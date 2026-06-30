@@ -1,0 +1,18 @@
+{
+  "name": "@chatbi/sdk",
+  "version": "1.0.0",
+  "description": "ChatBI Embed SDK - Web Components for third-party integration",
+  "type": "module",
+  "main": "dist/chatbi-sdk.min.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && tsc --emitDeclarationOnly",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "vite": "^5.0.0"
+  }
+}

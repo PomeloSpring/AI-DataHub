@@ -1,0 +1,16 @@
+# Correction Skill — SQL 纠错
+
+name: correction
+description: 根据执行错误信息修正 SQL 语句
+version: 1.0.0
+
+inputs:
+  - question: 用户原始问题
+  - failed_sql: 失败的 SQL 语句
+  - error_message: 错误信息
+  - table_info: 表元数据
+  - column_metadata: 字段元数据
+
+outputs:
+  - corrected_sql: 修正后的 SQL
+  - correction_reason: 修正原因

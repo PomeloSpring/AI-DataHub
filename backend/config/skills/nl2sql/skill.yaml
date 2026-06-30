@@ -1,0 +1,24 @@
+# NL2SQL Skill — 自然语言转 SQL 查询
+
+name: nl2sql
+description: 将自然语言问题转换为 SQL 查询
+version: 1.0.0
+
+inputs:
+  - question: 用户问题
+  - table_info: 表元数据
+  - column_metadata: 字段元数据
+  - business_terms: 业务术语
+  - table_relations: 表关联关系
+
+outputs:
+  - sql: 生成的 SQL 语句
+  - tables: 使用的表名列表
+  - chart_type: 推荐的图表类型
+  - brief: 对话标题
+
+components:
+  - system.md: 系统提示词
+  - rules.md: 生成规则
+  - examples.md: Few-shot 示例
+  - dialects/: 方言规则

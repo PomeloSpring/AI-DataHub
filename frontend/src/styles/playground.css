@@ -1,0 +1,113 @@
+/* Playground dark mode styles */
+.playground-container {
+  --bg-primary: #fff;
+  --bg-secondary: #fafafa;
+  --bg-editor: #fafafa;
+  --bg-line-num: #f5f5f5;
+  --border-color: #f0f0f0;
+  --text-color: #333;
+  --text-secondary: #999;
+}
+
+/* Dark mode overrides via Ant Design token */
+.ant-layout-dark .playground-container,
+.playground-dark {
+  --bg-primary: #141414;
+  --bg-secondary: #1f1f1f;
+  --bg-editor: #1a1a2e;
+  --bg-line-num: #16213e;
+  --border-color: #303030;
+  --text-color: #e8e8e8;
+  --text-secondary: #888;
+}
+
+/* Editor textarea dark mode */
+.playground-dark textarea,
+.ant-layout-dark textarea {
+  color: #e8e8e8 !important;
+}
+
+.playground-dark textarea::placeholder,
+.ant-layout-dark textarea::placeholder {
+  color: #666 !important;
+}
+
+/* Line numbers dark mode */
+.playground-dark .line-numbers,
+.ant-layout-dark .line-numbers {
+  background: #16213e;
+  color: #666;
+  border-right-color: #303030;
+}
+
+/* Tree dark mode */
+.playground-dark .ant-tree,
+.ant-layout-dark .ant-tree {
+  background: transparent;
+  color: #e8e8e8;
+}
+
+.playground-dark .ant-tree-node-content-wrapper:hover,
+.ant-layout-dark .ant-tree-node-content-wrapper:hover {
+  background: #1f1f1f;
+}
+
+.playground-dark .ant-tree-node-selected .ant-tree-node-content-wrapper,
+.ant-layout-dark .ant-tree-node-selected .ant-tree-node-content-wrapper {
+  background: #177ddc22;
+}
+
+/* Tabs dark mode */
+.playground-dark .ant-tabs-tab,
+.ant-layout-dark .ant-tabs-tab {
+  color: #888;
+}
+
+.playground-dark .ant-tabs-tab-active .ant-tabs-tab-btn,
+.ant-layout-dark .ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: #1677ff;
+}
+
+/* Table dark mode */
+.playground-dark .ant-table,
+.ant-layout-dark .ant-table {
+  background: transparent;
+}
+
+.playground-dark .ant-table-thead > tr > th,
+.ant-layout-dark .ant-table-thead > tr > th {
+  background: #1f1f1f;
+  color: #e8e8e8;
+  border-bottom-color: #303030;
+}
+
+.playground-dark .ant-table-tbody > tr > td,
+.ant-layout-dark .ant-table-tbody > tr > td {
+  border-bottom-color: #303030;
+  color: #e8e8e8;
+}
+
+.playground-dark .ant-table-tbody > tr:hover > td,
+.ant-layout-dark .ant-table-tbody > tr:hover > td {
+  background: #1f1f1f;
+}
+
+/* Select dark mode */
+.playground-dark .ant-select-selector,
+.ant-layout-dark .ant-select-selector {
+  background: #1f1f1f !important;
+  border-color: #303030 !important;
+  color: #e8e8e8 !important;
+}
+
+/* Divider dark mode */
+.playground-dark .ant-divider,
+.ant-layout-dark .ant-divider {
+  border-color: #303030;
+}
+
+/* Badge dark mode */
+.playground-dark .ant-badge-count,
+.ant-layout-dark .ant-badge-count {
+  background: #1677ff;
+}

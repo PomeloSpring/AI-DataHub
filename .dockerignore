@@ -1,0 +1,47 @@
+# Git
+.git
+.gitignore
+
+# Claude
+.claude
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.egg-info
+dist
+build
+.eggs
+*.egg
+venv
+.venv
+
+# Node
+node_modules
+npm-debug.log*
+
+# Build outputs
+frontend/dist
+frontend/build
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+docs
+*.md
+LICENSE
+
+# Data (mount as volume if needed)
+data
+
+# Logs
+*.log

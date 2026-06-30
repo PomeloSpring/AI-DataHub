@@ -1,0 +1,106 @@
+version: '3.8'
+
+# AI-DataHub 完整部署（含 MySQL）
+# 使用方式: docker compose -f docker-compose.full.yml up -d --build
+
+services:
+  # ── MySQL 数据库 ──────────────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: chatbi-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-chatbi_root_2024}
+      MYSQL_DATABASE: adh
+      MYSQL_USER: ${MYSQL_USER:-chatbi}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-chatbi_pass_2024}
+      TZ: Asia/Shanghai
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max-connections=200
+      - --default-authentication-plugin=mysql_native_password
+    networks:
+      - chatbi
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-chatbi_root_2024}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── 后端 API ──────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chatbi-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      # 元数据数据库（MySQL）
+      METADATA_DB_TYPE: mysql
+      METADATA_DB_HOST: mysql
+      METADATA_DB_PORT: 3306
+      METADATA_DB_USER: ${MYSQL_USER:-chatbi}
+      METADATA_DB_PASSWORD: ${MYSQL_PASSWORD:-chatbi_pass_2024}
+      METADATA_DB_DATABASE: adh
+      # 向量数据库（默认也用 MySQL，无 HNSW 向量搜索）
+      VECTOR_DB_TYPE: mysql
+      VECTOR_DB_HOST: mysql
+      VECTOR_DB_PORT: 3306
+      VECTOR_DB_USER: ${MYSQL_USER:-chatbi}
+      VECTOR_DB_PASSWORD: ${MYSQL_PASSWORD:-chatbi_pass_2024}
+      VECTOR_DB_DATABASE: adh
+      # LLM 配置
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-20250514}
+      # 应用配置
+      ADH_SECRET_KEY: ${ADH_SECRET_KEY:-change-me-in-production}
+      # Embedding
+      EMBEDDING_MODEL_PATH: ${EMBEDDING_MODEL_PATH:-shibing624/text2vec-base-chinese}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-768}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+    volumes:
+      - embedding-cache:/root/.cache/huggingface
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - chatbi
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ── 前端 ──────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: chatbi-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - chatbi
+
+volumes:
+  mysql-data:
+  embedding-cache:
+
+networks:
+  chatbi:
+    driver: bridge

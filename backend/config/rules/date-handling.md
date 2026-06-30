@@ -1,0 +1,15 @@
+# 日期处理规则
+
+## 相对日期转换
+- 今天 → CURDATE()
+- 昨天 → DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+- 本周 → DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+- 本月 → DATE_FORMAT(NOW(), '%Y-%m-01')
+- 上月 → DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 1 MONTH), '%Y-%m-01')
+- 最近 7 天 → DATE_SUB(NOW(), INTERVAL 7 DAY)
+- 最近 30 天 → DATE_SUB(NOW(), INTERVAL 30 DAY)
+
+## 日期格式
+- 标准格式：YYYY-MM-DD
+- 日期时间：YYYY-MM-DD HH:MM:SS
+- 月份：YYYY-MM

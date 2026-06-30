@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChatBI 嵌入集成测试</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f0f2f5;
+      color: #1a1a1a;
+    }
+    .header {
+      background: #fff;
+      border-bottom: 1px solid #e0e0e0;
+      padding: 16px 24px;
+    }
+    .header h1 { font-size: 20px; font-weight: 600; }
+    .header p { font-size: 13px; color: #666; margin-top: 4px; }
+    .config-bar {
+      background: #fff;
+      border-bottom: 1px solid #e0e0e0;
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .config-bar label {
+      font-size: 13px;
+      font-weight: 500;
+      color: #333;
+      white-space: nowrap;
+    }
+    .config-bar input {
+      padding: 6px 10px;
+      border: 1px solid #d9d9d9;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+    }
+    .config-bar input:focus { border-color: #1677ff; }
+    .config-bar input.w-md { width: 260px; }
+    .config-bar input.w-lg { width: 360px; }
+    .config-bar input.w-sm { width: 140px; }
+    .config-bar button {
+      padding: 6px 16px;
+      background: #1677ff;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .config-bar button:hover { opacity: 0.85; }
+    .config-bar .hint { font-size: 12px; color: #999; }
+    .container {
+      max-width: 1200px;
+      margin: 24px auto;
+      padding: 0 24px;
+    }
+    .tabs { display: flex; gap: 0; margin-bottom: 0; }
+    .tab {
+      padding: 10px 20px;
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-bottom: none;
+      border-radius: 8px 8px 0 0;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      color: #666;
+    }
+    .tab.active {
+      color: #1677ff;
+      border-color: #1677ff;
+      border-bottom: 1px solid #fff;
+      margin-bottom: -1px;
+      position: relative;
+      z-index: 1;
+    }
+    .tab-content {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 0 8px 8px 8px;
+      padding: 0;
+      min-height: 600px;
+      overflow: hidden;
+    }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 600px;
+      color: #999;
+      font-size: 14px;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .info-box {
+      background: #f6ffed;
+      border: 1px solid #b7eb8f;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      line-height: 1.8;
+    }
+    .info-box code {
+      background: #e8e8e8;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .config-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .config-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🔗 ChatBI 嵌入集成测试</h1>
+  <p>验证第三方嵌入功能：Chat分析组件 + Dashboard组件</p>
+</div>
+
+<div class="config-bar">
+  <div class="config-row">
+    <div class="config-group">
+      <label>后端地址:</label>
+      <input type="text" id="host" value="http://localhost:8000" class="w-md" placeholder="http://localhost:8000" />
+    </div>
+    <div class="config-group">
+      <label>SDK地址:</label>
+      <input type="text" id="sdkUrl" value="" class="w-lg" placeholder="留空自动使用当前服务的SDK路径" />
+    </div>
+  </div>
+  <div class="config-row">
+    <div class="config-group">
+      <label>API Key:</label>
+      <input type="text" id="apiKey" placeholder="ck_xxxxxxxxxxxxxxxx" class="w-md" />
+    </div>
+    <div class="config-group">
+      <label>用户ID:</label>
+      <input type="text" id="userId" value="test-user-001" class="w-sm" />
+    </div>
+    <button onclick="loadSDK()">加载SDK</button>
+    <span class="hint">填写后点击加载</span>
+  </div>
+</div>
+
+<div class="container">
+  <div class="info-box">
+    <strong>使用说明：</strong><br>
+    1. 启动后端：<code>cd chatbi-app && python backend/main.py</code><br>
+    2. 启动前端：<code>cd chatbi-app/frontend && npm run dev</code><br>
+    3. 访问 <code>http://localhost:3000/admin</code> → 集成管理 → 新建应用<br>
+    4. 创建后点击右侧 <strong>↗</strong> 按钮直接预览，或手动访问 <code>http://localhost:5173/test/index.html</code>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('chat', this)">💬 Chat 数据分析</div>
+    <div class="tab" onclick="switchTab('dashboard', this)">📊 Dashboard 仪表盘</div>
+  </div>
+
+  <div class="tab-content">
+    <div id="tab-chat" class="tab-panel active">
+      <div id="chat-container">
+        <div class="placeholder">
+          <span>请先加载SDK并填写API Key</span>
+        </div>
+      </div>
+    </div>
+    <div id="tab-dashboard" class="tab-panel">
+      <div id="dashboard-container">
+        <div class="placeholder">
+          <span>请先加载SDK并填写API Key</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  let sdkLoaded = false;
+
+  function switchTab(name, el) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('tab-' + name).classList.add('active');
+  }
+
+  function getSdkUrl() {
+    const custom = document.getElementById('sdkUrl').value.trim();
+    if (custom) return custom;
+    // When served from frontend dev server, use relative path
+    return '/sdk/dist/chatbi-sdk.min.js';
+  }
+
+  function loadSDK() {
+    const sdkUrl = getSdkUrl();
+    const apiKey = document.getElementById('apiKey').value.trim();
+
+    if (!apiKey) {
+      alert('请先填写 API Key');
+      return;
+    }
+
+    if (sdkLoaded) {
+      renderComponents();
+      return;
+    }
+
+    // Dynamically load SDK
+    const script = document.createElement('script');
+    script.src = sdkUrl;
+    script.onload = () => {
+      sdkLoaded = true;
+      console.log('✅ SDK 加载成功:', sdkUrl);
+      renderComponents();
+    };
+    script.onerror = () => {
+      alert('SDK 加载失败: ' + sdkUrl + '\n\n请检查：\n1. 前端开发服务器是否启动 (npm run dev)\n2. SDK地址是否正确');
+    };
+    document.body.appendChild(script);
+  }
+
+  function renderComponents() {
+    const host = document.getElementById('host').value.trim();
+    const apiKey = document.getElementById('apiKey').value.trim();
+    const userId = document.getElementById('userId').value.trim();
+
+    if (!apiKey) {
+      alert('请先填写 API Key');
+      return;
+    }
+
+    // Load Chat component
+    const chatContainer = document.getElementById('chat-container');
+    chatContainer.innerHTML = '';
+    const chatEl = document.createElement('chatbi-chat');
+    chatEl.setAttribute('host', host);
+    chatEl.setAttribute('api-key', apiKey);
+    chatEl.setAttribute('user-id', userId);
+    chatEl.setAttribute('user-name', '测试用户');
+    chatEl.setAttribute('height', '600px');
+    chatEl.setAttribute('theme', JSON.stringify({
+      primaryColor: '#1677ff',
+      borderRadius: '8px',
+    }));
+    chatContainer.appendChild(chatEl);
+
+    // Load Dashboard component
+    const dashContainer = document.getElementById('dashboard-container');
+    dashContainer.innerHTML = '';
+    const dashEl = document.createElement('chatbi-dashboard');
+    dashEl.setAttribute('host', host);
+    dashEl.setAttribute('api-key', apiKey);
+    dashEl.setAttribute('user-id', userId);
+    dashEl.setAttribute('user-name', '测试用户');
+    dashEl.setAttribute('height', '600px');
+    dashContainer.appendChild(dashEl);
+
+    // Listen for events
+    chatEl.addEventListener('chatbi:ready', (e) => {
+      console.log('✅ Chat 组件就绪:', e.detail);
+    });
+    chatEl.addEventListener('chatbi:message', (e) => {
+      console.log('📩 收到回复:', e.detail);
+    });
+    chatEl.addEventListener('chatbi:error', (e) => {
+      console.error('❌ 错误:', e.detail);
+    });
+    dashEl.addEventListener('chatbi:ready', (e) => {
+      console.log('✅ Dashboard 组件就绪:', e.detail);
+    });
+  }
+
+  // Auto-load from URL params
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('apiKey')) {
+    document.getElementById('apiKey').value = params.get('apiKey');
+    if (params.get('host')) document.getElementById('host').value = params.get('host');
+    if (params.get('userId')) document.getElementById('userId').value = params.get('userId');
+    if (params.get('sdkUrl')) document.getElementById('sdkUrl').value = params.get('sdkUrl');
+    loadSDK();
+  }
+</script>
+
+</body>
+</html>

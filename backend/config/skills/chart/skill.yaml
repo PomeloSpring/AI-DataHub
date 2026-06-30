@@ -1,0 +1,17 @@
+# Chart Skill — 图表配置生成
+
+name: chart
+description: 根据 SQL 查询结果生成数据可视化图表配置
+version: 1.0.0
+
+inputs:
+  - question: 用户问题
+  - sql: 生成的 SQL 语句
+  - schema: 表结构信息（M-Schema 格式）
+  - chart_type: 推荐的图表类型
+
+outputs:
+  - type: 图表类型
+  - title: 图表标题
+  - axis: 轴配置（x, y, series）
+  - columns: 表格列配置（table 类型）

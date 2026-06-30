@@ -1,0 +1,6 @@
+# Orchestrator Agent (Main Agent)
+name: orchestrator
+display_name: 编排调度
+description: 分析用户意图、选择子 Agent、协调执行、反思纠错、总结输出。
+type: orchestrator
+version: 1.0.0
