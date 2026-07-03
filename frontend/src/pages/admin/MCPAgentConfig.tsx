@@ -412,7 +412,7 @@ export function AgentsTab({ workspaceId, defaultWorkspaceId }: { workspaceId?: n
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Agent | null>(null);
   const [formOpen, setFormOpen] = useState(false);
-  const [form, setForm] = useState<any>({ agent_type: 'custom', is_active: 1, is_default: 0, max_retries: 2 });
+  const [form, setForm] = useState<any>({ agent_type: 'custom', is_active: 1, is_default: 0, max_retries: 2, max_iterations: 10 });
   const [mcpServers, setMcpServers] = useState<any[]>([]);
   const [datasources, setDatasources] = useState<any[]>([]);
 
@@ -443,6 +443,7 @@ export function AgentsTab({ workspaceId, defaultWorkspaceId }: { workspaceId?: n
       configObj = typeof form.config === 'string' ? JSON.parse(form.config || '{}') : (form.config || {});
     } catch { configObj = {}; }
     configObj.max_retries = form.max_retries ?? 2;
+    configObj.max_iterations = form.max_iterations ?? 10;
     const wsId = workspaceId || defaultWorkspaceId;
     const submitForm = { ...form, config: JSON.stringify(configObj), ...(wsId ? { workspace_id: wsId } : {}) };
     try {
@@ -455,7 +456,7 @@ export function AgentsTab({ workspaceId, defaultWorkspaceId }: { workspaceId?: n
       }
       setFormOpen(false);
       setEditing(null);
-      setForm({ agent_type: 'custom', is_active: 1, is_default: 0, max_retries: 2 });
+      setForm({ agent_type: 'custom', is_active: 1, is_default: 0, max_retries: 2, max_iterations: 10 });
       load();
     } catch { toast.error('保存失败'); }
   };
@@ -470,14 +471,16 @@ export function AgentsTab({ workspaceId, defaultWorkspaceId }: { workspaceId?: n
   };
 
   const handleEdit = (a: Agent) => {
-    // Parse max_retries from config JSON
+    // Parse config JSON
     let maxRetries = 2;
+    let maxIterations = 10;
     try {
       const cfg = typeof a.config === 'string' ? JSON.parse(a.config || '{}') : (a.config || {});
       maxRetries = cfg.max_retries ?? 2;
+      maxIterations = cfg.max_iterations ?? 10;
     } catch { /* use default */ }
     setEditing(a);
-    setForm({ ...a, max_retries: maxRetries });
+    setForm({ ...a, max_retries: maxRetries, max_iterations: maxIterations });
     setFormOpen(true);
   };
 
@@ -562,6 +565,18 @@ export function AgentsTab({ workspaceId, defaultWorkspaceId }: { workspaceId?: n
               />
               <p className="text-xs text-muted-foreground">数据获取失败时的内部重试次数（0=不重试）</p>
             </div>
+            <div className="space-y-1.5">
+              <Label>最大迭代次数</Label>
+              <Input
+                type="number"
+                min={1}
+                max={50}
+                value={form.max_iterations ?? 10}
+                onChange={e => setForm({ ...form, max_iterations: parseInt(e.target.value) || 10 })}
+                placeholder="10"
+              />
+              <p className="text-xs text-muted-foreground">工具调用的最大轮次（接近上限时会自动收尾）</p>
+            </div>
             <div className="flex items-end">
               <div className="flex items-center gap-2">
                 <Switch checked={form.is_active === 1} onCheckedChange={v => setForm({ ...form, is_active: v ? 1 : 0 })} />
@@ -582,7 +597,12 @@ export function AgentsTab({ workspaceId, defaultWorkspaceId }: { workspaceId?: n
           const mcpName = a.mcp_server_ids ? mcpServers.find(s => String(s.id) === a.mcp_server_ids)?.name : '';
           const dsName = a.datasource_ids ? datasources.find(d => String(d.id) === a.datasource_ids)?.name : '';
           let maxRetries = 2;
-          try { maxRetries = (typeof a.config === 'string' ? JSON.parse(a.config || '{}') : (a.config || {})).max_retries ?? 2; } catch {}
+          let maxIterations = 10;
+          try {
+            const cfg = typeof a.config === 'string' ? JSON.parse(a.config || '{}') : (a.config || {});
+            maxRetries = cfg.max_retries ?? 2;
+            maxIterations = cfg.max_iterations ?? 10;
+          } catch {}
           return (
             <div key={a.id} className="flex items-center justify-between p-3 hover:bg-muted/30">
               <div className="space-y-0.5">
@@ -593,11 +613,12 @@ export function AgentsTab({ workspaceId, defaultWorkspaceId }: { workspaceId?: n
                   {!a.is_active && <span className="ml-2 text-xs text-destructive">已禁用</span>}
                 </div>
                 <div className="text-xs text-muted-foreground">{a.description}</div>
-                {(mcpName || dsName || maxRetries !== 2) && (
+                {(mcpName || dsName || maxRetries !== 2 || maxIterations !== 10) && (
                   <div className="flex gap-2 mt-1">
                     {mcpName && <span className="text-xs bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">MCP: {mcpName}</span>}
                     {dsName && <span className="text-xs bg-green-50 text-green-600 px-1.5 py-0.5 rounded">数据源: {dsName}</span>}
                     {maxRetries !== 2 && <span className="text-xs bg-orange-50 text-orange-600 px-1.5 py-0.5 rounded">重试: {maxRetries}次</span>}
+                    {maxIterations !== 10 && <span className="text-xs bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded">迭代: {maxIterations}轮</span>}
                   </div>
                 )}
               </div>

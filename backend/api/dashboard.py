@@ -121,7 +121,7 @@ def _invalidate_dashboard_cache(user_id: int = None):
     if user_id is None:
         dashboard_cache.invalidate()
     else:
-        dashboard_cache.invalidate(f"dash:{user_id}")
+        dashboard_cache.invalidate_prefix(f"dash:{user_id}:")
 
 
 @router.get("/")
@@ -134,9 +134,10 @@ def list_dashboards(user: UserInfo = Depends(get_current_user), workspace_id: in
 def create_dashboard(req: DashboardCreate, user: UserInfo = Depends(get_current_user)):
     did = _ts_id()
     now = _now()
+    workspace_id = req.workspace_id or 0
 
     if req.is_default:
-        _clear_default(user.id)
+        _clear_default(user.id, workspace_id)
 
     conn = _get_metadata_conn()
     try:
@@ -147,7 +148,7 @@ def create_dashboard(req: DashboardCreate, user: UserInfo = Depends(get_current_
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (did, req.name, req.description, json.dumps(req.layout or []),
                  json.dumps(req.filters or {}), json.dumps(req.params or []),
-                 req.status or "designing", user.id, req.workspace_id or 0,
+                 req.status or "designing", user.id, workspace_id,
                  1 if req.is_public else 0, 1 if req.is_default else 0,
                  req.carousel_interval, now, now),
             )
@@ -162,12 +163,16 @@ def create_dashboard(req: DashboardCreate, user: UserInfo = Depends(get_current_
 def update_dashboard(dashboard_id: int, req: DashboardUpdate, user: UserInfo = Depends(get_current_user)):
     now = _now()
 
-    if req.is_default:
-        _clear_default(user.id)
-
     conn = _get_metadata_conn()
     try:
         with conn.cursor() as cur:
+            # Look up workspace_id for scoping _clear_default
+            if req.is_default:
+                cur.execute("SELECT workspace_id FROM adh_dashboards WHERE id = %s", (dashboard_id,))
+                row = cur.fetchone()
+                ws_id = row["workspace_id"] if row else 0
+                _clear_default(user.id, ws_id)
+
             updates = ["updated_at = %s"]
             params = [now]
             if req.name is not None:
@@ -232,16 +237,22 @@ def reorder_dashboards(req: dict, user: UserInfo = Depends(get_current_user)):
     return {"success": True}
 
 
-def _clear_default(user_id: int):
-    """Clear is_default flag for all dashboards of a user."""
+def _clear_default(user_id: int, workspace_id: int = 0):
+    """Clear is_default flag for all dashboards of a user within a workspace."""
     try:
         conn = _get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE adh_dashboards SET is_default = 0 WHERE owner_id = %s AND is_default = 1",
-                    (user_id,),
-                )
+                if workspace_id:
+                    cur.execute(
+                        "UPDATE adh_dashboards SET is_default = 0 WHERE owner_id = %s AND workspace_id = %s AND is_default = 1",
+                        (user_id, workspace_id),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE adh_dashboards SET is_default = 0 WHERE owner_id = %s AND is_default = 1",
+                        (user_id,),
+                    )
             conn.commit()
         finally:
             conn.close()
@@ -268,11 +279,11 @@ def copy_dashboard(dashboard_id: int, user: UserInfo = Depends(get_current_user)
             cur.execute(
                 "INSERT INTO adh_dashboards "
                 "(`id`, `name`, `description`, `layout`, `filters`, `params`, `status`, "
-                "`owner_id`, `is_public`, `is_default`, `carousel_interval`, `sort_order`, `created_at`, `updated_at`) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "`owner_id`, `workspace_id`, `is_public`, `is_default`, `carousel_interval`, `sort_order`, `created_at`, `updated_at`) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (new_id, f"{src['name']} (副本)", src.get("description"),
                  src.get("layout"), src.get("filters"), src.get("params"),
-                 "designing", user.id, 0, 0,
+                 "designing", user.id, src.get("workspace_id", 0), 0, 0,
                  src.get("carousel_interval", 0), 0, now, now),
             )
 

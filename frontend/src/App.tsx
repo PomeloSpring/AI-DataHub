@@ -18,9 +18,14 @@ import ModelLab from './pages/ModelLab';
 import ModelTrain from './pages/ModelTrain';
 import WorkspaceManagerV2 from './pages/WorkspaceManagerV2';
 import WorkflowConfig from './pages/admin/WorkflowConfig';
+import WorkflowEditor from './pages/admin/WorkflowEditor';
 import PromptManager from './pages/admin/PromptManager';
 import ModelCenter from './pages/admin/ModelCenter';
 import MCPAgentConfig from './pages/admin/MCPAgentConfig';
+import ScheduledTasks from './pages/admin/ScheduledTasks';
+import NotificationChannels from './pages/admin/NotificationChannels';
+import ReportTemplates from './pages/admin/ReportTemplates';
+import ReportView from './pages/ReportView';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -102,7 +107,11 @@ export default function App() {
           <Route path="models" element={<ModelCenter />} />
           <Route path="mcp-agent" element={<MCPAgentConfig />} />
           <Route path="workflows" element={<WorkflowConfig />} />
+          <Route path="workflow-editor" element={<WorkflowEditor />} />
           <Route path="prompts" element={<PromptManager />} />
+          <Route path="scheduled-tasks" element={<ScheduledTasks />} />
+          <Route path="notification-channels" element={<NotificationChannels />} />
+          <Route path="report-templates" element={<ReportTemplates />} />
           <Route path="settings" element={<Admin embeddedTab="brand" />} />
         </Route>
 
@@ -116,6 +125,9 @@ export default function App() {
 
         {/* Workspace management (standalone page, accessible from both modes) */}
         <Route path="/workspaces" element={<PrivateRoute><WorkspaceManagerV2 /></PrivateRoute>} />
+
+        {/* Report view (public/private, auth optional) */}
+        <Route path="/report/:reportId" element={<ReportView />} />
 
         {/* Profile (standalone) */}
         <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />

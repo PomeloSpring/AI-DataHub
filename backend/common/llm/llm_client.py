@@ -3,15 +3,21 @@ LLM Client — Multi-provider LLM API client.
 
 Supports Anthropic Claude, OpenAI-compatible APIs.
 Reads model config from database (adh_llm_models), falls back to .env.
+
+Langfuse integration: @observe(as_type="generation") decorator on each function.
+Langfuse 4.x automatically intercepts Anthropic SDK calls (including stream()),
+aggregates chunks, and captures thinking blocks. No manual Langfuse calls needed.
 """
 
 import asyncio
 import json
 import logging
+import time
 from typing import Generator
 from functools import partial
 
 from anthropic import Anthropic
+from langfuse import observe
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +56,7 @@ def _get_client() -> Anthropic:
     return _get_client_for_model(config)
 
 
+@observe(as_type="generation")
 def generate_sql(messages: list[dict], max_tokens: int = 4096, model_id: int = None) -> dict:
     """Call the LLM to generate SQL from a prompt.
 
@@ -127,6 +134,7 @@ def generate_sql(messages: list[dict], max_tokens: int = 4096, model_id: int = N
         raise RuntimeError(f"LLM 生成失败: {e}") from e
 
 
+@observe(as_type="generation")
 def generate_sql_stream(messages: list[dict], max_tokens: int = 4096, model_id: int = None) -> Generator[tuple, None, None]:
     """Stream LLM generation, yielding (event_type, data) tuples.
 
@@ -194,6 +202,7 @@ def generate_sql_stream(messages: list[dict], max_tokens: int = 4096, model_id: 
         raise RuntimeError(f"LLM 流式生成失败: {e}") from e
 
 
+@observe(as_type="generation")
 def generate_with_tools(
     messages: list[dict],
     tools: list[dict],
@@ -285,6 +294,7 @@ def generate_with_tools(
         raise RuntimeError(f"LLM 生成失败: {e}") from e
 
 
+@observe(as_type="generation")
 def generate_with_tools_stream(
     messages: list[dict],
     tools: list[dict],
@@ -345,7 +355,6 @@ def generate_with_tools_stream(
                 if event.type == "content_block_start":
                     block = event.content_block
                     if hasattr(block, "type") and block.type == "tool_use":
-                        # Tool use block starts — we'll collect input in deltas
                         pass
                 elif event.type == "content_block_delta":
                     delta = event.delta
@@ -354,8 +363,6 @@ def generate_with_tools_stream(
                     elif hasattr(delta, "text") and delta.text:
                         yield ("token", delta.text)
                     elif hasattr(delta, "partial_json") and delta.partial_json:
-                        # Tool use input is streamed as partial JSON chunks
-                        # We collect them and emit at the end
                         pass
                 elif event.type == "content_block_stop":
                     pass

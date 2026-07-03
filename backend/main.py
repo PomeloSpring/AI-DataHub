@@ -60,6 +60,7 @@ from backend.api.model_config import router as model_config_router
 from backend.api.admin_workflow import router as admin_workflow_router
 from backend.api import pipeline
 from backend.api.workspace_v2 import router as workspace_router
+from backend.api.scheduled_task import router as scheduled_task_router
 
 app = FastAPI(title="ChatBI API", description="ChatBI 数据分析助手 API", version="1.0.0")
 
@@ -96,7 +97,18 @@ app.include_router(admin_workflow_router, prefix="/api/admin", tags=["工作流�
 app.include_router(pipeline.router, prefix="/api/pipeline", tags=["Pipeline"])
 app.include_router(mcp_market_router, prefix="/api/mcp-market", tags=["MCP市场"])
 app.include_router(workspace_router, prefix="/api/workspaces", tags=["工作空间"])
+app.include_router(scheduled_task_router, prefix="/api", tags=["定时任务"])
 
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    """Flush pending Langfuse events on app shutdown."""
+    try:
+        from backend.common.llm.langfuse_client import flush
+        flush()
+    except Exception:
+        pass

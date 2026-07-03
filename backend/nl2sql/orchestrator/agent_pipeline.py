@@ -1342,6 +1342,11 @@ async def agent_generate(
     username: str = None,
     retrieval_strategy: str = None,
     workspace_id: int = 0,
+    disable_ask_user: bool = False,
+    context: str = None,
+    allowed_mcp_server_ids: list = None,
+    allowed_agent_names: list = None,
+    max_iterations: int = None,
 ):
     """Agent pipeline — LLM fully autonomous planning with streaming.
 
@@ -1355,6 +1360,10 @@ async def agent_generate(
     """
     from backend.common.llm.llm_client import _get_model_config, generate_with_tools_stream
     from backend.mcp_client.tools import MCPToolCaller
+    # Ensure agents are registered before building tools
+    from backend.nl2sql.orchestrator.pipeline_orchestrator import _init_agents
+    _init_agents()
+
     from backend.agent.router import get_all_agents
     from backend.nl2sql.sql.query_executor import _get_ds_conn_params
 
@@ -1387,13 +1396,20 @@ async def agent_generate(
     # 2. Collect tools — orchestrator tools + MCP tools + agent tools
     # MCP tools are available for fallback when sub-agents fail
     tools = list(ORCHESTRATOR_TOOLS)
+    if disable_ask_user:
+        tools = [t for t in tools if t["name"] != "ask_user"]
     seen_tool_names = {t["name"] for t in tools}
     mcp_caller = MCPToolCaller()
 
     if workspace_tools:
         # Use workspace's MCP tools (prefix with server name)
+        # Filter by allowed_mcp_server_ids if specified
         for t in workspace_tools.get('mcp_tools', []):
             server_name = t.get('server_name', '')
+            server_id = t.get('server_id', 0)
+            # Skip if MCP server not in allowed list
+            if allowed_mcp_server_ids is not None and server_id not in allowed_mcp_server_ids:
+                continue
             tool_name = f"{server_name}__{t['name']}" if server_name else t['name']
             if tool_name in seen_tool_names:
                 continue
@@ -1406,25 +1422,32 @@ async def agent_generate(
         logger.info("[Agent] Loaded %d MCP tools from workspace", len(workspace_tools.get('mcp_tools', [])))
     else:
         # Fallback: load all global MCP tools
-        try:
-            await mcp_caller.initialize()
-            mcp_tools = await mcp_caller.list_tools()
-            for t in mcp_tools:
-                if t["name"] in seen_tool_names:
-                    continue
-                seen_tool_names.add(t["name"])
-                tools.append({
-                    "name": t["name"],
-                    "description": t.get("description", ""),
-                    "input_schema": t.get("input_schema", {"type": "object", "properties": {}}),
-                })
-        except Exception as e:
-            logger.warning("[Agent] Failed to load MCP tools: %s", e)
+        # Skip entirely if allowed_mcp_server_ids is set but empty (no MCP allowed)
+        if allowed_mcp_server_ids is not None and len(allowed_mcp_server_ids) == 0:
+            logger.info("[Agent] No MCP servers configured, skipping global MCP tools")
+        else:
+            try:
+                await mcp_caller.initialize()
+                mcp_tools = await mcp_caller.list_tools()
+                for t in mcp_tools:
+                    if t["name"] in seen_tool_names:
+                        continue
+                    seen_tool_names.add(t["name"])
+                    tools.append({
+                        "name": t["name"],
+                        "description": t.get("description", ""),
+                        "input_schema": t.get("input_schema", {"type": "object", "properties": {}}),
+                    })
+            except Exception as e:
+                logger.warning("[Agent] Failed to load MCP tools: %s", e)
 
     agent_tools_map = {}
     all_agents = get_all_agents()
     for agent_name, agent in all_agents.items():
         if not agent.is_active:
+            continue
+        # Scheduled task: only allow explicitly configured sub-agents
+        if allowed_agent_names is not None and agent_name not in allowed_agent_names:
             continue
         tool_name = f"agent__{agent_name}"
         tools.append({
@@ -1503,6 +1526,10 @@ async def agent_generate(
         agent_graph=agent_graph,
         workspace_context=workspace_context,
     )
+
+    # Inject task context into system prompt (scheduled task background info)
+    if context:
+        system_prompt = f"{system_prompt}\n\n## 任务背景\n\n{context}"
 
     # 6. Build initial messages
     messages = [{"role": "system", "content": system_prompt}]
@@ -1673,29 +1700,22 @@ async def agent_generate(
             "mode": "agent",
         }
 
-        tool_results_list = []
-        for tc in tool_calls_this_round:
+        # ── Separate agent calls from other calls ──
+        agent_calls = [tc for tc in tool_calls_this_round if tc["name"].startswith("agent__")]
+        other_calls = [tc for tc in tool_calls_this_round if not tc["name"].startswith("agent__")]
+
+        # ── Helper: execute a single tool call ──
+        async def _execute_one_tool(tc: dict) -> tuple[dict, str, float]:
+            """Execute one tool call, return (tc, tool_result, elapsed)."""
             tool_name = tc["name"]
             tool_input = tc["input"]
-            tool_id = tc["id"]
-            step_num = len(all_tool_calls) + 1
-
-            # ── PreToolUse Hook ──
-            tool_input = await _pre_tool_use_hook(tool_name, tool_input, agent_context)
-
-            args_desc = _brief_args(tool_input)
-            yield "progress", {
-                "stage": "agent_exec",
-                "message": f"{tool_name}({args_desc})",
-                "step": step_num,
-                "iteration": iteration + 1,
-                "mode": "agent",
-            }
-
-            # ── Execute tool ──
             t_tool = time.time()
+
+            tool_input = await _pre_tool_use_hook(tool_name, tool_input, agent_context)
+            tc["input"] = tool_input  # update in case hook modified it
+
             if tool_name in {t["name"] for t in SYSTEM_TOOLS}:
-                tool_result = await _execute_system_tool(
+                result = await _execute_system_tool(
                     tool_name, tool_input,
                     datasource_id, model_id, user_id, username,
                     question=question,
@@ -1703,8 +1723,7 @@ async def agent_generate(
             elif tool_name in agent_tools_map:
                 agent = agent_tools_map[tool_name]
                 try:
-                    # Call sub-agent with timeout monitoring
-                    AGENT_TIMEOUT = 90  # seconds
+                    AGENT_TIMEOUT = 90
                     try:
                         agent_result = await asyncio.wait_for(
                             agent.run(
@@ -1714,6 +1733,7 @@ async def agent_generate(
                                 model_id=model_id,
                                 user_id=user_id,
                                 username=username,
+                                max_iterations=max_iterations,
                             ),
                             timeout=AGENT_TIMEOUT,
                         )
@@ -1727,8 +1747,7 @@ async def agent_generate(
                             retryable=True,
                             agent_name=agent.name,
                         )
-
-                    tool_result = json.dumps({
+                    result = json.dumps({
                         "success": agent_result.success,
                         "reply": agent_result.reply,
                         "sql": agent_result.sql,
@@ -1739,15 +1758,67 @@ async def agent_generate(
                         "tool_calls": agent_result.tool_calls,
                     }, ensure_ascii=False, default=str)
                 except Exception as e:
-                    tool_result = json.dumps({"error": str(e), "retryable": False})
+                    result = json.dumps({"error": str(e), "retryable": False})
             else:
                 try:
-                    tool_result = await mcp_caller.call(tool_name, tool_input)
-                    if not isinstance(tool_result, str):
-                        tool_result = json.dumps(tool_result, ensure_ascii=False, default=str)
+                    result = await mcp_caller.call(tool_name, tool_input)
+                    if not isinstance(result, str):
+                        result = json.dumps(result, ensure_ascii=False, default=str)
                 except Exception as e:
-                    tool_result = json.dumps({"error": str(e)})
-            tool_elapsed = round(time.time() - t_tool, 2)
+                    result = json.dumps({"error": str(e)})
+
+            elapsed = round(time.time() - t_tool, 2)
+            return tc, result, elapsed
+
+        # ── Execute tools: agents in parallel, others serial ──
+        # Progress events for all calls
+        for i, tc in enumerate(tool_calls_this_round):
+            step_num = len(all_tool_calls) + i + 1
+            args_desc = _brief_args(tc["input"])
+            yield "progress", {
+                "stage": "agent_exec",
+                "message": f"{tc['name']}({args_desc})",
+                "step": step_num,
+                "iteration": iteration + 1,
+                "mode": "agent",
+            }
+
+        # Run agent calls in parallel, other calls serial
+        executed_results = {}  # tool_id -> (tc, result, elapsed)
+
+        if agent_calls and len(agent_calls) > 1:
+            # Multiple agent calls → parallel execution
+            logger.info("[Orchestrator] Parallel execution: %d agents: %s",
+                        len(agent_calls), [tc["name"] for tc in agent_calls])
+            parallel_results = await asyncio.gather(
+                *[_execute_one_tool(tc) for tc in agent_calls],
+                return_exceptions=True,
+            )
+            for res in parallel_results:
+                if isinstance(res, Exception):
+                    logger.error("[Orchestrator] Parallel agent call failed: %s", res)
+                    continue
+                tc, result, elapsed = res
+                executed_results[tc["id"]] = (tc, result, elapsed)
+        else:
+            # Single agent or no agents → serial
+            for tc in agent_calls:
+                tc, result, elapsed = await _execute_one_tool(tc)
+                executed_results[tc["id"]] = (tc, result, elapsed)
+
+        # Other calls always serial
+        for tc in other_calls:
+            tc, result, elapsed = await _execute_one_tool(tc)
+            executed_results[tc["id"]] = (tc, result, elapsed)
+
+        # ── Build tool_results_list in original order ──
+        tool_results_list = []
+        for tc in tool_calls_this_round:
+            tc, tool_result, tool_elapsed = executed_results.get(tc["id"], (tc, "{}", 0))
+            tool_name = tc["name"]
+            tool_input = tc["input"]
+            tool_id = tc["id"]
+            step_num = len(all_tool_calls) + 1
 
             # ── Failure Pattern Detection (execute_sql) ──
             if tool_name == "execute_sql":
@@ -1827,36 +1898,44 @@ async def agent_generate(
 
             # ── Handle ask_user ──
             if tool_name == "ask_user":
-                try:
-                    parsed_result = json.loads(tool_result)
-                    if parsed_result.get("__ask_user__"):
-                        ask_id = str(uuid.uuid4())[:8]
-                        yield "ask_user", {
-                            "request_id": ask_id,
-                            "question": parsed_result["question"],
-                            "options": parsed_result.get("options", []),
-                        }
-                        try:
-                            user_response = await _wait_for_user_response(ask_id)
-                        except AgentCancelledError:
-                            logger.info("[Agent] User cancelled via ask_user, request_id=%s", ask_id)
-                            yield "token", {"text": "🚫 任务已取消"}
-                            yield "done", {
-                                "success": False,
-                                "reply": "🚫 任务已取消",
-                                "sql": final_sql,
-                                "error": "cancelled",
-                                "retryable": False,
-                                "mode": "agent",
+                if disable_ask_user:
+                    # No user interaction available (e.g. scheduled task)
+                    # Return the question as an error so the agent can work around it
+                    tool_result = json.dumps({
+                        "error": "无法与用户交互（定时任务模式）。请基于已有信息自行判断并继续执行，或直接报告无法完成的原因。",
+                        "question": parsed_result.get("question", "") if 'parsed_result' in dir() else "",
+                    }, ensure_ascii=False)
+                else:
+                    try:
+                        parsed_result = json.loads(tool_result)
+                        if parsed_result.get("__ask_user__"):
+                            ask_id = str(uuid.uuid4())[:8]
+                            yield "ask_user", {
+                                "request_id": ask_id,
+                                "question": parsed_result["question"],
+                                "options": parsed_result.get("options", []),
                             }
-                            return
-                        # Record confirmed info
-                        confirmed_context[parsed_result["question"]] = user_response
-                        tool_result = json.dumps({
-                            "user_response": user_response,
-                        }, ensure_ascii=False)
-                except (json.JSONDecodeError, KeyError):
-                    pass
+                            try:
+                                user_response = await _wait_for_user_response(ask_id)
+                            except AgentCancelledError:
+                                logger.info("[Agent] User cancelled via ask_user, request_id=%s", ask_id)
+                                yield "token", {"text": "🚫 任务已取消"}
+                                yield "done", {
+                                    "success": False,
+                                    "reply": "🚫 任务已取消",
+                                    "sql": final_sql,
+                                    "error": "cancelled",
+                                    "retryable": False,
+                                    "mode": "agent",
+                                }
+                                return
+                            # Record confirmed info
+                            confirmed_context[parsed_result["question"]] = user_response
+                            tool_result = json.dumps({
+                                "user_response": user_response,
+                            }, ensure_ascii=False)
+                    except (json.JSONDecodeError, KeyError):
+                        pass
 
             # ── Immediate Compaction Check ──
             # If a tool result is very large, trigger compaction before next iteration

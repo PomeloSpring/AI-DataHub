@@ -67,6 +67,13 @@ class TTLCache:
             elif key in self._cache:
                 del self._cache[key]
 
+    def invalidate_prefix(self, prefix: str):
+        """清除所有以 prefix 开头的缓存条目。"""
+        with self._lock:
+            keys_to_delete = [k for k in self._cache if k.startswith(prefix)]
+            for k in keys_to_delete:
+                del self._cache[k]
+
     def get_or_set(self, key: str, factory, ttl: int = None) -> Any:
         """获取缓存值，未命中时调用 factory() 生成并缓存。"""
         value = self.get(key)

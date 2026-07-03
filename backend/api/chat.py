@@ -763,6 +763,7 @@ async def chat_send_stream(req: ChatRequest, request: Request, user: UserInfo = 
 
                     yield _sse_event("progress", {"stage": "llm", "message": "正在调用 MCP 工具..."})
                     t_llm = perf_counter()
+                    mcp_tool_calls_log = []
 
                     llm_result = await async_generate_with_tools(messages, mcp_tool_list, model_id=model_id)
                     total_tool_tokens = {"input": 0, "output": 0, "total": 0}
@@ -792,10 +793,21 @@ async def chat_send_stream(req: ChatRequest, request: Request, user: UserInfo = 
                         # Execute tools and build tool_result messages
                         tool_results = []
                         for tool_call in llm_result["tool_uses"]:
+                            t_tool = perf_counter()
                             result = await _execute_mcp_tool_call(
                                 tool_call["id"], tool_call["name"], tool_call["input"]
                             )
+                            tool_elapsed = round(perf_counter() - t_tool, 2)
                             tool_results.append(result)
+                            result_content = result.get("content", "")
+                            mcp_tool_calls_log.append({
+                                "step": len(mcp_tool_calls_log) + 1,
+                                "tool": tool_call["name"],
+                                "arguments": tool_call["input"],
+                                "result": str(result_content)[:1000],
+                                "result_preview": str(result_content)[:200],
+                                "elapsed": tool_elapsed,
+                            })
                             yield _sse_event("tool_result", {
                                 "id": tool_call["id"],
                                 "name": tool_call["name"],
@@ -921,6 +933,7 @@ async def chat_send_stream(req: ChatRequest, request: Request, user: UserInfo = 
                             "datasets_count": len(datasets),
                         },
                         "mcp_tools_used": [t["name"] for t in mcp_tool_list],
+                        "tool_calls": mcp_tool_calls_log,
                     })
                     yield _sse_event("done", done_payload)
                     done_yielded = True
@@ -1870,6 +1883,7 @@ async def chat_send_loop_stream(req: ChatRequest, request: Request, user: UserIn
                     "rag": rag_payload,
                     "workflow_info": result.get("workflow", {}),
                     "log_id": result.get("log_id"),
+                    "tool_calls": result.get("tool_calls", []),
                 })
                 yield _sse_event("done", done_payload)
             elif result:

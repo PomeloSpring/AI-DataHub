@@ -1,0 +1,23 @@
+# Anomaly Detection Agent
+name: anomaly
+display_name: 异常检测
+description: 检测数据异常：流量突变、统计异常点、同比环比异常、指标偏离基线。支持任意数据源。
+datasource_type: ""
+max_retries: 0
+max_iterations: 15
+route_patterns:
+  - "(异常|突变|暴涨|暴跌).*(检测|分析|发现)"
+  - "(异常检测|异常发现|异常告警)"
+  - "(同比|环比).*(异常|偏离|差距)"
+  - "(指标|数据).*(异常|偏离|波动).*(分析|检测)"
+  - "(监控|告警).*(异常|阈值)"
+  - "(不正常|问题).*(数据|指标|趋势)"
+input_schema:
+  required:
+    - field: "question"
+      description: "用户的分析问题"
+      format: "自然语言问题"
+  optional:
+    - field: "metric"
+      description: "要检测异常的指标"
+      format: "如：请求量、错误率、响应时间"

@@ -21,6 +21,7 @@ from backend.models.schemas import (
     WorkflowConfigCreate, WorkflowConfigUpdate, WorkflowConfigResponse, WorkflowListResponse,
     WorkflowStepUpdate, WorkflowStepResponse,
     WorkflowLogResponse, WorkflowLogListResponse,
+    WorkflowEdgeCreate, WorkflowDAGConfig,
 )
 
 router = APIRouter()
@@ -347,7 +348,7 @@ def list_workflows(
 
             offset = (page - 1) * size
             cur.execute(
-                f"SELECT id, name, description, is_active, is_default, "
+                f"SELECT id, name, description, is_active, is_default, workflow_type, dag_config, "
                 f"created_at, updated_at, created_by "
                 f"FROM adh_workflow_configs {where} "
                 f"ORDER BY is_default DESC, name LIMIT %s OFFSET %s",
@@ -382,6 +383,23 @@ def list_workflows(
                         except:
                             pass
                 wf["steps"] = steps
+
+                # 获取工作流边
+                try:
+                    cur.execute(
+                        "SELECT id, workflow_id, source_step_id, target_step_id, edge_type, "
+                        "condition_expr, label, created_at "
+                        "FROM adh_workflow_edges WHERE workflow_id = %s",
+                        (wf["id"],),
+                    )
+                    edges = cur.fetchall()
+                    for e in edges:
+                        if hasattr(e.get("created_at"), "isoformat"):
+                            e["created_at"] = e["created_at"].isoformat()
+                    wf["edges"] = edges
+                except Exception:
+                    wf["edges"] = []
+
                 result.append(wf)
 
             return {"total": total, "items": result}
@@ -396,7 +414,7 @@ def get_workflow(workflow_id: int, admin: UserInfo = Depends(require_admin)):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, name, description, is_active, is_default, "
+                "SELECT id, name, description, is_active, is_default, workflow_type, dag_config, "
                 "created_at, updated_at, created_by "
                 "FROM adh_workflow_configs WHERE id = %s",
                 (workflow_id,),
@@ -431,6 +449,22 @@ def get_workflow(workflow_id: int, admin: UserInfo = Depends(require_admin)):
                         pass
             wf["steps"] = steps
 
+            # 获取工作流边
+            try:
+                cur.execute(
+                    "SELECT id, workflow_id, source_step_id, target_step_id, edge_type, "
+                    "condition_expr, label, created_at "
+                    "FROM adh_workflow_edges WHERE workflow_id = %s",
+                    (workflow_id,),
+                )
+                edges = cur.fetchall()
+                for e in edges:
+                    if hasattr(e.get("created_at"), "isoformat"):
+                        e["created_at"] = e["created_at"].isoformat()
+                wf["edges"] = edges
+            except Exception:
+                wf["edges"] = []
+
             return wf
     finally:
         conn.close()
@@ -454,10 +488,12 @@ def create_workflow(req: WorkflowConfigCreate, admin: UserInfo = Depends(require
             # 创建工作流配置
             cur.execute(
                 "INSERT INTO adh_workflow_configs "
-                "(id, name, description, is_active, is_default, created_at, updated_at, created_by) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                "(id, name, description, is_active, is_default, workflow_type, dag_config, "
+                "created_at, updated_at, created_by) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (workflow_id, req.name, req.description or "",
-                 1 if req.is_active else 0, 1 if req.is_default else 0, now, now, admin.username),
+                 1 if req.is_active else 0, 1 if req.is_default else 0,
+                 req.workflow_type, req.dag_config, now, now, admin.username),
             )
 
             # 创建工作流步骤
@@ -475,6 +511,19 @@ def create_workflow(req: WorkflowConfigCreate, admin: UserInfo = Depends(require
                          config_json, now, now),
                     )
 
+            # 创建工作流边
+            if req.edges:
+                for edge in req.edges:
+                    edge_id = _generate_id()
+                    cur.execute(
+                        "INSERT INTO adh_workflow_edges "
+                        "(id, workflow_id, source_step_id, target_step_id, edge_type, "
+                        "condition_expr, label, created_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                        (edge_id, workflow_id, edge.source_step_id, edge.target_step_id,
+                         edge.edge_type, edge.condition_expr, edge.label, now),
+                    )
+
         conn.commit()
         return {"success": True, "id": workflow_id}
     finally:
@@ -489,7 +538,7 @@ def update_workflow(workflow_id: int, req: WorkflowConfigUpdate, admin: UserInfo
         with conn.cursor() as cur:
             # 获取当前配置
             cur.execute(
-                "SELECT id, name, description, is_active, is_default "
+                "SELECT id, name, description, is_active, is_default, workflow_type, dag_config "
                 "FROM adh_workflow_configs WHERE id = %s",
                 (workflow_id,),
             )
@@ -504,6 +553,8 @@ def update_workflow(workflow_id: int, req: WorkflowConfigUpdate, admin: UserInfo
             description = req.description if req.description is not None else current["description"]
             is_active = req.is_active if req.is_active is not None else bool(current["is_active"])
             is_default = req.is_default if req.is_default is not None else bool(current["is_default"])
+            workflow_type = req.workflow_type if req.workflow_type is not None else current.get("workflow_type", "linear")
+            dag_config = req.dag_config if req.dag_config is not None else current.get("dag_config")
 
             # 如果设置为默认，先取消其他默认
             if is_default and not current["is_default"]:
@@ -515,11 +566,42 @@ def update_workflow(workflow_id: int, req: WorkflowConfigUpdate, admin: UserInfo
             cur.execute("DELETE FROM adh_workflow_configs WHERE id = %s", (workflow_id,))
             cur.execute(
                 "INSERT INTO adh_workflow_configs "
-                "(id, name, description, is_active, is_default, created_at, updated_at, created_by) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                "(id, name, description, is_active, is_default, workflow_type, dag_config, "
+                "created_at, updated_at, created_by) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (workflow_id, name, description, 1 if is_active else 0,
-                 1 if is_default else 0, now, now, admin.username),
+                 1 if is_default else 0, workflow_type, dag_config, now, now, admin.username),
             )
+
+            # 更新步骤（如果提供了新的步骤列表）
+            if req.steps is not None:
+                cur.execute("DELETE FROM adh_workflow_steps WHERE workflow_id = %s", (workflow_id,))
+                for step in req.steps:
+                    step_id = _generate_id()
+                    config_json = json.dumps(step.config, ensure_ascii=False) if step.config else None
+                    cur.execute(
+                        "INSERT INTO adh_workflow_steps "
+                        "(id, workflow_id, step_type, step_name, step_order, "
+                        "max_rounds, is_enabled, prompt_key, config, created_at, updated_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (step_id, workflow_id, step.step_type, step.step_name, step.step_order,
+                         step.max_rounds, 1 if step.is_enabled else 0, step.prompt_key,
+                         config_json, now, now),
+                    )
+
+            # 更新边（如果提供了新的边列表）
+            if req.edges is not None:
+                cur.execute("DELETE FROM adh_workflow_edges WHERE workflow_id = %s", (workflow_id,))
+                for edge in req.edges:
+                    edge_id = _generate_id()
+                    cur.execute(
+                        "INSERT INTO adh_workflow_edges "
+                        "(id, workflow_id, source_step_id, target_step_id, edge_type, "
+                        "condition_expr, label, created_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                        (edge_id, workflow_id, edge.source_step_id, edge.target_step_id,
+                         edge.edge_type, edge.condition_expr, edge.label, now),
+                    )
 
         conn.commit()
         return {"success": True}
@@ -551,6 +633,115 @@ def delete_workflow(workflow_id: int, admin: UserInfo = Depends(require_admin)):
 
         conn.commit()
         return {"success": True}
+    finally:
+        conn.close()
+
+
+# ── DAG Workflow Endpoints ──────────────────────────────────────────
+
+
+@router.post("/workflows/{workflow_id}/execute")
+async def execute_workflow_dag(workflow_id: int, req: dict, admin: UserInfo = Depends(require_admin)):
+    """Execute a DAG workflow."""
+    from backend.nl2sql.orchestrator.workflow.dag_engine import DAGExecutor
+
+    question = req.get("question", "")
+    datasource_id = req.get("datasource_id", 0)
+
+    if not question:
+        return {"success": False, "error": "请输入测试问题"}
+
+    executor = DAGExecutor(
+        workflow_id=workflow_id,
+        context={"question": question, "datasource_id": datasource_id},
+    )
+
+    result = await executor.execute()
+    return result
+
+
+@router.post("/workflows/{workflow_id}/validate")
+async def validate_workflow_dag(workflow_id: int, admin: UserInfo = Depends(require_admin)):
+    """Validate a DAG workflow (check for cycles, orphans, etc.)."""
+    from backend.nl2sql.orchestrator.workflow.dag_engine import DAGExecutor
+
+    executor = DAGExecutor(workflow_id=workflow_id, context={})
+    try:
+        await executor._load_workflow_config()
+        errors = executor.validate_dag()
+        return {"valid": len(errors) == 0, "errors": errors}
+    except Exception as e:
+        return {"valid": False, "errors": [str(e)]}
+
+
+@router.get("/workflows/{workflow_id}/dag")
+async def get_workflow_dag(workflow_id: int, admin: UserInfo = Depends(require_admin)):
+    """Get DAG configuration for a workflow."""
+    from backend.nl2sql.orchestrator.workflow.dag_engine import load_dag_config
+
+    try:
+        dag_config = load_dag_config(workflow_id)
+        return {"success": True, **dag_config}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/workflows/{workflow_id}/edges")
+async def create_workflow_edge(workflow_id: int, req: WorkflowEdgeCreate, admin: UserInfo = Depends(require_admin)):
+    """Create a new edge in the workflow DAG."""
+    conn = _get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            now = _now()
+            edge_id = _generate_id()
+
+            cur.execute(
+                "INSERT INTO adh_workflow_edges "
+                "(id, workflow_id, source_step_id, target_step_id, edge_type, condition_expr, label, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (edge_id, workflow_id, req.source_step_id, req.target_step_id,
+                 req.edge_type, req.condition_expr, req.label, now),
+            )
+
+        conn.commit()
+        return {"success": True, "id": edge_id}
+    finally:
+        conn.close()
+
+
+@router.delete("/workflows/{workflow_id}/edges/{edge_id}")
+async def delete_workflow_edge(workflow_id: int, edge_id: int, admin: UserInfo = Depends(require_admin)):
+    """Delete an edge from the workflow DAG."""
+    conn = _get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM adh_workflow_edges WHERE id = %s AND workflow_id = %s",
+                (edge_id, workflow_id),
+            )
+
+        conn.commit()
+        return {"success": True}
+    finally:
+        conn.close()
+
+
+@router.get("/workflows/{workflow_id}/edges")
+async def list_workflow_edges(workflow_id: int, admin: UserInfo = Depends(require_admin)):
+    """List all edges in a workflow DAG."""
+    conn = _get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, workflow_id, source_step_id, target_step_id, edge_type, condition_expr, label, created_at "
+                "FROM adh_workflow_edges WHERE workflow_id = %s",
+                (workflow_id,),
+            )
+            edges = cur.fetchall()
+            for e in edges:
+                if hasattr(e.get("created_at"), "isoformat"):
+                    e["created_at"] = e["created_at"].isoformat()
+            return {"items": edges, "total": len(edges)}
     finally:
         conn.close()
 

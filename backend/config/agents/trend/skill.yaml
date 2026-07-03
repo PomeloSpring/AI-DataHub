@@ -1,0 +1,24 @@
+# Trend Analysis Agent
+name: trend
+display_name: 趋势分析
+description: 分析数据趋势：时间序列趋势、增长率、移动平均、拐点识别、周期性规律、趋势预测。支持任意数据源。
+datasource_type: ""
+max_retries: 0
+max_iterations: 15
+route_patterns:
+  - "(趋势|走势|变化).*(分析|统计|查询)"
+  - "(增长|增长趋势|增长速率|增长率)"
+  - "(下降|下降趋势|衰退)"
+  - "(同比|环比).*(分析|对比|变化)"
+  - "(移动平均|均线|MA)"
+  - "(周期|季节性|规律).*(分析|发现)"
+  - "(预测|预估|展望)"
+input_schema:
+  required:
+    - field: "question"
+      description: "用户的分析问题"
+      format: "自然语言问题"
+  optional:
+    - field: "time_range"
+      description: "分析时间范围"
+      format: "如：近30天、近半年"

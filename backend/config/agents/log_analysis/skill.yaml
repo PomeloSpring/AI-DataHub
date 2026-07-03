@@ -4,6 +4,7 @@ display_name: 日志分析
 description: 可观测性分析：通过 MCP 服务查询和分析 Elasticsearch 中的日志（Logs）、指标（Metrics）、链路追踪（Traces），支持错误排查、趋势分析、链路瓶颈定位。
 datasource_type: ""  # 不绑定数据源，通过 MCP 服务访问 ES
 max_retries: 0
+max_iterations: 20
 route_patterns:
   - "(日志|log|LOG).*(分析|查询|搜索|排查|错误|异常|告警)"
   - "(分析|查询|搜索|排查).*(日志|log|LOG)"

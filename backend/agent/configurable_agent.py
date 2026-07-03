@@ -73,14 +73,17 @@ class ConfigurableAgent(BaseAgent):
                 pass
 
         # Protection config from DB or defaults
-        self.max_iterations = self.extra_config.get("max_iterations", 10)
         self.max_time_seconds = self.extra_config.get("max_time_seconds", 60)
         # doom_loop_threshold: consecutive identical tool calls to trigger doom loop
         # Default 4 to allow retry after transient failures (e.g., ES mapping failure)
         self.doom_loop_threshold = self.extra_config.get("doom_loop_threshold", 4)
 
+        # max_iterations priority: DB config > skill.yaml > default
+        from backend.config.agent_loader import get_max_iterations, get_max_retries
+        db_max_iterations = self.extra_config.get("max_iterations")
+        self.max_iterations = get_max_iterations(self.name, db_override=db_max_iterations)
+
         # max_retries priority: DB config > skill.yaml > rules.md default
-        from backend.config.agent_loader import get_max_retries
         db_max_retries = self.extra_config.get("max_retries")
         self.max_retries = get_max_retries(self.name, db_override=db_max_retries)
 
@@ -90,13 +93,22 @@ class ConfigurableAgent(BaseAgent):
         history: list[dict] = None,
         datasource_id: int = 0,
         model_id: int = None,
+        max_iterations: int = None,
         **kwargs,
     ) -> AgentResult:
         """Execute the configurable agent with LLM-driven tool calling.
 
         Uses AgentLoop for autonomous tool selection and execution.
+
+        Args:
+            max_iterations: Override agent's default max_iterations for this run.
         """
         self._start_time = time.time()
+
+        # Allow per-request override of max_iterations
+        if max_iterations is not None:
+            original_max = self.max_iterations
+            self.max_iterations = max_iterations
 
         # Use bound datasource if not specified
         if not datasource_id and self.datasource_ids:
@@ -119,23 +131,28 @@ class ConfigurableAgent(BaseAgent):
         system_prompt = self._build_system_prompt(tools, datasource_id)
 
         # 3. Execute with AgentLoop
-        loop = AgentLoop(
-            agent=self,
-            tools=tools,
-            execute_tool_fn=lambda name, args: self._execute_mcp_tool(name, args),
-        )
+        try:
+            loop = AgentLoop(
+                agent=self,
+                tools=tools,
+                execute_tool_fn=lambda name, args: self._execute_mcp_tool(name, args),
+            )
 
-        result = await loop.run(
-            question=question,
-            system_prompt=system_prompt,
-            model_id=model_id,
-            history=history,
-        )
+            result = await loop.run(
+                question=question,
+                system_prompt=system_prompt,
+                model_id=model_id,
+                history=history,
+            )
 
-        result.agent_name = self.name
-        result.mode = "configurable_agent"
-        result.timings["total"] = round(time.time() - self._start_time, 2)
-        return result
+            result.agent_name = self.name
+            result.mode = "configurable_agent"
+            result.timings["total"] = round(time.time() - self._start_time, 2)
+            return result
+        finally:
+            # Restore original max_iterations after this run
+            if max_iterations is not None:
+                self.max_iterations = original_max
 
     async def _collect_tools(self) -> list[dict]:
         """Collect available tools from MCP servers."""

@@ -1,6 +1,6 @@
 """Pydantic data models for ChatBI API."""
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from pydantic import BaseModel
 
 
@@ -568,13 +568,20 @@ class WorkflowConfigCreate(BaseModel):
     description: Optional[str] = ""
     is_active: bool = True
     is_default: bool = False
+    workflow_type: str = "linear"  # linear/dag
+    dag_config: Optional[str] = None
     steps: Optional[list[WorkflowStepConfig]] = []
+    edges: Optional[list["WorkflowEdgeCreate"]] = []
 
 class WorkflowConfigUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
     is_default: Optional[bool] = None
+    workflow_type: Optional[str] = None
+    dag_config: Optional[str] = None
+    steps: Optional[list[WorkflowStepConfig]] = None
+    edges: Optional[list["WorkflowEdgeCreate"]] = None
 
 class WorkflowStepUpdate(BaseModel):
     step_name: Optional[str] = None
@@ -651,3 +658,190 @@ class LoopExecutionRequest(BaseModel):
     datasource_id: Optional[int] = 0
     model_id: Optional[int] = None
     workflow_id: Optional[int] = None  # None = use default
+
+
+# ── DAG Workflow Extensions ──────────────────────────────────────────
+
+class WorkflowEdgeCreate(BaseModel):
+    source_step_id: int
+    target_step_id: int
+    edge_type: str = "normal"  # normal/conditional/error
+    condition_expr: Optional[str] = None
+    label: Optional[str] = None
+
+class WorkflowDAGConfig(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    is_active: bool = True
+    is_default: bool = False
+    workflow_type: str = "dag"  # linear/dag
+    dag_config: Optional[str] = None
+    steps: Optional[list[WorkflowStepConfig]] = []
+    edges: Optional[list[WorkflowEdgeCreate]] = []
+
+
+# ── Scheduled Tasks ────────────────────────────────────────────────
+
+class ScheduledTaskCreate(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    task_type: str  # query / agent
+    task_config: dict  # SQL列表/Agent问题列表/数据源ID等
+    report_template_key: Optional[str] = None
+    cron_expression: str
+    timezone: Optional[str] = "Asia/Shanghai"
+    channel_id: Optional[int] = None
+    notify_on_success: bool = True
+    notify_on_failure: bool = True
+    is_active: bool = True
+    workspace_id: int = 0
+    timeout_seconds: int = 300
+    max_retries: int = 0
+
+class ScheduledTaskUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    task_type: Optional[str] = None
+    task_config: Optional[dict] = None
+    report_template_key: Optional[str] = None
+    cron_expression: Optional[str] = None
+    timezone: Optional[str] = None
+    channel_id: Optional[int] = None
+    notify_on_success: Optional[bool] = None
+    notify_on_failure: Optional[bool] = None
+    is_active: Optional[bool] = None
+    timeout_seconds: Optional[int] = None
+    max_retries: Optional[int] = None
+
+class ScheduledTaskResponse(BaseModel):
+    id: int
+    name: str
+    description: str
+    task_type: str
+    task_config: dict
+    report_template_key: Optional[str] = None
+    cron_expression: str
+    timezone: str
+    channel_id: Optional[int] = None
+    notify_on_success: bool
+    notify_on_failure: bool
+    is_active: bool
+    workspace_id: int
+    owner_id: int
+    last_run_at: Optional[datetime] = None
+    last_status: Optional[str] = None
+    last_error: Optional[str] = None
+    run_count: int
+    timeout_seconds: int
+    max_retries: int
+    created_at: datetime
+    updated_at: datetime
+
+class ScheduledTaskListResponse(BaseModel):
+    items: list[ScheduledTaskResponse]
+    total: int
+
+
+# ── Scheduled Task Logs ────────────────────────────────────────────
+
+class ScheduledLogResponse(BaseModel):
+    id: int
+    scheduled_task_id: int
+    workspace_id: int
+    status: str
+    trigger_type: str
+    celery_task_id: Optional[str] = None
+    result_summary: Optional[str] = None
+    result_data: Optional[Any] = None
+    error_message: Optional[str] = None
+    questions_executed: Optional[list] = None
+    questions_succeeded: int
+    questions_failed: int
+    report_content: Optional[str] = None
+    channel_response: Optional[str] = None
+    notify_status: Optional[str] = None
+    elapsed_ms: Optional[int] = None
+    token_usage: Optional[Any] = None
+    worker_id: Optional[str] = None
+    report_id: Optional[int] = None
+    report_access_token: Optional[str] = None
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    created_at: datetime
+
+class ScheduledLogListResponse(BaseModel):
+    items: list[ScheduledLogResponse]
+    total: int
+
+
+# ── Notification Channels ──────────────────────────────────────────
+
+class NotificationChannelCreate(BaseModel):
+    name: str
+    channel_type: str  # dingtalk / feishu / wecom / email / webhook
+    config: dict  # webhook URL、密钥、SMTP 配置等
+    is_active: bool = True
+    workspace_id: int = 0
+
+class NotificationChannelUpdate(BaseModel):
+    name: Optional[str] = None
+    channel_type: Optional[str] = None
+    config: Optional[dict] = None
+    is_active: Optional[bool] = None
+
+class NotificationChannelResponse(BaseModel):
+    id: int
+    name: str
+    channel_type: str
+    config: dict
+    is_active: bool
+    workspace_id: int
+    owner_id: int
+    last_test_at: Optional[datetime] = None
+    last_test_status: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+# ── Report Templates ───────────────────────────────────────────────
+
+class ReportTemplateCreate(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    content: str
+    format: str = "markdown"  # markdown / html
+    workspace_id: int = 0
+
+class ReportTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    content: Optional[str] = None
+    format: Optional[str] = None
+
+class ReportTemplateResponse(BaseModel):
+    id: int
+    name: str
+    description: str
+    content: str
+    format: str
+    is_system: bool
+    workspace_id: int
+    owner_id: int
+    created_at: datetime
+    updated_at: datetime
+
+
+# ── Generated Reports ─────────────────────────────────────────────
+
+class ReportResponse(BaseModel):
+    id: int
+    task_id: int
+    log_id: Optional[int] = None
+    title: str
+    content: str
+    format: str
+    access_mode: str
+    workspace_id: int
+    owner_id: int
+    view_count: int
+    created_at: datetime

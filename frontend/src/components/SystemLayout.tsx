@@ -4,6 +4,7 @@ import {
   Database, FileText, Link, BookOpen, Users, Brain, Bot, Workflow, MessageSquare,
   Settings, LogOut, Menu, ArrowLeft, Palette, Sun, Moon, Zap, TrendingUp,
   Grid3x3, GlassWater, Heart, UserCircle, X, ChevronLeft, ChevronRight,
+  Clock, Bell,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -39,7 +40,12 @@ const SYSTEM_MENU_ITEMS = [
   { key: '/system/models', icon: Brain, label: '模型中心' },
   { key: '/system/mcp-agent', icon: Bot, label: 'MCP / Agent' },
   { key: '/system/workflows', icon: Workflow, label: '工作流配置' },
+  { key: '/system/workflow-editor', icon: Workflow, label: '工作流编排' },
   { key: '/system/prompts', icon: MessageSquare, label: 'Prompt 管理' },
+  { section: '自动化' },
+  { key: '/system/scheduled-tasks', icon: Clock, label: '定时任务' },
+  { key: '/system/notification-channels', icon: Bell, label: '通知渠道' },
+  { key: '/system/report-templates', icon: FileText, label: '报告模板' },
   { section: '系统管理' },
   { key: '/system/users', icon: Users, label: '用户管理' },
   { key: '/system/settings', icon: Settings, label: '系统设置' },
@@ -77,7 +83,7 @@ export default function SystemLayout() {
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Desktop Sidebar */}
-      <div className={`hidden lg:flex flex-col bg-sidebar border-r border-sidebar-border transition-all duration-200 ${collapsed ? 'w-[64px]' : 'w-[220px]'}`}>
+      <div className={`hidden lg:flex flex-col h-full bg-sidebar border-r border-sidebar-border transition-all duration-200 ${collapsed ? 'w-[64px]' : 'w-[220px]'} overflow-hidden`}>
         {/* Logo */}
         <div className="h-12 flex items-center justify-center border-b border-sidebar-border gap-1.5">
           {brand.show_icon && brand.logo_url ? (
@@ -104,8 +110,9 @@ export default function SystemLayout() {
           {collapsed && <TooltipContent side="right">返回工作空间</TooltipContent>}
         </Tooltip>
 
-        {/* Menu */}
-        <ScrollArea className="flex-1 py-2">
+        {/* Menu — min-h-0 allows flex child to shrink below content size, enabling scroll */}
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <ScrollArea className="h-full py-2">
           <nav className="space-y-1 px-2" role="navigation" aria-label="系统配置导航">
             {SYSTEM_MENU_ITEMS.map((item, idx) => {
               if ('section' in item) {
@@ -141,6 +148,7 @@ export default function SystemLayout() {
             })}
           </nav>
         </ScrollArea>
+        </div>
 
         {/* Collapse button */}
         <div className="p-2 border-t border-sidebar-border">

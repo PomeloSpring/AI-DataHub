@@ -24,6 +24,7 @@ AGENTS_DIR = Path(__file__).parent / "agents"
 
 # Global defaults from rules.md
 _DEFAULT_MAX_RETRIES = 2
+_DEFAULT_MAX_ITERATIONS = 10
 
 
 def load_agent_skill(agent_name: str) -> Optional[dict]:
@@ -84,6 +85,26 @@ def get_max_retries(agent_name: str, db_override: int = None) -> int:
 
     # Global default
     return _DEFAULT_MAX_RETRIES
+
+
+def get_max_iterations(agent_name: str, db_override: int = None) -> int:
+    """Get max_iterations with priority: DB override > skill.yaml > default.
+
+    Args:
+        agent_name: Agent name for loading skill.yaml
+        db_override: Value from DB config (None = not set)
+
+    Returns:
+        Effective max_iterations value
+    """
+    if db_override is not None:
+        return db_override
+
+    skill = load_agent_skill(agent_name)
+    if skill and "max_iterations" in skill:
+        return skill["max_iterations"]
+
+    return _DEFAULT_MAX_ITERATIONS
 
 
 def get_route_patterns(agent_name: str) -> list[str]:

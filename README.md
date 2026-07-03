@@ -72,18 +72,20 @@ Orchestrator (Main Agent)
 ├── Intent Analysis → Agent Selection
 ├── Context Assembly (history, feedback, metadata)
 ├── Reflection & Error Correction
+├── Parallel Dispatch (asyncio.gather for independent agents)
 └── Summary Generation
     │
-    ├── data_analysis_agent
-    │   ├── SQL Generation (NL2SQL)
-    │   ├── Query Execution (Doris/MySQL/ES)
-    │   ├── Result Analysis & Chart Recommendation
-    │   └── Self-Correction on SQL Errors
+    ├── data_analysis — SQL generation + execution + analysis
+    ├── log_analysis — ES log/metric/trace analysis
     │
-    ├── log_analysis
-    │   ├── ES Log Query (by Index, _id, traceId)
-    │   ├── Metrics Trend Analysis
-    │   └── Distributed Trace Analysis
+    ├── traffic — UV/PV, page views, time distribution, bounce rate
+    ├── user_profiling — Geography, device, new/returning users, segmentation
+    ├── funnel — Conversion funnel, step-by-step drop-off analysis
+    ├── retention — Cohort retention, user lifecycle, churn prediction
+    ├── anomaly — Statistical anomaly detection, outlier identification
+    ├── trend — Time series trends, growth rates, seasonality
+    │
+    ├── report — LLM-driven report generation (style-aware, not template substitution)
     │
     └── {custom agents} — DB-configured, file-prompted
         ├── MCP Tool Integration
@@ -99,9 +101,11 @@ AgentLoop.run()
   ├── 2. Call LLM with tools
   │     ├── No tool calls → Return final answer
   │     └── Has tool calls → Execute tools
-  ├── 3. Doom Loop Detection (repetitive tool calls)
-  ├── 4. Timeout & Cancellation Support
-  └── 5. Return AgentResult (reply, sql, data, tool_calls, tokens)
+  ├── 3. Soft Limit: approaching max_iterations → inject summary request
+  ├── 4. Hard Limit: exceeded → return partial results
+  ├── 5. Doom Loop Detection (repetitive tool calls)
+  ├── 6. Timeout & Cancellation Support
+  └── 7. Return AgentResult (reply, sql, data, tool_calls, tokens)
 ```
 
 ### Prompt-Driven Design
@@ -117,9 +121,15 @@ config/
 │   ├── data_analysis/         ← SQL agent
 │   │   ├── skill.yaml         ← Capabilities, route patterns, retry config
 │   │   └── system.md          ← Data analysis instructions
-│   └── log_analysis/          ← ES agent
-│       ├── skill.yaml         ← ES/metrics/traces capabilities
-│       └── system.md          ← Observability analysis instructions
+│   ├── log_analysis/          ← ES agent
+│   ├── traffic/               ← Traffic analysis (UV/PV, bounce rate)
+│   ├── user_profiling/        ← User profiling (geography, device, segmentation)
+│   ├── funnel/                ← Conversion funnel analysis
+│   ├── retention/             ← Cohort retention analysis
+│   ├── anomaly/               ← Anomaly detection
+│   ├── trend/                 ← Trend analysis
+│   └── report/                ← LLM-driven report generation
+├── templates/                 ← Report style templates (LLM reference)
 ├── skills/
 │   ├── nl2sql/                ← NL2SQL prompts (system, rules, examples, dialects/)
 │   ├── analysis/              ← Data analysis prompts
@@ -178,16 +188,36 @@ System
 
 ### Agent System
 - 🤖 **Multi-Agent Orchestration** — Main agent dispatches to specialized sub-agents
+- ⚡ **Parallel Dispatch** — Independent agents execute concurrently (asyncio.gather)
 - 📝 **Prompt-First Design** — Agent behavior controlled by markdown files
 - 🔁 **Intelligent Retry** — Sub-agents handle internal retries, main agent decides strategy
 - 🛡️ **Anti-Hallucination** — No data = no LLM call, strict data authenticity rules
 - 🔗 **Context Passing** — Main agent extracts key info from conversation history
-- 🔧 **Agent Loop** — Tool calling with doom loop detection, timeout, cancellation
+- 🔧 **Agent Loop** — Tool calling with soft limit, doom loop detection, timeout, cancellation
+
+### Analysis Dimensions
+- 📊 **Traffic Analysis** — UV/PV, page views, time distribution, bounce rate
+- 👤 **User Profiling** — Geography, device, new/returning users, activity segmentation
+- 🔀 **Conversion Funnel** — Step-by-step conversion and drop-off analysis
+- 📈 **Retention Analysis** — Cohort retention, user lifecycle, churn prediction
+- ⚠️ **Anomaly Detection** — Statistical outliers, trend breaks, period-over-period anomalies
+- 📉 **Trend Analysis** — Time series trends, growth rates, seasonality, forecasting
 
 ### Observability
 - 📋 **Log Analysis** — Query ES logs by Index, _id, traceId
 - 📈 **Metrics Analysis** — Trend detection, anomaly identification
 - 🔍 **Trace Analysis** — Distributed tracing, latency bottleneck identification
+
+### Scheduled Tasks & Reports
+- ⏰ **Scheduled Tasks** — Cron-based execution (SQL/Agent/MCP modes)
+- 📝 **LLM Report Generation** — Style-aware report generation (not template substitution)
+- 📢 **Multi-Channel Notification** — DingTalk, Feishu, WeCom, Email, Webhook
+- 📊 **Report Templates** — Configurable style templates for LLM-guided reports
+
+### Observability (Langfuse)
+- 🔍 **LLM Tracing** — Automatic tracing of all LLM calls via Langfuse
+- 📊 **Token Usage** — Input/output token tracking per request
+- 💰 **Cost Monitoring** — LLM cost analysis and optimization
 
 ### Enterprise
 - 🔐 **JWT Authentication** — Role-based access control
@@ -203,8 +233,10 @@ System
 - 📝 **Prompt Manager** — Edit and version control prompts
 - ⚙️ **Workflow Config** — Configure Loop Engineering pipeline steps
 - 🤖 **Agent Config** — Enable/disable agents, set datasources and MCP tools
+- ⏰ **Scheduled Tasks** — Cron-based task execution with multi-select datasource/MCP/agent config
 - 📊 **Model Center** — Configure LLM providers and models
 - 🔌 **MCP Market** — Browse and install MCP servers
+- 📋 **Report Templates** — Configure LLM report style templates
 - 📋 **Data Management** — Table metadata, business terms, SQL templates
 
 ## 📸 Screenshots
@@ -271,6 +303,7 @@ System
 | **AI/ML** | Multi-provider LLM, text2vec-base-chinese embeddings (768-dim) |
 | **Visualization** | ECharts, ReactFlow |
 | **Integration** | MCP (Model Context Protocol), Embed API |
+| **Observability** | Langfuse (LLM tracing, token usage, cost monitoring) |
 
 ## 📦 Quick Start
 
@@ -298,8 +331,10 @@ npm run dev           # Starts on port 3000
 ### 3. Database Setup
 ```bash
 cd docker/mysql
-mysql -u root -p < init.sql              # Create tables
-mysql -u root -p < workspace_migration.sql  # Workspace tables (optional)
+mysql -u root -p < init.sql                    # Create tables
+mysql -u root -p < workspace_migration.sql     # Workspace tables (optional)
+mysql -u root -p < scheduled_task_migration.sql # Scheduled tasks (optional)
+mysql -u root -p < analysis_agents_migration.sql # Analysis agents (optional)
 
 cd sync
 python metadata_sync.py         # Sync table metadata
@@ -313,7 +348,7 @@ AI-DataHub/
 ├── backend/
 │   ├── agent/                  # Multi-Agent system
 │   │   ├── base.py             # BaseAgent, AgentResult
-│   │   ├── agent_loop.py       # Tool calling loop (doom loop detection, timeout)
+│   │   ├── agent_loop.py       # Tool calling loop (soft limit, doom loop, timeout)
 │   │   ├── configurable_agent.py  # DB-configured agent
 │   │   ├── data_analysis_agent.py # Built-in data analysis agent
 │   │   ├── sql_agent.py        # SQL execution agent
@@ -324,6 +359,7 @@ AI-DataHub/
 │   │   ├── admin.py            # Admin management
 │   │   ├── admin_workflow.py   # Workflow config & logs
 │   │   ├── dashboard.py        # Dashboard CRUD
+│   │   ├── scheduled_task.py   # Scheduled tasks, channels, templates, reports
 │   │   ├── workspace.py        # Workspace management (v1)
 │   │   ├── workspace_v2.py     # Workspace management (v2)
 │   │   ├── embed.py            # Embed integration API
@@ -331,16 +367,21 @@ AI-DataHub/
 │   │   └── ...
 │   ├── services/               # Business logic layer
 │   │   ├── workspace_service.py    # Workspace service (v1)
-│   │   └── workspace_service_v2.py # Workspace service (v2)
+│   │   ├── workspace_service_v2.py # Workspace service (v2)
+│   │   └── scheduled_task_service.py # Scheduled task CRUD
+│   ├── tasks/                  # Background task execution
+│   │   ├── executor.py         # Task executor (SQL/Agent/MCP modes)
+│   │   └── notification.py     # Notification sender (DingTalk/Feishu/WeCom/Email)
 │   ├── common/                 # Shared infrastructure
-│   │   ├── config.py           # Environment config
+│   │   ├── config.py           # Environment config (incl. LANGFUSE_*)
 │   │   ├── db/                 # MetadataDB + VectorDB pools
-│   │   ├── llm/                # LLM client, embedding, token estimation
+│   │   ├── llm/                # LLM client, embedding, token estimation, Langfuse client
 │   │   ├── vector/             # VectorStore (Doris HNSW)
 │   │   ├── crypto.py           # AES-256-GCM encryption
 │   │   └── ttl_cache.py        # LRU cache
 │   ├── config/                 # Prompt & Agent configurations
 │   │   ├── agents/             # Agent configs (skill.yaml + system.md)
+│   │   ├── templates/          # Report style templates (LLM reference)
 │   │   ├── skills/             # Skill prompts (nl2sql, analysis, chart, etc.)
 │   │   ├── rules/              # Shared rules
 │   │   ├── loader.py           # Prompt loader
@@ -420,7 +461,10 @@ AI-DataHub/
 │   └── mysql/                  # Database init scripts
 │       ├── init.sql            # Main schema
 │       ├── workspace_migration.sql   # Workspace tables
-│       └── workspace_migration_v2.sql
+│       ├── workspace_migration_v2.sql
+│       ├── scheduled_task_migration.sql  # Scheduled tasks, channels, templates, reports
+│       ├── report_agent_migration.sql    # Report agent registration
+│       └── analysis_agents_migration.sql # Analysis agents registration
 ├── sync/                       # Database utilities
 │   ├── metadata_sync.py        # Sync table metadata
 │   └── rebuild_vectors_v2.py   # Rebuild vector embeddings
@@ -452,6 +496,11 @@ ANTHROPIC_MODEL=claude-sonnet-4-20250514
 # Embedding
 EMBEDDING_MODEL_PATH=shibing624/text2vec-base-chinese
 EMBEDDING_DIM=768
+
+# Langfuse (optional, for LLM observability)
+LANGFUSE_PUBLIC_KEY=pk-lf-xxx
+LANGFUSE_SECRET_KEY=sk-lf-xxx
+LANGFUSE_BASE_URL=http://localhost:3000
 ```
 
 ### Adding a New Agent

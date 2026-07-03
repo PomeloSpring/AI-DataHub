@@ -8,6 +8,16 @@ export interface ProgressStage {
   elapsed?: number;  // Step elapsed time in seconds
 }
 
+export interface ToolCall {
+  step?: number;
+  tool: string;
+  arguments?: Record<string, any>;
+  result?: string;
+  result_preview?: string;
+  error?: string;
+  elapsed?: number;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -36,6 +46,7 @@ export interface ChatMessage {
   progressStages?: ProgressStage[];  // Workflow execution stage history
   activeStage?: string;              // Current active stage key
   workflow_info?: any;               // Deep mode workflow info
+  tool_calls?: ToolCall[];           // Agent tool call history
   pendingAsk?: {                     // Agent ask_user interactive state
     request_id: string;
     question: string;
@@ -616,6 +627,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         activeStage: 'completed',
         analysis: doneData.analysis,
         workflow_info: doneData.workflow_info,
+        tool_calls: doneData.tool_calls,
       };
 
       set(state => {

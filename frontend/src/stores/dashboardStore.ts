@@ -63,6 +63,7 @@ export const DASHBOARD_STATUS_MAP: Record<DashboardStatus, { label: string; colo
 interface DashboardState {
   dashboards: Dashboard[];
   currentId: number | null;
+  currentWorkspaceId: number;
   loading: boolean;
   globalFilters: Record<string, any>;
   crossFilters: any[];
@@ -100,6 +101,7 @@ interface DashboardState {
 export const useDashboardStore = create<DashboardState>((set, get) => ({
   dashboards: [],
   currentId: null,
+  currentWorkspaceId: 0,
   loading: false,
   globalFilters: {},
   crossFilters: [],
@@ -118,9 +120,11 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   refreshingChartIds: new Set(),
 
   loadDashboards: async (workspaceId?: number) => {
-    set({ loading: true });
+    // Remember workspace context so subsequent operations reload the correct scope
+    const wsId = workspaceId ?? get().currentWorkspaceId ?? 0;
+    set({ loading: true, currentWorkspaceId: wsId });
     try {
-      const params = workspaceId ? `?workspace_id=${workspaceId}` : '';
+      const params = wsId ? `?workspace_id=${wsId}` : '';
       const { data } = await client.get(`/dashboard/${params}`);
       const dashboards = data as Dashboard[];
       set({ dashboards });
@@ -151,15 +155,16 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   createDashboard: async (name, workspaceId) => {
-    const { data } = await client.post('/dashboard/', { name, workspace_id: workspaceId || 0 });
-    await get().loadDashboards(workspaceId);
+    const wsId = workspaceId || get().currentWorkspaceId || 0;
+    const { data } = await client.post('/dashboard/', { name, workspace_id: wsId });
+    await get().loadDashboards(wsId);
     set({ currentId: data.id });
     return data.id;
   },
 
   updateDashboard: async (id, updates) => {
     await client.put(`/dashboard/${id}`, updates);
-    await get().loadDashboards();
+    await get().loadDashboards(get().currentWorkspaceId);
   },
 
   deleteDashboard: async (id) => {
@@ -167,34 +172,34 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     const state = get();
     const remaining = state.dashboards.filter(d => d.id !== id);
     set({ currentId: remaining.length > 0 ? remaining[0].id : null });
-    await get().loadDashboards();
+    await get().loadDashboards(get().currentWorkspaceId);
   },
 
   copyDashboard: async (id) => {
     const { data } = await client.post(`/dashboard/${id}/copy`);
-    await get().loadDashboards();
+    await get().loadDashboards(get().currentWorkspaceId);
     set({ currentId: data.id });
     toast.success('仪表盘已拷贝');
   },
 
   setDefault: async (id) => {
     await client.put(`/dashboard/${id}`, { is_default: true });
-    await get().loadDashboards();
+    await get().loadDashboards(get().currentWorkspaceId);
   },
 
   addChart: async (dashboardId, chart) => {
     await client.post(`/dashboard/${dashboardId}/charts`, chart);
-    await get().loadDashboards();
+    await get().loadDashboards(get().currentWorkspaceId);
   },
 
   updateChart: async (dashboardId, chartId, data) => {
     await client.put(`/dashboard/${dashboardId}/charts/${chartId}`, data);
-    await get().loadDashboards();
+    await get().loadDashboards(get().currentWorkspaceId);
   },
 
   deleteChart: async (dashboardId, chartId) => {
     await client.delete(`/dashboard/${dashboardId}/charts/${chartId}`);
-    await get().loadDashboards();
+    await get().loadDashboards(get().currentWorkspaceId);
   },
 
   saveLayout: async (dashboardId, layouts) => {
@@ -215,7 +220,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   reorderDashboards: async (orders) => {
     await client.post('/dashboard/reorder', { orders });
-    await get().loadDashboards();
+    await get().loadDashboards(get().currentWorkspaceId);
   },
 
   setGlobalFilters: (filters) => set({ globalFilters: filters }),

@@ -47,6 +47,21 @@ VECTOR_DIM = int(os.getenv("VECTOR_DIM", os.getenv("EMBEDDING_DIM", "768")))
 VECTOR_DISTANCE = os.getenv("VECTOR_DISTANCE", "l2")
 
 # ══════════════════════════════════════════════════════════════════════════
+# Redis — Celery Broker + Result Backend + Distributed Lock
+# ══════════════════════════════════════════════════════════════════════════
+
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+# ══════════════════════════════════════════════════════════════════════════
+# Langfuse — LLM Observability
+# ══════════════════════════════════════════════════════════════════════════
+
+LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
+LANGFUSE_HOST = os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com")
+LANGFUSE_ENABLED = bool(LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY)
+
+# ══════════════════════════════════════════════════════════════════════════
 # Application (ADH_* replaces CHATBI_*)
 # ══════════════════════════════════════════════════════════════════════════
 

@@ -14,6 +14,7 @@ AI-DataHub is a natural language business intelligence platform with a **Multi-A
 - **Frontend**: React 18, TypeScript, Vite, Tailwind CSS, Zustand, ECharts, ReactFlow
 - **Database**: Apache Doris (analytical queries + vectors), MySQL (metadata)
 - **AI**: Multi-provider LLM via Anthropic SDK (configurable), text2vec-base-chinese embeddings (768-dim)
+- **Observability**: Langfuse (LLM tracing, token usage, cost monitoring)
 
 ## Architecture
 
@@ -21,15 +22,22 @@ AI-DataHub is a natural language business intelligence platform with a **Multi-A
 
 ```
 Orchestrator (Main Agent)
-├── data_analysis_agent — SQL generation + execution + analysis
+├── data_analysis — SQL generation + execution + analysis
 ├── log_analysis — ES log/metric/trace analysis
+├── traffic — UV/PV, page views, time distribution, bounce rate
+├── user_profiling — Geography, device, new/returning users, segmentation
+├── funnel — Conversion funnel, step-by-step drop-off analysis
+├── retention — Cohort retention, user lifecycle, churn prediction
+├── anomaly — Statistical anomaly detection, outlier identification
+├── trend — Time series trends, growth rates, seasonality
+├── report — LLM-driven report generation (style-aware)
 └── {custom agents} — DB-configured, file-prompted
 ```
 
-**Orchestrator**: Pure orchestration — intent analysis, agent selection, context assembly, reflection, error correction, summary. Does NOT execute SQL or queries directly.
+**Orchestrator**: Pure orchestration — intent analysis, agent selection, context assembly, reflection, error correction, summary. Does NOT execute SQL or queries directly. Supports **parallel agent dispatch**: when the LLM returns multiple agent calls in one round, they execute concurrently via `asyncio.gather()`.
 
 **Sub-Agents**: Domain-specific execution. Each has:
-- `config/agents/{name}/skill.yaml` — metadata, route_patterns, max_retries
+- `config/agents/{name}/skill.yaml` — metadata, route_patterns, max_retries, max_iterations
 - `config/agents/{name}/system.md` — system prompt (source of truth)
 - DB record (`adh_agents`) — runtime state (is_active, datasource_ids, mcp_server_ids)
 
@@ -38,9 +46,10 @@ Orchestrator (Main Agent)
 `backend/agent/agent_loop.py` provides a reusable LLM-driven tool calling loop:
 - Calls LLM with available tools
 - Executes tool calls
+- **Soft limit**: when approaching `max_iterations`, injects a summary request to let the LLM gracefully conclude
 - Detects doom loops (repetitive tool calls)
 - Supports cancellation and timeout
-- Returns when LLM produces a final answer (no more tool calls)
+- Returns partial results on hard limit exceeded (not empty error)
 - Tracks tool_calls_log and total_tokens
 
 ### Agent Configuration Loading Priority
@@ -51,6 +60,7 @@ Orchestrator (Main Agent)
 | system_prompt | system.md > DB | File first |
 | route_patterns | skill.yaml only | File only |
 | max_retries | DB config > skill.yaml > rules.md default | DB can override |
+| max_iterations | DB config > skill.yaml > default (10) | DB can override |
 | is_active, datasource_ids, mcp_server_ids | DB only | Runtime state |
 
 ### Prompt Structure
@@ -60,7 +70,15 @@ config/
 ├── agents/
 │   ├── orchestrator/      — Main agent: system.md + rules.md
 │   ├── data_analysis/     — SQL agent: skill.yaml + system.md
-│   └── log_analysis/      — ES agent: skill.yaml + system.md
+│   ├── log_analysis/      — ES agent: skill.yaml + system.md
+│   ├── traffic/           — Traffic analysis agent
+│   ├── user_profiling/    — User profiling agent
+│   ├── funnel/            — Funnel analysis agent
+│   ├── retention/         — Retention analysis agent
+│   ├── anomaly/           — Anomaly detection agent
+│   ├── trend/             — Trend analysis agent
+│   └── report/            — Report generation agent
+├── templates/             — Report style templates (LLM reference, not Jinja2)
 ├── skills/
 │   ├── nl2sql/            — NL2SQL prompts (system, rules, examples, dialects/)
 │   ├── analysis/          — Data analysis prompts
@@ -76,7 +94,35 @@ config/
 
 1. **Quick** — RAG + LLM SQL gen + execute (fast, single pass)
 2. **Deep** — Loop Engineering with metadata supplement loops
-3. **Agent** — Multi-Agent with tool calling, autonomous planning, error correction
+3. **Agent** — Multi-Agent with tool calling, autonomous planning, error correction, parallel dispatch
+
+### Scheduled Tasks System
+
+```
+backend/
+├── api/scheduled_task.py      — REST API (tasks, channels, templates, reports)
+├── services/scheduled_task_service.py — CRUD service
+├── tasks/
+│   ├── executor.py            — Task execution (SQL/Agent/MCP modes)
+│   └── notification.py        — Notification sender (DingTalk/Feishu/WeCom/Email/Webhook)
+```
+
+**Execution modes**:
+- **SQL mode**: Direct SQL execution against datasource
+- **Agent mode**: Orchestrator-driven multi-agent execution
+- **MCP mode**: Agent execution with MCP server context
+
+**Report generation**: LLM-driven (not Jinja2 placeholders). Loads template as style reference, sends data + style to LLM for intelligent report generation with analysis insights.
+
+**Configuration**: task_config supports multi-select for datasource_ids, mcp_server_ids, agent_names. max_iterations configurable per-task.
+
+### Langfuse Integration
+
+LLM observability via Langfuse (`@observe` decorator):
+- `backend/common/llm/langfuse_client.py` — Singleton client, eagerly initialized
+- `backend/common/llm/llm_client.py` — `@observe(as_type="generation")` on all 4 LLM functions
+- Automatic tracing of Anthropic SDK calls (including streaming + thinking blocks)
+- Config: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL` in `.env`
 
 ### Database Separation
 
@@ -97,7 +143,7 @@ config/
 backend/
 ├── agent/                  # Agent implementations
 │   ├── base.py             # BaseAgent, AgentResult
-│   ├── agent_loop.py       # Tool calling loop (doom loop, timeout, cancel)
+│   ├── agent_loop.py       # Tool calling loop (soft limit, doom loop, timeout, cancel)
 │   ├── configurable_agent.py — DB-configured agent (loads prompts from files)
 │   ├── data_analysis_agent.py — Built-in data analysis agent
 │   ├── sql_agent.py        # SQL execution agent
@@ -108,6 +154,7 @@ backend/
 │   ├── admin.py            # Admin CRUD operations
 │   ├── admin_workflow.py   # Workflow config & execution logs
 │   ├── dashboard.py        # Dashboard CRUD
+│   ├── scheduled_task.py   # Scheduled tasks, channels, templates, reports
 │   ├── workspace.py        # Workspace management (v1)
 │   ├── workspace_v2.py     # Workspace management (v2)
 │   ├── embed.py            # Embed integration API
@@ -117,16 +164,21 @@ backend/
 │   └── ...
 ├── services/               # Business logic layer
 │   ├── workspace_service.py    # Workspace service (v1)
-│   └── workspace_service_v2.py # Workspace service (v2)
+│   ├── workspace_service_v2.py # Workspace service (v2)
+│   └── scheduled_task_service.py — Scheduled task CRUD + report/channel/template management
+├── tasks/                  # Background task execution
+│   ├── executor.py         — Task executor (SQL/Agent/MCP modes, LLM report generation)
+│   └── notification.py     — Notification sender (DingTalk/Feishu/WeCom/Email/Webhook)
 ├── common/                 # Shared infrastructure
-│   ├── config.py           # Environment config (ADH_*, METADATA_DB_*, VECTOR_DB_*)
+│   ├── config.py           # Environment config (ADH_*, METADATA_DB_*, VECTOR_DB_*, LANGFUSE_*)
 │   ├── db/                 # MetadataDB + VectorDB connection pools
-│   ├── llm/                # LLM client, embedding, token estimation
+│   ├── llm/                # LLM client, embedding, token estimation, Langfuse client
 │   ├── vector/             # VectorStore abstraction (Doris HNSW)
 │   ├── crypto.py           # AES-256-GCM encryption
 │   └── ttl_cache.py        # LRU cache
 ├── config/                 # Prompt & Agent configurations (file-based)
 │   ├── agents/             # Agent configs (skill.yaml + system.md per agent)
+│   ├── templates/          — Report style templates (LLM reference)
 │   ├── skills/             # Skill prompts (nl2sql, analysis, chart, etc.)
 │   ├── rules/              # Shared rules
 │   ├── loader.py           # Prompt loader
@@ -143,7 +195,7 @@ backend/
 │   ├── orchestrator/       # Pipeline orchestration (quick, deep, agent)
 │   │   ├── quick_pipeline.py
 │   │   ├── deep_pipeline.py
-│   │   ├── agent_pipeline.py
+│   │   ├── agent_pipeline.py  — Agent orchestration with parallel dispatch
 │   │   ├── pipeline_orchestrator.py
 │   │   └── workflow/       # Loop Engine workflow
 │   ├── prompt/             # Prompt construction (M-Schema, ER, terms)
@@ -177,10 +229,17 @@ backend/
 - Raw error messages are NOT shown to users — only business-level descriptions
 
 ### Agent Loop Safety
+- **Soft limit**: approaching max_iterations → inject summary request, let LLM gracefully conclude
+- **Hard limit**: max_iterations exceeded → return partial results (not empty error)
 - Doom loop detection: same tool called N times consecutively → abort
 - Timeout: per-agent timeout prevents hung executions
 - Cancellation: user can cancel running agent tasks
 - Token tracking: input/output tokens accumulated per loop
+
+### Parallel Agent Dispatch
+- Orchestrator can dispatch multiple sub-agents in parallel (asyncio.gather)
+- LLM decides parallel vs serial: multiple agent calls in one round = parallel, one at a time = serial
+- Other tools (MCP) always execute serially
 
 ## Common Commands
 
@@ -198,6 +257,9 @@ cd sync && python rebuild_vectors_v2.py         # Rebuild vector embeddings
 # Database migration
 cd docker/mysql && mysql -u root -p < init.sql
 cd docker/mysql && mysql -u root -p < workspace_migration.sql
+cd docker/mysql && mysql -u root -p < scheduled_task_migration.sql
+cd docker/mysql && mysql -u root -p < report_agent_migration.sql
+cd docker/mysql && mysql -u root -p < analysis_agents_migration.sql
 ```
 
 ## Important Notes
@@ -209,3 +271,5 @@ cd docker/mysql && mysql -u root -p < workspace_migration.sql
 - **Agent prompts are file-first** — edit `config/agents/{name}/system.md` to change agent behavior, DB is for runtime state only
 - **Feedback loop** — User feedback (👍👎) is injected into prompt context for subsequent queries
 - **Workspace isolation** — Datasources, agents, and dashboards are scoped to workspaces
+- **Langfuse tracing** — All LLM calls are automatically traced via `@observe` decorator
+- **Report generation** — LLM-driven with template as style reference, not Jinja2 placeholder substitution

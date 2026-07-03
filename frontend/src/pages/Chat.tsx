@@ -1127,13 +1127,13 @@ export default function Chat() {
                             {Object.entries(tc.arguments).map(([k, v]) => `${k}=${typeof v === 'string' ? v.slice(0, 80) : JSON.stringify(v).slice(0, 80)}`).join(', ')}
                           </div>
                         )}
-                        {tc.result_preview && (
+                        {(tc.result_preview || tc.result || tc.error) && (
                           <details className="ml-7">
                             <summary className="text-[11px] text-muted-foreground cursor-pointer hover:text-foreground">
-                              查看返回结果
+                              {tc.error ? '❌ 查看错误' : '查看返回结果'}
                             </summary>
                             <pre className="mt-1 p-2 bg-muted rounded text-[11px] whitespace-pre-wrap max-h-[150px] overflow-auto">
-                              {tc.result || tc.result_preview}
+                              {tc.error || tc.result || tc.result_preview}
                             </pre>
                           </details>
                         )}
