@@ -20,7 +20,7 @@ from backend.models.schemas import UserInfo
 from backend.common.config import (
     DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, METADATA_DB_DATABASE,
 )
-from backend.common.db.metadata_db import get_metadata_conn
+from backend.common.db.metadata_db import get_metadata_conn, get_vector_conn
 from backend.common.llm.embedding import (
     generate_embedding, embedding_to_sql_literal, get_model_info, reload_model,
     _EMBED_CACHE, _get_model,
@@ -166,10 +166,10 @@ def vector_search(req: SearchRequest, user: UserInfo = Depends(get_current_user)
         "detail": f"datasource_id={req.datasource_id}, limit={req.limit}",
     })
 
-    # Step 3: Execute vector search
+    # Step 3: Execute vector search (against Doris vector DB)
     t0 = time.time()
     try:
-        with _get_metadata_conn() as conn:
+        with get_vector_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql)
                 rows = cur.fetchall()
@@ -244,7 +244,7 @@ def column_vector_search(req: SearchRequest, user: UserInfo = Depends(get_curren
         LIMIT 5
     """
     try:
-        with _get_metadata_conn() as conn:
+        with get_vector_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(table_sql)
                 table_rows = cur.fetchall()
@@ -275,7 +275,7 @@ def column_vector_search(req: SearchRequest, user: UserInfo = Depends(get_curren
             LIMIT %s
         """
         try:
-            with _get_metadata_conn() as conn:
+            with get_vector_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(col_sql, table_names + [req.limit])
                     rows = cur.fetchall()

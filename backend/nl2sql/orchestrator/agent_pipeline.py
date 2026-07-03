@@ -780,8 +780,16 @@ async def _execute_system_tool(
     user_id: int,
     username: str,
     question: str = "",
+    allowed_datasource_ids: list = None,
 ) -> str:
-    """Execute a system tool and return the result as a string."""
+    """Execute a system tool and return the result as a string.
+
+    Args:
+        allowed_datasource_ids: When set, metadata queries search across all these datasources.
+            SQL execution still uses the primary datasource_id.
+    """
+    # For metadata queries, use all allowed datasources; for SQL execution, use primary
+    ds_ids_for_meta = allowed_datasource_ids if allowed_datasource_ids else ([datasource_id] if datasource_id else [])
     try:
         # ── Context Gathering ──────────────────────────────────────
 
@@ -792,7 +800,10 @@ async def _execute_system_tool(
                 return json.dumps({
                     "error": "必须提供 keywords 列表。如果无法确定要搜索什么，请调用 ask_user 向用户询问。",
                 }, ensure_ascii=False)
-            all_tables = _get_all_tables(datasource_id)
+            # Query across all allowed datasources
+            all_tables = []
+            for ds_id in ds_ids_for_meta:
+                all_tables.extend(_get_all_tables(ds_id))
             result = {}
             for kw in keywords:
                 kw_lower = kw.lower().strip()
@@ -810,10 +821,16 @@ async def _execute_system_tool(
 
         elif tool_name == "select_tables":
             from backend.rag.table_selector import select_tables
-            tables = select_tables(
-                tool_input["question"], top_k=15, datasource_id=datasource_id,
-            )
-            return json.dumps({"tables": tables}, ensure_ascii=False)
+            # Query across all allowed datasources and merge results
+            all_tables = []
+            seen = set()
+            for ds_id in ds_ids_for_meta or [datasource_id]:
+                tables = select_tables(tool_input["question"], top_k=15, datasource_id=ds_id)
+                for t in tables:
+                    if t not in seen:
+                        seen.add(t)
+                        all_tables.append(t)
+            return json.dumps({"tables": all_tables[:15]}, ensure_ascii=False)
 
         elif tool_name == "search_columns":
             import pymysql
@@ -828,7 +845,11 @@ async def _execute_system_tool(
             )
             try:
                 with conn.cursor() as cur:
-                    ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
+                    if ds_ids_for_meta:
+                        ids_str = ",".join(str(i) for i in ds_ids_for_meta)
+                        ds_filter = f"AND (datasource_id IN ({ids_str}) OR datasource_id = 0)"
+                    else:
+                        ds_filter = ""
                     cur.execute(
                         f"SELECT table_name, column_name, data_type, column_comment "
                         f"FROM adh_column_metadata "
@@ -1372,19 +1393,24 @@ async def agent_generate(
     # 0. Load workspace configuration if workspace_id provided
     workspace = None
     workspace_tools = None
+    allowed_datasource_ids = []  # All datasources available in this workspace
     if workspace_id:
         from backend.services.workspace_service import get_workspace_service
         workspace_service = get_workspace_service()
         workspace = await workspace_service.get_workspace(workspace_id)
         if workspace:
             workspace_tools = await workspace_service.get_workspace_tools(workspace_id)
+            # Load ALL workspace datasources (not just primary)
+            ws_datasources = workspace.get('datasources', [])
+            if ws_datasources:
+                allowed_datasource_ids = [ds['id'] for ds in ws_datasources]
             # Use workspace's primary datasource if not explicitly provided
             if not datasource_id:
                 primary_ds = await workspace_service.get_primary_datasource(workspace_id)
                 if primary_ds:
                     datasource_id = primary_ds['id']
-            logger.info("[Agent] Using workspace '%s' (id=%d), datasource_id=%d",
-                        workspace.get('name'), workspace_id, datasource_id)
+            logger.info("[Agent] Using workspace '%s' (id=%d), datasource_id=%d, all_datasources=%s",
+                        workspace.get('name'), workspace_id, datasource_id, allowed_datasource_ids)
 
     # 1. Engine info
     ds_params = _get_ds_conn_params(datasource_id)
@@ -1499,11 +1525,14 @@ async def agent_generate(
     # Include workspace context if available
     workspace_context = ""
     if workspace:
-        ws_datasources = workspace_tools.get('datasources', []) if workspace_tools else []
+        ws_datasources = workspace.get('datasources', [])
         ws_mcp_servers = workspace_tools.get('mcp_servers', []) if workspace_tools else []
         ws_agents = workspace_tools.get('agents', []) if workspace_tools else []
 
-        ds_names = [d.get('name', '未知') for d in ws_datasources]
+        ds_lines = []
+        for d in ws_datasources:
+            primary_mark = " ⭐主数据源" if d.get('is_primary') else ""
+            ds_lines.append(f"  - {d.get('name', '未知')} (id={d['id']}, {d.get('db_type', '?')}/{d.get('database_name', '?')}){primary_mark}")
         mcp_names = [m.get('name', '未知') for m in ws_mcp_servers]
         agent_names = [a.get('name', '未知') for a in ws_agents]
 
@@ -1511,7 +1540,8 @@ async def agent_generate(
 ## 当前工作空间
 - 名称: {workspace.get('name', '未命名')}
 - 类型: {workspace.get('workspace_type', 'custom')}
-- 可用数据源: {', '.join(ds_names) if ds_names else '无'}
+- 可用数据源 ({len(ws_datasources)} 个):
+{chr(10).join(ds_lines) if ds_lines else '  无'}
 - 可用MCP服务: {', '.join(mcp_names) if mcp_names else '无'}
 - 可用Agent: {', '.join(agent_names) if agent_names else '无'}
 - 检索策略: {workspace.get('retrieval_strategy', 'full_table')}
@@ -1719,6 +1749,7 @@ async def agent_generate(
                     tool_name, tool_input,
                     datasource_id, model_id, user_id, username,
                     question=question,
+                    allowed_datasource_ids=allowed_datasource_ids,
                 )
             elif tool_name in agent_tools_map:
                 agent = agent_tools_map[tool_name]
