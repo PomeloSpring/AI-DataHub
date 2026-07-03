@@ -972,11 +972,12 @@ async def execute_loop(
                 completed_at=_now(),
                 elapsed_ms=int((time.time() - start_time) * 1000),
             )
-            return {
+            yield "done", {
                 "success": False,
                 "message": "元数据补充循环未能生成SQL",
                 "log_id": log_id,
             }
+            return
 
         # Parse SQL from response
         sql_result = _parse_sql_response(generated_sql)
@@ -989,11 +990,12 @@ async def execute_loop(
                 completed_at=_now(),
                 elapsed_ms=int((time.time() - start_time) * 1000),
             )
-            return {
+            yield "done", {
                 "success": False,
                 "message": sql_result.get("message", "SQL生成失败"),
                 "log_id": log_id,
             }
+            return
 
         generated_sql = sql_result["sql"]
         chart_type = sql_result.get("chart-type", "table")
@@ -1087,12 +1089,13 @@ async def execute_loop(
                 completed_at=_now(),
                 elapsed_ms=int((time.time() - start_time) * 1000),
             )
-            return {
+            yield "done", {
                 "success": False,
                 "message": f"SQL执行失败（已重试{SQL_MAX_RETRIES}次）: {exec_result.get('error', '未知错误') if exec_result else '未知错误'}",
                 "sql": generated_sql,
                 "log_id": log_id,
             }
+            return
 
         # Step 6: Result Analysis (optional)
         analysis_result = None
@@ -1173,7 +1176,7 @@ async def execute_loop(
             elapsed_ms=elapsed_ms,
         )
 
-        return {
+        yield "done", {
             "success": True,
             "sql": generated_sql,
             "chart_type": chart_type,
@@ -1204,7 +1207,7 @@ async def execute_loop(
             completed_at=_now(),
             elapsed_ms=elapsed_ms,
         )
-        return {
+        yield "done", {
             "success": False,
             "message": f"执行失败: {str(e)}",
             "log_id": log_id,

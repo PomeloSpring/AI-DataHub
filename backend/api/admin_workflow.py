@@ -367,7 +367,9 @@ def list_workflows(
                 # 获取工作流步骤
                 cur.execute(
                     "SELECT id, workflow_id, step_type, step_name, step_order, "
-                    "max_rounds, is_enabled, prompt_key, config, created_at, updated_at "
+                    "max_rounds, is_enabled, prompt_key, config, "
+                    "position_x, position_y, node_type, dependencies, "
+                    "created_at, updated_at "
                     "FROM adh_workflow_steps WHERE workflow_id = %s ORDER BY step_order",
                     (wf["id"],),
                 )
@@ -432,11 +434,45 @@ def get_workflow(workflow_id: int, admin: UserInfo = Depends(require_admin)):
             # 获取工作流步骤
             cur.execute(
                 "SELECT id, workflow_id, step_type, step_name, step_order, "
-                "max_rounds, is_enabled, prompt_key, config, created_at, updated_at "
+                "max_rounds, is_enabled, prompt_key, config, "
+                "position_x, position_y, node_type, dependencies, "
+                "created_at, updated_at "
                 "FROM adh_workflow_steps WHERE workflow_id = %s ORDER BY step_order",
                 (workflow_id,),
             )
             steps = cur.fetchall()
+
+            # If no steps in DB but this is the default workflow, seed from hardcoded defaults
+            if not steps and wf.get("is_default"):
+                from backend.nl2sql.orchestrator.workflow.loop_engine import _get_default_workflow
+                default_wf = _get_default_workflow()
+                now = _now()
+                for s in default_wf.get("steps", []):
+                    step_id = _generate_id()
+                    cur.execute(
+                        "INSERT INTO adh_workflow_steps "
+                        "(id, workflow_id, step_type, step_name, step_order, "
+                        "max_rounds, is_enabled, prompt_key, config, "
+                        "position_x, position_y, node_type, dependencies, "
+                        "created_at, updated_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (step_id, workflow_id, s["step_type"], s["step_name"], s["step_order"],
+                         s.get("max_rounds", 1), 1 if s.get("is_enabled", True) else 0,
+                         s.get("prompt_key"), json.dumps(s.get("config", {}), ensure_ascii=False),
+                         0, 0, "step", None, now, now),
+                    )
+                    s["id"] = step_id  # Update for edge references
+                conn.commit()
+                # Re-query after seeding
+                cur.execute(
+                    "SELECT id, workflow_id, step_type, step_name, step_order, "
+                    "max_rounds, is_enabled, prompt_key, config, "
+                    "position_x, position_y, node_type, dependencies, "
+                    "created_at, updated_at "
+                    "FROM adh_workflow_steps WHERE workflow_id = %s ORDER BY step_order",
+                    (workflow_id,),
+                )
+                steps = cur.fetchall()
             for step in steps:
                 for k in ("created_at", "updated_at"):
                     if hasattr(step.get(k), "isoformat"):
@@ -461,7 +497,38 @@ def get_workflow(workflow_id: int, admin: UserInfo = Depends(require_admin)):
                 for e in edges:
                     if hasattr(e.get("created_at"), "isoformat"):
                         e["created_at"] = e["created_at"].isoformat()
-                wf["edges"] = edges
+
+                # Filter out edges referencing non-existent steps
+                valid_step_ids = {s["id"] for s in steps}
+                valid_edges = [e for e in edges
+                               if e["source_step_id"] in valid_step_ids
+                               and e["target_step_id"] in valid_step_ids]
+
+                # If no valid edges and steps exist, auto-generate linear edges
+                if not valid_edges and len(steps) > 1:
+                    now = _now()
+                    sorted_steps = sorted(steps, key=lambda s: s.get("step_order", 0))
+                    for i in range(len(sorted_steps) - 1):
+                        edge_id = _generate_id()
+                        cur.execute(
+                            "INSERT INTO adh_workflow_edges "
+                            "(id, workflow_id, source_step_id, target_step_id, edge_type, "
+                            "condition_expr, label, created_at) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                            (edge_id, workflow_id,
+                             sorted_steps[i]["id"], sorted_steps[i + 1]["id"],
+                             "normal", None, None, now),
+                        )
+                        valid_edges.append({
+                            "id": edge_id, "workflow_id": workflow_id,
+                            "source_step_id": sorted_steps[i]["id"],
+                            "target_step_id": sorted_steps[i + 1]["id"],
+                            "edge_type": "normal", "condition_expr": None,
+                            "label": None, "created_at": now.isoformat() if hasattr(now, "isoformat") else str(now),
+                        })
+                    conn.commit()
+
+                wf["edges"] = valid_edges
             except Exception:
                 wf["edges"] = []
 
@@ -504,11 +571,14 @@ def create_workflow(req: WorkflowConfigCreate, admin: UserInfo = Depends(require
                     cur.execute(
                         "INSERT INTO adh_workflow_steps "
                         "(id, workflow_id, step_type, step_name, step_order, "
-                        "max_rounds, is_enabled, prompt_key, config, created_at, updated_at) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        "max_rounds, is_enabled, prompt_key, config, "
+                        "position_x, position_y, node_type, dependencies, "
+                        "created_at, updated_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                         (step_id, workflow_id, step.step_type, step.step_name, step.step_order,
                          step.max_rounds, 1 if step.is_enabled else 0, step.prompt_key,
-                         config_json, now, now),
+                         config_json, step.position_x or 0, step.position_y or 0,
+                         step.node_type or 'step', step.dependencies, now, now),
                     )
 
             # 创建工作流边
@@ -533,6 +603,10 @@ def create_workflow(req: WorkflowConfigCreate, admin: UserInfo = Depends(require
 @router.put("/workflows/{workflow_id}")
 def update_workflow(workflow_id: int, req: WorkflowConfigUpdate, admin: UserInfo = Depends(require_admin)):
     """更新工作流配置"""
+    logger.info("[Workflow] Updating workflow %d: steps=%s, edges=%s",
+                workflow_id,
+                f"{len(req.steps)} items" if req.steps else "None",
+                f"{len(req.edges)} items" if req.edges else "None")
     conn = _get_metadata_conn()
     try:
         with conn.cursor() as cur:
@@ -574,32 +648,50 @@ def update_workflow(workflow_id: int, req: WorkflowConfigUpdate, admin: UserInfo
             )
 
             # 更新步骤（如果提供了新的步骤列表）
+            step_id_map = {}  # old_id -> new_id mapping for edge resolution
             if req.steps is not None:
+                logger.info("[Workflow] Saving %d steps for workflow %d", len(req.steps), workflow_id)
                 cur.execute("DELETE FROM adh_workflow_steps WHERE workflow_id = %s", (workflow_id,))
-                for step in req.steps:
+                for i, step in enumerate(req.steps):
                     step_id = _generate_id()
+                    # Map old step ID (if provided) to new generated ID
+                    if step.id is not None:
+                        step_id_map[step.id] = step_id
+                    # Also map by index for frontend string IDs (e.g., "node-xxx")
+                    step_id_map[i] = step_id
                     config_json = json.dumps(step.config, ensure_ascii=False) if step.config else None
+                    logger.info("[Workflow] Inserting step %d: id=%d, type=%s, name=%s, order=%d",
+                                i, step_id, step.step_type, step.step_name, step.step_order)
                     cur.execute(
                         "INSERT INTO adh_workflow_steps "
                         "(id, workflow_id, step_type, step_name, step_order, "
-                        "max_rounds, is_enabled, prompt_key, config, created_at, updated_at) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        "max_rounds, is_enabled, prompt_key, config, "
+                        "position_x, position_y, node_type, dependencies, "
+                        "created_at, updated_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                         (step_id, workflow_id, step.step_type, step.step_name, step.step_order,
                          step.max_rounds, 1 if step.is_enabled else 0, step.prompt_key,
-                         config_json, now, now),
+                         config_json, step.position_x or 0, step.position_y or 0,
+                         step.node_type or 'step', step.dependencies, now, now),
                     )
+                logger.info("[Workflow] All %d steps inserted successfully", len(req.steps))
+            else:
+                logger.info("[Workflow] No steps provided in request for workflow %d", workflow_id)
 
             # 更新边（如果提供了新的边列表）
             if req.edges is not None:
                 cur.execute("DELETE FROM adh_workflow_edges WHERE workflow_id = %s", (workflow_id,))
                 for edge in req.edges:
+                    # Resolve source/target IDs through step_id_map
+                    src_id = step_id_map.get(edge.source_step_id, edge.source_step_id)
+                    tgt_id = step_id_map.get(edge.target_step_id, edge.target_step_id)
                     edge_id = _generate_id()
                     cur.execute(
                         "INSERT INTO adh_workflow_edges "
                         "(id, workflow_id, source_step_id, target_step_id, edge_type, "
                         "condition_expr, label, created_at) "
                         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                        (edge_id, workflow_id, edge.source_step_id, edge.target_step_id,
+                        (edge_id, workflow_id, src_id, tgt_id,
                          edge.edge_type, edge.condition_expr, edge.label, now),
                     )
 
@@ -760,7 +852,8 @@ def update_workflow_step(
             # 获取当前步骤
             cur.execute(
                 "SELECT id, workflow_id, step_type, step_name, step_order, "
-                "max_rounds, is_enabled, prompt_key, config "
+                "max_rounds, is_enabled, prompt_key, config, "
+                "position_x, position_y, node_type, dependencies "
                 "FROM adh_workflow_steps WHERE id = %s AND workflow_id = %s",
                 (step_id, workflow_id),
             )
@@ -784,10 +877,14 @@ def update_workflow_step(
             cur.execute(
                 "INSERT INTO adh_workflow_steps "
                 "(id, workflow_id, step_type, step_name, step_order, "
-                "max_rounds, is_enabled, prompt_key, config, created_at, updated_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "max_rounds, is_enabled, prompt_key, config, "
+                "position_x, position_y, node_type, dependencies, "
+                "created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (step_id, workflow_id, current["step_type"], step_name, current["step_order"],
-                 max_rounds, 1 if is_enabled else 0, prompt_key, config_json, now, now),
+                 max_rounds, 1 if is_enabled else 0, prompt_key, config_json,
+                 current.get("position_x", 0), current.get("position_y", 0),
+                 current.get("node_type", "step"), current.get("dependencies"), now, now),
             )
 
         conn.commit()

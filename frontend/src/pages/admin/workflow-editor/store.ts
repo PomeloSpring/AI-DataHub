@@ -175,6 +175,10 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>((set, get) => 
     if (!currentWorkflowId) return;
     set({ isLoading: true });
     try {
+      // Build node ID to index mapping for edge resolution
+      const nodeIdToIndex = new Map<string, number>();
+      nodes.forEach((node, index) => { nodeIdToIndex.set(node.id, index); });
+
       const steps = nodes.map((node, index) => ({
         id: parseInt(node.id) || undefined,
         step_type: node.data.step_type || node.type,
@@ -189,15 +193,22 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>((set, get) => 
         dependencies: JSON.stringify([]),
         node_type: node.type,
       }));
-      const edgeList = edges.map((edge) => ({
-        source_step_id: parseInt(edge.source),
-        target_step_id: parseInt(edge.target),
-        edge_type: edge.data?.edgeType || 'normal',
-        condition_expr: edge.data?.conditionExpr,
-        label: edge.label as string,
-      }));
+      const edgeList = edges.map((edge) => {
+        // Resolve source/target: try parseInt first, fallback to index for new nodes
+        const srcParsed = parseInt(edge.source);
+        const tgtParsed = parseInt(edge.target);
+        return {
+          source_step_id: isNaN(srcParsed) ? (nodeIdToIndex.get(edge.source) ?? 0) : srcParsed,
+          target_step_id: isNaN(tgtParsed) ? (nodeIdToIndex.get(edge.target) ?? 0) : tgtParsed,
+          edge_type: edge.data?.edgeType || 'normal',
+          condition_expr: edge.data?.conditionExpr,
+          label: edge.label as string,
+        };
+      });
       await client.put(`/admin/workflows/${currentWorkflowId}`, { steps, edges: edgeList });
       set({ isDirty: false });
+      // Reload workflow to sync database-generated IDs (new nodes get real IDs)
+      await get().loadWorkflow(currentWorkflowId);
     } catch (e) {
       console.error('Failed to save workflow:', e);
     } finally {

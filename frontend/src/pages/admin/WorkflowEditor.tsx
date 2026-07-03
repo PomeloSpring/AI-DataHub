@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ReactFlowProvider } from '@xyflow/react';
-import { Plus, Save, Trash2, Settings, List, Loader2 } from 'lucide-react';
+import { Plus, Save, Trash2, Settings, List, Loader2, Play, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
+import client from '@/api/client';
 import DAGCanvas from './workflow-editor/DAGCanvas';
 import NodePalette from './workflow-editor/NodePalette';
 import NodeConfigPanel from './workflow-editor/NodeConfigPanel';
@@ -26,6 +29,28 @@ function WorkflowEditorContent() {
   const [newWorkflowName, setNewWorkflowName] = useState('');
   const [showNewInput, setShowNewInput] = useState(false);
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
+
+  // Test workflow state
+  const [showTestDialog, setShowTestDialog] = useState(false);
+  const [testQuestion, setTestQuestion] = useState('');
+  const [testRunning, setTestRunning] = useState(false);
+  const [testResult, setTestResult] = useState<any>(null);
+
+  const handleTestWorkflow = async () => {
+    if (!currentWorkflowId || !testQuestion.trim()) return;
+    setTestRunning(true);
+    setTestResult(null);
+    try {
+      const { data } = await client.post(`/admin/workflows/${currentWorkflowId}/execute`, {
+        question: testQuestion.trim(),
+      });
+      setTestResult(data);
+    } catch (e: any) {
+      setTestResult({ error: e?.response?.data?.detail || '执行失败' });
+    } finally {
+      setTestRunning(false);
+    }
+  };
 
   useEffect(() => { loadWorkflows(); }, []);
   useEffect(() => { const id = searchParams.get('id'); if (id) loadWorkflow(parseInt(id)); }, [searchParams]);
@@ -105,6 +130,7 @@ function WorkflowEditorContent() {
           </div>
           <div className="flex items-center gap-2">
             {selectedNode && <Button variant="outline" size="sm" onClick={handleDeleteNode}><Trash2 className="h-4 w-4 mr-1" />删除节点</Button>}
+            {currentWorkflowId && <Button variant="outline" size="sm" onClick={() => setShowTestDialog(true)}><Play className="h-4 w-4 mr-1" />测试</Button>}
             {currentWorkflowId && <Button size="sm" onClick={handleSave} disabled={!isDirty || isLoading}>{isLoading ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Save className="h-4 w-4 mr-1" />}保存</Button>}
           </div>
         </div>
@@ -123,6 +149,70 @@ function WorkflowEditorContent() {
           <NodeConfigPanel node={selectedNode} onUpdate={handleUpdateNode} onClose={() => { setShowConfig(false); setSelectedNode(null); }} />
         </div>
       )}
+
+      {/* Test Workflow Dialog */}
+      <Dialog open={showTestDialog} onOpenChange={setShowTestDialog}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-auto">
+          <DialogHeader>
+            <DialogTitle>测试工作流</DialogTitle>
+            <DialogDescription>输入一个问题，测试当前工作流的执行效果</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">测试问题</label>
+              <Textarea
+                value={testQuestion}
+                onChange={e => setTestQuestion(e.target.value)}
+                placeholder="输入一个自然语言问题，如：统计近一天的接口请求量"
+                rows={2}
+              />
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={handleTestWorkflow} disabled={testRunning || !testQuestion.trim()}>
+                {testRunning ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Play className="h-4 w-4 mr-1" />}
+                {testRunning ? '执行中...' : '开始测试'}
+              </Button>
+              <Button variant="outline" onClick={() => { setTestResult(null); setTestQuestion(''); }}>清空</Button>
+            </div>
+            {testResult && (
+              <div className="border rounded-lg p-4 space-y-3">
+                <h4 className="text-sm font-medium">执行结果</h4>
+                {testResult.error ? (
+                  <div className="text-destructive text-sm">{testResult.error}</div>
+                ) : (
+                  <>
+                    {testResult.reply && (
+                      <div className="text-sm">
+                        <span className="font-medium">回复：</span>
+                        <div className="mt-1 whitespace-pre-wrap">{testResult.reply}</div>
+                      </div>
+                    )}
+                    {testResult.sql && (
+                      <div className="text-sm">
+                        <span className="font-medium">SQL：</span>
+                        <pre className="mt-1 p-2 bg-muted rounded text-xs font-mono overflow-auto">{testResult.sql}</pre>
+                      </div>
+                    )}
+                    {testResult.steps && testResult.steps.length > 0 && (
+                      <div className="text-sm">
+                        <span className="font-medium">执行步骤：</span>
+                        <div className="mt-2 space-y-2">
+                          {testResult.steps.map((step: any, i: number) => (
+                            <div key={i} className="border rounded p-2 text-xs">
+                              <div className="font-medium">{step.step_name || `步骤 ${i + 1}`}</div>
+                              {step.result && <div className="mt-1 text-muted-foreground">{typeof step.result === 'string' ? step.result.slice(0, 200) : JSON.stringify(step.result).slice(0, 200)}</div>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

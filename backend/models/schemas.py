@@ -555,6 +555,7 @@ class PromptListResponse(BaseModel):
 # ── Loop Engineering: Workflow Config ───────────────────────────────
 
 class WorkflowStepConfig(BaseModel):
+    id: Optional[int] = None  # Database ID (None for new steps)
     step_type: str  # metadata_retrieval/llm_analysis/metadata_supplement/sql_generation/sql_execution/result_analysis
     step_name: str
     step_order: int
@@ -562,6 +563,10 @@ class WorkflowStepConfig(BaseModel):
     is_enabled: bool = True
     prompt_key: Optional[str] = None
     config: Optional[dict] = None
+    position_x: float = 0
+    position_y: float = 0
+    node_type: str = "step"  # start/end/step/condition/parallel/merge/agent/mcp_tool
+    dependencies: Optional[str] = None  # JSON array of step_ids
 
 class WorkflowConfigCreate(BaseModel):
     name: str
