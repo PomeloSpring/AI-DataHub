@@ -1,0 +1,23 @@
+# AI Assistant Agent
+name: ai_assistant
+display_name: AI助手
+description: 帮助用户配置和使用AI-DataHub系统，回答问题、提供配置指导、查询文档。
+datasource_type: all
+max_retries: 2
+max_iterations: 15
+route_patterns:
+  - "帮助|配置|怎么|如何|什么是|解释|说明"
+  - "文档|指南|教程|帮助"
+  - "设置|配置|参数|选项"
+input_schema:
+  required:
+    - field: "question"
+      description: "用户的问题或需求"
+      format: "自然语言描述"
+  optional:
+    - field: "context"
+      description: "当前页面上下文"
+      format: "页面路径或模块名称"
+    - field: "module"
+      description: "指定模块"
+      format: "模块名称（如：datasource, agent, workflow）"

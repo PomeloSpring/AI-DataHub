@@ -1,0 +1,43 @@
+services:
+  neo4j:
+    image: neo4j:5-community
+    container_name: ai-datahub-neo4j
+    restart: unless-stopped
+    ports:
+      - "7474:7474"   # HTTP Browser
+      - "7687:7687"   # Bolt Protocol
+    environment:
+      # 认证配置
+      - NEO4J_AUTH=neo4j/ai-datahub-2024
+
+      # 内存配置
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=1G
+      - NEO4J_server_memory_pagecache_size=512m
+
+      # 插件配置（APOC等）
+      - NEO4J_PLUGINS=["apoc"]
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+    networks:
+      - ai-datahub-network
+    healthcheck:
+      test: ["CMD", "neo4j", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  neo4j_plugins:
+    driver: local
+
+networks:
+  ai-datahub-network:
+    driver: bridge

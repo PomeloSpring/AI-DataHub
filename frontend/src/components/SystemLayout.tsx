@@ -42,6 +42,7 @@ const SYSTEM_MENU_ITEMS = [
   { key: '/system/workflows', icon: Workflow, label: '工作流配置' },
   { key: '/system/workflow-editor', icon: Workflow, label: '工作流编排' },
   { key: '/system/prompts', icon: MessageSquare, label: 'Prompt 管理' },
+  { key: '/system/knowledge-base', icon: BookOpen, label: '知识库管理' },
   { section: '自动化' },
   { key: '/system/scheduled-tasks', icon: Clock, label: '定时任务' },
   { key: '/system/notification-channels', icon: Bell, label: '通知渠道' },

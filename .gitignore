@@ -18,10 +18,13 @@ env/
 # IDE
 .idea/
 .vscode/
-.claude/
 *.swp
 *.swo
 *~
+
+# Claude Code local config (not project docs)
+.claude/settings.json
+.claude/local/
 
 # Environment
 .env
@@ -51,6 +54,5 @@ frontend/build/
 *.bak
 
 # Documentation (local only, except images for README)
-docs/*
 !docs/img/plan/
 docs/superpowers/

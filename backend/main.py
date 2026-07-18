@@ -61,6 +61,7 @@ from backend.api.admin_workflow import router as admin_workflow_router
 from backend.api import pipeline
 from backend.api.workspace_v2 import router as workspace_router
 from backend.api.scheduled_task import router as scheduled_task_router
+from backend.api.ai_assistant import router as ai_assistant_router
 
 app = FastAPI(title="ChatBI API", description="ChatBI 数据分析助手 API", version="1.0.0")
 
@@ -98,6 +99,7 @@ app.include_router(pipeline.router, prefix="/api/pipeline", tags=["Pipeline"])
 app.include_router(mcp_market_router, prefix="/api/mcp-market", tags=["MCP市场"])
 app.include_router(workspace_router, prefix="/api/workspaces", tags=["工作空间"])
 app.include_router(scheduled_task_router, prefix="/api", tags=["定时任务"])
+app.include_router(ai_assistant_router, tags=["AI助手"])
 
 @app.get("/api/health")
 def health():

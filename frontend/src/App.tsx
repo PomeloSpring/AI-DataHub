@@ -4,6 +4,7 @@ import { useAuthStore } from './stores/authStore';
 import { useWorkspaceStore } from './stores/workspaceStore';
 import WorkspaceLayout from './components/WorkspaceLayout';
 import SystemLayout from './components/SystemLayout';
+import { AIFloatingBox } from './components/ai-assistant';
 import Login from './pages/Login';
 import Chat from './pages/Chat';
 import Dashboard from './pages/Dashboard';
@@ -26,6 +27,7 @@ import ScheduledTasks from './pages/admin/ScheduledTasks';
 import NotificationChannels from './pages/admin/NotificationChannels';
 import ReportTemplates from './pages/admin/ReportTemplates';
 import ReportView from './pages/ReportView';
+import KnowledgeBase from './pages/admin/KnowledgeBase';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -112,6 +114,7 @@ export default function App() {
           <Route path="scheduled-tasks" element={<ScheduledTasks />} />
           <Route path="notification-channels" element={<NotificationChannels />} />
           <Route path="report-templates" element={<ReportTemplates />} />
+          <Route path="knowledge-base" element={<KnowledgeBase />} />
           <Route path="settings" element={<Admin embeddedTab="brand" />} />
         </Route>
 
@@ -148,6 +151,9 @@ export default function App() {
         {/* Default redirect */}
         <Route path="/" element={<PrivateRoute><LegacyChatRedirect /></PrivateRoute>} />
       </Routes>
+
+      {/* AI Assistant Floating Box - 全局悬浮框 */}
+      <AIFloatingBox />
     </BrowserRouter>
   );
 }
