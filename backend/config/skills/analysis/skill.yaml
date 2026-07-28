@@ -1,0 +1,16 @@
+# Analysis Skill — 数据分析解读
+
+name: analysis
+description: 对查询结果进行数据分析和业务解读
+version: 1.0.0
+
+inputs:
+  - question: 用户问题
+  - data: 查询结果数据（JSON）
+  - fields: 字段信息
+  - terminologies: 业务术语
+
+outputs:
+  - summary: 分析总结
+  - insights: 关键洞察列表
+  - suggestions: 建议列表

@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DataFusion Gateway Demo</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+  .container{max-width:960px;margin:0 auto;padding:24px 16px}
+  .header{text-align:center;margin-bottom:24px}
+  .header h1{font-size:24px;font-weight:700;color:#f8fafc}
+  .header p{color:#94a3b8;font-size:13px;margin-top:4px}
+  .card{background:#1e293b;border:1px solid #334155;border-radius:12px;margin-bottom:12px;overflow:hidden}
+  .card-header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;cursor:pointer;user-select:none}
+  .card-header:hover{background:#1e293b80}
+  .card-body{display:none;border-top:1px solid #334155;padding:18px}
+  .card-body.open{display:block}
+  .badge{padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;font-family:monospace}
+  .b-get{background:#064e3b;color:#6ee7b7}.b-post{background:#1e3a5f;color:#93c5fd}.b-put{background:#78350f;color:#fbbf24}.b-del{background:#7f1d1d;color:#fca5a5}
+  .path{font-family:monospace;font-size:13px;color:#e2e8f0;margin-left:8px}
+  .desc{font-size:12px;color:#94a3b8}
+  .arrow{color:#475569;transition:transform .2s;font-size:16px}.arrow.open{transform:rotate(90deg)}
+  label{display:block;font-size:11px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;margin-top:10px}
+  label:first-child{margin-top:0}
+  input,select,textarea{width:100%;background:#0f172a;border:1px solid #334155;border-radius:6px;padding:8px 10px;color:#e2e8f0;font-size:13px;font-family:monospace}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:#3b82f6}
+  textarea{resize:vertical;min-height:60px}
+  .row{display:flex;gap:8px}.row>*{flex:1}
+  .btn{padding:7px 16px;border-radius:6px;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
+  .btn-p{background:#3b82f6;color:#fff}.btn-p:hover{background:#2563eb}
+  .btn-g{background:transparent;color:#94a3b8;border:1px solid #334155}.btn-g:hover{background:#1e293b;color:#e2e8f0}
+  .btn-d{background:#991b1b;color:#fff}.btn-d:hover{background:#7f1d1d}
+  .btn-sm{padding:5px 12px;font-size:12px}
+  .actions{display:flex;gap:6px;margin-top:10px;align-items:center}
+  .latency{font-size:11px;color:#64748b;margin-left:auto}
+  .result{margin-top:10px;background:#0f172a;border:1px solid #334155;border-radius:6px;padding:10px;font-family:monospace;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all;max-height:350px;overflow-y:auto;color:#94a3b8}
+  .result.ok{border-color:#166534}.result.err{border-color:#991b1b;color:#fca5a5}
+  .rls-tag{display:inline-block;background:#1e3a5f;color:#93c5fd;padding:2px 8px;border-radius:4px;font-size:11px;margin:2px}
+  .tbl{width:100%;border-collapse:collapse;font-size:12px}.tbl th{background:#1e293b;color:#94a3b8;text-align:left;padding:6px 10px;border-bottom:1px solid #334155;position:sticky;top:0}.tbl td{padding:5px 10px;border-bottom:1px solid #1e293b;color:#cbd5e1;font-family:monospace;font-size:11px}.tbl tr:hover td{background:#1e293b40}
+  .tbl-wrap{max-height:250px;overflow:auto;margin-top:6px;border:1px solid #334155;border-radius:6px}
+  .section-title{font-size:15px;font-weight:600;color:#f8fafc;margin:20px 0 10px;display:flex;align-items:center;gap:6px}
+  .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+  .s-ok{background:#22c55e}.s-err{background:#ef4444}.s-unk{background:#64748b}
+  .ds-list{margin-top:10px}.ds-item{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#0f172a;border-radius:6px;margin-bottom:6px;font-size:13px}
+  .ds-item .info{display:flex;align-items:center;gap:8px}
+  .ds-item .name{font-weight:600;color:#e2e8f0}
+  .ds-item .meta{font-size:11px;color:#64748b;font-family:monospace}
+  .ds-item .actions{margin:0;gap:4px}
+  select.ds-select{margin-bottom:8px}
+  @media(max-width:640px){.row{flex-direction:column}}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>⚡ DataFusion Gateway</h1>
+    <p>SQL 网关体验面板 — 管理数据源，执行查询，测试 RLS</p>
+  </div>
+
+  <!-- Gateway Config -->
+  <div class="card">
+    <div class="card-header" onclick="toggle(this)">
+      <span style="font-weight:600;font-size:14px">🔧 Gateway 连接</span>
+      <span class="arrow">▶</span>
+    </div>
+    <div class="card-body open">
+      <div class="row">
+        <div style="flex:2"><label>Gateway 地址</label><input id="gw" value="http://localhost:50051"></div>
+        <div style="flex:1;display:flex;align-items:end">
+          <button class="btn btn-g btn-sm" onclick="checkHealth()" style="width:100%">测试连接</button>
+        </div>
+      </div>
+      <div style="margin-top:8px;font-size:12px;color:#94a3b8">
+        <span id="sDot" class="status-dot s-unk"></span><span id="sTxt">未连接</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Datasource Management -->
+  <div class="section-title">🗄️ 数据源管理</div>
+
+  <div class="card">
+    <div class="card-header" onclick="toggle(this)">
+      <span style="font-weight:600;font-size:14px">数据源列表</span>
+      <button class="btn btn-p btn-sm" onclick="event.stopPropagation();showDsForm()">+ 新增</button>
+      <span class="arrow">▶</span>
+    </div>
+    <div class="card-body open">
+      <div id="dsList" class="ds-list"><span style="color:#64748b;font-size:13px">点击"刷新"加载</span></div>
+      <div style="margin-top:8px"><button class="btn btn-g btn-sm" onclick="loadDsList()">刷新列表</button></div>
+    </div>
+  </div>
+
+  <!-- Add/Edit Datasource Form -->
+  <div class="card" id="dsFormCard" style="display:none">
+    <div class="card-header" onclick="toggle(this)">
+      <span style="font-weight:600;font-size:14px" id="dsFormTitle">新增数据源</span>
+      <span class="arrow open">▶</span>
+    </div>
+    <div class="card-body open">
+      <input type="hidden" id="dsEditId">
+      <div class="row">
+        <div style="flex:1"><label>名称</label><input id="dsName" placeholder="生产数据库"></div>
+        <div style="flex:0.5"><label>类型</label><select id="dsType"><option value="mysql">MySQL</option><option value="doris">Doris</option></select></div>
+      </div>
+      <div class="row">
+        <div style="flex:2"><label>Host</label><input id="dsHost" placeholder="127.0.0.1"></div>
+        <div style="flex:0.5"><label>Port</label><input id="dsPort" value="3306"></div>
+      </div>
+      <div class="row">
+        <div style="flex:1"><label>Database</label><input id="dsDb" placeholder="mydb"></div>
+        <div style="flex:1"><label>用户名</label><input id="dsUser" placeholder="root"></div>
+        <div style="flex:1"><label>密码</label><input id="dsPass" type="password" placeholder="password"></div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-p btn-sm" onclick="saveDs()">保存</button>
+        <button class="btn btn-g btn-sm" onclick="hideDsForm()">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Query -->
+  <div class="section-title">🔍 SQL 查询</div>
+
+  <div class="card">
+    <div class="card-header" onclick="toggle(this)">
+      <span style="font-weight:600;font-size:14px">执行查询</span>
+      <span class="desc" style="margin-left:auto">POST /api/query</span>
+      <span class="arrow">▶</span>
+    </div>
+    <div class="card-body open">
+      <label>数据源</label>
+      <select id="qDs" class="ds-select" onchange="onDsChange()"><option value="">-- 先创建数据源 --</option></select>
+      <label>SQL</label>
+      <textarea id="qSql" rows="3">SELECT 1 AS hello, 2 AS world</textarea>
+      <label>RLS 策略（可选，JSON 数组）</label>
+      <textarea id="qRls" rows="2" placeholder='[{"tables":["orders"],"row_filter":"tenant_id=1","hidden_columns":[],"masked_columns":{}}]'></textarea>
+      <div class="actions">
+        <button class="btn btn-p btn-sm" onclick="runQuery()">▶ 执行</button>
+        <span class="latency" id="qLat"></span>
+      </div>
+      <div id="qRes" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- Quick Examples -->
+  <div class="section-title">💡 快速示例</div>
+
+  <div class="card">
+    <div class="card-header" onclick="toggle(this)">
+      <span style="font-weight:600;font-size:14px">带 RLS 行级过滤</span>
+      <span class="arrow">▶</span>
+    </div>
+    <div class="card-body">
+      <p style="font-size:12px;color:#94a3b8;margin-bottom:8px">对 orders 表按 tenant_id 过滤，隐藏 internal_note 列</p>
+      <label>请求体</label>
+      <textarea id="ex1" rows="8">{
+  "datasource_id": "__DS_ID__",
+  "sql": "SELECT * FROM orders WHERE amount > 100",
+  "rls_policies": [{
+    "tables": ["orders"],
+    "row_filter": "tenant_id = 1",
+    "hidden_columns": ["internal_note"],
+    "masked_columns": {}
+  }]
+}</textarea>
+      <div class="actions">
+        <button class="btn btn-p btn-sm" onclick="runEx('ex1')">▶ 发送</button>
+        <span class="latency" id="ex1Lat"></span>
+      </div>
+      <div id="ex1Res" style="display:none"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header" onclick="toggle(this)">
+      <span style="font-weight:600;font-size:14px">多表 JOIN + 多策略</span>
+      <span class="arrow">▶</span>
+    </div>
+    <div class="card-body">
+      <p style="font-size:12px;color:#94a3b8;margin-bottom:8px">orders 按租户过滤，users 隐藏密码列</p>
+      <label>请求体</label>
+      <textarea id="ex2" rows="10">{
+  "datasource_id": "__DS_ID__",
+  "sql": "SELECT o.id, o.amount, u.name FROM orders o JOIN users u ON o.user_id = u.id",
+  "rls_policies": [
+    {"tables": ["orders"], "row_filter": "tenant_id = 1", "hidden_columns": [], "masked_columns": {}},
+    {"tables": ["users"], "row_filter": "", "hidden_columns": ["password_hash"], "masked_columns": {"phone": "***"}}
+  ]
+}</textarea>
+      <div class="actions">
+        <button class="btn btn-p btn-sm" onclick="runEx('ex2')">▶ 发送</button>
+        <span class="latency" id="ex2Lat"></span>
+      </div>
+      <div id="ex2Res" style="display:none"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const gw = () => $('gw').value.replace(/\/+$/,'');
+let dsList = [];
+
+// ── UI Helpers ──
+function toggle(h){const b=h.nextElementSibling,a=h.querySelector('.arrow');b.classList.toggle('open');a?.classList.toggle('open')}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+
+async function api(path,opts={}){
+  const s=performance.now();
+  try{const r=await fetch(gw()+path,{...opts,headers:{'Content-Type':'application/json',...(opts.headers||{})}});
+  const ms=Math.round(performance.now()-s);const d=await r.json();return{ok:r.ok,status:r.data,ms,d}}
+  catch(e){return{ok:false,status:0,ms:Math.round(performance.now()-s),d:{error:e.message}}}}
+function render(id,r,latId){
+  const el=$(id),le=$(latId);el.style.display='block';
+  if(le)le.textContent=`${r.ms}ms · ${r.status||''}`;
+  if(!r.ok){el.className='result err';el.textContent=JSON.stringify(r.d,null,2);return}
+  if(r.d.columns&&r.d.rows){
+    el.className='result ok';let h='';
+    if(r.d.rls_applied?.length){h+='<div>'+r.d.rls_applied.map(x=>`<span class="rls-tag">🛡️ ${esc(x)}</span>`).join('')+'</div>'}
+    h+=`<div style="font-size:11px;color:#64748b;margin:6px 0">${r.d.row_count} rows · ${r.d.execution_time_ms}ms</div>`;
+    if(r.d.rows.length){h+='<div class="tbl-wrap"><table class="tbl"><thead><tr>'+r.d.columns.map(c=>`<th>${esc(c.name)}<br><span style="font-weight:400;font-size:10px;color:#64748b">${esc(c.data_type)}</span></th>`).join('')+'</tr></thead><tbody>'+r.d.rows.map(row=>'<tr>'+row.map(v=>`<td>${v===null?'<span style="color:#475569">NULL</span>':esc(String(v))}</td>`).join('')+'</tr>').join('')+'</tbody></table></div>'}
+    el.innerHTML=h}else{el.className='result ok';el.textContent=JSON.stringify(r.d,null,2)}
+  else{el.className='result ok';el.textContent=JSON.stringify(r.d,null,2)}}
+
+// ── Health ──
+async function checkHealth(){
+  $('sDot').className='status-dot s-unk';$('sTxt').textContent='检测中...';
+  const r=await api('/api/health');
+  if(r.ok){$('sDot').className='status-dot s-ok';$('sTxt').textContent=`已连接 · v${r.d.version} · 运行 ${r.d.uptime_seconds}s`}
+  else{$('sDot').className='status-dot s-err';$('sTxt').textContent=`连接失败: ${r.d.error||r.status}`}}
+
+// ── Datasource CRUD ──
+async function loadDsList(){
+  const r=await api('/api/datasources');
+  if(!r.ok){$('dsList').innerHTML='<span style="color:#fca5a5">加载失败</span>';return}
+  dsList=r.d.datasources||[];
+  if(!dsList.length){$('dsList').innerHTML='<span style="color:#64748b">暂无数据源，请新增</span>';return}
+  $('dsList').innerHTML=dsList.map(ds=>`<div class="ds-item"><div class="info"><span class="name">${esc(ds.name)}</span><span class="meta">${esc(ds.db_type)}://${esc(ds.host)}:${ds.port}/${esc(ds.database)}</span></span></div><div class="actions"><button class="btn btn-g btn-sm" onclick="testDs('${ds.id}')">测试</button><button class="btn btn-g btn-sm" onclick="editDs('${ds.id}')">编辑</button><button class="btn btn-d btn-sm" onclick="delDs('${ds.id}')">删除</button></div></div>`).join('');
+  // Update query selector
+  const sel=$('qDs');const cur=sel.value;sel.innerHTML='<option value="">-- 选择数据源 --</option>'+dsList.map(ds=>`<option value="${ds.id}">${esc(ds.name)} (${esc(ds.host)})</option>`).join('');if(cur)sel.value=cur;
+  // Update example placeholders
+  updateExDsId()}
+
+function updateExDsId(){const id=$('qDs').value||'';['ex1','ex2'].forEach(e=>{const el=$(e);if(el)el.value=el.value.replace(/"datasource_id":\s*"[^"]*"/,`"datasource_id": "${id}"`)})}
+
+function showDsForm(ds){$('dsFormCard').style.display='block';$('dsFormTitle').textContent=ds?'编辑数据源':'新增数据源';$('dsEditId').value=ds?.id||'';$('dsName').value=ds?.name||'';$('dsType').value=ds?.db_type||'mysql';$('dsHost').value=ds?.host||'';$('dsPort').value=ds?.port||3306;$('dsDb').value=ds?.database||'';$('dsUser').value=ds?.username||'';$('dsPass').value=''}
+function hideDsForm(){$('dsFormCard').style.display='none'}
+
+async function saveDs(){
+  const id=$('dsEditId').value;const body={name:$('dsName').value,db_type:$('dsType').value,host:$('dsHost').value,port:parseInt($('dsPort').value)||3306,database:$('dsDb').value,username:$('dsUser').value,password:$('dsPass').value};
+  if(!body.host||!body.database){alert('host 和 database 必填');return}
+  const r=id?await api(`/api/datasources/${id}`,{method:'PUT',body:JSON.stringify(body)}):await api('/api/datasources',{method:'POST',body:JSON.stringify(body)});
+  if(r.ok){hideDsForm();loadDsList()}else{alert('保存失败: '+JSON.stringify(r.d))}}
+
+function editDs(id){const ds=dsList.find(d=>d.id===id);if(ds)showDsForm(ds)}
+
+async function delDs(id){if(!confirm('确认删除？'))return;const r=await api(`/api/datasources/${id}`,{method:'DELETE'});if(r.ok)loadDsList();else alert('删除失败')}
+
+async function testDs(id){
+  const el=event.target;el.textContent='测试中...';el.disabled=true;
+  const r=await api(`/api/datasources/${id}/test`,{method:'POST'});
+  el.disabled=false;el.textContent='测试';
+  if(r.ok&&r.d.success){alert(`✅ ${r.d.message}\n版本: ${r.d.info?.version}\n表数: ${r.d.info?.table_count}`)}
+  else{alert(`❌ ${r.d?.message||'连接失败'}`)}}
+
+// ── Query ──
+function onDsChange(){updateExDsId()}
+
+async function runQuery(){
+  const dsId=$('qDs').value;if(!dsId){alert('请先选择数据源');return}
+  let rls=[];const rTxt=$('qRls').value.trim();if(rTxt){try{rls=JSON.parse(rTxt)}catch(e){alert('RLS JSON 错误: '+e.message);return}}
+  const body={datasource_id:dsId,sql:$('qSql').value.trim(),rls_policies:rls};
+  const r=await api('/api/query',{method:'POST',body:JSON.stringify(body)});
+  render('qRes',r,'qLat')}
+
+async function runEx(id){
+  let body=$(id).value;const dsId=$('qDs').value||'';body=body.replace('__DS_ID__',dsId);
+  const r=await api('/api/query',{method:'POST',body});
+  render(id+'Res',r,id+'Lat')}
+
+// Init
+loadDsList();
+</script>
+</body>
+</html>

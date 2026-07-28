@@ -1,0 +1,1884 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* Kibana-inspired dark theme (default) */
+  :root {
+    --background: 222 47% 7%;
+    --foreground: 210 40% 98%;
+
+    --card: 222 47% 11%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222 47% 11%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 217 91% 60%;
+    --primary-foreground: 222 47% 7%;
+
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 217 33% 17%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 217 33% 17%;
+    --input: 217 33% 17%;
+    --ring: 217 91% 60%;
+
+    --radius: 0.5rem;
+
+    /* Sidebar */
+    --sidebar: 222 47% 5%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-border: 217 33% 12%;
+    --sidebar-accent: 217 33% 14%;
+    --sidebar-accent-foreground: 210 40% 98%;
+
+    /* Chart colors (Kibana-inspired) */
+    --chart-1: 217 91% 60%;
+    --chart-2: 160 84% 39%;
+    --chart-3: 45 93% 47%;
+    --chart-4: 0 84% 60%;
+    --chart-5: 280 84% 60%;
+    --chart-6: 190 90% 50%;
+    --chart-7: 340 82% 52%;
+    --chart-8: 120 60% 40%;
+    --chart-9: 260 70% 55%;
+    --chart-10: 30 90% 55%;
+
+    /* Kibana-specific */
+    --kibana-bg: 220 14% 6%;
+    --kibana-surface: 220 14% 9%;
+    --kibana-surface-hover: 220 14% 12%;
+    --kibana-border: 220 14% 16%;
+    --kibana-text: 210 20% 90%;
+    --kibana-text-secondary: 210 15% 55%;
+    --kibana-accent: 217 91% 60%;
+    --kibana-success: 160 84% 39%;
+    --kibana-warning: 45 93% 47%;
+    --kibana-danger: 0 84% 60%;
+  }
+
+  /* Light theme */
+  .light {
+    --background: 0 0% 100%;
+    --foreground: 222 47% 7%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 7%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 7%;
+
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 7%;
+
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 20% 35%;
+
+    --accent: 210 40% 96%;
+    --accent-foreground: 222 47% 7%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 217 91% 60%;
+
+    --sidebar: 210 40% 98%;
+    --sidebar-foreground: 222 47% 7%;
+    --sidebar-border: 214 32% 91%;
+    --sidebar-accent: 210 40% 96%;
+    --sidebar-accent-foreground: 222 47% 7%;
+
+    --kibana-bg: 210 20% 98%;
+    --kibana-surface: 0 0% 100%;
+    --kibana-surface-hover: 210 20% 96%;
+    --kibana-border: 214 32% 91%;
+    --kibana-text: 222 47% 7%;
+    --kibana-text-secondary: 215 20% 35%;
+  }
+
+  /* Tech theme — 科技风: deep blue-black, cyan/electric blue primary, neon accents */
+  .tech {
+    --background: 220 30% 5%;
+    --foreground: 190 30% 92%;
+
+    --card: 220 25% 9%;
+    --card-foreground: 190 30% 92%;
+
+    --popover: 220 25% 9%;
+    --popover-foreground: 190 30% 92%;
+
+    --primary: 190 100% 50%;
+    --primary-foreground: 220 30% 5%;
+
+    --secondary: 220 20% 14%;
+    --secondary-foreground: 190 30% 92%;
+
+    --muted: 220 20% 14%;
+    --muted-foreground: 200 15% 55%;
+
+    --accent: 220 20% 14%;
+    --accent-foreground: 190 30% 92%;
+
+    --destructive: 0 80% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 210 20% 15%;
+    --input: 210 20% 15%;
+    --ring: 190 100% 50%;
+
+    --sidebar: 220 30% 4%;
+    --sidebar-foreground: 190 30% 92%;
+    --sidebar-border: 210 20% 10%;
+    --sidebar-accent: 220 20% 11%;
+    --sidebar-accent-foreground: 190 30% 92%;
+
+    --chart-1: 190 100% 50%;
+    --chart-2: 160 80% 45%;
+    --chart-3: 280 80% 60%;
+    --chart-4: 50 100% 55%;
+    --chart-5: 340 80% 55%;
+    --chart-6: 120 60% 45%;
+    --chart-7: 240 70% 60%;
+    --chart-8: 30 90% 55%;
+    --chart-9: 210 80% 55%;
+    --chart-10: 170 90% 40%;
+
+    --kibana-bg: 220 28% 4%;
+    --kibana-surface: 220 24% 8%;
+    --kibana-surface-hover: 220 24% 12%;
+    --kibana-border: 210 20% 13%;
+    --kibana-text: 190 25% 88%;
+    --kibana-text-secondary: 200 15% 50%;
+    --kibana-accent: 190 100% 50%;
+    --kibana-success: 160 80% 45%;
+    --kibana-warning: 50 100% 55%;
+    --kibana-danger: 0 80% 55%;
+  }
+
+  /* Finance theme — 金融风: dark navy, gold/amber primary, professional */
+  .finance {
+    --background: 222 35% 6%;
+    --foreground: 40 20% 90%;
+
+    --card: 222 30% 10%;
+    --card-foreground: 40 20% 90%;
+
+    --popover: 222 30% 10%;
+    --popover-foreground: 40 20% 90%;
+
+    --primary: 38 92% 50%;
+    --primary-foreground: 222 35% 6%;
+
+    --secondary: 222 20% 14%;
+    --secondary-foreground: 40 20% 90%;
+
+    --muted: 222 20% 14%;
+    --muted-foreground: 220 12% 55%;
+
+    --accent: 222 20% 14%;
+    --accent-foreground: 40 20% 90%;
+
+    --destructive: 0 70% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 18% 14%;
+    --input: 220 18% 14%;
+    --ring: 38 92% 50%;
+
+    --sidebar: 222 35% 4%;
+    --sidebar-foreground: 40 20% 90%;
+    --sidebar-border: 220 18% 10%;
+    --sidebar-accent: 222 20% 11%;
+    --sidebar-accent-foreground: 40 20% 90%;
+
+    --chart-1: 38 92% 50%;
+    --chart-2: 150 60% 42%;
+    --chart-3: 210 80% 55%;
+    --chart-4: 0 70% 50%;
+    --chart-5: 280 60% 55%;
+    --chart-6: 190 70% 48%;
+    --chart-7: 340 65% 52%;
+    --chart-8: 120 50% 40%;
+    --chart-9: 260 55% 55%;
+    --chart-10: 25 85% 52%;
+
+    --kibana-bg: 222 32% 5%;
+    --kibana-surface: 222 28% 9%;
+    --kibana-surface-hover: 222 28% 13%;
+    --kibana-border: 220 18% 12%;
+    --kibana-text: 40 18% 86%;
+    --kibana-text-secondary: 220 12% 48%;
+    --kibana-accent: 38 92% 50%;
+    --kibana-success: 150 60% 42%;
+    --kibana-warning: 38 92% 50%;
+    --kibana-danger: 0 70% 50%;
+  }
+
+  /* Bento Grid theme — 柔和浅色，圆角卡片网格，彩色区块 */
+  .bento {
+    --background: 220 20% 97%;
+    --foreground: 222 30% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 30% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 30% 12%;
+
+    --primary: 250 80% 60%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 16% 93%;
+    --secondary-foreground: 222 30% 12%;
+
+    --muted: 220 16% 93%;
+    --muted-foreground: 220 10% 45%;
+
+    --accent: 250 60% 95%;
+    --accent-foreground: 250 80% 50%;
+
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 16% 90%;
+    --input: 220 16% 90%;
+    --ring: 250 80% 60%;
+
+    --radius: 1rem;
+
+    --sidebar: 220 20% 98%;
+    --sidebar-foreground: 222 30% 12%;
+    --sidebar-border: 220 16% 92%;
+    --sidebar-accent: 250 60% 96%;
+    --sidebar-accent-foreground: 250 80% 50%;
+
+    --chart-1: 250 80% 60%;
+    --chart-2: 170 70% 45%;
+    --chart-3: 340 70% 58%;
+    --chart-4: 35 90% 55%;
+    --chart-5: 200 80% 50%;
+    --chart-6: 280 60% 55%;
+    --chart-7: 150 55% 42%;
+    --chart-8: 10 80% 58%;
+    --chart-9: 220 70% 50%;
+    --chart-10: 310 55% 50%;
+
+    --kibana-bg: 220 20% 97%;
+    --kibana-surface: 0 0% 100%;
+    --kibana-surface-hover: 220 16% 96%;
+    --kibana-border: 220 16% 90%;
+    --kibana-text: 222 30% 12%;
+    --kibana-text-secondary: 220 10% 45%;
+    --kibana-accent: 250 80% 60%;
+    --kibana-success: 170 70% 45%;
+    --kibana-warning: 35 90% 55%;
+    --kibana-danger: 0 72% 55%;
+  }
+
+  /* Glassmorphism theme — 玻璃拟态: dark translucent, frosted glass cards */
+  .glass {
+    --background: 230 25% 6%;
+    --foreground: 210 30% 92%;
+
+    --card: 230 20% 12%;
+    --card-foreground: 210 30% 92%;
+
+    --popover: 230 20% 12%;
+    --popover-foreground: 210 30% 92%;
+
+    --primary: 200 90% 55%;
+    --primary-foreground: 230 25% 6%;
+
+    --secondary: 230 15% 15%;
+    --secondary-foreground: 210 30% 92%;
+
+    --muted: 230 15% 15%;
+    --muted-foreground: 220 15% 55%;
+
+    --accent: 230 15% 18%;
+    --accent-foreground: 210 30% 92%;
+
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 230 15% 20%;
+    --input: 230 15% 18%;
+    --ring: 200 90% 55%;
+
+    --sidebar: 230 25% 4%;
+    --sidebar-foreground: 210 30% 92%;
+    --sidebar-border: 230 15% 12%;
+    --sidebar-accent: 230 15% 10%;
+    --sidebar-accent-foreground: 210 30% 92%;
+
+    --chart-1: 200 90% 55%;
+    --chart-2: 160 75% 48%;
+    --chart-3: 280 70% 60%;
+    --chart-4: 40 90% 55%;
+    --chart-5: 340 75% 58%;
+    --chart-6: 120 55% 45%;
+    --chart-7: 260 65% 58%;
+    --chart-8: 20 85% 55%;
+    --chart-9: 180 80% 48%;
+    --chart-10: 300 55% 52%;
+
+    --kibana-bg: 230 22% 5%;
+    --kibana-surface: 230 18% 10%;
+    --kibana-surface-hover: 230 18% 14%;
+    --kibana-border: 230 14% 16%;
+    --kibana-text: 210 25% 88%;
+    --kibana-text-secondary: 220 15% 50%;
+    --kibana-accent: 200 90% 55%;
+    --kibana-success: 160 75% 48%;
+    --kibana-warning: 40 90% 55%;
+    --kibana-danger: 0 72% 55%;
+  }
+
+  /* AI-Native theme — 深空神经网络风格: 深色背景 + 青色/紫色渐变 + 动态光效 */
+  .ainative {
+    --background: 230 30% 4%;
+    --foreground: 180 20% 92%;
+
+    --card: 230 25% 8%;
+    --card-foreground: 180 20% 92%;
+
+    --popover: 230 25% 8%;
+    --popover-foreground: 180 20% 92%;
+
+    --primary: 180 100% 50%;
+    --primary-foreground: 230 30% 4%;
+
+    --secondary: 230 20% 12%;
+    --secondary-foreground: 180 20% 92%;
+
+    --muted: 230 20% 12%;
+    --muted-foreground: 200 15% 50%;
+
+    --accent: 270 80% 60%;
+    --accent-foreground: 180 20% 92%;
+
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 230 20% 15%;
+    --input: 230 20% 15%;
+    --ring: 180 100% 50%;
+
+    --sidebar: 230 30% 3%;
+    --sidebar-foreground: 180 20% 92%;
+    --sidebar-border: 230 20% 8%;
+    --sidebar-accent: 230 20% 10%;
+    --sidebar-accent-foreground: 180 100% 50%;
+
+    --chart-1: 180 100% 50%;
+    --chart-2: 270 80% 60%;
+    --chart-3: 320 80% 55%;
+    --chart-4: 50 100% 50%;
+    --chart-5: 200 90% 55%;
+    --chart-6: 140 70% 45%;
+    --chart-7: 290 70% 55%;
+    --chart-8: 30 90% 55%;
+    --chart-9: 220 80% 60%;
+    --chart-10: 160 85% 40%;
+
+    --kibana-bg: 230 28% 3%;
+    --kibana-surface: 230 24% 7%;
+    --kibana-surface-hover: 230 24% 11%;
+    --kibana-border: 230 20% 12%;
+    --kibana-text: 180 18% 88%;
+    --kibana-text-secondary: 200 12% 45%;
+    --kibana-accent: 180 100% 50%;
+    --kibana-success: 140 70% 45%;
+    --kibana-warning: 50 100% 50%;
+    --kibana-danger: 0 72% 55%;
+
+    /* AI-Native specific variables */
+    --ai-glow-primary: 180 100% 50%;
+    --ai-glow-accent: 270 80% 60%;
+    --ai-gradient-start: 180 100% 50%;
+    --ai-gradient-end: 270 80% 60%;
+    --ai-border-glow: 180 100% 50% / 0.3;
+    --ai-card-bg: 230 22% 6% / 0.8;
+    --ai-blur: 20px;
+    --ai-scanline-opacity: 0.03;
+  }
+
+  /* Medical theme — 医疗平台风格: 清爽浅色背景 + 医疗蓝绿主调 + 专业可信 */
+  .medical {
+    --background: 185 30% 97%;
+    --foreground: 185 40% 15%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 185 40% 15%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 185 40% 15%;
+
+    --primary: 186 80% 40%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 185 20% 93%;
+    --secondary-foreground: 185 40% 15%;
+
+    --muted: 185 20% 93%;
+    --muted-foreground: 185 10% 45%;
+
+    --accent: 160 60% 45%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 185 20% 88%;
+    --input: 185 20% 88%;
+    --ring: 186 80% 40%;
+
+    --radius: 0.75rem;
+
+    --sidebar: 186 35% 95%;
+    --sidebar-foreground: 185 40% 15%;
+    --sidebar-border: 185 20% 90%;
+    --sidebar-accent: 186 30% 92%;
+    --sidebar-accent-foreground: 186 80% 40%;
+
+    --chart-1: 186 80% 40%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 210 70% 50%;
+    --chart-4: 340 65% 55%;
+    --chart-5: 38 85% 55%;
+    --chart-6: 280 55% 55%;
+    --chart-7: 140 50% 42%;
+    --chart-8: 200 75% 50%;
+    --chart-9: 320 60% 52%;
+    --chart-10: 260 65% 58%;
+
+    --kibana-bg: 185 25% 97%;
+    --kibana-surface: 0 0% 100%;
+    --kibana-surface-hover: 185 20% 96%;
+    --kibana-border: 185 20% 90%;
+    --kibana-text: 185 35% 18%;
+    --kibana-text-secondary: 185 10% 50%;
+    --kibana-accent: 186 80% 40%;
+    --kibana-success: 160 60% 45%;
+    --kibana-warning: 38 85% 55%;
+    --kibana-danger: 0 72% 51%;
+
+    /* Medical specific variables */
+    --medical-teal: 186 80% 40%;
+    --medical-green: 160 60% 45%;
+    --medical-blue: 210 70% 50%;
+    --medical-amber: 38 85% 55%;
+    --medical-red: 0 72% 51%;
+    --medical-bg-subtle: 185 30% 97%;
+    --medical-card-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+    --medical-card-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+    --medical-border-radius: 12px;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+  body {
+    @apply bg-background text-foreground;
+    margin: 0;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  #root {
+    height: 100vh;
+    overflow: hidden;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted));
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+
+/* Dashboard canvas styles */
+.dashboard-canvas-viewport {
+  background-color: hsl(var(--kibana-bg));
+  background-image: radial-gradient(circle, hsl(var(--foreground) / 0.12) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+.dashboard-canvas {
+  background-color: hsl(var(--kibana-bg));
+  background-image: radial-gradient(circle, hsl(var(--foreground) / 0.12) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Pan cursor — custom hand with dark+light double stroke, visible on any background */
+.edit-mode .dashboard-canvas {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cg fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 9V5a1.5 1.5 0 0 1 3 0v4m0-4a1.5 1.5 0 0 1 3 0v4m0-4a1.5 1.5 0 0 1 3 0v5' stroke='%23000' stroke-width='3' opacity='.5'/%3E%3Cpath d='M7 9V5a1.5 1.5 0 0 1 3 0v4m0-4a1.5 1.5 0 0 1 3 0v4m0-4a1.5 1.5 0 0 1 3 0v5' stroke='%23fff' stroke-width='1.5'/%3E%3Cpath d='M4 10a6 6 0 0 0 6 6h1a6 6 0 0 0 6-6' stroke='%23000' stroke-width='3' opacity='.5'/%3E%3Cpath d='M4 10a6 6 0 0 0 6 6h1a6 6 0 0 0 6-6' stroke='%23fff' stroke-width='1.5'/%3E%3C/g%3E%3C/svg%3E") 10 2, grab;
+}
+
+.edit-mode .dashboard-canvas:active {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cg fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 10V5a1.5 1.5 0 0 1 3 0v5m0-5a1.5 1.5 0 0 1 3 0v5' stroke='%23000' stroke-width='3' opacity='.5'/%3E%3Cpath d='M7 10V5a1.5 1.5 0 0 1 3 0v5m0-5a1.5 1.5 0 0 1 3 0v5' stroke='%23fff' stroke-width='1.5'/%3E%3Cpath d='M4 11a6 6 0 0 0 6 6h1a6 6 0 0 0 6-6' stroke='%23000' stroke-width='3' opacity='.5'/%3E%3Cpath d='M4 11a6 6 0 0 0 6 6h1a6 6 0 0 0 6-6' stroke='%23fff' stroke-width='1.5'/%3E%3C/g%3E%3C/svg%3E") 10 2, grabbing;
+}
+
+/* Middle-mouse pan on viewport */
+.dashboard-canvas-viewport.panning,
+.dashboard-canvas-viewport.panning .dashboard-canvas {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cg fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 10V5a1.5 1.5 0 0 1 3 0v5m0-5a1.5 1.5 0 0 1 3 0v5' stroke='%23000' stroke-width='3' opacity='.5'/%3E%3Cpath d='M7 10V5a1.5 1.5 0 0 1 3 0v5m0-5a1.5 1.5 0 0 1 3 0v5' stroke='%23fff' stroke-width='1.5'/%3E%3Cpath d='M4 11a6 6 0 0 0 6 6h1a6 6 0 0 0 6-6' stroke='%23000' stroke-width='3' opacity='.5'/%3E%3Cpath d='M4 11a6 6 0 0 0 6 6h1a6 6 0 0 0 6-6' stroke='%23fff' stroke-width='1.5'/%3E%3C/g%3E%3C/svg%3E") 10 2, grabbing !important;
+}
+
+.dashboard-chart-cell {
+  background: hsl(var(--kibana-surface));
+  border: 1px solid hsl(var(--kibana-border));
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2), 0 1px 2px rgba(0,0,0,0.1);
+  transition: box-shadow 0.2s, border-color 0.2s;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  cursor: default;
+}
+
+.dashboard-chart-cell:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  border-color: hsl(var(--kibana-accent) / 0.3);
+}
+
+/* Selected element highlight */
+.dashboard-chart-cell.selected-element {
+  box-shadow: 0 0 0 2px hsl(var(--primary)), 0 4px 12px rgba(0,0,0,0.3);
+  border-color: hsl(var(--primary));
+}
+
+.dashboard-chart-cell.selected-element:hover {
+  box-shadow: 0 0 0 2px hsl(var(--primary)), 0 4px 16px rgba(0,0,0,0.4);
+}
+
+.dashboard-chart-cell.dragging {
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  z-index: 100;
+}
+
+.dashboard-chart-header {
+  background: hsl(var(--kibana-surface));
+  border-bottom: 1px solid hsl(var(--kibana-border));
+  flex-shrink: 0;
+}
+
+/* Chart content area - fill remaining space */
+.dashboard-chart-cell > div:not(.dashboard-chart-header):not(.resize-handle) {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+/* Ensure chart container fills its parent */
+.dashboard-chart-cell canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* AntV G2 chart container */
+.dashboard-chart-cell > div:not(.dashboard-chart-header):not(.resize-handle) > div {
+  width: 100% !important;
+  height: 100% !important;
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 20px;
+  height: 20px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, rgba(255,255,255,0.2) 50%);
+  border-bottom-right-radius: 8px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.dashboard-chart-cell:hover .resize-handle {
+  opacity: 1;
+}
+
+.add-chart-canvas-btn {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: hsl(var(--primary));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(22,119,255,0.4);
+  z-index: 50;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.add-chart-canvas-btn:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 16px rgba(22,119,255,0.5);
+}
+
+/* Grid pattern for edit mode */
+.edit-mode .dashboard-canvas {
+  background-image:
+    linear-gradient(hsl(var(--foreground) / 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(var(--foreground) / 0.08) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Animation utilities */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { transform: translateY(10px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out;
+}
+
+.animate-slide-up {
+  animation: slideUp 0.2s ease-out;
+}
+
+/* Ensure charts fill their containers */
+.dashboard-chart-cell canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Animation for spin */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Chart refresh button */
+.chart-refresh-btn {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 20;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 0 0 0 4px;
+  background: hsl(var(--muted) / 0.6);
+  color: hsl(var(--muted-foreground) / 0.5);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+  padding: 0;
+}
+.chart-cell:hover .chart-refresh-btn {
+  opacity: 1;
+}
+.chart-refresh-btn:hover {
+  background: hsl(var(--primary) / 0.15);
+  color: hsl(var(--primary));
+}
+
+/* Date picker — dark theme support */
+.dark input[type="date"],
+.dark input[type="datetime-local"] {
+  color-scheme: dark;
+}
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.7;
+}
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
+/* Line clamp utilities */
+.line-clamp-1 {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Skeleton loading animation */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 25%,
+    hsl(var(--muted) / 0.5) 50%,
+    hsl(var(--muted)) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--radius);
+}
+
+/* Tech theme — subtle glow on primary-colored elements */
+.tech .dashboard-chart-cell {
+  box-shadow: 0 0 12px hsl(var(--primary) / 0.08), 0 1px 3px rgba(0,0,0,0.3);
+}
+.tech .dashboard-chart-cell:hover {
+  box-shadow: 0 0 20px hsl(var(--primary) / 0.15), 0 4px 12px rgba(0,0,0,0.4);
+  border-color: hsl(var(--primary) / 0.4);
+}
+.tech .add-chart-canvas-btn {
+  box-shadow: 0 0 20px hsl(var(--primary) / 0.4), 0 4px 12px rgba(0,0,0,0.3);
+}
+.tech button[data-state="active"],
+.tech button[aria-current="page"] {
+  box-shadow: 0 0 8px hsl(var(--primary) / 0.3);
+}
+
+/* Finance theme — clean, professional, no glow */
+.finance .dashboard-chart-cell {
+  box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+  border-color: hsl(var(--kibana-border));
+}
+.finance .dashboard-chart-cell:hover {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  border-color: hsl(var(--primary) / 0.3);
+}
+
+/* Bento Grid theme — soft rounded cards, colored accents */
+.bento .dashboard-chart-cell {
+  border-radius: 1rem;
+  border: 1px solid hsl(var(--border));
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+.bento .dashboard-chart-cell:hover {
+  box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+  border-color: hsl(var(--primary) / 0.3);
+}
+.bento .dashboard-chart-header {
+  border-radius: 1rem 1rem 0 0;
+}
+.bento .add-chart-canvas-btn {
+  border-radius: 1rem;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+}
+.bento button[data-state="active"],
+.bento button[aria-current="page"] {
+  border-radius: 0.75rem;
+}
+
+/* Glassmorphism theme — frosted glass, translucent surfaces */
+.glass {
+  --glass-bg: 230 18% 10%;
+  --glass-border: 210 30% 92% / 0.08;
+  --glass-blur: 16px;
+}
+.glass .dashboard-chart-cell {
+  background: hsl(var(--glass-bg) / 0.6);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid hsl(var(--glass-border));
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3), inset 0 1px 0 hsl(210 30% 92% / 0.05);
+}
+.glass .dashboard-chart-cell:hover {
+  background: hsl(var(--glass-bg) / 0.75);
+  border-color: hsl(var(--primary) / 0.25);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.4), inset 0 1px 0 hsl(210 30% 92% / 0.08);
+}
+.glass .dashboard-chart-header {
+  background: transparent;
+  border-bottom: 1px solid hsl(var(--glass-border));
+}
+.glass .add-chart-canvas-btn {
+  background: hsl(var(--primary) / 0.8);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 20px hsl(var(--primary) / 0.3);
+}
+.glass button[data-state="active"],
+.glass button[aria-current="page"] {
+  background: hsl(var(--primary) / 0.12);
+  border: 1px solid hsl(var(--primary) / 0.2);
+}
+.glass ::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.3);
+  border-radius: 4px;
+}
+.glass ::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.5);
+}
+
+/* ============================================
+   AI-NATIVE THEME — 深空神经网络风格
+   ============================================ */
+
+/* Animated gradient border effect */
+@keyframes ai-border-glow {
+  0%, 100% {
+    border-color: hsl(180 100% 50% / 0.3);
+    box-shadow: 0 0 15px hsl(180 100% 50% / 0.1), inset 0 0 15px hsl(180 100% 50% / 0.05);
+  }
+  50% {
+    border-color: hsl(270 80% 60% / 0.3);
+    box-shadow: 0 0 15px hsl(270 80% 60% / 0.1), inset 0 0 15px hsl(270 80% 60% / 0.05);
+  }
+}
+
+/* Pulse animation for accent elements */
+@keyframes ai-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.05);
+  }
+}
+
+/* Scan line effect */
+@keyframes ai-scanline {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100%);
+  }
+}
+
+/* Neural network node pulse */
+@keyframes ai-node-pulse {
+  0%, 100% {
+    box-shadow: 0 0 5px hsl(180 100% 50% / 0.3);
+  }
+  50% {
+    box-shadow: 0 0 20px hsl(180 100% 50% / 0.6), 0 0 40px hsl(180 100% 50% / 0.2);
+  }
+}
+
+/* Gradient rotation for borders */
+@keyframes ai-gradient-rotate {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+/* Data stream effect */
+@keyframes ai-data-stream {
+  0% {
+    background-position: 0% 0%;
+  }
+  100% {
+    background-position: 0% 100%;
+  }
+}
+
+/* AI-Native theme base styles */
+.ainative {
+  /* Deep space background with subtle pattern */
+  background-image:
+    radial-gradient(circle at 20% 50%, hsl(180 100% 50% / 0.03) 0%, transparent 50%),
+    radial-gradient(circle at 80% 20%, hsl(270 80% 60% / 0.03) 0%, transparent 50%),
+    radial-gradient(circle at 50% 80%, hsl(320 80% 55% / 0.02) 0%, transparent 50%);
+}
+
+/* Dashboard canvas with neural network pattern */
+.ainative .dashboard-canvas-viewport,
+.ainative .dashboard-canvas {
+  background-color: hsl(var(--kibana-bg));
+  background-image:
+    radial-gradient(circle, hsl(180 100% 50% / 0.08) 1px, transparent 1px),
+    radial-gradient(circle at 50% 50%, hsl(270 80% 60% / 0.05) 0%, transparent 70%);
+  background-size: 30px 30px, 100% 100%;
+}
+
+/* Card with animated gradient border and glassmorphism */
+.ainative .dashboard-chart-cell {
+  position: relative;
+  background: hsl(var(--ai-card-bg));
+  backdrop-filter: blur(var(--ai-blur));
+  -webkit-backdrop-filter: blur(var(--ai-blur));
+  border: 1px solid hsl(180 100% 50% / 0.2);
+  border-radius: 12px;
+  box-shadow:
+    0 0 20px hsl(180 100% 50% / 0.05),
+    0 8px 32px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 hsl(180 100% 50% / 0.1);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+/* Scan line overlay on cards */
+.ainative .dashboard-chart-cell::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100%;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    hsl(180 100% 50% / var(--ai-scanline-opacity)) 50%,
+    transparent 100%
+  );
+  animation: ai-scanline 4s linear infinite;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.ainative .dashboard-chart-cell:hover::before {
+  opacity: 1;
+}
+
+/* Hover effects with glow */
+.ainative .dashboard-chart-cell:hover {
+  border-color: hsl(180 100% 50% / 0.4);
+  box-shadow:
+    0 0 30px hsl(180 100% 50% / 0.15),
+    0 0 60px hsl(180 100% 50% / 0.05),
+    0 12px 40px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 hsl(180 100% 50% / 0.15);
+  transform: translateY(-2px);
+}
+
+/* Selected element with animated border */
+.ainative .dashboard-chart-cell.selected-element {
+  border-color: transparent;
+  background-clip: padding-box;
+  box-shadow:
+    0 0 0 2px hsl(180 100% 50%),
+    0 0 30px hsl(180 100% 50% / 0.3),
+    0 0 60px hsl(180 100% 50% / 0.1);
+  animation: ai-border-glow 3s ease-in-out infinite;
+}
+
+/* Chart header with gradient underline */
+.ainative .dashboard-chart-header {
+  background: transparent;
+  border-bottom: 1px solid hsl(180 100% 50% / 0.15);
+  position: relative;
+}
+
+.ainative .dashboard-chart-header::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    hsl(180 100% 50% / 0.5) 20%,
+    hsl(270 80% 60% / 0.5) 50%,
+    hsl(180 100% 50% / 0.5) 80%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: ai-gradient-rotate 3s ease infinite;
+}
+
+/* Add chart button with pulse effect */
+.ainative .add-chart-canvas-btn {
+  background: linear-gradient(135deg,
+    hsl(180 100% 50%) 0%,
+    hsl(270 80% 60%) 100%
+  );
+  box-shadow:
+    0 0 20px hsl(180 100% 50% / 0.4),
+    0 0 40px hsl(180 100% 50% / 0.2),
+    0 4px 12px rgba(0, 0, 0, 0.3);
+  animation: ai-node-pulse 2s ease-in-out infinite;
+}
+
+.ainative .add-chart-canvas-btn:hover {
+  transform: scale(1.1);
+  box-shadow:
+    0 0 30px hsl(180 100% 50% / 0.6),
+    0 0 60px hsl(180 100% 50% / 0.3),
+    0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* Active navigation items with glow */
+.ainative button[data-state="active"],
+.ainative button[aria-current="page"] {
+  background: hsl(180 100% 50% / 0.1);
+  border: 1px solid hsl(180 100% 50% / 0.3);
+  box-shadow: 0 0 15px hsl(180 100% 50% / 0.2);
+  position: relative;
+}
+
+.ainative button[data-state="active"]::before,
+.ainative button[aria-current="page"]::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 60%;
+  background: linear-gradient(to bottom, hsl(180 100% 50%), hsl(270 80% 60%));
+  border-radius: 0 2px 2px 0;
+}
+
+/* Sidebar with subtle gradient */
+.ainative .sidebar,
+.ainative [class*="sidebar"] {
+  background: linear-gradient(180deg,
+    hsl(var(--sidebar)) 0%,
+    hsl(230 30% 5%) 100%
+  );
+  border-right: 1px solid hsl(180 100% 50% / 0.1);
+}
+
+/* Scrollbar with cyan accent */
+.ainative ::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg,
+    hsl(180 100% 50% / 0.3) 0%,
+    hsl(270 80% 60% / 0.3) 100%
+  );
+  border-radius: 4px;
+}
+
+.ainative ::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg,
+    hsl(180 100% 50% / 0.5) 0%,
+    hsl(270 80% 60% / 0.5) 100%
+  );
+}
+
+/* Input fields with subtle glow on focus */
+.ainative input:focus,
+.ainative textarea:focus,
+.ainative select:focus {
+  border-color: hsl(180 100% 50% / 0.5);
+  box-shadow: 0 0 15px hsl(180 100% 50% / 0.15);
+  outline: none;
+}
+
+/* Buttons with gradient hover */
+.ainative button:not(.dashboard-chart-cell button):not(.add-chart-canvas-btn) {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.ainative button:not(.dashboard-chart-cell button):not(.add-chart-canvas-btn):hover {
+  box-shadow: 0 0 15px hsl(180 100% 50% / 0.2);
+}
+
+/* Card hover lift effect */
+.ainative [class*="card"]:hover,
+.ainative .ant-card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 20px hsl(180 100% 50% / 0.1),
+    0 12px 40px rgba(0, 0, 0, 0.3);
+}
+
+/* Data visualization accents */
+.ainative .chart-line,
+.ainative .chart-bar {
+  filter: drop-shadow(0 0 8px hsl(180 100% 50% / 0.4));
+}
+
+/* Tooltip with glassmorphism */
+.ainative .ant-tooltip-inner,
+.ainative [class*="tooltip"] {
+  background: hsl(230 25% 8% / 0.9);
+  backdrop-filter: blur(16px);
+  border: 1px solid hsl(180 100% 50% / 0.2);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+/* Modal with deep space backdrop */
+.ainative .ant-modal-content,
+.ainative [class*="modal"] {
+  background: hsl(230 25% 6% / 0.95);
+  backdrop-filter: blur(20px);
+  border: 1px solid hsl(180 100% 50% / 0.2);
+  box-shadow:
+    0 0 40px hsl(180 100% 50% / 0.1),
+    0 24px 80px rgba(0, 0, 0, 0.6);
+}
+
+/* Loading spinner with cyan accent */
+.ainative .ant-spin-dot-item {
+  background-color: hsl(180 100% 50%);
+  box-shadow: 0 0 10px hsl(180 100% 50% / 0.5);
+}
+
+/* Table with subtle row highlighting */
+.ainative .ant-table-row:hover td,
+.ainative tr:hover td {
+  background: hsl(180 100% 50% / 0.05) !important;
+}
+
+/* Tag/badge with glow */
+.ainative .ant-tag,
+.ainative [class*="badge"] {
+  border: 1px solid hsl(180 100% 50% / 0.3);
+  box-shadow: 0 0 8px hsl(180 100% 50% / 0.1);
+}
+
+/* Switch with gradient */
+.ainative .ant-switch-checked {
+  background: linear-gradient(135deg,
+    hsl(180 100% 50%) 0%,
+    hsl(270 80% 60%) 100%
+  );
+  box-shadow: 0 0 15px hsl(180 100% 50% / 0.3);
+}
+
+/* Progress bar with gradient */
+.ainative .ant-progress-bg,
+.ainative [class*="progress"] [class*="bar"] {
+  background: linear-gradient(90deg,
+    hsl(180 100% 50%) 0%,
+    hsl(270 80% 60%) 100%
+  );
+  box-shadow: 0 0 10px hsl(180 100% 50% / 0.3);
+}
+
+/* Chat message bubbles */
+.ainative [class*="message-user"] {
+  background: linear-gradient(135deg,
+    hsl(180 100% 50% / 0.15) 0%,
+    hsl(270 80% 60% / 0.15) 100%
+  );
+  border: 1px solid hsl(180 100% 50% / 0.2);
+}
+
+.ainative [class*="message-ai"],
+.ainative [class*="message-assistant"] {
+  background: hsl(230 22% 8% / 0.8);
+  border: 1px solid hsl(230 20% 15%);
+  border-left: 3px solid hsl(180 100% 50%);
+}
+
+/* Edit mode grid with cyan lines */
+.ainative.edit-mode .dashboard-canvas {
+  background-image:
+    linear-gradient(hsl(180 100% 50% / 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(180 100% 50% / 0.06) 1px, transparent 1px);
+  background-size: 30px 30px;
+}
+
+/* Resize handle with gradient */
+.ainative .resize-handle {
+  background: linear-gradient(135deg,
+    transparent 50%,
+    hsl(180 100% 50% / 0.3) 50%
+  );
+}
+
+/* Skeleton loading with cyan accent */
+.ainative .skeleton {
+  background: linear-gradient(90deg,
+    hsl(230 20% 12%) 25%,
+    hsl(180 100% 50% / 0.1) 50%,
+    hsl(230 20% 12%) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* Floating action button pulse */
+.ainative [class*="fab"],
+.ainative [class*="floating-action"] {
+  animation: ai-node-pulse 2s ease-in-out infinite;
+}
+
+/* Gradient text for headings */
+.ainative h1,
+.ainative h2,
+.ainative h3 {
+  background: linear-gradient(135deg,
+    hsl(180 100% 50%) 0%,
+    hsl(270 80% 60%) 100%
+  );
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Status indicators with glow */
+.ainative [class*="status-online"],
+.ainative [class*="status-success"] {
+  box-shadow: 0 0 8px hsl(140 70% 45% / 0.6);
+}
+
+.ainative [class*="status-warning"] {
+  box-shadow: 0 0 8px hsl(50 100% 50% / 0.6);
+}
+
+.ainative [class*="status-error"],
+.ainative [class*="status-offline"] {
+  box-shadow: 0 0 8px hsl(0 72% 55% / 0.6);
+}
+
+/* ============================================
+   MEDICAL THEME — 医疗平台风格
+   ============================================ */
+
+/* Pulse animation for vital signs */
+@keyframes medical-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+/* Heartbeat line animation */
+@keyframes medical-heartbeat {
+  0% {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+  50% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+}
+
+/* Subtle cross pattern */
+@keyframes medical-cross-fade {
+  0%, 100% {
+    opacity: 0.02;
+  }
+  50% {
+    opacity: 0.05;
+  }
+}
+
+/* Medical theme base styles */
+.medical {
+  /* Clean, professional background */
+  background-image:
+    linear-gradient(135deg, hsl(185 30% 97%) 0%, hsl(185 25% 98%) 100%);
+}
+
+/* Dashboard canvas with subtle medical cross pattern */
+.medical .dashboard-canvas-viewport,
+.medical .dashboard-canvas {
+  background-color: hsl(var(--kibana-bg));
+  background-image:
+    radial-gradient(circle, hsl(186 80% 40% / 0.04) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Card with clean, professional styling */
+.medical .dashboard-chart-cell {
+  background: hsl(0 0% 100%);
+  border: 1px solid hsl(185 20% 90%);
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: all 0.2s ease;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Subtle top accent line on cards */
+.medical .dashboard-chart-cell::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg,
+    hsl(186 80% 40%) 0%,
+    hsl(160 60% 45%) 50%,
+    hsl(186 80% 40%) 100%
+  );
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.medical .dashboard-chart-cell:hover::before {
+  opacity: 1;
+}
+
+/* Hover effects - clean lift */
+.medical .dashboard-chart-cell:hover {
+  border-color: hsl(186 80% 40% / 0.3);
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.08),
+    0 2px 4px rgba(0, 0, 0, 0.04);
+  transform: translateY(-1px);
+}
+
+/* Selected element with teal border */
+.medical .dashboard-chart-cell.selected-element {
+  border-color: hsl(186 80% 40%);
+  box-shadow:
+    0 0 0 3px hsl(186 80% 40% / 0.15),
+    0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+/* Chart header with clean underline */
+.medical .dashboard-chart-header {
+  background: hsl(185 25% 98%);
+  border-bottom: 1px solid hsl(185 20% 92%);
+  position: relative;
+}
+
+.medical .dashboard-chart-header::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 40px;
+  height: 2px;
+  background: hsl(186 80% 40%);
+  border-radius: 1px;
+}
+
+/* Add chart button - medical teal */
+.medical .add-chart-canvas-btn {
+  background: hsl(186 80% 40%);
+  box-shadow:
+    0 2px 8px hsl(186 80% 40% / 0.3),
+    0 1px 3px rgba(0, 0, 0, 0.1);
+  transition: all 0.2s ease;
+}
+
+.medical .add-chart-canvas-btn:hover {
+  background: hsl(186 80% 35%);
+  transform: scale(1.05);
+  box-shadow:
+    0 4px 12px hsl(186 80% 40% / 0.4),
+    0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+/* Active navigation items - clean teal highlight */
+.medical button[data-state="active"],
+.medical button[aria-current="page"] {
+  background: hsl(186 80% 40% / 0.08);
+  border: 1px solid hsl(186 80% 40% / 0.2);
+  position: relative;
+}
+
+.medical button[data-state="active"]::before,
+.medical button[aria-current="page"]::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 60%;
+  background: hsl(186 80% 40%);
+  border-radius: 0 2px 2px 0;
+}
+
+/* Sidebar with clean medical style */
+.medical .sidebar,
+.medical [class*="sidebar"] {
+  background: hsl(186 35% 95%);
+  border-right: 1px solid hsl(185 20% 90%);
+}
+
+/* Scrollbar with teal accent */
+.medical ::-webkit-scrollbar-thumb {
+  background: hsl(186 80% 40% / 0.2);
+  border-radius: 4px;
+}
+
+.medical ::-webkit-scrollbar-thumb:hover {
+  background: hsl(186 80% 40% / 0.35);
+}
+
+/* Input fields with clean focus */
+.medical input:focus,
+.medical textarea:focus,
+.medical select:focus {
+  border-color: hsl(186 80% 40% / 0.5);
+  box-shadow: 0 0 0 3px hsl(186 80% 40% / 0.1);
+  outline: none;
+}
+
+/* Buttons with clean hover */
+.medical button:not(.dashboard-chart-cell button):not(.add-chart-canvas-btn) {
+  transition: all 0.15s ease;
+}
+
+.medical button:not(.dashboard-chart-cell button):not(.add-chart-canvas-btn):hover {
+  background: hsl(186 80% 40% / 0.05);
+}
+
+/* Card hover effect */
+.medical [class*="card"]:hover,
+.medical .ant-card:hover {
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.08),
+    0 2px 4px rgba(0, 0, 0, 0.04);
+}
+
+/* Tooltip with clean style */
+.medical .ant-tooltip-inner,
+.medical [class*="tooltip"] {
+  background: hsl(185 35% 15%);
+  border: 1px solid hsl(185 20% 20%);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border-radius: 8px;
+}
+
+/* Modal with clean backdrop */
+.medical .ant-modal-content,
+.medical [class*="modal"] {
+  background: hsl(0 0% 100%);
+  border: 1px solid hsl(185 20% 90%);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.12),
+    0 2px 8px rgba(0, 0, 0, 0.06);
+  border-radius: 16px;
+}
+
+/* Loading spinner with teal accent */
+.medical .ant-spin-dot-item {
+  background-color: hsl(186 80% 40%);
+}
+
+/* Table with subtle row highlighting */
+.medical .ant-table-row:hover td,
+.medical tr:hover td {
+  background: hsl(186 80% 40% / 0.04) !important;
+}
+
+/* Tag/badge with medical style */
+.medical .ant-tag,
+.medical [class*="badge"] {
+  border: 1px solid hsl(186 80% 40% / 0.2);
+  background: hsl(186 80% 40% / 0.05);
+  border-radius: 6px;
+}
+
+/* Switch with teal accent */
+.medical .ant-switch-checked {
+  background: hsl(186 80% 40%);
+}
+
+/* Progress bar with teal */
+.medical .ant-progress-bg,
+.medical [class*="progress"] [class*="bar"] {
+  background: linear-gradient(90deg,
+    hsl(186 80% 40%) 0%,
+    hsl(160 60% 45%) 100%
+  );
+}
+
+/* Chat message bubbles */
+.medical [class*="message-user"] {
+  background: hsl(186 80% 40% / 0.08);
+  border: 1px solid hsl(186 80% 40% / 0.15);
+  border-radius: 12px 12px 4px 12px;
+}
+
+.medical [class*="message-ai"],
+.medical [class*="message-assistant"] {
+  background: hsl(185 25% 98%);
+  border: 1px solid hsl(185 20% 92%);
+  border-left: 3px solid hsl(186 80% 40%);
+  border-radius: 12px 12px 12px 4px;
+}
+
+/* Edit mode grid with subtle teal lines */
+.medical.edit-mode .dashboard-canvas {
+  background-image:
+    linear-gradient(hsl(186 80% 40% / 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(186 80% 40% / 0.04) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Resize handle with teal */
+.medical .resize-handle {
+  background: linear-gradient(135deg,
+    transparent 50%,
+    hsl(186 80% 40% / 0.2) 50%
+  );
+}
+
+/* Skeleton loading with teal accent */
+.medical .skeleton {
+  background: linear-gradient(90deg,
+    hsl(185 20% 93%) 25%,
+    hsl(186 80% 40% / 0.05) 50%,
+    hsl(185 20% 93%) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* Status indicators with medical colors */
+.medical [class*="status-online"],
+.medical [class*="status-success"] {
+  color: hsl(160 60% 45%);
+  box-shadow: 0 0 6px hsl(160 60% 45% / 0.3);
+}
+
+.medical [class*="status-warning"] {
+  color: hsl(38 85% 55%);
+  box-shadow: 0 0 6px hsl(38 85% 55% / 0.3);
+}
+
+.medical [class*="status-error"],
+.medical [class*="status-offline"] {
+  color: hsl(0 72% 51%);
+  box-shadow: 0 0 6px hsl(0 72% 51% / 0.3);
+}
+
+/* Medical vital sign indicators */
+.medical [class*="vital-pulse"],
+.medical [class*="heartbeat"] {
+  animation: medical-pulse 1.5s ease-in-out infinite;
+}
+
+/* Medical data cards with left accent */
+.medical [class*="data-card"],
+.medical [class*="metric-card"] {
+  border-left: 4px solid hsl(186 80% 40%);
+}
+
+/* Medical alert styling */
+.medical [class*="alert-critical"] {
+  border-left: 4px solid hsl(0 72% 51%);
+  background: hsl(0 72% 51% / 0.05);
+}
+
+.medical [class*="alert-warning"] {
+  border-left: 4px solid hsl(38 85% 55%);
+  background: hsl(38 85% 55% / 0.05);
+}
+
+.medical [class*="alert-info"] {
+  border-left: 4px solid hsl(186 80% 40%);
+  background: hsl(186 80% 40% / 0.05);
+}
+
+/* Medical table with clean rows */
+.medical table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.medical table th {
+  background: hsl(185 25% 96%);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  color: hsl(185 10% 50%);
+}
+
+.medical table td {
+  border-bottom: 1px solid hsl(185 20% 93%);
+}
+
+/* Medical form inputs */
+.medical input[type="text"],
+.medical input[type="number"],
+.medical input[type="date"],
+.medical textarea,
+.medical select {
+  border: 1px solid hsl(185 20% 88%);
+  border-radius: 8px;
+  padding: 10px 14px;
+  transition: all 0.15s ease;
+}
+
+.medical input[type="text"]:hover,
+.medical input[type="number"]:hover,
+.medical input[type="date"]:hover,
+.medical textarea:hover,
+.medical select:hover {
+  border-color: hsl(186 80% 40% / 0.3);
+}
+
+/* Medical buttons */
+.medical .btn-primary,
+.medical button[class*="primary"] {
+  background: hsl(186 80% 40%);
+  color: white;
+  border-radius: 8px;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+
+.medical .btn-primary:hover,
+.medical button[class*="primary"]:hover {
+  background: hsl(186 80% 35%);
+  box-shadow: 0 2px 8px hsl(186 80% 40% / 0.3);
+}
+
+.medical .btn-secondary,
+.medical button[class*="secondary"] {
+  background: hsl(0 0% 100%);
+  color: hsl(186 80% 40%);
+  border: 1px solid hsl(186 80% 40% / 0.3);
+  border-radius: 8px;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+
+.medical .btn-secondary:hover,
+.medical button[class*="secondary"]:hover {
+  background: hsl(186 80% 40% / 0.05);
+  border-color: hsl(186 80% 40%);
+}
+
+/* Medical card with status indicator */
+.medical [class*="status-card"] {
+  position: relative;
+  overflow: hidden;
+}
+
+.medical [class*="status-card"]::after {
+  content: '';
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: hsl(160 60% 45%);
+  box-shadow: 0 0 6px hsl(160 60% 45% / 0.4);
+}
+
+/* Medical chart legend */
+.medical [class*="chart-legend"] {
+  font-size: 0.75rem;
+  color: hsl(185 10% 50%);
+  padding: 8px 12px;
+  background: hsl(185 25% 97%);
+  border-radius: 6px;
+  border: 1px solid hsl(185 20% 92%);
+}
+
+/* Medical data grid */
+.medical [class*="data-grid"] {
+  display: grid;
+  gap: 16px;
+}
+
+.medical [class*="data-grid"] > * {
+  background: hsl(0 0% 100%);
+  border: 1px solid hsl(185 20% 90%);
+  border-radius: 12px;
+  padding: 16px;
+  transition: all 0.2s ease;
+}
+
+.medical [class*="data-grid"] > *:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+/* Medical timeline */
+.medical [class*="timeline"] {
+  position: relative;
+  padding-left: 24px;
+}
+
+.medical [class*="timeline"]::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: hsl(185 20% 90%);
+}
+
+.medical [class*="timeline-item"] {
+  position: relative;
+  padding-bottom: 16px;
+}
+
+.medical [class*="timeline-item"]::before {
+  content: '';
+  position: absolute;
+  left: -20px;
+  top: 4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: hsl(186 80% 40%);
+  border: 2px solid hsl(0 0% 100%);
+  box-shadow: 0 0 0 2px hsl(186 80% 40% / 0.2);
+}
+
+/* Medical badge variants */
+.medical [class*="badge-critical"] {
+  background: hsl(0 72% 51% / 0.1);
+  color: hsl(0 72% 51%);
+  border: 1px solid hsl(0 72% 51% / 0.2);
+}
+
+.medical [class*="badge-warning"] {
+  background: hsl(38 85% 55% / 0.1);
+  color: hsl(38 85% 45%);
+  border: 1px solid hsl(38 85% 55% / 0.2);
+}
+
+.medical [class*="badge-normal"] {
+  background: hsl(160 60% 45% / 0.1);
+  color: hsl(160 60% 35%);
+  border: 1px solid hsl(160 60% 45% / 0.2);
+}
+
+.medical [class*="badge-info"] {
+  background: hsl(186 80% 40% / 0.1);
+  color: hsl(186 80% 30%);
+  border: 1px solid hsl(186 80% 40% / 0.2);
+}
+
+/* ============================================
+   MARKDOWN TABLE STYLES (for agent reply)
+   ============================================ */
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  margin: 0.75rem 0;
+}
+
+.prose thead th {
+  background: hsl(var(--muted));
+  font-weight: 600;
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 2px solid hsl(var(--border));
+  white-space: nowrap;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: hsl(var(--muted-foreground));
+}
+
+.prose tbody td {
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid hsl(var(--border) / 0.5);
+  vertical-align: middle;
+}
+
+.prose tbody tr:hover {
+  background: hsl(var(--muted) / 0.3);
+}
+
+.prose tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Alignment: respect markdown :---: and ---: markers */
+.prose th[align="center"],
+.prose td[align="center"] {
+  text-align: center;
+}
+.prose th[align="right"],
+.prose td[align="right"] {
+  text-align: right;
+}
+
+/* Compact table inside chat messages */
+.prose-sm table {
+  font-size: 0.75rem;
+}
+
+.prose-sm thead th {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.6875rem;
+}
+
+.prose-sm tbody td {
+  padding: 0.3rem 0.6rem;
+}
+
+/* Dark mode table refinements */
+.dark .prose thead th {
+  background: hsl(var(--muted) / 0.8);
+}
+
+.dark .prose tbody td {
+  border-color: hsl(var(--border) / 0.3);
+}

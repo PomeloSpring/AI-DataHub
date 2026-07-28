@@ -1,0 +1,23 @@
+# Funnel Analysis Agent
+name: funnel
+display_name: 转化漏斗
+description: 分析关键路径转化漏斗：定义漏斗步骤、计算各步骤转化率和流失率、定位最大流失环节。支持任意数据源。
+category: analysis
+datasource_type: ""
+max_retries: 0
+max_iterations: 15
+route_patterns:
+  - "(漏斗|转化|转化率).*(分析|统计|查询)"
+  - "(流失|流失率|丢失).*(分析|统计)"
+  - "(注册|激活|付费|下单).*(转化|漏斗)"
+  - "(关键路径|用户路径|行为路径).*(分析|转化)"
+  - "(步骤|环节).*(转化|流失)"
+input_schema:
+  required:
+    - field: "question"
+      description: "用户的分析问题"
+      format: "自然语言问题"
+  optional:
+    - field: "steps"
+      description: "漏斗步骤定义"
+      format: "如：访问→注册→激活→付费"

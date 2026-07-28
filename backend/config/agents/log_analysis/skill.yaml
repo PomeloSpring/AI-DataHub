@@ -1,0 +1,33 @@
+# Observability Analysis Agent
+name: log_analysis
+display_name: 日志分析
+description: 可观测性分析：通过 MCP 服务查询和分析 Elasticsearch 中的日志（Logs）、指标（Metrics）、链路追踪（Traces），支持错误排查、趋势分析、链路瓶颈定位。
+datasource_type: ""  # 不绑定数据源，通过 MCP 服务访问 ES
+max_retries: 0
+max_iterations: 20
+route_patterns:
+  - "(日志|log|LOG).*(分析|查询|搜索|排查|错误|异常|告警)"
+  - "(分析|查询|搜索|排查).*(日志|log|LOG)"
+  - "Index:\\s*\\S+.*_id:\\s*\\S+"
+  - "系统日志|应用日志|错误日志|访问日志"
+  - "(指标|metric|监控).*(分析|查询|趋势|异常)"
+  - "(链路|trace|追踪|调用链).*(分析|查询|排查|慢)"
+input_schema:
+  required:
+    - field: "Index"
+      description: "Elasticsearch 索引名称"
+      format: "Index: <索引名>"
+      example: "Index: sys-log-2026.06.26"
+  optional:
+    - field: "traceId"
+      description: "追踪 ID，用于关联同一请求的所有日志"
+      format: "traceId: <值>"
+    - field: "_id"
+      description: "文档 ID，用于精确查询"
+      format: "_id: <值>"
+    - field: "Application"
+      description: "应用名称"
+      format: "Application: <值>"
+    - field: "level"
+      description: "日志级别"
+      format: "level: ERROR|WARN|INFO"

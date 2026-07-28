@@ -1,0 +1,14 @@
+# Prediction Skill — 数据预测
+
+name: prediction
+description: 基于历史数据进行趋势预测
+version: 1.0.0
+
+inputs:
+  - question: 用户问题
+  - data: 历史数据（JSON）
+  - fields: 字段信息
+
+outputs:
+  - predicted_data: 预测数据（JSON 数组）
+  - prediction_note: 预测说明

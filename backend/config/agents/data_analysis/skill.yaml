@@ -1,0 +1,51 @@
+# Data Analysis Agent
+name: data_analysis_agent
+display_name: 数据分析
+description: 检索数据库元数据、生成 SQL、执行查询、分析结果。适用于查询数据、统计分析、生成报表。内置趋势分析、异常检测、留存分析、漏斗分析、流量分析、用户画像等专业分析能力。
+datasource_type: mysql,doris
+max_retries: 2
+route_patterns:
+  # General
+  - "查询|统计|分析|报表|多少|几个|排名|对比"
+  - "SELECT|select"
+  - "数据|用户|订单|设备|病例|医院"
+  # Trend (from trend agent)
+  - "(趋势|走势|变化).*(分析|统计|查询)"
+  - "(增长|增长趋势|增长速率|增长率)"
+  - "(下降|下降趋势|衰退)"
+  - "(同比|环比).*(分析|对比|变化)"
+  - "(移动平均|均线|MA)"
+  - "(周期|季节性|规律).*(分析|发现)"
+  - "(预测|预估|展望)"
+  # Anomaly (from anomaly agent)
+  - "(异常|突变|暴涨|暴跌|飙升|骤降)"
+  - "(监控|告警|预警).*(数据|指标)"
+  # Retention (from retention agent)
+  - "(留存|留存率|次日留存|7日留存|30日留存)"
+  - "(用户生命周期|流失|流失预警|回访)"
+  - "(cohort|LTV|生命周期价值)"
+  # Funnel (from funnel agent)
+  - "(漏斗|转化|转化率|流失率|转化漏斗)"
+  - "(注册|激活|付费|下单).*(转化|漏斗)"
+  # Traffic (from traffic agent)
+  - "(UV|PV|访问量|浏览量|页面访问)"
+  - "(流量|访问|页面).*(统计|分析|排行)"
+  - "(跳出率|bounce)"
+  - "(时段|小时).*(分布|趋势)"
+  # User Profiling (from user_profiling agent)
+  - "(用户画像|用户特征|用户分群|用户分层)"
+  - "(地域|地区|省份|城市).*(分布|统计)"
+  - "(设备|终端|操作系统|浏览器).*(分布|统计)"
+  - "(新老用户|新用户|老用户|活跃度|RFM)"
+input_schema:
+  required:
+    - field: "question"
+      description: "用户的自然语言问题"
+      format: "直接描述查询需求"
+  optional:
+    - field: "table"
+      description: "目标表名（如已知）"
+      format: "表名: <表名>"
+    - field: "filter"
+      description: "筛选条件"
+      format: "筛选: <条件>"

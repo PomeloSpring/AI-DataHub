@@ -1,0 +1,8 @@
+# Report Generation Agent
+name: report
+display_name: 报告生成
+description: 根据任务执行结果和报告样式模板，生成完整的数据分析报告。不是简单替换占位符，而是基于数据给出分析洞察、异常发现和趋势判断。
+datasource_type: ""
+max_retries: 0
+max_iterations: 3
+route_patterns: []
