@@ -16,9 +16,9 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.common.config import VECTOR_DB_TYPE
-from backend.common.llm.embedding import generate_embedding, embedding_to_sql_literal
-from backend.common.db.metadata_db import get_metadata_connection
+from services.shared.common.config import VECTOR_DB_TYPE
+from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
+from services.shared.common.db.metadata_db import get_metadata_connection
 
 BATCH_SIZE = 50
 
@@ -236,7 +236,7 @@ def rebuild_all():
     print("=" * 60)
 
     # Pre-load model
-    from backend.common.llm.embedding import _get_model
+    from services.shared.common.llm.embedding import _get_model
     model = _get_model()
     if model is None:
         print("WARNING: Model failed to load, will use hash fallback.")

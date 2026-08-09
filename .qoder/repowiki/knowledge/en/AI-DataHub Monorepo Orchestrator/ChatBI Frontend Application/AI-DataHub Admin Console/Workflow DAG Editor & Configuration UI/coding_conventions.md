@@ -1,0 +1,6 @@
+- Node type metadata is declared once in `types.ts` (`NODE_TYPE_DEFINITIONS`, `STEP_TYPE_OPTIONS`) and consumed by both `NodePalette` and `NodeConfigPanel` rather than duplicated per file.
+- All mutable editor state lives in the Zustand store; components only dispatch actions like `addNode`, `updateNodeData`, `onNodesChange` instead of holding local node lists.
+- Each custom node lives in its own file under `nodes/` and is re-exported through `nodes/index.ts`, then registered in `DAGCanvas.tsx`'s `nodeTypes` map keyed by `NodeType`.
+- Backend persistence uses a two-phase pattern: build a `steps[]` array from nodes preserving visual order as `step_order`, and a `edges[]` array mapping React Flow source/target to DB `source_step_id`/`target_step_id`, then `PUT /admin/workflows/:id`.
+- User-facing feedback is emitted via `sonner` toast notifications after successful save/create/delete operations, while errors are logged to `console.error` inside store async methods.
+- Dirty tracking is driven by setting `isDirty: true` on every node/edge mutation (drag, connect, delete, update) and cleared to `false` after a successful save or load.

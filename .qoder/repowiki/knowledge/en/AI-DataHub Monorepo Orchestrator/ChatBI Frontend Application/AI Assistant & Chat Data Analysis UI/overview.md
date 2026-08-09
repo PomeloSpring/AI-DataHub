@@ -1,0 +1,1 @@
+Provides a full-featured chat page for data analysis (SQL generation, execution, visualization) and a floating AI assistant panel with knowledge-base management.

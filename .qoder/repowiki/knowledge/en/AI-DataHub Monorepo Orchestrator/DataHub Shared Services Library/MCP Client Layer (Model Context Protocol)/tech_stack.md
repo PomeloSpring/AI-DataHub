@@ -1,0 +1,1 @@
+Python asyncio client over the `mcp` SDK (SSE, Streamable HTTP, stdio transports); MySQL metadata store accessed via `pymysql` through `services.shared.common.db.get_metadata_conn`.

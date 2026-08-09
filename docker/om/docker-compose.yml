@@ -1,0 +1,240 @@
+# ═══════════════════════════════════════════════════════════════
+# AI-DataHub — OpenMetadata 元数据平台编排
+# 基于官方 quickstart compose (1.6.3) 适配：
+#   - OM 专用 MySQL(3307)/ES(9201)/Airflow(18080) 端口外移，避免与业务组件冲突
+#   - ingestion/server 容器注入 host.docker.internal，便于采集宿主机数据源
+#   - 所有可覆盖项通过 ${VAR:-default} 暴露，由 start.sh 从 services/.env 注入
+# 启动: ./start.sh   停止: ./stop.sh
+# ═══════════════════════════════════════════════════════════════
+version: "3.9"
+
+volumes:
+  om-db-data:
+  om-es-data:
+  ingestion-volume-dag-airflow:
+  ingestion-volume-dags:
+  ingestion-volume-tmp:
+
+services:
+  mysql:
+    container_name: openmetadata_mysql
+    image: docker.getcollate.io/openmetadata/db:1.6.3
+    command: "--sort_buffer_size=10M"
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${OM_MYSQL_ROOT_PASSWORD:-password}
+    expose:
+      - 3306
+    ports:
+      - "${OM_MYSQL_PORT:-3307}:3306"
+    volumes:
+      - om-db-data:/var/lib/mysql
+    networks:
+      - om_net
+    healthcheck:
+      test: mysql --user=root --password=$$MYSQL_ROOT_PASSWORD --silent --execute "use openmetadata_db"
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  elasticsearch:
+    container_name: openmetadata_elasticsearch
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.4
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms1024m -Xmx1024m
+      - xpack.security.enabled=false
+    networks:
+      - om_net
+    ports:
+      - "${OM_ES_PORT:-9201}:9200"
+    healthcheck:
+      test: "curl -s http://localhost:9200/_cluster/health?pretty | grep status | grep -qE 'green|yellow' || exit 1"
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    volumes:
+      - om-es-data:/usr/share/elasticsearch/data
+
+  execute-migrate-all:
+    container_name: execute_migrate_all
+    image: docker.getcollate.io/openmetadata/server:1.6.3
+    command: "./bootstrap/openmetadata-ops.sh migrate"
+    environment: &om-common-env
+      OPENMETADATA_CLUSTER_NAME: ${OPENMETADATA_CLUSTER_NAME:-openmetadata}
+      SERVER_PORT: 8585
+      SERVER_ADMIN_PORT: 8586
+      LOG_LEVEL: INFO
+      MIGRATION_LIMIT_PARAM: 1200
+
+      # 认证（basic：admin/admin 登录 UI）
+      AUTHORIZER_CLASS_NAME: org.openmetadata.service.security.DefaultAuthorizer
+      AUTHORIZER_REQUEST_FILTER: org.openmetadata.service.security.JwtFilter
+      AUTHORIZER_ADMIN_PRINCIPALS: "[admin]"
+      AUTHORIZER_ALLOWED_REGISTRATION_DOMAIN: '["all"]'
+      AUTHORIZER_INGESTION_PRINCIPALS: "[ingestion-bot]"
+      AUTHORIZER_PRINCIPAL_DOMAIN: "open-metadata.org"
+      AUTHORIZER_ENFORCE_PRINCIPAL_DOMAIN: "false"
+      AUTHORIZER_ENABLE_SECURE_SOCKET: "false"
+      AUTHENTICATION_PROVIDER: basic
+      AUTHENTICATION_RESPONSE_TYPE: id_token
+      AUTHENTICATION_PUBLIC_KEYS: '[http://localhost:8585/api/v1/system/config/jwks, http://openmetadata-server:8585/api/v1/system/config/jwks]'
+      AUTHENTICATION_AUTHORITY: https://accounts.google.com
+      AUTHENTICATION_CLIENT_ID: ""
+      AUTHENTICATION_CALLBACK_URL: ""
+      AUTHENTICATION_JWT_PRINCIPAL_CLAIMS: "[email,preferred_username,sub]"
+      AUTHENTICATION_ENABLE_SELF_SIGNUP: "true"
+      AUTHENTICATION_CLIENT_TYPE: "public"
+
+      # JWT 配置
+      RSA_PUBLIC_KEY_FILE_PATH: "./conf/public_key.der"
+      RSA_PRIVATE_KEY_FILE_PATH: "./conf/private_key.der"
+      JWT_ISSUER: "open-metadata.org"
+      JWT_KEY_ID: "Gb389a-9f76-gdjs-a92j-0242bk94356"
+
+      # Pipeline 客户端 → 内置 Airflow
+      PIPELINE_SERVICE_CLIENT_ENDPOINT: http://ingestion:8080
+      PIPELINE_SERVICE_CLIENT_HEALTH_CHECK_INTERVAL: 300
+      SERVER_HOST_API_URL: http://openmetadata-server:8585/api
+      PIPELINE_SERVICE_CLIENT_VERIFY_SSL: "no-ssl"
+      PIPELINE_SERVICE_CLIENT_ENABLED: "true"
+      PIPELINE_SERVICE_CLIENT_CLASS_NAME: "org.openmetadata.service.clients.pipeline.airflow.AirflowRESTClient"
+      PIPELINE_SERVICE_IP_INFO_ENABLED: "false"
+      PIPELINE_SERVICE_CLIENT_HOST_IP: ""
+      PIPELINE_SERVICE_CLIENT_SECRETS_MANAGER_LOADER: "noop"
+      AIRFLOW_USERNAME: ${OM_AIRFLOW_USERNAME:-admin}
+      AIRFLOW_PASSWORD: ${OM_AIRFLOW_PASSWORD:-admin}
+      AIRFLOW_TIMEOUT: 120
+      AIRFLOW_TRUST_STORE_PATH: ""
+      AIRFLOW_TRUST_STORE_PASSWORD: ""
+      FERNET_KEY: ${OM_FERNET_KEY:-jJ/9sz0g0OHxsfxOoSfdFdmk3ysNmPRnH3TUAbz3IHA=}
+
+      # OM 元数据库
+      DB_DRIVER_CLASS: com.mysql.cj.jdbc.Driver
+      DB_SCHEME: mysql
+      DB_PARAMS: "allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=Asia/Shanghai"
+      DB_USER: ${OM_DB_USER:-openmetadata_user}
+      DB_USER_PASSWORD: ${OM_DB_PASSWORD:-openmetadata_password}
+      DB_HOST: mysql
+      DB_PORT: 3306
+      OM_DATABASE: ${OM_DATABASE:-openmetadata_db}
+
+      # 搜索引擎
+      SEARCH_TYPE: "elasticsearch"
+      ELASTICSEARCH_HOST: elasticsearch
+      ELASTICSEARCH_PORT: 9200
+      ELASTICSEARCH_SCHEME: http
+      ELASTICSEARCH_USER: ""
+      ELASTICSEARCH_PASSWORD: ""
+      ELASTICSEARCH_TRUST_STORE_PATH: ""
+      ELASTICSEARCH_TRUST_STORE_PASSWORD: ""
+      ELASTICSEARCH_CONNECTION_TIMEOUT_SECS: 5
+      ELASTICSEARCH_SOCKET_TIMEOUT_SECS: 60
+      ELASTICSEARCH_BATCH_SIZE: 100
+      ELASTICSEARCH_PAYLOAD_BYTES_SIZE: 10485760
+      ELASTICSEARCH_INDEX_MAPPING_LANG: EN
+
+      # 监控与密钥管理
+      EVENT_MONITOR: prometheus
+      EVENT_MONITOR_BATCH_SIZE: 10
+      EVENT_MONITOR_PATH_PATTERN: '["/api/v1/tables/*", "/api/v1/health-check"]'
+      EVENT_MONITOR_LATENCY: "[]"
+      SECRET_MANAGER: db
+      OM_SM_REGION: ""
+      OM_SM_ACCESS_KEY_ID: ""
+      OM_SM_ACCESS_KEY: ""
+
+      # JVM 与 Web
+      OPENMETADATA_HEAP_OPTS: ${OPENMETADATA_HEAP_OPTS:--Xmx2G -Xms1G}
+      MASK_PASSWORDS_API: "false"
+      WEB_CONF_URI_PATH: "/api"
+      WEB_CONF_HSTS_ENABLED: "false"
+      # 允许被 AI-DataHub 门户 iframe 嵌入（同域反代场景）
+      WEB_CONF_FRAME_OPTION_ENABLED: ${OM_FRAME_OPTION_ENABLED:-false}
+      WEB_CONF_FRAME_OPTION: "SAMEORIGIN"
+      WEB_CONF_FRAME_ORIGIN: ${OM_FRAME_ORIGIN:-""}
+      WEB_CONF_CONTENT_TYPE_OPTIONS_ENABLED: "false"
+      WEB_CONF_XSS_PROTECTION_ENABLED: "false"
+      WEB_CONF_XSS_CSP_ENABLED: "false"
+      WEB_CONF_REFERRER_POLICY_ENABLED: "false"
+      WEB_CONF_PERMISSION_POLICY_ENABLED: "false"
+      WEB_CONF_CACHE_CONTROL: ""
+      WEB_CONF_PRAGMA: ""
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    networks:
+      - om_net
+
+  openmetadata-server:
+    container_name: openmetadata_server
+    restart: always
+    image: docker.getcollate.io/openmetadata/server:1.6.3
+    environment: *om-common-env
+    extra_hosts:
+      # 容器内访问宿主机数据源（如本地 Doris/MySQL）使用 host.docker.internal
+      - "host.docker.internal:host-gateway"
+    expose:
+      - 8585
+      - 8586
+    ports:
+      - "${OM_SERVER_PORT:-8585}:8585"
+      - "${OM_ADMIN_PORT:-8586}:8586"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      execute-migrate-all:
+        condition: service_completed_successfully
+    networks:
+      - om_net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8586/healthcheck"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  ingestion:
+    container_name: openmetadata_ingestion
+    image: docker.getcollate.io/openmetadata/ingestion:1.6.3
+    depends_on:
+      elasticsearch:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+      openmetadata-server:
+        condition: service_started
+    environment:
+      AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__OPENMETADATA_AIRFLOW_APIS__DAG_GENERATED_CONFIGS: "/opt/airflow/dag_generated_configs"
+      DB_HOST: mysql
+      DB_PORT: 3306
+      AIRFLOW_DB: ${OM_AIRFLOW_DB:-airflow_db}
+      DB_SCHEME: mysql+pymysql
+      DB_USER: ${OM_AIRFLOW_DB_USER:-airflow_user}
+      DB_PASSWORD: ${OM_AIRFLOW_DB_PASSWORD:-airflow_pass}
+      DB_PROPERTIES: ""
+    extra_hosts:
+      # 采集器连接宿主机数据源时使用 host.docker.internal
+      - "host.docker.internal:host-gateway"
+    entrypoint: /bin/bash
+    command:
+      - "/opt/airflow/ingestion_dependency.sh"
+    expose:
+      - 8080
+    ports:
+      - "${OM_AIRFLOW_PORT:-18080}:8080"
+    networks:
+      - om_net
+    volumes:
+      - ingestion-volume-dag-airflow:/opt/airflow/dag_generated_configs
+      - ingestion-volume-dags:/opt/airflow/dags
+      - ingestion-volume-tmp:/tmp
+
+networks:
+  om_net:
+    driver: bridge

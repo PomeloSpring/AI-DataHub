@@ -1,0 +1,6 @@
+- Each script adds the project root to `sys.path` so it can import `backend.common.*` helpers without being installed as a package.
+- Incremental syncs follow a diff pattern: load existing rows into a dict keyed by natural key, build sets of fresh keys, then compute `to_insert` / `to_update` / `to_delete` lists before batched `DELETE` + `INSERT` upserts.
+- Embedding text is assembled from a small set of human-readable fields (table/column name, comment, keywords, tags) via dedicated `_table_embed_text` / `_col_embed_text` helpers and converted to SQL literals through `embedding_to_sql_literal`.
+- New row IDs are generated deterministically from `int(time.time() * 1_000_000) + offset` rather than relying on auto-increment, enabling safe re-runs across inserts.
+- Datasource credentials are read from `adh_datasources` and decrypted on-demand via `backend.common.crypto.is_encrypted` / `decrypt_password` before use.
+- All data mutations wrap operations in try/except with explicit `conn.rollback()` on failure and `finally` blocks that close connections.

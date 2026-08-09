@@ -1,0 +1,6 @@
+- Each page defines a constant map (e.g. `ACTION_MAP`, `LEVEL_MAP`) keyed by enum-like string values to render localized labels and color-coded badges consistently in tables.
+- Data loading is wrapped in a `useCallback` function named `loadXxx`, invoked by an initial `useEffect` and on filter/pagination changes, with a `loading` flag and error handling via `toast.error`.
+- Tables follow a uniform shape: header row with `bg-muted/50`, body rows with `border-t hover:bg-muted/30`, and a full-width empty/loading cell spanning all columns when data is absent or being fetched.
+- CRUD operations use a single dialog driven by `formOpen` + `editXxx` state, reusing one form object reset to an `EMPTY_FORM` constant for both create and edit flows.
+- Destructive actions (delete) are gated behind a second confirmation dialog bound to a `deleteTarget` state variable rather than inline `confirm()`.
+- Pagination is implemented client-side with `page`/`size=20` and a footer showing `第 {page} 页 / 共 {Math.ceil(total / 20)} 页`, disabling prev/next based on `page <= 1` and `page * 20 >= total`.

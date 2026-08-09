@@ -133,7 +133,7 @@ export default function ModelLab() {
   const loadDatasources = async () => {
     try {
       const { data } = await client.get('/datasources');
-      setDatasources(data);
+      setDatasources(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error('Failed to load datasources:', e);
     }

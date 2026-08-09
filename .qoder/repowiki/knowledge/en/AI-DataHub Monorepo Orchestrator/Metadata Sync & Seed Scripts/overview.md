@@ -1,0 +1,1 @@
+Operational scripts that sync table/column metadata and vector embeddings from MySQL/Doris/Elasticsearch into the adh Doris catalog, plus seed and migration utilities.

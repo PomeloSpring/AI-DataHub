@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: frontend/app_shell
+title: Frontend Application Shell & Routing
+scope:
+    - frontend/src/
+    - frontend/public/
+    - frontend/vite.config.ts
+source_files: []
+depends_on: []
+related_to:
+    - path: authservice

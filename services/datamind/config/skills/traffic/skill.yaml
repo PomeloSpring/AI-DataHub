@@ -1,0 +1,27 @@
+# Traffic Analysis Agent
+name: traffic
+display_name: 流量分析
+description: 分析流量数据：UV/PV统计、页面访问排行、时段分布、跳出率分析。支持任意数据源（ES、MySQL、Doris），根据绑定的数据源自动生成查询。
+category: analysis
+datasource_type: ""
+max_retries: 0
+max_iterations: 15
+route_patterns:
+  - "(UV|PV|uv|pv).*(统计|分析|查询)"
+  - "(流量|访问量|浏览量|页面访问).*(分析|统计|查询|趋势)"
+  - "(页面|接口).*(访问|请求).*(量|统计|排行)"
+  - "(跳出率|bounce).*(分析|统计)"
+  - "(时段|时间段|小时).*(分布|统计)"
+  - "(独立访客|访问次数|浏览次数)"
+input_schema:
+  required:
+    - field: "question"
+      description: "用户的分析问题"
+      format: "自然语言问题"
+  optional:
+    - field: "time_range"
+      description: "时间范围"
+      format: "如：近一天、近一周、2026-01-01~2026-01-31"
+    - field: "page"
+      description: "页面或接口路径"
+      format: "如：/api/users"

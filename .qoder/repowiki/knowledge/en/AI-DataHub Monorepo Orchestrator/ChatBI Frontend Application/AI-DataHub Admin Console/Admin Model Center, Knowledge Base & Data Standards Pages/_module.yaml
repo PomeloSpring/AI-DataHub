@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: frontend/admin/model_knowledge_standards
+title: Admin Model Center, Knowledge Base & Data Standards Pages
+scope:
+    - frontend/src/pages/admin/ModelCenter.tsx
+    - frontend/src/pages/admin/KnowledgeBase.tsx
+    - frontend/src/pages/admin/Standards.tsx
+source_files: []
+depends_on: []
+related_to:
+    - path: aiplatform_service

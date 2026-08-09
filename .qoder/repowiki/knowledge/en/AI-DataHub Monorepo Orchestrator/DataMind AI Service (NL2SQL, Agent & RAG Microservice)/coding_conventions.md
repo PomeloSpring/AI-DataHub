@@ -1,0 +1,5 @@
+- Each capability area (agents, nl2sql, rag, services, api) is organized as a Python package with its own `__init__.py` exposing a clean public surface.
+- Agent behavior is externalized as paired `skill.yaml` + `system.md` files under `config/agents/<name>/`, loaded dynamically rather than hard-coded.
+- Reusable policy rules (date handling, limits, null handling, SQL safety) live as Markdown files under `config/rules/` and are read by both NL2SQL validators and agent prompts.
+- RAG retrieval strategies implement a common base class under `rag/strategies/base.py` and are selected by name from a registry.
+- HTTP endpoints delegate business logic to `services/` modules, keeping `api/` thin route handlers.

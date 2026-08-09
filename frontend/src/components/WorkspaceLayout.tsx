@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation, useParams } from 'react-router-dom';
 import {
-  MessageSquare, LayoutDashboard, History, Settings, LogOut, Menu, Sun, Moon,
+  MessageSquare, History, Settings, LogOut, Menu, Sun, Moon,
   ChevronLeft, ChevronRight, X, ChevronDown, Palette, Zap, TrendingUp, Grid3x3,
   GlassWater, Folder, UserCircle, Brain, Heart, Check, ArrowRight,
+  Clock, Gem,
 } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -24,6 +25,7 @@ import client from '../api/client';
 const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] = [
   { id: 'dark', label: '暗色', icon: Moon, desc: '深色背景，适合长时间使用' },
   { id: 'light', label: '亮色', icon: Sun, desc: '浅色背景，清晰明亮' },
+  { id: 'datafoundry', label: 'DataFoundry', icon: Gem, desc: '克制优雅，近黑主色 + 宝石色调' },
   { id: 'tech', label: '科技风', icon: Zap, desc: '深蓝底色，霓虹高亮' },
   { id: 'finance', label: '金融风', icon: TrendingUp, desc: '深色海军蓝，金色主调' },
   { id: 'bento', label: 'Bento Grid', icon: Grid3x3, desc: '柔和圆角卡片，彩色区块布局' },
@@ -163,7 +165,7 @@ function MenuTreeNode({
         <TooltipTrigger asChild>
           <button
             onClick={() => onNavigate(path)}
-            className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-xs transition-colors
+            className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors
               ${isActive
                 ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
                 : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/30 hover:text-sidebar-foreground'
@@ -256,10 +258,13 @@ export default function WorkspaceLayout() {
   }, [location.pathname, workspaceId]);
 
   const menuItems = [
-    { key: `/ws/${workspaceId}/chat`, icon: MessageSquare, label: 'Chat 数据分析' },
-    { key: `/ws/${workspaceId}/page`, icon: LayoutDashboard, label: '页面设计' },
+    { section: '数据分析' },
+    { key: `/ws/${workspaceId}/chat`, icon: MessageSquare, label: 'Chat 智能问答' },
+    { key: `/ws/${workspaceId}/reports`, icon: Folder, label: '报表中心' },
+    { section: '自动化' },
+    { key: `/ws/${workspaceId}/scheduled`, icon: Clock, label: '任务调度' },
+    { section: '' },
     { key: `/ws/${workspaceId}/history`, icon: History, label: '查询历史' },
-    { key: `/ws/${workspaceId}/settings`, icon: Settings, label: '工作空间设置' },
   ];
 
   const currentPath = location.pathname;
@@ -280,7 +285,7 @@ export default function WorkspaceLayout() {
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Desktop Sidebar */}
-      <div className={`hidden lg:flex flex-col bg-sidebar border-r border-sidebar-border transition-all duration-200 ${collapsed ? 'w-[64px]' : 'w-[220px]'}`}>
+      <div className={`hidden lg:flex flex-col min-h-0 bg-sidebar border-r border-sidebar-border transition-all duration-200 ${collapsed ? 'w-[64px]' : 'w-[220px]'}`}>
         {/* Logo */}
         <div className="h-12 flex items-center justify-center border-b border-sidebar-border gap-1.5">
           {brand.show_icon && brand.logo_url ? (
@@ -296,8 +301,9 @@ export default function WorkspaceLayout() {
         {/* Workspace Selector */}
         <WorkspaceSelectorSidebar collapsed={collapsed} />
 
-        {/* Menu */}
-        <ScrollArea className="flex-1 py-2">
+        {/* Menu — min-h-0 allows flex child to shrink below content size, enabling scroll */}
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <ScrollArea className="h-full py-2">
           <nav className="space-y-1 px-2" role="navigation" aria-label="工作空间导航">
             {/* Dynamic menu tree */}
             {menuTree.length > 0 && (
@@ -320,18 +326,27 @@ export default function WorkspaceLayout() {
             )}
 
             {/* Static menu items */}
-            {menuItems.map(item => {
-              const Icon = item.icon;
+            {menuItems.map((item, idx) => {
+              if ('section' in item) {
+                if (!item.section) return <div key={idx} className="my-2 mx-2 border-t border-sidebar-border" />;
+                if (collapsed) return <div key={idx} className="my-2 mx-2 border-t border-sidebar-border" />;
+                return (
+                  <div key={idx} className="px-3 pt-5 pb-1.5">
+                    <span className="text-sm font-medium uppercase tracking-[0.08em] text-sidebar-foreground/50">{item.section}</span>
+                  </div>
+                );
+              }
+              const Icon = item.icon!;
               const isActive = currentPath === item.key || currentPath.startsWith(item.key + '/');
               return (
                 <Tooltip key={item.key} delayDuration={0}>
                   <TooltipTrigger asChild>
                     <button
-                      onClick={() => handleNavigate(item.key)}
-                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors
+                      onClick={() => handleNavigate(item.key!)}
+                      className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-200
                         ${isActive
-                          ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
-                          : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
+                          ? 'bg-primary text-primary-foreground font-medium'
+                          : 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground'
                         } ${collapsed ? 'justify-center' : ''}`}
                     >
                       <Icon className="h-4 w-4 flex-shrink-0" />
@@ -344,16 +359,36 @@ export default function WorkspaceLayout() {
             })}
           </nav>
         </ScrollArea>
+        </div>
 
-        {/* System Config Entry + Collapse */}
+        {/* Bottom Navigation */}
         <div className="p-2 border-t border-sidebar-border space-y-1">
+          <Tooltip delayDuration={0}>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => navigate('/data')}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-200
+                  text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground
+                  ${collapsed ? 'justify-center' : ''}`}
+              >
+                <LucideIcons.Database className="h-4 w-4 flex-shrink-0" />
+                {!collapsed && (
+                  <>
+                    <span className="flex-1 text-left">数据中台</span>
+                    <ArrowRight className="h-3.5 w-3.5 flex-shrink-0 opacity-50" />
+                  </>
+                )}
+              </button>
+            </TooltipTrigger>
+            {collapsed && <TooltipContent side="right">数据中台</TooltipContent>}
+          </Tooltip>
           {user?.role === 'admin' && (
             <Tooltip delayDuration={0}>
               <TooltipTrigger asChild>
                 <button
                   onClick={() => navigate('/system')}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors
-                    text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-200
+                    text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground
                     ${collapsed ? 'justify-center' : ''}`}
                 >
                   <LucideIcons.Settings className="h-4 w-4 flex-shrink-0" />
@@ -383,22 +418,31 @@ export default function WorkspaceLayout() {
       {mobileMenuOpen && (
         <div className="fixed inset-0 z-50 lg:hidden">
           <div className="absolute inset-0 bg-black/50" onClick={() => setMobileMenuOpen(false)} />
-          <div className="relative w-[280px] h-full bg-sidebar border-r border-sidebar-border flex flex-col">
+          <div className="relative w-[280px] h-full bg-sidebar border-r border-sidebar-border flex flex-col min-h-0">
             <div className="h-12 flex items-center justify-between px-4 border-b border-sidebar-border">
               <span className="font-bold text-lg text-sidebar-foreground">{brand.app_name || 'AI-DataHub'}</span>
               <Button variant="ghost" size="sm" className="h-9 w-9 p-0" onClick={() => setMobileMenuOpen(false)}>
                 <X className="h-5 w-5" />
               </Button>
             </div>
-            <ScrollArea className="flex-1 py-3">
+            <div className="flex-1 min-h-0 overflow-hidden">
+            <ScrollArea className="h-full py-3">
               <nav className="space-y-1 px-3">
-                {menuItems.map(item => {
-                  const Icon = item.icon;
+                {menuItems.map((item, idx) => {
+                  if ('section' in item) {
+                    if (!item.section) return <div key={idx} className="my-2 border-t border-sidebar-border" />;
+                    return (
+                      <div key={idx} className="px-4 pt-5 pb-1.5">
+                        <span className="text-sm font-semibold text-sidebar-foreground/60">{item.section}</span>
+                      </div>
+                    );
+                  }
+                  const Icon = item.icon!;
                   const isActive = currentPath === item.key;
                   return (
                     <button
                       key={item.key}
-                      onClick={() => handleNavigate(item.key)}
+                      onClick={() => handleNavigate(item.key!)}
                       className={`w-full flex items-center gap-3 px-4 py-3 rounded-md text-sm min-h-[44px]
                         ${isActive
                           ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
@@ -422,6 +466,7 @@ export default function WorkspaceLayout() {
                 )}
               </nav>
             </ScrollArea>
+            </div>
             {/* User info */}
             <div className="p-4 border-t border-sidebar-border">
               <div className="flex items-center gap-3">
@@ -443,7 +488,7 @@ export default function WorkspaceLayout() {
 
       {/* Main area */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-12 flex items-center justify-between px-4 border-b bg-background flex-shrink-0">
+        <header className="h-12 flex items-center justify-between px-4 border-b border-border bg-card flex-shrink-0">
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" className="lg:hidden h-9 w-9 p-0" onClick={() => setMobileMenuOpen(true)}>
               <Menu className="h-5 w-5" />

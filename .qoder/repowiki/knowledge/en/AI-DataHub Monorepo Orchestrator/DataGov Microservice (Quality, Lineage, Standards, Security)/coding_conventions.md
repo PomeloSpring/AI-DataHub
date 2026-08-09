@@ -1,0 +1,6 @@
+- Each domain lives in its own `api/<domain>.py` file that creates an `APIRouter` instance and registers handlers under a shared `/api/<domain>` prefix mounted in `main.py`.
+- Request bodies are validated with Pydantic `BaseModel` classes defined at the top of each router file, separating create/update schemas per resource.
+- Database access goes exclusively through shared helpers `execute_query`, `execute_insert`, `execute_write`, and `DBConnection` context manager — raw connections are not opened directly in handlers.
+- Write operations use parameterized `%s` placeholders built into string templates rather than f-strings for SQL values, keeping user input out of query strings.
+- Errors are surfaced as `HTTPException(status_code=..., detail=...)` after logging via `logger.error(...)` so callers receive structured error responses.
+- Optional JSON/dict fields stored in the DB are serialized with `json.dumps(..., ensure_ascii=False)` on write and deserialized with try/except `json.loads` on read.

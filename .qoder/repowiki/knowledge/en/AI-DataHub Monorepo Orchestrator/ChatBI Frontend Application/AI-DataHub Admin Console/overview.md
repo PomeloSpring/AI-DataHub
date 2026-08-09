@@ -1,0 +1,1 @@
+Aggregates all admin console pages in a flat layout, each exposing a self-contained React component for managing workflows, integrations, models, content, scheduling, audit, roles, and data governance.

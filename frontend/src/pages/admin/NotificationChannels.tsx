@@ -77,7 +77,7 @@ export default function NotificationChannels() {
     try {
       // 系统管理页面：不按 workspace 过滤
       const data = await listNotificationChannels();
-      setChannels(data);
+      setChannels(Array.isArray(data) ? data : []);
     } catch {
       toast.error('加载通知渠道失败');
     } finally {

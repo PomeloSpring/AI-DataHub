@@ -52,12 +52,14 @@ function FitViewOnLoad({ nodeCount }: { nodeCount: number }) {
   return null;
 }
 
+const noop = () => {};
+
 export default function DAGCanvas({
-  nodes,
-  edges,
-  onNodesChange,
-  onEdgesChange,
-  onConnect,
+  nodes = [],
+  edges = [],
+  onNodesChange = noop as any,
+  onEdgesChange = noop as any,
+  onConnect = noop as any,
   onNodeClick,
   onPaneClick,
 }: DAGCanvasProps) {

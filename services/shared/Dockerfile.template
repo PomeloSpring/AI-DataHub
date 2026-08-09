@@ -1,0 +1,40 @@
+# Shared Dockerfile template for all Python/FastAPI microservices
+# Copy to each service directory and customize SERVICE_MODULE
+#
+# Build: docker build -f services/{service}/Dockerfile -t adh-{service} .
+# Run:   docker run -p {port}:{port} adh-{service}
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy shared requirements first (better Docker cache)
+COPY services/shared/common/requirements.txt /app/services/shared/common/requirements.txt
+RUN pip install --no-cache-dir -r services/shared/common/requirements.txt
+
+# Copy service requirements
+COPY services/SERVICE_MODULE/requirements.txt /app/services/SERVICE_MODULE/requirements.txt
+RUN pip install --no-cache-dir -r services/SERVICE_MODULE/requirements.txt
+
+# Copy shared modules
+COPY services/shared/ /app/services/shared/
+
+# Copy service code
+COPY services/SERVICE_MODULE/ /app/services/SERVICE_MODULE/
+
+# Copy backend (needed for DataMind and shared imports)
+COPY backend/ /app/backend/
+COPY config/ /app/config/
+
+# Environment
+ENV PYTHONPATH=/app
+ENV SERVICE_PORT=SERVICE_PORT_VALUE
+
+EXPOSE SERVICE_PORT_VALUE
+
+CMD ["python", "-m", "uvicorn", "services.SERVICE_MODULE.main:app", "--host", "0.0.0.0", "--port", "SERVICE_PORT_VALUE"]

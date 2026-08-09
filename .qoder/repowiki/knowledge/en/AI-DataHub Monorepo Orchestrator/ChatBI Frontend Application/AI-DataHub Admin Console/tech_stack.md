@@ -1,0 +1,1 @@
+React + TypeScript pages consuming shared backend APIs; the workflow editor additionally uses a local Zustand store and a custom DAG canvas layer.

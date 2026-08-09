@@ -1,0 +1,6 @@
+- Each page is a single-file React component that declares local `useState` for list data, form state, and dialog visibility, then exposes a default export function component.
+- CRUD operations follow a load → open-dialog → submit → toast → reload pattern: data is fetched in a `useEffect` on mount, mutations call the API client, show `toast.success`/`toast.error`, and invoke the same load function to refresh the list.
+- User-facing dialogs are implemented with shadcn `Dialog`/`DialogContent`/`DialogFooter` pairs, with separate boolean state flags per dialog (create, edit, delete confirmation).
+- Form state is kept as plain objects managed by `setState(prev => ({ ...prev, field: value }))` updates, often with a shared `DEFAULT_FORM` constant reset on create.
+- List rendering uses conditional placeholders for loading and empty states (`加载中...` / `暂无...`) inside grid containers before mapping over data.
+- API errors are handled uniformly by catching the error object and surfacing `err.response?.data?.detail || err.message` (or a generic fallback) through `toast.error`.

@@ -1,0 +1,5 @@
+- Each domain feature is split into a FastAPI router under `api/` (request validation via Pydantic models) that delegates all persistence and orchestration to a corresponding service class in `services/`.
+- Service classes expose a module-level singleton instance (e.g. `sync_service = SyncService()`, `airflow_client = AirflowClient()`, `dag_generator = DAGGenerator()`) imported directly by callers instead of instantiating per-request.
+- Database access goes through the shared pool via `services.shared.common.db.get_pool().connection()` (or `get_metadata_conn()` for workspace queries), with every query wrapped in `try/finally conn.close()` blocks and JSON fields serialized/deserialized with `json.dumps`/`json.loads`.
+- External integrations (Airflow, shared DB) are configured via environment variables with sensible defaults rather than hard-coded values, allowing deployment without code changes.
+- Dynamic Airflow DAGs are generated as Python source strings from template functions keyed by `{source_type}_to_{target_type}` or falling back to `generic_full`/`generic_incremental`, then written to the Airflow DAGs folder via `airflow_client.create_dag`.

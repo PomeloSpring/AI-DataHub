@@ -1,0 +1,6 @@
+The module is organized by backend service, each under its own subdirectory:
+- `docker/mysql/` contains the canonical schema (`init.sql`) creating the `adh` database with all core tables, plus a set of versioned migration files (e.g. `workspace_migration_v2.sql`, `data_lineage_migration_v2.sql`) applied on top of the base schema.
+- `docker/neo4j/` defines a self-contained graph store via `docker-compose.yml` (Neo4j 5 community image, APOC plugin enabled, credentials `neo4j/ai-datahub-2024`, ports 7474/7687) and a `start.sh` wrapper that detects Docker Compose v1/v2 and brings up the stack; data/logs/plugins are persisted in named volumes attached to the shared `ai-datahub-network`.
+- `docker/sqlite/` provides an alternative embedded metadata store: `init.sh` creates a `data/metadata.db` file and runs `init.sql` against it via the `sqlite3` CLI.
+- `docker/doris/` holds a minimal `init.sql` for the Doris OLAP backend.
+Dependency direction is one-way: these assets are consumed by application services at startup or by developers to spin up local dependencies; there is no runtime code inside this module.

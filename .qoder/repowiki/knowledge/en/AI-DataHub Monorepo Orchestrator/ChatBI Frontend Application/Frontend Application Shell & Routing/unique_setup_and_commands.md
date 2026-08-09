@@ -1,0 +1,1 @@
+Development runs on `vite` at host `0.0.0.0:3000`; the dev server proxies `/api/*` requests to seven local microservices (ports 8001–8007) defined in `vite.config.ts`. The `@` alias resolves to `frontend/src/`, so all imports use absolute paths like `@/components/ui/button`.

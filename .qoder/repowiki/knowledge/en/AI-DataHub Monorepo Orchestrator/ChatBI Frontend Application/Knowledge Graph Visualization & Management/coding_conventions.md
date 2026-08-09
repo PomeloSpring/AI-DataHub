@@ -1,0 +1,5 @@
+- Each node kind is implemented as a small React component with a consistent shape: a colored header bar, optional property rows, and left/right `Handle` elements for connections.
+- Node and edge variants are registered via `Record<string, Component>` maps (`nodeTypes`, `edgeTypes`) rather than inline JSX, keeping the React Flow configuration declarative.
+- Visual styling per entity type is centralized in lookup tables (`edgeColorMap`, status/type label maps inside node components) instead of being scattered across render logic.
+- Side effects that mutate React Flow state are wrapped in `useCallback` and triggered only when the underlying `graphData` or `graphType` changes, followed by a `setTimeout` call to `reactFlow.fitView` after layout.
+- API mutations follow a uniform try/catch pattern that surfaces errors via `toast.error` and success via `toast.success`, with loading guarded by a shared `isLoading` flag.

@@ -1,0 +1,6 @@
+- Each page defines a local TypeScript interface mirroring the backend entity shape (e.g. `Application`, `EmbedLog`, `MCPServer`, `Agent`, `MCPRegistryItem`) and keeps list state plus pagination (`page`, `total`, `loading`) as component-level `useState`.
+- Data fetching is wrapped in a `load` function that sets `loading`, calls `client.get/post/put/delete`, catches errors and shows a `toast.error`, then clears loading in a `finally` block; lists are reloaded after every mutation.
+- User-facing strings are localized Chinese literals used directly in JSX labels, placeholders, badges, and toast messages rather than through an i18n library.
+- JSON-encoded fields (`allowed_dashboards`, `allowed_tables`, `tools_config`, `discovered_tools`, `config`) are parsed with try/catch around `JSON.parse` using safe fallbacks (`[]`, `{}`, empty string) before rendering or editing.
+- Destructive actions (delete, rotate-key, toggle status) require an explicit `confirm()` dialog before issuing the API call.
+- Form submissions serialize scalar overrides into JSON payloads (e.g. `max_retries`/`max_iterations` merged into `config`, selected tools mapped to `tools_config`) and append `workspace_id` only when a workspace context is provided.

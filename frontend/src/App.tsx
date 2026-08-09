@@ -4,6 +4,7 @@ import { useAuthStore } from './stores/authStore';
 import { useWorkspaceStore } from './stores/workspaceStore';
 import WorkspaceLayout from './components/WorkspaceLayout';
 import SystemLayout from './components/SystemLayout';
+import DataPlatformLayout from './components/DataPlatformLayout';
 import { AIFloatingBox } from './components/ai-assistant';
 import Login from './pages/Login';
 import Chat from './pages/Chat';
@@ -23,11 +24,40 @@ import WorkflowEditor from './pages/admin/WorkflowEditor';
 import PromptManager from './pages/admin/PromptManager';
 import ModelCenter from './pages/admin/ModelCenter';
 import MCPAgentConfig from './pages/admin/MCPAgentConfig';
+import MCPConfig from './pages/admin/MCPConfig';
+import AgentConfig from './pages/admin/AgentConfig';
+import ExecutionLayers from './pages/admin/ExecutionLayers';
 import ScheduledTasks from './pages/admin/ScheduledTasks';
 import NotificationChannels from './pages/admin/NotificationChannels';
 import ReportTemplates from './pages/admin/ReportTemplates';
 import ReportView from './pages/ReportView';
 import KnowledgeBase from './pages/admin/KnowledgeBase';
+import KnowledgeGraph from './pages/KnowledgeGraph';
+import SkillsTemplateManager from './pages/admin/SkillsTemplateManager';
+import ComingSoon from './pages/ComingSoon';
+
+// 新增页面 - 数据中台
+import QualityOverview from './pages/quality/QualityOverview';
+import QualityRules from './pages/quality/QualityRules';
+import LineageGraph from './pages/lineage/LineageGraph';
+import MetricsCenter from './pages/catalog/MetricsCenter';
+import OntologyModeling from './pages/catalog/OntologyModeling';
+import TagsManager from './pages/catalog/TagsManager';
+import Glossary from './pages/catalog/Glossary';
+import SyncTasks from './pages/sync/SyncTasks';
+import SyncLogs from './pages/sync/SyncLogs';
+import Roles from './pages/admin/Roles';
+import AuditLog from './pages/admin/AuditLog';
+import Standards from './pages/admin/Standards';
+import SensitiveData from './pages/admin/SensitiveData';
+
+// 新增页面 - Multi-Agent Enhancement
+import RLSManagement from './pages/admin/RLSManagement';
+import RoleManagement from './pages/admin/RoleManagement';
+import SandboxManagement from './pages/admin/SandboxManagement';
+import QualityReview from './pages/admin/QualityReview';
+import KnowledgeManagement from './pages/admin/KnowledgeManagement';
+import Monitoring from './pages/admin/Monitoring';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -91,34 +121,65 @@ export default function App() {
         <Route path="/ws/:workspaceId" element={<PrivateRoute><WorkspaceLayout /></PrivateRoute>}>
           <Route index element={<Chat />} />
           <Route path="chat" element={<Chat />} />
-          <Route path="page" element={<Dashboard />} />
-          <Route path="page/:dashboardId" element={<Analysis />} />
           <Route path="history" element={<History />} />
-          <Route path="settings" element={<WorkspaceManagerV2 />} />
+          <Route path="scheduled" element={<ScheduledTasks />} />
+          {/* 报表 */}
+          <Route path="reports" element={<ComingSoon title="报表中心" description="智能报表生成和查看" />} />
+        </Route>
+
+        {/* Data Platform mode: /data/* */}
+        <Route path="/data" element={<PrivateRoute><DataPlatformLayout /></PrivateRoute>}>
+          <Route index element={<Navigate to="/data/datasources" replace />} />
+          <Route path="datasources" element={<Admin embeddedTab="datasources" />} />
+          <Route path="tables" element={<Admin embeddedTab="metadata" />} />
+          <Route path="ontology" element={<OntologyModeling />} />
+          <Route path="metrics" element={<MetricsCenter />} />
+          <Route path="tags" element={<TagsManager />} />
+          <Route path="glossary" element={<Glossary />} />
+          <Route path="quality" element={<QualityOverview />} />
+          <Route path="quality/rules" element={<QualityRules />} />
+          <Route path="lineage" element={<LineageGraph />} />
+          <Route path="standards" element={<Standards />} />
+          <Route path="sensitive" element={<SensitiveData />} />
+          <Route path="sync" element={<SyncTasks />} />
+          <Route path="sync/logs" element={<SyncLogs />} />
+          <Route path="knowledge-graph" element={<KnowledgeGraph />} />
         </Route>
 
         {/* System config mode: /system/* */}
         <Route path="/system" element={<PrivateRoute><SystemLayout /></PrivateRoute>}>
-          <Route index element={<Navigate to="/system/datasources" replace />} />
-          <Route path="datasources" element={<Admin embeddedTab="datasources" />} />
-          <Route path="metadata" element={<Admin embeddedTab="metadata" />} />
-          <Route path="relations" element={<Admin embeddedTab="relations" />} />
-          <Route path="templates" element={<Admin embeddedTab="templates" />} />
-          <Route path="terms" element={<Admin embeddedTab="terms" />} />
+          <Route index element={<Navigate to="/system/models" replace />} />
           <Route path="users" element={<Admin embeddedTab="users" />} />
           <Route path="models" element={<ModelCenter />} />
           <Route path="mcp-agent" element={<MCPAgentConfig />} />
+          <Route path="mcp" element={<MCPConfig />} />
+          <Route path="agents" element={<AgentConfig />} />
+          <Route path="execution-layers" element={<ExecutionLayers />} />
           <Route path="workflows" element={<WorkflowConfig />} />
           <Route path="workflow-editor" element={<WorkflowEditor />} />
           <Route path="prompts" element={<PromptManager />} />
-          <Route path="scheduled-tasks" element={<ScheduledTasks />} />
+          <Route path="skills" element={<SkillsTemplateManager />} />
           <Route path="notification-channels" element={<NotificationChannels />} />
           <Route path="report-templates" element={<ReportTemplates />} />
           <Route path="knowledge-base" element={<KnowledgeBase />} />
+          <Route path="knowledge-graph" element={<KnowledgeGraph />} />
           <Route path="settings" element={<Admin embeddedTab="brand" />} />
+          {/* 权限管理 */}
+          <Route path="workspaces" element={<WorkspaceManagerV2 />} />
+          <Route path="roles" element={<RoleManagement />} />
+          <Route path="audit" element={<AuditLog />} />
+          <Route path="rls" element={<RLSManagement />} />
+          <Route path="sandbox" element={<SandboxManagement />} />
+          <Route path="quality-review" element={<QualityReview />} />
+          <Route path="knowledge-management" element={<KnowledgeManagement />} />
+          <Route path="dashboards" element={<Dashboard />} />
+          <Route path="dashboards/:dashboardId" element={<Analysis />} />
+          {/* 系统 */}
+          <Route path="monitoring" element={<Monitoring />} />
         </Route>
 
         {/* Legacy route redirects */}
+        <Route path="/ws/:workspaceId/settings" element={<Navigate to="/system/workspaces" replace />} />
         <Route path="/chat" element={<PrivateRoute><LegacyChatRedirect /></PrivateRoute>} />
         <Route path="/history" element={<PrivateRoute><LegacyHistoryRedirect /></PrivateRoute>} />
         <Route path="/page" element={<PrivateRoute><LegacyPageRedirect /></PrivateRoute>} />
@@ -141,7 +202,7 @@ export default function App() {
         <Route path="/admin/model" element={<Navigate to="/system/models" replace />} />
         <Route path="/admin/mcp-agent" element={<Navigate to="/system/mcp-agent" replace />} />
         <Route path="/admin/workflow" element={<Navigate to="/system/workflows" replace />} />
-        <Route path="/admin/prompts" element={<Navigate to="/system/prompts" replace />} />
+        <Route path="/admin/prompts" element={<Navigate to="/system/skills" replace />} />
 
         {/* Other legacy routes */}
         <Route path="/playground" element={<PrivateRoute><Playground /></PrivateRoute>} />

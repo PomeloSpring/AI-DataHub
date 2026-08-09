@@ -1,0 +1,1 @@
+Run locally with `uvicorn services.datagov.main:app --host 0.0.0.0 --port 8002 --reload`; containerized via `Dockerfile` which installs requirements from both `services/shared/common/requirements.txt` and `services/datagov/requirements.txt`, sets `PYTHONPATH=/app`, and exposes port 8002.

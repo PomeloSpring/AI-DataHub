@@ -1,0 +1,4 @@
+- Each guide follows a consistent structure: overview, step-by-step creation instructions with UI paths and URLs, tables of fields/defaults, best-practices section, and a Q&A FAQ block.
+- Guides end with a trailing separator line followed by a `**最后更新**：YYYY-MM-DD` footer indicating last update date.
+- User-facing UI navigation is documented using both breadcrumb-style paths (e.g., `系统配置 → 数据配置 → 数据源管理`) and explicit URL routes (e.g., `/system/datasources`).
+- Configuration options are presented in Markdown tables listing field name, description, required flag, and example/default value.

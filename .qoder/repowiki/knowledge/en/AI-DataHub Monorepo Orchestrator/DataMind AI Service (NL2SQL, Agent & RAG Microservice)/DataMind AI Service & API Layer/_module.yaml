@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: datamind_service/services_layer
+title: DataMind AI Service & API Layer
+scope:
+    - services/datamind/services/
+    - services/datamind/api/
+source_files: []
+depends_on: []
+related_to:
+    - path: authservice
+    - path: frontend/ai_assistant

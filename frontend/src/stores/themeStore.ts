@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export type ThemeId = 'dark' | 'light' | 'tech' | 'finance' | 'bento' | 'glass' | 'ainative' | 'medical';
+export type ThemeId = 'dark' | 'light' | 'tech' | 'finance' | 'bento' | 'glass' | 'ainative' | 'medical' | 'datafoundry';
 
 /** Whether a theme uses a dark color scheme */
 export const IS_DARK: Record<ThemeId, boolean> = {
@@ -13,6 +13,7 @@ export const IS_DARK: Record<ThemeId, boolean> = {
   glass: true,
   ainative: true,
   medical: false,
+  datafoundry: false,
 };
 
 interface ThemeState {
@@ -41,7 +42,7 @@ export const useThemeStore = create<ThemeState>()(
 /** Apply theme class to <html>. Called from Layout. */
 export function applyTheme(theme: ThemeId) {
   const root = document.documentElement;
-  root.classList.remove('light', 'tech', 'finance', 'bento', 'glass', 'ainative', 'medical');
+  root.classList.remove('light', 'tech', 'finance', 'bento', 'glass', 'ainative', 'medical', 'datafoundry');
   if (theme !== 'dark') {
     root.classList.add(theme);
   }

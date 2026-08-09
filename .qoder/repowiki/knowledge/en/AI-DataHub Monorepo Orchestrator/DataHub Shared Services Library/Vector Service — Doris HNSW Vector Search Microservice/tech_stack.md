@@ -1,0 +1,1 @@
+Python 3.11 with FastAPI + Uvicorn for HTTP, PyMySQL + dbutils PooledDB for Doris connections, Pydantic v2 for request/response validation, and the `mcp` SDK (SSE transport) for the model-context-protocol server; Docker image based on `python:3.11-slim`.

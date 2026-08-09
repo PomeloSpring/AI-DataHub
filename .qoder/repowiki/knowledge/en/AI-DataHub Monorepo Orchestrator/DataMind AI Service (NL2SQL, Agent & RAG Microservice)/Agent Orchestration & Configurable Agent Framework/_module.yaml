@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: datamind_service/agent_orchestration
+title: Agent Orchestration & Configurable Agent Framework
+scope:
+    - services/datamind/agent/
+    - services/datamind/config/
+source_files: []
+depends_on: []
+related_to: []

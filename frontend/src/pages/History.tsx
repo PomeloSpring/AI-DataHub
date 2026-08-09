@@ -74,9 +74,9 @@ export default function History() {
   const totalPages = Math.ceil(pagination.total / pagination.pageSize);
 
   return (
-    <div className="h-full flex flex-col p-4 md:p-6">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-6 gap-3">
-        <h1 className="text-2xl font-bold text-foreground">查询历史</h1>
+    <div className="flex flex-col p-6">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-3">
+        <h1 className="text-lg font-semibold text-foreground">查询历史</h1>
         <div className="flex items-center gap-3 flex-wrap">
           <Select value={status} onValueChange={(v) => { setStatus(v); setPagination(p => ({ ...p, current: 1 })); }}>
             <SelectTrigger className="w-[120px]">

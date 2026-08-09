@@ -1,0 +1,6 @@
+- Each editor panel (`ComponentLibrary`, `PropertyPanel`, `EditorToolbar`) declares a typed `Props` interface and receives callbacks (e.g. `onDragStart`, `onPropertyChange`, `onDelete`) instead of accessing store state directly, keeping panels pure presentational consumers.
+- Widget vs chart distinction is consistently made by checking `chart.chart_type?.startsWith('widget_')` to branch rendering, configuration, and styling logic across the canvas, library list, and property panel.
+- User-facing UI text is localized in Chinese (labels like '组件库', '画布属性', '保存'), while code identifiers remain English.
+- Reusable visual building blocks are imported from the local `@/components/ui/*` barrel rather than third-party UI libraries, ensuring consistent styling via shared variants.
+- Canvas layout uses absolute positioning with a grid-snapping helper (`snapToGrid`) applied to both x/y coordinates and dimensions when placing dropped items.
+- Side effects such as keyboard listeners, window event listeners, and `beforeunload` warnings are registered in `useEffect` hooks with explicit cleanup functions.

@@ -1,0 +1,6 @@
+- Every agent subclasses `BaseAgent` and implements `async run(question, history, datasource_id, model_id, **kwargs) -> AgentResult`, returning structured results rather than raising exceptions.
+- Agent identity and behavior are declared as class attributes (`name`, `description`, `system_prompt`, `is_active`) so the router can introspect them without instantiation.
+- Configuration follows a three-tier priority: DB override > `skill.yaml` field > module default, implemented via helper functions like `get_max_retries` / `get_max_iterations` in `agent_loader.py`.
+- Prompt assets are stored as Markdown/YAML files under `config/skills/` and `config/agents/<name>/` and loaded through `loader.py` / `agent_loader.py` rather than being hard-coded in Python.
+- The router uses a two-phase dispatch: first match against compiled regex `route_patterns` from `skill.yaml` for fast-path routing, then fall back to an LLM classifier that enumerates active agents.
+- Long-running agents expose `cancel()` / `is_cancelled()` and `check_timeout()` so the orchestrator can enforce execution budgets and propagate cancellation signals.

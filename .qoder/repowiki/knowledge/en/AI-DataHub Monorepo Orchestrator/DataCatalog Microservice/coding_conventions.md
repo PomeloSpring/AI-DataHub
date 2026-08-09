@@ -1,0 +1,6 @@
+- Each API feature is split into a thin `api/<feature>.py` router that only parses query/path parameters and delegates to a corresponding `services/<feature>_service.py` function.
+- Database access uses the shared `DBConnection` context manager with parameterized queries against the `adh_*` table namespace, never raw connection strings.
+- Workspace isolation is enforced by appending an `AND workspace_id = %s` clause and passing `workspace_id` through every service method that touches persistent data.
+- MCP tools are declared with the `@mcp.tool()` decorator and return JSON-encoded strings, wrapping calls in try/except blocks that log errors and return `{"error": ...}` payloads.
+- Service functions return plain dicts/lists rather than Pydantic models, keeping the API layer free of serialization concerns.
+- Routers are mounted with explicit `prefix` and `tags` arguments so generated OpenAPI groups reflect the logical domain (e.g. `/api/admin`, `/api/metrics`, `/api/tags`).

@@ -1,0 +1,1 @@
+Cross-cutting Python utilities shared by all DataHub microservices, providing unified configuration, authentication, caching, vector storage, LLM client, and database helpers.

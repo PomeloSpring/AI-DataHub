@@ -1,0 +1,1 @@
+The `adh_sql_templates` table must contain a `rules` STRING column — `_ensure_rules_column()` auto-adds it on first use. Graph mode relies on a TTL-cached NetworkX graph (`_GRAPH_TTL_SECONDS = 300`) rebuilt from `adh_*` tables; call `clear_graph_cache()` after metadata changes. Column metadata and BM25 indexes are cached per `datasource_id` in process memory.

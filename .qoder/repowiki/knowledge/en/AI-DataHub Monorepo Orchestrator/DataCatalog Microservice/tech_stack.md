@@ -1,0 +1,1 @@
+Python FastAPI + Uvicorn for HTTP; MCP protocol (Server-Sent Events over `/sse` and `/messages`) for AI tool integration; direct SQL via `DBConnection` against MySQL/PostgreSQL tables in the shared DataHub schema.

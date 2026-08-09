@@ -1,7 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAIAssistantStore } from '../../stores/aiAssistantStore';
-import { useAuthStore } from '../../stores/authStore';
-import { aiAssistantExecutor } from '../../utils/aiAssistantExecutor';
 
 interface Message {
   id: string;
@@ -10,8 +8,6 @@ interface Message {
   thinking?: string;
   timestamp: Date;
   sources?: any[];
-  toolCalls?: any[];
-  pendingActions?: any[];
 }
 
 const ChatInterface: React.FC = () => {
@@ -19,7 +15,6 @@ const ChatInterface: React.FC = () => {
   const [expandedThinking, setExpandedThinking] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { user } = useAuthStore();
   const {
     messages,
     isLoading,

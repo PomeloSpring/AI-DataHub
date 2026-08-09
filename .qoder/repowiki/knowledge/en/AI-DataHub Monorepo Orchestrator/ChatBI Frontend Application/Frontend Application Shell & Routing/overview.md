@@ -1,0 +1,1 @@
+React application entry point that bootstraps the UI, configures routing across workspace/data/system modes, and wires global providers, auth guards, and API proxying to backend microservices.

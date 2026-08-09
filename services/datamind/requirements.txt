@@ -1,0 +1,29 @@
+# DataMind Microservice Dependencies
+# Most dependencies are inherited from the main backend (backend/*).
+# This file lists only the direct dependencies needed to run this service.
+
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+python-jose[cryptography]>=3.3.0
+python-multipart>=0.0.6
+
+# Embedding model for RAG vector search
+sentence-transformers>=2.2.0
+huggingface_hub>=0.19.0
+
+# Backend dependencies (imported via sys.path)
+# These are already installed in the main backend environment:
+# - pymysql
+# - pandas
+# - anthropic
+# - langfuse
+# - numpy
+qoder-agent-sdk>=1.0.12
+claude-agent-sdk>=0.2.0
+
+# Multimodal processing (chat attachments)
+opencv-python-headless>=4.8.0
+pypdf>=4.0.0
+openpyxl>=3.1.0
+opencode-sdk>=0.2.0

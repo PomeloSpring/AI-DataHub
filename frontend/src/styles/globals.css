@@ -418,6 +418,86 @@
     --ai-scanline-opacity: 0.03;
   }
 
+  /* DataFoundry theme — 克制优雅: 近黑主色 + 浅色背景 + 宝石色调状态色 */
+  .datafoundry {
+    --background: 0 0% 98%;           /* #fafafa → surface-subtle */
+    --foreground: 0 0% 5%;            /* #0d0d0d */
+
+    --card: 0 0% 100%;                /* #ffffff → surface */
+    --card-foreground: 0 0% 5%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 5%;
+
+    --primary: 0 0% 5%;               /* #0d0d0d → 近黑色主色 */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 0 0% 96%;            /* #f5f5f5 */
+    --secondary-foreground: 0 0% 20%;
+
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 40%;     /* #666666 */
+
+    --accent: 0 0% 45%;               /* #737373 */
+    --accent-foreground: 0 0% 5%;
+
+    --destructive: 2 37% 46%;         /* #a24f49 砖红 */
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 0 0% 93%;               /* #ececf0 */
+    --input: 0 0% 93%;
+    --ring: 0 0% 5%;
+
+    --radius: 0.5rem;
+
+    /* Sidebar */
+    --sidebar: 0 0% 98%;
+    --sidebar-foreground: 0 0% 5%;
+    --sidebar-border: 0 0% 93%;
+    --sidebar-accent: 0 0% 96%;
+    --sidebar-accent-foreground: 0 0% 5%;
+
+    /* Chart colors — jewel tones */
+    --chart-1: 210 30% 45%;           /* #4d6f96 钢蓝 */
+    --chart-2: 260 20% 47%;           /* #74628f 暗紫 */
+    --chart-3: 178 34% 38%;           /* #3f827f 青绿 */
+    --chart-4: 205 40% 43%;           /* #3f769b 海蓝 */
+    --chart-5: 248 15% 46%;           /* #635c8e 灰紫 */
+    --chart-6: 186 34% 37%;           /* #3f7480 深青 */
+    --chart-7: 155 35% 37%;           /* #3f7d63 森林绿 */
+    --chart-8: 35 52% 40%;            /* #9a6a30 琥珀 */
+    --chart-9: 2 37% 46%;             /* #a24f49 砖红 */
+    --chart-10: 210 20% 55%;          /* 中性蓝灰 */
+
+    /* Kibana-compatible tokens */
+    --kibana-bg: 0 0% 98%;
+    --kibana-surface: 0 0% 100%;
+    --kibana-surface-hover: 0 0% 96%;
+    --kibana-border: 0 0% 93%;
+    --kibana-text: 0 0% 5%;
+    --kibana-text-secondary: 0 0% 40%;
+    --kibana-accent: 0 0% 5%;
+    --kibana-success: 155 35% 37%;
+    --kibana-warning: 35 52% 40%;
+    --kibana-danger: 2 37% 46%;
+
+    /* DataFoundry jewel-tone step colors */
+    --step-inspect: 210 30% 45%;      /* #4d6f96 钢蓝 */
+    --step-query: 260 20% 47%;        /* #74628f 暗紫 */
+    --step-transform: 178 34% 38%;    /* #3f827f 青绿 */
+    --step-fetch: 205 40% 43%;        /* #3f769b 海蓝 */
+    --step-visualize: 248 15% 46%;    /* #635c8e 灰紫 */
+    --step-knowledge: 186 34% 37%;    /* #3f7480 深青 */
+    --step-success: 155 35% 37%;      /* #3f7d63 森林绿 */
+    --step-warning: 35 52% 40%;       /* #9a6a30 琥珀 */
+    --step-error: 2 37% 46%;          /* #a24f49 砖红 */
+
+    /* DataFoundry shadow system */
+    --shadow-card: 0 1px 1px rgb(13 13 13 / 0.02);
+    --shadow-card-hover: 0 2px 8px rgb(13 13 13 / 0.04);
+    --shadow-dropdown: 0 4px 16px rgb(13 13 13 / 0.08);
+  }
+
   /* Medical theme — 医疗平台风格: 清爽浅色背景 + 医疗蓝绿主调 + 专业可信 */
   .medical {
     --background: 185 30% 97%;
@@ -1810,6 +1890,203 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
   color: hsl(186 80% 30%);
   border: 1px solid hsl(186 80% 40% / 0.2);
 }
+
+/* ============================================
+   DATAFOUNDRY THEME — 克制优雅风格
+   ============================================ */
+
+/* macOS-style overlay scrollbar — hidden by default, visible on hover */
+.datafoundry ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.datafoundry ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.datafoundry ::-webkit-scrollbar-thumb {
+  background: rgb(13 13 13 / 0.16);
+  border-radius: 3px;
+}
+
+.datafoundry ::-webkit-scrollbar-thumb:hover {
+  background: rgb(13 13 13 / 0.28);
+}
+
+/* Dashboard canvas — clean, minimal */
+.datafoundry .dashboard-canvas-viewport,
+.datafoundry .dashboard-canvas {
+  background-color: hsl(0 0% 98%);
+  background-image: radial-gradient(circle, hsl(0 0% 0% / 0.04) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Card —极简阴影, rounded-xl */
+.datafoundry .dashboard-chart-cell {
+  background: hsl(0 0% 100%);
+  border: 1px solid hsl(0 0% 93%);
+  border-radius: 12px;
+  box-shadow: 0 1px 1px rgb(13 13 13 / 0.02);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.datafoundry .dashboard-chart-cell:hover {
+  box-shadow: 0 2px 8px rgb(13 13 13 / 0.04);
+  border-color: hsl(0 0% 88%);
+}
+
+.datafoundry .dashboard-chart-cell.selected-element {
+  box-shadow: 0 0 0 2px hsl(0 0% 5%), 0 2px 8px rgb(13 13 13 / 0.04);
+  border-color: hsl(0 0% 5%);
+}
+
+.datafoundry .dashboard-chart-header {
+  background: hsl(0 0% 98%);
+  border-bottom: 1px solid hsl(0 0% 93%);
+}
+
+/* Add chart button — near-black */
+.datafoundry .add-chart-canvas-btn {
+  background: hsl(0 0% 5%);
+  box-shadow: 0 2px 8px rgb(13 13 13 / 0.15);
+}
+
+.datafoundry .add-chart-canvas-btn:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 16px rgb(13 13 13 / 0.2);
+}
+
+/* Active nav — near-black bg */
+.datafoundry button[data-state="active"],
+.datafoundry button[aria-current="page"] {
+  background: hsl(0 0% 5%);
+  color: hsl(0 0% 100%);
+  border-radius: 8px;
+}
+
+/* Sidebar — clean light */
+.datafoundry .sidebar,
+.datafoundry [class*="sidebar"] {
+  background: hsl(0 0% 98%);
+  border-right: 1px solid hsl(0 0% 93%);
+}
+
+/* Input focus — subtle ring */
+.datafoundry input:focus,
+.datafoundry textarea:focus,
+.datafoundry select:focus {
+  border-color: hsl(0 0% 5%);
+  box-shadow: 0 0 0 2px hsl(0 0% 5% / 0.08);
+  outline: none;
+}
+
+/* Buttons — transition */
+.datafoundry button {
+  transition: all 0.15s ease;
+}
+
+/* Tooltip — near-black */
+.datafoundry [class*="tooltip"] {
+  background: hsl(0 0% 5%);
+  color: hsl(0 0% 100%);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgb(13 13 13 / 0.12);
+}
+
+/* Modal — clean white */
+.datafoundry [class*="modal"] {
+  background: hsl(0 0% 100%);
+  border: 1px solid hsl(0 0% 93%);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgb(13 13 13 / 0.1);
+}
+
+/* Table rows — subtle hover */
+.datafoundry tr:hover td {
+  background: hsl(0 0% 5% / 0.02) !important;
+}
+
+/* Badge — rounded-full, jewel tones */
+.datafoundry [class*="badge"] {
+  border-radius: 9999px;
+}
+
+/* Skeleton — subtle */
+.datafoundry .skeleton {
+  background: linear-gradient(90deg,
+    hsl(0 0% 93%) 25%,
+    hsl(0 0% 96%) 50%,
+    hsl(0 0% 93%) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* Chat message bubbles */
+.datafoundry [class*="message-user"] {
+  background: hsl(0 0% 96%);
+  border: 1px solid hsl(0 0% 93%);
+  border-radius: 12px 12px 4px 12px;
+}
+
+.datafoundry [class*="message-ai"],
+.datafoundry [class*="message-assistant"] {
+  background: hsl(0 0% 100%);
+  border: 1px solid hsl(0 0% 93%);
+  border-left: 3px solid hsl(0 0% 5%);
+  border-radius: 12px 12px 12px 4px;
+}
+
+/* Edit mode grid — subtle */
+.datafoundry.edit-mode .dashboard-canvas {
+  background-image:
+    linear-gradient(hsl(0 0% 0% / 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(0 0% 0% / 0.03) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Resize handle */
+.datafoundry .resize-handle {
+  background: linear-gradient(135deg,
+    transparent 50%,
+    hsl(0 0% 5% / 0.1) 50%
+  );
+}
+
+/* Selection color */
+.datafoundry ::selection {
+  background: hsl(210 30% 45% / 0.2);
+}
+
+/* Code blocks — dark */
+.datafoundry code,
+.datafoundry pre {
+  background: hsl(0 0% 9%);
+  color: hsl(0 0% 90%);
+  border-radius: 12px;
+}
+
+/* Step tone utility classes for DataFoundry theme */
+.datafoundry .step-inspect { color: hsl(var(--step-inspect)); }
+.datafoundry .step-query { color: hsl(var(--step-query)); }
+.datafoundry .step-transform { color: hsl(var(--step-transform)); }
+.datafoundry .step-fetch { color: hsl(var(--step-fetch)); }
+.datafoundry .step-visualize { color: hsl(var(--step-visualize)); }
+.datafoundry .step-knowledge { color: hsl(var(--step-knowledge)); }
+.datafoundry .step-success { color: hsl(var(--step-success)); }
+.datafoundry .step-warning { color: hsl(var(--step-warning)); }
+.datafoundry .step-error { color: hsl(var(--step-error)); }
+
+.datafoundry .step-inspect-bg { background: hsl(var(--step-inspect) / 0.1); border-color: hsl(var(--step-inspect) / 0.3); }
+.datafoundry .step-query-bg { background: hsl(var(--step-query) / 0.1); border-color: hsl(var(--step-query) / 0.3); }
+.datafoundry .step-transform-bg { background: hsl(var(--step-transform) / 0.1); border-color: hsl(var(--step-transform) / 0.3); }
+.datafoundry .step-fetch-bg { background: hsl(var(--step-fetch) / 0.1); border-color: hsl(var(--step-fetch) / 0.3); }
+.datafoundry .step-visualize-bg { background: hsl(var(--step-visualize) / 0.1); border-color: hsl(var(--step-visualize) / 0.3); }
+.datafoundry .step-knowledge-bg { background: hsl(var(--step-knowledge) / 0.1); border-color: hsl(var(--step-knowledge) / 0.3); }
+.datafoundry .step-success-bg { background: hsl(var(--step-success) / 0.1); border-color: hsl(var(--step-success) / 0.3); }
+.datafoundry .step-warning-bg { background: hsl(var(--step-warning) / 0.1); border-color: hsl(var(--step-warning) / 0.3); }
+.datafoundry .step-error-bg { background: hsl(var(--step-error) / 0.1); border-color: hsl(var(--step-error) / 0.3); }
 
 /* ============================================
    MARKDOWN TABLE STYLES (for agent reply)

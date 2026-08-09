@@ -1,0 +1,1 @@
+React + TypeScript pages built on shadcn/ui (Button, Dialog, Tabs, Select, Badge, Spinner, etc.), lucide-react icons, sonner for toasts, and a centralized Axios-like `client` wrapper for all HTTP calls to `/embed/admin/*`, `/admin/mcp-servers`, `/admin/agents`, `/datasources/`, and `/mcp-market/*` endpoints.

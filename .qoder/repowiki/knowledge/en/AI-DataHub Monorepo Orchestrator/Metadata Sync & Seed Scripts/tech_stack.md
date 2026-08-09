@@ -1,0 +1,1 @@
+Python with `pymysql` for Doris/MySQL access, optional `elasticsearch` client for index metadata; embeddings produced by `backend.common.llm.embedding` (text2vec model) and persisted as 768-dim `ARRAY<FLOAT>` with HNSW ANN indexes in Doris OLAP tables.

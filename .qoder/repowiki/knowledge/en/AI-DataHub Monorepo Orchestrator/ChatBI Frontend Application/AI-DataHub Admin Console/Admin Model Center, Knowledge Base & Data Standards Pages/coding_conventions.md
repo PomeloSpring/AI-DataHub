@@ -1,0 +1,5 @@
+- Admin pages are implemented as default-exported React functional components that manage their own local state via `useState`/`useEffect` and render a top-level heading plus a content area.
+- Navigation within a page is driven by a string-typed `activeTab` state variable and conditional rendering of JSX blocks per tab value rather than nested routes.
+- Backend calls go through a shared HTTP client (`../../api/client` or `@/api/governance`) with try/catch blocks that log errors to console and surface user-facing messages via `alert` or `toast`.
+- UI elements are composed from the project's `@/components/ui` shadcn-style primitives (Button, Dialog, Select, Switch, Tabs, Badge, Input) instead of raw HTML elements.
+- User actions follow a confirm-then-execute pattern for destructive operations (e.g., delete toggles a confirmation flag before issuing the API call).

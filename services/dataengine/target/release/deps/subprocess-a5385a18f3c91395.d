@@ -1,0 +1,12 @@
+/home/wuzhiwei/project/AI-DataHub/services/dataengine/target/release/deps/subprocess-a5385a18f3c91395.d: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/builder.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/communicate.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/popen.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/posix.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/os_common.rs
+
+/home/wuzhiwei/project/AI-DataHub/services/dataengine/target/release/deps/libsubprocess-a5385a18f3c91395.rlib: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/builder.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/communicate.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/popen.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/posix.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/os_common.rs
+
+/home/wuzhiwei/project/AI-DataHub/services/dataengine/target/release/deps/libsubprocess-a5385a18f3c91395.rmeta: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/builder.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/communicate.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/popen.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/posix.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/os_common.rs
+
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/lib.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/builder.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/communicate.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/popen.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/posix.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subprocess-0.2.15/src/os_common.rs:

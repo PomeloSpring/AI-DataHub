@@ -1,0 +1,1 @@
+FastAPI for the HTTP surface; Pydantic models shared across API and services; YAML-driven agent/skill configuration; Neo4j for graph-based RAG; Langfuse for tracing; optional MCP server for tool exposure.

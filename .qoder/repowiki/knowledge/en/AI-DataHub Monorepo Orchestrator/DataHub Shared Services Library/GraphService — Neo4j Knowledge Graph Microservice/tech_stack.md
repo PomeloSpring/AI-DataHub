@@ -1,0 +1,1 @@
+Python 3.11 + FastAPI + Uvicorn serving a Neo4j knowledge graph; async access via `AsyncNeo4jStore` and synchronous access via `Neo4jStore` from `services.datamind.rag.graph_rag`; Pydantic v2 models for request/response schemas; Dockerized with `python:311-slim`.

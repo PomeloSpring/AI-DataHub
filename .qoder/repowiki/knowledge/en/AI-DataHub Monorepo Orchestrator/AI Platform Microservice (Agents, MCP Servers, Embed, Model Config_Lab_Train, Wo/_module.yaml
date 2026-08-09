@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: aiplatform_service
+title: AI Platform Microservice (Agents, MCP Servers, Embed, Model Config/Lab/Train, Workflow)
+scope:
+    - services/aiplatform/
+source_files: []
+depends_on: []
+related_to:
+    - path: frontend/admin/integrations
+    - path: frontend/admin/model_knowledge_standards

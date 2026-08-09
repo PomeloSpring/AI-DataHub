@@ -1,0 +1,6 @@
+- Routes are grouped by top-level layout mode (`/ws`, `/data`, `/system`) with nested child routes rendered inside dedicated layout components that supply sidebar/navigation chrome.
+- Legacy URLs are preserved by redirector components (`LegacyChatRedirect`, `LegacyPageRedirect`, `LegacyHistoryRedirect`, `RedirectToPage`) that first load workspaces via `useWorkspaceStore` before navigating to the new workspace-scoped route.
+- Global state is modeled as Zustand stores under `stores/`, each exporting a typed `create(...)` store with actions that mutate both memory and `localStorage` for persistence (e.g., token, user, theme).
+- API calls go through a single `axios` client in `api/client.ts` that injects Bearer tokens and handles 401 auto-refresh; feature domains split endpoint definitions into separate files (`governance.ts`, `lineage.ts`, etc.).
+- UI primitives are imported exclusively from the local `@/components/ui/*` barrel rather than directly from shadcn/ui packages, keeping component usage decoupled from the underlying library version.
+- Components are colocated with their tests under a sibling `__tests__/` directory (e.g., `components/__tests__/DashboardChart.utils.test.ts`, `stores/__tests__/*.test.ts`) following a co-location testing convention.

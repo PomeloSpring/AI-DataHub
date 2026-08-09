@@ -80,7 +80,7 @@ export default function Playground() {
   const loadDatasources = async () => {
     try {
       const { data } = await client.get('/datasources');
-      setDatasources(data);
+      setDatasources(Array.isArray(data) ? data : []);
       // 不自动选中数据源，由用户手动选择
     } catch (e) {
       console.error('Failed to load datasources:', e);
@@ -90,7 +90,7 @@ export default function Playground() {
   const loadTables = async (dsId: number) => {
     try {
       const { data } = await client.get(`/datasources/${dsId}/tables`);
-      setTables(data);
+      setTables(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error('Failed to load tables:', e);
     }
@@ -99,7 +99,7 @@ export default function Playground() {
   const loadColumns = async (dsId: number, tableName: string) => {
     try {
       const { data } = await client.get(`/datasources/${dsId}/tables/${tableName}/columns`);
-      setColumns(data);
+      setColumns(Array.isArray(data) ? data : []);
       setSelectedTable(tableName);
     } catch (e) {
       console.error('Failed to load columns:', e);
@@ -109,7 +109,7 @@ export default function Playground() {
   const loadSavedQueries = async () => {
     try {
       const { data } = await client.get('/playground/queries');
-      setSavedQueries(data);
+      setSavedQueries(Array.isArray(data) ? data : []);
     } catch {}
   };
 

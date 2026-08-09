@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: shared_libs/models
+title: Shared Pydantic & ORM Models for ChatBI Services
+scope:
+    - services/shared/models/
+source_files: []
+depends_on: []
+related_to: []

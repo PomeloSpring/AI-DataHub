@@ -1,0 +1,6 @@
+- Each page defines a top-level default-exported function component that encapsulates all state, handlers, and JSX for a single domain resource.
+- Data loading uses a `useCallback`-wrapped async function that sets a `loading` flag, calls an API client with `page`/`size`/`search` params, normalizes `res.data.items ?? res.data` into a typed array, and resets on error.
+- Create/Edit operations share a single form dialog driven by an `editTarget` nullability check to branch between POST (create) and PUT (update) calls, followed by `loadXxx()` refresh.
+- Enumerations of selectable values are declared as constant arrays of `{ value, label }` pairs near the top of the file and rendered via `<Select>` + `<SelectItem>` loops.
+- Type-driven color mapping tables (e.g. `TERM_TYPE_COLORS`, `METRIC_TYPE_COLORS`, `TAG_TYPE_COLORS`) map enum values to Tailwind badge classes used consistently in list rendering.
+- User feedback is uniformly delivered through `sonner`'s `toast.success` / `toast.error` after each mutation, with Chinese messages matching the UI language.

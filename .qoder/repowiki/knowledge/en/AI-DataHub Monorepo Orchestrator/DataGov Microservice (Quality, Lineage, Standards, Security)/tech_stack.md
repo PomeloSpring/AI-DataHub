@@ -1,0 +1,1 @@
+Python 3.11 + FastAPI + Pydantic models; MySQL-backed persistence through shared `services.shared.common.db` wrappers; served by uvicorn inside a `python:3.11-slim` container.

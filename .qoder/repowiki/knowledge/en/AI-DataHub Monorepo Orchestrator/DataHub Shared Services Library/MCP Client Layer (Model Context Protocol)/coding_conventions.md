@@ -1,0 +1,5 @@
+- Transport-specific imports (`mcp.client.sse`, `mcp.client.streamable_http`, `mcp.client.stdio`) are deferred inside each `_connect_*` method to keep the package importable even when the `mcp` SDK is not installed.
+- Tool names are qualified as `server_name__tool_name` throughout the stack (in `get_tools_for_llm`, `get_all_tools_for_llm`, `MCPToolCaller.call`, and `parse_tool_name`) to disambiguate tools across multiple MCP servers.
+- Arguments passed to MCP tools are auto-parsed: string values that look like JSON objects/arrays are deserialized before being sent to the server, both in `MCPClient._deserialize_json_strings` and in `MCPToolCaller.call`.
+- Connections are created per-call and explicitly disconnected in the same async task (via `try/finally`), avoiding any task-scoped anyio cancel scope issues instead of caching clients.
+- Server configuration is loaded once into memory with a 60-second TTL cache keyed by `load_configs(force=False)`, refreshed on demand or when forced.

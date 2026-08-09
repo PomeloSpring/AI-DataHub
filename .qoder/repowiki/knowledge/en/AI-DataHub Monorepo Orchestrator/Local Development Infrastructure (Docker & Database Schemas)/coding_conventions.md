@@ -1,0 +1,4 @@
+- Each backend lives in its own subdirectory under `docker/`, isolating schemas, init scripts, and compose definitions per datastore.
+- Database objects use the `adh_` prefix consistently across MySQL tables to namespace AI-DataHub entities within the `adh` database.
+- Schema evolution is handled by separate versioned migration files (e.g. `*_migration_v2.sql`) appended to the base `init.sql` rather than mutating the initial dump.
+- Dockerized services expose both HTTP and Bolt-style ports and persist state via named volumes (`neo4j_data`, `neo4j_logs`, `neo4j_plugins`) defined in the compose file.

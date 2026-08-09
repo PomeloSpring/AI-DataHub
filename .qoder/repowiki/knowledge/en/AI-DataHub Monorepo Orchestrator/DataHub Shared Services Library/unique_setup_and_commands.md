@@ -1,0 +1,1 @@
+Each service ships its own `start.sh`/`stop.sh` and `Dockerfile`; image builds follow the pattern `docker build -f services/{service}/Dockerfile -t adh-{service} .` as documented in `Dockerfile.template`.

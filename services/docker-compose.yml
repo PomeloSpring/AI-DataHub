@@ -1,0 +1,275 @@
+# AI-DataHub 数据中台 — All-in-One Docker Compose
+# 启动所有微服务 + 共享基础设施
+#
+# 使用方式:
+#   cd services && docker compose up -d
+#   或指定环境:
+#   cd services && docker compose --env-file ../backend/.env up -d
+
+version: "3.8"
+
+x-common-env: &common-env
+  METADATA_DB_TYPE: mysql
+  METADATA_DB_HOST: ${METADATA_DB_HOST:-mysql}
+  METADATA_DB_PORT: ${METADATA_DB_PORT:-3306}
+  METADATA_DB_USER: ${METADATA_DB_USER:-root}
+  METADATA_DB_PASSWORD: ${METADATA_DB_PASSWORD:-adh_test_2024}
+  METADATA_DB_DATABASE: ${METADATA_DB_DATABASE:-adh}
+  VECTOR_DB_TYPE: doris
+  VECTOR_DB_HOST: ${VECTOR_DB_HOST:-47.116.196.2}
+  VECTOR_DB_PORT: ${VECTOR_DB_PORT:-9030}
+  VECTOR_DB_USER: ${VECTOR_DB_USER:-root}
+  VECTOR_DB_PASSWORD: ${VECTOR_DB_PASSWORD:-}
+  VECTOR_DB_DATABASE: ${VECTOR_DB_DATABASE:-adh}
+  REDIS_URL: redis://redis:6379/0
+  ADH_SECRET_KEY: ${ADH_SECRET_KEY:-change-me-in-production}
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_USER: ${NEO4J_USER:-neo4j}
+  NEO4J_PASSWORD: ${NEO4J_PASSWORD:-ai-datahub-2024}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+  ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-20250514}
+  EMBEDDING_MODEL_PATH: ${EMBEDDING_MODEL_PATH:-shibing624/text2vec-base-chinese}
+  EMBEDDING_DIM: ${EMBEDDING_DIM:-768}
+  LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+  LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+  LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-http://localhost:13000}
+  ENGINE_SERVER_URL: ${ENGINE_SERVER_URL:-http://dataengine:8082}
+  ENGINE_TIMEOUT: ${ENGINE_TIMEOUT:-60}
+  ENGINE_ENABLED: ${ENGINE_ENABLED:-true}
+
+services:
+  # ══════════════════════════════════════════════════════════
+  # API Gateway
+  # ══════════════════════════════════════════════════════════
+  gateway:
+    image: nginx:alpine
+    container_name: adh-gateway
+    ports:
+      - "80:80"
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - datamind
+      - datagov
+      - dataflow
+      - dataviz
+      - datacatalog
+      - authservice
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════════════════════
+  # AuthService — 认证授权服务 (port 8006)
+  # ══════════════════════════════════════════════════════════
+  authservice:
+    build:
+      context: ..
+      dockerfile: services/authservice/Dockerfile
+    container_name: adh-authservice
+    ports:
+      - "8006:8006"
+      - "31006:31006"
+    environment:
+      <<: *common-env
+      SERVICE_PORT: "8006"
+      MCP_PORT: "31006"
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════════════════════
+  # DataCatalog — 数据目录服务 (port 8005)
+  # ══════════════════════════════════════════════════════════
+  datacatalog:
+    build:
+      context: ..
+      dockerfile: services/datacatalog/Dockerfile
+    container_name: adh-datacatalog
+    ports:
+      - "8005:8005"
+      - "31005:31005"
+    environment:
+      <<: *common-env
+      SERVICE_PORT: "8005"
+      MCP_PORT: "31005"
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════════════════════
+  # DataGov — 数据治理服务 (port 8002)
+  # ══════════════════════════════════════════════════════════
+  datagov:
+    build:
+      context: ..
+      dockerfile: services/datagov/Dockerfile
+    container_name: adh-datagov
+    ports:
+      - "8002:8002"
+      - "31002:31002"
+    environment:
+      <<: *common-env
+      SERVICE_PORT: "8002"
+      MCP_PORT: "31002"
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════════════════════
+  # DataViz — 可视化服务 (port 8004)
+  # ══════════════════════════════════════════════════════════
+  dataviz:
+    build:
+      context: ..
+      dockerfile: services/dataviz/Dockerfile
+    container_name: adh-dataviz
+    ports:
+      - "8004:8004"
+      - "31004:31004"
+    environment:
+      <<: *common-env
+      SERVICE_PORT: "8004"
+      MCP_PORT: "31004"
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════════════════════
+  # DataMind — AI 引擎服务 (port 8001)
+  # ══════════════════════════════════════════════════════════
+  datamind:
+    build:
+      context: ..
+      dockerfile: services/datamind/Dockerfile
+    container_name: adh-datamind
+    ports:
+      - "8001:8001"
+      - "31001:31001"
+    environment:
+      <<: *common-env
+      SERVICE_PORT: "8001"
+      MCP_PORT: "31001"
+    volumes:
+      - ../config:/app/config:ro
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════════════════════
+  # DataFlow — 数据集成服务 (port 8003)
+  # ══════════════════════════════════════════════════════════
+  dataflow:
+    build:
+      context: ..
+      dockerfile: services/dataflow/Dockerfile
+    container_name: adh-dataflow
+    ports:
+      - "8003:8003"
+      - "31003:31003"
+    environment:
+      <<: *common-env
+      SERVICE_PORT: "8003"
+      MCP_PORT: "31003"
+      AIRFLOW_API_URL: ${AIRFLOW_API_URL:-http://airflow-webserver:8080/api/v1}
+      AIRFLOW_USERNAME: ${AIRFLOW_USERNAME:-airflow}
+      AIRFLOW_PASSWORD: ${AIRFLOW_PASSWORD:-airflow}
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════════════════════
+  # VectorService — 向量检索服务 (port 8010)
+  # ══════════════════════════════════════════════════════════
+  vectorservice:
+    build:
+      context: ..
+      dockerfile: services/shared/vectorservice/Dockerfile
+    container_name: adh-vectorservice
+    ports:
+      - "8010:8010"
+      - "31010:31010"
+    environment:
+      <<: *common-env
+      SERVICE_PORT: "8010"
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════════════════════
+  # GraphService — 知识图谱服务 (port 8011)
+  # ══════════════════════════════════════════════════════════
+  graphservice:
+    build:
+      context: ..
+      dockerfile: services/shared/graphservice/Dockerfile
+    container_name: adh-graphservice
+    ports:
+      - "8011:8011"
+    environment:
+      <<: *common-env
+      SERVICE_PORT: "8011"
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════════════════════
+  # Frontend
+  # ══════════════════════════════════════════════════════════
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: adh-frontend
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════════════════════
+  # Infrastructure
+  # ══════════════════════════════════════════════════════════
+  redis:
+    image: redis:7-alpine
+    container_name: adh-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: adh-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-ai-datahub-2024}
+    volumes:
+      - neo4j_data:/data
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════════════════════
+  # DataEngine — Rust SQL 语义引擎
+  # ══════════════════════════════════════════════════════════
+  dataengine:
+    build:
+      context: /mnt/d/software/base/engine-server-rust
+      dockerfile: Dockerfile
+    container_name: adh-dataengine
+    ports:
+      - "8082:8082"
+    environment:
+      ENGINE_SERVER_HOST: "0.0.0.0"
+      ENGINE_SERVER_PORT: "8082"
+      RUST_LOG: "info"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════════════════════
+  # Qdrant (Optional — alternative vector store)
+  # ══════════════════════════════════════════════════════════
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    container_name: adh-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+    restart: unless-stopped
+
+
+volumes:
+  redis_data:
+  neo4j_data:
+  qdrant_data:

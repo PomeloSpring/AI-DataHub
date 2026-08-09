@@ -1,0 +1,1 @@
+React + TypeScript with Zustand for global state; SSE streaming via native `fetch` + `ReadableStream` reader parsing `event:`/`data:` lines; Markdown rendering via `react-markdown` + `remark-gfm`; UI built on shadcn-style primitives (`Button`, `Input`, `Tabs`, `DropdownMenu`, `ScrollArea`, `Badge`, `Select`) and `lucide-react` icons; notifications via `sonner`.

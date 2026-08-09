@@ -1,0 +1,1 @@
+The `mcp` package is an optional runtime dependency — each transport branch catches `ImportError` and logs `pip install mcp` if missing. Stdio transport requires launching a subprocess via `StdioServerParameters(command, args, env)` configured per server row.

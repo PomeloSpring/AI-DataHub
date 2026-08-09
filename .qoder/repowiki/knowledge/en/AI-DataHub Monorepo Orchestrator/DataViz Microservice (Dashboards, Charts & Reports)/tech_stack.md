@@ -1,0 +1,1 @@
+FastAPI + Uvicorn ASGI server; PyMySQL for MySQL datasource access; optional Elasticsearch SQL client for ES datasources; Pydantic for request validation; TTL cache from `services.shared.common.ttl_cache`; SQL safety enforced via `services.datamind.nl2sql.sql.query_executor.validate_sql`.

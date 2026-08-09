@@ -1,0 +1,1 @@
+No build scripts or env setup specific to this module; it relies on the app's existing token stored in `localStorage` (injected as `Authorization: Bearer ...` headers) and expects backend endpoints `/api/pipeline/send/stream`, `/api/pipeline/ask/respond`, `/chat/conversations`, `/chat/mcp-tools`, `/workspaces`, `/model-config/*`, and `/ai-assistant/*` to be available.

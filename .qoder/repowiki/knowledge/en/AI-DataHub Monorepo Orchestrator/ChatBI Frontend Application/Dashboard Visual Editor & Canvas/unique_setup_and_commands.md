@@ -1,0 +1,1 @@
+No build or runtime commands are specific to this module; it is loaded as part of the frontend SPA via React Router. The editor expects a dashboard id in the URL (`/dashboard/editor/:id`) and relies on the global `dashboardStore` being initialized before rendering.

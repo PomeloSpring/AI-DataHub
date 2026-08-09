@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: frontend/admin/workflow_editor
+title: Workflow DAG Editor & Configuration UI
+scope:
+    - frontend/src/pages/admin/workflow-editor/
+    - frontend/src/pages/admin/WorkflowEditor.tsx
+    - frontend/src/pages/admin/WorkflowConfig.tsx
+source_files: []
+depends_on: []
+related_to:
+    - path: dataflow_service

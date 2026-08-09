@@ -6,6 +6,7 @@ export interface ProgressStage {
   message: string;
   timestamp: number;
   elapsed?: number;  // Step elapsed time in seconds
+  step?: number;     // Step number (for agent_exec matching)
 }
 
 export interface ToolCall {
@@ -18,9 +19,18 @@ export interface ToolCall {
   elapsed?: number;
 }
 
+export interface AttachmentInfo {
+  id: string;
+  filename: string;
+  category: 'image' | 'table' | 'document' | 'model3d';
+  size?: number;
+  url?: string;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  attachments?: AttachmentInfo[];  // Multimodal attachments uploaded with this message
   question?: string;  // Original user question (for assistant messages)
   intent?: string;
   reply?: string;
@@ -78,6 +88,16 @@ interface Workflow {
   is_default: boolean;
 }
 
+export interface WorkspaceExecutionLayer {
+  layer_id: number;
+  name: string;
+  display_name: string;
+  layer_type: string;  // builtin | cli | docker | remote
+  allowed_tools: string[];
+  model_source: 'system' | 'execution_layer';
+  models: string[];  // cli 执行层的模型候选(如 provider/model_name)
+}
+
 interface ChatState {
   conversations: Conversation[];
   currentConvId: number | null;
@@ -103,6 +123,12 @@ interface ChatState {
     allowed_pipeline_modes?: string[];
   };
 
+  // 工作空间绑定的执行层(每工作空间至多一个)与运行时模型选择
+  executionLayer: WorkspaceExecutionLayer | null;
+  selectedModelRef: string | null;
+  // 执行层 SDK 会话 ID(多轮对话 resume,done 事件回传)
+  executorSessionId: string | null;
+
   // MCP tools state
   mcpServers: any[];
 
@@ -113,6 +139,8 @@ interface ChatState {
   loadSystemConfig: () => Promise<void>;
   loadWorkspaces: () => Promise<void>;
   loadWorkspaceConfig: (workspaceId: number) => Promise<void>;
+  loadExecutionLayer: (workspaceId: number) => Promise<void>;
+  setSelectedModelRef: (ref: string | null) => void;
   setSelectedDsId: (id: number) => void;
   setSelectedModelId: (id: number | null) => void;
   setUseLoopEngine: (use: boolean) => void;
@@ -125,7 +153,8 @@ interface ChatState {
   switchConversation: (convId: number) => Promise<void>;
   deleteConversation: (convId: number) => Promise<void>;
   renameConversation: (convId: number, title: string) => Promise<void>;
-  sendMessage: (question: string, mcpTools?: string[]) => Promise<void>;
+  sendMessage: (question: string, mcpTools?: string[], attachments?: AttachmentInfo[]) => Promise<void>;
+  uploadAttachment: (files: File[], workspaceId?: number) => Promise<AttachmentInfo[]>;
   cancelMessage: () => void;
   respondToAsk: (requestId: string, response: string) => Promise<void>;
   cancelAsk: (requestId: string) => void;
@@ -148,7 +177,7 @@ export async function saveMessages(convId: number, messages: ChatMessage[], titl
         rows: slim.result.rows || [],
       };
     }
-    // Keep RAG detail arrays for execution details drawer
+    // Keep RAG detail arrays for inline details
     if (slim.rag) {
       slim.rag = {
         rag_source: slim.rag.rag_source,
@@ -205,6 +234,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   selectedWorkspaceId: 0,
   workspaces: [],
   workspaceConfig: {},
+  executionLayer: null,
+  selectedModelRef: null,
+  executorSessionId: null,
 
   loadMcpTools: async () => {
     try {
@@ -250,6 +282,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ workspaceConfig: {} });
     }
   },
+
+  loadExecutionLayer: async (workspaceId: number) => {
+    // 工作空间生效的执行层(未绑定时后端回退内置层),含模型候选
+    try {
+      const { data } = await client.get(`/admin/execution-layers/workspaces/${workspaceId}/execution-layer`);
+      set({ executionLayer: data, selectedModelRef: null, executorSessionId: null });
+    } catch {
+      set({ executionLayer: null, selectedModelRef: null, executorSessionId: null });
+    }
+  },
+
+  setSelectedModelRef: (ref) => set({ selectedModelRef: ref }),
 
   loadConversations: async () => {
     try {
@@ -329,7 +373,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       created_at: data.created_at,
       updated_at: data.created_at,
     };
-    set(state => ({ conversations: [conv, ...state.conversations], currentConvId: conv.id, messages: [] }));
+    set(state => ({ conversations: [conv, ...state.conversations], currentConvId: conv.id, messages: [], executorSessionId: null }));
     return data.id;
   },
 
@@ -340,11 +384,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({
         currentConvId: convId,
         messages: msgs,
+        executorSessionId: null,  // 切换会话后执行层会话重新开始
         // Don't override selectedDsId — keep user's dropdown selection
       });
     } catch (e) {
       console.error('Failed to load conversation:', e);
-      set({ currentConvId: convId, messages: [] });
+      set({ currentConvId: convId, messages: [], executorSessionId: null });
     }
   },
 
@@ -358,6 +403,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           conversations,
           currentConvId: isCurrent ? null : state.currentConvId,
           messages: isCurrent ? [] : state.messages,
+          executorSessionId: isCurrent ? null : state.executorSessionId,
         };
       });
     } catch {}
@@ -374,7 +420,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {}
   },
 
-  sendMessage: async (question, mcpTools) => {
+  uploadAttachment: async (files, workspaceId) => {
+    const formData = new FormData();
+    files.forEach(f => formData.append('files', f));
+    formData.append('workspace_id', String(workspaceId ?? get().selectedWorkspaceId ?? 0));
+    const resp = await client.post('/chat/attachments/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return resp.data.attachments || [];
+  },
+
+  sendMessage: async (question, mcpTools, attachments) => {
     const state = get();
     let convId = state.currentConvId;
 
@@ -385,7 +441,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Helper: check if we're still in the same conversation
     const isSameConv = () => get().currentConvId === convId;
 
-    const userMsg: ChatMessage = { role: 'user', content: question };
+    const userMsg: ChatMessage = { role: 'user', content: question, ...(attachments?.length ? { attachments } : {}) };
     const currentMessages = state.messages;
 
     // Create abort controller for cancellation
@@ -412,6 +468,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       datasource_id: state.selectedDsId,
       model_id: state.selectedModelId,
       mcp_tools: mcpTools || [],
+      workspace_id: state.selectedWorkspaceId,
+      attachments: (attachments || []).map(a => a.id),
     };
 
     if (state.pipelineMode) {
@@ -422,10 +480,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (state.selectedWorkflowId) {
         requestBody.workflow_id = state.selectedWorkflowId;
       }
-      // Agent mode: use workspace_id instead of datasource_id
-      if (state.pipelineMode === 'agent' && state.selectedWorkspaceId) {
+      // Deep(内置 Agent)与 Agent(执行层)模式都需要工作空间上下文
+      if ((state.pipelineMode === 'agent' || state.pipelineMode === 'deep') && state.selectedWorkspaceId) {
         requestBody.workspace_id = state.selectedWorkspaceId;
-        delete requestBody.datasource_id;  // Agent mode doesn't need datasource_id
+      }
+      if (state.pipelineMode === 'agent') {
+        delete requestBody.datasource_id;  // 执行层自带数据源选择(execute_sql 工具)
+      }
+      // CLI 执行层(qoder/opencode):运行时选择的模型以 model_ref 透传,
+      // 上一轮会话 ID 以 session_id 回传实现 SDK 多轮对话
+      if (state.executionLayer?.layer_type === 'cli' && state.selectedModelRef) {
+        requestBody.model_ref = state.selectedModelRef;
+      }
+      if (state.executorSessionId) {
+        requestBody.session_id = state.executorSessionId;
       }
     } else if (state.useLoopEngine) {
       apiEndpoint = '/api/chat/send/loop/stream';
@@ -496,7 +564,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     if (msgs[lastIdx]?.role === 'assistant') {
                       const prev = msgs[lastIdx].progressStages || [];
                       const stage = data.stage || '';
-                      const entry = { stage, message: data.message || '', timestamp: Date.now(), elapsed: data.elapsed };
+                      const entry = { stage, message: data.message || '', timestamp: Date.now(), elapsed: data.elapsed, step: data.step };
                       msgs[lastIdx] = {
                         ...msgs[lastIdx],
                         progressStages: [...prev, entry],
@@ -633,7 +701,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set(state => {
         const msgs = [...state.messages];
         msgs[msgs.length - 1] = finalMsg;
-        return { messages: msgs, loading: false, loadingStep: '', abortController: null };
+        return {
+          messages: msgs,
+          loading: false,
+          loadingStep: '',
+          abortController: null,
+          // 执行层会话 ID 留存,下一轮回传以 resume 会话
+          executorSessionId: doneData.session_id || state.executorSessionId,
+        };
       });
 
       // Save conversation
@@ -845,6 +920,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         console.error('Failed to clear conversation:', e);
       }
     }
-    set({ messages: [], loading: false, loadingStep: '' });
+    set({ messages: [], loading: false, loadingStep: '', executorSessionId: null });
   },
 }));

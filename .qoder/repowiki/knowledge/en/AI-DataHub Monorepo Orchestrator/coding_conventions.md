@@ -1,0 +1,3 @@
+- Each backend service is launched via `uvicorn <module>:app --host 0.0.0.0 --port <fixed_port>` and registered in the root `SERVICES` array of `start-all.sh` so lifecycle scripts can manage them uniformly.
+- All services share a single virtual environment rooted at the repo (`venv/bin/python`) and import code via a top-level `PYTHONPATH` rather than per-service pip packages.
+- Containerized deployments use Docker Compose with a shared `chatbi` bridge network and rely on healthchecks/depends_on to enforce startup ordering between frontend and backend.

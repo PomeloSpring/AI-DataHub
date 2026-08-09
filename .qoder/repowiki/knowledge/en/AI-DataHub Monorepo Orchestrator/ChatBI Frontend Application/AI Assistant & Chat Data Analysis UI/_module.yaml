@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: frontend/ai_assistant
+title: AI Assistant & Chat Data Analysis UI
+scope:
+    - frontend/src/pages/Chat.tsx
+    - frontend/src/components/ai-assistant/
+    - frontend/src/stores/chatStore.ts
+    - frontend/src/stores/aiAssistantStore.ts
+source_files: []
+depends_on: []
+related_to:
+    - path: datamind_service/services_layer

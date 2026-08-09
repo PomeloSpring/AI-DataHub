@@ -28,6 +28,7 @@ import {
   Clock,
   Bell,
   RefreshCw,
+  Copy,
 } from 'lucide-react';
 import {
   listScheduledTasks,
@@ -49,6 +50,12 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
 const TASK_TYPE_MAP: Record<string, { label: string; color: string }> = {
   query: { label: 'SQL', color: 'bg-purple-500/10 text-purple-500 border-purple-500/20' },
   agent: { label: 'Agent', color: 'bg-orange-500/10 text-orange-500 border-orange-500/20' },
+};
+
+const TRIGGER_TYPE_MAP: Record<string, { label: string; color: string }> = {
+  cron: { label: '定时', color: 'bg-sky-500/10 text-sky-500 border-sky-500/20' },
+  webhook: { label: 'Webhook', color: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' },
+  both: { label: '定时+Webhook', color: 'bg-indigo-500/10 text-indigo-500 border-indigo-500/20' },
 };
 
 function getSourceBadge(task: ScheduledTask): { label: string; color: string } {
@@ -76,7 +83,7 @@ export default function ScheduledTasks() {
       setTasks(res.items);
       setTotal(res.total);
     } catch {
-      toast.error('加载定时任务失败');
+      toast.error('加载任务调度失败');
     } finally {
       setLoading(false);
     }
@@ -135,7 +142,7 @@ export default function ScheduledTasks() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">定时任务</h1>
+          <h1 className="text-2xl font-bold">任务调度</h1>
           <p className="text-muted-foreground text-sm mt-1">配置定时执行的 SQL 或 Agent 任务</p>
         </div>
         <div className="flex gap-2">
@@ -158,7 +165,7 @@ export default function ScheduledTasks() {
               <th className="text-left p-3 font-medium">任务名称</th>
               <th className="text-left p-3 font-medium">类型</th>
               <th className="text-left p-3 font-medium">执行来源</th>
-              <th className="text-left p-3 font-medium">Cron</th>
+              <th className="text-left p-3 font-medium">触发方式</th>
               <th className="text-left p-3 font-medium">状态</th>
               <th className="text-left p-3 font-medium">上次执行</th>
               <th className="text-left p-3 font-medium">执行次数</th>
@@ -176,7 +183,7 @@ export default function ScheduledTasks() {
             ) : tasks.length === 0 ? (
               <tr>
                 <td colSpan={9} className="p-8 text-center text-muted-foreground">
-                  暂无定时任务
+                  暂无任务调度
                 </td>
               </tr>
             ) : (
@@ -201,9 +208,16 @@ export default function ScheduledTasks() {
                     </Badge>
                   </td>
                   <td className="p-3">
-                    <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
-                      {task.cron_expression}
-                    </code>
+                    <div className="flex flex-col gap-1">
+                      <Badge variant="outline" className={TRIGGER_TYPE_MAP[task.trigger_type || 'cron']?.color + ' w-fit'}>
+                        {TRIGGER_TYPE_MAP[task.trigger_type || 'cron']?.label || task.trigger_type}
+                      </Badge>
+                      {task.cron_expression && (
+                        <code className="text-xs bg-muted px-1.5 py-0.5 rounded w-fit">
+                          {task.cron_expression}
+                        </code>
+                      )}
+                    </div>
                   </td>
                   <td className="p-3">
                     {task.last_status ? (
@@ -226,6 +240,19 @@ export default function ScheduledTasks() {
                   </td>
                   <td className="p-3">
                     <div className="flex justify-end gap-1">
+                      {task.trigger_type !== 'cron' && task.webhook_token && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            navigator.clipboard.writeText(`${window.location.origin}/api/webhook/tasks/${task.id}/${task.webhook_token}`);
+                            toast.success('已复制 Webhook URL');
+                          }}
+                          title="复制 Webhook URL"
+                        >
+                          <Copy className="w-4 h-4" />
+                        </Button>
+                      )}
                       <Button
                         variant="ghost"
                         size="sm"
@@ -312,7 +339,7 @@ export default function ScheduledTasks() {
           <DialogHeader>
             <DialogTitle>确认删除</DialogTitle>
             <DialogDescription>
-              确定要删除定时任务「{deleteTarget?.name}」吗？相关的执行历史也会被删除。
+              确定要删除任务调度「{deleteTarget?.name}」吗？相关的执行历史也会被删除。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

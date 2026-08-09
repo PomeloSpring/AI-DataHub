@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: frontend/admin/audit_security_roles
+title: Admin Audit Log, Sensitive Data & Role Management Pages
+scope:
+    - frontend/src/pages/admin/AuditLog.tsx
+    - frontend/src/pages/admin/SensitiveData.tsx
+    - frontend/src/pages/admin/Roles.tsx
+source_files: []
+depends_on: []
+related_to: []

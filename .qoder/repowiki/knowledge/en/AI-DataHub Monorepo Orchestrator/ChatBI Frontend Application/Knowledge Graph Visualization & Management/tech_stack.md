@@ -1,0 +1,1 @@
+React + TypeScript with `@xyflow/react` (React Flow) for the graph canvas, `@dagrejs/dagre`-based layout via `utils/layout.ts`, shadcn/ui primitives for chrome, `axios` for REST calls to `/api/graph`, `sonner` for toast notifications, and `react-router-dom` search params for URL-driven graph mode selection.

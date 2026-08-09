@@ -1,0 +1,1 @@
+FastAPI microservice on port 8004 that provides CRUD for dashboards and charts, SQL-backed chart data refresh with caching, and LLM-powered report generation backed by shared metadata and datasource connections.

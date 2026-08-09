@@ -1,0 +1,22 @@
+schema_version: 1
+module_path: ""
+title: AI-DataHub Monorepo Orchestrator
+scope:
+    - README.md
+    - CLAUDE.md
+    - GIT_GUIDE.md
+    - .dockerignore
+    - Dockerfile
+    - docker-compose.yml
+    - docker-compose.full.yml
+    - start.sh
+    - stop.sh
+    - start-all.sh
+    - stop-all.sh
+    - restart-all.sh
+    - .e2e_smoke_test.py
+    - .env.example
+    - .gitignore
+source_files: []
+depends_on: []
+related_to: []

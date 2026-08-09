@@ -1,0 +1,1 @@
+Python asyncio with SSE-style event streaming; Anthropic Claude via `services.shared.common.llm.llm_client`; pandas + pymysql for Doris/MySQL data access; custom DAG execution engine using Kahn's algorithm for topological ordering; vector similarity search via embedding literals against metadata tables.

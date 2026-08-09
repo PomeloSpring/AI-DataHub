@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import client from '../api/client';
-import { aiAssistantExecutor } from '../utils/aiAssistantExecutor';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -111,45 +110,9 @@ export const useAIAssistantStore = create<AIAssistantState>((set, get) => ({
     set({ currentContext: context });
   },
 
-  // 判断是否需要工具
-  _needsTools: (message: string): boolean => {
-    const messageLower = message.toLowerCase();
-
-    // 明确的操作意图关键词
-    const actionKeywords = ['帮我', '请帮我', '帮忙', '协助我', '我要', '我想', '我需要'];
-    // 需要使用工具的关键词
-    const toolKeywords = ['创建', '新建', '添加', '配置', '设置', '打开', '跳转', '填写', '保存', '提交', '删除', '编辑', '修改'];
-    // 工具对象关键词
-    const toolObjects = ['数据源', '定时任务', '通知', '工作流', 'agent', '报表', '渠道', '模板', '用户', '权限'];
-    // 询问类关键词
-    const questionKeywords = ['是什么', '什么是', '怎么理解', '如何理解', '为什么', '哪个页面', '当前页面', '现在在', '这是哪', '帮助', '说明', '介绍', '解释', '文档', '怎么用', '如何使用', '怎么配置', '如何配置'];
-
-    // 如果是纯粹的询问类问题，不需要工具
-    if (questionKeywords.some(kw => messageLower.includes(kw))) {
-      // 但如果同时包含明确的操作意图，仍然需要工具
-      if (actionKeywords.some(kw => messageLower.includes(kw))) {
-        return true;
-      }
-      return false;
-    }
-
-    // 如果包含操作关键词 + 工具对象，需要工具
-    const hasToolKeyword = toolKeywords.some(kw => messageLower.includes(kw));
-    const hasToolObject = toolObjects.some(kw => messageLower.includes(kw));
-
-    if (hasToolKeyword && hasToolObject) {
-      return true;
-    }
-
-    return false;
-  },
-
   // 发送消息（支持流式响应和思考过程）
   sendMessage: async (message: string, context?: PageContext | null) => {
-    const { sessionId, messages, _needsTools } = get();
-
-    // 判断是否需要工具
-    const needsTools = _needsTools(message);
+    const { sessionId, messages } = get();
 
     // 创建AbortController
     const abortController = new AbortController();
@@ -179,46 +142,7 @@ export const useAIAssistantStore = create<AIAssistantState>((set, get) => ({
     });
 
     try {
-      if (needsTools) {
-        // 需要工具时，使用非流式接口
-        const response = await client.post('/ai-assistant/chat', {
-          message,
-          context: context || undefined,
-          session_id: sessionId || undefined,
-          module: context?.module || undefined
-        });
-
-        const data = response.data;
-
-        // 更新sessionId
-        if (data.session_id) {
-          set({ sessionId: data.session_id });
-        }
-
-        // 更新消息内容
-        set((state) => ({
-          messages: state.messages.map(msg =>
-            msg.id === aiMessageId
-              ? {
-                  ...msg,
-                  content: data.message || '',
-                  toolCalls: data.tool_calls,
-                  pendingActions: data.pending_actions
-                }
-              : msg
-          ),
-          isLoading: false,
-          abortController: null
-        }));
-
-        // 如果有待执行的操作，立即执行
-        if (data.pending_actions && data.pending_actions.length > 0) {
-          console.log('Executing pending actions:', data.pending_actions);
-          await aiAssistantExecutor.fetchPendingActions();
-          await aiAssistantExecutor.executeAllActions();
-        }
-      } else {
-        // 不需要工具时，使用流式接口
+      // 使用流式接口
         const response = await fetch('/api/ai-assistant/chat/stream', {
           method: 'POST',
           headers: {
@@ -334,7 +258,6 @@ export const useAIAssistantStore = create<AIAssistantState>((set, get) => ({
         }
 
         set({ isLoading: false, abortController: null });
-      }
     } catch (error: any) {
       if (error.name === 'AbortError') {
         set((state) => ({

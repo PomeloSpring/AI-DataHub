@@ -1,0 +1,1 @@
+FastAPI microservice exposing REST endpoints for data quality rules and execution, table/column lineage tracking, data standards management, and sensitive data scanning/masking.

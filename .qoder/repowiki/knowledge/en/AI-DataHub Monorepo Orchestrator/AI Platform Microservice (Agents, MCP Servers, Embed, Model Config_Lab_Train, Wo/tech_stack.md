@@ -1,0 +1,1 @@
+Python 3.11 + FastAPI + Uvicorn; Pydantic for request/response models; raw SQL via parameterized queries through `services.shared.common.db`; served as a standalone uvicorn process on port 8007.

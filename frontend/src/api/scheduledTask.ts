@@ -114,34 +114,39 @@ export async function listScheduledTasks(params?: {
   page?: number;
   size?: number;
 }): Promise<{ items: ScheduledTask[]; total: number }> {
-  const { data } = await client.get('/scheduled-tasks', { params });
+  const { data } = await client.get('/scheduled-tasks/tasks', { params });
   return data;
 }
 
 export async function getScheduledTask(id: number): Promise<ScheduledTask> {
-  const { data } = await client.get(`/scheduled-tasks/${id}`);
+  const { data } = await client.get(`/scheduled-tasks/tasks/${id}`);
   return data;
 }
 
 export async function createScheduledTask(req: ScheduledTaskCreateRequest): Promise<{ id: number }> {
-  const { data } = await client.post('/scheduled-tasks', req);
+  const { data } = await client.post('/scheduled-tasks/tasks', req);
   return data;
 }
 
 export async function updateScheduledTask(id: number, req: ScheduledTaskUpdateRequest): Promise<void> {
-  await client.put(`/scheduled-tasks/${id}`, req);
+  await client.put(`/scheduled-tasks/tasks/${id}`, req);
 }
 
 export async function deleteScheduledTask(id: number): Promise<void> {
-  await client.delete(`/scheduled-tasks/${id}`);
+  await client.delete(`/scheduled-tasks/tasks/${id}`);
 }
 
 export async function toggleScheduledTask(id: number, isActive: boolean): Promise<void> {
-  await client.patch(`/scheduled-tasks/${id}/toggle`, null, { params: { is_active: isActive } });
+  await client.patch(`/scheduled-tasks/tasks/${id}/toggle`, null, { params: { is_active: isActive } });
 }
 
 export async function triggerScheduledTask(id: number): Promise<{ celery_task_id: string }> {
-  const { data } = await client.post(`/scheduled-tasks/${id}/trigger`);
+  const { data } = await client.post(`/scheduled-tasks/tasks/${id}/trigger`);
+  return data;
+}
+
+export async function regenerateWebhookToken(id: number): Promise<{ webhook_token: string }> {
+  const { data } = await client.post(`/scheduled-tasks/tasks/${id}/regenerate-webhook-token`);
   return data;
 }
 
@@ -151,12 +156,12 @@ export async function listScheduledLogs(
   taskId: number,
   params?: { page?: number; size?: number; status?: string }
 ): Promise<{ items: ScheduledLog[]; total: number }> {
-  const { data } = await client.get(`/scheduled-tasks/${taskId}/logs`, { params });
+  const { data } = await client.get(`/scheduled-tasks/tasks/${taskId}/logs`, { params });
   return data;
 }
 
 export async function getScheduledLog(logId: number): Promise<ScheduledLog> {
-  const { data } = await client.get(`/scheduled-logs/${logId}`);
+  const { data } = await client.get(`/scheduled-tasks/logs/${logId}`);
   return data;
 }
 
@@ -167,23 +172,23 @@ export async function getScheduledTaskStats(taskId: number): Promise<{
   success_rate: number;
   avg_elapsed_ms: number;
 }> {
-  const { data } = await client.get(`/scheduled-tasks/${taskId}/stats`);
+  const { data } = await client.get(`/scheduled-tasks/tasks/${taskId}/stats`);
   return data;
 }
 
 export async function cleanupScheduledLogs(days: number = 30): Promise<{ deleted: number }> {
-  const { data } = await client.delete('/scheduled-logs/cleanup', { params: { days } });
+  const { data } = await client.delete('/scheduled-tasks/logs/cleanup', { params: { days } });
   return data;
 }
 
 export async function updateLogStatus(logId: number, status: string, errorMessage?: string): Promise<void> {
-  await client.patch(`/scheduled-logs/${logId}/status`, null, {
+  await client.patch(`/scheduled-tasks/logs/${logId}/status`, null, {
     params: { status, error_message: errorMessage },
   });
 }
 
 export async function cleanupStaleLogs(timeoutMinutes: number = 10): Promise<{ cleaned: number }> {
-  const { data } = await client.post('/scheduled-logs/cleanup-stale', null, {
+  const { data } = await client.post('/scheduled-tasks/logs/cleanup-stale', null, {
     params: { timeout_minutes: timeoutMinutes },
   });
   return data;
@@ -192,30 +197,30 @@ export async function cleanupStaleLogs(timeoutMinutes: number = 10): Promise<{ c
 // ── Notification Channels API ──────────────────────────────────
 
 export async function listNotificationChannels(workspaceId?: number): Promise<NotificationChannel[]> {
-  const { data } = await client.get('/notification-channels', { params: { workspace_id: workspaceId } });
+  const { data } = await client.get('/notification/channels', { params: { workspace_id: workspaceId } });
   return data;
 }
 
 export async function getNotificationChannel(id: number): Promise<NotificationChannel> {
-  const { data } = await client.get(`/notification-channels/${id}`);
+  const { data } = await client.get(`/notification/channels/${id}`);
   return data;
 }
 
 export async function createNotificationChannel(req: NotificationChannelCreateRequest): Promise<{ id: number }> {
-  const { data } = await client.post('/notification-channels', req);
+  const { data } = await client.post('/notification/channels', req);
   return data;
 }
 
 export async function updateNotificationChannel(id: number, req: NotificationChannelUpdateRequest): Promise<void> {
-  await client.put(`/notification-channels/${id}`, req);
+  await client.put(`/notification/channels/${id}`, req);
 }
 
 export async function deleteNotificationChannel(id: number): Promise<void> {
-  await client.delete(`/notification-channels/${id}`);
+  await client.delete(`/notification/channels/${id}`);
 }
 
 export async function testNotificationChannel(id: number): Promise<{ success: boolean; result: any }> {
-  const { data } = await client.post(`/notification-channels/${id}/test`);
+  const { data } = await client.post(`/notification/channels/${id}/test`);
   return data;
 }
 
@@ -235,6 +240,6 @@ export interface ReportTemplate {
 }
 
 export async function listReportTemplates(workspaceId?: number): Promise<ReportTemplate[]> {
-  const { data } = await client.get('/report-templates', { params: { workspace_id: workspaceId } });
+  const { data } = await client.get('/scheduled-tasks/templates', { params: { workspace_id: workspaceId } });
   return data;
 }

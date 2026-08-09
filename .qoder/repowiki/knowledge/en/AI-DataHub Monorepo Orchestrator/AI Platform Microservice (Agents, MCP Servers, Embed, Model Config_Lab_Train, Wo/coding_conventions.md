@@ -1,0 +1,6 @@
+- Each feature module pairs an `api/<feature>.py` router (with Pydantic `BaseModel` request schemas) with a `services/<feature>_service.py` containing pure functions that call `execute_query`/`execute_insert`/`execute_write`.
+- Route handlers wrap database calls in try/except blocks that log errors and raise `HTTPException(status_code=500, detail=str(e))`, while re-raising existing `HTTPException`s unchanged.
+- Timestamp fields `created_at` and `updated_at` are normalized by calling `.isoformat()` when they are datetime objects before returning JSON responses.
+- JSON `config` columns stored as strings are deserialized with `json.loads(...)` inside a try/except block that silently ignores decode errors.
+- Boolean columns (`is_active`, `is_default`) are persisted as 0/1 integers via `1 if value else 0` and read back as-is.
+- Routers are mounted with explicit `prefix` and `tags` arguments so OpenAPI groups endpoints by feature area.

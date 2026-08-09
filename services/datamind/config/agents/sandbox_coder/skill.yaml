@@ -1,0 +1,23 @@
+# Sandbox Coder Agent - 沙箱代码生成
+name: sandbox_coder
+display_name: 代码执行
+description: 根据用户需求生成 Python 代码并在沙箱中执行，适用于数据分析、计算、可视化等 SQL 无法完成的任务。
+max_retries: 1
+max_iterations: 5
+route_patterns:
+  - "代码|python|Python|程序|脚本"
+  - "可视化|图表|画图|plot|chart"
+  - "机器学习|模型|预测|算法"
+  - "计算|统计|分析|处理"
+input_schema:
+  required:
+    - field: "task"
+      description: "用户需要完成的任务描述"
+      format: "自然语言描述"
+  optional:
+    - field: "data"
+      description: "输入数据（如有）"
+      format: "JSON 或描述"
+    - field: "requirements"
+      description: "额外依赖"
+      format: "包名列表"

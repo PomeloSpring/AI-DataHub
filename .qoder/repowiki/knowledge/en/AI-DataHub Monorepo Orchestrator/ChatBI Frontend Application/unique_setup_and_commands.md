@@ -1,0 +1,1 @@
+`npm run dev` starts the SPA dev server; `npm run build` runs `tsc && vite build` to produce the production bundle; `npm run test` runs Vitest across both `src/__tests__` and `sdk/src/__tests__`; the SDK has its own `npm run build` that emits `dist/chatbi-sdk.min.js` and declaration files.

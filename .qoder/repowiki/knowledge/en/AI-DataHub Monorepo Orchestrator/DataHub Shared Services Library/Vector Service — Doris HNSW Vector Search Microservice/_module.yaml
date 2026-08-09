@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: shared_libs/vectorservice
+title: Vector Service — Doris HNSW Vector Search Microservice
+scope:
+    - services/shared/vectorservice/
+source_files: []
+depends_on: []
+related_to:
+    - path: datamind_service/nl2sql_pipeline

@@ -1,0 +1,6 @@
+- External drivers (Neo4j) are lazily initialized via module-level globals accessed through getter functions (`get_driver`, `GraphSyncService.neo4j` property) so connections are created on first use rather than at import time.
+- Each sync handler follows a uniform pattern: validate required fields, build a stable `id` string (e.g. `table:{name}`, `col:{table}.{column}`), then call `create_node` / `create_relationship` / `execute_write` with parameterized Cypher using `$` placeholders.
+- CRUD methods wrap their logic in try/except blocks that log the exception and return a safe default value (`None`, `False`, or an empty model) instead of propagating errors to callers.
+- Cypher queries are constructed with f-strings for label/type interpolation but use parameter binding (`$limit`, `$node_id`, etc.) for all user-supplied values to avoid injection.
+- Node and edge objects are normalized through private `_to_graph_node` / `_to_graph_edge` helpers before being returned as Pydantic `GraphNode` / `GraphEdge` models.
+- Event-driven sync dispatches each `SyncEventType` to a dedicated `_sync_<entity>_<op>` coroutine, keeping create/update/delete semantics isolated per entity type.

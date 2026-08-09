@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: datamind_service
+title: DataMind AI Service (NL2SQL, Agent & RAG Microservice)
+scope:
+    - services/datamind/
+source_files: []
+depends_on: []
+related_to: []

@@ -1,0 +1,1 @@
+Aggregates cross-cutting Python utilities, shared Pydantic/ORM models, migrations, and two FastAPI microservices (graphservice, vectorservice) that both consume the common library.

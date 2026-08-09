@@ -1,0 +1,423 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: en-US
+branch: feature/ai-create-view
+nodes_managed: true
+exported_at: "2026-08-08T07:48:59Z"
+modules:
+    "":
+        dir_name: AI-DataHub Monorepo Orchestrator
+        title: AI-DataHub Monorepo Orchestrator
+        scope:
+            - README.md
+            - CLAUDE.md
+            - GIT_GUIDE.md
+            - .dockerignore
+            - Dockerfile
+            - docker-compose.yml
+            - docker-compose.full.yml
+            - start.sh
+            - stop.sh
+            - start-all.sh
+            - stop-all.sh
+            - restart-all.sh
+            - .e2e_smoke_test.py
+            - .env.example
+            - .gitignore
+        source_files: []
+        children:
+            - aiplatform_service
+            - authservice
+            - datacatalog_service
+            - dataflow_service
+            - datagov_service
+            - datamind_service
+            - dataviz_service
+            - docker_infra
+            - docs
+            - frontend
+            - shared_libs
+            - sync_scripts
+        depends_on: []
+        related_to: []
+    aiplatform_service:
+        dir_name: AI Platform Microservice (Agents, MCP Servers, Embed, Model Config_Lab_Train, Wo
+        title: AI Platform Microservice (Agents, MCP Servers, Embed, Model Config/Lab/Train, Workflow)
+        scope:
+            - services/aiplatform/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: frontend/admin/integrations
+            - path: frontend/admin/model_knowledge_standards
+    authservice:
+        dir_name: AuthService (Authentication, RBAC & User Management)
+        title: AuthService (Authentication, RBAC & User Management)
+        scope:
+            - services/authservice/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: datamind_service/services_layer
+            - path: frontend/app_shell
+    datacatalog_service:
+        dir_name: DataCatalog Microservice
+        title: DataCatalog Microservice
+        scope:
+            - services/datacatalog/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: frontend/catalog
+    dataflow_service:
+        dir_name: DataFlow Service — Sync & Workflow Orchestration Microservice
+        title: DataFlow Service — Sync & Workflow Orchestration Microservice
+        scope:
+            - services/dataflow/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: datagov_service
+            - path: dataviz_service
+            - path: frontend/admin/scheduled_tasks
+            - path: frontend/admin/workflow_editor
+    datagov_service:
+        dir_name: DataGov Microservice (Quality, Lineage, Standards, Security)
+        title: DataGov Microservice (Quality, Lineage, Standards, Security)
+        scope:
+            - services/datagov/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: dataflow_service
+    datamind_service:
+        dir_name: DataMind AI Service (NL2SQL, Agent & RAG Microservice)
+        title: DataMind AI Service (NL2SQL, Agent & RAG Microservice)
+        scope:
+            - services/datamind/
+        source_files: []
+        children:
+            - datamind_service/agent_orchestration
+            - datamind_service/nl2sql_pipeline
+            - datamind_service/rag_retrieval
+            - datamind_service/services_layer
+        depends_on: []
+        related_to: []
+    datamind_service/agent_orchestration:
+        dir_name: Agent Orchestration & Configurable Agent Framework
+        title: Agent Orchestration & Configurable Agent Framework
+        scope:
+            - services/datamind/agent/
+            - services/datamind/config/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    datamind_service/nl2sql_pipeline:
+        dir_name: NL2SQL Pipeline & Agent Orchestration
+        title: NL2SQL Pipeline & Agent Orchestration
+        scope:
+            - services/datamind/nl2sql/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: shared_libs/vectorservice
+    datamind_service/rag_retrieval:
+        dir_name: RAG Retrieval & Strategy Engine for NL2SQL
+        title: RAG Retrieval & Strategy Engine for NL2SQL
+        scope:
+            - services/datamind/rag/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: shared_libs/graphservice
+    datamind_service/services_layer:
+        dir_name: DataMind AI Service & API Layer
+        title: DataMind AI Service & API Layer
+        scope:
+            - services/datamind/services/
+            - services/datamind/api/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: authservice
+            - path: frontend/ai_assistant
+    dataviz_service:
+        dir_name: DataViz Microservice (Dashboards, Charts & Reports)
+        title: DataViz Microservice (Dashboards, Charts & Reports)
+        scope:
+            - services/dataviz/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: dataflow_service
+            - path: frontend/dashboard_editor
+    docker_infra:
+        dir_name: Local Development Infrastructure (Docker & Database Schemas)
+        title: Local Development Infrastructure (Docker & Database Schemas)
+        scope:
+            - docker/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    docs:
+        dir_name: Project Documentation & User Guides
+        title: Project Documentation & User Guides
+        scope:
+            - docs/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    frontend:
+        dir_name: ChatBI Frontend Application
+        title: ChatBI Frontend Application
+        scope:
+            - frontend/
+        source_files: []
+        children:
+            - frontend/admin
+            - frontend/ai_assistant
+            - frontend/app_shell
+            - frontend/catalog
+            - frontend/dashboard_editor
+            - frontend/knowledge_graph
+            - frontend/sdk
+        depends_on: []
+        related_to: []
+    frontend/admin:
+        dir_name: AI-DataHub Admin Console
+        title: AI-DataHub Admin Console
+        scope:
+            - frontend/src/pages/admin/
+        source_files: []
+        children:
+            - frontend/admin/audit_security_roles
+            - frontend/admin/content_management
+            - frontend/admin/integrations
+            - frontend/admin/model_knowledge_standards
+            - frontend/admin/scheduled_tasks
+            - frontend/admin/workflow_editor
+        depends_on: []
+        related_to: []
+    frontend/admin/audit_security_roles:
+        dir_name: Admin Audit Log, Sensitive Data & Role Management Pages
+        title: Admin Audit Log, Sensitive Data & Role Management Pages
+        scope:
+            - frontend/src/pages/admin/AuditLog.tsx
+            - frontend/src/pages/admin/SensitiveData.tsx
+            - frontend/src/pages/admin/Roles.tsx
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    frontend/admin/content_management:
+        dir_name: Admin Content Management Pages
+        title: Admin Content Management Pages
+        scope:
+            - frontend/src/pages/admin/PromptManager.tsx
+            - frontend/src/pages/admin/ReportTemplates.tsx
+            - frontend/src/pages/admin/DataManagement.tsx
+            - frontend/src/pages/admin/GraphEntities.tsx
+            - frontend/src/pages/admin/NotificationChannels.tsx
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    frontend/admin/integrations:
+        dir_name: Admin Integration & MCP Agent Management
+        title: Admin Integration & MCP Agent Management
+        scope:
+            - frontend/src/pages/admin/IntegrationApps.tsx
+            - frontend/src/pages/admin/IntegrationLogs.tsx
+            - frontend/src/pages/admin/MCPAgentConfig.tsx
+            - frontend/src/pages/admin/MCPMarket.tsx
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: aiplatform_service
+    frontend/admin/model_knowledge_standards:
+        dir_name: Admin Model Center, Knowledge Base & Data Standards Pages
+        title: Admin Model Center, Knowledge Base & Data Standards Pages
+        scope:
+            - frontend/src/pages/admin/ModelCenter.tsx
+            - frontend/src/pages/admin/KnowledgeBase.tsx
+            - frontend/src/pages/admin/Standards.tsx
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: aiplatform_service
+    frontend/admin/scheduled_tasks:
+        dir_name: Admin Scheduled Tasks Management
+        title: Admin Scheduled Tasks Management
+        scope:
+            - frontend/src/pages/admin/ScheduledTasks.tsx
+            - frontend/src/pages/admin/ScheduledTaskForm.tsx
+            - frontend/src/pages/admin/ScheduledTaskLogs.tsx
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: dataflow_service
+    frontend/admin/workflow_editor:
+        dir_name: Workflow DAG Editor & Configuration UI
+        title: Workflow DAG Editor & Configuration UI
+        scope:
+            - frontend/src/pages/admin/workflow-editor/
+            - frontend/src/pages/admin/WorkflowEditor.tsx
+            - frontend/src/pages/admin/WorkflowConfig.tsx
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: dataflow_service
+    frontend/ai_assistant:
+        dir_name: AI Assistant & Chat Data Analysis UI
+        title: AI Assistant & Chat Data Analysis UI
+        scope:
+            - frontend/src/pages/Chat.tsx
+            - frontend/src/components/ai-assistant/
+            - frontend/src/stores/chatStore.ts
+            - frontend/src/stores/aiAssistantStore.ts
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: datamind_service/services_layer
+    frontend/app_shell:
+        dir_name: Frontend Application Shell & Routing
+        title: Frontend Application Shell & Routing
+        scope:
+            - frontend/src/
+            - frontend/public/
+            - frontend/vite.config.ts
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: authservice
+    frontend/catalog:
+        dir_name: Catalog Domain Pages (Glossary, Metrics, Tags)
+        title: Catalog Domain Pages (Glossary, Metrics, Tags)
+        scope:
+            - frontend/src/pages/catalog/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: datacatalog_service
+    frontend/dashboard_editor:
+        dir_name: Dashboard Visual Editor & Canvas
+        title: Dashboard Visual Editor & Canvas
+        scope:
+            - frontend/src/pages/Dashboard*.tsx
+            - frontend/src/components/editor/
+            - frontend/src/components/ui/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: dataviz_service
+    frontend/knowledge_graph:
+        dir_name: Knowledge Graph Visualization & Management
+        title: Knowledge Graph Visualization & Management
+        scope:
+            - frontend/src/pages/KnowledgeGraph.tsx
+            - frontend/src/components/graph/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: shared_libs/graphservice
+    frontend/sdk:
+        dir_name: ChatBI Embed SDK (Web Components)
+        title: ChatBI Embed SDK (Web Components)
+        scope:
+            - frontend/sdk/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    shared_libs:
+        dir_name: DataHub Shared Services Library
+        title: DataHub Shared Services Library
+        scope:
+            - services/shared/
+        source_files: []
+        children:
+            - shared_libs/common_utils
+            - shared_libs/graphservice
+            - shared_libs/mcp_client
+            - shared_libs/models
+            - shared_libs/vectorservice
+        depends_on: []
+        related_to: []
+    shared_libs/common_utils:
+        dir_name: Shared Microservice Utilities & Cross-Cutting Services
+        title: Shared Microservice Utilities & Cross-Cutting Services
+        scope:
+            - services/shared/common/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    shared_libs/graphservice:
+        dir_name: GraphService — Neo4j Knowledge Graph Microservice
+        title: GraphService — Neo4j Knowledge Graph Microservice
+        scope:
+            - services/shared/graphservice/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: datamind_service/rag_retrieval
+            - path: frontend/knowledge_graph
+    shared_libs/mcp_client:
+        dir_name: MCP Client Layer (Model Context Protocol)
+        title: MCP Client Layer (Model Context Protocol)
+        scope:
+            - services/shared/mcp_client/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    shared_libs/models:
+        dir_name: Shared Pydantic & ORM Models for ChatBI Services
+        title: Shared Pydantic & ORM Models for ChatBI Services
+        scope:
+            - services/shared/models/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    shared_libs/vectorservice:
+        dir_name: Vector Service — Doris HNSW Vector Search Microservice
+        title: Vector Service — Doris HNSW Vector Search Microservice
+        scope:
+            - services/shared/vectorservice/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: datamind_service/nl2sql_pipeline
+    sync_scripts:
+        dir_name: Metadata Sync & Seed Scripts
+        title: Metadata Sync & Seed Scripts
+        scope:
+            - sync/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []

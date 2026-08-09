@@ -1,0 +1,6 @@
+- Each API endpoint wraps its service call in a try/except block that logs via `logger.exception` and raises `HTTPException` with status 400/404/500, preserving any already-raised HTTPException.
+- Request payloads are validated with Pydantic `BaseModel` classes defined alongside each router file, and `model_dump(exclude_none=True)` is used for update operations.
+- Database access goes through `get_metadata_conn()` context managers with explicit `conn.commit()` and `finally: conn.close()` blocks around every write path.
+- User-supplied SQL is always sanitized via `_substitute_params` (replacing `{{param}}` or `${param}` placeholders) and then passed through `validate_sql` before execution to prevent injection.
+- JSON fields stored as text (`layout`, `filters`, `params`, `config`, `position`, `data_cache`) are normalized on read with `_json_loads_safe` and serialized with `json.dumps` on write.
+- Float values that are NaN/Inf or Decimal are converted to JSON-safe primitives via a `_sanitize_floats` helper applied to all query result rows before returning responses.

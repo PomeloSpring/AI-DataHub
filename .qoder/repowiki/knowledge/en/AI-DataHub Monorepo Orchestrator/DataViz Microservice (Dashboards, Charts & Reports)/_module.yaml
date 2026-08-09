@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: dataviz_service
+title: DataViz Microservice (Dashboards, Charts & Reports)
+scope:
+    - services/dataviz/
+source_files: []
+depends_on: []
+related_to:
+    - path: dataflow_service
+    - path: frontend/dashboard_editor

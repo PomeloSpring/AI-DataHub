@@ -1,0 +1,1 @@
+Provides a unified Python client for connecting to external MCP servers via SSE, Streamable HTTP, or stdio transports and invoking their tools through a registry-managed interface.

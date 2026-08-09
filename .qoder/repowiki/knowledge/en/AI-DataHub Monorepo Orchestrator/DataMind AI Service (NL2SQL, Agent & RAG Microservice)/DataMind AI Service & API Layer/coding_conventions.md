@@ -1,0 +1,6 @@
+- Each feature area has a paired `api/<feature>.py` router and `services/<feature>_service.py` class, with the router instantiating the service and delegating all business logic.
+- Heavy dependencies (LLM clients, vector stores, metadata DB connections, other services) are imported lazily inside method bodies to break circular imports at module load time.
+- Streaming endpoints return `StreamingResponse` wrapping an async generator that yields SSE-formatted bytes via a local `_sse_event` helper, and check `request.is_disconnected()` between events to abort early.
+- Database access uses parameterized SQL through `get_metadata_conn()` / `DBConnection` with explicit `try/finally conn.close()` blocks around every cursor usage.
+- Request validation is done with Pydantic `BaseModel` classes defined next to each router, and user identity is injected via `Depends(get_current_user)` returning a `UserInfo` object.
+- Error paths consistently log with `logger.error(..., exc_info=True)` and return a structured dict containing an `error` field rather than raising unhandled exceptions.

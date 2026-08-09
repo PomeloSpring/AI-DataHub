@@ -2,10 +2,10 @@ import { useState, useRef, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   Send, Zap, Trash2, Download, Bot, User, Lightbulb, Database,
-  FileSearch, CheckCircle, BarChart3, Table, Code, Clock, Info,
+  CheckCircle, BarChart3, Table, Code, Clock,
   Plus, MessageSquare, Trash, TrendingUp, X, RefreshCw,
   MoreHorizontal, Pencil, Check, ThumbsUp, ThumbsDown, Cpu,
-  Workflow, Loader2, Copy, Maximize2, Minimize2, Folder,
+  Workflow, Loader2, Maximize2, Minimize2, Paperclip, FileText, Box, Terminal,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -17,11 +17,28 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 
 import { Spinner } from '@/components/ui/spinner';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useChatStore } from '../stores/chatStore';
+import type { AttachmentInfo } from '../stores/chatStore';
 import ChartPicker from '../components/ChartPicker';
+import ThinkingBlock from '../components/ThinkingBlock';
+import ToolCallTimeline from '../components/ToolCallTimeline';
+import InlineDetails from '../components/InlineDetails';
+import Model3DViewer from '../components/chat/Model3DViewer';
 import client from '../api/client';
+
+const CATEGORY_LABELS: Record<string, string> = {
+  image: '图片', table: '表格', document: '文档', model3d: '3D 模型',
+};
+
+// Attachment file URLs require auth; append token for <img>/three.js loaders
+function attUrl(att: AttachmentInfo): string {
+  if (!att.url) return '';
+  const token = localStorage.getItem('token');
+  return token ? `${att.url}?token=${encodeURIComponent(token)}` : att.url;
+}
 
 const chartTypeLabels: Record<string, string> = {
   table: '表格', column: '柱状图', bar: '柱状图', line: '折线图', pie: '饼图',
@@ -38,34 +55,39 @@ const chartTypeLabels: Record<string, string> = {
 export default function Chat() {
   const { workspaceId: urlWorkspaceId } = useParams<{ workspaceId: string }>();
   const [input, setInput] = useState('');
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [drawerMsg, setDrawerMsg] = useState<any>(null);
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [atMenuOpen, setAtMenuOpen] = useState(false);
   const [atMenuIndex, setAtMenuIndex] = useState(0);
   const [atFilter, setAtFilter] = useState('');
   const [focusMode, setFocusMode] = useState(false);
+  const [pendingAtts, setPendingAtts] = useState<AttachmentInfo[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [preview3d, setPreview3d] = useState<AttachmentInfo | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const {
     conversations, currentConvId, messages, loading, loadingStep,
     selectedDsId, datasources, selectedModelId, llmModels,
     pipelineMode: chatPipelineMode,
     retrievalStrategy, setRetrievalStrategy,
     selectedWorkspaceId, setSelectedWorkspaceId, workspaceConfig, loadWorkspaceConfig,
+    executionLayer, selectedModelRef, loadExecutionLayer, setSelectedModelRef,
     loadConversations, loadDatasources, loadLLMModels, loadWorkflows, loadSystemConfig,
     setSelectedDsId, setSelectedModelId, setPipelineMode,
     createConversation, switchConversation, deleteConversation, renameConversation,
     sendMessage, cancelMessage, respondToAsk, cancelAsk, updateMessageFeedback, setViewMode, analyzeData, predictData, clear,
+    uploadAttachment,
     mcpServers, loadMcpTools,
   } = useChatStore();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const thinkingRef = useRef<HTMLDivElement>(null);
 
-  // Only load MCP tools and enable @ mention in agent mode
-  const isAgentMode = chatPipelineMode === 'agent';
+  // 深度模式 = 平台内置 Agent(支持 MCP 工具 @ 提及);Agent 模式 = 外部执行层(默认 claude)
+  const isAgentMode = chatPipelineMode === 'deep';
+  const isExecMode = chatPipelineMode === 'agent';
 
-  // Flatten all MCP tools from all servers (only in agent mode)
+  // Flatten all MCP tools from all servers (only in deep/built-in agent mode)
   const allMcpTools = isAgentMode ? mcpServers.flatMap((s: any) =>
     (s.tools || []).map((t: any) => ({
       name: `${s.server_name}__${t.name}`,
@@ -225,11 +247,12 @@ export default function Chat() {
         loadWorkflows();
         loadSystemConfig();
         loadWorkspaceConfig(wsId);
+        loadExecutionLayer(wsId);
       }
     }
   }, [urlWorkspaceId]);
 
-  // Load MCP tools only when in agent mode
+  // Load MCP tools only when in deep (built-in agent) mode
   useEffect(() => {
     if (isAgentMode) {
       loadMcpTools();
@@ -255,25 +278,42 @@ export default function Chat() {
   }, [lastThinking]);
 
   const handleSend = () => {
-    if (!input.trim() || loading) return;
+    if ((!input.trim() && pendingAtts.length === 0) || loading) return;
 
     // Parse @tool mentions
     const mcpTools = parseMcpTools(input);
     // Strip @tool mentions from the display message
     const cleanMessage = input.replace(/@[\w_]+__[\w_]+\s*/g, '').trim();
+    const attachments = pendingAtts.length > 0 ? pendingAtts : undefined;
+    const questionText = cleanMessage || input.trim() || '请分析我上传的附件';
 
     if (mcpTools.length > 0) {
       // Pass with MCP tools
-      sendMessage(cleanMessage || input.trim(), mcpTools);
+      sendMessage(questionText, mcpTools, attachments);
     } else {
-      sendMessage(input.trim());
+      sendMessage(questionText, undefined, attachments);
     }
 
     setInput('');
+    setPendingAtts([]);
     setAtMenuOpen(false);
   };
 
-  const openDetails = (msg: any) => { setDrawerMsg(msg); setDrawerOpen(true); };
+  // Handle attachment file selection and upload
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (files.length === 0) return;
+    setUploading(true);
+    try {
+      const atts = await uploadAttachment(files);
+      setPendingAtts(prev => [...prev, ...atts]);
+    } catch (err: any) {
+      toast.error(err?.response?.data?.detail || '附件上传失败');
+    } finally {
+      setUploading(false);
+    }
+  };
 
   return (
     <div className={focusMode ? 'fixed inset-0 z-50 bg-background flex overflow-hidden' : 'flex h-full overflow-hidden'}>
@@ -410,8 +450,8 @@ export default function Chat() {
                     setPipelineMode(v as 'quick' | 'deep' | 'agent');
                     const msgs: Record<string, string> = {
                       quick: '快速模式：简化 RAG 检索，响应快，适合简单查询',
-                      deep: '深度模式：完整 RAG + Loop 自修复，适合复杂问题',
-                      agent: 'Agent 模式：LLM 自主决策，可调用 MCP 工具和外部 Agent',
+                      deep: '深度模式：平台内置 Agent，LLM 自主工具调用（SQL/分析/MCP）',
+                      agent: 'Agent 模式：外部执行层（默认 Claude Agent SDK）',
                     };
                     toast.info(msgs[v] || '');
                   }}
@@ -430,8 +470,8 @@ export default function Chat() {
               );
             })()}
 
-            {/* Datasource Selector - Only for Quick/Deep modes */}
-            {!isAgentMode && (
+            {/* Datasource Selector - Only for Quick mode */}
+            {chatPipelineMode === 'quick' && (
               <Select
                 key={`ds-${selectedWorkspaceId}`}
                 value={selectedDsId ? String(selectedDsId) : ''}
@@ -451,28 +491,56 @@ export default function Chat() {
               </Select>
             )}
 
-            {/* Model Selector - Always visible */}
-            <Select
-              key={`model-${selectedWorkspaceId}`}
-              value={selectedModelId ? String(selectedModelId) : 'default'}
-              onValueChange={(v) => setSelectedModelId(v === 'default' ? null : Number(v))}
-            >
-              <SelectTrigger className="w-[200px] h-8">
-                <Cpu className="h-3.5 w-3.5 mr-1.5" />
-                <SelectValue placeholder="选择模型" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="default">默认模型</SelectItem>
-                {llmModels.map((m) => (
-                  <SelectItem key={m.id} value={String(m.id)}>
-                    {m.name} {m.is_default ? '⭐' : ''}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {/* Model Selector — 按工作空间执行器切换候选:
+                CLI 执行层(qoder/opencode)展示执行层模型,否则展示系统模型中心 */}
+            {isExecMode && executionLayer?.layer_type === 'cli' ? (
+              <Select
+                key={`exec-model-${selectedWorkspaceId}`}
+                value={selectedModelRef || 'default'}
+                onValueChange={(v) => setSelectedModelRef(v === 'default' ? null : v)}
+              >
+                <SelectTrigger className="w-[220px] h-8" title={`执行层: ${executionLayer.display_name}`}>
+                  <Cpu className="h-3.5 w-3.5 mr-1.5" />
+                  <SelectValue placeholder="选择模型" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">默认模型(执行层配置)</SelectItem>
+                  {(executionLayer.models || []).map((ref) => (
+                    <SelectItem key={ref} value={ref}>{ref}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Select
+                key={`model-${selectedWorkspaceId}`}
+                value={selectedModelId ? String(selectedModelId) : 'default'}
+                onValueChange={(v) => setSelectedModelId(v === 'default' ? null : Number(v))}
+              >
+                <SelectTrigger className="w-[200px] h-8">
+                  <Cpu className="h-3.5 w-3.5 mr-1.5" />
+                  <SelectValue placeholder="选择模型" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">默认模型</SelectItem>
+                  {llmModels.map((m) => (
+                    <SelectItem key={m.id} value={String(m.id)}>
+                      {m.name} {m.is_default ? '⭐' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
 
-            {/* Retrieval Strategy - filtered by workspace config */}
-            {!isAgentMode && (
+            {/* 执行器标识(agent 模式下展示当前工作空间的执行层) */}
+            {isExecMode && executionLayer && executionLayer.layer_type !== 'builtin' && (
+              <Badge variant="outline" className="h-8 px-2 gap-1" title="当前工作空间的执行层">
+                <Terminal className="h-3 w-3" />
+                {executionLayer.display_name || executionLayer.name}
+              </Badge>
+            )}
+
+            {/* Retrieval Strategy - Quick mode only */}
+            {chatPipelineMode === 'quick' && (
               <Select
                 value={retrievalStrategy}
                 onValueChange={(v) => setRetrievalStrategy(v)}
@@ -550,18 +618,75 @@ export default function Chat() {
               <div className={`max-w-[96%] min-w-0 overflow-hidden ${msg.role === 'user' ? 'max-w-[70%]' : ''}`}>
                 {msg.role === 'user' && (
                   <div className="bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-4 py-3">
+                    {msg.attachments && msg.attachments.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        {msg.attachments.map(att => (
+                          att.category === 'image' ? (
+                            <img
+                              key={att.id}
+                              src={attUrl(att)}
+                              alt={att.filename}
+                              className="max-h-40 max-w-[200px] rounded-md object-contain bg-white/10 cursor-pointer"
+                              onClick={() => window.open(attUrl(att), '_blank')}
+                            />
+                          ) : (
+                            <div
+                              key={att.id}
+                              className={`flex items-center gap-1.5 bg-white/15 rounded-md px-2 py-1 text-xs ${att.category === 'model3d' ? 'cursor-pointer hover:bg-white/25' : ''}`}
+                              onClick={att.category === 'model3d' ? () => setPreview3d(att) : undefined}
+                              title={att.category === 'model3d' ? '点击预览 3D 模型' : att.filename}
+                            >
+                              {att.category === 'model3d' ? <Box className="h-3.5 w-3.5" /> : <FileText className="h-3.5 w-3.5" />}
+                              <span className="max-w-[140px] truncate">{att.filename}</span>
+                              {att.category === 'model3d' && <span className="opacity-70">预览</span>}
+                            </div>
+                          )
+                        ))}
+                      </div>
+                    )}
                     {msg.content}
                   </div>
                 )}
                 {msg.role === 'assistant' && (
                   <div className="bg-muted rounded-2xl rounded-tl-sm px-4 py-3 overflow-hidden">
                     {/* Streaming: show current action */}
-                    {loading && !msg.intent && !msg.error && (
+                    {loading && !msg.intent && !msg.error && !msg.thinking && !(msg.progressStages && msg.progressStages.length > 0) && (
                       <div>
                         <div className="flex items-center gap-2">
                           <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
                           <span className="text-sm text-muted-foreground">{loadingStep || '推理中...'}</span>
                         </div>
+                      </div>
+                    )}
+
+                    {/* Inline: thinking block */}
+                    {msg.thinking && (
+                      <ThinkingBlock content={msg.thinking} isStreaming={loading && idx === messages.length - 1} />
+                    )}
+
+                    {/* Inline: tool call timeline */}
+                    {((msg.tool_calls && msg.tool_calls.length > 0) || (msg.progressStages && msg.progressStages.some(s => s.stage === 'agent_exec'))) && (
+                      <ToolCallTimeline
+                        toolCalls={msg.tool_calls}
+                        progressStages={msg.progressStages}
+                        isStreaming={loading && idx === messages.length - 1 && !msg.sql}
+                      />
+                    )}
+
+                    {/* Inline: RAG/timings/workflow details */}
+                    {(msg.timings || msg.rag || msg.workflow_info) && (
+                      <InlineDetails
+                        rag={msg.rag}
+                        timings={msg.timings}
+                        elapsedMs={msg.elapsed_ms}
+                        workflowInfo={msg.workflow_info}
+                      />
+                    )}
+
+                    {/* 流式 token 输出(intent 未确定前,如执行层 CLI 的流式回复) */}
+                    {!msg.intent && msg.content && (
+                      <div className="leading-relaxed prose prose-sm max-w-none dark:prose-invert">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                       </div>
                     )}
 
@@ -575,10 +700,13 @@ export default function Chat() {
                         <div className="leading-relaxed prose prose-sm max-w-none dark:prose-invert">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.reply}</ReactMarkdown>
                         </div>
-                        <Button variant="ghost" size="sm" className="mt-2" onClick={() => openDetails(msg)}>
-                          <Info className="h-4 w-4 mr-1" />
-                          执行详情
-                        </Button>
+                      </div>
+                    )}
+
+                    {/* Agent/执行层最终回复(无 SQL 结果,如 qoder/opencode 执行层) */}
+                    {msg.reply && !msg.sql && !msg.error && msg.intent === 'agent' && (
+                      <div className="leading-relaxed prose prose-sm max-w-none dark:prose-invert">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.reply}</ReactMarkdown>
                       </div>
                     )}
 
@@ -647,10 +775,6 @@ export default function Chat() {
                     {msg.error && (
                       <div>
                         <Badge variant="destructive" className="mb-2">{msg.error}</Badge>
-                        <Button variant="ghost" size="sm" className="mt-1" onClick={() => openDetails(msg)}>
-                          <Info className="h-4 w-4 mr-1" />
-                          执行详情
-                        </Button>
                       </div>
                     )}
 
@@ -676,9 +800,6 @@ export default function Chat() {
                                 <TabsTrigger value="sql"><Code className="h-4 w-4 mr-1" />SQL</TabsTrigger>
                               </TabsList>
                             </Tabs>
-                            <Button variant="ghost" size="sm" onClick={() => openDetails(msg)}>
-                              <Info className="h-4 w-4 mr-1" />执行详情
-                            </Button>
                           </div>
                         )}
 
@@ -887,7 +1008,45 @@ export default function Chat() {
               </div>
             )}
 
+            {/* Pending attachments preview bar */}
+            {pendingAtts.length > 0 && (
+              <div className="flex items-center gap-2 mb-2 flex-wrap">
+                {pendingAtts.map(att => (
+                  <div key={att.id} className="flex items-center gap-1.5 border rounded-lg px-2 py-1 bg-muted/50">
+                    {att.category === 'image' ? (
+                      <img src={attUrl(att)} alt={att.filename} className="h-9 w-9 object-cover rounded" />
+                    ) : att.category === 'model3d' ? (
+                      <Box className="h-5 w-5 text-muted-foreground" />
+                    ) : (
+                      <FileText className="h-5 w-5 text-muted-foreground" />
+                    )}
+                    <span className="text-xs max-w-[130px] truncate" title={att.filename}>{att.filename}</span>
+                    <Badge variant="secondary" className="text-[10px] px-1 py-0">{CATEGORY_LABELS[att.category] || att.category}</Badge>
+                    <button
+                      className="text-muted-foreground hover:text-destructive"
+                      onClick={() => setPendingAtts(prev => prev.filter(a => a.id !== att.id))}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="flex gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                accept=".png,.jpg,.jpeg,.gif,.webp,.csv,.xlsx,.pdf,.md,.txt,.docx,.obj,.glb,.stl"
+                onChange={handleFileSelect}
+              />
+              <Button variant="outline" size="icon" className="flex-shrink-0" disabled={loading || uploading}
+                title="上传附件(图片/表格/文档/3D 模型)"
+                onClick={() => fileInputRef.current?.click()}>
+                {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
+              </Button>
               <Input
                 ref={inputRef}
                 value={input}
@@ -896,7 +1055,7 @@ export default function Chat() {
                 className="flex-1"
                 onKeyDown={isAgentMode ? handleInputKeyDown : (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
               />
-              <Button onClick={handleSend} disabled={loading || !input.trim()}>
+              <Button onClick={handleSend} disabled={loading || (!input.trim() && pendingAtts.length === 0)}>
                 {loading ? <Spinner className="h-4 w-4 mr-2" /> : <Send className="h-4 w-4 mr-2" />}
                 发送
               </Button>
@@ -923,238 +1082,15 @@ export default function Chat() {
         </div>
       </div>
 
-      {/* Execution Details Drawer */}
-      {drawerOpen && (
-        <div className="fixed inset-0 z-50 flex justify-end">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setDrawerOpen(false)} />
-          <div className="relative w-full max-w-[480px] bg-background border-l overflow-auto">
-            <div className="flex items-center justify-between p-4 border-b">
-              <h2 className="font-bold">执行详情</h2>
-              <Button variant="ghost" size="sm" onClick={() => setDrawerOpen(false)}>
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-            <div className="p-4 space-y-4">
-              {drawerMsg?.timings && Object.keys(drawerMsg.timings).length > 0 && (
-                <div className="p-3 bg-muted rounded-lg">
-                  <h4 className="font-medium text-sm mb-2">分步耗时</h4>
-                  {(['intent', 'rag', 'llm', 'validate', 'execute', 'total'] as const).filter(key => key in drawerMsg.timings).map(key => (
-                    <div key={key} className={`flex justify-between py-1 text-xs ${key === 'total' ? 'border-t mt-1 pt-2' : ''}`}>
-                      <span className="text-muted-foreground">{({ intent: '意图识别', rag: 'RAG 检索', llm: 'SQL 生成', validate: 'SQL 校验', execute: 'SQL 执行', total: '合计' })[key]}</span>
-                      <span className="font-medium">{typeof drawerMsg.timings[key] === 'number' ? `${drawerMsg.timings[key]}s` : drawerMsg.timings[key]}</span>
-                    </div>
-                  ))}
-                  {drawerMsg?.elapsed_ms && (
-                    <div className="flex justify-between py-1 text-xs border-t mt-1 pt-2">
-                      <span className="text-muted-foreground">前端总耗时</span>
-                      <span className="font-medium">{(drawerMsg.elapsed_ms / 1000).toFixed(1)}s</span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {drawerMsg?.rag && (
-                <div className="p-3 bg-muted rounded-lg space-y-3">
-                  <h4 className="font-medium text-sm">RAG 检索摘要</h4>
-                  {drawerMsg.rag.rag_source && (
-                    <p className="text-xs text-muted-foreground">
-                      数据来源: {drawerMsg.rag.rag_source === 'keyword_selected' ? '关键词匹配' : drawerMsg.rag.rag_source === 'vector_search' ? '向量检索' : drawerMsg.rag.rag_source}
-                    </p>
-                  )}
-                  <div className="flex gap-2 flex-wrap">
-                    {(drawerMsg.rag.table_info_count || 0) > 0 && <Badge variant="outline"><Database className="h-3 w-3 mr-1" />表 {drawerMsg.rag.table_info_count}</Badge>}
-                    {(drawerMsg.rag.column_metadata_count || 0) > 0 && <Badge variant="outline"><Database className="h-3 w-3 mr-1" />字段 {drawerMsg.rag.column_metadata_count}</Badge>}
-                    {drawerMsg.rag.sql_templates_count > 0 && <Badge variant="outline"><FileSearch className="h-3 w-3 mr-1" />SQL 模板 {drawerMsg.rag.sql_templates_count}</Badge>}
-                    {drawerMsg.rag.business_terms_count > 0 && <Badge variant="outline"><Lightbulb className="h-3 w-3 mr-1" />术语 {drawerMsg.rag.business_terms_count}</Badge>}
-                  </div>
-                  {drawerMsg.rag.table_info?.length > 0 && (
-                    <div>
-                      <p className="text-xs font-medium text-muted-foreground mb-1">匹配的表:</p>
-                      <div className="flex flex-wrap gap-1">
-                        {drawerMsg.rag.table_info.map((t: any, i: number) => (
-                          <Badge key={i} variant="secondary" className="text-xs">
-                            {t.table_name}{t.table_comment ? ` (${t.table_comment})` : ''}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {drawerMsg.rag.column_metadata?.length > 0 && (
-                    <div>
-                      <p className="text-xs font-medium text-muted-foreground mb-1">匹配的字段:</p>
-                      <div className="flex flex-wrap gap-1">
-                        {drawerMsg.rag.column_metadata.map((c: any, i: number) => (
-                          <Badge key={i} variant="outline" className="text-xs">
-                            {c.table_name}.{c.column_name}{c.column_comment ? ` (${c.column_comment})` : ''}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {drawerMsg?.thinking && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <h4 className="font-medium text-sm"><Lightbulb className="h-4 w-4 inline mr-1 text-purple-500" />模型推理</h4>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-2 text-xs"
-                      onClick={() => {
-                        navigator.clipboard.writeText(drawerMsg.thinking || '');
-                        toast.success('已复制');
-                      }}
-                    >
-                      <Copy className="h-3.5 w-3.5 mr-1" />
-                      复制
-                    </Button>
-                  </div>
-                  <pre className="p-3 bg-muted rounded-lg text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">{drawerMsg.thinking}</pre>
-                </div>
-              )}
-
-              {/* Execution flow — agent mode structured view */}
-              {drawerMsg?.progressStages && drawerMsg.progressStages.length > 0 && (() => {
-                // Build structured items: merge exec+exec_done into one line
-                const doneSteps = new Set<number>();
-                drawerMsg.progressStages.forEach((s: any) => {
-                  if (s.stage === 'agent_exec_done' && s.step) doneSteps.add(s.step);
-                });
-
-                let toolIdx = 0;
-                return (
-                  <div className="p-3 bg-muted rounded-lg">
-                    <h4 className="font-medium text-sm mb-3">执行流程</h4>
-                    <div className="space-y-2">
-                      {drawerMsg.progressStages.map((s: any, i: number) => {
-                        // Skip agent_exec_done — its elapsed is shown on the exec line
-                        if (s.stage === 'agent_exec_done') return null;
-
-                        if (s.stage === 'agent_exec') {
-                          toolIdx++;
-                          // Find matching done stage for elapsed
-                          const done = drawerMsg.progressStages.find(
-                            (x: any) => x.stage === 'agent_exec_done' && x.step === s.step
-                          );
-                          return (
-                            <div key={i} className="flex items-center gap-2 text-xs ml-3">
-                              <span className="w-4 h-4 rounded bg-blue-500/10 text-blue-500 flex items-center justify-center text-[9px] font-medium shrink-0">
-                                {toolIdx}
-                              </span>
-                              <span className="font-medium">{s.message}</span>
-                              {done?.elapsed !== undefined && (
-                                <span className="text-muted-foreground text-[10px] ml-auto shrink-0">
-                                  {done.elapsed < 1 ? `${Math.round(done.elapsed * 1000)}ms` : `${done.elapsed.toFixed(1)}s`}
-                                </span>
-                              )}
-                            </div>
-                          );
-                        }
-
-                        // Plan / think / decide / start
-                        const icon = s.stage === 'agent_start' ? '▶' : s.stage === 'agent_decide' ? '◆' : '○';
-                        const color = s.stage === 'agent_decide' ? 'text-primary' : 'text-muted-foreground';
-                        return (
-                          <div key={i} className={`flex items-center gap-2 text-xs ${color}`}>
-                            <span className="w-4 text-center text-[10px] shrink-0">{icon}</span>
-                            <span className={s.stage === 'agent_decide' ? 'font-medium' : ''}>{s.message}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    {drawerMsg.timings?.total && (
-                      <div className="mt-3 pt-2 border-t text-xs text-muted-foreground">
-                        总耗时: {drawerMsg.timings.total}s
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-
-              {/* Workflow info (Deep mode) */}
-              {drawerMsg?.workflow_info && (
-                <div className="p-3 bg-muted rounded-lg">
-                  <h4 className="font-medium text-sm mb-2">工作流信息</h4>
-                  <div className="space-y-1 text-xs">
-                    {drawerMsg.workflow_info.name && (
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">工作流</span>
-                        <span className="font-medium">{drawerMsg.workflow_info.name}</span>
-                      </div>
-                    )}
-                    {drawerMsg.workflow_info.rounds_used !== undefined && (
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">执行轮数</span>
-                        <span className="font-medium">{drawerMsg.workflow_info.rounds_used}</span>
-                      </div>
-                    )}
-                    {drawerMsg.workflow_info.loop_count !== undefined && (
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">元数据循环</span>
-                        <span className="font-medium">{drawerMsg.workflow_info.loop_count} 次</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Agent tool calls */}
-              {drawerMsg?.tool_calls && drawerMsg.tool_calls.length > 0 && (
-                <div className="p-3 bg-muted rounded-lg">
-                  <h4 className="font-medium text-sm mb-2">
-                    <Workflow className="h-4 w-4 inline mr-1 text-blue-500" />
-                    Agent 工具调用 · {drawerMsg.tool_calls.length} 步
-                  </h4>
-                  <div className="space-y-3">
-                    {drawerMsg.tool_calls.map((tc: any, i: number) => (
-                      <div key={i} className="border rounded-md p-2 bg-background">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="w-5 h-5 rounded-full bg-blue-500/10 text-blue-500 flex items-center justify-center text-[10px] font-medium shrink-0">
-                            {tc.step || i + 1}
-                          </span>
-                          <span className="font-medium text-xs">{tc.tool}</span>
-                          {tc.elapsed !== undefined && (
-                            <Badge variant="outline" className="text-[10px] ml-auto shrink-0">
-                              {tc.elapsed < 1 ? `${Math.round(tc.elapsed * 1000)}ms` : `${tc.elapsed.toFixed(1)}s`}
-                            </Badge>
-                          )}
-                        </div>
-                        {tc.arguments && Object.keys(tc.arguments).length > 0 && (
-                          <div className="text-[11px] text-muted-foreground ml-7 mb-1">
-                            <span className="font-medium">参数:</span>{' '}
-                            {Object.entries(tc.arguments).map(([k, v]) => `${k}=${typeof v === 'string' ? v.slice(0, 80) : JSON.stringify(v).slice(0, 80)}`).join(', ')}
-                          </div>
-                        )}
-                        {(tc.result_preview || tc.result || tc.error) && (
-                          <details className="ml-7">
-                            <summary className="text-[11px] text-muted-foreground cursor-pointer hover:text-foreground">
-                              {tc.error ? '❌ 查看错误' : '查看返回结果'}
-                            </summary>
-                            <pre className="mt-1 p-2 bg-muted rounded text-[11px] whitespace-pre-wrap max-h-[150px] overflow-auto">
-                              {tc.error || tc.result || tc.result_preview}
-                            </pre>
-                          </details>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                  {drawerMsg.timings?.total && (
-                    <div className="mt-2 pt-2 border-t text-xs text-muted-foreground">
-                      总耗时: {drawerMsg.timings.total}s
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {!drawerMsg?.timings && !drawerMsg?.rag && !drawerMsg?.thinking && !drawerMsg?.progressStages && !drawerMsg?.tool_calls && (
-                <div className="text-center py-12 text-muted-foreground">暂无执行详情</div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* 3D model preview dialog */}
+      <Dialog open={!!preview3d} onOpenChange={(open) => { if (!open) setPreview3d(null); }}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>{preview3d?.filename}</DialogTitle>
+          </DialogHeader>
+          {preview3d && <Model3DViewer url={attUrl(preview3d)} filename={preview3d.filename} />}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

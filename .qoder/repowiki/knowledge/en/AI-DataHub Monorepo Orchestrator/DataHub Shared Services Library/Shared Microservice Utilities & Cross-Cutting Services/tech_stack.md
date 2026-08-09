@@ -1,0 +1,1 @@
+Python package using PyMySQL for MySQL/Doris, PyJWT+bcrypt for auth, redis-py for distributed cache, anthropic SDK for LLM calls, langfuse for observability tracing, qdrant-client for optional vector store, elasticsearch-py for optional ES datasource, and fastapi/starlette for dependency injection patterns.

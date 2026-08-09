@@ -1,0 +1,6 @@
+- Each API route lives in its own file under `api/` and exposes a module-level `router = APIRouter()` that is mounted in `main.py` with a consistent `/api/<domain>` prefix and tag.
+- Business logic is centralized in `services/*.py` modules; API handlers only parse Pydantic models and call service functions, never touching the database directly.
+- Database access uses parameterized SQL through `DBConnection()` context managers with explicit column lists rather than `SELECT *`, and errors are caught and logged before returning safe defaults.
+- Sensitive fields (`email`, `phone`) are always written through `_encrypt_field` and read through `_decrypt_user_row`/`_decrypt_field`, which transparently handle legacy plaintext values.
+- Mutating operations return a `(success: bool, message: str)` tuple (or a three-tuple including an id), with Chinese user-facing messages returned to callers instead of raising exceptions.
+- Audit events are recorded via the `log_audit` helper immediately after state-changing actions such as login success, account lockout, user creation, and status changes.

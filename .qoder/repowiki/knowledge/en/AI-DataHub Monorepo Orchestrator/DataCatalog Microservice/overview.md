@@ -1,0 +1,1 @@
+FastAPI microservice exposing REST and MCP endpoints for metadata discovery, metrics, tags, glossary terms, lineage relations, datasources, templates, and menu configuration.

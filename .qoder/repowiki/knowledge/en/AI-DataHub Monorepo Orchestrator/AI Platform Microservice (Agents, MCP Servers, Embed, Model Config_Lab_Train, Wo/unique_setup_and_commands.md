@@ -1,0 +1,1 @@
+Run via `./start.sh start|stop|restart|status` from the project root (loads `services/.env`, uses `venv/bin/python`, writes PID to `pids/aiplatform.pid` and log to `logs/aiplatform.log`); alternatively `python -m uvicorn services.aiplatform.main:app --host 0.0.0.0 --port 8007`. Docker build copies both `services/shared` and `backend/` into the image and sets `PYTHONPATH=/app`.

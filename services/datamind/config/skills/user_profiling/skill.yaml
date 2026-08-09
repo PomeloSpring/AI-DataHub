@@ -1,0 +1,24 @@
+# User Profiling Agent
+name: user_profiling
+display_name: 用户画像
+description: 分析用户画像：地域分布、设备类型、新老用户比例、用户活跃度分层、用户行为特征。支持任意数据源。
+category: analysis
+datasource_type: ""
+max_retries: 0
+max_iterations: 15
+route_patterns:
+  - "(用户画像|用户特征|用户分析)"
+  - "(地域|地区|城市|省份).*(分布|统计|分析)"
+  - "(设备|终端|手机|浏览器).*(分布|统计|类型)"
+  - "(新老用户|新用户|老用户|活跃用户).*(比例|统计|分析)"
+  - "(用户分层|用户分群|用户等级|RFM)"
+  - "(活跃度|留存用户|流失用户).*(分析|统计)"
+input_schema:
+  required:
+    - field: "question"
+      description: "用户的分析问题"
+      format: "自然语言问题"
+  optional:
+    - field: "dimension"
+      description: "分析维度"
+      format: "如：地域、设备、新老用户"

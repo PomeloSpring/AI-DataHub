@@ -1,0 +1,1 @@
+Run via the shared lifecycle script: `./start.sh start|stop|restart|status` from the project root; the script auto-detects this service as `datacatalog` and starts `uvicorn services.datacatalog.main:app` on port 8005. Environment variables are loaded from `services/.env`. The MCP Starlette app can be created via `mcp_server.create_mcp_app()` for embedding.

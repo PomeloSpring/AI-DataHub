@@ -1,0 +1,3 @@
+- All microservices expose their FastAPI app via a `main.py` module launched by uvicorn through the shared Dockerfile template.
+- Cross-cutting concerns (config, auth, caching, vector stores, LLM clients) are implemented as pluggable interfaces under `common/` with concrete backends registered via factory or subclassing base classes.
+- Request/response contracts are defined once in `models/schemas.py` and imported directly by both graphservice and vectorservice instead of redefining Pydantic models locally.

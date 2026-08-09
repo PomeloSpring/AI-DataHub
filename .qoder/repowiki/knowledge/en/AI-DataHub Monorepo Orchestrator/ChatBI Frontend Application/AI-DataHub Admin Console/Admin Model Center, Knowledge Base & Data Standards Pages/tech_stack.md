@@ -1,0 +1,1 @@
+React + TypeScript pages using shadcn/ui primitives (Tabs, Dialog, Select, Switch, Badge, Button), lucide-react icons, sonner for toast notifications, and axios via a centralized `client` (`../../api/client`) plus a typed `governanceApi` module.

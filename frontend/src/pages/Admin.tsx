@@ -1607,7 +1607,7 @@ function DatasourceTab() {
     setLoading(true);
     try {
       const { data } = await client.get('/datasources');
-      setDatasources(data);
+      setDatasources(Array.isArray(data) ? data : []);
     } catch {
       // ignore
     } finally {
@@ -2423,7 +2423,7 @@ function EmbeddingModelSection() {
         client.get('/admin/embedding/models'),
         client.get('/admin/embedding'),
       ]);
-      setModels(modelsRes.data || []);
+      setModels(Array.isArray(modelsRes.data) ? modelsRes.data : []);
       setModelInfo(infoRes.data || {});
     } catch (e: any) {
       console.error('Failed to load embedding models:', e);
@@ -3391,7 +3391,7 @@ function ModelConfigTab() {
   const loadModels = async () => {
     try {
       const { data } = await client.get('/model-config/llm');
-      setModels(data);
+      setModels(Array.isArray(data) ? data : []);
     } catch {}
   };
 

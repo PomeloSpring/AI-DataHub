@@ -1,0 +1,1 @@
+`./start-all.sh [service|frontend|all]` launches every microservice and the frontend locally with PID/log management; `./stop-all.sh` and `./restart-all.sh` mirror the same interface. `docker compose up` builds the backend image (root `Dockerfile`) and the frontend image (`frontend/Dockerfile`) and starts them on the `chatbi` network.

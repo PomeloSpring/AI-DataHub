@@ -1,0 +1,1 @@
+React admin pages for viewing audit logs, managing sensitive data field masking rules, and configuring roles with resource-based permission matrices.

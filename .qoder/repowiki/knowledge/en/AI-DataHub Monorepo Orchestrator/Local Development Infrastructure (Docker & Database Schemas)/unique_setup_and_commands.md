@@ -1,0 +1,1 @@
+Run Neo4j locally with `bash docker/neo4j/start.sh` (auto-detects `docker compose` vs `docker-compose`); initialize SQLite metadata with `bash docker/sqlite/init.sh` which writes `data/metadata.db`; MySQL schema is bootstrapped by loading `docker/mysql/init.sql` into a running MySQL instance, then applying migrations in `docker/mysql/*_migration*.sql` order.

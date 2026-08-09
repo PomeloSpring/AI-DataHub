@@ -1,5 +1,8 @@
 """
-AI-DataHub Metadata Sync
+AI-DataHub Metadata Sync  [DEPRECATED — 保留作回滚路径]
+直连数据源采集元数据的旧实现；新环境请改用 OpenMetadata 采集 + 回灌:
+    python -m sync.om_sync        （见 docker/om/README.md）
+
 Incremental sync of table info and column metadata from MySQL/Doris/Elasticsearch.
 - Table info → adh.adh_table_info (table_comment, business_desc, tags)
 - Column metadata → adh.adh_column_metadata (column_comment, business_desc)
@@ -19,9 +22,9 @@ from datetime import datetime
 import pymysql
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from backend.common.llm.embedding import generate_embedding, embedding_to_sql_literal
-from backend.common.crypto import decrypt_password, is_encrypted
-from backend.common.config import METADATA_DB_DATABASE
+from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
+from services.shared.common.crypto import decrypt_password, is_encrypted
+from services.shared.common.config import METADATA_DB_DATABASE
 
 
 # ---------------------------------------------------------------------------

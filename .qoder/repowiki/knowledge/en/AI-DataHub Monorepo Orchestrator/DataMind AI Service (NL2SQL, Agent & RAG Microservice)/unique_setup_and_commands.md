@@ -1,0 +1,1 @@
+Run via `uvicorn services.datamind.main:app --host 0.0.0.0 --port 8001 --reload`; start/stop scripts provided at `start.sh`/`stop.sh`; health check at `/api/health`.

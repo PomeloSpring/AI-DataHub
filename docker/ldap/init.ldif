@@ -1,0 +1,100 @@
+# OpenLDAP 初始化数据
+# 创建组织单元、用户和组
+
+# ══════════════════════════════════════════════════════════════════
+# 组织单元
+# ══════════════════════════════════════════════════════════════════
+
+dn: ou=users,dc=example,dc=com
+objectClass: organizationalUnit
+ou: users
+
+dn: ou=groups,dc=example,dc=com
+objectClass: organizationalUnit
+ou: groups
+
+# ══════════════════════════════════════════════════════════════════
+# 用户
+# ══════════════════════════════════════════════════════════════════
+
+# 管理员
+dn: uid=admin,ou=users,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+uid: admin
+cn: Administrator
+sn: Admin
+mail: admin@example.com
+userPassword: admin123
+uidNumber: 1000
+gidNumber: 1000
+homeDirectory: /home/admin
+
+# 数据分析师 - 张三
+dn: uid=zhangsan,ou=users,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+uid: zhangsan
+cn: 张三
+sn: 张
+mail: zhangsan@example.com
+userPassword: password123
+uidNumber: 1001
+gidNumber: 1001
+homeDirectory: /home/zhangsan
+
+# 数据分析师 - 李四
+dn: uid=lisi,ou=users,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+uid: lisi
+cn: 李四
+sn: 李
+mail: lisi@example.com
+userPassword: password123
+uidNumber: 1002
+gidNumber: 1002
+homeDirectory: /home/lisi
+
+# 普通查看者 - 王五
+dn: uid=wangwu,ou=users,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+uid: wangwu
+cn: 王五
+sn: 王
+mail: wangwu@example.com
+userPassword: password123
+uidNumber: 1003
+gidNumber: 1003
+homeDirectory: /home/wangwu
+
+# ══════════════════════════════════════════════════════════════════
+# 组
+# ══════════════════════════════════════════════════════════════════
+
+# 管理员组
+dn: cn=admins,ou=groups,dc=example,dc=com
+objectClass: groupOfNames
+cn: admins
+description: 系统管理员
+member: uid=admin,ou=users,dc=example,dc=com
+
+# 数据分析师组
+dn: cn=analysts,ou=groups,dc=example,dc=com
+objectClass: groupOfNames
+cn: analysts
+description: 数据分析师
+member: uid=zhangsan,ou=users,dc=example,dc=com
+member: uid=lisi,ou=users,dc=example,dc=com
+
+# 普通用户组
+dn: cn=users,ou=groups,dc=example,dc=com
+objectClass: groupOfNames
+cn: users
+description: 普通用户
+member: uid=wangwu,ou=users,dc=example,dc=com

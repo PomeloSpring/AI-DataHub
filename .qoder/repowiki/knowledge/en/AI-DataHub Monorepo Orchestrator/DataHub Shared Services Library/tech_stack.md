@@ -1,0 +1,1 @@
+Python 3.11 + FastAPI + Uvicorn for all service entrypoints; shared dependencies pinned in `common/requirements.txt`; Docker images built from a single `Dockerfile.template` with `PYTHONPATH=/app` so `services.shared.common` is importable from any sibling service.

@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: datagov_service
+title: DataGov Microservice (Quality, Lineage, Standards, Security)
+scope:
+    - services/datagov/
+source_files: []
+depends_on: []
+related_to:
+    - path: dataflow_service

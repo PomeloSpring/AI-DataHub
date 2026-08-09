@@ -1,0 +1,1 @@
+React 18 + TypeScript + Vite 6 + React Router v7 for routing; Zustand for cross-component state; Tailwind CSS + Radix UI primitives for the component library; @xyflow/react + dagre for graph/canvas editors; axios for HTTP; Vitest + Testing Library for tests; Docker + nginx for containerized serving; a sibling Vite project builds the standalone SDK.

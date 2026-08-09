@@ -1,0 +1,6 @@
+- Database access goes through the `get_vector_connection()` context manager rather than direct pool calls, ensuring connections are always returned to the pool.
+- SQL queries use parameterized `%s` placeholders for all user-supplied values while only table/column identifiers are interpolated into f-strings, keeping query parameters safe from injection.
+- Embedding vectors are converted to SQL array literals via a local `_embedding_to_sql_literal` helper that joins floats with commas inside brackets before being embedded in the query string.
+- Upsert operations follow a DELETE-then-INSERT pattern against Doris DUPLICATE KEY tables instead of using native upsert syntax.
+- Each route wraps its body in try/except that logs the error and raises `HTTPException` with a descriptive detail message, centralizing error handling at the endpoint level.
+- Configuration is read exclusively from the shared `services.shared.common.config` module using `VECTOR_DB_*` constants rather than reading env vars directly inside the service.

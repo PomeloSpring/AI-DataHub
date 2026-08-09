@@ -1,0 +1,6 @@
+- Each pluggable subsystem (cache, vector store) exposes an abstract base class in a `base.py` file and concrete implementations in sibling modules, selected through a factory function rather than direct instantiation.
+- All external configuration is read from environment variables via `os.getenv` with documented defaults and backward-compatible legacy aliases (e.g., `METADATA_DB_HOST` falling back to `DORIS_HOST`).
+- Database access goes through `get_metadata_conn()` context managers that guarantee connection closure, and all SQL uses parameterized queries with `%s` placeholders.
+- Sensitive fields (passwords, email, phone) are encrypted before persistence and decrypted on read via centralized `crypto.encrypt_password` / `decrypt_password` helpers, with graceful fallbacks on decryption errors.
+- LLM client functions are decorated with `@observe(as_type="generation")` from langfuse and wrap synchronous Anthropic SDK calls in async thread-pool wrappers for non-blocking SSE streaming.
+- Error paths log via `logging.getLogger(__name__)` and return safe defaults or raise domain-specific exceptions rather than propagating raw third-party errors.

@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: frontend/dashboard_editor
+title: Dashboard Visual Editor & Canvas
+scope:
+    - frontend/src/pages/Dashboard*.tsx
+    - frontend/src/components/editor/
+    - frontend/src/components/ui/
+source_files: []
+depends_on: []
+related_to:
+    - path: dataviz_service

@@ -1,0 +1,1 @@
+Build produces a UMD bundle at `dist/chatbi-sdk.min.js` plus declaration files under `dist/`; run `npm run build` (Vite build + `tsc --emitDeclarationOnly`) or `npm run dev`/`preview` for local development. The package declares `type: module` but ships UMD so consumers can load it via `<script>` tags without a bundler.

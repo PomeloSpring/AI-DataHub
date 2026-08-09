@@ -1,0 +1,1 @@
+Embed application preview opens `/test/index.html?host=...&userId=...&apiKey=...` in a new window; the host is resolved from `window.location.hostname` (localhost maps to `http://localhost:8000`). Per-application API keys are cached in browser `localStorage` under the key `chatbi_app_keys` and survive page reloads.

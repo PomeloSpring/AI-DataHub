@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: frontend/admin/content_management
+title: Admin Content Management Pages
+scope:
+    - frontend/src/pages/admin/PromptManager.tsx
+    - frontend/src/pages/admin/ReportTemplates.tsx
+    - frontend/src/pages/admin/DataManagement.tsx
+    - frontend/src/pages/admin/GraphEntities.tsx
+    - frontend/src/pages/admin/NotificationChannels.tsx
+source_files: []
+depends_on: []
+related_to: []

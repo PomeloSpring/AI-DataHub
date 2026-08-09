@@ -1,0 +1,1 @@
+FastAPI + Uvicorn HTTP server; Pydantic v2 for request/response models; httpx for Apache Airflow REST v2 API calls; Celery + Redis for background task scheduling (with a Redis-set based single-instance lock for Beat); MySQL via `dbutils` connection pooling through `services.shared.common.db`; MCP tool protocol for AI-agent integration.

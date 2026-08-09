@@ -1,0 +1,1 @@
+No build script or special command — this is a standard Python package mounted by the parent FastAPI app. Streaming endpoints require `Cache-Control: no-cache` and `X-Accel-Buffering: no` headers so reverse proxies do not buffer SSE streams.

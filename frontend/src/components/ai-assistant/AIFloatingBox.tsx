@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useAuthStore } from '../../stores/authStore';
 import { useAIAssistantStore } from '../../stores/aiAssistantStore';
-import { aiAssistantExecutor } from '../../utils/aiAssistantExecutor';
 import ChatInterface from './ChatInterface';
 import ConversationHistory from './ConversationHistory';
 
@@ -18,7 +17,6 @@ interface AIFloatingBoxProps {
 
 const AIFloatingBox: React.FC<AIFloatingBoxProps> = ({ className = '' }) => {
   const location = useLocation();
-  const navigate = useNavigate();
   const { user } = useAuthStore();
   const {
     isOpen,
@@ -28,26 +26,9 @@ const AIFloatingBox: React.FC<AIFloatingBoxProps> = ({ className = '' }) => {
   } = useAIAssistantStore();
 
   const [activeTab, setActiveTab] = useState<'chat' | 'history'>('chat');
-  const boxRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<HTMLDivElement>(null);
-
-  // 拖动状态
-  const [isDragging, setIsDragging] = useState(false);
-  const [hasDragged, setHasDragged] = useState(false);  // 是否发生了实际拖动
-  const [position, setPosition] = useState({ x: 0, y: 0 });
-  const [dragStartPos, setDragStartPos] = useState({ x: 0, y: 0 });
-  const [boxStartPos, setBoxStartPos] = useState({ x: 0, y: 0 });
-
-  // 拖动阈值（像素），超过这个距离才算拖动
-  const DRAG_THRESHOLD = 5;
 
   // 检查用户权限
   const hasPermission = user && AI_ASSISTANT_ROLES.includes(user.role);
-
-  // 设置导航函数
-  useEffect(() => {
-    aiAssistantExecutor.setNavigate(navigate);
-  }, [navigate]);
 
   // 检查当前页面是否在排除列表中
   const isExcludedPage = useCallback(() => {
@@ -61,50 +42,6 @@ const AIFloatingBox: React.FC<AIFloatingBoxProps> = ({ className = '' }) => {
     });
   }, [location.pathname]);
 
-  // 初始化位置（右下角）
-  useEffect(() => {
-    const initPosition = () => {
-      const savedPosition = localStorage.getItem('ai-assistant-position');
-      if (savedPosition) {
-        try {
-          const pos = JSON.parse(savedPosition);
-          // 验证保存的位置是否在窗口范围内
-          if (pos.x >= 0 && pos.x < window.innerWidth && pos.y >= 0 && pos.y < window.innerHeight) {
-            setPosition(pos);
-            return;
-          }
-        } catch {
-          // 解析失败，使用默认位置
-        }
-      }
-      // 默认位置：右下角，留出边距
-      setPosition({
-        x: window.innerWidth - 80,
-        y: window.innerHeight - 80
-      });
-    };
-
-    initPosition();
-
-    // 监听窗口大小变化，重新调整位置
-    const handleResize = () => {
-      setPosition(prev => ({
-        x: Math.min(prev.x, window.innerWidth - 80),
-        y: Math.min(prev.y, window.innerHeight - 80)
-      }));
-    };
-
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  // 保存位置到localStorage
-  useEffect(() => {
-    if (position.x !== 0 || position.y !== 0) {
-      localStorage.setItem('ai-assistant-position', JSON.stringify(position));
-    }
-  }, [position]);
-
   // 自动识别当前页面上下文
   useEffect(() => {
     if (!hasPermission || isExcludedPage()) return;
@@ -112,76 +49,6 @@ const AIFloatingBox: React.FC<AIFloatingBoxProps> = ({ className = '' }) => {
     const context = analyzePageContext(location.pathname);
     updateContext(context);
   }, [location.pathname, hasPermission, updateContext, isExcludedPage]);
-
-  // 拖动开始
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    setIsDragging(true);
-    setHasDragged(false);
-    setDragStartPos({ x: e.clientX, y: e.clientY });
-    setBoxStartPos({ ...position });
-  }, [position]);
-
-  // 处理点击（区分单击和拖动）
-  const handleClick = useCallback((e: React.MouseEvent) => {
-    // 如果发生了拖动，不触发打开操作
-    if (hasDragged) {
-      e.preventDefault();
-      e.stopPropagation();
-      return;
-    }
-    // 否则打开对话框
-    toggleBox();
-  }, [hasDragged, toggleBox]);
-
-  // 拖动中
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isDragging) return;
-
-      const deltaX = e.clientX - dragStartPos.x;
-      const deltaY = e.clientY - dragStartPos.y;
-
-      // 检查是否超过拖动阈值
-      if (Math.abs(deltaX) > DRAG_THRESHOLD || Math.abs(deltaY) > DRAG_THRESHOLD) {
-        setHasDragged(true);
-      }
-
-      let newX = boxStartPos.x + deltaX;
-      let newY = boxStartPos.y + deltaY;
-
-      // 限制在窗口范围内
-      const minX = isOpen ? 200 : 30;
-      const maxX = window.innerWidth - (isOpen ? 200 : 30);
-      const minY = 30;
-      const maxY = window.innerHeight - (isOpen ? 300 : 30);
-
-      newX = Math.max(minX, Math.min(newX, maxX));
-      newY = Math.max(minY, Math.min(newY, maxY));
-
-      setPosition({ x: newX, y: newY });
-    };
-
-    const handleMouseUp = () => {
-      setIsDragging(false);
-      // 延迟重置hasDragged，确保click事件能正确判断
-      setTimeout(() => {
-        setHasDragged(false);
-      }, 100);
-    };
-
-    if (isDragging) {
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', handleMouseUp);
-    }
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isDragging, dragStartPos, boxStartPos, isOpen]);
 
   // 分析页面上下文
   const analyzePageContext = (pathname: string) => {
@@ -270,24 +137,16 @@ const AIFloatingBox: React.FC<AIFloatingBoxProps> = ({ className = '' }) => {
 
   return (
     <div
-      ref={boxRef}
-      className={`fixed z-[9999] ${className}`}
-      style={{
-        left: `${position.x}px`,
-        top: `${position.y}px`,
-        transform: 'translate(-50%, -50%)',
-        transition: isDragging ? 'none' : 'left 0.1s ease, top 0.1s ease'
-      }}
+      className={`fixed bottom-6 right-6 z-[9999] ${className}`}
     >
       {/* 悬浮按钮 */}
       {!isOpen && (
         <button
-          onClick={handleClick}
-          onMouseDown={handleMouseDown}
+          onClick={toggleBox}
           className="w-14 h-14 bg-blue-500 rounded-full shadow-lg
                      hover:bg-blue-600 transition-all duration-300
                      flex items-center justify-center
-                     hover:scale-110 active:scale-95 cursor-grab active:cursor-grabbing"
+                     hover:scale-110 active:scale-95"
           title="AI助手"
         >
           <svg
@@ -312,14 +171,9 @@ const AIFloatingBox: React.FC<AIFloatingBoxProps> = ({ className = '' }) => {
         <div
           className="w-96 h-[600px] bg-white rounded-lg shadow-xl border border-gray-200
                      flex flex-col overflow-hidden"
-          style={{ transform: 'translate(-50%, -50%)' }}
         >
-          {/* 标题栏 - 可拖动区域 */}
-          <div
-            ref={dragRef}
-            onMouseDown={handleMouseDown}
-            className="flex items-center justify-between p-4 bg-blue-500 text-white cursor-grab active:cursor-grabbing select-none"
-          >
+          {/* 标题栏 */}
+          <div className="flex items-center justify-between p-4 bg-blue-500 text-white select-none">
             <div className="flex items-center space-x-2">
               <svg
                 className="w-6 h-6"

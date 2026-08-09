@@ -1,0 +1,1 @@
+Run via `uvicorn services.shared.graphservice.main:app --host 0.0.0.0 --port 8011` (or the provided `start.sh`). Container image exposes port 8011 and sets `PYTHONPATH=/app`. Neo4j connection is configured through environment variables `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`; log level via `LOG_LEVEL`.

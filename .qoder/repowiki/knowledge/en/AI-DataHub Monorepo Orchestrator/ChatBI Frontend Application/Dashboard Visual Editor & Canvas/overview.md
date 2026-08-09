@@ -1,0 +1,1 @@
+Interactive canvas-based dashboard editor that lets users drag charts and widgets onto a zoomable/pannable workspace, configure properties, and save layouts via a three-panel UI.

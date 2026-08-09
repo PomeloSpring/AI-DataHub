@@ -1,0 +1,1 @@
+Pydantic v2 `BaseModel` with `Field(...)` validators and `Optional[...]` types; SQLAlchemy ORM for the menu adjacency-list table; Python `enum.Enum` for domain constants.

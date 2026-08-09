@@ -1,0 +1,1 @@
+The editor expects a running backend exposing `/admin/workflows` (GET list, GET/:id, POST create, PUT/:id save, DELETE/:id) and `/admin/workflows/:id/execute` (POST for the in-editor test dialog). New workflows are created with `workflow_type: 'dag'` and empty steps; loading a workflow without stored edges auto-generates sequential connections based on `step_order`.

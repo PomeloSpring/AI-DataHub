@@ -7,9 +7,8 @@ import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
-import { Plus, Pencil, Trash2, Server, Bot, Store } from 'lucide-react';
+import { Plus, Pencil, Trash2, Server, Bot } from 'lucide-react';
 import client from '@/api/client';
-import MCPMarket from './MCPMarket';
 
 interface MCPServer {
   id: number;
@@ -46,10 +45,10 @@ interface Agent {
 
 export default function MCPAgentConfig() {
   return (
-    <div className="h-full overflow-auto">
-      <Tabs defaultValue="mcp-servers" className="h-full">
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold mb-4">MCP / Agent</h1>
+    <div className="p-6 space-y-6">
+      <Tabs defaultValue="mcp-servers">
+        <div className="flex items-center justify-between">
+          <h1 className="text-lg font-semibold">MCP / Agent</h1>
           <TabsList>
             <TabsTrigger value="mcp-servers">
               <Server className="h-4 w-4 mr-2" />
@@ -59,10 +58,6 @@ export default function MCPAgentConfig() {
               <Bot className="h-4 w-4 mr-2" />
               Agent 管理
             </TabsTrigger>
-            <TabsTrigger value="market">
-              <Store className="h-4 w-4 mr-2" />
-              服务市场
-            </TabsTrigger>
           </TabsList>
         </div>
         <TabsContent value="mcp-servers" className="mt-0">
@@ -70,9 +65,6 @@ export default function MCPAgentConfig() {
         </TabsContent>
         <TabsContent value="agents" className="mt-0">
           <AgentsTab />
-        </TabsContent>
-        <TabsContent value="market" className="mt-0">
-          <MCPMarket />
         </TabsContent>
       </Tabs>
     </div>
@@ -98,7 +90,7 @@ export function MCPServersTab({ workspaceId, defaultWorkspaceId }: { workspaceId
     try {
       const params = workspaceId ? `?workspace_id=${workspaceId}` : '';
       const { data } = await client.get(`/admin/mcp-servers${params}`);
-      setServers(data);
+      setServers(Array.isArray(data) ? data : []);
     } catch { toast.error('加载失败'); }
     finally { setLoading(false); }
   };
@@ -195,7 +187,7 @@ export function MCPServersTab({ workspaceId, defaultWorkspaceId }: { workspaceId
 
       {/* Form */}
       {formOpen && (
-        <div className="border rounded-lg p-4 space-y-4 bg-muted/30">
+        <div className="border border-border rounded-xl p-4 space-y-4 bg-card">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <Label>服务名称</Label>
@@ -320,9 +312,9 @@ export function MCPServersTab({ workspaceId, defaultWorkspaceId }: { workspaceId
       )}
 
       {/* List */}
-      <div className="border rounded-lg divide-y">
+      <div className="border border-border rounded-xl divide-y divide-border">
         {servers.map(s => (
-          <div key={s.id} className="p-3 hover:bg-muted/30">
+          <div key={s.id} className="p-3 hover:bg-muted/50 transition-colors">
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
                 <div className="font-medium text-sm">
@@ -426,9 +418,9 @@ export function AgentsTab({ workspaceId, defaultWorkspaceId }: { workspaceId?: n
         client.get(`/admin/mcp-servers${mcpParams}`),
         client.get('/datasources/'),
       ]);
-      setAgents(agentsRes.data);
-      setMcpServers(mcpRes.data);
-      setDatasources(dsRes.data);
+      setAgents(Array.isArray(agentsRes.data) ? agentsRes.data : []);
+      setMcpServers(Array.isArray(mcpRes.data) ? mcpRes.data : []);
+      setDatasources(Array.isArray(dsRes.data) ? dsRes.data : []);
     } catch { toast.error('加载失败'); }
     finally { setLoading(false); }
   };
@@ -496,7 +488,7 @@ export function AgentsTab({ workspaceId, defaultWorkspaceId }: { workspaceId?: n
 
       {/* Form */}
       {formOpen && (
-        <div className="border rounded-lg p-4 space-y-4 bg-muted/30">
+        <div className="border border-border rounded-xl p-4 space-y-4 bg-card">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <Label>Agent 名称 (英文标识)</Label>
@@ -592,7 +584,7 @@ export function AgentsTab({ workspaceId, defaultWorkspaceId }: { workspaceId?: n
       )}
 
       {/* List */}
-      <div className="border rounded-lg divide-y">
+      <div className="border border-border rounded-xl divide-y divide-border">
         {agents.map(a => {
           const mcpName = a.mcp_server_ids ? mcpServers.find(s => String(s.id) === a.mcp_server_ids)?.name : '';
           const dsName = a.datasource_ids ? datasources.find(d => String(d.id) === a.datasource_ids)?.name : '';

@@ -1,0 +1,1 @@
+No build or runtime scripts are specific to these pages; they are consumed by the app's router as part of the admin section. The only prerequisite is that the governance API endpoints (`/audit-logs`, `/sensitive-fields`, `/roles`, `/permissions`) are available at runtime.

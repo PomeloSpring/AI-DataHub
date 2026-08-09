@@ -1,0 +1,5 @@
+- Cross-cutting UI state is held in Zustand stores under `src/stores/` and accessed via selectors rather than prop drilling.
+- Backend integration is centralized in `src/api/client.ts` with per-domain modules (`governance.ts`, `lineage.ts`, `metrics.ts`, `quality.ts`, `sync.ts`, `tags.ts`, `scheduledTask.ts`, `workspace.ts`) exposing typed functions instead of ad-hoc fetch calls.
+- Routes are grouped by layout mode (`/ws/*`, `/data/*`, `/system/*`) using nested `react-router-dom` routes, with legacy paths redirected to the new workspace-scoped URLs.
+- Reusable UI pieces live in `src/components/ui/` as small Radix-based primitives and are re-exported from `index.ts` for consistent consumption across pages.
+- Feature domains are organized as parallel folders under `src/pages/<domain>/` and `src/components/<domain>/`, keeping domain logic co-located while sharing the common store/API layer.

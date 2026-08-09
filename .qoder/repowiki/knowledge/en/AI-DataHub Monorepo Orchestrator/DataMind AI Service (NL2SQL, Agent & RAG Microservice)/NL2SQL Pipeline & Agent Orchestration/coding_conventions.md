@@ -1,0 +1,6 @@
+- Each pipeline yields a uniform `(event_type, data)` tuple stream supporting `progress`, `thinking`, `token`, `done`, and error events so callers can render SSE responses consistently across quick/deep/agent modes.
+- All pipeline results are passed through a local `_sanitize_for_json` helper that converts NaN/inf floats, `Decimal`, `datetime`, and `bytes` values before yielding to ensure JSON-safe payloads.
+- Tool implementations use late imports (e.g., `from services.datamind.rag...` inside the function body) to avoid circular imports between orchestrator, sql, and rag packages.
+- Database connections are obtained via `get_metadata_conn()` context managers with explicit `finally: conn.close()` blocks, and datasource configs are cached with a TTL cache keyed by `ds:{datasource_id}`.
+- Prompt content is constructed centrally in `prompt/prompt_builder.py` and consumed by all pipelines rather than being inline, keeping NL2SQL prompts versioned in one place.
+- Error handling follows a fail-fast pattern: guard checks (sensitive keywords, feasibility, semantic validation) short-circuit the pipeline and yield a `done` event with `success=False` instead of raising.

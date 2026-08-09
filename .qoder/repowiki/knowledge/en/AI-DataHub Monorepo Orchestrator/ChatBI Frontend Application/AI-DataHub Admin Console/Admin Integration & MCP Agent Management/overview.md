@@ -1,0 +1,1 @@
+Admin UI pages for managing embed integration applications, viewing integration logs, and configuring MCP servers, agents, and the MCP service marketplace.

@@ -1,0 +1,1 @@
+Defines shared Pydantic request/response schemas and a SQLAlchemy menu model used across ChatBI service endpoints for auth, chat, dashboards, workflows, scheduling, knowledge graphs, and AI assistant APIs.

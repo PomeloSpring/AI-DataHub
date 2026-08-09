@@ -1,0 +1,1 @@
+FastAPI microservice exposing a knowledge graph API backed by Neo4j, providing graph queries, CRUD operations, and event-driven synchronization from metadata sources.

@@ -1,0 +1,1 @@
+MySQL 8.0+ (utf8mb4), Neo4j 5 Community with APOC plugin, SQLite (via sqlite3 CLI), Apache Doris; orchestrated through Docker Compose with bridge networking and named volumes.

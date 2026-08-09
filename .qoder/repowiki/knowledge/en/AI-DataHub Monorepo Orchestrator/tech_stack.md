@@ -1,0 +1,1 @@
+Python 3.12 + uvicorn/FastAPI for all backend services; Vite/React for the frontend; Docker Compose for container orchestration; MySQL/Neo4j/SQLite/Doris as shared persistence backends; Redis/Celery for async task queues used by dataflow.

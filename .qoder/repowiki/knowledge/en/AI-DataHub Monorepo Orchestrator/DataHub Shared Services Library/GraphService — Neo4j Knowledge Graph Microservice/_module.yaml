@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: shared_libs/graphservice
+title: GraphService — Neo4j Knowledge Graph Microservice
+scope:
+    - services/shared/graphservice/
+source_files: []
+depends_on: []
+related_to:
+    - path: datamind_service/rag_retrieval
+    - path: frontend/knowledge_graph

@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: shared_libs
+title: DataHub Shared Services Library
+scope:
+    - services/shared/
+source_files: []
+depends_on: []
+related_to: []

@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS adh_datasources (
     password        VARCHAR(256) NOT NULL,
     database_name   VARCHAR(128) DEFAULT '',
     is_default      TINYINT      DEFAULT 0,
-    ssl             TINYINT      DEFAULT 0,
+    `ssl`           TINYINT      DEFAULT 0,
     owner_id        BIGINT       NOT NULL,
     created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

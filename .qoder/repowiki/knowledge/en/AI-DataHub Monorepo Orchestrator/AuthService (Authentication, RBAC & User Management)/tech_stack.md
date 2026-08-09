@@ -1,0 +1,1 @@
+FastAPI + Uvicorn ASGI server, PyMySQL for MySQL access, PyJWT (HS256) for stateless access/refresh tokens, bcrypt for password hashing, AES-256-GCM encryption for sensitive user fields, Pydantic v2 for request/response validation, DBUtils connection pooling.

@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: dataflow_service
+title: DataFlow Service — Sync & Workflow Orchestration Microservice
+scope:
+    - services/dataflow/
+source_files: []
+depends_on: []
+related_to:
+    - path: datagov_service
+    - path: dataviz_service
+    - path: frontend/admin/scheduled_tasks
+    - path: frontend/admin/workflow_editor

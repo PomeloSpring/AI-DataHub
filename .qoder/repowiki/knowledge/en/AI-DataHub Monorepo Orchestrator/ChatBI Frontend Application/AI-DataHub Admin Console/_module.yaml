@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: frontend/admin
+title: AI-DataHub Admin Console
+scope:
+    - frontend/src/pages/admin/
+source_files: []
+depends_on: []
+related_to: []

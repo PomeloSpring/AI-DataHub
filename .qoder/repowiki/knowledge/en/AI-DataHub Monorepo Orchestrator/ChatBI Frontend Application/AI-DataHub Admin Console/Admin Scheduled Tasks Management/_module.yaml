@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: frontend/admin/scheduled_tasks
+title: Admin Scheduled Tasks Management
+scope:
+    - frontend/src/pages/admin/ScheduledTasks.tsx
+    - frontend/src/pages/admin/ScheduledTaskForm.tsx
+    - frontend/src/pages/admin/ScheduledTaskLogs.tsx
+source_files: []
+depends_on: []
+related_to:
+    - path: dataflow_service

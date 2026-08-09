@@ -1,0 +1,1 @@
+Python async agents using an internal `AgentLoop` for LLM tool-calling cycles; YAML-based agent skill manifests under `config/agents/`; file-based prompt templates (Markdown + YAML) with optional DB override priority; Anthropic messages client used for intent routing.

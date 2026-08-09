@@ -1,0 +1,2 @@
+- Each admin feature is implemented as a single top-level page component file (or a small sibling set) directly under `pages/admin/`, keeping one concern per file.
+- Admin pages follow a consistent list/detail pattern: a table view with search/filter actions plus a modal or drawer form for create/edit operations.

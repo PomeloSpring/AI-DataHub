@@ -1,0 +1,155 @@
+# Apache Ranger + OpenLDAP + Kerberos 统一认证授权基础设施
+# 启动方式: docker compose -f docker-compose.ranger.yml up -d
+
+version: "3.8"
+
+services:
+  # ══════════════════════════════════════════════════════════════════════
+  # ZooKeeper — Ranger 依赖
+  # ══════════════════════════════════════════════════════════════════════
+  zookeeper:
+    image: zookeeper:3.8
+    container_name: adh-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOO_MY_ID: 1
+      ZOO_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ══════════════════════════════════════════════════════════════════════
+  # OpenLDAP — 统一用户目录
+  # ══════════════════════════════════════════════════════════════════════
+  openldap:
+    image: osixia/openldap:1.5.0
+    container_name: adh-openldap
+    ports:
+      - "389:389"
+      - "636:636"
+    environment:
+      LDAP_ORGANISATION: "AI-DataHub"
+      LDAP_DOMAIN: "example.com"
+      LDAP_ADMIN_PASSWORD: "admin123"
+      LDAP_CONFIG_PASSWORD: "config123"
+      LDAP_BASE_DN: "dc=example,dc=com"
+      LDAP_TLS: "false"
+    volumes:
+      - ldap_data:/var/lib/ldap
+      - ldap_config:/etc/ldap/slapd.d
+    healthcheck:
+      test: ["CMD", "ldapsearch", "-x", "-H", "ldap://localhost", "-b", "dc=example,dc=com", "-D", "cn=admin,dc=example,dc=com", "-w", "admin123"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ══════════════════════════════════════════════════════════════════════
+  # phpLDAPadmin — LDAP 管理界面（可选，开发环境用）
+  # ══════════════════════════════════════════════════════════════════════
+  phpldapadmin:
+    image: osixia/phpldapadmin:0.9.0
+    container_name: adh-phpldapadmin
+    ports:
+      - "6443:443"
+    environment:
+      PHPLDAPADMIN_LDAP_HOSTS: "openldap"
+      PHPLDAPADMIN_HTTPS: "false"
+    depends_on:
+      openldap:
+        condition: service_healthy
+
+  # ══════════════════════════════════════════════════════════════════════
+  # Apache Ranger Admin — 统一策略管理
+  # ══════════════════════════════════════════════════════════════════════
+  ranger-db:
+    image: mysql:8.0
+    container_name: adh-ranger-db
+    ports:
+      - "3309:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: "ranger123"
+      MYSQL_DATABASE: "ranger"
+      MYSQL_USER: "rangeradmin"
+      MYSQL_PASSWORD: "ranger123"
+    volumes:
+      - ranger_db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -pranger123 2>/dev/null | grep -q 'mysqld is alive'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  ranger-admin:
+    image: apache/ranger:2.4.0
+    container_name: adh-ranger-admin
+    ports:
+      - "6080:6080"
+    environment:
+      RANGER_ADMIN_HTTP_PORT: "6080"
+      RANGER_DB_TYPE: "mysql"
+      RANGER_DB_HOST: "ranger-db"
+      RANGER_DB_PORT: "3306"
+      RANGER_DB_NAME: "ranger"
+      RANGER_DB_USER: "root"
+      RANGER_DB_PASSWORD: "ranger123"
+      RANGER_ADMIN_PASSWORD: "admin"
+      # LDAP 用户同步配置
+      RANGER_USERSYNC_ENABLED: "true"
+      RANGER_USERSYNC_SOURCE: "ldap"
+      RANGER_USERSYNC_LDAP_URL: "ldap://openldap:389"
+      RANGER_USERSYNC_LDAP_BIND_DN: "cn=admin,dc=example,dc=com"
+      RANGER_USERSYNC_LDAP_BIND_PASSWORD: "admin123"
+      RANGER_USERSYNC_LDAP_SEARCH_BASE: "dc=example,dc=com"
+      RANGER_USERSYNC_LDAP_USER_SEARCH_BASE: "ou=users,dc=example,dc=com"
+      RANGER_USERSYNC_LDAP_USER_SEARCH_FILTER: "(objectClass=inetOrgPerson)"
+      RANGER_USERSYNC_LDAP_GROUP_SEARCH_BASE: "ou=groups,dc=example,dc=com"
+      RANGER_USERSYNC_INTERVAL: "300"
+    volumes:
+      - ranger_admin_data:/opt/ranger
+    depends_on:
+      ranger-db:
+        condition: service_healthy
+      openldap:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:6080/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+
+  # ══════════════════════════════════════════════════════════════════════
+  # Kerberos KDC — SSO 认证（可选）
+  # ══════════════════════════════════════════════════════════════════════
+  kdc:
+    image: kdc-kerberos:latest
+    build:
+      context: ./kerberos
+      dockerfile: Dockerfile
+    container_name: adh-kdc
+    ports:
+      - "88:88"
+      - "749:749"
+    environment:
+      KRB5_REALM: "EXAMPLE.COM"
+      KRB5_KDC: "localhost"
+      KRB5_ADMIN_SERVER: "localhost"
+      KRB5_MASTER_PASSWORD: "admin123"
+    volumes:
+      - kdc_data:/var/kerberos
+    profiles:
+      - kerberos  # Only start with --profile kerberos
+
+volumes:
+  zookeeper_data:
+  ldap_data:
+  ldap_config:
+  ranger_db_data:
+  ranger_admin_data:
+  kdc_data:

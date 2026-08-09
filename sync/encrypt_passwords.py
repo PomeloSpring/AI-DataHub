@@ -17,10 +17,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pymysql
-from backend.common.config import (
+from services.shared.common.config import (
     DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, METADATA_DB_DATABASE,
 )
-from backend.common.crypto import encrypt_password, is_encrypted
+from services.shared.common.crypto import encrypt_password, is_encrypted
 
 
 def migrate():

@@ -15,11 +15,12 @@ import {
 } from '@/components/ui/select';
 import { DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { toast } from 'sonner';
-import { Plus, Trash2, Database, Cpu, Bot, Check, ChevronsUpDown, X } from 'lucide-react';
+import { Plus, Trash2, Database, Cpu, Bot, Check, ChevronsUpDown, X, Copy, RefreshCw, Webhook } from 'lucide-react';
 import CronInput from '@/components/CronInput';
 import {
   createScheduledTask,
   updateScheduledTask,
+  regenerateWebhookToken,
   listNotificationChannels,
   listReportTemplates,
   type ScheduledTask,
@@ -129,6 +130,9 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
 
   // Schedule
   const [cronExpression, setCronExpression] = useState('0 9 * * *');
+  const [triggerType, setTriggerType] = useState<'cron' | 'webhook' | 'both'>('cron');
+  const [webhookSecret, setWebhookSecret] = useState('');
+  const [webhookToken, setWebhookToken] = useState<string | null>(null);
 
   // Notification
   const [channelId, setChannelId] = useState<number | null>(null);
@@ -188,7 +192,10 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
 
     setQuestions(cfg.questions || []);
     setContext(cfg.context || '');
-    setCronExpression(task.cron_expression);
+    setCronExpression(task.cron_expression || '');
+    setTriggerType(task.trigger_type || 'cron');
+    setWebhookSecret(task.webhook_secret || '');
+    setWebhookToken(task.webhook_token || null);
     setChannelId(task.channel_id);
     setNotifyOnSuccess(task.notify_on_success);
     setNotifyOnFailure(task.notify_on_failure);
@@ -229,7 +236,9 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
   // ── Submit ────────────────────────────────────────────────────
   const handleSubmit = async () => {
     if (!name.trim()) { toast.error('请输入任务名称'); return; }
-    if (!cronExpression.trim()) { toast.error('请输入 Cron 表达式'); return; }
+    if (triggerType !== 'webhook' && !cronExpression.trim()) {
+      toast.error('定时触发模式下请输入 Cron 表达式'); return;
+    }
 
     // Build task_config with arrays
     const taskConfig: any = { questions };
@@ -263,7 +272,9 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
       description: description.trim(),
       task_type: taskType,
       task_config: taskConfig,
-      cron_expression: cronExpression.trim(),
+      cron_expression: triggerType === 'webhook' ? '' : cronExpression.trim(),
+      trigger_type: triggerType,
+      webhook_secret: webhookSecret.trim() || undefined,
       channel_id: channelId || undefined,
       notify_on_success: notifyOnSuccess,
       notify_on_failure: notifyOnFailure,
@@ -458,8 +469,90 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
         </div>
       )}
 
-      {/* ── Cron ────────────────────────────────────────────── */}
-      <CronInput value={cronExpression} onChange={setCronExpression} />
+      {/* ── Trigger Type ──────────────────────────────────────── */}
+      <div className="space-y-1.5">
+        <Label>触发方式</Label>
+        <Select value={triggerType} onValueChange={(v: 'cron' | 'webhook' | 'both') => setTriggerType(v)}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="cron">定时触发</SelectItem>
+            <SelectItem value="webhook">Webhook 触发</SelectItem>
+            <SelectItem value="both">两者都支持</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* ── Cron (only for cron/both) ─────────────────────────── */}
+      {triggerType !== 'webhook' && (
+        <CronInput value={cronExpression} onChange={setCronExpression} />
+      )}
+
+      {/* ── Webhook Config (only for webhook/both) ────────────── */}
+      {triggerType !== 'cron' && (
+        <div className="space-y-3 rounded-lg border p-4 bg-muted/30">
+          <div className="flex items-center gap-2">
+            <Webhook className="h-4 w-4" />
+            <Label className="font-medium">Webhook 配置</Label>
+          </div>
+
+          {/* Webhook URL — only in edit mode */}
+          {isEdit && webhookToken && (
+            <div className="space-y-1.5">
+              <Label className="text-sm text-muted-foreground">Webhook URL</Label>
+              <div className="flex gap-2">
+                <Input
+                  readOnly
+                  value={`${window.location.origin}/api/webhook/tasks/${task?.id}/${webhookToken}`}
+                  className="font-mono text-xs"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => {
+                    navigator.clipboard.writeText(`${window.location.origin}/api/webhook/tasks/${task?.id}/${webhookToken}`);
+                    toast.success('已复制 Webhook URL');
+                  }}
+                >
+                  <Copy className="h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={async () => {
+                    if (!task) return;
+                    try {
+                      const res = await regenerateWebhookToken(task.id);
+                      setWebhookToken(res.webhook_token);
+                      toast.success('已重新生成 Webhook URL');
+                    } catch { toast.error('重新生成失败'); }
+                  }}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                外部系统 POST 此 URL 即可触发任务执行。重新生成后旧 URL 立即失效。
+              </p>
+            </div>
+          )}
+
+          {/* Webhook Secret */}
+          <div className="space-y-1.5">
+            <Label className="text-sm">签名密钥（可选）</Label>
+            <Input
+              type="password"
+              value={webhookSecret}
+              onChange={e => setWebhookSecret(e.target.value)}
+              placeholder="留空则不验证签名"
+            />
+            <p className="text-xs text-muted-foreground">
+              配置后，调用方需在请求头 <code>X-Webhook-Signature</code> 中传递 HMAC-SHA256 签名。
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ── Notification & Report ───────────────────────────── */}
       <div className="grid grid-cols-2 gap-4 min-w-0">

@@ -1,0 +1,6 @@
+- Request/response pairs follow a Create/Update/Response naming pattern per entity (e.g. `DashboardCreate`/`DashboardUpdate`/`DashboardResponse`, `DatasourceCreate`/`DatasourceUpdate`, `PromptCreate`/`PromptUpdate`/`PromptResponse`).
+- List responses wrap items in an `items: list[...]` field alongside a `total: int` counter (used by `UserListResponse`, `AuditLogResponse`, `ApplicationListResponse`, `WorkflowListResponse`, `ScheduledTaskListResponse`, `ScheduledLogListResponse`).
+- Domain constants are expressed as string-based `Enum`s inheriting from `str` (e.g. `MessageRole`, `DocumentType`, `GraphType`, `NodeType`, `RelationType`) so they serialize to plain strings over JSON.
+- Fields use `pydantic.Field` with `description=` docstrings and validation constraints (`min_length`, `max_length`, `ge`, `le`) instead of bare type hints.
+- Optional fields default to safe sentinel values (`0`, `None`, `""`, `[]`, `{}`) rather than relying on Pydantic defaults, making the wire format explicit.
+- Feature areas are organized into sections separated by comment header blocks (e.g. `# ── Auth ──`, `# ── Loop Engineering: Workflow Config ──`) within each schema file.

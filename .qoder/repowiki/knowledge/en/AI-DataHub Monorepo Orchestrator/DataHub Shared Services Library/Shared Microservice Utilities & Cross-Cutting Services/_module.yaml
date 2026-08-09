@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: shared_libs/common_utils
+title: Shared Microservice Utilities & Cross-Cutting Services
+scope:
+    - services/shared/common/
+source_files: []
+depends_on: []
+related_to: []

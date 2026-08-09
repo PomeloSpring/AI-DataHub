@@ -1,0 +1,24 @@
+# Retention Analysis Agent
+name: retention
+display_name: 留存分析
+description: 分析用户留存：次日/7日/30日留存率、用户生命周期、留存曲线、流失预警。支持任意数据源。
+category: analysis
+datasource_type: ""
+max_retries: 0
+max_iterations: 15
+route_patterns:
+  - "(留存|留存率).*(分析|统计|查询)"
+  - "(次日|7日|30日|七日|三十日).*(留存)"
+  - "(用户生命周期|生命周期价值|LTV).*(分析)"
+  - "(流失|流失率|流失预警).*(分析|统计)"
+  - "(回访|回头客|复购).*(分析|统计)"
+  - "(cohort|群组).*(分析|留存)"
+input_schema:
+  required:
+    - field: "question"
+      description: "用户的分析问题"
+      format: "自然语言问题"
+  optional:
+    - field: "period"
+      description: "留存周期"
+      format: "如：次日、7日、30日"

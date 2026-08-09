@@ -1,0 +1,1 @@
+Vite + React 18 with TypeScript, react-router-dom for routing, Zustand for global state, axios for HTTP with automatic JWT refresh, sonner for toasts, lucide-react icons, and shadcn/ui primitives under `@/components/ui`.

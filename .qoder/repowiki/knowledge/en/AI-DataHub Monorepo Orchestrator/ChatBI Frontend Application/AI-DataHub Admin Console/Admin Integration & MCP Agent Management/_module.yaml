@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: frontend/admin/integrations
+title: Admin Integration & MCP Agent Management
+scope:
+    - frontend/src/pages/admin/IntegrationApps.tsx
+    - frontend/src/pages/admin/IntegrationLogs.tsx
+    - frontend/src/pages/admin/MCPAgentConfig.tsx
+    - frontend/src/pages/admin/MCPMarket.tsx
+source_files: []
+depends_on: []
+related_to:
+    - path: aiplatform_service

@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   Database, FileText, Link, BookOpen, Users, Brain, Bot, Workflow, MessageSquare,
-  Settings, LogOut, Menu, ArrowLeft, Palette, Sun, Moon, Zap, TrendingUp,
+  Settings, LogOut, Menu, ArrowLeft, ArrowRight, Palette, Sun, Moon, Zap, TrendingUp,
   Grid3x3, GlassWater, Heart, UserCircle, X, ChevronLeft, ChevronRight,
-  Clock, Bell,
+  Clock, Bell, Network, BarChart3, Shield, GitBranch, Ruler, Eye, RefreshCw,
+  Activity, Server, Gem, Terminal,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -21,6 +22,7 @@ import { useWorkspaceStore } from '../stores/workspaceStore';
 const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] = [
   { id: 'dark', label: '暗色', icon: Moon, desc: '深色背景，适合长时间使用' },
   { id: 'light', label: '亮色', icon: Sun, desc: '浅色背景，清晰明亮' },
+  { id: 'datafoundry', label: 'DataFoundry', icon: Gem, desc: '克制优雅，近黑主色 + 宝石色调' },
   { id: 'tech', label: '科技风', icon: Zap, desc: '深蓝底色，霓虹高亮' },
   { id: 'finance', label: '金融风', icon: TrendingUp, desc: '深色海军蓝，金色主调' },
   { id: 'bento', label: 'Bento Grid', icon: Grid3x3, desc: '柔和圆角卡片，彩色区块布局' },
@@ -30,26 +32,34 @@ const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] =
 ];
 
 const SYSTEM_MENU_ITEMS = [
-  { section: '数据配置' },
-  { key: '/system/datasources', icon: Database, label: '数据源管理' },
-  { key: '/system/metadata', icon: FileText, label: '表元数据' },
-  { key: '/system/relations', icon: Link, label: '表关联' },
-  { key: '/system/templates', icon: FileText, label: 'SQL 模板' },
-  { key: '/system/terms', icon: BookOpen, label: '业务术语' },
-  { section: 'AI 配置' },
+  { section: 'AI 模板配置' },
   { key: '/system/models', icon: Brain, label: '模型中心' },
-  { key: '/system/mcp-agent', icon: Bot, label: 'MCP / Agent' },
-  { key: '/system/workflows', icon: Workflow, label: '工作流配置' },
-  { key: '/system/workflow-editor', icon: Workflow, label: '工作流编排' },
-  { key: '/system/prompts', icon: MessageSquare, label: 'Prompt 管理' },
-  { key: '/system/knowledge-base', icon: BookOpen, label: '知识库管理' },
-  { section: '自动化' },
-  { key: '/system/scheduled-tasks', icon: Clock, label: '定时任务' },
+  { key: '/system/mcp', icon: Server, label: 'MCP 服务模板' },
+  { key: '/system/agents', icon: Bot, label: 'Agent 模板' },
+  { key: '/system/execution-layers', icon: Terminal, label: '执行层' },
+  { key: '/system/workflows', icon: Workflow, label: '工作流模板' },
+  { key: '/system/skills', icon: MessageSquare, label: 'Skills 模板' },
+  { section: '知识管理' },
+  { key: '/system/knowledge-base', icon: BookOpen, label: '知识库' },
+  { key: '/system/knowledge-management', icon: BookOpen, label: '知识管理' },
+  { key: '/system/knowledge-graph', icon: Network, label: 'AI 助手手册' },
+  { section: '可视化配置' },
+  { key: '/system/dashboards', icon: BarChart3, label: '看板管理' },
+  { section: '集成配置' },
   { key: '/system/notification-channels', icon: Bell, label: '通知渠道' },
   { key: '/system/report-templates', icon: FileText, label: '报告模板' },
-  { section: '系统管理' },
+  { section: '安全与权限' },
   { key: '/system/users', icon: Users, label: '用户管理' },
+  { key: '/system/workspaces', icon: Database, label: '工作空间管理' },
+  { key: '/system/roles', icon: Shield, label: '角色权限' },
+  { key: '/system/rls', icon: Shield, label: '行级安全' },
+  { key: '/system/audit', icon: Eye, label: '审计日志' },
+  { section: '运维管理' },
+  { key: '/system/sandbox', icon: Server, label: '沙箱管理' },
+  { key: '/system/quality-review', icon: BarChart3, label: '质量审查' },
+  { section: '系统' },
   { key: '/system/settings', icon: Settings, label: '系统设置' },
+  { key: '/system/monitoring', icon: Activity, label: '系统监控' },
 ];
 
 export default function SystemLayout() {
@@ -120,7 +130,7 @@ export default function SystemLayout() {
                 if (collapsed) return <div key={idx} className="my-2 mx-2 border-t border-sidebar-border" />;
                 return (
                   <div key={idx} className="px-3 pt-5 pb-1.5">
-                    <span className="text-xs font-semibold text-sidebar-foreground/60">
+                    <span className="text-sm font-medium uppercase tracking-[0.08em] text-sidebar-foreground/50">
                       {item.section}
                     </span>
                   </div>
@@ -133,10 +143,10 @@ export default function SystemLayout() {
                   <TooltipTrigger asChild>
                     <button
                       onClick={() => navigate(item.key!)}
-                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors
+                      className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-200
                         ${isActive
-                          ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
-                          : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
+                          ? 'bg-primary text-primary-foreground font-medium'
+                          : 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground'
                         } ${collapsed ? 'justify-center' : ''}`}
                     >
                       <Icon className="h-4 w-4 flex-shrink-0" />
@@ -151,8 +161,41 @@ export default function SystemLayout() {
         </ScrollArea>
         </div>
 
-        {/* Collapse button */}
-        <div className="p-2 border-t border-sidebar-border">
+        {/* Bottom Navigation */}
+        <div className="p-2 border-t border-sidebar-border space-y-1">
+          <Tooltip delayDuration={0}>
+            <TooltipTrigger asChild>
+              <button
+                onClick={handleBackToWorkspace}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors
+                  text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground
+                  ${collapsed ? 'justify-center' : ''}`}
+              >
+                <ArrowLeft className="h-4 w-4 flex-shrink-0" />
+                {!collapsed && <span className="text-sm">工作空间</span>}
+              </button>
+            </TooltipTrigger>
+            {collapsed && <TooltipContent side="right">工作空间</TooltipContent>}
+          </Tooltip>
+          <Tooltip delayDuration={0}>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => navigate('/data')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors
+                  text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground
+                  ${collapsed ? 'justify-center' : ''}`}
+              >
+                <Database className="h-4 w-4 flex-shrink-0" />
+                {!collapsed && (
+                  <>
+                    <span className="flex-1 text-left">数据中台</span>
+                    <ArrowRight className="h-3.5 w-3.5 flex-shrink-0 opacity-50" />
+                  </>
+                )}
+              </button>
+            </TooltipTrigger>
+            {collapsed && <TooltipContent side="right">数据中台</TooltipContent>}
+          </Tooltip>
           <Button
             variant="ghost"
             size="sm"
@@ -189,7 +232,7 @@ export default function SystemLayout() {
                   if ('section' in item) {
                     return (
                       <div key={idx} className="px-4 pt-5 pb-1.5">
-                        <span className="text-xs font-semibold text-sidebar-foreground/60">
+                        <span className="text-sm font-semibold text-sidebar-foreground/60">
                           {item.section}
                         </span>
                       </div>
@@ -220,7 +263,7 @@ export default function SystemLayout() {
 
       {/* Main area */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-12 flex items-center justify-between px-4 border-b bg-background flex-shrink-0">
+        <header className="h-12 flex items-center justify-between px-4 border-b border-border bg-card flex-shrink-0">
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" className="lg:hidden h-9 w-9 p-0" onClick={() => setMobileMenuOpen(true)}>
               <Menu className="h-5 w-5" />

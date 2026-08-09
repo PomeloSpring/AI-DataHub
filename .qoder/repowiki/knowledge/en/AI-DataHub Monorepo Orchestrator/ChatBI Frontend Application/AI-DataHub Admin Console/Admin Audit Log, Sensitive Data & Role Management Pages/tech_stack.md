@@ -1,0 +1,1 @@
+React functional components with TypeScript; shadcn/ui primitives (Button, Input, Badge, Select, Dialog, Switch); `sonner` for toast notifications; `lucide-react` icons; data access via `@/api/governance` client against a REST governance API.

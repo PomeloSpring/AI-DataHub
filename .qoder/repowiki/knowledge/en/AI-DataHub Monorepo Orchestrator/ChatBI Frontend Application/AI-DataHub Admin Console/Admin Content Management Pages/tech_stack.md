@@ -1,0 +1,1 @@
+React + TypeScript functional components; shadcn/ui (button, dialog, select, tabs, badge, card, table); lucide-react icons; sonner for toast notifications; axios-based API client (`@/api/client`) plus direct axios calls for the graph module; Jinja2-style templating for report/notification messages.

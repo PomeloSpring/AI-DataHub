@@ -1,0 +1,5 @@
+- User-facing status codes are mapped through local `STATUS_MAP` / `TASK_TYPE_MAP` / `TRIGGER_MAP` lookup tables that pair backend enum values with localized labels and Tailwind color classes.
+- Data fetching uses `useCallback`-wrapped async functions combined with `useState` loading flags, and errors are surfaced via `toast.error` while successes use `toast.success`.
+- Multi-select configuration fields are implemented as a reusable `MultiSelect` popover + `SelectedBadges` combo, storing selections as arrays and serializing single-item arrays back to legacy scalar fields on submit.
+- Pagination is consistently implemented with `page`/`total` state, a fixed size of 20 items, and manual prev/next buttons with disabled guards based on `page <= 1` and `page * 20 >= total`.
+- Destructive or confirmation actions (delete, cancel, mark status) are gated behind a `Dialog` with explicit Cancel/Confirm buttons rather than browser confirm dialogs.

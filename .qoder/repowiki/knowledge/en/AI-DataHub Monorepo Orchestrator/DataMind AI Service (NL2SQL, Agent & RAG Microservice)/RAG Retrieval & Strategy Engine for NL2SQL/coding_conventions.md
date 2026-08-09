@@ -1,0 +1,6 @@
+- Each retrieval function accepts an optional pre-computed `vec_literal` string so callers can reuse a single embedding across multiple searches instead of regenerating embeddings.
+- Vector search paths branch on `VECTOR_DB_TYPE == 'doris'` to emit raw SQL with `l2_distance_approximate`; non-Doris paths delegate to `get_vector_store().search(...)` with filters/output_columns, keeping Doris-specific code isolated.
+- Datasource scoping is applied uniformly via `(datasource_id = {id} OR datasource_id = 0)` predicates so global (datasource_id=0) and tenant-scoped records coexist.
+- Strategies implement the `RetrievalStrategy` ABC and always return a dict with the same keys (`table_info`, `column_metadata`, `business_terms`, `table_relations`, `sql_templates`, `saved_datasets`, `rag_source`), enabling downstream prompt builders to be strategy-agnostic.
+- Auxiliary retrievals (templates, business terms, relations, saved datasets) are launched concurrently via `ThreadPoolExecutor(max_workers=...)` and each future is wrapped in try/except so one failure does not abort the whole pipeline.
+- Fallback behavior is explicit: when vector/RAG tables return empty results, `_fallback_from_information_schema()` queries `information_schema` directly and sets `rag_source` to indicate the fallback path.

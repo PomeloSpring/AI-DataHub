@@ -71,7 +71,7 @@ export default function ReportTemplates() {
     try {
       // 系统管理页面：不按 workspace 过滤
       const { data } = await client.get('/report-templates');
-      setTemplates(data || []);
+      setTemplates(Array.isArray(data) ? data : []);
     } catch {
       toast.error('加载模板失败');
     } finally {
@@ -176,8 +176,8 @@ export default function ReportTemplates() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">报告模板</h1>
-          <p className="text-muted-foreground text-sm mt-1">
+          <h1 className="text-lg font-semibold">报告模板</h1>
+          <p className="text-muted-foreground text-xs mt-1">
             配置定时任务的报告输出模板，支持 Markdown 和 HTML 格式
           </p>
         </div>

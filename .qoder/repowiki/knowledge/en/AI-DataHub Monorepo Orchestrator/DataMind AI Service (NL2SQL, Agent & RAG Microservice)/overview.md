@@ -1,0 +1,1 @@
+FastAPI microservice that wires NL2SQL pipelines, pluggable agents, and graph-augmented RAG retrieval behind a unified HTTP API with MCP tool exposure.

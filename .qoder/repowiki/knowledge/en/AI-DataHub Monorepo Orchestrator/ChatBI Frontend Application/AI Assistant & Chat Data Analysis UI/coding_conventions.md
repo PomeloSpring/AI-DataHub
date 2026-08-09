@@ -1,0 +1,6 @@
+- SSE streams are consumed by reading `response.body.getReader()`, buffering lines, splitting on `\n`, and dispatching on `event:` prefixes (`progress`, `thinking`, `token`, `ask_user`, `done`, `error`) before processing the following `data:` line.
+- AbortController instances are created per request, stored in store state, and exposed via `cancelMessage` / `stopGeneration` so users can interrupt long-running SSE flows.
+- Store actions wrap network calls in try/catch that silently swallow errors for optional resources (MCP tools, workspaces, system config) while logging via `console.error` or `toast.error` for user-facing failures.
+- Streaming updates use immutable snapshot pattern: read `get().messages`, copy the array, mutate the last assistant message index, then call `set({ messages })` to avoid stale closures.
+- Workspace-scoped configuration is loaded via `loadWorkspaceConfig(workspaceId)` and used to gate UI controls such as allowed pipeline modes and retrieval strategies instead of hard-coding defaults.
+- Component exports are centralized through a barrel `index.ts` that re-exports default components by named aliases (e.g., `export { default as AIFloatingBox } from './AIFloatingBox'`).
