@@ -14,15 +14,15 @@ Ask questions in plain Chinese, get data insights with visualizations. No SQL kn
 ## ✨ What It Does
 
 ```
-User: "近一个月每个医院的扫描次数趋势"
+User: "近一个月每个商场的人流量趋势"
 
 AI-DataHub:
-  1. 🔍 理解意图 → 需要统计扫描次数，按医院分组，时间范围近一个月
-  2. 📊 检索元数据 → 找到 tableA 表，确认 hospital_name、scan_time 字段
-  3. 🧠 生成 SQL → SELECT hospital_name, COUNT(*) ... WHERE scan_time >= ... GROUP BY ...
+  1. 🔍 理解意图 → 需要统计人流量，按商场分组，时间范围近一个月
+  2. 📊 检索元数据 → 找到 tableA 表，确认 shop_name、view_time 字段
+  3. 🧠 生成 SQL → SELECT shop_name, COUNT(*) ... WHERE view_time >= ... GROUP BY ...
   4. ⚡ 执行查询 → 返回 15 行数据
   5. 📈 推荐图表 → 折线图（趋势分析）
-  6. 💡 分析结果 → "本月扫描量整体平稳，A 医院扫描量最高..."
+  6. 💡 分析结果 → "本月人流量整体平稳，A 商场人流量最高..."
 ```
 
 ## 🏗️ Architecture
