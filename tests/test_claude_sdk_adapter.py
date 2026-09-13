@@ -3,8 +3,9 @@
 覆盖场景:
 1. 正常流式(StreamEvent 增量 → token/thinking,ResultMessage → done)
 2. resume 失败降级新会话重试
-3. sdk_tools 工具异常(execute_sql handler 错误路径)
-4. 双 SDK 回归(build_tool_servers qoder / claude)
+3. 工具调用可观测事件(ToolUseBlock/ToolResultBlock → tool_start/tool_result)
+4. sdk_tools 工具异常(execute_sql handler 错误路径)
+5. 双 SDK 回归(build_tool_servers qoder / claude)
 """
 
 import asyncio
@@ -34,8 +35,22 @@ class TextBlock:
 
 
 class ToolUseBlock:
-    def __init__(self, name):
+    def __init__(self, name, id="toolu_1", input=None):
         self.name = name
+        self.id = id
+        self.input = input or {}
+
+
+class ToolResultBlock:
+    def __init__(self, tool_use_id, content, is_error=False):
+        self.tool_use_id = tool_use_id
+        self.content = content
+        self.is_error = is_error
+
+
+class UserMessage:
+    def __init__(self, content):
+        self.content = content
 
 
 class AssistantMessage:
@@ -177,7 +192,88 @@ class TestResumeFallback:
         assert "stream broken mid-way" in done["result"].error
 
 
-# ── 场景3:sdk_tools 工具异常路径 ────────────────────────────────────
+# ── 场景3:工具调用可观测事件(tool_start/tool_result) ────────────
+
+class TestToolEvents:
+    def test_tool_use_and_result_emit_timeline_events(self):
+        ad = _adapter()
+
+        async def fake_query(prompt, options):
+            yield AssistantMessage([
+                ToolUseBlock("mcp__datahub_query__execute_sql", id="tu1", input={"sql": "SELECT 1"})
+            ])
+            yield UserMessage([ToolResultBlock("tu1", [{"text": "ok 1 row"}])])
+            yield AssistantMessage([TextBlock("answer")])
+            yield ResultMessage(session_id="s1")
+
+        with patch("claude_agent_sdk.query", fake_query):
+            events = _collect(ad, _task())
+
+        types = [e["type"] for e in events]
+        assert "tool_start" in types and "tool_result" in types
+        assert types.index("tool_start") < types.index("tool_result")
+        start = next(e for e in events if e["type"] == "tool_start")
+        assert start["tool_call_id"] == "tu1"
+        assert start["tool"] == "mcp__datahub_query__execute_sql"
+        assert start["arguments"] == {"sql": "SELECT 1"}
+        res = next(e for e in events if e["type"] == "tool_result")
+        assert res["tool_call_id"] == "tu1"
+        assert res["output"] == "ok 1 row" and res["error"] == ""
+        # done 携带完整 tool_calls 与统计(持久化回放)
+        done = events[-1]
+        assert done["result"].meta["tool_call_count"] == 1
+        calls = done["result"].meta["tool_calls"]
+        assert len(calls) == 1
+        assert calls[0]["result"] == "ok 1 row" and calls[0]["step"] == 1
+
+    def test_tool_result_error_maps_to_error_field(self):
+        ad = _adapter()
+
+        async def fake_query(prompt, options):
+            yield AssistantMessage([ToolUseBlock("Bash", id="tu2", input={"command": "ls"})])
+            yield UserMessage([ToolResultBlock("tu2", "permission denied", is_error=True)])
+            yield ResultMessage()
+
+        with patch("claude_agent_sdk.query", fake_query):
+            events = _collect(ad, _task())
+
+        res = next(e for e in events if e["type"] == "tool_result")
+        assert res["error"] == "permission denied" and res["output"] == "permission denied"
+        call = events[-1]["result"].meta["tool_calls"][0]
+        assert call["error"] == "permission denied" and call["result"] is None
+
+    def test_long_tool_output_truncated(self):
+        ad = _adapter()
+        big = "x" * 5000  # 超过默认 2000 展示上限
+
+        async def fake_query(prompt, options):
+            yield AssistantMessage([ToolUseBlock("Read", id="tu3")])
+            yield UserMessage([ToolResultBlock("tu3", big)])
+            yield ResultMessage()
+
+        with patch("claude_agent_sdk.query", fake_query):
+            events = _collect(ad, _task())
+
+        res = next(e for e in events if e["type"] == "tool_result")
+        assert res["output"].endswith("(truncated)")
+        assert len(res["output"]) < 2100
+
+    def test_plain_text_user_message_ignored(self):
+        ad = _adapter()
+
+        async def fake_query(prompt, options):
+            yield UserMessage("plain history text")  # 非工具结果的 UserMessage
+            yield AssistantMessage([TextBlock("hi")])
+            yield ResultMessage()
+
+        with patch("claude_agent_sdk.query", fake_query):
+            events = _collect(ad, _task())
+
+        assert not any(e["type"] in ("tool_start", "tool_result") for e in events)
+        assert events[-1]["result"].success
+
+
+# ── 场景4:sdk_tools 工具异常路径 ────────────────────────────────────
 
 class TestSdkToolErrors:
     def test_execute_sql_missing_sql(self):
@@ -213,7 +309,7 @@ class TestSdkToolErrors:
         assert "denied" in res["content"][0]["text"]
 
 
-# ── 场景4:双 SDK 回归 ──────────────────────────────────────────────
+# ── 场景5:双 SDK 回归 ──────────────────────────────────────────────
 
 class TestDualSdkToolServers:
     def test_qoder_backend(self):

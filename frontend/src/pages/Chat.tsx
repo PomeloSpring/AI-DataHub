@@ -673,6 +673,23 @@ export default function Chat() {
                       />
                     )}
 
+                    {/* 执行层统计摘要条(轮次/工具调用/耗时) */}
+                    {msg.executionStats && (msg.executionStats.num_turns || msg.executionStats.tool_call_count || msg.executionStats.duration_ms) && (
+                      <div className="flex items-center gap-2 mb-2 text-[10px] text-muted-foreground">
+                        {msg.executionStats.num_turns != null && (
+                          <span className="px-1.5 py-0.5 rounded bg-muted">{msg.executionStats.num_turns} 轮推理</span>
+                        )}
+                        {msg.executionStats.tool_call_count != null && msg.executionStats.tool_call_count > 0 && (
+                          <span className="px-1.5 py-0.5 rounded bg-muted">{msg.executionStats.tool_call_count} 次工具调用</span>
+                        )}
+                        {msg.executionStats.duration_ms != null && (
+                          <span className="px-1.5 py-0.5 rounded bg-muted">
+                            耗时 {(msg.executionStats.duration_ms / 1000).toFixed(1)}s
+                          </span>
+                        )}
+                      </div>
+                    )}
+
                     {/* Inline: RAG/timings/workflow details */}
                     {(msg.timings || msg.rag || msg.workflow_info) && (
                       <InlineDetails

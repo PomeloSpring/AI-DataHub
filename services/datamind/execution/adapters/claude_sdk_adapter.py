@@ -233,6 +233,10 @@ class ClaudeSDKAdapter(CLIProcessAdapter):
         meta: dict = {"cli": self.cli_name, "mode": "sdk"}
         final = None
         streamed = False  # 是否已通过 stream_event 推送过增量
+        # 工具调用跟踪:ToolUseBlock/ToolResultBlock → tool_start/tool_result 事件
+        from services.datamind.execution.stream_utils import ToolEventTracker
+
+        tracker = ToolEventTracker()
 
         async def _consume_stream(prompt_text: str):
             nonlocal final, streamed
@@ -257,6 +261,14 @@ class ClaudeSDKAdapter(CLIProcessAdapter):
                                 yield {"type": "token", "text": block.text}
                         elif btype == "ToolUseBlock":
                             logger.info("[ExecLayer:%s] tool use: %s", self._name, getattr(block, "name", "?"))
+                            yield tracker.on_tool_use(block)
+                elif kind == "UserMessage":
+                    # 工具执行结果:content 为 ToolResultBlock 列表(普通文本为 str,跳过)
+                    content = getattr(msg, "content", None)
+                    if isinstance(content, (list, tuple)):
+                        for block in content:
+                            if type(block).__name__ == "ToolResultBlock":
+                                yield tracker.on_tool_result(block)
                 elif kind == "ResultMessage":
                     final = msg
                     meta.update({
@@ -266,6 +278,7 @@ class ClaudeSDKAdapter(CLIProcessAdapter):
                         "subtype": getattr(msg, "subtype", None),
                         "total_cost_usd": getattr(msg, "total_cost_usd", None),
                     })
+                    tracker.update_meta(meta)
 
         try:
             async for ev in _consume_stream(prompt):

@@ -313,6 +313,22 @@ class ChatService:
                     yield _sse_event("token", {"text": ev.get("text", "")})
                 elif ev.get("type") == "thinking":
                     yield _sse_event("thinking", {"text": ev.get("text", "")})
+                elif ev.get("type") == "tool_start":
+                    # 执行层工具调用开始:前端时间线实时渲染 pending 步骤
+                    yield _sse_event("tool_start", {
+                        "tool_call_id": ev.get("tool_call_id", ""),
+                        "tool": ev.get("tool", ""),
+                        "arguments": ev.get("arguments") or {},
+                    })
+                elif ev.get("type") == "tool_result":
+                    # 执行层工具调用结果:回填时间线对应步骤
+                    yield _sse_event("tool_result", {
+                        "tool_call_id": ev.get("tool_call_id", ""),
+                        "tool": ev.get("tool", ""),
+                        "output": ev.get("output", ""),
+                        "error": ev.get("error", ""),
+                        "elapsed": ev.get("elapsed"),
+                    })
                 elif ev.get("type") == "done":
                     result = ev.get("result")
             if result is None:
@@ -341,6 +357,13 @@ class ChatService:
                 "execution_layer": layer_name,
                 # 执行层会话 ID,前端回传以实现 SDK 多轮对话
                 "session_id": result.meta.get("session_id") or "",
+                # 完整工具调用清单(持久化回放)与执行统计(时间线摘要条)
+                "tool_calls": result.meta.get("tool_calls") or [],
+                "stats": {
+                    "num_turns": result.meta.get("num_turns"),
+                    "tool_call_count": result.meta.get("tool_call_count") or 0,
+                    "duration_ms": result.meta.get("duration_ms"),
+                },
             })
         else:
             err = result.error or "执行层执行失败"

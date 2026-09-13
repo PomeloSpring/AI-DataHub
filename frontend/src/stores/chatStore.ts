@@ -11,6 +11,7 @@ export interface ProgressStage {
 
 export interface ToolCall {
   step?: number;
+  tool_call_id?: string;  // 执行层工具调用 ID(tool_result 回填匹配)
   tool: string;
   arguments?: Record<string, any>;
   result?: string;
@@ -57,6 +58,11 @@ export interface ChatMessage {
   activeStage?: string;              // Current active stage key
   workflow_info?: any;               // Deep mode workflow info
   tool_calls?: ToolCall[];           // Agent tool call history
+  executionStats?: {                 // 执行层统计(时间线摘要条)
+    num_turns?: number;
+    tool_call_count?: number;
+    duration_ms?: number;
+  };
   pendingAsk?: {                     // Agent ask_user interactive state
     request_id: string;
     question: string;
@@ -598,6 +604,50 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     return { messages: msgs };
                   });
                 }
+              } else if (currentEvent === 'tool_start') {
+                // 执行层工具调用开始:时间线追加 pending 步骤
+                if (isSameConv()) {
+                  set(state => {
+                    const msgs = [...state.messages];
+                    const lastIdx = msgs.length - 1;
+                    if (msgs[lastIdx]?.role === 'assistant') {
+                      const prev = msgs[lastIdx].tool_calls || [];
+                      msgs[lastIdx] = {
+                        ...msgs[lastIdx],
+                        tool_calls: [...prev, {
+                          step: prev.length + 1,
+                          tool_call_id: data.tool_call_id,
+                          tool: data.tool,
+                          arguments: data.arguments,
+                        }],
+                      };
+                    }
+                    return { messages: msgs };
+                  });
+                }
+              } else if (currentEvent === 'tool_result') {
+                // 执行层工具调用结果:按 tool_call_id 回填对应步骤
+                if (isSameConv()) {
+                  set(state => {
+                    const msgs = [...state.messages];
+                    const lastIdx = msgs.length - 1;
+                    if (msgs[lastIdx]?.role === 'assistant') {
+                      const updated = (msgs[lastIdx].tool_calls || []).map(tc =>
+                        tc.tool_call_id && tc.tool_call_id === data.tool_call_id
+                          ? {
+                              ...tc,
+                              result: data.error ? undefined : data.output,
+                              result_preview: (data.output || '').slice(0, 200),
+                              error: data.error || undefined,
+                              elapsed: data.elapsed,
+                            }
+                          : tc
+                      );
+                      msgs[lastIdx] = { ...msgs[lastIdx], tool_calls: updated };
+                    }
+                    return { messages: msgs };
+                  });
+                }
               } else if (currentEvent === 'ask_user') {
                 // Agent is asking the user a question — show interactive card
                 if (isSameConv()) {
@@ -695,7 +745,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         activeStage: 'completed',
         analysis: doneData.analysis,
         workflow_info: doneData.workflow_info,
-        tool_calls: doneData.tool_calls,
+        // done 携带完整清单优先(后端权威);否则保留流式聚合结果
+        tool_calls: (doneData.tool_calls && doneData.tool_calls.length > 0)
+          ? doneData.tool_calls
+          : existingMsg?.tool_calls,
+        executionStats: doneData.stats,
       };
 
       set(state => {

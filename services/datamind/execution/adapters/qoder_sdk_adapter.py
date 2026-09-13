@@ -213,6 +213,10 @@ class QoderSDKAdapter(CLIProcessAdapter):
         meta: dict = {"cli": self.cli_name, "mode": "sdk"}
         final = None
         streamed = False  # 是否已通过 stream_event 推送过增量
+        # 工具调用跟踪:ToolUseBlock/ToolResultBlock → tool_start/tool_result 事件
+        from services.datamind.execution.stream_utils import ToolEventTracker
+
+        tracker = ToolEventTracker()
 
         async def _consume_stream(prompt_text: str):
             nonlocal final, streamed
@@ -237,6 +241,13 @@ class QoderSDKAdapter(CLIProcessAdapter):
                                 yield {"type": "token", "text": block.text}
                         elif btype == "ToolUseBlock":
                             logger.info("[ExecLayer:%s] tool use: %s", self._name, block.name)
+                            yield tracker.on_tool_use(block)
+                elif kind == "UserMessage":
+                    # 工具执行结果:content 为 ToolResultBlock 列表(普通文本为 str,跳过)
+                    if isinstance(msg.content, (list, tuple)):
+                        for block in msg.content:
+                            if type(block).__name__ == "ToolResultBlock":
+                                yield tracker.on_tool_result(block)
                 elif kind == "ResultMessage":
                     final = msg
                     meta.update({
@@ -245,6 +256,7 @@ class QoderSDKAdapter(CLIProcessAdapter):
                         "session_id": msg.session_id,
                         "subtype": msg.subtype,
                     })
+                    tracker.update_meta(meta)
 
         try:
             async for ev in _consume_stream(prompt):

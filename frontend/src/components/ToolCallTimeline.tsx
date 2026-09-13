@@ -16,6 +16,7 @@ import type { ToolCall, ProgressStage } from '../stores/chatStore';
 // ── Tool display labels ────────────────────────────────────────
 
 const TOOL_LABELS: Record<string, string> = {
+  // 内置 Agent 管线工具
   analyze_question: '分析问题',
   search_semantic_model: '语义搜索',
   get_schema: '表结构',
@@ -24,10 +25,33 @@ const TOOL_LABELS: Record<string, string> = {
   browse_data_catalog: '数据目录',
   query_execute: '查询执行',
   sql_validate: 'SQL 校验',
+  // 执行层进程内工具(sdk_tools)
+  search_metadata: '元数据搜索',
+  get_table_schema: '表结构',
+  list_datasources: '数据源列表',
+  get_metrics: '指标定义',
+  get_glossary: '业务术语',
+  query_by_tags: '标签查询',
+  knowledge_search: '知识搜索',
+  // 执行层内置文件/通用工具
+  Read: '读取文件',
+  Write: '写入文件',
+  Edit: '编辑文件',
+  Bash: '执行命令',
+  Glob: '查找文件',
+  Grep: '搜索内容',
+  WebSearch: '网络搜索',
+  WebFetch: '网页读取',
+  Task: '子任务',
 };
 
 function getToolLabel(tool: string): string {
-  return TOOL_LABELS[tool] || tool;
+  if (TOOL_LABELS[tool]) return TOOL_LABELS[tool];
+  // mcp__server__tool → "MCP · server/tool"
+  if (tool.startsWith('mcp__')) {
+    return `MCP · ${tool.slice(5).replace(/__/g, '/')}`;
+  }
+  return tool;
 }
 
 // ── Extract summary from tool call ─────────────────────────────
