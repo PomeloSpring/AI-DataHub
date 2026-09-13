@@ -1,1 +1,1 @@
-"""AI modules — LLM client, embeddings, intent classification, prompt building."""
+"""AI modules — LLM client, intent classification, prompt building."""

@@ -7,7 +7,6 @@
 ```
 .claude/
 ├── plans/              # 执行计划和技术设计
-│   ├── ai-assistant-design.md    # AI助手技术设计
 │   └── ...                       # 其他执行计划
 ├── tasks/              # 任务跟踪和TODO
 │   ├── TODO-Optimization.md      # 优化事项跟踪
@@ -61,7 +60,6 @@
 
 ## 🚀 快速导航
 
-- [AI助手技术设计](./plans/ai-assistant-design.md)
 - [优化事项跟踪](./tasks/TODO-Optimization.md)
 
 ---

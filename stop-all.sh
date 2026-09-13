@@ -27,7 +27,6 @@ SERVICES=(
     "datamind"
     "dataflow"
     "aiplatform"
-    "vectorservice"
     "graphservice"
     "frontend"
 )

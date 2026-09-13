@@ -82,9 +82,8 @@ class ChatRequest(BaseModel):
     history: Optional[list[dict]] = []  # Multi-turn conversation history
     datasource_id: Optional[int] = 0
     model_id: Optional[int] = None  # LLM model ID, None = default
-    workflow_id: Optional[int] = None  # Workflow ID for Loop Engine, None = default
     pipeline_mode: Optional[str] = None  # Pipeline mode: "quick", "deep" (pipeline endpoint only)
-    retrieval_strategy: Optional[str] = None  # RAG strategy: full_table, column_first, two_stage, bidirectional, graph
+    retrieval_strategy: Optional[str] = None  # RAG strategy: hybrid
     mcp_tools: list[str] = []  # List of selected MCP tool names
     system_tools: list[str] = []  # List of selected system tool names (restrict to these only)
     workspace_id: Optional[int] = 0  # Workspace ID for Agent mode
@@ -552,139 +551,6 @@ class PromptVersionResponse(BaseModel):
 class PromptListResponse(BaseModel):
     items: list[PromptResponse]
     total: int
-
-
-# ── Loop Engineering: Workflow Config ───────────────────────────────
-
-class WorkflowStepConfig(BaseModel):
-    id: Optional[int] = None  # Database ID (None for new steps)
-    step_type: str  # metadata_retrieval/llm_analysis/metadata_supplement/sql_generation/sql_execution/result_analysis
-    step_name: str
-    step_order: int
-    max_rounds: int = 1
-    is_enabled: bool = True
-    prompt_key: Optional[str] = None
-    config: Optional[dict] = None
-    position_x: float = 0
-    position_y: float = 0
-    node_type: str = "step"  # start/end/step/condition/parallel/merge/agent/mcp_tool
-    dependencies: Optional[str] = None  # JSON array of step_ids
-
-class WorkflowConfigCreate(BaseModel):
-    name: str
-    description: Optional[str] = ""
-    is_active: bool = True
-    is_default: bool = False
-    workflow_type: str = "linear"  # linear/dag
-    dag_config: Optional[str] = None
-    steps: Optional[list[WorkflowStepConfig]] = []
-    edges: Optional[list["WorkflowEdgeCreate"]] = []
-
-class WorkflowConfigUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    is_active: Optional[bool] = None
-    is_default: Optional[bool] = None
-    workflow_type: Optional[str] = None
-    dag_config: Optional[str] = None
-    steps: Optional[list[WorkflowStepConfig]] = None
-    edges: Optional[list["WorkflowEdgeCreate"]] = None
-
-class WorkflowStepUpdate(BaseModel):
-    step_name: Optional[str] = None
-    max_rounds: Optional[int] = None
-    is_enabled: Optional[bool] = None
-    prompt_key: Optional[str] = None
-    config: Optional[dict] = None
-
-class WorkflowStepResponse(BaseModel):
-    id: int
-    workflow_id: int
-    step_type: str
-    step_name: str
-    step_order: int
-    max_rounds: int
-    is_enabled: bool
-    prompt_key: Optional[str] = None
-    config: Optional[dict] = None
-    created_at: datetime
-    updated_at: datetime
-
-class WorkflowConfigResponse(BaseModel):
-    id: int
-    name: str
-    description: Optional[str] = ""
-    is_active: bool
-    is_default: bool
-    created_at: datetime
-    updated_at: datetime
-    created_by: Optional[str] = ""
-    steps: list[WorkflowStepResponse] = []
-
-class WorkflowListResponse(BaseModel):
-    items: list[WorkflowConfigResponse]
-    total: int
-
-
-# ── Loop Engineering: Workflow Execution Log ────────────────────────
-
-class WorkflowLogResponse(BaseModel):
-    id: int
-    workflow_id: int
-    workflow_name: Optional[str] = ""
-    session_id: str
-    user_id: Optional[int] = None
-    username: Optional[str] = ""
-    question: Optional[str] = ""
-    current_step: Optional[str] = ""
-    current_round: Optional[int] = 0
-    metadata_context: Optional[str] = ""
-    metadata_requested: Optional[str] = ""
-    metadata_supplemented: Optional[str] = ""
-    llm_analysis: Optional[str] = ""
-    generated_sql: Optional[str] = ""
-    execution_result: Optional[str] = ""
-    analysis_result: Optional[str] = ""
-    chart_type: Optional[str] = ""
-    status: str = "running"
-    error_message: Optional[str] = ""
-    started_at: datetime
-    completed_at: Optional[datetime] = None
-    elapsed_ms: Optional[int] = 0
-
-class WorkflowLogListResponse(BaseModel):
-    items: list[WorkflowLogResponse]
-    total: int
-
-
-# ── Loop Engineering: Loop Execution Request ────────────────────────
-
-class LoopExecutionRequest(BaseModel):
-    question: str
-    history: Optional[list[dict]] = []
-    datasource_id: Optional[int] = 0
-    model_id: Optional[int] = None
-    workflow_id: Optional[int] = None  # None = use default
-
-
-# ── DAG Workflow Extensions ──────────────────────────────────────────
-
-class WorkflowEdgeCreate(BaseModel):
-    source_step_id: int
-    target_step_id: int
-    edge_type: str = "normal"  # normal/conditional/error
-    condition_expr: Optional[str] = None
-    label: Optional[str] = None
-
-class WorkflowDAGConfig(BaseModel):
-    name: str
-    description: Optional[str] = ""
-    is_active: bool = True
-    is_default: bool = False
-    workflow_type: str = "dag"  # linear/dag
-    dag_config: Optional[str] = None
-    steps: Optional[list[WorkflowStepConfig]] = []
-    edges: Optional[list[WorkflowEdgeCreate]] = []
 
 
 # ── Scheduled Tasks ────────────────────────────────────────────────

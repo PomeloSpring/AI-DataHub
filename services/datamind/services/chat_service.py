@@ -75,7 +75,6 @@ class ChatService:
                 datasource_id=datasource_id,
                 model_id=model_id,
                 pipeline_mode=pipeline_mode,
-                workflow_id=None,
                 user_id=user_id,
                 username=username,
                 retrieval_strategy=retrieval_strategy,
@@ -122,7 +121,6 @@ class ChatService:
                 datasource_id=datasource_id,
                 model_id=model_id,
                 pipeline_mode=pipeline_mode,
-                workflow_id=None,
                 user_id=user_id,
                 username=username,
                 retrieval_strategy=retrieval_strategy,
@@ -177,7 +175,6 @@ class ChatService:
                 datasource_id=datasource_id,
                 model_id=model_id,
                 pipeline_mode=pipeline_mode,
-                workflow_id=None,
                 user_id=user_id,
                 username=username,
                 workspace_id=workspace_id,
@@ -231,6 +228,10 @@ class ChatService:
         try:
             for l in exec_service.get_workspace_layers(workspace_id):
                 if l.get("status") != "active" or l.get("layer_type") == "builtin":
+                    continue
+                # 跳过心跳超时的 stale 自注册层(手工/内置层始终视为健康)
+                if not exec_service.is_healthy_layer(l):
+                    logger.warning("Skipping unhealthy execution layer: %s", l.get("name"))
                     continue
                 if l.get("is_default"):
                     row = l

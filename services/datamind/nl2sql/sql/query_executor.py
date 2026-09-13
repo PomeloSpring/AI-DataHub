@@ -692,117 +692,6 @@ def execute_query(
         raise RuntimeError(f"Query execution failed: {e}") from e
 
 
-def execute_query_with_ranger(
-    sql: str,
-    datasource_id: int = None,
-    query_type: str = "sql",
-    user_context: dict = None,
-    database: str = "",
-) -> tuple[pd.DataFrame, int, int]:
-    """Execute a query with Ranger authorization checks.
-
-    This function adds data-level access control on top of execute_query:
-    1. Parses SQL to identify tables and columns
-    2. Checks table/column-level permissions via Ranger
-    3. Injects row-level filters
-    4. Applies column masking after execution
-
-    Args:
-        sql: The SQL query string.
-        datasource_id: Optional datasource ID.
-        query_type: Query type — "sql", "rest", or "dsl".
-        user_context: dict with "username" and "user_id" for Ranger checks.
-        database: Database name for Ranger policy lookup.
-
-    Returns:
-        (DataFrame, execution_time_ms, row_count)
-
-    Raises:
-        PermissionError: If Ranger denies access.
-    """
-    from services.shared.common.config import RANGER_ENABLED
-
-    # If Ranger is disabled or no user context, use standard execution
-    if not RANGER_ENABLED or not user_context:
-        return execute_query(sql, datasource_id, query_type)
-
-    try:
-        from services.shared.services.ranger_client import (
-            ranger_client, inject_row_filter, apply_column_masking,
-        )
-
-        # Step 1: Parse SQL to extract tables and columns
-        tables_columns = _parse_sql_tables_columns(sql)
-
-        # Step 2: Check permissions for each table
-        import asyncio
-        groups = asyncio.get_event_loop().run_until_complete(
-            _get_user_groups_async(user_context.get("user_id", 0))
-        )
-
-        modified_sql = sql
-        all_masking_rules = {}
-
-        for table, columns in tables_columns.items():
-            # Check table access
-            result = asyncio.get_event_loop().run_until_complete(
-                ranger_client.check_access(
-                    user=user_context["username"],
-                    groups=groups,
-                    resource_type="table",
-                    resource={"database": database, "table": table},
-                    action="select",
-                )
-            )
-
-            if not result.allowed:
-                raise PermissionError(f"无权访问表 {table}: {result.reason}")
-
-            # Inject row filter if present
-            if result.row_filter:
-                modified_sql = inject_row_filter(modified_sql, table, result.row_filter)
-
-            # Collect column masking rules
-            if result.column_masking:
-                all_masking_rules.update(result.column_masking)
-
-        # Step 3: Execute the (potentially modified) SQL
-        df, elapsed_ms, row_count = execute_query(modified_sql, datasource_id, query_type)
-
-        # Step 4: Apply column masking
-        if all_masking_rules and df is not None and not df.empty:
-            df = apply_column_masking(df, all_masking_rules)
-
-        # Step 5: Log data access audit
-        _log_data_access_audit(
-            user_context=user_context,
-            datasource_id=datasource_id,
-            database=database,
-            tables=list(tables_columns.keys()),
-            sql=sql,
-            allowed=True,
-        )
-
-        return df, elapsed_ms, row_count
-
-    except PermissionError:
-        # Log denied access
-        _log_data_access_audit(
-            user_context=user_context,
-            datasource_id=datasource_id,
-            database=database,
-            tables=list(tables_columns.keys()) if 'tables_columns' in dir() else [],
-            sql=sql,
-            allowed=False,
-            deny_reason=str(e),
-        )
-        raise
-    except ImportError:
-        # Ranger client not available, fall back to standard execution
-        logger.warning("Ranger client not available, skipping authorization check")
-        return execute_query(sql, datasource_id, query_type)
-
-
 def _extract_table_names(sql: str) -> list[str]:
     """Extract table names from SQL query (FROM and JOIN clauses)."""
     import re
@@ -817,98 +706,6 @@ def _extract_table_names(sql: str) -> list[str]:
             result.append(t)
     return result
 
-
-def _parse_sql_tables_columns(sql: str) -> dict[str, list[str]]:
-    """Parse SQL to extract table names and columns.
-
-    Simple regex-based parser for common SQL patterns.
-    Returns dict of {table: [columns]}.
-
-    This is a simplified implementation. For production use,
-    consider using sqlparse or DataFusion's SQL parser.
-    """
-    import re
-
-    tables_columns = {}
-
-    # Extract tables from FROM and JOIN clauses
-    table_pattern = r'\b(?:FROM|JOIN)\s+(\w+)'
-    tables = re.findall(table_pattern, sql, re.IGNORECASE)
-
-    # Extract columns from SELECT clause
-    select_match = re.search(r'\bSELECT\b(.+?)\bFROM\b', sql, re.IGNORECASE | re.DOTALL)
-    columns = []
-    if select_match:
-        select_clause = select_match.group(1).strip()
-        if select_clause != '*':
-            # Split by comma and extract column names
-            for col_expr in select_clause.split(','):
-                col_expr = col_expr.strip()
-                # Handle "table.column" or "column AS alias"
-                col_match = re.search(r'(?:\w+\.)?(\w+)(?:\s+AS\s+\w+)?$', col_expr.strip())
-                if col_match:
-                    col_name = col_match.group(1)
-                    # Skip aggregate functions
-                    if col_name.upper() not in ('COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'COALESCE', 'IFNULL'):
-                        columns.append(col_name)
-
-    # Associate columns with tables (simplified: assume all columns from first table)
-    for table in tables:
-        tables_columns[table] = columns if columns else ['*']
-
-    return tables_columns
-
-
-async def _get_user_groups_async(user_id: int) -> list[str]:
-    """Get user's LDAP groups for Ranger policy matching."""
-    try:
-        from services.authservice.services.ldap_backend import ldap_backend
-        return ldap_backend.get_user_groups(user_id)
-    except Exception:
-        return []
-
-
-def _log_data_access_audit(
-    user_context: dict,
-    datasource_id: int,
-    database: str,
-    tables: list[str],
-    sql: str,
-    allowed: bool,
-    deny_reason: str = "",
-):
-    """Log data access audit to adh_data_access_audit table."""
-    try:
-        import time as _time
-        audit_id = int(_time.time() * 1000)
-
-        from services.shared.common.db.metadata_db import get_metadata_conn
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO adh_data_access_audit "
-                    "(id, user_id, username, datasource_id, database_name, table_name, "
-                    "action, allowed, deny_reason, query_text, created_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
-                    (
-                        audit_id,
-                        user_context.get("user_id", 0),
-                        user_context.get("username", ""),
-                        datasource_id,
-                        database,
-                        ", ".join(tables),
-                        "select",
-                        1 if allowed else 0,
-                        deny_reason,
-                        sql[:1000],  # Truncate long SQL
-                    ),
-                )
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.warning("Failed to log data access audit: %s", e)
 
 
 def execute_query_with_permission(
@@ -1082,8 +879,8 @@ def log_audit(
             (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
     """
     try:
-        from services.shared.common.db.metadata_db import get_vector_conn
-        conn = get_vector_conn()
+        from services.shared.common.db.metadata_db import get_metadata_conn
+        conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
                 cur.execute(insert_sql, (

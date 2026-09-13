@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import Optional
 
 from services.shared.common.db.metadata_db import get_metadata_conn
-from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +14,16 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _make_embedding(text: str) -> str:
-    vec = generate_embedding(text)
-    return embedding_to_sql_literal(vec)
+_EMBEDDING_DIM = 768
+
+
+def _placeholder_embedding() -> str:
+    """Zero-vector placeholder for the logically-disabled embedding column.
+
+    The column is retained (Doris ARRAY<FLOAT> NOT NULL / MySQL JSON) but is no
+    longer produced by an embedding model nor read by any retrieval path.
+    """
+    return "[" + ", ".join(["0.0"] * _EMBEDDING_DIM) + "]"
 
 
 def _emit_graph_sync(event_type: str, data: dict):
@@ -109,8 +115,7 @@ class TermService:
 
                 now = _now()
                 row_id = int(_time.time() * 1000000)
-                embed_text = f"{data['term_cn']} {data.get('term_en') or ''} {data.get('term_aliases') or ''} {data.get('description') or ''}"
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
 
                 cur.execute(
                     "INSERT INTO adh_business_terms "
@@ -164,8 +169,7 @@ class TermService:
                     else:
                         fields[f] = row[f] or ""
 
-                embed_text = f"{fields['term_cn']} {fields['term_en']} {fields['term_aliases']} {fields['description']}"
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 now = _now()
 
                 # Doris DUPLICATE KEY 表不支持 UPDATE，使用 DELETE + INSERT
@@ -232,15 +236,10 @@ class TermService:
                 )
                 full_row = cur.fetchone()
 
-                # 获取嵌入向量
-                cur.execute("SELECT embedding FROM adh_business_terms WHERE id = %s", (row_id,))
-
                 cur.execute("DELETE FROM adh_business_terms WHERE id = %s", (row_id,))
 
                 now = _now()
-                # 重建嵌入向量
-                embed_text = f"{full_row['term_cn']} {full_row.get('term_en') or ''} {full_row.get('term_aliases') or ''} {full_row.get('description') or ''}"
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
 
                 cur.execute(
                     "INSERT INTO adh_business_terms "

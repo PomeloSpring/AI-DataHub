@@ -20,7 +20,6 @@ from services.datamind.nl2sql.sql.feasibility_checker import assess_feasibility
 from services.datamind.nl2sql.sql.multi_step_planner import plan_query
 from services.datamind.nl2sql.sql.sensitive_detector import check_sensitive_keywords
 from services.datamind.nl2sql.sql.query_executor import execute_query, log_audit, _get_ds_conn_params, _extract_sql_from_text
-from services.datamind.rag.table_selector import select_tables
 from services.datamind.rag.rag_retriever import retrieve_with_strategy
 from services.datamind.nl2sql.intent.query_rewriter import rewrite_query
 
@@ -223,24 +222,19 @@ def quick_generate(
     # Use canonical query for RAG retrieval
     rag_query = canonical_query
 
-    selected_tables = select_tables(rag_query, top_k=5, datasource_id=datasource_id)
-    logger.info("[Quick] selected_tables=%s", selected_tables)
-
-    # RAG retrieval with selected tables
+    # RAG retrieval — single graph route (LLM + SPARQL grounding; no BM25/vector pre-selection)
     rag_results = retrieve_with_strategy(
-        rag_query, selected_tables=selected_tables,
-        datasource_id=datasource_id, strategy_name=retrieval_strategy,
+        rag_query, datasource_id=datasource_id, strategy_name=retrieval_strategy,
         model_id=model_id,
     )
-    rag_source = rag_results.get("rag_source", "keyword_selected")
+    rag_source = rag_results.get("rag_source", "graphrag")
     timings["rag"] = round(perf_counter() - t_rag, 2)
 
     logger.info(
-        "[Quick] RAG: source=%s, table_info=%d, column_metadata=%d, selected_tables=%s",
+        "[Quick] RAG: source=%s, table_info=%d, column_metadata=%d",
         rag_source,
         len(rag_results["table_info"]),
         len(rag_results["column_metadata"]),
-        selected_tables,
     )
 
     # Step 2.4: Sensitive keyword check

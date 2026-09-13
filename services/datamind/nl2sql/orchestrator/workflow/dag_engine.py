@@ -421,13 +421,13 @@ class DAGExecutor:
     async def _execute_metadata_retrieval(self, node: DAGNode, input_data: Dict) -> Dict:
         """Execute metadata retrieval step."""
         from services.datamind.rag.rag_retriever import retrieve_all
-        from services.datamind.rag.table_selector import select_tables
 
         question = input_data.get("question", self.context.get("question", ""))
         datasource_id = input_data.get("datasource_id", self.context.get("datasource_id", 0))
 
-        selected_tables = select_tables(question, top_k=5, datasource_id=datasource_id)
-        rag_context = retrieve_all(question=question, selected_tables=selected_tables, datasource_id=datasource_id)
+        # Single graph route: LLM + SPARQL grounding (no BM25/vector pre-selection)
+        rag_context = retrieve_all(question=question, datasource_id=datasource_id)
+        grounded_tables = [t.get("table_name") for t in rag_context.get("table_info", []) if t.get("table_name")]
 
         return {
             "table_info": rag_context.get("table_info", []),
@@ -435,7 +435,7 @@ class DAGExecutor:
             "business_terms": rag_context.get("business_terms", []),
             "table_relations": rag_context.get("table_relations", []),
             "sql_templates": rag_context.get("sql_templates", []),
-            "selected_tables": selected_tables,
+            "selected_tables": grounded_tables,
         }
 
     async def _execute_llm_analysis(self, node: DAGNode, input_data: Dict) -> Dict:

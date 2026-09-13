@@ -3,6 +3,10 @@
 Provides a unified interface for metadata storage (MySQL or Doris).
 The actual implementation is selected based on METADATA_DB_TYPE config.
 
+Supported METADATA_DB_TYPE values:
+    - "mysql" (default): MySQL 8.0 via pymysql + DBUtils pool
+    - "doris": Apache Doris (MySQL wire protocol compatible)
+
 Usage:
     from services.shared.common.db.metadata_db import get_metadata_conn, get_metadata_connection
 
@@ -31,9 +35,6 @@ from services.shared.common.config import (
     METADATA_DB_TYPE,
     METADATA_DB_HOST, METADATA_DB_PORT,
     METADATA_DB_USER, METADATA_DB_PASSWORD, METADATA_DB_DATABASE,
-    VECTOR_DB_TYPE,
-    VECTOR_DB_HOST, VECTOR_DB_PORT,
-    VECTOR_DB_USER, VECTOR_DB_PASSWORD, VECTOR_DB_DATABASE,
 )
 
 logger = logging.getLogger(__name__)
@@ -175,105 +176,6 @@ class DorisMetadataDB(MySQLMetadataDB):
         return stats
 
 
-class SQLiteMetadataDB(MetadataDB):
-    """SQLite implementation of MetadataDB for lightweight deployments."""
-
-    def __init__(self, db_path: str = None):
-        import sqlite3
-        from pathlib import Path
-
-        self._db_path = db_path or "data/metadata.db"
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = None
-        logger.info("SQLiteMetadataDB initialized at %s", self._db_path)
-
-    def _get_conn(self):
-        import sqlite3
-        if self._conn is None:
-            self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-            # Enable WAL mode for better concurrency
-            self._conn.execute("PRAGMA journal_mode=WAL")
-        return self._conn
-
-    def get_conn(self):
-        """Get a SQLite connection (returns a wrapper with dict-like cursor)."""
-        return _SQLiteConnectionWrapper(self._get_conn())
-
-    @contextmanager
-    def get_connection(self):
-        """Context manager for database connections."""
-        conn = self.get_conn()
-        try:
-            yield conn
-        finally:
-            pass  # SQLite connection is shared, don't close
-
-    def close_pool(self):
-        """Close the SQLite connection."""
-        if self._conn:
-            self._conn.close()
-            self._conn = None
-            logger.info("SQLiteMetadataDB connection closed")
-
-    def get_pool_stats(self) -> dict:
-        return {"type": "sqlite", "db_path": self._db_path}
-
-
-class _SQLiteConnectionWrapper:
-    """Wrapper to make sqlite3 connection compatible with pymysql interface."""
-
-    def __init__(self, conn):
-        self._conn = conn
-
-    def cursor(self):
-        return _SQLiteCursorWrapper(self._conn)
-
-    def commit(self):
-        self._conn.commit()
-
-    def close(self):
-        pass  # Shared connection, don't close
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        pass
-
-
-class _SQLiteCursorWrapper:
-    """Wrapper to make sqlite3 cursor compatible with pymysql DictCursor."""
-
-    def __init__(self, conn):
-        self._conn = conn
-        self._cursor = conn.cursor()
-
-    def execute(self, query, params=None):
-        # Convert MySQL-style %s placeholders to SQLite ? placeholders
-        import re
-        query = re.sub(r'%s', '?', query)
-        if params:
-            self._cursor.execute(query, params)
-        else:
-            self._cursor.execute(query)
-
-    def fetchone(self):
-        row = self._cursor.fetchone()
-        if row is None:
-            return None
-        return dict(row)
-
-    def fetchall(self):
-        return [dict(row) for row in self._cursor.fetchall()]
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        self._cursor.close()
-
-
 # -- Global Singleton -------------------------------------------------------
 
 _db: Optional[MetadataDB] = None
@@ -285,8 +187,6 @@ def _get_db() -> MetadataDB:
     if _db is None:
         if METADATA_DB_TYPE == "doris":
             _db = DorisMetadataDB()
-        elif METADATA_DB_TYPE == "sqlite":
-            _db = SQLiteMetadataDB()
         else:
             _db = MySQLMetadataDB()
     return _db
@@ -324,58 +224,3 @@ def close_metadata_pool():
 def get_metadata_pool_stats() -> dict:
     """Get metadata database connection pool statistics."""
     return _get_db().get_pool_stats()
-
-
-# -- Vector Database Connection Pool (Doris) --------------------------------
-# Separate from metadata pool -- vector search requires Doris with HNSW index.
-# Metadata may be in MySQL; vectors are always in Doris.
-
-_vec_db: Optional[MetadataDB] = None
-
-
-def _get_vec_db() -> MetadataDB:
-    """Get or create the global VectorDB instance (uses VECTOR_DB_* config)."""
-    global _vec_db
-    if _vec_db is None:
-        if VECTOR_DB_TYPE == "doris":
-            _vec_db = DorisMetadataDB(
-                host=VECTOR_DB_HOST, port=VECTOR_DB_PORT,
-                user=VECTOR_DB_USER, password=VECTOR_DB_PASSWORD,
-                database=VECTOR_DB_DATABASE,
-            )
-        elif VECTOR_DB_TYPE == "default":
-            # In-memory vector store doesn't need a DB connection
-            return None
-        else:
-            _vec_db = MySQLMetadataDB(
-                host=VECTOR_DB_HOST, port=VECTOR_DB_PORT,
-                user=VECTOR_DB_USER, password=VECTOR_DB_PASSWORD,
-                database=VECTOR_DB_DATABASE,
-            )
-    return _vec_db
-
-
-def get_vector_conn():
-    """Get a vector database connection from the pool."""
-    db = _get_vec_db()
-    if db is None:
-        raise RuntimeError("Vector DB is in-memory mode, use get_vector_store() instead")
-    return db.get_conn()
-
-
-@contextmanager
-def get_vector_connection():
-    """Context manager for vector database connections."""
-    db = _get_vec_db()
-    if db is None:
-        raise RuntimeError("Vector DB is in-memory mode, use get_vector_store() instead")
-    with db.get_connection() as conn:
-        yield conn
-
-
-def close_vector_pool():
-    """Close the vector database connection pool."""
-    global _vec_db
-    if _vec_db:
-        _vec_db.close_pool()
-        _vec_db = None

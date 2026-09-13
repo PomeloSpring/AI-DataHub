@@ -1,7 +1,7 @@
 """Builtin Toolbox — 内置 Agent 工具集(工作空间沙箱).
 
-为平台自研 Agent(ConfigurableAgent)提供与 opencode/qoder 对齐的
-内置工具,命名与 opencode 保持一致:
+为平台自研 Agent(ConfigurableAgent)提供标准命名的内置工具,
+工具名与标准工具目录(tool_catalog)保持一致:
     read / write / edit / glob / grep / bash / webfetch
 
 安全约束:
@@ -38,22 +38,53 @@ def workspace_root(workspace_id: int) -> Path:
 
 
 class BuiltinToolbox:
-    """工作空间沙箱内的内置工具集(命名对齐 opencode)."""
+    """工作空间沙箱内的内置工具集.
 
-    def __init__(self, workspace_id: int = 0):
+    多根沙箱:allowed_dirs 非空时以其为白名单根目录(逐个校验),
+    为空时回退单一工作空间目录 data/workspaces/ws_{id}。
+    """
+
+    def __init__(self, workspace_id: int = 0, allowed_dirs: list = None):
         self.workspace_id = workspace_id or 0
-        self.root = workspace_root(self.workspace_id)
+        ws_root = workspace_root(self.workspace_id)
+        roots: list[Path] = []
+        for d in (allowed_dirs or []):
+            d = str(d or "").strip()
+            if not d:
+                continue
+            try:
+                p = Path(d).expanduser().resolve()
+                p.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                logger.warning("[BuiltinToolbox] 忽略不可用的 allowed_dir %r: %s", d, e)
+                continue
+            if p not in roots:
+                roots.append(p)
+        if not roots:
+            roots = [ws_root.resolve()]
+        self.roots = roots
+        # 主目录:相对路径基准 / bash cwd / 兼容旧引用 self.root
+        self.root = roots[0]
+
+    def _rel(self, p: Path) -> str:
+        """将绝对路径相对化到其所属的白名单根(无匹配则原样返回)."""
+        for r in self.roots:
+            try:
+                return str(p.relative_to(r))
+            except ValueError:
+                continue
+        return str(p)
 
     def _resolve(self, path: str) -> Path:
-        """将相对路径解析到沙箱内;逃逸沙箱时抛 ValueError."""
+        """将路径解析到任一白名单根内;逃逸所有根时抛 ValueError."""
         p = Path(path)
         if not p.is_absolute():
             p = self.root / p
         resolved = p.resolve()
-        root_resolved = self.root.resolve()
-        if resolved != root_resolved and root_resolved not in resolved.parents:
-            raise ValueError(f"路径越出工作空间目录: {path}")
-        return resolved
+        for r in self.roots:
+            if resolved == r or r in resolved.parents:
+                return resolved
+        raise ValueError(f"路径越出允许目录: {path}")
 
     # ── read ─────────────────────────────────────────────────────
 
@@ -125,7 +156,7 @@ class BuiltinToolbox:
         try:
             if pattern:
                 matches = sorted(
-                    str(m.relative_to(self.root.resolve()))
+                    self._rel(m)
                     for m in base.glob(pattern) if m.is_file()
                 )[:500]
                 return "\n".join(matches) if matches else "(无匹配文件)"
@@ -160,7 +191,7 @@ class BuiltinToolbox:
                         f.read_text(encoding="utf-8", errors="ignore").splitlines(), 1
                     ):
                         if regex.search(line):
-                            rel = f.relative_to(self.root.resolve())
+                            rel = self._rel(f)
                             results.append(f"{rel}:{i}: {line.strip()[:300]}")
                             if len(results) >= MAX_SEARCH_RESULTS:
                                 results.append(f"...(超过 {MAX_SEARCH_RESULTS} 条,已截断)")

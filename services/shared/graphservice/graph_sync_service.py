@@ -1,6 +1,7 @@
-"""Graph Sync Service — automatic synchronization between MySQL and Neo4j.
+"""Graph Sync Service — automatic synchronization between MySQL and Oxigraph.
 
-Provides event-driven sync when metadata changes.
+Provides event-driven sync when metadata changes. All operations use SPARQL
+to write RDF triples into Oxigraph named graphs.
 """
 
 import logging
@@ -8,6 +9,8 @@ import asyncio
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from enum import Enum
+
+from services.shared.common.rdf.namespaces import ADH_NS
 
 logger = logging.getLogger(__name__)
 
@@ -36,24 +39,24 @@ class SyncEventType(str, Enum):
 
 
 class GraphSyncService:
-    """图谱自动同步服务"""
+    """图谱自动同步服务 — Oxigraph SPARQL backend."""
 
     def __init__(self):
-        """初始化同步服务"""
-        self._neo4j = None
+        """初始化同步服务."""
+        self._store = None
         self._sync_queue: asyncio.Queue = asyncio.Queue()
         self._is_processing = False
 
     @property
-    def neo4j(self):
-        """懒加载Neo4j连接"""
-        if self._neo4j is None:
-            from services.datamind.rag.graph_rag.neo4j_store import Neo4jStore
-            self._neo4j = Neo4jStore()
-        return self._neo4j
+    def store(self):
+        """懒加载 OxigraphStore."""
+        if self._store is None:
+            from services.datamind.rag.graph_rag.oxigraph_store import OxigraphStore
+            self._store = OxigraphStore()
+        return self._store
 
     async def emit_event(self, event_type: SyncEventType, data: Dict[str, Any]):
-        """发送同步事件
+        """发送同步事件.
 
         Args:
             event_type: 事件类型
@@ -64,453 +67,399 @@ class GraphSyncService:
             "data": data,
             "timestamp": datetime.now().isoformat()
         }
-
-        # 异步处理，不阻塞调用方
         asyncio.create_task(self._process_event(event))
 
     async def _process_event(self, event: Dict[str, Any]):
-        """处理同步事件
-
-        Args:
-            event: 事件数据
-        """
+        """处理同步事件."""
         event_type = event["type"]
         data = event["data"]
 
         try:
-            logger.info(f"Processing graph sync event: {event_type}")
+            logger.info("Processing graph sync event: %s", event_type)
 
-            if event_type == SyncEventType.TABLE_CREATED:
-                await self._sync_table_created(data)
-            elif event_type == SyncEventType.TABLE_UPDATED:
-                await self._sync_table_updated(data)
-            elif event_type == SyncEventType.TABLE_DELETED:
-                await self._sync_table_deleted(data)
-            elif event_type == SyncEventType.COLUMN_CREATED:
-                await self._sync_column_created(data)
-            elif event_type == SyncEventType.COLUMN_UPDATED:
-                await self._sync_column_updated(data)
-            elif event_type == SyncEventType.COLUMN_DELETED:
-                await self._sync_column_deleted(data)
-            elif event_type == SyncEventType.RELATION_CREATED:
-                await self._sync_relation_created(data)
-            elif event_type == SyncEventType.RELATION_UPDATED:
-                await self._sync_relation_updated(data)
-            elif event_type == SyncEventType.RELATION_DELETED:
-                await self._sync_relation_deleted(data)
-            elif event_type == SyncEventType.TERM_CREATED:
-                await self._sync_term_created(data)
-            elif event_type == SyncEventType.TERM_UPDATED:
-                await self._sync_term_updated(data)
-            elif event_type == SyncEventType.TERM_DELETED:
-                await self._sync_term_deleted(data)
-            elif event_type == SyncEventType.METRIC_CREATED:
-                await self._sync_metric_created(data)
-            elif event_type == SyncEventType.METRIC_UPDATED:
-                await self._sync_metric_updated(data)
-            elif event_type == SyncEventType.METRIC_DELETED:
-                await self._sync_metric_deleted(data)
-            elif event_type == SyncEventType.DIMENSION_CREATED:
-                await self._sync_dimension_created(data)
-            elif event_type == SyncEventType.DIMENSION_UPDATED:
-                await self._sync_dimension_updated(data)
-            elif event_type == SyncEventType.DIMENSION_DELETED:
-                await self._sync_dimension_deleted(data)
-            elif event_type == SyncEventType.FULL_SYNC:
-                await self._full_sync(data)
+            handlers = {
+                SyncEventType.TABLE_CREATED: self._sync_table_created,
+                SyncEventType.TABLE_UPDATED: self._sync_table_updated,
+                SyncEventType.TABLE_DELETED: self._sync_table_deleted,
+                SyncEventType.COLUMN_CREATED: self._sync_column_created,
+                SyncEventType.COLUMN_UPDATED: self._sync_column_updated,
+                SyncEventType.COLUMN_DELETED: self._sync_column_deleted,
+                SyncEventType.RELATION_CREATED: self._sync_relation_created,
+                SyncEventType.RELATION_UPDATED: self._sync_relation_updated,
+                SyncEventType.RELATION_DELETED: self._sync_relation_deleted,
+                SyncEventType.TERM_CREATED: self._sync_term_created,
+                SyncEventType.TERM_UPDATED: self._sync_term_updated,
+                SyncEventType.TERM_DELETED: self._sync_term_deleted,
+                SyncEventType.METRIC_CREATED: self._sync_metric_created,
+                SyncEventType.METRIC_UPDATED: self._sync_metric_updated,
+                SyncEventType.METRIC_DELETED: self._sync_metric_deleted,
+                SyncEventType.DIMENSION_CREATED: self._sync_dimension_created,
+                SyncEventType.DIMENSION_UPDATED: self._sync_dimension_updated,
+                SyncEventType.DIMENSION_DELETED: self._sync_dimension_deleted,
+                SyncEventType.FULL_SYNC: self._full_sync,
+            }
 
-            logger.info(f"Graph sync completed: {event_type}")
+            handler = handlers.get(event_type)
+            if handler:
+                handler(data)
+
+            logger.info("Graph sync completed: %s", event_type)
 
         except Exception as e:
-            logger.error(f"Graph sync failed for {event_type}: {e}", exc_info=True)
+            logger.error("Graph sync failed for %s: %s", event_type, e, exc_info=True)
 
     # ── Table Sync ────────────────────────────────────────────────────
 
-    async def _sync_table_created(self, data: Dict[str, Any]):
-        """同步新建的表"""
+    def _sync_table_created(self, data: Dict[str, Any]):
+        """同步新建的表."""
+        table_name = data.get("table_name")
+        if not table_name:
+            return
+        self.store.create_table_node(
+            name=table_name,
+            comment=data.get("table_comment", ""),
+            business_desc=data.get("table_business_desc", ""),
+            datasource_id=data.get("datasource_id", 0),
+        )
+
+    def _sync_table_updated(self, data: Dict[str, Any]):
+        """同步更新的表."""
+        from services.datamind.rag.graph_rag.oxigraph_store import _safe
         table_name = data.get("table_name")
         if not table_name:
             return
 
-        properties = {
-            "id": f"table:{table_name}",
-            "name": table_name,
-            "comment": data.get("table_comment", ""),
-            "business_desc": data.get("table_business_desc", ""),
-            "type": "table",
-            "datasource_id": data.get("datasource_id", 0)
-        }
+        ds_id = data.get("datasource_id", 0)
+        iri = f"{ADH_NS}table:{_safe(table_name)}"
+        graph = self.store.graph_uri(ds_id)
+        client = self.store._client
 
-        self.neo4j.create_node("Table", properties)
+        # Update comment
+        if "table_comment" in data:
+            client.update(f"""
+                DELETE {{ GRAPH <{graph}> {{ <{iri}> <{ADH_NS}comment> ?old }} }}
+                WHERE {{ GRAPH <{graph}> {{ <{iri}> <{ADH_NS}comment> ?old }} }}
+            """)
+            client.update(f"""
+                INSERT DATA {{ GRAPH <{graph}> {{ <{iri}> <{ADH_NS}comment> "{data['table_comment']}" }} }}
+            """)
 
-    async def _sync_table_updated(self, data: Dict[str, Any]):
-        """同步更新的表"""
+        if "table_business_desc" in data:
+            client.update(f"""
+                DELETE {{ GRAPH <{graph}> {{ <{iri}> <{ADH_NS}businessDesc> ?old }} }}
+                WHERE {{ GRAPH <{graph}> {{ <{iri}> <{ADH_NS}businessDesc> ?old }} }}
+            """)
+            client.update(f"""
+                INSERT DATA {{ GRAPH <{graph}> {{ <{iri}> <{ADH_NS}businessDesc> "{data['table_business_desc']}" }} }}
+            """)
+
+    def _sync_table_deleted(self, data: Dict[str, Any]):
+        """同步删除的表."""
+        from services.datamind.rag.graph_rag.oxigraph_store import _safe
         table_name = data.get("table_name")
         if not table_name:
             return
 
-        # 更新节点属性
-        set_clauses = []
-        params = {"node_id": f"table:{table_name}"}
+        ds_id = data.get("datasource_id", 0)
+        iri = f"{ADH_NS}table:{_safe(table_name)}"
+        graph = self.store.graph_uri(ds_id)
+        client = self.store._client
 
-        for key in ["table_comment", "table_business_desc"]:
-            if key in data:
-                prop_name = key.replace("table_", "")
-                set_clauses.append(f"n.{prop_name} = ${prop_name}")
-                params[prop_name] = data[key]
-
-        if set_clauses:
-            query = f"""
-            MATCH (n {{id: $node_id}})
-            SET {', '.join(set_clauses)}
-            """
-            self.neo4j.execute_query(query, params)
-
-    async def _sync_table_deleted(self, data: Dict[str, Any]):
-        """同步删除的表"""
-        table_name = data.get("table_name")
-        if not table_name:
-            return
-
-        query = """
-        MATCH (n {id: $node_id})
-        DETACH DELETE n
-        """
-        self.neo4j.execute_write(query, {"node_id": f"table:{table_name}"})
+        # Delete all triples involving this node
+        client.update(f"""
+            DELETE {{ GRAPH <{graph}> {{ <{iri}> ?p ?o }} }}
+            WHERE {{ GRAPH <{graph}> {{ <{iri}> ?p ?o }} }}
+        """)
+        client.update(f"""
+            DELETE {{ GRAPH <{graph}> {{ ?s ?p <{iri}> }} }}
+            WHERE {{ GRAPH <{graph}> {{ ?s ?p <{iri}> }} }}
+        """)
 
     # ── Column Sync ───────────────────────────────────────────────────
 
-    async def _sync_column_created(self, data: Dict[str, Any]):
-        """同步新建的字段"""
+    def _sync_column_created(self, data: Dict[str, Any]):
+        """同步新建的字段."""
         table_name = data.get("table_name")
         column_name = data.get("column_name")
         if not table_name or not column_name:
             return
 
-        # 创建字段节点
-        properties = {
-            "id": f"col:{table_name}.{column_name}",
-            "name": column_name,
-            "table_name": table_name,
-            "data_type": data.get("data_type", ""),
-            "comment": data.get("column_comment", ""),
-            "business_desc": data.get("business_desc", ""),
-            "is_key": data.get("is_key", "false"),
-            "type": "column",
-            "datasource_id": data.get("datasource_id", 0)
-        }
+        self.store.create_column_node(
+            table=table_name,
+            column=column_name,
+            data_type=data.get("data_type", ""),
+            comment=data.get("column_comment", ""),
+            datasource_id=data.get("datasource_id", 0),
+        )
 
-        self.neo4j.create_node("Column", properties)
-
-        # 创建表-字段关系
-        table_id = f"table:{table_name}"
-        column_id = f"col:{table_name}.{column_name}"
-        self.neo4j.create_relationship(table_id, column_id, "HAS_COLUMN", {"type": "has_column"})
-
-    async def _sync_column_updated(self, data: Dict[str, Any]):
-        """同步更新的字段"""
+    def _sync_column_updated(self, data: Dict[str, Any]):
+        """同步更新的字段."""
+        from services.datamind.rag.graph_rag.oxigraph_store import _safe
         table_name = data.get("table_name")
         column_name = data.get("column_name")
         if not table_name or not column_name:
             return
 
-        set_clauses = []
-        params = {"node_id": f"col:{table_name}.{column_name}"}
+        ds_id = data.get("datasource_id", 0)
+        iri = f"{ADH_NS}col:{_safe(table_name)}.{_safe(column_name)}"
+        graph = self.store.graph_uri(ds_id)
+        client = self.store._client
 
-        for key in ["data_type", "column_comment", "business_desc", "is_key"]:
-            if key in data:
-                prop_name = key.replace("column_", "")
-                set_clauses.append(f"n.{prop_name} = ${prop_name}")
-                params[prop_name] = data[key]
+        if "column_comment" in data or "data_type" in data:
+            prop_map = {
+                "column_comment": f"{ADH_NS}comment",
+                "data_type": f"{ADH_NS}dataType",
+            }
+            for key, pred in prop_map.items():
+                if key in data:
+                    client.update(f"""
+                        DELETE {{ GRAPH <{graph}> {{ <{iri}> <{pred}> ?old }} }}
+                        WHERE {{ GRAPH <{graph}> {{ <{iri}> <{pred}> ?old }} }}
+                    """)
+                    client.update(f"""
+                        INSERT DATA {{ GRAPH <{graph}> {{ <{iri}> <{pred}> "{data[key]}" }} }}
+                    """)
 
-        if set_clauses:
-            query = f"""
-            MATCH (n {{id: $node_id}})
-            SET {', '.join(set_clauses)}
-            """
-            self.neo4j.execute_query(query, params)
-
-    async def _sync_column_deleted(self, data: Dict[str, Any]):
-        """同步删除的字段"""
+    def _sync_column_deleted(self, data: Dict[str, Any]):
+        """同步删除的字段."""
+        from services.datamind.rag.graph_rag.oxigraph_store import _safe
         table_name = data.get("table_name")
         column_name = data.get("column_name")
         if not table_name or not column_name:
             return
 
-        query = """
-        MATCH (n {id: $node_id})
-        DETACH DELETE n
-        """
-        self.neo4j.execute_write(query, {"node_id": f"col:{table_name}.{column_name}"})
+        ds_id = data.get("datasource_id", 0)
+        iri = f"{ADH_NS}col:{_safe(table_name)}.{_safe(column_name)}"
+        graph = self.store.graph_uri(ds_id)
+        client = self.store._client
+
+        client.update(f"""
+            DELETE {{ GRAPH <{graph}> {{ <{iri}> ?p ?o }} }}
+            WHERE {{ GRAPH <{graph}> {{ <{iri}> ?p ?o }} }}
+        """)
+        client.update(f"""
+            DELETE {{ GRAPH <{graph}> {{ ?s ?p <{iri}> }} }}
+            WHERE {{ GRAPH <{graph}> {{ ?s ?p <{iri}> }} }}
+        """)
 
     # ── Relation Sync ─────────────────────────────────────────────────
 
-    async def _sync_relation_created(self, data: Dict[str, Any]):
-        """同步新建的表关系"""
+    def _sync_relation_created(self, data: Dict[str, Any]):
+        """同步新建的表关系."""
         source_table = data.get("source_table")
         target_table = data.get("target_table")
         if not source_table or not target_table:
             return
 
-        source_id = f"table:{source_table}"
-        target_id = f"table:{target_table}"
+        self.store.create_join_relation(
+            source_table, target_table,
+            join_type=data.get("join_type", ""),
+            datasource_id=data.get("datasource_id", 0),
+        )
 
-        properties = {
-            "source_column": data.get("source_column", ""),
-            "target_column": data.get("target_column", ""),
-            "relation_type": data.get("relation_type", "1:N"),
-            "join_type": data.get("join_type", "INNER"),
-            "description": data.get("description", ""),
-            "type": "join"
-        }
+    def _sync_relation_updated(self, data: Dict[str, Any]):
+        """同步更新的表关系."""
+        self._sync_relation_deleted(data)
+        self._sync_relation_created(data)
 
-        # 创建双向关系
-        self.neo4j.create_relationship(source_id, target_id, "JOIN", properties)
-        self.neo4j.create_relationship(target_id, source_id, "JOIN", properties)
-
-    async def _sync_relation_updated(self, data: Dict[str, Any]):
-        """同步更新的表关系"""
-        # 删除旧关系，创建新关系
-        relation_id = data.get("id")
-        if relation_id:
-            # 先删除旧关系
-            await self._sync_relation_deleted({"id": relation_id})
-            # 再创建新关系
-            await self._sync_relation_created(data)
-
-    async def _sync_relation_deleted(self, data: Dict[str, Any]):
-        """同步删除的表关系"""
-        relation_id = data.get("id")
-        if not relation_id:
+    def _sync_relation_deleted(self, data: Dict[str, Any]):
+        """同步删除的表关系."""
+        source_table = data.get("source_table")
+        target_table = data.get("target_table")
+        if not source_table or not target_table:
             return
 
-        # 从数据库获取关系信息
-        try:
-            from services.shared.common.db.metadata_db import get_metadata_conn
-            conn = get_metadata_conn()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT source_table, target_table
-                        FROM adh_table_relations
-                        WHERE id = %s
-                    """, (relation_id,))
-                    row = cur.fetchone()
-                    if row:
-                        source_id = f"table:{row['source_table']}"
-                        target_id = f"table:{row['target_table']}"
+        from services.datamind.rag.graph_rag.oxigraph_store import _safe
+        from services.shared.common.rdf.namespaces import ADH_NS
+        ds_id = data.get("datasource_id", 0)
+        graph = self.store.graph_uri(ds_id)
+        src_iri = f"{ADH_NS}table:{_safe(source_table)}"
+        tgt_iri = f"{ADH_NS}table:{_safe(target_table)}"
+        client = self.store._client
 
-                        # 删除双向关系
-                        query = """
-                        MATCH (a {id: $source_id})-[r:JOIN]->(b {id: $target_id})
-                        DELETE r
-                        """
-                        self.neo4j.execute_write(query, {"source_id": source_id, "target_id": target_id})
-                        self.neo4j.execute_write(query, {"source_id": target_id, "target_id": source_id})
-            finally:
-                conn.close()
-        except Exception as e:
-            logger.error(f"Failed to delete relation from graph: {e}")
+        # Delete both directions
+        client.update(f"""
+            DELETE {{ GRAPH <{graph}> {{ <{src_iri}> <{ADH_NS}join> <{tgt_iri}> }} }}
+            WHERE {{ GRAPH <{graph}> {{ <{src_iri}> <{ADH_NS}join> <{tgt_iri}> }} }}
+        """)
+        client.update(f"""
+            DELETE {{ GRAPH <{graph}> {{ <{tgt_iri}> <{ADH_NS}join> <{src_iri}> }} }}
+            WHERE {{ GRAPH <{graph}> {{ <{tgt_iri}> <{ADH_NS}join> <{src_iri}> }} }}
+        """)
 
     # ── Term Sync ─────────────────────────────────────────────────────
 
-    async def _sync_term_created(self, data: Dict[str, Any]):
-        """同步新建的术语"""
+    def _sync_term_created(self, data: Dict[str, Any]):
+        """同步新建的术语."""
         term_cn = data.get("term_cn")
         if not term_cn:
             return
 
-        properties = {
-            "id": f"term:{term_cn}",
-            "name_cn": term_cn,
-            "name_en": data.get("term_en", ""),
-            "aliases": data.get("term_aliases", ""),
-            "target_table": data.get("target_table", ""),
-            "target_column": data.get("target_column", ""),
-            "calculation": data.get("calculation", ""),
-            "description": data.get("description", ""),
-            "type": "term",
-            "datasource_id": data.get("datasource_id", 0)
-        }
+        ds_id = data.get("datasource_id", 0)
+        self.store.create_term_node(
+            name_cn=term_cn,
+            name_en=data.get("term_en", ""),
+            description=data.get("description", ""),
+            calculation=data.get("calculation", ""),
+            datasource_id=ds_id,
+        )
 
-        self.neo4j.create_node("Term", properties)
-
-        # 如果有目标表和字段，创建MAPS_TO关系
+        # Create MAPS_TO if target specified
         target_table = data.get("target_table", "")
         target_column = data.get("target_column", "")
         if target_table and target_column:
-            term_id = f"term:{term_cn}"
-            column_id = f"col:{target_table}.{target_column}"
-            self.neo4j.create_relationship(term_id, column_id, "MAPS_TO", {"type": "maps_to"})
+            self.store.create_term_mapping(term_cn, target_table, target_column, ds_id)
 
-    async def _sync_term_updated(self, data: Dict[str, Any]):
-        """同步更新的术语"""
+    def _sync_term_updated(self, data: Dict[str, Any]):
+        """同步更新的术语."""
+        term_cn = data.get("term_cn")
+        if not term_cn:
+            return
+        self._sync_term_deleted({"term_cn": term_cn, "datasource_id": data.get("datasource_id", 0)})
+        self._sync_term_created(data)
+
+    def _sync_term_deleted(self, data: Dict[str, Any]):
+        """同步删除的术语."""
+        from services.datamind.rag.graph_rag.oxigraph_store import _safe
         term_cn = data.get("term_cn")
         if not term_cn:
             return
 
-        # 删除旧关系后重新创建
-        await self._sync_term_deleted({"term_cn": term_cn})
-        await self._sync_term_created(data)
+        ds_id = data.get("datasource_id", 0)
+        iri = f"{ADH_NS}term:{_safe(term_cn)}"
+        graph = self.store.graph_uri(ds_id)
+        client = self.store._client
 
-    async def _sync_term_deleted(self, data: Dict[str, Any]):
-        """同步删除的术语"""
-        term_cn = data.get("term_cn")
-        if not term_cn:
-            return
-
-        query = """
-        MATCH (n {id: $node_id})
-        DETACH DELETE n
-        """
-        self.neo4j.execute_write(query, {"node_id": f"term:{term_cn}"})
+        client.update(f"""
+            DELETE {{ GRAPH <{graph}> {{ <{iri}> ?p ?o }} }}
+            WHERE {{ GRAPH <{graph}> {{ <{iri}> ?p ?o }} }}
+        """)
+        client.update(f"""
+            DELETE {{ GRAPH <{graph}> {{ ?s ?p <{iri}> }} }}
+            WHERE {{ GRAPH <{graph}> {{ ?s ?p <{iri}> }} }}
+        """)
 
     # ── Metric Sync ───────────────────────────────────────────────────
 
-    async def _sync_metric_created(self, data: Dict[str, Any]):
-        """同步新建的指标"""
+    def _sync_metric_created(self, data: Dict[str, Any]):
+        """同步新建的指标."""
         metric_name = data.get("name")
         if not metric_name:
             return
 
-        properties = {
-            "id": f"metric:{metric_name}",
-            "name": metric_name,
-            "name_en": data.get("name_en", ""),
-            "formula": data.get("formula", ""),
-            "unit": data.get("unit", ""),
-            "agg_type": data.get("agg_type", ""),
-            "target_table": data.get("target_table", ""),
-            "target_column": data.get("target_column", ""),
-            "description": data.get("description", ""),
-            "category": data.get("category", ""),
-            "type": "metric",
-            "datasource_id": data.get("datasource_id", 0)
-        }
+        ds_id = data.get("datasource_id", 0)
+        self.store.create_metric_node(
+            metric_name,
+            description=data.get("description", ""),
+            datasource_id=ds_id,
+        )
 
-        self.neo4j.create_node("Metric", properties)
-
-        # 如果有目标表和字段，创建DEFINES关系
+        # Create DEFINES if target specified
         target_table = data.get("target_table", "")
         target_column = data.get("target_column", "")
         if target_table and target_column:
-            metric_id = f"metric:{metric_name}"
-            column_id = f"col:{target_table}.{target_column}"
-            self.neo4j.create_relationship(metric_id, column_id, "DEFINES", {"type": "defines"})
+            self.store.create_metric_column_relation(
+                metric_name, target_table, target_column, ds_id
+            )
 
-    async def _sync_metric_updated(self, data: Dict[str, Any]):
-        """同步更新的指标"""
-        metric_id = data.get("id")
-        if not metric_id:
+    def _sync_metric_updated(self, data: Dict[str, Any]):
+        """同步更新的指标."""
+        metric_name = data.get("name")
+        if not metric_name:
             return
+        self._sync_metric_deleted({"name": metric_name, "datasource_id": data.get("datasource_id", 0)})
+        self._sync_metric_created(data)
 
-        # 获取指标名称
-        try:
-            from services.shared.common.db.metadata_db import get_metadata_conn
-            conn = get_metadata_conn()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT name FROM adh_metrics WHERE id = %s", (metric_id,))
-                    row = cur.fetchone()
-                    if row:
-                        await self._sync_metric_deleted({"name": row["name"]})
-                        data["name"] = row["name"]
-                        await self._sync_metric_created(data)
-            finally:
-                conn.close()
-        except Exception as e:
-            logger.error(f"Failed to sync metric update: {e}")
-
-    async def _sync_metric_deleted(self, data: Dict[str, Any]):
-        """同步删除的指标"""
+    def _sync_metric_deleted(self, data: Dict[str, Any]):
+        """同步删除的指标."""
+        from services.datamind.rag.graph_rag.oxigraph_store import _safe
         metric_name = data.get("name")
         if not metric_name:
             return
 
-        query = """
-        MATCH (n {id: $node_id})
-        DETACH DELETE n
-        """
-        self.neo4j.execute_write(query, {"node_id": f"metric:{metric_name}"})
+        ds_id = data.get("datasource_id", 0)
+        iri = f"{ADH_NS}metric:{_safe(metric_name)}"
+        graph = self.store.graph_uri(ds_id)
+        client = self.store._client
+
+        client.update(f"""
+            DELETE {{ GRAPH <{graph}> {{ <{iri}> ?p ?o }} }}
+            WHERE {{ GRAPH <{graph}> {{ <{iri}> ?p ?o }} }}
+        """)
+        client.update(f"""
+            DELETE {{ GRAPH <{graph}> {{ ?s ?p <{iri}> }} }}
+            WHERE {{ GRAPH <{graph}> {{ ?s ?p <{iri}> }} }}
+        """)
 
     # ── Dimension Sync ────────────────────────────────────────────────
 
-    async def _sync_dimension_created(self, data: Dict[str, Any]):
-        """同步新建的维度"""
+    def _sync_dimension_created(self, data: Dict[str, Any]):
+        """同步新建的维度."""
         dim_name = data.get("name")
         if not dim_name:
             return
 
-        properties = {
-            "id": f"dim:{dim_name}",
-            "name": dim_name,
-            "name_en": data.get("name_en", ""),
-            "hierarchy": data.get("hierarchy", ""),
-            "level": data.get("level", 0),
-            "target_table": data.get("target_table", ""),
-            "target_column": data.get("target_column", ""),
-            "description": data.get("description", ""),
-            "category": data.get("category", ""),
-            "type": "dimension",
-            "datasource_id": data.get("datasource_id", 0)
-        }
+        ds_id = data.get("datasource_id", 0)
+        from services.datamind.rag.graph_rag.oxigraph_store import _safe
+        from services.shared.common.rdf.namespaces import ADH_NS
+        iri = f"{ADH_NS}dimension:{_safe(dim_name)}"
+        graph = self.store.graph_uri(ds_id)
+        client = self.store._client
 
-        self.neo4j.create_node("Dimension", properties)
+        client.update(f"""
+            INSERT DATA {{
+                GRAPH <{graph}> {{
+                    <{iri}> a <{ADH_NS}Dimension> ;
+                        <http://www.w3.org/2000/01/rdf-schema#label> "{dim_name}" ;
+                        <{ADH_NS}comment> "{data.get('description', '')}" ;
+                        <{ADH_NS}hierarchy> "{data.get('hierarchy', '')}" .
+                }}
+            }}
+        """)
 
-        # 如果有目标表和字段，创建BELONGS_TO关系
-        target_table = data.get("target_table", "")
-        target_column = data.get("target_column", "")
-        if target_table and target_column:
-            dim_id = f"dim:{dim_name}"
-            column_id = f"col:{target_table}.{target_column}"
-            self.neo4j.create_relationship(dim_id, column_id, "BELONGS_TO", {"type": "belongs_to"})
-
-    async def _sync_dimension_updated(self, data: Dict[str, Any]):
-        """同步更新的维度"""
-        dim_id = data.get("id")
-        if not dim_id:
+    def _sync_dimension_updated(self, data: Dict[str, Any]):
+        """同步更新的维度."""
+        dim_name = data.get("name")
+        if not dim_name:
             return
+        self._sync_dimension_deleted({"name": dim_name, "datasource_id": data.get("datasource_id", 0)})
+        self._sync_dimension_created(data)
 
-        # 获取维度名称
-        try:
-            from services.shared.common.db.metadata_db import get_metadata_conn
-            conn = get_metadata_conn()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT name FROM adh_dimensions WHERE id = %s", (dim_id,))
-                    row = cur.fetchone()
-                    if row:
-                        await self._sync_dimension_deleted({"name": row["name"]})
-                        data["name"] = row["name"]
-                        await self._sync_dimension_created(data)
-            finally:
-                conn.close()
-        except Exception as e:
-            logger.error(f"Failed to sync dimension update: {e}")
-
-    async def _sync_dimension_deleted(self, data: Dict[str, Any]):
-        """同步删除的维度"""
+    def _sync_dimension_deleted(self, data: Dict[str, Any]):
+        """同步删除的维度."""
+        from services.datamind.rag.graph_rag.oxigraph_store import _safe
+        from services.shared.common.rdf.namespaces import ADH_NS
         dim_name = data.get("name")
         if not dim_name:
             return
 
-        query = """
-        MATCH (n {id: $node_id})
-        DETACH DELETE n
-        """
-        self.neo4j.execute_write(query, {"node_id": f"dim:{dim_name}"})
+        ds_id = data.get("datasource_id", 0)
+        iri = f"{ADH_NS}dimension:{_safe(dim_name)}"
+        graph = self.store.graph_uri(ds_id)
+        client = self.store._client
+
+        client.update(f"""
+            DELETE {{ GRAPH <{graph}> {{ <{iri}> ?p ?o }} }}
+            WHERE {{ GRAPH <{graph}> {{ <{iri}> ?p ?o }} }}
+        """)
+        client.update(f"""
+            DELETE {{ GRAPH <{graph}> {{ ?s ?p <{iri}> }} }}
+            WHERE {{ GRAPH <{graph}> {{ ?s ?p <{iri}> }} }}
+        """)
 
     # ── Full Sync ─────────────────────────────────────────────────────
 
-    async def _full_sync(self, data: Dict[str, Any]):
-        """全量同步"""
+    def _full_sync(self, data: Dict[str, Any]):
+        """全量同步."""
         datasource_id = data.get("datasource_id", 0)
+        result = self.store.clear_graph(datasource_id)
+        result = self.builder.build_from_metadata(datasource_id)
+        logger.info("Full sync completed: %s", result)
 
+    @property
+    def builder(self):
         from services.datamind.rag.graph_rag.graph_builder import GraphBuilder
-        builder = GraphBuilder(self.neo4j)
-
-        result = await builder.build_from_metadata(datasource_id)
-        logger.info(f"Full sync completed: {result}")
+        return GraphBuilder(store=self.store)
 
 
 # ── Singleton instance ─────────────────────────────────────────────────
@@ -519,7 +468,7 @@ _sync_service: Optional[GraphSyncService] = None
 
 
 def get_graph_sync_service() -> GraphSyncService:
-    """获取图谱同步服务单例"""
+    """获取图谱同步服务单例."""
     global _sync_service
     if _sync_service is None:
         _sync_service = GraphSyncService()

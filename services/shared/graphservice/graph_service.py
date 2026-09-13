@@ -1,15 +1,16 @@
 """Graph Service — unified knowledge graph service.
 
-Provides graph query, edit, and sync capabilities.
+Provides graph query, edit, and sync capabilities using Oxigraph/SPARQL.
 """
 
 import logging
 from typing import Optional, List, Dict, Any
 
-from services.datamind.rag.graph_rag.async_neo4j_store import AsyncNeo4jStore
-from services.datamind.rag.graph_rag.neo4j_store import Neo4jStore
+from services.datamind.rag.graph_rag.oxigraph_store import OxigraphStore
 from services.datamind.rag.graph_rag.graph_builder import GraphBuilder
 from services.datamind.rag.graph_rag.graph_retriever import GraphRetriever
+from services.shared.common.rdf.sparql_client import get_sparql_client
+from services.shared.common.rdf.namespaces import ADH_NS, SPARQL_PREFIXES
 from services.shared.models.graph import (
     GraphType, NodeType, GraphNode, GraphEdge, GraphStats, GraphData,
     NodeDetailResponse, SyncResponse
@@ -19,75 +20,39 @@ logger = logging.getLogger(__name__)
 
 
 class GraphService:
-    """知识图谱服务"""
+    """知识图谱服务 — Oxigraph SPARQL backend."""
 
-    def __init__(self, neo4j_store=None):
-        """初始化服务
+    def __init__(self, store: OxigraphStore = None):
+        self._store = store or OxigraphStore()
+        self._client = get_sparql_client()
+        self.builder = GraphBuilder(store=self._store)
+        self.retriever = GraphRetriever(store=self._store)
 
-        Args:
-            neo4j_store: Neo4j存储实例（AsyncNeo4jStore或Neo4jStore）
-        """
-        if neo4j_store is None:
-            self.neo4j = AsyncNeo4jStore()
-            self.is_async = True
-        elif isinstance(neo4j_store, AsyncNeo4jStore):
-            self.neo4j = neo4j_store
-            self.is_async = True
-        else:
-            self.neo4j = neo4j_store
-            self.is_async = False
-        self.builder = GraphBuilder(self.neo4j)
-        self.retriever = GraphRetriever(self.neo4j)
+    def _iri_to_node_id(self, iri: str) -> str:
+        """Convert an RDF IRI to a display-friendly node ID."""
+        return iri.replace(ADH_NS, "adh:")
 
-    def _to_graph_node(self, neo4j_node: Dict[str, Any]) -> GraphNode:
-        """将Neo4j节点转换为GraphNode
-
-        Args:
-            neo4j_node: Neo4j节点数据
-
-        Returns:
-            GraphNode: 图节点
-        """
-        props = neo4j_node.get("properties", neo4j_node)
-        node_id = props.get("id", str(neo4j_node.get("id", "")))
-
-        # 获取标签
-        labels = neo4j_node.get("labels", [])
-        if not labels:
-            # 尝试从type属性推断
-            node_type = props.get("type", "Unknown")
-            labels = [node_type.capitalize()]
-
+    def _to_graph_node(self, iri: str, node_type: str,
+                       label: str, properties: Dict[str, Any]) -> GraphNode:
+        """Build a GraphNode from RDF data."""
         return GraphNode(
-            id=node_id,
-            label=labels[0] if labels else "Unknown",
-            properties=props
+            id=self._iri_to_node_id(iri),
+            label=node_type or label or "Unknown",
+            properties=properties,
         )
 
-    def _to_graph_edge(self, neo4j_rel: Dict[str, Any], source_id: str = None, target_id: str = None) -> GraphEdge:
-        """将Neo4j关系转换为GraphEdge
-
-        Args:
-            neo4j_rel: Neo4j关系数据
-            source_id: 源节点ID（可选）
-            target_id: 目标节点ID（可选）
-
-        Returns:
-            GraphEdge: 图边
-        """
-        props = neo4j_rel.get("properties", {})
-        rel_id = str(neo4j_rel.get("id", ""))
-        rel_type = neo4j_rel.get("type", "RELATED")
-
+    def _to_graph_edge(self, src_iri: str, tgt_iri: str,
+                       rel_type: str, properties: Dict[str, Any] = None) -> GraphEdge:
+        """Build a GraphEdge from RDF data."""
         return GraphEdge(
-            id=rel_id,
-            source=source_id or props.get("source", ""),
-            target=target_id or props.get("target", ""),
+            id=f"{self._iri_to_node_id(src_iri)}-{rel_type}-{self._iri_to_node_id(tgt_iri)}",
+            source=self._iri_to_node_id(src_iri),
+            target=self._iri_to_node_id(tgt_iri),
             type=rel_type,
-            properties=props
+            properties=properties or {},
         )
 
-    async def get_graph_data(
+    def get_graph_data(
         self,
         graph_type: GraphType = GraphType.TABLE_RELATION,
         datasource_id: Optional[int] = None,
@@ -97,75 +62,33 @@ class GraphService:
         search: Optional[str] = None,
         limit: int = 200
     ) -> GraphData:
-        """获取图谱数据
-
-        Args:
-            graph_type: 图谱类型
-            datasource_id: 数据源ID
-            node_types: 节点类型过滤
-            max_depth: 最大遍历深度
-            center_node: 中心节点ID
-            search: 搜索关键词
-            limit: 返回数量限制
-
-        Returns:
-            GraphData: 图谱数据
-        """
+        """获取图谱数据."""
         try:
             nodes = []
             edges = []
+            ds_id = datasource_id or 0
+            graph = self._store.graph_uri(ds_id)
 
-            # 构建查询条件
-            type_filter = ""
-            if node_types:
-                type_conditions = [f"n:{t.value}" for t in node_types]
-                type_filter = "WHERE " + " OR ".join(type_conditions)
-
-            ds_filter = ""
-            if datasource_id is not None:
-                ds_filter = f"AND n.datasource_id = {datasource_id}"
-
-            # 根据图谱类型构建不同的查询
             if graph_type == GraphType.TABLE_RELATION:
-                nodes, edges = await self._get_table_relation_graph(
-                    type_filter, ds_filter, limit
-                )
+                nodes, edges = self._get_table_relation_graph(graph, ds_id, limit)
             elif graph_type == GraphType.BUSINESS_KNOWLEDGE:
-                nodes, edges = await self._get_business_knowledge_graph(
-                    type_filter, ds_filter, limit
-                )
+                nodes, edges = self._get_business_knowledge_graph(graph, ds_id, limit)
             elif graph_type == GraphType.DATA_LINEAGE:
-                nodes, edges = await self._get_data_lineage_graph(
-                    type_filter, ds_filter, limit
-                )
+                nodes, edges = self._get_data_lineage_graph(graph, ds_id, limit)
 
-            # 如果指定了中心节点，获取子图
-            if center_node and nodes:
-                center_found = any(n.id == center_node for n in nodes)
-                if not center_found:
-                    # 尝试查找中心节点
-                    related = await self.retriever.find_related_nodes(
-                        center_node, max_depth=max_depth
-                    )
-                    for node_data in related:
-                        nodes.append(self._to_graph_node(node_data))
-
-            # 搜索过滤
+            # Search filter
             if search and nodes:
                 search_lower = search.lower()
                 nodes = [
                     n for n in nodes
                     if search_lower in n.id.lower()
-                    or search_lower in str(n.properties.get("name", "")).lower()
+                    or search_lower in str(n.properties.get("label", "")).lower()
                     or search_lower in str(n.properties.get("comment", "")).lower()
-                    or search_lower in str(n.properties.get("name_cn", "")).lower()
                 ]
-                # 过滤边，只保留两端都在节点列表中的边
                 node_ids = {n.id for n in nodes}
                 edges = [e for e in edges if e.source in node_ids and e.target in node_ids]
 
-            # 获取统计
-            stats = await self._get_stats()
+            stats = self._get_stats(ds_id)
 
             return GraphData(
                 nodes=nodes[:limit],
@@ -174,522 +97,431 @@ class GraphService:
             )
 
         except Exception as e:
-            logger.error(f"Failed to get graph data: {e}", exc_info=True)
-            return GraphData(
-                stats=GraphStats(connected=False)
-            )
+            logger.error("Failed to get graph data: %s", e, exc_info=True)
+            return GraphData(stats=GraphStats(connected=False))
 
-    async def _execute_query(self, query: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """执行查询（支持异步和同步）
-
-        Args:
-            query: Cypher查询语句
-            parameters: 查询参数
-
-        Returns:
-            list: 查询结果
-        """
-        if self.is_async:
-            return await self.neo4j.execute_query(query, parameters)
-        else:
-            return self.neo4j.execute_query(query, parameters)
-
-    async def _get_table_relation_graph(
-        self, type_filter: str, ds_filter: str, limit: int
+    def _get_table_relation_graph(
+        self, graph: str, ds_id: int, limit: int
     ) -> tuple[List[GraphNode], List[GraphEdge]]:
-        """获取表关系图数据"""
+        """获取表关系图数据."""
         nodes = []
         edges = []
 
-        # 获取Table和Column节点
-        query = f"""
-        MATCH (n)
-        WHERE (n:Table OR n:Column) {ds_filter.replace('AND', 'AND', 1) if ds_filter else ''}
-        RETURN n, labels(n) as labels
-        LIMIT {limit}
+        # Get Table nodes
+        sparql = f"""
+            {SPARQL_PREFIXES}
+            SELECT ?iri ?label ?comment WHERE {{
+                GRAPH <{graph}> {{
+                    ?iri a adh:Table ;
+                        rdfs:label ?label .
+                    OPTIONAL {{ ?iri adh:comment ?comment }}
+                }}
+            }}
+            LIMIT {limit}
         """
         try:
-            result = await self._execute_query(query)
-            for record in result:
-                node = self._to_graph_node(record["n"])
-                node.label = record["labels"][0] if record["labels"] else "Unknown"
-                nodes.append(node)
+            rows = self._client.query(sparql)
+            for r in rows:
+                iri = r.get("iri", {}).get("value", "")
+                nodes.append(self._to_graph_node(iri, "Table", r.get("label", {}).get("value", ""), {
+                    "label": r.get("label", {}).get("value", ""),
+                    "comment": r.get("comment", {}).get("value", "") if r.get("comment") else "",
+                }))
         except Exception as e:
-            logger.warning(f"Query failed, trying simpler query: {e}")
-            # 降级查询
-            nodes = await self._get_nodes_fallback(["Table", "Column"], limit)
+            logger.warning("Table node query failed: %s", e)
 
-        # 获取关系
-        rel_query = """
-        MATCH (a)-[r]->(b)
-        WHERE type(r) IN ['HAS_COLUMN', 'JOIN']
-        RETURN a, b, r, type(r) as rel_type, id(a) as src, id(b) as tgt
-        LIMIT $limit
+        # Get Column nodes
+        col_sparql = f"""
+            {SPARQL_PREFIXES}
+            SELECT ?iri ?label ?tableName ?dataType WHERE {{
+                GRAPH <{graph}> {{
+                    ?iri a adh:Column ;
+                        rdfs:label ?label .
+                    OPTIONAL {{ ?iri adh:tableName ?tableName }}
+                    OPTIONAL {{ ?iri adh:dataType ?dataType }}
+                }}
+            }}
+            LIMIT {limit}
         """
         try:
-            result = await self._execute_query(rel_query, {"limit": limit * 2})
-            for record in result:
-                src_props = record["a"]
-                tgt_props = record["b"]
-                src_id = src_props.get("id", str(record["src"]))
-                tgt_id = tgt_props.get("id", str(record["tgt"]))
-
-                # Extract relationship properties
-                rel_props = record["r"]
-                if hasattr(rel_props, 'items'):
-                    rel_props = dict(rel_props.items())
-                elif not isinstance(rel_props, dict):
-                    rel_props = {}
-
-                edge = GraphEdge(
-                    id=f"{src_id}-{record['rel_type']}-{tgt_id}",
-                    source=src_id,
-                    target=tgt_id,
-                    type=record["rel_type"],
-                    properties=rel_props
-                )
-                edges.append(edge)
+            rows = self._client.query(col_sparql)
+            for r in rows:
+                iri = r.get("iri", {}).get("value", "")
+                nodes.append(self._to_graph_node(iri, "Column", r.get("label", {}).get("value", ""), {
+                    "label": r.get("label", {}).get("value", ""),
+                    "table_name": r.get("tableName", {}).get("value", "") if r.get("tableName") else "",
+                    "data_type": r.get("dataType", {}).get("value", "") if r.get("dataType") else "",
+                }))
         except Exception as e:
-            logger.warning(f"Relation query failed: {e}")
+            logger.warning("Column node query failed: %s", e)
+
+        # Get hasColumn + join relations
+        rel_sparql = f"""
+            {SPARQL_PREFIXES}
+            SELECT ?src ?tgt ?relType WHERE {{
+                GRAPH <{graph}> {{
+                    ?src ?rel ?tgt .
+                    FILTER(?rel IN (adh:hasColumn, adh:join))
+                }}
+            }}
+            LIMIT {limit * 2}
+        """
+        try:
+            rows = self._client.query(rel_sparql)
+            for r in rows:
+                src = r.get("src", {}).get("value", "")
+                tgt = r.get("tgt", {}).get("value", "")
+                rel = r.get("relType", {}).get("value", "").replace(ADH_NS, "")
+                edges.append(self._to_graph_edge(src, tgt, rel))
+        except Exception as e:
+            logger.warning("Relation query failed: %s", e)
 
         return nodes, edges
 
-    async def _get_business_knowledge_graph(
-        self, type_filter: str, ds_filter: str, limit: int
+    def _get_business_knowledge_graph(
+        self, graph: str, ds_id: int, limit: int
     ) -> tuple[List[GraphNode], List[GraphEdge]]:
-        """获取业务知识图数据"""
+        """获取业务知识图数据."""
         nodes = []
         edges = []
 
-        # 获取Term、Metric、Dimension节点
-        node_query = f"""
-        MATCH (n)
-        WHERE (n:Term OR n:Metric OR n:Dimension) {ds_filter.replace('AND', 'AND', 1) if ds_filter else ''}
-        RETURN n, labels(n) as labels
-        LIMIT {limit}
+        # Get Term, Metric nodes
+        sparql = f"""
+            {SPARQL_PREFIXES}
+            SELECT ?iri ?type ?label ?comment WHERE {{
+                GRAPH <{graph}> {{
+                    ?iri a ?type ;
+                        rdfs:label ?label .
+                    FILTER(?type IN (adh:Term, adh:Metric, adh:Dimension))
+                    OPTIONAL {{ ?iri adh:comment ?comment }}
+                }}
+            }}
+            LIMIT {limit}
         """
         try:
-            result = await self._execute_query(node_query)
-            for record in result:
-                node = self._to_graph_node(record["n"])
-                node.label = record["labels"][0] if record["labels"] else "Unknown"
-                nodes.append(node)
+            rows = self._client.query(sparql)
+            for r in rows:
+                iri = r.get("iri", {}).get("value", "")
+                ntype = r.get("type", {}).get("value", "").replace(ADH_NS, "")
+                nodes.append(self._to_graph_node(iri, ntype, r.get("label", {}).get("value", ""), {
+                    "label": r.get("label", {}).get("value", ""),
+                    "comment": r.get("comment", {}).get("value", "") if r.get("comment") else "",
+                }))
         except Exception as e:
-            logger.warning(f"Business knowledge query failed: {e}")
-            nodes = await self._get_nodes_fallback(["Term", "Metric", "Dimension"], limit)
+            logger.warning("Business knowledge query failed: %s", e)
 
-        # 获取关联的Table和Column
-        related_query = """
-        MATCH (n)-[r]-(m)
-        WHERE (n:Term OR n:Metric OR n:Dimension)
-        AND (m:Table OR m:Column)
-        RETURN n, m, r, type(r) as rel_type, id(n) as src, id(m) as tgt
-        LIMIT $limit
+        # Get mapsTo / defines relations
+        rel_sparql = f"""
+            {SPARQL_PREFIXES}
+            SELECT ?src ?tgt ?relType WHERE {{
+                GRAPH <{graph}> {{
+                    ?src ?rel ?tgt .
+                    FILTER(?rel IN (adh:mapsTo, adh:defines, adh:belongsTo))
+                }}
+            }}
+            LIMIT {limit}
         """
         try:
-            result = await self._execute_query(related_query, {"limit": limit})
-            added_node_ids = {n.id for n in nodes}
-
-            for record in result:
-                # 添加关联节点
-                m_props = record["m"]
-                m_id = m_props.get("id", str(record["tgt"]))
-                if m_id not in added_node_ids:
-                    related_node = self._to_graph_node(record["m"])
-                    nodes.append(related_node)
-                    added_node_ids.add(m_id)
-
-                # 添加边
-                n_props = record["n"]
-                n_id = n_props.get("id", str(record["src"]))
-
-                # Extract relationship properties
-                rel_props = record["r"]
-                if hasattr(rel_props, 'items'):
-                    rel_props = dict(rel_props.items())
-                elif not isinstance(rel_props, dict):
-                    rel_props = {}
-
-                edge = GraphEdge(
-                    id=f"{n_id}-{record['rel_type']}-{m_id}",
-                    source=n_id,
-                    target=m_id,
-                    type=record["rel_type"],
-                    properties=rel_props
-                )
-                edges.append(edge)
+            rows = self._client.query(rel_sparql)
+            for r in rows:
+                src = r.get("src", {}).get("value", "")
+                tgt = r.get("tgt", {}).get("value", "")
+                rel = r.get("relType", {}).get("value", "").replace(ADH_NS, "")
+                edges.append(self._to_graph_edge(src, tgt, rel))
         except Exception as e:
-            logger.warning(f"Business knowledge relations query failed: {e}")
+            logger.warning("Business relation query failed: %s", e)
 
         return nodes, edges
 
-    async def _get_data_lineage_graph(
-        self, type_filter: str, ds_filter: str, limit: int
+    def _get_data_lineage_graph(
+        self, graph: str, ds_id: int, limit: int
     ) -> tuple[List[GraphNode], List[GraphEdge]]:
-        """获取数据血缘图数据"""
+        """获取数据血缘图数据."""
         nodes = []
         edges = []
 
-        # 获取DataSource节点
-        ds_query = """
-        MATCH (n:DataSource)
-        RETURN n, labels(n) as labels
-        LIMIT $limit
+        sparql = f"""
+            {SPARQL_PREFIXES}
+            SELECT ?iri ?type ?label WHERE {{
+                GRAPH <{graph}> {{
+                    ?iri a ?type ;
+                        rdfs:label ?label .
+                    FILTER(?type IN (adh:DataSource, adh:Table))
+                }}
+            }}
+            LIMIT {limit}
         """
         try:
-            result = await self._execute_query(ds_query, {"limit": limit // 3})
-            for record in result:
-                node = self._to_graph_node(record["n"])
-                node.label = "DataSource"
-                nodes.append(node)
+            rows = self._client.query(sparql)
+            for r in rows:
+                iri = r.get("iri", {}).get("value", "")
+                ntype = r.get("type", {}).get("value", "").replace(ADH_NS, "")
+                nodes.append(self._to_graph_node(iri, ntype, r.get("label", {}).get("value", ""), {
+                    "label": r.get("label", {}).get("value", ""),
+                }))
         except Exception as e:
-            logger.warning(f"DataSource query failed: {e}")
-
-        # 获取ETLTask节点
-        etl_query = """
-        MATCH (n:ETLTask)
-        RETURN n, labels(n) as labels
-        LIMIT $limit
-        """
-        try:
-            result = await self._execute_query(etl_query, {"limit": limit // 3})
-            for record in result:
-                node = self._to_graph_node(record["n"])
-                node.label = "ETLTask"
-                nodes.append(node)
-        except Exception as e:
-            logger.warning(f"ETLTask query failed: {e}")
-
-        # 获取Table节点
-        table_query = """
-        MATCH (n:Table)
-        RETURN n, labels(n) as labels
-        LIMIT $limit
-        """
-        try:
-            result = await self._execute_query(table_query, {"limit": limit // 3})
-            for record in result:
-                node = self._to_graph_node(record["n"])
-                node.label = "Table"
-                nodes.append(node)
-        except Exception as e:
-            logger.warning(f"Table query failed: {e}")
-
-        # 获取血缘关系
-        rel_query = """
-        MATCH (a)-[r]->(b)
-        WHERE type(r) IN ['PRODUCES', 'CONSUMES', 'FEEDS', 'TRANSFORMS', 'DEPENDS_ON']
-        RETURN a, b, r, type(r) as rel_type, id(a) as src, id(b) as tgt
-        LIMIT $limit
-        """
-        try:
-            result = await self._execute_query(rel_query, {"limit": limit * 2})
-            for record in result:
-                src_props = record["a"]
-                tgt_props = record["b"]
-                src_id = src_props.get("id", str(record["src"]))
-                tgt_id = tgt_props.get("id", str(record["tgt"]))
-
-                # Extract relationship properties
-                rel_props = record["r"]
-                if hasattr(rel_props, 'items'):
-                    rel_props = dict(rel_props.items())
-                elif not isinstance(rel_props, dict):
-                    rel_props = {}
-
-                edge = GraphEdge(
-                    id=f"{src_id}-{record['rel_type']}-{tgt_id}",
-                    source=src_id,
-                    target=tgt_id,
-                    type=record["rel_type"],
-                    properties=rel_props
-                )
-                edges.append(edge)
-        except Exception as e:
-            logger.warning(f"Lineage relations query failed: {e}")
+            logger.warning("Lineage query failed: %s", e)
 
         return nodes, edges
 
-    async def _get_nodes_fallback(
-        self, labels: List[str], limit: int
-    ) -> List[GraphNode]:
-        """降级获取节点（处理Neo4j查询失败）"""
-        nodes = []
-        for label in labels:
-            try:
-                query = f"MATCH (n:{label}) RETURN n LIMIT {limit // len(labels)}"
-                result = await self._execute_query(query)
-                for record in result:
-                    node = self._to_graph_node(record["n"])
-                    node.label = label
-                    nodes.append(node)
-            except Exception as e:
-                logger.warning(f"Fallback query for {label} failed: {e}")
-        return nodes
-
-    async def _get_stats(self) -> GraphStats:
-        """获取图谱统计"""
+    def _get_stats(self, datasource_id: int = 0) -> GraphStats:
+        """获取图谱统计."""
         try:
-            if self.is_async:
-                stats = await self.neo4j.get_stats()
-            else:
-                stats = self.neo4j.get_stats()
+            graph = self._store.graph_uri(datasource_id)
+            triple_count = self._client.count_triples(graph)
+
+            sparql = f"""
+                {SPARQL_PREFIXES}
+                SELECT ?type (COUNT(?s) as ?cnt) WHERE {{
+                    GRAPH <{graph}> {{
+                        ?s a ?type .
+                    }}
+                }}
+                GROUP BY ?type
+            """
+            type_counts = self._client.query(sparql)
+            labels = []
+            total_nodes = 0
+            for r in type_counts:
+                t = r.get("type", {}).get("value", "").replace(ADH_NS, "")
+                labels.append(t)
+                total_nodes += int(r.get("cnt", {}).get("value", 0))
+
             return GraphStats(
-                node_count=stats.get("node_count", 0),
-                relationship_count=stats.get("relationship_count", 0),
-                labels=stats.get("labels", []),
-                connected=stats.get("connected", False)
+                node_count=total_nodes,
+                relationship_count=triple_count - total_nodes,  # rough estimate
+                labels=labels,
+                connected=True,
             )
         except Exception as e:
-            logger.error(f"Failed to get stats: {e}")
+            logger.error("Failed to get stats: %s", e)
             return GraphStats(connected=False)
 
-    async def get_node_detail(self, node_id: str) -> Optional[NodeDetailResponse]:
-        """获取节点详情
-
-        Args:
-            node_id: 节点ID
-
-        Returns:
-            NodeDetailResponse: 节点详情
-        """
+    def get_node_detail(self, node_iri: str, datasource_id: int = 0) -> Optional[NodeDetailResponse]:
+        """获取节点详情."""
         try:
-            # 查找节点
-            query = """
-            MATCH (n {id: $node_id})
-            RETURN n, labels(n) as labels
-            """
-            result = await self._execute_query(query, {"node_id": node_id})
+            graph = self._store.graph_uri(datasource_id)
 
-            if not result:
+            sparql = f"""
+                {SPARQL_PREFIXES}
+                SELECT ?p ?o WHERE {{
+                    <{node_iri}> ?p ?o .
+                }}
+                LIMIT 100
+            """
+            results = self._client.query(sparql)
+            if not results:
                 return None
 
-            node_data = result[0]["n"]
-            labels = result[0]["labels"]
-            node = GraphNode(
-                id=node_id,
-                label=labels[0] if labels else "Unknown",
-                properties=node_data
-            )
+            properties = {}
+            node_type = "Unknown"
+            label = ""
+            for r in results:
+                pred = r.get("p", {}).get("value", "")
+                obj = r.get("o", {}).get("value", "")
+                if pred == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type":
+                    node_type = obj.replace(ADH_NS, "")
+                elif pred == "http://www.w3.org/2000/01/rdf-schema#label":
+                    label = obj
+                else:
+                    properties[pred.replace(ADH_NS, "adh:")] = obj
 
-            # 获取关联节点和关系
-            related_query = """
-            MATCH (n {id: $node_id})-[r]-(m)
-            RETURN m, r, type(r) as rel_type, id(n) as src, id(m) as tgt,
-                   startNode(r).id as start_id, endNode(r).id as end_id
-            LIMIT 50
+            node = self._to_graph_node(node_iri, node_type, label, properties)
+
+            # Get related nodes
+            related_sparql = f"""
+                {SPARQL_PREFIXES}
+                SELECT ?rel ?other ?otherType ?otherLabel WHERE {{
+                    {{ <{node_iri}> ?rel ?other . }}
+                    UNION
+                    {{ ?other ?rel <{node_iri}> . }}
+                    ?other a ?otherType .
+                    OPTIONAL {{ ?other rdfs:label ?otherLabel }}
+                }}
+                LIMIT 50
             """
-            related_result = await self._execute_query(related_query, {"node_id": node_id})
-
+            related = self._client.query(related_sparql)
             related_nodes = []
             relations = []
-            seen_node_ids = set()
+            seen = set()
 
-            for record in related_result:
-                # 添加关联节点
-                m_id = record["m"].get("id", str(record["tgt"]))
-                if m_id not in seen_node_ids:
-                    related_node = self._to_graph_node(record["m"])
-                    related_nodes.append(related_node)
-                    seen_node_ids.add(m_id)
-
-                # 添加关系
-                start_id = record.get("start_id", node_id)
-                end_id = record.get("end_id", m_id)
-
-                edge = GraphEdge(
-                    id=f"{start_id}-{record['rel_type']}-{end_id}",
-                    source=start_id,
-                    target=end_id,
-                    type=record["rel_type"],
-                    properties=record["r"]
-                )
-                relations.append(edge)
+            for r in related:
+                other_iri = r.get("other", {}).get("value", "")
+                if other_iri not in seen:
+                    seen.add(other_iri)
+                    other_type = r.get("otherType", {}).get("value", "").replace(ADH_NS, "")
+                    other_label = r.get("otherLabel", {}).get("value", "") if r.get("otherLabel") else ""
+                    related_nodes.append(self._to_graph_node(other_iri, other_type, other_label, {
+                        "label": other_label,
+                    }))
+                    rel_type = r.get("rel", {}).get("value", "").replace(ADH_NS, "")
+                    relations.append(self._to_graph_edge(node_iri, other_iri, rel_type))
 
             return NodeDetailResponse(
                 node=node,
                 related_nodes=related_nodes,
-                relations=relations
+                relations=relations,
             )
 
         except Exception as e:
-            logger.error(f"Failed to get node detail: {e}")
+            logger.error("Failed to get node detail: %s", e)
             return None
 
-    async def create_node(
-        self, node_type: NodeType, properties: Dict[str, Any]
+    def create_node(
+        self, node_type: NodeType, properties: Dict[str, Any],
+        datasource_id: int = 0
     ) -> Optional[GraphNode]:
-        """创建节点
-
-        Args:
-            node_type: 节点类型
-            properties: 节点属性
-
-        Returns:
-            GraphNode: 创建的节点
-        """
+        """创建节点."""
         try:
-            # 确保有id属性
-            if "id" not in properties:
-                properties["id"] = f"{node_type.value.lower()}:{properties.get('name', 'new')}"
+            name = properties.get("name", properties.get("label", "unnamed"))
+            comment = properties.get("comment", "")
 
-            if self.is_async:
-                await self.neo4j.create_node(node_type.value, properties)
+            if node_type == NodeType.TABLE:
+                self._store.create_table_node(name, comment=comment,
+                                              business_desc=properties.get("business_desc", ""),
+                                              datasource_id=datasource_id)
+            elif node_type == NodeType.COLUMN:
+                table = properties.get("table_name", "")
+                self._store.create_column_node(table, name,
+                                               data_type=properties.get("data_type", ""),
+                                               comment=comment,
+                                               datasource_id=datasource_id)
+            elif node_type == NodeType.TERM:
+                self._store.create_term_node(name_cn=name,
+                                             description=properties.get("description", ""),
+                                             datasource_id=datasource_id)
+            elif node_type == NodeType.METRIC:
+                self._store.create_metric_node(name, description=comment,
+                                               datasource_id=datasource_id)
             else:
-                self.neo4j.create_node(node_type.value, properties)
+                logger.warning("Unsupported node type for creation: %s", node_type)
+                return None
 
             return GraphNode(
-                id=properties["id"],
+                id=f"adh:{node_type.value.lower()}:{name}",
                 label=node_type.value,
-                properties=properties
+                properties=properties,
             )
 
         except Exception as e:
-            logger.error(f"Failed to create node: {e}")
+            logger.error("Failed to create node: %s", e)
             return None
 
-    async def update_node(
-        self, node_id: str, properties: Dict[str, Any]
+    def update_node(
+        self, node_iri: str, properties: Dict[str, Any],
+        datasource_id: int = 0
     ) -> bool:
-        """更新节点
-
-        Args:
-            node_id: 节点ID
-            properties: 更新的属性
-
-        Returns:
-            bool: 是否成功
-        """
+        """更新节点属性."""
         try:
-            set_clauses = []
-            params = {"node_id": node_id}
+            graph = self._store.graph_uri(datasource_id)
 
+            # Delete old property values and insert new ones
             for key, value in properties.items():
-                param_name = f"prop_{key}"
-                set_clauses.append(f"n.{key} = ${param_name}")
-                params[param_name] = value
-
-            set_str = ", ".join(set_clauses)
-            query = f"""
-            MATCH (n {{id: $node_id}})
-            SET {set_str}
-            RETURN n
-            """
-
-            await self._execute_query(query, params)
+                pred_iri = f"{ADH_NS}{key}" if not key.startswith("http") else key
+                self._client.update(f"""
+                    DELETE {{ GRAPH <{graph}> {{ <{node_iri}> <{pred_iri}> ?old }} }}
+                    WHERE {{ GRAPH <{graph}> {{ <{node_iri}> <{pred_iri}> ?old }} }}
+                """)
+                self._client.update(f"""
+                    INSERT DATA {{
+                        GRAPH <{graph}> {{
+                            <{node_iri}> <{pred_iri}> "{value}" .
+                        }}
+                    }}
+                """)
             return True
 
         except Exception as e:
-            logger.error(f"Failed to update node: {e}")
+            logger.error("Failed to update node: %s", e)
             return False
 
-    async def delete_node(self, node_id: str) -> bool:
-        """删除节点
-
-        Args:
-            node_id: 节点ID
-
-        Returns:
-            bool: 是否成功
-        """
+    def delete_node(self, node_iri: str, datasource_id: int = 0) -> bool:
+        """删除节点."""
         try:
-            query = """
-            MATCH (n {id: $node_id})
-            DETACH DELETE n
-            """
-            if self.is_async:
-                await self.neo4j.execute_write(query, {"node_id": node_id})
-            else:
-                self.neo4j.execute_write(query, {"node_id": node_id})
+            graph = self._store.graph_uri(datasource_id)
+            self._client.update(f"""
+                DELETE {{
+                    GRAPH <{graph}> {{ <{node_iri}> ?p ?o }}
+                }}
+                WHERE {{
+                    GRAPH <{graph}> {{ <{node_iri}> ?p ?o }}
+                }}
+            """)
+            # Also delete triples where this node is the object
+            self._client.update(f"""
+                DELETE {{
+                    GRAPH <{graph}> {{ ?s ?p <{node_iri}> }}
+                }}
+                WHERE {{
+                    GRAPH <{graph}> {{ ?s ?p <{node_iri}> }}
+                }}
+            """)
             return True
 
         except Exception as e:
-            logger.error(f"Failed to delete node: {e}")
+            logger.error("Failed to delete node: %s", e)
             return False
 
-    async def create_relation(
+    def create_relation(
         self,
-        source_id: str,
-        target_id: str,
+        source_iri: str,
+        target_iri: str,
         relation_type: str,
-        properties: Optional[Dict[str, Any]] = None
+        properties: Optional[Dict[str, Any]] = None,
+        datasource_id: int = 0,
     ) -> Optional[GraphEdge]:
-        """创建关系
-
-        Args:
-            source_id: 源节点ID
-            target_id: 目标节点ID
-            relation_type: 关系类型
-            properties: 关系属性
-
-        Returns:
-            GraphEdge: 创建的关系
-        """
+        """创建关系."""
         try:
-            if self.is_async:
-                success = await self.neo4j.create_relationship(
-                    source_id, target_id, relation_type, properties
-                )
-            else:
-                success = self.neo4j.create_relationship(
-                    source_id, target_id, relation_type, properties
-                )
+            graph = self._store.graph_uri(datasource_id)
+            pred_iri = f"{ADH_NS}{relation_type}" if not relation_type.startswith("http") else relation_type
 
-            if success:
-                return GraphEdge(
-                    id=f"{source_id}-{relation_type}-{target_id}",
-                    source=source_id,
-                    target=target_id,
-                    type=relation_type,
-                    properties=properties or {}
-                )
+            self._client.update(f"""
+                INSERT DATA {{
+                    GRAPH <{graph}> {{
+                        <{source_iri}> <{pred_iri}> <{target_iri}> .
+                    }}
+                }}
+            """)
 
-            return None
+            return GraphEdge(
+                id=f"{self._iri_to_node_id(source_iri)}-{relation_type}-{self._iri_to_node_id(target_iri)}",
+                source=self._iri_to_node_id(source_iri),
+                target=self._iri_to_node_id(target_iri),
+                type=relation_type,
+                properties=properties or {},
+            )
 
         except Exception as e:
-            logger.error(f"Failed to create relation: {e}")
+            logger.error("Failed to create relation: %s", e)
             return None
 
-    async def delete_relation(
-        self, source_id: str, target_id: str, relation_type: str
+    def delete_relation(
+        self, source_iri: str, target_iri: str, relation_type: str,
+        datasource_id: int = 0
     ) -> bool:
-        """删除关系
-
-        Args:
-            source_id: 源节点ID
-            target_id: 目标节点ID
-            relation_type: 关系类型
-
-        Returns:
-            bool: 是否成功
-        """
+        """删除关系."""
         try:
-            query = f"""
-            MATCH (a {{id: $source_id}})-[r:{relation_type}]->(b {{id: $target_id}})
-            DELETE r
-            RETURN count(r) as deleted
-            """
-            result = await self._execute_query(query, {
-                "source_id": source_id,
-                "target_id": target_id
-            })
-            return result[0]["deleted"] > 0 if result else False
+            graph = self._store.graph_uri(datasource_id)
+            pred_iri = f"{ADH_NS}{relation_type}" if not relation_type.startswith("http") else relation_type
+
+            self._client.update(f"""
+                DELETE {{
+                    GRAPH <{graph}> {{ <{source_iri}> <{pred_iri}> <{target_iri}> }}
+                }}
+                WHERE {{
+                    GRAPH <{graph}> {{ <{source_iri}> <{pred_iri}> <{target_iri}> }}
+                }}
+            """)
+            return True
 
         except Exception as e:
-            logger.error(f"Failed to delete relation: {e}")
+            logger.error("Failed to delete relation: %s", e)
             return False
 
-    async def sync_from_metadata(self, datasource_id: int = 0) -> SyncResponse:
-        """从元数据同步到Neo4j
-
-        Args:
-            datasource_id: 数据源ID
-
-        Returns:
-            SyncResponse: 同步结果
-        """
+    def sync_from_metadata(self, datasource_id: int = 0) -> SyncResponse:
+        """从元数据同步到 Oxigraph."""
         try:
-            result = await self.builder.build_from_metadata(datasource_id)
+            result = self.builder.build_from_metadata(datasource_id)
 
             if result.get("success"):
                 return SyncResponse(
@@ -697,8 +529,18 @@ class GraphService:
                     tables=result.get("tables", 0),
                     columns=result.get("columns", 0),
                     terms=result.get("terms", 0),
-                    relations=result.get("relations", 0),
-                    message="同步成功"
+                    metrics=result.get("metrics", 0),
+                    dimensions=result.get("dimensions", 0),
+                    sql_templates=result.get("sql_templates", 0),
+                    relations=result.get("joins", 0),
+                    message=(
+                        f"图谱构建完成：{result.get('tables', 0)} 表、"
+                        f"{result.get('columns', 0)} 字段、"
+                        f"{result.get('terms', 0)} 术语、"
+                        f"{result.get('metrics', 0)} 指标、"
+                        f"{result.get('sql_templates', 0)} SQL 模板、"
+                        f"{result.get('joins', 0)} 关系"
+                    )
                 )
             else:
                 return SyncResponse(
@@ -707,41 +549,57 @@ class GraphService:
                 )
 
         except Exception as e:
-            logger.error(f"Sync failed: {e}")
+            logger.error("Sync failed: %s", e)
             return SyncResponse(
                 success=False,
                 message=str(e)
             )
 
-    async def search_nodes(
+    def search_nodes(
         self,
         query: str,
         node_types: Optional[List[NodeType]] = None,
-        limit: int = 20
+        limit: int = 20,
+        datasource_id: int = 0,
     ) -> List[GraphNode]:
-        """搜索节点
-
-        Args:
-            query: 搜索关键词
-            node_types: 节点类型过滤
-            limit: 返回数量限制
-
-        Returns:
-            List[GraphNode]: 节点列表
-        """
+        """搜索节点."""
         try:
-            types = [t.value for t in node_types] if node_types else None
-            results = await self.retriever.search_nodes(query, types, limit)
+            graph = self._store.graph_uri(datasource_id)
+            query_escaped = query.replace("\\", "\\\\").replace('"', '\\"')
 
+            type_filter = ""
+            if node_types:
+                type_iris = " ".join([f"adh:{t.value}" for t in node_types])
+                type_filter = f"FILTER(?type IN ({type_iris}))"
+
+            sparql = f"""
+                {SPARQL_PREFIXES}
+                SELECT ?iri ?type ?label ?comment WHERE {{
+                    GRAPH <{graph}> {{
+                        ?iri a ?type ;
+                            rdfs:label ?label .
+                        {type_filter}
+                        OPTIONAL {{ ?iri adh:comment ?comment }}
+                        FILTER(CONTAINS(LCASE(?label), "{query_escaped.lower()}")
+                               || CONTAINS(LCASE(STR(?iri)), "{query_escaped.lower()}"))
+                    }}
+                }}
+                LIMIT {limit}
+            """
+            results = self._client.query(sparql)
             nodes = []
-            for record in results:
-                node = self._to_graph_node(record.get("n", record))
-                if "types" in record:
-                    node.label = record["types"][0] if record["types"] else node.label
-                nodes.append(node)
+            for r in results:
+                iri = r.get("iri", {}).get("value", "")
+                ntype = r.get("type", {}).get("value", "").replace(ADH_NS, "")
+                label = r.get("label", {}).get("value", "")
+                comment = r.get("comment", {}).get("value", "") if r.get("comment") else ""
+                nodes.append(self._to_graph_node(iri, ntype, label, {
+                    "label": label,
+                    "comment": comment,
+                }))
 
             return nodes
 
         except Exception as e:
-            logger.error(f"Search failed: {e}")
+            logger.error("Search failed: %s", e)
             return []

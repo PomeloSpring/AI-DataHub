@@ -106,10 +106,12 @@ class ConfigurableAgent(BaseAgent):
         Kwargs:
             workspace_id: 工作空间 ID(文件工具沙箱根目录)
             allowed_tools: tools 权限白名单(标准名/具体工具名,空=不限制)
+            allowed_dirs: 可执行/可访问目录白名单(空=回退工作空间目录)
         """
         self._start_time = time.time()
         self._workspace_id = int(kwargs.get("workspace_id") or 0)
         self._allowed_tools = list(kwargs.get("allowed_tools") or [])
+        self._allowed_dirs = list(kwargs.get("allowed_dirs") or [])
 
         # Allow per-request override of max_iterations
         if max_iterations is not None:
@@ -257,7 +259,11 @@ class ConfigurableAgent(BaseAgent):
 
         tools_text = "\n".join(tools_desc) if tools_desc else "（无可用工具）"
 
-        return f"""{self.system_prompt}
+        # 前置护栏（角色风格 + 权限边界），按工作空间作用域
+        from services.datamind.config.guardrails import get_guardrail_prompt
+        guardrail = get_guardrail_prompt(getattr(self, "_workspace_id", 0))
+
+        body = f"""{self.system_prompt}
 
 ## 可用工具
 
@@ -277,6 +283,9 @@ class ConfigurableAgent(BaseAgent):
 - 基于工具返回的数据进行分析
 - 如果数据不足，说明原因
 """
+        if guardrail:
+            body = f"{guardrail}\n\n---\n\n{body}"
+        return body
 
     async def _execute_tool(self, tool_name: str, arguments: dict) -> str:
         """Execute a tool — dispatch to built-in(file/code) or MCP."""
@@ -287,7 +296,8 @@ class ConfigurableAgent(BaseAgent):
         # Builtin toolbox (read / write / edit / glob / grep / bash / webfetch)
         from services.datamind.agent.file_tools import BuiltinToolbox
         workspace_id = getattr(self, "_workspace_id", 0)
-        file_result = BuiltinToolbox(workspace_id).dispatch(tool_name, arguments)
+        allowed_dirs = getattr(self, "_allowed_dirs", None)
+        file_result = BuiltinToolbox(workspace_id, allowed_dirs=allowed_dirs).dispatch(tool_name, arguments)
         if file_result is not None:
             return file_result
 

@@ -10,7 +10,6 @@ export interface Workspace {
   is_public: boolean;
   allowed_modes: string;
   default_mode: string;
-  retrieval_strategy: string;
   config: Record<string, any>;
   icon: string;
   color: string;
@@ -54,7 +53,6 @@ export interface WorkspaceCreateRequest {
   is_public?: boolean;
   allowed_modes?: string;
   default_mode?: string;
-  retrieval_strategy?: string;
   config?: Record<string, any>;
   icon?: string;
   color?: string;

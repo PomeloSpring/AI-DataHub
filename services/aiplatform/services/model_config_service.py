@@ -255,33 +255,3 @@ def update_system_config(key: str, value: str) -> bool:
                 (key, value, key, now),
             )
     return True
-
-
-def get_embedding_config() -> dict:
-    """Get embedding model configuration."""
-    return {
-        "model_path": get_system_config("embedding_model_path", "shibing624/text2vec-base-chinese"),
-        "dim": int(get_system_config("embedding_dim", "768")),
-    }
-
-
-def update_embedding_config(model_path: str = None, dim: int = None) -> bool:
-    """Update embedding model configuration."""
-    now = _now()
-    with DBConnection() as conn:
-        with conn.cursor() as cur:
-            if model_path is not None:
-                cur.execute("DELETE FROM adh_system_config WHERE config_key = 'embedding_model_path'")
-                cur.execute(
-                    "INSERT INTO adh_system_config (config_key, config_value, description, updated_at) "
-                    "VALUES ('embedding_model_path', %s, 'Embedding model path', %s)",
-                    (model_path, now),
-                )
-            if dim is not None:
-                cur.execute("DELETE FROM adh_system_config WHERE config_key = 'embedding_dim'")
-                cur.execute(
-                    "INSERT INTO adh_system_config (config_key, config_value, description, updated_at) "
-                    "VALUES ('embedding_dim', %s, 'Embedding vector dimension', %s)",
-                    (str(dim), now),
-                )
-    return True

@@ -1,11 +1,11 @@
 """系统 LLM 模型资源 — 执行层共享.
 
 将平台模型中心(adh_llm_models)的大模型配置桥接给执行层:
-- CLI 本身没有模型清单时(opencode),用系统模型配置填充可选项
+- CLI 本身没有模型清单时,用系统模型配置填充可选项
 - 运行时按模型引用解析出 base_url / api_key 等凭据注入 CLI
 
-模型引用(ref)统一为 `{provider}/{model_name}`(与 opencode 的
-model 格式一致),同时兼容按配置名 / model_name 直接指定。
+模型引用(ref)统一为 `{provider}/{model_name}`,
+同时兼容按配置名 / model_name 直接指定。
 """
 
 import logging

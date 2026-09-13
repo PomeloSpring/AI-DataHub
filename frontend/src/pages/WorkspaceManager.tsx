@@ -50,7 +50,6 @@ const WORKSPACE_TEMPLATES: Record<string, {
   description: string;
   allowed_modes: string;
   default_mode: string;
-  retrieval_strategy: string;
   default_agents: string[];
 }> = {
   data_analysis: {
@@ -59,7 +58,6 @@ const WORKSPACE_TEMPLATES: Record<string, {
     description: '用于业务数据查询和统计分析',
     allowed_modes: 'quick,deep,agent',
     default_mode: 'quick',
-    retrieval_strategy: 'full_table',
     default_agents: ['data_analysis_agent'],
   },
   log_analysis: {
@@ -68,7 +66,6 @@ const WORKSPACE_TEMPLATES: Record<string, {
     description: '用于ES日志查询和链路追踪',
     allowed_modes: 'agent',
     default_mode: 'agent',
-    retrieval_strategy: 'full_table',
     default_agents: ['log_analysis'],
   },
   ops: {
@@ -77,7 +74,6 @@ const WORKSPACE_TEMPLATES: Record<string, {
     description: '包含数据源和日志服务，支持混合查询',
     allowed_modes: 'agent',
     default_mode: 'agent',
-    retrieval_strategy: 'full_table',
     default_agents: ['data_analysis_agent', 'log_analysis'],
   },
 };
@@ -357,7 +353,6 @@ function CreateWorkspaceDialog({
     workspace_type: 'custom',
     allowed_modes: 'quick,deep,agent',
     default_mode: 'quick',
-    retrieval_strategy: 'full_table',
     datasource_ids: [],
     mcp_server_ids: [],
     agent_names: [],
@@ -375,7 +370,6 @@ function CreateWorkspaceDialog({
         workspace_type: templateKey,
         allowed_modes: template.allowed_modes,
         default_mode: template.default_mode,
-        retrieval_strategy: template.retrieval_strategy,
         agent_names: template.default_agents,
       });
     }
@@ -637,7 +631,6 @@ function EditWorkspaceDialog({
     description: workspace.description || '',
     allowed_modes: workspace.allowed_modes || 'quick,deep,agent',
     default_mode: workspace.default_mode || 'quick',
-    retrieval_strategy: workspace.retrieval_strategy || 'full_table',
     datasource_ids: (workspace.datasources || []).map(d => d.id),
     mcp_server_ids: (workspace.mcp_servers || []).map(m => m.id),
     agent_names: (workspace.agents || []).map(a => a.name),

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import {
   Plus, Edit2, Trash2, Star, Database, Users, Settings,
   X, Folder, UserPlus, Server, Bot, Menu, Terminal,
-  BookOpen, Workflow, Zap, Shield, UserMinus,
+  BookOpen, Zap, Shield, UserMinus,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -400,15 +400,6 @@ function CreateWorkspaceDialog({
 
 // ── Edit Workspace Dialog ──────────────────────────────────────────
 
-const RETRIEVAL_STRATEGIES = [
-  { value: 'hybrid', label: '混合检索', desc: 'BM25+向量 RRF 融合（推荐）' },
-  { value: 'full_table', label: '整表检索', desc: '返回命中表的全部字段' },
-  { value: 'column_first', label: '字段优先', desc: '向量搜字段，只返回匹配字段' },
-  { value: 'two_stage', label: '两阶段', desc: '先选表，再筛字段' },
-  { value: 'bidirectional', label: '双向合并', desc: '表+字段双路召回，筛字段' },
-  { value: 'graph', label: '图检索', desc: '关系遍历，只返回触及的字段' },
-];
-
 const PIPELINE_MODES = [
   { value: 'quick', label: '快速', desc: '简化 RAG 检索，响应快' },
   { value: 'deep', label: '深度', desc: '平台内置 Agent，LLM 自主工具调用' },
@@ -430,19 +421,10 @@ function EditWorkspaceDialog({
     description: workspace.description || '',
     icon: workspace.icon,
   });
-  const [allowedStrategies, setAllowedStrategies] = useState<string[]>(
-    existingConfig.allowed_retrieval_strategies || RETRIEVAL_STRATEGIES.map(s => s.value)
-  );
   const [allowedModes, setAllowedModes] = useState<string[]>(
     existingConfig.allowed_pipeline_modes || PIPELINE_MODES.map(m => m.value)
   );
   const [saving, setSaving] = useState(false);
-
-  const toggleStrategy = (val: string) => {
-    setAllowedStrategies(prev =>
-      prev.includes(val) ? prev.filter(v => v !== val) : [...prev, val]
-    );
-  };
 
   const toggleMode = (val: string) => {
     setAllowedModes(prev =>
@@ -457,7 +439,6 @@ function EditWorkspaceDialog({
         ...form,
         config: {
           ...existingConfig,
-          allowed_retrieval_strategies: allowedStrategies,
           allowed_pipeline_modes: allowedModes,
         },
       });
@@ -528,24 +509,6 @@ function EditWorkspaceDialog({
                   onClick={() => toggleMode(m.value)}
                 >
                   {m.label}
-                </Button>
-              ))}
-            </div>
-          </div>
-
-          {/* Retrieval Strategies */}
-          <div className="space-y-2">
-            <Label>可用检索模式</Label>
-            <p className="text-xs text-muted-foreground">选择此工作空间中快速/深度模式可用的检索策略</p>
-            <div className="flex flex-wrap gap-2">
-              {RETRIEVAL_STRATEGIES.map(s => (
-                <Button
-                  key={s.value}
-                  variant={allowedStrategies.includes(s.value) ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => toggleStrategy(s.value)}
-                >
-                  {s.label}
                 </Button>
               ))}
             </div>
@@ -1193,54 +1156,6 @@ function WorkspaceKnowledgeView({ workspaceId }: { workspaceId: number }) {
   );
 }
 
-// ── Workspace Workflow View (read-only) ────────────────────────────
-
-function WorkspaceWorkflowView({ workspaceId }: { workspaceId: number }) {
-  const [config, setConfig] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    setLoading(true);
-    client.get(`/workspaces/${workspaceId}/workflow-config`)
-      .then(({ data }) => setConfig(data))
-      .catch(() => toast.error('加载工作流配置失败'))
-      .finally(() => setLoading(false));
-  }, [workspaceId]);
-
-  if (loading) return <div className="flex justify-center py-8"><Spinner size={24} /></div>;
-
-  if (!config) {
-    return (
-      <div className="text-sm text-muted-foreground text-center py-8">
-        暂无工作流配置
-      </div>
-    );
-  }
-
-  const PIPELINE_MODES: Record<string, string> = {
-    quick: '快速',
-    deep: '深度',
-    agent: 'Agent',
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between p-3 border rounded-lg">
-        <span className="font-medium">默认模式</span>
-        <Badge>{PIPELINE_MODES[config.default_pipeline_mode] || config.default_pipeline_mode}</Badge>
-      </div>
-      <div className="p-3 border rounded-lg">
-        <div className="font-medium mb-2">可用模式</div>
-        <div className="flex flex-wrap gap-2">
-          {(config.allowed_pipeline_modes || []).map((m: string) => (
-            <Badge key={m} variant="outline">{PIPELINE_MODES[m] || m}</Badge>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Manage Workspace Dialog ────────────────────────────────────────
 
 function ManageWorkspaceDialog({
@@ -1395,10 +1310,6 @@ function ManageWorkspaceDialog({
             <TabsTrigger value="execution">
               <Terminal className="h-4 w-4 mr-1" />
               执行层
-            </TabsTrigger>
-            <TabsTrigger value="workflow">
-              <Workflow className="h-4 w-4 mr-1" />
-              工作流
             </TabsTrigger>
             <TabsTrigger value="menu">
               <Menu className="h-4 w-4 mr-1" />
@@ -1562,10 +1473,6 @@ function ManageWorkspaceDialog({
 
           <TabsContent value="execution" className="space-y-4">
             <WorkspaceExecutionLayerTab workspaceId={workspace.id} />
-          </TabsContent>
-
-          <TabsContent value="workflow" className="space-y-4">
-            <WorkspaceWorkflowView workspaceId={workspace.id} />
           </TabsContent>
 
           <TabsContent value="menu" className="space-y-4">

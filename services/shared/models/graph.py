@@ -102,7 +102,7 @@ class GraphStats(BaseModel):
     node_count: int = Field(0, description="节点总数")
     relationship_count: int = Field(0, description="关系总数")
     labels: List[str] = Field(default_factory=list, description="节点类型列表")
-    connected: bool = Field(False, description="Neo4j连接状态")
+    connected: bool = Field(False, description="图数据库连接状态")
 
 
 class GraphData(BaseModel):
@@ -115,7 +115,7 @@ class GraphData(BaseModel):
 class AskResponse(BaseModel):
     """智能问答响应"""
     answer: str = Field(..., description="回答")
-    cypher: Optional[str] = Field(None, description="生成的Cypher查询")
+    sparql: Optional[str] = Field(None, description="生成的SPARQL查询")
     nodes: List[GraphNode] = Field(default_factory=list, description="相关节点")
     edges: List[GraphEdge] = Field(default_factory=list, description="相关边")
     confidence: float = Field(0.0, ge=0, le=1, description="置信度")
@@ -127,6 +127,9 @@ class SyncResponse(BaseModel):
     tables: int = Field(0, description="同步的表数")
     columns: int = Field(0, description="同步的字段数")
     terms: int = Field(0, description="同步的术语数")
+    metrics: int = Field(0, description="同步的指标数")
+    dimensions: int = Field(0, description="同步的维度数")
+    sql_templates: int = Field(0, description="同步的 SQL 模板数")
     relations: int = Field(0, description="同步的关系数")
     message: Optional[str] = Field(None, description="消息")
 

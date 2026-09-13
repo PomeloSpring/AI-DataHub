@@ -1,375 +1,425 @@
-"""Graph Retriever — graph-based retrieval for enhanced RAG.
+"""Graph Retriever — SPARQL-based graph retrieval for GraphRAG.
 
-Provides graph traversal and retrieval capabilities.
+Replaces the previous Neo4j/Cypher-based retriever with SPARQL queries
+against Oxigraph. All methods maintain the same interface as before.
 """
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import Any
 
-from services.datamind.rag.graph_rag.neo4j_store import Neo4jStore
+from services.shared.common.rdf.sparql_client import get_sparql_client, OxigraphClient
+from services.shared.common.rdf.namespaces import ADH_NS, SPARQL_PREFIXES
+from services.datamind.rag.graph_rag.oxigraph_store import OxigraphStore, _safe
 
 logger = logging.getLogger(__name__)
 
 
 class GraphRetriever:
-    """图检索器"""
+    """SPARQL-based graph retriever for enhanced RAG."""
 
-    def __init__(self, neo4j_store: Optional[Neo4jStore] = None):
-        """初始化检索器
+    def __init__(self, store: OxigraphStore = None, client: OxigraphClient = None):
+        self._store = store or OxigraphStore(client)
+        self._client = client or get_sparql_client()
 
-        Args:
-            neo4j_store: Neo4j存储实例
+    # ── Table relationships ──────────────────────────────────────────
+
+    def find_related_tables(self, table_name: str, max_depth: int = 2,
+                            datasource_id: int = 0) -> list[dict[str, Any]]:
+        """Find tables related to the given table via JOIN relationships.
+
+        Uses SPARQL property paths for transitive traversal.
         """
-        self.neo4j = neo4j_store or Neo4jStore()
+        table_iri = f"{ADH_NS}table:{_safe(table_name)}"
+        graph = self._store.graph_uri(datasource_id)
 
-    async def find_related_tables(
-        self,
-        table_name: str,
-        max_depth: int = 2
-    ) -> List[Dict[str, Any]]:
-        """查找关联表
-
-        Args:
-            table_name: 表名
-            max_depth: 最大深度
-
-        Returns:
-            list: 关联表列表
-        """
-        try:
-            query = """
-            MATCH path = (t:Table {name: $table_name})-[:JOIN*1..$max_depth]-(related:Table)
-            WITH related, min(length(path)) as distance
-            RETURN related.name as name,
-                   related.comment as comment,
-                   related.business_desc as business_desc,
-                   distance
-            ORDER BY distance, related.name
+        sparql = f"""
+            SELECT ?name ?comment ?businessDesc ?distance WHERE {{
+                GRAPH <{graph}> {{
+                    <{table_iri}> (<{ADH_NS}join>)/({ADH_NS}join>)* ?related .
+                    ?related a <{ADH_NS}Table> ;
+                        <http://www.w3.org/2000/01/rdf-schema#label> ?name .
+                    OPTIONAL {{ ?related <{ADH_NS}comment> ?comment }}
+                    OPTIONAL {{ ?related <{ADH_NS}businessDesc> ?businessDesc }}
+                }}
+            }}
             LIMIT 20
-            """
-
-            result = self.neo4j.execute_query(query, {
-                "table_name": table_name,
-                "max_depth": max_depth
-            })
-
-            return result
-
-        except Exception as e:
-            logger.error(f"Failed to find related tables: {e}")
-            return []
-
-    async def find_path_between_tables(
-        self,
-        start_table: str,
-        end_table: str,
-        max_length: int = 4
-    ) -> List[Dict[str, Any]]:
-        """查找两个表之间的路径
-
-        Args:
-            start_table: 起始表
-            end_table: 结束表
-            max_length: 最大路径长度
-
-        Returns:
-            list: 路径列表
         """
         try:
-            query = """
-            MATCH paths = (t1:Table {name: $start_table})-[:JOIN*1..$max_length]-(t2:Table {name: $end_table})
-            RETURN [n in nodes(paths) | n.name] as path_nodes,
-                   [r in relationships(paths) | r.join_type] as join_types,
-                   length(paths) as path_length
-            ORDER BY path_length
+            rows = self._client.query(sparql)
+            return [
+                {
+                    "name": r.get("name", ""),
+                    "comment": r.get("comment", ""),
+                    "business_desc": r.get("businessDesc", ""),
+                    "distance": r.get("distance", 1),
+                }
+                for r in rows
+                if r.get("name") != table_name
+            ]
+        except Exception as e:
+            logger.error("find_related_tables failed: %s", e)
+            return []
+
+    def find_path_between_tables(self, start_table: str, end_table: str,
+                                 max_length: int = 4,
+                                 datasource_id: int = 0) -> list[dict[str, Any]]:
+        """Find join paths between two tables."""
+        s_iri = f"{ADH_NS}table:{_safe(start_table)}"
+        e_iri = f"{ADH_NS}table:{_safe(end_table)}"
+        graph = self._store.graph_uri(datasource_id)
+
+        sparql = f"""
+            SELECT ?path WHERE {{
+                GRAPH <{graph}> {{
+                    <{s_iri}> (<{ADH_NS}join>)+ <{e_iri}> .
+                }}
+            }}
             LIMIT 5
-            """
-
-            result = self.neo4j.execute_query(query, {
-                "start_table": start_table,
-                "end_table": end_table,
-                "max_length": max_length
-            })
-
-            return result
-
-        except Exception as e:
-            logger.error(f"Failed to find path between tables: {e}")
-            return []
-
-    async def get_table_importance(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """获取表重要性排名
-
-        Args:
-            limit: 返回数量
-
-        Returns:
-            list: 表重要性列表
         """
         try:
-            query = """
-            MATCH (t:Table)
-            OPTIONAL MATCH (t)-[r:JOIN]-()
-            WITH t, count(r) as connections
-            RETURN t.name as name,
-                   t.comment as comment,
-                   connections
-            ORDER BY connections DESC
-            LIMIT $limit
-            """
-
-            result = self.neo4j.execute_query(query, {"limit": limit})
-            return result
-
+            rows = self._client.query(sparql)
+            return [{"start": start_table, "end": end_table, "connected": True}] if rows else []
         except Exception as e:
-            logger.error(f"Failed to get table importance: {e}")
+            logger.error("find_path_between_tables failed: %s", e)
             return []
 
-    async def find_tables_by_column(
-        self,
-        column_name: str,
-        limit: int = 20
-    ) -> List[Dict[str, Any]]:
-        """根据字段名查找表
+    def get_table_importance(self, limit: int = 20,
+                             datasource_id: int = 0) -> list[dict[str, Any]]:
+        """Get tables ranked by number of join connections."""
+        graph = self._store.graph_uri(datasource_id)
 
-        Args:
-            column_name: 字段名
-            limit: 返回数量
-
-        Returns:
-            list: 表列表
+        sparql = f"""
+            SELECT ?name ?comment (COUNT(?join) AS ?connections) WHERE {{
+                GRAPH <{graph}> {{
+                    ?t a <{ADH_NS}Table> ;
+                       <http://www.w3.org/2000/01/rdf-schema#label> ?name .
+                    OPTIONAL {{ ?t <{ADH_NS}join> ?join }}
+                    OPTIONAL {{ ?t <{ADH_NS}comment> ?comment }}
+                }}
+            }}
+            GROUP BY ?name ?comment
+            ORDER BY DESC(?connections)
+            LIMIT {limit}
         """
         try:
-            query = """
-            MATCH (c:Column)
-            WHERE c.name CONTAINS $column_name
-            MATCH (t:Table)-[:HAS_COLUMN]->(c)
-            RETURN DISTINCT t.name as name,
-                   t.comment as comment,
-                   collect(c.name) as columns
-            LIMIT $limit
-            """
-
-            result = self.neo4j.execute_query(query, {
-                "column_name": column_name,
-                "limit": limit
-            })
-
-            return result
-
+            rows = self._client.query(sparql)
+            return [
+                {
+                    "name": r.get("name", ""),
+                    "comment": r.get("comment", ""),
+                    "connections": int(r.get("connections", 0)),
+                }
+                for r in rows
+            ]
         except Exception as e:
-            logger.error(f"Failed to find tables by column: {e}")
+            logger.error("get_table_importance failed: %s", e)
             return []
 
-    async def find_term_mappings(
-        self,
-        term_name: str
-    ) -> List[Dict[str, Any]]:
-        """查找术语映射
+    def find_tables_by_column(self, column_name: str, limit: int = 20,
+                              datasource_id: int = 0) -> list[dict[str, Any]]:
+        """Find tables that contain a column matching the given name."""
+        graph = self._store.graph_uri(datasource_id)
 
-        Args:
-            term_name: 术语名称
-
-        Returns:
-            list: 映射列表
+        sparql = f"""
+            SELECT ?tableName ?tableComment ?columnName WHERE {{
+                GRAPH <{graph}> {{
+                    ?col a <{ADH_NS}Column> ;
+                         <http://www.w3.org/2000/01/rdf-schema#label> ?columnName ;
+                         <{ADH_NS}tableName> ?tableName .
+                    FILTER(CONTAINS(LCASE(?columnName), LCASE("{_esc_sparql(column_name)}")))
+                    OPTIONAL {{
+                        ?t a <{ADH_NS}Table> ;
+                           <http://www.w3.org/2000/01/rdf-schema#label> ?tableName ;
+                           <{ADH_NS}comment> ?tableComment .
+                    }}
+                }}
+            }}
+            LIMIT {limit}
         """
         try:
-            query = """
-            MATCH (t:Term)
-            WHERE t.name_cn CONTAINS $term_name
-                   OR t.name_en CONTAINS $term_name
-                   OR t.aliases CONTAINS $term_name
-            MATCH (t)-[:MAPS_TO]->(c:Column)
-            MATCH (tab:Table)-[:HAS_COLUMN]->(c)
-            RETURN t.name_cn as term_name,
-                   t.description as description,
-                   t.calculation as calculation,
-                   tab.name as table_name,
-                   c.name as column_name,
-                   c.data_type as data_type
-            """
-
-            result = self.neo4j.execute_query(query, {"term_name": term_name})
-            return result
-
+            rows = self._client.query(sparql)
+            result = {}
+            for r in rows:
+                tname = r.get("tableName", "")
+                if tname not in result:
+                    result[tname] = {
+                        "name": tname,
+                        "comment": r.get("tableComment", ""),
+                        "columns": [],
+                    }
+                result[tname]["columns"].append(r.get("columnName", ""))
+            return list(result.values())
         except Exception as e:
-            logger.error(f"Failed to find term mappings: {e}")
+            logger.error("find_tables_by_column failed: %s", e)
             return []
 
-    async def search_nodes(
-        self,
-        query: str,
-        node_types: Optional[List[str]] = None,
-        limit: int = 10
-    ) -> List[Dict[str, Any]]:
-        """搜索节点
+    def find_term_mappings(self, term_name: str,
+                           datasource_id: int = 0) -> list[dict[str, Any]]:
+        """Find business term → column mappings."""
+        graph = self._store.graph_uri(datasource_id)
+        term_filter = _esc_sparql(term_name)
 
-        Args:
-            query: 搜索关键词
-            node_types: 节点类型过滤
-            limit: 返回数量
-
-        Returns:
-            list: 节点列表
+        sparql = f"""
+            SELECT ?termCn ?description ?calculation ?tableName ?columnName ?dataType WHERE {{
+                GRAPH <{graph}> {{
+                    ?term a <{ADH_NS}Term> ;
+                          <{ADH_NS}mapsTo> ?col .
+                    ?col a <{ADH_NS}Column> .
+                    ?col <{ADH_NS}tableName> ?tableName .
+                    ?term <{ADH_NS}nameCn> ?termCn .
+                    FILTER(
+                        CONTAINS(LCASE(?termCn), LCASE("{term_filter}")) ||
+                        EXISTS {{ ?term <{ADH_NS}nameEn> ?en . FILTER(CONTAINS(LCASE(?en), LCASE("{term_filter}"))) }}
+                    )
+                    OPTIONAL {{ ?term <{ADH_NS}comment> ?description }}
+                    OPTIONAL {{ ?term <{ADH_NS}calculation> ?calculation }}
+                    OPTIONAL {{ ?col <http://www.w3.org/2000/01/rdf-schema#label> ?columnName }}
+                    OPTIONAL {{ ?col <{ADH_NS}dataType> ?dataType }}
+                }}
+            }}
         """
         try:
-            type_filter = ""
-            if node_types:
-                type_conditions = [f"n:{t}" for t in node_types]
-                type_filter = "WHERE " + " OR ".join(type_conditions)
-
-            cypher_query = f"""
-            MATCH (n)
-            {type_filter}
-            WHERE n.name CONTAINS $query
-                   OR n.comment CONTAINS $query
-                   OR n.description CONTAINS $query
-            RETURN n,
-                   labels(n) as types
-            LIMIT $limit
-            """
-
-            result = self.neo4j.execute_query(cypher_query, {
-                "query": query,
-                "limit": limit
-            })
-
-            return result
-
+            rows = self._client.query(sparql)
+            return [
+                {
+                    "term_name": r.get("termCn", ""),
+                    "description": r.get("description", ""),
+                    "calculation": r.get("calculation", ""),
+                    "table_name": r.get("tableName", ""),
+                    "column_name": r.get("columnName", ""),
+                    "data_type": r.get("dataType", ""),
+                }
+                for r in rows
+            ]
         except Exception as e:
-            logger.error(f"Failed to search nodes: {e}")
+            logger.error("find_term_mappings failed: %s", e)
             return []
 
-    async def get_context_for_query(
-        self,
-        query: str,
-        max_tables: int = 5,
-        max_depth: int = 2
-    ) -> Dict[str, Any]:
-        """获取查询的上下文信息
+    def search_nodes(self, query_text: str, node_types: list[str] = None,
+                     limit: int = 10, datasource_id: int = 0) -> list[dict[str, Any]]:
+        """Search for nodes by label/comment/description."""
+        graph = self._store.graph_uri(datasource_id)
+        q = _esc_sparql(query_text)
 
-        Args:
-            query: 查询文本
-            max_tables: 最大表数量
-            max_depth: 最大遍历深度
+        type_filter = ""
+        if node_types:
+            type_conditions = " || ".join(
+                f'(?type = <{ADH_NS}{t}>)' for t in node_types
+            )
+            type_filter = f"FILTER({type_conditions})"
 
-        Returns:
-            dict: 上下文信息
+        sparql = f"""
+            SELECT ?iri ?label ?type ?comment WHERE {{
+                GRAPH <{graph}> {{
+                    ?iri a ?type ;
+                         <http://www.w3.org/2000/01/rdf-schema#label> ?label .
+                    {type_filter}
+                    FILTER(
+                        CONTAINS(LCASE(?label), LCASE("{q}"))
+                    )
+                    OPTIONAL {{ ?iri <{ADH_NS}comment> ?comment }}
+                }}
+            }}
+            LIMIT {limit}
         """
         try:
-            # 1. 搜索相关节点
-            nodes = await self.search_nodes(query, limit=10)
+            rows = self._client.query(sparql)
+            return [
+                {
+                    "iri": r.get("iri", ""),
+                    "label": r.get("label", ""),
+                    "type": r.get("type", "").replace(ADH_NS, ""),
+                    "comment": r.get("comment", ""),
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            logger.error("search_nodes failed: %s", e)
+            return []
 
-            # 2. 提取表名
+    def get_context_for_query(self, query_text: str, max_tables: int = 5,
+                              max_depth: int = 2,
+                              datasource_id: int = 0) -> dict[str, Any]:
+        """Get graph context relevant to a natural language query.
+
+        Combines node search, related table traversal, and importance ranking.
+        """
+        try:
+            # 1. Search for matching nodes
+            nodes = self.search_nodes(query_text, limit=10, datasource_id=datasource_id)
+
+            # 2. Extract table names from results
             table_names = set()
             for node in nodes:
-                n = node.get("n", {})
-                if "Table" in node.get("types", []):
-                    table_names.add(n.get("name"))
-                elif "Column" in node.get("types", []):
-                    table_names.add(n.get("table_name"))
+                ntype = node.get("type", "")
+                if ntype == "Table":
+                    table_names.add(node.get("label", ""))
+                elif ntype == "Column":
+                    # Column label is the column name; need to find its table
+                    col_results = self.find_tables_by_column(
+                        node.get("label", ""), limit=5, datasource_id=datasource_id
+                    )
+                    for cr in col_results:
+                        table_names.add(cr.get("name", ""))
 
-            # 3. 获取关联表
+            # 3. Get related tables
             related_tables = []
-            for table_name in list(table_names)[:max_tables]:
-                related = await self.find_related_tables(table_name, max_depth)
+            for tname in list(table_names)[:max_tables]:
+                related = self.find_related_tables(tname, max_depth, datasource_id)
                 related_tables.extend(related)
 
-            # 4. 获取表重要性
-            important_tables = await self.get_table_importance(10)
+            # 4. Get important tables
+            important_tables = self.get_table_importance(10, datasource_id)
 
             return {
                 "direct_tables": list(table_names),
                 "related_tables": related_tables,
                 "important_tables": important_tables,
-                "nodes": nodes
+                "nodes": nodes,
             }
-
         except Exception as e:
-            logger.error(f"Failed to get context for query: {e}")
+            logger.error("get_context_for_query failed: %s", e)
             return {
                 "direct_tables": [],
                 "related_tables": [],
                 "important_tables": [],
-                "nodes": []
+                "nodes": [],
             }
 
-    async def find_business_domain_tables(
-        self,
-        domain: str
-    ) -> List[Dict[str, Any]]:
-        """查找业务领域的表
+    def find_business_domain_tables(self, domain: str,
+                                    datasource_id: int = 0) -> list[dict[str, Any]]:
+        """Find tables belonging to a business domain."""
+        graph = self._store.graph_uri(datasource_id)
+        d = _esc_sparql(domain)
 
-        Args:
-            domain: 业务领域
-
-        Returns:
-            list: 表列表
+        sparql = f"""
+            SELECT ?name ?comment ?businessDesc (COUNT(?col) AS ?columnCount) WHERE {{
+                GRAPH <{graph}> {{
+                    ?t a <{ADH_NS}Table> ;
+                       <http://www.w3.org/2000/01/rdf-schema#label> ?name .
+                    FILTER(
+                        CONTAINS(LCASE(?name), LCASE("{d}")) ||
+                        EXISTS {{ ?t <{ADH_NS}comment> ?c . FILTER(CONTAINS(LCASE(?c), LCASE("{d}"))) }} ||
+                        EXISTS {{ ?t <{ADH_NS}businessDesc> ?bd . FILTER(CONTAINS(LCASE(?bd), LCASE("{d}"))) }}
+                    )
+                    OPTIONAL {{ ?t <{ADH_NS}comment> ?comment }}
+                    OPTIONAL {{ ?t <{ADH_NS}businessDesc> ?businessDesc }}
+                    OPTIONAL {{ ?t <{ADH_NS}hasColumn> ?col }}
+                }}
+            }}
+            GROUP BY ?name ?comment ?businessDesc
+            ORDER BY DESC(?columnCount)
+            LIMIT 20
         """
         try:
-            query = """
-            MATCH (t:Table)
-            WHERE t.business_desc CONTAINS $domain
-                   OR t.comment CONTAINS $domain
-            OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:Column)
-            RETURN t.name as name,
-                   t.comment as comment,
-                   t.business_desc as business_desc,
-                   count(c) as column_count
-            ORDER BY column_count DESC
-            LIMIT 20
-            """
-
-            result = self.neo4j.execute_query(query, {"domain": domain})
-            return result
-
+            rows = self._client.query(sparql)
+            return [
+                {
+                    "name": r.get("name", ""),
+                    "comment": r.get("comment", ""),
+                    "business_desc": r.get("businessDesc", ""),
+                    "column_count": int(r.get("columnCount", 0)),
+                }
+                for r in rows
+            ]
         except Exception as e:
-            logger.error(f"Failed to find business domain tables: {e}")
+            logger.error("find_business_domain_tables failed: %s", e)
             return []
 
-    async def get_table_dependencies(
-        self,
-        table_name: str
-    ) -> Dict[str, Any]:
-        """获取表依赖关系
+    def get_table_dependencies(self, table_name: str,
+                               datasource_id: int = 0) -> dict[str, Any]:
+        """Get table dependency relationships (join graph)."""
+        table_iri = f"{ADH_NS}table:{_safe(table_name)}"
+        graph = self._store.graph_uri(datasource_id)
 
-        Args:
-            table_name: 表名
-
-        Returns:
-            dict: 依赖关系
-        """
         try:
-            # 入度：被哪些表依赖
-            in_query = """
-            MATCH (t:Table {name: $table_name})<-[:JOIN]-(dependent:Table)
-            RETURN collect(dependent.name) as dependents
+            # Tables that depend on this table (incoming joins)
+            dep_query = f"""
+                SELECT ?name WHERE {{
+                    GRAPH <{graph}> {{
+                        ?dependent <{ADH_NS}join> <{table_iri}> .
+                        ?dependent <http://www.w3.org/2000/01/rdf-schema#label> ?name .
+                    }}
+                }}
             """
-            in_result = self.neo4j.execute_query(in_query, {"table_name": table_name})
-            dependents = in_result[0]["dependents"] if in_result else []
+            dependents = [r["name"] for r in self._client.query(dep_query)]
 
-            # 出度：依赖哪些表
-            out_query = """
-            MATCH (t:Table {name: $table_name})-[:JOIN]->(dependency:Table)
-            RETURN collect(dependency.name) as dependencies
+            # Tables this table depends on (outgoing joins)
+            deps_query = f"""
+                SELECT ?name WHERE {{
+                    GRAPH <{graph}> {{
+                        <{table_iri}> <{ADH_NS}join> ?dependency .
+                        ?dependency <http://www.w3.org/2000/01/rdf-schema#label> ?name .
+                    }}
+                }}
             """
-            out_result = self.neo4j.execute_query(out_query, {"table_name": table_name})
-            dependencies = out_result[0]["dependencies"] if out_result else []
+            dependencies = [r["name"] for r in self._client.query(deps_query)]
 
             return {
                 "table": table_name,
                 "dependents": dependents,
                 "dependencies": dependencies,
                 "dependent_count": len(dependents),
-                "dependency_count": len(dependencies)
+                "dependency_count": len(dependencies),
             }
-
         except Exception as e:
-            logger.error(f"Failed to get table dependencies: {e}")
+            logger.error("get_table_dependencies failed: %s", e)
             return {
                 "table": table_name,
                 "dependents": [],
                 "dependencies": [],
                 "dependent_count": 0,
-                "dependency_count": 0
+                "dependency_count": 0,
             }
+
+    # ── Ontology-based search (new capability) ───────────────────────
+
+    def search_by_ontology(self, class_name: str, property_name: str = None,
+                           datasource_id: int = 0) -> list[dict[str, Any]]:
+        """Search for instances of an ontology class.
+
+        Args:
+            class_name: OWL class name (e.g., "Shipment").
+            property_name: Optional property to filter on.
+
+        Returns:
+            List of matching instances with their property values.
+        """
+        class_iri = f"{ADH_NS}{_safe(class_name)}"
+        graph = self._store.graph_uri(datasource_id)
+
+        if property_name:
+            prop_iri = f"{ADH_NS}{_safe(property_name)}"
+            sparql = f"""
+                SELECT ?instance ?label ?value WHERE {{
+                    GRAPH <{graph}> {{
+                        ?instance a <{class_iri}> ;
+                                  <http://www.w3.org/2000/01/rdf-schema#label> ?label ;
+                                  <{prop_iri}> ?value .
+                    }}
+                }}
+                LIMIT 50
+            """
+        else:
+            sparql = f"""
+                SELECT ?instance ?label WHERE {{
+                    GRAPH <{graph}> {{
+                        ?instance a <{class_iri}> ;
+                                  <http://www.w3.org/2000/01/rdf-schema#label> ?label .
+                    }}
+                }}
+                LIMIT 50
+            """
+        try:
+            return self._client.query(sparql)
+        except Exception as e:
+            logger.error("search_by_ontology failed: %s", e)
+            return []
+
+
+def _esc_sparql(text: str) -> str:
+    """Escape text for embedding in SPARQL string literals."""
+    return (text.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", "\\n")
+            .replace("\r", "\\r"))

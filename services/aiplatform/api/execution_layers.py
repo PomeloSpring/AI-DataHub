@@ -52,11 +52,33 @@ class WorkspaceLayersUpdate(BaseModel):
     bindings: list[WorkspaceBinding] = []
 
 
+class LayerRegister(BaseModel):
+    name: str
+    layer_type: str = "remote"
+    display_name: str = ""
+    description: str = ""
+    capabilities: list[str] = []
+    tools: list[dict] = []
+    endpoint_url: str = ""
+    config: dict = {}
+
+
+class LayerHeartbeat(BaseModel):
+    name: str = ""
+    layer_id: int = 0
+    tools: Optional[list[dict]] = None
+
+
+class LayerDeregister(BaseModel):
+    name: str = ""
+    layer_id: int = 0
+
+
 # ── 静态路径(必须先于 /{layer_id} 定义) ─────────────────────────
 
 @router.get("/discover")
 async def discover_clis():
-    """自动发现物理机上的已知 CLI 工具(opencode / qoder 等)."""
+    """自动发现物理机上的已知 CLI 工具(qoder 等)."""
     try:
         from services.datamind.execution.discovery import CLIDiscovery
 
@@ -73,6 +95,31 @@ async def list_tool_catalog():
     from services.datamind.execution.tool_catalog import TOOL_CATALOG
 
     return TOOL_CATALOG
+
+
+@router.get("/available")
+def discover_available_layers(capability: Optional[str] = None):
+    """发现端点 — 返回健康可用的执行层列表(可按能力过滤)."""
+    try:
+        return exec_service.discover_layers(capability=capability or "")
+    except Exception as e:
+        logger.error("Discover available layers failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/register")
+def register_execution_layer(req: LayerRegister):
+    """执行层自注册端点 — 由 SDK Adapter / 远程执行层启动时调用."""
+    try:
+        if req.layer_type not in VALID_LAYER_TYPES:
+            raise HTTPException(status_code=400, detail=f"不支持的执行层类型: {req.layer_type}")
+        layer_id = exec_service.register_layer(req.model_dump())
+        return {"id": layer_id, "name": req.name, "success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Register execution layer failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/models")
@@ -182,7 +229,7 @@ async def get_workspace_execution_layer(workspace_id: int):
 
     chat 页面据此调整模型框:
     - builtin: 模型候选来自系统模型中心(model_source=system)
-    - cli(qoder/opencode 等): 候选来自执行层 list_models(model_source=execution_layer)
+    - cli(qoder 等): 候选来自执行层 list_models(model_source=execution_layer)
     """
     try:
         manager = get_execution_layer_manager()
@@ -297,3 +344,50 @@ async def test_execution_layer(layer_id: int):
     except Exception as e:
         logger.error("Test execution layer failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{layer_id}/heartbeat")
+def heartbeat_execution_layer(layer_id: int, req: LayerHeartbeat):
+    """心跳上报 — 刷新执行层存活时间(可选同时更新工具目录)."""
+    try:
+        ok = exec_service.heartbeat(name=req.name, layer_id=layer_id, tools=req.tools)
+        if not ok:
+            raise HTTPException(status_code=404, detail="执行层不存在")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Execution layer heartbeat failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{layer_id}/deregister")
+def deregister_execution_layer(layer_id: int, req: Optional[LayerDeregister] = None):
+    """注销自注册执行层(置为 inactive)."""
+    try:
+        ok = exec_service.deregister(name=(req.name if req else ""), layer_id=layer_id)
+        if not ok:
+            raise HTTPException(status_code=400, detail="执行层不存在或非自注册层(source=manual 不可注销)")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Execution layer deregister failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{layer_id}/tools")
+async def get_execution_layer_tools(layer_id: int):
+    """动态工具目录 — 优先实询适配器 list_tools 并刷新缓存,失败时回退已缓存目录."""
+    row = exec_service.get_layer(layer_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="执行层不存在")
+    try:
+        manager = get_execution_layer_manager()
+        adapter = manager.build_adapter(row)
+        tools = await adapter.list_tools()
+        exec_service.record_tools(layer_id, tools)
+        return {"tools": tools, "source": "live"}
+    except Exception as e:
+        logger.warning("Live tool catalog for layer %s failed: %s", row.get("name"), e)
+        return {"tools": row.get("tools") or [], "source": "cached"}

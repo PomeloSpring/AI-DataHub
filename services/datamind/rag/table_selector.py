@@ -9,7 +9,7 @@ import logging
 import re
 from typing import Optional
 
-from services.shared.common.db.metadata_db import get_vector_conn
+from services.shared.common.db.metadata_db import get_metadata_conn
 from services.datamind.rag.terminology_manager import expand_synonyms
 from services.datamind.rag.bm25 import BM25, rrf_merge
 
@@ -93,7 +93,7 @@ def _get_all_tables(datasource_id: int = 0) -> list[dict]:
         return _tables_cache[datasource_id]
 
     try:
-        conn = get_vector_conn()
+        conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
                 # Include both datasource-specific and global (ds=0) rows
@@ -181,23 +181,21 @@ def select_tables(
     vector_literal: str = None,
     datasource_id: int = 0,
 ) -> list[str]:
-    """Select relevant tables using BM25 sparse + vector dense hybrid retrieval.
+    """Select relevant tables using BM25 sparse keyword retrieval.
 
-    BM25 provides keyword-aware ranking (sparse), vector search provides semantic
-    ranking (dense). Results are merged via Reciprocal Rank Fusion (RRF).
+    Uses jieba keyword extraction + dynamic synonym expansion, then a BM25 index
+    built over cached table metadata. ``vector_literal`` is accepted for backward
+    compatibility with existing callers but is ignored (no embedding/vector search).
 
     Args:
         question: The user's question.
         top_k: Maximum number of tables to return.
-        vector_literal: Pre-computed embedding vector for vector search.
-                        If None, generates one automatically.
+        vector_literal: Ignored (kept for signature compatibility).
         datasource_id: Filter tables by this datasource.
 
     Returns:
         List of selected table names (up to top_k).
     """
-    from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
-
     all_tables = _get_all_tables(datasource_id)
     if not all_tables:
         logger.warning("No tables available for selection")
@@ -209,67 +207,7 @@ def select_tables(
     logger.debug("Table selector: question=%s, keywords=%s, expanded=%s", question[:50], keywords, expanded)
 
     # Step 2: BM25 sparse retrieval
-    bm25_tables = _bm25_search_tables(expanded, top_k * 2, datasource_id)
+    bm25_tables = _bm25_search_tables(expanded, top_k, datasource_id)
 
-    # Step 3: Vector dense retrieval
-    if not vector_literal:
-        try:
-            vec_literal = embedding_to_sql_literal(generate_embedding(question))
-        except Exception:
-            vec_literal = None
-    else:
-        vec_literal = vector_literal
-
-    vector_tables = []
-    if vec_literal:
-        vector_tables = _vector_search_tables(vec_literal, top_k * 2, datasource_id)
-
-    # Step 4: RRF fusion of sparse + dense rankings
-    rankings = []
-    weights = []
-    if bm25_tables:
-        rankings.append(bm25_tables)
-        weights.append(1.0)  # sparse weight
-    if vector_tables:
-        rankings.append(vector_tables)
-        weights.append(1.0)  # dense weight
-
-    if not rankings:
-        logger.info("Table selector: no results from BM25 or vector search")
-        return []
-
-    if len(rankings) == 1:
-        merged = rankings[0][:top_k]
-    else:
-        rrf_results = rrf_merge(rankings, k=60, weights=weights)
-        merged = [name for name, _ in rrf_results[:top_k]]
-
-    logger.info("Table selector: bm25=%s, vector=%s, rrf_merged=%s",
-                bm25_tables[:5], vector_tables[:5], merged)
-    return merged
-
-
-def _vector_search_tables(vec_literal: str, limit: int = 5, datasource_id: int = 0) -> list[str]:
-    """Fallback: use vector search to find relevant tables."""
-    try:
-        ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
-        sql = f"""
-            SELECT table_name
-            FROM adh_table_info
-            WHERE is_active = 1 {ds_filter}
-            ORDER BY l2_distance_approximate(embedding, {vec_literal}) ASC
-            LIMIT {limit}
-        """
-        conn = get_vector_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-                rows = cur.fetchall()
-                selected = [r["table_name"] for r in rows]
-                logger.info("Table selector (vector fallback): selected %d tables: %s", len(selected), selected)
-                return selected
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.warning("Vector search fallback failed: %s", e)
-        return []
+    logger.info("Table selector: bm25=%s", bm25_tables[:5])
+    return bm25_tables

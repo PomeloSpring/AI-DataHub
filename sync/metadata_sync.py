@@ -1,7 +1,5 @@
 """
-AI-DataHub Metadata Sync  [DEPRECATED — 保留作回滚路径]
-直连数据源采集元数据的旧实现；新环境请改用 OpenMetadata 采集 + 回灌:
-    python -m sync.om_sync        （见 docker/om/README.md）
+AI-DataHub Metadata Sync  [DEPRECATED]
 
 Incremental sync of table info and column metadata from MySQL/Doris/Elasticsearch.
 - Table info → adh.adh_table_info (table_comment, business_desc, tags)
@@ -22,7 +20,6 @@ from datetime import datetime
 import pymysql
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
 from services.shared.common.crypto import decrypt_password, is_encrypted
 from services.shared.common.config import METADATA_DB_DATABASE
 
@@ -388,8 +385,7 @@ def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> None:
                 cur.execute("DELETE FROM adh_table_info WHERE table_name = %s AND datasource_id = %s", (tname, ds_id))
 
             for r in tables_to_update:
-                embed_text = _table_embed_text(r['table_name'], r['table_comment'], r.get('keywords') or "", "", r['domain_tag'])
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 cur.execute("DELETE FROM adh_table_info WHERE id = %s", (r["id"],))
                 cur.execute(
                     "INSERT INTO adh_table_info "
@@ -401,8 +397,7 @@ def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> None:
 
             for r in tables_to_insert:
                 row_id = int(_time.time() * 1000000) + tables_to_insert.index(r)
-                embed_text = _table_embed_text(r['table_name'], r['table_comment'], "", "", r['domain_tag'])
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 cur.execute(
                     "INSERT INTO adh_table_info "
                     "(id, datasource_id, table_name, table_comment, table_business_desc, keywords, region_tag, domain_tag, is_active, sync_time, embedding) "
@@ -482,8 +477,7 @@ def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> None:
                 )
 
             for r in cols_to_update:
-                embed_text = _col_embed_text(r['table_name'], r['column_name'], "", r['column_comment'], r.get('keywords') or "")
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 cur.execute("DELETE FROM adh_column_metadata WHERE id = %s", (r["id"],))
                 cur.execute(
                     "INSERT INTO adh_column_metadata "
@@ -497,8 +491,7 @@ def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> None:
 
             for r in cols_to_insert:
                 row_id = int(_time.time() * 1000000) + cols_to_insert.index(r) + 500000
-                embed_text = _col_embed_text(r['table_name'], r['column_name'], "", r['column_comment'], "")
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 cur.execute(
                     "INSERT INTO adh_column_metadata "
                     "(id, datasource_id, table_name, column_name, data_type, column_comment, "
@@ -590,8 +583,7 @@ def _sync_es_metadata(ds_id: int, ds_config: dict) -> None:
                 cur.execute("DELETE FROM adh_table_info WHERE table_name = %s AND datasource_id = %s", (tname, ds_id))
 
             for r in tables_to_update:
-                embed_text = _table_embed_text(r['table_name'], r['table_comment'], r.get('keywords') or "", "", r['domain_tag'])
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 cur.execute("DELETE FROM adh_table_info WHERE id = %s", (r["id"],))
                 cur.execute(
                     "INSERT INTO adh_table_info "
@@ -603,8 +595,7 @@ def _sync_es_metadata(ds_id: int, ds_config: dict) -> None:
 
             for idx, r in enumerate(tables_to_insert):
                 row_id = int(_time.time() * 1000000) + idx
-                embed_text = _table_embed_text(r['table_name'], r['table_comment'], "", "", r['domain_tag'])
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 cur.execute(
                     "INSERT INTO adh_table_info "
                     "(id, datasource_id, table_name, table_comment, table_business_desc, keywords, region_tag, domain_tag, is_active, sync_time, embedding) "
@@ -682,8 +673,7 @@ def _sync_es_metadata(ds_id: int, ds_config: dict) -> None:
                 )
 
             for r in cols_to_update:
-                embed_text = _col_embed_text(r['table_name'], r['column_name'], "", r['column_comment'], r.get('keywords') or "")
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 cur.execute("DELETE FROM adh_column_metadata WHERE id = %s", (r["id"],))
                 cur.execute(
                     "INSERT INTO adh_column_metadata "
@@ -697,8 +687,7 @@ def _sync_es_metadata(ds_id: int, ds_config: dict) -> None:
 
             for idx, r in enumerate(cols_to_insert):
                 row_id = int(_time.time() * 1000000) + idx + 500000
-                embed_text = _col_embed_text(r['table_name'], r['column_name'], "", r['column_comment'], "")
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 cur.execute(
                     "INSERT INTO adh_column_metadata "
                     "(id, datasource_id, table_name, column_name, data_type, column_comment, "
@@ -796,8 +785,7 @@ def _sync_es_table_columns(ds_id: int, ds_config: dict, table_name: str) -> dict
                 )
 
             for r in cols_to_update:
-                embed_text = _col_embed_text(r['table_name'], r['column_name'], "", r['column_comment'], r.get('keywords') or "")
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 cur.execute("DELETE FROM adh_column_metadata WHERE id = %s", (r["id"],))
                 cur.execute(
                     "INSERT INTO adh_column_metadata "
@@ -811,8 +799,7 @@ def _sync_es_table_columns(ds_id: int, ds_config: dict, table_name: str) -> dict
 
             for idx, r in enumerate(cols_to_insert):
                 row_id = int(_time.time() * 1000000) + idx + 500000
-                embed_text = _col_embed_text(r['table_name'], r['column_name'], "", r['column_comment'], "")
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 cur.execute(
                     "INSERT INTO adh_column_metadata "
                     "(id, datasource_id, table_name, column_name, data_type, column_comment, "
@@ -843,23 +830,16 @@ def _sync_es_table_columns(ds_id: int, ds_config: dict, table_name: str) -> dict
 # Public API — auto-dispatch by db_type
 # ---------------------------------------------------------------------------
 
-def _make_embedding(text: str) -> str:
-    vec = generate_embedding(text)
-    return embedding_to_sql_literal(vec)
+_EMBEDDING_DIM = 768
 
 
-def _table_embed_text(table_name: str, table_comment: str = "", keywords: str = "",
-                      region_tag: str = "", domain_tag: str = "") -> str:
-    """Concise embedding text: name + comment + keywords. Business desc NOT included."""
-    parts = [table_name, table_comment or "", keywords or ""]
-    return " ".join(p for p in parts if p).strip()
+def _placeholder_embedding() -> str:
+    """Zero-vector placeholder for the logically-disabled embedding column.
 
-
-def _col_embed_text(table_name: str, column_name: str, data_type: str = "",
-                    column_comment: str = "", keywords: str = "") -> str:
-    """Concise embedding text for column: name + col + type + comment + keywords."""
-    parts = [table_name, column_name, data_type or "", column_comment or "", keywords or ""]
-    return " ".join(p for p in parts if p).strip()
+    The column is retained (Doris ARRAY<FLOAT> NOT NULL) but is no longer
+    produced by an embedding model nor read by any retrieval path.
+    """
+    return "[" + ", ".join(["0.0"] * _EMBEDDING_DIM) + "]"
 
 
 def sync_metadata(ds_id: int = 0) -> None:
@@ -997,11 +977,7 @@ def sync_table_relations(ds_id: int) -> dict:
 
             for idx, fk in enumerate(to_insert):
                 row_id = int(_time.time() * 1000000) + idx
-                embed_text = (
-                    f"{fk['source_table']}.{fk['source_column']} → "
-                    f"{fk['target_table']}.{fk['target_column']} 1:N"
-                )
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 description = f"{fk['source_table']}.{fk['source_column']} 关联 {fk['target_table']}.{fk['target_column']}"
                 cur.execute(
                     "INSERT INTO adh_table_relations "
@@ -1114,8 +1090,7 @@ def _sync_mysql_table_columns(ds_id: int, ds_config: dict, table_name: str) -> d
                 )
 
             for r in cols_to_update:
-                embed_text = _col_embed_text(r['table_name'], r['column_name'], "", r['column_comment'], r.get('keywords') or "")
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 cur.execute("DELETE FROM adh_column_metadata WHERE id = %s", (r["id"],))
                 cur.execute(
                     "INSERT INTO adh_column_metadata "
@@ -1129,8 +1104,7 @@ def _sync_mysql_table_columns(ds_id: int, ds_config: dict, table_name: str) -> d
 
             for idx, r in enumerate(cols_to_insert):
                 row_id = int(_time.time() * 1000000) + idx + 500000
-                embed_text = _col_embed_text(r['table_name'], r['column_name'], "", r['column_comment'], "")
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 cur.execute(
                     "INSERT INTO adh_column_metadata "
                     "(id, datasource_id, table_name, column_name, data_type, column_comment, "

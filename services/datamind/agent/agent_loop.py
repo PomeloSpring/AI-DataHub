@@ -90,25 +90,6 @@ class AgentLoop:
         logger.info("[AgentLoop:%s] Starting with %d tools, max_iterations=%d",
                      self.agent.name, len(self.tools), self.agent.max_iterations)
 
-        # Langfuse trace
-        t_trace_start = time.time()
-        lf_trace = None
-        try:
-            from services.shared.common.llm.langfuse_client import get_langfuse
-            lf = get_langfuse()
-            if lf:
-                lf_trace = lf.trace(
-                    name=f"agent_{self.agent.name}",
-                    input={"question": question, "tools_count": len(self.tools)},
-                    metadata={
-                        "agent_name": self.agent.name,
-                        "max_iterations": self.agent.max_iterations,
-                        "max_time_seconds": getattr(self.agent, 'max_time_seconds', 0),
-                    },
-                )
-        except Exception:
-            pass
-
         max_iter = self.agent.max_iterations
         soft_limit = max_iter - 2  # Last 2 iterations are for summarization
 
@@ -179,17 +160,6 @@ class AgentLoop:
             if not resp_tools:
                 reply = resp_text
                 logger.info("[AgentLoop:%s] Completed after %d iterations", self.agent.name, iteration + 1)
-                # Update Langfuse trace
-                if lf_trace:
-                    try:
-                        lf_trace.update(
-                            output={"reply": reply[:500], "tool_calls_count": len(self.tool_calls_log)},
-                            metadata={"iterations": iteration + 1, "elapsed": round(time.time() - t_trace_start, 2)},
-                        )
-                        from services.shared.common.llm.langfuse_client import flush
-                        flush()
-                    except Exception:
-                        pass
                 return AgentResult(
                     success=True,
                     reply=reply,
@@ -224,17 +194,6 @@ class AgentLoop:
                 if self._detect_doom_loop(tool_name, tool_input):
                     logger.error("[AgentLoop:%s] ❌ Doom loop detected: %s called %d times consecutively",
                                  self.agent.name, tool_name, self.doom_loop_threshold)
-                    if lf_trace:
-                        try:
-                            lf_trace.update(
-                                output={"error": "doom_loop_detected", "tool": tool_name},
-                                metadata={"iterations": iteration + 1, "elapsed": round(time.time() - t_trace_start, 2)},
-                                level="ERROR",
-                            )
-                            from services.shared.common.llm.langfuse_client import flush
-                            flush()
-                        except Exception:
-                            pass
                     return AgentResult(
                         success=False,
                         reply=f"检测到循环调用: {tool_name} 被连续调用 {self.doom_loop_threshold} 次",
@@ -290,17 +249,6 @@ class AgentLoop:
         if not partial_reply and self.tool_calls_log:
             partial_reply = f"已完成 {len(self.tool_calls_log)} 次工具调用，但未生成最终回答。"
 
-        if lf_trace:
-            try:
-                lf_trace.update(
-                    output={"error": "max_iterations_exceeded", "partial_reply": partial_reply[:500]},
-                    metadata={"iterations": max_iter, "elapsed": round(time.time() - t_trace_start, 2)},
-                    level="ERROR",
-                )
-                from services.shared.common.llm.langfuse_client import flush
-                flush()
-            except Exception:
-                pass
         return AgentResult(
             success=False,
             reply=partial_reply or f"超过最大迭代次数 ({max_iter})",
@@ -342,7 +290,6 @@ class AgentLoop:
     async def _default_llm_call(self, messages: list, tools: list, model_id: int = None) -> dict:
         """Default LLM call using the project's LLM client."""
         from services.shared.common.llm.llm_client import generate_with_tools_stream
-        from services.shared.common.llm.langfuse_client import get_langfuse
         import asyncio
 
         text_parts = []
@@ -372,35 +319,6 @@ class AgentLoop:
         if tokens:
             self.total_tokens["input"] = self.total_tokens.get("input", 0) + tokens.get("input", 0)
             self.total_tokens["output"] = self.total_tokens.get("output", 0) + tokens.get("output", 0)
-
-        # Track with Langfuse
-        try:
-            lf = get_langfuse()
-            if lf:
-                from services.shared.common.llm.llm_client import _get_model_config
-                config = _get_model_config(model_id)
-                generation = lf.generation(
-                    name=f"llm_call_{self.agent.name}",
-                    model=config.get("model_name", "unknown"),
-                    input=messages,
-                    output={
-                        "text": "".join(text_parts),
-                        "tool_calls": tool_calls,
-                    },
-                    usage={
-                        "input": tokens.get("input", 0),
-                        "output": tokens.get("output", 0),
-                        "total": tokens.get("total", 0),
-                    },
-                    metadata={
-                        "agent_name": self.agent.name,
-                        "iteration": len(self.tool_calls_log),
-                    },
-                    start_time=t_start,
-                    end_time=time.time(),
-                )
-        except Exception as e:
-            logger.debug("[Langfuse] Failed to track LLM call: %s", e)
 
         return {
             "text": "".join(text_parts),

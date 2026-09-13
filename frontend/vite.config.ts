@@ -49,7 +49,6 @@ function createProxyConfig() {
 
   // DataFlow (Data Integration)
   proxy['/api/sync'] = proxyOptions(SERVICES.dataflow)
-  proxy['/api/workflow'] = proxyOptions(SERVICES.dataflow)
   proxy['/api/scheduled-tasks'] = proxyOptions(SERVICES.dataflow)
   proxy['/api/report-templates'] = proxyOptions(SERVICES.dataflow)
   proxy['/api/notification'] = proxyOptions(SERVICES.dataflow)
@@ -78,19 +77,16 @@ function createProxyConfig() {
   proxy['/api/playground'] = proxyOptions(SERVICES.datamind)
   proxy['/api/model-config'] = proxyOptions(SERVICES.datamind)
 
-  // AI Platform - MCP, Agents, Embed, Model Lab/Train, Workflows
+  // AI Platform - MCP, Agents, Embed, Model Lab/Train
   proxy['/api/admin/mcp-servers'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/admin/agents'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/admin/sync'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/admin/model-config'] = proxyOptions(SERVICES.aiplatform)
-  proxy['/api/admin/workflows'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/admin/prompts'] = proxyOptions(SERVICES.aiplatform)
-  proxy['/api/admin/workflow-logs'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/admin/brand'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/admin/cache'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/admin/execution-layers'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/embed'] = proxyOptions(SERVICES.aiplatform)
-  proxy['/api/model-lab'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/model-train'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/mcp-market'] = proxyOptions(SERVICES.aiplatform)
 

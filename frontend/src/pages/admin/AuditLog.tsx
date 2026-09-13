@@ -67,8 +67,6 @@ const ACTION_LABELS: Record<string, string> = {
   update_llm_model: '更新LLM模型',
   delete_llm_model: '删除LLM模型',
   set_default_model: '设置默认模型',
-  update_embedding_config: '更新Embedding配置',
-  reload_embedding: '重载Embedding模型',
   update_system_config: '更新系统配置',
   create_workspace: '创建工作空间',
   update_workspace: '更新工作空间',

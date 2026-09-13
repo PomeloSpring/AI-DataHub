@@ -35,6 +35,9 @@ interface SyncResult {
   tables: number;
   columns: number;
   terms: number;
+  metrics?: number;
+  dimensions?: number;
+  sql_templates?: number;
   relations: number;
   message?: string;
 }

@@ -1,7 +1,6 @@
 """DataFlow Microservice — FastAPI entry point.
 
-Handles data sync, workflow orchestration (via Airflow integration),
-scheduled tasks, and notifications.
+Handles data sync, scheduled tasks, and notifications.
 
 Runs on port 8003.
 """
@@ -14,7 +13,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.dataflow.api.sync import router as sync_router
-from services.dataflow.api.workflow import router as workflow_router
 from services.dataflow.api.scheduled import router as scheduled_router
 from services.dataflow.api.scheduled import templates_router as report_templates_router
 from services.dataflow.api.notification import router as notification_router
@@ -36,7 +34,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(redirect_slashes=True,
     title="AI-DataHub DataFlow Service",
-    description="Data sync, workflow orchestration, scheduled tasks, and notifications",
+    description="Data sync, scheduled tasks, and notifications",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -52,7 +50,6 @@ app.add_middleware(
 
 # Include routers
 app.include_router(sync_router, prefix="/api/sync", tags=["Sync"])
-app.include_router(workflow_router, prefix="/api/workflow", tags=["Workflow"])
 app.include_router(scheduled_router, prefix="/api/scheduled-tasks", tags=["Scheduled Tasks"])
 app.include_router(report_templates_router, prefix="/api/report-templates", tags=["Report Templates"])
 app.include_router(notification_router, prefix="/api/notification", tags=["Notifications"])

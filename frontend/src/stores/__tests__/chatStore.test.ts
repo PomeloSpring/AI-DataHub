@@ -68,9 +68,6 @@ describe('chatStore', () => {
       datasources: [],
       selectedModelId: null,
       llmModels: [],
-      useLoopEngine: false,
-      selectedWorkflowId: null,
-      workflows: [],
     })
     vi.clearAllMocks()
     window.localStorage.clear()
@@ -164,15 +161,6 @@ describe('chatStore', () => {
       useChatStore.setState({ selectedModelId: 5 })
       useChatStore.getState().setSelectedModelId(null)
       expect(useChatStore.getState().selectedModelId).toBeNull()
-    })
-  })
-
-  describe('setUseLoopEngine', () => {
-    it('toggles loop engine', () => {
-      useChatStore.getState().setUseLoopEngine(true)
-      expect(useChatStore.getState().useLoopEngine).toBe(true)
-      useChatStore.getState().setUseLoopEngine(false)
-      expect(useChatStore.getState().useLoopEngine).toBe(false)
     })
   })
 

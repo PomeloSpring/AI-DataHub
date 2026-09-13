@@ -28,7 +28,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from 'sonner';
 import {
-  Boxes, Sparkles, Save, CheckCircle2, Archive, RefreshCw, Loader2, Trash2,
+  Boxes, Sparkles, Save, CheckCircle2, Archive, RefreshCw, Loader2, Trash2, Code2,
 } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { json } from '@codemirror/lang-json';
@@ -76,6 +76,10 @@ export default function OntologyModeling() {
   const [generating, setGenerating] = useState(false);
   const [progressLogs, setProgressLogs] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+
+  // ── SPARQL 预览 ──
+  const [sparqlPreview, setSparqlPreview] = useState('');
+  const [sparqlLoading, setSparqlLoading] = useState(false);
 
   // ── 弹窗 ──
   const [activateOpen, setActivateOpen] = useState(false);
@@ -167,7 +171,13 @@ export default function OntologyModeling() {
     setActivating(true);
     try {
       await ontologyApi.activate(model.id);
-      toast.success('模型已激活，对象向量已重建');
+      // 激活后写入 Oxigraph RDF
+      try {
+        await client.post(`/ontology/${model.id}/write-rdf`);
+      } catch {
+        // RDF 写入失败不阻塞激活
+      }
+      toast.success('模型已激活，RDF 已写入 Oxigraph，对象向量已重建');
       setActivateOpen(false);
       await loadModels(datasourceId || undefined);
       await loadModel(model.id);
@@ -175,6 +185,20 @@ export default function OntologyModeling() {
       toast.error(e.response?.data?.detail || '激活失败');
     } finally {
       setActivating(false);
+    }
+  };
+
+  // ── SPARQL 预览 ──
+  const handleLoadSparqlPreview = async () => {
+    if (!model) return;
+    setSparqlLoading(true);
+    try {
+      const { data } = await client.get(`/ontology/${model.id}/sparql-preview`);
+      setSparqlPreview(data.turtle || data.sparql || '');
+    } catch {
+      setSparqlPreview('# 无法生成 RDF 预览，请确认模型已激活');
+    } finally {
+      setSparqlLoading(false);
     }
   };
 
@@ -372,6 +396,7 @@ export default function OntologyModeling() {
                   <TabsTrigger value="json">JSON</TabsTrigger>
                   <TabsTrigger value="yaml">YAML</TabsTrigger>
                   <TabsTrigger value="md">MD 预览</TabsTrigger>
+                  <TabsTrigger value="sparql">SPARQL 预览</TabsTrigger>
                 </TabsList>
                 <TabsContent value="json" className="mt-2">
                   <CodeMirror
@@ -408,6 +433,29 @@ export default function OntologyModeling() {
                   />
                   <div className="text-xs text-muted-foreground mt-1">
                     MD 按对象分节生成，激活时逐段向量化；直接修改 MD 不会回写结构。
+                  </div>
+                </TabsContent>
+                <TabsContent value="sparql" className="mt-2">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleLoadSparqlPreview}
+                      disabled={sparqlLoading}
+                    >
+                      {sparqlLoading ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Code2 className="h-3.5 w-3.5 mr-1" />}
+                      加载 RDF/Turtle 预览
+                    </Button>
+                  </div>
+                  <CodeMirror
+                    value={sparqlPreview || '// 点击“加载 RDF/Turtle 预览”按钮查看本体模型的 RDF 表示'}
+                    height="60vh"
+                    extensions={[markdown()]}
+                    editable={false}
+                    className="border border-border rounded-md text-xs overflow-hidden"
+                  />
+                  <div className="text-xs text-muted-foreground mt-1">
+                    激活时本体模型自动转换为 RDF/Turtle 写入 Oxigraph；此 Tab 展示生成的 RDF 内容。
                   </div>
                 </TabsContent>
               </Tabs>
@@ -466,6 +514,7 @@ export default function OntologyModeling() {
             <p>激活将执行以下操作：</p>
             <ul className="list-disc pl-5 space-y-1">
               <li>该数据源原 active 模型将被归档</li>
+              <li>本体模型转换为 RDF/Turtle 写入 Oxigraph</li>
               <li>逐对象 MD 段重新向量化写入向量库（{objects.length} 个对象）</li>
               <li>ontology_first 检索策略将使用新模型</li>
             </ul>

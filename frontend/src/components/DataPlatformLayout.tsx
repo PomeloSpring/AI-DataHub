@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
-  Database, FileText, Link, BookOpen, Settings, LogOut, Menu, ArrowLeft, ArrowRight,
+  Database, FileText, Link, BookOpen, Settings, LogOut, Menu,
   Sun, Moon, Palette, Zap, TrendingUp, Grid3x3, GlassWater, Heart,
   UserCircle, X, ChevronLeft, ChevronRight, BarChart3, Tag, GitBranch,
   RefreshCw, Activity, Shield, Ruler, Eye, Brain, Gem, Boxes,
@@ -16,7 +16,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { useAuthStore } from '../stores/authStore';
 import { useThemeStore, applyTheme, type ThemeId } from '../stores/themeStore';
 import { useBrandStore } from '../stores/brandStore';
-import { useWorkspaceStore } from '../stores/workspaceStore';
+import SectionSwitcher from './SectionSwitcher';
 
 const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] = [
   { id: 'dark', label: '暗色', icon: Moon, desc: '深色背景，适合长时间使用' },
@@ -58,18 +58,12 @@ export default function DataPlatformLayout() {
   const { user, logout } = useAuthStore();
   const { theme, setTheme } = useThemeStore();
   const { brand, fetchBrand } = useBrandStore();
-  const { getDefaultWorkspaceId } = useWorkspaceStore();
 
   useEffect(() => { applyTheme(theme); }, [theme]);
   useEffect(() => { fetchBrand(); }, [fetchBrand]);
   useEffect(() => { setMobileMenuOpen(false); }, [location.pathname]);
 
   const currentPath = location.pathname;
-
-  const handleBackToWorkspace = () => {
-    const wsId = getDefaultWorkspaceId();
-    navigate(`/ws/${wsId}/chat`);
-  };
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -86,20 +80,6 @@ export default function DataPlatformLayout() {
             <span className="font-bold text-sm text-sidebar-foreground truncate">数据中台</span>
           )}
         </div>
-
-        {/* Back to workspace */}
-        <Tooltip delayDuration={0}>
-          <TooltipTrigger asChild>
-            <button
-              onClick={handleBackToWorkspace}
-              className={`w-full flex items-center gap-2 px-3 py-3 hover:bg-sidebar-accent/50 transition-colors border-b border-sidebar-border text-sidebar-foreground/70 hover:text-sidebar-foreground ${collapsed ? 'justify-center' : ''}`}
-            >
-              <ArrowLeft className="h-4 w-4 flex-shrink-0" />
-              {!collapsed && <span className="text-sm">返回工作空间</span>}
-            </button>
-          </TooltipTrigger>
-          {collapsed && <TooltipContent side="right">返回工作空间</TooltipContent>}
-        </Tooltip>
 
         {/* Menu */}
         <div className="flex-1 min-h-0 overflow-hidden">
@@ -139,43 +119,8 @@ export default function DataPlatformLayout() {
           </ScrollArea>
         </div>
 
-        {/* Bottom Navigation */}
-        <div className="p-2 border-t border-sidebar-border space-y-1">
-          <Tooltip delayDuration={0}>
-            <TooltipTrigger asChild>
-              <button
-                onClick={handleBackToWorkspace}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-200
-                  text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground
-                  ${collapsed ? 'justify-center' : ''}`}
-              >
-                <ArrowLeft className="h-4 w-4 flex-shrink-0" />
-                {!collapsed && <span>工作空间</span>}
-              </button>
-            </TooltipTrigger>
-            {collapsed && <TooltipContent side="right">工作空间</TooltipContent>}
-          </Tooltip>
-          {user?.role === 'admin' && (
-            <Tooltip delayDuration={0}>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => navigate('/system')}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors
-                    text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground
-                    ${collapsed ? 'justify-center' : ''}`}
-                >
-                  <Settings className="h-4 w-4 flex-shrink-0" />
-                  {!collapsed && (
-                    <>
-                      <span className="flex-1 text-left">系统配置</span>
-                      <ArrowRight className="h-3.5 w-3.5 flex-shrink-0 opacity-50" />
-                    </>
-                  )}
-                </button>
-              </TooltipTrigger>
-              {collapsed && <TooltipContent side="right">系统配置</TooltipContent>}
-            </Tooltip>
-          )}
+        {/* Bottom Navigation — module switching moved to header (see SectionSwitcher) */}
+        <div className="p-2 border-t border-sidebar-border">
           <Button
             variant="ghost"
             size="sm"
@@ -200,14 +145,6 @@ export default function DataPlatformLayout() {
             </div>
             <ScrollArea className="flex-1 py-3">
               <nav className="space-y-1 px-3">
-                <button
-                  onClick={() => { handleBackToWorkspace(); setMobileMenuOpen(false); }}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-md text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent/50"
-                >
-                  <ArrowLeft className="h-5 w-5 flex-shrink-0" />
-                  <span>返回工作空间</span>
-                </button>
-                <div className="my-2 border-t border-sidebar-border" />
                 {DATA_PLATFORM_MENU_ITEMS.map((item, idx) => {
                   if ('section' in item) {
                     return (
@@ -248,6 +185,9 @@ export default function DataPlatformLayout() {
             </Button>
           </div>
           <div className="flex items-center gap-2">
+            {/* Module switcher — 工作空间 / 数据中台 / 系统配置 */}
+            <SectionSwitcher current="data" />
+
             <DropdownMenu>
               <Tooltip>
                 <TooltipTrigger asChild>

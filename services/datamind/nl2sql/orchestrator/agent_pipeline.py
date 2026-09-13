@@ -412,9 +412,11 @@ def _build_agent_system_prompt(
     tools_listing: str,
     agent_graph: str = "",
     workspace_context: str = "",
+    workspace_id: int = 0,
 ) -> str:
     """Build the 4-layer system prompt for the agent.
 
+    Layer 0 (guardrail): 角色风格 + 权限边界（前置注入，最高优先级）
     Layer 1 (static): Identity + capability
     Layer 2 (static): Behavior principles
     --- DYNAMIC BOUNDARY ---
@@ -424,6 +426,10 @@ def _build_agent_system_prompt(
     Metadata (layer 4 equivalent) enters via tool results, not here.
     """
     current_date = datetime.now().strftime("%Y-%m-%d %A")
+
+    # ── Guardrail Layer (角色风格 + 权限边界) ──
+    from services.datamind.config.guardrails import get_guardrail_prompt
+    guardrail = get_guardrail_prompt(workspace_id)
 
     # ── Static Layer — loaded from files ──
     from services.datamind.config.agent_loader import load_agent_prompt, load_orchestrator_rules
@@ -478,7 +484,10 @@ def _build_agent_system_prompt(
 ## 当前用户问题
 {question}"""
 
-    return f"{static}\n\n---\n\n{dynamic}"
+    body = f"{static}\n\n---\n\n{dynamic}"
+    if guardrail:
+        body = f"{guardrail}\n\n---\n\n{body}"
+    return body
 
 
 # ── System Tool Definitions (Anthropic tool_use format) ──────────────
@@ -930,7 +939,6 @@ async def _execute_system_tool(
                 _get_table_info_for_names, _get_columns_for_tables,
                 retrieve_sql_templates, retrieve_business_terms, retrieve_table_relations,
             )
-            from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
 
             table_names = tool_input["table_names"]
             search_question = tool_input.get("question", "") or question
@@ -941,16 +949,9 @@ async def _execute_system_tool(
             from services.datamind.nl2sql.prompt.prompt_builder import _to_m_schema, _to_er_diagram, _to_terminologies, _to_sql_examples
             schema_text = _to_m_schema(table_info, columns)
 
-            vec_literal = ""
-            if search_question:
-                try:
-                    vec_literal = embedding_to_sql_literal(generate_embedding(search_question))
-                except Exception:
-                    pass
-
-            templates = retrieve_sql_templates(search_question, 5, vec_literal, datasource_id)
-            terms = retrieve_business_terms(search_question, 20, vec_literal=vec_literal, datasource_id=datasource_id)
-            relations = retrieve_table_relations(search_question, 20, table_names, vec_literal, datasource_id)
+            templates = retrieve_sql_templates(search_question, 5, datasource_id=datasource_id)
+            terms = retrieve_business_terms(search_question, 20, datasource_id=datasource_id)
+            relations = retrieve_table_relations(search_question, 20, table_names, datasource_id=datasource_id)
 
             er_text = _to_er_diagram(relations)
             terms_text = _to_terminologies(terms)
@@ -1002,18 +1003,12 @@ async def _execute_system_tool(
 
         elif tool_name == "search_business_terms":
             from services.datamind.rag.rag_retriever import retrieve_business_terms
-            from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
 
             keywords = tool_input["keywords"]
             q = " ".join(keywords)
-            try:
-                vec_literal = embedding_to_sql_literal(generate_embedding(q))
-            except Exception:
-                vec_literal = None
 
             terms = retrieve_business_terms(
-                q, 20, keywords=keywords,
-                vec_literal=vec_literal, datasource_id=datasource_id,
+                q, 20, keywords=keywords, datasource_id=datasource_id,
             )
             return json.dumps({"terms": terms[:10]}, ensure_ascii=False, default=str)
 
@@ -1066,7 +1061,6 @@ async def _execute_system_tool(
                 retrieve_sql_templates, retrieve_business_terms, retrieve_table_relations,
             )
             from services.datamind.nl2sql.sql.query_executor import _get_ds_conn_params
-            from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
 
             gen_question = tool_input["question"]
             agent_context = tool_input.get("context", "")
@@ -1091,13 +1085,9 @@ async def _execute_system_tool(
                 if recovered_tables:
                     table_info = _get_table_info_for_names(recovered_tables, datasource_id)
                     columns = _get_columns_for_tables(recovered_tables, datasource_id)
-                    try:
-                        vec = embedding_to_sql_literal(generate_embedding(gen_question))
-                    except Exception:
-                        vec = ""
-                    templates = retrieve_sql_templates(gen_question, 5, vec, datasource_id)
-                    terms = retrieve_business_terms(gen_question, 20, vec_literal=vec, datasource_id=datasource_id)
-                    relations = retrieve_table_relations(gen_question, 20, recovered_tables, vec, datasource_id)
+                    templates = retrieve_sql_templates(gen_question, 5, datasource_id=datasource_id)
+                    terms = retrieve_business_terms(gen_question, 20, datasource_id=datasource_id)
+                    relations = retrieve_table_relations(gen_question, 20, recovered_tables, datasource_id=datasource_id)
                 else:
                     # Fallback: no table names found, do full RAG
                     rag = retrieve_all(gen_question, datasource_id=datasource_id)
@@ -1650,6 +1640,18 @@ async def agent_generate(
 
     t_start = time.time()
 
+    # Phase 3: capability-based execution-layer discovery (cached 30s, informational)
+    try:
+        from services.datamind.execution.discovery_client import get_discovery_client
+        _available_layers = get_discovery_client().discover()
+        logger.info(
+            "[Agent] Discovery: %d healthy execution layer(s): %s",
+            len(_available_layers),
+            [l.get("name") for l in _available_layers],
+        )
+    except Exception as e:
+        logger.debug("[Agent] Execution-layer discovery skipped: %s", e)
+
     # 0. Load workspace configuration if workspace_id provided
     workspace = None
     workspace_tools = None
@@ -1825,6 +1827,7 @@ async def agent_generate(
         tools_listing=tools_listing,
         agent_graph=agent_graph,
         workspace_context=workspace_context,
+        workspace_id=workspace_id,
     )
 
     # Inject task context into system prompt (scheduled task background info)
@@ -2378,7 +2381,6 @@ async def agent_generate(
                         _get_table_info_for_names, _get_columns_for_tables,
                         retrieve_sql_templates, retrieve_business_terms, retrieve_table_relations,
                     )
-                    from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
 
                     recovered_tables = []
                     for tc in all_tool_calls:
@@ -2390,13 +2392,9 @@ async def agent_generate(
                     if recovered_tables:
                         table_info = _get_table_info_for_names(recovered_tables, datasource_id)
                         columns = _get_columns_for_tables(recovered_tables, datasource_id)
-                        try:
-                            vec = embedding_to_sql_literal(generate_embedding(question))
-                        except Exception:
-                            vec = ""
-                        templates = retrieve_sql_templates(question, 5, vec, datasource_id)
-                        terms = retrieve_business_terms(question, 20, vec_literal=vec, datasource_id=datasource_id)
-                        relations = retrieve_table_relations(question, 20, recovered_tables, vec, datasource_id)
+                        templates = retrieve_sql_templates(question, 5, datasource_id=datasource_id)
+                        terms = retrieve_business_terms(question, 20, datasource_id=datasource_id)
+                        relations = retrieve_table_relations(question, 20, recovered_tables, datasource_id=datasource_id)
 
                         engine_name = engine
 

@@ -1,7 +1,4 @@
-"""Model Training Service — Fine-tune embedding model using feedback data.
-
-Migrated from backend/api/model_train.py.
-"""
+"""Model Training Service — Build feedback-based training data for model tuning."""
 
 import json
 import logging
@@ -61,12 +58,10 @@ def get_training_stats() -> dict:
     except Exception as e:
         logger.warning("Failed to build training data: %s", e)
 
-    from services.shared.common.config import EMBEDDING_MODEL_PATH
     return {
         "feedback": stats,
         "training_samples": sample_count,
         "versions": versions,
-        "current_model": EMBEDDING_MODEL_PATH,
     }
 
 

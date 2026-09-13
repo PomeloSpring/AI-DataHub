@@ -53,8 +53,10 @@ class BuiltInAdapter(ExecutionLayerAdapter):
                 user_id=ctx.user_id or None,
                 username=ctx.username or None,
                 workspace_id=ctx.workspace_id,
-                # tools 权限白名单(工作空间绑定执行层时配置,空=不限制)
+                # tools 权限白名单(层级 ∩ 工作空间,空=不限制)
                 allowed_tools=self.config.get("allowed_tools") or [],
+                # 可执行/可访问目录白名单(空=回退工作空间目录)
+                allowed_dirs=self.config.get("allowed_dirs") or [],
             )
             return ExecutionResult(
                 success=result.success,

@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from services.shared.common.db import DBConnection, execute_query, execute_insert, execute_write
+from services.shared.common.versioned_config import get_mcp_version_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -28,6 +29,7 @@ class MCPServerCreate(BaseModel):
     tools_config: dict = {}
     description: str = ""
     is_active: bool = True
+    created_by: str = "system"
 
 
 class MCPServerUpdate(BaseModel):
@@ -40,6 +42,13 @@ class MCPServerUpdate(BaseModel):
     tools_config: Optional[dict] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
+    change_log: str = "Updated"
+    updated_by: str = "system"
+
+
+class MCPRollbackRequest(BaseModel):
+    version: int
+    rolled_by: str = "system"
 
 
 def _now():
@@ -108,17 +117,22 @@ def get_mcp_server(server_id: int):
 
 @router.post("/")
 def create_mcp_server(req: MCPServerCreate):
-    """Create a new MCP server."""
+    """Create a new MCP server (records an initial v1 snapshot)."""
     try:
-        now = _now()
-        server_id = execute_insert(
-            """INSERT INTO adh_mcp_servers
-               (name, transport, url, command, args, env, tools_config, description,
-                is_active, created_at, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (req.name, req.transport, req.url, req.command,
-             json.dumps(req.args), json.dumps(req.env), json.dumps(req.tools_config),
-             req.description, 1 if req.is_active else 0, now, now),
+        store = get_mcp_version_store()
+        server_id = store.create(
+            {
+                "name": req.name,
+                "transport": req.transport,
+                "url": req.url,
+                "command": req.command,
+                "args": req.args,
+                "env": req.env,
+                "tools_config": req.tools_config,
+                "description": req.description,
+                "is_active": 1 if req.is_active else 0,
+            },
+            created_by=req.created_by,
         )
         return {"id": server_id, "success": True}
     except Exception as e:
@@ -128,48 +142,28 @@ def create_mcp_server(req: MCPServerCreate):
 
 @router.put("/{server_id}")
 def update_mcp_server(server_id: int, req: MCPServerUpdate):
-    """Update MCP server."""
+    """Update MCP server. Automatically creates a version snapshot."""
     try:
-        updates = []
-        params = []
-
-        if req.name is not None:
-            updates.append("name = %s")
-            params.append(req.name)
-        if req.transport is not None:
-            updates.append("transport = %s")
-            params.append(req.transport)
-        if req.url is not None:
-            updates.append("url = %s")
-            params.append(req.url)
-        if req.command is not None:
-            updates.append("command = %s")
-            params.append(req.command)
-        if req.args is not None:
-            updates.append("args = %s")
-            params.append(json.dumps(req.args))
-        if req.env is not None:
-            updates.append("env = %s")
-            params.append(json.dumps(req.env))
-        if req.tools_config is not None:
-            updates.append("tools_config = %s")
-            params.append(json.dumps(req.tools_config))
-        if req.description is not None:
-            updates.append("description = %s")
-            params.append(req.description)
+        store = get_mcp_version_store()
+        data = {}
+        for field in ("name", "transport", "url", "command", "args",
+                      "env", "tools_config", "description"):
+            val = getattr(req, field, None)
+            if val is not None:
+                data[field] = val
         if req.is_active is not None:
-            updates.append("is_active = %s")
-            params.append(1 if req.is_active else 0)
+            data["is_active"] = 1 if req.is_active else 0
 
-        if not updates:
+        if not data:
             return {"success": True, "message": "No changes"}
+        data["change_log"] = req.change_log
 
-        updates.append("updated_at = %s")
-        params.append(_now())
-        params.append(server_id)
-
-        execute_write(f"UPDATE adh_mcp_servers SET {', '.join(updates)} WHERE id = %s", params)
+        ok = store.update(server_id, data, updated_by=req.updated_by)
+        if not ok:
+            raise HTTPException(status_code=404, detail="MCP server not found")
         return {"success": True}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Update MCP server failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -210,4 +204,44 @@ def test_mcp_server(server_id: int):
         raise
     except Exception as e:
         logger.error("Test MCP server failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Version history & rollback ─────────────────────────────────────────
+
+@router.get("/{server_id}/versions")
+def list_mcp_versions(server_id: int):
+    """List version snapshots for an MCP server."""
+    try:
+        store = get_mcp_version_store()
+        versions = store.get_versions(server_id)
+        for v in versions:
+            content = v.get("content")
+            if isinstance(content, str):
+                try:
+                    v["content"] = json.loads(content)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            for k in ("created_at",):
+                if hasattr(v.get(k), "isoformat"):
+                    v[k] = v[k].isoformat()
+        return versions
+    except Exception as e:
+        logger.error("List MCP versions failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{server_id}/rollback")
+def rollback_mcp_server(server_id: int, req: MCPRollbackRequest):
+    """Rollback an MCP server config to a specific version."""
+    try:
+        store = get_mcp_version_store()
+        ok = store.rollback(server_id, req.version, rolled_by=req.rolled_by)
+        if not ok:
+            raise HTTPException(status_code=404, detail="MCP server or target version not found")
+        return {"success": True, "message": f"Rolled back to version {req.version}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Rollback MCP server failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))

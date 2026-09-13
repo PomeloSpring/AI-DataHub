@@ -48,8 +48,7 @@ SERVICE_REGISTRY = [
     {"key": "aiplatform", "name": "AI Platform", "desc": "MCP / Agent / 模型管理", "port": 8007, "path": "/health", "layer": "ai"},
     {"key": "datamind", "name": "DataMind", "desc": "NL2SQL / Agent / RAG", "port": 8001, "path": "/api/health", "layer": "ai"},
     {"key": "dataengine", "name": "DataEngine", "desc": "Rust 查询引擎网关", "port": 8082, "path": "/api/health", "layer": "infra"},
-    {"key": "vectorservice", "name": "VectorService", "desc": "Doris 向量检索", "port": 8010, "path": "/health", "layer": "infra"},
-    {"key": "graphservice", "name": "GraphService", "desc": "Neo4j 知识图谱", "port": 8011, "path": "/api/health", "layer": "infra"},
+    {"key": "graphservice", "name": "GraphService", "desc": "Oxigraph RDF 知识图谱", "port": 8011, "path": "/api/health", "layer": "infra"},
 ]
 
 _PROBE_TIMEOUT = 3.0  # seconds

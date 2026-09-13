@@ -1,15 +1,15 @@
 """标准工具目录 — 工作空间执行层 tools 权限白名单的通用抽象.
 
-命名与 opencode 内置工具保持一致(bash/edit/glob/grep/read/write/webfetch/task),
-经 TOOL_NAME_MAP 映射到各执行层后端的实际工具名(qoder 为 Pascal 命名,
+标准工具名(bash/edit/glob/grep/read/write/webfetch/task)经 TOOL_NAME_MAP
+映射到各执行层后端的实际工具名(qoder/claude 为 Pascal 命名,
 builtin 为内置 Agent 的实现名).
 
-opencode 的 `list`(目录列表)能力已并入 `glob`,不单独列目录项.
+目录列表能力已并入 `glob`,不单独列目录项.
 """
 
 import json
 
-# 标准工具目录(name 与 opencode 工具名一致),供前端渲染勾选 chips
+# 标准工具目录,供前端渲染勾选 chips
 TOOL_CATALOG = [
     {"name": "read", "label": "读取文件", "description": "读取文本文件内容"},
     {"name": "write", "label": "写入文件", "description": "创建或覆盖写入文件"},
@@ -23,11 +23,6 @@ TOOL_CATALOG = [
 
 # 标准名 → 各后端实际工具名;None 表示该后端无此工具
 TOOL_NAME_MAP = {
-    # opencode 内置工具名(与标准名一致)
-    "opencode": {
-        "read": "read", "write": "write", "edit": "edit", "glob": "glob",
-        "grep": "grep", "bash": "bash", "webfetch": "webfetch", "task": "task",
-    },
     # qoder CLI / qoder-agent-sdk 工具名(Claude Code 风格)
     "qoder": {
         "read": "Read", "write": "Write", "edit": "Edit", "glob": "Glob",
@@ -115,7 +110,7 @@ def expand_allowed_tools(allowed_tools, flavor: str) -> set:
 def disallowed_tools(allowed_tools, flavor: str) -> list:
     """白名单 → 该后端目录内未被允许的工具列表(deny-list).
 
-    用于 qoder/opencode:只禁用目录内未勾选的标准工具,
+    用于 qoder/claude:只禁用目录内未勾选的标准工具,
     不影响 MCP/自定义等目录外工具.
     """
     allowed = parse_allowed_tools(allowed_tools)

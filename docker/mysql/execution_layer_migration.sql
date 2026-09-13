@@ -1,5 +1,5 @@
 -- Execution Layer Migration
--- 多执行层架构:内置执行层 + CLI 执行层(opencode / qoder 等)
+-- 多执行层架构:内置执行层 + CLI 执行层(qoder 等)
 -- 详见 .claude/plans/execution-layer-design.md
 
 -- 执行层配置表
@@ -14,6 +14,12 @@ CREATE TABLE IF NOT EXISTS adh_execution_layers (
     health_check_at DATETIME,
     last_test_status VARCHAR(20),
     last_test_message TEXT,
+    capabilities JSON NULL COMMENT '能力标签列表,如 ["nl2sql","code","mcp"]',
+    tools JSON NULL COMMENT '自注册上报的工具/能力目录快照',
+    endpoint_url VARCHAR(500) NULL COMMENT '远程执行层可达地址(remote 类型)',
+    source VARCHAR(20) NOT NULL DEFAULT 'manual' COMMENT 'manual = 手工配置 | self = SDK 自注册',
+    last_heartbeat_at DATETIME NULL COMMENT '最近一次心跳时间',
+    registered_at DATETIME NULL COMMENT '首次自注册时间',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_name (name),

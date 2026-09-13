@@ -1,18 +1,13 @@
-"""Database Connection Layer -- MetadataDB + VectorDB + Datasource abstraction.
+"""Database Connection Layer -- MetadataDB + Datasource abstraction.
 
 Usage:
-    from services.shared.common.db import get_metadata_conn, get_vector_conn
+    from services.shared.common.db import get_metadata_conn
     from services.shared.common.db import get_datasource_conn, get_datasource_by_id
 
     # Metadata connection (MySQL)
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT ...")
-
-    # Vector connection (Doris with HNSW)
-    with get_vector_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT ... l2_distance_approximate(...)")
 
     # Datasource connection
     ds = get_datasource_by_id(1)
@@ -21,10 +16,7 @@ Usage:
 """
 
 from services.shared.common.db.metadata_db import (
-    # Metadata pool
     get_metadata_conn, get_metadata_connection, close_metadata_pool, get_metadata_pool_stats,
-    # Vector pool
-    get_vector_conn, get_vector_connection, close_vector_pool,
 )
 
 from services.shared.common.db.datasource_db import (
@@ -92,8 +84,6 @@ def execute_insert(sql: str, params=None) -> int:
 __all__ = [
     # Metadata pool
     "get_metadata_conn", "get_metadata_connection", "close_metadata_pool", "get_metadata_pool_stats",
-    # Vector pool
-    "get_vector_conn", "get_vector_connection", "close_vector_pool",
     # Datasource
     "get_datasource_conn", "get_datasource_by_id",
     # Legacy compatibility

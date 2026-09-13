@@ -5,7 +5,6 @@ import { useWorkspaceStore } from './stores/workspaceStore';
 import WorkspaceLayout from './components/WorkspaceLayout';
 import SystemLayout from './components/SystemLayout';
 import DataPlatformLayout from './components/DataPlatformLayout';
-import { AIFloatingBox } from './components/ai-assistant';
 import Login from './pages/Login';
 import Chat from './pages/Chat';
 import Dashboard from './pages/Dashboard';
@@ -16,12 +15,7 @@ import Playground from './pages/Playground';
 import Screen from './pages/Screen';
 import Analysis from './pages/Analysis';
 import Profile from './pages/Profile';
-import ModelLab from './pages/ModelLab';
-import ModelTrain from './pages/ModelTrain';
 import WorkspaceManagerV2 from './pages/WorkspaceManagerV2';
-import WorkflowConfig from './pages/admin/WorkflowConfig';
-import WorkflowEditor from './pages/admin/WorkflowEditor';
-import PromptManager from './pages/admin/PromptManager';
 import ModelCenter from './pages/admin/ModelCenter';
 import MCPAgentConfig from './pages/admin/MCPAgentConfig';
 import MCPConfig from './pages/admin/MCPConfig';
@@ -34,6 +28,7 @@ import ReportView from './pages/ReportView';
 import KnowledgeBase from './pages/admin/KnowledgeBase';
 import KnowledgeGraph from './pages/KnowledgeGraph';
 import SkillsTemplateManager from './pages/admin/SkillsTemplateManager';
+import VersionedConfigEditor, { createPromptAdapter, createMcpAdapter } from './pages/admin/VersionedConfigEditor';
 import ComingSoon from './pages/ComingSoon';
 
 // 新增页面 - 数据中台
@@ -155,9 +150,7 @@ export default function App() {
           <Route path="mcp" element={<MCPConfig />} />
           <Route path="agents" element={<AgentConfig />} />
           <Route path="execution-layers" element={<ExecutionLayers />} />
-          <Route path="workflows" element={<WorkflowConfig />} />
-          <Route path="workflow-editor" element={<WorkflowEditor />} />
-          <Route path="prompts" element={<PromptManager />} />
+          <Route path="config-versions" element={<VersionedConfigEditor adapters={[createPromptAdapter(), createMcpAdapter()]} />} />
           <Route path="skills" element={<SkillsTemplateManager />} />
           <Route path="notification-channels" element={<NotificationChannels />} />
           <Route path="report-templates" element={<ReportTemplates />} />
@@ -201,20 +194,15 @@ export default function App() {
         <Route path="/admin/data" element={<Navigate to="/system/datasources" replace />} />
         <Route path="/admin/model" element={<Navigate to="/system/models" replace />} />
         <Route path="/admin/mcp-agent" element={<Navigate to="/system/mcp-agent" replace />} />
-        <Route path="/admin/workflow" element={<Navigate to="/system/workflows" replace />} />
-        <Route path="/admin/prompts" element={<Navigate to="/system/skills" replace />} />
+        <Route path="/admin/prompts" element={<Navigate to="/system/config-versions" replace />} />
 
         {/* Other legacy routes */}
         <Route path="/playground" element={<PrivateRoute><Playground /></PrivateRoute>} />
-        <Route path="/model-lab" element={<PrivateRoute><ModelLab /></PrivateRoute>} />
-        <Route path="/model-train" element={<PrivateRoute><ModelTrain /></PrivateRoute>} />
 
         {/* Default redirect */}
         <Route path="/" element={<PrivateRoute><LegacyChatRedirect /></PrivateRoute>} />
       </Routes>
 
-      {/* AI Assistant Floating Box - 全局悬浮框 */}
-      <AIFloatingBox />
     </BrowserRouter>
   );
 }

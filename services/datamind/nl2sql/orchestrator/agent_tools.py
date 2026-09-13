@@ -193,7 +193,6 @@ async def execute_system_tool(
                 _get_table_info_for_names, _get_columns_for_tables,
                 retrieve_sql_templates, retrieve_business_terms, retrieve_table_relations,
             )
-            from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
 
             table_names = tool_input["table_names"]
             search_question = tool_input.get("question", "") or question
@@ -204,16 +203,9 @@ async def execute_system_tool(
             from services.datamind.nl2sql.prompt.prompt_builder import _to_m_schema, _to_er_diagram, _to_terminologies, _to_sql_examples
             schema_text = _to_m_schema(table_info, columns)
 
-            vec_literal = ""
-            if search_question:
-                try:
-                    vec_literal = embedding_to_sql_literal(generate_embedding(search_question))
-                except Exception:
-                    pass
-
-            templates = retrieve_sql_templates(search_question, 5, vec_literal, datasource_id)
-            terms = retrieve_business_terms(search_question, 20, vec_literal=vec_literal, datasource_id=datasource_id)
-            relations = retrieve_table_relations(search_question, 20, table_names, vec_literal, datasource_id)
+            templates = retrieve_sql_templates(search_question, 5, datasource_id=datasource_id)
+            terms = retrieve_business_terms(search_question, 20, datasource_id=datasource_id)
+            relations = retrieve_table_relations(search_question, 20, table_names, datasource_id=datasource_id)
 
             er_text = _to_er_diagram(relations)
             terms_text = _to_terminologies(terms)
@@ -253,18 +245,12 @@ async def execute_system_tool(
 
         elif tool_name == "search_business_terms":
             from services.datamind.rag.rag_retriever import retrieve_business_terms
-            from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
 
             keywords = tool_input["keywords"]
             q = " ".join(keywords)
-            try:
-                vec_literal = embedding_to_sql_literal(generate_embedding(q))
-            except Exception:
-                vec_literal = None
 
             terms = retrieve_business_terms(
-                q, 20, keywords=keywords,
-                vec_literal=vec_literal, datasource_id=datasource_id,
+                q, 20, keywords=keywords, datasource_id=datasource_id,
             )
             return json.dumps({"terms": terms[:10]}, ensure_ascii=False, default=str)
 
@@ -315,7 +301,6 @@ async def execute_system_tool(
                 retrieve_sql_templates, retrieve_business_terms, retrieve_table_relations,
             )
             from services.datamind.nl2sql.sql.query_executor import _get_ds_conn_params
-            from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
 
             gen_question = tool_input["question"]
             agent_context_str = tool_input.get("context", "")
@@ -336,13 +321,9 @@ async def execute_system_tool(
                 if recovered_tables:
                     table_info = _get_table_info_for_names(recovered_tables, datasource_id)
                     columns = _get_columns_for_tables(recovered_tables, datasource_id)
-                    try:
-                        vec = embedding_to_sql_literal(generate_embedding(gen_question))
-                    except Exception:
-                        vec = ""
-                    templates = retrieve_sql_templates(gen_question, 5, vec, datasource_id)
-                    terms = retrieve_business_terms(gen_question, 20, vec_literal=vec, datasource_id=datasource_id)
-                    relations = retrieve_table_relations(gen_question, 20, recovered_tables, vec, datasource_id)
+                    templates = retrieve_sql_templates(gen_question, 5, datasource_id=datasource_id)
+                    terms = retrieve_business_terms(gen_question, 20, datasource_id=datasource_id)
+                    relations = retrieve_table_relations(gen_question, 20, recovered_tables, datasource_id=datasource_id)
                 else:
                     rag = retrieve_all(gen_question, datasource_id=datasource_id)
                     table_info = rag["table_info"]

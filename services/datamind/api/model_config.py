@@ -1,4 +1,4 @@
-"""Model Config API — Manage LLM and Embedding model configurations.
+"""Model Config API — Manage LLM model and system configurations.
 
 Migrated from backend/api/model_config.py
 Table: adh_llm_models, adh_system_config

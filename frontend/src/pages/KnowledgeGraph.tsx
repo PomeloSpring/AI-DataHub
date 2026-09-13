@@ -24,7 +24,7 @@ import { toast } from 'sonner';
 
 type GraphType = 'table-relation' | 'business-knowledge' | 'data-lineage';
 type ViewMode = 'view' | 'edit' | 'ask';
-type ActiveTab = 'graph' | 'metrics' | 'dimensions' | 'cypher';
+type ActiveTab = 'graph' | 'metrics' | 'dimensions' | 'sparql';
 
 interface Metric {
   id: number;
@@ -90,9 +90,9 @@ export default function KnowledgeGraph() {
     target_table: '', target_column: '', description: '', category: ''
   });
 
-  // Cypher query state
-  const [cypherQuery, setCypherQuery] = useState('MATCH (n) RETURN n LIMIT 25');
-  const [cypherResult, setCypherResult] = useState<any>(null);
+  // SPARQL query state
+  const [sparqlQuery, setSparqlQuery] = useState('SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 25');
+  const [sparqlResult, setSparqlResult] = useState<any>(null);
 
   // Store
   const {
@@ -151,13 +151,16 @@ export default function KnowledgeGraph() {
     try {
       const result = await syncGraph(0);
       if (result.success) {
-        toast.success(`同步成功: ${result.tables} 表, ${result.columns} 字段, ${result.terms} 术语`);
+        toast.success(
+          `图谱构建完成: ${result.tables} 表, ${result.columns} 字段, ${result.terms} 术语, ` +
+          `${result.metrics ?? 0} 指标, ${result.sql_templates ?? 0} SQL 模板`
+        );
         await loadGraphData();
       } else {
-        toast.error(result.message || '同步失败');
+        toast.error(result.message || '图谱构建失败');
       }
     } catch (error) {
-      toast.error('同步失败');
+      toast.error('图谱构建失败');
     } finally {
       setIsLoading(false);
     }
@@ -273,16 +276,16 @@ export default function KnowledgeGraph() {
     setDimensionForm({ name: '', name_en: '', hierarchy: '', level: 0, target_table: '', target_column: '', description: '', category: '' });
   };
 
-  // ── Cypher Handler ─────────────────────────────────────────────────
+  // ── SPARQL Handler ────────────────────────────────────────────────
 
-  const handleExecuteCypher = async () => {
+  const handleExecuteSparql = async () => {
     setIsLoading(true);
     try {
-      const response = await axios.post(`${API_BASE}/cypher`, { query: cypherQuery }, { headers: getAuthHeader() });
-      setCypherResult(response.data);
+      const response = await axios.post(`${API_BASE}/query`, { query: sparqlQuery }, { headers: getAuthHeader() });
+      setSparqlResult(response.data);
       toast.success('查询执行成功');
     } catch (error) {
-      toast.error('Cypher查询失败');
+      toast.error('SPARQL查询失败');
     } finally {
       setIsLoading(false);
     }
@@ -309,9 +312,15 @@ export default function KnowledgeGraph() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={handleSync} disabled={isLoading}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSync}
+            disabled={isLoading}
+            title="从元数据重建知识图谱（表/字段/术语/指标/SQL 模板）"
+          >
             <RefreshCw className={`h-4 w-4 mr-1 ${isLoading ? 'animate-spin' : ''}`} />
-            同步图谱
+            构建图谱
           </Button>
         </div>
       </div>
@@ -333,9 +342,9 @@ export default function KnowledgeGraph() {
                 <Layers className="h-4 w-4" />
                 维度管理
               </TabsTrigger>
-              <TabsTrigger value="cypher" className="flex items-center gap-2">
+              <TabsTrigger value="sparql" className="flex items-center gap-2">
                 <Terminal className="h-4 w-4" />
-                Cypher查询
+                SPARQL查询
               </TabsTrigger>
             </TabsList>
           </div>
@@ -566,43 +575,43 @@ export default function KnowledgeGraph() {
             </Card>
           </TabsContent>
 
-          {/* Cypher Query Tab */}
-          <TabsContent value="cypher" className="flex-1 overflow-auto m-0 p-4">
+          {/* SPARQL Query Tab */}
+          <TabsContent value="sparql" className="flex-1 overflow-auto m-0 p-4">
             <Card>
               <CardHeader>
                 <CardTitle className="text-lg flex items-center gap-2">
                   <Terminal className="h-5 w-5" />
-                  Cypher 查询控制台
+                  SPARQL 查询控制台
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
                   <Label>查询语句</Label>
                   <Textarea
-                    value={cypherQuery}
-                    onChange={(e) => setCypherQuery(e.target.value)}
-                    placeholder="输入Cypher查询语句..."
+                    value={sparqlQuery}
+                    onChange={(e) => setSparqlQuery(e.target.value)}
+                    placeholder="输入SPARQL查询语句..."
                     className="font-mono text-sm h-32"
                   />
                 </div>
-                <Button onClick={handleExecuteCypher} disabled={isLoading}>
+                <Button onClick={handleExecuteSparql} disabled={isLoading}>
                   <Terminal className="h-4 w-4 mr-2" />
                   执行查询
                 </Button>
-                {cypherResult && (
+                {sparqlResult && (
                   <div className="space-y-2">
                     <Label>查询结果</Label>
                     <pre className="bg-muted p-4 rounded-lg text-xs overflow-auto max-h-96">
-                      {JSON.stringify(cypherResult, null, 2)}
+                      {JSON.stringify(sparqlResult, null, 2)}
                     </pre>
                   </div>
                 )}
                 <div className="text-xs text-muted-foreground">
                   💡 常用查询示例：
                   <ul className="mt-1 space-y-1 list-disc list-inside">
-                    <li><code className="px-1 bg-muted rounded">MATCH (n) RETURN n LIMIT 25</code> - 查看所有节点</li>
-                    <li><code className="px-1 bg-muted rounded">{"MATCH (t:Table)-[:HAS_COLUMN]->(c:Column) RETURN t, c LIMIT 25"}</code> - 查看表和字段</li>
-                    <li><code className="px-1 bg-muted rounded">MATCH (m:Metric) RETURN m</code> - 查看所有指标</li>
+                    <li><code className="px-1 bg-muted rounded">SELECT ?s ?p ?o WHERE {'{'} ?s ?p ?o {'}'} LIMIT 25</code> - 查看所有三元组</li>
+                    <li><code className="px-1 bg-muted rounded">SELECT ?t ?label WHERE {'{'} ?t a adh:Table ; rdfs:label ?label {'}'}</code> - 查看所有表</li>
+                    <li><code className="px-1 bg-muted rounded">SELECT ?m ?label WHERE {'{'} ?m a adh:Metric ; rdfs:label ?label {'}'}</code> - 查看所有指标</li>
                   </ul>
                 </div>
               </CardContent>

@@ -1,7 +1,7 @@
 """工作空间资源加载 — 各 SDK 适配器共享.
 
 按 workspace_id(含全局 workspace_id=0)从 adh_mcp_servers / adh_agents
-加载原始行;目标格式因 CLI 而异(qoder SDK options vs opencode.json),
+加载原始行;目标格式因 CLI 而异(qoder SDK options 等),
 由各适配器自行映射。
 """
 

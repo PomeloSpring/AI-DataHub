@@ -1,12 +1,6 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import {
-  Cpu, Workflow, MessageSquare, FlaskConical, Brain,
-} from 'lucide-react';
+import { Cpu } from 'lucide-react';
 import Admin from '../Admin';
-import ModelLab from '../ModelLab';
-import ModelTrain from '../ModelTrain';
-import WorkflowConfig from './WorkflowConfig';
-import PromptManager from './PromptManager';
 
 export default function ModelCenter() {
   return (
@@ -19,40 +13,10 @@ export default function ModelCenter() {
               <Cpu className="h-4 w-4 mr-2" />
               模型配置
             </TabsTrigger>
-            <TabsTrigger value="workflow">
-              <Workflow className="h-4 w-4 mr-2" />
-              查询模式
-            </TabsTrigger>
-            <TabsTrigger value="prompts">
-              <MessageSquare className="h-4 w-4 mr-2" />
-              Prompt管理
-            </TabsTrigger>
-            <TabsTrigger value="model-lab">
-              <FlaskConical className="h-4 w-4 mr-2" />
-              模型 Lab
-            </TabsTrigger>
-            <TabsTrigger value="model-train">
-              <Brain className="h-4 w-4 mr-2" />
-              模型微调
-            </TabsTrigger>
           </TabsList>
         </div>
         <TabsContent value="model-config" className="mt-0">
           <Admin embeddedTab="model-config" />
-        </TabsContent>
-        <TabsContent value="workflow" className="mt-0">
-          <div className="h-[calc(100vh-220px)]">
-            <WorkflowConfig />
-          </div>
-        </TabsContent>
-        <TabsContent value="prompts" className="mt-0">
-          <PromptManager />
-        </TabsContent>
-        <TabsContent value="model-lab" className="mt-0">
-          <ModelLab />
-        </TabsContent>
-        <TabsContent value="model-train" className="mt-0">
-          <ModelTrain />
         </TabsContent>
       </Tabs>
     </div>

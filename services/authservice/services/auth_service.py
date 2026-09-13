@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 import bcrypt
 import jwt
 
-from services.shared.common.config import ADH_SECRET_KEY, LDAP_ENABLED, RANGER_ENABLED
+from services.shared.common.config import ADH_SECRET_KEY
 from services.shared.common.db import DBConnection, execute_query, execute_write
 from services.shared.common.crypto import encrypt_password, decrypt_password, is_encrypted
 
@@ -126,68 +126,12 @@ def _ts_id() -> int:
 def login(username: str, password: str, ip_address: str = "") -> dict | None:
     """Authenticate user and return token pair, or None on failure.
 
-    Authentication flow:
-    1. If LDAP is enabled, try LDAP authentication first
-    2. On LDAP success, sync user to local DB (lazy provisioning)
-    3. On LDAP failure or if LDAP is disabled, fall back to local auth
-
     Returns dict with access_token, refresh_token, user info — or None.
     """
     _ensure_admin_user()
 
-    # ── LDAP authentication (if enabled) ──
-    if LDAP_ENABLED:
-        ldap_result = _try_ldap_login(username, password, ip_address)
-        if ldap_result is not None:
-            return ldap_result
-        # LDAP returned None → fall through to local auth
-
     # ── Local authentication ──
     return _local_login(username, password, ip_address)
-
-
-def _try_ldap_login(username: str, password: str, ip_address: str) -> dict | None:
-    """Attempt LDAP authentication. Returns token dict or None on failure."""
-    try:
-        from services.authservice.services.ldap_backend import ldap_backend
-
-        ldap_user = ldap_backend.authenticate(username, password)
-        if ldap_user is None:
-            return None  # LDAP auth failed, fall through to local
-
-        # LDAP auth succeeded — sync user to local DB
-        local_user = ldap_backend.sync_user_to_local(ldap_user)
-
-        log_audit(
-            local_user["id"], username, "login",
-            detail="LDAP登录成功", ip_address=ip_address, module="ldap",
-        )
-
-        token_data = {
-            "sub": str(local_user["id"]),
-            "user_id": local_user["id"],
-            "username": local_user["username"],
-            "role": local_user["role"],
-        }
-        access_token = create_access_token(token_data)
-        refresh_token = create_refresh_token(token_data)
-
-        return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "user": {
-                "id": local_user["id"],
-                "username": local_user["username"],
-                "role": local_user["role"],
-            },
-            "auth_source": "ldap",
-        }
-    except ImportError:
-        logger.warning("ldap3 not installed, skipping LDAP authentication")
-        return None
-    except Exception as e:
-        logger.error("LDAP authentication error for %s: %s", username, e)
-        return None
 
 
 def _local_login(username: str, password: str, ip_address: str) -> dict | None:

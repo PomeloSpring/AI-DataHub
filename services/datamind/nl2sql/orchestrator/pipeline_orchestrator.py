@@ -79,7 +79,6 @@ async def execute_pipeline(
     datasource_id: int = 0,
     model_id: Optional[int] = None,
     pipeline_mode: str = "quick",
-    workflow_id: Optional[int] = None,
     user_id: Optional[int] = None,
     username: Optional[str] = None,
     retrieval_strategy: str = None,

@@ -233,7 +233,7 @@ export default function GraphEntities() {
     });
   };
 
-  // ── Sync to Neo4j ──────────────────────────────────────────────────
+  // ── Sync to Oxigraph ───────────────────────────────────────────────
 
   const handleSync = async () => {
     setIsLoading(true);
@@ -277,7 +277,7 @@ export default function GraphEntities() {
             图谱实体管理
           </h1>
           <p className="text-muted-foreground mt-1">
-            管理业务指标和分析维度，同步到Neo4j知识图谱
+            管理业务指标和分析维度，同步到Oxigraph知识图谱
           </p>
         </div>
         <div className="flex items-center gap-2">

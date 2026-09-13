@@ -429,7 +429,6 @@ AI-DataHub/
 │       │   ├── ModelTrain.tsx  # Model training stats
 │       │   └── admin/          # Admin sub-pages
 │       │       ├── PromptManager.tsx
-│       │       ├── WorkflowConfig.tsx
 │       │       ├── MCPAgentConfig.tsx
 │       │       ├── MCPMarket.tsx
 │       │       ├── ModelCenter.tsx

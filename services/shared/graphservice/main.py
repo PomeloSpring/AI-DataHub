@@ -1,4 +1,4 @@
-"""GraphService Microservice — Neo4j Knowledge Graph API.
+"""GraphService Microservice — Oxigraph SPARQL Knowledge Graph API.
 
 Run: uvicorn services.shared.graphservice.main:app --host 0.0.0.0 --port 8011
 """
@@ -19,7 +19,7 @@ from services.shared.graphservice.api.graph import router as graph_router
 _log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, _log_level, logging.INFO), format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-app = FastAPI(title="GraphService API", description="知识图谱服务 — Neo4j 图查询", version="1.0.0")
+app = FastAPI(title="GraphService API", description="知识图谱服务 — Oxigraph SPARQL 图查询", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(graph_router, prefix="/api/graph", tags=["知识图谱"])
 

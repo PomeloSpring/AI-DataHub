@@ -35,7 +35,6 @@ from services.datamind.nl2sql.prompt.prompt_builder import build_nl2sql_prompt, 
 from services.datamind.nl2sql.sql.sql_validator import validate_and_fix
 from services.datamind.nl2sql.sql.query_executor import execute_query
 from services.datamind.nl2sql.intent.intent_classifier import classify_intent
-from services.datamind.rag.table_selector import select_tables
 
 logger = logging.getLogger(__name__)
 
@@ -790,12 +789,9 @@ async def execute_loop(
             }
         rag_query = canonical_query
 
-        selected_tables = select_tables(rag_query, top_k=5, datasource_id=datasource_id)
-        logger.info("Pre-selected tables: %s", selected_tables)
-
+        # Single graph route: LLM + SPARQL grounding (no BM25/vector pre-selection)
         rag_context = retrieve_with_strategy(
             question=question,
-            selected_tables=selected_tables,
             datasource_id=datasource_id,
             strategy_name=retrieval_strategy,
             model_id=model_id,

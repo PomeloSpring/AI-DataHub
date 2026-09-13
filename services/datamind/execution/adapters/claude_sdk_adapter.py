@@ -146,16 +146,12 @@ class ClaudeSDKAdapter(CLIProcessAdapter):
             max_turns=int(self.config.get("max_turns", 0)) or None,
             include_partial_messages=True,  # 启用流式增量(stream_event)
         )
-        # 工作目录:工作空间文件沙箱(与内置 Agent 文件工具同目录)
-        cwd = self.config.get("cwd")
-        if not cwd and workspace_id:
-            try:
-                from services.datamind.agent.file_tools import workspace_root
-                cwd = str(workspace_root(workspace_id))
-            except Exception as e:
-                logger.warning("[ExecLayer:%s] Resolve workspace cwd failed: %s", self._name, e)
+        # 目录沙箱:cwd=allowed_dirs[0](或工作空间文件沙箱),add_dirs=其余白名单目录
+        cwd, add_dirs = self._resolve_cwd(workspace_id)
         if cwd:
             options.cwd = cwd
+        if add_dirs:
+            options.add_dirs = add_dirs
         # 多轮对话:恢复前端回传的 SDK 会话(首轮无 session_id 时新建)
         session_id = ((task.context.extra or {}) if task.context else {}).get("session_id") or ""
         if session_id:
@@ -186,8 +182,8 @@ class ClaudeSDKAdapter(CLIProcessAdapter):
         if task.context and task.context.system_prompt:
             options.system_prompt = task.context.system_prompt
         logger.info(
-            "[ExecLayer:%s] SDK options: workspace=%s mcp=%s agents=%s sdk_tools=%s model=%s disallowed=%s",
-            self._name, workspace_id,
+            "[ExecLayer:%s] SDK options: workspace=%s cwd=%s add_dirs=%s mcp=%s agents=%s sdk_tools=%s model=%s disallowed=%s",
+            self._name, workspace_id, cwd or "-", list(add_dirs),
             list(res["mcp_servers"].keys()), list(res["agents"].keys()),
             list(tool_groups["servers"].keys()), model or "-",
             list(options.disallowed_tools or []),

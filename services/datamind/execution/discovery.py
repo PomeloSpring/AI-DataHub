@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 # PATH 之外额外扫描的常见安装目录
 EXTRA_SEARCH_DIRS = [
     os.path.expanduser("~/.qodersec/bin"),
-    os.path.expanduser("~/.opencode/bin"),   # opencode 官方安装脚本默认路径
     os.path.expanduser("~/.local/bin"),
     "/usr/local/bin",
 ]
@@ -46,15 +45,6 @@ if _bundled_cli:
 # 已知 CLI 白名单:binary / version_cmd / 默认命令模板 / 能力标签
 # model_flag: 指定模型的命令行参数;models_cmd: 列出可用模型的命令
 KNOWN_CLIS = {
-    "opencode": {
-        "binary": "opencode",
-        "version_cmd": ["opencode", "--version"],
-        "command": ["opencode", "run", "{question}"],
-        "model_flag": ["--model"],
-        "models_cmd": [],
-        "capabilities": ["code", "search", "read", "write", "mcp"],
-        "display_name": "OpenCode",
-    },
     "qoder": {
         "binary": "qodercli",
         "aliases": ["qoder"],

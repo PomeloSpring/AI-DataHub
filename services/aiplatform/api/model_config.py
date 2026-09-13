@@ -1,4 +1,4 @@
-"""Model Config API — Manage LLM and Embedding model configurations.
+"""Model Config API — Manage LLM model and system configurations.
 
 Migrated from backend/api/model_config.py
 Tables: adh_llm_models, adh_system_config
@@ -14,7 +14,6 @@ from services.aiplatform.services.model_config_service import (
     list_llm_models, create_llm_model, update_llm_model, delete_llm_model,
     set_default_model, get_llm_model_config, get_system_config,
     get_all_system_config, update_system_config,
-    get_embedding_config, update_embedding_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,11 +40,6 @@ class LLMModelUpdate(BaseModel):
     model_name: Optional[str] = None
     max_tokens: Optional[int] = None
     supports_thinking: Optional[bool] = None
-
-
-class EmbeddingConfigUpdate(BaseModel):
-    model_path: Optional[str] = None
-    dim: Optional[int] = None
 
 
 class SystemConfigUpdate(BaseModel):
@@ -114,42 +108,6 @@ def api_set_default_model(model_id: int):
         raise
     except Exception as e:
         logger.error("Set default model failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── Embedding Config ──────────────────────────────────────────────────
-
-@router.get("/embedding")
-def api_get_embedding_config():
-    """Get embedding model configuration."""
-    try:
-        return get_embedding_config()
-    except Exception as e:
-        logger.error("Get embedding config failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.put("/embedding")
-def api_update_embedding_config(req: EmbeddingConfigUpdate):
-    """Update embedding model configuration."""
-    try:
-        update_embedding_config(model_path=req.model_path, dim=req.dim)
-        return {"success": True}
-    except Exception as e:
-        logger.error("Update embedding config failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/embedding/reload")
-def api_reload_embedding():
-    """Reload the embedding model from current config."""
-    try:
-        from services.shared.common.llm.embedding import reload_model, get_model_info
-        model_path = get_system_config("embedding_model_path", "shibing624/text2vec-base-chinese")
-        info = reload_model(model_path)
-        return {"success": True, "model_info": info}
-    except Exception as e:
-        logger.error("Reload embedding failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 

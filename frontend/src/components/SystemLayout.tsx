@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
-  Database, FileText, Link, BookOpen, Users, Brain, Bot, Workflow, MessageSquare,
-  Settings, LogOut, Menu, ArrowLeft, ArrowRight, Palette, Sun, Moon, Zap, TrendingUp,
+  Database, FileText, Link, BookOpen, Users, Brain, Bot, MessageSquare,
+  Settings, LogOut, Menu, Palette, Sun, Moon, Zap, TrendingUp,
   Grid3x3, GlassWater, Heart, UserCircle, X, ChevronLeft, ChevronRight,
   Clock, Bell, Network, BarChart3, Shield, GitBranch, Ruler, Eye, RefreshCw,
   Activity, Server, Gem, Terminal,
@@ -18,6 +18,7 @@ import { useAuthStore } from '../stores/authStore';
 import { useThemeStore, applyTheme, type ThemeId } from '../stores/themeStore';
 import { useBrandStore } from '../stores/brandStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
+import SectionSwitcher from './SectionSwitcher';
 
 const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] = [
   { id: 'dark', label: '暗色', icon: Moon, desc: '深色背景，适合长时间使用' },
@@ -34,15 +35,15 @@ const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] =
 const SYSTEM_MENU_ITEMS = [
   { section: 'AI 模板配置' },
   { key: '/system/models', icon: Brain, label: '模型中心' },
-  { key: '/system/mcp', icon: Server, label: 'MCP 服务模板' },
-  { key: '/system/agents', icon: Bot, label: 'Agent 模板' },
+  { key: '/system/mcp', icon: Server, label: 'MCP 服务' },
+  { key: '/system/agents', icon: Bot, label: 'Agent配置' },
+  { key: '/system/skills', icon: MessageSquare, label: 'Skills' },
+  { key: '/system/config-versions', icon: GitBranch, label: 'Prompt配置' },
   { key: '/system/execution-layers', icon: Terminal, label: '执行层' },
-  { key: '/system/workflows', icon: Workflow, label: '工作流模板' },
-  { key: '/system/skills', icon: MessageSquare, label: 'Skills 模板' },
   { section: '知识管理' },
   { key: '/system/knowledge-base', icon: BookOpen, label: '知识库' },
   { key: '/system/knowledge-management', icon: BookOpen, label: '知识管理' },
-  { key: '/system/knowledge-graph', icon: Network, label: 'AI 助手手册' },
+  { key: '/system/knowledge-graph', icon: Network, label: '知识图谱' },
   { section: '可视化配置' },
   { key: '/system/dashboards', icon: BarChart3, label: '看板管理' },
   { section: '集成配置' },
@@ -86,11 +87,6 @@ export default function SystemLayout() {
 
   const currentPath = location.pathname;
 
-  const handleBackToWorkspace = () => {
-    const wsId = getDefaultWorkspaceId();
-    navigate(`/ws/${wsId}/chat`);
-  };
-
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Desktop Sidebar */}
@@ -106,20 +102,6 @@ export default function SystemLayout() {
             <span className="font-bold text-sm text-sidebar-foreground truncate">系统配置</span>
           )}
         </div>
-
-        {/* Back to workspace */}
-        <Tooltip delayDuration={0}>
-          <TooltipTrigger asChild>
-            <button
-              onClick={handleBackToWorkspace}
-              className={`w-full flex items-center gap-2 px-3 py-3 hover:bg-sidebar-accent/50 transition-colors border-b border-sidebar-border text-sidebar-foreground/70 hover:text-sidebar-foreground ${collapsed ? 'justify-center' : ''}`}
-            >
-              <ArrowLeft className="h-4 w-4 flex-shrink-0" />
-              {!collapsed && <span className="text-sm">返回工作空间</span>}
-            </button>
-          </TooltipTrigger>
-          {collapsed && <TooltipContent side="right">返回工作空间</TooltipContent>}
-        </Tooltip>
 
         {/* Menu — min-h-0 allows flex child to shrink below content size, enabling scroll */}
         <div className="flex-1 min-h-0 overflow-hidden">
@@ -161,41 +143,8 @@ export default function SystemLayout() {
         </ScrollArea>
         </div>
 
-        {/* Bottom Navigation */}
-        <div className="p-2 border-t border-sidebar-border space-y-1">
-          <Tooltip delayDuration={0}>
-            <TooltipTrigger asChild>
-              <button
-                onClick={handleBackToWorkspace}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors
-                  text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground
-                  ${collapsed ? 'justify-center' : ''}`}
-              >
-                <ArrowLeft className="h-4 w-4 flex-shrink-0" />
-                {!collapsed && <span className="text-sm">工作空间</span>}
-              </button>
-            </TooltipTrigger>
-            {collapsed && <TooltipContent side="right">工作空间</TooltipContent>}
-          </Tooltip>
-          <Tooltip delayDuration={0}>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => navigate('/data')}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors
-                  text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground
-                  ${collapsed ? 'justify-center' : ''}`}
-              >
-                <Database className="h-4 w-4 flex-shrink-0" />
-                {!collapsed && (
-                  <>
-                    <span className="flex-1 text-left">数据中台</span>
-                    <ArrowRight className="h-3.5 w-3.5 flex-shrink-0 opacity-50" />
-                  </>
-                )}
-              </button>
-            </TooltipTrigger>
-            {collapsed && <TooltipContent side="right">数据中台</TooltipContent>}
-          </Tooltip>
+        {/* Bottom Navigation — module switching moved to header (see SectionSwitcher) */}
+        <div className="p-2 border-t border-sidebar-border">
           <Button
             variant="ghost"
             size="sm"
@@ -220,14 +169,6 @@ export default function SystemLayout() {
             </div>
             <ScrollArea className="flex-1 py-3">
               <nav className="space-y-1 px-3">
-                <button
-                  onClick={() => { handleBackToWorkspace(); setMobileMenuOpen(false); }}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-md text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent/50"
-                >
-                  <ArrowLeft className="h-5 w-5 flex-shrink-0" />
-                  <span>返回工作空间</span>
-                </button>
-                <div className="my-2 border-t border-sidebar-border" />
                 {SYSTEM_MENU_ITEMS.map((item, idx) => {
                   if ('section' in item) {
                     return (
@@ -270,6 +211,9 @@ export default function SystemLayout() {
             </Button>
           </div>
           <div className="flex items-center gap-2">
+            {/* Module switcher — 工作空间 / 数据中台 / 系统配置 */}
+            <SectionSwitcher current="system" />
+
             <DropdownMenu>
               <Tooltip>
                 <TooltipTrigger asChild>

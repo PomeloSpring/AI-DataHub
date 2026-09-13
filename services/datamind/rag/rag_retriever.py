@@ -1,15 +1,17 @@
-"""RAG Retriever — vector-based retrieval from Doris RAG tables with optional filtering.
+"""RAG Retriever — keyword/BM25 metadata retrieval from RAG tables (no embeddings).
 
-Searches adh_table_info, adh_column_metadata, adh_sql_templates, and adh_business_terms
-using Doris ANN vector search (HNSW index) for semantic similarity.
-Supports table-name filtering for more targeted retrieval.
+The search pipeline is single-route: ``retrieve_all``/``retrieve_with_strategy``
+delegate to the GraphRAG strategy (agentic SPARQL grounding over the Oxigraph
+knowledge graph, then deterministic by-name hydration). The granularity helpers
+below (``retrieve_sql_templates`` / ``retrieve_business_terms`` /
+``retrieve_table_relations``) are keyword/LIKE based and back the agent tools;
+they no longer read vector columns or generate embeddings.
 
-Falls back to information_schema when RAG tables are empty or vector search fails.
+Falls back to information_schema when RAG tables are empty.
 """
 
 import logging
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 
 import pymysql
@@ -17,135 +19,12 @@ import pymysql
 from services.shared.common.config import (
     DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, METADATA_DB_DATABASE,
     DORIS_DATABASE,
-    VECTOR_DB_HOST, VECTOR_DB_PORT, VECTOR_DB_USER, VECTOR_DB_PASSWORD, VECTOR_DB_DATABASE,
 )
-from services.shared.common.db.metadata_db import get_metadata_conn, get_vector_conn
-from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
-from services.datamind.nl2sql.sql.sensitive_detector import filter_sensitive_columns
+from services.shared.common.db.metadata_db import get_metadata_conn
 
 logger = logging.getLogger(__name__)
 
-VECTOR_SEARCH_LIMIT = 20
 
-
-async def retrieve_with_ranger_filter(
-    question: str,
-    datasource_id: int = 0,
-    user_context: dict = None,
-    database: str = "",
-    strategy: str = "hybrid",
-) -> dict:
-    """Retrieve RAG metadata with Ranger-based permission filtering.
-
-    This function wraps the standard retrieval and filters out tables/columns
-    that the user doesn't have access to according to Ranger policies.
-
-    When Ranger is disabled or no user_context is provided, returns unfiltered results.
-
-    Args:
-        question: User's natural language question
-        datasource_id: Datasource ID for metadata lookup
-        user_context: dict with "username" and "user_id"
-        database: Database name for Ranger policy lookup
-        strategy: Retrieval strategy name
-
-    Returns:
-        dict with filtered table_info, column_metadata, etc.
-    """
-    from services.shared.common.config import RANGER_ENABLED
-
-    # Get standard retrieval results
-    from services.datamind.rag.strategies import get_strategy
-    strategy_obj = get_strategy(strategy)
-    metadata = strategy_obj.retrieve(question, datasource_id)
-
-    # If Ranger is disabled or no user context, return unfiltered
-    if not RANGER_ENABLED or not user_context:
-        return metadata
-
-    try:
-        from services.shared.services.ranger_client import ranger_client
-        import asyncio
-
-        # Get user's LDAP groups
-        groups = await _get_user_groups_for_ranger(user_context.get("user_id", 0))
-
-        # Filter table_info
-        if "table_info" in metadata and metadata["table_info"]:
-            filtered_tables = []
-            for table_meta in metadata["table_info"]:
-                table_name = table_meta.get("table_name", "")
-
-                # Check table access
-                result = await ranger_client.check_access(
-                    user=user_context["username"],
-                    groups=groups,
-                    resource_type="table",
-                    resource={"database": database, "table": table_name},
-                    action="select",
-                )
-
-                if result.allowed:
-                    # Filter columns within the table
-                    if "columns" in table_meta:
-                        allowed_cols = await ranger_client.get_allowed_columns(
-                            user=user_context["username"],
-                            groups=groups,
-                            database=database,
-                            table=table_name,
-                        )
-                        # If allowed_cols is ["*"], all columns are allowed
-                        if allowed_cols != ["*"]:
-                            table_meta["columns"] = [
-                                c for c in table_meta["columns"]
-                                if c.get("column_name") in allowed_cols
-                            ]
-                    filtered_tables.append(table_meta)
-
-            metadata["table_info"] = filtered_tables
-
-        # Filter column_metadata
-        if "column_metadata" in metadata and metadata["column_metadata"]:
-            filtered_columns = []
-            for col_meta in metadata["column_metadata"]:
-                table_name = col_meta.get("table_name", "")
-                col_name = col_meta.get("column_name", "")
-
-                # Check column access
-                result = await ranger_client.check_access(
-                    user=user_context["username"],
-                    groups=groups,
-                    resource_type="column",
-                    resource={"database": database, "table": table_name, "column": col_name},
-                    action="select",
-                )
-
-                if result.allowed:
-                    filtered_columns.append(col_meta)
-
-            metadata["column_metadata"] = filtered_columns
-
-        logger.info(
-            "Ranger filtering: %d tables, %d columns remaining",
-            len(metadata.get("table_info", [])),
-            len(metadata.get("column_metadata", [])),
-        )
-
-    except ImportError:
-        logger.warning("Ranger client not available, returning unfiltered metadata")
-    except Exception as e:
-        logger.warning("Ranger filtering failed, returning unfiltered metadata: %s", e)
-
-    return metadata
-
-
-async def _get_user_groups_for_ranger(user_id: int) -> list[str]:
-    """Get user's LDAP groups for Ranger policy matching."""
-    try:
-        from services.authservice.services.ldap_backend import ldap_backend
-        return ldap_backend.get_user_groups(user_id)
-    except Exception:
-        return []
 
 # ── RAG results cache (LRU, max 128 entries) ─────────────────────────
 
@@ -162,7 +41,7 @@ def _rag_cache_key(question: str, target_tables: list[str] = None, keywords: lis
 
 @contextmanager
 def _get_connection():
-    """Connection to metadata database (may be MySQL)."""
+    """Connection to metadata database (may be MySQL or Doris)."""
     conn = get_metadata_conn()
     try:
         yield conn
@@ -170,417 +49,56 @@ def _get_connection():
         conn.close()
 
 
-@contextmanager
-def _get_vector_connection():
-    """Connection to vector database (Doris with HNSW index)."""
-    conn = get_vector_conn()
-    try:
-        yield conn
-    finally:
-        conn.close()
+# ── Keyword helpers (reuse table_selector tokenization) ──────────────
 
+def _search_tokens(question: str, keywords: list[str] = None) -> list[str]:
+    """Derive a small set of search tokens from a question / keyword list.
 
-def _fuzzy_match_table(table_name: str, target_tables: list[str]) -> bool:
-    """Check if table_name matches any target_tables keyword (case-insensitive substring)."""
-    lower = table_name.lower()
-    for kw in target_tables:
-        # Try exact match, then normalized variants
-        for variant in _normalize_table_keyword(kw):
-            if variant.lower() in lower:
-                return True
-    return False
-
-
-def retrieve_table_info(
-    question: str,
-    limit: int = 20,
-    target_tables: list[str] = None,
-    vec_literal: str = None,
-    datasource_id: int = 0,
-) -> list[dict]:
-    """Retrieve matching table-level info via vector similarity.
-
-    Only returns active tables (is_active = 1).
-    Vector search always runs without table name filtering (semantic matching).
-    If target_tables is provided, matching tables are boosted to the top.
-    If vec_literal is provided, skips embedding generation (use pre-computed).
+    Uses jieba keyword extraction + dynamic synonym expansion (shared with the
+    table selector). Returns de-duplicated, non-empty tokens capped for LIKE.
     """
-    from services.shared.common.config import VECTOR_DB_TYPE
-    from services.shared.common.vector import get_vector_store
-
-    # Generate embedding if not provided
-    embedding = None
-    if vec_literal is None:
-        embedding = generate_embedding(question)
-    else:
-        # Parse vec_literal back to list (for VectorStore API)
-        embedding = [float(x) for x in vec_literal.strip("[]").split(",")]
-
-    filters = {"is_active": 1}
-    if datasource_id:
-        filters["datasource_id"] = [datasource_id, 0]
-
-    output_cols = ["table_name", "table_comment", "table_business_desc", "region_tag", "domain_tag"]
-
-    try:
-        if VECTOR_DB_TYPE == "doris":
-            # Use raw SQL for Doris (l2_distance_approximate is faster)
-            vec_sql = embedding_to_sql_literal(embedding)
-            ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
-            sql = f"""
-                SELECT table_name, table_comment, table_business_desc, region_tag, domain_tag,
-                       l2_distance_approximate(embedding, {vec_sql}) AS distance
-                FROM adh_table_info
-                WHERE is_active = 1 {ds_filter}
-                ORDER BY distance ASC
-                LIMIT {limit}
-            """
-            with _get_vector_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql)
-                    rows = cur.fetchall()
-        else:
-            # Use VectorStore abstraction for SQLite/others
-            store = get_vector_store()
-            rows = store.search(
-                table="adh_table_info",
-                query_embedding=embedding,
-                limit=limit,
-                filters=filters,
-                output_columns=output_cols,
-            )
-
-        # If target_tables specified, boost matching tables to top
-        if target_tables and rows:
-            matched = [r for r in rows if _fuzzy_match_table(r["table_name"], target_tables)]
-            unmatched = [r for r in rows if not _fuzzy_match_table(r["table_name"], target_tables)]
-            rows = matched + unmatched
-
-        return rows
-    except Exception as e:
-        logger.warning("RAG vector search (table_info) failed: %s", e)
-        return []
-
-
-_TIME_COLUMN_PATTERNS = ("time", "date", "月", "日", "年", "创建时间", "更新时间", "扫描时间",
-                          "create_time", "update_time", "scan_time", "created_at", "updated_at")
-
-
-def retrieve_column_metadata(
-    question: str,
-    limit: int = 50,
-    target_tables: list[str] = None,
-    vec_literal: str = None,
-    datasource_id: int = 0,
-) -> list[dict]:
-    """Retrieve matching column metadata via vector similarity.
-
-    Only returns active columns (is_active = 1).
-    Vector search always runs without table name filtering (semantic matching).
-    If target_tables is provided, columns from matching tables are boosted to the top.
-    Time-related columns from matched tables are always included.
-    If vec_literal is provided, skips embedding generation (use pre-computed).
-    """
-    from services.shared.common.config import VECTOR_DB_TYPE
-    from services.shared.common.vector import get_vector_store
-
-    # Generate embedding if not provided
-    embedding = None
-    if vec_literal is None:
-        embedding = generate_embedding(question)
-    else:
-        embedding = [float(x) for x in vec_literal.strip("[]").split(",")]
-
-    # Fetch more than needed to ensure coverage
-    fetch_limit = max(limit, 100)
-
-    filters = {"is_active": 1}
-    if datasource_id:
-        filters["datasource_id"] = [datasource_id, 0]
-
-    output_cols = ["table_name", "column_name", "data_type", "column_comment", "business_desc", "is_key"]
-
-    try:
-        if VECTOR_DB_TYPE == "doris":
-            # Use raw SQL for Doris
-            vec_sql = embedding_to_sql_literal(embedding)
-            ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
-            sql = f"""
-                SELECT table_name, column_name, data_type,
-                       column_comment, business_desc, is_key,
-                       l2_distance_approximate(embedding, {vec_sql}) AS distance
-                FROM adh_column_metadata
-                WHERE is_active = 1 {ds_filter}
-                ORDER BY distance ASC
-                LIMIT {fetch_limit}
-            """
-            with _get_vector_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql)
-                    all_rows = cur.fetchall()
-        else:
-            # Use VectorStore abstraction for SQLite/others
-            store = get_vector_store()
-            all_rows = store.search(
-                table="adh_column_metadata",
-                query_embedding=embedding,
-                limit=fetch_limit,
-                filters=filters,
-                output_columns=output_cols,
-            )
-
-        # Identify matched tables (fuzzy match on target_tables)
-        matched_tables = set()
-        if target_tables:
-            for r in all_rows:
-                if _fuzzy_match_table(r["table_name"], target_tables):
-                    matched_tables.add(r["table_name"])
-
-        # Separate into priority groups
-        matched_cols = []       # columns from matched tables
-        time_cols = []          # time-related columns from matched tables
-        other_cols = []         # everything else
-
-        for r in all_rows:
-            is_matched = r["table_name"] in matched_tables
-            col_lower = r["column_name"].lower()
-            comment_lower = (r.get("column_comment") or "").lower()
-            is_time = any(p in col_lower or p in comment_lower for p in _TIME_COLUMN_PATTERNS)
-
-            if is_matched and is_time:
-                time_cols.append(r)
-            elif is_matched:
-                matched_cols.append(r)
-            else:
-                other_cols.append(r)
-
-        # Merge: matched tables first (time cols boosted), then others
-        rows = time_cols + matched_cols + other_cols
-
-        # Deduplicate by (table_name, column_name)
-        seen = set()
-        deduped = []
-        for r in rows:
-            key = (r["table_name"], r["column_name"])
-            if key not in seen:
-                seen.add(key)
-                deduped.append(r)
-
-        # Filter out sensitive columns
-        result = deduped[:limit]
-        filtered = filter_sensitive_columns(result)
-        if len(filtered) < len(result):
-            logger.info("Sensitive filter: %d → %d columns", len(result), len(filtered))
-        return filtered
-    except Exception as e:
-        logger.warning("RAG vector search (column_metadata) failed: %s", e)
-        return []
-
-
-# ── Column metadata cache and BM25 index ─────────────────────────────
-
-_columns_cache: dict[int, list[dict]] = {}
-_columns_bm25_cache: dict[int, "BM25"] = {}
-
-
-def _get_all_columns(datasource_id: int = 0) -> list[dict]:
-    """Get all active columns from adh_column_metadata (cached per datasource)."""
-    if datasource_id in _columns_cache:
-        return _columns_cache[datasource_id]
-
-    try:
-        ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
-        with _get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT table_name, column_name, data_type, "
-                    f"column_comment, business_desc, is_key "
-                    f"FROM adh_column_metadata "
-                    f"WHERE is_active = 1 {ds_filter} "
-                    f"ORDER BY table_name, column_name"
-                )
-                rows = cur.fetchall()
-                _columns_cache[datasource_id] = rows
-                return rows
-    except Exception as e:
-        logger.warning("Failed to get all columns: %s", e)
-        return []
-
-
-def _build_columns_bm25_index(datasource_id: int) -> "BM25":
-    """Build BM25 index from cached column metadata."""
-    from services.datamind.rag.bm25 import BM25
-    from services.datamind.rag.table_selector import _tokenize_text
-
-    if datasource_id in _columns_bm25_cache:
-        return _columns_bm25_cache[datasource_id]
-
-    all_columns = _get_all_columns(datasource_id)
-    if not all_columns:
-        bm25 = BM25()
-        bm25.index([])
-        _columns_bm25_cache[datasource_id] = bm25
-        return bm25
-
-    # Build document per column: tokenize column_name + comment + business_desc
-    documents = []
-    for col in all_columns:
-        text_parts = [
-            col.get("column_name", ""),
-            col.get("column_comment", ""),
-            col.get("business_desc", ""),
-        ]
-        doc_text = " ".join(p for p in text_parts if p)
-        documents.append(_tokenize_text(doc_text))
-
-    bm25 = BM25()
-    bm25.index(documents)
-    _columns_bm25_cache[datasource_id] = bm25
-    logger.info("Built BM25 index for %d columns (ds=%d)", len(all_columns), datasource_id)
-    return bm25
-
-
-def _bm25_search_columns(keywords: list[str], top_k: int, datasource_id: int) -> list[tuple[str, str]]:
-    """BM25 sparse retrieval for columns. Returns list of (table_name, column_name)."""
-    from services.datamind.rag.bm25 import BM25
-    from services.datamind.rag.table_selector import _tokenize_text
-
-    bm25 = _build_columns_bm25_index(datasource_id)
-    if bm25.is_empty:
-        return []
-
-    # Tokenize and expand query keywords for BM25
-    query_tokens = []
-    for kw in keywords:
-        query_tokens.append(kw.lower())
-        query_tokens.extend(_tokenize_text(kw))
-    query_tokens = list(set(query_tokens))
-
-    results = bm25.search(query_tokens, top_k=top_k)
-    if not results:
-        return []
-
-    all_columns = _get_all_columns(datasource_id)
-    return [(all_columns[idx]["table_name"], all_columns[idx]["column_name"]) for idx, _ in results]
-
-
-def _vector_search_columns(vec_literal: str, limit: int = 50, datasource_id: int = 0) -> list[tuple[str, str]]:
-    """Vector dense retrieval for columns. Returns list of (table_name, column_name)."""
-    try:
-        ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
-        sql = f"""
-            SELECT table_name, column_name,
-                   l2_distance_approximate(embedding, {vec_literal}) AS distance
-            FROM adh_column_metadata
-            WHERE is_active = 1 {ds_filter}
-            ORDER BY distance ASC
-            LIMIT {limit}
-        """
-        with _get_vector_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-                rows = cur.fetchall()
-                return [(r["table_name"], r["column_name"]) for r in rows]
-    except Exception as e:
-        logger.warning("Vector search (columns) failed: %s", e)
-        return []
-
-
-def select_columns(
-    question: str,
-    keywords: list[str] = None,
-    top_k: int = 50,
-    vector_literal: str = None,
-    datasource_id: int = 0,
-) -> list[dict]:
-    """Select relevant columns using BM25 sparse + vector dense hybrid retrieval.
-
-    BM25 provides keyword-aware ranking (sparse), vector search provides semantic
-    ranking (dense). Results are merged via Reciprocal Rank Fusion (RRF).
-
-    Args:
-        question: The user's question.
-        keywords: Extracted keywords for BM25 search. If None, extracted from question.
-        top_k: Maximum number of columns to return.
-        vector_literal: Pre-computed embedding vector. If None, generates one.
-        datasource_id: Filter columns by this datasource.
-
-    Returns:
-        List of column dicts with table_name, column_name, data_type, column_comment,
-        business_desc, is_key.
-    """
-    from services.datamind.rag.bm25 import rrf_merge
     from services.datamind.rag.table_selector import _extract_keywords, _expand_synonyms
 
-    # Extract keywords if not provided
-    if keywords is None:
-        keywords = _extract_keywords(question)
-        keywords = _expand_synonyms(keywords)
+    raw: list[str] = []
+    if keywords:
+        raw.extend(keywords)
+    if question:
+        raw.extend(_extract_keywords(question))
 
-    # Generate embedding if not provided
-    if vector_literal is None:
-        try:
-            vector_literal = embedding_to_sql_literal(generate_embedding(question))
-        except Exception:
-            vector_literal = None
-
-    # Step 1: BM25 sparse retrieval
-    bm25_columns = _bm25_search_columns(keywords, top_k * 2, datasource_id)
-    logger.debug("BM25 columns: %d results", len(bm25_columns))
-
-    # Step 2: Vector dense retrieval
-    vector_columns = []
-    if vector_literal:
-        vector_columns = _vector_search_columns(vector_literal, top_k * 2, datasource_id)
-        logger.debug("Vector columns: %d results", len(vector_columns))
-
-    # Step 3: RRF fusion of sparse + dense rankings
-    # Convert (table_name, column_name) tuples to strings for RRF
-    bm25_ids = [f"{t}.{c}" for t, c in bm25_columns]
-    vector_ids = [f"{t}.{c}" for t, c in vector_columns]
-
-    rankings = []
-    weights = []
-    if bm25_ids:
-        rankings.append(bm25_ids)
-        weights.append(1.0)  # sparse weight
-    if vector_ids:
-        rankings.append(vector_ids)
-        weights.append(1.0)  # dense weight
-
-    if not rankings:
-        logger.warning("No BM25 or vector results for columns")
+    raw = [t.strip() for t in raw if t and t.strip()]
+    if not raw:
         return []
 
-    merged = rrf_merge(rankings, weights=weights)
-    logger.info("Column RRF: bm25=%d, vector=%d, merged=%d", len(bm25_ids), len(vector_ids), len(merged))
+    try:
+        raw = _expand_synonyms(raw)
+    except Exception as e:  # pragma: no cover - synonym expansion is best-effort
+        logger.debug("Synonym expansion skipped: %s", e)
 
-    # Step 4: Get full column metadata for merged results
-    all_columns = _get_all_columns(datasource_id)
-    columns_map = {}
-    for col in all_columns:
-        key = f"{col['table_name']}.{col['column_name']}"
-        columns_map[key] = col
+    seen: set[str] = set()
+    tokens: list[str] = []
+    for t in raw:
+        t = (t or "").strip()
+        if t and t not in seen:
+            seen.add(t)
+            tokens.append(t)
+    return tokens[:8]
 
-    result = []
-    for item_id, score in merged[:top_k]:
-        if item_id in columns_map:
-            result.append(columns_map[item_id])
 
-    # Boost: time-related columns from matched tables
-    matched_tables = {c["table_name"] for c in result}
-    time_patterns = ("time", "date", "月", "日", "年", "创建时间", "更新时间",
-                     "create_time", "update_time", "created_at", "updated_at")
-    for col in all_columns:
-        if col["table_name"] in matched_tables:
-            col_name_lower = col["column_name"].lower()
-            if any(p in col_name_lower for p in time_patterns):
-                key = f"{col['table_name']}.{col['column_name']}"
-                if key not in {f"{c['table_name']}.{c['column_name']}" for c in result}:
-                    result.append(col)
+def _like_or(tokens: list[str], columns: list[str]) -> tuple[str, list]:
+    """Build an OR-of-LIKE condition across columns for each token.
 
-    logger.info("select_columns: returned %d columns from %d tables", len(result), len(matched_tables))
-    return result[:top_k]
+    Returns ``(condition_sql, params)``; condition is empty when no tokens.
+    """
+    conditions: list[str] = []
+    params: list = []
+    for tok in tokens:
+        like = f"%{tok}%"
+        for col in columns:
+            conditions.append(f"{col} LIKE %s")
+            params.append(like)
+    if not conditions:
+        return "", []
+    return "(" + " OR ".join(conditions) + ")", params
 
 
 _rules_column_checked = False
@@ -610,60 +128,48 @@ def _ensure_rules_column():
 
 
 def retrieve_sql_templates(question: str, limit: int = 5, vec_literal: str = None, datasource_id: int = 0) -> list[dict]:
-    """Retrieve matching SQL templates via vector similarity."""
-    from services.shared.common.config import VECTOR_DB_TYPE
-    from services.shared.common.vector import get_vector_store
+    """Retrieve matching SQL templates by keyword (intent_keywords / name / description).
 
+    ``vec_literal`` is accepted for backward compatibility with existing callers
+    but is ignored — retrieval is keyword/LIKE based, no embedding.
+    """
     _ensure_rules_column()
 
-    # Generate embedding if not provided
-    embedding = None
-    if vec_literal is None:
-        embedding = generate_embedding(question)
-    else:
-        embedding = [float(x) for x in vec_literal.strip("[]").split(",")]
-
-    filters = {"is_active": 1}
-    if datasource_id:
-        filters["datasource_id"] = [datasource_id, 0]
-
-    output_cols = ["template_id", "template_name", "category", "intent_keywords",
-                   "sql_template", "variables", "description", "rules", "usage_count"]
+    tokens = _search_tokens(question)
+    if not tokens:
+        return []
 
     try:
-        if VECTOR_DB_TYPE == "doris":
-            # Use raw SQL for Doris
-            vec_sql = embedding_to_sql_literal(embedding)
-            ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
-            sql = f"""
-                SELECT template_id, template_name, category, intent_keywords,
-                       sql_template, variables, description, rules, usage_count,
-                       l2_distance_approximate(embedding, {vec_sql}) AS distance
-                FROM adh_sql_templates
-                WHERE is_active = 1 {ds_filter}
-                ORDER BY distance ASC
-                LIMIT {limit}
-            """
-            with _get_vector_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql)
-                    rows = cur.fetchall()
-        else:
-            # Use VectorStore abstraction for SQLite/others
-            store = get_vector_store()
-            rows = store.search(
-                table="adh_sql_templates",
-                query_embedding=embedding,
-                limit=limit,
-                filters=filters,
-                output_columns=output_cols,
-            )
-
-        logger.debug("Retrieved %d sql_templates, rules present: %s",
-                     len(rows), [bool(r.get("rules")) for r in rows])
-        return rows
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                conditions = ["is_active = 1"]
+                params: list = []
+                if datasource_id:
+                    conditions.append("(datasource_id = %s OR datasource_id = 0)")
+                    params.extend([datasource_id, datasource_id])
+                where, like_params = _like_or(
+                    tokens, ["intent_keywords", "template_name", "description"],
+                )
+                if where:
+                    conditions.append(where)
+                    params.extend(like_params)
+                where_sql = "WHERE " + " AND ".join(conditions)
+                cur.execute(
+                    f"""
+                    SELECT template_id, template_name, category, intent_keywords,
+                           sql_template, variables, description, rules, usage_count
+                    FROM adh_sql_templates
+                    {where_sql}
+                    ORDER BY usage_count DESC
+                    LIMIT {int(limit)}
+                    """,
+                    params,
+                )
+                rows = cur.fetchall()
+                logger.debug("Retrieved %d sql_templates by keyword", len(rows))
+                return rows
     except Exception as e:
-        logger.warning("RAG vector search (sql_templates) failed: %s", e)
+        logger.warning("Keyword search (sql_templates) failed: %s", e)
         return []
 
 
@@ -674,95 +180,42 @@ def retrieve_business_terms(
     vec_literal: str = None,
     datasource_id: int = 0,
 ) -> list[dict]:
-    """Retrieve matching business terms via vector similarity.
+    """Retrieve matching business terms by keyword (term_cn / term_en / aliases).
 
-    If keywords are provided, boost terms that match those keywords.
-    If vec_literal is provided, skips embedding generation (use pre-computed).
+    ``vec_literal`` is accepted for backward compatibility but is ignored.
     """
-    from services.shared.common.config import VECTOR_DB_TYPE
-    from services.shared.common.vector import get_vector_store
-
-    # Generate embedding if not provided
-    embedding = None
-    if vec_literal is None:
-        embedding = generate_embedding(question)
-    else:
-        embedding = [float(x) for x in vec_literal.strip("[]").split(",")]
-
-    filters = {"is_active": 1}
-    if datasource_id:
-        filters["datasource_id"] = [datasource_id, 0]
-
-    output_cols = ["term_cn", "term_en", "term_aliases", "term_type",
-                   "target_table", "target_column", "calculation", "description"]
+    tokens = _search_tokens(question, keywords)
+    if not tokens:
+        return []
 
     try:
-        if VECTOR_DB_TYPE == "doris":
-            # Use raw SQL for Doris (supports keyword filtering in SQL)
-            vec_sql = embedding_to_sql_literal(embedding)
-            ds_condition = f"(datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
-
-            # If keywords provided, also search by keyword match
-            keyword_conditions = []
-            if keywords:
-                for kw in keywords[:5]:
-                    escaped = kw.replace("'", "''")
-                    keyword_conditions.append(
-                        f"(term_cn LIKE '%{escaped}%' OR term_en LIKE '%{escaped}%' OR term_aliases LIKE '%{escaped}%')"
-                    )
-
-            all_conditions = ["is_active = 1"]
-            if ds_condition:
-                all_conditions.append(ds_condition)
-            if keyword_conditions:
-                all_conditions.append(f"({' OR '.join(keyword_conditions)})")
-
-            where = f"WHERE {' AND '.join(all_conditions)}"
-
-            sql = f"""
-                SELECT term_cn, term_en, term_aliases, term_type,
-                       target_table, target_column, calculation, description,
-                       l2_distance_approximate(embedding, {vec_sql}) AS distance
-                FROM adh_business_terms
-                {where}
-                ORDER BY distance ASC
-                LIMIT {limit}
-            """
-            with _get_vector_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql)
-                    return cur.fetchall()
-        else:
-            # Use VectorStore abstraction for SQLite/others
-            # Fetch more results and filter by keywords in Python
-            fetch_limit = limit * 3 if keywords else limit
-            store = get_vector_store()
-            rows = store.search(
-                table="adh_business_terms",
-                query_embedding=embedding,
-                limit=fetch_limit,
-                filters=filters,
-                output_columns=output_cols,
-            )
-
-            # Filter by keywords in Python if provided
-            if keywords and rows:
-                def matches_keywords(row):
-                    text = " ".join([
-                        row.get("term_cn", ""),
-                        row.get("term_en", ""),
-                        row.get("term_aliases", ""),
-                    ]).lower()
-                    return any(kw.lower() in text for kw in keywords)
-
-                keyword_matched = [r for r in rows if matches_keywords(r)]
-                # Boost keyword-matched results to top, then add others
-                other = [r for r in rows if not matches_keywords(r)]
-                rows = keyword_matched + other
-
-            return rows[:limit]
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                conditions = ["is_active = 1"]
+                params: list = []
+                if datasource_id:
+                    conditions.append("(datasource_id = %s OR datasource_id = 0)")
+                    params.extend([datasource_id, datasource_id])
+                where, like_params = _like_or(
+                    tokens, ["term_cn", "term_en", "term_aliases", "description"],
+                )
+                if where:
+                    conditions.append(where)
+                    params.extend(like_params)
+                where_sql = "WHERE " + " AND ".join(conditions)
+                cur.execute(
+                    f"""
+                    SELECT term_cn, term_en, term_aliases, term_type,
+                           target_table, target_column, calculation, description
+                    FROM adh_business_terms
+                    {where_sql}
+                    LIMIT {int(limit)}
+                    """,
+                    params,
+                )
+                return cur.fetchall()
     except Exception as e:
-        logger.warning("RAG vector search (business_terms) failed: %s", e)
+        logger.warning("Keyword search (business_terms) failed: %s", e)
         return []
 
 
@@ -798,112 +251,55 @@ def retrieve_table_relations(
     vec_literal: str = None,
     datasource_id: int = 0,
 ) -> list[dict]:
-    """Retrieve matching table relations via vector similarity.
+    """Retrieve matching table relations by target-tables or question keywords.
 
-    Returns active relations ordered by semantic distance.
-    If target_tables is provided, relations involving those tables are boosted.
-    If vec_literal is provided, skips embedding generation (use pre-computed).
+    Relations involving ``target_tables`` are matched directly; otherwise active
+    relations are matched by keyword against description / table names.
+    ``vec_literal`` is accepted for backward compatibility but is ignored.
     """
-    from services.shared.common.config import VECTOR_DB_TYPE
-    from services.shared.common.vector import get_vector_store
-
-    # Generate embedding if not provided
-    embedding = None
-    if vec_literal is None:
-        embedding = generate_embedding(question)
-    else:
-        embedding = [float(x) for x in vec_literal.strip("[]").split(",")]
-
-    filters = {"is_active": 1}
-    if datasource_id:
-        filters["datasource_id"] = [datasource_id, 0]
-
-    output_cols = ["source_table", "source_column", "target_table", "target_column",
-                   "relation_type", "join_type", "description"]
-
-    try:
-        if VECTOR_DB_TYPE == "doris":
-            # Use raw SQL for Doris
-            vec_sql = embedding_to_sql_literal(embedding)
-            ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
-            sql = f"""
-                SELECT source_table, source_column, target_table, target_column,
-                       relation_type, join_type, description,
-                       l2_distance_approximate(embedding, {vec_sql}) AS distance
-                FROM adh_table_relations
-                WHERE is_active = 1 {ds_filter}
-                ORDER BY distance ASC
-                LIMIT {limit}
-            """
-            with _get_vector_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql)
-                    rows = cur.fetchall()
-        else:
-            # Use VectorStore abstraction for SQLite/others
-            store = get_vector_store()
-            rows = store.search(
-                table="adh_table_relations",
-                query_embedding=embedding,
-                limit=limit,
-                filters=filters,
-                output_columns=output_cols,
-            )
-
-        # If target_tables specified, boost matching relations to top
-        if target_tables and rows:
-            matched = []
-            unmatched = []
-            for r in rows:
-                src = r["source_table"].lower()
-                tgt = r["target_table"].lower()
-                if any(t in src or src in t for t in target_tables) or \
-                   any(t in tgt or tgt in t for t in target_tables):
-                    matched.append(r)
-                else:
-                    unmatched.append(r)
-            rows = matched + unmatched
-
-        return rows
-    except Exception as e:
-        logger.warning("RAG vector search (table_relations) failed: %s", e)
+    tokens = _search_tokens(question)
+    if not target_tables and not tokens:
         return []
 
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                conditions = ["is_active = 1"]
+                params: list = []
+                if datasource_id:
+                    conditions.append("(datasource_id = %s OR datasource_id = 0)")
+                    params.extend([datasource_id, datasource_id])
 
-def retrieve_filtered(
-    question: str,
-    target_tables: list[str] = None,
-    keywords: list[str] = None,
-    datasource_id: int = 0,
-) -> dict:
-    """Run targeted vector retrievals with table and keyword filtering.
+                sub: list[str] = []
+                if target_tables:
+                    for t in target_tables:
+                        sub.append("(source_table = %s OR target_table = %s)")
+                        params.extend([t, t])
+                if tokens:
+                    where_kw, kw_params = _like_or(
+                        tokens, ["description", "source_table", "target_table"],
+                    )
+                    if where_kw:
+                        sub.append(where_kw)
+                        params.extend(kw_params)
+                if sub:
+                    conditions.append("(" + " OR ".join(sub) + ")")
 
-    Falls back to information_schema if RAG tables return no metadata.
-    """
-    vec_literal = embedding_to_sql_literal(generate_embedding(question))
-
-    table_info = retrieve_table_info(question, target_tables=target_tables, vec_literal=vec_literal, datasource_id=datasource_id)
-    column_metadata = retrieve_column_metadata(question, target_tables=target_tables, vec_literal=vec_literal, datasource_id=datasource_id)
-
-    rag_source = "vector_search"
-    if not table_info and not column_metadata:
-        logger.warning(
-            "RAG filtered search returned empty metadata, falling back to information_schema"
-        )
-        fallback = _fallback_from_information_schema(target_tables=target_tables)
-        table_info = fallback["table_info"]
-        column_metadata = fallback["column_metadata"]
-        rag_source = "information_schema_fallback"
-
-    return {
-        "table_info": table_info,
-        "column_metadata": column_metadata,
-        "sql_templates": retrieve_sql_templates(question, vec_literal=vec_literal),
-        "business_terms": retrieve_business_terms(question, keywords=keywords, vec_literal=vec_literal),
-        "table_relations": retrieve_table_relations(question, target_tables=target_tables, vec_literal=vec_literal, datasource_id=datasource_id),
-        "saved_datasets": retrieve_saved_datasets(question),
-        "rag_source": rag_source,
-    }
+                where_sql = "WHERE " + " AND ".join(conditions)
+                cur.execute(
+                    f"""
+                    SELECT source_table, source_column, target_table, target_column,
+                           relation_type, join_type, description
+                    FROM adh_table_relations
+                    {where_sql}
+                    LIMIT {int(limit)}
+                    """,
+                    params,
+                )
+                return cur.fetchall()
+    except Exception as e:
+        logger.warning("Keyword search (table_relations) failed: %s", e)
+        return []
 
 
 def _normalize_table_keyword(kw: str) -> list[str]:
@@ -929,16 +325,15 @@ def _fallback_from_information_schema(
 ) -> dict:
     """Fallback: fetch table/column metadata directly from information_schema.
 
-    Used when RAG tables are empty or vector search fails.
-    If target_tables are specified but no exact match, tries LIKE matching
-    with plural-stripping for better fuzzy matching.
+    Used when RAG tables are empty. If target_tables are specified but no exact
+    match, tries LIKE matching with plural-stripping for better fuzzy matching.
     Returns dict with 'table_info' and 'column_metadata' keys.
     """
     result = {"table_info": [], "column_metadata": []}
     try:
         conn = pymysql.connect(
-            host=VECTOR_DB_HOST, port=VECTOR_DB_PORT, user=VECTOR_DB_USER,
-            password=VECTOR_DB_PASSWORD, database="information_schema",
+            host=DORIS_HOST, port=DORIS_PORT, user=DORIS_USER,
+            password=DORIS_PASSWORD, database="information_schema",
             charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor,
             connect_timeout=10, read_timeout=30,
         )
@@ -1052,117 +447,6 @@ def _get_columns_for_tables(table_names: list[str], datasource_id: int = 0) -> l
         return []
 
 
-def retrieve_all(
-    question: str,
-    target_tables: list[str] = None,
-    keywords: list[str] = None,
-    selected_tables: list[str] = None,
-    datasource_id: int = 0,
-) -> dict:
-    """Retrieve RAG metadata: table schema, SQL templates, business terms.
-
-    Args:
-        question: User's question (used for vector search and caching).
-        target_tables: Tables from intent classifier (legacy, used for boost).
-        keywords: Business keywords for term filtering.
-        selected_tables: Pre-selected tables from table_selector (keyword matching).
-                         If provided, skips vector search for tables and uses these directly.
-        datasource_id: Filter metadata by this datasource.
-
-    Flow:
-    1. If selected_tables provided: get schema directly (no vector search for tables)
-       Otherwise: vector search for tables + boost by target_tables
-    2. Get ALL columns from top tables (complete schema for LLM)
-    3. Parallel: SQL templates + business terms + saved datasets
-    Results are cached (LRU, 128 entries).
-    """
-    # Check cache
-    cache_key = _rag_cache_key(question, selected_tables or target_tables, keywords, datasource_id)
-    if cache_key in _RAG_CACHE:
-        _RAG_CACHE.move_to_end(cache_key)
-        logger.info("RAG cache hit: %s", question[:50])
-        return _RAG_CACHE[cache_key]
-
-    # Generate embedding once
-    vec_literal = embedding_to_sql_literal(generate_embedding(question))
-
-    # Step 1: Get table info — use selected_tables if available, otherwise vector search
-    if selected_tables:
-        logger.info("RAG: using pre-selected tables: %s", selected_tables)
-        table_info = _get_table_info_for_names(selected_tables, datasource_id)
-        rag_source = "keyword_selected"
-    else:
-        table_info = retrieve_table_info(question, 20, target_tables, vec_literal, datasource_id)
-        rag_source = "vector_search"
-
-    # Step 2: Get ALL columns for the selected tables
-    top_table_names = [t["table_name"] for t in table_info]
-    column_metadata = _get_columns_for_tables(top_table_names, datasource_id)
-
-    # Step 3: Parallel searches for templates, terms, relations, datasets
-    sql_templates = []
-    business_terms = []
-    table_relations = []
-    saved_datasets = []
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        f_sql = pool.submit(retrieve_sql_templates, question, 5, vec_literal, datasource_id)
-        f_terms = pool.submit(retrieve_business_terms, question, 20, keywords, vec_literal, datasource_id)
-        f_rels = pool.submit(retrieve_table_relations, question, 20, top_table_names, vec_literal, datasource_id)
-        f_ds = pool.submit(retrieve_saved_datasets, question)
-        try:
-            sql_templates = f_sql.result()
-        except Exception as e:
-            logger.warning("sql_templates failed: %s", e)
-        try:
-            business_terms = f_terms.result()
-        except Exception as e:
-            logger.warning("business_terms failed: %s", e)
-        try:
-            table_relations = f_rels.result()
-        except Exception as e:
-            logger.warning("table_relations failed: %s", e)
-        try:
-            saved_datasets = f_ds.result()
-        except Exception as e:
-            logger.warning("saved_datasets failed: %s", e)
-
-    # Fallback: if RAG returned no table/column metadata, try information_schema
-    if not table_info and not column_metadata:
-        logger.warning(
-            "RAG returned empty metadata (table_info=%d, column_metadata=%d, selected_tables=%s, target_tables=%s), "
-            "falling back to information_schema",
-            len(table_info), len(column_metadata), selected_tables, target_tables,
-        )
-        fallback_tables = selected_tables or target_tables
-        fallback = _fallback_from_information_schema(target_tables=fallback_tables)
-        table_info = fallback["table_info"]
-        column_metadata = fallback["column_metadata"]
-        rag_source = "information_schema_fallback"
-        if not table_info and not column_metadata:
-            logger.error(
-                "Fallback also returned empty! tables=%s may not exist in database=%s",
-                fallback_tables, DORIS_DATABASE,
-            )
-            rag_source = "empty"
-
-    result = {
-        "table_info": table_info,
-        "column_metadata": column_metadata,
-        "sql_templates": sql_templates,
-        "business_terms": business_terms,
-        "table_relations": table_relations,
-        "saved_datasets": saved_datasets,
-        "rag_source": rag_source,
-    }
-
-    # Cache result
-    _RAG_CACHE[cache_key] = result
-    if len(_RAG_CACHE) > _RAG_CACHE_MAX:
-        _RAG_CACHE.popitem(last=False)
-
-    return result
-
-
 def _get_table_info_for_names(table_names: list[str], datasource_id: int = 0) -> list[dict]:
     """Get table_info rows for specific table names from adh_table_info."""
     if not table_names:
@@ -1189,15 +473,48 @@ def _get_table_info_for_names(table_names: list[str], datasource_id: int = 0) ->
         return []
 
 
+def retrieve_all(
+    question: str,
+    target_tables: list[str] = None,
+    keywords: list[str] = None,
+    selected_tables: list[str] = None,
+    datasource_id: int = 0,
+) -> dict:
+    """Retrieve RAG metadata via the GraphRAG route (no embeddings/vectors).
+
+    Delegates to ``retrieve_with_strategy(strategy_name="graphrag")``: agentic
+    SPARQL grounding over the knowledge graph, then deterministic hydration of
+    grounded entities into the uniform result dict consumed by prompt_builder.
+
+    Args:
+        question: User's question.
+        target_tables: Tables from intent classifier (legacy, passed as candidates).
+        keywords: Business keywords for grounding hints / term filtering.
+        selected_tables: Pre-selected tables (passed as grounding candidates).
+        datasource_id: Filter metadata by this datasource.
+
+    Returns:
+        Dict with table_info, column_metadata, business_terms, table_relations,
+        sql_templates, saved_datasets, rag_source.
+    """
+    return retrieve_with_strategy(
+        question=question,
+        selected_tables=selected_tables,
+        target_tables=target_tables,
+        keywords=keywords,
+        datasource_id=datasource_id,
+        strategy_name="graphrag",
+    )
+
+
 def retrieve_tables_metadata(
     table_names: list[str],
     datasource_id: int = 0,
 ) -> dict:
-    """Directly retrieve metadata for specific table names, skipping vector search.
+    """Directly retrieve metadata for specific table names (no search).
 
-    Use this when table names are already known (e.g. LLM requested specific tables
-    for metadata supplementation), avoiding unnecessary embedding generation and
-    vector similarity searches.
+    Use this when table names are already known (e.g. LLM requested specific
+    tables for metadata supplementation).
 
     Args:
         table_names: Exact table names to retrieve.
@@ -1217,7 +534,6 @@ def retrieve_tables_metadata(
     try:
         with _get_connection() as conn:
             with conn.cursor() as cur:
-                placeholders = ", ".join(["%s"] * len(table_names))
                 ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
                 # Match relations where source or target is in the requested tables
                 like_conditions = []
@@ -1290,8 +606,8 @@ def retrieve_with_strategy(
 ) -> dict:
     """Retrieve metadata using the specified strategy.
 
-    This is the main entry point for strategy-based retrieval.
-    Falls back to retrieve_all (full_table) if strategy_name is None.
+    This is the main entry point for strategy-based retrieval. When no strategy
+    is specified it resolves from config (defaults to graphrag).
 
     Args:
         question: User's question.
@@ -1299,10 +615,9 @@ def retrieve_with_strategy(
         target_tables: Tables from intent classifier (legacy).
         keywords: Business keywords for term filtering.
         datasource_id: Filter metadata by this datasource.
-        strategy_name: Strategy name (full_table, column_first, two_stage, bidirectional, graph).
-                       None uses model config, then system config, then defaults to full_table.
-        model_id: LLM model ID. Used to read retrieval_strategy from model config when
-                  strategy_name is not specified.
+        strategy_name: Strategy name; None resolves from model/system config.
+        model_id: LLM model ID. Used to read retrieval_strategy from model
+                  config when strategy_name is not specified.
 
     Returns:
         Dict with table_info, column_metadata, business_terms, table_relations,

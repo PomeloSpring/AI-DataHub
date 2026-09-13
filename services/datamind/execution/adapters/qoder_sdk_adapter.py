@@ -119,6 +119,8 @@ class QoderSDKAdapter(CLIProcessAdapter):
         # 运行时 chat 选择的模型优先于执行层配置模型
         runtime_ref = ((task.context.extra or {}) if task.context else {}).get("model_ref") or ""
         model = runtime_ref or self.model or None
+        # 目录沙箱:cwd=allowed_dirs[0](或工作空间目录),add_dirs=其余白名单目录
+        cwd, add_dirs = self._resolve_cwd(workspace_id)
         options = QoderAgentOptions(
             cli_path=self.cli_path,
             model=model,
@@ -126,7 +128,8 @@ class QoderSDKAdapter(CLIProcessAdapter):
             auth=auth,
             permission_mode="bypassPermissions",  # headless 免权限确认
             setting_sources=[],  # 不加载机器上的用户/项目配置,保持进程独享
-            cwd=self.config.get("cwd") or None,
+            cwd=cwd or None,
+            add_dirs=add_dirs,
             max_turns=int(self.config.get("max_turns", 0)) or None,
             include_partial_messages=True,  # 启用流式增量(stream_event)
         )
@@ -162,8 +165,8 @@ class QoderSDKAdapter(CLIProcessAdapter):
         if task.context and task.context.system_prompt:
             options.system_prompt = task.context.system_prompt
         logger.info(
-            "[ExecLayer:%s] SDK options: workspace=%s mcp=%s agents=%s sdk_tools=%s model=%s disallowed=%s",
-            self._name, workspace_id,
+            "[ExecLayer:%s] SDK options: workspace=%s cwd=%s add_dirs=%s mcp=%s agents=%s sdk_tools=%s model=%s disallowed=%s",
+            self._name, workspace_id, cwd or "-", list(add_dirs),
             list(res["mcp_servers"].keys()), list(res["agents"].keys()),
             list(tool_groups["servers"].keys()), model or "-",
             list(options.disallowed_tools or []),

@@ -87,13 +87,6 @@ interface LLMModel {
   is_default: number;
 }
 
-interface Workflow {
-  id: number;
-  name: string;
-  description: string;
-  is_default: boolean;
-}
-
 export interface WorkspaceExecutionLayer {
   layer_id: number;
   name: string;
@@ -115,11 +108,8 @@ interface ChatState {
   datasources: { id: number; name: string; db_type: string }[];
   selectedModelId: number | null;
   llmModels: LLMModel[];
-  useLoopEngine: boolean;
-  selectedWorkflowId: number | null;
-  workflows: Workflow[];
   pipelineMode: 'quick' | 'deep' | 'agent' | null;  // null = use legacy endpoints
-  retrievalStrategy: string;  // hybrid, full_table, column_first, two_stage, bidirectional, graph
+  retrievalStrategy: string;  // hybrid only
 
   // Workspace state (for Agent mode)
   selectedWorkspaceId: number;
@@ -141,7 +131,6 @@ interface ChatState {
   loadConversations: () => Promise<void>;
   loadDatasources: () => Promise<void>;
   loadLLMModels: () => Promise<void>;
-  loadWorkflows: () => Promise<void>;
   loadSystemConfig: () => Promise<void>;
   loadWorkspaces: () => Promise<void>;
   loadWorkspaceConfig: (workspaceId: number) => Promise<void>;
@@ -149,8 +138,6 @@ interface ChatState {
   setSelectedModelRef: (ref: string | null) => void;
   setSelectedDsId: (id: number) => void;
   setSelectedModelId: (id: number | null) => void;
-  setUseLoopEngine: (use: boolean) => void;
-  setSelectedWorkflowId: (id: number | null) => void;
   setPipelineMode: (mode: 'quick' | 'deep' | 'agent' | null) => void;
   setRetrievalStrategy: (strategy: string) => void;
   setSelectedWorkspaceId: (id: number) => void;
@@ -229,9 +216,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   datasources: [],
   selectedModelId: null,
   llmModels: [],
-  useLoopEngine: false,
-  selectedWorkflowId: null,
-  workflows: [],
   pipelineMode: 'quick',
   retrievalStrategy: 'hybrid',
   mcpServers: [],
@@ -346,23 +330,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setSelectedModelId: (id) => set({ selectedModelId: id }),
-  setUseLoopEngine: (use) => set({ useLoopEngine: use }),
-  setSelectedWorkflowId: (id) => set({ selectedWorkflowId: id }),
   setPipelineMode: (mode) => set({ pipelineMode: mode }),
   setRetrievalStrategy: (strategy) => set({ retrievalStrategy: strategy }),
-
-  loadWorkflows: async () => {
-    try {
-      const { data } = await client.get('/admin/workflows');
-      const workflows = data.items || [];
-      set({ workflows });
-      // Auto-select default workflow
-      if (workflows.length > 0 && !get().selectedWorkflowId) {
-        const defaultWorkflow = workflows.find((w: Workflow) => w.is_default) || workflows[0];
-        set({ selectedWorkflowId: defaultWorkflow.id });
-      }
-    } catch {}
-  },
 
   createConversation: async () => {
     const dsId = get().selectedDsId;
@@ -483,9 +452,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       apiEndpoint = '/api/pipeline/send/stream';
       requestBody.pipeline_mode = state.pipelineMode;
       requestBody.retrieval_strategy = state.retrievalStrategy;
-      if (state.selectedWorkflowId) {
-        requestBody.workflow_id = state.selectedWorkflowId;
-      }
       // Deep(内置 Agent)与 Agent(执行层)模式都需要工作空间上下文
       if ((state.pipelineMode === 'agent' || state.pipelineMode === 'deep') && state.selectedWorkspaceId) {
         requestBody.workspace_id = state.selectedWorkspaceId;
@@ -493,18 +459,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (state.pipelineMode === 'agent') {
         delete requestBody.datasource_id;  // 执行层自带数据源选择(execute_sql 工具)
       }
-      // CLI 执行层(qoder/opencode):运行时选择的模型以 model_ref 透传,
+      // CLI 执行层(qoder):运行时选择的模型以 model_ref 透传,
       // 上一轮会话 ID 以 session_id 回传实现 SDK 多轮对话
       if (state.executionLayer?.layer_type === 'cli' && state.selectedModelRef) {
         requestBody.model_ref = state.selectedModelRef;
       }
       if (state.executorSessionId) {
         requestBody.session_id = state.executorSessionId;
-      }
-    } else if (state.useLoopEngine) {
-      apiEndpoint = '/api/chat/send/loop/stream';
-      if (state.selectedWorkflowId) {
-        requestBody.workflow_id = state.selectedWorkflowId;
       }
     } else {
       apiEndpoint = '/api/chat/send/stream';

@@ -27,7 +27,6 @@ class PipelineExecuteRequest(BaseModel):
     datasource_id: Optional[int] = 0
     model_id: Optional[int] = None
     pipeline_mode: Optional[str] = "quick"  # quick | deep | agent
-    workflow_id: Optional[int] = None
     retrieval_strategy: Optional[str] = None
     workspace_id: Optional[int] = 0
     attachments: Optional[list[str]] = []  # 多模态附件 ID 列表
@@ -69,7 +68,6 @@ async def execute_pipeline(
     datasource_id = req.datasource_id or 0
     model_id = req.model_id
     pipeline_mode = req.pipeline_mode or "quick"
-    workflow_id = req.workflow_id
     retrieval_strategy = req.retrieval_strategy
     workspace_id = req.workspace_id or 0
     attachments = req.attachments or []
@@ -108,7 +106,6 @@ async def execute_pipeline(
                 datasource_id=datasource_id,
                 model_id=model_id,
                 pipeline_mode=pipeline_mode,
-                workflow_id=workflow_id,
                 user_id=user["user_id"],
                 username=user["username"],
                 retrieval_strategy=retrieval_strategy,

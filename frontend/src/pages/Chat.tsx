@@ -70,10 +70,9 @@ export default function Chat() {
     conversations, currentConvId, messages, loading, loadingStep,
     selectedDsId, datasources, selectedModelId, llmModels,
     pipelineMode: chatPipelineMode,
-    retrievalStrategy, setRetrievalStrategy,
     selectedWorkspaceId, setSelectedWorkspaceId, workspaceConfig, loadWorkspaceConfig,
     executionLayer, selectedModelRef, loadExecutionLayer, setSelectedModelRef,
-    loadConversations, loadDatasources, loadLLMModels, loadWorkflows, loadSystemConfig,
+    loadConversations, loadDatasources, loadLLMModels, loadSystemConfig,
     setSelectedDsId, setSelectedModelId, setPipelineMode,
     createConversation, switchConversation, deleteConversation, renameConversation,
     sendMessage, cancelMessage, respondToAsk, cancelAsk, updateMessageFeedback, setViewMode, analyzeData, predictData, clear,
@@ -244,7 +243,6 @@ export default function Chat() {
         loadConversations();
         loadDatasources();
         loadLLMModels();
-        loadWorkflows();
         loadSystemConfig();
         loadWorkspaceConfig(wsId);
         loadExecutionLayer(wsId);
@@ -492,7 +490,7 @@ export default function Chat() {
             )}
 
             {/* Model Selector — 按工作空间执行器切换候选:
-                CLI 执行层(qoder/opencode)展示执行层模型,否则展示系统模型中心 */}
+                CLI 执行层(qoder)展示执行层模型,否则展示系统模型中心 */}
             {isExecMode && executionLayer?.layer_type === 'cli' ? (
               <Select
                 key={`exec-model-${selectedWorkspaceId}`}
@@ -537,38 +535,6 @@ export default function Chat() {
                 <Terminal className="h-3 w-3" />
                 {executionLayer.display_name || executionLayer.name}
               </Badge>
-            )}
-
-            {/* Retrieval Strategy - Quick mode only */}
-            {chatPipelineMode === 'quick' && (
-              <Select
-                value={retrievalStrategy}
-                onValueChange={(v) => setRetrievalStrategy(v)}
-              >
-                <SelectTrigger className="w-[150px] h-8">
-                  <SelectValue placeholder="检索策略" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(!workspaceConfig.allowed_retrieval_strategies || workspaceConfig.allowed_retrieval_strategies.includes('hybrid')) && (
-                    <SelectItem value="hybrid">混合检索 — BM25+向量 RRF 融合（推荐）</SelectItem>
-                  )}
-                  {(!workspaceConfig.allowed_retrieval_strategies || workspaceConfig.allowed_retrieval_strategies.includes('full_table')) && (
-                    <SelectItem value="full_table">整表检索 — 返回命中表的全部字段</SelectItem>
-                  )}
-                  {(!workspaceConfig.allowed_retrieval_strategies || workspaceConfig.allowed_retrieval_strategies.includes('column_first')) && (
-                    <SelectItem value="column_first">字段优先 — 向量搜字段，只返回匹配字段</SelectItem>
-                  )}
-                  {(!workspaceConfig.allowed_retrieval_strategies || workspaceConfig.allowed_retrieval_strategies.includes('two_stage')) && (
-                    <SelectItem value="two_stage">两阶段 — 先选表，再筛字段</SelectItem>
-                  )}
-                  {(!workspaceConfig.allowed_retrieval_strategies || workspaceConfig.allowed_retrieval_strategies.includes('bidirectional')) && (
-                    <SelectItem value="bidirectional">双向合并 — 表+字段双路召回，筛字段</SelectItem>
-                  )}
-                  {(!workspaceConfig.allowed_retrieval_strategies || workspaceConfig.allowed_retrieval_strategies.includes('graph')) && (
-                    <SelectItem value="graph">图检索 — 关系遍历，只返回触及的字段</SelectItem>
-                  )}
-                </SelectContent>
-              </Select>
             )}
             <Button variant="outline" size="sm" onClick={clear} disabled={messages.length === 0}>
               <Trash2 className="h-4 w-4 mr-2" />
@@ -720,7 +686,7 @@ export default function Chat() {
                       </div>
                     )}
 
-                    {/* Agent/执行层最终回复(无 SQL 结果,如 qoder/opencode 执行层) */}
+                    {/* Agent/执行层最终回复(无 SQL 结果,如 qoder 执行层) */}
                     {msg.reply && !msg.sql && !msg.error && msg.intent === 'agent' && (
                       <div className="leading-relaxed prose prose-sm max-w-none dark:prose-invert">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.reply}</ReactMarkdown>

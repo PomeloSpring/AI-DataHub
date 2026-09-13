@@ -1,6 +1,6 @@
 """CLIProcessAdapter — 本地 CLI 进程执行层.
 
-通过子进程调用本地 CLI 工具(opencode / qoder 等)。
+通过子进程调用本地 CLI 工具(qoder 等)。
 每个 CLI 有独立的命令模板(见 discovery.KNOWN_CLIS),
 模板中 {question} 占位符会被替换为任务问题;
 也可在执行层 config.command 中整体覆盖默认模板。
@@ -35,7 +35,7 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
         Args:
             layer_name: 执行层名称(来自 adh_execution_layers.name)
             config: 执行层配置,支持字段:
-                - cli_name: CLI 名称(opencode / qoder ...)
+                - cli_name: CLI 名称(qoder ...)
                 - cli_path: 可执行文件路径(默认从 PATH 查找)
                 - env: 附加环境变量
                 - command: 自定义命令模板(覆盖默认)
@@ -135,42 +135,46 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
             cmd[0] = self.cli_path
         return cmd
 
+    # ── 目录沙箱(allowed_dirs)───────────────────────────
+
+    def _allowed_dirs(self, workspace_id: int = 0) -> list[str]:
+        """执行层可访问目录白名单(绝对路径字符串列表).
+
+        取 config.allowed_dirs(manager 已归一化);为空时回退工作空间
+        沙箱目录 data/workspaces/ws_{id}(workspace_id=0 → global)。
+        """
+        dirs = [str(d).strip() for d in (self.config.get("allowed_dirs") or []) if str(d or "").strip()]
+        if dirs:
+            return dirs
+        if workspace_id:
+            try:
+                from services.datamind.agent.file_tools import workspace_root
+                return [str(workspace_root(workspace_id))]
+            except Exception as e:
+                logger.warning("[ExecLayer:%s] Resolve workspace root failed: %s", self._name, e)
+        return []
+
+    def _resolve_cwd(self, workspace_id: int = 0) -> tuple[str, list[str]]:
+        """解析 SDK 工作目录 → (cwd, add_dirs),用于多目录沙箱.
+
+        cwd 优先级:config.cwd 显式覆盖 > allowed_dirs[0] > 工作空间沙箱目录。
+        add_dirs 为 config.allowed_dirs 中除 cwd 外的其余目录;未配置
+        allowed_dirs 时为空(即回退工作空间目录时不产生附加目录)。
+        """
+        explicit = (self.config.get("cwd") or "").strip()
+        configured = [str(d).strip() for d in (self.config.get("allowed_dirs") or []) if str(d or "").strip()]
+        if configured:
+            cwd = explicit or configured[0]
+            return cwd, [d for d in configured if d != cwd]
+        if explicit:
+            return explicit, []
+        fallback = self._allowed_dirs(workspace_id)
+        return (fallback[0] if fallback else ""), []
+
     def _build_env(self, task: ExecutionTask) -> dict:
         env = os.environ.copy()
         env.update({k: str(v) for k, v in (self.config.get("env") or {}).items()})
-        self._inject_llm_env(env, task)
         return env
-
-    def _inject_llm_env(self, env: dict, task: ExecutionTask) -> None:
-        """为无自带凭据配置的 CLI 注入系统模型中心的大模型凭据.
-
-        opencode 子进程模式不物化 opencode.json,模型由 --model 指定,
-        凭据通过环境变量(ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL 等)注入;
-        执行层 config.env 中已显式设置的变量优先,不覆盖。
-        """
-        if self.cli_name != "opencode":
-            return
-        try:
-            from services.datamind.execution.llm_resources import resolve_system_llm_model
-            llm = resolve_system_llm_model(self._effective_model(task))
-            if not llm or not llm.get("api_key"):
-                return
-            provider = (llm.get("provider") or "anthropic").lower()
-            if provider == "anthropic":
-                env.setdefault("ANTHROPIC_API_KEY", llm["api_key"])
-                if llm.get("base_url"):
-                    # opencode 的 anthropic provider 在 baseURL 后直接拼 /messages,
-                    # 网关的 Anthropic 兼容端点在 /v1/messages,需补齐 /v1 后缀
-                    base = llm["base_url"].rstrip("/")
-                    if not base.endswith("/v1"):
-                        base += "/v1"
-                    env.setdefault("ANTHROPIC_BASE_URL", base)
-            elif provider == "openai":
-                env.setdefault("OPENAI_API_KEY", llm["api_key"])
-                if llm.get("base_url"):
-                    env.setdefault("OPENAI_BASE_URL", llm["base_url"])
-        except Exception as e:
-            logger.warning("[ExecLayer:%s] Inject LLM env failed: %s", self._name, e)
 
     async def execute(self, task: ExecutionTask) -> ExecutionResult:
         """通过子进程执行 CLI 命令并收集输出."""
@@ -383,7 +387,7 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
         """CLI 不支持列出模型时,用系统模型中心(adh_llm_models)配置填充.
 
         返回模型引用(`{provider}/{model_name}`),可直接作为
-        --model 参数 / opencode model 配置使用。
+        --model 参数使用。
         """
         try:
             from services.datamind.execution.llm_resources import list_system_llm_models

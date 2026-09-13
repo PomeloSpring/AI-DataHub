@@ -18,7 +18,6 @@ from .api.tags import router as tags_router
 from .api.datasources import router as datasources_router
 from .api.menu import router as menu_router
 from .api.admin_compat import router as admin_compat_router
-from .api.om_proxy import router as om_proxy_router
 from .api.ontology import router as ontology_router
 
 logging.basicConfig(level=logging.INFO)
@@ -50,7 +49,6 @@ app.include_router(tags_router, prefix="/api/tags", tags=["Tags"])
 app.include_router(datasources_router, prefix="/api/datasources", tags=["Datasources"])
 app.include_router(menu_router, prefix="/api/menu", tags=["Menu"])
 app.include_router(admin_compat_router, prefix="/api/admin", tags=["Admin Compat"])
-app.include_router(om_proxy_router, prefix="/api/catalog", tags=["OpenMetadata Proxy"])
 app.include_router(ontology_router, prefix="/api/catalog/ontology", tags=["Ontology Modeling"])
 
 # Node metrics for distributed monitoring

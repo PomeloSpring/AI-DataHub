@@ -1,9 +1,9 @@
 """Ontology Modeling Service — FDE 对象中心本体（本地轻量实现）。
 
 工作流：页面触发 LLM 生成草案(JSON 事实源) → 用户检查/编辑 → 确认激活 →
-逐对象 MD 段向量化写入 adh_ontology_objects（Doris HNSW），供 ontology_first 检索。
+逐对象 MD 段写入 adh_ontology_objects（元数据库，供对象关键词检索与前端预览）。
 
-三格式：JSON（接口流转，唯一事实源）/ YAML（结构可读）/ MD（向量化与 AI 识别）。
+三格式：JSON（接口流转，唯一事实源）/ YAML（结构可读）/ MD（AI 识别与检索）。
 保存 JSON 时服务端重新派生 YAML/MD，保证三格式一致。
 """
 
@@ -30,6 +30,18 @@ def _gen_id() -> int:
 
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+_EMBEDDING_DIM = 768
+
+
+def _placeholder_embedding() -> str:
+    """Zero-vector placeholder for the logically-disabled embedding column.
+
+    The column is retained (Doris ARRAY<FLOAT> NOT NULL / MySQL JSON) but is no
+    longer produced by an embedding model nor read by any retrieval path.
+    """
+    return "[" + ", ".join(["0.0"] * _EMBEDDING_DIM) + "]"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -489,10 +501,7 @@ def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
 
 
 def activate(model_id: int) -> dict:
-    """激活模型：旧 active 归档，逐对象 MD 段向量化写入 adh_ontology_objects。"""
-    from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
-    from services.shared.common.vector import get_vector_store
-
+    """激活模型：旧 active 归档，逐对象 MD 段写入 adh_ontology_objects（供对象检索/预览）。"""
     model = get_model(model_id)
     if not model:
         raise ValueError("模型不存在")
@@ -521,14 +530,12 @@ def activate(model_id: int) -> dict:
             )
         conn.commit()
 
-    # 2. 对象向量化（先下线旧对象，再写入新对象）
-    store = get_vector_store()
+    # 2. 展开对象写入元数据库（不再向量化；embedding 列写零向量占位）
     records = []
-    for obj in objects:
+    for i, obj in enumerate(objects):
         md_section = _object_md(obj)
-        embedding = generate_embedding(md_section)
         records.append({
-            "id": _gen_id() + len(records),
+            "id": _gen_id() + i,
             "model_id": model_id,
             "datasource_id": datasource_id,
             "object_key": obj.get("key", ""),
@@ -537,22 +544,30 @@ def activate(model_id: int) -> dict:
             "description": (obj.get("description") or "")[:1000],
             "md_section": md_section,
             "is_active": 1,
-            "embedding": embedding_to_sql_literal(embedding),
+            "embedding": _placeholder_embedding(),
         })
 
-    # 按 model 粒度清理旧对象（DUPLICATE KEY 表用 DELETE + INSERT）
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
+            # 下线其它模型对象 + 清理本模型旧对象（重激活幂等）
             cur.execute(
                 "DELETE FROM adh_ontology_objects WHERE datasource_id = %s AND model_id != %s",
                 (datasource_id, model_id),
             )
+            cur.execute(
+                "DELETE FROM adh_ontology_objects WHERE model_id = %s",
+                (model_id,),
+            )
+            for rec in records:
+                cols = ", ".join(f"`{k}`" for k in rec.keys())
+                placeholders = ", ".join(["%s"] * len(rec))
+                cur.execute(
+                    f"INSERT INTO adh_ontology_objects ({cols}) VALUES ({placeholders})",
+                    list(rec.values()),
+                )
         conn.commit()
 
-    if records:
-        store.upsert_batch("adh_ontology_objects", "id", records)
-
-    logger.info("[ontology] activated model %s: %d objects vectorized", model_id, len(records))
+    logger.info("[ontology] activated model %s: %d objects written", model_id, len(records))
     return get_model(model_id)
 
 
@@ -588,35 +603,51 @@ def delete_model(model_id: int) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 对象检索（供 ontology_first 策略与前端预览）
+# 对象检索（供本体对象关键词检索与前端预览）
 # ═══════════════════════════════════════════════════════════════════
 
 def search_objects(question: str, datasource_id: int = 0, limit: int = 5) -> list[dict]:
-    """对象向量检索，返回命中对象 + distance + 所属模型 json_content。"""
-    from services.shared.common.llm.embedding import generate_embedding
-    from services.shared.common.vector import get_vector_store
-
-    embedding = generate_embedding(question)
-    filters = {"is_active": 1}
-    if datasource_id:
-        filters["datasource_id"] = datasource_id
-
-    store = get_vector_store()
-    hits = store.search(
-        "adh_ontology_objects",
-        embedding,
-        limit=limit,
-        filters=filters,
-        output_columns=["id", "model_id", "object_key", "display_name", "aliases", "description"],
-    )
-    if not hits:
+    """本体对象关键词检索（元数据库 LIKE，无向量），返回命中对象 + 所属模型 json_content。"""
+    tokens: list[str] = []
+    q = (question or "").strip()
+    for part in re.split(r"[\s,，、;；/、]+", q):
+        p = part.strip()
+        if len(p) >= 2 and p not in tokens:
+            tokens.append(p)
+    if q and len(q) >= 2 and q not in tokens:
+        tokens.insert(0, q)
+    if not tokens:
         return []
 
-    # 附带所属模型的 JSON（展开物理元数据用）
-    model_ids = list({h["model_id"] for h in hits})
-    placeholders = ", ".join(["%s"] * len(model_ids))
+    cols = ["object_key", "display_name", "aliases", "description", "md_section"]
+    conditions = ["is_active = 1"]
+    params: list = []
+    if datasource_id:
+        conditions.append("datasource_id = %s")
+        params.append(datasource_id)
+    subs = []
+    for t in tokens:
+        like = f"%{t}%"
+        for c in cols:
+            subs.append(f"{c} LIKE %s")
+            params.append(like)
+    conditions.append("(" + " OR ".join(subs) + ")")
+    where = "WHERE " + " AND ".join(conditions)
+
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT id, model_id, object_key, display_name, aliases, description "
+                f"FROM adh_ontology_objects {where} LIMIT {int(limit)}",
+                params,
+            )
+            hits = cur.fetchall()
+            if not hits:
+                return []
+
+            # 附带所属模型的 JSON（展开物理元数据用）
+            model_ids = list({h["model_id"] for h in hits})
+            placeholders = ", ".join(["%s"] * len(model_ids))
             cur.execute(
                 f"SELECT id, json_content FROM adh_ontology_models WHERE id IN ({placeholders})",
                 model_ids,

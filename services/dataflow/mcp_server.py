@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 MCP_TOOLS = [
     {
         "name": "create_sync_task",
-        "description": "Create a data sync task between source and target databases. Generates an Airflow DAG automatically.",
+        "description": "Create a data sync task between source and target databases.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -154,8 +154,6 @@ def handle_tool_call(tool_name: str, arguments: dict) -> dict:
         Tool result dict with 'content' key.
     """
     from services.dataflow.services.sync_service import sync_service
-    from services.dataflow.services.dag_generator import dag_generator
-    from services.dataflow.services.airflow_client import airflow_client
 
     try:
         if tool_name == "create_sync_task":
@@ -163,17 +161,7 @@ def handle_tool_call(tool_name: str, arguments: dict) -> dict:
             target = arguments["target"]
             name = arguments["name"]
 
-            dag_id = dag_generator.generate_sync_dag({
-                "name": name,
-                "source_type": source["type"],
-                "source_config": source,
-                "target_type": target["type"],
-                "target_config": target,
-                "sync_mode": arguments.get("sync_mode", "full"),
-                "schedule": arguments.get("schedule"),
-                "task_config": {},
-            })
-
+            dag_id = f"sync_{source['type']}_{name}".replace(" ", "_").lower()
             task_id = sync_service.create_task(
                 data={
                     "name": name,
@@ -209,18 +197,16 @@ def handle_tool_call(tool_name: str, arguments: dict) -> dict:
                 task = sync_service.get_task(task_id)
                 if not task:
                     return {"content": [{"type": "text", "text": f"Sync task {task_id} not found"}]}
-                dag_id = task.get("dag_id")
-                if not dag_id:
-                    return {"content": [{"type": "text", "text": f"No DAG configured for task {task_id}"}]}
-                result = airflow_client.trigger_dag(dag_id, conf={"task_id": task_id, "triggered_by": "mcp"})
-                log_id = sync_service.create_log(task_id, dag_run_id=result.get("dag_run_id", ""), status="running")
+                from datetime import datetime
+                log_id = sync_service.create_log(
+                    task_id, dag_run_id=f"mcp_{datetime.now().strftime('%Y%m%d%H%M%S')}", status="running"
+                )
                 return {
                     "content": [{
                         "type": "text",
                         "text": json.dumps({
                             "success": True,
                             "task_id": task_id,
-                            "dag_run_id": result.get("dag_run_id"),
                             "log_id": log_id,
                         }, ensure_ascii=False),
                     }],
@@ -295,7 +281,7 @@ def get_mcp_server_info() -> dict:
     """Return MCP server metadata for registration."""
     return {
         "name": "dataflow",
-        "description": "Data sync, workflow orchestration, and scheduled task management",
+        "description": "Data sync and scheduled task management",
         "version": "1.0.0",
         "tools": MCP_TOOLS,
     }

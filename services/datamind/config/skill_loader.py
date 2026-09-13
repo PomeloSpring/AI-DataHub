@@ -7,9 +7,14 @@ User-created skills live in adh_skills table.
 Loading priority:
   DB (adh_skills, is_active=1) > File (config/skills/)
   User-created skills with the same name override system file skills.
+
+A TTL cache (default 60s) enables dynamic hot-reload: DB skill edits take
+effect within 60 seconds without restarting the service.
 """
 
 import logging
+import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +23,28 @@ import yaml
 logger = logging.getLogger(__name__)
 
 SKILLS_DIR = Path(__file__).parent / "skills"
+
+# ── Hot-reload TTL cache ───────────────────────────────────────────────
+_SKILL_CACHE_TTL = float(os.getenv("SKILL_CACHE_TTL", "60"))  # seconds
+_skill_cache: dict[str, tuple[float, Optional[dict]]] = {}
+_list_cache: dict[str, tuple[float, list]] = {}
+
+
+def clear_skill_cache():
+    """Invalidate all skill caches (single skills + listing)."""
+    _skill_cache.clear()
+    _list_cache.clear()
+
+
+def _cache_get(cache: dict, key: str):
+    item = cache.get(key)
+    if item is None:
+        return False, None
+    ts, value = item
+    if time.time() - ts > _SKILL_CACHE_TTL:
+        cache.pop(key, None)
+        return False, None
+    return True, value
 
 
 def _load_skill_from_file(skill_name: str) -> Optional[dict]:
@@ -86,6 +113,22 @@ def _load_skill_from_db(skill_name: str) -> Optional[dict]:
 
 
 def load_skill(skill_name: str) -> Optional[dict]:
+    """Load a skill by name (cached, TTL 60s). DB (user-created) beats file (system).
+
+    Returns:
+        Dict with keys: name, display_name, description, category, system_prompt,
+                        skill_config, source_type
+        None if not found
+    """
+    hit, cached = _cache_get(_skill_cache, skill_name)
+    if hit:
+        return cached
+    result = _load_skill_uncached(skill_name)
+    _skill_cache[skill_name] = (time.time(), result)
+    return result
+
+
+def _load_skill_uncached(skill_name: str) -> Optional[dict]:
     """Load a skill by name. DB (user-created) takes priority over file (system).
 
     Returns:
@@ -115,6 +158,24 @@ def load_skill(skill_name: str) -> Optional[dict]:
 
 
 def list_skills(category: str = None) -> list[dict]:
+    """List all skills (file + DB merged), cached with TTL 60s.
+
+    Args:
+        category: Optional filter by category (e.g., 'analysis')
+
+    Returns:
+        List of skill dicts with metadata (no system_prompt content)
+    """
+    cache_key = category or "__all__"
+    hit, cached = _cache_get(_list_cache, cache_key)
+    if hit:
+        return cached
+    result = _list_skills_uncached(category)
+    _list_cache[cache_key] = (time.time(), result)
+    return result
+
+
+def _list_skills_uncached(category: str = None) -> list[dict]:
     """List all skills (file + DB merged). DB entries override same-name file skills.
 
     Args:

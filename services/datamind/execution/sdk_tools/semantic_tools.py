@@ -81,11 +81,11 @@ async def knowledge_search(args):
     ctx = get_execution_context()
     user_context = {"user_id": ctx.user_id, "username": ctx.username}
     try:
-        from services.datamind.rag.rag_retriever import retrieve_with_ranger_filter
-        result = await retrieve_with_ranger_filter(
-            args.get("question", ""),
-            args.get("datasource_id") or ctx.datasource_id or 0,
-            user_context,
+        from services.datamind.rag.strategies import get_strategy
+        strategy = get_strategy()  # graphrag (single route: LLM + SPARQL grounding)
+        result = strategy.retrieve(
+            question=args.get("question", ""),
+            datasource_id=args.get("datasource_id") or ctx.datasource_id or 0,
         )
         return _text(result)
     except Exception as e:

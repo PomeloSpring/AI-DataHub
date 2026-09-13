@@ -21,6 +21,7 @@ import { useBrandStore } from '../stores/brandStore';
 import { useDashboardStore } from '../stores/dashboardStore';
 import { useWorkspaceStore, type Workspace } from '../stores/workspaceStore';
 import client from '../api/client';
+import SectionSwitcher from './SectionSwitcher';
 
 const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] = [
   { id: 'dark', label: '暗色', icon: Moon, desc: '深色背景，适合长时间使用' },
@@ -361,48 +362,8 @@ export default function WorkspaceLayout() {
         </ScrollArea>
         </div>
 
-        {/* Bottom Navigation */}
-        <div className="p-2 border-t border-sidebar-border space-y-1">
-          <Tooltip delayDuration={0}>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => navigate('/data')}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-200
-                  text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground
-                  ${collapsed ? 'justify-center' : ''}`}
-              >
-                <LucideIcons.Database className="h-4 w-4 flex-shrink-0" />
-                {!collapsed && (
-                  <>
-                    <span className="flex-1 text-left">数据中台</span>
-                    <ArrowRight className="h-3.5 w-3.5 flex-shrink-0 opacity-50" />
-                  </>
-                )}
-              </button>
-            </TooltipTrigger>
-            {collapsed && <TooltipContent side="right">数据中台</TooltipContent>}
-          </Tooltip>
-          {user?.role === 'admin' && (
-            <Tooltip delayDuration={0}>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => navigate('/system')}
-                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-200
-                    text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground
-                    ${collapsed ? 'justify-center' : ''}`}
-                >
-                  <LucideIcons.Settings className="h-4 w-4 flex-shrink-0" />
-                  {!collapsed && (
-                    <>
-                      <span className="flex-1 text-left">系统配置</span>
-                      <ArrowRight className="h-3.5 w-3.5 flex-shrink-0 opacity-50" />
-                    </>
-                  )}
-                </button>
-              </TooltipTrigger>
-              {collapsed && <TooltipContent side="right">系统配置</TooltipContent>}
-            </Tooltip>
-          )}
+        {/* Bottom Navigation — module switching moved to header (see SectionSwitcher) */}
+        <div className="p-2 border-t border-sidebar-border">
           <Button
             variant="ghost"
             size="sm"
@@ -495,6 +456,9 @@ export default function WorkspaceLayout() {
             </Button>
           </div>
           <div className="flex items-center gap-2">
+            {/* Module switcher — 工作空间 / 数据中台 / 系统配置 */}
+            <SectionSwitcher current="workspace" />
+
             {/* Theme selector */}
             <DropdownMenu>
               <Tooltip>

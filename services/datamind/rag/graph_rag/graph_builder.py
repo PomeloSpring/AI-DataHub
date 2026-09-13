@@ -1,851 +1,377 @@
-"""Graph Builder — build knowledge graph from metadata.
+"""Graph Builder — build knowledge graph from metadata into Oxigraph.
 
-Constructs Neo4j knowledge graph from database metadata.
+Reads metadata from MySQL tables (adh_table_info, adh_column_metadata, etc.)
+and constructs RDF triples in Oxigraph, organized by named graph per datasource.
+Also merges active ontology models from adh_ontology_models.
 """
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import Any
 
-from services.datamind.rag.graph_rag.neo4j_store import Neo4jStore
+from services.datamind.rag.graph_rag.oxigraph_store import OxigraphStore
 
 logger = logging.getLogger(__name__)
 
 
 class GraphBuilder:
-    """知识图谱构建器"""
+    """Builds the RDF knowledge graph from database metadata."""
 
-    def __init__(self, neo4j_store: Optional[Neo4jStore] = None):
-        """初始化构建器
+    def __init__(self, store: OxigraphStore = None):
+        self._store = store or OxigraphStore()
 
-        Args:
-            neo4j_store: Neo4j存储实例
-        """
-        self.neo4j = neo4j_store or Neo4jStore()
-
-    async def build_from_metadata(self, datasource_id: int = 0) -> Dict[str, Any]:
-        """从元数据构建知识图谱
+    def build_from_metadata(self, datasource_id: int = 0) -> dict[str, Any]:
+        """Build the knowledge graph from MySQL metadata tables.
 
         Args:
-            datasource_id: 数据源ID
+            datasource_id: Scope to a specific datasource (0 = all).
 
         Returns:
-            dict: 构建结果
+            Build statistics.
         """
+        logger.info("Building knowledge graph for datasource: %d", datasource_id)
+
+        stats = {
+            "tables": 0,
+            "columns": 0,
+            "terms": 0,
+            "metrics": 0,
+            "dimensions": 0,
+            "datasources": 0,
+            "joins": 0,
+            "term_mappings": 0,
+            "metric_relations": 0,
+            "sql_templates": 0,
+        }
+
         try:
-            logger.info(f"Building knowledge graph for datasource: {datasource_id}")
+            # Clear existing graph for this datasource
+            self._store.clear_graph(datasource_id)
 
-            # 清空现有图谱（可选）
-            # self.neo4j.clear_database()
+            # Build table nodes
+            tables = self._load_tables(datasource_id)
+            for t in tables:
+                self._store.create_table_node(
+                    name=t["table_name"],
+                    comment=t.get("table_comment", ""),
+                    business_desc=t.get("table_business_desc", ""),
+                    datasource_id=datasource_id,
+                )
+                stats["tables"] += 1
+            logger.info("Created %d table nodes", stats["tables"])
 
-            # 构建表节点
-            tables = await self._build_table_nodes(datasource_id)
-            logger.info(f"Created {len(tables)} table nodes")
+            # Build column nodes
+            columns = self._load_columns(datasource_id)
+            for c in columns:
+                self._store.create_column_node(
+                    table=c["table_name"],
+                    column=c["column_name"],
+                    data_type=c.get("data_type", ""),
+                    comment=c.get("column_comment", ""),
+                    datasource_id=datasource_id,
+                )
+                stats["columns"] += 1
+            logger.info("Created %d column nodes", stats["columns"])
 
-            # 构建字段节点
-            columns = await self._build_column_nodes(datasource_id)
-            logger.info(f"Created {len(columns)} column nodes")
+            # Build business term nodes
+            terms = self._load_terms(datasource_id)
+            for t in terms:
+                self._store.create_term_node(
+                    name_cn=t.get("name_cn", ""),
+                    name_en=t.get("name_en", ""),
+                    description=t.get("description", ""),
+                    calculation=t.get("calculation", ""),
+                    datasource_id=datasource_id,
+                )
+                # Create term → column mappings
+                if t.get("mapped_table") and t.get("mapped_column"):
+                    self._store.create_term_mapping(
+                        term_name=t["name_cn"],
+                        table=t["mapped_table"],
+                        column=t["mapped_column"],
+                        datasource_id=datasource_id,
+                    )
+                    stats["term_mappings"] += 1
+                stats["terms"] += 1
+            logger.info("Created %d term nodes, %d mappings", stats["terms"], stats["term_mappings"])
 
-            # 构建业务术语节点
-            terms = await self._build_term_nodes(datasource_id)
-            logger.info(f"Created {len(terms)} term nodes")
+            # Build metric nodes
+            metrics = self._load_metrics(datasource_id)
+            for m in metrics:
+                self._store.create_metric_node(
+                    name=m.get("name", ""),
+                    description=m.get("description", ""),
+                    datasource_id=datasource_id,
+                )
+                # Create metric → column relations
+                if m.get("table_name") and m.get("column_name"):
+                    self._store.create_metric_column_relation(
+                        metric_name=m["name"],
+                        table=m["table_name"],
+                        column=m["column_name"],
+                        datasource_id=datasource_id,
+                    )
+                    stats["metric_relations"] += 1
+                stats["metrics"] += 1
+            logger.info("Created %d metric nodes", stats["metrics"])
 
-            # 构建指标节点
-            metrics = await self._build_metric_nodes(datasource_id)
-            logger.info(f"Created {len(metrics)} metric nodes")
+            # Build datasource nodes
+            datasources = self._load_datasources()
+            for ds in datasources:
+                self._store.create_datasource_node(
+                    ds_id=ds["id"],
+                    name=ds.get("name", ""),
+                    db_type=ds.get("db_type", ""),
+                )
+                stats["datasources"] += 1
+            logger.info("Created %d datasource nodes", stats["datasources"])
 
-            # 构建维度节点
-            dimensions = await self._build_dimension_nodes(datasource_id)
-            logger.info(f"Created {len(dimensions)} dimension nodes")
+            # Build JOIN relations from data_lineage or table_relations
+            joins = self._load_join_relations(datasource_id)
+            for j in joins:
+                self._store.create_join_relation(
+                    table1=j["table1"],
+                    table2=j["table2"],
+                    join_type=j.get("join_type", ""),
+                    datasource_id=datasource_id,
+                )
+                stats["joins"] += 1
+            logger.info("Created %d join relations", stats["joins"])
 
-            # 构建数据源节点
-            datasources = await self._build_datasource_nodes()
-            logger.info(f"Created {len(datasources)} datasource nodes")
+            # Build SQL template nodes (materialize templates into the graph so
+            # the retriever can ground questions against them via SPARQL).
+            table_names = [t["table_name"] for t in tables]
+            templates = self._load_sql_templates(datasource_id)
+            for tpl in templates:
+                sql_text = tpl.get("sql_template", "") or ""
+                lowered = sql_text.lower()
+                touched = [tn for tn in table_names
+                           if tn and tn.lower() in lowered]
+                self._store.create_sql_template_node(
+                    template_id=tpl.get("template_id", ""),
+                    name=tpl.get("template_name", ""),
+                    sql=sql_text,
+                    intent_keywords=tpl.get("intent_keywords", ""),
+                    category=tpl.get("category", ""),
+                    description=tpl.get("description", ""),
+                    variables=tpl.get("variables", "") or "",
+                    rules=tpl.get("rules", "") or "",
+                    tables=touched,
+                    datasource_id=datasource_id,
+                )
+                stats["sql_templates"] += 1
+            logger.info("Created %d SQL template nodes", stats["sql_templates"])
 
-            # 构建ETL任务节点
-            etl_tasks = await self._build_etl_task_nodes()
-            logger.info(f"Created {len(etl_tasks)} ETL task nodes")
+            # Merge active ontology models
+            ontology_count = self._merge_ontology_models(datasource_id)
+            logger.info("Merged %d ontology model(s)", ontology_count)
 
-            # 构建关系
-            relations = await self._build_relations(datasource_id)
-            logger.info(f"Created {len(relations)} relations")
-
-            # 构建指标和维度关系
-            metric_relations = await self._build_metric_dimension_relations(datasource_id)
-            logger.info(f"Created {len(metric_relations)} metric-dimension relations")
-
-            # 构建数据血缘关系
-            lineage_relations = await self._build_lineage_relations()
-            logger.info(f"Created {len(lineage_relations)} lineage relations")
+            total_triples = self._store.count_triples(datasource_id)
+            logger.info("Graph build complete. Total triples: %d", total_triples)
 
             return {
                 "success": True,
-                "tables": len(tables),
-                "columns": len(columns),
-                "terms": len(terms),
-                "metrics": len(metrics),
-                "dimensions": len(dimensions),
-                "datasources": len(datasources),
-                "etl_tasks": len(etl_tasks),
-                "relations": len(relations) + len(metric_relations) + len(lineage_relations)
+                **stats,
+                "ontology_models_merged": ontology_count,
+                "total_triples": total_triples,
+                "datasource_id": datasource_id,
             }
 
         except Exception as e:
-            logger.error(f"Failed to build knowledge graph: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            logger.error("Graph build failed: %s", e, exc_info=True)
+            return {"success": False, **stats, "error": str(e), "datasource_id": datasource_id}
 
-    async def _build_table_nodes(self, datasource_id: int) -> List[Dict[str, Any]]:
-        """构建表节点
+    # ── Data loaders (MySQL) ─────────────────────────────────────────
 
-        Args:
-            datasource_id: 数据源ID
-
-        Returns:
-            list: 创建的节点列表
-        """
+    def _load_tables(self, datasource_id: int) -> list[dict]:
+        from services.shared.common.db.metadata_db import get_metadata_conn
+        conn = get_metadata_conn()
         try:
-            from services.shared.common.db.metadata_db import get_metadata_conn
-
-            conn = get_metadata_conn()
-            try:
-                with conn.cursor() as cur:
-                    # 查询表信息
-                    ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
-                    cur.execute(f"""
-                        SELECT table_name, table_comment, table_business_desc
-                        FROM adh_table_info
-                        WHERE is_active = 1 {ds_filter}
-                    """)
-
-                    tables = []
-                    for row in cur.fetchall():
-                        # 创建节点
-                        properties = {
-                            "id": f"table:{row['table_name']}",
-                            "name": row["table_name"],
-                            "comment": row.get("table_comment", ""),
-                            "business_desc": row.get("table_business_desc", ""),
-                            "type": "table",
-                            "datasource_id": datasource_id
-                        }
-
-                        await self.neo4j.create_node("Table", properties)
-                        tables.append(properties)
-
-                    return tables
-            finally:
-                conn.close()
-
+            with conn.cursor() as cur:
+                ds_filter = "AND (datasource_id = %s OR datasource_id = 0)" if datasource_id else ""
+                params = [datasource_id] if datasource_id else []
+                cur.execute(f"""
+                    SELECT table_name, table_comment, table_business_desc, datasource_id
+                    FROM adh_table_info
+                    WHERE is_active = 1 {ds_filter}
+                    ORDER BY table_name
+                """, params)
+                return cur.fetchall()
         except Exception as e:
-            logger.error(f"Failed to build table nodes: {e}")
+            logger.warning("Failed to load tables: %s", e)
             return []
+        finally:
+            conn.close()
 
-    async def _build_column_nodes(self, datasource_id: int) -> List[Dict[str, Any]]:
-        """构建字段节点
-
-        Args:
-            datasource_id: 数据源ID
-
-        Returns:
-            list: 创建的节点列表
-        """
+    def _load_columns(self, datasource_id: int) -> list[dict]:
+        from services.shared.common.db.metadata_db import get_metadata_conn
+        conn = get_metadata_conn()
         try:
-            from services.shared.common.db.metadata_db import get_metadata_conn
-
-            conn = get_metadata_conn()
-            try:
-                with conn.cursor() as cur:
-                    # 查询字段信息
-                    ds_filter = f"AND (c.datasource_id = {datasource_id} OR c.datasource_id = 0)" if datasource_id else ""
-                    cur.execute(f"""
-                        SELECT c.table_name, c.column_name, c.data_type,
-                               c.column_comment, c.business_desc, c.is_key
-                        FROM adh_column_metadata c
-                        WHERE c.is_active = 1 {ds_filter}
-                    """)
-
-                    columns = []
-                    for row in cur.fetchall():
-                        # 创建节点
-                        properties = {
-                            "id": f"col:{row['table_name']}.{row['column_name']}",
-                            "name": row["column_name"],
-                            "table_name": row["table_name"],
-                            "data_type": row["data_type"],
-                            "comment": row.get("column_comment", ""),
-                            "business_desc": row.get("business_desc", ""),
-                            "is_key": row.get("is_key", "false"),
-                            "type": "column",
-                            "datasource_id": datasource_id
-                        }
-
-                        await self.neo4j.create_node("Column", properties)
-                        columns.append(properties)
-
-                    return columns
-            finally:
-                conn.close()
-
+            with conn.cursor() as cur:
+                ds_filter = "AND (datasource_id = %s OR datasource_id = 0)" if datasource_id else ""
+                params = [datasource_id] if datasource_id else []
+                cur.execute(f"""
+                    SELECT table_name, column_name, data_type, column_comment, datasource_id
+                    FROM adh_column_metadata
+                    WHERE is_active = 1 {ds_filter}
+                    ORDER BY table_name, ordinal_position
+                """, params)
+                return cur.fetchall()
         except Exception as e:
-            logger.error(f"Failed to build column nodes: {e}")
+            logger.warning("Failed to load columns: %s", e)
             return []
+        finally:
+            conn.close()
 
-    async def _build_term_nodes(self, datasource_id: int) -> List[Dict[str, Any]]:
-        """构建业务术语节点
-
-        Args:
-            datasource_id: 数据源ID
-
-        Returns:
-            list: 创建的节点列表
-        """
+    def _load_terms(self, datasource_id: int) -> list[dict]:
+        from services.shared.common.db.metadata_db import get_metadata_conn
+        conn = get_metadata_conn()
         try:
-            from services.shared.common.db.metadata_db import get_metadata_conn
-
-            conn = get_metadata_conn()
-            try:
-                with conn.cursor() as cur:
-                    # 查询业务术语
-                    ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
-                    cur.execute(f"""
-                        SELECT term_cn, term_en, term_aliases, target_table,
-                               target_column, calculation, description
-                        FROM adh_business_terms
-                        WHERE is_active = 1 {ds_filter}
-                    """)
-
-                    terms = []
-                    for row in cur.fetchall():
-                        # 创建节点
-                        properties = {
-                            "id": f"term:{row['term_cn']}",
-                            "name_cn": row["term_cn"],
-                            "name_en": row.get("term_en", ""),
-                            "aliases": row.get("term_aliases", ""),
-                            "target_table": row.get("target_table", ""),
-                            "target_column": row.get("target_column", ""),
-                            "calculation": row.get("calculation", ""),
-                            "description": row.get("description", ""),
-                            "type": "term",
-                            "datasource_id": datasource_id
-                        }
-
-                        await self.neo4j.create_node("Term", properties)
-                        terms.append(properties)
-
-                    return terms
-            finally:
-                conn.close()
-
+            with conn.cursor() as cur:
+                ds_filter = "AND (datasource_id = %s OR datasource_id = 0)" if datasource_id else ""
+                params = [datasource_id] if datasource_id else []
+                cur.execute(f"""
+                    SELECT term_cn AS name_cn, term_en AS name_en, description,
+                           calculation, target_table AS mapped_table,
+                           target_column AS mapped_column, datasource_id
+                    FROM adh_business_terms
+                    WHERE is_active = 1 {ds_filter}
+                """, params)
+                return cur.fetchall()
         except Exception as e:
-            logger.error(f"Failed to build term nodes: {e}")
+            logger.warning("Failed to load business terms: %s", e)
             return []
+        finally:
+            conn.close()
 
-    async def _build_relations(self, datasource_id: int) -> List[Dict[str, Any]]:
-        """构建关系
-
-        Args:
-            datasource_id: 数据源ID
-
-        Returns:
-            list: 创建的关系列表
-        """
+    def _load_metrics(self, datasource_id: int) -> list[dict]:
+        from services.shared.common.db.metadata_db import get_metadata_conn
+        conn = get_metadata_conn()
         try:
-            relations = []
-
-            # 1. 表-字段关系 (HAS_COLUMN)
-            column_relations = await self._build_table_column_relations(datasource_id)
-            relations.extend(column_relations)
-
-            # 2. 表-表关系 (JOIN)
-            join_relations = await self._build_table_join_relations(datasource_id)
-            relations.extend(join_relations)
-
-            # 3. 术语-字段关系 (MAPS_TO)
-            term_relations = await self._build_term_column_relations(datasource_id)
-            relations.extend(term_relations)
-
-            return relations
-
+            with conn.cursor() as cur:
+                ds_filter = "AND (datasource_id = %s OR datasource_id = 0)" if datasource_id else ""
+                params = [datasource_id] if datasource_id else []
+                cur.execute(f"""
+                    SELECT name, description,
+                           target_table AS table_name,
+                           target_column AS column_name, datasource_id
+                    FROM adh_metrics
+                    WHERE is_active = 1 {ds_filter}
+                """, params)
+                return cur.fetchall()
         except Exception as e:
-            logger.error(f"Failed to build relations: {e}")
+            logger.warning("Failed to load metrics: %s", e)
             return []
+        finally:
+            conn.close()
 
-    async def _build_table_column_relations(self, datasource_id: int) -> List[Dict[str, Any]]:
-        """构建表-字段关系
-
-        Args:
-            datasource_id: 数据源ID
-
-        Returns:
-            list: 创建的关系列表
-        """
+    def _load_datasources(self) -> list[dict]:
+        from services.shared.common.db.metadata_db import get_metadata_conn
+        conn = get_metadata_conn()
         try:
-            from services.shared.common.db.metadata_db import get_metadata_conn
-
-            conn = get_metadata_conn()
-            try:
-                with conn.cursor() as cur:
-                    # 查询字段信息
-                    ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
-                    cur.execute(f"""
-                        SELECT table_name, column_name
-                        FROM adh_column_metadata
-                        WHERE is_active = 1 {ds_filter}
-                    """)
-
-                    relations = []
-                    for row in cur.fetchall():
-                        table_id = f"table:{row['table_name']}"
-                        column_id = f"col:{row['table_name']}.{row['column_name']}"
-
-                        # 创建关系
-                        await self.neo4j.create_relationship(
-                            table_id,
-                            column_id,
-                            "HAS_COLUMN",
-                            {"type": "has_column"}
-                        )
-                        relations.append({
-                            "source": table_id,
-                            "target": column_id,
-                            "type": "HAS_COLUMN"
-                        })
-
-                    return relations
-            finally:
-                conn.close()
-
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, name, db_type FROM adh_datasources WHERE is_active = 1")
+                return cur.fetchall()
         except Exception as e:
-            logger.error(f"Failed to build table-column relations: {e}")
+            logger.warning("Failed to load datasources: %s", e)
             return []
+        finally:
+            conn.close()
 
-    async def _build_table_join_relations(self, datasource_id: int) -> List[Dict[str, Any]]:
-        """构建表-表关系
-
-        Args:
-            datasource_id: 数据源ID
-
-        Returns:
-            list: 创建的关系列表
-        """
+    def _load_join_relations(self, datasource_id: int) -> list[dict]:
+        """Load JOIN relations from table_relations or data_lineage."""
+        from services.shared.common.db.metadata_db import get_metadata_conn
+        conn = get_metadata_conn()
         try:
-            from services.shared.common.db.metadata_db import get_metadata_conn
+            with conn.cursor() as cur:
+                ds_filter = "AND (datasource_id = %s OR datasource_id = 0)" if datasource_id else ""
+                params = [datasource_id] if datasource_id else []
+                # Try adh_table_relations first
+                cur.execute(f"""
+                    SELECT source_table AS table1, target_table AS table2,
+                           relation_type AS join_type, datasource_id
+                    FROM adh_table_relations
+                    WHERE is_active = 1 {ds_filter}
+                """, params)
+                rows = cur.fetchall()
+                if rows:
+                    return rows
 
-            conn = get_metadata_conn()
-            try:
-                with conn.cursor() as cur:
-                    # 查询表关系
-                    ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
-                    cur.execute(f"""
-                        SELECT source_table, source_column, target_table,
-                               target_column, relation_type, join_type, description
-                        FROM adh_table_relations
-                        WHERE is_active = 1 {ds_filter}
-                    """)
-
-                    relations = []
-                    for row in cur.fetchall():
-                        source_id = f"table:{row['source_table']}"
-                        target_id = f"table:{row['target_table']}"
-
-                        # 创建关系（双向）
-                        properties = {
-                            "source_column": row["source_column"],
-                            "target_column": row["target_column"],
-                            "relation_type": row.get("relation_type", "1:N"),
-                            "join_type": row.get("join_type", "INNER"),
-                            "description": row.get("description", ""),
-                            "type": "join"
-                        }
-
-                        await self.neo4j.create_relationship(source_id, target_id, "JOIN", properties)
-                        await self.neo4j.create_relationship(target_id, source_id, "JOIN", properties)
-
-                        relations.append({
-                            "source": source_id,
-                            "target": target_id,
-                            "type": "JOIN"
-                        })
-
-                    return relations
-            finally:
-                conn.close()
-
+                # Fallback: extract from data_lineage
+                cur.execute(f"""
+                    SELECT source_table AS table1, target_table AS table2,
+                           'lineage' AS join_type, 0 AS datasource_id
+                    FROM adh_data_lineage
+                    WHERE is_active = 1 AND source_table != target_table
+                    {ds_filter.replace('datasource_id', 'source_datasource_id') if datasource_id else ''}
+                    GROUP BY source_table, target_table
+                """, params)
+                return cur.fetchall()
         except Exception as e:
-            logger.error(f"Failed to build table join relations: {e}")
+            logger.warning("Failed to load join relations: %s", e)
             return []
+        finally:
+            conn.close()
 
-    async def _build_term_column_relations(self, datasource_id: int) -> List[Dict[str, Any]]:
-        """构建术语-字段关系
+    def _load_sql_templates(self, datasource_id: int) -> list[dict]:
+        """Load active SQL templates to materialize as graph nodes.
 
-        Args:
-            datasource_id: 数据源ID
-
-        Returns:
-            list: 创建的关系列表
+        Best-effort: if the table is absent, return [] so graph build continues.
         """
+        from services.shared.common.db.metadata_db import get_metadata_conn
+        conn = get_metadata_conn()
         try:
-            from services.shared.common.db.metadata_db import get_metadata_conn
-
-            conn = get_metadata_conn()
-            try:
-                with conn.cursor() as cur:
-                    # 查询业务术语
-                    ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
-                    cur.execute(f"""
-                        SELECT term_cn, target_table, target_column
-                        FROM adh_business_terms
-                        WHERE is_active = 1 AND target_table != '' AND target_column != '' {ds_filter}
-                    """)
-
-                    relations = []
-                    for row in cur.fetchall():
-                        term_id = f"term:{row['term_cn']}"
-                        column_id = f"col:{row['target_table']}.{row['target_column']}"
-
-                        # 创建关系
-                        await self.neo4j.create_relationship(
-                            term_id,
-                            column_id,
-                            "MAPS_TO",
-                            {"type": "maps_to"}
-                        )
-                        relations.append({
-                            "source": term_id,
-                            "target": column_id,
-                            "type": "MAPS_TO"
-                        })
-
-                    return relations
-            finally:
-                conn.close()
-
+            with conn.cursor() as cur:
+                ds_filter = "AND (datasource_id = %s OR datasource_id = 0)" if datasource_id else ""
+                params = [datasource_id] if datasource_id else []
+                cur.execute(f"""
+                    SELECT template_id, template_name, category, intent_keywords,
+                           sql_template, variables, rules, description
+                    FROM adh_sql_templates
+                    WHERE is_active = 1 {ds_filter}
+                    ORDER BY template_id
+                """, params)
+                return cur.fetchall()
         except Exception as e:
-            logger.error(f"Failed to build term-column relations: {e}")
+            logger.warning("Failed to load SQL templates: %s", e)
             return []
+        finally:
+            conn.close()
 
-    async def add_document_nodes(
-        self,
-        documents: List[Dict[str, Any]]
-    ) -> int:
-        """添加文档节点到知识图谱
+    def _merge_ontology_models(self, datasource_id: int) -> int:
+        """Merge active ontology models into the graph as RDF."""
+        from services.shared.common.db.metadata_db import get_metadata_conn
+        from services.shared.common.rdf.ontology_to_rdf import ontology_json_to_turtle
 
-        Args:
-            documents: 文档列表
-
-        Returns:
-            int: 添加的节点数量
-        """
+        conn = get_metadata_conn()
         count = 0
+        try:
+            with conn.cursor() as cur:
+                if datasource_id:
+                    cur.execute(
+                        "SELECT id, json_content FROM adh_ontology_models "
+                        "WHERE status = 'active' AND datasource_id = %s",
+                        [datasource_id],
+                    )
+                else:
+                    cur.execute(
+                        "SELECT id, json_content FROM adh_ontology_models WHERE status = 'active'"
+                    )
+                models = cur.fetchall()
 
-        for doc in documents:
-            try:
-                properties = {
-                    "id": f"doc:{doc['id']}",
-                    "title": doc["title"],
-                    "content": doc.get("content", "")[:1000],  # 只保存摘要
-                    "source": doc.get("source", ""),
-                    "doc_type": doc.get("doc_type", ""),
-                    "type": "document"
-                }
-
-                await self.neo4j.create_node("Document", properties)
-                count += 1
-
-                # 关联到相关表
-                if "related_tables" in doc:
-                    for table_name in doc["related_tables"]:
-                        table_id = f"table:{table_name}"
-                        await self.neo4j.create_relationship(
-                            f"doc:{doc['id']}",
-                            table_id,
-                            "DESCRIBES",
-                            {"type": "describes"}
-                        )
-
-            except Exception as e:
-                logger.error(f"Failed to add document node: {e}")
+            for model in models:
+                try:
+                    turtle = ontology_json_to_turtle(
+                        model["json_content"],
+                        datasource_id=datasource_id,
+                    )
+                    self._store.load_turtle(turtle, datasource_id)
+                    count += 1
+                except Exception as e:
+                    logger.warning("Failed to merge ontology model %s: %s",
+                                   model.get("id"), e)
+        except Exception as e:
+            logger.warning("Failed to load ontology models: %s", e)
+        finally:
+            conn.close()
 
         return count
-
-    async def _build_metric_nodes(self, datasource_id: int) -> List[Dict[str, Any]]:
-        """构建指标节点
-
-        Args:
-            datasource_id: 数据源ID
-
-        Returns:
-            list: 创建的节点列表
-        """
-        try:
-            from services.shared.common.db.metadata_db import get_metadata_conn
-
-            conn = get_metadata_conn()
-            try:
-                with conn.cursor() as cur:
-                    # 查询指标信息
-                    ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
-                    cur.execute(f"""
-                        SELECT name, name_en, formula, unit, agg_type,
-                               target_table, target_column, description, category
-                        FROM adh_metrics
-                        WHERE is_active = 1 {ds_filter}
-                    """)
-
-                    metrics = []
-                    for row in cur.fetchall():
-                        # 创建节点
-                        properties = {
-                            "id": f"metric:{row['name']}",
-                            "name": row["name"],
-                            "name_en": row.get("name_en", ""),
-                            "formula": row.get("formula", ""),
-                            "unit": row.get("unit", ""),
-                            "agg_type": row.get("agg_type", ""),
-                            "target_table": row.get("target_table", ""),
-                            "target_column": row.get("target_column", ""),
-                            "description": row.get("description", ""),
-                            "category": row.get("category", ""),
-                            "type": "metric",
-                            "datasource_id": datasource_id
-                        }
-
-                        await self.neo4j.create_node("Metric", properties)
-                        metrics.append(properties)
-
-                        # 如果有目标表和字段，创建DEFINES关系
-                        if row.get("target_table") and row.get("target_column"):
-                            table_id = f"table:{row['target_table']}"
-                            column_id = f"col:{row['target_table']}.{row['target_column']}"
-                            await self.neo4j.create_relationship(
-                                f"metric:{row['name']}",
-                                column_id,
-                                "DEFINES",
-                                {"type": "defines"}
-                            )
-
-                    return metrics
-            finally:
-                conn.close()
-
-        except Exception as e:
-            logger.error(f"Failed to build metric nodes: {e}")
-            return []
-
-    async def _build_dimension_nodes(self, datasource_id: int) -> List[Dict[str, Any]]:
-        """构建维度节点
-
-        Args:
-            datasource_id: 数据源ID
-
-        Returns:
-            list: 创建的节点列表
-        """
-        try:
-            from services.shared.common.db.metadata_db import get_metadata_conn
-
-            conn = get_metadata_conn()
-            try:
-                with conn.cursor() as cur:
-                    # 查询维度信息
-                    ds_filter = f"AND (datasource_id = {datasource_id} OR datasource_id = 0)" if datasource_id else ""
-                    cur.execute(f"""
-                        SELECT name, name_en, hierarchy, level,
-                               target_table, target_column, description, category
-                        FROM adh_dimensions
-                        WHERE is_active = 1 {ds_filter}
-                    """)
-
-                    dimensions = []
-                    for row in cur.fetchall():
-                        # 创建节点
-                        properties = {
-                            "id": f"dim:{row['name']}",
-                            "name": row["name"],
-                            "name_en": row.get("name_en", ""),
-                            "hierarchy": row.get("hierarchy", ""),
-                            "level": row.get("level", 0),
-                            "target_table": row.get("target_table", ""),
-                            "target_column": row.get("target_column", ""),
-                            "description": row.get("description", ""),
-                            "category": row.get("category", ""),
-                            "type": "dimension",
-                            "datasource_id": datasource_id
-                        }
-
-                        await self.neo4j.create_node("Dimension", properties)
-                        dimensions.append(properties)
-
-                        # 如果有目标表和字段，创建BELONGS_TO关系
-                        if row.get("target_table") and row.get("target_column"):
-                            column_id = f"col:{row['target_table']}.{row['target_column']}"
-                            await self.neo4j.create_relationship(
-                                f"dim:{row['name']}",
-                                column_id,
-                                "BELONGS_TO",
-                                {"type": "belongs_to"}
-                            )
-
-                    return dimensions
-            finally:
-                conn.close()
-
-        except Exception as e:
-            logger.error(f"Failed to build dimension nodes: {e}")
-            return []
-
-    async def _build_metric_dimension_relations(self, datasource_id: int) -> List[Dict[str, Any]]:
-        """构建指标-维度关系
-
-        Args:
-            datasource_id: 数据源ID
-
-        Returns:
-            list: 创建的关系列表
-        """
-        try:
-            from services.shared.common.db.metadata_db import get_metadata_conn
-
-            conn = get_metadata_conn()
-            try:
-                with conn.cursor() as cur:
-                    # 查询指标-维度关联
-                    cur.execute("""
-                        SELECT m.name as metric_name, d.name as dimension_name, md.relation_type
-                        FROM adh_metric_dimensions md
-                        JOIN adh_metrics m ON md.metric_id = m.id
-                        JOIN adh_dimensions d ON md.dimension_id = d.id
-                        WHERE m.is_active = 1 AND d.is_active = 1
-                    """)
-
-                    relations = []
-                    for row in cur.fetchall():
-                        metric_id = f"metric:{row['metric_name']}"
-                        dimension_id = f"dim:{row['dimension_name']}"
-                        rel_type = row.get("relation_type", "USES_DIMENSION")
-
-                        # 创建关系
-                        await self.neo4j.create_relationship(
-                            metric_id,
-                            dimension_id,
-                            rel_type,
-                            {"type": rel_type.lower()}
-                        )
-                        relations.append({
-                            "source": metric_id,
-                            "target": dimension_id,
-                            "type": rel_type
-                        })
-
-                    return relations
-            finally:
-                conn.close()
-
-        except Exception as e:
-            logger.error(f"Failed to build metric-dimension relations: {e}")
-            return []
-
-    async def _build_datasource_nodes(self) -> List[Dict[str, Any]]:
-        """构建数据源节点
-
-        Returns:
-            list: 创建的节点列表
-        """
-        try:
-            from services.shared.common.db.metadata_db import get_metadata_conn
-
-            conn = get_metadata_conn()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT id, name, type, host, port, database_name, description, status
-                        FROM adh_datasources
-                        WHERE is_active = 1
-                    """)
-
-                    datasources = []
-                    for row in cur.fetchall():
-                        properties = {
-                            "id": f"ds:{row['id']}",
-                            "name": row["name"],
-                            "ds_type": row.get("type", ""),
-                            "host": row.get("host", ""),
-                            "port": row.get("port", 0),
-                            "database_name": row.get("database_name", ""),
-                            "description": row.get("description", ""),
-                            "status": row.get("status", "active"),
-                            "type": "datasource"
-                        }
-
-                        await self.neo4j.create_node("DataSource", properties)
-                        datasources.append(properties)
-
-                    return datasources
-            finally:
-                conn.close()
-
-        except Exception as e:
-            logger.error(f"Failed to build datasource nodes: {e}")
-            return []
-
-    async def _build_etl_task_nodes(self) -> List[Dict[str, Any]]:
-        """构建ETL任务节点
-
-        Returns:
-            list: 创建的节点列表
-        """
-        try:
-            from services.shared.common.db.metadata_db import get_metadata_conn
-
-            conn = get_metadata_conn()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT id, name, task_type, schedule, source_datasource_id,
-                               source_tables, target_datasource_id, target_tables,
-                               description, status
-                        FROM adh_etl_tasks
-                        WHERE is_active = 1
-                    """)
-
-                    etl_tasks = []
-                    for row in cur.fetchall():
-                        properties = {
-                            "id": f"etl:{row['id']}",
-                            "name": row["name"],
-                            "task_type": row.get("task_type", ""),
-                            "schedule": row.get("schedule", ""),
-                            "source_datasource_id": row.get("source_datasource_id"),
-                            "source_tables": row.get("source_tables", ""),
-                            "target_datasource_id": row.get("target_datasource_id"),
-                            "target_tables": row.get("target_tables", ""),
-                            "description": row.get("description", ""),
-                            "status": row.get("status", "active"),
-                            "type": "etl_task"
-                        }
-
-                        await self.neo4j.create_node("ETLTask", properties)
-                        etl_tasks.append(properties)
-
-                        # 创建数据源关系
-                        if row.get("source_datasource_id"):
-                            source_ds_id = f"ds:{row['source_datasource_id']}"
-                            await self.neo4j.create_relationship(
-                                f"etl:{row['id']}",
-                                source_ds_id,
-                                "CONSUMES",
-                                {"type": "consumes"}
-                            )
-
-                        if row.get("target_datasource_id"):
-                            target_ds_id = f"ds:{row['target_datasource_id']}"
-                            await self.neo4j.create_relationship(
-                                f"etl:{row['id']}",
-                                target_ds_id,
-                                "PRODUCES",
-                                {"type": "produces"}
-                            )
-
-                    return etl_tasks
-            finally:
-                conn.close()
-
-        except Exception as e:
-            logger.error(f"Failed to build ETL task nodes: {e}")
-            return []
-
-    async def _build_lineage_relations(self) -> List[Dict[str, Any]]:
-        """构建数据血缘关系
-
-        Returns:
-            list: 创建的关系列表
-        """
-        try:
-            from services.shared.common.db.metadata_db import get_metadata_conn
-
-            conn = get_metadata_conn()
-            try:
-                with conn.cursor() as cur:
-                    # 查询数据血缘关系
-                    cur.execute("""
-                        SELECT source_type, source_id, source_name,
-                               target_type, target_id, target_name,
-                               relation_type, etl_task_id
-                        FROM adh_data_lineage
-                        WHERE is_active = 1
-                    """)
-
-                    relations = []
-                    for row in cur.fetchall():
-                        # 构建节点ID
-                        source_node_id = self._build_lineage_node_id(row["source_type"], row["source_id"])
-                        target_node_id = self._build_lineage_node_id(row["target_type"], row["target_id"])
-
-                        # 创建关系
-                        properties = {
-                            "type": row["relation_type"],
-                            "etl_task_id": row.get("etl_task_id")
-                        }
-
-                        await self.neo4j.create_relationship(
-                            source_node_id,
-                            target_node_id,
-                            row["relation_type"].upper(),
-                            properties
-                        )
-                        relations.append({
-                            "source": source_node_id,
-                            "target": target_node_id,
-                            "type": row["relation_type"].upper()
-                        })
-
-                    # 构建ETL任务依赖关系
-                    cur.execute("""
-                        SELECT task_id, depends_on_task_id, dependency_type
-                        FROM adh_etl_dependencies
-                    """)
-
-                    for row in cur.fetchall():
-                        task_id = f"etl:{row['task_id']}"
-                        depends_on_id = f"etl:{row['depends_on_task_id']}"
-
-                        await self.neo4j.create_relationship(
-                            task_id,
-                            depends_on_id,
-                            "DEPENDS_ON",
-                            {"type": row.get("dependency_type", "sequential")}
-                        )
-                        relations.append({
-                            "source": task_id,
-                            "target": depends_on_id,
-                            "type": "DEPENDS_ON"
-                        })
-
-                    return relations
-            finally:
-                conn.close()
-
-        except Exception as e:
-            logger.error(f"Failed to build lineage relations: {e}")
-            return []
-
-    def _build_lineage_node_id(self, node_type: str, node_id: str) -> str:
-        """构建血缘节点ID
-
-        Args:
-            node_type: 节点类型(datasource/table/task)
-            node_id: 节点ID
-
-        Returns:
-            str: 完整的节点ID
-        """
-        prefix_map = {
-            "datasource": "ds",
-            "table": "table",
-            "task": "etl"
-        }
-        prefix = prefix_map.get(node_type, node_type)
-        return f"{prefix}:{node_id}"

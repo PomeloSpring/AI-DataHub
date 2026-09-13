@@ -98,76 +98,7 @@ async def get_workspace_id(request: Request) -> int:
         return 0
 
 
-# ── Ranger Data-Level Authorization ─────────────────────────────────────
-
-def require_datasource_access(
-    datasource_id: int = 0,
-    database: str = "",
-    table: str = "",
-    columns: list[str] = [],
-    action: str = "select",
-):
-    """Factory for a FastAPI dependency that checks data-level access via Ranger.
-
-    Usage:
-        @router.post("/query")
-        async def run_query(
-            req: QueryRequest,
-            user: dict = Depends(require_datasource_access(
-                database="mydb", table="orders", action="select"
-            )),
-        ):
-            ...
-
-    When Ranger is disabled, this is a no-op (always allows).
-    """
-    async def _check(user: dict = Depends(get_current_user)) -> dict:
-        from services.shared.common.config import RANGER_ENABLED
-        if not RANGER_ENABLED:
-            return user
-
-        try:
-            from services.shared.services.ranger_client import ranger_client
-
-            # Get user's LDAP groups for Ranger policy matching
-            groups = await _get_user_ranger_groups(user["user_id"])
-
-            result = await ranger_client.check_access(
-                user=user["username"],
-                groups=groups,
-                resource_type="table",
-                resource={"database": database, "table": table},
-                action=action,
-            )
-
-            if not result.allowed:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"无权访问 {database}.{table}: {result.reason}",
-                )
-
-            # Attach Ranger context to user dict for downstream use
-            user["ranger_result"] = result
-            return user
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.warning("Ranger check failed, allowing access: %s", e)
-            return user
-
-    return _check
-
-
-async def _get_user_ranger_groups(user_id: int) -> list[str]:
-    """Get a user's LDAP group DNs for Ranger policy matching."""
-    try:
-        from services.authservice.services.ldap_backend import ldap_backend
-        return ldap_backend.get_user_groups(user_id)
-    except Exception:
-        return []
-
-
-# ── Lightweight Permission Check (no Ranger/LDAP/Kerberos) ────────────
+# ── Lightweight Permission Check ────────────────────────────────────────
 
 def require_permission(
     datasource_id: int = 0,

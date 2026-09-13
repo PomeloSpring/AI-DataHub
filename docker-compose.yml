@@ -14,8 +14,6 @@ services:
     volumes:
       # Mount .env for easy config changes
       - ./.env:/app/.env:ro
-      # Cache embedding model across restarts
-      - embedding-cache:/root/.cache/huggingface
     networks:
       - chatbi
     healthcheck:
@@ -38,9 +36,6 @@ services:
         condition: service_healthy
     networks:
       - chatbi
-
-volumes:
-  embedding-cache:
 
 networks:
   chatbi:

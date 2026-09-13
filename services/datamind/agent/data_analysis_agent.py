@@ -80,7 +80,8 @@ select_tables → retrieve_metadata → generate_sql → execute_sql → 回答
         tools = self._get_system_tools()
 
         # 2. Build system prompt (enhanced with context)
-        system_prompt = self._build_system_prompt(datasource_id)
+        workspace_id = int(kwargs.get("workspace_id") or 0)
+        system_prompt = self._build_system_prompt(datasource_id, workspace_id)
 
         # 3. Execute with AgentLoop
         loop = AgentLoop(
@@ -127,10 +128,11 @@ select_tables → retrieve_metadata → generate_sql → execute_sql → 回答
 
         return [t for t in SYSTEM_TOOLS if t["name"] in allowed_tools]
 
-    def _build_system_prompt(self, datasource_id: int = 0) -> str:
+    def _build_system_prompt(self, datasource_id: int = 0, workspace_id: int = 0) -> str:
         """Build system prompt with datasource context and analysis skill summary."""
         from services.datamind.nl2sql.sql.query_executor import _get_ds_conn_params
         from services.datamind.config.skill_loader import get_skill_summary_for_prompt
+        from services.datamind.config.guardrails import get_guardrail_prompt
 
         # Get engine info
         ds_params = _get_ds_conn_params(datasource_id)
@@ -141,7 +143,10 @@ select_tables → retrieve_metadata → generate_sql → execute_sql → 回答
         # Get analysis skill summary
         skill_summary = get_skill_summary_for_prompt()
 
-        return f"""{self.system_prompt}
+        # 前置护栏（角色风格 + 权限边界），按工作空间作用域
+        guardrail = get_guardrail_prompt(workspace_id)
+
+        body = f"""{self.system_prompt}
 
 ## 运行环境
 
@@ -150,6 +155,9 @@ select_tables → retrieve_metadata → generate_sql → execute_sql → 回答
 
 {skill_summary}
 """
+        if guardrail:
+            body = f"{guardrail}\n\n---\n\n{body}"
+        return body
 
     async def _execute_system_tool(
         self,

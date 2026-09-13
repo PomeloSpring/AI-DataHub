@@ -31,7 +31,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from services.datamind.api.chat import router as chat_router
 from services.datamind.api.attachments import router as attachments_router
 from services.datamind.api.agent import router as agent_router
-from services.datamind.api.knowledge import router as knowledge_router
 from services.datamind.api.knowledge_bases import router as knowledge_bases_router
 from services.datamind.api.pipeline import router as pipeline_router
 from services.datamind.api.query import router as query_router
@@ -59,7 +58,6 @@ app.add_middleware(
 app.include_router(chat_router, prefix="/api/chat", tags=["Chat / NL2SQL"])
 app.include_router(attachments_router, prefix="/api/chat/attachments", tags=["Chat Attachments"])
 app.include_router(agent_router, prefix="/api/agent", tags=["Agent Dispatch"])
-app.include_router(knowledge_router, prefix="/api/knowledge", tags=["Knowledge Base"])
 app.include_router(knowledge_bases_router, prefix="/api", tags=["Knowledge Bases Management"])
 app.include_router(pipeline_router, prefix="/api/pipeline", tags=["Pipeline Execution"])
 app.include_router(query_router, prefix="/api/query", tags=["SQL Query"])
@@ -95,13 +93,16 @@ async def startup_event():
     except Exception as e:
         logger.warning("Agent registry init deferred: %s", e)
 
+    # Self-register built-in execution layer + start heartbeat loop (Phase 3)
+    try:
+        from services.datamind.execution.registry import start_registry_background
+        app.state.registry_task = start_registry_background()
+        logger.info("Execution-layer registry background task started")
+    except Exception as e:
+        logger.warning("Execution-layer registry init deferred: %s", e)
+
 
 @app.on_event("shutdown")
 def shutdown_event():
-    """Flush pending Langfuse events on shutdown."""
-    try:
-        from services.shared.common.llm.langfuse_client import flush
-        flush()
-    except Exception:
-        pass
+    """Cleanup on shutdown."""
     logger.info("DataMind service shut down")

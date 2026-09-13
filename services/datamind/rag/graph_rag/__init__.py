@@ -1,14 +1,13 @@
-"""Graph RAG Module — Neo4j-based knowledge graph for enhanced retrieval.
+"""Graph RAG Module — Oxigraph SPARQL-based knowledge graph for enhanced retrieval.
 
 This module provides:
-- Neo4j connection management
-- Knowledge graph construction
-- Graph-based retrieval
-- Integration with existing RAG system
+- OxigraphStore: RDF triple store operations (replaces Neo4j)
+- GraphBuilder: Build knowledge graph from MySQL metadata
+- GraphRetriever: SPARQL-based graph retrieval
 """
 
-from services.datamind.rag.graph_rag.neo4j_store import Neo4jStore
+from services.datamind.rag.graph_rag.oxigraph_store import OxigraphStore
 from services.datamind.rag.graph_rag.graph_builder import GraphBuilder
 from services.datamind.rag.graph_rag.graph_retriever import GraphRetriever
 
-__all__ = ["Neo4jStore", "GraphBuilder", "GraphRetriever"]
+__all__ = ["OxigraphStore", "GraphBuilder", "GraphRetriever"]

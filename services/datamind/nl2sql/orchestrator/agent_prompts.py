@@ -43,9 +43,11 @@ def build_agent_system_prompt(
     question: str,
     prev_context: dict,
     tools_listing: str,
+    workspace_id: int = 0,
 ) -> str:
     """Build the 4-layer system prompt for the agent.
 
+    Layer 0 (guardrail): 角色风格 + 权限边界（前置注入，最高优先级）
     Layer 1 (static): Identity + capability
     Layer 2 (static): Behavior principles
     --- DYNAMIC BOUNDARY ---
@@ -55,6 +57,10 @@ def build_agent_system_prompt(
     Metadata enters via tool results, not here.
     """
     current_date = datetime.now().strftime("%Y-%m-%d %A")
+
+    # ── Guardrail Layer (角色风格 + 权限边界) ──
+    from services.datamind.config.guardrails import get_guardrail_prompt
+    guardrail = get_guardrail_prompt(workspace_id)
 
     # ── Static Layer ──
     static = f"""你是 ChatBI 数据分析助手，通过工具与数据源交互，将用户的自然语言问题转化为 SQL 查询并执行。
@@ -120,8 +126,8 @@ def build_agent_system_prompt(
 
 ### 安全约束
 - SQL 中的表名和字段名必须通过工具确认，禁止编造
-- 不要执行 DELETE、UPDATE、DROP 等写操作
-- 查询结果中的数据直接展示，不要篡改"""
+- 查询结果中的数据直接展示，不要篡改
+- （写操作禁止、越权拦截等安全边界由前置的「权限边界」护栏与 nl2sql:rules 统一提供）"""
 
     # ── Dynamic Layer ──
     dynamic = f"""## 运行环境
@@ -150,7 +156,10 @@ def build_agent_system_prompt(
 ## 当前用户问题
 {question}"""
 
-    return f"{static}\n\n---\n\n{dynamic}"
+    body = f"{static}\n\n---\n\n{dynamic}"
+    if guardrail:
+        body = f"{guardrail}\n\n---\n\n{body}"
+    return body
 
 
 # ── Context Compaction ──────────────────────────────────────────────

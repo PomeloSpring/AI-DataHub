@@ -1,7 +1,4 @@
-"""Model Train API — Fine-tune embedding model using feedback data.
-
-Migrated from backend/api/model_train.py
-"""
+"""Model Train API — Feedback-based training data statistics and versions."""
 
 import logging
 from typing import Optional

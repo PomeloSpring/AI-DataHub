@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import Optional
 
 from services.shared.common.db.metadata_db import get_metadata_conn
-from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +14,16 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _make_embedding(text: str) -> str:
-    vec = generate_embedding(text)
-    return embedding_to_sql_literal(vec)
+_EMBEDDING_DIM = 768
+
+
+def _placeholder_embedding() -> str:
+    """Zero-vector placeholder for the logically-disabled embedding column.
+
+    The column is retained (Doris ARRAY<FLOAT> NOT NULL / MySQL JSON) but is no
+    longer produced by an embedding model nor read by any retrieval path.
+    """
+    return "[" + ", ".join(["0.0"] * _EMBEDDING_DIM) + "]"
 
 
 def _emit_graph_sync(event_type: str, data: dict):
@@ -119,12 +125,7 @@ class RelationService:
 
                 now = _now()
                 row_id = int(_time.time() * 1000000)
-                embed_text = (
-                    f"{data['source_table']}.{data['source_column']} → "
-                    f"{data['target_table']}.{data['target_column']} "
-                    f"{data.get('relation_type', '1:N')} {data.get('description') or ''}"
-                )
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
 
                 cur.execute(
                     "INSERT INTO adh_table_relations "
@@ -178,11 +179,7 @@ class RelationService:
                 description = data.get("description") if data.get("description") is not None else (row["description"] or "")
                 is_active = data.get("is_active") if data.get("is_active") is not None else bool(row["is_active"])
 
-                embed_text = (
-                    f"{row['source_table']}.{source_column} → {row['target_table']}.{target_column} "
-                    f"{relation_type} {description}"
-                )
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 now = _now()
 
                 # Doris DUPLICATE KEY 表不支持 UPDATE，使用 DELETE + INSERT

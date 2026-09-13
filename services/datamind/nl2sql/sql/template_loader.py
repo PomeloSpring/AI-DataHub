@@ -1,14 +1,13 @@
-"""Prompt Loader — loads prompts from config/ directory.
+"""Prompt Loader — loads prompts via config.loader (DB override → file fallback).
 
-Loads from config/skills/ and config/rules/ directories.
+Delegates to services.datamind.config.loader so that permission-boundary / dialect
+edits made in the admin UI take effect on SQL generation (subject to the loader's
+TTL cache; call loader.clear_prompt_cache() right after a DB update).
 """
 
 import logging
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
-
-_PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent.parent.parent / "config"
 
 _DIALECT_MAP = {
     "Doris": "doris",
@@ -17,30 +16,36 @@ _DIALECT_MAP = {
 }
 
 
-def _load_md(skill: str, component: str = None, dialect: str = None) -> str:
-    """Load a markdown prompt file."""
-    if dialect:
-        path = _PROMPTS_DIR / "skills" / skill / "dialects" / f"{dialect}.md"
-    else:
-        path = _PROMPTS_DIR / "skills" / skill / f"{component}.md"
+def _load_md(skill: str, component: str = None, dialect: str = None, workspace_id: int = 0) -> str:
+    """Load a prompt via the DB-aware loader (DB override first, then .md file)."""
+    from services.datamind.config.loader import load_prompt
 
-    if path.exists():
-        try:
-            return path.read_text(encoding="utf-8")
-        except Exception as e:
-            logger.warning("Failed to load %s: %s", path, e)
-    return ""
+    try:
+        if dialect:
+            return load_prompt(skill, None, dialect=dialect, workspace_id=workspace_id) or ""
+        return load_prompt(skill, component, workspace_id=workspace_id) or ""
+    except Exception as e:
+        logger.warning("Failed to load prompt skill=%s component=%s dialect=%s: %s",
+                       skill, component, dialect, e)
+        return ""
 
 
-def get_sql_prompt(engine: str = "Doris", query_limit: bool = True) -> dict:
-    """Build the full SQL generation prompt."""
+def get_sql_prompt(engine: str = "Doris", query_limit: bool = True, workspace_id: int = 0) -> dict:
+    """Build the full SQL generation prompt (guardrail + system + rules + dialect)."""
     dialect = _DIALECT_MAP.get(engine, engine.lower())
 
-    system = _load_md("nl2sql", "system")
-    rules = _load_md("nl2sql", "rules")
-    dialect_rules = _load_md("nl2sql", dialect=dialect)
+    from services.datamind.config.guardrails import get_guardrail_prompt
+    guardrail = get_guardrail_prompt(workspace_id)
 
-    parts = [system]
+    system = _load_md("nl2sql", "system", workspace_id=workspace_id)
+    rules = _load_md("nl2sql", "rules", workspace_id=workspace_id)
+    dialect_rules = _load_md("nl2sql", dialect=dialect, workspace_id=workspace_id)
+
+    parts = []
+    if guardrail:
+        parts.append(guardrail)
+    if system:
+        parts.append(system)
     if rules:
         parts.append(rules)
     if dialect_rules:

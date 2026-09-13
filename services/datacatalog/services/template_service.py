@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import Optional
 
 from services.shared.common.db.metadata_db import get_metadata_conn
-from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +14,16 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _make_embedding(text: str) -> str:
-    vec = generate_embedding(text)
-    return embedding_to_sql_literal(vec)
+_EMBEDDING_DIM = 768
+
+
+def _placeholder_embedding() -> str:
+    """Zero-vector placeholder for the logically-disabled embedding column.
+
+    The column is retained (Doris ARRAY<FLOAT> NOT NULL / MySQL JSON) but is no
+    longer produced by an embedding model nor read by any retrieval path.
+    """
+    return "[" + ", ".join(["0.0"] * _EMBEDDING_DIM) + "]"
 
 
 class TemplateService:
@@ -94,8 +100,7 @@ class TemplateService:
 
                 now = _now()
                 row_id = int(_time.time() * 1000000)
-                embed_text = f"{data['template_name']} {data.get('intent_keywords', '')} {data.get('description', '')}"
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
 
                 cur.execute(
                     "INSERT INTO adh_sql_templates "
@@ -139,8 +144,7 @@ class TemplateService:
                         fields[f] = row.get(f) or ""
                 is_active = data.get("is_active") if data.get("is_active") is not None else bool(row["is_active"])
 
-                embed_text = f"{fields['template_name']} {fields['intent_keywords']} {fields['description']}"
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 now = _now()
 
                 datasource_id = data.get("datasource_id") if data.get("datasource_id") is not None else row.get("datasource_id", 0)

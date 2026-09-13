@@ -370,6 +370,7 @@ CREATE TABLE IF NOT EXISTS adh_prompts (
     id                  BIGINT NOT NULL AUTO_INCREMENT,
     prompt_key          VARCHAR(100) NOT NULL,
     prompt_name         VARCHAR(200) NOT NULL,
+    category            VARCHAR(40) NOT NULL DEFAULT 'skill' COMMENT 'skill | role_style | permission_boundary | dialect',
     system_prompt       TEXT,
     user_prompt_template TEXT,
     description         TEXT,
@@ -380,6 +381,8 @@ CREATE TABLE IF NOT EXISTS adh_prompts (
     created_by          VARCHAR(100),
     change_log          TEXT,
     PRIMARY KEY (id),
+    -- 注: workspace_id 由 workspace_migration_v2.sql 添加；唯一键随后由
+    -- ai_guardrails_migration.sql 改为 uk_prompt_key_ws(prompt_key, workspace_id, version)
     UNIQUE KEY uk_prompt_key (prompt_key)
 ) ENGINE=InnoDB;
 
@@ -390,6 +393,7 @@ CREATE TABLE IF NOT EXISTS adh_prompt_versions (
     id                  BIGINT NOT NULL AUTO_INCREMENT,
     prompt_id           BIGINT NOT NULL,
     prompt_key          VARCHAR(100) NOT NULL,
+    category            VARCHAR(40) NOT NULL DEFAULT 'skill',
     version             INT NOT NULL,
     system_prompt       TEXT,
     user_prompt_template TEXT,
@@ -530,10 +534,30 @@ CREATE TABLE IF NOT EXISTS adh_mcp_servers (
     last_test_at DATETIME,
     last_test_status VARCHAR(20),
     last_test_message VARCHAR(500),
+    version INT NOT NULL DEFAULT 1,
+    created_by VARCHAR(100),
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY uk_name (name)
+) ENGINE=InnoDB;
+
+-- ============================================================================
+-- MCP 服务器版本历史表 (Phase 2 动态配置版本管理)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS adh_mcp_server_versions (
+    id                  BIGINT NOT NULL AUTO_INCREMENT,
+    config_id           BIGINT NOT NULL COMMENT 'FK to adh_mcp_servers.id',
+    config_key          VARCHAR(200) NOT NULL COMMENT 'MCP server name',
+    version             INT NOT NULL DEFAULT 1,
+    content             JSON NOT NULL COMMENT 'Full config snapshot',
+    change_log          TEXT,
+    created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_by          VARCHAR(100),
+    is_current          TINYINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (id),
+    INDEX idx_mcpver_config_id (config_id),
+    INDEX idx_mcpver_config_key (config_key)
 ) ENGINE=InnoDB;
 
 -- ============================================================================

@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import Optional
 
 from services.shared.common.db.metadata_db import get_metadata_conn
-from services.shared.common.llm.embedding import generate_embedding, embedding_to_sql_literal
 
 logger = logging.getLogger(__name__)
 
@@ -15,30 +14,16 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _make_embedding(text: str) -> str:
-    vec = generate_embedding(text)
-    return embedding_to_sql_literal(vec)
+_EMBEDDING_DIM = 768
 
 
-def _table_embed_text(table_name: str, table_comment: str = "", keywords: str = "",
-                      region_tag: str = "", domain_tag: str = "") -> str:
-    """生成表级别的嵌入文本。
+def _placeholder_embedding() -> str:
+    """Zero-vector placeholder for the logically-disabled embedding column.
 
-    使用 keywords（短聚焦词）提升向量检索质量。
-    业务描述不包含在内——由 LLM 单独处理。
+    The column is retained (Doris ARRAY<FLOAT> NOT NULL / MySQL JSON) but is no
+    longer produced by an embedding model nor read by any retrieval path.
     """
-    parts = [table_name, table_comment or "", keywords or ""]
-    return " ".join(p for p in parts if p).strip()
-
-
-def _col_embed_text(table_name: str, column_name: str, data_type: str = "",
-                    column_comment: str = "", keywords: str = "") -> str:
-    """生成字段级别的嵌入文本。
-
-    使用 keywords 提升向量检索质量。业务描述由 LLM 单独处理。
-    """
-    parts = [table_name, column_name, data_type or "", column_comment or "", keywords or ""]
-    return " ".join(p for p in parts if p).strip()
+    return "[" + ", ".join(["0.0"] * _EMBEDDING_DIM) + "]"
 
 
 class MetadataService:
@@ -154,12 +139,7 @@ class MetadataService:
 
                 now = _now()
                 row_id = int(_time.time() * 1000000)
-                embed_text = _col_embed_text(
-                    data["table_name"], data["column_name"],
-                    data.get("data_type") or "", data.get("column_comment", ""),
-                    data.get("keywords") or "",
-                )
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
 
                 cur.execute(
                     "INSERT INTO adh_column_metadata "
@@ -197,9 +177,7 @@ class MetadataService:
                 keywords = data.get("keywords") if data.get("keywords") is not None else (row.get("keywords") or "")
                 is_active = data.get("is_active") if data.get("is_active") is not None else bool(row["is_active"])
 
-                # 重新生成嵌入向量
-                embed_text = _col_embed_text(row['table_name'], row['column_name'], row["data_type"], column_comment, keywords)
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 now = _now()
 
                 # Doris DUPLICATE KEY 表不支持 UPDATE，使用 DELETE + INSERT
@@ -304,11 +282,7 @@ class MetadataService:
 
                 now = _now()
                 row_id = int(_time.time() * 1000000)
-                embed_text = _table_embed_text(
-                    data["table_name"], data.get("table_comment", ""),
-                    data.get("keywords") or "", "", data.get("domain_tag", ""),
-                )
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
 
                 cur.execute(
                     "INSERT INTO adh_table_info "
@@ -346,9 +320,7 @@ class MetadataService:
                 region_tag = data.get("region_tag") if data.get("region_tag") is not None else (row["region_tag"] or "")
                 is_active = data.get("is_active") if data.get("is_active") is not None else bool(row["is_active"])
 
-                # 重新生成嵌入向量
-                embed_text = _table_embed_text(row['table_name'], table_comment, keywords, region_tag, domain_tag)
-                vec_literal = _make_embedding(embed_text)
+                vec_literal = _placeholder_embedding()
                 now = _now()
 
                 # Doris DUPLICATE KEY 表不支持 UPDATE，使用 DELETE + INSERT
