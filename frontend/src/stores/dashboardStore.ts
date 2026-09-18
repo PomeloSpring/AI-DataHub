@@ -8,6 +8,8 @@ export interface DashboardChart {
   name: string;
   chart_type: string;
   sql_query: string;
+  semantic_query?: Record<string, any> | null;
+  query_source?: 'raw_sql' | 'semantic';
   config: Record<string, any>;
   position: { x: number; y: number; w: number; h: number };
   source_type: string;
@@ -65,6 +67,7 @@ interface DashboardState {
   currentId: number | null;
   currentWorkspaceId: number;
   loading: boolean;
+  error: string | null;
   globalFilters: Record<string, any>;
   crossFilters: any[];
   favorites: number[];
@@ -77,13 +80,13 @@ interface DashboardState {
   loadDashboards: (workspaceId?: number) => Promise<void>;
   setCurrent: (id: number | null) => void;
   createDashboard: (name: string, workspaceId?: number) => Promise<number>;
-  updateDashboard: (id: number, data: Partial<Dashboard>) => Promise<void>;
+  updateDashboard: (id: number, data: Partial<Dashboard>, deferReload?: boolean) => Promise<void>;
   deleteDashboard: (id: number) => Promise<void>;
   copyDashboard: (id: number) => Promise<void>;
   setDefault: (id: number) => Promise<void>;
-  addChart: (dashboardId: number, chart: Partial<DashboardChart>) => Promise<void>;
-  updateChart: (dashboardId: number, chartId: number, data: Partial<DashboardChart>) => Promise<void>;
-  deleteChart: (dashboardId: number, chartId: number) => Promise<void>;
+  addChart: (dashboardId: number, chart: Partial<DashboardChart>, deferReload?: boolean) => Promise<number>;
+  updateChart: (dashboardId: number, chartId: number, data: Partial<DashboardChart>, deferReload?: boolean) => Promise<void>;
+  deleteChart: (dashboardId: number, chartId: number, deferReload?: boolean) => Promise<void>;
   saveLayout: (dashboardId: number, layouts: { chart_id: number; position: any }[]) => Promise<void>;
   reorderDashboards: (orders: { id: number; sort_order: number }[]) => Promise<void>;
   setGlobalFilters: (filters: Record<string, any>) => void;
@@ -98,11 +101,15 @@ interface DashboardState {
   refreshSingleChart: (chartId: number, extra?: { page_limit?: number; page_offset?: number; count_sql?: string }) => Promise<void>;
 }
 
+let loadVersion = 0;
+const refreshVersions = new Map<number, number>();
+
 export const useDashboardStore = create<DashboardState>((set, get) => ({
   dashboards: [],
   currentId: null,
   currentWorkspaceId: 0,
   loading: false,
+  error: null,
   globalFilters: {},
   crossFilters: [],
   favorites: (() => {
@@ -122,25 +129,30 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   loadDashboards: async (workspaceId?: number) => {
     // Remember workspace context so subsequent operations reload the correct scope
     const wsId = workspaceId ?? get().currentWorkspaceId ?? 0;
-    set({ loading: true, currentWorkspaceId: wsId });
+    const version = ++loadVersion;
+    if (wsId !== get().currentWorkspaceId) { set({ dashboards: [] }); get().setCurrent(null); }
+    set({ loading: true, error: null, currentWorkspaceId: wsId });
     try {
       const params = wsId ? `?workspace_id=${wsId}` : '';
       const { data } = await client.get(`/dashboard/${params}`);
-      const dashboards = data as Dashboard[];
+      if (version !== loadVersion) return;
+      if (!Array.isArray(data)) throw new Error('仪表盘接口格式错误');
+      const dashboards = data.map((d: Dashboard) => ({ ...d, filters: d.filters || {}, charts: d.charts || [], page_params: d.page_params || d.filters?.pageParams || [] }));
       set({ dashboards });
       const state = get();
-      if (!state.currentId && dashboards.length > 0) {
+      if (!dashboards.some(d => d.id === state.currentId)) {
         const defaultDb = dashboards.find(d => d.is_default);
-        set({ currentId: defaultDb?.id || dashboards[0].id });
+        get().setCurrent(defaultDb?.id || dashboards[0]?.id || null);
       }
     } catch {
-      set({ dashboards: [] });
+      if (version === loadVersion) set({ error: '看板加载失败，已保留本地已确认的数据，请重试' });
     } finally {
-      set({ loading: false });
+      if (version === loadVersion) set({ loading: false });
     }
   },
 
   setCurrent: (id) => {
+    if (get().currentId === id) return;
     const dashboard = get().dashboards.find(d => d.id === id);
     const pageParams = dashboard?.page_params || [];
     const pageParamValues: Record<string, any> = {};
@@ -149,8 +161,12 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     }
     set({
       currentId: id,
+      paramValues: Object.fromEntries((dashboard?.params || []).map(p => [p.name, p.default ?? ''])),
+      globalFilters: {},
+      crossFilters: [],
       pageParams,
       pageParamValues,
+      refreshing: false,
     });
   },
 
@@ -158,27 +174,32 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     const wsId = workspaceId || get().currentWorkspaceId || 0;
     const { data } = await client.post('/dashboard/', { name, workspace_id: wsId });
     await get().loadDashboards(wsId);
-    set({ currentId: data.id });
+    get().setCurrent(data.id);
     return data.id;
   },
 
-  updateDashboard: async (id, updates) => {
-    await client.put(`/dashboard/${id}`, updates);
-    await get().loadDashboards(get().currentWorkspaceId);
+  updateDashboard: async (id, updates, deferReload = false) => {
+    const { page_params, ...payload } = updates;
+    if (page_params !== undefined) payload.filters = { ...(updates.filters || get().dashboards.find(d => d.id === id)?.filters || {}), pageParams: page_params };
+    await client.put(`/dashboard/${id}`, payload);
+    set(state => ({ dashboards: state.dashboards.map(d => d.id === id ? { ...d, ...updates, ...payload } : d) }));
+    if (get().currentId === id && page_params !== undefined) get().setPageParams(page_params);
+    if (!deferReload) await get().loadDashboards(get().currentWorkspaceId);
   },
 
   deleteDashboard: async (id) => {
     await client.delete(`/dashboard/${id}`);
     const state = get();
     const remaining = state.dashboards.filter(d => d.id !== id);
-    set({ currentId: remaining.length > 0 ? remaining[0].id : null });
+    set({ dashboards: remaining });
+    if (state.currentId === id) get().setCurrent(remaining[0]?.id ?? null);
     await get().loadDashboards(get().currentWorkspaceId);
   },
 
   copyDashboard: async (id) => {
     const { data } = await client.post(`/dashboard/${id}/copy`);
     await get().loadDashboards(get().currentWorkspaceId);
-    set({ currentId: data.id });
+    get().setCurrent(data.id);
     toast.success('仪表盘已拷贝');
   },
 
@@ -187,19 +208,28 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     await get().loadDashboards(get().currentWorkspaceId);
   },
 
-  addChart: async (dashboardId, chart) => {
-    await client.post(`/dashboard/${dashboardId}/charts`, chart);
-    await get().loadDashboards(get().currentWorkspaceId);
+  addChart: async (dashboardId, chart, deferReload = false) => {
+    const { data } = await client.post(`/dashboard/${dashboardId}/charts`, chart);
+    const id = Number(data.id);
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error('新增图表未返回有效 ID');
+    set(state => ({ dashboards: state.dashboards.map(d => d.id === dashboardId
+      ? { ...d, charts: [...d.charts, { ...chart, id, dashboard_id: dashboardId } as DashboardChart] } : d) }));
+    if (!deferReload) await get().loadDashboards(get().currentWorkspaceId);
+    return id;
   },
 
-  updateChart: async (dashboardId, chartId, data) => {
+  updateChart: async (dashboardId, chartId, data, deferReload = false) => {
     await client.put(`/dashboard/${dashboardId}/charts/${chartId}`, data);
-    await get().loadDashboards(get().currentWorkspaceId);
+    set(state => ({ dashboards: state.dashboards.map(d => d.id === dashboardId
+      ? { ...d, charts: d.charts.map(c => c.id === chartId ? { ...c, ...data } : c) } : d) }));
+    if (!deferReload) await get().loadDashboards(get().currentWorkspaceId);
   },
 
-  deleteChart: async (dashboardId, chartId) => {
+  deleteChart: async (dashboardId, chartId, deferReload = false) => {
     await client.delete(`/dashboard/${dashboardId}/charts/${chartId}`);
-    await get().loadDashboards(get().currentWorkspaceId);
+    set(state => ({ dashboards: state.dashboards.map(d => d.id === dashboardId
+      ? { ...d, charts: d.charts.filter(c => c.id !== chartId) } : d) }));
+    if (!deferReload) await get().loadDashboards(get().currentWorkspaceId);
   },
 
   saveLayout: async (dashboardId, layouts) => {
@@ -272,7 +302,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     if (!currentId) return;
     const dashboard = dashboards.find(d => d.id === currentId);
     if (!dashboard) return;
-    const charts = dashboard.charts.filter(c => c.sql_query && !c.chart_type.startsWith('widget_'));
+    const charts = dashboard.charts.filter(c => (c.semantic_query || c.sql_query) && !c.chart_type.startsWith('widget_'));
     await Promise.all(charts.map(c => {
       const cfg = c.config || {};
       if (cfg.enableServerPagination) {
@@ -284,11 +314,13 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   refreshSingleChart: async (chartId, extra?) => {
     const { currentId, paramValues, pageParamValues } = get();
-    if (!currentId) return;
+    if (!currentId || !get().dashboards.find(d => d.id === currentId)?.charts.some(c => c.id === chartId)) return;
+    const version = (refreshVersions.get(chartId) || 0) + 1;
+    refreshVersions.set(chartId, version);
     set(state => {
       const ids = new Set(state.refreshingChartIds);
       ids.add(chartId);
-      return { refreshingChartIds: ids };
+      return { refreshingChartIds: ids, refreshing: true };
     });
     try {
       const body: any = { params: { ...paramValues, ...pageParamValues } };
@@ -297,6 +329,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       if (extra?.count_sql) body.count_sql = extra.count_sql;
 
       const { data } = await client.post(`/dashboard/${currentId}/charts/${chartId}/refresh`, body);
+      if (refreshVersions.get(chartId) !== version) return;
       if (data && !data.error) {
         set(state => ({
           dashboards: state.dashboards.map(d => {
@@ -318,29 +351,37 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '图表刷新失败');
     } finally {
-      set(state => {
+      if (refreshVersions.get(chartId) === version) set(state => {
         const ids = new Set(state.refreshingChartIds);
         ids.delete(chartId);
-        return { refreshingChartIds: ids };
+        const currentCharts = state.dashboards.find(d => d.id === state.currentId)?.charts || [];
+        return { refreshingChartIds: ids, refreshing: currentCharts.some(c => ids.has(c.id)) };
       });
     }
   },
 
   createFromTemplate: async (template) => {
-    const { createDashboard, addChart } = get();
+    const { createDashboard, addChart, updateDashboard } = get();
     const dashboardId = await createDashboard(template.name);
-    for (const chart of template.charts) {
-      const config = chart.config || {};
-      const sql = config.sql || '';
-      const { sql: _, ...restConfig } = config;
-      await addChart(dashboardId, {
-        name: chart.name,
-        chart_type: chart.chart_type,
-        sql_query: sql,
-        position: chart.position,
-        config: restConfig,
-        source_type: 'template',
-      });
+    try {
+      await updateDashboard(dashboardId, {
+        description: template.description || '', filters: template.filters || {},
+        params: template.params || [], page_params: template.page_params || template.filters?.pageParams || [], carousel_interval: template.carousel_interval || 0,
+      }, true);
+      for (const chart of template.charts || []) {
+        const { sql, ...config } = chart.config || {};
+        const semantic = chart.query_source === 'semantic' || !!chart.semantic_query;
+        await addChart(dashboardId, {
+          name: chart.name, chart_type: chart.chart_type,
+          sql_query: semantic ? '' : (chart.sql_query ?? sql ?? ''),
+          semantic_query: chart.semantic_query,
+          query_source: semantic ? 'semantic' : 'raw_sql',
+          position: chart.position, config,
+          source_type: chart.source_type || 'template', source_id: chart.source_id,
+        }, true);
+      }
+    } finally {
+      await get().loadDashboards(get().currentWorkspaceId);
     }
     return dashboardId;
   },

@@ -434,6 +434,23 @@ def delete_report_template(template_id: int):
 # ════════════════════════════════════════════════════════════════════
 
 
+@router.get("/reports")
+def list_reports(
+    workspace_id: int = Query(0, description="Workspace ID (0 = all)"),
+):
+    """报表中心: 成功执行生成的报告摘要清单(附任务名, 时间倒序)."""
+    return scheduled_task_service.list_reports(workspace_id=workspace_id)
+
+
+@router.get("/reports/{report_id}/detail")
+def get_report_detail(report_id: int):
+    """报表中心应用内查看: 返回完整内容, 免外链 access_token 校验."""
+    report = scheduled_task_service.get_report_detail(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="报告不存在")
+    return report
+
+
 @router.get("/reports/{report_id}")
 def get_report(report_id: int, token: Optional[str] = Query(None, description="Access token for private reports")):
     """Get a generated report by ID. Public reports are accessible to all; private require token."""

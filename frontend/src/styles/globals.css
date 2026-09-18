@@ -457,17 +457,17 @@
     --sidebar-accent: 0 0% 96%;
     --sidebar-accent-foreground: 0 0% 5%;
 
-    /* Chart colors — jewel tones */
-    --chart-1: 210 30% 45%;           /* #4d6f96 钢蓝 */
-    --chart-2: 260 20% 47%;           /* #74628f 暗紫 */
-    --chart-3: 178 34% 38%;           /* #3f827f 青绿 */
-    --chart-4: 205 40% 43%;           /* #3f769b 海蓝 */
-    --chart-5: 248 15% 46%;           /* #635c8e 灰紫 */
-    --chart-6: 186 34% 37%;           /* #3f7480 深青 */
-    --chart-7: 155 35% 37%;           /* #3f7d63 森林绿 */
-    --chart-8: 35 52% 40%;            /* #9a6a30 琥珀 */
-    --chart-9: 2 37% 46%;             /* #a24f49 砖红 */
-    --chart-10: 210 20% 55%;          /* 中性蓝灰 */
+    /* 图表配色：近黑主色 + 中性灰，多系列使用低饱和辅助色；状态色保持独立。 */
+    --chart-1: 0 0% 5%;              /* 与界面主色一致 */
+    --chart-2: 0 0% 40%;             /* 石墨灰 */
+    --chart-3: 210 18% 48%;           /* 灰蓝 */
+    --chart-4: 260 14% 52%;           /* 灰紫 */
+    --chart-5: 178 20% 42%;           /* 青灰 */
+    --chart-6: 35 24% 48%;            /* 暖褐 */
+    --chart-7: 155 18% 46%;           /* 灰绿 */
+    --chart-8: 205 14% 62%;           /* 浅蓝灰 */
+    --chart-9: 2 22% 54%;             /* 灰红 */
+    --chart-10: 248 10% 66%;          /* 浅紫灰 */
 
     /* Kibana-compatible tokens */
     --kibana-bg: 0 0% 98%;
@@ -1235,9 +1235,9 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
   filter: drop-shadow(0 0 8px hsl(180 100% 50% / 0.4));
 }
 
-/* Tooltip with glassmorphism */
+/* Tooltip with glassmorphism（排除 G2 图表 tooltip） */
 .ainative .ant-tooltip-inner,
-.ainative [class*="tooltip"] {
+.ainative [class*="tooltip"]:not([class*="g2-tooltip"]) {
   background: hsl(230 25% 8% / 0.9);
   backdrop-filter: blur(16px);
   border: 1px solid hsl(180 100% 50% / 0.2);
@@ -1574,9 +1574,9 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
     0 2px 4px rgba(0, 0, 0, 0.04);
 }
 
-/* Tooltip with clean style */
+/* Tooltip with clean style（排除 G2 图表 tooltip） */
 .medical .ant-tooltip-inner,
-.medical [class*="tooltip"] {
+.medical [class*="tooltip"]:not([class*="g2-tooltip"]) {
   background: hsl(185 35% 15%);
   border: 1px solid hsl(185 20% 20%);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
@@ -1986,8 +1986,8 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
   transition: all 0.15s ease;
 }
 
-/* Tooltip — near-black */
-.datafoundry [class*="tooltip"] {
+/* Tooltip — near-black（排除 G2 图表 tooltip，避免污染其内部子元素） */
+.datafoundry [class*="tooltip"]:not([class*="g2-tooltip"]) {
   background: hsl(0 0% 5%);
   color: hsl(0 0% 100%);
   border-radius: 8px;
@@ -2059,12 +2059,26 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
   background: hsl(210 30% 45% / 0.2);
 }
 
-/* Code blocks — dark */
-.datafoundry code,
-.datafoundry pre {
+/* Code blocks — dark（仅作用于代码块，不污染行内 code） */
+.datafoundry pre,
+.datafoundry pre code {
   background: hsl(0 0% 9%);
   color: hsl(0 0% 90%);
   border-radius: 12px;
+}
+
+/* 行内变量徽章 — 固定配色，不随主题切换 */
+.var-code,
+.datafoundry .var-code {
+  background: #f4f4f5;
+  color: #3f3f46;
+  border: 1px solid #e4e4e7;
+  border-radius: 4px;
+  padding: 0.125rem 0.375rem;
+}
+.var-code:hover,
+.datafoundry .var-code:hover {
+  background: #e4e4e7;
 }
 
 /* Step tone utility classes for DataFoundry theme */
@@ -2087,6 +2101,69 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
 .datafoundry .step-success-bg { background: hsl(var(--step-success) / 0.1); border-color: hsl(var(--step-success) / 0.3); }
 .datafoundry .step-warning-bg { background: hsl(var(--step-warning) / 0.1); border-color: hsl(var(--step-warning) / 0.3); }
 .datafoundry .step-error-bg { background: hsl(var(--step-error) / 0.1); border-color: hsl(var(--step-error) / 0.3); }
+
+/* ============================================
+   PROSE 主题令牌化 — chat/报告排版自动继承主题
+   typography 插件默认按浅色排版、依赖 .dark 类切换深浅;
+   本项目深色主题(dark/tech/finance/glass/ainative)不挂 .dark 类,
+   统一改为令牌驱动: 文本/链接/引用/代码全部走 CSS 变量,随主题联动
+   ============================================ */
+.prose,
+.prose-invert {
+  --tw-prose-body: hsl(var(--foreground) / 0.92);
+  --tw-prose-headings: hsl(var(--foreground));
+  --tw-prose-lead: hsl(var(--muted-foreground));
+  --tw-prose-links: hsl(var(--primary));
+  --tw-prose-bold: hsl(var(--foreground));
+  --tw-prose-counters: hsl(var(--muted-foreground));
+  --tw-prose-bullets: hsl(var(--muted-foreground));
+  --tw-prose-hr: hsl(var(--border));
+  --tw-prose-quotes: hsl(var(--muted-foreground));
+  --tw-prose-quote-borders: hsl(var(--primary) / 0.4);
+  --tw-prose-captions: hsl(var(--muted-foreground));
+  --tw-prose-code: hsl(var(--foreground));
+  --tw-prose-pre-code: hsl(var(--foreground) / 0.92);
+  --tw-prose-pre-bg: hsl(var(--muted));
+  --tw-prose-th-borders: hsl(var(--border));
+  --tw-prose-td-borders: hsl(var(--border) / 0.5);
+  /* invert 变量同步为同一套令牌,保证遗留 dark:prose-invert 行为一致 */
+  --tw-prose-invert-body: hsl(var(--foreground) / 0.92);
+  --tw-prose-invert-headings: hsl(var(--foreground));
+  --tw-prose-invert-lead: hsl(var(--muted-foreground));
+  --tw-prose-invert-links: hsl(var(--primary));
+  --tw-prose-invert-bold: hsl(var(--foreground));
+  --tw-prose-invert-counters: hsl(var(--muted-foreground));
+  --tw-prose-invert-bullets: hsl(var(--muted-foreground));
+  --tw-prose-invert-hr: hsl(var(--border));
+  --tw-prose-invert-quotes: hsl(var(--muted-foreground));
+  --tw-prose-invert-quote-borders: hsl(var(--primary) / 0.4);
+  --tw-prose-invert-captions: hsl(var(--muted-foreground));
+  --tw-prose-invert-code: hsl(var(--foreground));
+  --tw-prose-invert-pre-code: hsl(var(--foreground) / 0.92);
+  --tw-prose-invert-pre-bg: hsl(var(--muted));
+  --tw-prose-invert-th-borders: hsl(var(--border));
+  --tw-prose-invert-td-borders: hsl(var(--border) / 0.5);
+}
+
+/* 行内代码: muted 底 + 细边框,随主题;:not(pre) 不影响代码块内 code */
+.prose :not(pre) > code {
+  background: hsl(var(--muted));
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.25rem;
+  padding: 0.1em 0.35em;
+  font-weight: 500;
+}
+
+/* 代码块: 主题化容器(datafoundry 保持其专属深色代码块定制,特异性更高) */
+.prose pre {
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.5rem;
+}
+
+/* blockquote 中文语境去斜体,保留主题化左边框 */
+.prose blockquote {
+  font-style: normal;
+}
 
 /* ============================================
    MARKDOWN TABLE STYLES (for agent reply)
@@ -2151,11 +2228,5 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
   padding: 0.3rem 0.6rem;
 }
 
-/* Dark mode table refinements */
-.dark .prose thead th {
-  background: hsl(var(--muted) / 0.8);
-}
-
-.dark .prose tbody td {
-  border-color: hsl(var(--border) / 0.3);
-}
+/* 表格深浅差异已由 --muted/--border 令牌吸收,
+   原 .dark .prose 规则删除(applyTheme 从不挂 .dark 类,属死代码) */

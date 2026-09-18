@@ -1,7 +1,22 @@
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import type { DashboardParam } from '../stores/dashboardStore';
+import { useDashboardStore, type DashboardParam, type Dashboard } from '../stores/dashboardStore';
+
+export function DashboardRuntimeParams({ dashboard }: { dashboard: Dashboard }) {
+  const { paramValues, pageParamValues, setParamValue, setPageParamValue, currentId } = useDashboardStore();
+  if (currentId !== dashboard.id) return null;
+  return <>
+    <DashboardParams params={dashboard.params || []} values={paramValues} onChange={setParamValue} />
+    {!!dashboard.page_params?.length && <div className="flex flex-wrap gap-4 border-b px-4 py-2">
+      {dashboard.page_params.map(p => <label key={p.name} className="flex items-center gap-2 text-xs">{p.label || p.name}
+        <Input className="h-8 w-40" type={p.type === 'number' || p.type === 'date' ? p.type : 'text'}
+          placeholder={p.type === 'date_range' ? 'YYYY-MM-DD,YYYY-MM-DD' : ''}
+          value={pageParamValues[p.name] ?? p.default ?? ''} onChange={e => setPageParamValue(p.name, e.target.value)} />
+      </label>)}
+    </div>}
+  </>;
+}
 
 interface Props {
   params: DashboardParam[];

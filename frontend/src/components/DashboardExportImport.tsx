@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import { Download, Upload, Copy, Check, FileJson } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -10,7 +10,17 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 
 interface DashboardExportImportProps {
   dashboard: any;
-  onImport: (data: any) => void;
+  onImport: (data: any) => void | Promise<void>;
+}
+
+export function exportChart(chart: any) {
+  const semantic = chart.query_source === 'semantic' || !!chart.semantic_query;
+  const stripSql = (value: any): any => Array.isArray(value) ? value.map(stripSql) : value && typeof value === 'object'
+    ? Object.fromEntries(Object.entries(value).filter(([key]) => !/sql|data_cache|previewData/i.test(key)).map(([key, val]) => [key, stripSql(val)])) : value;
+  return { name: chart.name, chart_type: chart.chart_type,
+    ...(semantic ? { semantic_query: chart.semantic_query, query_source: 'semantic' } : { sql_query: chart.sql_query, query_source: chart.query_source || 'raw_sql' }),
+    config: semantic ? stripSql(chart.config) : chart.config, position: chart.position,
+    source_type: chart.source_type, source_id: chart.source_id };
 }
 
 export default function DashboardExportImport({ dashboard, onImport }: DashboardExportImportProps) {
@@ -18,26 +28,23 @@ export default function DashboardExportImport({ dashboard, onImport }: Dashboard
   const [importOpen, setImportOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [importData, setImportData] = useState('');
+  const [importing, setImporting] = useState(false);
+  const importLock = useRef(false);
 
   const exportData = useCallback(() => {
     if (!dashboard) return null;
 
     const exportObj = {
-      version: '1.0',
+      version: '1.1',
       exported_at: new Date().toISOString(),
       dashboard: {
         name: dashboard.name,
         description: dashboard.description,
         filters: dashboard.filters,
         carousel_interval: dashboard.carousel_interval,
-        charts: dashboard.charts.map((chart: any) => ({
-          name: chart.name,
-          chart_type: chart.chart_type,
-          sql_query: chart.sql_query,
-          config: chart.config,
-          position: chart.position,
-          source_type: chart.source_type,
-        })),
+        params: dashboard.params,
+        page_params: dashboard.page_params,
+        charts: dashboard.charts.map(exportChart),
       },
     };
 
@@ -75,29 +82,31 @@ export default function DashboardExportImport({ dashboard, onImport }: Dashboard
     }
   }, [exportData]);
 
-  const handleImport = useCallback(() => {
+  const handleImport = useCallback(async () => {
+    if (importLock.current) return;
+    importLock.current = true; setImporting(true);
     try {
       const parsed = JSON.parse(importData);
-      if (!parsed.dashboard) {
+      if (!parsed.dashboard || !Array.isArray(parsed.dashboard.charts)) {
         toast.error('无效的仪表盘数据格式');
         return;
       }
 
-      const { name, description, charts, filters, carousel_interval } = parsed.dashboard;
+      const { name, description, charts, filters, carousel_interval, params, page_params } = parsed.dashboard;
 
-      onImport({
+      await onImport({
         name: name ? `${name} (导入)` : '导入的仪表盘',
         description,
         filters,
         carousel_interval,
-        charts: charts || [],
+        charts: charts.map(exportChart), params, page_params,
       });
       toast.success('导入成功');
       setImportOpen(false);
       setImportData('');
     } catch {
-      toast.error('无效的JSON格式');
-    }
+      toast.error('导入未完成，请检查 JSON 或服务后重试；已保留输入内容');
+    } finally { importLock.current = false; setImporting(false); }
   }, [importData, onImport]);
 
   const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -122,7 +131,7 @@ export default function DashboardExportImport({ dashboard, onImport }: Dashboard
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent>
-          <DropdownMenuItem onClick={() => setExportOpen(true)}>
+          <DropdownMenuItem disabled={!dashboard} onClick={() => setExportOpen(true)}>
             <Upload className="h-4 w-4 mr-2" />
             导出仪表盘
           </DropdownMenuItem>
@@ -165,6 +174,7 @@ export default function DashboardExportImport({ dashboard, onImport }: Dashboard
 
       {/* Import Modal */}
       <Dialog open={importOpen} onOpenChange={(open) => {
+        if (importing) return;
         if (!open) setImportData('');
         setImportOpen(open);
       }}>
@@ -209,11 +219,11 @@ export default function DashboardExportImport({ dashboard, onImport }: Dashboard
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setImportOpen(false); setImportData(''); }}>
+            <Button variant="outline" disabled={importing} onClick={() => { setImportOpen(false); setImportData(''); }}>
               取消
             </Button>
-            <Button onClick={handleImport} disabled={!importData.trim()}>
-              导入
+            <Button onClick={handleImport} disabled={importing || !importData.trim()}>
+              {importing ? '导入中…' : '导入'}
             </Button>
           </DialogFooter>
         </DialogContent>

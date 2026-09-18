@@ -39,6 +39,7 @@ COMPACT_KEEP_RECENT = 6       # Number of recent messages to keep verbatim
 ORCHESTRATOR_SYSTEM_TOOL_NAMES = {
     "select_tables", "list_tables", "retrieve_metadata",
     "generate_sql", "execute_sql", "validate_sql",
+    "run_semantic_query",
     "search_columns", "get_sample_data", "search_business_terms",
     "image_info", "image_process", "detect_table_region",
 }
@@ -665,6 +666,38 @@ SYSTEM_TOOLS = [
             "required": ["sql"],
         },
     },
+    {
+        "name": "run_semantic_query",
+        "description": (
+            "【首选】以声明式语义层意图查数据。你只需选对象/指标/维度/过滤，\n"
+            "binding 解析 + 护栏 + RLS 改写都由语义层完成，你不需要也不允许写 SQL。\n"
+            "intent_json 形式: {object:'user',metrics:['用户数'],dimensions:['城市'],\n"
+            "  filters:[{dim:'创建时间',op:'gte',value:'2024-01-01'}],limit:100,\n"
+            "  time_grain:'month'|null, time_window:'7d', time_column:'创建时间',\n"
+            "  params:{'模板变量':值}, dry_run:false}。\n"
+            "相对时间(如‘最近7天’)一律用 time_window('7d'/'24h'/'2w'/'1M')表达，不要自行推算绝对日期。\n"
+            "对象若绑定 SQL 模板(高级函数/漏斗等)，先用 knowledge_search 查模板 variables，再用 params 传参。\n"
+            "先用 knowledge_search/select_tables 确认对象名与可用指标、维度。\n"
+            "任何带 SQL 的入参都会在解析阶段被拒绝，请主动只传声明式字段。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "intent_json": {
+                    "type": "string",
+                    "description": (
+                        "SemanticQuery JSON 字符串（object/metrics/dimensions/filters/order/limit/"
+                        "time_grain/time_window/time_column/params/dry_run）"
+                    ),
+                },
+                "datasource_id": {
+                    "type": "integer",
+                    "description": "可选，默认从执行上下文取",
+                },
+            },
+            "required": ["intent_json"],
+        },
+    },
     # === Self-Correction (Claude Code: error → fix loop) ===
     {
         "name": "explain_error",
@@ -1161,6 +1194,45 @@ async def _execute_system_tool(
             from services.datamind.nl2sql.sql.sql_validator import validate_and_fix
             sql, warnings = validate_and_fix(tool_input["sql"], query_type=tool_input.get("query_type", "sql"))
             return json.dumps({"sql": sql, "warnings": warnings}, ensure_ascii=False)
+
+        elif tool_name == "run_semantic_query":
+            # Phase 3: 语义层主路。内部已含护栏 + binding + RLS，失败时回
+            # 回结构化 error 给 LLM，让它重新产 intent（而不是 fallback 写 SQL）。
+            from services.datamind.execution.sdk_tools.semantic_query import run_semantic_query
+            from services.datamind.execution.sdk_tools.context import (
+                ExecutionContext, set_execution_context, ExecutionContextVar,
+            )
+            # 尝试取当前 ctx；为空时下面会补一个
+            try:
+                prev_ctx = ExecutionContextVar.get()
+            except LookupError:
+                prev_ctx = None
+            need_reset = False
+            if prev_ctx is None or not getattr(prev_ctx, "datasource_id", 0):
+                seed = ExecutionContext(
+                    user_id=int(user_id or 0), username=username or "",
+                    workspace_id=int(workspace_id or 0),
+                    datasource_id=int(datasource_id or 0),
+                )
+                set_execution_context(seed)
+                need_reset = True
+            try:
+                call_args = {
+                    "intent_json": tool_input.get("intent_json") or "{}",
+                    "datasource_id": tool_input.get("datasource_id") or datasource_id,
+                }
+                result = await run_semantic_query(call_args)
+            finally:
+                if need_reset:
+                    try:
+                        ExecutionContextVar.set(prev_ctx)
+                    except Exception:
+                        pass
+            try:
+                text = result["content"][0]["text"]
+            except Exception:
+                text = json.dumps(result, ensure_ascii=False, default=str)
+            return text
 
         elif tool_name == "execute_sql":
             from services.datamind.nl2sql.sql.query_executor import execute_query

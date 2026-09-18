@@ -701,7 +701,7 @@ export default function AddChartModal({ open, onClose, onAdd }: Props) {
               )}
 
               {hasData ? (
-                <div className="h-[300px] border rounded-lg p-2">
+                <div className="relative h-[300px] border rounded-lg p-2">
                   <DashboardChart chartType={chartType} data={{ columns, rows: previewRawData.rows }} config={{ xCol, yCol }} />
                 </div>
               ) : (

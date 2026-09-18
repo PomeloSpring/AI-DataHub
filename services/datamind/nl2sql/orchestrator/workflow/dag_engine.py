@@ -503,7 +503,7 @@ class DAGExecutor:
     async def _execute_sql_execution(self, node: DAGNode, input_data: Dict) -> Dict:
         """Execute SQL execution step."""
         from services.datamind.nl2sql.sql.sql_validator import validate_and_fix
-        from services.datamind.nl2sql.sql.query_executor import execute_query
+        from services.datamind.nl2sql.sql.query_executor import execute_query_with_permission
 
         sql = input_data.get("generated_sql", "")
         datasource_id = input_data.get("datasource_id", self.context.get("datasource_id", 0))
@@ -512,7 +512,13 @@ class DAGExecutor:
             return {"success": False, "error": "No SQL to execute"}
 
         sql, warnings = validate_and_fix(sql)
-        df, elapsed_ms, row_count = execute_query(sql, datasource_id=datasource_id)
+        # 经权限/敏感列屏蔽护城河执行(context 无 user_id 时仍套治理基线)
+        _uc = {
+            "user_id": self.context.get("user_id"),
+            "username": self.context.get("username"),
+        }
+        df, elapsed_ms, row_count = execute_query_with_permission(
+            sql, datasource_id, "sql", _uc, self.context.get("workspace_id", 0) or 0)
 
         columns = list(df.columns) if not df.empty else []
         rows = df.to_dict(orient="records") if not df.empty else []

@@ -37,65 +37,97 @@ class ChatService:
         attachments: list[str] = None,
         model_ref: str = "",
         session_id: str = "",
+        conversation_id: int = 0,
+        user_role: str = "",
+        waker_key: str = "",
     ):
         """Stream a query through the pipeline orchestrator.
 
         Yields SSE bytes for streaming response.
         """
         from services.datamind.nl2sql.orchestrator.pipeline_orchestrator import execute_pipeline
+        from services.shared import observability
 
         attachments = attachments or []
 
-        # Agent 模式(或携带多模态附件)派发到执行层;
-        # 工作空间绑定非内置层优先,否则默认 claude 层;外部层不可用时直接报错
-        if pipeline_mode == "agent" or attachments:
-            handled = False
-            async for event in self._try_dispatch_via_execution_layer(
-                question=question,
-                datasource_id=datasource_id,
-                model_id=model_id,
-                history=history,
-                workspace_id=workspace_id,
-                user_id=user_id,
-                username=username,
-                request=request,
-                attachments=attachments,
-                model_ref=model_ref,
-                session_id=session_id,
-            ):
-                handled = True
-                yield event
-            if handled:
-                return
-
+        # 可观测:一次用户回合 = 一个 trace;入口创建 recorder 并注入身份。
+        # 关闭 OBSERVABILITY_ENABLED 时 begin 返回 None,整条链路 no-op。
+        observability.begin(
+            entrypoint="chat",
+            user_id=user_id, username=username, user_role=user_role,
+            workspace_id=workspace_id, datasource_id=datasource_id or 0,
+            conversation_id=conversation_id or 0, model_ref=model_ref,
+            question=question,
+        )
+        _status, _err, _final = "", "", ""
         try:
-            async for event_type, data in execute_pipeline(
-                question=question,
-                history=history,
-                datasource_id=datasource_id,
-                model_id=model_id,
-                pipeline_mode=pipeline_mode,
-                user_id=user_id,
-                username=username,
-                retrieval_strategy=retrieval_strategy,
-                workspace_id=workspace_id,
-                attachments=attachments,
-            ):
-                if await request.is_disconnected():
-                    logger.info("Client disconnected, stopping stream")
-                    break
-                yield _sse_event(event_type, data)
+            # Agent 模式(或携带多模态附件)派发到执行层;
+            # 工作空间绑定非内置层优先,否则默认非内置外部层(qoder);外部层不可用时直接报错
+            if pipeline_mode == "agent" or attachments:
+                handled = False
+                async for event in self._try_dispatch_via_execution_layer(
+                    question=question,
+                    datasource_id=datasource_id,
+                    model_id=model_id,
+                    history=history,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    username=username,
+                    request=request,
+                    attachments=attachments,
+                    model_ref=model_ref,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    user_role=user_role,
+                    waker_key=waker_key,
+                ):
+                    handled = True
+                    yield event
+                if handled:
+                    return
 
-        except Exception as e:
-            logger.error("ChatService stream error: %s", e, exc_info=True)
-            yield _sse_event("error", {"message": str(e)})
-            yield _sse_event("done", {
-                "intent": "query",
-                "reply": f"Error: {str(e)}",
-                "sql": None,
-                "warnings": [],
-                "error": str(e),
-            })
+            try:
+                async for event_type, data in execute_pipeline(
+                    question=question,
+                    history=history,
+                    datasource_id=datasource_id,
+                    model_id=model_id,
+                    pipeline_mode=pipeline_mode,
+                    user_id=user_id,
+                    username=username,
+                    retrieval_strategy=retrieval_strategy,
+                    workspace_id=workspace_id,
+                    attachments=attachments,
+                ):
+                    if await request.is_disconnected():
+                        logger.info("Client disconnected, stopping stream")
+                        break
+                    if event_type == "done" and isinstance(data, dict):
+                        _final = data.get("reply") or _final
+                        if data.get("error"):
+                            _status, _err = "error", str(data.get("error"))
+                        # 回传 trace 关联键(只增不改),供前端赞踩/回看关联
+                        tid = observability.trace_id_for_response()
+                        muuid = observability.message_uuid()
+                        if tid:
+                            data.setdefault("trace_id", tid)
+                        if muuid:
+                            data.setdefault("message_uuid", muuid)
+                    yield _sse_event(event_type, data)
+
+            except Exception as e:
+                logger.error("ChatService stream error: %s", e, exc_info=True)
+                _status, _err = "error", str(e)
+                yield _sse_event("error", {"message": str(e)})
+                yield _sse_event("done", {
+                    "intent": "query",
+                    "reply": f"Error: {str(e)}",
+                    "sql": None,
+                    "warnings": [],
+                    "error": str(e),
+                })
+        finally:
+            observability.finalize(status=_status, error=_err, final_answer=_final)
 
     async def query(
         self,
@@ -210,10 +242,13 @@ class ChatService:
         attachments: list[str] = None,
         model_ref: str = "",
         session_id: str = "",
+        conversation_id: int = 0,
+        user_role: str = "",
+        waker_key: str = "",
     ):
         """Agent 模式执行层派发.
 
-        层解析优先级:工作空间绑定的非内置默认层 > 系统默认 claude 层。
+        层解析优先级:工作空间绑定的非内置默认层 > 系统默认非内置外部层(qoder)。
         外部执行层缺失或不可用时直接报错(不回退内置管线)。
         """
         import uuid
@@ -242,10 +277,10 @@ class ChatService:
         if row is None:
             row = fallback
         if row is None:
-            # Agent 模式默认执行层:claude
-            row = exec_service.get_layer_by_name("claude")
+            # Agent 模式默认执行层:系统级健康的非内置外部层(全面切 qoder 后通常为 cli-qoder)
+            row = exec_service.get_default_external_layer()
         if row is None or row.get("status") != "active":
-            err = "Agent 模式不可用:未找到可用的外部执行层(claude 层缺失或未启用)"
+            err = "Agent 模式不可用:未找到可用的外部执行层(qoder 层缺失或未启用)"
             logger.error(err)
             yield _sse_event("error", {"message": err})
             yield _sse_event("done", {
@@ -291,12 +326,19 @@ class ChatService:
                 datasource_id=datasource_id or 0,
                 user_id=user_id,
                 username=username,
+                user_role=user_role,
                 model_id=model_id,
-                # chat 运行时选择的执行层模型(如 provider/model_name)
-                # 及上一轮执行层会话 ID(SDK 多轮对话 resume)
+                # chat 运行时选择的执行层模型(如 provider/model_name)、
+                # 上一轮执行层会话 ID(SDK 多轮对话 resume)及 chat 会话 ID
+                # (qoder 长对话池 key: 同会话复用持久 qodercli 进程)
                 extra={
                     k: v
-                    for k, v in (("model_ref", model_ref), ("session_id", session_id))
+                    for k, v in (
+                        ("model_ref", model_ref),
+                        ("session_id", session_id),
+                        ("conversation_id", conversation_id),
+                        ("waker_key", waker_key),
+                    )
                     if v
                 },
             ),
@@ -350,7 +392,9 @@ class ChatService:
             return
 
         if result.success:
-            yield _sse_event("done", {
+            from services.shared import observability
+            observability.set_result(status="success", final_answer=result.output or "")
+            _done = {
                 "intent": "agent",
                 "reply": result.output,
                 "sql": None,
@@ -365,9 +409,19 @@ class ChatService:
                     "tool_call_count": result.meta.get("tool_call_count") or 0,
                     "duration_ms": result.meta.get("duration_ms"),
                 },
-            })
+            }
+            # 回传 trace 关联键(只增不改),供前端赞踩/回看关联
+            _tid = observability.trace_id_for_response()
+            _muuid = observability.message_uuid()
+            if _tid:
+                _done.setdefault("trace_id", _tid)
+            if _muuid:
+                _done.setdefault("message_uuid", _muuid)
+            yield _sse_event("done", _done)
         else:
             err = result.error or "执行层执行失败"
+            from services.shared import observability
+            observability.set_result(status="error", error=err)
             if result.meta.get("stderr_tail"):
                 err = f"{err}\n{result.meta['stderr_tail'][-500:]}"
             yield _sse_event("error", {"message": err})

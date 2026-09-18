@@ -43,12 +43,14 @@ def _get_columns(datasource_id: int) -> list[dict]:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT c.id, c.table_name, c.column_name, c.column_type, "
-                "c.column_comment, c.is_primary_key, c.is_nullable "
+                # 真实列为 data_type/is_key(非 column_type/is_primary_key), 用别名保持下游字段名不变
+                "SELECT c.id, c.table_name, c.column_name, c.data_type AS column_type, "
+                "COALESCE(NULLIF(c.business_desc, ''), c.column_comment) AS column_comment, "
+                "c.is_key AS is_primary_key, c.is_nullable "
                 "FROM adh_column_metadata c "
                 "JOIN adh_table_info t ON c.table_name = t.table_name "
                 "  AND c.datasource_id = t.datasource_id "
-                "WHERE c.datasource_id = %s AND t.is_active = 1",
+                "WHERE c.datasource_id = %s AND c.is_active = 1 AND t.is_active = 1",
                 (datasource_id,),
             )
             return cur.fetchall()
@@ -62,10 +64,11 @@ def _get_relations(datasource_id: int) -> list[dict]:
     try:
         with conn.cursor() as cur:
             cur.execute(
+                # 真实表无 relation_name 列(下游会自动回退 源表_目标表 命名)
                 "SELECT source_table, source_column, target_table, target_column, "
-                "relation_type, relation_name "
+                "relation_type, join_type, description "
                 "FROM adh_table_relations "
-                "WHERE datasource_id = %s",
+                "WHERE datasource_id = %s AND is_active = 1",
                 (datasource_id,),
             )
             return cur.fetchall()

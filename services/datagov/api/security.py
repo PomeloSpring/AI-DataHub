@@ -11,7 +11,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["数据安全"])
 
 # 与 adh_sensitive_fields.mask_type 枚举一致
-MASK_TYPES = ("full", "partial", "hash", "none")
+# block = 不能查询出来(合规屏蔽基线): 结果剔除 + 显式请求拒绝, 对所有用户含管理员生效
+MASK_TYPES = ("full", "partial", "hash", "none", "block")
 
 
 class SensitiveFieldCreate(BaseModel):
@@ -39,10 +40,11 @@ def list_sensitive_fields(
 ):
     """获取敏感字段列表."""
     try:
-        sql = "SELECT * FROM adh_sensitive_fields WHERE workspace_id = %s"
+        sql = "SELECT * FROM adh_sensitive_fields WHERE workspace_id IN (%s, 0)"
         params = [workspace_id]
-        if datasource_id:
-            sql += " AND datasource_id = %s"
+        if datasource_id is not None:
+            # 取"全局(datasource_id=0) ∪ 指定数据源"并集, 与执行侧加载口径一致
+            sql += " AND datasource_id IN (%s, 0)"
             params.append(datasource_id)
         if sensitivity_level:
             sql += " AND sensitivity_level = %s"

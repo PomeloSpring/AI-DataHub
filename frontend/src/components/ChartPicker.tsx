@@ -1,10 +1,14 @@
-import { useState, useMemo, useEffect } from 'react';
-import { Maximize2 } from 'lucide-react';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import { Maximize2, BarChart3, Table, Code, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
-import DashboardChart from './DashboardChart';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import DashboardChart, { ChartIcon, CHART_TYPES, CHART_TYPE_CATEGORIES } from './DashboardChart';
+import * as XLSX from 'xlsx';
+import html2canvas from 'html2canvas';
 
 interface Props {
   data: {
@@ -12,28 +16,34 @@ interface Props {
     rows: any[];
   };
   defaultType?: string;
+  /** 生成该数据的查询 SQL(可选);提供时卡片内展示 SQL 视图 */
+  sql?: string;
 }
 
-const CHART_TYPE_MAP: Record<string, string> = {
-  column: 'bar', bar: 'bar', line: 'line', pie: 'pie',
-  sankey: 'sankey', funnel: 'funnel', chord: 'chord',
-  calendar_heatmap: 'calendar_heatmap', big_number_trend: 'big_number_trend',
-  boxplot: 'boxplot', bubble: 'bubble',
-  timeseries_table: 'timeseries_table', timeseries_area: 'timeseries_area',
-  timeseries_bar: 'timeseries_bar', timeseries_line: 'timeseries_line',
-  timeseries_percent: 'timeseries_percent', timeseries_pivot: 'timeseries_pivot',
-  tree: 'tree', treemap: 'treemap', waterfall: 'waterfall',
+// 与看板共用同一套图表类型(系统新增/删减自动同步);排除看板参数控件(非取数图表)
+const PICKABLE = CHART_TYPES.filter(t => t.category !== 'widget');
+const VALID_TYPES = new Set(PICKABLE.map(t => t.value));
+
+// 历史消息兼容别名(LLM 旧契约/看板外叫法)
+const TYPE_ALIASES: Record<string, string> = {
+  column: 'bar', table: 'bar',
 };
 
-function resolveChartType(llmType?: string): string {
+export function resolveChartType(llmType?: string): string {
   if (!llmType || llmType === 'table') return 'bar';
-  return CHART_TYPE_MAP[llmType] || 'bar';
+  const alias = TYPE_ALIASES[llmType];
+  if (alias && !VALID_TYPES.has(llmType)) return alias;
+  return VALID_TYPES.has(llmType) ? llmType : 'bar';
 }
 
-export default function ChartPicker({ data, defaultType }: Props) {
+export default function ChartPicker({ data, defaultType, sql }: Props) {
   const columns = data?.columns || [];
   const rows = data?.rows || [];
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  const tableContainerRef = useRef<HTMLDivElement>(null);
 
+  // 与内置管线结果卡片同构的三视图:图表/明细/SQL(无 SQL 时不展示 SQL 页)
+  const [view, setView] = useState<'chart' | 'table' | 'sql'>('chart');
   const [chartType, setChartType] = useState(() => resolveChartType(defaultType));
   const [xCol, setXCol] = useState('');
   const [yCol, setYCol] = useState('');
@@ -96,15 +106,7 @@ export default function ChartPicker({ data, defaultType }: Props) {
 
   const hasSeries = seriesCol && seriesValues.length > 1;
 
-  const chartOptions = [
-    { value: 'bar', label: '📊 柱状图' },
-    { value: 'line', label: '📈 折线图' },
-    { value: 'pie', label: '🥧 饼图' },
-    { value: 'funnel', label: '🔽 漏斗图' },
-    { value: 'timeseries_line', label: '📈 时间序列折线图' },
-    { value: 'timeseries_bar', label: '📶 时间序列柱状图' },
-    { value: 'timeseries_area', label: '📊 时间序列面积图' },
-  ];
+  const chartOptions = PICKABLE;
 
   if (columns.length < 2 || rows.length === 0) return null;
 
@@ -114,13 +116,27 @@ export default function ChartPicker({ data, defaultType }: Props) {
     <div className="space-y-3">
       <div className="flex gap-2 items-center flex-wrap">
         <Select value={chartType} onValueChange={setChartType}>
-          <SelectTrigger className="w-[140px] h-8">
+          <SelectTrigger className="w-[170px] h-8">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent>
-            {chartOptions.map(opt => (
-              <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-            ))}
+          <SelectContent className="max-h-[70vh]">
+            {CHART_TYPE_CATEGORIES.map(cat => {
+              const opts = chartOptions.filter(o => o.category === cat.key);
+              if (!opts.length) return null;
+              return (
+                <SelectGroup key={cat.key}>
+                  <SelectLabel className="text-[10px] text-muted-foreground">{cat.label}</SelectLabel>
+                  {opts.map(opt => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      <span className="inline-flex items-center gap-1.5">
+                        <ChartIcon name={opt.icon} className="h-3.5 w-3.5 shrink-0" />
+                        {opt.label}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              );
+            })}
           </SelectContent>
         </Select>
 
@@ -194,28 +210,118 @@ export default function ChartPicker({ data, defaultType }: Props) {
     </div>
   );
 
+  // 导出功能
+  const exportToExcel = () => {
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Data');
+    XLSX.writeFile(wb, `${sql ? 'query_result' : 'data'}.xlsx`);
+  };
+
+  const exportToCSV = () => {
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const csv = XLSX.utils.sheet_to_csv(ws);
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${sql ? 'query_result' : 'data'}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportChartToPNG = async () => {
+    if (!chartContainerRef.current) return;
+    try {
+      const canvas = await html2canvas(chartContainerRef.current, {
+        backgroundColor: '#ffffff',
+        scale: 2,
+      });
+      const url = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${sql ? 'query_chart' : 'chart'}.png`;
+      a.click();
+    } catch (e) {
+      console.error('Export failed:', e);
+    }
+  };
+
   return (
     <div className="mt-3">
-      {controlsBlock}
-      <div className="relative mt-3">
-        <div className="h-[360px]">
-          <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={config} />
-        </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="absolute top-1 right-1"
-          onClick={() => setFullscreen(true)}
-        >
-          <Maximize2 className="h-4 w-4" />
-        </Button>
+      <div className="flex items-center justify-between mb-2">
+        <Tabs value={view} onValueChange={(v) => setView(v as any)}>
+          <TabsList>
+            <TabsTrigger value="chart"><BarChart3 className="h-4 w-4 mr-1" />图表</TabsTrigger>
+            <TabsTrigger value="table"><Table className="h-4 w-4 mr-1" />明细</TabsTrigger>
+            {sql && <TabsTrigger value="sql"><Code className="h-4 w-4 mr-1" />SQL</TabsTrigger>}
+          </TabsList>
+        </Tabs>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" className="h-7 text-xs">
+              <Download className="h-3 w-3 mr-1" />导出
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-32">
+            <DropdownMenuItem onClick={exportToExcel}>Excel</DropdownMenuItem>
+            <DropdownMenuItem onClick={exportToCSV}>CSV</DropdownMenuItem>
+            <DropdownMenuItem onClick={exportChartToPNG}>图表 PNG</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
+
+      {view === 'chart' && <>
+        {controlsBlock}
+        <div className="relative mt-3" ref={chartContainerRef}>
+          <div className="h-[360px]">
+            <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={config} />
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="absolute top-1 right-1"
+            onClick={() => setFullscreen(true)}
+          >
+            <Maximize2 className="h-4 w-4" />
+          </Button>
+        </div>
+      </>}
+
+      {view === 'table' && (
+        <div className="overflow-auto max-h-[400px] mt-1" ref={tableContainerRef}>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b bg-muted/50">
+                {columns.map((c: string) => (
+                  <th key={c} className="h-8 px-3 text-left align-middle font-medium text-muted-foreground">{c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, 200).map((row: any, i: number) => (
+                <tr key={i} className="border-b hover:bg-muted/50">
+                  {columns.map((c: string) => (
+                    <td key={c} className="px-3 py-1.5">{String(row[c] ?? '')}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {view === 'sql' && sql && (
+        <pre className="p-4 bg-muted text-foreground rounded-lg border text-xs leading-relaxed overflow-auto max-h-[400px] font-mono whitespace-pre-wrap">
+          {sql}
+        </pre>
+      )}
 
       <Dialog open={fullscreen} onOpenChange={setFullscreen}>
         <DialogContent className="max-w-[95vw] max-h-[95vh] h-[95vh]">
           <div className="flex flex-col h-full">
             {controlsBlock}
-            <div className="flex-1 mt-3 min-h-0">
+            <div className="relative flex-1 mt-3 min-h-0">
               <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={config} />
             </div>
           </div>

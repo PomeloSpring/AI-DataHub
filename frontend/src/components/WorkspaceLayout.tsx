@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation, useParams } from 'react-router-dom';
 import {
-  MessageSquare, History, Settings, LogOut, Menu, Sun, Moon,
+  MessageSquare, LogOut, Menu, Sun, Moon,
   ChevronLeft, ChevronRight, X, ChevronDown, Palette, Zap, TrendingUp, Grid3x3,
   GlassWater, Folder, UserCircle, Brain, Heart, Check, ArrowRight,
   Clock, Gem,
@@ -11,7 +11,6 @@ import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-  DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -69,10 +68,6 @@ function WorkspaceSelectorSidebar({ collapsed }: { collapsed: boolean }) {
     navigate(`/ws/${ws.id}/chat`);
   };
 
-  const handleManage = () => {
-    navigate('/workspaces');
-  };
-
   if (collapsed) {
     return (
       <DropdownMenu>
@@ -89,11 +84,6 @@ function WorkspaceSelectorSidebar({ collapsed }: { collapsed: boolean }) {
               {ws.id === currentWorkspaceId && <Check className="h-4 w-4 text-primary" />}
             </DropdownMenuItem>
           ))}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={handleManage}>
-            <Settings className="h-4 w-4 mr-2" />
-            管理工作空间
-          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     );
@@ -125,11 +115,6 @@ function WorkspaceSelectorSidebar({ collapsed }: { collapsed: boolean }) {
             {ws.id === currentWorkspaceId && <Check className="h-4 w-4 text-primary shrink-0" />}
           </DropdownMenuItem>
         ))}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={handleManage}>
-          <Settings className="h-4 w-4 mr-2" />
-          管理工作空间
-        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -264,8 +249,6 @@ export default function WorkspaceLayout() {
     { key: `/ws/${workspaceId}/reports`, icon: Folder, label: '报表中心' },
     { section: '自动化' },
     { key: `/ws/${workspaceId}/scheduled`, icon: Clock, label: '任务调度' },
-    { section: '' },
-    { key: `/ws/${workspaceId}/history`, icon: History, label: '查询历史' },
   ];
 
   const currentPath = location.pathname;
@@ -499,7 +482,7 @@ export default function WorkspaceLayout() {
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => navigate('/profile')}>
+                <DropdownMenuItem onClick={() => navigate(`/ws/${workspaceId}/profile`)}>
                   <UserCircle className="h-4 w-4 mr-2" />
                   个人设置
                 </DropdownMenuItem>

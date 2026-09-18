@@ -51,6 +51,10 @@ app.add_middleware(
 )
 
 # ── Routers ──────────────────────────────────────────────────────────
+# 权限码驱动的 API 鉴权(由 adh_perm_registry 统一声明, 与 authservice/datamind 一致)
+from services.shared.common.api_permission import add_api_permission_middleware
+add_api_permission_middleware(app)
+
 app.include_router(quality_router, prefix="/api/quality", tags=["数据质量"])
 app.include_router(lineage_router, prefix="/api/lineage", tags=["数据血缘"])
 app.include_router(standards_router, prefix="/api/standards", tags=["数据标准"])

@@ -22,13 +22,22 @@ datafusion-common = "42"
 datafusion-sql = "42"
 datafusion-optimizer = "42"
 
+# SQL parser (same version DataFusion uses) — for AST-level RLS injection on pushdown
+sqlparser = "0.50"
+
 # Arrow
 arrow = "53"
 arrow-json = "53"
 arrow-schema = "53"
 
 # MySQL async client
-mysql_async = "0.34"
+mysql_async = { version = "0.34", default-features = false, features = ["rustls-tls"] }
+
+# PostgreSQL async client
+tokio-postgres = "0.7"
+deadpool-postgres = "0.14"
+tokio-postgres-rustls = "0.12"
+rustls = "0.23"
 
 # SQLite (for config persistence)
 rusqlite = { version = "0.31", features = ["bundled"] }

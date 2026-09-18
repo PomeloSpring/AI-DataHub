@@ -70,8 +70,8 @@ def create_category(data: dict) -> dict:
             cur.execute(
                 "INSERT INTO adh_tag_categories "
                 "(id, name, description, parent_id, sort_order, is_active, workspace_id, "
-                "created_at, updated_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     row_id,
                     data["name"],
@@ -80,7 +80,6 @@ def create_category(data: dict) -> dict:
                     data.get("sort_order", 0),
                     data.get("is_active", 1),
                     data.get("workspace_id", 0),
-                    now,
                     now,
                 ),
             )
@@ -177,18 +176,21 @@ def create_tag(data: dict) -> dict:
             if cur.fetchone():
                 raise ValueError(f"Tag '{data['name']}' already exists in this category")
 
+            # entity_type 列是 ENUM('user','table','column','metric','custom')，空串会写入失败
             cur.execute(
                 "INSERT INTO adh_tags "
-                "(id, name, description, category_id, entity_type, "
+                "(id, name, description, category_id, entity_type, tag_type, data_type, color, "
                 "is_active, workspace_id, created_at, updated_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     row_id,
                     data["name"],
                     data.get("description", ""),
                     data.get("category_id"),
-                    data.get("entity_type", ""),
-                    
+                    data.get("entity_type") or "table",
+                    data.get("tag_type") or "manual",
+                    data.get("data_type") or "string",
+                    data.get("color") or "",
                     data.get("is_active", 1),
                     data.get("workspace_id", 0),
                     now,
@@ -265,21 +267,24 @@ def get_tag_values(tag_id: int, entity_type: Optional[str] = None) -> list:
     Returns:
         list of tag value dicts
     """
+    # adh_tag_values 无 entity_type/entity_name 列：实体类型从标签定义 JOIN 得出
     with DBConnection() as conn:
         with conn.cursor() as cur:
-            conditions = ["tag_id = %s"]
+            conditions = ["tv.tag_id = %s"]
             params = [tag_id]
 
             if entity_type:
-                conditions.append("entity_type = %s")
+                conditions.append("t.entity_type = %s")
                 params.append(entity_type)
 
             where = f"WHERE {' AND '.join(conditions)}"
 
             cur.execute(
-                f"SELECT id, entity_type, entity_id, entity_name, created_at "
-                f"FROM adh_tag_values {where} "
-                f"ORDER BY created_at DESC",
+                f"SELECT tv.id, t.entity_type, tv.entity_id, tv.value, tv.source, tv.created_at "
+                f"FROM adh_tag_values tv "
+                f"JOIN adh_tags t ON tv.tag_id = t.id "
+                f"{where} "
+                f"ORDER BY tv.created_at DESC",
                 params,
             )
             rows = cur.fetchall()
@@ -305,30 +310,32 @@ def set_tag_value(tag_id: int, data: dict) -> dict:
 
     with DBConnection() as conn:
         with conn.cursor() as cur:
-            # Check if tag exists
-            cur.execute("SELECT id FROM adh_tags WHERE id = %s", (tag_id,))
-            if not cur.fetchone():
+            # Check if tag exists (workspace_id 跟随标签定义)
+            cur.execute("SELECT id, workspace_id FROM adh_tags WHERE id = %s", (tag_id,))
+            tag_row = cur.fetchone()
+            if not tag_row:
                 raise ValueError(f"Tag {tag_id} not found")
 
-            # Check duplicate
             cur.execute(
                 "SELECT id FROM adh_tag_values "
-                "WHERE tag_id = %s AND entity_type = %s AND entity_id = %s",
-                (tag_id, data["entity_type"], data["entity_id"]),
+                "WHERE tag_id = %s AND entity_id = %s",
+                (tag_id, data["entity_id"]),
             )
             if cur.fetchone():
                 return {"success": True, "message": "Tag already applied to this entity"}
 
             cur.execute(
                 "INSERT INTO adh_tag_values "
-                "(id, tag_id, entity_type, entity_id, entity_name, created_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
+                "(id, workspace_id, tag_id, entity_id, value, confidence, source, created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, 1.00, %s, %s, %s)",
                 (
                     row_id,
+                    data.get("workspace_id", tag_row["workspace_id"]),
                     tag_id,
-                    data["entity_type"],
                     data["entity_id"],
-                    data.get("entity_name", ""),
+                    data.get("value") or data.get("entity_name") or "",
+                    data.get("source") or "manual",
+                    now,
                     now,
                 ),
             )
@@ -352,41 +359,41 @@ def query_entities_by_tags(conditions: list, operator: str = "AND", workspace_id
 
     with DBConnection() as conn:
         with conn.cursor() as cur:
-            # Build query based on operator
+            # 查询主体条件仅按 tag_id 匹配（value 过滤在前端结果展示层处理）
+            tag_ids = [c["tag_id"] for c in conditions]
+            placeholders = ", ".join(["%s"] * len(tag_ids))
+            # entity_type 来自标签定义（adh_tag_values 无该列）
+            select_sql = (
+                f"SELECT t.entity_type, tv.entity_id, "
+                f"COUNT(DISTINCT tv.tag_id) AS match_count, "
+                f"GROUP_CONCAT(DISTINCT t.name) AS matched_tags "
+                f"FROM adh_tag_values tv "
+                f"JOIN adh_tags t ON tv.tag_id = t.id "
+            )
+            ws_cond = "AND tv.workspace_id = %s" if workspace_id else ""
+
             if operator.upper() == "AND":
                 # Intersection: entities must have ALL specified tags
-                tag_ids = [c["tag_id"] for c in conditions]
-                placeholders = ", ".join(["%s"] * len(tag_ids))
-
                 cur.execute(
-                    f"SELECT tv.entity_type, tv.entity_id, tv.entity_name, "
-                    f"COUNT(DISTINCT tv.tag_id) AS match_count, "
-                    f"GROUP_CONCAT(DISTINCT t.name) AS matched_tags "
-                    f"FROM adh_tag_values tv "
-                    f"JOIN adh_tags t ON tv.tag_id = t.id "
-                    f"WHERE tv.tag_id IN ({placeholders}) "
-                    f"GROUP BY tv.entity_type, tv.entity_id, tv.entity_name "
+                    select_sql + f"WHERE tv.tag_id IN ({placeholders}) {ws_cond} "
+                    f"GROUP BY t.entity_type, tv.entity_id "
                     f"HAVING match_count = %s "
-                    f"ORDER BY tv.entity_type, tv.entity_name",
-                    tag_ids + [len(tag_ids)],
+                    f"ORDER BY t.entity_type, tv.entity_id",
+                    tag_ids + ([workspace_id] if workspace_id else []) + [len(tag_ids)],
                 )
             else:
                 # Union: entities with ANY specified tag
-                tag_ids = [c["tag_id"] for c in conditions]
-                placeholders = ", ".join(["%s"] * len(tag_ids))
-
                 cur.execute(
-                    f"SELECT tv.entity_type, tv.entity_id, tv.entity_name, "
-                    f"COUNT(DISTINCT tv.tag_id) AS match_count, "
-                    f"GROUP_CONCAT(DISTINCT t.name) AS matched_tags "
-                    f"FROM adh_tag_values tv "
-                    f"JOIN adh_tags t ON tv.tag_id = t.id "
-                    f"WHERE tv.tag_id IN ({placeholders}) "
-                    f"GROUP BY tv.entity_type, tv.entity_id, tv.entity_name "
-                    f"ORDER BY match_count DESC, tv.entity_type, tv.entity_name",
-                    tag_ids,
+                    select_sql + f"WHERE tv.tag_id IN ({placeholders}) {ws_cond} "
+                    f"GROUP BY t.entity_type, tv.entity_id "
+                    f"ORDER BY match_count DESC, t.entity_type, tv.entity_id",
+                    tag_ids + ([workspace_id] if workspace_id else []),
                 )
 
             rows = cur.fetchall()
+            for r in rows:
+                # 前端按数组渲染 matched_tags，GROUP_CONCAT 字符串转列表
+                mt = r.get("matched_tags") or ""
+                r["matched_tags"] = [x for x in mt.split(",") if x]
 
     return rows

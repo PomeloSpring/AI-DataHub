@@ -22,6 +22,7 @@ from services.aiplatform.api.brand import router as brand_router
 from services.aiplatform.api.cache import router as cache_router
 from services.aiplatform.api.execution_layers import router as execution_layers_router
 from services.aiplatform.api.prompts import router as prompts_router
+from services.aiplatform.api.wakers import router as wakers_router
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -55,6 +56,10 @@ app.add_middleware(
 )
 
 # Include routers
+# 权限码驱动的 API 鉴权(由 adh_perm_registry 统一声明, 与 authservice/datamind 一致)
+from services.shared.common.api_permission import add_api_permission_middleware
+add_api_permission_middleware(app)
+
 app.include_router(mcp_servers_router, prefix="/api/admin/mcp-servers", tags=["MCP Servers"])
 app.include_router(agents_router, prefix="/api/admin/agents", tags=["Agents"])
 app.include_router(embed_router, prefix="/api/embed", tags=["Embed"])
@@ -67,6 +72,7 @@ app.include_router(brand_router, prefix="/api/admin/brand", tags=["Brand"])
 app.include_router(cache_router, prefix="/api/admin/cache", tags=["Cache"])
 app.include_router(execution_layers_router, prefix="/api/admin/execution-layers", tags=["Execution Layers"])
 app.include_router(prompts_router, prefix="/api/admin/prompts", tags=["Prompts"])
+app.include_router(wakers_router, prefix="/api/admin/wakers", tags=["Wakers"])
 
 # Node metrics for distributed monitoring
 from services.shared.common.system_metrics import router as node_metrics_router

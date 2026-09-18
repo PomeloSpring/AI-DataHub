@@ -331,7 +331,7 @@ export default function SkillsTemplateManager() {
       <div className="w-80 flex flex-col border rounded-lg bg-card">
         <div className="p-4 border-b space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Skills 模板</h2>
+            <h2 className="text-sm font-semibold">Skills</h2>
             <div className="flex gap-1">
               <label>
                 <input type="file" accept=".zip" className="hidden" onChange={handleImport} />

@@ -37,7 +37,7 @@ get_service_config() {
         datamind)      echo "services.datamind.main:8001" ;;
         dataflow)      echo "services.dataflow.main:8003" ;;
         aiplatform)    echo "services.aiplatform.main:8007" ;;
-        graphservice)  echo "services.shared.graphservice.main:8011" ;;
+        graphservice)  echo "services.graphservice.main:8011" ;;
         *) log_error "Unknown service: $SERVICE_NAME"; exit 1 ;;
     esac
 }

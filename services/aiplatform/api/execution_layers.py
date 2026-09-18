@@ -230,10 +230,18 @@ async def get_workspace_execution_layer(workspace_id: int):
     chat 页面据此调整模型框:
     - builtin: 模型候选来自系统模型中心(model_source=system)
     - cli(qoder 等): 候选来自执行层 list_models(model_source=execution_layer)
+
+    Agent 模式一致性: 解析结果为 builtin 但系统存在健康外部层时,
+    回退到默认外部层(与 chat_service 的 agent 派发规则对齐:
+    builtin 不参与 agent 模式派发), 避免"实际走 qoder、模型框却展示系统模型中心".
     """
     try:
         manager = get_execution_layer_manager()
         row = await manager.resolve_workspace_layer(workspace_id)
+        if row.get("layer_type") == "builtin":
+            external = exec_service.get_default_external_layer()
+            if external:
+                row = external
         resp = {
             "layer_id": row.get("id"),
             "name": row.get("name"),

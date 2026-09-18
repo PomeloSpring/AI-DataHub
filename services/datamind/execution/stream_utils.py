@@ -157,3 +157,8 @@ class ToolEventTracker:
         if self.calls:
             meta["tool_calls"] = self.calls
             meta["tool_call_count"] = self.count
+
+    def arguments_of(self, tool_call_id: str) -> dict:
+        """按 tool_call_id 取回工具入参(供可观测记录 SQL/参数等产物输入)."""
+        rec = self._records.get(tool_call_id)
+        return (rec or {}).get("arguments") or {}

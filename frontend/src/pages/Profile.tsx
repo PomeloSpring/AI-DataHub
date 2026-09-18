@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
-import { User, Mail, Phone, Shield, Clock, Save, Lock } from 'lucide-react';
+import { User, Mail, Phone, Shield, Clock, Save, Lock, ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -31,6 +32,17 @@ export default function Profile() {
 
   const updateUser = useAuthStore((s) => s.updateUser);
 
+  const navigate = useNavigate();
+  const location = useLocation();
+  // 当前 Profile 内嵌于哪个布局框架, 返回按钮回到对应分区主页面
+  const homePath = (() => {
+    const p = location.pathname;
+    if (p.startsWith('/system')) return '/system';
+    const ws = p.match(/^(\/ws\/[^/]+)/);
+    if (ws) return `${ws[1]}/chat`;
+    return '/data';
+  })();
+
   useEffect(() => {
     loadProfile();
   }, []);
@@ -38,7 +50,7 @@ export default function Profile() {
   const loadProfile = async () => {
     setLoading(true);
     try {
-      const { data } = await client.get('/auth/me');
+      const { data } = await client.get('/users/me');
       setProfile(data);
       setFormValues({
         username: data.username || '',
@@ -55,7 +67,7 @@ export default function Profile() {
   const handleSaveProfile = async () => {
     setSaving(true);
     try {
-      const { data } = await client.put('/auth/me', formValues);
+      const { data } = await client.put('/users/me', formValues);
       setProfile(data);
       // Update auth store if username changed
       if (data.username !== profile?.username) {
@@ -85,7 +97,7 @@ export default function Profile() {
 
     setChangingPwd(true);
     try {
-      await client.put('/auth/me/password', {
+      await client.put('/users/me/password', {
         old_password: pwdForm.old_password,
         new_password: pwdForm.new_password,
       });
@@ -107,8 +119,14 @@ export default function Profile() {
   }
 
   return (
-    <div className="h-full overflow-auto p-6">
-      <h1 className="text-2xl font-bold mb-6">个人设置</h1>
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold">个人设置</h1>
+        <Button variant="outline" size="sm" onClick={() => navigate(homePath)}>
+          <ArrowLeft className="h-4 w-4 mr-1" />
+          返回主页
+        </Button>
+      </div>
 
       <div className="max-w-[640px] space-y-6">
         {/* Account info card */}

@@ -5,7 +5,6 @@ import time
 import logging
 from contextlib import contextmanager
 
-import pymysql
 import pandas as pd
 
 from services.shared.common.config import (
@@ -67,11 +66,21 @@ def _get_ds_conn_params(datasource_id: int = None) -> dict:
             conn = get_metadata_conn()
             try:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT host, port, username, password, database_name, db_type, `ssl` "
-                        "FROM adh_datasources WHERE id = %s",
-                        (datasource_id,),
-                    )
+                    try:
+                        cur.execute(
+                            "SELECT host, port, username, password, database_name, db_type, "
+                            "`ssl`, ssl_mode "
+                            "FROM adh_datasources WHERE id = %s",
+                            (datasource_id,),
+                        )
+                    except Exception:
+                        # ssl_mode 列为迁移新增(未迁移时不阻断): 回落旧列查询
+                        conn.rollback()
+                        cur.execute(
+                            "SELECT host, port, username, password, database_name, db_type, `ssl` "
+                            "FROM adh_datasources WHERE id = %s",
+                            (datasource_id,),
+                        )
                     row = cur.fetchone()
                     if row:
                         password = row["password"] or ""
@@ -86,6 +95,7 @@ def _get_ds_conn_params(datasource_id: int = None) -> dict:
                             "database": row.get("database_name") or DORIS_DATABASE,
                             "db_type": row.get("db_type", "doris"),
                             "ssl": bool(row.get("ssl", 0)),
+                            "ssl_mode": row.get("ssl_mode") or None,
                         }
             finally:
                 conn.close()
@@ -106,17 +116,22 @@ def invalidate_datasource_cache(datasource_id: int = None):
 
 @contextmanager
 def get_connection(datasource_id: int = None):
-    """Context manager that yields a pymysql connection to the specified datasource."""
+    """Context manager that yields a driver connection to the specified datasource.
+
+    按 db_type 分发: mysql/doris → pymysql, postgres/sls → psycopg2(共享工厂
+    datasource_db.get_datasource_conn), 作为 DataEngine 不可用时的直连兜底。
+    """
+    from services.shared.common.db.datasource_db import get_datasource_conn
     params = _get_ds_conn_params(datasource_id)
-    conn = pymysql.connect(
+    conn = get_datasource_conn(
+        db_type=params.get("db_type", "doris"),
         host=params["host"],
         port=params["port"],
         user=params["user"],
         password=params["password"],
         database=params["database"],
-        charset="utf8mb4",
-        cursorclass=pymysql.cursors.DictCursor,
-        connect_timeout=10,
+        ssl=bool(params.get("ssl", False)),
+        ssl_mode=params.get("ssl_mode"),
         read_timeout=60,
     )
     try:
@@ -638,6 +653,7 @@ def execute_query(
                     username=str(params.get("user", "")),
                     password=str(params.get("password", "")),
                     database=str(params.get("database", "")),
+                    ssl_mode=params.get("ssl_mode"),
                 )
 
                 # Load RLS policies for DataEngine
@@ -746,11 +762,10 @@ def execute_query_with_permission(
     """
     from services.datamind.permission.enforcer import permission_enforcer
 
-    # No user context = skip permission check (system/internal calls)
-    if not user_context or not user_context.get("user_id"):
-        return execute_query(sql, datasource_id, query_type)
-
-    user_id = user_context["user_id"]
+    # 无 user_context 不再整体旁路: 敏感列屏蔽基线对所有调用(含系统/内部)强制生效。
+    # enforce_sql 对 user_id=0 走 sensitive_only(仅治理基线, 不做 RBAC/RLS 行级过滤)。
+    user_id = (user_context or {}).get("user_id") or 0
+    has_user = bool(user_id)
 
     try:
         # Step 1-3: Check permissions and rewrite SQL
@@ -764,28 +779,29 @@ def execute_query_with_permission(
         # Step 4: Execute the modified query
         df, elapsed_ms, row_count = execute_query(modified_sql, datasource_id, query_type)
 
-        # Step 5: Apply column hiding/masking
+        # Step 5: Apply column hiding/masking (含 block 屏蔽列, 始终执行)
         if perm_result.hidden_columns or perm_result.masked_columns:
             df = permission_enforcer.apply_post_processing(df, perm_result)
 
-        # Step 6: Log audit (success)
-        _log_permission_audit(
-            user_context=user_context,
-            datasource_id=datasource_id,
-            tables=permission_enforcer._extract_tables(sql),
-            original_sql=sql,
-            filtered_sql=modified_sql,
-            allowed=True,
-            policies=perm_result.policies_applied,
-            workspace_id=workspace_id,
-        )
+        # Step 6: Log audit (success) — 仅真实用户调用落审计
+        if has_user:
+            _log_permission_audit(
+                user_context=user_context,
+                datasource_id=datasource_id,
+                tables=permission_enforcer._extract_tables(sql),
+                original_sql=sql,
+                filtered_sql=modified_sql,
+                allowed=True,
+                policies=perm_result.policies_applied,
+                workspace_id=workspace_id,
+            )
 
         return df, elapsed_ms, row_count
 
     except PermissionError:
         # Log denied access
         _log_permission_audit(
-            user_context=user_context,
+            user_context=user_context or {},
             datasource_id=datasource_id,
             tables=permission_enforcer._extract_tables(sql),
             original_sql=sql,
@@ -813,6 +829,23 @@ def _log_permission_audit(
         import time as _time
         audit_id = int(_time.time() * 1000)
 
+        # policies_applied 混合了 RLS 数字策略 id 与字符串治理标记(如
+        # "sensitive_block:..."/"sensitive_fields:..."), 而 policy_id 列为整型 ——
+        # 只取首个数字入 policy_id, 字符串标记归入 policy_name, 避免类型错。
+        numeric_pid = None
+        markers: list = []
+        for p in (policies or []):
+            if isinstance(p, bool):
+                continue
+            if isinstance(p, int):
+                if numeric_pid is None:
+                    numeric_pid = p
+            else:
+                s = str(p)
+                if s and s != "permission_enforcer":
+                    markers.append(s)
+        policy_name = (",".join(markers) or "permission_enforcer")[:255]
+
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
@@ -825,8 +858,8 @@ def _log_permission_audit(
                         audit_id,
                         user_context.get("user_id", 0),
                         workspace_id,
-                        policies[0] if policies else None,
-                        "permission_enforcer",
+                        numeric_pid,
+                        policy_name,
                         ", ".join(tables),
                         "allow" if allowed else "deny",
                         original_sql[:1000],
@@ -968,6 +1001,7 @@ def execute_query_via_engine(
             username=str(params.get("user", "")),
             password=str(params.get("password", "")),
             database=str(params.get("database", "")),
+            ssl_mode=params.get("ssl_mode"),
         )
     except Exception as e:
         logger.warning("Failed to get/create engine datasource: %s", e)

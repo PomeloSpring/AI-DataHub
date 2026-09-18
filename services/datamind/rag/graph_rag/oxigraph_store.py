@@ -160,7 +160,8 @@ class OxigraphStore:
     def create_sql_template_node(self, template_id: str, name: str, sql: str,
                                  intent_keywords: str = "", category: str = "",
                                  description: str = "", variables: str = "",
-                                 rules: str = "", tables: list[str] = None,
+                                 rules: str = "", dialect: str = "",
+                                 tables: list[str] = None,
                                  datasource_id: int = 0):
         """Create an adh:SQLTemplate node with its text/keywords and touched tables.
 
@@ -183,7 +184,8 @@ class OxigraphStore:
                         <{ADH_NS}category> "{_esc(category)}" ;
                         <{ADH_NS}comment> "{_esc(description)}" ;
                         <{ADH_NS}variables> "{_esc(variables)}" ;
-                        <{ADH_NS}rules> "{_esc(rules)}" .{touch_triples}
+                        <{ADH_NS}rules> "{_esc(rules)}" ;
+                        <{ADH_NS}dialect> "{_esc(dialect)}" .{touch_triples}
                 }}
             }}
         """)

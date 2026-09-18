@@ -683,6 +683,49 @@ class ScheduledTaskService:
         if hasattr(row.get("created_at"), "isoformat"):
             row["created_at"] = row["created_at"].isoformat()
 
+    def list_reports(self, workspace_id: int = 0) -> list:
+        """报表中心摘要清单(不含 content 大字段), 附任务名, 按生成时间倒序."""
+        sql = (
+            "SELECT r.id, r.task_id, r.log_id, r.title, r.format, r.access_mode, "
+            "r.workspace_id, r.view_count, r.created_at, t.name AS task_name "
+            "FROM adh_reports r LEFT JOIN adh_scheduled_tasks t ON t.id = r.task_id "
+        )
+        params: tuple = ()
+        if workspace_id:
+            sql += "WHERE r.workspace_id = %s "
+            params = (workspace_id,)
+        sql += "ORDER BY r.created_at DESC"
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall() or []
+                for row in rows:
+                    self._normalize_report(row)
+                return rows
+        finally:
+            conn.close()
+
+    def get_report_detail(self, report_id: int) -> Optional[dict]:
+        """应用内查看完整报告: 登录用户即可读, 不走外链 access_token 校验."""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT r.*, t.name AS task_name FROM adh_reports r "
+                    "LEFT JOIN adh_scheduled_tasks t ON t.id = r.task_id WHERE r.id = %s",
+                    (report_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                # 不外发外链令牌; 应用内查看不计 view_count(与分享链接统计区分)
+                row.pop("access_token", None)
+                self._normalize_report(row)
+                return row
+        finally:
+            conn.close()
+
     # ── Stale Task Detection ────────────────────────────────────────
 
     def cleanup_stale_running_logs(self, timeout_minutes: int = 10) -> int:

@@ -1580,6 +1580,8 @@ function TermsTab() {
 const DB_TYPES = [
   { value: 'mysql', label: 'MySQL', icon: Database, color: 'text-blue-400', defaultPort: 3306 },
   { value: 'doris', label: 'Apache Doris', icon: Cylinder, color: 'text-cyan-400', defaultPort: 9030 },
+  { value: 'postgresql', label: 'PostgreSQL', icon: Database, color: 'text-indigo-400', defaultPort: 5432 },
+  { value: 'sls', label: 'SLS (PG协议接入)', icon: Server, color: 'text-teal-400', defaultPort: 5432 },
   { value: 'elasticsearch', label: 'Elasticsearch', icon: Search, color: 'text-amber-400', defaultPort: 9200 },
 ];
 
@@ -1707,7 +1709,7 @@ function DatasourceTab() {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-lg font-semibold">数据源管理</h3>
-          <p className="text-sm text-muted-foreground">管理数据库连接，支持 MySQL、Apache Doris、Elasticsearch</p>
+          <p className="text-sm text-muted-foreground">管理数据库连接，支持 MySQL、Apache Doris、PostgreSQL、SLS(PG协议)、Elasticsearch</p>
         </div>
         <Button onClick={openCreate}>
           <Plus className="h-4 w-4 mr-2" />
@@ -1972,6 +1974,7 @@ function UsersTab() {
   const [search, setSearch] = useState('');
   const [filterRole, setFilterRole] = useState('');
   const [loading, setLoading] = useState(false);
+  const [roles, setRoles] = useState<Array<{ name: string; display_name: string }>>([]);
 
   // Modals
   const [createOpen, setCreateOpen] = useState(false);
@@ -1991,8 +1994,9 @@ function UsersTab() {
       const params: any = { page: p ?? page, size };
       if (search) params.search = search;
       if (filterRole) params.role = filterRole;
-      const { data } = await client.get('/auth/users', { params });
-      setUsers(data.items || []);
+      const { data } = await client.get('/users/', { params });
+      const items = (data.items || []).map((u: any) => ({ ...u, role: u.user_role ?? u.role }));
+      setUsers(items);
       setTotal(data.total || 0);
     } catch {
       // ignore
@@ -2002,6 +2006,18 @@ function UsersTab() {
   };
 
   useEffect(() => { loadUsers(); }, []);
+
+  // 角色下拉联动「角色权限配置」中的角色列表
+  useEffect(() => {
+    client.get('/roles/').then(({ data }) => {
+      setRoles(Array.isArray(data)
+        ? data.map((r: any) => ({ name: r.name, display_name: r.display_name }))
+        : []);
+    }).catch(() => { /* 列表为空时静默处理 */ });
+  }, []);
+
+  const roleLabel = (name?: string) =>
+    roles.find((r) => r.name === name)?.display_name || ROLE_LABELS[name || ''] || name || '';
 
   const doSearch = () => {
     setPage(1);
@@ -2013,7 +2029,7 @@ function UsersTab() {
     if (!createForm.username?.trim()) { toast.error('请输入用户名'); return; }
     if (!createForm.password) { toast.error('请输入密码'); return; }
     try {
-      await client.post('/auth/users', createForm);
+      await client.post('/users/', createForm);
       toast.success('用户创建成功');
       setCreateOpen(false);
       setCreateForm({ role: 'viewer' });
@@ -2037,7 +2053,7 @@ function UsersTab() {
 
   const handleEdit = async () => {
     try {
-      await client.put(`/auth/users/${selectedUser.id}`, editForm);
+      await client.put(`/users/${selectedUser.id}`, editForm);
       toast.success('用户信息已更新');
       setEditOpen(false);
       loadUsers();
@@ -2056,7 +2072,7 @@ function UsersTab() {
   const handleResetPwd = async () => {
     if (!resetPwdForm.new_password) { toast.error('请输入新密码'); return; }
     try {
-      await client.put(`/auth/users/${selectedUser.id}/password`, resetPwdForm);
+      await client.put(`/users/${selectedUser.id}/password`, resetPwdForm);
       toast.success('密码已重置');
       setResetPwdOpen(false);
     } catch (e: any) {
@@ -2068,7 +2084,7 @@ function UsersTab() {
   const toggleStatus = async (user: any) => {
     const newStatus = user.status === 'active' ? 'disabled' : 'active';
     try {
-      await client.put(`/auth/users/${user.id}/status`, { status: newStatus });
+      await client.put(`/users/${user.id}/status`, { status: newStatus });
       toast.success(newStatus === 'active' ? '已启用' : '已禁用');
       loadUsers();
     } catch (e: any) {
@@ -2084,7 +2100,7 @@ function UsersTab() {
 
   const handleDelete = async () => {
     try {
-      await client.delete(`/auth/users/${selectedUser.id}`);
+      await client.delete(`/users/${selectedUser.id}`);
       toast.success('用户已删除');
       setDeleteOpen(false);
       loadUsers();
@@ -2113,9 +2129,9 @@ function UsersTab() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">全部角色</SelectItem>
-              <SelectItem value="admin">管理员</SelectItem>
-              <SelectItem value="analyst">分析师</SelectItem>
-              <SelectItem value="viewer">查看者</SelectItem>
+              {roles.map((r) => (
+                <SelectItem key={r.name} value={r.name}>{r.display_name || r.name}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
           <Button onClick={doSearch}>
@@ -2158,7 +2174,7 @@ function UsersTab() {
                     <td className="p-4 align-middle text-sm text-muted-foreground">{user.phone || '-'}</td>
                     <td className="p-4 align-middle">
                       <Badge variant={user.role === 'admin' ? 'destructive' : 'secondary'}>
-                        {ROLE_LABELS[user.role] || user.role}
+                        {roleLabel(user.role)}
                       </Badge>
                     </td>
                     <td className="p-4 align-middle">
@@ -2286,9 +2302,9 @@ function UsersTab() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="viewer">查看者</SelectItem>
-                  <SelectItem value="analyst">分析师</SelectItem>
-                  <SelectItem value="admin">管理员</SelectItem>
+                  {roles.map((r) => (
+                    <SelectItem key={r.name} value={r.name}>{r.display_name || r.name}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -2338,9 +2354,9 @@ function UsersTab() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="viewer">查看者</SelectItem>
-                  <SelectItem value="analyst">分析师</SelectItem>
-                  <SelectItem value="admin">管理员</SelectItem>
+                  {roles.map((r) => (
+                    <SelectItem key={r.name} value={r.name}>{r.display_name || r.name}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>

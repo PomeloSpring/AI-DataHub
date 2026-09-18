@@ -21,6 +21,7 @@ import { toast } from 'sonner';
 import { Plus, Trash2, RefreshCw, ScanSearch, Edit, Shield } from 'lucide-react';
 import { governanceApi, type SensitiveField } from '@/api/governance';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
+import client from '@/api/client';
 
 const LEVEL_MAP: Record<string, { label: string; color: string }> = {
   low: { label: '低', color: 'bg-green-500/10 text-green-500 border-green-500/20' },
@@ -29,14 +30,18 @@ const LEVEL_MAP: Record<string, { label: string; color: string }> = {
   critical: { label: '极高', color: 'bg-red-500/10 text-red-500 border-red-500/20' },
 };
 
+// mask_type 与后端 adh_sensitive_fields 枚举一致: full|partial|hash|none|block
+// block = 不能查询出来(合规屏蔽基线), 对所有身份含管理员生效
 const MASK_TYPE_OPTIONS = [
-  { value: 'full_mask', label: '完全脱敏' },
-  { value: 'partial_mask', label: '部分脱敏' },
+  { value: 'block', label: '禁止查询（不能查询出来）', danger: true },
+  { value: 'full', label: '完全脱敏' },
+  { value: 'partial', label: '部分脱敏' },
   { value: 'hash', label: '哈希处理' },
-  { value: 'encrypt', label: '加密存储' },
-  { value: 'truncate', label: '截断处理' },
-  { value: 'redact', label: '打码处理' },
+  { value: 'none', label: '不处理' },
 ];
+
+const maskTypeLabel = (v: string) =>
+  MASK_TYPE_OPTIONS.find(m => m.value === v)?.label || v || '-';
 
 interface FieldForm {
   datasource_id: string;
@@ -65,7 +70,15 @@ export default function SensitiveData() {
   const [deleteTarget, setDeleteTarget] = useState<SensitiveField | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanDatasourceId, setScanDatasourceId] = useState('');
+  const [datasources, setDatasources] = useState<Array<{ id: number; name: string; db_type: string }>>([]);
   const { getDefaultWorkspaceId } = useWorkspaceStore();
+
+  // 加载数据源列表
+  useEffect(() => {
+    client.get('/datasources/').then(({ data }) => {
+      setDatasources(Array.isArray(data) ? data : []);
+    }).catch(() => {});
+  }, []);
 
   const loadFields = useCallback(async () => {
     setLoading(true);
@@ -92,7 +105,7 @@ export default function SensitiveData() {
   const openEdit = (field: SensitiveField) => {
     setEditField(field);
     setForm({
-      datasource_id: String(field.datasource_id),
+      datasource_id: field.datasource_id === 0 ? 'global' : String(field.datasource_id),
       table_name: field.table_name,
       column_name: field.column_name,
       sensitivity_level: field.sensitivity_level,
@@ -102,15 +115,15 @@ export default function SensitiveData() {
   };
 
   const handleSave = async () => {
-    if (!form.datasource_id) { toast.error('请输入数据源 ID'); return; }
-    if (!form.table_name.trim()) { toast.error('请输入表名'); return; }
+    // 数据源 ID: 'global' = 0 (全局), 否则为具体数据源 ID
+    const dsId = form.datasource_id === 'global' ? 0 : Number(form.datasource_id);
     if (!form.column_name.trim()) { toast.error('请输入字段名'); return; }
     if (!form.sensitivity_level) { toast.error('请选择敏感级别'); return; }
     if (!form.mask_type) { toast.error('请选择脱敏方式'); return; }
     const payload = {
-      datasource_id: Number(form.datasource_id),
-      table_name: form.table_name,
-      column_name: form.column_name,
+      datasource_id: dsId,
+      table_name: form.table_name.trim(),
+      column_name: form.column_name.trim(),
       sensitivity_level: form.sensitivity_level,
       mask_type: form.mask_type,
       workspace_id: getDefaultWorkspaceId(),
@@ -144,13 +157,14 @@ export default function SensitiveData() {
 
   const handleScan = async () => {
     if (!scanDatasourceId) {
-      toast.error('请输入数据源 ID');
+      toast.error('请选择数据源');
       return;
     }
     setScanning(true);
     try {
       const workspaceId = getDefaultWorkspaceId();
-      const res = await governanceApi.scanSensitiveFields(Number(scanDatasourceId), workspaceId);
+      const dsId = scanDatasourceId === 'global' ? 0 : Number(scanDatasourceId);
+      const res = await governanceApi.scanSensitiveFields(dsId, workspaceId);
       const count = res.data?.found ?? res.data?.count ?? 0;
       toast.success(`扫描完成，发现 ${count} 个敏感字段`);
       loadFields();
@@ -184,12 +198,19 @@ export default function SensitiveData() {
       <div className="flex items-center gap-3 p-4 border rounded-lg bg-muted/20">
         <Shield className="w-5 h-5 text-muted-foreground" />
         <span className="text-sm font-medium">自动扫描</span>
-        <Input
-          className="w-[200px]"
-          placeholder="数据源 ID"
-          value={scanDatasourceId}
-          onChange={e => setScanDatasourceId(e.target.value)}
-        />
+        <Select value={scanDatasourceId} onValueChange={setScanDatasourceId}>
+          <SelectTrigger className="w-[200px]">
+            <SelectValue placeholder="选择数据源" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="global">全局（所有数据源）</SelectItem>
+            {datasources.map(ds => (
+              <SelectItem key={ds.id} value={String(ds.id)}>
+                {ds.name} ({ds.db_type})
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Button size="sm" variant="outline" onClick={handleScan} disabled={scanning}>
           <ScanSearch className="w-4 h-4 mr-1" />
           {scanning ? '扫描中...' : '扫描敏感字段'}
@@ -230,7 +251,11 @@ export default function SensitiveData() {
               fields.map(field => (
                 <tr key={field.id} className="border-t hover:bg-muted/30">
                   <td className="p-3">
-                    <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{field.table_name}</code>
+                    {field.table_name ? (
+                      <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{field.table_name}</code>
+                    ) : (
+                      <Badge variant="outline" className="text-xs border-blue-500/30 text-blue-500">全局（所有表）</Badge>
+                    )}
                   </td>
                   <td className="p-3">
                     <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{field.column_name}</code>
@@ -241,10 +266,16 @@ export default function SensitiveData() {
                     </Badge>
                   </td>
                   <td className="p-3 text-xs">
-                    {MASK_TYPE_OPTIONS.find(m => m.value === field.mask_type)?.label || field.mask_type}
+                    {field.mask_type === 'block' ? (
+                      <Badge variant="outline" className="bg-red-500/10 text-red-500 border-red-500/30 font-medium">
+                        {maskTypeLabel(field.mask_type)}
+                      </Badge>
+                    ) : (
+                      maskTypeLabel(field.mask_type)
+                    )}
                   </td>
                   <td className="p-3 text-xs text-muted-foreground">
-                    {field.datasource_id}
+                    {field.datasource_id === 0 ? '0（全局）' : field.datasource_id}
                   </td>
                   <td className="p-3 text-xs text-muted-foreground">
                     {new Date(field.created_at).toLocaleString()}
@@ -313,26 +344,41 @@ export default function SensitiveData() {
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <label className="text-sm font-medium">数据源 ID *</label>
-              <Input
-                className="mt-1"
-                type="number"
-                value={form.datasource_id}
-                onChange={e => setForm(f => ({ ...f, datasource_id: e.target.value }))}
-                placeholder="输入数据源 ID"
+              <label className="text-sm font-medium">数据源 *</label>
+              <Select
+                value={form.datasource_id || 'global'}
+                onValueChange={v => setForm(f => ({ ...f, datasource_id: v }))}
                 disabled={!!editField}
-              />
+              >
+                <SelectTrigger className="mt-1">
+                  <SelectValue placeholder="选择数据源" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="global">全局（所有数据源）</SelectItem>
+                  {datasources.map(ds => (
+                    <SelectItem key={ds.id} value={String(ds.id)}>
+                      {ds.name} ({ds.db_type})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {!editField && (
+                <p className="text-xs text-muted-foreground mt-1">选择「全局」则对所有数据源生效，与指定数据源规则取并集</p>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium">表名 *</label>
+                <label className="text-sm font-medium">表名</label>
                 <Input
                   className="mt-1"
                   value={form.table_name}
                   onChange={e => setForm(f => ({ ...f, table_name: e.target.value }))}
-                  placeholder="如: user_info"
+                  placeholder="留空 = 对所有表按列名生效"
                   disabled={!!editField}
                 />
+                {!editField && (
+                  <p className="text-xs text-muted-foreground mt-1">留空表示跨所有表按列名屏蔽（全局）</p>
+                )}
               </div>
               <div>
                 <label className="text-sm font-medium">字段名 *</label>
@@ -394,7 +440,7 @@ export default function SensitiveData() {
           <DialogHeader>
             <DialogTitle>确认删除</DialogTitle>
             <DialogDescription>
-              确定要删除敏感字段「{deleteTarget?.table_name}.{deleteTarget?.column_name}」的脱敏配置吗？
+              确定要删除敏感字段「{deleteTarget?.table_name ? deleteTarget.table_name + '.' : '（全局）'}{deleteTarget?.column_name}」的脱敏配置吗？
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

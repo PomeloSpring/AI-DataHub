@@ -55,6 +55,7 @@ class PermissionEnforcer:
         datasource_id: int,
         table_name: str = "",
         columns: list = None,
+        sensitive_only: bool = False,
     ) -> PermissionResult:
         """Check user access to a datasource/table/columns.
 
@@ -64,6 +65,9 @@ class PermissionEnforcer:
             datasource_id: Target datasource.
             table_name: Target table (empty = datasource-level check only).
             columns: Columns being accessed (empty = all).
+            sensitive_only: 仅应用治理敏感基线(block/mask), 跳过 RBAC/RLS。
+                用于无身份(user_id=0)的系统/内部调用: 行级/越权控制不适用,
+                但敏感列屏蔽基线必须生效(护城河不可绕过)。
 
         Returns:
             PermissionResult with allowed, row_filter, hidden/masked columns.
@@ -74,9 +78,11 @@ class PermissionEnforcer:
         result = PermissionResult()
 
         # 敏感字段标记（datagov）— 治理基线，对所有用户生效（含管理员）
+        #   mask(full/partial/hash) -> 脱敏返回; block -> 不能查询出来(并入 hidden_columns)
         sensitive_masked = {}
+        sensitive_blocked: list = []
         if table_name:
-            sensitive_masked = self._get_sensitive_masks(
+            sensitive_masked, sensitive_blocked = self._get_sensitive_policies(
                 workspace_id, datasource_id, table_name
             )
             if sensitive_masked:
@@ -84,6 +90,17 @@ class PermissionEnforcer:
                 result.policies_applied.append(
                     f"sensitive_fields:{','.join(sorted(sensitive_masked))}"
                 )
+            for col in sensitive_blocked:
+                if col not in result.hidden_columns:
+                    result.hidden_columns.append(col)
+            if sensitive_blocked:
+                result.policies_applied.append(
+                    f"sensitive_block:{','.join(sorted(sensitive_blocked))}"
+                )
+
+        # 无身份调用: 只套治理敏感基线(已并入), 不做 RBAC/RLS 行级过滤
+        if sensitive_only:
+            return result
 
         # Admin bypass — admins have full access (敏感字段脱敏除外，已在上方生效)
         user_roles = role_service.get_user_roles(user_id, workspace_id)
@@ -108,11 +125,13 @@ class PermissionEnforcer:
                 result.reason = f"无权访问表 {table_name}"
                 return result
 
-            # Step 3: Get column restrictions
+            # Step 3: Get column restrictions (合并, 不得覆盖敏感基线已并入的 hidden/masked)
             col_restrictions = role_service.get_user_column_restrictions(
                 user_id, datasource_id, table_name, workspace_id
             )
-            result.hidden_columns = col_restrictions.get("hidden_columns", [])
+            for col in col_restrictions.get("hidden_columns", []):
+                if col not in result.hidden_columns:
+                    result.hidden_columns.append(col)
             # 角色策略不得弱化敏感基线（不覆盖敏感字段的脱敏方式）
             for col, mask in col_restrictions.get("masked_columns", {}).items():
                 if col not in sensitive_masked:
@@ -123,7 +142,9 @@ class PermissionEnforcer:
                 user_id, workspace_id, datasource_id, table_name
             )
             result.row_filter = rls_policies.get("row_filter", "")
-            result.policies_applied = rls_policies.get("policies_applied", [])
+            for pid in rls_policies.get("policies_applied", []):
+                if pid not in result.policies_applied:
+                    result.policies_applied.append(pid)
 
             # Merge RLS column policies (RLS overrides role-level, but never weakens sensitive baseline)
             rls_hidden = rls_policies.get("hidden_columns", [])
@@ -164,9 +185,13 @@ class PermissionEnforcer:
         if tables is None:
             tables = self._extract_tables(sql)
 
+        # 无身份(user_id 缺省/0): 仅套治理敏感基线, 不做 RBAC/RLS
+        only_sensitive = not user_id
+
         if not tables:
             # No tables found, check datasource-level only
-            result = self.check_access(user_id, workspace_id, datasource_id)
+            result = self.check_access(
+                user_id, workspace_id, datasource_id, sensitive_only=only_sensitive)
             if not result.allowed:
                 raise PermissionError(result.reason)
             return sql, result
@@ -177,7 +202,8 @@ class PermissionEnforcer:
 
         for table in tables:
             result = self.check_access(
-                user_id, workspace_id, datasource_id, table
+                user_id, workspace_id, datasource_id, table,
+                sensitive_only=only_sensitive,
             )
             if not result.allowed:
                 raise PermissionError(result.reason)
@@ -230,30 +256,67 @@ class PermissionEnforcer:
 
     # ── Internal helpers ───────────────────────────────────────────
 
-    def _get_sensitive_masks(
+    def _get_sensitive_policies(
         self, workspace_id: int, datasource_id: int, table_name: str
-    ) -> dict:
-        """从 datagov 敏感字段标记加载脱敏规则 {column: mask_type}.
+    ) -> tuple[dict, list]:
+        """从 datagov 敏感字段标记加载 (masks, blocks)。
 
-        匹配当前工作空间或全局（workspace_id=0）标记；失败不阻断查询。
+        取"全局(datasource_id=0 / table_name='') ∪ 指定数据源/表"并集:
+        table_name='' 的规则视为跨所有表按列名生效。mask_type='block' 归入
+        blocks(不能查询出来), 其余按 _SENSITIVE_MASK_MAP 归入 masks。失败不阻断。
         """
         try:
             from services.shared.common.db import execute_query
             rows = execute_query(
                 """SELECT column_name, mask_type FROM adh_sensitive_fields
-                   WHERE datasource_id = %s AND table_name = %s
+                   WHERE datasource_id IN (%s, 0) AND table_name IN (%s, '')
                      AND workspace_id IN (%s, 0)""",
                 (datasource_id, table_name, workspace_id),
             )
-            masks = {}
+            masks: dict = {}
+            blocks: list = []
             for row in rows:
-                mask = _SENSITIVE_MASK_MAP.get(row.get("mask_type") or "")
-                if mask:
-                    masks[row["column_name"]] = mask
-            return masks
+                col = row.get("column_name")
+                if not col:
+                    continue
+                mt = (row.get("mask_type") or "").lower()
+                if mt == "block":
+                    if col not in blocks:
+                        blocks.append(col)
+                else:
+                    mask = _SENSITIVE_MASK_MAP.get(mt)
+                    if mask:
+                        masks[col] = mask
+            return masks, blocks
         except Exception as e:
-            logger.warning("Load sensitive masks failed for %s: %s", table_name, e)
-            return {}
+            logger.warning("Load sensitive policies failed for %s: %s", table_name, e)
+            return {}, []
+
+    def _get_sensitive_masks(
+        self, workspace_id: int, datasource_id: int, table_name: str
+    ) -> dict:
+        """兼容旧签名: 仅返回脱敏映射(不含 block)。"""
+        masks, _ = self._get_sensitive_policies(workspace_id, datasource_id, table_name)
+        return masks
+
+    def get_blocked_columns(
+        self, workspace_id: int, datasource_id: int, table_name: str = ""
+    ) -> list:
+        """返回该(数据源/表)生效的合规屏蔽列名(全局 ∪ 指定), 供语义层精确拒绝。"""
+        _, blocks = self._get_sensitive_policies(workspace_id, datasource_id, table_name)
+        return blocks
+
+    @staticmethod
+    def _references_blocked(sql: str, blocked: list) -> list:
+        """保守检测 SQL 是否显式点名了被屏蔽列(词边界, 大小写不敏感)。
+
+        SELECT * 不含具体列名 -> 不算点名(由执行层后置丢弃兜底); 命中的列名返回。
+        """
+        hits: list = []
+        for col in blocked or []:
+            if col and re.search(rf"\b{re.escape(str(col))}\b", sql or "", re.IGNORECASE):
+                hits.append(col)
+        return hits
 
     def _extract_tables(self, sql: str) -> list:
         """Extract table names from SQL FROM/JOIN clauses."""
@@ -269,26 +332,38 @@ class PermissionEnforcer:
                 result.append(t)
         return result
 
-    def _inject_row_filter(self, sql: str, table: str, row_filter: str) -> str:
-        """Inject row-level filter into SQL by wrapping table with subquery.
+    # FROM/JOIN 后的下一词若是这些关键字, 说明表没有别名(而是子句边界), 不得误当作别名
+    _SQL_RESERVED_AFTER_TABLE = {
+        "where", "group", "by", "order", "limit", "having", "join", "inner", "left",
+        "right", "full", "cross", "outer", "natural", "on", "using", "union", "minus",
+        "intersect", "except", "set", "and", "or", "not", "as", "when", "then", "else",
+        "end", "into", "for", "window", "semi", "anti", "straight_join", "asc", "desc", "with",
+    }
 
-        SELECT * FROM orders → SELECT * FROM (SELECT * FROM orders WHERE region='cn') AS orders
+    def _inject_row_filter(self, sql: str, table: str, row_filter: str) -> str:
+        """注入行级过滤: 把 FROM/JOIN 引用的表包成带过滤的子查询。
+
+        - 保留原表别名: `FROM t t1` -> `FROM (SELECT * FROM t WHERE f) AS t1` (不会退成非法的 `AS t t1`)
+        - 同时覆盖 JOIN 表(而非只 FROM 首表), 避免关联查询对 JOIN 侧表的 RLS 旁路
+        - 无别名时回退用表名作别名: `FROM t` -> `FROM (SELECT * FROM t WHERE f) AS t`
         """
         if not row_filter:
             return sql
 
-        # Find FROM table and wrap with filtered subquery
-        pattern = rf'(\bFROM\s+){re.escape(table)}(\s|,|WHERE|GROUP|ORDER|LIMIT|$)'
-        replacement = rf'\1(SELECT * FROM {table} WHERE {row_filter}) AS {table}\2'
-        result = re.sub(pattern, replacement, sql, flags=re.IGNORECASE)
+        sub = f"(SELECT * FROM {table} WHERE {row_filter})"
+        pattern = rf'(\b(?:FROM|JOIN)\s+){re.escape(table)}\b(\s+(?:AS\s+)?([A-Za-z_]\w*))?'
 
-        if result == sql:
-            # Try without trailing context
-            pattern = rf'(\bFROM\s+){re.escape(table)}(\s)'
-            replacement = rf'\1(SELECT * FROM {table} WHERE {row_filter}) AS {table}\2'
-            result = re.sub(pattern, replacement, sql, flags=re.IGNORECASE)
+        def _repl(m: "re.Match") -> str:
+            lead = m.group(1)          # 'FROM '/'JOIN ' (保留原始大小写与空白)
+            tail = m.group(2) or ""    # 紧随其后的整段(可能为空, 含别名或关键字)
+            alias = m.group(3)
+            if alias and alias.lower() not in self._SQL_RESERVED_AFTER_TABLE:
+                # 命中真实别名: 用别名作包裹子查询的别名, 丢弃原 tail(已并入别名)
+                return f"{lead}{sub} AS {alias}"
+            # 无别名(或下一词是关键字): 用表名作别名, 并把原 tail 原样保留在子查询之后
+            return f"{lead}{sub} AS {table}{tail}"
 
-        return result
+        return re.sub(pattern, _repl, sql, flags=re.IGNORECASE)
 
     def _mask_value(self, value, mask_type: str):
         """Apply masking to a single value."""

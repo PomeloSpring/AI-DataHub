@@ -9,11 +9,13 @@ Usage:
 
 from services.datamind.rag.strategies.base import RetrievalStrategy
 from services.datamind.rag.strategies.graphrag import GraphRagStrategy
+from services.datamind.rag.strategies.ontology_traversal import OntologyTraversalStrategy
 
 # ── Strategy Registry ──────────────────────────────────────────────
 
 STRATEGIES: dict[str, type[RetrievalStrategy]] = {
     "graphrag": GraphRagStrategy,
+    "ontology_traversal": OntologyTraversalStrategy,
 }
 
 # Allowed values for config/UI

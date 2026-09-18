@@ -8,7 +8,7 @@ import logging
 import math
 import re
 
-from services.shared.common.db.datasource_db import get_datasource_by_id, get_datasource_conn
+from services.dataviz.services.governed_query import governed_execute
 
 logger = logging.getLogger(__name__)
 
@@ -74,60 +74,6 @@ def _substitute_params(sql: str, params: dict) -> str:
     return re.sub(r'\$\{(\w+)\}', replacer, sql)
 
 
-def _execute_on_datasource(sql: str, datasource_id: int) -> dict:
-    """Execute SQL on the specified datasource and return result dict."""
-    import pymysql as _pymysql
-
-    ds = get_datasource_by_id(datasource_id)
-    if not ds:
-        raise Exception(f"数据源 {datasource_id} 不存在")
-
-    db_type = ds.get("db_type", "mysql")
-
-    if db_type == "elasticsearch":
-        from services.datamind.nl2sql.sql.query_executor import _build_es_client
-        params = {
-            "host": ds["host"], "port": ds["port"],
-            "user": ds.get("username"), "password": ds.get("password"),
-            "ssl": bool(ds.get("ssl", 0)),
-        }
-        es = _build_es_client(params)
-        try:
-            result = es.sql.query(body={"query": sql})
-            columns_info = result.get("columns", [])
-            rows_data = result.get("rows", [])
-            if not columns_info or not rows_data:
-                return {"columns": [], "rows": [], "row_count": 0}
-            col_names = [col.get("name", f"col_{i}") for i, col in enumerate(columns_info)]
-            rows = [dict(zip(col_names, row)) for row in rows_data]
-            data = _sanitize_floats(rows)
-            return {"columns": col_names, "rows": data, "row_count": len(data)}
-        finally:
-            es.close()
-    else:
-        conn_kwargs = {
-            "host": ds["host"],
-            "port": ds["port"],
-            "user": ds.get("username", ""),
-            "password": ds.get("password", ""),
-            "database": ds.get("database_name"),
-            "charset": "utf8mb4",
-            "cursorclass": _pymysql.cursors.DictCursor,
-            "connect_timeout": 10,
-            "read_timeout": 30,
-        }
-        conn = _pymysql.connect(**conn_kwargs)
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-                rows = cur.fetchall()
-                columns = list(rows[0].keys()) if rows else []
-                data = _sanitize_floats(rows)
-                return {"columns": columns, "rows": data, "row_count": len(data)}
-        finally:
-            conn.close()
-
-
 # ── Component Data Service ───────────────────────────────────────────────────
 
 
@@ -141,6 +87,9 @@ class ComponentService:
         params: dict = None,
         component_type: str = "table",
         options: dict = None,
+        user_id: int = 0,
+        workspace_id: int = 0,
+        username: str = "",
     ) -> dict:
         """Execute component SQL with parameter substitution, pagination, and sorting.
 
@@ -185,7 +134,7 @@ class ComponentService:
                 ok, msg = validate_sql(count_sql, require_limit=False)
                 if ok:
                     try:
-                        count_result = _execute_on_datasource(count_sql, datasource_id)
+                        count_result = governed_execute(count_sql, datasource_id, user_id, workspace_id, username)
                         if count_result.get("rows"):
                             row = count_result["rows"][0]
                             total = (
@@ -222,7 +171,7 @@ class ComponentService:
             return {"success": False, "error": f"SQL 校验失败: {msg}"}
 
         try:
-            result = _execute_on_datasource(sql, datasource_id)
+            result = governed_execute(sql, datasource_id, user_id, workspace_id, username)
             return {
                 "success": True,
                 "data": result.get("rows", []),

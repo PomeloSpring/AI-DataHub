@@ -116,7 +116,7 @@ async def cancel_agent(
     Note: Cancellation is best-effort. The agent loop checks for
     cancellation between tool-call rounds.
     """
-    task_key = f"{user["user_id"]}:{agent_name}"
+    task_key = f'{user["user_id"]}:{agent_name}'
     task = _running_tasks.get(task_key)
 
     if task and not task.done():

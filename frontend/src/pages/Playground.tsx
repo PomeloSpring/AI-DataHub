@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import {
-  Play, Save, Code, Trash2, Table, FileText,
-  BarChart3, Copy, Database, ChevronRight,
+  Save, Trash2, Table, FileText,
+  Copy, Database, ChevronRight, Play,
+  Braces, GitBranch, ShieldCheck, Crosshair,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,7 +16,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
-import DashboardChart, { CHART_TYPES, ChartIcon } from '../components/DashboardChart';
+import ASTTreeView from '../components/ASTTreeView';
 import client from '../api/client';
 
 interface Datasource {
@@ -51,10 +52,130 @@ interface SavedQuery {
   created_at: string;
 }
 
+type ResultTab = 'result' | 'ast' | 'lineage' | 'rls' | 'provenance';
+
+// ── Phase 6: 语义层可观测面板的展示组件 ────────────────────────
+
+function TabButton({ active, loading, onClick, icon: Icon, children }: {
+  active: boolean; loading?: boolean; onClick: () => void;
+  icon: any; children: React.ReactNode;
+}) {
+  return (
+    <button
+      className={`px-3 py-1 text-sm font-medium rounded-t transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+        active ? 'text-foreground border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'
+      }`}
+      onClick={onClick}
+    >
+      {loading ? <Spinner size={12} /> : <Icon className="h-3.5 w-3.5" />}
+      {children}
+    </button>
+  );
+}
+
+function JsonBlock({ value }: { value: any }) {
+  return (
+    <pre className="text-xs font-mono whitespace-pre-wrap break-all text-foreground/90">
+      {typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
+    </pre>
+  );
+}
+
+function LineageNode({ node, depth = 0 }: { node: any; depth?: number }) {
+  if (!node) return null;
+  return (
+    <div style={{ marginLeft: depth * 16 }} className="py-0.5">
+      <div className="flex items-center gap-2 text-sm">
+        <GitBranch className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+        <span className="font-mono">{node.name}</span>
+        {node.dataset && <Badge variant="outline" className="text-xs font-normal">{node.dataset}</Badge>}
+        {node.expression && <span className="text-xs text-muted-foreground truncate">{node.expression}</span>}
+      </div>
+      {(node.downstream || []).map((c: any, i: number) => (
+        <LineageNode key={i} node={c} depth={depth + 1} />
+      ))}
+    </div>
+  );
+}
+
+function SqlDiff({ base, secured, diff }: { base: string; secured: string; diff: string[] }) {
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <div className="text-xs font-semibold mb-1 text-muted-foreground">baseSql (改写前)</div>
+          <pre className="text-xs font-mono whitespace-pre-wrap p-2 rounded bg-muted border">{base}</pre>
+        </div>
+        <div>
+          <div className="text-xs font-semibold mb-1 text-muted-foreground">securedSql (改写后 · 所见即所执行)</div>
+          <pre className="text-xs font-mono whitespace-pre-wrap p-2 rounded bg-muted border">{secured}</pre>
+        </div>
+      </div>
+      {diff?.length > 0 && (
+        <div>
+          <div className="text-xs font-semibold mb-1 text-muted-foreground">unified diff</div>
+          <pre className="text-xs font-mono p-2 rounded border overflow-auto">
+            {diff.map((l, i) => (
+              <div
+                key={i}
+                className={
+                  l.startsWith('+++') || l.startsWith('---')
+                    ? 'text-muted-foreground'
+                    : l.startsWith('+') ? 'text-green-600 bg-green-50 dark:bg-green-950/30'
+                    : l.startsWith('-') ? 'text-red-600 bg-red-50 dark:bg-red-950/30'
+                    : ''
+                }
+              >{l}</div>
+            ))}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProvenanceCard({ data }: { data: any }) {
+  const b = data?.binding || {};
+  const g = b.guardrail || {};
+  const a = b.access || {};
+  const rows: [string, React.ReactNode][] = [
+    ['对象 (object)', b.object_key],
+    ['物理表 (catalog.db.table)', b.catalog_ref || `${b.catalog_name || ''}.${b.db_name || ''}.${b.physical_table || ''}`],
+    ['datasource_id', b.datasource_id],
+    ['绑定来源', b.source],
+    ['sync_state', <Badge key="s" variant={b.sync_state === 'bound' ? 'secondary' : 'destructive'} className="text-xs font-normal">{b.sync_state}</Badge>],
+    ['query_mode', g.query_mode],
+    ['size_class', g.size_class],
+    ['allow_full_scan', String(g.allow_full_scan)],
+    ['requiredPerms', (a.permission_tokens || []).join(', ') || '—'],
+    ['rlsPolicies', (a.rls_policy_refs || []).join(', ') || '—'],
+    ['maskedColumns', (a.masked_columns || []).join(', ') || '—'],
+  ];
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 max-w-2xl">
+        {rows.map(([k, v]) => (
+          <div key={k} className="flex items-center justify-between gap-3 border-b border-dashed py-1">
+            <span className="text-xs text-muted-foreground">{k}</span>
+            <span className="text-sm font-mono text-right truncate">{v ?? '—'}</span>
+          </div>
+        ))}
+      </div>
+      {data?.plan?.sql && (
+        <div>
+          <div className="text-xs font-semibold mb-1 text-muted-foreground">编译 baseSql (dry-run)</div>
+          <pre className="text-xs font-mono whitespace-pre-wrap p-2 rounded bg-muted border">{data.plan.sql}</pre>
+        </div>
+      )}
+      {data?.warnings?.length > 0 && (
+        <div className="text-xs text-amber-600">{data.warnings.join(' · ')}</div>
+      )}
+    </div>
+  );
+}
+
 export default function Playground() {
   const [sql, setSql] = useState('');
-  const [result, setResult] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
   const [datasources, setDatasources] = useState<Datasource[]>([]);
   const [selectedDs, setSelectedDs] = useState<number | null>(null);
   const [tables, setTables] = useState<TableInfo[]>([]);
@@ -65,12 +186,92 @@ export default function Playground() {
   const [saveName, setSaveName] = useState('');
   const [saveDesc, setSaveDesc] = useState('');
   const [isDataset, setIsDataset] = useState(false);
-  const [chartType, setChartType] = useState('bar');
-  const [resultTab, setResultTab] = useState<'result' | 'chart'>('result');
+  const [resultTab, setResultTab] = useState<ResultTab>('ast');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const editorRef = useRef<HTMLTextAreaElement>(null);
 
+  // 受治理的交互式取数结果(继承当前用户角色权限; 与看板 raw_sql 同源)
+  const [execResult, setExecResult] = useState<any>(null);
+  const [executing, setExecuting] = useState(false);
+
+  // Phase 6: 语义层可观测分析状态 (AST / 血缘 / RLS 改写预览 / 溯源) — 均不返回数据行
+  const [analysis, setAnalysis] = useState<Record<string, any>>({});
+  // AST 页签: 默认树形可视化, 可切回原始 JSON
+  const [astRaw, setAstRaw] = useState(false);
+  const [analyzing, setAnalyzing] = useState<string | null>(null);
+  const [provObject, setProvObject] = useState('');
+
   const selectedDsType = datasources.find(d => d.id === selectedDs)?.db_type || '';
+
+  const ANALYSIS_TABS: { key: ResultTab; label: string; icon: any }[] = [
+    { key: 'result', label: '执行结果', icon: Play },
+    { key: 'ast', label: 'AST', icon: Braces },
+    { key: 'lineage', label: '血缘', icon: GitBranch },
+    { key: 'rls', label: 'RLS 改写', icon: ShieldCheck },
+    { key: 'provenance', label: '溯源', icon: Crosshair },
+  ];
+
+  const analyzePath: Record<string, string> = {
+    ast: '/playground/ast', lineage: '/playground/lineage',
+    rls: '/playground/rls-diff',
+  };
+
+  // 受治理执行: body 只传 sql + datasource_id; 身份由后端从 JWT 解析, 不传 user_id
+  const executeSql = async () => {
+    if (!sql.trim()) { toast.error('请输入 SQL'); return; }
+    if (!selectedDs) { toast.error('请先选择数据源'); return; }
+    setExecuting(true);
+    setResultTab('result');
+    try {
+      const { data } = await client.post('/playground/execute', {
+        sql: sql.trim(), datasource_id: selectedDs,
+      });
+      setExecResult(data);
+      if (data.error) toast.error(data.error);
+      else toast.success(`查询成功，返回 ${data.row_count ?? data.rows?.length ?? 0} 行`);
+    } catch (e: any) {
+      const detail = e.response?.data?.detail;
+      const msg = typeof detail === 'string' ? detail : (detail?.error || detail || '执行失败');
+      setExecResult({ error: msg });
+      toast.error(msg);
+    } finally {
+      setExecuting(false);
+    }
+  };
+
+  const runAnalyze = async (kind: 'ast' | 'lineage' | 'rls') => {
+    if (!sql.trim()) { toast.error('请输入 SQL'); return; }
+    if (kind === 'rls' && !selectedDs) { toast.error('请先选择数据源'); return; }
+    setAnalyzing(kind);
+    setResultTab(kind);
+    try {
+      // 只发待分析的 SQL 与数据源(供改写预览); 身份由后端从 JWT 解析, body 不传 user_id
+      const body: any = { sql: sql.trim(), datasource_id: selectedDs };
+      const { data } = await client.post(analyzePath[kind], body);
+      setAnalysis((a) => ({ ...a, [kind]: data }));
+    } catch (e: any) {
+      const detail = e.response?.data?.detail;
+      setAnalysis((a) => ({ ...a, [kind]: { error: typeof detail === 'string' ? detail : (detail?.error || detail || '分析失败') } }));
+      if (typeof detail === 'string') toast.error(detail);
+    } finally {
+      setAnalyzing(null);
+    }
+  };
+
+  const runProvenance = async () => {
+    if (!provObject.trim()) { toast.error('请输入本体对象名'); return; }
+    setAnalyzing('provenance');
+    setResultTab('provenance');
+    try {
+      const { data } = await client.post('/playground/provenance', { object: provObject.trim(), datasource_id: selectedDs || 0 });
+      setAnalysis((a) => ({ ...a, provenance: data }));
+    } catch (e: any) {
+      const detail = e.response?.data?.detail;
+      setAnalysis((a) => ({ ...a, provenance: { error: typeof detail === 'string' ? detail : (detail?.error || '溯源失败') } }));
+    } finally {
+      setAnalyzing(null);
+    }
+  };
 
   useEffect(() => {
     loadDatasources();
@@ -111,34 +312,6 @@ export default function Playground() {
       const { data } = await client.get('/playground/queries');
       setSavedQueries(Array.isArray(data) ? data : []);
     } catch {}
-  };
-
-  const executeSql = async () => {
-    if (!sql.trim()) {
-      toast.error('请输入 SQL');
-      return;
-    }
-    if (!selectedDs) {
-      toast.error('请先选择数据源');
-      return;
-    }
-    setLoading(true);
-    try {
-      const { data } = await client.post('/playground/execute', {
-        sql: sql.trim(),
-        datasource_id: selectedDs,
-      });
-      setResult(data);
-      if (data.error) {
-        toast.error(data.error);
-      } else {
-        toast.success(`查询成功，返回 ${data.rows?.length || 0} 行`);
-      }
-    } catch (e: any) {
-      toast.error(e.response?.data?.detail || '执行失败');
-    } finally {
-      setLoading(false);
-    }
   };
 
   const saveQuery = async () => {
@@ -193,8 +366,6 @@ export default function Playground() {
     }
   };
 
-  const hasResult = result && !result.error && result.columns && result.rows;
-
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
@@ -224,8 +395,8 @@ export default function Playground() {
               ))}
             </SelectContent>
           </Select>
-          <Button onClick={executeSql} disabled={loading}>
-            {loading ? <Spinner className="mr-2" size={16} /> : <Play className="h-4 w-4 mr-2" />}
+          <Button onClick={executeSql} disabled={executing || !selectedDs}>
+            {executing ? <Spinner size={12} className="mr-2" /> : <Play className="h-4 w-4 mr-2" />}
             执行 (Ctrl+Enter)
           </Button>
           <Button variant="outline" onClick={copySql}>
@@ -351,16 +522,16 @@ export default function Playground() {
               ref={editorRef}
               value={sql}
               onChange={(e) => setSql(e.target.value)}
-              placeholder={selectedDsType === 'elasticsearch'
-                ? '输入 ES SQL 查询，索引名需双引号包裹...\n例如: SELECT * FROM "my_index" WHERE "field" = \'value\' LIMIT 10\n(Ctrl+Enter 执行)'
-                : '输入 SQL 查询... (Ctrl+Enter 执行)'}
-              className="h-full resize-none font-mono text-sm rounded-none border-0"
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
                   e.preventDefault();
                   executeSql();
                 }
               }}
+              placeholder={selectedDsType === 'elasticsearch'
+                ? '输入 ES SQL 查询... (Ctrl+Enter 执行; 结果按当前用户角色权限施加敏感列屏蔽/脱敏 + 行级 RLS)\n例如: SELECT * FROM "my_index" LIMIT 100'
+                : '输入 SQL 查询... (Ctrl+Enter 执行; 结果按当前用户角色权限施加敏感列屏蔽/脱敏 + 行级 RLS)'}
+              className="h-full resize-none font-mono text-sm rounded-none border-0"
             />
           </div>
 
@@ -368,119 +539,180 @@ export default function Playground() {
           <div className="flex-1 flex flex-col overflow-hidden">
             {/* Result title bar with tabs */}
             <div className="border-b flex items-center justify-between px-3 h-10 flex-shrink-0">
-              <div className="flex items-center gap-1">
-                <button
-                  className={`px-3 py-1 text-sm font-medium rounded-t transition-colors ${
-                    resultTab === 'result'
-                      ? 'text-foreground border-b-2 border-primary'
-                      : 'text-muted-foreground hover:text-foreground'
-                  }`}
-                  onClick={() => setResultTab('result')}
-                >
-                  <Table className="h-3.5 w-3.5 inline mr-1.5" />
-                  结果
-                </button>
-                <button
-                  className={`px-3 py-1 text-sm font-medium rounded-t transition-colors ${
-                    resultTab === 'chart'
-                      ? 'text-foreground border-b-2 border-primary'
-                      : 'text-muted-foreground hover:text-foreground'
-                  }`}
-                  onClick={() => setResultTab('chart')}
-                >
-                  <BarChart3 className="h-3.5 w-3.5 inline mr-1.5" />
-                  图表
-                </button>
+              <div className="flex items-center gap-1 overflow-x-auto">
+                {ANALYSIS_TABS.map((t) => (
+                  <TabButton
+                    key={t.key}
+                    active={resultTab === t.key}
+                    loading={analyzing === t.key}
+                    icon={t.icon}
+                    onClick={() => {
+                      if (t.key === 'provenance') setResultTab('provenance');
+                      else if (t.key === 'result') setResultTab('result');
+                      else runAnalyze(t.key as 'ast' | 'lineage' | 'rls');
+                    }}
+                  >
+                    {t.label}
+                  </TabButton>
+                ))}
               </div>
-              {hasResult && (
-                <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                  <span>返回 <span className="font-medium text-foreground">{result.row_count ?? result.rows?.length ?? 0}</span> 行</span>
-                  {result.elapsed_ms != null && (
-                    <span>耗时 <span className="font-medium text-foreground">{result.elapsed_ms}ms</span></span>
-                  )}
-                </div>
-              )}
             </div>
 
             {/* Tab content */}
             <div className="flex-1 overflow-hidden">
-              {result?.error ? (
-                <div className="p-4 text-destructive">{result.error}</div>
-              ) : resultTab === 'result' ? (
-                /* Result table */
-                hasResult ? (
-                  <div className="h-full overflow-auto">
-                    <table className="w-full">
-                      <thead className="sticky top-0 z-10">
-                        <tr className="border-b bg-muted/80">
-                          <th className="h-8 px-3 text-left align-middle font-medium text-muted-foreground text-xs w-12">#</th>
-                          {result.columns.map((col: string) => (
-                            <th key={col} className="h-8 px-3 text-left align-middle font-medium text-muted-foreground text-xs">
-                              {col}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {result.rows?.map((row: any, i: number) => (
-                          <tr key={i} className="border-b hover:bg-muted/50">
-                            <td className="px-3 py-1.5 text-xs text-muted-foreground">{i + 1}</td>
-                            {result.columns.map((col: string) => (
-                              <td key={col} className="px-3 py-1.5 text-xs">
-                                {row[col]?.toString() || '-'}
-                              </td>
+              {resultTab === 'result' && (
+                <div className="h-full flex flex-col overflow-hidden">
+                  {execResult && !execResult.error && (execResult.columns?.length > 0) && (
+                    <div className="px-3 py-1.5 text-xs text-muted-foreground border-b flex gap-4 shrink-0">
+                      <span>返回 <span className="font-medium text-foreground">{execResult.row_count ?? execResult.rows?.length ?? 0}</span> 行</span>
+                      {execResult.elapsed_ms != null && <span>耗时 {execResult.elapsed_ms}ms</span>}
+                      <span className="text-amber-600">已按当前用户权限脱敏/屏蔽与行级过滤</span>
+                    </div>
+                  )}
+                  <div className="flex-1 overflow-auto">
+                    {executing ? (
+                      <div className="p-4"><Spinner size={16} /></div>
+                    ) : !execResult ? (
+                      <p className="p-4 text-sm text-muted-foreground">点击「执行」运行 SQL；结果按当前用户的角色权限（敏感列屏蔽/脱敏 + 行级 RLS）返回。</p>
+                    ) : execResult.error ? (
+                      <div className="p-4 text-sm text-destructive">{String(execResult.error)}</div>
+                    ) : (execResult.columns?.length ? (
+                      <table className="w-full text-sm border-collapse">
+                        <thead className="sticky top-0 bg-muted">
+                          <tr>
+                            {execResult.columns.map((col: string) => (
+                              <th key={col} className="text-left px-3 py-2 border-b font-medium whitespace-nowrap">{col}</th>
                             ))}
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-center h-full text-muted-foreground">
-                    <div className="text-center">
-                      <Code className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                      <p>执行 SQL 查看结果</p>
-                      <p className="text-xs mt-1">Ctrl+Enter 快速执行</p>
-                    </div>
-                  </div>
-                )
-              ) : (
-                /* Chart view */
-                hasResult ? (
-                  <div className="h-full flex flex-col">
-                    <div className="p-2 border-b flex items-center gap-2 flex-shrink-0">
-                      <Select value={chartType} onValueChange={setChartType}>
-                        <SelectTrigger className="h-7 w-[160px]">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {CHART_TYPES.map(ct => (
-                            <SelectItem key={ct.value} value={ct.value}>
-                              <span className="flex items-center gap-2">
-                                <ChartIcon name={ct.icon} className="h-4 w-4" />
-                                {ct.label}
-                              </span>
-                            </SelectItem>
+                        </thead>
+                        <tbody>
+                          {(execResult.rows || []).map((row: any, i: number) => (
+                            <tr key={i} className="hover:bg-muted/50">
+                              {execResult.columns.map((col: string) => (
+                                <td key={col} className="px-3 py-1.5 border-b whitespace-nowrap max-w-[320px] truncate">
+                                  {row[col] == null ? '' : String(row[col])}
+                                </td>
+                              ))}
+                            </tr>
                           ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="flex-1 p-2 overflow-hidden">
-                      <DashboardChart
-                        chartType={chartType}
-                        data={{ columns: result.columns, rows: result.rows }}
-                        config={{}}
-                      />
-                    </div>
+                        </tbody>
+                      </table>
+                    ) : (
+                      <p className="p-4 text-sm text-muted-foreground">无结果</p>
+                    ))}
                   </div>
-                ) : (
-                  <div className="flex items-center justify-center h-full text-muted-foreground">
-                    <div className="text-center">
-                      <BarChart3 className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                      <p>执行 SQL 后查看图表</p>
-                    </div>
+                </div>
+              )}
+
+              {resultTab === 'ast' && (
+                <ScrollArea className="h-full">
+                  <div className="p-4">
+                    {analyzing === 'ast' ? <Spinner size={16} /> : !analysis.ast ? (
+                      <p className="text-sm text-muted-foreground">点击「AST」按钮解析当前 SQL 的语法树。</p>
+                    ) : analysis.ast.error ? (
+                      <p className="text-sm text-destructive">{String(analysis.ast.error)}</p>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="text-xs text-muted-foreground">
+                          引用表: <span className="font-mono">{analysis.ast.tables?.join(', ') || '—'}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-muted-foreground">语法树</span>
+                          <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setAstRaw((v) => !v)}>
+                            {astRaw ? '树视图' : '查看原始 JSON'}
+                          </Button>
+                        </div>
+                        {astRaw ? <JsonBlock value={analysis.ast.ast} /> : <ASTTreeView dump={analysis.ast.ast} />}
+                      </div>
+                    )}
                   </div>
-                )
+                </ScrollArea>
+              )}
+
+              {resultTab === 'lineage' && (
+                <ScrollArea className="h-full">
+                  <div className="p-4">
+                    {analyzing === 'lineage' ? <Spinner size={16} /> : !analysis.lineage ? (
+                      <p className="text-sm text-muted-foreground">点击「血缘」按钮查看列级血缘。</p>
+                    ) : analysis.lineage.error ? (
+                      <p className="text-sm text-destructive">{String(analysis.lineage.error)}</p>
+                    ) : (
+                      <div className="space-y-4">
+                        {(analysis.lineage.columns || []).map((c: any, i: number) => (
+                          <div key={i}>
+                            <div className="text-xs font-semibold mb-1">列 <span className="font-mono">{c.column}</span></div>
+                            {c.error ? <p className="text-xs text-destructive">{c.error}</p> : <LineageNode node={c.lineage} />}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </ScrollArea>
+              )}
+
+              {resultTab === 'rls' && (
+                <ScrollArea className="h-full">
+                  <div className="p-4">
+                    {analyzing === 'rls' ? <Spinner size={16} /> : !analysis.rls ? (
+                      <p className="text-sm text-muted-foreground">点击「RLS 改写」按钮查看当前用户下 baseSql→securedSql 的行级+列级改写。</p>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <Badge variant="secondary" className="font-normal">生效策略: {(analysis.rls.rlsPolicies || []).join(', ') || '无'}</Badge>
+                          <Badge variant="outline" className="font-normal">改写表: {(analysis.rls.appliedRls || []).join(', ') || '无'}</Badge>
+                          {!analysis.rls.changed && <span className="text-muted-foreground">当前用户对该查询无生效 RLS</span>}
+                          {analysis.rls.error && <span className="text-destructive">{String(analysis.rls.error)}</span>}
+                        </div>
+                        {/* 列级限制明细: 隐藏列已从 securedSql 剔除, 掩码列已替换为脱敏表达式 */}
+                        {Object.keys(analysis.rls.columnRestrictions || {}).length > 0 && (
+                          <div className="space-y-1.5 rounded-md border border-border/60 bg-muted/30 p-2.5">
+                            {Object.entries(analysis.rls.columnRestrictions as Record<string, any>).map(([tbl, spec]: [string, any]) => (
+                              <div key={tbl} className="flex flex-wrap items-center gap-2 text-xs">
+                                <span className="font-mono text-foreground/80">{tbl}</span>
+                                {(spec?.hidden || []).length > 0 && (
+                                  <Badge variant="destructive" className="font-normal">隐藏列: {spec.hidden.join(', ')}</Badge>
+                                )}
+                                {Object.keys(spec?.masked || {}).length > 0 && (
+                                  <Badge variant="outline" className="font-normal border-amber-400 text-amber-600">
+                                    掩码列: {Object.entries(spec.masked as Record<string, string>).map(([c, m]) => `${c}(${m})`).join(', ')}
+                                  </Badge>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <SqlDiff base={analysis.rls.baseSql} secured={analysis.rls.securedSql} diff={analysis.rls.diff || []} />
+                      </div>
+                    )}
+                  </div>
+                </ScrollArea>
+              )}
+
+              {resultTab === 'provenance' && (
+                <div className="h-full flex flex-col">
+                  <div className="p-2 border-b flex items-center gap-2 flex-shrink-0">
+                    <Input
+                      value={provObject}
+                      onChange={(e) => setProvObject(e.target.value)}
+                      placeholder="本体对象名 (如 user / Patient / obj:Order)"
+                      className="h-7 w-[280px]"
+                      onKeyDown={(e) => { if (e.key === 'Enter') runProvenance(); }}
+                    />
+                    <Button size="sm" className="h-7" onClick={runProvenance} disabled={analyzing === 'provenance'}>
+                      {analyzing === 'provenance' ? <Spinner size={12} className="mr-2" /> : <Crosshair className="h-3.5 w-3.5 mr-1" />}
+                      溯源
+                    </Button>
+                  </div>
+                  <div className="flex-1 overflow-auto p-4">
+                    {analyzing === 'provenance' ? <Spinner size={16} /> : !analysis.provenance ? (
+                      <p className="text-sm text-muted-foreground">输入本体对象名, 查看其 binding / query_mode / size_class 溯源。</p>
+                    ) : analysis.provenance.error ? (
+                      <p className="text-sm text-destructive">{String(analysis.provenance.error)}</p>
+                    ) : (
+                      <ProvenanceCard data={analysis.provenance} />
+                    )}
+                  </div>
+                </div>
               )}
             </div>
           </div>

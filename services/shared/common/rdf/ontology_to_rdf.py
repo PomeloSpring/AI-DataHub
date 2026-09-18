@@ -97,47 +97,124 @@ def build_sparql_insert_from_turtle(turtle_str: str, graph_uri: str) -> str:
 
 # ── Internal emitters ────────────────────────────────────────────────
 
+def _class_iri(key: str) -> str:
+    """IRI for an ontology object class (namespaced to avoid colliding with
+    the physical adh:table: / adh:col: nodes built by the graph store)."""
+    return f"adh:obj:{_safe_uri(key)}"
+
+
 def _emit_class(lines: list[str], obj: dict, model_name: str):
-    """Emit an owl:Class declaration with properties and restrictions."""
-    class_name = _safe_uri(obj.get("class", obj.get("id", "Unknown")))
-    class_iri = f"adh:{class_name}"
-    label = obj.get("label", class_name)
+    """Emit an ontology object as an owl:Class plus its traversable links.
 
-    lines.append(f"{class_iri} a owl:Class ;")
-    lines.append(f'    rdfs:label "{_escape(label)}"@zh ;')
+    Accepts the canonical ontology_service schema
+    (key / display_name / aliases / primary_table / properties[].column / links[])
+    and stays backward-compatible with the legacy class / relations schema.
 
+    The important addition over the old behaviour: each link is emitted as an
+    *instance-level* triple (``adh:linkedTo``) so a single SPARQL property path
+    can walk the object graph, plus a reified ``adh:Link`` node carrying the
+    physical JOIN expression so it survives one-shot traversal.
+    """
+    key = obj.get("key") or obj.get("class") or obj.get("id") or "Unknown"
+    class_iri = _class_iri(key)
+    label = obj.get("display_name") or obj.get("label") or key
+
+    # Dual-typed: owl:Class (consumed by the ontology_traversal SPARQL) plus
+    # adh:Term so the existing "业务知识图" visualization renders it without a
+    # frontend change (that view queries adh:Term/Metric/Dimension nodes).
+    lines.append(f"{class_iri} a owl:Class , adh:Term ;")
+    lines.append(f'    rdfs:label "{_escape(str(label))}"@zh ;')
     if obj.get("description"):
-        lines.append(f'    rdfs:comment "{_escape(obj["description"])}"@zh ;')
-
-    # Data properties (primitive types)
-    for prop in obj.get("properties", []):
-        prop_name = prop.get("name", "")
-        prop_type = prop.get("type", "string")
-        prop_label = prop.get("label", prop_name)
-
-        if _is_primitive_type(prop_type):
-            # owl:DatatypeProperty
-            prop_iri = f"adh:{_safe_uri(prop_name)}"
-            lines.append(f"    # property: {prop_name} ({prop_type})")
-        else:
-            # owl:ObjectProperty → range is another class
-            target_iri = f"adh:{_safe_uri(prop_type)}"
-            lines.append(f"    # relation: {prop_name} -> {prop_type}")
-
+        desc = _escape(str(obj["description"]))
+        lines.append(f'    rdfs:comment "{desc}"@zh ;')
+        lines.append(f'    adh:comment "{desc}"^^xsd:string ;')
+    if obj.get("primary_table"):
+        lines.append(f'    adh:primaryTable "{_escape(str(obj["primary_table"]))}"^^xsd:string ;')
+    for alias in (obj.get("aliases") or []):
+        # 英文别名以 @en 标签，便于 SPARQL 根据语言过滤；中文默认 @zh。
+        lang = "en" if _is_ascii(str(alias)) else "zh"
+        lines.append(f'    skos:altLabel "{_escape(str(alias))}"@{lang} ;')
+    # 执行绑定徒章（Phase 2）：将语义层已解析好的 query_mode/size_class/
+    # catalog_ref/permission_tokens 直接写图，供图谱徒章与 traversal 回传。
+    binding = obj.get("execution_binding") or {}
+    emitted_binding = False
+    if isinstance(binding, dict) and binding:
+        qm = binding.get("query_mode")
+        sc = binding.get("size_class")
+        cr = binding.get("catalog_ref")
+        afs = binding.get("allow_full_scan")
+        st = binding.get("sync_state")
+        if qm:
+            lines.append(f'    adh:queryMode "{_escape(str(qm))}"^^xsd:string ;')
+            emitted_binding = True
+        if sc:
+            lines.append(f'    adh:sizeClass "{_escape(str(sc))}"^^xsd:string ;')
+            emitted_binding = True
+        if cr:
+            lines.append(f'    adh:catalogRef "{_escape(str(cr))}"^^xsd:string ;')
+            emitted_binding = True
+        if afs is not None:
+            lines.append(f'    adh:allowFullScan "{1 if int(afs or 0) else 0}"^^xsd:boolean ;')
+            emitted_binding = True
+        if st:
+            lines.append(f'    adh:syncState "{_escape(str(st))}"^^xsd:string ;')
+            emitted_binding = True
     lines[-1] = lines[-1].rstrip(" ;") + " ."
     lines.append("")
 
-    # Emit individual properties as owl:DatatypeProperty / owl:ObjectProperty
+    # Object → Table 的 boundTo 边（数据血缘链：Object-boundTo-Table-Column-DataSource）
+    phys = obj.get("primary_table") or ""
+    if emitted_binding and phys:
+        table_iri = f"adh:table:{_safe_uri(str(phys))}"
+        lines.append(f"{class_iri} adh:boundTo {table_iri} .")
+        for tok in (binding.get("permission_tokens") or []):
+            lines.append(f'{class_iri} adh:permToken "{_escape(str(tok))}"^^xsd:string .')
+        for mc in (binding.get("masked_columns") or []):
+            lines.append(f'{class_iri} adh:maskedColumn "{_escape(str(mc))}"^^xsd:string .')
+        lines.append("")
+
+    # Physical column mapping (dedup) — used to expand objects back to tables.
+    seen_cols: set[str] = set()
     for prop in obj.get("properties", []):
-        _emit_property(lines, prop, class_iri, obj.get("class", "Unknown"))
+        column = prop.get("column")
+        if column and str(column) not in seen_cols:
+            seen_cols.add(str(column))
+            lines.append(f'{class_iri} adh:mapsColumn "{_escape(str(column))}"^^xsd:string .')
+    if seen_cols:
+        lines.append("")
 
-    # Emit relations as owl:ObjectProperty
-    for rel in obj.get("relations", []):
-        _emit_relation(lines, rel, class_iri)
+    # Links → traversable instance edges + reified join expressions.
+    for rel in (obj.get("links") or obj.get("relations") or []):
+        _emit_link_instance(lines, class_iri, key, rel)
 
-    # Emit constraints as owl:Restriction
-    for constraint in obj.get("constraints", []):
-        _emit_constraint(lines, constraint, class_iri)
+
+def _emit_link_instance(lines: list[str], src_iri: str, src_key: str, rel: dict):
+    """Emit a traversable edge plus a reified adh:Link carrying the JOIN."""
+    target = rel.get("target") or ""
+    if not target:
+        return
+    tgt_iri = _class_iri(target)
+    rel_name = _safe_uri(str(rel.get("type") or rel.get("name") or "linked"))
+    join_expr = str(rel.get("join") or "")
+    cardinality = str(rel.get("cardinality") or "")
+    link_label = rel.get("description") or rel.get("label") or rel_name
+
+    # Direct edge for SPARQL property-path traversal (adh:linkedTo*).
+    lines.append(f"{src_iri} adh:linkedTo {tgt_iri} .")
+    # Mirror as adh:mapsTo (Term→Term) so the object↔object link is drawn by the
+    # existing "业务知识图" view, whose relation filter selects mapsTo/defines/belongsTo.
+    lines.append(f"{src_iri} adh:mapsTo {tgt_iri} .")
+    # Reified link so the JOIN / cardinality survive a single closure query.
+    link_iri = f"adh:link_{_safe_uri(src_key)}_{rel_name}_{_safe_uri(str(target))}"
+    lines.append(f"{link_iri} a adh:Link ;")
+    lines.append(f"    adh:linkFrom {src_iri} ;")
+    lines.append(f"    adh:linkTo {tgt_iri} ;")
+    lines.append(f'    adh:linkType "{_escape(rel_name)}"^^xsd:string ;')
+    if cardinality:
+        lines.append(f'    adh:cardinality "{_escape(cardinality)}"^^xsd:string ;')
+    lines.append(f'    adh:joinExpr "{_escape(join_expr)}"^^xsd:string ;')
+    lines.append(f'    rdfs:label "{_escape(str(link_label))}"@zh .')
+    lines.append("")
 
 
 def _emit_property(lines: list[str], prop: dict, class_iri: str, class_name: str):
@@ -291,3 +368,11 @@ def _escape(text: str) -> str:
             .replace("\n", "\\n")
             .replace("\r", "\\r")
             .replace("\t", "\\t"))
+
+
+def _is_ascii(text: str) -> bool:
+    """判断字符串是否全 ASCII，用于给 skos:altLabel 打 @en/@zh 语言标签。"""
+    try:
+        return all(ord(ch) < 128 for ch in text)
+    except Exception:
+        return False

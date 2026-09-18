@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
-  Database, FileText, Link, BookOpen, Users, Brain, Bot, MessageSquare,
+  Database, FileText, Link, BookOpen, Users, Brain, Bot,
   Settings, LogOut, Menu, Palette, Sun, Moon, Zap, TrendingUp,
   Grid3x3, GlassWater, Heart, UserCircle, X, ChevronLeft, ChevronRight,
   Clock, Bell, Network, BarChart3, Shield, GitBranch, Ruler, Eye, RefreshCw,
-  Activity, Server, Gem, Terminal,
+  Activity, Server, Gem, Sparkles, Waypoints, LayoutTemplate,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -19,6 +19,14 @@ import { useThemeStore, applyTheme, type ThemeId } from '../stores/themeStore';
 import { useBrandStore } from '../stores/brandStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import SectionSwitcher from './SectionSwitcher';
+import AsBotButton from './AsBotButton';
+import AsBotPanel from './asbot/AsBotPanel';
+import { isMenuAllowed } from '../stores/permissionStore';
+
+/** 将路由 key 转换为 menu_key: '/system/models' → 'system:models' */
+function toMenuKey(routeKey: string): string {
+  return routeKey.replace('/system/', 'system:').replace(/^\//, '');
+}
 
 const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] = [
   { id: 'dark', label: '暗色', icon: Moon, desc: '深色背景，适合长时间使用' },
@@ -36,16 +44,17 @@ const SYSTEM_MENU_ITEMS = [
   { section: 'AI 模板配置' },
   { key: '/system/models', icon: Brain, label: '模型中心' },
   { key: '/system/mcp', icon: Server, label: 'MCP 服务' },
-  { key: '/system/agents', icon: Bot, label: 'Agent配置' },
-  { key: '/system/skills', icon: MessageSquare, label: 'Skills' },
+  { key: '/system/wakers', icon: Bot, label: 'Waker 配置' },
+  { key: '/system/skills', icon: Sparkles, label: '技能配置' },
+  { key: '/system/as-bot', icon: Bot, label: 'AI 助手' },
   { key: '/system/config-versions', icon: GitBranch, label: 'Prompt配置' },
-  { key: '/system/execution-layers', icon: Terminal, label: '执行层' },
   { section: '知识管理' },
   { key: '/system/knowledge-base', icon: BookOpen, label: '知识库' },
   { key: '/system/knowledge-management', icon: BookOpen, label: '知识管理' },
   { key: '/system/knowledge-graph', icon: Network, label: '知识图谱' },
   { section: '可视化配置' },
   { key: '/system/dashboards', icon: BarChart3, label: '看板管理' },
+  { key: '/system/vis-library', icon: LayoutTemplate, label: 'UI 字模库' },
   { section: '集成配置' },
   { key: '/system/notification-channels', icon: Bell, label: '通知渠道' },
   { key: '/system/report-templates', icon: FileText, label: '报告模板' },
@@ -58,6 +67,7 @@ const SYSTEM_MENU_ITEMS = [
   { section: '运维管理' },
   { key: '/system/sandbox', icon: Server, label: '沙箱管理' },
   { key: '/system/quality-review', icon: BarChart3, label: '质量审查' },
+  { key: '/system/observability', icon: Waypoints, label: 'LLM 可观测' },
   { section: '系统' },
   { key: '/system/settings', icon: Settings, label: '系统设置' },
   { key: '/system/monitoring', icon: Activity, label: '系统监控' },
@@ -107,7 +117,7 @@ export default function SystemLayout() {
         <div className="flex-1 min-h-0 overflow-hidden">
           <ScrollArea className="h-full py-2">
           <nav className="space-y-1 px-2" role="navigation" aria-label="系统配置导航">
-            {SYSTEM_MENU_ITEMS.map((item, idx) => {
+            {SYSTEM_MENU_ITEMS.filter(item => !('key' in item) || isMenuAllowed(toMenuKey((item as any).key))).map((item, idx) => {
               if ('section' in item) {
                 if (collapsed) return <div key={idx} className="my-2 mx-2 border-t border-sidebar-border" />;
                 return (
@@ -169,7 +179,7 @@ export default function SystemLayout() {
             </div>
             <ScrollArea className="flex-1 py-3">
               <nav className="space-y-1 px-3">
-                {SYSTEM_MENU_ITEMS.map((item, idx) => {
+                {SYSTEM_MENU_ITEMS.filter(item => !('key' in item) || isMenuAllowed(toMenuKey((item as any).key))).map((item, idx) => {
                   if ('section' in item) {
                     return (
                       <div key={idx} className="px-4 pt-5 pb-1.5">
@@ -211,6 +221,8 @@ export default function SystemLayout() {
             </Button>
           </div>
           <div className="flex items-center gap-2">
+            {/* AS-BOT 系统助手 */}
+            <AsBotButton />
             {/* Module switcher — 工作空间 / 数据中台 / 系统配置 */}
             <SectionSwitcher current="system" />
 
@@ -251,7 +263,7 @@ export default function SystemLayout() {
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => navigate('/profile')}>
+                <DropdownMenuItem onClick={() => navigate('/system/profile')}>
                   <UserCircle className="h-4 w-4 mr-2" />
                   个人设置
                 </DropdownMenuItem>
@@ -267,6 +279,7 @@ export default function SystemLayout() {
           <Outlet />
         </main>
       </div>
+      <AsBotPanel />
     </div>
   );
 }

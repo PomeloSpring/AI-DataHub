@@ -113,7 +113,10 @@ class OxigraphClient:
             graph_uri: Named graph IRI. If None, loads into default graph.
             content_type: MIME type of the input data.
         """
-        params = {}
+        # Oxigraph's PUT /store REPLACES the (named) graph by default, which would
+        # wipe the physically-inserted nodes when the ontology turtle is merged.
+        # noreplace=true makes it append, so physical + ontology layers coexist.
+        params = {"noreplace": "true"}
         if graph_uri:
             params["graph"] = graph_uri
         resp = self._client.put(

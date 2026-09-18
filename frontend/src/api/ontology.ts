@@ -102,6 +102,8 @@ export const ontologyApi = {
       params: datasourceId ? { datasource_id: datasourceId } : {},
     }),
   get: (id: number) => client.get<OntologyModel>(`/catalog/ontology/models/${id}`),
+  versions: (id: number) =>
+    client.get<{ items: OntologyModelSummary[] }>(`/catalog/ontology/models/${id}/versions`),
   save: (id: number, jsonContent: string, name?: string) =>
     client.put<OntologyModel>(`/catalog/ontology/models/${id}`, {
       json_content: jsonContent,

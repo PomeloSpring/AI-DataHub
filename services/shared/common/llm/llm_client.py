@@ -7,6 +7,7 @@ Reads model config from database (adh_llm_models), falls back to .env.
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import time
@@ -51,6 +52,39 @@ def _get_client() -> Anthropic:
     return _get_client_for_model(config)
 
 
+def _calc_cost_usd(config: dict, tokens: dict):
+    """非 Qoder 直连路径的兜底成本估算(token×单价);无单价配置返回 None。"""
+    try:
+        ip = (config or {}).get("input_price_per_1k")
+        op = (config or {}).get("output_price_per_1k")
+        if ip is None and op is None:
+            return None
+        ip = float(ip or 0)
+        op = float(op or 0)
+        return round((tokens.get("input", 0) or 0) / 1000 * ip
+                     + (tokens.get("output", 0) or 0) / 1000 * op, 6)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _obs_record_llm(config, tokens, *, duration_ms=None, status="success", error=""):
+    """记录直连 LLM 调用的 token 用量(cost 兜底估算)。未开启/无 recorder 时 no-op。"""
+    try:
+        from services.shared import observability
+        observability.record_llm_call(
+            name="anthropic_llm_request",
+            model_ref=(config or {}).get("model_name", "") or "",
+            input_tokens=int(tokens.get("input", 0) or 0),
+            output_tokens=int(tokens.get("output", 0) or 0),
+            cost_usd=_calc_cost_usd(config, tokens),
+            duration_ms=duration_ms,
+            status=status,
+            error=error,
+        )
+    except Exception:  # noqa: BLE001 — 观测不得影响主链路
+        pass
+
+
 def generate_sql(messages: list[dict], max_tokens: int = 4096, model_id: int = None) -> dict:
     """Call the LLM to generate SQL from a prompt.
 
@@ -78,6 +112,7 @@ def generate_sql(messages: list[dict], max_tokens: int = 4096, model_id: int = N
             filtered_messages.append(msg)
 
     try:
+        _t0 = time.monotonic()
         kwargs = dict(model=model_name, max_tokens=effective_max_tokens, messages=filtered_messages)
         if system_text:
             kwargs["system"] = system_text
@@ -121,6 +156,7 @@ def generate_sql(messages: list[dict], max_tokens: int = 4096, model_id: int = N
             "output": getattr(usage, "output_tokens", 0) if usage else 0,
         }
         tokens["total"] = tokens["input"] + tokens["output"]
+        _obs_record_llm(config, tokens, duration_ms=int((time.monotonic() - _t0) * 1000))
 
         return {"sql": raw, "thinking": thinking_text, "tokens": tokens}
     except Exception as e:
@@ -188,6 +224,7 @@ def generate_sql_stream(messages: list[dict], max_tokens: int = 4096, model_id: 
                 "output": getattr(usage, "output_tokens", 0) if usage else 0,
             }
             tokens["total"] = tokens["input"] + tokens["output"]
+            _obs_record_llm(config, tokens)
             yield ("done", tokens)
 
     except Exception as e:
@@ -274,6 +311,7 @@ def generate_with_tools(
         }
         tokens["total"] = tokens["input"] + tokens["output"]
 
+        _obs_record_llm(config, tokens)
         return {
             "text": "\n".join(text_parts),
             "thinking": thinking_text,
@@ -377,6 +415,7 @@ def generate_with_tools_stream(
             }
             tokens["total"] = tokens["input"] + tokens["output"]
             tokens["stop_reason"] = final_message.stop_reason
+            _obs_record_llm(config, tokens)
             yield ("done", tokens)
 
     except Exception as e:
@@ -388,12 +427,20 @@ def generate_with_tools_stream(
 # These run synchronous LLM calls in a thread pool to avoid blocking
 # the async event loop during SSE streaming.
 
+async def _run_in_executor_ctx(fn, *args):
+    """在克隆当前 contextvars 上下文的线程里执行同步函数。
+
+    run_in_executor 默认不传播 contextvar,而观测依赖 _recorder 上下文变量;
+    用 copy_context().run 把上下文(含 trace recorder)带进工作线程。
+    """
+    loop = asyncio.get_event_loop()
+    ctx = contextvars.copy_context()
+    return await loop.run_in_executor(None, partial(ctx.run, fn, *args))
+
+
 async def async_generate_sql(messages: list[dict], max_tokens: int = 4096, model_id: int = None) -> dict:
     """Async wrapper for generate_sql — runs in thread pool."""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None, partial(generate_sql, messages, max_tokens, model_id)
-    )
+    return await _run_in_executor_ctx(generate_sql, messages, max_tokens, model_id)
 
 
 async def async_generate_with_tools(
@@ -403,7 +450,4 @@ async def async_generate_with_tools(
     model_id: int = None,
 ) -> dict:
     """Async wrapper for generate_with_tools — runs in thread pool."""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None, partial(generate_with_tools, messages, tools, max_tokens, model_id)
-    )
+    return await _run_in_executor_ctx(generate_with_tools, messages, tools, max_tokens, model_id)

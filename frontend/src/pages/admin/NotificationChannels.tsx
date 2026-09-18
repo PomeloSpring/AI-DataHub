@@ -401,7 +401,7 @@ export default function NotificationChannels() {
               </p>
               <div className="flex flex-wrap gap-1 text-xs">
                 {['task_name', 'date', 'time', 'total', 'succeeded', 'failed', 'status', 'result_summary', 'report_link'].map(v => (
-                  <code key={v} className="px-1 py-0.5 bg-muted rounded cursor-pointer hover:bg-muted-foreground/20"
+                  <code key={v} className="var-code cursor-pointer"
                     onClick={() => {
                       const ta = document.getElementById('msg-template') as HTMLTextAreaElement;
                       if (ta) {

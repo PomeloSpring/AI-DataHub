@@ -98,6 +98,49 @@ async def get_workspace_id(request: Request) -> int:
         return 0
 
 
+# ── Internal service-to-service identity (signed header for proxied calls) ──
+# 下游(语义层)只信由此头传入、由带 JWT 的入口服务签发的身份, 绝不信任请求体里的
+# user_id(I2/I4)。密钥用 ADH_SECRET_KEY(HMAC-SHA256), 防伪造/篡改。
+
+_ID_HEADER = "X-Internal-Identity"
+_ID_SALT = "adh-internal-id-v1"
+
+
+def sign_internal_identity(user_id: int, workspace_id: int = 0) -> str:
+    """生成内部身份头值 '<uid>:<ws>:<hmac>'。仅供可信入口服务(datamind)签发。"""
+    import hmac as _hmac
+    import hashlib as _hashlib
+    uid, ws = int(user_id or 0), int(workspace_id or 0)
+    payload = f"{_ID_SALT}:{uid}:{ws}"
+    sig = _hmac.new(
+        ADH_SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), _hashlib.sha256,
+    ).hexdigest()[:32]
+    return f"{uid}:{ws}:{sig}"
+
+
+def verify_internal_identity(value: str) -> dict | None:
+    """校验内部身份头; 返回 {user_id, workspace_id}, 缺失/篡改返回 None。"""
+    import hmac as _hmac
+    import hashlib as _hashlib
+    if not value or not ADH_SECRET_KEY:
+        return None
+    parts = value.split(":")
+    if len(parts) != 3:
+        return None
+    uid_s, ws_s, sig = parts
+    try:
+        uid, ws = int(uid_s), int(ws_s)
+    except (TypeError, ValueError):
+        return None
+    payload = f"{_ID_SALT}:{uid}:{ws}"
+    expect = _hmac.new(
+        ADH_SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), _hashlib.sha256,
+    ).hexdigest()[:32]
+    if not _hmac.compare_digest(sig, expect):
+        return None
+    return {"user_id": uid, "workspace_id": ws}
+
+
 # ── Lightweight Permission Check ────────────────────────────────────────
 
 def require_permission(

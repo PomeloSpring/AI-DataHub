@@ -243,3 +243,32 @@ export async function listReportTemplates(workspaceId?: number): Promise<ReportT
   const { data } = await client.get('/scheduled-tasks/templates', { params: { workspace_id: workspaceId } });
   return data;
 }
+
+// ── Reports Center API (自动化任务成功执行生成的报告) ─────────────
+
+export interface ReportSummary {
+  id: number;
+  task_id: number;
+  log_id: number | null;
+  title: string;
+  format: string;
+  access_mode: string;
+  workspace_id: number;
+  view_count: number;
+  created_at: string;
+  task_name: string | null;
+}
+
+export interface ReportDetail extends ReportSummary {
+  content: string;
+}
+
+export async function listReports(workspaceId?: number): Promise<ReportSummary[]> {
+  const { data } = await client.get('/scheduled-tasks/reports', { params: { workspace_id: workspaceId } });
+  return data;
+}
+
+export async function getReportDetail(reportId: number): Promise<ReportDetail> {
+  const { data } = await client.get(`/scheduled-tasks/reports/${reportId}/detail`);
+  return data;
+}

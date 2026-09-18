@@ -134,13 +134,21 @@ TOOL_SPECS = [
 READONLY_ANNOTATIONS = {"readOnlyHint": True}
 
 
-def build_catalog_server(backend: str = "qoder"):
-    """构建 catalog 进程内 MCP server(qoder / claude)."""
+def build_catalog_server(backend: str = "qoder", tool_names=None):
+    """构建 catalog 进程内 MCP server(qoder / claude).
+
+    tool_names 给定时只注册被选中的工具(waker 粒度的逐个工具权限控制);
+    为空则注册本组全部工具。
+    """
     from services.datamind.execution.sdk_tools.compat import make_server, make_tool
 
+    specs = TOOL_SPECS
+    if tool_names is not None:
+        selected = set(tool_names)
+        specs = [s for s in TOOL_SPECS if s["name"] in selected]
     tools = [
         make_tool(backend, s["name"], s["description"], s["schema"],
                   s["handler"], annotations=READONLY_ANNOTATIONS)
-        for s in TOOL_SPECS
+        for s in specs
     ]
     return make_server(backend, "datahub_catalog", tools)

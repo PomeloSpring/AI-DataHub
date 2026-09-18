@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import {
   Plus, Edit2, Trash2, Star, Database, Users, Settings,
-  X, Folder, UserPlus, Server, Bot, Menu, Terminal,
-  BookOpen, Zap, Shield, UserMinus,
+  X, Folder, UserPlus, Server, Bot, Menu,
+  BookOpen, Shield, UserMinus,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -632,237 +632,114 @@ function WorkspaceMCPTab({ workspaceId }: { workspaceId: number }) {
   );
 }
 
-// ── Workspace Agent Tab (association mode) ─────────────────────────
+// ── Workspace Wakers Tab (binding mode) ────────────────────────────
 
-function WorkspaceAgentTab({ workspaceId }: { workspaceId: number }) {
-  const [current, setCurrent] = useState<any[]>([]);
-  const [available, setAvailable] = useState<any[]>([]);
+function WorkspaceWakersTab({ workspaceId }: { workspaceId: number }) {
+  const [wakers, setWakers] = useState<any[]>([]);
+  const [boundIds, setBoundIds] = useState<number[]>([]);
+  const [defaultId, setDefaultId] = useState<number>(0);
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [wsRes, allRes] = await Promise.all([
-        client.get(`/admin/agents?workspace_id=${workspaceId}`),
-        client.get('/admin/agents'),
+      const [allRes, bindRes] = await Promise.all([
+        client.get('/admin/wakers/'),
+        client.get(`/admin/wakers/workspace/${workspaceId}/wakers`),
       ]);
-      const wsItems = wsRes.data || [];
-      const allItems = allRes.data || [];
-      const wsIds = new Set(wsItems.map((a: any) => a.id));
-      setCurrent(wsItems);
-      setAvailable(allItems.filter((a: any) => !wsIds.has(a.id)));
-    } catch { toast.error('加载 Agent 失败'); }
+      setWakers(Array.isArray(allRes.data) ? allRes.data : []);
+      const bindings = Array.isArray(bindRes.data) ? bindRes.data : [];
+      setBoundIds(bindings.map((b: any) => b.waker_id));
+      setDefaultId(bindings.find((b: any) => b.is_default)?.waker_id || 0);
+    } catch { toast.error('加载 Waker 失败'); }
     finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [workspaceId]);
 
-  const handleAdd = async (id: number) => {
-    try {
-      await client.put(`/admin/agents/${id}`, { workspace_id: workspaceId });
-      toast.success('已添加');
-      load();
-    } catch { toast.error('添加失败'); }
+  const toggle = (id: number) => {
+    setBoundIds((prev) => {
+      if (prev.includes(id)) {
+        if (defaultId === id) setDefaultId(0);
+        return prev.filter((x) => x !== id);
+      }
+      return [...prev, id];
+    });
   };
 
-  const handleRemove = async (id: number) => {
+  const save = async () => {
+    setSaving(true);
     try {
-      await client.put(`/admin/agents/${id}`, { workspace_id: 0 });
-      toast.success('已移除');
-      load();
-    } catch { toast.error('移除失败'); }
+      const effDefault = defaultId || boundIds[0] || 0;
+      const bindings = boundIds.map((id, idx) => ({
+        waker_id: id,
+        is_default: effDefault === id,
+        sort: idx,
+      }));
+      await client.put(`/admin/wakers/workspace/${workspaceId}/wakers`, { bindings });
+      toast.success('Waker 配置已保存');
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || '保存失败');
+    } finally { setSaving(false); }
   };
 
   if (loading) return <div className="flex justify-center py-8"><Spinner size={24} /></div>;
+
+  const effDefault = defaultId || boundIds[0] || 0;
 
   return (
     <div className="space-y-4">
-      {current.map(a => (
-        <div key={a.id} className="flex items-center justify-between p-3 border rounded-lg">
-          <div className="flex items-center gap-2 min-w-0">
-            <Bot className="h-4 w-4 flex-shrink-0" />
-            <span className="truncate">{a.display_name || a.name}</span>
-            {a.agent_type === 'builtin' && <Badge variant="secondary" className="flex-shrink-0">内置</Badge>}
-            {!a.is_active && <span className="text-xs text-destructive flex-shrink-0">已禁用</span>}
-          </div>
-          <Button size="sm" variant="outline" onClick={() => handleRemove(a.id)}>
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-      ))}
-
-      {available.length > 0 && (
-        <>
-          <div className="text-sm text-muted-foreground mt-4">可添加的 Agent：</div>
-          {available.map(a => (
-            <div key={a.id} className="flex items-center justify-between p-3 border rounded-lg border-dashed">
-              <div className="flex items-center gap-2 min-w-0">
-                <Bot className="h-4 w-4 flex-shrink-0" />
-                <span className="truncate">{a.display_name || a.name}</span>
-                {a.agent_type === 'builtin' && <Badge variant="secondary" className="flex-shrink-0">内置</Badge>}
-              </div>
-              <Button size="sm" variant="outline" onClick={() => handleAdd(a.id)}>
-                <Plus className="h-4 w-4" />
-              </Button>
-            </div>
-          ))}
-        </>
-      )}
-
-      {current.length === 0 && available.length === 0 && (
-        <div className="text-sm text-muted-foreground text-center py-8">
-          暂无 Agent，请先在系统配置中创建
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Workspace Execution Layer Tab (binding mode) ────────────────────
-
-const LAYER_TYPE_LABELS: Record<string, string> = {
-  builtin: '内置',
-  cli: 'CLI',
-  docker: 'Docker',
-  remote: '远程',
-};
-
-function WorkspaceExecutionLayerTab({ workspaceId }: { workspaceId: number }) {
-  const [bound, setBound] = useState<any | null>(null);  // 每个工作空间只允许绑定一个执行层
-  const [allLayers, setAllLayers] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [toolCatalog, setToolCatalog] = useState<any[]>([]);
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const [wsRes, allRes, toolsRes] = await Promise.all([
-        client.get(`/admin/execution-layers/workspaces/${workspaceId}`),
-        client.get('/admin/execution-layers'),
-        client.get('/admin/execution-layers/tools').catch(() => ({ data: [] })),
-      ]);
-      const wsItems = wsRes.data || [];
-      setBound(wsItems[0] || null);
-      setAllLayers(allRes.data || []);
-      setToolCatalog(Array.isArray(toolsRes.data) ? toolsRes.data : []);
-    } catch { toast.error('加载执行层失败'); }
-    finally { setLoading(false); }
-  };
-
-  useEffect(() => { load(); }, []);
-
-  const persist = async (binding: any | null) => {
-    setSaving(true);
-    try {
-      await client.put(`/admin/execution-layers/workspaces/${workspaceId}`, {
-        bindings: binding ? [{
-          execution_layer_id: binding.id,
-          is_default: true,
-          priority: 0,
-          allowed_tools: Array.isArray(binding.allowed_tools) ? binding.allowed_tools : [],
-        }] : [],
-      });
-      toast.success('已更新');
-      await load();
-    } catch (e: any) { toast.error(e?.response?.data?.detail || '更新执行层绑定失败'); }
-    finally { setSaving(false); }
-  };
-
-  // tools 权限:勾选/取消工具;未勾选任何项 = 不限制
-  const handleToggleTool = (toolName: string) => {
-    if (!bound) return;
-    const cur: string[] = Array.isArray(bound.allowed_tools) ? bound.allowed_tools : [];
-    let next: string[];
-    if (cur.length === 0) next = [toolName];
-    else if (cur.includes(toolName)) next = cur.filter(t => t !== toolName);
-    else next = [...cur, toolName];
-    persist({ ...bound, allowed_tools: next });
-  };
-
-  if (loading) return <div className="flex justify-center py-8"><Spinner size={24} /></div>;
-
-  const allowed: string[] = Array.isArray(bound?.allowed_tools) ? bound.allowed_tools : [];
-  const restricted = allowed.length > 0;
-
-  return (
-    <div className="space-y-3">
       <div className="text-sm text-muted-foreground">
-        每个工作空间只能配置一个执行层，用于 Agent 任务派发；未绑定时回退到内置执行层。
+        选择该工作空间可用的 Waker（角色化智能体）。标记为默认的将作为缺省 Waker。
       </div>
 
-      {allLayers.map(l => {
-        const isBound = bound?.id === l.id;
+      {wakers.length === 0 && (
+        <div className="text-sm text-muted-foreground text-center py-8">
+          暂无 Waker，请先在系统配置中创建
+        </div>
+      )}
+
+      {wakers.map((w) => {
+        const checked = boundIds.includes(w.id);
         return (
-          <div key={l.id} className={`p-3 border rounded-lg space-y-2 ${isBound ? 'border-primary bg-primary/5' : ''}`}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 min-w-0">
-                <input
-                  type="radio"
-                  name={`exec-layer-${workspaceId}`}
-                  checked={isBound}
-                  disabled={saving}
-                  onChange={() => !isBound && persist(l)}
-                  className="h-4 w-4 accent-primary flex-shrink-0"
-                />
-                <Terminal className="h-4 w-4 flex-shrink-0" />
-                <span className="truncate">{l.display_name || l.name}</span>
-                <Badge variant="outline" className="flex-shrink-0">
-                  {LAYER_TYPE_LABELS[l.layer_type] || l.layer_type}
-                </Badge>
-                {isBound && (
-                  <Badge variant="secondary" className="flex-shrink-0">
-                    <Star className="h-3 w-3 mr-1" />当前执行层
-                  </Badge>
-                )}
-                {l.status !== 'active' && (
-                  <span className="text-xs text-destructive flex-shrink-0">不可用</span>
-                )}
-              </div>
-              {isBound && l.layer_type !== 'builtin' && (
-                <Button size="sm" variant="outline" disabled={saving} onClick={() => persist(null)}>
-                  取消绑定
-                </Button>
-              )}
+          <div key={w.id} className="flex items-center justify-between p-3 border rounded-lg">
+            <div className="flex items-center gap-2 min-w-0">
+              <Bot className="h-4 w-4 flex-shrink-0" />
+              <span className="truncate">{w.display_name || w.name}</span>
+              <code className="text-xs bg-muted px-1.5 py-0.5 rounded flex-shrink-0">{w.waker_key}</code>
+              {!!w.is_builtin && <Badge variant="secondary" className="flex-shrink-0">内置</Badge>}
+              {!w.is_active && <span className="text-xs text-destructive flex-shrink-0">已禁用</span>}
             </div>
-            {isBound && toolCatalog.length > 0 && (
-              <div className="space-y-1 pl-6">
-                <div className="text-xs text-muted-foreground">
-                  工具权限：{restricted ? `仅允许 ${allowed.length} 项` : '不限制（勾选后生效白名单）'}
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {toolCatalog.map(t => {
-                    const checked = !restricted || allowed.includes(t.name);
-                    const active = restricted && allowed.includes(t.name);
-                    return (
-                      <button
-                        key={t.name}
-                        type="button"
-                        title={t.description}
-                        disabled={saving}
-                        onClick={() => handleToggleTool(t.name)}
-                        className={`px-2 py-0.5 rounded-full text-xs border transition-colors ${
-                          active
-                            ? 'bg-primary text-primary-foreground border-primary'
-                            : checked
-                              ? 'bg-muted text-foreground border-border'
-                              : 'bg-transparent text-muted-foreground border-dashed border-border'
-                        }`}
-                      >
-                        {t.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+            <div className="flex items-center gap-3 flex-shrink-0">
+              {checked && (
+                <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <input
+                    type="radio"
+                    name={`ws-default-waker-${workspaceId}`}
+                    checked={effDefault === w.id}
+                    onChange={() => setDefaultId(w.id)}
+                    className="h-3.5 w-3.5 accent-primary"
+                  />
+                  默认
+                </label>
+              )}
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={() => toggle(w.id)}
+                className="h-4 w-4 accent-primary"
+              />
+            </div>
           </div>
         );
       })}
 
-      {allLayers.length === 0 && (
-        <div className="text-sm text-muted-foreground text-center py-8">
-          暂无执行层，请先在系统配置中创建
+      {wakers.length > 0 && (
+        <div className="flex justify-end">
+          <Button size="sm" onClick={save} disabled={saving}>
+            {saving ? '保存中...' : '保存 Waker 配置'}
+          </Button>
         </div>
       )}
     </div>
@@ -1063,47 +940,6 @@ function WorkspaceRolesTab({ workspaceId }: { workspaceId: number }) {
   );
 }
 
-// ── Workspace Skills View (read-only) ──────────────────────────────
-
-function WorkspaceSkillsView({ workspaceId }: { workspaceId: number }) {
-  const [skills, setSkills] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    setLoading(true);
-    client.get(`/workspaces/${workspaceId}/skills`)
-      .then(({ data }) => setSkills(data || []))
-      .catch(() => toast.error('加载 Skills 失败'))
-      .finally(() => setLoading(false));
-  }, [workspaceId]);
-
-  if (loading) return <div className="flex justify-center py-8"><Spinner size={24} /></div>;
-
-  if (skills.length === 0) {
-    return (
-      <div className="text-sm text-muted-foreground text-center py-8">
-        暂无 Skills 配置
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-2">
-      {skills.map((s: any) => (
-        <div key={s.skill_key} className="flex items-center justify-between p-3 border rounded-lg">
-          <div className="flex items-center gap-2 min-w-0">
-            <Zap className="h-4 w-4 flex-shrink-0" />
-            <span className="font-medium truncate">{s.skill_key}</span>
-            <Badge variant={s.enabled ? 'default' : 'secondary'} className="flex-shrink-0">
-              {s.enabled ? '已启用' : '已禁用'}
-            </Badge>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ── Workspace Knowledge View (read-only) ───────────────────────────
 
 function WorkspaceKnowledgeView({ workspaceId }: { workspaceId: number }) {
@@ -1129,6 +965,7 @@ function WorkspaceKnowledgeView({ workspaceId }: { workspaceId: number }) {
   }
 
   const KB_TYPE_LABELS: Record<string, string> = {
+    qmind: 'QMind 知识检索',
     local: '本地目录',
     vector_db: '向量数据库',
     cloud_rag: '云 RAG',
@@ -1273,7 +1110,7 @@ function ManageWorkspaceDialog({
         <DialogHeader>
           <DialogTitle>管理工作空间 - {workspace.name}</DialogTitle>
           <DialogDescription>
-            管理工作空间的用户、数据源、MCP 服务和 Agent
+            管理工作空间的用户、数据源、Waker 和 MCP 服务
           </DialogDescription>
         </DialogHeader>
 
@@ -1291,9 +1128,9 @@ function ManageWorkspaceDialog({
               <Database className="h-4 w-4 mr-1" />
               数据源 ({datasources.length})
             </TabsTrigger>
-            <TabsTrigger value="skills">
-              <Zap className="h-4 w-4 mr-1" />
-              Skills
+            <TabsTrigger value="wakers">
+              <Bot className="h-4 w-4 mr-1" />
+              Waker
             </TabsTrigger>
             <TabsTrigger value="knowledge">
               <BookOpen className="h-4 w-4 mr-1" />
@@ -1302,14 +1139,6 @@ function ManageWorkspaceDialog({
             <TabsTrigger value="mcp">
               <Server className="h-4 w-4 mr-1" />
               MCP 服务
-            </TabsTrigger>
-            <TabsTrigger value="agents">
-              <Bot className="h-4 w-4 mr-1" />
-              Agent
-            </TabsTrigger>
-            <TabsTrigger value="execution">
-              <Terminal className="h-4 w-4 mr-1" />
-              执行层
             </TabsTrigger>
             <TabsTrigger value="menu">
               <Menu className="h-4 w-4 mr-1" />
@@ -1455,8 +1284,8 @@ function ManageWorkspaceDialog({
             )}
           </TabsContent>
 
-          <TabsContent value="skills" className="space-y-4">
-            <WorkspaceSkillsView workspaceId={workspace.id} />
+          <TabsContent value="wakers" className="space-y-4">
+            <WorkspaceWakersTab workspaceId={workspace.id} />
           </TabsContent>
 
           <TabsContent value="knowledge" className="space-y-4">
@@ -1465,14 +1294,6 @@ function ManageWorkspaceDialog({
 
           <TabsContent value="mcp" className="space-y-4">
             <WorkspaceMCPTab workspaceId={workspace.id} />
-          </TabsContent>
-
-          <TabsContent value="agents" className="space-y-4">
-            <WorkspaceAgentTab workspaceId={workspace.id} />
-          </TabsContent>
-
-          <TabsContent value="execution" className="space-y-4">
-            <WorkspaceExecutionLayerTab workspaceId={workspace.id} />
           </TabsContent>
 
           <TabsContent value="menu" className="space-y-4">

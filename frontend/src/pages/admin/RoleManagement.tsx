@@ -17,7 +17,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import {
   Plus, Edit, Trash2, Shield, Users, Settings, UserPlus, UserMinus,
-  Database, Table, Columns3, Key,
+  Database, Table, Columns3, Key, Bot,
 } from 'lucide-react';
 import client from '@/api/client';
 
@@ -29,6 +29,19 @@ interface Role {
   is_system: number;
   is_active: number;
   users?: Array<{ user_id: number; username: string }>;
+}
+
+interface PermPoint {
+  perm_code: string;
+  label: string;
+  description: string;
+  menu_key: string;
+}
+
+interface PermGroup {
+  module: string;
+  module_label: string;
+  permissions: PermPoint[];
 }
 
 interface DatasourceAccess {
@@ -87,6 +100,23 @@ export default function RoleManagement() {
   const [newAttrKey, setNewAttrKey] = useState('');
   const [newAttrValue, setNewAttrValue] = useState('');
 
+  // AS-BOT permissions
+  const [asbotAccess, setAsbotAccess] = useState<Record<string, boolean>>({});
+  const [asbotCanAccess, setAsbotCanAccess] = useState(false);
+
+  const AS_BOT_ACTIONS = [
+    { key: 'ontology.generate', label: '生成本体草案' },
+    { key: 'ontology.save', label: '保存本体模型' },
+    { key: 'ontology.activate', label: '激活本体模型' },
+    { key: 'ontology.import_yaml', label: '导入 YAML' },
+    { key: 'metadata.sync', label: '同步元数据' },
+  ];
+
+  // 功能权限(权限码: adh_perm_registry + adh_role_perms)
+  const [permGroups, setPermGroups] = useState<PermGroup[]>([]);
+  const [rolePerms, setRolePerms] = useState<Set<string>>(new Set());
+  const [permsSaving, setPermsSaving] = useState(false);
+
   // User assignment
   const [userTarget, setUserTarget] = useState<Role | null>(null);
   const [allUsers, setAllUsers] = useState<any[]>([]);
@@ -95,7 +125,7 @@ export default function RoleManagement() {
   const loadRoles = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await client.get('/admin/roles');
+      const { data } = await client.get('/roles/');
       setRoles(Array.isArray(data) ? data : []);
     } catch {
       toast.error('加载角色失败');
@@ -125,10 +155,10 @@ export default function RoleManagement() {
     setSaving(true);
     try {
       if (editRole) {
-        await client.put(`/admin/roles/${editRole.id}`, { display_name: formDisplayName, description: formDesc });
+        await client.put(`/roles/${editRole.id}`, { display_name: formDisplayName, description: formDesc });
         toast.success('已更新');
       } else {
-        await client.post('/admin/roles', { name: formName, display_name: formDisplayName, description: formDesc });
+        await client.post('/roles/', { name: formName, display_name: formDisplayName, description: formDesc });
         toast.success('已创建');
       }
       setFormOpen(false); loadRoles();
@@ -139,7 +169,7 @@ export default function RoleManagement() {
   const handleDelete = async () => {
     if (!deleteTarget) return;
     try {
-      await client.delete(`/admin/roles/${deleteTarget.id}`);
+      await client.delete(`/roles/${deleteTarget.id}`);
       toast.success('已删除'); setDeleteTarget(null); loadRoles();
     } catch (e: any) { toast.error(e.response?.data?.detail || '删除失败'); }
   };
@@ -154,21 +184,37 @@ export default function RoleManagement() {
       const { data: dsData } = await client.get('/datasources/');
       setAllDatasources(Array.isArray(dsData) ? dsData : []);
       // Load role permissions
-      const { data: dsAccess } = await client.get(`/admin/roles/${role.id}/datasources`);
+      const { data: dsAccess } = await client.get(`/roles/${role.id}/datasources`);
       setDsAccess(dsAccess || []);
-      const { data: tAccess } = await client.get(`/admin/roles/${role.id}/tables`);
+      const { data: tAccess } = await client.get(`/roles/${role.id}/tables`);
       setTableAccess(tAccess || []);
-      const { data: cAccess } = await client.get(`/admin/roles/${role.id}/columns`);
+      const { data: cAccess } = await client.get(`/roles/${role.id}/columns`);
       setColAccess(cAccess || []);
-      const { data: attrData } = await client.get(`/admin/roles/${role.id}/attributes`, { params: { workspace_id: 0 } });
+      const { data: attrData } = await client.get(`/roles/${role.id}/attributes`, { params: { workspace_id: 0 } });
       setAttrs(attrData || {});
+      // Load AS-BOT permissions
+      try {
+        const { data: asbotData } = await client.get(`/as-bot/roles/${role.id}/permissions`);
+        setAsbotAccess(asbotData.permissions || {});
+        setAsbotCanAccess(asbotData.can_access ?? false);
+      } catch {
+        setAsbotAccess({});
+        setAsbotCanAccess(false);
+      }
+      // Load permission registry + role perm codes
+      try {
+        const { data: regData } = await client.get('/roles/perm-registry');
+        setPermGroups(regData.groups || []);
+        const { data: permData } = await client.get(`/roles/${role.id}/permissions`);
+        setRolePerms(new Set<string>(permData.permissions || []));
+      } catch { setPermGroups([]); setRolePerms(new Set()); }
     } catch { /* ignore */ }
   };
 
   const saveDatasourceAccess = async (dsIds: number[]) => {
     if (!permTarget) return;
     try {
-      await client.put(`/admin/roles/${permTarget.id}/datasources`, { datasource_ids: dsIds });
+      await client.put(`/roles/${permTarget.id}/datasources`, { datasource_ids: dsIds });
       setDsAccess(dsIds.map(id => {
         const ds = allDatasources.find((d: any) => d.id === id);
         return { datasource_id: id, datasource_name: ds?.name || '', db_type: ds?.db_type || '' };
@@ -189,7 +235,7 @@ export default function RoleManagement() {
   const saveTableAccess = async () => {
     if (!permTarget) return;
     try {
-      await client.put(`/admin/roles/${permTarget.id}/tables`, {
+      await client.put(`/roles/${permTarget.id}/tables`, {
         tables: tableAccess.map(t => ({ datasource_id: t.datasource_id, table_name: t.table_name, access_type: t.access_type }))
       });
       toast.success('表权限已保存');
@@ -209,7 +255,7 @@ export default function RoleManagement() {
   const saveColumnAccess = async () => {
     if (!permTarget) return;
     try {
-      await client.put(`/admin/roles/${permTarget.id}/columns`, {
+      await client.put(`/roles/${permTarget.id}/columns`, {
         columns: colAccess.map(c => ({
           datasource_id: c.datasource_id, table_name: c.table_name,
           column_name: c.column_name, access_type: c.access_type, mask_pattern: c.mask_pattern
@@ -235,9 +281,35 @@ export default function RoleManagement() {
   const saveAttributes = async () => {
     if (!permTarget) return;
     try {
-      await client.put(`/admin/roles/${permTarget.id}/attributes`, { workspace_id: 0, attributes: attrs });
+      await client.put(`/roles/${permTarget.id}/attributes`, { workspace_id: 0, attributes: attrs });
       toast.success('属性已保存');
     } catch { toast.error('保存失败'); }
+  };
+
+  const togglePerm = (code: string) => {
+    setRolePerms(prev => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code); else next.add(code);
+      return next;
+    });
+  };
+
+  const toggleModuleAll = (group: PermGroup, checked: boolean) => {
+    setRolePerms(prev => {
+      const next = new Set(prev);
+      group.permissions.forEach(p => checked ? next.add(p.perm_code) : next.delete(p.perm_code));
+      return next;
+    });
+  };
+
+  const savePerms = async () => {
+    if (!permTarget) return;
+    setPermsSaving(true);
+    try {
+      await client.put(`/roles/${permTarget.id}/permissions`, { permissions: [...rolePerms] });
+      toast.success(rolePerms.size === 0 ? '已保存：未勾选任何权限 = 不限制(拥有全部)' : `已保存 ${rolePerms.size} 项权限`);
+    } catch { toast.error('保存失败'); }
+    finally { setPermsSaving(false); }
   };
 
   // ── User Assignment ──────────────────────────────────────────────
@@ -245,9 +317,9 @@ export default function RoleManagement() {
   const openUsers = async (role: Role) => {
     setUserTarget(role);
     try {
-      const { data: roleData } = await client.get(`/admin/roles/${role.id}`);
+      const { data: roleData } = await client.get(`/roles/${role.id}`);
       setRoleUsers(roleData.users || []);
-      const { data: usersData } = await client.get('/admin/users', { params: { size: 9999 } });
+      const { data: usersData } = await client.get('/users/', { params: { size: 200 } });
       setAllUsers(usersData.items || usersData || []);
     } catch { setRoleUsers([]); }
   };
@@ -255,9 +327,9 @@ export default function RoleManagement() {
   const handleAssignUser = async (userId: number) => {
     if (!userTarget) return;
     try {
-      await client.post(`/admin/roles/${userTarget.id}/users`, { user_id: userId, workspace_id: 0 });
+      await client.post(`/roles/${userTarget.id}/users`, { user_id: userId, workspace_id: 0 });
       toast.success('已分配');
-      const { data } = await client.get(`/admin/roles/${userTarget.id}`);
+      const { data } = await client.get(`/roles/${userTarget.id}`);
       setRoleUsers(data.users || []);
     } catch { toast.error('分配失败'); }
   };
@@ -265,9 +337,9 @@ export default function RoleManagement() {
   const handleRemoveUser = async (userId: number) => {
     if (!userTarget) return;
     try {
-      await client.delete(`/admin/roles/${userTarget.id}/users/${userId}`, { params: { workspace_id: 0 } });
+      await client.delete(`/roles/${userTarget.id}/users/${userId}`, { params: { workspace_id: 0 } });
       toast.success('已移除');
-      const { data } = await client.get(`/admin/roles/${userTarget.id}`);
+      const { data } = await client.get(`/roles/${userTarget.id}`);
       setRoleUsers(data.users || []);
     } catch { toast.error('移除失败'); }
   };
@@ -331,11 +403,13 @@ export default function RoleManagement() {
             <DialogDescription>配置该角色的数据访问范围</DialogDescription>
           </DialogHeader>
           <Tabs value={permTab} onValueChange={setPermTab}>
-            <TabsList className="grid grid-cols-4 w-full">
-              <TabsTrigger value="datasources"><Database className="h-4 w-4 mr-1" />数据源</TabsTrigger>
-              <TabsTrigger value="tables"><Table className="h-4 w-4 mr-1" />表</TabsTrigger>
-              <TabsTrigger value="columns"><Columns3 className="h-4 w-4 mr-1" />列</TabsTrigger>
-              <TabsTrigger value="attributes"><Settings className="h-4 w-4 mr-1" />属性</TabsTrigger>
+            <TabsList className="grid grid-cols-6 w-full">
+              <TabsTrigger value="datasources"><Database className="h-3.5 w-3.5 mr-1" />数据源</TabsTrigger>
+              <TabsTrigger value="tables"><Table className="h-3.5 w-3.5 mr-1" />表</TabsTrigger>
+              <TabsTrigger value="columns"><Columns3 className="h-3.5 w-3.5 mr-1" />列</TabsTrigger>
+              <TabsTrigger value="attributes"><Settings className="h-3.5 w-3.5 mr-1" />属性</TabsTrigger>
+              <TabsTrigger value="asbot"><Bot className="h-3.5 w-3.5 mr-1" />AS-BOT</TabsTrigger>
+              <TabsTrigger value="perms"><Shield className="h-3.5 w-3.5 mr-1" />功能权限</TabsTrigger>
             </TabsList>
 
             {/* Datasource Access */}
@@ -459,6 +533,92 @@ export default function RoleManagement() {
               )}
               {Object.keys(attrs).length > 0 && (
                 <Button size="sm" onClick={saveAttributes}>保存属性</Button>
+              )}
+            </TabsContent>
+
+            {/* AS-BOT Permissions */}
+            <TabsContent value="asbot" className="space-y-3">
+              <p className="text-sm text-muted-foreground">配置该角色使用 AS-BOT 系统助手的权限</p>
+              <div className="flex items-center justify-between border rounded-lg px-4 py-3 bg-muted/30">
+                <div className="flex items-center gap-2">
+                  <Bot className="h-4 w-4 text-primary" />
+                  <span className="text-sm font-medium">AS-BOT 访问权限</span>
+                </div>
+                <Switch
+                  checked={asbotCanAccess}
+                  onCheckedChange={setAsbotCanAccess}
+                />
+              </div>
+              {asbotCanAccess && (
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">勾选允许该角色执行的操作：</p>
+                  {AS_BOT_ACTIONS.map(action => (
+                    <div key={action.key} className="flex items-center justify-between border rounded px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <Shield className="h-3 w-3 text-muted-foreground" />
+                        <span className="text-sm">{action.label}</span>
+                        <code className="text-[10px] bg-muted px-1 rounded text-muted-foreground">{action.key}</code>
+                      </div>
+                      <Switch
+                        checked={asbotAccess[action.key] !== false}
+                        onCheckedChange={checked => setAsbotAccess(prev => ({ ...prev, [action.key]: checked }))}
+                      />
+                    </div>
+                  ))}
+                  <Button size="sm" onClick={async () => {
+                    if (!permTarget) return;
+                    try {
+                      await client.put(`/as-bot/roles/${permTarget.id}/permissions`, {
+                        permissions: { ...asbotAccess, can_access: asbotCanAccess },
+                      });
+                      toast.success('AS-BOT 权限已保存');
+                    } catch {
+                      toast.error('保存失败');
+                    }
+                  }}>保存 AS-BOT 权限</Button>
+                </div>
+              )}
+            </TabsContent>
+
+            {/* 功能权限(权限码) */}
+            <TabsContent value="perms" className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                按权限点勾选。权限码统一驱动菜单可见性与 API 鉴权，无需逐个配置菜单/接口。
+                全部不勾选 = 不限制（拥有全部权限）
+              </p>
+              {permGroups.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">权限点注册表为空</p>
+              ) : (
+                <div className="space-y-4">
+                  {permGroups.map(group => {
+                    const allChecked = group.permissions.every(p => rolePerms.has(p.perm_code));
+                    return (
+                      <div key={group.module} className="border rounded-lg">
+                        <div className="flex items-center justify-between px-3 py-2 bg-muted/40 border-b">
+                          <span className="text-xs font-semibold">{group.module_label || group.module}</span>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <span className="text-[10px] text-muted-foreground">全选</span>
+                            <Switch checked={allChecked} onCheckedChange={checked => toggleModuleAll(group, checked)} />
+                          </label>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1.5 p-3">
+                          {group.permissions.map(p => (
+                            <div key={p.perm_code} className="flex items-center justify-between border rounded px-2 py-1.5" title={p.description || p.perm_code}>
+                              <div className="flex flex-col min-w-0">
+                                <span className="text-xs truncate">{p.label || p.perm_code}</span>
+                                <code className="text-[10px] text-muted-foreground">{p.perm_code}</code>
+                              </div>
+                              <Switch checked={rolePerms.has(p.perm_code)} onCheckedChange={() => togglePerm(p.perm_code)} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <Button size="sm" onClick={savePerms} disabled={permsSaving}>
+                    {permsSaving ? '保存中...' : `保存功能权限（已选 ${rolePerms.size} 项）`}
+                  </Button>
+                </div>
               )}
             </TabsContent>
           </Tabs>

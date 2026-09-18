@@ -23,6 +23,11 @@ interface Props {
   onExit: () => void;
   onOpenLeftPanel: () => void;
   onOpenRightPanel: () => void;
+  saving: boolean;
+  showGrid: boolean;
+  onToggleGrid: () => void;
+  onPreview: () => void;
+  onSaveVis: () => void;
 }
 
 export default function EditorToolbar({
@@ -30,10 +35,10 @@ export default function EditorToolbar({
   pendingNewCount, pendingChangeCount, pendingDeleteCount,
   leftPanelOpen, rightPanelOpen,
   onZoomIn, onZoomOut, onResetZoom, onOpenTemplates, onSave, onExit,
-  onOpenLeftPanel, onOpenRightPanel,
+  onOpenLeftPanel, onOpenRightPanel, saving, showGrid, onToggleGrid, onPreview, onSaveVis,
 }: Props) {
   return (
-    <div className="flex items-center justify-between px-3 py-2 border-b bg-muted/30 flex-shrink-0">
+    <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b bg-background flex-shrink-0">
       <div className="flex items-center gap-2">
         {!leftPanelOpen && (
           <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={onOpenLeftPanel}>
@@ -92,12 +97,13 @@ export default function EditorToolbar({
           <TooltipContent>模板</TooltipContent>
         </Tooltip>
 
-        {hasUnsavedChanges && (
-          <Button size="sm" onClick={onSave}>
-            <Check className="h-4 w-4 mr-1" />保存 ({pendingCount})
-          </Button>
-        )}
-        <Button size="sm" variant={hasUnsavedChanges ? 'outline' : 'default'} onClick={onExit}>
+        <Button size="sm" variant={showGrid ? 'secondary' : 'ghost'} onClick={onToggleGrid}>网格</Button>
+        <Button size="sm" variant="outline" onClick={onSaveVis} disabled={saving}>存为字模</Button>
+        <Button size="sm" variant="outline" onClick={onPreview}>草稿预览</Button>
+        <Button size="sm" onClick={onSave} disabled={saving || !hasUnsavedChanges}>
+          <Check className="h-4 w-4 mr-1" />{saving ? '保存中…' : `保存 (${pendingCount})`}
+        </Button>
+        <Button size="sm" variant={hasUnsavedChanges ? 'outline' : 'default'} onClick={onExit} disabled={saving}>
           <Minimize2 className="h-4 w-4 mr-1" />退出编辑
         </Button>
 

@@ -1,12 +1,16 @@
 """Knowledge Base Management API — Support multiple knowledge bases with various source types.
 
 Supports:
+- QMind (Qoder 云端知识库/笔记本):列表与检索均来自 qmind CLI,
+  通过 `GET /knowledge-bases/qmind/notebooks` 实时检索、`POST /knowledge-bases/qmind/import`
+  将选定的 notebook 落地为可被 Waker 绑定的知识库行(kb_type='qmind')。
 - Local data directory
 - Vector databases (Doris, Milvus, Pinecone, etc.)
 - Cloud RAG services (Aliyun, Tencent, Baidu, etc.)
 """
 
 import json
+import asyncio
 import logging
 from datetime import datetime
 from typing import Optional, List
@@ -20,13 +24,16 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# 阻塞型 CLI/DB 调用统一放到线程池,避免阻塞事件循环
+_to_thread = asyncio.to_thread
+
 
 # ── Pydantic Models ────────────────────────────────────────────────
 
 class KnowledgeBaseCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = None
-    kb_type: str = Field(..., pattern="^(local|vector_db|cloud_rag)$")
+    kb_type: str = Field(..., pattern="^(local|vector_db|cloud_rag|qmind)$")
     source_config: dict = Field(default_factory=dict)
 
 
@@ -81,6 +88,10 @@ def _ensure_table():
             conn.commit()
     finally:
         conn.close()
+
+
+class QMindImportRequest(BaseModel):
+    notebook_ids: Optional[List[str]] = None  # 为空表示导入全部检索到的 notebook
 
 
 # Initialize table on module load
@@ -140,6 +151,103 @@ async def list_knowledge_bases(
             return results
     finally:
         conn.close()
+
+
+@router.get("/knowledge-bases/qmind/notebooks")
+async def list_qmind_notebooks():
+    """从 Qoder 实时检索 QMind 知识库(笔记本)列表.
+
+    返回每个 notebook 及其是否已导入为本地知识库(imported / kb_id),
+    供后台展示“可绑定的 Qoder 知识库”。qmind CLI 不可用时返回空列表。
+    """
+    from services.datamind.rag.qmind_retriever import list_notebooks
+
+    notebooks = await _to_thread(list_notebooks)
+    # 已导入的 notebook_id → 本地 kb 行
+    imported: dict[str, int] = {}
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, source_config FROM adh_knowledge_bases WHERE kb_type = 'qmind'"
+            )
+            for row in cursor.fetchall():
+                try:
+                    cfg = json.loads(row.get("source_config") or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    cfg = {}
+                nb = cfg.get("notebook_id")
+                if nb:
+                    imported[nb] = row["id"]
+    finally:
+        conn.close()
+
+    return {
+        "available": bool(notebooks),
+        "notebooks": [
+            {**nb, "imported": nb["notebook_id"] in imported, "kb_id": imported.get(nb["notebook_id"])}
+            for nb in notebooks
+        ],
+    }
+
+
+@router.post("/knowledge-bases/qmind/import")
+async def import_qmind_notebooks(request: QMindImportRequest):
+    """将选定的 Qoder QMind notebook 导入(落地)为可绑定的知识库(kb_type='qmind').
+
+    以 notebook_id 为幂等键:已存在则刷新标题/描述,不存在则新建。未指定
+    notebook_ids 时导入检索到的全部 notebook。
+    """
+    from services.datamind.rag.qmind_retriever import list_notebooks
+
+    notebooks = await _to_thread(list_notebooks)
+    if not notebooks:
+        raise HTTPException(status_code=502, detail="未能从 Qoder 检索到知识库(qmind CLI 不可用或未登录)")
+    wanted = set(request.notebook_ids or [])
+    selected = [n for n in notebooks if not wanted or n["notebook_id"] in wanted]
+    if not selected:
+        raise HTTPException(status_code=400, detail="选定的 notebook 不在检索结果中")
+
+    created, updated = 0, 0
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cursor:
+            for nb in selected:
+                cursor.execute(
+                    "SELECT id FROM adh_knowledge_bases WHERE kb_type='qmind' AND "
+                    "JSON_UNQUOTE(JSON_EXTRACT(source_config, '$.notebook_id')) = %s",
+                    (nb["notebook_id"],),
+                )
+                row = cursor.fetchone()
+                cfg = json.dumps(
+                    {"notebook_id": nb["notebook_id"], "org_id": nb["org_id"],
+                     "title": nb["title"], "top_k": 5},
+                    ensure_ascii=False,
+                )
+                if row:
+                    cursor.execute(
+                        "UPDATE adh_knowledge_bases SET name=%s, description=%s, source_config=%s "
+                        "WHERE id=%s",
+                        (nb["title"], nb["description"], cfg, row["id"]),
+                    )
+                    updated += 1
+                else:
+                    cursor.execute(
+                        """INSERT INTO adh_knowledge_bases
+                           (name, description, kb_type, source_config, status, workspace_ids)
+                           VALUES (%s, %s, 'qmind', %s, 'active', '[]')""",
+                        (nb["title"], nb["description"], cfg),
+                    )
+                    created += 1
+            conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "message": f"已导入 {created} 个、刷新 {updated} 个 Qoder 知识库",
+        "created": created,
+        "updated": updated,
+    }
 
 
 @router.get("/knowledge-bases/{kb_id}", response_model=KnowledgeBaseResponse)

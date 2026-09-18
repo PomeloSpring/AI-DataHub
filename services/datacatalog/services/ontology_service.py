@@ -71,7 +71,7 @@ def _collect_metadata(datasource_id: int) -> dict:
             cur.execute(
                 "SELECT term_cn, term_en, term_aliases, term_type, target_table, "
                 "target_column, calculation, description FROM adh_business_terms "
-                "WHERE datasource_id = %s AND is_active = 1 LIMIT 200",
+                "WHERE (datasource_id = %s OR datasource_id = 0) AND is_active = 1 LIMIT 200",
                 (datasource_id,),
             )
             terms = cur.fetchall()
@@ -87,14 +87,26 @@ def _collect_metadata(datasource_id: int) -> dict:
             metrics = []
             try:
                 cur.execute(
-                    "SELECT metric_name, metric_display_name, metric_type, "
-                    "calculation_logic, description FROM adh_metrics "
-                    "WHERE datasource_id = %s AND is_active = 1 LIMIT 200",
+                    "SELECT name, name_en, agg_type, formula, target_table, "
+                    "description FROM adh_metrics "
+                    "WHERE (datasource_id = %s OR datasource_id = 0) AND is_active = 1 LIMIT 200",
                     (datasource_id,),
                 )
                 metrics = cur.fetchall()
             except Exception as e:
                 logger.warning("metrics collect skipped: %s", e)
+
+            dimensions = []
+            try:
+                cur.execute(
+                    "SELECT name, name_en, target_table, target_column, category, "
+                    "aliases, value_labels, description FROM adh_dimensions "
+                    "WHERE (datasource_id = %s OR datasource_id = 0) AND is_active = 1 LIMIT 300",
+                    (datasource_id,),
+                )
+                dimensions = cur.fetchall()
+            except Exception as e:
+                logger.warning("dimensions collect skipped: %s", e)
 
     col_map: dict[str, list] = {}
     for c in columns:
@@ -107,6 +119,7 @@ def _collect_metadata(datasource_id: int) -> dict:
         "terms": terms,
         "metrics": metrics,
         "relations": relations,
+        "dimensions": dimensions,
     }
 
 
@@ -158,15 +171,41 @@ def _schema_text(batch_tables: list, meta: dict) -> str:
             lines.append(line)
         lines.append("")
 
-    metrics = [m for m in meta["metrics"]]
+    metrics = [m for m in meta["metrics"]
+               if not m.get("target_table") or m["target_table"] in table_names]
     if metrics:
         lines.append("Metrics:")
         for m in metrics[:40]:
-            line = f"  - {m.get('metric_display_name') or m['metric_name']}"
-            if m.get("calculation_logic"):
-                line += f" = {m['calculation_logic']}"
+            line = f"  - {m['name']}"
+            if m.get("name_en"):
+                line += f" ({m['name_en']})"
+            if m.get("formula"):
+                line += f" = {m['formula']}"
             if m.get("description"):
                 line += f" ({m['description']})"
+            lines.append(line)
+        lines.append("")
+
+    # 语义维度字典(含枚举业务标签): 让 NL2SQL 老管道也能把码值翻成业务含义
+    dims = [d for d in (meta.get("dimensions") or [])
+            if d.get("target_table") in table_names]
+    if dims:
+        def _json_field(v):
+            if isinstance(v, (str, bytes)):
+                try:
+                    return json.loads(v)
+                except (ValueError, TypeError):
+                    return None
+            return v
+        lines.append("Semantic dimensions (name | aliases | enum labels):")
+        for d in dims[:80]:
+            line = f"  - {d['name']} @ {d['target_table']}.{d.get('target_column') or ''}"
+            al = _json_field(d.get("aliases")) or []
+            if al:
+                line += f" | aliases: {', '.join(str(a) for a in al)}"
+            vl = _json_field(d.get("value_labels")) or {}
+            if vl:
+                line += " | 枚举: " + ", ".join(f"{k}={v}" for k, v in sorted(vl.items()))
             lines.append(line)
 
     return "\n".join(lines)
@@ -437,22 +476,55 @@ def _row_to_model(row: dict, include_content: bool = True) -> dict:
     return model
 
 
-def list_models(datasource_id: int = None) -> list:
-    """模型列表（不含大字段）。"""
+def list_models(datasource_id: int = None, include_archived: bool = False) -> list:
+    """模型列表（不含大字段）。
+
+    默认排除 archived —— 归档的历史版本属于对应模型的「版本管理」，
+    由 list_versions 按 (datasource_id, name) 分组呈现，不再混在主列表。
+    """
+    sql = (
+        "SELECT id, datasource_id, name, status, object_count, created_by, "
+        "created_at, updated_at FROM adh_ontology_models"
+    )
+    conditions: list[str] = []
+    params: list = []
+    if datasource_id:
+        conditions.append("datasource_id = %s")
+        params.append(datasource_id)
+    if not include_archived:
+        conditions.append("status <> 'archived'")
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY updated_at DESC"
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
-            if datasource_id:
-                cur.execute(
-                    "SELECT id, datasource_id, name, status, object_count, created_by, "
-                    "created_at, updated_at FROM adh_ontology_models "
-                    "WHERE datasource_id = %s ORDER BY updated_at DESC",
-                    (datasource_id,),
-                )
-            else:
-                cur.execute(
-                    "SELECT id, datasource_id, name, status, object_count, created_by, "
-                    "created_at, updated_at FROM adh_ontology_models ORDER BY updated_at DESC"
-                )
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    return [_row_to_model(r, include_content=False) for r in rows]
+
+
+def list_versions(model_id: int) -> list:
+    """同一本体模型（按 datasource_id + name 归组）的全部版本，含归档。
+
+    主列表只展示非归档模型；被归档的历史版本归入此接口，作为对应模型的
+    「版本管理」视图。当前 active 版本排在首位，其余按更新时间倒序。
+    """
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT datasource_id, name FROM adh_ontology_models WHERE id = %s",
+                (model_id,),
+            )
+            base = cur.fetchone()
+            if not base:
+                raise ValueError("模型不存在")
+            cur.execute(
+                "SELECT id, datasource_id, name, status, object_count, created_by, "
+                "created_at, updated_at FROM adh_ontology_models "
+                "WHERE datasource_id = %s AND name = %s "
+                "ORDER BY (status = 'active') DESC, updated_at DESC",
+                (base["datasource_id"], base["name"]),
+            )
             rows = cur.fetchall()
     return [_row_to_model(r, include_content=False) for r in rows]
 
@@ -466,12 +538,17 @@ def get_model(model_id: int) -> Optional[dict]:
 
 
 def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
-    """保存草案编辑（JSON 事实源），服务端重新派生 YAML/MD。仅 draft 可编辑。"""
+    """保存本体编辑（JSON 事实源），服务端重新派生 YAML/MD。
+
+    draft：直接改内容。active：允许就地编辑，保存时按 primary_table 依据真实元数据
+    重算 execution_binding、重展开 adh_ontology_objects、重写绑定并同步图谱，
+    使本体与「表 & 字段 / 指标」等数据目录联动。archived 不可编辑。
+    """
     model = get_model(model_id)
     if not model:
         raise ValueError("模型不存在")
-    if model["status"] != "draft":
-        raise ValueError("仅 draft 状态的模型可编辑；如需修改已激活模型，请重新生成草案")
+    if model["status"] == "archived":
+        raise ValueError("已归档模型不可编辑；如需修改请在「版本管理」中回滚激活该版本")
 
     try:
         doc = json.loads(json_content)
@@ -479,6 +556,15 @@ def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
         raise ValueError(f"JSON 解析失败: {e}")
     if not isinstance(doc.get("objects"), list) or not doc["objects"]:
         raise ValueError("JSON 必须包含非空 objects 数组")
+
+    # 补齐上下文，供绑定重算 / 派生使用
+    doc["datasource_id"] = model["datasource_id"]
+    doc.setdefault("domain", "")
+    doc.setdefault("description", "")
+
+    # 激活态编辑：依据真实表元数据重算绑定并联动刷新对象/绑定/图谱
+    if model["status"] == "active":
+        _sync_active_model(doc, model_id, model["datasource_id"])
 
     # 重新规范化并重派生
     json_norm = json.dumps(doc, ensure_ascii=False, indent=2)
@@ -497,7 +583,204 @@ def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
                 + ([name] if name else []) + [model_id],
             )
         conn.commit()
+
+    # 激活态编辑：json_content 已落库，此时再重建图谱，确保 _merge_ontology_models
+    # 读到最新对象集（否则图谱会滞后一次保存）。
+    if model["status"] == "active":
+        from services.datacatalog.services import ontology_yaml_import as _yimp
+        _yimp._rebuild_graph(model["datasource_id"])
     return get_model(model_id)
+
+
+def _expand_objects(doc: dict, model_id: int, datasource_id: int) -> int:
+    """把 canonical doc 的对象展开写入 adh_ontology_objects（幂等：先清本模型再插）。
+
+    返回写入对象数。activate 与激活态编辑保存共用。
+    """
+    objects = doc.get("objects") or []
+    records = []
+    for i, obj in enumerate(objects):
+        records.append({
+            "id": _gen_id() + i,
+            "model_id": model_id,
+            "datasource_id": datasource_id,
+            "object_key": obj.get("key", ""),
+            "display_name": obj.get("display_name", obj.get("key", "")),
+            "aliases": ", ".join(obj.get("aliases") or []),
+            "description": (obj.get("description") or "")[:1000],
+            "md_section": _object_md(obj),
+            "is_active": 1,
+            "embedding": _placeholder_embedding(),
+        })
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            # 下线其它模型对象 + 清理本模型旧对象（重激活/重保存幂等）
+            cur.execute(
+                "DELETE FROM adh_ontology_objects WHERE datasource_id = %s AND model_id != %s",
+                (datasource_id, model_id),
+            )
+            cur.execute(
+                "DELETE FROM adh_ontology_objects WHERE model_id = %s",
+                (model_id,),
+            )
+            for rec in records:
+                cols = ", ".join(f"`{k}`" for k in rec.keys())
+                placeholders = ", ".join(["%s"] * len(rec))
+                cur.execute(
+                    f"INSERT INTO adh_ontology_objects ({cols}) VALUES ({placeholders})",
+                    list(rec.values()),
+                )
+        conn.commit()
+    return len(records)
+
+
+def _enum_item_to_label(item: str) -> tuple[str, str] | None:
+    """把本体 enum 项("3=UPLOAD（已上传）"/"0:否")解析为 (code, 业务标签)。
+
+    括号内有中文 → 取中文作标签(可读性优先); 否则用等号右侧原文。
+    """
+    import re
+    s = str(item or "").strip()
+    if not s:
+        return None
+    mm = re.match(r"^(\w+)\s*[=:：]\s*(.+)$", s)
+    if not mm:
+        return None
+    code, rest = mm.group(1), mm.group(2).strip()
+    cn = re.search(r"[（(]([^（）()]*[\u4e00-\u9fff][^（）()]*)[）)]", rest)
+    if cn:
+        label = cn.group(1).strip()
+    else:
+        label = re.sub(r"[（(].*?[）)]", "", rest).strip() or rest
+    return code, label
+
+
+def sync_enums_to_dimensions(doc: dict, datasource_id: int) -> dict:
+    """把本体对象属性的 enum/中文名沉淀进语义维度字典。
+
+    回写目标(adh_dimensions, 按 target_table+target_column 命中):
+    - properties[].enum → value_labels {code: label}
+    - properties[].name(英文属性名)/description(业务名) → aliases
+    已有人工 value_labels 与本体冲突时不覆盖, 只记日志。
+    字典中无维度行的枚举属性 → 不自动建维度, 列入 gaps 供人工决策。
+    """
+    updated, conflicts, gaps = 0, [], []
+    # 同一列可能被多对象引用: 合并后再写
+    by_col: dict[tuple[str, str], dict] = {}
+    for obj in doc.get("objects") or []:
+        for p in obj.get("properties") or obj.get("attributes") or []:
+            col_ref = str(p.get("column") or "")
+            if "." not in col_ref:
+                continue
+            tbl, col = col_ref.split(".", 1)
+            entry = by_col.setdefault((tbl, col), {"labels": {}, "aliases": set()})
+            for it in (p.get("enum") or []):
+                parsed = _enum_item_to_label(it)
+                if parsed:
+                    entry["labels"][parsed[0]] = parsed[1]
+            for a in (p.get("name"), p.get("description")):
+                a = str(a or "").strip()
+                if not a or a == col:
+                    continue
+                entry["aliases"].add(a)
+        # 对象级别名不进列, 只收属性
+    if not by_col:
+        return {"updated": 0, "conflicts": [], "gaps": []}
+
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            for (tbl, col), entry in by_col.items():
+                cur.execute(
+                    "SELECT id, name, aliases, value_labels, description FROM adh_dimensions "
+                    "WHERE is_active = 1 AND target_table = %s AND target_column = %s",
+                    (tbl, col),
+                )
+                rows = cur.fetchall()
+                if not rows:
+                    if entry["labels"]:
+                        gaps.append({"table": tbl, "column": col,
+                                     "enum_size": len(entry["labels"])})
+                    continue
+                for d in rows:
+                    # -- value_labels 合并(人工非空优先)
+                    old_labels = d.get("value_labels")
+                    if isinstance(old_labels, (str, bytes)):
+                        try:
+                            old_labels = json.loads(old_labels)
+                        except (ValueError, TypeError):
+                            old_labels = None
+                    new_labels = dict(entry["labels"])
+                    if isinstance(old_labels, dict) and old_labels:
+                        diff = {k: v for k, v in new_labels.items()
+                                if k in old_labels and old_labels[k] != v}
+                        if diff:
+                            conflicts.append({"dimension_id": d["id"], "diff": diff})
+                        new_labels = {**new_labels, **old_labels}  # 人工值覆盖本体值
+                    if new_labels == (old_labels or {}):
+                        labels_sql = None
+                    else:
+                        labels_sql = json.dumps(new_labels, ensure_ascii=False)
+                    # -- aliases 追加合并
+                    old_alias = d.get("aliases")
+                    if isinstance(old_alias, (str, bytes)):
+                        try:
+                            old_alias = json.loads(old_alias)
+                        except (ValueError, TypeError):
+                            old_alias = None
+                    old_alias = list(old_alias or [])
+                    # 与维度名同义的别名不收录(如 名称"案例状态" vs 别名"案例状态（核心状态机）")
+                    def _trivial(x: str) -> bool:
+                        y = re.sub(r"[（(].*?[）)]", "", str(x)).strip()
+                        return y == d["name"] or str(x).strip() == d["name"]
+                    merged_alias = sorted({str(x) for x in old_alias
+                                           if not _trivial(x)} | {a for a in entry["aliases"]
+                                                                   if not _trivial(a)})
+                    alias_sql = None
+                    if merged_alias != old_alias:
+                        alias_sql = json.dumps(merged_alias, ensure_ascii=False)
+                    if labels_sql is None and alias_sql is None:
+                        continue
+                    sets, params = [], []
+                    if labels_sql is not None:
+                        sets.append("value_labels = %s"); params.append(labels_sql)
+                    if alias_sql is not None:
+                        sets.append("aliases = %s"); params.append(alias_sql)
+                    sets.append("updated_at = %s"); params.append(_now())
+                    cur.execute(
+                        f"UPDATE adh_dimensions SET {', '.join(sets)} WHERE id = %s",
+                        params + [d["id"]],
+                    )
+                    updated += 1
+        conn.commit()
+
+    if conflicts:
+        logger.warning("[ontology] enum→dims 冲突(保留人工标签): %s", conflicts)
+    if gaps:
+        logger.info("[ontology] 有枚举语义但字典缺维度行: %s", gaps)
+    logger.info("[ontology] sync_enums_to_dimensions: updated=%d conflicts=%d gaps=%d",
+                updated, len(conflicts), len(gaps))
+    return {"updated": updated, "conflicts": conflicts, "gaps": gaps}
+
+
+def _sync_active_model(doc: dict, model_id: int, datasource_id: int) -> None:
+    """激活态编辑保存时的联动刷新：重算 binding → 重展开对象 → 重写绑定。
+
+    会就地修改 doc.objects[].execution_binding，使回写的 JSON 与结构化绑定保持权威一致。
+    图谱重建不在此处触发：需等 save_draft 将最新 json_content 落库后再调，
+    否则 _merge_ontology_models 会读到旧内容，使图谱滞后一次保存。
+    """
+    from services.datacatalog.services import ontology_yaml_import as _yimp
+
+    table_info = _yimp._load_table_info_map(datasource_id)
+    ds_name = _yimp._datasource_name_by_id(datasource_id)
+    doc["datasource_name"] = ds_name
+    for obj in doc.get("objects") or []:
+        obj["execution_binding"] = _yimp._build_execution_binding(
+            obj.get("primary_table") or "", datasource_id, table_info, datasource_name=ds_name)
+    _expand_objects(doc, model_id, datasource_id)
+    _yimp._persist_bindings(doc, model_id)
+    # 本体 enum/属性中文名 → 语义维度字典(别名与枚举标签的唯一联动点)
+    sync_enums_to_dimensions(doc, datasource_id)
 
 
 def activate(model_id: int) -> dict:
@@ -531,43 +814,11 @@ def activate(model_id: int) -> dict:
         conn.commit()
 
     # 2. 展开对象写入元数据库（不再向量化；embedding 列写零向量占位）
-    records = []
-    for i, obj in enumerate(objects):
-        md_section = _object_md(obj)
-        records.append({
-            "id": _gen_id() + i,
-            "model_id": model_id,
-            "datasource_id": datasource_id,
-            "object_key": obj.get("key", ""),
-            "display_name": obj.get("display_name", obj.get("key", "")),
-            "aliases": ", ".join(obj.get("aliases") or []),
-            "description": (obj.get("description") or "")[:1000],
-            "md_section": md_section,
-            "is_active": 1,
-            "embedding": _placeholder_embedding(),
-        })
+    count = _expand_objects(doc, model_id, datasource_id)
+    # 3. 枚举/别名同步进维度字典
+    sync_enums_to_dimensions(doc, datasource_id)
 
-    with get_metadata_conn() as conn:
-        with conn.cursor() as cur:
-            # 下线其它模型对象 + 清理本模型旧对象（重激活幂等）
-            cur.execute(
-                "DELETE FROM adh_ontology_objects WHERE datasource_id = %s AND model_id != %s",
-                (datasource_id, model_id),
-            )
-            cur.execute(
-                "DELETE FROM adh_ontology_objects WHERE model_id = %s",
-                (model_id,),
-            )
-            for rec in records:
-                cols = ", ".join(f"`{k}`" for k in rec.keys())
-                placeholders = ", ".join(["%s"] * len(rec))
-                cur.execute(
-                    f"INSERT INTO adh_ontology_objects ({cols}) VALUES ({placeholders})",
-                    list(rec.values()),
-                )
-        conn.commit()
-
-    logger.info("[ontology] activated model %s: %d objects written", model_id, len(records))
+    logger.info("[ontology] activated model %s: %d objects written", model_id, count)
     return get_model(model_id)
 
 

@@ -91,7 +91,8 @@ export default function KnowledgeGraph() {
   });
 
   // SPARQL query state
-  const [sparqlQuery, setSparqlQuery] = useState('SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 25');
+  // SPARQL 数据均入命名图 <...ds:ID>，默认查询需遍历 GRAPH 才有结果
+  const [sparqlQuery, setSparqlQuery] = useState('SELECT ?s ?p ?o WHERE { GRAPH ?g { ?s ?p ?o } } LIMIT 25');
   const [sparqlResult, setSparqlResult] = useState<any>(null);
 
   // Store
@@ -609,9 +610,9 @@ export default function KnowledgeGraph() {
                 <div className="text-xs text-muted-foreground">
                   💡 常用查询示例：
                   <ul className="mt-1 space-y-1 list-disc list-inside">
-                    <li><code className="px-1 bg-muted rounded">SELECT ?s ?p ?o WHERE {'{'} ?s ?p ?o {'}'} LIMIT 25</code> - 查看所有三元组</li>
-                    <li><code className="px-1 bg-muted rounded">SELECT ?t ?label WHERE {'{'} ?t a adh:Table ; rdfs:label ?label {'}'}</code> - 查看所有表</li>
-                    <li><code className="px-1 bg-muted rounded">SELECT ?m ?label WHERE {'{'} ?m a adh:Metric ; rdfs:label ?label {'}'}</code> - 查看所有指标</li>
+                    <li><code className="px-1 bg-muted rounded">SELECT ?s ?p ?o WHERE {'{'} GRAPH ?g {'{'} ?s ?p ?o {'}'} {'}'} LIMIT 25</code> - 查看所有三元组(需遍历命名图 GRAPH)</li>
+                    <li><code className="px-1 bg-muted rounded">SELECT ?t ?label WHERE {'{'} GRAPH ?g {'{'} ?t a adh:Table ; rdfs:label ?label {'}'} {'}'}</code> - 查看所有表</li>
+                    <li><code className="px-1 bg-muted rounded">SELECT ?m ?label WHERE {'{'} GRAPH ?g {'{'} ?m a adh:Metric ; rdfs:label ?label {'}'} {'}'}</code> - 查看所有指标</li>
                   </ul>
                 </div>
               </CardContent>

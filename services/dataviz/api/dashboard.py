@@ -7,10 +7,11 @@ import logging
 
 import pymysql
 from fastapi import APIRouter, Depends, HTTPException, Query as QueryParam
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional
 
 from services.shared.common.auth import get_current_user, get_workspace_id
+from services.dataviz.services.governed_query import NoIdentityError
 from services.dataviz.services.dashboard_service import (
     dashboard_service,
     chart_service,
@@ -59,6 +60,9 @@ class ChartCreate(BaseModel):
     position: Optional[dict] = None
     source_type: Optional[str] = "query"
     source_id: Optional[int] = None
+    # Phase 5: 大屏语义化 — 存声明式 SemanticQuery 而非裸 SQL
+    semantic_query: Optional[dict] = None
+    query_source: Optional[str] = "raw_sql"  # raw_sql | semantic
 
 
 class ChartUpdate(BaseModel):
@@ -69,6 +73,15 @@ class ChartUpdate(BaseModel):
     position: Optional[dict] = None
     source_type: Optional[str] = None
     source_id: Optional[int] = None
+    semantic_query: Optional[dict] = None
+    query_source: Optional[str] = None
+
+    @field_validator("name", "chart_type", "source_type", "query_source")
+    @classmethod
+    def validate_required_metadata(cls, value):
+        if value is None or not value.strip():
+            raise ValueError("已提交的元数据字段不能为空")
+        return value
 
 
 class ChartRefreshRequest(BaseModel):
@@ -170,13 +183,16 @@ def reorder_dashboards_endpoint(
 def preview_datasource_endpoint(
     req: dict,
     user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
 ):
     """Execute a saved query/dataset SQL and return preview data."""
     try:
         source_type = req.get("source_type", "")
         source_id = req.get("source_id", 0)
-        result = preview_saved_query(user["user_id"], source_type, source_id)
+        result = preview_saved_query(user["user_id"], source_type, source_id, workspace_id)
         return result
+    except NoIdentityError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.exception("Failed to preview datasource")
         raise HTTPException(status_code=500, detail=str(e))
@@ -297,7 +313,7 @@ def update_chart_endpoint(
     """Update a chart within a dashboard."""
     try:
         updated = chart_service.update_chart(
-            dashboard_id, chart_id, req.model_dump(exclude_none=True),
+            dashboard_id, chart_id, req.model_dump(exclude_unset=True),
         )
         if not updated:
             raise HTTPException(status_code=404, detail="Chart not found")
@@ -306,7 +322,7 @@ def update_chart_endpoint(
         raise
     except Exception as e:
         logger.exception("Failed to update chart")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="图表配置保存失败，请重试") from e
 
 
 @router.delete("/{dashboard_id}/charts/{chart_id}")
@@ -334,6 +350,7 @@ def refresh_chart_endpoint(
     chart_id: int,
     req: ChartRefreshRequest = ChartRefreshRequest(),
     user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
 ):
     """Re-execute a chart's SQL query on its configured datasource."""
     try:
@@ -343,8 +360,13 @@ def refresh_chart_endpoint(
             page_limit=req.page_limit,
             page_offset=req.page_offset,
             count_sql=req.count_sql,
+            user_id=user.get("user_id") or 0,
+            workspace_id=workspace_id,
+            username=user.get("username", "") or "",
         )
         return result
+    except NoIdentityError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except pymysql.Error as e:
@@ -359,13 +381,19 @@ def refresh_all_charts_endpoint(
     dashboard_id: int,
     req: dict = {},
     user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
 ):
     """Re-execute all charts' SQL in a dashboard on their respective datasources."""
     try:
         result = chart_service.refresh_all_charts(
             dashboard_id, params=req.get("params", {}),
+            user_id=user.get("user_id") or 0,
+            workspace_id=workspace_id,
+            username=user.get("username", "") or "",
         )
         return result
+    except NoIdentityError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.exception("Failed to refresh all charts")
         raise HTTPException(status_code=500, detail=str(e))

@@ -11,6 +11,7 @@ import time
 from typing import Optional
 
 from services.shared.common.db import DBConnection
+from services.dataviz.services.governed_query import governed_execute
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +107,9 @@ async def generate_report(
     if not template_content:
         template_content = "Generate a clear, well-structured data analysis report."
 
-    # Execute data query
-    query_data = _execute_data_query(data_query)
+    # Execute data query — 以创建者(owner_id)身份走治理护城河(I1/I2)。
+    # 创建者被删/降权时由 permission_enforcer 按当前角色 fail-closed。
+    query_data = _execute_data_query(data_query, owner_id=owner_id, workspace_id=workspace_id)
 
     # Generate report content via LLM
     report_content = await _call_llm_for_report(template_content, query_data, title)
@@ -170,8 +172,12 @@ def _get_template_content(template_key: str) -> Optional[str]:
     return None
 
 
-def _execute_data_query(data_query: str) -> dict:
-    """Execute a SQL query and return the results.
+def _execute_data_query(data_query: str, owner_id: int = 0, workspace_id: int = 0,
+                        datasource_id: int = 0) -> dict:
+    """Execute a SQL query through the data moat and return the results.
+
+    身份以报表创建者(owner_id)构造 user_context, 经统一治理执行器(敏感 block/mask
+    + RLS + 审计), 无可信身份 -> fail-closed 拒绝取数(I5)。不再裸连数据源。
 
     Supports referencing saved queries by ID (prefix with 'query:') or direct SQL.
     """
@@ -201,12 +207,7 @@ def _execute_data_query(data_query: str) -> dict:
         sql += " LIMIT 500"
 
     try:
-        with DBConnection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-                rows = cur.fetchall()
-                columns = list(rows[0].keys()) if rows else []
-                return {"columns": columns, "rows": rows, "row_count": len(rows)}
+        return governed_execute(sql, datasource_id, owner_id, workspace_id)
     except Exception as e:
         logger.warning("Data query execution failed: %s", e)
         return {"columns": [], "rows": [], "row_count": 0, "error": str(e)}

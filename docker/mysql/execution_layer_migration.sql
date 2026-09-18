@@ -45,13 +45,14 @@ CREATE TABLE IF NOT EXISTS adh_workspace_execution_layers (
 INSERT IGNORE INTO adh_execution_layers (name, display_name, description, layer_type, config, status)
 VALUES ('builtin', '内置执行层', '平台内置 Agent 执行引擎(SQL/数据分析/可配置 Agent)', 'builtin', '{}', 'active');
 
--- Claude Agent SDK 执行层(claude-agent-sdk,运行时随 SDK 内置,无需外部 CLI)
+-- Qoder Agent SDK 执行层(qoder-agent-sdk,mode=sdk;PAT 由进程环境变量 QODER_PERSONAL_ACCESS_TOKEN 提供,不落库)
+-- 统一语义层下取数走声明式 semantic 工具 run_semantic_query(execute_sql 已下线)
 INSERT IGNORE INTO adh_execution_layers (name, display_name, description, layer_type, config, status)
 VALUES (
-    'claude',
-    'Claude Agent SDK',
-    'Anthropic 官方 Agent SDK(Claude Code 内核):内置文件/命令/网页工具、子代理、会话恢复与上下文自动压缩,平台工具(execute_sql/元数据/语义)经进程内 MCP 注入',
+    'cli-qoder',
+    'qoder CLI',
+    'Qoder 官方 Agent SDK(qoder-agent-sdk):子代理/会话恢复/上下文压缩,平台工具(元数据/语义)经进程内 MCP 注入;取数统一走 run_semantic_query',
     'cli',
-    JSON_OBJECT('mode', 'sdk', 'cli_name', 'claude', 'sdk_tools', 'all'),
+    JSON_OBJECT('mode', 'sdk', 'cli_name', 'qoder', 'cli_path', 'qodercli', 'sdk_tools', 'all'),
     'active'
 );

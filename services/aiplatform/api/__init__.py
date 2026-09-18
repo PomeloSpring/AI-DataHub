@@ -9,3 +9,4 @@ from services.aiplatform.api.brand import router as brand_router
 from services.aiplatform.api.cache import router as cache_router
 from services.aiplatform.api.execution_layers import router as execution_layers_router
 from services.aiplatform.api.prompts import router as prompts_router
+from services.aiplatform.api.wakers import router as wakers_router

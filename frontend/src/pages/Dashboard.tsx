@@ -1,1061 +1,143 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import {
-  Plus, Edit, Trash2, Star, Move, BarChart3, Play, Settings,
-  AlertTriangle, Check, X, ArrowUp, ArrowDown, Search, Layout,
-  LayoutDashboard, Copy,
-} from 'lucide-react';
+import { Plus, Search, Star, MoreHorizontal, Edit, Eye, Play, Copy, Settings, ArrowUp, ArrowDown, Trash2, LayoutDashboard, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { Spinner } from '@/components/ui/spinner';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { useDashboardStore } from '../stores/dashboardStore';
-import DashboardChart from '../components/DashboardChart';
-import AddChartModal from '../components/AddChartModal';
-import CarouselView from '../components/CarouselView';
-import DashboardFilters, { DEFAULT_FILTERS } from '../components/DashboardFilters';
-import ChartConfigPanel from '../components/ChartConfigPanel';
-import DashboardExportImport from '../components/DashboardExportImport';
-import DashboardAutoRefresh from '../components/DashboardAutoRefresh';
-import DashboardTemplates from '../components/DashboardTemplates';
-import DashboardCrossFilter, { CrossFilter } from '../components/DashboardCrossFilter';
-import DashboardSearch from '../components/DashboardSearch';
-import DashboardParams from '../components/DashboardParams';
 import { Badge } from '@/components/ui/badge';
-import type { DashboardParam, Dashboard, DashboardStatus, PageParam } from '../stores/dashboardStore';
-import { DASHBOARD_STATUS_MAP } from '../stores/dashboardStore';
-
-// Canvas settings
-const CANVAS_WIDTH = 1920;
-const CANVAS_HEIGHT = 1080;
-const GRID_SIZE = 20;
-const DEFAULT_CHART_SIZE = { w: 400, h: 350 };
-
-// ── Page Params Bar ─────────────────────────────────────────────────────
-
-function PageParamsBar({
-  params,
-  values,
-  onChange,
-}: {
-  params: PageParam[];
-  values: Record<string, any>;
-  onChange: (name: string, value: any) => void;
-}) {
-  if (!params || params.length === 0) return null;
-
-  return (
-    <div className="flex items-center gap-4 px-4 py-2 border-b bg-muted/20 flex-wrap">
-      {params.map((p) => {
-        const val = values[p.name] ?? p.default ?? '';
-
-        return (
-          <div key={p.name} className="flex items-center gap-2">
-            <Label className="text-xs text-muted-foreground whitespace-nowrap">
-              {p.label || p.name}
-            </Label>
-            {p.type === 'date' ? (
-              <Input
-                type="date"
-                value={val}
-                onChange={(e) => onChange(p.name, e.target.value)}
-                className="h-8 w-[140px] text-xs"
-              />
-            ) : p.type === 'date_range' ? (
-              <Input
-                type="text"
-                value={val}
-                placeholder="YYYY-MM-DD,YYYY-MM-DD"
-                onChange={(e) => onChange(p.name, e.target.value)}
-                className="h-8 w-[220px] text-xs"
-              />
-            ) : p.type === 'number' ? (
-              <Input
-                type="number"
-                value={val}
-                onChange={(e) => onChange(p.name, e.target.value)}
-                className="h-8 w-[120px] text-xs"
-              />
-            ) : (
-              <Input
-                type="text"
-                value={val}
-                onChange={(e) => onChange(p.name, e.target.value)}
-                className="h-8 w-[140px] text-xs"
-              />
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ── Page Params Config Section ──────────────────────────────────────────
-
-function PageParamsConfigSection({
-  pageParams,
-  setPageParams,
-}: {
-  pageParams: PageParam[];
-  setPageParams: (params: PageParam[]) => void;
-}) {
-  const addPageParam = () => {
-    setPageParams([...pageParams, { name: '', label: '', type: 'string', default: '' }]);
-  };
-
-  const updatePageParam = (idx: number, field: string, value: any) => {
-    const next = [...pageParams];
-    (next[idx] as any)[field] = value;
-    setPageParams(next);
-  };
-
-  const removePageParam = (idx: number) => {
-    setPageParams(pageParams.filter((_, i) => i !== idx));
-  };
-
-  return (
-    <div className="space-y-2">
-      <Label>页面参数</Label>
-      <p className="text-xs text-muted-foreground">
-        定义页面级参数后，在图表 SQL 中使用 {'${param_name}'} 占位符引用参数值
-      </p>
-      <div className="space-y-3 mt-2">
-        {pageParams.map((p, idx) => (
-          <div key={idx} className="flex items-start gap-2 p-3 border rounded-lg bg-muted/30">
-            <div className="flex-1 grid grid-cols-2 gap-2">
-              <Input
-                size={20}
-                placeholder="参数名 (英文)"
-                value={p.name}
-                onChange={(e) => updatePageParam(idx, 'name', e.target.value)}
-              />
-              <Input
-                size={20}
-                placeholder="显示标签"
-                value={p.label}
-                onChange={(e) => updatePageParam(idx, 'label', e.target.value)}
-              />
-              <Select
-                value={p.type}
-                onValueChange={(v) => updatePageParam(idx, 'type', v)}
-              >
-                <SelectTrigger className="h-8">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="string">文本</SelectItem>
-                  <SelectItem value="number">数字</SelectItem>
-                  <SelectItem value="date">日期</SelectItem>
-                  <SelectItem value="date_range">日期范围</SelectItem>
-                </SelectContent>
-              </Select>
-              <Input
-                size={20}
-                placeholder="默认值"
-                value={p.default}
-                onChange={(e) => updatePageParam(idx, 'default', e.target.value)}
-              />
-            </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 w-8 p-0 flex-shrink-0"
-              onClick={() => removePageParam(idx)}
-            >
-              <X className="h-4 w-4 text-destructive" />
-            </Button>
-          </div>
-        ))}
-        <Button variant="outline" size="sm" onClick={addPageParam}>
-          <Plus className="h-4 w-4 mr-1" />
-          添加页面参数
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-// ── Dashboard Settings Content ──────────────────────────────────────────
-
-function DashboardSettingsContent({
-  current, carouselInterval, setCarouselInterval, updateDashboard, onClose,
-}: {
-  current: Dashboard;
-  carouselInterval: number;
-  setCarouselInterval: (v: number) => void;
-  updateDashboard: (id: number, data: Partial<Dashboard>) => Promise<void>;
-  onClose: () => void;
-}) {
-  const [params, setParams] = useState<DashboardParam[]>(current.params || []);
-  const [pageParams, setPageParams] = useState<PageParam[]>(current.page_params || []);
-  const [status, setStatus] = useState<DashboardStatus>(current.status || 'designing');
-
-  const addParam = () => {
-    setParams([...params, { name: '', label: '', type: 'text', options: [], default: '', placeholder: '' }]);
-  };
-
-  const updateParam = (idx: number, field: string, value: any) => {
-    const next = [...params];
-    (next[idx] as any)[field] = value;
-    setParams(next);
-  };
-
-  const removeParam = (idx: number) => {
-    setParams(params.filter((_, i) => i !== idx));
-  };
-
-  const handleSave = async () => {
-    // Validate: names must be non-empty and unique
-    const validParams = params.filter(p => p.name.trim());
-    const names = new Set(validParams.map(p => p.name.trim()));
-    if (names.size !== validParams.length) {
-      toast.error('参数名称不能重复');
-      return;
-    }
-    // Validate page params: names must be non-empty and unique
-    const validPageParams = pageParams.filter(p => p.name.trim());
-    const pageNames = new Set(validPageParams.map(p => p.name.trim()));
-    if (pageNames.size !== validPageParams.length) {
-      toast.error('页面参数名称不能重复');
-      return;
-    }
-    await updateDashboard(current.id, {
-      params: validParams,
-      page_params: validPageParams,
-      status,
-      carousel_interval: carouselInterval,
-    } as any);
-    toast.success('设置已保存');
-    onClose();
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="space-y-2">
-        <Label>仪表盘状态</Label>
-        <p className="text-xs text-muted-foreground">仅「已启用」状态的仪表盘可在可视化大屏和统计分析中展示</p>
-        <div className="flex gap-2">
-          {(Object.entries(DASHBOARD_STATUS_MAP) as [DashboardStatus, typeof DASHBOARD_STATUS_MAP[DashboardStatus]][]).map(([key, val]) => (
-            <Button key={key} variant={status === key ? 'default' : 'outline'} size="sm"
-              className={status === key ? '' : ''}
-              onClick={() => setStatus(key)}>
-              {val.label}
-            </Button>
-          ))}
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <Label>设为默认仪表盘</Label>
-        <div className="flex gap-2">
-          <Button variant={current.is_default ? 'default' : 'outline'} size="sm"
-            onClick={async () => { await updateDashboard(current.id, { is_default: true } as any); toast.success('已设为默认'); }}>
-            是
-          </Button>
-          <Button variant={!current.is_default ? 'default' : 'outline'} size="sm"
-            onClick={async () => { await updateDashboard(current.id, { is_default: false } as any); }}>
-            否
-          </Button>
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <Label>查询参数</Label>
-        <p className="text-xs text-muted-foreground">
-          定义参数后，在图表 SQL 中使用 {'{{param_name}}'} 占位符引用参数值
-        </p>
-        <div className="space-y-3 mt-2">
-          {params.map((p, idx) => (
-            <div key={idx} className="flex items-start gap-2 p-3 border rounded-lg bg-muted/30">
-              <div className="flex-1 grid grid-cols-2 gap-2">
-                <Input size={20} placeholder="参数名 (英文)" value={p.name}
-                  onChange={e => updateParam(idx, 'name', e.target.value)} />
-                <Input size={20} placeholder="显示标签" value={p.label}
-                  onChange={e => updateParam(idx, 'label', e.target.value)} />
-                <Select value={p.type} onValueChange={v => updateParam(idx, 'type', v)}>
-                  <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="text">文本输入</SelectItem>
-                    <SelectItem value="number">数字输入</SelectItem>
-                    <SelectItem value="date">日期选择</SelectItem>
-                    <SelectItem value="select">下拉选择</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Input size={20} placeholder="默认值" value={p.default || ''}
-                  onChange={e => updateParam(idx, 'default', e.target.value)} />
-                {p.type === 'select' && (
-                  <Input size={20} className="col-span-2" placeholder="选项（逗号分隔）"
-                    value={(p.options || []).join(',')}
-                    onChange={e => updateParam(idx, 'options', e.target.value.split(',').map(s => s.trim()).filter(Boolean))} />
-                )}
-              </div>
-              <Button variant="ghost" size="sm" className="h-8 w-8 p-0 flex-shrink-0"
-                onClick={() => removeParam(idx)}>
-                <X className="h-4 w-4 text-destructive" />
-              </Button>
-            </div>
-          ))}
-          <Button variant="outline" size="sm" onClick={addParam}>
-            <Plus className="h-4 w-4 mr-1" />添加参数
-          </Button>
-        </div>
-      </div>
-
-      <PageParamsConfigSection pageParams={pageParams} setPageParams={setPageParams} />
-
-      <div className="space-y-2">
-        <Label>轮播间隔（秒）</Label>
-        <div className="flex gap-2">
-          {[5, 10, 30, 60].map(v => (
-            <Button key={v} variant={carouselInterval === v ? 'default' : 'outline'} size="sm"
-              onClick={() => setCarouselInterval(v)}>
-              {v}秒
-            </Button>
-          ))}
-        </div>
-      </div>
-
-      <Button onClick={handleSave}>保存</Button>
-    </div>
-  );
-}
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
+import { useDashboardStore, DASHBOARD_STATUS_MAP, type Dashboard as DashboardModel, type DashboardParam, type PageParam, type DashboardStatus } from '@/stores/dashboardStore';
+import { DashboardThumbnail } from '@/components/DashboardCanvas';
+import DashboardExportImport from '@/components/DashboardExportImport';
+import DashboardTemplates from '@/components/DashboardTemplates';
+import CarouselView from '@/components/CarouselView';
+import { useVisLibrary } from '@/hooks/useVisLibrary';
 
 export default function Dashboard() {
+  const store = useDashboardStore();
+  const library = useVisLibrary();
   const navigate = useNavigate();
-  const { workspaceId: urlWorkspaceId } = useParams<{ workspaceId: string }>();
-  const {
-    dashboards, currentId, loading, globalFilters, crossFilters, favorites,
-    paramValues, pageParams, pageParamValues, refreshing,
-    loadDashboards, setCurrent, createDashboard, updateDashboard,
-    deleteDashboard, copyDashboard, setDefault, addChart, updateChart, reorderDashboards,
-    setGlobalFilters, setCrossFilters, toggleFavorite, createFromTemplate,
-    setParamValue, setPageParamValue, refreshCharts,
-  } = useDashboardStore();
-
-  const [addModalOpen, setAddModalOpen] = useState(false);
-  const [carouselOpen, setCarouselOpen] = useState(false);
-  const [carouselInterval, setCarouselInterval] = useState(10);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [editingName, setEditingName] = useState<number | null>(null);
-  const [nameValue, setNameValue] = useState('');
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [editingChartId, setEditingChartId] = useState<number | null>(null);
-  const [editingChartName, setEditingChartName] = useState('');
-  const [configPanelOpen, setConfigPanelOpen] = useState(false);
-  const [selectedChart, setSelectedChart] = useState<any>(null);
-  const [templatesOpen, setTemplatesOpen] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const [deleteTargetId, setDeleteTargetId] = useState<number | null>(null);
-
-  const canvasRef = useRef<HTMLDivElement>(null);
-  const [canvasSize, setCanvasSize] = useState({ width: CANVAS_WIDTH, height: CANVAS_HEIGHT });
-  const [scale, setScale] = useState(1);
-  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState(false);
-  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
-
-  useEffect(() => {
-    const wsId = urlWorkspaceId ? Number(urlWorkspaceId) : undefined;
-    loadDashboards(wsId);
-  }, [urlWorkspaceId]);
-
-  const current = useMemo(() => dashboards.find(d => d.id === currentId) || null, [dashboards, currentId]);
-
-  // Auto-migrate settings-based params to canvas widgets (run once per dashboard)
-  const migratedDashboardsRef = useRef<Set<number>>(new Set());
-  useEffect(() => {
-    if (!current) return;
-    const params = current.params;
-    if (!params || params.length === 0) return;
-    if (migratedDashboardsRef.current.has(current.id)) return;
-
-    // Check if migration already done (widget charts exist)
-    const hasWidgets = current.charts.some(c => c.chart_type.startsWith('widget_'));
-    if (hasWidgets) {
-      migratedDashboardsRef.current.add(current.id);
-      return;
-    }
-
-    // Mark as migrating to prevent re-entry
-    migratedDashboardsRef.current.add(current.id);
-
-    // Convert each param to a widget chart
-    const typeMap: Record<string, string> = {
-      text: 'widget_text',
-      number: 'widget_number',
-      date: 'widget_date',
-      select: 'widget_select',
-    };
-
-    params.forEach((p, idx) => {
-      const widgetType = typeMap[p.type] || 'widget_text';
-      const widgetConfig: any = {
-        paramKey: p.name,
-        label: p.label || p.name,
-        placeholder: p.placeholder || '',
-        defaultValue: p.default || '',
-        labelPosition: 'left',
-      };
-
-      if (p.type === 'select' && p.options?.length) {
-        widgetConfig.options = p.options.map(o => ({ label: o, value: o }));
-      }
-
-      addChart(current.id, {
-        name: p.label || p.name || `参数 ${idx + 1}`,
-        chart_type: widgetType,
-        sql_query: '',
-        config: widgetConfig,
-        source_type: 'widget',
-        source_id: 0,
-        data_cache: '',
-        position: { x: 0, y: idx * 80, w: 240, h: 70 },
-      } as any);
-    });
-
-    // Clear old params
-    updateDashboard(current.id, { params: [] } as any);
-    toast.success(`已将 ${params.length} 个参数迁移到画布控件`);
-  }, [current?.id, current?.params]);
-
-  const displayCharts = useMemo(() => {
-    return current?.charts || [];
-  }, [current]);
-
-  useEffect(() => {
-    if (!current || !displayCharts.length) {
-      setCanvasSize({ width: CANVAS_WIDTH, height: CANVAS_HEIGHT });
-      return;
-    }
-    let maxY = CANVAS_HEIGHT;
-    displayCharts.forEach(chart => {
-      const bottom = (chart.position?.y ?? 0) + (chart.position?.h ?? DEFAULT_CHART_SIZE.h);
-      if (bottom > maxY) maxY = bottom;
-    });
-    setCanvasSize({ width: CANVAS_WIDTH, height: Math.max(CANVAS_HEIGHT, maxY + 200) });
-  }, [current, displayCharts]);
-
-  useEffect(() => {
-    if (!canvasRef.current) return;
-    const container = canvasRef.current.parentElement;
-    if (!container) return;
-    const containerWidth = container.clientWidth - 48;
-    const containerHeight = container.clientHeight - 48;
-    const scaleX = containerWidth / canvasSize.width;
-    const scaleY = containerHeight / canvasSize.height;
-    setScale(Math.min(scaleX, scaleY, 1));
-  }, [canvasSize]);
-
-  // Memoize parsed chart data to avoid creating new object references on every render
-  const chartDataMap = useMemo(() => {
-    const map: Record<number, { columns: string[]; rows: any[] } | null> = {};
-    for (const chart of displayCharts) {
-      if (chart.data_cache) {
-        try {
-          const parsed = JSON.parse(chart.data_cache);
-          if (parsed.columns && parsed.rows) {
-            map[chart.id] = parsed;
-            continue;
-          }
-        } catch { /* ignore */ }
-      }
-      map[chart.id] = chart.config?.data || null;
-    }
-    return map;
-  }, [displayCharts]);
-
-  const handleFilterChange = useCallback((filterId: string, value: any) => {
-    setGlobalFilters({ ...globalFilters, [filterId]: value });
-  }, [globalFilters, setGlobalFilters]);
-
-  const handleClearFilters = useCallback(() => setGlobalFilters({}), [setGlobalFilters]);
-  const handleChartConfig = useCallback((chart: any) => { setSelectedChart(chart); setConfigPanelOpen(true); }, []);
-
-  const handleSaveChartConfig = useCallback(async (configWithMeta: any) => {
-    if (selectedChart) {
-      // Extract meta fields prefixed with underscore
-      const { _sql_query, _previewData, ...config } = configWithMeta;
-      const updates: any = { config };
-
-      // If SQL was edited, save it and update data cache
-      if (_sql_query !== undefined) {
-        updates.sql_query = _sql_query;
-        if (_previewData) {
-          updates.data_cache = JSON.stringify({ columns: _previewData.columns, rows: _previewData.rows.slice(0, 200) });
-          updates.source_type = 'query';
-        }
-      }
-
-      if (current) {
-        await updateChart(current.id, selectedChart.id, { ...selectedChart, ...updates });
-      }
-      toast.success('图表配置已保存');
-    }
-  }, [selectedChart, current, updateChart]);
-
-  const handleImportDashboard = useCallback(async (data: any) => {
-    await createFromTemplate(data);
-    toast.success('仪表盘导入成功');
-  }, [createFromTemplate]);
-
-  const handleRefresh = useCallback(() => refreshCharts(), [refreshCharts]);
-
-  const handleApplyTemplate = useCallback(async (template: any) => {
-    const newDashboardId = await createFromTemplate(template);
-    if (newDashboardId) {
-      const wsId = urlWorkspaceId ? Number(urlWorkspaceId) : undefined;
-      await loadDashboards(wsId);
-      setCurrent(newDashboardId);
-      toast.success('仪表盘已从模板创建');
-    }
-  }, [createFromTemplate, loadDashboards, setCurrent, urlWorkspaceId]);
-
-  const handleCrossFilterChange = useCallback((filters: CrossFilter[]) => setCrossFilters(filters), [setCrossFilters]);
-
-  const handleAddChart = useCallback(async (chart: any) => {
-    // Find available position
-    const isWidget = chart.chart_type?.startsWith('widget_');
-    const defaultSize = isWidget ? { w: 240, h: 70 } : DEFAULT_CHART_SIZE;
-
-    const existingPositions = displayCharts.map(c => ({
-      x: c.position?.x ?? 0, y: c.position?.y ?? 0,
-      w: c.position?.w ?? DEFAULT_CHART_SIZE.w, h: c.position?.h ?? DEFAULT_CHART_SIZE.h,
-    }));
-    let newX = 0, newY = 0, found = false;
-    for (let y = 0; y < canvasSize.height && !found; y += GRID_SIZE) {
-      for (let x = 0; x < canvasSize.width - defaultSize.w && !found; x += GRID_SIZE) {
-        const overlaps = existingPositions.some(pos =>
-          x < pos.x + pos.w && x + defaultSize.w > pos.x &&
-          y < pos.y + pos.h && y + defaultSize.h > pos.y
-        );
-        if (!overlaps) { newX = x; newY = y; found = true; }
-      }
-    }
-
-    const chartWithPosition = {
-      ...chart,
-      position: { x: newX, y: newY, w: defaultSize.w, h: defaultSize.h },
-    };
-
-    if (current) {
-      await addChart(current.id, chartWithPosition);
-    }
-    toast.success('图表已添加');
-  }, [current, addChart, displayCharts, canvasSize]);
-
-  const handleCreateDashboard = useCallback(async () => {
-    const name = newName.trim() || `仪表盘 ${dashboards.length + 1}`;
-    const wsId = urlWorkspaceId ? Number(urlWorkspaceId) : undefined;
-    await createDashboard(name, wsId);
-    setNewName('');
-    toast.success('仪表盘已创建');
-  }, [newName, dashboards.length, createDashboard, urlWorkspaceId]);
-
-  const handleRename = useCallback(async (id: number) => {
-    if (nameValue.trim()) {
-      await updateDashboard(id, { name: nameValue.trim() } as any);
-      toast.success('已重命名');
-    }
-    setEditingName(null);
-  }, [nameValue, updateDashboard]);
-
-  const handleSetDefault = useCallback(async (id: number) => {
-    await setDefault(id);
-    toast.success('已设为默认');
-  }, [setDefault]);
-
-  const handleDeleteDashboard = useCallback((id: number) => {
-    setDeleteTargetId(id);
-    setDeleteConfirmOpen(true);
-  }, []);
-
-  const confirmDeleteDashboard = useCallback(async () => {
-    if (deleteTargetId) {
-      await deleteDashboard(deleteTargetId);
-      toast.success('已删除');
-      setDeleteConfirmOpen(false);
-      setDeleteTargetId(null);
-    }
-  }, [deleteTargetId, deleteDashboard]);
-
-  const handleMoveDashboard = useCallback(async (id: number, direction: 'up' | 'down') => {
-    const idx = dashboards.findIndex(d => d.id === id);
-    if (idx < 0) return;
-    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
-    if (targetIdx < 0 || targetIdx >= dashboards.length) return;
-    const newDashboards = [...dashboards];
-    [newDashboards[idx], newDashboards[targetIdx]] = [newDashboards[targetIdx], newDashboards[idx]];
-    await reorderDashboards(newDashboards.map((d, i) => ({ id: d.id, sort_order: i })));
-  }, [dashboards, reorderDashboards]);
-
-  const handleRenameChart = useCallback(async (chartId: number) => {
-    if (!editingChartName.trim()) { setEditingChartId(null); return; }
-    if (current) {
-      const chart = current.charts.find(c => c.id === chartId);
-      if (chart) {
-        await updateChart(current.id, chartId, { ...chart, name: editingChartName.trim() } as any);
-      }
-    }
-    setEditingChartId(null);
-    toast.success('图表已重命名');
-  }, [current, editingChartName, updateChart]);
-
-  const handleDragStart = useCallback((_e: React.MouseEvent, _chartId: number) => {
-    // Drag/resize removed from dashboard view — use fullscreen editor instead
-  }, []);
-
-  const handlePanStart = useCallback((e: React.MouseEvent) => {
-    if (e.button === 1) {
-      e.preventDefault();
-      setIsPanning(true);
-      setPanStart({ x: e.clientX - panOffset.x, y: e.clientY - panOffset.y });
-    }
-  }, [panOffset]);
-
-  const handlePanMove = useCallback((e: MouseEvent) => {
-    if (!isPanning) return;
-    setPanOffset({ x: e.clientX - panStart.x, y: e.clientY - panStart.y });
-  }, [isPanning, panStart]);
-
-  const handlePanEnd = useCallback(() => setIsPanning(false), []);
-
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    if (e.ctrlKey) {
-      e.preventDefault();
-      const delta = e.deltaY > 0 ? 0.9 : 1.1;
-      const newScale = Math.min(2, Math.max(0.3, scale * delta));
-
-      const rect = canvasRef.current?.getBoundingClientRect();
-      if (!rect) return;
-
-      const centerX = rect.width / 2;
-      const centerY = rect.height / 2;
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
-
-      const scaleFactor = newScale / scale;
-      const newPanX = panOffset.x * scaleFactor + (mouseX - centerX) * (1 - scaleFactor);
-      const newPanY = panOffset.y * scaleFactor + (mouseY - centerY) * (1 - scaleFactor);
-
-      setScale(newScale);
-      setPanOffset({ x: newPanX, y: newPanY });
-    }
-  }, [scale, panOffset]);
-
-  // Window-level event listeners for pan
-  useEffect(() => {
-    if (!isPanning) return;
-
-    const handleGlobalMouseMove = (e: MouseEvent) => {
-      handlePanMove(e);
-    };
-
-    const handleGlobalMouseUp = () => {
-      handlePanEnd();
-    };
-
-    window.addEventListener('mousemove', handleGlobalMouseMove);
-    window.addEventListener('mouseup', handleGlobalMouseUp);
-
-    return () => {
-      window.removeEventListener('mousemove', handleGlobalMouseMove);
-      window.removeEventListener('mouseup', handleGlobalMouseUp);
-    };
-  }, [isPanning, handlePanMove, handlePanEnd]);
-
-  // Cancel pan on Escape
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (isPanning) setIsPanning(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPanning]);
-
-  if (loading && dashboards.length === 0) {
-    return <div className="flex items-center justify-center h-screen"><Spinner size={48} /></div>;
-  }
-
-  return (
-    <div className="flex h-full overflow-hidden">
-      {/* Sidebar */}
-      <div className={`flex-shrink-0 flex flex-col border-r bg-muted/30 transition-all duration-200 ${sidebarCollapsed ? 'w-0' : 'w-[220px]'}`}>
-        <div className="p-3 border-b">
-          <Button className="w-full" size="sm" onClick={handleCreateDashboard}>
-            <Plus className="h-4 w-4 mr-2" />新建仪表盘
-          </Button>
-          <Input size={20} placeholder="仪表盘名称" value={newName}
-            onChange={e => setNewName(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleCreateDashboard()}
-            className="mt-1.5" />
+  const location = useLocation();
+  const { workspaceId } = useParams();
+  const [search, setSearch] = useState('');
+  const [status, setStatus] = useState('all');
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [nameDialog, setNameDialog] = useState<{ id?: number; name: string } | null>(null);
+  const [settingsId, setSettingsId] = useState<number | null>(null);
+  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [templates, setTemplates] = useState(false);
+  const [carousel, setCarousel] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const lock = useRef(false);
+  useEffect(() => { void store.loadDashboards(workspaceId ? Number(workspaceId) : undefined); }, [workspaceId]);
+  const filtered = useMemo(() => store.dashboards.filter(d =>
+    `${d.name} ${d.description || ''}`.toLowerCase().includes(search.toLowerCase()) &&
+    (status === 'all' || (d.status || 'designing') === status) && (!favoritesOnly || store.favorites.includes(d.id))
+  ), [store.dashboards, search, status, favoritesOnly, store.favorites]);
+  const enabled = store.dashboards.filter(d => d.status === 'enabled');
+  const current = store.dashboards.find(d => d.id === store.currentId) || null;
+  const settings = store.dashboards.find(d => d.id === settingsId);
+  const run = async (action: () => Promise<unknown>) => {
+    if (lock.current) return;
+    lock.current = true; setBusy(true);
+    try { await action(); } catch { toast.error('操作失败，请重试'); }
+    finally { lock.current = false; setBusy(false); }
+  };
+  const edit = (id: number) => navigate(`/dashboard/editor/${id}`, { state: { from: location.pathname } });
+  const move = (id: number, delta: number) => run(async () => {
+    const ordered = [...store.dashboards];
+    const index = ordered.findIndex(d => d.id === id), next = index + delta;
+    if (index < 0 || next < 0 || next >= ordered.length) return;
+    [ordered[index], ordered[next]] = [ordered[next], ordered[index]];
+    await store.reorderDashboards(ordered.map((d, sort_order) => ({ id: d.id, sort_order })));
+  });
+  return <div className="h-full overflow-auto bg-background">
+    <div className="mx-auto max-w-[1800px] p-5 md:p-8 space-y-6">
+      <header className="flex flex-wrap items-center justify-between gap-4">
+        <div><div className="mb-2 text-xs tracking-[0.2em] text-muted-foreground">DATAFOUNDRY / WORKSPACE</div>
+          <h1 className="text-2xl font-semibold tracking-tight">仪表盘</h1><p className="mt-1 text-sm text-muted-foreground">用可复用字模设计看板，统一预览与大屏展示。</p></div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={() => setTemplates(true)}>从模板创建</Button>
+          <Button variant="outline" disabled={!enabled.length} onClick={() => setCarousel(true)}><Play className="mr-2 h-4 w-4" />轮播</Button>
+          <DashboardExportImport dashboard={current} onImport={async data => { await store.createFromTemplate(data); }} />
+          <Button disabled={busy} onClick={() => setNameDialog({ name: '' })}><Plus className="mr-2 h-4 w-4" />新建看板</Button>
         </div>
-        <ScrollArea className="flex-1 p-2">
-          {dashboards.length === 0 && (
-            <div className="text-center py-12 text-muted-foreground">暂无仪表盘</div>
-          )}
-          {dashboards.map((db, idx) => (
-            <div
-              key={db.id}
-              className={`flex items-center gap-1.5 px-2.5 py-2 rounded-md cursor-pointer mb-1 transition-all ${
-                currentId === db.id ? 'bg-primary/10 border border-primary/30' : 'border border-transparent hover:bg-muted'
-              }`}
-              onClick={() => setCurrent(db.id)}
-            >
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span
-                    onClick={(e) => { e.stopPropagation(); toggleFavorite(db.id); }}
-                    className="flex-shrink-0 cursor-pointer"
-                  >
-                    {favorites.includes(db.id) ? (
-                      <Star className="h-3 w-3 fill-yellow-500 text-yellow-500" />
-                    ) : db.is_default ? (
-                      <Star className="h-3 w-3 fill-yellow-500 text-yellow-500" />
-                    ) : (
-                      <BarChart3 className={`h-3 w-3 ${currentId === db.id ? 'text-primary' : 'text-muted-foreground'}`} />
-                    )}
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>{favorites.includes(db.id) ? '取消收藏' : '收藏'}</TooltipContent>
-              </Tooltip>
-              {editingName === db.id ? (
-                <div className="flex items-center gap-1 flex-1">
-                  <Input value={nameValue} autoFocus
-                    onChange={e => setNameValue(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') handleRename(db.id); }}
-                    onClick={e => e.stopPropagation()}
-                    className="text-xs flex-1" />
-                  <Check className="h-3 w-3 text-primary cursor-pointer" onClick={() => handleRename(db.id)} />
-                  <X className="h-3 w-3 text-muted-foreground cursor-pointer" onClick={() => setEditingName(null)} />
-                </div>
-              ) : (
-                <span className={`text-xs flex-1 truncate ${currentId === db.id ? 'text-primary' : ''} ${db.is_default ? 'font-medium' : ''}`}>
-                  {db.name}
-                </span>
-              )}
-              <div className="flex items-center gap-0 flex-shrink-0">
-                <ArrowUp className={`h-3 w-3 text-muted-foreground cursor-pointer ${idx === 0 ? 'opacity-30' : ''}`}
-                  onClick={(e) => { e.stopPropagation(); handleMoveDashboard(db.id, 'up'); }} />
-                <ArrowDown className={`h-3 w-3 text-muted-foreground cursor-pointer ${idx === dashboards.length - 1 ? 'opacity-30' : ''}`}
-                  onClick={(e) => { e.stopPropagation(); handleMoveDashboard(db.id, 'down'); }} />
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-5 w-5 p-0 ml-1"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <Settings className="h-3 w-3" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent>
-                    <DropdownMenuItem onClick={() => handleSetDefault(db.id)}>
-                      <Star className="h-4 w-4 mr-2" />设为默认
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => { setEditingName(db.id); setNameValue(db.name); }}>
-                      <Edit className="h-4 w-4 mr-2" />重命名
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => copyDashboard(db.id)}>
-                      <Copy className="h-4 w-4 mr-2" />拷贝
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => handleDeleteDashboard(db.id)} className="text-destructive">
-                      <Trash2 className="h-4 w-4 mr-2" />删除
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            </div>
-          ))}
-        </ScrollArea>
+      </header>
+      <div className="flex flex-wrap items-center gap-3 border-y py-4">
+        <div className="relative min-w-[200px] flex-1 max-w-md"><Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" /><Input aria-label="搜索看板" placeholder="搜索名称或描述…" className="pl-9" value={search} onChange={e => setSearch(e.target.value)} /></div>
+        <select aria-label="状态筛选" className="h-10 rounded-md border bg-background px-3 text-sm" value={status} onChange={e => setStatus(e.target.value)}><option value="all">全部状态</option>{Object.entries(DASHBOARD_STATUS_MAP).map(([key, value]) => <option key={key} value={key}>{value.label}</option>)}</select>
+        <Button variant={favoritesOnly ? 'secondary' : 'ghost'} onClick={() => setFavoritesOnly(v => !v)}><Star className="mr-2 h-4 w-4" />仅收藏</Button>
+        <span className="ml-auto text-xs text-muted-foreground">{filtered.length} 个看板</span>
       </div>
-
-      {/* Main area */}
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        {/* Toolbar */}
-        <div className="flex items-center justify-between px-4 py-2 border-b flex-shrink-0 gap-2 flex-wrap">
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setSidebarCollapsed(!sidebarCollapsed)}>
-              <Move className="h-4 w-4" />
-            </Button>
-            <h2 className="text-base font-bold">{current?.name || '仪表盘设计'}</h2>
-            {current?.is_default && <Star className="h-4 w-4 fill-yellow-500 text-yellow-500" />}
-            {current && (
-              <Badge variant="outline" className={`text-xs ${DASHBOARD_STATUS_MAP[current.status || 'designing'].color}`}>
-                {DASHBOARD_STATUS_MAP[current.status || 'designing'].label}
-              </Badge>
-            )}
-            <span className="text-xs text-muted-foreground ml-2">
-              {Math.round(scale * 100)}% | {canvasSize.width}×{canvasSize.height}
-            </span>
-          </div>
-          <div className="flex gap-1.5 flex-wrap items-center">
-              <>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button size="sm" variant="outline" onClick={() => navigate(`/dashboard/editor/${currentId}`)} disabled={!current}>
-                      <Edit className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>编辑</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button size="sm" variant="outline" onClick={() => setTemplatesOpen(true)}>
-                      <Layout className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>模板</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button size="sm" variant="outline" onClick={() => setSearchOpen(true)}>
-                      <Search className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>搜索</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button size="sm" variant="outline"
-                      onClick={() => { setCarouselInterval(current?.carousel_interval || 10); setCarouselOpen(true); }}
-                      disabled={dashboards.length === 0}>
-                      <Play className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>轮播</TooltipContent>
-                </Tooltip>
-                <DashboardExportImport dashboard={current} onImport={handleImportDashboard} />
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button size="sm" variant="outline" onClick={() => setSettingsOpen(true)} disabled={!current}>
-                      <Settings className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>设置</TooltipContent>
-                </Tooltip>
-              </>
-          </div>
-        </div>
-
-        {/* Auto-refresh */}
-        {current && <DashboardAutoRefresh onRefresh={handleRefresh} loading={loading || refreshing} />}
-
-        {/* Page Params Bar */}
-        {pageParams.length > 0 && (
-          <PageParamsBar
-            params={pageParams}
-            values={pageParamValues}
-            onChange={setPageParamValue}
-          />
-        )}
-
-        {/* Dashboard Params */}
-        {current?.params && current.params.length > 0 && (
-          <DashboardParams
-            params={current.params}
-            values={paramValues}
-            onChange={setParamValue}
-          />
-        )}
-
-        {/* Global Filters */}
-        <DashboardFilters filters={DEFAULT_FILTERS} values={globalFilters} onChange={handleFilterChange} onClearAll={handleClearFilters} />
-
-        {/* Cross Filters */}
-        <DashboardCrossFilter filters={crossFilters} onFilterChange={handleCrossFilterChange} charts={displayCharts} />
-
-        {/* Canvas area */}
-        <div
-          className={`dashboard-canvas-viewport flex-1 overflow-auto relative ${isPanning ? 'panning' : ''}`}
-          onWheel={handleWheel} onMouseDown={handlePanStart}
-        >
-          {!current ? (
-            <div className="flex flex-col items-center justify-center h-full text-center px-4">
-              <LayoutDashboard className="h-16 w-16 text-muted-foreground/30 mb-4" />
-              <p className="text-lg font-medium text-muted-foreground mb-2">请选择或创建一个仪表盘</p>
-              <p className="text-sm text-muted-foreground/70 mb-6">仪表盘可以帮助您可视化和监控关键业务指标</p>
-              <Button onClick={handleCreateDashboard}>
-                <Plus className="h-4 w-4 mr-2" />创建第一个仪表盘
-              </Button>
-            </div>
-          ) : displayCharts.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-center px-4">
-              <BarChart3 className="h-16 w-16 text-muted-foreground/30 mb-4" />
-              <p className="text-lg font-medium text-muted-foreground mb-2">暂无图表</p>
-              <p className="text-sm text-muted-foreground/70 mb-6">进入编辑器添加图表和控件</p>
-              <Button size="lg" onClick={() => navigate(`/dashboard/editor/${currentId}`)}>
-                <Edit className="h-5 w-5 mr-2" />进入编辑器
-              </Button>
-            </div>
-          ) : (
-            <div className="flex items-center justify-center min-h-full p-8">
-              <div
-                ref={canvasRef}
-                className="dashboard-canvas"
-                style={{
-                  width: canvasSize.width, height: canvasSize.height,
-                  transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${scale})`,
-                  transformOrigin: 'center center',
-                  flexShrink: 0,
-                }}
-              >
-                {displayCharts.map((chart) => {
-                  const chartData = chartDataMap[chart.id];
-                  const posX = chart.position?.x ?? 0;
-                  const posY = chart.position?.y ?? 0;
-                  const posW = chart.position?.w ?? DEFAULT_CHART_SIZE.w;
-                  const posH = chart.position?.h ?? DEFAULT_CHART_SIZE.h;
-
-                  return (
-                    <div
-                      key={chart.id}
-                      className="dashboard-chart-cell"
-                      style={{
-                        position: 'absolute', left: posX, top: posY, width: posW, height: posH,
-                        zIndex: 1,
-                        ...(chart.chart_type.startsWith('widget_') ? (() => {
-                          const ws = chart.config?.widgetStyle || {};
-                          return {
-                            background: ws.backgroundColor || undefined,
-                            borderRadius: ws.borderRadius != null ? ws.borderRadius : undefined,
-                            borderLeft: `3px solid ${ws.borderColor || 'hsl(var(--primary))'}`,
-                            borderWidth: ws.borderWidth != null ? ws.borderWidth : undefined,
-                            borderColor: ws.borderColor || undefined,
-                            borderStyle: ws.borderStyle || undefined,
-                            boxShadow: ws.boxShadow || undefined,
-                            opacity: ws.opacity != null ? ws.opacity : undefined,
-                          };
-                        })() : {}),
-                      }}
-                      onMouseDown={(e) => handleDragStart(e, chart.id)}
-                    >
-                      {!chart.chart_type.startsWith('widget_') && (
-                      <div className="dashboard-chart-header flex items-center justify-between px-3.5 py-2.5 flex-shrink-0">
-                        {editingChartId === chart.id ? (
-                          <div className="flex items-center gap-1 flex-1">
-                            <Input value={editingChartName} autoFocus
-                              onChange={e => setEditingChartName(e.target.value)}
-                              onKeyDown={e => { if (e.key === 'Enter') handleRenameChart(chart.id); }}
-                              onClick={e => e.stopPropagation()}
-                              className="text-sm flex-1" />
-                            <Check className="h-4 w-4 text-primary cursor-pointer" onClick={() => handleRenameChart(chart.id)} />
-                            <X className="h-4 w-4 text-muted-foreground cursor-pointer" onClick={() => setEditingChartId(null)} />
-                          </div>
-                        ) : (
-                          <span className="text-sm font-medium truncate flex-1">
-                            {chart.name}
-                          </span>
-                        )}
-                        <div className="flex gap-1 ml-2 flex-shrink-0">
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
-                                onClick={(e) => { e.stopPropagation(); handleChartConfig(chart); }}>
-                                <Settings className="h-4 w-4 text-muted-foreground" />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>图表配置</TooltipContent>
-                          </Tooltip>
-                        </div>
-                      </div>
-                      )}
-                      <div className="p-2 flex-1 min-h-0 overflow-hidden"
-                        style={{
-                          ...(chart.chart_type.startsWith('widget_') && chart.config?.widgetStyle ? {
-                            color: chart.config.widgetStyle.textColor || undefined,
-                            fontSize: chart.config.widgetStyle.fontSize || undefined,
-                          } : {}),
-                        }}
-                      >
-                        <DashboardChart
-                          chartType={chart.chart_type}
-                          data={chartData || { columns: [], rows: [] }}
-                          config={chart.config || {}}
-                          chartId={chart.id}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
+      {library.error && <div role="alert" className="text-sm text-muted-foreground">字模加载失败；已有快照仍可展示。<Button variant="link" onClick={library.refresh}>重试</Button></div>}
+      {store.error && <div role="alert">{store.error}<Button variant="link" onClick={() => store.loadDashboards()}>重试</Button></div>}
+      {store.loading && !store.dashboards.length ? <p>正在加载看板…</p> : filtered.length === 0 ?
+        <div className="rounded-xl border border-dashed py-24 text-center"><LayoutDashboard className="mx-auto mb-4 h-10 w-10 text-muted-foreground" /><p className="font-medium">{store.dashboards.length ? '没有符合条件的看板' : '从第一个看板开始'}</p><p className="mt-2 text-sm text-muted-foreground">创建空白画布，在编辑器选择图表和字模。</p></div> :
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          {filtered.map(db => <article key={db.id} className="group overflow-hidden rounded-xl border bg-card transition-shadow hover:shadow-md">
+            <button type="button" aria-label={`预览 ${db.name}`} className="block w-full border-b p-3 bg-muted/20" onClick={() => navigate(`/system/dashboards/${db.id}`)}><DashboardThumbnail dashboard={db} items={library.items} /></button>
+            <div className="space-y-4 p-4">
+              <div className="flex items-start gap-2"><div className="min-w-0 flex-1"><h2 className="truncate font-semibold" title={db.name}>{db.name}</h2><p className="mt-1 truncate text-xs text-muted-foreground">{db.description || '暂无描述'}</p></div>
+                <button aria-label={`${store.favorites.includes(db.id) ? '取消收藏' : '收藏'} ${db.name}`} className="p-1" onClick={() => store.toggleFavorite(db.id)}><Star className={`h-4 w-4 ${store.favorites.includes(db.id) ? 'fill-current' : 'text-muted-foreground'}`} /></button>
+                <DropdownMenu><DropdownMenuTrigger asChild><Button aria-label={`${db.name} 更多操作`} size="icon" variant="ghost" className="h-6 w-6"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end">
+                  <DropdownMenuItem disabled={busy} onClick={() => setNameDialog({ id: db.id, name: db.name })}><Edit className="mr-2 h-4 w-4" />重命名</DropdownMenuItem>
+                  <DropdownMenuItem disabled={busy} onClick={() => run(() => store.copyDashboard(db.id))}><Copy className="mr-2 h-4 w-4" />复制</DropdownMenuItem>
+                  <DropdownMenuItem disabled={busy} onClick={() => run(() => store.setDefault(db.id))}><Star className="mr-2 h-4 w-4" />设为默认</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setSettingsId(db.id)}><Settings className="mr-2 h-4 w-4" />状态与参数设置</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => store.setCurrent(db.id)}>选为导出对象</DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem disabled={busy || store.dashboards[0]?.id === db.id} onClick={() => move(db.id, -1)}><ArrowUp className="mr-2 h-4 w-4" />上移</DropdownMenuItem>
+                  <DropdownMenuItem disabled={busy || store.dashboards[store.dashboards.length - 1]?.id === db.id} onClick={() => move(db.id, 1)}><ArrowDown className="mr-2 h-4 w-4" />下移</DropdownMenuItem>
+                  <DropdownMenuSeparator /><DropdownMenuItem disabled={busy} className="text-destructive" onClick={() => setDeleteId(db.id)}><Trash2 className="mr-2 h-4 w-4" />删除</DropdownMenuItem>
+                </DropdownMenuContent></DropdownMenu>
               </div>
+              <div className="flex flex-wrap gap-2 text-xs"><Badge variant="secondary">{DASHBOARD_STATUS_MAP[db.status || 'designing']?.label || '设计中'}</Badge>{db.is_default && <Badge variant="outline">默认</Badge>}<span className="self-center text-muted-foreground">{db.charts.filter(c => !c.chart_type.startsWith('widget_')).length} 个图表</span></div>
+              <p className="text-xs text-muted-foreground">更新于 {db.updated_at ? new Date(db.updated_at).toLocaleString('zh-CN') : '—'}</p>
+              <div className="flex gap-2 border-t pt-3"><Button size="sm" className="flex-1" onClick={() => edit(db.id)}><Edit className="mr-1 h-3.5 w-3.5" />编辑</Button><Button size="sm" variant="outline" onClick={() => navigate(`/system/dashboards/${db.id}`)}><Eye className="mr-1 h-3.5 w-3.5" />预览</Button><Button size="sm" variant="ghost" disabled={db.status !== 'enabled'} title="仅已启用看板可播放" onClick={() => navigate(`/screen/${db.id}`)}><Play className="h-4 w-4" /><span className="sr-only">播放</span></Button></div>
             </div>
-          )}
-        </div>
-      </div>
-
-      {/* Modals */}
-      <AddChartModal open={addModalOpen} onClose={() => setAddModalOpen(false)} onAdd={handleAddChart} />
-
-      {carouselOpen && (
-        <CarouselView
-          dashboards={dashboards}
-          startIndex={dashboards.findIndex(d => d.id === currentId)}
-          interval={carouselInterval}
-          onClose={() => setCarouselOpen(false)}
-        />
-      )}
-
-      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="max-w-[600px] max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>仪表盘设置</DialogTitle>
-          </DialogHeader>
-          {current && (
-            <DashboardSettingsContent
-              current={current}
-              carouselInterval={carouselInterval}
-              setCarouselInterval={setCarouselInterval}
-              updateDashboard={updateDashboard}
-              onClose={() => setSettingsOpen(false)}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
-
-      <ChartConfigPanel open={configPanelOpen} chart={selectedChart}
-        onClose={() => { setConfigPanelOpen(false); setSelectedChart(null); }}
-        onSave={handleSaveChartConfig} />
-
-      <DashboardTemplates open={templatesOpen} onClose={() => setTemplatesOpen(false)} onApply={handleApplyTemplate} />
-
-      <Dialog open={searchOpen} onOpenChange={setSearchOpen}>
-        <DialogContent className="max-w-[600px]">
-          <DialogHeader>
-            <DialogTitle>搜索仪表盘</DialogTitle>
-          </DialogHeader>
-          <DashboardSearch dashboards={dashboards}
-            onSelect={(id) => { setCurrent(id); setSearchOpen(false); }}
-            onToggleFavorite={toggleFavorite} favorites={favorites} />
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-destructive" />
-              确定删除此仪表盘？
-            </DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">删除后不可恢复，包含的所有图表也将被删除。</p>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteConfirmOpen(false)}>取消</Button>
-            <Button variant="destructive" onClick={confirmDeleteDashboard}>删除</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </article>)}
+        </div>}
     </div>
-  );
+    <Dialog open={!!nameDialog} onOpenChange={open => { if (!open && !busy) setNameDialog(null); }}><DialogContent><DialogHeader><DialogTitle>{nameDialog?.id ? '重命名看板' : '新建看板'}</DialogTitle><DialogDescription>新看板默认使用 1920 × 1080 画布。</DialogDescription></DialogHeader><Input autoFocus aria-label="看板名称" placeholder="输入看板名称" value={nameDialog?.name || ''} onChange={e => setNameDialog(d => d && ({ ...d, name: e.target.value }))} /><DialogFooter><Button disabled={busy || !nameDialog?.name.trim()} onClick={() => run(async () => {
+      if (!nameDialog) return;
+      if (nameDialog.id) { await store.updateDashboard(nameDialog.id, { name: nameDialog.name.trim() }); setNameDialog(null); }
+      else { const id = await store.createDashboard(nameDialog.name.trim(), workspaceId ? Number(workspaceId) : undefined); setNameDialog(null); edit(id); }
+    })}>{busy ? '保存中…' : '确认'}</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={deleteId !== null} onOpenChange={open => { if (!open && !busy) setDeleteId(null); }}><DialogContent><DialogHeader><DialogTitle>删除看板？</DialogTitle><DialogDescription>看板及其中的图表将被删除，此操作无法撤销。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" disabled={busy} onClick={() => setDeleteId(null)}>取消</Button><Button variant="destructive" disabled={busy} onClick={() => run(async () => { if (deleteId !== null) await store.deleteDashboard(deleteId); setDeleteId(null); })}>确认删除</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={!!settings} onOpenChange={open => { if (!open) setSettingsId(null); }}><DialogContent className="max-w-2xl max-h-[90vh] overflow-auto"><DialogHeader><DialogTitle>状态与参数设置</DialogTitle></DialogHeader>{settings && <DashboardSettings key={settings.id} dashboard={settings} onClose={() => setSettingsId(null)} />}</DialogContent></Dialog>
+    <DashboardTemplates open={templates} onClose={() => setTemplates(false)} onApply={async template => { const id = await store.createFromTemplate(template); setTemplates(false); edit(id); }} />
+    {carousel && <CarouselView dashboards={enabled} interval={current?.carousel_interval || 10} startIndex={Math.max(0, enabled.findIndex(d => d.id === current?.id))} onClose={() => setCarousel(false)} />}
+  </div>;
+}
+
+function DashboardSettings({ dashboard, onClose }: { dashboard: DashboardModel; onClose: () => void }) {
+  const updateDashboard = useDashboardStore(s => s.updateDashboard);
+  const [status, setStatus] = useState<DashboardStatus>(dashboard.status || 'designing');
+  const [interval, setInterval] = useState(dashboard.carousel_interval || 10);
+  const [params, setParams] = useState<DashboardParam[]>(() => structuredClone(dashboard.params || []));
+  const [pageParams, setPageParams] = useState<PageParam[]>(() => structuredClone(dashboard.page_params || []));
+  const [saving, setSaving] = useState(false);
+  const lock = useRef(false);
+  const save = async () => {
+    if (lock.current) return;
+    const valid = (items: { name: string }[]) => items.every(p => /^[A-Za-z_][\w]*$/.test(p.name)) && new Set(items.map(p => p.name)).size === items.length;
+    if (!valid(params) || !valid(pageParams)) { toast.error('参数名须为唯一的英文字母、数字或下划线，且不能以数字开头'); return; }
+    lock.current = true; setSaving(true);
+    try { await updateDashboard(dashboard.id, { status, params, page_params: pageParams, carousel_interval: interval }); toast.success('设置已保存'); onClose(); }
+    catch { toast.error('保存失败，设置已保留'); } finally { lock.current = false; setSaving(false); }
+  };
+  return <div className="space-y-5"><p className="text-xs text-muted-foreground">设计中看板可管理预览，仅已启用看板允许播放。取消不会写入设置。</p>
+    <div className="flex flex-wrap gap-2">{Object.entries(DASHBOARD_STATUS_MAP).map(([key, value]) => <Button key={key} variant={status === key ? 'default' : 'outline'} disabled={saving} onClick={() => setStatus(key as DashboardStatus)}>{value.label}</Button>)}</div>
+    <label className="block text-sm">轮播间隔（秒）<Input type="number" min={3} max={3600} value={interval} onChange={e => setInterval(Math.max(3, Math.min(3600, Number(e.target.value) || 10)))} /></label>
+    {[false, true].map(page => {
+      const items = page ? pageParams : params;
+      const setItems = (next: any[]) => page ? setPageParams(next) : setParams(next);
+      return <section key={String(page)} className="space-y-2"><h3 className="text-sm font-medium">{page ? '页面参数' : '查询参数'}</h3>{items.map((p, i) => {
+        const update = (key: string, value: unknown) => setItems(items.map((v, j) => j === i ? { ...v, [key]: value } : v));
+        return <div key={i} className="flex items-start gap-2 rounded border p-3"><div className="grid flex-1 grid-cols-2 gap-2"><Input aria-label="参数名" placeholder="参数名" value={p.name} onChange={e => update('name', e.target.value)} /><Input aria-label="参数标签" placeholder="显示标签" value={p.label} onChange={e => update('label', e.target.value)} /><select className="rounded border bg-background text-sm" value={p.type} onChange={e => update('type', e.target.value)}>{(page ? ['string', 'number', 'date', 'date_range'] : ['text', 'number', 'date', 'select']).map(t => <option key={t} value={t}>{t}</option>)}</select><Input aria-label="默认值" placeholder="默认值" value={p.default || ''} onChange={e => update('default', e.target.value)} />{!page && p.type === 'select' && <Input className="col-span-2" placeholder="选项，逗号分隔" value={((p as DashboardParam).options || []).join(',')} onChange={e => update('options', e.target.value.split(',').map(v => v.trim()).filter(Boolean))} />}</div><Button variant="ghost" size="icon" aria-label="移除参数" onClick={() => setItems(items.filter((_, j) => j !== i))}><X className="h-4 w-4" /></Button></div>;
+      })}<Button variant="outline" size="sm" onClick={() => setItems([...items, { name: '', label: '', type: page ? 'string' : 'text', default: '' }])}>添加{page ? '页面' : '查询'}参数</Button></section>;
+    })}
+    <Button disabled={saving} onClick={save}>{saving ? '保存中…' : '保存设置'}</Button>
+  </div>;
 }

@@ -28,7 +28,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from 'sonner';
 import {
-  Boxes, Sparkles, Save, CheckCircle2, Archive, RefreshCw, Loader2, Trash2, Code2,
+  Boxes, Sparkles, Save, CheckCircle2, Archive, RefreshCw, Loader2, Trash2, Code2, History,
 } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { json } from '@codemirror/lang-json';
@@ -84,6 +84,11 @@ export default function OntologyModeling() {
   // ── 弹窗 ──
   const [activateOpen, setActivateOpen] = useState(false);
   const [activating, setActivating] = useState(false);
+
+  // ── 版本管理（归档版本在此呈现，不入主列表） ──
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [versions, setVersions] = useState<OntologyModelSummary[]>([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
 
   const loadDatasources = useCallback(async () => {
     try {
@@ -153,11 +158,12 @@ export default function OntologyModeling() {
     setSaving(true);
     try {
       const { data } = await ontologyApi.save(model.id, jsonDraft);
+      const wasActive = model.status === 'active';
       setModel(data);
       setJsonDraft(data.json_content || '');
       setDirty(false);
       loadModels(datasourceId || undefined);
-      toast.success('草案已保存，YAML/MD 已同步派生');
+      toast.success(wasActive ? '已保存，并同步刷新对象/绑定/图谱' : '草案已保存，YAML/MD 已同步派生');
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '保存失败');
     } finally {
@@ -229,6 +235,44 @@ export default function OntologyModeling() {
     }
   };
 
+  // ── 版本管理：拉取同一模型（数据源 + 名称）的全部版本（含归档） ──
+  const fetchVersions = useCallback(async (id: number) => {
+    setVersionsLoading(true);
+    try {
+      const { data } = await ontologyApi.versions(id);
+      setVersions(data.items || []);
+    } catch {
+      toast.error('加载版本历史失败');
+      setVersions([]);
+    } finally {
+      setVersionsLoading(false);
+    }
+  }, []);
+
+  const handleOpenVersions = async () => {
+    if (!model) return;
+    setVersionsOpen(true);
+    await fetchVersions(model.id);
+  };
+
+  // 回滚：激活某个历史/归档版本（服务端自动归档当前 active）
+  const handleRestoreVersion = async (id: number) => {
+    try {
+      await ontologyApi.activate(id);
+      try {
+        await client.post(`/ontology/${id}/write-rdf`);
+      } catch {
+        // RDF 写入失败不阻塞激活
+      }
+      toast.success('已回滚并激活该版本');
+      await loadModels(datasourceId || undefined);
+      await loadModel(id);
+      await fetchVersions(id);
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || '激活失败');
+    }
+  };
+
   const objects = useMemo(() => parseObjects(model ? jsonDraft : ''), [model, jsonDraft]);
   const jsonInvalid = useMemo(() => {
     if (!dirty || !jsonDraft.trim()) return false;
@@ -240,7 +284,7 @@ export default function OntologyModeling() {
     }
   }, [jsonDraft, dirty]);
 
-  const editable = model?.status === 'draft';
+  const editable = !!model && model.status !== 'archived';
 
   return (
     <div className="space-y-4">
@@ -351,13 +395,17 @@ export default function OntologyModeling() {
               </CardTitle>
               {model && (
                 <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={handleOpenVersions}>
+                    <History className="h-3.5 w-3.5 mr-1" />
+                    版本管理
+                  </Button>
                   {editable && (
                     <Button size="sm" onClick={handleSave} disabled={saving || jsonInvalid || !dirty}>
                       {saving ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1" />}
-                      保存草案
+                      {model.status === 'draft' ? '保存草案' : '保存'}
                     </Button>
                   )}
-                  {editable && (
+                  {model.status === 'draft' && (
                     <Button size="sm" variant="default" onClick={() => setActivateOpen(true)}>
                       <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
                       确认激活
@@ -377,11 +425,13 @@ export default function OntologyModeling() {
                 </div>
               )}
             </div>
-            {!editable && model && (
+            {model && (
               <div className="text-xs text-muted-foreground">
                 {model.status === 'active'
-                  ? '激活模型只读；如需修改请重新生成草案后编辑并激活。'
-                  : '已归档模型只读。'}
+                  ? '激活模型可直接编辑；保存将依据真实表元数据重算绑定，并同步对象/图谱，与数据目录联动。'
+                  : model.status === 'archived'
+                    ? '已归档模型只读；如需修改请在「版本管理」回滚激活。'
+                    : '草案编辑后保存，确认无误后激活。'}
               </div>
             )}
           </CardHeader>
@@ -528,6 +578,66 @@ export default function OntologyModeling() {
               {activating && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
               确认激活
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 版本管理弹窗（同一模型的归档/历史版本在此呈现） */}
+      <Dialog open={versionsOpen} onOpenChange={setVersionsOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>版本管理 · {model?.name}</DialogTitle>
+          </DialogHeader>
+          <div className="text-xs text-muted-foreground">
+            同一模型（数据源 + 名称）的全部版本；当前激活版本置顶，已归档的历史版本在此呈现，不占用主列表。
+          </div>
+          <ScrollArea className="h-[50vh] mt-2">
+            {versionsLoading ? (
+              <div className="py-6 text-center text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 mr-1 inline animate-spin" />加载中…
+              </div>
+            ) : versions.length === 0 ? (
+              <div className="py-6 text-center text-sm text-muted-foreground">暂无版本记录</div>
+            ) : (
+              <div className="space-y-2 pr-2">
+                {versions.map((v) => {
+                  const meta = STATUS_META[v.status] || STATUS_META.draft;
+                  return (
+                    <div
+                      key={v.id}
+                      className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium truncate">{v.name}</span>
+                          <Badge variant="outline" className={meta.cls}>{meta.label}</Badge>
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-0.5">
+                          {v.object_count} 个对象 · {v.created_by || '—'} · 更新于 {v.updated_at?.slice(0, 16).replace('T', ' ')}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => { loadModel(v.id); setVersionsOpen(false); }}
+                        >
+                          查看
+                        </Button>
+                        {v.status !== 'active' && (
+                          <Button size="sm" variant="outline" onClick={() => handleRestoreVersion(v.id)}>
+                            激活
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </ScrollArea>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setVersionsOpen(false)}>关闭</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -19,8 +19,8 @@ from decimal import Decimal
 from typing import Optional
 
 from services.shared.common.db.metadata_db import get_metadata_conn
-from services.shared.common.db.datasource_db import get_datasource_by_id, get_datasource_conn
 from services.shared.common.ttl_cache import dashboard_cache
+from services.dataviz.services.governed_query import governed_execute, NoIdentityError
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ def _normalize_dashboard(row: dict) -> dict:
 
 def _normalize_chart(row: dict) -> dict:
     """Normalize chart row for JSON serialization."""
-    for field in ("config", "position"):
+    for field in ("config", "position", "semantic_query"):
         row[field] = _json_loads_safe(row.get(field))
     for ts in ("created_at", "updated_at"):
         if hasattr(row.get(ts), "isoformat"):
@@ -93,6 +93,7 @@ def _normalize_chart(row: dict) -> dict:
     row.setdefault("source_type", "query")
     row.setdefault("source_id", None)
     row.setdefault("data_cache", None)
+    row.setdefault("query_source", "raw_sql")
     return row
 
 
@@ -157,58 +158,6 @@ def _get_chart_datasource_id(chart: dict) -> int:
     if isinstance(config, dict):
         return config.get("datasource_id", 0)
     return 0
-
-
-def _execute_on_datasource(sql: str, datasource_id: int) -> dict:
-    """Execute SQL on the specified datasource and return result dict."""
-    ds = get_datasource_by_id(datasource_id)
-    if not ds:
-        raise Exception(f"数据源 {datasource_id} 不存在")
-
-    db_type = ds.get("db_type", "mysql")
-
-    if db_type == "elasticsearch":
-        from services.datamind.nl2sql.sql.query_executor import _build_es_client
-        params = {
-            "host": ds["host"], "port": ds["port"],
-            "user": ds.get("username"), "password": ds.get("password"),
-            "ssl": bool(ds.get("ssl", 0)),
-        }
-        es = _build_es_client(params)
-        try:
-            result = es.sql.query(body={"query": sql})
-            columns_info = result.get("columns", [])
-            rows_data = result.get("rows", [])
-            if not columns_info or not rows_data:
-                return {"columns": [], "rows": [], "row_count": 0}
-            col_names = [col.get("name", f"col_{i}") for i, col in enumerate(columns_info)]
-            rows = [dict(zip(col_names, row)) for row in rows_data]
-            data = _sanitize_floats(rows)
-            return {"columns": col_names, "rows": data, "row_count": len(data)}
-        finally:
-            es.close()
-    else:
-        conn_kwargs = {
-            "host": ds["host"],
-            "port": ds["port"],
-            "user": ds.get("username", ""),
-            "password": ds.get("password", ""),
-            "database": ds.get("database_name"),
-            "charset": "utf8mb4",
-            "cursorclass": __import__("pymysql").cursors.DictCursor,
-            "connect_timeout": 10,
-            "read_timeout": 30,
-        }
-        conn = __import__("pymysql").connect(**conn_kwargs)
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-                rows = cur.fetchall()
-                columns = list(rows[0].keys()) if rows else []
-                data = _sanitize_floats(rows)
-                return {"columns": columns, "rows": data, "row_count": len(data)}
-        finally:
-            conn.close()
 
 
 def _clear_default(user_id: int, workspace_id: int = 0):
@@ -503,13 +452,15 @@ class DashboardService:
                         "INSERT INTO adh_charts "
                         "(`id`, `dashboard_id`, `name`, `chart_type`, `sql_query`, "
                         "`config`, `position`, `source_type`, `source_id`, `data_cache`, "
-                        "`created_at`, `updated_at`) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        "`semantic_query`, `query_source`, `created_at`, `updated_at`) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                         (
                             cid, new_id, c["name"], c["chart_type"], c.get("sql_query"),
                             c.get("config"), c.get("position"),
                             c.get("source_type", "query"),
-                            c.get("source_id"), c.get("data_cache"), now, now,
+                            c.get("source_id"), c.get("data_cache"),
+                            c.get("semantic_query"), c.get("query_source") or "raw_sql",
+                            now, now,
                         ),
                     )
 
@@ -553,8 +504,8 @@ class ChartService:
                     "INSERT INTO adh_charts "
                     "(`id`, `dashboard_id`, `name`, `chart_type`, `sql_query`, "
                     "`config`, `position`, `source_type`, `source_id`, `data_cache`, "
-                    "`created_at`, `updated_at`) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    "`semantic_query`, `query_source`, `created_at`, `updated_at`) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (
                         cid, dashboard_id,
                         data["name"], data["chart_type"], data.get("sql_query"),
@@ -562,6 +513,8 @@ class ChartService:
                         json.dumps(data.get("position") or {}),
                         data.get("source_type", "query"),
                         data.get("source_id"), data.get("data_cache"),
+                        json.dumps(data.get("semantic_query"), ensure_ascii=False) if data.get("semantic_query") else None,
+                        data.get("query_source") or "raw_sql",
                         now, now,
                     ),
                 )
@@ -577,22 +530,41 @@ class ChartService:
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE adh_charts SET name=%s, chart_type=%s, sql_query=%s, config=%s, "
-                    "`position`=%s, source_type=%s, source_id=%s, data_cache=%s, updated_at=%s "
-                    "WHERE id=%s AND dashboard_id=%s",
-                    (
-                        data.get("name"), data.get("chart_type"),
-                        data.get("sql_query"),
-                        json.dumps(data.get("config") or {}),
-                        json.dumps(data.get("position") or {}),
-                        data.get("source_type", "query"),
-                        data.get("source_id"), data.get("data_cache"),
-                        now, chart_id, dashboard_id,
-                    ),
+                # 只更新已提交的白名单字段，视觉编辑不得清空查询和缓存。
+                allowed = (
+                    "name", "chart_type", "sql_query", "config", "position",
+                    "source_type", "source_id", "data_cache", "semantic_query", "query_source",
                 )
+                sets, params = [], []
+                for field in allowed:
+                    if field not in data:
+                        continue
+                    value = data[field]
+                    if field in ("name", "chart_type", "source_type", "query_source") and not value:
+                        raise ValueError(f"{field} cannot be empty")
+                    if field in ("config", "position", "semantic_query"):
+                        value = json.dumps(value, ensure_ascii=False) if value is not None else None
+                    sets.append(f"`{field}`=%s")
+                    params.append(value)
+                if sets:
+                    sets.append("updated_at=%s")
+                    params.extend([now, chart_id, dashboard_id])
+                    cur.execute(
+                        f"UPDATE adh_charts SET {', '.join(sets)} "
+                        "WHERE id=%s AND dashboard_id=%s",
+                        params,
+                    )
+                    if cur.rowcount > 0:
+                        conn.commit()
+                        return True
+                # 空更新和相同值更新也是成功，只有对象确实不存在才返回 False。
+                cur.execute(
+                    "SELECT id FROM adh_charts WHERE id=%s AND dashboard_id=%s",
+                    (chart_id, dashboard_id),
+                )
+                exists = cur.fetchone() is not None
             conn.commit()
-            return cur.rowcount > 0
+            return exists
         finally:
             conn.close()
 
@@ -612,10 +584,12 @@ class ChartService:
 
     def refresh_chart(self, dashboard_id: int, chart_id: int, params: dict = None,
                       page_limit: int = None, page_offset: int = None,
-                      count_sql: str = None) -> dict:
+                      count_sql: str = None, user_id: int = 0,
+                      workspace_id: int = 0, username: str = "") -> dict:
         """Re-execute a chart's SQL query on its configured datasource.
 
         Supports param substitution, server-side pagination, and cache update.
+        raw_sql 取数一律走治理护城河(身份由服务端传入, 无身份 fail-closed)。
         """
         from services.datamind.nl2sql.sql.query_executor import validate_sql
 
@@ -656,7 +630,7 @@ class ChartService:
                     ok, msg = validate_sql(count_sql, require_limit=False)
                     if ok:
                         try:
-                            count_result = _execute_on_datasource(count_sql, datasource_id)
+                            count_result = governed_execute(count_sql, datasource_id, user_id, workspace_id, username)
                             if count_result.get("rows"):
                                 row = count_result["rows"][0]
                                 total = (
@@ -684,7 +658,7 @@ class ChartService:
                     chart_id, params, page_limit, sql,
                 )
 
-                result = _execute_on_datasource(sql, datasource_id)
+                result = governed_execute(sql, datasource_id, user_id, workspace_id, username)
                 if total is not None:
                     result["total"] = total
 
@@ -704,9 +678,17 @@ class ChartService:
         finally:
             conn.close()
 
-    def refresh_all_charts(self, dashboard_id: int, params: dict = None) -> dict:
-        """Re-execute all charts' SQL in a dashboard on their respective datasources."""
+    def refresh_all_charts(self, dashboard_id: int, params: dict = None,
+                           user_id: int = 0, workspace_id: int = 0,
+                           username: str = "") -> dict:
+        """Re-execute all charts' SQL in a dashboard on their respective datasources.
+
+        取数走治理护城河; 无可信身份 -> fail-closed 整体拒绝(I5)。
+        """
         from services.datamind.nl2sql.sql.query_executor import validate_sql
+
+        if not user_id:
+            raise NoIdentityError("缺少可信用户身份, 拒绝批量取数(数据合规护城河)")
 
         params = params or {}
         conn = get_metadata_conn()
@@ -746,7 +728,7 @@ class ChartService:
                     )
 
                     try:
-                        result = _execute_on_datasource(sql, datasource_id)
+                        result = governed_execute(sql, datasource_id, user_id, workspace_id, username)
                         results[cid] = result
 
                         cache = json.dumps(
@@ -885,8 +867,13 @@ class SnapshotService:
 # ── Preview / Datasource Aggregation ────────────────────────────────────────
 
 
-def preview_saved_query(user_id: int, source_type: str, source_id: int) -> dict:
-    """Execute a saved query/dataset SQL and return preview data."""
+def preview_saved_query(user_id: int, source_type: str, source_id: int,
+                        workspace_id: int = 0) -> dict:
+    """Execute a saved query/dataset SQL and return preview data.
+
+    元数据查询仍走 metadata 库, 但返回数据行的取数一律经统一治理护城河
+    (敏感 block/mask + RLS + 审计), 无可信身份 -> fail-closed(I1/I2/I3/I5)。
+    """
     from services.datamind.nl2sql.sql.query_executor import validate_sql
 
     if not source_id:
@@ -916,10 +903,9 @@ def preview_saved_query(user_id: int, source_type: str, source_id: int) -> dict:
             if not ok:
                 return {"error": f"SQL 校验失败: {msg}"}
 
-            cur.execute(execute_sql)
-            rows = cur.fetchall()
-            columns = list(rows[0].keys()) if rows else []
-            return {"columns": columns, "rows": _sanitize_floats(rows), "row_count": len(rows)}
+        return governed_execute(execute_sql, 0, user_id, workspace_id)
+    except NoIdentityError:
+        raise
     except Exception as e:
         return {"error": str(e)}
     finally:

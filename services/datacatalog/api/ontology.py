@@ -9,6 +9,7 @@
     POST   /models/{id}/archive   归档并下线对象向量
     DELETE /models/{id}           删除模型
     GET    /search                对象向量检索（调试/预览）
+    POST   /import-yaml           导入 Palantir Ontology YAML 为 active 模型并入图
 """
 
 import json
@@ -73,8 +74,11 @@ def generate_ontology(req: dict):
 
 
 @router.get("/models")
-def list_models(datasource_id: int = Query(None, description="按数据源筛选")):
-    return {"items": ontology_service.list_models(datasource_id)}
+def list_models(
+    datasource_id: int = Query(None, description="按数据源筛选"),
+    include_archived: bool = Query(False, description="是否包含归档版本（默认排除，归档版本走版本管理）"),
+):
+    return {"items": ontology_service.list_models(datasource_id, include_archived=include_archived)}
 
 
 @router.get("/models/{model_id}")
@@ -83,6 +87,15 @@ def get_model(model_id: int):
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
     return model
+
+
+@router.get("/models/{model_id}/versions")
+def list_versions(model_id: int):
+    """同一模型（datasource_id + name 归组）的全部版本，含归档；用于「版本管理」视图。"""
+    try:
+        return {"items": ontology_service.list_versions(model_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.put("/models/{model_id}")
@@ -117,6 +130,31 @@ def archive_model(model_id: int):
 @router.delete("/models/{model_id}")
 def delete_model(model_id: int):
     return {"success": ontology_service.delete_model(model_id)}
+
+
+@router.post("/import-yaml")
+def import_yaml(req: dict):
+    """导入 Palantir Ontology YAML（ontology/*.yaml）为 active 本体模型并重建图谱。
+
+    body: {datasource_id: int, dir?: str, created_by?: str, rebuild_graph?: bool}
+    """
+    from ..services import ontology_yaml_import
+
+    datasource_id = int(req.get("datasource_id") or 0)
+    if not datasource_id:
+        raise HTTPException(status_code=400, detail="datasource_id 必填")
+    try:
+        return ontology_yaml_import.import_palantir_yaml(
+            dir_path=req.get("dir"),
+            datasource_id=datasource_id,
+            created_by=str(req.get("created_by") or ""),
+            rebuild_graph=bool(req.get("rebuild_graph", True)),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("ontology import-yaml failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/search")

@@ -299,11 +299,12 @@ export default function TagsManager() {
     try {
       const res = await tagsApi.queryByTags({
         conditions: queryConditions,
-        mode: queryMode,
+        operator: queryMode === 'intersection' ? 'AND' : 'OR',
         workspace_id: currentWorkspaceId,
       });
-      setQueryResults(res.data || []);
-      if ((res.data || []).length === 0) toast.info('未找到匹配的实体');
+      const items = res.data?.items ?? res.data ?? [];
+      setQueryResults(items);
+      if (items.length === 0) toast.info('未找到匹配的实体');
     } catch {
       toast.error('查询失败');
     } finally {
@@ -442,7 +443,7 @@ export default function TagsManager() {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 min-w-0">
                         <Tag className="w-4 h-4 text-muted-foreground shrink-0" />
-                        <span className="font-medium truncate">{tag.display_name}</span>
+                        <span className="font-medium truncate">{tag.display_name || tag.name || '(未命名)'}</span>
                         <Badge variant="outline" className={TAG_TYPE_COLORS[tag.tag_type] || ''}>
                           {TAG_TYPES.find((t) => t.value === tag.tag_type)?.label || tag.tag_type}
                         </Badge>
@@ -473,7 +474,7 @@ export default function TagsManager() {
         <div className="w-80 border rounded-lg flex flex-col shrink-0">
           <div className="p-3 border-b">
             <span className="text-sm font-medium">
-              {selectedTag ? `${selectedTag.display_name} - 标签值` : '标签值'}
+              {selectedTag ? `${selectedTag.display_name || selectedTag.name || '(未命名)'} - 标签值` : '标签值'}
             </span>
           </div>
           <div className="flex-1 overflow-y-auto">
@@ -644,7 +645,7 @@ export default function TagsManager() {
             <DialogTitle>确认删除</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            确定要删除标签 <strong>{deleteTarget?.display_name}</strong> 吗？此操作不可恢复。
+            确定要删除标签 <strong>{deleteTarget?.display_name || deleteTarget?.name || '(未命名)'}</strong> 吗？此操作不可恢复。
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>

@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use tracing::{info, warn};
 
-use crate::engine::{QueryExecutor, QuerySession};
+use crate::engine::{QueryExecutor, QuerySession, is_metadata_query, is_passthrough_datasource, execute_metadata_query, needs_pushdown, execute_pushdown_query, execute_passthrough_with_rls};
 use crate::providers::ConnectionPoolManager;
 use crate::store::DatasourceStore;
 use crate::types::{DatasourceConfig, QueryRequest, QueryResponse};
@@ -59,6 +59,64 @@ pub async fn handle_query(
         datasource.database,
         request.rls_policies.len(),
     );
+
+    // Metadata queries (SHOW/DESC) bypass DataFusion — execute directly
+    if is_metadata_query(&request.sql) {
+        let response = execute_metadata_query(&state.pool_manager, &datasource, &request.sql).await;
+        if response.error.is_some() {
+            warn!("[{}] Metadata query failed: {:?}", request_id, response.error);
+            return (StatusCode::BAD_REQUEST, Json(response));
+        }
+        info!(
+            "[{}] Metadata query succeeded: {} rows in {}ms",
+            request_id, response.row_count, response.execution_time_ms
+        );
+        return (StatusCode::OK, Json(response));
+    }
+
+    // Passthrough datasources (e.g. SLS) — execute directly, bypass DataFusion.
+    // These datasources use PG wire protocol but have their own SQL engine,
+    // making DataFusion's schema discovery incompatible.
+    // RLS is still enforced via AST-level injection (best-effort).
+    if is_passthrough_datasource(&datasource) {
+        let response = execute_passthrough_with_rls(
+            &state.pool_manager,
+            &datasource,
+            &request.sql,
+            &request.rls_policies,
+        )
+        .await;
+        if response.error.is_some() {
+            warn!("[{}] Passthrough query failed: {:?}", request_id, response.error);
+            return (StatusCode::BAD_REQUEST, Json(response));
+        }
+        info!(
+            "[{}] Passthrough query ({}) succeeded: {} rows in {}ms (rls={})",
+            request_id, datasource.db_type, response.row_count, response.execution_time_ms, response.rls_applied.len()
+        );
+        return (StatusCode::OK, Json(response));
+    }
+
+    // Doris pushdown — SQL uses Doris-specific functions that DataFusion cannot
+    // execute. Parse + inject RLS via sqlparser, then run directly on Doris.
+    if needs_pushdown(&datasource, &request.sql) {
+        let response = execute_pushdown_query(
+            &state.pool_manager,
+            &datasource,
+            &request.sql,
+            &request.rls_policies,
+        )
+        .await;
+        if response.error.is_some() {
+            warn!("[{}] Doris pushdown query failed: {:?}", request_id, response.error);
+            return (StatusCode::BAD_REQUEST, Json(response));
+        }
+        info!(
+            "[{}] Doris pushdown query succeeded: {} rows in {}ms (rls={})",
+            request_id, response.row_count, response.execution_time_ms, response.rls_applied.len()
+        );
+        return (StatusCode::OK, Json(response));
+    }
 
     // Create per-request session with RLS-secured tables
     let session_result = QuerySession::create(

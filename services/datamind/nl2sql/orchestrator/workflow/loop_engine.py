@@ -33,7 +33,7 @@ from services.datamind.rag.rag_retriever import retrieve_all, retrieve_tables_me
 from services.datamind.nl2sql.intent.query_rewriter import rewrite_query
 from services.datamind.nl2sql.prompt.prompt_builder import build_nl2sql_prompt, build_nl2sql_prompt_with_supplement
 from services.datamind.nl2sql.sql.sql_validator import validate_and_fix
-from services.datamind.nl2sql.sql.query_executor import execute_query
+from services.datamind.nl2sql.sql.query_executor import execute_query, execute_query_with_permission
 from services.datamind.nl2sql.intent.intent_classifier import classify_intent
 
 logger = logging.getLogger(__name__)
@@ -1023,9 +1023,11 @@ async def execute_loop(
             if warnings:
                 logger.info("SQL warnings: %s", warnings)
 
-            # Execute query
+            # Execute query — 经权限/敏感列屏蔽护城河执行(user_id 缺失时仍套治理基线)
             try:
-                df, elapsed_ms, row_count = execute_query(generated_sql, datasource_id=datasource_id, query_type=query_type)
+                _uc = {"user_id": user_id, "username": username}
+                df, elapsed_ms, row_count = execute_query_with_permission(
+                    generated_sql, datasource_id, query_type, _uc, 0)
                 columns = list(df.columns) if not df.empty else []
                 rows = df.to_dict(orient="records") if not df.empty else []
                 rows = _sanitize_rows(rows)

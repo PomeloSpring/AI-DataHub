@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import {
-  Send, Zap, Trash2, Download, Bot, User, Lightbulb, Database,
+  Send, Zap, Trash2, Download, Bot, User, Lightbulb,
   CheckCircle, BarChart3, Table, Code, Clock,
   Plus, MessageSquare, Trash, TrendingUp, X, RefreshCw,
   MoreHorizontal, Pencil, Check, ThumbsUp, ThumbsDown, Cpu,
-  Workflow, Loader2, Maximize2, Minimize2, Paperclip, FileText, Box, Terminal,
+  Workflow, Loader2, Maximize2, Minimize2, Paperclip, FileText, Box,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -23,8 +23,9 @@ import remarkGfm from 'remark-gfm';
 import { useChatStore } from '../stores/chatStore';
 import type { AttachmentInfo } from '../stores/chatStore';
 import ChartPicker from '../components/ChartPicker';
-import ThinkingBlock from '../components/ThinkingBlock';
-import ToolCallTimeline from '../components/ToolCallTimeline';
+import { CHART_TYPES } from '../components/DashboardChart';
+import MarkdownWithCharts from '../components/MarkdownWithCharts';
+import ProcessTimeline from '../components/ProcessTimeline';
 import InlineDetails from '../components/InlineDetails';
 import Model3DViewer from '../components/chat/Model3DViewer';
 import client from '../api/client';
@@ -40,16 +41,11 @@ function attUrl(att: AttachmentInfo): string {
   return token ? `${att.url}?token=${encodeURIComponent(token)}` : att.url;
 }
 
+// 图表类型标签与看板共用同一套 CHART_TYPES(前置为历史消息的旧类型别名,仅用于旧消息回放)
 const chartTypeLabels: Record<string, string> = {
-  table: '表格', column: '柱状图', bar: '柱状图', line: '折线图', pie: '饼图',
-  funnel: '漏斗图', sankey: '桑葚图', chord: '弦图',
-  calendar_heatmap: '日历热力图', big_number_trend: '趋势大数字图',
-  boxplot: '箱线图', bubble: '气泡图',
-  timeseries_table: '时间序列表格', timeseries_area: '时间序列面积图',
-  timeseries_bar: '时间序列柱状图', timeseries_line: '时间序列折线图',
-  timeseries_percent: '时间序列百分比变化', timeseries_pivot: '时间序列周期透视',
-  tree: '树图', treemap: '矩形树图', waterfall: '瀑布图',
-  text_display: '文本展示', table_value: '表值图',
+  timeseries_table: '时间序列表格', timeseries_percent: '时间序列百分比变化',
+  timeseries_pivot: '时间序列周期透视', chord: '弦图', column: '柱状图', table: '表格',
+  ...Object.fromEntries(CHART_TYPES.map(t => [t.value, t.label])),
 };
 
 export default function Chat() {
@@ -64,14 +60,16 @@ export default function Chat() {
   const [pendingAtts, setPendingAtts] = useState<AttachmentInfo[]>([]);
   const [uploading, setUploading] = useState(false);
   const [preview3d, setPreview3d] = useState<AttachmentInfo | null>(null);
+  const [recommendedQuestions, setRecommendedQuestions] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const {
-    conversations, currentConvId, messages, loading, loadingStep,
-    selectedDsId, datasources, selectedModelId, llmModels,
+    conversations, currentConvId, messages, loading,
+    selectedDsId,
     pipelineMode: chatPipelineMode,
-    selectedWorkspaceId, setSelectedWorkspaceId, workspaceConfig, loadWorkspaceConfig,
+    selectedWorkspaceId, setSelectedWorkspaceId, loadWorkspaceConfig,
     executionLayer, selectedModelRef, loadExecutionLayer, setSelectedModelRef,
+    wakers, selectedWakerKey, loadWakers, setSelectedWakerKey,
     loadConversations, loadDatasources, loadLLMModels, loadSystemConfig,
     setSelectedDsId, setSelectedModelId, setPipelineMode,
     createConversation, switchConversation, deleteConversation, renameConversation,
@@ -79,12 +77,23 @@ export default function Chat() {
     uploadAttachment,
     mcpServers, loadMcpTools,
   } = useChatStore();
+  // 加载推荐问题（Chat 空白时展示）
+  useEffect(() => {
+    client.get('/admin/knowledge/random', {
+      params: { knowledge_type: 'recommend_question', limit: 3, workspace_id: 0 },
+    })
+      .then(({ data }) => {
+        const qs = (data.items || []).map((it: any) => it.title).filter(Boolean);
+        if (qs.length > 0) setRecommendedQuestions(qs);
+      })
+      .catch(() => { /* 静默:无推荐问题时使用默认 */ });
+  }, []);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const thinkingRef = useRef<HTMLDivElement>(null);
 
-  // 深度模式 = 平台内置 Agent(支持 MCP 工具 @ 提及);Agent 模式 = 外部执行层(默认 claude)
+  // 深度模式 = 平台内置 Agent(支持 MCP 工具 @ 提及);Agent 模式 = 外部执行层(默认 qoder)
   const isAgentMode = chatPipelineMode === 'deep';
-  const isExecMode = chatPipelineMode === 'agent';
 
   // Flatten all MCP tools from all servers (only in deep/built-in agent mode)
   const allMcpTools = isAgentMode ? mcpServers.flatMap((s: any) =>
@@ -194,22 +203,30 @@ export default function Chat() {
   const [expectedTableInput, setExpectedTableInput] = useState<Record<number, string>>({});
   const [showExpectedInput, setShowExpectedInput] = useState<Record<number, boolean>>({});
 
-  const handleFeedback = async (idx: number, satisfied: boolean, expectedTable?: string) => {
+  const handleFeedback = async (idx: number, satisfied: boolean, note?: string) => {
     const msg = messages[idx];
     if (!msg) return;
     // Extract tables_used from warnings
     const tablesWarning = msg.warnings?.find((w: string) => w.startsWith('涉及表:'));
     const tablesUsed = tablesWarning ? tablesWarning.replace('涉及表: ', '') : '';
+    const isNl2sql = !!msg.sql;
     try {
       await client.post('/chat/feedback', {
         question: msg.question || msg.content || '',
         tables_used: tablesUsed,
         datasource_id: selectedDsId,
         satisfied,
-        expected_table: expectedTable || '',
+        // NL2SQL 结果卡收集"期望表名";Agent/对话输出收集自由原因(reason)
+        expected_table: isNl2sql ? (note || '') : '',
+        reason: isNl2sql ? '' : (note || ''),
+        // 可观测关联键:有 trace 时反馈能在 Trace 列表/详情回显
+        trace_id: msg.trace_id || '',
+        message_uuid: msg.message_uuid || '',
+        conversation_id: currentConvId || 0,
+        workspace_id: selectedWorkspaceId || 0,
       });
       // Persist feedback in message
-      updateMessageFeedback(idx, satisfied ? 'up' : 'down', expectedTable);
+      updateMessageFeedback(idx, satisfied ? 'up' : 'down', isNl2sql ? note : undefined);
       setFeedbackMap(prev => ({ ...prev, [idx]: satisfied ? 'up' : 'down' }));
       setShowExpectedInput(prev => ({ ...prev, [idx]: false }));
       toast.success(satisfied ? '已标记满意，感谢反馈' : '已标记不满意，感谢反馈');
@@ -246,9 +263,19 @@ export default function Chat() {
         loadSystemConfig();
         loadWorkspaceConfig(wsId);
         loadExecutionLayer(wsId);
+        loadWakers(wsId);
       }
     }
   }, [urlWorkspaceId]);
+
+  // 执行层与模型候选、Waker 清单:跟随工作空间变化刷新(不依赖 URL 参数,
+  // 覆盖同工作空间重新进入 Chat 等场景,避免候选停留在空/旧层)
+  useEffect(() => {
+    if (selectedWorkspaceId) {
+      loadExecutionLayer(selectedWorkspaceId);
+      loadWakers(selectedWorkspaceId);
+    }
+  }, [selectedWorkspaceId, loadExecutionLayer, loadWakers]);
 
   // Load MCP tools only when in deep (built-in agent) mode
   useEffect(() => {
@@ -297,7 +324,60 @@ export default function Chat() {
     setAtMenuOpen(false);
   };
 
-  // Handle attachment file selection and upload
+  // 推荐追问/快捷动作：以按钮形式直接发起一轮对话（不污染输入框）
+  const runQuestion = (text: string) => {
+    if (loading || !text.trim()) return;
+    const mcpTools = parseMcpTools(text);
+    const clean = text.replace(/@[\w_]+__[\w_]+\s*/g, '').trim();
+    sendMessage(mcpTools.length ? clean : text, mcpTools.length ? mcpTools : undefined);
+  };
+
+  // 赞踩打标渲染 — 内置结果卡与 Agent 输出共用(外层需 flex flex-wrap 容器)
+  const renderFeedback = (idx: number, msg: any) => {
+    const fb = msg.feedback || feedbackMap[idx];
+    const isNl2sql = !!msg.sql;
+    return (
+      <>
+        <div className="flex-1" />
+        {!fb ? (
+          <div className="flex items-center gap-1 ml-auto">
+            <span className="text-xs text-muted-foreground mr-1">结果准确?</span>
+            <Button variant="ghost" size="sm" className="h-7 px-2"
+              onClick={() => handleFeedback(idx, true)}>
+              <ThumbsUp className="h-3.5 w-3.5" />
+            </Button>
+            <Button variant="ghost" size="sm" className="h-7 px-2"
+              onClick={() => setShowExpectedInput(prev => ({ ...prev, [idx]: !prev[idx] }))}>
+              <ThumbsDown className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        ) : (
+          <span className="text-xs text-muted-foreground ml-auto">
+            {fb === 'up' ? '👍 已反馈' : '👎 已反馈'}
+          </span>
+        )}
+        {showExpectedInput[idx] && !fb && (
+          <div className="flex items-center gap-2 mt-2 w-full">
+            <Input
+              value={expectedTableInput[idx] || ''}
+              onChange={(e) => setExpectedTableInput(prev => ({ ...prev, [idx]: e.target.value }))}
+              placeholder={isNl2sql ? '期望的表名（可选，如 t_user_customer）' : '补充原因（可选，帮助我们改进）'}
+              className="h-7 text-xs flex-1"
+            />
+            <Button size="sm" variant="default" className="h-7 text-xs"
+              onClick={() => handleFeedback(idx, false, expectedTableInput[idx])}>
+              提交
+            </Button>
+            <Button size="sm" variant="ghost" className="h-7 text-xs"
+              onClick={() => { handleFeedback(idx, false); setShowExpectedInput(prev => ({ ...prev, [idx]: false })); }}>
+              跳过
+            </Button>
+          </div>
+        )}
+      </>
+    );
+  };
+
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     e.target.value = '';
@@ -422,18 +502,17 @@ export default function Chat() {
             <h1 className="text-lg font-bold">Chat 数据分析</h1>
           </div>
           <div className="flex items-center gap-2">
-            {/* Mode Selector - filtered by workspace config */}
+            {/* Mode Selector — 全面转向 Qoder 执行层:隐藏 quick/内置 deep,仅保留 Qoder */}
             {(() => {
-              const allowed = workspaceConfig.allowed_pipeline_modes;
-              const modes = Array.isArray(allowed) ? allowed : ['quick', 'deep', 'agent'];
+              const modes: string[] = ['agent'];
               const modeLabel: Record<string, { icon: any; text: string }> = {
                 quick: { icon: <Zap className="h-3 w-3 inline mr-1" />, text: '快速' },
                 deep: { icon: <Workflow className="h-3 w-3 inline mr-1" />, text: '深度' },
-                agent: { icon: <Bot className="h-3 w-3 inline mr-1" />, text: 'Agent' },
+                agent: { icon: <Bot className="h-3 w-3 inline mr-1" />, text: 'Qoder' },
               };
-              const currentMode = modes.includes(chatPipelineMode || '') ? chatPipelineMode! : (modes[0] || 'quick');
+              const currentMode = modes.includes(chatPipelineMode || '') ? chatPipelineMode! : (modes[0] || 'agent');
               if (modes.length <= 1) {
-                const m = modes[0] || 'quick';
+                const m = modes[0] || 'agent';
                 return (
                   <div className="h-8 px-3 flex items-center text-xs border rounded-md bg-background">
                     {modeLabel[m]?.icon}{modeLabel[m]?.text || m}
@@ -449,7 +528,7 @@ export default function Chat() {
                     const msgs: Record<string, string> = {
                       quick: '快速模式：简化 RAG 检索，响应快，适合简单查询',
                       deep: '深度模式：平台内置 Agent，LLM 自主工具调用（SQL/分析/MCP）',
-                      agent: 'Agent 模式：外部执行层（默认 Claude Agent SDK）',
+                      agent: 'Qoder 执行层：角色化智能体，自主工具调用与可视化',
                     };
                     toast.info(msgs[v] || '');
                   }}
@@ -468,74 +547,67 @@ export default function Chat() {
               );
             })()}
 
-            {/* Datasource Selector - Only for Quick mode */}
-            {chatPipelineMode === 'quick' && (
+            {/* Waker 选择器 — 仅当 (工作空间+角色) 可选 Waker > 1 时展示;只有一个时隐藏 */}
+            {wakers.length > 1 && (
               <Select
-                key={`ds-${selectedWorkspaceId}`}
-                value={selectedDsId ? String(selectedDsId) : ''}
-                onValueChange={(v) => setSelectedDsId(Number(v))}
+                key={`waker-${selectedWorkspaceId}`}
+                value={selectedWakerKey || wakers[0]?.waker_key}
+                onValueChange={(v) => setSelectedWakerKey(v)}
               >
-                <SelectTrigger className="w-[200px] h-8">
-                  <Database className="h-3.5 w-3.5 mr-1.5" />
-                  <SelectValue placeholder="选择数据源" />
+                <SelectTrigger className="w-[160px] h-8" title="选择 Waker(角色化智能体)">
+                  <Bot className="h-3.5 w-3.5 mr-1.5" />
+                  <SelectValue placeholder="选择 Waker" />
                 </SelectTrigger>
                 <SelectContent>
-                  {datasources.map((ds) => (
-                    <SelectItem key={ds.id} value={String(ds.id)}>
-                      {ds.name}
-                    </SelectItem>
+                  {wakers.map((w) => (
+                    <SelectItem key={w.waker_key} value={w.waker_key}>{w.display_name || w.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             )}
 
-            {/* Model Selector — 按工作空间执行器切换候选:
-                CLI 执行层(qoder)展示执行层模型,否则展示系统模型中心 */}
-            {isExecMode && executionLayer?.layer_type === 'cli' ? (
-              <Select
-                key={`exec-model-${selectedWorkspaceId}`}
-                value={selectedModelRef || 'default'}
-                onValueChange={(v) => setSelectedModelRef(v === 'default' ? null : v)}
-              >
-                <SelectTrigger className="w-[220px] h-8" title={`执行层: ${executionLayer.display_name}`}>
-                  <Cpu className="h-3.5 w-3.5 mr-1.5" />
-                  <SelectValue placeholder="选择模型" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="default">默认模型(执行层配置)</SelectItem>
-                  {(executionLayer.models || []).map((ref) => (
-                    <SelectItem key={ref} value={ref}>{ref}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : (
-              <Select
-                key={`model-${selectedWorkspaceId}`}
-                value={selectedModelId ? String(selectedModelId) : 'default'}
-                onValueChange={(v) => setSelectedModelId(v === 'default' ? null : Number(v))}
-              >
-                <SelectTrigger className="w-[200px] h-8">
-                  <Cpu className="h-3.5 w-3.5 mr-1.5" />
-                  <SelectValue placeholder="选择模型" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="default">默认模型</SelectItem>
-                  {llmModels.map((m) => (
-                    <SelectItem key={m.id} value={String(m.id)}>
-                      {m.name} {m.is_default ? '⭐' : ''}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
+            {/* 模型选择器:
+                - 有 Waker 时: 候选 = 选中 Waker 的可用模型; >1 才展示 (=1 自动选中 / 留空用执行层默认)
+                - 无 Waker 时: 回退执行层模型候选(原行为) */}
+            {(() => {
+              const waker = wakers.find(w => w.waker_key === (selectedWakerKey || wakers[0]?.waker_key)) || null;
+              if (wakers.length > 0 && waker) {
+                const wm = waker.models || [];
+                if (wm.length <= 1) return null;
+                const cur = selectedModelRef && wm.includes(selectedModelRef) ? selectedModelRef : wm[0];
+                return (
+                  <Select key={`waker-model-${waker.waker_key}`} value={cur} onValueChange={(v) => setSelectedModelRef(v)}>
+                    <SelectTrigger className="w-[200px] h-8" title={`Waker「${waker.display_name || waker.name}」可用模型`}>
+                      <Cpu className="h-3.5 w-3.5 mr-1.5" />
+                      <SelectValue placeholder="选择模型" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {wm.map((ref) => (<SelectItem key={ref} value={ref}>{ref}</SelectItem>))}
+                    </SelectContent>
+                  </Select>
+                );
+              }
+              // 无 Waker 配置: 回退执行层模型选择
+              return (
+                <Select
+                  key={`exec-model-${selectedWorkspaceId}`}
+                  value={selectedModelRef || 'default'}
+                  onValueChange={(v) => setSelectedModelRef(v === 'default' ? null : v)}
+                >
+                  <SelectTrigger className="w-[220px] h-8" title={`执行层: ${executionLayer?.display_name || 'Qoder 执行层'}`}>
+                    <Cpu className="h-3.5 w-3.5 mr-1.5" />
+                    <SelectValue placeholder="选择模型" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="default">默认模型(执行层配置)</SelectItem>
+                    {(executionLayer?.models || []).map((ref) => (
+                      <SelectItem key={ref} value={ref}>{ref}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              );
+            })()}
 
-            {/* 执行器标识(agent 模式下展示当前工作空间的执行层) */}
-            {isExecMode && executionLayer && executionLayer.layer_type !== 'builtin' && (
-              <Badge variant="outline" className="h-8 px-2 gap-1" title="当前工作空间的执行层">
-                <Terminal className="h-3 w-3" />
-                {executionLayer.display_name || executionLayer.name}
-              </Badge>
-            )}
             <Button variant="outline" size="sm" onClick={clear} disabled={messages.length === 0}>
               <Trash2 className="h-4 w-4 mr-2" />
               清空对话
@@ -559,7 +631,7 @@ export default function Chat() {
               <p className="text-lg">输入你的数据查询问题</p>
               <p className="text-sm mt-2">AI 将自动生成 SQL、执行查询并可视化结果</p>
               <div className="flex gap-3 mt-8 flex-wrap justify-center">
-                {['查看最近7天的病例数量', '各区域设备使用率统计', '本月新增用户趋势'].map((q) => (
+                {(recommendedQuestions.length > 0 ? recommendedQuestions : ['查看最近7天的病例数量', '各区域设备使用率统计', '本月新增用户趋势']).map((q) => (
                   <Badge
                     key={q}
                     variant="outline"
@@ -615,28 +687,29 @@ export default function Chat() {
                 )}
                 {msg.role === 'assistant' && (
                   <div className="bg-muted rounded-2xl rounded-tl-sm px-4 py-3 overflow-hidden">
-                    {/* Streaming: show current action */}
-                    {loading && !msg.intent && !msg.error && !msg.thinking && !(msg.progressStages && msg.progressStages.length > 0) && (
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-                          <span className="text-sm text-muted-foreground">{loadingStep || '推理中...'}</span>
-                        </div>
+                    {/* 等待模型响应:气泡还没有任何可见输出时给明确提示(而非空白) */}
+                    {loading && !msg.content && !msg.reply && !msg.intent && !msg.error && !msg.thinking && !(msg.tool_calls && msg.tool_calls.length > 0) && (
+                      <div className="flex items-center gap-2">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                        <span className="text-sm text-muted-foreground">等待模型响应...</span>
                       </div>
                     )}
 
-                    {/* Inline: thinking block */}
-                    {msg.thinking && (
-                      <ThinkingBlock content={msg.thinking} isStreaming={loading && idx === messages.length - 1} />
-                    )}
+                    {/* 执行过程:思考与工具调用按实际发生顺序穿插展示 */}
+                    <ProcessTimeline
+                      process={msg.process}
+                      toolCalls={msg.tool_calls}
+                      progressStages={msg.progressStages}
+                      thinking={msg.thinking}
+                      isStreaming={loading && idx === messages.length - 1 && !msg.sql}
+                    />
 
-                    {/* Inline: tool call timeline */}
-                    {((msg.tool_calls && msg.tool_calls.length > 0) || (msg.progressStages && msg.progressStages.some(s => s.stage === 'agent_exec'))) && (
-                      <ToolCallTimeline
-                        toolCalls={msg.tool_calls}
-                        progressStages={msg.progressStages}
-                        isStreaming={loading && idx === messages.length - 1 && !msg.sql}
-                      />
+                    {/* 工具已全部结束但模型还在组织最终回答 → 同样给等待提示 */}
+                    {loading && idx === messages.length - 1 && !msg.content && !msg.reply && (msg.tool_calls?.length ?? 0) > 0 && msg.tool_calls!.every(t => t.result || t.error) && (
+                      <div className="flex items-center gap-2 mt-1">
+                        <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                        <span className="text-xs text-muted-foreground">等待模型响应...</span>
+                      </div>
                     )}
 
                     {/* 执行层统计摘要条(轮次/工具调用/耗时) */}
@@ -666,36 +739,33 @@ export default function Chat() {
                       />
                     )}
 
-                    {/* 流式 token 输出(intent 未确定前,如执行层 CLI 的流式回复) */}
-                    {!msg.intent && msg.content && (
-                      <div className="leading-relaxed prose prose-sm max-w-none dark:prose-invert">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                      </div>
-                    )}
+                    {/* 流式 token 输出(intent 未确定前,如执行层 CLI 的流式回复,含内嵌图表块) */}
+                    {!msg.intent && msg.content && <MarkdownWithCharts text={msg.content} />}
 
                     {msg.intent && ['chat', 'explain'].includes(msg.intent) && msg.reply && (
-                      <div className="leading-relaxed prose prose-sm max-w-none dark:prose-invert">
+                      <div className="leading-relaxed prose prose-sm max-w-none">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.reply}</ReactMarkdown>
                       </div>
                     )}
                     {msg.reply && !msg.sql && !msg.error && msg.intent === 'query' && (
                       <div>
-                        <div className="leading-relaxed prose prose-sm max-w-none dark:prose-invert">
+                        <div className="leading-relaxed prose prose-sm max-w-none">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.reply}</ReactMarkdown>
                         </div>
                       </div>
                     )}
 
-                    {/* Agent/执行层最终回复(无 SQL 结果,如 qoder 执行层) */}
+                    {/* Agent/执行层最终回复(无 SQL 结果,如 qoder 执行层,含内嵌图表块)+ 赞踩打标 */}
                     {msg.reply && !msg.sql && !msg.error && msg.intent === 'agent' && (
-                      <div className="leading-relaxed prose prose-sm max-w-none dark:prose-invert">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.reply}</ReactMarkdown>
-                      </div>
+                      <>
+                        <MarkdownWithCharts text={msg.reply} />
+                        <div className="flex gap-2 mt-1 flex-wrap items-center">{renderFeedback(idx, msg)}</div>
+                      </>
                     )}
 
                     {/* Agent mode: show analysis text above chart when both reply and sql exist */}
                     {msg.reply && msg.sql && !msg.error && (
-                      <div className="mb-3 leading-relaxed prose prose-sm max-w-none dark:prose-invert">
+                      <div className="mb-3 leading-relaxed prose prose-sm max-w-none">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.reply}</ReactMarkdown>
                       </div>
                     )}
@@ -865,45 +935,7 @@ export default function Chat() {
                             <Button variant="outline" size="sm" onClick={() => sendMessage(msg.question || msg.content)}>
                               <RefreshCw className="h-4 w-4 mr-1" />重新执行
                             </Button>
-                            <div className="flex-1" />
-                            {(() => {
-                              const fb = msg.feedback || feedbackMap[idx];
-                              return !fb ? (
-                                <div className="flex items-center gap-1 ml-auto">
-                                  <span className="text-xs text-muted-foreground mr-1">结果准确?</span>
-                                  <Button variant="ghost" size="sm" className="h-7 px-2"
-                                    onClick={() => handleFeedback(idx, true)}>
-                                    <ThumbsUp className="h-3.5 w-3.5" />
-                                  </Button>
-                                  <Button variant="ghost" size="sm" className="h-7 px-2"
-                                    onClick={() => setShowExpectedInput(prev => ({ ...prev, [idx]: !prev[idx] }))}>
-                                    <ThumbsDown className="h-3.5 w-3.5" />
-                                  </Button>
-                                </div>
-                              ) : (
-                                <span className="text-xs text-muted-foreground ml-auto">
-                                  {fb === 'up' ? '👍 已反馈' : '👎 已反馈'}
-                                </span>
-                              );
-                            })()}
-                            {showExpectedInput[idx] && !(msg.feedback || feedbackMap[idx]) && (
-                              <div className="flex items-center gap-2 mt-2 w-full">
-                                <Input
-                                  value={expectedTableInput[idx] || ''}
-                                  onChange={(e) => setExpectedTableInput(prev => ({ ...prev, [idx]: e.target.value }))}
-                                  placeholder="期望的表名（可选，如 t_user_customer）"
-                                  className="h-7 text-xs flex-1"
-                                />
-                                <Button size="sm" variant="default" className="h-7 text-xs"
-                                  onClick={() => handleFeedback(idx, false, expectedTableInput[idx])}>
-                                  提交
-                                </Button>
-                                <Button size="sm" variant="ghost" className="h-7 text-xs"
-                                  onClick={() => { handleFeedback(idx, false); setShowExpectedInput(prev => ({ ...prev, [idx]: false })); }}>
-                                  跳过
-                                </Button>
-                              </div>
-                            )}
+                            {renderFeedback(idx, msg)}
                           </div>
                         )}
 
@@ -947,6 +979,23 @@ export default function Chat() {
             </div>
           ))}
 
+          {/* 推荐追问 — 末条为助手回复且未在加载时展示，强化交互（下钻/拆解/看板/质量） */}
+          {!loading && messages.length > 0 && messages[messages.length - 1]?.role === 'assistant' && (
+            <div className="pl-12 flex flex-wrap gap-2 items-center pt-1">
+              <span className="text-xs text-muted-foreground"><Lightbulb className="h-3 w-3 inline mr-1" />继续探索：</span>
+              {[
+                { label: '下钻分析', icon: <BarChart3 className="h-3 w-3 mr-1" />, text: '请对上一步结果做下钻分析：按关键维度逐层拆解，找出贡献最大与异常的细分，并给出可执行结论。' },
+                { label: '场景拆解', icon: <Workflow className="h-3 w-3 mr-1" />, text: '请把该问题拆解成 3-5 个可执行的子分析场景，分别列出需要验证的指标、维度与预期结论。' },
+                { label: '生成看板', icon: <TrendingUp className="h-3 w-3 mr-1" />, text: '请基于以上结论，规划一个可视化看板：给出关键指标卡、图表类型与布局建议。' },
+                { label: '数据质量检查', icon: <Table className="h-3 w-3 mr-1" />, text: '请检查上述结论涉及数据的质量问题（缺失/重复/异常值/口径一致性），并给出修正建议。' },
+              ].map((f) => (
+                <Button key={f.label} variant="outline" size="sm" className="h-7 text-xs" onClick={() => runQuestion(f.text)}>
+                  {f.icon}{f.label}
+                </Button>
+              ))}
+            </div>
+          )}
+
           {/* Loading indicator (when no assistant message exists yet) */}
           {loading && !(messages.length > 0 && messages[messages.length - 1]?.role === 'assistant' && !messages[messages.length - 1]?.sql && !messages[messages.length - 1]?.intent) && (
             <div className="flex gap-3">
@@ -957,7 +1006,7 @@ export default function Chat() {
                 <div className="bg-muted rounded-2xl rounded-tl-sm px-4 py-3">
                   <div className="flex items-center gap-2">
                     <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-                    <span className="text-xs text-muted-foreground">{loadingStep || '推理中...'}</span>
+                    <span className="text-xs text-muted-foreground">等待模型响应...</span>
                   </div>
                 </div>
               </div>

@@ -28,6 +28,7 @@ SERVICES=(
     "dataflow"
     "aiplatform"
     "graphservice"
+    "semanticservice"
     "frontend"
 )
 

@@ -98,7 +98,7 @@ export default function Glossary() {
     try {
       const params: any = { page, size: 20 };
       if (search) params.search = search;
-      const res = await client.get('/terms', { params });
+      const res = await client.get('/admin/terms', { params });
       const items = res?.data?.items ?? res?.data;
       setTerms(Array.isArray(items) ? items : []);
       setTotal(res?.data?.total || 0);
@@ -141,10 +141,10 @@ export default function Glossary() {
     setSaving(true);
     try {
       if (editTerm) {
-        await client.put(`/terms/${editTerm.id}`, formData);
+        await client.put(`/admin/terms/${editTerm.id}`, formData);
         toast.success('术语已更新');
       } else {
-        await client.post('/terms', formData);
+        await client.post('/admin/terms', formData);
         toast.success('术语已创建');
       }
       setFormOpen(false);
@@ -159,7 +159,7 @@ export default function Glossary() {
   const handleDelete = async () => {
     if (!deleteTarget) return;
     try {
-      await client.delete(`/terms/${deleteTarget.id}`);
+      await client.delete(`/admin/terms/${deleteTarget.id}`);
       toast.success('术语已删除');
       setDeleteTarget(null);
       loadTerms();
@@ -170,7 +170,7 @@ export default function Glossary() {
 
   const handleToggle = async (term: Term) => {
     try {
-      await client.put(`/terms/${term.id}/toggle`);
+      await client.put(`/admin/terms/${term.id}/toggle`);
       toast.success(term.is_active ? '已禁用' : '已启用');
       loadTerms();
     } catch {

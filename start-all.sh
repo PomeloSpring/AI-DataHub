@@ -44,7 +44,8 @@ SERVICES=(
     "datamind:services.datamind.main:8001"
     "dataflow:services.dataflow.main:8003"
     "aiplatform:services.aiplatform.main:8007"
-    "graphservice:services.shared.graphservice.main:8011"
+    "graphservice:services.graphservice.main:8011"
+    "semanticservice:services.semanticservice.main:8012"
 )
 
 # DataEngine 服务（Rust 二进制）

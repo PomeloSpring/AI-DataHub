@@ -20,6 +20,11 @@ export interface ToolCall {
   elapsed?: number;
 }
 
+// 执行过程有序时间线:思考与工具调用按实际发生顺序穿插记录
+export type ProcessSegment =
+  | { kind: 'thinking'; text: string }
+  | { kind: 'tool'; tool_call_id?: string; step?: number };
+
 export interface AttachmentInfo {
   id: string;
   filename: string;
@@ -54,10 +59,13 @@ export interface ChatMessage {
   predicting?: boolean;
   feedback?: 'up' | 'down';  // User feedback on this result
   expected_table?: string;   // Expected table from negative feedback
+  trace_id?: string;         // 可观测回合 trace ID(done 事件回传,赞踩关联用)
+  message_uuid?: string;     // 可观测消息统一主键(赞踩反馈写入 adh_message_feedback)
   progressStages?: ProgressStage[];  // Workflow execution stage history
   activeStage?: string;              // Current active stage key
   workflow_info?: any;               // Deep mode workflow info
   tool_calls?: ToolCall[];           // Agent tool call history
+  process?: ProcessSegment[];        // 思考/工具穿插的有序时间线(流式构建,done 对齐)
   executionStats?: {                 // 执行层统计(时间线摘要条)
     num_turns?: number;
     tool_call_count?: number;
@@ -97,6 +105,17 @@ export interface WorkspaceExecutionLayer {
   models: string[];  // cli 执行层的模型候选(如 provider/model_name)
 }
 
+// Chat 端可选的 Waker(按 工作空间+角色 解析,含各自可用模型)
+export interface ChatWaker {
+  id: number;
+  waker_key: string;
+  name: string;
+  display_name: string;
+  description: string;
+  models: string[];
+  is_default: boolean;
+}
+
 interface ChatState {
   conversations: Conversation[];
   currentConvId: number | null;
@@ -122,6 +141,9 @@ interface ChatState {
   // 工作空间绑定的执行层(每工作空间至多一个)与运行时模型选择
   executionLayer: WorkspaceExecutionLayer | null;
   selectedModelRef: string | null;
+  // Chat 端可选的 Waker 清单与当前选中(空=未配置 Waker,模型候选回退执行层)
+  wakers: ChatWaker[];
+  selectedWakerKey: string | null;
   // 执行层 SDK 会话 ID(多轮对话 resume,done 事件回传)
   executorSessionId: string | null;
 
@@ -135,6 +157,8 @@ interface ChatState {
   loadWorkspaces: () => Promise<void>;
   loadWorkspaceConfig: (workspaceId: number) => Promise<void>;
   loadExecutionLayer: (workspaceId: number) => Promise<void>;
+  loadWakers: (workspaceId: number) => Promise<void>;
+  setSelectedWakerKey: (key: string | null) => void;
   setSelectedModelRef: (ref: string | null) => void;
   setSelectedDsId: (id: number) => void;
   setSelectedModelId: (id: number | null) => void;
@@ -158,7 +182,46 @@ interface ChatState {
   clear: () => Promise<void>;
 }
 
-export async function saveMessages(convId: number, messages: ChatMessage[], title?: string) {
+// ── 有序时间线(process)辅助 ──────────────────────────────────────
+
+/** 追加思考增量:连续的 thinking 事件合并进同一段,被工具打断后另起新段。 */
+function appendThinkingToProcess(process: ProcessSegment[] | undefined, text: string): ProcessSegment[] {
+  const prev = process || [];
+  const last = prev[prev.length - 1];
+  if (last && last.kind === 'thinking') {
+    return [...prev.slice(0, -1), { kind: 'thinking', text: last.text + text }];
+  }
+  return [...prev, { kind: 'thinking', text }];
+}
+
+/** 把流式构建的 process 与 done 的后端权威 tool_calls 对齐:
+ *  1) tool_call_id 全部可匹配 → 保留;
+ *  2) done 清单无 id 且数量一致 → 按位次回填 step;
+ *  3) 对不上 → 丢弃,前端回落旧的分开展示。 */
+function reconcileProcess(
+  process: ProcessSegment[] | undefined,
+  toolCalls: ToolCall[] | undefined,
+): ProcessSegment[] | undefined {
+  if (!process || process.length === 0) return undefined;
+  const toolSegs = process.filter(p => p.kind === 'tool');
+  const tc = toolCalls || [];
+  if (toolSegs.length === 0) return tc.length === 0 ? process : undefined;
+  if (tc.length === toolSegs.length) {
+    const ids = new Set(tc.map(t => t.tool_call_id).filter(Boolean));
+    if (toolSegs.every(s => s.kind === 'tool' && s.tool_call_id && ids.has(s.tool_call_id))) {
+      return process;
+    }
+    if (tc.every(t => !t.tool_call_id)) {
+      let idx = -1;
+      return process.map(s => s.kind === 'tool'
+        ? { kind: 'tool' as const, step: tc[++idx].step ?? idx + 1 }
+        : s);
+    }
+  }
+  return undefined;
+}
+
+export async function saveMessages(convId: number, messages: ChatMessage[], title?: string, sessionId?: string | null) {
   const slimMessages = messages.map(m => {
     const slim: any = { ...m };
     // Keep full result (SQL already has LIMIT 1000)
@@ -189,6 +252,7 @@ export async function saveMessages(convId: number, messages: ChatMessage[], titl
   });
   const payload: any = { messages: slimMessages };
   if (title) payload.title = title;
+  if (sessionId) payload.executor_session_id = sessionId;
   try {
     await client.put(`/chat/conversations/${convId}`, payload);
   } catch (e) {
@@ -216,7 +280,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   datasources: [],
   selectedModelId: null,
   llmModels: [],
-  pipelineMode: 'quick',
+  pipelineMode: 'agent',
   retrievalStrategy: 'hybrid',
   mcpServers: [],
 
@@ -226,6 +290,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   workspaceConfig: {},
   executionLayer: null,
   selectedModelRef: null,
+  wakers: [],
+  selectedWakerKey: null,
   executorSessionId: null,
 
   loadMcpTools: async () => {
@@ -260,14 +326,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const { data } = await client.get(`/workspaces/${workspaceId}`);
       const config = data?.config || {};
       set({ workspaceConfig: config });
-      // Validate pipelineMode against allowed modes
-      const modes = config.allowed_pipeline_modes;
-      if (Array.isArray(modes) && modes.length > 0) {
-        const current = get().pipelineMode;
-        if (!current || !modes.includes(current)) {
-          set({ pipelineMode: modes[0] as 'quick' | 'deep' | 'agent' });
-        }
-      }
+      // 全面转向 Qoder 执行层:锁定 agent 模式,忽略旧 allowed_pipeline_modes
+      set({ pipelineMode: 'agent' });
     } catch {
       set({ workspaceConfig: {} });
     }
@@ -284,6 +344,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setSelectedModelRef: (ref) => set({ selectedModelRef: ref }),
+
+  loadWakers: async (workspaceId: number) => {
+    // Chat 端可选 Waker 清单(按 工作空间+当前用户角色 解析,与后端 resolve_wakers 口径一致)
+    try {
+      const { data } = await client.get('/chat/wakers', { params: { workspace_id: workspaceId } });
+      const list: ChatWaker[] = Array.isArray(data) ? data : [];
+      const def = list.find((w) => w.is_default) || list[0] || null;
+      // 默认选中 is_default(或首个);selectedModelRef 置空→发送时派生为该 Waker 首个模型
+      set({ wakers: list, selectedWakerKey: def?.waker_key ?? null, selectedModelRef: null });
+    } catch {
+      set({ wakers: [], selectedWakerKey: null });
+    }
+  },
+
+  setSelectedWakerKey: (key) => {
+    // 切换 Waker 时重置显式模型选择(新 Waker 的可用模型集不同)
+    set({ selectedWakerKey: key, selectedModelRef: null });
+  },
 
   loadConversations: async () => {
     try {
@@ -359,7 +437,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({
         currentConvId: convId,
         messages: msgs,
-        executorSessionId: null,  // 切换会话后执行层会话重新开始
+        // 恢复持久化的执行层会话 ID,重新打开对话即可 resume qoder 会话
+        executorSessionId: data.executor_session_id || null,
         // Don't override selectedDsId — keep user's dropdown selection
       });
     } catch (e) {
@@ -459,13 +538,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (state.pipelineMode === 'agent') {
         delete requestBody.datasource_id;  // 执行层自带数据源选择(execute_sql 工具)
       }
-      // CLI 执行层(qoder):运行时选择的模型以 model_ref 透传,
-      // 上一轮会话 ID 以 session_id 回传实现 SDK 多轮对话
-      if (state.executionLayer?.layer_type === 'cli' && state.selectedModelRef) {
+      // Waker 选择: 发送 waker_key;模型候选优先取自选中 Waker 的可用模型,
+      // 未显式选择时派生为其首个模型(仅 1 个时无需选择框);无 Waker 配置时
+      // 回退到执行层运行时模型(model_ref)。上一轮会话 ID 以 session_id 回传 resume。
+      if (state.pipelineMode === 'agent') {
+        const waker = state.wakers.find(w => w.waker_key === state.selectedWakerKey) || null;
+        if (waker) {
+          requestBody.waker_key = waker.waker_key;
+          const wm = waker.models || [];
+          const ref = state.selectedModelRef || (wm.length >= 1 ? wm[0] : '');
+          if (ref) requestBody.model_ref = ref;
+        } else if (state.executionLayer?.layer_type === 'cli' && state.selectedModelRef) {
+          requestBody.model_ref = state.selectedModelRef;
+        }
+      } else if (state.executionLayer?.layer_type === 'cli' && state.selectedModelRef) {
         requestBody.model_ref = state.selectedModelRef;
       }
       if (state.executorSessionId) {
         requestBody.session_id = state.executorSessionId;
+      }
+      // qoder 长对话池 key: 后端按 chat 会话维护持久 qodercli 进程,
+      // 同会话后续轮次免起进程/恢复会话/重连 MCP, 显著降低首字延迟
+      if (state.pipelineMode === 'agent' && convId) {
+        requestBody.conversation_id = convId;
       }
     } else {
       apiEndpoint = '/api/chat/send/stream';
@@ -548,7 +643,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     const msgs = [...state.messages];
                     const lastIdx = msgs.length - 1;
                     if (msgs[lastIdx]?.role === 'assistant') {
-                      msgs[lastIdx] = { ...msgs[lastIdx], thinking: streamingThinking };
+                      msgs[lastIdx] = {
+                        ...msgs[lastIdx],
+                        thinking: streamingThinking,
+                        process: appendThinkingToProcess(msgs[lastIdx].process, data.text),
+                      };
                     }
                     return { messages: msgs };
                   });
@@ -566,7 +665,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   });
                 }
               } else if (currentEvent === 'tool_start') {
-                // 执行层工具调用开始:时间线追加 pending 步骤
+                // 执行层工具调用开始:时间线追加 pending 步骤,并记入有序 process
                 if (isSameConv()) {
                   set(state => {
                     const msgs = [...state.messages];
@@ -580,6 +679,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
                           tool_call_id: data.tool_call_id,
                           tool: data.tool,
                           arguments: data.arguments,
+                        }],
+                        process: [...(msgs[lastIdx].process || []), {
+                          kind: 'tool' as const,
+                          tool_call_id: data.tool_call_id,
+                          step: prev.length + 1,
                         }],
                       };
                     }
@@ -683,6 +787,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       console.debug('[SSE] Building finalMsg: intent=', doneData.intent, 'sql=', doneData.sql?.substring(0, 100), 'hasResult=', !!doneData.result, 'hasError=', !!doneData.error);
       // Preserve progress stages from streaming
       const existingMsg = get().messages[get().messages.length - 1];
+      // done 携带完整清单优先(后端权威);否则保留流式聚合结果
+      const finalToolCalls = (doneData.tool_calls && doneData.tool_calls.length > 0)
+        ? doneData.tool_calls
+        : existingMsg?.tool_calls;
       const finalMsg: ChatMessage = {
         role: 'assistant',
         content: doneData.error ? '' : (doneData.reply || streamingText),
@@ -706,10 +814,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         activeStage: 'completed',
         analysis: doneData.analysis,
         workflow_info: doneData.workflow_info,
-        // done 携带完整清单优先(后端权威);否则保留流式聚合结果
-        tool_calls: (doneData.tool_calls && doneData.tool_calls.length > 0)
-          ? doneData.tool_calls
-          : existingMsg?.tool_calls,
+        tool_calls: finalToolCalls,
+        // 可观测关联键:赞踩反馈据此写入 adh_message_feedback 并能在 Trace 详情回显
+        trace_id: doneData.trace_id,
+        message_uuid: doneData.message_uuid,
+        // 有序时间线:流式 process 与最终 tool_calls 对齐,对不上则丢弃回落旧展示
+        process: reconcileProcess(existingMsg?.process, finalToolCalls),
         executionStats: doneData.stats,
       };
 
@@ -726,11 +836,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         };
       });
 
-      // Save conversation
+      // Save conversation (连同 qoder 会话 ID 一并持久化)
       if (isSameConv()) {
         const msgs = get().messages;
         const title = deriveTitle(msgs);
-        await saveMessages(convId, msgs, title);
+        await saveMessages(convId, msgs, title, get().executorSessionId);
         if (title) {
           set(s => ({
             conversations: s.conversations.map(c =>

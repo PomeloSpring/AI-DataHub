@@ -47,6 +47,12 @@ class GraphBuilder:
             # Clear existing graph for this datasource
             self._store.clear_graph(datasource_id)
 
+            # Merge ontology FIRST: the RDF bulk load (PUT /store) replaces the
+            # named graph, so it must run before the physical nodes are appended
+            # via INSERT DATA — otherwise it would wipe them.
+            ontology_count = self._merge_ontology_models(datasource_id)
+            logger.info("Merged %d ontology model(s)", ontology_count)
+
             # Build table nodes
             tables = self._load_tables(datasource_id)
             for t in tables:
@@ -155,15 +161,14 @@ class GraphBuilder:
                     description=tpl.get("description", ""),
                     variables=tpl.get("variables", "") or "",
                     rules=tpl.get("rules", "") or "",
+                    dialect=tpl.get("dialect", "") or "",
                     tables=touched,
                     datasource_id=datasource_id,
                 )
                 stats["sql_templates"] += 1
             logger.info("Created %d SQL template nodes", stats["sql_templates"])
 
-            # Merge active ontology models
-            ontology_count = self._merge_ontology_models(datasource_id)
-            logger.info("Merged %d ontology model(s)", ontology_count)
+            # Ontology models were merged at the start (see above).
 
             total_triples = self._store.count_triples(datasource_id)
             logger.info("Graph build complete. Total triples: %d", total_triples)
@@ -213,7 +218,7 @@ class GraphBuilder:
                     SELECT table_name, column_name, data_type, column_comment, datasource_id
                     FROM adh_column_metadata
                     WHERE is_active = 1 {ds_filter}
-                    ORDER BY table_name, ordinal_position
+                    ORDER BY table_name, id
                 """, params)
                 return cur.fetchall()
         except Exception as e:
@@ -269,7 +274,8 @@ class GraphBuilder:
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT id, name, db_type FROM adh_datasources WHERE is_active = 1")
+                # adh_datasources 无 is_active/status 列(init.sql schema), 全量列出即可
+                cur.execute("SELECT id, name, db_type FROM adh_datasources")
                 return cur.fetchall()
         except Exception as e:
             logger.warning("Failed to load datasources: %s", e)
@@ -325,15 +331,26 @@ class GraphBuilder:
                 params = [datasource_id] if datasource_id else []
                 cur.execute(f"""
                     SELECT template_id, template_name, category, intent_keywords,
-                           sql_template, variables, rules, description
+                           sql_template, variables, rules, description, dialect
                     FROM adh_sql_templates
                     WHERE is_active = 1 {ds_filter}
                     ORDER BY template_id
                 """, params)
                 return cur.fetchall()
         except Exception as e:
-            logger.warning("Failed to load SQL templates: %s", e)
-            return []
+            try:
+                # dialect 列为迁移新增: 旧库上回落无 dialect 查询, 图谱装载不中断
+                cur.execute(f"""
+                    SELECT template_id, template_name, category, intent_keywords,
+                           sql_template, variables, rules, description
+                    FROM adh_sql_templates
+                    WHERE is_active = 1 {ds_filter}
+                    ORDER BY template_id
+                """, params)
+                return cur.fetchall()
+            except Exception as e2:
+                logger.warning("Failed to load SQL templates: %s", e2)
+                return []
         finally:
             conn.close()
 

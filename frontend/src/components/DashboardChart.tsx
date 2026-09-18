@@ -8,10 +8,11 @@ import {
   Flower2, Target, Cloud, Map, List, ListChecks, Sliders,
   Search, RotateCcw, Download,
 } from 'lucide-react';
-import { useThemeStore } from '../stores/themeStore';
+import { useThemeStore, IS_DARK } from '../stores/themeStore';
 import { Label } from '@/components/ui/label';
 import { useDashboardStore } from '../stores/dashboardStore';
 import ModalPage from './ModalPage';
+import { chartDataKey, type LocalVisual } from '@/lib/dashboardDesign';
 
 // Lucide icon map for chart types
 const CHART_ICON_MAP: Record<string, React.ComponentType<any>> = {
@@ -35,6 +36,8 @@ interface Props {
   style?: React.CSSProperties;
   loading?: boolean;
   chartId?: number;
+  visual?: LocalVisual;
+  draft?: boolean;
 }
 
 // Map data URLs
@@ -46,6 +49,24 @@ const MAP_URLS = {
 // Color palettes
 const LIGHT_COLORS = ['#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de', '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc'];
 const DARK_COLORS = ['#4992ff', '#7cffb2', '#fddd60', '#ff6e76', '#58d9f9', '#05c091', '#ff8a45', '#8d48e3', '#dd79ff'];
+
+/** 运行时读取主题 CSS 变量为可用颜色(canvas 无法解析 var(),需取实际值)。 */
+function readToken(name: string, fallback: string): string {
+  try {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    if (!v) return fallback;
+    // G2 的颜色解析器不支持 CSS Color 4 空格语法，转为兼容的逗号语法。
+    const [channels, alpha] = v.split('/').map(part => part.trim());
+    const hsl = channels.split(/[\s,]+/).join(', ');
+    return alpha ? `hsla(${hsl}, ${alpha})` : `hsl(${hsl})`;
+  } catch { return fallback; }
+}
+
+/** 图表系列色板: 读取 --chart-1..10 主题令牌,随主题联动;缺失时回退经典盘。 */
+function readChartPalette(isDark: boolean): string[] {
+  const fb = isDark ? DARK_COLORS : LIGHT_COLORS;
+  return Array.from({ length: 10 }, (_, i) => readToken(`--chart-${i + 1}`, fb[i % fb.length]));
+}
 
 // Helper: check if data has group column for multi-series
 export function detectGroupColumn(columns: string[], rows: any[], config: Record<string, any>): string | null {
@@ -223,17 +244,25 @@ export function groupDataByColumn(rows: any[], xCol: string, yCol: string, group
 }
 
 // Build G2 spec based on chart type
-export function buildG2Spec(chartType: string, columns: string[], rows: any[], config: Record<string, any>, isDark: boolean, width: number, height: number) {
-  const colors = isDark ? DARK_COLORS : LIGHT_COLORS;
-  const textColor = isDark ? '#f0f0f0' : '#333';
-  const bgColor = isDark ? '#1f1f3a' : '#ffffff';
+export function buildG2Spec(chartType: string, columns: string[], rows: any[], config: Record<string, any>, isDark: boolean, width: number, height: number, visual?: LocalVisual) {
+  isDark = visual?.mode ? visual.mode === 'dark' : isDark;
+  // 图表配色运行时读取主题令牌(--chart-*/--foreground/--card),随 9 套主题联动;
+  // isDark 仅用于 G2 内置 classic/classicDark 网格底纹与字重微调
+  const colors = config?.colorScheme?.length ? config.colorScheme : visual?.palette?.length ? visual.palette : readChartPalette(isDark);
+  const local = !!visual?.mode;
+  const textColor = visual?.textColor || (local ? (isDark ? '#e2e8f0' : '#111827') : readToken('--foreground', isDark ? '#f0f0f0' : '#333'));
+  const subTextColor = visual?.subTextColor || (local ? (isDark ? '#94a3b8' : '#6b7280') : readToken('--muted-foreground', isDark ? '#aaa' : '#555'));
+  const bgColor = visual?.viewBg || (local ? (isDark ? '#0f172a' : '#ffffff') : readToken('--card', isDark ? '#1f1f3a' : '#ffffff'));
+  const borderColor = config?.axisStyle?.gridColor || config?.gridColor || visual?.gridColor || (local ? (isDark ? '#334155' : '#e5e7eb') : readToken('--border', isDark ? '#444' : '#e5e7eb'));
+  const tooltipBg = visual?.popoverBg || (local ? bgColor : readToken('--popover', bgColor));
+  const tooltipText = local ? textColor : readToken('--popover-foreground', textColor);
   // Axis label styling — brighter, larger, bolder on dark backgrounds
   const axisLabelStyle = isDark
-    ? { labelFill: '#f0f0f0', labelFontSize: 12, labelFontWeight: '600' as const }
-    : { labelFill: '#555', labelFontSize: 11, labelFontWeight: '400' as const };
+    ? { labelFill: textColor, labelFontSize: 12, labelFontWeight: '600' as const }
+    : { labelFill: subTextColor, labelFontSize: 11, labelFontWeight: '400' as const };
   const legendLabelStyle = isDark
-    ? { fill: '#f0f0f0', fontSize: 12, fontWeight: '600' as const }
-    : { fill: '#555', fontSize: 11 };
+    ? { fill: textColor, fontSize: 12, fontWeight: '600' as const }
+    : { fill: subTextColor, fontSize: 11 };
 
   const xCol = config?.xCol || columns.find(c => typeof rows[0]?.[c] === 'string') || columns[0];
   const yCol = config?.yCol || columns.find(c => typeof rows[0]?.[c] === 'number') || columns[1];
@@ -305,7 +334,47 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
     width,
     height,
     autoFit: false,
-    theme: isDark ? 'classicDark' : 'classic',
+    theme: {
+      type: isDark ? 'classicDark' : 'classic',
+      // 未编码 color 的单系列走 theme.color，分组系列才走色盘。
+      color: colors[0],
+      category10: colors,
+      category20: [...colors, ...colors],
+      // 放在主题内，避免被各图表的 mark style 覆盖。
+      view: { viewFill: bgColor },
+      axis: {
+        labelFill: subTextColor, labelOpacity: 1,
+        titleFill: textColor, titleOpacity: 1,
+        gridStroke: borderColor, gridStrokeOpacity: 1,
+        lineStroke: borderColor, lineStrokeOpacity: 1,
+        tickStroke: borderColor, tickOpacity: 1,
+      },
+      legendCategory: {
+        itemLabelFill: subTextColor, itemLabelFillOpacity: 1,
+        itemValueFill: subTextColor, itemValueFillOpacity: 1,
+        titleFill: textColor, titleFillOpacity: 1,
+      },
+      legendContinuous: {
+        labelFill: subTextColor, labelFillOpacity: 1,
+        titleFill: textColor, titleFillOpacity: 1,
+      },
+      tooltip: {
+        css: {
+          '.g2-tooltip': {
+            'background-color': tooltipBg,
+            color: tooltipText,
+            border: `1px solid ${borderColor}`,
+            'border-radius': '8px',
+            'font-family': 'inherit',
+            'box-shadow': '0 6px 16px rgb(0 0 0 / 0.12)',
+          },
+          '.g2-tooltip-title': { color: subTextColor },
+          // 数值/名称显式取 popover-foreground，G2 默认黑色在深色 popover 上会看不见。
+          '.g2-tooltip-list-item-name-label': { color: tooltipText },
+          '.g2-tooltip-list-item-value': { color: tooltipText, 'font-weight': '600' },
+        },
+      },
+    },
     padding: [40, 24, 40, 24],
     style: {
       viewFill: bgColor,
@@ -324,22 +393,33 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
           y: { style: axisLabelStyle },
         },
         scale: { color: { range: colors } },
-        style: { radiusTopLeft: 4, radiusTopRight: 4 },
+        style: { radiusTopLeft: Number.parseFloat(config?.borderRadius ?? 4) || 0, radiusTopRight: Number.parseFloat(config?.borderRadius ?? 4) || 0,
+          ...(config?.gradient ? { fill: `l(270) 0:${colors[0]} 1:${colors[1] || colors[0]}` } : {}) },
+        labels: config?.showLabel ? [{ text: yCol, style: { fill: textColor } }] : [],
         interaction: { tooltip: { shared: true } },
       };
 
     case 'line':
+      if (config?.areaFill) return {
+        ...baseSpec, type: 'view', data: processedData,
+        scale: { color: { range: colors } },
+        axis: { x: { style: axisLabelStyle }, y: { style: axisLabelStyle } },
+        children: [
+          { type: 'area', encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config.smooth === false ? 'area' : 'smooth' }, style: { fillOpacity: config.areaOpacity ?? 0.15 } },
+          { type: 'line', encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config.smooth === false ? 'line' : 'smooth' }, style: { lineWidth: config.lineWidth ?? 2, ...(config.glow ? { shadowColor: colors[0], shadowBlur: 8 } : {}) } },
+        ],
+      };
       return {
         ...baseSpec,
         type: 'line',
         data: processedData,
-        encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: 'smooth' },
+        encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config?.smooth === false ? undefined : 'smooth' },
         axis: {
           x: { labelAutoRotate: true, style: axisLabelStyle },
           y: { style: axisLabelStyle },
         },
         scale: { color: { range: colors } },
-        style: { lineWidth: 2 },
+        style: { lineWidth: config?.lineWidth ?? 2 },
         point: { shapeSize: 3 },
         interaction: { tooltip: { shared: true } },
       };
@@ -349,13 +429,13 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         ...baseSpec,
         type: 'area',
         data: processedData,
-        encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: 'smooth' },
+        encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config?.smooth === false ? undefined : 'smooth' },
         axis: {
           x: { labelAutoRotate: true, style: axisLabelStyle },
           y: { style: axisLabelStyle },
         },
         scale: { color: { range: colors } },
-        style: { fillOpacity: 0.3 },
+        style: { fillOpacity: config?.areaOpacity ?? 0.3 },
         interaction: { tooltip: { shared: true } },
       };
 
@@ -370,11 +450,11 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         data: pieData,
         encode: { x: 'name', y: 'value', color: 'name' },
         transform: [{ type: 'stackY' }],
-        coordinate: { type: 'theta', innerRadius: 0.4 },
+        coordinate: { type: 'theta', innerRadius: config?.innerRadius ?? 0.4 },
         scale: { color: { range: colors } },
         style: { stroke: bgColor, lineWidth: 2 },
-        labels: [{ text: 'name', position: 'outside', style: { fontSize: 11, fill: textColor } }],
-        legend: { color: { position: 'right', itemLabelStyle: legendLabelStyle } },
+        labels: config?.showLabel === false ? [] : [{ text: 'name', position: 'outside', style: { fontSize: 11, fill: textColor } }],
+        legend: config?.legend === false ? false : { color: { position: config?.legend || 'right', itemLabelStyle: legendLabelStyle } },
         interaction: { tooltip: {} },
       };
     }
@@ -404,12 +484,12 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
       });
       return {
         ...baseSpec,
-        type: 'line',
+        type: config?.areaOpacity != null ? 'area' : 'line',
         data: radarData,
         encode: { x: 'name', y: 'value', color: 'category' },
         coordinate: { type: 'polar' },
         scale: { color: { range: colors } },
-        style: { lineWidth: 2 },
+        style: { lineWidth: config?.lineWidth ?? 2, fillOpacity: config?.areaOpacity ?? 0 },
         axis: { x: { style: axisLabelStyle }, y: { style: axisLabelStyle } },
         interaction: { tooltip: {} },
       };
@@ -417,16 +497,24 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
 
     case 'gauge': {
       const val = Number(rows[0]?.[yCol]) || 0;
+      const hasThresholds = Array.isArray(config?.thresholds) && config.thresholds.some((t: any) => typeof t === 'number');
+      // 无阈值时保持旧契约 (value)；有阈值时转成 G2 gauge 的 target/total/thresholds 真实渲染。
+      const total = Number(config?.maxValue) > 0 ? Number(config.maxValue) : (hasThresholds ? 1 : val);
+      const thresholds = hasThresholds
+        ? [...new Set<number>(config.thresholds.filter((t: any) => typeof t === 'number' && t > 0 && t < 1))].sort((a, b) => a - b).map((t: number) => t * total).concat(total)
+        : [];
       return {
         ...baseSpec,
         type: 'gauge',
-        data: { value: val },
+        data: hasThresholds
+          ? { target: Math.max(0, Math.min(val, total)), total, thresholds }
+          : { value: val },
         style: {
           pointerShape: 'pointer',
           pinShape: 'circle',
-          labelTextFill: textColor,
-          labelTextFontSize: 13,
-          labelTextFontWeight: '600',
+          textFill: config?.valueColor || textColor,
+          textFontSize: 24,
+          textFontWeight: '600',
         },
         scale: { color: { range: colors } },
       };
@@ -447,7 +535,10 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         scale: { x: { padding: 0 }, color: { range: colors } },
         coordinate: { transform: [{ type: 'transpose' }] },
         axis: false,
-        style: { stroke: bgColor, lineWidth: 1 },
+        style: { stroke: bgColor, lineWidth: 1, ...(config?.gradient ? { fill: (d: any) => {
+          const i = Math.max(0, funnelData.findIndex(row => row.action === d.action));
+          return `l(0) 0:${colors[i % colors.length]} 1:${colors[(i + 1) % colors.length]}`;
+        } } : {}) },
         labels: [{
           text: (d: any) => `${d.action}\n${d.pv}`,
           position: 'inside',
@@ -529,7 +620,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
               y: height / 2 - (showComparison && (yoyChange !== null || momChange !== null) ? 20 : 0),
               fontSize: valueFontSize,
               fontWeight: 'bold',
-              fill: textColor,
+              fill: config?.valueColor || textColor,
               textAlign: 'center',
             },
           },
@@ -579,7 +670,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
               y: height / 2 - 20,
               fontSize: 36,
               fontWeight: 'bold',
-              fill: textColor,
+              fill: config?.valueColor || textColor,
               textAlign: 'center',
             },
           },
@@ -703,7 +794,9 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         data: waterfallData,
         encode: { x: categoryCol, y: ['start', 'end'], color: (d: any) => d.value >= 0 ? 'increase' : 'decrease' },
         scale: { color: { domain: ['increase', 'decrease'], range: ['#52c41a', '#ff4d4f'] } },
-        style: { radiusTopLeft: 4, radiusTopRight: 4 },
+        style: { radiusTopLeft: Number.parseFloat(config?.borderRadius ?? 4) || 0, radiusTopRight: Number.parseFloat(config?.borderRadius ?? 4) || 0,
+          ...(config?.gradient ? { fill: `l(270) 0:${colors[0]} 1:${colors[1] || colors[0]}` } : {}) },
+        labels: config?.showLabel ? [{ text: yCol, style: { fill: textColor } }] : [],
         axis: {
           x: { style: axisLabelStyle },
           y: { style: axisLabelStyle },
@@ -935,25 +1028,31 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
           y: { style: axisLabelStyle },
         },
         scale: { color: { range: colors } },
-        style: { radiusTopLeft: 4, radiusTopRight: 4 },
+        style: { radiusTopLeft: Number.parseFloat(config?.borderRadius ?? 4) || 0, radiusTopRight: Number.parseFloat(config?.borderRadius ?? 4) || 0,
+          ...(config?.gradient ? { fill: `l(270) 0:${colors[0]} 1:${colors[1] || colors[0]}` } : {}) },
+        labels: config?.showLabel ? [{ text: yCol, style: { fill: textColor } }] : [],
         interaction: { tooltip: { shared: true } },
       };
   }
 }
 
-function DashboardChartInner({ chartType, data, config, style, loading, chartId }: Props) {
-  const isDark = useThemeStore(s => s.isDark);
-  const isLoading = loading ?? (chartId != null && useDashboardStore.getState().refreshingChartIds.has(chartId));
+function DashboardChartInner({ chartType, data, config, style, loading, chartId, visual, draft = false }: Props) {
+  // 依赖 theme(主题 id)而非 isDark: 同明暗主题切换(dark→tech)也需重建图表以读取新令牌色
+  const theme = useThemeStore(s => s.theme);
+  const isDark = visual?.mode ? visual.mode === 'dark' : IS_DARK[theme];
+  const refreshing = useDashboardStore(s => chartId != null && s.refreshingChartIds.has(chartId));
+  const isLoading = loading ?? refreshing;
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const [mapData, setMapData] = useState<any>(null);
 
   const cfg = config || {};
+  const widgetParams = useDashboardStore(s => s.paramValues);
 
   // Initialize date/date range default values before chart refresh
   useEffect(() => {
-    if (!cfg.paramKey) return;
+    if (draft || !cfg.paramKey) return;
     const store = useDashboardStore.getState();
     const current = store.paramValues[cfg.paramKey];
 
@@ -970,7 +1069,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId 
         store.setParamValue(cfg.paramKey, cfg.defaultValue);
       }
     }
-  }, [chartType, cfg.paramKey, cfg.rangeMaxDays, cfg.defaultValue]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [draft, chartType, cfg.paramKey, cfg.rangeMaxDays, cfg.defaultValue]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-refresh for server-side pagination on mount (data_cache has full data, need paginated)
   useEffect(() => {
@@ -981,10 +1080,8 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId 
   }, [chartId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Serialize data/config to detect actual content changes (not just reference changes)
-  const dataKey = data?.columns?.length
-    ? data.columns.join(',') + '|' + data.rows.length + '|' + (data.rows[0] ? JSON.stringify(data.rows[0]) : '')
-    : '';
-  const configKey = cfg ? JSON.stringify(cfg) : '';
+  const dataKey = chartDataKey(data);
+  const configKey = JSON.stringify({ config: cfg, visual });
 
   // Measure container dimensions
   useEffect(() => {
@@ -1044,99 +1141,105 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId 
     // For map charts, wait for map data
     if ((chartType === 'china_map' || chartType === 'world_map') && !mapData) return;
 
-    // Destroy previous chart
-    if (chartRef.current) {
-      chartRef.current.destroy();
-      chartRef.current = null;
-    }
+    // 布局组件在父级 useEffect 中应用主题类；下一帧再取 CSS 变量，避免读到旧主题。
+    const frame = requestAnimationFrame(() => {
+      if (!containerRef.current) return;
+      // Destroy previous chart
+      if (chartRef.current) {
+        chartRef.current.destroy();
+        chartRef.current = null;
+      }
 
-    try {
-      const spec = buildG2Spec(
-        chartType, data.columns, data.rows, cfg, isDark,
-        dimensions.width, dimensions.height
-      );
+      try {
+        const spec = buildG2Spec(
+          chartType, data.columns, data.rows, cfg, isDark,
+          dimensions.width, dimensions.height, visual
+        );
 
-      // Handle map charts
-      if (chartType === 'china_map' || chartType === 'world_map') {
-        const nameCol = cfg?.nameCol || data.columns.find(c => typeof data.rows[0]?.[c] === 'string') || data.columns[0];
-        const valueCol = cfg?.valueCol || data.columns.find(c => typeof data.rows[0]?.[c] === 'number') || data.columns[1];
+        // Handle map charts
+        if (chartType === 'china_map' || chartType === 'world_map') {
+          const nameCol = cfg?.nameCol || data.columns.find(c => typeof data.rows[0]?.[c] === 'string') || data.columns[0];
+          const valueCol = cfg?.valueCol || data.columns.find(c => typeof data.rows[0]?.[c] === 'number') || data.columns[1];
 
-        // Prepare data as a map for quick lookup
-        const dataMap: Record<string, number> = {};
-        data.rows.forEach(r => {
-          const name = String(r[nameCol]);
-          const value = Number(r[valueCol]) || 0;
-          dataMap[name] = value;
-        });
+          // Prepare data as a map for quick lookup
+          const dataMap: Record<string, number> = {};
+          data.rows.forEach(r => {
+            const name = String(r[nameCol]);
+            const value = Number(r[valueCol]) || 0;
+            dataMap[name] = value;
+          });
 
-        // Merge data into map features
-        const featuresWithValues = mapData.features.map((f: any) => ({
-          ...f,
-          properties: {
-            ...f.properties,
-            value: dataMap[f.properties.name] || 0,
-          },
-        }));
+          // Merge data into map features
+          const featuresWithValues = mapData.features.map((f: any) => ({
+            ...f,
+            properties: {
+              ...f.properties,
+              value: dataMap[f.properties.name] || 0,
+            },
+          }));
 
-        const chart = new Chart({
-          container: containerRef.current,
-          width: dimensions.width,
-          height: dimensions.height,
-          autoFit: false,
-        });
+          const chart = new Chart({
+            container: containerRef.current,
+            width: dimensions.width,
+            height: dimensions.height,
+            autoFit: false,
+          });
 
-        chart.options({
-          type: 'geoView',
-          children: [
-            {
-              type: 'geoPath',
-              data: { type: 'FeatureCollection', features: featuresWithValues },
-              encode: {
-                color: 'value',
-              },
-              scale: {
-                color: {
-                  palette: 'ylGn',
-                  unknown: '#f0f0f0',
+          chart.options({
+            type: 'geoView',
+            theme: spec.theme,
+            children: [
+              {
+                type: 'geoPath',
+                data: { type: 'FeatureCollection', features: featuresWithValues },
+                encode: {
+                  color: 'value',
+                },
+                scale: {
+                  color: {
+                    palette: 'ylGn',
+                    unknown: readToken('--muted', '#f0f0f0'),
+                  },
+                },
+                style: {
+                  stroke: readToken('--card', '#fff'),
+                  lineWidth: 0.5,
+                },
+                tooltip: {
+                  title: 'name',
+                  items: [{ field: 'value', name: '数值' }],
                 },
               },
-              style: {
-                stroke: '#fff',
-                lineWidth: 0.5,
-              },
-              tooltip: {
-                title: 'name',
-                items: [{ field: 'value', name: '数值' }],
-              },
-            },
-          ],
-        });
+            ],
+          });
 
-        chart.render();
-        chartRef.current = chart;
-      } else {
-        const chart = new Chart({
-          container: containerRef.current,
-          width: dimensions.width,
-          height: dimensions.height,
-          autoFit: false,
-        });
+          chart.render();
+          chartRef.current = chart;
+        } else {
+          const chart = new Chart({
+            container: containerRef.current,
+            width: dimensions.width,
+            height: dimensions.height,
+            autoFit: false,
+          });
 
-        chart.options(spec);
-        chart.render();
-        chartRef.current = chart;
+          chart.options(spec);
+          chart.render();
+          chartRef.current = chart;
+        }
+      } catch (e) {
+        console.error('Chart render error:', e);
       }
-    } catch (e) {
-      console.error('Chart render error:', e);
-    }
+    });
 
     return () => {
+      cancelAnimationFrame(frame);
       if (chartRef.current) {
         chartRef.current.destroy();
         chartRef.current = null;
       }
     };
-  }, [chartType, dataKey, configKey, dimensions, mapData]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [chartType, dataKey, configKey, dimensions, mapData, theme]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Widget rendering — compact form controls, not G2 charts (buttons handled separately below)
   const WIDGET_TYPES = ['widget_label', 'widget_text', 'widget_number', 'widget_date', 'widget_daterange', 'widget_select', 'widget_multi_select'];
@@ -1150,11 +1253,12 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId 
     const options: { label: string; value: string }[] = cfg?.options || [];
     const ws = cfg?.widgetStyle || {};
 
-    const paramValues = useDashboardStore.getState().paramValues;
+    const paramValues = widgetParams;
     const setParamValue = useDashboardStore.getState().setParamValue;
     const currentValue = paramValues[paramKey] ?? defaultValue;
 
     const handleChange = (val: any) => {
+      if (draft) return;
       if (paramKey) setParamValue(paramKey, val);
       // Bind filter value to page param(s) if bind_param is configured
       const bindParam = cfg?.bind_param;
@@ -1324,10 +1428,11 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId 
     const handleClick = (e: React.MouseEvent) => {
       e.stopPropagation();
       e.preventDefault();
+      if (draft) return;
       if (chartType === 'widget_search') {
         useDashboardStore.getState().refreshCharts();
       } else if (chartType === 'widget_reset') {
-        const paramValues = useDashboardStore.getState().paramValues;
+        const paramValues = widgetParams;
         const keys = Object.keys(paramValues);
         keys.forEach(k => useDashboardStore.getState().setParamValue(k, ''));
       } else if (chartType === 'widget_export') {

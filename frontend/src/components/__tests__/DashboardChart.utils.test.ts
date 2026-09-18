@@ -1,5 +1,11 @@
-import { describe, it, expect } from 'vitest'
-import {
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { createElement, useEffect } from 'react'
+import { act, cleanup, render } from '@testing-library/react'
+import * as G2 from '@antv/g2'
+import postcss from 'postcss'
+import { readFileSync } from 'node:fs'
+import { applyTheme, IS_DARK, useThemeStore, type ThemeId } from '../../stores/themeStore'
+import DashboardChart, {
   detectGroupColumn,
   isTimeColumn,
   parseTime,
@@ -458,5 +464,155 @@ describe('buildG2Spec', () => {
     const spec = buildG2Spec('radar', ['metric', 'score', 'category'], radarRows, {}, false, 400, 300)
     expect(spec.type).toBe('line')
     expect(spec.coordinate.type).toBe('polar')
+  })
+})
+
+// 使用实际主题令牌，覆盖无分组图表、分组色盘及父级应用主题的时序。
+describe('图表主题适配', () => {
+  const columns = ['日期', '病例数量']
+  const rows = [
+    { 日期: '2026-09-14', 病例数量: 8 },
+    { 日期: '2026-09-15', 病例数量: 20 },
+    { 日期: '2026-09-16', 病例数量: 36 },
+  ]
+  let stylesheet: HTMLStyleElement
+  let originalClass: string
+  let themeCSS: string
+  const originalTheme = useThemeStore.getState().theme
+
+  beforeEach(() => {
+    originalClass = document.documentElement.className
+    stylesheet = document.createElement('style')
+    const rules: string[] = []
+    themeCSS = readFileSync('src/styles/globals.css', 'utf8')
+    postcss.parse(themeCSS).walkRules(rule => {
+      if (rule.selector === ':root' || /^\.(light|tech|finance|bento|glass|ainative|medical|datafoundry)$/.test(rule.selector)) {
+        rules.push(rule.toString())
+      }
+    })
+    stylesheet.textContent = rules.join('\n')
+    document.head.append(stylesheet)
+    applyTheme('datafoundry')
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    stylesheet.remove()
+    document.documentElement.className = originalClass
+    useThemeStore.setState({ theme: originalTheme, isDark: IS_DARK[originalTheme] })
+  })
+
+  it.each(['bar', 'line', 'area', 'timeseries_bar', 'timeseries_line', 'timeseries_area'])(
+    '%s 无分组时使用近黑主色，不回退 G2 默认蓝色', chartType => {
+      const spec = buildG2Spec(chartType, columns, rows, {}, false, 400, 300)
+      expect(spec.encode.color).toBeUndefined()
+      expect(spec.theme.color).toBe('hsl(0, 0%, 5%)')
+      // 验证 G2 实际主题解析器接收到了默认色，而不只是 scale.color.range。
+      const actualTheme = G2.stdlib()['theme.classic'](spec.theme)
+      expect(actualTheme.color).toBe('hsl(0, 0%, 5%)')
+      expect(actualTheme.view.viewFill).toBe('hsl(0, 0%, 100%)')
+    },
+  )
+
+  it.each(['bar', 'line', 'timeseries_bar', 'timeseries_line', 'timeseries_area'])(
+    '%s 分组时保留不同颜色，不被单系列默认色覆盖', chartType => {
+      const groupedRows = rows.flatMap(row => [
+        { ...row, 地区: '东区' }, { ...row, 地区: '西区' },
+      ])
+      const spec = buildG2Spec(chartType, [...columns, '地区'], groupedRows, { groupCol: '地区' }, false, 400, 300)
+      expect(spec.encode.color).toBe('地区')
+      expect(spec.scale.color.range.slice(0, 2)).toEqual(['hsl(0, 0%, 5%)', 'hsl(0, 0%, 40%)'])
+      expect(new Set(spec.scale.color.range).size).toBe(10)
+      expect(spec.theme.category10).toEqual(spec.scale.color.range)
+    },
+  )
+
+  it('背景、坐标轴、图例与浮层使用主题令牌', () => {
+    const spec = buildG2Spec('timeseries_bar', columns, rows, {}, false, 400, 300)
+    expect(spec.theme.view.viewFill).toBe('hsl(0, 0%, 100%)')
+    expect(spec.theme.axis.labelOpacity).toBe(1)
+    expect(spec.theme.axis.gridStroke).toBe('hsl(0, 0%, 93%)')
+    expect(spec.theme.legendCategory.itemLabelFill).toBe('hsl(0, 0%, 40%)')
+    expect(spec.theme.tooltip.css['.g2-tooltip']['background-color']).toBe('hsl(0, 0%, 100%)')
+    expect(spec.theme.tooltip.css['.g2-tooltip'].color).toBe('hsl(0, 0%, 5%)')
+    // 数值与名称显式取 popover-foreground，避免深色主题下与背景同色而看不清。
+    expect(spec.theme.tooltip.css['.g2-tooltip-list-item-value'].color).toBe('hsl(0, 0%, 5%)')
+    expect(spec.theme.tooltip.css['.g2-tooltip-list-item-name-label'].color).toBe('hsl(0, 0%, 5%)')
+  })
+
+  it('全局 UI tooltip 规则排除 G2 图表 tooltip，不再污染其子元素', () => {
+    for (const theme of ['datafoundry', 'ainative', 'medical']) {
+      const rule = new RegExp(`\\.${theme} \\[class\\*="tooltip"\\][^{]*\\{`)
+      const match = themeCSS.match(rule)
+      expect(match, `${theme} 应有 tooltip 主题规则`).toBeTruthy()
+      expect(match![0], `${theme} 的 tooltip 规则应排除 g2-tooltip`).toContain(':not([class*="g2-tooltip"])')
+    }
+  })
+
+  it('其他主题仍使用各自色盘', () => {
+    const expectedColors = {
+      datafoundry: 'hsl(0, 0%, 5%)',
+      light: 'hsl(217, 91%, 60%)',
+      dark: 'hsl(217, 91%, 60%)',
+      tech: 'hsl(190, 100%, 50%)',
+    }
+    for (const theme of Object.keys(expectedColors) as (keyof typeof expectedColors)[]) {
+      applyTheme(theme)
+      const spec = buildG2Spec('timeseries_bar', columns, rows, {}, IS_DARK[theme], 400, 300)
+      expect(spec.theme.color).toBe(expectedColors[theme])
+      expect(spec.theme.color).toBe(spec.scale.color.range[0])
+      expect(spec.theme.type).toBe(IS_DARK[theme] ? 'classicDark' : 'classic')
+    }
+  })
+
+  it('等父级应用主题后再取色，同明暗切换及卸载时取消旧帧', () => {
+    const frames = new Map<number, FrameRequestCallback>()
+    let nextFrame = 0
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.set(++nextFrame, callback)
+      return nextFrame
+    })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id))
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400)
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(300)
+    const specs: any[] = []
+    const destroy = vi.fn()
+    vi.spyOn(G2, 'Chart').mockImplementation(function (this: any) {
+      this.options = (spec: any) => specs.push(spec)
+      this.render = vi.fn()
+      this.destroy = destroy
+    } as any)
+
+    function ThemeLayout() {
+      const theme = useThemeStore(state => state.theme)
+      useEffect(() => { applyTheme(theme) }, [theme])
+      return createElement(DashboardChart, { chartType: 'timeseries_bar', data: { columns, rows } })
+    }
+    const flushFrame = () => act(() => {
+      const pending = [...frames.values()]
+      frames.clear()
+      pending.forEach(callback => callback(0))
+    })
+
+    useThemeStore.setState({ theme: 'datafoundry', isDark: false })
+    const mounted = render(createElement(ThemeLayout))
+    expect(specs).toHaveLength(0)
+    flushFrame()
+    expect(specs[specs.length - 1].theme.color).toBe('hsl(0, 0%, 5%)')
+
+    for (const theme of ['dark', 'tech'] as ThemeId[]) {
+      act(() => useThemeStore.getState().setTheme(theme))
+      flushFrame()
+      const expected = buildG2Spec('timeseries_bar', columns, rows, {}, true, 400, 300)
+      expect(specs[specs.length - 1].theme.color).toBe(expected.theme.color)
+    }
+    expect(specs[specs.length - 2].theme.color).not.toBe(specs[specs.length - 1].theme.color)
+    expect(destroy).toHaveBeenCalled()
+
+    act(() => useThemeStore.getState().setTheme('datafoundry'))
+    mounted.unmount()
+    expect(frames.size).toBe(0)
   })
 })

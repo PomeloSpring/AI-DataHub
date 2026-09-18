@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   Plus, Edit2, Trash2, Database, Server, Cloud, Folder, Search,
-  RefreshCw, Settings, X, Check, Link, Unlink,
+  RefreshCw, Settings, X, Check, Link, Unlink, Sparkles,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -26,7 +26,7 @@ interface KnowledgeBase {
   id: number;
   name: string;
   description: string;
-  kb_type: 'local' | 'vector_db' | 'cloud_rag';
+  kb_type: 'local' | 'vector_db' | 'cloud_rag' | 'qmind';
   source_config: Record<string, any>;
   status: 'active' | 'inactive' | 'error';
   document_count: number;
@@ -37,9 +37,26 @@ interface KnowledgeBase {
   updated_at: string;
 }
 
+interface QMindNotebook {
+  notebook_id: string;
+  title: string;
+  org_id?: string;
+  description?: string;
+  status?: string;
+  imported?: boolean;
+  kb_id?: number | null;
+}
+
 // ── KB Type Config ─────────────────────────────────────────────────
 
 const KB_TYPES = [
+  {
+    value: 'qmind',
+    label: 'QMind 知识检索',
+    icon: Sparkles,
+    desc: '来自 Qoder QMind 笔记本，本地 qmind CLI 按需检索',
+    color: 'bg-indigo-100 text-indigo-800',
+  },
   {
     value: 'local',
     label: '本地数据目录',
@@ -72,6 +89,14 @@ export default function KnowledgeBase() {
   const [editingKB, setEditingKB] = useState<KnowledgeBase | null>(null);
   const [showDeleteDialog, setShowDeleteDialog] = useState<KnowledgeBase | null>(null);
   const [managingKB, setManagingKB] = useState<KnowledgeBase | null>(null);
+
+  // Qoder QMind notebook 检索/导入
+  const [showQmindDialog, setShowQmindDialog] = useState(false);
+  const [qmindLoading, setQmindLoading] = useState(false);
+  const [qmindImporting, setQmindImporting] = useState(false);
+  const [qmindAvailable, setQmindAvailable] = useState(true);
+  const [qmindNotebooks, setQmindNotebooks] = useState<QMindNotebook[]>([]);
+  const [qmindSelected, setQmindSelected] = useState<string[]>([]);
 
   useEffect(() => {
     loadKnowledgeBases();
@@ -116,19 +141,72 @@ export default function KnowledgeBase() {
     return KB_TYPES.find(t => t.value === type) || KB_TYPES[0];
   };
 
+  const openQmindDialog = async () => {
+    setShowQmindDialog(true);
+    setQmindLoading(true);
+    setQmindSelected([]);
+    try {
+      const { data } = await client.get('/knowledge-bases/qmind/notebooks');
+      setQmindAvailable(!!data?.available);
+      setQmindNotebooks(data?.notebooks || []);
+      // 默认勾选尚未导入的 notebook
+      setQmindSelected((data?.notebooks || [])
+        .filter((n: QMindNotebook) => !n.imported)
+        .map((n: QMindNotebook) => n.notebook_id));
+    } catch (error: any) {
+      toast.error(error.response?.data?.detail || '检索 Qoder 知识库失败');
+      setQmindAvailable(false);
+      setQmindNotebooks([]);
+    } finally {
+      setQmindLoading(false);
+    }
+  };
+
+  const toggleQmindNotebook = (id: string) => {
+    setQmindSelected((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const importQmind = async () => {
+    if (qmindSelected.length === 0) {
+      toast.error('请至少选择一个知识库');
+      return;
+    }
+    setQmindImporting(true);
+    try {
+      const { data } = await client.post('/knowledge-bases/qmind/import', {
+        notebook_ids: qmindSelected,
+      });
+      toast.success(data?.message || '导入成功');
+      setShowQmindDialog(false);
+      loadKnowledgeBases();
+    } catch (error: any) {
+      toast.error(error.response?.data?.detail || '导入失败');
+    } finally {
+      setQmindImporting(false);
+    }
+  };
+
   return (
     <div className="p-6 w-full">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold">知识库管理</h1>
           <p className="text-muted-foreground mt-1">
-            管理多个知识库，支持本地目录、向量数据库、云厂商 RAG 等多种数据源
+            管理多个知识库，支持从 Qoder QMind 检索导入，以及本地目录、向量数据库、云厂商 RAG 等数据源
           </p>
         </div>
-        <Button onClick={() => setShowCreateDialog(true)}>
-          <Plus className="h-4 w-4 mr-2" />
-          新建知识库
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={openQmindDialog}>
+            <Sparkles className="h-4 w-4 mr-2" />
+            从 Qoder 检索知识库
+          </Button>
+          <Button onClick={() => setShowCreateDialog(true)}>
+            <Plus className="h-4 w-4 mr-2" />
+            新建知识库
+          </Button>
+        </div>
       </div>
 
       {/* Knowledge Base List */}
@@ -304,6 +382,77 @@ export default function KnowledgeBase() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Qoder QMind Notebook Import Dialog */}
+      <Dialog open={showQmindDialog} onOpenChange={(v) => { if (!v) setShowQmindDialog(false); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>从 Qoder QMind 检索知识库</DialogTitle>
+            <DialogDescription>
+              列出当前账号下的 Qoder QMind 笔记本(notebook)，勾选后导入为知识库，可在 Waker 中绑定检索
+            </DialogDescription>
+          </DialogHeader>
+
+          {qmindLoading ? (
+            <div className="flex justify-center py-12">
+              <Spinner size={32} />
+            </div>
+          ) : !qmindAvailable ? (
+            <div className="border rounded-lg p-8 text-center">
+              <Sparkles className="h-10 w-10 mx-auto mb-3 text-muted-foreground" />
+              <h3 className="text-base font-medium mb-1">未能检索到 Qoder 知识库</h3>
+              <p className="text-sm text-muted-foreground">
+                请确认服务器已安装并登录 <code>qmind</code> CLI（<code>qmind login</code>），稍后重试。
+              </p>
+            </div>
+          ) : qmindNotebooks.length === 0 ? (
+            <div className="border rounded-lg p-8 text-center">
+              <p className="text-sm text-muted-foreground">当前账号下没有可用的 QMind 笔记本</p>
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-[50vh] overflow-y-auto py-2">
+              {qmindNotebooks.map((nb) => {
+                const checked = qmindSelected.includes(nb.notebook_id);
+                return (
+                  <label
+                    key={nb.notebook_id}
+                    className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
+                      checked ? 'border-primary bg-primary/5' : 'hover:border-muted-foreground/50'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={checked}
+                      onChange={() => toggleQmindNotebook(nb.notebook_id)}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{nb.title}</span>
+                        {nb.imported && <Badge variant="secondary">已导入</Badge>}
+                      </div>
+                      {nb.description && (
+                        <div className="text-xs text-muted-foreground truncate">{nb.description}</div>
+                      )}
+                      <div className="text-xs text-muted-foreground/70 font-mono mt-0.5">{nb.notebook_id}</div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowQmindDialog(false)}>取消</Button>
+            <Button
+              onClick={importQmind}
+              disabled={qmindLoading || !qmindAvailable || qmindSelected.length === 0 || qmindImporting}
+            >
+              {qmindImporting ? '导入中...' : `导入所选 (${qmindSelected.length})`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -458,6 +607,44 @@ function SourceConfigForm({
   config: Record<string, any>;
   onChange: (config: Record<string, any>) => void;
 }) {
+  if (kbType === 'qmind') {
+    return (
+      <div className="space-y-4">
+        <div className="p-4 bg-indigo-50 rounded-lg">
+          <p className="text-sm text-indigo-800">
+            对应一个 Qoder QMind 笔记本(notebook)，通过本地 <code>qmind</code> CLI 按需检索；
+            建议使用“从 Qoder 检索知识库”导入，而非手动新建。
+          </p>
+        </div>
+        <div className="space-y-2">
+          <Label>Notebook ID</Label>
+          <Input
+            value={config.notebook_id || ''}
+            readOnly
+            className="font-mono bg-muted/40"
+            placeholder="由导入自动填充"
+          />
+          <p className="text-xs text-muted-foreground">Qoder QMind 笔记本唯一标识，导入时自动写入，请勿手动修改</p>
+        </div>
+        {config.org_id && (
+          <div className="space-y-2">
+            <Label>组织 ID</Label>
+            <Input value={config.org_id} readOnly className="font-mono bg-muted/40" />
+          </div>
+        )}
+        <div className="space-y-2">
+          <Label>检索数量 (Top K)</Label>
+          <Input
+            type="number"
+            value={config.top_k || '5'}
+            onChange={(e) => onChange({ ...config, top_k: parseInt(e.target.value) || 5 })}
+            placeholder="5"
+          />
+        </div>
+      </div>
+    );
+  }
+
   if (kbType === 'local') {
     return (
       <div className="space-y-4">

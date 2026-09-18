@@ -18,13 +18,15 @@ pub struct QueryRequest {
 /// Datasource connection configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct DatasourceConfig {
-    pub db_type: String,        // "mysql" | "doris"
+    pub db_type: String,        // "mysql" | "doris" | "postgres" | "sls"
     pub host: String,
     pub port: u16,
     pub database: String,
     pub user: String,
     pub password: String,
     pub ssl: Option<bool>,
+    /// SSL mode: "disabled" | "preferred" | "required"
+    pub ssl_mode: Option<String>,
 }
 
 /// RLS policy for one or more tables

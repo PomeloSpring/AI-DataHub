@@ -194,12 +194,12 @@ export default function ReportTemplates() {
       {/* Variable reference */}
       <div className="border rounded-lg p-3 bg-muted/30 text-sm">
         <span className="font-medium">可用变量：</span>
-        <code className="mx-1 px-1 bg-muted rounded">{'{{ date }}'}</code>
-        <code className="mx-1 px-1 bg-muted rounded">{'{{ timestamp }}'}</code>
-        <code className="mx-1 px-1 bg-muted rounded">{'{{ task_name }}'}</code>
-        <code className="mx-1 px-1 bg-muted rounded">{'{{ results }}'}</code>
-        <code className="mx-1 px-1 bg-muted rounded">{'{{ succeeded }}'}</code>
-        <code className="mx-1 px-1 bg-muted rounded">{'{{ failed }}'}</code>
+        <code className="mx-1 var-code">{'{{ date }}'}</code>
+        <code className="mx-1 var-code">{'{{ timestamp }}'}</code>
+        <code className="mx-1 var-code">{'{{ task_name }}'}</code>
+        <code className="mx-1 var-code">{'{{ results }}'}</code>
+        <code className="mx-1 var-code">{'{{ succeeded }}'}</code>
+        <code className="mx-1 var-code">{'{{ failed }}'}</code>
         <span className="text-muted-foreground ml-2">（Jinja2 语法）</span>
       </div>
 

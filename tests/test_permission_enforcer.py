@@ -175,9 +175,10 @@ class TestCheckAccess:
         assert result.allowed is False
         assert "表" in result.reason
 
+    @patch.object(PermissionEnforcer, "_get_sensitive_policies", return_value=({}, []))
     @patch("services.authservice.services.role_service.role_service")
     @patch("services.authservice.services.rls_service.rls_service")
-    def test_allowed_with_restrictions(self, mock_rls, mock_role, enforcer):
+    def test_allowed_with_restrictions(self, mock_rls, mock_role, mock_sens, enforcer):
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "analyst"}]
         mock_role.get_user_allowed_datasources.return_value = []
         mock_role.get_user_allowed_tables.return_value = []
@@ -200,9 +201,10 @@ class TestCheckAccess:
         assert result.row_filter == "region = '华东'"
         assert 123 in result.policies_applied
 
+    @patch.object(PermissionEnforcer, "_get_sensitive_policies", return_value=({}, []))
     @patch("services.authservice.services.role_service.role_service")
     @patch("services.authservice.services.rls_service.rls_service")
-    def test_no_restrictions_empty_result(self, mock_rls, mock_role, enforcer):
+    def test_no_restrictions_empty_result(self, mock_rls, mock_role, mock_sens, enforcer):
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "analyst"}]
         mock_role.get_user_allowed_datasources.return_value = []
         mock_role.get_user_allowed_tables.return_value = []

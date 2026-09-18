@@ -54,10 +54,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Datasource CRUD
         .route("/api/datasources", axum::routing::get(api::datasources::list_datasources))
         .route("/api/datasources", axum::routing::post(api::datasources::create_datasource))
-        .route("/api/datasources/{id}", axum::routing::get(api::datasources::get_datasource))
-        .route("/api/datasources/{id}", axum::routing::put(api::datasources::update_datasource))
-        .route("/api/datasources/{id}", axum::routing::delete(api::datasources::delete_datasource))
-        .route("/api/datasources/{id}/test", axum::routing::post(api::datasources::test_datasource))
+        .route("/api/datasources/:id", axum::routing::get(api::datasources::get_datasource))
+        .route("/api/datasources/:id", axum::routing::put(api::datasources::update_datasource))
+        .route("/api/datasources/:id", axum::routing::delete(api::datasources::delete_datasource))
+        .route("/api/datasources/:id/test", axum::routing::post(api::datasources::test_datasource))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);

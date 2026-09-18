@@ -29,7 +29,7 @@ def _placeholder_embedding() -> str:
 def _emit_graph_sync(event_type: str, data: dict):
     """向图谱同步服务发送事件（非关键路径，失败不影响主流程）。"""
     try:
-        from services.shared.graphservice.graph_sync_service import get_graph_sync_service, SyncEventType
+        from services.graphservice.graph_sync_service import get_graph_sync_service, SyncEventType
         import asyncio
         sync_service = get_graph_sync_service()
         asyncio.create_task(sync_service.emit_event(

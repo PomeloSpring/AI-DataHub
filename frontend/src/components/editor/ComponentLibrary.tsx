@@ -1,3 +1,7 @@
+import { useState } from 'react';
+import { VIS_CATEGORIES, type VisComponent } from '@/api/visLibrary';
+import { useVisLibrary } from '@/hooks/useVisLibrary';
+import VisComponentPreview from '@/components/VisComponentPreview';
 import { Layers, BarChart3, Settings, PanelLeftClose } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -13,11 +17,15 @@ interface Props {
   onDragStart: (e: React.DragEvent, item: ChartTypeItem) => void;
   onDragEnd: () => void;
   onSelectChart: (chart: any) => void;
+  onApplyVis: (component: VisComponent) => void;
+  onVisDragStart: (e: React.DragEvent, component: VisComponent) => void;
 }
 
 export default function ComponentLibrary({
-  allCharts, selectedChart, isOpen, onClose, onDragStart, onDragEnd, onSelectChart,
+  allCharts, selectedChart, isOpen, onClose, onDragStart, onDragEnd, onSelectChart, onApplyVis, onVisDragStart,
 }: Props) {
+  const library = useVisLibrary();
+  const [category, setCategory] = useState('chart_style');
   const chartGroups = (() => {
     const groups: { category: typeof CHART_TYPE_CATEGORIES[number]; items: ChartTypeItem[] }[] = [];
     for (const cat of CHART_TYPE_CATEGORIES) {
@@ -31,7 +39,7 @@ export default function ComponentLibrary({
   const widgetItems = CHART_TYPES.filter(t => t.category === 'widget');
 
   return (
-    <div className={`flex-shrink-0 flex flex-col border-r bg-muted/30 transition-all duration-200 overflow-hidden ${isOpen ? 'w-[260px]' : 'w-0'}`}>
+    <div className={`flex-shrink-0 flex flex-col border-r bg-background transition-all duration-200 overflow-hidden max-lg:absolute max-lg:inset-y-0 max-lg:left-0 max-lg:z-30 ${isOpen ? 'w-[260px]' : 'w-0 border-r-0'}`}>
       <div className="flex items-center justify-between p-3 border-b">
         <h3 className="font-semibold text-sm flex items-center gap-2">
           <Layers className="h-4 w-4" />
@@ -42,12 +50,28 @@ export default function ComponentLibrary({
         </Button>
       </div>
 
-      <Tabs defaultValue="charts" className="flex-1 flex flex-col min-h-0">
+      <Tabs defaultValue="vis" className="flex-1 flex flex-col min-h-0">
         <TabsList className="w-full rounded-none border-b">
+          <TabsTrigger value="vis" className="flex-1 text-xs">字模</TabsTrigger>
           <TabsTrigger value="charts" className="flex-1 text-xs">图表</TabsTrigger>
           <TabsTrigger value="widgets" className="flex-1 text-xs">控件</TabsTrigger>
+          <TabsTrigger value="layers" className="flex-1 text-xs">图层</TabsTrigger>
         </TabsList>
 
+        <TabsContent value="vis" className="flex-1 min-h-0 mt-0 overflow-auto p-3 space-y-3">
+          <select aria-label="字模分类" className="w-full rounded border bg-background p-2 text-xs" value={category} onChange={e => setCategory(e.target.value)}>
+            {VIS_CATEGORIES.filter(c => c.id !== 'sql_template').map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+          </select>
+          <p className="text-xs text-muted-foreground">点击应用到选中元素；图表字模可拖入新建。布局应用前可预览。</p>
+          {library.error && <div role="alert" className="text-xs text-destructive">{library.error}<Button variant="link" onClick={library.refresh}>重试</Button></div>}
+          {library.loading && <p className="text-xs">正在加载字模…</p>}
+          {library.items.filter(c => c.category === category).map(c => <button key={c.id} type="button" className="block w-full rounded-lg border p-2 text-left hover:border-foreground/50"
+            draggable={['chart_style', 'kpi_card'].includes(c.category)} onDragStart={e => onVisDragStart(e, c)} onDragEnd={onDragEnd} onClick={() => onApplyVis(c)}>
+            <VisComponentPreview c={c} /><span className="mt-1 block text-xs font-medium">{c.name}</span>
+            <span className="text-[10px] text-muted-foreground">{c.is_builtin ? '内置' : '自定义'}{c.chart_type ? ` · ${c.chart_type}` : ''}</span>
+          </button>)}
+          {!library.loading && !library.error && !library.items.some(c => c.category === category) && <p className="text-xs">该分类暂无字模</p>}
+        </TabsContent>
         <TabsContent value="charts" className="flex-1 min-h-0 mt-0">
           <ScrollArea className="h-full p-2">
             {chartGroups.map(({ category, items }) => (
@@ -99,10 +123,9 @@ export default function ComponentLibrary({
             </div>
           </ScrollArea>
         </TabsContent>
-      </Tabs>
-
       {/* Existing charts list */}
-      <div className="border-t flex-shrink-0 max-h-[240px] flex flex-col overflow-hidden">
+      <TabsContent value="layers" className="flex-1 min-h-0 overflow-auto">
+      <div className="flex flex-col overflow-hidden">
         <div className="p-2 flex flex-col min-h-0">
           <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-2 mb-1.5 flex-shrink-0">
             已添加 ({allCharts.length})
@@ -142,6 +165,8 @@ export default function ComponentLibrary({
           </ScrollArea>
         </div>
       </div>
+      </TabsContent>
+      </Tabs>
     </div>
   );
 }

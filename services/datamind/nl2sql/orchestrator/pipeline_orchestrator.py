@@ -4,7 +4,7 @@ Modes:
 - "quick": SQL data queries only (fast path, no Agent routing)
 - "deep":  内置 Agent 管线 — LLM 自主工具调用(Agent 路由、MCP、日志分析等)
 
-注:"agent" 聊天模式(外部执行层,默认 claude)由 API 层派发,
+注:"agent" 聊天模式(外部执行层,默认 qoder)由 API 层派发,
 不会到达本编排器;传入 agent 时按 deep 兼容处理。
 """
 

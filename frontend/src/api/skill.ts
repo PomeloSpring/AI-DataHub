@@ -1,59 +1,45 @@
 import client from './client';
 
 export interface Skill {
-  id?: number;
   name: string;
   display_name: string;
   description: string;
   category: string;
+  source_type: 'system' | 'custom';
+  is_builtin: boolean;
+  /** 'skill_md' = Qoder 文件夹规范;  '' = 旧格式 */
+  format?: string;
+  // 仅详情接口返回
   system_prompt?: string;
-  skill_config?: string | object;
-  source_type: 'system' | 'user';
-  source_skill?: string;
-  is_active: number;
-  workspace_id?: number;
-  created_at?: string;
-  updated_at?: string;
+  markdown?: string;
 }
 
-export interface SkillCreate {
+export interface SkillUpsert {
   name: string;
   display_name?: string;
   description?: string;
   category?: string;
   system_prompt?: string;
-  skill_config?: string | object;
-  source_type?: string;
-  source_skill?: string;
-  is_active?: number;
-  workspace_id?: number;
 }
 
 export const skillApi = {
-  /** List all skills (file system + DB merged) */
+  /** List all skills (系统内置 + 自定义, 均来自本地文件夹) */
   list: (category?: string) =>
     client.get<Skill[]>('/admin/skills', { params: category ? { category } : {} }),
 
-  /** Get a single skill by name (includes system_prompt) */
+  /** Get a single skill by name (includes system_prompt + SKILL.md markdown) */
   get: (name: string) =>
     client.get<Skill>(`/admin/skills/${name}`),
 
-  /** Create a user-defined skill */
-  create: (data: SkillCreate) =>
-    client.post<{ id: number; success: boolean }>('/admin/skills', data),
+  /** Create a custom skill (落盘为 config/skills/{name}/SKILL.md) */
+  create: (data: SkillUpsert) =>
+    client.post<{ name: string; success: boolean }>('/admin/skills', data),
 
-  /** Update a skill */
-  update: (id: number, data: Partial<SkillCreate>) =>
-    client.put<{ success: boolean }>(`/admin/skills/${id}`, data),
+  /** Update a custom skill (内置技能拒绝) */
+  update: (name: string, data: SkillUpsert) =>
+    client.put<{ name: string; success: boolean }>(`/admin/skills/${name}`, data),
 
-  /** Delete a skill (only user-created) */
-  delete: (id: number) =>
-    client.delete<{ success: boolean }>(`/admin/skills/${id}`),
-
-  /** Copy a system skill to create a user-editable copy */
-  copy: (name: string, workspaceId?: number) =>
-    client.post<{ id: number; name: string; success: boolean }>(
-      `/admin/skills/${name}/copy`,
-      workspaceId ? { workspace_id: workspaceId } : {},
-    ),
+  /** Delete a custom skill (内置技能拒绝) */
+  delete: (name: string) =>
+    client.delete<{ name: string; success: boolean }>(`/admin/skills/${name}`),
 };

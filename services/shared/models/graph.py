@@ -23,6 +23,7 @@ class NodeType(str, Enum):
     DIMENSION = "Dimension"
     DATASOURCE = "DataSource"
     DOCUMENT = "Document"
+    OBJECT = "Object"          # 本体业务对象 (语义层 SSoT; Phase 5)
 
 
 class RelationType(str, Enum):
@@ -34,6 +35,7 @@ class RelationType(str, Enum):
     USES_DIMENSION = "USES_DIMENSION"
     BELONGS_TO = "BELONGS_TO"
     DESCRIBES = "DESCRIBES"
+    BOUND_TO = "BOUND_TO"      # 语义对象 -> 物理表 绑定 (Phase 5)
 
 
 # ── Request Models ─────────────────────────────────────────────────────

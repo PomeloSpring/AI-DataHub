@@ -117,11 +117,11 @@ export default function ReportView() {
       <div className="max-w-4xl mx-auto px-4 pb-12">
         {report.format === 'html' ? (
           <article
-            className="prose prose-sm max-w-none dark:prose-invert"
+            className="prose prose-sm max-w-none"
             dangerouslySetInnerHTML={{ __html: report.content }}
           />
         ) : (
-          <article className="prose prose-sm max-w-none dark:prose-invert">
+          <article className="prose prose-sm max-w-none">
             <pre className="whitespace-pre-wrap text-sm leading-relaxed font-sans bg-transparent p-0">
               {report.content}
             </pre>

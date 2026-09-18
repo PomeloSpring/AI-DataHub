@@ -5,10 +5,11 @@ Migrated from backend/api/component_data.py. Uses service layer for all business
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Optional
 
+from services.shared.common.auth import get_current_user, get_workspace_id
 from services.dataviz.services.component_service import component_service
 
 logger = logging.getLogger(__name__)
@@ -47,8 +48,14 @@ class ComponentDataResponse(BaseModel):
 
 
 @router.post("/component-data", response_model=ComponentDataResponse)
-def get_component_data(req: ComponentDataRequest):
+def get_component_data(
+    req: ComponentDataRequest,
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
     """Unified endpoint for all component data fetching.
+
+    取数统一走治理护城河(敏感 block/mask + RLS + 审计), 身份由 JWT 服务端解析。
 
     Supports:
     - Parameter substitution via ${param} placeholders
@@ -64,6 +71,9 @@ def get_component_data(req: ComponentDataRequest):
             params=req.params,
             component_type=req.component_type,
             options=options,
+            user_id=user["user_id"],
+            workspace_id=workspace_id,
+            username=user.get("username", ""),
         )
         return ComponentDataResponse(**result)
     except Exception as e:

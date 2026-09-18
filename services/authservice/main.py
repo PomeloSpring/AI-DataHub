@@ -23,6 +23,8 @@ from services.authservice.api.roles import router as roles_router
 from services.authservice.api.audit import router as audit_router
 from services.authservice.api.rls import router as rls_router
 from services.authservice.api.monitoring import router as monitoring_router
+from services.authservice.api.observability import router as observability_router
+from services.authservice.api.knowledge import router as knowledge_router
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -52,6 +54,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# API 权限校验中间件
+from services.shared.common.api_permission import add_api_permission_middleware
+add_api_permission_middleware(app)
+
 # Include routers
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.include_router(users_router, prefix="/api/users", tags=["users"])
@@ -60,6 +66,8 @@ app.include_router(roles_router, prefix="/api/roles", tags=["roles"])
 app.include_router(audit_router, prefix="/api/audit", tags=["audit"])
 app.include_router(rls_router, prefix="/api/admin", tags=["RLS Security"])
 app.include_router(monitoring_router, prefix="/api/monitoring", tags=["monitoring"])
+app.include_router(observability_router, prefix="/api/observability", tags=["observability"])
+app.include_router(knowledge_router, prefix="/api/admin", tags=["knowledge"])
 
 # Node metrics for distributed monitoring
 from services.shared.common.system_metrics import router as node_metrics_router

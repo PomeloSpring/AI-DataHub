@@ -25,19 +25,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger("datamind")
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+from services.shared import observability
 
 from services.datamind.api.chat import router as chat_router
 from services.datamind.api.attachments import router as attachments_router
 from services.datamind.api.agent import router as agent_router
 from services.datamind.api.knowledge_bases import router as knowledge_bases_router
+from services.datamind.api.skills_admin import router as skills_admin_router
 from services.datamind.api.pipeline import router as pipeline_router
-from services.datamind.api.query import router as query_router
 from services.datamind.api.history import router as history_router
 from services.datamind.api.playground import router as playground_router
 from services.datamind.api.model_config import router as model_config_router
 from services.datamind.api.execution import router as execution_router
+from services.datamind.api.as_bot import router as as_bot_router
 
 app = FastAPI(
     title="DataMind API",
@@ -54,17 +57,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# API 权限校验中间件
+from services.shared.common.api_permission import add_api_permission_middleware
+add_api_permission_middleware(app)
+
+
+@app.middleware("http")
+async def _trace_middleware(request: Request, call_next):
+    """为每个请求分配 trace_id 并回写 X-Trace-Id 响应头。
+
+    在 call_next 前设置 contextvar,使其传播到端点与流式生成器(子 task 拷贝上下文);
+    实际 recorder 由各入口(chat/playground/agent)按身份创建。
+    """
+    trace_id = observability.set_trace_id()
+    response = await call_next(request)
+    try:
+        response.headers["X-Trace-Id"] = trace_id
+    except Exception:  # noqa: BLE001
+        pass
+    return response
+
 # Include routers
 app.include_router(chat_router, prefix="/api/chat", tags=["Chat / NL2SQL"])
 app.include_router(attachments_router, prefix="/api/chat/attachments", tags=["Chat Attachments"])
 app.include_router(agent_router, prefix="/api/agent", tags=["Agent Dispatch"])
 app.include_router(knowledge_bases_router, prefix="/api", tags=["Knowledge Bases Management"])
+app.include_router(skills_admin_router, prefix="/api", tags=["Skills Management"])
 app.include_router(pipeline_router, prefix="/api/pipeline", tags=["Pipeline Execution"])
-app.include_router(query_router, prefix="/api/query", tags=["SQL Query"])
 app.include_router(history_router, prefix="/api/history", tags=["Query History"])
 app.include_router(playground_router, prefix="/api/playground", tags=["SQL Playground"])
 app.include_router(model_config_router, prefix="/api/model-config", tags=["Model Config"])
 app.include_router(execution_router, prefix="/api/execution", tags=["Execution Layers"])
+app.include_router(as_bot_router, prefix="/api/as-bot", tags=["AS-BOT System Assistant"])
 
 # Node metrics for distributed monitoring
 from services.shared.common.system_metrics import router as node_metrics_router

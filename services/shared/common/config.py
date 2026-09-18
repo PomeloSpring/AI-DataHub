@@ -19,6 +19,27 @@ import os
 from pathlib import Path
 
 # Load .env — try services/.env first, then backend/.env as fallback
+def _manual_load_env(path: Path) -> None:
+    """无 python-dotenv 时的兜底解析:KEY=VALUE(忽略注释/空行,去包裹引号,不覆盖已有环境变量)."""
+    try:
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].strip()
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if not key:
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("\"", "'"):
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+    except OSError:
+        pass
+
+
 try:
     from dotenv import load_dotenv
     _services_env = Path(__file__).resolve().parent.parent.parent / ".env"
@@ -28,7 +49,13 @@ try:
     elif _backend_env.exists():
         load_dotenv(_backend_env, override=True)
 except ImportError:
-    pass
+    # python-dotenv 未安装:手动解析,避免静默回退到 localhost
+    _services_env = Path(__file__).resolve().parent.parent.parent / ".env"
+    _backend_env = Path(__file__).resolve().parent.parent.parent.parent / "backend" / ".env"
+    if _services_env.exists():
+        _manual_load_env(_services_env)
+    elif _backend_env.exists():
+        _manual_load_env(_backend_env)
 
 # ══════════════════════════════════════════════════════════════════════════
 # Metadata Database (MySQL) — stores table/column/term metadata
@@ -67,6 +94,13 @@ ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com"
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 
 # ══════════════════════════════════════════════════════════════════════════
+# Observability — LLM 交互可观测(O0: credit/token 用量落库, MySQL)
+# ══════════════════════════════════════════════════════════════════════════
+
+OBSERVABILITY_ENABLED = os.getenv("OBSERVABILITY_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+OBSERVABILITY_SPAN_MAX_CHARS = int(os.getenv("OBSERVABILITY_SPAN_MAX_CHARS", "4096"))
+
+# ══════════════════════════════════════════════════════════════════════════
 # Oxigraph — RDF Triple Store (SPARQL 1.1)
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -84,6 +118,7 @@ SERVICE_PORTS = {
     "datacatalog": 8005,
     "authservice": 8006,
     "graphservice": 8011,
+    "semanticservice": 8012,
 }
 
 MCP_PORTS = {
@@ -116,6 +151,13 @@ DORIS_DATABASE = os.getenv("DORIS_DATABASE", "alliedstar")
 ENGINE_SERVER_URL = os.getenv("ENGINE_SERVER_URL", "http://localhost:8082")
 ENGINE_TIMEOUT = int(os.getenv("ENGINE_TIMEOUT", "60"))
 ENGINE_ENABLED = os.getenv("ENGINE_ENABLED", "true").lower() == "true"
+
+# ══════════════════════════════════════════════════════════════════════════
+# SemanticLayer — semanticservice (:8012) 声明式查询入口 (ChatBI/大屏同源)
+# ══════════════════════════════════════════════════════════════════════════
+
+SEMANTIC_SERVICE_URL = os.getenv("SEMANTIC_SERVICE_URL", "http://localhost:8012")
+SEMANTIC_TIMEOUT = int(os.getenv("SEMANTIC_TIMEOUT", "60"))
 
 # Backward compatibility aliases (deprecated)
 GATEWAY_URL = ENGINE_SERVER_URL

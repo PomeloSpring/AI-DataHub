@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { Settings, Copy, Play, Loader2, Database, Link, Plus, Trash2 } from 'lucide-react';
 import { CHART_TYPES, ChartIcon } from './DashboardChart';
@@ -20,7 +20,7 @@ interface ChartConfigPanelProps {
   open: boolean;
   chart: any;
   onClose: () => void;
-  onSave: (config: any) => void;
+  onSave: (config: any) => void | Promise<void>;
 }
 
 const CHART_COLORS = [
@@ -31,6 +31,9 @@ const CHART_COLORS = [
 
 export default function ChartConfigPanel({ open, chart, onClose, onSave }: ChartConfigPanelProps) {
   const [config, setConfig] = useState<any>({});
+  const semantic = chart?.query_source === 'semantic' || !!chart?.semantic_query;
+  const [saving, setSaving] = useState(false);
+  const saveLock = useRef(false);
   const [sqlQuery, setSqlQuery] = useState('');
   const [executing, setExecuting] = useState(false);
   const [previewData, setPreviewData] = useState<{ columns: string[]; rows: any[] } | null>(null);
@@ -45,17 +48,12 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
       const dsId = chart?.source_id || chartConfig.datasource_id || 0;
 
       setConfig(chartConfig);
-      setSqlQuery(chart?.sql_query || '');
+      setSqlQuery(semantic ? '' : chart?.sql_query || '');
       setSelectedDsId(dsId);
       setPreviewData(null);
 
-      client.get('/datasources/').then(({ data }) => {
-        setDatasources(data);
-        // Auto-select default only if chart has no datasource configured
-        if (!dsId && data.length > 0) {
-          const defaultDs = data.find((d: any) => d.is_default) || data[0];
-          setSelectedDsId(defaultDs.id);
-        }
+      if (!semantic) client.get('/datasources/').then(({ data }) => {
+        setDatasources(Array.isArray(data) ? data : []);
       }).catch(() => {});
 
       // Load dashboards list for drill-through link config
@@ -65,19 +63,23 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
     }
   }, [open, chart]);
 
-  const handleSave = useCallback(() => {
-    onSave({
-      ...config,
-      _chart_type: config.chartType || chart?.chart_type,
-      _sql_query: sqlQuery,
-      _previewData: previewData,
-      _datasource_id: selectedDsId,
-    });
-    onClose();
-  }, [config, chart, sqlQuery, previewData, selectedDsId, onSave, onClose]);
+  const handleSave = useCallback(async () => {
+    if (saveLock.current) return;
+    saveLock.current = true; setSaving(true);
+    try {
+      const updates: any = { ...config, _chart_type: config.chartType || chart?.chart_type };
+      if (!semantic) {
+        if (sqlQuery !== (chart?.sql_query || '')) updates._sql_query = sqlQuery;
+        if (selectedDsId !== (chart?.source_id || chart?.config?.datasource_id || 0)) updates._datasource_id = selectedDsId;
+      }
+      await onSave(updates);
+      onClose();
+    } catch { toast.error('保存失败，配置已保留，请重试'); }
+    finally { saveLock.current = false; setSaving(false); }
+  }, [config, chart, semantic, sqlQuery, selectedDsId, onSave, onClose]);
 
   const handleExecuteSql = async () => {
-    if (!sqlQuery.trim()) return;
+    if (semantic || !sqlQuery.trim() || executing || saving) return;
     setExecuting(true);
     try {
       const { data } = await client.post('/playground/execute', {
@@ -106,7 +108,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
   if (!chart) return null;
 
   return (
-    <Dialog open={open} onOpenChange={onClose}>
+    <Dialog open={open} onOpenChange={value => { if (!value && !saving && !executing) onClose(); }}>
       <DialogContent className="max-w-[600px] max-h-[80vh]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -125,7 +127,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                   <TabsTrigger value="basic" className="flex-1">基础设置</TabsTrigger>
                   <TabsTrigger value="style" className="flex-1">样式设置</TabsTrigger>
                   <TabsTrigger value="axis" className="flex-1">坐标轴</TabsTrigger>
-                  <TabsTrigger value="datasource" className="flex-1">数据源</TabsTrigger>
+                  {!semantic && <TabsTrigger value="datasource" className="flex-1">数据源</TabsTrigger>}
                 </>
               )}
             </TabsList>
@@ -371,7 +373,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                             </SelectContent>
                           </Select>
                         </div>
-                        <div className="space-y-1">
+                        {!semantic && <div className="space-y-1">
                           <Label>总数查询 SQL (可选)</Label>
                           <textarea
                             className="w-full h-16 text-xs p-2 rounded border bg-background resize-none"
@@ -380,7 +382,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                             onChange={e => updateConfig('countSql', e.target.value)}
                           />
                           <p className="text-xs text-muted-foreground">留空则自动用主 SQL 包装 COUNT(*)，填写后更精确</p>
-                        </div>
+                        </div>}
                         <p className="text-xs text-muted-foreground">
                           主 SQL 中使用 <code>{'{{page_limit}}'}</code> 和 <code>{'{{page_offset}}'}</code>，后端自动拼接 LIMIT/OFFSET
                         </p>
@@ -675,15 +677,15 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                     <div
                       key={index}
                       className={`w-8 h-8 rounded cursor-pointer border-2 ${
-                        config.colors?.includes(color) ? 'border-primary' : 'border-transparent'
+                        config.colorScheme?.includes(color) ? 'border-primary' : 'border-transparent'
                       }`}
                       style={{ background: color }}
                       onClick={() => {
-                        const currentColors = config.colors || [];
+                        const currentColors = config.colorScheme || [];
                         const newColors = currentColors.includes(color)
                           ? currentColors.filter((c: string) => c !== color)
                           : [...currentColors, color];
-                        updateConfig('colors', newColors);
+                        updateConfig('colorScheme', newColors);
                       }}
                     />
                   ))}
@@ -756,7 +758,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
               </div>
             </TabsContent>
 
-            <TabsContent value="datasource" className="space-y-4 mt-4">
+            {!semantic && <TabsContent value="datasource" className="space-y-4 mt-4">
               {/* Datasource selector */}
               <div className="space-y-2">
                 <Label className="flex items-center gap-2">
@@ -866,13 +868,14 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                   </div>
                 </div>
               )}
-            </TabsContent>
+            </TabsContent>}
           </Tabs>
+          {semantic && <p className="mt-4 text-xs text-muted-foreground">此图表使用声明式语义查询。可调整字段映射与外观，不展示或修改生成 SQL。</p>}
         </ScrollArea>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>取消</Button>
-          <Button onClick={handleSave}>保存</Button>
+          <Button variant="outline" disabled={saving || executing} onClick={onClose}>取消</Button>
+          <Button disabled={saving || executing} onClick={handleSave}>{saving ? '保存中…' : '保存'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

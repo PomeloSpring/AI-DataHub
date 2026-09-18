@@ -114,14 +114,23 @@ async fn test_mysql_connection(config: &crate::types::DatasourceConfig) -> Resul
     use mysql_async::prelude::*;
     use mysql_async::{Pool, OptsBuilder};
 
-    let opts = OptsBuilder::default()
+    let mut builder = OptsBuilder::default()
         .ip_or_hostname(config.host.clone())
         .tcp_port(config.port)
         .db_name(Some(config.database.clone()))
         .user(Some(config.user.clone()))
         .pass(Some(config.password.clone()));
 
-    let pool = Pool::new(opts);
+    // Enable SSL if configured
+    let ssl_mode = config.ssl_mode.as_deref().unwrap_or("disabled");
+    let ssl_enabled = ssl_mode != "disabled" || config.ssl.unwrap_or(false);
+    if ssl_enabled {
+        builder = builder.ssl_opts(Some(
+            mysql_async::SslOpts::default().with_danger_accept_invalid_certs(true)
+        ));
+    }
+
+    let pool = Pool::new(builder);
     let mut conn = pool.get_conn().await.map_err(|e| format!("Connect failed: {}", e))?;
 
     let version: String = conn

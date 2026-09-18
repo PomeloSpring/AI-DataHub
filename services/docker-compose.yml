@@ -164,13 +164,29 @@ services:
   graphservice:
     build:
       context: ..
-      dockerfile: services/shared/graphservice/Dockerfile
+      dockerfile: services/graphservice/Dockerfile
     container_name: adh-graphservice
     ports:
       - "8011:8011"
     environment:
       <<: *common-env
       SERVICE_PORT: "8011"
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════════════════════
+  # SemanticLayer — 语义层服务 (port 8012)
+  # BI/ChatBI -> 语义层 -> 执行层 中间层: binding/MDL/选路/护栏
+  # ══════════════════════════════════════════════════════════
+  semanticservice:
+    build:
+      context: ..
+      dockerfile: services/semanticservice/Dockerfile
+    container_name: adh-semanticservice
+    ports:
+      - "8012:8012"
+    environment:
+      <<: *common-env
+      SERVICE_PORT: "8012"
     restart: unless-stopped
 
   # ══════════════════════════════════════════════════════════

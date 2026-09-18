@@ -35,7 +35,7 @@ impl QuerySession {
         let dialect = SqlDialect::from_str(&datasource.db_type);
 
         // 2. Discover table schemas
-        let discovered_tables = discovery::SchemaDiscovery::discover_all(&pool, &datasource.database)
+        let discovered_tables = discovery::SchemaDiscovery::discover_all(&pool, &datasource.database, dialect)
             .await
             .map_err(|e| {
                 datafusion::common::DataFusionError::Execution(format!(
@@ -57,12 +57,12 @@ impl QuerySession {
             HashMap::new();
 
         for discovered in &discovered_tables {
-            let schema = table_to_arrow_schema(discovered);
+            let schema = table_to_arrow_schema(discovered, dialect);
 
-            // Base remote table
+            // Base remote table — qualifier is database (MySQL/Doris) or schema (Postgres)
             let base_table = Arc::new(RemoteSqlTable::new(
                 pool.clone(),
-                datasource.database.clone(),
+                discovered.qualifier.clone(),
                 discovered.name.clone(),
                 schema.clone(),
                 dialect,
@@ -73,7 +73,7 @@ impl QuerySession {
             if let Some(policy) = policy_map.get(&table_lower) {
                 // Parse row filter expression
                 let row_filter = if !policy.row_filter.is_empty() {
-                    match parse_filter_expr(&policy.row_filter, &schema) {
+                    match parse_filter_expr(&policy.row_filter, &schema).await {
                         Ok(expr) => {
                             rls_applied.push(format!("行级过滤 [{}]: {}", discovered.name, policy.row_filter));
                             Some(expr)
@@ -153,7 +153,7 @@ impl QuerySession {
 }
 
 /// Parse a filter expression string into a DataFusion Expr
-fn parse_filter_expr(expr_str: &str, schema: &arrow::datatypes::SchemaRef) -> Result<datafusion::logical_expr::Expr> {
+async fn parse_filter_expr(expr_str: &str, schema: &arrow::datatypes::SchemaRef) -> Result<datafusion::logical_expr::Expr> {
     use arrow::record_batch::RecordBatch;
     use datafusion::datasource::MemTable;
 
@@ -168,17 +168,29 @@ fn parse_filter_expr(expr_str: &str, schema: &arrow::datatypes::SchemaRef) -> Re
     // Parse the filter as a WHERE clause using SQL
     let sql = format!("SELECT * FROM _temp WHERE {}", expr_str);
 
-    // Use a blocking approach within the async context
-    let df = tokio::runtime::Handle::current().block_on(ctx.sql(&sql))?;
+    let df = ctx.sql(&sql).await?;
     let plan = df.logical_plan().clone();
 
-    // Extract the filter predicate from the plan
-    if let datafusion::logical_expr::LogicalPlan::Filter(filter) = plan {
-        Ok(filter.predicate.clone())
+    // Extract the filter predicate from the plan (may be nested under Projection etc.)
+    if let Some(predicate) = find_filter_predicate(&plan) {
+        Ok(predicate)
     } else {
         Err(datafusion::common::DataFusionError::Plan(format!(
             "Failed to parse filter expression: {}",
             expr_str
         )))
     }
+}
+
+/// Recursively search the plan tree for a Filter node's predicate
+fn find_filter_predicate(plan: &datafusion::logical_expr::LogicalPlan) -> Option<datafusion::logical_expr::Expr> {
+    if let datafusion::logical_expr::LogicalPlan::Filter(filter) = plan {
+        return Some(filter.predicate.clone());
+    }
+    for input in plan.inputs() {
+        if let Some(pred) = find_filter_predicate(input) {
+            return Some(pred);
+        }
+    }
+    None
 }

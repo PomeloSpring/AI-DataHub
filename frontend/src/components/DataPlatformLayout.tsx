@@ -4,7 +4,8 @@ import {
   Database, FileText, Link, BookOpen, Settings, LogOut, Menu,
   Sun, Moon, Palette, Zap, TrendingUp, Grid3x3, GlassWater, Heart,
   UserCircle, X, ChevronLeft, ChevronRight, BarChart3, Tag, GitBranch,
-  RefreshCw, Activity, Shield, Ruler, Eye, Brain, Gem, Boxes,
+  RefreshCw, Activity, Shield, Ruler, Eye, Brain, Gem, Boxes, Network, Terminal,
+  FileQuestion,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -17,6 +18,14 @@ import { useAuthStore } from '../stores/authStore';
 import { useThemeStore, applyTheme, type ThemeId } from '../stores/themeStore';
 import { useBrandStore } from '../stores/brandStore';
 import SectionSwitcher from './SectionSwitcher';
+import AsBotButton from './AsBotButton';
+import AsBotPanel from './asbot/AsBotPanel';
+import { isMenuAllowed } from '../stores/permissionStore';
+
+/** 将路由 key 转换为 menu_key: '/data/ontology' → 'data:ontology' */
+function toMenuKey(routeKey: string): string {
+  return routeKey.replace('/data/', 'data:').replace(/^\//, '');
+}
 
 const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] = [
   { id: 'dark', label: '暗色', icon: Moon, desc: '深色背景，适合长时间使用' },
@@ -33,11 +42,14 @@ const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] =
 const DATA_PLATFORM_MENU_ITEMS = [
   { section: '数据源' },
   { key: '/data/datasources', icon: Database, label: '数据源管理' },
+  { key: '/data/tables', icon: FileText, label: '表 & 字段' },
+  { key: '/data/playground', icon: Terminal, label: 'SQL Playground' },
   { section: '数据目录' },
   { key: '/data/ontology', icon: Boxes, label: '本体建模' },
-  { key: '/data/tables', icon: FileText, label: '表 & 字段' },
+  { key: '/data/knowledge-graph', icon: Network, label: '本体可视化' },
   { key: '/data/metrics', icon: BarChart3, label: '指标中心' },
   { key: '/data/tags', icon: Tag, label: '标签管理' },
+  { key: '/data/sql-pairs', icon: FileQuestion, label: 'SQL 示例对' },
   { key: '/data/glossary', icon: BookOpen, label: '业务术语' },
   { section: '数据质量' },
   { key: '/data/quality', icon: Activity, label: '质量概览' },
@@ -85,7 +97,7 @@ export default function DataPlatformLayout() {
         <div className="flex-1 min-h-0 overflow-hidden">
           <ScrollArea className="h-full py-2">
             <nav className="space-y-1 px-2" role="navigation" aria-label="数据中台导航">
-              {DATA_PLATFORM_MENU_ITEMS.map((item, idx) => {
+              {DATA_PLATFORM_MENU_ITEMS.filter(item => !('key' in item) || isMenuAllowed(toMenuKey((item as any).key))).map((item, idx) => {
                 if ('section' in item) {
                   if (collapsed) return <div key={idx} className="my-2 mx-2 border-t border-sidebar-border" />;
                   return (
@@ -95,7 +107,11 @@ export default function DataPlatformLayout() {
                   );
                 }
                 const Icon = item.icon!;
-                const isActive = currentPath === item.key || currentPath.startsWith(item.key! + '/');
+                // 前缀匹配时排除存在更深层菜单项的情况，避免父子路由同时高亮（如 质量概览/质量规则、同步任务/执行日志）
+                const hasDeeperMenuItem = DATA_PLATFORM_MENU_ITEMS.some(
+                  o => 'key' in o && o.key!.startsWith(item.key! + '/') && currentPath.startsWith(o.key!)
+                );
+                const isActive = currentPath === item.key || (currentPath.startsWith(item.key! + '/') && !hasDeeperMenuItem);
                 return (
                   <Tooltip key={item.key} delayDuration={0}>
                     <TooltipTrigger asChild>
@@ -145,7 +161,7 @@ export default function DataPlatformLayout() {
             </div>
             <ScrollArea className="flex-1 py-3">
               <nav className="space-y-1 px-3">
-                {DATA_PLATFORM_MENU_ITEMS.map((item, idx) => {
+                {DATA_PLATFORM_MENU_ITEMS.filter(item => !('key' in item) || isMenuAllowed(toMenuKey((item as any).key))).map((item, idx) => {
                   if ('section' in item) {
                     return (
                       <div key={idx} className="px-4 pt-5 pb-1.5">
@@ -185,6 +201,8 @@ export default function DataPlatformLayout() {
             </Button>
           </div>
           <div className="flex items-center gap-2">
+            {/* AS-BOT 系统助手 */}
+            <AsBotButton />
             {/* Module switcher — 工作空间 / 数据中台 / 系统配置 */}
             <SectionSwitcher current="data" />
 
@@ -225,7 +243,7 @@ export default function DataPlatformLayout() {
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => navigate('/profile')}>
+                <DropdownMenuItem onClick={() => navigate('/data/profile')}>
                   <UserCircle className="h-4 w-4 mr-2" />
                   个人设置
                 </DropdownMenuItem>
@@ -241,6 +259,7 @@ export default function DataPlatformLayout() {
           <Outlet />
         </main>
       </div>
+      <AsBotPanel />
     </div>
   );
 }

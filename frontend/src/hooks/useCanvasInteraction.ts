@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { DashboardChart } from '../stores/dashboardStore';
+import { screenToCanvas, clampPosition, isEditingTarget } from '@/lib/dashboardDesign';
 
 // Canvas constants
 export const CANVAS_WIDTH = 1920;
@@ -39,10 +40,9 @@ export function useCanvasInteraction(opts: {
 
   // Canvas state
   const canvasRef = useRef<HTMLDivElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const [canvasSize, setCanvasSize] = useState({ width: CANVAS_WIDTH, height: CANVAS_HEIGHT });
-  const [canvasBgColor, setCanvasBgColor] = useState(() => {
-    try { return localStorage.getItem('editor_canvas_bg') || ''; } catch { return ''; }
-  });
+  const [canvasBgColor, setCanvasBgColor] = useState('');
   const [gridSize, setGridSize] = useState(GRID_SIZE);
   const [scale, setScale] = useState(0.6);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
@@ -59,13 +59,11 @@ export function useCanvasInteraction(opts: {
   const [resizePosition, setResizePosition] = useState({ x: 0, y: 0, w: 0, h: 0 });
   const [isPanning, setIsPanning] = useState(false);
 
-  // rAF throttle
-  const rafRef = useRef(0);
-
   const snapToGrid = useCallback((value: number) => Math.round(value / gridSize) * gridSize, [gridSize]);
 
   // ========== Drag existing chart ==========
   const handleDragStart = useCallback((e: React.MouseEvent, chartId: number) => {
+    if (e.button !== 0 || isEditingTarget(e.target)) return;
     e.stopPropagation();
     e.preventDefault();
     const chart = allCharts.find(c => c.id === chartId);
@@ -82,6 +80,7 @@ export function useCanvasInteraction(opts: {
 
   // ========== Resize ==========
   const handleResizeStart = useCallback((e: React.MouseEvent, chartId: number) => {
+    if (e.button !== 0 || isEditingTarget(e.target)) return;
     e.stopPropagation();
     e.preventDefault();
     const chart = allCharts.find(c => c.id === chartId);
@@ -103,7 +102,7 @@ export function useCanvasInteraction(opts: {
 
   // ========== Pan ==========
   const handlePanStart = useCallback((e: React.MouseEvent) => {
-    if (e.target === canvasRef.current || (e.target as HTMLElement).classList.contains('dashboard-canvas')) {
+    if ((e.button === 0 || e.button === 1) && (e.target === canvasRef.current || e.target === surfaceRef.current)) {
       e.preventDefault();
       panRef.current = { active: true, start: { x: e.clientX - panOffset.x, y: e.clientY - panOffset.y } };
       setIsPanning(true);
@@ -133,38 +132,20 @@ export function useCanvasInteraction(opts: {
   const zoomOut = useCallback(() => setScale(prev => Math.max(0.2, prev * 0.8)), []);
 
   const resetZoom = useCallback(() => {
-    if (allCharts.length > 0) {
-      const container = canvasRef.current;
-      if (!container) return;
-      const containerWidth = container.clientWidth - 100;
-      const containerHeight = container.clientHeight - 100;
-      let maxX = 0, maxY = 0;
-      allCharts.forEach(chart => {
-        const right = (chart.position?.x ?? 0) + (chart.position?.w ?? DEFAULT_CHART_SIZE.w);
-        const bottom = (chart.position?.y ?? 0) + (chart.position?.h ?? DEFAULT_CHART_SIZE.h);
-        if (right > maxX) maxX = right;
-        if (bottom > maxY) maxY = bottom;
-      });
-      const scaleX = containerWidth / maxX;
-      const scaleY = containerHeight / maxY;
-      setScale(Math.min(scaleX, scaleY, 1));
-      setPanOffset({ x: 0, y: 0 });
-    } else {
-      setScale(0.6);
-      setPanOffset({ x: 0, y: 0 });
-    }
-  }, [allCharts]);
+    const container = canvasRef.current;
+    if (!container) return;
+    setScale(Math.max(0.05, Math.min((container.clientWidth - 64) / canvasSize.width, (container.clientHeight - 64) / canvasSize.height, 1)));
+    setPanOffset({ x: 0, y: 0 });
+  }, [canvasSize]);
 
   // ========== Global event listeners (registered once, use refs) ==========
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = requestAnimationFrame(() => {
-        if (dragRef.current.chartId && canvasRef.current) {
-          const canvasRect = canvasRef.current.getBoundingClientRect();
-          const x = snapToGrid((e.clientX - canvasRect.left) / scale - dragRef.current.offset.x);
-          const y = snapToGrid((e.clientY - canvasRect.top) / scale - dragRef.current.offset.y);
-          const newPos = { x: Math.max(0, Math.min(x, canvasSize.width - DEFAULT_CHART_SIZE.w)), y: Math.max(0, y) };
+      if (dragRef.current.chartId !== null && surfaceRef.current) {
+          const point = screenToCanvas({ x: e.clientX, y: e.clientY }, surfaceRef.current.getBoundingClientRect(), scale);
+          const chart = allCharts.find(c => c.id === dragRef.current.chartId);
+          const newPos = clampPosition({ x: point.x - dragRef.current.offset.x, y: point.y - dragRef.current.offset.y },
+            chart?.position || DEFAULT_CHART_SIZE, canvasSize, gridSize);
           dragRef.current.position = newPos;
           setDragPosition(newPos);
         } else if (resizeRef.current.chartId) {
@@ -179,7 +160,7 @@ export function useCanvasInteraction(opts: {
           const newPos = {
             ...resizeRef.current.position,
             w: Math.min(newW, canvasSize.width - resizeRef.current.position.x),
-            h: newH,
+            h: Math.min(newH, canvasSize.height - resizeRef.current.position.y),
           };
           resizeRef.current.position = newPos;
           setResizePosition(newPos);
@@ -187,10 +168,10 @@ export function useCanvasInteraction(opts: {
           const newPos = { x: e.clientX - panRef.current.start.x, y: e.clientY - panRef.current.start.y };
           setPanOffset(newPos);
         }
-      });
     };
 
-    const handleMouseUp = () => {
+    const handleMouseUp = (e: MouseEvent) => {
+      handleMouseMove(e);
       if (dragRef.current.chartId) {
         onDragEnd(dragRef.current.chartId, dragRef.current.position);
         dragRef.current = { chartId: null, offset: { x: 0, y: 0 }, position: { x: 0, y: 0 } };
@@ -206,6 +187,7 @@ export function useCanvasInteraction(opts: {
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (isEditingTarget(e.target)) return;
       if (e.key === 'Escape') {
         if (dragRef.current.chartId) {
           dragRef.current = { chartId: null, offset: { x: 0, y: 0 }, position: { x: 0, y: 0 } };
@@ -229,13 +211,13 @@ export function useCanvasInteraction(opts: {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
       window.removeEventListener('keydown', handleKeyDown);
-      cancelAnimationFrame(rafRef.current);
     };
-  }, [scale, canvasSize, allCharts, snapToGrid, onDragEnd, onResizeEnd]);
+  }, [scale, canvasSize, allCharts, gridSize, snapToGrid, onDragEnd, onResizeEnd]);
 
   return {
     // State
     canvasRef,
+    surfaceRef,
     canvasSize,
     setCanvasSize,
     canvasBgColor,

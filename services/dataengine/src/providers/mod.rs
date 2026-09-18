@@ -3,4 +3,4 @@ pub mod remote_exec;
 pub mod pool_manager;
 
 pub use mysql_table::RemoteSqlTable;
-pub use pool_manager::ConnectionPoolManager;
+pub use pool_manager::{ConnectionPoolManager, DbPool};

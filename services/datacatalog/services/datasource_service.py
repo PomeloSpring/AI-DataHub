@@ -27,6 +27,17 @@ try:
 except ImportError:
     HAS_ELASTICSEARCH = False
 
+# Try to import psycopg2 (PostgreSQL / SLS-PG 协议)
+try:
+    import psycopg2
+    import psycopg2.extras
+    HAS_PSYCOPG2 = True
+except ImportError:
+    HAS_PSYCOPG2 = False
+
+# 走 PG 协议/语法的数据源类型(SLS 以 PG 兼容协议接入)
+POSTGRES_DB_TYPES = ("postgres", "postgresql", "pg", "sls")
+
 
 # ── 模块级状态 ────────────────────────────────────────────────────────
 
@@ -180,27 +191,56 @@ class DatasourceService:
         """
         ds_id = _ts_id()
         now = _now()
+        ds_name = (data.get("name") or "").strip()
+        if not ds_name:
+            raise ValueError("数据源名称不能为空")
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
+                # name 为全局唯一标识：先查重，给出友好提示（DB 层另有 UNIQUE 兜底）
+                cur.execute("SELECT 1 FROM adh_datasources WHERE name = %s LIMIT 1", (ds_name,))
+                if cur.fetchone():
+                    raise ValueError(f"数据源名称「{ds_name}」已存在；名称为全局唯一标识，请换一个")
                 if data.get("is_default"):
                     cur.execute("UPDATE adh_datasources SET is_default = 0")
-                cur.execute(
-                    "INSERT INTO adh_datasources "
-                    "(id, name, db_type, host, port, username, password, database_name, "
-                    "is_default, `ssl`, owner_id, created_at, updated_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (
-                        ds_id, data["name"], data.get("db_type", "mysql"),
-                        data["host"], data.get("port", 3306),
-                        data.get("username", ""),
-                        encrypt_password(data.get("password", "")),
-                        data.get("database_name") or "",
-                        1 if data.get("is_default") else 0,
-                        1 if data.get("ssl") else 0,
-                        owner_id, now, now,
-                    ),
-                )
+                ssl_mode = (data.get("ssl_mode") or "disabled")
+                try:
+                    cur.execute(
+                        "INSERT INTO adh_datasources "
+                        "(id, name, db_type, host, port, username, password, database_name, "
+                        "is_default, `ssl`, ssl_mode, owner_id, created_at, updated_at) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (
+                            ds_id, ds_name, data.get("db_type", "mysql"),
+                            data["host"], data.get("port", 3306),
+                            data.get("username", ""),
+                            encrypt_password(data.get("password", "")),
+                            data.get("database_name") or "",
+                            1 if data.get("is_default") else 0,
+                            1 if data.get("ssl") else 0,
+                            ssl_mode,
+                            owner_id, now, now,
+                        ),
+                    )
+                except Exception:
+                    # ssl_mode 列为迁移新增(未迁移时回落旧列清单)
+                    conn.rollback()
+                    cur.execute(
+                        "INSERT INTO adh_datasources "
+                        "(id, name, db_type, host, port, username, password, database_name, "
+                        "is_default, `ssl`, owner_id, created_at, updated_at) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (
+                            ds_id, ds_name, data.get("db_type", "mysql"),
+                            data["host"], data.get("port", 3306),
+                            data.get("username", ""),
+                            encrypt_password(data.get("password", "")),
+                            data.get("database_name") or "",
+                            1 if data.get("is_default") else 0,
+                            1 if data.get("ssl") else 0,
+                            owner_id, now, now,
+                        ),
+                    )
             conn.commit()
         finally:
             conn.close()
@@ -227,8 +267,17 @@ class DatasourceService:
                 params = [now]
 
                 if data.get("name") is not None:
+                    new_name = (data["name"] or "").strip()
+                    if not new_name:
+                        raise ValueError("数据源名称不能为空")
+                    cur.execute(
+                        "SELECT 1 FROM adh_datasources WHERE name = %s AND id <> %s LIMIT 1",
+                        (new_name, ds_id),
+                    )
+                    if cur.fetchone():
+                        raise ValueError(f"数据源名称「{new_name}」已存在；名称为全局唯一标识，请换一个")
                     updates.append("name = %s")
-                    params.append(data["name"])
+                    params.append(new_name)
                 if data.get("db_type") is not None:
                     updates.append("db_type = %s")
                     params.append(data["db_type"])
@@ -255,12 +304,28 @@ class DatasourceService:
                 if data.get("ssl") is not None:
                     updates.append("`ssl` = %s")
                     params.append(1 if data["ssl"] else 0)
+                if data.get("ssl_mode") is not None:
+                    updates.append("ssl_mode = %s")
+                    params.append(data["ssl_mode"])
 
                 params.append(ds_id)
-                cur.execute(
-                    f"UPDATE adh_datasources SET {', '.join(updates)} WHERE id = %s",
-                    params,
-                )
+                try:
+                    cur.execute(
+                        f"UPDATE adh_datasources SET {', '.join(updates)} WHERE id = %s",
+                        params,
+                    )
+                except Exception:
+                    # ssl_mode 列未迁移时剔除该字段重试
+                    if "ssl_mode = %s" not in updates:
+                        raise
+                    conn.rollback()
+                    idx = updates.index("ssl_mode = %s")
+                    updates.pop(idx)
+                    params.pop(idx + 1)  # 首位是 updated_at, 字段参数同下标+1
+                    cur.execute(
+                        f"UPDATE adh_datasources SET {', '.join(updates)} WHERE id = %s",
+                        params,
+                    )
             conn.commit()
         finally:
             conn.close()
@@ -404,28 +469,39 @@ class DatasourceService:
     def get_datasource_conn(
         self, db_type: str, host: str, port: int,
         user: str, password: str, database: str = None, ssl: bool = False,
+        ssl_mode: str = None,
     ):
         """创建数据库连接（工厂方法）。
 
         Args:
-            db_type: 数据库类型 (mysql/doris/elasticsearch)。
+            db_type: 数据库类型 (mysql/doris/postgres/sls/elasticsearch)。
             host: 主机地址。
             port: 端口。
             user: 用户名。
             password: 密码。
             database: 数据库名。
-            ssl: 是否启用 SSL。
+            ssl: 是否启用 SSL（兼容旧字段）。
+            ssl_mode: SSL 模式 (disabled/preferred/required)，设置时优先于 ssl。
 
         Returns:
-            pymysql 连接或 Elasticsearch 客户端。
+            pymysql / psycopg2 连接或 Elasticsearch 客户端。
         """
+        db_type = (db_type or "mysql").lower()
+        # 归一化有效 ssl_mode(MySQL 列可能回传 bytes)
+        if isinstance(ssl_mode, bytes):
+            ssl_mode = ssl_mode.decode("utf-8", errors="replace")
+        effective_ssl_mode = ssl_mode or "disabled"
+        if effective_ssl_mode == "disabled" and ssl:
+            effective_ssl_mode = "required"
+
         if db_type == "elasticsearch":
             if not HAS_ELASTICSEARCH:
                 raise ValueError("Elasticsearch 库未安装，请执行: pip install elasticsearch")
-            protocol = "https" if ssl else "http"
+            use_ssl = effective_ssl_mode != "disabled"
+            protocol = "https" if use_ssl else "http"
             es_url = f"{protocol}://{host}:{port}"
             es_kwargs = {"hosts": [es_url], "request_timeout": 30, "meta_header": False}
-            if ssl:
+            if use_ssl:
                 es_kwargs["verify_certs"] = False
                 es_kwargs["ssl_show_warn"] = False
             if user and password:
@@ -433,6 +509,23 @@ class DatasourceService:
             elif user:
                 es_kwargs["basic_auth"] = (user, "")
             return Elasticsearch(**es_kwargs)
+        elif db_type in POSTGRES_DB_TYPES:
+            if not HAS_PSYCOPG2:
+                raise ValueError("psycopg2 未安装，请执行: pip install psycopg2-binary")
+            pg_kwargs = {
+                "host": host,
+                "port": port,
+                "user": user,
+                "password": password,
+                "dbname": database or "postgres",
+                "cursor_factory": psycopg2.extras.RealDictCursor,
+                "connect_timeout": 10,
+            }
+            if effective_ssl_mode == "required":
+                pg_kwargs["sslmode"] = "require"
+            elif effective_ssl_mode == "preferred":
+                pg_kwargs["sslmode"] = "prefer"
+            return psycopg2.connect(**pg_kwargs)
         else:
             conn_kwargs = {
                 "host": host,
@@ -445,12 +538,12 @@ class DatasourceService:
                 "connect_timeout": 10,
                 "read_timeout": 30,
             }
-            if ssl:
-                conn_kwargs["ssl"] = {
-                    "ssl_disabled": False,
-                    "ssl_verify_cert": False,
-                    "ssl_verify_identity": False,
-                }
+            if effective_ssl_mode == "required":
+                conn_kwargs["ssl"] = {"ssl_mode": "REQUIRED"}
+                conn_kwargs["ssl_disabled"] = False
+            elif effective_ssl_mode == "preferred":
+                conn_kwargs["ssl"] = {"ssl_mode": "PREFERRED"}
+                conn_kwargs["ssl_disabled"] = False
             return pymysql.connect(**conn_kwargs)
 
     def get_datasource_conn_from_dict(self, ds: dict):
@@ -470,6 +563,7 @@ class DatasourceService:
             password=ds.get("password", ""),
             database=ds.get("database_name"),
             ssl=bool(ds.get("ssl", 0)),
+            ssl_mode=ds.get("ssl_mode"),
         )
 
     async def get_datasource_by_id(self, ds_id: int) -> Optional[dict]:
@@ -620,33 +714,57 @@ class DatasourceService:
             es.close()
 
     async def _list_db_tables(self, ds: dict) -> list:
-        """列出 MySQL/Doris 数据库的表。"""
+        """列出 MySQL/Doris/Postgres 数据库的表。"""
         conn = self.get_datasource_conn_from_dict(ds)
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT TABLE_NAME, TABLE_COMMENT, TABLE_ROWS, DATA_LENGTH "
-                    "FROM information_schema.TABLES "
-                    "WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE' "
-                    "ORDER BY TABLE_NAME",
-                    (ds.get("database_name") or "",),
-                )
+                if (ds.get("db_type") or "").lower() in POSTGRES_DB_TYPES:
+                    cur.execute(
+                        "SELECT table_name AS \"TABLE_NAME\", "
+                        "obj_description((table_schema || '.' || table_name)::regclass, 'pg_class', 'comment') AS \"TABLE_COMMENT\", "
+                        "NULL AS \"TABLE_ROWS\", NULL AS \"DATA_LENGTH\" "
+                        "FROM information_schema.tables "
+                        "WHERE table_catalog = %s AND table_type = 'BASE TABLE' "
+                        "AND table_schema NOT IN ('pg_catalog', 'information_schema') "
+                        "ORDER BY table_schema, table_name",
+                        (ds.get("database_name") or "",),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT TABLE_NAME, TABLE_COMMENT, TABLE_ROWS, DATA_LENGTH "
+                        "FROM information_schema.TABLES "
+                        "WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE' "
+                        "ORDER BY TABLE_NAME",
+                        (ds.get("database_name") or "",),
+                    )
                 return cur.fetchall()
         finally:
             conn.close()
 
     async def _list_db_columns(self, ds: dict, table_name: str) -> list:
-        """列出 MySQL/Doris 表的列。"""
+        """列出 MySQL/Doris/Postgres 表的列。"""
         conn = self.get_datasource_conn_from_dict(ds)
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_COMMENT, COLUMN_KEY, IS_NULLABLE "
-                    "FROM information_schema.COLUMNS "
-                    "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s "
-                    "ORDER BY ORDINAL_POSITION",
-                    (ds.get("database_name") or "", table_name),
-                )
+                if (ds.get("db_type") or "").lower() in POSTGRES_DB_TYPES:
+                    cur.execute(
+                        "SELECT column_name AS \"COLUMN_NAME\", data_type AS \"DATA_TYPE\", "
+                        "col_description((table_schema || '.' || table_name)::regclass, ordinal_position) AS \"COLUMN_COMMENT\", "
+                        "'' AS \"COLUMN_KEY\", is_nullable AS \"IS_NULLABLE\" "
+                        "FROM information_schema.columns "
+                        "WHERE table_catalog = %s AND table_name = %s "
+                        "AND table_schema NOT IN ('pg_catalog', 'information_schema') "
+                        "ORDER BY table_schema, ordinal_position",
+                        (ds.get("database_name") or "", table_name),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_COMMENT, COLUMN_KEY, IS_NULLABLE "
+                        "FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s "
+                        "ORDER BY ORDINAL_POSITION",
+                        (ds.get("database_name") or "", table_name),
+                    )
                 return cur.fetchall()
         finally:
             conn.close()

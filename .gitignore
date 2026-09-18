@@ -32,6 +32,7 @@ env/
 .env.*.local
 backend/.env
 .pids
+pids/
 
 # OS
 .DS_Store
@@ -46,9 +47,11 @@ yarn-error.log*
 # Build outputs
 frontend/dist/
 frontend/build/
+frontend/node_modules/
 
 # Logs
 *.log
+logs/
 
 # Temporary files
 *.tmp
@@ -57,3 +60,9 @@ frontend/build/
 # Documentation (local only, except images for README)
 !docs/img/plan/
 docs/superpowers/
+
+# Build artifacts & local runtime caches
+services/dataengine/target/
+*.gateway.pid
+.gateway.pid
+jieba.cache

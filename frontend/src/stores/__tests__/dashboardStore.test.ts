@@ -75,6 +75,7 @@ describe('dashboardStore', () => {
       dashboards: [],
       currentId: null,
       loading: false,
+      error: null,
       globalFilters: {},
       crossFilters: [],
       favorites: [],
@@ -234,7 +235,7 @@ describe('dashboardStore', () => {
 
       const id = await useDashboardStore.getState().createDashboard('New')
       expect(id).toBe(99)
-      expect(vi.mocked(client.post)).toHaveBeenCalledWith('/dashboard/', { name: 'New' })
+      expect(vi.mocked(client.post)).toHaveBeenCalledWith('/dashboard/', { name: 'New', workspace_id: 0 })
     })
 
     it('deleteDashboard removes and updates currentId', async () => {
@@ -347,6 +348,73 @@ describe('dashboardStore', () => {
       const updatedCharts = useDashboardStore.getState().dashboards[0].charts
       expect(updatedCharts[0].position).toEqual({ x: 100, y: 200, w: 500, h: 400 })
       expect(updatedCharts[1].position).toEqual({ x: 0, y: 600, w: 300, h: 200 })
+    })
+  })
+
+  describe('保存契约与看板隔离', () => {
+    it('addChart 返回真实 ID、本地合并且 deferReload 不重载', async () => {
+      mockPost({ id: 42 })
+      useDashboardStore.setState({ dashboards: [makeDashboard({ id: 10, charts: [] })], currentWorkspaceId: 10 })
+      const getSpy = vi.mocked(client.get)
+      const newId = await useDashboardStore.getState().addChart(10, makeChart({ id: -1 }) as any, true)
+      expect(newId).toBe(42)
+      expect(useDashboardStore.getState().dashboards[0].charts[0].id).toBe(42)
+      expect(getSpy).not.toHaveBeenCalled()
+    })
+
+    it('addChart 无有效 ID 时抛错不静默', async () => {
+      mockPost({})
+      useDashboardStore.setState({ dashboards: [makeDashboard({ id: 10, charts: [] })] })
+      await expect(useDashboardStore.getState().addChart(10, makeChart({ id: -1 }) as any, true)).rejects.toThrow()
+    })
+
+    it('updateChart 只提交变更字段并保留语义/查询', async () => {
+      mockPut()
+      const chart = makeChart({ id: 5, semantic_query: { object: 'x' }, query_source: 'semantic', sql_query: '' })
+      useDashboardStore.setState({ dashboards: [makeDashboard({ id: 10, charts: [chart] })] })
+      await useDashboardStore.getState().updateChart(10, 5, { config: { vis: { version: 1 } } } as any, true)
+      expect(vi.mocked(client.put)).toHaveBeenCalledWith('/dashboard/10/charts/5', { config: { vis: { version: 1 } } })
+      const kept = useDashboardStore.getState().dashboards[0].charts[0]
+      expect(kept.semantic_query).toEqual({ object: 'x' })
+      expect(kept.query_source).toBe('semantic')
+    })
+
+    it('updateDashboard 将 page_params 落进 filters 不新增字段', async () => {
+      mockPut()
+      useDashboardStore.setState({ dashboards: [makeDashboard({ id: 10, filters: { keep: 1 } })] })
+      await useDashboardStore.getState().updateDashboard(10, { page_params: [{ name: 'a', type: 'string', default: '', label: 'A' }] } as any, true)
+      const body = vi.mocked(client.put).mock.calls[0][1] as any
+      expect(body.page_params).toBeUndefined()
+      expect(body.filters.pageParams).toHaveLength(1)
+      expect(body.filters.keep).toBe(1)
+    })
+
+    it('loadDashboards 失败保留本地数据并置错误', async () => {
+      useDashboardStore.setState({ dashboards: [makeDashboard({ id: 10 })], currentWorkspaceId: 10 })
+      vi.mocked(client.get).mockRejectedValue(new Error('down'))
+      await useDashboardStore.getState().loadDashboards(10)
+      expect(useDashboardStore.getState().dashboards).toHaveLength(1)
+      expect(useDashboardStore.getState().error).toMatch(/加载失败/)
+    })
+
+    it('切换看板重置参数状态且乱序刷新不回写', async () => {
+      const dash = makeDashboard({ id: 10, params: [{ name: 'p', type: 'text', label: 'P', default: 'd' }],
+        charts: [makeChart({ id: 5 })] })
+      useDashboardStore.setState({ dashboards: [dash], currentId: 999, paramValues: { p: 'edited' }, globalFilters: { x: 1 } })
+      useDashboardStore.getState().setCurrent(10)
+      // 切到不同看板重置临时过滤并从默认重建参数
+      expect(useDashboardStore.getState().globalFilters).toEqual({})
+      expect(useDashboardStore.getState().paramValues).toEqual({ p: 'd' })
+
+      // 乱序响应：先发慢后回，晚到的旧请求不得覆盖新结果
+      let resolveFirst: (v: any) => void = () => {}
+      vi.mocked(client.post).mockImplementationOnce(() => new Promise(r => { resolveFirst = r; }))
+        .mockResolvedValueOnce({ data: { columns: ['x'], rows: [[2]] } } as any)
+      const p1 = useDashboardStore.getState().refreshSingleChart(5)
+      await useDashboardStore.getState().refreshSingleChart(5)
+      resolveFirst({ data: { columns: ['x'], rows: [[1]] } })
+      await p1
+      expect(JSON.parse(useDashboardStore.getState().dashboards[0].charts[0].data_cache!).rows).toEqual([[2]])
     })
   })
 })

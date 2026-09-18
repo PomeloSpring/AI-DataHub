@@ -23,7 +23,8 @@ pub struct CreateDatasource {
     pub database: String,
     pub username: String,
     pub password: String,
-    pub ssl: Option<bool>,            // default false
+    pub ssl: Option<bool>,            // default false (legacy)
+    pub ssl_mode: Option<String>,     // "disabled" | "preferred" | "required"
 }
 
 /// Datasource record returned to API callers (no password)
@@ -37,6 +38,7 @@ pub struct DatasourceRecord {
     pub database: String,
     pub username: String,
     pub ssl: bool,
+    pub ssl_mode: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -67,11 +69,17 @@ impl DatasourceStore {
                 username TEXT NOT NULL,
                 password_encrypted TEXT NOT NULL,
                 ssl INTEGER DEFAULT 0,
+                ssl_mode TEXT DEFAULT 'disabled',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
             [],
         ).map_err(|e| format!("SQLite create table failed: {}", e))?;
+
+        // Idempotent migration: add ssl_mode column if missing
+        conn.execute_batch(
+            "ALTER TABLE datasources ADD COLUMN ssl_mode TEXT DEFAULT 'disabled';"
+        ).ok(); // ignore error if column already exists
 
         info!("Datasource store initialized at {}", path);
         Ok(Self {
@@ -86,15 +94,16 @@ impl DatasourceStore {
         let db_type = ds.db_type.as_deref().unwrap_or("mysql");
         let port = ds.port.unwrap_or(3306);
         let ssl = if ds.ssl.unwrap_or(false) { 1 } else { 0 };
+        let ssl_mode = resolve_ssl_mode(ds.ssl_mode.as_deref(), ds.ssl);
 
         // Simple obfuscation: base64 encode the password
         let password_enc = base64_encode(&ds.password);
 
         let conn = self.conn.lock().map_err(|e| format!("Lock failed: {}", e))?;
         conn.execute(
-            "INSERT INTO datasources (id, name, db_type, host, port, database_name, username, password_encrypted, ssl, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![id, ds.name, db_type, ds.host, port, ds.database, ds.username, password_enc, ssl, now, now],
+            "INSERT INTO datasources (id, name, db_type, host, port, database_name, username, password_encrypted, ssl, ssl_mode, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![id, ds.name, db_type, ds.host, port, ds.database, ds.username, password_enc, ssl, ssl_mode, now, now],
         ).map_err(|e| format!("Insert failed: {}", e))?;
 
         Ok(id)
@@ -104,7 +113,7 @@ impl DatasourceStore {
     pub fn list(&self) -> Result<Vec<DatasourceRecord>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock failed: {}", e))?;
         let mut stmt = conn
-            .prepare("SELECT id, name, db_type, host, port, database_name, username, ssl, created_at, updated_at FROM datasources ORDER BY created_at DESC")
+            .prepare("SELECT id, name, db_type, host, port, database_name, username, ssl, ssl_mode, created_at, updated_at FROM datasources ORDER BY created_at DESC")
             .map_err(|e| format!("Prepare failed: {}", e))?;
 
         let rows = stmt
@@ -118,8 +127,9 @@ impl DatasourceStore {
                     database: row.get(5)?,
                     username: row.get(6)?,
                     ssl: row.get::<_, i32>(7)? != 0,
-                    created_at: row.get(8)?,
-                    updated_at: row.get(9)?,
+                    ssl_mode: row.get::<_, String>(8).unwrap_or_else(|_| "disabled".to_string()),
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
                 })
             })
             .map_err(|e| format!("Query failed: {}", e))?;
@@ -135,11 +145,13 @@ impl DatasourceStore {
     pub fn get(&self, id: &str) -> Result<DatasourceConfig, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock failed: {}", e))?;
         let mut stmt = conn
-            .prepare("SELECT db_type, host, port, database_name, username, password_encrypted, ssl FROM datasources WHERE id = ?1")
+            .prepare("SELECT db_type, host, port, database_name, username, password_encrypted, ssl, ssl_mode FROM datasources WHERE id = ?1")
             .map_err(|e| format!("Prepare failed: {}", e))?;
 
         let result = stmt.query_row(params![id], |row| {
             let password_enc: String = row.get(5)?;
+            let ssl_bool: bool = row.get::<_, i32>(6)? != 0;
+            let ssl_mode: String = row.get::<_, String>(7).unwrap_or_else(|_| "disabled".to_string());
             Ok(DatasourceConfig {
                 db_type: row.get(0)?,
                 host: row.get(1)?,
@@ -147,7 +159,8 @@ impl DatasourceStore {
                 database: row.get(3)?,
                 user: row.get(4)?,
                 password: base64_decode(&password_enc),
-                ssl: Some(row.get::<_, i32>(6)? != 0),
+                ssl: Some(ssl_bool),
+                ssl_mode: Some(ssl_mode),
             })
         }).map_err(|e| format!("Datasource '{}' not found: {}", id, e))?;
 
@@ -158,7 +171,7 @@ impl DatasourceStore {
     pub fn get_record(&self, id: &str) -> Result<DatasourceRecord, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock failed: {}", e))?;
         let mut stmt = conn
-            .prepare("SELECT id, name, db_type, host, port, database_name, username, ssl, created_at, updated_at FROM datasources WHERE id = ?1")
+            .prepare("SELECT id, name, db_type, host, port, database_name, username, ssl, ssl_mode, created_at, updated_at FROM datasources WHERE id = ?1")
             .map_err(|e| format!("Prepare failed: {}", e))?;
 
         let result = stmt.query_row(params![id], |row| {
@@ -171,8 +184,9 @@ impl DatasourceStore {
                 database: row.get(5)?,
                 username: row.get(6)?,
                 ssl: row.get::<_, i32>(7)? != 0,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
+                ssl_mode: row.get::<_, String>(8).unwrap_or_else(|_| "disabled".to_string()),
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
             })
         }).map_err(|e| format!("Datasource '{}' not found: {}", id, e))?;
 
@@ -185,12 +199,13 @@ impl DatasourceStore {
         let db_type = ds.db_type.as_deref().unwrap_or("mysql");
         let port = ds.port.unwrap_or(3306);
         let ssl = if ds.ssl.unwrap_or(false) { 1 } else { 0 };
+        let ssl_mode = resolve_ssl_mode(ds.ssl_mode.as_deref(), ds.ssl);
         let password_enc = base64_encode(&ds.password);
 
         let conn = self.conn.lock().map_err(|e| format!("Lock failed: {}", e))?;
         let affected = conn.execute(
-            "UPDATE datasources SET name=?1, db_type=?2, host=?3, port=?4, database_name=?5, username=?6, password_encrypted=?7, ssl=?8, updated_at=?9 WHERE id=?10",
-            params![ds.name, db_type, ds.host, port, ds.database, ds.username, password_enc, ssl, now, id],
+            "UPDATE datasources SET name=?1, db_type=?2, host=?3, port=?4, database_name=?5, username=?6, password_encrypted=?7, ssl=?8, ssl_mode=?9, updated_at=?10 WHERE id=?11",
+            params![ds.name, db_type, ds.host, port, ds.database, ds.username, password_enc, ssl, ssl_mode, now, id],
         ).map_err(|e| format!("Update failed: {}", e))?;
 
         if affected == 0 {
@@ -214,6 +229,20 @@ impl DatasourceStore {
 }
 
 // ── Simple Base64 obfuscation (not cryptographic security, just avoids plaintext) ──
+
+/// Resolve effective SSL mode from ssl_mode string and legacy ssl boolean.
+/// Priority: ssl_mode > ssl flag > "disabled"
+fn resolve_ssl_mode(ssl_mode: Option<&str>, ssl: Option<bool>) -> String {
+    if let Some(mode) = ssl_mode {
+        if !mode.is_empty() && mode != "disabled" {
+            return mode.to_string();
+        }
+    }
+    if ssl.unwrap_or(false) {
+        return "required".to_string();
+    }
+    "disabled".to_string()
+}
 
 fn base64_encode(s: &str) -> String {
     base64_write(s.as_bytes())

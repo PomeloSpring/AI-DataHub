@@ -103,8 +103,8 @@ function groupToolCalls(toolCalls: ToolCall[]): ToolCallGroup[] {
 }
 
 // ── Single Tool Item ───────────────────────────────────────────
-
-function SingleToolItem({ tc }: { tc: ToolCall & { _index: number } }) {
+// 导出供 ProcessTimeline(思考/工具穿插的有序时间线)复用
+export function SingleToolItem({ tc }: { tc: ToolCall & { _index: number } }) {
   const [expanded, setExpanded] = useState(false);
   const failed = !!tc.error;
   const pending = !tc.result && !tc.error;

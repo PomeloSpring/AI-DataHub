@@ -22,6 +22,7 @@ class ExecutionContext:
     datasource_id: int = 0
     user_id: int = 0
     username: str = ""
+    user_role: str = ""
     model_id: Optional[int] = None
     system_prompt: str = ""
     extra: dict = field(default_factory=dict)

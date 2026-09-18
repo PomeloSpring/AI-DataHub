@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   Settings, BarChart3, Move, Paintbrush, Monitor, Grid3x3, Palette, PanelRightClose,
 } from 'lucide-react';
@@ -43,8 +44,9 @@ export default function PropertyPanel({
   isNewChart, onPropertyChange, onPositionChange, onWidgetConfigChange,
   onDelete, onChartConfig,
 }: Props) {
+  const [tab, setTab] = useState('appearance');
   return (
-    <div className={`flex-shrink-0 flex flex-col border-l bg-muted/30 transition-all duration-200 overflow-hidden ${isOpen ? 'w-[300px]' : 'w-0'}`}>
+    <div className={`flex-shrink-0 flex flex-col border-l bg-background transition-all duration-200 overflow-hidden max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-30 ${isOpen ? 'w-[300px]' : 'w-0 border-l-0'}`}>
       <div className="flex items-center justify-between p-3 border-b">
         <h3 className="font-semibold text-sm flex items-center gap-2">
           {selectedElementType === 'canvas' ? (
@@ -60,6 +62,10 @@ export default function PropertyPanel({
         </Button>
       </div>
 
+      <div className="flex border-b p-1" role="tablist">
+        {[['appearance', '外观'], ['data', '数据'], ['position', '位置']].map(([key, label]) =>
+          <Button key={key} role="tab" aria-selected={tab === key} size="sm" variant={tab === key ? 'secondary' : 'ghost'} onClick={() => setTab(key)} className="flex-1">{label}</Button>)}
+      </div>
       <ScrollArea className="flex-1 min-h-0 p-3">
         {selectedChart && selectedElementType !== 'canvas' ? (
           <div className="space-y-4">
@@ -104,7 +110,7 @@ export default function PropertyPanel({
             <Separator />
 
             {/* Position & Size */}
-            <div className="space-y-3">
+            <div className={`space-y-3 ${tab === 'position' ? '' : 'hidden'}`}>
               <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1">
                 <Move className="h-3 w-3" /> 位置与大小
               </div>
@@ -123,7 +129,7 @@ export default function PropertyPanel({
             <Separator />
 
             {/* Widget config */}
-            {selectedChart.chart_type?.startsWith('widget_') && (
+            {tab === 'data' && selectedChart.chart_type?.startsWith('widget_') && (
               <WidgetConfig
                 chart={selectedChart}
                 onWidgetConfigChange={onWidgetConfigChange}
@@ -133,23 +139,20 @@ export default function PropertyPanel({
             <Separator />
 
             {/* Style settings */}
-            <StyleSettings
-              chart={selectedChart}
-              onWidgetConfigChange={onWidgetConfigChange}
-            />
+            {tab === 'appearance' && (selectedChart.chart_type?.startsWith('widget_') ? <StyleSettings
+              chart={selectedChart} onWidgetConfigChange={onWidgetConfigChange}
+            /> : <div className="space-y-3">
+              <p className="text-xs text-muted-foreground">字模提供基础外观，下列设置为当前图表的显式覆盖。</p>
+              {[['cardBg', '卡片背景'], ['titleColor', '标题颜色'], ['valueColor', '指标颜色'], ['labelColor', '标签颜色']].map(([key, label]) =>
+                <label key={key} className="block space-y-1 text-xs">{label}<Input value={selectedChart.config?.[key] || ''} placeholder="沿用字模" onChange={e => onWidgetConfigChange(selectedChart.id, key, e.target.value)} /></label>)}
+              <label className="block space-y-1 text-xs">系列配色（逗号分隔）<Input value={(selectedChart.config?.colorScheme || []).join(', ')} placeholder="沿用字模" onChange={e => onWidgetConfigChange(selectedChart.id, 'colorScheme', e.target.value.split(',').map(s => s.trim()).filter(Boolean))} /></label>
+            </div>)}
 
             {/* Chart-specific: SQL info */}
-            {!selectedChart.chart_type?.startsWith('widget_') && selectedChart.sql_query && (
-              <>
-                <Separator />
-                <div className="space-y-2">
-                  <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">数据源</div>
-                  <pre className="text-[10px] mt-1 p-2 bg-muted rounded font-mono max-h-[80px] overflow-auto whitespace-pre-wrap">
-                    {selectedChart.sql_query}
-                  </pre>
-                </div>
-              </>
-            )}
+            {tab === 'data' && !selectedChart.chart_type?.startsWith('widget_') && <div className="space-y-3 text-xs">
+              <p>{selectedChart.query_source === 'semantic' || selectedChart.semantic_query ? '语义图表：声明式查询保持不变，不展示生成 SQL。' : '通过人工数据配置入口绑定数据。'}</p>
+              <Button size="sm" variant="outline" onClick={() => onChartConfig(selectedChart)}>数据与字段配置</Button>
+            </div>}
 
             <div className="h-2" />
           </div>
@@ -172,7 +175,7 @@ export default function PropertyPanel({
       {/* Fixed footer */}
       {selectedChart && selectedElementType !== 'canvas' && (
         <div className="flex-shrink-0 border-t p-3 space-y-2 bg-background">
-          {!selectedChart.chart_type?.startsWith('widget_') && !isNewChart(selectedChart.id) && (
+          {!selectedChart.chart_type?.startsWith('widget_') && (
             <Button className="w-full" size="sm" variant="outline" onClick={() => onChartConfig(selectedChart)}>
               <Settings className="h-4 w-4 mr-2" />高级配置
             </Button>
@@ -510,15 +513,14 @@ function CanvasProperties({
         </div>
         <div className="flex items-center gap-2">
           <input type="color" value={canvasBgColor || '#f5f5f5'}
-            onChange={e => { setCanvasBgColor(e.target.value); try { localStorage.setItem('editor_canvas_bg', e.target.value); } catch {} }}
+            onChange={e => setCanvasBgColor(e.target.value)}
             className="w-8 h-8 rounded cursor-pointer border" />
           <Input className="h-7 text-xs font-mono flex-1" value={canvasBgColor || ''}
-            onChange={e => { setCanvasBgColor(e.target.value); try { localStorage.setItem('editor_canvas_bg', e.target.value); } catch {} }}
+            onChange={e => setCanvasBgColor(e.target.value)}
             placeholder="默认背景" />
           <Button variant="outline" size="sm" className="h-7 text-xs flex-shrink-0"
-            onClick={() => { setCanvasBgColor(''); try { localStorage.removeItem('editor_canvas_bg'); } catch {} }}>
-            重置
-          </Button>
+            onClick={() => setCanvasBgColor('')}
+          >重置</Button>
         </div>
       </div>
 

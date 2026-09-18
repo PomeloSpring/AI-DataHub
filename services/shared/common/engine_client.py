@@ -14,6 +14,7 @@ Usage:
     )
 """
 
+import hashlib
 import logging
 import os
 import time
@@ -34,6 +35,25 @@ class EngineError(Exception):
     def __init__(self, message: str, status_code: int = 0):
         super().__init__(message)
         self.status_code = status_code
+
+
+def _transpile_for_engine(sql: str) -> str:
+    """MySQL/Doris 方言 → DataFusion 方言(引擎边界唯一转译点)。
+
+    DataFusion 规划层不认 MySQL 函数(DATE_SUB/DATE_FORMAT/IFNULL 等),
+    会在 plan 期报 Invalid function。方言映射见 shared/semantics/datafusion_dialect。
+    任何转译失败都保留原 SQL 下发(引擎报错 → 上层回退 MySQL 直连),
+    正确性优先;调用方持有的原 sql 不变,回退路径不受影响。
+    """
+    try:
+        from services.shared.semantics.datafusion_dialect import to_datafusion
+        out = to_datafusion(sql)
+        if out != sql:
+            logger.debug("DataFusion dialect transpiled SQL")
+        return out
+    except Exception as e:  # noqa: BLE001 — 转译失败不阻断,保留原样
+        logger.debug("dialect transpile skipped: %s", e)
+        return sql
 
 
 class QueryResult:
@@ -75,6 +95,7 @@ class EngineClient:
         self._healthy: Optional[bool] = None
         self._last_check: float = 0
         self._datasource_cache: dict[str, str] = {}  # name -> id mapping
+        self._datasource_fp: dict[str, str] = {}     # name -> 连接参数指纹(用于感知变更)
 
     def health(self) -> bool:
         """Check if engine server is healthy."""
@@ -118,7 +139,7 @@ class EngineClient:
             EngineError on failure.
         """
         body = {
-            "sql": sql,
+            "sql": _transpile_for_engine(sql),
             "datasource_id": datasource_id,
         }
         if rls_policies:
@@ -174,8 +195,12 @@ class EngineClient:
         username: str,
         password: str,
         database: str,
+        ssl_mode: str = None,
     ) -> str:
         """Create a datasource in DataEngine.
+
+        Args:
+            ssl_mode: SSL mode — "disabled" | "preferred" | "required".
 
         Returns:
             Datasource UUID.
@@ -189,6 +214,8 @@ class EngineClient:
             "password": password,
             "database": database,
         }
+        if ssl_mode and ssl_mode != "disabled":
+            body["ssl_mode"] = ssl_mode
 
         try:
             resp = self._session.post(
@@ -197,7 +224,8 @@ class EngineClient:
                 timeout=self.timeout,
             )
 
-            if resp.status_code != 200:
+            # Rust 端创建成功返回 201 CREATED，兼容 200/201 均为成功
+            if resp.status_code not in (200, 201):
                 raise EngineError(
                     f"Create datasource failed: {resp.text}",
                     status_code=resp.status_code,
@@ -212,6 +240,41 @@ class EngineClient:
             raise
         except Exception as e:
             raise EngineError(f"Create datasource error: {e}")
+
+    def update_datasource(
+        self,
+        datasource_id: str,
+        name: str,
+        db_type: str,
+        host: str,
+        port: int,
+        username: str,
+        password: str,
+        database: str,
+        ssl_mode: str = None,
+    ) -> bool:
+        """PUT /api/datasources/:id — 更新已注册数据源的连接参数(如密码轮换)."""
+        body = {
+            "name": name,
+            "db_type": db_type,
+            "host": host,
+            "port": port,
+            "username": username,
+            "password": password,
+            "database": database,
+        }
+        if ssl_mode and ssl_mode != "disabled":
+            body["ssl_mode"] = ssl_mode
+        try:
+            resp = self._session.put(
+                f"{self.base_url}/api/datasources/{datasource_id}",
+                json=body,
+                timeout=self.timeout,
+            )
+            return resp.status_code == 200
+        except Exception as e:  # noqa: BLE001 — 更新失败不阻断, 回落旧参数
+            logger.warning("Failed to update engine datasource %s: %s", datasource_id, e)
+            return False
 
     def list_datasources(self) -> list[dict]:
         """List all datasources."""
@@ -252,6 +315,12 @@ class EngineClient:
         except Exception:
             return False
 
+    @staticmethod
+    def _params_fingerprint(db_type, host, port, username, password, database, ssl_mode=None) -> str:
+        """对连接参数取指纹, 用于判断自上次调用后参数是否变化(含密码)."""
+        raw = f"{db_type}|{host}|{port}|{username}|{password}|{database}|{ssl_mode or ''}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
     def get_or_create_datasource(
         self,
         name: str,
@@ -261,15 +330,31 @@ class EngineClient:
         username: str,
         password: str,
         database: str,
+        ssl_mode: str = None,
     ) -> str:
         """Get existing datasource by name or create new one.
+
+        感知连接参数变更: 命中已存在的数据源时, 若本次参数(尤其密码)与上次不同,
+        会 PUT 刷新 DataFusion 侧存储, 使应用内修改的数据源凭据能下推到查询引擎。
+        (注: DataFusion 连接池按 host:port:database 缓存, 凭据轮换后仍需引擎侧重建/重启
+        才能真正生效; 此处保证存储侧不为旧密码。)
 
         Returns:
             Datasource UUID.
         """
+        fp = self._params_fingerprint(db_type, host, port, username, password, database, ssl_mode)
+
         # Check cache first
         if name in self._datasource_cache:
-            return self._datasource_cache[name]
+            ds_id = self._datasource_cache[name]
+            if self._datasource_fp.get(name) != fp:
+                # 参数已变(如密码轮换): 推送到 DataFusion 并刷新指纹
+                if self.update_datasource(
+                    ds_id, name, db_type, host, port, username, password, database,
+                    ssl_mode=ssl_mode,
+                ):
+                    self._datasource_fp[name] = fp
+            return ds_id
 
         # List existing datasources
         try:
@@ -278,12 +363,19 @@ class EngineClient:
                 if ds.get("name") == name:
                     ds_id = ds.get("id", "")
                     self._datasource_cache[name] = ds_id
+                    # 首次见到(或 Python 进程重启后): 用当前参数覆盖存储,
+                    # 修正历史遗留的旧/错凭据, 保证 DataFusion 侧与元数据库一致。
+                    if self.update_datasource(
+                        ds_id, name, db_type, host, port, username, password, database,
+                        ssl_mode=ssl_mode,
+                    ):
+                        self._datasource_fp[name] = fp
                     return ds_id
         except Exception:
             pass
 
         # Create new datasource
-        return self.create_datasource(
+        ds_id = self.create_datasource(
             name=name,
             db_type=db_type,
             host=host,
@@ -291,7 +383,10 @@ class EngineClient:
             username=username,
             password=password,
             database=database,
+            ssl_mode=ssl_mode,
         )
+        self._datasource_fp[name] = fp
+        return ds_id
 
 
 # Singleton instance

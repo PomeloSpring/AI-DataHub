@@ -9,7 +9,6 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -56,8 +55,8 @@ const WORKSPACE_TEMPLATES: Record<string, {
     label: '数据分析',
     icon: '📊',
     description: '用于业务数据查询和统计分析',
-    allowed_modes: 'quick,deep,agent',
-    default_mode: 'quick',
+    allowed_modes: 'agent',
+    default_mode: 'agent',
     default_agents: ['data_analysis_agent'],
   },
   log_analysis: {
@@ -351,8 +350,8 @@ function CreateWorkspaceDialog({
     name: '',
     description: '',
     workspace_type: 'custom',
-    allowed_modes: 'quick,deep,agent',
-    default_mode: 'quick',
+    allowed_modes: 'agent',
+    default_mode: 'agent',
     datasource_ids: [],
     mcp_server_ids: [],
     agent_names: [],
@@ -480,44 +479,16 @@ function CreateWorkspaceDialog({
                 />
               </div>
               <div className="space-y-2">
-                <Label>允许的模式</Label>
-                <div className="flex gap-2">
-                  {['quick', 'deep', 'agent'].map(mode => (
-                    <Badge
-                      key={mode}
-                      variant={(form.allowed_modes || '').includes(mode) ? 'default' : 'outline'}
-                      className="cursor-pointer"
-                      onClick={() => {
-                        const modes = (form.allowed_modes || '').split(',').filter(Boolean);
-                        const newModes = modes.includes(mode)
-                          ? modes.filter(m => m !== mode)
-                          : [...modes, mode];
-                        setForm({ ...form, allowed_modes: newModes.join(',') });
-                      }}
-                    >
-                      {mode === 'quick' && <Zap className="h-3 w-3 mr-1" />}
-                      {mode === 'deep' && <Workflow className="h-3 w-3 mr-1" />}
-                      {mode === 'agent' && <Bot className="h-3 w-3 mr-1" />}
-                      {mode}
-                    </Badge>
-                  ))}
+                <Label>对话模式</Label>
+                {/* 全面转向 Qoder 执行层:隐藏 quick/内置 deep 配置,固定为 Qoder(agent) */}
+                <div className="flex items-center gap-2 h-9 px-3 border rounded-md bg-muted/40 text-sm">
+                  <Bot className="h-4 w-4 text-primary" />
+                  <span>Qoder 执行层</span>
+                  <Badge variant="secondary" className="ml-auto">agent</Badge>
                 </div>
-              </div>
-              <div className="space-y-2">
-                <Label>默认模式</Label>
-                <Select
-                  value={form.default_mode}
-                  onValueChange={(v) => setForm({ ...form, default_mode: v })}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(form.allowed_modes || '').split(',').filter(Boolean).map(mode => (
-                      <SelectItem key={mode} value={mode}>{mode}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <p className="text-xs text-muted-foreground">
+                  统一使用 Qoder 角色化智能体,quick/深度模式已下线。
+                </p>
               </div>
             </TabsContent>
 

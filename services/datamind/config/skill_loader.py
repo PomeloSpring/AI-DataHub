@@ -14,6 +14,8 @@ effect within 60 seconds without restarting the service.
 
 import logging
 import os
+import re
+import shutil
 import time
 from pathlib import Path
 from typing import Optional
@@ -47,15 +49,62 @@ def _cache_get(cache: dict, key: str):
     return True, value
 
 
+def _parse_skill_md(text: str) -> tuple[dict, str]:
+    """解析 Qoder 规范 SKILL.md:YAML frontmatter + Markdown 正文.
+
+    Returns (meta, body);无 frontmatter 时 meta={} 且 body=原文。
+    """
+    if not text.startswith("---"):
+        return {}, text.strip()
+    # 关闭分隔线:第二个独占一行的 ---
+    lines = text.splitlines()
+    end = -1
+    for i in range(1, len(lines)):
+        if lines[i].strip() in ("---", "..."):
+            end = i
+            break
+    if end < 0:
+        return {}, text.strip()
+    front = "\n".join(lines[1:end])
+    body = "\n".join(lines[end + 1:]).strip()
+    try:
+        meta = yaml.safe_load(front) or {}
+    except Exception:  # noqa: BLE001
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    return meta, body
+
+
 def _load_skill_from_file(skill_name: str) -> Optional[dict]:
-    """Load skill from config/skills/{name}/ directory."""
+    """Load skill from config/skills/{name}/ directory.
+
+    优先 Qoder 规范 SKILL.md(frontmatter + 正文);兼容旧版 skill.yaml + system.md。
+    """
     skill_dir = SKILLS_DIR / skill_name
     if not skill_dir.exists():
         return None
 
-    result = {"name": skill_name, "source_type": "system"}
+    result = {"name": skill_name, "source_type": "system", "is_builtin": True}
 
-    # Load skill.yaml
+    # 1. Qoder 规范:SKILL.md
+    skill_md = skill_dir / "SKILL.md"
+    if skill_md.exists():
+        try:
+            meta, body = _parse_skill_md(skill_md.read_text(encoding="utf-8"))
+            result["display_name"] = meta.get("display_name") or meta.get("name") or skill_name
+            result["description"] = meta.get("description", "")
+            result["category"] = meta.get("category", "")
+            result["skill_config"] = meta
+            result["system_prompt"] = body
+            result["format"] = "skill_md"
+            # frontmatter source: custom 标记为自定义技能(非内置)
+            result["is_builtin"] = (meta.get("source") or "builtin") != "custom"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to load SKILL.md %s: %s", skill_name, e)
+        return result
+
+    # 2. 兼容旧版:skill.yaml + system.md
     yaml_path = skill_dir / "skill.yaml"
     if yaml_path.exists():
         try:
@@ -65,6 +114,7 @@ def _load_skill_from_file(skill_name: str) -> Optional[dict]:
             result["description"] = meta.get("description", "")
             result["category"] = meta.get("category", "")
             result["skill_config"] = meta
+            result["is_builtin"] = (meta.get("source") or "builtin") != "custom"
         except Exception as e:
             logger.warning("Failed to load skill yaml %s: %s", skill_name, e)
 
@@ -191,8 +241,14 @@ def _list_skills_uncached(category: str = None) -> list[dict]:
         for d in SKILLS_DIR.iterdir():
             if d.is_dir():
                 skill = _load_skill_from_file(d.name)
-                if skill:
-                    skills[d.name] = skill
+                if not skill:
+                    continue
+                # 管道内部 prompt 资产(config/skills/{nl2sql,chart,analysis,prediction}/
+                # {system,rules,examples,dialects}.md 由 config.loader 按提示词组件加载)
+                # 不是可绑定技能: 旧格式 skill.yaml 且无 category 的文件夹不在 Skills 列表暴露。
+                if skill.get("format") != "skill_md" and not skill.get("category"):
+                    continue
+                skills[d.name] = skill
 
     # 2. Load from DB (overrides file skills with same name)
     try:
@@ -267,3 +323,84 @@ def get_skill_summary_for_prompt() -> str:
     lines.append("如果用户问题不属于以上任何分析领域，直接按通用数据分析流程处理。")
 
     return "\n".join(lines)
+
+
+# ── 文件夹技能写操作(自定义 skills 以 Qoder 规范 SKILL.md 落盘) ──────────
+
+_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def is_valid_skill_name(name: str) -> bool:
+    return bool(name) and bool(_NAME_RE.match(name))
+
+
+def skill_exists(name: str) -> bool:
+    return (SKILLS_DIR / name / "SKILL.md").exists() or (SKILLS_DIR / name / "skill.yaml").exists()
+
+
+def save_skill_folder(
+    name: str,
+    *,
+    display_name: str = "",
+    description: str = "",
+    category: str = "custom",
+    body: str = "",
+    custom: bool = True,
+) -> Path:
+    """创建/更新一个文件夹技能,写为 Qoder 规范 SKILL.md(frontmatter + 正文).
+
+    custom=True 时 frontmatter 标记 source: custom(区别于系统内置)。
+    """
+    if not is_valid_skill_name(name):
+        raise ValueError("技能名仅允许字母/数字/下划线/连字符")
+    skill_dir = SKILLS_DIR / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    meta = {"name": name}
+    if display_name:
+        meta["display_name"] = display_name
+    if description:
+        meta["description"] = description
+    if category:
+        meta["category"] = category
+    if custom:
+        meta["source"] = "custom"
+    front = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False).strip()
+    content = f"---\n{front}\n---\n\n{body.strip()}\n"
+    (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+    clear_skill_cache()
+    return skill_dir
+
+
+def delete_skill_folder(name: str) -> bool:
+    """删除一个自定义(非内置)文件夹技能。内置技能拒绝删除。"""
+    if not is_valid_skill_name(name):
+        return False
+    skill = _load_skill_from_file(name)
+    if skill and skill.get("is_builtin"):
+        raise PermissionError("系统内置技能不可删除")
+    skill_dir = SKILLS_DIR / name
+    if skill_dir.exists() and skill_dir.is_dir():
+        shutil.rmtree(skill_dir)
+        clear_skill_cache()
+        return True
+    return False
+
+
+def read_skill_markdown(name: str) -> Optional[str]:
+    """读取技能的 SKILL.md 原文(供编辑表单回填);若仅旧版则合成 frontmatter + system.md。"""
+    skill_dir = SKILLS_DIR / name
+    md = skill_dir / "SKILL.md"
+    if md.exists():
+        return md.read_text(encoding="utf-8")
+    yaml_path, sys_path = skill_dir / "skill.yaml", skill_dir / "system.md"
+    if yaml_path.exists() or sys_path.exists():
+        meta = {}
+        if yaml_path.exists():
+            try:
+                meta = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+            except Exception:  # noqa: BLE001
+                meta = {}
+        body = sys_path.read_text(encoding="utf-8") if sys_path.exists() else ""
+        front = yaml.safe_dump({"name": name, **meta}, allow_unicode=True, sort_keys=False).strip()
+        return f"---\n{front}\n---\n\n{body}\n"
+    return None

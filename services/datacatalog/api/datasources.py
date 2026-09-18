@@ -45,7 +45,10 @@ async def create_datasource(
     user: dict = Depends(require_admin),
 ):
     """创建数据源（需要管理员权限）。"""
-    return await datasource_service.create_datasource(req, owner_id=user.get("user_id", 0))
+    try:
+        return await datasource_service.create_datasource(req, owner_id=user.get("user_id", 0))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.put("/{ds_id}")
@@ -55,7 +58,10 @@ async def update_datasource(
     user: dict = Depends(require_admin),
 ):
     """更新数据源（需要管理员权限）。"""
-    return await datasource_service.update_datasource(ds_id, req)
+    try:
+        return await datasource_service.update_datasource(ds_id, req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/{ds_id}")

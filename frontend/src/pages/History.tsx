@@ -27,7 +27,7 @@ function TableSkeleton({ rows = 8 }: { rows?: number }) {
   );
 }
 
-export default function History() {
+export default function History({ compact = false }: { compact?: boolean }) {
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [days, setDays] = useState('7');
@@ -74,7 +74,7 @@ export default function History() {
   const totalPages = Math.ceil(pagination.total / pagination.pageSize);
 
   return (
-    <div className="flex flex-col p-6">
+    <div className={compact ? '' : 'flex flex-col p-6'}>
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-3">
         <h1 className="text-lg font-semibold text-foreground">查询历史</h1>
         <div className="flex items-center gap-3 flex-wrap">

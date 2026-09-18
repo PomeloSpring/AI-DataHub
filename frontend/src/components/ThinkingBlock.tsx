@@ -2,11 +2,11 @@
  * ThinkingBlock — Collapsible model reasoning display.
  *
  * Shows the LLM's chain-of-thought inline within assistant messages.
- * Defaults to collapsed with a text preview. Expands during streaming.
+ * 默认折叠(含流式期间),仅显缩略预览与状态;用户可手动展开。
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { ChevronRight, ChevronDown, Brain } from 'lucide-react';
+import { ChevronRight, ChevronDown, Brain, Loader2 } from 'lucide-react';
 
 interface Props {
   content: string;
@@ -14,15 +14,9 @@ interface Props {
 }
 
 export default function ThinkingBlock({ content, isStreaming = false }: Props) {
-  const [expanded, setExpanded] = useState(isStreaming);
+  // 不默认展开:流式期间也只显示“思考中”状态,避免刷屏
+  const [expanded, setExpanded] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
-
-  // Auto-expand during streaming, auto-collapse when done
-  useEffect(() => {
-    if (isStreaming) {
-      setExpanded(true);
-    }
-  }, [isStreaming]);
 
   // Auto-scroll body during streaming
   useEffect(() => {
@@ -48,6 +42,11 @@ export default function ThinkingBlock({ content, isStreaming = false }: Props) {
         <span className="text-xs font-medium text-purple-600 dark:text-purple-400 shrink-0">
           思考
         </span>
+        {isStreaming && (
+          <span className="flex items-center gap-1 text-xs text-purple-500/80 shrink-0">
+            <Loader2 className="h-3 w-3 animate-spin" />思考中...
+          </span>
+        )}
         {!expanded && (
           <span className="text-xs text-muted-foreground truncate flex-1 min-w-0">
             {preview}

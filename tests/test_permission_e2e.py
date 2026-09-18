@@ -277,7 +277,9 @@ class TestWorkspaceIsolation:
         )
         # No row filter should be injected
         assert modified_sql == sql
-        assert result.hidden_columns == []
+        # 全国 workspace 不额外加列限制; 但 datagov 全局敏感基线(table_name='')对所有人生效
+        _, baseline_blocks = enforcer._get_sensitive_policies(300, 1, "orders")
+        assert result.hidden_columns == baseline_blocks
 
 
 class TestColumnMasking:

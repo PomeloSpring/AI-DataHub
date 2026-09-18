@@ -39,6 +39,10 @@ app.add_middleware(
 )
 
 # Include routers
+# 权限码驱动的 API 鉴权(由 adh_perm_registry 统一声明, 与 authservice/datamind 一致)
+from services.shared.common.api_permission import add_api_permission_middleware
+add_api_permission_middleware(app)
+
 app.include_router(catalog_router, prefix="/api/catalog", tags=["Catalog"])
 app.include_router(metadata_router, prefix="/api/admin", tags=["Metadata Admin"])
 app.include_router(templates_router, prefix="/api/admin/templates", tags=["Templates Admin"])
