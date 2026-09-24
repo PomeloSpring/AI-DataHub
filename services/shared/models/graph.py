@@ -12,6 +12,7 @@ class GraphType(str, Enum):
     TABLE_RELATION = "table-relation"
     BUSINESS_KNOWLEDGE = "business-knowledge"
     DATA_LINEAGE = "data-lineage"
+    ONTOLOGY_OVERVIEW = "ontology-overview"   # 本体总览: 对象=点, Link=名边(随边取端点)
 
 
 class NodeType(str, Enum):

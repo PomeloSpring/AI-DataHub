@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
-import type { VisComponent } from '@/api/visLibrary';
-import Preview from '@/components/VisComponentPreview';
+import { VIS_CATEGORIES, type VisComponent } from '@/api/visLibrary';
+import Preview, { ShapePreview } from '@/components/VisComponentPreview';
+import { CHART_TYPES, CHART_TYPE_CATEGORIES } from '@/components/DashboardChart';
+import { sanitizePack } from '@/lib/dashboardDesign';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -14,25 +16,20 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { Plus, Edit, Trash2, RefreshCw, Lock, LayoutTemplate, Palette, Image, Gauge, Grid3x3, Frame, FileCode, BarChart3 } from 'lucide-react';
+import { Plus, Edit, Trash2, RefreshCw, Lock, LayoutTemplate, Palette, Image, Gauge, Grid3x3, Frame, FileCode, BarChart3, Layers } from 'lucide-react';
 import client from '@/api/client';
 import { useAuthStore } from '@/stores/authStore';
 
-const CATEGORIES: { id: string; label: string; icon: any }[] = [
-  { id: 'chart_style', label: '图表样式', icon: BarChart3 },
-  { id: 'screen_background', label: '大屏背景', icon: Image },
-  { id: 'kpi_card', label: 'KPI 卡片', icon: Gauge },
-  { id: 'layout_template', label: '布局模板', icon: Grid3x3 },
-  { id: 'decoration_frame', label: '装饰边框', icon: Frame },
-  { id: 'color_theme', label: '配色主题', icon: Palette },
-  { id: 'sql_template', label: 'SQL 模板', icon: FileCode },
-];
-const CHART_TYPES = ['bar', 'line', 'area', 'pie', 'scatter', 'radar', 'gauge', 'funnel', 'heatmap', 'treemap', 'waterfall', 'sankey', 'boxplot', 'bubble', 'table', 'big_number_trend', 'text_display'];
+const ICONS = { theme_pack: Layers, chart_style: BarChart3, screen_background: Image, kpi_card: Gauge,
+  layout_template: Grid3x3, decoration_frame: Frame, color_theme: Palette, sql_template: FileCode };
+const CATEGORIES = VIS_CATEGORIES.map(c => ({ ...c, icon: ICONS[c.id] }));
 
 export default function VisLibrary() {
   const isAdmin = useAuthStore(s => s.user?.role) === 'admin';
   const { items, loading, error, refresh: load } = useVisLibrary(true);
-  const [catFilter, setCatFilter] = useState<string>('all');
+  const [catFilter, setCatFilter] = useState<string>('theme_pack');
+  const [viewPack, setViewPack] = useState<VisComponent | null>(null);
+  const packStyle = viewPack ? sanitizePack(viewPack.style_config) : {};
 
   const [formOpen, setFormOpen] = useState(false);
   const [edit, setEdit] = useState<VisComponent | null>(null);
@@ -98,7 +95,7 @@ export default function VisLibrary() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold flex items-center gap-2"><LayoutTemplate className="h-5 w-5" /> UI 字模库</h1>
-          <p className="text-sm text-muted-foreground mt-1">大屏可复用的"活字":图表样式 / 背景 / KPI 卡 / 布局 / 装饰 / 配色 / SQL 模板。系统内置仅管理员可改,自定义可回存沉淀。</p>
+          <p className="text-sm text-muted-foreground mt-1">大屏可复用的"活字":主题包 / 图表样式 / 背景 / KPI 卡 / 布局 / 装饰 / 配色 / SQL 模板。系统内置仅管理员可改,自定义可回存沉淀。</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={load}><RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />刷新</Button>
@@ -131,7 +128,8 @@ export default function VisLibrary() {
               <Badge variant={c.source === 'system' ? 'default' : 'secondary'}>{c.source === 'system' ? '内置' : '自定义'}</Badge>
             </div>
             {c.description && <p className="text-xs text-muted-foreground line-clamp-2">{c.description}</p>}
-            <div className="flex items-center gap-2 pt-1">
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              {c.category === 'theme_pack' && <Button variant="outline" size="sm" onClick={() => setViewPack(c)}>浏览整套组件</Button>}
               <Button variant="outline" size="sm" disabled={!canEdit(c)} onClick={() => openEdit(c)}>
                 <Edit className="h-3.5 w-3.5 mr-1" />{canEdit(c) ? '编辑' : '只读'}
               </Button>
@@ -146,6 +144,24 @@ export default function VisLibrary() {
         )}
       </div>
 
+      <Dialog open={!!viewPack} onOpenChange={() => setViewPack(null)}>
+        <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>{viewPack?.name} · 整套 UI 字模</DialogTitle><DialogDescription>按同一主题展示全部图表与参数控件的形状示意；示例不读取业务数据。</DialogDescription></DialogHeader>
+          <div className="space-y-5 rounded-lg p-4" style={{ backgroundColor: packStyle.background?.backgroundColor, backgroundImage: packStyle.background?.backgroundImage, backgroundSize: packStyle.background?.backgroundSize }}>
+            {CHART_TYPE_CATEGORIES.map(group => <section key={group.key}>
+              <h3 className="mb-2 text-sm font-medium" style={{ color: packStyle.mode === 'dark' ? '#e2e8f0' : '#334155' }}>{group.label}</h3>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">{CHART_TYPES.filter(t => t.category === group.key).map(t => {
+                const styles = t.category === 'widget' ? packStyle.widgets : packStyle.charts;
+                const cfg = { ...styles?.default, ...styles?.[t.value] };
+                return <div key={t.value} className="rounded-lg border p-2" style={{ background: packStyle.card?.cardBg, border: packStyle.card?.cardBorder, borderRadius: packStyle.card?.cardRadius }}>
+                  <ShapePreview type={t.value} palette={cfg.colorScheme || packStyle.palette || []} cfg={cfg} />
+                  <p className="mt-2 text-center text-xs" style={{ color: packStyle.mode === 'dark' ? '#cbd5e1' : '#475569' }}>{t.label}</p>
+                </div>;
+              })}</div>
+            </section>)}
+          </div>
+        </DialogContent>
+      </Dialog>
       {/* 编辑弹窗 */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="max-w-[560px] max-h-[85vh] overflow-y-auto">
@@ -176,7 +192,7 @@ export default function VisLibrary() {
                   <SelectTrigger><SelectValue placeholder="不限" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="_none">不限</SelectItem>
-                    {CHART_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                    {CHART_TYPES.filter(t => t.category !== 'widget').map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>

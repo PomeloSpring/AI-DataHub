@@ -117,6 +117,21 @@ def delete_admin_skill(name: str):
     return {"name": name, "success": True}
 
 
+@router.get("/admin/skills/{name}/versions")
+def list_skill_versions_api(name: str):
+    """技能版本历史(SKILL.md 快照, 新→旧)。版本管理唯一入口在 Skills 管理。"""
+    return {"versions": skill_loader.list_skill_versions(name)}
+
+
+@router.post("/admin/skills/{name}/rollback")
+def rollback_skill_api(name: str, req: dict):
+    """回滚到指定快照(当前版会先自动快照)。仅自定义技能文件夹有版本。"""
+    version = str(req.get("version") or "")
+    if not skill_loader.rollback_skill_version(name, version):
+        raise HTTPException(status_code=404, detail="版本不存在或技能不可回滚")
+    return {"name": name, "rolled_back_to": version, "success": True}
+
+
 def _delete_db_skill(name: str) -> None:
     try:
         from services.shared.common.db import execute_write

@@ -15,7 +15,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { ArrowLeft, RefreshCw, Trash2, XCircle, CheckCircle, Clock } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Trash2, XCircle, Clock } from 'lucide-react';
 import {
   listScheduledLogs,
   getScheduledTaskStats,
@@ -27,6 +27,8 @@ import {
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
   success: { label: '成功', color: 'bg-green-500/10 text-green-500 border-green-500/20' },
+  partial: { label: '部分成功', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
+  queued: { label: '排队中', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
   failed: { label: '失败', color: 'bg-red-500/10 text-red-500 border-red-500/20' },
   running: { label: '运行中', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
   timeout: { label: '超时', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
@@ -160,6 +162,9 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
           <SelectContent>
             <SelectItem value="all">全部状态</SelectItem>
             <SelectItem value="success">成功</SelectItem>
+            <SelectItem value="partial">部分成功</SelectItem>
+            <SelectItem value="queued">排队中</SelectItem>
+            <SelectItem value="cancelled">已取消</SelectItem>
             <SelectItem value="failed">失败</SelectItem>
             <SelectItem value="running">运行中</SelectItem>
             <SelectItem value="timeout">超时</SelectItem>
@@ -207,7 +212,7 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
                     <div className="flex justify-end gap-1">
                       {log.report_id && (
                         <Button variant="ghost" size="sm" asChild>
-                          <a href={`/report/${log.report_id}${log.report_access_token ? `?token=${log.report_access_token}` : ''}`} target="_blank" rel="noopener noreferrer">
+                          <a href={`/report/${log.report_id}`} target="_blank" rel="noopener noreferrer">
                             报告
                           </a>
                         </Button>
@@ -256,7 +261,7 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
                   <div className="col-span-2">
                     <span className="text-muted-foreground">报告：</span>
                     <a
-                      href={`/report/${detailLog.report_id}${detailLog.report_access_token ? `?token=${detailLog.report_access_token}` : ''}`}
+                      href={`/report/${detailLog.report_id}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-primary underline ml-1"
@@ -268,7 +273,7 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
               </div>
 
               {/* Status Actions */}
-              {detailLog.status === 'running' && (
+              {['queued', 'running'].includes(detailLog.status) && (
                 <div className="flex gap-2 pt-1">
                   <Button size="sm" variant="destructive" onClick={async () => {
                     try {
@@ -283,48 +288,11 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
                   </Button>
                 </div>
               )}
-              {detailLog.status !== 'running' && (
-                <div className="flex gap-2 pt-1">
-                  {detailLog.status !== 'success' && (
-                    <Button size="sm" variant="outline" onClick={async () => {
-                      try {
-                        await updateLogStatus(detailLog.id, 'success');
-                        toast.success('已标记为成功');
-                        setDetailLog(null);
-                        loadLogs();
-                        loadStats();
-                      } catch { toast.error('操作失败'); }
-                    }}>
-                      <CheckCircle className="w-4 h-4 mr-1" /> 标记成功
-                    </Button>
-                  )}
-                  {detailLog.status !== 'failed' && (
-                    <Button size="sm" variant="outline" onClick={async () => {
-                      try {
-                        await updateLogStatus(detailLog.id, 'failed', '手动标记');
-                        toast.success('已标记为失败');
-                        setDetailLog(null);
-                        loadLogs();
-                        loadStats();
-                      } catch { toast.error('操作失败'); }
-                    }}>
-                      <XCircle className="w-4 h-4 mr-1" /> 标记失败
-                    </Button>
-                  )}
-                  {detailLog.status !== 'timeout' && (
-                    <Button size="sm" variant="outline" onClick={async () => {
-                      try {
-                        await updateLogStatus(detailLog.id, 'timeout', '手动标记超时');
-                        toast.success('已标记为超时');
-                        setDetailLog(null);
-                        loadLogs();
-                        loadStats();
-                      } catch { toast.error('操作失败'); }
-                    }}>
-                      <Clock className="w-4 h-4 mr-1" /> 标记超时
-                    </Button>
-                  )}
-                </div>
+              {detailLog.stage_error_code && (
+                <div className="text-amber-600">阶段状态：{detailLog.stage_error_code}</div>
+              )}
+              {detailLog.run_key && (
+                <div className="text-muted-foreground">运行标识：{detailLog.run_key}</div>
               )}
               {detailLog.result_summary && (
                 <div>

@@ -194,6 +194,7 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._build_env(task),
@@ -248,6 +249,7 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._build_env(task),
@@ -345,6 +347,7 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
         try:
             proc = await asyncio.create_subprocess_exec(
                 *self.version_cmd,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env=self._build_env(None),
@@ -365,6 +368,7 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
         try:
             proc = await asyncio.create_subprocess_exec(
                 *self.models_cmd,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env=self._build_env(None),

@@ -24,15 +24,26 @@ MAX_SEARCH_RESULTS = 100
 BASH_TIMEOUT_CAP = 120
 BASH_OUTPUT_CAP = 100_000
 
-# 工作空间文件根目录:<项目根>/data/workspaces
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-WORKSPACES_DIR = _PROJECT_ROOT / "data" / "workspaces"
+# 工作空间文件根目录:通过 ADH_WORKSPACES_DIR 环境变量配置,
+# Docker 部署时挂载 named volume 实现持久化
+_WORKSPACES_DIR_ENV = None
+
+
+def _get_workspaces_dir() -> Path:
+    global _WORKSPACES_DIR_ENV
+    if _WORKSPACES_DIR_ENV is None:
+        from services.shared.common.config import ADH_WORKSPACES_DIR
+        _WORKSPACES_DIR_ENV = Path(ADH_WORKSPACES_DIR)
+    return _WORKSPACES_DIR_ENV
+
+
+WORKSPACES_DIR = property(lambda self: _get_workspaces_dir())
 
 
 def workspace_root(workspace_id: int) -> Path:
     """工作空间文件根目录(不存在则创建);workspace_id=0 用 global."""
     name = f"ws_{workspace_id}" if workspace_id else "global"
-    root = WORKSPACES_DIR / name
+    root = _get_workspaces_dir() / name
     root.mkdir(parents=True, exist_ok=True)
     return root
 

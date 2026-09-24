@@ -69,6 +69,40 @@ export async function fetchSystemMetrics(): Promise<SystemMetrics> {
   return data;
 }
 
+// ── 中间件依赖健康 ──────────────────────────────────────────────
+export interface MiddlewareItem {
+  key: string;
+  name: string;
+  desc: string;
+  category: string;
+  required: boolean;
+  configured: boolean;
+  status: 'healthy' | 'down' | 'skipped';
+  latency_ms: number | null;
+  detail: string;
+  message: string;
+}
+
+export interface MiddlewareSummary {
+  total: number;
+  healthy: number;
+  down: number;
+  skipped: number;
+  required_down: number;
+  avg_latency_ms: number | null;
+}
+
+export interface MiddlewareResult {
+  checked_at: string;
+  summary: MiddlewareSummary;
+  items: MiddlewareItem[];
+}
+
+export async function fetchMiddlewareHealth(): Promise<MiddlewareResult> {
+  const { data } = await client.get<MiddlewareResult>('/monitoring/middleware');
+  return data;
+}
+
 /** Format bytes as human-readable string */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return '-';

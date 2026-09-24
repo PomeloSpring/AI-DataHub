@@ -1,13 +1,14 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { RefreshCw, Pause, Play, Clock } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
+import { RefreshCw, Clock, MoreHorizontal } from 'lucide-react';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuLabel, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { toast } from 'sonner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Badge } from '@/components/ui/badge';
 
 interface DashboardAutoRefreshProps {
-  onRefresh: () => void;
+  onRefresh: () => void | boolean | Promise<void | boolean>;
   loading?: boolean;
+  menuItems?: ReactNode;
 }
 
 const REFRESH_INTERVALS = [
@@ -21,150 +22,49 @@ const REFRESH_INTERVALS = [
   { value: '1800', label: '30分钟' },
 ];
 
-export default function DashboardAutoRefresh({ onRefresh, loading }: DashboardAutoRefreshProps) {
+export default function DashboardAutoRefresh({ onRefresh, loading, menuItems }: DashboardAutoRefreshProps) {
   const [interval, setInterval] = useState('0');
-  const [isPaused, setIsPaused] = useState(false);
+  const [paused, setPaused] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-  const [countdown, setCountdown] = useState(0);
-  const timerRef = useRef<number | null>(null);
-  const countdownRef = useRef<number | null>(null);
-
-  const intervalNum = parseInt(interval);
-
-  const clearTimers = useCallback(() => {
-    if (timerRef.current) {
-      window.clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-    if (countdownRef.current) {
-      window.clearInterval(countdownRef.current);
-      countdownRef.current = null;
-    }
+  const [failed, setFailed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const running = useRef(false);
+  const mounted = useRef(true);
+  const latest = useRef({ onRefresh, loading }); latest.current = { onRefresh, loading };
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const refresh = useCallback(async () => {
+    if (running.current || latest.current.loading) return;
+    running.current = true; setBusy(true);
+    try {
+      const success = await latest.current.onRefresh();
+      if (mounted.current) { setFailed(success === false); if (success !== false) setLastRefresh(new Date()); }
+    } catch {
+      if (mounted.current) { setFailed(true); toast.error('看板刷新失败，请重试'); }
+    } finally { running.current = false; if (mounted.current) setBusy(false); }
   }, []);
-
   useEffect(() => {
-    return () => clearTimers();
-  }, [clearTimers]);
-
-  const startTimer = useCallback(() => {
-    clearTimers();
-    if (intervalNum <= 0 || isPaused) return;
-
-    setCountdown(intervalNum);
-
-    const countdownInterval = window.setInterval(() => {
-      setCountdown((prev: number) => {
-        if (prev <= 1) return intervalNum;
-        return prev - 1;
-      });
-    }, 1000);
-    countdownRef.current = countdownInterval;
-
-    const refreshInterval = window.setInterval(() => {
-      onRefresh();
-      setLastRefresh(new Date());
-    }, intervalNum * 1000);
-    timerRef.current = refreshInterval;
-  }, [intervalNum, isPaused, onRefresh, clearTimers]);
-
-  useEffect(() => {
-    startTimer();
-    return clearTimers;
-  }, [startTimer, clearTimers]);
-
-  const handleIntervalChange = useCallback((value: string) => {
-    setInterval(value);
-    setIsPaused(false);
-    if (parseInt(value) > 0) {
-      setLastRefresh(new Date());
-    }
-  }, []);
-
-  const togglePause = useCallback(() => {
-    setIsPaused(prev => !prev);
-  }, []);
-
-  const handleManualRefresh = useCallback(() => {
-    onRefresh();
-    setLastRefresh(new Date());
-    if (intervalNum > 0) {
-      setCountdown(intervalNum);
-    }
-  }, [onRefresh, intervalNum]);
-
-  const formatTime = useCallback((date: Date) => {
-    return date.toLocaleTimeString('zh-CN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-  }, []);
-
-  return (
-    <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/30 border-b flex-shrink-0">
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 w-8 p-0"
-            onClick={handleManualRefresh}
-            disabled={loading}
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>手动刷新</TooltipContent>
-      </Tooltip>
-
-      <Select value={interval} onValueChange={handleIntervalChange}>
-        <SelectTrigger className="w-[100px] h-8">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {REFRESH_INTERVALS.map((item) => (
-            <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-
-      {intervalNum > 0 && (
-        <>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-8 w-8 p-0"
-                onClick={togglePause}
-              >
-                {isPaused ? (
-                  <Play className="h-4 w-4 text-green-500" />
-                ) : (
-                  <Pause className="h-4 w-4 text-yellow-500" />
-                )}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{isPaused ? '继续自动刷新' : '暂停自动刷新'}</TooltipContent>
-          </Tooltip>
-
-          <div className="flex items-center gap-1 px-2 py-1 bg-background rounded border">
-            <Clock className="h-3 w-3 text-muted-foreground" />
-            <span className="text-xs text-muted-foreground min-w-[20px] text-center">{countdown}</span>
-            <span className="text-xs text-muted-foreground">秒</span>
-          </div>
-
-          {isPaused && (
-            <Badge variant="outline" className="text-xs text-yellow-500">已暂停</Badge>
-          )}
-        </>
-      )}
-
-      {lastRefresh && (
-        <span className="text-xs text-muted-foreground ml-auto">
-          上次刷新: {formatTime(lastRefresh)}
-        </span>
-      )}
-    </div>
-  );
+    if (!Number(interval) || paused) return;
+    const timer = window.setInterval(() => void refresh(), Number(interval) * 1000);
+    return () => window.clearInterval(timer);
+  }, [interval, paused, refresh]);
+  return <div className="flex shrink-0 items-center gap-1" data-testid="dashboard-refresh-actions">
+    <Tooltip><TooltipTrigger asChild>
+      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={failed ? '刷新失败，重试' : '刷新数据'} disabled={busy || loading} onClick={() => void refresh()}>
+        <RefreshCw className={`h-4 w-4 ${busy || loading ? 'animate-spin' : ''} ${failed ? 'text-destructive' : ''}`} />
+      </Button>
+    </TooltipTrigger><TooltipContent>{failed ? '部分图表刷新失败，请重试' : '刷新数据'}</TooltipContent></Tooltip>
+    <DropdownMenu><DropdownMenuTrigger asChild>
+      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="自动刷新与更多操作" title="自动刷新与更多操作">
+        <Clock className={`hidden h-4 w-4 sm:block ${Number(interval) && !paused ? 'text-primary' : ''}`} /><MoreHorizontal className="h-4 w-4 sm:hidden" />
+      </Button>
+    </DropdownMenuTrigger><DropdownMenuContent align="end" className="w-56">
+      <DropdownMenuLabel>自动刷新</DropdownMenuLabel>
+      <div className="px-2 py-1"><select aria-label="自动刷新间隔" className="w-full rounded border bg-background p-2 text-sm" value={interval} onChange={e => { setInterval(e.target.value); setPaused(false); }}>
+        {REFRESH_INTERVALS.map(item => <option key={item.value} value={item.value}>{item.value === '0' ? '关闭自动刷新' : `每 ${item.label}`}</option>)}
+      </select></div>
+      {Number(interval) > 0 && <DropdownMenuItem onClick={() => setPaused(v => !v)}>{paused ? '继续自动刷新' : '暂停自动刷新'}</DropdownMenuItem>}
+      <p className="px-2 py-2 text-xs text-muted-foreground">{failed ? '部分图表刷新失败，请重试' : lastRefresh ? `最近成功刷新 ${lastRefresh.toLocaleTimeString('zh-CN')}` : '尚未手动或自动刷新'}</p>
+      {menuItems && <><DropdownMenuSeparator />{menuItems}</>}
+    </DropdownMenuContent></DropdownMenu>
+  </div>;
 }

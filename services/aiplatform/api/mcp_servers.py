@@ -9,17 +9,27 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query, Depends
+from pydantic import BaseModel, model_validator
+from services.shared.common.auth import get_current_user, require_admin
 
 from services.shared.common.db import DBConnection, execute_query, execute_insert, execute_write
 from services.shared.common.versioned_config import get_mcp_version_store
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
-class MCPServerCreate(BaseModel):
+class MCPServerPayload(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def reject_workspace_binding(cls, data):
+        if isinstance(data, dict) and {"workspace_id", "workspace_ids"}.intersection(data):
+            raise ValueError("MCP 使用范围请在 Waker 中绑定，不再支持工作空间绑定")
+        return data
+
+
+class MCPServerCreate(MCPServerPayload):
     name: str
     transport: str = "sse"
     url: str = ""
@@ -32,7 +42,7 @@ class MCPServerCreate(BaseModel):
     created_by: str = "system"
 
 
-class MCPServerUpdate(BaseModel):
+class MCPServerUpdate(MCPServerPayload):
     name: Optional[str] = None
     transport: Optional[str] = None
     url: Optional[str] = None
@@ -56,18 +66,19 @@ def _now():
 
 
 @router.get("/")
-def list_mcp_servers(workspace_id: int = Query(0)):
-    """List MCP servers."""
+def list_mcp_servers(workspace_id: Optional[int] = Query(None), user: dict = Depends(get_current_user)):
+    """系统管理目录或已授权 Waker 的资源投影，不构成执行授权。"""
     try:
-        if workspace_id:
-            rows = execute_query(
-                """SELECT s.* FROM adh_mcp_servers s
-                   JOIN adh_workspace_mcp_servers ws ON ws.mcp_server_id = s.id
-                   WHERE ws.workspace_id = %s
-                   ORDER BY s.name""",
-                (workspace_id,),
-            )
+        if workspace_id is not None:
+            from services.datamind.execution.wakers import visible_resource_ids
+            ids = visible_resource_ids(user, workspace_id, "mcp_server_ids")
+            if not ids:
+                return []
+            marks = ','.join(['%s'] * len(ids))
+            rows = execute_query(f"SELECT * FROM adh_mcp_servers WHERE id IN ({marks}) AND is_active=1 ORDER BY name", tuple(ids))
         else:
+            if user.get("role") != "admin":
+                raise HTTPException(403, "系统 MCP 目录仅管理员可访问，请选择已授权工作空间")
             rows = execute_query("SELECT * FROM adh_mcp_servers ORDER BY name")
 
         for r in rows:
@@ -80,13 +91,17 @@ def list_mcp_servers(workspace_id: int = Query(0)):
             for k in ("created_at", "updated_at", "last_test_at"):
                 if hasattr(r.get(k), "isoformat"):
                     r[k] = r[k].isoformat()
-        return rows
-    except Exception as e:
-        logger.error("List MCP servers failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        if user.get("role") != "admin":
+            return [{k: r[k] for k in ("id", "name", "description", "transport", "is_active") if k in r} for r in rows]
+        return [{k: v for k, v in r.items() if k != "workspace_id"} for r in rows]
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("MCP 目录加载失败")
+        raise HTTPException(status_code=503, detail="MCP 目录暂不可用，请稍后重试") from None
 
 
-@router.get("/{server_id}")
+@router.get("/{server_id}", dependencies=[Depends(require_admin)])
 def get_mcp_server(server_id: int):
     """Get MCP server by ID."""
     try:
@@ -115,7 +130,7 @@ def get_mcp_server(server_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/")
+@router.post("/", dependencies=[Depends(require_admin)])
 def create_mcp_server(req: MCPServerCreate):
     """Create a new MCP server (records an initial v1 snapshot)."""
     try:
@@ -140,7 +155,7 @@ def create_mcp_server(req: MCPServerCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/{server_id}")
+@router.put("/{server_id}", dependencies=[Depends(require_admin)])
 def update_mcp_server(server_id: int, req: MCPServerUpdate):
     """Update MCP server. Automatically creates a version snapshot."""
     try:
@@ -169,7 +184,7 @@ def update_mcp_server(server_id: int, req: MCPServerUpdate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/{server_id}")
+@router.delete("/{server_id}", dependencies=[Depends(require_admin)])
 def delete_mcp_server(server_id: int):
     """Delete MCP server."""
     try:
@@ -180,7 +195,7 @@ def delete_mcp_server(server_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{server_id}/test")
+@router.post("/{server_id}/test", dependencies=[Depends(require_admin)])
 def test_mcp_server(server_id: int):
     """Test MCP server connection."""
     try:
@@ -209,7 +224,7 @@ def test_mcp_server(server_id: int):
 
 # ── Version history & rollback ─────────────────────────────────────────
 
-@router.get("/{server_id}/versions")
+@router.get("/{server_id}/versions", dependencies=[Depends(require_admin)])
 def list_mcp_versions(server_id: int):
     """List version snapshots for an MCP server."""
     try:
@@ -231,7 +246,7 @@ def list_mcp_versions(server_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{server_id}/rollback")
+@router.post("/{server_id}/rollback", dependencies=[Depends(require_admin)])
 def rollback_mcp_server(server_id: int, req: MCPRollbackRequest):
     """Rollback an MCP server config to a specific version."""
     try:

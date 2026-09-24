@@ -194,6 +194,17 @@ def _cache_result(cur, chart_id: int, result: dict) -> None:
     )
 
 
+def _refresh_design(chart, user):
+    from services.dataviz.services.dashboard_service import refresh_designed_chart
+    try:
+        return refresh_designed_chart(chart, user.get("user_id"))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="无权访问该图表数据") from exc
+    except Exception as exc:
+        logger.exception("设计图表刷新失败")
+        raise HTTPException(status_code=400, detail="图表数据刷新失败，请检查设计绑定或联系管理员") from exc
+
+
 # ── Pydantic Models ─────────────────────────────────────────────────────────
 
 
@@ -221,7 +232,7 @@ def refresh_chart(
     with DBConnection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, dashboard_id, workspace_id, sql_query, config, "
+                "SELECT id, dashboard_id, workspace_id, source_id, sql_query, config, "
                 "query_source, semantic_query FROM adh_charts WHERE id = %s",
                 (chart_id,),
             )
@@ -229,6 +240,8 @@ def refresh_chart(
             if not chart:
                 raise HTTPException(status_code=404, detail="Chart not found")
 
+            if (_json_loads_safe(chart.get("config")) or {}).get("as_bot_design"):
+                return _refresh_design(chart, user)
             datasource_id = _get_chart_datasource_id(chart)
             query_source = chart.get("query_source") or "raw_sql"
             semantic_query = _json_loads_safe(chart.get("semantic_query"))
@@ -317,7 +330,7 @@ def get_chart_data(
     with DBConnection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, name, chart_type, sql_query, config, data_cache, "
+                "SELECT id, dashboard_id, source_id, workspace_id, name, chart_type, sql_query, config, data_cache, "
                 "query_source, semantic_query FROM adh_charts WHERE id = %s",
                 (chart_id,),
             )
@@ -336,6 +349,8 @@ def get_chart_data(
             if isinstance(sq, dict):
                 result["semantic_query"] = sq
 
+            if (result.get("config") or {}).get("as_bot_design"):
+                return {**result, **_refresh_design(chart, user)}
             data_cache = chart.get("data_cache")
             if data_cache:
                 cache = _json_loads_safe(data_cache)

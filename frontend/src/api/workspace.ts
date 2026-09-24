@@ -57,7 +57,6 @@ export interface WorkspaceCreateRequest {
   icon?: string;
   color?: string;
   datasource_ids?: number[];
-  mcp_server_ids?: number[];
   agent_names?: string[];
 }
 
@@ -120,20 +119,4 @@ export async function removeDatasourceFromWorkspace(
   datasourceId: number
 ): Promise<void> {
   await client.delete(`/workspaces/${workspaceId}/datasources/${datasourceId}`);
-}
-
-export async function addMCPServerToWorkspace(
-  workspaceId: number,
-  mcpServerId: number
-): Promise<void> {
-  await client.post(`/workspaces/${workspaceId}/mcp-servers`, null, {
-    params: { mcp_server_id: mcpServerId },
-  });
-}
-
-export async function removeMCPServerFromWorkspace(
-  workspaceId: number,
-  mcpServerId: number
-): Promise<void> {
-  await client.delete(`/workspaces/${workspaceId}/mcp-servers/${mcpServerId}`);
 }

@@ -8,6 +8,7 @@ export interface OntologyModelSummary {
   name: string;
   status: OntologyStatus;
   object_count: number;
+  kb_id?: number | null;
   created_by: string;
   created_at: string;
   updated_at: string;

@@ -18,7 +18,7 @@ def _normalize(row: dict) -> dict:
     """解析 config / allowed_tools / capabilities / tools JSON、datetime 转 ISO 字符串."""
     for json_field, default in (
         ("config", {}),
-        ("allowed_tools", []),
+        ("allowed_tools", None),
         ("capabilities", []),
         ("tools", []),
     ):
@@ -27,6 +27,8 @@ def _normalize(row: dict) -> dict:
             try:
                 row[json_field] = json.loads(val)
             except (json.JSONDecodeError, TypeError):
+                if json_field in ("allowed_tools", "config"):
+                    raise ValueError("执行层权限配置格式错误")
                 row[json_field] = default
         elif val is None:
             row[json_field] = default
@@ -289,12 +291,13 @@ def set_workspace_layers(workspace_id: int, bindings: list[dict]):
     for b in bindings:
         is_default = bool(b.get("is_default")) and not default_set
         default_set = default_set or is_default
-        allowed = b.get("allowed_tools") or []
+        from services.datamind.execution.tool_catalog import parse_allowed_tools
+        allowed = None if b.get("allowed_tools") is None else parse_allowed_tools(b["allowed_tools"])
         execute_write(
             """INSERT INTO adh_workspace_execution_layers
                (workspace_id, execution_layer_id, is_default, priority, allowed_tools)
                VALUES (%s, %s, %s, %s, %s)""",
             (workspace_id, b["execution_layer_id"], 1 if is_default else 0,
              int(b.get("priority", 0)),
-             json.dumps(allowed, ensure_ascii=False) if allowed else None),
+             json.dumps(allowed, ensure_ascii=False) if allowed is not None else None),
         )

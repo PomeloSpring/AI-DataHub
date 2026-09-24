@@ -40,6 +40,7 @@ class ChatService:
         conversation_id: int = 0,
         user_role: str = "",
         waker_key: str = "",
+        report_theme: str = "",
     ):
         """Stream a query through the pipeline orchestrator.
 
@@ -65,7 +66,7 @@ class ChatService:
             # 工作空间绑定非内置层优先,否则默认非内置外部层(qoder);外部层不可用时直接报错
             if pipeline_mode == "agent" or attachments:
                 handled = False
-                async for event in self._try_dispatch_via_execution_layer(
+                stream = self._try_dispatch_via_execution_layer(
                     question=question,
                     datasource_id=datasource_id,
                     model_id=model_id,
@@ -80,9 +81,14 @@ class ChatService:
                     conversation_id=conversation_id,
                     user_role=user_role,
                     waker_key=waker_key,
-                ):
-                    handled = True
-                    yield event
+                    report_theme=report_theme,
+                )
+                try:
+                    async for event in stream:
+                        handled = True
+                        yield event
+                finally:
+                    await stream.aclose()
                 if handled:
                     return
 
@@ -245,6 +251,7 @@ class ChatService:
         conversation_id: int = 0,
         user_role: str = "",
         waker_key: str = "",
+        report_theme: str = "",
     ):
         """Agent 模式执行层派发.
 
@@ -273,7 +280,10 @@ class ChatService:
                     break
                 fallback = fallback or l
         except Exception as e:
-            logger.warning("Resolve workspace execution layer failed: %s", e)
+            logger.exception("工作空间执行层权限解析失败")
+            yield _sse_event("error", {"message": "执行层权限配置暂不可用"})
+            yield _sse_event("done", {"error": "执行层权限配置暂不可用"})
+            return
         if row is None:
             row = fallback
         if row is None:
@@ -296,26 +306,24 @@ class ChatService:
         yield _sse_event("progress", {
             "stage": "execution_layer",
             "step": "dispatch",
-            "message": f"已路由到执行层: {layer_name}",
+            "message": f"等待模型响应...",
             "execution_layer": layer_name,
         })
 
         # 加载多模态附件,以文件路径清单透传给执行层适配器
-        task_attachments = []
-        if attachments:
+        task_attachments = [{"id": aid} for aid in (attachments or [])]
+
+        # 数据源权威回填: 兼容旧客户端/直连 API 未带 datasource_id 时, 从会话持久化行回填,
+        # 避免语义工具以 datasource_id=0 命中空目录(取不到数)。回填值仍对 LLM 黑盒。
+        if not datasource_id and conversation_id:
             try:
-                from services.datamind.multimodal.loader import load_attachments
-                task_attachments = [
-                    {
-                        "id": a["id"],
-                        "filename": a["filename"],
-                        "category": a["category"],
-                        "path": a["storage_path"],
-                    }
-                    for a in load_attachments(attachments, user_id)
-                ]
-            except Exception as e:
-                logger.warning("Load attachments for execution layer failed: %s", e)
+                from services.shared.common.db import execute_query
+                _crow = execute_query(
+                    "SELECT datasource_id FROM adh_conversations WHERE id = %s",
+                    (conversation_id,), fetchone=True)
+                datasource_id = int((_crow or {}).get("datasource_id") or 0)
+            except Exception as e:  # noqa: BLE001 — 回填失败不阻断, 由下游 get_metrics/run_semantic_query fail-loud
+                logger.debug("[agent] conversation datasource backfill skipped: %s", e)
 
         task = ExecutionTask(
             task_id=uuid.uuid4().hex[:16],
@@ -338,6 +346,7 @@ class ChatService:
                         ("session_id", session_id),
                         ("conversation_id", conversation_id),
                         ("waker_key", waker_key),
+                        ("report_theme", report_theme),
                     )
                     if v
                 },
@@ -346,46 +355,49 @@ class ChatService:
         )
 
         try:
+            if row.get("layer_type") != "cli" or (row.get("config") or {}).get("mode") != "sdk":
+                raise ValueError("所选执行层不支持 Waker 安全执行")
             adapter = manager.build_adapter(row)
             # 流式执行:CLI 输出逐块以 token 事件推送到前端
             result = None
-            async for ev in adapter.execute_stream(task):
-                if ev.get("type") == "token":
-                    if await request.is_disconnected():
-                        return
-                    yield _sse_event("token", {"text": ev.get("text", "")})
-                elif ev.get("type") == "thinking":
-                    yield _sse_event("thinking", {"text": ev.get("text", "")})
-                elif ev.get("type") == "tool_start":
-                    # 执行层工具调用开始:前端时间线实时渲染 pending 步骤
-                    yield _sse_event("tool_start", {
-                        "tool_call_id": ev.get("tool_call_id", ""),
-                        "tool": ev.get("tool", ""),
-                        "arguments": ev.get("arguments") or {},
-                    })
-                elif ev.get("type") == "tool_result":
-                    # 执行层工具调用结果:回填时间线对应步骤
-                    yield _sse_event("tool_result", {
-                        "tool_call_id": ev.get("tool_call_id", ""),
-                        "tool": ev.get("tool", ""),
-                        "output": ev.get("output", ""),
-                        "error": ev.get("error", ""),
-                        "elapsed": ev.get("elapsed"),
-                    })
-                elif ev.get("type") == "done":
-                    result = ev.get("result")
+            stream = adapter.execute_stream(task)
+            try:
+                async for ev in stream:
+                    if ev.get("type") == "capabilities":
+                        yield _sse_event("capabilities", ev["data"])
+                    elif ev.get("type") == "token":
+                        if await request.is_disconnected():
+                            return
+                        yield _sse_event("token", {"text": ev.get("text", "")})
+                    elif ev.get("type") == "thinking":
+                        yield _sse_event("thinking", {"text": ev.get("text", "")})
+                    elif ev.get("type") == "tool_start":
+                        # 执行层工具调用开始:前端时间线实时渲染 pending 步骤
+                        yield _sse_event("tool_start", {
+                            "tool_call_id": ev.get("tool_call_id", ""),
+                            "tool": ev.get("tool", ""),
+                            "arguments": ev.get("arguments") or {},
+                        })
+                    elif ev.get("type") == "tool_result":
+                        # 执行层工具调用结果:回填时间线对应步骤
+                        yield _sse_event("tool_result", {
+                            "tool_call_id": ev.get("tool_call_id", ""),
+                            "tool": ev.get("tool", ""),
+                            "output": ev.get("output", ""),
+                            "error": ev.get("error", ""),
+                            "elapsed": ev.get("elapsed"),
+                        })
+                    elif ev.get("type") == "done":
+                        result = ev.get("result")
+            finally:
+                await stream.aclose()
             if result is None:
                 result = ExecutionResult(success=False, error="执行层未返回结果")
         except Exception as e:
             logger.error("Execution layer dispatch error: %s", e, exc_info=True)
-            yield _sse_event("error", {"message": str(e)})
-            yield _sse_event("done", {
-                "intent": "agent",
-                "reply": f"执行层错误: {str(e)}",
-                "sql": None,
-                "warnings": [],
-                "error": str(e),
-            })
+            message = str(e) if isinstance(e, (ValueError, PermissionError)) else "执行层未能安全完成，请联系管理员"
+            yield _sse_event("error", {"message": message})
+            yield _sse_event("done", {"intent": "agent", "reply": message, "error": message})
             return
 
         if await request.is_disconnected():
@@ -401,7 +413,7 @@ class ChatService:
                 "warnings": [],
                 "execution_layer": layer_name,
                 # 执行层会话 ID,前端回传以实现 SDK 多轮对话
-                "session_id": result.meta.get("session_id") or "",
+                "capabilities": result.meta.get("capabilities"),
                 # 完整工具调用清单(持久化回放)与执行统计(时间线摘要条)
                 "tool_calls": result.meta.get("tool_calls") or [],
                 "stats": {
@@ -422,9 +434,7 @@ class ChatService:
             err = result.error or "执行层执行失败"
             from services.shared import observability
             observability.set_result(status="error", error=err)
-            if result.meta.get("stderr_tail"):
-                err = f"{err}\n{result.meta['stderr_tail'][-500:]}"
-            yield _sse_event("error", {"message": err})
+            yield _sse_event("error", {"message": err, "status_code": result.meta.get("status_code")})
             yield _sse_event("done", {
                 "intent": "agent",
                 "reply": err,

@@ -338,7 +338,20 @@ describe('buildG2Spec', () => {
     const gaugeRows = [{ label: 'CPU', value: 75 }]
     const spec = buildG2Spec('gauge', ['label', 'value'], gaugeRows, {}, false, 400, 300)
     expect(spec.type).toBe('gauge')
-    expect(spec.data.value).toBe(75)
+    expect(spec.data).toEqual({ target: 75, total: 100, thresholds: [100] })
+  })
+
+  it('仪表盘按量程转换比例阈值并限制越界值', () => {
+    const spec = buildG2Spec('gauge', ['label', 'value'], [{ label: 'CPU', value: 75 }], { maxValue: 100, thresholds: [0.85, 0.6, 0.6] }, true, 400, 300)
+    expect(spec.data).toEqual({ target: 75, total: 100, thresholds: [60, 85, 100] })
+    const ratio = buildG2Spec('gauge', ['label', 'value'], [{ label: 'CPU', value: 0.75 }], {}, false, 400, 300)
+    expect(ratio.data).toEqual({ target: 0.75, total: 1, thresholds: [1] })
+  })
+
+  it.each(['heatmap', 'calendar_heatmap'])('%s 采用字模色板', chartType => {
+    const colors = ['#22d3ee', '#3b82f6']
+    const spec = buildG2Spec(chartType, columns, rows, {}, true, 400, 300, { mode: 'dark', palette: colors })
+    expect(spec.scale.color.range).toEqual(colors)
   })
 
   it('builds waterfall chart spec', () => {
@@ -512,7 +525,7 @@ describe('图表主题适配', () => {
       // 验证 G2 实际主题解析器接收到了默认色，而不只是 scale.color.range。
       const actualTheme = G2.stdlib()['theme.classic'](spec.theme)
       expect(actualTheme.color).toBe('hsl(0, 0%, 5%)')
-      expect(actualTheme.view.viewFill).toBe('hsl(0, 0%, 100%)')
+      expect((actualTheme as any).view.viewFill).toBe('hsl(0, 0%, 100%)')
     },
   )
 

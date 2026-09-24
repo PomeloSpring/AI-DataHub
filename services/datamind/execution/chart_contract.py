@@ -56,6 +56,34 @@ rose, radial_bar, word_cloud, china_map, world_map
 """
 
 
+ARTIFACT_CONTRACT = """\
+# 文件产物交付约定
+
+当你为用户生成了可下载/可查看的文件产物(如 Excel 报表、HTML 报告、Markdown、PDF、CSV、PNG/JPG 图片)时:
+1. 把文件写入会话工作区 `/workspace/<文件名>`(例如 `/workspace/案例订单分析报告.html`)。
+2. 在回答中输出一个 ```artifact 代码块, 内容为严格 JSON(无注释、无多余文本):
+
+```artifact
+{"type": "html", "filename": "案例订单分析报告.html", "path": "案例订单分析报告.html", "theme": "datafoundry", "description": "一句话说明该产物内容"}
+```
+
+字段说明:
+- type 只能取: excel, pdf, html, md, csv, png, jpg (按文件真实类型; xlsx 用 excel)。
+- filename: 展示与下载用的文件名(含扩展名); path: 相对会话工作区的文件名(可带 /workspace/ 前缀, 会被剥离)。
+- theme(可选): 该产物采用的主题 id; 配色与图表色序必须取自系统注入的"报告主题令牌", 默认继承用户当前主题, 禁止自造颜色。
+- 前端会把该块渲染为**下载卡片**; html 与 png/jpg 还会在卡片内**可视化预览**(iframe/图片为生成时的主题快照)。
+- 一个回答可输出多个 ```artifact 块。
+
+严格禁止(避免误导用户与展示不出来):
+- **不存在**所谓的"工作空间文件面板/文件管理器/右侧或上方的文件列表 UI"; 不得让用户去那里找下载入口。
+- 交付文件的**唯一**方式就是上面的 ```artifact 下载卡片。不要用文字描述一个不存在的界面。
+- HTML 产物必须单文件自包含: 禁止引用任何外部 CDN / 远程 JS 库(echarts/cdn-mermaid/markmap) / 远程字体 / 远程图片; 图表用内联 SVG 或 base64 PNG。
+- 报告/产物禁止 emoji 与装饰性图标; 风格专业、严谨、克制。
+- 数据图表用 ```chart 块、流程/脑图用 ```mermaid 块(平台内置渲染), 不要在 HTML 里自造图表库。
+- path/filename 必须是你真实写入工作区的文件, 不得编造; 文件内容必须来自真实产出, 不得伪造。
+"""
+
+
 def chart_contract_text() -> str:
-    """返回图表契约提示词文本。"""
-    return CHART_CONTRACT
+    """返回图表 + 文件产物输出契约提示词文本。"""
+    return CHART_CONTRACT + "\n" + ARTIFACT_CONTRACT

@@ -9,13 +9,35 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends, Request
+from services.shared.common.auth import get_current_user, authorize_workspace
 from pydantic import BaseModel, Field
 
 from services.shared.common.db import DBConnection
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+
+
+async def _quality_access(request: Request, user: dict = Depends(get_current_user)):
+    """所有质量入口显式校验工作空间，规则 ID 不能越权选择其他空间。"""
+    ws = request.query_params.get("workspace_id")
+    rule_id = request.path_params.get("rule_id") or request.query_params.get("rule_id")
+    if rule_id:
+        rule = _load_rule(int(rule_id))
+        actual = rule.get("workspace_id") or 0
+        if ws is not None and int(ws) != actual:
+            raise HTTPException(status_code=404, detail="规则不存在")
+        ws = actual
+    elif ws is None and request.method in ("POST", "PUT"):
+        try:
+            body = await request.json()
+            ws = body.get("workspace_id", 0) if isinstance(body, dict) else 0
+        except ValueError:
+            ws = 0
+    authorize_workspace(user, ws or 0)
+
+
+router = APIRouter(dependencies=[Depends(_quality_access)])
 
 RULE_TYPES = [
     "not_null", "unique", "range", "format", "referential",
@@ -91,6 +113,7 @@ def list_rules(
     target_table: Optional[str] = Query(None),
     rule_type: Optional[str] = Query(None),
     is_active: Optional[int] = Query(None),
+    user: dict = Depends(get_current_user),
 ):
     """List quality rules with latest check status (returns array)."""
     conditions = ["r.workspace_id = %s"]
@@ -117,12 +140,14 @@ def list_rules(
                         FROM adh_quality_results q1
                         JOIN (
                             SELECT rule_id, MAX(check_time) AS max_time
-                            FROM adh_quality_results GROUP BY rule_id
+                            FROM adh_quality_results
+                            WHERE JSON_EXTRACT(detail, '$.execution.user_id') = %s
+                            GROUP BY rule_id
                         ) q2 ON q1.rule_id = q2.rule_id AND q1.check_time = q2.max_time
                     ) lr ON lr.rule_id = r.id
                     WHERE {where}
                     ORDER BY r.id DESC""",
-                params,
+                [user["user_id"], *params],
             )
             rows = cur.fetchall()
     return [_normalize_rule(r) for r in rows]
@@ -202,19 +227,19 @@ def _load_rule(rule_id: int) -> dict:
 
 
 @router.post("/rules/{rule_id}/execute")
-def execute_rule(rule_id: int):
+def execute_rule(rule_id: int, user: dict = Depends(get_current_user)):
     """Execute a single quality rule check."""
     from services.datagov.services.quality_engine import execute_single_rule
 
     rule = _load_rule(rule_id)
-    result = execute_single_rule(rule)
+    result = execute_single_rule(rule, user)
     if result.get("error"):
         raise HTTPException(status_code=400, detail=result["error"])
     return result
 
 
 @router.post("/execute")
-def execute_workspace_rules(workspace_id: int = Query(...)):
+def execute_workspace_rules(workspace_id: int = Query(...), user: dict = Depends(get_current_user)):
     """Execute all active rules for a workspace."""
     from services.datagov.services.quality_engine import execute_single_rule
 
@@ -230,10 +255,17 @@ def execute_workspace_rules(workspace_id: int = Query(...)):
 
     results = []
     for rule in rows:
-        results.append(execute_single_rule(rule))
+        results.append(execute_single_rule(rule, user))
 
     passed = sum(1 for r in results if r.get("passed"))
     return {"executed": len(results), "passed": passed, "failed": len(results) - passed, "results": results}
+
+
+@router.get("/rules/{rule_id}/samples")
+def rule_samples(rule_id: int, user: dict = Depends(get_current_user)):
+    from services.datagov.services.quality_engine import execute_single_rule
+    result = execute_single_rule(_load_rule(rule_id), user, include_samples=True, persist=False)
+    return {"samples": result.get("detail_samples", []), "error": result.get("error")}
 
 
 # ── Results ──────────────────────────────────────────────────────────
@@ -246,10 +278,11 @@ def list_results(
     end_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    user: dict = Depends(get_current_user),
 ):
     """Get quality check results with optional filters."""
-    conditions = ["1=1"]
-    params = []
+    conditions = ["JSON_EXTRACT(detail, '$.execution.user_id') = %s"]
+    params = [user["user_id"]]
     if rule_id:
         conditions.append("rule_id = %s")
         params.append(rule_id)
@@ -278,11 +311,13 @@ def list_results(
             rows = cur.fetchall()
 
     for row in rows:
-        if row.get("detail") and isinstance(row["detail"], str):
+        detail = row.get("detail") or {}
+        if isinstance(detail, str):
             try:
-                row["detail"] = json.loads(row["detail"])
-            except (json.JSONDecodeError, TypeError):
-                pass
+                detail = json.loads(detail)
+            except (ValueError, TypeError):
+                detail = {}
+        row["detail"] = {k: detail[k] for k in ("execution", "status") if k in detail}
 
     return {"total": total, "page": page, "page_size": page_size, "items": rows}
 
@@ -294,21 +329,24 @@ def list_reports(
     workspace_id: int = Query(0),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    user: dict = Depends(get_current_user),
 ):
     """Get quality reports."""
     offset = (page - 1) * page_size
     with DBConnection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) AS total FROM adh_quality_reports WHERE workspace_id = %s",
-                (workspace_id,),
+                "SELECT COUNT(*) AS total FROM adh_quality_reports WHERE workspace_id = %s "
+                "AND JSON_EXTRACT(summary, '$.executed_by') = %s",
+                (workspace_id, user["user_id"]),
             )
             total = cur.fetchone()["total"]
 
             cur.execute(
                 """SELECT * FROM adh_quality_reports WHERE workspace_id = %s
+                   AND JSON_EXTRACT(summary, '$.executed_by') = %s
                    ORDER BY report_date DESC, id DESC LIMIT %s OFFSET %s""",
-                (workspace_id, page_size, offset),
+                (workspace_id, user["user_id"], page_size, offset),
             )
             rows = cur.fetchall()
 
@@ -345,7 +383,8 @@ def _report_view(row: dict) -> dict:
 
 
 @router.post("/reports/generate")
-def generate_report(workspace_id: int = Query(...), report_name: str = Query("")):
+def generate_report(workspace_id: int = Query(...), report_name: str = Query(""),
+                    user: dict = Depends(get_current_user)):
     """Generate a quality report by running all active rules and aggregating."""
     from services.datagov.services.quality_engine import execute_single_rule
 
@@ -363,7 +402,7 @@ def generate_report(workspace_id: int = Query(...), report_name: str = Query("")
     rule_results = []
     passed_count = 0
     for rule in rows:
-        result = execute_single_rule(rule)
+        result = execute_single_rule(rule, user)
         rule_results.append(result)
         if result.get("passed"):
             passed_count += 1
@@ -373,6 +412,8 @@ def generate_report(workspace_id: int = Query(...), report_name: str = Query("")
     name = report_name or f"质量报告 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
     summary = {
+        "executed_by": user["user_id"],
+        "scope": "authorized",
         "report_name": name,
         "total_rules": total_count,
         "passed": passed_count,
@@ -405,7 +446,7 @@ def generate_report(workspace_id: int = Query(...), report_name: str = Query("")
 # ── Dashboard ────────────────────────────────────────────────────────
 
 @router.get("/dashboard")
-def quality_dashboard(workspace_id: int = Query(0)):
+def quality_dashboard(workspace_id: int = Query(0), user: dict = Depends(get_current_user)):
     """Quality overview: overall score, pass rate, rule counts, recent reports, top issues."""
     with DBConnection() as conn:
         with conn.cursor() as cur:
@@ -423,8 +464,9 @@ def quality_dashboard(workspace_id: int = Query(0)):
                           SUM(passed) AS passed_checks,
                           ROUND(AVG(pass_rate), 2) AS avg_pass_rate
                    FROM adh_quality_results
-                   WHERE workspace_id = %s AND check_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)""",
-                (workspace_id,),
+                   WHERE workspace_id = %s AND check_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+                     AND JSON_EXTRACT(detail, '$.execution.user_id') = %s""",
+                (workspace_id, user["user_id"]),
             )
             check_stats = cur.fetchone() or {}
 
@@ -436,8 +478,9 @@ def quality_dashboard(workspace_id: int = Query(0)):
             # 最近报告
             cur.execute(
                 """SELECT * FROM adh_quality_reports WHERE workspace_id = %s
+                   AND JSON_EXTRACT(summary, '$.executed_by') = %s
                    ORDER BY report_date DESC, id DESC LIMIT 5""",
-                (workspace_id,),
+                (workspace_id, user["user_id"]),
             )
             report_rows = cur.fetchall()
             recent_reports = []
@@ -457,12 +500,13 @@ def quality_dashboard(workspace_id: int = Query(0)):
                    FROM adh_quality_results qr
                    JOIN adh_quality_rules r ON qr.rule_id = r.id
                    WHERE qr.workspace_id = %s
+                     AND JSON_EXTRACT(qr.detail, '$.execution.user_id') = %s
                      AND qr.check_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)
                    GROUP BY r.id, r.rule_name, r.rule_type, r.target_table, r.severity
                    HAVING failure_count > 0
                    ORDER BY failure_count DESC
                    LIMIT 10""",
-                (workspace_id,),
+                (workspace_id, user["user_id"]),
             )
             top_issues = []
             for row in cur.fetchall():

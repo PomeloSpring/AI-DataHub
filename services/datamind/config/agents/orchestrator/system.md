@@ -16,8 +16,9 @@
 
 **执行流程：**
 ```
-select_tables → retrieve_metadata → generate_sql → execute_sql → 回答
+get_metrics → run_semantic_query → 回答
 ```
+对象已在本体绑定时一律走声明式语义查询（护栏/RLS/审计由语义层完成，你不写 SQL）；仅当语义层未覆盖且会话绑定了 SQL 工具时，才 `select_tables → retrieve_metadata → generate_sql → execute_sql`，且 `execute_sql` 始终经统一治理执行器，不是裸连旁路。
 你可以直接调用这些工具，每个工具的用途见下方工具列表。
 
 #### 模式二：委托子 Agent（复杂查询，专业分析）

@@ -607,10 +607,16 @@ def _column_map_from_props(obj: dict) -> dict:
 
 
 def _rebuild_graph(datasource_id: int) -> dict:
-    """best-effort 触发图谱重建（本体经 graph_builder._merge_ontology_models 入图）。"""
+    """best-effort 触发图谱重建（本体经 graph_builder._merge_ontology_models 入图）。
+
+    系统本体模型(datasource_id 空/0)→ 重建**系统域图 ds:-1**(AS-BOT 专用, 隔离业务本体);
+    业务模型(datasource_id>0)→ 各自 ds:N。旧行为(系统模型重建整个 ds:0 聚合图)既污染又浪费, 已收敛。
+    """
     try:
+        from services.datamind.rag.graph_rag.oxigraph_store import SYSTEM_DATASOURCE_ID
         from services.graphservice.graph_service import GraphService
-        resp = GraphService().sync_from_metadata(datasource_id)
+        ds = SYSTEM_DATASOURCE_ID if not datasource_id else datasource_id
+        resp = GraphService().sync_from_metadata(ds)
         return {
             "success": bool(getattr(resp, "success", False)),
             "tables": getattr(resp, "tables", 0),
@@ -619,6 +625,6 @@ def _rebuild_graph(datasource_id: int) -> dict:
         }
     except Exception as e:
         logger.warning("[ontology-import] graph rebuild failed (model saved, "
-                       "trigger POST /api/graph/sync?datasource_id=%s manually): %s",
+                       "trigger POST /api/graph/sync?datasource_id=%s&system_scope=true manually): %s",
                        datasource_id, e)
         return {"success": False, "error": str(e)}

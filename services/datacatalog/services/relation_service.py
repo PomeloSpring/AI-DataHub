@@ -228,7 +228,7 @@ class RelationService:
         if not datasource_id:
             return {"success": False, "message": "请选择要同步的数据源"}
         try:
-            from sync.metadata_sync import sync_table_relations as _sync_rels
+            from services.datacatalog.services.metadata_sync import sync_table_relations as _sync_rels
             result = _sync_rels(datasource_id)
             return {
                 "success": True,

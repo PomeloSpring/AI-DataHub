@@ -16,13 +16,14 @@ from datetime import datetime
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from services.shared.common.auth import get_current_user, require_admin
 
 from services.shared.common.db import get_metadata_conn
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # 阻塞型 CLI/DB 调用统一放到线程池,避免阻塞事件循环
 _to_thread = asyncio.to_thread
@@ -30,19 +31,27 @@ _to_thread = asyncio.to_thread
 
 # ── Pydantic Models ────────────────────────────────────────────────
 
-class KnowledgeBaseCreate(BaseModel):
+class KnowledgeBasePayload(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def reject_workspace_binding(cls, data):
+        if isinstance(data, dict) and {"workspace_id", "workspace_ids"}.intersection(data):
+            raise ValueError("知识库使用范围请在 Waker 中绑定，不再支持工作空间绑定")
+        return data
+
+
+class KnowledgeBaseCreate(KnowledgeBasePayload):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = None
     kb_type: str = Field(..., pattern="^(local|vector_db|cloud_rag|qmind)$")
     source_config: dict = Field(default_factory=dict)
 
 
-class KnowledgeBaseUpdate(BaseModel):
+class KnowledgeBaseUpdate(KnowledgeBasePayload):
     name: Optional[str] = None
     description: Optional[str] = None
     source_config: Optional[dict] = None
     status: Optional[str] = None
-    workspace_ids: Optional[List[int]] = None
 
 
 class KnowledgeBaseResponse(BaseModel):
@@ -50,12 +59,11 @@ class KnowledgeBaseResponse(BaseModel):
     name: str
     description: str
     kb_type: str
-    source_config: dict
+    source_config: Optional[dict] = None
     status: str
     document_count: int
     chunk_count: int
     last_sync_at: Optional[str]
-    workspace_ids: List[int]
     created_at: str
     updated_at: str
 
@@ -100,13 +108,22 @@ _ensure_table()
 
 # ── API Endpoints ──────────────────────────────────────────────────
 
-@router.get("/knowledge-bases", response_model=List[KnowledgeBaseResponse])
+@router.get("/knowledge-bases", response_model=List[KnowledgeBaseResponse], response_model_exclude_none=True)
 async def list_knowledge_bases(
     kb_type: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     workspace_id: Optional[int] = Query(None),
+    user: dict = Depends(get_current_user),
 ):
-    """List all knowledge bases with optional filters."""
+    """系统管理目录或从当前身份可用 Waker 派生的只读资源目录。"""
+    allowed_ids = None
+    if workspace_id is not None:
+        from services.datamind.execution.wakers import visible_resource_ids
+        allowed_ids = set(visible_resource_ids(user, workspace_id, "knowledge_base_ids"))
+        if not allowed_ids:
+            return []
+    elif user.get("role") != "admin":
+        raise HTTPException(403, "系统知识库目录仅管理员可访问，请选择已授权工作空间")
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cursor:
@@ -121,16 +138,16 @@ async def list_knowledge_bases(
                 sql += " AND status = %s"
                 params.append(status)
 
+            if allowed_ids is not None:
+                sql += " AND status='active' AND id IN (" + ','.join(['%s'] * len(allowed_ids)) + ")"
+                params.extend(sorted(allowed_ids))
             sql += " ORDER BY created_at DESC"
             cursor.execute(sql, params)
             rows = cursor.fetchall()
 
             results = []
             for row in rows:
-                workspace_ids = json.loads(row.get("workspace_ids") or "[]")
-
-                # Filter by workspace_id if specified
-                if workspace_id is not None and workspace_id not in workspace_ids:
+                if allowed_ids is not None and (row["id"] not in allowed_ids or row["status"] != "active"):
                     continue
 
                 results.append(KnowledgeBaseResponse(
@@ -138,12 +155,11 @@ async def list_knowledge_bases(
                     name=row["name"],
                     description=row.get("description") or "",
                     kb_type=row["kb_type"],
-                    source_config=json.loads(row.get("source_config") or "{}"),
+                    source_config=json.loads(row.get("source_config") or "{}") if user.get("role") == "admin" else None,
                     status=row["status"],
                     document_count=row.get("document_count") or 0,
                     chunk_count=row.get("chunk_count") or 0,
                     last_sync_at=row["last_sync_at"].isoformat() if row.get("last_sync_at") else None,
-                    workspace_ids=workspace_ids,
                     created_at=row["created_at"].isoformat(),
                     updated_at=row["updated_at"].isoformat(),
                 ))
@@ -153,7 +169,7 @@ async def list_knowledge_bases(
         conn.close()
 
 
-@router.get("/knowledge-bases/qmind/notebooks")
+@router.get("/knowledge-bases/qmind/notebooks", dependencies=[Depends(require_admin)])
 async def list_qmind_notebooks():
     """从 Qoder 实时检索 QMind 知识库(笔记本)列表.
 
@@ -191,7 +207,7 @@ async def list_qmind_notebooks():
     }
 
 
-@router.post("/knowledge-bases/qmind/import")
+@router.post("/knowledge-bases/qmind/import", dependencies=[Depends(require_admin)])
 async def import_qmind_notebooks(request: QMindImportRequest):
     """将选定的 Qoder QMind notebook 导入(落地)为可绑定的知识库(kb_type='qmind').
 
@@ -250,7 +266,7 @@ async def import_qmind_notebooks(request: QMindImportRequest):
     }
 
 
-@router.get("/knowledge-bases/{kb_id}", response_model=KnowledgeBaseResponse)
+@router.get("/knowledge-bases/{kb_id}", response_model=KnowledgeBaseResponse, dependencies=[Depends(require_admin)])
 async def get_knowledge_base(kb_id: int):
     """Get a specific knowledge base by ID."""
     conn = get_metadata_conn()
@@ -272,7 +288,6 @@ async def get_knowledge_base(kb_id: int):
                 document_count=row.get("document_count") or 0,
                 chunk_count=row.get("chunk_count") or 0,
                 last_sync_at=row["last_sync_at"].isoformat() if row.get("last_sync_at") else None,
-                workspace_ids=json.loads(row.get("workspace_ids") or "[]"),
                 created_at=row["created_at"].isoformat(),
                 updated_at=row["updated_at"].isoformat(),
             )
@@ -280,7 +295,7 @@ async def get_knowledge_base(kb_id: int):
         conn.close()
 
 
-@router.post("/knowledge-bases", response_model=KnowledgeBaseResponse)
+@router.post("/knowledge-bases", response_model=KnowledgeBaseResponse, dependencies=[Depends(require_admin)])
 async def create_knowledge_base(request: KnowledgeBaseCreate):
     """Create a new knowledge base."""
     conn = get_metadata_conn()
@@ -313,7 +328,6 @@ async def create_knowledge_base(request: KnowledgeBaseCreate):
                 document_count=0,
                 chunk_count=0,
                 last_sync_at=None,
-                workspace_ids=[],
                 created_at=row["created_at"].isoformat(),
                 updated_at=row["updated_at"].isoformat(),
             )
@@ -321,7 +335,7 @@ async def create_knowledge_base(request: KnowledgeBaseCreate):
         conn.close()
 
 
-@router.put("/knowledge-bases/{kb_id}", response_model=KnowledgeBaseResponse)
+@router.put("/knowledge-bases/{kb_id}", response_model=KnowledgeBaseResponse, dependencies=[Depends(require_admin)])
 async def update_knowledge_base(kb_id: int, request: KnowledgeBaseUpdate):
     """Update a knowledge base."""
     conn = get_metadata_conn()
@@ -352,10 +366,6 @@ async def update_knowledge_base(kb_id: int, request: KnowledgeBaseUpdate):
                 updates.append("status = %s")
                 params.append(request.status)
 
-            if request.workspace_ids is not None:
-                updates.append("workspace_ids = %s")
-                params.append(json.dumps(request.workspace_ids))
-
             if updates:
                 sql = f"UPDATE adh_knowledge_bases SET {', '.join(updates)} WHERE id = %s"
                 params.append(kb_id)
@@ -376,7 +386,6 @@ async def update_knowledge_base(kb_id: int, request: KnowledgeBaseUpdate):
                 document_count=row.get("document_count") or 0,
                 chunk_count=row.get("chunk_count") or 0,
                 last_sync_at=row["last_sync_at"].isoformat() if row.get("last_sync_at") else None,
-                workspace_ids=json.loads(row.get("workspace_ids") or "[]"),
                 created_at=row["created_at"].isoformat(),
                 updated_at=row["updated_at"].isoformat(),
             )
@@ -384,7 +393,7 @@ async def update_knowledge_base(kb_id: int, request: KnowledgeBaseUpdate):
         conn.close()
 
 
-@router.delete("/knowledge-bases/{kb_id}")
+@router.delete("/knowledge-bases/{kb_id}", dependencies=[Depends(require_admin)])
 async def delete_knowledge_base(kb_id: int):
     """Delete a knowledge base."""
     conn = get_metadata_conn()
@@ -404,7 +413,7 @@ async def delete_knowledge_base(kb_id: int):
         conn.close()
 
 
-@router.post("/knowledge-bases/{kb_id}/sync")
+@router.post("/knowledge-bases/{kb_id}/sync", dependencies=[Depends(require_admin)])
 async def sync_knowledge_base(kb_id: int):
     """Sync a knowledge base (triggers background sync process)."""
     conn = get_metadata_conn()
@@ -436,7 +445,7 @@ async def sync_knowledge_base(kb_id: int):
         conn.close()
 
 
-@router.get("/knowledge-bases/{kb_id}/documents")
+@router.get("/knowledge-bases/{kb_id}/documents", dependencies=[Depends(require_admin)])
 async def list_knowledge_base_documents(
     kb_id: int,
     page: int = Query(1, ge=1),

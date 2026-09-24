@@ -92,10 +92,26 @@ class TestAliasResolution:
         assert expr == "COUNT(*)" and agg == "COUNT" and not unsupport
 
     def test_ambiguous_fuzzy_rejected(self, patched, binding):
-        # "医院" 同时是别名(就诊医院)与更长的其他键包含关系 → 精确命中优先, 不报错
+        # "医院" 是别名(就诊医院) → 精确命中优先, 不受模糊拒收影响
         r = _resolver(binding)
         expr, _ = r.resolve_dimension("医院")
         assert expr == "`company_name`"
+
+    def test_contains_fuzzy_no_longer_binds(self, patched, binding):
+        # T5: "案例状态" 的包含式前缀不再静默绑定, 而是回抛候选
+        r = _resolver(binding)
+        expr, _ = r.resolve_dimension("案例状")   # 非精确名/非别名, 仅包含命中
+        assert expr is None
+        hint = r.fuzzy_hint("案例状")
+        assert "案例状态" in hint
+        assert r.resolution_sources().get("案例状") == "fuzzy_rejected"
+
+    def test_fuzzy_reject_returns_none_and_no_leak(self, patched, binding):
+        # 拒收提示只含业务名候选, 不得出现物理列名
+        r = _resolver(binding)
+        assert r.resolve_dimension("案例状")[0] is None
+        hint = r.fuzzy_hint("案例状")
+        assert "case_status" not in hint and "t_case" not in hint
 
 
 # ── time_grain 生效范围 ────────────────────────────────────────

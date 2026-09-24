@@ -5,7 +5,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from typing import Optional
 
 from services.shared.common.auth import get_current_user, require_admin
@@ -17,14 +17,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-class CreateWorkspaceRequest(BaseModel):
+class WorkspacePayload(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def reject_resource_bindings(cls, data):
+        if isinstance(data, dict) and {"mcp_server_ids", "mcp_server_id", "knowledge_base_ids", "knowledge_base_id"}.intersection(data):
+            raise ValueError("知识库和 MCP 请在 Waker 中绑定，不再支持工作空间直接绑定")
+        return data
+
+
+class CreateWorkspaceRequest(WorkspacePayload):
     name: str
     description: Optional[str] = ""
     icon: Optional[str] = "📊"
     color: Optional[str] = "#1890ff"
 
 
-class UpdateWorkspaceRequest(BaseModel):
+class UpdateWorkspaceRequest(WorkspacePayload):
     name: Optional[str] = None
     description: Optional[str] = None
     icon: Optional[str] = None
@@ -375,14 +384,14 @@ def get_workspace_tools(workspace_id: int, user: dict = Depends(get_current_user
                 )
                 datasources = cur.fetchall()
 
-                cur.execute(
-                    """SELECT m.id, m.name, m.description, COALESCE(wm.alias, '') AS alias
-                       FROM adh_workspace_mcp_servers wm
-                       JOIN adh_mcp_servers m ON m.id = wm.mcp_server_id
-                       WHERE wm.workspace_id = %s""",
-                    (workspace_id,),
-                )
-                mcp_servers = cur.fetchall()
+                from services.datamind.execution.wakers import visible_resource_ids
+                ids = visible_resource_ids(user, workspace_id, "mcp_server_ids")
+                mcp_servers = []
+                if ids:
+                    marks = ','.join(['%s'] * len(ids))
+                    cur.execute(f"SELECT id,name,description,'' AS alias FROM adh_mcp_servers "
+                                f"WHERE id IN ({marks}) AND is_active=1 ORDER BY name", tuple(ids))
+                    mcp_servers = cur.fetchall()
 
                 cur.execute(
                     """SELECT a.id, a.name, a.display_name, a.description, wa.is_enabled
@@ -482,43 +491,21 @@ def remove_workspace_datasource(workspace_id: int, datasource_id: int,
 def add_workspace_mcp_server(workspace_id: int,
                              mcp_server_id: int = Query(...),
                              user: dict = Depends(get_current_user)):
-    """Bind an MCP server to a workspace."""
-    try:
-        with DBConnection() as conn:
-            with conn.cursor() as cur:
-                _check_membership(cur, workspace_id, user, require_admin_role=True)
-                cur.execute(
-                    """INSERT INTO adh_workspace_mcp_servers (workspace_id, mcp_server_id)
-                       VALUES (%s, %s)
-                       ON DUPLICATE KEY UPDATE mcp_server_id = mcp_server_id""",
-                    (workspace_id, mcp_server_id),
-                )
-        return {"success": True}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to add workspace MCP server: %s", e)
-        raise HTTPException(status_code=500, detail="添加MCP服务失败")
+    """已退役的绑定入口：保留鉴权及可诊断迁移提示，不执行写入。"""
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            _check_membership(cur, workspace_id, user, require_admin_role=True)
+    raise HTTPException(410, "MCP 工作空间绑定已停用，请在 Waker 中配置服务和逐工具授权")
 
 
 @router.delete("/{workspace_id}/mcp-servers/{mcp_server_id}")
 def remove_workspace_mcp_server(workspace_id: int, mcp_server_id: int,
                                 user: dict = Depends(get_current_user)):
-    """Unbind an MCP server from a workspace."""
-    try:
-        with DBConnection() as conn:
-            with conn.cursor() as cur:
-                _check_membership(cur, workspace_id, user, require_admin_role=True)
-                cur.execute(
-                    "DELETE FROM adh_workspace_mcp_servers WHERE workspace_id = %s AND mcp_server_id = %s",
-                    (workspace_id, mcp_server_id),
-                )
-        return {"success": True}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to remove workspace MCP server: %s", e)
-        raise HTTPException(status_code=500, detail="移除MCP服务失败")
+    """旧解绑不再改变任何资源授权。"""
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            _check_membership(cur, workspace_id, user, require_admin_role=True)
+    raise HTTPException(410, "MCP 工作空间绑定已停用，请在 Waker 中调整服务和逐工具授权")
 
 
 # ── Workspace Roles (RBAC) ─────────────────────────────────────────────

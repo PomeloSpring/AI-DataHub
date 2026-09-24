@@ -134,8 +134,16 @@ services:
       <<: *common-env
       SERVICE_PORT: "8001"
       MCP_PORT: "31001"
+      # 对象存储(附件)
+      OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-http://minio:9000}
+      OBJECT_STORAGE_ACCESS_KEY: ${OBJECT_STORAGE_ACCESS_KEY:-minioadmin}
+      OBJECT_STORAGE_SECRET_KEY: ${OBJECT_STORAGE_SECRET_KEY:-minioadmin}
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-adh-attachments}
+      # Agent 工作空间沙箱(挂载 named volume)
+      ADH_WORKSPACES_DIR: /app/data/workspaces
     volumes:
       - ../config:/app/config:ro
+      - datamind-workspaces:/app/data/workspaces
     restart: unless-stopped
 
   # ══════════════════════════════════════════════════════════
@@ -202,6 +210,23 @@ services:
     restart: unless-stopped
 
   # ══════════════════════════════════════════════════════════
+  # MinIO — S3 兼容对象存储(附件文件)
+  # ══════════════════════════════════════════════════════════
+  minio:
+    image: minio/minio:latest
+    container_name: adh-minio
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web Console
+    environment:
+      MINIO_ROOT_USER: ${OBJECT_STORAGE_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${OBJECT_STORAGE_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════════════════════
   # Infrastructure
   # ══════════════════════════════════════════════════════════
   redis:
@@ -247,3 +272,5 @@ services:
 volumes:
   redis_data:
   oxigraph_data:
+  minio-data:
+  datamind-workspaces:

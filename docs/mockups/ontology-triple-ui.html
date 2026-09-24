@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>本体三元组配置 · 目标样式原型</title>
+<style>
+  :root{
+    --bg:#0b0d10; --panel:#111419; --card:#151920; --line:#232a34; --line2:#2e3745;
+    --txt:#e6e9ee; --dim:#8b93a1; --faint:#5c6470;
+    --primary:#0e1116; --primary-border:#8b93a1;
+    --indigo:#6366f1; --blue:#3b82f6; --green:#22c55e; --orange:#f97316;
+    --teal:#14b8a6; --purple:#a855f7; --amber:#f59e0b; --cyan:#06b6d4; --red:#ef4444;
+    --mono:ui-monospace,'JetBrains Mono',Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+  .app{max-width:1440px;margin:0 auto;padding:0 20px 60px}
+  header.top{display:flex;align-items:center;gap:12px;padding:16px 0;border-bottom:1px solid var(--line);margin-bottom:0}
+  header.top .logo{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,#6366f1,#22d3ee);display:flex;align-items:center;justify-content:center;font-weight:700}
+  header.top h1{font-size:16px;font-weight:600}
+  header.top .sub{color:var(--dim);font-size:12px}
+  nav.tabs{display:flex;gap:4px;padding:10px 0;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:5;flex-wrap:wrap}
+  nav.tabs button{background:transparent;border:1px solid transparent;color:var(--dim);padding:7px 14px;border-radius:8px;cursor:pointer;font-size:13px}
+  nav.tabs button.on{background:var(--primary);color:#fff;border-color:var(--primary-border)}
+  section.screen{display:none;padding-top:18px}
+  section.screen.on{display:block}
+  .hint{color:var(--dim);font-size:12px;margin:4px 0 14px}
+  .split{display:flex;gap:16px;align-items:flex-start}
+  .col{flex:1;min-width:0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+  .card h3{font-size:13px;font-weight:600;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+  .card h3 .ico{width:18px;height:18px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
+  table.list{width:100%;border-collapse:collapse;font-size:13px}
+  table.list th{color:var(--faint);text-align:left;font-weight:500;padding:6px 8px;border-bottom:1px solid var(--line)}
+  table.list td{padding:8px;border-bottom:1px solid var(--line);vertical-align:middle}
+  table.list tr.sel td{background:rgba(99,102,241,.08)}
+  .chip{display:inline-flex;align-items:center;gap:5px;background:#1d2532;border:1px solid var(--line2);color:#c8d0dc;border-radius:6px;padding:2px 8px;font-size:12px;margin:2px 4px 2px 0}
+  .chip .x{color:var(--faint);cursor:pointer;font-style:normal}
+  .chip.add{border-style:dashed;color:var(--dim);background:transparent}
+  .chip.indigo{border-color:rgba(99,102,241,.5);color:#a5b4fc;background:rgba(99,102,241,.1)}
+  .chip.green{border-color:rgba(34,197,94,.4);color:#86efac;background:rgba(34,197,94,.08)}
+  .chip.orange{border-color:rgba(249,115,22,.45);color:#fdba74;background:rgba(249,115,22,.08)}
+  .chip.purple{border-color:rgba(168,85,247,.45);color:#d8b4fe;background:rgba(168,85,247,.08)}
+  .chip.gray{color:var(--dim)}
+  .sbj{display:flex;align-items:center;gap:8px;background:#0f1319;border:1px solid var(--line2);border-radius:10px;padding:10px 12px;margin-bottom:14px}
+  .sbj .t{font:12px var(--mono);color:#a5b4fc}
+  .sbj .tag{margin-left:auto;font-size:11px;color:var(--dim);border:1px solid var(--line2);padding:1px 8px;border-radius:20px}
+  label.f{display:block;color:var(--dim);font-size:12px;margin:10px 0 4px}
+  .input{width:100%;background:#0f1319;border:1px solid var(--line2);color:var(--txt);border-radius:8px;padding:7px 10px;font-size:13px}
+  .refsel{display:flex;align-items:center;gap:6px;background:#0f1319;border:1px solid var(--line2);border-radius:8px;padding:6px 10px;font-size:13px;width:100%}
+  .refsel .path{color:var(--txt)}
+  .refsel .caret{margin-left:auto;color:var(--faint)}
+  .refsel .lock{color:#4ade80;font-size:11px}
+  .pred{font:11px var(--mono);color:var(--teal);min-width:190px;display:inline-block}
+  .prow{display:flex;gap:10px;align-items:flex-start;padding:7px 0;border-bottom:1px dashed var(--line)}
+  .prow:last-child{border-bottom:none}
+  .prow .lft{width:200px;flex-shrink:0;padding-top:6px}
+  .prow .rgt{flex:1;min-width:0}
+  .rdf{background:#0a0d11;border:1px solid var(--line);border-radius:10px;padding:12px 14px;font:12px/1.9 var(--mono);color:#9fb0c7;overflow:auto}
+  .rdf .p{color:var(--teal)} .rdf .o{color:#c4b5fd} .rdf .lit{color:#86efac} .rdf .iri{color:#93c5fd} .rdf .cmt{color:var(--faint)}
+  .btnrow{display:flex;gap:10px;margin-top:14px;align-items:center}
+  .btn{border-radius:8px;padding:7px 16px;font-size:13px;cursor:pointer;border:1px solid var(--line2);background:transparent;color:var(--txt)}
+  .btn.pri{background:var(--primary);border-color:var(--primary-border);color:#fff}
+  .btn.warn{border-color:rgba(245,158,11,.5);color:#fbbf24}
+  .note{font-size:12px;color:var(--dim)}
+  .note.ok{color:#4ade80} .note.warn{color:#fbbf24}
+  .sec{font-size:11px;letter-spacing:1px;color:var(--faint);margin:16px 0 6px;text-transform:uppercase}
+  .badge-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+  /* graph canvas */
+  .canvas{position:relative;background:#0c0f14;border:1px solid var(--line);border-radius:12px;overflow:hidden;height:600px}
+  .canvas .grid{position:absolute;inset:0;background-image:radial-gradient(#1c222c 1px,transparent 1px);background-size:22px 22px}
+  .gnode{position:absolute;background:var(--card);border:1.5px solid var(--line2);border-radius:10px;min-width:150px;padding:8px 10px;font-size:12px;box-shadow:0 6px 18px rgba(0,0,0,.4)}
+  .gnode .ttl{font-weight:600;font-size:13px;display:flex;align-items:center;gap:6px}
+  .gnode .sub{color:var(--faint);font-size:11px;margin-top:2px}
+  .gnode .badges{display:flex;gap:6px;margin-top:6px}
+  .gnode .b{font-size:10px;color:var(--dim);border:1px solid var(--line2);border-radius:5px;padding:0 5px}
+  .gnode.obj{border-color:rgba(99,102,241,.7)}
+  .gnode.tbl{border-color:rgba(59,130,246,.6)}
+  .gnode .st{width:7px;height:7px;border-radius:50%;background:#4ade80;margin-left:auto}
+  .hull{position:absolute;border:1px dashed rgba(148,163,184,.35);border-radius:16px;background:rgba(148,163,184,.03)}
+  .hull .lbl{position:absolute;top:-11px;left:14px;background:var(--bg);padding:0 8px;font-size:11px;color:var(--dim);letter-spacing:1px}
+  svg.links{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .elabel{fill:#9fb0c7;font-size:11px}
+  .ecard{fill:#0c0f14;stroke:#2e3745;rx:9}
+  .legend{position:absolute;left:12px;bottom:12px;background:rgba(17,20,25,.92);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:11px;color:var(--dim)}
+  .legend i{display:inline-block;width:16px;height:3px;border-radius:2px;vertical-align:middle;margin-right:6px}
+  .mini{position:absolute;right:12px;bottom:12px;width:120px;height:76px;background:rgba(17,20,25,.9);border:1px solid var(--line);border-radius:8px}
+  .stat{position:absolute;left:12px;top:12px;background:rgba(17,20,25,.9);border:1px solid var(--line);border-radius:8px;padding:5px 12px;font-size:12px;color:var(--dim)}
+  .drawer{position:absolute;right:0;top:0;bottom:0;width:330px;background:rgba(17,20,25,.97);border-left:1px solid var(--line2);padding:14px;overflow:auto}
+  .drawer h4{font-size:13px;margin-bottom:2px}
+  .drawer .k{font-size:11px;color:var(--faint);margin:12px 0 4px}
+  .drawer .row1{display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px dashed var(--line)}
+  .drawer .row1 span:last-child{color:var(--dim)}
+  .tool{position:absolute;right:12px;top:12px;display:flex;gap:6px}
+  .tool .t{width:26px;height:26px;border-radius:7px;background:var(--card);border:1px solid var(--line);color:var(--dim);display:flex;align-items:center;justify-content:center;font-size:12px}
+  .layer{flex:1;text-align:center}
+  .laywrap{display:flex;gap:14px;align-items:stretch}
+  .colhead{font-size:11px;letter-spacing:1px;color:var(--faint);margin-bottom:8px;text-transform:uppercase}
+  .tblcard{background:var(--card);border:1px solid rgba(59,130,246,.5);border-radius:10px;overflow:hidden;margin-bottom:10px}
+  .tblcard .h{padding:8px 10px;font-size:12px;font-weight:600;background:rgba(59,130,246,.1);display:flex;gap:6px;align-items:center}
+  .tblcard .h .n{margin-left:auto;font-size:11px;color:var(--dim)}
+  .tblcard .c{padding:4px 10px;font:11px var(--mono);color:#9fb0c7;border-top:1px solid var(--line);display:flex;justify-content:space-between}
+  .tblcard .c .ty{color:var(--faint)}
+  .kbd{font:11px var(--mono);background:#1d2532;border:1px solid var(--line2);border-radius:5px;padding:1px 6px;color:#c8d0dc}
+  .flowline{color:var(--faint);text-align:center;font-size:20px;padding-top:120px}
+</style>
+</head>
+<body>
+<div class="app">
+<header class="top">
+  <div class="logo">◆</div>
+  <div><h1>本体三元组配置 — 开发完成后样式原型</h1><div class="sub">DataFoundry · 指标中心 / 标签管理 / 业务术语 / 知识图谱 · 点击页签切换</div></div>
+</header>
+
+<nav class="tabs">
+  <button class="on" data-s="s1">① 指标中心 · 编辑指标(三元组表单)</button>
+  <button data-s="s2">② 标签管理 · 打标即三元组</button>
+  <button data-s="s3">③ 业务术语 · 收编闭环</button>
+  <button data-s="s4">④ 知识图谱 · 本体总览(新默认视图)</button>
+  <button data-s="s5">⑤ 知识图谱 · 语义-物理桥接</button>
+</nav>
+
+<!-- ═══════════ S1 指标中心 ═══════════ -->
+<section class="screen on" id="s1">
+  <div class="hint">要点：左侧列表不变（还是高效表单）；右侧编辑抽屉变成"主语头 → 谓词分组 → 三元组预览"三段式。<b>引用类字段只能从级联选择器选，不能手敲物理名</b>；别名从逗号串变 chip 多值。</div>
+  <div class="split">
+    <div class="col" style="flex:1.05">
+      <div class="card">
+        <h3><span class="ico" style="background:rgba(249,115,22,.18);color:#fdba74">◆</span>指标中心 <span class="chip indigo" style="margin-left:8px">指标</span><span class="chip gray">维度</span></h3>
+        <table class="list">
+          <tr><th>名称</th><th>别名</th><th>归属对象</th><th>聚合</th><th>校验</th></tr>
+          <tr class="sel"><td>案例数量</td><td><span class="chip">病例数</span><span class="chip">total_cases</span></td><td>case</td><td>COUNT</td><td><span class="badge-dot" style="background:#4ade80"></span>引用完整</td></tr>
+          <tr><td>总费用</td><td><span class="chip">费用合计</span></td><td>case</td><td>SUM</td><td><span class="badge-dot" style="background:#4ade80"></span>引用完整</td></tr>
+          <tr><td>工单量</td><td>—</td><td style="color:#fbbf24">ticket</td><td>COUNT</td><td><span class="badge-dot" style="background:#fbbf24"></span>对象未激活</td></tr>
+          <tr><td>营收</td><td><span class="chip">收入</span></td><td>ticket</td><td>SUM</td><td><span class="badge-dot" style="background:#4ade80"></span>引用完整</td></tr>
+        </table>
+        <div class="btnrow"><span class="note">悬空引用在<b>列表页即显形</b>（谓词字典校验），不必等到激活被阻断</span></div>
+      </div>
+    </div>
+
+    <div class="col" style="flex:1.25">
+      <div class="card">
+        <div class="sbj"><span style="font-size:11px;color:var(--faint)">S</span><span class="t">adh:metric:案例数量</span><span class="tag">a adh:Metric · @hospital</span><span class="tag" style="border-color:rgba(74,222,128,.4);color:#4ade80">bound</span></div>
+
+        <div class="sec">字面量谓词（多值 = chip）</div>
+        <div class="prow"><span class="lft"><span class="pred">skos:altLabel</span></span><span class="rgt"><span class="chip">病例数 <i class="x">×</i></span><span class="chip">total_cases <i class="x">×</i></span><span class="chip add">+ 新增别名</span></span></div>
+        <div class="prow"><span class="lft"><span class="pred">rdfs:label@zh</span></span><span class="rgt"><input class="input" value="案例数量"></span></div>
+        <div class="prow"><span class="lft"><span class="pred">rdfs:comment（口径）</span></span><span class="rgt"><input class="input" value="未删除案例的去重计数（含公式，公式不上云）"></span></div>
+
+        <div class="sec">引用类谓词（宾语 = 实体选择器，禁止自由文本）</div>
+        <div class="prow"><span class="lft"><span class="pred">adh:boundToObject</span></span><span class="rgt"><div class="refsel"><span class="path">hospital ▾ / 案例域 ▾ / <b>case</b></span><span class="lock">✓ 引用存在</span><span class="caret">⌄</span></div></span></div>
+        <div class="prow"><span class="lft"><span class="pred">adh:aggregation</span></span><span class="rgt"><div class="refsel"><span class="path">COUNT ▾</span><span class="caret">⌄</span></div></span></div>
+        <div class="prow"><span class="lft"><span class="pred">adh:unit</span></span><span class="rgt"><div class="refsel"><span class="path">个（受控单位表）▾</span><span class="caret">⌄</span></div></span></div>
+
+        <div class="sec">三元组预览（只读 · 所见=所落图）</div>
+        <div class="rdf">
+<span class="iri">adh:metric:案例数量</span> <span class="p">a</span> <span class="o">adh:Metric</span> .<br>
+<span class="iri">adh:metric:案例数量</span> <span class="p">adh:boundToObject</span> <span class="o">adh:obj:case</span> .<br>
+<span class="iri">adh:metric:案例数量</span> <span class="p">skos:altLabel</span> <span class="lit">"病例数"@zh</span> , <span class="lit">"total_cases"@en</span> .<br>
+<span class="iri">adh:metric:案例数量</span> <span class="p">adh:aggregation</span> <span class="lit">"COUNT"</span> ; <span class="p">adh:unit</span> <span class="lit">"个"</span> .<br>
+<span class="cmt"># formula 仅存服务端, 云文档投影为口径文字 (护栏§7)</span>
+        </div>
+        <div class="btnrow">
+          <button class="btn pri">保存草案</button>
+          <button class="btn warn">提交生效（AS-BOT 审批）</button>
+          <span class="note">写图/同步知识库不在此触发 → 审批执行后级联</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ S2 标签 ═══════════ -->
+<section class="screen" id="s2">
+  <div class="hint">要点：打标界面直接声明"谁 --dcterms:subject--> 什么标签"。标签<b>现在会投进 RDF 图</b>——图谱里对象/表卡按标签着色，上一轮"路径高亮"的业务色彩层由它提供。</div>
+  <div class="split">
+    <div class="col">
+      <div class="card">
+        <h3><span class="ico" style="background:rgba(168,85,247,.18);color:#d8b4fe">⌗</span>标签体系</h3>
+        <table class="list">
+          <tr><th>分类</th><th>标签</th></tr>
+          <tr><td>业务域</td><td><span class="chip purple">财务</span><span class="chip purple">核心</span><span class="chip purple">患者安全</span></td></tr>
+          <tr><td>敏感度</td><td><span class="chip orange">含PII</span><span class="chip orange">内部</span></td></tr>
+          <tr><td>数据层</td><td><span class="chip">DWD</span><span class="chip">ADS</span></td></tr>
+        </table>
+        <div class="note" style="margin-top:8px">分类树投影为 <span class="kbd">skos:broader</span> 层级边</div>
+      </div>
+      <div class="card">
+        <h3><span class="ico" style="background:rgba(99,102,241,.18);color:#a5b4fc">⚿</span>为实体加标签（弹窗）</h3>
+        <div class="prow"><span class="lft"><span class="pred">S 主体</span></span><span class="rgt"><div class="refsel"><span class="path">adh:table:t_case_records（表）</span><span class="caret">⌄</span></div></span></div>
+        <div class="prow"><span class="lft"><span class="pred">P 谓词</span></span><span class="rgt"><input class="input" value="dcterms:subject" disabled style="opacity:.7"></span></div>
+        <div class="prow"><span class="lft"><span class="pred">O 标签 ▾</span></span><span class="rgt">
+          <span class="chip purple">财务 ✓</span><span class="chip orange">含PII ✓</span><span class="chip purple">核心 ☐</span><span class="chip">DWD ☐</span>
+          <div class="note" style="margin-top:6px">只能从已有标签选（引用），不可输入新词 —— 防标签失控生长</div>
+        </span></div>
+        <div class="btnrow"><button class="btn pri">确认打标（2 条三元组）</button></div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card">
+        <h3><span class="ico" style="background:rgba(59,130,246,.18);color:#93c5fd">▣</span>实体详情：t_case_records</h3>
+        <div class="sbj" style="margin-bottom:8px"><span style="font-size:11px;color:var(--faint)">S</span><span class="t">adh:table:t_case_records</span><span class="tag">a adh:Table</span></div>
+        <div class="rdf" style="margin:10px 0">
+<span class="iri">adh:table:t_case_records</span> <span class="p">dcterms:subject</span> <span class="o">adh:tag:财务</span> , <span class="o">adh:tag:含PII</span> .<br>
+<span class="iri">adh:obj:case</span> <span class="p">adh:boundTo</span> <span class="o">adh:table:t_case_records</span> .
+        </div>
+        <div class="note">当前标签：<span class="chip purple">财务</span><span class="chip orange">含PII</span>　→ 图谱中该表卡出现<b style="color:#d8b4fe">紫色描边点</b>与 PII 徽标</div>
+        <div class="card" style="margin:12px 0 0;background:#0f1319">
+          <div class="note ok">✓ 联动效果（图谱内）：标签=过滤器 —— 顶栏出现 <span class="kbd">按标签筛选 ▾ [财务 ∧ 核心]</span>，命中子图淡出其余节点</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ S3 业务术语 ═══════════ -->
+<section class="screen" id="s3">
+  <div class="hint">要点：术语定位=「未收编黑话缓冲区」。mapsTo 宾语从手敲字符串改为<b>级联引用</b>；新增「收编为别名」动作 —— 一键把黑话升格进对象/字典 aliases 并走 AS-BOT 审批，闭环可视化。</div>
+  <div class="split">
+    <div class="col" style="flex:1">
+      <div class="card">
+        <h3><span class="ico" style="background:rgba(20,184,166,.18);color:#5eead4">❝</span>业务术语表</h3>
+        <table class="list">
+          <tr><th>术语</th><th>类型</th><th>映射</th><th>收编状态</th></tr>
+          <tr class="sel"><td>华东</td><td>取值</td><td class="mono" style="font:11px var(--mono);color:#9fb0c7">col:region=EAST</td><td><span class="chip green">已收编→维度值</span></td></tr>
+          <tr><td>活跃用户</td><td>口径</td><td style="color:#fbbf24">（未绑定）</td><td><span class="chip orange">缓冲区 · 30天命中12次</span></td></tr>
+          <tr><td>退号</td><td>黑话</td><td style="color:#fbbf24">（未绑定）</td><td><span class="chip orange">建议升格</span></td></tr>
+          <tr><td>患者</td><td>对象</td><td class="mono" style="font:11px var(--mono);color:#9fb0c7">adh:obj:patient</td><td><span class="chip green">已收编→对象别名</span></td></tr>
+        </table>
+        <div class="note" style="margin-top:8px">"30天命中12次"= 解析失败队列 <span class="kbd">adh_alias_suggestions.hit_count</span> —— 收编优先级由数据排序，不靠拍脑袋</div>
+      </div>
+    </div>
+    <div class="col" style="flex:1.2">
+      <div class="card">
+        <div class="sbj"><span style="font-size:11px;color:var(--faint)">S</span><span class="t">adh:term:退号</span><span class="tag">a skos:Concept</span></div>
+        <div class="prow"><span class="lft"><span class="pred">skos:prefLabel@zh</span></span><span class="rgt"><input class="input" value="退号"></span></div>
+        <div class="prow"><span class="lft"><span class="pred">skos:altLabel</span></span><span class="rgt"><span class="chip">取消预约 <i class="x">×</i></span><span class="chip">no-show退费 <i class="x">×</i></span><span class="chip add">+</span></span></div>
+        <div class="prow"><span class="lft"><span class="pred">adh:mapsToColumn</span></span><span class="rgt"><div class="refsel"><span class="path">hospital ▾ / t_case_records ▾ / <b>case_status</b></span><span class="lock">✓</span><span class="caret">⌄</span></div><div class="note">原为手敲 "t_case_records.status"（拼错即悬空）→ 现级联引用</div></span></div>
+        <div class="prow"><span class="lft"><span class="pred">skos:related</span></span><span class="rgt"><span class="chip indigo">维度:案例状态</span><span class="chip add">+ 关联字典项/对象</span></span></div>
+        <div class="sec">收编动作（二选一，均走 AS-BOT）</div>
+        <div class="btnrow" style="margin-top:4px">
+          <button class="btn pri">→ 收编为「案例状态」别名</button>
+          <button class="btn">→ 收编为对象 case 别名</button>
+          <span class="note">生成 <span class="kbd">skos:related</span> 边 + 写入 aliases + 术语行标记已收编</span>
+        </div>
+        <div class="sec">三元组预览</div>
+        <div class="rdf">
+<span class="iri">adh:term:退号</span> <span class="p">skos:prefLabel</span> <span class="lit">"退号"@zh</span> ; <span class="p">skos:altLabel</span> <span class="lit">"取消预约"@zh</span> .<br>
+<span class="iri">adh:term:退号</span> <span class="p">adh:mapsToColumn</span> <span class="o">adh:col:t_case_records.case_status</span> .<br>
+<span class="iri">adh:term:退号</span> <span class="p">skos:related</span> <span class="o">adh:dim:案例状态</span> . <span class="cmt"># 收编后 → aliases 增 "退号"</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ S4 本体总览 ═══════════ -->
+<section class="screen" id="s4">
+  <div class="hint">开发完成后知识图谱页的<b>默认视图</b>：只有业务对象（点）和 Link（名边），域是容器不是节点；表/列/数据源不出现。选中对象 → 右抽屉下钻。</div>
+  <div class="canvas">
+    <div class="grid"></div>
+    <div class="stat">3 域 · 7 对象 · 8 Link　<span style="color:#4ade80">● 6 bound</span>　<span style="color:#fbbf24">● 1 drifted</span></div>
+    <div class="tool"><span class="t">⊕</span><span class="t">⊖</span><span class="t">⛶</span><span class="t">↻</span></div>
+    <div class="hull" style="left:60px;top:70px;width:520px;height:280px"><span class="lbl">案例域</span></div>
+    <div class="hull" style="left:150px;top:400px;width:360px;height:150px"><span class="lbl">患者域</span></div>
+    <div class="hull" style="left:640px;top:170px;width:250px;height:230px"><span class="lbl">财务域</span></div>
+    <svg class="links">
+      <defs><marker id="ar" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#64748b"/></marker></defs>
+      <line x1="255" y1="160" x2="455" y2="120" stroke="#475569" stroke-width="1.6" marker-end="url(#ar)"/>
+      <line x1="255" y1="185" x2="450" y2="275" stroke="#475569" stroke-width="1.6" marker-end="url(#ar)"/>
+      <line x1="230" y1="230" x2="255" y2="440" stroke="#475569" stroke-width="1.6" marker-end="url(#ar)"/>
+      <line x1="560" y1="140" x2="700" y2="230" stroke="#475569" stroke-width="1.6" marker-end="url(#ar)"/>
+      <line x1="570" y1="290" x2="700" y2="280" stroke="#475569" stroke-width="1.6" marker-end="url(#ar)"/>
+      <line x1="300" y1="480" x2="700" y2="330" stroke="#475569" stroke-width="1.4" stroke-dasharray="5 5" marker-end="url(#ar)"/>
+      <rect x="330" y="122" width="80" height="18" class="ecard"/><text x="341" y="135" class="elabel">就诊于·N:1</text>
+      <rect x="322" y="218" width="80" height="18" class="ecard"/><text x="333" y="231" class="elabel">产生·1:N</text>
+      <rect x="196" y="330" width="80" height="18" class="ecard"/><text x="207" y="343" class="elabel">涉及·N:1</text>
+      <rect x="600" y="168" width="66" height="18" class="ecard"/><text x="609" y="181" class="elabel">归属·N:1</text>
+      <rect x="606" y="272" width="66" height="18" class="ecard"/><text x="615" y="285" class="elabel">支付·1:1</text>
+      <rect x="470" y="410" width="96" height="18" class="ecard"/><text x="479" y="423" class="elabel" >退款↘(虚=多跳)</text>
+    </svg>
+    <div class="gnode obj" style="left:100px;top:140px"><div class="ttl">案例 <span style="font-weight:400;color:var(--faint)">(case)</span><span class="st"></span></div><div class="sub">工单 · 就诊案例</div><div class="badges"><span class="b">◆ 3 指标</span><span class="b">▤ 5 维度</span><span class="b" style="color:#d8b4fe;border-color:rgba(168,85,247,.4)">⌗ 财务</span></div></div>
+    <div class="gnode obj" style="left:460px;top:90px"><div class="ttl">医院 <span style="font-weight:400;color:var(--faint)">(hospital)</span><span class="st"></span></div><div class="sub">就诊机构</div><div class="badges"><span class="b">◆ 1 指标</span><span class="b">▤ 4 维度</span></div></div>
+    <div class="gnode obj" style="left:450px;top:255px"><div class="ttl">费用记录 <span style="font-weight:400;color:var(--faint)">(charge)</span><span class="st" style="background:#fbbf24"></span></div><div class="sub">drifted · 表已变更</div><div class="badges"><span class="b">◆ 2 指标</span><span class="b" style="color:#d8b4fe;border-color:rgba(168,85,247,.4)">⌗ 含PII</span></div></div>
+    <div class="gnode obj" style="left:180px;top:440px"><div class="ttl">患者 <span style="font-weight:400;color:var(--faint)">(patient)</span><span class="st"></span></div><div class="badges"><span class="b">◆ 0 指标</span><span class="b">▤ 7 维度</span></div></div>
+    <div class="gnode obj" style="left:700px;top:200px"><div class="ttl">账单 <span style="font-weight:400;color:var(--faint)">(invoice)</span><span class="st"></span></div><div class="badges"><span class="b">◆ 2 指标</span><span class="b">▤ 3 维度</span></div></div>
+    <div class="legend">
+      <div><b style="color:#e6e9ee">图例</b>（=谓词字典，单一来源）</div>
+      <div style="margin-top:5px"><span class="badge-dot" style="background:#6366f1"></span>对象　<span style="margin-left:8px"><i style="background:#475569"></i>Link 实线(带名字+基数)　<span style="margin-left:8px"><i style="background:#475569;height:0;border-top:2px dashed #475569"></i>多跳/间接</span></span></div>
+      <div style="margin-top:4px">徽标: ◆指标 ▤维度 ⌗标签 ●绑定态　域=虚线容器,点击折叠</div>
+    </div>
+    <div class="mini"></div>
+    <div class="drawer">
+      <h4>案例 <span style="color:var(--faint);font-weight:400">case</span></h4>
+      <div class="note">焦点子图：已淡出 2 跳外节点（点击空白退出）</div>
+      <div class="k">属性（业务名 · 即维度来源）</div>
+      <div class="row1"><span>创建日期</span><span>时间 ▤</span></div>
+      <div class="row1"><span>案例状态</span><span>枚举 3 值</span></div>
+      <div class="row1"><span>就诊医院 / 费用金额 / 患者手机号 …</span><span></span></div>
+      <div class="k">指标</div>
+      <div class="row1"><span>案例数量</span><span>COUNT · 个</span></div>
+      <div class="row1"><span>总费用</span><span>SUM · 元</span></div>
+      <div class="k">关联（Link）</div>
+      <div class="row1"><span>就诊于 → 医院 (N:1)</span><span>跳转↗</span></div>
+      <div class="row1"><span>产生 ← 费用记录 (1:N)</span><span>跳转↗</span></div>
+      <div class="k">执行绑定（徽标 · 不显示物理名）</div>
+      <div class="row1"><span>query_mode</span><span>materialized</span></div>
+      <div class="row1"><span>size_class / sync</span><span style="color:#fbbf24">large · drifted ⚠对账</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ S5 桥接视图 ═══════════ -->
+<section class="screen" id="s5">
+  <div class="hint">"数据血缘图"改造后：四列分层。<b>列不再是一个个节点+连线</b>，而是收进表卡（点 ▸ 展开）；表到数据源走聚合边。维度→列的关联仅在点击术语/维度时高亮路径。</div>
+  <div class="laywrap">
+    <div class="layer col" style="max-width:190px">
+      <div class="colhead">L0 数据源</div>
+      <div class="card" style="padding:10px"><div style="font-size:12px">🗄 doris-prod<br><span class="note">含 7 张表（聚合边）</span></div></div>
+      <div class="card" style="padding:10px"><div style="font-size:12px">🗄 mysql-hospital<br><span class="note">含 4 张表</span></div></div>
+    </div>
+    <div class="flowline">─▶</div>
+    <div class="layer col" style="max-width:200px">
+      <div class="colhead">L1 本体对象</div>
+      <div class="gnode obj" style="position:static;margin-bottom:10px"><div class="ttl">案例</div><div class="badges"><span class="b">boundTo ▸ 1表</span></div></div>
+      <div class="gnode obj" style="position:static;margin-bottom:10px"><div class="ttl">患者</div><div class="badges"><span class="b">boundTo ▸ 1表</span></div></div>
+      <div class="gnode obj" style="position:static"><div class="ttl">费用记录</div><div class="badges"><span class="b">模板对象</span></div></div>
+    </div>
+    <div class="flowline">─▶</div>
+    <div class="layer col">
+      <div class="colhead">L2 物理表（列收纳进卡内 · 默认折叠）</div>
+      <div class="tblcard">
+        <div class="h"><span class="badge-dot" style="background:#3b82f6"></span>t_case_records<span class="n">12 列 ▸ 展开</span></div>
+        <div class="c" style="color:#4ade80">case_status <span class="ty" style="color:var(--faint)">int · ← 维度「案例状态」映射（点击维度时这条路径高亮）</span></div>
+        <div class="c" style="display:none"></div>
+      </div>
+      <div class="tblcard">
+        <div class="h"><span class="badge-dot" style="background:#3b82f6"></span>t_case_records · 已展开<span class="n">收起 ▾</span></div>
+        <div class="c">id <span class="ty">bigint · PK</span></div>
+        <div class="c">case_status <span class="ty">int · 枚举{0,1,3}</span></div>
+        <div class="c">company_name <span class="ty">varchar</span></div>
+        <div class="c" style="color:#fbbf24">patient_phone <span class="ty">varchar · ⚿ PII:已脱敏(mask)</span></div>
+        <div class="c">del_flag / amount / create_time <span class="ty">…</span></div>
+      </div>
+      <div class="tblcard">
+        <div class="h"><span class="badge-dot" style="background:#3b82f6"></span>t_patient<span class="n">8 列 ▸</span></div>
+      </div>
+    </div>
+    <div class="flowline">─▶</div>
+    <div class="layer col" style="max-width:210px">
+      <div class="colhead">选中项路径（按需显形）</div>
+      <div class="card" style="padding:12px">
+        <div class="note" style="margin-bottom:6px">点击 维度「案例状态」：</div>
+        <div class="rdf" style="font-size:11px;line-height:2">
+<span class="o">adh:dim:案例状态</span><br>
+ ├<span class="p"> boundToObject</span> <span class="iri">obj:case</span><br>
+ └<span class="p"> mapsToColumn</span> <span class="iri">col:t_case.case_status</span><br>
+ 　└ 属于 <span class="iri">table:t_case_records</span><br>
+ 　　└ 位于 <span class="o">ds:doris-prod</span>
+        </div>
+        <div class="note ok" style="margin-top:8px">✓ 只亮这一条链，其余淡出 —— 回答"这个维度关联了哪些表/数据源"而不画满全图</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</div>
+<script>
+document.querySelectorAll('nav.tabs button').forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll('nav.tabs button').forEach(x=>x.classList.remove('on'));
+    document.querySelectorAll('section.screen').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    document.getElementById(b.dataset.s).classList.add('on');
+    location.hash=b.dataset.s;
+  };
+});
+if(location.hash){const t=document.querySelector(`nav.tabs button[data-s="${location.hash.slice(1)}"]`);t&&t.click();}
+</script>
+</body>
+</html>

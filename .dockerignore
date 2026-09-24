@@ -45,3 +45,15 @@ data
 
 # Logs
 *.log
+
+# 会话沙箱构建不得携带本地凭据、运行数据或编译缓存
+.env
+**/.env
+.qoder
+.pytest_cache
+**/target
+**/node_modules
+**/__pycache__
+*.db
+*.db-*
+pids

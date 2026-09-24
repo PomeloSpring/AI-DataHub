@@ -22,6 +22,12 @@ export interface SkillUpsert {
   system_prompt?: string;
 }
 
+export interface SkillVersion {
+  version: string;   // UTC 时间戳 YYYYMMDD-HHMMSS
+  size: number;
+  preview: string;
+}
+
 export const skillApi = {
   /** List all skills (系统内置 + 自定义, 均来自本地文件夹) */
   list: (category?: string) =>
@@ -42,4 +48,12 @@ export const skillApi = {
   /** Delete a custom skill (内置技能拒绝) */
   delete: (name: string) =>
     client.delete<{ name: string; success: boolean }>(`/admin/skills/${name}`),
+
+  /** 版本历史(SKILL.md 快照, 新→旧); 保存时自动快照, 保留最近 20 份 */
+  versions: (name: string) =>
+    client.get<{ versions: SkillVersion[] }>(`/admin/skills/${name}/versions`),
+
+  /** 回滚到指定快照(当前版先自动快照) */
+  rollback: (name: string, version: string) =>
+    client.post<{ name: string; success: boolean }>(`/admin/skills/${name}/rollback`, { version }),
 };

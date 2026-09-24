@@ -75,6 +75,8 @@ class GraphService:
                 nodes, edges = self._get_business_knowledge_graph(graph, ds_id, limit)
             elif graph_type == GraphType.DATA_LINEAGE:
                 nodes, edges = self._get_data_lineage_graph(graph, ds_id, limit)
+            elif graph_type == GraphType.ONTOLOGY_OVERVIEW:
+                nodes, edges = self._get_ontology_overview_graph(graph, ds_id, limit)
 
             # Search filter
             if search and nodes:
@@ -251,6 +253,113 @@ class GraphService:
                 edges.append(self._to_graph_edge(src, tgt, rel))
         except Exception as e:
             logger.warning("Business relation query failed: %s", e)
+
+        return nodes, edges
+
+    def _get_ontology_overview_graph(
+        self, graph: str, ds_id: int, limit: int
+    ) -> tuple[List[GraphNode], List[GraphEdge]]:
+        """本体总览: 业务对象=点, Link=带名字的边(Palantir 式主语视图)。
+
+        契约要点(治理"孤立圆点/层次错乱"根因):
+        - 边端点(对象 IRI/label)随边一起取回 → 边不会被悬空剪枝, 孤点对象也入图;
+        - 只携 link 语义(label/type/cardinality); joinExpr 不出图(数据源黑盒护栏 §7);
+        - 列/物理表/数据源不在此视图 —— 它们属"语义-物理桥接"层。
+        """
+        nodes: List[GraphNode] = []
+        edges: List[GraphEdge] = []
+        seen: set = set()
+
+        def _add_obj(iri: str, label: str, props: Dict[str, Any] = None):
+            if not iri:
+                return
+            nid = self._iri_to_node_id(iri)
+            if nid in seen:
+                return
+            seen.add(nid)
+            nodes.append(self._to_graph_node(iri, "Object", label or iri, {
+                "label": label or "",
+                "object_key": iri.replace(f"{ADH_NS}obj:", ""),
+                **(props or {}),
+            }))
+
+        # 1) 全量对象(含无 Link 的孤点对象) + 绑定徽标
+        cls_sparql = f"""
+            {SPARQL_PREFIXES}
+            SELECT ?iri ?label ?comment ?pt ?qm ?sc ?st WHERE {{
+                GRAPH <{graph}> {{
+                    ?iri a owl:Class ; rdfs:label ?label .
+                    OPTIONAL {{ ?iri adh:comment ?comment }}
+                    OPTIONAL {{ ?iri adh:primaryTable ?pt }}
+                    OPTIONAL {{ ?iri adh:queryMode ?qm }}
+                    OPTIONAL {{ ?iri adh:sizeClass ?sc }}
+                    OPTIONAL {{ ?iri adh:syncState ?st }}
+                }}
+            }} LIMIT {limit}
+        """
+        try:
+            for r in self._client.query(cls_sparql):
+                props: Dict[str, Any] = {}
+                if r.get("comment"):
+                    props["comment"] = r["comment"]
+                if r.get("pt"):
+                    props["primary_table"] = r["pt"]
+                if r.get("qm") or r.get("sc") or r.get("st"):
+                    props["binding"] = {"query_mode": r.get("qm", "") or "",
+                                        "size_class": r.get("sc", "") or "",
+                                        "sync_state": r.get("st", "") or ""}
+                _add_obj(r.get("iri", ""), r.get("label", ""), props)
+        except Exception as e:
+            logger.warning("Ontology overview: class query failed: %s", e)
+
+        # 2) 别名(逐行归并到节点, 不用 GROUP_CONCAT — 保 Oxigraph 兼容)
+        alt_sparql = f"""
+            {SPARQL_PREFIXES}
+            SELECT ?iri ?alt WHERE {{
+                GRAPH <{graph}> {{ ?iri skos:altLabel ?alt . }}
+            }} LIMIT {limit * 4}
+        """
+        try:
+            alias_map: Dict[str, List[str]] = {}
+            for r in self._client.query(alt_sparql):
+                nid = self._iri_to_node_id(r.get("iri", ""))
+                if r.get("alt"):
+                    alias_map.setdefault(nid, []).append(str(r["alt"]))
+            for n in nodes:
+                als = alias_map.get(n.id)
+                if als:
+                    n.properties["aliases"] = ", ".join(als)
+        except Exception as e:
+            logger.warning("Ontology overview: alias query failed: %s", e)
+
+        # 3) Link 名边: 端点 label 随边取回, 天然避免悬空剪枝; 不取 joinExpr
+        link_sparql = f"""
+            {SPARQL_PREFIXES}
+            SELECT ?from ?fromL ?to ?toL ?lname ?ltype ?lcard WHERE {{
+                GRAPH <{graph}> {{
+                    ?l a adh:Link ; adh:linkFrom ?from ; adh:linkTo ?to .
+                    OPTIONAL {{ ?l rdfs:label ?lname }}
+                    OPTIONAL {{ ?l adh:linkType ?ltype }}
+                    OPTIONAL {{ ?l adh:cardinality ?lcard }}
+                    OPTIONAL {{ ?from rdfs:label ?fromL }}
+                    OPTIONAL {{ ?to rdfs:label ?toL }}
+                }}
+            }} LIMIT {limit * 2}
+        """
+        try:
+            for r in self._client.query(link_sparql):
+                src, tgt = r.get("from", ""), r.get("to", "")
+                if not src or not tgt or src == tgt:
+                    continue
+                _add_obj(src, r.get("fromL", ""))   # 端点兼底(正常已在步骤1入图)
+                _add_obj(tgt, r.get("toL", ""))
+                name = r.get("lname") or r.get("ltype") or "关联"
+                props = {}
+                if r.get("lcard"):
+                    props["cardinality"] = r["lcard"]
+                edges.append(self._to_graph_edge(src, tgt, str(name), props))
+        except Exception as e:
+            logger.warning("Ontology overview: link query failed: %s", e)
 
         return nodes, edges
 

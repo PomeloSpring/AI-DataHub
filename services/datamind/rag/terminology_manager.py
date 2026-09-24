@@ -17,11 +17,14 @@ from services.shared.common.db.metadata_db import get_metadata_conn
 
 logger = logging.getLogger(__name__)
 
-# ── Cache ────────────────────────────────────────────────────────────
+# ── Cache (per-datasource buckets) ─────────────────────────────────────
+# Keyed by datasource_id: 术语/同义词不允许跨数据源串味。
+# datasource_id=0 视为全局/系统调用 → 加载全量(保持既有行为);
+# datasource_id>0 → 只加载本数据源 + 全局(datasource_id=0)术语。
 
 _CACHE_TTL = 300  # 5 minutes
-_cache: dict = {}
-_cache_ts: float = 0
+_cache: dict[int, dict] = {}
+_cache_ts: dict[int, float] = {}
 
 
 def _get_connection():
@@ -29,16 +32,28 @@ def _get_connection():
     return get_metadata_conn()
 
 
-def _load_terms() -> list[dict]:
-    """Load all active business terms from database."""
+def _ds_scope(datasource_id: int) -> tuple[str, list]:
+    """Return (sql_condition, params) shared by terms/keywords loading."""
+    if datasource_id:
+        # 占位符与参数必须同数：字面量 0 不占位，传两个参数会让 pymysql 格式化报
+        # "not all arguments converted"，两加载函数全部静默回退空缓存（术语/关键词整体失效）。
+        return "(datasource_id = %s OR datasource_id = 0)", [datasource_id]
+    return "", []
+
+
+def _load_terms(datasource_id: int = 0) -> list[dict]:
+    """Load active business terms from database, scoped to the datasource."""
+    cond, params = _ds_scope(datasource_id)
+    where = "WHERE is_active = 1" + (f" AND {cond}" if cond else "")
     try:
         conn = _get_connection()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, term_cn, term_en, term_aliases, term_type, "
+                    "SELECT id, datasource_id, term_cn, term_en, term_aliases, term_type, "
                     "target_table, target_column, description "
-                    "FROM adh_business_terms WHERE is_active = 1"
+                    f"FROM adh_business_terms {where}",
+                    params,
                 )
                 return cur.fetchall()
         finally:
@@ -48,18 +63,21 @@ def _load_terms() -> list[dict]:
         return []
 
 
-def _load_table_keywords() -> dict[str, list[str]]:
+def _load_table_keywords(datasource_id: int = 0) -> dict[str, list[str]]:
     """Load table keywords from adh_table_info.keywords field.
 
     Returns: {table_name: [keyword1, keyword2, ...]}
     """
+    cond, params = _ds_scope(datasource_id)
+    where = "WHERE is_active = 1 AND keywords IS NOT NULL AND keywords != ''" \
+        + (f" AND {cond}" if cond else "")
     try:
         conn = _get_connection()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT table_name, keywords FROM adh_table_info "
-                    "WHERE is_active = 1 AND keywords IS NOT NULL AND keywords != ''"
+                    f"SELECT table_name, keywords FROM adh_table_info {where}",
+                    params,
                 )
                 result = {}
                 for row in cur.fetchall():
@@ -74,15 +92,15 @@ def _load_table_keywords() -> dict[str, list[str]]:
         return {}
 
 
-def _ensure_cache():
-    """Refresh cache if TTL expired."""
-    global _cache, _cache_ts
+def _ensure_cache(datasource_id: int = 0):
+    """Refresh the per-datasource cache bucket if TTL expired."""
     now = time.time()
-    if _cache and (now - _cache_ts) < _CACHE_TTL:
+    bucket = _cache.get(datasource_id)
+    if bucket and (now - _cache_ts.get(datasource_id, 0)) < _CACHE_TTL:
         return
 
-    terms = _load_terms()
-    table_keywords = _load_table_keywords()
+    terms = _load_terms(datasource_id)
+    table_keywords = _load_table_keywords(datasource_id)
 
     # Build synonym map: term → [synonym1, synonym2, ...]
     # Sources: term_cn, term_en, term_aliases (comma-separated)
@@ -126,29 +144,30 @@ def _ensure_cache():
                 synonym_map[kw] = [kw]
             keyword_set.add(kw)
 
-    _cache = {
+    _cache[datasource_id] = {
         "terms": terms,
         "synonym_map": synonym_map,
         "keyword_set": list(keyword_set),
         "table_keywords": table_keywords,
     }
-    _cache_ts = now
-    logger.info("Terminology cache refreshed: %d terms, %d synonym entries, %d keywords",
-                len(terms), len(synonym_map), len(keyword_set))
+    _cache_ts[datasource_id] = now
+    logger.info("Terminology cache refreshed (ds=%s): %d terms, %d synonym entries, %d keywords",
+                datasource_id, len(terms), len(synonym_map), len(keyword_set))
 
 
-def get_synonym_map() -> dict[str, list[str]]:
-    """Get the full synonym map. Keys are terms, values are lists of synonyms."""
-    _ensure_cache()
-    return _cache.get("synonym_map", {})
+def get_synonym_map(datasource_id: int = 0) -> dict[str, list[str]]:
+    """Get the synonym map for a datasource. Keys are terms, values are lists of synonyms."""
+    _ensure_cache(datasource_id)
+    return _cache[datasource_id].get("synonym_map", {})
 
 
-def expand_synonyms(keywords: list[str]) -> list[str]:
+def expand_synonyms(keywords: list[str], datasource_id: int = 0) -> list[str]:
     """Expand a list of keywords with their synonyms from the database.
 
     Replaces the hardcoded _SYNONYM_MAP in table_selector.py.
+    Synonyms are resolved within the given datasource (+ global terms).
     """
-    synonym_map = get_synonym_map()
+    synonym_map = get_synonym_map(datasource_id)
     expanded = set(keywords)
     for kw in keywords:
         if kw in synonym_map:
@@ -156,29 +175,32 @@ def expand_synonyms(keywords: list[str]) -> list[str]:
     return list(expanded)
 
 
-def get_business_keywords() -> list[str]:
-    """Get all business term keywords for RAG filtering.
+def get_business_keywords(datasource_id: int = 0) -> list[str]:
+    """Get business term keywords for RAG filtering (datasource-scoped).
 
     Replaces the hardcoded keyword list in intent_classifier.py extract_keywords.
     """
-    _ensure_cache()
-    return _cache.get("keyword_set", [])
+    _ensure_cache(datasource_id)
+    return _cache[datasource_id].get("keyword_set", [])
 
 
-def get_all_terms() -> list[dict]:
-    """Get all active business terms."""
-    _ensure_cache()
-    return _cache.get("terms", [])
+def get_all_terms(datasource_id: int = 0) -> list[dict]:
+    """Get active business terms for a datasource (0 = all)."""
+    _ensure_cache(datasource_id)
+    return _cache[datasource_id].get("terms", [])
 
 
-def get_term_for_table(table_name: str) -> list[dict]:
+def get_term_for_table(table_name: str, datasource_id: int = 0) -> list[dict]:
     """Get business terms associated with a specific table."""
-    terms = get_all_terms()
+    terms = get_all_terms(datasource_id)
     return [t for t in terms if t.get("target_table") == table_name]
 
 
-def clear_cache():
-    """Force cache refresh on next access."""
-    global _cache, _cache_ts
-    _cache = {}
-    _cache_ts = 0
+def clear_cache(datasource_id: int = None):
+    """Force cache refresh on next access (single bucket or all)."""
+    if datasource_id is None:
+        _cache.clear()
+        _cache_ts.clear()
+    else:
+        _cache.pop(datasource_id, None)
+        _cache_ts.pop(datasource_id, None)

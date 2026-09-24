@@ -1,6 +1,7 @@
 import client from './client';
 
 export const VIS_CATEGORIES = [
+  { id: 'theme_pack', label: '主题包' },
   { id: 'chart_style', label: '图表样式' }, { id: 'screen_background', label: '大屏背景' },
   { id: 'kpi_card', label: 'KPI 卡片' }, { id: 'layout_template', label: '布局模板' },
   { id: 'decoration_frame', label: '装饰边框' }, { id: 'color_theme', label: '配色主题' },

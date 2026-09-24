@@ -51,11 +51,13 @@ def _get_connection():
 
 # ── Keyword helpers (reuse table_selector tokenization) ──────────────
 
-def _search_tokens(question: str, keywords: list[str] = None) -> list[str]:
+def _search_tokens(question: str, keywords: list[str] = None,
+                   datasource_id: int = 0) -> list[str]:
     """Derive a small set of search tokens from a question / keyword list.
 
     Uses jieba keyword extraction + dynamic synonym expansion (shared with the
     table selector). Returns de-duplicated, non-empty tokens capped for LIKE.
+    Synonym expansion is scoped to the datasource to avoid cross-source pollution.
     """
     from services.datamind.rag.table_selector import _extract_keywords, _expand_synonyms
 
@@ -70,7 +72,7 @@ def _search_tokens(question: str, keywords: list[str] = None) -> list[str]:
         return []
 
     try:
-        raw = _expand_synonyms(raw)
+        raw = _expand_synonyms(raw, datasource_id)
     except Exception as e:  # pragma: no cover - synonym expansion is best-effort
         logger.debug("Synonym expansion skipped: %s", e)
 
@@ -135,7 +137,7 @@ def retrieve_sql_templates(question: str, limit: int = 5, vec_literal: str = Non
     """
     _ensure_rules_column()
 
-    tokens = _search_tokens(question)
+    tokens = _search_tokens(question, datasource_id=datasource_id)
     if not tokens:
         return []
 
@@ -184,7 +186,7 @@ def retrieve_business_terms(
 
     ``vec_literal`` is accepted for backward compatibility but is ignored.
     """
-    tokens = _search_tokens(question, keywords)
+    tokens = _search_tokens(question, keywords, datasource_id)
     if not tokens:
         return []
 
@@ -257,7 +259,7 @@ def retrieve_table_relations(
     relations are matched by keyword against description / table names.
     ``vec_literal`` is accepted for backward compatibility but is ignored.
     """
-    tokens = _search_tokens(question)
+    tokens = _search_tokens(question, datasource_id=datasource_id)
     if not target_tables and not tokens:
         return []
 

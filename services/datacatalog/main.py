@@ -52,6 +52,9 @@ app.include_router(metrics_router, prefix="/api/metrics", tags=["Metrics"])
 app.include_router(tags_router, prefix="/api/tags", tags=["Tags"])
 app.include_router(datasources_router, prefix="/api/datasources", tags=["Datasources"])
 app.include_router(menu_router, prefix="/api/menu", tags=["Menu"])
+# 同一套菜单 CRUD 也挂到 /api/admin/menu-tree(前端 MenuEditorTab 调用的路径),
+# 必须先于 admin_compat(其 GET 只有裸查询、无写操作端点)
+app.include_router(menu_router, prefix="/api/admin", tags=["Menu Admin Compat"])
 app.include_router(admin_compat_router, prefix="/api/admin", tags=["Admin Compat"])
 app.include_router(ontology_router, prefix="/api/catalog/ontology", tags=["Ontology Modeling"])
 
@@ -64,6 +67,23 @@ app.include_router(node_metrics_router, tags=["node-metrics"])
 async def health_check():
     """Health check endpoint."""
     return {"status": "ok", "service": "datacatalog"}
+
+
+@app.on_event("startup")
+async def _start_kb_sync_reconciler():
+    """本体→知识库同步对账循环(T9): 漂移自动重推, 静默失败转为可告警记录。
+
+    KB_SYNC_RECONCILE=0 可关闭; daemon 线程, 对账失败只记日志不影响服务。
+    """
+    import os
+    if os.getenv("KB_SYNC_RECONCILE", "1") == "0":
+        return
+    try:
+        from services.datacatalog.services.ontology_kb_sync import start_reconciler
+        start_reconciler(int(os.getenv("KB_SYNC_RECONCILE_INTERVAL", "600")))
+        logger.info("[datacatalog] kb-sync reconciler started")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[datacatalog] kb-sync reconciler not started: %s", e)
 
 
 if __name__ == "__main__":

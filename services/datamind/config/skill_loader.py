@@ -350,11 +350,13 @@ def save_skill_folder(
     """创建/更新一个文件夹技能,写为 Qoder 规范 SKILL.md(frontmatter + 正文).
 
     custom=True 时 frontmatter 标记 source: custom(区别于系统内置)。
+    覆盖前自动将旧版快照到 versions/SKILL.<ts>.md(保留最近 20 份) —— 技能版本管理唯一入口。
     """
     if not is_valid_skill_name(name):
         raise ValueError("技能名仅允许字母/数字/下划线/连字符")
     skill_dir = SKILLS_DIR / name
     skill_dir.mkdir(parents=True, exist_ok=True)
+    _snapshot_skill_version(skill_dir)
     meta = {"name": name}
     if display_name:
         meta["display_name"] = display_name
@@ -369,6 +371,72 @@ def save_skill_folder(
     (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
     clear_skill_cache()
     return skill_dir
+
+
+# ── 技能版本快照(versions/SKILL.<UTC ts>.md, 保留最近 20 份) ─────────
+
+_VERSION_KEEP = 20
+_VERSION_RE = re.compile(r"^\d{8}-\d{6}$")  # 路径穿越防护: 版本号仅允许时间戳格式
+
+
+def _versions_dir(skill_dir: Path) -> Path:
+    return skill_dir / "versions"
+
+
+def _snapshot_skill_version(skill_dir: Path) -> Optional[str]:
+    """覆盖保存前把现存 SKILL.md 快照进 versions/; 无现存文件返回 None。超量自动淘汰最旧。"""
+    md = skill_dir / "SKILL.md"
+    if not md.exists():
+        return None
+    from datetime import datetime, timezone
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    vdir = _versions_dir(skill_dir)
+    vdir.mkdir(exist_ok=True)
+    shutil.copy2(md, vdir / f"SKILL.{ts}.md")
+    files = sorted(vdir.glob("SKILL.*.md"))
+    if len(files) > _VERSION_KEEP:
+        for old in files[: len(files) - _VERSION_KEEP]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    return ts
+
+
+def list_skill_versions(name: str) -> list[dict]:
+    """版本列表(新→旧): version=UTC 时间戳, preview 供前端展示差异线索。"""
+    if not is_valid_skill_name(name):
+        return []
+    vdir = _versions_dir(SKILLS_DIR / name)
+    if not vdir.is_dir():
+        return []
+    out: list[dict] = []
+    for f in sorted(vdir.glob("SKILL.*.md"), reverse=True):
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            text = ""
+        out.append({
+            "version": f.stem[len("SKILL."):],
+            "size": f.stat().st_size,
+            "preview": text[:200],
+        })
+    return out
+
+
+def rollback_skill_version(name: str, version: str) -> bool:
+    """回滚到指定快照: 先把当前版快照,再用历史内容覆写 SKILL.md。"""
+    if not is_valid_skill_name(name) or not _VERSION_RE.match(str(version or "")):
+        return False
+    skill_dir = SKILLS_DIR / name
+    src = _versions_dir(skill_dir) / f"SKILL.{version}.md"
+    if not src.exists():
+        return False
+    _snapshot_skill_version(skill_dir)
+    shutil.copy2(src, skill_dir / "SKILL.md")
+    clear_skill_cache()
+    return True
 
 
 def delete_skill_folder(name: str) -> bool:

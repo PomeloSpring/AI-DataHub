@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { X, Send, Loader2, Bot, User, Trash2 } from 'lucide-react';
+import { X, Send, Loader2, Bot, User, Plus, History, Trash2, Maximize2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -9,20 +9,31 @@ import ProcessTimeline from '../ProcessTimeline';
 import { useAsBotStore } from '../../stores/asBotStore';
 import type { AsBotMessage } from '../../stores/asBotStore';
 import ApprovalCard from './ApprovalCard';
+import DashboardDesignPanel from './DashboardDesignPanel';
+import { DESIGN_STATUS } from '../../api/dashboardDesign';
 
 /**
- * AS-BOT 侧边聊天面板 — 从右侧滑出.
+ * AS-BOT 聊天面板 — 抽屉(variant=drawer)与全屏独立标签页(fullscreen)复用同一实现.
  */
-export default function AsBotPanel() {
+export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolean }) {
   const {
     panelOpen, messages, loading, loadingStep,
     sendMessage, cancelMessage, approveAction, rejectAction,
-    closePanel, clearMessages,
+    closePanel, newConversation,
+    conversations, conversationId, switchConversation, deleteConversation, loadConversations,
+    designs, activeDesignId, openDesign, loadDesigns,
+    permissions, permissionsLoaded, loadPermissions,
   } = useAsBotStore();
 
   const [input, setInput] = useState('');
+  const [showHistory, setShowHistory] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // 全屏独立标签页：挂载即加载权限与会话（不依赖抽屉的 openPanel）
+  useEffect(() => {
+    if (fullscreen) { void loadPermissions(); void loadConversations(); }
+  }, [fullscreen]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -33,10 +44,10 @@ export default function AsBotPanel() {
 
   // Focus input when panel opens
   useEffect(() => {
-    if (panelOpen && inputRef.current) {
+    if ((fullscreen || panelOpen) && inputRef.current) {
       setTimeout(() => inputRef.current?.focus(), 300);
     }
-  }, [panelOpen]);
+  }, [panelOpen, fullscreen]);
 
   const handleSend = () => {
     const text = input.trim();
@@ -52,10 +63,24 @@ export default function AsBotPanel() {
     }
   };
 
-  if (!panelOpen) return null;
+  if (!fullscreen && !panelOpen) return null;
+
+  // 全屏标签页权限门禁：无权限时不暴露会话能力
+  if (fullscreen && permissionsLoaded && !permissions?.can_access) {
+    return (
+      <div className="h-screen w-full flex flex-col items-center justify-center gap-2 text-muted-foreground bg-background">
+        <Bot className="h-10 w-10 opacity-30" />
+        <p className="text-sm">当前账号无权访问 AS-BOT 系统助手</p>
+      </div>
+    );
+  }
+
+  const contentWidth = fullscreen ? 'max-w-3xl mx-auto w-full' : '';
 
   return (
-    <div className="fixed right-0 top-0 bottom-0 w-[420px] bg-background border-l shadow-2xl z-50 flex flex-col overflow-hidden animate-in slide-in-from-right duration-300">
+    <div className={fullscreen
+      ? 'h-screen w-full bg-background flex flex-col overflow-hidden'
+      : 'fixed right-0 top-0 bottom-0 w-[420px] bg-background border-l shadow-2xl z-50 flex flex-col overflow-hidden animate-in slide-in-from-right duration-300'}>
       {/* Header */}
       <div className="flex items-center justify-between px-4 h-14 border-b shrink-0">
         <div className="flex items-center gap-2">
@@ -65,21 +90,74 @@ export default function AsBotPanel() {
         <div className="flex items-center gap-1">
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={clearMessages}>
-                <Trash2 className="h-3.5 w-3.5" />
+              <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => { newConversation(); setShowHistory(false); }}>
+                <Plus className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>清空对话</TooltipContent>
+            <TooltipContent>新对话</TooltipContent>
           </Tooltip>
-          <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={closePanel}>
-            <X className="h-4 w-4" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-8 w-8 p-0" aria-pressed={showHistory}
+                onClick={() => { setShowHistory(v => !v); if (!showHistory) void loadConversations(); }}>
+                <History className="h-3.5 w-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>历史记录</TooltipContent>
+          </Tooltip>
+          {!fullscreen && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="sm" className="h-8 w-8 p-0" aria-label="在新标签页全屏打开"
+                  onClick={() => window.open('/as-bot/chat', '_blank', 'noopener')}>
+                  <Maximize2 className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>在新标签页全屏打开</TooltipContent>
+            </Tooltip>
+          )}
+          {!fullscreen && (
+            <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={closePanel}>
+              <X className="h-4 w-4" />
+            </Button>
+          )}
         </div>
       </div>
 
+      {/* 历史记录浮层 */}
+      {showHistory && (
+        <div className="border-b bg-muted/30 px-3 py-2 max-h-56 overflow-y-auto">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs font-medium text-muted-foreground">历史对话</span>
+            <button className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setShowHistory(false)}>收起</button>
+          </div>
+          {conversations.length === 0 ? (
+            <p className="text-xs text-muted-foreground py-2">暂无历史记录</p>
+          ) : (
+            <div className="space-y-1">
+              {conversations.map(c => (
+                <div key={c.id}
+                  className={`group flex items-center gap-2 rounded px-2 py-1.5 cursor-pointer text-sm hover:bg-muted ${c.id === conversationId ? 'bg-primary/10 text-primary' : ''}`}
+                  onClick={() => { switchConversation(c.id); setShowHistory(false); }}>
+                  <Bot className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                  <span className="flex-1 truncate">{c.title || '未命名'}</span>
+                  <span className="text-[10px] text-muted-foreground shrink-0">{new Date(c.updated_at).toLocaleDateString()}</span>
+                  <button
+                    className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive shrink-0"
+                    title="删除" aria-label="删除对话"
+                    onClick={(e) => { e.stopPropagation(); void deleteConversation(c.id); }}>
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Messages */}
       <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 py-3" ref={scrollRef}>
-        <div className="space-y-4">
+        <div className={`space-y-4 ${contentWidth}`}>
           {messages.length === 0 && (
             <div className="text-center text-muted-foreground py-12 space-y-3">
               <Bot className="h-10 w-10 mx-auto opacity-30" />
@@ -114,6 +192,13 @@ export default function AsBotPanel() {
             />
           ))}
 
+          {designs.filter(design => design.status !== 'cancelled').map(design => <div key={design.design_id} className="rounded-lg border bg-card p-3 space-y-2">
+            <p className="text-sm font-medium">仪表盘设计 · {design.name || design.request.slice(0, 30)}</p>
+            <p className="text-xs text-muted-foreground">{DESIGN_STATUS[design.status] || design.status} · 版本 {design.version}</p>
+            <p className="text-xs">{design.selection ? `业务域：${design.selection.datasource_name}` : '请先选择目标仪表盘、业务范围和知识库'}</p>
+            <Button size="sm" variant="outline" disabled={loading} onClick={() => openDesign(design.design_id)}>打开设计面板</Button>
+          </div>)}
+
           {/* Loading indicator */}
           {loading && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -132,9 +217,12 @@ export default function AsBotPanel() {
         </div>
       </div>
 
+      {activeDesignId && <DashboardDesignPanel key={activeDesignId} designId={activeDesignId}
+        onClose={() => openDesign(null)} onChanged={() => void loadDesigns()} onContinue={text => void sendMessage(text)} />}
+
       {/* Input */}
       <div className="border-t px-4 py-3 shrink-0">
-        <div className="flex gap-2">
+        <div className={`flex gap-2 ${contentWidth}`}>
           <Input
             ref={inputRef}
             value={input}

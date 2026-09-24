@@ -4,7 +4,7 @@ import {
   Database, FileText, Link, BookOpen, Users, Brain, Bot,
   Settings, LogOut, Menu, Palette, Sun, Moon, Zap, TrendingUp,
   Grid3x3, GlassWater, Heart, UserCircle, X, ChevronLeft, ChevronRight,
-  Clock, Bell, Network, BarChart3, Shield, GitBranch, Ruler, Eye, RefreshCw,
+  Clock, Bell, BarChart3, Shield, GitBranch, Ruler, Eye, RefreshCw,
   Activity, Server, Gem, Sparkles, Waypoints, LayoutTemplate,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -51,7 +51,6 @@ const SYSTEM_MENU_ITEMS = [
   { section: '知识管理' },
   { key: '/system/knowledge-base', icon: BookOpen, label: '知识库' },
   { key: '/system/knowledge-management', icon: BookOpen, label: '知识管理' },
-  { key: '/system/knowledge-graph', icon: Network, label: '知识图谱' },
   { section: '可视化配置' },
   { key: '/system/dashboards', icon: BarChart3, label: '看板管理' },
   { key: '/system/vis-library', icon: LayoutTemplate, label: 'UI 字模库' },

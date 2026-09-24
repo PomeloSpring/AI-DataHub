@@ -454,6 +454,110 @@ def to_md(doc: dict) -> str:
     return "\n".join(parts)
 
 
+# ── 云端脱敏渲染(知识库专用) ──────────────────────────────────────────
+# 数据源黑盒原则(安全护栏 §7)延伸到"元数据出境": 上云文档只保留业务语义,
+# 剔除物理表/列名、JOIN 表达式、指标 formula 原文、catalog_ref/数据源标识等。
+# 与 to_md 分离: 内部检索/向量化仍用 to_md(含物理信息), 仅对外的知识库文档走本函数。
+
+_CLOUD_STRIP_NOTICE = (
+    "> 说明: 本文档仅供业务语义参考, 已剔除物理表/列名、JOIN 表达式与指标计算式等实现细节。"
+)
+
+
+def _cloud_object_md(obj: dict, template_vars_fn=None) -> str:
+    """单个对象的对外 MD 段(白名单渲染, 不含物理标识)。"""
+    lines = [f"## 业务对象: {obj.get('display_name', obj.get('key', ''))} ({obj.get('key', '')})"]
+    aliases = obj.get("aliases") or []
+    if aliases:
+        lines.append(f"别名: {', '.join(str(a) for a in aliases)}")
+    if obj.get("description"):
+        lines.append(f"描述: {obj['description']}")
+
+    # 逻辑执行视图: 只暴露 bind_kind / query_mode / 模板引用与其参数声明, 不暴露物理表
+    binding = obj.get("execution_binding") or {}
+    logical: list[str] = []
+    if binding.get("bind_kind"):
+        logical.append(f"执行方式={binding['bind_kind']}")
+    if binding.get("query_mode"):
+        logical.append(f"路由={binding['query_mode']}")
+    tpl_ref = binding.get("template_ref") or ""
+    if logical:
+        lines.append("执行(逻辑): " + " | ".join(logical))
+    if tpl_ref:
+        seg = f"SQL 模板: {tpl_ref}"
+        decl = template_vars_fn(tpl_ref) if template_vars_fn else None
+        if decl:
+            params = ", ".join(
+                f"{name}({(spec or {}).get('type', 'any')})" for name, spec in decl.items()
+            )
+            seg += f" — 需用 params 传入: {params}"
+        lines.append(seg)
+
+    props = obj.get("properties") or []
+    rendered_props: list[str] = []
+    for p in props:
+        biz = (p.get("name") or "").strip()
+        if not biz:
+            # 无业务名的属性跳过: 避免回退到物理列名(column)造成泄露
+            continue
+        seg = f"- {biz}"
+        if p.get("type"):
+            seg += f" ({p['type']}"
+            seg += ", 主键" if p.get("is_key") else ""
+            seg += ")"
+        if p.get("description") and p["description"] != biz:
+            seg += f": {p['description']}"
+        enum = p.get("enum") or []
+        if enum:
+            seg += f"；枚举: {'; '.join(str(e) for e in enum)}"
+        rendered_props.append(seg)
+    if rendered_props:
+        lines.append("")
+        lines.append("### 属性(业务名)")
+        lines.extend(rendered_props)
+
+    links = obj.get("links") or []
+    if links:
+        lines.append("")
+        lines.append("### 关系")
+        for lk in links:
+            # 保留关系语义(type/target/基数/描述), 剔除 join 物理表达式
+            seg = f"- {lk.get('type', 'references')} {lk.get('target', '')}"
+            if lk.get("cardinality"):
+                seg += f" ({lk['cardinality']})"
+            if lk.get("description"):
+                seg += f"：{lk['description']}"
+            lines.append(seg)
+
+    metrics = obj.get("metrics") or []
+    if metrics:
+        lines.append("")
+        lines.append("### 指标")
+        for m in metrics:
+            # 保留指标名与口径文字说明, 剔除 formula 原文(可能含物理列名)
+            seg = f"- {m.get('name', '')}"
+            if m.get("description"):
+                seg += f"（{m['description']}）"
+            lines.append(seg)
+
+    return "\n".join(lines)
+
+
+def to_cloud_md(doc: dict, template_vars_fn=None) -> str:
+    """把 canonical 本体 doc 渲染为可安全上云的业务语义文档(白名单)。"""
+    parts = [f"# 本体模型: {doc.get('domain', '')}"]
+    if doc.get("description"):
+        parts.append("")
+        parts.append(doc["description"])
+    parts.append("")
+    parts.append(_CLOUD_STRIP_NOTICE)
+    parts.append("")
+    for obj in doc.get("objects", []):
+        parts.append(_cloud_object_md(obj, template_vars_fn))
+        parts.append("")
+    return "\n".join(parts)
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 模型 CRUD
 # ═══════════════════════════════════════════════════════════════════
@@ -465,6 +569,7 @@ def _row_to_model(row: dict, include_content: bool = True) -> dict:
         "name": row["name"],
         "status": row["status"],
         "object_count": row.get("object_count", 0),
+        "kb_id": row.get("kb_id"),
         "created_by": row.get("created_by", ""),
         "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else row["created_at"],
         "updated_at": row["updated_at"].isoformat() if hasattr(row["updated_at"], "isoformat") else row["updated_at"],
@@ -483,7 +588,7 @@ def list_models(datasource_id: int = None, include_archived: bool = False) -> li
     由 list_versions 按 (datasource_id, name) 分组呈现，不再混在主列表。
     """
     sql = (
-        "SELECT id, datasource_id, name, status, object_count, created_by, "
+        "SELECT id, datasource_id, name, status, object_count, kb_id, created_by, "
         "created_at, updated_at FROM adh_ontology_models"
     )
     conditions: list[str] = []
@@ -589,6 +694,54 @@ def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
     if model["status"] == "active":
         from services.datacatalog.services import ontology_yaml_import as _yimp
         _yimp._rebuild_graph(model["datasource_id"])
+    updated = get_model(model_id)
+
+    # 草案保存: 字典孤儿引用只告警不阻断(硬阻断在 activate, 见 find_orphan_dict_bindings)。
+    if model["status"] == "draft":
+        try:
+            orphans = find_orphan_dict_bindings(doc)
+        except Exception as e:  # noqa: BLE001 — 校验不影响保存主链路
+            logger.warning("[Ontology] save_draft orphan check failed: %s", e)
+            orphans = []
+        if orphans:
+            logger.warning("[Ontology] draft model=%s 存在字典孤儿引用(不阻断): %s",
+                           model_id, orphans)
+            updated["validation_warnings"] = [
+                f"字典行绑定到不存在的对象, 激活前需修正: {o}" for o in orphans]
+    return updated
+
+
+def set_model_kb(model_id: int, kb_id: Optional[int]) -> dict:
+    """为模型选定目标知识库(业务本体同步去向)。只改模型行配置列, 不碰派生表。
+
+    改绑前先从旧绑定库下线同名文档, 再按新 kb_id 异步重推。系统本体(ds 0/null)
+    沿用全局 sync_ontology, 不走此选择(传入会被拒绝)。
+    """
+    from services.datacatalog.services import ontology_kb_sync
+
+    model = get_model(model_id)
+    if not model:
+        raise ValueError("模型不存在")
+    if int(model.get("datasource_id") or 0) <= 0:
+        raise ValueError("系统本体沿用全局同步目标库，无需选择业务知识库")
+    kb_val = int(kb_id) if kb_id else 0
+    if kb_val:
+        valid = {k["id"] for k in ontology_kb_sync.list_bindable_kbs()}
+        if kb_val not in valid:
+            raise ValueError("目标知识库不可绑定：需为启用中的 qmind 知识库")
+    # 改绑前下线旧库文档
+    if model.get("kb_id") and int(model.get("kb_id") or 0) != kb_val:
+        old_targets = ontology_kb_sync.sync_targets_for_model(model)
+        if old_targets:
+            ontology_kb_sync._remove_from_targets(model.get("name") or "", old_targets)
+    now = _now()
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE adh_ontology_models SET kb_id = %s, updated_at = %s WHERE id = %s",
+                (kb_val or None, now, model_id))
+        conn.commit()
+    ontology_kb_sync.trigger_sync_async(model_id)
     return get_model(model_id)
 
 
@@ -783,8 +936,45 @@ def _sync_active_model(doc: dict, model_id: int, datasource_id: int) -> None:
     sync_enums_to_dimensions(doc, datasource_id)
 
 
+def find_orphan_dict_bindings(doc: dict) -> list[str]:
+    """检查指标/维度字典的悬空绑定, 返回孤儿清单(空 = 干净)。
+
+    范围: 生效字典行中 target_table 属于本模型对象 primary_table 且 bound_object_key 非空的行;
+    bound_object_key 不再指向模型内任何对象 key/别名即孤儿(字符串松耦合的级联校验)。
+    比较不区分大小写(与 MySQL utf8mb4_0900_ai_ci 行为对齐)。
+    """
+    objects = doc.get("objects") or []
+    keys_norm = {str(o.get("key") or "").strip().lower() for o in objects} - {""}
+    keys_norm |= {str(a).strip().lower() for o in objects for a in (o.get("aliases") or [])}
+    tables = {str(o.get("primary_table") or "").strip() for o in objects} - {""}
+    orphans: list[str] = []
+    if not tables:
+        return orphans
+    placeholders = ", ".join(["%s"] * len(tables))
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            for tbl in ("adh_metrics", "adh_dimensions"):
+                try:
+                    cur.execute(
+                        f"SELECT name, bound_object_key FROM {tbl} "
+                        f"WHERE is_active = 1 AND bound_object_key IS NOT NULL "
+                        f"  AND bound_object_key != '' AND target_table IN ({placeholders})",
+                        tuple(tables),
+                    )
+                    for r in cur.fetchall():
+                        if str(r["bound_object_key"]).strip().lower() not in keys_norm:
+                            orphans.append(
+                                f"{tbl}:{r.get('name')} → {r['bound_object_key']}")
+                except Exception:
+                    conn.rollback()  # 旧库无该列/表: 跳过不致命
+    return orphans
+
+
 def activate(model_id: int) -> dict:
-    """激活模型：旧 active 归档，逐对象 MD 段写入 adh_ontology_objects（供对象检索/预览）。"""
+    """激活模型：旧 active 归档，逐对象 MD 段写入 adh_ontology_objects（供对象检索/预览）。
+
+    硬阻断字典孤儿引用：激活会使指向已消失对象的字典行悬空, 宁可拒绝激活也不留静默断链。
+    """
     model = get_model(model_id)
     if not model:
         raise ValueError("模型不存在")
@@ -795,6 +985,12 @@ def activate(model_id: int) -> dict:
     objects = doc.get("objects") or []
     if not objects:
         raise ValueError("模型无对象，无法激活")
+
+    orphans = find_orphan_dict_bindings(doc)
+    if orphans:
+        raise ValueError(
+            "存在字典行绑定到本模型已不存在的对象, 拒绝激活(先修正 bound_object_key 或重新建对象): "
+            + "; ".join(orphans[:10]) + (" 等" if len(orphans) > 10 else ""))
 
     datasource_id = model["datasource_id"]
     now = _now()

@@ -222,55 +222,14 @@ def validate_sql(sql: str, require_limit: bool = True) -> tuple[bool, str]:
     Returns:
         (True, "") if valid, (False, error_message) if invalid.
     """
-    if not sql or not sql.strip():
-        return False, "SQL statement cannot be empty."
-
-    # Strip leading explanation text (LLM sometimes puts prose before SQL)
-    cleaned = _extract_sql_from_text(sql)
-
-    cleaned = cleaned.rstrip(";").strip()
-
-    # Reject multiple statements (ignore semicolons inside strings, identifiers, and comments)
-    # Simple heuristic: remove quoted strings, backtick identifiers, and comments, then check for semicolons
-    import re as _re
-    no_strings = _re.sub(r"'[^']*'", "''", cleaned)  # Remove single-quoted strings
-    no_strings = _re.sub(r'"[^"]*"', '""', no_strings)  # Remove double-quoted strings
-    no_strings = _re.sub(r'`[^`]*`', '``', no_strings)  # Remove backtick-quoted identifiers
-    no_strings = _re.sub(r'--[^\n]*', '', no_strings)  # Remove single-line comments
-    no_strings = _re.sub(r'/\*.*?\*/', '', no_strings, flags=_re.DOTALL)  # Remove multi-line comments
-    if ";" in no_strings:
-        return False, "Multiple statements are not allowed."
-
-    # Normalise for keyword checks
-    upper = cleaned.upper().lstrip()
-
-    # Must start with SELECT or WITH
-    if not (upper.startswith("SELECT") or upper.startswith("WITH")):
-        preview = cleaned[:80].replace("\n", " ")
-        return False, f"Only SELECT or WITH (CTE) queries are allowed. Got: '{preview}...'"
-
-    # Block DDL keywords
-    ddl_patterns = [
-        r"\bCREATE\b", r"\bALTER\b", r"\bDROP\b", r"\bTRUNCATE\b",
-        r"\bRENAME\b", r"\bGRANT\b", r"\bREVOKE\b",
-    ]
-    for pat in ddl_patterns:
-        if re.search(pat, upper):
-            return False, f"DDL statement detected ({pat.strip(chr(92)).strip('b')}). Only SELECT is allowed."
-
-    # Block DML keywords (INSERT / UPDATE / DELETE / REPLACE in statement position)
-    dml_patterns = [
-        r"\bINSERT\b", r"\bUPDATE\b", r"\bDELETE\b", r"\bREPLACE\b",
-    ]
-    for pat in dml_patterns:
-        if re.search(pat, upper):
-            return False, f"DML statement detected ({pat.strip(chr(92)).strip('b')}). Only SELECT is allowed."
-
-    # Must contain LIMIT (unless skipped for count queries)
-    if require_limit and not re.search(r"\bLIMIT\b", upper):
-        return False, "Query must include a LIMIT clause."
-
-    return True, ""
+    from services.shared.semantics.sql_guard import parse_query
+    try:
+        tree = parse_query(sql)
+        if require_limit and tree.args.get("limit") is None:
+            return False, "Query must include a LIMIT clause."
+        return True, ""
+    except (PermissionError, ValueError, TypeError):
+        return False, "仅允许单条 SELECT/WITH 只读查询"
 
 
 def _build_es_client(params: dict):
@@ -798,18 +757,17 @@ def execute_query_with_permission(
 
         return df, elapsed_ms, row_count
 
-    except PermissionError:
-        # Log denied access
-        _log_permission_audit(
-            user_context=user_context or {},
-            datasource_id=datasource_id,
-            tables=permission_enforcer._extract_tables(sql),
-            original_sql=sql,
-            filtered_sql="",
-            allowed=False,
-            deny_reason=str(PermissionError),
-            workspace_id=workspace_id,
-        )
+    except PermissionError as exc:
+        if has_user:
+            try:
+                denied_tables = permission_enforcer._extract_tables(sql)
+            except Exception:
+                denied_tables = []
+            _log_permission_audit(
+                user_context=user_context or {}, datasource_id=datasource_id,
+                tables=denied_tables, original_sql=sql, filtered_sql="",
+                allowed=False, deny_reason=str(exc), workspace_id=workspace_id,
+            )
         raise
 
 

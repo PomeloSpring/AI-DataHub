@@ -88,6 +88,9 @@ interface ToolCallGroup {
   items: (ToolCall & { _index: number })[];
 }
 
+// 导出供 ProcessTimeline 复用相邻同工具分组的类型
+export type { ToolCallGroup };
+
 function groupToolCalls(toolCalls: ToolCall[]): ToolCallGroup[] {
   const groups: ToolCallGroup[] = [];
   for (let i = 0; i < toolCalls.length; i++) {
@@ -187,8 +190,8 @@ export function SingleToolItem({ tc }: { tc: ToolCall & { _index: number } }) {
 }
 
 // ── Grouped Tool Items ─────────────────────────────────────────
-
-function GroupedToolItems({ group }: { group: ToolCallGroup }) {
+// 导出供 ProcessTimeline 有序时间线复用(相邻同工具调用折叠成组)
+export function GroupedToolItems({ group }: { group: ToolCallGroup }) {
   const [expanded, setExpanded] = useState(false);
   const okCount = group.items.filter(t => t.result && !t.error).length;
   const failCount = group.items.filter(t => t.error).length;

@@ -55,25 +55,77 @@ def decode_token(token: str) -> dict:
     return payload
 
 
+def resolve_current_user(token: str) -> dict:
+    """验签后读取当前用户状态与角色，旧 JWT 不保留已撤销的权限。"""
+    try:
+        payload = decode_token(token)
+        uid = int(payload.get("user_id") or 0)
+        if uid <= 0:
+            raise HTTPException(status_code=401, detail="无效身份")
+        live = get_user_by_id(uid)
+        if not live or live.get("status") != "active":
+            raise HTTPException(status_code=401, detail="用户不存在或已停用")
+        return {"user_id": uid, "username": live.get("username") or "",
+                "role": live.get("user_role") or "viewer"}
+    except (jwt.InvalidTokenError, ValueError, TypeError):
+        raise HTTPException(status_code=401, detail="登录已失效，请重新登录") from None
+
+
+def resolve_execution_owner(owner_id: int, workspace_id: int) -> dict:
+    """后台任务只接受持久化创建者；每次运行重新读取状态、角色和工作空间授权。"""
+    uid = int(owner_id or 0)
+    if uid <= 0:
+        raise PermissionError("任务待认领，缺少可信创建者")
+    live = get_user_by_id(uid)
+    if not live or live.get("status") != "active":
+        raise PermissionError("任务创建者不存在或已停用")
+    user = {"user_id": uid, "username": live.get("username") or "",
+            "role": live.get("user_role") or "viewer"}
+    user["workspace_id"] = authorize_workspace(user, workspace_id)
+    return user
+
+
+def authorize_workspace(user: dict, workspace_id: int) -> int:
+    """客户端工作空间仅作选择；资源访问必须通过服务端授权。"""
+    if not isinstance(user, dict) or not user.get("user_id"):
+        raise HTTPException(status_code=401, detail="缺少可信身份")
+    try:
+        ws = int(workspace_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="工作空间无效") from None
+    if ws < 0:
+        raise HTTPException(status_code=400, detail="工作空间无效")
+    if user.get("role") == "admin":
+        return ws
+    if not ws:
+        raise HTTPException(status_code=403, detail="请选择已授权工作空间")
+    from services.authservice.services.role_service import role_service
+    try:
+        allowed = role_service.check_user_workspace_access(int(user["user_id"]), ws)
+    except Exception:
+        logger.exception("工作空间授权校验不可用")
+        raise HTTPException(status_code=503, detail="权限服务暂不可用") from None
+    if not allowed:
+        raise HTTPException(status_code=403, detail="无权访问该工作空间")
+    return ws
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
+    request: Request = None,
 ) -> dict:
     """FastAPI dependency that extracts and validates the current user from JWT.
 
     Returns:
         dict with {user_id, username, role}
     """
-    try:
-        payload = decode_token(credentials.credentials)
-        return {
-            "user_id": payload.get("user_id"),
-            "username": payload.get("username"),
-            "role": payload.get("role", "viewer"),
-        }
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token has expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    cached = getattr(request.state, "current_user", None) if request else None
+    if cached:
+        return cached
+    if not isinstance(credentials, HTTPAuthorizationCredentials):
+        raise HTTPException(status_code=401, detail="缺少可信身份")
+    from starlette.concurrency import run_in_threadpool
+    return await run_in_threadpool(resolve_current_user, credentials.credentials)
 
 
 async def require_admin(
@@ -96,6 +148,14 @@ async def get_workspace_id(request: Request) -> int:
         return int(ws_id)
     except (ValueError, TypeError):
         return 0
+
+
+async def require_workspace_access(
+    request: Request, user: dict = Depends(get_current_user),
+) -> int:
+    from starlette.concurrency import run_in_threadpool
+    selected = await get_workspace_id(request)
+    return await run_in_threadpool(authorize_workspace, user, selected)
 
 
 # ── Internal service-to-service identity (signed header for proxied calls) ──
@@ -190,8 +250,8 @@ def require_permission(
         except HTTPException:
             raise
         except Exception as e:
-            logger.warning("Permission check failed, allowing access: %s", e)
-            return user
+            logger.warning("权限校验失败，拒绝访问: %s", e)
+            raise HTTPException(status_code=503, detail="权限服务暂不可用") from None
 
     return _check
 

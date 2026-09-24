@@ -64,6 +64,7 @@ function createProxyConfig() {
   proxy['/api/charts'] = proxyOptions(SERVICES.dataviz)
   proxy['/api/reports'] = proxyOptions(SERVICES.dataviz)
   proxy['/api/vis-library'] = proxyOptions(SERVICES.dataviz)
+  proxy['/api/datasets'] = proxyOptions(SERVICES.dataviz)
 
   // GraphService — 知识图谱可视化 + SPARQL 查询 (Oxigraph 后端)
   proxy['/api/graph'] = proxyOptions(SERVICES.graphservice)
@@ -99,6 +100,7 @@ function createProxyConfig() {
   proxy['/api/admin/brand'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/admin/cache'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/admin/execution-layers'] = proxyOptions(SERVICES.aiplatform)
+  proxy['/api/sandbox'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/embed'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/model-train'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/mcp-market'] = proxyOptions(SERVICES.aiplatform)

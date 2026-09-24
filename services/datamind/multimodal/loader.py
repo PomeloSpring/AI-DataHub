@@ -2,18 +2,58 @@
 
 将 adh_chat_attachments 记录转换为可注入 Anthropic messages 的
 content blocks(图片 base64 block / 表格与文档解析文本 block)。
+
+存储后端透明: 通过 ObjectStorage 抽象层,自动适配对象存储或本地磁盘。
 """
 
 import base64
 import json
 import logging
 import os
+import tempfile
 import uuid
 
 logger = logging.getLogger(__name__)
 
 # Anthropic 单张图片上限 5MB,超限自动压缩
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+def _get_storage():
+    from services.shared.common.object_storage import get_object_storage
+    return get_object_storage()
+
+
+def _resolve_file_bytes(storage_path: str, storage_type: str = "local") -> bytes | None:
+    """根据 storage_type 读取文件内容为字节,返回 None 表示文件不存在."""
+    storage = _get_storage()
+    if storage_type == "object" and storage.is_object_storage:
+        return storage.download_bytes(storage_path)
+    # 本地模式(或对象存储不可用时的回退)
+    if os.path.exists(storage_path):
+        with open(storage_path, "rb") as f:
+            return f.read()
+    # 尝试作为 object key 回退
+    if storage.is_object_storage:
+        return storage.download_bytes(storage_path)
+    return None
+
+
+def _resolve_local_path(storage_path: str, storage_type: str = "local") -> str | None:
+    """获取本地可用的文件路径;对象存储时下载到临时文件并返回路径."""
+    storage = _get_storage()
+    if storage_type == "object" and storage.is_object_storage:
+        data = storage.download_bytes(storage_path)
+        if data is None:
+            return None
+        # 写入临时文件供解析器使用
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.basename(storage_path))
+        tmp.write(data)
+        tmp.close()
+        return tmp.name
+    if os.path.exists(storage_path):
+        return storage_path
+    return None
 
 
 def load_attachments(att_ids: list[str], user_id: int = 0) -> list[dict]:
@@ -33,7 +73,7 @@ def load_attachments(att_ids: list[str], user_id: int = 0) -> list[dict]:
             placeholders = ",".join(["%s"] * len(att_ids))
             sql = (
                 "SELECT id, user_id, workspace_id, filename, mime_type, category, "
-                "storage_path, size, parsed_meta FROM adh_chat_attachments "
+                "storage_path, storage_type, size, parsed_meta FROM adh_chat_attachments "
                 f"WHERE id IN ({placeholders})"
             )
             params = list(att_ids)
@@ -78,31 +118,34 @@ def _update_parsed_meta(att_id: str, meta: dict) -> None:
 
 def save_derived_attachment(source_att: dict, img_bytes: bytes, filename: str, meta: dict = None) -> dict:
     """保存派生图像(OpenCV 处理产物)为新附件记录,返回附件行 dict."""
-    from services.shared.common.config import ADH_UPLOAD_DIR
+    from services.datamind.multimodal import classify_extension
+    from services.shared.common.db.metadata_db import get_metadata_conn
+
+    storage = _get_storage()
+    storage_type = "object" if storage.is_object_storage else "local"
 
     att_id = uuid.uuid4().hex
-    user_dir = os.path.join(ADH_UPLOAD_DIR, str(source_att.get("user_id", 0)))
-    os.makedirs(user_dir, exist_ok=True)
-    storage_path = os.path.join(user_dir, f"{att_id}_{filename}")
-    with open(storage_path, "wb") as f:
-        f.write(img_bytes)
+    object_key = f"users/{source_att.get('user_id', 0)}/{att_id}_{filename}"
+
+    # 上传到对象存储(或本地回退)
+    storage.upload_bytes(object_key, img_bytes, content_type="image/png")
+
+    storage_path = object_key if storage.is_object_storage else storage._local_path(object_key)
 
     ext = os.path.splitext(filename)[1].lower()
-    from services.datamind.multimodal import classify_extension
     category = classify_extension(ext) or "image"
-
-    from services.shared.common.db.metadata_db import get_metadata_conn
 
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO adh_chat_attachments "
-                "(id, user_id, workspace_id, filename, mime_type, category, storage_path, size, parsed_meta, created_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
+                "(id, user_id, workspace_id, filename, mime_type, category, "
+                "storage_path, storage_type, size, parsed_meta, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
                 (
                     att_id, source_att.get("user_id", 0), source_att.get("workspace_id", 0),
-                    filename, "", category, storage_path, len(img_bytes),
+                    filename, "", category, storage_path, storage_type, len(img_bytes),
                     json.dumps(meta or {}, ensure_ascii=False),
                 ),
             )
@@ -117,6 +160,7 @@ def save_derived_attachment(source_att: dict, img_bytes: bytes, filename: str, m
         "filename": filename,
         "category": category,
         "storage_path": storage_path,
+        "storage_type": storage_type,
         "size": len(img_bytes),
     }
 
@@ -127,14 +171,18 @@ def _prepare_image_data(att: dict) -> tuple[str, str] | None:
     """读取图片并返回 (base64_data, media_type);超过 5MB 时渐进压缩."""
     from services.datamind.multimodal import IMAGE_MEDIA_TYPES
 
-    path = att.get("storage_path", "")
-    if not path or not os.path.exists(path):
+    storage_path = att.get("storage_path", "")
+    storage_type = att.get("storage_type", "local")
+    if not storage_path:
         return None
-    ext = os.path.splitext(att.get("filename", path))[1].lower()
+
+    data = _resolve_file_bytes(storage_path, storage_type)
+    if data is None:
+        return None
+
+    ext = os.path.splitext(att.get("filename", storage_path))[1].lower()
     media_type = IMAGE_MEDIA_TYPES.get(ext, "image/jpeg")
 
-    with open(path, "rb") as f:
-        data = f.read()
     if len(data) <= MAX_IMAGE_BYTES:
         return base64.b64encode(data).decode("ascii"), media_type
 
@@ -175,6 +223,8 @@ def build_user_content(question: str, attachments: list[dict], supports_vision: 
     for att in attachments:
         category = att.get("category", "")
         filename = att.get("filename", "")
+        storage_path = att.get("storage_path", "")
+        storage_type = att.get("storage_type", "local")
 
         if category == "image":
             image_block = None
@@ -205,22 +255,42 @@ def build_user_content(question: str, attachments: list[dict], supports_vision: 
                     blocks.append({"type": "text", "text": f"[用户上传了图片附件: {filename},但无法解析: {e}]"})
 
         elif category == "table":
-            meta = att.get("parsed_meta") or {}
-            if not meta.get("preview_text"):
+            meta = att.get("parsed_meta")
+            if not meta or not meta.get("preview_text"):
                 from services.datamind.multimodal.table_parser import parse_table_file
-                meta = parse_table_file(att.get("storage_path", ""), filename)
-                _update_parsed_meta(att["id"], meta)
-            blocks.append({"type": "text", "text": meta.get("preview_text", f"[表格文件 {filename} 解析为空]")})
+                local_path = _resolve_local_path(storage_path, storage_type)
+                if local_path:
+                    meta = parse_table_file(local_path, filename)
+                    _update_parsed_meta(att["id"], meta)
+                    # 清理临时文件
+                    if storage_type == "object":
+                        try:
+                            os.unlink(local_path)
+                        except OSError:
+                            pass
+                else:
+                    meta = {"preview_text": f"[表格文件 {filename} 无法读取]"}
+            blocks.append({"type": "text", "text": (meta or {}).get("preview_text", f"[表格文件 {filename} 解析为空]")})
 
         elif category == "document":
-            meta = att.get("parsed_meta") or {}
-            if not meta.get("text"):
+            meta = att.get("parsed_meta")
+            if not meta or not meta.get("text"):
                 from services.datamind.multimodal.doc_parser import extract_document_text
-                meta = extract_document_text(att.get("storage_path", ""), filename)
-                _update_parsed_meta(att["id"], meta)
+                local_path = _resolve_local_path(storage_path, storage_type)
+                if local_path:
+                    meta = extract_document_text(local_path, filename)
+                    _update_parsed_meta(att["id"], meta)
+                    # 清理临时文件
+                    if storage_type == "object":
+                        try:
+                            os.unlink(local_path)
+                        except OSError:
+                            pass
+                else:
+                    meta = {"text": f"[文档文件 {filename} 无法读取]"}
             blocks.append({
                 "type": "text",
-                "text": f"[用户上传了文档附件: {filename}]\n{meta.get('text', '(文档内容为空)')}",
+                "text": f"[用户上传了文档附件: {filename}]\n{(meta or {}).get('text', '(文档内容为空)')}",
             })
 
         elif category == "model3d":
@@ -228,7 +298,6 @@ def build_user_content(question: str, attachments: list[dict], supports_vision: 
                 "type": "text",
                 "text": (
                     f"[用户上传了3D模型附件: {filename}, attachment_id={att.get('id', '')},"
-                    f"文件位于 {att.get('storage_path', '')}。"
                     f"前端已提供 three.js 预览,如需分析文件内容可读取该文件]"
                 ),
             })

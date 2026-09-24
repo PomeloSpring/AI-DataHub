@@ -18,6 +18,19 @@ def _text(data, is_error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": text}], **({"isError": True} if is_error else {})}
 
 
+# §7 数据源黑盒：物理元数据回给 LLM 前剥除内部 id（datasource_id/行 id），
+# 仅保留写 SQL 所需的建模信息（表名/列名/类型/注释/business_desc 等）。
+_PHYSICAL_ID_KEYS = {"datasource_id", "id"}
+
+
+def _strip_physical_ids(obj):
+    if isinstance(obj, dict):
+        return {k: _strip_physical_ids(v) for k, v in obj.items() if k not in _PHYSICAL_ID_KEYS}
+    if isinstance(obj, list):
+        return [_strip_physical_ids(x) for x in obj]
+    return obj
+
+
 def _global_search_with_global(keyword: str, search_type, workspace_id: int, limit: int) -> dict:
     """目录搜索:本工作空间 + 全局(workspace_id=0)元数据合并去重."""
     from services.datacatalog.services import catalog_service
@@ -59,7 +72,7 @@ async def search_metadata(args):
             ctx.workspace_id,
             10,
         )
-        return _text(result)
+        return _text(_strip_physical_ids(result))
     except Exception as e:
         logger.error("search_metadata error: %s", e)
         return _text({"error": str(e)}, is_error=True)
@@ -77,7 +90,7 @@ async def get_table_schema(args):
         )
         if not result:
             return _text({"error": f"Table '{args['table_name']}' not found"}, is_error=True)
-        return _text(result)
+        return _text(_strip_physical_ids(result))
     except Exception as e:
         logger.error("get_table_schema error: %s", e)
         return _text({"error": str(e)}, is_error=True)
@@ -123,8 +136,9 @@ TOOL_SPECS = [
     {
         "name": "list_datasources",
         "description": (
-            "List available datasources (MySQL/Doris/ES) in the current workspace with their ids and db_type. "
-            "Needed to pick datasource_id before execute_sql."
+            "List the datasources you are authorized to use in the current workspace, each with its business name and db_type. "
+            "Use the returned name as the 'datasource' argument of check_sql/execute_sql to target a specific source in multi-source "
+            "scenarios; omit it to use the session-selected source. Internal ids are never exposed."
         ),
         "schema": {},
         "handler": list_datasources,

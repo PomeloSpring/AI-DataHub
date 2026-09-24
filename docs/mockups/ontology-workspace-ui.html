@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>本体工作区 · 样式原型 v2</title>
+<style>
+  :root{
+    --bg:#0b0d10; --panel:#111419; --card:#151920; --line:#232a34; --line2:#2e3745;
+    --txt:#e6e9ee; --dim:#8b93a1; --faint:#5c6470;
+    --indigo:#6366f1; --blue:#3b82f6; --green:#22c55e; --orange:#f97316;
+    --teal:#14b8a6; --purple:#a855f7; --amber:#f59e0b; --cyan:#06b6d4; --red:#ef4444;
+    --mono:ui-monospace,'JetBrains Mono',Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+  .hint{color:var(--dim);font-size:12px;margin:4px 0 12px}
+  nav.tabs{display:flex;gap:4px;padding:12px 20px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:9;flex-wrap:wrap}
+  nav.tabs button{background:transparent;border:1px solid transparent;color:var(--dim);padding:7px 14px;border-radius:8px;cursor:pointer;font-size:13px}
+  nav.tabs button.on{background:#0e1116;color:#fff;border-color:#8b93a1}
+  section.screen{display:none}
+  section.screen.on{display:block}
+  .chip{display:inline-flex;align-items:center;gap:5px;background:#1d2532;border:1px solid var(--line2);color:#c8d0dc;border-radius:6px;padding:1px 8px;font-size:12px;margin:2px 4px 2px 0}
+  .chip.indigo{border-color:rgba(99,102,241,.5);color:#a5b4fc;background:rgba(99,102,241,.1)}
+  .chip.green{border-color:rgba(34,197,94,.4);color:#86efac;background:rgba(34,197,94,.08)}
+  .chip.orange{border-color:rgba(249,115,22,.45);color:#fdba74;background:rgba(249,115,22,.08)}
+  .chip.purple{border-color:rgba(168,85,247,.45);color:#d8b4fe;background:rgba(168,85,247,.08)}
+  .chip.red{border-color:rgba(239,68,68,.45);color:#fca5a5;background:rgba(239,68,68,.08)}
+  .chip.gray{color:var(--dim)}
+  .chip.add{border-style:dashed;color:var(--dim);background:transparent}
+  .pred{font:11px var(--mono);color:var(--teal);min-width:170px;display:inline-block}
+  .mono{font:11px var(--mono);color:#9fb0c7}
+  /* workspace frame */
+  .frame{display:flex;height:calc(100vh - 96px);border-top:1px solid var(--line)}
+  .side{width:250px;flex-shrink:0;border-right:1px solid var(--line);background:var(--panel);padding:14px;overflow:auto}
+  .side h2{font-size:12px;color:var(--faint);letter-spacing:1px;margin:4px 0 8px}
+  .grp{margin-bottom:16px}
+  .mitem{border:1px solid var(--line);border-radius:10px;padding:9px 10px;margin-bottom:8px;cursor:pointer;background:var(--card)}
+  .mitem.on{border-color:rgba(99,102,241,.65);background:rgba(99,102,241,.08)}
+  .mitem .nm{font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px}
+  .mitem .nm .st{margin-left:auto;width:7px;height:7px;border-radius:50%;background:#4ade80}
+  .mitem .meta{font-size:11px;color:var(--faint);margin-top:2px}
+  .mitem.warn .st{background:var(--amber)}
+  .pool{border:1px dashed rgba(245,158,11,.5);background:rgba(245,158,11,.05);border-radius:10px;padding:9px 10px;font-size:12px;color:#fbbf24;cursor:pointer}
+  .main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .mhead{padding:12px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .mhead .t{font-size:15px;font-weight:650}
+  .mhead .ds{font-size:11px;color:var(--dim);border:1px solid var(--line2);border-radius:6px;padding:1px 8px}
+  .mhead .act{margin-left:auto;display:flex;gap:8px}
+  .btn{border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer;border:1px solid var(--line2);background:transparent;color:var(--txt)}
+  .btn.pri{background:#0e1116;border-color:#8b93a1;color:#fff}
+  .btn.warn{border-color:rgba(245,158,11,.5);color:#fbbf24}
+  .sub{display:flex;gap:2px;padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+  .sub button{background:none;border:1px solid transparent;color:var(--dim);padding:6px 13px;border-radius:8px 8px 0 0;cursor:pointer;font-size:12.5px}
+  .sub button.on{color:#fff;background:var(--card);border-color:var(--line);border-bottom-color:transparent}
+  .body{flex:1;overflow:auto;padding:0}
+  .note{font-size:12px;color:var(--dim)} .note.ok{color:#4ade80} .note.warn{color:#fbbf24}
+  table.list{width:100%;border-collapse:collapse;font-size:13px}
+  table.list th{color:var(--faint);text-align:left;font-weight:500;padding:7px 10px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0}
+  table.list td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+  table.list tr.sel td{background:rgba(99,102,241,.08)}
+  /* object layout */
+  .obj3{display:flex;height:100%}
+  .objtree{width:220px;border-right:1px solid var(--line);padding:12px;overflow:auto}
+  .dom{font-size:11px;color:var(--faint);letter-spacing:1px;margin:10px 0 4px}
+  .onode{border:1px solid var(--line);background:var(--card);border-radius:9px;padding:7px 9px;margin-bottom:6px;font-size:12.5px;cursor:pointer}
+  .onode.on{border-color:rgba(99,102,241,.65);background:rgba(99,102,241,.1)}
+  .onode .k{color:var(--faint);font:10.5px var(--mono)}
+  .onode .bad{display:flex;gap:4px;margin-top:4px;font-size:10px;color:var(--dim)}
+  .onode .bad span{border:1px solid var(--line2);border-radius:4px;padding:0 4px}
+  .objdetail{flex:1;padding:16px 18px;overflow:auto;min-width:0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 15px;margin-bottom:13px}
+  .card h3{font-size:13px;font-weight:600;margin-bottom:9px}
+  .kv{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:6px 2px;border-bottom:1px dashed var(--line)}
+  .kv:last-child{border-bottom:none}
+  .kv .r{color:var(--dim);text-align:right}
+  .link-row{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:7px 2px;border-bottom:1px dashed var(--line)}
+  .link-row:last-child{border-bottom:none}
+  .link-row .dir{color:var(--faint);font:11px var(--mono)}
+  .link-row .card-n{margin-left:auto;font-size:11px;color:var(--dim)}
+  .tabsplit{display:flex;gap:14px;padding:16px 18px;align-items:flex-start}
+  .drawer{width:360px;flex-shrink:0;border-left:1px solid var(--line);padding:14px;background:var(--panel);overflow:auto}
+  .sbj{display:flex;align-items:center;gap:8px;background:#0f1319;border:1px solid var(--line2);border-radius:9px;padding:8px 10px;margin-bottom:10px}
+  .sbj .t{font:11.5px var(--mono);color:#a5b4fc}
+  .prow{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px dashed var(--line)}
+  .prow:last-child{border-bottom:none}
+  .prow .lft{width:170px;flex-shrink:0;padding-top:5px}
+  .prow .rgt{flex:1;min-width:0}
+  .input{width:100%;background:#0f1319;border:1px solid var(--line2);color:var(--txt);border-radius:8px;padding:6px 9px;font-size:12.5px}
+  .refsel{display:flex;align-items:center;gap:6px;background:#0f1319;border:1px solid var(--line2);border-radius:8px;padding:5px 9px;font-size:12.5px;width:100%}
+  .refsel .lock{margin-left:auto;color:#4ade80;font-size:11px}
+  .rdf{background:#0a0d11;border:1px solid var(--line);border-radius:9px;padding:10px 12px;font:11.5px/1.9 var(--mono);color:#9fb0c7;overflow:auto}
+  .rdf .p{color:var(--teal)} .rdf .o{color:#c4b5fd} .rdf .lit{color:#86efac} .rdf .iri{color:#93c5fd} .rdf .cmt{color:var(--faint)}
+  .sec{font-size:11px;letter-spacing:1px;color:var(--faint);margin:12px 0 4px;text-transform:uppercase}
+  .badge-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+</style>
+</head>
+<body>
+
+<nav class="tabs">
+  <button class="on" data-s="w1">① 模型工作区 · 对象中枢（一个本体所有属性同页）</button>
+  <button data-s="w2">② 模型工作区 · 指标/维度/术语（模型内视角）</button>
+  <button data-s="w3">③ 未归属资产池（缓冲区 · 归属动作）</button>
+  <button data-s="w4">④ 全局字典视图（旧指标中心降级为筛选视图）</button>
+</nav>
+
+<!-- ═══════════ W1 对象中枢 ═══════════ -->
+<section class="screen on" id="w1">
+<div class="frame">
+  <!-- 左：模型列表（分组隔离） -->
+  <div class="side">
+    <div class="grp">
+      <h2>业务本体</h2>
+      <div class="mitem on"><div class="nm">test-alb-全量本体<span class="st"></span></div><div class="meta">ds: test-alb · 34 对象 · active</div></div>
+      <div class="mitem"><div class="nm">erp-全量本体<span class="st"></span></div><div class="meta">ds: erp-mysql · 12 对象 · active</div></div>
+      <div class="mitem"><div class="nm">logs-全量本体<span class="st" style="background:var(--faint)"></span></div><div class="meta">ds: es-logs · 6 对象 · draft</div></div>
+    </div>
+    <div class="grp">
+      <h2>系统能力本体</h2>
+      <div class="mitem"><div class="nm">AS-BOT 系统本体<span class="st"></span></div><div class="meta">ds: (系统) · 8 对象 · active</div></div>
+    </div>
+    <div class="pool">⚠ 未归属资产池 · 17 项<br><span style="color:var(--dim);font-size:11px">4 指标 · 3 维度 · 10 术语 尚未绑定到任何模型</span></div>
+    <div class="note" style="margin-top:10px">模型列表只放<b>本体模型</b>；指标/维度/术语是模型的<b>内容</b>，进入模型后在右侧配置 —— 这就是"分开来展示"</div>
+  </div>
+
+  <!-- 右：模型工作区 -->
+  <div class="main">
+    <div class="mhead">
+      <span class="t">test-alb-全量本体</span>
+      <span class="ds">数据源: test-alb</span>
+      <span class="chip green">active</span>
+      <span class="chip gray">v2026-09-20 21:14</span>
+      <span class="chip orange">图谱 ● 已同步</span><span class="chip orange">知识库 ● 已同步</span>
+      <div class="act"><button class="btn">导入 YAML</button><button class="btn pri">提交变更（AS-BOT）</button></div>
+    </div>
+    <div class="sub">
+      <button class="on">对象 · Link（34）</button><button>指标（58）</button><button>维度（96）</button><button>业务术语（23）</button><button>标签（9）</button><button>图谱预览</button><button>版本</button>
+    </div>
+    <div class="body">
+      <div class="obj3">
+        <div class="objtree">
+          <div class="dom">▾ 案例域 (6)</div>
+          <div class="onode on"><b>案例</b> <span class="k">case</span><div class="bad"><span>◆3</span><span>▤5</span><span>⌗2</span><span style="color:#86efac">bound</span></div></div>
+          <div class="onode"><b>费用记录</b> <span class="k">charge</span><div class="bad"><span>◆2</span><span>▤3</span><span style="color:#fbbf24">drifted</span></div></div>
+          <div class="onode"><b>医院</b> <span class="k">hospital</span><div class="bad"><span>◆1</span><span>▤4</span><span style="color:#86efac">bound</span></div></div>
+          <div class="dom">▾ 患者域 (4)</div>
+          <div class="onode"><b>患者</b> <span class="k">patient</span><div class="bad"><span>▤7</span></div></div>
+          <div class="dom">▾ 号源域 (5)</div>
+          <div class="onode"><b>排班</b> <span class="k">schedule</span><div class="bad"><span>◆1</span><span>▤2</span></div></div>
+          <div class="note" style="margin-top:12px;font-size:11px">徽标=本模型内挂在对象上的资产数<br>点域标题可折叠</div>
+        </div>
+        <div class="objdetail">
+          <div class="card">
+            <h3>案例 <span class="mono">(adh:obj:case)</span> <span style="float:right"><span class="chip indigo">别名: 工单</span><span class="chip indigo">就诊案例</span><span class="chip add">+</span></span></h3>
+            <div class="kv"><span>执行绑定</span><span class="r">materialized · large · <span style="color:#4ade80">bound</span>　<span class="mono">t_case_records</span> <span class="note">(物理名仅管理端可见)</span></span></div>
+            <div class="kv"><span>描述</span><span class="r">一条就诊案例记录，del_flag=0 视为有效</span></div>
+          </div>
+          <div class="tabsplit" style="padding:0;display:grid;grid-template-columns:1fr 1fr;gap:13px">
+            <div class="card" style="margin:0">
+              <h3>属性（业务名 · 维度来源） <span style="float:right;font-weight:400;color:var(--faint)">7</span></h3>
+              <div class="kv"><span>创建日期 <span class="chip green" style="font-size:10px">▤已建维度</span></span><span class="r">时间</span></div>
+              <div class="kv"><span>案例状态 <span class="chip green" style="font-size:10px">▤已建维度</span></span><span class="r">枚举·3值</span></div>
+              <div class="kv"><span>患者手机号 <span class="chip red" style="font-size:10px">⚿ PII·mask</span></span><span class="r">varchar</span></div>
+              <div class="kv"><span>费用金额 <span class="chip gray" style="font-size:10px">未建维度</span></span><span class="r">decimal</span></div>
+              <div class="note" style="margin-top:6px">"未建维度"属性 → 一键 <b>+建维度</b>（预填 mapsToColumn=本表列，仍是唯一编辑器，不弹新页）</div>
+            </div>
+            <div class="card" style="margin:0">
+              <h3>关系 Link <span style="float:right;font-weight:400;color:var(--faint)">4</span></h3>
+              <div class="link-row"><span class="dir">出</span> 就诊于 → <b>医院</b> <span class="card-n">N:1 · ✓引用有效</span></div>
+              <div class="link-row"><span class="dir">出</span> 涉及 → <b>患者</b> <span class="card-n">N:1 · ✓</span></div>
+              <div class="link-row"><span class="dir">入</span> ← 产生 <b>费用记录</b> <span class="card-n">1:N · ✓</span></div>
+              <div class="link-row"><span class="dir">入</span> ← 参照 <b style="color:#fbbf24">退号单(系统本体?)</b> <span class="card-n" style="color:#fbbf24">⚠ 目标对象不在本模型</span></div>
+              <div class="note" style="margin-top:6px">Link 只能指向<b>本模型内</b>对象；跨模型引用即时告警</div>
+            </div>
+            <div class="card" style="margin:0">
+              <h3>本对象指标（boundToObject = case）<span style="float:right;font-weight:400;color:var(--faint)">3</span></h3>
+              <div class="kv"><span>案例数量 <span class="chip">病例数</span><span class="chip">total_cases</span></span><span class="r">COUNT · 个</span></div>
+              <div class="kv"><span>总费用</span><span class="r">SUM · 元</span></div>
+              <div class="kv"><span>次均费用</span><span class="r">衍生 = 总费用/案例数量</span></div>
+              <div class="btnrow" style="margin-top:8px"><button class="btn">+ 新增指标（挂本对象）</button></div>
+            </div>
+            <div class="card" style="margin:0">
+              <h3>本对象维度 & 绑定术语<span style="float:right;font-weight:400;color:var(--faint)">5 · 2</span></h3>
+              <div class="kv"><span>创建日期</span><span class="r">时间 · 别名×2</span></div>
+              <div class="kv"><span>案例状态</span><span class="r">枚举 0=仅表单 1=需要处理 3=已上传</span></div>
+              <div class="kv"><span>❝「退号」 <span class="chip orange" style="font-size:10px">缓冲区术语</span></span><span class="r"><button class="btn" style="padding:1px 8px;font-size:11px">收编为别名</button></span></div>
+              <div class="kv"><span>❝「有效案例」</span><span class="r"><button class="btn" style="padding:1px 8px;font-size:11px">收编为别名</button></span></div>
+              <div class="note" style="margin-top:6px">术语不再去别的页面对照 —— <b>绑定在本对象的术语直接显示在对象卡里</b>，收编动作同页完成</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ═══════════ W2 模型内指标/维度/术语 tab ═══════════ -->
+<section class="screen" id="w2">
+<div class="frame">
+  <div class="side">
+    <div class="grp"><h2>业务本体</h2>
+      <div class="mitem on"><div class="nm">test-alb-全量本体<span class="st"></span></div><div class="meta">ds: test-alb · 34 对象 · active</div></div>
+      <div class="mitem"><div class="nm">erp-全量本体<span class="st"></span></div><div class="meta">ds: erp-mysql · 12 对象</div></div>
+    </div>
+    <div class="grp"><h2>系统能力本体</h2>
+      <div class="mitem"><div class="nm">AS-BOT 系统本体<span class="st"></span></div><div class="meta">ds: (系统) · 8 对象 · active</div></div>
+    </div>
+    <div class="pool">⚠ 未归属资产池 · 17 项</div>
+  </div>
+  <div class="main">
+    <div class="mhead"><span class="t">test-alb-全量本体</span><span class="ds">指标视图</span><div class="act"><button class="btn pri">+ 新增指标</button></div></div>
+    <div class="sub"><button>对象 · Link（34）</button><button class="on">指标（58）</button><button>维度（96）</button><button>业务术语（23）</button><button>标签（9）</button><button>图谱预览</button><button>版本</button></div>
+    <div class="body" style="display:flex">
+      <div style="flex:1;min-width:0;overflow:auto">
+        <table class="list">
+          <tr><th>指标</th><th>归属对象（boundToObject）</th><th>聚合</th><th>单位</th><th>别名</th><th>校验</th></tr>
+          <tr class="sel"><td>案例数量</td><td>case · 案例</td><td>COUNT</td><td>个</td><td><span class="chip">病例数</span><span class="chip">total_cases</span></td><td><span class="badge-dot" style="background:#4ade80"></span>OK</td></tr>
+          <tr><td>总费用</td><td>case · 案例</td><td>SUM</td><td>元</td><td><span class="chip">费用合计</span></td><td><span class="badge-dot" style="background:#4ade80"></span>OK</td></tr>
+          <tr><td>退号率</td><td><b style="color:#fbbf24">schedule · 排班</b> <span class="note">(点对象名→跳对象卡)</span></td><td>RATIO</td><td>%</td><td>—</td><td><span class="badge-dot" style="background:var(--amber)"></span>无口径说明</td></tr>
+          <tr><td>床位周转</td><td>ward · 病区</td><td>AVG</td><td>次/月</td><td>—</td><td><span class="badge-dot" style="background:#4ade80"></span>OK</td></tr>
+        </table>
+        <div class="note" style="padding:10px 16px">此列表<b>只显示挂在 test-alb 对象集上的指标</b>（后端过滤：bound_object_key ∈ 本模型对象）。切到"AS-BOT 系统本体"再看的就是系统能力指标 —— 回答"AS-BOT 的指标去哪查"：进那个模型，同页。</div>
+      </div>
+      <!-- 右抽屉 = 之前的三元组表单，收窄复用 -->
+      <div class="drawer">
+        <h3 style="font-size:13px;margin-bottom:8px">编辑指标 · 案例数量</h3>
+        <div class="sbj"><span style="font-size:10px;color:var(--faint)">S</span><span class="t">adh:metric:案例数量</span><span class="chip green" style="margin-left:auto;font-size:10px">模型内新建</span></div>
+        <div class="prow"><span class="lft"><span class="pred">adh:boundToObject</span></span><span class="rgt"><div class="refsel"><span>case（案例）▾</span><span class="lock">已锁本模型</span></div><div class="note" style="margin-top:3px">级联范围=仅本模型 34 个对象，跨模型不可能选错</div></span></div>
+        <div class="prow"><span class="lft"><span class="pred">skos:altLabel</span></span><span class="rgt"><span class="chip">病例数 ×</span><span class="chip">total_cases ×</span><span class="chip add">+</span></span></div>
+        <div class="prow"><span class="lft"><span class="pred">adh:aggregation / unit</span></span><span class="rgt"><div class="refsel"><span>COUNT ▾</span></div><div class="refsel" style="margin-top:4px"><span>个 ▾</span></div></span></div>
+        <div class="sec">三元组预览</div>
+        <div class="rdf"><span class="iri">adh:metric:案例数量</span> <span class="p">a</span> <span class="o">adh:Metric</span> ;<br>　<span class="p">adh:boundToObject</span> <span class="o">adh:obj:case</span> ;<br>　<span class="p">skos:altLabel</span> <span class="lit">"病例数"@zh</span> ;<br>　<span class="p">adh:aggregation</span> <span class="lit">"COUNT"</span> .</div>
+        <div style="display:flex;gap:8px;margin-top:10px"><button class="btn pri">保存</button><button class="btn">另存为其他模型的指标…</button></div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ═══════════ W3 资产池 ═══════════ -->
+<section class="screen" id="w3">
+<div class="frame">
+  <div class="side">
+    <div class="grp"><h2>业务本体</h2>
+      <div class="mitem"><div class="nm">test-alb-全量本体<span class="st"></span></div><div class="meta">ds: test-alb · 34 对象</div></div>
+      <div class="mitem"><div class="nm">erp-全量本体<span class="st"></span></div><div class="meta">ds: erp-mysql · 12 对象</div></div>
+    </div>
+    <div class="grp"><h2>系统能力本体</h2><div class="mitem"><div class="nm">AS-BOT 系统本体<span class="st"></span></div></div></div>
+    <div class="pool" style="border-style:solid;background:rgba(245,158,11,.1)">⚠ 未归属资产池 · 17 项（当前）</div>
+  </div>
+  <div class="main">
+    <div class="mhead"><span class="t">未归属资产池</span><span class="chip orange">缓冲区 · 非常态存放地</span><div class="act"><button class="btn">批量归属…</button><button class="btn pri">丢弃已过期 5 项</button></div></div>
+    <div class="body" style="padding:16px 18px">
+      <div class="hint">这里收留一切 <b>没有 boundToObject / 没有绑定模型</b> 的资产：新导入未挂接的指标、解析失败回流的候选词、退役术语。目标 = 让池子尽快清空（每行三选一：归属 / 收编 / 退回）。</div>
+      <table class="list">
+        <tr><th>资产</th><th>类型</th><th>来源线索</th><th>建议归属（系统猜测）</th><th>动作</th></tr>
+        <tr><td>活跃用户</td><td><span class="chip indigo">术语/候选词</span></td><td class="mono">alias_suggestions · 30天命中12次</td><td>erp: user ▾ / test-alb: patient ▾</td><td><button class="btn" style="padding:2px 10px">归属到▾</button> <button class="btn" style="padding:2px 10px">收编为别名</button></td></tr>
+        <tr><td>退号数</td><td><span class="chip">指标</span></td><td class="mono">批量导入 · bound_object_key 为空</td><td>test-alb: schedule（口径含"退号"）</td><td><button class="btn" style="padding:2px 10px">确认归属</button></td></tr>
+        <tr><td>VIP客户</td><td><span class="chip indigo">术语</span></td><td class="mono">Glossary 退役映射</td><td>erp: customer</td><td><button class="btn" style="padding:2px 10px">归属到▾</button> <button class="btn" style="padding:2px 10px;color:var(--faint)">退回</button></td></tr>
+        <tr><td>床位周转(旧)</td><td><span class="chip">指标</span></td><td class="mono">对象 ward 已删 · 孤儿</td><td>—</td><td><button class="btn warn" style="padding:2px 10px">重新归属</button></td></tr>
+      </table>
+      <div class="card" style="margin-top:14px;background:#0f1319">
+        <h3>与自进化闭环的关系（一张图）</h3>
+        <div class="mono" style="font-size:12px;line-height:2.2">
+        解析失败/模糊被拒 → <span style="color:#fbbf24">资产池</span> → 人工"归属/收编"(AS-BOT 审批) → 对象/字典 aliases → 图谱+知识库重建 → eval 重评 → <span style="color:#4ade80">池子清空 = 本体覆盖度上升</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ═══════════ W4 全局字典 ═══════════ -->
+<section class="screen" id="w4">
+  <div style="padding:16px 18px">
+    <div class="hint">旧的「指标中心 / 业务术语 / 标签管理」<b>不删除</b>，降级为"全局字典视图"= 跨模型的运维清单：默认带 <b>模型筛选器</b>，编辑仍走同一抽屉组件（唯一编辑器原则不变）。日常建模操作请进模型工作区（①②），这里只做批量巡检。</div>
+    <div class="card" style="display:flex;gap:10px;align-items:center;padding:10px 14px">
+      <span class="note">范围：</span>
+      <span class="chip indigo">全部模型</span><span class="chip gray">test-alb-全量本体</span><span class="chip gray">erp-全量本体</span><span class="chip gray">AS-BOT 系统本体</span><span class="chip orange">未归属(17)</span>
+      <span style="margin-left:auto" class="note">指标 71 · 维度 118 · 术语 44　　<span style="color:#fbbf24">⚠ 17 项未归属</span></span>
+    </div>
+    <table class="list">
+      <tr><th>名称</th><th>类型</th><th>所属模型</th><th>归属对象</th><th>状态</th></tr>
+      <tr><td>案例数量</td><td>指标</td><td><b>test-alb-全量本体</b></td><td>case</td><td><span class="badge-dot" style="background:#4ade80"></span>OK</td></tr>
+      <tr><td>会话成功率</td><td>指标</td><td><b>AS-BOT 系统本体</b></td><td>conversation</td><td><span class="badge-dot" style="background:#4ade80"></span>OK</td></tr>
+      <tr><td>动作审批通过率</td><td>指标</td><td><b>AS-BOT 系统本体</b></td><td>approval</td><td><span class="badge-dot" style="background:#4ade80"></span>OK</td></tr>
+      <tr><td>退号数</td><td>指标</td><td style="color:#fbbf24">— 未归属</td><td>—</td><td><span class="badge-dot" style="background:var(--amber)"></span>待归属 →</td></tr>
+    </table>
+    <div class="note" style="margin-top:10px">✓ 回答你的原问题："AS-BOT 系统能力本体的指标去哪查" —— 全局视图选 <b>AS-BOT 系统本体</b>，或直接进该模型工作区的指标页签。</div>
+  </div>
+</section>
+
+<script>
+document.querySelectorAll('nav.tabs button').forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll('nav.tabs button').forEach(x=>x.classList.remove('on'));
+    document.querySelectorAll('section.screen').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');document.getElementById(b.dataset.s).classList.add('on');
+  };
+});
+</script>
+</body>
+</html>

@@ -22,6 +22,15 @@ from services.shared.common.rdf.namespaces import ADH_NS
 
 logger = logging.getLogger(__name__)
 
+# 系统域专用图哨兵 datasource_id: 与 ds:0("聚合全部", 供 ChatBI 全局检索)区分开,
+# 专供 AS-BOT 系统能力本体图谱使用 —— 只含 datasource_id IS NULL/0 的系统元数据与系统本体模型,
+# 杜绝业务本体(如 test-alb, datasource_id>0)串入(见规则 as-bot-system-waker.md)。
+SYSTEM_DATASOURCE_ID = -1
+
+
+def is_system_scope(datasource_id: int) -> bool:
+    return datasource_id == SYSTEM_DATASOURCE_ID
+
 
 class OxigraphStore:
     """Oxigraph-backed RDF store for the knowledge graph."""

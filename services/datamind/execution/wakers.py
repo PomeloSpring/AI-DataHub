@@ -31,11 +31,23 @@ def _parse_json(value, default):
         return default
 
 
+def _resource_ids(raw):
+    if raw in (None, ""):
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError as exc:
+            raise ValueError("Waker 资源绑定不是合法 JSON") from exc
+    if not isinstance(raw, list) or any(isinstance(x, bool) or not isinstance(x, int) or x <= 0 for x in raw):
+        raise ValueError("Waker 资源绑定必须为正整数数组")
+    return list(dict.fromkeys(raw))
+
+
 def _normalize(row: dict) -> dict:
     """DB 行 → Waker 配置(persona/tools/mcp_server_ids/datasource_ids/skills 解析)."""
-    tools = _parse_json(row.get("tools"), {})
-    if isinstance(tools, list):  # 兼容早期: tools 直接是组名列表
-        tools = {"groups": tools, "standard": []}
+    from services.datamind.execution.tool_policy import normalize_tools
+    tools = normalize_tools(row.get("tools"))
     return {
         "id": row.get("id"),
         "waker_key": row.get("waker_key"),
@@ -45,14 +57,10 @@ def _normalize(row: dict) -> dict:
         "category": row.get("category") or "custom",
         "system_prompt": row.get("system_prompt") or "",
         "persona": _parse_json(row.get("persona"), {}),
-        "tools": {
-            "groups": tools.get("groups") or [],
-            "standard": tools.get("standard") or [],
-            "mcp": tools.get("mcp") or {},
-        },
-        "mcp_server_ids": _parse_json(row.get("mcp_server_ids"), []),
-        "datasource_ids": _parse_json(row.get("datasource_ids"), []),
-        "knowledge_base_ids": _parse_json(row.get("knowledge_base_ids"), []),
+        "tools": tools,
+        "mcp_server_ids": _resource_ids(row.get("mcp_server_ids")),
+        "datasource_ids": _resource_ids(row.get("datasource_ids")),
+        "knowledge_base_ids": _resource_ids(row.get("knowledge_base_ids")),
         "skills": _parse_json(row.get("skills"), []),
         "models": _parse_json(row.get("models"), []),
         "chart_enabled": bool(row.get("chart_enabled", 1)),
@@ -68,11 +76,12 @@ def _query(sql: str, params: tuple = ()) -> list[dict]:
     try:
         return list(execute_query(sql, params) or [])
     except Exception as e:
-        logger.warning("[Waker] query failed: %s", e)
-        return []
+        logger.exception("[Waker] 权限配置查询失败")
+        raise RuntimeError("Waker 权限服务暂不可用") from e
 
 
-def resolve_wakers(workspace_id: int, user_role: str = "", waker_key: str = "") -> list[dict]:
+def resolve_wakers(workspace_id: int, user_role: str = "", waker_key: str = "", user_id: int = 0,
+                   include_unavailable: bool = False) -> list[dict]:
     """解析 (工作空间 + 角色) 生效的 Waker 配置列表(已归一化).
 
     waker_key 非空时进一步收窄为聊天端选定的单个 Waker(仅当它属于当前
@@ -82,7 +91,7 @@ def resolve_wakers(workspace_id: int, user_role: str = "", waker_key: str = "") 
     candidates: list[dict] = []
     if workspace_id:
         candidates = [
-            _normalize(r)
+            dict(r)
             for r in _query(
                 """SELECT w.*, b.is_default FROM adh_workspace_wakers b
                    JOIN adh_wakers w ON w.id = b.waker_id
@@ -91,49 +100,55 @@ def resolve_wakers(workspace_id: int, user_role: str = "", waker_key: str = "") 
                 (workspace_id,),
             )
         ]
-    # 2. 工作空间无绑定 → 回退全局 Waker
-    if not candidates:
+    # 全局域只在明确选择全局工作空间时使用，不因业务工作空间无绑定而放权。
+    if not workspace_id:
         candidates = [
-            _normalize(r)
+            dict(r)
             for r in _query(
                 "SELECT * FROM adh_wakers WHERE is_active = 1 AND workspace_id = 0 ORDER BY id"
             )
         ]
     if not candidates:
+        if waker_key:
+            raise PermissionError("当前工作空间未授权所选 Waker")
         return []
 
-    # 3. 角色白名单
-    allowed_ids: Optional[set] = None
-    if user_role:
-        role_rows = _query("SELECT id FROM adh_roles WHERE name = %s", (user_role,))
+    # 普通会话不允许经全局候选隐式进入系统助手。
+    candidates = [w for w in candidates if w["waker_key"] != SYSTEM_BOT_WAKER_KEY]
+    effective = candidates if user_role == "admin" else []
+    if user_role != "admin":
+        if user_id:
+            from services.authservice.services.role_service import role_service
+            role_rows = role_service.get_user_roles(user_id, workspace_id)
+        else:
+            role_rows = _query("SELECT id FROM adh_roles WHERE name = %s", (user_role,)) if user_role else []
         role_ids = [r["id"] for r in role_rows]
         if role_ids:
             placeholders = ", ".join(["%s"] * len(role_ids))
-            bind_rows = _query(
+            allowed = {r["waker_id"] for r in _query(
                 f"SELECT DISTINCT waker_id FROM adh_role_wakers WHERE role_id IN ({placeholders})",
                 tuple(role_ids),
-            )
-            bound = {r["waker_id"] for r in bind_rows}
-            # 仅当该角色确有 Waker 授权时才施加限制
-            if bound:
-                allowed_ids = bound
-
-    effective = candidates
-    if allowed_ids is not None:
-        filtered = [w for w in candidates if w["id"] in allowed_ids]
-        if filtered:
-            effective = filtered
-
-    # 4. 聊天端选定的单个 Waker(仅当在生效集合内时收窄;否则保持全部生效)
+            )}
+            effective = [w for w in candidates if w["id"] in allowed]
     if waker_key:
-        picked = [
-            w for w in effective
-            if str(w.get("waker_key")) == str(waker_key) or str(w.get("id")) == str(waker_key)
-        ]
-        if picked:
-            effective = picked
-
-    return effective
+        effective = [w for w in effective if w["waker_key"] == waker_key]
+        if not effective:
+            raise PermissionError("未授权使用所选 Waker")
+    result = []
+    for row in effective:
+        try:
+            waker = _normalize(row)
+            if include_unavailable:
+                from services.datamind.execution.tool_policy import compile_policy
+                compile_policy(waker)
+            result.append(waker)
+        except ValueError as exc:
+            if not include_unavailable:
+                raise
+            logger.warning("Waker 配置不可用: %s: %s", row.get("waker_key"), exc)
+            result.append({**{k: row.get(k) for k in ("id", "waker_key", "name", "display_name", "is_default")},
+                           "available": False, "unavailable_reason": str(exc), "models": []})
+    return result
 
 
 def default_waker(wakers: list[dict]) -> Optional[dict]:
@@ -141,6 +156,24 @@ def default_waker(wakers: list[dict]) -> Optional[dict]:
     if not wakers:
         return None
     return next((w for w in wakers if w.get("is_default")), wakers[0])
+
+
+def visible_resource_ids(user: dict, workspace_id: int, field: str) -> list[int]:
+    """目录只读投影；执行权限仍由会话选定的单个 Waker 决定。"""
+    from services.shared.common.auth import authorize_workspace
+    from services.datamind.execution.tool_policy import compile_policy
+    if field not in ("mcp_server_ids", "knowledge_base_ids"):
+        raise ValueError("不支持的 Waker 资源类型")
+    authorize_workspace(user, workspace_id)
+    resolved = resolve_wakers(workspace_id, user.get("role", ""), user_id=user["user_id"])
+    ids = set()
+    for waker in resolved:
+        policy = compile_policy(waker)
+        if field == "mcp_server_ids":
+            ids.update(int(sid) for sid, names in policy.external.items() if names)
+        else:
+            ids.update(_resource_ids(waker.get(field)))
+    return sorted(ids)
 
 
 def collect_mcp_server_ids(wakers: list[dict]) -> list[int]:
@@ -278,7 +311,9 @@ def load_knowledge_bases(kb_ids: list[int]) -> list[dict]:
         tuple(ids),
     )
     by_id = {r["id"]: r for r in rows}
-    return [by_id[kid] for kid in ids if kid in by_id]
+    if set(by_id) != set(ids):
+        raise ValueError("Waker 绑定的知识库不存在或未启用，请检查绑定")
+    return [by_id[kid] for kid in ids]
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -294,7 +329,66 @@ AS_BOT_WRITE_ACTIONS = [
     "ontology.activate",
     "ontology.import_yaml",
     "metadata.sync",
+    "task.claim_owner",
+    "alias.approve",
+    "alias.reject",
+    "dashboard.publish",
 ]
+
+# 每个动作的参数 schema(提议创建时即校验, 不等执行期 payload.get 兑底)。
+# required: 必填字段; ints/strs/enum: 类型与取值约束。
+AS_BOT_ACTION_SCHEMAS: dict[str, dict] = {
+    "ontology.generate": {"required": ["datasource_id"], "ints": ["datasource_id"]},
+    "ontology.save": {"required": ["model_id", "json_content"],
+                      "ints": ["model_id"], "strs": ["json_content"]},
+    "ontology.activate": {"required": ["model_id"], "ints": ["model_id"]},
+    "ontology.import_yaml": {"required": ["dir", "datasource_id"],
+                             "ints": ["datasource_id"], "strs": ["dir"]},
+    "metadata.sync": {"required": ["datasource_id"], "positive_ints": ["datasource_id"]},
+    "task.claim_owner": {"required": ["task_id"], "positive_ints": ["task_id"]},
+    "alias.approve": {"required": ["target_type", "term"],
+                      "ints": ["suggestion_id"],
+                      "enum": {"target_type": ["object", "metric", "dimension"]}},
+    "alias.reject": {"required": ["suggestion_id"], "ints": ["suggestion_id"]},
+    "dashboard.publish": {"required": ["design_id", "version", "digest"],
+                          "positive_ints": ["version"], "strs": ["design_id", "digest"]},
+}
+
+
+def validate_action_payload(action_key: str, payload: dict) -> tuple[bool, str]:
+    """校验 AS-BOT 动作参数。返回 (是否合法, 错误描述)。未注册 schema 的动作不校验。"""
+    schema = AS_BOT_ACTION_SCHEMAS.get(action_key)
+    if not schema or action_key not in AS_BOT_WRITE_ACTIONS:
+        return False, "动作未注册"
+    if not isinstance(payload, dict):
+        return False, "参数必须为对象"
+    if action_key == "dashboard.publish":
+        import re
+        if set(payload) != {"design_id", "version", "digest"}:
+            return False, "发布仅允许设计 ID、版本和摘要"
+        if not re.fullmatch(r"[a-f0-9]{32}", str(payload.get("design_id", ""))) or not re.fullmatch(r"[a-f0-9]{64}", str(payload.get("digest", ""))):
+            return False, "设计标识或摘要无效"
+    for field in schema.get("positive_ints") or []:
+        value = payload.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            return False, f"参数 {field} 必须为正整数"
+    for field in schema.get("required") or []:
+        v = payload.get(field)
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return False, f"缺少必填参数: {field}"
+    for field in schema.get("ints") or []:
+        if field in payload and payload[field] is not None:
+            try:
+                int(payload[field])
+            except (TypeError, ValueError):
+                return False, f"参数 {field} 必须为整数"
+    for field in schema.get("strs") or []:
+        if field in payload and not isinstance(payload[field], str):
+            return False, f"参数 {field} 必须为字符串"
+    for field, allowed in (schema.get("enum") or {}).items():
+        if field in payload and payload[field] not in allowed:
+            return False, f"参数 {field} 取值必须是 {allowed} 之一"
+    return True, ""
 
 
 def resolve_system_bot_waker() -> Optional[dict]:
@@ -302,8 +396,9 @@ def resolve_system_bot_waker() -> Optional[dict]:
 
     从 adh_wakers 表加载 waker_key='__system_bot__' 的记录.
     该 Waker 绑定项目内置知识库与本体模型能力, 工具集限定为
-    catalog + semantic + ontology + screen, 不含 query(禁止裸 SQL 直连数据源).
+    catalog + semantic + ontology + screen + system, 不含 query(禁止裸 SQL 直连数据源).
     semantic 组的 run_semantic_query 与 screen 组的取数都走数据护城河, 继承当前用户权限.
+    system 组为本系统只读运营/可观测能力(system_usage/system_overview), 仅管理员可用.
     """
     rows = _query(
         "SELECT * FROM adh_wakers WHERE waker_key = %s AND is_active = 1 LIMIT 1",
@@ -312,9 +407,18 @@ def resolve_system_bot_waker() -> Optional[dict]:
     if not rows:
         logger.warning("[AS-BOT] System bot waker not found in adh_wakers")
         return None
-    waker = _normalize(rows[0])
-    # 强制覆盖工具组: catalog + semantic + ontology + screen, 禁止 query(裸SQL)
-    waker["tools"]["groups"] = ["catalog", "semantic", "ontology", "screen"]
+    row = dict(rows[0])
+    row["tools"] = {}
+    row["mcp_server_ids"] = []
+    waker = _normalize(row)
+    # 强制覆盖工具组: catalog + semantic + ontology + screen + system, 禁止 query(裸SQL)
+    # system 组提供本系统只读运营/可观测能力(仅管理员), 让 AS-BOT 聚焦本系统而非业务本体。
+    waker["tools"]["groups"] = ["catalog", "semantic", "ontology", "screen", "system"]
+    from services.datamind.execution.sdk_tools import TOOL_SERVER_TOOLS
+    waker["tools"]["mcp"] = {g: list(TOOL_SERVER_TOOLS[g][1]) for g in waker["tools"]["groups"]}
+    waker["tools"]["standard"] = []
+    waker["mcp_server_ids"] = []
+    waker["tools"]["external"] = {}
     return waker
 
 
@@ -324,6 +428,8 @@ def check_as_bot_permission(user_role: str, action_key: str) -> bool:
     admin 角色始终允许; 其他角色查 adh_as_bot_role_actions 表.
     未配置时默认拒绝( fail-closed ).
     """
+    if action_key not in AS_BOT_WRITE_ACTIONS:
+        return False
     if user_role == "admin":
         return True
     if not user_role or not action_key:
@@ -376,20 +482,36 @@ def set_as_bot_role_permissions(role_id: int, permissions: dict[str, bool]):
             logger.warning("[AS-BOT] Failed to set permission %s for role %s: %s", action_key, role_id, e)
 
 
-def create_approval(user_id: int, action_key: str, payload: dict, conversation_id: int = None) -> int:
-    """创建审批记录, 返回 approval_id."""
-    from services.shared.common.db import execute_query
+def create_approval(user_id: int, action_key: str, payload: dict, conversation_id: int = None, *, cursor=None) -> int:
+    """创建审批记录, 返回 approval_id.
+
+    提议时即校验参数 schema(不合法直接拒绝写入), 避免到执行期才暴露参数缺失;
+    未注册的 action_key 也在此拦截。
+    """
+    from services.shared.common.db import execute_insert
     import json as _json
 
+    if action_key not in AS_BOT_WRITE_ACTIONS:
+        logger.warning("[AS-BOT] create_approval 拒绝未注册动作: %s", action_key)
+        return 0
+    ok, err = validate_action_payload(action_key, payload)
+    if not ok:
+        logger.warning("[AS-BOT] create_approval 参数校验失败 %s: %s", action_key, err)
+        return 0
+
+    if action_key == "dashboard.publish" and cursor is None:
+        raise ValueError("仪表盘发布提议只能由成功预览事务创建")
+    if cursor is not None:
+        cursor.execute("INSERT INTO adh_as_bot_approvals (user_id,action_key,payload,conversation_id,created_at) "
+                       "VALUES (%s,%s,%s,%s,UTC_TIMESTAMP())",
+                       (user_id, action_key, _json.dumps(payload, ensure_ascii=False), conversation_id))
+        return cursor.lastrowid
     try:
-        execute_query(
+        return execute_insert(
             "INSERT INTO adh_as_bot_approvals (user_id, action_key, payload, conversation_id) "
             "VALUES (%s, %s, %s, %s)",
             (user_id, action_key, _json.dumps(payload, ensure_ascii=False, default=str), conversation_id),
         )
-        # 获取最新插入 ID
-        rows = _query("SELECT LAST_INSERT_ID() as id")
-        return rows[0]["id"] if rows else 0
     except Exception as e:
         logger.error("[AS-BOT] Failed to create approval: %s", e)
         return 0
@@ -404,19 +526,22 @@ def get_approval(approval_id: int) -> Optional[dict]:
     return rows[0] if rows else None
 
 
-def update_approval_status(approval_id: int, status: str, decided_by: int, result: dict = None):
-    """更新审批状态."""
-    from services.shared.common.db import execute_query
-    import json as _json
-    from datetime import datetime
+def claim_approval(approval_id: int, decided_by: int) -> bool:
+    """唯一执行领取点；并发批准只能有一方获得执行权。"""
+    from services.shared.common.db import execute_write
+    return execute_write("UPDATE adh_as_bot_approvals SET status='executing', decided_by=%s, "
+        "decided_at=NOW() WHERE id=%s AND status='pending'", (decided_by, approval_id)) == 1
 
-    try:
-        result_json = _json.dumps(result, ensure_ascii=False, default=str) if result else None
-        execute_query(
-            "UPDATE adh_as_bot_approvals SET status = %s, decided_by = %s, "
-            "decided_at = %s, result = %s WHERE id = %s",
-            (status, decided_by, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-             result_json, approval_id),
-        )
-    except Exception as e:
-        logger.error("[AS-BOT] Failed to update approval %s: %s", approval_id, e)
+
+def update_approval_status(approval_id: int, status: str, decided_by: int, result: dict = None):
+    """拒绝只修改 pending；执行结果只能由领取者完成。写入失败必须可见。"""
+    from services.shared.common.db import execute_write
+    expected = "pending" if status == "rejected" else "executing"
+    if status not in ("rejected", "executed", "failed"):
+        raise ValueError("不合法的审批终态")
+    return execute_write(
+        "UPDATE adh_as_bot_approvals SET status=%s, decided_by=%s, decided_at=NOW(), result=%s "
+        "WHERE id=%s AND status=%s AND (%s='pending' OR decided_by=%s)",
+        (status, decided_by, json.dumps(result, ensure_ascii=False, default=str) if result else None,
+         approval_id, expected, expected, decided_by),
+    ) == 1

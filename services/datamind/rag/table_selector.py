@@ -147,9 +147,9 @@ def _extract_keywords(question: str) -> list[str]:
     return keywords
 
 
-def _expand_synonyms(keywords: list[str]) -> list[str]:
+def _expand_synonyms(keywords: list[str], datasource_id: int = 0) -> list[str]:
     """Expand keywords with synonyms from database (via terminology_manager)."""
-    return expand_synonyms(keywords)
+    return expand_synonyms(keywords, datasource_id)
 
 
 def _bm25_search_tables(keywords: list[str], top_k: int, datasource_id: int) -> list[str]:
@@ -203,7 +203,7 @@ def select_tables(
 
     # Step 1: Extract and expand keywords
     keywords = _extract_keywords(question)
-    expanded = _expand_synonyms(keywords)
+    expanded = _expand_synonyms(keywords, datasource_id)
     logger.debug("Table selector: question=%s, keywords=%s, expanded=%s", question[:50], keywords, expanded)
 
     # Step 2: BM25 sparse retrieval

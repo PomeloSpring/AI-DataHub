@@ -1,8 +1,7 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
 import type { DashboardChart } from '../stores/dashboardStore';
-import { screenToCanvas, clampPosition, isEditingTarget } from '@/lib/dashboardDesign';
+import { chartRect, snapCanvasRect, isEditingTarget, type Rect, type SnapGuide } from '@/lib/dashboardDesign';
 
-// Canvas constants
 export const CANVAS_WIDTH = 1920;
 export const CANVAS_HEIGHT = 1080;
 export const GRID_SIZE = 20;
@@ -13,233 +12,220 @@ export const MIN_WIDGET_HEIGHT = 36;
 export const DEFAULT_CHART_SIZE = { w: 400, h: 300 };
 export const DEFAULT_WIDGET_SIZE = { w: 300, h: 60 };
 
-interface DragState {
-  chartId: number | null;
-  offset: { x: number; y: number };
-  position: { x: number; y: number };
-}
-
-interface ResizeState {
-  chartId: number | null;
-  start: { x: number; y: number; w: number; h: number };
-  position: { x: number; y: number; w: number; h: number };
-}
-
-interface PanState {
-  active: boolean;
-  start: { x: number; y: number };
-}
+type Point = { x: number; y: number };
+type Gesture = {
+  kind: 'drag' | 'resize' | 'pan'; pointerId: number; target: HTMLElement;
+  start: Point; original: Rect; current: Rect; scale: number;
+  chartId?: number; others: Rect[]; moved: boolean; minimum: { w: number; h: number };
+};
 
 export function useCanvasInteraction(opts: {
   allCharts: DashboardChart[];
-  onDragEnd: (chartId: number, position: { x: number; y: number }) => void;
-  onResizeEnd: (chartId: number, position: { x: number; y: number; w: number; h: number }) => void;
+  onDragEnd: (chartId: number, position: Point) => void;
+  onResizeEnd: (chartId: number, position: Rect) => void;
   onSelectElement: (chart: DashboardChart | null) => void;
+  autoFit?: boolean;
+  viewportKey?: string;
+  viewportSize?: { width: number; height: number };
+  panMode?: boolean;
+  interactionLocked?: boolean;
 }) {
-  const { allCharts, onDragEnd, onResizeEnd, onSelectElement } = opts;
-
-  // Canvas state
   const canvasRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const [canvasSize, setCanvasSize] = useState({ width: CANVAS_WIDTH, height: CANVAS_HEIGHT });
-  const [canvasBgColor, setCanvasBgColor] = useState('');
   const [gridSize, setGridSize] = useState(GRID_SIZE);
+  const [snapEnabled, setSnapEnabled] = useState(true);
   const [scale, setScale] = useState(0.6);
-  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
-
-  // Mutable refs for interaction state (avoid re-renders during drag)
-  const dragRef = useRef<DragState>({ chartId: null, offset: { x: 0, y: 0 }, position: { x: 0, y: 0 } });
-  const resizeRef = useRef<ResizeState>({ chartId: null, start: { x: 0, y: 0, w: 0, h: 0 }, position: { x: 0, y: 0, w: 0, h: 0 } });
-  const panRef = useRef<PanState>({ active: false, start: { x: 0, y: 0 } });
-
-  // Visual state (triggers re-renders for visual feedback)
+  const [panOffset, setPanOffset] = useState<Point>({ x: 0, y: 0 });
   const [draggingChart, setDraggingChart] = useState<number | null>(null);
-  const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
+  const [dragPosition, setDragPosition] = useState<Point>({ x: 0, y: 0 });
   const [resizingChart, setResizingChart] = useState<number | null>(null);
-  const [resizePosition, setResizePosition] = useState({ x: 0, y: 0, w: 0, h: 0 });
+  const [resizePosition, setResizePosition] = useState<Rect>({ x: 0, y: 0, w: 400, h: 300 });
   const [isPanning, setIsPanning] = useState(false);
-
-  const snapToGrid = useCallback((value: number) => Math.round(value / gridSize) * gridSize, [gridSize]);
-
-  // ========== Drag existing chart ==========
-  const handleDragStart = useCallback((e: React.MouseEvent, chartId: number) => {
-    if (e.button !== 0 || isEditingTarget(e.target)) return;
-    e.stopPropagation();
-    e.preventDefault();
-    const chart = allCharts.find(c => c.id === chartId);
-    if (!chart) return;
-    const cellEl = (e.currentTarget as HTMLElement).closest('.dashboard-chart-cell') as HTMLElement;
-    if (!cellEl) return;
-    const rect = cellEl.getBoundingClientRect();
-    const offset = { x: (e.clientX - rect.left) / scale, y: (e.clientY - rect.top) / scale };
-    const position = { x: chart.position?.x ?? 0, y: chart.position?.y ?? 0 };
-    dragRef.current = { chartId, offset, position };
-    setDraggingChart(chartId);
-    setDragPosition(position);
-  }, [allCharts, scale]);
-
-  // ========== Resize ==========
-  const handleResizeStart = useCallback((e: React.MouseEvent, chartId: number) => {
-    if (e.button !== 0 || isEditingTarget(e.target)) return;
-    e.stopPropagation();
-    e.preventDefault();
-    const chart = allCharts.find(c => c.id === chartId);
-    if (!chart) return;
-    const start = {
-      x: e.clientX, y: e.clientY,
-      w: chart.position?.w ?? DEFAULT_CHART_SIZE.w,
-      h: chart.position?.h ?? DEFAULT_CHART_SIZE.h,
-    };
-    const position = {
-      x: chart.position?.x ?? 0, y: chart.position?.y ?? 0,
-      w: chart.position?.w ?? DEFAULT_CHART_SIZE.w,
-      h: chart.position?.h ?? DEFAULT_CHART_SIZE.h,
-    };
-    resizeRef.current = { chartId, start, position };
-    setResizingChart(chartId);
-    setResizePosition(position);
-  }, [allCharts]);
-
-  // ========== Pan ==========
-  const handlePanStart = useCallback((e: React.MouseEvent) => {
-    if ((e.button === 0 || e.button === 1) && (e.target === canvasRef.current || e.target === surfaceRef.current)) {
-      e.preventDefault();
-      panRef.current = { active: true, start: { x: e.clientX - panOffset.x, y: e.clientY - panOffset.y } };
-      setIsPanning(true);
-      onSelectElement(null);
+  const [guides, setGuides] = useState<SnapGuide[]>([]);
+  const gesture = useRef<Gesture | null>(null);
+  const frame = useRef<number | null>(null);
+  const pending = useRef<PointerEvent | null>(null);
+  const spacePressed = useRef(false);
+  const fitting = useRef(true);
+  const elementInteraction = useRef(false);
+  const cancelRef = useRef<() => void>(() => {});
+  const size = opts.viewportSize || canvasSize;
+  const previousSize = useRef({ ...size, key: opts.viewportKey });
+  useLayoutEffect(() => {
+    const previous = previousSize.current;
+    if (previous.key === opts.viewportKey && !fitting.current && (previous.width !== size.width || previous.height !== size.height)) {
+      // 页面增高或缩短时保持左上角不跳动，避免松手后卡片偏离指针落点。
+      setPanOffset(p => ({ x: p.x + (size.width - previous.width) * scale / 2, y: p.y + (size.height - previous.height) * scale / 2 }));
     }
-  }, [panOffset, onSelectElement]);
+    previousSize.current = { ...size, key: opts.viewportKey };
+  }, [size.width, size.height, opts.viewportKey, scale]);
+  const latest = useRef({ ...opts, canvasSize: size, gridSize, snapEnabled });
+  latest.current = { ...opts, canvasSize: size, gridSize, snapEnabled };
+  const isInteracting = useCallback(() => !!gesture.current || elementInteraction.current, []);
+  const beginElementInteraction = useCallback(() => {
+    if (isInteracting() || latest.current.interactionLocked) return false;
+    elementInteraction.current = true;
+    fitting.current = false;
+    return true;
+  }, [isInteracting]);
+  const endElementInteraction = useCallback(() => { elementInteraction.current = false; }, []);
 
-  // ========== Zoom ==========
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    const newScale = Math.min(2, Math.max(0.2, scale * delta));
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const centerX = rect.width / 2;
-    const centerY = rect.height / 2;
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
-    const scaleFactor = newScale / scale;
-    const newPanX = panOffset.x * scaleFactor + (mouseX - centerX) * (1 - scaleFactor);
-    const newPanY = panOffset.y * scaleFactor + (mouseY - centerY) * (1 - scaleFactor);
-    setScale(newScale);
-    setPanOffset({ x: newPanX, y: newPanY });
-  }, [scale, panOffset]);
+  const start = useCallback((e: React.PointerEvent, kind: Gesture['kind'], chartId?: number) => {
+    if (e.defaultPrevented || isInteracting() || latest.current.interactionLocked || e.isPrimary === false || (e.button !== 0 && !(kind === 'pan' && e.button === 1)) || isEditingTarget(e.target)) return;
+    const chart = latest.current.allCharts.find(c => c.id === chartId);
+    if (kind !== 'pan' && !chart) return;
+    e.preventDefault(); e.stopPropagation();
+    const target = (kind !== 'pan' && (e.currentTarget as HTMLElement).closest<HTMLElement>('.adh-cell')) || canvasRef.current || e.currentTarget as HTMLElement;
+    const original = chart ? chartRect(chart) : { ...panOffset, w: 0, h: 0 };
+    const widget = chart?.chart_type.startsWith('widget_');
+    gesture.current = { kind, chartId, pointerId: e.pointerId, target, start: { x: e.clientX, y: e.clientY },
+      original, current: original, scale, moved: false,
+      others: latest.current.allCharts.filter(c => c.id !== chartId).map(chartRect),
+      minimum: { w: widget ? MIN_WIDGET_WIDTH : MIN_CHART_WIDTH, h: widget ? MIN_WIDGET_HEIGHT : MIN_CHART_HEIGHT } };
+    // 捕获在稳定的视口节点上，选中图表产生的新工具条不会中断捕获。
+    target.setPointerCapture?.(e.pointerId);
+    if (kind !== 'pan' || (!spacePressed.current && !latest.current.panMode && e.button === 0)) latest.current.onSelectElement(chart || null);
+  }, [scale, panOffset, isInteracting]);
+  const handleDragStart = useCallback((e: React.PointerEvent, id: number) => {
+    if (spacePressed.current || latest.current.panMode || e.button === 1) start(e, 'pan');
+    else start(e, 'drag', id);
+  }, [start]);
+  const handleResizeStart = useCallback((e: React.PointerEvent, id: number) => start(e, 'resize', id), [start]);
+  const handlePanStart = useCallback((e: React.PointerEvent) => {
+    const target = e.target as HTMLElement;
+    if (e.button === 1 || spacePressed.current || latest.current.panMode || !target.closest?.('[data-chart-id],.adh-cell,button,input,select,textarea,[role="separator"]')) start(e, 'pan');
+  }, [start]);
 
-  const zoomIn = useCallback(() => setScale(prev => Math.min(2, prev * 1.2)), []);
-  const zoomOut = useCallback(() => setScale(prev => Math.max(0.2, prev * 0.8)), []);
-
-  const resetZoom = useCallback(() => {
-    const container = canvasRef.current;
-    if (!container) return;
-    setScale(Math.max(0.05, Math.min((container.clientWidth - 64) / canvasSize.width, (container.clientHeight - 64) / canvasSize.height, 1)));
-    setPanOffset({ x: 0, y: 0 });
-  }, [canvasSize]);
-
-  // ========== Global event listeners (registered once, use refs) ==========
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (dragRef.current.chartId !== null && surfaceRef.current) {
-          const point = screenToCanvas({ x: e.clientX, y: e.clientY }, surfaceRef.current.getBoundingClientRect(), scale);
-          const chart = allCharts.find(c => c.id === dragRef.current.chartId);
-          const newPos = clampPosition({ x: point.x - dragRef.current.offset.x, y: point.y - dragRef.current.offset.y },
-            chart?.position || DEFAULT_CHART_SIZE, canvasSize, gridSize);
-          dragRef.current.position = newPos;
-          setDragPosition(newPos);
-        } else if (resizeRef.current.chartId) {
-          const chart = allCharts.find(c => c.id === resizeRef.current.chartId);
-          const isWidget = chart?.chart_type?.startsWith('widget_');
-          const minW = isWidget ? MIN_WIDGET_WIDTH : MIN_CHART_WIDTH;
-          const minH = isWidget ? MIN_WIDGET_HEIGHT : MIN_CHART_HEIGHT;
-          const deltaX = (e.clientX - resizeRef.current.start.x) / scale;
-          const deltaY = (e.clientY - resizeRef.current.start.y) / scale;
-          const newW = snapToGrid(Math.max(minW, resizeRef.current.start.w + deltaX));
-          const newH = snapToGrid(Math.max(minH, resizeRef.current.start.h + deltaY));
-          const newPos = {
-            ...resizeRef.current.position,
-            w: Math.min(newW, canvasSize.width - resizeRef.current.position.x),
-            h: Math.min(newH, canvasSize.height - resizeRef.current.position.y),
-          };
-          resizeRef.current.position = newPos;
-          setResizePosition(newPos);
-        } else if (panRef.current.active) {
-          const newPos = { x: e.clientX - panRef.current.start.x, y: e.clientY - panRef.current.start.y };
-          setPanOffset(newPos);
-        }
-    };
-
-    const handleMouseUp = (e: MouseEvent) => {
-      handleMouseMove(e);
-      if (dragRef.current.chartId) {
-        onDragEnd(dragRef.current.chartId, dragRef.current.position);
-        dragRef.current = { chartId: null, offset: { x: 0, y: 0 }, position: { x: 0, y: 0 } };
-        setDraggingChart(null);
-      } else if (resizeRef.current.chartId) {
-        onResizeEnd(resizeRef.current.chartId, resizeRef.current.position);
-        resizeRef.current = { chartId: null, start: { x: 0, y: 0, w: 0, h: 0 }, position: { x: 0, y: 0, w: 0, h: 0 } };
-        setResizingChart(null);
-      } else if (panRef.current.active) {
-        panRef.current = { active: false, start: { x: 0, y: 0 } };
-        setIsPanning(false);
+    const apply = (e: PointerEvent) => {
+      const g = gesture.current;
+      if (!g || e.pointerId !== g.pointerId) return;
+      const dx = e.clientX - g.start.x, dy = e.clientY - g.start.y;
+      if (!g.moved && Math.hypot(dx, dy) < 3) return;
+      g.moved = true;
+      fitting.current = false;
+      if (g.kind === 'pan') {
+        setIsPanning(true);
+        g.current = { ...g.original, x: g.original.x + dx, y: g.original.y + dy };
+        setPanOffset({ x: g.current.x, y: g.current.y });
+        return;
       }
+      const raw = g.kind === 'drag'
+        ? { ...g.original, x: g.original.x + dx / g.scale, y: g.original.y + dy / g.scale }
+        : { ...g.original, w: g.original.w + dx / g.scale, h: g.original.h + dy / g.scale };
+      const { canvasSize, gridSize, snapEnabled } = latest.current;
+      const next = snapCanvasRect(raw, canvasSize, g.others, gridSize, g.scale, g.kind === 'resize', snapEnabled && !e.altKey, g.minimum);
+      g.current = next.rect;
+      setGuides(next.guides);
+      if (g.kind === 'drag') { setDraggingChart(g.chartId!); setDragPosition(next.rect); }
+      else { setResizingChart(g.chartId!); setResizePosition(next.rect); }
     };
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (isEditingTarget(e.target)) return;
-      if (e.key === 'Escape') {
-        if (dragRef.current.chartId) {
-          dragRef.current = { chartId: null, offset: { x: 0, y: 0 }, position: { x: 0, y: 0 } };
-          setDraggingChart(null);
-        }
-        if (resizeRef.current.chartId) {
-          resizeRef.current = { chartId: null, start: { x: 0, y: 0, w: 0, h: 0 }, position: { x: 0, y: 0, w: 0, h: 0 } };
-          setResizingChart(null);
-        }
-        if (panRef.current.active) {
-          panRef.current = { active: false, start: { x: 0, y: 0 } };
-          setIsPanning(false);
-        }
+    const clearFrame = () => {
+      if (frame.current !== null) cancelAnimationFrame(frame.current);
+      frame.current = null; pending.current = null;
+    };
+    const clear = () => {
+      clearFrame();
+      const g = gesture.current;
+      gesture.current = null;
+      if (g?.target.hasPointerCapture?.(g.pointerId)) g.target.releasePointerCapture(g.pointerId);
+      setDraggingChart(null); setResizingChart(null); setIsPanning(false); setGuides([]);
+    };
+    const move = (e: PointerEvent) => {
+      if (!gesture.current || gesture.current.pointerId !== e.pointerId) return;
+      pending.current = e;
+      if (frame.current !== null) return;
+      frame.current = requestAnimationFrame(() => {
+        frame.current = null;
+        if (pending.current) apply(pending.current);
+        pending.current = null;
+      });
+    };
+    const up = (e: PointerEvent) => {
+      const g = gesture.current;
+      if (!g || e.pointerId !== g.pointerId) return;
+      clearFrame(); apply(e);
+      if (g.moved) {
+        if (g.kind === 'drag') latest.current.onDragEnd(g.chartId!, { x: g.current.x, y: g.current.y });
+        if (g.kind === 'resize') latest.current.onResizeEnd(g.chartId!, g.current);
       }
+      clear();
     };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    window.addEventListener('keydown', handleKeyDown);
+    const cancel = () => {
+      if (gesture.current?.kind === 'pan') setPanOffset({ x: gesture.current.original.x, y: gesture.current.original.y });
+      clear();
+    };
+    cancelRef.current = cancel;
+    const cancelledPointer = (e: PointerEvent) => { if (gesture.current?.pointerId === e.pointerId) cancel(); };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && gesture.current) { e.preventDefault(); cancel(); }
+      if (e.code === 'Space' && canvasRef.current && !isEditingTarget(e.target) && !document.querySelector('[role="dialog"],[role="menu"]')) { e.preventDefault(); spacePressed.current = true; }
+    };
+    const keyup = (e: KeyboardEvent) => { if (e.code === 'Space') spacePressed.current = false; };
+    const blur = () => { spacePressed.current = false; cancel(); };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancelledPointer);
+    window.addEventListener('lostpointercapture', cancelledPointer);
+    window.addEventListener('keydown', key);
+    window.addEventListener('keyup', keyup);
+    window.addEventListener('blur', blur);
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancelledPointer); window.removeEventListener('lostpointercapture', cancelledPointer);
+      window.removeEventListener('keydown', key); window.removeEventListener('keyup', keyup); window.removeEventListener('blur', blur);
+      clearFrame();
+      const g = gesture.current; gesture.current = null;
+      if (g?.target.hasPointerCapture?.(g.pointerId)) g.target.releasePointerCapture(g.pointerId);
     };
-  }, [scale, canvasSize, allCharts, gridSize, snapToGrid, onDragEnd, onResizeEnd]);
+  }, []);
 
-  return {
-    // State
-    canvasRef,
-    surfaceRef,
-    canvasSize,
-    setCanvasSize,
-    canvasBgColor,
-    setCanvasBgColor,
-    gridSize,
-    setGridSize,
-    scale,
-    setScale,
-    panOffset,
-    setPanOffset,
-    draggingChart,
-    dragPosition,
-    resizingChart,
-    resizePosition,
-    isPanning,
-    // Handlers
-    handleDragStart,
-    handleResizeStart,
-    handlePanStart,
-    handleWheel,
-    zoomIn,
-    zoomOut,
-    resetZoom,
-  };
+  useEffect(() => { cancelRef.current(); spacePressed.current = false; }, [opts.viewportKey, opts.interactionLocked]);
+
+  // 非被动监听确保滚轮缩放不同时滚动页面，缩放锚点固定在鼠标位置。
+  useEffect(() => {
+    const wheel = (e: WheelEvent) => {
+      const el = canvasRef.current;
+      if (!el || !(e.target instanceof Node) || !el.contains(e.target)) return;
+      e.preventDefault();
+      if (isInteracting() || latest.current.interactionLocked) return;
+      fitting.current = false;
+      const bounds = el.getBoundingClientRect();
+      const next = Math.min(2, Math.max(0.01, scale * Math.exp(-e.deltaY * 0.002)));
+      const factor = next / scale;
+      setPanOffset(p => ({ x: p.x * factor + (e.clientX - bounds.left - bounds.width / 2) * (1 - factor),
+        y: p.y * factor + (e.clientY - bounds.top - bounds.height / 2) * (1 - factor) }));
+      setScale(next);
+    };
+    window.addEventListener('wheel', wheel, { passive: false });
+    return () => window.removeEventListener('wheel', wheel);
+  }, [scale, isInteracting]);
+  const zoomIn = useCallback(() => { if (!isInteracting() && !latest.current.interactionLocked) { fitting.current = false; setScale(v => Math.min(2, v * 1.2)); } }, [isInteracting]);
+  const zoomOut = useCallback(() => { if (!isInteracting() && !latest.current.interactionLocked) { fitting.current = false; setScale(v => Math.max(0.01, v / 1.2)); } }, [isInteracting]);
+  const zoomTo = useCallback((value: number) => {
+    if (isInteracting() || latest.current.interactionLocked || !Number.isFinite(value)) return;
+    fitting.current = false; setScale(Math.max(0.01, Math.min(2, value))); setPanOffset({ x: 0, y: 0 });
+  }, [isInteracting]);
+  const resetZoom = useCallback(() => {
+    const el = canvasRef.current;
+    if (!el || !el.clientWidth || !el.clientHeight || isInteracting() || latest.current.interactionLocked) return;
+    fitting.current = true;
+    setScale(Math.max(0.01, Math.min((el.clientWidth - 64) / size.width, (el.clientHeight - 64) / size.height, 1)));
+    setPanOffset({ x: 0, y: 0 });
+  }, [size.width, size.height, isInteracting]);
+  useEffect(() => { fitting.current = true; }, [opts.viewportKey]);
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!opts.autoFit || !el) return;
+    const measure = () => { if (fitting.current) resetZoom(); };
+    const observer = new ResizeObserver(measure);
+    observer.observe(el); measure();
+    return () => observer.disconnect();
+  }, [opts.autoFit, opts.viewportKey, resetZoom]);
+
+  return { canvasRef, surfaceRef, canvasSize: size, setCanvasSize, gridSize, setGridSize, snapEnabled, setSnapEnabled,
+    scale, setScale, panOffset, setPanOffset, draggingChart, dragPosition, resizingChart, resizePosition, isPanning, guides,
+    handleDragStart, handleResizeStart, handlePanStart, zoomIn, zoomOut, zoomTo, resetZoom,
+    isInteracting, beginElementInteraction, endElementInteraction };
 }

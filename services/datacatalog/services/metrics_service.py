@@ -1,5 +1,6 @@
 """Metrics service - CRUD logic for metrics and dimensions."""
 
+import json
 import logging
 import time
 from datetime import datetime
@@ -35,8 +36,27 @@ _ALIAS_SELECT = (
     "id, name, name AS display_name, name_en, category AS metric_type, "
     "agg_type AS calculation_type, agg_type, formula AS expression, formula, "
     "unit, target_table, target_column, description, category, "
+    "COALESCE(aliases, '[]') AS aliases, "
     "bound_object_key, is_active, workspace_id, created_at, updated_at"
 )
+
+
+def _norm_aliases(val):
+    """别名入参归一: list/逗号串 → JSON 字符串; 空 → '[]'。列型为 JSON。"""
+    if val is None:
+        return "[]"
+    if isinstance(val, str):
+        items = [x.strip() for x in val.split(",") if x.strip()]
+    elif isinstance(val, (list, tuple)):
+        items = [str(x).strip() for x in val if str(x).strip()]
+    else:
+        items = []
+    # 去重保序
+    seen: list[str] = []
+    for x in items:
+        if x not in seen:
+            seen.append(x)
+    return json.dumps(seen, ensure_ascii=False)
 
 
 def _isoformat(rows: list) -> list:
@@ -47,6 +67,42 @@ def _isoformat(rows: list) -> list:
     return rows
 
 
+def _model_object_keys(model_id: int) -> list[str]:
+    """取某本体模型当前生效的对象 key 集合(模型工作区作用域的锚点)。
+
+    源自 adh_ontology_objects(激活/保存时由 _expand_objects 展开写入, 幂等)。
+    """
+    if not model_id:
+        return []
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT object_key FROM adh_ontology_objects "
+                "WHERE model_id = %s AND is_active = 1", (model_id,))
+            return [r["object_key"] for r in cur.fetchall() if r.get("object_key")]
+
+
+def _apply_model_scope(conditions: list, params: list,
+                       model_id: Optional[int], scope: Optional[str]) -> bool:
+    """把模型作用域追加到 WHERE 条件; 返回 False 表示必然空集(调用方可短路)。
+
+    scope: 'model'=只看本模型对象挂接的资产(需 model_id); 'unbound'=只看待归属(未绑定);
+    其他/空 = 不加过滤(全局字典视图旧行为不变)。MySQL ci 排序规则使 IN 天然大小写不敏感。
+    """
+    if scope == "unbound":
+        conditions.append("(bound_object_key IS NULL OR bound_object_key = '')")
+        return True
+    if scope == "model" or model_id:
+        keys = _model_object_keys(int(model_id or 0))
+        if not keys:
+            return False
+        conditions.append(
+            f"bound_object_key IN ({', '.join(['%s'] * len(keys))})")
+        params.extend(keys)
+        return True
+    return True
+
+
 def list_metrics(
     page: int = 1,
     size: int = 20,
@@ -54,6 +110,8 @@ def list_metrics(
     tags: Optional[str] = None,
     search: str = "",
     workspace_id: int = 0,
+    model_id: Optional[int] = None,
+    scope: Optional[str] = None,
 ) -> dict:
     """List metrics with pagination and filters.
 
@@ -64,6 +122,8 @@ def list_metrics(
         tags: Filter by tags (comma-separated)
         search: Search keyword
         workspace_id: Workspace isolation
+        model_id: 本体模型作用域(配合 scope='model'): 只列 bound_object_key ∈ 该模型对象集的指标
+        scope: 'model' | 'unbound' | 空(全局, 旧行为)
 
     Returns:
         dict with total and items
@@ -85,6 +145,8 @@ def list_metrics(
     if search:
         conditions.append("(name LIKE %s OR name_en LIKE %s OR description LIKE %s)")
         params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+    if not _apply_model_scope(conditions, params, model_id, scope):
+        return {"total": 0, "items": []}
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
@@ -136,6 +198,10 @@ def create_metric(data: dict) -> dict:
             if cur.fetchone():
                 raise ValueError(f"Metric '{biz_name}' already exists")
 
+            # 字典写入口的引用完整性: bound_object_key 必须指向当前生效对象(ontology-modeling §4),
+            # 悬空创建即拒, 不等到激活阶段才暴露
+            _require_object_keys(cur, [data.get("bound_object_key")])
+
             # adh_metrics.id 是 INT, 不能用时间戳主键
             cur.execute("SELECT COALESCE(MAX(id), 0) + 1 AS nid FROM adh_metrics")
             row_id = cur.fetchone()["nid"]
@@ -143,8 +209,8 @@ def create_metric(data: dict) -> dict:
                 "INSERT INTO adh_metrics "
                 "(id, workspace_id, name, name_en, formula, unit, agg_type, "
                 "target_table, target_column, description, owner, category, datasource_id, "
-                "is_active, created_at, updated_at, default_agg, bound_object_key) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "is_active, created_at, updated_at, default_agg, bound_object_key, aliases) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     row_id,
                     data.get("workspace_id", 0),
@@ -164,6 +230,7 @@ def create_metric(data: dict) -> dict:
                     now,
                     agg_type,
                     data.get("bound_object_key") or None,
+                    _norm_aliases(data.get("aliases")),
                 ),
             )
 
@@ -204,6 +271,21 @@ def _fetch_metric_dimensions(cur, metric_id: int) -> list:
     return cur.fetchall()
 
 
+def _require_object_keys(cur, keys) -> None:
+    """字典写入的 bound_object_key 引用校验: 非空 key 必须在当前生效对象集内。"""
+    want = [str(k).strip() for k in keys if k and str(k).strip()]
+    if not want:
+        return
+    ph = ", ".join(["%s"] * len(want))
+    cur.execute(
+        f"SELECT object_key FROM adh_ontology_objects "
+        f"WHERE is_active = 1 AND object_key IN ({ph})", tuple(want))
+    ok = {str(r["object_key"]).lower() for r in cur.fetchall()}
+    bad = [k for k in want if k.lower() not in ok]
+    if bad:
+        raise ValueError(f"归属对象不存在或已失效: {', '.join(bad)}（请先在本体模型中创建并激活对象）")
+
+
 def update_metric(metric_id: int, data: dict) -> bool:
     """Update a metric.
 
@@ -219,6 +301,8 @@ def update_metric(metric_id: int, data: dict) -> bool:
             cur.execute("SELECT id FROM adh_metrics WHERE id = %s", (metric_id,))
             if not cur.fetchone():
                 return False
+            if data.get("bound_object_key"):
+                _require_object_keys(cur, [data.get("bound_object_key")])
 
             fields = []
             params = []
@@ -240,6 +324,9 @@ def update_metric(metric_id: int, data: dict) -> bool:
                 if key in mapped:
                     fields.append(f"{key} = %s")
                     params.append(mapped[key])
+            if "aliases" in data:
+                fields.append("aliases = %s")
+                params.append(_norm_aliases(data["aliases"]))
 
             if not fields:
                 return True
@@ -358,3 +445,152 @@ def add_dimension(metric_id: int, data: dict) -> dict:
             )
 
     return {"id": row_id, "dimension_id": dimension_id, "success": True}
+
+
+# ── 全局维度字典(adh_dimensions) — 指标中心唯一人工编辑入口 ──────────────
+# run_semantic_query 解析维度名/别名/枚举标签的权威来源。与本体回写链路
+# (sync_enums_to_dimensions)协同: aliases/value_labels 人工值优先, 本体激活只补空白不覆盖。
+# name / datasource_id / is_active 不开放——是字典键与血缘锚点。
+
+_DIM_SELECT = (
+    "id, COALESCE(name, '') AS name, COALESCE(name_en, '') AS name_en, "
+    "COALESCE(category, '') AS category, COALESCE(level, 0) AS level, "
+    "COALESCE(hierarchy, '') AS hierarchy, COALESCE(target_table, '') AS target_table, "
+    "COALESCE(target_column, '') AS target_column, "
+    "COALESCE(bound_object_key, '') AS bound_object_key, "
+    "aliases, value_labels, COALESCE(certified, 0) AS certified, "
+    "COALESCE(datasource_id, 0) AS datasource_id, COALESCE(description, '') AS description"
+)
+
+# 白名单可编辑列(字典键/血缘锚点不在此列表, 一律拒绝写入; bound_object_key 为归属引用, 开放)
+_DIM_EDITABLE = [
+    "name_en", "category", "level", "hierarchy",
+    "aliases", "value_labels", "description", "certified", "bound_object_key",
+]
+
+
+def list_all_dimensions(model_id: Optional[int] = None,
+                        scope: Optional[str] = None) -> dict:
+    """全局维度字典只读列表(供指标中心「维度字典」Tab 与模型工作区复用)。
+
+    model_id/scope 语义同 list_metrics: scope='model' 只看本模型对象挂接维度,
+    'unbound' 看待归属, 缺省保持旧行为(全量)。
+    """
+    conditions = ["is_active = 1"]
+    params: list = []
+    if not _apply_model_scope(conditions, params, model_id, scope):
+        return {"total": 0, "items": []}
+    where = "WHERE " + " AND ".join(conditions)
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {_DIM_SELECT} FROM adh_dimensions {where} "
+                f"ORDER BY category, name", params)
+            rows = cur.fetchall()
+    return {"total": len(rows), "items": rows}
+
+
+def update_dimension(dim_id: int, data: dict) -> bool:
+    """编辑全局维度字典白名单列。
+
+    aliases: list[str]; value_labels: dict[str,str] — 以 JSON 列存储。
+    仅更新传入的白名单字段; 非白名单字段(name/datasource_id/is_active)忽略。
+    bound_object_key 开放: 模型工作区"归属到对象/资产池归属动作"的写入口(对象名是引用非锚点)。
+    """
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM adh_dimensions WHERE id = %s", (dim_id,))
+            if not cur.fetchone():
+                return False
+
+            fields = []
+            params = []
+            for key in _DIM_EDITABLE:
+                if key not in data:
+                    continue
+                val = data[key]
+                if key in ("aliases", "value_labels"):
+                    if val in (None, "", [], {}):
+                        val = None
+                    else:
+                        val = json.dumps(val, ensure_ascii=False)
+                elif key == "certified":
+                    val = 1 if val else 0
+                elif key == "level":
+                    val = int(val or 0)
+                fields.append(f"{key} = %s")
+                params.append(val)
+
+            if not fields:
+                return True
+
+            params.append(dim_id)
+            cur.execute(f"UPDATE adh_dimensions SET {', '.join(fields)} WHERE id = %s", params)
+
+    return True
+
+
+# ── 未归属资产池 (模型工作区缓冲区视图) ────────────────────────
+
+def delete_dimension(dim_id: int) -> bool:
+    """删除维度字典行及其指标关系行(与 delete_metric 同口径的物理删除)。
+
+    字典行是引用方(bound_object_key 指向对象), 删除不产生悬空引用;
+    图谱/知识库里的残留由各自下次重建对账。
+    """
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM adh_dimensions WHERE id = %s", (dim_id,))
+            if not cur.fetchone():
+                return False
+
+            cur.execute("DELETE FROM adh_metric_dimensions WHERE dimension_id = %s", (dim_id,))
+            cur.execute("DELETE FROM adh_dimensions WHERE id = %s", (dim_id,))
+
+    return True
+
+
+def asset_pool() -> dict:
+    """聚合所有"尚未归属/悬空"的建模资产, 供工作区左栏资产池与各页计数徽章。
+
+    - metrics/dimensions: bound_object_key 为空(unbound) 或指向已不再生效对象的孤儿(orphan);
+    - terms: 未绑定任何表的黑话(target_table 为空);
+    - suggestions: 解析失败回流的候选词(adh_alias_suggestions pending, 表未迁移时容错为空)。
+    只读聚合, 治理动作(归属/收编/退回)由各自既有写入口完成。
+    """
+    out: dict = {"metrics": [], "dimensions": [], "terms": [], "suggestions": [], "counts": {}}
+    orphan_cond = (
+        "(COALESCE(bound_object_key, '') = '' OR bound_object_key NOT IN "
+        "(SELECT object_key FROM adh_ontology_objects WHERE is_active = 1))")
+    reason_case = ("CASE WHEN COALESCE(bound_object_key, '') = '' "
+                   "THEN 'unbound' ELSE 'orphan' END AS pool_reason")
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {_ALIAS_SELECT}, {reason_case} FROM adh_metrics "
+                f"WHERE is_active = 1 AND {orphan_cond} ORDER BY name LIMIT 200")
+            out["metrics"] = _isoformat(cur.fetchall())
+            cur.execute(
+                f"SELECT {_DIM_SELECT}, {reason_case} FROM adh_dimensions "
+                f"WHERE is_active = 1 AND {orphan_cond} ORDER BY name LIMIT 200")
+            out["dimensions"] = cur.fetchall()
+            cur.execute(
+                "SELECT id, datasource_id, term_cn, term_en, term_aliases, term_type, "
+                "       target_table, target_column, description "
+                "FROM adh_business_terms WHERE is_active = 1 "
+                "  AND COALESCE(target_table, '') = '' ORDER BY term_cn LIMIT 200")
+            out["terms"] = cur.fetchall()
+    try:
+        with DBConnection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, term, target_type, target_ref, datasource_id, source, "
+                    "       candidates, hit_count, updated_at "
+                    "FROM adh_alias_suggestions WHERE status = 'pending' "
+                    "ORDER BY hit_count DESC, updated_at DESC LIMIT 100")
+                out["suggestions"] = cur.fetchall()
+    except Exception as e:  # noqa: BLE001 — 队列表未迁移属正常, 不报错
+        logger.debug("[asset_pool] suggestions skipped: %s", e)
+    out["counts"] = {k: len(out[k]) for k in ("metrics", "dimensions", "terms", "suggestions")}
+    out["counts"]["total"] = sum(out["counts"].values())
+    return out

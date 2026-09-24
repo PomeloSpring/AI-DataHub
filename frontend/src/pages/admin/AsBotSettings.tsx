@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Bot, Shield, CheckCircle, XCircle, Clock, Boxes, FileText, ShieldCheck, Loader2, ChevronRight, ChevronDown, ExternalLink } from 'lucide-react';
+import { Bot, Shield, CheckCircle, XCircle, Clock, Boxes, FileText, ShieldCheck, Loader2, ChevronRight, ChevronDown, ExternalLink, Network, RefreshCw } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import client from '../../api/client';
+import { ModelGraphTab } from '../catalog/ModelAssetTabs';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -24,6 +25,8 @@ const ACTION_DEFS: ActionDef[] = [
   { key: 'ontology.activate', label: '激活本体模型', description: '将本体模型设为激活状态', category: 'ontology', requires_approval: true },
   { key: 'ontology.import_yaml', label: '导入 YAML', description: '导入 Palantir 格式 YAML 本体', category: 'ontology', requires_approval: true },
   { key: 'metadata.sync', label: '同步元数据', description: '从数据源同步元数据信息', category: 'metadata', requires_approval: true },
+  { key: 'alias.approve', label: '审核通过别名建议', description: '将回流业务词写回对象/字典别名并联动重建', category: 'metadata', requires_approval: true },
+  { key: 'alias.reject', label: '驳回别名建议', description: '丢弃一条别名回流建议', category: 'metadata', requires_approval: true },
 ];
 
 const ACTION_ICONS: Record<string, any> = {
@@ -74,6 +77,17 @@ export default function AsBotSettings() {
   const [ontologyModels, setOntologyModels] = useState<OntologyModel[]>([]);
   const [loadingOntology, setLoadingOntology] = useState(false);
   const [expandedObjects, setExpandedObjects] = useState<Set<string>>(new Set());
+  const [rebuildingGraph, setRebuildingGraph] = useState(false);
+
+  const rebuildSystemGraph = async () => {
+    setRebuildingGraph(true);
+    try {
+      // 系统域图 ds:-1 重建(仅系统元数据与系统本体模型, 隔离业务本体)
+      await client.post('/graph/sync?system_scope=true');
+      loadOntologyModels();
+    } catch { /* 图谱服务不可达时静默, 页内空态会提示 */ }
+    setRebuildingGraph(false);
+  };
 
   useEffect(() => {
     client.get('/as-bot/actions').then(({ data }) => {
@@ -141,6 +155,7 @@ export default function AsBotSettings() {
       <Tabs defaultValue="ontology">
         <TabsList>
           <TabsTrigger value="ontology"><Boxes className="h-3.5 w-3.5 mr-1" />本体模型</TabsTrigger>
+          <TabsTrigger value="graph"><Network className="h-3.5 w-3.5 mr-1" />本体图</TabsTrigger>
           <TabsTrigger value="actions">动作定义</TabsTrigger>
           <TabsTrigger value="approvals">审批历史</TabsTrigger>
           <TabsTrigger value="about">说明</TabsTrigger>
@@ -225,6 +240,33 @@ export default function AsBotSettings() {
                   ))}
                 </div>
               )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── 本体图（AS-BOT 系统能力本体结构可视化）──────────────── */}
+        <TabsContent value="graph" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Network className="h-4 w-4 text-indigo-500" />
+                    AS-BOT 本体图
+                  </CardTitle>
+                  <CardDescription>
+                    系统能力本体的系统域视图（总览/表关系/业务知识）—— 仅 datasource_id 为空/0 的系统元数据与系统本体模型，
+                    已隔离业务本体（如 test-alb）；业务图谱在「数据平台 → 本体工作区 → 图谱」。
+                  </CardDescription>
+                </div>
+                <Button variant="outline" size="sm" onClick={rebuildSystemGraph} disabled={rebuildingGraph}>
+                  {rebuildingGraph ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5 mr-1" />}
+                  重建系统图
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <ModelGraphTab datasourceId={0} systemScope />
             </CardContent>
           </Card>
         </TabsContent>

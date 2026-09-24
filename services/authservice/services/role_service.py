@@ -332,8 +332,8 @@ class RoleService:
                 cur.execute(
                     """SELECT COUNT(*) as cnt FROM adh_user_roles ur
                        JOIN adh_workspace_roles wr ON wr.role_id = ur.role_id AND wr.workspace_id = %s
-                       WHERE ur.user_id = %s""",
-                    (workspace_id, user_id)
+                       WHERE ur.user_id = %s AND ur.workspace_id IN (0, %s)""",
+                    (workspace_id, user_id, workspace_id)
                 )
                 return cur.fetchone()["cnt"] > 0
         finally:

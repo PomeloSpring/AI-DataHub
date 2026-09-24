@@ -87,40 +87,12 @@ def apply_rls(
         return "", [], "sqlglot unavailable; refusing to run RLS-guarded query unfiltered"
 
     try:
-        tree = sqlglot.parse_one(sql, dialect=dialect)
-    except Exception as e:
-        logger.warning("[rls] parse failed, refusing unfiltered execution: %s", e)
-        return "", [], f"RLS rewrite parse error: {e}"
-
-    applied: list[str] = []
-    for table, predicate in table_filters.items():
-        replaced = False
-        for node in list(tree.find_all(exp.Table)):
-            if (node.name or "").lower() != table.lower():
-                continue
-            # 已经是本表过滤子查询的, 跳过(幂等)
-            parent = node.find_ancestor(exp.Subquery)
-            if parent is not None and predicate in (parent.sql(dialect=dialect) or ""):
-                continue
-            # 保留原限定引用(catalog.db.table), 避免包裹后丢层级
-            qualified = node.sql(dialect=dialect) or table
-            try:
-                inner = sqlglot.parse_one(
-                    f"SELECT * FROM {qualified} WHERE {predicate}", dialect=dialect,
-                )
-            except Exception as e:
-                logger.warning("[rls] predicate parse failed for %s: %s", table, e)
-                return "", [], f"RLS predicate invalid for {table}: {e}"
-            sub = exp.Subquery(
-                this=inner,
-                alias=exp.TableAlias(this=exp.to_identifier(table)),
-            )
-            node.replace(sub)
-            replaced = True
-        if replaced:
-            applied.append(table)
-
-    return tree.sql(dialect=dialect), applied, None
+        from services.shared.semantics.sql_guard import inject_filters
+        secured, applied = inject_filters(sql, table_filters, dialect)
+        return secured, applied, None
+    except Exception:
+        logger.exception("[rls] 无法安全应用行策略")
+        return "", [], "行级策略无法安全应用，已拒绝执行"
 
 
 def masked_columns(column_restriction: dict[str, dict[str, object]]) -> list[str]:

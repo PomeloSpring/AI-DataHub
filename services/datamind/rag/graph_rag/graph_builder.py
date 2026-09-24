@@ -8,9 +8,63 @@ Also merges active ontology models from adh_ontology_models.
 import logging
 from typing import Any
 
-from services.datamind.rag.graph_rag.oxigraph_store import OxigraphStore
+from services.datamind.rag.graph_rag.oxigraph_store import (
+    OxigraphStore,
+    SYSTEM_DATASOURCE_ID,
+    is_system_scope,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _ds_scope(datasource_id: int, col: str = "datasource_id") -> tuple[str, list]:
+    """返回 (SQL 过滤子句, params), 按三种域区分:
+
+    - 系统域 (datasource_id == SYSTEM_DATASOURCE_ID/-1): 仅 `col = 0 OR col IS NULL`（系统元数据）;
+    - 业务域 (datasource_id > 0): `col = %s OR col = 0`（本域 + 全局共享 ds=0 行）;
+    - 聚合 (datasource_id == 0): 不过滤（全部数据源）—— ChatBI 全局图语义保持不变。
+    """
+    if is_system_scope(datasource_id):
+        return f"AND ({col} = 0 OR {col} IS NULL)", []
+    if datasource_id:
+        return f"AND ({col} = %s OR {col} = 0)", [datasource_id]
+    return "", []
+
+
+def _system_object_keys() -> list[str]:
+    """系统域 active 模型(datasource_id 空/0)的对象 key 清单。
+
+    字典表(adh_metrics 等)的 datasource_id 恒为 0(全局行), 其业务/系统归属
+    只能由 bound_object_key 所在模型判定 —— 按 datasource_id 筛字典等于没筛
+    (GMV/订单数串进系统图的根因)。
+    """
+    import json
+    from services.shared.common.db.metadata_db import get_metadata_conn
+    conn = get_metadata_conn()
+    keys: set[str] = set()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT JSON_EXTRACT(json_content, '$.objects[*].key') AS objs "
+                "FROM adh_ontology_models "
+                "WHERE status = 'active' AND (datasource_id IS NULL OR datasource_id = 0) "
+                "AND json_content IS NOT NULL"
+            )
+            for row in cur.fetchall():
+                raw = row.get("objs") if isinstance(row, dict) else row[0]
+                if not raw:
+                    continue
+                try:
+                    parsed = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+                    if isinstance(parsed, list):
+                        keys.update(str(k) for k in parsed if k)
+                except (TypeError, ValueError):
+                    continue
+    except Exception as e:
+        logger.warning("Failed to load system object keys: %s", e)
+    finally:
+        conn.close()
+    return sorted(keys)
 
 
 class GraphBuilder:
@@ -120,8 +174,8 @@ class GraphBuilder:
                 stats["metrics"] += 1
             logger.info("Created %d metric nodes", stats["metrics"])
 
-            # Build datasource nodes
-            datasources = self._load_datasources()
+            # Build datasource nodes —— 系统域不枚举业务数据源(test-alb 等名称不得进系统图)
+            datasources = [] if is_system_scope(datasource_id) else self._load_datasources()
             for ds in datasources:
                 self._store.create_datasource_node(
                     ds_id=ds["id"],
@@ -192,8 +246,7 @@ class GraphBuilder:
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                ds_filter = "AND (datasource_id = %s OR datasource_id = 0)" if datasource_id else ""
-                params = [datasource_id] if datasource_id else []
+                ds_filter, params = _ds_scope(datasource_id)
                 cur.execute(f"""
                     SELECT table_name, table_comment, table_business_desc, datasource_id
                     FROM adh_table_info
@@ -212,8 +265,7 @@ class GraphBuilder:
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                ds_filter = "AND (datasource_id = %s OR datasource_id = 0)" if datasource_id else ""
-                params = [datasource_id] if datasource_id else []
+                ds_filter, params = _ds_scope(datasource_id)
                 cur.execute(f"""
                     SELECT table_name, column_name, data_type, column_comment, datasource_id
                     FROM adh_column_metadata
@@ -228,12 +280,15 @@ class GraphBuilder:
             conn.close()
 
     def _load_terms(self, datasource_id: int) -> list[dict]:
+        # 业务术语是"尚未绑定对象/字典的业务黑话"缓冲区(建模规范§5), 属行业词汇而非
+        # 平台运营知识 —— 系统域图不收录(宁缺勿错)。
+        if is_system_scope(datasource_id):
+            return []
         from services.shared.common.db.metadata_db import get_metadata_conn
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                ds_filter = "AND (datasource_id = %s OR datasource_id = 0)" if datasource_id else ""
-                params = [datasource_id] if datasource_id else []
+                ds_filter, params = _ds_scope(datasource_id)
                 cur.execute(f"""
                     SELECT term_cn AS name_cn, term_en AS name_en, description,
                            calculation, target_table AS mapped_table,
@@ -253,8 +308,22 @@ class GraphBuilder:
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                ds_filter = "AND (datasource_id = %s OR datasource_id = 0)" if datasource_id else ""
-                params = [datasource_id] if datasource_id else []
+                if is_system_scope(datasource_id):
+                    # 字典行 datasource_id 恒为 0, 只能按绑定对象所在模型判定归属:
+                    # 仅收录绑到系统域模型对象的指标; 未绑定(bound_object_key 空)一律排除。
+                    keys = _system_object_keys()
+                    if not keys:
+                        return []
+                    ph = ",".join(["%s"] * len(keys))
+                    cur.execute(f"""
+                        SELECT name, description,
+                               target_table AS table_name,
+                               target_column AS column_name, datasource_id
+                        FROM adh_metrics
+                        WHERE is_active = 1 AND bound_object_key IN ({ph})
+                    """, keys)
+                    return cur.fetchall()
+                ds_filter, params = _ds_scope(datasource_id)
                 cur.execute(f"""
                     SELECT name, description,
                            target_table AS table_name,
@@ -289,8 +358,7 @@ class GraphBuilder:
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                ds_filter = "AND (datasource_id = %s OR datasource_id = 0)" if datasource_id else ""
-                params = [datasource_id] if datasource_id else []
+                ds_filter, params = _ds_scope(datasource_id)
                 # Try adh_table_relations first
                 cur.execute(f"""
                     SELECT source_table AS table1, target_table AS table2,
@@ -303,14 +371,15 @@ class GraphBuilder:
                     return rows
 
                 # Fallback: extract from data_lineage
+                lin_filter, lin_params = _ds_scope(datasource_id, "source_datasource_id")
                 cur.execute(f"""
                     SELECT source_table AS table1, target_table AS table2,
                            'lineage' AS join_type, 0 AS datasource_id
                     FROM adh_data_lineage
                     WHERE is_active = 1 AND source_table != target_table
-                    {ds_filter.replace('datasource_id', 'source_datasource_id') if datasource_id else ''}
+                    {lin_filter}
                     GROUP BY source_table, target_table
-                """, params)
+                """, lin_params)
                 return cur.fetchall()
         except Exception as e:
             logger.warning("Failed to load join relations: %s", e)
@@ -323,12 +392,14 @@ class GraphBuilder:
 
         Best-effort: if the table is absent, return [] so graph build continues.
         """
+        # 模板是面向业务取数的查询资产(含业务表 SQL 文本), 系统域图不收录。
+        if is_system_scope(datasource_id):
+            return []
         from services.shared.common.db.metadata_db import get_metadata_conn
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                ds_filter = "AND (datasource_id = %s OR datasource_id = 0)" if datasource_id else ""
-                params = [datasource_id] if datasource_id else []
+                ds_filter, params = _ds_scope(datasource_id)
                 cur.execute(f"""
                     SELECT template_id, template_name, category, intent_keywords,
                            sql_template, variables, rules, description, dialect
@@ -354,6 +425,14 @@ class GraphBuilder:
         finally:
             conn.close()
 
+    def build_system_graph(self) -> dict[str, Any]:
+        """构建/重建 AS-BOT 专用的**系统域**图 (ds:-1)。
+
+        收录: 系统本体模型(datasource_id 空/0) + 系统元数据表(datasource_id 空/0)
+        + 绑定到系统模型对象的字典指标; 排除业务字典/术语/SQL模板/数据源节点。
+        """
+        return self.build_from_metadata(SYSTEM_DATASOURCE_ID)
+
     def _merge_ontology_models(self, datasource_id: int) -> int:
         """Merge active ontology models into the graph as RDF."""
         from services.shared.common.db.metadata_db import get_metadata_conn
@@ -363,7 +442,13 @@ class GraphBuilder:
         count = 0
         try:
             with conn.cursor() as cur:
-                if datasource_id:
+                if is_system_scope(datasource_id):
+                    # 系统域: 仅系统本体模型(datasource_id IS NULL 或 0), 排除业务本体(test-alb 等)
+                    cur.execute(
+                        "SELECT id, json_content FROM adh_ontology_models "
+                        "WHERE status = 'active' AND (datasource_id IS NULL OR datasource_id = 0)"
+                    )
+                elif datasource_id:
                     cur.execute(
                         "SELECT id, json_content FROM adh_ontology_models "
                         "WHERE status = 'active' AND datasource_id = %s",

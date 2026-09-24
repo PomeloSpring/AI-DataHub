@@ -109,6 +109,11 @@ def _normalize_payload(obj: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     # timeGrain -> time_grain (GraphQL-subset 驼峰别名)
     if "timeGrain" in payload and "time_grain" not in payload:
         payload["time_grain"] = payload.pop("timeGrain")
+    # timeRange -> time_range (驼峰别名); time_window 与 time_range 同时给时 time_range 优先(编译层落定)
+    if "timeRange" in payload and "time_range" not in payload:
+        payload["time_range"] = payload.pop("timeRange")
+    if payload.get("time_range") and payload.get("time_window"):
+        notes.append("precedence:time_range>time_window (日历区间优先, 滚动窗口忽略)")
 
     # 剔除未识别字段: pydantic extra=forbid 会显式失败, 但给 LLM 一次自动纠错机会
     allowed = set(SemanticQuery.model_fields.keys())

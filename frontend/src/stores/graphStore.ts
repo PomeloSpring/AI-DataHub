@@ -45,6 +45,7 @@ interface SyncResult {
 interface FetchGraphOptions {
   graphType?: string;
   datasourceId?: number;
+  systemScope?: boolean;
   nodeTypes?: string[];
   maxDepth?: number;
   centerNode?: string;
@@ -67,7 +68,7 @@ interface GraphStore {
   fetchGraphData: (options?: FetchGraphOptions) => Promise<void>;
   searchNodes: (query: string, nodeTypes?: string[], limit?: number) => Promise<void>;
   getNodeDetail: (nodeId: string) => Promise<any>;
-  syncGraph: (datasourceId?: number) => Promise<SyncResult>;
+  syncGraph: (datasourceId?: number, systemScope?: boolean) => Promise<SyncResult>;
 
   // Node CRUD
   createNode: (nodeType: string, properties: Record<string, any>) => Promise<GraphNode | null>;
@@ -133,6 +134,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
 
       if (options.graphType) params.append('graph_type', options.graphType);
       if (options.datasourceId) params.append('datasource_id', options.datasourceId.toString());
+      if (options.systemScope) params.append('system_scope', 'true');
       if (options.nodeTypes) {
         options.nodeTypes.forEach((t) => params.append('node_types', t));
       }
@@ -212,12 +214,12 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   },
 
   // Sync graph
-  syncGraph: async (datasourceId = 0) => {
+  syncGraph: async (datasourceId = 0, systemScope = false) => {
     set({ isLoading: true, error: null });
 
     try {
       const response = await axios.post(
-        `${API_BASE}/sync?datasource_id=${datasourceId}`,
+        `${API_BASE}/sync?datasource_id=${datasourceId}${systemScope ? '&system_scope=true' : ''}`,
         {},
         { headers: getAuthHeader() }
       );

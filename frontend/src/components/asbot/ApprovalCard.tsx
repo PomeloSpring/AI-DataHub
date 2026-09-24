@@ -5,7 +5,7 @@ import type { ApprovalRequest } from '../../stores/asBotStore';
 
 interface ApprovalCardProps {
   approval: ApprovalRequest;
-  status?: 'pending' | 'approved' | 'rejected' | 'executed' | 'failed';
+  status?: 'pending' | 'approved' | 'rejected' | 'executed' | 'failed' | 'superseded';
   result?: any;
   onApprove: () => void;
   onReject: () => void;
@@ -17,9 +17,11 @@ const ACTION_ICONS: Record<string, any> = {
   'ontology.activate': ShieldCheck,
   'ontology.import_yaml': FileText,
   'metadata.sync': Loader2,
+  'dashboard.publish': ShieldCheck,
 };
 
 const STATUS_CONFIG: Record<string, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline'; icon: any; color: string }> = {
+  superseded: { label: '已失效', variant: 'secondary', icon: X, color: 'text-muted-foreground' },
   pending: { label: '待审批', variant: 'outline', icon: AlertTriangle, color: 'text-yellow-500' },
   approved: { label: '已批准', variant: 'default', icon: Check, color: 'text-green-500' },
   rejected: { label: '已拒绝', variant: 'secondary', icon: X, color: 'text-muted-foreground' },
@@ -71,7 +73,7 @@ export default function ApprovalCard({ approval, status = 'pending', result, onA
       )}
 
       {/* Action buttons (only when pending) */}
-      {status === 'pending' && (
+      {status === 'pending' && approval.action_key !== 'dashboard.publish' && (
         <div className="flex gap-2 pt-1">
           <Button
             size="sm"

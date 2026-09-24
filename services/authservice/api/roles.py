@@ -119,9 +119,9 @@ def get_current_user_permissions(user: dict = Depends(get_current_user)):
     role_id = role_rows[0]["id"]
     rows = execute_query("SELECT perm_code FROM adh_role_perms WHERE role_id=%s", (role_id,))
     perms = [r["perm_code"] for r in (rows or [])]
-    # 未配置 = 不限制
+    # 未配置不授予任何功能权限。
     if not perms:
-        return {"permissions": [], "menus": all_menus, "unrestricted": True}
+        return {"permissions": [], "menus": [], "unrestricted": False}
     # 由权限码反查可访问菜单
     perm_set = set(perms)
     menus = set()

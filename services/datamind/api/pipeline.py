@@ -65,6 +65,9 @@ async def execute_pipeline(
     """
     from services.datamind.nl2sql.orchestrator.pipeline_orchestrator import execute_pipeline as _execute_pipeline
 
+    from services.datamind.execution.session_workspace import preflight_request
+    from starlette.concurrency import run_in_threadpool
+    await run_in_threadpool(preflight_request, req, user)
     question = req.question
     history = req.history or []
     datasource_id = req.datasource_id or 0
@@ -96,7 +99,7 @@ async def execute_pipeline(
         try:
             if pipeline_mode == "agent" or attachments:
                 handled = False
-                async for event in ChatService()._try_dispatch_via_execution_layer(
+                stream = ChatService()._try_dispatch_via_execution_layer(
                     question=question,
                     datasource_id=datasource_id,
                     model_id=model_id,
@@ -111,9 +114,13 @@ async def execute_pipeline(
                     conversation_id=req.conversation_id or 0,
                     user_role=user_role,
                     waker_key=req.waker_key or "",
-                ):
-                    handled = True
-                    yield event
+                )
+                try:
+                    async for event in stream:
+                        handled = True
+                        yield event
+                finally:
+                    await stream.aclose()
                 if handled:
                     return
 

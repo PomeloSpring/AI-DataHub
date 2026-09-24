@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import {
-  Plus, Edit2, Trash2, Eye, Search, Sparkles, BookOpen, Lock, FileCode,
+  Plus, Edit2, Trash2, Eye, Search, Sparkles, BookOpen, Lock, FileCode, History, RotateCcw,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -16,7 +16,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { skillApi, type Skill, type SkillUpsert } from '@/api/skill';
+import { skillApi, type Skill, type SkillUpsert, type SkillVersion } from '@/api/skill';
 
 // ── Category Options ───────────────────────────────────────────────
 
@@ -43,6 +43,36 @@ export default function SkillsManager() {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Skill | null>(null);
   const [deleting, setDeleting] = useState<Skill | null>(null);
+
+  // 版本历史(SKILL.md 快照; 保存时自动生成, 保留最近 20 份)
+  const [versionsFor, setVersionsFor] = useState<Skill | null>(null);
+  const [versions, setVersions] = useState<SkillVersion[]>([]);
+  const [loadingVersions, setLoadingVersions] = useState(false);
+
+  const openVersions = async (s: Skill) => {
+    setVersionsFor(s);
+    setLoadingVersions(true);
+    try {
+      const { data } = await skillApi.versions(s.name);
+      setVersions(data?.versions || []);
+    } catch {
+      setVersions([]);
+    } finally {
+      setLoadingVersions(false);
+    }
+  };
+
+  const handleRollback = async (v: SkillVersion) => {
+    if (!versionsFor) return;
+    try {
+      await skillApi.rollback(versionsFor.name, v.version);
+      toast.success(`已回滚到 ${v.version}（回滚前已自动快照当前版）`);
+      setVersionsFor(null);
+      loadSkills();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || '回滚失败');
+    }
+  };
 
   useEffect(() => {
     loadSkills();
@@ -197,6 +227,9 @@ export default function SkillsManager() {
                     <Button variant="ghost" size="sm" onClick={() => setEditing(s)} title="编辑">
                       <Edit2 className="h-4 w-4" />
                     </Button>
+                    <Button variant="ghost" size="sm" onClick={() => openVersions(s)} title="版本历史">
+                      <History className="h-4 w-4" />
+                    </Button>
                     <Button variant="ghost" size="sm" onClick={() => setDeleting(s)} title="删除">
                       <Trash2 className="h-4 w-4" />
                     </Button>
@@ -262,6 +295,43 @@ export default function SkillsManager() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleting(null)}>取消</Button>
             <Button variant="destructive" onClick={handleDelete}>删除</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 版本历史 Dialog */}
+      <Dialog open={!!versionsFor} onOpenChange={(o) => !o && setVersionsFor(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>版本历史 · {versionsFor?.display_name || versionsFor?.name}</DialogTitle>
+            <DialogDescription>
+              每次保存自动快照当前版，保留最近 20 份；回滚前会先快照现有版本，可再次回滚回来。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[50vh] overflow-y-auto divide-y">
+            {loadingVersions && <p className="p-4 text-sm text-muted-foreground">加载中…</p>}
+            {!loadingVersions && versions.length === 0 && (
+              <p className="p-4 text-sm text-muted-foreground">暂无历史版本（新保存一次后产生）</p>
+            )}
+            {versions.map((v, idx) => (
+              <div key={v.version} className="flex items-start gap-3 py-2">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium">
+                    {v.version.replace(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5:$6')} UTC
+                    {idx === 0 && <Badge variant="outline" className="ml-2 text-[10px]">最近快照</Badge>}
+                  </div>
+                  <pre className="mt-1 whitespace-pre-wrap break-all text-[11px] text-muted-foreground font-mono max-h-20 overflow-hidden">
+                    {v.preview}
+                  </pre>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => handleRollback(v)} title="回滚到此版本">
+                  <RotateCcw className="h-3.5 w-3.5 mr-1" />回滚
+                </Button>
+              </div>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setVersionsFor(null)}>关闭</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

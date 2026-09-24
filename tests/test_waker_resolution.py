@@ -69,18 +69,18 @@ class TestResolveCandidates:
     def test_workspace_binding_returns_candidates(self):
         rows = [_row(1, "analyst", is_default=1), _row(2, "reporter")]
         with patch("services.shared.common.db.execute_query", _fake_query(workspace_rows=rows)):
-            result = w.resolve_wakers(5, "")
+            result = w.resolve_wakers(5, "admin")
         assert [x["name"] for x in result] == ["analyst", "reporter"]
         assert result[0]["is_default"] is True
 
-    def test_fallback_to_global_when_no_workspace_binding(self):
+    def test_no_global_fallback_when_workspace_has_no_binding(self):
         g = [_row(9, "global_default", workspace_id=0)]
         with patch(
             "services.shared.common.db.execute_query",
             _fake_query(workspace_rows=[], global_rows=g),
         ):
-            result = w.resolve_wakers(5, "")
-        assert [x["name"] for x in result] == ["global_default"]
+            result = w.resolve_wakers(5, "admin")
+        assert result == []
 
     def test_no_wakers_at_all_returns_empty(self):
         with patch(
@@ -104,22 +104,22 @@ class TestRoleWhitelist:
             result = w.resolve_wakers(5, "analyst")
         assert [x["name"] for x in result] == ["reporter"]
 
-    def test_role_without_binding_keeps_all_candidates(self):
+    def test_role_without_binding_denied(self):
         rows = [_row(1, "analyst"), _row(2, "reporter")]
         fq = _fake_query(workspace_rows=rows, role_rows=[{"id": 10}], role_waker_rows=[])
         with patch("services.shared.common.db.execute_query", fq):
             result = w.resolve_wakers(5, "viewer")
-        assert len(result) == 2
+        assert result == []
 
-    def test_unknown_role_keeps_all_candidates(self):
+    def test_unknown_role_denied(self):
         rows = [_row(1, "analyst")]
         fq = _fake_query(workspace_rows=rows, role_rows=[])  # 角色不存在
         with patch("services.shared.common.db.execute_query", fq):
             result = w.resolve_wakers(5, "ghost")
-        assert len(result) == 1
+        assert result == []
 
-    def test_role_binding_no_overlap_falls_back_to_candidates(self):
-        # 角色白名单与工作空间候选无交集 → 保留全部候选(不塌缩为空)
+    def test_role_binding_no_overlap_denied(self):
+        # 角色白名单与工作空间候选无交集必须拒绝。
         rows = [_row(1, "analyst"), _row(2, "reporter")]
         fq = _fake_query(
             workspace_rows=rows,
@@ -128,7 +128,7 @@ class TestRoleWhitelist:
         )
         with patch("services.shared.common.db.execute_query", fq):
             result = w.resolve_wakers(5, "analyst")
-        assert len(result) == 2
+        assert result == []
 
 
 # ── _normalize: JSON 列解析 ──────────────────────────────────────
@@ -138,13 +138,13 @@ class TestNormalize:
         row = _row(
             1, "analyst",
             persona={"responsibility": "查询数据", "style": "简洁"},
-            tools={"groups": ["catalog", "query"], "standard": ["read", "grep"]},
+            tools={"groups": ["catalog", "semantic"], "standard": ["read", "grep"]},
             mcp_server_ids=[101, 102],
             skills=[{"name": "月度报告", "instruction": "按月汇总"}],
         )
         n = w._normalize(row)
         assert n["persona"]["responsibility"] == "查询数据"
-        assert n["tools"]["groups"] == ["catalog", "query"]
+        assert n["tools"]["groups"] == ["catalog", "semantic"]
         assert n["tools"]["standard"] == ["read", "grep"]
         assert n["mcp_server_ids"] == [101, 102]
         assert n["skills"][0]["name"] == "月度报告"
@@ -152,19 +152,17 @@ class TestNormalize:
 
     def test_legacy_tools_as_list(self):
         # 兼容早期: tools 直接是组名列表
-        row = _row(1, "a", tools=["catalog", "query"])
-        row["tools"] = json.dumps(["catalog", "query"])
+        row = _row(1, "a", tools=["catalog", "semantic"])
+        row["tools"] = json.dumps(["catalog", "semantic"])
         n = w._normalize(row)
-        assert n["tools"]["groups"] == ["catalog", "query"]
+        assert n["tools"]["groups"] == ["catalog", "semantic"]
         assert n["tools"]["standard"] == []
 
-    def test_bad_json_falls_back_to_default(self):
+    def test_bad_resource_json_is_rejected(self):
         row = _row(1, "a")
-        row["persona"] = "{not valid json"
         row["mcp_server_ids"] = "oops"
-        n = w._normalize(row)
-        assert n["persona"] == {}
-        assert n["mcp_server_ids"] == []
+        with pytest.raises(ValueError, match="资源绑定"):
+            w._normalize(row)
 
 
 # ── default_waker ────────────────────────────────────────────────
@@ -189,7 +187,7 @@ class TestCollectors:
     def _sample_wakers(self):
         return [
             w._normalize(_row(1, "a", mcp_server_ids=[101, 102], tools={"groups": ["catalog"], "standard": ["read"]})),
-            w._normalize(_row(2, "b", mcp_server_ids=[102, 103], tools={"groups": ["query", "catalog"], "standard": ["grep", "read"]})),
+            w._normalize(_row(2, "b", mcp_server_ids=[102, 103], tools={"groups": ["semantic", "catalog"], "standard": ["grep", "read"]})),
         ]
 
     def test_collect_mcp_ids_dedup(self):
@@ -200,7 +198,7 @@ class TestCollectors:
         assert w.collect_mcp_server_ids(ws) == [5, 7]
 
     def test_collect_tool_groups_dedup(self):
-        assert w.collect_tool_groups(self._sample_wakers()) == ["catalog", "query"]
+        assert w.collect_tool_groups(self._sample_wakers()) == ["catalog", "semantic"]
 
     def test_collect_standard_tools_dedup(self):
         assert w.collect_standard_tools(self._sample_wakers()) == ["read", "grep"]

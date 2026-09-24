@@ -13,9 +13,11 @@ export type Rect = { x: number; y: number; w: number; h: number };
 const VISUAL_KEYS = ['colorScheme', 'gradient', 'borderRadius', 'showLabel', 'smooth', 'lineWidth',
   'areaFill', 'areaOpacity', 'innerRadius', 'legend', 'thresholds', 'gridColor', 'valueColor', 'labelColor',
   'cardBg', 'cardBorder', 'glow', 'cornerAccent', 'showCornerBrackets', 'borderStyle',
-  'titleBarBg', 'titleColor', 'showUnderline', 'underlineColor', 'titleFontSize', 'titleFontWeight'];
+  'titleBarBg', 'titleColor', 'showUnderline', 'underlineColor', 'titleFontSize', 'titleFontWeight', 'cardRadius'];
 const TOP_KEYS = ['backgroundColor', 'backgroundImage', 'backgroundSize', 'overlay',
   'mode', 'palette', 'viewBg', 'popoverBg', 'textColor', 'subTextColor', 'gridColor'];
+const WIDGET_KEYS = ['backgroundColor', 'textColor', 'borderColor', 'borderWidth', 'borderStyle',
+  'borderRadius', 'padding', 'fontSize', 'fontWeight', 'opacity', 'boxShadow', 'verticalAlign', 'horizontalAlign'];
 const safeString = (v: string) => !/url\s*\(|javascript:|expression\s*\(|<|>|[;{}]/i.test(v);
 function safeValue(v: unknown): any {
   if (typeof v === 'string') return safeString(v) && v.length < 2048 ? v : undefined;
@@ -53,32 +55,73 @@ export function sanitizeStyle(style: any): Record<string, any> {
 }
 export const snapshotComponent = (c: VisComponent): VisSnapshot => ({
   version: 1, category: c.category, code: c.code, revision: c.updated_at,
-  style_config: sanitizeStyle(c.style_config),
+  style_config: c.category === 'theme_pack' ? sanitizePack(c.style_config) : sanitizeStyle(c.style_config),
 });
 export const COMPONENT_SLOT: Partial<Record<VisCategory, string>> = {
   screen_background: 'background', color_theme: 'colorTheme', kpi_card: 'cardStyle',
   decoration_frame: 'decoration', layout_template: 'layout', chart_style: 'chartStyle',
+  theme_pack: 'themePack',
 };
+// 主题包结构: { mode, palette, background, card, decoration, charts{default,<type>}, widgets{default,<type>} }
+// 卡片作用域样式: 把 borderRadius 归一为 cardRadius, 避免与图表标记的圆角(borderRadius)冲突。
+function toCardStyle(v: any): Record<string, any> {
+  const out = visualConfig(v);
+  if (out.cardRadius === undefined && out.borderRadius !== undefined) out.cardRadius = out.borderRadius;
+  delete out.borderRadius;
+  return out;
+}
+export function sanitizePack(style: any): Record<string, any> {
+  const s = style || {};
+  const map = (src: any, fn: (v: any) => any) => {
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(src || {})) if (v && typeof v === 'object' && !Array.isArray(v)) out[k] = fn(v);
+    return out;
+  };
+  return {
+    ...pick(s, ['viewBg', 'popoverBg', 'textColor', 'subTextColor', 'gridColor']),
+    mode: s.mode === 'dark' || s.mode === 'light' ? s.mode : undefined,
+    palette: Array.isArray(s.palette) ? s.palette.filter((v: unknown) => typeof v === 'string' && safeString(v)).slice(0, 64) : undefined,
+    background: pick(s.background, ['backgroundColor', 'backgroundImage', 'backgroundSize', 'overlay']),
+    card: toCardStyle(s.card || {}),
+    decoration: toCardStyle(s.decoration || {}),
+    charts: map(s.charts, visualConfig),
+    widgets: map(s.widgets, (v) => pick(v, WIDGET_KEYS)),
+  };
+}
+export function themePackFor(theme: string | undefined, items: VisComponent[]): VisComponent | undefined {
+  if (!theme) return undefined;
+  return items.find(c => c.category === 'theme_pack' && c.code === `tp_${theme}`)
+    || items.find(c => c.category === 'theme_pack' && c.code === 'tp_datafoundry');
+}
 export function resolveComponent(ref: unknown, snapshot: VisSnapshot | undefined, items: VisComponent[]) {
   if (snapshot?.version === 1 && snapshot.style_config) return sanitizeStyle(snapshot.style_config);
   const component = items.find(c => String(c.id) === String(ref) || c.code === ref);
   return component ? sanitizeStyle(component.style_config) : undefined;
 }
+const finite = (v: unknown, fallback: number) => typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+export function chartRect(chart: { position?: Partial<Rect>; chart_type?: string }): Rect {
+  const widget = chart.chart_type?.startsWith('widget_');
+  const p = chart.position || {};
+  return { x: Math.max(0, finite(p.x, 0)), y: Math.max(0, finite(p.y, 0)),
+    w: Math.max(widget ? 100 : 200, finite(p.w, widget ? 300 : 400)),
+    h: Math.max(widget ? 36 : 150, finite(p.h, widget ? 60 : 300)) };
+}
 export function getCanvas(filters: any = {}, charts: Pick<DashboardChart, 'position'>[] = []) {
   const c = filters?.design?.canvas || {};
-  const positive = (v: any, fallback: number) => Number.isFinite(v) && v > 0 ? v : fallback;
+  const positions = charts.map(chartRect);
   return {
-    width: Math.max(positive(c.width, 1920), ...charts.map(chart => (chart.position?.x || 0) + (chart.position?.w || 0))),
-    height: Math.max(positive(c.height, 1080), ...charts.map(chart => (chart.position?.y || 0) + (chart.position?.h || 0))),
-    gridSize: positive(c.gridSize, 20),
+    width: Math.max(320, finite(c.width, 1920), ...positions.map(p => p.x + p.w)),
+    height: Math.max(180, finite(c.height, 1080), ...positions.map(p => p.y + p.h)),
+    gridSize: Math.max(1, finite(c.gridSize, 20)),
   };
 }
 export function applyScreenComponent(filters: any = {}, c: VisComponent) {
   const slot = COMPONENT_SLOT[c.category];
   if (!slot || c.category === 'sql_template') return filters;
-  return { ...filters, components: { ...filters.components, [slot]: c.code },
-    design: { ...filters.design, version: 1, canvas: { ...getCanvas(filters), ...filters.design?.canvas },
-      componentSnapshots: { ...filters.design?.componentSnapshots, [slot]: snapshotComponent(c) } } };
+  const snapshots = { ...filters.design?.componentSnapshots, [slot]: snapshotComponent(c) };
+  const design = { ...filters.design, version: 1, canvas: { ...getCanvas(filters), ...filters.design?.canvas }, componentSnapshots: snapshots };
+  if (c.category === 'theme_pack') design.themePack = c.code;
+  return { ...filters, components: c.category === 'theme_pack' ? filters.components : { ...filters.components, [slot]: c.code }, design };
 }
 export function compatible(c: VisComponent, chartType: string) {
   if (c.category === 'kpi_card') return ['big_number', 'big_number_trend', 'statistic', 'text_display'].includes(chartType);
@@ -99,7 +142,7 @@ export function applyChartComponent(config: any = {}, c: VisComponent, items: Vi
     snapshots: { ...config.vis?.snapshots, [slot]: snapshotComponent(c) } };
   return next;
 }
-export function resolveDashboardDesign(filters: any = {}, items: VisComponent[] = []) {
+export function resolveDashboardDesign(filters: any = {}, items: VisComponent[] = [], opts?: { theme?: string }) {
   const refs = filters.components || {};
   const snapshots = filters.design?.componentSnapshots || {};
   const styles: Record<string, any> = {};
@@ -108,21 +151,40 @@ export function resolveDashboardDesign(filters: any = {}, items: VisComponent[] 
     styles[slot] = resolveComponent(refs[slot], snapshots[slot], items);
     if (!styles[slot] && refs[slot]) missing.push(String(refs[slot]));
   }
-  const theme = { ...styles.colorTheme, ...sanitizeStyle(filters.theme || {}) };
+  // 主题包: 显式引用/快照优先; 无显式设计时跟随用户全局主题(内存回退, 不落库)。
+  const packRef = filters.design?.themePack || refs.themePack;
+  const snap = snapshots.themePack;
+  const validSnapshot = snap?.version === 1 && snap.category === 'theme_pack' && snap.style_config;
+  const component = items.find(c => c.category === 'theme_pack' && (c.code === packRef || String(c.id) === String(packRef)));
+  // 兼容早期仅保存色板的残缺快照，完整快照仍优先且不依赖在线字模。
+  const completeSnapshot = validSnapshot && ['background', 'card', 'charts', 'widgets'].some(k => snap.style_config[k]);
+  let pack: Record<string, any> | undefined;
+  if (packRef || validSnapshot) {
+    const raw = completeSnapshot ? snap.style_config : component?.style_config || (validSnapshot ? snap.style_config : undefined);
+    pack = raw ? sanitizePack(raw) : undefined;
+    if (!pack && packRef) missing.push(String(packRef));
+  } else {
+    const comp = themePackFor(opts?.theme, items);
+    pack = comp ? sanitizePack(comp.style_config) : undefined;
+  }
+  const theme = { ...pick(pack, ['mode', 'palette', 'viewBg', 'popoverBg', 'textColor', 'subTextColor', 'gridColor']),
+    ...styles.colorTheme, ...sanitizeStyle(filters.theme || {}) };
   const legacy = filters.theme || {};
   const lc = legacy.card || {};
-  const legacyCard = visualConfig({ ...lc, cardBg: lc.cardBg || lc.background,
+  const legacyCard = toCardStyle({ ...lc, cardBg: lc.cardBg || lc.background,
     cardBorder: lc.cardBorder || (lc.borderColor ? `1px solid ${lc.borderColor}` : undefined),
     glow: lc.glow || lc.boxShadow, labelColor: lc.labelColor || lc.textColor,
     showUnderline: lc.showUnderline ?? lc.titleDivider, underlineColor: lc.underlineColor || lc.titleDividerColor,
     titleBarBg: legacy.header?.gradient, titleColor: legacy.title?.color || legacy.header?.color });
-  const card = { ...styles.cardStyle?.config, ...styles.decoration?.config, ...legacyCard };
-  const background = { ...styles.background, ...pick({ ...legacy, backgroundColor: legacy.backgroundColor || legacy.background }, ['backgroundColor', 'backgroundImage', 'backgroundSize', 'overlay']),
+  const card = { ...pack?.card, ...pack?.decoration, ...toCardStyle(styles.cardStyle?.config), ...toCardStyle(styles.decoration?.config), ...legacyCard };
+  const background = { ...pack?.background, ...styles.background, ...pick({ ...legacy, backgroundColor: legacy.backgroundColor || legacy.background }, ['backgroundColor', 'backgroundImage', 'backgroundSize', 'overlay']),
     ...pick(filters.design?.canvas, ['backgroundColor', 'backgroundImage', 'backgroundSize', 'overlay']) };
-  return { visual: theme as LocalVisual, card, background, missing };
+  return { visual: theme as LocalVisual, card, background, missing, pack };
 }
-export function resolveChartDesign(config: any = {}, screen: ReturnType<typeof resolveDashboardDesign>, items: VisComponent[]) {
-  let inherited: Record<string, any> = { ...screen.card };
+export function resolveChartDesign(config: any = {}, screen: ReturnType<typeof resolveDashboardDesign>, items: VisComponent[], chartType = '') {
+  const packChart = { ...screen.pack?.charts?.default, ...screen.pack?.charts?.[chartType] };
+  const packWidget = { ...screen.pack?.widgets?.default, ...screen.pack?.widgets?.[chartType] };
+  let inherited: Record<string, any> = { ...packChart, ...screen.card };
   let visual = { ...screen.visual };
   const refs = config.vis?.refs || {};
   const snapshots = config.vis?.snapshots || {};
@@ -130,15 +192,16 @@ export function resolveChartDesign(config: any = {}, screen: ReturnType<typeof r
   for (const slot of new Set([...Object.keys(refs), ...Object.keys(snapshots)])) {
     const style = resolveComponent(refs[slot], snapshots[slot], items);
     if (!style && refs[slot]) missing.push(String(refs[slot]));
-    inherited = { ...inherited, ...style?.config };
+    inherited = { ...inherited, ...(['cardStyle', 'decoration'].includes(slot) ? toCardStyle(style?.config) : style?.config) };
     if (slot === 'colorTheme' && style) visual = { ...visual, ...style };
   }
   const overrides = { ...config };
   for (const key of VISUAL_KEYS) if (overrides[key] === '' || (Array.isArray(overrides[key]) && !overrides[key].length)) delete overrides[key];
-  const merged = { ...inherited, ...overrides, axisStyle: { ...inherited.axisStyle, ...overrides.axisStyle } };
+  const merged = { ...inherited, ...overrides, axisStyle: { ...inherited.axisStyle, ...overrides.axisStyle },
+    ...(chartType.startsWith('widget_') ? { widgetStyle: { ...packWidget, ...overrides.widgetStyle } } : {}) };
   if (merged.colorScheme?.length) visual.palette = merged.colorScheme;
   if (merged.axisStyle?.gridColor || merged.gridColor) visual.gridColor = merged.axisStyle?.gridColor || merged.gridColor;
-  return { config: merged, visual, missing };
+  return { config: merged, visual, missing, widget: packWidget };
 }
 // 仅在完全没有持久外观时读取旧本机偏好；返回值只用于渲染，不参与保存。
 export function legacyCanvasFilters(filters: any = {}) {
@@ -149,7 +212,8 @@ export function legacyCanvasFilters(filters: any = {}) {
     const carousel = JSON.parse(localStorage.getItem('carousel_settings') || '{}');
     const backgroundColor = editor || screen.bgColor || carousel.backgroundColor;
     const backgroundImage = screen.bgImage || carousel.backgroundImage;
-    return { ...filters, theme: pick({ backgroundColor, backgroundImage }, ['backgroundColor', 'backgroundImage']) };
+    const theme = pick({ backgroundColor, backgroundImage }, ['backgroundColor', 'backgroundImage']);
+    return Object.keys(theme).length ? { ...filters, theme } : filters;
   } catch { return filters; }
 }
 export function screenToCanvas(point: { x: number; y: number }, rect: { left: number; top: number }, scale: number) {
@@ -160,6 +224,68 @@ export function clampPosition(point: { x: number; y: number }, size: { w: number
     x: Math.max(0, Math.min(Math.round(point.x / grid) * grid, canvas.width - size.w)),
     y: Math.max(0, Math.min(Math.round(point.y / grid) * grid, canvas.height - size.h)),
   };
+}
+export type SnapGuide = { axis: 'x' | 'y'; value: number };
+// 吸附阈值以屏幕像素计算；邻居边缘/中心优先，远离吸附点时连续移动。
+export function snapCanvasRect(raw: Rect, canvas: { width: number; height: number }, others: Rect[], grid: number,
+  scale: number, resize = false, enabled = true, minimum = { w: 200, h: 150 }) {
+  const rect = { ...raw };
+  const guides: SnapGuide[] = [];
+  const tolerance = 6 / Math.max(0.05, scale);
+  for (const axis of ['x', 'y'] as const) {
+    const size = axis === 'x' ? 'w' : 'h';
+    const extent = axis === 'x' ? canvas.width : canvas.height;
+    const max = Math.max(0, extent - rect[size]);
+    if (!resize) rect[axis] = Math.max(0, Math.min(rect[axis], max));
+    else rect[size] = Math.max(minimum[size], Math.min(rect[size], extent - rect[axis]));
+    if (!enabled) continue;
+    const anchors = resize ? [rect[axis] + rect[size]] : [rect[axis], rect[axis] + rect[size] / 2, rect[axis] + rect[size]];
+    const targets = [0, extent / 2, extent, ...others.flatMap(p => [p[axis], p[axis] + p[size] / 2, p[axis] + p[size]])];
+    let best: { delta: number; target: number } | undefined;
+    for (const anchor of anchors) for (const target of targets) {
+      const delta = target - anchor;
+      const next = resize ? rect[size] + delta : rect[axis] + delta;
+      if (resize ? next < minimum[size] || rect[axis] + next > extent : next < 0 || next > max) continue;
+      if (Math.abs(delta) <= tolerance && (!best || Math.abs(delta) < Math.abs(best.delta))) best = { delta, target };
+    }
+    if (best) {
+      rect[resize ? size : axis] += best.delta;
+      guides.push({ axis, value: best.target });
+    } else if (grid > 0) {
+      const value = resize ? rect[axis] + rect[size] : rect[axis];
+      const delta = Math.round(value / grid) * grid - value;
+      const next = rect[resize ? size : axis] + delta;
+      if (Math.abs(delta) <= tolerance && (resize ? next >= minimum[size] && rect[axis] + next <= extent : next >= 0 && next <= max)) {
+        rect[resize ? size : axis] = next;
+      }
+    }
+  }
+  return { rect, guides };
+}
+// 整屏切换只移除视觉覆盖；保留查询、字段映射、交互参数及位置。
+export function clearChartVisualOverrides(config: any = {}) {
+  const next = { ...config };
+  for (const key of VISUAL_KEYS) delete next[key];
+  if (next.axisStyle) { next.axisStyle = { ...next.axisStyle }; delete next.axisStyle.gridColor; }
+  if (next.widgetStyle) {
+    next.widgetStyle = { ...next.widgetStyle };
+    for (const key of WIDGET_KEYS) delete next.widgetStyle[key];
+  }
+  delete next.vis;
+  return next;
+}
+export function libraryThemeFilters(filters: any = {}, component?: VisComponent) {
+  const next = { ...filters, design: { ...filters.design }, components: { ...filters.components } };
+  delete next.theme;
+  const snapshots = { ...next.design.componentSnapshots };
+  for (const slot of ['background', 'cardStyle', 'decoration', 'colorTheme', 'themePack']) {
+    delete next.components[slot]; delete snapshots[slot];
+  }
+  delete next.design.themePack;
+  next.design.componentSnapshots = snapshots;
+  next.design.canvas = { ...next.design.canvas };
+  for (const key of ['backgroundColor', 'backgroundImage', 'backgroundSize', 'overlay']) delete next.design.canvas[key];
+  return component ? applyScreenComponent(next, component) : next;
 }
 export function isEditingTarget(target: EventTarget | null) {
   return target instanceof Element && !!target.closest('input,textarea,select,button,[contenteditable="true"],.cm-editor,[role="dialog"],[role="alertdialog"]');

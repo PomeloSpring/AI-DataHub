@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { VIS_CATEGORIES, type VisComponent } from '@/api/visLibrary';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
-import VisComponentPreview from '@/components/VisComponentPreview';
+import VisComponentPreview, { ShapePreview } from '@/components/VisComponentPreview';
+import { resolveDashboardDesign } from '@/lib/dashboardDesign';
 import { Layers, BarChart3, Settings, PanelLeftClose } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -19,13 +20,14 @@ interface Props {
   onSelectChart: (chart: any) => void;
   onApplyVis: (component: VisComponent) => void;
   onVisDragStart: (e: React.DragEvent, component: VisComponent) => void;
+  design: ReturnType<typeof resolveDashboardDesign>;
 }
 
 export default function ComponentLibrary({
-  allCharts, selectedChart, isOpen, onClose, onDragStart, onDragEnd, onSelectChart, onApplyVis, onVisDragStart,
+  allCharts, selectedChart, isOpen, onClose, onDragStart, onDragEnd, onSelectChart, onApplyVis, onVisDragStart, design,
 }: Props) {
   const library = useVisLibrary();
-  const [category, setCategory] = useState('chart_style');
+  const [category, setCategory] = useState('theme_pack');
   const chartGroups = (() => {
     const groups: { category: typeof CHART_TYPE_CATEGORIES[number]; items: ChartTypeItem[] }[] = [];
     for (const cat of CHART_TYPE_CATEGORIES) {
@@ -37,13 +39,19 @@ export default function ComponentLibrary({
   })();
 
   const widgetItems = CHART_TYPES.filter(t => t.category === 'widget');
+  const preview = (item: ChartTypeItem) => {
+    const styles = item.category === 'widget' ? design.pack?.widgets : design.pack?.charts;
+    return <div className="w-full overflow-hidden rounded" style={{ background: design.card.cardBg || (design.visual.mode === 'dark' ? '#0f172a' : '#ffffff') }}>
+      <ShapePreview type={item.value} palette={design.visual.palette || []} cfg={{ ...styles?.default, ...styles?.[item.value] }} />
+    </div>;
+  };
 
   return (
     <div className={`flex-shrink-0 flex flex-col border-r bg-background transition-all duration-200 overflow-hidden max-lg:absolute max-lg:inset-y-0 max-lg:left-0 max-lg:z-30 ${isOpen ? 'w-[260px]' : 'w-0 border-r-0'}`}>
       <div className="flex items-center justify-between p-3 border-b">
         <h3 className="font-semibold text-sm flex items-center gap-2">
           <Layers className="h-4 w-4" />
-          组件库
+          UI 字模库
         </h3>
         <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={onClose}>
           <PanelLeftClose className="h-4 w-4" />
@@ -62,7 +70,7 @@ export default function ComponentLibrary({
           <select aria-label="字模分类" className="w-full rounded border bg-background p-2 text-xs" value={category} onChange={e => setCategory(e.target.value)}>
             {VIS_CATEGORIES.filter(c => c.id !== 'sql_template').map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
           </select>
-          <p className="text-xs text-muted-foreground">点击应用到选中元素；图表字模可拖入新建。布局应用前可预览。</p>
+          <p className="text-xs text-muted-foreground">{category === 'theme_pack' ? '主题包=一整套风格(背景+卡片+全部图表/控件)，点击一键套用。' : '点击应用到选中元素；图表字模可拖入新建。布局应用前可预览。'}</p>
           {library.error && <div role="alert" className="text-xs text-destructive">{library.error}<Button variant="link" onClick={library.refresh}>重试</Button></div>}
           {library.loading && <p className="text-xs">正在加载字模…</p>}
           {library.items.filter(c => c.category === category).map(c => <button key={c.id} type="button" className="block w-full rounded-lg border p-2 text-left hover:border-foreground/50"
@@ -86,11 +94,12 @@ export default function ComponentLibrary({
                       draggable
                       onDragStart={(e) => onDragStart(e, item)}
                       onDragEnd={onDragEnd}
-                      className="flex items-center gap-1.5 px-2 py-1.5 rounded-md cursor-grab active:cursor-grabbing
+                      className="flex flex-col items-center gap-1.5 px-2 py-1.5 rounded-md cursor-grab active:cursor-grabbing
                         border border-transparent hover:border-primary/30 hover:bg-accent/60 transition-colors select-none group"
                       title={`拖拽 ${item.label} 到画布`}
                     >
-                      <ChartIcon name={item.icon} className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary flex-shrink-0" />
+                      {preview(item)}
+                      <ChartIcon name={item.icon} className="sr-only" />
                       <span className="text-[11px] leading-tight truncate">{item.label}</span>
                     </div>
                   ))}
@@ -112,11 +121,12 @@ export default function ComponentLibrary({
                   draggable
                   onDragStart={(e) => onDragStart(e, item)}
                   onDragEnd={onDragEnd}
-                  className="flex items-center gap-1.5 px-2 py-1.5 rounded-md cursor-grab active:cursor-grabbing
+                  className="flex flex-col items-center gap-1.5 px-2 py-1.5 rounded-md cursor-grab active:cursor-grabbing
                     border border-transparent hover:border-primary/30 hover:bg-accent/60 transition-colors select-none group"
                   title={`拖拽 ${item.label} 到画布`}
                 >
-                  <ChartIcon name={item.icon} className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary flex-shrink-0" />
+                  {preview(item)}
+                  <ChartIcon name={item.icon} className="sr-only" />
                   <span className="text-[11px] leading-tight truncate">{item.label}</span>
                 </div>
               ))}

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>本体可视化 · 原型导航</title>
+<style>
+  body{background:#0b0d10;color:#e6e9ee;font:15px/1.6 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+  .wrap{max-width:760px;padding:40px 24px}
+  h1{font-size:22px;margin-bottom:4px}
+  .sub{color:#8b93a1;font-size:13px;margin-bottom:28px}
+  a.card{display:block;background:#151920;border:1px solid #232a34;border-radius:14px;padding:18px 20px;margin-bottom:14px;text-decoration:none;color:inherit;transition:border-color .15s}
+  a.card:hover{border-color:#6366f1}
+  .t{font-weight:600;font-size:16px}
+  .d{color:#8b93a1;font-size:13px;margin-top:4px}
+  .tag{display:inline-block;font-size:11px;border:1px solid #2e3745;border-radius:20px;padding:1px 10px;color:#a5b4fc;margin-left:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>◆ 本体可视化 · 设计原型</h1>
+  <div class="sub">两版高保真样式原型（纯演示稿，非应用代码）。已实施项标注 ✔</div>
+  <a class="card" href="/ontology-workspace-ui.html">
+    <div class="t">v2 · 模型工作区（最终确认版）<span class="tag">✔ 已实施</span></div>
+    <div class="d">① 对象中枢（模型列表分组+资产池） ② 模型内指标/维度 ③ 未归属资产池 ④ 全局字典筛选视图 —— 回应"模型列表分开看、一个本体的属性同页配置"</div>
+  </a>
+  <a class="card" href="/ontology-triple-ui.html">
+    <div class="t">v1 · 三元组配置 + 图谱五视图<span class="tag">✔ 大部分已实施</span></div>
+    <div class="d">① 指标三元组表单 ② 打标即三元组 ③ 术语收编闭环 ④ 本体总览图 ⑤ 语义-物理桥接 —— 图谱总览/名边/label 修复已上线，⑤ 桥接视图为下迭代</div>
+  </a>
+</div>
+</body>
+</html>

@@ -7,7 +7,7 @@ ExecutionContextVar 注入(见 context.py)。
 工具组(由 waker 能力按"逐个工具"粒度勾选控制启用):
 - catalog:  search_metadata / get_table_schema / list_datasources
 - semantic: get_metrics / get_glossary / query_by_tags / knowledge_search / run_semantic_query
-- query:    execute_sql(受控旁路;统一语义层下默认不勾选,由 waker 显式授权)
+- query:    check_sql(治理预检) / execute_sql(受治理只读执行;由 waker 显式授权)
 
 设计理念:代码不再硬删任何工具组,工具的去留完全下放到 waker 的"工具权限"粒度配置
 (waker.tools.mcp 逐工具勾选)。未选中的工具不会被注册进 MCP server,LLM 无从调用。
@@ -30,6 +30,7 @@ from services.datamind.execution.sdk_tools.ontology_tools import build_ontology_
 from services.datamind.execution.sdk_tools.query_tools import build_query_server
 from services.datamind.execution.sdk_tools.screen_tools import build_screen_server
 from services.datamind.execution.sdk_tools.semantic_tools import build_semantic_server
+from services.datamind.execution.sdk_tools.system_tools import build_system_server
 
 logger = logging.getLogger(__name__)
 
@@ -41,16 +42,17 @@ TOOL_SERVER_BUILDERS = {
     "query": build_query_server,
     "ontology": build_ontology_server,
     "screen": build_screen_server,
+    "system": build_system_server,
 }
 
 # 工具组名 → server 名与工具名(用于 allowed_tools 精确预授权)
 TOOL_SERVER_TOOLS = {
     "catalog": ("datahub_catalog", ["search_metadata", "get_table_schema", "list_datasources"]),
-    "query": ("datahub_query", ["execute_sql"]),
+    "query": ("datahub_query", ["check_sql", "execute_sql"]),
     "semantic": ("datahub_semantic", [
         "get_metrics", "get_glossary", "query_by_tags", "knowledge_search",
         # Phase 3: 声明式语义查询工具（与 retrieval 同层，LLM 主路）
-        "run_semantic_query",
+        "run_semantic_query", "get_business_semantics", "search_business_knowledge",
     ]),
     "ontology": ("datahub_ontology", [
         "search_ontology", "get_ontology_model", "list_ontology_models",
@@ -59,8 +61,10 @@ TOOL_SERVER_TOOLS = {
     ]),
     "screen": ("datahub_screen", [
         "create_data_screen", "get_data_screen", "update_data_screen_chart",
+        "request_dashboard_design", "get_dashboard_design", "prepare_dashboard_design",
         "list_vis_components", "get_vis_component", "save_vis_component",
     ]),
+    "system": ("datahub_system", ["system_usage", "system_overview"]),
 }
 
 
@@ -81,12 +85,14 @@ def build_tool_servers(backend: str, enabled, selection=None) -> dict:
     servers: dict = {}
     allowed_tools: list[str] = []
 
-    if selection:
-        # 细粒度:waker 逐工具勾选。仅构建有≥一个被选工具的组。
+    if selection is not None:
+        # 显式空选择不得回退到整组注册。
         for group, tools in selection.items():
             names = [t for t in (tools or []) if t]
             builder = TOOL_SERVER_BUILDERS.get(group)
-            if not builder or not names:
+            if not builder or set(names) - set(TOOL_SERVER_TOOLS[group][1]):
+                raise ValueError("不允许的 Waker 工具配置")
+            if not names:
                 continue
             try:
                 cfg = builder(backend, tool_names=names)
@@ -94,14 +100,19 @@ def build_tool_servers(backend: str, enabled, selection=None) -> dict:
                 srv_name, _ = TOOL_SERVER_TOOLS[group]
                 allowed_tools.extend(f"mcp__{srv_name}__{t}" for t in names)
             except Exception as e:
-                logger.warning("[sdk_tools] Build granular group '%s' failed: %s", group, e)
+                logger.exception("[sdk_tools] 工具初始化失败: %s", group)
+                raise RuntimeError("已授权工具初始化失败") from e
         return {"servers": servers, "allowed_tools": allowed_tools}
 
     # 向后兼容:按工具组整组注册
-    if enabled in (None, "", "all"):
-        groups = list(TOOL_SERVER_BUILDERS.keys())
+    if enabled in (None, ""):
+        groups = []
+    elif enabled == "all":
+        raise ValueError("禁止隐式注册全部工具，请提供明确授权")
     else:
-        groups = [g for g in enabled if g in TOOL_SERVER_BUILDERS]
+        groups = list(enabled)
+    if any(g not in TOOL_SERVER_BUILDERS for g in groups):
+        raise ValueError("不允许的 Waker 工具组")
     for g in groups:
         try:
             cfg = TOOL_SERVER_BUILDERS[g](backend)
@@ -109,7 +120,8 @@ def build_tool_servers(backend: str, enabled, selection=None) -> dict:
             srv_name, tool_names = TOOL_SERVER_TOOLS[g]
             allowed_tools.extend(f"mcp__{srv_name}__{t}" for t in tool_names)
         except Exception as e:
-            logger.warning("[sdk_tools] Build tool group '%s' (%s) failed: %s", g, backend, e)
+            logger.exception("[sdk_tools] 工具组初始化失败: %s", g)
+            raise RuntimeError("已授权工具初始化失败") from e
     return {"servers": servers, "allowed_tools": allowed_tools}
 
 
@@ -122,6 +134,7 @@ __all__ = [
     "build_semantic_server",
     "build_ontology_server",
     "build_screen_server",
+    "build_system_server",
     "ExecutionContextVar",
     "get_execution_context",
     "set_execution_context",

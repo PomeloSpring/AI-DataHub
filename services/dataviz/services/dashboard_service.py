@@ -94,6 +94,10 @@ def _normalize_chart(row: dict) -> dict:
     row.setdefault("source_id", None)
     row.setdefault("data_cache", None)
     row.setdefault("query_source", "raw_sql")
+    if (row.get("config") or {}).get("as_bot_design"):
+        # 设计者的 SQL/预览不能经普通图表详情或共享缓存分发。
+        row.pop("sql_query", None)
+        row["data_cache"] = None
     return row
 
 
@@ -191,6 +195,68 @@ def _invalidate_dashboard_cache(user_id: int = None):
         dashboard_cache.invalidate()
     else:
         dashboard_cache.invalidate_prefix(f"dash:{user_id}:")
+
+
+def publish_design_in_transaction(cur, doc, queries, scope, user):
+    """仅由已锁定并校验的审批事务调用，不自行提交。"""
+    from services.dataviz.services.dashboard_design_service import dump
+    selection = doc["selection"]
+    if doc["operation"] == "create":
+        cur.execute("INSERT INTO adh_dashboards (name,description,workspace_id,owner_id,status,is_public,created_at,updated_at) "
+                    "VALUES (%s,%s,%s,%s,'enabled',0,UTC_TIMESTAMP(),UTC_TIMESTAMP())",
+                    (doc["name"], doc["request"], scope["workspace"], user["user_id"]))
+        dashboard_id = cur.lastrowid
+    else:
+        dashboard_id = selection["dashboard_id"]
+    chart_ids = []
+    for widget, sql in zip(doc["widgets"], queries):
+        cfg = {**widget["config"], "datasource_id": scope["datasource_id"], "as_bot_design": True}
+        query = dump(widget["query"]) if widget["query_source"] == "semantic" else None
+        values = (widget["title"], widget["chart_type"], sql, dump(cfg), dump(widget["position"]),
+                  scope["datasource_id"], query, widget["query_source"], scope["workspace"])
+        if doc["operation"] == "update":
+            cid = selection["chart_id"]
+            cur.execute("UPDATE adh_charts SET name=%s,chart_type=%s,sql_query=%s,config=%s,position=%s,source_id=%s,"
+                        "semantic_query=%s,query_source=%s,workspace_id=%s,data_cache=NULL,updated_at=UTC_TIMESTAMP() "
+                        "WHERE id=%s AND dashboard_id=%s", (*values, cid, dashboard_id))
+        else:
+            cur.execute("INSERT INTO adh_charts (name,chart_type,sql_query,config,position,source_id,semantic_query,"
+                        "query_source,workspace_id,dashboard_id,source_type,created_at,updated_at) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'query',UTC_TIMESTAMP(),UTC_TIMESTAMP())",
+                        (*values, dashboard_id))
+            cid = cur.lastrowid
+        chart_ids.append(cid)
+    return {"success": True, "dashboard_id": dashboard_id, "chart_ids": chart_ids,
+            "operation": doc["operation"], "url": f"/screen/{dashboard_id}"}
+
+
+def refresh_designed_chart(chart, user_id):
+    """设计图表不复用跨用户 data_cache；每次按查看者身份重新治理。"""
+    from services.shared.common.auth import resolve_execution_owner
+    from services.shared.common.db import execute_query
+    from services.dataviz.services.dashboard_design_service import compile_widget, validate_query_sources, decoded, DesignError
+    uid = int(user_id or 0)
+    if not uid:
+        raise NoIdentityError("缺少可信身份")
+    dashboard = execute_query("SELECT owner_id,workspace_id,is_public FROM adh_dashboards WHERE id=%s",
+                              (chart["dashboard_id"],), fetchone=True)
+    if not dashboard or (dashboard["owner_id"] != uid and not dashboard["is_public"]):
+        raise PermissionError("无权访问该仪表盘")
+    live = resolve_execution_owner(uid, int(dashboard["workspace_id"] or 0))
+    config = decoded(chart["config"], {})
+    ds = int(chart.get("source_id") or config.get("datasource_id") or 0)
+    if not ds:
+        raise DesignError("图表业务绑定已失效")
+    source = execute_query("SELECT db_type FROM adh_datasources WHERE id=%s", (ds,), fetchone=True)
+    if not source:
+        raise DesignError("图表业务域已失效")
+    scope = {"datasource_id": ds, "workspace": live["workspace_id"],
+             "dialect": "postgres" if source["db_type"] in ("postgres", "postgresql", "pg", "sls") else "mysql"}
+    widget = {"query_source": chart["query_source"], "query": decoded(chart.get("semantic_query"), {}),
+              "manual_sql": chart.get("sql_query")}
+    sql, _ = compile_widget(widget, scope)
+    validate_query_sources(sql, scope)
+    return governed_execute(sql, ds, uid, scope["workspace"], live["username"])
 
 
 # ── DashboardService ─────────────────────────────────────────────────────────
@@ -598,7 +664,7 @@ class ChartService:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, sql_query, config FROM adh_charts "
+                    "SELECT id,dashboard_id,workspace_id,source_id,semantic_query,query_source,sql_query,config FROM adh_charts "
                     "WHERE id = %s AND dashboard_id = %s",
                     (chart_id, dashboard_id),
                 )
@@ -606,6 +672,8 @@ class ChartService:
                 if not chart:
                     raise ValueError("图表不存在")
 
+                if (_json_loads_safe(chart.get("config")) or {}).get("as_bot_design"):
+                    return refresh_designed_chart(chart, user_id)
                 sql = chart.get("sql_query", "")
                 if not sql:
                     return {"columns": [], "rows": [], "row_count": 0}
@@ -695,7 +763,7 @@ class ChartService:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, sql_query, config FROM adh_charts "
+                    "SELECT id,dashboard_id,workspace_id,source_id,semantic_query,query_source,sql_query,config FROM adh_charts "
                     "WHERE dashboard_id = %s ORDER BY id",
                     (dashboard_id,),
                 )
@@ -706,6 +774,9 @@ class ChartService:
 
                 for chart in charts:
                     cid = chart["id"]
+                    if (_json_loads_safe(chart.get("config")) or {}).get("as_bot_design"):
+                        results[cid] = refresh_designed_chart(chart, user_id)
+                        continue
                     sql = chart.get("sql_query", "")
                     if not sql:
                         results[cid] = {"columns": [], "rows": [], "row_count": 0}

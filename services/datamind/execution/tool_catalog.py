@@ -79,11 +79,11 @@ def parse_allowed_tools(raw) -> list[str]:
             return []
         try:
             raw = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
-            return []
-    if isinstance(raw, list):
-        return [str(t) for t in raw if t]
-    return []
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("工具白名单不是合法 JSON") from exc
+    if isinstance(raw, list) and all(isinstance(t, str) and t.strip() for t in raw):
+        return [LEGACY_ALIASES.get(t.strip(), t.strip()) for t in raw]
+    raise ValueError("工具白名单必须是字符串数组")
 
 
 def expand_allowed_tools(allowed_tools, flavor: str) -> set:
@@ -114,8 +114,6 @@ def disallowed_tools(allowed_tools, flavor: str) -> list:
     不影响 MCP/自定义等目录外工具.
     """
     allowed = parse_allowed_tools(allowed_tools)
-    if not allowed:
-        return []
     allowed_set = expand_allowed_tools(allowed, flavor)
     mapping = TOOL_NAME_MAP.get(flavor, {})
     return [

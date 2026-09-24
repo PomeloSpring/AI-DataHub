@@ -11,6 +11,7 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
 ## 1. 统一取数入口（不可旁路）
 - 任何返回数据行的执行**必须**经 `services/datamind/nl2sql/sql/query_executor.py: execute_query_with_permission`（或其封装 `services/dataviz/services/governed_query.py: governed_execute`）。
 - **禁止**新增任何直连数据源、绕过 `permission_enforcer` 的裸执行通道；**禁止**新增"返回数据行但不经治理"的 `/execute` 类端点。
+- 语义层 `run_semantic_query` 与 nl2sql `execute_sql` 是**两条并列的受治理入口**（都满足本护栏），不是"一条合规一条旁路"；判合不合规只看**是否过治理入口**，不看走的是语义层还是 SQL。
 - SQL Playground / 看板 / 报表 / 组件的 raw_sql 取数一律走治理入口，与主链路同源（`execute_via_playground`、`governed_execute`）。
 
 ## 2. 身份 fail-closed
@@ -39,13 +40,23 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
 - 默认要求 `LIMIT`；确有需要（count 包裹、Playground 内部已另行补限流）才可传 `require_limit=False`，但**不得**用于绕过安全关键字与多语句校验。
 - 缺 LIMIT 的扫描应"自动补默认 LIMIT 后再校验"，而非直接放行（见 `sdk_tools/query_tools.py`）。
 
-## 6. Chat / Agent 只走语义层
-- LLM 侧取数**只允许** `run_semantic_query`（声明式意图 `{object, metrics[], dimensions[], filters[], order[], limit, time_window…}`）。
-- intent 中任何 `sql/raw_sql/statement` 字段在 `parse_intent` 直接**拒收**；**禁止**为 LLM 暴露/恢复裸 `execute_sql` 通道。
-- 本体是唯一权威取数入口；受控执行自动施加权限 / RLS / 护栏 / 审计。
+## 6. Chat / Agent 取数：语义层与 nl2sql 双路径（均须受治理）
+> 只要满足本护栏全部安全要求（§1–§5、§7–§10），**语义层与 nl2sql 都是允许的取数路径**；
+> 二者不是"合规 vs 裸连"的关系，只是**权限施加机制**不同。走哪条由 **Waker 职责**划分，不是代码硬禁。
+- **语义层 `run_semantic_query`（主路）**：LLM 只产**声明式意图** `{object, metrics[], dimensions[], filters[], order[], limit, time_window…}`，
+  经 intent→binding→plan→**七闸门**（identity / permission / preflight / proposal / approval / execute / audit，`services/shared/semantics/gates.py`）执行；
+  **权限由语义层自身控制**（`permission_token` 校验 + RLS sqlglot 改写 + 审计）。
+- **nl2sql `execute_sql`（受治理旁路）**：只读 `SELECT`/`WITH`，**必须**经 `execute_query_with_permission` → `permission_enforcer.enforce_sql`（敏感基线/RBAC/列级）改写后才执行，
+  **行级权限识别由 DataFusion（Rust 引擎 `SecureTableProvider`）在 plan 期施加**，成功/拒绝均落审计。用于语义层无法表达的形状（多表 JOIN、窗口函数、未建模对象）。
+  **红线**：严禁把 LLM 生成的原始 SQL 直接下发数据源执行；`enforce_sql` 抛 `PermissionError` 必须在到达数据源**之前**中止（`execute_query_with_permission` 已 `raise`），不得回退到未审核的 `execute_query`/`get_connection` 直连。
+- **`check_sql`（nl2sql 执行前的治理预检，必用）**：`execute_sql` 前先调 `check_sql`（`sdk_tools/query_tools.py`），不执行、不返回数据行，校验安全（只读/DDL-DML/多语句/LIMIT/huge 全扫）+ 逐表 `check_access` 权限预览（表级/列隐藏脱敏/行级 RLS），返回 `verdict=ok/warn/blocked`；`blocked` 不得再执行。它是纵深防御与可诊断提示，**不替代** `execute_sql` 自身的强制审核。
+- **路径选择归 Waker**：语义 Waker 只勾 `semantic` 组，nl2sql Waker 显式勾 `query` 组（`waker.tools.mcp` 逐工具授权）；未勾选即不注册、LLM 无从调用。AS-BOT 系统 Waker 仍禁 `query`（域边界，见 `as-bot-system-waker.md` §2）。
+- **两条路径不得互串**：语义 intent 中任何 `sql/raw_sql/statement` 字段在 `parse_intent` 直接**拒收**（语义层不吃裸 SQL）；`execute_sql` 是独立工具，不是把 SQL 塞进语义 intent。
+- 本体仍是已建模对象的权威入口：nl2sql **不得**用于绕过本体去查已治理对象（那是定位漂移），只补语义层覆盖不到的查询形状。
 
 ## 7. 数据源黑盒脱敏（对 LLM 与前端）
-- 取数结果**严禁**向 LLM / 客户端泄露：生成的 SQL（base_sql/secured_sql）、`datasource_id`、`catalog_ref`、`physical_table`、provenance、账号/IP/主机、原始报错栈。
+- 取数结果**严禁**向 LLM / 普通客户端响应泄露：生成的 SQL（base_sql/secured_sql）、`datasource_id`、`catalog_ref`、`physical_table`、provenance、账号/IP/主机、原始报错栈。
+- **明确例外**：用户确认的 AS-BOT 仪表盘设计面板，经服务端 `playground:execute` 与目标编辑权校验，可通过专用 REST 查看/人工编辑业务查询 SQL；修改后必须重新安全校验、治理预览和确认发布。SQL 不进入 Agent、SSE、聊天历史或普通图表响应，权限改写 SQL 与连接凭据仍不展示。
 - 执行阶段失败：原始细节**仅进服务端日志**，对外回通用文案 `_EXEC_FAIL_HINT`；告警经 `_safe_warnings` 按 `_LEAK_KEYWORDS` 过滤。
 - 相对时间用 `time_window`（`7d/24h/2w/1M`），不得让 LLM 手算绝对日期。
 
@@ -65,8 +76,12 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
 ## 11. 改动这类文件时的硬性回归
 - 触碰 `enforcer.py` / `query_executor.py` / `governed_query.py` / `playground.py` / `semantic_query.py` / `df_serialize.py` 后，**必须**跑：
   `tests/test_data_moat_enforcement.py`、`tests/test_permission_enforcer.py`、`tests/test_permission_e2e.py`，并为新分支补用例（尤其：带别名 JOIN 的 RLS、重名列、无可信身份拒绝、敏感 block 对 admin 生效）。
-- 服务以 uvicorn **无 `--reload`** 常驻：接口/权限代码改动后须重启对应服务（datamind=8001、dataviz=8004 等）方生效；数据源配置来自 `services/.env`。
+- 触碰 `sdk_tools/query_tools.py`（`execute_sql` / `check_sql`）后，**必须**跑 `tests/test_execute_sql_governance.py`：它锁定 execute_sql 只经 `execute_query_with_permission`、权限拒绝在执行前即中止、以及源码级禁止 `get_connection`/裸 `execute_query` 旁路。新增取数工具不得绕过该门禁。
+- 服务以 uvicorn **无 `--reload`** 常驻：接口/权限代码改动后须重启对应服务（datamind=8001、dataviz=8004、aiplatform=8007 等）方生效；数据源配置来自 `services/.env`。
 
 ## 12. 禁止的反模式（速查）
-- ❌ 为图方便直连数据源返回数据；❌ 从请求体读用户身份；❌ 让角色/RLS 弱化敏感基线；❌ 给 LLM 开放裸 SQL；
+- ❌ 为图方便直连数据源返回数据；❌ 从请求体读用户身份；❌ 让角色/RLS 弱化敏感基线；
+- ❌ 给 LLM 开放**不经 `execute_query_with_permission` 治理**的裸 SQL 旁路（经统一治理入口的 `execute_sql` 不在此列）；
+- ❌ 用 nl2sql 绕过本体去查已治理建模对象；❌ 把裸 SQL 塞进语义 intent（`parse_intent` 必拒）；
+- ❌ 把 `execute_sql` 生成的原始 SQL 直连数据源（必过 `execute_query_with_permission`，审核不过即中止）；❌ 跳过 `check_sql` 预检直接 `execute_sql`；
 - ❌ 对外回显 SQL/数据源/账号/IP/报错栈；❌ `to_json` 裸序列化或吞异常致空结果；❌ 观测/审计改动抛异常影响主链路。

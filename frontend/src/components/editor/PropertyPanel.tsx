@@ -1,4 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { PAGE_COLUMNS, PAGE_LABELS, PAGE_ROW, pageGap, type PageBreakpoint } from '@/lib/dashboardPageLayout';
+import type { Rect } from '@/lib/dashboardDesign';
 import {
   Settings, BarChart3, Move, Paintbrush, Monitor, Grid3x3, Palette, PanelRightClose,
 } from 'lucide-react';
@@ -19,6 +22,9 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   selectedChart: any;
+  pageBreakpoint?: PageBreakpoint;
+  pageRect?: Rect;
+  onResetPage?: () => void;
   selectedElementType: ElementType;
   canvasSize: { width: number; height: number };
   setCanvasSize: (s: { width: number; height: number }) => void;
@@ -42,22 +48,29 @@ export default function PropertyPanel({
   canvasSize, setCanvasSize, canvasBgColor, setCanvasBgColor,
   gridSize, setGridSize, scale, setScale, allCharts,
   isNewChart, onPropertyChange, onPositionChange, onWidgetConfigChange,
-  onDelete, onChartConfig,
+  onDelete, onChartConfig, pageBreakpoint, pageRect, onResetPage,
 }: Props) {
   const [tab, setTab] = useState('appearance');
-  return (
-    <div className={`flex-shrink-0 flex flex-col border-l bg-background transition-all duration-200 overflow-hidden max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-30 ${isOpen ? 'w-[300px]' : 'w-0 border-l-0'}`}>
+  const [narrow, setNarrow] = useState(() => window.innerWidth < 1024);
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 1023px)');
+    const change = () => setNarrow(media.matches);
+    change(); media.addEventListener('change', change);
+    return () => media.removeEventListener('change', change);
+  }, []);
+  const content = (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       <div className="flex items-center justify-between p-3 border-b">
         <h3 className="font-semibold text-sm flex items-center gap-2">
           {selectedElementType === 'canvas' ? (
-            <><Monitor className="h-4 w-4" />画布属性</>
+            <><Monitor className="h-4 w-4" />{pageBreakpoint ? '页面属性' : '画布属性'}</>
           ) : selectedElementType === 'control' ? (
             <><Settings className="h-4 w-4" />控件属性</>
           ) : (
             <><BarChart3 className="h-4 w-4" />图表属性</>
           )}
         </h3>
-        <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={onClose}>
+        <Button variant="ghost" size="sm" aria-label="关闭属性面板" className="h-7 w-7 p-0" onClick={onClose}>
           <PanelRightClose className="h-4 w-4" />
         </Button>
       </div>
@@ -112,14 +125,14 @@ export default function PropertyPanel({
             {/* Position & Size */}
             <div className={`space-y-3 ${tab === 'position' ? '' : 'hidden'}`}>
               <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1">
-                <Move className="h-3 w-3" /> 位置与大小
+                <Move className="h-3 w-3" /> {pageBreakpoint ? `${PAGE_LABELS[pageBreakpoint]}网格位置与大小` : '位置与大小'}
               </div>
               <div className="grid grid-cols-2 gap-2">
                 {(['x', 'y', 'w', 'h'] as const).map(axis => (
                   <div key={axis} className="space-y-1">
-                    <Label className="text-[10px] text-muted-foreground">{axis === 'x' ? 'X' : axis === 'y' ? 'Y' : axis === 'w' ? '宽度' : '高度'}</Label>
-                    <Input type="number" className="h-7 text-xs"
-                      value={selectedChart.position?.[axis] ?? (axis === 'w' ? DEFAULT_CHART_SIZE.w : axis === 'h' ? DEFAULT_CHART_SIZE.h : 0)}
+                    <Label className="text-[10px] text-muted-foreground">{pageBreakpoint ? { x: '起始列（从 0 开始）', y: '起始行（从 0 开始）', w: '跨列数', h: '跨行数' }[axis] : axis === 'x' ? 'X' : axis === 'y' ? 'Y' : axis === 'w' ? '宽度' : '高度'}</Label>
+                    <Input type="number" aria-label={`${pageBreakpoint ? '页面' : '大屏'}布局 ${axis}`} className="h-7 text-xs"
+                      value={(pageBreakpoint ? pageRect?.[axis] : selectedChart.position?.[axis]) ?? (axis === 'w' ? DEFAULT_CHART_SIZE.w : axis === 'h' ? DEFAULT_CHART_SIZE.h : 0)}
                       onChange={e => onPositionChange(selectedChart.id, axis, Number(e.target.value) || 0)} />
                   </div>
                 ))}
@@ -156,7 +169,11 @@ export default function PropertyPanel({
 
             <div className="h-2" />
           </div>
-        ) : (
+        ) : pageBreakpoint ? <div className="space-y-3 text-sm">
+          <p>{PAGE_LABELS[pageBreakpoint]} · {PAGE_COLUMNS[pageBreakpoint]} 列 · 间距 {pageGap(pageBreakpoint)}px</p>
+          <p className="text-xs text-muted-foreground">基础行高 {PAGE_ROW}px；图表高度包含行间距。仅修改当前断点，未调整的平板和手机布局从桌面派生。</p>
+          <Button variant="outline" size="sm" onClick={onResetPage}>恢复当前断点自动适配</Button>
+        </div> : (
           /* Canvas Properties */
           <CanvasProperties
             canvasSize={canvasSize}
@@ -188,6 +205,10 @@ export default function PropertyPanel({
       )}
     </div>
   );
+  if (narrow) return <Dialog open={isOpen} onOpenChange={open => { if (!open) onClose(); }}><DialogContent className="left-auto right-0 top-0 h-[100dvh] w-[min(320px,95vw)] translate-x-0 translate-y-0 rounded-none p-0 flex flex-col gap-0">
+    <DialogTitle className="sr-only">属性面板</DialogTitle><DialogDescription className="sr-only">修改当前选中元素的外观、数据与布局。</DialogDescription>{content}
+  </DialogContent></Dialog>;
+  return <aside className={`shrink-0 overflow-hidden border-l ${isOpen ? 'w-[300px]' : 'hidden'}`}>{content}</aside>;
 }
 
 // ========== Sub-components ==========

@@ -9,6 +9,8 @@ import { splitChartBlocks } from '../lib/chartBlocks';
 interface Props {
   text: string;
   className?: string;
+  /** 当前会话 ID, 供按引用的文件产物卡片构造下载/预览 URL。 */
+  conversationId?: number | null;
 }
 
 /**
@@ -16,7 +18,7 @@ interface Props {
  * ```mermaid 块渲染流程图/时序图,```artifact 块渲染可下载文件产物。
  * 解析失败降级为代码块。图表内嵌于 content,天然随消息持久化与回放。
  */
-export default function MarkdownWithCharts({ text, className }: Props) {
+export default function MarkdownWithCharts({ text, className, conversationId }: Props) {
   const segments = useMemo(() => splitChartBlocks(text || ''), [text]);
   // prose 排版色已由 globals.css 令牌化(--tw-prose-* → 主题变量),自动随主题
   const proseCls = className || 'leading-relaxed prose prose-sm max-w-none';
@@ -50,7 +52,10 @@ export default function MarkdownWithCharts({ text, className }: Props) {
               type={seg.type}
               filename={seg.filename}
               content={seg.content}
+              path={seg.path}
+              theme={seg.theme}
               description={seg.description}
+              conversationId={conversationId}
             />
           );
         }

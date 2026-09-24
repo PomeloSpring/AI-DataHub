@@ -34,6 +34,7 @@ class GraphRagStrategy(RetrievalStrategy):
         target_tables: list[str] = None,
         keywords: list[str] = None,
         datasource_id: int = 0,
+        extra_object_keys: list[str] = None,
     ) -> dict:
         from services.datamind.rag.graph_rag.agentic_sparql import AgenticSparqlRetriever
         from services.datamind.rag.graph_rag.oxigraph_store import OxigraphStore
@@ -44,11 +45,13 @@ class GraphRagStrategy(RetrievalStrategy):
             return empty_result("graphrag:store_unavailable")
 
         candidate = selected_tables or target_tables
+        # T7: 知识库命中的对象 key 作为额外检索线索注入 grounding(与词法 keywords 合并)
+        grounding_keywords = list(keywords or []) + [str(k) for k in (extra_object_keys or []) if k]
 
         # ── Grounding: the single (SPARQL) retrieval route ──
         try:
             grounding = AgenticSparqlRetriever(store=store).ground(
-                question, datasource_id=datasource_id, keywords=keywords,
+                question, datasource_id=datasource_id, keywords=grounding_keywords,
                 candidate_tables=candidate,
             )
         except Exception as e:

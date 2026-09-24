@@ -1,370 +1,289 @@
 # AI-DataHub 项目架构
 
-> 自然语言商业智能平台 — 中文自然语言查询 → SQL → 可视化 → 洞察，无需 SQL 知识
+> 自然语言商业智能平台 — 语义层为唯一事实源：自然语言 → 声明式意图 → 受控取数 → 可视化 → 洞察。
+>
+> 本文档与代码实际状态同步（2026-09）。历史版本中的向量检索服务（embedding/Doris 向量）与
+> `execute_sql` 裸 SQL 通道均已下线，统一走 GraphRAG + 关键词/BM25 与 `run_semantic_query`。
 
 ---
 
-## 一、整体架构总览
+## 一、整体分层架构
 
+```mermaid
+flowchart TB
+    subgraph FE["前端 React 18 + Vite"]
+        UI["数据中台 /data/* · 系统配置 /system/* · 工作空间 /ws/*"]
+        Store["Zustand: authStore / chatStore / asBotStore / permissionStore / workspaceStore"]
+        SDK["Embed SDK（AK 嵌入看板/大屏）"]
+    end
+    GW["Nginx :80（生产）/ Vite Proxy（开发）— 按 /api/* 前缀路由到微服务"]
+    subgraph SVC["微服务层（uvicorn, 无 --reload）"]
+        AUTH["authservice :8006<br/>JWT·用户·角色·权限码·RLS·审计"]
+        DM["datamind :8001<br/>Chat/Agent 编排·Playground·AS-BOT·知识库·执行层适配"]
+        DC["datacatalog :8005<br/>数据源·元数据·本体建模·术语·标签·指标字典·数据集API"]
+        DV["dataviz :8004<br/>看板·图表·报表·Datasets·治理取数"]
+        DG["datagov :8002<br/>质量·血缘·标准·敏感数据"]
+        DF["dataflow :8003<br/>同步·调度·通知"]
+        AI["aiplatform :8007<br/>Waker·MCP·模型配置·Prompt"]
+        GS["graphservice :8011<br/>Oxigraph 知识图谱/SPARQL"]
+        SS["semanticservice :8012<br/>语义层只读契约(ast/lineage/rls-diff)"]
+    end
+    subgraph EXEC["LLM 执行层（Harness）"]
+        QSA["QoderSDKAdapter<br/>按会话 QoderSDKClient 长对话池"]
+        MCP["进程内 MCP 工具:<br/>datahub_catalog / datahub_semantic / datahub_ontology / datahub_screen"]
+    end
+    subgraph DATA["数据与基础设施"]
+        MDB[("MySQL 元数据库 adh*<br/>字典/本体/权限/Waker/审计")]
+        DE["DataFusion Gateway (Rust)<br/>联邦查询·RLS 二次校验"]
+        OXI[("Oxigraph 命名图<br/>ds:ID 隔离")]
+        DS[("业务数据源<br/>MySQL/Doris/SLS…")]
+        QMIND["Qoder qMind 云端知识库<br/>(qmind CLI 子进程)"]
+        LLM["Qoder 平台 LLM"]
+    end
+    UI --> Store --> GW
+    GW --> SVC
+    DM --> QSA --> LLM
+    QSA --> MCP --> SS
+    MCP --> DE --> DS
+    DC --> GS --> OXI
+    DM --> QMIND
+    SVC --> MDB
+    DG --> DS
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              Frontend (React 18 + Vite)                         │
-│   Chat · Dashboard · Catalog · Admin · KnowledgeGraph · ModelLab · Workspace    │
-│   Zustand Store · Tailwind CSS · ECharts · ReactFlow · Embed SDK              │
-└──────────────────────────────┬──────────────────────────────────────────────────┘
-                               │ HTTP / SSE
-┌──────────────────────────────▼──────────────────────────────────────────────────┐
-│                         Nginx API Gateway (port 80)                             │
-└──┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬─────────────────────┘
-   │      │      │      │      │      │      │      │      │
-   ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼
-┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐
-│Data  ││Data  ││Data  ││Data  ││Data  ││Auth  ││AI    ││Vector││Graph │
-│Mind  ││Gov   ││Flow  ││Viz   ││Cat.  ││Svc   ││Plat. ││Svc   ││Svc   │
-│:8001 ││:8002 ││:8003 ││:8004 ││:8005 ││:8006 ││:8007 ││:8010 ││:8011 │
-└──┬───┘└──┬───┘└──┬───┘└──┬───┘└──┬───┘└──┬───┘└──┬───┘└──┬───┘└──┬───┘
-   │       │       │       │       │       │       │       │       │
-   └───────┴───────┴───────┴───────┴───────┴───┬───┴───────┴───────┘
-                                               │
-              ┌────────────────────────────────┼────────────────────────────┐
-              │         Shared Infrastructure  │                            │
-              │  ┌─────────┐ ┌─────────┐ ┌─────▼─────┐ ┌───────────────┐  │
-              │  │  MySQL  │ │  Doris  │ │   Redis   │ │   Oxigraph    │  │
-              │  │ :3306   │ │ :9030   │ │  :6379    │ │   :7878       │  │
-              │  │(元数据) │ │(向量+OLAP)│ │(缓存/锁) │ │(RDF知识图谱) │  │
-              │  └─────────┘ └─────────┘ └───────────┘ └───────────────┘  │
-              │  ┌─────────┐ ┌──────────┐                                  │
-              │  │ Qdrant  │ │DataEngine│                                  │
-              │  │(可选向量)│ │:8082(Rust)│                                  │
-              │  └─────────┘ └──────────┘                                  │
-              └────────────────────────────────────────────────────────────┘
-```
+
+### 服务职责速查
+
+| 服务 | 端口 | 职责 | 关键模块 |
+|---|---|---|---|
+| authservice | 8006 | JWT 认证、用户/角色、权限码注册表、RLS 策略、审计、系统监控 | `api/roles.py`、`services/rls_service.py` |
+| datamind | 8001 | Chat/Agent 编排（SSE 管道）、SQL Playground、AS-BOT API、知识库管理、执行层适配 | `agent/`、`execution/`、`api/playground.py`、`api/as_bot.py`、`rag/qmind_retriever.py` |
+| datacatalog | 8005 | 数据源、元数据、本体建模（生成/激活/YAML 导入）、业务术语、标签、指标/维度字典、本体→知识库同步 | `services/ontology_service.py`、`ontology_kb_sync.py`、`api/metrics.py` |
+| dataviz | 8004 | 看板、图表、报表、可视化大屏、UI 字模库、Datasets 治理建模层、治理取数 | `services/dataset_service.py`、`governed_query.py` |
+| datagov | 8002 | 数据质量、血缘、数据标准、敏感字段治理（敏感基线唯一来源） | — |
+| dataflow | 8003 | 元数据/数据同步任务、定时调度、通知渠道、报告模板 | — |
+| aiplatform | 8007 | Waker 管理、MCP 服务市场、模型配置、Prompt 版本、执行层注册表 | `api/wakers.py` |
+| graphservice | 8011 | 知识图谱查询（Oxigraph SPARQL）；字典端点已全部下线（读写归指标中心/datacatalog） | `api/graph.py` |
+| semanticservice | 8012 | 语义层只读契约端点（AST/血缘/RLS diff 预览/provenance） | — |
+| dataengine | (GATEWAY_PORT) | Rust DataFusion 联邦查询网关，MySQL/Doris/SLS provider，RLS 二次校验 | `src/` |
 
 ---
 
-## 二、微服务清单
+## 二、模块关联（语义层要素的分工与数据流）
 
-| 服务 | 端口 | MCP 端口 | 职责 |
-|------|------|----------|------|
-| **DataMind** | 8001 | 31001 | AI 引擎：NL2SQL、Agent 编排、RAG 检索、执行层调度、Chat SSE |
-| **DataGov** | 8002 | 31002 | 数据治理：质量规则、数据血缘、安全分级、脱敏策略 |
-| **DataFlow** | 8003 | 31003 | 数据集成：元数据同步、数据源管理 |
-| **DataViz** | 8004 | 31004 | 可视化：仪表盘 CRUD、图表配置、交叉筛选、自动刷新 |
-| **DataCatalog** | 8005 | 31005 | 数据目录：表/列元数据、标签、术语表、指标管理 |
-| **AuthService** | 8006 | 31006 | 认证授权：JWT、RBAC、列级权限、审计日志 |
-| **AIPlatform** | 8007 | — | 平台管理：MCP 服务器、Agent 配置、模型实验室、Embed、品牌、缓存 |
-| **VectorService** | 8010 | 31010 | 向量检索：Doris HNSW / Qdrant / 内存 numpy，Embedding 生成 |
-| **GraphService** | 8011 | — | 知识图谱：Oxigraph RDF/SPARQL 实体/关系管理、图查询、可视化数据 |
+```mermaid
+flowchart LR
+    subgraph 物理层
+        T["表&字段<br/>adh_table_info/column_metadata"]
+        TAG["标签<br/>categories/tags/values<br/>+ 自动域/地域标签"]
+    end
+    subgraph 语义字典层
+        TERM["业务术语<br/>词→表/列/公式映射"]
+        MET["指标 adh_metrics<br/>口径/聚合/单位"]
+        DIM["维度 adh_dimensions<br/>枚举标签/别名/时间"]
+    end
+    subgraph 语义模型层
+        ONT["本体模型<br/>JSON事实源→派生YAML/MD<br/>对象-属性-关系+execution_binding"]
+        KG["知识图谱 Oxigraph"]
+        KB["qMind 知识库<br/>本体模型-&lt;名称&gt;.md"]
+    end
+    subgraph 消费层
+        RSQ["run_semantic_query"]
+        DS2["Datasets 治理建模层<br/>semantic|sql 双来源+行级scope"]
+        CHAT["Chat/AS-BOT"]
+        BI["看板/报表/大屏"]
+    end
+    T -->|metadata_sync 定时同步| TAG
+    T --> TERM & MET & DIM
+    TAG -->|按域分批送LLM| ONT
+    TERM -->|翻译依据| ONT
+    ONT -->|激活: 对象展开/绑定落库| KG
+    ONT -->|激活/保存: 自动同步 md| KB
+    MET & DIM -->|bound_object_key 挂到对象| ONT
+    ONT -->|唯一取数入口| RSQ
+    KB -->|knowledge_search 优先检索| CHAT
+    DS2 --> RSQ
+    CHAT & BI --> DS2
+```
+
+### 各模块定位（一句话）
+
+| 模块 | 定位 | 回答的问题 |
+|---|---|---|
+| 表 & 字段 | 技术元数据（同步而来） | 数据物理上在哪 |
+| 标签管理 | 数据资产分类面（人工 + 自动域/地域标签） | 这张表属于什么类别 |
+| 业务术语 | 同义词词典（词 → 表/列/公式） | 这个业务词指哪列 |
+| 指标中心 | 度量/维度字典（唯一口径权威，**编辑单一入口**：指标字典/维度字典双 Tab） | 这个数怎么算、这个词指哪列 |
+| 本体建模 | 业务世界语法（对象-属性-关系 + 物理绑定） | 数据在业务上是什么 |
+| 本体可视化 | 关系探索 + SPARQL（不含字典管理） | 实体之间怎么连 |
+| Datasets | BI 治理建模层（语义对象/SQL 双来源 + 行级范围） | 分析资产怎么复用同一口径 |
+| qMind 知识库 | AI 的权威上下文（含自动同步的本体文档） | 回答/建模前查什么 |
+
+> 治理原则：指标/维度字典的**读写唯一入口**是 datacatalog `/api/metrics`（指标中心双 Tab：
+> 指标字典/维度字典）；知识图谱页不再内嵌字典管理，graphservice 的字典端点已下线，
+> 避免双编辑器对同一张表各写一套字段映射造成漂移。人工维护的维度别名/枚举标签
+> 优先级高于本体回写（sync_enums_to_dimensions 只补空白不覆盖）。
 
 ---
 
-## 三、中间件与基础设施
+## 三、数据标注与同步链路
 
-### 3.1 数据存储层
-
-| 中间件 | 版本 | 用途 | 部署方式 |
-|--------|------|------|----------|
-| **MySQL** | 8.0 | 元数据存储（用户/权限/工作空间/数据源/会话/配置） | Docker / 远程 |
-| **Apache Doris** | — | OLAP 分析引擎 + HNSW 向量检索（双角色） | 远程集群 |
-| **Redis** | 7-alpine | 缓存、Celery Broker、分布式锁 | Docker |
-| **Oxigraph** | latest | 轻量级 RDF 三元组存储，SPARQL 1.1 合规（知识图谱/本体建模） | Docker（~50MB 镜像，RocksDB 持久化） |
-| **Qdrant** | v1.12.1 | 可选向量数据库（替代 Doris 向量检索） | Docker |
-
-### 3.2 AI / LLM 层
-
-| 组件 | 说明 |
-|------|------|
-| **Anthropic Claude** | 主力 LLM 提供商，通过 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` 配置代理 |
-| **Embedding Model** | `shibing624/text2vec-base-chinese`（768 维），HuggingFace Mirror 下载 |
-| **Multi-Provider LLM** | 支持多模型配置（`adh_llm_models` 表），运行时动态切换 |
-
-### 3.3 执行层（Agent Execution Layer）
-
-| 适配器 | 模式 | 说明 |
-|--------|------|------|
-| **BuiltInAdapter** | 内置 | 系统内置 Agent Loop（quick/deep pipeline） |
-| **ClaudeSDKAdapter** | SDK | Claude Agent SDK，进程内 MCP + 自定义工具 |
-| **QoderSDKAdapter** | SDK | Qoder Agent SDK，session 多轮恢复，in-process tools |
-| **CLIProcessAdapter** | 子进程 | qodercli CLI 纯文本输出（降级模式） |
-
-**SDK 内置工具集**（通过 `sdk_tools/` 注入执行层）：
-- **catalog_tools**: `search_metadata`, `get_table_schema`, `list_datasources`
-- **query_tools**: `execute_sql`（封装 validate_sql + execute_query_with_permission，200 行上限）
-- **semantic_tools**: `get_metrics`, `get_glossary`, `query_by_tags`, `knowledge_search`
-
-### 3.4 认证与安全
-
-| 组件 | 说明 |
-|------|------|
-| **JWT 认证** | AuthService 签发，`ADH_SECRET_KEY` 签名 |
-| **RBAC** | 角色/权限管理，工作空间级隔离 |
-| **AES 加密** | 数据源密码加密存储（`crypto.py`） |
-| **列级脱敏** | 敏感数据分级 + 查询时自动脱敏 |
-
-### 3.5 外部平台集成
-
-| 平台 | 说明 |
-|------|------|
-| **MCP (Model Context Protocol)** | 工具协议标准，每个服务暴露 MCP 端口，支持 stdio/sse/http 传输 |
-
-### 3.6 共享基础设施库（`services/shared/`）
-
-| 模块 | 路径 | 职责 |
-|------|------|------|
-| **common/config** | `shared/common/config.py` | 集中环境变量加载（所有服务通过此模块读取配置） |
-| **common/db** | `shared/common/db/` | MetadataDB 连接池（PooledDB）、向量池 |
-| **common/llm** | `shared/common/llm/` | LLM 客户端封装（多 provider） |
-| **common/vector** | `shared/common/vector/` | 向量存储抽象（Doris HNSW / Qdrant / numpy） |
-| **common/crypto** | `shared/common/crypto.py` | AES 加解密 |
-| **common/auth** | `shared/common/auth.py` | JWT 验证中间件 |
-| **common/engine_client** | `shared/common/engine_client.py` | DataEngine Rust 引擎 HTTP 客户端 |
-| **common/rls_loader** | `shared/common/rls_loader.py` | 行级安全策略加载 |
-| **common/cache** | `shared/common/cache/` | TTL 缓存 |
-| **mcp_client** | `shared/mcp_client/` | MCP 客户端（注册、工具发现、调用） |
-| **connectors** | `shared/connectors/` | 数据源连接器（ES 等） |
-| **models** | `shared/models/` | 共享 Pydantic + ORM 模型 |
+| 链路 | 触发 | 实现 | 一致性要点 |
+|---|---|---|---|
+| 元数据同步 | 手动 / dataflow 定时 | `sync/metadata_sync.py` → `adh_table_info` / `adh_column_metadata`；按表名规则自动提取 `domain_tag/region_tag` | 视图不得被 `TABLE_TYPE='BASE TABLE'` 过滤系统性丢弃 |
+| 本体生成 | 页面按钮 / AS-BOT 工具 | LLM 按域标签分批（每批 ≤20 表）归纳 → JSON 草案 → 人工编辑 → **激活** | 同一数据源仅一个 active 版本，旧版自动归档，可回滚 |
+| 本体 → 知识图谱 | 激活 / 激活态保存 / YAML 导入 | `graph_builder` → Oxigraph 命名图 `ds:ID`；对象 MD 段展开进 `adh_ontology_objects` | **先落库 json_content 再重建图谱**（否则图谱滞后一次保存）；全局聚合图 ds:0 需单独触发重建 |
+| 本体 → qMind 知识库 | `ontology_service` 服务层钩子（save/activate/archive/delete） | `ontology_kb_sync.py`：md_content 以固定标题「本体模型-<名称>.md」先删旧再 upload（幂等）；后台线程 + 静默失败 | 仅 `source_config.sync_ontology=true` 的 active qMind KB；文档归属 active 版本，同名多版本共享一篇 |
+| 本体枚举 → 维度字典 | 激活 / 激活态保存 | `sync_enums_to_dimensions`：enum → `value_labels`、属性名/描述 → `aliases` | **人工标签优先**，冲突不覆盖只记日志；字典缺维度行的枚举列入 gaps 供人工决策 |
+| YAML 导入 | 页面 / AS-BOT | `ontology_yaml_import.import_palantir_yaml`：Palantir 多域 YAML 合并为单模型 `{datasource}-全量本体` | 激活态允许就地编辑，保存时按真实表元数据重算 execution_binding 并联动刷新 |
+| 数据源身份 | 数据源增删改 | `adh_datasources.name` 全局唯一（UNIQUE）；`adh_ontology_bindings` 与 canonical `execution_binding` 同时持久化 `datasource_name` | 删除重建（同名）自动重解析；解析结果回填当前 live datasource_id |
 
 ---
 
-## 四、前端架构
+## 四、技术栈
 
-```
-frontend/src/
-├── api/              # API 客户端层（14 个 API 模块）
-├── components/       # 共享组件（30+ 组件）
-│   ├── ToolCallTimeline    # 工具调用时间线（执行可观测）
-│   ├── ThinkingBlock       # 思考过程折叠块
-│   ├── ERDiagram           # ER 图可视化
-│   ├── graph/              # 知识图谱可视化
-│   ├── chat/               # 聊天专用组件
-│   ├── editor/             # SQL/代码编辑器
-│   └── ui/                 # 基础 UI 原子组件
-├── pages/            # 页面路由
-│   ├── Chat.tsx            # 聊天主页（Quick/Deep/Agent 三模式）
-│   ├── Dashboard.tsx       # 仪表盘
-│   ├── DashboardEditor.tsx # 仪表盘编辑器
-│   ├── KnowledgeGraph.tsx  # 知识图谱
-│   ├── WorkspaceManager*.tsx # 工作空间管理
-│   ├── admin/              # 管理后台
-│   ├── catalog/            # 数据目录
-│   ├── lineage/            # 数据血缘
-│   └── quality/            # 数据质量
-├── stores/           # Zustand 状态管理
-│   ├── chatStore.ts        # 聊天状态（SSE 流、消息、工具调用）
-│   ├── brandStore.ts       # 品牌配置
-│   ├── themeStore.ts       # 主题
-│   └── workspaceStore.ts   # 工作空间
-├── config/           # 构建时常量
-├── hooks/            # 自定义 Hooks
-├── styles/           # Tailwind CSS + 主题 Token
-└── sdk/              # Embed SDK（Web Components 可嵌入库）
-```
-
-### 前端技术栈
-
-| 技术 | 版本/说明 |
-|------|-----------|
-| React | 18 |
-| TypeScript | 5.x |
-| Vite | 构建工具 |
-| Tailwind CSS | 样式系统（多主题 Token 化设计） |
-| Zustand | 状态管理 |
-| ECharts | 图表可视化 |
-| ReactFlow | 工作流/图谱可视化 |
-| React | 18 |
+| 层 | 选型 | 备注 |
+|---|---|---|
+| 前端 | React 18 + TypeScript + Vite + Tailwind + shadcn/Radix + Zustand + G2/ECharts + ReactFlow + react-markdown | vitest 单测；vite 改 config 自动重启 |
+| 后端 | Python 3.10 + FastAPI × 9 服务 | uvicorn **无 --reload**，改代码/路由必须 `bash services/<svc>/start.sh restart` |
+| 数据访问 | DBUtils 连接池 + PyMySQL；`services/shared/common/db`（元数据）/ `datasource_db`（业务源） | 数据源配置来自 `services/.env` |
+| 查询引擎 | Rust DataFusion Gateway（axum 0.7 路由语法 `:id`），MySQL/Doris/SLS provider；不可用时 pymysql/psycopg2 直连兜底 | 连接池 key 不含凭据 → 密码轮换需 PUT 下推或重启引擎 |
+| 存储 | MySQL（OLTP 元数据，全部 `adh_*` 表）；Oxigraph（RDF 命名图，Docker 命名卷）；Doris（可选 OLAP / 可观测大表） | embedding 与 Doris 向量检索已全量移除，统一 GraphRAG + 关键词/BM25 |
+| LLM | Qoder 平台（qoder-agent-sdk）；`QoderSDKClient` 按会话长对话池，失败回落单发 `query()+resume` | 认证 `QODER_PERSONAL_ACCESS_TOKEN` |
+| 知识库 | Qoder qMind 云端 Notebook（qmind CLI 子进程，`QMIND_TOKEN` 自动换取 job token） | 真实 notebook 由 CLI 创建后产品页导入，禁止 SQL 种子假条目 |
+| 网关 | Nginx（生产，`services/dataengine/nginx.conf`）/ Vite proxy（开发，`frontend/vite.config.ts`） | 新增服务前缀两处都要配 |
+| 可观测 | 自研 span/用量采集（`services/shared/observability`），MySQL=OLTP / Doris=OLAP 分库 | 未开启即全链路 no-op、绝不抛出 |
+| 迁移 | `docker/mysql/*.sql` 幂等脚本（CREATE IF NOT EXISTS + INSERT IGNORE + information_schema 判列） | 应用时**必须引号感知分词**，禁止按 `;` 朴素切分 |
 
 ---
 
-## 五、数据流架构
+## 五、权限体系（三层正交）
 
-### 5.1 Chat 查询流（Agent 模式）
-
-```
-User Input
-    │
-    ▼
-Chat.tsx ──POST /api/chat/send/agent/stream──▶ DataMind (chat_service.py)
-    │                                              │
-    │                                              ▼
-    │                                     ExecutionLayerManager
-    │                                              │
-    │                              ┌───────────────┼───────────────┐
-    │                              ▼               ▼               ▼
-    │                     ClaudeSDKAdapter  QoderSDKAdapter  CLIProcessAdapter
-    │                              │               │               │
-    │                              └───────────────┼───────────────┘
-    │                                              ▼
-    │                                     SDK Tools (in-process)
-    │                                     ├── search_metadata
-    │                                     ├── get_table_schema
-    │                                     ├── execute_sql
-    │                                     └── knowledge_search
-    │                                              │
-    │◀────── SSE: tool_start / tool_result ────────┘
-    │◀────── SSE: thinking / token / done ─────────┘
-    ▼
-Chat.tsx 渲染
-├── ToolCallTimeline（工具调用时间线）
-├── ThinkingBlock（思考过程）
-├── 执行统计摘要条（轮次/工具次数/耗时）
-└── ECharts 可视化
+```mermaid
+flowchart TB
+    subgraph L1["① 功能权限（权限码注册表驱动）"]
+        PR["adh_perm_registry<br/>perm_code(module:action)<br/>+ api_pattern/api_method(逗号多值) + menu_key"]
+        RP["adh_role_perms: 角色→权限码"]
+        MW["api_permission 中间件（9 服务全注册）<br/>路径+方法命中声明 → 角色需具备任一权限码<br/>admin 放行; 角色未配置=不限制(向后兼容)"]
+        FS["前端 permissionStore<br/>/roles/current/permissions 一次拉取<br/>→ 菜单显隐 + 按钮 hasPerm"]
+        PR --> MW
+        RP --> MW
+        PR -->|menu_key 派生| FS
+    end
+    subgraph L2["② 数据权限（数据护城河，统一取数入口不可旁路）"]
+        SEQ["enforcer.check_access 生效顺序:<br/>敏感基线(对 admin 也生效) → sensitive_only →<br/>admin 旁路(敏感除外) → 数据源/表 RBAC →<br/>列级 hidden/masked → RLS row_filter"]
+        RULE["只增不减: 角色/RLS 策略永不得弱化敏感基线"]
+    end
+    subgraph L3["③ 身份 fail-closed"]
+        ID["只信服务端: JWT / 嵌入 AK / 报表创建者<br/>body.user_id 一律不信<br/>无可信身份 → NoIdentityError 拒绝取数"]
+    end
+    L1 --> L2 --> L3
 ```
 
-### 5.2 NL2SQL Pipeline（Quick/Deep 模式）
+### 功能权限要点
 
-```
-User Question
-    │
-    ▼
-DataMind Pipeline Orchestrator
-    │
-    ├── RAG 检索 ──▶ VectorService ──▶ Doris HNSW / Qdrant
-    │                                       │
-    ├── 元数据加载 ──▶ DataCatalog ◀────────┘
-    │
-    ├── LLM 推理 ──▶ Anthropic Claude
-    │
-    ├── SQL 校验 ──▶ DataEngine (Rust) ──▶ MDL/RLS/方言转译
-    │
-    ├── 查询执行 ──▶ Doris / MySQL / ES
-    │
-    └── 自动可视化 ──▶ ECharts 配置生成
-```
+- 单一事实源：`adh_perm_registry`（权限码声明 API 模式 + 菜单 key）+ `adh_role_perms`；
+  角色配置页（RoleManagement → 功能权限 Tab）按模块分组勾选，不再逐菜单/逐接口配置。
+- 中间件对 `api_pattern`/`api_method` 做**笛卡尔展开**匹配（fnmatch `*` 通配）；
+  「读语义但用 POST」的端点（如数据集 preview/query）需独立权限码（`dataset:query`），
+  否则会被 manage 误拦。
+- 内置资源（如 `__system_bot__` Waker）仅 admin 可编辑（前端只读 + 后端 403 双保险）。
+- 权限码 pattern 必须按各服务**实际挂载路径**核对（如本体真实前缀 `/api/catalog/ontology`、
+  看板 `/api/dashboard` 无 s），否则管控静默空转。
+
+### 数据权限要点（详见 `.qoder/rules/security-guardrails.md`）
+
+- 任何返回数据行的执行必须经 `execute_query_with_permission`（或封装 `governed_execute`）。
+- RLS 行过滤以包裹子查询注入，保留原表别名，覆盖 FROM 与 JOIN 两侧。
+- `validate_sql`：仅 SELECT/WITH，禁 DDL/DML/多语句，缺 LIMIT 自动补默认后再校验。
+- 结果序列化经 `df_to_columns_rows` 无损消歧重名列。
+- 审计成功与拒绝均落库；可观测/审计改动不得抛异常影响主链路。
 
 ---
 
-## 六、部署架构
+## 六、执行层与 Waker 权限管理
 
-### 6.1 本地开发（Shell 脚本）
-
-```bash
-./start-all.sh          # 启动所有微服务 + 前端
-./stop-all.sh           # 停止所有服务
-./restart-all.sh        # 重启所有服务
+```
+Waker(配置单元 "what") ──注入──▶ Harness(QoderSDKAdapter "how") ──驱动──▶ LLM(model)
 ```
 
-- 共享虚拟环境：`./venv/bin/python`
-- 进程管理：PID 文件（`pids/`）+ 日志文件（`logs/`）
-- 前端：`npm run dev`（Vite HMR）
-
-### 6.2 Docker Compose（生产部署）
-
-```bash
-# 最小部署（后端 + 前端）
-docker compose up -d
-
-# 完整部署（含 MySQL）
-docker compose -f docker-compose.full.yml up -d
-
-# 全微服务部署（含所有中间件）
-cd services && docker compose up -d
-```
-
-### 6.3 中间件端口汇总
-
-| 中间件 | 端口 | 协议 |
-|--------|------|------|
-| Nginx Gateway | 80 | HTTP |
-| Frontend (Vite/Nginx) | 3000 | HTTP |
-| DataMind | 8001 / 31001 | HTTP / MCP |
-| DataGov | 8002 / 31002 | HTTP / MCP |
-| DataFlow | 8003 / 31003 | HTTP / MCP |
-| DataViz | 8004 / 31004 | HTTP / MCP |
-| DataCatalog | 8005 / 31005 | HTTP / MCP |
-| AuthService | 8006 / 31006 | HTTP / MCP |
-| AIPlatform | 8007 | HTTP |
-| VectorService | 8010 / 31010 | HTTP / MCP |
-| GraphService | 8011 | HTTP |
-| DataEngine (Rust) | 8082 | HTTP |
-| MySQL | 3306 | TCP |
-| Apache Doris | 9030 | MySQL Protocol |
-| Redis | 6379 | TCP |
-| Oxigraph | 7878 | HTTP (SPARQL) |
-| Qdrant HTTP | 6333 | HTTP |
-| Qdrant gRPC | 6334 | gRPC |
+| 维度 | 机制 |
+|---|---|
+| Waker 解析 | `adh_wakers` 按 工作空间绑定 + 用户角色 + 会话选定 `waker_key` 合并（`resolve_wakers`）；`__system_bot__` 走 `resolve_system_bot_waker` 专用分支，工具组由服务端强制覆盖 |
+| 工具粒度 | `tools.groups`（catalog/semantic/ontology/screen）；`tools.mcp = {group: [tool,...]}` 逐工具勾选（权限完全下放配置，无代码硬删工具组）；`tools.standard` 标准工具白名单 → 生成 deny-list（注意：空数组=不限制，必须显式配置） |
+| 知识库绑定 | `knowledge_base_ids` → ① 注入 system_prompt（引导优先检索）② `ctx.extra.bound_knowledge_base_ids` → `knowledge_search` 按绑定范围检索。语义：`None`=不限库；`[]`=明确无绑定直接回退 graphrag |
+| 技能绑定 | `skills` 名称数组 → `config/skills/<name>/SKILL.md` 文件夹按名加载提示词 |
+| 生效保障 | options 稳定投影指纹（含 system_prompt/tools/mcp/agents/ctx）→ **换绑后下一轮自动 resume 重建长对话**，历史保留 |
+| 基础设施黑盒 | `datasource_id/workspace_id/user_id` 由服务端 ContextVar 注入工具 handler，LLM 不可见、不可传、不可猜 |
+| AS-BOT 审批 | 写操作工具返回 `approval_required` 标记 → 前端 ApprovalCard → 审批 API 执行；角色动作权限 `adh_as_bot_role_actions` |
+| 执行层注册表 | `adh_execution_layers`（cli-qoder 必须 `config.mode=sdk` 才走 QoderSDKAdapter，否则 Waker 注入/语义工具全失效）；默认外部层取第一个 healthy 非 builtin |
 
 ---
 
-## 七、配置管理
+## 七、LLM 功能设计架构
 
-### 7.1 环境变量（`services/.env`）
+### 端到端时序（一次 Chat 取数）
 
-```ini
-# 元数据库
-METADATA_DB_TYPE=mysql
-METADATA_DB_HOST=...
-METADATA_DB_PORT=3306
-
-# 向量数据库
-VECTOR_DB_TYPE=doris          # doris | qdrant | default(numpy)
-VECTOR_DB_HOST=...
-
-# LLM
-ANTHROPIC_API_KEY=...
-ANTHROPIC_BASE_URL=...        # 支持代理
-ANTHROPIC_MODEL=claude-sonnet-4-20250514
-
-# Embedding
-EMBEDDING_MODEL_PATH=shibing624/text2vec-base-chinese
-EMBEDDING_DIM=768
-HF_ENDPOINT=https://hf-mirror.com
-
-# 知识图谱
-OXIGRAPH_URL=http://localhost:7878
-
-# DataEngine
-ENGINE_SERVER_URL=http://localhost:8082
-ENGINE_ENABLED=true
+```mermaid
+sequenceDiagram
+    participant U as 用户(Chat/AS-BOT面板)
+    participant DM as datamind pipeline(SSE)
+    participant H as QoderSDKAdapter(Harness)
+    participant L as Qoder LLM
+    participant T as 进程内MCP工具
+    participant SL as 语义层(shared.semantics)
+    participant E as DataFusion/直连
+    U->>DM: 提问(waker_key/workspace)
+    DM->>H: ExecutionTask(ctx: 身份ContextVar)
+    H->>H: 解析Waker→compose_system_prompt<br/>(persona+skills+KB+护城河规则)
+    H->>L: 会话池内流式对话
+    L->>T: knowledge_search(questions批量) ←先查qMind知识库(含最新本体文档)
+    L->>T: get_metrics/get_glossary(信息不全才补查)
+    L->>T: run_semantic_query(intent 或 intents_json≤8 批量)
+    T->>SL: parse_intent(拒SQL字段)→resolve_binding→plan→七闸门
+    SL->>E: secured_sql(权限/RLS/护栏已注入)
+    E-->>T: rows(敏感列block/mask, 重名列无损消歧)
+    T-->>L: 声明式结果(剥离SQL/数据源/物理细节)
+    L-->>DM: thinking/token/tool 事件流
+    DM-->>U: SSE 有序时间线(相邻同工具折叠成组)+图表契约渲染
 ```
 
-### 7.2 运行时配置（数据库驱动）
+### 语义层编译链路
 
-| 配置项 | 存储位置 | 说明 |
-|--------|----------|------|
-| 数据源连接 | `adh_datasources` 表 | 密码 AES 加密存储 |
-| LLM 模型配置 | `adh_llm_models` 表 | 多 provider 动态切换 |
-| MCP 服务器 | `adh_mcp_servers` 表 | stdio/sse/http 传输 |
-| Agent 技能 | `datamind/config/agents/` | YAML + Markdown 声明式 |
-| 品牌设置 | `data/brand_settings.json` | 应用名/Logo/主题色 |
-| 工作空间执行层 | `adh_workspace_execution_layers` | 工作空间绑定执行层配置 |
+```
+intent(JSON) ──intent.py 解析(拒 sql/raw_sql/statement)──▶ SemanticQuery
+    ──binding_resolver 三级解析(name 优先)──▶ ResolvedBinding(物理表+方言+护栏)
+    ──planner 编译(指标/维度/枚举/相对时间 time_window)──▶ PlannedExecution(base_sql)
+    ──gates 七闸门 identity→permission→preflight→proposal→approval→execute→audit──▶ rows
+```
+
+- SQL 方言在语义层保留、引擎边界单点转译（失败回退）；相对时间一律 `time_window`（`7d/24h/1M`）。
+- 本体对象绑定 SQL 模板（漏斗/留存等高级函数）时，`params` 按声明传参，模板 variables 由知识库文档可查。
+
+### 工具链路优化四原则
+
+1. **折叠展示**：前端 ProcessTimeline 把相邻同名工具调用折叠成组（思考段打断分组）。
+2. **批量调用**：`run_semantic_query.intents_json`（≤8）、`knowledge_search.questions`、
+   `get_glossary.keywords` —— 一次传全，压缩轮次。
+3. **知识库优先**：先 `knowledge_search`（知识库含自动同步的最新本体文档），
+   够用直接组装 intent，不全再 `get_metrics/get_glossary` 补查。
+4. **本体自动同步**：语义层更新 → qMind 知识库文档刷新（幂等），保证 AI 上下文与口径同源。
+
+### Chat / AS-BOT / Datasets 的关系
+
+- **Chat**（工作空间）：业务分析对话，走选定 Waker；产物按图表契约渲染，赞踩关联可观测 trace。
+- **AS-BOT**（系统助手，数据中台/系统配置 Header 入口）：系统 Waker `__system_bot__`，
+  工具组服务端限定（catalog+semantic+ontology+screen，禁裸 SQL），写操作需审批卡片。
+- **Datasets**（dataviz 治理建模层）：语义对象/SQL 双来源，行级 scope 与 RLS/敏感基线
+  **AND 叠加、只收紧不放宽**；看板/报表/Chat（`query_dataset`）共用同一执行路径同一年口径；
+  SQL Playground 保存查询可联动建集（`adh_saved_queries.dataset_id` 回写）。
 
 ---
 
-## 八、可观测性架构
+## 附：关键约定与红线
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    用户侧执行可观测设计                      │
-├─────────────────────────────────────────────────────────────┤
-│ ToolCallTimeline 组件                                       │
-│ ├── tool_start 事件                                         │
-│ ├── tool_result 事件                                        │
-│ └── 实时 pending→完成                                       │
-│                                                             │
-│ 执行统计摘要条                                              │
-│ ├── N 轮推理                                                │
-│ ├── N 次工具调用                                            │
-│ └── 耗时 Xs                                                │
-│                                                             │
-│ 历史回放（消息持久化）                                      │
-│ └── 刷新后时间线完整恢复                                  │
-└─────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 九、技术栈汇总
-
-| 层 | 技术 |
-|----|------|
-| **前端** | React 18, TypeScript, Vite, Tailwind CSS, Zustand, ECharts, ReactFlow |
-| **后端** | Python 3.12, FastAPI, Uvicorn, SQLAlchemy, Pydantic |
-| **AI/LLM** | Anthropic Claude SDK, Qoder Agent SDK, text2vec-base-chinese |
-| **数据库** | MySQL 8.0, Apache Doris, Oxigraph (RDF) |
-| **向量检索** | Doris HNSW, Qdrant, NumPy (内存) |
-| **缓存** | Redis 7 |
-| **安全** | JWT, RBAC, AES |
-| **工具协议** | MCP (Model Context Protocol) |
-| **SQL 引擎** | DataEngine (Rust) — MDL/RLS/方言转译 |
-| **部署** | Docker Compose, Shell 脚本, Nginx |
-| **嵌入** | Web Components Embed SDK |
+- 服务以 uvicorn 无 `--reload` 常驻：接口/权限代码改动后必须重启对应服务。
+- 触碰 `enforcer.py / query_executor.py / governed_query.py / playground.py /
+  semantic_query.py / df_serialize.py` 后必须跑护城河三套回归测试。
+- 长对话池：流中断/异常即退役回落单发；跨线程埋点须 `contextvars.copy_context().run` 传播 recorder。
+- 前端接口路径与后端真实挂载前缀必须核对（vite proxy + nginx 两处网关配置）。
+- 系统内置组件（Waker/知识库种子）严禁 SQL 占位种子，真实资源经 CLI/产品页创建。

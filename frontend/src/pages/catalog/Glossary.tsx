@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import client from '@/api/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -77,7 +77,17 @@ const emptyForm: TermFormData = {
   description: '',
 };
 
-export default function Glossary() {
+export default function Glossary({
+  embedded = false,
+  datasourceId,
+  tables,
+}: {
+  /** 嵌入模型工作区: 隐藏页头, 按当前模型对象主表集过滤术语 */
+  embedded?: boolean;
+  datasourceId?: number;
+  /** 模型对象的 primary_table 集(小写): 工作区作用域的真锚点(不依赖 datasource_id, 系统本体 ds=0 也能正确隔离) */
+  tables?: string[];
+} = {}) {
   const [terms, setTerms] = useState<Term[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -96,8 +106,11 @@ export default function Glossary() {
   const loadTerms = useCallback(async () => {
     setLoading(true);
     try {
-      const params: any = { page, size: 20 };
+      // 嵌入模式一次拉大页: 作用域在前端按表集过滤, 避免先分页再过滤的计数错乱
+      const params: any = { page, size: embedded ? 200 : 20 };
       if (search) params.search = search;
+      // 工作区作用域: 只看本数据源(+全局)的术语
+      if (datasourceId) params.datasource_id = datasourceId;
       const res = await client.get('/admin/terms', { params });
       const items = res?.data?.items ?? res?.data;
       setTerms(Array.isArray(items) ? items : []);
@@ -108,7 +121,7 @@ export default function Glossary() {
     } finally {
       setLoading(false);
     }
-  }, [page, search]);
+  }, [page, search, datasourceId, embedded]);
 
   useEffect(() => {
     loadTerms();
@@ -178,13 +191,22 @@ export default function Glossary() {
     }
   };
 
+  // 工作区作用域: 只显示绑定到本模型对象主表的术语(修复系统本体看到 test-alb 术语的串数据问题)
+  const shownTerms = useMemo(() => {
+    if (!embedded || !tables) return terms;
+    const set = new Set(tables.map((t) => String(t).toLowerCase()));
+    return terms.filter((t) => set.has(String(t.target_table || '').toLowerCase()));
+  }, [terms, embedded, tables]);
+
   return (
-    <div className="p-6 space-y-4">
+    <div className={embedded ? 'space-y-4' : 'p-6 space-y-4'}>
       <div className="flex items-center justify-between">
+        {!embedded && (
         <div>
           <h1 className="text-2xl font-bold">业务术语</h1>
           <p className="text-muted-foreground text-sm mt-1">管理业务术语定义，用于 NL2SQL 语义理解和 RAG 检索增强</p>
         </div>
+        )}
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={loadTerms}>
             <RefreshCw className="w-4 h-4 mr-1" />
@@ -239,7 +261,7 @@ export default function Glossary() {
                 </td>
               </tr>
             ) : (
-              terms.map((term) => (
+              shownTerms.map((term) => (
                 <tr key={term.id} className="border-t hover:bg-muted/30">
                   <td className="p-3">
                     <div className="flex items-center gap-2">
@@ -290,7 +312,7 @@ export default function Glossary() {
       </div>
 
       {/* Pagination */}
-      {total > 20 && (
+      {!embedded && total > 20 && (
         <div className="flex items-center justify-between text-sm text-muted-foreground">
           <span>共 {total} 条</span>
           <div className="flex gap-2">

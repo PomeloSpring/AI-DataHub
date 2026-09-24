@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -27,9 +26,7 @@ interface MCPServer {
   last_test_message?: string;
 }
 
-export default function MCPConfig({ workspaceId: propWorkspaceId, defaultWorkspaceId }: { workspaceId?: number; defaultWorkspaceId?: number } = {}) {
-  const { workspaceId: paramWorkspaceId } = useParams();
-  const workspaceId = propWorkspaceId ?? (paramWorkspaceId ? Number(paramWorkspaceId) : undefined);
+export default function MCPConfig() {
   const [servers, setServers] = useState<MCPServer[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<MCPServer | null>(null);
@@ -43,8 +40,7 @@ export default function MCPConfig({ workspaceId: propWorkspaceId, defaultWorkspa
   const load = async () => {
     setLoading(true);
     try {
-      const params = workspaceId ? `?workspace_id=${workspaceId}` : '';
-      const { data } = await client.get(`/admin/mcp-servers${params}`);
+      const { data } = await client.get('/admin/mcp-servers');
       setServers(Array.isArray(data) ? data : []);
     } catch { toast.error('加载失败'); }
     finally { setLoading(false); }
@@ -54,13 +50,14 @@ export default function MCPConfig({ workspaceId: propWorkspaceId, defaultWorkspa
 
   const handleSave = async () => {
     if (!form.name) { toast.error('请输入服务名称'); return; }
-    const wsId = workspaceId || defaultWorkspaceId;
     let toolsConfigStr = form.tools_config || '';
     if (discoveredToolsList.length > 0) {
       const selected = discoveredToolsList.filter(t => selectedToolNames.has(t.name));
       toolsConfigStr = JSON.stringify(selected.map(t => ({ name: t.name, description: t.description || '' })));
     }
-    const submitData = { ...form, tools_config: toolsConfigStr, ...(wsId ? { workspace_id: wsId } : {}) };
+    const submitData = { ...form, tools_config: toolsConfigStr };
+    delete submitData.workspace_id;
+    delete submitData.workspace_ids;
     try {
       if (editing) {
         await client.put(`/admin/mcp-servers/${editing.id}`, submitData);

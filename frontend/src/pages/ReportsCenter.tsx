@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { FileBarChart, Loader2, Eye, Inbox } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
-import MarkdownWithCharts from '@/components/MarkdownWithCharts';
+import ReportContent from '@/components/ReportContent';
 import {
   listReports, getReportDetail,
   type ReportSummary, type ReportDetail,
@@ -20,6 +20,18 @@ function formatDate(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
+
+// 生成状态真实映射：degraded 是 M2 降级事实表，绝不等同 ready 证据化报告。
+const GEN_STATUS: Record<string, { label: string; cls: string }> = {
+  queued: { label: '排队中', cls: 'text-blue-500' },
+  running: { label: '生成中', cls: 'text-blue-500' },
+  ready: { label: '已就绪', cls: 'text-green-500' },
+  degraded: { label: '降级事实报告', cls: 'text-amber-500' },
+  failed: { label: '生成失败', cls: 'text-red-500' },
+  timeout: { label: '生成超时', cls: 'text-yellow-500' },
+};
+const PENDING = ['queued', 'running'];
+const NO_BODY = ['queued', 'running', 'failed', 'timeout'];
 
 export default function ReportsCenter() {
   const { workspaceId } = useParams<{ workspaceId: string }>();
@@ -71,7 +83,7 @@ export default function ReportsCenter() {
     if (!id) return;
     setDetailLoading(true);
     getReportDetail(id)
-      .then(setDetail)
+      .then(data => { setDetail(data); setError(data.access_warning || ''); })
       .catch(e => {
         setDetail(null);
         setError(e?.response?.data?.detail || '加载报告内容失败');
@@ -82,6 +94,13 @@ export default function ReportsCenter() {
   useEffect(() => {
     if (activeId) loadDetail(activeId);
   }, [activeId, loadDetail]);
+
+  // 生成中的报告自动轮询，直到进入终态
+  useEffect(() => {
+    if (!detail || !PENDING.includes(detail.generation_status || '')) return;
+    const timer = setTimeout(() => loadDetail(detail.id), 2000);
+    return () => clearTimeout(timer);
+  }, [detail, loadDetail]);
 
   const activeGroup = groups.find(g => g.key === activeKey) || null;
 
@@ -152,6 +171,11 @@ export default function ReportsCenter() {
                       <Badge variant="outline" className="text-[10px]">
                         {detail.format === 'html' ? 'HTML' : 'Markdown'}
                       </Badge>
+                      {detail.generation_status && GEN_STATUS[detail.generation_status] && (
+                        <Badge variant="outline" className={`text-[10px] ${GEN_STATUS[detail.generation_status].cls}`}>
+                          {GEN_STATUS[detail.generation_status].label}
+                        </Badge>
+                      )}
                       <span>{formatDate(detail.created_at)}</span>
                       <span className="flex items-center gap-1">
                         <Eye className="h-3 w-3" /> {detail.view_count}
@@ -184,13 +208,21 @@ export default function ReportsCenter() {
                 <div className="h-full flex items-center justify-center text-muted-foreground">
                   <Loader2 className="h-5 w-5 animate-spin mr-2" /> 加载报告内容...
                 </div>
-              ) : detail.format === 'html' ? (
-                <article
-                  className="prose prose-sm max-w-none"
-                  dangerouslySetInnerHTML={{ __html: detail.content || '' }}
-                />
+              ) : NO_BODY.includes(detail.generation_status || '') ? (
+                <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
+                  {PENDING.includes(detail.generation_status || '')
+                    ? <><Loader2 className="h-4 w-4 animate-spin mr-2" /> 报告生成中，页面将自动刷新...</>
+                    : '本次运行未生成可展示的报告正文（生成失败或超时）。'}
+                </div>
               ) : (
-                <MarkdownWithCharts text={detail.content || ''} className="prose prose-sm max-w-none" />
+                <>
+                  {detail.generation_status === 'degraded' && (
+                    <p className="mb-3 text-xs text-amber-600">
+                      降级事实报告：仅展示已授权查询返回的样本，尚未完成证据校验，不可对外发布，不代表总体。
+                    </p>
+                  )}
+                  <ReportContent content={detail.content || ''} format={detail.format} />
+                </>
               )}
             </div>
           </div>

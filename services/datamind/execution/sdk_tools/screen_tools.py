@@ -108,6 +108,8 @@ async def _resolve_intent(intent_payload: dict, ctx):
             hint="先用 knowledge_search 找一个已在本体里 bound 的对象。",
         ))
 
+    from services.datamind.execution.resource_guard import validate_binding
+    await asyncio.to_thread(validate_binding, ctx, binding)
     p = await asyncio.to_thread(plan, q, binding)
     if not p.sql:
         raise ScreenIntentError(_error("语义层护栏拒绝了本次查询, 请调整对象/指标/维度或加过滤后重试。"))
@@ -184,6 +186,12 @@ def _auto_layout(widgets: list[dict]) -> list[tuple]:
 async def create_data_screen(args: dict) -> dict:
     """创建一个可视化数据大屏: 逐图按语义意图取数并预填充数据缓存。"""
     args = args or {}
+    from services.datamind.execution.sdk_tools.context import get_execution_context
+    current = get_execution_context()
+    if current and current.extra.get("waker_key") == "__system_bot__":
+        from services.datamind.execution.sdk_tools.dashboard_design_tools import request_dashboard_design
+        return await request_dashboard_design({"request": f"创建仪表盘：{args.get('name', '')}",
+                                                "name": args.get("name", ""), "operation": "create"})
     name = (args.get("name") or "").strip()
     widgets = args.get("widgets") or []
     if not name:
@@ -282,7 +290,7 @@ async def create_data_screen(args: dict) -> dict:
         "params": params,
         "filters": filters,
         "status": "enabled",
-        "is_public": True,
+        "is_public": False,
         "workspace_id": workspace_id,
     }, user_id)
 
@@ -380,6 +388,12 @@ async def get_data_screen(args: dict) -> dict:
 async def update_data_screen_chart(args: dict) -> dict:
     """更新大屏中的某个图表(标题/类型/意图/配置/位置), 如换意图则重新取数刷新缓存。"""
     args = args or {}
+    from services.datamind.execution.sdk_tools.context import get_execution_context
+    current = get_execution_context()
+    if current and current.extra.get("waker_key") == "__system_bot__":
+        from services.datamind.execution.sdk_tools.dashboard_design_tools import request_dashboard_design
+        return await request_dashboard_design({"request": f"修改仪表盘 {args.get('dashboard_id')} 的图表 {args.get('chart_id')}",
+                                                "operation": "update"})
     dashboard_id = int(args.get("dashboard_id") or 0)
     chart_id = int(args.get("chart_id") or 0)
     if not dashboard_id or not chart_id:
@@ -582,6 +596,9 @@ TOOL_SPECS = [
     },
 ]
 
+from services.datamind.execution.sdk_tools.dashboard_design_tools import SCREEN_SPECS
+TOOL_SPECS.extend(SCREEN_SPECS)
+
 READONLY_ANNOTATIONS = {"readOnlyHint": True}
 
 
@@ -595,7 +612,7 @@ def build_screen_server(backend: str = "qoder", tool_names=None):
         specs = [s for s in TOOL_SPECS if s["name"] in selected]
     tools = [
         make_tool(backend, s["name"], s["description"], s["schema"], s["handler"],
-                  annotations=s.get("annotations") or READONLY_ANNOTATIONS)
+                  annotations=s.get("annotations") or {"readOnlyHint": s["name"] == "get_dashboard_design"})
         for s in specs
     ]
     return make_server(backend, "datahub_screen", tools)

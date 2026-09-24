@@ -34,10 +34,12 @@ class RedisCache(CacheBackend):
         port: int = 6379,
         db: int = 0,
         password: str = None,
+        url: str = None,
     ):
         self.prefix = prefix
         self.default_ttl = default_ttl
         self._redis = None
+        self._url = url
         self._host = host
         self._port = port
         self._db = db
@@ -48,18 +50,24 @@ class RedisCache(CacheBackend):
         if self._redis is None:
             try:
                 import redis
-                self._redis = redis.Redis(
-                    host=self._host,
-                    port=self._port,
-                    db=self._db,
-                    password=self._password,
-                    decode_responses=True,
-                    socket_timeout=5,
-                    socket_connect_timeout=5,
-                )
+                if self._url:
+                    self._redis = redis.Redis.from_url(
+                        self._url, decode_responses=True,
+                        socket_timeout=5, socket_connect_timeout=5,
+                    )
+                else:
+                    self._redis = redis.Redis(
+                        host=self._host,
+                        port=self._port,
+                        db=self._db,
+                        password=self._password,
+                        decode_responses=True,
+                        socket_timeout=5,
+                        socket_connect_timeout=5,
+                    )
                 # Test connection
                 self._redis.ping()
-                logger.info("Redis cache connected: %s:%s/%s", self._host, self._port, self._db)
+                logger.info("Redis cache connected: %s", self._url or f"{self._host}:{self._port}/{self._db}")
             except ImportError:
                 raise ImportError("redis package not installed. Run: pip install redis")
             except Exception as e:
@@ -112,6 +120,23 @@ class RedisCache(CacheBackend):
         except Exception as e:
             logger.warning("Redis exists failed for %s: %s", key, e)
             return False
+
+    def incr(self, key: str, amount: int = 1) -> int:
+        """计数器自增(跨实例共享)；失败返回 0，不影响主流程。"""
+        try:
+            return int(self._get_redis().incrby(self._make_key(key), amount))
+        except Exception as e:
+            logger.debug("Redis incr failed for %s: %s", key, e)
+            return 0
+
+    def get_counter(self, key: str) -> int:
+        """读取计数器；失败返回 0。"""
+        try:
+            v = self._get_redis().get(self._make_key(key))
+            return int(v) if v else 0
+        except Exception as e:
+            logger.debug("Redis get_counter failed for %s: %s", key, e)
+            return 0
 
     def clear_pattern(self, pattern: str) -> int:
         """Clear all keys matching pattern. Returns number of keys deleted."""

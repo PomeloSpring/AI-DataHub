@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import {
@@ -11,13 +10,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { toast } from 'sonner';
 import {
   Plus,
@@ -25,8 +17,6 @@ import {
   History,
   Edit,
   Trash2,
-  Clock,
-  Bell,
   RefreshCw,
   Copy,
 } from 'lucide-react';
@@ -42,6 +32,9 @@ import ScheduledTaskLogs from './ScheduledTaskLogs';
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
   success: { label: '成功', color: 'bg-green-500/10 text-green-500 border-green-500/20' },
+  partial: { label: '部分成功', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
+  queued: { label: '排队中', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
+  cancelled: { label: '已取消', color: 'bg-gray-500/10 text-gray-500 border-gray-500/20' },
   failed: { label: '失败', color: 'bg-red-500/10 text-red-500 border-red-500/20' },
   running: { label: '运行中', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
   timeout: { label: '超时', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
@@ -60,8 +53,8 @@ const TRIGGER_TYPE_MAP: Record<string, { label: string; color: string }> = {
 
 function getSourceBadge(task: ScheduledTask): { label: string; color: string } {
   const cfg = task.task_config || {} as any;
-  if (cfg.agent_name) return { label: 'Agent', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' };
-  if (cfg.mcp_server_id) return { label: 'MCP', color: 'bg-teal-500/10 text-teal-500 border-teal-500/20' };
+  if (task.requires_waker_migration) return { label: '需重新配置 Waker', color: 'text-orange-500 border-orange-500/20' };
+  if (cfg.waker_key) return { label: `Waker · ${cfg.waker_key}`, color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' };
   return { label: '数据源', color: 'bg-gray-500/10 text-gray-500 border-gray-500/20' };
 }
 
@@ -104,7 +97,8 @@ export default function ScheduledTasks() {
   const handleTrigger = async (task: ScheduledTask) => {
     try {
       await triggerScheduledTask(task.id);
-      toast.success('已发送到执行队列');
+      toast.success('已排队，请在执行历史查看实际状态');
+      setLogsTaskId(task.id);
     } catch {
       toast.error('触发失败');
     }
@@ -220,7 +214,11 @@ export default function ScheduledTasks() {
                     </div>
                   </td>
                   <td className="p-3">
-                    {task.last_status ? (
+                    {task.ownership_status === 'unclaimed' ? (
+                      <Badge variant="outline" className="text-orange-500">待认领（通过 AS-BOT 审批）</Badge>
+                    ) : task.requires_waker_migration ? (
+                      <Badge variant="outline" className="text-orange-500">需重新配置 Waker</Badge>
+                    ) : task.last_status ? (
                       <Badge variant="outline" className={STATUS_MAP[task.last_status]?.color}>
                         {STATUS_MAP[task.last_status]?.label || task.last_status}
                       </Badge>
@@ -257,6 +255,7 @@ export default function ScheduledTasks() {
                         variant="ghost"
                         size="sm"
                         onClick={() => handleTrigger(task)}
+                        disabled={task.ownership_status === 'unclaimed' || task.requires_waker_migration}
                         title="手动触发"
                       >
                         <Play className="w-4 h-4" />

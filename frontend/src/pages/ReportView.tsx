@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
+import ReportContent from '@/components/ReportContent';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { Badge } from '@/components/ui/badge';
 import { Lock, Eye } from 'lucide-react';
@@ -14,6 +15,8 @@ interface Report {
   access_mode: string;
   view_count: number;
   created_at: string;
+  access_warning?: string;
+  generation_status?: string;
 }
 
 export default function ReportView() {
@@ -43,24 +46,28 @@ export default function ReportView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  // Use ref to prevent double-fetch in React StrictMode
-  const fetchedRef = useRef(false);
   useEffect(() => {
-    if (!reportId || fetchedRef.current) return;
-    fetchedRef.current = true;
+    if (!reportId) return;
+    let cancelled = false;
     setLoading(true);
     const params: any = {};
     if (token) params.token = token;
 
-    client.get(`/reports/${reportId}`, { params })
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = () => client.get(`/reports/${reportId}`, { params })
       .then(({ data }) => {
+        if (cancelled) return;
         setReport(data);
-        setError('');
+        const pending = ['queued', 'running'].includes(data.generation_status);
+        setError(pending ? '' : data.access_warning || '');
+        if (pending) timer = setTimeout(refresh, 2000);
       })
       .catch(e => {
-        setError(e?.response?.data?.detail || '加载失败');
+        if (!cancelled) setError(e?.response?.data?.detail || '加载失败');
       })
-      .finally(() => setLoading(false));
+      .finally(() => { if (!cancelled) setLoading(false); });
+    refresh();
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [reportId, token]);
 
   if (loading) {
@@ -78,7 +85,7 @@ export default function ReportView() {
           <Lock className="w-12 h-12 mx-auto text-muted-foreground" />
           <h1 className="text-xl font-bold">无法访问</h1>
           <p className="text-muted-foreground">{error}</p>
-          <p className="text-sm text-muted-foreground">此报告为私有访问，需要有效的访问令牌</p>
+          <p className="text-sm text-muted-foreground">请确认登录身份、分享有效期及报告生成状态</p>
         </div>
       </div>
     );
@@ -104,6 +111,9 @@ export default function ReportView() {
         <h1 className="text-2xl font-bold">{report.title}</h1>
         <div className="flex items-center gap-2 mt-2">
           <Badge variant="outline">{report.format === 'html' ? 'HTML' : 'Markdown'}</Badge>
+          {report.generation_status && (
+            <Badge variant="outline">{({ queued: '排队中', running: '生成中', ready: '已就绪', degraded: '降级事实报告', failed: '生成失败', timeout: '生成超时' } as Record<string, string>)[report.generation_status] || report.generation_status}</Badge>
+          )}
           <Badge variant="outline" className={report.access_mode === 'public' ? 'text-green-500' : 'text-orange-500'}>
             {report.access_mode === 'public' ? '公开' : '私有'}
           </Badge>
@@ -115,18 +125,9 @@ export default function ReportView() {
 
       {/* Report Content */}
       <div className="max-w-4xl mx-auto px-4 pb-12">
-        {report.format === 'html' ? (
-          <article
-            className="prose prose-sm max-w-none"
-            dangerouslySetInnerHTML={{ __html: report.content }}
-          />
-        ) : (
-          <article className="prose prose-sm max-w-none">
-            <pre className="whitespace-pre-wrap text-sm leading-relaxed font-sans bg-transparent p-0">
-              {report.content}
-            </pre>
-          </article>
-        )}
+        {['queued', 'running'].includes(report.generation_status || '') ? (
+          <p className="text-muted-foreground">报告尚未完成，页面会自动更新执行状态。</p>
+        ) : <ReportContent content={report.content} format={report.format} />}
       </div>
     </div>
   );

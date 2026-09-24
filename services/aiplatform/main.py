@@ -23,6 +23,7 @@ from services.aiplatform.api.cache import router as cache_router
 from services.aiplatform.api.execution_layers import router as execution_layers_router
 from services.aiplatform.api.prompts import router as prompts_router
 from services.aiplatform.api.wakers import router as wakers_router
+from services.aiplatform.api.sandbox import router as sandbox_router
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -73,6 +74,7 @@ app.include_router(cache_router, prefix="/api/admin/cache", tags=["Cache"])
 app.include_router(execution_layers_router, prefix="/api/admin/execution-layers", tags=["Execution Layers"])
 app.include_router(prompts_router, prefix="/api/admin/prompts", tags=["Prompts"])
 app.include_router(wakers_router, prefix="/api/admin/wakers", tags=["Wakers"])
+app.include_router(sandbox_router, prefix="/api/sandbox", tags=["Sandbox"])
 
 # Node metrics for distributed monitoring
 from services.shared.common.system_metrics import router as node_metrics_router

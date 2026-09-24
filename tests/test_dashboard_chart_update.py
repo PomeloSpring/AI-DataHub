@@ -103,6 +103,23 @@ def test_update_chart_missing_returns_false(monkeypatch):
     assert dash.chart_service.update_chart(10, 5, {"position": {"x": 1, "y": 1, "w": 2, "h": 2}}) is False
 
 
+def test_vis_library_accepts_theme_pack_category(monkeypatch):
+    vls = importlib.import_module("services.dataviz.services.vis_library_service")
+    assert "theme_pack" in vls.CATEGORIES
+    captured = {}
+    monkeypatch.setattr(vls, "execute_insert", lambda sql, params: (captured.update(params=params), 77)[1])
+    monkeypatch.setattr(vls, "execute_query", lambda *a, **k: None)
+    cid = vls.vis_library_service.create_component(
+        {"name": "P", "category": "theme_pack",
+         "style_config": {"mode": "dark", "palette": ["#22d3ee"], "charts": {"default": {"gradient": True}}}},
+        user_id=1, is_admin=True,
+    )
+    assert cid == 77
+    import json as _json
+    sc = _json.loads(captured["params"][4])
+    assert sc["charts"]["default"]["gradient"] is True
+
+
 def test_copy_dashboard_preserves_semantic_and_design(monkeypatch):
     log = []
     src_dash = {

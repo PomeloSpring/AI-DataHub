@@ -11,12 +11,17 @@ export interface ScheduledTask {
   report_template_key: string | null;
   cron_expression: string;
   timezone: string;
+  trigger_type?: string;
+  webhook_token?: string | null;
+  webhook_secret?: string;
   channel_id: number | null;
   notify_on_success: boolean;
   notify_on_failure: boolean;
   is_active: boolean;
   workspace_id: number;
   owner_id: number;
+  ownership_status?: 'owned' | 'unclaimed';
+  requires_waker_migration?: boolean;
   last_run_at: string | null;
   last_status: string | null;
   last_error: string | null;
@@ -29,8 +34,14 @@ export interface ScheduledTask {
 
 export interface TaskConfig {
   datasource_id: number;
+  datasource_ids?: number[];
   questions: TaskQuestion[];
+  waker_key?: string;
   agent_name?: string;
+  agent_names?: string[];
+  mcp_server_id?: number;
+  mcp_server_ids?: number[];
+  max_iterations?: number;
   context?: string;
 }
 
@@ -47,6 +58,9 @@ export interface ScheduledLog {
   status: string;
   trigger_type: string;
   celery_task_id: string | null;
+  run_key?: string;
+  stage_error_code?: string;
+  report_id?: number;
   result_summary: string | null;
   result_data: any;
   error_message: string | null;
@@ -86,6 +100,8 @@ export interface ScheduledTaskCreateRequest {
   report_template_key?: string;
   cron_expression: string;
   timezone?: string;
+  trigger_type?: string;
+  webhook_secret?: string;
   channel_id?: number;
   notify_on_success?: boolean;
   notify_on_failure?: boolean;
@@ -106,6 +122,23 @@ export interface NotificationChannelCreateRequest {
 }
 
 export type NotificationChannelUpdateRequest = Partial<NotificationChannelCreateRequest>;
+
+export interface ScheduledWakerOption {
+  waker_key: string;
+  name: string;
+  available: boolean;
+  reason?: string;
+  datasource_ids: number[];
+  tools: string[];
+  unavailable_tools: { name: string; reason: string }[];
+}
+
+export async function listScheduledWakers(workspaceId: number, taskId?: number): Promise<ScheduledWakerOption[]> {
+  const { data } = await client.get(taskId
+    ? `/scheduled-tasks/tasks/${taskId}/waker-options`
+    : '/scheduled-tasks/waker-options', { params: taskId ? undefined : { workspace_id: workspaceId } });
+  return data;
+}
 
 // ── Scheduled Tasks API ────────────────────────────────────────
 
@@ -140,7 +173,7 @@ export async function toggleScheduledTask(id: number, isActive: boolean): Promis
   await client.patch(`/scheduled-tasks/tasks/${id}/toggle`, null, { params: { is_active: isActive } });
 }
 
-export async function triggerScheduledTask(id: number): Promise<{ celery_task_id: string }> {
+export async function triggerScheduledTask(id: number): Promise<{ status: 'queued'; mode: string; log_id: number; run_key: string }> {
   const { data } = await client.post(`/scheduled-tasks/tasks/${id}/trigger`);
   return data;
 }
@@ -257,10 +290,14 @@ export interface ReportSummary {
   view_count: number;
   created_at: string;
   task_name: string | null;
+  generation_status?: string;
 }
 
 export interface ReportDetail extends ReportSummary {
   content: string;
+  access_warning?: string;
+  generation_status?: string;
+  evidence_summary?: { quality?: string; complete?: boolean; semantic_version?: string; period?: string; validated?: boolean };
 }
 
 export async function listReports(workspaceId?: number): Promise<ReportSummary[]> {

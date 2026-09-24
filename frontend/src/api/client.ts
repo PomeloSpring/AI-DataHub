@@ -2,6 +2,34 @@ import axios from 'axios';
 
 const client = axios.create({ baseURL: '/api' });
 
+// ── 错误详情归一化 ──────────────────────────────────────────────
+// FastAPI 422 的 detail 是对象数组({type,loc,msg,input,ctx}[]), 全站 100+ 处
+// `err.response.data.detail` 直传渲染会整页崩("Objects are not valid as a React child")。
+// 在拦截器里把 detail 压成可读字符串, 所有调用点一次性变安全(含裸 axios 如 graphStore)。
+function normalizeErrorDetail(data: any): any {
+  if (!data || !Array.isArray(data.detail)) return data;
+  data.detail = data.detail
+    .map((d: any) => {
+      if (typeof d === 'string') return d;
+      if (d && typeof d === 'object') {
+        const loc = Array.isArray(d.loc) ? d.loc.filter((x: any) => x !== 'body').join('.') : '';
+        return [loc, d.msg].filter(Boolean).join(': ') || JSON.stringify(d);
+      }
+      return String(d);
+    })
+    .join('; ');
+  return data;
+}
+
+axios.interceptors.response.use(
+  (res) => res,
+  (err) => { normalizeErrorDetail(err.response?.data); return Promise.reject(err); },
+);
+client.interceptors.response.use(
+  (res) => res,
+  (err) => { normalizeErrorDetail(err.response?.data); return Promise.reject(err); },
+);
+
 // ── Token refresh state ──────────────────────────────────────────
 let isRefreshing = false;
 let refreshSubscribers: ((token: string) => void)[] = [];

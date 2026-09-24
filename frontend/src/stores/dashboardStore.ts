@@ -77,6 +77,7 @@ interface DashboardState {
   refreshing: boolean;
   refreshingChartIds: Set<number>;
 
+  reset: () => void;
   loadDashboards: (workspaceId?: number) => Promise<void>;
   setCurrent: (id: number | null) => void;
   createDashboard: (name: string, workspaceId?: number) => Promise<number>;
@@ -97,11 +98,12 @@ interface DashboardState {
   setPageParams: (params: PageParam[]) => void;
   setPageParamValue: (name: string, value: any) => void;
   initPageParamValues: () => void;
-  refreshCharts: () => Promise<void>;
-  refreshSingleChart: (chartId: number, extra?: { page_limit?: number; page_offset?: number; count_sql?: string }) => Promise<void>;
+  refreshCharts: () => Promise<boolean>;
+  refreshSingleChart: (chartId: number, extra?: { page_limit?: number; page_offset?: number; count_sql?: string }) => Promise<boolean>;
 }
 
 let loadVersion = 0;
+let sessionVersion = 0;
 const refreshVersions = new Map<number, number>();
 
 export const useDashboardStore = create<DashboardState>((set, get) => ({
@@ -125,6 +127,12 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   pageParamValues: {},
   refreshing: false,
   refreshingChartIds: new Set(),
+
+  reset: () => {
+    ++loadVersion; ++sessionVersion; refreshVersions.clear();
+    set({ dashboards: [], currentId: null, currentWorkspaceId: 0, loading: false, error: null,
+      globalFilters: {}, crossFilters: [], paramValues: {}, pageParams: [], pageParamValues: {}, refreshing: false, refreshingChartIds: new Set() });
+  },
 
   loadDashboards: async (workspaceId?: number) => {
     // Remember workspace context so subsequent operations reload the correct scope
@@ -299,22 +307,24 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   refreshCharts: async () => {
     const { currentId, dashboards } = get();
-    if (!currentId) return;
+    if (!currentId) return false;
     const dashboard = dashboards.find(d => d.id === currentId);
-    if (!dashboard) return;
+    if (!dashboard) return false;
     const charts = dashboard.charts.filter(c => (c.semantic_query || c.sql_query) && !c.chart_type.startsWith('widget_'));
-    await Promise.all(charts.map(c => {
+    const results = await Promise.all(charts.map(c => {
       const cfg = c.config || {};
       if (cfg.enableServerPagination) {
         return get().refreshSingleChart(c.id, { page_limit: cfg.pageLimit || 20, page_offset: 0, count_sql: cfg.countSql });
       }
       return get().refreshSingleChart(c.id);
     }));
+    return results.every(Boolean);
   },
 
   refreshSingleChart: async (chartId, extra?) => {
     const { currentId, paramValues, pageParamValues } = get();
-    if (!currentId || !get().dashboards.find(d => d.id === currentId)?.charts.some(c => c.id === chartId)) return;
+    if (!currentId || !get().dashboards.find(d => d.id === currentId)?.charts.some(c => c.id === chartId)) return false;
+    const session = sessionVersion;
     const version = (refreshVersions.get(chartId) || 0) + 1;
     refreshVersions.set(chartId, version);
     set(state => {
@@ -329,7 +339,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       if (extra?.count_sql) body.count_sql = extra.count_sql;
 
       const { data } = await client.post(`/dashboard/${currentId}/charts/${chartId}/refresh`, body);
-      if (refreshVersions.get(chartId) !== version) return;
+      if (session !== sessionVersion || refreshVersions.get(chartId) !== version) return false;
       if (data && !data.error) {
         set(state => ({
           dashboards: state.dashboards.map(d => {
@@ -345,13 +355,16 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
             };
           }),
         }));
+        return true;
       } else if (data?.error) {
         toast.error(`图表刷新失败: ${data.error}`);
-      }
+      } else toast.error('图表刷新未返回有效结果');
+      return false;
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '图表刷新失败');
+      if (session === sessionVersion) toast.error(e.response?.data?.detail || '图表刷新失败');
+      return false;
     } finally {
-      if (refreshVersions.get(chartId) === version) set(state => {
+      if (session === sessionVersion && refreshVersions.get(chartId) === version) set(state => {
         const ids = new Set(state.refreshingChartIds);
         ids.delete(chartId);
         const currentCharts = state.dashboards.find(d => d.id === state.currentId)?.charts || [];

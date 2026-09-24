@@ -1,15 +1,12 @@
-"""Cache Factory — creates cache instances based on configuration.
+"""Cache Factory — 统一 Redis 分布式缓存。
 
-Supports two backends:
-- local: In-memory cache (default, no external dependencies)
-- redis: Redis distributed cache (requires redis server)
+不再提供进程内本地缓存后端：缓存状态必须跨实例共享(分布式优先)。
+Redis 不可用时，RedisCache 的 get/set 会透明降级为“无缓存”(回源计算),
+不会返回错误值、也不会静默切回本地缓存。
 
-Configuration (in .env):
-    CACHE_BACKEND=local  # or "redis"
-    REDIS_HOST=localhost
-    REDIS_PORT=6379
-    REDIS_DB=0
-    REDIS_PASSWORD=  # optional
+Configuration (in .env / 服务环境):
+    REDIS_URL=redis://localhost:6379/0    # 优先
+    REDIS_HOST/REDIS_PORT/REDIS_DB/REDIS_PASSWORD  # 无 REDIS_URL 时回退
 """
 
 import os
@@ -17,7 +14,6 @@ import logging
 from typing import Dict
 
 from services.shared.common.cache.base import CacheBackend
-from services.shared.common.cache.local import LocalCache
 from services.shared.common.cache.redis_cache import RedisCache
 
 logger = logging.getLogger(__name__)
@@ -25,85 +21,37 @@ logger = logging.getLogger(__name__)
 # Cache instances (singleton per prefix)
 _instances: Dict[str, CacheBackend] = {}
 
-# Default configuration
-_DEFAULT_CONFIG = {
-    "local": {
-        "max_size": 1000,
-    },
-    "redis": {
-        "host": "localhost",
-        "port": 6379,
-        "db": 0,
-        "password": None,
-    },
-}
 
-
-def _get_backend_type() -> str:
-    """Get configured cache backend type."""
-    return os.getenv("CACHE_BACKEND", "local").lower()
-
-
-def _get_config() -> dict:
-    """Get cache configuration from environment."""
-    backend = _get_backend_type()
-
-    if backend == "redis":
-        return {
-            "host": os.getenv("REDIS_HOST", _DEFAULT_CONFIG["redis"]["host"]),
-            "port": int(os.getenv("REDIS_PORT", _DEFAULT_CONFIG["redis"]["port"])),
-            "db": int(os.getenv("REDIS_DB", _DEFAULT_CONFIG["redis"]["db"])),
-            "password": os.getenv("REDIS_PASSWORD", _DEFAULT_CONFIG["redis"]["password"]),
-        }
-    else:
-        return {
-            "max_size": int(os.getenv("CACHE_MAX_SIZE", _DEFAULT_CONFIG["local"]["max_size"])),
-        }
+def _redis_url() -> str:
+    url = os.getenv("REDIS_URL")
+    if url:
+        return url
+    host = os.getenv("REDIS_HOST", "localhost")
+    port = os.getenv("REDIS_PORT", "6379")
+    db = os.getenv("REDIS_DB", "0")
+    return f"redis://{host}:{port}/{db}"
 
 
 def get_cache(prefix: str, default_ttl: int = 300) -> CacheBackend:
-    """Get or create a cache instance with the given prefix.
+    """Get or create a Redis-backed cache instance with the given prefix.
 
     Args:
-        prefix: Cache prefix for namespacing (e.g., "rag", "tables", "graph")
+        prefix: Cache prefix for namespacing (e.g., "rag", "datasource")
         default_ttl: Default TTL in seconds (default: 5 minutes)
 
     Returns:
-        CacheBackend instance (LocalCache or RedisCache)
+        RedisCache 实例(命名前缀 chatbi:<prefix>); Redis 不可用时操作降级为无缓存。
     """
     if prefix in _instances:
         return _instances[prefix]
 
-    backend_type = _get_backend_type()
-    config = _get_config()
-
-    if backend_type == "redis":
-        try:
-            cache = RedisCache(
-                prefix=f"chatbi:{prefix}",
-                default_ttl=default_ttl,
-                **config,
-            )
-            # Test connection
-            cache.size()
-            logger.info("Created Redis cache: prefix=%s, ttl=%s", prefix, default_ttl)
-        except Exception as e:
-            logger.warning("Redis unavailable (%s), falling back to local cache", e)
-            cache = LocalCache(
-                prefix=f"chatbi:{prefix}",
-                default_ttl=default_ttl,
-                max_size=config.get("max_size", 1000),
-            )
-            backend_type = "local"
-    else:
-        cache = LocalCache(
-            prefix=f"chatbi:{prefix}",
-            default_ttl=default_ttl,
-            max_size=config.get("max_size", 1000),
-        )
-        logger.info("Created local cache: prefix=%s, ttl=%s, max_size=%s",
-                     prefix, default_ttl, config.get("max_size", 1000))
-
+    cache = RedisCache(
+        prefix=f"chatbi:{prefix}",
+        default_ttl=default_ttl,
+        url=_redis_url(),
+        password=os.getenv("REDIS_PASSWORD") or None,
+    )
+    logger.info("Created Redis cache: prefix=%s, ttl=%s", prefix, default_ttl)
     _instances[prefix] = cache
     return cache
 

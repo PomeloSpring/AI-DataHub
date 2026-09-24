@@ -17,20 +17,18 @@ log_info()  { echo -e "${GREEN}[INFO]${NC}  $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# 端口 → 服务名 (与 services/shared/common/config.py SERVICE_PORTS 保持一致)
+# 端口 → 服务名: Python 微服务读 services.conf（唯一权威清单），其余特殊进程在此补充
 declare -A PORT_SERVICE=(
     [3000]="frontend-dev"
-    [8001]="datamind"
-    [8002]="datagov"
-    [8003]="dataflow"
-    [8004]="dataviz"
-    [8005]="datacatalog"
-    [8006]="authservice"
-    [8007]="aiplatform"
-    [8011]="graphservice"
-    [8012]="semanticservice"
     [8082]="dataengine"
 )
+if [ -f "$SCRIPT_DIR/services/shared/scripts/services.conf" ]; then
+    while IFS=: read -r _name _module _port; do
+        PORT_SERVICE[$_port]="$_name"
+    done < <(grep -vE '^\s*(#|$)' "$SCRIPT_DIR/services/shared/scripts/services.conf")
+else
+    log_error "缺少 services.conf，仅处理特殊端口"
+fi
 
 STATUS_ONLY=0
 AUTO_YES=0

@@ -25,7 +25,9 @@ import time
 from datetime import datetime
 
 from services.shared.common.db import DBConnection
-from services.shared.common.db.datasource_db import get_datasource_by_id, get_datasource_conn
+from services.shared.common.auth import authorize_workspace
+from services.dataviz.services.governed_query import governed_execute
+from services.shared.semantics.sql_guard import bounded_query, parse_query
 
 logger = logging.getLogger(__name__)
 
@@ -51,30 +53,42 @@ def _parse_config(rule: dict) -> dict:
     return cfg
 
 
-def _open_target_conn(rule: dict):
-    """按规则的 target_datasource_id 建立目标库连接."""
-    ds_id = rule.get("target_datasource_id")
-    if not ds_id:
-        raise ValueError("规则未配置目标数据源 (target_datasource_id)")
-    ds = get_datasource_by_id(ds_id)
-    if not ds:
-        raise ValueError(f"数据源不存在: {ds_id}")
-    return get_datasource_conn(
-        ds["db_type"], ds["host"], ds["port"],
-        ds["username"], ds["password"], ds.get("database_name"),
-    )
+def _open_target_conn(rule: dict, user: dict, include_samples: bool = False):
+    """创建治理查询上下文，不再打开数据源裸连接。"""
+    if not user or not user.get("user_id"):
+        raise PermissionError("质量检查缺少可信身份")
+    ws = authorize_workspace(user, rule.get("workspace_id") or 0)
+    if not rule.get("target_datasource_id"):
+        raise ValueError("规则未配置目标数据源")
+    return {"datasource_id": rule["target_datasource_id"], "workspace_id": ws,
+            "user": user, "include_samples": include_samples}
+
+
+def _governed_rows(context, sql: str, params=None, limit: int = 1) -> list:
+    if params:
+        from sqlglot import exp
+        parts = sql.split("%s")
+        if len(parts) != len(params) + 1:
+            raise ValueError("检查参数不匹配")
+        sql = parts[0] + "".join(
+            exp.convert(value).sql(dialect="mysql") + suffix
+            for value, suffix in zip(params, parts[1:]))
+    sql = bounded_query(sql, limit)
+    user = context["user"]
+    result = governed_execute(sql, context["datasource_id"], user["user_id"],
+                              context["workspace_id"], user.get("username", ""))
+    return result.get("rows") or []
 
 
 def _fetch_one(conn, sql: str, params=None) -> dict:
-    with conn.cursor() as cur:
-        cur.execute(sql, params)
-        return cur.fetchone() or {}
+    rows = _governed_rows(conn, sql, params)
+    return rows[0] if rows else {}
 
 
 def _fetch_all(conn, sql: str, params=None) -> list:
-    with conn.cursor() as cur:
-        cur.execute(sql, params)
-        return cur.fetchall()
+    if not conn["include_samples"]:
+        return []
+    return _governed_rows(conn, sql, params, SAMPLE_LIMIT)
 
 
 def _sanitize_samples(rows: list) -> list:
@@ -161,8 +175,7 @@ def _check_custom_sql(conn, table: str, column: str, cfg: dict):
     sql = (cfg.get("sql") or "").strip().rstrip(";")
     if not sql:
         raise ValueError("custom_sql 规则需要 sql 配置（SELECT 语句，返回违规行）")
-    if not re.match(r"^\s*select\b", sql, re.IGNORECASE):
-        raise ValueError("custom_sql 仅允许 SELECT 语句")
+    parse_query(sql)
     failed = _fetch_one(conn, f"SELECT COUNT(*) AS c FROM ({sql}) _violations")["c"]
     total = _fetch_one(conn, f"SELECT COUNT(*) AS c FROM {table}")["c"]
     samples = _fetch_all(conn, f"SELECT * FROM ({sql}) _violations LIMIT {SAMPLE_LIMIT}")
@@ -226,8 +239,14 @@ _CHECKERS = {
 
 # ── 入口 ─────────────────────────────────────────────────────────────
 
-def execute_single_rule(rule: dict) -> dict:
-    """执行单条质量规则，写入 adh_quality_results 并返回结果."""
+def execute_single_rule(rule: dict, user_context: dict = None, *,
+                        include_samples: bool = False, persist: bool = True) -> dict:
+    """在可信用户范围内检查；样本仅按查看者实时读取，不持久化。"""
+    if not user_context or not user_context.get("user_id"):
+        raise PermissionError("质量检查缺少可信身份")
+    authorize_workspace(user_context, rule.get("workspace_id") or 0)
+    execution = {"user_id": user_context["user_id"],
+                 "workspace_id": rule.get("workspace_id") or 0, "scope": "authorized"}
     rule_id = rule.get("id")
     rule_type = rule.get("rule_type", "")
     cfg = _parse_config(rule)
@@ -252,7 +271,7 @@ def execute_single_rule(rule: dict) -> dict:
         if rule_type not in ("row_count",) and not column:
             raise ValueError(f"{rule_type} 规则需要 target_column")
 
-        conn = _open_target_conn(rule)
+        conn = _open_target_conn(rule, user_context, include_samples)
         total_rows, failed_rows, samples = checker(conn, table, column, cfg)
 
         passed = failed_rows <= int(cfg.get("max_failed_rows", 0))
@@ -260,45 +279,44 @@ def execute_single_rule(rule: dict) -> dict:
         elapsed_ms = int((time.time() - start) * 1000)
         check_time = datetime.now()
 
-        detail = {"samples": _sanitize_samples(samples), "config": cfg}
-        with DBConnection() as db:
-            with db.cursor() as cur:
-                cur.execute(
-                    """INSERT INTO adh_quality_results
-                       (rule_id, workspace_id, check_time, passed, total_rows, failed_rows,
-                        pass_rate, detail, elapsed_ms)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (rule_id, rule.get("workspace_id") or 0, check_time, int(passed),
-                     total_rows, failed_rows, pass_rate,
-                     json.dumps(detail, ensure_ascii=False, default=str), elapsed_ms),
-                )
-
-        return {
-            **base, "passed": passed, "total_rows": total_rows, "failed_rows": failed_rows,
-            "pass_rate": pass_rate, "detail_samples": _sanitize_samples(samples),
-            "elapsed_ms": elapsed_ms, "check_time": str(check_time),
-        }
-    except Exception as e:
-        logger.error("Quality rule %s execution failed: %s", rule_id, e)
-        # 执行异常也记录一条 error 结果，便于追踪
-        try:
+        detail = {"execution": execution, "status": "passed" if passed else "failed"}
+        if persist:
             with DBConnection() as db:
                 with db.cursor() as cur:
                     cur.execute(
                         """INSERT INTO adh_quality_results
                            (rule_id, workspace_id, check_time, passed, total_rows, failed_rows,
                             pass_rate, detail, elapsed_ms)
-                           VALUES (%s, %s, %s, 0, 0, 0, 0.00, %s, %s)""",
-                        (rule_id, rule.get("workspace_id") or 0, datetime.now(),
-                         json.dumps({"error": str(e)[:500]}, ensure_ascii=False),
-                         int((time.time() - start) * 1000)),
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        (rule_id, rule.get("workspace_id") or 0, check_time, int(passed),
+                         total_rows, failed_rows, pass_rate,
+                         json.dumps(detail, ensure_ascii=False, default=str), elapsed_ms),
                     )
+
+        return {
+            **base, "passed": passed, "total_rows": total_rows, "failed_rows": failed_rows,
+            "pass_rate": pass_rate, "execution": execution,
+            "detail_samples": _sanitize_samples(samples) if include_samples else [],
+            "elapsed_ms": elapsed_ms, "check_time": str(check_time),
+        }
+    except Exception as e:
+        logger.error("Quality rule %s execution failed: %s", rule_id, e)
+        # 执行异常也记录一条 error 结果，便于追踪
+        try:
+            if persist:
+                with DBConnection() as db:
+                    with db.cursor() as cur:
+                        cur.execute(
+                            """INSERT INTO adh_quality_results
+                               (rule_id, workspace_id, check_time, passed, total_rows, failed_rows,
+                                pass_rate, detail, elapsed_ms)
+                               VALUES (%s, %s, %s, 0, 0, 0, 0.00, %s, %s)""",
+                            (rule_id, rule.get("workspace_id") or 0, datetime.now(),
+                             json.dumps({"status": "unknown", "execution": execution,
+                                         "error": "质量检查未完成"}, ensure_ascii=False),
+                             int((time.time() - start) * 1000)),
+                        )
         except Exception:
             logger.warning("Failed to record error result for rule %s", rule_id)
-        return {**base, "passed": False, "error": str(e)[:500]}
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        return {**base, "passed": False, "status": "unknown", "execution": execution,
+                "error": "质量检查未完成，请检查权限或联系管理员"}

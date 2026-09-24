@@ -20,6 +20,7 @@ class RetrievalStrategy(ABC):
         target_tables: list[str] = None,
         keywords: list[str] = None,
         datasource_id: int = 0,
+        extra_object_keys: list[str] = None,
     ) -> dict:
         """Retrieve metadata for NL2SQL prompt construction.
 
@@ -29,6 +30,7 @@ class RetrievalStrategy(ABC):
             target_tables: Tables from intent classifier (legacy, for boost).
             keywords: Business keywords for term filtering.
             datasource_id: Filter metadata by this datasource.
+            extra_object_keys: 知识库(qmind)命中的本体对象 key, 用作种子/线索注入(T7)。
 
         Returns:
             Dict with keys:

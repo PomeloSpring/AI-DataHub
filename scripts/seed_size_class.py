@@ -108,7 +108,7 @@ def _query_source_stats(ds_config: dict) -> dict[str, dict]:
 def _get_ds_config(meta_conn, ds_id: int) -> dict:
     """从 adh_datasources 读取源库连接配置(密码按需解密)。
 
-    不依赖 sync.metadata_sync(已 DEPRECATED, 且其元数据连接走 DORIS_HOST),
+    不依赖 services.datacatalog.services.metadata_sync(已 DEPRECATED, 且其元数据连接走 DORIS_HOST),
     这里直接用元数据库连接。
 
     回退:若源 host:port 与元数据库相同(同一实例上的不同 schema),且存储的密码

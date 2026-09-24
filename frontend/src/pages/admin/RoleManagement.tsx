@@ -17,7 +17,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import {
   Plus, Edit, Trash2, Shield, Users, Settings, UserPlus, UserMinus,
-  Database, Table, Columns3, Key, Bot,
+  Database, Table, Columns3, Key, Bot, LayoutDashboard, Globe,
 } from 'lucide-react';
 import client from '@/api/client';
 
@@ -29,19 +29,6 @@ interface Role {
   is_system: number;
   is_active: number;
   users?: Array<{ user_id: number; username: string }>;
-}
-
-interface PermPoint {
-  perm_code: string;
-  label: string;
-  description: string;
-  menu_key: string;
-}
-
-interface PermGroup {
-  module: string;
-  module_label: string;
-  permissions: PermPoint[];
 }
 
 interface DatasourceAccess {
@@ -110,12 +97,18 @@ export default function RoleManagement() {
     { key: 'ontology.activate', label: '激活本体模型' },
     { key: 'ontology.import_yaml', label: '导入 YAML' },
     { key: 'metadata.sync', label: '同步元数据' },
+    { key: 'alias.approve', label: '审核通过别名建议' },
+    { key: 'alias.reject', label: '驳回别名建议' },
   ];
 
-  // 功能权限(权限码: adh_perm_registry + adh_role_perms)
-  const [permGroups, setPermGroups] = useState<PermGroup[]>([]);
-  const [rolePerms, setRolePerms] = useState<Set<string>>(new Set());
-  const [permsSaving, setPermsSaving] = useState(false);
+  // 菜单权限
+  const [menuRegistry, setMenuRegistry] = useState<Array<{ menu_key: string; label: string; section: string; module: string }>>([]);
+  const [roleMenus, setRoleMenus] = useState<Record<string, boolean>>({});
+
+  // 接口权限
+  const [roleApis, setRoleApis] = useState<Array<{ api_pattern: string; method: string; is_allowed: boolean }>>([]);
+  const [newApiPattern, setNewApiPattern] = useState('');
+  const [newApiMethod, setNewApiMethod] = useState('*');
 
   // User assignment
   const [userTarget, setUserTarget] = useState<Role | null>(null);
@@ -201,13 +194,18 @@ export default function RoleManagement() {
         setAsbotAccess({});
         setAsbotCanAccess(false);
       }
-      // Load permission registry + role perm codes
+      // Load menu registry + role menu permissions
       try {
-        const { data: regData } = await client.get('/roles/perm-registry');
-        setPermGroups(regData.groups || []);
-        const { data: permData } = await client.get(`/roles/${role.id}/permissions`);
-        setRolePerms(new Set<string>(permData.permissions || []));
-      } catch { setPermGroups([]); setRolePerms(new Set()); }
+        const { data: regData } = await client.get('/roles/menu-registry');
+        setMenuRegistry(Array.isArray(regData) ? regData : []);
+        const { data: menuData } = await client.get(`/roles/${role.id}/menus`);
+        setRoleMenus(menuData.menus || {});
+      } catch { setMenuRegistry([]); setRoleMenus({}); }
+      // Load role API permissions
+      try {
+        const { data: apiData } = await client.get(`/roles/${role.id}/apis`);
+        setRoleApis(apiData.apis || []);
+      } catch { setRoleApis([]); }
     } catch { /* ignore */ }
   };
 
@@ -284,32 +282,6 @@ export default function RoleManagement() {
       await client.put(`/roles/${permTarget.id}/attributes`, { workspace_id: 0, attributes: attrs });
       toast.success('属性已保存');
     } catch { toast.error('保存失败'); }
-  };
-
-  const togglePerm = (code: string) => {
-    setRolePerms(prev => {
-      const next = new Set(prev);
-      if (next.has(code)) next.delete(code); else next.add(code);
-      return next;
-    });
-  };
-
-  const toggleModuleAll = (group: PermGroup, checked: boolean) => {
-    setRolePerms(prev => {
-      const next = new Set(prev);
-      group.permissions.forEach(p => checked ? next.add(p.perm_code) : next.delete(p.perm_code));
-      return next;
-    });
-  };
-
-  const savePerms = async () => {
-    if (!permTarget) return;
-    setPermsSaving(true);
-    try {
-      await client.put(`/roles/${permTarget.id}/permissions`, { permissions: [...rolePerms] });
-      toast.success(rolePerms.size === 0 ? '已保存：未勾选任何权限 = 不限制(拥有全部)' : `已保存 ${rolePerms.size} 项权限`);
-    } catch { toast.error('保存失败'); }
-    finally { setPermsSaving(false); }
   };
 
   // ── User Assignment ──────────────────────────────────────────────
@@ -403,13 +375,14 @@ export default function RoleManagement() {
             <DialogDescription>配置该角色的数据访问范围</DialogDescription>
           </DialogHeader>
           <Tabs value={permTab} onValueChange={setPermTab}>
-            <TabsList className="grid grid-cols-6 w-full">
+            <TabsList className="grid grid-cols-7 w-full">
               <TabsTrigger value="datasources"><Database className="h-3.5 w-3.5 mr-1" />数据源</TabsTrigger>
               <TabsTrigger value="tables"><Table className="h-3.5 w-3.5 mr-1" />表</TabsTrigger>
               <TabsTrigger value="columns"><Columns3 className="h-3.5 w-3.5 mr-1" />列</TabsTrigger>
               <TabsTrigger value="attributes"><Settings className="h-3.5 w-3.5 mr-1" />属性</TabsTrigger>
               <TabsTrigger value="asbot"><Bot className="h-3.5 w-3.5 mr-1" />AS-BOT</TabsTrigger>
-              <TabsTrigger value="perms"><Shield className="h-3.5 w-3.5 mr-1" />功能权限</TabsTrigger>
+              <TabsTrigger value="menus"><LayoutDashboard className="h-3.5 w-3.5 mr-1" />菜单</TabsTrigger>
+              <TabsTrigger value="apis"><Globe className="h-3.5 w-3.5 mr-1" />接口</TabsTrigger>
             </TabsList>
 
             {/* Datasource Access */}
@@ -580,44 +553,97 @@ export default function RoleManagement() {
               )}
             </TabsContent>
 
-            {/* 功能权限(权限码) */}
-            <TabsContent value="perms" className="space-y-3">
-              <p className="text-sm text-muted-foreground">
-                按权限点勾选。权限码统一驱动菜单可见性与 API 鉴权，无需逐个配置菜单/接口。
-                全部不勾选 = 不限制（拥有全部权限）
-              </p>
-              {permGroups.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">权限点注册表为空</p>
+            {/* 菜单权限 */}
+            <TabsContent value="menus" className="space-y-3">
+              <p className="text-sm text-muted-foreground">配置该角色可访问的菜单。未配置 = 不限制（全部可见）</p>
+              {menuRegistry.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">菜单注册表为空</p>
               ) : (
                 <div className="space-y-4">
-                  {permGroups.map(group => {
-                    const allChecked = group.permissions.every(p => rolePerms.has(p.perm_code));
+                  {['system', 'data', 'workspace'].map(mod => {
+                    const items = menuRegistry.filter(m => m.module === mod);
+                    if (items.length === 0) return null;
+                    const sections = [...new Set(items.map(i => i.section))];
                     return (
-                      <div key={group.module} className="border rounded-lg">
-                        <div className="flex items-center justify-between px-3 py-2 bg-muted/40 border-b">
-                          <span className="text-xs font-semibold">{group.module_label || group.module}</span>
-                          <label className="flex items-center gap-2 cursor-pointer">
-                            <span className="text-[10px] text-muted-foreground">全选</span>
-                            <Switch checked={allChecked} onCheckedChange={checked => toggleModuleAll(group, checked)} />
-                          </label>
-                        </div>
-                        <div className="grid grid-cols-2 gap-1.5 p-3">
-                          {group.permissions.map(p => (
-                            <div key={p.perm_code} className="flex items-center justify-between border rounded px-2 py-1.5" title={p.description || p.perm_code}>
-                              <div className="flex flex-col min-w-0">
-                                <span className="text-xs truncate">{p.label || p.perm_code}</span>
-                                <code className="text-[10px] text-muted-foreground">{p.perm_code}</code>
-                              </div>
-                              <Switch checked={rolePerms.has(p.perm_code)} onCheckedChange={() => togglePerm(p.perm_code)} />
+                      <div key={mod}>
+                        <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+                          {mod === 'system' ? '系统配置' : mod === 'data' ? '数据中台' : '工作空间'}
+                        </h4>
+                        {sections.map(sec => (
+                          <div key={sec} className="mb-2">
+                            <p className="text-[10px] text-muted-foreground/70 mb-1">{sec}</p>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              {items.filter(i => i.section === sec).map(item => (
+                                <div key={item.menu_key} className="flex items-center justify-between border rounded px-2 py-1.5">
+                                  <span className="text-xs">{item.label}</span>
+                                  <Switch
+                                    checked={roleMenus[item.menu_key] !== false}
+                                    onCheckedChange={checked => setRoleMenus(prev => ({ ...prev, [item.menu_key]: checked }))}
+                                  />
+                                </div>
+                              ))}
                             </div>
-                          ))}
-                        </div>
+                          </div>
+                        ))}
                       </div>
                     );
                   })}
-                  <Button size="sm" onClick={savePerms} disabled={permsSaving}>
-                    {permsSaving ? '保存中...' : `保存功能权限（已选 ${rolePerms.size} 项）`}
-                  </Button>
+                  <Button size="sm" onClick={async () => {
+                    if (!permTarget) return;
+                    try {
+                      await client.put(`/roles/${permTarget.id}/menus`, { menus: roleMenus });
+                      toast.success('菜单权限已保存');
+                    } catch { toast.error('保存失败'); }
+                  }}>保存菜单权限</Button>
+                </div>
+              )}
+            </TabsContent>
+
+            {/* 接口权限 */}
+            <TabsContent value="apis" className="space-y-3">
+              <p className="text-sm text-muted-foreground">配置该角色可调用的 API 接口。未配置 = 不限制。支持 * 通配符</p>
+              <div className="flex gap-2">
+                <Input placeholder="API 路径，如 /api/ontology/*" value={newApiPattern} onChange={e => setNewApiPattern(e.target.value)} className="flex-1" />
+                <select className="border rounded px-2 py-1 text-sm" value={newApiMethod} onChange={e => setNewApiMethod(e.target.value)}>
+                  <option value="*">全部</option>
+                  <option value="GET">GET</option>
+                  <option value="POST">POST</option>
+                  <option value="PUT">PUT</option>
+                  <option value="DELETE">DELETE</option>
+                </select>
+                <Button size="sm" onClick={() => {
+                  if (!newApiPattern.trim()) return;
+                  setRoleApis(prev => [...prev, { api_pattern: newApiPattern.trim(), method: newApiMethod, is_allowed: true }]);
+                  setNewApiPattern('');
+                }} disabled={!newApiPattern.trim()}><Plus className="h-4 w-4" /></Button>
+              </div>
+              {roleApis.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">未配置限制，该角色可访问所有接口</p>
+              ) : (
+                <div className="space-y-1">
+                  {roleApis.map((api, i) => (
+                    <div key={i} className="flex items-center justify-between border rounded px-3 py-1.5">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="text-[10px]">{api.method}</Badge>
+                        <code className="text-xs">{api.api_pattern}</code>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Switch checked={api.is_allowed} onCheckedChange={checked => {
+                          setRoleApis(prev => prev.map((a, ai) => ai === i ? { ...a, is_allowed: checked } : a));
+                        }} />
+                        <Button variant="ghost" size="sm" onClick={() => setRoleApis(prev => prev.filter((_, ai) => ai !== i))}>
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                  <Button size="sm" onClick={async () => {
+                    if (!permTarget) return;
+                    try {
+                      await client.put(`/roles/${permTarget.id}/apis`, { apis: roleApis });
+                      toast.success('接口权限已保存');
+                    } catch { toast.error('保存失败'); }
+                  }}>保存接口权限</Button>
                 </div>
               )}
             </TabsContent>

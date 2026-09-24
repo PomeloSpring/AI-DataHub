@@ -11,12 +11,14 @@ import { useDashboardStore, DASHBOARD_STATUS_MAP, type Dashboard as DashboardMod
 import { DashboardThumbnail } from '@/components/DashboardCanvas';
 import DashboardExportImport from '@/components/DashboardExportImport';
 import DashboardTemplates from '@/components/DashboardTemplates';
-import CarouselView from '@/components/CarouselView';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
+import { useThemeStore } from '@/stores/themeStore';
+import { applyScreenComponent, themePackFor } from '@/lib/dashboardDesign';
 
 export default function Dashboard() {
   const store = useDashboardStore();
   const library = useVisLibrary();
+  const theme = useThemeStore(s => s.theme);
   const navigate = useNavigate();
   const location = useLocation();
   const { workspaceId } = useParams();
@@ -27,10 +29,9 @@ export default function Dashboard() {
   const [settingsId, setSettingsId] = useState<number | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [templates, setTemplates] = useState(false);
-  const [carousel, setCarousel] = useState(false);
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
-  useEffect(() => { void store.loadDashboards(workspaceId ? Number(workspaceId) : undefined); }, [workspaceId]);
+  useEffect(() => { void store.loadDashboards(workspaceId ? Number(workspaceId) : 0); }, [workspaceId]);
   const filtered = useMemo(() => store.dashboards.filter(d =>
     `${d.name} ${d.description || ''}`.toLowerCase().includes(search.toLowerCase()) &&
     (status === 'all' || (d.status || 'designing') === status) && (!favoritesOnly || store.favorites.includes(d.id))
@@ -45,6 +46,7 @@ export default function Dashboard() {
     finally { lock.current = false; setBusy(false); }
   };
   const edit = (id: number) => navigate(`/dashboard/editor/${id}`, { state: { from: location.pathname } });
+  const play = (id: number, interval = 0) => navigate(`/screen/${id}?workspace_id=${Number(workspaceId) || 0}&from=${encodeURIComponent(location.pathname)}&interval=${interval}`, { state: { from: location.pathname } });
   const move = (id: number, delta: number) => run(async () => {
     const ordered = [...store.dashboards];
     const index = ordered.findIndex(d => d.id === id), next = index + delta;
@@ -59,7 +61,7 @@ export default function Dashboard() {
           <h1 className="text-2xl font-semibold tracking-tight">仪表盘</h1><p className="mt-1 text-sm text-muted-foreground">用可复用字模设计看板，统一预览与大屏展示。</p></div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={() => setTemplates(true)}>从模板创建</Button>
-          <Button variant="outline" disabled={!enabled.length} onClick={() => setCarousel(true)}><Play className="mr-2 h-4 w-4" />轮播</Button>
+          <Button variant="outline" disabled={!enabled.length} onClick={() => play(enabled.find(d => d.id === current?.id)?.id || enabled[0].id, current?.carousel_interval || 10)}><Play className="mr-2 h-4 w-4" />轮播</Button>
           <DashboardExportImport dashboard={current} onImport={async data => { await store.createFromTemplate(data); }} />
           <Button disabled={busy} onClick={() => setNameDialog({ name: '' })}><Plus className="mr-2 h-4 w-4" />新建看板</Button>
         </div>
@@ -85,6 +87,10 @@ export default function Dashboard() {
                   <DropdownMenuItem disabled={busy} onClick={() => run(() => store.copyDashboard(db.id))}><Copy className="mr-2 h-4 w-4" />复制</DropdownMenuItem>
                   <DropdownMenuItem disabled={busy} onClick={() => run(() => store.setDefault(db.id))}><Star className="mr-2 h-4 w-4" />设为默认</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => setSettingsId(db.id)}><Settings className="mr-2 h-4 w-4" />状态与参数设置</DropdownMenuItem>
+                  <DropdownMenuItem disabled={busy || !themePackFor(theme, library.items)} onClick={() => run(async () => {
+                    const packComp = themePackFor(theme, library.items);
+                    if (packComp) await store.updateDashboard(db.id, { filters: applyScreenComponent(db.filters, packComp) } as any);
+                  })}><Star className="mr-2 h-4 w-4" />固化当前主题({theme})</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => store.setCurrent(db.id)}>选为导出对象</DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem disabled={busy || store.dashboards[0]?.id === db.id} onClick={() => move(db.id, -1)}><ArrowUp className="mr-2 h-4 w-4" />上移</DropdownMenuItem>
@@ -94,7 +100,7 @@ export default function Dashboard() {
               </div>
               <div className="flex flex-wrap gap-2 text-xs"><Badge variant="secondary">{DASHBOARD_STATUS_MAP[db.status || 'designing']?.label || '设计中'}</Badge>{db.is_default && <Badge variant="outline">默认</Badge>}<span className="self-center text-muted-foreground">{db.charts.filter(c => !c.chart_type.startsWith('widget_')).length} 个图表</span></div>
               <p className="text-xs text-muted-foreground">更新于 {db.updated_at ? new Date(db.updated_at).toLocaleString('zh-CN') : '—'}</p>
-              <div className="flex gap-2 border-t pt-3"><Button size="sm" className="flex-1" onClick={() => edit(db.id)}><Edit className="mr-1 h-3.5 w-3.5" />编辑</Button><Button size="sm" variant="outline" onClick={() => navigate(`/system/dashboards/${db.id}`)}><Eye className="mr-1 h-3.5 w-3.5" />预览</Button><Button size="sm" variant="ghost" disabled={db.status !== 'enabled'} title="仅已启用看板可播放" onClick={() => navigate(`/screen/${db.id}`)}><Play className="h-4 w-4" /><span className="sr-only">播放</span></Button></div>
+              <div className="flex gap-2 border-t pt-3"><Button size="sm" className="flex-1" onClick={() => edit(db.id)}><Edit className="mr-1 h-3.5 w-3.5" />编辑</Button><Button size="sm" variant="outline" onClick={() => navigate(`/system/dashboards/${db.id}`)}><Eye className="mr-1 h-3.5 w-3.5" />预览</Button><Button size="sm" variant="ghost" disabled={db.status !== 'enabled'} title="仅已启用看板可播放" onClick={() => play(db.id)}><Play className="h-4 w-4" /><span className="sr-only">播放</span></Button></div>
             </div>
           </article>)}
         </div>}
@@ -107,7 +113,6 @@ export default function Dashboard() {
     <Dialog open={deleteId !== null} onOpenChange={open => { if (!open && !busy) setDeleteId(null); }}><DialogContent><DialogHeader><DialogTitle>删除看板？</DialogTitle><DialogDescription>看板及其中的图表将被删除，此操作无法撤销。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" disabled={busy} onClick={() => setDeleteId(null)}>取消</Button><Button variant="destructive" disabled={busy} onClick={() => run(async () => { if (deleteId !== null) await store.deleteDashboard(deleteId); setDeleteId(null); })}>确认删除</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={!!settings} onOpenChange={open => { if (!open) setSettingsId(null); }}><DialogContent className="max-w-2xl max-h-[90vh] overflow-auto"><DialogHeader><DialogTitle>状态与参数设置</DialogTitle></DialogHeader>{settings && <DashboardSettings key={settings.id} dashboard={settings} onClose={() => setSettingsId(null)} />}</DialogContent></Dialog>
     <DashboardTemplates open={templates} onClose={() => setTemplates(false)} onApply={async template => { const id = await store.createFromTemplate(template); setTemplates(false); edit(id); }} />
-    {carousel && <CarouselView dashboards={enabled} interval={current?.carousel_interval || 10} startIndex={Math.max(0, enabled.findIndex(d => d.id === current?.id))} onClose={() => setCarousel(false)} />}
   </div>;
 }
 

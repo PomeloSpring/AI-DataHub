@@ -1,0 +1,25 @@
+-- Waker 会话目录、身份绑定与跨进程执行互斥；由部署显式执行。
+CREATE TABLE IF NOT EXISTS adh_agent_sessions (
+    session_key CHAR(32) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+    conversation_id BIGINT NULL,
+    user_id BIGINT NOT NULL,
+    workspace_id BIGINT NOT NULL,
+    waker_key VARCHAR(128) NOT NULL,
+    backend VARCHAR(32) NOT NULL,
+    storage_node CHAR(32) NOT NULL,
+    relative_dir VARCHAR(255) NOT NULL,
+    sdk_session_id VARCHAR(128) NULL,
+    policy_hash CHAR(64) NOT NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'idle',
+    execution_token CHAR(32) NULL,
+    owner_pid INT NULL,
+    owner_start VARCHAR(64) NULL,
+    sdk_pid INT NULL,
+    sdk_start VARCHAR(64) NULL,
+    version BIGINT NOT NULL DEFAULT 0,
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uq_agent_conversation (conversation_id),
+    KEY idx_agent_owner (user_id, workspace_id),
+    KEY idx_agent_status (storage_node, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

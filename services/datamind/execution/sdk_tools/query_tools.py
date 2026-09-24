@@ -76,6 +76,110 @@ async def execute_sql(args):
     })
 
 
+async def check_sql(args):
+    """SQL 治理预检: 只判断安全与权限, 不执行、不返回数据行。
+
+    供 nl2sql 路径在 execute_sql 前自检: 只读性/DDL-DML/多语句/LIMIT/huge 全扫,
+    以及当前身份对引用表的表级/列级(隐藏/脱敏)/行级(RLS)权限预览。
+    """
+    from services.datamind.execution.sdk_tools.context import get_execution_context
+    from services.datamind.nl2sql.sql.query_executor import validate_sql
+
+    ctx = get_execution_context()
+    sql = (args.get("sql") or "").strip()
+    if not sql:
+        return _text({"error": "sql is required"}, is_error=True)
+    ds_id = args.get("datasource_id") or (ctx.datasource_id if ctx else None)
+
+    warnings: list[str] = []
+
+    # 1) 安全: 仅 SELECT/WITH, 禁 DDL/DML/多语句(不含 LIMIT 校验)
+    ok, msg = validate_sql(sql, require_limit=False)
+    security = {"is_read_only": ok, "detail": msg if not ok else "仅 SELECT/WITH, 无 DDL/DML/多语句"}
+    if not ok:
+        warnings.append(f"安全: {msg}")
+
+    # 2) LIMIT / huge 全扫护栏(与 execute_sql 同口径)
+    has_limit = bool(re.search(r"\bLIMIT\b", sql, re.IGNORECASE))
+    limit_note = "" if has_limit else "缺 LIMIT, 执行时会自动补默认 LIMIT"
+    huge = _huge_scan_guard(sql, ds_id)
+    if huge:
+        warnings.append(huge)
+
+    # 3) 权限预览(不执行): 逐表 check_access, 汇总隐藏/脱敏列与行过滤命中
+    permission = {
+        "allowed": True, "tables": [], "denied_tables": [],
+        "hidden_columns": [], "masked_columns": {},
+        "row_filter_tables": [], "policies_applied": [],
+    }
+    try:
+        from services.datamind.permission.enforcer import permission_enforcer
+        tables = permission_enforcer._extract_tables(sql)
+        permission["tables"] = tables
+        user_id = ctx.user_id if ctx else 0
+        ws_id = ctx.workspace_id if ctx else 0
+        only_sensitive = not user_id
+        hidden: set = set()
+        masked: dict = {}
+        policies: list = []
+        for t in tables:
+            try:
+                policy_table = permission_enforcer._policy_table(t, ds_id or 0)
+            except Exception as exc:  # 跨库/未绑定限定名
+                permission["allowed"] = False
+                permission["denied_tables"].append({"table": t, "reason": str(exc)})
+                continue
+            res = permission_enforcer.check_access(
+                user_id, ws_id, ds_id or 0, policy_table, sensitive_only=only_sensitive)
+            if not res.allowed:
+                permission["allowed"] = False
+                permission["denied_tables"].append({"table": t, "reason": res.reason})
+            hidden.update(res.hidden_columns)
+            for col, m in res.masked_columns.items():
+                masked[col] = m
+            if res.row_filter:
+                permission["row_filter_tables"].append(t)
+            policies.extend(res.policies_applied)
+        permission["hidden_columns"] = sorted(hidden)
+        permission["masked_columns"] = masked
+        permission["policies_applied"] = sorted(set(str(p) for p in policies))
+        blocked_hits = permission_enforcer._references_blocked(sql, list(hidden))
+        if blocked_hits:
+            permission["allowed"] = False
+            warnings.append(f"权限: 查询显式点名了被屏蔽列 {blocked_hits}, 执行将被拒绝")
+        if permission["row_filter_tables"]:
+            warnings.append("以下表会自动施加行级过滤(RLS): " + ", ".join(permission["row_filter_tables"]))
+    except Exception as exc:  # 预览失败不得阻断, 但要显式暴露
+        logger.error("check_sql permission preview error: %s", exc)
+        permission["preview_error"] = "权限预览暂不可用, 请谨慎执行"
+        warnings.append("权限预览暂不可用")
+
+    if not ok or not permission["allowed"]:
+        verdict = "blocked"
+    elif warnings:
+        verdict = "warn"
+    else:
+        verdict = "ok"
+
+    return _text({
+        "executed": False,
+        "verdict": verdict,
+        "security": security,
+        "limit": {"present": has_limit, "note": limit_note},
+        "permission": permission,
+        "warnings": warnings,
+        "guidance": _check_sql_guidance(verdict),
+    })
+
+
+def _check_sql_guidance(verdict: str) -> str:
+    return {
+        "ok": "安全与权限均通过, 可用 execute_sql 执行(仍会自动施加治理)。",
+        "warn": "存在提醒(如缺 LIMIT/行级过滤), 修正谓词或确认后执行。",
+        "blocked": "被护栏拒绝: 含非只读语句、越权表或点名被屏蔽列, 须修正或申请权限后再试, 不得绕过。",
+    }.get(verdict, "")
+
+
 def _huge_scan_guard(sql: str, datasource_id) -> str | None:
     """raw_source/huge 表若无 WHERE 则拒绝(消除无界全表扫旁路)。"""
     try:
@@ -105,15 +209,30 @@ def _huge_scan_guard(sql: str, datasource_id) -> str | None:
 
 TOOL_SPECS = [
     {
+        "name": "check_sql",
+        "description": (
+            "Pre-flight governance check for a SQL statement WITHOUT executing it. "
+            "Validates security (read-only SELECT/WITH, no DDL/DML/multi-statement, LIMIT, huge-table full scan) "
+            "and previews permissions for the current identity across referenced tables "
+            "(table access, hidden/masked columns, row-level RLS). Returns a verdict of ok/warn/blocked. "
+            "Always call this before execute_sql; it never returns data rows."
+        ),
+        "schema": {
+            "sql": Annotated[str, "The SELECT SQL statement to validate"],
+            "datasource": Annotated[Optional[str], "Target datasource by its business name (as shown by list_datasources); omit to use the session-selected source. Do NOT guess — if unsure which source, ask the user."],
+        },
+        "handler": check_sql,
+    },
+    {
         "name": "execute_sql",
         "description": (
             "Execute a read-only SQL query against a datasource with permission checks and audit logging. "
             "Only SELECT statements are allowed; the query is validated and auto-limited. "
-            "Use list_datasources to find datasource_id and get_table_schema before writing SQL."
+            "To target a specific source, pass its business name via 'datasource' (see list_datasources); omit it to use the session-selected source. Do NOT pass a numeric id."
         ),
         "schema": {
             "sql": Annotated[str, "The SELECT SQL statement to execute"],
-            "datasource_id": Annotated[Optional[int], "Datasource id from list_datasources; omit to use the default"],
+            "datasource": Annotated[Optional[str], "Target datasource by its business name (as shown by list_datasources); omit to use the session-selected source. Do NOT guess — if unsure which source, ask the user."],
         },
         "handler": execute_sql,
     },
@@ -125,7 +244,7 @@ READONLY_ANNOTATIONS = {"readOnlyHint": True}
 def build_query_server(backend: str = "qoder", tool_names=None):
     """构建 query 进程内 MCP server(qoder / claude).
 
-    tool_names 给定时只注册被选中的工具(waker 粒度控制 execute_sql 开关)。
+    tool_names 给定时只注册被选中的工具(waker 粒度控制 check_sql / execute_sql 开关)。
     """
     from services.datamind.execution.sdk_tools.compat import make_server, make_tool
 

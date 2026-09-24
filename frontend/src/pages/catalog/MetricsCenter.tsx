@@ -28,6 +28,8 @@ import {
   BarChart3,
   Layers,
 } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import DimensionsDictTab from './DimensionsDictTab';
 
 interface Metric {
   id: number;
@@ -43,6 +45,8 @@ interface Metric {
   granularity?: string;
   owner?: string;
   tags?: string[];
+  bound_object_key?: string;
+  aliases?: string | string[];
   created_at: string;
   updated_at: string;
 }
@@ -68,6 +72,34 @@ interface MetricFormData {
   target_table: string;
   target_column: string;
   granularity: string;
+  bound_object_key: string;
+  aliases: string;   // 逗号分隔, 提交时拆为数组(后端存 JSON 列)
+}
+
+/** 解析后端 aliases(JSON 字符串或数组) → 逗号串(输入框展示用) */
+function aliasesToText(v: unknown): string {
+  if (Array.isArray(v)) return v.join(', ');
+  if (typeof v === 'string' && v.trim()) {
+    try {
+      const arr = JSON.parse(v);
+      return Array.isArray(arr) ? arr.join(', ') : v;
+    } catch { return v; }
+  }
+  return '';
+}
+
+/** 三元组预览(只读): 所见 = 所写 = 图谱投影, 与 to_rdf/字典行为同一主语结构 */
+function metricRdfPreview(f: MetricFormData): string {
+  const subj = `adh:metric:${f.display_name || f.name || '?'}`;
+  const lines: string[] = [`${subj} a adh:Metric .`];
+  if (f.bound_object_key) lines.push(`${subj} adh:boundToObject adh:obj:${f.bound_object_key} .`);
+  const als = aliasesToText(f.aliases).split(',').map((s) => s.trim()).filter(Boolean);
+  als.forEach((a) => lines.push(`${subj} skos:altLabel "${a}" .`));
+  if (f.calculation_type) lines.push(`${subj} adh:aggregation "${f.calculation_type.toUpperCase()}" .`);
+  if (f.unit) lines.push(`${subj} adh:unit "${f.unit}" .`);
+  if (f.description) lines.push(`${subj} rdfs:comment "${f.description}" .`);
+  lines.push(`# formula 仅存服务端, 不对外/不上云`);
+  return lines.join('\n');
 }
 
 interface DimensionFormData {
@@ -110,6 +142,8 @@ const emptyMetricForm: MetricFormData = {
   target_table: '',
   target_column: '',
   granularity: '',
+  bound_object_key: '',
+  aliases: '',
 };
 
 const emptyDimensionForm: DimensionFormData = {
@@ -120,8 +154,22 @@ const emptyDimensionForm: DimensionFormData = {
   description: '',
 };
 
-export default function MetricsCenter() {
+export default function MetricsCenter({
+  embedded = false,
+  modelId,
+  view = 'metrics',
+  objects,
+}: {
+  /** 嵌入模型工作区: 隐藏页面标题与字典 Tab 头(由工作区顶层页签控制) */
+  embedded?: boolean;
+  /** 本体模型作用域: 只列/新建挂在该模型对象上的指标 */
+  modelId?: number;
+  view?: 'metrics' | 'dimensions';
+  /** 模型内对象清单(嵌入时传): 新建指标的"归属对象"引用选择器 */
+  objects?: { key: string; display_name: string }[];
+} = {}) {
   const { currentWorkspaceId } = useWorkspaceStore();
+  const [tab, setTab] = useState<'metrics' | 'dimensions'>(view);
   const [metrics, setMetrics] = useState<Metric[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -150,6 +198,8 @@ export default function MetricsCenter() {
       const params: any = { page, size: 20, workspace_id: currentWorkspaceId };
       if (search) params.search = search;
       if (filterType !== 'all') params.metric_type = filterType;
+      // 模型工作区作用域: 只列 bound_object_key ∈ 本模型对象集的指标
+      if (modelId) { params.model_id = modelId; params.scope = 'model'; }
       const res = await metricsApi.list(params);
       const items = res?.data?.items ?? res?.data;
       setMetrics(Array.isArray(items) ? items : []);
@@ -161,7 +211,7 @@ export default function MetricsCenter() {
     } finally {
       setLoading(false);
     }
-  }, [page, search, filterType, currentWorkspaceId]);
+  }, [page, search, filterType, currentWorkspaceId, modelId]);
 
   useEffect(() => {
     loadMetrics();
@@ -201,6 +251,8 @@ export default function MetricsCenter() {
       target_table: metric.target_table || '',
       target_column: metric.target_column || '',
       granularity: metric.granularity || '',
+      bound_object_key: metric.bound_object_key || '',
+      aliases: aliasesToText(metric.aliases),
     });
     setFormOpen(true);
   };
@@ -212,17 +264,19 @@ export default function MetricsCenter() {
     }
     setSaving(true);
     try {
+      const payload: any = { ...formData, workspace_id: currentWorkspaceId,
+        aliases: formData.aliases.split(',').map((s) => s.trim()).filter(Boolean) };
       if (editMetric) {
-        await metricsApi.update(editMetric.id, { ...formData, workspace_id: currentWorkspaceId });
+        await metricsApi.update(editMetric.id, payload);
         toast.success('指标已更新');
       } else {
-        await metricsApi.create({ ...formData, workspace_id: currentWorkspaceId });
+        await metricsApi.create(payload);
         toast.success('指标已创建');
       }
       setFormOpen(false);
       loadMetrics();
-    } catch {
-      toast.error('保存失败');
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || '保存失败');
     } finally {
       setSaving(false);
     }
@@ -257,22 +311,38 @@ export default function MetricsCenter() {
   };
 
   return (
-    <div className="p-6 space-y-4">
+    <div className={embedded ? 'space-y-4' : 'p-6 space-y-4'}>
+      {!embedded && (
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">指标中心</h1>
-          <p className="text-muted-foreground text-sm mt-1">管理业务指标定义、计算口径和维度</p>
+          <p className="text-muted-foreground text-sm mt-1">指标字典与维度字典的唯一管理入口</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={loadMetrics}>
-            <RefreshCw className="w-4 h-4 mr-1" />
-            刷新
-          </Button>
-          <Button size="sm" onClick={handleOpenCreate}>
-            <Plus className="w-4 h-4 mr-1" />
-            新建指标
-          </Button>
-        </div>
+      </div>
+      )}
+
+      <Tabs value={tab} onValueChange={(v) => setTab(v as 'metrics' | 'dimensions')}>
+        {!embedded && (
+        <TabsList>
+          <TabsTrigger value="metrics" className="flex items-center gap-2">
+            <BarChart3 className="w-4 h-4" /> 指标字典
+          </TabsTrigger>
+          <TabsTrigger value="dimensions" className="flex items-center gap-2">
+            <Layers className="w-4 h-4" /> 维度字典
+          </TabsTrigger>
+        </TabsList>
+        )}
+
+        <TabsContent value="metrics" className="space-y-4">
+      <div className="flex justify-end gap-2">
+        <Button variant="outline" size="sm" onClick={loadMetrics}>
+          <RefreshCw className="w-4 h-4 mr-1" />
+          刷新
+        </Button>
+        <Button size="sm" onClick={handleOpenCreate}>
+          <Plus className="w-4 h-4 mr-1" />
+          新建指标
+        </Button>
       </div>
 
       {/* Filters */}
@@ -309,6 +379,8 @@ export default function MetricsCenter() {
               <th className="text-left p-3 font-medium">类型</th>
               <th className="text-left p-3 font-medium">计算方式</th>
               <th className="text-left p-3 font-medium">单位</th>
+              <th className="text-left p-3 font-medium">别名</th>
+              <th className="text-left p-3 font-medium">归属对象</th>
               <th className="text-left p-3 font-medium">目标表</th>
               <th className="text-left p-3 font-medium">负责人</th>
               <th className="text-right p-3 font-medium">操作</th>
@@ -317,13 +389,13 @@ export default function MetricsCenter() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={8} className="p-8 text-center text-muted-foreground">
+                <td colSpan={10} className="p-8 text-center text-muted-foreground">
                   加载中...
                 </td>
               </tr>
             ) : metrics.length === 0 ? (
               <tr>
-                <td colSpan={8} className="p-8 text-center text-muted-foreground">
+                <td colSpan={10} className="p-8 text-center text-muted-foreground">
                   暂无指标数据
                 </td>
               </tr>
@@ -348,6 +420,18 @@ export default function MetricsCenter() {
                     </Badge>
                   </td>
                   <td className="p-3 text-muted-foreground">{m.unit || '-'}</td>
+                  <td className="p-3">
+                    <div className="flex flex-wrap gap-1 max-w-[180px]">
+                      {aliasesToText(m.aliases).split(',').map((s) => s.trim()).filter(Boolean).map((a) => (
+                        <Badge key={a} variant="outline" className="text-[11px] font-normal">{a}</Badge>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="p-3">
+                    {m.bound_object_key
+                      ? <Badge variant="secondary" className="text-xs font-mono">{m.bound_object_key}</Badge>
+                      : <span className="text-xs text-amber-500">未归属</span>}
+                  </td>
                   <td className="p-3 text-muted-foreground font-mono text-xs">{m.target_table || '-'}</td>
                   <td className="p-3 text-muted-foreground">{m.owner || '-'}</td>
                   <td className="p-3 text-right">
@@ -381,6 +465,12 @@ export default function MetricsCenter() {
           </div>
         </div>
       )}
+        </TabsContent>
+
+        <TabsContent value="dimensions" className="space-y-4">
+          <DimensionsDictTab modelId={modelId} scope={modelId ? 'model' : undefined} />
+        </TabsContent>
+      </Tabs>
 
       {/* Create/Edit Metric Dialog */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
@@ -456,6 +546,14 @@ export default function MetricsCenter() {
               />
             </div>
             <div className="space-y-2">
+              <label className="text-sm font-medium">别名（多个用逗号分隔）</label>
+              <Input
+                placeholder="如: 病例数, total_cases — 语义查询按别名自动解析"
+                value={formData.aliases}
+                onChange={(e) => setFormData({ ...formData, aliases: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
               <label className="text-sm font-medium">粒度</label>
               <Input
                 placeholder="如: daily, hourly"
@@ -463,6 +561,26 @@ export default function MetricsCenter() {
                 onChange={(e) => setFormData({ ...formData, granularity: e.target.value })}
               />
             </div>
+            {/* 归属对象(模型工作区内): 引用选择器, 只能选本模型对象 —— 不产生悬空/跨模型挂接 */
+            }
+            {embedded && objects && objects.length > 0 && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">归属对象 *</label>
+              <Select
+                value={formData.bound_object_key || undefined}
+                onValueChange={(v) => setFormData({ ...formData, bound_object_key: v })}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="选择本模型内的业务对象" />
+                </SelectTrigger>
+                <SelectContent>
+                  {objects.map((o) => (
+                    <SelectItem key={o.key} value={o.key}>{o.display_name || o.key} ({o.key})</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            )}
             <div className="space-y-2">
               <label className="text-sm font-medium">目标表</label>
               <Input
@@ -479,6 +597,13 @@ export default function MetricsCenter() {
                 onChange={(e) => setFormData({ ...formData, target_column: e.target.value })}
               />
             </div>
+          </div>
+          {/* 三元组预览: 所见=所写=图谱投影 */}
+          <div className="mt-2">
+            <label className="text-sm font-medium text-muted-foreground">三元组预览（保存后将形成以下字典/图节点事实）</label>
+            <pre className="mt-1 p-3 rounded-md bg-muted/50 border text-[11px] font-mono whitespace-pre-wrap leading-relaxed">
+              {metricRdfPreview(formData)}
+            </pre>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>取消</Button>

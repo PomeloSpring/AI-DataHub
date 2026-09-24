@@ -34,11 +34,13 @@ const MCP_TOOL_GROUPS: { group: string; label: string; desc: string; tools: { na
       { name: 'get_glossary', label: '术语' },
       { name: 'query_by_tags', label: '标签查询' },
       { name: 'run_semantic_query', label: '语义查询' },
+      { name: 'get_business_semantics', label: '业务语义' },
+      { name: 'search_business_knowledge', label: '业务知识检索' },
     ],
   },
   {
-    group: 'query', label: 'SQL 执行', desc: 'execute_sql 受控旁路(默认不建议开启)',
-    tools: [{ name: 'execute_sql', label: '执行 SQL' }],
+    group: 'query', label: 'SQL 执行', desc: 'nl2sql 受治理旁路: check_sql 预检 + execute_sql 只读执行(均经权限/RLS/审计)',
+    tools: [{ name: 'check_sql', label: 'SQL 校验' }, { name: 'execute_sql', label: '执行 SQL' }],
   },
   {
     group: 'ontology', label: '本体模型', desc: '本体建模与元数据管理工具(AS-BOT 专用)',
@@ -65,9 +67,6 @@ const MCP_TOOL_GROUPS: { group: string; label: string; desc: string; tools: { na
     ],
   },
 ];
-const MCP_GROUP_TOOLS: Record<string, string[]> = Object.fromEntries(
-  MCP_TOOL_GROUPS.map((g) => [g.group, g.tools.map((t) => t.name)]),
-);
 const STANDARD_TOOLS = [
   { name: 'read', label: '读取' }, { name: 'write', label: '写入' }, { name: 'edit', label: '编辑' },
   { name: 'glob', label: '文件检索' }, { name: 'grep', label: '内容搜索' }, { name: 'bash', label: '命令执行' },
@@ -84,7 +83,7 @@ interface Waker {
   category: string;
   system_prompt: string;
   persona: { responsibility?: string; style?: string; boundary?: string };
-  tools: { groups: string[]; standard: string[]; mcp: Record<string, string[]> };
+  tools: { groups: string[]; standard: string[]; mcp: Record<string, string[]>; external?: Record<string, string[]> };
   mcp_server_ids: number[];
   datasource_ids: number[];
   knowledge_base_ids: number[];
@@ -101,7 +100,7 @@ interface Waker {
 const emptyWaker = (): Waker => ({
   id: 0, waker_key: '', name: '', display_name: '', description: '', category: 'custom',
   system_prompt: '', persona: {},
-  tools: { groups: ['semantic'], standard: ['read', 'grep'], mcp: { semantic: ['knowledge_search', 'run_semantic_query'] } },
+  tools: { groups: [], standard: [], mcp: {}, external: {} },
   mcp_server_ids: [], datasource_ids: [], knowledge_base_ids: [], skills: [], models: [], chart_enabled: true,
   permission_mode: 'inherit', is_active: true, workspace_id: 0,
 });
@@ -109,6 +108,8 @@ const emptyWaker = (): Waker => ({
 export default function WakerManager() {
   const [wakers, setWakers] = useState<Waker[]>([]);
   const [mcpServers, setMcpServers] = useState<any[]>([]);
+  const [toolGroups, setToolGroups] = useState<typeof MCP_TOOL_GROUPS>([]);
+  const [standardTools, setStandardTools] = useState<typeof STANDARD_TOOLS>([]);
   const [datasources, setDatasources] = useState<any[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<any[]>([]);
   const [skillOptions, setSkillOptions] = useState<any[]>([]);
@@ -129,7 +130,7 @@ export default function WakerManager() {
   const load = async () => {
     setLoading(true);
     try {
-      const [wRes, mcpRes, dsRes, kbRes, wsRes, roleRes, skillRes] = await Promise.all([
+      const [wRes, mcpRes, dsRes, kbRes, wsRes, roleRes, skillRes, catalogRes] = await Promise.all([
         client.get('/admin/wakers/'),
         client.get('/admin/mcp-servers'),
         client.get('/datasources/'),
@@ -137,8 +138,11 @@ export default function WakerManager() {
         client.get('/workspaces'),
         client.get('/admin/wakers/roles'),
         client.get('/admin/skills'),
+        client.get('/admin/wakers/tools/catalog'),
       ]);
-      setWakers(Array.isArray(wRes.data) ? wRes.data.map(normalizeWaker) : []);
+      setToolGroups(catalogRes.data.groups);
+      setStandardTools(catalogRes.data.standard);
+      setWakers(Array.isArray(wRes.data) ? wRes.data.map((r: any) => normalizeWaker(r, catalogRes.data.groups)) : []);
       setMcpServers(Array.isArray(mcpRes.data) ? mcpRes.data : []);
       setDatasources(Array.isArray(dsRes.data) ? dsRes.data : []);
       setKnowledgeBases(Array.isArray(kbRes.data) ? kbRes.data.filter((k: any) => k.status === 'active') : []);
@@ -205,7 +209,8 @@ export default function WakerManager() {
       waker_key: key,
       name: form.name.trim() || key,
       display_name: form.display_name || form.name,
-      tools: { ...form.tools, groups: derivedGroups },
+      tools: { ...form.tools, groups: derivedGroups,
+        external: Object.fromEntries((form.mcp_server_ids || []).map(id => [String(id), form.tools.external?.[String(id)] || []])) },
       chart_enabled: !!form.chart_enabled,
       is_active: !!form.is_active,
     };
@@ -471,8 +476,11 @@ export default function WakerManager() {
             </div>
 
             <Field label="工具权限 (逐工具粒度 — 未勾选的工具不会注册，LLM 无从调用)">
+              <p className="text-sm text-muted-foreground">空配置＝无工具权限。实际可用能力还需通过工作空间、执行层与用户权限校验。</p>
+              <p className="text-xs text-destructive">子任务隔离尚未完成，配置会保留但不会注册执行，并在会话权限中显示不可用原因。</p>
+              {form.waker_key === '__system_bot__' && <p className="text-sm">系统助手固定使用系统域业务工具，不授予原生文件或命令权限。</p>}
               <div className="space-y-3">
-                {MCP_TOOL_GROUPS.map((g) => {
+                {toolGroups.map((g) => {
                   const sel = form.tools?.mcp?.[g.group] || [];
                   const all = g.tools.map((t) => t.name);
                   const allOn = sel.length === all.length;
@@ -506,9 +514,10 @@ export default function WakerManager() {
               </div>
             </Field>
 
-            <Field label="标准工具白名单 (文件/命令等内置工具)">
+            <Field label="标准工具白名单 (当前会话沙箱)">
+              <p className="text-xs text-muted-foreground">命令执行必须同时授权读取；未授权写入或编辑时目录只读。子任务隔离未验证前会明确拒绝启用。</p>
               <div className="flex flex-wrap gap-2">
-                {STANDARD_TOOLS.map((t) => {
+                {standardTools.map((t) => {
                   const active = (form.tools?.standard || []).includes(t.name);
                   return (
                     <Badge key={t.name} variant={active ? 'default' : 'outline'} className="cursor-pointer"
@@ -522,6 +531,7 @@ export default function WakerManager() {
 
             <div className="grid grid-cols-2 gap-4">
               <Field label="引用 MCP 服务">
+                <p className="mb-2 text-xs text-muted-foreground">在此绑定服务并逐工具授权，无需再关联工作空间。空绑定不开放任何外部 MCP。</p>
                 <div className="flex flex-wrap gap-2 max-h-[140px] overflow-y-auto">
                   {mcpServers.filter((s) => s.is_active).map((s) => {
                     const active = (form.mcp_server_ids || []).includes(s.id);
@@ -534,8 +544,25 @@ export default function WakerManager() {
                   })}
                   {mcpServers.filter((s) => s.is_active).length === 0 && <span className="text-xs text-muted-foreground">无可用 MCP</span>}
                 </div>
+                {(form.mcp_server_ids || []).map(id => {
+                  const srv = mcpServers.find(s => s.id === id);
+                  const discovered = srv?.discovered_tools;
+                  const tools = Array.isArray(discovered) ? discovered : (discovered?.tools || []);
+                  const selected = form.tools.external?.[String(id)] || [];
+                  return <div key={id} className="mt-2 border rounded p-2 text-xs">
+                    <p>{srv?.name || id}：逐工具授权</p>
+                    <p className="text-destructive">HTTP/SSE 远程 MCP 尚缺可信身份和数据治理契约，当前禁止执行；stdio 仅在只读、禁网沙箱内运行，且须显式授权读取。</p>
+                    {tools.length === 0 && <p className="text-destructive">缺少工具目录，请先在 MCP 管理中完成工具发现；不会默认授权全部工具。</p>}
+                    <div className="flex flex-wrap gap-1 mt-1">{tools.map((t: any) => <Badge key={t.name}
+                      title={t.description || t.name} className="cursor-pointer"
+                      variant={selected.includes(t.name) ? 'default' : 'outline'}
+                      onClick={() => setForm(f => ({...f, tools: {...f.tools, external: {...f.tools.external,
+                        [String(id)]: toggleArr(selected, t.name) as string[]}}}))}>{t.name}</Badge>)}</div>
+                  </div>;
+                })}
               </Field>
               <Field label="引用数据源">
+                <p className="mb-2 text-xs text-muted-foreground">不指定时继承当前工作空间绑定的数据源；指定后仅可使用所选数据源与工作空间授权范围的交集，仍受当前用户权限限制。AS-BOT 默认系统域不受此设置影响。</p>
                 <div className="flex flex-wrap gap-2 max-h-[140px] overflow-y-auto">
                   {datasources.map((ds) => {
                     const active = (form.datasource_ids || []).includes(ds.id);
@@ -550,6 +577,7 @@ export default function WakerManager() {
                 </div>
               </Field>
               <Field label="引用知识库">
+                <p className="mb-2 text-xs text-muted-foreground">知识库使用范围以当前 Waker 的显式绑定为准，无需再关联工作空间；空绑定不允许知识库检索。</p>
                 <div className="flex flex-wrap gap-2 max-h-[140px] overflow-y-auto">
                   {knowledgeBases.map((kb) => {
                     const active = (form.knowledge_base_ids || []).includes(kb.id);
@@ -645,19 +673,20 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 // DB 行 → 前端表单结构(persona/tools/mcp_server_ids/skills 兜底为对象/数组)
-function normalizeWaker(r: any): Waker {
+function normalizeWaker(r: any, catalog = MCP_TOOL_GROUPS): Waker {
   const tools = typeof r.tools === 'string' ? JSON.parse(r.tools || '{}') : (r.tools || {});
   const groups: string[] = Array.isArray(tools) ? tools : (tools.groups || []);
   const standard: string[] = Array.isArray(tools) ? [] : (tools.standard || []);
   // 优先用已配置的逐工具 mcp;旧数据无 mcp 时按 groups 展开全部工具(向后兼容)
   let mcp: Record<string, string[]> = (!Array.isArray(tools) && tools.mcp) ? tools.mcp : {};
-  if (!mcp || Object.keys(mcp).length === 0) {
-    mcp = Object.fromEntries(groups.filter((g) => MCP_GROUP_TOOLS[g]).map((g) => [g, [...MCP_GROUP_TOOLS[g]]]));
+  if (Array.isArray(tools) || !Object.prototype.hasOwnProperty.call(tools, 'mcp')) {
+    const groupTools = Object.fromEntries(catalog.map(g => [g.group, g.tools.map(t => t.name)]));
+    mcp = Object.fromEntries(groups.filter(g => groupTools[g]).map(g => [g, groupTools[g]]));
   }
   return {
     ...r,
     persona: typeof r.persona === 'string' ? JSON.parse(r.persona || '{}') : (r.persona || {}),
-    tools: { groups, standard, mcp },
+    tools: { groups, standard, mcp, external: tools.external || {} },
     mcp_server_ids: parseArr(r.mcp_server_ids),
     datasource_ids: parseArr(r.datasource_ids),
     knowledge_base_ids: parseArr(r.knowledge_base_ids),

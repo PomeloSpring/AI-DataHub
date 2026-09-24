@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import {
   Plus, Edit2, Trash2, Star, Database, Users, Settings,
-  X, Folder, UserPlus, Server, Bot, Menu,
-  BookOpen, Shield, UserMinus,
+  X, UserPlus, Bot, Menu,
+  Shield, UserMinus,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -400,12 +400,6 @@ function CreateWorkspaceDialog({
 
 // ── Edit Workspace Dialog ──────────────────────────────────────────
 
-const PIPELINE_MODES = [
-  { value: 'quick', label: '快速', desc: '简化 RAG 检索，响应快' },
-  { value: 'deep', label: '深度', desc: '平台内置 Agent，LLM 自主工具调用' },
-  { value: 'agent', label: 'Agent', desc: '外部执行层（默认 Claude Agent SDK）' },
-];
-
 function EditWorkspaceDialog({
   workspace,
   onClose,
@@ -421,16 +415,7 @@ function EditWorkspaceDialog({
     description: workspace.description || '',
     icon: workspace.icon,
   });
-  const [allowedModes, setAllowedModes] = useState<string[]>(
-    existingConfig.allowed_pipeline_modes || PIPELINE_MODES.map(m => m.value)
-  );
   const [saving, setSaving] = useState(false);
-
-  const toggleMode = (val: string) => {
-    setAllowedModes(prev =>
-      prev.includes(val) ? prev.filter(v => v !== val) : [...prev, val]
-    );
-  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -439,7 +424,6 @@ function EditWorkspaceDialog({
         ...form,
         config: {
           ...existingConfig,
-          allowed_pipeline_modes: allowedModes,
         },
       });
       toast.success('工作空间更新成功');
@@ -495,24 +479,6 @@ function EditWorkspaceDialog({
               onChange={(e) => setForm({ ...form, description: e.target.value })}
             />
           </div>
-
-          {/* Pipeline Modes */}
-          <div className="space-y-2">
-            <Label>可用查询模式</Label>
-            <p className="text-xs text-muted-foreground">选择此工作空间中用户可以使用的查询模式</p>
-            <div className="flex flex-wrap gap-2">
-              {PIPELINE_MODES.map(m => (
-                <Button
-                  key={m.value}
-                  variant={allowedModes.includes(m.value) ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => toggleMode(m.value)}
-                >
-                  {m.label}
-                </Button>
-              ))}
-            </div>
-          </div>
         </div>
 
         <DialogFooter>
@@ -525,110 +491,6 @@ function EditWorkspaceDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-// ── Workspace MCP Tab (association mode, like datasources) ─────────
-
-function WorkspaceMCPTab({ workspaceId }: { workspaceId: number }) {
-  const [current, setCurrent] = useState<any[]>([]);
-  const [available, setAvailable] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [testing, setTesting] = useState<number | null>(null);
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const [wsRes, allRes] = await Promise.all([
-        client.get(`/admin/mcp-servers?workspace_id=${workspaceId}`),
-        client.get('/admin/mcp-servers'),
-      ]);
-      const wsItems = wsRes.data || [];
-      const allItems = allRes.data || [];
-      const wsIds = new Set(wsItems.map((s: any) => s.id));
-      setCurrent(wsItems);
-      // Available = system-level items (workspace_id=0) not already in this workspace
-      // + items from other workspaces
-      setAvailable(allItems.filter((s: any) => !wsIds.has(s.id)));
-    } catch { toast.error('加载 MCP 服务失败'); }
-    finally { setLoading(false); }
-  };
-
-  useEffect(() => { load(); }, []);
-
-  const handleAdd = async (id: number) => {
-    try {
-      await client.put(`/admin/mcp-servers/${id}`, { workspace_id: workspaceId });
-      toast.success('已添加');
-      load();
-    } catch { toast.error('添加失败'); }
-  };
-
-  const handleRemove = async (id: number) => {
-    try {
-      await client.put(`/admin/mcp-servers/${id}`, { workspace_id: 0 });
-      toast.success('已移除');
-      load();
-    } catch { toast.error('移除失败'); }
-  };
-
-  const handleTest = async (id: number) => {
-    setTesting(id);
-    try {
-      const { data } = await client.post(`/admin/mcp-servers/${id}/test`);
-      if (data.success) toast.success(data.message);
-      else toast.error(data.message);
-    } catch { toast.error('测试失败'); }
-    finally { setTesting(null); }
-  };
-
-  if (loading) return <div className="flex justify-center py-8"><Spinner size={24} /></div>;
-
-  return (
-    <div className="space-y-4">
-      {current.map(s => (
-        <div key={s.id} className="flex items-center justify-between p-3 border rounded-lg">
-          <div className="flex items-center gap-2 min-w-0">
-            <Server className="h-4 w-4 flex-shrink-0" />
-            <span className="truncate">{s.name}</span>
-            <Badge variant="outline" className="flex-shrink-0">{s.transport}</Badge>
-            {!s.is_active && <span className="text-xs text-destructive flex-shrink-0">已禁用</span>}
-          </div>
-          <div className="flex gap-1 flex-shrink-0">
-            <Button size="sm" variant="outline" onClick={() => handleTest(s.id)} disabled={testing === s.id}>
-              {testing === s.id ? '...' : '测试'}
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => handleRemove(s.id)}>
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      ))}
-
-      {available.length > 0 && (
-        <>
-          <div className="text-sm text-muted-foreground mt-4">可添加的 MCP 服务：</div>
-          {available.map(s => (
-            <div key={s.id} className="flex items-center justify-between p-3 border rounded-lg border-dashed">
-              <div className="flex items-center gap-2 min-w-0">
-                <Server className="h-4 w-4 flex-shrink-0" />
-                <span className="truncate">{s.name}</span>
-                <Badge variant="outline" className="flex-shrink-0">{s.transport}</Badge>
-              </div>
-              <Button size="sm" variant="outline" onClick={() => handleAdd(s.id)}>
-                <Plus className="h-4 w-4" />
-              </Button>
-            </div>
-          ))}
-        </>
-      )}
-
-      {current.length === 0 && available.length === 0 && (
-        <div className="text-sm text-muted-foreground text-center py-8">
-          暂无 MCP 服务，请先在系统配置中创建
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -691,7 +553,7 @@ function WorkspaceWakersTab({ workspaceId }: { workspaceId: number }) {
   return (
     <div className="space-y-4">
       <div className="text-sm text-muted-foreground">
-        选择该工作空间可用的 Waker（角色化智能体）。标记为默认的将作为缺省 Waker。
+        选择该工作空间可用的 Waker（角色化智能体）。标记为默认的将作为缺省 Waker。知识库和 MCP 服务统一在 Waker 中绑定。
       </div>
 
       {wakers.length === 0 && (
@@ -940,59 +802,6 @@ function WorkspaceRolesTab({ workspaceId }: { workspaceId: number }) {
   );
 }
 
-// ── Workspace Knowledge View (read-only) ───────────────────────────
-
-function WorkspaceKnowledgeView({ workspaceId }: { workspaceId: number }) {
-  const [knowledgeBases, setKnowledgeBases] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    setLoading(true);
-    client.get(`/knowledge-bases?workspace_id=${workspaceId}`)
-      .then(({ data }) => setKnowledgeBases(data || []))
-      .catch(() => toast.error('加载知识库失败'))
-      .finally(() => setLoading(false));
-  }, [workspaceId]);
-
-  if (loading) return <div className="flex justify-center py-8"><Spinner size={24} /></div>;
-
-  if (knowledgeBases.length === 0) {
-    return (
-      <div className="text-sm text-muted-foreground text-center py-8">
-        暂未关联知识库
-      </div>
-    );
-  }
-
-  const KB_TYPE_LABELS: Record<string, string> = {
-    qmind: 'QMind 知识检索',
-    local: '本地目录',
-    vector_db: '向量数据库',
-    cloud_rag: '云 RAG',
-  };
-
-  return (
-    <div className="space-y-2">
-      {knowledgeBases.map((kb: any) => (
-        <div key={kb.id} className="flex items-center justify-between p-3 border rounded-lg">
-          <div className="flex items-center gap-2 min-w-0">
-            <Database className="h-4 w-4 flex-shrink-0" />
-            <div className="min-w-0">
-              <div className="font-medium truncate">{kb.name}</div>
-              <div className="text-xs text-muted-foreground">
-                {KB_TYPE_LABELS[kb.kb_type] || kb.kb_type} · {kb.document_count} 个文档
-              </div>
-            </div>
-          </div>
-          <Badge variant={kb.status === 'active' ? 'default' : 'secondary'}>
-            {kb.status === 'active' ? '正常' : '停用'}
-          </Badge>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ── Manage Workspace Dialog ────────────────────────────────────────
 
 function ManageWorkspaceDialog({
@@ -1073,8 +882,9 @@ function ManageWorkspaceDialog({
 
   const handleAddDatasource = async (dsId: number) => {
     try {
-      await client.post(`/workspaces/${workspace.id}/datasources`, {
-        datasource_id: dsId,
+      // 后端 add_workspace_datasource 以 Query(...) 接收 datasource_id，必须走查询参数而非 body
+      await client.post(`/workspaces/${workspace.id}/datasources`, null, {
+        params: { datasource_id: dsId },
       });
       toast.success('数据源已添加');
       loadData();
@@ -1110,7 +920,7 @@ function ManageWorkspaceDialog({
         <DialogHeader>
           <DialogTitle>管理工作空间 - {workspace.name}</DialogTitle>
           <DialogDescription>
-            管理工作空间的用户、数据源、Waker 和 MCP 服务
+            管理工作空间的用户、角色、数据源、Waker 和菜单
           </DialogDescription>
         </DialogHeader>
 
@@ -1131,14 +941,6 @@ function ManageWorkspaceDialog({
             <TabsTrigger value="wakers">
               <Bot className="h-4 w-4 mr-1" />
               Waker
-            </TabsTrigger>
-            <TabsTrigger value="knowledge">
-              <BookOpen className="h-4 w-4 mr-1" />
-              知识库
-            </TabsTrigger>
-            <TabsTrigger value="mcp">
-              <Server className="h-4 w-4 mr-1" />
-              MCP 服务
             </TabsTrigger>
             <TabsTrigger value="menu">
               <Menu className="h-4 w-4 mr-1" />
@@ -1286,14 +1088,6 @@ function ManageWorkspaceDialog({
 
           <TabsContent value="wakers" className="space-y-4">
             <WorkspaceWakersTab workspaceId={workspace.id} />
-          </TabsContent>
-
-          <TabsContent value="knowledge" className="space-y-4">
-            <WorkspaceKnowledgeView workspaceId={workspace.id} />
-          </TabsContent>
-
-          <TabsContent value="mcp" className="space-y-4">
-            <WorkspaceMCPTab workspaceId={workspace.id} />
           </TabsContent>
 
           <TabsContent value="menu" className="space-y-4">

@@ -16,6 +16,7 @@ import re
 from services.datamind.rag.strategies.base import RetrievalStrategy, empty_result
 from services.datamind.rag.graph_rag.oxigraph_store import OxigraphStore
 from services.shared.common.rdf.sparql_client import get_sparql_client, OxigraphClient
+from services.shared.common.rdf.namespaces import ADH_NS
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class OntologyTraversalStrategy(RetrievalStrategy):
         target_tables: list[str] = None,
         keywords: list[str] = None,
         datasource_id: int = 0,
+        extra_object_keys: list[str] = None,
     ) -> dict:
         from services.datamind.rag.rag_retriever import _search_tokens
 
@@ -54,10 +56,16 @@ class OntologyTraversalStrategy(RetrievalStrategy):
 
         graph = OxigraphStore.graph_uri(datasource_id)
 
-        # ① 入口 seed（纯词法匹配，无 LLM）
+        # ① 入口 seed: 知识库命中的对象 key 优先注入(T7, 云端向量检索补词法召回缺口),
+        # 不足 _MAX_SEEDS 时再补纯词法 CONTAINS 命中(确定性解析, 无 LLM/无向量)。
+        key_seeds = self._resolve_key_seeds(client, graph, extra_object_keys or [])
         tokens = [_clean_token(t) for t in _search_tokens(question, keywords)]
         tokens = [t for t in tokens if t]
-        seeds = self._find_seeds(client, graph, tokens) if tokens else []
+        seeds = list(key_seeds)
+        if len(seeds) < _MAX_SEEDS and tokens:
+            for s in self._find_seeds(client, graph, tokens):
+                if all(s["iri"] != k["iri"] for k in seeds):
+                    seeds.append(s)
         if not seeds:
             # 词法无命中：若有候选表提示则交下游按名 hydration，否则空
             candidate = selected_tables or target_tables or []
@@ -81,6 +89,7 @@ class OntologyTraversalStrategy(RetrievalStrategy):
         result["ontology_context"] = {
             "strategy": self.name,
             "seeds": [s["label"] for s in seeds[:_MAX_SEEDS]],
+            "kb_seeded": [s["label"] for s in key_seeds],
             "objects": sorted({v["label"] for v in closure.values()}),
             "links": links[:30],
             "tables": tables,
@@ -95,6 +104,42 @@ class OntologyTraversalStrategy(RetrievalStrategy):
         return result
 
     # ── SPARQL steps ────────────────────────────────────────────────
+
+    def _resolve_key_seeds(self, client: OxigraphClient, graph: str,
+                           keys: list[str]) -> list[dict]:
+        """T7: 把知识库命中的对象 key 确定性地解析为图种子。
+
+        云端语义检索只负责"认出哪个对象", 这里仅做 key→IRI/label 的精确解析;
+        图上不存在的节点静默丢弃, 不引入任何猜测性绑定。
+        """
+        if not keys:
+            return []
+        from services.shared.common.rdf.ontology_to_rdf import _safe_uri
+
+        out: list[dict] = []
+        seen: set[str] = set()
+        for raw in keys:
+            key = str(raw or "").strip()
+            if not key:
+                continue
+            iri = f"{ADH_NS}obj:{_safe_uri(key)}"
+            if iri in seen:
+                continue
+            seen.add(iri)
+            try:
+                rows = client.query(
+                    f"SELECT ?label WHERE {{ GRAPH <{graph}> {{ <{iri}> "
+                    f"<http://www.w3.org/2000/01/rdf-schema#label> ?label }} }} LIMIT 1")
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[ontology_traversal] key seed resolve failed %s: %s", key, e)
+                rows = []
+            if not rows:
+                continue  # 图上无此对象: 丢弃, 不造悬空种子
+            out.append({"iri": iri, "label": str(rows[0].get("label") or key),
+                        "from_kb": True})
+            if len(out) >= _MAX_SEEDS:
+                break
+        return out
 
     def _find_seeds(self, client: OxigraphClient, graph: str, tokens: list[str]) -> list[dict]:
         conds = []

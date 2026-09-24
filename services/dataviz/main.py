@@ -20,6 +20,7 @@ from services.dataviz.api.chart import router as chart_router
 from services.dataviz.api.report import router as report_router
 from services.dataviz.api.component_data import router as component_data_router
 from services.dataviz.api.vis_library import router as vis_library_router
+from services.dataviz.api.datasets import router as datasets_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,16 +53,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount routers
-# 权限码驱动的 API 鉴权(由 adh_perm_registry 统一声明, 与 authservice/datamind 一致)
 from services.shared.common.api_permission import add_api_permission_middleware
 add_api_permission_middleware(app)
 
+# Mount routers
 app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboards"])
 app.include_router(chart_router, prefix="/api/charts", tags=["charts"])
 app.include_router(report_router, prefix="/api/reports", tags=["reports"])
 app.include_router(component_data_router, prefix="/api", tags=["component-data"])
 app.include_router(vis_library_router, prefix="/api/vis-library", tags=["vis-library"])
+app.include_router(datasets_router, prefix="/api/datasets", tags=["datasets"])
 
 # Node metrics for distributed monitoring
 from services.shared.common.system_metrics import router as node_metrics_router

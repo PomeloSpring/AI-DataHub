@@ -496,19 +496,18 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
     }
 
     case 'gauge': {
-      const val = Number(rows[0]?.[yCol]) || 0;
-      const hasThresholds = Array.isArray(config?.thresholds) && config.thresholds.some((t: any) => typeof t === 'number');
-      // 无阈值时保持旧契约 (value)；有阈值时转成 G2 gauge 的 target/total/thresholds 真实渲染。
-      const total = Number(config?.maxValue) > 0 ? Number(config.maxValue) : (hasThresholds ? 1 : val);
-      const thresholds = hasThresholds
-        ? [...new Set<number>(config.thresholds.filter((t: any) => typeof t === 'number' && t > 0 && t < 1))].sort((a, b) => a - b).map((t: number) => t * total).concat(total)
-        : [];
+      const input = Number(rows[0]?.[yCol]);
+      const val = Number.isFinite(input) ? input : 0;
+      const maximum = Number(config?.maxValue);
+      // G2 使用 target/total；未配置量程时兼容比例值与百分数。
+      const total = Number.isFinite(maximum) && maximum > 0 ? maximum : (val >= 0 && val <= 1 ? 1 : Math.max(100, val));
+      const thresholds = Array.isArray(config?.thresholds)
+        ? [...new Set<number>(config.thresholds.filter((t: any) => typeof t === 'number' && t > 0 && t < 1))].sort((a, b) => a - b).map(t => t * total).concat(total)
+        : [total];
       return {
         ...baseSpec,
         type: 'gauge',
-        data: hasThresholds
-          ? { target: Math.max(0, Math.min(val, total)), total, thresholds }
-          : { value: val },
+        data: { target: Math.max(0, Math.min(val, total)), total, thresholds },
         style: {
           pointerShape: 'pointer',
           pinShape: 'circle',
@@ -563,7 +562,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         type: 'cell',
         data: heatData,
         encode: { x: 'x', y: 'y', color: 'value' },
-        scale: { color: { palette: isDark ? ['#14142a', '#177ddc', '#4992ff'] : ['#f0f5ff', '#5470c6', '#1a3a6e'] } },
+        scale: { color: { range: colors } },
         style: { inset: 1 },
         labels: [{ text: 'value', style: { fill: textColor, fontSize: 10 } }],
         axis: {
@@ -919,7 +918,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         type: 'cell',
         data: rows.map(r => ({ date: String(r[dateCol]), value: Number(r[valCol]) || 0 })),
         encode: { x: 'date', y: 'value', color: 'value' },
-        scale: { color: { palette: isDark ? ['#14142a', '#177ddc', '#4992ff'] : ['#f0f5ff', '#5470c6', '#1a3a6e'] } },
+        scale: { color: { range: colors } },
         style: { inset: 1 },
         labels: [{ text: 'value', style: { fill: textColor, fontSize: 10 } }],
         axis: {
@@ -1046,6 +1045,8 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
   const chartRef = useRef<Chart | null>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const [mapData, setMapData] = useState<any>(null);
+  const [modalState, setModalState] = useState<{ pageId: number; params: Record<string, any> } | null>(null);
+  const [page, setPage] = useState(1);
 
   const cfg = config || {};
   const widgetParams = useDashboardStore(s => s.paramValues);
@@ -1089,7 +1090,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       if (containerRef.current) {
         const { clientWidth, clientHeight } = containerRef.current;
         if (clientWidth > 0 && clientHeight > 0) {
-          setDimensions({ width: clientWidth, height: clientHeight });
+          setDimensions(previous => previous.width === clientWidth && previous.height === clientHeight ? previous : { width: clientWidth, height: clientHeight });
         }
       }
     };
@@ -1110,7 +1111,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       window.removeEventListener('resize', measure);
       if (observer) observer.disconnect();
     };
-  }, []);
+  }, [chartType, !!data.columns?.length, !!data.rows?.length, !!mapData]);
 
   // Fetch map data for map charts
   useEffect(() => {
@@ -1197,12 +1198,12 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
                 },
                 scale: {
                   color: {
-                    palette: 'ylGn',
-                    unknown: readToken('--muted', '#f0f0f0'),
+                    range: cfg.colorScheme?.length ? cfg.colorScheme : visual?.palette?.length ? visual.palette : readChartPalette(isDark),
+                    unknown: visual?.viewBg || readToken('--muted', '#f0f0f0'),
                   },
                 },
                 style: {
-                  stroke: readToken('--card', '#fff'),
+                  stroke: visual?.viewBg || readToken('--card', '#fff'),
                   lineWidth: 0.5,
                 },
                 tooltip: {
@@ -1239,7 +1240,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
         chartRef.current = null;
       }
     };
-  }, [chartType, dataKey, configKey, dimensions, mapData, theme]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [chartType, dataKey, configKey, dimensions.width, dimensions.height, mapData, theme]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Widget rendering — compact form controls, not G2 charts (buttons handled separately below)
   const WIDGET_TYPES = ['widget_label', 'widget_text', 'widget_number', 'widget_date', 'widget_daterange', 'widget_select', 'widget_multi_select'];
@@ -1287,20 +1288,22 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       justifyContent: 'center',
       gap: hasLabel ? 6 : 4,
       position: 'absolute', inset: 0,
-      padding: hasLabel ? '4px 8px' : '4px',
-      fontSize: 'clamp(10px, 1.2vw, 16px)',
+      padding: ws.padding ?? (hasLabel ? '4px 8px' : '4px'),
+      fontSize: ws.fontSize ?? 14,
+      fontWeight: ws.fontWeight,
       color: ws.textColor || 'inherit',
       boxSizing: 'border-box',
-      borderRadius: 6,
-      border: '1px solid hsl(var(--input))',
-      background: 'hsl(var(--background))',
+      borderRadius: ws.borderRadius ?? 6,
+      border: `${ws.borderWidth ?? 1}px ${ws.borderStyle || 'solid'} ${ws.borderColor || (isDark ? '#475569' : '#cbd5e1')}`,
+      background: ws.backgroundColor || visual?.viewBg || (isDark ? '#0f172a' : '#ffffff'),
+      colorScheme: isDark ? 'dark' : 'light',
       outline: 'none',
       cursor: 'text',
     };
 
     const labelEl = hasLabel ? (
       <Label style={{
-        fontSize: 'inherit', fontWeight: 500, color: 'hsl(var(--muted-foreground))',
+        fontSize: 'inherit', fontWeight: 500, color: ws.textColor || visual?.subTextColor || (isDark ? '#cbd5e1' : '#475569'),
         whiteSpace: 'nowrap', flexShrink: 0,
       }}>
         {label}
@@ -1315,10 +1318,10 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
           justifyContent: ws.horizontalAlign || 'center',
           position: 'absolute', inset: 0,
           overflow: 'hidden',
-          padding: '4px 8px',
-          fontSize: 'clamp(10px, 1.2vw, 16px)',
+          padding: ws.padding ?? '4px 8px',
+          fontSize: ws.fontSize ?? 14,
           fontWeight: ws.fontWeight || 500,
-          color: ws.textColor || 'hsl(var(--foreground))',
+          color: ws.textColor || visual?.textColor || (isDark ? '#e2e8f0' : '#111827'),
           lineHeight: 1.4, wordBreak: 'break-word',
           boxSizing: 'border-box',
         }}>
@@ -1345,9 +1348,10 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       const dateInputStyle: React.CSSProperties = {
         flex: 1, height: '100%', fontSize: 'inherit', borderRadius: 6,
         border: `1px solid ${isDark ? 'rgba(255,255,255,0.15)' : 'hsl(var(--input))'}`,
-        background: isDark ? 'rgba(255,255,255,0.08)' : 'hsl(var(--background))',
+        background: ws.backgroundColor || (isDark ? '#1e293b' : '#ffffff'),
         padding: '4px 8px', outline: 'none',
-        color: isDark ? '#eee' : 'inherit',
+        color: ws.textColor || visual?.textColor || (isDark ? '#e2e8f0' : '#111827'),
+        colorScheme: isDark ? 'dark' : 'light',
         boxSizing: 'border-box',
       };
 
@@ -1390,9 +1394,10 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       const dateInnerStyle: React.CSSProperties = {
         flex: 1, minHeight: 0, fontSize: 'inherit', borderRadius: 6,
         border: `1px solid ${isDark ? 'rgba(255,255,255,0.15)' : 'hsl(var(--input))'}`,
-        background: isDark ? 'rgba(255,255,255,0.08)' : 'hsl(var(--background))',
+        background: ws.backgroundColor || (isDark ? '#1e293b' : '#ffffff'),
         padding: '4px 8px', outline: 'none',
-        color: isDark ? '#eee' : 'inherit',
+        color: ws.textColor || visual?.textColor || (isDark ? '#e2e8f0' : '#111827'),
+        colorScheme: isDark ? 'dark' : 'light',
         boxSizing: 'border-box', width: '100%',
       };
       if (!hasLabel) return <input type="date" {...dateProps} value={currentValue || ''} onChange={e => handleChange(e.target.value)} style={directStyle} />;
@@ -1473,8 +1478,9 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
           position: 'absolute', inset: 0,
           fontSize: 'inherit',
-          borderRadius: 6,
-          border: isPrimary ? 'none' : `1px solid ${btnBorderColor}`,
+          borderRadius: ws.borderRadius ?? 6,
+          fontWeight: ws.fontWeight,
+          border: `${ws.borderWidth ?? 1}px ${ws.borderStyle || 'solid'} ${btnBorderColor}`,
           background: btnBgColor,
           color: btnTextColor,
           padding: '4px 8px',
@@ -1523,11 +1529,9 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       param_mapping: Record<string, string>;
     }> = cfg?.links || [];
 
-    const [modalState, setModalState] = useState<{ pageId: number; params: Record<string, any> } | null>(null);
-
     const handleCellClick = (col: string, row: any) => {
       const linkDef = links.find(l => l.column === col);
-      if (!linkDef) return;
+      if (!linkDef || draft) return;
 
       // Build params from param_mapping: targetParamName -> sourceColumnValue
       const mappedParams: Record<string, any> = {};
@@ -1548,7 +1552,6 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       }
     };
 
-    const [page, setPage] = useState(1);
     const totalPages = enableServerPagination
       ? Math.max(1, Math.ceil(serverTotal / pageLimit))
       : (enablePagination ? Math.ceil(allRows.length / pageSize) : 1);
@@ -1584,9 +1587,12 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
     });
 
     const showRefreshBtn = chartId != null;
+    const tableText = visual?.textColor || (isDark ? '#e2e8f0' : '#111827');
+    const tableMuted = visual?.subTextColor || (isDark ? '#94a3b8' : '#475569');
+    const tableBorder = visual?.gridColor || (isDark ? '#334155' : '#e2e8f0');
 
     return (
-      <div className="chart-cell" style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', position: 'relative', ...style }}>
+      <div className="chart-cell" style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', position: 'relative', color: tableText, ...style }}>
         {isLoading && (
           <div style={{
             position: 'absolute', inset: 0, zIndex: 10,
@@ -1624,18 +1630,18 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
             fontSize: 12, lineHeight: 1.5,
           }}>
             <thead>
-              <tr style={{ borderBottom: '2px solid hsl(var(--border))', position: 'sticky', top: 0, background: 'hsl(var(--card))', zIndex: 1 }}>
-                {showIndex && <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 500, color: 'hsl(var(--muted-foreground))', width: 40 }}>#</th>}
+              <tr style={{ borderBottom: `2px solid ${tableBorder}`, position: 'sticky', top: 0, background: cfg.titleBarBg || visual?.viewBg || (isDark ? '#0f172a' : '#ffffff'), zIndex: 1 }}>
+                {showIndex && <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 500, color: tableMuted, width: 40 }}>#</th>}
                 {data.columns.map(col => (
-                  <th key={col} style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 500, color: 'hsl(var(--muted-foreground))', whiteSpace: 'nowrap' }}>{col}</th>
+                  <th key={col} style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 500, color: tableMuted, whiteSpace: 'nowrap' }}>{col}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {rows.map((row, i) => (
                 <tr key={i} style={{
-                  borderBottom: '1px solid hsl(var(--border))',
-                  background: striped && i % 2 === 1 ? 'hsl(var(--muted) / 0.3)' : 'transparent',
+                  borderBottom: `1px solid ${tableBorder}`,
+                  background: striped && i % 2 === 1 ? (isDark ? '#ffffff0a' : '#00000005') : 'transparent',
                 }}>
                   {showIndex && <td style={{ padding: '4px 8px', color: 'hsl(var(--muted-foreground))', fontSize: 11 }}>{startIndex + i + 1}</td>}
                   {data.columns.map(col => {

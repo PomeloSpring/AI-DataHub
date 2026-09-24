@@ -14,7 +14,7 @@ Phase 4 之前，实际执行仍复用 `execute_query_with_permission`(带权限
 import asyncio
 import json
 import logging
-from typing import Annotated
+from typing import Annotated, Optional
 
 from services.datamind.execution.sdk_tools.catalog_tools import _text
 
@@ -55,66 +55,73 @@ def _sanitize_execute_error(se) -> str:
     return reason
 
 
-async def run_semantic_query(args):
-    """LLM 面向语义层的主入口：intent -> binding -> plan -> (secured) SQL -> rows。
-
-    Args (由 SDK schema 约束):
-        intent_json: SemanticQuery JSON 字符串
+async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
+    """执行单个 intent, 返回 (结果 payload, is_error). 由单发/批量入口共用.
 
     datasource_id 对 LLM 是黑盒: 一律以执行上下文(会话选定的数据源)为权威,
     仅当上下文缺失时才回落到显式入参(供非 chat 的程序化调用路径)。
     """
-    from services.datamind.execution.sdk_tools.context import get_execution_context
     from services.shared.semantics.binding_resolver import resolve_binding
     from services.shared.semantics.intent import parse_intent
     from services.shared.semantics.planner import plan
 
-    ctx = get_execution_context()
-    raw = args.get("intent_json") or "{}"
-    try:
-        payload = json.loads(raw) if isinstance(raw, str) else dict(raw)
-    except json.JSONDecodeError as e:
-        return _text({"error": f"intent_json 不是合法 JSON: {e}"}, is_error=True)
+    payload = dict(raw_payload or {})
 
     # 数据源黑盒: datasource_id 以执行上下文(会话选定数据源)为权威,
     # 只有上下文没有时才回落到显式入参。否则 LLM 瞎猜的 datasource_id(如 1)
     # 会覆盖真实 id, 导致 resolve_binding 只扫 datasource_id IN(1,0) 全落空 ->
     # 误报 "object 'case' 未绑定到任何物理表"。
-    if not payload.get("datasource_id"):
-        ctx_ds = (ctx.datasource_id if ctx else 0) or 0
-        ds = ctx_ds or args.get("datasource_id") or 0
-        if ds:
-            payload["datasource_id"] = int(ds)
-    if ctx and not payload.get("workspace_id") and getattr(ctx, "workspace_id", None):
-        payload["workspace_id"] = int(ctx.workspace_id)
-    if ctx and not payload.get("user_id") and getattr(ctx, "user_id", None):
-        payload["user_id"] = int(ctx.user_id)
+    if ctx:
+        payload["datasource_id"] = int(ctx.datasource_id or 0)
+        payload["workspace_id"] = int(ctx.workspace_id or 0)
+        payload["user_id"] = int(ctx.user_id or 0)
+
+    # fail-loud: 业务会话未确定数据源时明确报错, 不下探 resolve_binding(datasource_id=0)
+    # 把"未选源"误报成"对象未绑定"(系统助手 ds=0 是合法系统域, 不拦)。
+    if not int(payload.get("datasource_id") or 0) and ctx is not None \
+            and (getattr(ctx, "extra", None) or {}).get("waker_key") != "__system_bot__":
+        return ({"error": "当前会话未确定数据源，无法执行语义查询；请先在会话中选择一个已授权数据源。"}, True)
 
     q, err, notes = parse_intent(payload)
     if err:
         # 关键护栏：LLM 只允许声明式意图；SQL 旁路在这里被拒
-        return _text({
+        return ({
             "error": err,
             "notes": notes,
             "hint": "只允许 {object, metrics[], dimensions[], filters[], order[], limit}；禁止传任何 SQL 字段。",
-        }, is_error=True)
+        }, True)
 
     binding, bind_warnings = await asyncio.to_thread(
         resolve_binding, q.object, datasource_id=q.datasource_id,
     )
     if binding is None:
-        return _text({
+        return ({
             "error": f"object '{q.object}' 未绑定到任何物理表",
             "warnings": bind_warnings,
             "hint": "先用 knowledge_search 或 select_tables 找一个已在本体里 bound 的对象。",
-        }, is_error=True)
+        }, True)
+
+    from services.datamind.execution.resource_guard import validate_binding
+    try:
+        await asyncio.to_thread(validate_binding, ctx, binding)
+    except PermissionError as exc:
+        return ({"error": str(exc)}, True)
 
     p = await asyncio.to_thread(plan, q, binding)
+
+    # 别名回流队列(自进化闭环入口): 被拒近似词/未解析词自动落入待审, best-effort 永不影响取数。
+    _terms = (p.provenance or {}).get("unresolved_terms")
+    if _terms:
+        try:
+            from services.datamind.rag.alias_suggestion import record_unresolved_terms
+            await asyncio.to_thread(record_unresolved_terms, q.datasource_id, _terms)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[run_semantic_query] alias suggestion record skipped: %s", e)
 
     # 护栏拒绝：planner 已经产出了空 SQL + warning。数据源对 LLM 是黑盒,
     # 这里只回声明式原因,不回 catalog_ref / provenance / 生成的 SQL。
     if not p.sql:
-        return _text({
+        return ({
             "error": "语义层护栏拒绝了本次查询",
             "reason": _safe_warnings(p.warnings) or ["查询被安全护栏拦截,请调整意图后重试"],
             "guardrail": {
@@ -122,7 +129,7 @@ async def run_semantic_query(args):
                 "size_class": p.guardrail.size_class,
                 "allow_full_scan": bool(p.guardrail.allow_full_scan),
             },
-        }, is_error=True)
+        }, True)
 
     # Phase 4：统一走七闸门链(identity->permission->preflight->proposal->approval->execute->audit)。
     # RLS sqlglot 改写(语义层唯一可见改写)与审计都在 gates 内完成。
@@ -164,8 +171,63 @@ async def run_semantic_query(args):
         payload_out["needs_approval"] = se.needs_approval
         if se.proposed_edit:
             payload_out["proposed_edit"] = se.proposed_edit
-        return _text(payload_out, is_error=True)
-    return _text(payload_out)
+        return payload_out, True
+    return payload_out, False
+
+
+_MAX_BATCH = 8
+
+
+async def run_semantic_query(args):
+    """LLM 面向语义层的主入口：intent -> binding -> plan -> (secured) SQL -> rows。
+
+    支持两种入参(事二选一):
+      intent_json:  单个 SemanticQuery JSON 字符串
+      intents_json: JSON 数组(多个 intent 一次串行执行), 多维下钻/对比场景用,
+                    返回 {results:[{intent摘要, ...各条结果}]}, 减少工具调用轮次。
+    """
+    from services.datamind.execution.sdk_tools.context import get_execution_context
+
+    ctx = get_execution_context()
+    batch_raw = args.get("intents_json")
+    batch_items: list | None = None
+    if batch_raw and str(batch_raw).strip():
+        try:
+            items = json.loads(batch_raw) if isinstance(batch_raw, str) else batch_raw
+        except (json.JSONDecodeError, TypeError):
+            items = None
+        if isinstance(items, dict):
+            items = [items]  # LLM 误把单对象塞进 intents_json → 归一为 1 元素批, 不再报错白耗一轮推理
+        if isinstance(items, list) and items:
+            if len(items) > _MAX_BATCH:
+                return _text({"error": f"批量上限 {_MAX_BATCH} 条, 当前 {len(items)} 条, 请拆分"}, is_error=True)
+            batch_items = items
+        # intents_json 解析失败/空但携了合法 intent_json 时, 不硬报错, 落到下方单 intent 路径(避免因参数形式耗额外一轮)
+    if batch_items is not None:
+        results: list[dict] = []
+        err_count = 0
+        for idx, it in enumerate(batch_items):
+            if not isinstance(it, dict):
+                results.append({"index": idx, "error": "批量元素必须是 intent 对象"})
+                err_count += 1
+                continue
+            res, is_err = await _execute_single(it, ctx)
+            results.append({"index": idx, **res})
+            if is_err:
+                err_count += 1
+        return _text(
+            {"results": results, "total": len(results), "failed": err_count,
+             "all_ok": err_count == 0},
+            is_error=err_count == len(results),
+        )
+
+    raw = args.get("intent_json") or "{}"
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else dict(raw)
+    except json.JSONDecodeError as e:
+        return _text({"error": f"intent_json 不是合法 JSON: {e}"}, is_error=True)
+    res, is_err = await _execute_single(payload, ctx)
+    return _text(res, is_error=is_err)
 
 
 TOOL_SPECS = [
@@ -182,9 +244,12 @@ TOOL_SPECS = [
             '"filters": [{"dim": "...", "op": "eq|ne|gt|gte|lt|lte|in|like", "value": ...}], '
             '"order": [{"by": "...", "desc": false}], '
             '"limit": 100, "time_grain": "day|week|month|null", "dry_run": false, '
-            '"time_window": "7d", "time_column": "<dim_name>", "params": {"<tpl_var>": ...}}. '
-            "Relative time ranges (e.g. last 7 days) MUST use time_window "
-            "(Ns/Nm/Nh/Nd/Nw/NM like '7d','24h','2w','1M') instead of hand-computed absolute dates; "
+            '"time_window": "7d", "time_range": "last_week", "time_column": "<dim_name>", "params": {"<tpl_var>": ...}}. '
+            "Extract all three elements (metrics / dimensions / time) from the question; NEVER drop a "
+            "time expression. Relative rolling windows (e.g. last 7 days) MUST use time_window "
+            "(Ns/Nm/Nh/Nd/Nw/NM like '7d','24h','2w','1M'); calendar ranges (e.g. last week / this month / "
+            "last quarter) MUST use time_range (today|yesterday|this_week|last_week|this_month|last_month|"
+            "this_quarter|last_quarter|this_year|last_year); never hand-computed absolute dates; "
             "time_column picks the event-time dimension (defaults to the bound time dimension). "
             "If the object is bound to a SQL template (bind_kind=sql_template), pass declared "
             "variables via params — run knowledge_search first to see the template's variables. "
@@ -192,7 +257,8 @@ TOOL_SPECS = [
             "Prefer this over execute_sql for agent-mode queries."
         ),
         "schema": {
-            "intent_json": Annotated[str, "SemanticQuery JSON string (see description for shape)"],
+            "intent_json": Annotated[Optional[str], "SemanticQuery JSON string (see description for shape); single query"],
+            "intents_json": Annotated[Optional[str], 'JSON ARRAY of intent objects for one-shot batch execution (max 8), e.g. \'[{"object":"case","dimensions":["医院"]},{"object":"case","dimensions":["下单渠道"]}]\'. PREFER this over calling the tool repeatedly when drilling down by multiple dimensions; returns {results:[...]} aligned with input order.'],
         },
         "handler": run_semantic_query,
     },

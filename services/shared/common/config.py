@@ -81,9 +81,21 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 ADH_SECRET_KEY = os.getenv("ADH_SECRET_KEY", os.getenv("CHATBI_SECRET_KEY", ""))
 ADH_DEFAULT_ADMIN_PASSWORD = os.getenv("ADH_DEFAULT_ADMIN_PASSWORD", "")
 
-# 聊天附件(多模态文件)存储根目录,默认项目根目录下 data/chat_attachments
+# ── 对象存储 (S3 兼容: MinIO / AWS S3 / 阿里云 OSS 等) ──────────
+# 用于聊天附件等文件存储,替代本地磁盘,支持分布式多实例共享
+OBJECT_STORAGE_ENDPOINT = os.getenv("OBJECT_STORAGE_ENDPOINT", "")  # 如 http://minio:9000
+OBJECT_STORAGE_ACCESS_KEY = os.getenv("OBJECT_STORAGE_ACCESS_KEY", "")
+OBJECT_STORAGE_SECRET_KEY = os.getenv("OBJECT_STORAGE_SECRET_KEY", "")
+OBJECT_STORAGE_BUCKET = os.getenv("OBJECT_STORAGE_BUCKET", "adh-attachments")
+OBJECT_STORAGE_REGION = os.getenv("OBJECT_STORAGE_REGION", "")
+# 未配置 endpoint 时回退本地磁盘(开发环境兼容)
+OBJECT_STORAGE_ENABLED = bool(OBJECT_STORAGE_ENDPOINT and OBJECT_STORAGE_ACCESS_KEY)
+# 本地回退目录(仅 OBJECT_STORAGE_ENABLED=False 时生效)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 ADH_UPLOAD_DIR = os.getenv("ADH_UPLOAD_DIR", str(_PROJECT_ROOT / "data" / "chat_attachments"))
+
+# ── Agent 工作空间沙箱根目录(Docker 部署时挂载 named volume) ─────
+ADH_WORKSPACES_DIR = os.getenv("ADH_WORKSPACES_DIR", str(_PROJECT_ROOT / "data" / "workspaces"))
 
 # ══════════════════════════════════════════════════════════════════════════
 # LLM (Anthropic)

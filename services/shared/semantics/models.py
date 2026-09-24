@@ -26,6 +26,12 @@ FilterOp = Literal[
     "in", "nin", "like", "between", "is_null", "is_not_null",
 ]
 TimeGrain = Literal["second", "minute", "hour", "day", "week", "month", "quarter", "year"]
+# 日历时间区间 token(受控枚举): LLM 只声明自然语言日历档位, 绝对日期由服务端确定性编译
+TimeRange = Literal[
+    "today", "yesterday", "this_week", "last_week",
+    "this_month", "last_month", "this_quarter", "last_quarter",
+    "this_year", "last_year",
+]
 
 
 # ── 意图 (LLM 与大屏共用) ─────────────────────────────────────────
@@ -67,7 +73,18 @@ class SemanticQuery(BaseModel):
                     "编译为 源库方言 的 now()-interval 谓词, 与 filters AND 叠加",
     )
     time_column: Optional[str] = Field(
-        None, description="time_window 作用的事件时间列(维度名/物理列); 缺省回落 category='时间' 的首个维度",
+        None, description="time_window/time_range 作用的事件时间列(维度名/物理列); 缺省回落 category='时间' 的首个维度",
+    )
+    time_range: Optional[TimeRange] = Field(
+        None,
+        description="日历时间区间(上周/本月/本季度等自然语言档位), 编译为 BETWEEN 起止谓词; "
+                    "与 time_window 同时给时 time_range 优先(记 warning)。相对滚动窗口仍用 time_window。",
+    )
+    time_start: Optional[str] = Field(
+        None, description="绝对区间起(ISO 日期/时间, 服务端 UTC); 仅 time_range/time_window 无法表达时兜底",
+    )
+    time_end: Optional[str] = Field(
+        None, description="绝对区间止(ISO 日期/时间, 服务端 UTC); 与 time_start 成对使用",
     )
     params: dict[str, Any] = Field(
         default_factory=dict,

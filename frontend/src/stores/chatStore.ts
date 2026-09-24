@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import client from '../api/client';
+import { toast } from 'sonner';
+import { useThemeStore } from './themeStore';
 
 export interface ProgressStage {
   stage: string;
@@ -54,6 +56,7 @@ export interface ChatMessage {
   ai_raw_response?: string;
   timings?: Record<string, number>;
   analysis?: string;
+  followups?: string[];  // 基于本轮上文由 LLM 推断的"继续探索"追问(异步拉取后回填)
   prediction?: string;
   analyzing?: boolean;
   predicting?: boolean;
@@ -114,9 +117,13 @@ export interface ChatWaker {
   description: string;
   models: string[];
   is_default: boolean;
+  available?: boolean;
+  unavailable_reason?: string;
 }
 
 interface ChatState {
+  reset: () => void;
+  conversationError: string | null;
   conversations: Conversation[];
   currentConvId: number | null;
   messages: ChatMessage[];
@@ -144,6 +151,9 @@ interface ChatState {
   // Chat 端可选的 Waker 清单与当前选中(空=未配置 Waker,模型候选回退执行层)
   wakers: ChatWaker[];
   selectedWakerKey: string | null;
+  reportTheme: string;  // 报告交付主题 id; '' = 跟随当前 App 主题
+  capabilities: { tools: { name: string; description: string }[]; version: string; empty: boolean;
+    unavailable_tools?: { name: string; reason: string }[] } | null;
   // 执行层 SDK 会话 ID(多轮对话 resume,done 事件回传)
   executorSessionId: string | null;
 
@@ -159,6 +169,7 @@ interface ChatState {
   loadExecutionLayer: (workspaceId: number) => Promise<void>;
   loadWakers: (workspaceId: number) => Promise<void>;
   setSelectedWakerKey: (key: string | null) => void;
+  setReportTheme: (t: string) => void;
   setSelectedModelRef: (ref: string | null) => void;
   setSelectedDsId: (id: number) => void;
   setSelectedModelId: (id: number | null) => void;
@@ -167,10 +178,12 @@ interface ChatState {
   setSelectedWorkspaceId: (id: number) => void;
   loadMcpTools: () => Promise<void>;
   createConversation: () => Promise<number>;
+  startNewConversation: () => void;
   switchConversation: (convId: number) => Promise<void>;
   deleteConversation: (convId: number) => Promise<void>;
   renameConversation: (convId: number, title: string) => Promise<void>;
   sendMessage: (question: string, mcpTools?: string[], attachments?: AttachmentInfo[]) => Promise<void>;
+  loadFollowups: (convId: number | null, question: string, answer: string) => Promise<void>;
   uploadAttachment: (files: File[], workspaceId?: number) => Promise<AttachmentInfo[]>;
   cancelMessage: () => void;
   respondToAsk: (requestId: string, response: string) => Promise<void>;
@@ -221,7 +234,7 @@ function reconcileProcess(
   return undefined;
 }
 
-export async function saveMessages(convId: number, messages: ChatMessage[], title?: string, sessionId?: string | null) {
+export async function saveMessages(convId: number, messages: ChatMessage[], title?: string) {
   const slimMessages = messages.map(m => {
     const slim: any = { ...m };
     // Keep full result (SQL already has LIMIT 1000)
@@ -252,11 +265,11 @@ export async function saveMessages(convId: number, messages: ChatMessage[], titl
   });
   const payload: any = { messages: slimMessages };
   if (title) payload.title = title;
-  if (sessionId) payload.executor_session_id = sessionId;
   try {
     await client.put(`/chat/conversations/${convId}`, payload);
   } catch (e) {
     console.error('Failed to save conversation:', e);
+    toast.error('会话记录保存失败，请稍后重试');
   }
 }
 
@@ -269,7 +282,11 @@ export function deriveTitle(messages: ChatMessage[]): string | undefined {
   return undefined;
 }
 
+let chatContextVersion = 0;
+let conversationListVersion = 0;
 export const useChatStore = create<ChatState>((set, get) => ({
+  reset: () => { ++chatContextVersion; ++conversationListVersion; get().abortController?.abort(); set(useChatStore.getInitialState()); },
+  conversationError: null,
   conversations: [],
   currentConvId: null,
   messages: [],
@@ -292,11 +309,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   selectedModelRef: null,
   wakers: [],
   selectedWakerKey: null,
+  reportTheme: '',
+  capabilities: null,
   executorSessionId: null,
 
   loadMcpTools: async () => {
+    const context = chatContextVersion;
     try {
       const { data } = await client.get('/chat/mcp-tools');
+      if (context !== chatContextVersion) return;
       set({ mcpServers: data.servers || [] });
     } catch {
       // silently fail - MCP is optional
@@ -304,8 +325,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   loadWorkspaces: async () => {
+    const context = chatContextVersion;
     try {
       const { data } = await client.get('/workspaces');
+      if (context !== chatContextVersion) return;
       set({ workspaces: data || [] });
       // Auto-select default workspace
       if (data.length > 0 && !get().selectedWorkspaceId) {
@@ -318,63 +341,101 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setSelectedWorkspaceId: (id: number) => {
-    set({ selectedWorkspaceId: id });
+    ++chatContextVersion; ++conversationListVersion;
+    get().abortController?.abort();
+    set({ selectedWorkspaceId: id, currentConvId: null, messages: [], conversations: [], conversationError: null, executorSessionId: null,
+      workspaceConfig: {}, executionLayer: null, wakers: [], selectedWakerKey: null, selectedModelRef: null,
+      capabilities: null, loading: false, abortController: null });
   },
 
   loadWorkspaceConfig: async (workspaceId: number) => {
+    const context = chatContextVersion;
     try {
       const { data } = await client.get(`/workspaces/${workspaceId}`);
+      if (context !== chatContextVersion || workspaceId !== get().selectedWorkspaceId) return;
       const config = data?.config || {};
       set({ workspaceConfig: config });
       // 全面转向 Qoder 执行层:锁定 agent 模式,忽略旧 allowed_pipeline_modes
       set({ pipelineMode: 'agent' });
     } catch {
+      if (context !== chatContextVersion || workspaceId !== get().selectedWorkspaceId) return;
       set({ workspaceConfig: {} });
+      toast.error('工作空间配置加载失败，请重新进入智能问数');
     }
   },
 
   loadExecutionLayer: async (workspaceId: number) => {
+    const context = chatContextVersion;
     // 工作空间生效的执行层(未绑定时后端回退内置层),含模型候选
     try {
       const { data } = await client.get(`/admin/execution-layers/workspaces/${workspaceId}/execution-layer`);
+      if (context !== chatContextVersion || workspaceId !== get().selectedWorkspaceId) return;
       set({ executionLayer: data, selectedModelRef: null, executorSessionId: null });
     } catch {
+      if (context !== chatContextVersion || workspaceId !== get().selectedWorkspaceId) return;
       set({ executionLayer: null, selectedModelRef: null, executorSessionId: null });
+      toast.error('工作空间模型配置加载失败，请重新进入智能问数');
     }
   },
 
   setSelectedModelRef: (ref) => set({ selectedModelRef: ref }),
 
   loadWakers: async (workspaceId: number) => {
+    const context = chatContextVersion;
     // Chat 端可选 Waker 清单(按 工作空间+当前用户角色 解析,与后端 resolve_wakers 口径一致)
     try {
       const { data } = await client.get('/chat/wakers', { params: { workspace_id: workspaceId } });
       const list: ChatWaker[] = Array.isArray(data) ? data : [];
-      const def = list.find((w) => w.is_default) || list[0] || null;
+      const usable = list.filter(w => w.available !== false);
+      const def = usable.find((w) => w.is_default) || usable[0] || null;
       // 默认选中 is_default(或首个);selectedModelRef 置空→发送时派生为该 Waker 首个模型
-      set({ wakers: list, selectedWakerKey: def?.waker_key ?? null, selectedModelRef: null });
+      if (context !== chatContextVersion || get().selectedWorkspaceId !== workspaceId) return;
+      set({ wakers: list, selectedWakerKey: get().currentConvId ? get().selectedWakerKey : def?.waker_key ?? null, selectedModelRef: null });
     } catch {
-      set({ wakers: [], selectedWakerKey: null });
+      if (context !== chatContextVersion || get().selectedWorkspaceId !== workspaceId) return;
+      set({ wakers: [] });
+      toast.error('Waker 权限清单加载失败，请重试；当前会话绑定未改变');
     }
   },
 
   setSelectedWakerKey: (key) => {
-    // 切换 Waker 时重置显式模型选择(新 Waker 的可用模型集不同)
-    set({ selectedWakerKey: key, selectedModelRef: null });
+    const { currentConvId, selectedWakerKey, abortController } = get();
+    if (key === selectedWakerKey) return;            // 未变化: Radix 不会触发, 双保险
+    abortController?.abort();
+    // 打开的历史会话尚未绑定 Waker(selectedWakerKey 为空): 本次选择视为"绑定/继续该会话",
+    // 保留已加载的消息, 不新开会话(修复: 点开历史→选 Waker 消息被清空)。
+    if (currentConvId != null && !selectedWakerKey) {
+      set({ selectedWakerKey: key, selectedModelRef: null, capabilities: null,
+        abortController: null, loading: false });
+      return;
+    }
+    // 其余情况(新会话空选 / 从已绑定 Waker 切到不同 Waker): 会话与 Waker 一一绑定,
+    // 切换即开启新会话, 清空上下文与 resume 会话。
+    set({ selectedWakerKey: key, selectedModelRef: null, currentConvId: null, messages: [],
+      executorSessionId: null, capabilities: null, loading: false, abortController: null });
   },
 
   loadConversations: async () => {
+    const workspaceId = get().selectedWorkspaceId;
+    if (!workspaceId) return;
+    const version = ++conversationListVersion;
+    const context = chatContextVersion;
+    set({ conversationError: null });
     try {
-      const workspaceId = get().selectedWorkspaceId;
-      const params = workspaceId ? `?workspace_id=${workspaceId}` : '';
-      const { data } = await client.get(`/chat/conversations${params}`);
+      const { data } = await client.get(`/chat/conversations?workspace_id=${workspaceId}`);
+      if (version !== conversationListVersion || context !== chatContextVersion) return;
+      if (!Array.isArray(data)) throw new Error('会话列表格式错误');
       set({ conversations: data });
-    } catch {}
+    } catch {
+      if (version === conversationListVersion && context === chatContextVersion) set({ conversationError: '会话列表加载失败，请重试' });
+    }
   },
 
   loadDatasources: async () => {
+    const context = chatContextVersion;
     try {
       const { data } = await client.get('/datasources/');
+      if (context !== chatContextVersion) return;
       set({ datasources: data });
       // Auto-select default datasource
       if (data.length > 0 && !get().selectedDsId) {
@@ -385,10 +446,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setSelectedDsId: (id) => set({ selectedDsId: id }),
+  setReportTheme: (t) => set({ reportTheme: t }),
 
   loadLLMModels: async () => {
+    const context = chatContextVersion;
     try {
       const { data } = await client.get('/model-config/llm');
+      if (context !== chatContextVersion) return;
       set({ llmModels: data });
       // Auto-select default model
       if (data.length > 0 && !get().selectedModelId) {
@@ -399,8 +463,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   loadSystemConfig: async () => {
+    const context = chatContextVersion;
     try {
       const { data } = await client.get('/model-config/system');
+      if (context !== chatContextVersion) return;
       if (data?.retrieval_strategy) {
         set({ retrievalStrategy: data.retrieval_strategy });
       }
@@ -412,12 +478,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setRetrievalStrategy: (strategy) => set({ retrievalStrategy: strategy }),
 
   createConversation: async () => {
+    const origin = get();
     const dsId = get().selectedDsId;
     const workspaceId = get().selectedWorkspaceId;
     const { data } = await client.post('/chat/conversations', {
       datasource_id: dsId,
       workspace_id: workspaceId,
+      waker_key: get().pipelineMode === 'agent' ? get().selectedWakerKey || '' : '',
     });
+    if (get().selectedWorkspaceId !== origin.selectedWorkspaceId ||
+        get().selectedWakerKey !== origin.selectedWakerKey || get().messages !== origin.messages ||
+        get().abortController !== origin.abortController) {
+      throw new Error('会话上下文已改变，未接管迟到的新会话');
+    }
     const conv: Conversation = {
       id: data.id,
       title: data.title,
@@ -426,24 +499,47 @@ export const useChatStore = create<ChatState>((set, get) => ({
       created_at: data.created_at,
       updated_at: data.created_at,
     };
-    set(state => ({ conversations: [conv, ...state.conversations], currentConvId: conv.id, messages: [], executorSessionId: null }));
+    set(state => ({ conversations: [conv, ...state.conversations], currentConvId: conv.id, messages: [], executorSessionId: null, capabilities: null }));
     return data.id;
   },
 
+  // “新建对话”不预先落库：仅重置为未保存的新会话（currentConvId=null），
+  // 首条消息发送时由 sendMessage 懒创建，避免点击/放弃留下空“新对话”。
+  startNewConversation: () => {
+    get().abortController?.abort();
+    set({ currentConvId: null, messages: [], executorSessionId: null, capabilities: null,
+      loading: false, loadingStep: '', abortController: null });
+  },
+
   switchConversation: async (convId) => {
+    get().abortController?.abort();
+    const switching = new AbortController();
+    set({ abortController: switching, loading: false, loadingStep: '' });
     try {
       const { data } = await client.get(`/chat/conversations/${convId}`);
+      if (get().abortController !== switching) return;
       const msgs = Array.isArray(data.messages) ? data.messages : [];
+      // 会话未绑定 Waker(早期数据/创建时未带)时, 默认展示当前工作空间首个可用 Waker, 而非空"选择 Waker"。
+      // 仅当会话与当前工作空间一致时 wakers 清单才有效; 跨工作空间交由工作空间切换重载处理。
+      const sameWs = (data.workspace_id || 0) === get().selectedWorkspaceId;
+      const usable = sameWs ? (get().wakers || []).filter((w) => w.available !== false) : [];
+      const defaultWaker = usable.find((w) => w.is_default)?.waker_key || usable[0]?.waker_key || null;
       set({
         currentConvId: convId,
         messages: msgs,
+        abortController: null,
         // 恢复持久化的执行层会话 ID,重新打开对话即可 resume qoder 会话
-        executorSessionId: data.executor_session_id || null,
-        // Don't override selectedDsId — keep user's dropdown selection
+        executorSessionId: null,
+        selectedWorkspaceId: data.workspace_id || 0,
+        selectedWakerKey: data.waker_key || defaultWaker,
+        capabilities: null,
+        selectedDsId: data.datasource_id || 0,
       });
     } catch (e) {
+      if (get().abortController !== switching) return;
+      set({ abortController: null });
       console.error('Failed to load conversation:', e);
-      set({ currentConvId: convId, messages: [], executorSessionId: null });
+      toast.error('切换会话失败，未改变当前会话');
     }
   },
 
@@ -460,7 +556,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           executorSessionId: isCurrent ? null : state.executorSessionId,
         };
       });
-    } catch {}
+    } catch (e: any) {
+      const detail = e.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : '删除会话失败，记录仍保留，请重试');
+    }
   },
 
   renameConversation: async (convId, title) => {
@@ -486,20 +585,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   sendMessage: async (question, mcpTools, attachments) => {
     const state = get();
+    if (state.loading) return;
+    const abortController = new AbortController();
+    set({ loading: true, abortController });
     let convId = state.currentConvId;
-
-    if (!convId) {
-      convId = await get().createConversation();
+    let createdHere = false;
+    let persisted = false;
+    // 本次新建但最终未落库(失败/取消/切走)的会话 → 回滚删除，避免留下空"新对话"。
+    // 保留当前 messages，用户仍能看到本次提问与错误。
+    const rollbackEmptyConv = async () => {
+      if (!createdHere || !convId || persisted) return;
+      try { await client.delete(`/chat/conversations/${convId}`); } catch { /* best-effort */ }
+      set(st => ({
+        conversations: st.conversations.filter(c => c.id !== convId),
+        currentConvId: st.currentConvId === convId ? null : st.currentConvId,
+      }));
+    };
+    try {
+      if (!convId) { convId = await get().createConversation(); createdHere = true; }
+    } catch {
+      if (get().abortController === abortController) {
+        set({ loading: false, abortController: null });
+        toast.error('创建会话失败，未发送消息');
+      }
+      return;
     }
+    if (get().abortController !== abortController) { await rollbackEmptyConv(); return; }
+    let requestFinished = false;
 
     // Helper: check if we're still in the same conversation
-    const isSameConv = () => get().currentConvId === convId;
+    const isSameConv = () => get().currentConvId === convId &&
+      (get().abortController === abortController || (requestFinished && get().abortController === null));
 
     const userMsg: ChatMessage = { role: 'user', content: question, ...(attachments?.length ? { attachments } : {}) };
     const currentMessages = state.messages;
 
     // Create abort controller for cancellation
-    const abortController = new AbortController();
     set({ loading: true, loadingStep: '正在分析意图...', messages: [...currentMessages, userMsg], abortController });
 
     const history = currentMessages.map(m => ({
@@ -524,6 +645,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       mcp_tools: mcpTools || [],
       workspace_id: state.selectedWorkspaceId,
       attachments: (attachments || []).map(a => a.id),
+      // 报告交付主题: 选择"跟随"(空)时回落当前 App 主题
+      report_theme: state.reportTheme || useThemeStore.getState().theme,
     };
 
     if (state.pipelineMode) {
@@ -536,7 +659,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         requestBody.workspace_id = state.selectedWorkspaceId;
       }
       if (state.pipelineMode === 'agent') {
-        delete requestBody.datasource_id;  // 执行层自带数据源选择(execute_sql 工具)
+        // Agent 模式仍透传会话已选数据源作为 ExecutionContext 权威作用域(不进 LLM 视野、数据源对工具黑盒不变)。
+        // 旧写法 `delete requestBody.datasource_id` 会让语义层以 datasource_id=0 命中空目录 → 取不到数。
+        // execute_sql 若需临时换源, 仍可用业务名 datasource 参数按查询覆盖。
+        requestBody.datasource_id = state.selectedDsId || 0;
       }
       // Waker 选择: 发送 waker_key;模型候选优先取自选中 Waker 的可用模型,
       // 未显式选择时派生为其首个模型(仅 1 个时无需选择框);无 Waker 配置时
@@ -554,14 +680,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       } else if (state.executionLayer?.layer_type === 'cli' && state.selectedModelRef) {
         requestBody.model_ref = state.selectedModelRef;
       }
-      if (state.executorSessionId) {
-        requestBody.session_id = state.executorSessionId;
-      }
       // qoder 长对话池 key: 后端按 chat 会话维护持久 qodercli 进程,
       // 同会话后续轮次免起进程/恢复会话/重连 MCP, 显著降低首字延迟
-      if (state.pipelineMode === 'agent' && convId) {
-        requestBody.conversation_id = convId;
-      }
+      if (convId) requestBody.conversation_id = convId;
     } else {
       apiEndpoint = '/api/chat/send/stream';
     }
@@ -616,7 +737,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
               const data = JSON.parse(dataBuffer);
               console.debug('[SSE]', currentEvent, data);
 
-              if (currentEvent === 'progress') {
+              if (currentEvent === 'capabilities') {
+                if (isSameConv()) set({ capabilities: data });
+              } else if (currentEvent === 'progress') {
                 if (isSameConv()) {
                   set({ loadingStep: data.message });
                   // Track progress stages on the streaming message
@@ -755,10 +878,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       console.debug('[SSE] Stream ended, doneData=', doneData, 'streamingTextLen=', streamingText.length);
 
       // User switched conversation during streaming — just clean up loading state
-      if (!isSameConv()) {
-        set({ loading: false, loadingStep: '', abortController: null });
-        return;
-      }
+      if (!isSameConv()) return;
 
       if (!doneData) {
         // Stream ended without a 'done' event — show fallback error message
@@ -777,8 +897,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
             return { messages: msgs, loading: false, loadingStep: '', abortController: null };
           });
-        } else {
-          set({ loading: false, loadingStep: '', abortController: null });
         }
         return;
       }
@@ -823,6 +941,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         executionStats: doneData.stats,
       };
 
+      requestFinished = true;
       set(state => {
         const msgs = [...state.messages];
         msgs[msgs.length - 1] = finalMsg;
@@ -832,7 +951,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           loadingStep: '',
           abortController: null,
           // 执行层会话 ID 留存,下一轮回传以 resume 会话
-          executorSessionId: doneData.session_id || state.executorSessionId,
+          executorSessionId: null,
+          capabilities: doneData.capabilities || get().capabilities,
         };
       });
 
@@ -840,7 +960,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (isSameConv()) {
         const msgs = get().messages;
         const title = deriveTitle(msgs);
-        await saveMessages(convId, msgs, title, get().executorSessionId);
+        await saveMessages(convId, msgs, title);
+        persisted = true;
+        // 本轮回答成功后，异步推断“继续探索”追问（不阻断 done 渲染）。
+        if (!finalMsg.error) void get().loadFollowups(convId, question, finalMsg.content || finalMsg.reply || '');
         if (title) {
           set(s => ({
             conversations: s.conversations.map(c =>
@@ -867,8 +990,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
             return { messages: msgs, loading: false, loadingStep: '', abortController: null };
           });
-        } else {
-          set({ loading: false, loadingStep: '', abortController: null });
         }
         return;
       }
@@ -886,10 +1007,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
           return { messages: msgs, loading: false, loadingStep: '', abortController: null };
         });
-      } else {
-        set({ loading: false, loadingStep: '', abortController: null });
       }
+    } finally {
+      // 本次新建但未成功落库的会话统一回滚(成功保存过则 persisted=true 不删)。
+      await rollbackEmptyConv();
     }
+  },
+
+  // 基于本轮问答上文异步拉取“继续探索”追问，回填到当前会话最后一条助手消息。
+  loadFollowups: async (convId, question, answer) => {
+    if (!question && !answer) return;
+    try {
+      const { data } = await client.post('/chat/followups', {
+        question, answer, model_id: get().selectedModelId ?? undefined,
+      });
+      const followups: string[] = Array.isArray(data?.followups) ? data.followups : [];
+      if (followups.length === 0) return;
+      set(state => {
+        if (state.currentConvId !== convId) return state;  // 用户已切走，不回填
+        const msgs = [...state.messages];
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i].role === 'assistant') { msgs[i] = { ...msgs[i], followups }; break; }
+        }
+        return { messages: msgs };
+      });
+    } catch { /* 追问为增强项，失败静默不阻断 */ }
   },
 
   cancelMessage: () => {
@@ -1036,15 +1178,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clear: async () => {
-    const { currentConvId } = get();
+    const { currentConvId, abortController } = get();
+    abortController?.abort();
+    set({ currentConvId: null, messages: [], loading: false, loadingStep: '', executorSessionId: null,
+      capabilities: null, abortController: null });
     // Clear conversation messages in database
     if (currentConvId) {
       try {
         await client.put(`/chat/conversations/${currentConvId}`, { messages: [] });
       } catch (e) {
         console.error('Failed to clear conversation:', e);
+        toast.error('旧会话记录未能清空，新对话已与其隔离');
       }
     }
-    set({ messages: [], loading: false, loadingStep: '', executorSessionId: null });
   },
 }));

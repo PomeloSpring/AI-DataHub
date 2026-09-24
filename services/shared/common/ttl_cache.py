@@ -1,104 +1,91 @@
 """
-TTL Cache — 通用带过期时间的 LRU 缓存。
+TTL Cache — 统一 Redis 分布式缓存的兼容外壳。
 
-用于缓存数据源配置、菜单树、Dashboard 数据等变化不频繁的数据。
-支持按 key 过期、全局清除、缓存统计。
+历史：曾为进程内 LRU+TTL（多实例各存各的、重启即丢、跨实例失效不生效）。
+现改为基于 services.shared.common.cache (RedisCache) 的**同名同接口**实现：
+- 缓存状态跨实例共享、进程重启不丢（符合分布式优先）。
+- 保留 get/set/invalidate/invalidate_prefix/get_or_set/stats 接口，调用点无需改动。
+- Redis 不可用时透明降级为“无缓存”（get 返回 None→回源、set 记 warning），
+  不返回错误值、也不静默切回本地缓存（缓存是性能旁路，缺失不影响正确性）。
+
+注：不再按 maxsize 做 LRU 逐出，改由逐 key TTL 过期回收（键空间有界：按数据源/用户/菜单等维度）。
 """
 
-import time
-import threading
-from collections import OrderedDict
-from typing import Any, Optional
+import logging
+
+from services.shared.common.cache.factory import get_cache
+
+logger = logging.getLogger(__name__)
 
 
 class TTLCache:
-    """带过期时间的线程安全 LRU 缓存。"""
+    """Redis 支撑的 TTL 缓存（保持既有 API）。"""
 
     def __init__(self, name: str = "default", maxsize: int = 256, ttl: int = 300):
         """
         Args:
-            name: 缓存名称，用于日志和统计
-            maxsize: 最大缓存条目数
+            name: 缓存名称（作为 Redis 命名空间前缀 + 统计标签）
+            maxsize: 兼容旧签名，保留于 stats 展示；不再用于 LRU 逐出（改用 TTL 回收）
             ttl: 默认过期时间（秒）
         """
         self._name = name
-        self._cache: OrderedDict[str, tuple[Any, float]] = OrderedDict()
         self._maxsize = maxsize
         self._ttl = ttl
-        self._lock = threading.Lock()
-        self._hits = 0
-        self._misses = 0
+        self._c = get_cache(name, default_ttl=ttl)
 
-    def get(self, key: str) -> Optional[Any]:
-        """获取缓存值，返回 None 表示未命中或已过期。"""
-        with self._lock:
-            if key not in self._cache:
-                self._misses += 1
-                return None
+    def get(self, key: str):
+        """获取缓存值，未命中或已过期返回 None（Redis 异常亦返回 None→调用方回源）。"""
+        value = self._c.get(key)
+        self._c.incr("_stats:hit" if value is not None else "_stats:miss")
+        return value
 
-            value, expire_at = self._cache[key]
-            if time.time() >= expire_at:
-                # 过期删除
-                del self._cache[key]
-                self._misses += 1
-                return None
-
-            # 命中，移到末尾
-            self._cache.move_to_end(key)
-            self._hits += 1
-            return value
-
-    def set(self, key: str, value: Any, ttl: int = None):
+    def set(self, key: str, value, ttl: int = None):
         """设置缓存值。ttl 为 None 时使用默认值。"""
-        with self._lock:
-            if key in self._cache:
-                del self._cache[key]
-            elif len(self._cache) >= self._maxsize:
-                self._cache.popitem(last=False)
-
-            expire_at = time.time() + (ttl if ttl is not None else self._ttl)
-            self._cache[key] = (value, expire_at)
+        self._c.set(key, value, ttl=ttl if ttl is not None else self._ttl)
 
     def invalidate(self, key: str = None):
-        """清除缓存。key=None 清除全部。"""
-        with self._lock:
-            if key is None:
-                self._cache.clear()
-            elif key in self._cache:
-                del self._cache[key]
+        """清除缓存。key=None 清除该命名空间全部（含统计计数）。"""
+        if key is None:
+            self._c.clear()
+        else:
+            self._c.delete(key)
 
     def invalidate_prefix(self, prefix: str):
         """清除所有以 prefix 开头的缓存条目。"""
-        with self._lock:
-            keys_to_delete = [k for k in self._cache if k.startswith(prefix)]
-            for k in keys_to_delete:
-                del self._cache[k]
+        self._c.clear_pattern(f"{prefix}*")
 
-    def get_or_set(self, key: str, factory, ttl: int = None) -> Any:
-        """获取缓存值，未命中时调用 factory() 生成并缓存。"""
+    def get_or_set(self, key: str, factory, ttl: int = None):
+        """获取缓存值，未命中时调用 factory() 生成并缓存（None 不缓存，避免污染）。"""
         value = self.get(key)
         if value is not None:
             return value
         value = factory()
-        self.set(key, value, ttl=ttl)
+        if value is not None:
+            self.set(key, value, ttl=ttl)
         return value
 
     def stats(self) -> dict:
-        """返回缓存统计信息。"""
-        with self._lock:
-            total = self._hits + self._misses
-            return {
-                "name": self._name,
-                "size": len(self._cache),
-                "maxsize": self._maxsize,
-                "ttl": self._ttl,
-                "hits": self._hits,
-                "misses": self._misses,
-                "hit_rate": f"{self._hits / total * 100:.1f}%" if total > 0 else "N/A",
-            }
+        """返回缓存统计信息（hits/misses 走 Redis 计数器，跨实例累计）。"""
+        hits = self._c.get_counter("_stats:hit")
+        misses = self._c.get_counter("_stats:miss")
+        total = hits + misses
+        try:
+            size = self._c.size()
+        except Exception:  # noqa: BLE001 — 统计不可用不致命
+            size = 0
+        return {
+            "name": self._name,
+            "backend": "redis",
+            "size": size,
+            "maxsize": self._maxsize,
+            "ttl": self._ttl,
+            "hits": hits,
+            "misses": misses,
+            "hit_rate": f"{hits / total * 100:.1f}%" if total > 0 else "N/A",
+        }
 
 
-# ── 全局缓存实例 ────────────────────────────────────────────────────────
+# ── 全局缓存实例（Redis 命名空间 chatbi:<name>）────────────────────────
 
 # 数据源配置：变化很少，缓存 5 分钟
 datasource_cache = TTLCache(name="datasource", maxsize=64, ttl=300)

@@ -28,6 +28,16 @@ DEFAULT_MEMORY = "512m"
 DEFAULT_CPU = "1.0"
 DEFAULT_WORK_DIR = "/tmp/sandbox-work"
 
+# python_runtime：本地会话沙箱（SessionToolSandbox）唯一使用的运行时镜像。
+# 运行期容器 --network=none / --read-only，无法 pip 安装，基础包在镜像构建期
+# 固化（见 docker/agent-sandbox/requirements.txt 与 docker/agent-sandbox/build.sh）。
+# 可用 ADH_AGENT_SANDBOX_IMAGE 覆盖，但默认必须指向预装基础包的 python_runtime。
+PYTHON_RUNTIME_IMAGE = "adh-python-runtime:1"
+
+
+def _python_runtime_image() -> str:
+    return os.environ.get("ADH_AGENT_SANDBOX_IMAGE", PYTHON_RUNTIME_IMAGE)
+
 # Wrapper script that captures stdout/stderr and return value
 EXECUTION_WRAPPER = '''\
 import sys
@@ -67,6 +77,115 @@ output = {{
 print("___SANDBOX_RESULT___")
 print(json.dumps(output, ensure_ascii=False))
 '''
+
+
+class SessionToolSandbox:
+    """会话工具专用沙箱；不会接受模型提供的镜像、挂载、环境或 Docker 参数。"""
+
+    @staticmethod
+    def ensure_available():
+        image = _python_runtime_image()
+        try:
+            subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", image],
+                           capture_output=True, timeout=15, check=True)
+        except Exception as exc:
+            raise ValueError(
+                f"会话工具沙箱未就绪，请执行 docker/agent-sandbox/build.sh 构建 python_runtime 镜像（{image}）"
+            ) from exc
+
+    @staticmethod
+    def command(runtime, name):
+        import uuid
+        image = _python_runtime_image()
+        container = f"adh-agent-{runtime.key}-{uuid.uuid4().hex}"
+        writable = name in ("write", "edit") or (name == "bash" and bool(set(runtime.policy.standard) & {"write", "edit"}))
+        mount = f"type=bind,src={runtime.workspace},dst=/workspace" + ("" if writable else ",readonly")
+        uid = os.getuid() if os.getuid() else 65534
+        gid = os.getgid() if os.getuid() else 65534
+        return container, [
+            "docker", "run", "--name", container, "--pull=never", "--rm", "-i",
+            "--label", f"adh.agent.session={runtime.key}",
+            "--label", f"adh.agent.execution={runtime.token}",
+            "--network=none", "--read-only", "--cap-drop=ALL",
+            "--security-opt=no-new-privileges", "--pids-limit=64",
+            "--memory=256m", "--memory-swap=256m", "--cpus=1",
+            "--user", f"{uid}:{gid}", "--tmpfs", "/tmp:rw,noexec,nosuid,size=32m",
+            "--mount", mount, "--workdir", "/workspace", image,
+        ]
+
+    @staticmethod
+    async def run(runtime, name, args):
+        import asyncio
+        runtime.verify()
+        container, command = SessionToolSandbox.command(runtime, name)
+        payload = json.dumps({"name": name, "args": args}, ensure_ascii=False).encode()
+        if len(payload) > 500_000:
+            raise ValueError("工具参数超过大小限制")
+        import anyio
+        runtime.sandbox_used = True
+        async def launch():
+            from functools import partial
+            from services.datamind.execution.session_workspace import run_owned_sync
+            create_command = list(command)
+            create_command[1] = "create"
+            created = await run_owned_sync(partial(subprocess.run, create_command,
+                capture_output=True, text=True, timeout=30))
+            if created.returncode:
+                logger.error("会话沙箱创建失败: %s", created.stderr[:2000])
+                raise RuntimeError("会话沙箱不可用，请检查 Docker 和会话持久目录")
+            return await asyncio.create_subprocess_exec(
+                "docker", "start", "-ai", container, stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+        creation = asyncio.create_task(launch())
+        process = None
+        try:
+            process = await asyncio.shield(creation)
+            stdout, stderr = await asyncio.wait_for(process.communicate(payload), timeout=130)
+            if len(stdout) > 300_000:
+                raise RuntimeError("沙箱输出超过限制")
+            try:
+                result = json.loads(stdout)
+            except (ValueError, UnicodeDecodeError) as exc:
+                logger.error("会话沙箱启动/协议失败: %s", stderr.decode(errors="replace")[:2000])
+                raise RuntimeError("会话沙箱不可用，请检查 Docker 和工具镜像") from exc
+            if result.get("error"):
+                raise ValueError(result["error"])
+            if process.returncode:
+                raise RuntimeError("会话沙箱执行失败")
+            return result["result"]
+        finally:
+            # 取消 Docker 客户端不会自动终止容器，必须确认容器清理再返回。
+            with anyio.CancelScope(shield=True):
+                try:
+                    try:
+                        process = process or await asyncio.shield(creation)
+                    finally:
+                        await SessionToolSandbox.stop(container)
+                except BaseException:
+                    runtime.unsafe = True
+                    raise
+                finally:
+                    if process is not None and process.returncode is None:
+                        process.kill()
+                        await process.wait()
+
+    @staticmethod
+    async def stop(container):
+        import asyncio
+        process = await asyncio.create_subprocess_exec(
+            "docker", "rm", "-f", container, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, stderr = await asyncio.wait_for(process.communicate(), timeout=15)
+        except BaseException:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+            raise
+        if process.returncode and b"No such container" not in stderr:
+            logger.error("无法确认沙箱已停止: %s", stderr.decode(errors="replace")[:1000])
+            raise RuntimeError("无法确认沙箱停止，会话必须保持阻断")
 
 
 class SandboxExecutor:

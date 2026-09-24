@@ -343,13 +343,16 @@ def set_tag_value(tag_id: int, data: dict) -> dict:
     return {"id": row_id, "success": True}
 
 
-def query_entities_by_tags(conditions: list, operator: str = "AND", workspace_id: int = 0) -> list:
+def query_entities_by_tags(conditions: list, operator: str = "AND", workspace_id: int = 0,
+                           datasource_ids: Optional[list] = None) -> list:
     """Query entities by tag conditions (intersection/union).
 
     Args:
         conditions: list of dicts with tag_id and optionally tag_name, value
         operator: "AND" for intersection, "OR" for union
         workspace_id: Workspace isolation
+        datasource_ids: 本体资源域隔离——仅返回归属于这些数据源的实体。
+            传入空列表视为无任何授权(fail-closed, 返回空); 不传(None)则不限数据源(仅 REST 旧调用兼容)。
 
     Returns:
         list of entity dicts with matched tag info
@@ -396,4 +399,44 @@ def query_entities_by_tags(conditions: list, operator: str = "AND", workspace_id
                 mt = r.get("matched_tags") or ""
                 r["matched_tags"] = [x for x in mt.split(",") if x]
 
-    return rows
+    return _filter_by_datasource(rows, datasource_ids)
+
+
+def _filter_by_datasource(rows: list, datasource_ids: Optional[list]) -> list:
+    """按数据源资源域过滤 tag 命中实体(entity_type='table' 的 entity_id 为物理表名)。
+
+    datasource_ids=None → 不过滤(REST 旧行为); 空集 → fail-closed 不返回。
+    仅对可映射到数据源的实体类型(table/column/metric)保留, custom/user 无数据源属主不纳入。
+    """
+    if datasource_ids is None or not rows:
+        return rows
+    allowed = {int(d) for d in datasource_ids if d}
+    if not allowed:
+        return []  # fail-closed: 无授权数据源不返回任何实体
+    marks = ", ".join(["%s"] * len(allowed))
+    ds_params = list(allowed)
+    # 每种实体类型 → 该授权数据源集下的实体标识集合
+    type_queries = {
+        "table": f"SELECT DISTINCT table_name AS e FROM adh_table_info WHERE datasource_id IN ({marks})",
+        "column": f"SELECT DISTINCT CONCAT(table_name, '.', column_name) AS e FROM adh_column_metadata WHERE datasource_id IN ({marks})",
+        "metric": f"SELECT DISTINCT name AS e FROM adh_metrics WHERE is_active = 1 AND datasource_id IN ({marks})",
+    }
+    allowed_entities: dict[str, set] = {}
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            for et, q in type_queries.items():
+                try:
+                    cur.execute(q, ds_params)
+                    allowed_entities[et] = {str(r["e"]) for r in cur.fetchall()}
+                except Exception:  # noqa: BLE001 — 某类映射表不可用时该类实体不命中(保守)
+                    allowed_entities[et] = set()
+    kept = []
+    for r in rows:
+        et = r.get("entity_type")
+        eid = str(r.get("entity_id") or "")
+        allow = allowed_entities.get(et)
+        if allow is None:
+            continue  # custom/user 等无法归属数据源 → 不纳入受治理结果
+        if eid in allow or (et == "column" and any(e.endswith("." + eid) for e in allow)):
+            kept.append(r)
+    return kept

@@ -1,9 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { useAuthStore } from './stores/authStore';
-import { useWorkspaceStore } from './stores/workspaceStore';
 import { usePermissionStore } from './stores/permissionStore';
 import WorkspaceLayout from './components/WorkspaceLayout';
+import { WorkspaceEntry, WorkspaceBoundary } from './components/WorkspaceRoute';
 import SystemLayout from './components/SystemLayout';
 import DataPlatformLayout from './components/DataPlatformLayout';
 import Login from './pages/Login';
@@ -28,21 +28,21 @@ import VisLibrary from './pages/admin/VisLibrary';
 import ReportView from './pages/ReportView';
 import KnowledgeBase from './pages/admin/KnowledgeBase';
 import KnowledgeGraph from './pages/KnowledgeGraph';
-import VersionedConfigEditor, { createPromptAdapter, createMcpAdapter } from './pages/admin/VersionedConfigEditor';
+import VersionedConfigEditor, { createPromptAdapter } from './pages/admin/VersionedConfigEditor';
 import ReportsCenter from './pages/ReportsCenter';
 
 // 新增页面 - 数据中台
 import QualityOverview from './pages/quality/QualityOverview';
 import QualityRules from './pages/quality/QualityRules';
 import LineageGraph from './pages/lineage/LineageGraph';
-import MetricsCenter from './pages/catalog/MetricsCenter';
 import OntologyModeling from './pages/catalog/OntologyModeling';
 import TagsManager from './pages/catalog/TagsManager';
 import SqlPairs from './pages/catalog/SqlPairs';
 import Glossary from './pages/catalog/Glossary';
+import Datasets from './pages/datasets/Datasets';
+import DatasetDetail from './pages/datasets/DatasetDetail';
 import SyncTasks from './pages/sync/SyncTasks';
 import SyncLogs from './pages/sync/SyncLogs';
-import Roles from './pages/admin/Roles';
 import AuditLog from './pages/admin/AuditLog';
 import Standards from './pages/admin/Standards';
 import SensitiveData from './pages/admin/SensitiveData';
@@ -56,6 +56,7 @@ import Observability from './pages/admin/Observability';
 import KnowledgeManagement from './pages/admin/KnowledgeManagement';
 import Monitoring from './pages/admin/Monitoring';
 import AsBotSettings from './pages/admin/AsBotSettings';
+import AsBotPanel from './components/asbot/AsBotPanel';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -67,40 +68,6 @@ function RedirectToPage() {
   const { id, dashboardId } = useParams();
   const targetId = id ?? dashboardId;
   return <Navigate to={`/page/${targetId}`} replace />;
-}
-
-/** Redirect old routes to workspace-scoped routes, loading workspaces first */
-function useWorkspaceRedirect(): number | null {
-  const { workspaces, currentWorkspaceId, loadWorkspaces, getDefaultWorkspaceId } = useWorkspaceStore();
-  const [ready, setReady] = useState(false);
-
-  useEffect(() => {
-    if (workspaces.length === 0 && !ready) {
-      loadWorkspaces().then(() => setReady(true));
-    } else {
-      setReady(true);
-    }
-  }, [workspaces.length]);
-
-  if (!ready || workspaces.length === 0) return null;
-  return getDefaultWorkspaceId();
-}
-
-function LegacyChatRedirect() {
-  const wsId = useWorkspaceRedirect();
-  if (!wsId) return null; // wait for load
-  return <Navigate to={`/ws/${wsId}/chat`} replace />;
-}
-
-function LegacyPageRedirect() {
-  const wsId = useWorkspaceRedirect();
-  if (!wsId) return null;
-  return <Navigate to={`/ws/${wsId}/page`} replace />;
-}
-
-function LegacyHistoryRedirect() {
-  if (!useWorkspaceRedirect()) return null;
-  return <Navigate to="/system/observability" replace />;
 }
 
 export default function App() {
@@ -120,9 +87,24 @@ export default function App() {
         <Route path="/dashboard/editor/:id" element={<PrivateRoute><DashboardEditor /></PrivateRoute>} />
         <Route path="/screen" element={<PrivateRoute><Screen /></PrivateRoute>} />
         <Route path="/screen/:dashboardId" element={<PrivateRoute><Screen /></PrivateRoute>} />
+        {/* AS-BOT 系统助手全屏独立页（可在新标签页打开） */}
+        <Route path="/as-bot/chat" element={<PrivateRoute><AsBotPanel fullscreen /></PrivateRoute>} />
+
+        <Route path="/dashboards" element={<PrivateRoute><WorkspaceEntry /></PrivateRoute>} />
+        <Route path="/ask" element={<PrivateRoute><WorkspaceEntry module="ask" /></PrivateRoute>} />
+        <Route path="/workspace" element={<PrivateRoute><WorkspaceEntry module="workspace" /></PrivateRoute>} />
+        <Route path="/dashboards/:workspaceId" element={<PrivateRoute><WorkspaceBoundary><WorkspaceLayout module="dashboards" /></WorkspaceBoundary></PrivateRoute>}>
+          <Route index element={<Analysis />} />
+          <Route path=":dashboardId" element={<Analysis />} />
+          <Route path="profile" element={<Profile />} />
+        </Route>
+        <Route path="/ask/:workspaceId" element={<PrivateRoute><WorkspaceBoundary><WorkspaceLayout module="ask" /></WorkspaceBoundary></PrivateRoute>}>
+          <Route index element={<Chat />} />
+          <Route path="profile" element={<Profile />} />
+        </Route>
 
         {/* Workspace mode: /ws/:workspaceId/* */}
-        <Route path="/ws/:workspaceId" element={<PrivateRoute><WorkspaceLayout /></PrivateRoute>}>
+        <Route path="/ws/:workspaceId" element={<PrivateRoute><WorkspaceBoundary><WorkspaceLayout /></WorkspaceBoundary></PrivateRoute>}>
           <Route index element={<Chat />} />
           <Route path="chat" element={<Chat />} />
           <Route path="scheduled" element={<ScheduledTasks />} />
@@ -130,6 +112,8 @@ export default function App() {
           <Route path="reports" element={<ReportsCenter />} />
           {/* 个人设置:在原本的框架(侧边栏/顶栏)下渲染, 非独立全屏页 */}
           <Route path="profile" element={<Profile />} />
+          {/* 仪表盘/可视化大屏菜单: 默认内嵌展示（保留工作空间侧栏），需要播放/轮播时由页面内按钮跳转 /screen/:id */}
+          <Route path="page/:dashboardId" element={<Analysis />} />
         </Route>
 
         {/* Data Platform mode: /data/* */}
@@ -138,7 +122,10 @@ export default function App() {
           <Route path="datasources" element={<Admin embeddedTab="datasources" />} />
           <Route path="tables" element={<Admin embeddedTab="metadata" />} />
           <Route path="ontology" element={<OntologyModeling />} />
-          <Route path="metrics" element={<MetricsCenter />} />
+          {/* 指标中心已并入模型工作区页签; 旧路由重定向兼容书签(本体可视化路由保留) */}
+          <Route path="metrics" element={<Navigate to="/data/ontology" replace />} />
+          <Route path="datasets" element={<Datasets />} />
+          <Route path="datasets/:id" element={<DatasetDetail />} />
           <Route path="tags" element={<TagsManager />} />
           <Route path="sql-pairs" element={<SqlPairs />} />
           <Route path="glossary" element={<Glossary />} />
@@ -168,11 +155,13 @@ export default function App() {
           <Route path="agents" element={<Navigate to="/system/wakers" replace />} />
           {/* 执行层已合并入模型中心,旧路由重定向以兼容书签 */}
           <Route path="execution-layers" element={<Navigate to="/system/models" replace />} />
-          <Route path="config-versions" element={<VersionedConfigEditor adapters={[createPromptAdapter(), createMcpAdapter()]} />} />
+          {/* 版本化配置只管 Prompt; MCP 版本化已取消(服务本身由 MCP 配置页管理), skills 版本在 Skills 管理内做 */}
+          <Route path="config-versions" element={<VersionedConfigEditor adapters={[createPromptAdapter()]} />} />
           <Route path="notification-channels" element={<NotificationChannels />} />
           <Route path="report-templates" element={<ReportTemplates />} />
           <Route path="knowledge-base" element={<KnowledgeBase />} />
-          <Route path="knowledge-graph" element={<KnowledgeGraph />} />
+          {/* AS-BOT 本体图已并入 AI 助手页(/system/as-bot)的「本体图」页签; 旧路由重定向 */}
+          <Route path="knowledge-graph" element={<Navigate to="/system/as-bot" replace />} />
           <Route path="settings" element={<Admin embeddedTab="brand" />} />
           {/* 权限管理 */}
           <Route path="workspaces" element={<WorkspaceManagerV2 />} />
@@ -195,10 +184,10 @@ export default function App() {
 
         {/* Legacy route redirects */}
         <Route path="/ws/:workspaceId/settings" element={<Navigate to="/system/workspaces" replace />} />
-        <Route path="/chat" element={<PrivateRoute><LegacyChatRedirect /></PrivateRoute>} />
-        <Route path="/history" element={<PrivateRoute><LegacyHistoryRedirect /></PrivateRoute>} />
-        <Route path="/page" element={<PrivateRoute><LegacyPageRedirect /></PrivateRoute>} />
-        <Route path="/page/:dashboardId" element={<PrivateRoute><LegacyPageRedirect /></PrivateRoute>} />
+        <Route path="/chat" element={<PrivateRoute><WorkspaceEntry module="ask" /></PrivateRoute>} />
+        <Route path="/history" element={<PrivateRoute><Navigate to="/system/observability" replace /></PrivateRoute>} />
+        <Route path="/page" element={<PrivateRoute><WorkspaceEntry legacyId /></PrivateRoute>} />
+        <Route path="/page/:dashboardId" element={<PrivateRoute><WorkspaceEntry legacyId /></PrivateRoute>} />
         <Route path="/analysis/:id" element={<RedirectToPage />} />
         <Route path="/dashboard" element={<Navigate to="/page" replace />} />
 
@@ -222,7 +211,7 @@ export default function App() {
         <Route path="/playground" element={<PrivateRoute><Playground /></PrivateRoute>} />
 
         {/* Default redirect */}
-        <Route path="/" element={<PrivateRoute><LegacyChatRedirect /></PrivateRoute>} />
+        <Route path="/" element={<PrivateRoute><WorkspaceEntry /></PrivateRoute>} />
       </Routes>
 
     </BrowserRouter>

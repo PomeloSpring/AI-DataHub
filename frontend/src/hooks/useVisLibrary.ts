@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { create } from 'zustand';
 import { fetchVisComponents, type VisComponent } from '@/api/visLibrary';
 
@@ -22,5 +22,6 @@ const useLibrary = create<LibraryState>((set, get) => ({
 export function useVisLibrary(includeInactive = false) {
   const state = useLibrary();
   useEffect(() => { if (!state.loaded && !state.error) void state.refresh(); }, [state.loaded, state.error, state.refresh]);
-  return { ...state, items: includeInactive ? state.items : state.items.filter(c => c.is_active) };
+  const items = useMemo(() => includeInactive ? state.items : state.items.filter(c => c.is_active), [includeInactive, state.items]);
+  return { ...state, items };
 }

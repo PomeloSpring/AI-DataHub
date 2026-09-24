@@ -60,6 +60,21 @@ class SavedQueryCreate(BaseModel):
     sql_query: str
     is_dataset: bool = False
     dataset_keywords: str = ""
+    # 保存为数据集时的联动参数(前端传当前选中数据源与最近一次执行结果列/首行)
+    datasource_id: int = 0
+    dataset_visibility: str = "workspace"
+    result_columns: Optional[list] = None
+    result_first_row: Optional[dict] = None
+
+
+def _infer_field_config(columns: list, first_row: dict) -> list:
+    """由执行结果推断数据集字段角色: 数值→度量, 其余→维度(详情页可调整)."""
+    fields = []
+    for c in columns or []:
+        v = (first_row or {}).get(c)
+        role = "measure" if isinstance(v, (int, float)) and not isinstance(v, bool) else "dimension"
+        fields.append({"field": str(c), "role": role, "label": str(c)})
+    return fields
 
 
 class SavedQueryUpdate(BaseModel):
@@ -199,22 +214,66 @@ def list_queries(
 
 
 @router.post("/queries")
-def create_query(req: SavedQueryCreate, workspace_id: int = Query(0)):
-    """Create saved query."""
+def create_query(
+    req: SavedQueryCreate,
+    workspace_id: int = Query(0),
+    user: dict = Depends(get_current_user),
+):
+    """Create saved query.
+
+    勾选"保存为数据集"时同步在治理建模层(adh_datasets)创建 SQL 数据集并回写
+    dataset_id, 后续字段/行级范围/看板引用在数据集模块统一管理。
+    数据集创建失败不影响查询本身保存(降级为普通 saved query)。
+    """
     try:
         qid = int(time.time() * 1000)
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         execute_insert(
             """INSERT INTO adh_saved_queries
-               (id, name, description, sql_query, is_dataset, dataset_keywords, workspace_id, created_at, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+               (id, name, description, sql_query, is_dataset, dataset_keywords, owner_id, workspace_id, created_at, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (qid, req.name, req.description, req.sql_query,
-             1 if req.is_dataset else 0, req.dataset_keywords, workspace_id, now, now),
+             1 if req.is_dataset else 0, req.dataset_keywords,
+             int(user.get("user_id") or 0), workspace_id, now, now),
         )
-        return {"id": qid}
+        dataset_id = 0
+        if req.is_dataset:
+            dataset_id = _create_linked_dataset(req, qid, user, workspace_id)
+            if dataset_id:
+                execute_write("UPDATE adh_saved_queries SET dataset_id = %s WHERE id = %s",
+                              (dataset_id, qid))
+        return {"id": qid, "dataset_id": dataset_id}
     except Exception as e:
         logger.error("Create query failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _create_linked_dataset(req: SavedQueryCreate, qid: int, user: dict, workspace_id: int) -> int:
+    """保存查询时联动创建 SQL 数据集; 失败只记日志返回 0(不阻断保存)."""
+    try:
+        from services.dataviz.services import dataset_service
+        identity = {
+            "user_id": int(user.get("user_id") or 0),
+            "username": user.get("username") or "",
+            "role": user.get("role") or "",
+            "workspace_id": int(workspace_id or 0),
+        }
+        name = req.name.strip()
+        if dataset_service.get_dataset_by_name(name):
+            name = f"{name}-{qid}"  # 数据集名全局唯一, 冲突时加后缀
+        ds = dataset_service.create_dataset({
+            "name": name,
+            "description": req.description or f"由 SQL Playground 保存创建: {req.name}",
+            "source_type": "sql",
+            "datasource_id": req.datasource_id or 0,
+            "sql_query": req.sql_query,
+            "field_config": _infer_field_config(req.result_columns or [], req.result_first_row or {}),
+            "visibility": req.dataset_visibility if req.dataset_visibility in ("private", "workspace", "public") else "workspace",
+        }, identity)
+        return int(ds["id"])
+    except Exception as e:  # noqa: BLE001
+        logger.warning("create linked dataset failed for query %s: %s", qid, e)
+        return 0
 
 
 @router.put("/queries/{query_id}")

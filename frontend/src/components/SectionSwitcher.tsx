@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { LayoutGrid, Folder, Database, Settings, Check } from 'lucide-react';
+import { LayoutGrid, Folder, Database, Settings, Check, MessageSquare, ChartNoAxesCombined } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -9,7 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useAuthStore } from '../stores/authStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 
-export type SectionId = 'workspace' | 'data' | 'system';
+export type SectionId = 'workspace' | 'data' | 'system' | 'ask' | 'dashboards';
 
 interface SectionSwitcherProps {
   /** Currently active section — used to highlight the matching item. */
@@ -27,11 +27,11 @@ interface SectionSwitcherProps {
 export default function SectionSwitcher({ current }: SectionSwitcherProps) {
   const navigate = useNavigate();
   const { user } = useAuthStore();
-  const { getDefaultWorkspaceId, currentWorkspaceId } = useWorkspaceStore();
+  const { getDefaultWorkspaceId } = useWorkspaceStore();
 
   const goWorkspace = () => {
-    const wsId = currentWorkspaceId || getDefaultWorkspaceId();
-    navigate(`/ws/${wsId}/chat`);
+    const wsId = getDefaultWorkspaceId();
+    navigate(wsId ? `/ws/${wsId}/chat` : '/workspace');
   };
   const goData = () => navigate('/data');
   const goSystem = () => navigate('/system');
@@ -55,6 +55,10 @@ export default function SectionSwitcher({ current }: SectionSwitcherProps) {
           模块切换
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
+        {([{ id: 'dashboards', label: '数据看板', Icon: ChartNoAxesCombined }, { id: 'ask', label: '智能问数', Icon: MessageSquare }] as const).map(({ id, label, Icon }) =>
+          <DropdownMenuItem key={id} onClick={() => { const wsId = getDefaultWorkspaceId(); navigate(wsId ? `/${id}/${wsId}` : `/${id}`); }} className={`flex items-center gap-2 ${current === id ? 'bg-accent' : ''}`}>
+            <Icon className="h-4 w-4" /><span className="flex-1">{label}</span>{current === id && <Check className="h-4 w-4 text-primary" />}
+          </DropdownMenuItem>)}
         <DropdownMenuItem
           onClick={goWorkspace}
           className={`flex items-center gap-2 ${current === 'workspace' ? 'bg-accent' : ''}`}

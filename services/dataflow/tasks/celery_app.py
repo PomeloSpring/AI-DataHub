@@ -13,11 +13,10 @@ Usage:
 
 import logging
 import os
-import socket
+from services.shared.common import config as _config  # 加载统一环境配置
 
 import redis
 from celery import Celery
-from celery.signals import beat_init
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +31,13 @@ app.conf.update(
     broker_url=REDIS_URL,
     result_backend=REDIS_URL,
     broker_connection_retry_on_startup=True,
+    broker_connection_timeout=3,
+    task_publish_retry=False,
+    broker_transport_options={"socket_connect_timeout": 2, "socket_timeout": 2,
+                              "visibility_timeout": 3700},
+    result_backend_transport_options={"socket_connect_timeout": 2, "socket_timeout": 2},
+    imports=("services.dataflow.tasks.executor",),
+    beat_scheduler="services.dataflow.tasks.beat_schedule:DatabaseScheduler",
 
     # Serialization
     task_serializer="json",
@@ -75,33 +81,36 @@ app.autodiscover_tasks(["services.dataflow.tasks"])
 
 # ── Beat Multi-Instance Lock ───────────────────────────────────────
 
-BEAT_LOCK_KEY = "adh_celery_beat:lock"
-BEAT_LOCK_TTL = 86400  # 24 hours
+BEAT_LOCK_KEY = "adh_celery_beat:lease:v2"
+BEAT_LOCK_TTL = 15
 
 
-@beat_init.connect
-def acquire_beat_lock(sender, **kwargs):
-    """On Beat startup, acquire a Redis lock to prevent duplicate schedulers.
+class BeatLease:
+    """短租约持续续期；丢锁/Redis 故障暂停派发，备用实例可在租约到期后接管。"""
+    def __init__(self, client=None, key=BEAT_LOCK_KEY, ttl=BEAT_LOCK_TTL):
+        self.client = client or redis.from_url(REDIS_URL, socket_connect_timeout=2, socket_timeout=2)
+        self.lock = self.client.lock(key, timeout=ttl, blocking=False, thread_local=False)
+        self.held = False
 
-    If another Beat instance already holds the lock, shut down this instance's
-    scheduler immediately. The lock auto-expires after BEAT_LOCK_TTL seconds.
-    """
-    try:
-        r = redis.from_url(REDIS_URL, socket_connect_timeout=5)
-        hostname = sender.hostname or socket.gethostname()
+    def renew(self):
+        try:
+            if self.held:
+                try:
+                    self.lock.reacquire()
+                    return True
+                except redis.exceptions.LockNotOwnedError:
+                    self.held = False
+            self.held = bool(self.lock.acquire(blocking=False))
+            return self.held
+        except redis.exceptions.RedisError:
+            self.held = False
+            logger.warning("Beat 租约服务不可用，暂停派发")
+            return False
 
-        acquired = r.set(BEAT_LOCK_KEY, hostname, nx=True, ex=BEAT_LOCK_TTL)
-        if acquired:
-            logger.info("[Beat] Lock acquired by %s", hostname)
-        else:
-            existing = r.get(BEAT_LOCK_KEY)
-            if isinstance(existing, bytes):
-                existing = existing.decode()
-            logger.warning(
-                "[Beat] Lock held by %s, shutting down scheduler on %s",
-                existing, hostname,
-            )
-            sender.scheduler.shutdown()
-    except redis.ConnectionError as e:
-        # If Redis is down, let Beat run anyway (better than no scheduling)
-        logger.warning("[Beat] Redis unavailable (%s), running without lock", e)
+    def close(self):
+        if self.held:
+            try:
+                self.lock.release()
+            except redis.exceptions.RedisError:
+                logger.warning("Beat 租约释放失败，等待自动过期")
+            self.held = False

@@ -5,6 +5,7 @@
 #   ./start-all.sh              # 前台启动所有服务（日志合并输出到控制台）
 #   ./start-all.sh -d           # 后台守护模式（日志写入 logs/ 目录）
 #   ./start-all.sh authservice  # 前台启动指定服务
+#   ./start-all.sh celery       # 只启动 Celery worker + beat
 #   ./start-all.sh status       # 查看服务状态
 # ═══════════════════════════════════════════════════════════════
 
@@ -34,25 +35,24 @@ FG_PIDS=()        # 前台模式追踪的所有进程 PID
 FG_MODE=false     # 是否前台模式运行
 
 # ═══════════════════════════════════════════════════════════════
-# 服务定义: name:module:port
+# 服务定义: name:module:port —— 唯一权威清单在 services/shared/scripts/services.conf
 # ═══════════════════════════════════════════════════════════════
-SERVICES=(
-    "authservice:services.authservice.main:8006"
-    "datacatalog:services.datacatalog.main:8005"
-    "datagov:services.datagov.main:8002"
-    "dataviz:services.dataviz.main:8004"
-    "datamind:services.datamind.main:8001"
-    "dataflow:services.dataflow.main:8003"
-    "aiplatform:services.aiplatform.main:8007"
-    "graphservice:services.graphservice.main:8011"
-    "semanticservice:services.semanticservice.main:8012"
-)
+SERVICES_CONF="$PROJECT_ROOT/services/shared/scripts/services.conf"
+if [ ! -f "$SERVICES_CONF" ]; then
+    log_error "缺少服务注册表: $SERVICES_CONF"
+    exit 1
+fi
+mapfile -t SERVICES < <(grep -vE '^\s*(#|$)' "$SERVICES_CONF")
 
 # DataEngine 服务（Rust 二进制）
 DATAENGINE_BIN="$PROJECT_ROOT/services/dataengine/target/release/datafusion-gateway"
 DATAENGINE_PORT=8082
 DATAENGINE_LOG="$LOG_DIR/dataengine.log"
 DATAENGINE_PID="$PID_DIR/dataengine.pid"
+
+# Celery 定时任务进程（无端口，经 Redis broker 通信；beat 有 Redis 租约防多实例）
+CELERY_APP="services.dataflow.tasks.celery_app"
+CELERY_PROCS=("celery-worker" "celery-beat")
 
 # 前端服务（特殊处理）
 FRONTEND_DIR="$PROJECT_ROOT/frontend"
@@ -88,13 +88,13 @@ start_service() {
 
     log_info "启动 ${name} (端口: $port)..."
 
-    # 启动服务（后台运行，日志同时输出到文件和控制台）
+    # 启动服务（后台运行，日志写文件；不用 tee 子进程，避免占住调用方管道）
     cd "$PROJECT_ROOT"
     PYTHONPATH="$PYTHONPATH" nohup "$PYTHON" -m uvicorn "${module}:app" \
         --host 0.0.0.0 \
         --port "$port" \
         --log-level info \
-        > >(tee -a "$log_file") 2>&1 &
+        >> "$log_file" 2>&1 < /dev/null &
 
     local pid=$!
     echo "$pid" > "$pid_file"
@@ -108,6 +108,61 @@ start_service() {
         rm -f "$pid_file"
         return 1
     fi
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 函数: 启动 Celery worker / beat（后台守护模式）
+# ═══════════════════════════════════════════════════════════════
+# 构造指定 Celery 进程的命令到全局数组 CELERY_CMD
+build_celery_cmd() {
+    local name="$1"
+    if [ "$name" = "celery-worker" ]; then
+        CELERY_CMD=("$PYTHON" -m celery -A "$CELERY_APP" worker -Q scheduled,default -l info -c 4)
+    else
+        CELERY_CMD=("$PYTHON" -m celery -A "$CELERY_APP" beat -l info)
+    fi
+}
+
+start_celery_process() {
+    local name="$1"
+    local pid_file="$PID_DIR/${name}.pid"
+    local log_file="$LOG_DIR/${name}.log"
+
+    if [ -f "$pid_file" ]; then
+        local old_pid=$(cat "$pid_file")
+        if kill -0 "$old_pid" 2>/dev/null; then
+            log_warn "${name} 已在运行 (PID: $old_pid)"
+            return 0
+        fi
+        rm -f "$pid_file"
+    fi
+
+    log_info "启动 ${name}..."
+
+    build_celery_cmd "$name"
+    cd "$PROJECT_ROOT"
+    PYTHONPATH="$PYTHONPATH" nohup "${CELERY_CMD[@]}" \
+        >> "$log_file" 2>&1 < /dev/null &
+
+    local pid=$!
+    echo "$pid" > "$pid_file"
+
+    sleep 2
+    if kill -0 "$pid" 2>/dev/null; then
+        log_info "${name} 启动成功 (PID: $pid)"
+    else
+        log_error "${name} 启动失败，查看日志: $log_file"
+        rm -f "$pid_file"
+        return 1
+    fi
+}
+
+start_celery() {
+    local success=0 fail=0
+    for name in "${CELERY_PROCS[@]}"; do
+        if start_celery_process "$name"; then ((success++)); else ((fail++)); fi
+    done
+    [ $fail -eq 0 ]
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -183,7 +238,7 @@ start_dataengine() {
     # 启动 DataEngine
     cd "$PROJECT_ROOT/services/dataengine"
     nohup env GATEWAY_PORT="$DATAENGINE_PORT" "$DATAENGINE_BIN" \
-        > >(tee -a "$log_file") 2>&1 &
+        >> "$log_file" 2>&1 < /dev/null &
 
     local pid=$!
     echo "$pid" > "$pid_file"
@@ -269,7 +324,7 @@ start_frontend() {
     log_info "启动 frontend (端口: $FRONTEND_PORT)..."
 
     cd "$FRONTEND_DIR"
-    nohup npm run dev > >(tee -a "$log_file") 2>&1 &
+    nohup npm run dev >> "$log_file" 2>&1 < /dev/null &
     local npm_pid=$!
 
     # 等待 vite 子进程启动并监听端口
@@ -443,6 +498,23 @@ start_frontend_fg() {
     FG_PIDS+=("$pid")
 }
 
+# 前台模式启动 Celery worker / beat
+start_celery_fg() {
+    local name="$1"
+    local color="$2"
+
+    log_info "启动 ${name}"
+
+    build_celery_cmd "$name"
+    (
+        cd "$PROJECT_ROOT"
+        PYTHONPATH="$PYTHONPATH" exec "${CELERY_CMD[@]}" 2>&1
+    ) | awk -v svc="$name" -v c="$color" -v n="\033[0m" \
+        '{printf "%s[%-12s]%s %s\n", c, svc, n, $0; fflush()}' &
+
+    FG_PIDS+=("$!")
+}
+
 # 前台模式主流程
 run_foreground() {
     FG_MODE=true
@@ -467,6 +539,13 @@ run_foreground() {
         start_service_fg "$name" "$module" "$port" "${FG_COLORS[$ci]}"
         ((ci++))
         if [ $? -eq 0 ]; then ((success++)); else ((fail++)); fi
+    done
+
+    # 启动 Celery worker + beat
+    for cname in "${CELERY_PROCS[@]}"; do
+        start_celery_fg "$cname" "${FG_COLORS[$((ci % ${#FG_COLORS[@]}))]}"
+        ((ci++))
+        ((success++))
     done
 
     # 启动前端
@@ -550,6 +629,23 @@ show_status() {
     printf "  %-20s %-8s %-8s " "frontend" "$FRONTEND_PORT" "$frontend_pid"
     echo -e "$frontend_status"
 
+    # Celery worker / beat 状态（无端口）
+    for cname in "${CELERY_PROCS[@]}"; do
+        local c_pid_file="$PID_DIR/${cname}.pid"
+        local c_status="未运行"
+        local c_pid="-"
+        if [ -f "$c_pid_file" ]; then
+            c_pid=$(cat "$c_pid_file")
+            if kill -0 "$c_pid" 2>/dev/null; then
+                c_status="${GREEN}运行中${NC}"
+            else
+                c_status="${RED}已停止${NC}"; c_pid="-"
+            fi
+        fi
+        printf "  %-20s %-8s %-8s " "$cname" "-" "$c_pid"
+        echo -e "$c_status"
+    done
+
     echo ""
     echo -e "  日志目录: ${LOG_DIR}"
     echo -e "  PID目录:  ${PID_DIR}"
@@ -598,6 +694,13 @@ case "${1:-all}" in
             fi
         done
 
+        # 启动 Celery worker + beat（依赖 dataflow 任务模块，排在微服务之后）
+        if start_celery; then
+            ((success+=2))
+        else
+            ((fail++))
+        fi
+
         # 启动前端
         if start_frontend; then
             ((success++))
@@ -625,6 +728,17 @@ case "${1:-all}" in
             wait
         fi
         ;;
+    celery)
+        # 只启动 Celery worker + beat
+        if [ "${2:-}" = "-d" ]; then
+            start_celery
+        else
+            start_celery_fg "celery-worker" "${FG_COLORS[0]}"
+            start_celery_fg "celery-beat" "${FG_COLORS[1]}"
+            FG_MODE=true
+            wait
+        fi
+        ;;
     *)
         # 启动指定服务
         found=false
@@ -642,9 +756,9 @@ case "${1:-all}" in
                 break
             fi
         done
-        if [ "$found" = false ] && [ "$1" != "frontend" ]; then
+        if [ "$found" = false ] && [ "$1" != "frontend" ] && [ "$1" != "celery" ]; then
             log_error "未知服务: $1"
-            echo "可用服务: ${SERVICES[*]} frontend"
+            echo "可用服务: ${SERVICES[*]} frontend celery"
             exit 1
         fi
         ;;

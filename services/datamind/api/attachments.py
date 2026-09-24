@@ -1,6 +1,9 @@
 """Chat Attachments API — 多模态附件上传与访问.
 
-文件存储在本地磁盘(ADH_UPLOAD_DIR/{user_id}/),元数据存 adh_chat_attachments。
+文件存储后端:
+- 对象存储(S3 兼容): storage_type='object', storage_path 存 object key
+- 本地磁盘(回退): storage_type='local', storage_path 存绝对路径
+通过 services.shared.common.object_storage 统一抽象.
 """
 
 import logging
@@ -9,7 +12,7 @@ import uuid
 
 import jwt
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from services.shared.common.auth import decode_token, get_current_user
@@ -68,16 +71,16 @@ async def upload_attachments(
         {"attachments": [{id, filename, category, size, url}, ...]}
     """
     from services.datamind.multimodal import classify_extension
-    from services.shared.common.config import ADH_UPLOAD_DIR
     from services.shared.common.db.metadata_db import get_metadata_conn
+    from services.shared.common.object_storage import get_object_storage
+
+    storage = get_object_storage()
+    storage_type = "object" if storage.is_object_storage else "local"
 
     if len(files) > MAX_FILES_PER_REQUEST:
         raise HTTPException(status_code=400, detail=f"单次最多上传 {MAX_FILES_PER_REQUEST} 个文件")
 
     uploaded = []
-    user_dir = os.path.join(ADH_UPLOAD_DIR, str(user["user_id"]))
-    os.makedirs(user_dir, exist_ok=True)
-
     conn = get_metadata_conn()
     try:
         for file in files:
@@ -95,24 +98,33 @@ async def upload_attachments(
                 raise HTTPException(status_code=400, detail=f"文件过大(上限 20MB): {filename}")
 
             att_id = uuid.uuid4().hex
-            storage_path = os.path.join(user_dir, f"{att_id}_{filename}")
-            with open(storage_path, "wb") as f:
-                f.write(content)
+            # 对象存储 key 格式: users/{user_id}/{att_id}_{filename}
+            object_key = f"users/{user['user_id']}/{att_id}_{filename}"
+
+            # 上传到对象存储(或本地回退)
+            storage.upload_bytes(object_key, content, content_type=file.content_type or "application/octet-stream")
+
+            # storage_path: 对象存储存 key,本地存绝对路径(兼容旧逻辑)
+            storage_path = object_key if storage.is_object_storage else storage._local_path(object_key)
 
             try:
                 with conn.cursor() as cur:
                     cur.execute(
                         "INSERT INTO adh_chat_attachments "
-                        "(id, user_id, workspace_id, filename, mime_type, category, storage_path, size, created_at) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())",
+                        "(id, user_id, workspace_id, filename, mime_type, category, "
+                        "storage_path, storage_type, size, created_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
                         (
                             att_id, user["user_id"], workspace_id, filename,
-                            file.content_type or "", category, storage_path, len(content),
+                            file.content_type or "", category, storage_path,
+                            storage_type, len(content),
                         ),
                     )
                 conn.commit()
             except Exception as e:
                 logger.error("Save attachment meta failed (%s): %s", filename, e)
+                # 回滚已上传的文件
+                storage.delete(object_key)
                 raise HTTPException(status_code=500, detail=f"附件保存失败: {filename}")
 
             uploaded.append({
@@ -135,13 +147,14 @@ def get_attachment_file(
 ):
     """下载/预览附件文件(仅属主可访问)."""
     from services.shared.common.db.metadata_db import get_metadata_conn
+    from services.shared.common.object_storage import get_object_storage
 
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT filename, mime_type, storage_path FROM adh_chat_attachments "
-                "WHERE id = %s AND user_id = %s",
+                "SELECT filename, mime_type, storage_path, storage_type "
+                "FROM adh_chat_attachments WHERE id = %s AND user_id = %s",
                 (att_id, user["user_id"]),
             )
             row = cur.fetchone()
@@ -150,14 +163,31 @@ def get_attachment_file(
 
     if not row:
         raise HTTPException(status_code=404, detail="附件不存在")
-    if not os.path.exists(row["storage_path"]):
-        raise HTTPException(status_code=404, detail="附件文件已丢失")
 
-    return FileResponse(
-        row["storage_path"],
-        filename=row["filename"],
-        media_type=row["mime_type"] or "application/octet-stream",
-    )
+    storage = get_object_storage()
+    storage_type = row.get("storage_type", "local")
+    media_type = row["mime_type"] or "application/octet-stream"
+
+    if storage_type == "object" or storage.is_object_storage:
+        # 对象存储模式: 优先返回预签名 URL 重定向,或流式下载
+        object_key = row["storage_path"]
+        if storage.is_object_storage:
+            data = storage.download_bytes(object_key)
+            if data is None:
+                raise HTTPException(status_code=404, detail="附件文件已丢失")
+            return Response(content=data, media_type=media_type,
+                            headers={"Content-Disposition": f'inline; filename="{row["filename"]}"'})
+        # 对象存储不可用但记录是 object 类型: 尝试本地回退
+        local_path = storage._local_path(object_key)
+        if not os.path.exists(local_path):
+            raise HTTPException(status_code=404, detail="附件文件已丢失")
+        return FileResponse(local_path, filename=row["filename"], media_type=media_type)
+    else:
+        # 本地模式(旧数据兼容)
+        local_path = row["storage_path"]
+        if not os.path.exists(local_path):
+            raise HTTPException(status_code=404, detail="附件文件已丢失")
+        return FileResponse(local_path, filename=row["filename"], media_type=media_type)
 
 
 @router.delete("/{att_id}")
@@ -167,12 +197,14 @@ def delete_attachment(
 ):
     """删除附件(仅属主)."""
     from services.shared.common.db.metadata_db import get_metadata_conn
+    from services.shared.common.object_storage import get_object_storage
 
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT storage_path FROM adh_chat_attachments WHERE id = %s AND user_id = %s",
+                "SELECT storage_path, storage_type FROM adh_chat_attachments "
+                "WHERE id = %s AND user_id = %s",
                 (att_id, user["user_id"]),
             )
             row = cur.fetchone()
@@ -183,9 +215,15 @@ def delete_attachment(
     finally:
         conn.close()
 
-    try:
-        if row["storage_path"] and os.path.exists(row["storage_path"]):
-            os.remove(row["storage_path"])
-    except OSError as e:
-        logger.warning("Remove attachment file failed: %s", e)
+    # 删除文件
+    storage = get_object_storage()
+    storage_type = row.get("storage_type", "local")
+    if storage_type == "object" and storage.is_object_storage:
+        storage.delete(row["storage_path"])
+    elif storage_type == "local":
+        try:
+            if row["storage_path"] and os.path.exists(row["storage_path"]):
+                os.remove(row["storage_path"])
+        except OSError as e:
+            logger.warning("Remove attachment file failed: %s", e)
     return {"success": True}

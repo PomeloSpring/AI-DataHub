@@ -157,6 +157,31 @@ def import_yaml(req: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/models/{model_id}/sync-status")
+def model_sync_status(model_id: int):
+    """模型的图谱/知识库同步状态(工作区头部徽章, 只读容错)。"""
+    from ..services import ontology_kb_sync
+
+    return ontology_kb_sync.model_sync_status(model_id)
+
+
+@router.get("/kb-options")
+def kb_options():
+    """业务本体可选目标知识库清单(active qmind)。"""
+    from ..services import ontology_kb_sync
+
+    return {"items": ontology_kb_sync.list_bindable_kbs()}
+
+
+@router.put("/models/{model_id}/kb")
+def set_model_kb(model_id: int, req: dict):
+    """为模型选定目标知识库(业务本体同步去向); 改绑后自动重推/下线旧库。"""
+    try:
+        return ontology_service.set_model_kb(model_id, req.get("kb_id"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/search")
 def search_objects(
     q: str = Query(..., min_length=1, description="检索关键词"),

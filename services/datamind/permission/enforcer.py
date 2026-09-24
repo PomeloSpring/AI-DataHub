@@ -181,9 +181,9 @@ class PermissionEnforcer:
         Returns:
             (modified_sql, PermissionResult)
         """
-        # Auto-detect tables if not provided
-        if tables is None:
-            tables = self._extract_tables(sql)
+        from services.shared.semantics.sql_guard import extract_tables, inject_filters
+        # 总是解析真实查询，调用方传入的表清单不能省略 JOIN 或 CTE 内的表。
+        tables = extract_tables(sql)
 
         # 无身份(user_id 缺省/0): 仅套治理敏感基线, 不做 RBAC/RLS
         only_sensitive = not user_id
@@ -199,10 +199,12 @@ class PermissionEnforcer:
         # Check access for each table and merge results
         combined_result = PermissionResult()
         modified_sql = sql
+        table_filters = {}
 
         for table in tables:
+            policy_table = self._policy_table(table, datasource_id)
             result = self.check_access(
-                user_id, workspace_id, datasource_id, table,
+                user_id, workspace_id, datasource_id, policy_table,
                 sensitive_only=only_sensitive,
             )
             if not result.allowed:
@@ -210,15 +212,19 @@ class PermissionEnforcer:
 
             # Inject row filter
             if result.row_filter:
-                modified_sql = self._inject_row_filter(modified_sql, table, result.row_filter)
+                table_filters[table] = result.row_filter
 
             # Merge column restrictions
             for col in result.hidden_columns:
                 if col not in combined_result.hidden_columns:
                     combined_result.hidden_columns.append(col)
-            combined_result.masked_columns.update(result.masked_columns)
+            for col, mask in result.masked_columns.items():
+                previous = combined_result.masked_columns.get(col)
+                combined_result.masked_columns[col] = mask if previous in (None, mask) else "null"
             combined_result.policies_applied.extend(result.policies_applied)
 
+        self._protect_projection(sql, combined_result)
+        modified_sql, _ = inject_filters(sql, table_filters)
         combined_result.row_filter = modified_sql != sql
         return modified_sql, combined_result
 
@@ -239,19 +245,14 @@ class PermissionEnforcer:
         if df is None or df.empty:
             return df
 
-        # Remove hidden columns
-        for col in result.hidden_columns:
-            if col in df.columns:
-                df = df.drop(columns=[col])
-                logger.debug("Hidden column removed: %s", col)
-
-        # Apply masking
-        for col, mask_type in result.masked_columns.items():
-            if col not in df.columns:
-                continue
-            df[col] = df[col].apply(lambda v: self._mask_value(v, mask_type))
-            logger.debug("Column masked: %s (%s)", col, mask_type)
-
+        hidden = {str(c).lower() for c in result.hidden_columns}
+        masks = {str(c).lower(): m for c, m in result.masked_columns.items()}
+        df = df.iloc[:, [i for i, c in enumerate(df.columns) if str(c).lower() not in hidden]].copy()
+        for index, column in enumerate(df.columns):
+            mask_type = masks.get(str(column).lower())
+            if mask_type:
+                values = df.iloc[:, index].map(lambda value: self._mask_value(value, mask_type))
+                df.isetitem(index, values)
         return df
 
     # ── Internal helpers ───────────────────────────────────────────
@@ -289,8 +290,8 @@ class PermissionEnforcer:
                         masks[col] = mask
             return masks, blocks
         except Exception as e:
-            logger.warning("Load sensitive policies failed for %s: %s", table_name, e)
-            return {}, []
+            logger.warning("敏感策略加载失败，拒绝执行: %s", e)
+            raise PermissionError("敏感数据策略暂不可用") from e
 
     def _get_sensitive_masks(
         self, workspace_id: int, datasource_id: int, table_name: str
@@ -319,18 +320,54 @@ class PermissionEnforcer:
         return hits
 
     def _extract_tables(self, sql: str) -> list:
-        """Extract table names from SQL FROM/JOIN clauses."""
-        pattern = r'\b(?:FROM|JOIN)\s+(\w+)'
-        tables = re.findall(pattern, sql, re.IGNORECASE)
-        # Deduplicate while preserving order
-        seen = set()
-        result = []
-        for t in tables:
-            t_lower = t.lower()
-            if t_lower not in seen and t_lower not in ('select', 'where', 'and', 'or', 'set'):
-                seen.add(t_lower)
-                result.append(t)
-        return result
+        from services.shared.semantics.sql_guard import extract_tables
+        return extract_tables(sql)
+
+    @staticmethod
+    def _policy_table(table: str, datasource_id: int) -> str:
+        """旧策略按源内裸表名存储；限定名须证明属于当前源，不能跨库套错策略。"""
+        parts = table.split(".")
+        if len(parts) == 1:
+            return table
+        from services.shared.common.db import get_datasource_by_id
+        source = get_datasource_by_id(datasource_id) if datasource_id else None
+        if not source or len(parts) != 2:
+            raise PermissionError("限定表引用尚未建立可信数据源绑定")
+        namespace = source.get("database_name") or ""
+        if source.get("db_type") in ("postgres", "postgresql", "pg", "sls"):
+            namespace = "public"
+        if parts[0].lower() != namespace.lower():
+            raise PermissionError("跨库表引用尚未建立独立治理绑定")
+        return parts[-1]
+
+    @staticmethod
+    def _protect_projection(sql: str, result: PermissionResult):
+        """避免通过列别名或计算表达式绕过结果侧隐藏和脱敏。"""
+        from sqlglot import exp
+        from services.shared.semantics.sql_guard import parse_query
+        if not result.hidden_columns and not result.masked_columns:
+            return
+        tree = parse_query(sql)
+        hidden = {str(c).lower() for c in result.hidden_columns}
+        masks = {str(c).lower(): m for c, m in result.masked_columns.items()}
+        if any(c.name.lower() in hidden for c in tree.find_all(exp.Column)):
+            raise PermissionError("查询引用了禁止访问的字段")
+        # 显式位置列重命名无法用名称可靠传播，保守拒绝。
+        if any(a.args.get("columns") for a in tree.find_all(exp.TableAlias)):
+            raise PermissionError("受保护字段不支持位置重命名")
+        for _ in range(len(list(tree.find_all(exp.Select))) + 1):
+            for select in tree.find_all(exp.Select):
+                for item in select.expressions:
+                    hits = [masks[c.name.lower()] for c in item.find_all(exp.Column) if c.name.lower() in masks]
+                    if not hits:
+                        continue
+                    value = item.this if isinstance(item, exp.Alias) else item
+                    if not isinstance(value, exp.Column):
+                        raise PermissionError("受保护字段不支持派生计算")
+                    alias = item.alias_or_name
+                    mask = hits[0] if len(set(hits)) == 1 else "null"
+                    masks[alias.lower()] = mask
+                    result.masked_columns[alias] = mask
 
     # FROM/JOIN 后的下一词若是这些关键字, 说明表没有别名(而是子句边界), 不得误当作别名
     _SQL_RESERVED_AFTER_TABLE = {
@@ -350,20 +387,8 @@ class PermissionEnforcer:
         if not row_filter:
             return sql
 
-        sub = f"(SELECT * FROM {table} WHERE {row_filter})"
-        pattern = rf'(\b(?:FROM|JOIN)\s+){re.escape(table)}\b(\s+(?:AS\s+)?([A-Za-z_]\w*))?'
-
-        def _repl(m: "re.Match") -> str:
-            lead = m.group(1)          # 'FROM '/'JOIN ' (保留原始大小写与空白)
-            tail = m.group(2) or ""    # 紧随其后的整段(可能为空, 含别名或关键字)
-            alias = m.group(3)
-            if alias and alias.lower() not in self._SQL_RESERVED_AFTER_TABLE:
-                # 命中真实别名: 用别名作包裹子查询的别名, 丢弃原 tail(已并入别名)
-                return f"{lead}{sub} AS {alias}"
-            # 无别名(或下一词是关键字): 用表名作别名, 并把原 tail 原样保留在子查询之后
-            return f"{lead}{sub} AS {table}{tail}"
-
-        return re.sub(pattern, _repl, sql, flags=re.IGNORECASE)
+        from services.shared.semantics.sql_guard import inject_filters
+        return inject_filters(sql, {table: row_filter})[0]
 
     def _mask_value(self, value, mask_type: str):
         """Apply masking to a single value."""

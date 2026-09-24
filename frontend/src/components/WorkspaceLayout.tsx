@@ -42,13 +42,13 @@ function getMenuIcon(iconName?: string): React.ComponentType<{ className?: strin
 
 // ── Workspace Selector (sidebar-embedded) ─────────────────────────
 
-function WorkspaceSelectorSidebar({ collapsed }: { collapsed: boolean }) {
+function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collapsed: boolean; module?: 'workspace' | 'ask' | 'dashboards' }) {
   const { workspaces, currentWorkspaceId, setWorkspace, loadWorkspaces } = useWorkspaceStore();
   const navigate = useNavigate();
   const { workspaceId } = useParams();
 
   useEffect(() => {
-    loadWorkspaces();
+    if (!useWorkspaceStore.getState().loaded) void loadWorkspaces();
   }, []);
 
   // Sync URL workspaceId to store
@@ -65,14 +65,14 @@ function WorkspaceSelectorSidebar({ collapsed }: { collapsed: boolean }) {
 
   const handleSwitch = (ws: Workspace) => {
     setWorkspace(ws.id);
-    navigate(`/ws/${ws.id}/chat`);
+    navigate(module === 'workspace' ? `/ws/${ws.id}/chat` : `/${module}/${ws.id}`);
   };
 
   if (collapsed) {
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button className="w-full flex items-center justify-center py-3 hover:bg-sidebar-accent/50 transition-colors">
+          <button aria-label="切换工作空间" className="w-full flex items-center justify-center py-3 hover:bg-sidebar-accent/50 transition-colors">
             <span className="text-lg">{currentWs?.icon || '📊'}</span>
           </button>
         </DropdownMenuTrigger>
@@ -92,7 +92,7 @@ function WorkspaceSelectorSidebar({ collapsed }: { collapsed: boolean }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button className="w-full flex items-center gap-2 px-3 py-3 hover:bg-sidebar-accent/50 transition-colors border-b border-sidebar-border">
+        <button aria-label="切换工作空间" className={`w-full min-w-0 flex items-center gap-2 px-3 py-2 hover:bg-muted/50 transition-colors ${module === 'workspace' ? 'border-b border-sidebar-border' : 'rounded-md'}`}>
           <span className="text-lg flex-shrink-0">{currentWs?.icon || '📊'}</span>
           <div className="flex-1 min-w-0 text-left">
             <div className="text-sm font-medium truncate text-sidebar-foreground">
@@ -143,7 +143,8 @@ function MenuTreeNode({
 
   if (isLeaf) {
     const wsPrefix = workspaceId ? `/ws/${workspaceId}` : '';
-    const path = node.link_type === 'screen' ? `/screen/${node.page_id}` : `${wsPrefix}/page/${node.page_id}`;
+    // 菜单展示默认留在工作空间框架内（非全屏）；link_type==='screen' 的看板内页提供“播放”按钮时才进入 /screen/:id 轮播全屏。
+    const path = `${wsPrefix}/page/${node.page_id}`;
     const isActive = currentPath === path;
 
     return (
@@ -214,10 +215,14 @@ function MenuTreeNode({
 
 // ── Workspace Layout ──────────────────────────────────────────────
 
-export default function WorkspaceLayout() {
+export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'workspace' | 'ask' | 'dashboards' }) {
+  const independent = module !== 'workspace';
   const [collapsed, setCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [menuTree, setMenuTree] = useState<any[]>([]);
+  const [menuScope, setMenuScope] = useState<string>();
+  const [menuError, setMenuError] = useState('');
+  const [menuRetry, setMenuRetry] = useState(0);
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
   const navigate = useNavigate();
   const location = useLocation();
@@ -230,18 +235,25 @@ export default function WorkspaceLayout() {
   useEffect(() => { applyTheme(theme); }, [theme]);
   useEffect(() => {
     fetchBrand();
-    if (workspaceId) loadDashboards(Number(workspaceId));
-  }, [fetchBrand, workspaceId]);
+    if (workspaceId && !independent) loadDashboards(Number(workspaceId));
+  }, [fetchBrand, workspaceId, independent, loadDashboards]);
   useEffect(() => { setMobileMenuOpen(false); }, [location.pathname]);
 
   // Fetch menu tree (workspace-scoped)
   useEffect(() => {
-    if (workspaceId) {
+    let cancelled = false;
+    setMenuTree([]); setMenuError(''); setMenuScope(workspaceId);
+    if (workspaceId && !independent) {
       client.get(`/admin/menu-tree?workspace_id=${workspaceId}`)
-        .then(({ data }) => setMenuTree(data || []))
-        .catch(() => {});
+        .then(({ data }) => {
+          if (!Array.isArray(data)) throw new Error('目录格式错误');
+          if (!cancelled) setMenuTree(data);
+        })
+        .catch(() => { if (!cancelled) setMenuError('工作空间目录加载失败'); });
     }
-  }, [location.pathname, workspaceId]);
+    return () => { cancelled = true; };
+  }, [workspaceId, independent, menuRetry]);
+  const visibleMenuTree = menuScope === workspaceId ? menuTree : [];
 
   const menuItems = [
     { section: '数据分析' },
@@ -269,7 +281,7 @@ export default function WorkspaceLayout() {
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Desktop Sidebar */}
-      <div className={`hidden lg:flex flex-col min-h-0 bg-sidebar border-r border-sidebar-border transition-all duration-200 ${collapsed ? 'w-[64px]' : 'w-[220px]'}`}>
+      {!independent && <div className={`hidden lg:flex flex-col min-h-0 bg-sidebar border-r border-sidebar-border transition-all duration-200 ${collapsed ? 'w-[64px]' : 'w-[220px]'}`}>
         {/* Logo */}
         <div className="h-12 flex items-center justify-center border-b border-sidebar-border gap-1.5">
           {brand.show_icon && brand.logo_url ? (
@@ -290,9 +302,10 @@ export default function WorkspaceLayout() {
           <ScrollArea className="h-full py-2">
           <nav className="space-y-1 px-2" role="navigation" aria-label="工作空间导航">
             {/* Dynamic menu tree */}
-            {menuTree.length > 0 && (
+            {menuError && menuScope === workspaceId && <p role="alert" className="px-2 text-xs text-destructive">{menuError}<Button variant="link" size="sm" onClick={() => setMenuRetry(v => v + 1)}>重试</Button></p>}
+            {visibleMenuTree.length > 0 && (
               <>
-                {menuTree.map(node => (
+                {visibleMenuTree.map(node => (
                   <MenuTreeNode
                     key={node.id}
                     node={node}
@@ -356,10 +369,10 @@ export default function WorkspaceLayout() {
             {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
           </Button>
         </div>
-      </div>
+      </div>}
 
       {/* Mobile Menu Overlay */}
-      {mobileMenuOpen && (
+      {!independent && mobileMenuOpen && (
         <div className="fixed inset-0 z-50 lg:hidden">
           <div className="absolute inset-0 bg-black/50" onClick={() => setMobileMenuOpen(false)} />
           <div className="relative w-[280px] h-full bg-sidebar border-r border-sidebar-border flex flex-col min-h-0">
@@ -431,23 +444,27 @@ export default function WorkspaceLayout() {
       )}
 
       {/* Main area */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="min-w-0 flex-1 flex flex-col overflow-hidden">
         <header className="h-12 flex items-center justify-between px-4 border-b border-border bg-card flex-shrink-0">
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" className="lg:hidden h-9 w-9 p-0" onClick={() => setMobileMenuOpen(true)}>
-              <Menu className="h-5 w-5" />
-            </Button>
+          <div className="flex min-w-0 items-center gap-2">
+            {!independent && <Button variant="ghost" size="sm" className="lg:hidden h-9 w-9 p-0" onClick={() => setMobileMenuOpen(true)}><Menu className="h-5 w-5" /></Button>}
+            {independent && <>
+              <span className="hidden shrink-0 font-semibold sm:inline">{brand.app_name || 'AI-DataHub'}</span>
+              <span className="hidden text-muted-foreground sm:inline">/</span>
+              <span className="shrink-0 text-sm font-medium">{module === 'ask' ? '智能问数' : '数据看板'}</span>
+              <div className="min-w-0 max-w-56"><WorkspaceSelectorSidebar collapsed={false} module={module} /></div>
+            </>}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             {/* Module switcher — 工作空间 / 数据中台 / 系统配置 */}
-            <SectionSwitcher current="workspace" />
+            <SectionSwitcher current={module} />
 
             {/* Theme selector */}
             <DropdownMenu>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="sm" className="h-9 w-9 p-0">
+                    <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label="主题风格">
                       <Palette className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -474,7 +491,7 @@ export default function WorkspaceLayout() {
             {/* User menu */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
+                <button aria-label="用户菜单" className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
                   <Avatar className="h-6 w-6">
                     <AvatarFallback className="text-xs">{user?.username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
                   </Avatar>
@@ -482,7 +499,7 @@ export default function WorkspaceLayout() {
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => navigate(`/ws/${workspaceId}/profile`)}>
+                <DropdownMenuItem onClick={() => navigate(module === 'workspace' ? `/ws/${workspaceId}/profile` : `/${module}/${workspaceId}/profile`)}>
                   <UserCircle className="h-4 w-4 mr-2" />
                   个人设置
                 </DropdownMenuItem>
@@ -494,7 +511,7 @@ export default function WorkspaceLayout() {
             </DropdownMenu>
           </div>
         </header>
-        <main className="flex-1 overflow-auto bg-background">
+        <main className="min-h-0 min-w-0 flex-1 overflow-auto bg-background">
           <Outlet />
         </main>
       </div>

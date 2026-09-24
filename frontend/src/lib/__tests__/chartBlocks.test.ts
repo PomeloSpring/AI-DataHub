@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseChartBody, normalizeRows, splitChartBlocks } from '../chartBlocks';
+import { parseChartBody, parseArtifactBody, normalizeRows, splitChartBlocks } from '../chartBlocks';
 
 describe('splitChartBlocks', () => {
   it('提取 chart 块并保留其余 markdown', () => {
@@ -79,5 +79,37 @@ describe('parseChartBody', () => {
     expect(noSql.sql).toBeUndefined();
     const blankSql = parseChartBody('{"sql":"   ","columns":["a","b"],"rows":[["x",1]]}') as any;
     expect(blankSql.sql).toBeUndefined();
+  });
+});
+
+describe('parseArtifactBody', () => {
+  it('按引用 path 产物(无 content)合法', () => {
+    const seg = parseArtifactBody('{"type":"html","filename":"报告.html","path":"报告.html"}') as any;
+    expect(seg.kind).toBe('artifact');
+    expect(seg.path).toBe('报告.html');
+    expect(seg.content).toBeUndefined();
+  });
+
+  it('artifact 携带可选 theme 字段', () => {
+    const seg = parseArtifactBody('{"type":"html","filename":"r.html","path":"r.html","theme":"datafoundry"}') as any;
+    expect(seg.kind).toBe('artifact');
+    expect(seg.theme).toBe('datafoundry');
+  });
+
+  it('内联 content 产物(无 path)合法', () => {
+    const seg = parseArtifactBody('{"type":"md","filename":"a.md","content":"hello"}') as any;
+    expect(seg.kind).toBe('artifact');
+    expect(seg.content).toBe('hello');
+    expect(seg.path).toBeUndefined();
+  });
+
+  it('content 与 path 均缺失 → 降级 raw', () => {
+    expect(parseArtifactBody('{"type":"md","filename":"a.md"}').kind).toBe('raw');
+  });
+
+  it('splitChartBlocks 能识别 artifact 围栏', () => {
+    const text = '结论。\n```artifact\n{"type":"excel","filename":"r.xlsx","path":"r.xlsx"}\n```';
+    const segs = splitChartBlocks(text);
+    expect(segs.map(s => s.kind)).toContain('artifact');
   });
 });

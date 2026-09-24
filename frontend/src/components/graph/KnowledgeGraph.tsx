@@ -201,6 +201,41 @@ function DataSourceNode({ data }: { data: any }) {
   );
 }
 
+/** 本体总览节点: 业务对象卡片(Palantir 式主语视图) —— 名字/key/别名/绑定态, 不展示物理细节 */
+function ObjectNode({ data }: { data: any }) {
+  const sync = (data.binding?.sync_state || '').toLowerCase();
+  const syncDot = sync === 'bound' ? 'bg-green-500'
+    : sync === 'drifted' || sync === 'orphaned' ? 'bg-amber-500' : 'bg-gray-500';
+  return (
+    <div className="bg-card border-2 border-indigo-500 rounded-lg shadow-lg min-w-[160px] max-w-[240px]">
+      <Handle type="target" position={Position.Left} className="!bg-indigo-500 !w-3 !h-3" />
+      <Handle type="source" position={Position.Right} className="!bg-indigo-500 !w-3 !h-3" />
+
+      <div className="flex items-center gap-2 px-3 py-2 bg-indigo-500/10 border-b rounded-t-lg">
+        <div className="w-3 h-3 rounded bg-indigo-500 shrink-0" />
+        <span className="font-semibold text-sm truncate">{data.label || data.object_key}</span>
+        <div className={`ml-auto w-2 h-2 rounded-full ${syncDot}`} title={sync || '未绑定'} />
+      </div>
+
+      {data.object_key && (
+        <div className="px-3 py-1 text-[11px] font-mono text-muted-foreground border-b truncate">
+          {data.object_key}
+        </div>
+      )}
+
+      {data.aliases && (
+        <div className="px-3 py-1 text-xs text-muted-foreground border-b truncate">
+          别名: {data.aliases}
+        </div>
+      )}
+
+      {data.comment && (
+        <div className="px-3 py-2 text-xs text-muted-foreground line-clamp-2">{data.comment}</div>
+      )}
+    </div>
+  );
+}
+
 function ETLTaskNode({ data }: { data: any }) {
   const statusColors: Record<string, string> = {
     active: 'bg-green-500',
@@ -323,6 +358,7 @@ const nodeTypes: Record<string, React.ComponentType<any>> = {
   Dimension: DimensionNode,
   DataSource: DataSourceNode,
   ETLTask: ETLTaskNode,
+  Object: ObjectNode,
 };
 
 const edgeTypes: Record<string, React.ComponentType<any>> = {
@@ -385,7 +421,8 @@ function KnowledgeGraphInner({
       position: { x: 0, y: 0 }, // Will be set by layout
       data: {
         ...node.properties,
-        label: node.properties.name || node.properties.name_cn || node.id,
+        // label 键位修复: 后端 properties.label 为主展示名(此前误读 name 导致显示裸 IRI)
+        label: node.properties.label || node.properties.name || node.properties.name_cn || node.id,
         nodeType: node.label,
       },
     }));
@@ -396,8 +433,11 @@ function KnowledgeGraphInner({
       target: edge.target,
       type: 'knowledge',
       data: {
-        label: edge.type,
-        color: edgeColorMap[edge.type] || '#6b7280',
+        // 总览视图: 边上标 Link 名字与基数(谓词字典即图例)
+        label: edge.properties?.cardinality
+          ? `${edge.type} · ${edge.properties.cardinality}`
+          : edge.type,
+        color: edgeColorMap[edge.type] || (graphType === 'ontology-overview' ? '#6366f1' : '#6b7280'),
       },
       markerEnd: {
         type: MarkerType.ArrowClosed,

@@ -21,10 +21,8 @@ logging.basicConfig(level=getattr(logging, _log_level, logging.INFO), format="%(
 
 app = FastAPI(title="GraphService API", description="知识图谱服务 — Oxigraph SPARQL 图查询", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-# 权限码驱动的 API 鉴权(由 adh_perm_registry 统一声明, 与 authservice/datamind 一致)
 from services.shared.common.api_permission import add_api_permission_middleware
 add_api_permission_middleware(app)
-
 app.include_router(graph_router, prefix="/api/graph", tags=["知识图谱"])
 
 # Node metrics for distributed monitoring

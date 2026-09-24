@@ -13,6 +13,10 @@ _DIALECT_MAP = {
     "Doris": "doris",
     "MySQL": "mysql",
     "Elasticsearch": "elasticsearch",
+    "PostgreSQL": "postgres",
+    "PG": "postgres",
+    "SLS": "sls",
+    "Sls": "sls",
 }
 
 

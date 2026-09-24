@@ -25,6 +25,8 @@ SERVICES=(
     "datagov"
     "dataviz"
     "datamind"
+    "celery-beat"    # 先停调度派发，再停 worker，最后停 dataflow
+    "celery-worker"
     "dataflow"
     "aiplatform"
     "graphservice"
@@ -46,13 +48,16 @@ stop_service() {
         fi
     fi
 
-    # PID 文件不存在时，尝试通过端口查找（前端 vite 等）
+    # PID 文件不存在时，尝试通过端口查找（含脚本外手工拉起的进程，停完下次由脚本重新纳管）
     if [ -z "$pid" ]; then
         local port=""
         case "$name" in
             frontend)   port=3000 ;;
             backend)    port=8000 ;;
             dataengine) port=8082 ;;
+            *)
+                port=$(grep -E "^${name}:" "$PROJECT_ROOT/services/shared/scripts/services.conf" 2>/dev/null | head -1 | cut -d: -f3)
+                ;;
         esac
         if [ -n "$port" ]; then
             pid=$(lsof -i :"$port" -sTCP:LISTEN -t 2>/dev/null | head -1)
@@ -105,17 +110,22 @@ case "${1:-all}" in
         log_info "所有服务已停止"
         ;;
     *)
+        # celery 别名 → 一次停 worker + beat
+        targets=("$1")
+        [ "$1" = "celery" ] && targets=("celery-beat" "celery-worker")
         found=false
-        for name in "${SERVICES[@]}"; do
-            if [ "$name" = "$1" ]; then
-                stop_service "$name"
-                found=true
-                break
-            fi
+        for name in "${targets[@]}"; do
+            for known in "${SERVICES[@]}"; do
+                if [ "$name" = "$known" ]; then
+                    stop_service "$name"
+                    found=true
+                    break
+                fi
+            done
         done
         if [ "$found" = false ]; then
             echo -e "${RED}未知服务: $1${NC}"
-            echo "可用服务: ${SERVICES[*]}"
+            echo "可用服务: ${SERVICES[*]} celery"
             exit 1
         fi
         ;;

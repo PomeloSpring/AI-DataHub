@@ -342,9 +342,13 @@ class MenuService:
         return roots
 
     def _invalidate_menu_cache(self):
-        """清除所有菜单树缓存。"""
-        menu_cache.invalidate("menu_tree_0")
-        menu_cache.invalidate("menu_tree")
+        """清除所有菜单树缓存（包含工作空间分桶）。
+
+        缓存键形如 `menu_tree_{workspace_id}`，旧实现只显式清了 `menu_tree_0`/`menu_tree`，
+        导致工作空间菜单增删改后对应 `menu_tree_1`… 仍命中旧数据（需等 TTL 才自愈）。
+        改用前缀失效，一次覆盖全部分桶，跨实例通过 Redis SCAN 同步生效。
+        """
+        menu_cache.invalidate_prefix("menu_tree")
 
 
 # ── 模块级单例 ────────────────────────────────────────────────────────

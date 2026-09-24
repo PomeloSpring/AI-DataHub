@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useLocation } from 'react-router-dom';
 import {
   Send, Zap, Trash2, Download, Bot, User, Lightbulb,
   CheckCircle, BarChart3, Table, Code, Clock,
@@ -34,6 +34,19 @@ const CATEGORY_LABELS: Record<string, string> = {
   image: '图片', table: '表格', document: '文档', model3d: '3D 模型',
 };
 
+// 报告/产物可选主题(与后端 report_themes 一致); 默认"跟随当前主题"不在列表内。
+const THEME_OPTIONS: { id: string; label: string }[] = [
+  { id: 'datafoundry', label: 'DataFoundry' },
+  { id: 'light', label: '浅色' },
+  { id: 'dark', label: '深色' },
+  { id: 'tech', label: '科技' },
+  { id: 'finance', label: '金融' },
+  { id: 'bento', label: '便当格' },
+  { id: 'glass', label: '玻璃' },
+  { id: 'ainative', label: 'AI 原生' },
+  { id: 'medical', label: '医疗' },
+];
+
 // Attachment file URLs require auth; append token for <img>/three.js loaders
 function attUrl(att: AttachmentInfo): string {
   if (!att.url) return '';
@@ -50,6 +63,9 @@ const chartTypeLabels: Record<string, string> = {
 
 export default function Chat() {
   const { workspaceId: urlWorkspaceId } = useParams<{ workspaceId: string }>();
+  const independent = useLocation().pathname.startsWith('/ask/');
+  const [conversationsOpen, setConversationsOpen] = useState(false);
+  const conversationError = useChatStore(s => s.conversationError);
   const [input, setInput] = useState('');
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -70,9 +86,10 @@ export default function Chat() {
     selectedWorkspaceId, setSelectedWorkspaceId, loadWorkspaceConfig,
     executionLayer, selectedModelRef, loadExecutionLayer, setSelectedModelRef,
     wakers, selectedWakerKey, loadWakers, setSelectedWakerKey,
+    reportTheme, setReportTheme,
     loadConversations, loadDatasources, loadLLMModels, loadSystemConfig,
     setSelectedDsId, setSelectedModelId, setPipelineMode,
-    createConversation, switchConversation, deleteConversation, renameConversation,
+    startNewConversation, switchConversation, deleteConversation, renameConversation,
     sendMessage, cancelMessage, respondToAsk, cancelAsk, updateMessageFeedback, setViewMode, analyzeData, predictData, clear,
     uploadAttachment,
     mcpServers, loadMcpTools,
@@ -199,6 +216,7 @@ export default function Chat() {
     }
   };
   const prevMsgCountRef = useRef(0);
+  const prevConvIdRef = useRef<number | null | undefined>(undefined);
   const [feedbackMap, setFeedbackMap] = useState<Record<number, 'up' | 'down'>>({});
   const [expectedTableInput, setExpectedTableInput] = useState<Record<number, string>>({});
   const [showExpectedInput, setShowExpectedInput] = useState<Record<number, boolean>>({});
@@ -257,14 +275,13 @@ export default function Chat() {
         // Clear current conversation
         useChatStore.setState({ currentConvId: null, messages: [] });
         // Reload all data
-        loadConversations();
         loadDatasources();
         loadLLMModels();
         loadSystemConfig();
         loadWorkspaceConfig(wsId);
-        loadExecutionLayer(wsId);
-        loadWakers(wsId);
+        setInput(''); setPendingAtts([]); setRenamingId(null); setConversationsOpen(false);
       }
+      if (wsId) void loadConversations();
     }
   }, [urlWorkspaceId]);
 
@@ -290,11 +307,18 @@ export default function Chat() {
   const lastThinking = messages.length > 0 ? messages[messages.length - 1]?.thinking || '' : '';
   useEffect(() => {
     const count = messages.length;
-    if (count > prevMsgCountRef.current || loading) {
+    const convChanged = currentConvId !== prevConvIdRef.current;
+    if (convChanged) {
+      // 打开/切换历史会话: 整段消息被替换, 平滑滚动会从顶部一路划到底 → 直接瞬时定位到底部。
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      // 图表/图片异步渲染撑高容器后再补一次瞬时定位, 确保真正贴底。
+      requestAnimationFrame(() => messagesEndRef.current?.scrollIntoView({ behavior: 'auto' }));
+    } else if (count > prevMsgCountRef.current || loading) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
     prevMsgCountRef.current = count;
-  }, [messages.length, loading]);
+    prevConvIdRef.current = currentConvId;
+  }, [messages.length, loading, currentConvId]);
 
   useEffect(() => {
     if (lastThinking && thinkingRef.current) {
@@ -393,18 +417,21 @@ export default function Chat() {
     }
   };
 
+  if (urlWorkspaceId && Number(urlWorkspaceId) !== selectedWorkspaceId) return <div role="status" className="p-6">正在切换工作空间…</div>;
   return (
-    <div className={focusMode ? 'fixed inset-0 z-50 bg-background flex overflow-hidden' : 'flex h-full overflow-hidden'}>
+    <div className={focusMode ? 'fixed inset-0 z-50 bg-background flex overflow-hidden' : 'relative flex h-full min-w-0 overflow-hidden'}>
+      {conversationsOpen && !focusMode && <button className="absolute inset-0 z-20 bg-black/30 md:hidden" aria-label="关闭会话列表" onClick={() => setConversationsOpen(false)} />}
       {/* Left sidebar: conversation list */}
-      <div className={focusMode ? 'hidden' : 'hidden md:flex w-[240px] flex-shrink-0 flex-col border-r bg-muted/30 relative z-10'}>
+      <div aria-label="会话列表" className={focusMode ? 'hidden' : `${conversationsOpen ? 'absolute inset-y-0 left-0 z-30 flex bg-background' : 'hidden'} md:relative md:flex md:z-10 w-[240px] flex-shrink-0 flex-col border-r bg-muted/30`}>
         <div className="p-3 border-b">
-          <Button className="w-full" size="sm" onClick={() => createConversation()}>
+          <Button className="w-full" size="sm" onClick={() => { startNewConversation(); setConversationsOpen(false); }}>
             <Plus className="h-4 w-4 mr-2" />
             新建对话
           </Button>
         </div>
         <ScrollArea className="flex-1 min-h-0 p-2">
-          {conversations.length === 0 && (
+          {conversationError && <p role="alert" className="p-2 text-xs text-destructive">{conversationError}<Button variant="link" size="sm" onClick={() => void loadConversations()}>重试</Button></p>}
+          {!conversationError && conversations.length === 0 && (
             <div className="text-center py-12 text-muted-foreground">暂无对话</div>
           )}
           {conversations.map(conv => (
@@ -416,7 +443,7 @@ export default function Chat() {
                   : 'hover:bg-muted'
               }`}
               onClick={() => {
-                if (renamingId !== conv.id) switchConversation(conv.id);
+                if (renamingId !== conv.id) { void switchConversation(conv.id); setConversationsOpen(false); }
               }}
             >
               <MessageSquare className="h-4 w-4 shrink-0" />
@@ -494,12 +521,13 @@ export default function Chat() {
       </div>
 
       {/* Main chat area */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="min-w-0 flex-1 flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-3 border-b flex-shrink-0">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-3 overflow-x-auto px-3 md:px-6 py-3 border-b flex-shrink-0">
+          <div className="flex shrink-0 items-center gap-2">
+            {!focusMode && <Button className="md:hidden" variant="ghost" size="icon" aria-label="打开会话列表" onClick={() => setConversationsOpen(true)}><MessageSquare className="h-4 w-4" /></Button>}
             <Bot className="h-6 w-6 text-primary" />
-            <h1 className="text-lg font-bold">Chat 数据分析</h1>
+            <h1 className="text-lg font-bold">{independent ? '智能问数' : 'Chat 数据分析'}</h1>
           </div>
           <div className="flex items-center gap-2">
             {/* Mode Selector — 全面转向 Qoder 执行层:隐藏 quick/内置 deep,仅保留 Qoder */}
@@ -548,10 +576,10 @@ export default function Chat() {
             })()}
 
             {/* Waker 选择器 — 仅当 (工作空间+角色) 可选 Waker > 1 时展示;只有一个时隐藏 */}
-            {wakers.length > 1 && (
+            {wakers.length > 0 && (
               <Select
                 key={`waker-${selectedWorkspaceId}`}
-                value={selectedWakerKey || wakers[0]?.waker_key}
+                value={selectedWakerKey || ''}
                 onValueChange={(v) => setSelectedWakerKey(v)}
               >
                 <SelectTrigger className="w-[160px] h-8" title="选择 Waker(角色化智能体)">
@@ -560,7 +588,8 @@ export default function Chat() {
                 </SelectTrigger>
                 <SelectContent>
                   {wakers.map((w) => (
-                    <SelectItem key={w.waker_key} value={w.waker_key}>{w.display_name || w.name}</SelectItem>
+                    <SelectItem key={w.waker_key} value={w.waker_key} disabled={w.available === false}
+                      title={w.unavailable_reason}>{w.display_name || w.name}{w.available === false ? `（不可用：${w.unavailable_reason}）` : ''}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -608,6 +637,18 @@ export default function Chat() {
               );
             })()}
 
+            {/* 报告主题: 默认跟随当前 App 主题; 可显式选 9 套之一(交付 HTML/Excel 产物用) */}
+            <Select value={reportTheme || 'follow'} onValueChange={(v) => setReportTheme(v === 'follow' ? '' : v)}>
+              <SelectTrigger className="w-[150px] h-8" title="报告/产物主题(默认跟随当前主题)">
+                <Lightbulb className="h-3.5 w-3.5 mr-1.5" />
+                <SelectValue placeholder="报告主题" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="follow">跟随当前主题</SelectItem>
+                {THEME_OPTIONS.map((t) => (<SelectItem key={t.id} value={t.id}>{t.label}</SelectItem>))}
+              </SelectContent>
+            </Select>
+
             <Button variant="outline" size="sm" onClick={clear} disabled={messages.length === 0}>
               <Trash2 className="h-4 w-4 mr-2" />
               清空对话
@@ -631,7 +672,7 @@ export default function Chat() {
               <p className="text-lg">输入你的数据查询问题</p>
               <p className="text-sm mt-2">AI 将自动生成 SQL、执行查询并可视化结果</p>
               <div className="flex gap-3 mt-8 flex-wrap justify-center">
-                {(recommendedQuestions.length > 0 ? recommendedQuestions : ['查看最近7天的病例数量', '各区域设备使用率统计', '本月新增用户趋势']).map((q) => (
+                {(recommendedQuestions.length > 0 ? recommendedQuestions : ['查看最近7天的案例数量', '各区域设备使用率统计', '本月新增用户趋势']).map((q) => (
                   <Badge
                     key={q}
                     variant="outline"
@@ -688,7 +729,8 @@ export default function Chat() {
                 {msg.role === 'assistant' && (
                   <div className="bg-muted rounded-2xl rounded-tl-sm px-4 py-3 overflow-hidden">
                     {/* 等待模型响应:气泡还没有任何可见输出时给明确提示(而非空白) */}
-                    {loading && !msg.content && !msg.reply && !msg.intent && !msg.error && !msg.thinking && !(msg.tool_calls && msg.tool_calls.length > 0) && (
+                    {/* 仅对当前正在流式的最后一条生效;否则历史里被取消/清空的空 assistant 气泡会随任意新请求的 loading 再次转圈 */}
+                    {loading && idx === messages.length - 1 && !msg.content && !msg.reply && !msg.intent && !msg.error && !msg.thinking && !(msg.tool_calls && msg.tool_calls.length > 0) && (
                       <div className="flex items-center gap-2">
                         <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
                         <span className="text-sm text-muted-foreground">等待模型响应...</span>
@@ -740,7 +782,7 @@ export default function Chat() {
                     )}
 
                     {/* 流式 token 输出(intent 未确定前,如执行层 CLI 的流式回复,含内嵌图表块) */}
-                    {!msg.intent && msg.content && <MarkdownWithCharts text={msg.content} />}
+                    {!msg.intent && msg.content && <MarkdownWithCharts text={msg.content} conversationId={currentConvId} />}
 
                     {msg.intent && ['chat', 'explain'].includes(msg.intent) && msg.reply && (
                       <div className="leading-relaxed prose prose-sm max-w-none">
@@ -758,7 +800,7 @@ export default function Chat() {
                     {/* Agent/执行层最终回复(无 SQL 结果,如 qoder 执行层,含内嵌图表块)+ 赞踩打标 */}
                     {msg.reply && !msg.sql && !msg.error && msg.intent === 'agent' && (
                       <>
-                        <MarkdownWithCharts text={msg.reply} />
+                        <MarkdownWithCharts text={msg.reply} conversationId={currentConvId} />
                         <div className="flex gap-2 mt-1 flex-wrap items-center">{renderFeedback(idx, msg)}</div>
                       </>
                     )}
@@ -979,18 +1021,15 @@ export default function Chat() {
             </div>
           ))}
 
-          {/* 推荐追问 — 末条为助手回复且未在加载时展示，强化交互（下钻/拆解/看板/质量） */}
-          {!loading && messages.length > 0 && messages[messages.length - 1]?.role === 'assistant' && (
+          {/* 继续探索 — 基于本轮上文由模型推断的追问(回答完成后异步回填);无内容则不展示 */}
+          {!loading && messages.length > 0 && messages[messages.length - 1]?.role === 'assistant'
+            && (messages[messages.length - 1]?.followups?.length ?? 0) > 0 && (
             <div className="pl-12 flex flex-wrap gap-2 items-center pt-1">
               <span className="text-xs text-muted-foreground"><Lightbulb className="h-3 w-3 inline mr-1" />继续探索：</span>
-              {[
-                { label: '下钻分析', icon: <BarChart3 className="h-3 w-3 mr-1" />, text: '请对上一步结果做下钻分析：按关键维度逐层拆解，找出贡献最大与异常的细分，并给出可执行结论。' },
-                { label: '场景拆解', icon: <Workflow className="h-3 w-3 mr-1" />, text: '请把该问题拆解成 3-5 个可执行的子分析场景，分别列出需要验证的指标、维度与预期结论。' },
-                { label: '生成看板', icon: <TrendingUp className="h-3 w-3 mr-1" />, text: '请基于以上结论，规划一个可视化看板：给出关键指标卡、图表类型与布局建议。' },
-                { label: '数据质量检查', icon: <Table className="h-3 w-3 mr-1" />, text: '请检查上述结论涉及数据的质量问题（缺失/重复/异常值/口径一致性），并给出修正建议。' },
-              ].map((f) => (
-                <Button key={f.label} variant="outline" size="sm" className="h-7 text-xs" onClick={() => runQuestion(f.text)}>
-                  {f.icon}{f.label}
+              {messages[messages.length - 1].followups!.map((fu, i) => (
+                <Button key={i} variant="outline" size="sm" className="h-7 text-xs max-w-[320px]" title={fu}
+                  onClick={() => runQuestion(fu)}>
+                  <span className="truncate">{fu}</span>
                 </Button>
               ))}
             </div>

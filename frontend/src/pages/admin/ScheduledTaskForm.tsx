@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/select';
 import { DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { toast } from 'sonner';
-import { Plus, Trash2, Database, Cpu, Bot, Check, ChevronsUpDown, X, Copy, RefreshCw, Webhook } from 'lucide-react';
+import { Plus, Trash2, Check, ChevronsUpDown, X, Copy, RefreshCw, Webhook } from 'lucide-react';
 import CronInput from '@/components/CronInput';
 import {
   createScheduledTask,
@@ -23,6 +23,8 @@ import {
   regenerateWebhookToken,
   listNotificationChannels,
   listReportTemplates,
+  listScheduledWakers,
+  type ScheduledWakerOption,
   type ScheduledTask,
   type ScheduledTaskCreateRequest,
   type TaskQuestion,
@@ -33,8 +35,6 @@ import client from '@/api/client';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 
 interface WorkspaceDatasource { id: number; name: string; db_type: string; database_name: string; is_default: number; }
-interface WorkspaceMCPServer { id: number; name: string; description: string; }
-interface WorkspaceAgent { id: number; name: string; display_name: string; description: string; }
 
 interface Props {
   task: ScheduledTask | null;
@@ -113,6 +113,7 @@ function SelectedBadges({ selected, onRemove, labelFn }: {
 export default function ScheduledTaskForm({ task, onClose }: Props) {
   const { currentWorkspaceId } = useWorkspaceStore();
   const isEdit = !!task;
+  const workspaceId = task?.workspace_id ?? currentWorkspaceId;
 
   // ── Form state ────────────────────────────────────────────────
   const [name, setName] = useState('');
@@ -121,8 +122,7 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
 
   // Execution source — multi-select (arrays)
   const [datasourceIds, setDatasourceIds] = useState<number[]>([]);
-  const [mcpServerIds, setMcpServerIds] = useState<number[]>([]);
-  const [agentNames, setAgentNames] = useState<string[]>([]);
+  const [wakerKey, setWakerKey] = useState('');
 
   // Questions
   const [questions, setQuestions] = useState<TaskQuestion[]>([{ title: '', sql: '' }]);
@@ -150,24 +150,39 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [reportTemplates, setReportTemplates] = useState<ReportTemplate[]>([]);
   const [wsDatasources, setWsDatasources] = useState<WorkspaceDatasource[]>([]);
-  const [wsMcpServers, setWsMcpServers] = useState<WorkspaceMCPServer[]>([]);
-  const [wsAgents, setWsAgents] = useState<WorkspaceAgent[]>([]);
+  const [wakers, setWakers] = useState<ScheduledWakerOption[]>([]);
+  const [wakersLoading, setWakersLoading] = useState(false);
+  const [wakersError, setWakersError] = useState('');
+  const selectedWaker = wakers.find(w => w.waker_key === wakerKey);
 
   useEffect(() => {
     // Load channels without workspace filter to ensure saved channels are always visible
     listNotificationChannels().then(setChannels).catch(() => {});
     listReportTemplates(currentWorkspaceId).then(setReportTemplates).catch(() => {});
     client.get('/datasources/').then(({ data }) => setWsDatasources(data || [])).catch(() => {});
-    client.get('/admin/mcp-servers').then(({ data }) => setWsMcpServers(data || [])).catch(() => {});
-    client.get('/admin/agents').then(({ data }) => setWsAgents(data || [])).catch(() => {});
   }, [currentWorkspaceId]);
+
+  useEffect(() => {
+    if (taskType !== 'agent') return;
+    let cancelled = false;
+    setWakersLoading(true);
+    setWakersError('');
+    setWakers([]);
+    listScheduledWakers(workspaceId, task?.id)
+      .then(data => { if (!cancelled) setWakers(data); })
+      .catch((error: any) => {
+        if (!cancelled) setWakersError(error?.response?.data?.detail || '加载 Waker 失败，请重新打开任务配置');
+      })
+      .finally(() => { if (!cancelled) setWakersLoading(false); });
+    return () => { cancelled = true; };
+  }, [workspaceId, task?.id, taskType]);
 
   // ── Populate form when editing ────────────────────────────────
   useEffect(() => {
     if (!task) return;
     setName(task.name);
     setDescription(task.description || '');
-    setTaskType(task.task_type);
+    setTaskType(task.requires_waker_migration ? 'agent' : task.task_type);
 
     const cfg = task.task_config || {};
 
@@ -178,22 +193,13 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
       setDatasourceIds([cfg.datasource_id]);
     }
 
-    if (Array.isArray(cfg.mcp_server_ids)) {
-      setMcpServerIds(cfg.mcp_server_ids);
-    } else if (cfg.mcp_server_id) {
-      setMcpServerIds([cfg.mcp_server_id]);
-    }
-
-    if (Array.isArray(cfg.agent_names)) {
-      setAgentNames(cfg.agent_names);
-    } else if (cfg.agent_name) {
-      setAgentNames([cfg.agent_name]);
-    }
+    setWakerKey(task.requires_waker_migration ? '' : cfg.waker_key || '');
 
     setQuestions(cfg.questions || []);
     setContext(cfg.context || '');
     setCronExpression(task.cron_expression || '');
-    setTriggerType(task.trigger_type || 'cron');
+    const tt = task.trigger_type;
+    setTriggerType(tt === 'webhook' || tt === 'both' ? tt : 'cron');
     setWebhookSecret(task.webhook_secret || '');
     setWebhookToken(task.webhook_token || null);
     setChannelId(task.channel_id);
@@ -225,13 +231,6 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
     const num = Number(val);
     setDatasourceIds(prev => prev.includes(num) ? prev.filter(v => v !== num) : [...prev, num]);
   };
-  const toggleMcpServer = (val: string) => {
-    const num = Number(val);
-    setMcpServerIds(prev => prev.includes(num) ? prev.filter(v => v !== num) : [...prev, num]);
-  };
-  const toggleAgent = (val: string) => {
-    setAgentNames(prev => prev.includes(val) ? prev.filter(v => v !== val) : [...prev, val]);
-  };
 
   // ── Submit ────────────────────────────────────────────────────
   const handleSubmit = async () => {
@@ -240,6 +239,14 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
       toast.error('定时触发模式下请输入 Cron 表达式'); return;
     }
 
+    if (taskType === 'agent') {
+      if (wakersLoading || wakersError || !selectedWaker?.available) {
+        toast.error('请选择任务创建者已授权且可用的 Waker'); return;
+      }
+      if (datasourceIds.length !== 1 || !selectedWaker.datasource_ids.includes(datasourceIds[0])) {
+        toast.error('请选择 Waker 授权范围内的一个数据源'); return;
+      }
+    }
     // Build task_config with arrays
     const taskConfig: any = { questions };
     if (datasourceIds.length === 1) {
@@ -247,16 +254,7 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
     } else if (datasourceIds.length > 1) {
       taskConfig.datasource_ids = datasourceIds;
     }
-    if (mcpServerIds.length === 1) {
-      taskConfig.mcp_server_id = mcpServerIds[0];
-    } else if (mcpServerIds.length > 1) {
-      taskConfig.mcp_server_ids = mcpServerIds;
-    }
-    if (agentNames.length === 1) {
-      taskConfig.agent_name = agentNames[0];
-    } else if (agentNames.length > 1) {
-      taskConfig.agent_names = agentNames;
-    }
+    if (taskType === 'agent') taskConfig.waker_key = wakerKey;
 
     if (taskType === 'query' && questions.some(q => !q.sql?.trim())) {
       toast.error('SQL 模式下每项必须包含 SQL'); return;
@@ -282,7 +280,7 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
       timeout_seconds: timeoutSeconds,
       max_retries: maxRetries,
       is_active: isActive,
-      workspace_id: currentWorkspaceId,
+      workspace_id: workspaceId,
     };
 
     setSaving(true);
@@ -310,14 +308,7 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
     value: String(ds.id),
     label: `${ds.name}（${ds.db_type} / ${ds.database_name}）${ds.is_default ? ' · 默认' : ''}`,
   }));
-  const mcpOptions = wsMcpServers.map(srv => ({
-    value: String(srv.id),
-    label: srv.name + (srv.description ? ` — ${srv.description}` : ''),
-  }));
-  const agentOptions = wsAgents.map(ag => ({
-    value: ag.name,
-    label: (ag.display_name || ag.name) + (ag.description ? ` — ${ag.description}` : ''),
-  }));
+  const analysisDatasources = dsOptions.filter(ds => selectedWaker?.datasource_ids.includes(Number(ds.value)));
 
   return (
     <div className="space-y-4 min-w-0 overflow-hidden">
@@ -355,60 +346,39 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
       <div className="space-y-2">
         <Label>{taskType === 'query' ? '数据源' : '执行权限'}</Label>
         {taskType === 'agent' && (
-          <p className="text-xs text-muted-foreground">配置 Agent 可使用的资源。不指定 = 不允许使用。可多选。</p>
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">知识库和 MCP 由 Waker 统一授权，按任务创建者权限执行。</p>
+            {task?.requires_waker_migration && <p role="alert" className="text-sm text-destructive">需重新配置 Waker：旧 Agent/MCP 配置已停用，请明确选择并保存。</p>}
+            <Label htmlFor="scheduled-waker">Waker *</Label>
+            <Select value={wakerKey} onValueChange={setWakerKey} disabled={wakersLoading}>
+              <SelectTrigger id="scheduled-waker"><SelectValue placeholder={wakersLoading ? '加载 Waker...' : '选择 Waker'} /></SelectTrigger>
+              <SelectContent>
+                {wakers.map(w => <SelectItem key={w.waker_key} value={w.waker_key} disabled={!w.available}>{w.name}{!w.available ? `（${w.reason || '不可用'}）` : ''}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            {wakersError && <p role="alert" className="text-sm text-destructive">{wakersError}</p>}
+            {!wakersLoading && !wakersError && wakers.length === 0 && <p className="text-sm text-destructive">没有已授权 Waker，请先配置工作空间和角色的 Waker 授权。</p>}
+            {selectedWaker && <div className="text-xs text-muted-foreground space-y-1">
+              <p>定时可用工具：{selectedWaker.tools.join('、') || '无'}</p>
+              {selectedWaker.unavailable_tools.map(t => <p key={t.name}>{t.name}：{t.reason}</p>)}
+            </div>}
+          </div>
         )}
 
         {/* Datasource */}
         <div className="space-y-1.5">
           {taskType === 'agent' && <Label className="text-xs font-normal text-muted-foreground">数据源</Label>}
-          <MultiSelect
-            options={dsOptions}
-            selected={datasourceIds.map(String)}
-            onToggle={toggleDatasource}
-            placeholder={taskType === 'query' ? '选择数据源' : '不指定（不可用）'}
-          />
-          <SelectedBadges
-            selected={datasourceIds.map(String)}
-            onRemove={v => toggleDatasource(v)}
-            labelFn={v => wsDatasources.find(ds => ds.id === Number(v))?.name || v}
-          />
+          {taskType === 'agent' ? (
+            <Select value={datasourceIds.length === 1 ? String(datasourceIds[0]) : ''} onValueChange={v => setDatasourceIds([Number(v)])} disabled={!selectedWaker?.available}>
+              <SelectTrigger aria-label="分析数据源"><SelectValue placeholder="选择一个已授权数据源" /></SelectTrigger>
+              <SelectContent>{analysisDatasources.map(ds => <SelectItem key={ds.value} value={ds.value}>{ds.label}</SelectItem>)}</SelectContent>
+            </Select>
+          ) : <>
+            <MultiSelect options={dsOptions} selected={datasourceIds.map(String)} onToggle={toggleDatasource} placeholder="选择数据源" />
+            <SelectedBadges selected={datasourceIds.map(String)} onRemove={v => toggleDatasource(v)} labelFn={v => wsDatasources.find(ds => ds.id === Number(v))?.name || v} />
+          </>}
         </div>
 
-        {/* MCP Server — Agent 模式才有 */}
-        {taskType === 'agent' && (
-          <div className="space-y-1.5">
-            <Label className="text-xs font-normal text-muted-foreground">MCP 服务</Label>
-            <MultiSelect
-              options={mcpOptions}
-              selected={mcpServerIds.map(String)}
-              onToggle={toggleMcpServer}
-              placeholder="不指定（不可用）"
-            />
-            <SelectedBadges
-              selected={mcpServerIds.map(String)}
-              onRemove={v => toggleMcpServer(v)}
-              labelFn={v => wsMcpServers.find(s => s.id === Number(v))?.name || v}
-            />
-          </div>
-        )}
-
-        {/* Sub-Agent — Agent 模式才有 */}
-        {taskType === 'agent' && (
-          <div className="space-y-1.5">
-            <Label className="text-xs font-normal text-muted-foreground">子 Agent</Label>
-            <MultiSelect
-              options={agentOptions}
-              selected={agentNames}
-              onToggle={toggleAgent}
-              placeholder="不指定（不可用）"
-            />
-            <SelectedBadges
-              selected={agentNames}
-              onRemove={v => toggleAgent(v)}
-              labelFn={v => wsAgents.find(a => a.name === v)?.display_name || v}
-            />
-          </div>
-        )}
       </div>
 
 

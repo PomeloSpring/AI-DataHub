@@ -109,6 +109,10 @@ def health_check():
 async def startup_event():
     """Initialize resources on startup."""
     logger.info("DataMind service starting up...")
+    import asyncio
+    from services.datamind.execution.session_workspace import reconcile_stale_sessions
+    repaired = await asyncio.to_thread(reconcile_stale_sessions)
+    logger.info("Waker 会话恢复检查完成，中断执行数=%s", repaired)
     # Pre-warm agent registry for deep/agent mode
     try:
         from services.datamind.nl2sql.orchestrator.pipeline_orchestrator import _init_agents

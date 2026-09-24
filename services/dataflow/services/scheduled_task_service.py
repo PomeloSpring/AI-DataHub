@@ -27,7 +27,7 @@ class ScheduledTaskService:
 
     # ── Scheduled Tasks CRUD ────────────────────────────────────────
 
-    def list_tasks(self, workspace_id: int = 0, page: int = 1, size: int = 20) -> dict:
+    def list_tasks(self, workspace_id: int = 0, page: int = 1, size: int = 20, owner_id: int = None) -> dict:
         """List scheduled tasks with pagination, scoped by workspace."""
         conn = get_metadata_conn()
         try:
@@ -37,6 +37,9 @@ class ScheduledTaskService:
                 if workspace_id:
                     conditions.append("workspace_id = %s")
                     params.append(workspace_id)
+                if owner_id is not None:
+                    conditions.append("owner_id = %s")
+                    params.append(owner_id)
                 where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
                 cur.execute(f"SELECT COUNT(*) AS total FROM adh_scheduled_tasks {where}", params)
@@ -70,6 +73,10 @@ class ScheduledTaskService:
 
     def create_task(self, data: dict, owner_id: int, workspace_id: int = 0) -> int:
         """Create a new scheduled task. Returns the new task ID."""
+        if int(owner_id or 0) <= 0:
+            raise PermissionError("创建任务必须有可信创建者")
+        from services.datamind.execution.scheduled_analysis import validate_task_waker
+        validate_task_waker({**data, "owner_id": owner_id, "workspace_id": workspace_id})
         task_id = _generate_id()
         now = _now()
         conn = get_metadata_conn()
@@ -108,13 +115,36 @@ class ScheduledTaskService:
         finally:
             conn.close()
 
+    def claim_owner(self, task_id: int, owner_id: int) -> dict:
+        """仅供 AS-BOT 已审批动作调用，不提供直接认领 API。"""
+        from services.shared.common.auth import resolve_execution_owner
+        from services.shared.common.db import execute_write
+        task = self.get_task(task_id)
+        if not task:
+            raise ValueError("任务不存在")
+        resolve_execution_owner(owner_id, task.get("workspace_id") or 0)
+        changed = execute_write("UPDATE adh_scheduled_tasks SET owner_id=%s, updated_at=NOW() "
+            "WHERE id=%s AND (owner_id IS NULL OR owner_id<=0)", (owner_id, task_id))
+        return {"success": changed == 1, "message": "任务已认领" if changed else "任务已有创建者"}
+
     def update_task(self, task_id: int, data: dict) -> bool:
         """Update a scheduled task."""
         if not data:
             return False
         conn = get_metadata_conn()
         try:
+            conn.begin()
             with conn.cursor() as cur:
+                cur.execute("SELECT * FROM adh_scheduled_tasks WHERE id=%s FOR UPDATE", (task_id,))
+                existing = cur.fetchone()
+                if not existing:
+                    return False
+                self._normalize_task(existing)
+                merged = {**existing, **{k: v for k, v in data.items() if v is not None},
+                          "owner_id": existing.get("owner_id"), "workspace_id": existing.get("workspace_id") or 0}
+                from services.datamind.execution.scheduled_analysis import validate_task_waker
+                if data != {"is_active": False}:
+                    validate_task_waker(merged)
                 updates = ["updated_at = %s"]
                 params = [_now()]
 
@@ -169,18 +199,8 @@ class ScheduledTaskService:
             conn.close()
 
     def toggle_task(self, task_id: int, is_active: int) -> bool:
-        """Enable or disable a scheduled task."""
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE adh_scheduled_tasks SET is_active = %s, updated_at = %s WHERE id = %s",
-                    (is_active, _now(), task_id),
-                )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            conn.close()
+        """启用同样校验 Waker；停用始终允许，不阻挡旧任务下线。"""
+        return self.update_task(task_id, {"is_active": bool(is_active)})
 
     def update_task_status(self, task_id: int, status: str, error: str = None):
         """Update task runtime status after execution."""
@@ -211,9 +231,12 @@ class ScheduledTaskService:
 
     def _normalize_task(self, row: dict):
         """Normalize task row for JSON serialization."""
+        row["ownership_status"] = "owned" if int(row.get("owner_id") or 0) > 0 else "unclaimed"
         for field in ("task_config",):
             if isinstance(row.get(field), str):
                 row[field] = json.loads(row[field])
+        from services.datamind.execution.scheduled_analysis import needs_waker_migration
+        row["requires_waker_migration"] = needs_waker_migration(row)
         for ts in ("created_at", "updated_at", "last_run_at"):
             if hasattr(row.get(ts), "isoformat"):
                 row[ts] = row[ts].isoformat()
@@ -221,9 +244,10 @@ class ScheduledTaskService:
     # ── Scheduled Logs ──────────────────────────────────────────────
 
     def create_log(self, task_id: int, trigger_type: str, status: str,
-                   celery_task_id: str = None, workspace_id: int = 0) -> int:
-        """Create an execution log entry."""
-        log_id = _generate_id()
+                   celery_task_id: str = None, workspace_id: int = 0, run_key: str = None) -> int:
+        """运行键在派发前生成；重投只取得已有日志，不覆盖状态。"""
+        from uuid import uuid4
+        run_key = run_key or celery_task_id or uuid4().hex
         now = _now()
         conn = get_metadata_conn()
         try:
@@ -231,15 +255,72 @@ class ScheduledTaskService:
                 cur.execute(
                     "INSERT INTO adh_scheduled_logs "
                     "(id, scheduled_task_id, workspace_id, status, trigger_type, "
-                    "celery_task_id, started_at, created_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (log_id, task_id, workspace_id, status, trigger_type,
-                     celery_task_id, now, now),
+                    "celery_task_id, started_at, created_at, run_key, lease_expires_at) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,DATE_ADD(NOW(), INTERVAL 10 MINUTE)) "
+                    "ON DUPLICATE KEY UPDATE id=id",
+                    (_generate_id(), task_id, workspace_id, status, trigger_type,
+                     celery_task_id, now, now, run_key),
                 )
+                cur.execute("SELECT id, scheduled_task_id FROM adh_scheduled_logs WHERE run_key=%s", (run_key,))
+                row = cur.fetchone()
+                if not row or int(row["scheduled_task_id"]) != int(task_id):
+                    raise ValueError("运行键与任务不匹配")
             conn.commit()
-            return log_id
+            return row["id"]
         finally:
             conn.close()
+
+    def claim_log(self, log_id: int, worker_id: str, timeout: int) -> bool:
+        from services.shared.common.db import execute_write
+        return execute_write(
+            "UPDATE adh_scheduled_logs SET status='running', worker_id=%s, started_at=NOW(), "
+            "lease_expires_at=DATE_ADD(NOW(), INTERVAL %s SECOND) "
+            "WHERE id=%s AND status='queued' AND lease_expires_at > NOW()",
+            (worker_id[:50], timeout, log_id),
+        ) == 1
+
+    def finish_log(self, log_id: int, **values) -> bool:
+        """日志与任务终态原子提交；取消/超时后的迟到结果不可覆盖终态。"""
+        allowed = {"status", "questions_succeeded", "questions_failed", "result_summary",
+                   "stage_error_code", "error_message", "elapsed_ms", "finished_at"}
+        if set(values) - allowed or values.get("status") not in ("success", "partial", "failed", "timeout", "cancelled"):
+            raise ValueError("日志字段或终态不合法")
+        conn = get_metadata_conn()
+        try:
+            conn.begin()
+            with conn.cursor() as cur:
+                cur.execute("SELECT scheduled_task_id, status, lease_expires_at<=NOW() AS lease_expired "
+                                            "FROM adh_scheduled_logs WHERE id=%s FOR UPDATE", (log_id,))
+                row = cur.fetchone()
+                if not row or row["status"] not in ("queued", "running"):
+                    conn.rollback()
+                    return False
+                if row.get("lease_expired"):
+                    values.update(status="timeout", stage_error_code="TIMEOUT")
+                updates = ", ".join(f"`{key}`=%s" for key in values)
+                cur.execute(f"UPDATE adh_scheduled_logs SET {updates} WHERE id=%s",
+                            tuple(values.values()) + (log_id,))
+                cur.execute(
+                    "UPDATE adh_scheduled_tasks SET last_run_at=NOW(), last_status=%s, last_error=%s, "
+                    "run_count=run_count+1, updated_at=NOW() WHERE id=%s",
+                    (values["status"], values.get("error_message") or "", row["scheduled_task_id"]),
+                )
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def claim_notification(self, log_id: int) -> bool:
+        """最多发送一次；发送后崩溃保留 sending 供人工核对，不盲目重发。"""
+        from services.shared.common.db import execute_write
+        return execute_write(
+            "UPDATE adh_scheduled_logs SET notify_status='sending' WHERE id=%s "
+            "AND status NOT IN ('queued','running') AND (notify_status IS NULL OR notify_status='skipped')",
+            (log_id,),
+        ) == 1
 
     def update_log(self, log_id: int, **kwargs):
         """Update an execution log entry."""
@@ -372,14 +453,14 @@ class ScheduledTaskService:
             report = self._get_report_by_log_id(row["id"])
             if report:
                 row["report_id"] = report["id"]
-                row["report_access_token"] = report.get("access_token")
+                row.pop("report_access_token", None)
 
     def _get_report_by_log_id(self, log_id: int) -> Optional[dict]:
         """Get report by execution log ID."""
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT id, access_token FROM adh_reports WHERE log_id = %s LIMIT 1", (log_id,))
+                cur.execute("SELECT id FROM adh_reports WHERE log_id = %s LIMIT 1", (log_id,))
                 return cur.fetchone()
         finally:
             conn.close()
@@ -636,95 +717,26 @@ class ScheduledTaskService:
 
     def create_report(self, task_id: int, log_id: int, title: str, content: str,
                       format: str = "markdown", access_mode: str = "private",
-                      workspace_id: int = 0, owner_id: int = 0) -> dict:
-        """Create a generated report. Returns the report dict with access token."""
-        report_id = _generate_id()
-        import secrets
-        access_token = secrets.token_urlsafe(32) if access_mode == "private" else None
-        now = _now()
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO adh_reports "
-                    "(id, task_id, log_id, title, content, format, access_mode, access_token, "
-                    "workspace_id, owner_id, created_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (report_id, task_id, log_id, title, content, format,
-                     access_mode, access_token, workspace_id, owner_id, now),
-                )
-            conn.commit()
-            return {"id": report_id, "access_token": access_token, "access_mode": access_mode}
-        finally:
-            conn.close()
+                      workspace_id: int = 0, owner_id: int = 0, **metadata) -> dict:
+        from services.dataviz.services.report_service import create_report
+        return create_report(task_id=task_id, log_id=log_id, title=title, content=content,
+                             format=format, workspace_id=workspace_id, owner_id=owner_id, **metadata)
 
-    def get_report(self, report_id: int, access_token: str = None) -> Optional[dict]:
-        """Get a report by ID. For private reports, access_token is required."""
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT * FROM adh_reports WHERE id = %s", (report_id,))
-                row = cur.fetchone()
-                if not row:
-                    return None
-                if row["access_mode"] == "private":
-                    if not access_token or access_token != row.get("access_token"):
-                        return {"id": row["id"], "access_mode": "private", "error": "需要访问令牌"}
-                # Increment view count
-                cur.execute("UPDATE adh_reports SET view_count = view_count + 1 WHERE id = %s", (report_id,))
-                conn.commit()
-                self._normalize_report(row)
-                return row
-        finally:
-            conn.close()
+    def get_report(self, report_id: int, access_token: str = None, user: dict = None) -> Optional[dict]:
+        from services.dataviz.services.report_service import get_report
+        return get_report(report_id, access_token=access_token, user=user)
 
     def _normalize_report(self, row):
         """Normalize report row."""
         if hasattr(row.get("created_at"), "isoformat"):
             row["created_at"] = row["created_at"].isoformat()
 
-    def list_reports(self, workspace_id: int = 0) -> list:
-        """报表中心摘要清单(不含 content 大字段), 附任务名, 按生成时间倒序."""
-        sql = (
-            "SELECT r.id, r.task_id, r.log_id, r.title, r.format, r.access_mode, "
-            "r.workspace_id, r.view_count, r.created_at, t.name AS task_name "
-            "FROM adh_reports r LEFT JOIN adh_scheduled_tasks t ON t.id = r.task_id "
-        )
-        params: tuple = ()
-        if workspace_id:
-            sql += "WHERE r.workspace_id = %s "
-            params = (workspace_id,)
-        sql += "ORDER BY r.created_at DESC"
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql, params)
-                rows = cur.fetchall() or []
-                for row in rows:
-                    self._normalize_report(row)
-                return rows
-        finally:
-            conn.close()
+    def list_reports(self, workspace_id: int = 0, user: dict = None) -> list:
+        from services.dataviz.services.report_service import list_reports
+        return list_reports((user or {}).get("user_id", 0), workspace_id, size=100, user=user)["items"]
 
-    def get_report_detail(self, report_id: int) -> Optional[dict]:
-        """应用内查看完整报告: 登录用户即可读, 不走外链 access_token 校验."""
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT r.*, t.name AS task_name FROM adh_reports r "
-                    "LEFT JOIN adh_scheduled_tasks t ON t.id = r.task_id WHERE r.id = %s",
-                    (report_id,),
-                )
-                row = cur.fetchone()
-                if not row:
-                    return None
-                # 不外发外链令牌; 应用内查看不计 view_count(与分享链接统计区分)
-                row.pop("access_token", None)
-                self._normalize_report(row)
-                return row
-        finally:
-            conn.close()
+    def get_report_detail(self, report_id: int, user: dict = None) -> Optional[dict]:
+        return self.get_report(report_id, user=user)
 
     # ── Stale Task Detection ────────────────────────────────────────
 
@@ -737,14 +749,14 @@ class ScheduledTaskService:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE adh_scheduled_logs SET status = 'timeout', "
-                    "error_message = '执行超时，可能已崩溃', "
-                    "finished_at = NOW() "
-                    "WHERE status = 'running' AND started_at < DATE_SUB(NOW(), INTERVAL %s MINUTE)",
+                    "SELECT id FROM adh_scheduled_logs WHERE status IN ('queued','running') AND "
+                    "((lease_expires_at IS NOT NULL AND lease_expires_at<=NOW()) OR "
+                    "(lease_expires_at IS NULL AND started_at<DATE_SUB(NOW(), INTERVAL %s MINUTE)))",
                     (timeout_minutes,),
                 )
-            conn.commit()
-            count = cur.rowcount
+                stale = cur.fetchall()
+            count = sum(self.finish_log(row["id"], status="timeout", stage_error_code="TIMEOUT",
+                                       error_message="执行租约已过期", finished_at=_now()) for row in stale)
             if count:
                 logger.info("[Service] Cleaned up %d stale running logs (timeout=%dmin)", count, timeout_minutes)
             return count

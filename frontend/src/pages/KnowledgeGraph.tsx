@@ -3,53 +3,25 @@ import { useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import {
-  Database, Network, GitBranch, Search, RefreshCw,
-  Plus, Edit, Terminal, BarChart3, Layers, Save, Trash2
+  Database, Network, GitBranch, Search, RefreshCw, Terminal,
 } from 'lucide-react';
 import KnowledgeGraphView from '@/components/graph/KnowledgeGraph';
+import { ModelGraphTab } from './catalog/ModelAssetTabs';
 import { useGraphStore } from '@/stores/graphStore';
 import axios from 'axios';
 import { toast } from 'sonner';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-type GraphType = 'table-relation' | 'business-knowledge' | 'data-lineage';
+type GraphType = 'ontology-overview' | 'table-relation' | 'business-knowledge' | 'data-lineage';
 type ViewMode = 'view' | 'edit' | 'ask';
-type ActiveTab = 'graph' | 'metrics' | 'dimensions' | 'sparql';
-
-interface Metric {
-  id: number;
-  name: string;
-  name_en: string;
-  formula: string;
-  unit: string;
-  agg_type: string;
-  target_table: string;
-  target_column: string;
-  description: string;
-  category: string;
-}
-
-interface Dimension {
-  id: number;
-  name: string;
-  name_en: string;
-  hierarchy: string;
-  level: number;
-  target_table: string;
-  target_column: string;
-  description: string;
-  category: string;
-}
+type ActiveTab = 'graph' | 'sparql';
 
 // ── API Helpers ────────────────────────────────────────────────────────
 
@@ -62,33 +34,44 @@ function getAuthHeader() {
 
 // ── Main Component ─────────────────────────────────────────────────────
 
-export default function KnowledgeGraph() {
+/** 系统配置入口的精简图页: 只展示 AS-BOT 系统能力本体图(锁定总览, ds:0) */
+function AsBotGraphPage() {
+  return (
+    <div className="h-full flex flex-col">
+      <div className="flex items-center gap-4 p-4 border-b bg-background shrink-0">
+        <div className="flex items-center gap-2">
+          <Network className="h-6 w-6 text-primary" />
+          <h1 className="text-xl font-semibold">AS-BOT 本体图</h1>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          仅展示系统助手依赖的本体模型结构（对象为点、Link 为名边）；业务本体图谱请前往「数据平台 → 本体工作区 → 图谱」。
+        </p>
+      </div>
+      <div className="flex-1 p-4 min-h-0">
+        {/* 系统助手总览必须走系统图 ds:-1(system_scope), 否则 datasource_id=0 命中聚合图串入业务本体 */}
+        <ModelGraphTab datasourceId={0} systemScope singleView="ontology-overview" />
+      </div>
+    </div>
+  );
+}
+
+export default function KnowledgeGraph({ systemOnly = false }: { systemOnly?: boolean } = {}) {
+  // 拆独立组件避免条件化 hooks; 全功能图页见本体工作区图谱页签/旧路由。
+  if (systemOnly) return <AsBotGraphPage />;
+  return <KnowledgeGraphFull />;
+}
+
+function KnowledgeGraphFull() {
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // State from URL
-  const graphType = (searchParams.get('type') as GraphType) || 'table-relation';
+  // State from URL — 默认落地视图 = 本体总览(对象=点, Link=名边; 业务主语视角)
+  const graphType = (searchParams.get('type') as GraphType) || 'ontology-overview';
   const viewMode = (searchParams.get('mode') as ViewMode) || 'view';
 
   // Local state
   const [activeTab, setActiveTab] = useState<ActiveTab>('graph');
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-
-  // Metrics & Dimensions state
-  const [metrics, setMetrics] = useState<Metric[]>([]);
-  const [dimensions, setDimensions] = useState<Dimension[]>([]);
-  const [showMetricDialog, setShowMetricDialog] = useState(false);
-  const [showDimensionDialog, setShowDimensionDialog] = useState(false);
-  const [editingMetric, setEditingMetric] = useState<Metric | null>(null);
-  const [editingDimension, setEditingDimension] = useState<Dimension | null>(null);
-  const [metricForm, setMetricForm] = useState({
-    name: '', name_en: '', formula: '', unit: '', agg_type: 'SUM',
-    target_table: '', target_column: '', description: '', category: ''
-  });
-  const [dimensionForm, setDimensionForm] = useState({
-    name: '', name_en: '', hierarchy: '', level: 0,
-    target_table: '', target_column: '', description: '', category: ''
-  });
 
   // SPARQL query state
   // SPARQL 数据均入命名图 <...ds:ID>，默认查询需遍历 GRAPH 才有结果
@@ -110,14 +93,6 @@ export default function KnowledgeGraph() {
       loadGraphData();
     }
   }, [graphType, activeTab]);
-
-  useEffect(() => {
-    if (activeTab === 'metrics') {
-      fetchMetrics();
-    } else if (activeTab === 'dimensions') {
-      fetchDimensions();
-    }
-  }, [activeTab]);
 
   // ── Graph Handlers ─────────────────────────────────────────────────
 
@@ -167,116 +142,6 @@ export default function KnowledgeGraph() {
     }
   };
 
-  // ── Metrics Handlers ───────────────────────────────────────────────
-
-  const fetchMetrics = async () => {
-    try {
-      const response = await axios.get(`${API_BASE}/metrics`, { headers: getAuthHeader() });
-      const items = response?.data;
-      setMetrics(Array.isArray(items) ? items : []);
-    } catch {
-      setMetrics([]);
-    }
-  };
-
-  const handleSaveMetric = async () => {
-    try {
-      if (editingMetric) {
-        await axios.put(`${API_BASE}/metrics/${editingMetric.id}`, metricForm, { headers: getAuthHeader() });
-        toast.success('指标更新成功');
-      } else {
-        await axios.post(`${API_BASE}/metrics`, metricForm, { headers: getAuthHeader() });
-        toast.success('指标创建成功');
-      }
-      setShowMetricDialog(false);
-      setEditingMetric(null);
-      resetMetricForm();
-      fetchMetrics();
-    } catch (error) {
-      toast.error('保存指标失败');
-    }
-  };
-
-  const handleDeleteMetric = async (id: number) => {
-    if (!confirm('确定删除此指标？')) return;
-    try {
-      await axios.delete(`${API_BASE}/metrics/${id}`, { headers: getAuthHeader() });
-      toast.success('指标删除成功');
-      fetchMetrics();
-    } catch (error) {
-      toast.error('删除指标失败');
-    }
-  };
-
-  const openEditMetric = (metric: Metric) => {
-    setEditingMetric(metric);
-    setMetricForm({
-      name: metric.name, name_en: metric.name_en, formula: metric.formula,
-      unit: metric.unit, agg_type: metric.agg_type, target_table: metric.target_table,
-      target_column: metric.target_column, description: metric.description, category: metric.category
-    });
-    setShowMetricDialog(true);
-  };
-
-  const resetMetricForm = () => {
-    setMetricForm({ name: '', name_en: '', formula: '', unit: '', agg_type: 'SUM', target_table: '', target_column: '', description: '', category: '' });
-  };
-
-  // ── Dimensions Handlers ────────────────────────────────────────────
-
-  const fetchDimensions = async () => {
-    try {
-      const response = await axios.get(`${API_BASE}/dimensions`, { headers: getAuthHeader() });
-      const items = response?.data;
-      setDimensions(Array.isArray(items) ? items : []);
-    } catch {
-      setDimensions([]);
-    }
-  };
-
-  const handleSaveDimension = async () => {
-    try {
-      if (editingDimension) {
-        await axios.put(`${API_BASE}/dimensions/${editingDimension.id}`, dimensionForm, { headers: getAuthHeader() });
-        toast.success('维度更新成功');
-      } else {
-        await axios.post(`${API_BASE}/dimensions`, dimensionForm, { headers: getAuthHeader() });
-        toast.success('维度创建成功');
-      }
-      setShowDimensionDialog(false);
-      setEditingDimension(null);
-      resetDimensionForm();
-      fetchDimensions();
-    } catch (error) {
-      toast.error('保存维度失败');
-    }
-  };
-
-  const handleDeleteDimension = async (id: number) => {
-    if (!confirm('确定删除此维度？')) return;
-    try {
-      await axios.delete(`${API_BASE}/dimensions/${id}`, { headers: getAuthHeader() });
-      toast.success('维度删除成功');
-      fetchDimensions();
-    } catch (error) {
-      toast.error('删除维度失败');
-    }
-  };
-
-  const openEditDimension = (dimension: Dimension) => {
-    setEditingDimension(dimension);
-    setDimensionForm({
-      name: dimension.name, name_en: dimension.name_en, hierarchy: dimension.hierarchy,
-      level: dimension.level, target_table: dimension.target_table, target_column: dimension.target_column,
-      description: dimension.description, category: dimension.category
-    });
-    setShowDimensionDialog(true);
-  };
-
-  const resetDimensionForm = () => {
-    setDimensionForm({ name: '', name_en: '', hierarchy: '', level: 0, target_table: '', target_column: '', description: '', category: '' });
-  };
-
   // ── SPARQL Handler ────────────────────────────────────────────────
 
   const handleExecuteSparql = async () => {
@@ -295,6 +160,7 @@ export default function KnowledgeGraph() {
   // ── Config ─────────────────────────────────────────────────────────
 
   const graphTypeConfig = {
+    'ontology-overview': { icon: Network, label: '本体总览', description: '业务对象为点、Link 为带名字的边；列/表/数据源不在此层' },
     'table-relation': { icon: Database, label: '表关系图', description: '展示数据库表之间的关联关系' },
     'business-knowledge': { icon: Network, label: '业务知识图', description: '展示业务术语、指标、维度的定义关系' },
     'data-lineage': { icon: GitBranch, label: '数据血缘图', description: '展示数据从源头到应用的流转路径' }
@@ -334,14 +200,6 @@ export default function KnowledgeGraph() {
               <TabsTrigger value="graph" className="flex items-center gap-2">
                 <Network className="h-4 w-4" />
                 图谱可视化
-              </TabsTrigger>
-              <TabsTrigger value="metrics" className="flex items-center gap-2">
-                <BarChart3 className="h-4 w-4" />
-                指标管理
-              </TabsTrigger>
-              <TabsTrigger value="dimensions" className="flex items-center gap-2">
-                <Layers className="h-4 w-4" />
-                维度管理
               </TabsTrigger>
               <TabsTrigger value="sparql" className="flex items-center gap-2">
                 <Terminal className="h-4 w-4" />
@@ -454,6 +312,13 @@ export default function KnowledgeGraph() {
                 <div className="border-t pt-4">
                   <Label className="text-xs font-medium mb-2 block">图例</Label>
                   <div className="space-y-1.5 text-xs">
+                    {graphType === 'ontology-overview' && (
+                      <>
+                        <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-indigo-500" /><span>业务对象</span></div>
+                        <div className="flex items-center gap-2"><div className="w-4 h-0.5 bg-indigo-400" /><span>Link(名字·基数)</span></div>
+                        <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-green-500" /><span>已绑定</span><div className="w-2 h-2 rounded-full bg-amber-500" /><span>漂移</span></div>
+                      </>
+                    )}
                     <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-blue-500" /><span>表</span></div>
                     <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-green-500" /><span>字段</span></div>
                     <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-purple-500" /><span>术语</span></div>
@@ -480,100 +345,6 @@ export default function KnowledgeGraph() {
                 />
               </div>
             </div>
-          </TabsContent>
-
-          {/* Metrics Tab */}
-          <TabsContent value="metrics" className="flex-1 overflow-auto m-0 p-4">
-            <div className="flex justify-end mb-4">
-              <Button onClick={() => { resetMetricForm(); setEditingMetric(null); setShowMetricDialog(true); }}>
-                <Plus className="h-4 w-4 mr-2" />
-                新增指标
-              </Button>
-            </div>
-            <Card>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>指标名称</TableHead>
-                    <TableHead>英文名</TableHead>
-                    <TableHead>公式</TableHead>
-                    <TableHead>单位</TableHead>
-                    <TableHead>聚合类型</TableHead>
-                    <TableHead>分类</TableHead>
-                    <TableHead>操作</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {metrics.map((metric) => (
-                    <TableRow key={metric.id}>
-                      <TableCell className="font-medium">{metric.name}</TableCell>
-                      <TableCell className="text-muted-foreground">{metric.name_en}</TableCell>
-                      <TableCell className="font-mono text-xs">{metric.formula}</TableCell>
-                      <TableCell>{metric.unit}</TableCell>
-                      <TableCell><Badge variant="outline">{metric.agg_type}</Badge></TableCell>
-                      <TableCell><Badge variant="secondary">{metric.category}</Badge></TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Button variant="ghost" size="sm" onClick={() => openEditMetric(metric)}>
-                            <Edit className="h-4 w-4" />
-                          </Button>
-                          <Button variant="ghost" size="sm" onClick={() => handleDeleteMetric(metric.id)}>
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </Card>
-          </TabsContent>
-
-          {/* Dimensions Tab */}
-          <TabsContent value="dimensions" className="flex-1 overflow-auto m-0 p-4">
-            <div className="flex justify-end mb-4">
-              <Button onClick={() => { resetDimensionForm(); setEditingDimension(null); setShowDimensionDialog(true); }}>
-                <Plus className="h-4 w-4 mr-2" />
-                新增维度
-              </Button>
-            </div>
-            <Card>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>维度名称</TableHead>
-                    <TableHead>英文名</TableHead>
-                    <TableHead>层级</TableHead>
-                    <TableHead>层级关系</TableHead>
-                    <TableHead>目标表</TableHead>
-                    <TableHead>分类</TableHead>
-                    <TableHead>操作</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {dimensions.map((dimension) => (
-                    <TableRow key={dimension.id}>
-                      <TableCell className="font-medium">{dimension.name}</TableCell>
-                      <TableCell className="text-muted-foreground">{dimension.name_en}</TableCell>
-                      <TableCell>{dimension.level}</TableCell>
-                      <TableCell className="text-xs">{dimension.hierarchy}</TableCell>
-                      <TableCell className="font-mono text-xs">{dimension.target_table}</TableCell>
-                      <TableCell><Badge variant="secondary">{dimension.category}</Badge></TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Button variant="ghost" size="sm" onClick={() => openEditDimension(dimension)}>
-                            <Edit className="h-4 w-4" />
-                          </Button>
-                          <Button variant="ghost" size="sm" onClick={() => handleDeleteDimension(dimension.id)}>
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </Card>
           </TabsContent>
 
           {/* SPARQL Query Tab */}
@@ -620,119 +391,6 @@ export default function KnowledgeGraph() {
           </TabsContent>
         </Tabs>
       </div>
-
-      {/* Metric Dialog */}
-      <Dialog open={showMetricDialog} onOpenChange={setShowMetricDialog}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{editingMetric ? '编辑指标' : '新增指标'}</DialogTitle>
-          </DialogHeader>
-          <div className="grid grid-cols-2 gap-4 py-4">
-            <div className="space-y-2">
-              <Label>指标名称 *</Label>
-              <Input value={metricForm.name} onChange={(e) => setMetricForm({...metricForm, name: e.target.value})} placeholder="如: GMV" />
-            </div>
-            <div className="space-y-2">
-              <Label>英文名称</Label>
-              <Input value={metricForm.name_en} onChange={(e) => setMetricForm({...metricForm, name_en: e.target.value})} placeholder="如: Gross Merchandise Volume" />
-            </div>
-            <div className="col-span-2 space-y-2">
-              <Label>计算公式</Label>
-              <Input value={metricForm.formula} onChange={(e) => setMetricForm({...metricForm, formula: e.target.value})} placeholder="如: SUM(order_amount)" />
-            </div>
-            <div className="space-y-2">
-              <Label>单位</Label>
-              <Input value={metricForm.unit} onChange={(e) => setMetricForm({...metricForm, unit: e.target.value})} placeholder="如: 元" />
-            </div>
-            <div className="space-y-2">
-              <Label>聚合类型</Label>
-              <Select value={metricForm.agg_type} onValueChange={(v) => setMetricForm({...metricForm, agg_type: v})}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="SUM">SUM</SelectItem>
-                  <SelectItem value="AVG">AVG</SelectItem>
-                  <SelectItem value="COUNT">COUNT</SelectItem>
-                  <SelectItem value="MAX">MAX</SelectItem>
-                  <SelectItem value="MIN">MIN</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>目标表</Label>
-              <Input value={metricForm.target_table} onChange={(e) => setMetricForm({...metricForm, target_table: e.target.value})} placeholder="如: orders" />
-            </div>
-            <div className="space-y-2">
-              <Label>目标字段</Label>
-              <Input value={metricForm.target_column} onChange={(e) => setMetricForm({...metricForm, target_column: e.target.value})} placeholder="如: amount" />
-            </div>
-            <div className="space-y-2">
-              <Label>分类</Label>
-              <Input value={metricForm.category} onChange={(e) => setMetricForm({...metricForm, category: e.target.value})} placeholder="如: 交易" />
-            </div>
-            <div className="col-span-2 space-y-2">
-              <Label>描述</Label>
-              <Textarea value={metricForm.description} onChange={(e) => setMetricForm({...metricForm, description: e.target.value})} placeholder="指标说明..." />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowMetricDialog(false)}>取消</Button>
-            <Button onClick={handleSaveMetric}>
-              <Save className="h-4 w-4 mr-2" />
-              {editingMetric ? '更新' : '创建'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Dimension Dialog */}
-      <Dialog open={showDimensionDialog} onOpenChange={setShowDimensionDialog}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{editingDimension ? '编辑维度' : '新增维度'}</DialogTitle>
-          </DialogHeader>
-          <div className="grid grid-cols-2 gap-4 py-4">
-            <div className="space-y-2">
-              <Label>维度名称 *</Label>
-              <Input value={dimensionForm.name} onChange={(e) => setDimensionForm({...dimensionForm, name: e.target.value})} placeholder="如: 时间" />
-            </div>
-            <div className="space-y-2">
-              <Label>英文名称</Label>
-              <Input value={dimensionForm.name_en} onChange={(e) => setDimensionForm({...dimensionForm, name_en: e.target.value})} placeholder="如: Time" />
-            </div>
-            <div className="space-y-2">
-              <Label>层级</Label>
-              <Input type="number" value={dimensionForm.level} onChange={(e) => setDimensionForm({...dimensionForm, level: parseInt(e.target.value) || 0})} />
-            </div>
-            <div className="space-y-2">
-              <Label>目标表</Label>
-              <Input value={dimensionForm.target_table} onChange={(e) => setDimensionForm({...dimensionForm, target_table: e.target.value})} placeholder="如: users" />
-            </div>
-            <div className="col-span-2 space-y-2">
-              <Label>层级关系 (JSON)</Label>
-              <Input value={dimensionForm.hierarchy} onChange={(e) => setDimensionForm({...dimensionForm, hierarchy: e.target.value})} placeholder='如: ["国家","省","市"]' />
-            </div>
-            <div className="space-y-2">
-              <Label>目标字段</Label>
-              <Input value={dimensionForm.target_column} onChange={(e) => setDimensionForm({...dimensionForm, target_column: e.target.value})} placeholder="如: region" />
-            </div>
-            <div className="space-y-2">
-              <Label>分类</Label>
-              <Input value={dimensionForm.category} onChange={(e) => setDimensionForm({...dimensionForm, category: e.target.value})} placeholder="如: 地理" />
-            </div>
-            <div className="col-span-2 space-y-2">
-              <Label>描述</Label>
-              <Textarea value={dimensionForm.description} onChange={(e) => setDimensionForm({...dimensionForm, description: e.target.value})} placeholder="维度说明..." />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDimensionDialog(false)}>取消</Button>
-            <Button onClick={handleSaveDimension}>
-              <Save className="h-4 w-4 mr-2" />
-              {editingDimension ? '更新' : '创建'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

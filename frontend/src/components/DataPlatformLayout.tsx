@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
-  Database, FileText, Link, BookOpen, Settings, LogOut, Menu,
+  Database, FileText, Link, Settings, LogOut, Menu,
   Sun, Moon, Palette, Zap, TrendingUp, Grid3x3, GlassWater, Heart,
-  UserCircle, X, ChevronLeft, ChevronRight, BarChart3, Tag, GitBranch,
-  RefreshCw, Activity, Shield, Ruler, Eye, Brain, Gem, Boxes, Network, Terminal,
+  UserCircle, X, ChevronLeft, ChevronRight, GitBranch,
+  RefreshCw, Activity, Shield, Ruler, Eye, Brain, Gem, Boxes, Terminal, Layers,
   FileQuestion,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -44,13 +44,10 @@ const DATA_PLATFORM_MENU_ITEMS = [
   { key: '/data/datasources', icon: Database, label: '数据源管理' },
   { key: '/data/tables', icon: FileText, label: '表 & 字段' },
   { key: '/data/playground', icon: Terminal, label: 'SQL Playground' },
+  { key: '/data/datasets', icon: Layers, label: '数据集' },
   { section: '数据目录' },
-  { key: '/data/ontology', icon: Boxes, label: '本体建模' },
-  { key: '/data/knowledge-graph', icon: Network, label: '本体可视化' },
-  { key: '/data/metrics', icon: BarChart3, label: '指标中心' },
-  { key: '/data/tags', icon: Tag, label: '标签管理' },
+  { key: '/data/ontology', icon: Boxes, label: '本体工作区' },
   { key: '/data/sql-pairs', icon: FileQuestion, label: 'SQL 示例对' },
-  { key: '/data/glossary', icon: BookOpen, label: '业务术语' },
   { section: '数据质量' },
   { key: '/data/quality', icon: Activity, label: '质量概览' },
   { key: '/data/quality/rules', icon: Settings, label: '质量规则' },

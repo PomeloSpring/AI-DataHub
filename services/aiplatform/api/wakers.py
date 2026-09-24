@@ -159,6 +159,45 @@ def list_roles():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# 工具目录展示元数据(供 Waker 编辑器渲染): 以 TOOL_SERVER_TOOLS 为权威工具清单,
+# 这里只补中文标签; 新增工具未登记标签时回退原始名(仍会展示, 不丢失)。
+_TOOL_GROUP_META = {
+    "catalog": ("元数据检索", "数据目录类工具(物理表/列/数据源, 对 LLM 相对敏感)"),
+    "semantic": ("业务语义", "统一语义层主路(发现对象/指标/知识 + 声明式查询)"),
+    "query": ("SQL 执行", "nl2sql 受治理旁路: check_sql 预检 + execute_sql 只读执行(均经权限/RLS/审计)"),
+    "ontology": ("本体模型", "本体建模与元数据管理工具"),
+    "screen": ("可视化大屏", "生成/管理数据大屏 + 字模库(取数走治理入口)"),
+    "system": ("系统运营", "本系统只读运营/可观测能力(仅管理员)"),
+}
+_TOOL_LABELS = {
+    "search_metadata": "元数据搜索", "get_table_schema": "表结构", "list_datasources": "数据源列表",
+    "knowledge_search": "知识检索", "get_metrics": "指标", "get_glossary": "术语",
+    "query_by_tags": "标签查询", "run_semantic_query": "语义查询",
+    "get_business_semantics": "业务语义", "search_business_knowledge": "业务知识检索",
+    "check_sql": "SQL 校验", "execute_sql": "执行 SQL",
+    "search_ontology": "搜索本体", "get_ontology_model": "模型详情", "list_ontology_models": "模型列表",
+    "get_metadata_summary": "元数据摘要", "generate_ontology_draft": "生成草案*", "save_ontology_model": "保存模型*",
+    "activate_ontology_model": "激活模型*", "import_ontology_yaml": "导入YAML*",
+    "create_data_screen": "创建大屏*", "get_data_screen": "查看大屏", "update_data_screen_chart": "更新图表*",
+    "request_dashboard_design": "申请仪表盘设计", "get_dashboard_design": "读取仪表盘设计", "prepare_dashboard_design": "准备仪表盘设计",
+    "list_vis_components": "字模列表", "get_vis_component": "字模详情", "save_vis_component": "存为字模*",
+    "system_usage": "用量统计", "system_overview": "系统概览",
+}
+
+
+@router.get("/tools/catalog")
+def tool_catalog(user: dict = Depends(get_current_user)):
+    from services.datamind.execution.sdk_tools import TOOL_SERVER_TOOLS
+    from services.datamind.execution.tool_catalog import TOOL_CATALOG
+    return {"standard": TOOL_CATALOG, "groups": [
+        {"group": g,
+         "label": _TOOL_GROUP_META.get(g, (g, ""))[0],
+         "desc": _TOOL_GROUP_META.get(g, (g, ""))[1] or "按实际工具名授权，未勾选即禁止",
+         "tools": [{"name": n, "label": _TOOL_LABELS.get(n, n)} for n in names]}
+        for g, (_, names) in TOOL_SERVER_TOOLS.items()
+    ]}
+
+
 @router.get("/{waker_id}")
 def get_waker(waker_id: int):
     row = execute_query("SELECT * FROM adh_wakers WHERE id = %s", (waker_id,), fetchone=True)
@@ -171,6 +210,11 @@ def get_waker(waker_id: int):
 def create_waker(req: WakerPayload):
     if not req.name and not req.waker_key:
         raise HTTPException(status_code=400, detail="name / waker_key 至少填一个")
+    from services.datamind.execution.tool_policy import compile_policy
+    try:
+        compile_policy(req.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     key = req.waker_key or req.name
     existing = execute_query("SELECT id FROM adh_wakers WHERE waker_key = %s", (key,), fetchone=True)
     if existing:
@@ -208,12 +252,18 @@ def create_waker(req: WakerPayload):
 @router.put("/{waker_id}")
 def update_waker(waker_id: int, req: WakerUpdate, user: dict = Depends(get_current_user)):
     # 系统内置 Waker 仅 admin 可编辑
-    existing = execute_query("SELECT is_builtin FROM adh_wakers WHERE id = %s", (waker_id,), fetchone=True)
+    existing = execute_query("SELECT * FROM adh_wakers WHERE id = %s", (waker_id,), fetchone=True)
     if not existing:
         raise HTTPException(status_code=404, detail="Waker not found")
     if existing.get("is_builtin") and (user.get("role") or "") != "admin":
         raise HTTPException(status_code=403, detail="系统内置 Waker 仅管理员可编辑")
     data = req.model_dump(exclude_none=True)
+    if "tools" in data or "mcp_server_ids" in data:
+        from services.datamind.execution.tool_policy import compile_policy
+        try:
+            compile_policy({**_normalize(dict(existing)), **data})
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
     if not data:
         return {"success": True, "message": "No changes"}
     updates, params = [], []

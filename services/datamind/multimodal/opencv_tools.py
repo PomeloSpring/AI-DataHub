@@ -15,11 +15,15 @@ def _read_image(att: dict):
     import cv2
     import numpy as np
 
+    from services.datamind.multimodal.loader import _resolve_file_bytes
+
     path = att.get("storage_path", "")
-    if not path or not os.path.exists(path):
+    storage_type = att.get("storage_type", "local")
+    if not path:
         return None
-    with open(path, "rb") as f:
-        data = f.read()
+    data = _resolve_file_bytes(path, storage_type)
+    if data is None:
+        return None
     return cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
 
 

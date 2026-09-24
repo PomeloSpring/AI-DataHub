@@ -38,10 +38,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 权限码驱动的 API 鉴权(由 adh_perm_registry 统一声明, 与 authservice/datamind 一致)
 from services.shared.common.api_permission import add_api_permission_middleware
 add_api_permission_middleware(app)
-
 app.include_router(semantic_router)
 app.include_router(playground_router)
 

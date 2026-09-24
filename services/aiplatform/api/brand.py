@@ -1,11 +1,13 @@
 """Brand API — Brand settings management.
 
-Migrated from backend/api/admin.py (brand section).
+Migrated from file-based storage (data/brand_settings.json) to MySQL
+for distributed service consistency. All instances share the same row
+via METADATA_DB connection pool.
+
+Table: adh_brand_settings (single-row, id=1)
 """
 
-import json
 import logging
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -14,11 +16,8 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Brand settings file path
-_BRAND_SETTINGS_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "brand_settings.json"
-
 _DEFAULT_BRAND = {
-    "app_name": "ChatBI",
+    "app_name": "AI-DataHub",
     "logo_url": "",
     "show_icon": True,
     "show_text": True,
@@ -33,22 +32,54 @@ class BrandSettingsUpdate(BaseModel):
 
 
 def _load_brand_settings() -> dict:
-    """Load brand settings from file."""
-    if _BRAND_SETTINGS_PATH.exists():
-        try:
-            with open(_BRAND_SETTINGS_PATH, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-            return {**_DEFAULT_BRAND, **saved}
-        except Exception:
-            pass
-    return dict(_DEFAULT_BRAND)
+    """Load brand settings from MySQL (adh_brand_settings single-row table)."""
+    from services.shared.common.db.metadata_db import get_metadata_conn
+
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT app_name, logo_url, show_icon, show_text "
+                "FROM adh_brand_settings WHERE id = 1"
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return dict(_DEFAULT_BRAND)
+
+    return {
+        "app_name": row.get("app_name") or _DEFAULT_BRAND["app_name"],
+        "logo_url": row.get("logo_url") or "",
+        "show_icon": bool(row.get("show_icon", 1)),
+        "show_text": bool(row.get("show_text", 1)),
+    }
 
 
 def _save_brand_settings(settings: dict):
-    """Save brand settings to file."""
-    _BRAND_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(_BRAND_SETTINGS_PATH, "w", encoding="utf-8") as f:
-        json.dump(settings, f, ensure_ascii=False, indent=2)
+    """Save brand settings to MySQL (upsert single-row)."""
+    from services.shared.common.db.metadata_db import get_metadata_conn
+
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO adh_brand_settings (id, app_name, logo_url, show_icon, show_text) "
+                "VALUES (1, %s, %s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE "
+                "app_name = VALUES(app_name), logo_url = VALUES(logo_url), "
+                "show_icon = VALUES(show_icon), show_text = VALUES(show_text)",
+                (
+                    settings.get("app_name", _DEFAULT_BRAND["app_name"]),
+                    settings.get("logo_url", ""),
+                    int(settings.get("show_icon", True)),
+                    int(settings.get("show_text", True)),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @router.get("/")

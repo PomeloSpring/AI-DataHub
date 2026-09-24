@@ -67,7 +67,53 @@ _WINDOW_UNIT = {
     "M": ("MONTH", "months"),
     "y": ("YEAR", "years"),
 }
-# 与 models.SemanticQuery.time_window 的 pattern 保持一致: ^\d{1,4}[smhdwMy]$
+# 日历时间区间 -> (起, 止) 左闭右开谓词表达式; MySQL/Doris 族(服务端 CURDATE 单一时钟)
+_MY_RANGE = {
+    "today": ("CURDATE()", "CURDATE() + INTERVAL 1 DAY"),
+    "yesterday": ("CURDATE() - INTERVAL 1 DAY", "CURDATE()"),
+    "this_week": (
+        "DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)",
+        "DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY) + INTERVAL 7 DAY"),
+    "last_week": (
+        "DATE_SUB(CURDATE(), INTERVAL (WEEKDAY(CURDATE()) + 7) DAY)",
+        "DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)"),
+    "this_month": ("DATE_FORMAT(CURDATE(), '%Y-%m-01')",
+                   "DATE_FORMAT(CURDATE(), '%Y-%m-01') + INTERVAL 1 MONTH"),
+    "last_month": (
+        "DATE_SUB(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)",
+        "DATE_FORMAT(CURDATE(), '%Y-%m-01')"),
+    "this_quarter": (
+        "MAKEDATE(YEAR(CURDATE()), 1) + INTERVAL (QUARTER(CURDATE()) - 1) * 3 MONTH",
+        "MAKEDATE(YEAR(CURDATE()), 1) + INTERVAL QUARTER(CURDATE()) * 3 MONTH"),
+    "last_quarter": (
+        "MAKEDATE(YEAR(CURDATE()), 1) + INTERVAL (QUARTER(CURDATE()) - 2) * 3 MONTH",
+        "MAKEDATE(YEAR(CURDATE()), 1) + INTERVAL (QUARTER(CURDATE()) - 1) * 3 MONTH"),
+    "this_year": ("MAKEDATE(YEAR(CURDATE()), 1)", "MAKEDATE(YEAR(CURDATE()) + 1, 1)"),
+    "last_year": ("MAKEDATE(YEAR(CURDATE()) - 1, 1)", "MAKEDATE(YEAR(CURDATE()), 1)"),
+}
+# PostgreSQL 族(含 sls): date_trunc ISO 周边界
+_PG_RANGE = {
+    "today": ("CURRENT_DATE", "CURRENT_DATE + 1"),
+    "yesterday": ("CURRENT_DATE - 1", "CURRENT_DATE"),
+    "this_week": ("DATE_TRUNC('week', CURRENT_DATE)",
+                  "DATE_TRUNC('week', CURRENT_DATE) + INTERVAL '7 days'"),
+    "last_week": ("DATE_TRUNC('week', CURRENT_DATE) - INTERVAL '7 days'",
+                  "DATE_TRUNC('week', CURRENT_DATE)"),
+    "this_month": ("DATE_TRUNC('month', CURRENT_DATE)",
+                   "DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'"),
+    "last_month": ("DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month'",
+                   "DATE_TRUNC('month', CURRENT_DATE)"),
+    "this_quarter": ("DATE_TRUNC('quarter', CURRENT_DATE)",
+                     "DATE_TRUNC('quarter', CURRENT_DATE) + INTERVAL '3 months'"),
+    "last_quarter": ("DATE_TRUNC('quarter', CURRENT_DATE) - INTERVAL '3 months'",
+                     "DATE_TRUNC('quarter', CURRENT_DATE)"),
+    "this_year": ("DATE_TRUNC('year', CURRENT_DATE)",
+                  "DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'"),
+    "last_year": ("DATE_TRUNC('year', CURRENT_DATE) - INTERVAL '1 year'",
+                  "DATE_TRUNC('year', CURRENT_DATE)"),
+}
+# 绝对区间兜底: 仅接受 ISO 日期/日期时间, 防注入
+_ABS_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$")
 _WINDOW_RE = re.compile(r"^(\d{1,4})([smhdwMy])$")
 # SQL 模板占位符与危险片段(参数值内容检查)
 _TPL_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -116,13 +162,19 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
     select_items: list[tuple[str, str]] = []   # (expr, alias)
     group_by: list[str] = []
     col_roles: dict[str, str] = {}
+    unresolved: list[dict] = []   # 结构化未解析项(供别名回流队列, 只含业务词)
 
     for d in query.dimensions:
         expr, role = resolver.resolve_dimension(d, time_grain=query.time_grain)
         if expr is None:
+            hint = resolver.fuzzy_hint(d)
             warnings.append(
-                f"无法解析维度「{d}」, 已跳过。本对象可用维度: "
-                f"{resolver.suggest_dimensions()}; 请用字典名或其别名重试")
+                f"无法解析维度「{d}」, 已跳过。{hint or f'本对象可用维度: {resolver.suggest_dimensions()}; 请用字典名或其别名重试'}")
+            unresolved.append({
+                "term": d, "type": "dimension",
+                "reason": resolver.resolution_sources().get(d) or "unresolved",
+                "candidates": resolver.fuzzy_candidates(d),
+            })
             continue
         select_items.append((expr, d))
         col_roles[d] = role
@@ -137,6 +189,9 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
             warnings.append(
                 f"无法解析指标「{m}」, 已跳过。本对象可用指标: "
                 f"{resolver.suggest_metrics()}; 请用字典名或其别名重试")
+            unresolved.append({
+                "term": m, "type": "metric", "reason": "unresolved", "candidates": [],
+            })
             continue
         select_items.append((expr, m))
         col_roles[m] = "measure"
@@ -153,12 +208,28 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
         if cond:
             where_parts.append(cond)
         else:
+            hint = resolver.fuzzy_hint(f.dim)
             warnings.append(
-                f"无法解析过滤维度「{f.dim}」。本对象可用维度: "
-                f"{resolver.suggest_dimensions()}")
+                f"无法解析过滤维度「{f.dim}」。{hint or f'本对象可用维度: {resolver.suggest_dimensions()}'}")
+            if not any(u["term"] == f.dim and u["type"] == "dimension" for u in unresolved):
+                unresolved.append({
+                    "term": f.dim, "type": "dimension",
+                    "reason": resolver.resolution_sources().get(f.dim) or "unresolved",
+                    "candidates": resolver.fuzzy_candidates(f.dim),
+                })
 
-    # ③.5 相对时间窗: time_window -> 源库方言的 rolling interval 谓词, 与 filters AND 叠加
-    if query.time_window:
+    # ③.5 时间条件(优先级): time_range(日历) > time_start/time_end(绝对) > time_window(相对滚动)
+    if query.time_range:
+        _tc = resolver.render_time_range(
+            query.time_range, query.time_column, warnings)
+        if _tc:
+            where_parts.append(_tc)
+    elif query.time_start or query.time_end:
+        _tc = resolver.render_time_bounds(
+            query.time_start, query.time_end, query.time_column, warnings)
+        if _tc:
+            where_parts.append(_tc)
+    elif query.time_window:
         win_cond = resolver.render_time_window(
             query.time_window, query.time_column, warnings)
         if win_cond:
@@ -197,6 +268,10 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
     prov = _provenance(binding, query)
     # 服务端诊断用(工具侧 provenance 已剥离): 供 gates/Playground 在解析失败时给出候选
     prov["available_dimensions"] = resolver.available_dimension_names()
+    # 归因: 每个请求名字的解析来源(dict_exact/dict_alias/column_map/physical_desc/phys_col/fuzzy_rejected)
+    prov["resolution_sources"] = resolver.resolution_sources()
+    # 结构化未解析项(业务词+候选), 供别名回流队列自动落入(不含物理细节)
+    prov["unresolved_terms"] = unresolved
 
     return PlannedExecution(
         sql=sql,
@@ -295,7 +370,8 @@ class _ColumnResolver:
     """把 SemanticQuery 的名字解析为物理列/表达式。
 
     解析优先级: 维度/指标字典精确名 → 字典别名(aliases/name_en/属性中文名) →
-    binding.column_map → 物理列(含列业务名 business_desc) → 唯一包含式模糊。
+    binding.column_map → 物理列(含列业务名 business_desc)。包含式模糊不再静默绑定,
+    只回抛候选(fuzzy_rejected)由调用方确认后重试(宁缺勿错)。
     字典行携带 value_labels(枚举码→业务标签)时, SELECT/GROUP BY 用同一 CASE 表达式,
     WHERE 则支持 label→code 反查(过滤可传业务名也可传码值)。
     dialect 决定标识符引用与时间函数(MySQL 系 DATE_FORMAT/反引号 vs PG to_char/双引号)。
@@ -310,6 +386,31 @@ class _ColumnResolver:
         self._metrics: dict[str, dict[str, Any]] | None = None
         self._dims: dict[str, dict[str, Any]] | None = None
         self._index: dict[str, dict[str, Any]] | None = None
+        # 归因: normkey -> 来源类别; requested name -> 解析来源(供 plan provenance)
+        self._dim_origin: dict[str, str] = {}
+        self._res_trace: dict[str, str] = {}
+        # T5: 包含式模糊命中不再静默绑定, 只回抛候选(宁缺勿错)
+        self._fuzzy_candidates: dict[str, list[str]] = {}
+
+    def fuzzy_hint(self, name: str) -> str:
+        """若该名称是被拒的模糊命中, 给出候选提示文案(仅业务名, 不暴露物理列)。"""
+        cands = self._fuzzy_candidates.get(name)
+        if not cands:
+            return ""
+        return (f"近似候选: {cands}; 未确认前不会自动绑定, "
+                f"请确认语义后从候选中选准确名称重试。")
+
+    def fuzzy_candidates(self, name: str) -> list[str]:
+        """被拒模糊命中的业务名候选(无则空列表)。"""
+        return list(self._fuzzy_candidates.get(name) or [])
+
+    def resolution_sources(self) -> dict[str, str]:
+        """返回本次编译中每个被请求名字的解析来源。
+
+        取值: dict_exact / dict_alias / column_map / physical_desc / phys_col / fuzzy。
+        供 eval 按来源分桶统计"种子解析质量"(不对外暴露物理细节, 仅服务端诊断)。
+        """
+        return dict(self._res_trace)
 
     def physical_columns(self) -> set[str]:
         return set(self._load_phys())
@@ -437,18 +538,19 @@ class _ColumnResolver:
             idx: dict[str, dict[str, Any]] = {}
             phys = self._load_phys()
 
-            def add(key: str, entry: dict, prefer: bool = False):
+            def add(key: str, entry: dict, origin: str, prefer: bool = False):
                 k = _norm_name(key)
                 if not k:
                     return
                 if prefer or k not in idx:
                     idx[k] = entry
+                    self._dim_origin[k] = origin
 
             # 1) 物理列本体名(最低优先, 可被字典覆盖)
             for col, meta in phys.items():
                 dt = str(meta.get("data_type") or "").split("(")[0].lower()
                 add(col, {"col": col, "time": dt in self._TIME_TYPES,
-                          "labels": {}, "name": col, "kind": "phys"})
+                          "labels": {}, "name": col, "kind": "phys"}, "phys_col")
             # 2) 字典行: name/name_en/aliases 全部入索引; 字典优先于物理同名列
             for _k, d in self._load_dims().items():
                 col = d.get("target_column") or ""
@@ -459,14 +561,14 @@ class _ColumnResolver:
                 entry = {
                     "col": col,
                     "time": (d.get("category") or "") == "时间" or dt in self._TIME_TYPES,
-                    "labels": d["value_labels"],
+                    "labels": d.get("value_labels") or {},
                     "name": d["name"], "kind": "dim",
                 }
-                add(d["name"], entry, prefer=True)
+                add(d["name"], entry, "dict_exact", prefer=True)
                 if d.get("name_en"):
-                    add(d["name_en"], entry, prefer=True)
-                for a in (d["aliases"] or []):
-                    add(a, entry, prefer=True)
+                    add(d["name_en"], entry, "dict_exact", prefer=True)
+                for a in (d.get("aliases") or []):
+                    add(a, entry, "dict_alias", prefer=True)
             # 3) 物理列中文业务名(business_desc) → 指回物理列(不对外展示)
             for col, meta in phys.items():
                 bd = str(meta.get("business_desc") or "").strip()
@@ -476,7 +578,7 @@ class _ColumnResolver:
                         continue  # 该列已登记为字典维度, 中文业务名指向字典条目
                     add(bd, {"col": col, "time": str(meta.get("data_type") or "")
                              .split("(")[0].lower() in self._TIME_TYPES,
-                             "labels": {}, "name": col, "kind": "phys"})
+                             "labels": {}, "name": col, "kind": "phys"}, "physical_desc")
             # 4) binding.column_map(本体属性名 → 物理列)
             for alias, col in (self.binding.column_map or {}).items():
                 if col:
@@ -484,23 +586,37 @@ class _ColumnResolver:
                     add(alias, {"col": col, "time": bool(e.get("time")),
                                 "labels": e.get("labels") or {},
                                 "name": e.get("name") if e.get("kind") == "dim" else col,
-                                "kind": e.get("kind") or "phys"})
+                                "kind": e.get("kind") or "phys"}, "column_map")
             self._index = idx
         return self._index
 
     def lookup_dimension(self, name: str) -> Optional[dict[str, Any]]:
-        """任意写法 → 维度条目; 精确/别名命中优先, 其次唯一包含式模糊。"""
+        """任意写法 → 维度条目; 仅精确/别名/列映射/业务名命中才绑定。
+
+        包含式模糊命中不再静默绑定(T5): 只记入 _fuzzy_candidates 供 plan() 回抛候选,
+        错绑产生的静默错数比"回抛后多一轮重试"危害大得多(宁缺勿错)。
+        """
         idx = self._dim_index()
         n = _norm_name(name)
         if not n:
             return None
         hit = idx.get(n)
         if hit:
+            self._res_trace[name] = self._dim_origin.get(
+                n, "dict_exact" if hit.get("kind") == "dim" else "phys_col")
             return hit
-        # 唯一模糊: "X包含Y"或"Y包含X"且只指向一个 distinct 列才接受(防误绑)
-        cands = {e["col"]: e for k, e in idx.items() if (n in k or k in n)}
-        if len(cands) == 1:
-            return next(iter(cands.values()))
+        # 包含式模糊("X包含Y"或"Y包含X"): 不绑定, 回抛业务名候选
+        cand_keys = [k for k in idx if (n in k or k in n)]
+        if cand_keys:
+            self._res_trace[name] = "fuzzy_rejected"
+            labels = sorted({
+                idx[k]["name"] if idx[k]["kind"] == "dim" else k
+                for k in cand_keys
+                if self._dim_origin.get(k) in ("dict_exact", "dict_alias",
+                                               "physical_desc", "column_map")
+            })
+            if labels:
+                self._fuzzy_candidates[name] = labels
         return None
 
     def suggest_dimensions(self, limit: int = 10) -> list[str]:
@@ -587,6 +703,7 @@ class _ColumnResolver:
         phys = {_norm_name(c): c for c in self._load_phys()}
         col = phys.get(_norm_name(name))
         if col:
+            self._res_trace[name] = "phys_col"
             return f"SUM({_quote_ident(col, self.dialect)})", "SUM", "", False
         return None, None, "", False
     
@@ -594,12 +711,17 @@ class _ColumnResolver:
         ms = self._load_metrics()
         m = ms.get(name)
         if m:
+            self._res_trace[name] = "dict_exact"
             return m
         n = _norm_name(name)
         for _k, row in ms.items():
             cands = {_norm_name(row["name"]), _norm_name(row.get("name_en") or "")}
-            cands |= {_norm_name(a) for a in (row.get("aliases") or []) if a}
             if n in cands:
+                self._res_trace[name] = "dict_exact"
+                return row
+            aliases = {_norm_name(a) for a in (row.get("aliases") or []) if a}
+            if n in aliases:
+                self._res_trace[name] = "dict_alias"
                 return row
         return None
     
@@ -644,6 +766,31 @@ class _ColumnResolver:
     
     # time window (相对滚动窗口)
     
+    def _resolve_time_col_expr(
+        self, time_column: Optional[str], warnings: list[str],
+    ) -> Optional[str]:
+        """定位事件时间列: 显式 time_column(走别名解析) -> 字典时间维度 -> 唯一 datetime 物理列。"""
+        if time_column:
+            entry = self.lookup_dimension(time_column)
+            if entry is None:
+                warnings.append(
+                    f"时间维度「{time_column}」无法解析, 可用时间维度: "
+                    f"{self.suggest_time_dimensions() or '无'}")
+                return None
+            return _quote_ident(entry["col"], self.dialect)
+        for d in self._load_dims().values():
+            if (d.get("category") or "") == "时间" and d.get("target_column"):
+                return _quote_ident(d["target_column"], self.dialect)
+        tcols = [c for c, meta in self._load_phys().items()
+                 if str(meta.get("data_type") or "").split("(")[0].lower()
+                 in self._TIME_TYPES]
+        if len(tcols) == 1:
+            return _quote_ident(tcols[0], self.dialect)
+        warnings.append(
+            "时间条件需要显式 time_column: 本对象未登记时间类维度"
+            f"(可用维度: {self.suggest_dimensions()})")
+        return None
+
     def render_time_window(
         self, window: str, time_column: Optional[str], warnings: list[str],
     ) -> Optional[str]:
@@ -654,37 +801,49 @@ class _ColumnResolver:
             return None
         n, unit_key = int(mm.group(1)), mm.group(2)
         my_unit, pg_unit = _WINDOW_UNIT[unit_key]
-    
-        # 目标列: 显式 time_column(走同一别名解析) -> 字典时间维度 -> 唯一 datetime 物理列
-        col_expr: Optional[str] = None
-        if time_column:
-            entry = self.lookup_dimension(time_column)
-            if entry is None:
-                warnings.append(
-                    f"时间维度「{time_column}」无法解析, 可用时间维度: "
-                    f"{self.suggest_time_dimensions() or '无'}")
-                return None
-            col_expr = _quote_ident(entry["col"], self.dialect)
-        else:
-            for d in self._load_dims().values():
-                if (d.get("category") or "") == "时间" and d.get("target_column"):
-                    col_expr = _quote_ident(d["target_column"], self.dialect)
-                    break
-            if col_expr is None:
-                tcols = [c for c, meta in self._load_phys().items()
-                         if str(meta.get("data_type") or "").split("(")[0].lower()
-                         in self._TIME_TYPES]
-                if len(tcols) == 1:
-                    col_expr = _quote_ident(tcols[0], self.dialect)
-            if col_expr is None:
-                warnings.append(
-                    "time_window 需要显式 time_column: 本对象未登记时间类维度"
-                    f"(可用维度: {self.suggest_dimensions()})")
-                return None
-    
+        col_expr = self._resolve_time_col_expr(time_column, warnings)
+        if col_expr is None:
+            return None
         if self.dialect == "postgres":
             return f"{col_expr} >= now() - INTERVAL '{n} {pg_unit}'"
         return f"{col_expr} >= DATE_SUB(NOW(), INTERVAL {n} {my_unit})"
+
+    def render_time_range(
+        self, rng: str, time_column: Optional[str], warnings: list[str],
+    ) -> Optional[str]:
+        """把日历 time_range('last_week' 等) 编译为左闭右开区间谓词(col >= 起 AND col < 止)。"""
+        table = _PG_RANGE if self.dialect == "postgres" else _MY_RANGE
+        bounds = table.get(str(rng or "").strip())
+        if not bounds:
+            warnings.append(f"unknown time_range: {rng!r} (expect 'last_week'/'this_month'/...)")
+            return None
+        col_expr = self._resolve_time_col_expr(time_column, warnings)
+        if col_expr is None:
+            return None
+        start, end = bounds
+        return f"{col_expr} >= {start} AND {col_expr} < {end}"
+
+    def render_time_bounds(
+        self, start: Optional[str], end: Optional[str],
+        time_column: Optional[str], warnings: list[str],
+    ) -> Optional[str]:
+        """绝对区间兜底: time_start/time_end(严格 ISO, 服务端单一时钟) 编译为闭区间谓词。"""
+        s, e = str(start or "").strip(), str(end or "").strip()
+        for v in (s, e):
+            if v and not _ABS_DATE_RE.match(v):
+                warnings.append(f"invalid time bound: {v!r} (expect ISO date/datetime)")
+                return None
+        if not s and not e:
+            return None
+        col_expr = self._resolve_time_col_expr(time_column, warnings)
+        if col_expr is None:
+            return None
+        parts: list[str] = []
+        if s:
+            parts.append(f"{col_expr} >= {_lit(s)}")
+        if e:
+            parts.append(f"{col_expr} <= {_lit(e)}")
+        return " AND ".join(parts)
     
     def suggest_time_dimensions(self) -> list[str]:
         out = []
@@ -744,8 +903,8 @@ def _plan_template(
         warnings.append("模板对象忽略 metrics/dimensions(结果形状由模板 SQL 决定)")
     if query.order:
         warnings.append("模板对象忽略 order")
-    if query.time_window:
-        warnings.append("模板对象忽略 time_window(时间窗请用模板参数传递)")
+    if query.time_window or query.time_range or query.time_start or query.time_end:
+        warnings.append("模板对象忽略 time_window/time_range/time_start/time_end(时间窗请用模板参数传递)")
 
     params: dict[str, Any] = dict(query.params or {})
     # filters 语法糖: dim 与模板参数同名且 params 未显式给出时, 折算为参数值

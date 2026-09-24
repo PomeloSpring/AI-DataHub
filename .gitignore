@@ -66,3 +66,10 @@ services/dataengine/target/
 *.gateway.pid
 .gateway.pid
 jieba.cache
+
+# 会话运行数据与本地诊断临时文件
+/data/workspaces/
+/scripts/_tmp_*.py
+/services/dataengine/*.db
+/services/dataengine/*.db-shm
+/services/dataengine/*.db-wal

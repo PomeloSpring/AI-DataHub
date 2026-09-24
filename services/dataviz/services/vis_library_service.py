@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 CATEGORIES = {
     "chart_style", "screen_background", "kpi_card",
     "layout_template", "decoration_frame", "color_theme", "sql_template",
+    "theme_pack",
 }
 
 _JSON_FIELDS = ("style_config", "query_template")

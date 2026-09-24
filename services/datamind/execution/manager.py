@@ -30,22 +30,16 @@ def _tool_key(name: str) -> str:
 def _merge_allowed_tools(layer_tools, ws_tools) -> list[str]:
     """层级默认白名单 ∩ 工作空间绑定白名单.
 
-    - 两者非空:取交集(按 canonical 键比较,保留层级顺序)。
-    - 仅一方非空:用该方。
-    - 都空:返回 [](不限制)。
+    未配置/NULL 表示继承；显式空数组表示全部禁止；两方配置时取交集。
     """
-    layer = parse_allowed_tools(layer_tools)
-    ws = parse_allowed_tools(ws_tools)
-    if layer and ws:
-        ws_keys = {_tool_key(t) for t in ws}
-        merged = [t for t in layer if _tool_key(t) in ws_keys]
-        if not merged:
-            logger.warning(
-                "allowed_tools 交集为空(层级=%s, 工作空间=%s);视为不限制。",
-                layer, ws,
-            )
-        return merged
-    return layer or ws
+    layer = None if layer_tools is None else parse_allowed_tools(layer_tools)
+    ws = None if ws_tools is None else parse_allowed_tools(ws_tools)
+    if layer is None:
+        return ws
+    if ws is None:
+        return layer
+    ws_keys = {_tool_key(t) for t in ws}
+    return [t for t in layer if _tool_key(t) in ws_keys]
 
 
 def _normalize_dirs(raw) -> list[str]:
@@ -76,13 +70,11 @@ class ExecutionLayerManager:
         layer_type = row.get("layer_type", "")
         name = row.get("name", "")
         config = dict(row.get("config") or {})
+        config["_layer_id"] = row.get("id")
 
         # allowed_tools: 层级 ∩ 工作空间
         merged_tools = _merge_allowed_tools(config.get("allowed_tools"), row.get("allowed_tools"))
-        if merged_tools:
-            config["allowed_tools"] = merged_tools
-        else:
-            config.pop("allowed_tools", None)
+        config["allowed_tools"] = merged_tools
 
         # allowed_dirs: 层级默认(全局);工作空间覆盖预留
         dirs = _normalize_dirs(config.get("allowed_dirs"))
@@ -100,8 +92,7 @@ class ExecutionLayerManager:
                 if config.get("cli_name") == "claude":
                     from services.datamind.execution.adapters.claude_sdk_adapter import ClaudeSDKAdapter
                     return ClaudeSDKAdapter(name, config)
-            from services.datamind.execution.adapters.cli_adapter import CLIProcessAdapter
-            return CLIProcessAdapter(name, config)
+            raise ValueError("该 CLI 执行层不支持 Waker 安全执行，仅允许 Qoder/Claude SDK")
         if layer_type == "builtin":
             from services.datamind.execution.adapters.builtin_adapter import BuiltInAdapter
             return BuiltInAdapter(name, config)

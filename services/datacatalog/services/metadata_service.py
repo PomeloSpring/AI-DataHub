@@ -37,7 +37,7 @@ class MetadataService:
         if not datasource_id:
             return {"success": False, "message": "请选择要同步的数据源"}
         try:
-            from sync.metadata_sync import sync_metadata as _sync
+            from services.datacatalog.services.metadata_sync import sync_metadata as _sync
             _sync(datasource_id)
             return {"success": True, "message": "元数据同步完成"}
         except Exception as e:
@@ -51,7 +51,7 @@ class MetadataService:
         if not table_name:
             return {"success": False, "message": "请输入要同步的表名"}
         try:
-            from sync.metadata_sync import sync_table_columns as _sync_cols
+            from services.datacatalog.services.metadata_sync import sync_table_columns as _sync_cols
             result = _sync_cols(datasource_id, table_name)
             return {
                 "success": True,

@@ -19,7 +19,7 @@ export type ChartSegment =
   | { kind: 'markdown'; text: string }
   | { kind: 'chart'; title?: string; chartType?: string; sql?: string; data: ChartData }
   | { kind: 'mermaid'; code: string; title?: string }
-  | { kind: 'artifact'; type: 'excel' | 'pdf' | 'html' | 'md' | 'png' | 'jpg' | 'csv'; filename: string; content: string; description?: string }
+  | { kind: 'artifact'; type: 'excel' | 'pdf' | 'html' | 'md' | 'png' | 'jpg' | 'csv'; filename: string; content?: string; path?: string; theme?: string; description?: string }
   | { kind: 'raw'; text: string }; // 解析失败 → 原样代码文本
 
 // 匹配 ```chart ... ``` 围栏(语言标注为 chart,大小写不敏感)
@@ -63,20 +63,24 @@ export function parseChartBody(body: string): ChartSegment {
   }
 }
 
-/** 解析单个 artifact 块 body(JSON)→ artifact 段或 raw 段(降级)。 */
+/** 解析单个 artifact 块 body(JSON)→ artifact 段或 raw 段(降级)。
+ *  支持两种交付: 内联 content(base64/文本) 或 按引用 path(会话工作区文件)。 */
 export function parseArtifactBody(body: string): ChartSegment {
   const text = body.trim();
   try {
     const obj = JSON.parse(text);
     const type = obj?.type;
     const filename = obj?.filename;
-    const content = obj?.content;
-    if (!type || !filename || !content) throw new Error('missing fields');
+    const content = typeof obj?.content === 'string' ? obj.content : undefined;
+    const path = typeof obj?.path === 'string' ? obj.path : undefined;
+    if (!type || !filename || (!content && !path)) throw new Error('missing fields');
     return {
       kind: 'artifact',
       type,
       filename,
       content,
+      path,
+      theme: typeof obj.theme === 'string' ? obj.theme : undefined,
       description: typeof obj.description === 'string' ? obj.description : undefined,
     };
   } catch {

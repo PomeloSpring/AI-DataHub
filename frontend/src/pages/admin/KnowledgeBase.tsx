@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   Plus, Edit2, Trash2, Database, Server, Cloud, Folder, Search,
-  RefreshCw, Settings, X, Check, Link, Unlink, Sparkles,
+  RefreshCw, Settings, X, Sparkles,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -32,7 +32,6 @@ interface KnowledgeBase {
   document_count: number;
   chunk_count: number;
   last_sync_at: string | null;
-  workspace_ids: number[];
   created_at: string;
   updated_at: string;
 }
@@ -88,7 +87,6 @@ export default function KnowledgeBase() {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [editingKB, setEditingKB] = useState<KnowledgeBase | null>(null);
   const [showDeleteDialog, setShowDeleteDialog] = useState<KnowledgeBase | null>(null);
-  const [managingKB, setManagingKB] = useState<KnowledgeBase | null>(null);
 
   // Qoder QMind notebook 检索/导入
   const [showQmindDialog, setShowQmindDialog] = useState(false);
@@ -228,6 +226,7 @@ export default function KnowledgeBase() {
         </div>
       ) : (
         <div className="border rounded-lg overflow-hidden">
+          <p className="p-3 text-sm text-muted-foreground">知识库使用范围统一在 Waker 中绑定，无需关联工作空间。</p>
           <table className="w-full">
             <thead className="bg-muted/50">
               <tr>
@@ -235,7 +234,6 @@ export default function KnowledgeBase() {
                 <th className="text-left p-3 font-medium">类型</th>
                 <th className="text-left p-3 font-medium">状态</th>
                 <th className="text-left p-3 font-medium">文档数</th>
-                <th className="text-left p-3 font-medium">关联工作空间</th>
                 <th className="text-left p-3 font-medium">最后同步</th>
                 <th className="text-right p-3 font-medium">操作</th>
               </tr>
@@ -272,13 +270,6 @@ export default function KnowledgeBase() {
                     <td className="p-3 text-muted-foreground">
                       {kb.document_count.toLocaleString()}
                     </td>
-                    <td className="p-3">
-                      {kb.workspace_ids.length > 0 ? (
-                        <Badge variant="outline">{kb.workspace_ids.length} 个工作空间</Badge>
-                      ) : (
-                        <span className="text-muted-foreground text-sm">未关联</span>
-                      )}
-                    </td>
                     <td className="p-3 text-muted-foreground text-sm">
                       {kb.last_sync_at
                         ? new Date(kb.last_sync_at).toLocaleString('zh-CN')
@@ -293,14 +284,6 @@ export default function KnowledgeBase() {
                           title="同步"
                         >
                           <RefreshCw className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setManagingKB(kb)}
-                          title="关联工作空间"
-                        >
-                          <Link className="h-4 w-4" />
                         </Button>
                         <Button
                           variant="ghost"
@@ -345,18 +328,6 @@ export default function KnowledgeBase() {
           onClose={() => setEditingKB(null)}
           onSaved={() => {
             setEditingKB(null);
-            loadKnowledgeBases();
-          }}
-        />
-      )}
-
-      {/* Manage Workspace Dialog */}
-      {managingKB && (
-        <ManageWorkspaceDialog
-          knowledgeBase={managingKB}
-          onClose={() => setManagingKB(null)}
-          onSaved={() => {
-            setManagingKB(null);
             loadKnowledgeBases();
           }}
         />
@@ -904,107 +875,6 @@ function EditKnowledgeBaseDialog({
             onChange={(config) => setForm({ ...form, source_config: config })}
           />
         </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            取消
-          </Button>
-          <Button onClick={handleSave} disabled={saving}>
-            {saving ? '保存中...' : '保存'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// ── Manage Workspace Dialog ────────────────────────────────────────
-
-function ManageWorkspaceDialog({
-  knowledgeBase,
-  onClose,
-  onSaved,
-}: {
-  knowledgeBase: KnowledgeBase;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [workspaces, setWorkspaces] = useState<any[]>([]);
-  const [selectedIds, setSelectedIds] = useState<number[]>(knowledgeBase.workspace_ids || []);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    setLoading(true);
-    client.get('/workspaces')
-      .then(({ data }) => setWorkspaces(data || []))
-      .catch(() => toast.error('加载工作空间失败'))
-      .finally(() => setLoading(false));
-  }, []);
-
-  const toggleWorkspace = (id: number) => {
-    setSelectedIds(prev =>
-      prev.includes(id) ? prev.filter(v => v !== id) : [...prev, id]
-    );
-  };
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      await client.put(`/knowledge-bases/${knowledgeBase.id}`, {
-        workspace_ids: selectedIds,
-      });
-      toast.success('工作空间关联已更新');
-      onSaved();
-    } catch (error: any) {
-      toast.error(error.response?.data?.detail || '更新失败');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Dialog open={true} onOpenChange={onClose}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>关联工作空间</DialogTitle>
-          <DialogDescription>
-            选择哪些工作空间可以使用 "{knowledgeBase.name}" 知识库
-          </DialogDescription>
-        </DialogHeader>
-
-        {loading ? (
-          <div className="flex justify-center py-8">
-            <Spinner size={24} />
-          </div>
-        ) : (
-          <div className="space-y-2 py-4 max-h-[400px] overflow-y-auto">
-            {workspaces.map((ws) => (
-              <div
-                key={ws.id}
-                onClick={() => toggleWorkspace(ws.id)}
-                className={`flex items-center justify-between p-3 border rounded-lg cursor-pointer transition-colors ${
-                  selectedIds.includes(ws.id)
-                    ? 'border-primary bg-primary/5'
-                    : 'hover:bg-muted/50'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <span>{ws.icon}</span>
-                  <span className="font-medium">{ws.name}</span>
-                </div>
-                {selectedIds.includes(ws.id) && (
-                  <Check className="h-4 w-4 text-primary" />
-                )}
-              </div>
-            ))}
-            {workspaces.length === 0 && (
-              <div className="text-center text-muted-foreground py-4">
-                暂无工作空间
-              </div>
-            )}
-          </div>
-        )}
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>

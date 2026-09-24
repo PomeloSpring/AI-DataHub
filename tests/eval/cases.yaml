@@ -1,0 +1,393 @@
+# Golden-question 评测用例集(离线, 断言确定性编译层的 intent->plan 解析质量)
+# 数据源约定: 1=hospital(t_case_records) 2=retail(t_ticket_records) 3=hospital-PG方言
+# expect: ok / error_contains / sql_contains / resolution_source{name:档位} /
+#         unbound / intent_rejected / hint_no_physical(未解析提示不得泄露物理列)
+
+# ── 仪表盘已确认范围的编译契约 ───────────────────────────
+- id: dashboard_case_7d_confirmed
+  question: 在 test 加近7天按创建日期的案例数量柱状图
+  tags: [dashboard, combo, time_window, time_grain, exact]
+  datasource_id: 1
+  intent: {object: case, metrics: [案例数量], dimensions: [创建日期], time_column: 创建日期, time_window: 7d, time_grain: day, limit: 500}
+  expect: {ok: true, resolution_source: {案例数量: dict_exact, 创建日期: dict_exact}, sql_contains: [DATE_FORMAT, INTERVAL 7 DAY]}
+
+- id: dashboard_system_scope_cannot_resolve_business
+  question: 系统用量不能借用业务案例对象
+  tags: [dashboard, cross_source, unbound]
+  datasource_id: 0
+  intent: {object: case, metrics: [案例数量], limit: 500}
+  expect: {unbound: true}
+
+- id: dashboard_other_domain_same_name
+  question: 用户选择工单业务后使用本域案例数量
+  tags: [dashboard, cross_source, exact]
+  datasource_id: 2
+  intent: {object: case, metrics: [案例数量], dimensions: [工单日期], time_column: 工单日期, time_window: 7d, limit: 500}
+  expect: {ok: true, sql_contains: [ticket_id], resolution_source: {案例数量: dict_exact}}
+
+- id: dashboard_agent_raw_sql_rejected
+  question: 仪表盘设计 Agent 不能提交裸 SQL
+  tags: [dashboard, reject]
+  datasource_id: 1
+  intent: {object: case, sql: 'SELECT * FROM t_case_records', limit: 500}
+  expect: {intent_rejected: true}
+
+# ── Waker 定时分析的语义编译契约 ────────────────────────
+- id: scheduled_waker_bound_business_intent
+  question: 定时按已授权 Waker 的业务口径统计最近七天病例数
+  tags: [scheduled, alias, time_window, combo]
+  datasource_id: 1
+  intent: {object: case, metrics: [病例数], time_column: 创建日期, time_window: 7d, limit: 100}
+  expect: {ok: true, resolution_source: {病例数: dict_alias}, sql_contains: [INTERVAL 7 DAY]}
+
+- id: scheduled_mcp_raw_sql_rejected
+  question: 外部 MCP 意图提议不得附带裸 SQL
+  tags: [scheduled, reject, guardrail]
+  datasource_id: 1
+  intent: {object: case, metrics: [案例数量], raw_sql: 'SELECT * FROM t_case_records', limit: 100}
+  expect: {intent_rejected: true}
+
+- id: scheduled_waker_system_cannot_bind_business
+  question: 未选择业务域的定时意图不能借用业务对象
+  tags: [scheduled, cross_source, unbound]
+  datasource_id: 0
+  intent: {object: case, metrics: [案例数量], limit: 100}
+  expect: {unbound: true}
+
+# ── 精确名命中 (dict_exact) ──────────────────────────────
+- id: m_exact_casecount
+  question: 案例数量是多少
+  tags: [exact, metric]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], limit: 10}
+  expect: {ok: true, resolution_source: {"案例数量": dict_exact}}
+
+# ── 日历时间区间 (time_range, 确定性编译为 BETWEEN 起止谓词) ──
+- id: time_range_last_week
+  question: 上周案例数量
+  tags: [time_window, exact]
+  datasource_id: 1
+  intent: {object: case, metrics: [案例数量], time_column: 创建日期, time_range: last_week, limit: 100}
+  expect: {ok: true, sql_contains: [DATE_SUB, WEEKDAY, CURDATE]}
+
+- id: time_range_this_month
+  question: 本月案例数量
+  tags: [time_window, exact]
+  datasource_id: 1
+  intent: {object: case, metrics: [案例数量], time_column: 创建日期, time_range: this_month, limit: 100}
+  expect: {ok: true, sql_contains: [DATE_FORMAT, "INTERVAL 1 MONTH"]}
+
+- id: time_range_precedence_over_window
+  question: 上周(日历)优先于近7天(滚动), 编译不应退化为 rolling
+  tags: [combo, time_window]
+  datasource_id: 1
+  intent: {object: case, metrics: [案例数量], time_column: 创建日期, time_range: last_week, time_window: 7d, limit: 100}
+  expect: {ok: true, sql_contains: [WEEKDAY]}
+
+- id: time_range_invalid_token_rejected
+  question: 非法日历 token 应在解析阶段拒收(不静默忽略)
+  tags: [reject, time_window]
+  datasource_id: 1
+  intent: {object: case, metrics: [案例数量], time_range: last_fortnight, limit: 100}
+  expect: {intent_rejected: true}
+
+- id: d_exact_hospital
+  question: 按就诊医院看案例数量
+  tags: [exact, dimension]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], dimensions: ["就诊医院"], limit: 10}
+  expect: {ok: true, resolution_source: {"就诊医院": dict_exact}}
+
+- id: m_exact_en
+  question: case_count
+  tags: [exact, metric, english]
+  datasource_id: 1
+  intent: {object: case, metrics: ["case_count"], limit: 10}
+  expect: {ok: true, resolution_source: {"case_count": dict_exact}}
+
+- id: d_exact_en
+  question: group by create_date
+  tags: [exact, dimension, english]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], dimensions: ["create_date"], limit: 10}
+  expect: {ok: true, resolution_source: {"create_date": dict_exact}}
+
+# ── 别名命中 (dict_alias) ────────────────────────────────
+- id: m_alias_bingli
+  question: 病例数
+  tags: [alias, metric]
+  datasource_id: 1
+  intent: {object: case, metrics: ["病例数"], limit: 10}
+  expect: {ok: true, resolution_source: {"病例数": dict_alias}}
+
+- id: m_alias_totalfee
+  question: 费用合计
+  tags: [alias, metric]
+  datasource_id: 1
+  intent: {object: case, metrics: ["费用合计"], limit: 10}
+  expect: {ok: true, resolution_source: {"费用合计": dict_alias}}
+
+- id: d_alias_hospital
+  question: 按医院统计
+  tags: [alias, dimension]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], dimensions: ["医院"], limit: 10}
+  expect: {ok: true, resolution_source: {"医院": dict_alias}}
+
+- id: d_alias_createdtime
+  question: 按创建时间趋势
+  tags: [alias, dimension, time]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], dimensions: ["创建时间"], time_grain: day, limit: 10}
+  expect: {ok: true, resolution_source: {"创建时间": dict_alias}, sql_contains: ["DATE_FORMAT"]}
+
+- id: d_alias_en
+  question: group by case created at
+  tags: [alias, dimension, english]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], dimensions: ["case created at"], limit: 10}
+  expect: {ok: true, resolution_source: {"case created at": dict_alias}}
+
+# ── 物理列业务名 / 裸物理列 (physical_desc / phys_col) ────
+- id: d_physdesc_amount
+  question: 按费用金额方向
+  tags: [physical_desc, dimension]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], dimensions: ["费用金额"], limit: 10}
+  expect: {ok: true, resolution_source: {"费用金额": physical_desc}}
+
+- id: d_physcol_rawname
+  question: group by create_time
+  tags: [phys_col, dimension]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], dimensions: ["create_time"], limit: 10}
+  expect: {ok: true, resolution_source: {"create_time": phys_col}}
+
+- id: m_physcol_sumfallback
+  question: amount 求和
+  tags: [phys_col, metric]
+  datasource_id: 1
+  intent: {object: case, metrics: ["amount"], limit: 10}
+  expect: {ok: true, resolution_source: {"amount": phys_col}, sql_contains: ["SUM"]}
+
+# ── 枚举业务标签过滤/展示 ────────────────────────────────
+- id: enum_filter_label
+  question: 需要处理的案例数量
+  tags: [enum, filter]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], filters: [{dim: "案例状态", op: eq, value: "需要处理"}], limit: 10}
+  expect: {ok: true, sql_contains: ["`case_status`", "1"]}
+
+- id: enum_filter_code
+  question: 状态码为1的案例数
+  tags: [enum, filter]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], filters: [{dim: "案例状态", op: eq, value: 1}], limit: 10}
+  expect: {ok: true, sql_contains: ["`case_status`"]}
+
+- id: enum_dim_display
+  question: 各区域营收
+  tags: [enum, dimension]
+  datasource_id: 2
+  intent: {object: case, metrics: ["营收"], dimensions: ["区域"], limit: 10}
+  expect: {ok: true, sql_contains: ["CASE"]}
+
+- id: enum_filter_in_labels
+  question: 华东华南的营收
+  tags: [enum, filter, in]
+  datasource_id: 2
+  intent: {object: case, metrics: ["营收"], filters: [{dim: "区域", op: in, values: ["华东", "华南"]}], limit: 10}
+  expect: {ok: true, sql_contains: ["EAST", "SOUTH"]}
+
+# ── 相对时间窗 time_window ───────────────────────────────
+- id: tw_7d
+  question: 最近7天案例数
+  tags: [time_window]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], time_window: "7d", limit: 10}
+  expect: {ok: true, sql_contains: ["INTERVAL"]}
+
+- id: tw_24h_col
+  question: 近24小时案例数按创建日期
+  tags: [time_window]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], time_window: "24h", time_column: "创建日期", limit: 10}
+  expect: {ok: true, sql_contains: ["INTERVAL"]}
+
+- id: tw_2w
+  question: 最近两周案例数
+  tags: [time_window]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], time_window: "2w", limit: 10}
+  expect: {ok: true, sql_contains: ["INTERVAL"]}
+
+- id: tw_pg_dialect
+  question: 最近7天案例数(PG)
+  tags: [time_window, dialect]
+  datasource_id: 3
+  intent: {object: case, metrics: ["案例数量"], time_window: "7d", limit: 10}
+  expect: {ok: true}
+
+# ── 时间粒度 time_grain ──────────────────────────────────
+- id: grain_month
+  question: 按月看案例数
+  tags: [time_grain]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], dimensions: ["创建日期"], time_grain: month, limit: 10}
+  expect: {ok: true, sql_contains: ["%Y-%m"]}
+
+# ── 跨源同名指标各自绑定本源 ────────────────────────────
+- id: xsrc_ds1
+  question: 医院案例数量
+  tags: [cross_source]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], limit: 10}
+  expect: {ok: true, sql_contains: ["del_flag"]}
+
+- id: xsrc_ds2
+  question: 工单案例数量
+  tags: [cross_source]
+  datasource_id: 2
+  intent: {object: case, metrics: ["案例数量"], limit: 10}
+  expect: {ok: true, sql_contains: ["DISTINCT", "ticket_id"]}
+
+# ── SQL 模板对象 params ──────────────────────────────────
+- id: tpl_ok
+  question: 转化漏斗
+  tags: [template]
+  datasource_id: 1
+  intent: {object: funnel, params: {start_date: "2026-01-01", scene: "急诊"}}
+  expect: {ok: true}
+
+- id: tpl_missing_param
+  question: 漏斗但漏传场景
+  tags: [template, reject]
+  datasource_id: 1
+  intent: {object: funnel, params: {start_date: "2026-01-01"}}
+  expect: {error_contains: "缺少模板参数"}
+
+- id: tpl_unknown_param
+  question: 漏斗传了未声明参数
+  tags: [template, reject]
+  datasource_id: 1
+  intent: {object: funnel, params: {start_date: "2026-01-01", scene: "急诊", bogus: "x"}}
+  expect: {error_contains: "未在模板声明"}
+
+# ── 未绑定对象 ───────────────────────────────────────────
+- id: unbound_device
+  question: 设备台账
+  tags: [unbound]
+  datasource_id: 1
+  intent: {object: device, metrics: ["设备数量"], limit: 10}
+  expect: {unbound: true}
+
+# ── 裸 SQL 旁路必须被拒收 ────────────────────────────────
+- id: reject_raw_sql
+  question: 帮我跑个SQL
+  tags: [guardrail, reject]
+  datasource_id: 1
+  intent: {object: case, sql: "SELECT * FROM t_case_records"}
+  expect: {intent_rejected: true}
+
+# ── 模糊命中(T5: 不静默绑定, 回抛候选) ────────────────
+- id: fuzzy_status
+  question: 状态分布
+  tags: [fuzzy, dimension]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], dimensions: ["状态"], limit: 10}
+  expect: {error_contains: "无法解析维度", resolution_source: {"状态": fuzzy_rejected}, hint_no_physical: true}
+
+# ── 未解析指标/维度/过滤: 回抛候选且不泄露物理列 ─────────
+- id: unknown_metric
+  question: 利润率是多少
+  tags: [unresolved, metric, no_leak]
+  datasource_id: 1
+  intent: {object: case, metrics: ["利润率"], limit: 10}
+  expect: {error_contains: "无法解析指标", hint_no_physical: true}
+
+- id: unknown_dim
+  question: 按不存在的维度分组
+  tags: [unresolved, dimension, no_leak]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], dimensions: ["不存在的维度"], limit: 10}
+  expect: {error_contains: "无法解析维度", hint_no_physical: true}
+
+- id: unknown_filter
+  question: 薪资大于1的案例数
+  tags: [unresolved, filter, no_leak]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], filters: [{dim: "薪资", op: gt, value: 1}], limit: 10}
+  expect: {error_contains: "无法解析过滤维度", hint_no_physical: true}
+
+# ── order / limit ────────────────────────────────────────
+- id: order_desc
+  question: 各区域营收排行
+  tags: [order]
+  datasource_id: 2
+  intent: {object: case, metrics: ["营收"], dimensions: ["区域"], order: [{by: "营收", desc: true}], limit: 10}
+  expect: {ok: true, sql_contains: ["DESC"]}
+
+- id: limit_val
+  question: 前20条
+  tags: [limit]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], limit: 20}
+  expect: {ok: true, sql_contains: ["LIMIT 20"]}
+
+# ── 多指标多维度组合 ────────────────────────────────────
+- id: combo_metric_dim
+  question: 各医院总费用
+  tags: [combo]
+  datasource_id: 1
+  intent: {object: case, metrics: ["总费用"], dimensions: ["就诊医院"], limit: 10}
+  expect: {ok: true}
+
+- id: ds2_all
+  question: 各区域营收和工单量
+  tags: [combo, alias]
+  datasource_id: 2
+  intent: {object: case, metrics: ["营收", "工单量"], dimensions: ["地区"], limit: 10}
+  expect: {ok: true, resolution_source: {"工单量": dict_alias, "地区": dict_alias}}
+
+# ── 扩充: 粒度/多指标/排序/LIKE/跨源时间 ────────────────
+- id: grain_day
+  question: 按天看案例数
+  tags: [time_grain]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], dimensions: ["创建日期"], time_grain: day, limit: 10}
+  expect: {ok: true, sql_contains: ["%Y-%m-%d"]}
+
+- id: m_alias_en_total
+  question: total_cases
+  tags: [alias, metric, english]
+  datasource_id: 1
+  intent: {object: case, metrics: ["total_cases"], limit: 10}
+  expect: {ok: true, resolution_source: {"total_cases": dict_alias}}
+
+- id: multi_metric
+  question: 案例数和总费用一起看
+  tags: [combo, metric]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量", "总费用"], limit: 10}
+  expect: {ok: true}
+
+- id: order_by_dim_asc
+  question: 按创建日期正序
+  tags: [order]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], dimensions: ["创建日期"], order: [{by: "创建日期"}], time_grain: day, limit: 10}
+  expect: {ok: true, sql_contains: ["ASC"]}
+
+- id: filter_like
+  question: 名字带市的医院案例数
+  tags: [filter, like]
+  datasource_id: 1
+  intent: {object: case, metrics: ["案例数量"], filters: [{dim: "就诊医院", op: like, value: "%市医院%"}], limit: 10}
+  expect: {ok: true, sql_contains: ["LIKE"]}
+
+- id: ds2_time_window
+  question: 近一个月工单量按工单创建时间
+  tags: [time_window, cross_source, alias]
+  datasource_id: 2
+  intent: {object: case, metrics: ["案例数量"], dimensions: ["工单创建时间"], time_window: "1M", limit: 10}
+  expect: {ok: true, resolution_source: {"工单创建时间": dict_alias}, sql_contains: ["ticket_time"]}

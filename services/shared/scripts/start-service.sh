@@ -1,15 +1,22 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-# 通用服务启动脚本
+# 通用服务启动脚本 —— 唯一实现（各服务目录下的 start.sh 是薄壳）
 # 用法: ./start.sh {start|stop|restart|status}
+#
+# 薄壳通过环境变量传入:
+#   SERVICE_NAME  服务名（必填）
+#   SERVICE_DIR   服务目录（默认 services/$SERVICE_NAME）
+# 服务模块与端口唯一登记处: services/shared/scripts/services.conf
 # ═══════════════════════════════════════════════════════════════
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SERVICE_NAME="$(basename "$SCRIPT_DIR")"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"          # services/shared/scripts
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"   # 仓库根
+SERVICE_NAME="${SERVICE_NAME:?缺少 SERVICE_NAME（请通过 services/<name>/start.sh 调用）}"
+SERVICE_DIR="${SERVICE_DIR:-$PROJECT_ROOT/services/$SERVICE_NAME}"
 LOG_DIR="$PROJECT_ROOT/logs"
 PID_DIR="$PROJECT_ROOT/pids"
 PYTHON="$PROJECT_ROOT/venv/bin/python"
+SERVICES_CONF="$SCRIPT_DIR/services.conf"
 
 mkdir -p "$LOG_DIR" "$PID_DIR"
 
@@ -27,19 +34,15 @@ if [ -f "$PROJECT_ROOT/services/.env" ]; then
     set -a; source "$PROJECT_ROOT/services/.env"; set +a
 fi
 
-# 获取服务配置: module:port
+# 获取服务配置: module:port（查注册表，不再内置 case 清单）
 get_service_config() {
-    case "$SERVICE_NAME" in
-        authservice)   echo "services.authservice.main:8006" ;;
-        datacatalog)   echo "services.datacatalog.main:8005" ;;
-        datagov)       echo "services.datagov.main:8002" ;;
-        dataviz)       echo "services.dataviz.main:8004" ;;
-        datamind)      echo "services.datamind.main:8001" ;;
-        dataflow)      echo "services.dataflow.main:8003" ;;
-        aiplatform)    echo "services.aiplatform.main:8007" ;;
-        graphservice)  echo "services.graphservice.main:8011" ;;
-        *) log_error "Unknown service: $SERVICE_NAME"; exit 1 ;;
-    esac
+    local line
+    line=$(grep -E "^${SERVICE_NAME}:" "$SERVICES_CONF" 2>/dev/null | head -1)
+    if [ -z "$line" ]; then
+        log_error "Unknown service: $SERVICE_NAME (注册表: $SERVICES_CONF)"
+        exit 1
+    fi
+    echo "${line#*:}"   # name:module:port → module:port
 }
 
 start() {
@@ -68,9 +71,10 @@ start() {
     log_info "启动 $SERVICE_NAME (端口: $port)..."
 
     cd "$PROJECT_ROOT"
+    # 日志只写文件、不占调用方管道（避免 `./start.sh | tee` 等场景挂住不返回）
     PYTHONPATH="$PROJECT_ROOT" nohup "$PYTHON" -m uvicorn "${module}:app" \
         --host 0.0.0.0 --port "$port" --log-level info \
-        > >(tee -a "$log_file") 2>&1 &
+        >> "$log_file" 2>&1 < /dev/null &
 
     local pid=$!
     echo "$pid" > "$pid_file"
@@ -88,11 +92,11 @@ start() {
 
 stop() {
     local pid_file="$PID_DIR/${SERVICE_NAME}.pid"
+    local config=$(get_service_config)
+    local port=$(echo "$config" | cut -d: -f2)
 
     if [ ! -f "$pid_file" ]; then
         log_warn "$SERVICE_NAME 未在运行"
-        local config=$(get_service_config)
-        local port=$(echo "$config" | cut -d: -f2)
         local pid=$(lsof -i :"$port" -sTCP:LISTEN -t 2>/dev/null | head -1)
         if [ -n "$pid" ]; then
             log_info "通过端口发现进程 (PID: $pid)"

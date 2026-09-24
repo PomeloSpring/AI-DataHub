@@ -17,6 +17,7 @@ interface PermissionState {
   clear: () => void;
 }
 
+let permissionVersion = 0;
 export const usePermissionStore = create<PermissionState>((set) => ({
   perms: null,
   allowedMenus: null,
@@ -24,8 +25,10 @@ export const usePermissionStore = create<PermissionState>((set) => ({
   loaded: false,
 
   loadPermissions: async () => {
+    const version = ++permissionVersion;
     try {
       const { data } = await client.get('/roles/current/permissions');
+      if (version !== permissionVersion) return;
       set({
         perms: data.permissions || [],
         allowedMenus: data.menus || [],
@@ -33,12 +36,13 @@ export const usePermissionStore = create<PermissionState>((set) => ({
         loaded: true,
       });
     } catch {
+      if (version !== permissionVersion) return;
       // 加载失败时不限制(安全降级, API 层仍有后端中间件兜底)
       set({ perms: null, allowedMenus: null, unrestricted: true, loaded: true });
     }
   },
 
-  clear: () => set({ perms: null, allowedMenus: null, unrestricted: true, loaded: false }),
+  clear: () => { ++permissionVersion; set({ perms: null, allowedMenus: null, unrestricted: true, loaded: false }); },
 }));
 
 /** 权限码匹配(支持 * 与 module:* 通配) */
