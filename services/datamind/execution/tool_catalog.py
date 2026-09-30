@@ -1,8 +1,7 @@
 """标准工具目录 — 工作空间执行层 tools 权限白名单的通用抽象.
 
 标准工具名(bash/edit/glob/grep/read/write/webfetch/task)经 TOOL_NAME_MAP
-映射到各执行层后端的实际工具名(qoder/claude 为 Pascal 命名,
-builtin 为内置 Agent 的实现名).
+映射到各执行层后端的实际工具名(qoder/claude 为 Pascal 命名).
 
 目录列表能力已并入 `glob`,不单独列目录项.
 """
@@ -32,11 +31,6 @@ TOOL_NAME_MAP = {
     "claude": {
         "read": "Read", "write": "Write", "edit": "Edit", "glob": "Glob",
         "grep": "Grep", "bash": "Bash", "webfetch": "WebFetch", "task": "Task",
-    },
-    # 内置 Agent(ConfigurableAgent)的实现名(BuiltinToolbox)
-    "builtin": {
-        "read": "read", "write": "write", "edit": "edit", "glob": "glob",
-        "grep": "grep", "bash": "bash", "webfetch": "webfetch", "task": None,
     },
 }
 

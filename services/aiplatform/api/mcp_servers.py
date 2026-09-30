@@ -6,6 +6,7 @@ Table: adh_mcp_servers
 
 import json
 import logging
+
 from datetime import datetime
 from typing import Optional
 
@@ -99,6 +100,9 @@ def list_mcp_servers(workspace_id: Optional[int] = Query(None), user: dict = Dep
     except Exception:
         logger.exception("MCP 目录加载失败")
         raise HTTPException(status_code=503, detail="MCP 目录暂不可用，请稍后重试") from None
+
+
+
 
 
 @router.get("/{server_id}", dependencies=[Depends(require_admin)])
@@ -197,7 +201,7 @@ def delete_mcp_server(server_id: int):
 
 @router.post("/{server_id}/test", dependencies=[Depends(require_admin)])
 def test_mcp_server(server_id: int):
-    """Test MCP server connection."""
+    """真实连接测试：连接 → 初始化 → 工具发现；结果与发现的工具清单落库。"""
     try:
         row = execute_query(
             "SELECT * FROM adh_mcp_servers WHERE id = %s",
@@ -207,14 +211,45 @@ def test_mcp_server(server_id: int):
         if not row:
             raise HTTPException(status_code=404, detail="MCP server not found")
 
-        # TODO: Implement actual MCP connection test
-        # For now, just return success
-        now = _now()
-        execute_write(
-            "UPDATE adh_mcp_servers SET last_test_at = %s, last_test_status = %s WHERE id = %s",
-            (now, "success", server_id),
+        args = row.get("args") or []
+        if isinstance(args, str):
+            try:
+                args = json.loads(args) if args.strip() else []
+            except (json.JSONDecodeError, TypeError):
+                args = [a.strip() for a in args.split(",") if a.strip()]
+        env = row.get("env") or {}
+        if isinstance(env, str):
+            try:
+                env = json.loads(env) if env.strip() else {}
+            except (json.JSONDecodeError, TypeError):
+                env = {}
+        transport = row.get("transport") or "sse"
+        if transport == "http":
+            transport = "streamable_http"
+
+        import asyncio
+
+        from services.aiplatform.services.mcp_server_service import update_test_result
+        from services.shared.mcp_client.client import MCPClient
+
+        client = MCPClient(
+            server_id=row["id"],
+            name=row["name"],
+            transport=transport,
+            url=row.get("url") or "",
+            command=row.get("command") or "",
+            args=args,
+            env=env,
         )
-        return {"success": True, "message": "Connection test passed"}
+        result = asyncio.run(client.test_connection())
+        # 成败均落库（last_test_* + discovered_tools），供前端展示真实状态与工具清单。
+        update_test_result(
+            server_id,
+            bool(result.get("success")),
+            result.get("message", ""),
+            result.get("tools") or [],
+        )
+        return result
     except HTTPException:
         raise
     except Exception as e:

@@ -386,9 +386,15 @@ def create_conversation(
     req: CreateConversationRequest,
     user: UserInfo = Depends(get_current_user),
 ):
-    """Create a new conversation."""
-    authorize_workspace(user, req.workspace_id or 0)
-    if req.waker_key:
+    """Create a new conversation.
+
+    workspace_id=0 表示全局/智能助手会话，按 user_id 隔离，不要求工作空间授权。
+    """
+    # workspace_id=0 为全局助手会话，仅按 user_id 隔离，无需工作空间授权
+    if req.workspace_id:
+        authorize_workspace(user, req.workspace_id)
+    # workspace_id=0 时不验证 waker_key（全局助手继承角色默认 Waker）
+    if req.waker_key and req.workspace_id:
         from services.datamind.execution.tool_policy import resolve_policy
         from services.datamind.execution.models import ExecutionContext
         ctx = ExecutionContext(user_id=user["user_id"], user_role=user.get("role", ""),

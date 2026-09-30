@@ -1,7 +1,8 @@
-"""Wakers API — 统一"角色化智能体"(Waker)配置与绑定管理.
+"""Wakers API — 统一"角色化智能体"(Waker)配置管理.
 
-表: adh_wakers / adh_workspace_wakers / adh_role_wakers
+表: adh_wakers（角色-Waker 一对一绑定，adh_wakers.role_id）
 一个 Waker 内联 persona/系统提示词/工具集/skills/图表开关,引用共享 MCP 与数据源。
+Waker 只绑定到用户角色，不绑定到工作空间。
 """
 
 import json
@@ -31,7 +32,6 @@ class WakerPayload(BaseModel):
     persona: dict = {}
     tools: dict = {}
     mcp_server_ids: list = []
-    datasource_ids: list = []
     knowledge_base_ids: list = []
     skills: list = []
     models: list = []
@@ -51,7 +51,6 @@ class WakerUpdate(BaseModel):
     persona: Optional[dict] = None
     tools: Optional[dict] = None
     mcp_server_ids: Optional[list] = None
-    datasource_ids: Optional[list] = None
     knowledge_base_ids: Optional[list] = None
     skills: Optional[list] = None
     models: Optional[list] = None
@@ -61,24 +60,11 @@ class WakerUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
-class WorkspaceWakerBinding(BaseModel):
-    waker_id: int
-    is_default: bool = False
-    sort: int = 0
-
-
-class WorkspaceWakersUpdate(BaseModel):
-    bindings: list[WorkspaceWakerBinding] = []
-
-
-class RoleWakersUpdate(BaseModel):
-    waker_ids: list[int] = []
-
 
 # ── helpers ────────────────────────────────────────────────────────
 
-_JSON_FIELDS = ("persona", "tools", "mcp_server_ids", "datasource_ids", "knowledge_base_ids", "skills", "models")
-_LIST_FIELDS = ("mcp_server_ids", "datasource_ids", "knowledge_base_ids", "skills", "models")
+_JSON_FIELDS = ("persona", "tools", "mcp_server_ids", "knowledge_base_ids", "skills", "models")
+_LIST_FIELDS = ("mcp_server_ids", "knowledge_base_ids", "skills", "models")
 
 
 def _ensure_columns():
@@ -127,21 +113,10 @@ def _normalize(row: dict) -> dict:
 # ── Waker CRUD ─────────────────────────────────────────────────────
 
 @router.get("/")
-def list_wakers(workspace_id: int = Query(0)):
-    """列出 Waker: workspace_id 指定时返回该工作空间绑定 + 全局 Waker。"""
+def list_wakers():
+    """列出所有 Waker（Waker 只绑定到角色，不绑定到工作空间）。"""
     try:
-        if workspace_id:
-            rows = execute_query(
-                """SELECT DISTINCT w.*, b.is_default
-                   FROM adh_wakers w
-                   LEFT JOIN adh_workspace_wakers b
-                     ON b.waker_id = w.id AND b.workspace_id = %s
-                   WHERE w.is_active = 1 AND (w.workspace_id = 0 OR w.workspace_id = %s OR b.id IS NOT NULL)
-                   ORDER BY w.workspace_id, w.name""",
-                (workspace_id, workspace_id),
-            )
-        else:
-            rows = execute_query("SELECT * FROM adh_wakers ORDER BY workspace_id, name")
+        rows = execute_query("SELECT * FROM adh_wakers ORDER BY name")
         return [_normalize(dict(r)) for r in rows]
     except Exception as e:  # noqa: BLE001
         logger.error("List wakers failed: %s", e)
@@ -224,7 +199,7 @@ def create_waker(req: WakerPayload):
         waker_id = execute_insert(
             """INSERT INTO adh_wakers
                (waker_key, name, display_name, description, category, system_prompt,
-                persona, tools, mcp_server_ids, datasource_ids, knowledge_base_ids, skills, models, chart_enabled,
+                persona, tools, mcp_server_ids, knowledge_base_ids, skills, models, chart_enabled,
                 permission_mode, is_active, workspace_id, created_at, updated_at, created_by)
                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'admin')""",
             (
@@ -233,7 +208,6 @@ def create_waker(req: WakerPayload):
                 json.dumps(req.persona or {}, ensure_ascii=False),
                 json.dumps(req.tools or {}, ensure_ascii=False),
                 json.dumps(req.mcp_server_ids or [], ensure_ascii=False),
-                json.dumps(req.datasource_ids or [], ensure_ascii=False),
                 json.dumps(req.knowledge_base_ids or [], ensure_ascii=False),
                 json.dumps(req.skills or [], ensure_ascii=False),
                 json.dumps(req.models or [], ensure_ascii=False),
@@ -272,7 +246,7 @@ def update_waker(waker_id: int, req: WakerUpdate, user: dict = Depends(get_curre
         if field in data:
             updates.append(f"{field} = %s")
             params.append(data[field])
-    for field in ("persona", "tools", "mcp_server_ids", "datasource_ids", "knowledge_base_ids", "skills", "models"):
+    for field in ("persona", "tools", "mcp_server_ids", "knowledge_base_ids", "skills", "models"):
         if field in data:
             updates.append(f"{field} = %s")
             params.append(json.dumps(data[field], ensure_ascii=False))
@@ -295,59 +269,13 @@ def update_waker(waker_id: int, req: WakerUpdate, user: dict = Depends(get_curre
 
 @router.delete("/{waker_id}")
 def delete_waker(waker_id: int):
-    row = execute_query("SELECT is_builtin FROM adh_wakers WHERE id = %s", (waker_id,), fetchone=True)
+    row = execute_query("SELECT is_builtin, name, role_id FROM adh_wakers WHERE id = %s", (waker_id,), fetchone=True)
     if not row:
         raise HTTPException(status_code=404, detail="Waker not found")
-    if row.get("is_builtin"):
-        raise HTTPException(status_code=400, detail="内置 Waker 不可删除")
-    execute_write("DELETE FROM adh_workspace_wakers WHERE waker_id = %s", (waker_id,))
-    execute_write("DELETE FROM adh_role_wakers WHERE waker_id = %s", (waker_id,))
-    execute_write("DELETE FROM adh_wakers WHERE id = %s", (waker_id,))
-    return {"success": True}
-
-
-# ── 工作空间绑定 ───────────────────────────────────────────────────
-
-@router.get("/workspace/{workspace_id}/wakers")
-def get_workspace_wakers(workspace_id: int):
-    rows = execute_query(
-        """SELECT b.waker_id, b.is_default, b.sort, w.name, w.display_name
-           FROM adh_workspace_wakers b JOIN adh_wakers w ON w.id = b.waker_id
-           WHERE b.workspace_id = %s ORDER BY b.sort, b.id""",
-        (workspace_id,),
+    # 角色-Waker 一对一绑定: Waker 不允许直接删除，必须通过删除角色联动删除
+    raise HTTPException(
+        status_code=400,
+        detail=f"Waker「{row.get('name')}」与角色绑定，不允许直接删除。请通过删除对应角色来联动删除 Waker。"
     )
-    return [dict(r) for r in rows]
 
 
-@router.put("/workspace/{workspace_id}/wakers")
-def set_workspace_wakers(workspace_id: int, req: WorkspaceWakersUpdate):
-    execute_write("DELETE FROM adh_workspace_wakers WHERE workspace_id = %s", (workspace_id,))
-    default_set = False
-    for b in req.bindings:
-        is_default = bool(b.is_default) and not default_set
-        default_set = default_set or is_default
-        execute_write(
-            "INSERT INTO adh_workspace_wakers (workspace_id, waker_id, is_default, sort) VALUES (%s,%s,%s,%s)",
-            (workspace_id, b.waker_id, 1 if is_default else 0, int(b.sort or 0)),
-        )
-    return {"success": True}
-
-
-# ── 角色绑定 ───────────────────────────────────────────────────────
-
-@router.get("/role/{role_id}/wakers")
-def get_role_wakers(role_id: int):
-    rows = execute_query(
-        "SELECT waker_id FROM adh_role_wakers WHERE role_id = %s", (role_id,)
-    )
-    return {"waker_ids": [r["waker_id"] for r in rows]}
-
-
-@router.put("/role/{role_id}/wakers")
-def set_role_wakers(role_id: int, req: RoleWakersUpdate):
-    execute_write("DELETE FROM adh_role_wakers WHERE role_id = %s", (role_id,))
-    for wid in req.waker_ids:
-        execute_write(
-            "INSERT INTO adh_role_wakers (role_id, waker_id) VALUES (%s,%s)", (role_id, wid)
-        )
-    return {"success": True}

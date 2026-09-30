@@ -1,4 +1,4 @@
-"""Pipeline Execution API — Execute queries via Quick/Deep/Agent pipeline.
+"""Pipeline Execution API — Execute queries via Quick/Agent pipeline.
 
 Proxies to the existing backend pipeline orchestrator.
 """
@@ -26,7 +26,7 @@ class PipelineExecuteRequest(BaseModel):
     history: Optional[list[dict]] = []
     datasource_id: Optional[int] = 0
     model_id: Optional[int] = None
-    pipeline_mode: Optional[str] = "quick"  # quick | deep | agent
+    pipeline_mode: Optional[str] = "quick"  # quick | agent
     retrieval_strategy: Optional[str] = None
     workspace_id: Optional[int] = 0
     attachments: Optional[list[str]] = []  # 多模态附件 ID 列表
@@ -59,7 +59,7 @@ async def execute_pipeline(
     request: Request,
     user: UserInfo = Depends(get_current_user),
 ):
-    """Execute a query through the pipeline (Quick/Deep/Agent mode).
+    """Execute a query through the pipeline (Quick/Agent mode).
 
     Returns an SSE stream with progress, thinking, token, and done events.
     """
@@ -81,7 +81,7 @@ async def execute_pipeline(
 
     async def event_generator():
         # Agent 模式(或携带多模态附件)派发到执行层(默认 qoder);
-        # quick/deep 模式走内置管线
+        # quick 模式走内置管线
         from services.datamind.services.chat_service import ChatService
         from services.shared import observability
 

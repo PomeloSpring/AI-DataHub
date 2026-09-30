@@ -1,76 +1,16 @@
-"""Pipeline Orchestrator — Routes queries between Quick and Deep modes.
+"""Pipeline Orchestrator — Quick mode SQL pipeline + intent classification.
 
 Modes:
 - "quick": SQL data queries only (fast path, no Agent routing)
-- "deep":  内置 Agent 管线 — LLM 自主工具调用(Agent 路由、MCP、日志分析等)
 
 注:"agent" 聊天模式(外部执行层,默认 qoder)由 API 层派发,
-不会到达本编排器;传入 agent 时按 deep 兼容处理。
+不会到达本编排器。
 """
 
 import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
-
-# ── Agent registration (lazy, on first deep request) ──────────────
-
-_agents_initialized = False
-
-
-def _init_agents():
-    """Register agents: SQL Agent (built-in) + all DB agents (ConfigurableAgent).
-
-    Called once on first deep mode request.
-    - sql_agent: hardcoded, uses NL2SQL pipeline
-    - All other agents: loaded from adh_agents table as ConfigurableAgent
-    """
-    global _agents_initialized
-    if _agents_initialized:
-        return
-
-    from services.datamind.agent.router import register_agent
-    from services.datamind.agent.data_analysis_agent import create_data_analysis_agent
-
-    # Register Data Analysis Agent (built-in, always active)
-    register_agent(create_data_analysis_agent())
-
-    # Load custom agents from DB
-    try:
-        from services.shared.common.db.metadata_db import get_metadata_conn
-        from services.datamind.agent.configurable_agent import create_configurable_agent
-
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT name, display_name, description, agent_type, system_prompt, "
-                    "mcp_server_ids, datasource_ids, tools, config, is_active "
-                    "FROM adh_agents"
-                )
-                rows = cur.fetchall()
-
-                for row in rows:
-                    agent_name = row["name"]
-                    # Skip if same name as built-in agent
-                    if agent_name == "sql_agent":
-                        # Sync is_active from DB for sql_agent
-                        from services.datamind.agent.router import _agents
-                        if agent_name in _agents:
-                            _agents[agent_name].is_active = bool(row["is_active"])
-                            logger.info("[Orchestrator] sql_agent is_active=%s (from DB)", row["is_active"])
-                        continue
-
-                    agent = create_configurable_agent(row)
-                    register_agent(agent)
-                    logger.info("[Orchestrator] Loaded DB agent: %s (active=%s)", agent_name, agent.is_active)
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.warning("[Orchestrator] Failed to load agents from DB: %s", e)
-
-    _agents_initialized = True
-    logger.info("[Orchestrator] Agents initialized")
 
 
 async def execute_pipeline(
@@ -86,22 +26,18 @@ async def execute_pipeline(
     user_role: str = "user",
     attachments: list[str] = None,
 ):
-    """Execute query through Quick-Deep pipeline.
+    """Execute query through Quick pipeline.
 
-    Quick mode: SQL data queries only. Non-query intents rejected.
-    Deep mode: Full Agent routing — SQL, log analysis, MCP tools, etc.
+    Quick mode: SQL data queries only. Non-query intents handled inline.
 
     Args:
-        workspace_id: For Agent mode, use workspace's configured resources.
-        attachments: 多模态附件 ID 列表;非空时强制走 Agent 管线(仅 agent 支持多模态注入).
+        workspace_id: Workspace context for resource resolution.
+        attachments: 多模态附件 ID 列表(本编排器不处理附件,附件应走外部执行层).
 
     Yields:
         (event_type, data) tuples matching SSE format.
     """
-    chosen_mode = pipeline_mode if pipeline_mode in ("quick", "deep", "agent") else "quick"
-    # agent 模式(外部执行层)已在 API 层派发;兼容直达本编排器时降级为内置 Agent
-    if chosen_mode == "agent":
-        chosen_mode = "deep"
+    chosen_mode = pipeline_mode if pipeline_mode == "quick" else "quick"
     attachments = attachments or []
 
     logger.info("Pipeline orchestrator: mode=%s, workspace_id=%d, attachments=%d", chosen_mode, workspace_id, len(attachments))
@@ -112,7 +48,7 @@ async def execute_pipeline(
     from services.datamind.nl2sql.prompt.prompt_builder import build_chat_prompt
     from services.shared.common.llm.llm_client import generate_sql
 
-    # 携带多模态附件时跳过纯文本快捷意图分支,确保附件进入 Agent 管线被处理
+    # 携带多模态附件时跳过纯文本快捷意图分支
     quick = None if attachments else _quick_classify(question)
     intent = quick["intent"] if quick else "query"
 
@@ -147,85 +83,34 @@ async def execute_pipeline(
         }
         return
 
-    if chosen_mode == "quick":
-        # ── Quick mode: SQL queries only ──
-        yield "progress", {"stage": "intent", "message": "快速模式: 正在分析...", "mode": "quick"}
+    # ── Quick mode: SQL queries only ──
+    yield "progress", {"stage": "intent", "message": "快速模式: 正在分析...", "mode": "quick"}
 
-        result_event = None
-        from services.datamind.nl2sql.orchestrator.quick_pipeline import quick_generate
-        for event_type, data in quick_generate(
-            question=question,
-            history=history,
-            datasource_id=datasource_id,
-            model_id=model_id,
-            user_id=user_id,
-            username=username,
-            retrieval_strategy=retrieval_strategy,
-        ):
-            if event_type == "done":
-                result_event = data
-            else:
-                yield event_type, data
-
-        if result_event:
-            yield "done", result_event
+    result_event = None
+    from services.datamind.nl2sql.orchestrator.quick_pipeline import quick_generate
+    for event_type, data in quick_generate(
+        question=question,
+        history=history,
+        datasource_id=datasource_id,
+        model_id=model_id,
+        user_id=user_id,
+        username=username,
+        retrieval_strategy=retrieval_strategy,
+    ):
+        if event_type == "done":
+            result_event = data
         else:
-            logger.warning("Quick pipeline yielded no done event")
-            yield "done", {
-                "intent": "query",
-                "reply": "快速模式处理异常，请重试或切换到深度模式。",
-                "sql": None,
-                "warnings": [],
-                "error": "Quick pipeline yielded no done event",
-                "mode": "quick",
-            }
+            yield event_type, data
 
+    if result_event:
+        yield "done", result_event
     else:
-        # ── Deep mode: 内置 Agent 管线 — LLM 自主工具调用(system + MCP + agents) ──
-        _init_agents()
-
-        yield "progress", {"stage": "agent_plan", "message": "深度模式: 正在规划...", "mode": "deep"}
-
-        done_yielded = False
-        try:
-            from services.datamind.nl2sql.orchestrator.agent_pipeline import agent_generate
-
-            async for event_type, data in agent_generate(
-                question=question,
-                history=history,
-                datasource_id=datasource_id,
-                model_id=model_id,
-                user_id=user_id,
-                username=username,
-                retrieval_strategy=retrieval_strategy,
-                workspace_id=workspace_id,
-                user_role=user_role,
-                attachments=attachments,
-            ):
-                if event_type == "done":
-                    done_yielded = True
-                yield event_type, data
-        except Exception as e:
-            logger.error("[Orchestrator] Deep (built-in agent) mode failed: %s", e, exc_info=True)
-            if not done_yielded:
-                yield "done", {
-                    "intent": "query",
-                    "reply": f"深度模式执行出错: {str(e)}",
-                    "sql": None,
-                    "warnings": [],
-                    "error": str(e),
-                    "mode": "deep",
-                }
-                done_yielded = True
-
-        # Safety net: guarantee a done event even if generator exits without one
-        if not done_yielded:
-            logger.warning("[Orchestrator] agent_generate exited without yielding done event")
-            yield "done", {
-                "intent": "query",
-                "reply": "深度模式未完成，请重试或切换到其他模式。",
-                "sql": None,
-                "warnings": ["内置 Agent 未返回最终结果"],
-                "error": "内置 Agent 未返回完成事件",
-                "mode": "deep",
-            }
+        logger.warning("Quick pipeline yielded no done event")
+        yield "done", {
+            "intent": "query",
+            "reply": "快速模式处理异常，请重试。",
+            "sql": None,
+            "warnings": [],
+            "error": "Quick pipeline yielded no done event",
+            "mode": "quick",
+        }

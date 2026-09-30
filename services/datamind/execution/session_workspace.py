@@ -196,7 +196,10 @@ def preflight_request(req, user):
     from services.shared.common.auth import authorize_workspace
     from services.datamind.execution.models import ExecutionContext
     from services.datamind.execution.tool_policy import resolve_policy
-    authorize_workspace(user, req.workspace_id or 0)
+    # workspace_id=0 为全局助手会话，仅按 user_id 隔离，无需工作空间授权
+    workspace_id = req.workspace_id or 0
+    if workspace_id:
+        authorize_workspace(user, workspace_id)
     agent_mode = getattr(req, "pipeline_mode", "agent") == "agent" or bool(req.attachments)
     ctx = ExecutionContext(user_id=user["user_id"], user_role=user.get("role", ""),
                            workspace_id=req.workspace_id or 0,
@@ -226,7 +229,9 @@ def preflight_request(req, user):
 
 def validate_conversation(ctx, conversation_id):
     from services.shared.common.auth import authorize_workspace
-    authorize_workspace({"user_id": ctx.user_id, "role": ctx.user_role}, ctx.workspace_id)
+    # workspace_id=0 为全局助手会话，仅按 user_id 隔离，无需工作空间授权
+    if ctx.workspace_id:
+        authorize_workspace({"user_id": ctx.user_id, "role": ctx.user_role}, ctx.workspace_id)
     row = execute_query("SELECT * FROM adh_conversations WHERE id=%s AND user_id=%s",
                         (conversation_id, ctx.user_id), fetchone=True)
     if not row:

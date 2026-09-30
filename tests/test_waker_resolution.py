@@ -1,7 +1,7 @@
 """Waker 解析服务单元测试 — 对应计划 test_waker_resolution.
 
 覆盖 services/datamind/execution/wakers.py:
-- resolve_wakers: 工作空间绑定 / 全局回退 / 角色白名单交集 / 无重叠回退候选
+- resolve_wakers: 角色-Waker 一对一绑定(按 role_id 直查 adh_wakers)
 - _normalize: DB JSON 字段(persona/tools/mcp_server_ids/skills)解析
 - default_waker: is_default 优先,否则首个
 - collect_mcp_server_ids / collect_tool_groups / collect_standard_tools 合并去重
@@ -47,88 +47,57 @@ def _row(id_, name, **overrides):
     return row
 
 
-def _fake_query(workspace_rows=None, global_rows=None, role_rows=None, role_waker_rows=None):
-    """按 SQL 关键字路由的 execute_query 替身."""
+def _fake_query(role_rows=None, waker_rows=None):
+    """按 SQL 关键字路由的 execute_query 替身(角色-Waker 一对一)."""
     def _q(sql, params=None, fetchone=False):
         s = " ".join(sql.split())
-        if "adh_workspace_wakers" in s:
-            return list(workspace_rows or [])
-        if "FROM adh_wakers WHERE is_active = 1 AND workspace_id = 0" in s:
-            return list(global_rows or [])
         if "FROM adh_roles WHERE name" in s:
             return list(role_rows or [])
-        if "adh_role_wakers" in s:
-            return list(role_waker_rows or [])
+        if "FROM adh_wakers WHERE role_id IN" in s:
+            return list(waker_rows or [])
         return []
     return _q
 
 
-# ── resolve_wakers:候选与回退 ────────────────────────────────────
+# ── resolve_wakers:角色-Waker 一对一绑定 ──────────────────────────
 
-class TestResolveCandidates:
-    def test_workspace_binding_returns_candidates(self):
-        rows = [_row(1, "analyst", is_default=1), _row(2, "reporter")]
-        with patch("services.shared.common.db.execute_query", _fake_query(workspace_rows=rows)):
-            result = w.resolve_wakers(5, "admin")
-        assert [x["name"] for x in result] == ["analyst", "reporter"]
-        assert result[0]["is_default"] is True
-
-    def test_no_global_fallback_when_workspace_has_no_binding(self):
-        g = [_row(9, "global_default", workspace_id=0)]
-        with patch(
-            "services.shared.common.db.execute_query",
-            _fake_query(workspace_rows=[], global_rows=g),
-        ):
-            result = w.resolve_wakers(5, "admin")
-        assert result == []
-
-    def test_no_wakers_at_all_returns_empty(self):
-        with patch(
-            "services.shared.common.db.execute_query",
-            _fake_query(workspace_rows=[], global_rows=[]),
-        ):
-            assert w.resolve_wakers(5, "") == []
-
-
-# ── resolve_wakers:角色白名单 ────────────────────────────────────
-
-class TestRoleWhitelist:
-    def test_role_binding_filters_candidates(self):
-        rows = [_row(1, "analyst"), _row(2, "reporter")]
-        fq = _fake_query(
-            workspace_rows=rows,
-            role_rows=[{"id": 10}],
-            role_waker_rows=[{"waker_id": 2}],
-        )
+class TestResolveOneToOne:
+    def test_role_with_waker_returns_it(self):
+        """角色有对应 Waker 时直接返回."""
+        rows = [_row(1, "analyst")]
+        fq = _fake_query(role_rows=[{"id": 2}], waker_rows=rows)
         with patch("services.shared.common.db.execute_query", fq):
             result = w.resolve_wakers(5, "analyst")
-        assert [x["name"] for x in result] == ["reporter"]
+        assert [x["name"] for x in result] == ["analyst"]
 
-    def test_role_without_binding_denied(self):
-        rows = [_row(1, "analyst"), _row(2, "reporter")]
-        fq = _fake_query(workspace_rows=rows, role_rows=[{"id": 10}], role_waker_rows=[])
+    def test_role_without_waker_returns_empty(self):
+        """角色存在但无 Waker 时返回空列表."""
+        fq = _fake_query(role_rows=[{"id": 10}], waker_rows=[])
         with patch("services.shared.common.db.execute_query", fq):
             result = w.resolve_wakers(5, "viewer")
         assert result == []
 
-    def test_unknown_role_denied(self):
-        rows = [_row(1, "analyst")]
-        fq = _fake_query(workspace_rows=rows, role_rows=[])  # 角色不存在
+    def test_unknown_role_returns_empty(self):
+        """角色不存在时返回空列表."""
+        fq = _fake_query(role_rows=[], waker_rows=[])
         with patch("services.shared.common.db.execute_query", fq):
             result = w.resolve_wakers(5, "ghost")
         assert result == []
 
-    def test_role_binding_no_overlap_denied(self):
-        # 角色白名单与工作空间候选无交集必须拒绝。
-        rows = [_row(1, "analyst"), _row(2, "reporter")]
-        fq = _fake_query(
-            workspace_rows=rows,
-            role_rows=[{"id": 10}],
-            role_waker_rows=[{"waker_id": 999}],
-        )
+    def test_no_role_specified_returns_empty(self):
+        """未指定角色时返回空列表."""
+        fq = _fake_query(role_rows=[], waker_rows=[])
         with patch("services.shared.common.db.execute_query", fq):
-            result = w.resolve_wakers(5, "analyst")
+            result = w.resolve_wakers(5, "")
         assert result == []
+
+    def test_waker_key_mismatch_raises(self):
+        """指定 waker_key 但与角色绑定的不匹配时抛 PermissionError."""
+        rows = [_row(1, "analyst")]
+        fq = _fake_query(role_rows=[{"id": 2}], waker_rows=rows)
+        with patch("services.shared.common.db.execute_query", fq):
+            with pytest.raises(PermissionError, match="未授权"):
+                w.resolve_wakers(5, "analyst", waker_key="wrong_key")
 
 
 # ── _normalize: JSON 列解析 ──────────────────────────────────────

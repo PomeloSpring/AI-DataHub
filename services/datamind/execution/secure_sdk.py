@@ -166,6 +166,7 @@ async def execute_stream(adapter, task, backend):
 
 
 async def _execute_stream(adapter, task, backend):
+    import time as _time
     from services.datamind.execution.session_workspace import claim_session
     from services.datamind.execution.sdk_tools.compat import load_sdk
     from services.datamind.execution.stream_utils import ToolEventTracker
@@ -180,16 +181,27 @@ async def _execute_stream(adapter, task, backend):
     starting_sdk = False
     texts = []
     tracker = ToolEventTracker()
+    _t0 = _time.time()
     try:
         runtime = await run_owned_sync(claim_session, task, backend, adapter.config)
+        logger.info("[timing] claim_session: %.1fms", (_time.time() - _t0) * 1000)
+        _t1 = _time.time()
         await run_owned_sync(bind_resources, task.context, runtime.policy)
+        logger.info("[timing] bind_resources: %.1fms", (_time.time() - _t1) * 1000)
+        _t1 = _time.time()
         if set(runtime.policy.standard) & {"read", "write", "edit", "glob", "grep", "bash"}:
             from services.aiplatform.services.sandbox_executor import SessionToolSandbox
             await run_owned_sync(SessionToolSandbox.ensure_available)
+        logger.info("[timing] sandbox_ensure: %.1fms", (_time.time() - _t1) * 1000)
+        _t1 = _time.time()
         await run_owned_sync(materialize_attachments, task, runtime)
+        logger.info("[timing] materialize_attachments: %.1fms", (_time.time() - _t1) * 1000)
+        _t1 = _time.time()
         if runtime.policy.external:
             from services.datamind.execution.sdk_tools.external_tools import build_external_servers
             task.context.extra["external_servers"] = await build_external_servers(backend, task.context, runtime)
+        logger.info("[timing] external_servers: %.1fms", (_time.time() - _t1) * 1000)
+        _t1 = _time.time()
         options = build_options(adapter, task, backend)
         context_token = set_execution_context(task.context)
         sdk = load_sdk(backend)
@@ -197,11 +209,16 @@ async def _execute_stream(adapter, task, backend):
         starting_sdk = True
         client = client_type(options=options)
         await client.connect()
+        logger.info("[timing] sdk_connect: %.1fms", (_time.time() - _t1) * 1000)
+        _t1 = _time.time()
         await run_owned_sync(runtime.record_client, client)
         yield {"type": "capabilities", "data": runtime.policy.manifest()}
         prompt = adapter._prompt_with_attachments(task, include_history=not runtime.sdk_session_id)
+        logger.info("[timing] prompt_build: %.1fms", (_time.time() - _t1) * 1000)
         query_started = True
+        _t1 = _time.time()
         await client.query(prompt)
+        logger.info("[timing] client_query_sent: %.1fms", (_time.time() - _t1) * 1000)
         iterator = client.receive_response().__aiter__()
         while True:
             try:

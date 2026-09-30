@@ -17,7 +17,7 @@ from services.datamind.execution.manager import get_execution_layer_manager
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-VALID_LAYER_TYPES = ("builtin", "cli", "docker", "remote")
+VALID_LAYER_TYPES = ("cli", "docker", "remote")
 VALID_STATUSES = ("active", "inactive", "error")
 
 
@@ -225,23 +225,14 @@ def update_workspace_execution_layers(workspace_id: int, req: WorkspaceLayersUpd
 
 @router.get("/workspaces/{workspace_id}/execution-layer")
 async def get_workspace_execution_layer(workspace_id: int):
-    """获取工作空间生效的执行层(未绑定时回退内置层)及模型候选.
+    """获取工作空间生效的执行层及模型候选.
 
     chat 页面据此调整模型框:
-    - builtin: 模型候选来自系统模型中心(model_source=system)
     - cli(qoder 等): 候选来自执行层 list_models(model_source=execution_layer)
-
-    Agent 模式一致性: 解析结果为 builtin 但系统存在健康外部层时,
-    回退到默认外部层(与 chat_service 的 agent 派发规则对齐:
-    builtin 不参与 agent 模式派发), 避免"实际走 qoder、模型框却展示系统模型中心".
     """
     try:
         manager = get_execution_layer_manager()
         row = await manager.resolve_workspace_layer(workspace_id)
-        if row.get("layer_type") == "builtin":
-            external = exec_service.get_default_external_layer()
-            if external:
-                row = external
         resp = {
             "layer_id": row.get("id"),
             "name": row.get("name"),
@@ -312,8 +303,6 @@ def delete_execution_layer(layer_id: int):
         row = exec_service.get_layer(layer_id)
         if not row:
             raise HTTPException(status_code=404, detail="执行层不存在")
-        if row.get("layer_type") == "builtin":
-            raise HTTPException(status_code=400, detail="内置执行层不可删除")
         exec_service.delete_layer(layer_id)
         return {"success": True}
     except HTTPException:

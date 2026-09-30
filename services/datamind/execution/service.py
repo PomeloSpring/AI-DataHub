@@ -231,15 +231,12 @@ def is_healthy_layer(row: dict) -> bool:
 
 
 def get_default_external_layer() -> dict | None:
-    """系统默认外部执行层(非 builtin)。
+    """系统默认外部执行层。
 
-    用于 chat Agent 模式在工作空间未显式绑定外部层时的兜底解析:
-    取第一个 healthy 且 active 的非内置执行层(按 id 升序,通常为 qoder)。
-    builtin 层不参与 Agent 模式派发,故排除。
+    用于 chat Agent 模式在工作空间未显式绑定外部层时的兆底解析:
+    取第一个 healthy 且 active 的执行层(按 id 升序,通常为 qoder)。
     """
     for r in list_layers():
-        if r.get("layer_type") == "builtin":
-            continue
         if not _row_healthy(r):
             continue
         return r

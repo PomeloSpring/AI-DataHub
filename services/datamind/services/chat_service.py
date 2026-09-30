@@ -1,7 +1,7 @@
 """Chat Service — Thin wrapper that delegates to existing backend modules.
 
 Provides streaming and non-streaming query execution via the pipeline orchestrator,
-and agent dispatch via the agent pipeline.
+and agent dispatch via external execution layers.
 """
 
 import json
@@ -176,65 +176,6 @@ class ChatService:
 
         return result
 
-    async def dispatch_agent(
-        self,
-        question: str,
-        agent_name: Optional[str],
-        datasource_id: int,
-        model_id: Optional[int],
-        history: list[dict],
-        workspace_id: int,
-        user_id: int,
-        username: str,
-        request: Request,
-        user_role: str = "user",
-        attachments: list[str] = None,
-        model_ref: str = "",
-        session_id: str = "",
-    ):
-        """Dispatch a query to a specific agent or auto-route via orchestrator.
-
-        Always runs on the built-in Agent pipeline (deep mode):
-        explicit agent targeting and orchestrator intent routing both live there.
-        External execution layers are reserved for the 'agent' chat mode.
-        Yields SSE bytes.
-        """
-        attachments = attachments or []
-
-        from services.datamind.nl2sql.orchestrator.pipeline_orchestrator import execute_pipeline
-
-        # 内置 Agent 管线(deep 模式)支持意图路由与指定 agent 分发
-        pipeline_mode = "deep"
-
-        try:
-            async for event_type, data in execute_pipeline(
-                question=question,
-                history=history,
-                datasource_id=datasource_id,
-                model_id=model_id,
-                pipeline_mode=pipeline_mode,
-                user_id=user_id,
-                username=username,
-                workspace_id=workspace_id,
-                user_role=user_role,
-                attachments=attachments,
-            ):
-                if await request.is_disconnected():
-                    logger.info("Client disconnected, stopping agent dispatch")
-                    break
-                yield _sse_event(event_type, data)
-
-        except Exception as e:
-            logger.error("Agent dispatch error: %s", e, exc_info=True)
-            yield _sse_event("error", {"message": str(e)})
-            yield _sse_event("done", {
-                "intent": "query",
-                "reply": f"Agent error: {str(e)}",
-                "sql": None,
-                "warnings": [],
-                "error": str(e),
-            })
-
     async def _try_dispatch_via_execution_layer(
         self,
         question: str,
@@ -255,8 +196,8 @@ class ChatService:
     ):
         """Agent 模式执行层派发.
 
-        层解析优先级:工作空间绑定的非内置默认层 > 系统默认非内置外部层(qoder)。
-        外部执行层缺失或不可用时直接报错(不回退内置管线)。
+        层解析优先级:工作空间绑定的默认层 > 系统默认外部层(qoder)。
+        外部执行层缺失或不可用时直接报错。
         """
         import uuid
 
@@ -269,9 +210,8 @@ class ChatService:
         fallback = None
         try:
             for l in exec_service.get_workspace_layers(workspace_id):
-                if l.get("status") != "active" or l.get("layer_type") == "builtin":
+                if l.get("status") != "active":
                     continue
-                # 跳过心跳超时的 stale 自注册层(手工/内置层始终视为健康)
                 if not exec_service.is_healthy_layer(l):
                     logger.warning("Skipping unhealthy execution layer: %s", l.get("name"))
                     continue
@@ -287,7 +227,7 @@ class ChatService:
         if row is None:
             row = fallback
         if row is None:
-            # Agent 模式默认执行层:系统级健康的非内置外部层(全面切 qoder 后通常为 cli-qoder)
+            # Agent 模式默认执行层:系统级健康的外部层(通常为 cli-qoder)
             row = exec_service.get_default_external_layer()
         if row is None or row.get("status") != "active":
             err = "Agent 模式不可用:未找到可用的外部执行层(qoder 层缺失或未启用)"

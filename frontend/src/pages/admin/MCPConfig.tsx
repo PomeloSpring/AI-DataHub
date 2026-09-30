@@ -129,9 +129,11 @@ export default function MCPConfig() {
           <h1 className="text-2xl font-bold">MCP 服务</h1>
           <p className="text-muted-foreground text-sm mt-1">注册 MCP 服务，为 Agent 提供工具能力</p>
         </div>
-        <Button size="sm" onClick={() => { setEditing(null); setForm({ transport: 'sse', is_active: 1 }); setFormOpen(true); }}>
-          <Plus className="h-4 w-4 mr-1" /> 添加服务
-        </Button>
+        <div className="flex gap-2">
+          <Button size="sm" onClick={() => { setEditing(null); setForm({ transport: 'sse', is_active: 1 }); setFormOpen(true); }}>
+            <Plus className="h-4 w-4 mr-1" /> 添加服务
+          </Button>
+        </div>
       </div>
 
       {/* Form */}
@@ -147,6 +149,7 @@ export default function MCPConfig() {
               <Select value={form.transport} onValueChange={v => setForm({ ...form, transport: v })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="sse">SSE (远程服务)</SelectItem>
                   <SelectItem value="streamable_http">Streamable HTTP (远程服务)</SelectItem>
                   <SelectItem value="stdio">stdio (本地进程)</SelectItem>
                 </SelectContent>
@@ -266,7 +269,7 @@ export default function MCPConfig() {
               const toolsRaw = s.discovered_tools || s.tools_config;
               if (!toolsRaw) return null;
               try {
-                const tools = JSON.parse(toolsRaw);
+                const tools = typeof toolsRaw === 'string' ? JSON.parse(toolsRaw) : toolsRaw;
                 if (!Array.isArray(tools) || tools.length === 0) return null;
                 const isExpanded = expandedTools.has(s.id);
                 return (

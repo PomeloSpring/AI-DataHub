@@ -148,7 +148,7 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
             return dirs
         if workspace_id:
             try:
-                from services.datamind.agent.file_tools import workspace_root
+                from services.datamind.execution.workspace import workspace_root
                 return [str(workspace_root(workspace_id))]
             except Exception as e:
                 logger.warning("[ExecLayer:%s] Resolve workspace root failed: %s", self._name, e)

@@ -3,14 +3,16 @@
 Each service creates an MCP server that exposes tools and resources
 for external AI tool integration (Claude Desktop, Cursor, etc.).
 
-Usage in each service's main.py:
-    from services.shared.common.mcp_base import create_mcp_server
+统一用 mcp SDK 低级 Server(list_tools/call_tool 装饰器)——FastMCP 风格的
+`@server.tool()` 在低级 Server 上不存在，使用会 AttributeError。
 
-    mcp = create_mcp_server("datacatalog", "Data Catalog MCP Server")
+Usage in each service's mcp_server.py:
+    from services.shared.common.mcp_base import create_mcp_server, create_mcp_starlette_app
 
-    @mcp.tool()
-    async def search_metadata(query: str) -> str:
-        ...
+    server = create_mcp_server("datacatalog", "Data Catalog MCP Server")
+
+    @server.list_tools()
+    async def _list_tools(): ...
 """
 
 from mcp.server import Server
@@ -39,8 +41,12 @@ def create_mcp_starlette_app(server: Server, sse_path: str = "/sse", message_pat
 
     Args:
         server: MCP Server instance
-        sse_path: URL path for SSE endpoint
-        message_path: URL path for message endpoint
+        sse_path: URL path for SSE endpoint (子 app 内相对路径)
+        message_path: URL path for message endpoint (子 app 内相对路径)
+
+    挂载前缀由 Starlette Mount 的 root_path 自动处理：mcp SDK 的 SseServerTransport
+    在 SSE 连接建立时按 root_path + message_path 回传 endpoint event，
+    因此此处只传相对路径（手动拼接前缀会造成 /mcp/mcp/messages 双重前缀）。
 
     Returns:
         Starlette ASGI application

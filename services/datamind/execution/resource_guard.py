@@ -22,28 +22,24 @@ class ResourceScopeError(PermissionError):
 
 
 def bind_resources(ctx, policy):
-    """每次从共享库解析范围：空 Waker 源配置继承工作空间，非空只收窄。
+    """每次从共享库解析范围：Waker 不持有数据源边界，范围=工作空间绑定∩用户角色权限。
 
-    用户权限仍取交集；无唯一候选不猜源，已选源失效不静默切换。
+    Waker 必须依托用户或工作空间使用，数据源权限始终跟随用户角色（RLS/列级按真实用户施加）。
+    无唯一候选不猜源，已选源失效不静默切换。
     系统助手的默认域独立，不继承业务数据源。
     """
     if policy.waker["waker_key"] == "__system_bot__":
         ctx.datasource_id = 0
         allowed = set()
     else:
-        configured = set(policy.waker.get("datasource_ids") or [])
         rows = execute_query(
             "SELECT b.datasource_id FROM adh_workspace_datasources b "
             "JOIN adh_datasources d ON d.id=b.datasource_id WHERE b.workspace_id=%s",
             (ctx.workspace_id,),
         )
-        workspace_sources = {r["datasource_id"] for r in rows}
-        if ctx.datasource_id:
-            if configured and ctx.datasource_id not in configured:
-                raise ResourceScopeError("当前数据源不在 Waker 指定范围内，请选择已授权数据源")
-            if ctx.datasource_id not in workspace_sources:
-                raise ResourceScopeError("当前数据源未绑定到工作空间或绑定已撤回，请重新选择")
-        allowed = workspace_sources & configured if configured else workspace_sources
+        allowed = {r["datasource_id"] for r in rows}
+        if ctx.datasource_id and ctx.datasource_id not in allowed:
+            raise ResourceScopeError("当前数据源未绑定到工作空间或绑定已撤回，请重新选择")
         if ctx.user_role != "admin":
             from services.authservice.services.role_service import role_service
             # fail-closed(护城河 RBAC): 空角色权限不解释为全量, 与普通用户取交集即收窄。

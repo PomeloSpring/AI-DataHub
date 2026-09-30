@@ -1,16 +1,15 @@
-"""Waker 解析服务 — chat 运行时按 (工作空间 + 用户角色) 解析生效的 Waker 集合.
+"""Waker 解析服务 — chat 运行时按 (工作空间 + 用户角色) 解析生效的 Waker.
 
 Waker 是"角色化智能体"的统一配置单元(表 adh_wakers),内联职责/风格/边界(persona)、
 系统提示词、工具集、图表开关、skills;MCP 与数据源作为共享资源被引用(ID 列表)。
 
-绑定关系:
-- adh_workspace_wakers: 工作空间可用 Waker(is_default 指定默认)
-- adh_role_wakers: 角色可用 Waker(按 adh_roles.name = user_role 解析 role_id)
+绑定关系(角色-Waker 一对一):
+- adh_wakers.role_id: 每个角色有且仅有一个 Waker(唯一索引)
+- adh_workspace_wakers: 工作空间可用 Waker 授权(已废弃,保留兼容)
 
 解析规则:
-- 候选 = 工作空间绑定 Waker;工作空间无绑定时回退全局 Waker(workspace_id=0)
-- 角色白名单 = 该角色绑定的 Waker;角色无绑定时不额外限制
-- 生效 = 候选 ∩ 角色白名单(白名单为空则取候选);取不到时回退工作空间默认 Waker
+- 按用户角色直接查 adh_wakers.role_id(一对一绑定)
+- 角色无 Waker 时返回空列表
 """
 
 import json
@@ -45,7 +44,8 @@ def _resource_ids(raw):
 
 
 def _normalize(row: dict) -> dict:
-    """DB 行 → Waker 配置(persona/tools/mcp_server_ids/datasource_ids/skills 解析)."""
+    """DB 行 → Waker 配置(persona/tools/mcp_server_ids/knowledge_base_ids/skills 解析；
+    数据源范围不属 Waker 配置，始终由工作空间绑定∩用户角色权限决定)."""
     from services.datamind.execution.tool_policy import normalize_tools
     tools = normalize_tools(row.get("tools"))
     return {
@@ -59,7 +59,6 @@ def _normalize(row: dict) -> dict:
         "persona": _parse_json(row.get("persona"), {}),
         "tools": tools,
         "mcp_server_ids": _resource_ids(row.get("mcp_server_ids")),
-        "datasource_ids": _resource_ids(row.get("datasource_ids")),
         "knowledge_base_ids": _resource_ids(row.get("knowledge_base_ids")),
         "skills": _parse_json(row.get("skills"), []),
         "models": _parse_json(row.get("models"), []),
@@ -82,54 +81,33 @@ def _query(sql: str, params: tuple = ()) -> list[dict]:
 
 def resolve_wakers(workspace_id: int, user_role: str = "", waker_key: str = "", user_id: int = 0,
                    include_unavailable: bool = False) -> list[dict]:
-    """解析 (工作空间 + 角色) 生效的 Waker 配置列表(已归一化).
+    """解析用户角色对应的 Waker 配置(角色-Waker 一对一绑定).
 
-    waker_key 非空时进一步收窄为聊天端选定的单个 Waker(仅当它属于当前
-    生效集合时生效,否则忽略该选择回退到全部生效 Waker,防止越权)。
+    按用户角色直接查 adh_wakers.role_id,返回该角色的唯一 Waker.
+    waker_key 参数保留向后兼容,但不再用于收窄(因为一对一绑定下无选择空间).
     """
-    # 1. 工作空间候选(含默认标记)
-    candidates: list[dict] = []
-    if workspace_id:
-        candidates = [
-            dict(r)
-            for r in _query(
-                """SELECT w.*, b.is_default FROM adh_workspace_wakers b
-                   JOIN adh_wakers w ON w.id = b.waker_id
-                   WHERE b.workspace_id = %s AND w.is_active = 1
-                   ORDER BY b.sort, w.id""",
-                (workspace_id,),
-            )
-        ]
-    # 全局域只在明确选择全局工作空间时使用，不因业务工作空间无绑定而放权。
-    if not workspace_id:
-        candidates = [
-            dict(r)
-            for r in _query(
-                "SELECT * FROM adh_wakers WHERE is_active = 1 AND workspace_id = 0 ORDER BY id"
-            )
-        ]
-    if not candidates:
-        if waker_key:
-            raise PermissionError("当前工作空间未授权所选 Waker")
+    # 解析用户角色 ID
+    if user_id:
+        from services.authservice.services.role_service import role_service
+        role_rows = role_service.get_user_roles(user_id, workspace_id)
+    else:
+        role_rows = _query("SELECT id FROM adh_roles WHERE name = %s", (user_role,)) if user_role else []
+    role_ids = [r["id"] for r in role_rows]
+    if not role_ids:
         return []
 
-    # 普通会话不允许经全局候选隐式进入系统助手。
-    candidates = [w for w in candidates if w["waker_key"] != SYSTEM_BOT_WAKER_KEY]
-    effective = candidates if user_role == "admin" else []
-    if user_role != "admin":
-        if user_id:
-            from services.authservice.services.role_service import role_service
-            role_rows = role_service.get_user_roles(user_id, workspace_id)
-        else:
-            role_rows = _query("SELECT id FROM adh_roles WHERE name = %s", (user_role,)) if user_role else []
-        role_ids = [r["id"] for r in role_rows]
-        if role_ids:
-            placeholders = ", ".join(["%s"] * len(role_ids))
-            allowed = {r["waker_id"] for r in _query(
-                f"SELECT DISTINCT waker_id FROM adh_role_wakers WHERE role_id IN ({placeholders})",
-                tuple(role_ids),
-            )}
-            effective = [w for w in candidates if w["id"] in allowed]
+    # 按 role_id 直接查 Waker(角色-Waker 一对一)
+    placeholders = ", ".join(["%s"] * len(role_ids))
+    candidates = _query(
+        f"SELECT * FROM adh_wakers WHERE role_id IN ({placeholders}) AND is_active = 1 ORDER BY id",
+        tuple(role_ids),
+    )
+    if not candidates:
+        if waker_key:
+            raise PermissionError("当前角色未配置 Waker")
+        return []
+
+    effective = list(candidates)
     if waker_key:
         effective = [w for w in effective if w["waker_key"] == waker_key]
         if not effective:
@@ -146,7 +124,7 @@ def resolve_wakers(workspace_id: int, user_role: str = "", waker_key: str = "", 
             if not include_unavailable:
                 raise
             logger.warning("Waker 配置不可用: %s: %s", row.get("waker_key"), exc)
-            result.append({**{k: row.get(k) for k in ("id", "waker_key", "name", "display_name", "is_default")},
+            result.append({**{k: row.get(k) for k in ("id", "waker_key", "name", "display_name")},
                            "available": False, "unavailable_reason": str(exc), "models": []})
     return result
 

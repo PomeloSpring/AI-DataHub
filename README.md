@@ -243,7 +243,7 @@ System
 
 <table>
 <tr>
-<td><img src="docs/img/Chat数据分析.png" width="400" alt="Chat 数据分析"></td>
+<td><img src="docs/img/Chat数据分析.png" width="400" alt="智能问数"></td>
 <td><img src="docs/img/可视化UI设计.png" width="400" alt="可视化 UI 设计"></td>
 </tr>
 <tr>

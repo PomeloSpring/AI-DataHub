@@ -5,7 +5,7 @@ import {
   CheckCircle, BarChart3, Table, Code, Clock,
   Plus, MessageSquare, Trash, TrendingUp, X, RefreshCw,
   MoreHorizontal, Pencil, Check, ThumbsUp, ThumbsDown, Cpu,
-  Workflow, Loader2, Maximize2, Minimize2, Paperclip, FileText, Box,
+  Loader2, Maximize2, Minimize2, Paperclip, FileText, Box,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -69,9 +69,6 @@ export default function Chat() {
   const [input, setInput] = useState('');
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState('');
-  const [atMenuOpen, setAtMenuOpen] = useState(false);
-  const [atMenuIndex, setAtMenuIndex] = useState(0);
-  const [atFilter, setAtFilter] = useState('');
   const [focusMode, setFocusMode] = useState(false);
   const [pendingAtts, setPendingAtts] = useState<AttachmentInfo[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -85,14 +82,13 @@ export default function Chat() {
     pipelineMode: chatPipelineMode,
     selectedWorkspaceId, setSelectedWorkspaceId, loadWorkspaceConfig,
     executionLayer, selectedModelRef, loadExecutionLayer, setSelectedModelRef,
-    wakers, selectedWakerKey, loadWakers, setSelectedWakerKey,
+    wakers, selectedWakerKey, loadWakers,
     reportTheme, setReportTheme,
     loadConversations, loadDatasources, loadLLMModels, loadSystemConfig,
     setSelectedDsId, setSelectedModelId, setPipelineMode,
     startNewConversation, switchConversation, deleteConversation, renameConversation,
     sendMessage, cancelMessage, respondToAsk, cancelAsk, updateMessageFeedback, setViewMode, analyzeData, predictData, clear,
     uploadAttachment,
-    mcpServers, loadMcpTools,
   } = useChatStore();
   // 加载推荐问题（Chat 空白时展示）
   useEffect(() => {
@@ -109,112 +105,6 @@ export default function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const thinkingRef = useRef<HTMLDivElement>(null);
 
-  // 深度模式 = 平台内置 Agent(支持 MCP 工具 @ 提及);Agent 模式 = 外部执行层(默认 qoder)
-  const isAgentMode = chatPipelineMode === 'deep';
-
-  // Flatten all MCP tools from all servers (only in deep/built-in agent mode)
-  const allMcpTools = isAgentMode ? mcpServers.flatMap((s: any) =>
-    (s.tools || []).map((t: any) => ({
-      name: `${s.server_name}__${t.name}`,
-      displayName: t.name,
-      serverName: s.server_name,
-      description: t.description || '',
-    }))
-  ) : [];
-
-  // Filtered tools for @ mention
-  const filteredTools = atFilter
-    ? allMcpTools.filter((t: any) =>
-        t.name.toLowerCase().includes(atFilter.toLowerCase()) ||
-        t.displayName.toLowerCase().includes(atFilter.toLowerCase()) ||
-        t.description.toLowerCase().includes(atFilter.toLowerCase())
-      )
-    : allMcpTools;
-
-  // Parse @tool mentions from input
-  const parseMcpTools = (text: string): string[] => {
-    const matches = text.match(/@[\w_]+__[\w_]+/g) || [];
-    return matches.map(m => m.substring(1)); // remove @
-  };
-
-  // Handle input change with @ detection
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value;
-    setInput(value);
-
-    // Detect @ trigger
-    const cursorPos = e.target.selectionStart || value.length;
-    const textBeforeCursor = value.substring(0, cursorPos);
-    const atIndex = textBeforeCursor.lastIndexOf('@');
-
-    if (atIndex >= 0) {
-      const afterAt = textBeforeCursor.substring(atIndex + 1);
-      // Only show menu if @ is at start or preceded by space
-      if (atIndex === 0 || textBeforeCursor[atIndex - 1] === ' ') {
-        if (!afterAt.includes(' ') && afterAt.length < 30) {
-          setAtFilter(afterAt);
-          setAtMenuOpen(true);
-          setAtMenuIndex(0);
-          return;
-        }
-      }
-    }
-    setAtMenuOpen(false);
-  };
-
-  // Select a tool from @ menu
-  const selectAtTool = (toolName: string) => {
-    const cursorPos = inputRef.current?.selectionStart || input.length;
-    const textBeforeCursor = input.substring(0, cursorPos);
-    const atIndex = textBeforeCursor.lastIndexOf('@');
-
-    if (atIndex >= 0) {
-      const before = input.substring(0, atIndex);
-      const after = input.substring(cursorPos);
-      const newInput = `${before}@${toolName} ${after}`;
-      setInput(newInput);
-      setAtMenuOpen(false);
-
-      // Focus and set cursor after the inserted tool
-      setTimeout(() => {
-        if (inputRef.current) {
-          const newPos = atIndex + toolName.length + 2; // +2 for @ and space
-          inputRef.current.focus();
-          inputRef.current.setSelectionRange(newPos, newPos);
-        }
-      }, 0);
-    }
-  };
-
-  // Handle keyboard in @ menu
-  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (atMenuOpen && filteredTools.length > 0) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setAtMenuIndex(prev => Math.min(prev + 1, filteredTools.length - 1));
-        return;
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setAtMenuIndex(prev => Math.max(prev - 1, 0));
-        return;
-      }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault();
-        selectAtTool(filteredTools[atMenuIndex].name);
-        return;
-      }
-      if (e.key === 'Escape') {
-        setAtMenuOpen(false);
-        return;
-      }
-    }
-
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
   const prevMsgCountRef = useRef(0);
   const prevConvIdRef = useRef<number | null | undefined>(undefined);
   const [feedbackMap, setFeedbackMap] = useState<Record<number, 'up' | 'down'>>({});
@@ -294,15 +184,6 @@ export default function Chat() {
     }
   }, [selectedWorkspaceId, loadExecutionLayer, loadWakers]);
 
-  // Load MCP tools only when in deep (built-in agent) mode
-  useEffect(() => {
-    if (isAgentMode) {
-      loadMcpTools();
-    } else {
-      setAtMenuOpen(false);
-    }
-  }, [isAgentMode]);
-
   // Auto-scroll: new messages or streaming thinking content
   const lastThinking = messages.length > 0 ? messages[messages.length - 1]?.thinking || '' : '';
   useEffect(() => {
@@ -329,31 +210,19 @@ export default function Chat() {
   const handleSend = () => {
     if ((!input.trim() && pendingAtts.length === 0) || loading) return;
 
-    // Parse @tool mentions
-    const mcpTools = parseMcpTools(input);
-    // Strip @tool mentions from the display message
-    const cleanMessage = input.replace(/@[\w_]+__[\w_]+\s*/g, '').trim();
     const attachments = pendingAtts.length > 0 ? pendingAtts : undefined;
-    const questionText = cleanMessage || input.trim() || '请分析我上传的附件';
+    const questionText = input.trim() || '请分析我上传的附件';
 
-    if (mcpTools.length > 0) {
-      // Pass with MCP tools
-      sendMessage(questionText, mcpTools, attachments);
-    } else {
-      sendMessage(questionText, undefined, attachments);
-    }
+    sendMessage(questionText, undefined, attachments);
 
     setInput('');
     setPendingAtts([]);
-    setAtMenuOpen(false);
   };
 
   // 推荐追问/快捷动作：以按钮形式直接发起一轮对话（不污染输入框）
   const runQuestion = (text: string) => {
     if (loading || !text.trim()) return;
-    const mcpTools = parseMcpTools(text);
-    const clean = text.replace(/@[\w_]+__[\w_]+\s*/g, '').trim();
-    sendMessage(mcpTools.length ? clean : text, mcpTools.length ? mcpTools : undefined);
+    sendMessage(text);
   };
 
   // 赞踩打标渲染 — 内置结果卡与 Agent 输出共用(外层需 flex flex-wrap 容器)
@@ -530,12 +399,10 @@ export default function Chat() {
             <h1 className="text-lg font-bold">{independent ? '智能问数' : 'Chat 数据分析'}</h1>
           </div>
           <div className="flex items-center gap-2">
-            {/* Mode Selector — 全面转向 Qoder 执行层:隐藏 quick/内置 deep,仅保留 Qoder */}
+            {/* Mode Selector — 全面转向 Qoder 执行层 */}
             {(() => {
               const modes: string[] = ['agent'];
               const modeLabel: Record<string, { icon: any; text: string }> = {
-                quick: { icon: <Zap className="h-3 w-3 inline mr-1" />, text: '快速' },
-                deep: { icon: <Workflow className="h-3 w-3 inline mr-1" />, text: '深度' },
                 agent: { icon: <Bot className="h-3 w-3 inline mr-1" />, text: 'Qoder' },
               };
               const currentMode = modes.includes(chatPipelineMode || '') ? chatPipelineMode! : (modes[0] || 'agent');
@@ -552,10 +419,8 @@ export default function Chat() {
                   key={`mode-${selectedWorkspaceId}`}
                   value={currentMode}
                   onValueChange={(v) => {
-                    setPipelineMode(v as 'quick' | 'deep' | 'agent');
+                    setPipelineMode(v as 'quick' | 'agent');
                     const msgs: Record<string, string> = {
-                      quick: '快速模式：简化 RAG 检索，响应快，适合简单查询',
-                      deep: '深度模式：平台内置 Agent，LLM 自主工具调用（SQL/分析/MCP）',
                       agent: 'Qoder 执行层：角色化智能体，自主工具调用与可视化',
                     };
                     toast.info(msgs[v] || '');
@@ -575,31 +440,11 @@ export default function Chat() {
               );
             })()}
 
-            {/* Waker 选择器 — 仅当 (工作空间+角色) 可选 Waker > 1 时展示;只有一个时隐藏 */}
-            {wakers.length > 0 && (
-              <Select
-                key={`waker-${selectedWorkspaceId}`}
-                value={selectedWakerKey || ''}
-                onValueChange={(v) => setSelectedWakerKey(v)}
-              >
-                <SelectTrigger className="w-[160px] h-8" title="选择 Waker(角色化智能体)">
-                  <Bot className="h-3.5 w-3.5 mr-1.5" />
-                  <SelectValue placeholder="选择 Waker" />
-                </SelectTrigger>
-                <SelectContent>
-                  {wakers.map((w) => (
-                    <SelectItem key={w.waker_key} value={w.waker_key} disabled={w.available === false}
-                      title={w.unavailable_reason}>{w.display_name || w.name}{w.available === false ? `（不可用：${w.unavailable_reason}）` : ''}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-
             {/* 模型选择器:
-                - 有 Waker 时: 候选 = 选中 Waker 的可用模型; >1 才展示 (=1 自动选中 / 留空用执行层默认)
+                - 有 Waker 时: 候选 = Waker 的可用模型; >1 才展示 (=1 自动选中 / 留空用执行层默认)
                 - 无 Waker 时: 回退执行层模型候选(原行为) */}
             {(() => {
-              const waker = wakers.find(w => w.waker_key === (selectedWakerKey || wakers[0]?.waker_key)) || null;
+              const waker = wakers.length > 0 ? wakers[0] : null;
               if (wakers.length > 0 && waker) {
                 const wm = waker.models || [];
                 if (wm.length <= 1) return null;
@@ -1057,28 +902,6 @@ export default function Chat() {
         {/* Input area */}
         <div className="flex-shrink-0 p-4 border-t bg-background">
           <div className="relative">
-            {/* @ mention dropdown - only in agent mode */}
-            {isAgentMode && atMenuOpen && filteredTools.length > 0 && (
-              <div className="absolute bottom-full left-0 right-0 mb-1 bg-popover border rounded-lg shadow-lg max-h-48 overflow-y-auto z-50">
-                <div className="px-2 py-1.5 text-xs text-muted-foreground border-b">
-                  选择 MCP 工具 (↑↓ 选择，Enter 确认)
-                </div>
-                {filteredTools.map((tool: any, i: number) => (
-                  <div
-                    key={tool.name}
-                    className={`px-3 py-2 cursor-pointer text-sm ${
-                      i === atMenuIndex ? 'bg-accent text-accent-foreground' : 'hover:bg-muted'
-                    }`}
-                    onClick={() => selectAtTool(tool.name)}
-                  >
-                    <span className="font-mono font-medium text-primary">{tool.displayName}</span>
-                    <span className="ml-2 text-xs text-muted-foreground">({tool.serverName})</span>
-                    <span className="ml-2 text-xs text-muted-foreground truncate">{tool.description}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-
             {/* Pending attachments preview bar */}
             {pendingAtts.length > 0 && (
               <div className="flex items-center gap-2 mb-2 flex-wrap">
@@ -1121,10 +944,10 @@ export default function Chat() {
               <Input
                 ref={inputRef}
                 value={input}
-                onChange={isAgentMode ? handleInputChange : (e) => setInput(e.target.value)}
-                placeholder={isAgentMode ? "输入问题... 输入 @ 调用 MCP 工具" : "输入你的数据查询问题..."}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="输入你的数据查询问题..."
                 className="flex-1"
-                onKeyDown={isAgentMode ? handleInputKeyDown : (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
               />
               <Button onClick={handleSend} disabled={loading || (!input.trim() && pendingAtts.length === 0)}>
                 {loading ? <Spinner className="h-4 w-4 mr-2" /> : <Send className="h-4 w-4 mr-2" />}
@@ -1137,18 +960,6 @@ export default function Chat() {
                 </Button>
               )}
             </div>
-
-            {/* Show selected @tools as chips - only in agent mode */}
-            {isAgentMode && parseMcpTools(input).length > 0 && (
-              <div className="flex items-center gap-1 mt-1.5 flex-wrap">
-                <span className="text-xs text-muted-foreground">调用:</span>
-                {parseMcpTools(input).map(toolName => (
-                  <Badge key={toolName} variant="secondary" className="text-xs py-0">
-                    @{toolName}
-                  </Badge>
-                ))}
-              </div>
-            )}
           </div>
         </div>
       </div>

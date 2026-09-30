@@ -102,7 +102,7 @@ export interface WorkspaceExecutionLayer {
   layer_id: number;
   name: string;
   display_name: string;
-  layer_type: string;  // builtin | cli | docker | remote
+  layer_type: string;  // cli | docker | remote
   allowed_tools: string[];
   model_source: 'system' | 'execution_layer';
   models: string[];  // cli 执行层的模型候选(如 provider/model_name)
@@ -134,7 +134,7 @@ interface ChatState {
   datasources: { id: number; name: string; db_type: string }[];
   selectedModelId: number | null;
   llmModels: LLMModel[];
-  pipelineMode: 'quick' | 'deep' | 'agent' | null;  // null = use legacy endpoints
+  pipelineMode: 'quick' | 'agent' | null;  // null = use legacy endpoints
   retrievalStrategy: string;  // hybrid only
 
   // Workspace state (for Agent mode)
@@ -173,7 +173,7 @@ interface ChatState {
   setSelectedModelRef: (ref: string | null) => void;
   setSelectedDsId: (id: number) => void;
   setSelectedModelId: (id: number | null) => void;
-  setPipelineMode: (mode: 'quick' | 'deep' | 'agent' | null) => void;
+  setPipelineMode: (mode: 'quick' | 'agent' | null) => void;
   setRetrievalStrategy: (strategy: string) => void;
   setSelectedWorkspaceId: (id: number) => void;
   loadMcpTools: () => Promise<void>;
@@ -366,7 +366,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   loadExecutionLayer: async (workspaceId: number) => {
     const context = chatContextVersion;
-    // 工作空间生效的执行层(未绑定时后端回退内置层),含模型候选
+    // 工作空间生效的执行层,含模型候选
     try {
       const { data } = await client.get(`/admin/execution-layers/workspaces/${workspaceId}/execution-layer`);
       if (context !== chatContextVersion || workspaceId !== get().selectedWorkspaceId) return;
@@ -654,8 +654,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       apiEndpoint = '/api/pipeline/send/stream';
       requestBody.pipeline_mode = state.pipelineMode;
       requestBody.retrieval_strategy = state.retrievalStrategy;
-      // Deep(内置 Agent)与 Agent(执行层)模式都需要工作空间上下文
-      if ((state.pipelineMode === 'agent' || state.pipelineMode === 'deep') && state.selectedWorkspaceId) {
+      // Agent(执行层)模式需要工作空间上下文
+      if (state.pipelineMode === 'agent' && state.selectedWorkspaceId) {
         requestBody.workspace_id = state.selectedWorkspaceId;
       }
       if (state.pipelineMode === 'agent') {

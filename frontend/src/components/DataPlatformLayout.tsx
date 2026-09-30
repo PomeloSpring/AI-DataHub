@@ -4,7 +4,7 @@ import {
   Database, FileText, Link, Settings, LogOut, Menu,
   Sun, Moon, Palette, Zap, TrendingUp, Grid3x3, GlassWater, Heart,
   UserCircle, X, ChevronLeft, ChevronRight, GitBranch,
-  RefreshCw, Activity, Shield, Ruler, Eye, Brain, Gem, Boxes, Terminal, Layers,
+  RefreshCw, Activity, Shield, ShieldCheck, Ruler, Eye, Brain, Gem, Boxes, Terminal, Layers,
   FileQuestion,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -44,16 +44,18 @@ const DATA_PLATFORM_MENU_ITEMS = [
   { key: '/data/datasources', icon: Database, label: '数据源管理' },
   { key: '/data/tables', icon: FileText, label: '表 & 字段' },
   { key: '/data/playground', icon: Terminal, label: 'SQL Playground' },
-  { key: '/data/datasets', icon: Layers, label: '数据集' },
   { section: '数据目录' },
+  { key: '/data/datasets', icon: Layers, label: '数据集' },
   { key: '/data/ontology', icon: Boxes, label: '本体工作区' },
   { key: '/data/sql-pairs', icon: FileQuestion, label: 'SQL 示例对' },
+  { section: '数据安全配置' },
+  { key: '/data/sensitive', icon: Shield, label: '敏感数据' },
+  { key: '/data/rls', icon: ShieldCheck, label: 'RLS 行级安全' },
   { section: '数据质量' },
   { key: '/data/quality', icon: Activity, label: '质量概览' },
   { key: '/data/quality/rules', icon: Settings, label: '质量规则' },
   { key: '/data/lineage', icon: GitBranch, label: '数据血缘' },
   { key: '/data/standards', icon: Ruler, label: '数据标准' },
-  { key: '/data/sensitive', icon: Shield, label: '敏感数据' },
   { section: '数据同步' },
   { key: '/data/sync', icon: RefreshCw, label: '同步任务' },
   { key: '/data/sync/logs', icon: FileText, label: '执行日志' },
@@ -198,7 +200,6 @@ export default function DataPlatformLayout() {
             </Button>
           </div>
           <div className="flex items-center gap-2">
-            {/* AS-BOT 系统助手 */}
             <AsBotButton />
             {/* Module switcher — 工作空间 / 数据中台 / 系统配置 */}
             <SectionSwitcher current="data" />

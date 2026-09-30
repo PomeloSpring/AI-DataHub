@@ -14,12 +14,25 @@ Permission model:
 import re
 import hashlib
 import logging
+import time
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Optional, Callable
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# ── check_access TTL 缓存 (30s) ─────────────────────────────────────
+# 同一用户/数据源/表的权限在短时间内不会变化，缓存避免重复 DB 查询。
+# 主要受益方: check_sql 预检、多表 SQL 的逐表 check_access 调用。
+_ACCESS_CACHE_TTL = 30  # seconds
+_access_cache: dict[str, tuple[float, "PermissionResult"]] = {}
+
+
+def invalidate_access_cache():
+    """清空权限缓存（权限策略变更后调用）。"""
+    _access_cache.clear()
 
 # datagov adh_sensitive_fields.mask_type → enforcer 脱敏方式
 _SENSITIVE_MASK_MAP = {
@@ -72,6 +85,30 @@ class PermissionEnforcer:
         Returns:
             PermissionResult with allowed, row_filter, hidden/masked columns.
         """
+        # TTL 缓存: 同一 (user, ws, ds, table, sensitive_only) 30s 内不重复查 DB
+        cache_key = f"{user_id}:{workspace_id}:{datasource_id}:{table_name}:{sensitive_only}"
+        now = time.time()
+        if cache_key in _access_cache:
+            cached_at, cached_result = _access_cache[cache_key]
+            if now - cached_at < _ACCESS_CACHE_TTL:
+                return deepcopy(cached_result)
+
+        result = self._check_access_impl(
+            user_id, workspace_id, datasource_id, table_name, columns, sensitive_only
+        )
+        _access_cache[cache_key] = (now, result)
+        return deepcopy(result)
+
+    def _check_access_impl(
+        self,
+        user_id: int,
+        workspace_id: int,
+        datasource_id: int,
+        table_name: str = "",
+        columns: list = None,
+        sensitive_only: bool = False,
+    ) -> PermissionResult:
+        """check_access 实际实现（不含缓存逻辑）。"""
         from services.authservice.services.role_service import role_service
         from services.authservice.services.rls_service import rls_service
 
@@ -102,11 +139,8 @@ class PermissionEnforcer:
         if sensitive_only:
             return result
 
-        # Admin bypass — admins have full access (敏感字段脱敏除外，已在上方生效)
-        user_roles = role_service.get_user_roles(user_id, workspace_id)
-        is_admin = any(r.get("name") == "admin" for r in user_roles)
-        if is_admin:
-            return result
+        # RLS/RBAC 完全按用户角色权限配置生效，不做 admin 旁路
+        # 敏感字段脱敏已在上方并入，对所有角色（含 admin）强制生效
 
         # Step 1: Check datasource access
         allowed_ds = role_service.get_user_allowed_datasources(user_id, workspace_id)
@@ -196,19 +230,37 @@ class PermissionEnforcer:
                 raise PermissionError(result.reason)
             return sql, result
 
-        # Check access for each table and merge results
+        # 批量校验: #2(datasource access) 和 #3(table access) 提到循环外只查一次
+        # 避免 N 张表重复查 2 次 DB（原来 3 表 = 15~21 次查询 → 现在 8~11 次）
         combined_result = PermissionResult()
         modified_sql = sql
         table_filters = {}
 
+        if not only_sensitive:
+            from services.authservice.services.role_service import role_service
+            # 数据源级访问 — 只查一次
+            allowed_ds = role_service.get_user_allowed_datasources(user_id, workspace_id)
+            if allowed_ds and datasource_id not in allowed_ds:
+                raise PermissionError(f"无权访问数据源 {datasource_id}")
+            # 表级访问 — 只查一次
+            allowed_tables = role_service.get_user_allowed_tables(
+                user_id, datasource_id, workspace_id
+            )
+
         for table in tables:
             policy_table = self._policy_table(table, datasource_id)
-            result = self.check_access(
+
+            # 表级访问校验（已在循环外加载 allowed_tables）
+            if not only_sensitive and allowed_tables and policy_table not in allowed_tables:
+                raise PermissionError(f"无权访问表 {table}")
+
+            # 仅做表级专属查询: #1 敏感字段 + #4 列限制 + #5 RLS
+            result = self._check_table_permissions(
                 user_id, workspace_id, datasource_id, policy_table,
                 sensitive_only=only_sensitive,
+                skip_datasource_check=True,
+                skip_table_access_check=True,
             )
-            if not result.allowed:
-                raise PermissionError(result.reason)
 
             # Inject row filter
             if result.row_filter:
@@ -227,6 +279,74 @@ class PermissionEnforcer:
         modified_sql, _ = inject_filters(sql, table_filters)
         combined_result.row_filter = modified_sql != sql
         return modified_sql, combined_result
+
+    def _check_table_permissions(
+        self,
+        user_id: int,
+        workspace_id: int,
+        datasource_id: int,
+        table_name: str,
+        sensitive_only: bool = False,
+        skip_datasource_check: bool = False,
+        skip_table_access_check: bool = False,
+    ) -> PermissionResult:
+        """单表权限校验（表级专属查询: 敏感字段 + 列限制 + RLS）。
+
+        与 check_access 的区别: 调用方已提前校验过数据源/表级访问,
+        这里跳过重复查询, 只做表级专属的 3 项检查。
+        """
+        from services.authservice.services.role_service import role_service
+        from services.authservice.services.rls_service import rls_service
+
+        result = PermissionResult()
+
+        # #1 敏感字段标记
+        sensitive_masked, sensitive_blocked = self._get_sensitive_policies(
+            workspace_id, datasource_id, table_name
+        )
+        if sensitive_masked:
+            result.masked_columns.update(sensitive_masked)
+            result.policies_applied.append(
+                f"sensitive_fields:{','.join(sorted(sensitive_masked))}"
+            )
+        for col in sensitive_blocked:
+            if col not in result.hidden_columns:
+                result.hidden_columns.append(col)
+        if sensitive_blocked:
+            result.policies_applied.append(
+                f"sensitive_block:{','.join(sorted(sensitive_blocked))}"
+            )
+
+        if sensitive_only:
+            return result
+
+        # #4 列限制
+        col_restrictions = role_service.get_user_column_restrictions(
+            user_id, datasource_id, table_name, workspace_id
+        )
+        for col in col_restrictions.get("hidden_columns", []):
+            if col not in result.hidden_columns:
+                result.hidden_columns.append(col)
+        for col, mask in col_restrictions.get("masked_columns", {}).items():
+            if col not in sensitive_masked:
+                result.masked_columns[col] = mask
+
+        # #5 RLS 行级 + 列级
+        rls_policies = rls_service.get_effective_policies(
+            user_id, workspace_id, datasource_id, table_name
+        )
+        result.row_filter = rls_policies.get("row_filter", "")
+        for pid in rls_policies.get("policies_applied", []):
+            if pid not in result.policies_applied:
+                result.policies_applied.append(pid)
+        for col in rls_policies.get("hidden_columns", []):
+            if col not in result.hidden_columns:
+                result.hidden_columns.append(col)
+        for col, mask in rls_policies.get("masked_columns", {}).items():
+            if col not in sensitive_masked:
+                result.masked_columns[col] = mask
+
+        return result
 
     def apply_post_processing(
         self,

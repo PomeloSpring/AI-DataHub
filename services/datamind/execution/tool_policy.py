@@ -165,12 +165,9 @@ def live_ceiling(ctx, runtime):
     if config.get("cwd") or config.get("allowed_dirs"):
         raise PermissionError("执行层配置不再满足会话目录隔离要求")
     bindings = service.get_workspace_layers(ctx.workspace_id)
-    # builtin 层不参与 Agent 派发; 工作空间仅绑定 builtin 等同"未绑定外部层",
-    # 应与派发侧(chat_service 跳过 builtin → 兜底系统默认外部层)一致允许继承,
-    # 只有绑定了其它外部层却不包含本层才算"授权被撤回"。
-    external_bindings = [r for r in bindings if r.get("layer_type") != "builtin"]
-    bound = next((r for r in external_bindings if r["id"] == runtime.layer_id), None)
-    if bound is None and (runtime.layer_bound or external_bindings):
+    # 工作空间仅绑定当前层才算授权; 未绑定且存在其它外部层绑定才算“授权被撤回”。
+    bound = next((r for r in bindings if r["id"] == runtime.layer_id), None)
+    if bound is None and (runtime.layer_bound or bindings):
         raise PermissionError("工作空间的执行层授权已撤回")
     return _merge_allowed_tools(config.get("allowed_tools"), bound.get("allowed_tools") if bound else None)
 

@@ -48,15 +48,15 @@ async function doRefreshToken(): Promise<string | null> {
   if (!refreshToken) return null;
 
   try {
-    const { data } = await axios.post('/api/auth/refresh', null, {
-      params: { refresh_token: refreshToken },
-    });
+    // 后端 /api/auth/refresh 期望 JSON body: { refresh_token: string }
+    const { data } = await client.post('/auth/refresh', { refresh_token: refreshToken });
     const newToken = data.access_token;
     const newRefresh = data.refresh_token;
     localStorage.setItem('token', newToken);
     if (newRefresh) localStorage.setItem('refresh_token', newRefresh);
     return newToken;
-  } catch {
+  } catch (err) {
+    console.warn('[auth] Token refresh failed:', err);
     return null;
   }
 }
@@ -76,6 +76,14 @@ client.interceptors.response.use(
 
     if (err.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true;
+
+      // 刷新请求本身 401 时不再重试，直接跳登录
+      if (originalRequest.url?.includes('/auth/refresh')) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('refresh_token');
+        window.location.href = '/login';
+        return Promise.reject(err);
+      }
 
       if (isRefreshing) {
         // Wait for the ongoing refresh

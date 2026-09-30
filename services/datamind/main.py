@@ -32,7 +32,6 @@ from services.shared import observability
 
 from services.datamind.api.chat import router as chat_router
 from services.datamind.api.attachments import router as attachments_router
-from services.datamind.api.agent import router as agent_router
 from services.datamind.api.knowledge_bases import router as knowledge_bases_router
 from services.datamind.api.skills_admin import router as skills_admin_router
 from services.datamind.api.pipeline import router as pipeline_router
@@ -80,7 +79,6 @@ async def _trace_middleware(request: Request, call_next):
 # Include routers
 app.include_router(chat_router, prefix="/api/chat", tags=["Chat / NL2SQL"])
 app.include_router(attachments_router, prefix="/api/chat/attachments", tags=["Chat Attachments"])
-app.include_router(agent_router, prefix="/api/agent", tags=["Agent Dispatch"])
 app.include_router(knowledge_bases_router, prefix="/api", tags=["Knowledge Bases Management"])
 app.include_router(skills_admin_router, prefix="/api", tags=["Skills Management"])
 app.include_router(pipeline_router, prefix="/api/pipeline", tags=["Pipeline Execution"])
@@ -113,21 +111,6 @@ async def startup_event():
     from services.datamind.execution.session_workspace import reconcile_stale_sessions
     repaired = await asyncio.to_thread(reconcile_stale_sessions)
     logger.info("Waker 会话恢复检查完成，中断执行数=%s", repaired)
-    # Pre-warm agent registry for deep/agent mode
-    try:
-        from services.datamind.nl2sql.orchestrator.pipeline_orchestrator import _init_agents
-        _init_agents()
-        logger.info("Agent registry initialized")
-    except Exception as e:
-        logger.warning("Agent registry init deferred: %s", e)
-
-    # Self-register built-in execution layer + start heartbeat loop (Phase 3)
-    try:
-        from services.datamind.execution.registry import start_registry_background
-        app.state.registry_task = start_registry_background()
-        logger.info("Execution-layer registry background task started")
-    except Exception as e:
-        logger.warning("Execution-layer registry init deferred: %s", e)
 
 
 @app.on_event("shutdown")

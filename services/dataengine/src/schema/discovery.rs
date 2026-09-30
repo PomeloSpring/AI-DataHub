@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::{DataFusionError, Result};
@@ -9,6 +10,19 @@ use tracing::{debug, info};
 
 use crate::providers::pool_manager::DbPool;
 use crate::providers::mysql_table::SqlDialect;
+
+/// Schema discovery cache: (database, pool_id) -> (discovered_tables, timestamp).
+/// TTL = 60 seconds. Avoids repeated INFORMATION_SCHEMA queries on every request.
+const SCHEMA_CACHE_TTL_SECS: u64 = 60;
+
+struct CachedDiscovery {
+    tables: Vec<DiscoveredTable>,
+    fetched_at: Instant,
+}
+
+static SCHEMA_CACHE: once_cell::sync::Lazy<
+    std::sync::Mutex<HashMap<String, CachedDiscovery>>,
+> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
 
 /// Table schema discovered from remote database
 #[derive(Debug, Clone)]
@@ -33,16 +47,63 @@ pub struct DiscoveredColumn {
 pub struct SchemaDiscovery;
 
 impl SchemaDiscovery {
-    /// Discover all tables in a database
+    /// Discover all tables in a database (with 60s in-memory cache).
     pub async fn discover_all(
         pool: &DbPool,
         database: &str,
         _dialect: SqlDialect,
     ) -> Result<Vec<DiscoveredTable>> {
-        match pool {
-            DbPool::MySQL(mysql_pool) => discover_all_mysql(mysql_pool, database).await,
-            DbPool::Postgres(pg_pool) => discover_all_postgres(pg_pool, database).await,
+        // Cache key: db_type + database name
+        let cache_key = match pool {
+            DbPool::MySQL(_) => format!("mysql:{}", database),
+            DbPool::Postgres(_) => format!("pg:{}", database),
+        };
+
+        // Check cache
+        {
+            let cache = SCHEMA_CACHE.lock().unwrap();
+            if let Some(cached) = cache.get(&cache_key) {
+                if cached.fetched_at.elapsed().as_secs() < SCHEMA_CACHE_TTL_SECS {
+                    debug!(
+                        "Schema cache hit for '{}': {} tables (age {}s)",
+                        database,
+                        cached.tables.len(),
+                        cached.fetched_at.elapsed().as_secs()
+                    );
+                    return Ok(cached.tables.clone());
+                }
+            }
         }
+
+        // Cache miss or expired — fetch from remote
+        let tables = match pool {
+            DbPool::MySQL(mysql_pool) => discover_all_mysql(mysql_pool, database).await?,
+            DbPool::Postgres(pg_pool) => discover_all_postgres(pg_pool, database).await?,
+        };
+
+        // Update cache
+        {
+            let mut cache = SCHEMA_CACHE.lock().unwrap();
+            cache.insert(cache_key, CachedDiscovery {
+                tables: tables.clone(),
+                fetched_at: Instant::now(),
+            });
+        }
+
+        info!(
+            "Discovered {} tables in database '{}' (cached for {}s)",
+            tables.len(),
+            database,
+            SCHEMA_CACHE_TTL_SECS
+        );
+        Ok(tables)
+    }
+
+    /// Invalidate schema cache for a specific database.
+    pub fn invalidate(database: &str) {
+        let mut cache = SCHEMA_CACHE.lock().unwrap();
+        cache.retain(|k, _| !k.ends_with(database));
+        info!("Schema cache invalidated for '{}'", database);
     }
 }
 

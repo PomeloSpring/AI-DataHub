@@ -93,9 +93,6 @@ class ExecutionLayerManager:
                     from services.datamind.execution.adapters.claude_sdk_adapter import ClaudeSDKAdapter
                     return ClaudeSDKAdapter(name, config)
             raise ValueError("该 CLI 执行层不支持 Waker 安全执行，仅允许 Qoder/Claude SDK")
-        if layer_type == "builtin":
-            from services.datamind.execution.adapters.builtin_adapter import BuiltInAdapter
-            return BuiltInAdapter(name, config)
 
         raise ValueError(f"不支持的执行层类型: {layer_type}")
 
@@ -116,7 +113,7 @@ class ExecutionLayerManager:
         return self.build_adapter(row)
 
     async def resolve_workspace_layer(self, workspace_id: int) -> dict:
-        """解析工作空间的默认执行层配置行;未绑定时回退到内置执行层."""
+        """解析工作空间的默认执行层配置行;未绑定时报错."""
         from services.datamind.execution import service
 
         layers = service.get_workspace_layers(workspace_id)
@@ -131,13 +128,11 @@ class ExecutionLayerManager:
                     row = l
                     break
         if row is None:
-            row = service.get_layer_by_name("builtin")
-        if row is None:
-            raise KeyError("没有可用的执行层(内置执行层缺失)")
+            raise KeyError("工作空间未绑定可用的执行层")
         return row
 
     async def get_workspace_adapter(self, workspace_id: int):
-        """获取工作空间的默认执行层适配器;未绑定时回退到内置执行层."""
+        """获取工作空间的默认执行层适配器."""
         return self.build_adapter(await self.resolve_workspace_layer(workspace_id))
 
     async def execute(self, layer_id: int, task: ExecutionTask) -> ExecutionResult:

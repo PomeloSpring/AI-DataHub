@@ -23,13 +23,14 @@ import WakerManager from './pages/admin/WakerManager';
 import SkillsManager from './pages/admin/SkillsManager';
 import ScheduledTasks from './pages/admin/ScheduledTasks';
 import NotificationChannels from './pages/admin/NotificationChannels';
-import ReportTemplates from './pages/admin/ReportTemplates';
 import VisLibrary from './pages/admin/VisLibrary';
+import ReportTemplates from './pages/admin/ReportTemplates';
 import ReportView from './pages/ReportView';
 import KnowledgeBase from './pages/admin/KnowledgeBase';
 import KnowledgeGraph from './pages/KnowledgeGraph';
 import VersionedConfigEditor, { createPromptAdapter } from './pages/admin/VersionedConfigEditor';
 import ReportsCenter from './pages/ReportsCenter';
+import AsBotPanel from './components/asbot/AsBotPanel';
 
 // 新增页面 - 数据中台
 import QualityOverview from './pages/quality/QualityOverview';
@@ -55,8 +56,6 @@ import QualityReview from './pages/admin/QualityReview';
 import Observability from './pages/admin/Observability';
 import KnowledgeManagement from './pages/admin/KnowledgeManagement';
 import Monitoring from './pages/admin/Monitoring';
-import AsBotSettings from './pages/admin/AsBotSettings';
-import AsBotPanel from './components/asbot/AsBotPanel';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -87,8 +86,6 @@ export default function App() {
         <Route path="/dashboard/editor/:id" element={<PrivateRoute><DashboardEditor /></PrivateRoute>} />
         <Route path="/screen" element={<PrivateRoute><Screen /></PrivateRoute>} />
         <Route path="/screen/:dashboardId" element={<PrivateRoute><Screen /></PrivateRoute>} />
-        {/* AS-BOT 系统助手全屏独立页（可在新标签页打开） */}
-        <Route path="/as-bot/chat" element={<PrivateRoute><AsBotPanel fullscreen /></PrivateRoute>} />
 
         <Route path="/dashboards" element={<PrivateRoute><WorkspaceEntry /></PrivateRoute>} />
         <Route path="/ask" element={<PrivateRoute><WorkspaceEntry module="ask" /></PrivateRoute>} />
@@ -134,6 +131,8 @@ export default function App() {
           <Route path="lineage" element={<LineageGraph />} />
           <Route path="standards" element={<Standards />} />
           <Route path="sensitive" element={<SensitiveData />} />
+          {/* 数据安全配置: 敏感数据 + RLS 行级安全聚合在数据中台(自 /system/rls 迁入) */}
+          <Route path="rls" element={<RLSManagement />} />
           <Route path="sync" element={<SyncTasks />} />
           <Route path="sync/logs" element={<SyncLogs />} />
           <Route path="knowledge-graph" element={<KnowledgeGraph />} />
@@ -160,18 +159,18 @@ export default function App() {
           <Route path="notification-channels" element={<NotificationChannels />} />
           <Route path="report-templates" element={<ReportTemplates />} />
           <Route path="knowledge-base" element={<KnowledgeBase />} />
-          {/* AS-BOT 本体图已并入 AI 助手页(/system/as-bot)的「本体图」页签; 旧路由重定向 */}
-          <Route path="knowledge-graph" element={<Navigate to="/system/as-bot" replace />} />
+          {/* 旧本体图路由重定向到数据中台本体建模 */}
+          <Route path="knowledge-graph" element={<Navigate to="/data/ontology" replace />} />
           <Route path="settings" element={<Admin embeddedTab="brand" />} />
           {/* 权限管理 */}
           <Route path="workspaces" element={<WorkspaceManagerV2 />} />
           <Route path="roles" element={<RoleManagement />} />
           <Route path="audit" element={<AuditLog />} />
-          <Route path="rls" element={<RLSManagement />} />
+          {/* 行级安全已迁入数据中台「数据安全配置」(/data/rls), 旧路由重定向兼容书签 */}
+          <Route path="rls" element={<Navigate to="/data/rls" replace />} />
           <Route path="sandbox" element={<SandboxManagement />} />
           <Route path="quality-review" element={<QualityReview />} />
           <Route path="observability" element={<Observability />} />
-          <Route path="as-bot" element={<AsBotSettings />} />
           <Route path="knowledge-management" element={<KnowledgeManagement />} />
           <Route path="dashboards" element={<Dashboard />} />
           <Route path="dashboards/:dashboardId" element={<Analysis />} />
@@ -196,6 +195,9 @@ export default function App() {
 
         {/* Report view (public/private, auth optional) */}
         <Route path="/report/:reportId" element={<ReportView />} />
+
+        {/* AS-BOT 全屏独立标签页 */}
+        <Route path="/as-bot/chat" element={<PrivateRoute><AsBotPanel fullscreen /></PrivateRoute>} />
 
         {/* Profile: 旧全屏独立路由 → 重定向到数据中台框架下的内嵌页(兼容书签) */}
         <Route path="/profile" element={<Navigate to="/data/profile" replace />} />

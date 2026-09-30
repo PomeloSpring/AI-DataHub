@@ -1,0 +1,12 @@
+#!/bin/sh
+# 项目内置 qodercli 启动脚本
+# 使用 runtime/node 和 runtime/qodercli/node_modules，不依赖部署机器的全局安装
+RUNTIME_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+NODE_BIN="$RUNTIME_DIR/../node/bin/node"
+
+# 如果内置 node 不存在，回退到系统 node
+if [ ! -x "$NODE_BIN" ]; then
+    NODE_BIN="node"
+fi
+
+exec "$NODE_BIN" "$RUNTIME_DIR/node_modules/@qoder-ai/qodercli/bundle/qodercli.js" "$@"

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -17,7 +18,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import {
   Plus, Edit, Trash2, Shield, Users, Settings, UserPlus, UserMinus,
-  Database, Table, Columns3, Key, Bot, LayoutDashboard, Globe,
+  Database, Table, Columns3, Key, Bot, LayoutDashboard, Globe, ExternalLink,
 } from 'lucide-react';
 import client from '@/api/client';
 
@@ -52,6 +53,7 @@ interface ColumnAccess {
 }
 
 export default function RoleManagement() {
+  const navigate = useNavigate();
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
@@ -86,20 +88,6 @@ export default function RoleManagement() {
   const [attrs, setAttrs] = useState<Record<string, string>>({});
   const [newAttrKey, setNewAttrKey] = useState('');
   const [newAttrValue, setNewAttrValue] = useState('');
-
-  // AS-BOT permissions
-  const [asbotAccess, setAsbotAccess] = useState<Record<string, boolean>>({});
-  const [asbotCanAccess, setAsbotCanAccess] = useState(false);
-
-  const AS_BOT_ACTIONS = [
-    { key: 'ontology.generate', label: '生成本体草案' },
-    { key: 'ontology.save', label: '保存本体模型' },
-    { key: 'ontology.activate', label: '激活本体模型' },
-    { key: 'ontology.import_yaml', label: '导入 YAML' },
-    { key: 'metadata.sync', label: '同步元数据' },
-    { key: 'alias.approve', label: '审核通过别名建议' },
-    { key: 'alias.reject', label: '驳回别名建议' },
-  ];
 
   // 菜单权限
   const [menuRegistry, setMenuRegistry] = useState<Array<{ menu_key: string; label: string; section: string; module: string }>>([]);
@@ -152,7 +140,12 @@ export default function RoleManagement() {
         toast.success('已更新');
       } else {
         await client.post('/roles/', { name: formName, display_name: formDisplayName, description: formDesc });
-        toast.success('已创建');
+        toast.success(`角色已创建，已同步创建「${formDisplayName || formName}」的 Waker，可前往 Waker 配置页编辑`, {
+          action: {
+            label: '去编辑',
+            onClick: () => navigate('/system/wakers'),
+          },
+        });
       }
       setFormOpen(false); loadRoles();
     } catch (e: any) { toast.error(e.response?.data?.detail || '保存失败'); }
@@ -185,15 +178,6 @@ export default function RoleManagement() {
       setColAccess(cAccess || []);
       const { data: attrData } = await client.get(`/roles/${role.id}/attributes`, { params: { workspace_id: 0 } });
       setAttrs(attrData || {});
-      // Load AS-BOT permissions
-      try {
-        const { data: asbotData } = await client.get(`/as-bot/roles/${role.id}/permissions`);
-        setAsbotAccess(asbotData.permissions || {});
-        setAsbotCanAccess(asbotData.can_access ?? false);
-      } catch {
-        setAsbotAccess({});
-        setAsbotCanAccess(false);
-      }
       // Load menu registry + role menu permissions
       try {
         const { data: regData } = await client.get('/roles/menu-registry');
@@ -348,6 +332,9 @@ export default function RoleManagement() {
                   {role.description && <p className="text-sm text-muted-foreground">{role.description}</p>}
                 </div>
                 <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => navigate('/system/wakers')} title="编辑 Waker 配置">
+                    <Bot className="h-4 w-4" />
+                  </Button>
                   <Button variant="outline" size="sm" onClick={() => openPermissions(role)} title="权限配置">
                     <Key className="h-4 w-4" />
                   </Button>
@@ -375,12 +362,11 @@ export default function RoleManagement() {
             <DialogDescription>配置该角色的数据访问范围</DialogDescription>
           </DialogHeader>
           <Tabs value={permTab} onValueChange={setPermTab}>
-            <TabsList className="grid grid-cols-7 w-full">
+            <TabsList className="grid grid-cols-6 w-full">
               <TabsTrigger value="datasources"><Database className="h-3.5 w-3.5 mr-1" />数据源</TabsTrigger>
               <TabsTrigger value="tables"><Table className="h-3.5 w-3.5 mr-1" />表</TabsTrigger>
               <TabsTrigger value="columns"><Columns3 className="h-3.5 w-3.5 mr-1" />列</TabsTrigger>
               <TabsTrigger value="attributes"><Settings className="h-3.5 w-3.5 mr-1" />属性</TabsTrigger>
-              <TabsTrigger value="asbot"><Bot className="h-3.5 w-3.5 mr-1" />AS-BOT</TabsTrigger>
               <TabsTrigger value="menus"><LayoutDashboard className="h-3.5 w-3.5 mr-1" />菜单</TabsTrigger>
               <TabsTrigger value="apis"><Globe className="h-3.5 w-3.5 mr-1" />接口</TabsTrigger>
             </TabsList>
@@ -506,50 +492,6 @@ export default function RoleManagement() {
               )}
               {Object.keys(attrs).length > 0 && (
                 <Button size="sm" onClick={saveAttributes}>保存属性</Button>
-              )}
-            </TabsContent>
-
-            {/* AS-BOT Permissions */}
-            <TabsContent value="asbot" className="space-y-3">
-              <p className="text-sm text-muted-foreground">配置该角色使用 AS-BOT 系统助手的权限</p>
-              <div className="flex items-center justify-between border rounded-lg px-4 py-3 bg-muted/30">
-                <div className="flex items-center gap-2">
-                  <Bot className="h-4 w-4 text-primary" />
-                  <span className="text-sm font-medium">AS-BOT 访问权限</span>
-                </div>
-                <Switch
-                  checked={asbotCanAccess}
-                  onCheckedChange={setAsbotCanAccess}
-                />
-              </div>
-              {asbotCanAccess && (
-                <div className="space-y-2">
-                  <p className="text-xs text-muted-foreground">勾选允许该角色执行的操作：</p>
-                  {AS_BOT_ACTIONS.map(action => (
-                    <div key={action.key} className="flex items-center justify-between border rounded px-3 py-2">
-                      <div className="flex items-center gap-2">
-                        <Shield className="h-3 w-3 text-muted-foreground" />
-                        <span className="text-sm">{action.label}</span>
-                        <code className="text-[10px] bg-muted px-1 rounded text-muted-foreground">{action.key}</code>
-                      </div>
-                      <Switch
-                        checked={asbotAccess[action.key] !== false}
-                        onCheckedChange={checked => setAsbotAccess(prev => ({ ...prev, [action.key]: checked }))}
-                      />
-                    </div>
-                  ))}
-                  <Button size="sm" onClick={async () => {
-                    if (!permTarget) return;
-                    try {
-                      await client.put(`/as-bot/roles/${permTarget.id}/permissions`, {
-                        permissions: { ...asbotAccess, can_access: asbotCanAccess },
-                      });
-                      toast.success('AS-BOT 权限已保存');
-                    } catch {
-                      toast.error('保存失败');
-                    }
-                  }}>保存 AS-BOT 权限</Button>
-                </div>
               )}
             </TabsContent>
 

@@ -6,8 +6,10 @@ export const VIS_CATEGORIES = [
   { id: 'kpi_card', label: 'KPI 卡片' }, { id: 'layout_template', label: '布局模板' },
   { id: 'decoration_frame', label: '装饰边框' }, { id: 'color_theme', label: '配色主题' },
   { id: 'sql_template', label: 'SQL 模板' },
+  { id: 'map_tile', label: '地图瓦片' },
 ] as const;
-export type VisCategory = typeof VIS_CATEGORIES[number]['id'];
+// report_template 是独立菜单，不在字模库 UI 分类中，但数据库中仍有该 category
+export type VisCategory = typeof VIS_CATEGORIES[number]['id'] | 'report_template';
 export interface VisComponent {
   id: number; code: string; name: string; category: VisCategory; chart_type?: string | null;
   style_config: Record<string, any>; source: string; is_builtin: number; is_active: number;
@@ -15,8 +17,9 @@ export interface VisComponent {
   updated_at?: string;
 }
 export function validateVisResponse(data: unknown): VisComponent[] {
+  const VALID_CATEGORIES = [...VIS_CATEGORIES.map(c => c.id), 'report_template'];
   if (!Array.isArray(data) || data.some(c => !c || typeof c.code !== 'string' ||
-    typeof c.name !== 'string' || !VIS_CATEGORIES.some(cat => cat.id === c.category) ||
+    typeof c.name !== 'string' || !VALID_CATEGORIES.includes(c.category) ||
     !c.style_config || typeof c.style_config !== 'object' || Array.isArray(c.style_config))) {
     throw new Error('字模接口未返回有效 JSON 数组，请检查服务或代理后重试');
   }

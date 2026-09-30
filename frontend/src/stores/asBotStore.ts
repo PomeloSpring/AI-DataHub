@@ -56,7 +56,7 @@ export interface AsBotConversation {
   updated_at: string;
 }
 
-const SYSTEM_BOT_WAKER = '__system_bot__';
+// AS-BOT 不再使用特殊 Waker，继承当前角色的 Waker（与问数页面一致）
 
 // 从会话首条用户消息派生标题(与主聊天一致)
 function deriveTitle(messages: AsBotMessage[]): string {
@@ -174,7 +174,7 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
 
   loadConversations: async () => {
     try {
-      const { data } = await client.get('/chat/conversations', { params: { waker_key: SYSTEM_BOT_WAKER } });
+      const { data } = await client.get('/chat/conversations', { params: { workspace_id: 0 } });
       set({ conversations: Array.isArray(data) ? data : [] });
     } catch { toast.error('系统助手会话列表加载失败'); }
   },
@@ -186,8 +186,8 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
     try {
       const { data } = await client.get(`/chat/conversations/${convId}`);
       if (get().abortController !== switching) return;
-      if (data.waker_key !== SYSTEM_BOT_WAKER || Number(data.workspace_id || 0) !== 0) {
-        throw new Error('该会话不属于系统助手');
+      if (Number(data.workspace_id || 0) !== 0) {
+        throw new Error('该会话不属于智能助手');
       }
       const msgs = Array.isArray(data.messages) ? data.messages : [];
       set({ conversationId: convId, messages: msgs, designs: [], activeDesignId: null, executorSessionId: null, abortController: null });
@@ -254,14 +254,14 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
     if (!convId) {
       try {
         const { data } = await client.post('/chat/conversations', {
-          workspace_id: 0, datasource_id: 0, waker_key: SYSTEM_BOT_WAKER,
+          workspace_id: 0, datasource_id: 0,
         });
         if (!ownsRequest() || abortController.signal.aborted) return;
         convId = data.id;
         set(s => ({
           conversationId: data.id,
           conversations: [{ id: data.id, title: data.title, workspace_id: 0, datasource_id: 0,
-            waker_key: SYSTEM_BOT_WAKER, created_at: data.created_at, updated_at: data.created_at },
+            waker_key: data.waker_key || '', created_at: data.created_at, updated_at: data.created_at },
             ...s.conversations],
         }));
       } catch {
@@ -297,7 +297,6 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
       question: text,
       history,
       pipeline_mode: 'agent',
-      waker_key: SYSTEM_BOT_WAKER,
       workspace_id: 0,
       conversation_id: convId || 0,
     };
@@ -495,11 +494,19 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
               if (currentEvent === 'error' || currentEvent === 'done' || !currentEvent) {
                 // Only throw for actual errors
                 if (currentEvent === 'error') {
+                  // 解析错误消息：优先从 JSON 中提取 message 字段
+                  let errorMsg = e.message || '请求失败';
+                  try {
+                    const parsed = JSON.parse(dataBuffer);
+                    errorMsg = parsed.message || errorMsg;
+                  } catch {
+                    errorMsg = dataBuffer || errorMsg;
+                  }
                   set(state => {
                     const msgs = [...state.messages];
                     const lastIdx = msgs.length - 1;
                     if (msgs[lastIdx]?.role === 'assistant') {
-                      msgs[lastIdx] = { ...msgs[lastIdx], error: dataBuffer || e.message };
+                      msgs[lastIdx] = { ...msgs[lastIdx], error: errorMsg };
                     }
                     return { messages: msgs, loading: false, loadingStep: '', abortController: null };
                   });

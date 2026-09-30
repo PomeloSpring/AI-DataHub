@@ -378,14 +378,14 @@ def test_live_upper_limits_and_binding_revocation(monkeypatch):
         policies.live_ceiling(ctx, runtime)
 
 
-def test_live_ceiling_allows_inherit_when_workspace_bound_only_to_builtin(monkeypatch):
-    """默认工作空间仅绑定 builtin 时, Agent 模式应允许继承系统默认外部层(与派发侧一致), 不误报撤回。"""
+def test_live_ceiling_allows_inherit_when_workspace_has_no_external_bindings(monkeypatch):
+    """默认工作空间未绑定任何外部层时, Agent 模式应允许继承系统默认外部层, 不误报撤回。"""
     from services.datamind.execution import service
     row = {"id": 6, "status": "active", "config": {"mode": "sdk", "cli_name": "qoder", "allowed_tools": ["read"]}}
     monkeypatch.setattr(service, "get_layer", lambda _: row)
-    # 工作空间只绑定了 builtin(layer_type=builtin), 未绑定任何外部层
+    # 工作空间未绑定任何层
     monkeypatch.setattr(service, "get_workspace_layers",
-                        lambda _: [{"id": 1, "layer_type": "builtin", "allowed_tools": None}])
+                        lambda _: [])
     runtime = SimpleNamespace(layer_id=6, layer_bound=False, backend="qoder")
     # 不抛异常; bound=None → 仅用层自身 ceiling
     assert policies.live_ceiling(ExecutionContext(workspace_id=1), runtime) == ["read"]
@@ -493,8 +493,8 @@ def datasource_scope(monkeypatch):
     monkeypatch.setattr(guard, "execute_query", query)
     monkeypatch.setattr(role_service, "get_user_allowed_datasources", lambda uid, ws: state["user"])
 
-    def context(selected=7, configured=None, role="admin", key="test"):
-        policy = policies.compile_policy({"waker_key": key, "datasource_ids": configured or [],
+    def context(selected=7, role="admin", key="test"):
+        policy = policies.compile_policy({"waker_key": key,
                                           "knowledge_base_ids": [4], "tools": {}})
         ctx = ExecutionContext(user_id=1, user_role=role, workspace_id=3, datasource_id=selected,
                                extra={"waker_key": key, "secure_runtime": SimpleNamespace(policy=policy, tool_tasks=set())})
@@ -503,56 +503,52 @@ def datasource_scope(monkeypatch):
     return guard, state, context
 
 
-@pytest.mark.parametrize("configured,selected", [([], 7), ([], 8), ([7], 7), ([7, 8], 8)])
-def test_waker_source_inherits_workspace_or_restricts(datasource_scope, configured, selected):
+@pytest.mark.parametrize("selected", [7, 8])
+def test_waker_source_inherits_workspace(datasource_scope, selected):
+    """Waker 不持有数据源边界：会话源只要在工作空间绑定内即保留。"""
     guard, state, context = datasource_scope
-    ctx, policy = context(selected, configured)
+    ctx, policy = context(selected)
     guard.bind_resources(ctx, policy)
     assert ctx.datasource_id == selected
     assert ctx.extra["bound_knowledge_base_ids"] == [4]
 
 
-@pytest.mark.parametrize("configured,selected,reason", [([7], 8, "Waker"), ([9], 9, "工作空间"), ([], 9, "工作空间")])
-def test_source_inheritance_never_expands_scope(datasource_scope, configured, selected, reason):
+def test_source_outside_workspace_rejected_without_switching(datasource_scope):
+    """会话已选源不在工作空间绑定内 → 拒绝且不静默切换到其他源。"""
     guard, state, context = datasource_scope
-    ctx, policy = context(selected, configured)
-    with pytest.raises(PermissionError, match=reason):
+    ctx, policy = context(9)
+    with pytest.raises(PermissionError, match="工作空间"):
         guard.bind_resources(ctx, policy)
-    # 不把被拒绝的选择静默改成其他源。
-    assert ctx.datasource_id == selected
+    assert ctx.datasource_id == 9
 
 
-@pytest.mark.parametrize("configured,workspace,user,role,expected", [
-    ([], [7], [7], "admin", 7),
-    ([8], [7, 8], [7, 8], "admin", 8),
-    ([8, 9], [7, 8], [8], "admin", 8),
-    ([], [7, 8], [8], "analyst", 8),
-    ([], [7, 8], [7, 8], "admin", 0),
-    ([9], [7, 8], [7, 8], "admin", 0),
-    ([7], [], [7], "admin", 0),
-    ([], [], [], "admin", 0),
-    ([], [7], [], "analyst", 0),
+@pytest.mark.parametrize("workspace,user,role,expected", [
+    ([7], [7], "admin", 7),
+    ([7, 8], [8], "analyst", 8),
+    ([7, 8], [7, 8], "admin", 0),
+    ([], [7], "admin", 0),
+    ([], [], "admin", 0),
+    ([7], [], "analyst", 0),
 ])
-def test_auto_select_only_unique_authorized_source(datasource_scope, configured, workspace, user, role, expected):
+def test_auto_select_only_unique_authorized_source(datasource_scope, workspace, user, role, expected):
     guard, state, context = datasource_scope
     state.update(workspace=workspace, user=user)
-    ctx, policy = context(0, configured, role)
+    ctx, policy = context(0, role)
     guard.bind_resources(ctx, policy)
     assert ctx.datasource_id == expected
 
 
-@pytest.mark.parametrize("configured", [[], [7]])
-def test_user_grants_still_required_for_inherited_source(datasource_scope, configured):
+def test_user_grants_still_required_for_inherited_source(datasource_scope):
     guard, state, context = datasource_scope
     state["user"] = []
-    ctx, policy = context(7, configured, "analyst")
+    ctx, policy = context(7, "analyst")
     with pytest.raises(PermissionError, match="当前用户"):
         guard.bind_resources(ctx, policy)
 
 
 def test_system_bot_does_not_inherit_business_sources(datasource_scope):
     guard, state, context = datasource_scope
-    ctx, policy = context(7, [7], key="__system_bot__")
+    ctx, policy = context(7, key="__system_bot__")
     guard.bind_resources(ctx, policy)
     assert ctx.datasource_id == 0 and not state["queries"]
 

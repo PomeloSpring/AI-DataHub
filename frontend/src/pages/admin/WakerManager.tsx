@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -11,7 +11,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
-import { Plus, Pencil, Trash2, Bot, Star, Lock, Eye } from 'lucide-react';
+import { Pencil, Bot, Lock, Eye } from 'lucide-react';
 import client from '@/api/client';
 import { useAuthStore } from '../../stores/authStore';
 
@@ -85,7 +85,6 @@ interface Waker {
   persona: { responsibility?: string; style?: string; boundary?: string };
   tools: { groups: string[]; standard: string[]; mcp: Record<string, string[]>; external?: Record<string, string[]> };
   mcp_server_ids: number[];
-  datasource_ids: number[];
   knowledge_base_ids: number[];
   skills: string[];
   models: string[];
@@ -93,16 +92,14 @@ interface Waker {
   permission_mode: string;
   is_active: boolean;
   is_builtin?: number;
-  workspace_id?: number;
-  is_default?: number;
 }
 
 const emptyWaker = (): Waker => ({
   id: 0, waker_key: '', name: '', display_name: '', description: '', category: 'custom',
   system_prompt: '', persona: {},
   tools: { groups: [], standard: [], mcp: {}, external: {} },
-  mcp_server_ids: [], datasource_ids: [], knowledge_base_ids: [], skills: [], models: [], chart_enabled: true,
-  permission_mode: 'inherit', is_active: true, workspace_id: 0,
+  mcp_server_ids: [], knowledge_base_ids: [], skills: [], models: [], chart_enabled: true,
+  permission_mode: 'inherit', is_active: true,
 });
 
 export default function WakerManager() {
@@ -110,7 +107,6 @@ export default function WakerManager() {
   const [mcpServers, setMcpServers] = useState<any[]>([]);
   const [toolGroups, setToolGroups] = useState<typeof MCP_TOOL_GROUPS>([]);
   const [standardTools, setStandardTools] = useState<typeof STANDARD_TOOLS>([]);
-  const [datasources, setDatasources] = useState<any[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<any[]>([]);
   const [skillOptions, setSkillOptions] = useState<any[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
@@ -119,24 +115,13 @@ export default function WakerManager() {
   const [editing, setEditing] = useState<Waker | null>(null);
   const [form, setForm] = useState<Waker>(emptyWaker());
 
-  // 绑定 tab 状态
-  const [workspaces, setWorkspaces] = useState<any[]>([]);
-  const [roles, setRoles] = useState<any[]>([]);
-  const [bindWsId, setBindWsId] = useState<number>(0);
-  const [bindRoleId, setBindRoleId] = useState<number>(0);
-  const [wsBindings, setWsBindings] = useState<any[]>([]);
-  const [roleBindings, setRoleBindings] = useState<number[]>([]);
-
   const load = async () => {
     setLoading(true);
     try {
-      const [wRes, mcpRes, dsRes, kbRes, wsRes, roleRes, skillRes, catalogRes] = await Promise.all([
+      const [wRes, mcpRes, kbRes, skillRes, catalogRes] = await Promise.all([
         client.get('/admin/wakers/'),
         client.get('/admin/mcp-servers'),
-        client.get('/datasources/'),
         client.get('/knowledge-bases'),
-        client.get('/workspaces'),
-        client.get('/admin/wakers/roles'),
         client.get('/admin/skills'),
         client.get('/admin/wakers/tools/catalog'),
       ]);
@@ -144,10 +129,7 @@ export default function WakerManager() {
       setStandardTools(catalogRes.data.standard);
       setWakers(Array.isArray(wRes.data) ? wRes.data.map((r: any) => normalizeWaker(r, catalogRes.data.groups)) : []);
       setMcpServers(Array.isArray(mcpRes.data) ? mcpRes.data : []);
-      setDatasources(Array.isArray(dsRes.data) ? dsRes.data : []);
       setKnowledgeBases(Array.isArray(kbRes.data) ? kbRes.data.filter((k: any) => k.status === 'active') : []);
-      setWorkspaces(Array.isArray(wsRes.data) ? wsRes.data : []);
-      setRoles(Array.isArray(roleRes.data) ? roleRes.data : []);
       setSkillOptions(Array.isArray(skillRes.data) ? skillRes.data : []);
     } catch {
       toast.error('加载失败');
@@ -177,10 +159,8 @@ export default function WakerManager() {
   useEffect(() => { load(); }, []);
 
   const mcpName = (id: number) => mcpServers.find((s) => s.id === id)?.name || `#${id}`;
-  const dsName = (id: number) => datasources.find((d) => d.id === id)?.name || `#${id}`;
   const kbName = (id: number) => knowledgeBases.find((k) => k.id === id)?.name || `#${id}`;
 
-  const openCreate = () => { setEditing(null); setForm(emptyWaker()); setFormOpen(true); };
   const openEdit = (w: Waker) => { setEditing(w); setForm(JSON.parse(JSON.stringify(w))); setFormOpen(true); };
 
   const toggleArr = (arr: (string | number)[], val: string | number) =>
@@ -229,58 +209,9 @@ export default function WakerManager() {
     }
   };
 
-  const handleDelete = async (w: Waker) => {
-    if (w.is_builtin) { toast.error('内置 Waker 不可删除'); return; }
-    if (!confirm(`确定删除 Waker "${w.display_name || w.name}"?`)) return;
-    try {
-      await client.delete(`/admin/wakers/${w.id}`);
-      toast.success('已删除');
-      load();
-    } catch { toast.error('删除失败'); }
-  };
-
-  // ── 工作空间绑定 ──
-  const loadWsBinding = async (wsId: number) => {
-    setBindWsId(wsId);
-    if (!wsId) { setWsBindings([]); return; }
-    try {
-      const { data } = await client.get(`/admin/wakers/workspace/${wsId}/wakers`);
-      setWsBindings(Array.isArray(data) ? data : []);
-    } catch { setWsBindings([]); }
-  };
-  const saveWsBinding = async () => {
-    try {
-      const bindings = wsBindings.map((b) => ({ waker_id: b.waker_id, is_default: !!b.is_default, sort: b.sort || 0 }));
-      await client.put(`/admin/wakers/workspace/${bindWsId}/wakers`, { bindings });
-      toast.success('工作空间绑定已保存');
-    } catch { toast.error('保存失败'); }
-  };
-  const toggleWsWaker = (wakerId: number, add: boolean) => {
-    setWsBindings((prev) => (add
-      ? [...prev, { waker_id: wakerId, is_default: prev.length === 0, sort: prev.length }]
-      : prev.filter((b) => b.waker_id !== wakerId)));
-  };
-
-  // ── 角色绑定 ──
-  const loadRoleBinding = async (roleId: number) => {
-    setBindRoleId(roleId);
-    if (!roleId) { setRoleBindings([]); return; }
-    try {
-      const { data } = await client.get(`/admin/wakers/role/${roleId}/wakers`);
-      setRoleBindings(data?.waker_ids || []);
-    } catch { setRoleBindings([]); }
-  };
-  const saveRoleBinding = async () => {
-    try {
-      await client.put(`/admin/wakers/role/${bindRoleId}/wakers`, { waker_ids: roleBindings });
-      toast.success('角色绑定已保存');
-    } catch { toast.error('保存失败'); }
-  };
 
   const { user } = useAuthStore();
   const isAdmin = user?.role === 'admin';
-  const boundWakerIds = useMemo(() => new Set(wsBindings.map((b) => b.waker_id)), [wsBindings]);
-  const roleWakerSet = useMemo(() => new Set(roleBindings), [roleBindings]);
   const isReadOnly = !!(editing?.is_builtin && !isAdmin);
 
   return (
@@ -288,16 +219,13 @@ export default function WakerManager() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2"><Bot className="h-6 w-6 text-primary" />Waker 配置</h1>
-          <p className="text-muted-foreground text-sm mt-1">角色化智能体的统一定义入口(替代分散的 Agent / Skills 配置)</p>
+          <p className="text-muted-foreground text-sm mt-1">角色化智能体的配置编辑(角色创建时自动创建同名 Waker)</p>
         </div>
-        <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1" /> 添加 Waker</Button>
       </div>
 
       <Tabs defaultValue="wakers">
         <TabsList>
           <TabsTrigger value="wakers">Waker 定义</TabsTrigger>
-          <TabsTrigger value="workspace">工作空间绑定</TabsTrigger>
-          <TabsTrigger value="role">角色绑定</TabsTrigger>
         </TabsList>
 
         {/* ── Waker 列表 ── */}
@@ -326,9 +254,6 @@ export default function WakerManager() {
                     {w.mcp_server_ids?.map((id) => (
                       <span key={`m${id}`} className="text-xs bg-green-50 text-green-600 px-1.5 py-0.5 rounded">MCP: {mcpName(id)}</span>
                     ))}
-                    {w.datasource_ids?.map((id) => (
-                      <span key={`d${id}`} className="text-xs bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded">数据源: {dsName(id)}</span>
-                    ))}
                     {w.knowledge_base_ids?.map((id) => (
                       <span key={`k${id}`} className="text-xs bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded">知识库: {kbName(id)}</span>
                     ))}
@@ -343,91 +268,13 @@ export default function WakerManager() {
                   ) : (
                     <Button size="sm" variant="ghost" onClick={() => openEdit(w)}><Pencil className="h-4 w-4" /></Button>
                   )}
-                  <Button size="sm" variant="ghost" onClick={() => handleDelete(w)} disabled={!!w.is_builtin}><Trash2 className="h-4 w-4" /></Button>
                 </div>
               </div>
             ))}
             {!loading && wakers.length === 0 && (
-              <div className="text-sm text-muted-foreground text-center py-12">暂无 Waker,点击上方按钮添加</div>
+              <div className="text-sm text-muted-foreground text-center py-12">暂无 Waker，请先创建角色</div>
             )}
           </div>
-        </TabsContent>
-
-        {/* ── 工作空间绑定 ── */}
-        <TabsContent value="workspace" className="mt-4 space-y-4">
-          <div className="flex items-center gap-3">
-            <Label className="shrink-0">工作空间</Label>
-            <Select value={String(bindWsId)} onValueChange={(v) => loadWsBinding(Number(v))}>
-              <SelectTrigger className="w-[260px]"><SelectValue placeholder="选择工作空间" /></SelectTrigger>
-              <SelectContent>
-                {workspaces.map((ws) => (<SelectItem key={ws.id} value={String(ws.id)}>{ws.name}</SelectItem>))}
-              </SelectContent>
-            </Select>
-            {bindWsId > 0 && <Button size="sm" onClick={saveWsBinding}>保存绑定</Button>}
-          </div>
-          {bindWsId > 0 ? (
-            <div className="border border-border rounded-xl divide-y divide-border">
-              {wakers.map((w) => {
-                const bound = boundWakerIds.has(w.id);
-                const binding = wsBindings.find((b) => b.waker_id === w.id);
-                return (
-                  <div key={w.id} className="flex items-center justify-between p-3">
-                    <div className="text-sm">{w.display_name || w.name}<span className="text-xs text-muted-foreground ml-2">({w.name})</span></div>
-                    <div className="flex items-center gap-4">
-                      {bound && (
-                        <button
-                          className="flex items-center gap-1 text-xs"
-                          onClick={() => setWsBindings((prev) => prev.map((b) => ({
-                            ...b, is_default: b.waker_id === w.id ? !b.is_default : false,
-                          })))}
-                        >
-                          <Star className={`h-4 w-4 ${binding?.is_default ? 'fill-yellow-400 text-yellow-400' : 'text-muted-foreground'}`} />
-                          默认
-                        </button>
-                      )}
-                      <Switch checked={bound} onCheckedChange={(v) => toggleWsWaker(w.id, v)} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">请选择工作空间以配置其可用 Waker。</p>
-          )}
-        </TabsContent>
-
-        {/* ── 角色绑定 ── */}
-        <TabsContent value="role" className="mt-4 space-y-4">
-          <div className="flex items-center gap-3">
-            <Label className="shrink-0">角色</Label>
-            <Select value={String(bindRoleId)} onValueChange={(v) => loadRoleBinding(Number(v))}>
-              <SelectTrigger className="w-[260px]"><SelectValue placeholder="选择角色" /></SelectTrigger>
-              <SelectContent>
-                {roles.map((r) => (<SelectItem key={r.id} value={String(r.id)}>{r.display_name || r.name}</SelectItem>))}
-              </SelectContent>
-            </Select>
-            {bindRoleId > 0 && <Button size="sm" onClick={saveRoleBinding}>保存绑定</Button>}
-          </div>
-          {bindRoleId > 0 ? (
-            <div className="flex flex-wrap gap-2">
-              {wakers.map((w) => {
-                const active = roleWakerSet.has(w.id);
-                return (
-                  <Badge
-                    key={w.id}
-                    variant={active ? 'default' : 'outline'}
-                    className="cursor-pointer"
-                    onClick={() => setRoleBindings((prev) => toggleArr(prev, w.id) as number[])}
-                  >
-                    {w.display_name || w.name}
-                  </Badge>
-                );
-              })}
-              {wakers.length === 0 && <p className="text-sm text-muted-foreground">暂无 Waker</p>}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">请选择角色以配置其可用 Waker。</p>
-          )}
         </TabsContent>
       </Tabs>
 
@@ -436,7 +283,7 @@ export default function WakerManager() {
         <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              {editing ? (isReadOnly ? '查看 Waker 配置' : '编辑 Waker') : '新建 Waker'}
+              {isReadOnly ? '查看 Waker 配置' : '编辑 Waker'}
               {isReadOnly && <Badge variant="secondary" className="text-xs"><Lock className="h-3 w-3 mr-1" />系统内置 · 不可编辑</Badge>}
             </DialogTitle>
             <DialogDescription>{isReadOnly ? '该 Waker 为系统内置配置，仅支持查看' : '定义角色化智能体的人格、工具、技能与资源引用'}</DialogDescription>
@@ -561,21 +408,6 @@ export default function WakerManager() {
                   </div>;
                 })}
               </Field>
-              <Field label="引用数据源">
-                <p className="mb-2 text-xs text-muted-foreground">不指定时继承当前工作空间绑定的数据源；指定后仅可使用所选数据源与工作空间授权范围的交集，仍受当前用户权限限制。AS-BOT 默认系统域不受此设置影响。</p>
-                <div className="flex flex-wrap gap-2 max-h-[140px] overflow-y-auto">
-                  {datasources.map((ds) => {
-                    const active = (form.datasource_ids || []).includes(ds.id);
-                    return (
-                      <Badge key={ds.id} variant={active ? 'default' : 'outline'} className="cursor-pointer"
-                        onClick={() => setForm({ ...form, datasource_ids: toggleArr(form.datasource_ids || [], ds.id) as number[] })}>
-                        {ds.name}
-                      </Badge>
-                    );
-                  })}
-                  {datasources.length === 0 && <span className="text-xs text-muted-foreground">无数据源</span>}
-                </div>
-              </Field>
               <Field label="引用知识库">
                 <p className="mb-2 text-xs text-muted-foreground">知识库使用范围以当前 Waker 的显式绑定为准，无需再关联工作空间；空绑定不允许知识库检索。</p>
                 <div className="flex flex-wrap gap-2 max-h-[140px] overflow-y-auto">
@@ -632,16 +464,7 @@ export default function WakerManager() {
               </div>
             </Field>
 
-            <div className="grid grid-cols-3 gap-4 items-end">
-              <Field label="权限模式">
-                <Select value={form.permission_mode} onValueChange={(v) => setForm({ ...form, permission_mode: v })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="inherit">继承用户角色</SelectItem>
-                    <SelectItem value="restrict">严格限制</SelectItem>
-                  </SelectContent>
-                </Select>
-              </Field>
+            <div className="grid grid-cols-2 gap-4 items-end">
               <div className="flex items-center gap-2">
                 <Switch checked={!!form.chart_enabled} onCheckedChange={(v) => setForm({ ...form, chart_enabled: v })} />
                 <span className="text-sm">注入图表契约</span>
@@ -688,7 +511,6 @@ function normalizeWaker(r: any, catalog = MCP_TOOL_GROUPS): Waker {
     persona: typeof r.persona === 'string' ? JSON.parse(r.persona || '{}') : (r.persona || {}),
     tools: { groups, standard, mcp, external: tools.external || {} },
     mcp_server_ids: parseArr(r.mcp_server_ids),
-    datasource_ids: parseArr(r.datasource_ids),
     knowledge_base_ids: parseArr(r.knowledge_base_ids),
     skills: parseArr(r.skills)
       .map((s: any) => (typeof s === 'string' ? s : String(s?.name || s?.key || '')))

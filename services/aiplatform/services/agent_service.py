@@ -123,12 +123,3 @@ def delete_agent(agent_id: int) -> bool:
     """Delete agent by ID."""
     execute_write("DELETE FROM adh_agents WHERE id = %s", (agent_id,))
     return True
-
-
-def reload_route_patterns():
-    """Reload route patterns cache after agent changes."""
-    try:
-        from services.datamind.agent.router import reload_route_patterns as _reload
-        _reload()
-    except Exception:
-        pass

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   Plus, Edit2, Trash2, Star, Database, Users, Settings,
-  X, UserPlus, Bot, Menu,
+  X, UserPlus, Menu,
   Shield, UserMinus,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -494,119 +494,6 @@ function EditWorkspaceDialog({
   );
 }
 
-// ── Workspace Wakers Tab (binding mode) ────────────────────────────
-
-function WorkspaceWakersTab({ workspaceId }: { workspaceId: number }) {
-  const [wakers, setWakers] = useState<any[]>([]);
-  const [boundIds, setBoundIds] = useState<number[]>([]);
-  const [defaultId, setDefaultId] = useState<number>(0);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const [allRes, bindRes] = await Promise.all([
-        client.get('/admin/wakers/'),
-        client.get(`/admin/wakers/workspace/${workspaceId}/wakers`),
-      ]);
-      setWakers(Array.isArray(allRes.data) ? allRes.data : []);
-      const bindings = Array.isArray(bindRes.data) ? bindRes.data : [];
-      setBoundIds(bindings.map((b: any) => b.waker_id));
-      setDefaultId(bindings.find((b: any) => b.is_default)?.waker_id || 0);
-    } catch { toast.error('加载 Waker 失败'); }
-    finally { setLoading(false); }
-  };
-
-  useEffect(() => { load(); }, [workspaceId]);
-
-  const toggle = (id: number) => {
-    setBoundIds((prev) => {
-      if (prev.includes(id)) {
-        if (defaultId === id) setDefaultId(0);
-        return prev.filter((x) => x !== id);
-      }
-      return [...prev, id];
-    });
-  };
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      const effDefault = defaultId || boundIds[0] || 0;
-      const bindings = boundIds.map((id, idx) => ({
-        waker_id: id,
-        is_default: effDefault === id,
-        sort: idx,
-      }));
-      await client.put(`/admin/wakers/workspace/${workspaceId}/wakers`, { bindings });
-      toast.success('Waker 配置已保存');
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '保存失败');
-    } finally { setSaving(false); }
-  };
-
-  if (loading) return <div className="flex justify-center py-8"><Spinner size={24} /></div>;
-
-  const effDefault = defaultId || boundIds[0] || 0;
-
-  return (
-    <div className="space-y-4">
-      <div className="text-sm text-muted-foreground">
-        选择该工作空间可用的 Waker（角色化智能体）。标记为默认的将作为缺省 Waker。知识库和 MCP 服务统一在 Waker 中绑定。
-      </div>
-
-      {wakers.length === 0 && (
-        <div className="text-sm text-muted-foreground text-center py-8">
-          暂无 Waker，请先在系统配置中创建
-        </div>
-      )}
-
-      {wakers.map((w) => {
-        const checked = boundIds.includes(w.id);
-        return (
-          <div key={w.id} className="flex items-center justify-between p-3 border rounded-lg">
-            <div className="flex items-center gap-2 min-w-0">
-              <Bot className="h-4 w-4 flex-shrink-0" />
-              <span className="truncate">{w.display_name || w.name}</span>
-              <code className="text-xs bg-muted px-1.5 py-0.5 rounded flex-shrink-0">{w.waker_key}</code>
-              {!!w.is_builtin && <Badge variant="secondary" className="flex-shrink-0">内置</Badge>}
-              {!w.is_active && <span className="text-xs text-destructive flex-shrink-0">已禁用</span>}
-            </div>
-            <div className="flex items-center gap-3 flex-shrink-0">
-              {checked && (
-                <label className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <input
-                    type="radio"
-                    name={`ws-default-waker-${workspaceId}`}
-                    checked={effDefault === w.id}
-                    onChange={() => setDefaultId(w.id)}
-                    className="h-3.5 w-3.5 accent-primary"
-                  />
-                  默认
-                </label>
-              )}
-              <input
-                type="checkbox"
-                checked={checked}
-                onChange={() => toggle(w.id)}
-                className="h-4 w-4 accent-primary"
-              />
-            </div>
-          </div>
-        );
-      })}
-
-      {wakers.length > 0 && (
-        <div className="flex justify-end">
-          <Button size="sm" onClick={save} disabled={saving}>
-            {saving ? '保存中...' : '保存 Waker 配置'}
-          </Button>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ── Workspace Roles Tab (RBAC) ─────────────────────────────────────
 
@@ -920,7 +807,7 @@ function ManageWorkspaceDialog({
         <DialogHeader>
           <DialogTitle>管理工作空间 - {workspace.name}</DialogTitle>
           <DialogDescription>
-            管理工作空间的用户、角色、数据源、Waker 和菜单
+            管理工作空间的用户、角色、数据源和菜单
           </DialogDescription>
         </DialogHeader>
 
@@ -938,11 +825,7 @@ function ManageWorkspaceDialog({
               <Database className="h-4 w-4 mr-1" />
               数据源 ({datasources.length})
             </TabsTrigger>
-            <TabsTrigger value="wakers">
-              <Bot className="h-4 w-4 mr-1" />
-              Waker
-            </TabsTrigger>
-            <TabsTrigger value="menu">
+              <TabsTrigger value="menu">
               <Menu className="h-4 w-4 mr-1" />
               菜单管理
             </TabsTrigger>
@@ -1086,9 +969,6 @@ function ManageWorkspaceDialog({
             )}
           </TabsContent>
 
-          <TabsContent value="wakers" className="space-y-4">
-            <WorkspaceWakersTab workspaceId={workspace.id} />
-          </TabsContent>
 
           <TabsContent value="menu" className="space-y-4">
             <MenuEditorTab workspaceId={workspace.id} />

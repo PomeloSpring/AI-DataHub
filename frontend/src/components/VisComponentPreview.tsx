@@ -1,5 +1,6 @@
 import type { VisComponent } from '@/api/visLibrary';
 import { sanitizeStyle, sanitizePack } from '@/lib/dashboardDesign';
+import { FileText, Map } from 'lucide-react';
 
 const FALLBACK = ['#334155', '#64748b', '#94a3b8'];
 const colorsOf = (value: unknown): string[] => {
@@ -121,6 +122,32 @@ export default function VisComponentPreview({ c }: { c: VisComponent }) {
     borderBottom: cfg.showUnderline ? `2px solid ${cfg.underlineColor}` : undefined,
   }}>标题与边框</div>;
   if (c.category === 'sql_template') return <div className="flex h-16 items-center justify-center rounded-md border text-xs text-muted-foreground">仅供人工数据配置</div>;
+  if (c.category === 'report_template') {
+    const fmt = (c.style_config as any)?.format || 'markdown';
+    return <div className="flex h-16 flex-col items-center justify-center rounded-md border p-2 text-xs text-muted-foreground">
+      <FileText className="h-5 w-5 mb-1" />
+      <span>{fmt === 'html' ? 'HTML' : 'Markdown'} 报告模板</span>
+    </div>;
+  }
+  if (c.category === 'map_tile') {
+    const sc2 = c.style_config as any;
+    const provider = sc2?.provider || 'custom';
+    const tileUrl = sc2?.tileUrl || '';
+    const providerNames: Record<string, string> = { openstreetmap: 'OSM', amap: '高德', tianditu: '天地图', carto: 'CartoDB', custom: '自定义' };
+    // 使用北京附近坐标预览（确保有陆地内容）
+    const previewUrl = tileUrl.replace('{z}', '5').replace('{x}', '25').replace('{y}', '12').replace('{r}', '').replace('{apiKey}', sc2?.apiKey || '');
+    return (
+      <div className="relative h-16 overflow-hidden rounded-md border">
+        {previewUrl ? (
+          <img src={previewUrl} alt={c.name} className="h-full w-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+        ) : null}
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 p-1 text-[10px] text-white">
+          <Map className="h-4 w-4 mb-0.5" />
+          <span>{providerNames[provider] || '地图瓦片'}</span>
+        </div>
+      </div>
+    );
+  }
   if (c.category === 'color_theme') return <div className="flex h-16 gap-1 rounded border p-2">{palette.map((color, i) => <span key={i} className="flex-1 rounded" style={{ background: color }} />)}</div>;
   // chart_style / color_theme: 按图表类型绘制对应形状
   return <div data-preview-type={c.chart_type || 'bar'} className="rounded-md border p-1" style={{ background: sc.viewBg }}>

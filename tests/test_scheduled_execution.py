@@ -14,7 +14,7 @@ def scheduled_waker(monkeypatch):
     from services.datamind.execution import resource_guard
     from services.datamind.execution.sdk_tools import external_tools
     state = {"waker": {"id": 1, "waker_key": "sales", "name": "销售分析", "is_default": 1,
-             "system_prompt": "你是销售分析", "datasource_ids": [], "knowledge_base_ids": [],
+             "system_prompt": "你是销售分析", "knowledge_base_ids": [],
              "mcp_server_ids": [], "tools": {"mcp": {"semantic": ["get_metrics", "run_semantic_query"]}}},
              "sources": [8], "kbs": [4], "enabled": True,
              "server": {"id": 9, "name": "srv", "transport": "sse", "url": "http://test.invalid",
@@ -360,9 +360,10 @@ def test_beat_tick_pauses_without_lease(monkeypatch):
 # ── MCP/Agent 工具范围：只提议意图，取数留在治理链 ─────────
 
 def test_agent_datasource_scope_enforced(scheduled_waker):
+    """Waker 不持有数据源边界：任务源不在创建者授权范围（工作空间绑定∩角色）→ 拒绝。"""
     from services.datamind.execution import scheduled_analysis as sa
-    scheduled_waker["waker"]["datasource_ids"] = [1, 2]
-    with pytest.raises(PermissionError, match="Waker"):
+    scheduled_waker["sources"] = [7]
+    with pytest.raises(PermissionError, match="数据源未绑定到工作空间"):
         sa.load_profile({"waker_key": "sales", "datasource_id": 8}, {"workspace_id": 3, "user_id": 7})
 
 

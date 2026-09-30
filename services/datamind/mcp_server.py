@@ -1,13 +1,18 @@
 """DataMind MCP Server — Exposes AI capabilities as MCP tools.
 
-Run: python services.datamind.mcp_server
+权威形态：SSE 端点（由 main.py 挂载为 /mcp，注册于系统配置 MCP 服务菜单）。
+stdio 形态已废弃（分帧为 LSP 风格 Content-Length，与 MCP 标准 newline-delimited
+不兼容，标准客户端无法连接）；仅保留代码供内部调试，不再维护。
 
 This MCP server provides three tools:
 - query_data: Natural language data query (NL2SQL)
 - execute_sql: Direct SQL execution against a datasource
 - analyze_data: Multi-dimensional data analysis
 
-It wraps the existing backend modules and exposes them via the MCP protocol.
+安全约定（数据护城河）：三个工具的取数全部经治理入口——
+query_data/analyze_data 走 NL2SQL 管道（内部 execute_query_with_permission），
+execute_sql 直接走 execute_query_with_permission；身份为系统调用
+(user_id=0 → sensitive_only 基线，护栏 §2)，无 RBAC/RLS 但敏感基线强制生效。
 """
 
 import asyncio
@@ -133,9 +138,13 @@ async def handle_query_data(arguments: dict) -> str:
                 result = data
             elif event_type == "error":
                 result["error"] = data.get("message", str(data))
-    except Exception as e:
-        logger.error("query_data failed: %s", e)
+    except PermissionError as e:
+        # 治理层拒绝是面向用户的可诊断提示，直接回显（含错因，护栏 §7 例外）。
         result = {"error": str(e)}
+    except Exception:
+        # 原始报错可能含连接串/主机等物理信息，仅进服务端日志（护栏 §7）。
+        logger.exception("query_data failed")
+        result = {"error": "查询执行失败，请联系管理员查看服务端日志"}
 
     # Format for MCP response
     response = {
@@ -155,8 +164,8 @@ async def handle_query_data(arguments: dict) -> str:
 
 
 async def handle_execute_sql(arguments: dict) -> str:
-    """Execute SQL directly against the datasource."""
-    from services.datamind.nl2sql.sql.query_executor import execute_query
+    """Execute SQL directly against the datasource (治理入口，统一取数护栏 §1)。"""
+    from services.datamind.nl2sql.sql.query_executor import execute_query_with_permission
 
     sql = arguments.get("sql", "")
     datasource_id = arguments.get("datasource_id", 0)
@@ -165,7 +174,10 @@ async def handle_execute_sql(arguments: dict) -> str:
         return json.dumps({"error": "sql is required"})
 
     try:
-        df, elapsed_ms, row_count = execute_query(sql, datasource_id)
+        # 系统调用身份（user_id=0）：只套敏感基线，不做 RBAC/RLS（护栏 §2）。
+        # 严禁回退到裸 execute_query/get_connection 直连（护栏 §12）。
+        df, elapsed_ms, row_count = execute_query_with_permission(
+            sql, datasource_id, "sql", {"user_id": 0, "username": "mcp"}, 0)
         columns = list(df.columns) if not df.empty else []
         rows = df.to_dict(orient="records") if not df.empty else []
 
@@ -190,9 +202,13 @@ async def handle_execute_sql(arguments: dict) -> str:
             "elapsed_ms": elapsed_ms,
         }, ensure_ascii=False, default=str)
 
-    except Exception as e:
-        logger.error("execute_sql failed: %s", e)
-        return json.dumps({"error": str(e)})
+    except PermissionError as e:
+        # 治理拒绝（安全校验/权限）是可操作提示，回显给 MCP 客户端。
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    except Exception:
+        # 原始报错可能含主机/账号等物理信息，仅进服务端日志（护栏 §7）。
+        logger.exception("execute_sql failed")
+        return json.dumps({"error": "SQL 执行失败，请联系管理员查看服务端日志"}, ensure_ascii=False)
 
 
 async def handle_analyze_data(arguments: dict) -> str:
@@ -222,9 +238,11 @@ async def handle_analyze_data(arguments: dict) -> str:
         ):
             if event_type == "done":
                 query_result = data
-    except Exception as e:
-        logger.error("analyze_data query failed: %s", e)
-        return json.dumps({"error": f"Query failed: {str(e)}"})
+    except PermissionError as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    except Exception:
+        logger.exception("analyze_data query failed")
+        return json.dumps({"error": "查询执行失败，请联系管理员查看服务端日志"}, ensure_ascii=False)
 
     if not query_result or not query_result.get("result"):
         return json.dumps({
@@ -396,8 +414,46 @@ async def run_stdio_server():
 
 
 def main():
-    """Entry point for the MCP server."""
+    """Entry point for the (deprecated) stdio MCP server."""
     asyncio.run(run_stdio_server())
+
+
+def create_mcp_app():
+    """SSE 形态的 MCP 端点（内置 MCP 服务的权威暴露形态）。
+
+    挂载：datamind/main.py -> app.mount("/mcp", create_mcp_app())
+    对外端点：/mcp/sse（SSE 连接）+ /mcp/messages（JSON-RPC POST）。
+    位于 /api/ 权限中间件之外（外部 AI 客户端无法携带 JWT），靠内网边界防护；
+    取数安全由工具内部的治理入口保证（见模块 docstring）。
+    """
+    from mcp.types import TextContent, Tool
+
+    from ..shared.common.mcp_base import create_mcp_server, create_mcp_starlette_app
+
+    server = create_mcp_server(
+        "datamind",
+        "DataMind MCP Server: NL2SQL query, governed SQL execution, data analysis",
+    )
+
+    @server.list_tools()
+    async def _list_tools() -> list:
+        return [Tool(**spec) for spec in TOOLS]
+
+    @server.call_tool()
+    async def _call_tool(name: str, arguments: dict) -> list:
+        handler = TOOL_HANDLERS.get(name)
+        if handler is None:
+            text = json.dumps({"error": f"Unknown tool: {name}"}, ensure_ascii=False)
+        else:
+            try:
+                text = await handler(arguments or {})
+            except Exception:
+                # handler 自身已按治理口径处理业务异常；此处仅兜结构性异常，不回显原始报错。
+                logger.exception("MCP tool %s failed", name)
+                text = json.dumps({"error": "工具执行失败，请联系管理员查看服务端日志"}, ensure_ascii=False)
+        return [TextContent(type="text", text=text)]
+
+    return create_mcp_starlette_app(server, sse_path="/sse", message_path="/messages")
 
 
 if __name__ == "__main__":

@@ -22,15 +22,15 @@ import {
   updateScheduledTask,
   regenerateWebhookToken,
   listNotificationChannels,
-  listReportTemplates,
   listScheduledWakers,
   type ScheduledWakerOption,
   type ScheduledTask,
   type ScheduledTaskCreateRequest,
   type TaskQuestion,
   type NotificationChannel,
-  type ReportTemplate,
 } from '@/api/scheduledTask';
+import { useVisLibrary } from '@/hooks/useVisLibrary';
+import type { VisComponent } from '@/api/visLibrary';
 import client from '@/api/client';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 
@@ -148,7 +148,8 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
 
   // ── Dropdown data ─────────────────────────────────────────────
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
-  const [reportTemplates, setReportTemplates] = useState<ReportTemplate[]>([]);
+  const { items: visItems, loading: visLoading } = useVisLibrary(true);
+  const reportTemplates = visItems.filter(i => i.category === 'report_template');
   const [wsDatasources, setWsDatasources] = useState<WorkspaceDatasource[]>([]);
   const [wakers, setWakers] = useState<ScheduledWakerOption[]>([]);
   const [wakersLoading, setWakersLoading] = useState(false);
@@ -158,7 +159,6 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
   useEffect(() => {
     // Load channels without workspace filter to ensure saved channels are always visible
     listNotificationChannels().then(setChannels).catch(() => {});
-    listReportTemplates(currentWorkspaceId).then(setReportTemplates).catch(() => {});
     client.get('/datasources/').then(({ data }) => setWsDatasources(data || [])).catch(() => {});
   }, [currentWorkspaceId]);
 
@@ -550,12 +550,15 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
             <SelectTrigger><SelectValue placeholder="无模板" /></SelectTrigger>
             <SelectContent onCloseAutoFocus={(e: any) => e.preventDefault()}>
               <SelectItem value="none">无模板</SelectItem>
-              {reportTemplates.map(tpl => (
-                <SelectItem key={tpl.id} value={String(tpl.id)}>
-                  {tpl.name}（{tpl.format === 'html' ? 'HTML' : 'MD'}）
-                  {tpl.is_system ? ' · 内置' : ''}
-                </SelectItem>
-              ))}
+              {reportTemplates.map(tpl => {
+                const fmt = (tpl.style_config as any)?.format || 'markdown';
+                return (
+                  <SelectItem key={tpl.id} value={String(tpl.id)}>
+                    {tpl.name}（{fmt === 'html' ? 'HTML' : 'MD'}）
+                    {tpl.is_builtin ? ' · 内置' : ''}
+                  </SelectItem>
+                );
+              })}
             </SelectContent>
           </Select>
         </div>

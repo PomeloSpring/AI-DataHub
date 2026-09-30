@@ -46,7 +46,6 @@ const SYSTEM_MENU_ITEMS = [
   { key: '/system/mcp', icon: Server, label: 'MCP 服务' },
   { key: '/system/wakers', icon: Bot, label: 'Waker 配置' },
   { key: '/system/skills', icon: Sparkles, label: '技能配置' },
-  { key: '/system/as-bot', icon: Bot, label: 'AI 助手' },
   { key: '/system/config-versions', icon: GitBranch, label: 'Prompt配置' },
   { section: '知识管理' },
   { key: '/system/knowledge-base', icon: BookOpen, label: '知识库' },
@@ -54,14 +53,13 @@ const SYSTEM_MENU_ITEMS = [
   { section: '可视化配置' },
   { key: '/system/dashboards', icon: BarChart3, label: '看板管理' },
   { key: '/system/vis-library', icon: LayoutTemplate, label: 'UI 字模库' },
+  { key: '/system/report-templates', icon: FileText, label: '报告模板' },
   { section: '集成配置' },
   { key: '/system/notification-channels', icon: Bell, label: '通知渠道' },
-  { key: '/system/report-templates', icon: FileText, label: '报告模板' },
   { section: '安全与权限' },
   { key: '/system/users', icon: Users, label: '用户管理' },
   { key: '/system/workspaces', icon: Database, label: '工作空间管理' },
   { key: '/system/roles', icon: Shield, label: '角色权限' },
-  { key: '/system/rls', icon: Shield, label: '行级安全' },
   { key: '/system/audit', icon: Eye, label: '审计日志' },
   { section: '运维管理' },
   { key: '/system/sandbox', icon: Server, label: '沙箱管理' },
@@ -220,7 +218,6 @@ export default function SystemLayout() {
             </Button>
           </div>
           <div className="flex items-center gap-2">
-            {/* AS-BOT 系统助手 */}
             <AsBotButton />
             {/* Module switcher — 工作空间 / 数据中台 / 系统配置 */}
             <SectionSwitcher current="system" />

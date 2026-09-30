@@ -12,12 +12,30 @@ Usage:
     result = engine_client.query(sql, datasource_id, rls_policies=policies)
 """
 
+import hashlib
 import logging
+import time
 from typing import Optional
 
 from services.shared.common.db.metadata_db import get_metadata_conn
 
 logger = logging.getLogger(__name__)
+
+# ── RLS policy cache (30s TTL) ────────────────────────────────────────
+# Key: (user_id, workspace_id, datasource_id, sorted_tables, user_role)
+# Avoids repeated DB queries for the same user/table combination.
+_RLS_CACHE_TTL = 30  # seconds
+_rls_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+def _cache_key(user_id, workspace_id, datasource_id, tables, user_role) -> str:
+    raw = f"{user_id}:{workspace_id}:{datasource_id}:{','.join(sorted(tables))}:{user_role}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+
+def invalidate_rls_cache():
+    """Clear the RLS policy cache (call after policy changes)."""
+    _rls_cache.clear()
 
 
 def load_rls_policies_for_query(
@@ -34,19 +52,24 @@ def load_rls_policies_for_query(
         workspace_id: Current workspace ID.
         datasource_id: Datasource ID.
         tables: List of table names referenced in the query.
-        user_role: User role ("admin" bypasses all policies).
+        user_role: User role (unused — RLS follows DB policy config, no role bypass).
 
     Returns:
         List of DataEngine RLSPolicy dicts:
         [{"tables": [...], "row_filter": "...", "hidden_columns": [...],
           "masked_columns": {"col": "pattern"}}]
     """
-    # Admin users bypass all RLS
-    if user_role == "admin":
-        return []
-
+    # RLS 策略完全按数据库配置生效，不做角色旁路
     if not tables:
         return []
+
+    # Check cache first (30s TTL)
+    key = _cache_key(user_id, workspace_id, datasource_id, tables, user_role)
+    now = time.time()
+    if key in _rls_cache:
+        cached_at, cached_result = _rls_cache[key]
+        if now - cached_at < _RLS_CACHE_TTL:
+            return cached_result
 
     conn = get_metadata_conn()
     try:
@@ -65,7 +88,11 @@ def load_rls_policies_for_query(
             )
 
             # 4. Merge into DataEngine format
-            return _merge_policies(row_policies, column_policies, tables)
+            result = _merge_policies(row_policies, column_policies, tables)
+
+            # Cache the result
+            _rls_cache[key] = (now, result)
+            return result
 
     except Exception as e:
         logger.error("Failed to load RLS policies: %s", e)

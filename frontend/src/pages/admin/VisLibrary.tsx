@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
 import { VIS_CATEGORIES, type VisComponent } from '@/api/visLibrary';
 import Preview, { ShapePreview } from '@/components/VisComponentPreview';
@@ -16,12 +16,14 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { Plus, Edit, Trash2, RefreshCw, Lock, LayoutTemplate, Palette, Image, Gauge, Grid3x3, Frame, FileCode, BarChart3, Layers } from 'lucide-react';
+import { Plus, Edit, Trash2, RefreshCw, Lock, LayoutTemplate, Palette, Image, Gauge, Grid3x3, Frame, FileCode, BarChart3, Layers, FileText, Map } from 'lucide-react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import client from '@/api/client';
 import { useAuthStore } from '@/stores/authStore';
 
 const ICONS = { theme_pack: Layers, chart_style: BarChart3, screen_background: Image, kpi_card: Gauge,
-  layout_template: Grid3x3, decoration_frame: Frame, color_theme: Palette, sql_template: FileCode };
+  layout_template: Grid3x3, decoration_frame: Frame, color_theme: Palette, sql_template: FileCode, report_template: FileText, map_tile: Map };
 const CATEGORIES = VIS_CATEGORIES.map(c => ({ ...c, icon: ICONS[c.id] }));
 
 export default function VisLibrary() {
@@ -29,6 +31,9 @@ export default function VisLibrary() {
   const { items, loading, error, refresh: load } = useVisLibrary(true);
   const [catFilter, setCatFilter] = useState<string>('theme_pack');
   const [viewPack, setViewPack] = useState<VisComponent | null>(null);
+  const [previewTile, setPreviewTile] = useState<VisComponent | null>(null);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<L.Map | null>(null);
   const packStyle = viewPack ? sanitizePack(viewPack.style_config) : {};
 
   const [formOpen, setFormOpen] = useState(false);
@@ -42,18 +47,30 @@ export default function VisLibrary() {
   const [chartType, setChartType] = useState('');
   const [styleConfig, setStyleConfig] = useState('{}');
   const [queryTemplate, setQueryTemplate] = useState('');
+  const [reportContent, setReportContent] = useState('');
+  const [reportFormat, setReportFormat] = useState<'markdown' | 'html'>('markdown');
+  const [mapTileUrl, setMapTileUrl] = useState('');
+  const [mapTileProvider, setMapTileProvider] = useState('');
+  const [mapTileApiKey, setMapTileApiKey] = useState('');
   const [description, setDescription] = useState('');
   const [asBuiltin, setAsBuiltin] = useState(false);
 
   const openCreate = () => {
     setEdit(null); setName(''); setCategory('chart_style'); setChartType('');
     setStyleConfig(JSON.stringify({ config: { colorScheme: ['#22d3ee', '#3b82f6'] } }, null, 2));
-    setQueryTemplate(''); setDescription(''); setAsBuiltin(false); setFormOpen(true);
+    setQueryTemplate(''); setReportContent(''); setReportFormat('markdown');
+    setMapTileUrl(''); setMapTileProvider(''); setMapTileApiKey('');
+    setDescription(''); setAsBuiltin(false); setFormOpen(true);
   };
   const openEdit = (c: VisComponent) => {
     setEdit(c); setName(c.name); setCategory(c.category); setChartType(c.chart_type || '');
     setStyleConfig(JSON.stringify(c.style_config || {}, null, 2));
     setQueryTemplate(c.query_template ? JSON.stringify(c.query_template, null, 2) : '');
+    setReportContent((c.style_config as any)?.content || '');
+    setReportFormat((c.style_config as any)?.format || 'markdown');
+    setMapTileUrl((c.style_config as any)?.tileUrl || '');
+    setMapTileProvider((c.style_config as any)?.provider || '');
+    setMapTileApiKey((c.style_config as any)?.apiKey || '');
     setDescription(c.description || ''); setAsBuiltin(!!c.is_builtin); setFormOpen(true);
   };
 
@@ -62,6 +79,14 @@ export default function VisLibrary() {
     try { sc = JSON.parse(styleConfig || '{}'); } catch { toast.error('样式配置不是合法 JSON'); return; }
     if (queryTemplate.trim()) {
       try { qt = JSON.parse(queryTemplate); } catch { toast.error('SQL 模板不是合法 JSON'); return; }
+    }
+    // 报告模板: content/format 存入 style_config
+    if (category === 'report_template') {
+      sc = { content: reportContent, format: reportFormat };
+    }
+    // 地图瓦片: tileUrl/provider/apiKey 存入 style_config
+    if (category === 'map_tile') {
+      sc = { tileUrl: mapTileUrl, provider: mapTileProvider, apiKey: mapTileApiKey };
     }
     setSaving(true);
     try {
@@ -86,6 +111,31 @@ export default function VisLibrary() {
       toast.error(e?.response?.data?.detail || '删除失败');
     }
   };
+
+  // 初始化 Leaflet 地图预览
+  useEffect(() => {
+    if (!previewTile || !mapContainerRef.current) return;
+    // 清理旧地图
+    if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
+    const sc2 = previewTile.style_config as any;
+    const tileUrl = sc2?.tileUrl || '';
+    const apiKey = sc2?.apiKey || '';
+    const url = tileUrl.replace('{apiKey}', apiKey);
+    const map = L.map(mapContainerRef.current, {
+      center: [39.9042, 116.4074], // 北京
+      zoom: 10,
+      zoomControl: true,
+      attributionControl: false,
+    });
+    L.tileLayer(url, {
+      maxZoom: 18,
+      minZoom: 3,
+    }).addTo(map);
+    mapRef.current = map;
+    // 弹窗打开后需要 invalidateSize 确保地图正确渲染
+    setTimeout(() => map.invalidateSize(), 100);
+    return () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
+  }, [previewTile]);
 
   const shown = catFilter === 'all' ? items : items.filter(i => i.category === catFilter);
   const canEdit = (c: VisComponent) => isAdmin || !c.is_builtin;
@@ -130,6 +180,7 @@ export default function VisLibrary() {
             {c.description && <p className="text-xs text-muted-foreground line-clamp-2">{c.description}</p>}
             <div className="flex flex-wrap items-center gap-2 pt-1">
               {c.category === 'theme_pack' && <Button variant="outline" size="sm" onClick={() => setViewPack(c)}>浏览整套组件</Button>}
+              {c.category === 'map_tile' && <Button variant="outline" size="sm" onClick={() => setPreviewTile(c)}>预览瓦片</Button>}
               <Button variant="outline" size="sm" disabled={!canEdit(c)} onClick={() => openEdit(c)}>
                 <Edit className="h-3.5 w-3.5 mr-1" />{canEdit(c) ? '编辑' : '只读'}
               </Button>
@@ -209,6 +260,56 @@ export default function VisLibrary() {
                 <p className="text-[11px] text-muted-foreground">SQL 模板仅在图表配置里由管理员/数据开发使用, 不进入 Chat/Agent 取数。</p>
               </div>
             )}
+            {category === 'report_template' && (
+              <div className="space-y-1.5">
+                <Label>模板格式</Label>
+                <Select value={reportFormat} onValueChange={v => setReportFormat(v as 'markdown' | 'html')}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="markdown">Markdown</SelectItem>
+                    <SelectItem value="html">HTML</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            {category === 'report_template' && (
+              <div className="space-y-1.5">
+                <Label>模板内容 (Jinja2 语法)</Label>
+                <Textarea value={reportContent} onChange={e => setReportContent(e.target.value)} rows={10}
+                  placeholder="使用 Jinja2 语法编写报告模板，支持 {{ 变量 }} 和 {% 控制结构 %}" className="font-mono text-xs" />
+                <p className="text-[11px] text-muted-foreground">报告模板用于自动化任务生成报告，支持 Jinja2 模板语法。</p>
+              </div>
+            )}
+            {category === 'map_tile' && (
+              <div className="space-y-1.5">
+                <Label>瓦片服务</Label>
+                <Select value={mapTileProvider} onValueChange={setMapTileProvider}>
+                  <SelectTrigger><SelectValue placeholder="选择瓦片服务" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="openstreetmap">OpenStreetMap (免费)</SelectItem>
+                    <SelectItem value="amap">高德地图 (需 API Key)</SelectItem>
+                    <SelectItem value="tianditu">天地图 (需 API Key)</SelectItem>
+                    <SelectItem value="carto">CartoDB (免费)</SelectItem>
+                    <SelectItem value="custom">自定义</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            {category === 'map_tile' && (
+              <div className="space-y-1.5">
+                <Label>瓦片 URL 模板</Label>
+                <Input value={mapTileUrl} onChange={e => setMapTileUrl(e.target.value)}
+                  placeholder="https://tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                <p className="text-[11px] text-muted-foreground">支持 {'{z}/{x}/{y}'} 占位符，部分服务需要 API Key。</p>
+              </div>
+            )}
+            {category === 'map_tile' && mapTileProvider !== 'openstreetmap' && mapTileProvider !== 'carto' && (
+              <div className="space-y-1.5">
+                <Label>API Key</Label>
+                <Input value={mapTileApiKey} onChange={e => setMapTileApiKey(e.target.value)}
+                  placeholder="输入服务 API Key" type="password" />
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label>描述</Label>
               <Input value={description} onChange={e => setDescription(e.target.value)} placeholder="用途说明" />
@@ -235,6 +336,35 @@ export default function VisLibrary() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
             <Button variant="destructive" onClick={() => deleteTarget && remove(deleteTarget)}>下架</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 地图瓦片预览 */}
+      <Dialog open={!!previewTile} onOpenChange={() => setPreviewTile(null)}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{previewTile?.name}</DialogTitle>
+            <p className="text-sm text-muted-foreground">{previewTile?.description}</p>
+          </DialogHeader>
+          {previewTile && (() => {
+            const sc2 = previewTile.style_config as any;
+            const tileUrl = sc2?.tileUrl || '';
+            const provider = sc2?.provider || 'custom';
+            const providerNames: Record<string, string> = { openstreetmap: 'OSM', amap: '高德', tianditu: '天地图', carto: 'CartoDB', custom: '自定义' };
+            return (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-sm">
+                  <Badge>{providerNames[provider] || provider}</Badge>
+                  <span className="text-muted-foreground truncate font-mono text-xs">{tileUrl}</span>
+                </div>
+                <div ref={mapContainerRef} className="h-[400px] rounded-lg border overflow-hidden" />
+                <p className="text-xs text-muted-foreground">支持鼠标滚轮缩放、拖拽平移。中心点：北京。</p>
+              </div>
+            );
+          })()}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPreviewTile(null)}>关闭</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

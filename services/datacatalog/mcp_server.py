@@ -1,6 +1,9 @@
 """MCP Server for DataCatalog - Tools for external AI integration.
 
 Exposes data catalog tools via MCP protocol for Claude Desktop, Cursor, etc.
+
+统一用 mcp SDK 低级 Server(list_tools/call_tool 装饰器)：mcp_base.create_mcp_server
+返回的是 mcp.server.Server，FastMCP 风格的 @mcp.tool() 在其上不存在（会 AttributeError）。
 """
 
 import json
@@ -12,10 +15,59 @@ from .services import catalog_service, metrics_service, tags_service
 
 logger = logging.getLogger(__name__)
 
-mcp = create_mcp_server("datacatalog", "Data Catalog MCP Server")
+server = create_mcp_server("datacatalog", "Data Catalog MCP Server")
+
+TOOLS_SCHEMA = [
+    {
+        "name": "search_metadata",
+        "description": "Search metadata across tables, columns, metrics, and terms.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keyword"},
+                "type": {"type": "string",
+                          "description": 'Optional filter - "table", "column", "metric", "term"'},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_table_schema",
+        "description": "Get table structure including columns and metadata.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "table_name": {"type": "string", "description": "Table name to look up"},
+            },
+            "required": ["table_name"],
+        },
+    },
+    {
+        "name": "get_metrics",
+        "description": "Query metrics by name or tags.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metric_name": {"type": "string", "description": "Optional metric name filter"},
+                "tags": {"type": "string", "description": "Optional comma-separated tags filter"},
+            },
+        },
+    },
+    {
+        "name": "query_tags",
+        "description": "Query entities by tag conditions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tag_conditions": {"type": "string",
+                                    "description": 'JSON string, e.g. {"conditions": [{"tag_id": 1}], "operator": "AND"}'},
+            },
+            "required": ["tag_conditions"],
+        },
+    },
+]
 
 
-@mcp.tool()
 async def search_metadata(query: str, type: Optional[str] = None) -> str:
     """Search metadata across tables, columns, metrics, and terms.
 
@@ -38,7 +90,6 @@ async def search_metadata(query: str, type: Optional[str] = None) -> str:
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
 async def get_table_schema(table_name: str) -> str:
     """Get table structure including columns and metadata.
 
@@ -58,7 +109,6 @@ async def get_table_schema(table_name: str) -> str:
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
 async def get_metrics(metric_name: Optional[str] = None, tags: Optional[str] = None) -> str:
     """Query metrics by name or tags.
 
@@ -81,7 +131,6 @@ async def get_metrics(metric_name: Optional[str] = None, tags: Optional[str] = N
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
 async def query_tags(tag_conditions: str) -> str:
     """Query entities by tag conditions.
 
@@ -112,6 +161,36 @@ async def query_tags(tag_conditions: str) -> str:
         return json.dumps({"error": str(e)})
 
 
+@server.list_tools()
+async def _list_tools() -> list:
+    """Expose the catalog tool catalog with hand-written JSON schemas."""
+    from mcp.types import Tool
+    return [Tool(**spec) for spec in TOOLS_SCHEMA]
+
+
+@server.call_tool()
+async def _call_tool(name: str, arguments: dict) -> list:
+    from mcp.types import TextContent
+
+    args = arguments or {}
+    try:
+        if name == "search_metadata":
+            text = await search_metadata(args.get("query", ""), args.get("type"))
+        elif name == "get_table_schema":
+            text = await get_table_schema(args.get("table_name", ""))
+        elif name == "get_metrics":
+            text = await get_metrics(args.get("metric_name"), args.get("tags"))
+        elif name == "query_tags":
+            text = await query_tags(args.get("tag_conditions", ""))
+        else:
+            text = json.dumps({"error": f"Unknown tool: {name}"}, ensure_ascii=False)
+    except Exception:
+        # 各工具内部已捕获业务错误；此处兜结构性异常，不回显原始报错。
+        logger.exception("MCP tool %s failed", name)
+        text = json.dumps({"error": "工具执行失败，请联系管理员查看服务端日志"}, ensure_ascii=False)
+    return [TextContent(type="text", text=text)]
+
+
 def create_mcp_app():
-    """Create the MCP Starlette app for serving."""
-    return create_mcp_starlette_app(mcp, sse_path="/sse", message_path="/messages")
+    """Create the MCP Starlette app for serving (挂载于 datacatalog/main.py: /mcp)。"""
+    return create_mcp_starlette_app(server, sse_path="/sse", message_path="/messages")

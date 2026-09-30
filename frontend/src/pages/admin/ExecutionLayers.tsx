@@ -296,7 +296,7 @@ export default function ExecutionLayers() {
             <Terminal className="h-5 w-5" /> 执行层管理
           </h2>
           <p className="text-sm text-muted-foreground mt-1">
-            配置 AI 任务的执行后端:内置 Agent、本地 CLI(qoder)等
+            配置 AI 任务的执行后端:qodercli
           </p>
         </div>
         <div className="flex gap-2">

@@ -70,7 +70,7 @@ class RoleService:
             conn.close()
 
     def create_role(self, name: str, display_name: str, description: str = "") -> int:
-        """Create a new role."""
+        """Create a new role and its associated Waker (one-to-one binding)."""
         role_id = _gen_id()
         conn = get_metadata_conn()
         try:
@@ -79,7 +79,36 @@ class RoleService:
                     "INSERT INTO adh_roles (id, name, display_name, description) VALUES (%s, %s, %s, %s)",
                     (role_id, name, display_name, description)
                 )
+                # 联动创建同名 Waker（角色-Waker 一对一绑定）
+                import json
+                default_persona = {
+                    "responsibility": f"协助 {display_name or name} 角色完成数据分析与相关任务",
+                    "style": "专业、简洁、数据驱动，中文回答",
+                    "boundary": "只回答数据相关问题，不臆造数据，涉及权限外数据应说明并拒绝"
+                }
+                default_tools = {
+                    "mcp": {
+                        "semantic": ["get_metrics", "get_glossary", "knowledge_search", "run_semantic_query"],
+                        "catalog": ["search_metadata", "get_table_schema", "list_datasources"]
+                    },
+                    "groups": ["semantic", "catalog"],
+                    "external": {},
+                    "standard": ["read", "grep", "glob"]
+                }
+                cur.execute(
+                    """INSERT INTO adh_wakers 
+                       (waker_key, name, display_name, description, category, system_prompt, persona, tools, 
+                        chart_enabled, is_active, is_builtin, role_id, workspace_id)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (name, name, display_name or name, description or f"{display_name or name}角色的AI助手",
+                     "custom",
+                     f"你是 {display_name or name} 的AI助手，负责协助完成数据分析与相关任务。",
+                     json.dumps(default_persona, ensure_ascii=False),
+                     json.dumps(default_tools, ensure_ascii=False),
+                     1, 1, 0, role_id, 0)
+                )
                 conn.commit()
+                logger.info(f"Created role '{name}' (id={role_id}) with associated waker")
                 return role_id
         finally:
             conn.close()
@@ -105,14 +134,17 @@ class RoleService:
             conn.close()
 
     def delete_role(self, role_id: int) -> bool:
-        """Delete a role (only if not system role)."""
+        """Delete a role (only if not system role) and its associated Waker."""
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT is_system FROM adh_roles WHERE id = %s", (role_id,))
+                cur.execute("SELECT is_system, name FROM adh_roles WHERE id = %s", (role_id,))
                 role = cur.fetchone()
                 if not role or role.get("is_system"):
                     return False
+                # 联动删除关联 Waker（角色-Waker 一对一绑定）
+                cur.execute("DELETE FROM adh_wakers WHERE role_id = %s", (role_id,))
+                logger.info(f"Deleted waker for role '{role.get('name')}' (role_id={role_id})")
                 cur.execute("DELETE FROM adh_role_attributes WHERE role_id = %s", (role_id,))
                 cur.execute("DELETE FROM adh_user_roles WHERE role_id = %s", (role_id,))
                 cur.execute("DELETE FROM adh_workspace_roles WHERE role_id = %s", (role_id,))

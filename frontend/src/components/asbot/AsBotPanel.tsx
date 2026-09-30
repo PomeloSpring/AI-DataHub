@@ -8,6 +8,7 @@ import remarkGfm from 'remark-gfm';
 import ProcessTimeline from '../ProcessTimeline';
 import { useAsBotStore } from '../../stores/asBotStore';
 import type { AsBotMessage } from '../../stores/asBotStore';
+import { useThemeStore, applyTheme } from '../../stores/themeStore';
 import ApprovalCard from './ApprovalCard';
 import DashboardDesignPanel from './DashboardDesignPanel';
 import { DESIGN_STATUS } from '../../api/dashboardDesign';
@@ -29,11 +30,15 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
   const [showHistory, setShowHistory] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const { theme } = useThemeStore();
 
   // 全屏独立标签页：挂载即加载权限与会话（不依赖抽屉的 openPanel）
   useEffect(() => {
     if (fullscreen) { void loadPermissions(); void loadConversations(); }
   }, [fullscreen]);
+
+  // 应用主题到全屏页面
+  useEffect(() => { applyTheme(theme); }, [theme]);
 
   // Auto-scroll to bottom
   useEffect(() => {

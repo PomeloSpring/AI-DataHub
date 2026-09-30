@@ -33,6 +33,7 @@ _cache: dict[str, tuple[float, list[dict]]] = {}  # role_name → (timestamp, ru
 # 始终放行的路径前缀
 _PUBLIC_ROUTES = {
     ("POST", "/api/auth/login"),
+    ("POST", "/api/auth/refresh"),  # refresh 用 body 中的 refresh_token 鉴权，不依赖 access token
     ("GET", "/api/health"), ("GET", "/health"),
 }
 _SELF_ROUTES = {

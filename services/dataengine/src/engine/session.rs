@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::common::Result;
+use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
 use tracing::info;
 
 use crate::providers::{ConnectionPoolManager, RemoteSqlTable, mysql_table::SqlDialect};
 use crate::schema::discovery::{self, table_to_arrow_schema};
-use crate::security::SecureCatalog;
-use crate::security::SecureTableProvider;
+use crate::security::{RLSAnalyzerRule, RLSVerifierRule, SecureCatalog, SecureTableProvider};
 use crate::types::{DatasourceConfig, RLSPolicy};
 
 /// Query session — creates a per-request DataFusion context with RLS-secured tables.
@@ -52,6 +52,9 @@ impl QuerySession {
             }
         }
 
+        // Pre-parsed RLS filter expressions for RLSAnalyzerRule (logical plan level)
+        let mut rls_filter_exprs: HashMap<String, datafusion::logical_expr::Expr> = HashMap::new();
+
         // 4. Create table providers
         let mut tables: HashMap<String, Arc<dyn datafusion::datasource::TableProvider>> =
             HashMap::new();
@@ -76,6 +79,8 @@ impl QuerySession {
                     match parse_filter_expr(&policy.row_filter, &schema).await {
                         Ok(expr) => {
                             rls_applied.push(format!("行级过滤 [{}]: {}", discovered.name, policy.row_filter));
+                            // Also store for RLSAnalyzerRule (logical plan level defense)
+                            rls_filter_exprs.insert(table_lower.clone(), expr.clone());
                             Some(expr)
                         }
                         Err(e) => {
@@ -141,10 +146,20 @@ impl QuerySession {
             rls_applied.len()
         );
 
-        // 5. Create session with secure catalog
+        // 5. Create session with secure catalog and custom RLS rules
         //    Register as "datafusion" — DataFusion's DEFAULT_CATALOG,
         //    so unqualified table names (e.g. SELECT * FROM t) resolve correctly.
-        let ctx = SessionContext::new();
+        //
+        //    Custom rules provide defense-in-depth:
+        //    - RLSAnalyzerRule: injects Filter nodes at logical plan level (before optimization)
+        //    - RLSVerifierRule: verifies RLS filters survive optimization (after optimization)
+        //    - SecureTableProvider: enforces RLS at physical scan level (already done above)
+        let base_ctx = SessionContext::new();
+        let state = SessionStateBuilder::new_from_existing(base_ctx.state().clone())
+            .with_analyzer_rule(Arc::new(RLSAnalyzerRule::new(rls_filter_exprs)))
+            .with_optimizer_rule(Arc::new(RLSVerifierRule::from_policies(rls_policies)))
+            .build();
+        let ctx = SessionContext::new_with_state(state);
         let catalog = SecureCatalog::new(tables);
         ctx.register_catalog("datafusion", Arc::new(catalog));
 

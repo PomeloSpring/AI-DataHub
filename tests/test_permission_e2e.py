@@ -25,6 +25,8 @@ from services.datamind.permission.enforcer import PermissionEnforcer, Permission
 
 @pytest.fixture
 def enforcer():
+    from services.datamind.permission.enforcer import invalidate_access_cache
+    invalidate_access_cache()  # 清空 TTL 缓存, 避免跨测试泄漏
     return PermissionEnforcer()
 
 
@@ -45,19 +47,25 @@ def enforcer():
 
 
 class TestAdminAccess:
-    """Admin should have full access everywhere."""
+    """Admin follows role-based permission configuration (no automatic bypass)."""
 
     @patch("services.authservice.services.role_service.role_service")
     @patch("services.authservice.services.rls_service.rls_service")
-    def test_admin_bypass_all_checks(self, mock_rls, mock_role, enforcer):
-        """Admin role bypasses all permission checks."""
+    def test_admin_follows_datasource_permissions(self, mock_rls, mock_role, enforcer):
+        """Admin role is subject to datasource access permissions."""
         mock_role.get_user_roles.return_value = [{"id": 1, "name": "admin"}]
+        mock_role.get_user_allowed_datasources.return_value = [1, 2]  # Only DS 1, 2
+        mock_role.get_user_allowed_tables.return_value = []
+        mock_role.get_user_column_restrictions.return_value = {"hidden_columns": [], "masked_columns": {}}
+        mock_rls.get_effective_policies.return_value = {"row_filter": "", "hidden_columns": [], "masked_columns": {}, "policies_applied": []}
 
-        # Admin can access any datasource
-        result = enforcer.check_access(user_id=1, workspace_id=0, datasource_id=999)
+        # Admin can access allowed datasource
+        result = enforcer.check_access(user_id=1, workspace_id=0, datasource_id=1)
         assert result.allowed is True
-        assert result.hidden_columns == []
-        assert result.masked_columns == {}
+
+        # Admin denied for non-allowed datasource
+        result = enforcer.check_access(user_id=1, workspace_id=0, datasource_id=999)
+        assert result.allowed is False
 
     @patch("services.authservice.services.role_service.role_service")
     @patch("services.authservice.services.rls_service.rls_service")

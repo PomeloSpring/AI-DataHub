@@ -177,7 +177,7 @@ def _accessible_datasource_ids(user, workspace_id):
 
 
 def _discover_domains(user, workspace_id):
-    """业务域 = 有生效业务本体模型且用户可访问的数据源；不依赖 Waker 的 datasource_ids 配置。"""
+    """业务域 = 有生效业务本体模型且用户可访问的数据源；Waker 不持有数据源配置。"""
     rows = execute_query(
         "SELECT d.id,d.name,d.db_type,m.name AS model_name FROM adh_datasources d "
         "JOIN adh_ontology_models m ON m.datasource_id=d.id AND m.status='active' AND m.datasource_id>0 "
