@@ -105,29 +105,67 @@ def create_rls_policy(req: RLSPolicyCreate, admin: dict = Depends(require_admin)
             "is_active": req.is_active,
             "created_by": admin.get("user_id"),
         })
+        # 审计日志：创建策略
+        rls_service.log_audit(
+            user_id=admin.get("user_id", 0),
+            workspace_id=req.workspace_id,
+            policy_id=policy_id,
+            policy_name=req.name,
+            table_name=req.table_name,
+            action="policy_create",
+            original_sql="",
+            filtered_sql=f"type={req.policy_type}, datasource={req.datasource_id}, filter={req.filter_expr}",
+        )
         return {"success": True, "id": policy_id}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.put("/rls-policies/{policy_id}")
-def update_rls_policy(policy_id: int, req: RLSPolicyUpdate, _admin: dict = Depends(require_admin)):
+def update_rls_policy(policy_id: int, req: RLSPolicyUpdate, admin: dict = Depends(require_admin)):
     """Update an RLS policy."""
     from services.authservice.services.rls_service import rls_service
     try:
+        # 先获取旧策略用于审计
+        old_policy = rls_service.get_policy(policy_id)
         data = req.model_dump(exclude_unset=True)
         rls_service.update_policy(policy_id, data)
+        # 审计日志：更新策略
+        rls_service.log_audit(
+            user_id=admin.get("user_id", 0),
+            workspace_id=old_policy.get("workspace_id", 0) if old_policy else 0,
+            policy_id=policy_id,
+            policy_name=old_policy.get("name", "") if old_policy else "",
+            table_name=old_policy.get("table_name", "") if old_policy else "",
+            action="policy_update",
+            original_sql="",
+            filtered_sql=str(data)[:500],
+        )
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/rls-policies/{policy_id}")
-def delete_rls_policy(policy_id: int, _admin: dict = Depends(require_admin)):
+def delete_rls_policy(policy_id: int, admin: dict = Depends(require_admin)):
     """Delete a RLS policy and its column policies."""
     from services.authservice.services.rls_service import rls_service
     try:
+        # 先获取旧策略用于审计
+        old_policy = rls_service.get_policy(policy_id)
         rls_service.delete_policy(policy_id)
+        # 审计日志：删除策略
+        if old_policy:
+            rls_service.log_audit(
+                user_id=admin.get("user_id", 0),
+                workspace_id=old_policy.get("workspace_id", 0),
+                policy_id=policy_id,
+                policy_name=old_policy.get("name", ""),
+                table_name=old_policy.get("table_name", ""),
+                action="policy_delete",
+                original_sql="",
+                filtered_sql="",
+            )
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -143,12 +181,24 @@ def get_column_policies(policy_id: int, _admin: dict = Depends(require_admin)):
 
 
 @router.put("/rls-policies/{policy_id}/columns")
-def set_column_policies(policy_id: int, body: ColumnPoliciesBody, _admin: dict = Depends(require_admin)):
+def set_column_policies(policy_id: int, body: ColumnPoliciesBody, admin: dict = Depends(require_admin)):
     """Replace all column policies for a given RLS policy."""
     from services.authservice.services.rls_service import rls_service
     try:
         columns = [c.model_dump() for c in body.columns]
         rls_service.set_column_policies(policy_id, columns)
+        # 审计日志：更新列策略
+        old_policy = rls_service.get_policy(policy_id)
+        rls_service.log_audit(
+            user_id=admin.get("user_id", 0),
+            workspace_id=old_policy.get("workspace_id", 0) if old_policy else 0,
+            policy_id=policy_id,
+            policy_name=old_policy.get("name", "") if old_policy else "",
+            table_name=old_policy.get("table_name", "") if old_policy else "",
+            action="column_policy_update",
+            original_sql="",
+            filtered_sql=str(columns)[:500],
+        )
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -316,17 +316,24 @@ class RLSService:
 
     def list_audit_logs(self, workspace_id: int, user_id: int = None,
                         page: int = 1, size: int = 20) -> dict:
-        """List RLS audit logs."""
+        """List RLS audit logs.
+        
+        workspace_id=0 表示查询所有工作空间的日志（管理员视角）。
+        """
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                where = ["workspace_id = %s"]
-                params = [workspace_id]
+                where = []
+                params = []
+                # workspace_id=0 表示查所有工作空间
+                if workspace_id:
+                    where.append("workspace_id = %s")
+                    params.append(workspace_id)
                 if user_id:
                     where.append("user_id = %s")
                     params.append(user_id)
 
-                where_clause = " AND ".join(where)
+                where_clause = " AND ".join(where) if where else "1=1"
                 cur.execute(f"SELECT COUNT(*) as total FROM adh_rls_audit_logs WHERE {where_clause}", params)
                 total = cur.fetchone()["total"]
 

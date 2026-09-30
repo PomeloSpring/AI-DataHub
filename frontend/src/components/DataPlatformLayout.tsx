@@ -50,7 +50,7 @@ const DATA_PLATFORM_MENU_ITEMS = [
   { key: '/data/sql-pairs', icon: FileQuestion, label: 'SQL 示例对' },
   { section: '数据安全配置' },
   { key: '/data/sensitive', icon: Shield, label: '敏感数据' },
-  { key: '/data/rls', icon: ShieldCheck, label: 'RLS 行级安全' },
+  { key: '/data/rls', icon: ShieldCheck, label: '安全策略' },
   { section: '数据质量' },
   { key: '/data/quality', icon: Activity, label: '质量概览' },
   { key: '/data/quality/rules', icon: Settings, label: '质量规则' },

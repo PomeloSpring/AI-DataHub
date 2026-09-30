@@ -41,7 +41,7 @@ const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] =
 ];
 
 const SYSTEM_MENU_ITEMS = [
-  { section: 'AI 模板配置' },
+  { section: 'AI 配置' },
   { key: '/system/models', icon: Brain, label: '模型中心' },
   { key: '/system/mcp', icon: Server, label: 'MCP 服务' },
   { key: '/system/wakers', icon: Bot, label: 'Waker 配置' },
@@ -62,12 +62,12 @@ const SYSTEM_MENU_ITEMS = [
   { key: '/system/roles', icon: Shield, label: '角色权限' },
   { key: '/system/audit', icon: Eye, label: '审计日志' },
   { section: '运维管理' },
+  { key: '/system/monitoring', icon: Activity, label: '系统监控' },
   { key: '/system/sandbox', icon: Server, label: '沙箱管理' },
   { key: '/system/quality-review', icon: BarChart3, label: '质量审查' },
   { key: '/system/observability', icon: Waypoints, label: 'LLM 可观测' },
   { section: '系统' },
   { key: '/system/settings', icon: Settings, label: '系统设置' },
-  { key: '/system/monitoring', icon: Activity, label: '系统监控' },
 ];
 
 export default function SystemLayout() {
