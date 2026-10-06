@@ -75,8 +75,8 @@ class ScheduledTaskService:
         """Create a new scheduled task. Returns the new task ID."""
         if int(owner_id or 0) <= 0:
             raise PermissionError("创建任务必须有可信创建者")
-        from services.datamind.execution.scheduled_analysis import validate_task_waker
-        validate_task_waker({**data, "owner_id": owner_id, "workspace_id": workspace_id})
+        from services.datamind.execution.scheduled_analysis import validate_task_as_bot
+        validate_task_as_bot({**data, "owner_id": owner_id, "workspace_id": workspace_id})
         task_id = _generate_id()
         now = _now()
         conn = get_metadata_conn()
@@ -142,9 +142,9 @@ class ScheduledTaskService:
                 self._normalize_task(existing)
                 merged = {**existing, **{k: v for k, v in data.items() if v is not None},
                           "owner_id": existing.get("owner_id"), "workspace_id": existing.get("workspace_id") or 0}
-                from services.datamind.execution.scheduled_analysis import validate_task_waker
+                from services.datamind.execution.scheduled_analysis import validate_task_as_bot
                 if data != {"is_active": False}:
-                    validate_task_waker(merged)
+                    validate_task_as_bot(merged)
                 updates = ["updated_at = %s"]
                 params = [_now()]
 
@@ -199,7 +199,7 @@ class ScheduledTaskService:
             conn.close()
 
     def toggle_task(self, task_id: int, is_active: int) -> bool:
-        """启用同样校验 Waker；停用始终允许，不阻挡旧任务下线。"""
+        """启用同样校验 AS-BOT；停用始终允许，不阻挡旧任务下线。"""
         return self.update_task(task_id, {"is_active": bool(is_active)})
 
     def update_task_status(self, task_id: int, status: str, error: str = None):
@@ -235,8 +235,8 @@ class ScheduledTaskService:
         for field in ("task_config",):
             if isinstance(row.get(field), str):
                 row[field] = json.loads(row[field])
-        from services.datamind.execution.scheduled_analysis import needs_waker_migration
-        row["requires_waker_migration"] = needs_waker_migration(row)
+        from services.datamind.execution.scheduled_analysis import needs_as_bot_migration
+        row["requires_as_bot_migration"] = needs_as_bot_migration(row)
         for ts in ("created_at", "updated_at", "last_run_at"):
             if hasattr(row.get(ts), "isoformat"):
                 row[ts] = row[ts].isoformat()
@@ -347,6 +347,15 @@ class ScheduledTaskService:
             conn.commit()
         finally:
             conn.close()
+
+    def update_progress(self, log_id: int, succeeded: int, failed: int) -> bool:
+        """逐题进度落库（仅未结束的实例生效，终态由 finish_log 保护）。"""
+        from services.shared.common.db import execute_write
+        return execute_write(
+            "UPDATE adh_scheduled_logs SET questions_succeeded=%s, questions_failed=%s "
+            "WHERE id=%s AND status IN ('queued','running')",
+            (int(succeeded or 0), int(failed or 0), log_id),
+        ) == 1
 
     def list_logs(self, task_id: int = 0, workspace_id: int = 0,
                   page: int = 1, size: int = 20, status: str = None) -> dict:
@@ -467,8 +476,12 @@ class ScheduledTaskService:
 
     # ── Notification Channels CRUD ──────────────────────────────────
 
-    def list_channels(self, workspace_id: int = 0) -> list:
-        """List notification channels, scoped by workspace."""
+    def list_channels(self, workspace_id: int = 0, owner_id: int = None) -> list:
+        """List notification channels, scoped by workspace.
+
+        owner_id 给定时（非 admin 全局视图）只返回自建 + 无主内置渠道——
+        config 含 webhook/密钥，不得泄露他人渠道（fail-closed）。
+        """
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
@@ -476,6 +489,13 @@ class ScheduledTaskService:
                     cur.execute(
                         "SELECT * FROM adh_notification_channels WHERE workspace_id = %s ORDER BY created_at DESC",
                         (workspace_id,),
+                    )
+                elif owner_id is not None:
+                    cur.execute(
+                        "SELECT * FROM adh_notification_channels "
+                        "WHERE owner_id = %s OR (workspace_id = 0 AND (owner_id = 0 OR owner_id IS NULL)) "
+                        "ORDER BY created_at DESC",
+                        (owner_id,),
                     )
                 else:
                     cur.execute("SELECT * FROM adh_notification_channels ORDER BY created_at DESC")
@@ -599,8 +619,11 @@ class ScheduledTaskService:
 
     # ── Report Templates CRUD ───────────────────────────────────────
 
-    def list_templates(self, workspace_id: int = 0) -> list:
-        """List report templates (system + workspace-scoped)."""
+    def list_templates(self, workspace_id: int = 0, owner_id: int = None) -> list:
+        """List report templates (system + workspace-scoped).
+
+        owner_id 给定时（非 admin 全局视图）只返回系统内置 + 自建模板。
+        """
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
@@ -610,6 +633,13 @@ class ScheduledTaskService:
                         "WHERE is_system = 1 OR workspace_id = %s "
                         "ORDER BY is_system DESC, name ASC",
                         (workspace_id,),
+                    )
+                elif owner_id is not None:
+                    cur.execute(
+                        "SELECT * FROM adh_report_templates "
+                        "WHERE is_system = 1 OR owner_id = %s "
+                        "ORDER BY is_system DESC, name ASC",
+                        (owner_id,),
                     )
                 else:
                     cur.execute("SELECT * FROM adh_report_templates ORDER BY is_system DESC, name ASC")

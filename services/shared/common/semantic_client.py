@@ -1,4 +1,4 @@
-"""Semantic Layer Client — Python client for semanticservice (:8012).
+"""Semantic Layer Client — Python client for semhub (:8012).
 
 统一 ChatBI 与大屏(dataviz)对语义层的访问:发送声明式 SemanticQuery,
 拿回 SemanticResult(columns/rows/provenance),绝不下发裸 SQL。

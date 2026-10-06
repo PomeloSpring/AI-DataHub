@@ -594,3 +594,101 @@ def asset_pool() -> dict:
     out["counts"] = {k: len(out[k]) for k in ("metrics", "dimensions", "terms", "suggestions")}
     out["counts"]["total"] = sum(out["counts"].values())
     return out
+
+
+# ── 口径认证（P4）：区分「可信口径」与「草稿口径」 ─────────────────
+# 为什么要认证：指标/维度是给业务看的权威口径，未经人工确认的 formula 可能是
+# LLM 归纳或历史遗留，直接当权威答案会误导决策。认证 = 有人对其口径负责。
+# 纪律：认证只是**标记权威性**，不改变解析/查询行为（否则 0 认证时知识库会空，
+# 反而破坏现有功能）；未认证口径仍然可用，但必须在展示时标注为草稿。
+
+CERTIFY_SCOPE = ("metric", "dimension")
+
+
+def certify_metric(metric_id: int, certified: bool, owner: str = "",
+                   certified_by: str = "") -> dict:
+    """认证/解除认证指标口径。
+
+    Args:
+        metric_id: 指标 id
+        certified: True=认证为可信口径；False=退回草稿
+        owner: 口径责任人（认证时必填——谁认的、谁负责口径不漂）
+        certified_by: 操作者标记（审计用，如 `user:1`）
+
+    Returns:
+        {"metric_id","name","certified","owner"}
+    """
+    return _certify("adh_metrics", metric_id, certified, owner, certified_by)
+
+
+def certify_dimension(dim_id: int, certified: bool, owner: str = "",
+                      certified_by: str = "") -> dict:
+    """认证/解除认证维度口径（语义同 certify_metric）。"""
+    return _certify("adh_dimensions", dim_id, certified, owner, certified_by)
+
+
+def _certify(table: str, row_id: int, certified: bool, owner: str,
+             certified_by: str) -> dict:
+    if table not in ("adh_metrics", "adh_dimensions"):
+        raise ValueError("不支持的口径类型")
+    if certified and not str(owner or "").strip():
+        # 认证必须有责任人：没有责任人的口径不叫认证，只是把 0 改成 1
+        raise ValueError("认证口径必须指定 owner（口径责任人）")
+    # 责任人列两表不同：adh_metrics.owner / adh_dimensions.owner_role
+    owner_col = "owner" if table == "adh_metrics" else "owner_role"
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT id, name, certified, {owner_col} AS owner FROM {table} WHERE id = %s",
+                (row_id,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"口径不存在: {row_id}")
+            cur.execute(
+                f"UPDATE {table} SET certified = %s, {owner_col} = %s, updated_at = %s WHERE id = %s",
+                (1 if certified else 0, str(owner or "").strip() or (row.get("owner") or ""),
+                 _now(), row_id))
+    logger.info("[Metrics] certify %s id=%s certified=%s owner=%s by=%s",
+                table, row_id, certified, owner, certified_by)
+    return {"id": row_id, "name": row.get("name"), "certified": bool(certified),
+            "owner": str(owner or "").strip() or (row.get("owner") or "")}
+
+
+def certification_summary(datasource_id: int = 0) -> dict:
+    """口径认证覆盖率（P4.3）：暴露「多少口径还没人负责」这个事实。
+
+    认证率低不是缺陷，是**待办清单**——但必须可见，不能假装口径都是权威的。
+    """
+    scope = " AND datasource_id = %s" if datasource_id else ""
+    params = (datasource_id,) if datasource_id else ()
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            # 责任人列两表不同：adh_metrics.owner / adh_dimensions.owner_role
+            cur.execute(
+                f"SELECT COUNT(*) total, SUM(COALESCE(certified,0)) cert, "
+                f"       SUM(CASE WHEN COALESCE(owner,'')='' THEN 1 ELSE 0 END) no_owner "
+                f"FROM adh_metrics WHERE is_active = 1{scope}", params)
+            m = cur.fetchone() or {}
+            cur.execute(
+                f"SELECT COUNT(*) total, SUM(COALESCE(certified,0)) cert, "
+                f"       SUM(CASE WHEN COALESCE(owner_role,'')='' THEN 1 ELSE 0 END) no_owner "
+                f"FROM adh_dimensions WHERE is_active = 1{scope}", params)
+            d = cur.fetchone() or {}
+
+    def _pack(row):
+        total = int(row.get("total") or 0)
+        cert = int(row.get("cert") or 0)
+        return {"total": total, "certified": cert, "draft": total - cert,
+                "without_owner": int(row.get("no_owner") or 0),
+                "certified_ratio": round(cert / total, 4) if total else 0.0}
+
+    metrics, dims = _pack(m), _pack(d)
+    total = metrics["total"] + dims["total"]
+    cert = metrics["certified"] + dims["certified"]
+    return {
+        "metrics": metrics, "dimensions": dims,
+        "overall": {"total": total, "certified": cert, "draft": total - cert,
+                    "certified_ratio": round(cert / total, 4) if total else 0.0},
+        "note": ("口径全部已认证" if total and cert == total else
+                 f"仍有 {total - cert} 个口径未认证（草稿），展示时应标注为草稿而非权威答案"),
+    }

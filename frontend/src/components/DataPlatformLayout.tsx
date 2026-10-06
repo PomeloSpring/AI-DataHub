@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
-  Database, FileText, Link, Settings, LogOut, Menu,
+  Database, FileText, Settings, LogOut, Menu,
   Sun, Moon, Palette, Zap, TrendingUp, Grid3x3, GlassWater, Heart,
   UserCircle, X, ChevronLeft, ChevronRight, GitBranch,
-  RefreshCw, Activity, Shield, ShieldCheck, Ruler, Eye, Brain, Gem, Boxes, Terminal, Layers,
-  FileQuestion,
+  RefreshCw, Activity, Shield, ShieldCheck, Ruler, Brain, Gem, Boxes, Terminal, Layers,
+  FunctionSquare,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -21,6 +21,7 @@ import SectionSwitcher from './SectionSwitcher';
 import AsBotButton from './AsBotButton';
 import AsBotPanel from './asbot/AsBotPanel';
 import { isMenuAllowed } from '../stores/permissionStore';
+import { pruneEmptySections } from '@/lib/menuUtils';
 
 /** 将路由 key 转换为 menu_key: '/data/ontology' → 'data:ontology' */
 function toMenuKey(routeKey: string): string {
@@ -46,8 +47,7 @@ const DATA_PLATFORM_MENU_ITEMS = [
   { key: '/data/playground', icon: Terminal, label: 'SQL Playground' },
   { section: '数据目录' },
   { key: '/data/datasets', icon: Layers, label: '数据集' },
-  { key: '/data/ontology', icon: Boxes, label: '本体工作区' },
-  { key: '/data/sql-pairs', icon: FileQuestion, label: 'SQL 示例对' },
+  { key: '/data/ontology', icon: Boxes, label: '数据建模' },
   { section: '数据安全配置' },
   { key: '/data/sensitive', icon: Shield, label: '敏感数据' },
   { key: '/data/rls', icon: ShieldCheck, label: '安全策略' },
@@ -59,6 +59,7 @@ const DATA_PLATFORM_MENU_ITEMS = [
   { section: '数据同步' },
   { key: '/data/sync', icon: RefreshCw, label: '同步任务' },
   { key: '/data/sync/logs', icon: FileText, label: '执行日志' },
+  { key: '/data/udfs', icon: FunctionSquare, label: 'UDF 管理' },
 ];
 
 export default function DataPlatformLayout() {
@@ -75,6 +76,10 @@ export default function DataPlatformLayout() {
   useEffect(() => { setMobileMenuOpen(false); }, [location.pathname]);
 
   const currentPath = location.pathname;
+  // 按权限过滤菜单; 一级分组下无可访问项时不渲染该分组标题
+  const visibleMenu = pruneEmptySections(
+    DATA_PLATFORM_MENU_ITEMS.filter(item => !('key' in item) || isMenuAllowed(toMenuKey((item as any).key)))
+  );
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -96,7 +101,7 @@ export default function DataPlatformLayout() {
         <div className="flex-1 min-h-0 overflow-hidden">
           <ScrollArea className="h-full py-2">
             <nav className="space-y-1 px-2" role="navigation" aria-label="数据中台导航">
-              {DATA_PLATFORM_MENU_ITEMS.filter(item => !('key' in item) || isMenuAllowed(toMenuKey((item as any).key))).map((item, idx) => {
+              {visibleMenu.map((item, idx) => {
                 if ('section' in item) {
                   if (collapsed) return <div key={idx} className="my-2 mx-2 border-t border-sidebar-border" />;
                   return (
@@ -107,7 +112,7 @@ export default function DataPlatformLayout() {
                 }
                 const Icon = item.icon!;
                 // 前缀匹配时排除存在更深层菜单项的情况，避免父子路由同时高亮（如 质量概览/质量规则、同步任务/执行日志）
-                const hasDeeperMenuItem = DATA_PLATFORM_MENU_ITEMS.some(
+                const hasDeeperMenuItem = visibleMenu.some(
                   o => 'key' in o && o.key!.startsWith(item.key! + '/') && currentPath.startsWith(o.key!)
                 );
                 const isActive = currentPath === item.key || (currentPath.startsWith(item.key! + '/') && !hasDeeperMenuItem);
@@ -160,7 +165,7 @@ export default function DataPlatformLayout() {
             </div>
             <ScrollArea className="flex-1 py-3">
               <nav className="space-y-1 px-3">
-                {DATA_PLATFORM_MENU_ITEMS.filter(item => !('key' in item) || isMenuAllowed(toMenuKey((item as any).key))).map((item, idx) => {
+                {visibleMenu.map((item, idx) => {
                   if ('section' in item) {
                     return (
                       <div key={idx} className="px-4 pt-5 pb-1.5">

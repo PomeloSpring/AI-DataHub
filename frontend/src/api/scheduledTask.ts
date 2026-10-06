@@ -21,7 +21,7 @@ export interface ScheduledTask {
   workspace_id: number;
   owner_id: number;
   ownership_status?: 'owned' | 'unclaimed';
-  requires_waker_migration?: boolean;
+  requires_as_bot_migration?: boolean;
   last_run_at: string | null;
   last_status: string | null;
   last_error: string | null;
@@ -36,7 +36,7 @@ export interface TaskConfig {
   datasource_id: number;
   datasource_ids?: number[];
   questions: TaskQuestion[];
-  waker_key?: string;
+  as_bot_key?: string;
   agent_name?: string;
   agent_names?: string[];
   mcp_server_id?: number;
@@ -123,8 +123,8 @@ export interface NotificationChannelCreateRequest {
 
 export type NotificationChannelUpdateRequest = Partial<NotificationChannelCreateRequest>;
 
-export interface ScheduledWakerOption {
-  waker_key: string;
+export interface ScheduledAsBotOption {
+  as_bot_key: string;
   name: string;
   available: boolean;
   reason?: string;
@@ -133,10 +133,10 @@ export interface ScheduledWakerOption {
   unavailable_tools: { name: string; reason: string }[];
 }
 
-export async function listScheduledWakers(workspaceId: number, taskId?: number): Promise<ScheduledWakerOption[]> {
+export async function listScheduledAsBots(workspaceId: number, taskId?: number): Promise<ScheduledAsBotOption[]> {
   const { data } = await client.get(taskId
-    ? `/scheduled-tasks/tasks/${taskId}/waker-options`
-    : '/scheduled-tasks/waker-options', { params: taskId ? undefined : { workspace_id: workspaceId } });
+    ? `/scheduled-tasks/tasks/${taskId}/as-bot-options`
+    : '/scheduled-tasks/as-bot-options', { params: taskId ? undefined : { workspace_id: workspaceId } });
   return data;
 }
 

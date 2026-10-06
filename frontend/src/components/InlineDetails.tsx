@@ -13,10 +13,80 @@ import {
   ChevronRight, ChevronDown,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import client from '@/api/client';
+
+export interface KnowledgeChunk {
+  title: string;
+  excerpt: string;
+  freshness: 'current' | 'stale' | 'unknown';
+  citation_ref?: string;
+  version?: string;
+  excerpt_truncated?: boolean;
+}
+
+export interface KnowledgeResult {
+  status?: string;
+  message?: string;
+  error_code?: string;
+  question?: string;
+  count?: number;
+  incomplete?: boolean;
+  degraded?: boolean;
+  warnings?: string[];
+  chunks?: KnowledgeChunk[];
+  results?: KnowledgeResult[];
+}
+
+function CitationCard({ chunk, conversationId }: { chunk: KnowledgeChunk; conversationId?: number | null }) {
+  const [detail, setDetail] = useState<KnowledgeChunk | null>(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const read = async () => {
+    setLoading(true);
+    setDetail(null);
+    setError('');
+    try {
+      const { data } = await client.get(`/chat/conversations/${conversationId}/citations/${encodeURIComponent(chunk.citation_ref!)}`);
+      setDetail(data);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || '引用读取失败，请重新检索');
+    } finally {
+      setLoading(false);
+    }
+  };
+  const shown = detail || chunk;
+  const label = shown.freshness === 'current' ? (detail ? '当前版本已核验' : '检索时已核验')
+    : shown.freshness === 'stale' ? '引用版本落后于当前本体' : '来源版本未确认';
+  return <div className="rounded border p-2 space-y-1 text-xs">
+    <div className="flex gap-2 items-center"><span className="font-medium">{shown.title}</span>
+      <Badge variant="outline">{label}</Badge></div>
+    {shown.version && <p className="text-muted-foreground break-all">版本：{shown.version}</p>}
+    {error ? <p role="alert" className="text-destructive">{error}</p>
+      : <p className="whitespace-pre-wrap break-words max-h-80 overflow-auto">{shown.excerpt}</p>}
+    {!error && !detail && chunk.excerpt_truncated && <p className="text-muted-foreground">展示摘录已截短</p>}
+    {chunk.citation_ref && conversationId && <button type="button" disabled={loading} className="text-primary underline"
+      onClick={read}>{loading ? '正在核验权限…' : '核验并查看完整引用'}</button>}
+  </div>;
+}
+
+export function KnowledgeSummary({ data, conversationId }: { data: KnowledgeResult; conversationId?: number | null }) {
+  return <div className="border rounded-lg p-3 mb-2 space-y-2" aria-label="知识检索详情">
+    <p className="text-xs font-medium">知识检索{data.incomplete ? ' · 部分问题未完成' : ''}</p>
+    {data.results && data.message && <p role={data.status === 'error' || data.incomplete ? 'alert' : undefined} className="text-xs">{data.message}</p>}
+    {(data.results || [data]).map((item, i) => <div key={i} className="space-y-2">
+      {item.question && <p className="text-xs font-medium">{item.question}</p>}
+      {item.status === 'error' && <p role="alert" className="text-xs text-destructive">{item.error_code ? `${item.error_code}：` : ''}{item.message || '知识检索未完成'}</p>}
+      {item.status === 'empty' && <p className="text-xs text-muted-foreground">检索已完成，未找到相关文档</p>}
+      {item.degraded && <p className="text-xs text-amber-600">当前为降级检索结果，不代表知识库已命中</p>}
+      {item.warnings?.map((warning, index) => <p className="text-xs text-amber-600" key={index}>{warning}</p>)}
+      {item.chunks?.map((chunk, index) => <CitationCard key={`${conversationId || 0}-${chunk.citation_ref || index}-${chunk.version || ''}-${i}`} chunk={chunk} conversationId={conversationId} />)}
+    </div>)}
+  </div>;
+}
 
 // ── RAG Summary ────────────────────────────────────────────────
 
-interface RagData {
+interface RagData extends KnowledgeResult {
   rag_source?: string;
   table_info_count?: number;
   column_metadata_count?: number;
@@ -32,6 +102,7 @@ function RagSummary({ rag }: { rag: RagData }) {
   const total = (rag.table_info_count || 0) + (rag.column_metadata_count || 0)
     + (rag.sql_templates_count || 0) + (rag.business_terms_count || 0);
 
+  if (rag.status || rag.chunks || rag.results) return <KnowledgeSummary data={rag} />;
   if (total === 0) return null;
 
   const sourceLabel = rag.rag_source === 'keyword_selected' ? '关键词匹配'
@@ -203,7 +274,7 @@ interface Props {
 }
 
 export default function InlineDetails({ rag, timings, elapsedMs, workflowInfo }: Props) {
-  const hasRag = rag && ((rag.table_info_count || 0) > 0 || (rag.column_metadata_count || 0) > 0);
+  const hasRag = rag && (rag.status || rag.chunks || rag.results || (rag.table_info_count || 0) > 0 || (rag.column_metadata_count || 0) > 0);
   const hasTimings = timings && Object.keys(timings).length > 0;
   const hasWorkflow = !!workflowInfo;
 

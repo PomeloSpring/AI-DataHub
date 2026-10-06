@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
-  Database, FileText, Link, BookOpen, Users, Brain, Bot,
+  Database, FileText, BookOpen, Users, Brain, Bot,
   Settings, LogOut, Menu, Palette, Sun, Moon, Zap, TrendingUp,
   Grid3x3, GlassWater, Heart, UserCircle, X, ChevronLeft, ChevronRight,
-  Clock, Bell, BarChart3, Shield, GitBranch, Ruler, Eye, RefreshCw,
-  Activity, Server, Gem, Sparkles, Waypoints, LayoutTemplate,
+  Clock, Bell, BarChart3, Shield, GitBranch, Eye,
+  Activity, Server, Gem, Sparkles, Waypoints, LayoutTemplate, FlaskConical,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -22,6 +22,7 @@ import SectionSwitcher from './SectionSwitcher';
 import AsBotButton from './AsBotButton';
 import AsBotPanel from './asbot/AsBotPanel';
 import { isMenuAllowed } from '../stores/permissionStore';
+import { pruneEmptySections } from '@/lib/menuUtils';
 
 /** 将路由 key 转换为 menu_key: '/system/models' → 'system:models' */
 function toMenuKey(routeKey: string): string {
@@ -44,7 +45,7 @@ const SYSTEM_MENU_ITEMS = [
   { section: 'AI 配置' },
   { key: '/system/models', icon: Brain, label: '模型中心' },
   { key: '/system/mcp', icon: Server, label: 'MCP 服务' },
-  { key: '/system/wakers', icon: Bot, label: 'Waker 配置' },
+  { key: '/system/as-bots', icon: Bot, label: 'AS-BOT 配置' },
   { key: '/system/skills', icon: Sparkles, label: '技能配置' },
   { key: '/system/config-versions', icon: GitBranch, label: 'Prompt配置' },
   { section: '知识管理' },
@@ -63,9 +64,11 @@ const SYSTEM_MENU_ITEMS = [
   { key: '/system/audit', icon: Eye, label: '审计日志' },
   { section: '运维管理' },
   { key: '/system/monitoring', icon: Activity, label: '系统监控' },
+  { key: '/system/task-monitor', icon: Clock, label: '任务监控' },
   { key: '/system/sandbox', icon: Server, label: '沙箱管理' },
   { key: '/system/quality-review', icon: BarChart3, label: '质量审查' },
   { key: '/system/observability', icon: Waypoints, label: 'LLM 可观测' },
+  { key: '/system/eval', icon: FlaskConical, label: '评测中心' },
   { section: '系统' },
   { key: '/system/settings', icon: Settings, label: '系统设置' },
 ];
@@ -93,6 +96,10 @@ export default function SystemLayout() {
   }, [user]);
 
   const currentPath = location.pathname;
+  // 按权限过滤菜单; 一级分组下无可访问项时不渲染该分组标题
+  const visibleMenu = pruneEmptySections(
+    SYSTEM_MENU_ITEMS.filter(item => !('key' in item) || isMenuAllowed(toMenuKey((item as any).key)))
+  );
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -114,7 +121,7 @@ export default function SystemLayout() {
         <div className="flex-1 min-h-0 overflow-hidden">
           <ScrollArea className="h-full py-2">
           <nav className="space-y-1 px-2" role="navigation" aria-label="系统配置导航">
-            {SYSTEM_MENU_ITEMS.filter(item => !('key' in item) || isMenuAllowed(toMenuKey((item as any).key))).map((item, idx) => {
+            {visibleMenu.map((item, idx) => {
               if ('section' in item) {
                 if (collapsed) return <div key={idx} className="my-2 mx-2 border-t border-sidebar-border" />;
                 return (
@@ -176,7 +183,7 @@ export default function SystemLayout() {
             </div>
             <ScrollArea className="flex-1 py-3">
               <nav className="space-y-1 px-3">
-                {SYSTEM_MENU_ITEMS.filter(item => !('key' in item) || isMenuAllowed(toMenuKey((item as any).key))).map((item, idx) => {
+                {visibleMenu.map((item, idx) => {
                   if ('section' in item) {
                     return (
                       <div key={idx} className="px-4 pt-5 pb-1.5">

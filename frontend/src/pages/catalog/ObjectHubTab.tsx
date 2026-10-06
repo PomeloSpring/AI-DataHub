@@ -19,7 +19,12 @@ export interface HubObject {
   aliases?: string[];
   description?: string;
   primary_table?: string;
-  properties?: { column: string; name?: string; type?: string; is_key?: boolean; description?: string; enum?: string[] }[];
+  /** 业务本体路由指针（路由索引层）：指向目标源本体/源对象 + 源内过滤提示 */
+  route?: {
+    mode?: string; source_ontology?: string; datasource_name?: string; object_key?: string;
+    filter_hints?: { dimension?: string; examples?: string[] }[];
+  };
+  properties?: { column?: string; name?: string; type?: string; is_key?: boolean; description?: string; enum?: string[] }[];
   links?: { type?: string; target?: string; cardinality?: string; description?: string }[];
   execution_binding?: { query_mode?: string; size_class?: string; physical_table?: string; bind_kind?: string; template_ref?: string };
 }
@@ -120,9 +125,12 @@ export default function ObjectHubTab({ modelId, objects }: { modelId: number; ob
                   <span className="font-mono">{o.key}</span>
                   <span className="ml-auto" />
                   <span title="模型内挂接指标数">◆{metricsByObj.get(o.key.toLowerCase()) || 0}</span>
-                  {o.primary_table
-                    ? <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-green-600 border-green-500/30">bound</Badge>
-                    : <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-amber-500 border-amber-500/30">未绑表</Badge>}
+                  {o.route?.source_ontology
+                    ? <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-green-600 border-green-500/30"
+                        title={`路由至 ${o.route.source_ontology}${o.route.object_key ? ' · ' + o.route.object_key : ''}`}>route</Badge>
+                    : o.primary_table
+                      ? <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-green-600 border-green-500/30">bound</Badge>
+                      : <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-amber-500 border-amber-500/30">未绑表</Badge>}
                 </div>
               </button>
             ))}
@@ -144,6 +152,15 @@ export default function ObjectHubTab({ modelId, objects }: { modelId: number; ob
               {(obj.aliases || []).map((a) => <Badge key={a} variant="secondary" className="text-[11px]">{a}</Badge>)}
             </div>
             {obj.description && <p className="text-sm text-muted-foreground mt-1">{obj.description}</p>}
+            {obj.route?.source_ontology && (
+              <div className="text-xs text-muted-foreground mt-1">
+                路由至: 源本体「{obj.route.source_ontology}」
+                {obj.route.object_key ? ` · 对象「${obj.route.object_key}」` : ''}
+                {obj.route.datasource_name ? `（数据源: ${obj.route.datasource_name}）` : ''}
+                {(obj.route.filter_hints || []).length > 0 &&
+                  `，过滤提示: ${obj.route.filter_hints!.map((h) => `${h.dimension}(${(h.examples || []).join('/')})`).join('；')}`}
+              </div>
+            )}
             {obj.execution_binding && (
               <div className="text-xs text-muted-foreground mt-1">
                 绑定: {obj.execution_binding.physical_table || obj.primary_table || '-'}

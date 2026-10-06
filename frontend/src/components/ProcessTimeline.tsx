@@ -18,10 +18,11 @@ interface Props {
   progressStages?: ProgressStage[];
   thinking?: string;
   isStreaming?: boolean;
+  conversationId?: number | null;
 }
 
 export default function ProcessTimeline({
-  process, toolCalls, progressStages, thinking, isStreaming = false,
+  process, toolCalls, progressStages, thinking, isStreaming = false, conversationId,
 }: Props) {
   const byId = useMemo(() => {
     const m = new Map<string, ToolCall>();
@@ -43,6 +44,7 @@ export default function ProcessTimeline({
           <ThinkingBlock content={thinking} isStreaming={isStreaming} />
         )}
         <ToolCallTimeline
+          conversationId={conversationId}
           toolCalls={toolCalls}
           progressStages={progressStages}
           isStreaming={isStreaming}
@@ -71,7 +73,7 @@ export default function ProcessTimeline({
           (seg.tool_call_id && byId.get(seg.tool_call_id)) ||
           (seg.step != null ? byStep.get(seg.step) : undefined);
         if (!tc) return null;
-        return <SingleToolItem key={`c-${seg.tool_call_id || tc.step || i}`} tc={{ ...tc, _index: i }} />;
+        return <SingleToolItem key={`c-${seg.tool_call_id || tc.step || i}`} tc={{ ...tc, _index: i }} conversationId={conversationId} />;
       })}
     </div>
   );

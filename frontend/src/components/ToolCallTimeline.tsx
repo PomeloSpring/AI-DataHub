@@ -12,6 +12,7 @@ import {
   ChevronRight, ChevronDown,
 } from 'lucide-react';
 import type { ToolCall, ProgressStage } from '../stores/chatStore';
+import { KnowledgeSummary } from './InlineDetails';
 
 // ── Tool display labels ────────────────────────────────────────
 
@@ -33,6 +34,17 @@ const TOOL_LABELS: Record<string, string> = {
   get_glossary: '业务术语',
   query_by_tags: '标签查询',
   knowledge_search: '知识搜索',
+  get_object_definition: '业务对象定义',
+  // 工作空间资产/磁盘治理工具
+  asset_list: '资产清单',
+  asset_get: '读取资产',
+  asset_archive: '归档收藏',
+  disk_status: '磁盘用量',
+  cleanup_candidates: '清理候选',
+  cleanup_execute: '执行清理',
+  // 系统运营工具
+  system_usage: '用量统计',
+  system_overview: '系统概览',
   // 执行层内置文件/通用工具
   Read: '读取文件',
   Write: '写入文件',
@@ -57,6 +69,12 @@ function getToolLabel(tool: string): string {
 // ── Extract summary from tool call ─────────────────────────────
 
 function extractSummary(tc: ToolCall): string {
+  if (tc.knowledge) {
+    if (tc.knowledge.incomplete) return '部分知识检索未完成';
+    if (tc.knowledge.status === 'error') return tc.knowledge.message || '知识检索失败';
+    if (tc.knowledge.status === 'empty') return '未找到相关文档';
+    return '知识检索已完成，引用状态见下方';
+  }
   if (tc.error) {
     const firstLine = tc.error.split('\n')[0] ?? '';
     return firstLine.length > 60 ? firstLine.slice(0, 60) + '...' : firstLine;
@@ -107,10 +125,10 @@ function groupToolCalls(toolCalls: ToolCall[]): ToolCallGroup[] {
 
 // ── Single Tool Item ───────────────────────────────────────────
 // 导出供 ProcessTimeline(思考/工具穿插的有序时间线)复用
-export function SingleToolItem({ tc }: { tc: ToolCall & { _index: number } }) {
+export function SingleToolItem({ tc, conversationId }: { tc: ToolCall & { _index: number }; conversationId?: number | null }) {
   const [expanded, setExpanded] = useState(false);
-  const failed = !!tc.error;
-  const pending = !tc.result && !tc.error;
+  const failed = !!tc.error || tc.knowledge?.status === 'error' || !!tc.knowledge?.incomplete;
+  const pending = !tc.result && !tc.error && !tc.knowledge;
   const summary = extractSummary(tc);
   const argsStr = formatArgs(tc.arguments);
   const stepNum = tc.step || tc._index + 1;
@@ -162,13 +180,14 @@ export function SingleToolItem({ tc }: { tc: ToolCall & { _index: number } }) {
         )}
       </div>
 
+      {tc.knowledge && <KnowledgeSummary data={tc.knowledge} conversationId={conversationId} />}
       {/* Expanded details */}
       {expanded && (
         <div className="ml-9 mr-2 mb-1.5 space-y-1.5">
           {argsStr && (
             <div>
               <span className="text-[10px] font-medium text-muted-foreground">参数</span>
-              <pre className="mt-0.5 p-1.5 bg-muted rounded text-[10px] whitespace-pre-wrap break-all max-h-[100px] overflow-auto">
+              <pre className="mt-0.5 p-1.5 bg-muted rounded text-[10px] whitespace-pre-wrap break-all" style={{ maxHeight: 100, overflowY: 'auto' }}>
                 {argsStr}
               </pre>
             </div>
@@ -178,7 +197,7 @@ export function SingleToolItem({ tc }: { tc: ToolCall & { _index: number } }) {
               <span className="text-[10px] font-medium text-muted-foreground">
                 {failed ? '❌ 错误' : '返回结果'}
               </span>
-              <pre className="mt-0.5 p-1.5 bg-muted rounded text-[10px] whitespace-pre-wrap break-all max-h-[120px] overflow-auto">
+              <pre className="mt-0.5 p-1.5 bg-muted rounded text-[10px] whitespace-pre-wrap break-all" style={{ maxHeight: 120, overflowY: 'auto' }}>
                 {tc.error || tc.result || tc.result_preview}
               </pre>
             </div>
@@ -191,7 +210,7 @@ export function SingleToolItem({ tc }: { tc: ToolCall & { _index: number } }) {
 
 // ── Grouped Tool Items ─────────────────────────────────────────
 // 导出供 ProcessTimeline 有序时间线复用(相邻同工具调用折叠成组)
-export function GroupedToolItems({ group }: { group: ToolCallGroup }) {
+export function GroupedToolItems({ group, conversationId }: { group: ToolCallGroup; conversationId?: number | null }) {
   const [expanded, setExpanded] = useState(false);
   const okCount = group.items.filter(t => t.result && !t.error).length;
   const failCount = group.items.filter(t => t.error).length;
@@ -218,7 +237,7 @@ export function GroupedToolItems({ group }: { group: ToolCallGroup }) {
       {expanded && (
         <div className="border-t px-1 py-0.5">
           {group.items.map((tc, i) => (
-            <SingleToolItem key={i} tc={tc} />
+            <SingleToolItem key={i} tc={tc} conversationId={conversationId} />
           ))}
         </div>
       )}
@@ -229,12 +248,13 @@ export function GroupedToolItems({ group }: { group: ToolCallGroup }) {
 // ── Main Component ─────────────────────────────────────────────
 
 interface Props {
+  conversationId?: number | null;
   toolCalls?: ToolCall[];
   progressStages?: ProgressStage[];
   isStreaming?: boolean;
 }
 
-export default function ToolCallTimeline({ toolCalls, progressStages, isStreaming = false }: Props) {
+export default function ToolCallTimeline({ toolCalls, progressStages, isStreaming = false, conversationId }: Props) {
   // Build tool calls from progressStages if toolCalls not available
   const effectiveToolCalls = useMemo(() => {
     if (toolCalls && toolCalls.length > 0) return toolCalls;
@@ -278,13 +298,13 @@ export default function ToolCallTimeline({ toolCalls, progressStages, isStreamin
       {/* Timeline */}
       <div className="space-y-0.5">
         {showFlat ? (
-          <SingleToolItem tc={{ ...groups[0].items[0], _index: 0 }} />
+          <SingleToolItem tc={{ ...groups[0].items[0], _index: 0 }} conversationId={conversationId} />
         ) : (
           groups.map((group, i) =>
             group.items.length === 1 ? (
-              <SingleToolItem key={i} tc={{ ...group.items[0], _index: 0 }} />
+              <SingleToolItem key={i} tc={{ ...group.items[0], _index: 0 }} conversationId={conversationId} />
             ) : (
-              <GroupedToolItems key={i} group={group} />
+              <GroupedToolItems key={i} group={group} conversationId={conversationId} />
             )
           )
         )}

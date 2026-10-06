@@ -124,7 +124,7 @@ class TestPlaygroundGovernedExecution:
 
     def test_semantic_playground_has_no_data_execute_route(self):
         # 语义层只留静态/预览(不返回数据行); 取数在 datamind 侧经护城河执行
-        from services.semanticservice.api import playground as sem_pg
+        from services.semhub.api import playground as sem_pg
 
         paths = _route_paths(sem_pg.router)
         assert not any(p.rstrip("/").endswith("/execute") for p in paths), paths
@@ -271,7 +271,7 @@ class TestInternalIdentityHeader:
         assert auth_mod.verify_internal_identity("") is None                 # 缺失
 
     def test_semantic_rls_diff_ignores_body_user_id(self, monkeypatch):
-        from services.semanticservice.api import playground as sem_pg
+        from services.semhub.api import playground as sem_pg
 
         monkeypatch.setattr(auth_mod, "ADH_SECRET_KEY", "unit-test-secret")
         monkeypatch.setattr(sem_pg, "_sqlglot_or_503", lambda: None)

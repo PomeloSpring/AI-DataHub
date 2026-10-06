@@ -118,18 +118,17 @@ def test_screen_group_registered():
             "list_vis_components", "get_vis_component", "save_vis_component"} <= set(tools)
 
 
-# ── AS-BOT 工具白名单: 放开 screen 但禁 query ──────────────────────────
+# ── AS-BOT 工具白名单: 放开 screen 但禁 query（逐工具授权裁决，无强制组） ──
 
-def test_asbot_groups_include_screen_exclude_query(monkeypatch):
-    wakers = importlib.import_module("services.datamind.execution.wakers")
-    fake_row = {
-        "waker_key": "__system_bot__", "name": "as_bot", "display_name": "AS-BOT",
-        "description": "", "system_prompt": "", "persona": "{}", "tools": "{}",
-        "category": "custom", "workspace_id": 0, "is_active": 1, "is_builtin": 1,
-        "knowledge_base_ids": "[]", "skills": "[]",
-    }
-    monkeypatch.setattr(wakers, "_query", lambda *a, **k: [dict(fake_row)])
-    w = wakers.resolve_system_bot_waker()
-    assert "screen" in w["tools"]["groups"]
-    assert "semantic" in w["tools"]["groups"]
-    assert "query" not in w["tools"]["groups"]
+def test_asbot_tool_selection_includes_screen_excludes_query():
+    """工具去留完全由 as_bot.tools.mcp 逐工具勾选裁决：
+    勾了 screen/semantic 即注册，未勾 query 即不注册（LLM 无从调用）。"""
+    tool_policy = importlib.import_module("services.datamind.execution.tool_policy")
+    policy = tool_policy.compile_policy({
+        "as_bot_key": "as_bot", "mcp_server_ids": [],
+        "tools": {"mcp": {"screen": ["create_data_screen", "get_data_screen"],
+                          "semantic": ["get_metrics", "run_semantic_query"]}},
+    })
+    names = {n.rsplit("__", 1)[-1] for n in policy.allowed}
+    assert "create_data_screen" in names and "get_metrics" in names
+    assert "execute_sql" not in names and "check_sql" not in names

@@ -19,7 +19,9 @@ export type ChartSegment =
   | { kind: 'markdown'; text: string }
   | { kind: 'chart'; title?: string; chartType?: string; sql?: string; data: ChartData }
   | { kind: 'mermaid'; code: string; title?: string }
-  | { kind: 'artifact'; type: 'excel' | 'pdf' | 'html' | 'md' | 'png' | 'jpg' | 'csv'; filename: string; content?: string; path?: string; theme?: string; description?: string }
+  | { kind: 'artifact'; type: 'excel' | 'pdf' | 'html' | 'md' | 'png' | 'jpg' | 'gif' | 'webp' | 'csv'; filename: string; content?: string; path?: string; theme?: string; description?: string }
+  | { kind: 'sql'; code: string }
+  | { kind: 'graph'; title?: string; nodes: { id: string; label?: string; type?: string }[]; edges: { source: string; target: string; label?: string }[] }
   | { kind: 'raw'; text: string }; // 解析失败 → 原样代码文本
 
 // 匹配 ```chart ... ``` 围栏(语言标注为 chart,大小写不敏感)
@@ -28,6 +30,10 @@ const CHART_FENCE = /```chart[ \t]*\r?\n([\s\S]*?)```/gi;
 const MERMAID_FENCE = /```mermaid[ \t]*\r?\n([\s\S]*?)```/gi;
 // 匹配 ```artifact ... ``` 围栏
 const ARTIFACT_FENCE = /```artifact[ \t]*\r?\n([\s\S]*?)```/gi;
+// 匹配 ```sql ... ``` 围栏(SQL 卡片:复制/在 Playground 打开)
+const SQL_FENCE = /```sql[ \t]*\r?\n([\s\S]*?)```/gi;
+// 匹配 ```graph ... ``` 围栏(关系图谱 JSON: {title?, nodes:[{id,label?,type?}], edges:[{source,target,label?}]})
+const GRAPH_FENCE = /```graph[ \t]*\r?\n([\s\S]*?)```/gi;
 
 /** 把 rows(数组的数组 或 对象的数组)归一化为对象数组。 */
 export function normalizeRows(columns: string[], rawRows: any[]): Record<string, any>[] {
@@ -63,6 +69,40 @@ export function parseChartBody(body: string): ChartSegment {
   }
 }
 
+/** 解析 ```graph 块 body(JSON)→ graph 段或 raw 段(降级)。
+ *  节点须有 id;边的端点不在节点集内时丢弃该边(宁缺勿悬空)。 */
+export function parseGraphBody(body: string): ChartSegment {
+  try {
+    const obj = JSON.parse(body);
+    const rawNodes = obj?.nodes;
+    const rawEdges = obj?.edges;
+    if (!Array.isArray(rawNodes) || !Array.isArray(rawEdges)) throw new Error('missing fields');
+    const nodes = rawNodes
+      .filter((n: any) => n && n.id !== undefined && n.id !== null && n.id !== '')
+      .map((n: any) => ({
+        id: String(n.id),
+        label: typeof n.label === 'string' ? n.label : undefined,
+        type: typeof n.type === 'string' ? n.type : undefined,
+      }));
+    const ids = new Set(nodes.map(n => n.id));
+    const edges = rawEdges
+      .filter((e: any) => e && ids.has(String(e?.source)) && ids.has(String(e?.target)))
+      .map((e: any) => ({
+        source: String(e.source),
+        target: String(e.target),
+        label: typeof e.label === 'string' ? e.label : undefined,
+      }));
+    return {
+      kind: 'graph',
+      title: typeof obj.title === 'string' ? obj.title : undefined,
+      nodes,
+      edges,
+    };
+  } catch {
+    return { kind: 'raw', text: body };
+  }
+}
+
 /** 解析单个 artifact 块 body(JSON)→ artifact 段或 raw 段(降级)。
  *  支持两种交付: 内联 content(base64/文本) 或 按引用 path(会话工作区文件)。 */
 export function parseArtifactBody(body: string): ChartSegment {
@@ -88,7 +128,7 @@ export function parseArtifactBody(body: string): ChartSegment {
   }
 }
 
-/** 把整段回答文本切分为 markdown / chart / mermaid / artifact / raw 交替片段。 */
+/** 把整段回答文本切分为 markdown / chart / mermaid / artifact / sql / graph / raw 交替片段。 */
 export function splitChartBlocks(text: string): ChartSegment[] {
   const segs: ChartSegment[] = [];
   if (!text) return segs;
@@ -100,6 +140,8 @@ export function splitChartBlocks(text: string): ChartSegment[] {
     { regex: CHART_FENCE, kind: 'chart' },
     { regex: MERMAID_FENCE, kind: 'mermaid' },
     { regex: ARTIFACT_FENCE, kind: 'artifact' },
+    { regex: SQL_FENCE, kind: 'sql' },
+    { regex: GRAPH_FENCE, kind: 'graph' },
   ];
 
   // 收集所有匹配
@@ -126,6 +168,10 @@ export function splitChartBlocks(text: string): ChartSegment[] {
       segs.push({ kind: 'mermaid', code: match.body.trim() });
     } else if (match.kind === 'artifact') {
       segs.push(parseArtifactBody(match.body));
+    } else if (match.kind === 'sql') {
+      segs.push({ kind: 'sql', code: match.body.trim() });
+    } else if (match.kind === 'graph') {
+      segs.push(parseGraphBody(match.body));
     }
     last = match.index + match.length;
   }

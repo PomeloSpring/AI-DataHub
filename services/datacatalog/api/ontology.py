@@ -17,13 +17,25 @@ import logging
 import queue
 import threading
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from ..services import ontology_service
+from services.shared.common.auth import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _allowed_source_ids(user: dict) -> set:
+    """用户可见数据源集（角色×数据源授权，唯一裁决点，fail-closed）。
+
+    admin 同样纯角色裁决不 bypass（waker-datasource-domain §1）；
+    空集=无任何源本体可见，不得当全量。
+    get_current_user 返回 dict（{user_id, username, role}），不得按对象属性取值。
+    """
+    from services.authservice.services.role_service import role_service
+    return set(role_service.get_user_allowed_datasources(int(user.get("user_id") or 0), 0))
 
 
 def _sse_event(event: str, data: dict) -> str:
@@ -73,18 +85,44 @@ def generate_ontology(req: dict):
     )
 
 
+@router.post("/generate-business-assets")
+def generate_business_assets(user: dict = Depends(get_current_user)):
+    """自动生成/刷新业务本体（数据资产路由图）。
+
+    从数据源、数据集、同步任务、数据安全配置、数据质量、用户权限策略与血缘
+    自动构建路由索引层（确定性生成，无 LLM）；落库走 save_draft/activate 级联。
+    返回生成摘要与显式告警（治理数据未对齐项，不静默吞）。"""
+    from ..services import business_asset_ontology
+    try:
+        return business_asset_ontology.generate_business_asset_ontology(
+            created_by=str((user or {}).get("username") or ""))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("business asset ontology generation failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="业务本体自动生成未完成，请查看服务端日志") from e
+
+
 @router.get("/models")
 def list_models(
     datasource_id: int = Query(None, description="按数据源筛选"),
     include_archived: bool = Query(False, description="是否包含归档版本（默认排除，归档版本走版本管理）"),
+    user: dict = Depends(get_current_user),
 ):
-    return {"items": ontology_service.list_models(datasource_id, include_archived=include_archived)}
+    # 可见性：源本体按用户数据源权限分配；业务/系统本体全员可见
+    allowed = _allowed_source_ids(user)
+    return {"items": ontology_service.list_models(
+        datasource_id, include_archived=include_archived,
+        allowed_datasource_ids=allowed)}
 
 
 @router.get("/models/{model_id}")
-def get_model(model_id: int):
+def get_model(model_id: int, user: dict = Depends(get_current_user)):
     model = ontology_service.get_model(model_id)
     if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if not ontology_service.can_view_model(model, _allowed_source_ids(user)):
+        # 不泄露存在性：不可见即 404（不回 403 提示“存在但无权”）
         raise HTTPException(status_code=404, detail="模型不存在")
     return model
 
@@ -125,6 +163,32 @@ def archive_model(model_id: int):
         return ontology_service.archive(model_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/models/{model_id}/restore")
+def restore_model(model_id: int):
+    """还原已归档模型为草案（归档数据可见可逆）。"""
+    try:
+        return ontology_service.restore(model_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/models/{model_id}/kb-sync")
+def sync_model_kb(model_id: int):
+    """手动把生效模型的脱敏语义文档同步到目标知识库（结果落水位线）。
+
+    同步失败显式报错并写服务端日志，不静默吞成成功；成功/失败均落
+    adh_ontology_kb_sync_state 供任务监控/徽章展示。
+    """
+    from ..services import ontology_kb_sync
+    try:
+        return ontology_kb_sync.sync_model_to_qmind(model_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("manual kb sync failed for model %s: %s", model_id, e, exc_info=True)
+        raise HTTPException(status_code=502, detail="知识库同步未完成，请查看服务端日志") from e
 
 
 @router.delete("/models/{model_id}")

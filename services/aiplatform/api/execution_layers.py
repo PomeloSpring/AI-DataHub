@@ -41,17 +41,6 @@ class ExecutionLayerUpdate(BaseModel):
     status: Optional[str] = None
 
 
-class WorkspaceBinding(BaseModel):
-    execution_layer_id: int
-    is_default: bool = False
-    priority: int = 0
-    allowed_tools: list[str] = []  # tools 权限白名单,空表示不限制
-
-
-class WorkspaceLayersUpdate(BaseModel):
-    bindings: list[WorkspaceBinding] = []
-
-
 class LayerRegister(BaseModel):
     name: str
     layer_type: str = "remote"
@@ -188,39 +177,8 @@ def create_execution_layer(req: ExecutionLayerCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/workspaces/{workspace_id}")
-def get_workspace_execution_layers(workspace_id: int):
-    """获取工作空间绑定的执行层."""
-    try:
-        return exec_service.get_workspace_layers(workspace_id)
-    except Exception as e:
-        logger.error("Get workspace execution layers failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.put("/workspaces/{workspace_id}")
-def update_workspace_execution_layers(workspace_id: int, req: WorkspaceLayersUpdate):
-    """配置工作空间的执行层绑定(每个工作空间只允许配置一个执行层)."""
-    try:
-        if len(req.bindings) > 1:
-            raise HTTPException(status_code=400, detail="每个工作空间只允许配置一个执行层")
-        for b in req.bindings:
-            if not exec_service.get_layer(b.execution_layer_id):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"执行层不存在: id={b.execution_layer_id}",
-                )
-            # 单一绑定始终作为默认执行层
-            b.is_default = True
-        exec_service.set_workspace_layers(
-            workspace_id, [b.model_dump() for b in req.bindings]
-        )
-        return {"success": True}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Update workspace execution layers failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+# (已退役: GET/PUT /workspaces/{workspace_id} 工作空间执行层绑定 ——
+#  执行层全局生效, 不按工作空间绑定; AS-BOT 可用点按用户角色裁决)
 
 
 @router.get("/workspaces/{workspace_id}/execution-layer")

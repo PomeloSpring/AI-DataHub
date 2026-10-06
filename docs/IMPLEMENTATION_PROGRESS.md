@@ -122,7 +122,7 @@ venv/bin/python -m pytest tests/test_trusted_analysis_security.py tests/test_qua
 - `services/datagov/main.py` ✅
 - `services/dataviz/main.py` ✅
 - `services/graphservice/main.py` ✅
-- `services/semanticservice/main.py` ✅
+- `services/semhub/main.py` ✅
 
 ### 4.6 执行层身份注入
 
@@ -362,7 +362,7 @@ venv/bin/python -m pytest tests/test_trusted_analysis_security.py tests/test_qua
 | `services/datagov/main.py` | 注册权限中间件 |
 | `services/dataviz/main.py` | 注册权限中间件 |
 | `services/graphservice/main.py` | 注册权限中间件 |
-| `services/semanticservice/main.py` | 注册权限中间件 |
+| `services/semhub/main.py` | 注册权限中间件 |
 | `services/dataviz/services/report_service.py` | 导入 report_access，list_reports 增加身份校验 |
 | `services/dataviz/api/report.py` | 全部端点增加身份+工作空间校验 |
 | `services/datamind/api/execution.py` | 增加身份+工作空间校验 |
@@ -412,7 +412,7 @@ npm --prefix frontend run build
 | datacatalog | 8005 | uvicorn 无 --reload |
 | dataviz | 8004 | |
 | datagov | | |
-| semanticservice | | |
+| semhub | | |
 | graphservice | | |
 | dataflow worker | | Celery worker |
 

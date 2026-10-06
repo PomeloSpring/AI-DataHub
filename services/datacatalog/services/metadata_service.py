@@ -41,7 +41,8 @@ class MetadataService:
             _sync(datasource_id)
             return {"success": True, "message": "元数据同步完成"}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            logger.error("元数据同步失败 datasource_id=%s: %s", datasource_id, e)
+            return {"success": False, "message": f"元数据同步失败：{e}"}
 
     @staticmethod
     def sync_table_columns(datasource_id: int, table_name: str) -> dict:
@@ -59,7 +60,8 @@ class MetadataService:
                            f"（新增 {result['inserted']}，更新 {result['updated']}，删除 {result['deleted']}）",
             }
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            logger.error("字段同步失败 datasource_id=%s table=%s: %s", datasource_id, table_name, e)
+            return {"success": False, "message": f"字段同步失败：{e}"}
 
     # ── 字段元数据 CRUD ──────────────────────────────────────────────
 

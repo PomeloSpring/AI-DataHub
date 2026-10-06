@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { Plus, Pencil, Trash2, Bot } from 'lucide-react';
+import { Plus, Pencil, Trash2 } from 'lucide-react';
 import client from '@/api/client';
 
 interface Agent {

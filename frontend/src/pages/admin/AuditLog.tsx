@@ -2,7 +2,7 @@
  * 审计日志页面 — 查看系统操作审计记录
  */
 import { useState, useEffect, useCallback } from 'react';
-import { toast } from 'sonner';
+
 import { RefreshCw, Search, Shield, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -89,6 +89,24 @@ const ACTION_LABELS: Record<string, string> = {
   install_mcp: '安装MCP服务',
   account_locked: '账号锁定',
 };
+
+// 配置变更审计的 action 是**运行时从路径推导**的（如 update_as_bot / create_eval_case），
+// 静态表盖不全，这里把动词前缀拆出来译一下，剩下的当作资源名展示。
+const VERB_LABELS: Record<string, string> = {
+  create: '创建', update: '更新', delete: '删除', patch: '更新', post: '新增',
+};
+
+function formatAction(action: string): string {
+  if (!action) return '-';
+  const mapped = ACTION_LABELS[action];
+  if (mapped) return mapped;
+  const idx = action.indexOf('_');
+  if (idx > 0) {
+    const verb = VERB_LABELS[action.slice(0, idx)];
+    if (verb) return `${verb} ${action.slice(idx + 1).replace(/_/g, ' ')}`;
+  }
+  return action;
+}
 
 export default function AuditLog() {
   const [logs, setLogs] = useState<AuditLogItem[]>([]);
@@ -216,7 +234,7 @@ export default function AuditLog() {
                     )}
                   </td>
                   <td className="p-3 text-sm">
-                    {ACTION_LABELS[log.action] || log.action}
+                    {formatAction(log.action)}
                   </td>
                   <td className="p-3 text-sm max-w-[300px] truncate" title={log.detail}>
                     {log.detail || '-'}

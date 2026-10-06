@@ -120,7 +120,7 @@ export default function DashboardDesignPanel({ designId, onClose, onChanged, onC
   });
   const publish = () => run(async () => {
     if (!preview || preview.design.version !== design?.version) return;
-    await client.post('/as-bot/approve', { approval_id: design.approval_id });
+    await client.post(`${path}/publish`, { expected_version: design!.version });
     accept(await getDesign(designId));
     const dashboards = useDashboardStore.getState();
     await dashboards.loadDashboards();

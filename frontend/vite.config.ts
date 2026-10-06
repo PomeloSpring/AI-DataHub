@@ -11,8 +11,7 @@ const SERVICES = {
   datamind: 'http://127.0.0.1:8001',
   dataflow: 'http://127.0.0.1:8003',
   aiplatform: 'http://127.0.0.1:8007',
-  graphservice: 'http://127.0.0.1:8011',
-  semanticservice: 'http://127.0.0.1:8012',
+  semhub: 'http://127.0.0.1:8012',
 }
 
 // 创建代理配置：每个路径前缀代理到对应的微服务
@@ -36,6 +35,10 @@ function createProxyConfig() {
   proxy['/api/admin/rls-audit-logs'] = proxyOptions(SERVICES.authservice)
   proxy['/api/monitoring'] = proxyOptions(SERVICES.authservice)
   proxy['/api/observability'] = proxyOptions(SERVICES.authservice)
+  // 评测中心（用例 CRUD / 运行 / 版本对比）—— 必须显式加进白名单：
+  // 本表是**显式路径白名单**，漏一条就会被 SPA 兜底成 index.html(200+HTML)，
+  // 前端拿到非预期结构却显示成"空列表"，是个静默失败。
+  proxy['/api/eval'] = proxyOptions(SERVICES.authservice)
 
   // DataMind (AI Engine) — 需要较长超时
   proxy['/api/chat'] = { ...proxyOptions(SERVICES.datamind), timeout: 600000 }
@@ -46,6 +49,8 @@ function createProxyConfig() {
   proxy['/api/as-bot'] = { ...proxyOptions(SERVICES.datamind), timeout: 600000 }
   // Skills 管理(文件夹/SKILL.md)由 datamind 提供,须先于 /api/admin/* → aiplatform 的通用规则
   proxy['/api/admin/skills'] = proxyOptions(SERVICES.datamind)
+  // 工作空间资产清单(OSS 托管)由 datamind 提供
+  proxy['/api/workspace-assets'] = proxyOptions(SERVICES.datamind)
 
   // DataGov (Data Governance)
   proxy['/api/quality'] = proxyOptions(SERVICES.datagov)
@@ -55,9 +60,12 @@ function createProxyConfig() {
 
   // DataFlow (Data Integration)
   proxy['/api/sync'] = proxyOptions(SERVICES.dataflow)
+  proxy['/api/dag'] = proxyOptions(SERVICES.dataflow)
+  proxy['/api/udfs'] = proxyOptions(SERVICES.dataflow)
   proxy['/api/scheduled-tasks'] = proxyOptions(SERVICES.dataflow)
   proxy['/api/report-templates'] = proxyOptions(SERVICES.dataflow)
   proxy['/api/notification'] = proxyOptions(SERVICES.dataflow)
+  proxy['/api/task-monitor'] = proxyOptions(SERVICES.dataflow)
 
   // DataViz (Visualization)
   proxy['/api/dashboard'] = proxyOptions(SERVICES.dataviz)
@@ -66,10 +74,10 @@ function createProxyConfig() {
   proxy['/api/vis-library'] = proxyOptions(SERVICES.dataviz)
   proxy['/api/datasets'] = proxyOptions(SERVICES.dataviz)
 
-  // GraphService — 知识图谱可视化 + SPARQL 查询 (Oxigraph 后端)
-  proxy['/api/graph'] = proxyOptions(SERVICES.graphservice)
-  // SemanticService — 语义层只读契约端点 (resolve/query/health)
-  proxy['/api/semantic'] = proxyOptions(SERVICES.semanticservice)
+  // 知识图谱可视化 + SPARQL 查询 (Oxigraph 后端; 原 graphservice 已并入 semhub:8012)
+  proxy['/api/graph'] = proxyOptions(SERVICES.semhub)
+  // SemanticService → SemHub — 语义层只读契约端点 (resolve/query/health)
+  proxy['/api/semantic'] = proxyOptions(SERVICES.semhub)
 
   // DataCatalog
   proxy['/api/catalog'] = proxyOptions(SERVICES.datacatalog)
@@ -91,7 +99,7 @@ function createProxyConfig() {
   proxy['/api/model-config'] = proxyOptions(SERVICES.datamind)
 
   // AI Platform - MCP, Agents, Embed, Model Lab/Train
-  proxy['/api/admin/wakers'] = proxyOptions(SERVICES.aiplatform)
+  proxy['/api/admin/as-bots'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/admin/mcp-servers'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/admin/agents'] = proxyOptions(SERVICES.aiplatform)
   proxy['/api/admin/sync'] = proxyOptions(SERVICES.aiplatform)

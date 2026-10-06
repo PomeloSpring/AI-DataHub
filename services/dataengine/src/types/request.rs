@@ -11,8 +11,20 @@ pub struct QueryRequest {
     pub datasource: Option<DatasourceConfig>,
     #[serde(default)]
     pub rls_policies: Vec<RLSPolicy>,
+    /// 跨源联邦附加数据源：每个源注册为独立 catalog（catalog 名 =
+    /// adh_datasources.name，SQL 中用 `ds.db.table` 三段式限定名引用）
+    #[serde(default)]
+    pub federated: Vec<FederatedSource>,
     /// Unique request ID for audit log correlation
     pub request_id: Option<String>,
+}
+
+/// 联邦附加数据源（跨源 SQL 的非主源）
+#[derive(Debug, Clone, Deserialize)]
+pub struct FederatedSource {
+    /// catalog 名（= adh_datasources.name，全局唯一，三段式限定名首段）
+    pub name: String,
+    pub config: DatasourceConfig,
 }
 
 /// Datasource connection configuration

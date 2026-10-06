@@ -70,7 +70,7 @@ class RoleService:
             conn.close()
 
     def create_role(self, name: str, display_name: str, description: str = "") -> int:
-        """Create a new role and its associated Waker (one-to-one binding)."""
+        """Create a new role and its associated AS-BOT (one-to-one binding)."""
         role_id = _gen_id()
         conn = get_metadata_conn()
         try:
@@ -79,7 +79,7 @@ class RoleService:
                     "INSERT INTO adh_roles (id, name, display_name, description) VALUES (%s, %s, %s, %s)",
                     (role_id, name, display_name, description)
                 )
-                # 联动创建同名 Waker（角色-Waker 一对一绑定）
+                # 联动创建同名 AS-BOT（角色-AS-BOT 一对一绑定）
                 import json
                 default_persona = {
                     "responsibility": f"协助 {display_name or name} 角色完成数据分析与相关任务",
@@ -96,8 +96,8 @@ class RoleService:
                     "standard": ["read", "grep", "glob"]
                 }
                 cur.execute(
-                    """INSERT INTO adh_wakers 
-                       (waker_key, name, display_name, description, category, system_prompt, persona, tools, 
+                    """INSERT INTO adh_as_bots 
+                       (as_bot_key, name, display_name, description, category, system_prompt, persona, tools, 
                         chart_enabled, is_active, is_builtin, role_id, workspace_id)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (name, name, display_name or name, description or f"{display_name or name}角色的AI助手",
@@ -108,7 +108,7 @@ class RoleService:
                      1, 1, 0, role_id, 0)
                 )
                 conn.commit()
-                logger.info(f"Created role '{name}' (id={role_id}) with associated waker")
+                logger.info(f"Created role '{name}' (id={role_id}) with associated AS-BOT")
                 return role_id
         finally:
             conn.close()
@@ -134,7 +134,7 @@ class RoleService:
             conn.close()
 
     def delete_role(self, role_id: int) -> bool:
-        """Delete a role (only if not system role) and its associated Waker."""
+        """Delete a role (only if not system role) and its associated AS-BOT."""
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
@@ -142,12 +142,13 @@ class RoleService:
                 role = cur.fetchone()
                 if not role or role.get("is_system"):
                     return False
-                # 联动删除关联 Waker（角色-Waker 一对一绑定）
-                cur.execute("DELETE FROM adh_wakers WHERE role_id = %s", (role_id,))
-                logger.info(f"Deleted waker for role '{role.get('name')}' (role_id={role_id})")
+                # 联动删除关联 AS-BOT（角色-AS-BOT 一对一绑定）
+                cur.execute("DELETE FROM adh_as_bots WHERE role_id = %s", (role_id,))
+                logger.info(f"Deleted AS-BOT for role '{role.get('name')}' (role_id={role_id})")
                 cur.execute("DELETE FROM adh_role_attributes WHERE role_id = %s", (role_id,))
                 cur.execute("DELETE FROM adh_user_roles WHERE role_id = %s", (role_id,))
                 cur.execute("DELETE FROM adh_workspace_roles WHERE role_id = %s", (role_id,))
+                cur.execute("DELETE FROM adh_role_dashboard_access WHERE role_id = %s", (role_id,))
                 cur.execute("DELETE FROM adh_roles WHERE id = %s", (role_id,))
                 conn.commit()
                 return True
@@ -196,22 +197,81 @@ class RoleService:
 
     # ── User-Role Assignment ───────────────────────────────────────
 
-    def assign_user_role(self, user_id: int, role_id: int, workspace_id: int = 0) -> bool:
-        """Assign a role to a user."""
+    def write_global_role_mirror(self, cur, user_id: int, role_name: str) -> int:
+        """全局角色双写（唯一镜像写入口）：adh_user_roles(ws=0) 行随 user_role 列同事务写入。
+
+        adh_user_roles 的 workspace_id=0 行是全局角色的**唯一真值源镜像**（数据权限/
+        API 权限码门控均经它消费）；adh_users.user_role 列仅是登录/JWT 的缓存。
+        两者必须同事务双写——历史缺陷：两条写路径各写一处，列有值但镜像无行，
+        用户零权限码被 API 门控 403（如建号后无法发消息）。
+        调用方持有事务游标（与 user_role 列更新同事务，失败一起回滚）。
+
+        role_name→role_id 按 adh_roles.name 解析；未知名 fail-loud 抛 ValueError，
+        不静默写 0/跳过。返回 role_id。
+        """
+        cur.execute("SELECT id FROM adh_roles WHERE name = %s", (str(role_name or ""),))
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"角色不存在: {role_name!r}（请先在角色管理中创建）")
+        role_id = int(row["id"])
+        cur.execute("DELETE FROM adh_user_roles WHERE user_id = %s AND workspace_id = 0",
+                    (user_id,))
+        cur.execute(
+            "INSERT INTO adh_user_roles (id, user_id, role_id, workspace_id) VALUES (%s, %s, %s, 0)",
+            (_gen_id(), user_id, role_id))
+        return role_id
+
+    def _apply_global_role(self, cur, user_id: int, role_name: str) -> int:
+        """游标版全局角色双写（镜像 + 列缓存同事务），供各写入口共用。"""
+        role_id = self.write_global_role_mirror(cur, user_id, role_name)
+        cur.execute("UPDATE adh_users SET user_role = %s, updated_at = %s WHERE id = %s",
+                    (str(role_name), time.strftime("%Y-%m-%d %H:%M:%S"), user_id))
+        return role_id
+
+    def set_global_role(self, user_id: int, role_name: str) -> bool:
+        """独立事务版全局角色分配（管理接口/数据修复用）：镜像与列缓存同事务双写。"""
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT IGNORE INTO adh_user_roles (id, user_id, role_id, workspace_id) VALUES (%s, %s, %s, %s)",
-                    (_gen_id(), user_id, role_id, workspace_id)
-                )
+                self._apply_global_role(cur, user_id, role_name)
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def assign_user_role(self, user_id: int, role_id: int, workspace_id: int = 0) -> bool:
+        """Assign a role to a user.
+
+        ws=0 是全局角色分配——必须走双写入口（镜像+列同事务），不得只写镜像
+        （历史缺陷的另一半：列与镜像各写一处）；ws>0 是工作空间级绑定，不影响全局列。
+        """
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                if int(workspace_id or 0) == 0:
+                    cur.execute("SELECT name FROM adh_roles WHERE id = %s", (role_id,))
+                    row = cur.fetchone()
+                    if not row:
+                        logger.warning("[role_service] assign_user_role 角色不存在: role_id=%s", role_id)
+                        return False
+                    self._apply_global_role(cur, user_id, str(row["name"]))
+                else:
+                    cur.execute(
+                        "INSERT IGNORE INTO adh_user_roles (id, user_id, role_id, workspace_id) VALUES (%s, %s, %s, %s)",
+                        (_gen_id(), user_id, role_id, workspace_id)
+                    )
                 conn.commit()
                 return True
         finally:
             conn.close()
 
     def remove_user_role(self, user_id: int, role_id: int, workspace_id: int = 0) -> bool:
-        """Remove a role from a user."""
+        """Remove a role from a user.
+
+        ws=0 移除全局角色后**回落 viewer**（口径：全局角色不可为空——登录/JWT 与
+        API 门控都消费列缓存，空角色=零权限码死号），镜像与列同步回落；
+        ws>0 只删工作空间绑定。
+        """
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
@@ -219,8 +279,11 @@ class RoleService:
                     "DELETE FROM adh_user_roles WHERE user_id = %s AND role_id = %s AND workspace_id = %s",
                     (user_id, role_id, workspace_id)
                 )
+                removed = cur.rowcount > 0
+                if int(workspace_id or 0) == 0 and removed:
+                    self._apply_global_role(cur, user_id, "viewer")
                 conn.commit()
-                return cur.rowcount > 0
+                return removed
         finally:
             conn.close()
 
@@ -244,6 +307,80 @@ class RoleService:
                         (user_id,)
                     )
                 return cur.fetchall()
+        finally:
+            conn.close()
+
+    # ── 工作空间私有化(个人工作站): 属主校验与双配额 ─────────────
+
+    def check_workspace_owner(self, user_id: int, workspace_id: int) -> bool:
+        """工作空间随用户走: 仅属主可访问(成员体系已退役)。"""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM adh_workspaces WHERE id = %s AND owner_id = %s",
+                    (workspace_id, user_id))
+                return cur.fetchone() is not None
+        finally:
+            conn.close()
+
+    def get_user_workspace_quota(self, user_id: int) -> dict:
+        """每用户工作空间配额; 无配置行 = 缺省 5 个空间 / 每空间 5GB。"""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT max_workspaces, disk_quota_bytes FROM adh_user_workspace_quota WHERE user_id = %s",
+                    (user_id,))
+                row = cur.fetchone()
+                return dict(row) if row else {"max_workspaces": 5, "disk_quota_bytes": 5 * 1024 ** 3}
+        finally:
+            conn.close()
+
+    def count_user_workspaces(self, user_id: int) -> int:
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) AS c FROM adh_workspaces WHERE owner_id = %s", (user_id,))
+                return int(cur.fetchone()["c"])
+        finally:
+            conn.close()
+
+    def set_user_workspace_quota(self, user_id: int, max_workspaces: int, disk_quota_bytes: int) -> bool:
+        """设置/更新用户工作空间配额(管理员)。"""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO adh_user_workspace_quota (user_id, max_workspaces, disk_quota_bytes) "
+                    "VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE "
+                    "max_workspaces=VALUES(max_workspaces), disk_quota_bytes=VALUES(disk_quota_bytes)",
+                    (user_id, max_workspaces, disk_quota_bytes))
+                conn.commit()
+                return True
+        finally:
+            conn.close()
+
+    def list_workspace_quotas(self) -> list:
+        """管理员统管: 全用户 + 各自空间清单(磁盘用量由 API 层补充)。"""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT u.id AS user_id, u.username,
+                              COALESCE(q.max_workspaces, 5) AS max_workspaces,
+                              COALESCE(q.disk_quota_bytes, %s) AS disk_quota_bytes
+                       FROM adh_users u
+                       LEFT JOIN adh_user_workspace_quota q ON q.user_id = u.id
+                       ORDER BY u.id""", (5 * 1024 ** 3,))
+                users = cur.fetchall()
+                for item in users:
+                    cur.execute(
+                        "SELECT id, name, is_default FROM adh_workspaces "
+                        "WHERE owner_id = %s ORDER BY is_default DESC, id",
+                        (item["user_id"],))
+                    item["workspaces"] = cur.fetchall()
+                return users
         finally:
             conn.close()
 
@@ -408,7 +545,9 @@ class RoleService:
     def get_user_allowed_datasources(self, user_id: int, workspace_id: int = 0) -> list:
         """Get all datasource IDs a user can access via their roles.
 
-        Returns list of datasource_ids. Empty list means no restriction (all allowed).
+        Returns list of datasource_ids。**空列表 = 无任何授权（fail-closed）**，
+        不是“不限制”——waker-datasource-domain §1 明确禁止把空授权解释为全量，
+        消费方一律按 `datasource_id not in allowed` 拒绝，不得写 `if allowed and ...`。
         """
         conn = get_metadata_conn()
         try:
@@ -421,6 +560,149 @@ class RoleService:
                     (user_id, workspace_id)
                 )
                 return [r["datasource_id"] for r in cur.fetchall()]
+        finally:
+            conn.close()
+
+    # ── 功能 AI 能力（权限码 → AS-BOT 功能能力继承）────────────────────────────
+
+    def get_user_role_ai_perms(self, user_id: int, workspace_id: int = 0) -> dict:
+        """用户经角色持有的权限码及其 AI 可调用级别。
+
+        Returns ``{perm_code: {"ai_access", "label", "ai_note"}}`` —— 供
+        ``tool_policy.compile_policy`` 做功能能力继承判定（AS-BOT 自动继承，
+        AS-BOT 仅做减法）。
+
+        口径与其它数据权限路径一致：走 ``adh_user_roles``（全局行 workspace_id=0
+        + 工作空间行），不走 JWT 里的 ``user_role`` 列缓存。
+
+        ``ai_access`` 取 ``adh_perm_registry`` 的配置值（管理员可调），
+        但它不是最终裁决：涉密硬上界由 ``perm_link`` 再收窄一次，
+        配置写成 write 也抬不上去。
+        """
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT DISTINCT p.perm_code, p.ai_access, p.label, p.ai_note
+                       FROM adh_user_roles ur
+                       JOIN adh_role_perms rp ON rp.role_id = ur.role_id
+                       JOIN adh_perm_registry p ON p.perm_code = rp.perm_code
+                       WHERE ur.user_id = %s AND (ur.workspace_id = %s OR ur.workspace_id = 0)
+                         AND p.is_active = 1""",
+                    (user_id, workspace_id)
+                )
+                return {
+                    r["perm_code"]: {
+                        "ai_access": r.get("ai_access") or "none",
+                        "label": r.get("label") or r["perm_code"],
+                        "ai_note": r.get("ai_note") or "",
+                    }
+                    for r in cur.fetchall()
+                }
+        finally:
+            conn.close()
+
+    def get_user_role_perm_codes(self, user_id: int, workspace_id: int = 0) -> list:
+        """用户经角色持有的权限码清单（与 get_user_role_ai_perms 同口径）。"""
+        return sorted(self.get_user_role_ai_perms(user_id, workspace_id))
+
+    # ── Dashboard Visibility (看板可见性按角色授权) ───────────────────
+
+    def get_role_dashboards(self, role_id: int) -> list:
+        """Get dashboard IDs visible to a role, with display info."""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT rda.dashboard_id, d.name, d.status
+                       FROM adh_role_dashboard_access rda
+                       LEFT JOIN adh_dashboards d ON d.id = rda.dashboard_id
+                       WHERE rda.role_id = %s ORDER BY d.name""",
+                    (role_id,)
+                )
+                return cur.fetchall()
+        finally:
+            conn.close()
+
+    def set_role_dashboards(self, role_id: int, dashboard_ids: list) -> bool:
+        """Replace all dashboard visibility grants for a role (full replace, idempotent)."""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM adh_role_dashboard_access WHERE role_id = %s", (role_id,))
+                for dash_id in set(dashboard_ids or []):
+                    cur.execute(
+                        "INSERT IGNORE INTO adh_role_dashboard_access (role_id, dashboard_id) VALUES (%s, %s)",
+                        (role_id, int(dash_id))
+                    )
+                conn.commit()
+                return True
+        finally:
+            conn.close()
+
+    def get_dashboard_roles(self, dashboard_id: int) -> list:
+        """Get role IDs that can see a dashboard (看板→角色方向的同一份授权)."""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT rda.role_id, r.name, r.display_name
+                       FROM adh_role_dashboard_access rda
+                       LEFT JOIN adh_roles r ON r.id = rda.role_id
+                       WHERE rda.dashboard_id = %s ORDER BY r.name""",
+                    (dashboard_id,)
+                )
+                return cur.fetchall()
+        finally:
+            conn.close()
+
+    def set_dashboard_roles(self, dashboard_id: int, role_ids: list) -> bool:
+        """Replace all role grants for a dashboard (full replace, idempotent)."""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM adh_role_dashboard_access WHERE dashboard_id = %s", (dashboard_id,))
+                for role_id in set(role_ids or []):
+                    cur.execute(
+                        "INSERT IGNORE INTO adh_role_dashboard_access (role_id, dashboard_id) VALUES (%s, %s)",
+                        (int(role_id), dashboard_id)
+                    )
+                conn.commit()
+                return True
+        finally:
+            conn.close()
+
+    def get_user_allowed_dashboards(self, user_id: int, workspace_id: int = 0) -> list:
+        """Get dashboard IDs a user can see via their roles (可见性唯一裁决).
+
+        adh_user_roles ⋈ adh_role_dashboard_access; ws=0 镜像角色同样生效。
+        **fail-closed**: 空授权返回空列表 = 一律不可见, 不解释为全量。
+        """
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT DISTINCT rda.dashboard_id
+                       FROM adh_user_roles ur
+                       JOIN adh_role_dashboard_access rda ON rda.role_id = ur.role_id
+                       WHERE ur.user_id = %s AND (ur.workspace_id = %s OR ur.workspace_id = 0)""",
+                    (user_id, workspace_id)
+                )
+                return [r["dashboard_id"] for r in cur.fetchall()]
+        finally:
+            conn.close()
+
+    def list_dashboard_catalog(self) -> list:
+        """All dashboards (admin 配置选择器用). 看板不按工作空间归属, 平铺返回."""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT d.id, d.name, d.status
+                       FROM adh_dashboards d
+                       ORDER BY d.name"""
+                )
+                return cur.fetchall()
         finally:
             conn.close()
 

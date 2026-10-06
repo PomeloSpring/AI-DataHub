@@ -275,7 +275,9 @@ export default function SensitiveData() {
                     )}
                   </td>
                   <td className="p-3 text-xs text-muted-foreground">
-                    {field.datasource_id === 0 ? '0（全局）' : field.datasource_id}
+                    {field.datasource_id === 0
+                      ? '全局'
+                      : (datasources.find(d => d.id === field.datasource_id)?.name || '数据源已删除')}
                   </td>
                   <td className="p-3 text-xs text-muted-foreground">
                     {new Date(field.created_at).toLocaleString()}

@@ -18,6 +18,7 @@ import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
 import ASTTreeView from '../components/ASTTreeView';
 import client from '../api/client';
+import { fetchVisComponents, type VisComponent } from '@/api/visLibrary';
 
 interface Datasource {
   id: number;
@@ -201,7 +202,35 @@ export default function Playground() {
   const [analyzing, setAnalyzing] = useState<string | null>(null);
   const [provObject, setProvObject] = useState('');
 
-  const selectedDsType = datasources.find(d => d.id === selectedDs)?.db_type || '';
+  // SQL 卡片「在 Playground 打开」带入的语句:挂载时消费一次并预填编辑器
+  useEffect(() => {
+    const raw = sessionStorage.getItem('playground_sql');
+    if (raw) {
+      sessionStorage.removeItem('playground_sql');
+      try {
+        const { sql: s } = JSON.parse(raw);
+        if (typeof s === 'string' && s) setSql(s);
+      } catch { /* 忽略非法载荷 */ }
+    }
+  }, []);
+
+  // SQL 模板字模(sql_template): 从字模库加载,点击插入编辑器;失败显式提示不阻断编辑
+  const [tpls, setTpls] = useState<VisComponent[]>([]);
+  const [tplError, setTplError] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    fetchVisComponents()
+      .then(items => {
+        if (cancelled) return;
+        setTpls(items.filter(i => i.category === 'sql_template' && (i.query_template as any)?.sql));
+      })
+      .catch((e: any) => {
+        if (cancelled) return;
+        setTplError(e?.message || 'SQL 模板加载失败，请在字模库检查后重试');
+      });
+    return () => { cancelled = true; };
+  }, []);
+
 
   const ANALYSIS_TABS: { key: ResultTab; label: string; icon: any }[] = [
     { key: 'result', label: '执行结果', icon: Play },
@@ -512,6 +541,38 @@ export default function Playground() {
               ))}
             </div>
           </ScrollArea>
+
+          <Separator className="shrink-0" />
+          <div className="p-3 border-b shrink-0">
+            <h3 className="text-sm font-semibold">SQL 模板（字模库）</h3>
+          </div>
+          <ScrollArea className="flex-1 min-h-0 max-h-[220px]">
+            <div className="p-2">
+              {tplError ? (
+                <p className="px-2 py-1.5 text-xs text-destructive" role="alert">{tplError}</p>
+              ) : tpls.length === 0 ? (
+                <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                  暂无模板（可在聊天 SQL 卡片「存为模板」沉淀）
+                </p>
+              ) : tpls.map(t => (
+                <div
+                  key={t.id}
+                  className="flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer hover:bg-muted"
+                  title={t.description || t.name}
+                  onClick={() => {
+                    const s = (t.query_template as any)?.sql;
+                    if (typeof s === 'string' && s) setSql(s);
+                  }}
+                >
+                  <FileText className="h-4 w-4 text-primary flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm truncate">{t.name}</div>
+                    <div className="text-xs text-muted-foreground">点击插入编辑器</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </ScrollArea>
         </div>
 
         {/* Main area */}
@@ -528,9 +589,7 @@ export default function Playground() {
                   executeSql();
                 }
               }}
-              placeholder={selectedDsType === 'elasticsearch'
-                ? '输入 ES SQL 查询... (Ctrl+Enter 执行; 结果按当前用户角色权限施加敏感列屏蔽/脱敏 + 行级 RLS)\n例如: SELECT * FROM "my_index" LIMIT 100'
-                : '输入 SQL 查询... (Ctrl+Enter 执行; 结果按当前用户角色权限施加敏感列屏蔽/脱敏 + 行级 RLS)'}
+              placeholder={'输入 SQL 查询... (Ctrl+Enter 执行; 结果按当前用户角色权限施加敏感列屏蔽/脱敏 + 行级 RLS)'}
               className="h-full resize-none font-mono text-sm rounded-none border-0"
             />
           </div>

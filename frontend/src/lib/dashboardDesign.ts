@@ -13,7 +13,10 @@ export type Rect = { x: number; y: number; w: number; h: number };
 const VISUAL_KEYS = ['colorScheme', 'gradient', 'borderRadius', 'showLabel', 'smooth', 'lineWidth',
   'areaFill', 'areaOpacity', 'innerRadius', 'legend', 'thresholds', 'gridColor', 'valueColor', 'labelColor',
   'cardBg', 'cardBorder', 'glow', 'cornerAccent', 'showCornerBrackets', 'borderStyle',
-  'titleBarBg', 'titleColor', 'showUnderline', 'underlineColor', 'titleFontSize', 'titleFontWeight', 'cardRadius'];
+  'titleBarBg', 'titleColor', 'showUnderline', 'underlineColor', 'titleFontSize', 'titleFontWeight', 'cardRadius',
+  // 分析画布字模旋钮(DataProfileCard/GraphCard/AnimatedTimeChart/DataGrid 消费,纯展示参数)
+  'topN', 'bins', 'speedMs', 'rowHeight', 'headerBg', 'zebraBg',
+  'nodeBg', 'nodeBorder', 'edgeColor', 'direction', 'nodeWidth', 'nodeHeight', 'ranksep', 'nodesep'];
 const TOP_KEYS = ['backgroundColor', 'backgroundImage', 'backgroundSize', 'overlay',
   'mode', 'palette', 'viewBg', 'popoverBg', 'textColor', 'subTextColor', 'gridColor'];
 const WIDGET_KEYS = ['backgroundColor', 'textColor', 'borderColor', 'borderWidth', 'borderStyle',

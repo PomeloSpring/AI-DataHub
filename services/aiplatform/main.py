@@ -22,7 +22,7 @@ from services.aiplatform.api.brand import router as brand_router
 from services.aiplatform.api.cache import router as cache_router
 from services.aiplatform.api.execution_layers import router as execution_layers_router
 from services.aiplatform.api.prompts import router as prompts_router
-from services.aiplatform.api.wakers import router as wakers_router
+from services.aiplatform.api.as_bots import router as as_bots_router
 from services.aiplatform.api.sandbox import router as sandbox_router
 
 logging.basicConfig(
@@ -73,7 +73,7 @@ app.include_router(brand_router, prefix="/api/admin/brand", tags=["Brand"])
 app.include_router(cache_router, prefix="/api/admin/cache", tags=["Cache"])
 app.include_router(execution_layers_router, prefix="/api/admin/execution-layers", tags=["Execution Layers"])
 app.include_router(prompts_router, prefix="/api/admin/prompts", tags=["Prompts"])
-app.include_router(wakers_router, prefix="/api/admin/wakers", tags=["Wakers"])
+app.include_router(as_bots_router, prefix="/api/admin/as-bots", tags=["AS-BOTs"])
 app.include_router(sandbox_router, prefix="/api/sandbox", tags=["Sandbox"])
 
 # Node metrics for distributed monitoring

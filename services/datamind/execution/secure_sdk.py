@@ -16,19 +16,30 @@ from services.datamind.execution.session_workspace import run_owned_sync
 logger = logging.getLogger(__name__)
 
 
+def _sdk_cli_path(adapter) -> str | None:
+    """SDK 子进程 env 剔除了 PATH(安全隔离), 相对命令名无法解析:
+    - cli_path 为绝对路径(含相对项目根解析后的)→ 交给 SDK 直接 spawn;
+      不存在时由 SDK fail-loud(CLINotFoundError), 不静默回退;
+    - 纯命令名/空 → None, 让 SDK 走内置查找(QODERCLI_PATH → SDK 自带 bundled runtime → PATH)。
+    """
+    p = getattr(adapter, "cli_path", "") or ""
+    return p if os.path.isabs(p) else None
+
+
 def build_options(adapter, task, backend):
     from services.datamind.execution.sdk_tools.compat import load_sdk
     from services.datamind.execution.sdk_tools import build_tool_servers
     from services.datamind.execution.sdk_tools.workspace_tools import build_workspace_server
     from services.datamind.execution.prompt_composer import compose_system_prompt
-    from services.datamind.execution import wakers
+    from services.datamind.execution import as_bots
     sdk = load_sdk(backend)
     ctx = task.context
     runtime = ctx.extra.get("secure_runtime")
     if runtime is None:
         raise PermissionError("SDK 启动前必须绑定可信会话")
     policy = runtime.policy
-    groups = build_tool_servers(backend, [], selection=policy.selection)
+    groups = build_tool_servers(backend, [], selection=policy.selection,
+                                function_names=policy.function_names)
     servers = groups["servers"]
     if policy.standard:
         servers["datahub_workspace"] = build_workspace_server(backend, runtime)
@@ -61,9 +72,9 @@ def build_options(adapter, task, backend):
     env.update({"HOME": home, "XDG_CONFIG_HOME": home, "TMPDIR": str(runtime.runtime_dir / "tmp"),
                 "QODER_CONFIG_DIR": home + "/qoder", "CLAUDE_CONFIG_DIR": home + "/claude"})
     prompt = compose_system_prompt(
-        policy.waker, [policy.waker], ctx.username, ctx.user_role,
-        knowledge_bases=wakers.load_knowledge_bases(policy.waker.get("knowledge_base_ids") or []),
-        skills=wakers.load_skills(wakers.collect_skill_names([policy.waker])),
+        policy.as_bot, [policy.as_bot], ctx.username, ctx.user_role,
+        knowledge_bases=as_bots.load_knowledge_bases(policy.as_bot.get("knowledge_base_ids") or []),
+        skills=as_bots.load_skills(as_bots.collect_skill_names([policy.as_bot])),
         user_id=ctx.user_id, workspace_id=ctx.workspace_id, datasource_id=ctx.datasource_id,
         capabilities=policy.manifest(),
         report_theme_id=ctx.extra.get("report_theme") or "",
@@ -78,53 +89,52 @@ def build_options(adapter, task, backend):
         token = (adapter.config.get("env") or {}).get("QODER_PERSONAL_ACCESS_TOKEN") or os.environ.get("QODER_PERSONAL_ACCESS_TOKEN")
         if not token:
             raise ValueError("Qoder 模型凭据未配置")
-        return sdk.QoderAgentOptions(**common, cli_path=adapter.cli_path,
+        return sdk.QoderAgentOptions(**common, cli_path=_sdk_cli_path(adapter),
                                     model=ctx.extra.get("model_ref") or adapter.model or None,
                                     auth=AccessTokenAuthOptions(access_token=token),
                                     strict_mcp_config=True, allowed_mcp_server_names=list(servers), skills=[])
     llm_env, model = adapter._resolve_llm(task)
     env.update(llm_env)
-    return sdk.ClaudeAgentOptions(**common, cli_path=adapter.cli_path, model=model or adapter.model or None)
+    return sdk.ClaudeAgentOptions(**common, cli_path=_sdk_cli_path(adapter), model=model or adapter.model or None)
 
 
-def materialize_attachments(task, runtime):
+def place_attachments(task, runtime):
+    """把随消息上传的附件落盘到会话工作区 uploads/,并校验既有工作区文件引用.
+
+    task.attachments 元素两种形态:
+    - {"filename","category","size","content": bytes} —— 本次上传,写入 workspace/uploads/;
+    - {"path": "uploads/x.png"}                        —— 引用会话工作区既有文件,校验后直用。
+    归一为 {filename, category, path(工作区相对), size},供 prompt 清单与 done 事件回带。
+    附件即工作区文件,随会话目录清理,无独立附件存储/元数据表。
+    """
     if not task.attachments:
         return
-    from services.datamind.multimodal.loader import load_attachments
-    ids = [a["id"] for a in task.attachments]
-    rows = load_attachments(ids, task.context.user_id)
-    if {r["id"] for r in rows} != set(ids):
-        raise PermissionError("附件不存在或无权访问")
+    from services.datamind.multimodal import MAX_FILE_SIZE, MAX_FILES_PER_REQUEST, classify_extension
+    from services.datamind.multimodal.loader import resolve_workspace_file, write_upload_file
+
+    if len(task.attachments) > MAX_FILES_PER_REQUEST:
+        raise ValueError(f"单次最多携带 {MAX_FILES_PER_REQUEST} 个附件")
     output = []
-    for row in rows:
-        if int(row.get("workspace_id") or 0) != task.context.workspace_id:
-            raise PermissionError("附件不属于当前工作空间")
-        if int(row.get("size") or 0) > 20_000_000:
-            raise ValueError("附件超过会话大小限制")
-        if row.get("storage_type") == "object":
-            from services.shared.common.object_storage import get_object_storage
-            storage = get_object_storage()
-            if not storage.is_object_storage:
-                raise RuntimeError("附件对象存储不可用")
-            data = storage.download_bytes(row["storage_path"])
+    for att in task.attachments:
+        content = att.get("content")
+        if content is not None:
+            if len(content) > MAX_FILE_SIZE:
+                raise ValueError(f"附件超过大小限制(20MB): {att.get('filename', '')}")
+            output.append(write_upload_file(runtime.workspace, att.get("filename", ""), content))
         else:
-            from services.shared.common.config import ADH_UPLOAD_DIR
-            source = Path(row["storage_path"]).resolve()
-            base = Path(ADH_UPLOAD_DIR).resolve()
-            if base not in source.parents or source.stat().st_size > 20_000_000:
-                raise PermissionError("附件存储路径无效")
-            data = source.read_bytes()
-        if data is None or len(data) > 20_000_000:
-            raise ValueError("附件缺失或超过大小限制")
-        import uuid
-        name = "attachment_" + uuid.uuid4().hex + Path(row["filename"]).suffix[:16]
-        target = runtime.workspace / name
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        if os.geteuid() == 0:
-            os.chown(target, 65534, 65534)
-        output.append({"filename": row["filename"], "category": row["category"], "path": "/workspace/" + name})
+            rel = att.get("path", "")
+            target = resolve_workspace_file(runtime.workspace, rel)
+            if not target.is_file():
+                raise ValueError(f"附件不存在: {rel}")
+            size = target.stat().st_size
+            if size > MAX_FILE_SIZE:
+                raise ValueError(f"附件超过大小限制(20MB): {target.name}")
+            output.append({
+                "filename": target.name,
+                "category": classify_extension(target.suffix) or "document",
+                "path": str(target.relative_to(Path(runtime.workspace).resolve())),
+                "size": size,
+            })
     task.attachments = output
 
 
@@ -194,8 +204,8 @@ async def _execute_stream(adapter, task, backend):
             await run_owned_sync(SessionToolSandbox.ensure_available)
         logger.info("[timing] sandbox_ensure: %.1fms", (_time.time() - _t1) * 1000)
         _t1 = _time.time()
-        await run_owned_sync(materialize_attachments, task, runtime)
-        logger.info("[timing] materialize_attachments: %.1fms", (_time.time() - _t1) * 1000)
+        await run_owned_sync(place_attachments, task, runtime)
+        logger.info("[timing] place_attachments: %.1fms", (_time.time() - _t1) * 1000)
         _t1 = _time.time()
         if runtime.policy.external:
             from services.datamind.execution.sdk_tools.external_tools import build_external_servers
@@ -254,19 +264,36 @@ async def _execute_stream(adapter, task, backend):
                 final = msg
                 from services.datamind.execution.adapters.qoder_sdk_adapter import _obs_record_result
                 _obs_record_result(msg)
-        if final is None or getattr(final, "is_error", False):
-            raise RuntimeError("模型执行未正常完成")
+        if final is None:
+            # 流在收到 ResultMessage 前结束（SDK 子进程崩溃/被杀/传输中断），非模型结果。
+            raise RuntimeError("模型执行未返回结果：响应流在 ResultMessage 前结束（SDK 子进程崩溃/中断）")
+        if getattr(final, "is_error", False):
+            # SDK 报告结构化错误结果（error_max_turns / error_during_execution 等）。
+            # 把 subtype/errors/terminal_reason 带进异常文本供服务端日志诊断；
+            # 对外（result.error）仍走通用文案，不外泄细节（护栏 §7）。
+            detail = "; ".join(getattr(final, "errors", None) or []) or (getattr(final, "result", "") or "")
+            raise RuntimeError(
+                "模型执行返回错误结果: subtype=%s terminal_reason=%s stop_reason=%s num_turns=%s detail=%s"
+                % (getattr(final, "subtype", "?"), getattr(final, "terminal_reason", "") or "-",
+                   getattr(final, "stop_reason", "") or "-", getattr(final, "num_turns", None), detail[:300]))
         meta = {"capabilities": runtime.policy.manifest(), "num_turns": getattr(final, "num_turns", None),
-                "duration_ms": getattr(final, "duration_ms", None)}
+                "duration_ms": getattr(final, "duration_ms", None),
+                # 回带落盘后的附件清单(工作区相对路径),供前端持久化消息历史引用;
+                # 仅取已归一项(含 path),绝不携带上传字节
+                "attachments": [
+                    {"filename": a.get("filename"), "category": a.get("category"),
+                     "path": a.get("path"), "size": a.get("size")}
+                    for a in (task.attachments or []) if isinstance(a, dict) and a.get("path")
+                ]}
         tracker.update_meta(meta)
         result = ExecutionResult(success=True, output=getattr(final, "result", "") or "".join(texts), meta=meta)
     except HTTPException as exc:
         result = ExecutionResult(success=False, error=str(exc.detail), meta={"status_code": exc.status_code})
     except (PermissionError, ValueError) as exc:
-        logger.exception("Waker 执行配置或权限错误")
+        logger.exception("AS-BOT 执行配置或权限错误")
         result = ExecutionResult(success=False, error=("模型执行失败，请联系管理员查看日志" if starting_sdk else str(exc)))
     except Exception:
-        logger.exception("Waker 安全执行失败")
+        logger.exception("AS-BOT 安全执行失败")
         result = ExecutionResult(success=False, error="执行未完成，请检查会话状态、工具配置或联系管理员查看日志")
     finally:
         # 领取线程不可被取消；即使 await 未交回，也必须接管它已写入的 runtime。

@@ -32,14 +32,14 @@ interface DashboardOption {
 // ── Multi-Select Component ────────────────────────────────────────
 
 function MultiSelect({
-  options, selected, onChange, placeholder, labelKey = 'label', valueKey = 'value',
+  options, selected, onChange, placeholder,
 }: {
   options: { label: string; value: string | number }[];
   selected: (string | number)[];
   onChange: (vals: (string | number)[]) => void;
   placeholder?: string;
-  labelKey?: string;
-  valueKey?: string;
+
+
 }) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
@@ -342,9 +342,8 @@ export default function IntegrationApps() {
             <tbody>
               {apps.map((app) => {
                 let dashIds: number[] = [];
-                let tblNames: string[] = [];
                 try { dashIds = app.allowed_dashboards ? JSON.parse(app.allowed_dashboards) : []; } catch {}
-                try { tblNames = app.allowed_tables ? JSON.parse(app.allowed_tables) : []; } catch {}
+
 
                 return (
                   <tr key={app.id} className="border-b hover:bg-muted/30">

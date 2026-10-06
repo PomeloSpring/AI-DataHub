@@ -20,13 +20,6 @@ from services.shared.common.ttl_cache import datasource_cache
 
 logger = logging.getLogger(__name__)
 
-# Try to import elasticsearch
-try:
-    from elasticsearch import Elasticsearch
-    HAS_ELASTICSEARCH = True
-except ImportError:
-    HAS_ELASTICSEARCH = False
-
 # Try to import psycopg2 (PostgreSQL / SLS-PG 协议)
 try:
     import psycopg2
@@ -76,11 +69,12 @@ def _sanitize_rows(rows: list) -> list:
 class DatasourceService:
     """数据源管理服务。"""
 
-    async def list_datasources(self, workspace_id: int = 0) -> list[dict]:
+    async def list_datasources(self, workspace_id: int = 0, user_id: int = 0) -> list[dict]:
         """列出所有数据源。
 
         Args:
-            workspace_id: 工作空间 ID，0 表示不限制。
+            workspace_id: 工作空间 ID，0 表示不限制（全局管理列表）。
+            user_id: 请求用户 ID；workspace_id>0 时按其角色授权集过滤（纯角色裁决）。
 
         Returns:
             数据源列表，密码已脱敏。
@@ -91,14 +85,20 @@ class DatasourceService:
             try:
                 with conn.cursor() as cur:
                     if workspace_id:
+                        # 纯角色裁决: 工作空间不再绑定数据源(adh_workspace_datasources 退役);
+                        # 按请求用户角色授权集过滤, 空授权 fail-closed 返回空列表。
+                        from services.authservice.services.role_service import role_service
+                        allowed = sorted(set(role_service.get_user_allowed_datasources(
+                            user_id, workspace_id)))
+                        if not allowed:
+                            return []
+                        marks = ','.join(['%s'] * len(allowed))
                         cur.execute(
                             "SELECT d.id, d.name, d.db_type, d.host, d.port, d.username, "
                             "d.database_name, d.is_default, d.`ssl`, d.owner_id, d.created_at, d.updated_at "
-                            "FROM adh_datasources d "
-                            "JOIN adh_workspace_datasources wd ON wd.datasource_id = d.id "
-                            "WHERE wd.workspace_id = %s "
+                            f"FROM adh_datasources d WHERE d.id IN ({marks}) "
                             "ORDER BY d.is_default DESC, d.name ASC",
-                            (workspace_id,),
+                            tuple(allowed),
                         )
                     else:
                         cur.execute(
@@ -126,6 +126,31 @@ class DatasourceService:
                 "created_at": "",
                 "updated_at": "",
             }]
+
+    async def list_authorized_datasources(self, user_id: int, workspace_id: int = 0) -> list[dict]:
+        """列出当前用户角色授权的数据源（纯角色裁决；聊天选择器等“我的可用数据源”消费）。
+
+        数据源可用集 = 用户角色授权(adh_user_roles ⋈ adh_role_datasource_access)；
+        空授权 fail-closed 返回空列表（不解释为全量）。仅回传选择器所需最小字段
+        (id/name/db_type/is_default)，不含主机/账号等连接信息（守 security §7）。
+        """
+        from services.authservice.services.role_service import role_service
+        allowed = sorted(set(role_service.get_user_allowed_datasources(user_id, workspace_id)))
+        if not allowed:
+            return []
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                marks = ','.join(['%s'] * len(allowed))
+                cur.execute(
+                    "SELECT id, name, db_type, is_default "
+                    f"FROM adh_datasources WHERE id IN ({marks}) "
+                    "ORDER BY is_default DESC, name ASC",
+                    tuple(allowed),
+                )
+                return cur.fetchall()
+        finally:
+            conn.close()
 
     async def get_datasource(self, ds_id: int) -> Optional[dict]:
         """获取单个数据源（密码已脱敏）。
@@ -356,7 +381,10 @@ class DatasourceService:
         return {"success": True}
 
     async def test_connection(self, ds_id: int) -> dict:
-        """测试数据源连接。
+        """测试数据源连接 — 必须经 DataEngine 执行通道探测(与查询执行同链路)。
+
+        禁止降级为 pymysql 直连探测: 直连只验证配置写对, 会"测试通过但查询失败"
+        (执行走 DataEngine), 通道不一致本身就是缺陷。
 
         Args:
             ds_id: 数据源 ID。
@@ -369,19 +397,23 @@ class DatasourceService:
             return {"success": False, "message": "数据源不存在"}
 
         try:
-            conn = self.get_datasource_conn_from_dict(ds)
-            if ds.get("db_type") == "elasticsearch":
-                info = conn.info()
-                conn.close()
-                return {
-                    "success": True,
-                    "message": f"连接成功 - ES {info.get('version', {}).get('number', 'unknown')}",
-                }
-            else:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-                conn.close()
-                return {"success": True, "message": "连接成功"}
+            from services.shared.common.engine_client import engine_client, ENGINE_ENABLED
+            if not ENGINE_ENABLED:
+                return {"success": False, "message": "执行引擎(DataEngine)未启用，无法测试连接（禁止降级直连）"}
+            if not engine_client.health():
+                return {"success": False, "message": "执行引擎(DataEngine)不可用，无法测试连接（禁止降级直连）"}
+            engine_ds_id = engine_client.get_or_create_datasource(
+                name=f"adh-{ds_id}",
+                db_type=ds.get("db_type") or "mysql",
+                host=str(ds.get("host") or ""),
+                port=int(ds.get("port") or 3306),
+                username=str(ds.get("username") or ""),
+                password=str(ds.get("password") or ""),
+                database=str(ds.get("database_name") or ""),
+                ssl_mode=ds.get("ssl_mode"),
+            )
+            engine_client.query(sql="SELECT 1", datasource_id=engine_ds_id, rls_policies=[])
+            return {"success": True, "message": "连接成功（经 DataEngine 执行通道）"}
         except Exception as e:
             logger.error(
                 "数据源连接测试失败 ds_id=%s: %s (type=%s)",
@@ -409,10 +441,7 @@ class DatasourceService:
         if not ds:
             raise ValueError("数据源不存在")
 
-        if ds.get("db_type") == "elasticsearch":
-            return await self._list_es_indices(ds)
-        else:
-            return await self._list_db_tables(ds)
+        return await self._list_db_tables(ds)
 
     async def list_columns(self, ds_id: int, table_name: str) -> list:
         """列出表的列信息。
@@ -431,10 +460,7 @@ class DatasourceService:
         if not ds:
             raise ValueError("数据源不存在")
 
-        if ds.get("db_type") == "elasticsearch":
-            return await self._list_es_fields(ds, table_name)
-        else:
-            return await self._list_db_columns(ds, table_name)
+        return await self._list_db_columns(ds, table_name)
 
     async def execute_sql(self, ds_id: int, sql: str, limit: int = 200) -> dict:
         """执行 SQL 查询。
@@ -461,10 +487,7 @@ class DatasourceService:
 
         start = time.time()
 
-        if ds.get("db_type") == "elasticsearch":
-            return await self._execute_es_sql(ds, sql, start)
-        else:
-            return await self._execute_db_sql(ds, sql, start)
+        return await self._execute_db_sql(ds, sql, start)
 
     def get_datasource_conn(
         self, db_type: str, host: str, port: int,
@@ -474,7 +497,7 @@ class DatasourceService:
         """创建数据库连接（工厂方法）。
 
         Args:
-            db_type: 数据库类型 (mysql/doris/postgres/sls/elasticsearch)。
+            db_type: 数据库类型 (mysql/doris/postgres/sls)。
             host: 主机地址。
             port: 端口。
             user: 用户名。
@@ -484,7 +507,7 @@ class DatasourceService:
             ssl_mode: SSL 模式 (disabled/preferred/required)，设置时优先于 ssl。
 
         Returns:
-            pymysql / psycopg2 连接或 Elasticsearch 客户端。
+            pymysql / psycopg2 连接。
         """
         db_type = (db_type or "mysql").lower()
         # 归一化有效 ssl_mode(MySQL 列可能回传 bytes)
@@ -494,22 +517,7 @@ class DatasourceService:
         if effective_ssl_mode == "disabled" and ssl:
             effective_ssl_mode = "required"
 
-        if db_type == "elasticsearch":
-            if not HAS_ELASTICSEARCH:
-                raise ValueError("Elasticsearch 库未安装，请执行: pip install elasticsearch")
-            use_ssl = effective_ssl_mode != "disabled"
-            protocol = "https" if use_ssl else "http"
-            es_url = f"{protocol}://{host}:{port}"
-            es_kwargs = {"hosts": [es_url], "request_timeout": 30, "meta_header": False}
-            if use_ssl:
-                es_kwargs["verify_certs"] = False
-                es_kwargs["ssl_show_warn"] = False
-            if user and password:
-                es_kwargs["basic_auth"] = (user, password)
-            elif user:
-                es_kwargs["basic_auth"] = (user, "")
-            return Elasticsearch(**es_kwargs)
-        elif db_type in POSTGRES_DB_TYPES:
+        if db_type in POSTGRES_DB_TYPES:
             if not HAS_PSYCOPG2:
                 raise ValueError("psycopg2 未安装，请执行: pip install psycopg2-binary")
             pg_kwargs = {
@@ -622,96 +630,6 @@ class DatasourceService:
                 conn.close()
         except Exception:
             pass  # MySQL 不可用，跳过默认数据源创建
-
-    # ── 内部方法：ES 操作 ──────────────────────────────────────────────
-
-    async def _list_es_indices(self, ds: dict) -> list:
-        """列出 Elasticsearch 索引。"""
-        conn = self.get_datasource_conn_from_dict(ds)
-        try:
-            try:
-                indices = conn.indices.get_alias(index="*")
-            except Exception:
-                # 降级：使用 cat.indices
-                cat = conn.cat.indices(format="json", h="index,docs.count,store.size")
-                result = []
-                for row in cat:
-                    index_name = row.get("index", "")
-                    if not index_name.startswith("."):
-                        result.append({
-                            "TABLE_NAME": index_name,
-                            "TABLE_COMMENT": "ES Index",
-                            "TABLE_ROWS": int(row.get("docs.count", 0) or 0),
-                        })
-                return result
-
-            result = []
-            for index_name in sorted(indices.keys()):
-                if not index_name.startswith("."):
-                    result.append({
-                        "TABLE_NAME": index_name,
-                        "TABLE_COMMENT": "ES Index",
-                        "TABLE_ROWS": 0,
-                    })
-            return result
-        finally:
-            conn.close()
-
-    async def _list_es_fields(self, ds: dict, table_name: str) -> list:
-        """列出 Elasticsearch 索引的字段。"""
-        conn = self.get_datasource_conn_from_dict(ds)
-        try:
-            mapping = conn.indices.get_mapping(index=table_name)
-            result = []
-            if table_name in mapping:
-                mapping_body = (
-                    mapping[table_name]
-                    if isinstance(mapping[table_name], dict)
-                    else mapping[table_name].body
-                    if hasattr(mapping[table_name], "body")
-                    else {}
-                )
-                properties = mapping_body.get("mappings", {}).get("properties", {})
-                for field_name, field_info in properties.items():
-                    result.append({
-                        "COLUMN_NAME": field_name,
-                        "DATA_TYPE": field_info.get("type", "text"),
-                        "COLUMN_COMMENT": "",
-                        "COLUMN_KEY": "",
-                        "IS_NULLABLE": "YES",
-                    })
-            return result
-        finally:
-            conn.close()
-
-    async def _execute_es_sql(self, ds: dict, sql: str, start: float) -> dict:
-        """通过 ES SQL API 执行查询。"""
-        from services.datamind.nl2sql.sql.query_executor import _build_es_client
-
-        params = {
-            "host": ds["host"], "port": ds["port"],
-            "user": ds.get("username"), "password": ds.get("password"),
-            "ssl": bool(ds.get("ssl", 0)),
-        }
-        es = _build_es_client(params)
-        try:
-            result = es.sql.query(body={"query": sql})
-            columns_info = result.get("columns", [])
-            rows_data = result.get("rows", [])
-            if not columns_info or not rows_data:
-                return {
-                    "columns": [], "rows": [], "row_count": 0,
-                    "elapsed_ms": int((time.time() - start) * 1000),
-                }
-            col_names = [col.get("name", f"col_{i}") for i, col in enumerate(columns_info)]
-            rows = [dict(zip(col_names, row)) for row in rows_data]
-            elapsed_ms = int((time.time() - start) * 1000)
-            return {
-                "columns": col_names, "rows": rows,
-                "row_count": len(rows), "elapsed_ms": elapsed_ms,
-            }
-        finally:
-            es.close()
 
     async def _list_db_tables(self, ds: dict) -> list:
         """列出 MySQL/Doris/Postgres 数据库的表。"""

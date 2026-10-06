@@ -4,7 +4,7 @@
 - 系统内置:services/datamind/config/skills/{name}/(随仓库发布,只读展示)
 - 自定义:  通过本 API 创建,落盘为 config/skills/{name}/SKILL.md(frontmatter source: custom)
 
-供前端 Skills 独立菜单与 Waker「按名勾选绑定技能」使用:
+供前端 Skills 独立菜单与 AS-BOT「按名勾选绑定技能」使用:
 - GET    /admin/skills           列表(含 is_builtin,不含正文)
 - GET    /admin/skills/{name}    详情(含正文与 SKILL.md 原文)
 - POST   /admin/skills           新建自定义技能(写 SKILL.md 文件夹)
@@ -46,7 +46,7 @@ def _brief(skill: dict) -> dict:
 
 @router.get("/admin/skills")
 def list_admin_skills(category: str = Query("")):
-    """列出全部技能(系统内置 + 自定义),供 Skills 菜单与 Waker 绑定下拉."""
+    """列出全部技能(系统内置 + 自定义),供 Skills 菜单与 AS-BOT 绑定下拉."""
     try:
         skills = skill_loader.list_skills(category=category or None)
         items = [_brief(s) for s in skills]

@@ -27,12 +27,13 @@ describe('仪表盘设计确认', () => {
     render(<DashboardDesignPanel {...props} />);
     const publish = await screen.findByRole('button', { name: '确认并发布' });
     expect(publish).toBeDisabled();
-    mocks.post.mockResolvedValueOnce({ data: { design: { ...design, version: 4, status: 'pending_confirmation', approval_id: 9, preview_valid: true },
+    mocks.post.mockResolvedValueOnce({ data: { design: { ...design, version: 4, status: 'pending_confirmation', preview_valid: true },
       generated_at: '2026-09-22 10:00:00', charts: [{ key: '0', columns: ['数量'], rows: [{ 数量: 3 }], row_count: 1 }] } });
     fireEvent.click(screen.getByRole('button', { name: '重新校验并预览' }));
     await waitFor(() => expect(publish).toBeEnabled());
     expect(mocks.post).toHaveBeenCalledWith(expect.stringContaining('/preview'), { expected_version: 3 });
-    expect(mocks.post).not.toHaveBeenCalledWith('/as-bot/approve', expect.anything());
+    // 查询预览不等于发布：未点确认前不得调用发布端点
+    expect(mocks.post).not.toHaveBeenCalledWith(expect.stringContaining('/publish'), expect.anything());
   });
 
   it('修改 SQL 后旧预览不可批准，SQL 不发送到聊天', async () => {

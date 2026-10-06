@@ -100,8 +100,7 @@ if [ -x "$PIP" ]; then
         services/dataflow/requirements.txt
         services/dataviz/requirements.txt
         services/aiplatform/requirements.txt
-        services/graphservice/requirements.txt
-        services/semanticservice/requirements.txt
+        services/semhub/requirements.txt
     )
     for req in "${REQ_FILES[@]}"; do
         if [ -f "$req" ]; then
@@ -195,6 +194,15 @@ else
     log_info "跳过 dataengine 编译 (需要时加 --with-engine)"
 fi
 
+# qmind CLI 预装(知识库检索依赖; 不预装则首次调用时自动下载)
+if [ -x "runtime/qmind/qmind" ]; then
+    log_info "qmind CLI 已就绪: runtime/qmind/qmind"
+elif [ -f "runtime/qmind/setup.sh" ]; then
+    log_info "预装 qmind CLI..."
+    bash runtime/qmind/setup.sh && log_info "qmind CLI 完成" \
+        || log_warn "qmind CLI 预装失败(首次知识库检索时会再次尝试)"
+fi
+
 # ═══════════════ 汇总 ═══════════════
 echo ""
 if [ $FAILURES -eq 0 ]; then
@@ -203,8 +211,8 @@ else
     log_error "完成, 但有 $FAILURES 项失败(见上方)"
 fi
 echo -e "${BLUE}端口约定:${NC} frontend 3000 | datamind 8001 | datagov 8002 | dataflow 8003 \
-| dataviz 8004 | datacatalog 8005 | authservice 8006 | aiplatform 8007 | graphservice 8011 \
-| semanticservice 8012 | dataengine 8082"
+| dataviz 8004 | datacatalog 8005 | authservice 8006 | aiplatform 8007 \
+| semhub 8012 | dataengine 8082"
 echo -e "${BLUE}下一步:${NC}"
 echo "  1) 填写 services/.env 的数据源与密钥"
 echo "  2) ./start-all.sh -d      启动全部后端   |   cd frontend && npm run dev   启动前端"

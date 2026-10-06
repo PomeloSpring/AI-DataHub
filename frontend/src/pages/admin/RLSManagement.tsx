@@ -20,7 +20,7 @@ import client from '@/api/client';
 import {
   listRLSPolicies, createRLSPolicy, updateRLSPolicy, deleteRLSPolicy,
   getRLSColumnPolicies, setRLSColumnPolicies, listRLSAuditLogs,
-  type RLSPolicy, type RLSColumnPolicy, type RLSAuditLog,
+  type RLSPolicy, type RLSAuditLog,
 } from '@/api/rls';
 
 interface Datasource { id: number; name: string; db_type?: string; }
@@ -73,10 +73,29 @@ export default function RLSManagement() {
   const [auditLogs, setAuditLogs] = useState<RLSAuditLog[]>([]);
   const [auditTotal, setAuditTotal] = useState(0);
   const [auditPage, setAuditPage] = useState(1);
+  // 审计行用户显示 name（ui-resource-display：不裸显 user_id）
+  const [userNames, setUserNames] = useState<Record<number, string>>({});
+  const [usersLoaded, setUsersLoaded] = useState(false);
 
   // Load datasources
   useEffect(() => {
     client.get('/datasources/').then(({ data }) => setDatasources(Array.isArray(data) ? data : [])).catch(() => {});
+  }, []);
+
+  // Load users for audit log name mapping（加载失败不拖垮页面，仅降级为占位标注）
+  useEffect(() => {
+    client.get('/users/', { params: { page: 1, size: 200 } })
+      .then(({ data }) => {
+        const items = Array.isArray(data) ? data : data?.items || [];
+        const map: Record<number, string> = {};
+        for (const u of items) {
+          const uid = Number(u.id ?? u.user_id);
+          if (uid) map[uid] = u.username || u.name || '';
+        }
+        setUserNames(map);
+        setUsersLoaded(true);
+      })
+      .catch(() => setUsersLoaded(true));
   }, []);
 
   // Load policies split by type
@@ -185,7 +204,11 @@ export default function RLSManagement() {
     finally { setColSaving(false); }
   };
 
-  const dsName = (id: number) => datasources.find(d => d.id === id)?.name || `ID:${id}`;
+  // 页面显示资源一律用 name; 已删除数据源给可读标注(原 id 仅进 title 次要信息)
+  const dsName = (id: number) => datasources.find(d => d.id === id)?.name || '数据源已删除';
+  const dsTitle = (id: number) => (datasources.find(d => d.id === id) ? undefined : `原数据源 ID: ${id}`);
+  // 审计行用户同口径：name 为主，未加载用占位，不可见用户给可读标注(原 id 仅进 title)
+  const auditUserName = (uid: number) => userNames[uid] || (usersLoaded ? '未知用户' : '加载中…');
 
   const renderPolicyCard = (policy: RLSPolicy, showColBtn: boolean) => (
     <div key={policy.id} className="border rounded-lg p-4 flex items-start justify-between">
@@ -198,7 +221,7 @@ export default function RLSManagement() {
           <Badge variant={policy.is_active ? 'default' : 'outline'}>{policy.is_active ? '启用' : '禁用'}</Badge>
         </div>
         <div className="text-sm text-muted-foreground space-y-1">
-          <p>数据源: <strong>{dsName(policy.datasource_id)}</strong> | 表: <code>{policy.table_name}</code></p>
+          <p>数据源: <strong title={dsTitle(policy.datasource_id)}>{dsName(policy.datasource_id)}</strong> | 表: <code>{policy.table_name}</code></p>
           {policy.filter_expr && <p>过滤: <code className="bg-muted px-1 rounded">{policy.filter_expr}</code></p>}
           {policy.description && <p>{policy.description}</p>}
         </div>
@@ -297,14 +320,34 @@ export default function RLSManagement() {
                     {actionLabels[log.action] || log.action}
                   </Badge>
                   <span className="text-muted-foreground text-xs">{log.created_at}</span>
-                  {log.user_id > 0 && <span className="text-xs text-muted-foreground">用户: {log.user_id}</span>}
+                  {log.user_id > 0 && (
+                    <span className="text-xs text-muted-foreground" title={`原用户 ID: ${log.user_id}`}>
+                      用户: {auditUserName(log.user_id)}
+                    </span>
+                  )}
                 </div>
                 {log.policy_name && <p className="text-xs">策略: {log.policy_name}</p>}
                 {log.table_name && <p className="text-xs">表: {log.table_name}</p>}
-                {log.filtered_sql && (
+                {(log.deny_reason || log.original_sql || log.filtered_sql) && (
                   <details className="mt-1">
                     <summary className="cursor-pointer text-xs text-muted-foreground">查看详情</summary>
-                    <pre className="mt-1 text-xs bg-muted p-2 rounded overflow-auto max-h-32">{log.filtered_sql}</pre>
+                    <div className="mt-1 space-y-1">
+                      {log.deny_reason && (
+                        <p className="text-xs"><span className="text-muted-foreground">拒绝原因:</span> {log.deny_reason}</p>
+                      )}
+                      {log.original_sql && (
+                        <div>
+                          <p className="text-xs text-muted-foreground">原始 SQL</p>
+                          <pre className="mt-1 text-xs bg-muted p-2 rounded overflow-auto max-h-32">{log.original_sql}</pre>
+                        </div>
+                      )}
+                      {log.filtered_sql && (
+                        <div>
+                          <p className="text-xs text-muted-foreground">治理后 SQL</p>
+                          <pre className="mt-1 text-xs bg-muted p-2 rounded overflow-auto max-h-32">{log.filtered_sql}</pre>
+                        </div>
+                      )}
+                    </div>
                   </details>
                 )}
               </div>
@@ -354,7 +397,7 @@ export default function RLSManagement() {
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="condition">条件表达式</SelectItem>
-                      <SelectItem value="user_attribute">用户属性</SelectItem>
+                      <SelectItem value="user_attribute">角色属性</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -362,11 +405,11 @@ export default function RLSManagement() {
                   <Label>过滤表达式</Label>
                   <Textarea value={form.filter_expr} onChange={e => setForm(f => ({ ...f, filter_expr: e.target.value }))}
                     placeholder={'如: region = :user_region\n或: status = \'active\''} rows={3} />
-                  <p className="text-xs text-muted-foreground mt-1">使用 :user_xxx 引用用户属性值</p>
+                  <p className="text-xs text-muted-foreground mt-1">使用 :user_xxx 引用角色属性值（在角色管理中配置）</p>
                 </div>
                 {form.filter_type === 'user_attribute' && (
                   <div>
-                    <Label>用户属性名</Label>
+                    <Label>属性名</Label>
                     <Input value={form.user_attribute} onChange={e => setForm(f => ({ ...f, user_attribute: e.target.value }))} placeholder="如: region" />
                   </div>
                 )}

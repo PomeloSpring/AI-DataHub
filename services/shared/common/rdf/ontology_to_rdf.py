@@ -71,6 +71,47 @@ def ontology_json_to_turtle(json_content: str | dict, datasource_id: int = 0) ->
     for obj in model.get("objects", []):
         _emit_class(lines, obj, model_name)
 
+    # ── M3 规则 / M4 场景节点（图谱知识图谱化：规则作用域与场景编排可视觉追踪）──
+    for rule in (model.get("rules") or []):
+        rkey = str(rule.get("key") or "").strip()
+        if not rkey:
+            continue
+        r_iri = f"adh:rule:{_safe_uri(rkey)}"
+        lines.append(f"{r_iri} a adh:Rule ;")
+        stmt = _escape(str(rule.get("statement") or rkey))[:120]
+        lines.append(f'    rdfs:label "{stmt}"@zh ;')
+        rtype = _escape(str(rule.get("type") or ""))
+        lines.append(f'    adh:ruleType "{rtype}"^^xsd:string .')
+        enf = rule.get("enforcement") or {}
+        for tgt in (enf.get("applies_to") or []):
+            tgt_iri = _class_iri(str(tgt))
+            lines.append(f"{r_iri} adh:governs {tgt_iri} .")
+        act_ref = str(enf.get("action") or "").strip()
+        if act_ref and act_ref != "*":
+            lines.append(f"{r_iri} adh:controls adh:act:{_safe_uri(act_ref)} .")
+    if model.get("rules"):
+        lines.append("")
+    for scn in (model.get("scenarios") or []):
+        skey = str(scn.get("key") or "").strip()
+        if not skey:
+            continue
+        s_iri = f"adh:scenario:{_safe_uri(skey)}"
+        lines.append(f"{s_iri} a adh:Scenario ;")
+        stitle = _escape(str(scn.get("title") or skey))
+        lines.append(f'    rdfs:label "{stitle}"@zh ;')
+        if scn.get("goal"):
+            sgoal = _escape(str(scn["goal"]))
+            lines.append(f'    adh:effect "{sgoal}"^^xsd:string ;')
+        lines[-1] = lines[-1].rstrip(" ;") + " ."
+        for tgt in (scn.get("uses_objects") or []):
+            lines.append(f"{s_iri} adh:usesObject {_class_iri(str(tgt))} .")
+        for act in (scn.get("uses_actions") or []):
+            lines.append(f"{s_iri} adh:usesAction adh:act:{_safe_uri(str(act))} .")
+        for rk in (scn.get("uses_rules") or []):
+            lines.append(f"{s_iri} adh:usesRule adh:rule:{_safe_uri(str(rk))} .")
+    if model.get("scenarios"):
+        lines.append("")
+
     # Process enums → owl:Class with owl:oneOf
     for enum in model.get("enums", []):
         _emit_enum(lines, enum, model_name)
@@ -130,6 +171,22 @@ def _emit_class(lines: list[str], obj: dict, model_name: str):
         lines.append(f'    adh:comment "{desc}"^^xsd:string ;')
     if obj.get("primary_table"):
         lines.append(f'    adh:primaryTable "{_escape(str(obj["primary_table"]))}"^^xsd:string ;')
+    # 业务本体路由指针（路由索引层）：目标源本体/数据源/对象 + 源内过滤提示。
+    # 只投影 name 级标识（与护栏 §7 一致），供业务图 ds:0 的路由消费与图谱展示。
+    route = obj.get("route")
+    if isinstance(route, dict) and route:
+        if route.get("source_ontology"):
+            lines.append(f'    adh:routeSource "{_escape(str(route["source_ontology"]))}"^^xsd:string ;')
+        if route.get("datasource_name"):
+            lines.append(f'    adh:routeDatasource "{_escape(str(route["datasource_name"]))}"^^xsd:string ;')
+        if route.get("object_key"):
+            lines.append(f'    adh:routeObject "{_escape(str(route["object_key"]))}"^^xsd:string ;')
+        if route.get("mode"):
+            lines.append(f'    adh:routeMode "{_escape(str(route["mode"]))}"^^xsd:string ;')
+        for hint in (route.get("filter_hints") or []):
+            dim = str((hint or {}).get("dimension") or "")
+            if dim:
+                lines.append(f'    adh:routeFilterHint "{_escape(dim)}"^^xsd:string ;')
     for alias in (obj.get("aliases") or []):
         # 英文别名以 @en 标签，便于 SPARQL 根据语言过滤；中文默认 @zh。
         lang = "en" if _is_ascii(str(alias)) else "zh"
@@ -181,6 +238,56 @@ def _emit_class(lines: list[str], obj: dict, model_name: str):
             seen_cols.add(str(column))
             lines.append(f'{class_iri} adh:mapsColumn "{_escape(str(column))}"^^xsd:string .')
     if seen_cols:
+        lines.append("")
+
+    # ── 语义展开节点（M2 行为 / 属性维度 / 派生指标）──
+    # 图谱知识图谱化：对象周围以连线呈现可分析的语义单元，而非只有对象间 link。
+    for act in (obj.get("actions") or []):
+        akey = str(act.get("key") or "").strip()
+        if not akey:
+            continue
+        act_iri = f"adh:act:{_safe_uri(akey)}"
+        lines.append(f"{act_iri} a adh:Action ;")
+        lines.append(f'    rdfs:label "{_escape(str(act.get("label") or akey))}"@zh ;')
+        lines.append(f'    adh:actionKey "{_escape(akey)}"^^xsd:string ;')
+        lines.append(f'    adh:readOnly "{1 if act.get("read_only") else 0}"^^xsd:boolean ;')
+        if act.get("risk"):
+            risk_val = _escape(str(act["risk"]))
+            lines.append(f'    adh:risk "{risk_val}"^^xsd:string ;')
+        if act.get("effect"):
+            effect_val = _escape(str(act["effect"]))
+            lines.append(f'    adh:effect "{effect_val}"^^xsd:string ;')
+        lines[-1] = lines[-1].rstrip(" ;") + " ."
+        lines.append(f"{class_iri} adh:hasAction {act_iri} .")
+    for prop in (obj.get("properties") or []):
+        pname = str(prop.get("name") or "").strip()
+        pcol = str(prop.get("column") or "").strip()
+        if not pname or not pcol:
+            continue
+        prop_iri = f"adh:prop:{_safe_uri(str(key) + '.' + pcol.rsplit('.', 1)[-1])}"
+        lines.append(f"{prop_iri} a adh:Property ;")
+        lines.append(f'    rdfs:label "{_escape(pname)}"@zh ;')
+        if prop.get("type"):
+            ptype = _escape(str(prop["type"]))
+            lines.append(f'    adh:dataType "{ptype}"^^xsd:string ;')
+        if prop.get("description"):
+            pdesc = _escape(str(prop["description"]))
+            lines.append(f'    adh:effect "{pdesc}"^^xsd:string ;')
+        lines[-1] = lines[-1].rstrip(" ;") + " ."
+        lines.append(f"{class_iri} adh:hasProperty {prop_iri} .")
+    for m in (obj.get("metrics") or []):
+        mname = str(m.get("name") or "").strip()
+        if not mname:
+            continue
+        m_iri = f"adh:objmetric:{_safe_uri(str(key) + '.' + mname)}"
+        lines.append(f"{m_iri} a adh:Metric ;")
+        lines.append(f'    rdfs:label "{_escape(mname)}"@zh ;')
+        if m.get("description"):
+            mdesc = _escape(str(m["description"]))
+            lines.append(f'    adh:effect "{mdesc}"^^xsd:string ;')
+        lines[-1] = lines[-1].rstrip(" ;") + " ."
+        lines.append(f"{class_iri} adh:hasMetric {m_iri} .")
+    if (obj.get("actions") or obj.get("properties") or obj.get("metrics")):
         lines.append("")
 
     # Links → traversable instance edges + reified join expressions.

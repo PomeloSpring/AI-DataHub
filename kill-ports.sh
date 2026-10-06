@@ -61,6 +61,14 @@ pids_on_port() {
     echo "$pids"
 }
 
+# celery 组无端口, 只能按 cmdline 查找. kill-ports 的语义是"清理本项目服务", 若漏掉 celery:
+# API 服务全停后 celery 幸存继续刷日志(造成"celery 日志在跑但 API 全 pending"的误关联),
+# 且下次启动叠加成双 worker/双 beat 致定时任务双发.
+celery_pids() {
+    ps -eo pid,cmd | awk -v app="services.dataflow.tasks.celery_app" \
+        '$2 != "awk" && index($0, "-m celery -A " app) > 0 {print $1}' | sort -u
+}
+
 # ── 收集占用 ──
 FOUND=0
 declare -A PORT_PIDS
@@ -76,8 +84,18 @@ for port in "${TARGET_PORTS[@]}"; do
     done
 done
 
+# celery 组一并纳入清理范围
+CELERY_PIDS=$(celery_pids)
+if [ -n "$CELERY_PIDS" ]; then
+    FOUND=1
+    for pid in $CELERY_PIDS; do
+        cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | cut -c1-80)
+        echo "  :-- (celery)  PID=${pid}  ${cmd}"
+    done
+fi
+
 if [ $FOUND -eq 0 ]; then
-    log_info "目标端口全部空闲, 无需处理"
+    log_info "目标端口与 celery 组均空闲, 无需处理"
     exit 0
 fi
 [ $STATUS_ONLY -eq 1 ] && exit 0
@@ -97,12 +115,17 @@ for port in "${!PORT_PIDS[@]}"; do
         kill -TERM "$pid" 2>/dev/null
     done
 done
+for pid in $CELERY_PIDS; do
+    [ "$pid" = "$SELF_PID" ] && continue
+    kill -TERM "$pid" 2>/dev/null
+done
 # 统一等待回退, 避免逐端口串行 sleep
 for i in {1..8}; do
     LEFT=0
     for port in "${!PORT_PIDS[@]}"; do
         [ -n "$(pids_on_port "$port")" ] && LEFT=1 && break
     done
+    [ -n "$CELERY_PIDS" ] && [ -n "$(celery_pids)" ] && LEFT=1
     [ $LEFT -eq 0 ] && break
     sleep 1
 done
@@ -118,4 +141,16 @@ for port in "${!PORT_PIDS[@]}"; do
     # 清理对应残留 pid 文件, 防止 start.sh 误判"已在运行"
     [ -n "$name" ] && rm -f "$PID_DIR/${name}.pid"
 done
+
+# celery 组收尾: 强杀残留 + 清 pid 文件(避免过期 pid 文件让 stop-all/start-all 误判)
+if [ -n "$CELERY_PIDS" ]; then
+    remain=$(celery_pids)
+    if [ -n "$remain" ]; then
+        log_warn "celery 未响应 TERM, 强制终止: $remain"
+        for pid in $remain; do kill -9 "$pid" 2>/dev/null; done
+    else
+        log_info "celery 组已清理"
+    fi
+    rm -f "$PID_DIR/celery-worker.pid" "$PID_DIR/celery-beat.pid"
+fi
 log_info "完成"

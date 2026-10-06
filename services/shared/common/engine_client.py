@@ -121,6 +121,7 @@ class EngineClient:
         datasource_id: str,
         limit: int = None,
         rls_policies: list[dict] = None,
+        federated: list[dict] = None,
     ) -> QueryResult:
         """Execute SQL through DataEngine.
 
@@ -131,6 +132,10 @@ class EngineClient:
             rls_policies: Optional list of RLS policies to apply.
                 Each policy: {"tables": [...], "row_filter": "...",
                               "hidden_columns": [...], "masked_columns": {...}}
+            federated: 跨源联邦附加数据源：[{"name": 数据源名, "config":
+                {db_type/host/port/database/user/password/ssl_mode}}]，
+                SQL 中以 `name.db.table` 三段式限定名引用；RLS 策略按
+                限定名匹配键逐源施加。
 
         Returns:
             QueryResult with columns, data, dtypes.
@@ -144,6 +149,8 @@ class EngineClient:
         }
         if rls_policies:
             body["rls_policies"] = rls_policies
+        if federated:
+            body["federated"] = federated
 
         try:
             resp = self._session.post(
@@ -185,6 +192,41 @@ class EngineClient:
             raise
         except Exception as e:
             raise EngineError(f"Engine query error: {e}")
+
+    def explain(self, sql: str, datasource_id: str,
+                rls_policies: list[dict] = None,
+                federated: list[dict] = None) -> list[str]:
+        """EXPLAIN 查询，返回执行计划文本行（不含数据行）。
+
+        用途：同步/DAG 任务执行诊断（扫描/过滤/Join 策略、下推情况）。
+        """
+        body = {
+            "sql": sql,
+            "datasource_id": datasource_id,
+        }
+        if rls_policies:
+            body["rls_policies"] = rls_policies
+        if federated:
+            body["federated"] = federated
+        try:
+            resp = self._session.post(
+                f"{self.base_url}/api/explain",
+                json=body,
+                timeout=self.timeout,
+            )
+            if resp.status_code != 200:
+                raise EngineError(f"Engine explain failed: {resp.text}", status_code=resp.status_code)
+            result = resp.json()
+            if result.get("error"):
+                raise EngineError(f"Engine explain error: {result['error']}")
+            lines = []
+            for row in result.get("rows") or []:
+                lines.append(" ".join(str(v) for v in row if v is not None))
+            return lines
+        except EngineError:
+            raise
+        except requests.exceptions.RequestException as e:
+            raise EngineError(f"Engine explain error: {e}")
 
     def create_datasource(
         self,

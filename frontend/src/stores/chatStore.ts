@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import client from '../api/client';
 import { toast } from 'sonner';
 import { useThemeStore } from './themeStore';
+import type { KnowledgeResult } from '../components/InlineDetails';
 
 export interface ProgressStage {
   stage: string;
@@ -18,6 +19,7 @@ export interface ToolCall {
   arguments?: Record<string, any>;
   result?: string;
   result_preview?: string;
+  knowledge?: KnowledgeResult;
   error?: string;
   elapsed?: number;
 }
@@ -28,11 +30,39 @@ export type ProcessSegment =
   | { kind: 'tool'; tool_call_id?: string; step?: number };
 
 export interface AttachmentInfo {
-  id: string;
   filename: string;
   category: 'image' | 'table' | 'document' | 'model3d';
   size?: number;
-  url?: string;
+  /** 会话工作区相对路径(如 uploads/x.png);发送后由 done 事件回带,历史预览走 session-file */
+  path?: string;
+  /** 本地 blob 预览地址(仅待发/刚发送的本轮消息,不持久化) */
+  blobUrl?: string;
+}
+
+/** 待发附件:本地文件 + blob 预览,随消息以 multipart/files 上传,由服务端落盘到会话工作区 */
+export interface PendingAttachment extends AttachmentInfo {
+  file: File;
+  blobUrl: string;
+}
+
+// 附件本地校验(与后端 send_payload 约束一致:白名单扩展名/20MB/单次 5 个)
+export const ATTACH_MAX_FILES = 5;
+export const ATTACH_MAX_SIZE = 20 * 1024 * 1024;
+const ATTACH_EXT_CATEGORY: Record<string, AttachmentInfo['category']> = {
+  '.png': 'image', '.jpg': 'image', '.jpeg': 'image', '.gif': 'image', '.webp': 'image',
+  '.csv': 'table', '.xlsx': 'table',
+  '.pdf': 'document', '.md': 'document', '.txt': 'document', '.docx': 'document',
+  '.obj': 'model3d', '.glb': 'model3d', '.stl': 'model3d',
+};
+
+/** 本地校验单个附件并归类;不合规返回错误文案,合规返回 null */
+export function validateLocalAttachment(file: File): { error: string } | { category: AttachmentInfo['category'] } {
+  const ext = (file.name.match(/\.[^.]+$/)?.[0] || '').toLowerCase();
+  const category = ATTACH_EXT_CATEGORY[ext];
+  if (!category) return { error: `不支持的文件类型: ${ext || '(无扩展名)'}` };
+  if (!file.size) return { error: `附件为空文件: ${file.name}` };
+  if (file.size > ATTACH_MAX_SIZE) return { error: `文件过大(上限 20MB): ${file.name}` };
+  return { category };
 }
 
 export interface ChatMessage {
@@ -52,7 +82,7 @@ export interface ChatMessage {
   brief?: string;
   tokens?: { input: number; output: number; total: number };
   elapsed_ms?: number;
-  viewMode?: 'chart' | 'table' | 'sql';
+  viewMode?: 'chart' | 'table' | 'sql' | 'profile';
   ai_raw_response?: string;
   timings?: Record<string, number>;
   analysis?: string;
@@ -108,10 +138,10 @@ export interface WorkspaceExecutionLayer {
   models: string[];  // cli 执行层的模型候选(如 provider/model_name)
 }
 
-// Chat 端可选的 Waker(按 工作空间+角色 解析,含各自可用模型)
-export interface ChatWaker {
+// Chat 端可选的 AS-BOT(按 工作空间+角色 解析,含各自可用模型)
+export interface ChatAsBot {
   id: number;
-  waker_key: string;
+  as_bot_key: string;
   name: string;
   display_name: string;
   description: string;
@@ -148,9 +178,9 @@ interface ChatState {
   // 工作空间绑定的执行层(每工作空间至多一个)与运行时模型选择
   executionLayer: WorkspaceExecutionLayer | null;
   selectedModelRef: string | null;
-  // Chat 端可选的 Waker 清单与当前选中(空=未配置 Waker,模型候选回退执行层)
-  wakers: ChatWaker[];
-  selectedWakerKey: string | null;
+  // Chat 端可选的 AS-BOT 清单与当前选中(空=未配置 AS-BOT,模型候选回退执行层)
+  asBots: ChatAsBot[];
+  selectedAsBotKey: string | null;
   reportTheme: string;  // 报告交付主题 id; '' = 跟随当前 App 主题
   capabilities: { tools: { name: string; description: string }[]; version: string; empty: boolean;
     unavailable_tools?: { name: string; reason: string }[] } | null;
@@ -167,8 +197,8 @@ interface ChatState {
   loadWorkspaces: () => Promise<void>;
   loadWorkspaceConfig: (workspaceId: number) => Promise<void>;
   loadExecutionLayer: (workspaceId: number) => Promise<void>;
-  loadWakers: (workspaceId: number) => Promise<void>;
-  setSelectedWakerKey: (key: string | null) => void;
+  loadAsBots: (workspaceId: number) => Promise<void>;
+  setSelectedAsBotKey: (key: string | null) => void;
   setReportTheme: (t: string) => void;
   setSelectedModelRef: (ref: string | null) => void;
   setSelectedDsId: (id: number) => void;
@@ -182,14 +212,13 @@ interface ChatState {
   switchConversation: (convId: number) => Promise<void>;
   deleteConversation: (convId: number) => Promise<void>;
   renameConversation: (convId: number, title: string) => Promise<void>;
-  sendMessage: (question: string, mcpTools?: string[], attachments?: AttachmentInfo[]) => Promise<void>;
+  sendMessage: (question: string, mcpTools?: string[], attachments?: PendingAttachment[]) => Promise<void>;
   loadFollowups: (convId: number | null, question: string, answer: string) => Promise<void>;
-  uploadAttachment: (files: File[], workspaceId?: number) => Promise<AttachmentInfo[]>;
   cancelMessage: () => void;
   respondToAsk: (requestId: string, response: string) => Promise<void>;
   cancelAsk: (requestId: string) => void;
   updateMessageFeedback: (idx: number, feedback: 'up' | 'down', expectedTable?: string) => void;
-  setViewMode: (idx: number, mode: 'chart' | 'table' | 'sql') => void;
+  setViewMode: (idx: number, mode: 'chart' | 'table' | 'sql' | 'profile') => void;
   analyzeData: (msgIdx: number, question: string) => Promise<void>;
   predictData: (msgIdx: number, question: string) => Promise<void>;
   clear: () => Promise<void>;
@@ -261,6 +290,10 @@ export async function saveMessages(convId: number, messages: ChatMessage[], titl
         datasets_count: slim.rag.datasets_count,
       };
     }
+    // 附件仅持久化工作区引用,本地 blob 预览地址不入库
+    if (slim.attachments) {
+      slim.attachments = slim.attachments.map(({ blobUrl: _blobUrl, ...rest }: any) => rest);
+    }
     return slim;
   });
   const payload: any = { messages: slimMessages };
@@ -307,8 +340,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   workspaceConfig: {},
   executionLayer: null,
   selectedModelRef: null,
-  wakers: [],
-  selectedWakerKey: null,
+  asBots: [],
+  selectedAsBotKey: null,
   reportTheme: '',
   capabilities: null,
   executorSessionId: null,
@@ -344,7 +377,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     ++chatContextVersion; ++conversationListVersion;
     get().abortController?.abort();
     set({ selectedWorkspaceId: id, currentConvId: null, messages: [], conversations: [], conversationError: null, executorSessionId: null,
-      workspaceConfig: {}, executionLayer: null, wakers: [], selectedWakerKey: null, selectedModelRef: null,
+      workspaceConfig: {}, executionLayer: null, asBots: [], selectedAsBotKey: null, selectedModelRef: null,
       capabilities: null, loading: false, abortController: null });
   },
 
@@ -360,7 +393,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {
       if (context !== chatContextVersion || workspaceId !== get().selectedWorkspaceId) return;
       set({ workspaceConfig: {} });
-      toast.error('工作空间配置加载失败，请重新进入智能问数');
+      toast.error('工作空间配置加载失败，请重新进入工作空间');
     }
   },
 
@@ -374,44 +407,44 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {
       if (context !== chatContextVersion || workspaceId !== get().selectedWorkspaceId) return;
       set({ executionLayer: null, selectedModelRef: null, executorSessionId: null });
-      toast.error('工作空间模型配置加载失败，请重新进入智能问数');
+      toast.error('工作空间模型配置加载失败，请重新进入工作空间');
     }
   },
 
   setSelectedModelRef: (ref) => set({ selectedModelRef: ref }),
 
-  loadWakers: async (workspaceId: number) => {
+  loadAsBots: async (workspaceId: number) => {
     const context = chatContextVersion;
-    // Chat 端可选 Waker 清单(按 工作空间+当前用户角色 解析,与后端 resolve_wakers 口径一致)
+    // Chat 端可选 AS-BOT 清单(按 工作空间+当前用户角色 解析,与后端 resolve_as_bots 口径一致)
     try {
-      const { data } = await client.get('/chat/wakers', { params: { workspace_id: workspaceId } });
-      const list: ChatWaker[] = Array.isArray(data) ? data : [];
+      const { data } = await client.get('/chat/as-bots', { params: { workspace_id: workspaceId } });
+      const list: ChatAsBot[] = Array.isArray(data) ? data : [];
       const usable = list.filter(w => w.available !== false);
       const def = usable.find((w) => w.is_default) || usable[0] || null;
-      // 默认选中 is_default(或首个);selectedModelRef 置空→发送时派生为该 Waker 首个模型
+      // 默认选中 is_default(或首个);selectedModelRef 置空→发送时派生为该 AS-BOT 首个模型
       if (context !== chatContextVersion || get().selectedWorkspaceId !== workspaceId) return;
-      set({ wakers: list, selectedWakerKey: get().currentConvId ? get().selectedWakerKey : def?.waker_key ?? null, selectedModelRef: null });
+      set({ asBots: list, selectedAsBotKey: get().currentConvId ? get().selectedAsBotKey : def?.as_bot_key ?? null, selectedModelRef: null });
     } catch {
       if (context !== chatContextVersion || get().selectedWorkspaceId !== workspaceId) return;
-      set({ wakers: [] });
-      toast.error('Waker 权限清单加载失败，请重试；当前会话绑定未改变');
+      set({ asBots: [] });
+      toast.error('AS-BOT 权限清单加载失败，请重试；当前会话绑定未改变');
     }
   },
 
-  setSelectedWakerKey: (key) => {
-    const { currentConvId, selectedWakerKey, abortController } = get();
-    if (key === selectedWakerKey) return;            // 未变化: Radix 不会触发, 双保险
+  setSelectedAsBotKey: (key) => {
+    const { currentConvId, selectedAsBotKey, abortController } = get();
+    if (key === selectedAsBotKey) return;            // 未变化: Radix 不会触发, 双保险
     abortController?.abort();
-    // 打开的历史会话尚未绑定 Waker(selectedWakerKey 为空): 本次选择视为"绑定/继续该会话",
-    // 保留已加载的消息, 不新开会话(修复: 点开历史→选 Waker 消息被清空)。
-    if (currentConvId != null && !selectedWakerKey) {
-      set({ selectedWakerKey: key, selectedModelRef: null, capabilities: null,
+    // 打开的历史会话尚未绑定 AS-BOT(selectedAsBotKey 为空): 本次选择视为"绑定/继续该会话",
+    // 保留已加载的消息, 不新开会话(修复: 点开历史→选 AS-BOT 消息被清空)。
+    if (currentConvId != null && !selectedAsBotKey) {
+      set({ selectedAsBotKey: key, selectedModelRef: null, capabilities: null,
         abortController: null, loading: false });
       return;
     }
-    // 其余情况(新会话空选 / 从已绑定 Waker 切到不同 Waker): 会话与 Waker 一一绑定,
+    // 其余情况(新会话空选 / 从已绑定 AS-BOT 切到不同 AS-BOT): 会话与 AS-BOT 一一绑定,
     // 切换即开启新会话, 清空上下文与 resume 会话。
-    set({ selectedWakerKey: key, selectedModelRef: null, currentConvId: null, messages: [],
+    set({ selectedAsBotKey: key, selectedModelRef: null, currentConvId: null, messages: [],
       executorSessionId: null, capabilities: null, loading: false, abortController: null });
   },
 
@@ -434,7 +467,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loadDatasources: async () => {
     const context = chatContextVersion;
     try {
-      const { data } = await client.get('/datasources/');
+      // 纯角色裁决: 选择器只列当前用户角色授权的数据源(空授权→空列表)。
+      const { data } = await client.get('/datasources/authorized');
       if (context !== chatContextVersion) return;
       set({ datasources: data });
       // Auto-select default datasource
@@ -484,10 +518,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const { data } = await client.post('/chat/conversations', {
       datasource_id: dsId,
       workspace_id: workspaceId,
-      waker_key: get().pipelineMode === 'agent' ? get().selectedWakerKey || '' : '',
     });
     if (get().selectedWorkspaceId !== origin.selectedWorkspaceId ||
-        get().selectedWakerKey !== origin.selectedWakerKey || get().messages !== origin.messages ||
+        get().selectedAsBotKey !== origin.selectedAsBotKey || get().messages !== origin.messages ||
         get().abortController !== origin.abortController) {
       throw new Error('会话上下文已改变，未接管迟到的新会话');
     }
@@ -519,19 +552,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const { data } = await client.get(`/chat/conversations/${convId}`);
       if (get().abortController !== switching) return;
       const msgs = Array.isArray(data.messages) ? data.messages : [];
-      // 会话未绑定 Waker(早期数据/创建时未带)时, 默认展示当前工作空间首个可用 Waker, 而非空"选择 Waker"。
-      // 仅当会话与当前工作空间一致时 wakers 清单才有效; 跨工作空间交由工作空间切换重载处理。
-      const sameWs = (data.workspace_id || 0) === get().selectedWorkspaceId;
-      const usable = sameWs ? (get().wakers || []).filter((w) => w.available !== false) : [];
-      const defaultWaker = usable.find((w) => w.is_default)?.waker_key || usable[0]?.waker_key || null;
+      // 会话未绑定 AS-BOT(早期数据/创建时未带)时, 默认展示当前工作空间首个可用 AS-BOT, 而非空"选择 AS-BOT"。
+      // 全局会话(ws=0, 面板等全局入口所建)跨工作空间互见: 允许用当前工作空间清单兜底; 跨工作空间交由工作空间切换重载处理。
+      const sameWs = !data.workspace_id || data.workspace_id === get().selectedWorkspaceId;
+      const usable = sameWs ? (get().asBots || []).filter((w) => w.available !== false) : [];
+      const defaultAsBot = usable.find((w) => w.is_default)?.as_bot_key || usable[0]?.as_bot_key || null;
       set({
         currentConvId: convId,
         messages: msgs,
         abortController: null,
         // 恢复持久化的执行层会话 ID,重新打开对话即可 resume qoder 会话
         executorSessionId: null,
-        selectedWorkspaceId: data.workspace_id || 0,
-        selectedWakerKey: data.waker_key || defaultWaker,
+        // 全局会话不改变当前工作空间上下文（仅归属标记为 ws=0）
+        selectedWorkspaceId: data.workspace_id || get().selectedWorkspaceId,
+        selectedAsBotKey: data.as_bot_key || defaultAsBot,
         capabilities: null,
         selectedDsId: data.datasource_id || 0,
       });
@@ -573,16 +607,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {}
   },
 
-  uploadAttachment: async (files, workspaceId) => {
-    const formData = new FormData();
-    files.forEach(f => formData.append('files', f));
-    formData.append('workspace_id', String(workspaceId ?? get().selectedWorkspaceId ?? 0));
-    const resp = await client.post('/chat/attachments/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    return resp.data.attachments || [];
-  },
-
   sendMessage: async (question, mcpTools, attachments) => {
     const state = get();
     if (state.loading) return;
@@ -617,7 +641,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const isSameConv = () => get().currentConvId === convId &&
       (get().abortController === abortController || (requestFinished && get().abortController === null));
 
-    const userMsg: ChatMessage = { role: 'user', content: question, ...(attachments?.length ? { attachments } : {}) };
+    const userMsg: ChatMessage = {
+      role: 'user',
+      content: question,
+      ...(attachments?.length
+        ? { attachments: attachments.map(a => ({ filename: a.filename, category: a.category, size: a.size, blobUrl: a.blobUrl })) }
+        : {}),
+    };
     const currentMessages = state.messages;
 
     // Create abort controller for cancellation
@@ -644,7 +674,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       model_id: state.selectedModelId,
       mcp_tools: mcpTools || [],
       workspace_id: state.selectedWorkspaceId,
-      attachments: (attachments || []).map(a => a.id),
       // 报告交付主题: 选择"跟随"(空)时回落当前 App 主题
       report_theme: state.reportTheme || useThemeStore.getState().theme,
     };
@@ -664,14 +693,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // execute_sql 若需临时换源, 仍可用业务名 datasource 参数按查询覆盖。
         requestBody.datasource_id = state.selectedDsId || 0;
       }
-      // Waker 选择: 发送 waker_key;模型候选优先取自选中 Waker 的可用模型,
-      // 未显式选择时派生为其首个模型(仅 1 个时无需选择框);无 Waker 配置时
+      // AS-BOT 选择: 发送 as_bot_key;模型候选优先取自选中 AS-BOT 的可用模型,
+      // 未显式选择时派生为其首个模型(仅 1 个时无需选择框);无 AS-BOT 配置时
       // 回退到执行层运行时模型(model_ref)。上一轮会话 ID 以 session_id 回传 resume。
       if (state.pipelineMode === 'agent') {
-        const waker = state.wakers.find(w => w.waker_key === state.selectedWakerKey) || null;
-        if (waker) {
-          requestBody.waker_key = waker.waker_key;
-          const wm = waker.models || [];
+        const asBot = state.asBots.find(w => w.as_bot_key === state.selectedAsBotKey) || null;
+        if (asBot) {
+          // AS-BOT 与角色强绑定：不再向后端传 asBotId，后端按当前用户角色解析；这里仅派生 model_ref。
+          const wm = asBot.models || [];
           const ref = state.selectedModelRef || (wm.length >= 1 ? wm[0] : '');
           if (ref) requestBody.model_ref = ref;
         } else if (state.executionLayer?.layer_type === 'cli' && state.selectedModelRef) {
@@ -688,18 +717,36 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     try {
+      // 有附件时整体改 multipart(payload + files),由服务端落盘到会话工作区;
+      // 无附件保持 JSON(AS-BOT 同形态)。multipart 时不能手设 Content-Type(需带 boundary)。
+      let reqBody: BodyInit;
+      const reqHeaders: Record<string, string> = { ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+      if (attachments && attachments.length > 0) {
+        const form = new FormData();
+        form.append('payload', JSON.stringify(requestBody));
+        attachments.forEach(a => form.append('files', a.file));
+        reqBody = form;
+      } else {
+        reqHeaders['Content-Type'] = 'application/json';
+        reqBody = JSON.stringify(requestBody);
+      }
       const response = await fetch(apiEndpoint, {
         method: 'POST',
         signal: abortController.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify(requestBody),
+        headers: reqHeaders,
+        body: reqBody,
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        // 服务端错误带可诊断 detail（HTTPException），必须透传给用户，不得只报状态码
+        let reason = '';
+        try {
+          const body = await response.json();
+          const d = body?.detail ?? body?.error ?? body?.message;
+          if (typeof d === 'string') reason = d;
+          else if (d != null) reason = JSON.stringify(d);
+        } catch { /* 非 JSON 响应体（如网关错误页）忽略 */ }
+        throw new Error(reason ? `发送失败（${response.status}）：${reason}` : `发送失败（HTTP ${response.status}）`);
       }
 
       const reader = response.body!.getReader();
@@ -826,6 +873,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                               ...tc,
                               result: data.error ? undefined : data.output,
                               result_preview: (data.output || '').slice(0, 200),
+                              knowledge: data.knowledge || undefined,
                               error: data.error || undefined,
                               elapsed: data.elapsed,
                             }
@@ -945,6 +993,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set(state => {
         const msgs = [...state.messages];
         msgs[msgs.length - 1] = finalMsg;
+        // done 回带落盘后的附件清单(工作区相对路径)→ 回填用户消息附件引用,
+        // 历史预览改走 session-file;文件名可能被服务端去重改名,以回带为准
+        if (Array.isArray(doneData.attachments) && doneData.attachments.length > 0) {
+          const uIdx = msgs.length - 2;
+          if (uIdx >= 0 && msgs[uIdx].role === 'user' && msgs[uIdx].attachments?.length) {
+            const prev = msgs[uIdx].attachments || [];
+            msgs[uIdx] = {
+              ...msgs[uIdx],
+              attachments: doneData.attachments.map((a: any, i: number) => ({
+                filename: a.filename,
+                category: a.category,
+                size: a.size,
+                path: a.path,
+                blobUrl: prev[i]?.blobUrl,
+              })),
+            };
+          }
+        }
         return {
           messages: msgs,
           loading: false,

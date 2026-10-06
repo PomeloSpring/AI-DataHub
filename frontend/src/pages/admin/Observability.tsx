@@ -24,6 +24,7 @@ import {
   type UsageSummary, type DailyPoint, type ModelUsage, type UserUsage,
   type SessionRow, type TraceRow, type TraceDetail, type CommonFilters,
 } from '@/api/observability';
+import client from '@/api/client';
 
 const fmt = (n: number | null | undefined, digits = 0) =>
   n === null || n === undefined ? '—' : Number(n).toLocaleString('en-US', { maximumFractionDigits: digits });
@@ -110,6 +111,15 @@ export default function Observability() {
   const [models, setModels] = useState<ModelUsage[]>([]);
   const [users, setUsers] = useState<UserUsage[]>([]);
   const [sessions, setSessions] = useState<{ items: SessionRow[]; total: number }>({ items: [], total: 0 });
+  // 数据源 id → name 映射(页面显示资源一律用 name)
+  const [dsNames, setDsNames] = useState<Record<number, string>>({});
+  useEffect(() => {
+    client.get('/datasources/').then(({ data }) => {
+      const m: Record<number, string> = {};
+      (Array.isArray(data) ? data : []).forEach((d: any) => { m[d.id] = d.name; });
+      setDsNames(m);
+    }).catch(() => {});
+  }, []);
   const [sessPage, setSessPage] = useState(1);
   const [traces, setTraces] = useState<{ items: TraceRow[]; total: number }>({ items: [], total: 0 });
   const [tracePage, setTracePage] = useState(1);
@@ -306,7 +316,7 @@ export default function Observability() {
             rows={sessions.items.map(r => [
               <div><div className="font-medium truncate max-w-xs">{r.title || `#${r.conversation_id}`}</div><div className="text-xs text-muted-foreground">conv {r.conversation_id}</div></div>,
               `${r.username}(${r.user_id})`,
-              `ds:${r.datasource_id}`,
+              r.datasource_id ? (dsNames[r.datasource_id] || '数据源已删除') : '未绑定',
               fmt(r.turns), fmt(r.total_tokens), fmt(r.credits, 2), fmt(r.errors), fmtTime(r.last_active),
               <Button size="sm" variant="ghost" onClick={() => { setConvFilter(r.conversation_id); setTab('traces'); }}>查看 Trace</Button>,
             ])}

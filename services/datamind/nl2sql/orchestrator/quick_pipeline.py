@@ -205,7 +205,7 @@ def quick_generate(
 
     ds_params = _get_ds_conn_params(datasource_id)
     db_type = ds_params.get("db_type", "doris")
-    engine_map = {"doris": "Doris", "mysql": "MySQL", "elasticsearch": "Elasticsearch"}
+    engine_map = {"doris": "Doris", "mysql": "MySQL"}
     engine = engine_map.get(db_type, db_type.capitalize())
 
     # Keyword-based table pre-selection

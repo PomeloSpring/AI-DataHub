@@ -36,7 +36,8 @@ app.conf.update(
     broker_transport_options={"socket_connect_timeout": 2, "socket_timeout": 2,
                               "visibility_timeout": 3700},
     result_backend_transport_options={"socket_connect_timeout": 2, "socket_timeout": 2},
-    imports=("services.dataflow.tasks.executor",),
+    imports=("services.dataflow.tasks.executor", "services.dataflow.tasks.dag_tasks",
+             "services.dataflow.tasks.eval_tasks"),
     beat_scheduler="services.dataflow.tasks.beat_schedule:DatabaseScheduler",
 
     # Serialization
@@ -72,6 +73,9 @@ app.conf.update(
     task_default_queue="default",
     task_routes={
         "services.dataflow.tasks.executor.*": {"queue": "scheduled"},
+        # 评测任务耗时不定（检索/LLM 集），与定时分析同走 scheduled 队列；
+        # 不注册进 imports 的话 worker 启动时看不到它，投递会报 unregistered task。
+        "services.dataflow.tasks.eval_tasks.*": {"queue": "scheduled"},
     },
 )
 

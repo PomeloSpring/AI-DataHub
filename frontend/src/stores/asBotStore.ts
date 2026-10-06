@@ -1,8 +1,9 @@
 import { create } from 'zustand';
 import client from '../api/client';
 import { toast } from 'sonner';
-import { listDesigns, designError } from '../api/dashboardDesign';
-import type { DashboardDesign } from '../api/dashboardDesign';
+
+// AS-BOT 面板与智能问数同一载体、不同入口：会话历史合并共用，
+// 设计会话绑定只校验归属（user_id），不再需要入口哨兵。
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -10,10 +11,6 @@ export interface AsBotMessage {
   role: 'user' | 'assistant';
   content: string;
   thinking?: string;
-  // 审批相关
-  pendingApproval?: ApprovalRequest;
-  approvalStatus?: 'pending' | 'approved' | 'rejected' | 'executed' | 'failed' | 'superseded';
-  approvalResult?: any;
   // 工具调用
   tool_calls?: Array<{
     step: number;
@@ -32,31 +29,17 @@ export interface AsBotMessage {
   error?: string;
 }
 
-export interface ApprovalRequest {
-  approval_id: number;
-  action_key: string;
-  action_label: string;
-  description: string;
-  payload: Record<string, any>;
-}
-
-interface AsBotPermissions {
-  role: string;
-  permissions: Record<string, boolean>;
-  can_access: boolean;
-}
-
 export interface AsBotConversation {
   id: number;
   title: string;
   workspace_id: number;
   datasource_id: number;
-  waker_key?: string;
+  as_bot_key?: string;
   created_at: string;
   updated_at: string;
 }
 
-// AS-BOT 不再使用特殊 Waker，继承当前角色的 Waker（与问数页面一致）
+// AS-BOT 继承当前角色的 AS-BOT（与问数页面一致）
 
 // 从会话首条用户消息派生标题(与主聊天一致)
 function deriveTitle(messages: AsBotMessage[]): string {
@@ -75,9 +58,6 @@ function slimForStore(messages: AsBotMessage[]): AsBotMessage[] {
     content: m.content,
     thinking: m.thinking ? m.thinking.slice(0, 8000) : undefined,
     error: m.error,
-    approvalStatus: m.approvalStatus,
-    approvalResult: m.approvalResult,
-    pendingApproval: m.pendingApproval,
     tool_calls: (m.tool_calls || []).map(tc => ({
       ...tc,
       result: tc.result ? tc.result.slice(0, 4000) : tc.result,
@@ -87,38 +67,18 @@ function slimForStore(messages: AsBotMessage[]): AsBotMessage[] {
   }));
 }
 
-// approve/reject 等转录变化后的持久化(标题已定, 不改动)
-async function persistConversation(get: () => AsBotState) {
-  const s = get();
-  if (!s.conversationId) return;
-  try {
-    await client.put(`/chat/conversations/${s.conversationId}`, {
-      messages: slimForStore(s.messages),
-    });
-  } catch { /* 持久化失败不阻断交互 */ }
-}
-
 interface AsBotState {
   // Panel state
   panelOpen: boolean;
-  designs: DashboardDesign[];
-  activeDesignId: string | null;
-  openDesign: (id: string | null) => void;
-  loadDesigns: () => Promise<void>;
   // Messages
   messages: AsBotMessage[];
   loading: boolean;
   loadingStep: string;
   abortController: AbortController | null;
-  // Conversation history (persisted to adh_conversations, tagged waker_key=__system_bot__)
+  // Conversation history (persisted to adh_conversations; 两入口合并共用)
   conversationId: number | null;
   conversations: AsBotConversation[];
   executorSessionId: string | null;
-  // Permissions
-  permissions: AsBotPermissions | null;
-  permissionsLoaded: boolean;
-  // Pending approval count (for badge)
-  pendingApprovalCount: number;
 
   // Actions
   togglePanel: () => void;
@@ -126,10 +86,6 @@ interface AsBotState {
   closePanel: () => void;
   sendMessage: (text: string) => Promise<void>;
   cancelMessage: () => void;
-  approveAction: (approvalId: number, msgIdx: number) => Promise<void>;
-  rejectAction: (approvalId: number, msgIdx: number) => Promise<void>;
-  loadPermissions: () => Promise<void>;
-  loadPendingApprovals: () => Promise<void>;
   loadConversations: () => Promise<void>;
   newConversation: () => void;
   switchConversation: (convId: number) => Promise<void>;
@@ -139,17 +95,6 @@ interface AsBotState {
 
 export const useAsBotStore = create<AsBotState>((set, get) => ({
   panelOpen: false,
-  designs: [],
-  activeDesignId: null,
-  openDesign: (id) => set({ activeDesignId: id }),
-  loadDesigns: async () => {
-    const cid = get().conversationId;
-    if (!cid) return;
-    try {
-      const designs = await listDesigns(cid);
-      if (get().conversationId === cid) set({ designs });
-    } catch (e) { if (get().conversationId === cid) toast.error(designError(e)); }
-  },
   messages: [],
   loading: false,
   loadingStep: '',
@@ -157,9 +102,6 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
   conversationId: null,
   conversations: [],
   executorSessionId: null,
-  permissions: null,
-  permissionsLoaded: false,
-  pendingApprovalCount: 0,
 
   togglePanel: () => set(state => ({ panelOpen: !state.panelOpen })),
   openPanel: () => { set({ panelOpen: true }); void get().loadConversations(); },
@@ -169,14 +111,14 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
 
   newConversation: () => {
     get().abortController?.abort();
-    set({ conversationId: null, messages: [], designs: [], activeDesignId: null, executorSessionId: null, loading: false, loadingStep: '', abortController: null });
+    set({ conversationId: null, messages: [], executorSessionId: null, loading: false, loadingStep: '', abortController: null });
   },
 
   loadConversations: async () => {
     try {
       const { data } = await client.get('/chat/conversations', { params: { workspace_id: 0 } });
       set({ conversations: Array.isArray(data) ? data : [] });
-    } catch { toast.error('系统助手会话列表加载失败'); }
+    } catch { toast.error('会话列表加载失败'); }
   },
 
   switchConversation: async (convId) => {
@@ -186,12 +128,8 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
     try {
       const { data } = await client.get(`/chat/conversations/${convId}`);
       if (get().abortController !== switching) return;
-      if (Number(data.workspace_id || 0) !== 0) {
-        throw new Error('该会话不属于智能助手');
-      }
       const msgs = Array.isArray(data.messages) ? data.messages : [];
-      set({ conversationId: convId, messages: msgs, designs: [], activeDesignId: null, executorSessionId: null, abortController: null });
-            void get().loadDesigns();
+      set({ conversationId: convId, messages: msgs, executorSessionId: null, abortController: null });
     } catch {
       if (get().abortController !== switching) return;
       set({ abortController: null });
@@ -211,25 +149,7 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
       });
     } catch (e: any) {
       const detail = e.response?.data?.detail;
-      toast.error(typeof detail === 'string' ? detail : '删除系统助手会话失败，记录未移除');
-    }
-  },
-
-  loadPermissions: async () => {
-    try {
-      const { data } = await client.get('/as-bot/permissions');
-      set({ permissions: data, permissionsLoaded: true });
-    } catch {
-      set({ permissions: { role: '', permissions: {}, can_access: false }, permissionsLoaded: true });
-    }
-  },
-
-  loadPendingApprovals: async () => {
-    try {
-      const { data } = await client.get('/as-bot/approvals', { params: { status: 'pending' } });
-      set({ pendingApprovalCount: (data.approvals || []).length });
-    } catch {
-      // silently fail
+      toast.error(typeof detail === 'string' ? detail : '删除会话失败，记录未移除');
     }
   },
 
@@ -261,7 +181,7 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
         set(s => ({
           conversationId: data.id,
           conversations: [{ id: data.id, title: data.title, workspace_id: 0, datasource_id: 0,
-            waker_key: data.waker_key || '', created_at: data.created_at, updated_at: data.created_at },
+            as_bot_key: data.as_bot_key || '', created_at: data.created_at, updated_at: data.created_at },
             ...s.conversations],
         }));
       } catch {
@@ -283,7 +203,7 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
           title: deriveTitle(msgs),
         });
         set(s => ({ conversations: s.conversations.map(c => c.id === convId ? { ...c, updated_at: new Date().toISOString() } : c) }));
-      } catch { toast.error('系统助手会话记录保存失败，请重试'); }
+      } catch { toast.error('会话记录保存失败，请重试'); }
     };
 
     const history = currentMessages.map(m => ({
@@ -418,30 +338,6 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
                   return { messages: msgs };
                 });
               } else if (currentEvent === 'done') {
-                // Check if the response contains an approval request
-                let pendingApproval: ApprovalRequest | undefined;
-
-                // Parse approval request from tool results
-                if (data.tool_calls) {
-                  for (const tc of data.tool_calls) {
-                    try {
-                      const output = typeof tc.result === 'string' ? JSON.parse(tc.result) : tc.result;
-                      if (output?.approval_required) {
-                        pendingApproval = {
-                          approval_id: output.approval_id || 0,
-                          action_key: output.action_key,
-                          action_label: output.action_label,
-                          description: output.description,
-                          payload: output.payload,
-                        };
-                        break;
-                      }
-                    } catch {
-                      // Not a JSON result, skip
-                    }
-                  }
-                }
-
                 set(state => {
                   const msgs = [...state.messages];
                   const lastIdx = msgs.length - 1;
@@ -452,41 +348,13 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
                       thinking: data.thinking || streamingThinking,
                       error: data.error,
                       tool_calls: data.tool_calls || msgs[lastIdx].tool_calls,
-                      pendingApproval,
                     };
                   }
                   return { messages: msgs, loading: false, loadingStep: '' };
                 });
 
                 set({ executorSessionId: null });
-                // If there's a pending approval, create it on the backend
-                if (pendingApproval && pendingApproval.action_key && !pendingApproval.approval_id) {
-                  try {
-                    const { data: created } = await client.post('/as-bot/approvals/create', {
-                      action_key: pendingApproval.action_key,
-                      payload: pendingApproval.payload,
-                    });
-                    if (!ownsRequest()) return;
-                    // Update with real approval_id
-                    if (created?.id) {
-                      set(state => {
-                        const msgs = [...state.messages];
-                        const lastIdx = msgs.length - 1;
-                        if (msgs[lastIdx]?.pendingApproval) {
-                          msgs[lastIdx] = {
-                            ...msgs[lastIdx],
-                            pendingApproval: { ...msgs[lastIdx].pendingApproval!, approval_id: created.id },
-                          };
-                        }
-                        return { messages: msgs };
-                      });
-                    }
-                  } catch {
-                    toast.error('审批提议创建失败，操作尚未进入审批流程');
-                  }
-                }
                 void persist();
-                void get().loadDesigns();
               } else if (currentEvent === 'error') {
                 throw new Error(data.message);
               }
@@ -572,76 +440,5 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
     if (abortController) {
       abortController.abort();
     }
-  },
-
-  approveAction: async (approvalId: number, msgIdx: number) => {
-    set(state => {
-      const msgs = [...state.messages];
-      if (msgs[msgIdx]) {
-        msgs[msgIdx] = { ...msgs[msgIdx], approvalStatus: 'approved' };
-      }
-      return { messages: msgs, loading: true, loadingStep: '正在执行...' };
-    });
-
-    try {
-      const { data } = await client.post('/as-bot/approve', { approval_id: approvalId });
-      void get().loadDesigns();
-      set(state => {
-        const msgs = [...state.messages];
-        if (msgs[msgIdx]) {
-          msgs[msgIdx] = {
-            ...msgs[msgIdx],
-            approvalStatus: data.status || 'executed',
-            approvalResult: data.result,
-          };
-        }
-        return { messages: msgs, loading: false, loadingStep: '' };
-      });
-
-      // Add a system message with the result
-      const result = data.result;
-      const resultMsg: AsBotMessage = {
-        role: 'assistant',
-        content: result?.success
-          ? `操作已执行成功。${result?.model_id ? `模型 ID: ${result.model_id}` : ''}`
-          : `执行失败: ${result?.error || '未知错误'}`,
-      };
-      set(state => ({ messages: [...state.messages, resultMsg] }));
-      void persistConversation(get);
-    } catch (e: any) {
-      set(state => {
-        const msgs = [...state.messages];
-        if (msgs[msgIdx]) {
-          msgs[msgIdx] = { ...msgs[msgIdx], approvalStatus: 'failed', approvalResult: { error: e.message } };
-        }
-        return { messages: msgs, loading: false, loadingStep: '' };
-      });
-      void persistConversation(get);
-    }
-  },
-
-  rejectAction: async (approvalId: number, msgIdx: number) => {
-    try {
-      await client.post('/as-bot/reject', { approval_id: approvalId });
-      void get().loadDesigns();
-    } catch (e) {
-      toast.error(designError(e));
-      return;
-    }
-    set(state => {
-      const msgs = [...state.messages];
-      if (msgs[msgIdx]) {
-        msgs[msgIdx] = { ...msgs[msgIdx], approvalStatus: 'rejected' };
-      }
-      return { messages: msgs };
-    });
-
-    // Add a message noting rejection
-    const rejectMsg: AsBotMessage = {
-      role: 'assistant',
-      content: '操作已拒绝。如需其他操作,请继续提问。',
-    };
-    set(state => ({ messages: [...state.messages, rejectMsg] }));
-    void persistConversation(get);
   },
 }));

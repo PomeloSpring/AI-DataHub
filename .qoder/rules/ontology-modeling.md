@@ -48,7 +48,7 @@ description: 本体建模规范（Ontology Modeling Spec）。本体是唯一语
 
 ## 8. 建模回归门禁
 触碰 `ontology_service.py` / `ontology_kb_sync.py` / `shared/semantics/{planner,models,intent,binding_resolver}.py` / `terminology_manager.py` 后必须跑：
-- `venv/bin/python -m tests.eval.runner`（golden-question，**正确率不得回退**）；
+- `venv/bin/python -m services.shared.eval.runner`（golden-question，**正确率不得回退**；`--suite retrieval` 另跑本体层检索评测）；
 - `tests/test_cloud_md_redaction.py`、`tests/test_doc_freshness.py`、`tests/test_alias_suggestions.py`、`tests/test_terminology_scoping.py`、`tests/test_planner_resolution.py`；
 - 涉及取数执行链（planner/semantic_query/gates）另按护栏 §11 跑护城河三件套。
 新增建模/解析行为分支必须同步新增 eval 用例（尤其：别名命中档位、孤儿引用阻断、上云脱敏、模糊回抛）。

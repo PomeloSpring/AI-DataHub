@@ -97,7 +97,11 @@ class TestCheckAccessAdmin:
             PermissionEnforcer, "_get_sensitive_policies",
             lambda self, ws, ds, table: ({"salary": "full"}, ["phone"]),
         )
-        monkeypatch.setattr(role_service, "get_user_roles", lambda uid, ws: [{"name": "admin"}])
+        # mock 需含 id：rls_service.get_effective_policies 按角色绑定筛选策略时
+        # 会取 role_ids = [r["id"] for r in roles]（无 id 会 KeyError）
+        monkeypatch.setattr(role_service, "get_user_roles", lambda uid, ws: [{"id": 1, "name": "admin"}])
+        # fail-closed：数据源步空授权=拒绝（admin 同样纯角色裁决），测试需显式授权 DS7
+        monkeypatch.setattr(role_service, "get_user_allowed_datasources", lambda uid, ws: [7])
 
         res = permission_enforcer.check_access(
             user_id=99, workspace_id=1, datasource_id=7, table_name="t_user")
@@ -192,7 +196,8 @@ class TestExecutorMoat:
             seen["user_id"] = user_id
             return sql, PermissionResult(hidden_columns=["phone"])
 
-        def fake_exec(sql, datasource_id=None, query_type="sql"):
+        def fake_exec(sql, datasource_id=None, query_type="sql", **kwargs):
+            # **kwargs：execute_query 已扩到 user_id/workspace_id/federated，mock 需兼容
             df = pd.DataFrame([{"id": 1, "name": "a", "phone": "13800000000"}])
             return df, 5, 1
 
@@ -204,7 +209,7 @@ class TestExecutorMoat:
             lambda **k: audit_calls.__setitem__("n", audit_calls["n"] + 1))
 
         df, _ms, _rc = qe.execute_query_with_permission(
-            "SELECT * FROM t_user", datasource_id=7, query_type="sql",
+            "SELECT * FROM t_user", datasource_id=7,
             user_context={}, workspace_id=0)
 
         # 无身份仍走治理基线: enforce_sql 以 user_id=0 调用, block 列被丢弃

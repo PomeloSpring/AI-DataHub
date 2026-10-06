@@ -12,10 +12,10 @@ from services.datamind.execution.tool_policy import compile_policy
 
 
 def make_task(tmp_path, tools=None):
-    policy = compile_policy({"waker_key": "test", "name": "测试", "tools": tools or {}, "chart_enabled": False})
+    policy = compile_policy({"as_bot_key": "test", "name": "测试", "tools": tools or {}, "chart_enabled": False})
     runtime = SessionWorkspace("a" * 32, "b" * 32, tmp_path, policy, None, "trusted-session")
     ctx = ExecutionContext(user_id=1, workspace_id=2, user_role="admin",
-                           extra={"secure_runtime": runtime, "session_id": "forged", "waker_key": "test"})
+                           extra={"secure_runtime": runtime, "session_id": "forged", "as_bot_key": "test"})
     return ExecutionTask(task_id="t", question="你好", context=ctx)
 
 
@@ -26,7 +26,7 @@ def build(tmp_path, monkeypatch, tools=None):
     task = make_task(tmp_path, tools)
     adapter = QoderSDKAdapter("test", {"cli_name": "qoder", "mode": "sdk"})
     with patch("services.datamind.execution.prompt_composer._permission_summary", return_value="权限"), \
-         patch("services.datamind.execution.wakers.load_skills", return_value=[]):
+         patch("services.datamind.execution.as_bots.load_skills", return_value=[]):
         return adapter._build_options(task), task
 
 

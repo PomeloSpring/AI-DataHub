@@ -29,7 +29,7 @@ def _placeholder_embedding() -> str:
 def _emit_graph_sync(event_type: str, data: dict):
     """向图谱同步服务发送事件（非关键路径，失败不影响主流程）。"""
     try:
-        from services.graphservice.graph_sync_service import get_graph_sync_service, SyncEventType
+        from services.semhub.graph.graph_sync_service import get_graph_sync_service, SyncEventType
         import asyncio
         sync_service = get_graph_sync_service()
         asyncio.create_task(sync_service.emit_event(
@@ -235,4 +235,5 @@ class RelationService:
                 "message": f"表关联同步完成：新增 {result['inserted']}，更新 {result['updated']}，删除 {result['deleted']}",
             }
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            logger.error("表关联同步失败 datasource_id=%s: %s", datasource_id, e)
+            return {"success": False, "message": f"表关联同步失败：{e}"}

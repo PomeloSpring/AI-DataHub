@@ -1,6 +1,7 @@
 # 角色为中心的访问模型改造设计（看板 / 智能问数 / 工作空间）
 
 > 状态：设计评审稿 v1（2026-09-30）
+> 注（AS-BOT/Waker 统一后）：`adh_wakers`→`adh_as_bots`、`__system_bot__` 哨兵已移除、系统域边界改由工具授权承担（见 `.qoder/rules/as-bot-system-waker.md`）；本文其余「现状」描述为评审时点快照，以 always-on 规则与现行代码为准。
 > 范围：数据看板可见性、智能问数（Waker+数据源）授权来源、工作空间从"必选上下文"降级为"可选模块"
 > 不变项：数据护城河（permission_enforcer 敏感基线/RBAC/列级/RLS）、Waker 逐工具授权（tool_policy）、AS-BOT 系统域边界均不动
 
@@ -151,22 +152,28 @@ def resolve_wakers(workspace_id, user_role="", waker_key="", user_id=0, ...):
 ### 4.2 `bind_resources`（resource_guard.py）
 
 > 决策更新：Waker 不再持有数据源配置（`datasource_ids` 配置维度已移除，DB 列保留不消费）。
-> Waker 必须依托用户或工作空间使用，数据源范围始终由「工作空间绑定 ∩ 用户角色权限」决定；
+> Waker 必须依托用户或工作空间使用，数据源范围**唯一由用户角色授权决定**；
 > 定时任务的 Waker 也继承任务创建者的角色权限，无需在 Waker 上单独配置数据源。
+>
+> **实现已落地（超前于本稿 P2 口径）**：工作空间域**不再保留“空间绑定”层**——`adh_workspace_datasources`
+> 退役为冻结表（保留结构与删除工作空间时的级联清理，任何读路径不得消费）。个人域与工作空间域**共用同一裁决口径**：
+> `allowed = role_service.get_user_allowed_datasources(user_id, workspace_id)`；admin 同样纯角色裁决、**不 bypass**，
+> 空角色授权一律 fail-closed（不解释为全量）。为防上线即锁死，随附一次性显式种子 `docker/mysql/role_datasource_admin_seed.sql`
+> 给 admin 角色补全量数据源授权。
 
 ```python
-# 现状分支保留：__system_bot__ → allowed = set()（系统源独立）
-# 个人域分支（workspace_id == 0 且非系统 bot）：
-#   allowed = 角色数据源权限全集          # 无空间绑定可交集，角色即唯一裁决层
-#   空角色权限 = fail-closed（不解释为全量）
-# 工作空间域：allowed = 空间绑定 ∩ 角色数据源权限（admin 跳过角色交集）
+# __system_bot__ → allowed = set()（系统源独立，datasource_id=0）
+# 其余（个人域 workspace_id==0 与工作空间域 workspace_id>0 同一口径）：
+#   allowed = role_service.get_user_allowed_datasources(user_id, workspace_id)  # 角色即唯一裁决层
+#   已选源 ∉ allowed → ResourceScopeError（不静默切换）；未选源且唯一候选 → 自动选定
+#   空角色授权 = fail-closed（admin 不例外、不 bypass）
 ```
 
 规则细节：
-- 两个域共用同一裁决口径，仅“是否有空间绑定层”不同；不存在 Waker 自持范围的第三条分支。
-- 会话已选源撤回 → 报错不静默切换（现状规则原样保留，个人域同样适用）。
-- `ctx.extra["available_datasource_ids"]` / `tag_authorized_datasource_ids` 注入口径不变，
-  个人域自然等于角色授权集。
+- 个人域与工作空间域**不再有“是否有空间绑定层”的差异**：两域都只按角色授权裁决；不存在 Waker 自持范围的第三条分支。
+- 会话已选源撤回 → 报错不静默切换（现状规则原样保留）。
+- `ctx.extra["available_datasource_ids"]` / `tag_authorized_datasource_ids` 注入口径不变，等于角色授权集。
+- 数据源列表 / 聊天选择器统一走 `GET /api/datasources/authorized`（datacatalog，内部调 `get_user_allowed_datasources`），不再读绑定表。
 
 ### 4.3 `authorize_workspace`（shared/common/auth.py）契约点
 

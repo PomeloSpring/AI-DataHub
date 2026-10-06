@@ -38,6 +38,8 @@ class RLSPolicyCreate(BaseModel):
 class RLSPolicyUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    datasource_id: Optional[int] = None
+    table_name: Optional[str] = None
     policy_type: Optional[str] = None
     filter_type: Optional[str] = None
     filter_expr: Optional[str] = None
@@ -54,11 +56,6 @@ class ColumnPolicyItem(BaseModel):
 
 class ColumnPoliciesBody(BaseModel):
     columns: list[ColumnPolicyItem]
-
-
-class UserAttributesBody(BaseModel):
-    workspace_id: int
-    attributes: dict
 
 
 # ── RLS Policy CRUD ──────────────────────────────────────────────
@@ -126,22 +123,28 @@ def update_rls_policy(policy_id: int, req: RLSPolicyUpdate, admin: dict = Depend
     """Update an RLS policy."""
     from services.authservice.services.rls_service import rls_service
     try:
-        # 先获取旧策略用于审计
+        # 先获取旧策略用于审计; 策略不存在必须显式报错, 不得假成功
         old_policy = rls_service.get_policy(policy_id)
+        if not old_policy:
+            raise HTTPException(status_code=404, detail="策略不存在")
         data = req.model_dump(exclude_unset=True)
-        rls_service.update_policy(policy_id, data)
+        if not rls_service.update_policy(policy_id, data):
+            # fail-loud: 无有效可更新字段或更新未落库时不得回"保存成功"
+            raise HTTPException(status_code=400, detail="更新未生效：没有可更新的字段")
         # 审计日志：更新策略
         rls_service.log_audit(
             user_id=admin.get("user_id", 0),
-            workspace_id=old_policy.get("workspace_id", 0) if old_policy else 0,
+            workspace_id=old_policy.get("workspace_id", 0),
             policy_id=policy_id,
-            policy_name=old_policy.get("name", "") if old_policy else "",
-            table_name=old_policy.get("table_name", "") if old_policy else "",
+            policy_name=old_policy.get("name", ""),
+            table_name=old_policy.get("table_name", ""),
             action="policy_update",
             original_sql="",
             filtered_sql=str(data)[:500],
         )
         return {"success": True}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -199,26 +202,6 @@ def set_column_policies(policy_id: int, body: ColumnPoliciesBody, admin: dict = 
             original_sql="",
             filtered_sql=str(columns)[:500],
         )
-        return {"success": True}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-# ── User Attributes Endpoints ────────────────────────────────────
-
-@router.get("/rls-user-attributes/{user_id}")
-def get_user_attributes(user_id: int, workspace_id: int = Query(0), _admin: dict = Depends(require_admin)):
-    """Get RLS user attributes for dynamic row filtering."""
-    from services.authservice.services.rls_service import rls_service
-    return rls_service.get_user_attributes(user_id, workspace_id)
-
-
-@router.put("/rls-user-attributes/{user_id}")
-def set_user_attributes(user_id: int, body: UserAttributesBody, _admin: dict = Depends(require_admin)):
-    """Set RLS user attributes (replace all)."""
-    from services.authservice.services.rls_service import rls_service
-    try:
-        rls_service.set_user_attributes(user_id, body.workspace_id, body.attributes)
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

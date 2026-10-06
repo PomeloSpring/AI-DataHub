@@ -25,6 +25,7 @@ from services.authservice.api.rls import router as rls_router
 from services.authservice.api.monitoring import router as monitoring_router
 from services.authservice.api.observability import router as observability_router
 from services.authservice.api.knowledge import router as knowledge_router
+from services.authservice.api.eval import router as eval_router
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -68,6 +69,7 @@ app.include_router(rls_router, prefix="/api/admin", tags=["RLS Security"])
 app.include_router(monitoring_router, prefix="/api/monitoring", tags=["monitoring"])
 app.include_router(observability_router, prefix="/api/observability", tags=["observability"])
 app.include_router(knowledge_router, prefix="/api/admin", tags=["knowledge"])
+app.include_router(eval_router, prefix="/api/eval", tags=["eval"])
 
 # Node metrics for distributed monitoring
 from services.shared.common.system_metrics import router as node_metrics_router

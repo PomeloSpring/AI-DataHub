@@ -188,7 +188,8 @@ async def create_data_screen(args: dict) -> dict:
     args = args or {}
     from services.datamind.execution.sdk_tools.context import get_execution_context
     current = get_execution_context()
-    if current and current.extra.get("waker_key") == "__system_bot__":
+    from services.datamind.execution.sdk_tools.scoped_metadata import system_scope
+    if current and system_scope(current):
         from services.datamind.execution.sdk_tools.dashboard_design_tools import request_dashboard_design
         return await request_dashboard_design({"request": f"创建仪表盘：{args.get('name', '')}",
                                                 "name": args.get("name", ""), "operation": "create"})
@@ -368,7 +369,7 @@ async def get_data_screen(args: dict) -> dict:
     ctx = ExecutionContextVar.get()
     user_id = (ctx.user_id if ctx else 0) or 0
 
-    dashboard = DashboardService().get_dashboard(dashboard_id, user_id)
+    dashboard = DashboardService().get_dashboard(dashboard_id, user_id, enforce_visibility=False)
     if not dashboard:
         return _error(f"大屏 {dashboard_id} 不存在")
 
@@ -390,7 +391,8 @@ async def update_data_screen_chart(args: dict) -> dict:
     args = args or {}
     from services.datamind.execution.sdk_tools.context import get_execution_context
     current = get_execution_context()
-    if current and current.extra.get("waker_key") == "__system_bot__":
+    from services.datamind.execution.sdk_tools.scoped_metadata import system_scope
+    if current and system_scope(current):
         from services.datamind.execution.sdk_tools.dashboard_design_tools import request_dashboard_design
         return await request_dashboard_design({"request": f"修改仪表盘 {args.get('dashboard_id')} 的图表 {args.get('chart_id')}",
                                                 "operation": "update"})
@@ -405,7 +407,9 @@ async def update_data_screen_chart(args: dict) -> dict:
     ctx = ExecutionContextVar.get()
     user_id = (ctx.user_id if ctx else 0) or 0
 
-    dashboard = DashboardService().get_dashboard(dashboard_id, user_id)
+    # AS-BOT 大屏设计通道: 访问控制由 resource_guard 的 owner/is_public 策略承担,
+    # 不适用角色可见性裁决(看板"可看"改造的明确边界)。
+    dashboard = DashboardService().get_dashboard(dashboard_id, user_id, enforce_visibility=False)
     if not dashboard:
         return _error(f"大屏 {dashboard_id} 不存在")
 

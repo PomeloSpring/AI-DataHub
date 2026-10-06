@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import DashboardChart, { ChartIcon, CHART_TYPES, CHART_TYPE_CATEGORIES } from './DashboardChart';
+import SqlCard from './SqlCard';
 import * as XLSX from 'xlsx';
 import html2canvas from 'html2canvas';
 
@@ -18,6 +19,8 @@ interface Props {
   defaultType?: string;
   /** 生成该数据的查询 SQL(可选);提供时卡片内展示 SQL 视图 */
   sql?: string;
+  /** 图上下钻: 点击图形元素时回传生成的下钻问题(不传则不启用) */
+  onDrill?: (question: string) => void;
 }
 
 // 与看板共用同一套图表类型(系统新增/删减自动同步);排除看板参数控件(非取数图表)
@@ -36,7 +39,7 @@ export function resolveChartType(llmType?: string): string {
   return VALID_TYPES.has(llmType) ? llmType : 'bar';
 }
 
-export default function ChartPicker({ data, defaultType, sql }: Props) {
+export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) {
   const columns = data?.columns || [];
   const rows = data?.rows || [];
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -50,6 +53,16 @@ export default function ChartPicker({ data, defaultType, sql }: Props) {
   const [seriesCol, setSeriesCol] = useState('');
   const [selectedSeries, setSelectedSeries] = useState<string[]>([]);
   const [fullscreen, setFullscreen] = useState(false);
+
+  // 图上下钻:点击图形元素 → 生成下钻问题(调用方预填输入框,用户确认后发送)
+  const onChartDrill = (datum: Record<string, any>) => {
+    if (!onDrill) return;
+    const cond = xCol && datum[xCol] !== undefined
+      ? `${xCol}=${datum[xCol]}`
+      : Object.entries(datum).filter(([k]) => !k.startsWith('_')).slice(0, 2)
+          .map(([k, v]) => `${k}=${v}`).join(' 且 ');
+    onDrill(`下钻分析:${cond},请按其他维度拆解${yCol ? `「${yCol}」` : '关键指标'}并解释差异原因`);
+  };
 
   useEffect(() => {
     if (defaultType) setChartType(resolveChartType(defaultType));
@@ -275,7 +288,7 @@ export default function ChartPicker({ data, defaultType, sql }: Props) {
         {controlsBlock}
         <div className="relative mt-3" ref={chartContainerRef}>
           <div className="h-[360px]">
-            <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={config} />
+            <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={config} onDrill={onDrill ? onChartDrill : undefined} />
           </div>
           <Button
             variant="ghost"
@@ -312,9 +325,7 @@ export default function ChartPicker({ data, defaultType, sql }: Props) {
       )}
 
       {view === 'sql' && sql && (
-        <pre className="p-4 bg-muted text-foreground rounded-lg border text-xs leading-relaxed overflow-auto max-h-[400px] font-mono whitespace-pre-wrap">
-          {sql}
-        </pre>
+        <SqlCard code={sql} maxHeight={400} />
       )}
 
       <Dialog open={fullscreen} onOpenChange={setFullscreen}>
@@ -322,7 +333,7 @@ export default function ChartPicker({ data, defaultType, sql }: Props) {
           <div className="flex flex-col h-full">
             {controlsBlock}
             <div className="relative flex-1 mt-3 min-h-0">
-              <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={config} />
+              <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={config} onDrill={onDrill ? onChartDrill : undefined} />
             </div>
           </div>
         </DialogContent>

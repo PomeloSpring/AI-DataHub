@@ -28,6 +28,13 @@ export default function IntegrationLogs() {
   const [filterAppId, setFilterAppId] = useState('');
   const [filterUserId, setFilterUserId] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+  // 资源筛选用选择框(不手填 ID): 应用清单供下拉选择
+  const [apps, setApps] = useState<Array<{ id: number; name: string }>>([]);
+  useEffect(() => {
+    client.get('/embed/admin/applications', { params: { page: 1, size: 100 } })
+      .then(({ data }) => setApps(data.items || data || []))
+      .catch(() => setApps([]));
+  }, []);
 
   const load = useCallback(async (p?: number) => {
     setLoading(true);
@@ -57,12 +64,14 @@ export default function IntegrationLogs() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <Input
-          placeholder="应用ID"
+        <select
+          className="border rounded px-3 py-1.5 text-sm bg-background w-40"
           value={filterAppId}
           onChange={(e) => setFilterAppId(e.target.value)}
-          className="w-32"
-        />
+        >
+          <option value="">全部应用</option>
+          {apps.map(app => <option key={app.id} value={String(app.id)}>{app.name}</option>)}
+        </select>
         <Input
           placeholder="用户ID"
           value={filterUserId}

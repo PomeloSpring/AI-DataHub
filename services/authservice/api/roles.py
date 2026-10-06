@@ -27,11 +27,6 @@ class UpdateRoleRequest(BaseModel):
     is_active: Optional[int] = None
 
 
-class SetRoleAttributesRequest(BaseModel):
-    workspace_id: int = 0
-    attributes: dict = {}
-
-
 class AssignUserRoleRequest(BaseModel):
     user_id: int
     workspace_id: int = 0
@@ -45,12 +40,12 @@ class SetDatasourceAccessRequest(BaseModel):
     datasource_ids: list[int]
 
 
-class SetTableAccessRequest(BaseModel):
-    tables: list[dict]  # [{datasource_id, table_name, access_type}]
+class SetDashboardAccessRequest(BaseModel):
+    dashboard_ids: list[int]
 
 
-class SetColumnAccessRequest(BaseModel):
-    columns: list[dict]  # [{datasource_id, table_name, column_name, access_type, mask_pattern}]
+class SetRoleRLSPoliciesRequest(BaseModel):
+    policy_ids: list[int]
 
 
 class CreateRLSPolicyRequest(BaseModel):
@@ -70,10 +65,6 @@ class SetRLSColumnPoliciesRequest(BaseModel):
     columns: list[dict]  # [{column_name, access_type, mask_pattern, description}]
 
 
-class SetUserAttributesRequest(BaseModel):
-    attributes: dict  # {attr_key: attr_value}
-
-
 # ── Role CRUD ───────────────────────────────────────────────────────────
 
 @router.get("/")
@@ -84,19 +75,118 @@ def list_roles(workspace_id: int = Query(None), user: dict = Depends(get_current
 
 @router.get("/perm-registry")
 def list_perm_registry(user: dict = Depends(get_current_user)):
-    """获取全部权限点(按模块分组), 供角色配置页渲染."""
+    """获取全部权限点, 供角色配置页「菜单与功能」分组渲染.
+
+    - groups: 按模块分组(兼容保留)
+    - menu_groups: 按菜单分组(菜单→功能), menu_key 为空或指向不存在菜单的权限码归 standalone
+    - 每个权限点附 api_pattern/api_method 只读字段(接口→权限码绑定由注册表维护, 角色侧不可编辑)
+    - 每个权限点附 AI 能力字段: ai_access(配置级别)/ai_effective(生效级别)/
+      ai_locked(涉密硬上界)/ai_action_key(登记了才生成 LLM 功能工具)/ai_note(原因)
+    """
     rows = execute_query(
-        "SELECT perm_code, label, module, module_label, description, menu_key, sort "
+        "SELECT perm_code, label, module, module_label, description, menu_key, sort, "
+        "       api_pattern, api_method, ai_access, ai_action_key, ai_note "
         "FROM adh_perm_registry WHERE is_active=1 ORDER BY sort"
-    )
-    grouped: dict[str, dict] = {}
-    for r in (rows or []):
-        g = grouped.setdefault(r["module"], {"module": r["module"], "module_label": r.get("module_label") or r["module"], "permissions": []})
-        g["permissions"].append({
-            "perm_code": r["perm_code"], "label": r["label"],
+    ) or []
+    menus = {
+        m["menu_key"]: m
+        for m in (execute_query(
+            "SELECT menu_key, label, section, module, sort, ai_access FROM adh_menu_registry WHERE is_active=1") or [])
+    }
+
+    # 涉密硬上界在代码层（perm_link），DB 配置抬不上去；
+    # 前端需要同时看到「配置值」与「生效值」，否则会以为改了就生效。
+    from services.datamind.execution import perm_link
+
+    def _item(r):
+        code = r["perm_code"]
+        configured = r.get("ai_access") or "none"
+        effective = perm_link.cap_level(code, configured)
+        locked = code in perm_link.SECRET_BOUND_NONE_PERMS or code in perm_link.SECRET_BOUND_READ_ONLY_PERMS
+        return {
+            "perm_code": code, "label": r["label"],
             "description": r.get("description") or "", "menu_key": r.get("menu_key") or "",
+            "api_pattern": r.get("api_pattern") or "", "api_method": r.get("api_method") or "*",
+            "ai_access": configured, "ai_effective": effective, "ai_locked": bool(locked),
+            "ai_action_key": r.get("ai_action_key") or "", "ai_note": r.get("ai_note") or "",
+        }
+
+    grouped: dict[str, dict] = {}
+    by_menu: dict[str, dict] = {}
+    standalone: list = []
+    for r in rows:
+        g = grouped.setdefault(r["module"], {"module": r["module"], "module_label": r.get("module_label") or r["module"], "permissions": []})
+        g["permissions"].append(_item(r))
+        menu_key = (r.get("menu_key") or "").strip()
+        menu = menus.get(menu_key)
+        if not menu:
+            standalone.append(_item(r))
+            continue
+        mg = by_menu.setdefault(menu_key, {
+            "menu_key": menu_key, "label": menu["label"], "section": menu.get("section") or "",
+            "module": menu.get("module") or r["module"], "module_label": r.get("module_label") or r["module"],
+            "sort": menu.get("sort") or 0, "permissions": [],
+            # 菜单级 AI 默认值，仅供前端批量套用；生效级别以各权限点为准。
+            "ai_access": menu.get("ai_access") or "none",
         })
-    return {"groups": list(grouped.values())}
+        mg["permissions"].append(_item(r))
+
+    module_order = {"system": 0, "data": 1, "workspace": 2}
+    menu_groups = sorted(
+        by_menu.values(),
+        key=lambda g: (module_order.get(g["module"], 99), g["sort"], g["label"]),
+    )
+    return {"groups": list(grouped.values()), "menu_groups": menu_groups, "standalone": standalone}
+
+
+class SetAiAccessRequest(BaseModel):
+    ai_access: str  # none | read | write
+    ai_note: Optional[str] = None  # 缺省 = 保留原有原因文案
+
+
+@router.put("/perm-registry/{perm_code}/ai-access")
+def set_perm_ai_access(perm_code: str, body: SetAiAccessRequest,
+                       user: dict = Depends(require_admin)):
+    """设置功能项的 AI 可调用级别（admin）。
+
+    涉密项被代码层硬上界（perm_link.SECRET_BOUND_*）卡死：请求把它设为
+    更高级别时**明确拒绝并说明原因**，不做静默降级 —— 让管理员知道改不动，
+    而不是以为改成功了（no-silent-degradation §1）。
+    """
+    from services.datamind.execution import perm_link
+
+    try:
+        level = perm_link.normalize_level(body.ai_access)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    rows = execute_query("SELECT perm_code, label FROM adh_perm_registry WHERE perm_code=%s",
+                         (perm_code,)) or []
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"权限点「{perm_code}」不存在")
+    label = rows[0].get("label") or perm_code
+
+    effective = perm_link.cap_level(perm_code, level)
+    if effective != level:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"「{label}」涉及敏感信息，AI 可调用级别最高只能是"
+                    f"「{'只读可见' if effective == perm_link.AI_LEVEL_READ else '不开放给 AI'}」，"
+                    f"不能设为「{'可读可写' if level == perm_link.AI_LEVEL_WRITE else '只读可见'}」。"
+                    f"原因：{body.ai_note or '该功能涉及密钥/凭据/权限配置'}"))
+
+    note = (body.ai_note or "").strip()[:255] if body.ai_note is not None else None
+    if note is None:
+        execute_write("UPDATE adh_perm_registry SET ai_access=%s WHERE perm_code=%s",
+                      (level, perm_code))
+        current_note = (execute_query("SELECT ai_note FROM adh_perm_registry WHERE perm_code=%s",
+                                      (perm_code,)) or [{}])[0].get("ai_note") or ""
+    else:
+        execute_write("UPDATE adh_perm_registry SET ai_access=%s, ai_note=%s WHERE perm_code=%s",
+                      (level, note, perm_code))
+        current_note = note
+    return {"perm_code": perm_code, "label": label, "ai_access": level,
+            "ai_effective": effective, "ai_note": current_note}
 
 
 @router.get("/current/permissions")
@@ -104,7 +194,7 @@ def get_current_user_permissions(user: dict = Depends(get_current_user)):
     """返回当前用户的权限码集合与可访问菜单 key(前端据此渲染菜单与按钮).
 
     - admin: unrestricted=True, 全部放行
-    - 角色未绑定任何权限码: unrestricted=True(不限制, 向后兼容)
+    - 角色未绑定任何权限码: unrestricted=False, 不可用任何功能/菜单(fail-closed)
     - 否则: 返回权限码列表 + 由权限码反查的可访问菜单 key
     """
     role_name = user.get("role") or ""
@@ -132,6 +222,15 @@ def get_current_user_permissions(user: dict = Depends(get_current_user)):
         if pc in perm_set or f"{module}:*" in perm_set or "*" in perm_set:
             menus.add(mrow["menu_key"])
     return {"permissions": perms, "menus": sorted(menus), "unrestricted": False}
+
+
+@router.get("/dashboard-catalog")
+def list_dashboard_catalog(admin: dict = Depends(require_admin)):
+    """全部看板清单 — 供角色配置页「看板」选择器(仅 admin)。
+
+    必须定义在 /{role_id} 之前, 否则会被当作 role_id 解析(422)。
+    """
+    return role_service.list_dashboard_catalog()
 
 
 @router.get("/{role_id}")
@@ -194,7 +293,7 @@ def get_role_permissions(role_id: int, user: dict = Depends(get_current_user)):
 @router.put("/{role_id}/permissions")
 def set_role_permissions(role_id: int, req: SetPermissionsRequest,
                          admin: dict = Depends(require_admin)):
-    """全量替换角色权限码(仅 admin). 空列表=不限制(拥有全部)."""
+    """全量替换角色权限码(仅 admin). 空列表=清空全部功能权限(fail-closed, 该角色不可用)."""
     role = execute_query("SELECT id FROM adh_roles WHERE id=%s", (role_id,), fetchone=True)
     if not role:
         raise HTTPException(status_code=404, detail="角色不存在")
@@ -228,53 +327,58 @@ def set_role_datasources(role_id: int, req: SetDatasourceAccessRequest,
     return {"success": ok}
 
 
-# ── Table Access ────────────────────────────────────────────────────────
+# ── Dashboard Visibility (看板可见性按角色授权) ───────────────────────
 
-@router.get("/{role_id}/tables")
-def get_role_tables(role_id: int, user: dict = Depends(get_current_user)):
-    """Get tables a role can access."""
-    return role_service.get_role_tables(role_id)
-
-
-@router.put("/{role_id}/tables")
-def set_role_tables(role_id: int, req: SetTableAccessRequest,
-                    admin: dict = Depends(require_admin)):
-    """Set table access for a role (admin only)."""
-    ok = role_service.set_role_tables(role_id, req.tables)
-    return {"success": ok}
+@router.get("/{role_id}/dashboards")
+def get_role_dashboards(role_id: int, user: dict = Depends(get_current_user)):
+    """Get dashboard IDs visible to a role (fail-closed: 空=一律不可见)."""
+    return role_service.get_role_dashboards(role_id)
 
 
-# ── Column Access ───────────────────────────────────────────────────────
-
-@router.get("/{role_id}/columns")
-def get_role_columns(role_id: int, user: dict = Depends(get_current_user)):
-    """Get column permissions for a role."""
-    return role_service.get_role_columns(role_id)
-
-
-@router.put("/{role_id}/columns")
-def set_role_columns(role_id: int, req: SetColumnAccessRequest,
-                     admin: dict = Depends(require_admin)):
-    """Set column access for a role (admin only)."""
-    ok = role_service.set_role_columns(role_id, req.columns)
-    return {"success": ok}
-
-
-# ── Role Attributes (Data Scope) ───────────────────────────────
-
-@router.get("/{role_id}/attributes")
-def get_role_attributes(role_id: int, workspace_id: int = Query(0),
-                        user: dict = Depends(get_current_user)):
-    """Get role attributes as {key: value} for a workspace."""
-    return role_service.get_role_attributes(role_id, workspace_id)
-
-
-@router.put("/{role_id}/attributes")
-def set_role_attributes(role_id: int, req: SetRoleAttributesRequest,
+@router.put("/{role_id}/dashboards")
+def set_role_dashboards(role_id: int, req: SetDashboardAccessRequest,
                         admin: dict = Depends(require_admin)):
-    """Set (replace) role attributes for a workspace (admin only)."""
-    ok = role_service.set_role_attributes(role_id, req.workspace_id, req.attributes)
-    return {"success": ok}
+    """全量替换角色可见看板(仅 admin). 空列表=全部不可见."""
+    role = execute_query("SELECT id FROM adh_roles WHERE id=%s", (role_id,), fetchone=True)
+    if not role:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    ok = role_service.set_role_dashboards(role_id, req.dashboard_ids)
+    return {"success": ok, "count": len(set(req.dashboard_ids or []))}
+
+
+# ── RLS Policy Binding (数据安全策略绑定: 勾选才生效) ──────────────────
+
+@router.get("/{role_id}/rls-policies")
+def get_role_rls_policies(role_id: int, user: dict = Depends(get_current_user)):
+    """Get data-security policy IDs bound to a role."""
+    rows = execute_query(
+        "SELECT policy_id FROM adh_role_rls_policies WHERE role_id=%s ORDER BY policy_id",
+        (role_id,))
+    return {"role_id": role_id, "policy_ids": [r["policy_id"] for r in (rows or [])]}
+
+
+@router.put("/{role_id}/rls-policies")
+def set_role_rls_policies(role_id: int, req: SetRoleRLSPoliciesRequest,
+                          admin: dict = Depends(require_admin)):
+    """全量替换角色绑定的数据安全策略(仅 admin).
+
+    勾选才生效: 仅绑定的策略施加行/列限制; 空列表=不施加任何 RLS 限制。
+    """
+    role = execute_query("SELECT id FROM adh_roles WHERE id=%s", (role_id,), fetchone=True)
+    if not role:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    execute_write("DELETE FROM adh_role_rls_policies WHERE role_id=%s", (role_id,))
+    for pid in set(req.policy_ids or []):
+        execute_write(
+            "INSERT IGNORE INTO adh_role_rls_policies (role_id, policy_id) VALUES (%s,%s)",
+            (role_id, int(pid)))
+    # 使 enforcer 侧访问缓存失效(行/列限制变更需即时生效)
+    try:
+        from services.datamind.permission.enforcer import invalidate_access_cache
+        invalidate_access_cache()
+    except Exception:  # noqa: BLE001 — enforcer 不可用时不影响绑定保存
+        pass
+    return {"success": True, "count": len(set(req.policy_ids or []))}
 
 
 # ── Role User Assignment ───────────────────────────────────────
@@ -365,26 +469,3 @@ def set_rls_column_policies(
     ok = rls_service.set_column_policies(policy_id, req.columns)
     return {"success": ok}
 
-
-# ── User RLS Attributes ────────────────────────────────────────────────
-
-@router.get("/rls/users/{user_id}/attributes")
-def get_user_rls_attributes(
-    user_id: int,
-    workspace_id: int = Query(...),
-    user: dict = Depends(get_current_user),
-):
-    """Get RLS attributes for a user."""
-    return rls_service.get_user_attributes(user_id, workspace_id)
-
-
-@router.put("/rls/users/{user_id}/attributes")
-def set_user_rls_attributes(
-    user_id: int,
-    workspace_id: int = Query(...),
-    req: SetUserAttributesRequest = ...,
-    admin: dict = Depends(require_admin),
-):
-    """Set RLS attributes for a user (admin only)."""
-    ok = rls_service.set_user_attributes(user_id, workspace_id, req.attributes)
-    return {"success": ok}

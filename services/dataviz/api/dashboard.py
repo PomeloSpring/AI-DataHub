@@ -10,7 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query as QueryParam
 from pydantic import BaseModel, field_validator
 from typing import Optional
 
-from services.shared.common.auth import get_current_user, get_workspace_id
+from services.shared.common.auth import get_current_user, get_workspace_id, require_admin
+from services.shared.common.db import DBConnection
 from services.dataviz.services.governed_query import NoIdentityError
 from services.dataviz.services.dashboard_service import (
     dashboard_service,
@@ -18,6 +19,7 @@ from services.dataviz.services.dashboard_service import (
     snapshot_service,
     preview_saved_query,
     list_datasource_aggregations,
+    visible_dashboard_ids,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,6 +106,10 @@ class ReorderRequest(BaseModel):
     orders: list[dict]
 
 
+class SetVisibleRolesRequest(BaseModel):
+    role_ids: list[int]
+
+
 # ── Dashboard Endpoints ─────────────────────────────────────────────────────
 
 
@@ -112,9 +118,10 @@ def list_dashboards_endpoint(
     user: dict = Depends(get_current_user),
     workspace_id: int = Depends(get_workspace_id),
 ):
-    """List dashboards (workspace scoped)."""
+    """List dashboards (workspace scoped, 按角色可见集过滤)."""
     try:
-        return dashboard_service.list_dashboards(user["user_id"], workspace_id)
+        return dashboard_service.list_dashboards(
+            user["user_id"], workspace_id, user.get("role") or "")
     except Exception as e:
         logger.exception("Failed to list dashboards")
         raise HTTPException(status_code=500, detail=str(e))
@@ -210,14 +217,156 @@ def list_datasources_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Dashboard Groups (仪表盘组/看板组合: 看板目录切换维度) ────────────
+
+
+class GroupCreate(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    sort: int = 0
+
+
+class GroupItemsRequest(BaseModel):
+    dashboard_ids: list[int]
+
+
+class GroupRolesRequest(BaseModel):
+    role_ids: list[int]
+
+
+def _group_payload(g: dict) -> dict:
+    from services.shared.common.db import execute_query
+    g["dashboard_ids"] = [r["dashboard_id"] for r in (execute_query(
+        "SELECT dashboard_id FROM adh_dashboard_group_items WHERE group_id=%s ORDER BY sort, id",
+        (g["id"],)) or [])]
+    g["role_ids"] = [r["role_id"] for r in (execute_query(
+        "SELECT role_id FROM adh_role_dashboard_groups WHERE group_id=%s", (g["id"],)) or [])]
+    return g
+
+
+@router.get("/groups")
+def list_groups_endpoint(user: dict = Depends(get_current_user)):
+    """全部仪表盘组(管理端组合管理用; 含组内看板与绑定角色)."""
+    from services.shared.common.db import execute_query
+    groups = execute_query("SELECT * FROM adh_dashboard_groups ORDER BY sort, id") or []
+    return [_group_payload(g) for g in groups]
+
+
+@router.get("/groups/visible")
+def list_visible_groups_endpoint(user: dict = Depends(get_current_user)):
+    """当前用户可见的仪表盘组(组按角色分配), 每组带 组内∩角色可见 的看板清单.
+
+    可见但未入组的看板归"未分组"兑底组(id=0); 组只做编排不授予可见(fail-closed)。
+    """
+    from services.shared.common.db import execute_query
+    uid = user["user_id"]
+    is_admin = (user.get("role") or "") == "admin"
+    visible = visible_dashboard_ids(uid, user.get("role") or "")
+    if visible is not None and not visible:
+        return []  # fail-closed: 无任何可见看板
+    rows = execute_query(
+        "SELECT id, name, status, is_default, sort_order FROM adh_dashboards "
+        "ORDER BY is_default DESC, sort_order, id") or []
+    if visible is not None:
+        rows = [r for r in rows if r["id"] in visible]
+    if is_admin:
+        # 管理员可见全部组(含未绑角色的编排, 便于自检)
+        groups = execute_query("SELECT * FROM adh_dashboard_groups ORDER BY sort, id") or []
+    else:
+        groups = execute_query(
+            """SELECT DISTINCT g.* FROM adh_dashboard_groups g
+               JOIN adh_role_dashboard_groups rg ON rg.group_id = g.id
+               JOIN adh_user_roles ur ON ur.role_id = rg.role_id
+               WHERE ur.user_id = %s ORDER BY g.sort, g.id""", (uid,)) or []
+    out = []
+    grouped_ids: set = set()
+    for g in groups:
+        member = {r["dashboard_id"] for r in (execute_query(
+            "SELECT dashboard_id FROM adh_dashboard_group_items WHERE group_id=%s ORDER BY sort, id",
+            (g["id"],)) or [])}
+        grouped_ids |= member
+        out.append({"id": g["id"], "name": g["name"], "description": g.get("description") or "",
+                    "sort": g.get("sort") or 0, "dashboards": [b for b in rows if b["id"] in member]})
+    out.append({"id": 0, "name": "未分组", "description": "未加入任何仪表盘组的可见看板",
+                "sort": 9999, "dashboards": [b for b in rows if b["id"] not in grouped_ids]})
+    return out
+
+
+@router.post("/groups")
+def create_group_endpoint(req: GroupCreate, admin: dict = Depends(require_admin)):
+    """新建仪表盘组(仅 admin)."""
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO adh_dashboard_groups (name, description, sort) VALUES (%s, %s, %s)",
+                (req.name, req.description or "", req.sort or 0))
+            group_id = cur.lastrowid
+    return {"success": True, "id": group_id}
+
+
+@router.put("/groups/{group_id}")
+def update_group_endpoint(group_id: int, req: GroupCreate, admin: dict = Depends(require_admin)):
+    """更新仪表盘组(仅 admin)."""
+    from services.shared.common.db import execute_write
+    n = execute_write(
+        "UPDATE adh_dashboard_groups SET name=%s, description=%s, sort=%s WHERE id=%s",
+        (req.name, req.description or "", req.sort or 0, group_id))
+    if not n:
+        raise HTTPException(status_code=404, detail="仪表盘组不存在")
+    return {"success": True}
+
+
+@router.delete("/groups/{group_id}")
+def delete_group_endpoint(group_id: int, admin: dict = Depends(require_admin)):
+    """删除仪表盘组及其成员/角色绑定(仅 admin, 不删看板本身)."""
+    from services.shared.common.db import execute_write
+    execute_write("DELETE FROM adh_dashboard_group_items WHERE group_id=%s", (group_id,))
+    execute_write("DELETE FROM adh_role_dashboard_groups WHERE group_id=%s", (group_id,))
+    n = execute_write("DELETE FROM adh_dashboard_groups WHERE id=%s", (group_id,))
+    if not n:
+        raise HTTPException(status_code=404, detail="仪表盘组不存在")
+    return {"success": True}
+
+
+@router.put("/groups/{group_id}/items")
+def set_group_items_endpoint(group_id: int, req: GroupItemsRequest,
+                             admin: dict = Depends(require_admin)):
+    """全量替换组内看板(仅 admin)."""
+    from services.shared.common.db import execute_write, execute_query
+    if not execute_query("SELECT id FROM adh_dashboard_groups WHERE id=%s", (group_id,), fetchone=True):
+        raise HTTPException(status_code=404, detail="仪表盘组不存在")
+    execute_write("DELETE FROM adh_dashboard_group_items WHERE group_id=%s", (group_id,))
+    for i, did in enumerate(dict.fromkeys(req.dashboard_ids or [])):
+        execute_write(
+            "INSERT IGNORE INTO adh_dashboard_group_items (group_id, dashboard_id, sort) VALUES (%s,%s,%s)",
+            (group_id, int(did), i))
+    return {"success": True, "count": len(set(req.dashboard_ids or []))}
+
+
+@router.put("/groups/{group_id}/roles")
+def set_group_roles_endpoint(group_id: int, req: GroupRolesRequest,
+                             admin: dict = Depends(require_admin)):
+    """全量替换组的角色绑定(仅 admin). 组按角色分配, 不授予看板可见性."""
+    from services.shared.common.db import execute_write, execute_query
+    if not execute_query("SELECT id FROM adh_dashboard_groups WHERE id=%s", (group_id,), fetchone=True):
+        raise HTTPException(status_code=404, detail="仪表盘组不存在")
+    execute_write("DELETE FROM adh_role_dashboard_groups WHERE group_id=%s", (group_id,))
+    for rid in set(req.role_ids or []):
+        execute_write(
+            "INSERT IGNORE INTO adh_role_dashboard_groups (role_id, group_id) VALUES (%s,%s)",
+            (int(rid), group_id))
+    return {"success": True, "count": len(set(req.role_ids or []))}
+
+
 @router.get("/{dashboard_id}")
 def get_dashboard_endpoint(
     dashboard_id: int,
     user: dict = Depends(get_current_user),
 ):
-    """Get a dashboard with its charts."""
+    """Get a dashboard with its charts (角色不可见 → 404, 不暴露存在性)."""
     try:
-        dashboard = dashboard_service.get_dashboard(dashboard_id, user["user_id"])
+        dashboard = dashboard_service.get_dashboard(
+            dashboard_id, user["user_id"], user.get("role") or "")
         if not dashboard:
             raise HTTPException(status_code=404, detail="Dashboard not found")
         return dashboard
@@ -283,6 +432,34 @@ def copy_dashboard_endpoint(
     except Exception as e:
         logger.exception("Failed to copy dashboard")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Dashboard Visibility Roles (看板可见角色配置, 双向入口的看板侧) ────
+
+
+@router.get("/{dashboard_id}/visible-roles")
+def get_visible_roles_endpoint(
+    dashboard_id: int,
+    user: dict = Depends(get_current_user),
+):
+    """获取可看到该看板的角色列表."""
+    from services.authservice.services.role_service import role_service
+    return role_service.get_dashboard_roles(dashboard_id)
+
+
+@router.put("/{dashboard_id}/visible-roles")
+def set_visible_roles_endpoint(
+    dashboard_id: int,
+    req: SetVisibleRolesRequest,
+    admin: dict = Depends(require_admin),
+):
+    """全量替换看板的可见角色(仅 admin). 空列表=一律不可见(fail-closed)."""
+    from services.authservice.services.role_service import role_service
+    if not dashboard_service.get_dashboard(
+            dashboard_id, admin["user_id"], admin.get("role") or ""):
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    ok = role_service.set_dashboard_roles(dashboard_id, req.role_ids)
+    return {"success": ok, "count": len(set(req.role_ids or []))}
 
 
 # ── Chart Endpoints ─────────────────────────────────────────────────────────

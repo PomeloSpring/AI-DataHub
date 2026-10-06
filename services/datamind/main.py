@@ -31,7 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from services.shared import observability
 
 from services.datamind.api.chat import router as chat_router
-from services.datamind.api.attachments import router as attachments_router
+from services.datamind.api.session_files import router as session_files_router
 from services.datamind.api.knowledge_bases import router as knowledge_bases_router
 from services.datamind.api.skills_admin import router as skills_admin_router
 from services.datamind.api.pipeline import router as pipeline_router
@@ -40,6 +40,7 @@ from services.datamind.api.playground import router as playground_router
 from services.datamind.api.model_config import router as model_config_router
 from services.datamind.api.execution import router as execution_router
 from services.datamind.api.as_bot import router as as_bot_router
+from services.datamind.api.workspace_assets import router as workspace_assets_router
 
 app = FastAPI(
     title="DataMind API",
@@ -78,7 +79,7 @@ async def _trace_middleware(request: Request, call_next):
 
 # Include routers
 app.include_router(chat_router, prefix="/api/chat", tags=["Chat / NL2SQL"])
-app.include_router(attachments_router, prefix="/api/chat/attachments", tags=["Chat Attachments"])
+app.include_router(session_files_router, prefix="/api/chat", tags=["Session Files Preview"])
 app.include_router(knowledge_bases_router, prefix="/api", tags=["Knowledge Bases Management"])
 app.include_router(skills_admin_router, prefix="/api", tags=["Skills Management"])
 app.include_router(pipeline_router, prefix="/api/pipeline", tags=["Pipeline Execution"])
@@ -87,6 +88,7 @@ app.include_router(playground_router, prefix="/api/playground", tags=["SQL Playg
 app.include_router(model_config_router, prefix="/api/model-config", tags=["Model Config"])
 app.include_router(execution_router, prefix="/api/execution", tags=["Execution Layers"])
 app.include_router(as_bot_router, prefix="/api/as-bot", tags=["AS-BOT System Assistant"])
+app.include_router(workspace_assets_router, prefix="/api/workspace-assets", tags=["Workspace Assets"])
 
 # Node metrics for distributed monitoring
 from services.shared.common.system_metrics import router as node_metrics_router

@@ -167,29 +167,15 @@ services:
     restart: unless-stopped
 
   # ══════════════════════════════════════════════════════════
-  # GraphService — 知识图谱服务 (port 8011)
-  # ══════════════════════════════════════════════════════════
-  graphservice:
-    build:
-      context: ..
-      dockerfile: services/graphservice/Dockerfile
-    container_name: adh-graphservice
-    ports:
-      - "8011:8011"
-    environment:
-      <<: *common-env
-      SERVICE_PORT: "8011"
-    restart: unless-stopped
-
-  # ══════════════════════════════════════════════════════════
   # SemanticLayer — 语义层服务 (port 8012)
   # BI/ChatBI -> 语义层 -> 执行层 中间层: binding/MDL/选路/护栏
+  # 并含知识图谱 /api/graph (原 graphservice:8011 已并入本服务)
   # ══════════════════════════════════════════════════════════
-  semanticservice:
+  semhub:
     build:
       context: ..
-      dockerfile: services/semanticservice/Dockerfile
-    container_name: adh-semanticservice
+      dockerfile: services/semhub/Dockerfile
+    container_name: adh-semhub
     ports:
       - "8012:8012"
     environment:

@@ -158,7 +158,7 @@ const CATEGORY_OPTIONS: AdapterFilterOption[] = [
 ];
 
 // 版本化 Prompt 页只治理"护栏 + NL2SQL 生成链"两类真消费点:
-// - guardrail:role_style 已退出(角色风格唯一配置点 = Waker persona);
+// - guardrail:role_style 已退出(角色风格唯一配置点 = AS-BOT persona);
 // - 分析类提示词(LLM 分析/元数据分析/结果分析)属技能职责, 由 Skills 管理承接, 不在此呈现。
 const PROMPT_KEY_PREFIXES = ['guardrail:', 'nl2sql:'];
 const PROMPT_HIDDEN_KEYS = ['guardrail:role_style'];
@@ -543,7 +543,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
           <h1 className="text-2xl font-bold">版本化配置管理</h1>
           <p className="text-sm text-muted-foreground">
             治理护栏与 NL2SQL 生成链 Prompt（全局默认 + 工作空间覆盖），自动记录版本快照，支持历史 diff 与一键回滚。
-            角色风格在 Waker 配置，分析类提示词在 Skills 管理，MCP 服务在 MCP 配置页管理，均不属本页职责。
+            角色风格在 AS-BOT 配置，分析类提示词在 Skills 管理，MCP 服务在 MCP 配置页管理，均不属本页职责。
           </p>
         </div>
         <div className="w-56">

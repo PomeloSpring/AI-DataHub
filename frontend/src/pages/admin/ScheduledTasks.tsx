@@ -53,8 +53,8 @@ const TRIGGER_TYPE_MAP: Record<string, { label: string; color: string }> = {
 
 function getSourceBadge(task: ScheduledTask): { label: string; color: string } {
   const cfg = task.task_config || {} as any;
-  if (task.requires_waker_migration) return { label: '需重新配置 Waker', color: 'text-orange-500 border-orange-500/20' };
-  if (cfg.waker_key) return { label: `Waker · ${cfg.waker_key}`, color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' };
+  if (task.requires_as_bot_migration) return { label: '需重新配置 AS-BOT', color: 'text-orange-500 border-orange-500/20' };
+  if (cfg.as_bot_key) return { label: `AS-BOT · ${cfg.as_bot_key}`, color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' };
   return { label: '数据源', color: 'bg-gray-500/10 text-gray-500 border-gray-500/20' };
 }
 
@@ -216,8 +216,8 @@ export default function ScheduledTasks() {
                   <td className="p-3">
                     {task.ownership_status === 'unclaimed' ? (
                       <Badge variant="outline" className="text-orange-500">待认领（通过 AS-BOT 审批）</Badge>
-                    ) : task.requires_waker_migration ? (
-                      <Badge variant="outline" className="text-orange-500">需重新配置 Waker</Badge>
+                    ) : task.requires_as_bot_migration ? (
+                      <Badge variant="outline" className="text-orange-500">需重新配置 AS-BOT</Badge>
                     ) : task.last_status ? (
                       <Badge variant="outline" className={STATUS_MAP[task.last_status]?.color}>
                         {STATUS_MAP[task.last_status]?.label || task.last_status}
@@ -255,7 +255,7 @@ export default function ScheduledTasks() {
                         variant="ghost"
                         size="sm"
                         onClick={() => handleTrigger(task)}
-                        disabled={task.ownership_status === 'unclaimed' || task.requires_waker_migration}
+                        disabled={task.ownership_status === 'unclaimed' || task.requires_as_bot_migration}
                         title="手动触发"
                       >
                         <Play className="w-4 h-4" />

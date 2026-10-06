@@ -95,7 +95,7 @@ const STATUS_LABELS: Record<string, string> = {
 // ── Dynamic Config Form ────────────────────────────────────────────
 
 function ConfigForm({
-  sandboxType,
+
   configSchema,
   values,
   onChange,

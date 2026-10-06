@@ -22,7 +22,7 @@ TOOLS = [
           {"keyword": {"type": "string"}}),
     _tool("run_semantic_query", "执行声明式语义意图，禁止 SQL。只允许对象、指标、维度、过滤、排序、limit、time_window、time_grain、time_column、params。",
           {"intent": {"type": "object"}}),
-    _tool("knowledge_search", "检索当前 Waker 已绑定知识库中的业务口径。", {"question": {"type": "string"}}),
+    _tool("knowledge_search", "检索当前 AS-BOT 已绑定知识库中的业务口径。", {"question": {"type": "string"}}),
     _tool("needs_clarification", "口径或业务意图不明确时停止，交由人工补充任务配置。", {}),
 ]
 
@@ -48,15 +48,21 @@ SEMANTIC_TOOLS = {"get_metrics", "run_semantic_query", "knowledge_search"}
 
 
 class ScheduledScopeError(PermissionError):
-    def __init__(self, message, code="WAKER_SCOPE_DENIED"):
+    def __init__(self, message, code="ASBOT_SCOPE_DENIED"):
         super().__init__(message)
         self.code = code
 
 
-def needs_waker_migration(task):
+def _config_as_bot_key(config) -> str:
+    """task_config 内的 AS-BOT 标识：读侧兼容双键（as_bot_key 优先，waker_key 存量回退），
+    写侧只写 as_bot_key。"""
+    return str(config.get("as_bot_key") or config.get("waker_key") or "")
+
+
+def needs_as_bot_migration(task):
     config = task.get("task_config") or {}
     analysis = task.get("task_type") == "agent" or any(config.get(k) for k in LEGACY_BINDINGS)
-    return analysis and (not config.get("waker_key") or bool(LEGACY_BINDINGS.intersection(config)))
+    return analysis and (not _config_as_bot_key(config) or bool(LEGACY_BINDINGS.intersection(config)))
 
 
 def _profile(ctx, policy):
@@ -96,50 +102,47 @@ def _profile(ctx, policy):
 
 
 def load_profile(config, identity):
-    """只信持久化创建者和当前 Waker；每次调用重新读取共享权限。"""
+    """只信持久化创建者和当前 AS-BOT；每次调用重新读取共享权限。"""
     from services.datamind.execution.tool_policy import resolve_policy
-    if not isinstance(config, dict) or LEGACY_BINDINGS.intersection(config) or not config.get("waker_key"):
-        raise ScheduledScopeError("需重新配置 Waker：请选择并保存分析任务的 Waker", "WAKER_REQUIRED")
-    if not isinstance(config["waker_key"], str) or config["waker_key"] == "__system_bot__":
-        raise ScheduledScopeError("定时分析必须选择业务 Waker")
+    as_bot_key = _config_as_bot_key(config) if isinstance(config, dict) else ""
+    if not isinstance(config, dict) or LEGACY_BINDINGS.intersection(config) or not as_bot_key:
+        raise ScheduledScopeError("需重新配置 AS-BOT：请选择并保存分析任务的 AS-BOT", "ASBOT_REQUIRED")
     source = config.get("datasource_id")
     if type(source) is not int or source <= 0 or config.get("datasource_ids"):
         raise ScheduledScopeError("分析任务必须明确选择一个数据源")
     ctx = ExecutionContext(user_id=identity["user_id"], workspace_id=identity["workspace_id"],
-                           datasource_id=source, extra={"waker_key": config["waker_key"]})
+                           datasource_id=source, extra={"as_bot_key": as_bot_key})
     profile = _profile(ctx, resolve_policy(ctx))
     if source not in profile["sources"]:
-        raise ScheduledScopeError("数据源不在任务创建者与 Waker 的授权范围内")
+        raise ScheduledScopeError("数据源不在任务创建者与 AS-BOT 的授权范围内")
     if not {"get_metrics", "run_semantic_query"} <= profile["tools"]:
-        raise ScheduledScopeError("定时分析需要 Waker 授权 get_metrics 和 run_semantic_query")
+        raise ScheduledScopeError("定时分析需要 AS-BOT 授权 get_metrics 和 run_semantic_query")
     return profile
 
 
-def validate_task_waker(task):
-    if needs_waker_migration(task):
-        raise ScheduledScopeError("需重新配置 Waker：旧 Agent/MCP 配置已停用", "WAKER_REQUIRED")
+def validate_task_as_bot(task):
+    if needs_as_bot_migration(task):
+        raise ScheduledScopeError("需重新配置 AS-BOT：旧 Agent/MCP 配置已停用", "ASBOT_REQUIRED")
     if task.get("task_type") == "agent":
         return load_profile(task.get("task_config") or {}, {
             "user_id": task.get("owner_id"), "workspace_id": task.get("workspace_id") or 0})
     return None
 
 
-def waker_options(owner_id, workspace_id):
+def as_bot_options(owner_id, workspace_id):
     """候选身份由服务端任务创建者决定，不接受请求体身份。"""
     from services.shared.common.auth import resolve_execution_owner
-    from services.datamind.execution.wakers import resolve_wakers
+    from services.datamind.execution.as_bots import resolve_as_bots
     from services.datamind.execution.tool_policy import compile_policy
     user = resolve_execution_owner(owner_id, workspace_id)
     result = []
-    for waker in resolve_wakers(workspace_id, user["role"], user_id=owner_id):
-        if waker["waker_key"] == "__system_bot__":
-            continue
-        item = {"waker_key": waker["waker_key"], "name": waker.get("display_name") or waker["name"],
+    for as_bot in resolve_as_bots(workspace_id, user["role"], user_id=owner_id):
+        item = {"as_bot_key": as_bot["as_bot_key"], "name": as_bot.get("display_name") or as_bot["name"],
                 "available": False, "datasource_ids": [], "tools": [], "unavailable_tools": []}
         try:
             ctx = ExecutionContext(user_id=owner_id, workspace_id=workspace_id, user_role=user["role"],
-                                   extra={"waker_key": waker["waker_key"]})
-            profile = _profile(ctx, compile_policy(waker))
+                                   extra={"as_bot_key": as_bot["as_bot_key"]})
+            profile = _profile(ctx, compile_policy(as_bot))
             item.update(datasource_ids=sorted(profile["sources"]), tools=sorted(profile["tools"]) +
                         [f"MCP {s['name']}：propose_semantic_intent" for s in profile["servers"]],
                         unavailable_tools=[{"name": n, "reason": r} for n, r in profile["unavailable"].items()])
@@ -150,7 +153,7 @@ def waker_options(owner_id, workspace_id):
             else:
                 item["available"] = True
         except (PermissionError, ValueError) as exc:
-            logger.warning("定时 Waker 不可用: %s", exc)
+            logger.warning("定时 AS-BOT 不可用: %s", exc)
             item["reason"] = str(exc)
         result.append(item)
     return result
@@ -186,7 +189,7 @@ async def analyze_question(question: str, config: dict, identity: dict, check=No
         profile = await asyncio.to_thread(load_profile, config, identity)
     except (PermissionError, ValueError, HTTPException) as exc:
         logger.warning("定时分析授权拒绝: %s", exc)
-        return {"status": "failed", "error_code": getattr(exc, "code", "WAKER_SCOPE_DENIED"), "needs_attention": True}
+        return {"status": "failed", "error_code": getattr(exc, "code", "ASBOT_SCOPE_DENIED"), "needs_attention": True}
     tools = [t for t in TOOLS if t["name"] in profile["tools"] or t["name"] == "needs_clarification"]
     remote_tools = {}
     for index, server in enumerate(profile["servers"]):
@@ -199,7 +202,7 @@ async def analyze_question(question: str, config: dict, identity: dict, check=No
     async def recheck():
         live = await asyncio.to_thread(load_profile, config, identity)
         if live["fingerprint"] != profile["fingerprint"]:
-            raise ScheduledScopeError("Waker 或 MCP 配置已变化，请重新执行任务", "WAKER_SCOPE_CHANGED")
+            raise ScheduledScopeError("AS-BOT 或 MCP 配置已变化，请重新执行任务", "ASBOT_SCOPE_CHANGED")
         return live
     token = set_execution_context(ctx)
     results = []
@@ -207,8 +210,8 @@ async def analyze_question(question: str, config: dict, identity: dict, check=No
         "你是无人值守语义分析助手。先查看实时目录，再执行 run_semantic_query。"
         "只能使用给定的业务名；不猜口径，不生成 SQL。相对日期使用 time_window。"
         "不清楚时调用 needs_clarification。所有所需查询完成才结束。"
-    ) + "\n所选 Waker 的业务说明（不能改变工具与权限范围）：\n" +
-        str(profile["policy"].waker.get("system_prompt") or "")[:12000]},
+    ) + "\n所选 AS-BOT 的业务说明（不能改变工具与权限范围）：\n" +
+        str(profile["policy"].as_bot.get("system_prompt") or "")[:12000]},
     {"role": "user", "content": question + "\n任务背景：" + str(config.get("context") or "")}]
     try:
         for _ in range(max(1, min(int(config.get("max_iterations") or 8), 20))):
@@ -241,7 +244,7 @@ async def analyze_question(question: str, config: dict, identity: dict, check=No
                 reject_identity(args)
                 _check_source(args, ctx.datasource_id)
                 if name not in {t["name"] for t in tools}:
-                    raise ScheduledScopeError("当前 Waker 未授权该定时工具", "TOOL_NOT_ALLOWED")
+                    raise ScheduledScopeError("当前 AS-BOT 未授权该定时工具", "TOOL_NOT_ALLOWED")
                 if name in remote_tools:
                     try:
                         intent = await asyncio.wait_for(propose_intent(remote_tools[name], question), 30)
@@ -286,6 +289,6 @@ async def analyze_question(question: str, config: dict, identity: dict, check=No
         return {"status": "failed", "error_code": "ITERATION_LIMIT", "needs_attention": True}
     except (PermissionError, ValueError, HTTPException) as exc:
         logger.warning("定时分析权限或配置已失效: %s", exc)
-        return {"status": "failed", "error_code": getattr(exc, "code", "WAKER_SCOPE_DENIED"), "needs_attention": True}
+        return {"status": "failed", "error_code": getattr(exc, "code", "ASBOT_SCOPE_DENIED"), "needs_attention": True}
     finally:
         ExecutionContextVar.reset(token)

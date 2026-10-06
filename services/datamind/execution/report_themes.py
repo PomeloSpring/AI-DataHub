@@ -2,7 +2,7 @@
 
 值与 frontend/src/styles/globals.css 各主题 class 的核心 CSS 变量同源(HSL 三元组)。
 改主题配色时必须同步本表, 否则报告与 App 主题漂移(违反"同一生效配置多处消费必须共用")。
-默认主题 datafoundry 与 themeStore 初始值保持一致。
+默认主题 light 与 themeStore 初始值保持一致。
 """
 
 # theme_id -> 核心令牌(HSL 三元组字符串, 与 globals.css 一致)
@@ -90,7 +90,7 @@ THEME_TOKENS: dict[str, dict] = {
     },
 }
 
-DEFAULT_THEME = "datafoundry"
+DEFAULT_THEME = "light"
 VALID_THEMES = tuple(THEME_TOKENS.keys())
 
 

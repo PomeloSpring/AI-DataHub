@@ -38,6 +38,32 @@ def invalidate_rls_cache():
     _rls_cache.clear()
 
 
+def _resolve_table_refs(tables: list[str], datasource_id: int) -> list[tuple[str, int, str]]:
+    """限定名归一 → [(匹配键(与 SQL 引用一致), 所属源 id, 策略裸表名)]。
+
+    三段 `ds.db.t`（跨源联邦）按 adh_datasources.name 解析所属源，未命中
+    fail-closed 拒绝（不猜源）；双段/裸表归当前源。匹配键保留原始引用，
+    供 DataEngine RLS 施加时对齐（护栏 §10：匹配键按解析后的 (源, 表) 归一）。
+    """
+    from services.shared.common.db.datasource_db import get_datasource_by_name
+    resolved: list[tuple[str, int, str]] = []
+    for t in tables:
+        parts = t.split(".")
+        if len(parts) == 1:
+            resolved.append((t, datasource_id, t))
+        elif len(parts) in (2, 3):
+            ds_id = datasource_id
+            if len(parts) == 3:
+                source = get_datasource_by_name(parts[0])
+                if not source:
+                    raise PermissionError("限定表引用的数据源无法解析，已拒绝执行")
+                ds_id = int(source.get("id") or 0)
+            resolved.append((t, ds_id, parts[-1]))
+        else:
+            raise PermissionError("限定表引用格式不受支持，已拒绝执行")
+    return resolved
+
+
 def load_rls_policies_for_query(
     user_id: int,
     workspace_id: int,
@@ -63,6 +89,9 @@ def load_rls_policies_for_query(
     if not tables:
         return []
 
+    # 限定名归一：跨源表按所属源加载，匹配键保留原始引用（不串味）
+    resolved = _resolve_table_refs(tables, datasource_id)
+
     # Check cache first (30s TTL)
     key = _cache_key(user_id, workspace_id, datasource_id, tables, user_role)
     now = time.time()
@@ -71,50 +100,62 @@ def load_rls_policies_for_query(
         if now - cached_at < _RLS_CACHE_TTL:
             return cached_result
 
-    conn = get_metadata_conn()
     try:
-        with conn.cursor() as cur:
-            # 1. Load user attributes for row-level filtering
-            user_attrs = _load_user_attributes(cur, user_id)
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                # 1. Load user attributes for row-level filtering
+                user_attrs = _load_user_attributes(cur, user_id, workspace_id)
 
-            # 2. Load row-level policies
-            row_policies = _load_row_policies(
-                cur, workspace_id, datasource_id, tables, user_id, user_attrs
-            )
+                # 2/3. 按源分组加载行级/列级策略（跨源 SQL 每张表取所属源的策略）
+                row_policies: list[dict] = []
+                column_policies: list[dict] = []
+                for ds_id in dict.fromkeys(item[1] for item in resolved):
+                    ds_tables = list(dict.fromkeys(
+                        bare for _key, rid, bare in resolved if rid == ds_id))
+                    for row in _load_row_policies(
+                            cur, workspace_id, ds_id, ds_tables, user_id, user_attrs):
+                        row["_ds_id"] = ds_id
+                        row_policies.append(row)
+                    for col in _load_column_policies(
+                            cur, workspace_id, ds_id, ds_tables, user_id):
+                        col["_ds_id"] = ds_id
+                        column_policies.append(col)
 
-            # 3. Load column-level policies (from rls_column_policies + role_column_access)
-            column_policies = _load_column_policies(
-                cur, workspace_id, datasource_id, tables, user_id
-            )
-
-            # 4. Merge into DataEngine format
-            result = _merge_policies(row_policies, column_policies, tables)
+                # 4. Merge into DataEngine format
+                result = _merge_policies(row_policies, column_policies, resolved)
 
             # Cache the result
             _rls_cache[key] = (now, result)
             return result
-
+        finally:
+            conn.close()
+    except PermissionError:
+        raise
     except Exception as e:
         logger.error("Failed to load RLS policies: %s", e)
-        return []  # Fail open — no policies applied
-    finally:
-        conn.close()
+        # fail-closed（护栏 §2/§3）：策略加载失败必须显式拒绝，
+        # 不得静默降级为无 RLS 执行（no-silent-degradation）
+        raise PermissionError("行级安全策略暂不可用，已拒绝执行") from e
 
 
-def _load_user_attributes(cur, user_id: int) -> dict:
-    """Load user attributes for dynamic policy filtering."""
-    attrs = {}
-    try:
-        cur.execute(
-            "SELECT attribute_name, attribute_value "
-            "FROM adh_rls_user_attributes WHERE user_id = %s",
-            (user_id,),
-        )
-        for row in cur.fetchall():
-            attrs[row["attribute_name"]] = row["attribute_value"]
-    except Exception as e:
-        logger.debug("No user attributes found: %s", e)
-    return attrs
+def _load_user_attributes(cur, user_id: int, workspace_id: int) -> dict:
+    """Load :user_xxx 属性值 — 统一由用户角色权限管理(角色属性)。
+
+    旧版按用户单独配置的 adh_rls_user_attributes 已退役(表已下线, 不再读取);
+    取值失败不得静默吞掉 —— 错值替换会让行过滤产生错数(fail-closed,
+    异常交由外层统一拒绝执行)。
+    """
+    if not user_id:
+        return {}
+    cur.execute(
+        "SELECT DISTINCT ra.attr_key AS attribute_name, ra.attr_value AS attribute_value "
+        "FROM adh_role_attributes ra "
+        "JOIN adh_user_roles ur ON ra.role_id = ur.role_id "
+        "WHERE ur.user_id = %s AND (ra.workspace_id = %s OR ra.workspace_id = 0)",
+        (user_id, workspace_id),
+    )
+    return {row["attribute_name"]: row["attribute_value"] for row in cur.fetchall()}
 
 
 def _load_row_policies(
@@ -222,38 +263,40 @@ def _load_column_policies(
 
 
 def _merge_policies(
-    row_policies: list[dict], column_policies: list[dict], tables: list[str]
+    row_policies: list[dict], column_policies: list[dict],
+    resolved: list[tuple[str, int, str]],
 ) -> list[dict]:
     """Merge row and column policies into DataEngine format.
 
-    Returns list of RLSPolicy dicts grouped by table set.
+    resolved: [(匹配键, 所属源 id, 裸表名)] —— 按 (源, 裸表) 匹配策略，
+    输出的 tables 用匹配键（与 SQL 引用一致），跨库同名表不串味。
+    Returns list of RLSPolicy dicts grouped by table ref.
     """
-    # Group row filters by table
-    row_filters: dict[str, list[str]] = {}
+    # Group row filters by (source, bare table)
+    row_filters: dict[tuple, list[str]] = {}
     for rp in row_policies:
-        tbl = rp["table_name"]
-        row_filters.setdefault(tbl, []).append(rp["filter_expr"])
+        row_filters.setdefault((rp.get("_ds_id"), rp["table_name"]), []).append(rp["filter_expr"])
 
-    # Group column policies by table
-    hidden: dict[str, list[str]] = {}
-    masked: dict[str, dict[str, str]] = {}
+    # Group column policies by (source, bare table)
+    hidden: dict[tuple, list[str]] = {}
+    masked: dict[tuple, dict[str, str]] = {}
     for cp in column_policies:
-        tbl = cp["table_name"]
+        scope = (cp.get("_ds_id"), cp["table_name"])
         col = cp["column_name"]
         access = cp["access_type"]
 
         if access == "hidden":
-            hidden.setdefault(tbl, []).append(col)
+            hidden.setdefault(scope, []).append(col)
         elif access in ("masked", "mask"):
-            pattern = cp.get("mask_pattern") or "default"
-            masked.setdefault(tbl, {})[col] = pattern
+            masked.setdefault(scope, {})[col] = cp.get("mask_pattern") or "default"
 
-    # Build combined policy per table
+    # Build combined policy per table reference
     result = []
-    for table in tables:
-        filters = row_filters.get(table, [])
-        hide_cols = hidden.get(table, [])
-        mask_cols = masked.get(table, {})
+    for match_key, ds_id, bare in resolved:
+        scope = (ds_id, bare)
+        filters = row_filters.get(scope, [])
+        hide_cols = hidden.get(scope, [])
+        mask_cols = masked.get(scope, {})
 
         # Only include if there's something to apply
         if not filters and not hide_cols and not mask_cols:
@@ -263,7 +306,7 @@ def _merge_policies(
         combined_filter = " AND ".join(f"({f})" for f in filters) if filters else ""
 
         result.append({
-            "tables": [table],
+            "tables": [match_key],
             "row_filter": combined_filter,
             "hidden_columns": hide_cols,
             "masked_columns": mask_cols,

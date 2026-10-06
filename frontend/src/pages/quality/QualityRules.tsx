@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { qualityApi } from '@/api/quality';
 import client from '@/api/client';
-import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -105,7 +104,8 @@ const EMPTY_FORM = {
 };
 
 export default function QualityRules() {
-  const { currentWorkspaceId } = useWorkspaceStore();
+  // 质量域为全局共享（工作空间概念已退役，不再按工作空间隔离/选择）；
+  // API 的 workspace 参数固定 0，后端按 IN (ws, 0) 兼容全局行。
   const [rules, setRules] = useState<QualityRule[]>([]);
   const [datasources, setDatasources] = useState<Datasource[]>([]);
   const [loading, setLoading] = useState(false);
@@ -125,17 +125,16 @@ export default function QualityRules() {
   const [searchText, setSearchText] = useState('');
 
   const loadRules = useCallback(async () => {
-    if (!currentWorkspaceId) return;
     setLoading(true);
     try {
-      const { data } = await qualityApi.getRules(currentWorkspaceId);
+      const { data } = await qualityApi.getRules(0);
       setRules(data || []);
     } catch {
       toast.error('加载质量规则失败');
     } finally {
       setLoading(false);
     }
-  }, [currentWorkspaceId]);
+  }, []);
 
   useEffect(() => { loadRules(); }, [loadRules]);
 
@@ -204,7 +203,7 @@ export default function QualityRules() {
         ...form,
         target_datasource_id: Number(form.target_datasource_id),
         rule_config: JSON.parse(form.rule_config),
-        workspace_id: currentWorkspaceId,
+        workspace_id: 0,
       };
       if (editRule) {
         await qualityApi.updateRule(editRule.id, payload);
@@ -262,14 +261,6 @@ export default function QualityRules() {
     if (searchText && !rule.name.toLowerCase().includes(searchText.toLowerCase())) return false;
     return true;
   });
-
-  if (!currentWorkspaceId) {
-    return (
-      <div className="p-6 text-center text-muted-foreground">
-        请先选择工作空间
-      </div>
-    );
-  }
 
   return (
     <div className="p-6 space-y-4">

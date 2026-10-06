@@ -27,8 +27,9 @@ async def get_metrics(args):
         from services.shared.semantics.mdl_compiler import _get_metrics, _get_dimensions
 
         ds_id = (ctx.datasource_id if ctx else 0) or 0
-        # fail-loud: 业务会话未确定数据源时不得回空目录假成功(系统助手 ds=0 是合法系统域, 不拦)。
-        if not ds_id and ctx is not None and (getattr(ctx, "extra", None) or {}).get("waker_key") != "__system_bot__":
+        # fail-loud: 业务会话未确定数据源时不得回空目录假成功(系统域 ds=0 是合法系统域, 不拦)。
+        from services.datamind.execution.sdk_tools.scoped_metadata import system_scope
+        if not ds_id and ctx is not None and not system_scope(ctx):
             return _text({"error": "当前会话未确定数据源，无法加载语义目录；请先在会话中选择一个已授权数据源后重试。"},
                          is_error=True)
         keyword = (args.get("keyword") or "").strip().lower()
@@ -163,6 +164,23 @@ def _classify_retrieval_source(rag_source: str, count: int) -> str:
     return "none"
 
 
+def _attach_routes(result: dict) -> dict:
+    """把命中对象 key 解析为业务本体路由并附到结果（canonical 确定性读取）。
+
+    路由解析失败时 routes 置空并显式标注 route_resolution=failed ——
+    routes=[]（真无路由）与 failed（解析降级）必须可区分（no-silent-degradation）。
+    """
+    try:
+        from services.datamind.rag.business_route import resolve_business_routes
+        result["routes"] = resolve_business_routes(result.get("hit_object_keys") or [])
+        result["route_resolution"] = "ok"
+    except Exception as e:  # noqa: BLE001 — 路由是增强信息，不毁掉检索主结果
+        logger.warning("[knowledge_search] 业务本体路由解析失败: %s", e)
+        result["routes"] = []
+        result["route_resolution"] = f"failed: {e}"
+    return result
+
+
 async def knowledge_search(args):
     """知识库检索; 支持 questions 一次传多个问题, 批量检索减少调用轮次。
 
@@ -175,18 +193,14 @@ async def knowledge_search(args):
     ctx = get_execution_context()
     try:
         from services.datamind.rag.qmind_retriever import qmind_retrieve
-        # 仅消费服务端 Waker 显式绑定；缺少上下文不能查询全库。
+        # 仅消费服务端 AS-BOT 显式绑定；缺少上下文不能查询全库。
         bound_kb_ids = (ctx.extra or {}).get("bound_knowledge_base_ids")
-        # AS-BOT 系统助手: 硬限定系统级——仅检索其绑定的系统知识库, 且绝不回退业务本体(test-alb 等)。
-        from services.datamind.execution.wakers import (
-            SYSTEM_BOT_WAKER_KEY, resolve_system_bot_waker, collect_knowledge_base_ids,
-        )
-        system_scope = (ctx.extra or {}).get("waker_key") == SYSTEM_BOT_WAKER_KEY
-        if system_scope and not bound_kb_ids:
-            _sb = resolve_system_bot_waker()
-            bound_kb_ids = collect_knowledge_base_ids([_sb]) if _sb else []
+        # 系统能力形态（能力叠加）：系统 KB 照常检索，无命中同样回退业务元数据并标注来源；
+        # “系统运营问题不拿业务知识充数”由 prompt 引导 + 来源分桶承担，不再检索硬限定。
+        from services.datamind.execution.sdk_tools.scoped_metadata import system_scope
+        system_scope_flag = system_scope(ctx)
         if not bound_kb_ids:
-            return _text({"error": "当前 Waker 未绑定知识库"}, is_error=True)
+            return _text({"error": "当前 AS-BOT 未绑定知识库"}, is_error=True)
         from services.datamind.execution.resource_guard import validate_knowledge_binding
         await asyncio.to_thread(validate_knowledge_binding, bound_kb_ids)
         # 会话已选源由服务端上下文提供；不把 datasource_id 暴露给 LLM——
@@ -199,10 +213,11 @@ async def knowledge_search(args):
         if len(questions) == 1:
             t0 = time.perf_counter()
             result = await asyncio.to_thread(qmind_retrieve, questions[0], ds_id, bound_kb_ids,
-                                             system_scope=system_scope)
+                                             system_scope=system_scope_flag)
             elapsed = int((time.perf_counter() - t0) * 1000)
             source = _classify_retrieval_source(result.get("rag_source"), result.get("count") or 0)
             result = {**result, "retrieval_source": source, "retrieval_ms": elapsed}
+            result = _attach_routes(result)
             # 归因不写敏感 SQL/PII, 仅来源标签 + 耗时(护栏 §9)
             record_span(kind="retrieval", name="knowledge_search", status="success",
                         duration_ms=elapsed, input_text=questions[0][:200],
@@ -212,7 +227,7 @@ async def knowledge_search(args):
         t0 = time.perf_counter()
         for qtext in questions:
             r = await asyncio.to_thread(qmind_retrieve, qtext, ds_id, bound_kb_ids,
-                                        system_scope=system_scope)
+                                        system_scope=system_scope_flag)
             cnt = r.get("count") or 0
             results.append({"question": qtext,
                             "rag_source": r.get("rag_source"),
@@ -220,6 +235,9 @@ async def knowledge_search(args):
                             "knowledge_base": r.get("knowledge_base"),
                             "doc_stale": r.get("doc_stale"),
                             "hit_object_keys": r.get("hit_object_keys") or [],
+                            **{k: v for k, v in _attach_routes(
+                                {"hit_object_keys": r.get("hit_object_keys") or []}).items()
+                               if k != "hit_object_keys"},
                             "chunks": r.get("chunks") or [],
                             "count": cnt})
         elapsed = int((time.perf_counter() - t0) * 1000)
@@ -233,7 +251,7 @@ async def knowledge_search(args):
                       "usage": "多问题已一次返回, 无需逐个重复调用。"})
     except Exception:
         logger.exception("知识检索失败")
-        return _text({"error": "知识检索未完成，请检查 Waker 知识库绑定或联系管理员"}, is_error=True)
+        return _text({"error": "知识检索未完成，请检查 AS-BOT 知识库绑定或联系管理员"}, is_error=True)
 
 
 async def list_datasets(args):
@@ -410,7 +428,7 @@ def build_semantic_server(backend: str = "qoder", tool_names=None):
 
     Phase 3 将 run_semantic_query 归入本组（与 retrieval 类工具同层），
     保证 agent 只需开启 “semantic” 即可拿到完整“发现对象 + 下意”工具集。
-    tool_names 给定时只注册被选中的工具(waker 粒度逐个控制)。
+    tool_names 给定时只注册被选中的工具(AS-BOT 粒度逐个控制)。
     """
     from services.datamind.execution.sdk_tools.compat import make_server, make_tool
     from services.datamind.execution.sdk_tools.semantic_query import (

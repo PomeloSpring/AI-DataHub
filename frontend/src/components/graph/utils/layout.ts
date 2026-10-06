@@ -64,8 +64,8 @@ export function applyDagreLayout(
   // Add nodes to the graph
   nodes.forEach((node) => {
     g.setNode(node.id, {
-      width: opts.nodeWidth,
-      height: opts.nodeHeight,
+      width: node.measured?.width ?? node.width ?? opts.nodeWidth,
+      height: node.measured?.height ?? node.height ?? opts.nodeHeight,
     });
   });
 
@@ -83,8 +83,8 @@ export function applyDagreLayout(
 
     // Calculate position (dagre returns center position, React Flow uses top-left)
     const position = {
-      x: nodeWithPosition.x - opts.nodeWidth / 2,
-      y: nodeWithPosition.y - opts.nodeHeight / 2,
+      x: nodeWithPosition.x - nodeWithPosition.width / 2,
+      y: nodeWithPosition.y - nodeWithPosition.height / 2,
     };
 
     // Set source and target positions based on direction
@@ -107,6 +107,8 @@ export function applyDagreLayout(
       position,
       sourcePosition,
       targetPosition,
+      // 自定义节点的 Handle 读取 data；只设置 Node 顶层方向不会改变其连接点。
+      data: { ...node.data, sourcePosition, targetPosition },
     };
   });
 

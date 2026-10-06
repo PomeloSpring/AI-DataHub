@@ -48,8 +48,8 @@ function AsBotGraphPage() {
         </p>
       </div>
       <div className="flex-1 p-4 min-h-0">
-        {/* 系统助手总览必须走系统图 ds:-1(system_scope), 否则 datasource_id=0 命中聚合图串入业务本体 */}
-        <ModelGraphTab datasourceId={0} systemScope singleView="ontology-overview" />
+        {/* 系统助手总览必须走系统图 ds:-1(kind=system), 否则 datasource_id=0 命中聚合图串入业务本体 */}
+        <ModelGraphTab datasourceId={0} kind="system" singleView="ontology-overview" />
       </div>
     </div>
   );

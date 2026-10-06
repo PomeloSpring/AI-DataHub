@@ -101,7 +101,8 @@ def authorize_workspace(user: dict, workspace_id: int) -> int:
         raise HTTPException(status_code=403, detail="请选择已授权工作空间")
     from services.authservice.services.role_service import role_service
     try:
-        allowed = role_service.check_user_workspace_access(int(user["user_id"]), ws)
+        # 工作空间随用户走(个人工作站): 仅属主可访问, 成员体系已退役
+        allowed = role_service.check_workspace_owner(int(user["user_id"]), ws)
     except Exception:
         logger.exception("工作空间授权校验不可用")
         raise HTTPException(status_code=503, detail="权限服务暂不可用") from None
@@ -126,6 +127,34 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="缺少可信身份")
     from starlette.concurrency import run_in_threadpool
     return await run_in_threadpool(resolve_current_user, credentials.credentials)
+
+
+_bearer_optional = HTTPBearer(auto_error=False)
+
+
+async def get_file_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_optional),
+) -> dict:
+    """文件下载鉴权: 支持 Authorization header 或 ?token= 查询参数。
+
+    查询参数回退用于 <img src> / three.js 等无法携带自定义 header 的场景。
+    (会话工作区文件伺服 /api/chat/session-file 与产物下载共用)
+    """
+    token = credentials.credentials if credentials else request.query_params.get("token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = decode_token(token)
+        return {
+            "user_id": payload.get("user_id"),
+            "username": payload.get("username"),
+            "role": payload.get("role", "viewer"),
+        }
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 
 async def require_admin(
@@ -594,6 +623,10 @@ def create_user(username: str, password: str, role: str = "viewer",
                     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (user_id, username, pw_hash, enc_email, enc_phone, "", role, "active", 0, now, now),
                 )
+                # 全局角色双写：adh_user_roles(ws=0) 镜像随 user_role 列缓存同事务写入。
+                # 历史缺陷：只写列不写镜像 → 用户零权限码被 API 门控 403（建号后无法发消息）。
+                from services.authservice.services.role_service import role_service as _role_svc
+                _role_svc.write_global_role_mirror(cur, user_id, role)
             conn.commit()
         return True, "创建成功", user_id
     except Exception as e:
@@ -652,6 +685,10 @@ def update_user(user_id: int, username: str = None, email: str = None,
                     f"UPDATE adh_users SET {', '.join(updates)} WHERE id = %s",
                     params,
                 )
+                # 改角色同步全局镜像（列与 adh_user_roles(ws=0) 同事务双写）
+                if role is not None:
+                    from services.authservice.services.role_service import role_service as _role_svc
+                    _role_svc.write_global_role_mirror(cur, user_id, role)
             conn.commit()
         return True, "更新成功"
     except Exception as e:
@@ -741,6 +778,9 @@ def delete_user(user_id: int) -> tuple[bool, str]:
                 user = cur.fetchone()
                 if not user:
                     return False, "用户不存在"
+                # 级联清理角色镜像（含工作空间级绑定），否则残留孤儿行——
+                # 历史缺陷：只删用户不删 adh_user_roles，孤儿镜像长期悬挂
+                cur.execute("DELETE FROM adh_user_roles WHERE user_id = %s", (user_id,))
                 cur.execute("DELETE FROM adh_users WHERE id = %s", (user_id,))
             conn.commit()
         return True, "删除成功"

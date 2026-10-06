@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
 import { qualityApi } from '@/api/quality';
-import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -69,30 +68,30 @@ function ScoreSkeleton() {
 }
 
 export default function QualityOverview() {
-  const { currentWorkspaceId } = useWorkspaceStore();
+  // 质量域为全局共享（工作空间概念已退役，不再按工作空间隔离/选择）；
+  // API 的 workspace 参数固定 0，后端按 IN (ws, 0) 兼容全局行。
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   const loadDashboard = useCallback(async () => {
-    if (!currentWorkspaceId) return;
     setLoading(true);
     try {
-      const { data } = await qualityApi.getDashboard(currentWorkspaceId);
+      const { data } = await qualityApi.getDashboard(0);
       setDashboard(data);
     } catch {
       toast.error('加载质量概览失败');
     } finally {
       setLoading(false);
     }
-  }, [currentWorkspaceId]);
+  }, []);
 
   useEffect(() => { loadDashboard(); }, [loadDashboard]);
 
   const handleGenerateReport = async () => {
     setActionLoading('report');
     try {
-      await qualityApi.generateReport(currentWorkspaceId);
+      await qualityApi.generateReport(0);
       toast.success('质量报告生成成功');
       loadDashboard();
     } catch {
@@ -105,7 +104,7 @@ export default function QualityOverview() {
   const handleRunAllChecks = async () => {
     setActionLoading('checks');
     try {
-      await qualityApi.executeAll(currentWorkspaceId);
+      await qualityApi.executeAll(0);
       toast.success('所有检查已触发执行');
       loadDashboard();
     } catch {
@@ -114,14 +113,6 @@ export default function QualityOverview() {
       setActionLoading(null);
     }
   };
-
-  if (!currentWorkspaceId) {
-    return (
-      <div className="p-6 text-center text-muted-foreground">
-        请先选择工作空间
-      </div>
-    );
-  }
 
   return (
     <div className="p-6 space-y-6">

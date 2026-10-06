@@ -10,7 +10,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.graphservice.graph_service import GraphService
+from services.semhub.graph.graph_service import GraphService
 from services.shared.common.rdf.namespaces import ADH_NS
 
 

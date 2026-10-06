@@ -33,8 +33,12 @@ class RLSService:
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                where = ["workspace_id = %s"]
-                params = [workspace_id]
+                where = []
+                params = []
+                # workspace_id=0 = 不限工作空间(全局清单, 供角色绑定选择器)
+                if workspace_id:
+                    where.append("workspace_id = %s")
+                    params.append(workspace_id)
                 if datasource_id:
                     where.append("datasource_id = %s")
                     params.append(datasource_id)
@@ -42,14 +46,14 @@ class RLSService:
                     where.append("table_name = %s")
                     params.append(table_name)
 
-                where_clause = " AND ".join(where)
+                where_clause = ("WHERE " + " AND ".join(where)) if where else ""
 
-                cur.execute(f"SELECT COUNT(*) as total FROM adh_rls_policies WHERE {where_clause}", params)
+                cur.execute(f"SELECT COUNT(*) as total FROM adh_rls_policies {where_clause}", params)
                 total = cur.fetchone()["total"]
 
                 offset = (page - 1) * size
                 cur.execute(
-                    f"SELECT * FROM adh_rls_policies WHERE {where_clause} ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                    f"SELECT * FROM adh_rls_policies {where_clause} ORDER BY created_at DESC LIMIT %s OFFSET %s",
                     params + [size, offset]
                 )
                 items = cur.fetchall()
@@ -93,13 +97,18 @@ class RLSService:
             conn.close()
 
     def update_policy(self, policy_id: int, data: dict) -> bool:
-        """Update an existing RLS policy."""
+        """Update an existing RLS policy.
+
+        返回 True=更新落库(含值未变化的幂等保存); False=没有可更新字段或策略不存在
+        (调用方必须据此显式报错, 不得假成功)。
+        """
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
                 fields = []
                 params = []
-                for key in ["name", "description", "policy_type", "filter_type",
+                for key in ["name", "description", "datasource_id", "table_name",
+                            "policy_type", "filter_type",
                             "filter_expr", "user_attribute", "is_active"]:
                     if key in data:
                         fields.append(f"{key} = %s")
@@ -111,8 +120,13 @@ class RLSService:
                     f"UPDATE adh_rls_policies SET {', '.join(fields)} WHERE id = %s",
                     params
                 )
+                if cur.rowcount == 0:
+                    # MySQL 对「值未变化」的 UPDATE 也报 affected=0:
+                    # 记录仍在→幂等保存成功; 记录已不在→更新未生效
+                    cur.execute("SELECT id FROM adh_rls_policies WHERE id = %s", (policy_id,))
+                    return cur.fetchone() is not None
                 conn.commit()
-                return cur.rowcount > 0
+                return True
         finally:
             conn.close()
 
@@ -169,50 +183,14 @@ class RLSService:
         finally:
             conn.close()
 
-    # ── User Attributes ────────────────────────────────────────────
-
-    def get_user_attributes(self, user_id: int, workspace_id: int) -> dict:
-        """Get all RLS attributes for a user in a workspace."""
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT attr_key, attr_value FROM adh_rls_user_attributes WHERE user_id = %s AND workspace_id = %s",
-                    (user_id, workspace_id)
-                )
-                rows = cur.fetchall()
-                return {r["attr_key"]: r["attr_value"] for r in rows}
-        finally:
-            conn.close()
-
-    def set_user_attributes(self, user_id: int, workspace_id: int, attrs: dict) -> bool:
-        """Set RLS attributes for a user in a workspace (replace all)."""
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                # Delete existing
-                cur.execute(
-                    "DELETE FROM adh_rls_user_attributes WHERE user_id = %s AND workspace_id = %s",
-                    (user_id, workspace_id)
-                )
-                # Insert new
-                for key, value in attrs.items():
-                    cur.execute(
-                        """INSERT INTO adh_rls_user_attributes
-                           (id, user_id, workspace_id, attr_key, attr_value)
-                           VALUES (%s, %s, %s, %s, %s)""",
-                        (_gen_id(), user_id, workspace_id, key, str(value))
-                    )
-                conn.commit()
-                return True
-        finally:
-            conn.close()
-
     # ── Effective Policies ─────────────────────────────────────────
 
     def get_effective_policies(self, user_id: int, workspace_id: int,
                                datasource_id: int, table_name: str) -> dict:
         """Get the effective RLS policies for a user/table combination.
+
+        勾选才生效: 仅应用「用户任一角色绑定的策略」(adh_role_rls_policies);
+        角色未绑定任何策略 = 不施加任何 RLS 行/列限制。
 
         Returns:
             {
@@ -229,31 +207,42 @@ class RLSService:
             "policies_applied": [],
         }
 
+        from services.authservice.services.role_service import role_service
+
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                # Find matching policies
+                # 勾选才生效: 仅应用「用户任一角色绑定的策略」; 无角色/无绑定 = 无限制
+                roles = role_service.get_user_roles(user_id, workspace_id)
+                role_ids = [r["id"] for r in roles]
+                if not role_ids:
+                    return result
+                ph = ",".join(["%s"] * len(role_ids))
                 cur.execute(
-                    """SELECT * FROM adh_rls_policies
-                       WHERE workspace_id = %s AND datasource_id = %s AND table_name = %s
-                         AND is_active = 1""",
-                    (workspace_id, datasource_id, table_name)
+                    f"SELECT DISTINCT policy_id FROM adh_role_rls_policies WHERE role_id IN ({ph})",
+                    role_ids)
+                bound_ids = [r["policy_id"] for r in cur.fetchall()]
+                if not bound_ids:
+                    return result
+
+                # Find matching policies (绑定集 ∩ workspace/datasource/table/is_active 匹配)
+                ph2 = ",".join(["%s"] * len(bound_ids))
+                cur.execute(
+                    f"""SELECT * FROM adh_rls_policies
+                        WHERE id IN ({ph2})
+                          AND (workspace_id = %s OR workspace_id = 0)
+                          AND datasource_id = %s AND table_name = %s
+                          AND is_active = 1""",
+                    (*bound_ids, workspace_id, datasource_id, table_name)
                 )
                 policies = cur.fetchall()
 
                 if not policies:
                     return result
 
-                # Get user attributes from roles (role-based, not per-user)
-                from services.authservice.services.role_service import role_service
+                # :user_xxx 属性取值: 统一由用户角色权限管理(角色属性, adh_role_attributes);
+                # 旧版按用户单独配置的 adh_rls_user_attributes 已退役(不再读取)
                 user_attrs = role_service.get_user_effective_attributes(user_id, workspace_id)
-
-                # Fallback: also check legacy per-user attributes
-                legacy_attrs = self.get_user_attributes(user_id, workspace_id)
-                # Role attributes take precedence, legacy fills gaps
-                for k, v in legacy_attrs.items():
-                    if k not in user_attrs:
-                        user_attrs[k] = v
 
                 for policy in policies:
                     pid = policy["id"]

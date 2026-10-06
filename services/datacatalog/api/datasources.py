@@ -24,7 +24,21 @@ async def list_datasources(
     user: dict = Depends(get_current_user),
 ):
     """列出所有数据源。"""
-    return await datasource_service.list_datasources(workspace_id)
+    return await datasource_service.list_datasources(workspace_id, user_id=user.get("user_id") or 0)
+
+
+@router.get("/authorized")
+async def list_authorized_datasources(
+    workspace_id: int = Query(0, description="工作空间 ID（可选，0=个人域）"),
+    user: dict = Depends(get_current_user),
+):
+    """列出当前用户角色授权的数据源（聊天选择器用）。
+
+    纯角色裁决：数据源可用集=用户角色授权；空授权 fail-closed 返回空列表。
+    必须定义在 /{ds_id} 之前，否则 "authorized" 会被当作 ds_id 解析(422)。
+    """
+    return await datasource_service.list_authorized_datasources(
+        user.get("user_id") or 0, workspace_id)
 
 
 @router.get("/{ds_id}")

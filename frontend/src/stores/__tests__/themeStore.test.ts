@@ -3,8 +3,8 @@ import { useThemeStore, applyTheme, IS_DARK, type ThemeId } from '../themeStore'
 
 describe('themeStore', () => {
   beforeEach(() => {
-    // Reset store to default
-    useThemeStore.setState({ theme: 'dark', isDark: true })
+    // Reset store to default (亮色)
+    useThemeStore.setState({ theme: 'light', isDark: false })
     document.documentElement.className = ''
     window.localStorage.clear()
   })

@@ -54,6 +54,25 @@ class PermissionResult:
     policies_applied: list = field(default_factory=list)
 
 
+def _ds_deny_reason(datasource_id) -> str:
+    """数据源拒绝文案：显示 name 不裸显 id（ui-resource-display）。
+
+    datasource_id 缺省/0 的真实原因是“未选择目标数据源”（而非无权），
+    给可操作提示；查不到 name 时给可读标注 + 原 id 供排查。
+    """
+    if not datasource_id:
+        return "未选择目标数据源，已拒绝执行（请指定查询数据源后重试）"
+    name = ""
+    try:
+        from services.shared.common.db.datasource_db import get_datasource_by_id
+        name = (get_datasource_by_id(datasource_id) or {}).get("name") or ""
+    except Exception:
+        pass  # 名称解析失败不影响拒绝决定本身，仅影响文案丰富度
+    if name:
+        return f"无权访问数据源「{name}」"
+    return f"无权访问数据源（已删除或不可见，原 ID: {datasource_id}）"
+
+
 class PermissionEnforcer:
     """Unified permission enforcement for query execution.
 
@@ -142,11 +161,14 @@ class PermissionEnforcer:
         # RLS/RBAC 完全按用户角色权限配置生效，不做 admin 旁路
         # 敏感字段脱敏已在上方并入，对所有角色（含 admin）强制生效
 
-        # Step 1: Check datasource access
+        # Step 1: Check datasource access（fail-closed：空授权=无权，不得解释为全量）
+        # waker-datasource-domain §1：admin 同样纯角色裁决不 bypass；与 resource_guard 同口径。
+        # 历史缺陷：曾写 `if allowed_ds and datasource_id not in allowed_ds`——空授权时
+        # 跳过检查（fail-open），无任何角色授权的用户数据源步直接放行。
         allowed_ds = role_service.get_user_allowed_datasources(user_id, workspace_id)
-        if allowed_ds and datasource_id not in allowed_ds:
+        if datasource_id and datasource_id not in allowed_ds:
             result.allowed = False
-            result.reason = f"无权访问数据源 {datasource_id}"
+            result.reason = _ds_deny_reason(datasource_id)
             return result
 
         # Step 2: Check table access (if table specified)
@@ -238,25 +260,33 @@ class PermissionEnforcer:
 
         if not only_sensitive:
             from services.authservice.services.role_service import role_service
-            # 数据源级访问 — 只查一次
+            # 数据源级访问 — 只查一次（fail-closed：空授权=无权，与 check_access 同口径）
             allowed_ds = role_service.get_user_allowed_datasources(user_id, workspace_id)
-            if allowed_ds and datasource_id not in allowed_ds:
-                raise PermissionError(f"无权访问数据源 {datasource_id}")
-            # 表级访问 — 只查一次
-            allowed_tables = role_service.get_user_allowed_tables(
-                user_id, datasource_id, workspace_id
-            )
+            if datasource_id and datasource_id not in allowed_ds:
+                raise PermissionError(_ds_deny_reason(datasource_id))
+            # 表级访问 — 按表所属源缓存（跨源 SQL 每个源只查一次）
+            allowed_tables_cache: dict = {}
 
         for table in tables:
-            policy_table = self._policy_table(table, datasource_id)
+            policy_table, table_ds_id = self._resolve_table_ref(table, datasource_id)
 
-            # 表级访问校验（已在循环外加载 allowed_tables）
-            if not only_sensitive and allowed_tables and policy_table not in allowed_tables:
-                raise PermissionError(f"无权访问表 {table}")
+            if not only_sensitive:
+                # 跨源表所属源同样必须逐个在授权集内（限定名不得绕过数据源授权）。
+                # fail-closed 同口径：空授权=无权；历史缺陷 `if allowed_ds and` 会在
+                # 空授权时跳过本步（跨源 SQL 的旁路）。无源可解析的裸表跟随主源（已校验）。
+                if table_ds_id and table_ds_id not in allowed_ds:
+                    raise PermissionError(_ds_deny_reason(table_ds_id))
+                if table_ds_id not in allowed_tables_cache:
+                    allowed_tables_cache[table_ds_id] = role_service.get_user_allowed_tables(
+                        user_id, table_ds_id, workspace_id)
+                allowed_tables = allowed_tables_cache[table_ds_id]
+                if allowed_tables and policy_table not in allowed_tables:
+                    raise PermissionError(f"无权访问表 {table}")
 
             # 仅做表级专属查询: #1 敏感字段 + #4 列限制 + #5 RLS
+            # 按表所属源加载策略（跨源不串味）
             result = self._check_table_permissions(
-                user_id, workspace_id, datasource_id, policy_table,
+                user_id, workspace_id, table_ds_id, policy_table,
                 sensitive_only=only_sensitive,
                 skip_datasource_check=True,
                 skip_table_access_check=True,
@@ -443,22 +473,40 @@ class PermissionEnforcer:
         from services.shared.semantics.sql_guard import extract_tables
         return extract_tables(sql)
 
-    @staticmethod
-    def _policy_table(table: str, datasource_id: int) -> str:
-        """旧策略按源内裸表名存储；限定名须证明属于当前源，不能跨库套错策略。"""
+    def _resolve_table_ref(self, table: str, datasource_id: int) -> tuple[str, int]:
+        """限定表引用归一 → (策略匹配用裸表名, 表所属数据源 id)。
+
+        - 裸表 `t`：属于当前会话源；
+        - 双段 `db.t`：db 必须等于当前源 namespace，否则拒绝（不得跨库套错策略）；
+        - 三段 `ds.db.t`（跨源联邦）：catalog 段按 adh_datasources.name（全局唯一）
+          解析所属源，db 段校验为该源 namespace。
+        数据源名无法解析或 namespace 不匹配一律拒绝（fail-closed，不猜源）。
+        跨源 SQL 中每张表按所属源加载敏感/RLS 策略，杜绝跨库同名串味（护栏 §10）。
+        """
         parts = table.split(".")
         if len(parts) == 1:
-            return table
-        from services.shared.common.db import get_datasource_by_id
-        source = get_datasource_by_id(datasource_id) if datasource_id else None
-        if not source or len(parts) != 2:
+            return table, datasource_id
+        if len(parts) not in (2, 3):
             raise PermissionError("限定表引用尚未建立可信数据源绑定")
+        from services.shared.common.db import get_datasource_by_id, get_datasource_by_name
+        if len(parts) == 3:
+            source = get_datasource_by_name(parts[0])
+            if not source:
+                raise PermissionError("限定表引用的数据源无法解析，已拒绝执行")
+        else:
+            source = get_datasource_by_id(datasource_id) if datasource_id else None
+            if not source:
+                raise PermissionError("限定表引用尚未建立可信数据源绑定")
         namespace = source.get("database_name") or ""
         if source.get("db_type") in ("postgres", "postgresql", "pg", "sls"):
             namespace = "public"
-        if parts[0].lower() != namespace.lower():
+        if parts[-2].lower() != namespace.lower():
             raise PermissionError("跨库表引用尚未建立独立治理绑定")
-        return parts[-1]
+        return parts[-1], int(source.get("id") or datasource_id or 0)
+
+    def _policy_table(self, table: str, datasource_id: int) -> str:
+        """兼容旧签名: 仅返回策略匹配用裸表名（限定名解析见 _resolve_table_ref）。"""
+        return self._resolve_table_ref(table, datasource_id)[0]
 
     @staticmethod
     def _protect_projection(sql: str, result: PermissionResult):

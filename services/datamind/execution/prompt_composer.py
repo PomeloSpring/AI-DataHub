@@ -1,4 +1,4 @@
-"""系统提示词组合器 — 由生效 Waker + 用户角色/权限 + 图表契约组装执行层 system_prompt.
+"""系统提示词组合器 — 由生效 AS-BOT + 用户角色/权限 + 图表契约组装执行层 system_prompt.
 
 用于 Qoder 执行层:适配器把组合结果赋给 options.system_prompt,
 使 Agent 具备角色化人格、可见的前端图表格式、以及当前用户的角色与数据权限边界。
@@ -16,6 +16,11 @@ SEMANTIC_QUERY_RULES = """## 数据查询规范（统一语义层）
 - 获取任何业务数据都必须、且只能通过 `run_semantic_query` 工具：你只产出**声明式意图**
   （{object, metrics[], dimensions[], filters[], order[], limit, time_grain, time_window, time_range}），
   由语义层完成 intent→binding→plan→受控执行，并自动施加权限/RLS/护栏/审计。
+- **第一步（强制）：本体/源意图识别**——取数前先确认数据在哪个本体/数据源，再查目录或组装 intent：
+  ① 先从问题与 `knowledge_search` 线索（`routes`/`hit_object_keys`）判断对象属于哪个源/本体；
+  ② 多数据源时结合问题用 `list_datasources` 选定 `datasource`（业务名），不确定就 `ask_user`；
+  ③ 目录/检索为空时**先怀疑“源/本体没选对”**（返回带 `incomplete_scope` 标注时必须先选源再重查），
+     不得据此断言“该对象不存在”——目录为空 ≠ 对象不存在。
 - **意图三要素齐备**：每个取数问题先从自然语言抽出「指标 / 维度 / 时间」三类要素再组装 intent——
   指标进 metrics[]、分组维度进 dimensions[]、时间进 time_window/time_range；问题里出现的时间词**绝不能丢**，
   也不要塞进 filters 手算绝对日期。缺哪个要素、或名称拿不准，先看 `get_metrics` 目录、仍不确定就回抛候选让用户确认，不臆造。
@@ -32,6 +37,18 @@ SEMANTIC_QUERY_RULES = """## 数据查询规范（统一语义层）
      向用户说明可能存在新旧版本口径差异；若 knowledge_search 结果标注 doc_stale=true，
      说明知识库文档落后于当前本体，其内容仅供参考，**不得**据此发明未出现在 get_metrics 中的名称；
   ④ knowledge_search 返回 hit_object_keys 时，优先直接以其中的 key 作为 run_semantic_query 的 object。
+- **业务本体路由（两级检索）**：业务本体是「概念 → 源本体」的路由索引层，本身不提供数据。
+  `knowledge_search` 返回 `routes` 时按路由执行，不要臆测数据在哪个源：
+  ① `routes[].target_object_key` 作为 `run_semantic_query` 的 `object`（无该字段时用 hit_object_keys；
+     两者都无则是数据源级路由——先用 `datasource` 参数选定该源，再以 `get_metrics`/元数据在源内定位对象）；
+  ② `routes[].datasource_name` 是目标数据源业务名：查询工具用 `datasource`（业务名）参数指定该源，
+     会话多源未定时也可用 `ask_user` 与用户确认；若工具提示无权限访问该源，如实告知用户，
+     严禁换源重试或猜源；
+  ③ `routes[].filter_hints` 是源内维度提示（如「站点：日本/美国」）：把用户问题中对应的条件落为
+     `filters[]`（如 站点=日本），它是维度过滤、不是独立数据源；
+  ④ `routes[].scenarios` 给出跨源场景清单（`sources[]` + `join_hint`）：逐源分别查询后在结论中
+     合并对比，`join_hint` 仅作关联口径说明，不跨源连表；
+  ⑤ `route_resolution` 为 `failed` 时路由解析不可用（不代表无路由），按②用 `list_datasources` 确认候选源。
 - 指标/维度名必须从 `get_metrics` 目录原文复制（其 name 或任一 alias 都合法，系统会解析别名）；
   按天/按月趋势 = is_time 维度 + `time_grain`；枚举维度结果已自动把码值翻成业务名，结论中直接使用业务名；
   若告警出现“无法解析”，**不要臆造名称**：告警若附带“近似候选”，先判断候选是否就是用户要的口径，
@@ -56,7 +73,7 @@ NL2SQL_QUERY_RULES = """## 数据查询规范（语义层主路 + 受治理 SQL 
   它同样是**受治理只读入口**（经统一执行器，仅 SELECT/WITH、自动校验、自动补 LIMIT、权限/RLS/敏感屏蔽/审计自动施加），**不是**裸连数据源。
 - `execute_sql` 规范：业务背景/指标口径/字段含义一律先用 `knowledge_search`（已绑定知识库）了解，不靠直接翻表结构去猜业务语义；只有需要把口径落到具体物理表/列以拼装 SQL 时，才用 `get_table_schema` / `search_metadata` 确认表名列名。查询形状（时间/过滤/聚合/JOIN）由你自主组织，但写 SQL 前必须先 `check_sql` 预检、只读 SELECT/WITH、禁止 DDL/DML 与多语句；huge 表无过滤谓词的全表扫描会被护栏拒绝，需加 WHERE。
 - 指标/维度名、枚举业务名以 `get_metrics` / 字典为准；相对时间优先用 `run_semantic_query` 的 `time_window`，SQL 路径不得臆造列名。
-- **数据源选择**：`check_sql`/`execute_sql` 默认作用于会话已选数据源；若当前工作空间授权了多个数据源，先用 `list_datasources` 看候选（只返回业务名与方言，不含 id），按问题选最匹配的一个并用 `datasource`（业务名）参数指定；不确定用哪个源时调 `ask_user` 让用户选，严禁臆测源名或传数字 id。单源时可省略。
+- **数据源选择**：`check_sql`/`execute_sql` 默认作用于会话已选数据源；若当前工作空间授权了多个数据源，先用 `list_datasources` 看候选（只返回业务名与方言，不含 id），按问题选最匹配的一个并用 `datasource`（业务名）参数指定；若 `knowledge_search` 返回 `routes`，数据源优先按 `routes[].datasource_name`（业务本体路由）指定；不确定用哪个源时调 `ask_user` 让用户选，严禁臆测源名或传数字 id。单源时可省略。
 - 不确定口径先检索（knowledge_search / get_metrics / get_glossary / 元数据），宁缺勿错；两档权威冲突时名称以 `get_metrics` 实时目录为准。
 - 无论走哪条路径，返回数据都必须遵守下方数据源黑盒与敏感合规约束；不得向用户暴露物理 SQL/库表/账号/IP 等细节。"""
 
@@ -82,6 +99,19 @@ COMPLIANCE_RULES = """## 敏感数据合规（强约束，不可协商）
   可建议用户改用已授权的脱敏字段或申请治理侧调整策略，但不得给出原值。
 - 若取数结果因权限被裁剪（列被隐藏/行被 RLS 过滤），只说明“已按权限与合规策略返回可见范围”，
   不得暗示被隐藏字段的存在或内容。"""
+
+
+# 平台功能操作规范（与数据问答是两个独立维度）。
+# 仅当本会话确实注册了功能能力工具时才注入 —— 与 has_execute_sql 同思路，
+# 避免“提示词说能操作、工具却没有”的矛盾（能力以工具清单为准）。
+FUNCTION_ACTION_RULES = """## 平台功能操作规范（与数据问答是两个独立维度）
+除取数外，你还可能被授权若干**平台功能动作**（报表、看板、调度任务、质量检核、数据集等的清单查询与操作）。边界如下：
+- **能力以工具清单为准**：只调用下方「当前会话实际工具权限」列出的工具；未列出的功能 = 本次会话不可用，如实告知，不得尝试调用、不得声称能做。
+- **涉密功能不代查、不代改**：数据源配置与连接凭据、模型 API Key、MCP/通知渠道凭据、用户与角色权限、行级安全策略、沙箱与执行环境、系统设置、系统提示词与技能提示词 —— 即使被问到也只说明“不开放给 AI”。
+- **写操作先确认**：生成报表、创建调度任务、触发质量检核等写动作，必须先说明将做什么、影响哪些对象，征得用户确认后再调用工具。
+- **审批如实转述**：需要人工审批的动作提交后，只说“已提交、等待审批”，不得声称已生效或已完成。
+- **只读即只读**：标注只读的功能不得尝试任何写入；被权限或级别拒绝时把原因原样告知用户，不换工具绕过、不静默降级。
+- **结果按业务语言转述**：清单/统计用业务名称表达，不回显物理表名、SQL 原文、内部 ID、连接信息或报错栈。"""
 
 
 AS_BOT_DESIGN_RULES = """## AS-BOT 系统域与仪表盘协作（优先于通用检索流程）
@@ -256,8 +286,8 @@ def _knowledge_base_lines(knowledge_bases: list) -> list[str]:
 
 
 def compose_system_prompt(
-    default_waker: dict | None,
-    wakers: list[dict],
+    default_as_bot: dict | None,
+    as_bots: list[dict],
     username: str = "",
     user_role: str = "",
     knowledge_bases: list | None = None,
@@ -271,26 +301,26 @@ def compose_system_prompt(
     """组合执行层系统提示词.
 
     Args:
-        default_waker: 生效的默认 Waker(定义主人格),可为 None
-        wakers: 全部生效 Waker(用于汇总图表开关)
+        default_as_bot: 生效的默认 AS-BOT(定义主人格),可为 None
+        as_bots: 全部生效 AS-BOT(用于汇总图表开关)
         username / user_role: 当前用户身份,用于自动注入角色与权限
-        knowledge_bases: 生效 Waker 绑定的知识库(已归一化,含 name/kb_type),可为 None
-        skills: 生效 Waker 勾选绑定并已加载的技能 [{name, display_name, system_prompt}]
+        knowledge_bases: 生效 AS-BOT 绑定的知识库(已归一化,含 name/kb_type),可为 None
+        skills: 生效 AS-BOT 勾选绑定并已加载的技能 [{name, display_name, system_prompt}]
         user_id / workspace_id / datasource_id: 当前会话身份与数据源,用于强制加载
             生效的合规屏蔽列与 RLS 行范围(L1 护城河; datasource_id=0 仍加载全局屏蔽列)
     """
-    wakers = wakers or []
+    as_bots = as_bots or []
     skills = skills or []
     sections: list[str] = []
 
-    if default_waker:
-        header = f"# 角色: {default_waker.get('display_name') or default_waker.get('name')}"
+    if default_as_bot:
+        header = f"# 角色: {default_as_bot.get('display_name') or default_as_bot.get('name')}"
         sections.append(header)
-        if default_waker.get("description"):
-            sections.append(default_waker["description"])
-        if default_waker.get("system_prompt"):
-            sections.append(default_waker["system_prompt"])
-        persona_lines = _persona_lines(default_waker.get("persona") or {})
+        if default_as_bot.get("description"):
+            sections.append(default_as_bot["description"])
+        if default_as_bot.get("system_prompt"):
+            sections.append(default_as_bot["system_prompt"])
+        persona_lines = _persona_lines(default_as_bot.get("persona") or {})
         if persona_lines:
             sections.append("## 角色设定\n" + "\n".join(persona_lines))
 
@@ -304,9 +334,8 @@ def compose_system_prompt(
 
     # 已绑定知识库: 仅作口径/背景补充(回退用), 不作对象/指标/维度名称来源; 取数以语义层为先。
     # (与 SEMANTIC_QUERY_RULES 的"语义层优先"一致, 不再引导"回答前先 knowledge_search")。
-    is_system_bot = bool(default_waker and default_waker.get("waker_key") == "__system_bot__")
     kb_lines = _knowledge_base_lines(knowledge_bases)
-    if kb_lines and not is_system_bot:
+    if kb_lines:
         sections.append(
             "## 已绑定知识库\n"
             + "\n".join(kb_lines)
@@ -315,23 +344,35 @@ def compose_system_prompt(
             "  知识库内容与本体名称冲突时一律以 `get_metrics` 为准, **不得**据知识库发明未出现在目录中的对象/指标名(如跨数据源/跨方言的幽灵对象)。"
         )
 
-    # 取数规范(强约束):默认语义层唯一主路;仅当本会话已授权 execute_sql(nl2sql waker) 时
+    # 取数规范(强约束):默认语义层唯一主路;仅当本会话已授权 execute_sql(nl2sql AS-BOT) 时
     # 切换为"语义层主路 + 受治理 SQL 补充"双路径口径, 避免提示词与实际可用工具矛盾。
     has_execute_sql = bool(capabilities) and any(
         str(t.get("name", "")).endswith("execute_sql") for t in (capabilities.get("tools") or [])
     )
     sections.append(NL2SQL_QUERY_RULES if has_execute_sql else SEMANTIC_QUERY_RULES)
 
+    # 平台功能操作维度：仅当本会话真的注册了功能能力工具时才注入，
+    # 否则提示词会宣称能操作而工具没有（同 has_execute_sql 的防矛盾思路）。
+    has_function_tools = bool(capabilities) and any(
+        "datahub_functions__" in str(t.get("name", "")) for t in (capabilities.get("tools") or [])
+    )
+    if has_function_tools:
+        sections.append(FUNCTION_ACTION_RULES)
+
     # 数据源黑盒(强约束):不向用户/回答暴露主机/账号/IP/SQL 等物理细节
     sections.append(DATA_SOURCE_BLACKBOX_RULES)
-    if is_system_bot:
+    # 仪表盘设计协作规范: 会话注册了设计工具(request_dashboard_design)才注入，
+    # 与 has_execute_sql/has_function_tools 同思路（能力以工具清单为准）。
+    has_design_tools = bool(capabilities) and any(
+        "request_dashboard_design" in str(t.get("name", "")) for t in (capabilities.get("tools") or []))
+    if has_design_tools:
         sections.append(AS_BOT_DESIGN_RULES)
 
     # 敏感合规护城河(L1):强制加载当前用户的 RLS 行范围与合规屏蔽列, 越权请求须拒绝
     sections.append(COMPLIANCE_RULES)
 
-    # 图表契约:任一生效 Waker 开启图表即注入
-    if any(w.get("chart_enabled") for w in wakers) or default_waker is None:
+    # 图表契约:任一生效 AS-BOT 开启图表即注入
+    if any(w.get("chart_enabled") for w in as_bots) or default_as_bot is None:
         sections.append(chart_contract_text())
 
     # 报告主题令牌: 交付 HTML/Excel 时只能用的配色(默认继承用户当前 App 主题)。

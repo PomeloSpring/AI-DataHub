@@ -55,9 +55,19 @@ def check_sensitive_fields(sql: str) -> list[str]:
 
 
 def add_limit(sql: str, default_limit: int = 1000) -> str:
-    """Ensure the SQL has a LIMIT clause. If not, append the default."""
-    if re.search(r"\bLIMIT\s+\d+", sql, re.IGNORECASE):
-        return sql
+    """Ensure the SQL has an outer LIMIT clause. If not, append the default.
+
+    子查询内的 LIMIT 不算外层限流（与 sql_guard.bounded_query 同口径）：
+    以解析出的外层 limit 为准；解析失败时回退文本匹配兕底。
+    """
+    try:
+        from services.shared.semantics.sql_guard import parse_query
+        tree = parse_query(sql)
+        if tree.args.get("limit") is not None:
+            return sql
+    except Exception:
+        if re.search(r"\bLIMIT\s+\d+", sql, re.IGNORECASE):
+            return sql
     return sql.rstrip(";") + f" LIMIT {default_limit}"
 
 
@@ -118,21 +128,16 @@ def check_select_star(sql: str) -> tuple[bool, str]:
 
     return False, ""
 
-def validate_and_fix(sql: str, query_type: str = "sql") -> tuple[str, list[str]]:
+def validate_and_fix(sql: str) -> tuple[str, list[str]]:
     """Run all validations and return (fixed_sql, warnings).
 
     This does NOT reject the query — it fixes what it can and returns
     warnings for the user to review.
 
     Args:
-        sql: The SQL/query string.
-        query_type: "sql", "rest", or "dsl". REST/DSL skip SQL-specific checks.
+        sql: The SQL query string.
     """
     warnings = []
-
-    # REST/DSL queries don't need SQL validation
-    if query_type in ("rest", "dsl"):
-        return sql, warnings
 
     # Step 1: Clean SQL — strip markdown fences, leading prose, trailing semicolons
     sql = sql.strip()

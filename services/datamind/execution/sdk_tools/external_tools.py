@@ -8,16 +8,16 @@ from services.datamind.execution.sdk_tools.compat import make_tool, make_server
 
 
 def load_server(server_id, policy):
-    """资源引用来自已解析的 Waker，工作空间不再单独绑定 MCP。"""
-    if (server_id not in policy.waker.get("mcp_server_ids", [])
+    """资源引用来自已解析的 AS-BOT，工作空间不再单独绑定 MCP。"""
+    if (server_id not in policy.as_bot.get("mcp_server_ids", [])
             or not policy.external.get(str(server_id))):
-        raise PermissionError("当前 Waker 未绑定该 MCP 或未授权工具")
+        raise PermissionError("当前 AS-BOT 未绑定该 MCP 或未授权工具")
     row = execute_query(
         "SELECT s.* FROM adh_mcp_servers s WHERE s.id=%s AND s.is_active=1",
         (server_id,), fetchone=True,
     )
     if not row:
-        raise PermissionError("Waker 绑定的 MCP 服务不存在或已停用")
+        raise PermissionError("AS-BOT 绑定的 MCP 服务不存在或已停用")
     return row
 
 

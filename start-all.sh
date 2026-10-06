@@ -113,6 +113,16 @@ start_service() {
 # ═══════════════════════════════════════════════════════════════
 # 函数: 启动 Celery worker / beat（后台守护模式）
 # ═══════════════════════════════════════════════════════════════
+# 按 cmdline 查找 celery 实例（前台实例不写 pid 文件，只靠 pid 文件查重会漏，
+# 叠加启动会产生双 worker/双 beat，定时任务会被重复调度）
+# role: celery-worker | celery-beat
+find_celery_pids() {
+    local role="$1" kw="worker"
+    [ "$role" = "celery-beat" ] && kw="beat"
+    ps -eo pid,cmd | awk -v app="$CELERY_APP" -v kw=" $kw" \
+        '$2 != "awk" && index($0, "-m celery -A " app) > 0 && index($0, kw) > 0 {print $1}'
+}
+
 # 构造指定 Celery 进程的命令到全局数组 CELERY_CMD
 build_celery_cmd() {
     local name="$1"
@@ -135,6 +145,13 @@ start_celery_process() {
             return 0
         fi
         rm -f "$pid_file"
+    fi
+
+    # pid 文件之外再按 cmdline 兜底查重（已有实例则不叠加）
+    local existing=$(find_celery_pids "$name" | tr '\n' ' ')
+    if [ -n "$existing" ]; then
+        log_warn "${name} 已有实例运行 (PID: ${existing}), 跳过启动"
+        return 0
     fi
 
     log_info "启动 ${name}..."
@@ -387,21 +404,42 @@ stop_frontend() {
 # 前台模式函数（日志带彩色服务名前缀，合并输出到控制台）
 # ═══════════════════════════════════════════════════════════════
 
+# 前台模式：记录真实监听进程 PID 供 stop-all.sh 精确停止
+# （前台管道的 $! 是 awk 前缀进程而非服务本身，不登记会让 PID 文件过期）
+write_fg_port_pid() {
+    local name="$1" port="$2"
+    local real_pid=""
+    for _ in {1..10}; do
+        real_pid=$(lsof -i :"$port" -sTCP:LISTEN -t 2>/dev/null | head -1)
+        [ -n "$real_pid" ] && break
+        sleep 1
+    done
+    if [ -n "$real_pid" ]; then
+        echo "$real_pid" > "$PID_DIR/${name}.pid"
+    else
+        log_warn "${name} 未能解析监听进程，PID 文件未登记（stop-all.sh 将按端口兜底）"
+    fi
+}
+
 fg_cleanup() {
-    echo ""
-    log_info "正在停止所有服务..."
-    for pid in "${FG_PIDS[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null
-        fi
-    done
-    sleep 1
-    for pid in "${FG_PIDS[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -9 "$pid" 2>/dev/null
-        fi
-    done
-    log_info "所有服务已停止"
+    # 仅前台模式有子进程需要清理；后台(-d)模式退出也会命中本 EXIT trap，
+    # 无前台子进程时静默退出，不打印误导性的“正在停止所有服务...”
+    if [ -n "${FG_PIDS[*]}" ]; then
+        echo ""
+        log_info "正在停止所有服务..."
+        for pid in "${FG_PIDS[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                kill "$pid" 2>/dev/null
+            fi
+        done
+        sleep 1
+        for pid in "${FG_PIDS[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -9 "$pid" 2>/dev/null
+            fi
+        done
+        log_info "所有服务已停止"
+    fi
     exit 0
 }
 
@@ -422,12 +460,12 @@ start_service_fg() {
 
     log_info "启动 ${name} (端口: $port)"
 
-    # 在子 shell 中启动，日志通过 awk 加彩色前缀后输出到控制台
+    # 在子 shell 中启动，日志经 tee 落盘（前台模式也留现场）+ awk 加彩色前缀后输出到控制台
     (
         cd "$PROJECT_ROOT"
         PYTHONPATH="$PYTHONPATH" exec "$PYTHON" -m uvicorn "${module}:app" \
             --host 0.0.0.0 --port "$port" --log-level info 2>&1
-    ) | awk -v svc="$name" -v c="$color" -v n="\033[0m" \
+    ) | tee -a "$LOG_DIR/${name}.log" | awk -v svc="$name" -v c="$color" -v n="\033[0m" \
         '{printf "%s[%-12s]%s %s\n", c, svc, n, $0; fflush()}' &
 
     local pid=$!
@@ -438,6 +476,8 @@ start_service_fg() {
         log_error "${name} 启动失败"
         return 1
     fi
+
+    write_fg_port_pid "$name" "$port"
 }
 
 # 前台模式启动 DataEngine
@@ -459,7 +499,7 @@ start_dataengine_fg() {
     (
         cd "$PROJECT_ROOT/services/dataengine"
         exec env GATEWAY_PORT="$DATAENGINE_PORT" "$DATAENGINE_BIN" 2>&1
-    ) | awk -v svc="dataengine" -v c="$color" -v n="\033[0m" \
+    ) | tee -a "$DATAENGINE_LOG" | awk -v svc="dataengine" -v c="$color" -v n="\033[0m" \
         '{printf "%s[%-12s]%s %s\n", c, svc, n, $0; fflush()}' &
 
     local pid=$!
@@ -491,11 +531,13 @@ start_frontend_fg() {
     (
         cd "$FRONTEND_DIR"
         exec npm run dev 2>&1
-    ) | awk -v svc="frontend" -v c="$color" -v n="\033[0m" \
+    ) | tee -a "$LOG_DIR/frontend.log" | awk -v svc="frontend" -v c="$color" -v n="\033[0m" \
         '{printf "%s[%-12s]%s %s\n", c, svc, n, $0; fflush()}' &
 
     local pid=$!
     FG_PIDS+=("$pid")
+
+    write_fg_port_pid "frontend" "$FRONTEND_PORT"
 }
 
 # 前台模式启动 Celery worker / beat
@@ -503,13 +545,20 @@ start_celery_fg() {
     local name="$1"
     local color="$2"
 
+    # 与后台模式一致兜底查重，防止前台重复启动叠加双实例
+    local existing=$(find_celery_pids "$name" | tr '\n' ' ')
+    if [ -n "$existing" ]; then
+        log_warn "${name} 已有实例运行 (PID: ${existing}), 跳过启动"
+        return 0
+    fi
+
     log_info "启动 ${name}"
 
     build_celery_cmd "$name"
     (
         cd "$PROJECT_ROOT"
         PYTHONPATH="$PYTHONPATH" exec "${CELERY_CMD[@]}" 2>&1
-    ) | awk -v svc="$name" -v c="$color" -v n="\033[0m" \
+    ) | tee -a "$LOG_DIR/${name}.log" | awk -v svc="$name" -v c="$color" -v n="\033[0m" \
         '{printf "%s[%-12s]%s %s\n", c, svc, n, $0; fflush()}' &
 
     FG_PIDS+=("$!")
@@ -746,6 +795,7 @@ case "${1:-all}" in
             IFS=':' read -r name module port <<< "$svc"
             if [ "$name" = "$1" ]; then
                 if [ "${2:-}" = "-d" ]; then
+                    trap - SIGINT SIGTERM EXIT  # 后台单服务模式与全量 -d 一致，取消前台清理 trap
                     start_service "$name" "$module" "$port"
                 else
                     start_service_fg "$name" "$module" "$port" "${FG_COLORS[0]}"

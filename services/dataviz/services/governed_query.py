@@ -38,7 +38,6 @@ def governed_execute(
     df, elapsed_ms, row_count = execute_query_with_permission(
         sql,
         datasource_id=datasource_id,
-        query_type="sql",
         user_context={"user_id": uid, "username": username or ""},
         workspace_id=int(workspace_id or 0),
     )

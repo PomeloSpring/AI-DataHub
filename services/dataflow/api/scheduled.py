@@ -58,7 +58,14 @@ async def _scheduled_access(request: Request):
                 ws = body.get("workspace_id", 0) if isinstance(body, dict) else 0
             except ValueError:
                 ws = 0
-        authorize_workspace(user, ws or 0)
+        if ws:
+            authorize_workspace(user, int(ws))
+        elif request.method in ("POST", "PUT"):
+            # 写操作必须明确工作空间（非 admin ws=0 拒绝）
+            authorize_workspace(user, 0)
+        # GET 无 ws：放行——列表端点按身份圈范围（tasks 按 owner、reports 按 user、
+        # channels/templates 按 owner+内置），非 admin 不得看全量；
+        # 此处不再 authorize_workspace(user, 0)（非 admin 恒 403，曾致任务调度页打不开）
     if "/logs/cleanup" in request.url.path and user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="仅管理员可执行全局清理")
 
@@ -170,28 +177,28 @@ def get_scheduled_task(task_id: int):
     return task
 
 
-def _waker_checked(operation, *args, **kwargs):
+def _as_bot_checked(operation, *args, **kwargs):
     try:
         return operation(*args, **kwargs)
     except (PermissionError, ValueError) as exc:
-        logger.warning("定时任务 Waker 配置校验拒绝: %s", exc)
+        logger.warning("定时任务 AS-BOT 配置校验拒绝: %s", exc)
         raise HTTPException(422, str(exc)) from exc
 
 
-@router.get("/waker-options")
-def scheduled_waker_options(workspace_id: int = Query(0), user: dict = Depends(get_current_user)):
-    from services.datamind.execution.scheduled_analysis import waker_options
+@router.get("/as-bot-options")
+def scheduled_as_bot_options(workspace_id: int = Query(0), user: dict = Depends(get_current_user)):
+    from services.datamind.execution.scheduled_analysis import as_bot_options
     authorize_workspace(user, workspace_id)
-    return _waker_checked(waker_options, user["user_id"], workspace_id)
+    return _as_bot_checked(as_bot_options, user["user_id"], workspace_id)
 
 
-@router.get("/tasks/{task_id}/waker-options")
-def existing_task_waker_options(task_id: int):
-    from services.datamind.execution.scheduled_analysis import waker_options
+@router.get("/tasks/{task_id}/as-bot-options")
+def existing_task_as_bot_options(task_id: int):
+    from services.datamind.execution.scheduled_analysis import as_bot_options
     task = scheduled_task_service.get_task(task_id)
     if not task:
         raise HTTPException(404, "定时任务不存在")
-    return _waker_checked(waker_options, task["owner_id"], task.get("workspace_id") or 0)
+    return _as_bot_checked(as_bot_options, task["owner_id"], task.get("workspace_id") or 0)
 
 
 @router.post("/tasks")
@@ -211,7 +218,7 @@ def create_scheduled_task(req: ScheduledTaskCreate, user: dict = Depends(get_cur
     if req.task_type not in ("query", "agent"):
         raise HTTPException(status_code=400, detail="task_type 必须为 query 或 agent")
 
-    task_id = _waker_checked(scheduled_task_service.create_task,
+    task_id = _as_bot_checked(scheduled_task_service.create_task,
         data=req.model_dump(),
         owner_id=user["user_id"],
         workspace_id=req.workspace_id,
@@ -239,7 +246,7 @@ def update_scheduled_task(task_id: int, req: ScheduledTaskUpdate):
         raise HTTPException(status_code=400, detail="task_type 必须为 query 或 agent")
 
     data = req.model_dump(exclude_unset=True)
-    success = _waker_checked(scheduled_task_service.update_task, task_id, data)
+    success = _as_bot_checked(scheduled_task_service.update_task, task_id, data)
     return {"success": success}
 
 
@@ -264,7 +271,7 @@ def toggle_scheduled_task(
     if not existing:
         raise HTTPException(status_code=404, detail="定时任务不存在")
 
-    success = _waker_checked(scheduled_task_service.toggle_task, task_id, 1 if is_active else 0)
+    success = _as_bot_checked(scheduled_task_service.toggle_task, task_id, 1 if is_active else 0)
     return {"success": success}
 
 
@@ -280,8 +287,8 @@ async def manual_trigger_scheduled_task(task_id: int, background_tasks: Backgrou
     if not existing:
         raise HTTPException(status_code=404, detail="定时任务不存在")
 
-    from services.datamind.execution.scheduled_analysis import validate_task_waker
-    _waker_checked(validate_task_waker, existing)
+    from services.datamind.execution.scheduled_analysis import validate_task_as_bot
+    _as_bot_checked(validate_task_as_bot, existing)
     # Auto-cleanup stale running logs before triggering
     scheduled_task_service.cleanup_stale_running_logs(timeout_minutes=10)
 
@@ -399,9 +406,12 @@ def cleanup_scheduled_logs(
 @router.get("/channels")
 def list_notification_channels(
     workspace_id: int = Query(0, description="Workspace ID"),
+    user: dict = Depends(get_current_user),
 ):
     """List notification channels, scoped by workspace."""
-    return scheduled_task_service.list_channels(workspace_id=workspace_id)
+    # 非 admin 全局视图只给自建 + 无主内置渠道（config 含 webhook/密钥，不泄露他人）
+    owner_id = None if user.get("role") == "admin" else user["user_id"]
+    return scheduled_task_service.list_channels(workspace_id=workspace_id, owner_id=owner_id)
 
 
 @router.get("/channels/{channel_id}")
@@ -476,9 +486,12 @@ def test_notification_channel(channel_id: int):
 @router.get("/templates")
 def list_report_templates(
     workspace_id: int = Query(0, description="Workspace ID"),
+    user: dict = Depends(get_current_user),
 ):
     """List report templates (system built-in + workspace custom)."""
-    return scheduled_task_service.list_templates(workspace_id=workspace_id)
+    # 非 admin 全局视图只给系统内置 + 自建模板
+    owner_id = None if user.get("role") == "admin" else user["user_id"]
+    return scheduled_task_service.list_templates(workspace_id=workspace_id, owner_id=owner_id)
 
 
 @router.get("/templates/{template_id}")

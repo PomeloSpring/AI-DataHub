@@ -50,6 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         // Query & Health
         .route("/api/query", axum::routing::post(api::query::handle_query))
+        .route("/api/explain", axum::routing::post(api::query::handle_explain))
         .route("/api/health", axum::routing::get(api::health::handle_health))
         // Datasource CRUD
         .route("/api/datasources", axum::routing::get(api::datasources::list_datasources))

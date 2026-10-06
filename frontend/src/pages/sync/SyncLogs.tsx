@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/select';
 import { toast } from 'sonner';
 import { RefreshCw, Search } from 'lucide-react';
-import { syncApi, type SyncLog } from '@/api/sync';
+import { syncApi, type SyncLog, type SyncTask } from '@/api/sync';
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
   success: { label: '成功', color: 'bg-green-500/10 text-green-500 border-green-500/20' },
@@ -38,6 +38,13 @@ export default function SyncLogs() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [taskIdFilter, setTaskIdFilter] = useState('');
+  // 资源筛选用选择框(不手填 ID): 任务清单供下拉选择
+  const [taskOptions, setTaskOptions] = useState<SyncTask[]>([]);
+  useEffect(() => {
+    syncApi.list({ page: 1, size: 100 })
+      .then(res => setTaskOptions(res.data.items || res.data || []))
+      .catch(() => setTaskOptions([]));
+  }, []);
   const [statusFilter, setStatusFilter] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -83,12 +90,17 @@ export default function SyncLogs() {
 
       {/* Filters */}
       <div className="flex items-center gap-3 flex-wrap">
-        <Input
-          className="w-[180px]"
-          placeholder="任务 ID"
-          value={taskIdFilter}
-          onChange={e => setTaskIdFilter(e.target.value)}
-        />
+        <Select value={taskIdFilter || 'all'} onValueChange={v => setTaskIdFilter(v === 'all' ? '' : v)}>
+          <SelectTrigger className="w-[180px]">
+            <SelectValue placeholder="全部任务" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部任务</SelectItem>
+            {taskOptions.map(t => (
+              <SelectItem key={t.id} value={String(t.id)}>{t.name || `任务 ${t.id}`}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Select value={statusFilter || 'all'} onValueChange={v => setStatusFilter(v === 'all' ? '' : v)}>
           <SelectTrigger className="w-[150px]">
             <SelectValue placeholder="全部状态" />

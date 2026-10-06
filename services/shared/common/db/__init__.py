@@ -20,7 +20,7 @@ from services.shared.common.db.metadata_db import (
 )
 
 from services.shared.common.db.datasource_db import (
-    get_datasource_conn, get_datasource_by_id,
+    get_datasource_conn, get_datasource_by_id, get_datasource_by_name,
 )
 
 # Backward-compatible aliases for legacy code that imports from db.py
@@ -85,7 +85,7 @@ __all__ = [
     # Metadata pool
     "get_metadata_conn", "get_metadata_connection", "close_metadata_pool", "get_metadata_pool_stats",
     # Datasource
-    "get_datasource_conn", "get_datasource_by_id",
+    "get_datasource_conn", "get_datasource_by_id", "get_datasource_by_name",
     # Legacy compatibility
     "DBConnection", "execute_query", "execute_write", "execute_insert",
 ]

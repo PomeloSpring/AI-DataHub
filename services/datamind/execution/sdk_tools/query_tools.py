@@ -17,6 +17,22 @@ logger = logging.getLogger(__name__)
 MAX_ROWS = 200
 
 
+def _resolve_datasource_arg(args, ctx) -> int | None:
+    """查询工具的生效数据源解析(waker-datasource-domain §2):
+
+    - LLM 传 `datasource`(业务名)→ 在角色授权集内按 name 解析为 id(唯一裁决
+      = resource_guard._resolve_authorized_source), 未命中抛含候选名的可操作错误;
+    - 未传 → 用会话生效源 ctx.datasource_id(已由 resource_guard 校验∈授权集);
+    - 禁止消费 LLM 传的数值 id(黑盒, 不得诱导猜值)。
+    """
+    name = (args.get("datasource") or "").strip()
+    if not name:
+        return ctx.datasource_id if ctx else None
+    from services.datamind.execution.resource_guard import _resolve_authorized_source
+    available = (ctx.extra.get("available_datasource_ids") if ctx else None) or []
+    return _resolve_authorized_source(name, available)
+
+
 async def execute_sql(args):
     from services.datamind.execution.sdk_tools.context import get_execution_context
     from services.datamind.nl2sql.sql.query_executor import (
@@ -46,18 +62,22 @@ async def execute_sql(args):
     if not ok:
         return _text({"error": f"护栏: {msg}"}, is_error=True)
 
-    ds_id = args.get("datasource_id") or (ctx.datasource_id if ctx else None)
+    try:
+        ds_id = _resolve_datasource_arg(args, ctx)
+    except Exception as e:
+        # 名解析失败的可操作错误(含候选名)原样返回给 LLM，引导询问用户，不掩盖
+        return _text({"error": str(e)}, is_error=True)
     guardrail_err = _huge_scan_guard(sql, ds_id)
     if guardrail_err:
         return _text({"error": guardrail_err, "hint": "为 large/huge 表加过滤谓词, 或改用 run_semantic_query。"}, is_error=True)
 
     user_context = {"user_id": ctx.user_id, "username": ctx.username}
     try:
+        # 签名: execute_query_with_permission(sql, datasource_id, user_context, workspace_id, ...)
         df, exec_ms, row_count = await asyncio.to_thread(
             execute_query_with_permission,
             sql,
-            args.get("datasource_id"),
-            "sql",
+            ds_id,
             user_context,
             ctx.workspace_id,
         )
@@ -89,7 +109,11 @@ async def check_sql(args):
     sql = (args.get("sql") or "").strip()
     if not sql:
         return _text({"error": "sql is required"}, is_error=True)
-    ds_id = args.get("datasource_id") or (ctx.datasource_id if ctx else None)
+    try:
+        ds_id = _resolve_datasource_arg(args, ctx)
+    except Exception as e:
+        # 名解析失败的可操作错误(含候选名)原样返回给 LLM，引导询问用户，不掩盖
+        return _text({"error": str(e)}, is_error=True)
 
     warnings: list[str] = []
 
@@ -244,7 +268,7 @@ READONLY_ANNOTATIONS = {"readOnlyHint": True}
 def build_query_server(backend: str = "qoder", tool_names=None):
     """构建 query 进程内 MCP server(qoder / claude).
 
-    tool_names 给定时只注册被选中的工具(waker 粒度控制 check_sql / execute_sql 开关)。
+    tool_names 给定时只注册被选中的工具(AS-BOT 粒度控制 check_sql / execute_sql 开关)。
     """
     from services.datamind.execution.sdk_tools.compat import make_server, make_tool
 

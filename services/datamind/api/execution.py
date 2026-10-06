@@ -26,24 +26,14 @@ class ExecuteRequest(BaseModel):
     model_id: Optional[int] = None
     history: list[dict] = []
     conversation_id: int = 0
-    waker_key: str = ""
+    as_bot_key: str = ""
     timeout: int = 300
-    attachments: list[str] = []  # 多模态附件 ID 列表
+    attachments: list[str] = []  # 多模态附件:会话工作区既有文件相对路径清单(如 uploads/x.png)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────
 
-@router.get("/layers/{workspace_id}")
-def get_workspace_layers(workspace_id: int, user: dict = Depends(get_current_user)):
-    """获取工作空间可用的执行层(含绑定关系)."""
-    from services.datamind.execution import service
-
-    authorize_workspace(user, workspace_id)
-    try:
-        return service.get_workspace_layers(workspace_id)
-    except Exception as e:
-        logger.error("Get workspace execution layers failed: %s", e)
-        raise HTTPException(status_code=500, detail="执行服务暂不可用") from None
+# (已退役: GET /layers/{workspace_id} 工作空间执行层绑定 —— 执行层全局生效, 不按空间绑定)
 
 
 @router.post("/execute")
@@ -80,11 +70,10 @@ async def execute_task(req: ExecuteRequest, user: dict = Depends(get_current_use
     from starlette.concurrency import run_in_threadpool
     await run_in_threadpool(preflight_request, req, user)
     if row.get("layer_type") != "cli" or (row.get("config") or {}).get("mode") != "sdk":
-        raise HTTPException(422, "所选执行层不支持 Waker 安全执行")
-    bound = service.get_workspace_layers(workspace_id)
-    if req.execution_layer_id and not any(x["id"] == row["id"] for x in bound):
-        raise HTTPException(403, "所选执行层未绑定当前工作空间")
-    task_attachments = [{"id": aid} for aid in req.attachments]
+        raise HTTPException(422, "所选执行层不支持 AS-BOT 安全执行")
+    # 执行层全局生效(不按工作空间绑定), 无需绑定校验
+    # 附件按工作区相对路径引用既有文件(place_attachments 做包含/存在校验,缺失显式报错)
+    task_attachments = [{"path": p} for p in req.attachments]
 
     task = ExecutionTask(
         task_id=uuid.uuid4().hex[:16],
@@ -97,7 +86,7 @@ async def execute_task(req: ExecuteRequest, user: dict = Depends(get_current_use
             username=user.get("username", ""),
             user_role=user.get("role", ""),
             model_id=req.model_id,
-            extra={"conversation_id": req.conversation_id, "waker_key": req.waker_key},
+            extra={"conversation_id": req.conversation_id, "as_bot_key": req.as_bot_key},
         ),
         timeout=req.timeout,
         attachments=task_attachments,

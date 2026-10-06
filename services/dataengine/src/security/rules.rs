@@ -59,14 +59,19 @@ impl RLSAnalyzerRule {
         plan.transform(|node| {
             match node {
                 LogicalPlan::TableScan(scan) => {
-                    let table_name = scan.table_name.table().to_lowercase();
-                    if let Some(filter_expr) = self.filter_exprs.get(&table_name) {
+                    // 匹配键变体查找（裸名/db.table/ds.db.table），跨库同名不串味
+                    let hit = crate::security::ref_key_variants(
+                        &scan.table_name, crate::security::DEFAULT_CATALOG,
+                    )
+                    .iter()
+                    .find_map(|key| self.filter_exprs.get(key).map(|e| (key.clone(), e.clone())));
+                    if let Some((table_key, filter_expr)) = hit {
                         debug!(
                             "RLSAnalyzerRule: injecting filter for table '{}': {}",
-                            table_name, filter_expr
+                            table_key, filter_expr
                         );
                         let filter_plan = LogicalPlan::Filter(Filter::try_new(
-                            filter_expr.clone(),
+                            filter_expr,
                             Arc::new(LogicalPlan::TableScan(scan)),
                         )?);
                         Ok(Transformed::yes(filter_plan))
@@ -139,11 +144,10 @@ impl RLSVerifierRule {
         plan.apply(|node| {
             if let LogicalPlan::Filter(filter) = node {
                 if let LogicalPlan::TableScan(scan) = filter.input.as_ref() {
-                    let table_name = scan.table_name.table().to_lowercase();
-                    if self.rls_tables.contains(&table_name) {
+                    if self.scan_matches_rls(scan) {
                         debug!(
                             "RLSVerifierRule: verified RLS filter on table '{}': {}",
-                            table_name, filter.predicate
+                            scan.table_name, filter.predicate
                         );
                     }
                 }
@@ -180,7 +184,7 @@ impl RLSVerifierRule {
         let _ = plan.apply(|node| {
             if let LogicalPlan::Filter(filter) = node {
                 if let LogicalPlan::TableScan(scan) = filter.input.as_ref() {
-                    if scan.table_name.table().to_lowercase() == table_name {
+                    if self.scan_matches(scan, table_name) {
                         found = true;
                         return Ok(TreeNodeRecursion::Stop);
                     }
@@ -196,9 +200,7 @@ impl RLSVerifierRule {
         let mut found = false;
         let _ = plan.apply(|node| {
             if let LogicalPlan::TableScan(scan) = node {
-                if scan.table_name.table().to_lowercase() == table_name
-                    && Self::is_secure_table(scan)
-                {
+                if self.scan_matches(scan, table_name) && Self::is_secure_table(scan) {
                     found = true;
                     return Ok(TreeNodeRecursion::Stop);
                 }
@@ -206,6 +208,20 @@ impl RLSVerifierRule {
             Ok(TreeNodeRecursion::Continue)
         });
         found
+    }
+
+    /// TableScan 是否命中某个策略键（变体匹配：裸名/db.table/ds.db.table）
+    fn scan_matches(&self, scan: &TableScan, rls_key: &str) -> bool {
+        crate::security::ref_key_variants(&scan.table_name, crate::security::DEFAULT_CATALOG)
+            .iter()
+            .any(|key| key == rls_key)
+    }
+
+    /// TableScan 是否属于任一 RLS 保护表
+    fn scan_matches_rls(&self, scan: &TableScan) -> bool {
+        crate::security::ref_key_variants(&scan.table_name, crate::security::DEFAULT_CATALOG)
+            .iter()
+            .any(|key| self.rls_tables.contains(key))
     }
 }
 
@@ -215,7 +231,10 @@ impl OptimizerRule for RLSVerifierRule {
     }
 
     fn supports_rewrite(&self) -> bool {
-        false
+        // 声明走 rewrite 路径: 与下方 rewrite() 实现一致。此前返回 false 与 rewrite()
+        // 实现冲突, 优化器按旧 optimize 路径调用其默认实现, 恒抛
+        // "Internal error: Should have called rewrite" 导致 DataEngine 查询全败。
+        true
     }
 
     fn rewrite(

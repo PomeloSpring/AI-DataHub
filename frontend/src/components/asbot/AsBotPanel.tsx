@@ -1,17 +1,17 @@
 import { useState, useRef, useEffect } from 'react';
-import { X, Send, Loader2, Bot, User, Plus, History, Trash2, Maximize2 } from 'lucide-react';
+import { X, Send, Loader2, Bot, User, Plus, History, Trash2, ExternalLink } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import MarkdownWithCharts from '../MarkdownWithCharts';
 import ProcessTimeline from '../ProcessTimeline';
+import ConversationDesignSection from '../ConversationDesignSection';
 import { useAsBotStore } from '../../stores/asBotStore';
 import type { AsBotMessage } from '../../stores/asBotStore';
 import { useThemeStore, applyTheme } from '../../stores/themeStore';
-import ApprovalCard from './ApprovalCard';
-import DashboardDesignPanel from './DashboardDesignPanel';
-import { DESIGN_STATUS } from '../../api/dashboardDesign';
+import { hasPerm } from '../../stores/permissionStore';
+import { useChatStore } from '../../stores/chatStore';
 
 /**
  * AS-BOT 聊天面板 — 抽屉(variant=drawer)与全屏独立标签页(fullscreen)复用同一实现.
@@ -19,11 +19,9 @@ import { DESIGN_STATUS } from '../../api/dashboardDesign';
 export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolean }) {
   const {
     panelOpen, messages, loading, loadingStep,
-    sendMessage, cancelMessage, approveAction, rejectAction,
+    sendMessage, cancelMessage,
     closePanel, newConversation,
     conversations, conversationId, switchConversation, deleteConversation, loadConversations,
-    designs, activeDesignId, openDesign, loadDesigns,
-    permissions, permissionsLoaded, loadPermissions,
   } = useAsBotStore();
 
   const [input, setInput] = useState('');
@@ -31,10 +29,21 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { theme } = useThemeStore();
+  const navigate = useNavigate();
 
-  // 全屏独立标签页：挂载即加载权限与会话（不依赖抽屉的 openPanel）
+  // 跳转到工作空间 Chat 的对应会话：会话 id 经 sessionStorage 一次性携带
+  // （与首页 home_question 同惯例），由 Chat 挂载时消费并 switchConversation。
+  const jumpToWorkspaceConversation = () => {
+    const conv = conversations.find((c) => c.id === conversationId);
+    const wsId = conv?.workspace_id || useChatStore.getState().selectedWorkspaceId || 0;
+    if (conversationId != null) sessionStorage.setItem('asbot_open_conversation', String(conversationId));
+    closePanel();
+    navigate(wsId ? `/ws/${wsId}/chat` : '/ask');
+  };
+
+  // 全屏独立标签页：挂载即加载会话（不依赖抽屉的 openPanel）
   useEffect(() => {
-    if (fullscreen) { void loadPermissions(); void loadConversations(); }
+    if (fullscreen) { void loadConversations(); }
   }, [fullscreen]);
 
   // 应用主题到全屏页面
@@ -70,12 +79,12 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
 
   if (!fullscreen && !panelOpen) return null;
 
-  // 全屏标签页权限门禁：无权限时不暴露会话能力
-  if (fullscreen && permissionsLoaded && !permissions?.can_access) {
+  // 全屏标签页权限门禁：菜单与功能权限码(asbot:use)裁决，无权限时不暴露会话能力
+  if (fullscreen && !hasPerm('asbot:use')) {
     return (
       <div className="h-screen w-full flex flex-col items-center justify-center gap-2 text-muted-foreground bg-background">
         <Bot className="h-10 w-10 opacity-30" />
-        <p className="text-sm">当前账号无权访问 AS-BOT 系统助手</p>
+        <p className="text-sm">当前账号无权访问 AS-BOT</p>
       </div>
     );
   }
@@ -113,12 +122,12 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
           {!fullscreen && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="sm" className="h-8 w-8 p-0" aria-label="在新标签页全屏打开"
-                  onClick={() => window.open('/as-bot/chat', '_blank', 'noopener')}>
-                  <Maximize2 className="h-4 w-4" />
+                <Button variant="ghost" size="sm" className="h-8 w-8 p-0" aria-label="在工作空间中打开该会话"
+                  onClick={jumpToWorkspaceConversation}>
+                  <ExternalLink className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>在新标签页全屏打开</TooltipContent>
+              <TooltipContent>在工作空间中打开该会话</TooltipContent>
             </Tooltip>
           )}
           {!fullscreen && (
@@ -191,18 +200,18 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
             <MessageBubble
               key={idx}
               msg={msg}
+              conversationId={conversationId}
               isStreaming={loading && idx === messages.length - 1}
-              onApprove={(approvalId) => approveAction(approvalId, idx)}
-              onReject={(approvalId) => rejectAction(approvalId, idx)}
             />
           ))}
 
-          {designs.filter(design => design.status !== 'cancelled').map(design => <div key={design.design_id} className="rounded-lg border bg-card p-3 space-y-2">
-            <p className="text-sm font-medium">仪表盘设计 · {design.name || design.request.slice(0, 30)}</p>
-            <p className="text-xs text-muted-foreground">{DESIGN_STATUS[design.status] || design.status} · 版本 {design.version}</p>
-            <p className="text-xs">{design.selection ? `业务域：${design.selection.datasource_name}` : '请先选择目标仪表盘、业务范围和知识库'}</p>
-            <Button size="sm" variant="outline" disabled={loading} onClick={() => openDesign(design.design_id)}>打开设计面板</Button>
-          </div>)}
+          {/* 会话关联的仪表盘设计（与工作空间 Chat 共用同一实现） */}
+          <ConversationDesignSection
+            conversationId={conversationId}
+            refreshSignal={messages.length}
+            disabled={loading}
+            onContinue={text => void sendMessage(text)}
+          />
 
           {/* Loading indicator */}
           {loading && (
@@ -221,9 +230,6 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
           )}
         </div>
       </div>
-
-      {activeDesignId && <DashboardDesignPanel key={activeDesignId} designId={activeDesignId}
-        onClose={() => openDesign(null)} onChanged={() => void loadDesigns()} onContinue={text => void sendMessage(text)} />}
 
       {/* Input */}
       <div className="border-t px-4 py-3 shrink-0">
@@ -258,12 +264,11 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
 // ── Message Bubble ────────────────────────────────────────────────
 
 function MessageBubble({
-  msg, isStreaming, onApprove, onReject,
+  msg, isStreaming, conversationId,
 }: {
   msg: AsBotMessage;
   isStreaming: boolean;
-  onApprove: (id: number) => void;
-  onReject: (id: number) => void;
+  conversationId: number | null;
 }) {
   const isUser = msg.role === 'user';
 
@@ -287,14 +292,15 @@ function MessageBubble({
 
         {/* Main content */}
         {msg.content && (
-          <div className={`rounded-lg px-3 py-2 text-sm overflow-hidden break-words ${isUser ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}>
+          <div className={`text-sm break-words ${isUser
+            ? 'bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-4 py-3'
+            : 'bg-muted rounded-2xl rounded-tl-sm px-4 py-3 overflow-hidden'}`}>
             {isUser ? (
               <p className="whitespace-pre-wrap">{msg.content}</p>
             ) : (
               <div className="prose prose-sm dark:prose-invert max-w-none break-words [&_table]:block [&_table]:overflow-x-auto [&_table]:max-w-full [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_code]:break-all">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {msg.content}
-                </ReactMarkdown>
+                {/* 与工作空间 Chat 同一渲染（图表契约/表格/代码样式一致） */}
+                <MarkdownWithCharts text={msg.content} conversationId={conversationId} />
               </div>
             )}
           </div>
@@ -305,17 +311,6 @@ function MessageBubble({
           <div className="rounded-lg px-3 py-2 text-sm bg-destructive/10 text-destructive border border-destructive/20 break-words">
             {msg.error}
           </div>
-        )}
-
-        {/* Approval card */}
-        {msg.pendingApproval && (
-          <ApprovalCard
-            approval={msg.pendingApproval}
-            status={msg.approvalStatus || 'pending'}
-            result={msg.approvalResult}
-            onApprove={() => onApprove(msg.pendingApproval!.approval_id)}
-            onReject={() => onReject(msg.pendingApproval!.approval_id)}
-          />
         )}
       </div>
 

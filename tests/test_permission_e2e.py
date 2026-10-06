@@ -72,7 +72,7 @@ class TestAdminAccess:
     def test_admin_sees_all_columns(self, mock_rls, mock_role, enforcer):
         """Admin sees all columns without masking."""
         mock_role.get_user_roles.return_value = [{"id": 1, "name": "admin"}]
-        mock_role.get_user_allowed_datasources.return_value = []
+        mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
         mock_role.get_user_allowed_tables.return_value = []
         mock_role.get_user_column_restrictions.return_value = {"hidden_columns": [], "masked_columns": {}}
         mock_rls.get_effective_policies.return_value = {"row_filter": "", "hidden_columns": [], "masked_columns": {}, "policies_applied": []}
@@ -93,7 +93,7 @@ class TestZhangsanEastChina:
     def test_zhangsan_can_access_east_datasource(self, mock_rls, mock_role, enforcer):
         """zhangsan can access datasource 1 in 华东 workspace."""
         mock_role.get_user_roles.return_value = [{"id": 100, "name": "region_analyst"}]
-        mock_role.get_user_allowed_datasources.return_value = []  # No restriction
+        mock_role.get_user_allowed_datasources.return_value = [1]  # 显式授权 DS1（fail-closed：空=拒绝，不再是 No restriction）
         mock_role.get_user_allowed_tables.return_value = []
         mock_role.get_user_column_restrictions.return_value = {"hidden_columns": [], "masked_columns": {"phone": "partial"}}
         mock_rls.get_effective_policies.return_value = {
@@ -115,7 +115,7 @@ class TestZhangsanEastChina:
     def test_zhangsan_sql_gets_row_filter(self, mock_rls, mock_role, enforcer):
         """zhangsan's SQL should have row filter injected."""
         mock_role.get_user_roles.return_value = [{"id": 100, "name": "region_analyst"}]
-        mock_role.get_user_allowed_datasources.return_value = []
+        mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
         mock_role.get_user_allowed_tables.return_value = []
         mock_role.get_user_column_restrictions.return_value = {"hidden_columns": [], "masked_columns": {}}
         mock_rls.get_effective_policies.return_value = {
@@ -141,7 +141,7 @@ class TestLisiSouthChina:
     def test_lisi_can_only_see_orders(self, mock_rls, mock_role, enforcer):
         """lisi can only access orders table, not users or products."""
         mock_role.get_user_roles.return_value = [{"id": 200, "name": "data_viewer"}]
-        mock_role.get_user_allowed_datasources.return_value = []
+        mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
         mock_role.get_user_allowed_tables.return_value = ["orders"]  # Only orders
 
         # Can access orders
@@ -163,7 +163,7 @@ class TestLisiSouthChina:
     def test_lisi_salary_hidden_phone_masked(self, mock_rls, mock_role, enforcer):
         """lisi should have salary hidden and phone masked."""
         mock_role.get_user_roles.return_value = [{"id": 200, "name": "data_viewer"}]
-        mock_role.get_user_allowed_datasources.return_value = []
+        mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
         mock_role.get_user_allowed_tables.return_value = []
         mock_role.get_user_column_restrictions.return_value = {
             "hidden_columns": ["amount"],
@@ -226,7 +226,7 @@ class TestWorkspaceIsolation:
     def test_east_workspace_filters_to_east(self, mock_rls, mock_role, enforcer):
         """华东 workspace should filter to 华东 data only."""
         mock_role.get_user_roles.return_value = [{"id": 100, "name": "region_analyst"}]
-        mock_role.get_user_allowed_datasources.return_value = []
+        mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
         mock_role.get_user_allowed_tables.return_value = []
         mock_role.get_user_column_restrictions.return_value = {"hidden_columns": [], "masked_columns": {}}
         mock_rls.get_effective_policies.return_value = {
@@ -247,7 +247,7 @@ class TestWorkspaceIsolation:
     def test_south_workspace_filters_to_south(self, mock_rls, mock_role, enforcer):
         """华南 workspace should filter to 华南 data only."""
         mock_role.get_user_roles.return_value = [{"id": 200, "name": "data_viewer"}]
-        mock_role.get_user_allowed_datasources.return_value = []
+        mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
         mock_role.get_user_allowed_tables.return_value = []
         mock_role.get_user_column_restrictions.return_value = {"hidden_columns": [], "masked_columns": {}}
         mock_rls.get_effective_policies.return_value = {
@@ -269,7 +269,7 @@ class TestWorkspaceIsolation:
     def test_national_workspace_no_filter(self, mock_rls, mock_role, enforcer):
         """全国 workspace should have no row filter."""
         mock_role.get_user_roles.return_value = [{"id": 300, "name": "full_analyst"}]
-        mock_role.get_user_allowed_datasources.return_value = []
+        mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
         mock_role.get_user_allowed_tables.return_value = []
         mock_role.get_user_column_restrictions.return_value = {"hidden_columns": [], "masked_columns": {}}
         mock_rls.get_effective_policies.return_value = {

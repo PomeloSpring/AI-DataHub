@@ -4,6 +4,8 @@ import remarkGfm from 'remark-gfm';
 import ChartPicker from './ChartPicker';
 import MermaidBlock from './MermaidBlock';
 import ArtifactCard from './ArtifactCard';
+import SqlCard from './SqlCard';
+import GraphCard from './GraphCard';
 import { splitChartBlocks } from '../lib/chartBlocks';
 
 interface Props {
@@ -11,6 +13,8 @@ interface Props {
   className?: string;
   /** 当前会话 ID, 供按引用的文件产物卡片构造下载/预览 URL。 */
   conversationId?: number | null;
+  /** 图上下钻: 点击图表元素时回传下钻问题(不传则不启用)。 */
+  onDrill?: (question: string) => void;
 }
 
 /**
@@ -18,7 +22,7 @@ interface Props {
  * ```mermaid 块渲染流程图/时序图,```artifact 块渲染可下载文件产物。
  * 解析失败降级为代码块。图表内嵌于 content,天然随消息持久化与回放。
  */
-export default function MarkdownWithCharts({ text, className, conversationId }: Props) {
+export default function MarkdownWithCharts({ text, className, conversationId, onDrill }: Props) {
   const segments = useMemo(() => splitChartBlocks(text || ''), [text]);
   // prose 排版色已由 globals.css 令牌化(--tw-prose-* → 主题变量),自动随主题
   const proseCls = className || 'leading-relaxed prose prose-sm max-w-none';
@@ -38,12 +42,18 @@ export default function MarkdownWithCharts({ text, className, conversationId }: 
           return (
             <div key={i} className="my-3 rounded-lg border p-3 bg-card">
               {seg.title && <div className="text-sm font-semibold mb-1">{seg.title}</div>}
-              <ChartPicker data={seg.data} defaultType={seg.chartType} sql={seg.sql} />
+              <ChartPicker data={seg.data} defaultType={seg.chartType} sql={seg.sql} onDrill={onDrill} />
             </div>
           );
         }
         if (seg.kind === 'mermaid') {
           return <MermaidBlock key={i} code={seg.code} title={seg.title} />;
+        }
+        if (seg.kind === 'sql') {
+          return <SqlCard key={i} code={seg.code} />;
+        }
+        if (seg.kind === 'graph') {
+          return <GraphCard key={i} title={seg.title} nodes={seg.nodes} edges={seg.edges} />;
         }
         if (seg.kind === 'artifact') {
           return (

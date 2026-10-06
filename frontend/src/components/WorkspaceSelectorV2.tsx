@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Folder, Plus, Settings, Check, ChevronDown } from 'lucide-react';
+import { Folder, Settings, Check, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -8,7 +8,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Badge } from '@/components/ui/badge';
+
 import { useNavigate } from 'react-router-dom';
 import client from '../api/client';
 
@@ -30,7 +30,7 @@ interface WorkspaceSelectorV2Props {
 export default function WorkspaceSelectorV2({ className }: WorkspaceSelectorV2Props) {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [currentWorkspace, setCurrentWorkspace] = useState<Workspace | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [, setLoading] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {

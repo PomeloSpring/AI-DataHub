@@ -115,8 +115,12 @@ def list_rules(
     is_active: Optional[int] = Query(None),
     user: dict = Depends(get_current_user),
 ):
-    """List quality rules with latest check status (returns array)."""
-    conditions = ["r.workspace_id = %s"]
+    """List quality rules with latest check status (returns array).
+
+    口径：workspace_id=0 为全局/未分域（与 adh_sensitive_fields 的 IN (ws,0) 一致），
+    查询含全局行；最近检查结果不再按执行者过滤（质量结果是治理域共享信息）。
+    """
+    conditions = ["r.workspace_id IN (%s, 0)"]
     params = [workspace_id]
     if target_table:
         conditions.append("r.target_table = %s")
@@ -141,13 +145,12 @@ def list_rules(
                         JOIN (
                             SELECT rule_id, MAX(check_time) AS max_time
                             FROM adh_quality_results
-                            WHERE JSON_EXTRACT(detail, '$.execution.user_id') = %s
                             GROUP BY rule_id
                         ) q2 ON q1.rule_id = q2.rule_id AND q1.check_time = q2.max_time
                     ) lr ON lr.rule_id = r.id
                     WHERE {where}
                     ORDER BY r.id DESC""",
-                [user["user_id"], *params],
+                params,
             )
             rows = cur.fetchall()
     return [_normalize_rule(r) for r in rows]
@@ -246,7 +249,7 @@ def execute_workspace_rules(workspace_id: int = Query(...), user: dict = Depends
     with DBConnection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM adh_quality_rules WHERE workspace_id = %s AND is_active = 1",
+                "SELECT * FROM adh_quality_rules WHERE workspace_id IN (%s, 0) AND is_active = 1",
                 (workspace_id,),
             )
             rows = cur.fetchall()
@@ -280,14 +283,17 @@ def list_results(
     page_size: int = Query(50, ge=1, le=200),
     user: dict = Depends(get_current_user),
 ):
-    """Get quality check results with optional filters."""
-    conditions = ["JSON_EXTRACT(detail, '$.execution.user_id') = %s"]
-    params = [user["user_id"]]
+    """Get quality check results with optional filters.
+
+    口径：含全局(workspace 0)行，不按执行者过滤（质量结果属治理域共享信息）。
+    """
+    conditions = ["1=1"]
+    params: list = []
     if rule_id:
         conditions.append("rule_id = %s")
         params.append(rule_id)
     if workspace_id:
-        conditions.append("workspace_id = %s")
+        conditions.append("workspace_id IN (%s, 0)")
         params.append(workspace_id)
     if start_date:
         conditions.append("check_time >= %s")
@@ -336,17 +342,15 @@ def list_reports(
     with DBConnection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) AS total FROM adh_quality_reports WHERE workspace_id = %s "
-                "AND JSON_EXTRACT(summary, '$.executed_by') = %s",
-                (workspace_id, user["user_id"]),
+                "SELECT COUNT(*) AS total FROM adh_quality_reports WHERE workspace_id IN (%s, 0)",
+                (workspace_id,),
             )
             total = cur.fetchone()["total"]
 
             cur.execute(
-                """SELECT * FROM adh_quality_reports WHERE workspace_id = %s
-                   AND JSON_EXTRACT(summary, '$.executed_by') = %s
+                """SELECT * FROM adh_quality_reports WHERE workspace_id IN (%s, 0)
                    ORDER BY report_date DESC, id DESC LIMIT %s OFFSET %s""",
-                (workspace_id, user["user_id"], page_size, offset),
+                (workspace_id, page_size, offset),
             )
             rows = cur.fetchall()
 
@@ -450,23 +454,22 @@ def quality_dashboard(workspace_id: int = Query(0), user: dict = Depends(get_cur
     """Quality overview: overall score, pass rate, rule counts, recent reports, top issues."""
     with DBConnection() as conn:
         with conn.cursor() as cur:
-            # 规则总数与启用数
+            # 规则总数与启用数（含全局 workspace 0）
             cur.execute(
                 """SELECT COUNT(*) AS total_rules, SUM(is_active) AS active_rules
-                   FROM adh_quality_rules WHERE workspace_id = %s""",
+                   FROM adh_quality_rules WHERE workspace_id IN (%s, 0)""",
                 (workspace_id,),
             )
             rule_stats = cur.fetchone() or {}
 
-            # 近 30 天检查结果：通过率与平均分
+            # 近 30 天检查结果：通过率与平均分（质量结果属治理域共享信息，不按执行者过滤）
             cur.execute(
                 """SELECT COUNT(*) AS total_checks,
                           SUM(passed) AS passed_checks,
                           ROUND(AVG(pass_rate), 2) AS avg_pass_rate
                    FROM adh_quality_results
-                   WHERE workspace_id = %s AND check_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-                     AND JSON_EXTRACT(detail, '$.execution.user_id') = %s""",
-                (workspace_id, user["user_id"]),
+                   WHERE workspace_id IN (%s, 0) AND check_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)""",
+                (workspace_id,),
             )
             check_stats = cur.fetchone() or {}
 
@@ -477,10 +480,9 @@ def quality_dashboard(workspace_id: int = Query(0), user: dict = Depends(get_cur
 
             # 最近报告
             cur.execute(
-                """SELECT * FROM adh_quality_reports WHERE workspace_id = %s
-                   AND JSON_EXTRACT(summary, '$.executed_by') = %s
+                """SELECT * FROM adh_quality_reports WHERE workspace_id IN (%s, 0)
                    ORDER BY report_date DESC, id DESC LIMIT 5""",
-                (workspace_id, user["user_id"]),
+                (workspace_id,),
             )
             report_rows = cur.fetchall()
             recent_reports = []
@@ -499,14 +501,13 @@ def quality_dashboard(workspace_id: int = Query(0), user: dict = Depends(get_cur
                           MAX(CASE WHEN qr.passed = 0 THEN qr.check_time END) AS last_failure_at
                    FROM adh_quality_results qr
                    JOIN adh_quality_rules r ON qr.rule_id = r.id
-                   WHERE qr.workspace_id = %s
-                     AND JSON_EXTRACT(qr.detail, '$.execution.user_id') = %s
+                   WHERE qr.workspace_id IN (%s, 0)
                      AND qr.check_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)
                    GROUP BY r.id, r.rule_name, r.rule_type, r.target_table, r.severity
                    HAVING failure_count > 0
                    ORDER BY failure_count DESC
                    LIMIT 10""",
-                (workspace_id, user["user_id"]),
+                (workspace_id,),
             )
             top_issues = []
             for row in cur.fetchall():

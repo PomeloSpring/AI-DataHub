@@ -1,17 +1,20 @@
-"""Object Storage — S3 兼容的文件存储抽象层.
+"""Object Storage — S3 兼容的文件存储抽象层(归档资产专用)。
 
 支持后端:
 - MinIO / AWS S3 / 阿里云 OSS / 腾讯云 COS 等 S3 兼容接口
-- 未配置时自动回退到本地磁盘(开发环境兼容)
+- 未配置时自动回退到本地磁盘(开发环境兼容,ADH_OBJECT_FALLBACK_DIR)
+
+仅承载工作空间归档资产(workspace_assets);聊天附件是会话工作区文件,
+不经本模块(见 services.datamind.multimodal.loader)。
 
 Usage:
     from services.shared.common.object_storage import ObjectStorage
 
     storage = ObjectStorage()
-    storage.upload_bytes("users/1/abc_image.png", data, content_type="image/png")
-    data = storage.download_bytes("users/1/abc_image.png")
-    storage.delete("users/1/abc_image.png")
-    url = storage.get_presigned_url("users/1/abc_image.png", expires=3600)
+    storage.upload_bytes("workspaces/3/assets/abc_report.pdf", data, content_type="application/pdf")
+    data = storage.download_bytes("workspaces/3/assets/abc_report.pdf")
+    storage.delete("workspaces/3/assets/abc_report.pdf")
+    url = storage.get_presigned_url("workspaces/3/assets/abc_report.pdf", expires=3600)
 """
 
 import io
@@ -55,11 +58,11 @@ class ObjectStorage:
             OBJECT_STORAGE_SECRET_KEY,
             OBJECT_STORAGE_BUCKET,
             OBJECT_STORAGE_REGION,
-            ADH_UPLOAD_DIR,
+            ADH_OBJECT_FALLBACK_DIR,
         )
         self._enabled = OBJECT_STORAGE_ENABLED
         self._bucket = OBJECT_STORAGE_BUCKET
-        self._fallback_dir = ADH_UPLOAD_DIR
+        self._fallback_dir = ADH_OBJECT_FALLBACK_DIR
         self._client = None
 
         if self._enabled:
@@ -147,7 +150,7 @@ class ObjectStorage:
         """上传字节数据.
 
         Args:
-            key: 对象键(如 "users/1/abc_image.png")
+            key: 对象键(如 "workspaces/3/assets/abc_report.pdf")
             data: 文件字节内容
             content_type: MIME 类型
         """
@@ -220,17 +223,25 @@ class ObjectStorage:
         else:
             return os.path.exists(self._local_path(key))
 
-    def get_presigned_url(self, key: str, expires: int = 3600) -> Optional[str]:
-        """生成预签名下载 URL(有效期默认 1 小时).
+    def get_presigned_url(self, key: str, expires: int = 3600,
+                          download_filename: str = "") -> Optional[str]:
+        """生成预签名下载 URL(有效期默认 1 小时), 浏览器直连对象存储下载。
 
-        本地回退模式下返回 None(由调用方走 FileResponse).
+        download_filename 非空时以附件名下载(RFC 5987 声明 UTF-8 原名)。
+        本地回退模式下返回 None(由调用方走服务端代理)。
         """
         if not self._enabled:
             return None
         try:
+            params = {"Bucket": self._bucket, "Key": key}
+            if download_filename:
+                from urllib.parse import quote
+                quoted = quote(download_filename)
+                params["ResponseContentDisposition"] = (
+                    f"attachment; filename=\"{quoted}\"; filename*=UTF-8''{quoted}")
             url = self._client.generate_presigned_url(
                 "get_object",
-                Params={"Bucket": self._bucket, "Key": key},
+                Params=params,
                 ExpiresIn=expires,
             )
             return url

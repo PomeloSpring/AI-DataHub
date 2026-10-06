@@ -9,11 +9,11 @@ from services.dataviz.services import dashboard_design_service as designs
 
 def design_actor():
     ctx = get_execution_context()
-    if not ctx or ctx.extra.get("waker_key") != designs.SYSTEM_BOT or not ctx.extra.get("secure_runtime"):
+    if not ctx or not ctx.extra.get("secure_runtime"):
         raise designs.DesignError("仪表盘设计仅可通过可信 AS-BOT 会话使用", "forbidden", 403)
     cid = int(ctx.extra.get("conversation_id") or 0)
     if not cid:
-        raise designs.DesignError("请先建立系统助手会话")
+        raise designs.DesignError("请先建立 AS-BOT 会话")
     return {"user_id": ctx.user_id}, cid
 
 
@@ -63,7 +63,9 @@ SCREEN_SPECS = [
     {"name": "prepare_dashboard_design", "handler": prepare_dashboard_design,
      "description": "按用户确认的选择准备图表语义意图和设计步骤。存疑时用 questions 提出选项并等待回答，可传空 widgets。方案准备完成后提示用户打开面板查看 SQL、真实预览并确认发布。禁止 SQL 字段。",
      "schema": {"design_id": DESIGN_ID, "expected_version": Annotated[int, "get_dashboard_design 返回的当前版本"],
-                "widgets": Annotated[list, "图表数组：{title,chart_type,query:{object,metrics,dimensions,time_window,time_column,time_grain},config,position:{x,y,w,h}}"],
+                "widgets": Annotated[list, "图表数组：{title,chart_type,query:{object,metrics,dimensions,time_window,time_column,time_grain},config,position:{x,y,w,h}}。"
+                                             "position 是 12 列网格坐标（整数）：x/y 为列/行起点、w/h 为跨度，例如两列布局用 {x:0,w:6}+{x:6,w:6}，"
+                                             "多图纵向排布 y 递增（如 0,4,8）；请给出合理页面排版，不要全部堆在 (0,0)。"],
                 "steps": Annotated[list, "可见业务设计步骤：目标、来源、口径、时间、坐标、布局及影响"],
                 "questions": Annotated[Optional[list], "存疑选项 [{key,label,options:[业务选项1,业务选项2]}]，不能擅自挑选"]}},
 ]

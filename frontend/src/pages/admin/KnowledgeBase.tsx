@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
-  Plus, Edit2, Trash2, Database, Server, Cloud, Folder, Search,
-  RefreshCw, Settings, X, Sparkles,
+  Plus, Edit2, Trash2, Database, Cloud, Folder,
+  RefreshCw, Sparkles,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+
 import client from '../../api/client';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -226,7 +226,7 @@ export default function KnowledgeBase() {
         </div>
       ) : (
         <div className="border rounded-lg overflow-hidden">
-          <p className="p-3 text-sm text-muted-foreground">知识库使用范围统一在 Waker 中绑定，无需关联工作空间。</p>
+          <p className="p-3 text-sm text-muted-foreground">知识库使用范围统一在 AS-BOT 中绑定，无需关联工作空间。</p>
           <table className="w-full">
             <thead className="bg-muted/50">
               <tr>
@@ -360,7 +360,7 @@ export default function KnowledgeBase() {
           <DialogHeader>
             <DialogTitle>从 Qoder QMind 检索知识库</DialogTitle>
             <DialogDescription>
-              列出当前账号下的 Qoder QMind 笔记本(notebook)，勾选后导入为知识库，可在 Waker 中绑定检索
+              列出当前账号下的 Qoder QMind 笔记本(notebook)，勾选后导入为知识库，可在 AS-BOT 中绑定检索
             </DialogDescription>
           </DialogHeader>
 

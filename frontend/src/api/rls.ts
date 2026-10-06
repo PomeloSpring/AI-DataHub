@@ -43,6 +43,7 @@ export interface RLSAuditLog {
   action: string;
   original_sql: string;
   filtered_sql: string;
+  deny_reason?: string | null;
   created_at: string;
 }
 
@@ -92,25 +93,6 @@ export async function setRLSColumnPolicies(
   columns: Partial<RLSColumnPolicy>[]
 ): Promise<{ success: boolean }> {
   const { data } = await client.put(`/admin/rls-policies/${policyId}/columns`, { columns });
-  return data;
-}
-
-export async function getRLSUserAttributes(userId: number, workspaceId: number): Promise<Record<string, string>> {
-  const { data } = await client.get(`/admin/rls-user-attributes/${userId}`, {
-    params: { workspace_id: workspaceId },
-  });
-  return data;
-}
-
-export async function setRLSUserAttributes(
-  userId: number,
-  workspaceId: number,
-  attributes: Record<string, string>
-): Promise<{ success: boolean }> {
-  const { data } = await client.put(`/admin/rls-user-attributes/${userId}`, {
-    workspace_id: workspaceId,
-    attributes,
-  });
   return data;
 }
 

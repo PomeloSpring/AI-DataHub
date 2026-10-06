@@ -8,8 +8,14 @@ export interface SyncTask {
   source_config: Record<string, any>;
   target_type: string;
   target_config: Record<string, any>;
-  sync_mode: 'full' | 'incremental' | 'cdc';
-  schedule_cron: string;
+  // 结构化配置（源/目标以数据源名引用，不落连接凭据）
+  source_datasource_name?: string;
+  source_table?: string;
+  target_datasource_name?: string;
+  target_table?: string;
+  sync_mode: 'full' | 'incremental';
+  incremental_column?: string;
+  schedule_cron: string | null;
   is_active: boolean;
   last_status: string | null;
   last_run_at: string | null;
@@ -22,13 +28,14 @@ export interface SyncTask {
 export interface SyncLog {
   id: number;
   sync_task_id: number;
-  task_name: string;
+  task_name?: string;
   status: string;
   trigger_type: string;
   rows_read: number;
   rows_written: number;
   rows_failed: number;
   elapsed_ms: number | null;
+  error_code?: string;
   error_message: string | null;
   started_at: string;
   finished_at: string | null;

@@ -367,7 +367,8 @@ def execute_semantic(
         df, exec_ms, row_count = execute_query_with_permission(
             exec_res.secured_sql or exec_res.base_sql,
             binding.datasource_id or q.datasource_id or None,
-            "sql", user_context or {}, int(q.workspace_id or (user_context or {}).get("workspace_id") or 0),
+            # 签名: (sql, datasource_id, user_context, workspace_id, ...) — 无 source 参数
+            user_context or {}, int(q.workspace_id or (user_context or {}).get("workspace_id") or 0),
         )
         exec_res.result = {
             "columns": list(df.columns),

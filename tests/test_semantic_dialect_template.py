@@ -67,7 +67,7 @@ class TestDialectSelection:
 
     def test_dialect_of_unknown_falls_back(self):
         # 未知协议保守回落 mysql(planner 会另出 warning)
-        assert planner._dialect_of("elasticsearch") == "mysql"
+        assert planner._dialect_of("clickhouse") == "mysql"
         assert planner._dialect_of("") == "mysql"
 
     def test_quote_ident(self):
@@ -333,6 +333,7 @@ class _FakeCursor:
     def __init__(self, conn):
         self.conn = conn
         self._row = None
+        self._rows = []
 
     def __enter__(self):
         return self
@@ -343,26 +344,28 @@ class _FakeCursor:
     def execute(self, sql, params=None):
         s = " ".join(sql.split())
         if "adh_ontology_bindings" in s:
-            self._row = self.conn.binding_row
+            # 多站点路由后产品代码用 fetchall（一个对象可能 N 条绑定），fake 需同步
+            self._rows = self.conn.binding_rows
         elif s.startswith("SELECT id FROM adh_datasources WHERE name"):
-            self._row = {"id": self.conn.live_id}
+            self._rows = [{"id": self.conn.live_id}]
         elif s.startswith("SELECT db_type FROM adh_datasources"):
-            self._row = {"db_type": self.conn.db_type}
+            self._rows = [{"db_type": self.conn.db_type}]
         elif s.startswith("SELECT name FROM adh_datasources WHERE id"):
-            self._row = {"name": self.conn.ds_name}
+            self._rows = [{"name": self.conn.ds_name}]
         else:
-            self._row = None
+            self._rows = []
+        self._row = self._rows[0] if self._rows else None
 
     def fetchone(self):
         return self._row
 
     def fetchall(self):
-        return []
+        return self._rows
 
 
 class _FakeConn:
     def __init__(self, binding_row, live_id, db_type, ds_name):
-        self.binding_row = binding_row
+        self.binding_rows = [binding_row] if binding_row else []
         self.live_id = live_id
         self.db_type = db_type
         self.ds_name = ds_name

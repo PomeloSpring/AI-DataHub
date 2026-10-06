@@ -22,15 +22,15 @@ import {
   updateScheduledTask,
   regenerateWebhookToken,
   listNotificationChannels,
-  listScheduledWakers,
-  type ScheduledWakerOption,
+  listScheduledAsBots,
+  type ScheduledAsBotOption,
   type ScheduledTask,
   type ScheduledTaskCreateRequest,
   type TaskQuestion,
   type NotificationChannel,
 } from '@/api/scheduledTask';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
-import type { VisComponent } from '@/api/visLibrary';
+
 import client from '@/api/client';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 
@@ -122,7 +122,7 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
 
   // Execution source — multi-select (arrays)
   const [datasourceIds, setDatasourceIds] = useState<number[]>([]);
-  const [wakerKey, setWakerKey] = useState('');
+  const [asBotKey, setAsBotKey] = useState('');
 
   // Questions
   const [questions, setQuestions] = useState<TaskQuestion[]>([{ title: '', sql: '' }]);
@@ -148,13 +148,13 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
 
   // ── Dropdown data ─────────────────────────────────────────────
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
-  const { items: visItems, loading: visLoading } = useVisLibrary(true);
+  const { items: visItems } = useVisLibrary(true);
   const reportTemplates = visItems.filter(i => i.category === 'report_template');
   const [wsDatasources, setWsDatasources] = useState<WorkspaceDatasource[]>([]);
-  const [wakers, setWakers] = useState<ScheduledWakerOption[]>([]);
-  const [wakersLoading, setWakersLoading] = useState(false);
-  const [wakersError, setWakersError] = useState('');
-  const selectedWaker = wakers.find(w => w.waker_key === wakerKey);
+  const [asBots, setAsBots] = useState<ScheduledAsBotOption[]>([]);
+  const [asBotsLoading, setAsBotsLoading] = useState(false);
+  const [asBotsError, setAsBotsError] = useState('');
+  const selectedAsBot = asBots.find(w => w.as_bot_key === asBotKey);
 
   useEffect(() => {
     // Load channels without workspace filter to ensure saved channels are always visible
@@ -165,15 +165,15 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
   useEffect(() => {
     if (taskType !== 'agent') return;
     let cancelled = false;
-    setWakersLoading(true);
-    setWakersError('');
-    setWakers([]);
-    listScheduledWakers(workspaceId, task?.id)
-      .then(data => { if (!cancelled) setWakers(data); })
+    setAsBotsLoading(true);
+    setAsBotsError('');
+    setAsBots([]);
+    listScheduledAsBots(workspaceId, task?.id)
+      .then(data => { if (!cancelled) setAsBots(data); })
       .catch((error: any) => {
-        if (!cancelled) setWakersError(error?.response?.data?.detail || '加载 Waker 失败，请重新打开任务配置');
+        if (!cancelled) setAsBotsError(error?.response?.data?.detail || '加载 AS-BOT 失败，请重新打开任务配置');
       })
-      .finally(() => { if (!cancelled) setWakersLoading(false); });
+      .finally(() => { if (!cancelled) setAsBotsLoading(false); });
     return () => { cancelled = true; };
   }, [workspaceId, task?.id, taskType]);
 
@@ -182,7 +182,7 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
     if (!task) return;
     setName(task.name);
     setDescription(task.description || '');
-    setTaskType(task.requires_waker_migration ? 'agent' : task.task_type);
+    setTaskType(task.requires_as_bot_migration ? 'agent' : task.task_type);
 
     const cfg = task.task_config || {};
 
@@ -193,7 +193,7 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
       setDatasourceIds([cfg.datasource_id]);
     }
 
-    setWakerKey(task.requires_waker_migration ? '' : cfg.waker_key || '');
+    setAsBotKey(task.requires_as_bot_migration ? '' : cfg.as_bot_key || '');
 
     setQuestions(cfg.questions || []);
     setContext(cfg.context || '');
@@ -240,11 +240,11 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
     }
 
     if (taskType === 'agent') {
-      if (wakersLoading || wakersError || !selectedWaker?.available) {
-        toast.error('请选择任务创建者已授权且可用的 Waker'); return;
+      if (asBotsLoading || asBotsError || !selectedAsBot?.available) {
+        toast.error('请选择任务创建者已授权且可用的 AS-BOT'); return;
       }
-      if (datasourceIds.length !== 1 || !selectedWaker.datasource_ids.includes(datasourceIds[0])) {
-        toast.error('请选择 Waker 授权范围内的一个数据源'); return;
+      if (datasourceIds.length !== 1 || !selectedAsBot.datasource_ids.includes(datasourceIds[0])) {
+        toast.error('请选择 AS-BOT 授权范围内的一个数据源'); return;
       }
     }
     // Build task_config with arrays
@@ -254,7 +254,7 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
     } else if (datasourceIds.length > 1) {
       taskConfig.datasource_ids = datasourceIds;
     }
-    if (taskType === 'agent') taskConfig.waker_key = wakerKey;
+    if (taskType === 'agent') taskConfig.as_bot_key = asBotKey;
 
     if (taskType === 'query' && questions.some(q => !q.sql?.trim())) {
       toast.error('SQL 模式下每项必须包含 SQL'); return;
@@ -308,7 +308,7 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
     value: String(ds.id),
     label: `${ds.name}（${ds.db_type} / ${ds.database_name}）${ds.is_default ? ' · 默认' : ''}`,
   }));
-  const analysisDatasources = dsOptions.filter(ds => selectedWaker?.datasource_ids.includes(Number(ds.value)));
+  const analysisDatasources = dsOptions.filter(ds => selectedAsBot?.datasource_ids.includes(Number(ds.value)));
 
   return (
     <div className="space-y-4 min-w-0 overflow-hidden">
@@ -347,20 +347,20 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
         <Label>{taskType === 'query' ? '数据源' : '执行权限'}</Label>
         {taskType === 'agent' && (
           <div className="space-y-2">
-            <p className="text-xs text-muted-foreground">知识库和 MCP 由 Waker 统一授权，按任务创建者权限执行。</p>
-            {task?.requires_waker_migration && <p role="alert" className="text-sm text-destructive">需重新配置 Waker：旧 Agent/MCP 配置已停用，请明确选择并保存。</p>}
-            <Label htmlFor="scheduled-waker">Waker *</Label>
-            <Select value={wakerKey} onValueChange={setWakerKey} disabled={wakersLoading}>
-              <SelectTrigger id="scheduled-waker"><SelectValue placeholder={wakersLoading ? '加载 Waker...' : '选择 Waker'} /></SelectTrigger>
+            <p className="text-xs text-muted-foreground">知识库和 MCP 由 AS-BOT 统一授权，按任务创建者权限执行。</p>
+            {task?.requires_as_bot_migration && <p role="alert" className="text-sm text-destructive">需重新配置 AS-BOT：旧 Agent/MCP 配置已停用，请明确选择并保存。</p>}
+            <Label htmlFor="scheduled-asBot">AS-BOT *</Label>
+            <Select value={asBotKey} onValueChange={setAsBotKey} disabled={asBotsLoading}>
+              <SelectTrigger id="scheduled-asBot"><SelectValue placeholder={asBotsLoading ? '加载 AS-BOT...' : '选择 AS-BOT'} /></SelectTrigger>
               <SelectContent>
-                {wakers.map(w => <SelectItem key={w.waker_key} value={w.waker_key} disabled={!w.available}>{w.name}{!w.available ? `（${w.reason || '不可用'}）` : ''}</SelectItem>)}
+                {asBots.map(w => <SelectItem key={w.as_bot_key} value={w.as_bot_key} disabled={!w.available}>{w.name}{!w.available ? `（${w.reason || '不可用'}）` : ''}</SelectItem>)}
               </SelectContent>
             </Select>
-            {wakersError && <p role="alert" className="text-sm text-destructive">{wakersError}</p>}
-            {!wakersLoading && !wakersError && wakers.length === 0 && <p className="text-sm text-destructive">没有已授权 Waker，请先配置工作空间和角色的 Waker 授权。</p>}
-            {selectedWaker && <div className="text-xs text-muted-foreground space-y-1">
-              <p>定时可用工具：{selectedWaker.tools.join('、') || '无'}</p>
-              {selectedWaker.unavailable_tools.map(t => <p key={t.name}>{t.name}：{t.reason}</p>)}
+            {asBotsError && <p role="alert" className="text-sm text-destructive">{asBotsError}</p>}
+            {!asBotsLoading && !asBotsError && asBots.length === 0 && <p className="text-sm text-destructive">没有已授权 AS-BOT，请先配置工作空间和角色的 AS-BOT 授权。</p>}
+            {selectedAsBot && <div className="text-xs text-muted-foreground space-y-1">
+              <p>定时可用工具：{selectedAsBot.tools.join('、') || '无'}</p>
+              {selectedAsBot.unavailable_tools.map(t => <p key={t.name}>{t.name}：{t.reason}</p>)}
             </div>}
           </div>
         )}
@@ -369,7 +369,7 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
         <div className="space-y-1.5">
           {taskType === 'agent' && <Label className="text-xs font-normal text-muted-foreground">数据源</Label>}
           {taskType === 'agent' ? (
-            <Select value={datasourceIds.length === 1 ? String(datasourceIds[0]) : ''} onValueChange={v => setDatasourceIds([Number(v)])} disabled={!selectedWaker?.available}>
+            <Select value={datasourceIds.length === 1 ? String(datasourceIds[0]) : ''} onValueChange={v => setDatasourceIds([Number(v)])} disabled={!selectedAsBot?.available}>
               <SelectTrigger aria-label="分析数据源"><SelectValue placeholder="选择一个已授权数据源" /></SelectTrigger>
               <SelectContent>{analysisDatasources.map(ds => <SelectItem key={ds.value} value={ds.value}>{ds.label}</SelectItem>)}</SelectContent>
             </Select>

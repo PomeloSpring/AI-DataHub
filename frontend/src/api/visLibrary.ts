@@ -31,6 +31,8 @@ export async function fetchVisComponents(includeInactive = false) {
 }
 export async function createVisComponent(payload: {
   name: string; category: VisCategory; chart_type?: string; style_config: Record<string, any>;
+  /** SQL 模板字模的参数化查询(category='sql_template' 时携带,如 {sql: "..."}) */
+  query_template?: Record<string, any>;
 }) {
   return client.post('/vis-library/components', { ...payload, is_builtin: false, source: 'custom' });
 }

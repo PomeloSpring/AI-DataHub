@@ -7,7 +7,7 @@
  *  - 指标/维度: "归属到…" 下拉选当前模型对象 → 唯一编辑器 API 写 bound_object_key(引用, 非锚点);
  *    或"删除"(字典行物理删除, 与指标中心同口径) —— 清掉永不归属的噪声资产才能清空资产池;
  *  - 术语: 引导去业务术语页绑定映射(删除也在该页);
- *  - 候选词: 通过 AS-BOT alias.approve/alias.reject 审批通道处理(不造第二写通道, 无直接删除)。
+ *  - 候选词: 经别名直审端点回写/驳回（ontology:save 权限码把关后直执行，审批通道已退役，无直接删除）。
  */
 import { useState, useEffect, useCallback } from 'react';
 import { metricsApi } from '@/api/metrics';
@@ -106,19 +106,15 @@ export default function AssetPoolPanel({
 
   const proposeAlias = async (sug: PoolItem, action: 'approve' | 'reject') => {
     try {
-      const { data } = await client.post('/as-bot/approvals/create', {
-        action_key: `alias.${action}`,
-        payload: {
-          suggestion_id: sug.id,
-          term: sug.term,
-          target_type: sug.target_type || 'dimension',
-          target_ref: sug.target_ref || '',
-        },
-      });
-      if (data?.success) toast.success('已提交 AS-BOT 审批，请在审批面板确认');
-      else toast.error(data?.error || '创建审批失败（检查动作权限/参数）');
-    } catch {
-      toast.error('创建审批请求失败');
+      // 别名直审：服务端校验 ontology:save 后直接写回（无审批中间态）
+      const body = action === 'approve'
+        ? { term: sug.term, target_type: sug.target_type || 'dimension', target_ref: sug.target_ref || '' }
+        : undefined;
+      const { data } = await client.post(`/as-bot/alias-suggestions/${sug.id}/${action}`, body);
+      if (data?.success) toast.success(action === 'approve' ? `「${sug.term}」已回写字典/对象别名` : `「${sug.term}」已驳回`);
+      else toast.error(data?.error || '别名审核失败');
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || '别名审核请求失败');
     }
   };
 

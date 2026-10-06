@@ -215,6 +215,23 @@ def _tpl_ref_of_obj(o: dict) -> str:
     return ""
 
 
+def _product_ref_for(datasource_name: str, primary_table: str) -> str:
+    """查该表对应的数据产品名（稳定身份）；未登记/查询失败返回空。
+
+    product_ref 随绑定持久化（见 data_product_binding_migration），供 P3 的
+    契约变更影响分析从产品反查本体对象。查询口径走
+    `data_product_service.find_by_table`（唯一口径，不另造判断）。
+    """
+    if not primary_table:
+        return ""
+    try:
+        from services.datacatalog.services import data_product_service as dps
+        row = dps.find_by_table(datasource_name or "", primary_table)
+        return str((row or {}).get("product_name") or "")
+    except Exception:  # noqa: BLE001 — 查不到不阻断绑定构建
+        return ""
+
+
 def _build_execution_binding(primary_table: str, datasource_id: int,
                              table_info: dict[str, dict],
                              datasource_name: str = "",
@@ -237,6 +254,11 @@ def _build_execution_binding(primary_table: str, datasource_id: int,
                 "allow_full_scan": 1,
                 "permission_tokens": [],
                 "masked_columns": [],
+                "product_ref": _product_ref_for(datasource_name, primary_table),
+        # 产品类 = 逻辑表名：同构多站点下站点实例共享一份契约（一份定义 × N 个物理部署）；
+        # binding_resolver 解析时会用 adh_data_products.product_class 校正（产品表是身份事实源）
+        "product_class": primary_table,
+                "product_class": "",   # 无物理表，无产品类
                 "sync_state": "bound",
             }
         return {
@@ -250,6 +272,8 @@ def _build_execution_binding(primary_table: str, datasource_id: int,
             "allow_full_scan": 1,
             "permission_tokens": [],
             "masked_columns": [],
+            "product_ref": "",
+            "product_class": "",
             "sync_state": "unbound",
         }
     row = table_info.get(primary_table) or {}
@@ -276,6 +300,7 @@ def _build_execution_binding(primary_table: str, datasource_id: int,
         "permission_tokens": [],
         "masked_columns": [],
         "rls_policy_ref": None,
+        "product_ref": _product_ref_for(datasource_name, primary_table),
         # 未命中元数据时标 drifted（不静默），便亍 Phase 4 拦截与图谱徒章
         "sync_state": "bound" if row else "drifted",
     }
@@ -304,6 +329,7 @@ def palantir_to_canonical(docs: list[dict], datasource_id: int,
     ds_name = _datasource_name_by_id(datasource_id)
     objects: dict[str, dict] = {}      # key → canonical object（保序）
     name_to_key: dict[str, str] = {}   # Palantir Name → key（解析 link target）
+    by_identity: dict[str, str] = {}   # 对象身份键 → key（按 object_identity_key 判重）
     domain = ""
     platform = ""
     description = ""
@@ -317,8 +343,8 @@ def palantir_to_canonical(docs: list[dict], datasource_id: int,
         description = description or (doc.get("description") or "")
         for o in doc.get("object_types") or []:
             name = o.get("name") or ""
-            key = (o.get("api_name") or name.lower()).strip()
-            if not key or key in objects:
+            key = ontology_service.normalize_object_key(o.get("api_name") or name) or name.lower()
+            if not key:
                 continue
             name_to_key[name] = key
 
@@ -326,10 +352,25 @@ def palantir_to_canonical(docs: list[dict], datasource_id: int,
     for doc in docs:
         for o in doc.get("object_types") or []:
             name = o.get("name") or ""
-            key = (o.get("api_name") or name.lower()).strip()
-            if not key or key in objects:
+            key = ontology_service.normalize_object_key(o.get("api_name") or name) or name.lower()
+            if not key:
                 continue
-            primary_table = _source_table(o)
+            # 按身份键判重(忽略大小写与分隔符)：同身份重复是录入噪音，主表一致才可合并；
+            # 主表不同是真冲突，宁可中止导入也不静默二选一（no-silent-degradation）。
+            ik = ontology_service.object_identity_key(key)
+            target_key = by_identity.get(ik)
+            new_table = _source_table(o)
+            if target_key is not None:
+                prev = objects.get(target_key) or {}
+                if str(prev.get("primary_table") or "") != str(new_table or ""):
+                    raise ValueError(
+                        "导入的本体出现同名不同主表的对象冲突, 已中止(需人工裁决): "
+                        f"key={target_key}/{key} "
+                        f"primary_table={prev.get('primary_table')}/{new_table}")
+            else:
+                target_key = key
+                by_identity[ik] = key
+            primary_table = new_table
             tpl_ref = _tpl_ref_of_obj(o)
 
             properties = []
@@ -353,10 +394,10 @@ def palantir_to_canonical(docs: list[dict], datasource_id: int,
                     "description": (cp.get("description") or "").strip(),
                 })
 
-            objects[key] = {
-                "key": key,
-                "display_name": name or key,
-                "aliases": _derive_aliases(name, key, primary_table, o.get("aliases")),
+            entry = {
+                "key": target_key,
+                "display_name": name or target_key,
+                "aliases": _derive_aliases(name, target_key, primary_table, o.get("aliases")),
                 "description": (o.get("description") or "").strip(),
                 "primary_table": primary_table,
                 "source_ref": (o.get("source") or {}).get("table") if isinstance(o.get("source"), dict) else o.get("source") or "",
@@ -367,10 +408,17 @@ def palantir_to_canonical(docs: list[dict], datasource_id: int,
                 "links": [],
                 "metrics": metrics,
             }
+            if target_key in objects:
+                objects[target_key], _detail = ontology_service.merge_object_pair(
+                    objects[target_key], entry)
+                logger.warning("[YamlImport] 对象 %s 重复录入, 已合并(丢弃 %s): %s",
+                               target_key, key, _detail)
+            else:
+                objects[target_key] = entry
             # 域内 link_types
             for lt in o.get("link_types") or []:
                 tgt_raw = lt.get("target") or ""
-                objects[key]["links"].append(_build_link(
+                objects[target_key]["links"].append(_build_link(
                     lt.get("name") or "", name_to_key.get(tgt_raw, tgt_raw.lower()),
                     join=lt.get("join") or "", cardinality=lt.get("cardinality") or "",
                     description=lt.get("description") or "",
@@ -449,7 +497,7 @@ def _upsert_active_model(doc: dict, created_by: str) -> int:
     已为 active 而 short-circuit，导致 adh_ontology_objects 不展开。
     修正：先写 draft，再让 activate() 走完整的“归档旧 active + 本行转 active + 展开对象”路径。
     """
-    datasource_id = doc["datasource_id"]
+    datasource_id = doc.get("datasource_id") or 0   # 业务/系统本体无 datasource_id（归属=domain+kind）
     now = ontology_service._now()
     model_id = ontology_service._gen_id()
     json_content = json.dumps(doc, ensure_ascii=False, indent=2)
@@ -500,7 +548,7 @@ def import_palantir_yaml(dir_path: str | Path = None, datasource_id: int = 0,
 
     graph_summary = {"skipped": True}
     if rebuild_graph:
-        graph_summary = _rebuild_graph(datasource_id)
+        graph_summary = _rebuild_graph(datasource_id, "source" if datasource_id else "system")
 
     logger.info(
         "[ontology-import] Palantir YAML → model %s (ds=%s): %d objects, %d links, %d bindings (%d drifted)",
@@ -546,12 +594,12 @@ def _persist_bindings(doc: dict, model_id: int) -> dict:
                     unbound += 1
                 cur.execute(
                     "INSERT INTO adh_ontology_bindings "
-                    "(id, model_id, object_key, datasource_id, datasource_name, catalog_ref, bind_kind, "
+                    "(id, model_id, object_key, datasource_id, datasource_name, product_ref, catalog_ref, bind_kind, "
                     " template_ref, physical_table, join_expr, column_map, query_mode, size_class, "
                     " allow_full_scan, max_rows, timeout_sec, permission_tokens, "
                     " rls_policy_ref, masked_columns, sync_state, last_verified_at, "
                     " status, created_at, updated_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,%s,%s,%s,%s,NULL,NULL,%s,%s,%s,%s,%s,'active',%s,%s)",
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,%s,%s,%s,%s,NULL,NULL,%s,%s,%s,%s,%s,'active',%s,%s)",
                     (
                         ontology_service._gen_id() + written,
                         model_id,
@@ -559,6 +607,10 @@ def _persist_bindings(doc: dict, model_id: int) -> dict:
                         datasource_id,
                         # 存 name 作为稳定关联键：数据源删除重建后仍能按名重关联
                         binding.get("datasource_name") or doc.get("datasource_name") or "",
+                        # 数据产品名（稳定身份）：P3 影响分析从产品反查本体对象
+                        binding.get("product_ref") or _product_ref_for(
+                            binding.get("datasource_name") or doc.get("datasource_name") or "",
+                            binding.get("physical_table", "")),
                         binding.get("catalog_ref", ""),
                         binding.get("bind_kind", "primary"),
                         binding.get("template_ref") or None,
@@ -606,17 +658,26 @@ def _column_map_from_props(obj: dict) -> dict:
     return cmap
 
 
-def _rebuild_graph(datasource_id: int) -> dict:
+def _rebuild_graph(datasource_id: int, kind: str = "") -> dict:
     """best-effort 触发图谱重建（本体经 graph_builder._merge_ontology_models 入图）。
 
-    系统本体模型(datasource_id 空/0)→ 重建**系统域图 ds:-1**(AS-BOT 专用, 隔离业务本体);
-    业务模型(datasource_id>0)→ 各自 ds:N。旧行为(系统模型重建整个 ds:0 聚合图)既污染又浪费, 已收敛。
+    按 **kind** 路由目标图（不用 `datasource_id=0` 判系统域——业务本体跨源 ds_id 也是 0）：
+    - kind=system  → 系统图 ds:-1（AS-BOT 专用，隔离业务本体）；
+    - kind=business → 业务图 ds:0（跨源连通图）；
+    - kind=source  → 源图 ds:{datasource_id}。
     """
     try:
         from services.datamind.rag.graph_rag.oxigraph_store import SYSTEM_DATASOURCE_ID
-        from services.graphservice.graph_service import GraphService
-        ds = SYSTEM_DATASOURCE_ID if not datasource_id else datasource_id
-        resp = GraphService().sync_from_metadata(ds)
+        from services.semhub.graph.graph_service import GraphService
+        if kind == "system":
+            ds = SYSTEM_DATASOURCE_ID
+        elif kind == "business":
+            ds = 0          # 业务本体独立图（跨源）
+        elif kind == "source":
+            ds = datasource_id
+        else:
+            ds = SYSTEM_DATASOURCE_ID if not datasource_id else datasource_id
+        resp = GraphService().sync_from_metadata(ds, kind)
         return {
             "success": bool(getattr(resp, "success", False)),
             "tables": getattr(resp, "tables", 0),

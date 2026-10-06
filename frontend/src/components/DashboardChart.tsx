@@ -6,13 +6,15 @@ import {
   Type, Table, Hash, Gauge, LineChart, BarChart, AreaChart, Calendar,
   Grid3x3, Box, Aperture, ArrowRightLeft, GitBranch, LayoutGrid,
   Flower2, Target, Cloud, Map, List, ListChecks, Sliders,
-  Search, RotateCcw, Download,
+  Search, RotateCcw, Download, Trophy, Play, Pause,
 } from 'lucide-react';
 import { useThemeStore, IS_DARK } from '../stores/themeStore';
 import { Label } from '@/components/ui/label';
 import { useDashboardStore } from '../stores/dashboardStore';
 import ModalPage from './ModalPage';
+import AnimatedTimeChart from './AnimatedTimeChart';
 import { chartDataKey, type LocalVisual } from '@/lib/dashboardDesign';
+import { readChartPalette, readToken } from '@/lib/chartTheme';
 
 // Lucide icon map for chart types
 const CHART_ICON_MAP: Record<string, React.ComponentType<any>> = {
@@ -20,7 +22,7 @@ const CHART_ICON_MAP: Record<string, React.ComponentType<any>> = {
   Type, Table, Hash, Gauge, LineChart, BarChart, AreaChart, Calendar,
   Grid3x3, Box, Aperture, ArrowRightLeft, GitBranch, LayoutGrid,
   Flower2, Target, Cloud, Map, List, ListChecks, Sliders,
-  Search, RotateCcw, Download,
+  Search, RotateCcw, Download, Trophy, Play, Pause,
 };
 
 export function ChartIcon({ name, className }: { name: string; className?: string }) {
@@ -38,6 +40,8 @@ interface Props {
   chartId?: number;
   visual?: LocalVisual;
   draft?: boolean;
+  /** 图上下钻: 点击图形元素时回传该行原始数据(不传则不挂载点击事件) */
+  onDrill?: (datum: Record<string, any>) => void;
 }
 
 // Map data URLs
@@ -47,26 +51,8 @@ const MAP_URLS = {
 };
 
 // Color palettes
-const LIGHT_COLORS = ['#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de', '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc'];
-const DARK_COLORS = ['#4992ff', '#7cffb2', '#fddd60', '#ff6e76', '#58d9f9', '#05c091', '#ff8a45', '#8d48e3', '#dd79ff'];
+// 主题令牌读取与系列色板已抽取至 lib/chartTheme(与 AnimatedTimeChart 共用单一真值源)
 
-/** 运行时读取主题 CSS 变量为可用颜色(canvas 无法解析 var(),需取实际值)。 */
-function readToken(name: string, fallback: string): string {
-  try {
-    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-    if (!v) return fallback;
-    // G2 的颜色解析器不支持 CSS Color 4 空格语法，转为兼容的逗号语法。
-    const [channels, alpha] = v.split('/').map(part => part.trim());
-    const hsl = channels.split(/[\s,]+/).join(', ');
-    return alpha ? `hsla(${hsl}, ${alpha})` : `hsl(${hsl})`;
-  } catch { return fallback; }
-}
-
-/** 图表系列色板: 读取 --chart-1..10 主题令牌,随主题联动;缺失时回退经典盘。 */
-function readChartPalette(isDark: boolean): string[] {
-  const fb = isDark ? DARK_COLORS : LIGHT_COLORS;
-  return Array.from({ length: 10 }, (_, i) => readToken(`--chart-${i + 1}`, fb[i % fb.length]));
-}
 
 // Helper: check if data has group column for multi-series
 export function detectGroupColumn(columns: string[], rows: any[], config: Record<string, any>): string | null {
@@ -1035,7 +1021,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
   }
 }
 
-function DashboardChartInner({ chartType, data, config, style, loading, chartId, visual, draft = false }: Props) {
+function DashboardChartInner({ chartType, data, config, style, loading, chartId, visual, draft = false, onDrill }: Props) {
   // 依赖 theme(主题 id)而非 isDark: 同明暗主题切换(dark→tech)也需重建图表以读取新令牌色
   const theme = useThemeStore(s => s.theme);
   const isDark = visual?.mode ? visual.mode === 'dark' : IS_DARK[theme];
@@ -1226,6 +1212,13 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
 
           chart.options(spec);
           chart.render();
+          // 图上下钻:点击图形元素回传该行数据(G2 v5 element:click,datum 在 event.data.data)
+          if (onDrill) {
+            chart.on('element:click', (e: any) => {
+              const datum = e?.data?.data;
+              if (datum && typeof datum === 'object') onDrill(datum);
+            });
+          }
           chartRef.current = chart;
         }
       } catch (e) {
@@ -1241,6 +1234,12 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       }
     };
   }, [chartType, dataKey, configKey, dimensions.width, dimensions.height, mapData, theme]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 时间动画图表(竞速条形图/时序播放) — 独立播放器组件,G2 实例常驻 + changeData 过渡动画
+  const ANIMATED_TYPES = ['bar_race', 'timeline_play'];
+  if (ANIMATED_TYPES.includes(chartType)) {
+    return <AnimatedTimeChart chartType={chartType as 'bar_race' | 'timeline_play'} data={data} config={cfg} style={style} />;
+  }
 
   // Widget rendering — compact form controls, not G2 charts (buttons handled separately below)
   const WIDGET_TYPES = ['widget_label', 'widget_text', 'widget_number', 'widget_date', 'widget_daterange', 'widget_select', 'widget_multi_select'];
@@ -1836,6 +1835,8 @@ export const CHART_TYPES: ChartTypeItem[] = [
   { value: 'timeseries_bar', label: '时序柱状图', icon: 'BarChart', category: 'timeseries' },
   { value: 'timeseries_area', label: '时序面积图', icon: 'AreaChart', category: 'timeseries' },
   { value: 'calendar_heatmap', label: '日历热力图', icon: 'Calendar', category: 'timeseries' },
+  { value: 'bar_race', label: '竞速条形图', icon: 'Trophy', category: 'timeseries' },
+  { value: 'timeline_play', label: '时序播放', icon: 'Play', category: 'timeseries' },
   // 高级图表
   { value: 'heatmap', label: '热力图', icon: 'Grid3x3', category: 'advanced' },
   { value: 'boxplot', label: '箱线图', icon: 'Box', category: 'advanced' },

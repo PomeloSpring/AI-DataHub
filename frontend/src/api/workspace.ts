@@ -104,19 +104,7 @@ export async function getWorkspaceTools(id: number): Promise<{
 
 // ── Resource Management ────────────────────────────────────────────
 
-export async function addDatasourceToWorkspace(
-  workspaceId: number,
-  datasourceId: number,
-  isPrimary: boolean = false
-): Promise<void> {
-  await client.post(`/workspaces/${workspaceId}/datasources`, null, {
-    params: { datasource_id: datasourceId, is_primary: isPrimary },
-  });
-}
-
-export async function removeDatasourceFromWorkspace(
-  workspaceId: number,
-  datasourceId: number
-): Promise<void> {
-  await client.delete(`/workspaces/${workspaceId}/datasources/${datasourceId}`);
-}
+// 工作空间-数据源绑定 API 已下线：工作空间不再绑定数据源，
+// 数据源可用集改由用户角色授权唯一裁决。
+// “我的可用数据源”请改用 GET /datasources/authorized
+// (见 services/datacatalog/api/datasources.py)。

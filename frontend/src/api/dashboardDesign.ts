@@ -28,7 +28,6 @@ export interface DashboardDesign {
   steps: string[];
   questions: { key: string; label: string; options: string[] }[];
   answers: Record<string, string>;
-  approval_id?: number;
   preview_valid: boolean;
   result?: { success: boolean; url: string; dashboard_id: number; chart_ids: number[] };
 }

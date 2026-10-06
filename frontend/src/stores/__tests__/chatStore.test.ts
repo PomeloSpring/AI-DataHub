@@ -74,8 +74,8 @@ describe('chatStore', () => {
       datasources: [],
       selectedModelId: null,
       llmModels: [],
-      selectedWakerKey: null,
-      wakers: [],
+      selectedAsBotKey: null,
+      asBots: [],
     })
     vi.clearAllMocks()
     window.localStorage.clear()
@@ -386,32 +386,32 @@ describe('chatStore', () => {
     })
   })
 
-  describe('Waker 会话隔离', () => {
-    it('切换 Waker 时清空当前会话并取消执行', () => {
+  describe('AS-BOT 会话隔离', () => {
+    it('切换 AS-BOT 时清空当前会话并取消执行', () => {
       const abort = vi.fn()
-      useChatStore.setState({ currentConvId: 12, selectedWakerKey: 'chatbi', messages: [{ role: 'user', content: '私有上下文' }],
+      useChatStore.setState({ currentConvId: 12, selectedAsBotKey: 'chatbi', messages: [{ role: 'user', content: '私有上下文' }],
         abortController: { abort } as any, capabilities: { tools: [], version: 'old', empty: true } })
-      useChatStore.getState().setSelectedWakerKey('other')
+      useChatStore.getState().setSelectedAsBotKey('other')
       expect(abort).toHaveBeenCalledOnce()
       expect(useChatStore.getState().currentConvId).toBeNull()
       expect(useChatStore.getState().messages).toEqual([])
       expect(useChatStore.getState().capabilities).toBeNull()
     })
 
-    it('打开未绑定 Waker 的历史会话后选择 Waker 仅绑定, 不清空消息', () => {
-      useChatStore.setState({ currentConvId: 12, selectedWakerKey: null,
+    it('打开未绑定 AS-BOT 的历史会话后选择 AS-BOT 仅绑定, 不清空消息', () => {
+      useChatStore.setState({ currentConvId: 12, selectedAsBotKey: null,
         messages: [{ role: 'user', content: '历史消息' }, { role: 'assistant', content: '回答' }] })
-      useChatStore.getState().setSelectedWakerKey('chatbi')
+      useChatStore.getState().setSelectedAsBotKey('chatbi')
       const s = useChatStore.getState()
-      expect(s.selectedWakerKey).toBe('chatbi')
+      expect(s.selectedAsBotKey).toBe('chatbi')
       expect(s.currentConvId).toBe(12)          // 仍停留在该历史会话
       expect(s.messages).toHaveLength(2)         // 消息未被清空
     })
 
-    it('选择与当前相同的 Waker 不触发任何重置', () => {
-      useChatStore.setState({ currentConvId: 12, selectedWakerKey: 'chatbi',
+    it('选择与当前相同的 AS-BOT 不触发任何重置', () => {
+      useChatStore.setState({ currentConvId: 12, selectedAsBotKey: 'chatbi',
         messages: [{ role: 'user', content: '历史消息' }] })
-      useChatStore.getState().setSelectedWakerKey('chatbi')
+      useChatStore.getState().setSelectedAsBotKey('chatbi')
       const s = useChatStore.getState()
       expect(s.currentConvId).toBe(12)
       expect(s.messages).toHaveLength(1)
@@ -424,40 +424,40 @@ describe('chatStore', () => {
       expect(useChatStore.getState().selectedWorkspaceId).toBe(2)
     })
 
-    it('恢复会话以服务端工作空间和 Waker 为准，不接管 SDK 标识', async () => {
-      mockClient.get.mockResolvedValue({ data: { messages: [], workspace_id: 7, waker_key: 'bound', executor_session_id: 'untrusted' } })
+    it('恢复会话以服务端工作空间和 AS-BOT 为准，不接管 SDK 标识', async () => {
+      mockClient.get.mockResolvedValue({ data: { messages: [], workspace_id: 7, as_bot_key: 'bound', executor_session_id: 'untrusted' } })
       await useChatStore.getState().switchConversation(20)
       expect(useChatStore.getState().selectedWorkspaceId).toBe(7)
-      expect(useChatStore.getState().selectedWakerKey).toBe('bound')
+      expect(useChatStore.getState().selectedAsBotKey).toBe('bound')
       expect(useChatStore.getState().executorSessionId).toBeNull()
     })
 
-    it('打开未绑定 Waker 的历史会话时默认选中首个可用 Waker（不留空）', async () => {
+    it('打开未绑定 AS-BOT 的历史会话时默认选中首个可用 AS-BOT（不留空）', async () => {
       useChatStore.setState({
         selectedWorkspaceId: 3,
-        wakers: [
-          { waker_key: 'chatbi', name: 'chatbi', available: true } as any,
-          { waker_key: 'nl2sql', name: 'nl2sql', available: true } as any,
+        asBots: [
+          { as_bot_key: 'chatbi', name: 'chatbi', available: true } as any,
+          { as_bot_key: 'nl2sql', name: 'nl2sql', available: true } as any,
         ],
       })
-      mockClient.get.mockResolvedValue({ data: { messages: [{ role: 'user', content: '历史' }], workspace_id: 3, waker_key: '' } })
+      mockClient.get.mockResolvedValue({ data: { messages: [{ role: 'user', content: '历史' }], workspace_id: 3, as_bot_key: '' } })
       await useChatStore.getState().switchConversation(31)
       const s = useChatStore.getState()
-      expect(s.selectedWakerKey).toBe('chatbi')   // 默认首个可用, 而非空"选择 Waker"
+      expect(s.selectedAsBotKey).toBe('chatbi')   // 默认首个可用, 而非空"选择 AS-BOT"
       expect(s.messages).toHaveLength(1)            // 历史消息正常加载
     })
 
-    it('历史会话 Waker 为空时优先默认 is_default 项', async () => {
+    it('历史会话 AS-BOT 为空时优先默认 is_default 项', async () => {
       useChatStore.setState({
         selectedWorkspaceId: 3,
-        wakers: [
-          { waker_key: 'chatbi', name: 'chatbi', available: true } as any,
-          { waker_key: 'nl2sql', name: 'nl2sql', available: true, is_default: true } as any,
+        asBots: [
+          { as_bot_key: 'chatbi', name: 'chatbi', available: true } as any,
+          { as_bot_key: 'nl2sql', name: 'nl2sql', available: true, is_default: true } as any,
         ],
       })
-      mockClient.get.mockResolvedValue({ data: { messages: [], workspace_id: 3, waker_key: null } })
+      mockClient.get.mockResolvedValue({ data: { messages: [], workspace_id: 3, as_bot_key: null } })
       await useChatStore.getState().switchConversation(32)
-      expect(useChatStore.getState().selectedWakerKey).toBe('nl2sql')
+      expect(useChatStore.getState().selectedAsBotKey).toBe('nl2sql')
     })
 
     it('前端保存记录不写 SDK 会话标识', async () => {
@@ -468,21 +468,21 @@ describe('chatStore', () => {
   })
 
   describe('异步上下文隔离', () => {
-    it('旧工作空间的权限查询失败不会清除当前 Waker', async () => {
+    it('旧工作空间的权限查询失败不会清除当前 AS-BOT', async () => {
       let reject!: (reason: unknown) => void
       mockClient.get.mockReturnValueOnce(new Promise((_, r) => { reject = r }))
-      const loading = useChatStore.getState().loadWakers(1)
-      useChatStore.setState({ selectedWorkspaceId: 2, selectedWakerKey: 'keep' })
+      const loading = useChatStore.getState().loadAsBots(1)
+      useChatStore.setState({ selectedWorkspaceId: 2, selectedAsBotKey: 'keep' })
       reject(new Error('旧请求失败'))
       await loading
-      expect(useChatStore.getState().selectedWakerKey).toBe('keep')
+      expect(useChatStore.getState().selectedAsBotKey).toBe('keep')
     })
 
-    it('创建会话期间切换 Waker 不会接管迟到会话', async () => {
+    it('创建会话期间切换 AS-BOT 不会接管迟到会话', async () => {
       let resolve!: (result: any) => void
       mockClient.post.mockReturnValueOnce(new Promise(r => { resolve = r }))
       const creating = useChatStore.getState().createConversation()
-      useChatStore.getState().setSelectedWakerKey('new')
+      useChatStore.getState().setSelectedAsBotKey('new')
       resolve({ data: { id: 45 } })
       await expect(creating).rejects.toThrow('上下文已改变')
       expect(useChatStore.getState().currentConvId).toBeNull()

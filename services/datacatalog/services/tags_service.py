@@ -340,7 +340,115 @@ def set_tag_value(tag_id: int, data: dict) -> dict:
                 ),
             )
 
-    return {"id": row_id, "success": True}
+    result = {"id": row_id, "success": True}
+    # 打标后立即把「业务域」标注派生回 adh_table_info.domain_tag。
+    # 派生失败不阻断打标主链路，但必须把失败显式带回给调用方（不得静默）。
+    try:
+        result["tag_derivation"] = derive_table_domain_tags()
+    except Exception as e:  # noqa: BLE001 — 见上
+        logger.warning("[Tags] derive_table_domain_tags failed: %s", e)
+        result["tag_derivation"] = {"error": str(e)}
+    return result
+
+
+# ── 域标记事实源归一（adh_tag_values → adh_table_info.domain_tag）──
+
+_DOMAIN_CATEGORY = "业务域"
+
+
+def derive_table_domain_tags(datasource_id: Optional[int] = None) -> dict:
+    """把 `adh_tag_values` 的「业务域」人工标注派生回写 `adh_table_info.domain_tag`。
+
+    事实源划分（ontology-modeling §3 同一概念只登记一处）：
+    - **人工标注源** = `adh_tag_values`（标签管理页录入，三个分类：业务域/数据分层/敏感级别）；
+    - **派生缓存** = `adh_table_info.domain_tag`，供检索选表 / LLM 生成分批消费，
+      不得独立编辑，也不得被元数据同步的表名推断覆盖。
+
+    为什么需要派生：`metadata_sync.extract_domain_tag` 是表名**前缀**启发式
+    （dim_/dwd_/ods_/adh_），对 `t_*` 前缀的业务表一条都不命中，全部回落 'other'——
+    后端吃到的域信号实际是失效的，而真正在用的人工标注却只有前端在读。
+
+    唯一匹配才写：`adh_tag_values.entity_id` 是裸表名（无 datasource 维度），
+    同名表跨数据源会串味。命中多个数据源的表**跳过并记入 warnings**，不猜。
+    """
+    updated: list = []
+    ambiguous: list = []
+    uncovered: list = []
+    warnings: list = []
+
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            # 1) 人工标注：只要「业务域」分类、table 类实体
+            cur.execute(
+                "SELECT tv.entity_id AS table_name, tv.value AS domain_name "
+                "FROM adh_tag_values tv "
+                "JOIN adh_tags t ON tv.tag_id = t.id "
+                "JOIN adh_tag_categories c ON t.category_id = c.id "
+                "WHERE c.name = %s AND t.entity_type = 'table' AND t.is_active = 1",
+                (_DOMAIN_CATEGORY,),
+            )
+            labels: dict = {}
+            for r in cur.fetchall() or []:
+                name = str(r.get("table_name") or "").strip()
+                val = str(r.get("domain_name") or "").strip()
+                if not name or not val:
+                    continue
+                if name in labels and labels[name] != val:
+                    # 同一张表被打了两个业务域 → 不猜，显式记录
+                    warnings.append(f"表 {name} 同时标注了多个业务域: "
+                                    f"{labels[name]} / {val}，未派生")
+                    labels[name] = "__conflict__"
+                elif name not in labels:
+                    labels[name] = val
+
+            # 2) 现有表（可按数据源限定）
+            sql = ("SELECT id, datasource_id, table_name, domain_tag FROM adh_table_info "
+                   "WHERE is_active = 1")
+            params: list = []
+            if datasource_id:
+                sql += " AND datasource_id = %s"
+                params.append(datasource_id)
+            cur.execute(sql, params)
+            rows = cur.fetchall() or []
+
+            # 同名表出现在多个数据源下 → 歧义，不派生
+            by_name: dict = {}
+            for r in rows:
+                by_name.setdefault(str(r.get("table_name") or ""), []).append(r)
+
+            for name, rs in by_name.items():
+                if not name:
+                    continue
+                label = labels.get(name)
+                if not label:
+                    uncovered.append(name)
+                    continue
+                if label == "__conflict__":
+                    continue
+                if len(rs) > 1:
+                    ambiguous.append(name)
+                    continue
+                row = rs[0]
+                if (row.get("domain_tag") or "") == label:
+                    continue
+                cur.execute("UPDATE adh_table_info SET domain_tag = %s WHERE id = %s",
+                            (label, row["id"]))
+                updated.append(name)
+
+    if ambiguous:
+        warnings.append(
+            f"{len(ambiguous)} 张同名表存在于多个数据源, 未派生业务域(避免串味): "
+            + ", ".join(sorted(ambiguous)[:10]))
+    logger.info("[Tags] derive_table_domain_tags: updated=%d uncovered=%d ambiguous=%d",
+                len(updated), len(uncovered), len(ambiguous))
+    return {
+        "updated": len(updated),
+        "updated_tables": sorted(updated),
+        "uncovered_count": len(uncovered),
+        "uncovered_sample": sorted(uncovered)[:20],
+        "ambiguous": sorted(ambiguous),
+        "warnings": warnings,
+    }
 
 
 def query_entities_by_tags(conditions: list, operator: str = "AND", workspace_id: int = 0,

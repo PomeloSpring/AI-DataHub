@@ -24,7 +24,6 @@ async def execute_pipeline(
     retrieval_strategy: str = None,
     workspace_id: int = 0,
     user_role: str = "user",
-    attachments: list[str] = None,
 ):
     """Execute query through Quick pipeline.
 
@@ -32,15 +31,13 @@ async def execute_pipeline(
 
     Args:
         workspace_id: Workspace context for resource resolution.
-        attachments: 多模态附件 ID 列表(本编排器不处理附件,附件应走外部执行层).
 
     Yields:
         (event_type, data) tuples matching SSE format.
     """
     chosen_mode = pipeline_mode if pipeline_mode == "quick" else "quick"
-    attachments = attachments or []
 
-    logger.info("Pipeline orchestrator: mode=%s, workspace_id=%d, attachments=%d", chosen_mode, workspace_id, len(attachments))
+    logger.info("Pipeline orchestrator: mode=%s, workspace_id=%d", chosen_mode, workspace_id)
 
     # ── Intent classification (all modes) ──
     # Non-query intents (chat, greeting, explain) are handled directly without RAG/LLM pipeline
@@ -48,8 +45,8 @@ async def execute_pipeline(
     from services.datamind.nl2sql.prompt.prompt_builder import build_chat_prompt
     from services.shared.common.llm.llm_client import generate_sql
 
-    # 携带多模态附件时跳过纯文本快捷意图分支
-    quick = None if attachments else _quick_classify(question)
+    # 多模态附件只能经执行层处理,不会到达本编排器(入口已 fail-loud 拦截)
+    quick = _quick_classify(question)
     intent = quick["intent"] if quick else "query"
 
     if intent == "chat":

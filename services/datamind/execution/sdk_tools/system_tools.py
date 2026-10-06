@@ -112,17 +112,22 @@ async def system_overview(args):
     if not identity:
         return _text({"error": "系统总览仅管理员可查，当前身份无权限"}, is_error=True)
     overview = {
+        # 注：adh_datasources 无启用状态列，不再报 datasources_active（旧值因列缺失恒降级为 None）
         "datasources": _count("SELECT COUNT(*) FROM adh_datasources"),
-        "datasources_active": _count("SELECT COUNT(*) FROM adh_datasources WHERE is_active = 1"),
         "tables": _count("SELECT COUNT(*) FROM adh_table_info WHERE is_active = 1"),
         "columns": _count("SELECT COUNT(*) FROM adh_column_metadata WHERE is_active = 1"),
         "knowledge_bases_active": _count("SELECT COUNT(*) FROM adh_knowledge_bases WHERE status = 'active'"),
+        # 判别口径用 kind（x3 归属键改造），不用 datasource_id=0：
+        # 本体归属已按业务域而非数据源，业务本体的 datasource_id 也是 0，
+        # 旧口径会把业务本体误计为系统本体（as-bot-system-waker §1 域边界）。
         "ontology_models_system": _count(
-            "SELECT COUNT(*) FROM adh_ontology_models WHERE (datasource_id IS NULL OR datasource_id = 0) "
+            "SELECT COUNT(*) FROM adh_ontology_models WHERE kind = 'system' "
             "AND status IN ('active','draft')"),
         "ontology_models_business": _count(
-            "SELECT COUNT(*) FROM adh_ontology_models WHERE datasource_id > 0 AND status IN ('active','draft')"),
-        "pending_approvals": _count("SELECT COUNT(*) FROM adh_as_bot_approvals WHERE status = 'pending'"),
+            "SELECT COUNT(*) FROM adh_ontology_models WHERE kind = 'business' "
+            "AND status IN ('active','draft')"),
+        "pending_contract_changes": _count(
+            "SELECT COUNT(*) FROM adh_data_product_versions WHERE status = 'pending'"),
         "pending_alias_suggestions": _count("SELECT COUNT(*) FROM adh_alias_suggestions WHERE status = 'pending'"),
         "tasks_failed_24h": _count(
             "SELECT COUNT(*) FROM adh_scheduled_logs WHERE status = 'failed' "
@@ -171,7 +176,7 @@ READONLY_ANNOTATIONS = {"readOnlyHint": True}
 
 
 def build_system_server(backend: str = "qoder", tool_names=None):
-    """构建 system 进程内 MCP server（qoder / claude）。tool_names 给定时按 waker 逐工具粒度注册。"""
+    """构建 system 进程内 MCP server（qoder / claude）。tool_names 给定时按 AS-BOT 逐工具粒度注册。"""
     from services.datamind.execution.sdk_tools.compat import make_server, make_tool
 
     specs = list(TOOL_SPECS)

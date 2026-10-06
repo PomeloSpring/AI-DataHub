@@ -13,6 +13,8 @@ CHART_TYPES = [
     "text_display", "table_value", "big_number_trend", "gauge",
     # 时间序列
     "timeseries_line", "timeseries_bar", "timeseries_area", "calendar_heatmap",
+    # 时间动画(需时间列+数值列; 竞速图再加系列列)
+    "bar_race", "timeline_play",
     # 高级
     "heatmap", "boxplot", "bubble", "sankey", "tree", "treemap",
     "rose", "radial_bar", "word_cloud",
@@ -41,17 +43,25 @@ CHART_CONTRACT = """\
 字段说明:
 - chart_type 只能取以下之一: bar, line, pie, area, scatter, radar, funnel, waterfall, \
 text_display, table_value, big_number_trend, gauge, timeseries_line, timeseries_bar, \
-timeseries_area, calendar_heatmap, heatmap, boxplot, bubble, sankey, tree, treemap, \
-rose, radial_bar, word_cloud, china_map, world_map
+timeseries_area, calendar_heatmap, bar_race, timeline_play, heatmap, boxplot, bubble, \
+sankey, tree, treemap, rose, radial_bar, word_cloud, china_map, world_map
 - columns: 字符串数组,表头列名;至少包含一个维度列(字符串)和一个数值列
 - rows: 二维数组,每行元素顺序与 columns 对应;数值列必须是数字(不加引号)
 - 按数据形态选图:雷达图需多指标对比(1-2 行多数值列);词云需 词+频次 两列;\
 地图需首列为地区名(中国地图用省份/城市中文名);桑基/树图需 源→目标(或层级)+数值;\
-形态不满足时退回 bar/line/table,不要硬凑字段
+时间动画图(bar_race 竞速条形图/timeline_play 时序播放)需 时间列+数值列(bar_race 最好再有系列列,\
+如 月份+产品+销量),按时间演进展示时优先于静态时序图;形态不满足时退回 bar/line/table,不要硬凑字段
 - sql 字段填写生成该图表数据的真实查询语句(前端卡片内置 SQL 视图展示它)
 - 输出了 ```chart 块后,正文不要再重复粘贴同一份原始数据的 Markdown 表格或逐行数值\
 (前端卡片已内置 图表/明细/SQL 三视图),正文只给结论与要点解读
 - 一个回答可包含多个 ```chart 代码块;不需要图表时用普通 Markdown 即可
+- 关系图谱(表血缘/实体关系/流程拓扑)可用 ```graph 代码块输出,内容为严格 JSON:
+
+```graph
+{"title":"表血缘","nodes":[{"id":"orders","label":"订单表","type":"table"}],"edges":[{"source":"orders","target":"dws_sales","label":"汇总"}]}
+```
+
+  其中 nodes 需 id(label/type 可选,type 决定配色分组),edges 需 source/target(悬空边会被丢弃)
 - 数据必须来自真实查询结果,禁止编造
 """
 

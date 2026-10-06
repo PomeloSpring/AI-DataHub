@@ -22,7 +22,7 @@ class WorkspacePayload(BaseModel):
     @classmethod
     def reject_resource_bindings(cls, data):
         if isinstance(data, dict) and {"mcp_server_ids", "mcp_server_id", "knowledge_base_ids", "knowledge_base_id"}.intersection(data):
-            raise ValueError("知识库和 MCP 请在 Waker 中绑定，不再支持工作空间直接绑定")
+            raise ValueError("知识库和 MCP 请在 AS-BOT 中绑定，不再支持工作空间直接绑定")
         return data
 
 
@@ -55,19 +55,57 @@ class AssignWorkspaceRoleUserRequest(BaseModel):
 
 # ── Workspace CRUD ──────────────────────────────────────────────────────
 
+# ── 管理员统管: 全用户工作空间与双配额(须在 /{workspace_id} 之前定义) ──
+
+class SetWorkspaceQuotaRequest(BaseModel):
+    max_workspaces: int = 5
+    disk_quota_bytes: int = 5 * 1024 ** 3
+
+
+@router.get("/quotas")
+def list_workspace_quotas(admin: dict = Depends(require_admin)):
+    """管理员统管: 全用户工作空间清单 + 双配额 + 每空间磁盘用量。"""
+    from services.datamind.execution.session_workspace import workspace_disk_usage
+    users = role_service.list_workspace_quotas()
+    for item in users:
+        for ws in item.get("workspaces", []):
+            ws["disk_usage_bytes"] = workspace_disk_usage(ws["id"])
+    return users
+
+
+@router.put("/quotas/{user_id}")
+def set_workspace_quota(user_id: int, req: SetWorkspaceQuotaRequest,
+                        admin: dict = Depends(require_admin)):
+    """设置用户工作空间配额(可建空间数 + 每空间磁盘)。"""
+    if req.max_workspaces < 1 or req.disk_quota_bytes < 1:
+        raise HTTPException(status_code=400, detail="配额必须为正数")
+    ok = role_service.set_user_workspace_quota(user_id, req.max_workspaces, req.disk_quota_bytes)
+    return {"success": ok}
+
+
 @router.get("/")
 def list_workspaces(user: dict = Depends(get_current_user)):
-    """List workspaces the current user belongs to."""
+    """列出当前用户的工作空间(个人工作站, 随用户走); 首次访问自动创建默认空间。"""
+    uid = int(user["user_id"])
     try:
         with DBConnection() as conn:
             with conn.cursor() as cur:
+                # 懒创建默认工作站(幂等): 每个用户随用户走自动拥有一个默认空间
+                cur.execute("SELECT id FROM adh_workspaces WHERE owner_id = %s LIMIT 1", (uid,))
+                if not cur.fetchone():
+                    cur.execute(
+                        "INSERT INTO adh_workspaces (name, description, icon, color, owner_id, is_default, config) "
+                        "VALUES (%s, %s, %s, %s, %s, 1, %s)",
+                        (f"{user.get('username') or 'user'}的工作站", "个人工作站(随用户自动创建)",
+                         "🏠", "#1890ff", uid, json.dumps({})),
+                    )
+                    conn.commit()
                 cur.execute(
-                    """SELECT w.*, wu.role, wu.is_default as user_default
+                    """SELECT w.*, 'owner' AS role, w.is_default AS user_default
                        FROM adh_workspaces w
-                       JOIN adh_workspace_users wu ON wu.workspace_id = w.id
-                       WHERE wu.user_id = %s
-                       ORDER BY wu.is_default DESC, w.name""",
-                    (user["user_id"],),
+                       WHERE w.owner_id = %s
+                       ORDER BY w.is_default DESC, w.name""",
+                    (uid,),
                 )
                 workspaces = cur.fetchall()
                 for ws in workspaces:
@@ -81,20 +119,21 @@ def list_workspaces(user: dict = Depends(get_current_user)):
 
 @router.get("/{workspace_id}")
 def get_workspace(workspace_id: int, user: dict = Depends(get_current_user)):
-    """Get a single workspace by ID. User must be a member."""
+    """Get a single workspace by ID. 仅属主(或 admin)可访问。"""
     try:
         with DBConnection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """SELECT w.*, wu.role, wu.is_default as user_default
+                    """SELECT w.*, 'owner' AS role, w.is_default AS user_default
                        FROM adh_workspaces w
-                       JOIN adh_workspace_users wu ON wu.workspace_id = w.id
-                       WHERE w.id = %s AND wu.user_id = %s""",
-                    (workspace_id, user["user_id"]),
+                       WHERE w.id = %s""",
+                    (workspace_id,),
                 )
                 workspace = cur.fetchone()
                 if not workspace:
                     raise HTTPException(status_code=404, detail="工作空间不存在")
+                if user.get("role") != "admin" and workspace.get("owner_id") != user["user_id"]:
+                    raise HTTPException(status_code=403, detail="无权访问该工作空间")
                 if isinstance(workspace.get("config"), str):
                     workspace["config"] = json.loads(workspace["config"])
                 return workspace
@@ -107,7 +146,13 @@ def get_workspace(workspace_id: int, user: dict = Depends(get_current_user)):
 
 @router.post("/")
 def create_workspace(req: CreateWorkspaceRequest, user: dict = Depends(get_current_user)):
-    """Create a new workspace. Current user becomes owner."""
+    """Create a new workspace. Current user becomes owner. 受每用户空间数配额限制。"""
+    uid = int(user["user_id"])
+    quota = role_service.get_user_workspace_quota(uid)
+    if role_service.count_user_workspaces(uid) >= quota["max_workspaces"]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"工作空间数量已达上限({quota['max_workspaces']}个)，请先删除闲置空间或联系管理员调整配额")
     try:
         with DBConnection() as conn:
             with conn.cursor() as cur:
@@ -327,18 +372,15 @@ def remove_user_from_workspace(workspace_id: int, target_user_id: int,
 
 
 def _check_membership(cur, workspace_id: int, user: dict, require_admin_role: bool = False):
-    """Verify the user belongs to the workspace; optionally require owner/admin."""
-    cur.execute(
-        "SELECT role FROM adh_workspace_users WHERE workspace_id = %s AND user_id = %s",
-        (workspace_id, user["user_id"]),
-    )
-    membership = cur.fetchone()
-    if not membership and user["role"] != "admin":
+    """工作空间随用户走: 仅属主可操作(成员体系已退役; 参数保留兼容)。"""
+    cur.execute("SELECT owner_id FROM adh_workspaces WHERE id = %s", (workspace_id,))
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="工作空间不存在")
+    is_owner = row["owner_id"] == user["user_id"]
+    if not is_owner and user["role"] != "admin":
         raise HTTPException(status_code=403, detail="无权访问此工作空间")
-    if require_admin_role and membership and membership["role"] not in ("owner", "admin") \
-            and user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="需要管理员权限")
-    return membership
+    return {"role": "owner" if is_owner else "admin"}
 
 
 # ── Workspace v2: default selection & resources ───────────────────────
@@ -350,13 +392,13 @@ def set_default_workspace(workspace_id: int, user: dict = Depends(get_current_us
         with DBConnection() as conn:
             with conn.cursor() as cur:
                 _check_membership(cur, workspace_id, user)
+                # 默认空间语义随属主落在 adh_workspaces.is_default(成员表已冻结)
                 cur.execute(
-                    "UPDATE adh_workspace_users SET is_default = 0 WHERE user_id = %s",
+                    "UPDATE adh_workspaces SET is_default = 0 WHERE owner_id = %s",
                     (user["user_id"],),
                 )
                 cur.execute(
-                    "UPDATE adh_workspace_users SET is_default = 1 "
-                    "WHERE workspace_id = %s AND user_id = %s",
+                    "UPDATE adh_workspaces SET is_default = 1 WHERE id = %s AND owner_id = %s",
                     (workspace_id, user["user_id"]),
                 )
         return {"success": True}
@@ -375,16 +417,22 @@ def get_workspace_tools(workspace_id: int, user: dict = Depends(get_current_user
             with conn.cursor() as cur:
                 _check_membership(cur, workspace_id, user)
 
-                cur.execute(
-                    """SELECT d.id, d.name, d.db_type, wd.is_primary, '' AS alias
-                       FROM adh_workspace_datasources wd
-                       JOIN adh_datasources d ON d.id = wd.datasource_id
-                       WHERE wd.workspace_id = %s""",
-                    (workspace_id,),
-                )
-                datasources = cur.fetchall()
+                # 纯角色裁决: 工作空间不再绑定数据源(adh_workspace_datasources 退役);
+                # 数据源可用集=当前用户角色授权, 空授权 fail-closed 空列表。
+                from services.authservice.services.role_service import role_service
+                allowed = sorted(set(role_service.get_user_allowed_datasources(
+                    user.get("user_id") or 0, workspace_id)))
+                datasources = []
+                if allowed:
+                    marks = ','.join(['%s'] * len(allowed))
+                    cur.execute(
+                        f"""SELECT d.id, d.name, d.db_type, 0 AS is_primary, '' AS alias
+                            FROM adh_datasources d WHERE d.id IN ({marks}) ORDER BY d.name""",
+                        tuple(allowed),
+                    )
+                    datasources = cur.fetchall()
 
-                from services.datamind.execution.wakers import visible_resource_ids
+                from services.datamind.execution.as_bots import visible_resource_ids
                 ids = visible_resource_ids(user, workspace_id, "mcp_server_ids")
                 mcp_servers = []
                 if ids:
@@ -415,78 +463,6 @@ def get_workspace_tools(workspace_id: int, user: dict = Depends(get_current_user
         raise HTTPException(status_code=500, detail="获取工作空间工具失败")
 
 
-@router.get("/{workspace_id}/datasources")
-def list_workspace_datasources(workspace_id: int, user: dict = Depends(get_current_user)):
-    """List datasources bound to a workspace."""
-    try:
-        with DBConnection() as conn:
-            with conn.cursor() as cur:
-                _check_membership(cur, workspace_id, user)
-                cur.execute(
-                    """SELECT d.*, wd.is_primary
-                       FROM adh_workspace_datasources wd
-                       JOIN adh_datasources d ON d.id = wd.datasource_id
-                       WHERE wd.workspace_id = %s
-                       ORDER BY wd.is_primary DESC, d.name""",
-                    (workspace_id,),
-                )
-                return cur.fetchall()
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to list workspace datasources: %s", e)
-        raise HTTPException(status_code=500, detail="获取数据源列表失败")
-
-
-@router.post("/{workspace_id}/datasources")
-def add_workspace_datasource(workspace_id: int,
-                             datasource_id: int = Query(...),
-                             is_primary: bool = Query(False),
-                             user: dict = Depends(get_current_user)):
-    """Bind a datasource to a workspace."""
-    try:
-        with DBConnection() as conn:
-            with conn.cursor() as cur:
-                _check_membership(cur, workspace_id, user, require_admin_role=True)
-                if is_primary:
-                    cur.execute(
-                        "UPDATE adh_workspace_datasources SET is_primary = 0 WHERE workspace_id = %s",
-                        (workspace_id,),
-                    )
-                cur.execute(
-                    """INSERT INTO adh_workspace_datasources (workspace_id, datasource_id, is_primary)
-                       VALUES (%s, %s, %s)
-                       ON DUPLICATE KEY UPDATE is_primary = %s""",
-                    (workspace_id, datasource_id, int(is_primary), int(is_primary)),
-                )
-        return {"success": True}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to add workspace datasource: %s", e)
-        raise HTTPException(status_code=500, detail="添加数据源失败")
-
-
-@router.delete("/{workspace_id}/datasources/{datasource_id}")
-def remove_workspace_datasource(workspace_id: int, datasource_id: int,
-                                user: dict = Depends(get_current_user)):
-    """Unbind a datasource from a workspace."""
-    try:
-        with DBConnection() as conn:
-            with conn.cursor() as cur:
-                _check_membership(cur, workspace_id, user, require_admin_role=True)
-                cur.execute(
-                    "DELETE FROM adh_workspace_datasources WHERE workspace_id = %s AND datasource_id = %s",
-                    (workspace_id, datasource_id),
-                )
-        return {"success": True}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to remove workspace datasource: %s", e)
-        raise HTTPException(status_code=500, detail="移除数据源失败")
-
-
 @router.post("/{workspace_id}/mcp-servers")
 def add_workspace_mcp_server(workspace_id: int,
                              mcp_server_id: int = Query(...),
@@ -495,7 +471,7 @@ def add_workspace_mcp_server(workspace_id: int,
     with DBConnection() as conn:
         with conn.cursor() as cur:
             _check_membership(cur, workspace_id, user, require_admin_role=True)
-    raise HTTPException(410, "MCP 工作空间绑定已停用，请在 Waker 中配置服务和逐工具授权")
+    raise HTTPException(410, "MCP 工作空间绑定已停用，请在 AS-BOT 中配置服务和逐工具授权")
 
 
 @router.delete("/{workspace_id}/mcp-servers/{mcp_server_id}")
@@ -505,7 +481,7 @@ def remove_workspace_mcp_server(workspace_id: int, mcp_server_id: int,
     with DBConnection() as conn:
         with conn.cursor() as cur:
             _check_membership(cur, workspace_id, user, require_admin_role=True)
-    raise HTTPException(410, "MCP 工作空间绑定已停用，请在 Waker 中调整服务和逐工具授权")
+    raise HTTPException(410, "MCP 工作空间绑定已停用，请在 AS-BOT 中调整服务和逐工具授权")
 
 
 # ── Workspace Roles (RBAC) ─────────────────────────────────────────────

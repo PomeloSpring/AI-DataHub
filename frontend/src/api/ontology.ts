@@ -6,6 +6,10 @@ export interface OntologyModelSummary {
   id: number;
   datasource_id: number;
   name: string;
+  /** 本体类型：source=源本体(某源物理表语义) / business=业务本体(跨源, 按业务域) / system=系统本体 */
+  kind?: 'source' | 'business' | 'system' | '';
+  /** 业务域归属（business 本体的归属键） */
+  domain?: string;
   status: OntologyStatus;
   object_count: number;
   kb_id?: number | null;
@@ -98,9 +102,9 @@ export function generateOntologyDraft(
 }
 
 export const ontologyApi = {
-  list: (datasourceId?: number) =>
+  list: (datasourceId?: number, includeArchived = false) =>
     client.get<{ items: OntologyModelSummary[] }>('/catalog/ontology/models', {
-      params: datasourceId ? { datasource_id: datasourceId } : {},
+      params: { ...(datasourceId ? { datasource_id: datasourceId } : {}), include_archived: includeArchived },
     }),
   get: (id: number) => client.get<OntologyModel>(`/catalog/ontology/models/${id}`),
   versions: (id: number) =>
@@ -112,6 +116,9 @@ export const ontologyApi = {
     }),
   activate: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/activate`),
   archive: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/archive`),
+  restore: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/restore`),
+  syncKb: (id: number) => client.post<{ synced?: number; removed?: number; skipped?: string; targets?: string[] }>(
+    `/catalog/ontology/models/${id}/kb-sync`),
   remove: (id: number) => client.delete(`/catalog/ontology/models/${id}`),
   search: (q: string, datasourceId: number, limit = 5) =>
     client.get<{ items: OntologyObjectHit[] }>('/catalog/ontology/search', {

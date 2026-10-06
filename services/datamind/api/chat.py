@@ -16,9 +16,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
-from services.shared.common.auth import get_current_user, authorize_workspace
+from services.shared.common.auth import get_current_user, authorize_workspace, get_file_user
 from services.shared.models.schemas import ChatRequest, UserInfo
-from services.datamind.api.attachments import get_file_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -34,11 +33,11 @@ class SendMessageRequest(BaseModel):
     pipeline_mode: Optional[str] = "quick"
     retrieval_strategy: Optional[str] = None
     workspace_id: Optional[int] = 0
-    attachments: Optional[list[str]] = []  # 多模态附件 ID 列表
+    attachments: list[dict] = []  # 服务端解析回填的上传附件(send_payload);JSON 请求不得携带
     model_ref: Optional[str] = ""  # 执行层运行时模型(如 provider/model_name)
     session_id: Optional[str] = ""  # 执行层会话 ID(SDK 多轮对话 resume)
     conversation_id: Optional[int] = 0  # chat 会话 ID(qoder 长对话池 key)
-    waker_key: Optional[str] = ""  # 聊天端选定的 Waker
+    as_bot_key: Optional[str] = ""  # 聊天端选定的 AS-BOT
     report_theme: Optional[str] = ""  # 报告交付主题 id(前端已将"跟随"解析为当前 App 主题; 空=回落默认)
 
 
@@ -46,18 +45,20 @@ class SendMessageRequest(BaseModel):
 
 @router.post("/send/stream")
 async def chat_send_stream(
-    req: SendMessageRequest,
     request: Request,
     user: UserInfo = Depends(get_current_user),
 ):
     """Send a message with SSE streaming response.
 
     Proxies to the existing backend pipeline orchestrator for NL2SQL.
+    请求体双模: JSON(无附件)或 multipart(payload + files,附件随消息上传落盘会话工作区)。
     """
+    from services.datamind.api.send_payload import parse_send_request
     from services.datamind.services.chat_service import ChatService
 
     from services.datamind.execution.session_workspace import preflight_request
     from starlette.concurrency import run_in_threadpool
+    req = await parse_send_request(request, SendMessageRequest)
     await run_in_threadpool(preflight_request, req, user)
     service = ChatService()
     return StreamingResponse(
@@ -77,7 +78,7 @@ async def chat_send_stream(
             session_id=req.session_id or "",
             conversation_id=req.conversation_id or 0,
             user_role=user.get("role") or "",
-            waker_key=req.waker_key or "",
+            as_bot_key=req.as_bot_key or "",
             report_theme=req.report_theme or "",
         ),
         media_type="text/event-stream",
@@ -85,27 +86,27 @@ async def chat_send_stream(
     )
 
 
-# ── Chat 可用 Waker 清单 ──────────────────────────────────
+# ── Chat 可用 AS-BOT 清单 ──────────────────────────────────
 
-@router.get("/wakers")
-def list_chat_wakers(
+@router.get("/as-bots")
+def list_chat_as_bots(
     workspace_id: int = Query(0, description="Workspace ID"),
     user: UserInfo = Depends(get_current_user),
 ):
-    """返回当前 (工作空间 + 用户角色) 可选的 Waker 清单(含各自的可用模型).
+    """返回当前 (工作空间 + 用户角色) 可选的 AS-BOT 清单(含各自的可用模型).
 
-    与运行时 resolve_wakers 解析口径一致(工作空间绑定回退全局 + 角色白名单),
+    与运行时 resolve_as_bots 解析口径一致(工作空间绑定回退全局 + 角色白名单),
     确保聊天端选择器展示的候选与后端实际允许的集合对齐。
     """
-    from services.datamind.execution import wakers as waker_service
+    from services.datamind.execution import as_bots as as_bot_service
 
     authorize_workspace(user, workspace_id)
-    resolved = waker_service.resolve_wakers(workspace_id, user.get("role") or "", user_id=user["user_id"],
-                                            include_unavailable=True)
+    resolved = as_bot_service.resolve_as_bots(workspace_id, user.get("role") or "", user_id=user["user_id"],
+                                              include_unavailable=True)
     return [
         {
             "id": w.get("id"),
-            "waker_key": w.get("waker_key"),
+            "as_bot_key": w.get("as_bot_key"),
             "name": w.get("name"),
             "display_name": w.get("display_name") or w.get("name"),
             "description": w.get("description") or "",
@@ -168,15 +169,20 @@ def save_message_feedback(req: FeedbackRequest, user: UserInfo = Depends(get_cur
 
 @router.post("/send")
 async def chat_send(
-    req: SendMessageRequest,
+    request: Request,
     user: UserInfo = Depends(get_current_user),
 ):
     """Send a message and get a non-streaming response.
 
     Runs the full NL2SQL pipeline and returns the final result.
+    非流式接口不支持附件(附件需执行层处理),携带附件显式拒绝而非静默忽略。
     """
+    from services.datamind.api.send_payload import parse_send_request
     from services.datamind.services.chat_service import ChatService
 
+    req = await parse_send_request(request, SendMessageRequest)
+    if req.attachments:
+        raise HTTPException(status_code=400, detail="附件消息需要执行层处理,请使用 /send/stream 流式接口")
     service = ChatService()
     result = await service.query(
         question=req.question,
@@ -188,7 +194,6 @@ async def chat_send(
         workspace_id=req.workspace_id or 0,
         user_id=user["user_id"],
         username=user["username"],
-        attachments=req.attachments or [],
     )
     return result
 
@@ -274,25 +279,15 @@ def get_session_file(
     root = sw.session_paths(base, row["session_key"], int(row["workspace_id"] or 0), create=False)
     ws_dir = (root / "workspace").resolve()
 
-    rel = (path or "").strip()
-    for prefix in ("/workspace/", "/workspace", "workspace/", "./", "/"):
-        if rel.startswith(prefix):
-            rel = rel[len(prefix):]
-            break
-    rel = rel.lstrip("/")
-    if not rel:
-        raise HTTPException(status_code=400, detail="缺少文件路径")
+    from services.datamind.multimodal.loader import normalize_rel_path, resolve_workspace_file
 
-    target = (ws_dir / rel).resolve()
-    # 防目录穿越: 目标必须仍在会话 workspace 目录内
-    if target != ws_dir and ws_dir not in target.parents:
-        raise HTTPException(status_code=403, detail="非法文件路径")
-    # 逐级拒绝符号链接逃逸(与会话目录守卫一致)
-    for p in [target, *target.parents]:
-        if p == ws_dir:
-            break
-        if p.is_symlink():
-            raise HTTPException(status_code=403, detail="非法文件路径")
+    if not normalize_rel_path(path):
+        raise HTTPException(status_code=400, detail="缺少文件路径")
+    try:
+        # 防目录穿越/符号链接逃逸(与附件引用共用同一守卫)
+        target = resolve_workspace_file(ws_dir, path)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e) or "非法文件路径")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
 
@@ -306,30 +301,29 @@ def get_session_file(
 @router.get("/conversations")
 def list_conversations(
     workspace_id: int = Query(0, description="Filter by workspace"),
-    waker_key: str = Query("", description="按归属 Waker 过滤;传 __system_bot__ 只看 AS-BOT 会话"),
+    as_bot_key: str = Query("", description="按归属 AS-BOT 过滤"),
     user: UserInfo = Depends(get_current_user),
 ):
-    """List user's conversations, optionally filtered by workspace and waker.
+    """List user's conversations, optionally filtered by workspace and AS-BOT.
 
-    AS-BOT 面板传 waker_key=__system_bot__ 只看系统助手会话; 未传 waker_key 的业务清单
-    默认排除 __system_bot__, 使两套会话历史互不串台。
+    会话历史合并共用（AS-BOT 面板与智能问数同一载体、不同入口），不再按入口区分。
     """
     from services.shared.common.db.metadata_db import get_metadata_conn
 
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
-            cols = "id, title, datasource_id, workspace_id, waker_key, created_at, updated_at"
+            cols = "id, title, datasource_id, workspace_id, as_bot_key, created_at, updated_at"
             where = ["user_id = %s"]
             params: list = [user["user_id"]]
             if workspace_id:
-                where.append("workspace_id = %s")
+                # 合并共用：工作空间列表含全局(ws=0)会话（AS-BOT 面板等全局入口所建），
+                # 反向（全局查询不过滤）同样互见，不按入口区分。
+                where.append("workspace_id IN (%s, 0)")
                 params.append(workspace_id)
-            if waker_key:
-                where.append("waker_key = %s")
-                params.append(waker_key)
-            else:
-                where.append("waker_key <> '__system_bot__'")
+            if as_bot_key:
+                where.append("as_bot_key = %s")
+                params.append(as_bot_key)
             cur.execute(
                 f"SELECT {cols} FROM adh_conversations "
                 f"WHERE {' AND '.join(where)} ORDER BY updated_at DESC LIMIT 50",
@@ -357,7 +351,7 @@ def get_conversation(
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, title, datasource_id, workspace_id, waker_key, messages, "
+                "SELECT id, title, datasource_id, workspace_id, as_bot_key, messages, "
                 "created_at, updated_at "
                 "FROM adh_conversations WHERE id = %s AND user_id = %s",
                 (conv_id, user["user_id"]),
@@ -378,7 +372,7 @@ def get_conversation(
 class CreateConversationRequest(BaseModel):
     datasource_id: Optional[int] = 0
     workspace_id: Optional[int] = 0
-    waker_key: Optional[str] = ""
+    as_bot_key: Optional[str] = ""
 
 
 @router.post("/conversations")
@@ -393,23 +387,29 @@ def create_conversation(
     # workspace_id=0 为全局助手会话，仅按 user_id 隔离，无需工作空间授权
     if req.workspace_id:
         authorize_workspace(user, req.workspace_id)
-    # workspace_id=0 时不验证 waker_key（全局助手继承角色默认 Waker）
-    if req.waker_key and req.workspace_id:
-        from services.datamind.execution.tool_policy import resolve_policy
-        from services.datamind.execution.models import ExecutionContext
-        ctx = ExecutionContext(user_id=user["user_id"], user_role=user.get("role", ""),
-                               workspace_id=req.workspace_id or 0, extra={"waker_key": req.waker_key})
-        resolve_policy(ctx)
+    # AS-BOT 与角色强绑定(一对一)：会话归属直接取当前用户角色的 AS-BOT，
+    # 不再依赖页面传标识；无授权 AS-BOT 则 fail-closed。
+    as_bot_key = ""
+    from services.datamind.execution.models import ExecutionContext
+    from services.datamind.execution.tool_policy import resolve_policy
+    ctx = ExecutionContext(user_id=user["user_id"], user_role=user.get("role", ""),
+                           workspace_id=req.workspace_id or 0, extra={"as_bot_key": req.as_bot_key or ""})
+    try:
+        as_bot_key = resolve_policy(ctx).as_bot["as_bot_key"]
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     from services.shared.common.db.metadata_db import get_metadata_conn
 
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO adh_conversations (user_id, title, datasource_id, workspace_id, waker_key, messages, created_at, updated_at) "
+                "INSERT INTO adh_conversations (user_id, title, datasource_id, workspace_id, as_bot_key, messages, created_at, updated_at) "
                 "VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())",
                 (user["user_id"], "新对话", req.datasource_id or 0, req.workspace_id or 0,
-                 req.waker_key or "", "[]"),
+                 as_bot_key, "[]"),
             )
             conn.commit()
             conv_id = cur.lastrowid
@@ -418,7 +418,7 @@ def create_conversation(
                 "title": "新对话",
                 "datasource_id": req.datasource_id or 0,
                 "workspace_id": req.workspace_id or 0,
-                "waker_key": req.waker_key or "",
+                "as_bot_key": as_bot_key,
                 "created_at": datetime.now().isoformat(),
             }
     finally:

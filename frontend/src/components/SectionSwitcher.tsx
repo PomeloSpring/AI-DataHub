@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { LayoutGrid, Folder, Database, Settings, Check, ChartNoAxesCombined } from 'lucide-react';
+import { LayoutGrid, Folder, Database, Settings, Check, ChartNoAxesCombined, House } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -8,8 +8,9 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useAuthStore } from '../stores/authStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
+import { isMenuPrefixAllowed, hasPerm } from '../stores/permissionStore';
 
-export type SectionId = 'workspace' | 'data' | 'system' | 'ask' | 'dashboards';
+export type SectionId = 'home' | 'workspace' | 'data' | 'system' | 'ask' | 'dashboards';
 
 interface SectionSwitcherProps {
   /** Currently active section — used to highlight the matching item. */
@@ -37,6 +38,10 @@ export default function SectionSwitcher({ current }: SectionSwitcherProps) {
   const goSystem = () => navigate('/system');
 
   const isAdmin = user?.role === 'admin';
+  // 模块级一级入口按权限显隐: 模块内没有任何可见菜单就不提供入口
+  const showDashboards = hasPerm('dashboard:read') || hasPerm('dashboard:manage');
+  const showWorkspace = isMenuPrefixAllowed('workspace:');
+  const showData = isMenuPrefixAllowed('data:');
 
   return (
     <DropdownMenu>
@@ -55,26 +60,29 @@ export default function SectionSwitcher({ current }: SectionSwitcherProps) {
           模块切换
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {([{ id: 'dashboards', label: '数据看板', Icon: ChartNoAxesCombined }] as const).map(({ id, label, Icon }) =>
-          <DropdownMenuItem key={id} onClick={() => { const wsId = getDefaultWorkspaceId(); navigate(wsId ? `/${id}/${wsId}` : `/${id}`); }} className={`flex items-center gap-2 ${current === id ? 'bg-accent' : ''}`}>
+        <DropdownMenuItem onClick={() => navigate('/')} className={`flex items-center gap-2 ${current === 'home' ? 'bg-accent' : ''}`}>
+          <House className="h-4 w-4" /><span className="flex-1">首页</span>{current === 'home' && <Check className="h-4 w-4 text-primary" />}
+        </DropdownMenuItem>
+        {showDashboards && ([{ id: 'dashboards', label: '数据看板', Icon: ChartNoAxesCombined }] as const).map(({ id, label, Icon }) =>
+          <DropdownMenuItem key={id} onClick={() => navigate('/dashboards')} className={`flex items-center gap-2 ${current === id ? 'bg-accent' : ''}`}>
             <Icon className="h-4 w-4" /><span className="flex-1">{label}</span>{current === id && <Check className="h-4 w-4 text-primary" />}
           </DropdownMenuItem>)}
-        <DropdownMenuItem
+        {showWorkspace && <DropdownMenuItem
           onClick={goWorkspace}
           className={`flex items-center gap-2 ${current === 'workspace' ? 'bg-accent' : ''}`}
         >
           <Folder className="h-4 w-4" />
           <span className="flex-1">工作空间</span>
           {current === 'workspace' && <Check className="h-4 w-4 text-primary" />}
-        </DropdownMenuItem>
-        <DropdownMenuItem
+        </DropdownMenuItem>}
+        {showData && <DropdownMenuItem
           onClick={goData}
           className={`flex items-center gap-2 ${current === 'data' ? 'bg-accent' : ''}`}
         >
           <Database className="h-4 w-4" />
           <span className="flex-1">数据中台</span>
           {current === 'data' && <Check className="h-4 w-4 text-primary" />}
-        </DropdownMenuItem>
+        </DropdownMenuItem>}
         {isAdmin && (
           <DropdownMenuItem
             onClick={goSystem}

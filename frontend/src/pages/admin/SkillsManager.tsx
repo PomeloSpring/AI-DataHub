@@ -138,7 +138,7 @@ export default function SkillsManager() {
         <div>
           <h1 className="text-2xl font-bold">技能配置</h1>
           <p className="text-muted-foreground mt-1">
-            管理 Agent 技能（Qoder「文件夹 + SKILL.md」规范），系统内置 {builtinCount} 个、自定义 {customCount} 个，可在 Waker 中勾选绑定
+            管理 Agent 技能（Qoder「文件夹 + SKILL.md」规范），系统内置 {builtinCount} 个、自定义 {customCount} 个，可在 AS-BOT 中勾选绑定
           </p>
         </div>
         <Button onClick={() => setCreating(true)}>

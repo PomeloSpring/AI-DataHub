@@ -10,7 +10,7 @@ import pytest
 from services.shared.common import db
 from services.dataflow.services import scheduled_task_service as scheduled
 from services.dataviz.services import report_service as reports
-from services.datamind.execution import wakers
+from services.datamind.execution import as_bots
 
 pytestmark = pytest.mark.skipif(os.getenv("ADH_TEST_MYSQL_ENABLE") != "1", reason="仅限显式隔离 MySQL")
 
@@ -100,15 +100,13 @@ def test_report_persistence_and_claim_idempotent(isolated):
     assert reports.load_report(report["id"])["generation_status"] == "failed"
 
 
-def test_approval_id_and_claim_are_atomic(isolated):
-    aid = wakers.create_approval(7, "metadata.sync", {"datasource_id": 8})
-    assert aid > 0
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        claims = list(pool.map(lambda _: wakers.claim_approval(aid, 7), range(8)))
-    assert sum(claims) == 1
-    assert not wakers.update_approval_status(aid, "rejected", 8)
-    assert not wakers.update_approval_status(aid, "executed", 8)
-    assert wakers.update_approval_status(aid, "executed", 7, {"success": True})
+def test_approval_channel_fully_removed():
+    """审批通道已退役：分布式幂等仲裁改由发布状态条件更新承担
+    （并发双发布只落一次图，见 test_dashboard_design 的隔离 MySQL 段）。"""
+    for name in ("create_approval", "get_approval", "claim_approval",
+                 "update_approval_status", "load_action_registry", "validate_action_payload"):
+        assert not hasattr(as_bots, name), f"审批通道残留: {name}"
+    assert not hasattr(as_bots, "check_as_bot_permission")
 
 
 def test_expired_run_reconciles_once(isolated):
@@ -175,9 +173,13 @@ def _seed_owner(factory):
     try:
         with c.cursor() as cur:
             cur.execute("CREATE TABLE IF NOT EXISTS adh_users (id BIGINT PRIMARY KEY, username VARCHAR(64), email VARCHAR(255), phone VARCHAR(255), avatar VARCHAR(255), user_role VARCHAR(32), status VARCHAR(16), last_login DATETIME, login_attempts INT DEFAULT 0, locked_until DATETIME, created_at DATETIME, updated_at DATETIME)")
-            cur.execute("CREATE TABLE IF NOT EXISTS adh_workspace_datasources (workspace_id BIGINT, datasource_id BIGINT, is_primary TINYINT DEFAULT 0)")
+            # 纯角色裁决：数据源授权来自 adh_user_roles ⋈ adh_role_datasource_access（adh_workspace_datasources 已退役）。
+            cur.execute("CREATE TABLE IF NOT EXISTS adh_user_roles (id BIGINT PRIMARY KEY, user_id BIGINT NOT NULL, role_id BIGINT NOT NULL, workspace_id BIGINT NOT NULL DEFAULT 0, created_at DATETIME, UNIQUE KEY uk_user_role_ws (user_id, role_id, workspace_id))")
+            cur.execute("CREATE TABLE IF NOT EXISTS adh_role_datasource_access (id BIGINT PRIMARY KEY, role_id BIGINT NOT NULL, datasource_id BIGINT NOT NULL, access_type VARCHAR(32) NOT NULL DEFAULT 'read', created_at DATETIME, UNIQUE KEY uk_role_ds (role_id, datasource_id))")
             cur.execute("INSERT INTO adh_users (id,username,user_role,status,created_at,updated_at) VALUES (7,'owner','admin','active',NOW(),NOW())")
-            cur.execute("INSERT INTO adh_workspace_datasources (workspace_id,datasource_id) VALUES (3,8)")
+            # 用户 7 在工作空间 3 持有角色 1，角色 1 授权数据源 8。
+            cur.execute("INSERT INTO adh_user_roles (id,user_id,role_id,workspace_id) VALUES (1,7,1,3)")
+            cur.execute("INSERT INTO adh_role_datasource_access (id,role_id,datasource_id,access_type,created_at) VALUES (8,1,8,'read',NOW())")
     finally:
         c.close()
 

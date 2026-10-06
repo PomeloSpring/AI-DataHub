@@ -34,8 +34,6 @@
 {"success":false,"message":"说明无法生成SQL的原因"}
 ```
 
-注意：query_type 可选值："sql"（默认，标准SQL）、"rest"（ES REST API）、"dsl"（ES DSL JSON）。普通数据库查询不需要指定 query_type，仅 Elasticsearch 涉及 _id 等元数据字段时使用 "rest" 或 "dsl"。
-
 ⚠️ **绝对要求（违反即失败）**：
 1. sql 字段必须是纯净的、可直接执行的 SQL 语句
 2. sql 字段内禁止出现：中文说明、注释（-- 或 /* */）、markdown、换行后的解释文本

@@ -69,6 +69,46 @@ def storage_node(base, create=True):
     return value
 
 
+def workspace_disk_usage(workspace_id: int) -> int:
+    """工作空间磁盘用量(字节): ws_{id} 下全部文件递归求和。
+
+    单存储节点卷语义; 多节点部署时各节点各自统计(资产真值源在对象存储)。
+    """
+    from services.shared.common.config import ADH_WORKSPACES_DIR
+    root = Path(ADH_WORKSPACES_DIR).resolve() / f"ws_{workspace_id}"
+    if not root.is_dir():
+        return 0
+    total = 0
+    for p in root.rglob("*"):
+        try:
+            if p.is_file() and not p.is_symlink():
+                total += p.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def assert_workspace_disk_quota(workspace_id: int) -> None:
+    """空间磁盘配额拦截: 用量已达配额则拒绝新建会话(提示归档/清理后重试)。"""
+    from services.shared.common.db.metadata_db import get_metadata_conn
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            # 配额按用户设置, 空间沿用属主的每空间磁盘配额
+            cur.execute(
+                "SELECT q.disk_quota_bytes FROM adh_user_workspace_quota q "
+                "JOIN adh_workspaces w ON w.owner_id = q.user_id WHERE w.id = %s",
+                (workspace_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    quota = int((row or {}).get("disk_quota_bytes") or 0)
+    if quota <= 0:
+        return
+    if workspace_disk_usage(workspace_id) >= quota:
+        raise HTTPException(status_code=409, detail="工作空间磁盘配额已用尽，请先归档收藏产物或清理会话文件")
+
+
 def session_paths(base, key, workspace_id, create=False, require_layout=True):
     if not re.fullmatch(r"[a-f0-9]{32}", key) or workspace_id < 0:
         raise ValueError("会话路径标识无效")
@@ -101,7 +141,9 @@ def _lock_conversation_for_deletion(cur, conversation_id, user_id):
     session = cur.fetchone()
     if session and session["user_id"] != user_id:
         raise HTTPException(404, "会话不存在或无权访问")
-    if conversation and session and int(conversation.get("workspace_id") or 0) != session["workspace_id"]:
+    if conversation and session and int(conversation.get("workspace_id") or 0) != session["workspace_id"] \
+            and int(conversation.get("workspace_id") or 0) != 0 and int(session.get("workspace_id") or 0) != 0:
+        # 全局会话(ws=0)跨入口执行时执行映射可能落在入口空间，属合法；其余不一致仍阻断。
         raise HTTPException(409, "会话工作区归属不一致，请联系管理员核对后重试")
     return session
 
@@ -203,13 +245,13 @@ def preflight_request(req, user):
     agent_mode = getattr(req, "pipeline_mode", "agent") == "agent" or bool(req.attachments)
     ctx = ExecutionContext(user_id=user["user_id"], user_role=user.get("role", ""),
                            workspace_id=req.workspace_id or 0,
-                           extra={"waker_key": getattr(req, "waker_key", "") or ""})
+                           extra={"as_bot_key": getattr(req, "as_bot_key", "") or ""})
     cid = getattr(req, "conversation_id", 0) or 0
     if cid:
         validate_conversation(ctx, cid)
     if not agent_mode:
-        if ctx.extra.get("waker_key"):
-            raise HTTPException(422, "Waker 会话不能切换到旧执行管线，请新建会话")
+        if ctx.extra.get("as_bot_key"):
+            raise HTTPException(422, "AS-BOT 会话不能切换到旧执行管线，请新建会话")
         return
     if cid:
         row = execute_query("SELECT status FROM adh_agent_sessions WHERE conversation_id=%s", (cid,), fetchone=True)
@@ -217,8 +259,10 @@ def preflight_request(req, user):
             raise HTTPException(409, "该会话正在删除或等待清理重试，不能继续执行")
         if row and row["status"] == "closed":
             raise HTTPException(409, "该会话已清空，请新建会话")
-        if row and row["status"] != "idle":
-            raise HTTPException(409, "会话正在执行或执行中断，请确认状态后操作")
+        if row and row["status"] == "running":
+            raise HTTPException(409, "上一轮仍在执行中，请等待完成（或停止后再发送）")
+        # interrupted（上轮执行中断）不拦：执行权已释放（execution_token=NULL），
+        # 新消息是新一轮请求、不重放中断轮副作用，交由 claim 认领后从干净上下文继续。
     try:
         resolve_policy(ctx)
     except PermissionError as exc:
@@ -229,20 +273,25 @@ def preflight_request(req, user):
 
 def validate_conversation(ctx, conversation_id):
     from services.shared.common.auth import authorize_workspace
-    # workspace_id=0 为全局助手会话，仅按 user_id 隔离，无需工作空间授权
-    if ctx.workspace_id:
-        authorize_workspace({"user_id": ctx.user_id, "role": ctx.user_role}, ctx.workspace_id)
     row = execute_query("SELECT * FROM adh_conversations WHERE id=%s AND user_id=%s",
                         (conversation_id, ctx.user_id), fetchone=True)
     if not row:
         raise HTTPException(404, "会话不存在或无权访问")
-    if int(row.get("workspace_id") or 0) != ctx.workspace_id:
-        raise HTTPException(403, "会话不属于当前工作空间")
-    chosen = ctx.extra.get("waker_key")
-    if row.get("waker_key") and chosen and row["waker_key"] != chosen:
-        raise HTTPException(409, "切换 Waker 需要新建会话")
-    if row.get("waker_key"):
-        ctx.extra["waker_key"] = row["waker_key"]
+    conv_ws = int(row.get("workspace_id") or 0)
+    # 会话归属的工作空间是固有属性：看得到就用得了（列表互见后语义一致）。
+    # 授权按会话归属校验；全局会话(ws=0)按 user_id 隔离，入口空间照常校验。
+    if conv_ws:
+        authorize_workspace({"user_id": ctx.user_id, "role": ctx.user_role}, conv_ws)
+    elif ctx.workspace_id:
+        authorize_workspace({"user_id": ctx.user_id, "role": ctx.user_role}, ctx.workspace_id)
+    # 执行归属跟随会话自身的工作空间，跨入口打开同一会话执行语义一致。
+    # （conv_ws=0 是合法的全局归属，不能用 or 回退到入口空间）
+    ctx.workspace_id = conv_ws
+    chosen = ctx.extra.get("as_bot_key")
+    if row.get("as_bot_key") and chosen and row["as_bot_key"] != chosen:
+        raise HTTPException(409, "切换 AS-BOT 需要新建会话")
+    if row.get("as_bot_key"):
+        ctx.extra["as_bot_key"] = row["as_bot_key"]
     return row
 
 
@@ -330,21 +379,20 @@ def claim_session(task, backend, config):
     if not ctx or ctx.user_id <= 0:
         raise PermissionError("缺少可信执行身份")
     if config.get("cwd") or config.get("allowed_dirs"):
-        raise ValueError("Waker 仅允许独立会话目录，请移除执行层 cwd/allowed_dirs 宽目录配置")
+        raise ValueError("AS-BOT 仅允许独立会话目录，请移除执行层 cwd/allowed_dirs 宽目录配置")
     cid = int(ctx.extra.get("conversation_id") or 0)
     if cid:
         validate_conversation(ctx, cid)
     ceiling = config.get("allowed_tools")
     policy = resolve_policy(ctx, ceiling)
-    ctx.extra["waker_key"] = policy.waker["waker_key"]
+    ctx.extra["as_bot_key"] = policy.as_bot["as_bot_key"]
     layer_id = int(config.get("_layer_id") or 0)
     layer_bound = False
     if layer_id:
-        from services.datamind.execution import service
         from services.datamind.execution.tool_policy import live_ceiling
-        layer_bound = any(r["id"] == layer_id for r in service.get_workspace_layers(ctx.workspace_id))
         from types import SimpleNamespace
-        current = live_ceiling(ctx, SimpleNamespace(layer_id=layer_id, layer_bound=layer_bound, backend=backend))
+        # 执行层全局生效(不按工作空间绑定); layer_bound 字段保留兼容签名
+        current = live_ceiling(ctx, SimpleNamespace(layer_id=layer_id, layer_bound=True, backend=backend))
         policy = resolve_policy(ctx, current)
         ceiling = current
     base = workspace_base()
@@ -358,15 +406,17 @@ def claim_session(task, backend, config):
                 conv = cur.fetchone()
                 if not conv or int(conv.get("workspace_id") or 0) != ctx.workspace_id:
                     raise HTTPException(404, "会话不存在或无权访问")
-                if conv.get("waker_key") and conv["waker_key"] != policy.waker["waker_key"]:
-                    raise HTTPException(409, "切换 Waker 需要新建会话")
+                if conv.get("as_bot_key") and conv["as_bot_key"] != policy.as_bot["as_bot_key"]:
+                    raise HTTPException(409, "切换 AS-BOT 需要新建会话")
                 cur.execute("SELECT * FROM adh_agent_sessions WHERE conversation_id=%s FOR UPDATE", (cid,))
                 row = cur.fetchone()
             else:
                 row = None
             if row:
-                if (row["user_id"], row["workspace_id"], row["waker_key"], row["backend"]) != (
-                        ctx.user_id, ctx.workspace_id, policy.waker["waker_key"], backend):
+                # 执行映射跟随会话归属（validate_conversation 已把 ctx.workspace_id 归一到会话空间）；
+                # 存量行的 workspace_id 可能是历史入口空间，身份校验只看属主+形态，目录用行自身空间。
+                if (row["user_id"], row["as_bot_key"], row["backend"]) != (
+                        ctx.user_id, policy.as_bot["as_bot_key"], backend):
                     raise HTTPException(403, "执行会话身份或后端不匹配，请新建会话")
                 if row["storage_node"] != node:
                     raise HTTPException(409, "会话工作区不在当前存储节点，无法恢复")
@@ -376,21 +426,30 @@ def claim_session(task, backend, config):
                     raise HTTPException(409, "该会话已清空，请新建会话")
                 if row["status"] == "running":
                     raise HTTPException(409, "该会话正在执行或上次执行尚未确认停止")
-                root = session_paths(base, row["session_key"], ctx.workspace_id)
+                root = session_paths(base, row["session_key"], row["workspace_id"])
                 if row["status"] == "interrupted":
-                    raise HTTPException(409, "上次执行已中断，请新建会话；不会自动重放有副作用的请求")
+                    # 上轮执行中断（执行权已释放）。新消息是新一轮请求、不重放中断轮副作用；
+                    # 丢弃中断的 SDK 会话（不 resume），复位为可认领状态后从干净执行上下文继续，
+                    # 不必逼用户新建会话（历史对话保留）。
+                    cur.execute("UPDATE adh_agent_sessions SET status='idle', sdk_session_id='', "
+                                "version=version+1, updated_at=UTC_TIMESTAMP(6) "
+                                "WHERE session_key=%s AND status='interrupted'",
+                                (row["session_key"],))
+                    row = {**row, "status": "idle", "sdk_session_id": ""}
             else:
                 if ctx.extra.get("session_id"):
                     raise HTTPException(409, "旧 SDK 会话不能直接接管，请新建会话")
                 if cid and conv.get("executor_session_id"):
                     raise HTTPException(409, "旧执行会话需重新建立安全工作区，请新建会话；聊天记录仍保留")
+                # 磁盘配额拦截: 超限不建新会话目录, 引导归档/清理
+                assert_workspace_disk_quota(ctx.workspace_id)
                 key = uuid.uuid4().hex
                 root = session_paths(base, key, ctx.workspace_id, create=True)
                 row = {"session_key": key, "sdk_session_id": ""}
                 cur.execute(
-                    "INSERT INTO adh_agent_sessions (session_key,conversation_id,user_id,workspace_id,waker_key,backend,"
+                    "INSERT INTO adh_agent_sessions (session_key,conversation_id,user_id,workspace_id,as_bot_key,backend,"
                     "storage_node,relative_dir,policy_hash) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (key, cid or None, ctx.user_id, ctx.workspace_id, policy.waker["waker_key"], backend,
+                    (key, cid or None, ctx.user_id, ctx.workspace_id, policy.as_bot["as_bot_key"], backend,
                      node, str(root.relative_to(base)), policy.digest),
                 )
             supplied = ctx.extra.get("session_id")
@@ -403,7 +462,7 @@ def claim_session(task, backend, config):
             if cur.rowcount != 1:
                 raise HTTPException(409, "会话执行状态冲突")
             if cid:
-                cur.execute("UPDATE adh_conversations SET waker_key=%s WHERE id=%s", (policy.waker["waker_key"], cid))
+                cur.execute("UPDATE adh_conversations SET as_bot_key=%s WHERE id=%s", (policy.as_bot["as_bot_key"], cid))
     runtime = SessionWorkspace(row["session_key"], token, root, policy, ceiling, row.get("sdk_session_id") or "",
                                layer_id=layer_id, layer_bound=layer_bound, backend=backend)
     ctx.extra["secure_runtime"] = runtime

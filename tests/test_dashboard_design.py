@@ -42,10 +42,12 @@ def test_no_selection_is_not_global_scope():
         ds.resolve_scope({}, USER)
 
 
-def test_domains_discovered_without_waker_datasource_bindings(monkeypatch):
-    """业务域不依赖 Waker 数据源，但知识库必须显式绑定。"""
-    monkeypatch.setattr('services.datamind.execution.wakers.resolve_system_bot_waker',
-                        lambda: {"knowledge_base_ids": [4]})
+def test_domains_discovered_without_as_bot_datasource_bindings(monkeypatch):
+    """业务域不依赖 AS-BOT 数据源，但知识库必须显式绑定。"""
+    monkeypatch.setattr('services.datamind.execution.as_bots.resolve_as_bots',
+                        lambda *a, **k: [{"as_bot_key": "a", "knowledge_base_ids": [4]}])
+    monkeypatch.setattr('services.datamind.execution.as_bots.default_as_bot',
+                        lambda bots: bots[0] if bots else None)
     def fake(sql, params=None, fetchone=False):
         if 'adh_ontology_models' in sql:
             return [{'id': 9, 'name': 'biz-db', 'db_type': 'mysql', 'model_name': '业务本体'}]
@@ -66,8 +68,10 @@ def _scope_fake(rows_map):
 
 
 def test_workspace_derived_from_dashboard_not_user_choice(monkeypatch):
-    monkeypatch.setattr('services.datamind.execution.wakers.resolve_system_bot_waker',
-                        lambda: {"knowledge_base_ids": []})
+    monkeypatch.setattr('services.datamind.execution.as_bots.resolve_as_bots',
+                        lambda *a, **k: [{"as_bot_key": "a", "knowledge_base_ids": []}])
+    monkeypatch.setattr('services.datamind.execution.as_bots.default_as_bot',
+                        lambda bots: bots[0] if bots else None)
     monkeypatch.setattr(ds, 'execute_query', _scope_fake({
         'adh_ontology_models': {'id': 7}, 'adh_dashboards': {'id': 5, 'workspace_id': 1, 'owner_id': USER['user_id']},
         'adh_charts': [{'id': 1, 'name': 'c', 'chart_type': 'bar'}], 'adh_knowledge_bases': []}))
@@ -128,32 +132,56 @@ def test_manual_sql_must_remain_single_readonly_query(sql):
         ds.compile_widget({"query_source": "raw_sql", "manual_sql": sql}, {"dialect": "mysql"})
 
 
-def test_direct_approval_creation_cannot_skip_preview():
-    from services.datamind.execution.wakers import create_approval
-    with pytest.raises(ValueError, match="成功预览"):
-        create_approval(7, 'dashboard.publish', {"design_id": 'a' * 32, "version": 1, "digest": 'b' * 64})
+def test_publish_direct_requires_valid_preview(monkeypatch):
+    """直执行发布：无有效预览即拒（不再有审批单可绕过预览）。"""
+    from services.datamind.execution import perm_link
+    monkeypatch.setattr(perm_link, 'require_write_perm', lambda *a, **k: None)
+    row = {'id': 'a' * 32, 'version': 2, 'status': 'designing', 'preview': None,
+           'preview_valid': 0, 'content': {'widgets': []}, 'result': None}
+    monkeypatch.setattr(ds, 'load', lambda *a, **k: (dict(row), dict(USER)))
+    monkeypatch.setattr(ds, 'identity', lambda u: dict(USER))
+    with pytest.raises(ds.DesignError):
+        ds.publish('a' * 32, USER, 2)
 
 
-def test_rest_refuses_forged_publish_payload():
-    from services.datamind.api.as_bot import CreateApprovalRequest, create_pending_approval
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(create_pending_approval(CreateApprovalRequest(action_key='dashboard.publish', payload={}), USER))
-    assert error.value.status_code == 422
+def test_rest_publish_requires_expected_version():
+    """REST 发布必须带 expected_version（乐观锁），伪造载荷被 schema 拒。"""
+    from services.datamind.api.as_bot import DesignVersion
+    with pytest.raises(Exception):
+        DesignVersion()  # 缺 expected_version
 
 
-def test_system_routes_stay_system_and_tools_are_explicit(monkeypatch):
-    from services.datamind.execution.prompt_composer import AS_BOT_DESIGN_RULES
-    from services.datamind.execution import wakers
-    monkeypatch.setattr(wakers, '_query', lambda *a: [{"waker_key": "__system_bot__", "id": 1, "tools": {}}])
-    bot = wakers.resolve_system_bot_waker()
-    assert 'query' not in bot['tools']['mcp']
-    assert 'get_business_semantics' in bot['tools']['mcp']['semantic']
-    assert '系统问题' in AS_BOT_DESIGN_RULES and '标题、配色' in AS_BOT_DESIGN_RULES
+def test_position_normalized_to_pixels_for_canvas():
+    """设计 12 列网格 position 发布时换算为像素（看板画布是像素绝对定位，否则图表缩成 4x2px）。"""
+    from services.dataviz.services.dashboard_service import _position_to_pixels
+    # 网格制两列布局 → 像素（1 列=80px、1 行=90px）
+    assert _position_to_pixels({"x": 6, "y": 2, "w": 6, "h": 4}) == {
+        "x": 480.0, "y": 180.0, "w": 480.0, "h": 360.0}
+    # 已是像素则原样
+    assert _position_to_pixels({"x": 10, "y": 20, "w": 400, "h": 300}) == {
+        "x": 10.0, "y": 20.0, "w": 400.0, "h": 300.0}
+    # 缺失/非法 → 全宽流式兜底且不重叠（auto-layout）
+    assert _position_to_pixels(None, 2) == {"x": 0.0, "y": 720.0, "w": 960.0, "h": 360.0}
+
+
+def test_system_scope_metadata_superposes_business(monkeypatch):
+    """能力叠加（域规则更新）：system 能力元数据可见系统本体 ∪ 业务域，字典按本源+全局口径。"""
     from services.datamind.execution.sdk_tools import scoped_metadata
+    from types import SimpleNamespace
+    policy = SimpleNamespace(selection={"system": ["system_usage"]}, as_bot={})
+    ctx = SimpleNamespace(datasource_id=0,
+                          extra={"secure_runtime": SimpleNamespace(policy=policy)})
     calls = []
     monkeypatch.setattr(scoped_metadata, 'execute_query', lambda sql, *a, **k: calls.append(sql) or [])
-    scoped_metadata.execute('get_metrics', {}, ds.SimpleNamespace(datasource_id=5, extra={'waker_key': '__system_bot__'}))
-    assert all('datasource_id=0' in sql for sql in calls)
+    scoped_metadata.execute('get_metrics', {}, ctx)
+    assert calls, "目录查询必须发出"
+    for sql in calls:
+        if "adh_ontology_models" in sql:
+            # 叠加可见：系统本体 + 业务域（跨源业务 + 本源 source）
+            assert "kind = 'system'" in sql and "kind = 'business'" in sql, sql
+        if "adh_metrics" in sql or "adh_dimensions" in sql:
+            # 字典统一本源+全局口径（系统对象字典行在 ds=0 内）
+            assert "datasource_id = %s OR datasource_id = 0" in sql, sql
 
 
 @pytest.fixture
@@ -166,7 +194,7 @@ def mysql_design(monkeypatch):
     uid = 2**52 + uuid.uuid4().int % 100000000
     user = {**USER, 'user_id': uid}
     monkeypatch.setattr(ds, 'identity', lambda u: user if u.get('user_id') == uid else (_ for _ in ()).throw(ds.DesignError('无权访问')))
-    cid = execute_insert("INSERT INTO adh_conversations (user_id,title,workspace_id,waker_key,messages) VALUES (%s,'__design_test__',0,'__system_bot__','[]')", (uid,))
+    cid = execute_insert("INSERT INTO adh_conversations (user_id,title,workspace_id,as_bot_key,messages) VALUES (%s,'__design_test__',0,'','[]')", (uid,))
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
@@ -194,7 +222,6 @@ def mysql_design(monkeypatch):
     d = ds.prepare(d['design_id'], user, d['version'], [WIDGET], ['统计案例、近7天、柱状图'])
     yield {'design': d, 'user': user, 'dashboard_id': dashboard_id, 'q': execute_query, 'write': execute_write, 'cid': cid}
     execute_write('DELETE FROM adh_charts WHERE dashboard_id=%s', (dashboard_id,))
-    execute_write('DELETE FROM adh_as_bot_approvals WHERE user_id=%s', (uid,))
     execute_write('DELETE FROM adh_as_bot_dashboard_designs WHERE user_id=%s', (uid,))
     execute_write('DELETE FROM adh_dashboards WHERE owner_id=%s', (uid,))
     execute_write('DELETE FROM adh_conversations WHERE user_id=%s', (uid,))
@@ -205,24 +232,22 @@ def test_mysql_preview_isolated_publish_idempotent(mysql_design):
     d = f['design']
     p = ds.preview(d['design_id'], f['user'], d['version'])
     assert not f['q']('SELECT id FROM adh_charts WHERE dashboard_id=%s', (f['dashboard_id'],))
-    aid = p['design']['approval_id']
-    first = ds.publish(aid, f['user'])
-    second = ds.publish(aid, f['user'])
-    assert first == second and first['status'] == 'executed'
+    v = p['design']['version']
+    first = ds.publish(d['design_id'], f['user'], v)
+    second = ds.publish(d['design_id'], f['user'], v)
+    assert first == second and first['status'] == 'published'
     rows = f['q']('SELECT data_cache,semantic_query,query_source FROM adh_charts WHERE dashboard_id=%s', (f['dashboard_id'],))
     assert len(rows) == 1 and rows[0]['data_cache'] is None and rows[0]['query_source'] == 'semantic'
 
 
-def test_mysql_edit_expires_old_approval(mysql_design):
+def test_mysql_edit_expires_old_preview(mysql_design):
     f = mysql_design
     p = ds.preview(f['design']['design_id'], f['user'], f['design']['version'])
     d = p['design']
     changed = ds.edit_sql(d['design_id'], f['user'], d['version'], '0', 'SELECT 2 AS n LIMIT 2')
     assert changed['version'] > d['version'] and not changed['preview_valid']
     with pytest.raises(ds.DesignError):
-        ds.publish(d['approval_id'], f['user'])
-    row = f['q']('SELECT status FROM adh_as_bot_approvals WHERE id=%s', (d['approval_id'],), fetchone=True)
-    assert row['status'] == 'superseded'
+        ds.publish(d['design_id'], f['user'], changed['version'])
 
 
 def test_mysql_expired_preview_cannot_publish(mysql_design):
@@ -230,24 +255,25 @@ def test_mysql_expired_preview_cannot_publish(mysql_design):
     p = ds.preview(f['design']['design_id'], f['user'], f['design']['version'])
     f['write']('UPDATE adh_as_bot_dashboard_designs SET preview_expires_at=UTC_TIMESTAMP()-INTERVAL 1 SECOND WHERE id=%s', (f['design']['design_id'],))
     with pytest.raises(ds.DesignError, match='过期'):
-        ds.publish(p['design']['approval_id'], f['user'])
+        ds.publish(f['design']['design_id'], f['user'], p['design']['version'])
 
 
 def test_mysql_two_connections_publish_only_once(mysql_design):
     f = mysql_design
     p = ds.preview(f['design']['design_id'], f['user'], f['design']['version'])
+    v = p['design']['version']
     def publish():
         try:
-            return ds.publish(p['design']['approval_id'], f['user'])
+            return ds.publish(f['design']['design_id'], f['user'], v)
         except ds.DesignError as error:
             return error.code
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: publish(), range(2)))
-    assert any(isinstance(r, dict) and r['status'] == 'executed' for r in results)
+    assert any(isinstance(r, dict) and r['status'] == 'published' for r in results)
     assert len(f['q']('SELECT id FROM adh_charts WHERE dashboard_id=%s', (f['dashboard_id'],))) == 1
 
 
-def test_mysql_fault_rolls_back_chart_and_approval(mysql_design, monkeypatch):
+def test_mysql_fault_rolls_back_chart_and_design(mysql_design, monkeypatch):
     import importlib
     dashboard_service = importlib.import_module('services.dataviz.services.dashboard_service')
     f = mysql_design
@@ -258,8 +284,7 @@ def test_mysql_fault_rolls_back_chart_and_approval(mysql_design, monkeypatch):
         raise RuntimeError('模拟进程提交前故障')
     monkeypatch.setattr(dashboard_service, 'publish_design_in_transaction', fail)
     with pytest.raises(RuntimeError):
-        ds.publish(p['design']['approval_id'], f['user'])
+        ds.publish(f['design']['design_id'], f['user'], p['design']['version'])
     assert not f['q']('SELECT id FROM adh_charts WHERE dashboard_id=%s', (f['dashboard_id'],))
-    assert f['q']('SELECT status FROM adh_as_bot_approvals WHERE id=%s', (p['design']['approval_id'],), fetchone=True)['status'] == 'pending'
     monkeypatch.setattr(dashboard_service, 'publish_design_in_transaction', real)
-    assert ds.publish(p['design']['approval_id'], f['user'])['status'] == 'executed'
+    assert ds.publish(f['design']['design_id'], f['user'], p['design']['version'])['status'] == 'published'

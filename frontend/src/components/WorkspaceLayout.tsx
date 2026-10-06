@@ -4,7 +4,7 @@ import {
   MessageSquare, LogOut, Menu, Sun, Moon,
   ChevronLeft, ChevronRight, X, ChevronDown, Palette, Zap, TrendingUp, Grid3x3,
   GlassWater, Folder, UserCircle, Brain, Heart, Check, ArrowRight,
-  Clock, Gem,
+  Clock, Gem, Plus, Archive,
 } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -17,10 +17,16 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { useAuthStore } from '../stores/authStore';
 import { useThemeStore, applyTheme, type ThemeId } from '../stores/themeStore';
 import { useBrandStore } from '../stores/brandStore';
-import { useDashboardStore } from '../stores/dashboardStore';
 import { useWorkspaceStore, type Workspace } from '../stores/workspaceStore';
-import client from '../api/client';
+import { isMenuAllowed } from '../stores/permissionStore';
+import { pruneEmptySections } from '@/lib/menuUtils';
 import SectionSwitcher from './SectionSwitcher';
+import { toast } from 'sonner';
+import client from '@/api/client';
+import { Input } from '@/components/ui/input';
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
+} from '@/components/ui/dialog';
 
 const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] = [
   { id: 'dark', label: '暗色', icon: Moon, desc: '深色背景，适合长时间使用' },
@@ -34,10 +40,9 @@ const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] =
   { id: 'medical', label: '医疗平台', icon: Heart, desc: '清爽蓝绿，专业可信' },
 ];
 
-function getMenuIcon(iconName?: string): React.ComponentType<{ className?: string }> {
-  if (!iconName) return Folder;
-  const icons = LucideIcons as Record<string, any>;
-  return icons[iconName] || Folder;
+/** 将路由 key 转换为 menu_key: '/ws/3/chat' → 'workspace:chat' */
+function toMenuKey(routeKey: string): string {
+  return `workspace:${routeKey.split('/').pop()}`;
 }
 
 // ── Workspace Selector (sidebar-embedded) ─────────────────────────
@@ -68,148 +73,113 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
     navigate(module === 'workspace' ? `/ws/${ws.id}/chat` : `/${module}/${ws.id}`);
   };
 
+  // 新建工作空间(个人工作站, 随用户走; 受管理员配额限制)
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newWsName, setNewWsName] = useState('');
+  const [creating, setCreating] = useState(false);
+  const handleCreate = async () => {
+    const name = newWsName.trim();
+    if (!name) { toast.error('请输入工作空间名称'); return; }
+    setCreating(true);
+    try {
+      const { data } = await client.post('/workspaces', { name });
+      toast.success('工作空间已创建');
+      setCreateOpen(false);
+      setNewWsName('');
+      await loadWorkspaces();
+      if (data?.id) {
+        setWorkspace(data.id);
+        navigate(module === 'workspace' ? `/ws/${data.id}/chat` : `/${module}/${data.id}`);
+      }
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || '创建失败');
+    } finally {
+      setCreating(false);
+    }
+  };
+  const createDialog = (
+    <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>新建工作空间</DialogTitle>
+          <DialogDescription>工作空间是你的个人工作站，可按项目分开组织会话与资产。</DialogDescription>
+        </DialogHeader>
+        <Input
+          autoFocus aria-label="工作空间名称" placeholder="输入工作空间名称" value={newWsName}
+          onChange={e => setNewWsName(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') void handleCreate(); }}
+        />
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button>
+          <Button onClick={handleCreate} disabled={creating}>{creating ? '创建中...' : '创建'}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+
   if (collapsed) {
     return (
+      <>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button aria-label="切换工作空间" className="w-full flex items-center justify-center py-3 hover:bg-sidebar-accent/50 transition-colors">
+              <span className="text-lg">{currentWs?.icon || '📊'}</span>
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent side="right" align="start" className="w-56">
+            {workspaces.map(ws => (
+              <DropdownMenuItem key={ws.id} onClick={() => handleSwitch(ws)} className="flex items-center gap-2">
+                <span>{ws.icon}</span>
+                <span className="flex-1 truncate">{ws.name}</span>
+                {ws.id === currentWorkspaceId && <Check className="h-4 w-4 text-primary" />}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuItem onClick={() => setCreateOpen(true)} className="flex items-center gap-2">
+              <Plus className="h-4 w-4" />
+              <span className="flex-1">新建工作空间</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {createDialog}
+      </>
+    );
+  }
+
+  return (
+    <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button aria-label="切换工作空间" className="w-full flex items-center justify-center py-3 hover:bg-sidebar-accent/50 transition-colors">
-            <span className="text-lg">{currentWs?.icon || '📊'}</span>
+          <button aria-label="切换工作空间" className={`w-full min-w-0 flex items-center gap-2 px-3 py-2 hover:bg-muted/50 transition-colors ${module === 'workspace' ? 'border-b border-sidebar-border' : 'rounded-md'}`}>
+            <span className="text-lg flex-shrink-0">{currentWs?.icon || '📊'}</span>
+            <div className="flex-1 min-w-0 text-left">
+              <div className="text-sm font-medium truncate text-sidebar-foreground">
+                {currentWs?.name || '选择工作空间'}
+              </div>
+            </div>
+            <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 text-sidebar-foreground/50" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent side="right" align="start" className="w-56">
           {workspaces.map(ws => (
             <DropdownMenuItem key={ws.id} onClick={() => handleSwitch(ws)} className="flex items-center gap-2">
               <span>{ws.icon}</span>
-              <span className="flex-1 truncate">{ws.name}</span>
-              {ws.id === currentWorkspaceId && <Check className="h-4 w-4 text-primary" />}
+              <div className="flex-1 min-w-0">
+                <div className="truncate">{ws.name}</div>
+                {ws.description && (
+                  <div className="text-xs text-muted-foreground truncate">{ws.description}</div>
+                )}
+              </div>
+              {ws.id === currentWorkspaceId && <Check className="h-4 w-4 text-primary shrink-0" />}
             </DropdownMenuItem>
           ))}
+          <DropdownMenuItem onClick={() => setCreateOpen(true)} className="flex items-center gap-2">
+            <Plus className="h-4 w-4" />
+            <span className="flex-1">新建工作空间</span>
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-    );
-  }
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button aria-label="切换工作空间" className={`w-full min-w-0 flex items-center gap-2 px-3 py-2 hover:bg-muted/50 transition-colors ${module === 'workspace' ? 'border-b border-sidebar-border' : 'rounded-md'}`}>
-          <span className="text-lg flex-shrink-0">{currentWs?.icon || '📊'}</span>
-          <div className="flex-1 min-w-0 text-left">
-            <div className="text-sm font-medium truncate text-sidebar-foreground">
-              {currentWs?.name || '选择工作空间'}
-            </div>
-          </div>
-          <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 text-sidebar-foreground/50" />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent side="right" align="start" className="w-56">
-        {workspaces.map(ws => (
-          <DropdownMenuItem key={ws.id} onClick={() => handleSwitch(ws)} className="flex items-center gap-2">
-            <span>{ws.icon}</span>
-            <div className="flex-1 min-w-0">
-              <div className="truncate">{ws.name}</div>
-              {ws.description && (
-                <div className="text-xs text-muted-foreground truncate">{ws.description}</div>
-              )}
-            </div>
-            {ws.id === currentWorkspaceId && <Check className="h-4 w-4 text-primary shrink-0" />}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-// ── Dynamic Menu Tree (reuse from Layout) ─────────────────────────
-
-interface MenuTreeNodeProps {
-  node: any;
-  depth: number;
-  collapsed: boolean;
-  currentPath: string;
-  expandedGroups: Set<number>;
-  onToggle: (id: number) => void;
-  onNavigate: (path: string) => void;
-  workspaceId?: string;
-}
-
-function MenuTreeNode({
-  node, depth, collapsed, currentPath, expandedGroups, onToggle, onNavigate, workspaceId,
-}: MenuTreeNodeProps) {
-  const hasChildren = node.children && node.children.length > 0;
-  const isLeaf = !!node.page_id;
-  const isExpanded = expandedGroups.has(node.id);
-  const NodeIcon = getMenuIcon(node.icon);
-
-  if (isLeaf) {
-    const wsPrefix = workspaceId ? `/ws/${workspaceId}` : '';
-    // 菜单展示默认留在工作空间框架内（非全屏）；link_type==='screen' 的看板内页提供“播放”按钮时才进入 /screen/:id 轮播全屏。
-    const path = `${wsPrefix}/page/${node.page_id}`;
-    const isActive = currentPath === path;
-
-    return (
-      <Tooltip delayDuration={0}>
-        <TooltipTrigger asChild>
-          <button
-            onClick={() => onNavigate(path)}
-            className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors
-              ${isActive
-                ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
-                : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/30 hover:text-sidebar-foreground'
-              } ${collapsed ? 'justify-center' : ''}`}
-            style={!collapsed ? { paddingLeft: `${12 + depth * 12}px` } : undefined}
-          >
-            <NodeIcon className="h-3.5 w-3.5 flex-shrink-0" />
-            {!collapsed && <span className="truncate">{node.name}</span>}
-          </button>
-        </TooltipTrigger>
-        {collapsed && <TooltipContent side="right">{node.name}</TooltipContent>}
-      </Tooltip>
-    );
-  }
-
-  return (
-    <div>
-      <Tooltip delayDuration={0}>
-        <TooltipTrigger asChild>
-          <button
-            onClick={() => { if (!collapsed) onToggle(node.id); }}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors
-              text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground
-              ${collapsed ? 'justify-center' : ''}`}
-            style={!collapsed ? { paddingLeft: `${12 + depth * 12}px` } : undefined}
-          >
-            <NodeIcon className="h-4 w-4 flex-shrink-0" />
-            {!collapsed && (
-              <>
-                <span className="truncate flex-1 text-left">{node.name}</span>
-                {hasChildren && (
-                  <ChevronDown className={`h-3 w-3 transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
-                )}
-              </>
-            )}
-          </button>
-        </TooltipTrigger>
-        {collapsed && <TooltipContent side="right">{node.name}</TooltipContent>}
-      </Tooltip>
-      {!collapsed && hasChildren && isExpanded && (
-        <div className="space-y-0.5">
-          {node.children.map((child: any) => (
-            <MenuTreeNode
-              key={child.id}
-              node={child}
-              depth={depth + 1}
-              collapsed={false}
-              currentPath={currentPath}
-              expandedGroups={expandedGroups}
-              onToggle={onToggle}
-              onNavigate={onNavigate}
-              workspaceId={workspaceId}
-            />
-          ))}
-        </div>
-      )}
-    </div>
+      {createDialog}
+    </>
   );
 }
 
@@ -219,59 +189,32 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
   const independent = module !== 'workspace';
   const [collapsed, setCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [menuTree, setMenuTree] = useState<any[]>([]);
-  const [menuScope, setMenuScope] = useState<string>();
-  const [menuError, setMenuError] = useState('');
-  const [menuRetry, setMenuRetry] = useState(0);
-  const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
   const navigate = useNavigate();
   const location = useLocation();
   const { workspaceId } = useParams();
   const { user, logout } = useAuthStore();
   const { theme, setTheme } = useThemeStore();
   const { brand, fetchBrand } = useBrandStore();
-  const { loadDashboards } = useDashboardStore();
 
   useEffect(() => { applyTheme(theme); }, [theme]);
   useEffect(() => {
     fetchBrand();
-    if (workspaceId && !independent) loadDashboards(Number(workspaceId));
-  }, [fetchBrand, workspaceId, independent, loadDashboards]);
+  }, [fetchBrand]);
   useEffect(() => { setMobileMenuOpen(false); }, [location.pathname]);
 
-  // Fetch menu tree (workspace-scoped)
-  useEffect(() => {
-    let cancelled = false;
-    setMenuTree([]); setMenuError(''); setMenuScope(workspaceId);
-    if (workspaceId && !independent) {
-      client.get(`/admin/menu-tree?workspace_id=${workspaceId}`)
-        .then(({ data }) => {
-          if (!Array.isArray(data)) throw new Error('目录格式错误');
-          if (!cancelled) setMenuTree(data);
-        })
-        .catch(() => { if (!cancelled) setMenuError('工作空间目录加载失败'); });
-    }
-    return () => { cancelled = true; };
-  }, [workspaceId, independent, menuRetry]);
-  const visibleMenuTree = menuScope === workspaceId ? menuTree : [];
-
-  const menuItems = [
+  // 菜单可见性按权限码裁决（与 SystemLayout/DataPlatformLayout 同口径）
+  // 资产清单是工作站基础功能(随用户走), 不按权限码过滤; 一级分组下无可访问项时不渲染分组标题
+  const menuItems = pruneEmptySections([
     { section: '数据分析' },
     { key: `/ws/${workspaceId}/chat`, icon: MessageSquare, label: 'Chat 智能问答' },
     { key: `/ws/${workspaceId}/reports`, icon: Folder, label: '报表中心' },
+    { section: '工作站' },
+    { key: `/ws/${workspaceId}/assets`, icon: Archive, label: '资产清单', always: true },
     { section: '自动化' },
     { key: `/ws/${workspaceId}/scheduled`, icon: Clock, label: '任务调度' },
-  ];
+  ].filter(item => !('key' in item) || (item as any).always || isMenuAllowed(toMenuKey((item as any).key))));
 
   const currentPath = location.pathname;
-
-  const toggleGroup = (id: number) => {
-    setExpandedGroups(prev => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  };
 
   const handleNavigate = (path: string) => {
     navigate(path);
@@ -301,27 +244,6 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
         <div className="flex-1 min-h-0 overflow-hidden">
           <ScrollArea className="h-full py-2">
           <nav className="space-y-1 px-2" role="navigation" aria-label="工作空间导航">
-            {/* Dynamic menu tree */}
-            {menuError && menuScope === workspaceId && <p role="alert" className="px-2 text-xs text-destructive">{menuError}<Button variant="link" size="sm" onClick={() => setMenuRetry(v => v + 1)}>重试</Button></p>}
-            {visibleMenuTree.length > 0 && (
-              <>
-                {visibleMenuTree.map(node => (
-                  <MenuTreeNode
-                    key={node.id}
-                    node={node}
-                    depth={0}
-                    collapsed={collapsed}
-                    currentPath={currentPath}
-                    expandedGroups={expandedGroups}
-                    onToggle={toggleGroup}
-                    onNavigate={handleNavigate}
-                    workspaceId={workspaceId}
-                  />
-                ))}
-                <div className="my-1.5 mx-2 border-t border-sidebar-border" />
-              </>
-            )}
-
             {/* Static menu items */}
             {menuItems.map((item, idx) => {
               if ('section' in item) {
@@ -451,7 +373,7 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
             {independent && <>
               <span className="hidden shrink-0 font-semibold sm:inline">{brand.app_name || 'AI-DataHub'}</span>
               <span className="hidden text-muted-foreground sm:inline">/</span>
-              <span className="shrink-0 text-sm font-medium">{module === 'ask' ? '智能问数' : '数据看板'}</span>
+              <span className="shrink-0 text-sm font-medium">{module === 'ask' ? '工作空间' : '数据看板'}</span>
               <div className="min-w-0 max-w-56"><WorkspaceSelectorSidebar collapsed={false} module={module} /></div>
             </>}
           </div>

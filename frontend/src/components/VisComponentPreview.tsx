@@ -90,6 +90,26 @@ export function ShapePreview({ type, palette, cfg }: { type: string; palette: st
           backgroundImage: cfg.gradient ? `linear-gradient(180deg, ${c(i)}, ${c(i + 1)})` : undefined,
         }} />)}
       </div>;
+    case 'bar_race':
+      // 竞速条形图示意:横向条形长短错落(逐帧滑动换位)
+      return <div className="flex h-16 flex-col justify-center gap-1 p-1">
+        {[[92, 0], [70, 1], [48, 2], [30, 3]].map(([w, i]) => (
+          <span key={i} style={{ width: `${w}%`, height: 8, background: c(i), borderRadius: cfg.borderRadius ?? 3 }} />
+        ))}
+      </div>;
+    case 'timeline_play':
+      // 时序播放示意:生长折线 + 播放按钮
+      return <div className="relative h-16 w-full">
+        <svg viewBox="0 0 100 40" className="h-16 w-full" preserveAspectRatio="none">
+          <polyline points={line} fill="none" stroke={c(0)} strokeWidth={cfg.lineWidth || 2} />
+          <circle cx="100" cy="9" r="3" fill={c(0)} />
+        </svg>
+        <span className="absolute inset-0 flex items-center justify-center">
+          <span className="flex h-6 w-6 items-center justify-center rounded-full" style={{ background: c(1) }}>
+            <svg viewBox="0 0 10 10" className="h-3 w-3"><polygon points="2,1 9,5 2,9" fill="#fff" /></svg>
+          </span>
+        </span>
+      </div>;
     default:
       return <div className="flex h-16 items-center justify-center text-xs text-muted-foreground">{type || '通用样式'}</div>;
   }

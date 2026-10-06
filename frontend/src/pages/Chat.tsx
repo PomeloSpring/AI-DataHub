@@ -5,7 +5,7 @@ import {
   CheckCircle, BarChart3, Table, Code, Clock,
   Plus, MessageSquare, Trash, TrendingUp, X, RefreshCw,
   MoreHorizontal, Pencil, Check, ThumbsUp, ThumbsDown, Cpu,
-  Loader2, Maximize2, Minimize2, Paperclip, FileText, Box,
+  Loader2, Maximize2, Minimize2, Paperclip, FileText, Box, FolderOpen, Save, ClipboardList,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -21,13 +21,20 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useChatStore } from '../stores/chatStore';
-import type { AttachmentInfo } from '../stores/chatStore';
+import type { AttachmentInfo, PendingAttachment } from '../stores/chatStore';
+import { ATTACH_MAX_FILES, validateLocalAttachment } from '../stores/chatStore';
 import ChartPicker from '../components/ChartPicker';
 import { CHART_TYPES } from '../components/DashboardChart';
 import MarkdownWithCharts from '../components/MarkdownWithCharts';
-import ProcessTimeline from '../components/ProcessTimeline';
+import ConversationDesignSection from '../components/ConversationDesignSection';
+import ExecutionProcess from '../components/ExecutionProcess';
 import InlineDetails from '../components/InlineDetails';
 import Model3DViewer from '../components/chat/Model3DViewer';
+import SessionFilesPanel from '../components/chat/SessionFilesPanel';
+import DataGrid from '../components/DataGrid';
+import DataProfileCard from '../components/DataProfileCard';
+import SqlCard from '../components/SqlCard';
+import { toCsv } from '../lib/dataGrid';
 import client from '../api/client';
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -47,11 +54,14 @@ const THEME_OPTIONS: { id: string; label: string }[] = [
   { id: 'medical', label: '医疗' },
 ];
 
-// Attachment file URLs require auth; append token for <img>/three.js loaders
-function attUrl(att: AttachmentInfo): string {
-  if (!att.url) return '';
+// 附件 URL:待发/刚发送的本轮附件用本地 blob 预览;
+// 历史消息附件按工作区相对路径走 session-file 伺服(带 token,供 <img>/three.js 加载)
+function attUrl(att: AttachmentInfo, conversationId?: number | null): string {
+  if (att.blobUrl) return att.blobUrl;
+  if (!att.path || !conversationId) return '';
   const token = localStorage.getItem('token');
-  return token ? `${att.url}?token=${encodeURIComponent(token)}` : att.url;
+  const base = `/api/chat/session-file?conversation_id=${conversationId}&path=${encodeURIComponent(att.path)}`;
+  return token ? `${base}&token=${encodeURIComponent(token)}` : base;
 }
 
 // 图表类型标签与看板共用同一套 CHART_TYPES(前置为历史消息的旧类型别名,仅用于旧消息回放)
@@ -70,9 +80,11 @@ export default function Chat() {
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [focusMode, setFocusMode] = useState(false);
-  const [pendingAtts, setPendingAtts] = useState<AttachmentInfo[]>([]);
-  const [uploading, setUploading] = useState(false);
+  const [pendingAtts, setPendingAtts] = useState<PendingAttachment[]>([]);
+  // 历史附件文件已随会话清理(session-file 404/无路径)的标记,键含会话与位置
+  const [brokenAtts, setBrokenAtts] = useState<Record<string, boolean>>({});
   const [preview3d, setPreview3d] = useState<AttachmentInfo | null>(null);
+  const [filesOpen, setFilesOpen] = useState(false);
   const [recommendedQuestions, setRecommendedQuestions] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -82,13 +94,12 @@ export default function Chat() {
     pipelineMode: chatPipelineMode,
     selectedWorkspaceId, setSelectedWorkspaceId, loadWorkspaceConfig,
     executionLayer, selectedModelRef, loadExecutionLayer, setSelectedModelRef,
-    wakers, selectedWakerKey, loadWakers,
+    asBots, loadAsBots,
     reportTheme, setReportTheme,
     loadConversations, loadDatasources, loadLLMModels, loadSystemConfig,
     setSelectedDsId, setSelectedModelId, setPipelineMode,
     startNewConversation, switchConversation, deleteConversation, renameConversation,
     sendMessage, cancelMessage, respondToAsk, cancelAsk, updateMessageFeedback, setViewMode, analyzeData, predictData, clear,
-    uploadAttachment,
   } = useChatStore();
   // 加载推荐问题（Chat 空白时展示）
   useEffect(() => {
@@ -102,8 +113,29 @@ export default function Chat() {
       .catch(() => { /* 静默:无推荐问题时使用默认 */ });
   }, []);
 
+  // 首页「试试这样问」跳转带入的问题:挂载时消费一次并预填输入框
+  useEffect(() => {
+    const q = sessionStorage.getItem('home_question');
+    if (q) {
+      sessionStorage.removeItem('home_question');
+      setInput(q);
+      inputRef.current?.focus();
+    }
+  }, []);
+
+  // AS-BOT 面板「在工作空间中打开该会话」带入的会话 id:挂载时消费一次并切换到该会话
+  useEffect(() => {
+    const raw = sessionStorage.getItem('asbot_open_conversation');
+    if (!raw) return;
+    sessionStorage.removeItem('asbot_open_conversation');
+    const convId = Number(raw);
+    if (convId) void switchConversation(convId);
+  }, []);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const thinkingRef = useRef<HTMLDivElement>(null);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
+  // 用户是否停留在底部: 上滚查看历史时不打断, 回到底部后恢复自动跟随。
+  const stickToBottomRef = useRef(true);
 
   const prevMsgCountRef = useRef(0);
   const prevConvIdRef = useRef<number | null | undefined>(undefined);
@@ -175,37 +207,52 @@ export default function Chat() {
     }
   }, [urlWorkspaceId]);
 
-  // 执行层与模型候选、Waker 清单:跟随工作空间变化刷新(不依赖 URL 参数,
+  // 执行层与模型候选、AS-BOT 清单:跟随工作空间变化刷新(不依赖 URL 参数,
   // 覆盖同工作空间重新进入 Chat 等场景,避免候选停留在空/旧层)
   useEffect(() => {
     if (selectedWorkspaceId) {
       loadExecutionLayer(selectedWorkspaceId);
-      loadWakers(selectedWorkspaceId);
+      loadAsBots(selectedWorkspaceId);
     }
-  }, [selectedWorkspaceId, loadExecutionLayer, loadWakers]);
+  }, [selectedWorkspaceId, loadExecutionLayer, loadAsBots]);
 
-  // Auto-scroll: new messages or streaming thinking content
-  const lastThinking = messages.length > 0 ? messages[messages.length - 1]?.thinking || '' : '';
+  // 跟踪用户是否贴底(基于 Radix ScrollArea 的 viewport), 用于决定流式期间是否自动跟随。
+  useEffect(() => {
+    const viewport = scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null;
+    if (!viewport) return;
+    const onScroll = () => {
+      stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 80;
+    };
+    viewport.addEventListener('scroll', onScroll, { passive: true });
+    return () => viewport.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // Auto-scroll: 新消息 / 流式过程(思考、工具调用、正文)增长时跟随到底部。
+  const lastMsg = messages[messages.length - 1];
+  const streamSig = lastMsg
+    ? `${(lastMsg.thinking || '').length}:${(lastMsg.content || '').length}:${(lastMsg.reply || '').length}:${lastMsg.process?.length || 0}:${lastMsg.tool_calls?.length || 0}`
+    : '';
   useEffect(() => {
     const count = messages.length;
     const convChanged = currentConvId !== prevConvIdRef.current;
+    const newMessage = count > prevMsgCountRef.current;
     if (convChanged) {
-      // 打开/切换历史会话: 整段消息被替换, 平滑滚动会从顶部一路划到底 → 直接瞬时定位到底部。
+      // 打开/切换历史会话: 整段消息被替换 → 直接瞬时定位到底部, 并恢复自动跟随。
+      stickToBottomRef.current = true;
       messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
       // 图表/图片异步渲染撑高容器后再补一次瞬时定位, 确保真正贴底。
       requestAnimationFrame(() => messagesEndRef.current?.scrollIntoView({ behavior: 'auto' }));
-    } else if (count > prevMsgCountRef.current || loading) {
+    } else if (newMessage) {
+      // 自己发出的新消息 → 强制跟随到底部。
+      stickToBottomRef.current = true;
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    } else if (loading && stickToBottomRef.current) {
+      // 流式内容增长 → 仅当用户仍停留在底部时跟随(瞬时, 避免 smooth 动画堆积)。
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
     }
     prevMsgCountRef.current = count;
     prevConvIdRef.current = currentConvId;
-  }, [messages.length, loading, currentConvId]);
-
-  useEffect(() => {
-    if (lastThinking && thinkingRef.current) {
-      thinkingRef.current.scrollTop = thinkingRef.current.scrollHeight;
-    }
-  }, [lastThinking]);
+  }, [messages.length, loading, currentConvId, streamSig]);
 
   const handleSend = () => {
     if ((!input.trim() && pendingAtts.length === 0) || loading) return;
@@ -271,18 +318,55 @@ export default function Chat() {
     );
   };
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     e.target.value = '';
     if (files.length === 0) return;
-    setUploading(true);
+    // 本地校验 + blob 预览;文件随消息以 multipart 上传,服务端落盘到会话工作区
+    const next = [...pendingAtts];
+    for (const f of files) {
+      if (next.length >= ATTACH_MAX_FILES) {
+        toast.error(`单次最多携带 ${ATTACH_MAX_FILES} 个附件`);
+        break;
+      }
+      const v = validateLocalAttachment(f);
+      if ('error' in v) {
+        toast.error(v.error);
+        continue;
+      }
+      next.push({ file: f, filename: f.name, category: v.category, size: f.size, blobUrl: URL.createObjectURL(f) });
+    }
+    setPendingAtts(next);
+  };
+
+  const removePendingAtt = (att: PendingAttachment) => {
+    URL.revokeObjectURL(att.blobUrl);
+    setPendingAtts(prev => prev.filter(a => a.blobUrl !== att.blobUrl));
+  };
+
+  // 图上下钻:点击图表元素 → 预填下钻问题到输入框(用户确认后发送)
+  const handleDrill = (q: string) => {
+    setInput(q);
+    inputRef.current?.focus();
+  };
+
+  // 结果表保存到会话工作区(落盘 uploads/ 的 xlsx,可在文件面板查看/归档)
+  const [savingResult, setSavingResult] = useState(false);
+  const saveResultToWorkspace = async (result: any, n: number) => {
+    if (!currentConvId || !result?.columns?.length) return;
+    setSavingResult(true);
     try {
-      const atts = await uploadAttachment(files);
-      setPendingAtts(prev => [...prev, ...atts]);
-    } catch (err: any) {
-      toast.error(err?.response?.data?.detail || '附件上传失败');
+      const { data } = await client.post('/chat/session-file/table', {
+        conversation_id: currentConvId,
+        filename: `查询结果_${n}.xlsx`,
+        columns: result.columns,
+        rows: result.rows || [],
+      });
+      toast.success(`已保存到会话工作区 ${data.filename}(文件面板可查看/归档)`);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || '保存失败,请稍后重试');
     } finally {
-      setUploading(false);
+      setSavingResult(false);
     }
   };
 
@@ -396,7 +480,7 @@ export default function Chat() {
           <div className="flex shrink-0 items-center gap-2">
             {!focusMode && <Button className="md:hidden" variant="ghost" size="icon" aria-label="打开会话列表" onClick={() => setConversationsOpen(true)}><MessageSquare className="h-4 w-4" /></Button>}
             <Bot className="h-6 w-6 text-primary" />
-            <h1 className="text-lg font-bold">{independent ? '智能问数' : 'Chat 数据分析'}</h1>
+            <h1 className="text-lg font-bold">{independent ? '工作空间' : 'Chat 数据分析'}</h1>
           </div>
           <div className="flex items-center gap-2">
             {/* Mode Selector — 全面转向 Qoder 执行层 */}
@@ -441,17 +525,17 @@ export default function Chat() {
             })()}
 
             {/* 模型选择器:
-                - 有 Waker 时: 候选 = Waker 的可用模型; >1 才展示 (=1 自动选中 / 留空用执行层默认)
-                - 无 Waker 时: 回退执行层模型候选(原行为) */}
+                - 有 AS-BOT 时: 候选 = AS-BOT 的可用模型; >1 才展示 (=1 自动选中 / 留空用执行层默认)
+                - 无 AS-BOT 时: 回退执行层模型候选(原行为) */}
             {(() => {
-              const waker = wakers.length > 0 ? wakers[0] : null;
-              if (wakers.length > 0 && waker) {
-                const wm = waker.models || [];
+              const asBot = asBots.length > 0 ? asBots[0] : null;
+              if (asBots.length > 0 && asBot) {
+                const wm = asBot.models || [];
                 if (wm.length <= 1) return null;
                 const cur = selectedModelRef && wm.includes(selectedModelRef) ? selectedModelRef : wm[0];
                 return (
-                  <Select key={`waker-model-${waker.waker_key}`} value={cur} onValueChange={(v) => setSelectedModelRef(v)}>
-                    <SelectTrigger className="w-[200px] h-8" title={`Waker「${waker.display_name || waker.name}」可用模型`}>
+                  <Select key={`asBot-model-${asBot.as_bot_key}`} value={cur} onValueChange={(v) => setSelectedModelRef(v)}>
+                    <SelectTrigger className="w-[200px] h-8" title={`AS-BOT「${asBot.display_name || asBot.name}」可用模型`}>
                       <Cpu className="h-3.5 w-3.5 mr-1.5" />
                       <SelectValue placeholder="选择模型" />
                     </SelectTrigger>
@@ -461,7 +545,7 @@ export default function Chat() {
                   </Select>
                 );
               }
-              // 无 Waker 配置: 回退执行层模型选择
+              // 无 AS-BOT 配置: 回退执行层模型选择
               return (
                 <Select
                   key={`exec-model-${selectedWorkspaceId}`}
@@ -510,7 +594,7 @@ export default function Chat() {
         </div>
 
         {/* Messages area */}
-        <ScrollArea className="flex-1 min-h-0 p-6">
+        <ScrollArea ref={scrollAreaRef} className="flex-1 min-h-0 p-6">
           {messages.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
               <Zap className="h-14 w-14 text-primary mb-5" />
@@ -539,23 +623,39 @@ export default function Chat() {
                 {msg.role === 'user' ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
               </div>
 
-              <div className={`max-w-[96%] min-w-0 overflow-hidden ${msg.role === 'user' ? 'max-w-[70%]' : ''}`}>
+              {/* 卡片宽度固定为容器的固定比例(不随内容变化)：流式思考与最终答案等宽，
+                  避免流式期被内容撑到全屏、答案出来又缩窄的宽度跳变；随窗口等比例缩放。 */}
+              <div className={`min-w-0 overflow-hidden ${msg.role === 'user' ? 'max-w-[70%]' : 'w-[70%]'}`}>
                 {msg.role === 'user' && (
                   <div className="bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-4 py-3">
                     {msg.attachments && msg.attachments.length > 0 && (
                       <div className="flex flex-wrap gap-2 mb-2">
-                        {msg.attachments.map(att => (
-                          att.category === 'image' ? (
+                        {msg.attachments.map((att, ai) => {
+                          const key = `${currentConvId}:${idx}:${ai}`;
+                          const url = attUrl(att, currentConvId);
+                          const gone = brokenAtts[key] || !url;
+                          if (gone) {
+                            // 文件已随会话清理(或旧记录无工作区路径):显式标注,不回退裸 ID
+                            return (
+                              <div key={key} className="flex items-center gap-1.5 bg-white/15 rounded-md px-2 py-1 text-xs opacity-80" title={att.filename}>
+                                <FileText className="h-3.5 w-3.5" />
+                                <span className="max-w-[140px] truncate">{att.filename}</span>
+                                <span className="opacity-70">附件已随会话清理</span>
+                              </div>
+                            );
+                          }
+                          return att.category === 'image' ? (
                             <img
-                              key={att.id}
-                              src={attUrl(att)}
+                              key={key}
+                              src={url}
                               alt={att.filename}
                               className="max-h-40 max-w-[200px] rounded-md object-contain bg-white/10 cursor-pointer"
-                              onClick={() => window.open(attUrl(att), '_blank')}
+                              onClick={() => window.open(url, '_blank')}
+                              onError={() => setBrokenAtts(prev => ({ ...prev, [key]: true }))}
                             />
                           ) : (
                             <div
-                              key={att.id}
+                              key={key}
                               className={`flex items-center gap-1.5 bg-white/15 rounded-md px-2 py-1 text-xs ${att.category === 'model3d' ? 'cursor-pointer hover:bg-white/25' : ''}`}
                               onClick={att.category === 'model3d' ? () => setPreview3d(att) : undefined}
                               title={att.category === 'model3d' ? '点击预览 3D 模型' : att.filename}
@@ -564,8 +664,8 @@ export default function Chat() {
                               <span className="max-w-[140px] truncate">{att.filename}</span>
                               {att.category === 'model3d' && <span className="opacity-70">预览</span>}
                             </div>
-                          )
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                     {msg.content}
@@ -582,8 +682,9 @@ export default function Chat() {
                       </div>
                     )}
 
-                    {/* 执行过程:思考与工具调用按实际发生顺序穿插展示 */}
-                    <ProcessTimeline
+                    {/* 执行过程:思考与工具调用收敛进限高窗口, 执行中自动跟随、结束自动折叠 */}
+                    <ExecutionProcess
+                      conversationId={currentConvId}
                       process={msg.process}
                       toolCalls={msg.tool_calls}
                       progressStages={msg.progressStages}
@@ -645,7 +746,7 @@ export default function Chat() {
                     {/* Agent/执行层最终回复(无 SQL 结果,如 qoder 执行层,含内嵌图表块)+ 赞踩打标 */}
                     {msg.reply && !msg.sql && !msg.error && msg.intent === 'agent' && (
                       <>
-                        <MarkdownWithCharts text={msg.reply} conversationId={currentConvId} />
+                        <MarkdownWithCharts text={msg.reply} conversationId={currentConvId} onDrill={handleDrill} />
                         <div className="flex gap-2 mt-1 flex-wrap items-center">{renderFeedback(idx, msg)}</div>
                       </>
                     )}
@@ -737,6 +838,7 @@ export default function Chat() {
                               <TabsList>
                                 <TabsTrigger value="chart"><BarChart3 className="h-4 w-4 mr-1" />图表</TabsTrigger>
                                 <TabsTrigger value="table"><Table className="h-4 w-4 mr-1" />明细</TabsTrigger>
+                                <TabsTrigger value="profile"><ClipboardList className="h-4 w-4 mr-1" />画像</TabsTrigger>
                                 <TabsTrigger value="sql"><Code className="h-4 w-4 mr-1" />SQL</TabsTrigger>
                               </TabsList>
                             </Tabs>
@@ -744,34 +846,21 @@ export default function Chat() {
                         )}
 
                         {msg.viewMode === 'chart' && msg.result && !msg.result.error && (
-                          <ChartPicker data={msg.result} defaultType={msg.chart_type} />
+                          <ChartPicker data={msg.result} defaultType={msg.chart_type} onDrill={handleDrill} />
                         )}
                         {msg.viewMode === 'table' && msg.result && !msg.result.error && (
-                          <div className="overflow-auto max-h-[400px]">
-                            <table className="w-full text-xs">
-                              <thead>
-                                <tr className="border-b bg-muted/50">
-                                  {msg.result.columns?.map((c: string) => (
-                                    <th key={c} className="h-8 px-3 text-left align-middle font-medium text-muted-foreground">{c}</th>
-                                  ))}
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {msg.result.rows?.slice(0, 50).map((row: any, i: number) => (
-                                  <tr key={i} className="border-b hover:bg-muted/50">
-                                    {msg.result.columns?.map((c: string) => (
-                                      <td key={c} className="px-3 py-1.5">{String(row[c] ?? '')}</td>
-                                    ))}
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
+                          <DataGrid
+                            columns={msg.result.columns || []}
+                            rows={msg.result.rows || []}
+                            height={400}
+                            filename={`chatbi_${idx + 1}`}
+                          />
+                        )}
+                        {msg.viewMode === 'profile' && msg.result && !msg.result.error && (
+                          <DataProfileCard columns={msg.result.columns || []} rows={msg.result.rows || []} />
                         )}
                         {msg.viewMode === 'sql' && (
-                          <pre className="p-4 bg-muted text-foreground rounded-lg border text-xs leading-relaxed overflow-auto max-h-[400px] font-mono">
-                            {msg.sql}
-                          </pre>
+                          <SqlCard code={msg.sql || ''} maxHeight={400} />
                         )}
 
                         {!msg.result && !msg.error && (
@@ -786,22 +875,7 @@ export default function Chat() {
                             <Button variant="outline" size="sm" onClick={() => {
                               const { columns, rows } = msg.result;
                               if (!columns || !rows) return;
-                              // Build CSV content
-                              const csvHeader = columns.join(',');
-                              const csvRows = rows.map((row: any) =>
-                                columns.map((col: string) => {
-                                  const val = row[col];
-                                  if (val === null || val === undefined) return '';
-                                  const str = String(val);
-                                  // Escape quotes and wrap in quotes if contains comma/newline/quote
-                                  if (str.includes(',') || str.includes('\n') || str.includes('"')) {
-                                    return `"${str.replace(/"/g, '""')}"`;
-                                  }
-                                  return str;
-                                }).join(',')
-                              );
-                              const csvContent = '﻿' + csvHeader + '\n' + csvRows.join('\n');
-                              const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                              const blob = new Blob([toCsv(columns, rows)], { type: 'text/csv;charset=utf-8;' });
                               const url = URL.createObjectURL(blob);
                               const a = document.createElement('a');
                               a.href = url;
@@ -810,6 +884,11 @@ export default function Chat() {
                               URL.revokeObjectURL(url);
                             }}>
                               <Download className="h-4 w-4 mr-1" />导出
+                            </Button>
+                            <Button variant="outline" size="sm" disabled={savingResult || !currentConvId}
+                              title={currentConvId ? '把完整结果保存为会话工作区 xlsx 文件(随会话清理,可归档收藏)' : '发送消息后可保存'}
+                              onClick={() => saveResultToWorkspace(msg.result, idx + 1)}>
+                              <Save className="h-4 w-4 mr-1" />存为工作区
                             </Button>
                             <Button variant="outline" size="sm" disabled={msg.analyzing}
                               onClick={() => analyzeData(idx, msg.brief || '分析这些数据')}>
@@ -866,6 +945,14 @@ export default function Chat() {
             </div>
           ))}
 
+          {/* 会话关联的仪表盘设计（与 AS-BOT 侧栏共用同一实现，入口不同、体验一致） */}
+          <ConversationDesignSection
+            conversationId={currentConvId}
+            refreshSignal={messages.length}
+            disabled={loading}
+            onContinue={text => { void sendMessage(text); }}
+          />
+
           {/* 继续探索 — 基于本轮上文由模型推断的追问(回答完成后异步回填);无内容则不展示 */}
           {!loading && messages.length > 0 && messages[messages.length - 1]?.role === 'assistant'
             && (messages[messages.length - 1]?.followups?.length ?? 0) > 0 && (
@@ -906,7 +993,7 @@ export default function Chat() {
             {pendingAtts.length > 0 && (
               <div className="flex items-center gap-2 mb-2 flex-wrap">
                 {pendingAtts.map(att => (
-                  <div key={att.id} className="flex items-center gap-1.5 border rounded-lg px-2 py-1 bg-muted/50">
+                  <div key={att.blobUrl} className="flex items-center gap-1.5 border rounded-lg px-2 py-1 bg-muted/50">
                     {att.category === 'image' ? (
                       <img src={attUrl(att)} alt={att.filename} className="h-9 w-9 object-cover rounded" />
                     ) : att.category === 'model3d' ? (
@@ -918,7 +1005,7 @@ export default function Chat() {
                     <Badge variant="secondary" className="text-[10px] px-1 py-0">{CATEGORY_LABELS[att.category] || att.category}</Badge>
                     <button
                       className="text-muted-foreground hover:text-destructive"
-                      onClick={() => setPendingAtts(prev => prev.filter(a => a.id !== att.id))}
+                      onClick={() => removePendingAtt(att)}
                     >
                       <X className="h-3.5 w-3.5" />
                     </button>
@@ -936,10 +1023,15 @@ export default function Chat() {
                 accept=".png,.jpg,.jpeg,.gif,.webp,.csv,.xlsx,.pdf,.md,.txt,.docx,.obj,.glb,.stl"
                 onChange={handleFileSelect}
               />
-              <Button variant="outline" size="icon" className="flex-shrink-0" disabled={loading || uploading}
-                title="上传附件(图片/表格/文档/3D 模型)"
+              <Button variant="outline" size="icon" className="flex-shrink-0" disabled={loading}
+                title="上传附件(图片/表格/文档/3D 模型,随消息发送并存入会话工作区)"
                 onClick={() => fileInputRef.current?.click()}>
-                {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
+                <Paperclip className="h-4 w-4" />
+              </Button>
+              <Button variant="outline" size="icon" className="flex-shrink-0" disabled={!currentConvId}
+                title={currentConvId ? '会话工作区文件(预览/下载/归档)' : '发送消息后可查看会话文件'}
+                onClick={() => setFilesOpen(true)}>
+                <FolderOpen className="h-4 w-4" />
               </Button>
               <Input
                 ref={inputRef}
@@ -970,9 +1062,17 @@ export default function Chat() {
           <DialogHeader>
             <DialogTitle>{preview3d?.filename}</DialogTitle>
           </DialogHeader>
-          {preview3d && <Model3DViewer url={attUrl(preview3d)} filename={preview3d.filename} />}
+          {preview3d && <Model3DViewer url={attUrl(preview3d, currentConvId)} filename={preview3d.filename} />}
         </DialogContent>
       </Dialog>
+
+      {/* 会话工作区文件面板 */}
+      <SessionFilesPanel
+        open={filesOpen}
+        onClose={() => setFilesOpen(false)}
+        workspaceId={selectedWorkspaceId}
+        conversationId={currentConvId}
+      />
     </div>
   );
 }

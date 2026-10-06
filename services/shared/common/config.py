@@ -82,7 +82,8 @@ ADH_SECRET_KEY = os.getenv("ADH_SECRET_KEY", os.getenv("CHATBI_SECRET_KEY", ""))
 ADH_DEFAULT_ADMIN_PASSWORD = os.getenv("ADH_DEFAULT_ADMIN_PASSWORD", "")
 
 # ── 对象存储 (S3 兼容: MinIO / AWS S3 / 阿里云 OSS 等) ──────────
-# 用于聊天附件等文件存储,替代本地磁盘,支持分布式多实例共享
+# 仅用于归档资产(工作空间资产清单)文件托管,支持分布式多实例共享;
+# 聊天附件是会话工作区文件(ADH_WORKSPACES_DIR),不走对象存储
 OBJECT_STORAGE_ENDPOINT = os.getenv("OBJECT_STORAGE_ENDPOINT", "")  # 如 http://minio:9000
 OBJECT_STORAGE_ACCESS_KEY = os.getenv("OBJECT_STORAGE_ACCESS_KEY", "")
 OBJECT_STORAGE_SECRET_KEY = os.getenv("OBJECT_STORAGE_SECRET_KEY", "")
@@ -92,7 +93,10 @@ OBJECT_STORAGE_REGION = os.getenv("OBJECT_STORAGE_REGION", "")
 OBJECT_STORAGE_ENABLED = bool(OBJECT_STORAGE_ENDPOINT and OBJECT_STORAGE_ACCESS_KEY)
 # 本地回退目录(仅 OBJECT_STORAGE_ENABLED=False 时生效)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-ADH_UPLOAD_DIR = os.getenv("ADH_UPLOAD_DIR", str(_PROJECT_ROOT / "data" / "chat_attachments"))
+# 项目根锚点(仓库根): 供执行层等把相对路径配置解析为绝对路径,
+# 使配置随代码库迁移/容器部署保持有效(不写死机器绝对路径)。
+PROJECT_ROOT = _PROJECT_ROOT
+ADH_OBJECT_FALLBACK_DIR = os.getenv("ADH_OBJECT_FALLBACK_DIR", str(_PROJECT_ROOT / "data" / "object_storage"))
 
 # ── Agent 工作空间沙箱根目录(Docker 部署时挂载 named volume) ─────
 ADH_WORKSPACES_DIR = os.getenv("ADH_WORKSPACES_DIR", str(_PROJECT_ROOT / "data" / "workspaces"))
@@ -129,8 +133,7 @@ SERVICE_PORTS = {
     "dataviz": 8004,
     "datacatalog": 8005,
     "authservice": 8006,
-    "graphservice": 8011,
-    "semanticservice": 8012,
+    "semhub": 8012,
 }
 
 MCP_PORTS = {
@@ -165,7 +168,7 @@ ENGINE_TIMEOUT = int(os.getenv("ENGINE_TIMEOUT", "60"))
 ENGINE_ENABLED = os.getenv("ENGINE_ENABLED", "true").lower() == "true"
 
 # ══════════════════════════════════════════════════════════════════════════
-# SemanticLayer — semanticservice (:8012) 声明式查询入口 (ChatBI/大屏同源)
+# SemanticLayer — semhub (:8012) 声明式查询入口 (ChatBI/大屏同源)
 # ══════════════════════════════════════════════════════════════════════════
 
 SEMANTIC_SERVICE_URL = os.getenv("SEMANTIC_SERVICE_URL", "http://localhost:8012")

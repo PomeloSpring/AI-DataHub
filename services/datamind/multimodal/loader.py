@@ -1,186 +1,128 @@
-"""Attachment loader — 附件元数据加载与多模态 content blocks 构建.
+"""Attachment loader — 会话工作区附件文件的落盘、解析与多模态 content blocks 构建.
 
-将 adh_chat_attachments 记录转换为可注入 Anthropic messages 的
-content blocks(图片 base64 block / 表格与文档解析文本 block)。
-
-存储后端透明: 通过 ObjectStorage 抽象层,自动适配对象存储或本地磁盘。
+附件即会话工作区文件(uploads/ 子目录下),无独立附件存储与元数据表:
+- 随消息上传的文件经 write_upload_file 落盘,派生图经 save_derived_file 写回;
+- 引用与解析一律经 resolve_workspace_file 在工作区内解析(防目录穿越/符号链接逃逸);
+- 生命周期随会话目录清理,历史消息里以工作区相对路径引用。
 """
 
 import base64
-import json
 import logging
 import os
-import tempfile
-import uuid
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 # Anthropic 单张图片上限 5MB,超限自动压缩
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
+# 附件落盘子目录(相对会话工作区)
+UPLOADS_SUBDIR = "uploads"
 
-def _get_storage():
-    from services.shared.common.object_storage import get_object_storage
-    return get_object_storage()
-
-
-def _resolve_file_bytes(storage_path: str, storage_type: str = "local") -> bytes | None:
-    """根据 storage_type 读取文件内容为字节,返回 None 表示文件不存在."""
-    storage = _get_storage()
-    if storage_type == "object" and storage.is_object_storage:
-        return storage.download_bytes(storage_path)
-    # 本地模式(或对象存储不可用时的回退)
-    if os.path.exists(storage_path):
-        with open(storage_path, "rb") as f:
-            return f.read()
-    # 尝试作为 object key 回退
-    if storage.is_object_storage:
-        return storage.download_bytes(storage_path)
-    return None
+# 会话文件引用允许的前导前缀(与 /api/chat/session-file 伺服口径一致)
+_PATH_PREFIXES = ("/workspace/", "/workspace", "workspace/", "./", "/")
 
 
-def _resolve_local_path(storage_path: str, storage_type: str = "local") -> str | None:
-    """获取本地可用的文件路径;对象存储时下载到临时文件并返回路径."""
-    storage = _get_storage()
-    if storage_type == "object" and storage.is_object_storage:
-        data = storage.download_bytes(storage_path)
-        if data is None:
-            return None
-        # 写入临时文件供解析器使用
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.basename(storage_path))
-        tmp.write(data)
-        tmp.close()
-        return tmp.name
-    if os.path.exists(storage_path):
-        return storage_path
-    return None
+def normalize_rel_path(rel_path: str) -> str:
+    """剥离 /workspace/ 等前缀,返回工作区相对路径(不含前导斜杠)."""
+    rel = (rel_path or "").strip()
+    for prefix in _PATH_PREFIXES:
+        if rel.startswith(prefix):
+            rel = rel[len(prefix):]
+            break
+    return rel.lstrip("/")
 
 
-def load_attachments(att_ids: list[str], user_id: int = 0) -> list[dict]:
-    """按 ID 批量加载附件元数据(校验归属).
+def resolve_workspace_file(workspace_dir, rel_path) -> Path:
+    """在会话工作区内解析文件路径,防目录穿越/符号链接逃逸.
 
-    Args:
-        att_ids: 附件 ID 列表
-        user_id: 非 0 时仅返回该用户的附件
+    不做存在性检查(由调用方决定 404/报错文案);非法/缺失路径抛 ValueError。
     """
-    if not att_ids:
-        return []
-    from services.shared.common.db.metadata_db import get_metadata_conn
-
-    conn = get_metadata_conn()
-    try:
-        with conn.cursor() as cur:
-            placeholders = ",".join(["%s"] * len(att_ids))
-            sql = (
-                "SELECT id, user_id, workspace_id, filename, mime_type, category, "
-                "storage_path, storage_type, size, parsed_meta FROM adh_chat_attachments "
-                f"WHERE id IN ({placeholders})"
-            )
-            params = list(att_ids)
-            if user_id:
-                sql += " AND user_id = %s"
-                params.append(user_id)
-            cur.execute(sql, params)
-            rows = cur.fetchall() or []
-    finally:
-        conn.close()
-
-    result = []
-    for r in rows:
-        meta = r.get("parsed_meta")
-        if isinstance(meta, str) and meta:
-            try:
-                meta = json.loads(meta)
-            except json.JSONDecodeError:
-                meta = None
-        r["parsed_meta"] = meta
-        result.append(r)
-    return result
+    ws_dir = Path(workspace_dir).resolve()
+    rel = normalize_rel_path(rel_path)
+    if not rel:
+        raise ValueError("缺少文件路径")
+    target = (ws_dir / rel).resolve()
+    if target != ws_dir and ws_dir not in target.parents:
+        raise ValueError("非法文件路径")
+    # 逐级拒绝符号链接逃逸(与会话目录守卫一致)
+    for p in [target, *target.parents]:
+        if p == ws_dir:
+            break
+        if p.is_symlink():
+            raise ValueError("非法文件路径")
+    return target
 
 
-def _update_parsed_meta(att_id: str, meta: dict) -> None:
-    from services.shared.common.db.metadata_db import get_metadata_conn
+def write_upload_file(workspace_dir, filename: str, data: bytes) -> dict:
+    """把上传/派生文件写入会话工作区 uploads/,重名自动去重.
 
-    try:
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE adh_chat_attachments SET parsed_meta = %s WHERE id = %s",
-                    (json.dumps(meta, ensure_ascii=False, default=str), att_id),
-                )
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.warning("Update parsed_meta failed (%s): %s", att_id, e)
-
-
-def save_derived_attachment(source_att: dict, img_bytes: bytes, filename: str, meta: dict = None) -> dict:
-    """保存派生图像(OpenCV 处理产物)为新附件记录,返回附件行 dict."""
+    返回 {filename, category, path(工作区相对), size};
+    文件名非法/类型不支持抛 ValueError。写入沿用 O_EXCL|O_NOFOLLOW 安全落盘,
+    root 下降权到 nobody(与会话工作区文件属主一致)。
+    """
     from services.datamind.multimodal import classify_extension
-    from services.shared.common.db.metadata_db import get_metadata_conn
 
-    storage = _get_storage()
-    storage_type = "object" if storage.is_object_storage else "local"
+    name = os.path.basename(filename or "").strip()
+    if not name or name in (".", ".."):
+        raise ValueError("附件文件名无效")
+    ext = os.path.splitext(name)[1].lower()
+    category = classify_extension(ext)
+    if not category:
+        raise ValueError(f"不支持的文件类型: {ext}")
 
-    att_id = uuid.uuid4().hex
-    object_key = f"users/{source_att.get('user_id', 0)}/{att_id}_{filename}"
+    uploads = Path(workspace_dir) / UPLOADS_SUBDIR
+    uploads.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.geteuid() == 0:
+        os.chown(uploads, 65534, 65534)
 
-    # 上传到对象存储(或本地回退)
-    storage.upload_bytes(object_key, img_bytes, content_type="image/png")
+    stem, suffix = os.path.splitext(name)
+    fd = None
+    for n in range(0, 1000):
+        target_name = name if n == 0 else f"{stem}_{n}{suffix}"
+        target = uploads / target_name
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            continue
+        break
+    else:
+        raise ValueError("同名附件过多,请重命名后重试")
 
-    storage_path = object_key if storage.is_object_storage else storage._local_path(object_key)
-
-    ext = os.path.splitext(filename)[1].lower()
-    category = classify_extension(ext) or "image"
-
-    conn = get_metadata_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO adh_chat_attachments "
-                "(id, user_id, workspace_id, filename, mime_type, category, "
-                "storage_path, storage_type, size, parsed_meta, created_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
-                (
-                    att_id, source_att.get("user_id", 0), source_att.get("workspace_id", 0),
-                    filename, "", category, storage_path, storage_type, len(img_bytes),
-                    json.dumps(meta or {}, ensure_ascii=False),
-                ),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    if os.geteuid() == 0:
+        os.chown(target, 65534, 65534)
     return {
-        "id": att_id,
-        "user_id": source_att.get("user_id", 0),
-        "workspace_id": source_att.get("workspace_id", 0),
-        "filename": filename,
+        "filename": target_name,
         "category": category,
-        "storage_path": storage_path,
-        "storage_type": storage_type,
-        "size": len(img_bytes),
+        "path": f"{UPLOADS_SUBDIR}/{target_name}",
+        "size": len(data),
     }
+
+
+def save_derived_file(workspace_dir, img_bytes: bytes, filename: str) -> dict:
+    """保存派生图像(OpenCV 处理产物)到同一会话工作区,返回附件描述 dict."""
+    return write_upload_file(workspace_dir, filename, img_bytes)
 
 
 # ── 图片 block 构建 ──────────────────────────────────────────────
 
-def _prepare_image_data(att: dict) -> tuple[str, str] | None:
-    """读取图片并返回 (base64_data, media_type);超过 5MB 时渐进压缩."""
+def _prepare_image_data(att: dict, workspace_dir) -> tuple[str, str] | None:
+    """读取工作区图片并返回 (base64_data, media_type);超过 5MB 时渐进压缩."""
     from services.datamind.multimodal import IMAGE_MEDIA_TYPES
 
-    storage_path = att.get("storage_path", "")
-    storage_type = att.get("storage_type", "local")
-    if not storage_path:
+    if not att.get("path"):
         return None
-
-    data = _resolve_file_bytes(storage_path, storage_type)
-    if data is None:
+    try:
+        target = resolve_workspace_file(workspace_dir, att["path"])
+    except ValueError:
         return None
+    if not target.is_file():
+        return None
+    data = target.read_bytes()
 
-    ext = os.path.splitext(att.get("filename", storage_path))[1].lower()
+    ext = os.path.splitext(att.get("filename") or target.name)[1].lower()
     media_type = IMAGE_MEDIA_TYPES.get(ext, "image/jpeg")
 
     if len(data) <= MAX_IMAGE_BYTES:
@@ -208,13 +150,15 @@ def _prepare_image_data(att: dict) -> tuple[str, str] | None:
 
 # ── 多模态 content blocks ────────────────────────────────────────
 
-def build_user_content(question: str, attachments: list[dict], supports_vision: bool = True):
+def build_user_content(question: str, attachments: list[dict], workspace_dir) -> list | str:
     """构建用户消息 content:无附件返回字符串,有附件返回 content blocks 列表.
 
+    attachments 元素契约 {filename, category, path},path 为工作区相对路径。
     - image: Vision 模型转 base64 image block,否则降级为 OpenCV 摘要文本
-    - table: pandas 解析为列结构 + 预览文本
-    - document: 抽取文本
+    - table: pandas 解析为列结构 + 预览文本(即时解析,不缓存)
+    - document: 抽取文本(即时解析,不缓存)
     - model3d: 仅文本说明(渲染在前端)
+    解析/读取失败显式写入块文案,不静默吞掉。
     """
     if not attachments:
         return question
@@ -223,84 +167,74 @@ def build_user_content(question: str, attachments: list[dict], supports_vision: 
     for att in attachments:
         category = att.get("category", "")
         filename = att.get("filename", "")
-        storage_path = att.get("storage_path", "")
-        storage_type = att.get("storage_type", "local")
+        rel_path = att.get("path", "")
 
         if category == "image":
             image_block = None
-            if supports_vision:
-                prepared = _prepare_image_data(att)
-                if prepared:
-                    b64, media_type = prepared
-                    image_block = {
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": media_type, "data": b64},
-                    }
+            prepared = _prepare_image_data(att, workspace_dir)
+            if prepared:
+                b64, media_type = prepared
+                image_block = {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": b64},
+                }
             if image_block:
                 blocks.append({
                     "type": "text",
-                    "text": f"[用户上传了图片附件: {filename}, attachment_id={att.get('id', '')}]",
+                    "text": f"[用户上传了图片附件: {filename}, 工作区路径: {rel_path}]",
                 })
                 blocks.append(image_block)
             else:
-                # 模型不支持 Vision 或图片读取失败 → OpenCV 摘要降级
+                # 图片读取失败/压缩超限 → OpenCV 摘要降级(显式标注降级事实)
                 try:
                     from services.datamind.multimodal.opencv_tools import image_info
-                    info = image_info(att)
+                    info = image_info(att, workspace_dir)
                     blocks.append({
                         "type": "text",
-                        "text": f"[用户上传了图片附件: {filename}, attachment_id={att.get('id', '')}。当前模型不支持图片理解,OpenCV 分析摘要: {json.dumps(info, ensure_ascii=False)}。可调用 image_info / image_process / detect_table_region 工具进一步处理]",
+                        "text": f"[用户上传了图片附件: {filename}, 工作区路径: {rel_path}。"
+                                f"图片未能注入(读取失败或超过大小限制),OpenCV 分析摘要: "
+                                f"{_json_dump(info)}。可调用 image_info / image_process / detect_table_region 工具进一步处理]",
                     })
                 except Exception as e:
-                    blocks.append({"type": "text", "text": f"[用户上传了图片附件: {filename},但无法解析: {e}]"})
+                    blocks.append({"type": "text",
+                                   "text": f"[用户上传了图片附件: {filename},但无法解析: {e}]"})
 
         elif category == "table":
-            meta = att.get("parsed_meta")
-            if not meta or not meta.get("preview_text"):
+            try:
                 from services.datamind.multimodal.table_parser import parse_table_file
-                local_path = _resolve_local_path(storage_path, storage_type)
-                if local_path:
-                    meta = parse_table_file(local_path, filename)
-                    _update_parsed_meta(att["id"], meta)
-                    # 清理临时文件
-                    if storage_type == "object":
-                        try:
-                            os.unlink(local_path)
-                        except OSError:
-                            pass
-                else:
-                    meta = {"preview_text": f"[表格文件 {filename} 无法读取]"}
-            blocks.append({"type": "text", "text": (meta or {}).get("preview_text", f"[表格文件 {filename} 解析为空]")})
+                target = resolve_workspace_file(workspace_dir, rel_path)
+                meta = parse_table_file(str(target), filename)
+            except Exception as e:
+                meta = {"error": f"[表格文件 {filename} 解析失败: {e}]"}
+            blocks.append({"type": "text",
+                           "text": meta.get("preview_text") or meta.get("error")
+                           or f"[表格文件 {filename} 解析为空]"})
 
         elif category == "document":
-            meta = att.get("parsed_meta")
-            if not meta or not meta.get("text"):
+            try:
                 from services.datamind.multimodal.doc_parser import extract_document_text
-                local_path = _resolve_local_path(storage_path, storage_type)
-                if local_path:
-                    meta = extract_document_text(local_path, filename)
-                    _update_parsed_meta(att["id"], meta)
-                    # 清理临时文件
-                    if storage_type == "object":
-                        try:
-                            os.unlink(local_path)
-                        except OSError:
-                            pass
-                else:
-                    meta = {"text": f"[文档文件 {filename} 无法读取]"}
+                target = resolve_workspace_file(workspace_dir, rel_path)
+                meta = extract_document_text(str(target), filename)
+            except Exception as e:
+                meta = {"text": f"[文档文件 {filename} 解析失败: {e}]"}
             blocks.append({
                 "type": "text",
-                "text": f"[用户上传了文档附件: {filename}]\n{(meta or {}).get('text', '(文档内容为空)')}",
+                "text": f"[用户上传了文档附件: {filename}]\n{meta.get('text', '(文档内容为空)')}",
             })
 
         elif category == "model3d":
             blocks.append({
                 "type": "text",
                 "text": (
-                    f"[用户上传了3D模型附件: {filename}, attachment_id={att.get('id', '')},"
+                    f"[用户上传了3D模型附件: {filename}, 工作区路径: {rel_path},"
                     f"前端已提供 three.js 预览,如需分析文件内容可读取该文件]"
                 ),
             })
 
     blocks.append({"type": "text", "text": question})
     return blocks
+
+
+def _json_dump(obj) -> str:
+    import json
+    return json.dumps(obj, ensure_ascii=False, default=str)

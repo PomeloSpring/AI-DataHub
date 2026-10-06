@@ -24,6 +24,7 @@ Usage:
 """
 
 import logging
+import os
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from typing import Optional
@@ -46,8 +47,20 @@ POOL_MAX_CACHED = 3
 POOL_MAX_SHARED = 6
 POOL_MAX_CONNECTIONS = 8
 POOL_BLOCKING = True
-POOL_TIMEOUT = 30
+POOL_TIMEOUT = 10
 POOL_RECYCLE = 3600
+
+# -- Network / socket timeouts (seconds) ------------------------------------
+# 元数据库是跨公网远程实例(47.103.50.8)，空闲连接易被链路(防火墙/NAT)静默断开成
+# “半开”状态。复用该连接时 DBUtils 的 ping=1 健康检查会在死 socket 上阻塞读，直到
+# read_timeout 才失败——历史缺陷：单个卡住的鉴权查询(resolve_current_user→get_user_by_id)
+# 连带把整页请求拖成 15~30s pending。这里把超时收紧，让死连接在秒级快速失败，
+# 由池自动重建新连接(重建仅 ~100ms)透明重试，而不是长时间挂起。
+# read_timeout 覆盖 ping 与查询读；元数据读结果集都很小(实测 <150ms)，留足余量。
+# 可按环境用 METADATA_DB_*_TIMEOUT 覆盖，便于对超慢读场景调优。
+CONN_CONNECT_TIMEOUT = float(os.getenv("METADATA_DB_CONNECT_TIMEOUT", "5"))
+CONN_READ_TIMEOUT = float(os.getenv("METADATA_DB_READ_TIMEOUT", "5"))
+CONN_WRITE_TIMEOUT = float(os.getenv("METADATA_DB_WRITE_TIMEOUT", "15"))
 
 
 class MetadataDB(ABC):
@@ -111,9 +124,9 @@ class MySQLMetadataDB(MetadataDB):
                 database=self._database,
                 charset="utf8mb4",
                 cursorclass=pymysql.cursors.DictCursor,
-                connect_timeout=10,
-                read_timeout=30,
-                write_timeout=30,
+                connect_timeout=CONN_CONNECT_TIMEOUT,
+                read_timeout=CONN_READ_TIMEOUT,
+                write_timeout=CONN_WRITE_TIMEOUT,
                 autocommit=True,
             )
             self._pool_initialized = True

@@ -57,11 +57,11 @@ AI-DataHub:
 │  └────────────────────────────────────────────────────────────┘  │
 ├──────────────────────────────────────────────────────────────────┤
 │                       Data Layer                                  │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────┐  ┌─────────────┐ │
-│  │  Doris   │  │  MySQL   │  │ Elasticsearch│  │  MCP Servers│ │
-│  │ (Analytics│  │(Metadata │  │ (Logs/Metrics│  │  (External  │ │
-│  │  Vectors) │  │  Config) │  │   Traces)    │  │   Tools)    │ │
-│  └──────────┘  └──────────┘  └──────────────┘  └─────────────┘ │
+│  ┌──────────┐  ┌──────────┐  ┌─────────────┐ │
+│  │  Doris   │  │  MySQL   │  │  MCP Servers│ │
+│  │ (Analytics│  │(Metadata │  │  (External  │ │
+│  │  Vectors) │  │  Config) │  │   Tools)    │ │
+│  └──────────┘  └──────────┘  └─────────────┘ │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -184,7 +184,7 @@ System
 - 📊 **Auto Visualization** — Recommends chart types (line, bar, pie, funnel, etc.)
 - 🔄 **Self-Correction** — SQL errors trigger automatic retry with error context
 - 🧠 **RAG-Enhanced** — Vector search for table metadata, business terms, SQL templates
-- 🌐 **Multi-Datasource** — Doris, MySQL, Elasticsearch in one platform
+- 🌐 **Multi-Datasource** — Doris, MySQL in one platform
 
 ### Agent System
 - 🤖 **Multi-Agent Orchestration** — Main agent dispatches to specialized sub-agents
@@ -243,7 +243,7 @@ System
 
 <table>
 <tr>
-<td><img src="docs/img/Chat数据分析.png" width="400" alt="智能问数"></td>
+<td><img src="docs/img/Chat数据分析.png" width="400" alt="工作空间"></td>
 <td><img src="docs/img/可视化UI设计.png" width="400" alt="可视化 UI 设计"></td>
 </tr>
 <tr>
@@ -299,7 +299,6 @@ System
 | **Backend** | Python 3.9+, FastAPI, Anthropic SDK |
 | **Frontend** | React 18, TypeScript, Vite, Tailwind CSS, Zustand |
 | **Database** | Apache Doris (analytics + vectors), MySQL (metadata) |
-| **Search** | Elasticsearch (logs, metrics, traces) |
 | **AI/ML** | Multi-provider LLM, text2vec-base-chinese embeddings (768-dim) |
 | **Visualization** | ECharts, ReactFlow |
 | **Integration** | MCP (Model Context Protocol), Embed API |
@@ -311,7 +310,6 @@ System
 - Python 3.9+
 - Node.js 18+
 - Apache Doris (or MySQL)
-- Elasticsearch (optional, for log analysis)
 
 ### 1. Backend
 ```bash
@@ -386,8 +384,6 @@ AI-DataHub/
 │   │   ├── rules/              # Shared rules
 │   │   ├── loader.py           # Prompt loader
 │   │   └── agent_loader.py     # Agent config loader + graph builder
-│   ├── connectors/             # External connectors
-│   │   └── es_connector.py     # Elasticsearch connector
 │   ├── mcp_client/             # MCP client integration
 │   │   ├── client.py           # MCP server connection
 │   │   ├── registry.py         # MCP tool registry

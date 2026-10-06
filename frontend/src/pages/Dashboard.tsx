@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, Search, Star, MoreHorizontal, Edit, Eye, Play, Copy, Settings, ArrowUp, ArrowDown, Trash2, LayoutDashboard, X } from 'lucide-react';
+import client from '@/api/client';
+import { Plus, Search, Star, MoreHorizontal, Edit, Eye, Play, Copy, Settings, ArrowUp, ArrowDown, Trash2, LayoutDashboard, X, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import { useDashboardStore, DASHBOARD_STATUS_MAP, type Dashboard as DashboardModel, type DashboardParam, type PageParam, type DashboardStatus } from '@/stores/dashboardStore';
 import { DashboardThumbnail } from '@/components/DashboardCanvas';
 import DashboardExportImport from '@/components/DashboardExportImport';
+import DashboardGroupsAdmin from '@/components/DashboardGroupsAdmin';
 import DashboardTemplates from '@/components/DashboardTemplates';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
 import { useThemeStore } from '@/stores/themeStore';
@@ -27,6 +30,7 @@ export default function Dashboard() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [nameDialog, setNameDialog] = useState<{ id?: number; name: string } | null>(null);
   const [settingsId, setSettingsId] = useState<number | null>(null);
+  const [visibleRolesId, setVisibleRolesId] = useState<number | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [templates, setTemplates] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -46,7 +50,7 @@ export default function Dashboard() {
     finally { lock.current = false; setBusy(false); }
   };
   const edit = (id: number) => navigate(`/dashboard/editor/${id}`, { state: { from: location.pathname } });
-  const play = (id: number, interval = 0) => navigate(`/screen/${id}?workspace_id=${Number(workspaceId) || 0}&from=${encodeURIComponent(location.pathname)}&interval=${interval}`, { state: { from: location.pathname } });
+  const play = (id: number, interval = 0) => navigate(`/screen/${id}?group=0&from=${encodeURIComponent(location.pathname)}&interval=${interval}`, { state: { from: location.pathname } });
   const move = (id: number, delta: number) => run(async () => {
     const ordered = [...store.dashboards];
     const index = ordered.findIndex(d => d.id === id), next = index + delta;
@@ -66,6 +70,7 @@ export default function Dashboard() {
           <Button disabled={busy} onClick={() => setNameDialog({ name: '' })}><Plus className="mr-2 h-4 w-4" />新建看板</Button>
         </div>
       </header>
+      <DashboardGroupsAdmin />
       <div className="flex flex-wrap items-center gap-3 border-y py-4">
         <div className="relative min-w-[200px] flex-1 max-w-md"><Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" /><Input aria-label="搜索看板" placeholder="搜索名称或描述…" className="pl-9" value={search} onChange={e => setSearch(e.target.value)} /></div>
         <select aria-label="状态筛选" className="h-10 rounded-md border bg-background px-3 text-sm" value={status} onChange={e => setStatus(e.target.value)}><option value="all">全部状态</option>{Object.entries(DASHBOARD_STATUS_MAP).map(([key, value]) => <option key={key} value={key}>{value.label}</option>)}</select>
@@ -87,6 +92,7 @@ export default function Dashboard() {
                   <DropdownMenuItem disabled={busy} onClick={() => run(() => store.copyDashboard(db.id))}><Copy className="mr-2 h-4 w-4" />复制</DropdownMenuItem>
                   <DropdownMenuItem disabled={busy} onClick={() => run(() => store.setDefault(db.id))}><Star className="mr-2 h-4 w-4" />设为默认</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => setSettingsId(db.id)}><Settings className="mr-2 h-4 w-4" />状态与参数设置</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setVisibleRolesId(db.id)}><Users className="mr-2 h-4 w-4" />可见角色</DropdownMenuItem>
                   <DropdownMenuItem disabled={busy || !themePackFor(theme, library.items)} onClick={() => run(async () => {
                     const packComp = themePackFor(theme, library.items);
                     if (packComp) await store.updateDashboard(db.id, { filters: applyScreenComponent(db.filters, packComp) } as any);
@@ -112,7 +118,76 @@ export default function Dashboard() {
     })}>{busy ? '保存中…' : '确认'}</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={deleteId !== null} onOpenChange={open => { if (!open && !busy) setDeleteId(null); }}><DialogContent><DialogHeader><DialogTitle>删除看板？</DialogTitle><DialogDescription>看板及其中的图表将被删除，此操作无法撤销。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" disabled={busy} onClick={() => setDeleteId(null)}>取消</Button><Button variant="destructive" disabled={busy} onClick={() => run(async () => { if (deleteId !== null) await store.deleteDashboard(deleteId); setDeleteId(null); })}>确认删除</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={!!settings} onOpenChange={open => { if (!open) setSettingsId(null); }}><DialogContent className="max-w-2xl max-h-[90vh] overflow-auto"><DialogHeader><DialogTitle>状态与参数设置</DialogTitle></DialogHeader>{settings && <DashboardSettings key={settings.id} dashboard={settings} onClose={() => setSettingsId(null)} />}</DialogContent></Dialog>
+    <Dialog open={visibleRolesId !== null} onOpenChange={open => { if (!open) setVisibleRolesId(null); }}><DialogContent className="max-w-lg max-h-[85vh] overflow-auto"><DialogHeader><DialogTitle>可见角色</DialogTitle><DialogDescription>勾选可查看该看板的角色；未勾选任何角色 = 除 admin 外无人可见（fail-closed）。看板内图表数据仍按查看者实时治理。</DialogDescription></DialogHeader>{visibleRolesId !== null && <DashboardVisibleRoles key={visibleRolesId} dashboardId={visibleRolesId} onClose={() => setVisibleRolesId(null)} />}</DialogContent></Dialog>
     <DashboardTemplates open={templates} onClose={() => setTemplates(false)} onApply={async template => { const id = await store.createFromTemplate(template); setTemplates(false); edit(id); }} />
+  </div>;
+}
+
+/** 看板可见角色配置：勾选可查看该看板的角色（授权表双向同一份数据） */
+function DashboardVisibleRoles({ dashboardId, onClose }: { dashboardId: number; onClose: () => void }) {
+  const [roles, setRoles] = useState<Array<{ id: number; name: string; display_name: string }>>([]);
+  const [selected, setSelected] = useState<number[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const lock = useRef(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      try {
+        const [{ data: roleData }, { data: visData }] = await Promise.all([
+          client.get('/roles/'),
+          client.get(`/dashboard/${dashboardId}/visible-roles`),
+        ]);
+        if (!alive) return;
+        setRoles(Array.isArray(roleData) ? roleData : []);
+        setSelected(Array.isArray(visData) ? visData.map((r: any) => r.role_id) : []);
+      } catch {
+        if (alive) toast.error('加载可见角色失败，请重试');
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [dashboardId]);
+
+  const toggle = (roleId: number) => {
+    setSelected(prev => prev.includes(roleId) ? prev.filter(id => id !== roleId) : [...prev, roleId]);
+  };
+
+  const save = async () => {
+    if (lock.current) return;
+    lock.current = true; setSaving(true);
+    try {
+      await client.put(`/dashboard/${dashboardId}/visible-roles`, { role_ids: selected });
+      toast.success('可见角色已保存');
+      onClose();
+    } catch {
+      toast.error('保存失败');
+    } finally {
+      lock.current = false; setSaving(false);
+    }
+  };
+
+  return <div className="space-y-4">
+    {loading ? <p className="text-sm text-muted-foreground">加载中…</p> : roles.length === 0 ? (
+      <p className="text-sm text-muted-foreground text-center py-4">暂无角色</p>
+    ) : (
+      <div className="space-y-1 max-h-[320px] overflow-auto">
+        {roles.map(role => (
+          <div key={role.id} className="flex items-center justify-between border rounded px-3 py-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-sm font-medium truncate">{role.display_name}</span>
+              <code className="text-xs bg-muted px-1.5 py-0.5 rounded flex-shrink-0">{role.name}</code>
+            </div>
+            <Switch checked={selected.includes(role.id)} onCheckedChange={() => toggle(role.id)} />
+          </div>
+        ))}
+      </div>
+    )}
+    <p className="text-xs text-muted-foreground">admin 角色始终可见全部看板，无需配置。</p>
+    <Button disabled={loading || saving} onClick={save}>{saving ? '保存中…' : '保存'}</Button>
   </div>;
 }
 

@@ -139,7 +139,8 @@ def _get_column_policies(datasource_id: int, workspace_id: int = 0) -> list[dict
 def _get_user_attributes(user_id: int, workspace_id: int) -> dict:
     """Get user attributes for dynamic RLS filtering.
 
-    Checks role-based attributes first, then legacy per-user attributes.
+    统一由用户角色权限管理: 取用户全部角色的属性(adh_role_attributes via adh_user_roles)。
+    旧版按用户单独配置的 adh_rls_user_attributes 已退役(不再读取)。
     """
     if not user_id:
         return {}
@@ -155,19 +156,7 @@ def _get_user_attributes(user_id: int, workspace_id: int) -> dict:
                 "WHERE ur.user_id = %s AND (ra.workspace_id = %s OR ra.workspace_id = 0)",
                 (user_id, workspace_id),
             )
-            attrs = {r["attr_key"]: r["attr_value"] for r in cur.fetchall()}
-
-            # Legacy per-user attributes (fill gaps)
-            cur.execute(
-                "SELECT attr_key, attr_value FROM adh_rls_user_attributes "
-                "WHERE user_id = %s AND workspace_id = %s",
-                (user_id, workspace_id),
-            )
-            for r in cur.fetchall():
-                if r["attr_key"] not in attrs:
-                    attrs[r["attr_key"]] = r["attr_value"]
-
-            return attrs
+            return {r["attr_key"]: r["attr_value"] for r in cur.fetchall()}
     finally:
         conn.close()
 

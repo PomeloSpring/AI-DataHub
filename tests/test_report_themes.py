@@ -7,7 +7,7 @@ ALL = {"dark", "light", "tech", "finance", "bento", "glass", "ainative", "medica
 
 def test_registry_has_all_nine_themes():
     assert set(rt.THEME_TOKENS.keys()) == ALL
-    assert rt.DEFAULT_THEME == "datafoundry"
+    assert rt.DEFAULT_THEME == "light"
 
 
 def test_resolve_theme_unknown_falls_back():

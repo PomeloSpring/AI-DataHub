@@ -1,7 +1,7 @@
 """Datasource connection management.
 
 Provides functions to create connections to external datasources
-(MySQL/Doris/PostgreSQL(SLS)/Elasticsearch)
+(MySQL/Doris/PostgreSQL(SLS))
 and to look up datasource configuration from the metadata database.
 
 Usage:
@@ -24,13 +24,6 @@ from services.shared.common.crypto import decrypt_password, is_encrypted
 
 logger = logging.getLogger(__name__)
 
-# Try to import elasticsearch
-try:
-    from elasticsearch import Elasticsearch
-    HAS_ELASTICSEARCH = True
-except ImportError:
-    HAS_ELASTICSEARCH = False
-
 # Try to import psycopg2 (PostgreSQL / SLS-PG 协议)
 try:
     import psycopg2
@@ -51,19 +44,18 @@ def get_datasource_conn(db_type: str, host: str, port: int,
 
     Args:
         db_type: Database type ("mysql", "doris", "postgres", "postgresql",
-                 "pg", "sls", "elasticsearch").
+                 "pg", "sls").
         host: Database host.
         port: Database port.
         user: Database username.
         password: Database password.
-        database: Database name (optional for ES).
+        database: Database name.
         ssl: Legacy SSL flag (still honored when ssl_mode is unset).
         ssl_mode: "disabled" | "preferred" | "required"; overrides ssl.
         read_timeout: MySQL/Doris socket read timeout (seconds).
 
     Returns:
-        A pymysql/psycopg2 connection for SQL datasources, or an Elasticsearch
-        client for ES.
+        A pymysql/psycopg2 connection for SQL datasources.
 
     Raises:
         ValueError: If the required driver package is not installed.
@@ -76,18 +68,7 @@ def get_datasource_conn(db_type: str, host: str, port: int,
     if effective_ssl_mode == "disabled" and ssl:
         effective_ssl_mode = "required"
 
-    if db_type == "elasticsearch":
-        if not HAS_ELASTICSEARCH:
-            raise ValueError("Elasticsearch library not installed. Run: pip install elasticsearch")
-        # Return Elasticsearch client - use https if ssl is enabled
-        es_url = f"http://{host}:{port}"
-        es_kwargs = {"hosts": [es_url], "request_timeout": 30, "meta_header": False}
-        if user and password:
-            es_kwargs["basic_auth"] = (user, password)
-        elif user:
-            es_kwargs["basic_auth"] = (user, "")
-        return Elasticsearch(**es_kwargs)
-    elif db_type in POSTGRES_DB_TYPES:
+    if db_type in POSTGRES_DB_TYPES:
         if not HAS_PSYCOPG2:
             raise ValueError("psycopg2 not installed. Run: pip install psycopg2-binary")
         pg_kwargs = {
@@ -151,6 +132,34 @@ def get_datasource_by_id(ds_id: int) -> dict:
                         # Log but continue - will fail at connection time
                         logger.warning(
                             "Failed to decrypt password for datasource %s: %s", ds_id, e
+                        )
+            return row
+    finally:
+        conn.close()
+
+
+def get_datasource_by_name(name: str) -> dict:
+    """Look up a datasource by global-unique name (uk_datasource_name).
+
+    三段式限定名 `ds.db.table` 的 catalog 段解析用；数据源 name 全局唯一、
+    删除重建后 id 会变而 name 不变（ontology-modeling §2），故跨源引用以名为准。
+    未命中返回 None（调用方必须 fail-closed 拒绝，不得猜源）。
+    """
+    if not name:
+        return None
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM adh_datasources WHERE name = %s", (name,))
+            row = cur.fetchone()
+            if row and row.get("password"):
+                password = row["password"]
+                if is_encrypted(password):
+                    try:
+                        row["password"] = decrypt_password(password)
+                    except ValueError as e:
+                        logger.warning(
+                            "Failed to decrypt password for datasource %s: %s", name, e
                         )
             return row
     finally:

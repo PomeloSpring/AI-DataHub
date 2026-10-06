@@ -80,6 +80,53 @@ def delete_dimension(dim_id: int):
     return {"success": True}
 
 
+# ── 口径认证（P4）────────────────────────────────────────────────
+# 路由顺序：/certification 与 /certify 必须在 /{metric_id} 之前注册，
+# 否则会被参数路由吞掉（FastAPI 按注册顺序匹配）。
+
+@router.get("/certification")
+def certification_summary(datasource_id: int = Query(0, description="限定数据源；0=全部")):
+    """口径认证覆盖率：暴露「多少口径还没人负责」。
+
+    认证率低不是缺陷，是待办清单——但必须可见，不能假装口径都是权威的。
+    """
+    return metrics_service.certification_summary(datasource_id)
+
+
+@router.post("/certify")
+def certify_scope(req: dict):
+    """认证/解除认证某个指标或维度口径。
+
+    body: {"scope": "metric"|"dimension", "id": int,
+           "certified": bool, "owner": "责任人", "certified_by": "user:1"}
+
+    纪律：认证只是**标记权威性**，不改变解析/查询行为（否则 0 认证时知识库会空）；
+    认证必须指定 owner（没有责任人的口径不叫认证）。展示时未认证口径应标为草稿。
+    """
+    scope = str(req.get("scope") or "")
+    if scope not in metrics_service.CERTIFY_SCOPE:
+        raise HTTPException(status_code=400, detail=f"scope 必须是 {metrics_service.CERTIFY_SCOPE}")
+    try:
+        row_id = int(req.get("id") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="id 必须为整数")
+    if row_id <= 0:
+        raise HTTPException(status_code=400, detail="id 必须为正整数")
+    certified = bool(req.get("certified"))
+    try:
+        if scope == "metric":
+            return metrics_service.certify_metric(
+                row_id, certified, owner=req.get("owner") or "",
+                certified_by=req.get("certified_by") or "")
+        return metrics_service.certify_dimension(
+            row_id, certified, owner=req.get("owner") or "",
+            certified_by=req.get("certified_by") or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"认证失败: {e}")
+
+
 @router.get("/{metric_id}")
 def get_metric(metric_id: int):
     """Get metric detail with dimensions."""

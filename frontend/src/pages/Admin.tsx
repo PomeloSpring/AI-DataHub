@@ -1,15 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import {
-  RefreshCw, Search, Plus, Edit, Trash2, Database, FileText, BookOpen, Users, UserPlus,
-  Wifi, Globe, Cylinder, Palette, Upload, X as XIcon, BarChart3, Link, AlertTriangle, Plug,
-  HelpCircle, Maximize2, Minimize2, Cpu, Workflow, MessageSquare, Bot, Server,
+  RefreshCw, Search, Plus, Edit, Trash2, Database, Users, UserPlus,
+  Wifi, Globe, Cylinder, Palette, Upload, X as XIcon, Link, AlertTriangle, Plug,
+  HelpCircle, Maximize2, Minimize2, Server,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -19,7 +19,6 @@ import { Spinner } from '@/components/ui/spinner';
 import { ScrollArea } from '@/components/ui/scroll-area';
 // Separator removed — unused
 import client from '../api/client';
-import MenuEditorTab from '../components/MenuEditorTab';
 import IntegrationApps from './admin/IntegrationApps';
 import ERDiagram from '../components/ERDiagram';
 import IntegrationLogs from './admin/IntegrationLogs';
@@ -108,7 +107,7 @@ function KeywordsHelp({ items }: { items: { title: string; desc: string }[] }) {
 // ── Table Info Tab ─────────────────────────────────────────────────────
 
 function TableInfoTab() {
-  const { data, total, page, size, loading, setPage, load, filters, resetFilters } = usePagedData('/admin/table-info');
+  const { data, total, page, size, loading, setPage, load } = usePagedData('/admin/table-info');
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editValues, setEditValues] = useState<any>({});
   const [syncing, setSyncing] = useState(false);
@@ -141,10 +140,14 @@ function TableInfoTab() {
     setSyncing(true);
     try {
       const { data: res } = await client.post('/admin/sync/metadata', { datasource_id: syncDsId });
-      toast.success(res.message);
-      load();
-    } catch {
-      toast.error('同步失败');
+      if (res.success === false) {
+        toast.error(res.message || '同步失败');
+      } else {
+        toast.success(res.message);
+        load();
+      }
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || e.response?.data?.message || '同步失败');
     } finally {
       setSyncing(false);
     }
@@ -1577,13 +1580,24 @@ function TermsTab() {
 
 // ── Datasource Tab ──────────────────────────────────────────────────────
 
+// 数据库类别分区（关系型 / 数仓 / 其他）：列表分区展示与类型选择分组共用
+const DB_CATEGORIES: Record<string, { label: string; icon: any; desc: string }> = {
+  relational: { label: '关系型数据库', icon: Database, desc: '事务型业务库（OLTP）：MySQL、PostgreSQL' },
+  warehouse: { label: '数据仓库', icon: Cylinder, desc: '分析型数仓（OLAP）：Apache Doris' },
+  other: { label: '其他数据服务', icon: Server, desc: '日志/检索等外部服务接入' },
+};
+const DB_CATEGORY_ORDER = ['relational', 'warehouse', 'other'];
+
 const DB_TYPES = [
-  { value: 'mysql', label: 'MySQL', icon: Database, color: 'text-blue-400', defaultPort: 3306 },
-  { value: 'doris', label: 'Apache Doris', icon: Cylinder, color: 'text-cyan-400', defaultPort: 9030 },
-  { value: 'postgresql', label: 'PostgreSQL', icon: Database, color: 'text-indigo-400', defaultPort: 5432 },
-  { value: 'sls', label: 'SLS (PG协议接入)', icon: Server, color: 'text-teal-400', defaultPort: 5432 },
-  { value: 'elasticsearch', label: 'Elasticsearch', icon: Search, color: 'text-amber-400', defaultPort: 9200 },
+  { value: 'mysql', label: 'MySQL', icon: Database, color: 'text-blue-400', defaultPort: 3306, category: 'relational' },
+  { value: 'postgresql', label: 'PostgreSQL', icon: Database, color: 'text-indigo-400', defaultPort: 5432, category: 'relational' },
+  { value: 'doris', label: 'Apache Doris', icon: Cylinder, color: 'text-cyan-400', defaultPort: 9030, category: 'warehouse' },
+  { value: 'sls', label: 'SLS (PG协议接入)', icon: Server, color: 'text-teal-400', defaultPort: 5432, category: 'other' },
 ];
+
+function dbCategoryOf(dbType: string): string {
+  return DB_TYPES.find(d => d.value === dbType)?.category || 'other';
+}
 
 function DatasourceTab() {
   const [datasources, setDatasources] = useState<any[]>([]);
@@ -1709,7 +1723,7 @@ function DatasourceTab() {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-lg font-semibold">数据源管理</h3>
-          <p className="text-sm text-muted-foreground">管理数据库连接，支持 MySQL、Apache Doris、PostgreSQL、SLS(PG协议)、Elasticsearch</p>
+          <p className="text-sm text-muted-foreground">管理数据库连接，支持 MySQL、Apache Doris、PostgreSQL、SLS(PG协议)</p>
         </div>
         <Button onClick={openCreate}>
           <Plus className="h-4 w-4 mr-2" />
@@ -1732,89 +1746,110 @@ function DatasourceTab() {
           </Button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {datasources.map((ds) => {
-            const dbInfo = DB_TYPES.find(d => d.value === ds.db_type);
-            const DbIcon = dbInfo?.icon || Database;
+        <div className="space-y-8">
+          {DB_CATEGORY_ORDER.map((catKey) => {
+            const cat = DB_CATEGORIES[catKey];
+            const CatIcon = cat.icon;
+            const items = datasources.filter((ds) => dbCategoryOf(ds.db_type) === catKey);
             return (
-              <div
-                key={ds.id}
-                className="border rounded-lg p-4 hover:shadow-md transition-shadow"
-              >
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <div className={`w-10 h-10 rounded-lg bg-muted flex items-center justify-center`}>
-                      <DbIcon className={`h-5 w-5 ${dbInfo?.color || 'text-muted-foreground'}`} />
-                    </div>
-                    <div>
-                      <h4 className="font-medium">{ds.name}</h4>
-                      <div className="flex gap-1 mt-1">
-                        <Badge variant="outline" className="text-xs">
-                          {dbInfo?.label || ds.db_type}
-                        </Badge>
-                        {ds.ssl ? (
-                          <Badge variant="secondary" className="text-xs">SSL</Badge>
-                        ) : null}
+              <section key={catKey} className="space-y-3">
+                <div className="flex items-center gap-2 border-b pb-2">
+                  <CatIcon className="h-4 w-4 text-primary" />
+                  <h4 className="text-sm font-semibold">{cat.label}</h4>
+                  <Badge variant="secondary" className="text-xs">{items.length}</Badge>
+                  <span className="text-xs text-muted-foreground">{cat.desc}</span>
+                </div>
+                {items.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-4">该分类下暂无数据源</p>
+                ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {items.map((ds) => {
+              const dbInfo = DB_TYPES.find(d => d.value === ds.db_type);
+              const DbIcon = dbInfo?.icon || Database;
+              return (
+                <div
+                  key={ds.id}
+                  className="border rounded-lg p-4 hover:shadow-md transition-shadow"
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-10 h-10 rounded-lg bg-muted flex items-center justify-center`}>
+                        <DbIcon className={`h-5 w-5 ${dbInfo?.color || 'text-muted-foreground'}`} />
+                      </div>
+                      <div>
+                        <h4 className="font-medium">{ds.name}</h4>
+                        <div className="flex gap-1 mt-1">
+                          <Badge variant="outline" className="text-xs">
+                            {dbInfo?.label || ds.db_type}
+                          </Badge>
+                          {ds.ssl ? (
+                            <Badge variant="secondary" className="text-xs">SSL</Badge>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
+                    {ds.is_default ? (
+                      <Badge variant="default" className="text-xs">默认</Badge>
+                    ) : null}
                   </div>
-                  {ds.is_default ? (
-                    <Badge variant="default" className="text-xs">默认</Badge>
-                  ) : null}
-                </div>
 
-                <div className="space-y-1 text-sm text-muted-foreground mb-4">
-                  <div className="flex items-center gap-2">
-                    <Globe className="h-3 w-3" />
-                    <span>{ds.host}:{ds.port}</span>
+                  <div className="space-y-1 text-sm text-muted-foreground mb-4">
+                    <div className="flex items-center gap-2">
+                      <Globe className="h-3 w-3" />
+                      <span>{ds.host}:{ds.port}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Database className="h-3 w-3" />
+                      <span>{ds.database_name || '-'}</span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Database className="h-3 w-3" />
-                    <span>{ds.database_name || '-'}</span>
+
+                  {testResult && testResult.id === ds.id && (
+                    <div className={`text-xs p-2 rounded mb-3 border ${
+                      testResult.success
+                        ? 'bg-green-500/10 text-green-400 border-green-500/20'
+                        : 'bg-red-500/10 text-red-400 border-red-500/20'
+                    }`}>
+                      {testResult.message}
+                    </div>
+                  )}
+
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="flex-1"
+                      onClick={() => handleTest(ds.id)}
+                      disabled={testing === ds.id}
+                    >
+                      {testing === ds.id ? (
+                        <Spinner className="h-3 w-3 mr-1" />
+                      ) : (
+                        <Wifi className="h-3 w-3 mr-1" />
+                      )}
+                      测试连接
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => openEdit(ds)}
+                    >
+                      <Edit className="h-3 w-3" />
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleDelete(ds.id)}
+                    >
+                      <Trash2 className="h-3 w-3 text-destructive" />
+                    </Button>
                   </div>
                 </div>
-
-                {testResult && testResult.id === ds.id && (
-                  <div className={`text-xs p-2 rounded mb-3 border ${
-                    testResult.success
-                      ? 'bg-green-500/10 text-green-400 border-green-500/20'
-                      : 'bg-red-500/10 text-red-400 border-red-500/20'
-                  }`}>
-                    {testResult.message}
-                  </div>
+              );
+            })}
+          </div>
                 )}
-
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="flex-1"
-                    onClick={() => handleTest(ds.id)}
-                    disabled={testing === ds.id}
-                  >
-                    {testing === ds.id ? (
-                      <Spinner className="h-3 w-3 mr-1" />
-                    ) : (
-                      <Wifi className="h-3 w-3 mr-1" />
-                    )}
-                    测试连接
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => openEdit(ds)}
-                  >
-                    <Edit className="h-3 w-3" />
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleDelete(ds.id)}
-                  >
-                    <Trash2 className="h-3 w-3 text-destructive" />
-                  </Button>
-                </div>
-              </div>
+              </section>
             );
           })}
         </div>
@@ -1846,15 +1881,25 @@ function DatasourceTab() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {DB_TYPES.map((db) => {
-                    const Icon = db.icon;
+                  {DB_CATEGORY_ORDER.map((catKey) => {
+                    const cat = DB_CATEGORIES[catKey];
+                    const dbs = DB_TYPES.filter(d => d.category === catKey);
+                    if (!dbs.length) return null;
                     return (
-                      <SelectItem key={db.value} value={db.value}>
-                        <div className="flex items-center gap-2">
-                          <Icon className={`h-4 w-4 ${db.color}`} />
-                          {db.label}
-                        </div>
-                      </SelectItem>
+                      <SelectGroup key={catKey}>
+                        <SelectLabel>{cat.label}</SelectLabel>
+                        {dbs.map((db) => {
+                          const Icon = db.icon;
+                          return (
+                            <SelectItem key={db.value} value={db.value}>
+                              <div className="flex items-center gap-2">
+                                <Icon className={`h-4 w-4 ${db.color}`} />
+                                {db.label}
+                              </div>
+                            </SelectItem>
+                          );
+                        })}
+                      </SelectGroup>
                     );
                   })}
                 </SelectContent>
@@ -1916,29 +1961,6 @@ function DatasourceTab() {
               />
               <Label>设为默认数据源</Label>
             </div>
-
-            {formValues.db_type === 'elasticsearch' && (
-              <div className="flex items-center gap-2">
-                <Switch
-                  checked={formValues.ssl || false}
-                  onCheckedChange={(v) => setFormValues({ ...formValues, ssl: v })}
-                />
-                <Label>使用 HTTPS (SSL)</Label>
-              </div>
-            )}
-
-            {formValues.db_type === 'elasticsearch' && (
-              <div className="p-3 bg-muted rounded-lg text-sm text-muted-foreground">
-                <p className="font-medium mb-1">Elasticsearch 连接说明：</p>
-                <ul className="list-disc list-inside space-y-1">
-                  <li>主机地址填写 ES 节点地址</li>
-                  <li>端口默认 9200</li>
-                  <li>用户名/密码用于认证（可选）</li>
-                  <li>数据库名称填写索引名称或索引模式</li>
-                  <li>如果 ES 启用了 HTTPS，请开启 SSL 选项</li>
-                </ul>
-              </div>
-            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setModalOpen(false)}>取消</Button>
@@ -2665,10 +2687,14 @@ function RelationsTab() {
     setSyncing(true);
     try {
       const { data: res } = await client.post('/admin/sync/relations', { datasource_id: syncDsId });
-      toast.success(res.message);
-      doSearch();
-    } catch {
-      toast.error('同步失败');
+      if (res.success === false) {
+        toast.error(res.message || '同步失败');
+      } else {
+        toast.success(res.message);
+        doSearch();
+      }
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || e.response?.data?.message || '同步失败');
     } finally {
       setSyncing(false);
     }
@@ -2876,7 +2902,6 @@ export default function Admin({ embeddedTab }: { embeddedTab?: string } = {}) {
       'users': <UsersTab />,
       'model-config': <ModelConfigTab />,
       'brand': <BrandSettingsTab />,
-      'menu-editor': <MenuEditorTab />,
       'integration': (
         <Tabs defaultValue="apps">
           <TabsList>
@@ -2908,10 +2933,6 @@ export default function Admin({ embeddedTab }: { embeddedTab?: string } = {}) {
             <Palette className="h-4 w-4 mr-2" />
             系统设置
           </TabsTrigger>
-          <TabsTrigger value="menu-editor">
-            <BarChart3 className="h-4 w-4 mr-2" />
-            菜单编辑
-          </TabsTrigger>
           <TabsTrigger value="integration">
             <Plug className="h-4 w-4 mr-2" />
             集成管理
@@ -2922,9 +2943,6 @@ export default function Admin({ embeddedTab }: { embeddedTab?: string } = {}) {
         </TabsContent>
         <TabsContent value="brand">
           <BrandSettingsTab />
-        </TabsContent>
-        <TabsContent value="menu-editor">
-          <MenuEditorTab />
         </TabsContent>
         <TabsContent value="integration">
           <Tabs defaultValue="apps">

@@ -92,7 +92,7 @@ class ExecutionLayerManager:
                 if config.get("cli_name") == "claude":
                     from services.datamind.execution.adapters.claude_sdk_adapter import ClaudeSDKAdapter
                     return ClaudeSDKAdapter(name, config)
-            raise ValueError("该 CLI 执行层不支持 Waker 安全执行，仅允许 Qoder/Claude SDK")
+            raise ValueError("该 CLI 执行层不支持 AS-BOT 安全执行，仅允许 Qoder/Claude SDK")
 
         raise ValueError(f"不支持的执行层类型: {layer_type}")
 
@@ -113,23 +113,17 @@ class ExecutionLayerManager:
         return self.build_adapter(row)
 
     async def resolve_workspace_layer(self, workspace_id: int) -> dict:
-        """解析工作空间的默认执行层配置行;未绑定时报错."""
+        """解析当前生效的执行层。
+
+        执行层全局生效, 不按工作空间绑定(AS-BOT 可用点按用户角色裁决);
+        workspace_id 参数保留兼容签名, 不参与解析。
+        """
         from services.datamind.execution import service
 
-        layers = service.get_workspace_layers(workspace_id)
-        row = None
-        for l in layers:
-            if l.get("is_default") and l.get("status") == "active":
-                row = l
-                break
-        if row is None:
-            for l in layers:
-                if l.get("status") == "active":
-                    row = l
-                    break
-        if row is None:
-            raise KeyError("工作空间未绑定可用的执行层")
-        return row
+        candidates = [r for r in service.list_layers() if r.get("status") == "active"]
+        if not candidates:
+            raise KeyError("系统无可用的执行层")
+        return next((r for r in candidates if r.get("is_default")), candidates[0])
 
     async def get_workspace_adapter(self, workspace_id: int):
         """获取工作空间的默认执行层适配器."""

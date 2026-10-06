@@ -73,11 +73,13 @@ class GraphBuilder:
     def __init__(self, store: OxigraphStore = None):
         self._store = store or OxigraphStore()
 
-    def build_from_metadata(self, datasource_id: int = 0) -> dict[str, Any]:
+    def build_from_metadata(self, datasource_id: int = 0, kind: str = "") -> dict[str, Any]:
         """Build the knowledge graph from MySQL metadata tables.
 
         Args:
             datasource_id: Scope to a specific datasource (0 = all).
+            kind: 本体类型 source/business/system —— 决定本体对象图的归属与目标 graph
+                （业务本体跨源 ds_id=0，按 datasource_id 判会错拉系统图）。
 
         Returns:
             Build statistics.
@@ -104,7 +106,7 @@ class GraphBuilder:
             # Merge ontology FIRST: the RDF bulk load (PUT /store) replaces the
             # named graph, so it must run before the physical nodes are appended
             # via INSERT DATA — otherwise it would wipe them.
-            ontology_count = self._merge_ontology_models(datasource_id)
+            ontology_count = self._merge_ontology_models(datasource_id, kind)
             logger.info("Merged %d ontology model(s)", ontology_count)
 
             # Build table nodes
@@ -353,7 +355,13 @@ class GraphBuilder:
             conn.close()
 
     def _load_join_relations(self, datasource_id: int) -> list[dict]:
-        """Load JOIN relations from table_relations or data_lineage."""
+        """Load JOIN relations from table_relations, falling back to data_lineage.
+
+        adh_data_lineage 的列是 source_name/target_name(source_type/target_type 区分
+        实体种类), **没有** source_table/target_table, 也没有任何 datasource 列。
+        旧写法按旧 schema 取列, 一执行就 MySQL 1054, 被下面的 except 吞成 warning
+        后静默返回空 —— 图谱缺边且无人察觉。这里对齐真实 schema, 并显式表达域边界。
+        """
         from services.shared.common.db.metadata_db import get_metadata_conn
         conn = get_metadata_conn()
         try:
@@ -370,18 +378,27 @@ class GraphBuilder:
                 if rows:
                     return rows
 
-                # Fallback: extract from data_lineage
-                lin_filter, lin_params = _ds_scope(datasource_id, "source_datasource_id")
-                cur.execute(f"""
-                    SELECT source_table AS table1, target_table AS table2,
+                if is_system_scope(datasource_id):
+                    # adh_data_lineage 无 datasource 列, 无法按域过滤; 其内容是业务表
+                    # 血缘, 吸入系统图会造成业务元数据串域(as-bot-system-waker §1)。
+                    # 这是有意的域边界, 不是失败, 故记 debug 而非 warning。
+                    logger.debug("[graph] 系统域图不吸收业务血缘关系(域边界)")
+                    return []
+
+                # Fallback: 业务/聚合域取表->表血缘(排除 datasource->* 等非表实体)
+                cur.execute("""
+                    SELECT source_name AS table1, target_name AS table2,
                            'lineage' AS join_type, 0 AS datasource_id
                     FROM adh_data_lineage
-                    WHERE is_active = 1 AND source_table != target_table
-                    {lin_filter}
-                    GROUP BY source_table, target_table
-                """, lin_params)
+                    WHERE is_active = 1
+                      AND source_type = 'table' AND target_type = 'table'
+                      AND source_name != target_name
+                    GROUP BY source_name, target_name
+                """)
                 return cur.fetchall()
         except Exception as e:
+            # 真正的意外异常才走到这里(列名/表名错配已在上面对齐 schema)。
+            # 旁路降级: 图谱关系边缺失不影响取数主链路, 但必须留 warning 可诊断。
             logger.warning("Failed to load join relations: %s", e)
             return []
         finally:
@@ -433,25 +450,48 @@ class GraphBuilder:
         """
         return self.build_from_metadata(SYSTEM_DATASOURCE_ID)
 
-    def _merge_ontology_models(self, datasource_id: int) -> int:
-        """Merge active ontology models into the graph as RDF."""
+    def _merge_ontology_models(self, datasource_id: int, kind: str = "") -> int:
+        """Merge active ontology models into the graph as RDF.
+
+        按 **kind** 归属，不用 `datasource_id=0` 判系统域（业务本体跨源 ds_id 也是 0，
+        旧口径会把业务本体拉进系统图 ds:-1、污染 AS-BOT 图谱）。
+        目标图：business→ds:0(业务图) / system→ds:-1(系统图) / source→ds:N(源图)。
+        """
         from services.shared.common.db.metadata_db import get_metadata_conn
         from services.shared.common.rdf.ontology_to_rdf import ontology_json_to_turtle
+
+        # kind 为空时按 datasource_id 推断（兼容旧调用）：-1=系统域，>0=源，0=聚合
+        if not kind:
+            kind = "system" if is_system_scope(datasource_id) else ("source" if datasource_id else "")
+
+        # 目标图按 kind（不按 datasource_id）
+        if kind == "system":
+            target_ds = SYSTEM_DATASOURCE_ID
+        elif kind == "business":
+            target_ds = 0          # 业务本体独立图（跨源连通图）
+        elif kind == "source":
+            target_ds = datasource_id
+        else:
+            target_ds = SYSTEM_DATASOURCE_ID if is_system_scope(datasource_id) else datasource_id
 
         conn = get_metadata_conn()
         count = 0
         try:
             with conn.cursor() as cur:
-                if is_system_scope(datasource_id):
-                    # 系统域: 仅系统本体模型(datasource_id IS NULL 或 0), 排除业务本体(test-alb 等)
+                if kind == "system":
                     cur.execute(
                         "SELECT id, json_content FROM adh_ontology_models "
-                        "WHERE status = 'active' AND (datasource_id IS NULL OR datasource_id = 0)"
+                        "WHERE status = 'active' AND kind = 'system'"
                     )
-                elif datasource_id:
+                elif kind == "business":
                     cur.execute(
                         "SELECT id, json_content FROM adh_ontology_models "
-                        "WHERE status = 'active' AND datasource_id = %s",
+                        "WHERE status = 'active' AND kind = 'business'"
+                    )
+                elif kind == "source" or datasource_id:
+                    cur.execute(
+                        "SELECT id, json_content FROM adh_ontology_models "
+                        "WHERE status = 'active' AND kind = 'source' AND datasource_id = %s",
                         [datasource_id],
                     )
                 else:
@@ -464,9 +504,9 @@ class GraphBuilder:
                 try:
                     turtle = ontology_json_to_turtle(
                         model["json_content"],
-                        datasource_id=datasource_id,
+                        datasource_id=target_ds,
                     )
-                    self._store.load_turtle(turtle, datasource_id)
+                    self._store.load_turtle(turtle, target_ds)
                     count += 1
                 except Exception as e:
                     logger.warning("Failed to merge ontology model %s: %s",

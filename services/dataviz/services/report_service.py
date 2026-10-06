@@ -186,7 +186,8 @@ def claim_report(report_id):
 def finish_report(report_id, **values):
     from services.shared.common.db import execute_write
     allowed = {"generation_status", "stage_error_code", "content", "security_context", "evidence_summary"}
-    if set(values) - allowed or values.get("generation_status") not in ("ready", "degraded", "failed", "timeout"):
+    # cancelled=任务监控人工停止；与其它终态一样受 `generation_status IN ('queued','running')` 保护，迟到结果不可覆盖。
+    if set(values) - allowed or values.get("generation_status") not in ("ready", "degraded", "failed", "timeout", "cancelled"):
         raise ValueError("报告更新字段或终态无效")
     updates = ",".join(f"`{key}`=%s" for key in values)
     params = tuple(json.dumps(v, ensure_ascii=False, default=str) if isinstance(v, dict) else v
@@ -329,15 +330,14 @@ def render_fact_report(title: str, results: list) -> str:
 
 
 def _authorize_source(identity, datasource_id):
-    from services.shared.common.db import execute_query
+    from services.authservice.services.role_service import role_service
     if int(datasource_id or 0) <= 0:
         raise PermissionError("分析来源未明确绑定")
-    workspace_id = identity["workspace_id"]
-    if workspace_id and not execute_query(
-        "SELECT datasource_id FROM adh_workspace_datasources WHERE workspace_id=%s AND datasource_id=%s",
-        (workspace_id, datasource_id), fetchone=True,
-    ):
-        raise PermissionError("分析来源不属于当前工作空间")
+    # 纯角色裁决: 分析来源可用集=执行身份的角色授权; 空授权 fail-closed。
+    allowed = set(role_service.get_user_allowed_datasources(
+        identity["user_id"], identity["workspace_id"]))
+    if int(datasource_id) not in allowed:
+        raise PermissionError("执行身份的角色未授权该分析来源")
 
 
 def _snapshot(identity, sql, datasource_id, dialect="mysql"):

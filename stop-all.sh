@@ -29,8 +29,7 @@ SERVICES=(
     "celery-worker"
     "dataflow"
     "aiplatform"
-    "graphservice"
-    "semanticservice"
+    "semhub"
     "frontend"
 )
 
@@ -52,6 +51,14 @@ stop_service() {
     if [ -z "$pid" ]; then
         local port=""
         case "$name" in
+            celery-worker|celery-beat)
+                # celery 无端口，按 cmdline 兜底查找；取最小 PID 为 worker 主进程
+                # （TERM 主进程会带走池子进程，下方 pkill -P 再兜底清子进程）
+                pid=$(ps -eo pid,cmd | awk -v app="services.dataflow.tasks.celery_app" \
+                    -v kw=" ${name#celery-}" \
+                    '$2 != "awk" && index($0, "-m celery -A " app) > 0 && index($0, kw) > 0 {print $1}' \
+                    | sort -n | head -1)
+                ;;
             frontend)   port=3000 ;;
             backend)    port=8000 ;;
             dataengine) port=8082 ;;

@@ -1,10 +1,13 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Download, FileText, FileSpreadsheet, FileImage, Code, FileType } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import DataGrid from '@/components/DataGrid';
+import ExcelPreview from '@/components/ExcelPreview';
+import { parseCsv } from '@/lib/dataGrid';
 
 interface Props {
-  type: 'excel' | 'pdf' | 'html' | 'md' | 'png' | 'jpg' | 'csv';
+  type: 'excel' | 'pdf' | 'html' | 'md' | 'png' | 'jpg' | 'gif' | 'webp' | 'csv';
   filename: string;
   /** 内联内容(base64 或纯文本);与 path 二选一。 */
   content?: string;
@@ -25,6 +28,8 @@ const TYPE_CONFIG: Record<string, { icon: any; label: string; mime: string; colo
   md: { icon: FileType, label: 'Markdown', mime: 'text/markdown', color: 'text-blue-600' },
   png: { icon: FileImage, label: 'PNG', mime: 'image/png', color: 'text-purple-600' },
   jpg: { icon: FileImage, label: 'JPG', mime: 'image/jpeg', color: 'text-purple-600' },
+  gif: { icon: FileImage, label: 'GIF', mime: 'image/gif', color: 'text-purple-600' },
+  webp: { icon: FileImage, label: 'WEBP', mime: 'image/webp', color: 'text-purple-600' },
 };
 
 function triggerDownload(blob: Blob, filename: string) {
@@ -84,8 +89,24 @@ export default function ArtifactCard({ type, filename, content, path, descriptio
     return `/api/chat/session-file?conversation_id=${conversationId}&path=${encodeURIComponent(path)}&token=${encodeURIComponent(token)}`;
   }, [path, conversationId]);
 
-  const isImage = type === 'png' || type === 'jpg';
+  const isImage = type === 'png' || type === 'jpg' || type === 'gif' || type === 'webp';
   const previewSrc = byRef ? fileUrl : (isImage ? inlineImageSrc(content, config.mime) : '');
+
+  // CSV 预览:按引用拉取文本(或内联解析) → 统一数据网格(排序/过滤/复制/导出)
+  const [csvGrid, setCsvGrid] = useState<{ columns: string[]; rows: Record<string, any>[] } | null>(null);
+  useEffect(() => {
+    if (type !== 'csv') return;
+    let cancelled = false;
+    if (byRef && fileUrl) {
+      fetch(fileUrl)
+        .then(r => { if (!r.ok) throw new Error(String(r.status)); return r.text(); })
+        .then(t => { if (!cancelled) setCsvGrid(parseCsv(t)); })
+        .catch(() => { if (!cancelled) setCsvGrid(null); });
+    } else if (content) {
+      setCsvGrid(parseCsv(content));
+    }
+    return () => { cancelled = true; };
+  }, [type, byRef, fileUrl, content]);
 
   const onDownload = () => {
     if (byRef) {
@@ -140,8 +161,33 @@ export default function ArtifactCard({ type, filename, content, path, descriptio
         </div>
       )}
 
-      {/* 文本类(md/csv)且非按引用: 预览前 2000 字符 */}
-      {!byRef && (type === 'md' || type === 'csv') && content && (
+      {/* Excel:多 sheet 预览与编辑(按引用; 内联 base64 仅下载) */}
+      {type === 'excel' && byRef && conversationId && (
+        <div className="border-t p-3">
+          <ExcelPreview path={path!} conversationId={conversationId} filename={filename} />
+        </div>
+      )}
+
+      {/* CSV:统一数据网格预览(替代旧文本截断) */}
+      {type === 'csv' && csvGrid && (
+        <div className="border-t p-3">
+          <DataGrid columns={csvGrid.columns} rows={csvGrid.rows} height={320} filename={filename.replace(/\.[^.]+$/, '')} />
+        </div>
+      )}
+
+      {/* PDF 内嵌预览: 按引用用 iframe, 内联 base64 转 object URL(浏览器 PDF 阅读器) */}
+      {type === 'pdf' && (byRef || content) && (
+        <div className="border-t">
+          <iframe
+            title={filename}
+            src={byRef ? fileUrl : inlineImageSrc(content, config.mime)}
+            className="h-[420px] w-full border-0"
+          />
+        </div>
+      )}
+
+      {/* 文本类(md)且非按引用: 预览前 2000 字符 */}
+      {!byRef && type === 'md' && content && (
         <div className="p-3 max-h-[300px] overflow-auto border-t">
           <pre className="text-xs font-mono whitespace-pre-wrap text-muted-foreground bg-muted/50 rounded p-2">
             {content.slice(0, 2000)}

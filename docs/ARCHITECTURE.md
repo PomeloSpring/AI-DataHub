@@ -24,16 +24,16 @@ flowchart TB
         DV["dataviz :8004<br/>看板·图表·报表·Datasets·治理取数"]
         DG["datagov :8002<br/>质量·血缘·标准·敏感数据"]
         DF["dataflow :8003<br/>同步·调度·通知"]
-        AI["aiplatform :8007<br/>Waker·MCP·模型配置·Prompt"]
+        AI["aiplatform :8007<br/>AS-BOT·MCP·模型配置·Prompt"]
         GS["graphservice :8011<br/>Oxigraph 知识图谱/SPARQL"]
-        SS["semanticservice :8012<br/>语义层只读契约(ast/lineage/rls-diff)"]
+        SS["semhub :8012<br/>语义层只读契约(ast/lineage/rls-diff)"]
     end
     subgraph EXEC["LLM 执行层（Harness）"]
         QSA["QoderSDKAdapter<br/>按会话 QoderSDKClient 长对话池"]
         MCP["进程内 MCP 工具:<br/>datahub_catalog / datahub_semantic / datahub_ontology / datahub_screen"]
     end
     subgraph DATA["数据与基础设施"]
-        MDB[("MySQL 元数据库 adh*<br/>字典/本体/权限/Waker/审计")]
+        MDB[("MySQL 元数据库 adh*<br/>字典/本体/权限/AS-BOT/审计")]
         DE["DataFusion Gateway (Rust)<br/>联邦查询·RLS 二次校验"]
         OXI[("Oxigraph 命名图<br/>ds:ID 隔离")]
         DS[("业务数据源<br/>MySQL/Doris/SLS…")]
@@ -61,9 +61,9 @@ flowchart TB
 | dataviz | 8004 | 看板、图表、报表、可视化大屏、UI 字模库、Datasets 治理建模层、治理取数 | `services/dataset_service.py`、`governed_query.py` |
 | datagov | 8002 | 数据质量、血缘、数据标准、敏感字段治理（敏感基线唯一来源） | — |
 | dataflow | 8003 | 元数据/数据同步任务、定时调度、通知渠道、报告模板 | — |
-| aiplatform | 8007 | Waker 管理、MCP 服务市场、模型配置、Prompt 版本、执行层注册表 | `api/wakers.py` |
+| aiplatform | 8007 | AS-BOT 管理、MCP 服务市场、模型配置、Prompt 版本、执行层注册表 | `api/as_bots.py` |
 | graphservice | 8011 | 知识图谱查询（Oxigraph SPARQL）；字典端点已全部下线（读写归指标中心/datacatalog） | `api/graph.py` |
-| semanticservice | 8012 | 语义层只读契约端点（AST/血缘/RLS diff 预览/provenance） | — |
+| semhub | 8012 | 语义层只读契约端点（AST/血缘/RLS diff 预览/provenance） | — |
 | dataengine | (GATEWAY_PORT) | Rust DataFusion 联邦查询网关，MySQL/Doris/SLS provider，RLS 二次校验 | `src/` |
 
 ---
@@ -186,7 +186,7 @@ flowchart TB
 - 中间件对 `api_pattern`/`api_method` 做**笛卡尔展开**匹配（fnmatch `*` 通配）；
   「读语义但用 POST」的端点（如数据集 preview/query）需独立权限码（`dataset:query`），
   否则会被 manage 误拦。
-- 内置资源（如 `__system_bot__` Waker）仅 admin 可编辑（前端只读 + 后端 403 双保险）。
+- 内置系统资源（如系统种子 AS-BOT/知识库）仅 admin 可编辑（前端只读 + 后端 403 双保险）。
 - 权限码 pattern 必须按各服务**实际挂载路径**核对（如本体真实前缀 `/api/catalog/ontology`、
   看板 `/api/dashboard` 无 s），否则管控静默空转。
 
@@ -200,22 +200,22 @@ flowchart TB
 
 ---
 
-## 六、执行层与 Waker 权限管理
+## 六、执行层与 AS-BOT 配置管理
 
 ```
-Waker(配置单元 "what") ──注入──▶ Harness(QoderSDKAdapter "how") ──驱动──▶ LLM(model)
+AS-BOT(配置单元 "what") ──注入──▶ Harness(QoderSDKAdapter "how") ──驱动──▶ LLM(model)
 ```
 
 | 维度 | 机制 |
 |---|---|
-| Waker 解析 | `adh_wakers` 按 工作空间绑定 + 用户角色 + 会话选定 `waker_key` 合并（`resolve_wakers`）；`__system_bot__` 走 `resolve_system_bot_waker` 专用分支，工具组由服务端强制覆盖 |
-| 工具粒度 | `tools.groups`（catalog/semantic/ontology/screen）；`tools.mcp = {group: [tool,...]}` 逐工具勾选（权限完全下放配置，无代码硬删工具组）；`tools.standard` 标准工具白名单 → 生成 deny-list（注意：空数组=不限制，必须显式配置） |
+| AS-BOT 解析 | `adh_as_bots` 按 工作空间绑定 + 用户角色 + 会话选定 `as_bot_key` 合并（`resolve_as_bots`/`default_as_bot`）；AS-BOT 与智能问数同载体、不同入口，无哨兵特化；系统/业务域由工具授权（`system` 组）判定（`tool_policy.is_system_scope`） |
+| 工具粒度 | `tools.groups`（catalog/query/semantic/ontology/screen/system）；`tools.mcp = {group: [tool,...]}` 逐工具勾选（权限完全下放配置，无代码硬删工具组）；`tools.standard` 标准工具白名单 → 生成 deny-list（注意：空数组=不限制，必须显式配置） |
 | 知识库绑定 | `knowledge_base_ids` → ① 注入 system_prompt（引导优先检索）② `ctx.extra.bound_knowledge_base_ids` → `knowledge_search` 按绑定范围检索。语义：`None`=不限库；`[]`=明确无绑定直接回退 graphrag |
 | 技能绑定 | `skills` 名称数组 → `config/skills/<name>/SKILL.md` 文件夹按名加载提示词 |
 | 生效保障 | options 稳定投影指纹（含 system_prompt/tools/mcp/agents/ctx）→ **换绑后下一轮自动 resume 重建长对话**，历史保留 |
 | 基础设施黑盒 | `datasource_id/workspace_id/user_id` 由服务端 ContextVar 注入工具 handler，LLM 不可见、不可传、不可猜 |
-| AS-BOT 审批 | 写操作工具返回 `approval_required` 标记 → 前端 ApprovalCard → 审批 API 执行；角色动作权限 `adh_as_bot_role_actions` |
-| 执行层注册表 | `adh_execution_layers`（cli-qoder 必须 `config.mode=sdk` 才走 QoderSDKAdapter，否则 Waker 注入/语义工具全失效）；默认外部层取第一个 healthy 非 builtin |
+| 写动作直执行 | 菜单与功能权限码（`perm_link.require_write_perm`，`ai_access='write'`，fail-closed）+ AS-BOT 工具授权把关后**直执行**；审计落库（`decided_by`/`approved_by` 服务端注入）；旧审批通道（`adh_as_bot_approvals`/角色动作矩阵）已退役 |
+| 执行层注册表 | `adh_execution_layers`（cli-qoder 必须 `config.mode=sdk` 才走 QoderSDKAdapter，否则 AS-BOT 注入/语义工具全失效）；默认外部层取第一个 healthy 非 builtin |
 
 ---
 
@@ -232,9 +232,9 @@ sequenceDiagram
     participant T as 进程内MCP工具
     participant SL as 语义层(shared.semantics)
     participant E as DataFusion/直连
-    U->>DM: 提问(waker_key/workspace)
+    U->>DM: 提问(as_bot_key/workspace)
     DM->>H: ExecutionTask(ctx: 身份ContextVar)
-    H->>H: 解析Waker→compose_system_prompt<br/>(persona+skills+KB+护城河规则)
+    H->>H: 解析AS-BOT→compose_system_prompt<br/>(persona+skills+KB+护城河规则)
     H->>L: 会话池内流式对话
     L->>T: knowledge_search(questions批量) ←先查qMind知识库(含最新本体文档)
     L->>T: get_metrics/get_glossary(信息不全才补查)
@@ -270,9 +270,8 @@ intent(JSON) ──intent.py 解析(拒 sql/raw_sql/statement)──▶ Semantic
 
 ### Chat / AS-BOT / Datasets 的关系
 
-- **Chat**（工作空间）：业务分析对话，走选定 Waker；产物按图表契约渲染，赞踩关联可观测 trace。
-- **AS-BOT**（系统助手，数据中台/系统配置 Header 入口）：系统 Waker `__system_bot__`，
-  工具组服务端限定（catalog+semantic+ontology+screen，禁裸 SQL），写操作需审批卡片。
+- **Chat**（工作空间）：业务分析对话，走选定 AS-BOT；产物按图表契约渲染，赞踩关联可观测 trace。
+- **AS-BOT 面板**（数据中台/系统配置 Header 入口）：与智能问数**同一载体、不同入口**——继承当前角色的 AS-BOT 配置（`asbot:use` 门禁）；系统/业务域与工具面由工具授权承担，写动作由菜单与功能权限码把关直执行；会话历史与 Chat 合并共用。
 - **Datasets**（dataviz 治理建模层）：语义对象/SQL 双来源，行级 scope 与 RLS/敏感基线
   **AND 叠加、只收紧不放宽**；看板/报表/Chat（`query_dataset`）共用同一执行路径同一年口径；
   SQL Playground 保存查询可联动建集（`adh_saved_queries.dataset_id` 回写）。
@@ -286,4 +285,4 @@ intent(JSON) ──intent.py 解析(拒 sql/raw_sql/statement)──▶ Semantic
   semantic_query.py / df_serialize.py` 后必须跑护城河三套回归测试。
 - 长对话池：流中断/异常即退役回落单发；跨线程埋点须 `contextvars.copy_context().run` 传播 recorder。
 - 前端接口路径与后端真实挂载前缀必须核对（vite proxy + nginx 两处网关配置）。
-- 系统内置组件（Waker/知识库种子）严禁 SQL 占位种子，真实资源经 CLI/产品页创建。
+- 系统内置组件（AS-BOT/知识库种子）严禁 SQL 占位种子，真实资源经 CLI/产品页创建。

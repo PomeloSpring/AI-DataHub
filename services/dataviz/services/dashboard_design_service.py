@@ -1,6 +1,7 @@
 """AS-BOT 设计草稿、显式业务授权、治理预览与事务发布。
 
 设计状态只存在 MySQL；SQL 仅能经鉴权 REST 交给人类编辑器，不能进入工具返回。
+发布走直执行（菜单与功能权限码 dashboard:manage 把关），不再经审批回路。
 """
 from __future__ import annotations
 
@@ -16,7 +17,6 @@ from services.shared.common.db import execute_query, execute_insert
 from services.shared.common.db.metadata_db import get_metadata_conn
 
 logger = logging.getLogger(__name__)
-SYSTEM_BOT = "__system_bot__"
 TERMINAL = {"published", "cancelled"}
 SQL_KEYS = {"sql", "raw_sql", "statement", "query_sql", "base_sql", "sql_query", "secured_sql", "manual_sql"}
 PRIVATE_KEYS = SQL_KEYS | {"datasource_id", "source_id", "workspace_id", "user_id", "username",
@@ -72,15 +72,14 @@ def transaction():
 def identity(user):
     from services.shared.common.auth import resolve_execution_owner
     live = resolve_execution_owner(user.get("user_id"), 0)
-    if live["role"] != "admin":
-        raise DesignError("系统助手设计功能仅管理员可用", "forbidden", 403)
     return live
 
 
 def check_conversation(conversation_id, user):
-    row = execute_query("SELECT user_id,workspace_id,waker_key FROM adh_conversations WHERE id=%s",
+    """设计会话绑定只校验归属（user_id）；会话历史已合并共用，不再按入口区分。"""
+    row = execute_query("SELECT user_id FROM adh_conversations WHERE id=%s",
                         (conversation_id,), fetchone=True)
-    if not row or row["user_id"] != user["user_id"] or row["waker_key"] != SYSTEM_BOT or row["workspace_id"] != 0:
+    if not row or row["user_id"] != user["user_id"]:
         raise DesignError("设计会话不存在或无权访问", "not_found", 404)
 
 
@@ -110,7 +109,7 @@ def public_design(row):
             "name": doc.get("name", ""), "request": doc.get("request", ""),
             "operation": doc.get("operation", "append"), "selection": doc.get("selection"),
             "widgets": widgets, "steps": doc.get("steps", []), "questions": doc.get("questions", []),
-            "answers": doc.get("answers", {}), "approval_id": row.get("approval_id"),
+            "answers": doc.get("answers", {}),
             "preview_valid": bool(row.get("preview_valid")), "result": row.get("result") or None,
             "notice": "业务范围和存疑口径由用户选择；SQL 编辑与预览请打开设计面板。"}
 
@@ -148,23 +147,22 @@ def request_design(user, conversation_id, request, name="", operation="append"):
 
 
 def _accessible_kbs(user, workspace_id):
-    """设计知识库来自系统 Waker 显式绑定；业务访问仍须确认设计范围。"""
+    """设计知识库来自当前角色 AS-BOT 显式绑定；业务访问仍须确认设计范围。"""
     from services.shared.common.auth import authorize_workspace
-    from services.datamind.execution.wakers import resolve_system_bot_waker
+    from services.datamind.execution.as_bots import resolve_as_bots, default_as_bot
     authorize_workspace(user, workspace_id)
-    if user.get("role") != "admin":
-        raise DesignError("系统助手设计功能仅管理员可用", "forbidden", 403)
-    waker = resolve_system_bot_waker()
-    if not waker:
-        raise DesignError("系统 Waker 不存在或已停用", "scope_changed", 409)
-    ids = waker.get("knowledge_base_ids") or []
+    as_bot = default_as_bot(resolve_as_bots(workspace_id, user.get("role") or "",
+                                             user_id=user.get("user_id") or 0))
+    if not as_bot:
+        raise DesignError("当前角色未配置 AS-BOT", "scope_changed", 409)
+    ids = as_bot.get("knowledge_base_ids") or []
     if not ids:
         return []
     marks = ','.join(['%s'] * len(ids))
     rows = execute_query(f"SELECT id,name,kb_type,source_config FROM adh_knowledge_bases "
                          f"WHERE id IN ({marks}) AND status='active' ORDER BY id", tuple(ids))
     if {r['id'] for r in rows} != set(ids):
-        raise DesignError("系统 Waker 绑定的知识库不存在或已停用", "scope_changed", 409)
+        raise DesignError("AS-BOT 绑定的知识库不存在或已停用", "scope_changed", 409)
     return rows
 
 
@@ -177,7 +175,7 @@ def _accessible_datasource_ids(user, workspace_id):
 
 
 def _discover_domains(user, workspace_id):
-    """业务域 = 有生效业务本体模型且用户可访问的数据源；Waker 不持有数据源配置。"""
+    """业务域 = 有生效业务本体模型且用户可访问的数据源；AS-BOT 不持有数据源配置。"""
     rows = execute_query(
         "SELECT d.id,d.name,d.db_type,m.name AS model_name FROM adh_datasources d "
         "JOIN adh_ontology_models m ON m.datasource_id=d.id AND m.status='active' AND m.datasource_id>0 "
@@ -215,16 +213,18 @@ def options(design_id, user, workspace_id=None):
 
 
 def _derive_workspace(s, ds_id, user):
-    """工作空间自动派生：已有仪表盘取其归属；新建取数据源主绑定；均不要求用户先选。"""
+    """工作空间自动派生：已有仪表盘取其归属；否则显式 workspace；均不要求用户先选。
+
+    工作空间不再绑定数据源（adh_workspace_datasources 退役为冻结表），
+    workspace_id 仅作管理归属；无仪表盘/显式空间时回落 0（个人域锚点）。
+    """
     if s.get("dashboard_id"):
         row = execute_query("SELECT workspace_id FROM adh_dashboards WHERE id=%s", (s["dashboard_id"],), fetchone=True)
         if row:
             return int(row["workspace_id"] or 0)
     if s.get("workspace") is not None:
         return int(s["workspace"])
-    row = execute_query("SELECT workspace_id FROM adh_workspace_datasources WHERE datasource_id=%s "
-                        "ORDER BY is_primary DESC, workspace_id LIMIT 1", (ds_id,), fetchone=True)
-    return int(row["workspace_id"]) if row else 0
+    return 0
 
 
 def resolve_scope(doc, user, cur=None):
@@ -247,7 +247,7 @@ def resolve_scope(doc, user, cur=None):
     selected_ids = s.get("knowledge_base_ids") or []
     accessible_kbs = _accessible_kbs(user, ws)
     if not set(selected_ids) <= {kb["id"] for kb in accessible_kbs}:
-        raise DesignError("知识库不可用或 Waker 授权已变化，请重新选择", "scope_changed", 409)
+        raise DesignError("知识库不可用或 AS-BOT 授权已变化，请重新选择", "scope_changed", 409)
     kbs = [kb for kb in accessible_kbs if kb["id"] in selected_ids]
     target = target_snapshot(doc, user, ws, cur=cur)
     return {"workspace": ws, "datasource_id": ds["id"], "datasource_name": ds["name"],
@@ -288,9 +288,8 @@ def _version(row, expected_version):
 
 
 def _supersede(cur, row):
-    if row.get("approval_id"):
-        cur.execute("UPDATE adh_as_bot_approvals SET status='superseded',decided_at=UTC_TIMESTAMP(),result=%s "
-                    "WHERE id=%s AND status='pending'", (dump({"reason": "设计或预览已更新"}), row["approval_id"]))
+    """设计/预览变更使旧预览失效（无审批单，直接清预览状态）。"""
+    return None
 
 
 def change(design_id, user, expected_version, mutate):
@@ -298,9 +297,8 @@ def change(design_id, user, expected_version, mutate):
         row, live = load(design_id, user, cur=cur)
         _version(row, expected_version)
         status = mutate(row["content"], live) or "designing"
-        _supersede(cur, row)
         cur.execute("UPDATE adh_as_bot_dashboard_designs SET content=%s,status=%s,version=version+1,preview=NULL,"
-                    "preview_expires_at=NULL,approval_id=NULL,updated_at=UTC_TIMESTAMP(6) WHERE id=%s AND version=%s",
+                    "preview_expires_at=NULL,updated_at=UTC_TIMESTAMP(6) WHERE id=%s AND version=%s",
                     (dump(row["content"]), status, design_id, expected_version))
     return get_design(design_id, user)
 
@@ -336,7 +334,7 @@ def semantics(design_id, user, keyword="", conversation_id=None):
     if row["status"] in TERMINAL:
         raise DesignError("设计已结束，请新建设计")
     from services.datamind.execution.sdk_tools.scoped_metadata import execute
-    ctx = SimpleNamespace(datasource_id=scope["datasource_id"], extra={"waker_key": SYSTEM_BOT})
+    ctx = SimpleNamespace(datasource_id=scope["datasource_id"], extra={})
     catalog = execute("get_metrics", {"keyword": keyword}, ctx, resource_scope=scope)
     objects = execute("search_ontology", {"keyword": keyword}, ctx, resource_scope=scope)
     return {**catalog, "ontology": objects["objects"], "scope": "dashboard_design", "design_id": design_id,
@@ -600,13 +598,12 @@ def edit_sql(design_id, user, expected_version, widget_key, sql):
 
 
 def preview(design_id, user, expected_version):
-    # 先持久化废弃旧审批，即使后续查询失败也不能继续批准旧预览。
+    # 先持久化废弃旧预览，即使后续查询失败也不能继续发布旧预览。
     changed = change(design_id, user, expected_version, lambda doc, actor: resolve_scope(doc, actor) and "designing")
     version = changed["version"]
     row, live = load(design_id, user)
     scope, queries, fingerprint = compile_design(row, live)
     from services.dataviz.services.governed_query import governed_execute
-    from services.datamind.execution.wakers import create_approval
     results = []
     for widget, sql in zip(row["content"]["widgets"], queries):
         result = governed_execute(sql, scope["datasource_id"], live["user_id"], scope["workspace"], live["username"])
@@ -618,13 +615,9 @@ def preview(design_id, user, expected_version):
     with transaction() as cur:
         locked, live = load(design_id, user, cur=cur)
         _version(locked, version)
-        payload = {"design_id": design_id, "version": version, "digest": fingerprint}
-        aid = create_approval(live["user_id"], "dashboard.publish", payload, row["conversation_id"], cursor=cur)
-        if not aid:
-            raise DesignError("审批提议创建失败，预览不能发布", "approval_failed", 503)
-        cur.execute("UPDATE adh_as_bot_dashboard_designs SET status='pending_confirmation',preview=%s,approval_id=%s,"
+        cur.execute("UPDATE adh_as_bot_dashboard_designs SET status='pending_confirmation',preview=%s,"
                     "preview_expires_at=DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 10 MINUTE),updated_at=UTC_TIMESTAMP(6) WHERE id=%s",
-                    (dump({"digest": fingerprint, "user_id": live["user_id"]}), aid, design_id))
+                    (dump({"digest": fingerprint, "user_id": live["user_id"], "version": version}), design_id))
         cur.execute("SELECT UTC_TIMESTAMP(6) AS generated_at")
         generated_at = str(cur.fetchone()["generated_at"])
     return {"design": get_design(design_id, live), "charts": results, "generated_at": generated_at}
@@ -634,34 +627,29 @@ def cancel(design_id, user, expected_version):
     return change(design_id, user, expected_version, lambda doc, actor: "cancelled")
 
 
-def publish(approval_id, user):
-    """事务内认领并完成发布；事务提交前崩溃不留下 executing 或半套图表。"""
+def publish(design_id, user, expected_version):
+    """直执行发布：预览有效 + 摘要一致 + 目标未变才落库；菜单与功能权限码把关。
+
+    并发/重复发布：事务内以行锁 + 状态条件更新仲裁（重复调用返回已发布结果，不重复落图）。
+    """
     live = identity(user)
-    approval = execute_query("SELECT * FROM adh_as_bot_approvals WHERE id=%s AND user_id=%s AND action_key='dashboard.publish'",
-                             (approval_id, live["user_id"]), fetchone=True)
-    if not approval:
-        raise DesignError("审批不存在或无权访问", "forbidden", 403)
-    payload = decoded(approval["payload"])
-    row, live = load(payload["design_id"], live)
-    if row["status"] == "published" and row["approval_id"] == approval_id:
-        return {"approval_id": approval_id, "status": "executed", "result": row["result"]}
+    from services.datamind.execution.perm_link import require_write_perm
+    require_write_perm(live["user_id"], 0, "dashboard:manage", "发布仪表盘")
+    row, live = load(design_id, live)
+    if row["status"] == "published":
+        return {"design_id": design_id, "status": "published", "result": row["result"]}
+    _version(row, expected_version)
     scope, queries, fingerprint = compile_design(row, live)
-    if fingerprint != payload["digest"]:
-        latest, _ = load(row["id"], live)
-        if latest["status"] == "published" and latest["approval_id"] == approval_id:
-            return {"approval_id": approval_id, "status": "executed", "result": latest["result"]}
+    if row["status"] != "pending_confirmation" or not row["preview_valid"]:
+        raise DesignError("预览过期或尚未预览，请重新预览确认", "stale_preview", 409)
+    if not row["preview"] or row["preview"].get("digest") != fingerprint:
         raise DesignError("权限、口径、绑定或目标已变化，请重新预览确认", "stale_preview", 409)
-    from services.datamind.execution.wakers import check_as_bot_permission
-    if not check_as_bot_permission(live["role"], "dashboard.publish"):
-        raise DesignError("无发布权限", "forbidden", 403)
     with transaction() as cur:
-        locked, live = load(row["id"], live, cur=cur)
-        cur.execute("SELECT status FROM adh_as_bot_approvals WHERE id=%s FOR UPDATE", (approval_id,))
-        state = cur.fetchone()["status"]
-        if locked["status"] == "published" and locked["approval_id"] == approval_id:
-            return {"approval_id": approval_id, "status": "executed", "result": locked["result"]}
-        _version(locked, payload["version"])
-        if state != "pending" or locked["approval_id"] != approval_id or not locked["preview_valid"] or locked["status"] != "pending_confirmation":
+        locked, live = load(design_id, live, cur=cur)
+        if locked["status"] == "published":
+            return {"design_id": design_id, "status": "published", "result": locked["result"]}
+        _version(locked, expected_version)
+        if locked["status"] != "pending_confirmation" or not locked["preview_valid"]:
             raise DesignError("预览过期或审批已失效，请重新预览", "stale_preview", 409)
         if locked["preview"].get("digest") != fingerprint:
             raise DesignError("预览版本不一致", "stale_preview", 409)
@@ -672,12 +660,11 @@ def publish(approval_id, user):
             raise DesignError("发布前权限或业务绑定已变化", "stale_preview", 409)
         from services.dataviz.services.dashboard_service import publish_design_in_transaction
         result = publish_design_in_transaction(cur, locked["content"], queries, scope, live)
-        cur.execute("UPDATE adh_as_bot_approvals SET status='executed',decided_by=%s,decided_at=UTC_TIMESTAMP(),result=%s "
-                    "WHERE id=%s AND status='pending'", (live["user_id"], dump(result), approval_id))
+        # 状态条件更新仲裁：只有把 pending_confirmation 置为 published 的一方执行落图。
+        cur.execute("UPDATE adh_as_bot_dashboard_designs SET status='published',result=%s,updated_at=UTC_TIMESTAMP(6) "
+                    "WHERE id=%s AND status='pending_confirmation'", (dump(result), design_id))
         if cur.rowcount != 1:
-            raise DesignError("审批状态已变化", "conflict", 409)
-        cur.execute("UPDATE adh_as_bot_dashboard_designs SET status='published',result=%s,updated_at=UTC_TIMESTAMP(6) WHERE id=%s",
-                    (dump(result), row["id"]))
+            raise DesignError("设计状态已变化", "conflict", 409)
     from services.dataviz.services.dashboard_service import _invalidate_dashboard_cache
     _invalidate_dashboard_cache(live["user_id"])
-    return {"approval_id": approval_id, "status": "executed", "result": result}
+    return {"design_id": design_id, "status": "published", "result": result}

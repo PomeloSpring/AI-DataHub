@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
-  MessageSquare, LayoutDashboard, History, Settings, Code,
-  LogOut, Menu, Sun, Moon, ChevronLeft, ChevronRight, X, ChevronDown,
+  MessageSquare, LayoutDashboard, History, Settings,
+  LogOut, Menu, Sun, Moon, ChevronLeft, ChevronRight, X,
   Palette, Zap, TrendingUp, Grid3x3, GlassWater,
-  Folder, FileText, UserCircle, FlaskConical, Brain, Heart,
+  UserCircle, Brain, Heart,
   Database,
 } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
@@ -17,7 +17,6 @@ import { useAuthStore } from '../stores/authStore';
 import { useThemeStore, applyTheme, type ThemeId } from '../stores/themeStore';
 import { useBrandStore } from '../stores/brandStore';
 import { useDashboardStore } from '../stores/dashboardStore';
-import client from '../api/client';
 import WorkspaceSelectorV2 from './WorkspaceSelectorV2';
 
 const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] = [
@@ -31,173 +30,9 @@ const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] =
   { id: 'medical', label: '医疗平台', icon: Heart, desc: '清爽蓝绿，专业可信' },
 ];
 
-/** Get icon component by name from lucide-react */
-function getMenuIcon(iconName?: string): React.ComponentType<{ className?: string }> {
-  if (!iconName) return Folder;
-  const icons = LucideIcons as Record<string, any>;
-  return icons[iconName] || Folder;
-}
-
-/** Props for the recursive menu tree node. */
-interface MenuTreeNodeProps {
-  node: any;
-  depth: number;
-  collapsed: boolean;
-  currentPath: string;
-  expandedGroups: Set<number>;
-  onToggle: (id: number) => void;
-  onNavigate: (path: string) => void;
-  mobile?: boolean;
-}
-
-function MenuTreeNode({
-  node,
-  depth,
-  collapsed,
-  currentPath,
-  expandedGroups,
-  onToggle,
-  onNavigate,
-  mobile = false,
-}: MenuTreeNodeProps) {
-  const hasChildren = node.children && node.children.length > 0;
-  const isLeaf = !!node.page_id;
-  const isExpanded = expandedGroups.has(node.id);
-  const NodeIcon = getMenuIcon(node.icon);
-
-  // Leaf node -- navigates to /page/{page_id} or /screen/{page_id}
-  if (isLeaf) {
-    const path = node.link_type === 'screen' ? `/screen/${node.page_id}` : `/page/${node.page_id}`;
-    const isActive = currentPath === path;
-
-    if (mobile) {
-      return (
-        <button
-          onClick={() => onNavigate(path)}
-          className={`w-full flex items-center gap-2 px-4 py-2 rounded-md text-sm transition-colors
-            ${isActive
-              ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
-              : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/30 hover:text-sidebar-foreground'
-            }`}
-          style={{ paddingLeft: `${16 + depth * 16}px` }}
-        >
-          <NodeIcon className="h-3.5 w-3.5 flex-shrink-0" />
-          <span className="truncate">{node.name}</span>
-        </button>
-      );
-    }
-
-    return (
-      <Tooltip delayDuration={0}>
-        <TooltipTrigger asChild>
-          <button
-            onClick={() => onNavigate(path)}
-            className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors
-              ${isActive
-                ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
-                : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/30 hover:text-sidebar-foreground'
-              } ${collapsed ? 'justify-center' : ''}`}
-            style={!collapsed ? { paddingLeft: `${12 + depth * 12}px` } : undefined}
-          >
-            <NodeIcon className="h-3.5 w-3.5 flex-shrink-0" />
-            {!collapsed && <span className="truncate">{node.name}</span>}
-          </button>
-        </TooltipTrigger>
-        {collapsed && <TooltipContent side="right">{node.name}</TooltipContent>}
-      </Tooltip>
-    );
-  }
-
-  // Group node -- expandable folder
-  if (mobile) {
-    return (
-      <div>
-        <button
-          onClick={() => onToggle(node.id)}
-          className={`w-full flex items-center gap-2 px-4 py-2.5 rounded-md text-sm transition-colors
-            text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground`}
-          style={{ paddingLeft: `${16 + depth * 16}px` }}
-        >
-          <NodeIcon className="h-4 w-4 flex-shrink-0" />
-          <span className="truncate flex-1 text-left">{node.name}</span>
-          {hasChildren && (
-            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
-          )}
-        </button>
-        {hasChildren && isExpanded && (
-          <div className="space-y-0.5">
-            {node.children.map((child: any) => (
-              <MenuTreeNode
-                key={child.id}
-                node={child}
-                depth={depth + 1}
-                collapsed={false}
-                currentPath={currentPath}
-                expandedGroups={expandedGroups}
-                onToggle={onToggle}
-                onNavigate={onNavigate}
-                mobile
-              />
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div>
-      <Tooltip delayDuration={0}>
-        <TooltipTrigger asChild>
-          <button
-            onClick={() => {
-              if (collapsed) return;
-              onToggle(node.id);
-            }}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors
-              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar
-              text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground
-              ${collapsed ? 'justify-center' : ''}`}
-            style={!collapsed ? { paddingLeft: `${12 + depth * 12}px` } : undefined}
-          >
-            <NodeIcon className="h-4 w-4 flex-shrink-0" />
-            {!collapsed && (
-              <>
-                <span className="truncate flex-1 text-left">{node.name}</span>
-                {hasChildren && (
-                  <ChevronDown className={`h-3 w-3 transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
-                )}
-              </>
-            )}
-          </button>
-        </TooltipTrigger>
-        {collapsed && <TooltipContent side="right">{node.name}</TooltipContent>}
-      </Tooltip>
-      {!collapsed && hasChildren && isExpanded && (
-        <div className="space-y-0.5">
-          {node.children.map((child: any) => (
-            <MenuTreeNode
-              key={child.id}
-              node={child}
-              depth={depth + 1}
-              collapsed={false}
-              currentPath={currentPath}
-              expandedGroups={expandedGroups}
-              onToggle={onToggle}
-              onNavigate={onNavigate}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function AppLayout() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [menuTree, setMenuTree] = useState<any[]>([]);
-  const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuthStore();
@@ -215,13 +50,6 @@ export default function AppLayout() {
     fetchBrand();
     loadDashboards();
   }, [fetchBrand, loadDashboards]);
-
-  // Fetch menu tree
-  useEffect(() => {
-    client.get('/admin/menu-tree')
-      .then(({ data }) => setMenuTree(data || []))
-      .catch(() => {});
-  }, [location.pathname]);
 
   // Close mobile menu on route change
   useEffect(() => {
@@ -243,18 +71,6 @@ export default function AppLayout() {
   ];
 
   const currentPath = location.pathname === '/' ? '/chat' : location.pathname;
-
-  const toggleGroup = (id: number) => {
-    setExpandedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-  };
 
   const handleNavigate = (path: string) => {
     navigate(path);
@@ -293,25 +109,6 @@ export default function AppLayout() {
         {/* Menu */}
         <ScrollArea className="flex-1 py-2">
           <nav className="space-y-1 px-2" role="navigation" aria-label="主导航">
-            {/* Dynamic menu tree */}
-            {menuTree.length > 0 && (
-              <>
-                {menuTree.map((node) => (
-                  <MenuTreeNode
-                    key={node.id}
-                    node={node}
-                    depth={0}
-                    collapsed={collapsed}
-                    currentPath={currentPath}
-                    expandedGroups={expandedGroups}
-                    onToggle={toggleGroup}
-                    onNavigate={handleNavigate}
-                  />
-                ))}
-                <div className="my-1.5 mx-2 border-t border-sidebar-border" />
-              </>
-            )}
-
             {/* Static menu items */}
             {menuItems.map((item) => {
               const Icon = item.icon;
@@ -392,26 +189,6 @@ export default function AppLayout() {
             </div>
             <ScrollArea className="flex-1 py-3">
               <nav className="space-y-1 px-3" role="navigation" aria-label="主导航">
-                {/* Dynamic menu tree */}
-                {menuTree.length > 0 && (
-                  <>
-                    {menuTree.map((node) => (
-                      <MenuTreeNode
-                        key={node.id}
-                        node={node}
-                        depth={0}
-                        collapsed={false}
-                        currentPath={currentPath}
-                        expandedGroups={expandedGroups}
-                        onToggle={toggleGroup}
-                        onNavigate={handleNavigate}
-                        mobile
-                      />
-                    ))}
-                    <div className="my-1.5 mx-3 border-t border-sidebar-border" />
-                  </>
-                )}
-
                 {/* Static menu items */}
                 {menuItems.map((item) => {
                   const Icon = item.icon;

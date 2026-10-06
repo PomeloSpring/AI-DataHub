@@ -8,12 +8,13 @@ from services.dataflow.tasks import executor
 
 
 @pytest.fixture
-def scheduled_waker(monkeypatch):
+def scheduled_as_bot(monkeypatch):
     import copy
     from services.shared.common import db, auth
     from services.datamind.execution import resource_guard
     from services.datamind.execution.sdk_tools import external_tools
-    state = {"waker": {"id": 1, "waker_key": "sales", "name": "销售分析", "is_default": 1,
+    from services.authservice.services.role_service import role_service
+    state = {"as_bot": {"id": 1, "as_bot_key": "sales", "name": "销售分析", "is_default": 1,
              "system_prompt": "你是销售分析", "knowledge_base_ids": [],
              "mcp_server_ids": [], "tools": {"mcp": {"semantic": ["get_metrics", "run_semantic_query"]}}},
              "sources": [8], "kbs": [4], "enabled": True,
@@ -21,10 +22,8 @@ def scheduled_waker(monkeypatch):
                         "tools_config": [{"name": "propose_semantic_intent"}]}, "queries": []}
     def query(sql, params=(), fetchone=False):
         state["queries"].append((sql, params))
-        if "adh_workspace_wakers" in sql:
-            return [copy.deepcopy(state["waker"])] if state["enabled"] else []
-        if "adh_workspace_datasources" in sql:
-            return [{"datasource_id": i} for i in state["sources"]]
+        if "adh_as_bots" in sql:
+            return [copy.deepcopy(state["as_bot"])] if state["enabled"] else []
         if "adh_mcp_servers" in sql:
             assert "workspace_id" not in sql and params == (9,)
             return copy.deepcopy(state["server"])
@@ -35,14 +34,20 @@ def scheduled_waker(monkeypatch):
     monkeypatch.setattr(db, "execute_query", query)
     monkeypatch.setattr(resource_guard, "execute_query", query)
     monkeypatch.setattr(external_tools, "execute_query", query)
+    # 角色-AS-BOT 一对一解析（HEAD as_bots.py 已改）：离线模拟用户角色，不连真库。
+    monkeypatch.setattr(role_service, "get_user_roles",
+                        lambda uid, ws=None: [{"id": 1, "name": "admin"}])
+    # 纯角色裁决：数据源可用集=创建者角色授权（离线用 state["sources"] 模拟，不连真库）。
+    monkeypatch.setattr(role_service, "get_user_allowed_datasources",
+                        lambda uid, ws=0: list(state["sources"]))
     monkeypatch.setattr(auth, "resolve_execution_owner", lambda uid, ws: {
         "user_id": uid, "workspace_id": ws, "role": "admin", "username": "创建者"})
     return state
 
 
 def _grant_mcp(state):
-    state["waker"]["mcp_server_ids"] = [9]
-    state["waker"]["tools"]["external"] = {"9": ["propose_semantic_intent"]}
+    state["as_bot"]["mcp_server_ids"] = [9]
+    state["as_bot"]["tools"]["external"] = {"9": ["propose_semantic_intent"]}
 
 
 @pytest.mark.parametrize("results,required,report_ok,expected", [
@@ -233,16 +238,16 @@ def test_beat_generates_run_before_publish(monkeypatch):
 
 @pytest.mark.parametrize("call,code", [(None, "NO_QUERY_RESULT"), ("execute_sql", "TOOL_NOT_ALLOWED"),
                                       ("needs_clarification", "NEEDS_CLARIFICATION")])
-def test_agent_never_fakes_completion_or_bypasses_tools(monkeypatch, call, code, scheduled_waker):
+def test_agent_never_fakes_completion_or_bypasses_tools(monkeypatch, call, code, scheduled_as_bot):
     from services.datamind.execution.scheduled_analysis import analyze_question
     from services.shared.common.llm import llm_client
     response = {"tool_uses": [{"id": "1", "name": call, "input": {}}] if call else [], "text": "已完成"}
     monkeypatch.setattr(llm_client, "generate_with_tools", lambda *a: response)
-    result = asyncio.run(analyze_question("统计订单", {"datasource_id": 8, "waker_key": "sales"}, {"user_id": 7, "workspace_id": 3}))
+    result = asyncio.run(analyze_question("统计订单", {"datasource_id": 8, "as_bot_key": "sales"}, {"user_id": 7, "workspace_id": 3}))
     assert result["status"] == "failed" and result["error_code"] == code
 
 
-def test_agent_injects_trusted_identity(monkeypatch, scheduled_waker):
+def test_agent_injects_trusted_identity(monkeypatch, scheduled_as_bot):
     from services.datamind.execution.scheduled_analysis import analyze_question
     from services.shared.common.llm import llm_client
     from services.dataviz.services import report_service
@@ -251,7 +256,7 @@ def test_agent_injects_trusted_identity(monkeypatch, scheduled_waker):
     execute = Mock(return_value={"status": "success", "rows": [], "columns": []})
     monkeypatch.setattr(report_service, "execute_semantic_source", execute)
     identity = {"user_id": 7, "workspace_id": 3, "username": "创建者", "role": "admin"}
-    out = asyncio.run(analyze_question("统计订单", {"datasource_id": 8, "waker_key": "sales"}, identity))
+    out = asyncio.run(analyze_question("统计订单", {"datasource_id": 8, "as_bot_key": "sales"}, identity))
     assert out["status"] == "success"
     assert execute.call_args.args[1:] == (identity, 8)
 
@@ -359,86 +364,94 @@ def test_beat_tick_pauses_without_lease(monkeypatch):
 
 # ── MCP/Agent 工具范围：只提议意图，取数留在治理链 ─────────
 
-def test_agent_datasource_scope_enforced(scheduled_waker):
-    """Waker 不持有数据源边界：任务源不在创建者授权范围（工作空间绑定∩角色）→ 拒绝。"""
+def test_agent_datasource_scope_enforced(scheduled_as_bot):
+    """AS-BOT 不持有数据源边界：任务源不在创建者角色授权范围 → 拒绝。"""
     from services.datamind.execution import scheduled_analysis as sa
-    scheduled_waker["sources"] = [7]
-    with pytest.raises(PermissionError, match="数据源未绑定到工作空间"):
-        sa.load_profile({"waker_key": "sales", "datasource_id": 8}, {"workspace_id": 3, "user_id": 7})
+    scheduled_as_bot["sources"] = [7]
+    with pytest.raises(PermissionError, match="当前用户无权使用该数据源"):
+        sa.load_profile({"as_bot_key": "sales", "datasource_id": 8}, {"workspace_id": 3, "user_id": 7})
 
 
-def test_agent_prompt_scoped_but_allowed(scheduled_waker):
+def test_agent_prompt_scoped_but_allowed(scheduled_as_bot):
     from services.datamind.execution import scheduled_analysis as sa
-    profile = sa.load_profile({"waker_key": "sales", "datasource_id": 8}, {"workspace_id": 3, "user_id": 7})
-    assert profile["policy"].waker["system_prompt"] == "你是销售分析"
+    profile = sa.load_profile({"as_bot_key": "sales", "datasource_id": 8}, {"workspace_id": 3, "user_id": 7})
+    assert profile["policy"].as_bot["system_prompt"] == "你是销售分析"
     assert profile["servers"] == []
 
 
-def test_mcp_requires_explicit_intent_contract(scheduled_waker):
+def test_mcp_requires_explicit_intent_contract(scheduled_as_bot):
     from services.datamind.execution import scheduled_analysis as sa
-    _grant_mcp(scheduled_waker)
-    scheduled_waker["server"]["tools_config"] = [{"name": "other"}]
+    _grant_mcp(scheduled_as_bot)
+    scheduled_as_bot["server"]["tools_config"] = [{"name": "other"}]
     with pytest.raises(PermissionError, match="契约工具"):
-        sa.load_profile({"waker_key": "sales", "datasource_id": 8}, {"workspace_id": 3, "user_id": 7})
+        sa.load_profile({"as_bot_key": "sales", "datasource_id": 8}, {"workspace_id": 3, "user_id": 7})
 
 
-def test_mcp_stdio_transport_explicitly_unavailable(scheduled_waker):
+def test_mcp_stdio_transport_explicitly_unavailable(scheduled_as_bot):
     from services.datamind.execution import scheduled_analysis as sa
-    _grant_mcp(scheduled_waker)
-    scheduled_waker["server"]["transport"] = "stdio"
-    p = sa.load_profile({"waker_key": "sales", "datasource_id": 8}, {"workspace_id": 3, "user_id": 7})
+    _grant_mcp(scheduled_as_bot)
+    scheduled_as_bot["server"]["transport"] = "stdio"
+    p = sa.load_profile({"as_bot_key": "sales", "datasource_id": 8}, {"workspace_id": 3, "user_id": 7})
     assert p["servers"] == []
     assert "HTTP 意图提议契约" in p["unavailable"]["mcp__external_9__propose_semantic_intent"]
 
 
-def test_mcp_intent_tool_accepted_without_workspace_binding(scheduled_waker):
+def test_mcp_intent_tool_accepted_under_role_scope(scheduled_as_bot):
     from services.datamind.execution import scheduled_analysis as sa
-    _grant_mcp(scheduled_waker)
-    p = sa.load_profile({"waker_key": "sales", "datasource_id": 8}, {"workspace_id": 3, "user_id": 7})
+    _grant_mcp(scheduled_as_bot)
+    p = sa.load_profile({"as_bot_key": "sales", "datasource_id": 8}, {"workspace_id": 3, "user_id": 7})
     assert p["servers"][0]["id"] == 9
 
 
 @pytest.mark.parametrize("legacy", [{}, {"agent_name": "sales"}, {"mcp_server_id": 9},
-                                    {"waker_key": "sales", "mcp_server_ids": []}])
-def test_old_task_requires_explicit_waker(legacy, scheduled_waker):
+                                    {"as_bot_key": "sales", "mcp_server_ids": []}])
+def test_old_task_requires_explicit_as_bot(legacy, scheduled_as_bot):
     from services.datamind.execution import scheduled_analysis as sa
     with pytest.raises(sa.ScheduledScopeError) as exc:
         sa.load_profile({"datasource_id": 8, **legacy}, {"workspace_id": 3, "user_id": 7})
-    assert exc.value.code == "WAKER_REQUIRED"
-    assert scheduled_waker["queries"] == []
+    assert exc.value.code == "ASBOT_REQUIRED"
+    assert scheduled_as_bot["queries"] == []
 
 
-@pytest.mark.parametrize("revoke", ["waker", "tool", "datasource", "mcp", "knowledge"])
-def test_independent_workers_observe_revocation(scheduled_waker, revoke):
+def test_task_config_dual_key_reads_legacy_waker_key():
+    """task_config 双键兼容：读侧 as_bot_key 优先、waker_key 存量回退，写侧只写 as_bot_key。"""
     from services.datamind.execution import scheduled_analysis as sa
-    _grant_mcp(scheduled_waker)
-    scheduled_waker["waker"]["knowledge_base_ids"] = [4]
-    scheduled_waker["waker"]["tools"]["mcp"]["semantic"].append("knowledge_search")
-    config = {"waker_key": "sales", "datasource_id": 8}
+    assert sa._config_as_bot_key({"as_bot_key": "sales", "waker_key": "old"}) == "sales"
+    assert sa._config_as_bot_key({"waker_key": "old"}) == "old"   # 存量任务不丢绑定
+    assert sa._config_as_bot_key({}) == ""
+
+
+@pytest.mark.parametrize("revoke", ["as_bot", "tool", "datasource", "mcp", "knowledge"])
+def test_independent_workers_observe_revocation(scheduled_as_bot, revoke):
+    from services.datamind.execution import scheduled_analysis as sa
+    _grant_mcp(scheduled_as_bot)
+    scheduled_as_bot["as_bot"]["knowledge_base_ids"] = [4]
+    scheduled_as_bot["as_bot"]["tools"]["mcp"]["semantic"].append("knowledge_search")
+    config = {"as_bot_key": "sales", "datasource_id": 8}
     identity = {"workspace_id": 3, "user_id": 7}
     first, second = sa.load_profile(config, identity), sa.load_profile(config, identity)
     assert first["context"] is not second["context"]
-    if revoke == "waker": scheduled_waker["enabled"] = False
-    if revoke == "tool": scheduled_waker["waker"]["tools"]["mcp"]["semantic"].remove("run_semantic_query")
-    if revoke == "datasource": scheduled_waker["sources"] = []
-    if revoke == "mcp": scheduled_waker["server"] = None
-    if revoke == "knowledge": scheduled_waker["kbs"] = []
+    if revoke == "as_bot": scheduled_as_bot["enabled"] = False
+    if revoke == "tool": scheduled_as_bot["as_bot"]["tools"]["mcp"]["semantic"].remove("run_semantic_query")
+    if revoke == "datasource": scheduled_as_bot["sources"] = []
+    if revoke == "mcp": scheduled_as_bot["server"] = None
+    if revoke == "knowledge": scheduled_as_bot["kbs"] = []
     for _ in (first, second):
         with pytest.raises(PermissionError):
             sa.load_profile(config, identity)
 
 
-def test_revocation_during_llm_never_reaches_query(monkeypatch, scheduled_waker):
+def test_revocation_during_llm_never_reaches_query(monkeypatch, scheduled_as_bot):
     from services.datamind.execution import scheduled_analysis as sa
     from services.shared.common.llm import llm_client
     from services.dataviz.services import report_service
     def revoke(*args):
-        scheduled_waker["enabled"] = False
+        scheduled_as_bot["enabled"] = False
         return {"tool_uses": [{"id": "1", "name": "run_semantic_query", "input": {"intent": {"object": "订单"}}}]}
     monkeypatch.setattr(llm_client, "generate_with_tools", revoke)
     query = Mock()
     monkeypatch.setattr(report_service, "execute_semantic_source", query)
-    out = asyncio.run(sa.analyze_question("统计", {"waker_key": "sales", "datasource_id": 8}, {"user_id": 7, "workspace_id": 3}))
+    out = asyncio.run(sa.analyze_question("统计", {"as_bot_key": "sales", "datasource_id": 8}, {"user_id": 7, "workspace_id": 3}))
     assert out["status"] == "failed" and not out.get("retryable")
     query.assert_not_called()
 
@@ -449,7 +462,7 @@ def test_legacy_worker_stops_before_llm(runtime, monkeypatch):
     query = Mock()
     monkeypatch.setattr(executor, "_execute_agent_mode", query)
     out = executor.execute_scheduled_task_sync(1, run_key="run-1")
-    assert out["status"] == "failed" and log["stage_error_code"] == "WAKER_REQUIRED"
+    assert out["status"] == "failed" and log["stage_error_code"] == "ASBOT_REQUIRED"
     query.assert_not_called()
 
 
@@ -487,11 +500,11 @@ def test_propose_intent_accepts_clean_intent(monkeypatch):
     assert intent == {"object": "订单", "metrics": ["金额"], "limit": 10}
 
 
-def test_mcp_unavailable_is_retryable_not_success(monkeypatch, scheduled_waker):
+def test_mcp_unavailable_is_retryable_not_success(monkeypatch, scheduled_as_bot):
     from services.datamind.execution import scheduled_analysis as sa
     from services.shared.common.llm import llm_client
     import services.shared.mcp_client.client as mcpmod
-    _grant_mcp(scheduled_waker)
+    _grant_mcp(scheduled_as_bot)
     monkeypatch.setattr(llm_client, "generate_with_tools",
                         lambda *a: {"tool_uses": [{"id": "1", "name": "propose_semantic_intent_1", "input": {}}]})
     class DeadClient:
@@ -499,7 +512,7 @@ def test_mcp_unavailable_is_retryable_not_success(monkeypatch, scheduled_waker):
         async def connect(self): return False
         async def disconnect(self): pass
     monkeypatch.setattr(mcpmod, "MCPClient", DeadClient)
-    out = asyncio.run(sa.analyze_question("统计", {"datasource_id": 8, "waker_key": "sales"}, {"user_id": 7, "workspace_id": 3}))
+    out = asyncio.run(sa.analyze_question("统计", {"datasource_id": 8, "as_bot_key": "sales"}, {"user_id": 7, "workspace_id": 3}))
     assert out["status"] == "failed" and out["error_code"] == "MCP_UNAVAILABLE" and out["retryable"]
 
 
@@ -507,14 +520,14 @@ def test_mcp_unavailable_is_retryable_not_success(monkeypatch, scheduled_waker):
 
 def _agent_task(**cfg):
     import threading, time as _t
-    base = {"datasource_id": 8, "waker_key": "sales", "questions": [{"title": "t", "question": "统计"}]}
+    base = {"datasource_id": 8, "as_bot_key": "sales", "questions": [{"title": "t", "question": "统计"}]}
     base.update(cfg)
     return {"task_config": base, "_identity": {"user_id": 7, "workspace_id": 3},
             "_deadline": _t.monotonic() + 60, "_log_id": 1, "_stop_event": threading.Event(),
             "max_retries": base.pop("max_retries", 0)}
 
 
-def test_agent_retries_transient_llm_then_succeeds(monkeypatch, scheduled_waker):
+def test_agent_retries_transient_llm_then_succeeds(monkeypatch, scheduled_as_bot):
     from services.dataviz.services import report_service
     from services.shared.common.llm import llm_client
     monkeypatch.setattr(executor, "_check_running", lambda task: None)
@@ -532,7 +545,7 @@ def test_agent_retries_transient_llm_then_succeeds(monkeypatch, scheduled_waker)
     assert out[0]["status"] == "success" and out[0]["attempts"] == 2
 
 
-def test_agent_non_retryable_not_repeated(monkeypatch, scheduled_waker):
+def test_agent_non_retryable_not_repeated(monkeypatch, scheduled_as_bot):
     from services.dataviz.services import report_service
     from services.shared.common.llm import llm_client
     monkeypatch.setattr(executor, "_check_running", lambda task: None)

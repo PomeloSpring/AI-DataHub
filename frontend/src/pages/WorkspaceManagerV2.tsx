@@ -1,986 +1,235 @@
-import { useState, useEffect } from 'react';
-import {
-  Plus, Edit2, Trash2, Star, Database, Users, Settings,
-  X, UserPlus, Menu,
-  Shield, UserMinus,
-} from 'lucide-react';
-import { toast } from 'sonner';
+import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Spinner } from '@/components/ui/spinner';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import client from '../api/client';
-import MenuEditorTab from '../components/MenuEditorTab';
+import { Badge } from '@/components/ui/badge';
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
+} from '@/components/ui/dialog';
+import { toast } from 'sonner';
+import { Users, HardDrive, Trash2, RefreshCw, Settings2 } from 'lucide-react';
+import client from '@/api/client';
 
-// ── Types ──────────────────────────────────────────────────────────
+// 管理员统管: 工作空间为用户个人工作站(随用户走, 无成员协作),
+// 管理员在此按用户限制可建空间数与每空间磁盘配额, 并查看磁盘用量。
 
-interface Workspace {
+interface QuotaWorkspace {
   id: number;
   name: string;
-  description: string;
-  icon: string;
-  color: string;
-  owner_id: number;
-  owner_name?: string;
-  is_default: boolean;
-  user_default: boolean;
-  role: string;
-  created_at: string;
+  is_default: number;
+  disk_usage_bytes: number;
 }
 
-interface WorkspaceUser {
-  id: number;
+interface QuotaUser {
+  user_id: number;
   username: string;
-  email: string;
-  avatar: string;
-  role: string;
-  joined_at: string;
+  max_workspaces: number;
+  disk_quota_bytes: number;
+  workspaces: QuotaWorkspace[];
 }
 
-interface Datasource {
-  id: number;
-  name: string;
-  db_type: string;
-  is_primary: boolean;
-}
+const fmtBytes = (n: number) => {
+  if (!n) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+};
 
-interface WorkspaceRole {
-  id: number;
-  name: string;
-  display_name: string;
-  description: string;
-  is_system: number;
-  in_workspace: boolean;
-  member_count?: number;
+function UsageBar({ used, quota }: { used: number; quota: number }) {
+  const pct = quota > 0 ? Math.min(100, (used / quota) * 100) : 0;
+  return (
+    <div className="h-1.5 w-full rounded bg-muted overflow-hidden">
+      <div
+        className={`h-1.5 rounded ${pct >= 90 ? 'bg-destructive' : pct >= 70 ? 'bg-amber-500' : 'bg-primary'}`}
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  );
 }
-
-interface RoleUser {
-  id: number;
-  username: string;
-  email: string;
-  role_scope: 'workspace' | 'global';
-}
-
-// ── Main Component ─────────────────────────────────────────────────
 
 export default function WorkspaceManagerV2() {
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [users, setUsers] = useState<QuotaUser[]>([]);
   const [loading, setLoading] = useState(false);
-  const [showCreateDialog, setShowCreateDialog] = useState(false);
-  const [editingWorkspace, setEditingWorkspace] = useState<Workspace | null>(null);
-  const [managingWorkspace, setManagingWorkspace] = useState<Workspace | null>(null);
-  const [showDeleteDialog, setShowDeleteDialog] = useState<Workspace | null>(null);
+  const [quotaTarget, setQuotaTarget] = useState<QuotaUser | null>(null);
+  const [editMax, setEditMax] = useState('5');
+  const [editDiskGb, setEditDiskGb] = useState('5');
+  const [saving, setSaving] = useState(false);
+  const [deleteWs, setDeleteWs] = useState<{ user: QuotaUser; ws: QuotaWorkspace } | null>(null);
 
-  useEffect(() => {
-    loadWorkspaces();
-  }, []);
-
-  const loadWorkspaces = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await client.get('/workspaces');
-      setWorkspaces(data || []);
-    } catch (error) {
-      console.error('Failed to load workspaces:', error);
-      toast.error('加载工作空间失败');
+      const { data } = await client.get('/workspaces/quotas');
+      setUsers(Array.isArray(data) ? data : []);
+    } catch {
+      toast.error('加载用户工作空间失败');
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const openQuota = (u: QuotaUser) => {
+    setQuotaTarget(u);
+    setEditMax(String(u.max_workspaces));
+    setEditDiskGb(String(Math.round((u.disk_quota_bytes / 1024 ** 3) * 10) / 10));
   };
 
-  const handleSetDefault = async (ws: Workspace) => {
+  const saveQuota = async () => {
+    if (!quotaTarget) return;
+    const maxWs = Number(editMax);
+    const diskBytes = Math.round(Number(editDiskGb) * 1024 ** 3);
+    if (!Number.isFinite(maxWs) || maxWs < 1 || !Number.isFinite(diskBytes) || diskBytes < 1) {
+      toast.error('配额必须为正数');
+      return;
+    }
+    setSaving(true);
     try {
-      await client.post(`/workspaces/${ws.id}/set-default`);
-      toast.success(`已将 "${ws.name}" 设为默认工作空间`);
-      loadWorkspaces();
-    } catch (error) {
-      toast.error('设置默认工作空间失败');
+      await client.put(`/workspaces/quotas/${quotaTarget.user_id}`, {
+        max_workspaces: maxWs,
+        disk_quota_bytes: diskBytes,
+      });
+      toast.success('配额已保存');
+      setQuotaTarget(null);
+      load();
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || '保存失败');
+    } finally {
+      setSaving(false);
     }
   };
 
-  const handleDelete = async () => {
-    if (!showDeleteDialog) return;
+  const removeWs = async () => {
+    if (!deleteWs) return;
     try {
-      await client.delete(`/workspaces/${showDeleteDialog.id}`);
-      toast.success(`已删除工作空间 "${showDeleteDialog.name}"`);
-      setShowDeleteDialog(null);
-      loadWorkspaces();
-    } catch (error: any) {
-      toast.error(error.response?.data?.detail || '删除失败');
+      await client.delete(`/workspaces/${deleteWs.ws.id}`);
+      toast.success(`已删除工作空间 "${deleteWs.ws.name}"`);
+      setDeleteWs(null);
+      load();
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || '删除失败');
     }
   };
 
   return (
-    <div className="p-6 w-full">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-6 w-full space-y-4">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">工作空间管理</h1>
+          <h1 className="text-2xl font-bold">用户工作空间统管</h1>
           <p className="text-muted-foreground mt-1">
-            管理您的工作空间，配置数据源、用户和权限
+            工作空间是用户个人工作站（随用户走，用户自助创建）；在此限制每个用户的空间数量与磁盘配额。
           </p>
         </div>
-        <Button onClick={() => setShowCreateDialog(true)}>
-          <Plus className="h-4 w-4 mr-2" />
-          新建工作空间
+        <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+          <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />
+          刷新
         </Button>
       </div>
 
-      {/* Workspace List */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 py-2">
-        {workspaces.map((ws) => (
-          <WorkspaceCard
-            key={ws.id}
-            workspace={ws}
-            onEdit={() => setEditingWorkspace(ws)}
-            onManage={() => setManagingWorkspace(ws)}
-            onDelete={() => setShowDeleteDialog(ws)}
-            onSetDefault={() => handleSetDefault(ws)}
-          />
-        ))}
-      </div>
-
-      {/* Create Dialog */}
-      <CreateWorkspaceDialog
-        open={showCreateDialog}
-        onClose={() => setShowCreateDialog(false)}
-        onCreated={() => {
-          setShowCreateDialog(false);
-          loadWorkspaces();
-        }}
-      />
-
-      {/* Edit Dialog */}
-      {editingWorkspace && (
-        <EditWorkspaceDialog
-          workspace={editingWorkspace}
-          onClose={() => setEditingWorkspace(null)}
-          onSaved={() => {
-            setEditingWorkspace(null);
-            loadWorkspaces();
-          }}
-        />
-      )}
-
-      {/* Manage Dialog */}
-      {managingWorkspace && (
-        <ManageWorkspaceDialog
-          workspace={managingWorkspace}
-          onClose={() => setManagingWorkspace(null)}
-        />
-      )}
-
-      {/* Delete Confirmation */}
-      <Dialog open={!!showDeleteDialog} onOpenChange={() => setShowDeleteDialog(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>确认删除</DialogTitle>
-            <DialogDescription>
-              确定要删除工作空间 "{showDeleteDialog?.name}" 吗？此操作不可撤销，
-              该工作空间下的所有数据（仪表盘、对话、配置等）都将被删除。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDeleteDialog(null)}>
-              取消
-            </Button>
-            <Button variant="destructive" onClick={handleDelete}>
-              删除
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-// ── Workspace Card ─────────────────────────────────────────────────
-
-function WorkspaceCard({
-  workspace,
-  onEdit,
-  onManage,
-  onDelete,
-  onSetDefault,
-}: {
-  workspace: Workspace;
-  onEdit: () => void;
-  onManage: () => void;
-  onDelete: () => void;
-  onSetDefault: () => void;
-}) {
-  const roleLabels: Record<string, { label: string; variant: 'default' | 'secondary' | 'outline' }> = {
-    owner: { label: '所有者', variant: 'default' },
-    admin: { label: '管理员', variant: 'secondary' },
-    member: { label: '成员', variant: 'outline' },
-    viewer: { label: '查看者', variant: 'outline' },
-  };
-
-  const role = roleLabels[workspace.role] || roleLabels.member;
-
-  return (
-    <Card className={`relative min-w-0 ${workspace.user_default ? 'ring-2 ring-primary' : ''}`}>
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-2xl flex-shrink-0">{workspace.icon}</span>
-            <div className="min-w-0">
-              <CardTitle className="text-lg truncate">{workspace.name}</CardTitle>
-              <div className="flex gap-2 mt-1 flex-wrap">
-                <Badge variant={role.variant}>{role.label}</Badge>
-                {workspace.user_default && (
-                  <Badge variant="default" className="bg-primary">
-                    <Star className="h-3 w-3 mr-1" />
-                    默认
+      {loading ? (
+        <div className="text-center py-8 text-muted-foreground">加载中...</div>
+      ) : users.length === 0 ? (
+        <div className="text-center py-8 text-muted-foreground">暂无用户</div>
+      ) : (
+        <div className="space-y-4">
+          {users.map(u => (
+            <section key={u.user_id} className="border rounded-lg p-4 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Users className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                  <span className="font-medium truncate">{u.username}</span>
+                  <Badge variant="secondary">{u.workspaces.length}/{u.max_workspaces} 个空间</Badge>
+                  <Badge variant="outline" className="text-xs">
+                    <HardDrive className="h-3 w-3 mr-1" />
+                    每空间 {fmtBytes(u.disk_quota_bytes)}
                   </Badge>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-        <CardDescription className="mt-2">
-          {workspace.description || '暂无描述'}
-          {workspace.owner_name && (
-            <span className="ml-2 text-xs">
-              · 所有者:
-              <a
-                href="/admin"
-                className="ml-1 text-primary hover:underline"
-                onClick={(e) => { e.stopPropagation(); }}
-              >
-                {workspace.owner_name}
-              </a>
-            </span>
-          )}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="sm" onClick={onManage}>
-            <Settings className="h-3.5 w-3.5 mr-1" />
-            管理
-          </Button>
-          <Button variant="outline" size="sm" onClick={onEdit}>
-            <Edit2 className="h-3.5 w-3.5 mr-1" />
-            编辑
-          </Button>
-          {!workspace.user_default && (
-            <Button variant="outline" size="sm" onClick={onSetDefault}>
-              <Star className="h-3.5 w-3.5 mr-1" />
-              设为默认
-            </Button>
-          )}
-          {workspace.role === 'owner' && !workspace.is_default && (
-            <Button variant="outline" size="sm" onClick={onDelete}>
-              <Trash2 className="h-3.5 w-3.5 mr-1" />
-              删除
-            </Button>
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-// ── Create Workspace Dialog ────────────────────────────────────────
-
-function CreateWorkspaceDialog({
-  open,
-  onClose,
-  onCreated,
-}: {
-  open: boolean;
-  onClose: () => void;
-  onCreated: () => void;
-}) {
-  const [form, setForm] = useState({
-    name: '',
-    description: '',
-    icon: '📊',
-    color: '#1890ff',
-  });
-  const [saving, setSaving] = useState(false);
-
-  const handleCreate = async () => {
-    if (!form.name.trim()) {
-      toast.error('请输入工作空间名称');
-      return;
-    }
-    setSaving(true);
-    try {
-      await client.post('/workspaces', form);
-      toast.success('工作空间创建成功');
-      onCreated();
-    } catch (error: any) {
-      toast.error(error.response?.data?.detail || '创建失败');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const icons = ['📊', '📋', '🔧', '🏠', '🚀', '💡', '🎯', '🌟'];
-
-  return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>新建工作空间</DialogTitle>
-          <DialogDescription>
-            创建一个新的工作空间来组织您的数据和资源
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-4 py-4">
-          <div className="space-y-2">
-            <Label>图标</Label>
-            <div className="flex gap-2">
-              {icons.map(icon => (
-                <Button
-                  key={icon}
-                  variant={form.icon === icon ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setForm({ ...form, icon })}
-                >
-                  {icon}
+                </div>
+                <Button variant="outline" size="sm" onClick={() => openQuota(u)}>
+                  <Settings2 className="h-4 w-4 mr-1" />
+                  配额设置
                 </Button>
-              ))}
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <Label>名称</Label>
-            <Input
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              placeholder="输入工作空间名称"
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label>描述</Label>
-            <Textarea
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-              placeholder="输入工作空间描述（可选）"
-            />
-          </div>
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            取消
-          </Button>
-          <Button onClick={handleCreate} disabled={saving}>
-            {saving ? '创建中...' : '创建'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// ── Edit Workspace Dialog ──────────────────────────────────────────
-
-function EditWorkspaceDialog({
-  workspace,
-  onClose,
-  onSaved,
-}: {
-  workspace: Workspace;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const existingConfig = (workspace as any).config || {};
-  const [form, setForm] = useState({
-    name: workspace.name,
-    description: workspace.description || '',
-    icon: workspace.icon,
-  });
-  const [saving, setSaving] = useState(false);
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      await client.put(`/workspaces/${workspace.id}`, {
-        ...form,
-        config: {
-          ...existingConfig,
-        },
-      });
-      toast.success('工作空间更新成功');
-      onSaved();
-    } catch (error: any) {
-      toast.error(error.response?.data?.detail || '更新失败');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const icons = ['📊', '📋', '🔧', '🏠', '🚀', '💡', '🎯', '🌟'];
-
-  return (
-    <Dialog open={true} onOpenChange={onClose}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>编辑工作空间</DialogTitle>
-          <DialogDescription>
-            修改 "{workspace.name}" 的配置
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-4 py-4">
-          <div className="space-y-2">
-            <Label>图标</Label>
-            <div className="flex gap-2">
-              {icons.map(icon => (
-                <Button
-                  key={icon}
-                  variant={form.icon === icon ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setForm({ ...form, icon })}
-                >
-                  {icon}
-                </Button>
-              ))}
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <Label>名称</Label>
-            <Input
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label>描述</Label>
-            <Textarea
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-            />
-          </div>
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            取消
-          </Button>
-          <Button onClick={handleSave} disabled={saving}>
-            {saving ? '保存中...' : '保存'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-
-// ── Workspace Roles Tab (RBAC) ─────────────────────────────────────
-
-function WorkspaceRolesTab({ workspaceId }: { workspaceId: number }) {
-  const [roles, setRoles] = useState<WorkspaceRole[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [memberRole, setMemberRole] = useState<WorkspaceRole | null>(null);
-  const [roleUsers, setRoleUsers] = useState<RoleUser[]>([]);
-  const [wsUsers, setWsUsers] = useState<WorkspaceUser[]>([]);
-
-  const load = async () => {
-    try {
-      const { data } = await client.get(`/workspaces/${workspaceId}/roles`);
-      setRoles(Array.isArray(data) ? data : []);
-    } catch { toast.error('加载角色失败'); }
-    finally { setLoading(false); }
-  };
-
-  useEffect(() => { load(); }, []);
-
-  const openMembers = async (role: WorkspaceRole) => {
-    setMemberRole(role);
-    try {
-      const [membersRes, usersRes] = await Promise.all([
-        client.get(`/workspaces/${workspaceId}/roles/${role.id}/users`),
-        client.get(`/workspaces/${workspaceId}/users`),
-      ]);
-      setRoleUsers(Array.isArray(membersRes.data) ? membersRes.data : []);
-      setWsUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
-    } catch { toast.error('加载角色成员失败'); }
-  };
-
-  const refreshMembers = async (role: WorkspaceRole) => {
-    try {
-      const { data } = await client.get(`/workspaces/${workspaceId}/roles/${role.id}/users`);
-      setRoleUsers(Array.isArray(data) ? data : []);
-    } catch { /* ignore */ }
-    load();  // 同步刷新成员计数
-  };
-
-  const handleGrant = async (roleId: number) => {
-    try {
-      await client.post(`/workspaces/${workspaceId}/roles`, { role_id: roleId });
-      toast.success('角色已授权');
-      load();
-    } catch (e: any) { toast.error(e.response?.data?.detail || '授权失败'); }
-  };
-
-  const handleRevoke = async (role: WorkspaceRole) => {
-    try {
-      await client.delete(`/workspaces/${workspaceId}/roles/${role.id}`);
-      toast.success(`已回收角色「${role.display_name}」`);
-      load();
-    } catch (e: any) { toast.error(e.response?.data?.detail || '回收失败'); }
-  };
-
-  const handleAssignUser = async (userId: number) => {
-    if (!memberRole) return;
-    try {
-      await client.post(`/workspaces/${workspaceId}/roles/${memberRole.id}/users`, { user_id: userId });
-      toast.success('已分配');
-      refreshMembers(memberRole);
-    } catch (e: any) { toast.error(e.response?.data?.detail || '分配失败'); }
-  };
-
-  const handleRemoveUser = async (userId: number) => {
-    if (!memberRole) return;
-    try {
-      await client.delete(`/workspaces/${workspaceId}/roles/${memberRole.id}/users/${userId}`);
-      toast.success('已取消');
-      refreshMembers(memberRole);
-    } catch (e: any) { toast.error(e.response?.data?.detail || '取消失败'); }
-  };
-
-  if (loading) return <div className="flex justify-center py-8"><Spinner size={24} /></div>;
-
-  const granted = roles.filter(r => r.in_workspace);
-  const available = roles.filter(r => !r.in_workspace);
-  const assignedIds = new Set(roleUsers.map(u => u.id));
-
-  return (
-    <div className="space-y-4">
-      <div className="text-sm text-muted-foreground">
-        将角色授权给工作空间后，把成员分配到角色即可批量控制数据访问范围，无需逐用户配置。
-      </div>
-
-      {granted.map(r => (
-        <div key={r.id} className="flex items-center justify-between p-3 border rounded-lg">
-          <div className="flex items-center gap-2 min-w-0">
-            <Shield className="h-4 w-4 flex-shrink-0" />
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="font-medium truncate">{r.display_name}</span>
-                <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{r.name}</code>
-                {r.is_system ? <Badge variant="secondary">系统</Badge> : <Badge variant="outline">自定义</Badge>}
               </div>
-              {r.description && <div className="text-xs text-muted-foreground truncate">{r.description}</div>}
-            </div>
-            <Badge variant="outline" className="flex-shrink-0">{r.member_count || 0} 名成员</Badge>
-          </div>
-          <div className="flex gap-1 flex-shrink-0">
-            <Button size="sm" variant="outline" onClick={() => openMembers(r)}>
-              <Users className="h-4 w-4 mr-1" />
-              成员
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => handleRevoke(r)}>
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      ))}
 
-      {available.length > 0 && (
-        <>
-          <div className="text-sm text-muted-foreground mt-4">可授权的角色：</div>
-          {available.map(r => (
-            <div key={r.id} className="flex items-center justify-between p-3 border rounded-lg border-dashed">
-              <div className="flex items-center gap-2 min-w-0">
-                <Shield className="h-4 w-4 flex-shrink-0" />
-                <span className="truncate">{r.display_name}</span>
-                <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{r.name}</code>
-                {r.is_system ? <Badge variant="secondary">系统</Badge> : <Badge variant="outline">自定义</Badge>}
-              </div>
-              <Button size="sm" variant="outline" onClick={() => handleGrant(r.id)}>
-                <Plus className="h-4 w-4" />
-              </Button>
-            </div>
-          ))}
-        </>
-      )}
-
-      {granted.length === 0 && available.length === 0 && (
-        <div className="text-sm text-muted-foreground text-center py-8">
-          暂无角色，请先在角色权限页面中创建
-        </div>
-      )}
-
-      {/* Role Members Dialog */}
-      <Dialog open={!!memberRole} onOpenChange={() => setMemberRole(null)}>
-        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>角色成员 — {memberRole?.display_name}</DialogTitle>
-            <DialogDescription>
-              将工作空间成员分配到该角色，全局角色成员不可在此取消
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <Label className="mb-2 block">已分配成员 ({roleUsers.length})</Label>
-              {roleUsers.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-2">暂无成员</p>
+              {u.workspaces.length === 0 ? (
+                <p className="text-sm text-muted-foreground">该用户还没有工作空间（首次访问时自动创建默认工作站）</p>
               ) : (
-                <div className="space-y-1 max-h-[200px] overflow-auto">
-                  {roleUsers.map(u => (
-                    <div key={u.id} className="flex items-center justify-between border rounded px-3 py-1.5">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm">{u.username}</span>
-                        {u.role_scope === 'global' && <Badge variant="secondary">全局角色</Badge>}
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                  {u.workspaces.map(ws => {
+                    const pct = u.disk_quota_bytes > 0
+                      ? Math.round((ws.disk_usage_bytes / u.disk_quota_bytes) * 100) : 0;
+                    return (
+                      <div key={ws.id} className="border rounded p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-sm font-medium truncate">{ws.name}</span>
+                            {ws.is_default ? <Badge variant="outline" className="text-[10px]">默认</Badge> : null}
+                          </div>
+                          <Button
+                            variant="ghost" size="sm" className="text-destructive"
+                            onClick={() => setDeleteWs({ user: u, ws })}
+                            title="删除工作空间"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-xs text-muted-foreground">
+                            <span>磁盘用量</span>
+                            <span>{fmtBytes(ws.disk_usage_bytes)} / {fmtBytes(u.disk_quota_bytes)}{pct >= 90 ? '（接近上限）' : ''}</span>
+                          </div>
+                          <UsageBar used={ws.disk_usage_bytes} quota={u.disk_quota_bytes} />
+                        </div>
                       </div>
-                      {u.role_scope !== 'global' && (
-                        <Button variant="ghost" size="sm" onClick={() => handleRemoveUser(u.id)}>
-                          <UserMinus className="h-3 w-3" />
-                        </Button>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
+            </section>
+          ))}
+        </div>
+      )}
+
+      {/* 配额设置 */}
+      <Dialog open={!!quotaTarget} onOpenChange={open => { if (!open) setQuotaTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>配额设置 — {quotaTarget?.username}</DialogTitle>
+            <DialogDescription>限制该用户可创建的工作空间数量与每个工作空间的磁盘上限。</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>可建工作空间数（含默认工作站）</Label>
+              <Input type="number" min={1} value={editMax} onChange={e => setEditMax(e.target.value)} />
             </div>
-            <div>
-              <Label className="mb-2 block">添加成员</Label>
-              <div className="max-h-[200px] overflow-auto space-y-1">
-                {wsUsers.filter(u => !assignedIds.has(u.id)).map(u => (
-                  <div key={u.id} className="flex items-center justify-between border rounded px-3 py-1.5">
-                    <span className="text-sm">{u.username}</span>
-                    <Button variant="ghost" size="sm" onClick={() => handleAssignUser(u.id)}>
-                      <UserPlus className="h-3 w-3" />
-                    </Button>
-                  </div>
-                ))}
-                {wsUsers.filter(u => !assignedIds.has(u.id)).length === 0 && (
-                  <p className="text-sm text-muted-foreground py-2">没有可添加的成员</p>
-                )}
-              </div>
+            <div className="space-y-2">
+              <Label>每工作空间磁盘配额（GB）</Label>
+              <Input type="number" min={1} step="0.5" value={editDiskGb} onChange={e => setEditDiskGb(e.target.value)} />
+              <p className="text-xs text-muted-foreground">达到上限后将拒绝新建会话，用户需归档收藏产物或清理会话文件。</p>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setMemberRole(null)}>关闭</Button>
+            <Button variant="outline" onClick={() => setQuotaTarget(null)}>取消</Button>
+            <Button onClick={saveQuota} disabled={saving}>{saving ? '保存中...' : '保存'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 删除确认 */}
+      <Dialog open={!!deleteWs} onOpenChange={open => { if (!open) setDeleteWs(null); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>确认删除工作空间</DialogTitle></DialogHeader>
+          <p className="text-sm">
+            确定要删除 "{deleteWs?.ws.name}" 吗？该空间下的会话产物将一并清理（已归档资产不受影响）。
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteWs(null)}>取消</Button>
+            <Button variant="destructive" onClick={removeWs}>删除</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
-  );
-}
-
-// ── Manage Workspace Dialog ────────────────────────────────────────
-
-function ManageWorkspaceDialog({
-  workspace,
-  onClose,
-}: {
-  workspace: Workspace;
-  onClose: () => void;
-}) {
-  const [users, setUsers] = useState<WorkspaceUser[]>([]);
-  const [datasources, setDatasources] = useState<Datasource[]>([]);
-  const [allDatasources, setAllDatasources] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [showAddUser, setShowAddUser] = useState(false);
-  const [newUserId, setNewUserId] = useState('');
-  const [newUserRole, setNewUserRole] = useState('member');
-
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
-    setLoading(true);
-    try {
-      const [usersRes, dsRes, allDsRes] = await Promise.all([
-        client.get(`/workspaces/${workspace.id}/users`),
-        client.get(`/workspaces/${workspace.id}/datasources`),
-        client.get('/datasources/'),
-      ]);
-      setUsers(usersRes.data || []);
-      setDatasources(dsRes.data || []);
-      setAllDatasources(allDsRes.data || []);
-    } catch (error) {
-      console.error('Failed to load data:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleAddUser = async () => {
-    if (!newUserId) {
-      toast.error('请输入用户ID');
-      return;
-    }
-    try {
-      await client.post(`/workspaces/${workspace.id}/users`, {
-        user_id: Number(newUserId),
-        role: newUserRole,
-      });
-      toast.success('用户已添加');
-      setShowAddUser(false);
-      setNewUserId('');
-      loadData();
-    } catch (error: any) {
-      toast.error(error.response?.data?.detail || '添加失败');
-    }
-  };
-
-  const handleUpdateUserRole = async (userId: number, role: string) => {
-    try {
-      await client.put(`/workspaces/${workspace.id}/users/${userId}`, { role });
-      toast.success('用户角色已更新');
-      loadData();
-    } catch (error: any) {
-      toast.error(error.response?.data?.detail || '更新失败');
-    }
-  };
-
-  const handleRemoveUser = async (userId: number) => {
-    try {
-      await client.delete(`/workspaces/${workspace.id}/users/${userId}`);
-      toast.success('用户已移除');
-      loadData();
-    } catch (error: any) {
-      toast.error(error.response?.data?.detail || '移除失败');
-    }
-  };
-
-  const handleAddDatasource = async (dsId: number) => {
-    try {
-      // 后端 add_workspace_datasource 以 Query(...) 接收 datasource_id，必须走查询参数而非 body
-      await client.post(`/workspaces/${workspace.id}/datasources`, null, {
-        params: { datasource_id: dsId },
-      });
-      toast.success('数据源已添加');
-      loadData();
-    } catch (error: any) {
-      toast.error(error.response?.data?.detail || '添加失败');
-    }
-  };
-
-  const handleRemoveDatasource = async (dsId: number) => {
-    try {
-      await client.delete(`/workspaces/${workspace.id}/datasources/${dsId}`);
-      toast.success('数据源已移除');
-      loadData();
-    } catch (error: any) {
-      toast.error(error.response?.data?.detail || '移除失败');
-    }
-  };
-
-  const roleLabels: Record<string, string> = {
-    owner: '所有者',
-    admin: '管理员',
-    member: '成员',
-    viewer: '查看者',
-  };
-
-  const availableDatasources = allDatasources.filter(
-    ds => !datasources.some(d => d.id === ds.id)
-  );
-
-  return (
-    <Dialog open={true} onOpenChange={onClose}>
-      <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>管理工作空间 - {workspace.name}</DialogTitle>
-          <DialogDescription>
-            管理工作空间的用户、角色、数据源和菜单
-          </DialogDescription>
-        </DialogHeader>
-
-        <Tabs defaultValue="users" className="py-4">
-          <TabsList>
-            <TabsTrigger value="users">
-              <Users className="h-4 w-4 mr-1" />
-              用户 ({users.length})
-            </TabsTrigger>
-            <TabsTrigger value="roles">
-              <Shield className="h-4 w-4 mr-1" />
-              角色
-            </TabsTrigger>
-            <TabsTrigger value="datasources">
-              <Database className="h-4 w-4 mr-1" />
-              数据源 ({datasources.length})
-            </TabsTrigger>
-              <TabsTrigger value="menu">
-              <Menu className="h-4 w-4 mr-1" />
-              菜单管理
-            </TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="users" className="space-y-4">
-            <div className="flex justify-end">
-              <Button size="sm" onClick={() => setShowAddUser(true)}>
-                <UserPlus className="h-4 w-4 mr-1" />
-                添加用户
-              </Button>
-            </div>
-
-            {users.map(user => (
-              <div key={user.id} className="flex items-center justify-between p-3 border rounded-lg">
-                <div className="flex items-center gap-3">
-                  <Avatar>
-                    <AvatarFallback>
-                      {user.username?.charAt(0)?.toUpperCase() || 'U'}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div>
-                    <div className="font-medium">{user.username}</div>
-                    <div className="text-sm text-muted-foreground">{user.email}</div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Select
-                    value={user.role}
-                    onValueChange={(role) => handleUpdateUserRole(user.id, role)}
-                    disabled={user.role === 'owner'}
-                  >
-                    <SelectTrigger className="w-[100px] h-8">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="admin">管理员</SelectItem>
-                      <SelectItem value="member">成员</SelectItem>
-                      <SelectItem value="viewer">查看者</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  {user.role !== 'owner' && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleRemoveUser(user.id)}
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
-                  )}
-                </div>
-              </div>
-            ))}
-
-            {/* Add User Dialog */}
-            <Dialog open={showAddUser} onOpenChange={setShowAddUser}>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>添加用户</DialogTitle>
-                </DialogHeader>
-                <div className="space-y-4 py-4">
-                  <div className="space-y-2">
-                    <Label>用户ID</Label>
-                    <Input
-                      value={newUserId}
-                      onChange={(e) => setNewUserId(e.target.value)}
-                      placeholder="输入用户ID"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>角色</Label>
-                    <Select value={newUserRole} onValueChange={setNewUserRole}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="admin">管理员</SelectItem>
-                        <SelectItem value="member">成员</SelectItem>
-                        <SelectItem value="viewer">查看者</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                <DialogFooter>
-                  <Button variant="outline" onClick={() => setShowAddUser(false)}>
-                    取消
-                  </Button>
-                  <Button onClick={handleAddUser}>添加</Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-          </TabsContent>
-
-          <TabsContent value="roles" className="space-y-4">
-            <WorkspaceRolesTab workspaceId={workspace.id} />
-          </TabsContent>
-
-          <TabsContent value="datasources" className="space-y-4">
-            {/* Current datasources */}
-            {datasources.map(ds => (
-              <div key={ds.id} className="flex items-center justify-between p-3 border rounded-lg">
-                <div className="flex items-center gap-2">
-                  <Database className="h-4 w-4" />
-                  <span>{ds.name}</span>
-                  <Badge variant="outline">{ds.db_type}</Badge>
-                  {ds.is_primary && <Badge>主数据源</Badge>}
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleRemoveDatasource(ds.id)}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-            ))}
-
-            {/* Available datasources */}
-            {availableDatasources.length > 0 && (
-              <>
-                <div className="text-sm text-muted-foreground mt-4">
-                  可添加的数据源：
-                </div>
-                {availableDatasources.map(ds => (
-                  <div key={ds.id} className="flex items-center justify-between p-3 border rounded-lg border-dashed">
-                    <div className="flex items-center gap-2">
-                      <Database className="h-4 w-4" />
-                      <span>{ds.name}</span>
-                      <Badge variant="outline">{ds.db_type}</Badge>
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleAddDatasource(ds.id)}
-                    >
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                  </div>
-                ))}
-              </>
-            )}
-          </TabsContent>
-
-
-          <TabsContent value="menu" className="space-y-4">
-            <MenuEditorTab workspaceId={workspace.id} />
-          </TabsContent>
-        </Tabs>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            关闭
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }

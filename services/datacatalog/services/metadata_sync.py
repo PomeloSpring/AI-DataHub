@@ -1,7 +1,7 @@
 """
 AI-DataHub Metadata Sync  [DEPRECATED]
 
-Incremental sync of table info and column metadata from MySQL/Doris/Elasticsearch.
+Incremental sync of table info and column metadata from MySQL/Doris.
 - Table info → adh.adh_table_info (table_comment, business_desc, tags)
 - Column metadata → adh.adh_column_metadata (column_comment, business_desc)
 
@@ -11,7 +11,6 @@ Usage:
     python -m services.datacatalog.services.metadata_sync
 """
 
-import os
 import re
 import time as _time
 from datetime import datetime
@@ -19,7 +18,10 @@ from datetime import datetime
 import pymysql
 
 from services.shared.common.crypto import decrypt_password, is_encrypted
-from services.shared.common.config import METADATA_DB_DATABASE
+from services.shared.common.config import (
+    METADATA_DB_HOST, METADATA_DB_PORT, METADATA_DB_USER,
+    METADATA_DB_PASSWORD, METADATA_DB_DATABASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +55,13 @@ def extract_region_tag(table_name: str) -> str:
 
 
 def extract_domain_tag(table_name: str) -> str:
+    """表名**前缀**启发式推断业务域（仅用于新建行的初始值）。
+
+    局限：规则只认 dim_/dwd_/ods_/adh_ 前缀，对 `t_*` 这类业务表一条都不命中，
+    全部回落 'other'。真正的业务域事实源是 `adh_tag_values` 的人工标注，
+    由 `tags_service.derive_table_domain_tags` 派生回写 domain_tag。
+    因此本函数的产出**不得覆盖已有行**（见 sync_tables 的变更判定）。
+    """
     lower = table_name.lower()
     for pattern, domain in _DOMAIN_PREFIX_RULES:
         if re.match(pattern, lower):
@@ -64,13 +73,20 @@ def extract_domain_tag(table_name: str) -> str:
 # DB helpers
 # ---------------------------------------------------------------------------
 
-def _get_doris_conn(database="information_schema"):
+def _get_doris_conn(database=None):
+    """连接元数据库（存放 adh_table_info / adh_column_metadata 等元数据表）。
+
+    历史上此处读 DORIS_* 环境变量（默认 127.0.0.1:9030）；现统一以
+    METADATA_DB_* 为唯一配置源（config.py 已将 DORIS_* 标记为 deprecated
+    别名）。否则未配 DORIS_* 的部署会静默回落本地地址连不上，
+    同步一行都写不进去且报错难以定位。
+    """
     return pymysql.connect(
-        host=os.environ.get("DORIS_HOST", "127.0.0.1"),
-        port=int(os.environ.get("DORIS_PORT", "9030")),
-        user=os.environ.get("DORIS_USER", "root"),
-        password=os.environ.get("DORIS_PASSWORD", ""),
-        database=database,
+        host=METADATA_DB_HOST,
+        port=METADATA_DB_PORT,
+        user=METADATA_DB_USER,
+        password=METADATA_DB_PASSWORD,
+        database=database or METADATA_DB_DATABASE,
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
     )
@@ -98,184 +114,6 @@ def _fetch_columns(conn, table_name, schema="alliedstar"):
 
 
 # ---------------------------------------------------------------------------
-# Elasticsearch helpers
-# ---------------------------------------------------------------------------
-
-def _build_es_client(ds_config: dict):
-    """Build an Elasticsearch client from datasource config."""
-    try:
-        from elasticsearch import Elasticsearch
-    except ImportError:
-        raise RuntimeError("elasticsearch 库未安装，请执行 pip install elasticsearch")
-
-    protocol = "https" if ds_config.get("ssl") else "http"
-    es_url = f"{protocol}://{ds_config['host']}:{ds_config['port']}"
-    es_kwargs = {"hosts": [es_url], "request_timeout": 30}
-    if ds_config.get("ssl"):
-        es_kwargs["verify_certs"] = False
-        es_kwargs["ssl_show_warn"] = False
-    if ds_config.get("user") and ds_config.get("password"):
-        es_kwargs["basic_auth"] = (ds_config["user"], ds_config["password"])
-    elif ds_config.get("user"):
-        es_kwargs["basic_auth"] = (ds_config["user"], "")
-    return Elasticsearch(**es_kwargs)
-
-
-def _fetch_es_indices(es) -> list:
-    """Fetch all indices and aliases from Elasticsearch, excluding system indices."""
-    result = []
-    seen = set()
-
-    # List concrete indices
-    indices = es.cat.indices(format="json", h="index,docs.count,store.size")
-    for idx in indices:
-        name = idx.get("index", "")
-        if name.startswith("."):
-            continue
-        seen.add(name)
-        result.append({
-            "TABLE_NAME": name,
-            "TABLE_COMMENT": f"docs: {idx.get('docs.count', '?')}, size: {idx.get('store.size', '?')}",
-        })
-
-    # List aliases — aliases are valid sync targets (may span multiple indices)
-    try:
-        aliases = es.cat.aliases(format="json", h="alias,index")
-        for row in aliases:
-            alias = row.get("alias", "")
-            if not alias or alias.startswith(".") or alias in seen:
-                continue
-            seen.add(alias)
-            result.append({
-                "TABLE_NAME": alias,
-                "TABLE_COMMENT": "alias",
-            })
-    except Exception:
-        pass  # alias listing is best-effort
-
-    return result
-
-
-def _deep_merge_properties(base: dict, overlay: dict) -> dict:
-    """Deep-merge two ES mapping property dicts.
-
-    When an alias points to multiple indices, each index may have slightly
-    different fields. We union all fields; for conflicting nested objects
-    we recurse, for conflicting leaf fields the first seen type wins.
-    """
-    merged = dict(base)
-    for key, overlay_val in overlay.items():
-        if key not in merged:
-            merged[key] = overlay_val
-            continue
-        base_val = merged[key]
-        # Both are nested objects — recurse
-        if "properties" in base_val and "properties" in overlay_val:
-            base_val["properties"] = _deep_merge_properties(
-                base_val["properties"], overlay_val["properties"]
-            )
-        # else: first seen type wins (leaf conflict)
-    return merged
-
-
-def _flatten_es_properties(properties: dict, prefix: str = "") -> list:
-    """Recursively flatten ES mapping properties into a flat field list.
-
-    Handles nested objects and multi-fields. Returns list of
-    {COLUMN_NAME, DATA_TYPE, COLUMN_COMMENT, COLUMN_KEY, IS_NULLABLE}.
-    """
-    fields = []
-    for field_name, field_info in properties.items():
-        full_name = f"{prefix}{field_name}" if not prefix else f"{prefix}.{field_name}"
-        es_type = field_info.get("type", "object")
-
-        # Multi-fields (e.g. keyword sub-field of text)
-        multi_fields = field_info.get("fields", {})
-        if multi_fields:
-            # Use the primary type, note multi-fields in comment
-            sub_types = ", ".join(f"{k}:{v.get('type', '?')}" for k, v in multi_fields.items() if k != "keyword")
-            comment = f"multi-fields: {sub_types}" if sub_types else ""
-        else:
-            comment = ""
-
-        # Nested object — recurse
-        if es_type == "object" or "properties" in field_info:
-            sub_props = field_info.get("properties", {})
-            if sub_props:
-                fields.extend(_flatten_es_properties(sub_props, full_name))
-            else:
-                fields.append({
-                    "COLUMN_NAME": full_name,
-                    "DATA_TYPE": "object",
-                    "COLUMN_COMMENT": comment,
-                    "COLUMN_KEY": "false",
-                    "IS_NULLABLE": "true",
-                })
-        else:
-            fields.append({
-                "COLUMN_NAME": full_name,
-                "DATA_TYPE": es_type,
-                "COLUMN_COMMENT": comment,
-                "COLUMN_KEY": "false",
-                "IS_NULLABLE": "true",
-            })
-
-    return fields
-
-
-def _extract_properties_from_mapping(idx_mapping: dict) -> dict:
-    """Extract properties dict from a single index mapping response.
-
-    Handles different ES versions:
-      ES 7.x:  {"mappings": {"_doc": {"properties": {...}}}}
-      ES 7.x+: {"mappings": {"properties": {...}}}
-      ES 8.x:  {"mappings": {"properties": {...}}}
-    """
-    mappings = idx_mapping.get("mappings", {})
-    if not mappings:
-        return {}
-
-    # Try direct: {"mappings": {"properties": {...}}}
-    if "properties" in mappings:
-        return mappings["properties"]
-
-    # Try with type name: {"mappings": {"_doc": {"properties": {...}}}}
-    for key, val in mappings.items():
-        if isinstance(val, dict) and "properties" in val:
-            return val["properties"]
-
-    return {}
-
-
-def _fetch_es_fields(es, index_name: str) -> list:
-    """Fetch field metadata for an ES index or alias via _mapping API.
-
-    When index_name is an alias pointing to multiple indices, merges all
-    underlying indices' schemas into a unified field list.
-    Returns list of {COLUMN_NAME, DATA_TYPE, COLUMN_COMMENT, COLUMN_KEY, IS_NULLABLE}.
-    """
-    mapping = es.indices.get_mapping(index=index_name)
-
-    # Merge properties from all indices in the response (alias may span multiple)
-    merged_properties = {}
-    for _idx_name, idx_mapping in mapping.items():
-        properties = _extract_properties_from_mapping(idx_mapping)
-        if properties:
-            merged_properties = _deep_merge_properties(merged_properties, properties)
-
-    if not merged_properties:
-        # Diagnostic: print what we got back to help debug
-        print(f"[metadata_sync] WARNING: no properties found for '{index_name}'. "
-              f"Mapping response keys: {list(mapping.keys())}. "
-              f"Raw structure sample: {str(mapping)[:500]}")
-        return []
-    return _flatten_es_properties(merged_properties)
-
-
-# ---------------------------------------------------------------------------
-# Datasource config
-# ---------------------------------------------------------------------------
-
 def _get_datasource_config(ds_id: int) -> dict:
     """Read datasource connection config from adh_datasources table."""
     conn = _get_doris_conn(METADATA_DB_DATABASE)
@@ -359,11 +197,10 @@ def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> None:
                     "domain_tag": domain_tag,
                 })
             else:
-                changed = (
-                    (old.get("table_comment") or "") != table_comment
-                    or (old.get("region_tag") or "") != region_tag
-                    or (old.get("domain_tag") or "") != domain_tag
-                )
+                # 只按表注释判变更；region_tag/domain_tag 不参与判定也不覆盖——
+                # 它们是派生缓存(事实源 = adh_tag_values 人工标注)。元数据同步的
+                # 表名启发式一旦写回就会冲掉人工标注(历史: 249 张表全 'other')。
+                changed = (old.get("table_comment") or "") != table_comment
                 if changed:
                     tables_to_update.append({
                         "id": old["id"],
@@ -371,8 +208,9 @@ def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> None:
                         "table_comment": table_comment,
                         "table_business_desc": old.get("table_business_desc") or "",
                         "keywords": old.get("keywords") or "",
-                        "region_tag": region_tag,
-                        "domain_tag": domain_tag,
+                        # 保留已有值：同步不覆盖派生/人工标注
+                        "region_tag": old.get("region_tag") or region_tag,
+                        "domain_tag": old.get("domain_tag") or domain_tag,
                         "is_active": old.get("is_active", 1),
                     })
 
@@ -514,317 +352,6 @@ def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sync logic — Elasticsearch (_mapping API)
-# ---------------------------------------------------------------------------
-
-def _sync_es_metadata(ds_id: int, ds_config: dict) -> None:
-    """Full sync for Elasticsearch datasource — syncs all indices."""
-    es = _build_es_client(ds_config)
-    dst_conn = _get_doris_conn(METADATA_DB_DATABASE)
-
-    try:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        indices = _fetch_es_indices(es)
-
-        # ── 1. Sync table info ──────────────────────────────────────────
-        existing_tables = {}
-        with dst_conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, table_name, table_comment, table_business_desc, keywords, region_tag, domain_tag, is_active "
-                "FROM adh_table_info WHERE datasource_id = %s",
-                (ds_id,),
-            )
-            for row in cur.fetchall():
-                existing_tables[row["table_name"]] = row
-
-        fresh_table_names = set()
-        tables_to_insert = []
-        tables_to_update = []
-
-        for tbl in indices:
-            table_name = tbl["TABLE_NAME"]
-            fresh_table_names.add(table_name)
-            table_comment = tbl.get("TABLE_COMMENT", "") or ""
-            region_tag = extract_region_tag(table_name)
-            domain_tag = extract_domain_tag(table_name)
-
-            old = existing_tables.get(table_name)
-            if old is None:
-                tables_to_insert.append({
-                    "table_name": table_name,
-                    "table_comment": table_comment,
-                    "region_tag": region_tag,
-                    "domain_tag": domain_tag,
-                })
-            else:
-                changed = (
-                    (old.get("table_comment") or "") != table_comment
-                    or (old.get("region_tag") or "") != region_tag
-                    or (old.get("domain_tag") or "") != domain_tag
-                )
-                if changed:
-                    tables_to_update.append({
-                        "id": old["id"],
-                        "table_name": table_name,
-                        "table_comment": table_comment,
-                        "table_business_desc": old.get("table_business_desc") or "",
-                        "keywords": old.get("keywords") or "",
-                        "region_tag": region_tag,
-                        "domain_tag": domain_tag,
-                        "is_active": old.get("is_active", 1),
-                    })
-
-        tables_to_delete = set(existing_tables.keys()) - fresh_table_names
-
-        with dst_conn.cursor() as cur:
-            for tname in tables_to_delete:
-                cur.execute("DELETE FROM adh_table_info WHERE table_name = %s AND datasource_id = %s", (tname, ds_id))
-
-            for r in tables_to_update:
-                vec_literal = _placeholder_embedding()
-                cur.execute("DELETE FROM adh_table_info WHERE id = %s", (r["id"],))
-                cur.execute(
-                    "INSERT INTO adh_table_info "
-                    "(id, datasource_id, table_name, table_comment, table_business_desc, keywords, region_tag, domain_tag, is_active, sync_time, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (r["id"], ds_id, r["table_name"], r["table_comment"], r["table_business_desc"],
-                     r.get("keywords") or "", r["region_tag"], r["domain_tag"], r["is_active"], now, vec_literal),
-                )
-
-            for idx, r in enumerate(tables_to_insert):
-                row_id = int(_time.time() * 1000000) + idx
-                vec_literal = _placeholder_embedding()
-                cur.execute(
-                    "INSERT INTO adh_table_info "
-                    "(id, datasource_id, table_name, table_comment, table_business_desc, keywords, region_tag, domain_tag, is_active, sync_time, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)",
-                    (row_id, ds_id, r["table_name"], r["table_comment"], "", "",
-                     r["region_tag"], r["domain_tag"], now, vec_literal),
-                )
-
-        # ── 2. Sync column metadata ─────────────────────────────────────
-        existing_cols = {}
-        with dst_conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, table_name, column_name, data_type, column_comment, business_desc, keywords, "
-                "is_key, is_nullable, is_active "
-                "FROM adh_column_metadata WHERE datasource_id = %s",
-                (ds_id,),
-            )
-            for row in cur.fetchall():
-                key = (row["table_name"], row["column_name"])
-                existing_cols[key] = row
-
-        fresh_col_keys = set()
-        cols_to_insert = []
-        cols_to_update = []
-
-        for tbl in indices:
-            table_name = tbl["TABLE_NAME"]
-            columns = _fetch_es_fields(es, table_name)
-            for col in columns:
-                col_name = col["COLUMN_NAME"]
-                key = (table_name, col_name)
-                fresh_col_keys.add(key)
-
-                is_key = col.get("COLUMN_KEY", "false")
-                col_comment = col.get("COLUMN_COMMENT", "") or ""
-                data_type = col["DATA_TYPE"]
-                is_nullable = col.get("IS_NULLABLE", "true")
-
-                old = existing_cols.get(key)
-                if old is None:
-                    cols_to_insert.append({
-                        "table_name": table_name,
-                        "column_name": col_name,
-                        "data_type": data_type,
-                        "column_comment": col_comment,
-                        "is_key": is_key,
-                        "is_nullable": is_nullable,
-                    })
-                else:
-                    changed = (
-                        (old.get("data_type") or "") != data_type
-                        or (old.get("column_comment") or "") != col_comment
-                    )
-                    if changed:
-                        cols_to_update.append({
-                            "id": old["id"],
-                            "table_name": table_name,
-                            "column_name": col_name,
-                            "data_type": data_type,
-                            "column_comment": col_comment,
-                            "business_desc": old.get("business_desc") or "",
-                            "keywords": old.get("keywords") or "",
-                            "is_key": is_key,
-                            "is_nullable": is_nullable,
-                            "is_active": old.get("is_active", 1),
-                        })
-
-        cols_to_delete = set(existing_cols.keys()) - fresh_col_keys
-
-        with dst_conn.cursor() as cur:
-            for (tn, cn) in cols_to_delete:
-                cur.execute(
-                    "DELETE FROM adh_column_metadata WHERE table_name = %s AND column_name = %s AND datasource_id = %s",
-                    (tn, cn, ds_id),
-                )
-
-            for r in cols_to_update:
-                vec_literal = _placeholder_embedding()
-                cur.execute("DELETE FROM adh_column_metadata WHERE id = %s", (r["id"],))
-                cur.execute(
-                    "INSERT INTO adh_column_metadata "
-                    "(id, datasource_id, table_name, column_name, data_type, column_comment, "
-                    "business_desc, keywords, is_key, is_nullable, is_active, sync_time, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (r["id"], ds_id, r["table_name"], r["column_name"], r["data_type"],
-                     r["column_comment"], r["business_desc"], r.get("keywords") or "",
-                     r["is_key"], r["is_nullable"], r["is_active"], now, vec_literal),
-                )
-
-            for idx, r in enumerate(cols_to_insert):
-                row_id = int(_time.time() * 1000000) + idx + 500000
-                vec_literal = _placeholder_embedding()
-                cur.execute(
-                    "INSERT INTO adh_column_metadata "
-                    "(id, datasource_id, table_name, column_name, data_type, column_comment, "
-                    "business_desc, keywords, is_key, is_nullable, is_active, sync_time, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)",
-                    (row_id, ds_id, r["table_name"], r["column_name"], r["data_type"],
-                     r["column_comment"], "", "", r["is_key"], r["is_nullable"],
-                     now, vec_literal),
-                )
-
-        dst_conn.commit()
-        print(f"[metadata_sync:es] Done — "
-              f"tables: {len(indices)} ({len(tables_to_insert)} new, {len(tables_to_update)} updated, {len(tables_to_delete)} deleted), "
-              f"columns: {len(cols_to_insert)} new, {len(cols_to_update)} updated, {len(cols_to_delete)} deleted.")
-    except Exception as exc:
-        dst_conn.rollback()
-        print(f"[metadata_sync:es] ERROR: {exc}")
-        raise
-    finally:
-        es.close()
-        dst_conn.close()
-
-
-def _sync_es_table_columns(ds_id: int, ds_config: dict, table_name: str) -> dict:
-    """Sync column metadata for a single ES index."""
-    es = _build_es_client(ds_config)
-    dst_conn = _get_doris_conn(METADATA_DB_DATABASE)
-
-    try:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        columns = _fetch_es_fields(es, table_name)
-        if not columns:
-            raise ValueError(f"索引 '{table_name}' 在 Elasticsearch 中不存在或无字段")
-
-        existing_cols = {}
-        with dst_conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, table_name, column_name, data_type, column_comment, business_desc, "
-                "is_key, is_nullable, is_active "
-                "FROM adh_column_metadata WHERE datasource_id = %s AND table_name = %s",
-                (ds_id, table_name),
-            )
-            for row in cur.fetchall():
-                existing_cols[row["column_name"]] = row
-
-        fresh_col_names = set()
-        cols_to_insert = []
-        cols_to_update = []
-
-        for col in columns:
-            col_name = col["COLUMN_NAME"]
-            fresh_col_names.add(col_name)
-
-            is_key = col.get("COLUMN_KEY", "false")
-            col_comment = col.get("COLUMN_COMMENT", "") or ""
-            data_type = col["DATA_TYPE"]
-            is_nullable = col.get("IS_NULLABLE", "true")
-
-            old = existing_cols.get(col_name)
-            if old is None:
-                cols_to_insert.append({
-                    "table_name": table_name,
-                    "column_name": col_name,
-                    "data_type": data_type,
-                    "column_comment": col_comment,
-                    "is_key": is_key,
-                    "is_nullable": is_nullable,
-                })
-            else:
-                changed = (
-                    (old.get("data_type") or "") != data_type
-                    or (old.get("column_comment") or "") != col_comment
-                )
-                if changed:
-                    cols_to_update.append({
-                        "id": old["id"],
-                        "table_name": table_name,
-                        "column_name": col_name,
-                        "data_type": data_type,
-                        "column_comment": col_comment,
-                        "business_desc": old.get("business_desc") or "",
-                        "is_key": is_key,
-                        "is_nullable": is_nullable,
-                        "is_active": old.get("is_active", 1),
-                    })
-
-        cols_to_delete = set(existing_cols.keys()) - fresh_col_names
-
-        with dst_conn.cursor() as cur:
-            for cn in cols_to_delete:
-                cur.execute(
-                    "DELETE FROM adh_column_metadata WHERE table_name = %s AND column_name = %s AND datasource_id = %s",
-                    (table_name, cn, ds_id),
-                )
-
-            for r in cols_to_update:
-                vec_literal = _placeholder_embedding()
-                cur.execute("DELETE FROM adh_column_metadata WHERE id = %s", (r["id"],))
-                cur.execute(
-                    "INSERT INTO adh_column_metadata "
-                    "(id, datasource_id, table_name, column_name, data_type, column_comment, "
-                    "business_desc, keywords, is_key, is_nullable, is_active, sync_time, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (r["id"], ds_id, r["table_name"], r["column_name"], r["data_type"],
-                     r["column_comment"], r["business_desc"], r.get("keywords") or "",
-                     r["is_key"], r["is_nullable"], r["is_active"], now, vec_literal),
-                )
-
-            for idx, r in enumerate(cols_to_insert):
-                row_id = int(_time.time() * 1000000) + idx + 500000
-                vec_literal = _placeholder_embedding()
-                cur.execute(
-                    "INSERT INTO adh_column_metadata "
-                    "(id, datasource_id, table_name, column_name, data_type, column_comment, "
-                    "business_desc, keywords, is_key, is_nullable, is_active, sync_time, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)",
-                    (row_id, ds_id, r["table_name"], r["column_name"], r["data_type"],
-                     r["column_comment"], "", "", r["is_key"], r["is_nullable"],
-                     now, vec_literal),
-                )
-
-        dst_conn.commit()
-        return {
-            "table_name": table_name,
-            "total_columns": len(columns),
-            "inserted": len(cols_to_insert),
-            "updated": len(cols_to_update),
-            "deleted": len(cols_to_delete),
-        }
-    except Exception as exc:
-        dst_conn.rollback()
-        raise
-    finally:
-        es.close()
-        dst_conn.close()
-
-
-# ---------------------------------------------------------------------------
 # Public API — auto-dispatch by db_type
 # ---------------------------------------------------------------------------
 
@@ -843,7 +370,7 @@ def _placeholder_embedding() -> str:
 def sync_metadata(ds_id: int = 0) -> None:
     """Incremental sync: sync table info and column metadata.
 
-    Dispatches to MySQL/Doris or Elasticsearch handler based on datasource type.
+    Dispatches to the MySQL/Doris handler based on datasource type.
     """
     if not ds_id:
         raise ValueError("datasource_id is required")
@@ -851,18 +378,16 @@ def sync_metadata(ds_id: int = 0) -> None:
     ds_config = _get_datasource_config(ds_id)
     db_type = ds_config["db_type"]
 
-    if db_type == "elasticsearch":
-        _sync_es_metadata(ds_id, ds_config)
-    elif db_type in ("mysql", "doris"):
+    if db_type in ("mysql", "doris"):
         _sync_mysql_metadata(ds_id, ds_config)
     else:
         raise ValueError(f"暂不支持从 {db_type} 类型数据源同步元数据")
 
 
 def sync_table_columns(ds_id: int, table_name: str) -> dict:
-    """Sync column metadata for a single table/index.
+    """Sync column metadata for a single table.
 
-    Dispatches to MySQL/Doris or Elasticsearch handler based on datasource type.
+    Dispatches to the MySQL/Doris handler based on datasource type.
     Returns a summary dict with counts of inserted/updated/deleted columns.
     """
     if not ds_id:
@@ -873,9 +398,7 @@ def sync_table_columns(ds_id: int, table_name: str) -> dict:
     ds_config = _get_datasource_config(ds_id)
     db_type = ds_config["db_type"]
 
-    if db_type == "elasticsearch":
-        return _sync_es_table_columns(ds_id, ds_config, table_name)
-    elif db_type in ("mysql", "doris"):
+    if db_type in ("mysql", "doris"):
         return _sync_mysql_table_columns(ds_id, ds_config, table_name)
     else:
         raise ValueError(f"暂不支持从 {db_type} 类型数据源同步元数据")

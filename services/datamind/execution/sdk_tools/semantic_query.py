@@ -77,9 +77,9 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
         payload["user_id"] = int(ctx.user_id or 0)
 
     # fail-loud: 业务会话未确定数据源时明确报错, 不下探 resolve_binding(datasource_id=0)
-    # 把"未选源"误报成"对象未绑定"(系统助手 ds=0 是合法系统域, 不拦)。
-    if not int(payload.get("datasource_id") or 0) and ctx is not None \
-            and (getattr(ctx, "extra", None) or {}).get("waker_key") != "__system_bot__":
+    # 把"未选源"误报成"对象未绑定"(系统域 ds=0 是合法系统域, 不拦)。
+    from services.datamind.execution.sdk_tools.scoped_metadata import system_scope
+    if not int(payload.get("datasource_id") or 0) and ctx is not None and not system_scope(ctx):
         return ({"error": "当前会话未确定数据源，无法执行语义查询；请先在会话中选择一个已授权数据源。"}, True)
 
     q, err, notes = parse_intent(payload)

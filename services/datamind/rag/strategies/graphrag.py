@@ -49,6 +49,7 @@ class GraphRagStrategy(RetrievalStrategy):
         grounding_keywords = list(keywords or []) + [str(k) for k in (extra_object_keys or []) if k]
 
         # ── Grounding: the single (SPARQL) retrieval route ──
+        grounding_failed = False
         try:
             grounding = AgenticSparqlRetriever(store=store).ground(
                 question, datasource_id=datasource_id, keywords=grounding_keywords,
@@ -57,6 +58,7 @@ class GraphRagStrategy(RetrievalStrategy):
         except Exception as e:
             logger.error("[graphrag] grounding failed: %s", e, exc_info=True)
             grounding = {"tables": [], "sql_templates": [], "business_terms": [], "metrics": []}
+            grounding_failed = True
 
         tables = [t for t in (grounding.get("tables") or []) if t][:_MAX_TABLES]
         if not tables and candidate:
@@ -93,6 +95,17 @@ class GraphRagStrategy(RetrievalStrategy):
             len(result["sql_templates"]), len(result["business_terms"]),
             len(result["table_relations"]),
         )
+        # 可诊断性（no-silent-degradation）：LLM/grounding 失败不得被吞成“无结果”。
+        # 命中为空 + ground 失败时标注 degraded + 原因，调用方（eval/前端/Agent）
+        # 必须能区分“真没有”与“检索链路坏了”。
+        trace_errors = [str(t.get("error") or "") for t in (grounding.get("trace") or [])
+                        if t.get("error")]
+        if grounding_failed or trace_errors:
+            reason = (f"agentic-sparql grounding 失败: {trace_errors[0]}" if trace_errors
+                      else "agentic-sparql grounding 异常")
+            result["degraded"] = True
+            result.setdefault("warnings", []).append(reason)
+            result.setdefault("ontology_context", {})["grounding_failure"] = reason
         return result
 
     # ── Hydration (deterministic metadata lookups, no embedding/BM25) ──

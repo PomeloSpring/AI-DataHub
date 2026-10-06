@@ -3,7 +3,8 @@
 QMind 是 Qoder 的知识库能力,以「笔记本(notebook)」为单位。它与本系统之间不是
 自建 HTTP 服务,而是通过 qoder 生态里的 `qmind` 命令行交互(与 qmind 技能用法一致):
 
-- 二进制按需下载到固定缓存目录 `~/.cache/qmind/bin/qmind-<os>-<arch>`;
+- 二进制放置于项目 `runtime/qmind/qmind`(与 qodercli 同层, 随仓库走);
+- 缺失时按需下载到 `runtime/qmind/`; 也可通过 setup.sh 预装;
 - 认证凭据由 `qmind login` 落盘在 `~/.qmind/credentials.json`,本模块不接触 token;
 - `qmind notebook list -format json`  → 列出(检索)全部 Qoder 知识库;
 - `qmind retrieve -nb <id> -q <q> -format json` → 对指定笔记本做知识检索。
@@ -59,6 +60,10 @@ def _breaker_record(success: bool, now: float = None):
 
 # ── CLI 解析 / 按需下载 ──────────────────────────────────────────────
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]  # → 仓库根
+_RUNTIME_QMIND_DIR = _PROJECT_ROOT / "runtime" / "qmind"
+
+
 def _platform_slug() -> tuple[str, str, str]:
     """返回 (os, arch, ext),与 qmind 技能下载脚本保持一致."""
     u = platform.system().lower()
@@ -74,17 +79,42 @@ def _platform_slug() -> tuple[str, str, str]:
     return os_name, arch, ext
 
 
+def _qmind_candidates() -> list[Path]:
+    """二进制自动识别顺序: 项目 runtime/qmind → 用户缓存 ~/.cache/qmind/bin。
+
+    项目目录随仓库走, 与运行用户无关(修复以 root 跑时 home 漂移), 也免逐节点手配。
+    显式 QMIND_BIN 由 qmind_bin_path() 单独短路, 不进入本清单。
+    """
+    os_name, arch, ext = _platform_slug()
+    name = f"qmind-{os_name}-{arch}{ext}"
+    return [
+        _RUNTIME_QMIND_DIR / "qmind",       # 项目固定单文件(推荐部署形态)
+        _RUNTIME_QMIND_DIR / name,          # 项目带平台后缀
+        Path.home() / ".cache" / "qmind" / "bin" / name,  # 兼容旧缓存
+    ]
+
+
 def qmind_bin_path() -> Path:
-    """qmind 二进制路径:优先 QMIND_BIN 环境变量,否则固定缓存目录."""
+    """解析 qmind 可执行文件位置。
+
+    QMIND_BIN 显式设置时以其为唯一答案(便于 CI/临时覆盖, 不做二次回退);
+    否则在 runtime/qmind/ 目录中自动挑选第一个真实可执行文件,
+    未命中返回项目规范路径供下载/错误提示。
+    """
     override = os.environ.get("QMIND_BIN")
     if override:
         return Path(override).expanduser()
-    os_name, arch, ext = _platform_slug()
-    return Path.home() / ".cache" / "qmind" / "bin" / f"qmind-{os_name}-{arch}{ext}"
+    for candidate in _qmind_candidates():
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return _RUNTIME_QMIND_DIR / "qmind"
 
 
 def ensure_qmind_cli() -> Path | None:
-    """确保 qmind CLI 可用;缺失时从公共 OSS 下载(与技能脚本一致)."""
+    """确保 qmind CLI 可用;缺失时从公共 OSS 下载到 runtime/qmind/.
+
+    也可通过 bash runtime/qmind/setup.sh 预装。
+    """
     bin_path = qmind_bin_path()
     if bin_path.exists() and os.access(bin_path, os.X_OK):
         return bin_path
@@ -118,12 +148,12 @@ def _cli_env() -> dict:
     return env
 
 
-def _run_cli(args: list[str]) -> dict | None:
-    """执行 qmind CLI 并解析 JSON 输出;失败返回 None(并计入熔断)."""
+def _run_cli_ex(args: list[str]) -> tuple[dict | None, str]:
+    """执行 qmind CLI 并解析 JSON 输出; 返回 (data, err). 失败时 data=None 并计入熔断."""
     bin_path = ensure_qmind_cli()
     if not bin_path:
         _breaker_record(False)
-        return None
+        return None, "qmind CLI 不可用"
     try:
         proc = subprocess.run(
             [str(bin_path), *args],
@@ -131,32 +161,88 @@ def _run_cli(args: list[str]) -> dict | None:
             env=_cli_env(),
         )
         if proc.returncode != 0:
+            err = (proc.stderr or "").strip()[:300]
             logger.warning("[qmind] `%s` failed (rc=%s): %s",
-                           " ".join(args), proc.returncode, (proc.stderr or "").strip()[:300])
+                           " ".join(args), proc.returncode, err)
             _breaker_record(False)
-            return None
+            return None, err
         out = json.loads(proc.stdout or "{}")
         _breaker_record(True)
-        return out
+        return out, ""
     except subprocess.TimeoutExpired:
         logger.warning("[qmind] `%s` timed out", " ".join(args))
         _breaker_record(False)
-        return None
+        return None, "timeout"
     except FileNotFoundError:
         logger.warning("[qmind] CLI not found at %s", bin_path)
         _breaker_record(False)
-        return None
+        return None, "cli not found"
     except json.JSONDecodeError as e:
         logger.warning("[qmind] non-JSON output: %s", e)
         _breaker_record(False)
-        return None
+        return None, f"non-JSON output: {e}"
     except Exception as e:  # noqa: BLE001
         logger.warning("[qmind] run error: %s", e)
         _breaker_record(False)
-        return None
+        return None, str(e)[:300]
+
+
+def _run_cli(args: list[str]) -> dict | None:
+    """执行 qmind CLI 并解析 JSON 输出;失败返回 None(并计入熔断)."""
+    data, _err = _run_cli_ex(args)
+    return data
 
 
 # ── 知识库(notebook)列举 ────────────────────────────────────────────
+
+
+def is_unavailable_error(err: str) -> bool:
+    """判定错误属于「当前凭据对目标 notebook 不可用」(无权/不存在, 如切换账号)。
+
+    仅此类错误允许触发 notebook 自动重建; 网络抖动/服务端 5xx 不在此列,
+    避免故障期间误建一堆重复知识库。
+    """
+    e = (err or "").lower()
+    return ("insufficient notebook permission" in e
+            or '"errorcode":"forbidden"' in e
+            or "not found" in e)
+
+
+def probe_notebook(notebook_id: str) -> tuple[bool, str]:
+    """探测 notebook 对当前凭据是否可达, 返回 (ok, err)。
+
+    以 exit code 为准(rc=0 即可达) —— `notebook get` 无视 -format json 输出
+    table 文本, 不能走 JSON 解析路径判定。
+    """
+    bin_path = ensure_qmind_cli()
+    if not bin_path:
+        return False, "qmind CLI 不可用"
+    try:
+        proc = subprocess.run(
+            [str(bin_path), "notebook", "get", notebook_id],
+            capture_output=True, text=True, timeout=_CLI_TIMEOUT,
+            env=_cli_env(),
+        )
+        if proc.returncode == 0:
+            return True, ""
+        return False, (proc.stderr or "").strip()[:300]
+    except subprocess.TimeoutExpired:
+        return False, "timeout"
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)[:300]
+
+
+def create_notebook(title: str, description: str = "") -> str | None:
+    """在当前凭据账号下新建 notebook, 返回新 notebook_id(失败返回 None)。"""
+    args = ["notebook", "create", "-title", title, "-format", "json"]
+    if description:
+        args += ["-desc", description]
+    data, err = _run_cli_ex(args)
+    if not data:
+        logger.warning("[qmind] notebook create failed: %s", err)
+        return None
+    return data.get("id") or data.get("notebook_id") or (data.get("notebook") or {}).get("id")
+
 
 def list_notebooks() -> list[dict]:
     """检索 Qoder 云端全部 QMind 知识库(笔记本).
@@ -350,29 +436,27 @@ def qmind_retrieve(
     Args:
         question: 用户问题。
         datasource_id: 回退 graphrag 时按数据源过滤元数据。
-        kb_ids: Waker 绑定的知识库 ID;指定时仅在这些库中检索。
+        kb_ids: AS-BOT 绑定的知识库 ID;指定时仅在这些库中检索。
         top_k: 检索条数(可被知识库 source_config.top_k 覆盖)。
-        system_scope: 系统级硬限定(如 AS-BOT 系统助手)。为 True 时**绝不**回退
-            graphrag 业务元数据检索——无系统知识库命中即返回空,杜绝业务本体(如 test-alb)串入。
+        system_scope: 系统能力形态标记(能力叠加，域规则更新)。命中/回退行为与业务一致，
+            仅在结果中标注 ``system_scope=True`` 供分桶归因；系统运营问题应走 system_* 工具，
+            不拿业务知识充数由 prompt 引导承担（不再是检索硬限定）。
 
     Returns:
         QMind 命中: {chunks, count, rag_source='qmind', knowledge_base, notebook_id};
-        否则 graphrag 统一结果 dict(system_scope 时为空的 system_kb_only 结果)。
+        否则 graphrag 统一结果 dict(系统能力时额外携带 ``system_scope=True`` 标注)。
     """
-    def _empty_system(degraded: bool = False) -> dict:
-        out = {"chunks": [], "count": 0, "rag_source": "system_kb_only",
-               "system_scope": True, "hit_object_keys": []}
-        if degraded:
-            out["degraded"] = True
+    def _mark_system(result) -> dict:
+        out = dict(result or {})
+        if system_scope:
+            out["system_scope"] = True
         return out
 
     kbs = _bound_qmind_kbs(kb_ids)
     # 熔断开启且确有绑定的 QMind 库: 短路回退本地 hybrid, 不逐次 spawn CLI(标注降级)。
     if kbs and not _breaker_allowed():
-        if system_scope:  # 系统级:不回退业务元数据,返回空的降级结果
-            return _empty_system(degraded=True)
         result = _fallback_graphrag(question, datasource_id, tagged=True)
-        result = dict(result or {})
+        result = _mark_system(result)
         result["rag_source"] = f"{result.get('rag_source', 'graphrag')}|qmind_circuit_open"
         result["degraded"] = True
         return result
@@ -392,7 +476,6 @@ def qmind_retrieve(
                 "hit_object_keys": extract_object_keys(chunks),
                 **fresh,
             }
-    # 无命中(未绑定 / CLI 不可用 / 无结果)→ 回退,行为与原实现一致
-    if system_scope:  # 系统级硬限定:无系统知识命中即空,不回退业务本体
-        return _empty_system()
-    return _fallback_graphrag(question, datasource_id, tagged=bool(kbs))
+    # 无命中(未绑定 / CLI 不可用 / 无结果)→ 回退；系统能力形态同样回退业务元数据，
+    # 以 rag_source/system_scope 标注来源（能力叠加，检索结果可区分可诊断）。
+    return _mark_system(_fallback_graphrag(question, datasource_id, tagged=bool(kbs)))

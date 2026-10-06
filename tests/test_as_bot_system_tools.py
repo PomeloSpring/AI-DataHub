@@ -93,26 +93,28 @@ def test_system_overview_counts_and_degrades(ctx, monkeypatch):
     _patch_role(monkeypatch, "admin")
     from services.shared.common import db
     def fake_query(sql, params=None, fetchone=False):
-        if "adh_datasources" in sql and "is_active" in sql:
-            raise RuntimeError("列缺失")  # 该项降级为 None，不阻断整体
+        if "adh_table_info" in sql:
+            raise RuntimeError("模拟单指标查询失败")  # 该项降级为 None，不阻断整体
         return {"c": 3}
     monkeypatch.setattr(db, "execute_query", fake_query)
     out = _payload(asyncio.run(st.system_overview({})))
     ov = out["overview"]
-    assert ov["datasources"] == 3 and ov["datasources_active"] is None
-    assert ov["pending_approvals"] == 3
+    # datasources 计数正常（adh_datasources 无 is_active 列，旧引用已移除）
+    assert ov["datasources"] == 3 and "datasources_active" not in ov
+    assert ov["tables"] is None  # 单指标失败降级可诊断，不阻断总览
+    assert ov["pending_contract_changes"] == 3
 
 
-# ── 检索系统级硬限定：绝不回退业务本体 ────────────────────────────
+# ── 检索能力叠加：系统形态同样回退业务元数据，但标注来源可区分 ──────
 
-def test_system_scope_never_falls_back_to_graphrag(monkeypatch):
+def test_system_scope_falls_back_with_source_marked(monkeypatch):
     monkeypatch.setattr(qr, "_bound_qmind_kbs", lambda kb_ids: [])
-    hit = []
-    monkeypatch.setattr(qr, "_fallback_graphrag", lambda *a, **k: hit.append(1) or {"chunks": [{"content": "test-alb"}]})
+    monkeypatch.setattr(qr, "_fallback_graphrag",
+                        lambda *a, **k: {"chunks": [{"content": "biz"}], "count": 1, "rag_source": "graphrag"})
     out = qr.qmind_retrieve("近3天有谁用chat", 0, [], system_scope=True)
-    assert hit == []  # 未回退业务检索
-    assert out["rag_source"] == "system_kb_only" and out["count"] == 0
-    assert not any("test-alb" in str(c) for c in out["chunks"])
+    # 能力叠加：回退业务检索（不硬限定），但 system_scope 标注供分桶归因
+    assert out["rag_source"] == "graphrag" and out["count"] == 1
+    assert out.get("system_scope") is True
 
 
 def test_non_system_scope_still_falls_back(monkeypatch):
@@ -122,34 +124,64 @@ def test_non_system_scope_still_falls_back(monkeypatch):
     assert out["rag_source"] == "graphrag" and out["count"] == 1
 
 
-def test_system_scope_circuit_open_returns_empty_not_business(monkeypatch):
+def test_system_scope_circuit_open_falls_back_marked(monkeypatch):
     monkeypatch.setattr(qr, "_bound_qmind_kbs", lambda kb_ids: [{"id": 1, "name": "sys", "notebook_id": "nb", "cfg": {}}])
     monkeypatch.setattr(qr, "_breaker_allowed", lambda now=None: False)
     called = []
-    monkeypatch.setattr(qr, "_fallback_graphrag", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(qr, "_fallback_graphrag",
+                        lambda *a, **k: called.append(1) or {"chunks": [], "count": 0, "rag_source": "graphrag"})
     out = qr.qmind_retrieve("用量", 0, [1], system_scope=True)
-    assert called == [] and out["rag_source"] == "system_kb_only" and out.get("degraded")
+    # 熔断同样透明回退本地 hybrid（能力叠加），降级与来源均标注（可诊断可区分）
+    assert called == [1] and out.get("degraded")
+    assert "qmind_circuit_open" in out["rag_source"] and out.get("system_scope") is True
 
 
-def test_knowledge_search_system_bot_passes_system_scope(monkeypatch):
+def _system_ctx(kb_ids=None):
+    """系统域执行上下文（工具授权口径：policy 授权 system 工具组）。"""
+    from types import SimpleNamespace
+    policy = SimpleNamespace(selection={"system": ["system_usage", "system_overview"]}, as_bot={})
+    runtime = SimpleNamespace(policy=policy)
+    return ExecutionContext(user_id=7, workspace_id=3,
+                            extra={"secure_runtime": runtime,
+                                   "bound_knowledge_base_ids": list(kb_ids or [])})
+
+
+def test_knowledge_search_system_scope_passes_through(monkeypatch):
     from services.datamind.execution.sdk_tools import semantic_tools as stl
-    from services.datamind.execution import wakers
-    token = set_execution_context(ExecutionContext(
-        user_id=7, workspace_id=3, extra={"waker_key": wakers.SYSTEM_BOT_WAKER_KEY}))
+    token = set_execution_context(_system_ctx([11]))
     seen = {}
     def fake_retrieve(q, ds, kb_ids, system_scope=False):
         seen["system_scope"] = system_scope
         seen["kb_ids"] = kb_ids
         return {"chunks": [], "count": 0, "rag_source": "system_kb_only"}
     monkeypatch.setattr("services.datamind.rag.qmind_retriever.qmind_retrieve", fake_retrieve)
-    monkeypatch.setattr(wakers, "resolve_system_bot_waker", lambda: {"id": 99, "knowledge_base_ids": [11]})
-    monkeypatch.setattr(wakers, "collect_knowledge_base_ids", lambda ws: [11])
     monkeypatch.setattr("services.datamind.execution.resource_guard.execute_query", lambda *a: [{"id": 11}])
     try:
         asyncio.run(stl.knowledge_search({"question": "近3天有谁用chat"}))
     finally:
         ExecutionContextVar.reset(token)
     assert seen["system_scope"] is True and seen["kb_ids"] == [11]
+
+
+def test_knowledge_search_business_scope_not_system(monkeypatch):
+    from services.datamind.execution.sdk_tools import semantic_tools as stl
+    from types import SimpleNamespace
+    policy = SimpleNamespace(selection={"semantic": ["knowledge_search"]}, as_bot={})
+    token = set_execution_context(ExecutionContext(
+        user_id=7, workspace_id=3, datasource_id=5,
+        extra={"secure_runtime": SimpleNamespace(policy=policy),
+               "bound_knowledge_base_ids": [22]}))
+    seen = {}
+    def fake_retrieve(q, ds, kb_ids, system_scope=False):
+        seen["system_scope"] = system_scope
+        return {"chunks": [], "count": 0, "rag_source": "none"}
+    monkeypatch.setattr("services.datamind.rag.qmind_retriever.qmind_retrieve", fake_retrieve)
+    monkeypatch.setattr("services.datamind.execution.resource_guard.execute_query", lambda *a: [{"id": 22}])
+    try:
+        asyncio.run(stl.knowledge_search({"question": "销售额"}))
+    finally:
+        ExecutionContextVar.reset(token)
+    assert seen["system_scope"] is False
 
 
 # ── 工具组注册 ────────────────────────────────────────────────────
@@ -161,9 +193,82 @@ def test_system_group_registered():
     assert srv == "datahub_system" and set(tools) == {"system_usage", "system_overview"}
 
 
-def test_system_bot_waker_includes_system_group(monkeypatch):
-    from services.datamind.execution import wakers
-    monkeypatch.setattr(wakers, "_query", lambda sql, params=(): [
-        {"id": 1, "waker_key": wakers.SYSTEM_BOT_WAKER_KEY, "tools": "{}", "is_active": 1}])
-    w = wakers.resolve_system_bot_waker()
-    assert "system" in w["tools"]["groups"] and "query" not in w["tools"]["groups"]
+def test_system_scope_requires_system_tool_group():
+    """系统/业务域边界由工具授权承担（取代旧 __system_bot__ 哨兵）。"""
+    from types import SimpleNamespace
+    from services.datamind.execution.tool_policy import is_system_scope
+    sys_policy = SimpleNamespace(selection={"system": ["system_usage"]}, as_bot={})
+    biz_policy = SimpleNamespace(selection={"semantic": ["get_metrics"]}, as_bot={})
+    assert is_system_scope(sys_policy) is True
+    assert is_system_scope(biz_policy) is False
+
+
+# ── scoped_metadata 两视图按工具授权分域断言 ────────────────────
+
+class TestScopedMetadataViewsByToolAuth:
+    """元数据/本体可见域随工具授权切两视图：
+    system 组 → 仅 kind='system'；业务域 → 业务本体 + 本源源本体（双轨）。"""
+
+    def _ctx(self, system: bool):
+        from types import SimpleNamespace
+        policy = SimpleNamespace(selection={"system": ["system_usage"]} if system
+                                 else {"semantic": ["get_metrics"]}, as_bot={})
+        return ExecutionContext(user_id=7, workspace_id=3, datasource_id=1,
+                                extra={"as_bot_key": "t",
+                                       "secure_runtime": SimpleNamespace(policy=policy, tool_tasks=set())})
+
+    def test_system_scope_sees_system_plus_business(self, monkeypatch):
+        """能力叠加：system 能力可见系统本体 ∪ 业务域（不互斥）。"""
+        from services.datamind.execution.sdk_tools import scoped_metadata as sm
+        calls = []
+        monkeypatch.setattr(sm, "execute_query",
+                            lambda sql, params=None, fetchone=False: calls.append((sql, params)) or [])
+        sm.execute("search_ontology", {}, self._ctx(system=True))
+        sql, params = calls[0]
+        assert "kind = 'system'" in sql
+        assert "kind = 'business'" in sql and "kind = 'source'" in sql
+        assert params == (1,)
+
+    def test_business_scope_sees_business_and_own_source(self, monkeypatch):
+        from services.datamind.execution.sdk_tools import scoped_metadata as sm
+        calls = []
+        monkeypatch.setattr(sm, "execute_query",
+                            lambda sql, params=None, fetchone=False: calls.append((sql, params)) or [])
+        sm.execute("search_ontology", {}, self._ctx(system=False))
+        sql, params = calls[0]
+        assert "kind = 'business'" in sql and "kind = 'source'" in sql
+        assert "kind = 'system'" not in sql
+        assert params == (1,)
+
+    def test_business_scope_requires_datasource_fail_closed(self):
+        from services.datamind.execution.sdk_tools import scoped_metadata as sm
+        ctx = self._ctx(system=False)
+        ctx.datasource_id = 0
+        with pytest.raises(PermissionError, match="数据源"):
+            sm.execute("search_ontology", {}, ctx)
+
+    def test_unselected_source_marks_incomplete_scope(self, monkeypatch):
+        """未选源时目录不完整必须显式标注（防'上下文不完整'被误报成'对象不存在'）。"""
+        from services.datamind.execution.sdk_tools import scoped_metadata as sm
+        monkeypatch.setattr(sm, "execute_query",
+                            lambda sql, params=None, fetchone=False: [])
+        ctx = self._ctx(system=True)
+        ctx.datasource_id = 0
+        out = sm.execute("get_metrics", {}, ctx)
+        assert out["total"] == 0
+        assert out.get("incomplete_scope") is True
+        assert "目录为空≠对象不存在" in out.get("note", "")
+        out2 = sm.execute("get_metrics", {}, self._ctx(system=True))  # 已选源则完整、不标注
+        assert "incomplete_scope" not in out2
+
+    def test_system_scope_dict_condition_unified(self, monkeypatch):
+        """get_metrics 字典作用域统一 `(本源 OR 全局)`（系统对象字典行在 ds=0 内）。"""
+        from services.datamind.execution.sdk_tools import scoped_metadata as sm
+        for system in (True, False):
+            calls = []
+            monkeypatch.setattr(sm, "execute_query",
+                                lambda sql, params=None, fetchone=False: calls.append((sql, params)) or [])
+            sm.execute("get_metrics", {}, self._ctx(system=system))
+            dict_calls = [c for c in calls if "adh_metrics" in c[0] or "adh_dimensions" in c[0]]
+            assert dict_calls and all("datasource_id = %s OR datasource_id = 0" in c[0]
+                                      for c in dict_calls)

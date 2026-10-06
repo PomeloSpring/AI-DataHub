@@ -34,16 +34,17 @@ class ChatService:
         user_id: int,
         username: str,
         request: Request,
-        attachments: list[str] = None,
+        attachments: list[dict] = None,
         model_ref: str = "",
         session_id: str = "",
         conversation_id: int = 0,
         user_role: str = "",
-        waker_key: str = "",
+        as_bot_key: str = "",
         report_theme: str = "",
     ):
         """Stream a query through the pipeline orchestrator.
 
+        attachments: 随消息上传的附件文件描述 [{filename, category, size, content}](见 send_payload)。
         Yields SSE bytes for streaming response.
         """
         from services.datamind.nl2sql.orchestrator.pipeline_orchestrator import execute_pipeline
@@ -80,7 +81,7 @@ class ChatService:
                     session_id=session_id,
                     conversation_id=conversation_id,
                     user_role=user_role,
-                    waker_key=waker_key,
+                    as_bot_key=as_bot_key,
                     report_theme=report_theme,
                 )
                 try:
@@ -90,6 +91,16 @@ class ChatService:
                 finally:
                     await stream.aclose()
                 if handled:
+                    return
+                if attachments:
+                    # 附件消息只能经执行层处理:派发未接住时显式报错,
+                    # 不得静默落入会忽略附件的内置管线(no-silent-degradation)
+                    err = "附件消息需要执行层支持,当前执行层不可用,附件未被处理"
+                    yield _sse_event("error", {"message": err})
+                    yield _sse_event("done", {
+                        "intent": "agent", "reply": err, "sql": None,
+                        "warnings": [], "error": err,
+                    })
                     return
 
             try:
@@ -103,7 +114,6 @@ class ChatService:
                     username=username,
                     retrieval_strategy=retrieval_strategy,
                     workspace_id=workspace_id,
-                    attachments=attachments,
                 ):
                     if await request.is_disconnected():
                         logger.info("Client disconnected, stopping stream")
@@ -146,7 +156,6 @@ class ChatService:
         workspace_id: int,
         user_id: int,
         username: str,
-        attachments: list[str] = None,
     ) -> dict:
         """Execute a query non-streaming. Collects all events and returns the final result."""
         from services.datamind.nl2sql.orchestrator.pipeline_orchestrator import execute_pipeline
@@ -163,7 +172,6 @@ class ChatService:
                 username=username,
                 retrieval_strategy=retrieval_strategy,
                 workspace_id=workspace_id,
-                attachments=attachments or [],
             ):
                 if event_type == "done":
                     result = data
@@ -186,12 +194,12 @@ class ChatService:
         user_id: int,
         username: str,
         request: Request,
-        attachments: list[str] = None,
+        attachments: list[dict] = None,
         model_ref: str = "",
         session_id: str = "",
         conversation_id: int = 0,
         user_role: str = "",
-        waker_key: str = "",
+        as_bot_key: str = "",
         report_theme: str = "",
     ):
         """Agent 模式执行层派发.
@@ -250,8 +258,8 @@ class ChatService:
             "execution_layer": layer_name,
         })
 
-        # 加载多模态附件,以文件路径清单透传给执行层适配器
-        task_attachments = [{"id": aid} for aid in (attachments or [])]
+        # 多模态附件:上传文件描述随任务透传,由 place_attachments 落盘到会话工作区
+        task_attachments = list(attachments or [])
 
         # 数据源权威回填: 兼容旧客户端/直连 API 未带 datasource_id 时, 从会话持久化行回填,
         # 避免语义工具以 datasource_id=0 命中空目录(取不到数)。回填值仍对 LLM 黑盒。
@@ -285,7 +293,7 @@ class ChatService:
                         ("model_ref", model_ref),
                         ("session_id", session_id),
                         ("conversation_id", conversation_id),
-                        ("waker_key", waker_key),
+                        ("as_bot_key", as_bot_key),
                         ("report_theme", report_theme),
                     )
                     if v
@@ -296,7 +304,7 @@ class ChatService:
 
         try:
             if row.get("layer_type") != "cli" or (row.get("config") or {}).get("mode") != "sdk":
-                raise ValueError("所选执行层不支持 Waker 安全执行")
+                raise ValueError("所选执行层不支持 AS-BOT 安全执行")
             adapter = manager.build_adapter(row)
             # 流式执行:CLI 输出逐块以 token 事件推送到前端
             result = None
@@ -362,6 +370,9 @@ class ChatService:
                     "duration_ms": result.meta.get("duration_ms"),
                 },
             }
+            # 回带落盘后的附件清单(工作区相对路径),前端据此持久化消息历史引用
+            if result.meta.get("attachments"):
+                _done["attachments"] = result.meta["attachments"]
             # 回传 trace 关联键(只增不改),供前端赞踩/回看关联
             _tid = observability.trace_id_for_response()
             _muuid = observability.message_uuid()

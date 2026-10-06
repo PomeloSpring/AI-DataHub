@@ -64,6 +64,16 @@ export function isMenuAllowed(menuKey: string): boolean {
 }
 
 /**
+ * 是否拥有某模块(前缀)下任一可见菜单 — 模块级一级入口显隐用。
+ * - 未加载完成 / unrestricted → 放行
+ */
+export function isMenuPrefixAllowed(prefix: string): boolean {
+  const { allowedMenus, unrestricted, loaded } = usePermissionStore.getState();
+  if (!loaded || unrestricted) return true;
+  return (allowedMenus ?? []).some(k => k.startsWith(prefix));
+}
+
+/**
  * 判断当前用户是否拥有某权限码(按钮/操作显隐用)。
  * - 未加载完成 / unrestricted → 放行
  */

@@ -3,7 +3,7 @@
 Supports:
 - QMind (Qoder 云端知识库/笔记本):列表与检索均来自 qmind CLI,
   通过 `GET /knowledge-bases/qmind/notebooks` 实时检索、`POST /knowledge-bases/qmind/import`
-  将选定的 notebook 落地为可被 Waker 绑定的知识库行(kb_type='qmind')。
+  将选定的 notebook 落地为可被 AS-BOT 绑定的知识库行(kb_type='qmind')。
 - Local data directory
 - Vector databases (Doris, Milvus, Pinecone, etc.)
 - Cloud RAG services (Aliyun, Tencent, Baidu, etc.)
@@ -36,7 +36,7 @@ class KnowledgeBasePayload(BaseModel):
     @classmethod
     def reject_workspace_binding(cls, data):
         if isinstance(data, dict) and {"workspace_id", "workspace_ids"}.intersection(data):
-            raise ValueError("知识库使用范围请在 Waker 中绑定，不再支持工作空间绑定")
+            raise ValueError("知识库使用范围请在 AS-BOT 中绑定，不再支持工作空间绑定")
         return data
 
 
@@ -115,10 +115,10 @@ async def list_knowledge_bases(
     workspace_id: Optional[int] = Query(None),
     user: dict = Depends(get_current_user),
 ):
-    """系统管理目录或从当前身份可用 Waker 派生的只读资源目录。"""
+    """系统管理目录或从当前身份可用 AS-BOT 派生的只读资源目录。"""
     allowed_ids = None
     if workspace_id is not None:
-        from services.datamind.execution.wakers import visible_resource_ids
+        from services.datamind.execution.as_bots import visible_resource_ids
         allowed_ids = set(visible_resource_ids(user, workspace_id, "knowledge_base_ids"))
         if not allowed_ids:
             return []

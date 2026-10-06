@@ -2,6 +2,7 @@ pub mod session;
 pub mod executor;
 pub mod metadata;
 pub mod pushdown;
+pub mod net_funcs;
 
 pub use session::QuerySession;
 pub use executor::QueryExecutor;

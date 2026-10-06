@@ -16,6 +16,9 @@ from services.dataflow.api.sync import router as sync_router
 from services.dataflow.api.scheduled import router as scheduled_router
 from services.dataflow.api.scheduled import templates_router as report_templates_router
 from services.dataflow.api.notification import router as notification_router
+from services.dataflow.api.task_monitor import router as task_monitor_router
+from services.dataflow.api.dag import router as dag_router
+from services.dataflow.api.udf import router as udf_router
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -28,6 +31,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle."""
     logger.info("DataFlow service starting up")
+    # 内置任务注册表落库(名称/职责/周期以代码为准，不覆盖暂停开关与运行态)
+    from services.shared.common.system_jobs import ensure_seeded
+    ensure_seeded()
     yield
     logger.info("DataFlow service shutting down")
 
@@ -54,9 +60,12 @@ from services.shared.common.api_permission import add_api_permission_middleware
 add_api_permission_middleware(app)
 
 app.include_router(sync_router, prefix="/api/sync", tags=["Sync"])
+app.include_router(dag_router, prefix="/api/dag", tags=["DAG Workflows"])
+app.include_router(udf_router, prefix="/api", tags=["UDF"])
 app.include_router(scheduled_router, prefix="/api/scheduled-tasks", tags=["Scheduled Tasks"])
 app.include_router(report_templates_router, prefix="/api/report-templates", tags=["Report Templates"])
 app.include_router(notification_router, prefix="/api/notification", tags=["Notifications"])
+app.include_router(task_monitor_router, prefix="/api/task-monitor", tags=["Task Monitor"])
 
 # Node metrics for distributed monitoring
 from services.shared.common.system_metrics import router as node_metrics_router

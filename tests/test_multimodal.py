@@ -1,21 +1,32 @@
-"""Unit tests for multimodal package — 分类/解析器/OpenCV工具/上传接口/content blocks."""
+"""Unit tests for multimodal package — 分类/解析器/工作区落盘/OpenCV工具/content blocks/发送解析.
 
+附件即会话工作区文件:无附件 ID、无 adh_chat_attachments 表、无独立附件存储。
+"""
+
+import asyncio
 import io
 import json
 import os
 import sys
 import zipfile
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datamind.multimodal import classify_extension
+from services.datamind.multimodal import (
+    ALLOWED_EXTENSIONS, MAX_FILE_SIZE, MAX_FILES_PER_REQUEST, classify_extension,
+)
+from services.datamind.multimodal import loader, opencv_tools
+from services.datamind.multimodal.loader import (
+    build_user_content, normalize_rel_path, resolve_workspace_file,
+    save_derived_file, write_upload_file,
+)
 from services.datamind.multimodal.table_parser import parse_table_file
 from services.datamind.multimodal.doc_parser import extract_document_text
-from services.datamind.multimodal import opencv_tools
-from services.datamind.multimodal.loader import build_user_content
+from services.datamind.execution.secure_sdk import place_attachments
+from services.datamind.api.send_payload import _validate_upload
 
 
 # ── classify_extension ─────────────────────────────────────────────
@@ -34,8 +45,11 @@ class TestClassifyExtension:
         assert classify_extension(".exe") is None
         assert classify_extension("") is None
 
+    def test_allowed_extensions_cover_categories(self):
+        assert ".csv" in ALLOWED_EXTENSIONS and ".exe" not in ALLOWED_EXTENSIONS
 
-# ── table_parser ───────────────────────────────────────────────────
+
+# ── table_parser / doc_parser (纯文件解析器,契约不变) ──────────────
 
 class TestTableParser:
     def test_parse_csv(self, tmp_path):
@@ -65,15 +79,12 @@ class TestTableParser:
         assert result["row_count"] == 0
 
     def test_preview_truncation(self, tmp_path):
-        # 大量长文本行触发截断
         lines = ["col1,col2"] + [f"v{i}," + "x" * 200 for i in range(500)]
         p = tmp_path / "big.csv"
         p.write_text("\n".join(lines), encoding="utf-8")
         result = parse_table_file(str(p), "big.csv")
         assert len(result["preview_text"]) <= 6000 + 20
 
-
-# ── doc_parser ─────────────────────────────────────────────────────
 
 class TestDocParser:
     def test_txt_and_md(self, tmp_path):
@@ -113,229 +124,401 @@ class TestDocParser:
         assert "解析失败" in result["text"]
 
 
-# ── opencv_tools ───────────────────────────────────────────────────
+# ── loader: 路径守卫与工作区落盘 ──────────────────────────────────
 
-@pytest.fixture
-def sample_image_att(tmp_path):
-    """生成一张 100x80 的测试 PNG 图片附件行."""
-    import cv2
-    import numpy as np
+class TestWorkspacePathGuard:
+    def test_normalize_rel_path(self):
+        assert normalize_rel_path("/workspace/uploads/a.png") == "uploads/a.png"
+        assert normalize_rel_path("workspace/a.png") == "a.png"
+        assert normalize_rel_path("./a.png") == "a.png"
+        assert normalize_rel_path("a.png") == "a.png"
 
-    img = np.full((80, 100, 3), 200, dtype=np.uint8)
-    cv2.rectangle(img, (20, 20), (80, 60), (0, 0, 0), 2)  # 画一个矩形框
-    path = str(tmp_path / "test_img.png")
-    cv2.imwrite(path, img)
-    return {
-        "id": "att001", "user_id": 1, "workspace_id": 0,
-        "filename": "test_img.png", "category": "image",
-        "storage_path": path, "size": os.path.getsize(path),
-    }
+    def test_resolve_ok(self, tmp_path):
+        (tmp_path / "uploads").mkdir()
+        (tmp_path / "uploads" / "a.png").write_bytes(b"x")
+        target = resolve_workspace_file(tmp_path, "uploads/a.png")
+        assert target == (tmp_path / "uploads" / "a.png").resolve()
 
+    def test_resolve_rejects_traversal(self, tmp_path):
+        with pytest.raises(ValueError):
+            resolve_workspace_file(tmp_path, "../outside.png")
+        with pytest.raises(ValueError):
+            resolve_workspace_file(tmp_path, "uploads/../../outside.png")
 
-def _mock_save_derived(source_att, img_bytes, filename, meta=None):
-    return {
-        "id": "derived001", "user_id": source_att.get("user_id", 0),
-        "workspace_id": 0, "filename": filename, "category": "image",
-        "storage_path": f"/tmp/{filename}", "size": len(img_bytes),
-    }
+    def test_resolve_rejects_missing_rel(self, tmp_path):
+        with pytest.raises(ValueError):
+            resolve_workspace_file(tmp_path, "")
+        with pytest.raises(ValueError):
+            resolve_workspace_file(tmp_path, "/")
 
-
-class TestOpenCVTools:
-    def test_image_info(self, sample_image_att):
-        info = opencv_tools.image_info(sample_image_att)
-        assert info["width"] == 100
-        assert info["height"] == 80
-        assert info["channels"] == 3
-        assert "mean_brightness" in info and "contrast_std" in info
-
-    def test_image_info_missing_file(self):
-        result = opencv_tools.image_info({"filename": "x.png", "storage_path": "/nonexistent.png"})
-        assert result["error"]
-
-    def test_image_process_resize(self, sample_image_att):
-        with patch("services.datamind.multimodal.loader.save_derived_attachment", side_effect=_mock_save_derived):
-            result = opencv_tools.image_process(sample_image_att, "resize", {"width": 50})
-        assert result["success"]
-        assert result["width"] == 50
-        assert result["height"] == 40  # 等比缩放
-        assert result["attachment_id"] == "derived001"
-
-    def test_image_process_crop_and_grayscale_and_edges(self, sample_image_att):
-        with patch("services.datamind.multimodal.loader.save_derived_attachment", side_effect=_mock_save_derived):
-            crop = opencv_tools.image_process(sample_image_att, "crop", {"x": 10, "y": 10, "width": 30, "height": 20})
-            gray = opencv_tools.image_process(sample_image_att, "grayscale")
-            edges = opencv_tools.image_process(sample_image_att, "edges")
-        assert crop["success"] and crop["width"] == 30 and crop["height"] == 20
-        assert gray["success"] and gray["width"] == 100
-        assert edges["success"]
-
-    def test_image_process_invalid_op(self, sample_image_att):
-        result = opencv_tools.image_process(sample_image_att, "blur_all")
-        assert result["error"]
-
-    def test_image_process_crop_out_of_range(self, sample_image_att):
-        result = opencv_tools.image_process(sample_image_att, "crop", {"x": 200, "y": 200, "width": 10, "height": 10})
-        assert result["error"]
-
-    def test_detect_table_region(self, tmp_path):
-        # 白底上画一个大矩形模拟表格区域
-        import cv2
-        import numpy as np
-
-        img = np.full((300, 400, 3), 255, dtype=np.uint8)
-        cv2.rectangle(img, (50, 50), (350, 250), (0, 0, 0), 2)
-        path = str(tmp_path / "table.png")
-        cv2.imwrite(path, img)
-        att = {"id": "att002", "user_id": 1, "filename": "table.png",
-               "storage_path": path, "size": os.path.getsize(path)}
-        with patch("services.datamind.multimodal.loader.save_derived_attachment", side_effect=_mock_save_derived):
-            result = opencv_tools.detect_table_region(att)
-        assert "error" not in result
-        if result.get("detected"):
-            assert result["region"]["width"] > 0
-            assert result["attachment_id"] == "derived001"
-
-    def test_summarize_image(self, sample_image_att):
-        summary = opencv_tools.summarize_image(sample_image_att)
-        data = json.loads(summary)
-        assert data["width"] == 100
+    def test_resolve_rejects_symlink_escape(self, tmp_path):
+        outside = tmp_path.parent / "outside_secret.png"
+        outside.write_bytes(b"secret")
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "link.png").symlink_to(outside)
+        with pytest.raises(ValueError):
+            resolve_workspace_file(ws, "link.png")
 
 
-# ── loader.build_user_content ─────────────────────────────────────
+class TestWriteUploadFile:
+    def test_write_and_classify(self, tmp_path):
+        att = write_upload_file(tmp_path, "pic.png", b"\x89PNG-fake")
+        assert att == {"filename": "pic.png", "category": "image",
+                       "path": "uploads/pic.png", "size": 9}
+        assert (tmp_path / "uploads" / "pic.png").read_bytes() == b"\x89PNG-fake"
+
+    def test_dedupe_same_name(self, tmp_path):
+        a1 = write_upload_file(tmp_path, "a.csv", b"x")
+        a2 = write_upload_file(tmp_path, "a.csv", b"y")
+        assert a1["path"] == "uploads/a.csv"
+        assert a2["filename"] == "a_1.csv" and a2["path"] == "uploads/a_1.csv"
+
+    def test_rejects_bad_extension(self, tmp_path):
+        with pytest.raises(ValueError, match="不支持的文件类型"):
+            write_upload_file(tmp_path, "evil.exe", b"MZ")
+
+    def test_rejects_bad_name(self, tmp_path):
+        with pytest.raises(ValueError, match="文件名无效"):
+            write_upload_file(tmp_path, "", b"x")
+        with pytest.raises(ValueError, match="文件名无效"):
+            write_upload_file(tmp_path, "..", b"x")
+
+    def test_save_derived_file(self, tmp_path):
+        att = save_derived_file(tmp_path, b"\x89PNG-derived", "resized_a.png")
+        assert att["category"] == "image"
+        assert att["path"] == "uploads/resized_a.png"
+        assert (tmp_path / "uploads" / "resized_a.png").exists()
+
+
+# ── place_attachments (secure_sdk): 上传落盘 + 工作区引用校验 ─────
+
+class TestPlaceAttachments:
+    def test_upload_content_lands_in_workspace(self, tmp_path):
+        task = SimpleNamespace(attachments=[
+            {"filename": "a.csv", "category": "table", "size": 7, "content": b"x,y\n1,2"},
+        ])
+        runtime = SimpleNamespace(workspace=tmp_path)
+        place_attachments(task, runtime)
+        assert task.attachments == [
+            {"filename": "a.csv", "category": "table", "path": "uploads/a.csv", "size": 7},
+        ]
+        assert (tmp_path / "uploads" / "a.csv").read_bytes() == b"x,y\n1,2"
+
+    def test_existing_workspace_file_ref(self, tmp_path):
+        placed = write_upload_file(tmp_path, "pic.png", b"\x89PNG")
+        task = SimpleNamespace(attachments=[{"path": placed["path"]}])
+        runtime = SimpleNamespace(workspace=tmp_path)
+        place_attachments(task, runtime)
+        assert task.attachments == [
+            {"filename": "pic.png", "category": "image", "path": "uploads/pic.png", "size": 4},
+        ]
+
+    def test_missing_ref_fails_loud(self, tmp_path):
+        task = SimpleNamespace(attachments=[{"path": "uploads/none.png"}])
+        with pytest.raises(ValueError, match="附件不存在"):
+            place_attachments(task, SimpleNamespace(workspace=tmp_path))
+
+    def test_traversal_ref_fails_loud(self, tmp_path):
+        task = SimpleNamespace(attachments=[{"path": "../etc/passwd"}])
+        with pytest.raises(ValueError):
+            place_attachments(task, SimpleNamespace(workspace=tmp_path))
+
+    def test_too_many_files_fails_loud(self, tmp_path):
+        task = SimpleNamespace(attachments=[
+            {"filename": f"f{i}.csv", "category": "table", "size": 1, "content": b"x"}
+            for i in range(MAX_FILES_PER_REQUEST + 1)
+        ])
+        with pytest.raises(ValueError, match="最多携带"):
+            place_attachments(task, SimpleNamespace(workspace=tmp_path))
+
+    def test_oversized_upload_fails_loud(self, tmp_path):
+        task = SimpleNamespace(attachments=[
+            {"filename": "big.csv", "category": "table", "size": 1,
+             "content": b"A" * (MAX_FILE_SIZE + 1)},
+        ])
+        with pytest.raises(ValueError, match="大小限制"):
+            place_attachments(task, SimpleNamespace(workspace=tmp_path))
+
+    def test_no_attachments_noop(self, tmp_path):
+        task = SimpleNamespace(attachments=[])
+        place_attachments(task, SimpleNamespace(workspace=tmp_path))
+        assert task.attachments == []
+
+
+# ── loader.build_user_content (工作区契约,无 DB/attachment_id) ─────
 
 class TestBuildUserContent:
-    def test_no_attachments_returns_string(self):
-        assert build_user_content("你好", []) == "你好"
+    def test_no_attachments_returns_string(self, tmp_path):
+        assert build_user_content("你好", [], tmp_path) == "你好"
 
-    def test_image_block_with_vision(self, sample_image_att):
-        blocks = build_user_content("分析这张图", [sample_image_att], supports_vision=True)
+    def test_image_block(self, tmp_path):
+        write_upload_file(tmp_path, "p.png", b"\x89PNG-bytes")
+        att = {"filename": "p.png", "category": "image", "path": "uploads/p.png"}
+        blocks = build_user_content("分析这张图", [att], tmp_path)
         assert isinstance(blocks, list)
         types = [b["type"] for b in blocks]
         assert "image" in types
         img_block = next(b for b in blocks if b["type"] == "image")
         assert img_block["source"]["type"] == "base64"
-        assert img_block["source"]["media_type"] == "image/png"
         assert blocks[-1] == {"type": "text", "text": "分析这张图"}
+        # 不再暴露 attachment_id,仅业务名与工作区路径
+        assert "attachment_id" not in blocks[0]["text"]
+        assert "uploads/p.png" in blocks[0]["text"]
 
-    def test_image_degraded_without_vision(self, sample_image_att):
-        blocks = build_user_content("分析", [sample_image_att], supports_vision=False)
+    def test_image_missing_degraded_explicit(self, tmp_path):
+        att = {"filename": "gone.png", "category": "image", "path": "uploads/gone.png"}
+        blocks = build_user_content("分析", [att], tmp_path)
         assert all(b["type"] == "text" for b in blocks)
-        assert "OpenCV" in blocks[0]["text"]
+        # 降级必须显式标注事实,不静默吞掉
+        assert "未能注入" in blocks[0]["text"] or "无法解析" in blocks[0]["text"]
 
-    def test_table_with_pre_parsed_meta(self):
-        att = {"id": "t1", "filename": "a.csv", "category": "table",
-               "storage_path": "/x", "parsed_meta": {"preview_text": "预览文本"}}
-        blocks = build_user_content("分析表格", [att])
-        assert blocks[0]["text"] == "预览文本"
+    def test_table_parses_from_workspace(self, tmp_path):
+        write_upload_file(tmp_path, "a.csv", "id,amount\n1,10\n2,20\n".encode())
+        att = {"filename": "a.csv", "category": "table", "path": "uploads/a.csv"}
+        blocks = build_user_content("分析表格", [att], tmp_path)
+        assert "amount" in blocks[0]["text"]
 
-    def test_document_with_pre_parsed_meta(self):
-        att = {"id": "d1", "filename": "a.md", "category": "document",
-               "storage_path": "/x", "parsed_meta": {"text": "文档正文"}}
-        blocks = build_user_content("总结", [att])
-        assert "文档正文" in blocks[0]["text"]
-        assert "a.md" in blocks[0]["text"]
+    def test_table_missing_fails_visible(self, tmp_path):
+        att = {"filename": "gone.csv", "category": "table", "path": "uploads/gone.csv"}
+        blocks = build_user_content("分析表格", [att], tmp_path)
+        assert "解析失败" in blocks[0]["text"]
 
-    def test_model3d_text_block(self):
-        att = {"id": "m1", "filename": "a.glb", "category": "model3d",
-               "storage_path": "/data/a.glb"}
-        blocks = build_user_content("看看模型", [att])
+    def test_document_parses_from_workspace(self, tmp_path):
+        write_upload_file(tmp_path, "note.md", "# 标题\n正文".encode())
+        att = {"filename": "note.md", "category": "document", "path": "uploads/note.md"}
+        blocks = build_user_content("总结", [att], tmp_path)
+        assert "正文" in blocks[0]["text"]
+        assert "note.md" in blocks[0]["text"]
+
+    def test_model3d_text_block(self, tmp_path):
+        att = {"filename": "a.glb", "category": "model3d", "path": "uploads/a.glb"}
+        blocks = build_user_content("看看模型", [att], tmp_path)
         assert "3D模型" in blocks[0]["text"]
-        assert "/data/a.glb" in blocks[0]["text"]
+        assert "uploads/a.glb" in blocks[0]["text"]
 
 
-# ── Upload API ─────────────────────────────────────────────────────
+# ── opencv_tools (工作区契约,派生图写回 uploads/) ──────────────────
 
 @pytest.fixture
-def upload_client(tmp_path):
-    """构建带鉴权覆盖的 TestClient,DB 写入全部 mock."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    from services.datamind.api.attachments import router
-    from services.shared.common.auth import get_current_user
+def sample_image_att(tmp_path):
+    """在会话工作区生成一张 100x80 的测试 PNG 图片附件描述."""
+    import cv2
+    import numpy as np
 
-    app = FastAPI()
-    app.include_router(router, prefix="/api/chat/attachments")
-    app.dependency_overrides[get_current_user] = lambda: {
-        "user_id": 1, "username": "tester", "role": "admin",
-    }
-    return TestClient(app), tmp_path
-
-
-def _mock_conn():
-    conn = MagicMock()
-    cursor = MagicMock()
-    conn.cursor.return_value.__enter__.return_value = cursor
-    conn.cursor.return_value.__exit__.return_value = False
-    return conn, cursor
+    img = np.full((80, 100, 3), 200, dtype=np.uint8)
+    cv2.rectangle(img, (20, 20), (80, 60), (0, 0, 0), 2)
+    path = tmp_path / "uploads"
+    path.mkdir(exist_ok=True)
+    file = path / "test_img.png"
+    cv2.imwrite(str(file), img)
+    return {"filename": "test_img.png", "category": "image",
+            "path": "uploads/test_img.png", "size": file.stat().st_size}, tmp_path
 
 
-class TestUploadAPI:
-    def test_upload_png_success(self, upload_client):
-        client, tmp_path = upload_client
-        conn, cursor = _mock_conn()
-        png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
-        with patch("services.shared.common.config.ADH_UPLOAD_DIR", str(tmp_path)), \
-             patch("services.shared.common.db.metadata_db.get_metadata_conn", return_value=conn):
-            resp = client.post(
-                "/api/chat/attachments/upload",
-                files=[("files", ("pic.png", io.BytesIO(png_bytes), "image/png"))],
-            )
+class TestOpenCVTools:
+    def test_image_info(self, sample_image_att):
+        att, ws = sample_image_att
+        info = opencv_tools.image_info(att, ws)
+        assert info["width"] == 100
+        assert info["height"] == 80
+        assert info["channels"] == 3
+        assert "mean_brightness" in info and "contrast_std" in info
+
+    def test_image_info_missing_file(self, tmp_path):
+        result = opencv_tools.image_info(
+            {"filename": "x.png", "path": "uploads/x.png"}, tmp_path)
+        assert result["error"]
+
+    def test_image_process_resize_writes_derived(self, sample_image_att):
+        att, ws = sample_image_att
+        result = opencv_tools.image_process(att, "resize", {"width": 50}, ws)
+        assert result["success"]
+        assert result["width"] == 50
+        assert result["height"] == 40  # 等比缩放
+        # 派生图写回同一工作区 uploads/,无 attachment_id/外部 URL
+        assert result["path"].startswith("uploads/")
+        assert "attachment_id" not in result and "url" not in result
+        assert (ws / result["path"]).exists()
+
+    def test_image_process_crop_and_grayscale_and_edges(self, sample_image_att):
+        att, ws = sample_image_att
+        crop = opencv_tools.image_process(att, "crop", {"x": 10, "y": 10, "width": 30, "height": 20}, ws)
+        gray = opencv_tools.image_process(att, "grayscale", None, ws)
+        edges = opencv_tools.image_process(att, "edges", None, ws)
+        assert crop["success"] and crop["width"] == 30 and crop["height"] == 20
+        assert gray["success"] and gray["width"] == 100
+        assert edges["success"]
+
+    def test_image_process_invalid_op(self, sample_image_att):
+        att, ws = sample_image_att
+        result = opencv_tools.image_process(att, "blur_all", None, ws)
+        assert result["error"]
+
+    def test_image_process_crop_out_of_range(self, sample_image_att):
+        att, ws = sample_image_att
+        result = opencv_tools.image_process(att, "crop", {"x": 200, "y": 200, "width": 10, "height": 10}, ws)
+        assert result["error"]
+
+    def test_detect_table_region(self, tmp_path):
+        import cv2
+        import numpy as np
+
+        img = np.full((300, 400, 3), 255, dtype=np.uint8)
+        cv2.rectangle(img, (50, 50), (350, 250), (0, 0, 0), 2)
+        (tmp_path / "uploads").mkdir()
+        file = tmp_path / "uploads" / "table.png"
+        cv2.imwrite(str(file), img)
+        att = {"filename": "table.png", "category": "image",
+               "path": "uploads/table.png", "size": file.stat().st_size}
+        result = opencv_tools.detect_table_region(att, tmp_path)
+        assert "error" not in result
+        if result.get("detected"):
+            assert result["region"]["width"] > 0
+            assert result["path"].startswith("uploads/")
+            assert (tmp_path / result["path"]).exists()
+
+    def test_summarize_image(self, sample_image_att):
+        att, ws = sample_image_att
+        summary = opencv_tools.summarize_image(att, ws)
+        data = json.loads(summary)
+        assert data["width"] == 100
+
+
+# ── send_payload: 上传校验(替代旧 Upload API 用例) ────────────────
+
+class TestUploadValidation:
+    def test_ok(self):
+        att = _validate_upload("pic.png", b"\x89PNG-data")
+        assert att["filename"] == "pic.png" and att["category"] == "image"
+        assert att["size"] == 9 and att["content"] == b"\x89PNG-data"
+
+    def test_rejects_bad_extension(self):
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as e:
+            _validate_upload("evil.exe", b"MZ")
+        assert "不支持的文件类型" in e.value.detail
+
+    def test_rejects_empty(self):
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as e:
+            _validate_upload("a.csv", b"")
+        assert "空文件" in e.value.detail
+
+    def test_rejects_oversized(self):
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as e:
+            _validate_upload("big.txt", b"A" * (MAX_FILE_SIZE + 1))
+        assert "文件过大" in e.value.detail
+
+
+class TestParseSendRequest:
+    """发送接口双模解析:multipart(payload+files)与 JSON(AS-BOT 形态)."""
+
+    @pytest.fixture
+    def client(self):
+        from fastapi import FastAPI, Request
+        from fastapi.testclient import TestClient
+        from services.datamind.api.pipeline import PipelineExecuteRequest
+        from services.datamind.api.send_payload import parse_send_request
+
+        app = FastAPI()
+
+        @app.post("/t")
+        async def _t(request: Request):
+            params = await parse_send_request(request, PipelineExecuteRequest)
+            return {
+                "question": params.question,
+                "workspace_id": params.workspace_id,
+                "attachments": [
+                    {"filename": a["filename"], "category": a["category"],
+                     "size": a["size"], "content_len": len(a["content"])}
+                    for a in params.attachments
+                ],
+            }
+
+        return TestClient(app)
+
+    def test_multipart_with_files(self, client):
+        resp = client.post(
+            "/t",
+            data={"payload": json.dumps({"question": "看图", "workspace_id": 3})},
+            files=[("files", ("pic.png", io.BytesIO(b"\x89PNG-x"), "image/png")),
+                   ("files", ("a.csv", io.BytesIO(b"i,a\n1,2"), "text/csv"))],
+        )
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data["attachments"]) == 1
-        att = data["attachments"][0]
-        assert att["category"] == "image"
-        assert att["filename"] == "pic.png"
-        assert att["url"].endswith("/file")
-        assert cursor.execute.called  # INSERT 被调用
-        # 文件实际落盘
-        user_dir = tmp_path / "1"
-        assert any(f.name.endswith("pic.png") for f in user_dir.iterdir())
+        assert data["question"] == "看图" and data["workspace_id"] == 3
+        assert [(a["filename"], a["category"]) for a in data["attachments"]] == [
+            ("pic.png", "image"), ("a.csv", "table")]
+        assert data["attachments"][0]["content_len"] == 6
 
-    def test_upload_multi_category(self, upload_client):
-        client, tmp_path = upload_client
-        conn, _ = _mock_conn()
-        files = [
-            ("files", ("a.csv", io.BytesIO(b"x,y\n1,2"), "text/csv")),
-            ("files", ("b.pdf", io.BytesIO(b"%PDF-1.4"), "application/pdf")),
-            ("files", ("c.glb", io.BytesIO(b"glTF"), "model/gltf-binary")),
-        ]
-        with patch("services.shared.common.config.ADH_UPLOAD_DIR", str(tmp_path)), \
-             patch("services.shared.common.db.metadata_db.get_metadata_conn", return_value=conn):
-            resp = client.post("/api/chat/attachments/upload", files=files)
-        assert resp.status_code == 200
-        cats = [a["category"] for a in resp.json()["attachments"]]
-        assert cats == ["table", "document", "model3d"]
-
-    def test_upload_rejects_bad_extension(self, upload_client):
-        client, tmp_path = upload_client
-        with patch("services.shared.common.config.ADH_UPLOAD_DIR", str(tmp_path)):
-            resp = client.post(
-                "/api/chat/attachments/upload",
-                files=[("files", ("evil.exe", io.BytesIO(b"MZ"), "application/octet-stream"))],
-            )
+    def test_multipart_rejects_bad_extension(self, client):
+        resp = client.post(
+            "/t",
+            data={"payload": json.dumps({"question": "q"})},
+            files=[("files", ("evil.exe", io.BytesIO(b"MZ"), "application/octet-stream"))],
+        )
         assert resp.status_code == 400
         assert "不支持的文件类型" in resp.json()["detail"]
 
-    def test_upload_rejects_too_many_files(self, upload_client):
-        client, tmp_path = upload_client
-        files = [
-            ("files", (f"f{i}.txt", io.BytesIO(b"x"), "text/plain")) for i in range(6)
-        ]
-        with patch("services.shared.common.config.ADH_UPLOAD_DIR", str(tmp_path)):
-            resp = client.post("/api/chat/attachments/upload", files=files)
+    def test_multipart_rejects_too_many_files(self, client):
+        files = [("files", (f"f{i}.csv", io.BytesIO(b"x"), "text/csv"))
+                 for i in range(MAX_FILES_PER_REQUEST + 1)]
+        resp = client.post("/t", data={"payload": json.dumps({"question": "q"})}, files=files)
         assert resp.status_code == 400
         assert "最多上传" in resp.json()["detail"]
 
-    def test_upload_rejects_oversized_file(self, upload_client):
-        client, tmp_path = upload_client
-        conn, _ = _mock_conn()
-        big = b"A" * (20 * 1024 * 1024 + 1)
-        with patch("services.shared.common.config.ADH_UPLOAD_DIR", str(tmp_path)), \
-             patch("services.shared.common.db.metadata_db.get_metadata_conn", return_value=conn):
-            resp = client.post(
-                "/api/chat/attachments/upload",
-                files=[("files", ("big.txt", io.BytesIO(big), "text/plain"))],
-            )
+    def test_multipart_missing_payload(self, client):
+        resp = client.post("/t", files=[("files", ("a.csv", io.BytesIO(b"x"), "text/csv"))])
         assert resp.status_code == 400
-        assert "文件过大" in resp.json()["detail"]
+        assert "payload" in resp.json()["detail"]
+
+    def test_json_ok(self, client):
+        resp = client.post("/t", json={"question": "q", "pipeline_mode": "agent"})
+        assert resp.status_code == 200
+        assert resp.json()["attachments"] == []
+
+    def test_json_rejects_attachment_ids(self, client):
+        """附件 ID 已退役:JSON 请求携带 attachments 一律显式拒绝,不静默忽略."""
+        resp = client.post("/t", json={"question": "q", "attachments": ["dead-beef-id"]})
+        assert resp.status_code == 400
+        assert "multipart" in resp.json()["detail"]
+
+
+# ── fail-loud: 带附件但执行层未接住 → 显式 error ───────────────────
+
+class TestAttachmentsFailLoud:
+    def test_unhandled_attachments_yield_error_not_fallback(self):
+        from services.datamind.services.chat_service import ChatService
+
+        service = ChatService()
+
+        async def empty_dispatch(**kwargs):
+            return
+            yield  # pragma: no cover — 使其成为异步生成器,但不产出任何事件
+
+        service._try_dispatch_via_execution_layer = lambda **kw: empty_dispatch()
+        request = SimpleNamespace()
+
+        async def _not_disconnected():
+            return False
+
+        request.is_disconnected = _not_disconnected
+
+        async def collect():
+            out = []
+            async for ev in service.stream_query(
+                question="分析这张图", history=[], datasource_id=0, model_id=None,
+                pipeline_mode="quick", retrieval_strategy=None, workspace_id=0,
+                user_id=1, username="tester", request=request,
+                attachments=[{"filename": "a.png", "category": "image", "size": 1, "content": b"x"}],
+            ):
+                out.append(ev)
+            return out
+
+        events = asyncio.run(collect())
+        text = b"".join(events).decode("utf-8")
+        assert "event: error" in text and "event: done" in text
+        # 显式暴露:提示附件未被处理,而非静默落入忽略附件的内置管线
+        assert "附件" in text and "未被处理" in text

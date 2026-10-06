@@ -5,7 +5,7 @@
 CREATE TABLE IF NOT EXISTS adh_datasources (
   id INT PRIMARY KEY AUTO_INCREMENT,
   name VARCHAR(200) NOT NULL COMMENT '数据源名称',
-  type VARCHAR(50) NOT NULL COMMENT '数据源类型(mysql/doris/elasticsearch/api/file)',
+  type VARCHAR(50) NOT NULL COMMENT '数据源类型(mysql/doris/api/file)',
   host VARCHAR(200) COMMENT '主机地址',
   port INT COMMENT '端口',
   database_name VARCHAR(100) COMMENT '数据库名',
@@ -82,8 +82,7 @@ CREATE TABLE IF NOT EXISTS adh_data_lineage (
 -- 插入示例数据源
 INSERT INTO adh_datasources (name, type, host, port, database_name, description, status) VALUES
 ('主MySQL', 'mysql', 'localhost', 3306, 'ai_datahub', '主数据库', 'active'),
-('Doris分析库', 'doris', 'localhost', 9030, 'analytics', '分析型数据库', 'active'),
-('ES日志库', 'elasticsearch', 'localhost', 9200, 'logs', '日志存储', 'active');
+('Doris分析库', 'doris', 'localhost', 9030, 'analytics', '分析型数据库', 'active');
 
 -- 插入示例ETL任务
 INSERT INTO adh_etl_tasks (name, task_type, source_datasource_id, source_tables, target_datasource_id, target_tables, description, status) VALUES

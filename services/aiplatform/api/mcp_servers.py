@@ -26,7 +26,7 @@ class MCPServerPayload(BaseModel):
     @classmethod
     def reject_workspace_binding(cls, data):
         if isinstance(data, dict) and {"workspace_id", "workspace_ids"}.intersection(data):
-            raise ValueError("MCP 使用范围请在 Waker 中绑定，不再支持工作空间绑定")
+            raise ValueError("MCP 使用范围请在 AS-BOT 中绑定，不再支持工作空间绑定")
         return data
 
 
@@ -68,10 +68,10 @@ def _now():
 
 @router.get("/")
 def list_mcp_servers(workspace_id: Optional[int] = Query(None), user: dict = Depends(get_current_user)):
-    """系统管理目录或已授权 Waker 的资源投影，不构成执行授权。"""
+    """系统管理目录或已授权 AS-BOT 的资源投影，不构成执行授权。"""
     try:
         if workspace_id is not None:
-            from services.datamind.execution.wakers import visible_resource_ids
+            from services.datamind.execution.as_bots import visible_resource_ids
             ids = visible_resource_ids(user, workspace_id, "mcp_server_ids")
             if not ids:
                 return []

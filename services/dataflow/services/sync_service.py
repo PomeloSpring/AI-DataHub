@@ -9,6 +9,7 @@ Tables:
 
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -70,33 +71,53 @@ class SyncService:
         finally:
             conn.close()
 
-    def create_task(self, data: dict, dag_id: str) -> int:
-        """Create a new sync task."""
+    def create_task(self, data: dict, dag_id: str, owner_id: int = 0,
+                    workspace_id: int = 0) -> int:
+        """Create a new sync task.
+
+        源/目标以 datasource_name 引用 adh_datasources（连接凭据永不落本表）；
+        剩余 source_config/target_config 仅存补充配置（批大小/写入模式等）。
+        """
         conn = _get_conn()
         try:
             with conn.cursor() as cur:
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                task_row_id = int(time.time() * 1000000)
                 cur.execute(
                     """INSERT INTO adh_sync_tasks
-                    (name, description, source_type, source_config, target_type, target_config,
-                     sync_mode, schedule, dag_id, task_config, is_active, status, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, 'idle', %s, %s)""",
+                    (id, name, description, source_type, source_config, target_type, target_config,
+                     source_datasource_name, source_table, target_datasource_name, target_table,
+                     sync_mode, incremental_column, schedule_cron, timezone, dag_id, task_config,
+                     is_active, status, owner_id, workspace_id, timeout_seconds, max_retries,
+                     created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            1, 'idle', %s, %s, %s, %s, %s, %s)""",
                     (
+                        task_row_id,
                         data["name"],
                         data.get("description", ""),
-                        data["source_type"],
-                        json.dumps(data["source_config"]),
-                        data["target_type"],
-                        json.dumps(data["target_config"]),
+                        data.get("source_type") or "mysql",
+                        json.dumps(data.get("source_config") or {}),
+                        data.get("target_type") or "mysql",
+                        json.dumps(data.get("target_config") or {}),
+                        data.get("source_datasource"),
+                        data.get("source_table"),
+                        data.get("target_datasource"),
+                        data.get("target_table"),
                         data.get("sync_mode", "full"),
-                        data.get("schedule"),
+                        data.get("incremental_column"),
+                        data.get("schedule_cron") or None,
+                        data.get("timezone") or "Asia/Shanghai",
                         dag_id,
                         json.dumps(data.get("task_config", {})),
+                        owner_id, workspace_id,
+                        int(data.get("timeout_seconds") or 1800),
+                        int(data.get("max_retries") or 0),
                         now, now,
                     ),
                 )
                 conn.commit()
-                return cur.lastrowid
+                return task_row_id
         finally:
             conn.close()
 
@@ -136,7 +157,7 @@ class SyncService:
         conn = _get_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM adh_sync_logs WHERE task_id = %s", (task_id,))
+                cur.execute("DELETE FROM adh_sync_logs WHERE sync_task_id = %s", (task_id,))
                 cur.execute("DELETE FROM adh_sync_tasks WHERE id = %s", (task_id,))
                 conn.commit()
                 return True
@@ -146,21 +167,25 @@ class SyncService:
     # ── Sync Logs ─────────────────────────────────────────────────
 
     def list_logs(self, task_id: Optional[int] = None, page: int = 1, size: int = 20) -> dict:
-        """List execution logs, optionally filtered by sync task."""
+        """List execution logs, optionally filtered by sync task.
+
+        返回带 task_name（JOIN 任务表，UI 显示 name 而非裸 id）。"""
         conn = _get_conn()
         try:
             with conn.cursor() as cur:
-                where = "WHERE task_id = %s" if task_id is not None else ""
+                where = "WHERE l.sync_task_id = %s" if task_id is not None else ""
                 params: tuple = (task_id,) if task_id is not None else ()
                 cur.execute(
-                    f"SELECT COUNT(*) as total FROM adh_sync_logs {where}",
+                    f"SELECT COUNT(*) as total FROM adh_sync_logs l {where}",
                     params,
                 )
                 total = cur.fetchone()["total"]
 
                 offset = (page - 1) * size
                 cur.execute(
-                    f"SELECT * FROM adh_sync_logs {where} ORDER BY started_at DESC LIMIT %s OFFSET %s",
+                    f"SELECT l.*, t.name AS task_name FROM adh_sync_logs l "
+                    f"LEFT JOIN adh_sync_tasks t ON t.id = l.sync_task_id "
+                    f"{where} ORDER BY l.started_at DESC LIMIT %s OFFSET %s",
                     params + (size, offset),
                 )
                 rows = cur.fetchall()
@@ -168,7 +193,7 @@ class SyncService:
         finally:
             conn.close()
 
-    def create_log(self, task_id: int, dag_run_id: str = "", status: str = "running") -> int:
+    def create_log(self, task_id: int, dag_run_id: str = "", status: str = "queued") -> int:
         """Create a new sync execution log."""
         conn = _get_conn()
         try:
@@ -176,9 +201,9 @@ class SyncService:
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 cur.execute(
                     """INSERT INTO adh_sync_logs
-                    (task_id, dag_run_id, status, started_at, records_synced, error_message)
-                    VALUES (%s, %s, %s, %s, 0, '')""",
-                    (task_id, dag_run_id, status, now),
+                    (id, sync_task_id, dag_run_id, status, trigger_type, started_at, created_at)
+                    VALUES (%s, %s, %s, %s, 'manual', %s, %s)""",
+                    (int(time.time() * 1000000), task_id, dag_run_id, status, now, now),
                 )
                 conn.commit()
                 return cur.lastrowid
@@ -413,38 +438,38 @@ class SyncService:
 sync_service = SyncService()
 
 
-def execute_scheduled_task(task_id: int, trigger_type: str = "manual"):
-    """Execute a scheduled task (called from background tasks).
+def dispatch_sync_task(task_id: int, trigger_type: str = "manual") -> dict:
+    """派发同步任务执行（手动入口；cron 派发走 beat 的 run_key 幂等）。
 
-    This is a simplified executor. The main backend has a full executor
-    with agent integration — this provides basic execution for the DataFlow service.
+    执行核心在 services.dataflow.dag.sync_task_runner（真实数据搬运，
+    不做假成功）。旧的 placeholder 假执行已移除（no-silent-degradation）。
     """
-    logger.info("Executing scheduled task %s (trigger=%s)", task_id, trigger_type)
+    import os
+    import uuid
+    from services.dataflow.dag.sync_task_runner import execute_sync_task_core
 
-    log_id = sync_service.create_scheduled_log(task_id, trigger_type)
-
+    task = sync_service.get_task(task_id)
+    if not task:
+        raise ValueError("同步任务不存在")
+    run_key = f"syncmanual:{task_id}:{uuid.uuid4().hex}"
+    mode = os.getenv("ADH_TASK_EXECUTION_MODE", "celery")
+    timeout = max(60, int(task.get("timeout_seconds") or 1800))
     try:
-        task = sync_service.get_scheduled_task(task_id)
-        if not task:
-            sync_service.update_scheduled_log(log_id, status="failed", error_message="Task not found")
-            return
-
-        task_config = task.get("task_config", {})
-        # Placeholder for actual execution logic
-        # In production, this would call the main backend's agent pipeline
-        # or execute SQL directly against the configured datasource
-        logger.info("Task config: %s", task_config)
-
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        sync_service.update_scheduled_log(log_id, status="success", finished_at=now)
-        logger.info("Scheduled task %s completed successfully", task_id)
-
-    except Exception as e:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        sync_service.update_scheduled_log(
-            log_id,
-            status="failed",
-            finished_at=now,
-            error_message=str(e)[:1000],
-        )
-        logger.error("Scheduled task %s failed: %s", task_id, e)
+        if mode == "background":
+            import threading
+            threading.Thread(
+                target=execute_sync_task_core,
+                args=(task_id, trigger_type, run_key, "async-bg"), daemon=True,
+            ).start()
+        elif mode == "celery":
+            from services.dataflow.tasks.celery_app import app as celery_app
+            celery_app.send_task(
+                "services.dataflow.tasks.dag_tasks.execute_sync_task",
+                args=(task_id, run_key), task_id=run_key, queue="scheduled",
+                soft_time_limit=timeout, time_limit=timeout + 60)
+        else:
+            raise ValueError(f"不支持的执行适配器: {mode}")
+    except Exception:
+        logger.exception("同步任务派发失败 task=%s", task_id)
+        raise RuntimeError("任务队列暂不可用，派发未完成")
+    return {"status": "queued", "mode": mode, "run_key": run_key}

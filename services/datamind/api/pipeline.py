@@ -29,11 +29,11 @@ class PipelineExecuteRequest(BaseModel):
     pipeline_mode: Optional[str] = "quick"  # quick | agent
     retrieval_strategy: Optional[str] = None
     workspace_id: Optional[int] = 0
-    attachments: Optional[list[str]] = []  # 多模态附件 ID 列表
+    attachments: list[dict] = []  # 服务端解析回填的上传附件(send_payload);JSON 请求不得携带
     model_ref: Optional[str] = ""  # 执行层运行时模型(如 provider/model_name)
     session_id: Optional[str] = ""  # 执行层会话 ID(SDK 多轮对话 resume)
     conversation_id: Optional[int] = 0  # chat 会话 ID(qoder 长对话池 key)
-    waker_key: Optional[str] = ""  # 聊天端选定的 Waker(空=按工作空间+角色全部生效 Waker 合并)
+    as_bot_key: Optional[str] = ""  # 聊天端选定的 AS-BOT(空=按工作空间+角色全部生效 AS-BOT 合并)
 
 
 # ── Pipeline Execute ─────────────────────────────────────────────────
@@ -45,17 +45,21 @@ def _sse_event(event: str, data: dict) -> bytes:
 
 @router.post("/send/stream")
 async def pipeline_send_stream(
-    req: PipelineExecuteRequest,
     request: Request,
     user: UserInfo = Depends(get_current_user),
 ):
-    """Alias for /execute — matches frontend's expected URL."""
-    return await execute_pipeline(req, request, user)
+    """Alias for /execute — matches frontend's expected URL.
+
+    请求体双模: JSON(无附件)或 multipart(payload + files,附件随消息上传落盘会话工作区)。
+    """
+    from services.datamind.api.send_payload import parse_send_request
+
+    req = await parse_send_request(request, PipelineExecuteRequest)
+    return await _pipeline_stream(req, request, user)
 
 
 @router.post("/execute")
 async def execute_pipeline(
-    req: PipelineExecuteRequest,
     request: Request,
     user: UserInfo = Depends(get_current_user),
 ):
@@ -63,6 +67,17 @@ async def execute_pipeline(
 
     Returns an SSE stream with progress, thinking, token, and done events.
     """
+    from services.datamind.api.send_payload import parse_send_request
+
+    req = await parse_send_request(request, PipelineExecuteRequest)
+    return await _pipeline_stream(req, request, user)
+
+
+async def _pipeline_stream(
+    req: PipelineExecuteRequest,
+    request: Request,
+    user: UserInfo,
+):
     from services.datamind.nl2sql.orchestrator.pipeline_orchestrator import execute_pipeline as _execute_pipeline
 
     from services.datamind.execution.session_workspace import preflight_request
@@ -113,7 +128,7 @@ async def execute_pipeline(
                     session_id=req.session_id or "",
                     conversation_id=req.conversation_id or 0,
                     user_role=user_role,
-                    waker_key=req.waker_key or "",
+                    as_bot_key=req.as_bot_key or "",
                 )
                 try:
                     async for event in stream:
@@ -122,6 +137,16 @@ async def execute_pipeline(
                 finally:
                     await stream.aclose()
                 if handled:
+                    return
+                if attachments:
+                    # 附件消息只能经执行层处理:派发未接住时显式报错,
+                    # 不得静默落入会忽略附件的内置管线(no-silent-degradation)
+                    err = "附件消息需要执行层支持,当前执行层不可用,附件未被处理"
+                    yield _sse_event("error", {"message": err})
+                    yield _sse_event("done", {
+                        "intent": "agent", "reply": err, "sql": None,
+                        "warnings": [], "error": err,
+                    })
                     return
 
             try:
@@ -135,7 +160,6 @@ async def execute_pipeline(
                     username=user["username"],
                     retrieval_strategy=retrieval_strategy,
                     workspace_id=workspace_id,
-                    attachments=attachments,
                 ):
                     if await request.is_disconnected():
                         logger.info("Client disconnected, stopping pipeline (mode=%s)", pipeline_mode)

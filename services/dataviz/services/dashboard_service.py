@@ -197,6 +197,28 @@ def _invalidate_dashboard_cache(user_id: int = None):
         dashboard_cache.invalidate_prefix(f"dash:{user_id}:")
 
 
+def _position_to_pixels(pos, index: int = 0) -> dict:
+    """设计 position 是 12 列网格制（x/y/w/h 为小整数），看板画布是像素绝对定位。
+
+    发布时换算成像素（1 列=80px、1 行=90px，与默认全宽卡 960x360 对齐）；
+    已是像素值则原样保留。position 缺失/非法时按全宽流式堆叠兜底（auto-layout），
+    保证发布后排版可用（LLM 未给排版也不塌）。"""
+    pos = pos if isinstance(pos, dict) else {}
+    try:
+        x, y, w, h = (float(pos.get(k) or 0) for k in ("x", "y", "w", "h"))
+    except (TypeError, ValueError):
+        x = y = w = h = 0.0
+    if max(w, h) <= 24:  # 网格制（像素值不会这么小）
+        if w <= 0:
+            w = 12.0
+        if h <= 0:
+            h = 4.0
+        if x == 0 and y == 0 and index > 0:
+            y = 4.0 * index  # 未给排版时按全宽流式错开，不重叠
+        return {"x": x * 80, "y": y * 90, "w": w * 80, "h": h * 90}
+    return {"x": x, "y": y, "w": w if w > 0 else 960, "h": h if h > 0 else 360}
+
+
 def publish_design_in_transaction(cur, doc, queries, scope, user):
     """仅由已锁定并校验的审批事务调用，不自行提交。"""
     from services.dataviz.services.dashboard_design_service import dump
@@ -212,7 +234,8 @@ def publish_design_in_transaction(cur, doc, queries, scope, user):
     for widget, sql in zip(doc["widgets"], queries):
         cfg = {**widget["config"], "datasource_id": scope["datasource_id"], "as_bot_design": True}
         query = dump(widget["query"]) if widget["query_source"] == "semantic" else None
-        values = (widget["title"], widget["chart_type"], sql, dump(cfg), dump(widget["position"]),
+        values = (widget["title"], widget["chart_type"], sql, dump(cfg),
+                  dump(_position_to_pixels(widget.get("position"), len(chart_ids))),
                   scope["datasource_id"], query, widget["query_source"], scope["workspace"])
         if doc["operation"] == "update":
             cid = selection["chart_id"]
@@ -227,7 +250,67 @@ def publish_design_in_transaction(cur, doc, queries, scope, user):
             cid = cur.lastrowid
         chart_ids.append(cid)
     return {"success": True, "dashboard_id": dashboard_id, "chart_ids": chart_ids,
-            "operation": doc["operation"], "url": f"/screen/{dashboard_id}"}
+            "operation": doc["operation"], "url": f"/dashboard/editor/{dashboard_id}"}
+
+
+# ── Dashboard Visibility (看板可见性按角色授权) ───────────────────────────
+#
+# 可见性唯一裁决 = 用户角色授权(adh_user_roles ⋈ adh_role_dashboard_access，
+# 经 role_service.get_user_allowed_dashboards 解析):
+#   * admin 始终全可见(展示范围语义; 图表数据仍由 permission_enforcer 按查看者治理);
+#   * 其余角色 fail-closed: 未配置授权 = 一律不可见(owner/is_public 不再授予“可看”);
+#   * 可见性裁决必须实时查询共享层，不进任何进程内 TTL 缓存(撤权后不得留可见窗口)。
+
+
+def _is_admin_user(user_id: int, user_role: str = "") -> bool:
+    """admin 判定以服务端身份为准：优先信任服务端注入的 user_role，缺失时回查授权表。"""
+    if (user_role or "").lower() == "admin":
+        return True
+    if not user_id:
+        return False
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS cnt FROM adh_user_roles ur "
+                "JOIN adh_roles r ON r.id = ur.role_id "
+                "WHERE ur.user_id = %s AND r.name = 'admin'",
+                (user_id,),
+            )
+            return int((cur.fetchone() or {}).get("cnt") or 0) > 0
+    finally:
+        conn.close()
+
+
+def visible_dashboard_ids(user_id: int, user_role: str = "", workspace_id: int = 0):
+    """返回用户可见看板 id 集；admin 返回 None 表示全可见；空集 = 全不可见(fail-closed)。"""
+    if _is_admin_user(user_id, user_role):
+        return None
+    from services.authservice.services.role_service import role_service
+    return set(role_service.get_user_allowed_dashboards(user_id, workspace_id))
+
+
+def check_dashboard_visible(dashboard_id: int, user_id: int, user_role: str = "",
+                            workspace_id: Optional[int] = None) -> bool:
+    """单看板可见性裁决（查看链路唯一入口）。workspace_id 缺省时按看板归属解析。"""
+    if not user_id:
+        return False
+    if _is_admin_user(user_id, user_role):
+        return True
+    if workspace_id is None:
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT workspace_id FROM adh_dashboards WHERE id = %s", (dashboard_id,))
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return False
+        workspace_id = int(row["workspace_id"] or 0)
+    from services.authservice.services.role_service import role_service
+    return int(dashboard_id) in set(
+        role_service.get_user_allowed_dashboards(user_id, workspace_id))
 
 
 def refresh_designed_chart(chart, user_id):
@@ -240,7 +323,8 @@ def refresh_designed_chart(chart, user_id):
         raise NoIdentityError("缺少可信身份")
     dashboard = execute_query("SELECT owner_id,workspace_id,is_public FROM adh_dashboards WHERE id=%s",
                               (chart["dashboard_id"],), fetchone=True)
-    if not dashboard or (dashboard["owner_id"] != uid and not dashboard["is_public"]):
+    if not dashboard or not check_dashboard_visible(
+            chart["dashboard_id"], uid, workspace_id=int(dashboard["workspace_id"] or 0)):
         raise PermissionError("无权访问该仪表盘")
     live = resolve_execution_owner(uid, int(dashboard["workspace_id"] or 0))
     config = decoded(chart["config"], {})
@@ -265,36 +349,37 @@ def refresh_designed_chart(chart, user_id):
 class DashboardService:
     """Dashboard CRUD operations."""
 
-    def list_dashboards(self, user_id: int, workspace_id: int = 0) -> list:
-        """List dashboards scoped by workspace and user ownership.
+    def list_dashboards(self, user_id: int, workspace_id: int = 0, user_role: str = "") -> list:
+        """List dashboards scoped by workspace and role visibility.
 
-        Uses TTL cache for performance.
+        可见性按请求实时裁决（不走 TTL 缓存）：进程内缓存无法跨实例失效，
+        撤权后不得留可见窗口（分布式约束）。
         """
-        cache_key = f"dash:{user_id}:{workspace_id}"
-        return dashboard_cache.get_or_set(
-            cache_key,
-            lambda: self._fetch_dashboards_from_db(user_id, workspace_id),
-        )
+        return self._fetch_dashboards_from_db(user_id, workspace_id, user_role)
 
-    def _fetch_dashboards_from_db(self, user_id: int, workspace_id: int = 0) -> list:
-        """Fetch dashboards from database."""
+    def _fetch_dashboards_from_db(self, user_id: int, workspace_id: int = 0,
+                                  user_role: str = "") -> list:
+        """Fetch dashboards from database (角色可见集过滤, fail-closed)."""
+        visible = visible_dashboard_ids(user_id, user_role, workspace_id)
+        if visible is not None and not visible:
+            return []
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
+                sql = "SELECT * FROM adh_dashboards"
+                params: list = []
+                conds = []
                 if workspace_id:
-                    cur.execute(
-                        "SELECT * FROM adh_dashboards "
-                        "WHERE workspace_id = %s AND (owner_id = %s OR is_public = 1) "
-                        "ORDER BY is_default DESC, sort_order ASC, updated_at DESC",
-                        (workspace_id, user_id),
-                    )
-                else:
-                    cur.execute(
-                        "SELECT * FROM adh_dashboards "
-                        "WHERE owner_id = %s OR is_public = 1 "
-                        "ORDER BY is_default DESC, sort_order ASC, updated_at DESC",
-                        (user_id,),
-                    )
+                    conds.append("workspace_id = %s")
+                    params.append(workspace_id)
+                if visible is not None:
+                    marks = ",".join(["%s"] * len(visible))
+                    conds.append(f"id IN ({marks})")
+                    params.extend(sorted(visible))
+                if conds:
+                    sql += " WHERE " + " AND ".join(conds)
+                sql += " ORDER BY is_default DESC, sort_order ASC, updated_at DESC"
+                cur.execute(sql, params)
                 dashboards = cur.fetchall()
                 if not dashboards:
                     return []
@@ -319,8 +404,16 @@ class DashboardService:
         finally:
             conn.close()
 
-    def get_dashboard(self, dashboard_id: int, user_id: int) -> Optional[dict]:
-        """Get a single dashboard with its charts."""
+    def get_dashboard(self, dashboard_id: int, user_id: int, user_role: str = "",
+                      enforce_visibility: bool = True) -> Optional[dict]:
+        """Get a single dashboard with its charts (角色不可见返回 None → API 404)。
+
+        enforce_visibility=False 仅供 AS-BOT 大屏设计通道使用：该通道的访问控制
+        仍由 resource_guard 的 owner/is_public 策略承担(本次改造边界外)，
+        不适用角色可见性裁决。
+        """
+        if enforce_visibility and not check_dashboard_visible(dashboard_id, user_id, user_role):
+            return None
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
@@ -447,6 +540,8 @@ class DashboardService:
         try:
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM adh_charts WHERE dashboard_id = %s", (dashboard_id,))
+                # 级联清理角色可见性授权, 避免悬空授权行
+                cur.execute("DELETE FROM adh_role_dashboard_access WHERE dashboard_id = %s", (dashboard_id,))
                 cur.execute(
                     "DELETE FROM adh_dashboards WHERE id = %s AND owner_id = %s",
                     (dashboard_id, user_id),
@@ -659,6 +754,9 @@ class ChartService:
         """
         from services.datamind.nl2sql.sql.query_executor import validate_sql
 
+        if not check_dashboard_visible(dashboard_id, user_id):
+            raise PermissionError("无权访问该仪表盘")
+
         params = params or {}
         conn = get_metadata_conn()
         try:
@@ -757,6 +855,8 @@ class ChartService:
 
         if not user_id:
             raise NoIdentityError("缺少可信用户身份, 拒绝批量取数(数据合规护城河)")
+        if not check_dashboard_visible(dashboard_id, user_id):
+            raise PermissionError("无权访问该仪表盘")
 
         params = params or {}
         conn = get_metadata_conn()

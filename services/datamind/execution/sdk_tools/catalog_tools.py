@@ -23,11 +23,36 @@ def _text(data, is_error: bool = False) -> dict:
 _PHYSICAL_ID_KEYS = {"datasource_id", "id"}
 
 
-def _strip_physical_ids(obj):
+def _ds_name_map() -> dict:
+    """数据源 id→业务名映射(元数据查询): 剥物理 id 时以业务名补位, 供 LLM 按名选源
+    (waker-datasource-domain §2: 只出业务名, 不出内部 id)。"""
+    from services.shared.common.db import execute_query
+    try:
+        rows = execute_query("SELECT id, name FROM adh_datasources") or []
+        return {int(r["id"]): (r.get("name") or "") for r in rows if r.get("id")}
+    except Exception as e:  # noqa: BLE001 — 映射失败不阻断检索, 缺名处标未知
+        logger.debug("ds name map unavailable: %s", e)
+        return {}
+
+
+def _strip_physical_ids(obj, ds_names: dict | None = None):
     if isinstance(obj, dict):
-        return {k: _strip_physical_ids(v) for k, v in obj.items() if k not in _PHYSICAL_ID_KEYS}
+        out = {}
+        for k, v in obj.items():
+            if k in _PHYSICAL_ID_KEYS:
+                if k == "datasource_id":
+                    # 剥内部 id, 但以业务名补位(否则 LLM 无从知道表在哪个源, 会猜错源)
+                    name = ""
+                    try:
+                        name = (ds_names or {}).get(int(v), "") if v else ""
+                    except (TypeError, ValueError):
+                        name = ""
+                    out["datasource"] = name or "未知数据源"
+                continue
+            out[k] = _strip_physical_ids(v, ds_names)
+        return out
     if isinstance(obj, list):
-        return [_strip_physical_ids(x) for x in obj]
+        return [_strip_physical_ids(x, ds_names) for x in obj]
     return obj
 
 
@@ -72,7 +97,7 @@ async def search_metadata(args):
             ctx.workspace_id,
             10,
         )
-        return _text(_strip_physical_ids(result))
+        return _text(_strip_physical_ids(result, _ds_name_map()))
     except Exception as e:
         logger.error("search_metadata error: %s", e)
         return _text({"error": str(e)}, is_error=True)
@@ -90,7 +115,7 @@ async def get_table_schema(args):
         )
         if not result:
             return _text({"error": f"Table '{args['table_name']}' not found"}, is_error=True)
-        return _text(_strip_physical_ids(result))
+        return _text(_strip_physical_ids(result, _ds_name_map()))
     except Exception as e:
         logger.error("get_table_schema error: %s", e)
         return _text({"error": str(e)}, is_error=True)
@@ -102,7 +127,8 @@ async def list_datasources(args):
     ctx = get_execution_context()
     try:
         from services.datacatalog.services.datasource_service import datasource_service
-        rows = await datasource_service.list_datasources(workspace_id=ctx.workspace_id)
+        rows = await datasource_service.list_datasources(
+            workspace_id=ctx.workspace_id, user_id=ctx.user_id)
         return _text({"datasources": rows, "total": len(rows)})
     except Exception as e:
         logger.error("list_datasources error: %s", e)
@@ -151,7 +177,7 @@ READONLY_ANNOTATIONS = {"readOnlyHint": True}
 def build_catalog_server(backend: str = "qoder", tool_names=None):
     """构建 catalog 进程内 MCP server(qoder / claude).
 
-    tool_names 给定时只注册被选中的工具(waker 粒度的逐个工具权限控制);
+    tool_names 给定时只注册被选中的工具(AS-BOT 粒度的逐个工具权限控制);
     为空则注册本组全部工具。
     """
     from services.datamind.execution.sdk_tools.compat import make_server, make_tool

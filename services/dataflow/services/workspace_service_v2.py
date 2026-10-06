@@ -268,68 +268,6 @@ class WorkspaceService:
         finally:
             conn.close()
 
-    # ── Datasource Management ──────────────────────────────────────
-
-    async def get_workspace_datasources(self, workspace_id: int) -> list[dict]:
-        """Get datasources associated with a workspace."""
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """SELECT d.*, wd.is_primary
-                       FROM adh_workspace_datasources wd
-                       JOIN adh_datasources d ON d.id = wd.datasource_id
-                       WHERE wd.workspace_id = %s
-                       ORDER BY wd.is_primary DESC, d.name""",
-                    (workspace_id,)
-                )
-                return cur.fetchall()
-        finally:
-            conn.close()
-
-    async def add_datasource_to_workspace(self, workspace_id: int, datasource_id: int, is_primary: bool = False) -> bool:
-        """Add a datasource to workspace."""
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                # If setting as primary, unset current primary
-                if is_primary:
-                    cur.execute(
-                        "UPDATE adh_workspace_datasources SET is_primary = 0 WHERE workspace_id = %s",
-                        (workspace_id,)
-                    )
-
-                cur.execute(
-                    """INSERT INTO adh_workspace_datasources (workspace_id, datasource_id, is_primary)
-                       VALUES (%s, %s, %s)
-                       ON DUPLICATE KEY UPDATE is_primary = %s""",
-                    (workspace_id, datasource_id, is_primary, is_primary)
-                )
-                conn.commit()
-                return True
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            conn.close()
-
-    async def remove_datasource_from_workspace(self, workspace_id: int, datasource_id: int) -> bool:
-        """Remove a datasource from workspace."""
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM adh_workspace_datasources WHERE workspace_id = %s AND datasource_id = %s",
-                    (workspace_id, datasource_id)
-                )
-                conn.commit()
-                return True
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            conn.close()
-
     # ── Workspace Context ──────────────────────────────────────────
 
     async def get_workspace_context(self, workspace_id: int, user_id: int) -> Optional[WorkspaceContext]:

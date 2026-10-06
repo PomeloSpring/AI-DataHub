@@ -1,4 +1,6 @@
-"""AS-BOT 会话历史作用域回归：waker_key 隔离系统助手与业务会话（离线，假 DB 连接）。"""
+"""AS-BOT 会话历史回归：会话合并共用、无 __system_bot__ 哨兵（离线，假 DB 连接）。"""
+from types import SimpleNamespace
+
 import pytest
 
 from services.datamind.api import chat
@@ -45,39 +47,64 @@ def capture(monkeypatch):
     log = []
     monkeypatch.setattr(metadata_db, "get_metadata_conn", lambda: _FakeConn(log))
     monkeypatch.setattr(chat, "authorize_workspace", lambda *a: 0)
-    from services.datamind.execution import tool_policy
-    monkeypatch.setattr(tool_policy, "resolve_policy", lambda *a: None)
     return log
 
 
-def test_list_scope_system_bot(capture):
-    chat.list_conversations(workspace_id=0, waker_key="__system_bot__", user={"user_id": 7})
-    sql, params = capture[-1]
-    assert "waker_key = %s" in sql and "__system_bot__" in params
+def _stub_policy(monkeypatch, as_bot_key, seen=None):
+    """桩掉 resolve_policy：返回带 as_bot 的策略对象（可记录 ctx）。"""
+    from services.datamind.execution import tool_policy
+
+    def fake_resolve(ctx, *a, **k):
+        if seen is not None:
+            seen["ctx_as_bot_key"] = ctx.extra.get("as_bot_key")
+        return SimpleNamespace(as_bot={"as_bot_key": as_bot_key})
+
+    monkeypatch.setattr(tool_policy, "resolve_policy", fake_resolve)
 
 
-def test_list_business_excludes_system_bot(capture):
-    chat.list_conversations(workspace_id=0, waker_key="", user={"user_id": 7})
+def test_list_scope_as_bot_filter(capture):
+    chat.list_conversations(workspace_id=0, as_bot_key="ops-bot", user={"user_id": 7})
     sql, params = capture[-1]
-    # 业务清单默认排除 AS-BOT 会话，且不把系统 waker 当作参数值
-    assert "waker_key <> '__system_bot__'" in sql
+    assert "as_bot_key = %s" in sql and "ops-bot" in params
+
+
+def test_workspace_list_includes_global_conversations(capture):
+    """合并共用：工作空间列表含全局(ws=0)会话（面板所建），双向互见不按入口区分。"""
+    chat.list_conversations(workspace_id=3, as_bot_key="", user={"user_id": 7})
+    sql, params = capture[-1]
+    assert "workspace_id IN (%s, 0)" in sql
+    assert params == (7, 3)  # 所有权仍按用户
+
+
+def test_list_merged_no_sentinel_exclusion(capture):
+    """会话历史合并共用：两入口会话互见，无 __system_bot__ 哨兵/入口区分。"""
+    chat.list_conversations(workspace_id=0, as_bot_key="", user={"user_id": 7})
+    sql, params = capture[-1]
+    assert "__system_bot__" not in sql
     assert "__system_bot__" not in params
+    assert "as_bot_key <>" not in sql
+    assert "as_bot_key =" not in sql.split("WHERE", 1)[1]  # 不按入口/as_bot 过滤 → 互见
     assert "user_id = %s" in sql and 7 in params  # 所有权仍按用户
 
 
-def test_create_tags_waker_key(capture):
+def test_create_tags_resolved_as_bot_key(capture, monkeypatch):
+    """会话归属取策略解析结果（服务端注入），客户端传值只进解析上下文。"""
+    seen = {}
+    _stub_policy(monkeypatch, "resolved-bot", seen)
     chat.create_conversation(
-        chat.CreateConversationRequest(workspace_id=0, datasource_id=0, waker_key="__system_bot__"),
+        chat.CreateConversationRequest(workspace_id=0, datasource_id=0, as_bot_key="ops-bot"),
         user={"user_id": 7})
     sql, params = capture[0]
-    assert "waker_key" in sql and "__system_bot__" in params and 7 in params
+    assert seen["ctx_as_bot_key"] == "ops-bot"  # 请求标识进入策略解析
+    assert "as_bot_key" in sql and "resolved-bot" in params and 7 in params
 
 
-def test_create_default_waker_empty_for_business(capture):
+def test_create_default_as_bot_empty_for_business(capture, monkeypatch):
+    _stub_policy(monkeypatch, "")
     chat.create_conversation(chat.CreateConversationRequest(workspace_id=5), user={"user_id": 7})
     sql, params = capture[0]
     assert "INSERT INTO adh_conversations" in sql
-    assert "" in params  # 未标记 → 空串, 归业务清单
+    assert "" in params  # 未绑定 AS-BOT → 空串
 
 
 def test_create_permission_denied_before_insert(capture, monkeypatch):
@@ -323,7 +350,7 @@ def test_deleting_session_is_blocked_by_preflight(monkeypatch):
     monkeypatch.setattr('services.shared.common.auth.authorize_workspace', lambda *a: 3)
     monkeypatch.setattr(sessions, 'validate_conversation', lambda *a: None)
     monkeypatch.setattr(sessions, 'execute_query', lambda *a, **k: {'status': 'deleting'})
-    req = SimpleNamespace(workspace_id=3, pipeline_mode='agent', attachments=[], conversation_id=10, waker_key='test')
+    req = SimpleNamespace(workspace_id=3, pipeline_mode='agent', attachments=[], conversation_id=10, as_bot_key='test')
     with pytest.raises(HTTPException) as error:
         sessions.preflight_request(req, {'user_id': 7, 'role': 'admin'})
     assert error.value.status_code == 409 and '删除' in error.value.detail

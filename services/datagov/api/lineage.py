@@ -46,7 +46,7 @@ def get_table_lineage(
     try:
         # Find the node
         node = execute_query(
-            "SELECT * FROM adh_lineage_nodes WHERE node_id LIKE %s AND workspace_id = %s AND node_type='table' LIMIT 1",
+            "SELECT * FROM adh_lineage_nodes WHERE node_id LIKE %s AND workspace_id IN (%s, 0) AND node_type='table' LIMIT 1",
             (f"%{table_name}%", workspace_id),
             fetchone=True,
         )
@@ -62,7 +62,7 @@ def get_table_lineage(
                 """SELECT n.*, e.edge_type, e.transform_expr, e.confidence
                    FROM adh_lineage_edges e
                    JOIN adh_lineage_nodes n ON n.id = e.source_node_id
-                   WHERE e.target_node_id = %s AND e.workspace_id = %s""",
+                   WHERE e.target_node_id = %s AND e.workspace_id IN (%s, 0)""",
                 (node_id, workspace_id),
             )
 
@@ -71,7 +71,7 @@ def get_table_lineage(
                 """SELECT n.*, e.edge_type, e.transform_expr, e.confidence
                    FROM adh_lineage_edges e
                    JOIN adh_lineage_nodes n ON n.id = e.target_node_id
-                   WHERE e.source_node_id = %s AND e.workspace_id = %s""",
+                   WHERE e.source_node_id = %s AND e.workspace_id IN (%s, 0)""",
                 (node_id, workspace_id),
             )
 
@@ -91,7 +91,7 @@ def get_column_lineage(
     try:
         node_id_pattern = f"{table_name}.{column_name}"
         node = execute_query(
-            "SELECT * FROM adh_lineage_nodes WHERE node_id LIKE %s AND workspace_id = %s AND node_type='column' LIMIT 1",
+            "SELECT * FROM adh_lineage_nodes WHERE node_id LIKE %s AND workspace_id IN (%s, 0) AND node_type='column' LIMIT 1",
             (f"%{node_id_pattern}%", workspace_id),
             fetchone=True,
         )
@@ -146,18 +146,48 @@ def create_lineage_edge(req: LineageEdgeCreate, workspace_id: int = Query(0)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _parse_metadata(value) -> dict:
+    """metadata 归一为对象：DB 存 JSON 字符串，必须解析后再下发（
+    否则前端 Object.entries 会把字符串按字符展开）。解析失败降级为空对象。"""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
 @router.get("/graph")
 def get_lineage_graph(workspace_id: int = Query(0)):
-    """获取完整血缘图（用于可视化）."""
+    """获取完整血缘图（用于可视化）.
+
+    输出对齐前端图表契约：节点带 name（node_name 优先、node_id 兜底，
+    不得回退裸类型标签）；边带 source_id/target_id（与内部 source_node_id
+    并存，两套字段同值）；metadata 归一为对象（DB 存 JSON 字符串，
+    不解析会让前端按字符展开）。
+    """
     try:
-        nodes = execute_query(
-            "SELECT id, node_type, node_id, node_name, metadata FROM adh_lineage_nodes WHERE workspace_id = %s",
+        rows = execute_query(
+            "SELECT id, node_type, node_id, node_name, metadata FROM adh_lineage_nodes WHERE workspace_id IN (%s, 0)",
             (workspace_id,),
         )
-        edges = execute_query(
-            "SELECT id, source_node_id, target_node_id, edge_type, transform_expr, confidence FROM adh_lineage_edges WHERE workspace_id = %s",
+        nodes = [
+            {**n,
+             "name": n.get("node_name") or n.get("node_id") or "",
+             "metadata": _parse_metadata(n.get("metadata"))}
+            for n in (rows or [])
+        ]
+        edge_rows = execute_query(
+            "SELECT id, source_node_id, target_node_id, edge_type, transform_expr, confidence FROM adh_lineage_edges WHERE workspace_id IN (%s, 0)",
             (workspace_id,),
         )
+        edges = [
+            {**e, "source_id": e.get("source_node_id"), "target_id": e.get("target_node_id")}
+            for e in (edge_rows or [])
+        ]
         return {"nodes": nodes, "edges": edges}
     except Exception as e:
         logger.error("Get lineage graph failed: %s", e)

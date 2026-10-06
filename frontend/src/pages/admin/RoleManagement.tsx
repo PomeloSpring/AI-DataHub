@@ -15,12 +15,16 @@ import {
 } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
 import { toast } from 'sonner';
 import {
-  Plus, Edit, Trash2, Shield, Users, Settings, UserPlus, UserMinus,
-  Database, Table, Columns3, Key, Bot, LayoutDashboard, Globe, ExternalLink,
+  Plus, Edit, Trash2, Shield, Users, UserPlus, UserMinus,
+  Database, Lock, Key, Bot, LayoutDashboard, ListChecks, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import client from '@/api/client';
+import { listRLSPolicies, type RLSPolicy } from '@/api/rls';
 
 interface Role {
   id: number;
@@ -38,19 +42,43 @@ interface DatasourceAccess {
   db_type: string;
 }
 
-interface TableAccess {
-  datasource_id: number;
-  table_name: string;
-  access_type: string;
+/** 权限码功能项（含只读接口绑定） */
+interface PermItem {
+  perm_code: string;
+  label: string;
+  description: string;
+  api_pattern: string;
+  api_method: string;
+  /** AI 可调用级别（配置值）：none=不开放 / read=只读 / write=可读可写 */
+  ai_access: 'none' | 'read' | 'write';
+  /** 生效级别（被涉密硬上界收窄后的值），UI 应以它为准展示实际效果 */
+  ai_effective: 'none' | 'read' | 'write';
+  /** 涉密项：级别由代码层硬上界卡死，UI 置灰不可改 */
+  ai_locked: boolean;
+  /** 登记了才会生成 LLM 功能工具 */
+  ai_action_key: string;
+  /** 不开放/只读的原因，必须展示给用户 */
+  ai_note: string;
 }
 
-interface ColumnAccess {
-  datasource_id: number;
-  table_name: string;
-  column_name: string;
-  access_type: string;
-  mask_pattern: string;
+/** 菜单分组（菜单 → 功能） */
+interface MenuPermGroup {
+  menu_key: string;
+  label: string;
+  section: string;
+  module: string;
+  module_label: string;
+  sort: number;
+  /** 菜单级 AI 默认值，仅供批量套用；生效级别以各功能项为准 */
+  ai_access: 'none' | 'read' | 'write';
+  permissions: PermItem[];
 }
+
+const AI_LEVEL_LABEL: Record<string, string> = {
+  none: '不开放给 AI',
+  read: '只读可见',
+  write: '可读可写',
+};
 
 export default function RoleManagement() {
   const navigate = useNavigate();
@@ -72,31 +100,32 @@ export default function RoleManagement() {
   const [dsAccess, setDsAccess] = useState<DatasourceAccess[]>([]);
   const [allDatasources, setAllDatasources] = useState<any[]>([]);
 
-  // Table access
-  const [tableAccess, setTableAccess] = useState<TableAccess[]>([]);
-  const [newTableDsId, setNewTableDsId] = useState(0);
-  const [newTableName, setNewTableName] = useState('');
+  // 数据安全策略绑定（勾选才生效）
+  const [rlsPolicies, setRlsPolicies] = useState<RLSPolicy[]>([]);
+  const [roleRlsPolicies, setRoleRlsPolicies] = useState<Set<number>>(new Set());
 
-  // Column access
-  const [colAccess, setColAccess] = useState<ColumnAccess[]>([]);
-  const [newColDsId, setNewColDsId] = useState(0);
-  const [newColTable, setNewColTable] = useState('');
-  const [newColName, setNewColName] = useState('');
-  const [newColType, setNewColType] = useState('hidden');
+  // 看板可见范围（看板不按工作空间归属, 平铺勾选; 可见性由角色授权 fail-closed 裁决）
+  const [dashboardCatalog, setDashboardCatalog] = useState<Array<{ id: number; name: string; status: string }>>([]);
+  const [roleDashboards, setRoleDashboards] = useState<number[]>([]);
 
-  // Attributes
-  const [attrs, setAttrs] = useState<Record<string, string>>({});
-  const [newAttrKey, setNewAttrKey] = useState('');
-  const [newAttrValue, setNewAttrValue] = useState('');
-
-  // 菜单权限
-  const [menuRegistry, setMenuRegistry] = useState<Array<{ menu_key: string; label: string; section: string; module: string }>>([]);
-  const [roleMenus, setRoleMenus] = useState<Record<string, boolean>>({});
-
-  // 接口权限
-  const [roleApis, setRoleApis] = useState<Array<{ api_pattern: string; method: string; is_allowed: boolean }>>([]);
-  const [newApiPattern, setNewApiPattern] = useState('');
-  const [newApiMethod, setNewApiMethod] = useState('*');
+  // 菜单与功能权限（权限码模型）
+  const [permGroups, setPermGroups] = useState<MenuPermGroup[]>([]);
+  const [standalonePerms, setStandalonePerms] = useState<PermItem[]>([]);
+  const [rolePerms, setRolePerms] = useState<Set<string>>(new Set());
+  const [expandedPerms, setExpandedPerms] = useState<Set<string>>(new Set());
+  // 菜单分组展开/收起(长列表浏览用): key=menu_key, '__standalone__'=通用功能
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const toggleGroupCollapse = (key: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+  const setAllCollapsed = (collapsed: boolean) => {
+    const keys = [...permGroups.map(g => g.menu_key), '__standalone__'];
+    setCollapsedGroups(collapsed ? new Set(keys) : new Set());
+  };
 
   // User assignment
   const [userTarget, setUserTarget] = useState<Role | null>(null);
@@ -140,10 +169,10 @@ export default function RoleManagement() {
         toast.success('已更新');
       } else {
         await client.post('/roles/', { name: formName, display_name: formDisplayName, description: formDesc });
-        toast.success(`角色已创建，已同步创建「${formDisplayName || formName}」的 Waker，可前往 Waker 配置页编辑`, {
+        toast.success(`角色已创建，已同步创建「${formDisplayName || formName}」的 AS-BOT，可前往 AS-BOT 配置页编辑`, {
           action: {
             label: '去编辑',
-            onClick: () => navigate('/system/wakers'),
+            onClick: () => navigate('/system/as-bots'),
           },
         });
       }
@@ -165,32 +194,37 @@ export default function RoleManagement() {
   const openPermissions = async (role: Role) => {
     setPermTarget(role);
     setPermTab('datasources');
-    try {
-      // Load datasources
-      const { data: dsData } = await client.get('/datasources/');
-      setAllDatasources(Array.isArray(dsData) ? dsData : []);
-      // Load role permissions
-      const { data: dsAccess } = await client.get(`/roles/${role.id}/datasources`);
-      setDsAccess(dsAccess || []);
-      const { data: tAccess } = await client.get(`/roles/${role.id}/tables`);
-      setTableAccess(tAccess || []);
-      const { data: cAccess } = await client.get(`/roles/${role.id}/columns`);
-      setColAccess(cAccess || []);
-      const { data: attrData } = await client.get(`/roles/${role.id}/attributes`, { params: { workspace_id: 0 } });
-      setAttrs(attrData || {});
-      // Load menu registry + role menu permissions
-      try {
-        const { data: regData } = await client.get('/roles/menu-registry');
-        setMenuRegistry(Array.isArray(regData) ? regData : []);
-        const { data: menuData } = await client.get(`/roles/${role.id}/menus`);
-        setRoleMenus(menuData.menus || {});
-      } catch { setMenuRegistry([]); setRoleMenus({}); }
-      // Load role API permissions
-      try {
-        const { data: apiData } = await client.get(`/roles/${role.id}/apis`);
-        setRoleApis(apiData.apis || []);
-      } catch { setRoleApis([]); }
-    } catch { /* ignore */ }
+    // 分块独立加载: 单块失败显式报错, 不连坐其它页签
+    const load = async (fn: () => Promise<void>, errMsg: string) => {
+      try { await fn(); } catch { toast.error(errMsg); }
+    };
+    await load(async () => {
+      const { data } = await client.get('/datasources/');
+      setAllDatasources(Array.isArray(data) ? data : []);
+    }, '加载数据源列表失败');
+    await load(async () => {
+      const { data } = await client.get(`/roles/${role.id}/datasources`);
+      setDsAccess(data || []);
+    }, '加载数据源权限失败');
+    await load(async () => {
+      const data = await listRLSPolicies(0, undefined, undefined, 1, 100);
+      setRlsPolicies(data.items || []);
+      const { data: bound } = await client.get(`/roles/${role.id}/rls-policies`);
+      setRoleRlsPolicies(new Set(bound.policy_ids || []));
+    }, '加载数据安全策略失败');
+    await load(async () => {
+      const { data } = await client.get('/roles/dashboard-catalog');
+      setDashboardCatalog(Array.isArray(data) ? data : []);
+      const { data: grants } = await client.get(`/roles/${role.id}/dashboards`);
+      setRoleDashboards((grants || []).map((r: any) => r.dashboard_id));
+    }, '加载看板可见范围失败');
+    await load(async () => {
+      const { data: reg } = await client.get('/roles/perm-registry');
+      setPermGroups(reg.menu_groups || []);
+      setStandalonePerms(reg.standalone || []);
+      const { data: permData } = await client.get(`/roles/${role.id}/permissions`);
+      setRolePerms(new Set(permData.permissions || []));
+    }, '加载功能权限失败');
   };
 
   const saveDatasourceAccess = async (dsIds: number[]) => {
@@ -214,57 +248,84 @@ export default function RoleManagement() {
     }
   };
 
-  const saveTableAccess = async () => {
+  const toggleRlsPolicy = (policyId: number) => {
+    if (!permTarget) return;
+    const next = roleRlsPolicies.has(policyId)
+      ? [...roleRlsPolicies].filter(id => id !== policyId)
+      : [...roleRlsPolicies, policyId];
+    client.put(`/roles/${permTarget.id}/rls-policies`, { policy_ids: next })
+      .then(() => { setRoleRlsPolicies(new Set(next)); toast.success('数据安全策略绑定已保存'); })
+      .catch(() => toast.error('保存失败'));
+  };
+
+  // ── Dashboard Visibility ──────────────────────────────────────
+
+  const toggleDashboard = (dashId: number) => {
+    if (!permTarget) return;
+    const next = roleDashboards.includes(dashId)
+      ? roleDashboards.filter(id => id !== dashId)
+      : [...roleDashboards, dashId];
+    client.put(`/roles/${permTarget.id}/dashboards`, { dashboard_ids: next })
+      .then(() => { setRoleDashboards(next); toast.success('看板可见范围已保存'); })
+      .catch(() => toast.error('保存失败'));
+  };
+
+  // ── Menu & Function Permissions (权限码) ────────────────────
+
+  const togglePerm = (code: string) => {
+    setRolePerms(prev => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code); else next.add(code);
+      return next;
+    });
+  };
+
+  const toggleMenuPerms = (codes: string[]) => {
+    setRolePerms(prev => {
+      const next = new Set(prev);
+      const allOn = codes.length > 0 && codes.every(c => next.has(c));
+      codes.forEach(c => { if (allOn) next.delete(c); else next.add(c); });
+      return next;
+    });
+  };
+
+  const toggleApiExpand = (code: string) => {
+    setExpandedPerms(prev => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code); else next.add(code);
+      return next;
+    });
+  };
+
+  /** 设置功能项的 AI 可调用级别。
+   *  涉密项后端会以 409 硬拒（不静默降级），这里把原因原样透出给用户。 */
+  const handleAiAccess = async (code: string, level: 'none' | 'read' | 'write') => {
+    const patch = (perm: PermItem, res: any): PermItem => ({
+      ...perm,
+      ai_access: (res.ai_access ?? level) as PermItem['ai_access'],
+      ai_effective: (res.ai_effective ?? level) as PermItem['ai_effective'],
+      ai_note: res.ai_note ?? perm.ai_note,
+    });
+    try {
+      const { data } = await client.put(
+        `/roles/perm-registry/${encodeURIComponent(code)}/ai-access`,
+        { ai_access: level },
+      );
+      setPermGroups(prev => prev.map(g => ({
+        ...g,
+        permissions: g.permissions.map(p => (p.perm_code === code ? patch(p, data) : p)),
+      })));
+      setStandalonePerms(prev => prev.map(p => (p.perm_code === code ? patch(p, data) : p)));
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || '设置 AI 可调用级别失败');
+    }
+  };
+
+  const saveFunctionPerms = async () => {
     if (!permTarget) return;
     try {
-      await client.put(`/roles/${permTarget.id}/tables`, {
-        tables: tableAccess.map(t => ({ datasource_id: t.datasource_id, table_name: t.table_name, access_type: t.access_type }))
-      });
-      toast.success('表权限已保存');
-    } catch { toast.error('保存失败'); }
-  };
-
-  const addTableAccess = () => {
-    if (!newTableName) { toast.error('请输入表名'); return; }
-    setTableAccess(prev => [...prev, { datasource_id: newTableDsId, table_name: newTableName, access_type: 'read' }]);
-    setNewTableName('');
-  };
-
-  const removeTableAccess = (idx: number) => {
-    setTableAccess(prev => prev.filter((_, i) => i !== idx));
-  };
-
-  const saveColumnAccess = async () => {
-    if (!permTarget) return;
-    try {
-      await client.put(`/roles/${permTarget.id}/columns`, {
-        columns: colAccess.map(c => ({
-          datasource_id: c.datasource_id, table_name: c.table_name,
-          column_name: c.column_name, access_type: c.access_type, mask_pattern: c.mask_pattern
-        }))
-      });
-      toast.success('列权限已保存');
-    } catch { toast.error('保存失败'); }
-  };
-
-  const addColumnAccess = () => {
-    if (!newColTable || !newColName) { toast.error('请输入表名和列名'); return; }
-    setColAccess(prev => [...prev, {
-      datasource_id: newColDsId, table_name: newColTable,
-      column_name: newColName, access_type: newColType, mask_pattern: ''
-    }]);
-    setNewColName('');
-  };
-
-  const removeColumnAccess = (idx: number) => {
-    setColAccess(prev => prev.filter((_, i) => i !== idx));
-  };
-
-  const saveAttributes = async () => {
-    if (!permTarget) return;
-    try {
-      await client.put(`/roles/${permTarget.id}/attributes`, { workspace_id: 0, attributes: attrs });
-      toast.success('属性已保存');
+      await client.put(`/roles/${permTarget.id}/permissions`, { permissions: [...rolePerms] });
+      toast.success('功能权限已保存');
     } catch { toast.error('保存失败'); }
   };
 
@@ -332,7 +393,7 @@ export default function RoleManagement() {
                   {role.description && <p className="text-sm text-muted-foreground">{role.description}</p>}
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => navigate('/system/wakers')} title="编辑 Waker 配置">
+                  <Button variant="outline" size="sm" onClick={() => navigate('/system/as-bots')} title="编辑 AS-BOT 配置">
                     <Bot className="h-4 w-4" />
                   </Button>
                   <Button variant="outline" size="sm" onClick={() => openPermissions(role)} title="权限配置">
@@ -359,16 +420,14 @@ export default function RoleManagement() {
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-auto">
           <DialogHeader>
             <DialogTitle>权限配置 — {permTarget?.display_name}</DialogTitle>
-            <DialogDescription>配置该角色的数据访问范围</DialogDescription>
+            <DialogDescription>配置该角色的数据访问范围与功能权限</DialogDescription>
           </DialogHeader>
           <Tabs value={permTab} onValueChange={setPermTab}>
-            <TabsList className="grid grid-cols-6 w-full">
+            <TabsList className="grid grid-cols-4 w-full">
               <TabsTrigger value="datasources"><Database className="h-3.5 w-3.5 mr-1" />数据源</TabsTrigger>
-              <TabsTrigger value="tables"><Table className="h-3.5 w-3.5 mr-1" />表</TabsTrigger>
-              <TabsTrigger value="columns"><Columns3 className="h-3.5 w-3.5 mr-1" />列</TabsTrigger>
-              <TabsTrigger value="attributes"><Settings className="h-3.5 w-3.5 mr-1" />属性</TabsTrigger>
-              <TabsTrigger value="menus"><LayoutDashboard className="h-3.5 w-3.5 mr-1" />菜单</TabsTrigger>
-              <TabsTrigger value="apis"><Globe className="h-3.5 w-3.5 mr-1" />接口</TabsTrigger>
+              <TabsTrigger value="policies"><Lock className="h-3.5 w-3.5 mr-1" />数据安全策略</TabsTrigger>
+              <TabsTrigger value="dashboards"><LayoutDashboard className="h-3.5 w-3.5 mr-1" />看板</TabsTrigger>
+              <TabsTrigger value="functions"><ListChecks className="h-3.5 w-3.5 mr-1" />菜单与功能</TabsTrigger>
             </TabsList>
 
             {/* Datasource Access */}
@@ -390,202 +449,131 @@ export default function RoleManagement() {
               {allDatasources.length === 0 && <p className="text-sm text-muted-foreground py-4 text-center">暂无数据源</p>}
             </TabsContent>
 
-            {/* Table Access */}
-            <TabsContent value="tables" className="space-y-3">
-              <p className="text-sm text-muted-foreground">限制该角色只能访问指定的表（不配置=不限制）</p>
-              <div className="flex gap-2">
-                <select className="border rounded px-2 py-1 text-sm" value={newTableDsId} onChange={e => setNewTableDsId(Number(e.target.value))}>
-                  <option value={0}>全部数据源</option>
-                  {allDatasources.map((ds: any) => <option key={ds.id} value={ds.id}>{ds.name}</option>)}
-                </select>
-                <Input placeholder="表名" value={newTableName} onChange={e => setNewTableName(e.target.value)} className="flex-1" />
-                <Button size="sm" onClick={addTableAccess} disabled={!newTableName}><Plus className="h-4 w-4" /></Button>
-              </div>
-              {tableAccess.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">暂无限制，可访问所有表</p>
+            {/* 数据安全策略绑定（勾选才生效; 策略在 数据安全策略 页维护） */}
+            <TabsContent value="policies" className="space-y-3">
+              <p className="text-sm text-muted-foreground">勾选该角色生效的数据安全策略。策略在「数据安全策略」页维护（行/列/属性约束），此处仅选择绑定；勾选的策略对该角色生效，未勾选不生效。</p>
+              {rlsPolicies.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">暂无策略，请先在「数据安全策略」页配置</p>
               ) : (
                 <div className="space-y-1">
-                  {tableAccess.map((t, i) => (
-                    <div key={i} className="flex items-center justify-between border rounded px-3 py-1.5">
-                      <div className="flex items-center gap-2">
-                        <Table className="h-3 w-3 text-muted-foreground" />
-                        <code className="text-sm">{t.table_name}</code>
-                        {t.datasource_id > 0 && <Badge variant="outline" className="text-xs">DS:{t.datasource_id}</Badge>}
+                  {rlsPolicies.map(p => (
+                    <div key={p.id} className="flex items-center justify-between gap-2 border rounded px-3 py-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <Lock className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                          <span className="text-sm font-medium truncate">{p.name}</span>
+                          <Badge variant="outline" className="text-xs flex-shrink-0">
+                            {p.policy_type === 'row' ? '行级' : p.policy_type === 'column' ? '列级' : '行+列'}
+                          </Badge>
+                          {!p.is_active && <Badge variant="secondary" className="text-xs flex-shrink-0">已停用</Badge>}
+                        </div>
+                        <div className="pl-6 text-xs text-muted-foreground truncate">
+                          表 <code>{p.table_name}</code>
+                          {p.filter_expr && <> · <code>{p.filter_expr}</code></>}
+                        </div>
                       </div>
-                      <Button variant="ghost" size="sm" onClick={() => removeTableAccess(i)}><Trash2 className="h-3 w-3" /></Button>
+                      <Switch
+                        checked={roleRlsPolicies.has(p.id)}
+                        onCheckedChange={() => toggleRlsPolicy(p.id)}
+                      />
                     </div>
                   ))}
                 </div>
               )}
-              {tableAccess.length > 0 && (
-                <Button size="sm" onClick={saveTableAccess}>保存表权限</Button>
-              )}
             </TabsContent>
 
-            {/* Column Access */}
-            <TabsContent value="columns" className="space-y-3">
-              <p className="text-sm text-muted-foreground">控制列的可见性和脱敏（不配置=不限制）</p>
-              <div className="flex gap-2 flex-wrap">
-                <select className="border rounded px-2 py-1 text-sm" value={newColDsId} onChange={e => setNewColDsId(Number(e.target.value))}>
-                  <option value={0}>全部</option>
-                  {allDatasources.map((ds: any) => <option key={ds.id} value={ds.id}>{ds.name}</option>)}
-                </select>
-                <Input placeholder="表名" value={newColTable} onChange={e => setNewColTable(e.target.value)} className="w-32" />
-                <Input placeholder="列名" value={newColName} onChange={e => setNewColName(e.target.value)} className="w-32" />
-                <select className="border rounded px-2 py-1 text-sm" value={newColType} onChange={e => setNewColType(e.target.value)}>
-                  <option value="hidden">隐藏</option>
-                  <option value="masked">脱敏</option>
-                  <option value="visible">可见</option>
-                </select>
-                <Button size="sm" onClick={addColumnAccess} disabled={!newColTable || !newColName}><Plus className="h-4 w-4" /></Button>
-              </div>
-              {colAccess.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">暂无列级限制</p>
+            {/* Dashboard Visibility */}
+            <TabsContent value="dashboards" className="space-y-3">
+              <p className="text-sm text-muted-foreground">勾选该角色可查看的看板。未勾选任何看板 = 除 admin 外不可见（fail-closed）</p>
+              {dashboardCatalog.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">暂无看板</p>
               ) : (
-                <div className="space-y-1">
-                  {colAccess.map((c, i) => (
-                    <div key={i} className="flex items-center justify-between border rounded px-3 py-1.5">
-                      <div className="flex items-center gap-2">
-                        <Columns3 className="h-3 w-3 text-muted-foreground" />
-                        <code className="text-sm">{c.table_name}.{c.column_name}</code>
-                        <Badge variant={c.access_type === 'hidden' ? 'destructive' : c.access_type === 'masked' ? 'secondary' : 'default'} className="text-xs">
-                          {c.access_type === 'hidden' ? '隐藏' : c.access_type === 'masked' ? '脱敏' : '可见'}
-                        </Badge>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {dashboardCatalog.map(d => (
+                    <div key={d.id} className="flex items-center justify-between gap-2 border rounded px-2 py-1.5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <LayoutDashboard className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                        <span className="text-xs truncate">{d.name}</span>
+                        {d.status !== 'enabled' && <Badge variant="outline" className="text-[10px] flex-shrink-0">未启用</Badge>}
                       </div>
-                      <Button variant="ghost" size="sm" onClick={() => removeColumnAccess(i)}><Trash2 className="h-3 w-3" /></Button>
+                      <Switch
+                        checked={roleDashboards.includes(d.id)}
+                        onCheckedChange={() => toggleDashboard(d.id)}
+                      />
                     </div>
                   ))}
                 </div>
               )}
-              {colAccess.length > 0 && (
-                <Button size="sm" onClick={saveColumnAccess}>保存列权限</Button>
-              )}
             </TabsContent>
 
-            {/* Attributes */}
-            <TabsContent value="attributes" className="space-y-3">
-              <p className="text-sm text-muted-foreground">配置数据范围属性，RLS 策略中的 :user_xxx 会替换为对应值</p>
-              <div className="flex gap-2">
-                <Input placeholder="属性名，如 region" value={newAttrKey} onChange={e => setNewAttrKey(e.target.value)} className="flex-1" />
-                <Input placeholder="属性值，如 cn" value={newAttrValue} onChange={e => setNewAttrValue(e.target.value)} className="flex-1" />
-                <Button size="sm" onClick={() => { if (newAttrKey) { setAttrs(p => ({ ...p, [newAttrKey]: newAttrValue })); setNewAttrKey(''); setNewAttrValue(''); } }} disabled={!newAttrKey}>
-                  <Plus className="h-4 w-4" />
-                </Button>
+            {/* 菜单与功能（权限码，菜单→功能分组，接口只读） */}
+            <TabsContent value="functions" className="space-y-3">
+              <p className="text-sm text-muted-foreground">按「菜单 → 功能」分组配置该角色可用的功能权限；展开功能可查看其绑定的接口（只读，由权限注册表维护）。未配置任何功能 = 该角色不可用（fail-closed），admin 不受限。</p>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={() => setAllCollapsed(false)}>全部展开</Button>
+                <Button variant="outline" size="sm" onClick={() => setAllCollapsed(true)}>全部收起</Button>
               </div>
-              {Object.keys(attrs).length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">暂无属性</p>
-              ) : (
-                <div className="space-y-1">
-                  {Object.entries(attrs).map(([k, v]) => (
-                    <div key={k} className="flex items-center justify-between border rounded px-3 py-1.5">
-                      <div className="flex items-center gap-2">
-                        <code className="text-sm font-medium">{k}</code>
-                        <span className="text-muted-foreground">=</span>
-                        <code className="text-sm">{v}</code>
-                      </div>
-                      <Button variant="ghost" size="sm" onClick={() => { const n = { ...attrs }; delete n[k]; setAttrs(n); }}>
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {Object.keys(attrs).length > 0 && (
-                <Button size="sm" onClick={saveAttributes}>保存属性</Button>
-              )}
-            </TabsContent>
-
-            {/* 菜单权限 */}
-            <TabsContent value="menus" className="space-y-3">
-              <p className="text-sm text-muted-foreground">配置该角色可访问的菜单。未配置 = 不限制（全部可见）</p>
-              {menuRegistry.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">菜单注册表为空</p>
+              {permGroups.length === 0 && standalonePerms.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">权限注册表为空</p>
               ) : (
                 <div className="space-y-4">
                   {['system', 'data', 'workspace'].map(mod => {
-                    const items = menuRegistry.filter(m => m.module === mod);
-                    if (items.length === 0) return null;
-                    const sections = [...new Set(items.map(i => i.section))];
+                    const groups = permGroups.filter(g => g.module === mod);
+                    if (groups.length === 0) return null;
                     return (
                       <div key={mod}>
                         <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
                           {mod === 'system' ? '系统配置' : mod === 'data' ? '数据中台' : '工作空间'}
                         </h4>
-                        {sections.map(sec => (
-                          <div key={sec} className="mb-2">
-                            <p className="text-[10px] text-muted-foreground/70 mb-1">{sec}</p>
-                            <div className="grid grid-cols-2 gap-1.5">
-                              {items.filter(i => i.section === sec).map(item => (
-                                <div key={item.menu_key} className="flex items-center justify-between border rounded px-2 py-1.5">
-                                  <span className="text-xs">{item.label}</span>
-                                  <Switch
-                                    checked={roleMenus[item.menu_key] !== false}
-                                    onCheckedChange={checked => setRoleMenus(prev => ({ ...prev, [item.menu_key]: checked }))}
-                                  />
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
+                        <div className="space-y-2">
+                          {groups.map(group => (
+                            <PermGroupCard
+                              key={group.menu_key}
+                              group={group}
+                              checked={rolePerms}
+                              expanded={expandedPerms}
+                              collapsed={collapsedGroups.has(group.menu_key)}
+                              onToggleGroup={toggleMenuPerms}
+                              onTogglePerm={togglePerm}
+                              onToggleApi={toggleApiExpand}
+                              onAiAccess={handleAiAccess}
+                              onToggleCollapse={() => toggleGroupCollapse(group.menu_key)}
+                            />
+                          ))}
+                        </div>
                       </div>
                     );
                   })}
-                  <Button size="sm" onClick={async () => {
-                    if (!permTarget) return;
-                    try {
-                      await client.put(`/roles/${permTarget.id}/menus`, { menus: roleMenus });
-                      toast.success('菜单权限已保存');
-                    } catch { toast.error('保存失败'); }
-                  }}>保存菜单权限</Button>
-                </div>
-              )}
-            </TabsContent>
-
-            {/* 接口权限 */}
-            <TabsContent value="apis" className="space-y-3">
-              <p className="text-sm text-muted-foreground">配置该角色可调用的 API 接口。未配置 = 不限制。支持 * 通配符</p>
-              <div className="flex gap-2">
-                <Input placeholder="API 路径，如 /api/ontology/*" value={newApiPattern} onChange={e => setNewApiPattern(e.target.value)} className="flex-1" />
-                <select className="border rounded px-2 py-1 text-sm" value={newApiMethod} onChange={e => setNewApiMethod(e.target.value)}>
-                  <option value="*">全部</option>
-                  <option value="GET">GET</option>
-                  <option value="POST">POST</option>
-                  <option value="PUT">PUT</option>
-                  <option value="DELETE">DELETE</option>
-                </select>
-                <Button size="sm" onClick={() => {
-                  if (!newApiPattern.trim()) return;
-                  setRoleApis(prev => [...prev, { api_pattern: newApiPattern.trim(), method: newApiMethod, is_allowed: true }]);
-                  setNewApiPattern('');
-                }} disabled={!newApiPattern.trim()}><Plus className="h-4 w-4" /></Button>
-              </div>
-              {roleApis.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">未配置限制，该角色可访问所有接口</p>
-              ) : (
-                <div className="space-y-1">
-                  {roleApis.map((api, i) => (
-                    <div key={i} className="flex items-center justify-between border rounded px-3 py-1.5">
-                      <div className="flex items-center gap-2">
-                        <Badge variant="outline" className="text-[10px]">{api.method}</Badge>
-                        <code className="text-xs">{api.api_pattern}</code>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Switch checked={api.is_allowed} onCheckedChange={checked => {
-                          setRoleApis(prev => prev.map((a, ai) => ai === i ? { ...a, is_allowed: checked } : a));
-                        }} />
-                        <Button variant="ghost" size="sm" onClick={() => setRoleApis(prev => prev.filter((_, ai) => ai !== i))}>
-                          <Trash2 className="h-3 w-3" />
+                  {standalonePerms.length > 0 && (
+                    <div>
+                      <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center justify-between">
+                        <span>通用功能</span>
+                        <Button
+                          variant="ghost" size="sm" className="h-6 w-6 p-0"
+                          aria-label={collapsedGroups.has('__standalone__') ? '展开 通用功能' : '收起 通用功能'}
+                          onClick={() => toggleGroupCollapse('__standalone__')}
+                        >
+                          {collapsedGroups.has('__standalone__') ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
                         </Button>
-                      </div>
+                      </h4>
+                      {!collapsedGroups.has('__standalone__') && (
+                        <div className="border rounded p-2 space-y-1">
+                        {standalonePerms.map(p => (
+                          <PermRow
+                            key={p.perm_code}
+                            perm={p}
+                            checked={rolePerms.has(p.perm_code)}
+                            expanded={expandedPerms.has(p.perm_code)}
+                            onToggle={() => togglePerm(p.perm_code)}
+                            onToggleApi={() => toggleApiExpand(p.perm_code)}
+                            onAiAccess={handleAiAccess}
+                          />
+                        ))}
+                        </div>
+                      )}
                     </div>
-                  ))}
-                  <Button size="sm" onClick={async () => {
-                    if (!permTarget) return;
-                    try {
-                      await client.put(`/roles/${permTarget.id}/apis`, { apis: roleApis });
-                      toast.success('接口权限已保存');
-                    } catch { toast.error('保存失败'); }
-                  }}>保存接口权限</Button>
+                  )}
+                  <Button size="sm" onClick={saveFunctionPerms}>保存功能权限</Button>
                 </div>
               )}
             </TabsContent>
@@ -661,6 +649,143 @@ export default function RoleManagement() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+/** 功能项行：权限码勾选 + AI 可调用级别选择 + 只读接口绑定展开 */
+function PermRow({ perm, checked, expanded, onToggle, onToggleApi, onAiAccess }: {
+  perm: PermItem;
+  checked: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+  onToggleApi: () => void;
+  onAiAccess: (code: string, level: 'none' | 'read' | 'write') => void;
+}) {
+  const patterns = (perm.api_pattern || '').split(',').map(s => s.trim()).filter(Boolean);
+  const effective = perm.ai_effective || perm.ai_access || 'none';
+  const configured = perm.ai_access || 'none';
+  // 生效值被硬上界压下来时要让用户看见，否则会以为改了就生效
+  const capped = effective !== configured;
+  return (
+    <div className="border rounded px-2 py-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <label className="flex items-center gap-2 min-w-0 cursor-pointer">
+          <input type="checkbox" className="h-3.5 w-3.5 flex-shrink-0" checked={checked} onChange={onToggle} />
+          <span className="text-xs font-medium truncate">{perm.label}</span>
+          <code className="text-[10px] text-muted-foreground flex-shrink-0" title={perm.perm_code}>{perm.perm_code}</code>
+        </label>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          <Select
+            value={configured}
+            disabled={perm.ai_locked}
+            onValueChange={(v: 'none' | 'read' | 'write') => onAiAccess(perm.perm_code, v)}
+          >
+            <SelectTrigger
+              className="h-6 w-[110px] text-[10px]"
+              title={perm.ai_locked
+                ? `该功能涉敏，AI 级别已锁死为「${AI_LEVEL_LABEL[effective]}」。${perm.ai_note || ''}`
+                : `AI 可调用级别：${AI_LEVEL_LABEL[effective]}`}
+            >
+              <SelectValue placeholder="AI 级别" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">不开放给 AI</SelectItem>
+              <SelectItem value="read">只读可见</SelectItem>
+              <SelectItem value="write">可读可写</SelectItem>
+            </SelectContent>
+          </Select>
+          <Badge
+            variant={effective === 'none' ? 'outline' : effective === 'read' ? 'secondary' : 'default'}
+            className="text-[9px] flex-shrink-0"
+            title={perm.ai_action_key ? `LLM 功能工具：${perm.ai_action_key}` : '未登记 LLM 功能工具，仅在 UI 上标记级别'}
+          >
+            {perm.ai_action_key ? 'AI 工具' : '未接 AI'}
+          </Badge>
+          {patterns.length > 0 && (
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-[10px] flex-shrink-0" onClick={onToggleApi}>
+              {expanded ? '收起接口' : `接口(${patterns.length})`}
+            </Button>
+          )}
+        </div>
+      </div>
+      {perm.description && <p className="text-[10px] text-muted-foreground pl-6">{perm.description}</p>}
+      {(capped || perm.ai_note) && (
+        <p className={`text-[10px] pl-6 ${capped ? 'text-amber-600' : 'text-muted-foreground'}`}>
+          {capped && <>已按涉密边界收窄：「{AI_LEVEL_LABEL[configured]}」→「{AI_LEVEL_LABEL[effective]}」。{perm.ai_note}</>}
+          {!capped && perm.ai_note}
+        </p>
+      )}
+      {expanded && patterns.length > 0 && (
+        <div className="mt-1 ml-6 space-y-0.5">
+          {patterns.map((pat, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <Badge variant="outline" className="text-[9px] flex-shrink-0">{perm.api_method || '*'}</Badge>
+              <code className="text-[10px] text-muted-foreground">{pat}</code>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 菜单卡片：组头勾选整组（含半选态）+ 功能项列表（支持展开/收起，方便浏览长列表） */
+function PermGroupCard({ group, checked, expanded, collapsed, onToggleGroup, onTogglePerm, onToggleApi, onToggleCollapse, onAiAccess }: {
+  group: MenuPermGroup;
+  checked: Set<string>;
+  expanded: Set<string>;
+  collapsed: boolean;
+  onToggleGroup: (codes: string[]) => void;
+  onTogglePerm: (code: string) => void;
+  onToggleApi: (code: string) => void;
+  onToggleCollapse: () => void;
+  onAiAccess: (code: string, level: 'none' | 'read' | 'write') => void;
+}) {
+  const codes = group.permissions.map(p => p.perm_code);
+  const checkedCount = codes.filter(c => checked.has(c)).length;
+  const all = codes.length > 0 && checkedCount === codes.length;
+  const partial = checkedCount > 0 && !all;
+  return (
+    <div className="border rounded">
+      <div className="flex items-center justify-between px-2 py-1.5 bg-muted/30">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            className="h-3.5 w-3.5"
+            checked={all}
+            ref={el => { if (el) el.indeterminate = partial; }}
+            onChange={() => onToggleGroup(codes)}
+          />
+          <span className="text-xs font-medium">{group.label}</span>
+          <span className="text-[10px] text-muted-foreground">{checkedCount}/{codes.length}</span>
+        </label>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-muted-foreground">{group.section}</span>
+          <Button
+            variant="ghost" size="sm" className="h-6 w-6 p-0"
+            aria-label={collapsed ? `展开 ${group.label}` : `收起 ${group.label}`}
+            onClick={onToggleCollapse}
+          >
+            {collapsed ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
+          </Button>
+        </div>
+      </div>
+      {!collapsed && (
+        <div className="p-2 space-y-1">
+          {group.permissions.map(p => (
+            <PermRow
+              key={p.perm_code}
+              perm={p}
+              checked={checked.has(p.perm_code)}
+              expanded={expanded.has(p.perm_code)}
+              onToggle={() => onTogglePerm(p.perm_code)}
+              onToggleApi={() => onToggleApi(p.perm_code)}
+              onAiAccess={onAiAccess}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

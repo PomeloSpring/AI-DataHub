@@ -60,11 +60,12 @@ export default function ThinkingBlock({ content, isStreaming = false }: Props) {
         </span>
       </div>
 
-      {/* Body */}
+      {/* Body — 限高窗口(内联 style 保证生效, 不依赖工具类 CSS), 思考内容再长也不撑高外层 */}
       {expanded && (
         <div
           ref={bodyRef}
-          className="px-3 pb-3 max-h-[300px] overflow-y-auto"
+          className="px-3 pb-3"
+          style={{ maxHeight: 240, overflowY: 'auto' }}
         >
           <div className="pl-5.5 border-l-2 border-purple-200 dark:border-purple-800/40 text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap break-words">
             {content}

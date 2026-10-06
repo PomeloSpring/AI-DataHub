@@ -19,6 +19,7 @@ from .api.datasources import router as datasources_router
 from .api.menu import router as menu_router
 from .api.admin_compat import router as admin_compat_router
 from .api.ontology import router as ontology_router
+from .api.data_products import router as data_products_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -51,6 +52,8 @@ app.include_router(lineage_router, prefix="/api/admin/relations", tags=["Lineage
 app.include_router(metrics_router, prefix="/api/metrics", tags=["Metrics"])
 app.include_router(tags_router, prefix="/api/tags", tags=["Tags"])
 app.include_router(datasources_router, prefix="/api/datasources", tags=["Datasources"])
+# 数据产品(L1 治理身份)：清单/详情/手工认领；挂 /api/catalog 下便于前端按目录分组
+app.include_router(data_products_router, prefix="/api/catalog/data-products", tags=["DataProducts"])
 app.include_router(menu_router, prefix="/api/menu", tags=["Menu"])
 # 同一套菜单 CRUD 也挂到 /api/admin/menu-tree(前端 MenuEditorTab 调用的路径),
 # 必须先于 admin_compat(其 GET 只有裸查询、无写操作端点)
@@ -79,6 +82,8 @@ async def _start_kb_sync_reconciler():
     if os.getenv("KB_SYNC_RECONCILE", "1") == "0":
         return
     try:
+        from services.shared.common.system_jobs import ensure_seeded
+        ensure_seeded()
         from services.datacatalog.services.ontology_kb_sync import start_reconciler
         start_reconciler(int(os.getenv("KB_SYNC_RECONCILE_INTERVAL", "600")))
         logger.info("[datacatalog] kb-sync reconciler started")

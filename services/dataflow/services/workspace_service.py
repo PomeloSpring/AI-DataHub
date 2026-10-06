@@ -28,15 +28,8 @@ class WorkspaceService:
                 if not workspace:
                     return None
 
-                # Get associated datasources (via association table)
-                cur.execute(
-                    """SELECT d.*, wd.is_primary
-                       FROM adh_workspace_datasources wd
-                       JOIN adh_datasources d ON d.id = wd.datasource_id
-                       WHERE wd.workspace_id = %s""",
-                    (workspace_id,)
-                )
-                workspace['datasources'] = cur.fetchall()
+                # 工作空间不再绑定数据源(adh_workspace_datasources 退役为冻结表):
+                # 数据源可用集由用户角色授权唯一裁决, 此处不再读取空间绑定。
 
                 # Get MCP servers (workspace_id field on adh_mcp_servers)
                 cur.execute(
@@ -106,37 +99,6 @@ class WorkspaceService:
             mcp_tools.extend(filtered)
 
         return {'mcp_tools': mcp_tools}
-
-    async def get_primary_datasource(self, workspace_id: int) -> Optional[dict]:
-        """Get the primary datasource for a workspace."""
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                # First try to get the primary datasource from association table
-                cur.execute(
-                    """SELECT d.*
-                       FROM adh_workspace_datasources wd
-                       JOIN adh_datasources d ON d.id = wd.datasource_id
-                       WHERE wd.workspace_id = %s AND wd.is_primary = 1
-                       LIMIT 1""",
-                    (workspace_id,)
-                )
-                ds = cur.fetchone()
-                if ds:
-                    return ds
-
-                # Fallback: get the first datasource in the workspace
-                cur.execute(
-                    """SELECT d.*
-                       FROM adh_workspace_datasources wd
-                       JOIN adh_datasources d ON d.id = wd.datasource_id
-                       WHERE wd.workspace_id = %s
-                       LIMIT 1""",
-                    (workspace_id,)
-                )
-                return cur.fetchone()
-        finally:
-            conn.close()
 
     async def get_user_workspaces(self, user_id: int) -> list[dict]:
         """Get all workspaces for a user."""

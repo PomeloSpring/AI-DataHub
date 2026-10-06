@@ -30,6 +30,17 @@ def _now_iso():
     return datetime.now().isoformat()
 
 
+def _persist_progress(task: dict):
+    """逐题进度落库供任务监控展示；旁路观测失败不阻断执行主链路（护栏 §9）。"""
+    try:
+        from services.dataflow.services.scheduled_task_service import scheduled_task_service as service
+        results = task.get("_results") or []
+        succeeded = sum(r.get("status") == "success" for r in results)
+        service.update_progress(task["_log_id"], succeeded, len(results) - succeeded)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Executor] 进度落库失败(不影响执行): %s", exc)
+
+
 def _execute_sql_on_datasource(sql: str, datasource_id: int, identity: dict) -> dict:
     """可信配置 SQL 必须先校验限流，再使用统一治理入口。"""
     from services.dataviz.services.governed_query import governed_execute
@@ -69,6 +80,7 @@ def _execute_sql_mode(task: dict) -> list:
         sql = q.get("sql", "")
         if not sql:
             results.append({"title": title, "status": "failed", "error": "Empty SQL"})
+            _persist_progress(task)
             continue
         try:
             security = None
@@ -99,11 +111,13 @@ def _execute_sql_mode(task: dict) -> list:
             })
             # 执行成功后自动采集血缘（用原始 SQL，不带 LIMIT 后缀）
             _collect_lineage(sql.strip().rstrip(";"), datasource_id, workspace_id, title)
+            _persist_progress(task)
         except (RunInterrupted, TimeoutError, asyncio.TimeoutError, SoftTimeLimitExceeded):
             raise
         except Exception as e:
             logger.warning("[Executor] SQL failed for '%s': %s", title, e)
             results.append({"title": title, "status": "failed", "error": "查询未完成，请检查配置或权限"})
+            _persist_progress(task)
 
     return results
 
@@ -161,12 +175,14 @@ def _execute_agent_mode(task: dict) -> list:
                 if not response.get("retryable") or response.get("_analysis_results") or attempt >= min(int(task.get("max_retries") or 0), 3):
                     break
             results.append({"title": q.get("title", "分析"), "attempts": attempt + 1, **response})
+            _persist_progress(task)
         except (RunInterrupted, TimeoutError, asyncio.TimeoutError, SoftTimeLimitExceeded):
             raise
         except Exception:
             logger.exception("任务 Agent 问题执行失败")
             results.append({"title": q.get("title", "分析"), "status": "failed",
                             "error": "分析未完成，请检查配置或权限"})
+            _persist_progress(task)
     return results
 
 
@@ -290,15 +306,15 @@ def _resolve_owner(task):
 
 
 def _check_datasource(task, identity):
-    from services.shared.common.db import execute_query
+    from services.authservice.services.role_service import role_service
     ds_id = int(task["task_config"].get("datasource_id") or 0)
     if ds_id <= 0:
         raise PermissionError("任务必须明确绑定数据源")
-    if identity["workspace_id"] and not execute_query(
-        "SELECT datasource_id FROM adh_workspace_datasources WHERE workspace_id=%s AND datasource_id=%s",
-        (identity["workspace_id"], ds_id), fetchone=True,
-    ):
-        raise PermissionError("数据源未关联到任务工作空间")
+    # 纯角色裁决: 数据源可用集=执行身份(任务创建者)的角色授权; 空授权 fail-closed。
+    allowed = set(role_service.get_user_allowed_datasources(
+        identity["user_id"], identity["workspace_id"]))
+    if ds_id not in allowed:
+        raise PermissionError("执行身份的角色未授权该数据源")
 
 
 def _check_running(task):
@@ -340,8 +356,8 @@ def _execute_core(task_id, trigger_type, run_key=None, worker_id="sync-process")
         if not task.get("owner_id"):
             error_code = "OWNER_REQUIRED"
         task["_identity"] = _resolve_owner(task)
-        from services.datamind.execution.scheduled_analysis import validate_task_waker
-        validate_task_waker(task)
+        from services.datamind.execution.scheduled_analysis import validate_task_as_bot
+        validate_task_as_bot(task)
         _check_datasource(task, task["_identity"])
         _check_running(task)
         config = task["task_config"]
@@ -418,9 +434,24 @@ def generate_report_task(report_id: int):
 
 @app.task(name="services.dataflow.tasks.executor.reconcile_runs", queue="scheduled")
 def reconcile_runs():
+    """内置任务：运行对账与卡死清理（可经任务监控页暂停，运行结果落 adh_system_jobs）。"""
+    from services.shared.common import system_jobs
+    if not system_jobs.is_job_active("runs_reconcile"):
+        logger.info("[Reconcile] 内置任务已人工暂停，本轮对账跳过")
+        return {"skipped": "paused"}
     from services.dataflow.services.scheduled_task_service import scheduled_task_service
     from services.dataviz.services.report_service import cleanup_stale_reports
-    return {"tasks": scheduled_task_service.cleanup_stale_running_logs(), "reports": cleanup_stale_reports()}
+    try:
+        result = {"tasks": scheduled_task_service.cleanup_stale_running_logs(),
+                  "reports": cleanup_stale_reports()}
+        system_jobs.record_run("runs_reconcile", "success",
+                               f"清理卡死执行实例 {result['tasks']} 个、报表生成 {result['reports']} 个")
+        return result
+    except Exception as exc:  # noqa: BLE001 — 记录后显式抛出，不把失败掩成成功
+        logger.exception("[Reconcile] 运行对账失败")
+        system_jobs.record_run("runs_reconcile", "failed",
+                               f"对账失败（{type(exc).__name__}），详见服务端日志")
+        raise
 
 
 def execute_scheduled_task_sync(task_id: int, trigger_type: str = "manual", run_key: str = None):

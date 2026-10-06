@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
 import { useAuthStore } from '../stores/authStore';
+import { fetchVisibleGroups } from '@/pages/Analysis';
 
 const features = [
   { icon: MessageSquare, title: '自然语言查询', desc: '用中文提问，AI 自动生成 SQL' },
@@ -33,7 +34,14 @@ export default function Login() {
     setLoading(true);
     try {
       await login(username, password);
-      navigate('/');
+      // 登录落地: 有已启用看板直达数据看板,否则落首页。
+      // 此跳转只作用于登录时刻;显式从模块切换选「首页」时恒进首页(见 Home)。
+      let target = '/';
+      try {
+        const gs = await fetchVisibleGroups();
+        if (gs.some(g => g.dashboards.some(d => d.status === 'enabled'))) target = '/dashboards';
+      } catch { /* 看板清单取不到时落首页(显式可见),不掩盖 */ }
+      navigate(target);
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '登录失败');
     } finally {

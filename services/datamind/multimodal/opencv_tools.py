@@ -1,7 +1,8 @@
 """OpenCV image tools — 图像分析/处理能力,作为 Agent 系统工具暴露.
 
-所有函数接收附件行 dict(含 storage_path),返回可 JSON 序列化的结果;
-处理产物(image_process / detect_table_region)另存为派生附件。
+所有函数接收附件描述 dict(含工作区相对路径 path)与会话工作区目录,
+返回可 JSON 序列化的结果;处理产物(image_process / detect_table_region)
+经 save_derived_file 写回同一工作区 uploads/。
 """
 
 import logging
@@ -10,28 +11,30 @@ import os
 logger = logging.getLogger(__name__)
 
 
-def _read_image(att: dict):
-    """读取附件图片为 cv2 BGR 数组;失败返回 None."""
+def _read_image(att: dict, workspace_dir):
+    """读取工作区附件图片为 cv2 BGR 数组;失败返回 None."""
     import cv2
     import numpy as np
 
-    from services.datamind.multimodal.loader import _resolve_file_bytes
+    from services.datamind.multimodal.loader import resolve_workspace_file
 
-    path = att.get("storage_path", "")
-    storage_type = att.get("storage_type", "local")
-    if not path:
+    if not att.get("path"):
         return None
-    data = _resolve_file_bytes(path, storage_type)
-    if data is None:
+    try:
+        target = resolve_workspace_file(workspace_dir, att["path"])
+    except ValueError:
         return None
+    if not target.is_file():
+        return None
+    data = target.read_bytes()
     return cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
 
 
-def image_info(att: dict) -> dict:
+def image_info(att: dict, workspace_dir) -> dict:
     """图像基础信息:尺寸/通道/亮度/对比度."""
     import cv2
 
-    img = _read_image(att)
+    img = _read_image(att, workspace_dir)
     if img is None:
         return {"error": f"无法读取图片: {att.get('filename', '')}"}
     h, w = img.shape[:2]
@@ -47,17 +50,17 @@ def image_info(att: dict) -> dict:
     }
 
 
-def summarize_image(att: dict) -> str:
+def summarize_image(att: dict, workspace_dir) -> str:
     """生成图像文本摘要(Vision 不可用时的降级描述)."""
     import json
-    info = image_info(att)
+    info = image_info(att, workspace_dir)
     if info.get("error"):
         return info["error"]
     return json.dumps(info, ensure_ascii=False)
 
 
-def image_process(att: dict, operation: str, params: dict = None) -> dict:
-    """图像处理:resize / crop / grayscale / edges,产物保存为派生附件.
+def image_process(att: dict, operation: str, params: dict, workspace_dir) -> dict:
+    """图像处理:resize / crop / grayscale / edges,产物保存为派生附件(写回工作区).
 
     Args:
         operation: resize(需 width) | crop(需 x,y,width,height) | grayscale | edges
@@ -65,7 +68,7 @@ def image_process(att: dict, operation: str, params: dict = None) -> dict:
     import cv2
 
     params = params or {}
-    img = _read_image(att)
+    img = _read_image(att, workspace_dir)
     if img is None:
         return {"error": f"无法读取图片: {att.get('filename', '')}"}
 
@@ -105,22 +108,20 @@ def image_process(att: dict, operation: str, params: dict = None) -> dict:
         return {"error": "图像编码失败"}
     out_name = os.path.splitext(out_name)[0] + ".png"
 
-    from services.datamind.multimodal.loader import save_derived_attachment
-    new_att = save_derived_attachment(att, buf.tobytes(), out_name, {"operation": operation, "params": params})
+    from services.datamind.multimodal.loader import save_derived_file
+    new_att = save_derived_file(workspace_dir, buf.tobytes(), out_name)
     oh, ow = out.shape[:2]
     return {
         "success": True,
         "operation": operation,
-        "attachment_id": new_att["id"],
-        "filename": out_name,
-        "url": f"/api/chat/attachments/{new_att['id']}/file",
-        "storage_path": new_att["storage_path"],
+        "filename": new_att["filename"],
+        "path": new_att["path"],
         "width": int(ow),
         "height": int(oh),
     }
 
 
-def detect_table_region(att: dict) -> dict:
+def detect_table_region(att: dict, workspace_dir) -> dict:
     """检测图像中的表格区域(最大四边形轮廓)并裁剪保存.
 
     用于图表截图/扫描表格的前处理;未检测到时返回提示。
@@ -128,7 +129,7 @@ def detect_table_region(att: dict) -> dict:
     import cv2
     import numpy as np
 
-    img = _read_image(att)
+    img = _read_image(att, workspace_dir)
     if img is None:
         return {"error": f"无法读取图片: {att.get('filename', '')}"}
 
@@ -171,14 +172,12 @@ def detect_table_region(att: dict) -> dict:
     if not ok:
         return {"error": "裁剪结果编码失败"}
 
-    from services.datamind.multimodal.loader import save_derived_attachment
+    from services.datamind.multimodal.loader import save_derived_file
     out_name = f"table_region_{os.path.splitext(att.get('filename', 'image'))[0]}.png"
-    new_att = save_derived_attachment(att, buf.tobytes(), out_name, {"region": detected})
+    new_att = save_derived_file(workspace_dir, buf.tobytes(), out_name)
     return {
         "detected": True,
         "region": detected,
-        "attachment_id": new_att["id"],
-        "filename": out_name,
-        "url": f"/api/chat/attachments/{new_att['id']}/file",
-        "storage_path": new_att["storage_path"],
+        "filename": new_att["filename"],
+        "path": new_att["path"],
     }

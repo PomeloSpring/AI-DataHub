@@ -1,6 +1,6 @@
 """T6 别名级联校验与回流队列单测(离线, 无 DB)。
 
-覆盖: AS-BOT 参数 schema 校验(提议即校验)、unresolved_terms 落入 provenance、
+覆盖: 别名回写直执行的参数校验（不再走审批回路）、unresolved_terms 落入 provenance、
 孤儿字典引用的检测与 activate 硬阻断语义。
 """
 import sys
@@ -9,44 +9,46 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from services.datamind.execution.wakers import validate_action_payload, AS_BOT_WRITE_ACTIONS
+from services.datamind.rag import alias_suggestion
 from services.shared.semantics.planner import _ColumnResolver, plan
 from services.shared.semantics.models import ResolvedBinding, SemanticQuery
 from services.datacatalog.services import ontology_service
 
 
-# ── AS-BOT 参数 schema ───────────────────────────────────
+# ── 别名回写直执行：参数校验（fail-loud，不静默丢参数） ─────────
 
-class TestActionPayloadSchema:
-    def test_new_actions_registered(self):
-        assert "alias.approve" in AS_BOT_WRITE_ACTIONS
-        assert "alias.reject" in AS_BOT_WRITE_ACTIONS
+class TestAliasDecisionValidation:
+    def test_missing_term_rejected(self, monkeypatch):
+        monkeypatch.setattr(alias_suggestion, "get_suggestion",
+                            lambda sid: {"id": sid, "term": "", "target_type": "metric", "target_ref": "m"})
+        with pytest.raises(ValueError, match="term"):
+            alias_suggestion.approve_suggestion({"suggestion_id": 7})
 
-    def test_missing_required_rejected(self):
-        ok, err = validate_action_payload("alias.approve", {"target_type": "metric"})
-        assert not ok and "term" in err
+    def test_bad_target_type_rejected(self, monkeypatch):
+        monkeypatch.setattr(alias_suggestion, "get_suggestion",
+                            lambda sid: {"id": sid, "term": "x", "target_type": "table", "target_ref": "m"})
+        with pytest.raises(ValueError, match="target_type"):
+            alias_suggestion.approve_suggestion({"suggestion_id": 7})
 
-    def test_bad_enum_rejected(self):
-        ok, err = validate_action_payload(
-            "alias.approve", {"target_type": "table", "term": "x"})
-        assert not ok and "target_type" in err
+    def test_dict_alias_requires_target_ref(self, monkeypatch):
+        monkeypatch.setattr(alias_suggestion, "get_suggestion",
+                            lambda sid: {"id": sid, "term": "x", "target_type": "metric", "target_ref": ""})
+        with pytest.raises(ValueError, match="target_ref"):
+            alias_suggestion.approve_suggestion({"suggestion_id": 7})
 
-    def test_bad_int_rejected(self):
-        ok, err = validate_action_payload(
-            "alias.reject", {"suggestion_id": "abc"})
-        assert not ok
+    def test_reject_requires_suggestion_id(self):
+        with pytest.raises(ValueError, match="suggestion_id"):
+            alias_suggestion.reject_suggestion({})
 
-    def test_valid_payload_passes(self):
-        ok, err = validate_action_payload(
-            "alias.approve", {"target_type": "dimension", "term": "就诊量",
-                              "suggestion_id": 7})
-        assert ok and err == ""
-
-    def test_existing_actions_validated(self):
-        ok, _ = validate_action_payload("ontology.save", {"model_id": 1})
-        assert not ok  # 缺 json_content
-        ok, _ = validate_action_payload("ontology.activate", {"model_id": 1})
-        assert ok
+    def test_valid_payload_passes(self, monkeypatch):
+        monkeypatch.setattr(alias_suggestion, "get_suggestion",
+                            lambda sid: {"id": sid, "term": "就诊量", "target_type": "dimension",
+                                         "target_ref": "量", "datasource_id": 1})
+        monkeypatch.setattr(alias_suggestion, "_approve_dict_alias", lambda *a, **k: None)
+        monkeypatch.setattr(alias_suggestion, "_set_status", lambda *a, **k: None)
+        out = alias_suggestion.approve_suggestion({"suggestion_id": 7, "term": "就诊量",
+                                                  "target_type": "dimension", "target_ref": "量"})
+        assert out["success"] is True and out["term"] == "就诊量"
 
 
 # ── planner unresolved_terms 结构化产出 ──────────────────
@@ -160,10 +162,22 @@ class TestOrphanBindings:
                             lambda: _FakeConn(rows))
         assert ontology_service.find_orphan_dict_bindings(doc) == []
 
-    def test_no_tables_skips_query(self, monkeypatch):
+    def test_no_tables_uses_global_scope(self, monkeypatch):
+        """业务本体对象无 primary_table → 孤儿检查走全局口径，不得跳过。
+
+        历史语义是"无表跳过查询"；业务本体路由化剥离 primary_table 后，若仍跳过，
+        字典孤儿检查对业务本体整体失效（缺口）。现按 bound_object_key 全局对比
+        （含其它 active 模型对象 key），悬空必须暴露（§4 宁阻断勿悬空）。
+        """
+        import json as _json
         doc = {"objects": [{"key": "case", "aliases": []}]}  # 无 primary_table
-        called = []
+        rows_by_call = [
+            [{"json_content": _json.dumps({"objects": [{"key": "other"}]})}],  # 其它 active 模型
+            [{"name": "幽灵指标", "bound_object_key": "ghost"}],               # metrics 悬空
+            [{"name": "创建日期", "bound_object_key": "case"}],               # dimensions 命中
+        ]
         monkeypatch.setattr(ontology_service, "get_metadata_conn",
-                            lambda: called.append(1) or _FakeConn([]))
-        assert ontology_service.find_orphan_dict_bindings(doc) == []
-        assert not called  # 表集合为空时不应连库
+                            lambda: _FakeConn(rows_by_call))
+        orphans = ontology_service.find_orphan_dict_bindings(doc)
+        assert any("幽灵指标" in o and "ghost" in o for o in orphans)
+        assert not any("创建日期" in o for o in orphans)

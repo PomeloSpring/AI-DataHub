@@ -33,11 +33,16 @@ def _payload(result):
 
 
 def test_execute_sql_routes_through_governed_executor(monkeypatch):
-    """正常查询也必须走 execute_query_with_permission, 且透传身份/工作空间。"""
+    """正常查询也必须走 execute_query_with_permission, 且透传身份/工作空间。
+
+    fake 签名与真实契约一致: (sql, datasource_id, user_context, workspace_id,
+    database, federated_names) — 旧用例曾按错误签名(query_type 参数)锁定,
+    导致调用错位(\"sql\"落 user_context)未被发现。"""
     captured = {}
 
-    def fake_exec(sql, datasource_id, query_type, user_context, workspace_id):
-        captured.update(sql=sql, ds=datasource_id, qt=query_type,
+    def fake_exec(sql, datasource_id, user_context, workspace_id,
+                  database="", federated_names=None):
+        captured.update(sql=sql, ds=datasource_id,
                         user=user_context, ws=workspace_id)
         return pd.DataFrame([{"a": 1}]), 5, 1
 
@@ -53,7 +58,6 @@ def test_execute_sql_routes_through_governed_executor(monkeypatch):
     # 关键: 走的是受治理入口, 且携带服务端身份(user_id/workspace), 非裸连
     assert captured["user"] == {"user_id": 42, "username": "alice"}
     assert captured["ws"] == 7
-    assert captured["qt"] == "sql"
     assert _payload(result)["row_count"] == 1
 
 

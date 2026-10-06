@@ -191,32 +191,21 @@ def sync_targets() -> list[dict]:
 
 
 def sync_targets_for_model(model: dict | None) -> list[dict]:
-    """按模型解析同步目标知识库(业务本体不再默认落系统库)。
-
-    - 系统本体(datasource_id 0/null): 沿用全局 sync_ontology=true 的 qmind 库(行为不变)。
-    - 业务本体(datasource_id>0): 仅返回 model.kb_id 指向的 active qmind 库; 未绑定→空(不静默推系统库)。
-    """
+    """按模型 kind 解析同步目标知识库（RAG 归属裁决）。"""
     if not model:
         return []
-    if int(model.get("datasource_id") or 0) <= 0:
+    # 归属裁决（按 kind，不用 datasource_id=0 旧口径——业务本体跨源 ds_id 也是 0）：
+    #   business / system → 全局 sync_ontology 库（共用知识库，RAG 检索是两者共同用途）
+    #   source            → **不做 RAG**（源本体只服务语义检索/取数，按数据源权限分配）
+    kind = str(model.get("kind") or "").strip()
+    if not kind:
+        # 兼容无 kind 的存量模型行：旧口径 ds<=0 视为系统域
+        kind = "system" if int(model.get("datasource_id") or 0) <= 0 else "source"
+    if kind in ("business", "system"):
         return sync_targets()
-    kb_id = model.get("kb_id")
-    if not kb_id:
+    if kind == "source":
         return []
-    from services.shared.common.db import execute_query
-    try:
-        rows = execute_query(
-            "SELECT id, name, source_config FROM adh_knowledge_bases "
-            "WHERE id = %s AND kb_type='qmind' AND status='active'", (int(kb_id),))
-    except Exception as e:  # noqa: BLE001 — 查询失败不阻断, 视为无目标
-        logger.warning("[OntoSync] per-model kb lookup failed for kb_id=%s: %s", kb_id, e)
-        return []
-    out = []
-    for r in rows or []:
-        nb = _parse_cfg(r.get("source_config")).get("notebook_id")
-        if nb and nb != "system":
-            out.append({"id": r["id"], "name": r.get("name"), "notebook_id": nb})
-    return out
+    return []
 
 
 def list_bindable_kbs() -> list[dict]:
@@ -285,6 +274,77 @@ def _upload_markdown(notebook_id: str, title: str, md: str) -> bool:
                 pass
 
 
+def ensure_notebook(kb: dict) -> tuple[str | None, str]:
+    """确保 kb 绑定的 notebook 对当前凭据可用, 返回 (notebook_id, err)。
+
+    账号切换等场景下旧 notebook 对当前凭据不可用(403/不存在)时, 在当前账号
+    自动重建同名 notebook 并回写绑定 —— 知识库内容全部由本项目同步生成(派生视图),
+    重建后由本次/下次推送全量补齐, 不存在内容丢失。
+
+    边界(防误建):
+    - 仅「无权/不存在」类错误触发重建; 网络抖动/服务端 5xx 维持原绑定交由调用方报错;
+    - 重建用 MySQL GET_LOCK 分布式互斥 + 锁内复查(并发同步只建一个),
+      不用进程内防重(distributed-first);
+    - 重建事件显式落日志与 source_config(previous_notebook_id/rebuilt_at),
+      审计可区分正常同步与重建后同步。
+    """
+    from services.datamind.rag.qmind_retriever import (
+        probe_notebook, create_notebook, is_unavailable_error,
+    )
+
+    cfg = kb.get("cfg") or {}
+    nb = cfg.get("notebook_id") or kb.get("notebook_id") or ""
+    if not nb:
+        return None, "知识库未绑定 notebook_id"
+    ok, err = probe_notebook(nb)
+    if ok:
+        return nb, ""
+    if not is_unavailable_error(err):
+        return nb, err  # 网络/服务端异常: 不重建, 保持现状由调用方报错
+
+    from services.shared.common.db.metadata_db import get_metadata_conn
+    kb_id = int(kb.get("id") or 0)
+    lock_name = f"adh_kb_nb_rebuild_{kb_id}"
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT GET_LOCK(%s, 30)", (lock_name,))
+            if int(list((cur.fetchone() or {}).values())[0] or 0) != 1:
+                return None, "知识库重建互斥锁未获得, 稍后重试"
+            try:
+                # 锁内复查: 并发同步可能已重建/修复, 避免重复建库
+                cur.execute("SELECT name, source_config FROM adh_knowledge_bases WHERE id=%s", (kb_id,))
+                row = cur.fetchone() or {}
+                nb2 = _parse_cfg(row.get("source_config")).get("notebook_id") or ""
+                if nb2 and nb2 != nb:
+                    ok2, _ = probe_notebook(nb2)
+                    if ok2:
+                        return nb2, ""
+                    nb = nb2
+                new_nb = create_notebook(
+                    row.get("name") or kb.get("name") or f"AI-DataHub-KB-{kb_id}",
+                    "AI-DataHub 语义文档知识库（由本项目自动同步，重建于凭据不可用场景）",
+                )
+                if not new_nb:
+                    return None, "自动重建知识库失败(qmind notebook create 未返回 id)"
+                cfg2 = _parse_cfg(row.get("source_config"))
+                cfg2["previous_notebook_id"] = nb
+                cfg2["rebuilt_at"] = datetime.now(timezone.utc).isoformat()
+                cfg2["notebook_id"] = new_nb
+                cur.execute("UPDATE adh_knowledge_bases SET source_config=%s WHERE id=%s",
+                            (json.dumps(cfg2, ensure_ascii=False), kb_id))
+                conn.commit()
+                # 显式声明降级/重建事实(双向声明: 服务端日志 + 落库可查)
+                logger.warning("[OntoSync] 知识库 %s(%s) 的 notebook 对当前凭据不可用，"
+                               "已在当前账号自动重建: %s -> %s（内容由本次同步全量重建）",
+                               kb_id, row.get("name"), nb, new_nb)
+                return new_nb, ""
+            finally:
+                cur.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+    finally:
+        conn.close()
+
+
 def _has_active_version_with_name(name: str, datasource_id, exclude_id: int = 0) -> bool:
     """同名(同数据源)是否还存在其它 active 版本."""
     try:
@@ -325,6 +385,7 @@ def _render_cloud_doc(model: dict) -> str:
     解析失败则回落空串(调用方据此跳过, 宁可不上传也不能泄露物理细节)。
     """
     from services.datacatalog.services.ontology_service import to_cloud_md
+    dict_metrics = _load_dict_metrics(int(model.get("datasource_id") or 0))
 
     raw = model.get("json_content") or ""
     if not raw.strip():
@@ -335,7 +396,8 @@ def _render_cloud_doc(model: dict) -> str:
         logger.warning("[OntoSync] parse json_content failed for model=%s: %s",
                        model.get("id"), e)
         return ""
-    body = to_cloud_md(doc, template_vars_fn=_make_template_vars_resolver())
+    body = to_cloud_md(doc, template_vars_fn=_make_template_vars_resolver(),
+                       dict_metrics=dict_metrics)
     if not body.strip():
         return ""
     return _version_header(model) + body
@@ -356,6 +418,10 @@ def sync_model_to_qmind(model_id: int) -> dict:
         return {"synced": 0, "targets": [], "skipped": "model_not_found"}
     targets = sync_targets_for_model(model)
     if not targets:
+        if str(model.get("kind") or "") == "source":
+            # 源本体不做 RAG 是归属裁决（只服务语义检索/取数），不是配置遗漏，
+            # 显式标注原因避免被当成待办告警（no-silent-degradation 反向：不制造假告警）
+            return {"synced": 0, "targets": [], "skipped": "source_model_semantic_only"}
         if int(model.get("datasource_id") or 0) > 0 and not model.get("kb_id"):
             return {"synced": 0, "targets": [], "skipped": "no_kb_bound"}
         return {"synced": 0, "targets": [], "skipped": "no_kb_with_sync_ontology"}
@@ -376,8 +442,13 @@ def sync_model_to_qmind(model_id: int) -> dict:
     synced: list[str] = []
     last_err = ""
     for kb in targets:
-        nb = kb["notebook_id"]
         try:
+            nb, nb_err = ensure_notebook(kb)
+            if not nb:
+                last_err = nb_err or f"kb={kb['id']} notebook 不可用"
+                logger.error("[OntoSync] %s", last_err)
+                continue
+            kb["notebook_id"] = nb  # 重建后水位线与后续引用使用新 id
             _delete_old_sources(nb, title)
             if _upload_markdown(nb, title, md):
                 synced.append(kb["name"] or str(kb["id"]))
@@ -496,15 +567,61 @@ def reconcile() -> dict:
 
 
 def start_reconciler(interval_sec: int = 600):
-    """启动后台对账循环(daemon 线程, 首轮先等待 interval 再跑, 避免启动即打云)。"""
+    """启动后台对账循环(daemon 线程, 首轮先等待 interval 再跑, 避免启动即打云)。
+
+    对账属系统内置任务 kb_sync_reconcile：支持任务监控页人工暂停，运行结果落 adh_system_jobs。
+    """
     import threading
+    from services.shared.common import system_jobs
 
     def _loop():
         while True:
             try:
                 time.sleep(max(60, int(interval_sec)))
-                reconcile()
+                if not system_jobs.is_job_active("kb_sync_reconcile"):
+                    logger.info("[OntoSync] 内置任务已人工暂停，本轮对账跳过")
+                    continue
+                result = reconcile()
+                if result.get("error"):
+                    system_jobs.record_run("kb_sync_reconcile", "failed", "对账未完成，详见服务端日志")
+                else:
+                    system_jobs.record_run("kb_sync_reconcile", "success",
+                                           f"检查 {result.get('checked', 0)} 个模型，重推 {result.get('resynced', 0)} 个")
             except Exception as e:  # noqa: BLE001 — 循环永不因单次失败退出
                 logger.warning("[OntoSync] reconcile loop error: %s", e)
+                system_jobs.record_run("kb_sync_reconcile", "failed",
+                                       f"对账失败（{type(e).__name__}），详见服务端日志")
 
     threading.Thread(target=_loop, daemon=True, name="onto-kb-reconcile").start()
+
+
+def _load_dict_metrics(datasource_id: int = 0) -> dict:
+    """把字典口径指标（adh_metrics）按 bound_object_key 分组，供 to_cloud_md 渲染。
+
+    为什么必须传：口径的认证状态（certified/owner）只存在于字典层；
+    canonical 的 objects[].metrics 是**派生计算字段**（is_active 这类），不是口径。
+    不传的话 to_cloud_md 只能渲染派生字段，认证就没有出口。
+
+    取数失败返回空 dict（渲染时只出派生字段段，不阻断同步主链路），
+    但**不静默**：调用方日志可见。
+    """
+    try:
+        from services.shared.common.db import execute_query
+        scope = " AND datasource_id IN (%s, 0)" if datasource_id else ""
+        params = (datasource_id,) if datasource_id else ()
+        rows = execute_query(
+            "SELECT name, description, certified, owner, bound_object_key "
+            f"FROM adh_metrics WHERE is_active = 1 AND COALESCE(bound_object_key,'') <> ''{scope}",
+            params) or []
+    except Exception as e:  # noqa: BLE001 — 不阻断同步主链路
+        logger.warning("[OntoSync] load dict metrics failed: %s", e)
+        return {}
+    out: dict = {}
+    for r in rows:
+        out.setdefault(str(r.get("bound_object_key") or ""), []).append({
+            "name": r.get("name") or "",
+            "description": r.get("description") or "",
+            "certified": bool(r.get("certified")),
+            "owner": r.get("owner") or "",
+        })
+    return out

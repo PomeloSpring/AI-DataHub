@@ -18,6 +18,8 @@ env/
 # Runtime (内置 Node.js + 各运行时独立子目录)
 runtime/node/
 runtime/*/node_modules/
+runtime/qmind/qmind
+runtime/qmind/qmind-*
 
 # IDE
 .idea/
@@ -77,3 +79,5 @@ jieba.cache
 /services/dataengine/*.db
 /services/dataengine/*.db-shm
 /services/dataengine/*.db-wal
+
+scripts

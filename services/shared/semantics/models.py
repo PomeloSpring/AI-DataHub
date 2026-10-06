@@ -142,6 +142,15 @@ class ResolvedBinding(BaseModel):
     sync_state: Literal["bound", "drifted", "orphaned", "unbound"] = "bound"
     source: Literal["adh_ontology_bindings", "adh_table_info", "adh_ontology_objects.execution_binding"] = \
         "adh_ontology_bindings"
+    # ── 数据产品身份（L1）：本体只绑数据产品的目标态所需 ──────────────
+    # product_ref 是平台级稳定身份（如 `test-alb.t_case_records`，不含内部 id）；
+    # 解析时仍以 physical_table 执行，但身份/契约/责任跟随 product_ref。
+    product_ref: str = Field("", description="数据产品名（稳定身份）；空 = 该表未登记为数据产品")
+    product_status: str = Field("", description="数据产品状态 draft|certified|deprecated|retired")
+    product_class: str = Field("", description="产品类：同构多站点共享的 schema 契约名（一份契约 × N 个物理部署）")
+    site: str = Field("", description="站点业务名；空 = 非站点化部署。多站点下同一对象有 N 条绑定，按会话站点路由")
+    resolution_source: str = Field(
+        "", description="解析档位: product|bindings|execution_binding|canonical|table_fallback，供 eval 分桶归因")
 
 
 # ── 计划 ────────────────────────────────────────────────────────

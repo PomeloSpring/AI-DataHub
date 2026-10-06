@@ -57,7 +57,11 @@ def _open_target_conn(rule: dict, user: dict, include_samples: bool = False):
     """创建治理查询上下文，不再打开数据源裸连接。"""
     if not user or not user.get("user_id"):
         raise PermissionError("质量检查缺少可信身份")
-    ws = authorize_workspace(user, rule.get("workspace_id") or 0)
+    # 质量域全局共享（工作空间概念已退役）：仅显式绑定工作空间的规则才校验归属；
+    # ws=0 的全局规则只需可信身份，数据安全由 governed_execute 护城河保障。
+    ws = int(rule.get("workspace_id") or 0)
+    if ws:
+        ws = authorize_workspace(user, ws)
     if not rule.get("target_datasource_id"):
         raise ValueError("规则未配置目标数据源")
     return {"datasource_id": rule["target_datasource_id"], "workspace_id": ws,
@@ -240,11 +244,20 @@ _CHECKERS = {
 # ── 入口 ─────────────────────────────────────────────────────────────
 
 def execute_single_rule(rule: dict, user_context: dict = None, *,
-                        include_samples: bool = False, persist: bool = True) -> dict:
-    """在可信用户范围内检查；样本仅按查看者实时读取，不持久化。"""
+                        include_samples: bool = False, persist: bool = True,
+                        source: dict = None) -> dict:
+    """在可信用户范围内检查；样本仅按查看者实时读取，不持久化。
+
+    source: 结果来源标注（如 {"kind": "sync_run", "run_key": ...}），
+    写入 detail.source，供质量页区分人工检查与同步/DAG 自动检查。
+    """
     if not user_context or not user_context.get("user_id"):
         raise PermissionError("质量检查缺少可信身份")
-    authorize_workspace(user_context, rule.get("workspace_id") or 0)
+    # 质量域不再按工作空间隔离（工作空间概念已退役，规则/结果全局共享）：
+    # 仅当规则显式绑定工作空间时才校验归属；ws=0 的全局规则只需可信身份。
+    # 数据安全由 governed_execute 的 RBAC/RLS/敏感基线全程保障，此处不弱化护城河。
+    if rule.get("workspace_id"):
+        authorize_workspace(user_context, rule["workspace_id"])
     execution = {"user_id": user_context["user_id"],
                  "workspace_id": rule.get("workspace_id") or 0, "scope": "authorized"}
     rule_id = rule.get("id")
@@ -280,6 +293,8 @@ def execute_single_rule(rule: dict, user_context: dict = None, *,
         check_time = datetime.now()
 
         detail = {"execution": execution, "status": "passed" if passed else "failed"}
+        if source:
+            detail["source"] = source
         if persist:
             with DBConnection() as db:
                 with db.cursor() as cur:
@@ -306,14 +321,17 @@ def execute_single_rule(rule: dict, user_context: dict = None, *,
             if persist:
                 with DBConnection() as db:
                     with db.cursor() as cur:
+                        err_detail = {"status": "unknown", "execution": execution,
+                                      "error": "质量检查未完成"}
+                        if source:
+                            err_detail["source"] = source
                         cur.execute(
                             """INSERT INTO adh_quality_results
                                (rule_id, workspace_id, check_time, passed, total_rows, failed_rows,
                                 pass_rate, detail, elapsed_ms)
                                VALUES (%s, %s, %s, 0, 0, 0, 0.00, %s, %s)""",
                             (rule_id, rule.get("workspace_id") or 0, datetime.now(),
-                             json.dumps({"status": "unknown", "execution": execution,
-                                         "error": "质量检查未完成"}, ensure_ascii=False),
+                             json.dumps(err_detail, ensure_ascii=False),
                              int((time.time() - start) * 1000)),
                         )
         except Exception:

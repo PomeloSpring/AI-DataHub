@@ -13,6 +13,7 @@ import {
   Handle,
   NodeProps,
   EdgeProps,
+  BaseEdge,
   EdgeLabelRenderer,
   getBezierPath,
   useReactFlow,
@@ -25,6 +26,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
 import {
   Search, RefreshCw, Maximize2, X,
@@ -32,7 +34,6 @@ import {
   ArrowUpRight, ArrowDownRight, Activity, Loader2,
 } from 'lucide-react';
 import { lineageApi } from '@/api/lineage';
-import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { toast } from 'sonner';
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -42,6 +43,8 @@ type LineageNodeType = 'table' | 'column' | 'etl_job' | 'report' | 'metric';
 interface LineageNodeData {
   id: number;
   name: string;
+  /** 带数据源维度的限定名（数据源.表 / 数据源.表.列） */
+  node_id?: string;
   node_type: LineageNodeType;
   metadata?: Record<string, any>;
   description?: string;
@@ -127,40 +130,54 @@ function LineageEdge({
   sourceY,
   targetX,
   targetY,
+  sourcePosition,
+  targetPosition,
   data,
   markerEnd,
   style,
+  selected,
 }: EdgeProps) {
+  // 与本体图谱（KnowledgeGraph）同款连线风格：柔和贝塞尔 + 细灰线 + 圆角，
+  // fill:none 必须显式设置（SVG 开放曲线默认填充会出现黑色楔形块）
   const [edgePath, labelX, labelY] = getBezierPath({
-    sourceX, sourceY, targetX, targetY,
-    sourcePosition: Position.Right,
-    targetPosition: Position.Left,
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+    curvature: 0.18,
   });
+
+  const emphasized = Boolean(selected);
+  const edgeColor = emphasized ? 'hsl(var(--primary))' : String(data?.color || '#94a3b8');
 
   return (
     <>
-      <path
+      <BaseEdge
         id={id}
-        d={edgePath}
+        path={edgePath}
         markerEnd={markerEnd}
+        interactionWidth={16}
         style={{
           ...style,
-          stroke: 'hsl(var(--primary))',
-          strokeWidth: 1.5,
-          opacity: 0.7,
+          fill: 'none',
+          stroke: edgeColor,
+          strokeWidth: emphasized ? 1.8 : 1.2,
+          strokeLinecap: 'round',
+          opacity: emphasized ? 1 : 0.65,
         }}
       />
       {typeof data?.edgeType === 'string' && (
         <EdgeLabelRenderer>
           <div
-            className="absolute bg-card border rounded px-1.5 py-0.5 shadow-sm pointer-events-none nodrag nopan"
+            className="absolute bg-card/95 border border-border/70 rounded-md px-2 py-0.5 shadow-sm pointer-events-none nodrag nopan text-[10px] text-muted-foreground whitespace-nowrap"
             style={{
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              zIndex: emphasized ? 20 : 1,
             }}
           >
-            <span className="text-[10px] text-muted-foreground font-medium">
-              {String(data.edgeType)}
-            </span>
+            {String(data.edgeType)}
           </div>
         </EdgeLabelRenderer>
       )}
@@ -174,12 +191,14 @@ function NodeDetailPanel({
   node,
   upstreamNodes,
   downstreamNodes,
+  columnMappings,
   onClose,
   onImpactAnalysis,
 }: {
   node: LineageNodeData;
   upstreamNodes: LineageNodeData[];
   downstreamNodes: LineageNodeData[];
+  columnMappings: Array<{ from: string; to: string }>;
   onClose: () => void;
   onImpactAnalysis: (nodeId: number) => void;
 }) {
@@ -252,7 +271,7 @@ function NodeDetailPanel({
                       className="flex items-center gap-2 p-2 rounded border bg-muted/30 text-xs"
                     >
                       <NIcon className={`h-3 w-3 shrink-0 ${nc.color}`} />
-                      <span className="font-medium truncate">{n.name}</span>
+                      <span className="font-medium truncate">{n.node_id || n.name}</span>
                       <Badge variant="outline" className="ml-auto text-[9px] px-1 py-0">
                         {NODE_TYPE_LABELS[n.node_type]}
                       </Badge>
@@ -284,7 +303,7 @@ function NodeDetailPanel({
                       className="flex items-center gap-2 p-2 rounded border bg-muted/30 text-xs"
                     >
                       <NIcon className={`h-3 w-3 shrink-0 ${nc.color}`} />
-                      <span className="font-medium truncate">{n.name}</span>
+                      <span className="font-medium truncate">{n.node_id || n.name}</span>
                       <Badge variant="outline" className="ml-auto text-[9px] px-1 py-0">
                         {NODE_TYPE_LABELS[n.node_type]}
                       </Badge>
@@ -296,6 +315,31 @@ function NodeDetailPanel({
               <p className="text-xs text-muted-foreground italic">No downstream targets</p>
             )}
           </div>
+
+          {/* Column-level mappings (table nodes) */}
+          {node.node_type === 'table' && (
+            <>
+              <Separator />
+              <div className="space-y-2">
+                <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                  字段映射 ({columnMappings.length})
+                </h5>
+                {columnMappings.length > 0 ? (
+                  <div className="space-y-1">
+                    {columnMappings.map((m, i) => (
+                      <div key={i} className="flex items-center gap-1.5 text-xs px-2 py-1 rounded border bg-muted/30">
+                        <span className="font-mono truncate">{m.from}</span>
+                        <ArrowDownRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                        <span className="font-mono truncate">{m.to}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground italic">暂无字段级映射</p>
+                )}
+              </div>
+            </>
+          )}
 
           <Separator />
 
@@ -321,7 +365,6 @@ const nodeTypes = { lineageNode: LineageNodeComponent };
 const edgeTypes = { lineageEdge: LineageEdge };
 
 function LineageGraphInner() {
-  const { currentWorkspaceId } = useWorkspaceStore();
   const reactFlow = useReactFlow();
 
   // Data state
@@ -332,6 +375,9 @@ function LineageGraphInner() {
   // UI state
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
+  // 字段级血缘默认不展示（列节点会把图打碎）：默认仅表级主视图，
+  // 字段映射在选中表节点的详情面板下钻；需要时可打开开关。
+  const [showColumns, setShowColumns] = useState(false);
   const [selectedNode, setSelectedNode] = useState<LineageNodeData | null>(null);
 
   // ReactFlow state
@@ -341,10 +387,11 @@ function LineageGraphInner() {
   // ── Fetch data ──────────────────────────────────────────────────────
 
   const fetchGraph = useCallback(async () => {
-    if (!currentWorkspaceId) return;
+    // 血缘为全局共享（工作空间概念已退役）：workspace 参数固定 0，
+    // 后端按 IN (ws, 0) 兼容全局行；不再用工作空间作请求门禁。
     setLoading(true);
     try {
-      const { data } = await lineageApi.getGraph(currentWorkspaceId);
+      const { data } = await lineageApi.getGraph(0);
       const graph = data as LineageGraphResponse;
       setRawNodes(graph.nodes || []);
       setRawEdges(graph.edges || []);
@@ -354,7 +401,7 @@ function LineageGraphInner() {
     } finally {
       setLoading(false);
     }
-  }, [currentWorkspaceId]);
+  }, []);
 
   useEffect(() => {
     fetchGraph();
@@ -394,13 +441,15 @@ function LineageGraphInner() {
     return new Set(
       rawNodes
         .filter((n) => {
+          if (!showColumns && n.node_type === 'column') return false;
           if (filterType !== 'all' && n.node_type !== filterType) return false;
-          if (q && !n.name.toLowerCase().includes(q)) return false;
+          const label = n.node_id || n.name || '';
+          if (q && !label.toLowerCase().includes(q)) return false;
           return true;
         })
         .map((n) => n.id),
     );
-  }, [rawNodes, searchQuery, filterType]);
+  }, [rawNodes, searchQuery, filterType, showColumns]);
 
   // ── Layout: topological sort with layered placement ───────────────
 
@@ -488,7 +537,7 @@ function LineageGraphInner() {
         type: 'lineageNode',
         position: positions.get(n.id) || { x: 0, y: 0 },
         data: {
-          label: n.name,
+          label: n.node_id || n.name,
           nodeType: n.node_type,
           description: n.description || '',
           metadata: n.metadata || {},
@@ -504,8 +553,7 @@ function LineageGraphInner() {
         target: String(e.target_id),
         type: 'lineageEdge',
         data: { edgeType: e.edge_type },
-        markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
-        animated: true,
+        markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color: '#94a3b8' },
       }));
 
     setNodes(rfNodes);
@@ -546,16 +594,30 @@ function LineageGraphInner() {
     reactFlow.fitView(FIT_VIEW_OPTIONS);
   }, [reactFlow]);
 
+  // ── Column-level mappings for selected table (detail panel drill-down) ──
+
+  const columnMappings = useMemo(() => {
+    if (!selectedNode || selectedNode.node_type !== 'table') return [];
+    const prefix = (selectedNode.node_id || '') + '.';
+    return rawEdges
+      .map((e) => ({ src: nodeMap.get(e.source_id), tgt: nodeMap.get(e.target_id) }))
+      .filter(({ src }) => src?.node_type === 'column' && (src.node_id || '').startsWith(prefix))
+      .map(({ src, tgt }) => ({
+        from: (src!.node_id || src!.name).split('.').slice(-2).join('.'),
+        to: tgt ? (tgt.node_id || tgt.name).split('.').slice(-2).join('.') : '?',
+      }));
+  }, [selectedNode, rawEdges, nodeMap]);
+
   const handleImpactAnalysis = useCallback(
     async (nodeId: number) => {
       try {
-        const { data } = await lineageApi.getImpact(nodeId, currentWorkspaceId);
+        const { data } = await lineageApi.getImpact(nodeId, 0);
         toast.success(`Impact analysis complete. ${data?.affected_nodes?.length ?? 0} affected nodes found.`);
       } catch {
         toast.error('Failed to run impact analysis');
       }
     },
-    [currentWorkspaceId],
+    [],
   );
 
   // ── Node type filter options ──────────────────────────────────────
@@ -613,6 +675,12 @@ function LineageGraphInner() {
             ))}
           </SelectContent>
         </Select>
+
+        {/* Column-level lineage toggle */}
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer whitespace-nowrap">
+          <Switch checked={showColumns} onCheckedChange={setShowColumns} />
+          字段级血缘
+        </label>
 
         <div className="flex-1" />
 
@@ -724,6 +792,7 @@ function LineageGraphInner() {
             node={selectedNode}
             upstreamNodes={upstreamNodes}
             downstreamNodes={downstreamNodes}
+            columnMappings={columnMappings}
             onClose={() => setSelectedNode(null)}
             onImpactAnalysis={handleImpactAnalysis}
           />

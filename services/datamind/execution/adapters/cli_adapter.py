@@ -22,6 +22,7 @@ from services.datamind.execution.models import (
     ExecutionTask,
     HealthStatus,
 )
+from services.shared.common.config import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
         self.cli_name = self.config.get("cli_name", "")
         cli_info = KNOWN_CLIS.get(self.cli_name, {})
         self.binary = cli_info.get("binary", self.cli_name)
-        self.cli_path = self.config.get("cli_path") or shutil.which(self.binary) or self.binary
+        self.cli_path = self._resolve_cli_path(self.config.get("cli_path"))
         self.version_cmd = cli_info.get("version_cmd", [self.binary, "--version"])
         if self.cli_path != self.binary and self.version_cmd and self.version_cmd[0] == self.binary:
             self.version_cmd = [self.cli_path] + self.version_cmd[1:]
@@ -61,6 +62,28 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
         self.models_cmd = list(cli_info.get("models_cmd", []))
         if self.cli_path != self.binary and self.models_cmd and self.models_cmd[0] == self.binary:
             self.models_cmd = [self.cli_path] + self.models_cmd[1:]
+
+    def _resolve_cli_path(self, raw) -> str:
+        """把执行层 cli_path 配置解析为子进程可用的路径(不写死机器绝对路径).
+
+        解析优先级:
+        - 空: PATH 查找 binary(找不到保留命令名; SDK 模式会进一步回退内置运行时);
+        - `$VAR`/`~` 展开(如 $QODERCLI_HOME/bin/qodercli、~/.qoder/bin/qodercli);
+        - 绝对路径: 原样使用;
+        - 相对路径(含分隔符或以 . 开头): 锚定**项目根**解析为绝对路径, 使配置随
+          代码库迁移/换目录/容器部署保持有效(如 'runtime/qodercli/bin/qodercli');
+        - 纯命令名: PATH 查找, 找不到保留命令名。
+        存在性不在此校验: 无效路径由执行/SDK 侧 fail-loud 报错(不静默回退)。
+        """
+        raw = (raw or "").strip()
+        if not raw:
+            return shutil.which(self.binary) or self.binary
+        expanded = os.path.expanduser(os.path.expandvars(raw))
+        if os.path.isabs(expanded):
+            return expanded
+        if os.sep in expanded or "/" in expanded or expanded.startswith("."):
+            return str((PROJECT_ROOT / expanded).resolve())
+        return shutil.which(expanded) or expanded
 
     @property
     def name(self) -> str:
@@ -99,7 +122,10 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
             return prompt
         lines = ["", "用户上传了以下多模态附件文件,可按绝对路径直接读取处理:"]
         for a in task.attachments:
-            lines.append(f"- {a.get('filename', '')} ({a.get('category', '')}): {a.get('path', '')}")
+            p = str(a.get("path", ""))
+            if p and not p.startswith("/"):
+                p = "/workspace/" + p
+            lines.append(f"- {a.get('filename', '')} ({a.get('category', '')}): {p}")
         return prompt + "\n" + "\n".join(lines)
 
     def _effective_model(self, task: ExecutionTask) -> str:

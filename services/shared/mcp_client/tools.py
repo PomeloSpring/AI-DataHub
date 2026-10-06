@@ -17,7 +17,7 @@ class MCPToolCaller:
 
     Usage:
         caller = MCPToolCaller()
-        result = await caller.call("elasticsearch__get_document", {"index": "logs", "id": "123"})
+        result = await caller.call("filesystem__read_file", {"path": "/etc/hosts"})
 
     Each ``call()`` creates a fresh MCP connection, executes the tool,
     and disconnects — all within the same async task.
@@ -73,7 +73,7 @@ class MCPToolCaller:
         within the same async task.
 
         Args:
-            tool_name: Qualified tool name, e.g. "elasticsearch__query_sql"
+            tool_name: Qualified tool name, e.g. "filesystem__read_file"
             arguments: Tool arguments dict
 
         Returns:

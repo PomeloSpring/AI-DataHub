@@ -154,7 +154,7 @@ class TestCheckAccess:
     def test_admin_follows_role_permissions(self, mock_rls, mock_role, enforcer):
         """Admin role follows role-based permission checks (no automatic bypass)."""
         mock_role.get_user_roles.return_value = [{"id": 1, "name": "admin"}]
-        mock_role.get_user_allowed_datasources.return_value = []  # No restriction
+        mock_role.get_user_allowed_datasources.return_value = [1]  # 显式授权 DS1（fail-closed：空=拒绝，不再是 No restriction）
         mock_role.get_user_allowed_tables.return_value = []  # No restriction
         mock_role.get_user_column_restrictions.return_value = {"hidden_columns": [], "masked_columns": {}}
         mock_rls.get_effective_policies.return_value = {"row_filter": "", "hidden_columns": [], "masked_columns": {}, "policies_applied": []}
@@ -174,7 +174,7 @@ class TestCheckAccess:
     @patch("services.authservice.services.rls_service.rls_service")
     def test_table_denied(self, mock_rls, mock_role, enforcer):
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "viewer"}]
-        mock_role.get_user_allowed_datasources.return_value = []  # No restriction
+        mock_role.get_user_allowed_datasources.return_value = [1]  # 显式授权 DS1（fail-closed：空=拒绝，不再是 No restriction）
         mock_role.get_user_allowed_tables.return_value = ["orders", "products"]  # No users table
         result = enforcer.check_access(
             user_id=1, workspace_id=0, datasource_id=1, table_name="users"
@@ -187,7 +187,7 @@ class TestCheckAccess:
     @patch("services.authservice.services.rls_service.rls_service")
     def test_allowed_with_restrictions(self, mock_rls, mock_role, mock_sens, enforcer):
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "analyst"}]
-        mock_role.get_user_allowed_datasources.return_value = []
+        mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
         mock_role.get_user_allowed_tables.return_value = []
         mock_role.get_user_column_restrictions.return_value = {
             "hidden_columns": ["salary"],
@@ -213,7 +213,7 @@ class TestCheckAccess:
     @patch("services.authservice.services.rls_service.rls_service")
     def test_no_restrictions_empty_result(self, mock_rls, mock_role, mock_sens, enforcer):
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "analyst"}]
-        mock_role.get_user_allowed_datasources.return_value = []
+        mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
         mock_role.get_user_allowed_tables.return_value = []
         mock_role.get_user_column_restrictions.return_value = {
             "hidden_columns": [],
@@ -241,7 +241,7 @@ class TestEnforceSQL:
     @patch("services.authservice.services.rls_service.rls_service")
     def test_sql_rewrite_with_row_filter(self, mock_rls, mock_role, enforcer):
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "analyst"}]
-        mock_role.get_user_allowed_datasources.return_value = []
+        mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
         mock_role.get_user_allowed_tables.return_value = []
         mock_role.get_user_column_restrictions.return_value = {
             "hidden_columns": [],

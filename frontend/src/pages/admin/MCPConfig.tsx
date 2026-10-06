@@ -6,7 +6,7 @@ import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
-import { Plus, Pencil, Trash2, Server } from 'lucide-react';
+import { Plus, Pencil, Trash2 } from 'lucide-react';
 import client from '@/api/client';
 
 interface MCPServer {
@@ -142,7 +142,7 @@ export default function MCPConfig() {
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <Label>服务名称</Label>
-              <Input value={form.name || ''} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="elasticsearch" />
+              <Input value={form.name || ''} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="filesystem" />
             </div>
             <div className="space-y-1.5">
               <Label>传输方式</Label>
@@ -158,7 +158,7 @@ export default function MCPConfig() {
           </div>
           <div className="space-y-1.5">
             <Label>描述</Label>
-            <Input value={form.description || ''} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Elasticsearch 日志查询服务" />
+            <Input value={form.description || ''} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="文件系统访问服务" />
           </div>
           {form.transport === 'sse' || form.transport === 'streamable_http' ? (
             <div className="space-y-1.5">
@@ -174,7 +174,7 @@ export default function MCPConfig() {
                 </div>
                 <div className="space-y-1.5">
                   <Label>参数 (逗号分隔)</Label>
-                  <Input value={form.args || ''} onChange={e => setForm({ ...form, args: e.target.value })} placeholder="-y,@anthropic/mcp-server-elasticsearch" />
+                  <Input value={form.args || ''} onChange={e => setForm({ ...form, args: e.target.value })} placeholder="-y,@modelcontextprotocol/server-filesystem" />
                 </div>
               </div>
               <div className="space-y-1.5">

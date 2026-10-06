@@ -1,6 +1,6 @@
 """AS-BOT 系统能力本体图谱 · 系统域隔离回归锁(离线, 假 DB/SPARQL)。
 
-背景(违反即缺陷): AS-BOT 是系统 Waker, 其本体图谱(表关系/业务知识/本体总览)只允许
+背景(违反即缺陷): AS-BOT 是系统 AS-BOT, 其本体图谱(表关系/业务知识/本体总览)只允许
 消费**系统本体**(datasource_id IS NULL/0), 严禁串入业务本体(如 test-alb, datasource_id>0)。
 旧 bug: 图谱读/建借用 ds:0("聚合全部"), 导致 test-alb 元数据/模型灌进 AS-BOT 视图。
 
@@ -24,8 +24,8 @@ from services.datamind.rag.graph_rag.graph_builder import (  # noqa: E402
 from services.datamind.rag.graph_rag.oxigraph_store import (  # noqa: E402
     SYSTEM_DATASOURCE_ID, OxigraphStore, is_system_scope,
 )
-from services.graphservice.graph_service import GraphService  # noqa: E402
-from services.graphservice.api.graph import _effective_ds  # noqa: E402
+from services.semhub.graph.graph_service import GraphService  # noqa: E402
+from services.semhub.api.graph import _effective_ds  # noqa: E402
 from services.shared.common.rdf.namespaces import ADH_NS  # noqa: E402
 
 
@@ -111,11 +111,13 @@ def test_merge_ontology_models_system_scope_only_system_models(capture):
     sql, params = capture[-1]
     assert n == 0                                 # 无模型返回(空)
     assert "adh_ontology_models" in sql
-    assert "datasource_id IS NULL OR datasource_id = 0" in sql
+    # 判别口径用 kind（x3/x4 归属改造）：业务本体跨源 ds_id=0，旧的
+    # `datasource_id=0` 判系统会把业务本体也拉进系统图。系统域只收 kind='system'。
+    assert "kind = 'system'" in sql
     assert "status = 'active'" in sql
     assert params == []
-    # 关键: 不得是"无数据源过滤"的聚合查询(那会把 test-alb 也 merge 进来)
-    assert sql.rstrip().endswith("datasource_id = 0)")
+    # 关键: 系统域只含系统本体，不得含业务/源本体(那会把 test-alb/业务对象 merge 进来)
+    assert "kind = 'business'" not in sql and "kind = 'source'" not in sql
 
 
 # ── 查询只命中 ds:-1 ───────────────────────────────────────────────
@@ -180,12 +182,12 @@ def test_load_terms_system_scope_skipped(capture):
 def test_load_metrics_system_scope_filters_by_bound_object_keys(capture, monkeypatch):
     """字典行 datasource_id 恒为 0: 系统域只能按绑定对象∈系统模型对象筛, 不得按 datasource 列筛。"""
     from services.datamind.rag.graph_rag import graph_builder as gb
-    monkeypatch.setattr(gb, "_system_object_keys", lambda: ["as_bot_approval", "waker"])
+    monkeypatch.setattr(gb, "_system_object_keys", lambda: ["as_bot_approval", "as_bot"])
     b = GraphBuilder(store=OxigraphStore.__new__(OxigraphStore))
     b._load_metrics(SYSTEM_DATASOURCE_ID)
     sql, params = capture[-1]
     assert "bound_object_key IN (%s,%s)" in sql
-    assert params == ["as_bot_approval", "waker"]
+    assert params == ["as_bot_approval", "as_bot"]
     # 关键: 绝不再出现"datasource_id = 0 OR IS NULL"这种对字典等于没筛的旧条件
     assert "datasource_id = 0 OR" not in sql
 
@@ -234,14 +236,14 @@ def test_system_object_keys_parses_json_extract(monkeypatch):
 
     class _Conn:
         def cursor(self):
-            return _FakeCursor(sink, rows=[{"objs": '["waker", "as_bot_approval", "waker"]'}])
+            return _FakeCursor(sink, rows=[{"objs": '["as_bot", "as_bot_approval", "as_bot"]'}])
         def close(self):
             pass
 
     import services.shared.common.db.metadata_db as mdb
     monkeypatch.setattr(mdb, "get_metadata_conn", lambda: _Conn())
     keys = gb._system_object_keys()
-    assert keys == ["as_bot_approval", "waker"]   # 去重+排序
+    assert keys == ["as_bot", "as_bot_approval"]   # 去重+排序(sorted)
     sql, params = sink[0]
     assert "datasource_id IS NULL OR datasource_id = 0" in sql
     assert "status = 'active'" in sql

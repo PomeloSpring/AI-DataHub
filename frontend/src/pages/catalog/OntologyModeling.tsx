@@ -26,11 +26,12 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Switch } from '@/components/ui/switch';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from 'sonner';
 import {
   Boxes, Sparkles, Save, CheckCircle2, Archive, RefreshCw, Loader2, Trash2, Code2, Play, History, AlertTriangle,
-  Upload, Send,
+  Upload, Undo2,
 } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { json } from '@codemirror/lang-json';
@@ -41,7 +42,7 @@ import AssetPoolPanel from './AssetPoolPanel';
 import MetricsCenter from './MetricsCenter';
 import DimensionsDictTab from './DimensionsDictTab';
 import Glossary from './Glossary';
-import { ModelGraphTab, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
+import { ModelGraphTab, ModelActionsTab, ModelRulesTab, ModelScenariosTab, ObjectCreateButton, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
 import { metricsApi } from '@/api/metrics';
 
 interface Datasource {
@@ -54,6 +55,17 @@ const STATUS_META: Record<OntologyStatus, { label: string; cls: string }> = {
   draft: { label: '草案', cls: 'bg-amber-500/10 text-amber-500 border-amber-500/20' },
   active: { label: '激活', cls: 'bg-green-500/10 text-green-500 border-green-500/20' },
   archived: { label: '已归档', cls: 'bg-gray-500/10 text-gray-500 border-gray-500/20' },
+};
+
+/** 知识库同步跳过原因 → 可读文案（不向用户甩英文码） */
+const KB_SKIP_LABEL: Record<string, string> = {
+  model_not_found: '模型不存在',
+  no_kb_bound: '模型未绑定目标知识库',
+  no_kb_with_sync_ontology: '没有开启同步的目标知识库',
+  status_draft: '草案未激活，不推送知识库',
+  status_archived: '模型已归档，不推送知识库',
+  superseded_by_active_version: '同名已有生效版本，本版本不上云',
+  no_md_content: '无可渲染的语义内容',
 };
 
 /** 从 JSON 内容解析对象列表（预览用，容错） */
@@ -103,7 +115,7 @@ function ModelGroup({ title, list, selectedId, onPick }: {
                 </Badge>
               </div>
               <div className="text-xs text-muted-foreground mt-0.5">
-                {m.object_count} 个对象 · {m.updated_at?.slice(0, 16).replace('T', ' ')}
+                {m.domain ? `${m.domain} · ` : ''}{m.object_count} 个对象 · {m.updated_at?.slice(0, 16).replace('T', ' ')}
               </div>
             </button>
           );
@@ -150,11 +162,15 @@ export default function OntologyModeling() {
   const [activateOpen, setActivateOpen] = useState(false);
   const [activating, setActivating] = useState(false);
 
-  // ── 导入 YAML / 提交变更(AS-BOT) ──
+  // ── 导入 YAML ──
   const [yamlOpen, setYamlOpen] = useState(false);
   const [yamlDir, setYamlDir] = useState('ontology');
   const [importing, setImporting] = useState(false);
-  const [proposing, setProposing] = useState(false);
+
+  // ── 归档可见 / 手动同步知识库 ──
+  const [showArchived, setShowArchived] = useState(false);
+  const [syncingKb, setSyncingKb] = useState(false);
+  const [syncTick, setSyncTick] = useState(0);
 
   const handleImportYaml = async () => {
     if (!datasourceId) {
@@ -177,23 +193,8 @@ export default function OntologyModeling() {
     }
   };
 
-  // 提交变更 = 把当前编辑内容作为 AS-BOT 审批单(提议即 schema 校验); 适用于无直接写权限场景
-  const handleSubmitChange = async () => {
-    if (!model || !jsonDraft.trim()) return;
-    setProposing(true);
-    try {
-      const { data } = await client.post('/as-bot/approvals/create', {
-        action_key: 'ontology.save',
-        payload: { model_id: model.id, json_content: jsonDraft },
-      });
-      if (data?.success) toast.success(`变更已提交审批 #${data.id}，请在 AS-BOT 面板确认执行`);
-      else toast.error(data?.error || '提交失败');
-    } catch {
-      toast.error('提交审批失败');
-    } finally {
-      setProposing(false);
-    }
-  };
+  // 写动作直执行：审批通道已退役，保存即生效（后端 ontology:save 权限码 fail-closed 把关），
+  // 无直接写权限时保存会 403 并给出可解释原因，不再走「提交变更(AS-BOT)」审批单。
 
   // ── 版本管理（归档版本在此呈现，不入主列表） ──
   const [versionsOpen, setVersionsOpen] = useState(false);
@@ -230,15 +231,15 @@ export default function OntologyModeling() {
     }
   }, []);
 
-  const loadModels = useCallback(async (dsId?: number) => {
+  const loadModels = useCallback(async (dsId?: number, withArchived = showArchived) => {
     try {
-      const { data } = await ontologyApi.list(dsId);
+      const { data } = await ontologyApi.list(dsId, withArchived);
       setModels(data.items || []);
     } catch {
       setModels([]);
     }
     refreshPool();
-  }, [refreshPool]);
+  }, [refreshPool, showArchived]);
 
   useEffect(() => {
     loadDatasources();
@@ -286,6 +287,23 @@ export default function OntologyModeling() {
   };
 
   // ── 保存（仅 draft） ──
+  // 供建模页签（行为/规则/场景/新建对象）落库：改 doc 后走 ontologyApi.save（save_draft 级联重建派生物）
+  const saveDocFromTab = useCallback(async (nextJson: string) => {
+    if (!model) return;
+    setJsonDraft(nextJson);
+    try {
+      const { data } = await ontologyApi.save(model.id, nextJson);
+      const wasActive = model.status === 'active';
+      setModel(data);
+      setJsonDraft(data.json_content || '');
+      setDirty(false);
+      loadModels(datasourceId || undefined);
+      toast.success(wasActive ? '已保存，并同步刷新对象/绑定/图谱' : '草案已保存，YAML/MD 已同步派生');
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || '保存失败');
+    }
+  }, [model, datasourceId, loadModels]);
+
   const handleSave = async () => {
     if (!model) return;
     setSaving(true);
@@ -395,6 +413,38 @@ export default function OntologyModeling() {
     }
   };
 
+  // ── 还原归档模型为草案（归档数据可逆） ──
+  const handleRestore = async () => {
+    if (!model) return;
+    try {
+      const { data } = await ontologyApi.restore(model.id);
+      setModel(data);
+      setJsonDraft(data.json_content || '');
+      setDirty(false);
+      loadModels(datasourceId || undefined);
+      toast.success('已还原为草案，可继续编辑后激活');
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || '还原失败');
+    }
+  };
+
+  // ── 手动同步知识库：把生效模型的脱敏文档推送到目标知识库 ──
+  const handleSyncKb = async () => {
+    if (!model) return;
+    setSyncingKb(true);
+    try {
+      const { data } = await ontologyApi.syncKb(model.id);
+      if (data.removed) toast.success(`已从 ${data.removed} 个知识库下线旧文档`);
+      else if (data.synced) toast.success(`已同步到 ${data.synced} 个知识库`);
+      else toast.warning(data.skipped ? `未同步：${KB_SKIP_LABEL[data.skipped] || data.skipped}` : '本次未产生同步');
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || '知识库同步失败');
+    } finally {
+      setSyncingKb(false);
+      setSyncTick((t) => t + 1);
+    }
+  };
+
   const handleDelete = async () => {
     if (!model) return;
     try {
@@ -452,12 +502,15 @@ export default function OntologyModeling() {
   const objectOptions = useMemo(
     () => hubObjects.map((o: any) => ({ key: o.key, display_name: o.display_name || o.key })),
     [objects]);
-  // 模型分组: 有合法数据源的归"业务本体", 其余(系统能力/孤儿 ds)归"系统能力本体"
-  const dsIdSet = useMemo(() => new Set(datasources.map((d) => d.id)), [datasources]);
-  const bizModels = useMemo(
-    () => models.filter((m) => m.datasource_id && dsIdSet.has(m.datasource_id)), [models, dsIdSet]);
-  const bizIds = useMemo(() => new Set(bizModels.map((m) => m.id)), [bizModels]);
-  const sysModels = useMemo(() => models.filter((m) => !bizIds.has(m.id)), [models, bizIds]);
+  // 模型分组按 kind（x4 归属改造）：本体归属是 domain+kind，不是数据源。
+  // 业务本体的 datasource_id 也是 0，旧的“有合法数据源 → 业务”口径会把它们误归到系统组。
+  const byKind = (k: string) => models.filter((m) => (m.kind || '') === k);
+  const sourceModels = useMemo(() => byKind('source'), [models]);
+  const bizModels = useMemo(() => byKind('business'), [models]);
+  const sysModels = useMemo(() => byKind('system'), [models]);
+  // 兼容无 kind 的存量模型：回落旧口径（有合法数据源 → 业务），不丢进任一组
+  const legacyModels = useMemo(() =>
+    models.filter((m) => !m.kind && !['source', 'business', 'system'].includes(m.kind || '')), [models]);
   const jsonInvalid = useMemo(() => {
     if (!dirty || !jsonDraft.trim()) return false;
     try {
@@ -534,7 +587,16 @@ export default function OntologyModeling() {
         {/* 左栏：模型列表(只放本体模型, 分组隔离) + 未归属资产池入口 */}
         <Card className="xl:col-span-1">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">模型列表</CardTitle>
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle className="text-sm">模型列表</CardTitle>
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+                <Switch checked={showArchived} onCheckedChange={(v) => {
+                  setShowArchived(v);
+                  loadModels(datasourceId || undefined, v);
+                }} />
+                显示归档
+              </label>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             <button
@@ -558,12 +620,22 @@ export default function OntologyModeling() {
               </div>
             )}
             <ModelGroup
-              title="业务本体" list={bizModels}
+              title="业务本体（按业务域）" list={bizModels}
+              selectedId={poolMode ? null : selectedId}
+              onPick={(id) => { setPoolMode(false); loadModel(id); }}
+            />
+            <ModelGroup
+              title="源本体（按数据源）" list={sourceModels}
               selectedId={poolMode ? null : selectedId}
               onPick={(id) => { setPoolMode(false); loadModel(id); }}
             />
             <ModelGroup
               title="系统能力本体" list={sysModels}
+              selectedId={poolMode ? null : selectedId}
+              onPick={(id) => { setPoolMode(false); loadModel(id); }}
+            />
+            <ModelGroup
+              title="未分类" list={legacyModels}
               selectedId={poolMode ? null : selectedId}
               onPick={(id) => { setPoolMode(false); loadModel(id); }}
             />
@@ -594,27 +666,35 @@ export default function OntologyModeling() {
                       </SelectContent>
                     </Select>
                   )}
-                  <SyncBadges modelId={model.id} />
+                  <SyncBadges modelId={model.id} refreshKey={syncTick} />
+                  <Button size="sm" variant="outline" onClick={handleSyncKb}
+                          disabled={syncingKb || model.status !== 'active'}
+                          title={model.status === 'active' ? '手动把当前生效模型的脱敏文档同步到目标知识库' : '仅生效模型可同步知识库'}>
+                    {syncingKb
+                      ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                      : <RefreshCw className="h-3.5 w-3.5 mr-1" />}
+                    同步知识库
+                  </Button>
                   <Button size="sm" variant="outline" onClick={handleOpenVersions}>
                     <History className="h-3.5 w-3.5 mr-1" />
                     版本管理
                   </Button>
-                  {editable && dirty && (
-                    <Button size="sm" variant="outline" onClick={handleSubmitChange} disabled={proposing || jsonInvalid}>
-                      {proposing ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Send className="h-3.5 w-3.5 mr-1" />}
-                      提交变更(审批)
-                    </Button>
-                  )}
                   {editable && (
                     <Button size="sm" onClick={handleSave} disabled={saving || jsonInvalid || !dirty}>
                       {saving ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1" />}
                       {model.status === 'draft' ? '保存草案' : '保存'}
                     </Button>
                   )}
-                  {model.status === 'draft' && (
+                  {(model.status === 'draft' || model.status === 'archived') && (
                     <Button size="sm" variant="default" onClick={() => setActivateOpen(true)}>
                       <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
                       确认激活
+                    </Button>
+                  )}
+                  {model.status === 'archived' && (
+                    <Button size="sm" variant="outline" onClick={handleRestore}>
+                      <Undo2 className="h-3.5 w-3.5 mr-1" />
+                      还原为草案
                     </Button>
                   )}
                   {model.status === 'active' && (
@@ -636,7 +716,7 @@ export default function OntologyModeling() {
                 {model.status === 'active'
                   ? '激活模型可直接编辑；保存将依据真实表元数据重算绑定，并同步对象/图谱，与数据目录联动。'
                   : model.status === 'archived'
-                    ? '已归档模型只读；如需修改请在「版本管理」回滚激活。'
+                    ? '已归档模型只读；可「还原为草案」继续编辑，或「确认激活」直接恢复为生效（归档数据始终可查看）。'
                     : '草案编辑后保存，确认无误后激活。'}
               </div>
             )}
@@ -656,29 +736,46 @@ export default function OntologyModeling() {
                   <TabsTrigger value="dimensions">维度</TabsTrigger>
                   <TabsTrigger value="terms">业务术语</TabsTrigger>
                   <TabsTrigger value="tags">标签</TabsTrigger>
+                  <TabsTrigger value="m234">行为</TabsTrigger>
+                  <TabsTrigger value="rules">规则</TabsTrigger>
+                  <TabsTrigger value="scenarios">场景</TabsTrigger>
                   <TabsTrigger value="graph">图谱</TabsTrigger>
                   <TabsTrigger value="editor">编辑器</TabsTrigger>
                 </TabsList>
-                <TabsContent value="hub" className="mt-2">
-                  <ObjectHubTab modelId={model.id} objects={hubObjects} />
+                <TabsContent value="hub" className="mt-2 h-[62vh] overflow-hidden">
+                  <div className="flex items-center gap-2 mb-2">
+                    <ObjectCreateButton jsonContent={jsonDraft} onSave={saveDocFromTab} />
+                  </div>
+                  <div className="h-[calc(62vh-2.5rem)] overflow-auto">
+                    <ObjectHubTab modelId={model.id} objects={hubObjects} />
+                  </div>
                 </TabsContent>
-                <TabsContent value="metrics" className="mt-2">
+                <TabsContent value="metrics" className="mt-2 h-[62vh] overflow-auto">
                   <MetricsCenter embedded view="metrics" modelId={model.id} objects={objectOptions} />
                 </TabsContent>
-                <TabsContent value="dimensions" className="mt-2">
+                <TabsContent value="dimensions" className="mt-2 h-[62vh] overflow-auto">
                   <DimensionsDictTab modelId={model.id} scope="model" />
                 </TabsContent>
-                <TabsContent value="terms" className="mt-2">
+                <TabsContent value="terms" className="mt-2 h-[62vh] overflow-auto">
                   <Glossary embedded datasourceId={model.datasource_id}
                     tables={hubObjects.map((o: any) => String(o.primary_table || '').toLowerCase()).filter(Boolean)} />
                 </TabsContent>
-                <TabsContent value="tags" className="mt-2">
+                <TabsContent value="tags" className="mt-2 h-[62vh] overflow-auto">
                   <ObjectTagsTab objects={hubObjects as any} />
                 </TabsContent>
-                <TabsContent value="graph" className="mt-2">
+                <TabsContent value="m234" className="mt-2 h-[62vh] overflow-hidden">
+                  <ModelActionsTab jsonContent={jsonDraft} onSave={saveDocFromTab} />
+                </TabsContent>
+                <TabsContent value="rules" className="mt-2 h-[62vh] overflow-hidden">
+                  <ModelRulesTab jsonContent={jsonDraft} onSave={saveDocFromTab} />
+                </TabsContent>
+                <TabsContent value="scenarios" className="mt-2 h-[62vh] overflow-hidden">
+                  <ModelScenariosTab jsonContent={jsonDraft} onSave={saveDocFromTab} />
+                </TabsContent>
+                <TabsContent value="graph" className="mt-2 h-[62vh] overflow-hidden">
                   {/* 系统模型(datasource_id 空/0)的图在专用系统图 ds:-1: 不带 system_scope
                       会落到 ds:0 聚合图(=全部数据源), 把业务表/test-alb 本体灌进来 */}
-                  <ModelGraphTab datasourceId={model.datasource_id} systemScope={!model.datasource_id} />
+                  <ModelGraphTab datasourceId={model.datasource_id} kind={model.kind} domain={model.domain} />
                 </TabsContent>
                 <TabsContent value="editor" className="mt-2">
               <Tabs defaultValue="json">

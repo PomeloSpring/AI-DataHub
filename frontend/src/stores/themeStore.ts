@@ -26,8 +26,9 @@ interface ThemeState {
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set, get) => ({
-      theme: 'dark',
-      isDark: true,
+      // 默认主题:亮色(仅影响未持久化过主题的用户,已保存的选择由 persist 恢复)
+      theme: 'light',
+      isDark: false,
       setTheme: (t) => set({ theme: t, isDark: IS_DARK[t] }),
       toggle: () => {
         const cur = get().theme;

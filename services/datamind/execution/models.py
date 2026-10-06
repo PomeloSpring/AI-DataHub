@@ -37,7 +37,8 @@ class ExecutionTask:
     context: ExecutionContext = field(default_factory=ExecutionContext)
     stream: bool = False
     timeout: int = 300
-    # 多模态附件清单: [{id, filename, category, path}]
+    # 多模态附件清单(会话工作区文件): 入参 [{filename, category, size, content}|{path}],
+    # place_attachments 落盘/校验后归一为 [{filename, category, path, size}]
     attachments: list = field(default_factory=list)
 
 
