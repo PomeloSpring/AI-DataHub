@@ -43,7 +43,7 @@ def _persist_progress(task: dict):
 
 def _execute_sql_on_datasource(sql: str, datasource_id: int, identity: dict) -> dict:
     """可信配置 SQL 必须先校验限流，再使用统一治理入口。"""
-    from backend.modules.viz.services.governed_query import governed_execute
+    from backend.core.governed_query import governed_execute
     from backend.semantics.sql_guard import bounded_query
     sql = bounded_query(sql, 1000)
     return governed_execute(sql, datasource_id, identity["user_id"],
@@ -306,7 +306,7 @@ def _resolve_owner(task):
 
 
 def _check_datasource(task, identity):
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     ds_id = int(task["task_config"].get("datasource_id") or 0)
     if ds_id <= 0:
         raise PermissionError("任务必须明确绑定数据源")

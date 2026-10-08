@@ -8,7 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 from backend.modules.auth.api import rls as rls_api
-from backend.modules.auth.services import rls_service as rls_svc_mod
+from backend.core import rls_service as rls_svc_mod
 
 
 class _FakeCursor:

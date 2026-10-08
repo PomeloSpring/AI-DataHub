@@ -20,7 +20,7 @@ def json_object(value) -> dict:
 
 
 def policy_snapshot(owner_id: int, workspace_id: int, sources: list[dict]) -> dict:
-    from backend.modules.mind.permission.enforcer import permission_enforcer
+    from backend.core.enforcer import permission_enforcer
     live = get_user_by_id(owner_id) if owner_id else None
     if not live or live.get("status") != "active":
         raise PermissionError("报告创建者身份无效")

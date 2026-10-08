@@ -11,7 +11,7 @@ import time
 from typing import Optional
 
 from backend.common.db import DBConnection
-from backend.modules.viz.services.governed_query import governed_execute
+from backend.core.governed_query import governed_execute
 from backend.common.auth import authorize_workspace, resolve_execution_owner
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from backend.modules.viz.services import report_access
@@ -330,7 +330,7 @@ def render_fact_report(title: str, results: list) -> str:
 
 
 def _authorize_source(identity, datasource_id):
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     if int(datasource_id or 0) <= 0:
         raise PermissionError("分析来源未明确绑定")
     # 纯角色裁决: 分析来源可用集=执行身份的角色授权; 空授权 fail-closed。

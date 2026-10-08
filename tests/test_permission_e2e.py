@@ -20,12 +20,12 @@ import pytest
 import pandas as pd
 from unittest.mock import patch, MagicMock
 
-from backend.modules.mind.permission.enforcer import PermissionEnforcer, PermissionResult
+from backend.core.enforcer import PermissionEnforcer, PermissionResult
 
 
 @pytest.fixture
 def enforcer():
-    from backend.modules.mind.permission.enforcer import invalidate_access_cache
+    from backend.core.enforcer import invalidate_access_cache
     invalidate_access_cache()  # 清空 TTL 缓存, 避免跨测试泄漏
     return PermissionEnforcer()
 
@@ -49,8 +49,8 @@ def enforcer():
 class TestAdminAccess:
     """Admin follows role-based permission configuration (no automatic bypass)."""
 
-    @patch("backend.modules.auth.services.role_service.role_service")
-    @patch("backend.modules.auth.services.rls_service.rls_service")
+    @patch("backend.core.role_service.role_service")
+    @patch("backend.core.rls_service.rls_service")
     def test_admin_follows_datasource_permissions(self, mock_rls, mock_role, enforcer):
         """Admin role is subject to datasource access permissions."""
         mock_role.get_user_roles.return_value = [{"id": 1, "name": "admin"}]
@@ -67,8 +67,8 @@ class TestAdminAccess:
         result = enforcer.check_access(user_id=1, workspace_id=0, datasource_id=999)
         assert result.allowed is False
 
-    @patch("backend.modules.auth.services.role_service.role_service")
-    @patch("backend.modules.auth.services.rls_service.rls_service")
+    @patch("backend.core.role_service.role_service")
+    @patch("backend.core.rls_service.rls_service")
     def test_admin_sees_all_columns(self, mock_rls, mock_role, enforcer):
         """Admin sees all columns without masking."""
         mock_role.get_user_roles.return_value = [{"id": 1, "name": "admin"}]
@@ -88,8 +88,8 @@ class TestAdminAccess:
 class TestZhangsanEastChina:
     """zhangsan as region_analyst in 华东 workspace."""
 
-    @patch("backend.modules.auth.services.role_service.role_service")
-    @patch("backend.modules.auth.services.rls_service.rls_service")
+    @patch("backend.core.role_service.role_service")
+    @patch("backend.core.rls_service.rls_service")
     def test_zhangsan_can_access_east_datasource(self, mock_rls, mock_role, enforcer):
         """zhangsan can access datasource 1 in 华东 workspace."""
         mock_role.get_user_roles.return_value = [{"id": 100, "name": "region_analyst"}]
@@ -110,8 +110,8 @@ class TestZhangsanEastChina:
         assert result.row_filter == "region = '华东'"
         assert "phone" in result.masked_columns
 
-    @patch("backend.modules.auth.services.role_service.role_service")
-    @patch("backend.modules.auth.services.rls_service.rls_service")
+    @patch("backend.core.role_service.role_service")
+    @patch("backend.core.rls_service.rls_service")
     def test_zhangsan_sql_gets_row_filter(self, mock_rls, mock_role, enforcer):
         """zhangsan's SQL should have row filter injected."""
         mock_role.get_user_roles.return_value = [{"id": 100, "name": "region_analyst"}]
@@ -136,8 +136,8 @@ class TestZhangsanEastChina:
 class TestLisiSouthChina:
     """lisi as data_viewer in 华南 workspace."""
 
-    @patch("backend.modules.auth.services.role_service.role_service")
-    @patch("backend.modules.auth.services.rls_service.rls_service")
+    @patch("backend.core.role_service.role_service")
+    @patch("backend.core.rls_service.rls_service")
     def test_lisi_can_only_see_orders(self, mock_rls, mock_role, enforcer):
         """lisi can only access orders table, not users or products."""
         mock_role.get_user_roles.return_value = [{"id": 200, "name": "data_viewer"}]
@@ -158,8 +158,8 @@ class TestLisiSouthChina:
         assert result.allowed is False
         assert "无权访问表" in result.reason
 
-    @patch("backend.modules.auth.services.role_service.role_service")
-    @patch("backend.modules.auth.services.rls_service.rls_service")
+    @patch("backend.core.role_service.role_service")
+    @patch("backend.core.rls_service.rls_service")
     def test_lisi_salary_hidden_phone_masked(self, mock_rls, mock_role, enforcer):
         """lisi should have salary hidden and phone masked."""
         mock_role.get_user_roles.return_value = [{"id": 200, "name": "data_viewer"}]
@@ -185,8 +185,8 @@ class TestLisiSouthChina:
         assert result.masked_columns.get("phone") == "partial"
         assert result.masked_columns.get("email") == "partial"
 
-    @patch("backend.modules.auth.services.role_service.role_service")
-    @patch("backend.modules.auth.services.rls_service.rls_service")
+    @patch("backend.core.role_service.role_service")
+    @patch("backend.core.rls_service.rls_service")
     def test_lisi_post_processing(self, mock_rls, mock_role, enforcer):
         """lisi's query results should have hidden columns removed and masked values."""
         df = pd.DataFrame({
@@ -221,8 +221,8 @@ class TestLisiSouthChina:
 class TestWorkspaceIsolation:
     """Test that workspaces properly isolate data."""
 
-    @patch("backend.modules.auth.services.role_service.role_service")
-    @patch("backend.modules.auth.services.rls_service.rls_service")
+    @patch("backend.core.role_service.role_service")
+    @patch("backend.core.rls_service.rls_service")
     def test_east_workspace_filters_to_east(self, mock_rls, mock_role, enforcer):
         """华东 workspace should filter to 华东 data only."""
         mock_role.get_user_roles.return_value = [{"id": 100, "name": "region_analyst"}]
@@ -242,8 +242,8 @@ class TestWorkspaceIsolation:
         )
         assert "region = '华东'" in modified_sql
 
-    @patch("backend.modules.auth.services.role_service.role_service")
-    @patch("backend.modules.auth.services.rls_service.rls_service")
+    @patch("backend.core.role_service.role_service")
+    @patch("backend.core.rls_service.rls_service")
     def test_south_workspace_filters_to_south(self, mock_rls, mock_role, enforcer):
         """华南 workspace should filter to 华南 data only."""
         mock_role.get_user_roles.return_value = [{"id": 200, "name": "data_viewer"}]
@@ -264,8 +264,8 @@ class TestWorkspaceIsolation:
         assert "region = '华南'" in modified_sql
         assert "salary" in result.hidden_columns
 
-    @patch("backend.modules.auth.services.role_service.role_service")
-    @patch("backend.modules.auth.services.rls_service.rls_service")
+    @patch("backend.core.role_service.role_service")
+    @patch("backend.core.rls_service.rls_service")
     def test_national_workspace_no_filter(self, mock_rls, mock_role, enforcer):
         """全国 workspace should have no row filter."""
         mock_role.get_user_roles.return_value = [{"id": 300, "name": "full_analyst"}]

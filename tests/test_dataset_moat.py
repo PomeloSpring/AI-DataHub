@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.modules.viz.services import dataset_service as svc
-from backend.modules.viz.services.governed_query import NoIdentityError
+from backend.core.governed_query import NoIdentityError
 
 
 # ── SQL 来源校验 ─────────────────────────────────────────────────────
@@ -109,7 +109,7 @@ class TestSqlWrappingShape:
             captured["sql"] = sql
             return {"columns": [], "rows": [], "row_count": 0, "elapsed_ms": 0}
 
-        import backend.modules.viz.services.governed_query as gq
+        import backend.core.governed_query as gq
         monkeypatch.setattr(gq, "governed_execute", fake_governed)
 
         ds_stub = {"source_type": "sql",
@@ -285,7 +285,7 @@ class TestInteropGuards:
     def test_extract_unmatched_column_returned_pending(self, monkeypatch):
         monkeypatch.setattr("backend.common.api_permission.check_api_permission",
                             lambda role, method, path: True)
-        monkeypatch.setattr("backend.modules.viz.services.governed_query.governed_execute",
+        monkeypatch.setattr("backend.core.governed_query.governed_execute",
                             lambda *a, **k: {
                                 "columns": ["region", "cnt_x", "amount"],
                                 "rows": [{"region": "华东", "cnt_x": 1, "amount": 2.5}],
@@ -309,7 +309,7 @@ class TestInteropGuards:
     def test_extract_matches_alias(self, monkeypatch):
         monkeypatch.setattr("backend.common.api_permission.check_api_permission",
                             lambda role, method, path: True)
-        monkeypatch.setattr("backend.modules.viz.services.governed_query.governed_execute",
+        monkeypatch.setattr("backend.core.governed_query.governed_execute",
                             lambda *a, **k: {"columns": ["地区"], "rows": [{"地区": "华东"}],
                                              "row_count": 1})
         monkeypatch.setattr(svc, "_semantic_fields", lambda ds, obj: [

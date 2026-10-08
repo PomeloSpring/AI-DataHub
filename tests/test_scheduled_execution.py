@@ -13,7 +13,7 @@ def scheduled_as_bot(monkeypatch):
     from backend.common import db, auth
     from backend.modules.mind.execution import resource_guard
     from backend.modules.mind.execution.sdk_tools import external_tools
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     state = {"as_bot": {"id": 1, "as_bot_key": "sales", "name": "销售分析", "is_default": 1,
              "system_prompt": "你是销售分析", "knowledge_base_ids": [],
              "mcp_server_ids": [], "tools": {"mcp": {"semantic": ["get_metrics", "run_semantic_query"]}}},
@@ -80,7 +80,7 @@ def test_disabled_owner_rejected(monkeypatch):
 
 
 def test_sql_uses_governance_and_outer_limit(monkeypatch):
-    from backend.modules.viz.services import governed_query
+    from backend.core import governed_query
     governed = Mock(return_value={"columns": ["数量"], "rows": [{"数量": 4}], "row_count": 1})
     monkeypatch.setattr(governed_query, "governed_execute", governed)
     out = executor._execute_sql_on_datasource("SELECT 'limit' AS label", 8,
@@ -91,7 +91,7 @@ def test_sql_uses_governance_and_outer_limit(monkeypatch):
 
 
 def test_write_sql_never_reaches_governance(monkeypatch):
-    from backend.modules.viz.services import governed_query
+    from backend.core import governed_query
     governed = Mock()
     monkeypatch.setattr(governed_query, "governed_execute", governed)
     with pytest.raises(PermissionError):

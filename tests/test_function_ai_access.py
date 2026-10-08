@@ -319,7 +319,7 @@ def test_resolve_policy_always_supplies_role_perms(monkeypatch):
                                          "models": []}])
     monkeypatch.setattr(as_bots, "default_as_bot", lambda bots: bots[0] if bots else None)
 
-    import backend.modules.auth.services.role_service as rs
+    import backend.core.role_service as rs
     monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                         lambda *a, **k: {"report:read": {"ai_access": "read", "label": "x", "ai_note": ""}})
 

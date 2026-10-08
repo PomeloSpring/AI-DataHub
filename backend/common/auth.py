@@ -99,7 +99,7 @@ def authorize_workspace(user: dict, workspace_id: int) -> int:
         return ws
     if not ws:
         raise HTTPException(status_code=403, detail="请选择已授权工作空间")
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     try:
         # 工作空间随用户走(个人工作站): 仅属主可访问, 成员体系已退役
         allowed = role_service.check_workspace_owner(int(user["user_id"]), ws)
@@ -286,7 +286,7 @@ def require_permission(
         effective_ws = workspace_id or ws_id
 
         try:
-            from backend.modules.mind.permission.enforcer import permission_enforcer
+            from backend.core.enforcer import permission_enforcer
 
             result = permission_enforcer.check_access(
                 user_id=user["user_id"],
@@ -654,7 +654,7 @@ def create_user(username: str, password: str, role: str = "viewer",
                 )
                 # 全局角色双写：adh_user_roles(ws=0) 镜像随 user_role 列缓存同事务写入。
                 # 历史缺陷：只写列不写镜像 → 用户零权限码被 API 门控 403（建号后无法发消息）。
-                from backend.modules.auth.services.role_service import role_service as _role_svc
+                from backend.core.role_service import role_service as _role_svc
                 _role_svc.write_global_role_mirror(cur, user_id, role)
             conn.commit()
         return True, "创建成功", user_id
@@ -716,7 +716,7 @@ def update_user(user_id: int, username: str = None, email: str = None,
                 )
                 # 改角色同步全局镜像（列与 adh_user_roles(ws=0) 同事务双写）
                 if role is not None:
-                    from backend.modules.auth.services.role_service import role_service as _role_svc
+                    from backend.core.role_service import role_service as _role_svc
                     _role_svc.write_global_role_mirror(cur, user_id, role)
             conn.commit()
         return True, "更新成功"

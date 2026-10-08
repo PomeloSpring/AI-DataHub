@@ -84,3 +84,5 @@ jieba.cache
 /services/dataengine/*.db-wal
 
 scripts
+# pytest tmp artifacts
+pytest-of-*/

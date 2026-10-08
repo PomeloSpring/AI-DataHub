@@ -190,7 +190,7 @@ def mysql_design(monkeypatch):
         pytest.skip('需显式启用隔离 MySQL 设计回归')
     from backend.common.db import execute_query, execute_insert, execute_write
     from backend.common.db.metadata_db import get_metadata_conn
-    from backend.modules.viz.services import governed_query
+    from backend.core import governed_query
     uid = 2**52 + uuid.uuid4().int % 100000000
     user = {**USER, 'user_id': uid}
     monkeypatch.setattr(ds, 'identity', lambda u: user if u.get('user_id') == uid else (_ for _ in ()).throw(ds.DesignError('无权访问')))

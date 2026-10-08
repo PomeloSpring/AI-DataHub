@@ -64,7 +64,7 @@ class TestModelVisibility:
                 calls.append((uid, ws))
                 return [7, 8]
 
-        monkeypatch.setattr("backend.modules.auth.services.role_service.role_service",
+        monkeypatch.setattr("backend.core.role_service.role_service",
                             _FakeRoleService)
         allowed = ontology_api._allowed_source_ids(
             {"user_id": 42, "username": "u", "role": "admin"})
@@ -123,7 +123,7 @@ class TestEnforcerFailClosed:
     def test_datasource_step_never_skips_on_empty_grant(self):
         """历史缺陷回归：`if allowed_ds and ...` 空授权跳过检查（fail-open）。"""
         import inspect
-        from backend.modules.mind.permission import enforcer
+        from backend.core import enforcer
         src = inspect.getsource(enforcer.PermissionEnforcer)
         # 只看代码行（历史缺陷描述在注释里，不算）
         code_lines = [ln for ln in src.splitlines()
@@ -135,6 +135,6 @@ class TestEnforcerFailClosed:
 
     def test_role_service_doc_is_fail_closed(self):
         import inspect
-        from backend.modules.auth.services.role_service import role_service
+        from backend.core.role_service import role_service
         doc = inspect.getdoc(role_service.get_user_allowed_datasources)
         assert "fail-closed" in doc and "no restriction" not in doc.lower()

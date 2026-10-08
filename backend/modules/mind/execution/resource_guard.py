@@ -30,7 +30,7 @@ def bind_resources(ctx, policy):
     system 工具组授权是**能力叠加**（admin 专属的系统能力面，域规则更新）：
     不屏蔽业务数据源继承，只额外提供系统资源（系统本体/系统工具/系统源 0）的访问权。
     """
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     # fail-closed(护城河 RBAC): 空角色授权不解释为全量; admin 不 bypass, 同样纯角色裁决。
     allowed = set(role_service.get_user_allowed_datasources(ctx.user_id, ctx.workspace_id))
     if ctx.datasource_id and ctx.datasource_id not in allowed:
@@ -50,7 +50,7 @@ def assert_ontology_draft_scope(ctx) -> int:
     且目标源必须在用户角色授权集内（fail-closed：空授权集不放行）。
     其余任何情形一律拒绝，不静默回退到系统域。
     """
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     target = int(getattr(ctx, "datasource_id", 0) or 0)
     if target <= 0:
         return 0

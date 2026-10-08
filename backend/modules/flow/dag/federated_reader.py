@@ -23,7 +23,7 @@ def governed_federated_read(sql: str, source_datasource_name: str,
     SQL 中三段式限定名引用的其他源自动解析为联邦源。
     """
     from backend.common.db import get_datasource_by_name
-    from backend.modules.mind.nl2sql.sql.query_executor import execute_query_with_permission
+    from backend.core.query_executor import execute_query_with_permission
 
     source = get_datasource_by_name(source_datasource_name)
     if not source:

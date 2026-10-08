@@ -22,7 +22,7 @@ import pytest
 
 # backend.modules.viz.services 包把同名子模块属性重绑为实例, 故显式取真模块对象
 dash_svc = importlib.import_module("backend.modules.viz.services.dashboard_service")
-role_svc_mod = importlib.import_module("backend.modules.auth.services.role_service")
+role_svc_mod = importlib.import_module("backend.core.role_service")
 role_service = role_svc_mod.role_service
 
 

@@ -65,7 +65,7 @@ def _default_datasource_id() -> int:
 
 def _safe_exec_error(exc: Exception, where: str) -> dict:
     """执行阶段失败: 原始细节仅进服务端日志, 对 LLM 回通用文案(数据源黑盒 §7)。"""
-    from backend.modules.viz.services.governed_query import NoIdentityError
+    from backend.core.governed_query import NoIdentityError
 
     if isinstance(exc, NoIdentityError):
         return _error("缺少可信用户身份, 拒绝取数(数据合规护城河)。")
@@ -84,7 +84,7 @@ async def _resolve_intent(intent_payload: dict, ctx):
     from backend.semantics.binding_resolver import resolve_binding
     from backend.semantics.intent import parse_intent
     from backend.semantics.planner import plan
-    from backend.modules.viz.services.governed_query import governed_execute, NoIdentityError
+    from backend.core.governed_query import governed_execute, NoIdentityError
 
     payload = dict(intent_payload or {})
     # 数据源黑盒: 以执行上下文(会话选定数据源)为权威, 不让 LLM 指定

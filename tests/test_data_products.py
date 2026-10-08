@@ -345,7 +345,7 @@ class TestContractChangeDirect:
     apply 由 dataset:manage 把关后直执行（审批回路已退役）。"""
 
     def _grant_dataset_manage(self, monkeypatch):
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"dataset:manage": {"ai_access": "write", "ai_note": ""}})
 
@@ -381,7 +381,7 @@ class TestContractChangeDirect:
 
     def test_apply_without_dataset_manage_fail_closed(self, monkeypatch):
         """直执行把关：approved_by 未持 dataset:manage 写权限即拒（fail-closed）。"""
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms", lambda *a: {})
         monkeypatch.setattr(dps, "get_product", lambda n: {"product_name": n})
         monkeypatch.setattr(dps, "execute_query",

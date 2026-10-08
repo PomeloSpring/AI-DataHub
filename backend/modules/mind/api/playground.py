@@ -155,7 +155,7 @@ def execute_via_playground(
     (permission_enforcer: 敏感 block 列剔除 / mask 脱敏 + RLS 行级过滤 + RBAC + 审计),
     身份只信服务端 JWT(I2), 无可信身份 -> fail-closed 4xx(I5)。仅只读语句。
     """
-    from backend.modules.mind.nl2sql.sql.query_executor import (
+    from backend.core.query_executor import (
         execute_query_with_permission, validate_sql,
     )
 

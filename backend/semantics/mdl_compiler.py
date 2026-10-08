@@ -25,22 +25,22 @@ logger = logging.getLogger(__name__)
 
 def _map_column_type(mysql_type: str) -> str:
     """类型映射与 datamind 保持一致;这里独立一份避免跨服务耦合。"""
-    from backend.modules.mind.nl2sql.sql.manifest_builder import _map_column_type as _impl
+    from backend.common.type_mapping import _map_column_type as _impl
     return _impl(mysql_type)
 
 
 def _map_join_type(rel_type: str) -> str:
-    from backend.modules.mind.nl2sql.sql.manifest_builder import _map_join_type as _impl
+    from backend.common.type_mapping import _map_join_type as _impl
     return _impl(rel_type)
 
 
 def _find_primary_key(cols: list[dict]) -> Optional[str]:
-    from backend.modules.mind.nl2sql.sql.manifest_builder import _find_primary_key as _impl
+    from backend.common.type_mapping import _find_primary_key as _impl
     return _impl(cols)
 
 
 def _build_session_properties_for_rls(policies: list[dict]) -> list[dict]:
-    from backend.modules.mind.nl2sql.sql.manifest_builder import (
+    from backend.common.type_mapping import (
         _build_session_properties_for_rls as _impl,
     )
     return _impl(policies)
@@ -177,7 +177,7 @@ def build_semantic_manifest(
         default_catalog: 未指定 catalog 时的兜底(默认 'adh', 保持向后兼容)
     """
     # 复用旧 builder 的 RLS/列策略/关系/user attrs, 避免漂移
-    from backend.modules.mind.nl2sql.sql.manifest_builder import (
+    from backend.common.type_mapping import (
         _get_columns, _get_relations, _get_rls_policies, _get_column_policies,
         _get_user_attributes,
     )
@@ -349,5 +349,5 @@ def build_semantic_manifest(
 
 
 def _get_data_source_type(datasource_id: int) -> str:
-    from backend.modules.mind.nl2sql.sql.manifest_builder import _get_data_source_type as _impl
+    from backend.common.type_mapping import _get_data_source_type as _impl
     return _impl(datasource_id)

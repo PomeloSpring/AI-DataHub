@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pandas as pd
 
-from backend.modules.mind.permission.enforcer import (
+from backend.core.enforcer import (
     PermissionEnforcer, PermissionResult, permission_enforcer,
 )
 from backend.semantics import gates, planner
@@ -91,7 +91,7 @@ class TestBlockHelpers:
 
 class TestCheckAccessAdmin:
     def test_admin_still_blocks_sensitive_columns(self, monkeypatch):
-        from backend.modules.auth.services.role_service import role_service
+        from backend.core.role_service import role_service
 
         monkeypatch.setattr(
             PermissionEnforcer, "_get_sensitive_policies",
@@ -120,7 +120,7 @@ class TestCheckAccessAdmin:
             PermissionEnforcer, "_get_sensitive_policies",
             lambda self, ws, ds, table: ({}, ["phone"]),
         )
-        from backend.modules.auth.services.role_service import role_service
+        from backend.core.role_service import role_service
         monkeypatch.setattr(role_service, "get_user_roles", _boom)
         res = permission_enforcer.check_access(
             user_id=0, workspace_id=0, datasource_id=7, table_name="t_user",
@@ -188,7 +188,7 @@ class TestSemanticGuard:
 
 class TestExecutorMoat:
     def test_no_user_context_still_drops_blocked(self, monkeypatch):
-        from backend.modules.mind.nl2sql.sql import query_executor as qe
+        from backend.core import query_executor as qe
 
         seen = {}
 

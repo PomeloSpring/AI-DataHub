@@ -125,7 +125,7 @@ class TestWriteOpsEnforceDomain:
     def test_save_system_model_without_perm_fail_closed(self, monkeypatch):
         """直执行口径：无 ontology:save 权限码即拒（审批回路已退役，不再生成审批单）。"""
         _patch_model(monkeypatch, [{"name": "AS-BOT 系统能力本体", "kind": "system"}])
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms", lambda *a: {})
         import asyncio
         result = asyncio.run(ot.save_ontology_model(

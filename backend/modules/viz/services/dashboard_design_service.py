@@ -170,7 +170,7 @@ def _accessible_datasource_ids(user, workspace_id):
     """None=不限制(admin)；否则返回授权集合（空集合=无权，不回退全量）。"""
     if user["role"] == "admin":
         return None
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     return set(role_service.get_user_allowed_datasources(user["user_id"], workspace_id))
 
 
@@ -554,7 +554,7 @@ def compile_design(row, user):
     if any(q["key"] not in doc.get("answers", {}) for q in doc.get("questions", [])):
         raise DesignError("还有待确认的口径选项", "answers_required")
     queries, bindings, policies = [], [], []
-    from backend.modules.mind.permission.enforcer import permission_enforcer
+    from backend.core.enforcer import permission_enforcer
     for widget in doc["widgets"]:
         sql, binding = compile_widget(widget, scope)
         for table in validate_query_sources(sql, scope):
@@ -603,7 +603,7 @@ def preview(design_id, user, expected_version):
     version = changed["version"]
     row, live = load(design_id, user)
     scope, queries, fingerprint = compile_design(row, live)
-    from backend.modules.viz.services.governed_query import governed_execute
+    from backend.core.governed_query import governed_execute
     results = []
     for widget, sql in zip(row["content"]["widgets"], queries):
         result = governed_execute(sql, scope["datasource_id"], live["user_id"], scope["workspace"], live["username"])

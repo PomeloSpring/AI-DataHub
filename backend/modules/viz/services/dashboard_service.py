@@ -20,7 +20,7 @@ from typing import Optional
 
 from backend.common.db.metadata_db import get_metadata_conn
 from backend.common.ttl_cache import dashboard_cache
-from backend.modules.viz.services.governed_query import governed_execute, NoIdentityError
+from backend.core.governed_query import governed_execute, NoIdentityError
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +286,7 @@ def visible_dashboard_ids(user_id: int, user_role: str = "", workspace_id: int =
     """返回用户可见看板 id 集；admin 返回 None 表示全可见；空集 = 全不可见(fail-closed)。"""
     if _is_admin_user(user_id, user_role):
         return None
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     return set(role_service.get_user_allowed_dashboards(user_id, workspace_id))
 
 
@@ -308,7 +308,7 @@ def check_dashboard_visible(dashboard_id: int, user_id: int, user_role: str = ""
         if not row:
             return False
         workspace_id = int(row["workspace_id"] or 0)
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     return int(dashboard_id) in set(
         role_service.get_user_allowed_dashboards(user_id, workspace_id))
 
@@ -792,7 +792,7 @@ class ChartService:
         Supports param substitution, server-side pagination, and cache update.
         raw_sql 取数一律走治理护城河(身份由服务端传入, 无身份 fail-closed)。
         """
-        from backend.modules.mind.nl2sql.sql.query_executor import validate_sql
+        from backend.core.query_executor import validate_sql
 
         if not check_dashboard_visible(dashboard_id, user_id):
             raise PermissionError("无权访问该仪表盘")
@@ -893,7 +893,7 @@ class ChartService:
 
         取数走治理护城河; 无可信身份 -> fail-closed 整体拒绝(I5)。
         """
-        from backend.modules.mind.nl2sql.sql.query_executor import validate_sql
+        from backend.core.query_executor import validate_sql
 
         if not user_id:
             raise NoIdentityError("缺少可信用户身份, 拒绝批量取数(数据合规护城河)")
@@ -1095,7 +1095,7 @@ def preview_saved_query(user_id: int, source_type: str, source_id: int,
     元数据查询仍走 metadata 库, 但返回数据行的取数一律经统一治理护城河
     (敏感 block/mask + RLS + 审计), 无可信身份 -> fail-closed(I1/I2/I3/I5)。
     """
-    from backend.modules.mind.nl2sql.sql.query_executor import validate_sql
+    from backend.core.query_executor import validate_sql
 
     if not source_id:
         return {"error": "Missing source_id"}

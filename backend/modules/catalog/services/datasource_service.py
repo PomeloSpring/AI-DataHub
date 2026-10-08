@@ -87,7 +87,7 @@ class DatasourceService:
                     if workspace_id:
                         # 纯角色裁决: 工作空间不再绑定数据源(adh_workspace_datasources 退役);
                         # 按请求用户角色授权集过滤, 空授权 fail-closed 返回空列表。
-                        from backend.modules.auth.services.role_service import role_service
+                        from backend.core.role_service import role_service
                         allowed = sorted(set(role_service.get_user_allowed_datasources(
                             user_id, workspace_id)))
                         if not allowed:
@@ -134,7 +134,7 @@ class DatasourceService:
         空授权 fail-closed 返回空列表（不解释为全量）。仅回传选择器所需最小字段
         (id/name/db_type/is_default)，不含主机/账号等连接信息（守 security §7）。
         """
-        from backend.modules.auth.services.role_service import role_service
+        from backend.core.role_service import role_service
         allowed = sorted(set(role_service.get_user_allowed_datasources(user_id, workspace_id)))
         if not allowed:
             return []

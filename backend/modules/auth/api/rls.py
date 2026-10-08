@@ -70,14 +70,14 @@ def list_rls_policies(
     _admin: dict = Depends(require_admin),
 ):
     """List RLS policies."""
-    from backend.modules.auth.services.rls_service import rls_service
+    from backend.core.rls_service import rls_service
     return rls_service.list_policies(workspace_id, datasource_id, table_name, page, size)
 
 
 @router.get("/rls-policies/{policy_id}")
 def get_rls_policy(policy_id: int, _admin: dict = Depends(require_admin)):
     """Get a single RLS policy."""
-    from backend.modules.auth.services.rls_service import rls_service
+    from backend.core.rls_service import rls_service
     policy = rls_service.get_policy(policy_id)
     if not policy:
         raise HTTPException(status_code=404, detail="Policy not found")
@@ -87,7 +87,7 @@ def get_rls_policy(policy_id: int, _admin: dict = Depends(require_admin)):
 @router.post("/rls-policies")
 def create_rls_policy(req: RLSPolicyCreate, admin: dict = Depends(require_admin)):
     """Create a new RLS policy."""
-    from backend.modules.auth.services.rls_service import rls_service
+    from backend.core.rls_service import rls_service
     try:
         policy_id = rls_service.create_policy({
             "name": req.name,
@@ -121,7 +121,7 @@ def create_rls_policy(req: RLSPolicyCreate, admin: dict = Depends(require_admin)
 @router.put("/rls-policies/{policy_id}")
 def update_rls_policy(policy_id: int, req: RLSPolicyUpdate, admin: dict = Depends(require_admin)):
     """Update an RLS policy."""
-    from backend.modules.auth.services.rls_service import rls_service
+    from backend.core.rls_service import rls_service
     try:
         # 先获取旧策略用于审计; 策略不存在必须显式报错, 不得假成功
         old_policy = rls_service.get_policy(policy_id)
@@ -152,7 +152,7 @@ def update_rls_policy(policy_id: int, req: RLSPolicyUpdate, admin: dict = Depend
 @router.delete("/rls-policies/{policy_id}")
 def delete_rls_policy(policy_id: int, admin: dict = Depends(require_admin)):
     """Delete a RLS policy and its column policies."""
-    from backend.modules.auth.services.rls_service import rls_service
+    from backend.core.rls_service import rls_service
     try:
         # 先获取旧策略用于审计
         old_policy = rls_service.get_policy(policy_id)
@@ -179,14 +179,14 @@ def delete_rls_policy(policy_id: int, admin: dict = Depends(require_admin)):
 @router.get("/rls-policies/{policy_id}/columns")
 def get_column_policies(policy_id: int, _admin: dict = Depends(require_admin)):
     """Get column policies for a given RLS policy."""
-    from backend.modules.auth.services.rls_service import rls_service
+    from backend.core.rls_service import rls_service
     return rls_service.get_column_policies(policy_id)
 
 
 @router.put("/rls-policies/{policy_id}/columns")
 def set_column_policies(policy_id: int, body: ColumnPoliciesBody, admin: dict = Depends(require_admin)):
     """Replace all column policies for a given RLS policy."""
-    from backend.modules.auth.services.rls_service import rls_service
+    from backend.core.rls_service import rls_service
     try:
         columns = [c.model_dump() for c in body.columns]
         rls_service.set_column_policies(policy_id, columns)
@@ -218,7 +218,7 @@ def list_audit_logs(
     _admin: dict = Depends(require_admin),
 ):
     """List RLS audit logs."""
-    from backend.modules.auth.services.rls_service import rls_service
+    from backend.core.rls_service import rls_service
     return rls_service.list_audit_logs(workspace_id, user_id, page, size)
 
 
@@ -231,6 +231,6 @@ def match_rls_policies(
     _admin: dict = Depends(require_admin),
 ):
     """Get matching RLS policies for a datasource table."""
-    from backend.modules.auth.services.rls_service import rls_service
+    from backend.core.rls_service import rls_service
     policies = rls_service.get_matching_policies(datasource_id, table_name) if hasattr(rls_service, 'get_matching_policies') else []
     return {"policies": policies}

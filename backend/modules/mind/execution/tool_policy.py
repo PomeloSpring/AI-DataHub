@@ -207,7 +207,7 @@ def resolve_policy(ctx, ceiling=None):
         ctx.extra["model_ref"] = models[0]
     # 功能能力从角色权限码继承。读取失败不静默当成"无权限"：
     # 直接抛错，让调用方看到工具不可用，而不是把功能悄悄少注册一批。
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     role_perms = role_service.get_user_role_ai_perms(ctx.user_id, ctx.workspace_id)
     return compile_policy(as_bot, ceiling, role_perms=role_perms)
 

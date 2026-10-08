@@ -305,7 +305,7 @@ def explain_sql(req: ExplainRequest, request: Request):
     数据下推情况 / Join 策略 / 扫描代价可由此查看（同步与 SQL 任务通用）。
     """
     from backend.common.db import get_datasource_by_name
-    from backend.modules.mind.nl2sql.sql.query_executor import explain_query_with_permission
+    from backend.core.query_executor import explain_query_with_permission
     source = get_datasource_by_name(req.datasource)
     if not source:
         raise HTTPException(status_code=400, detail=f"数据源 '{req.datasource}' 不存在")

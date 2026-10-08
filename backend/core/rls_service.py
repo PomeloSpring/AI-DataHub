@@ -207,7 +207,7 @@ class RLSService:
             "policies_applied": [],
         }
 
-        from backend.modules.auth.services.role_service import role_service
+        from backend.core.role_service import role_service
 
         conn = get_metadata_conn()
         try:

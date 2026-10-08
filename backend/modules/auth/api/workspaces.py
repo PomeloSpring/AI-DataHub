@@ -10,7 +10,7 @@ from typing import Optional
 
 from backend.common.auth import get_current_user, require_admin
 from backend.common.db import DBConnection
-from backend.modules.auth.services.role_service import role_service
+from backend.core.role_service import role_service
 
 logger = logging.getLogger(__name__)
 
@@ -419,7 +419,7 @@ def get_workspace_tools(workspace_id: int, user: dict = Depends(get_current_user
 
                 # 纯角色裁决: 工作空间不再绑定数据源(adh_workspace_datasources 退役);
                 # 数据源可用集=当前用户角色授权, 空授权 fail-closed 空列表。
-                from backend.modules.auth.services.role_service import role_service
+                from backend.core.role_service import role_service
                 allowed = sorted(set(role_service.get_user_allowed_datasources(
                     user.get("user_id") or 0, workspace_id)))
                 datasources = []

@@ -28,7 +28,7 @@ def governed_execute(
     返回 {columns, rows, row_count, elapsed_ms}, 与原 `_execute_on_datasource` 契约一致,
     但结果已按当前用户身份施加敏感列屏蔽(block 剔除/mask 脱敏) + RLS 行级过滤 + 审计。
     """
-    from backend.modules.mind.nl2sql.sql.query_executor import execute_query_with_permission
+    from backend.core.query_executor import execute_query_with_permission
 
     uid = int(user_id or 0)
     if not uid:

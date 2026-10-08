@@ -94,7 +94,7 @@ def resolve_as_bots(workspace_id: int, user_role: str = "", as_bot_key: str = ""
     """
     # 解析用户角色 ID
     if user_id:
-        from backend.modules.auth.services.role_service import role_service
+        from backend.core.role_service import role_service
         role_rows = role_service.get_user_roles(user_id, workspace_id)
     else:
         role_rows = _query("SELECT id FROM adh_roles WHERE name = %s", (user_role,)) if user_role else []

@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query as QueryParam
 
 from backend.common.auth import get_current_user, get_workspace_id
 from backend.modules.viz.services import dataset_service
-from backend.modules.viz.services.governed_query import NoIdentityError, governed_execute
+from backend.core.governed_query import NoIdentityError, governed_execute
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

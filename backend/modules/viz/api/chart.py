@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from backend.common.auth import get_current_user
 from backend.common.db import DBConnection
-from backend.modules.viz.services.governed_query import governed_execute, NoIdentityError
+from backend.core.governed_query import governed_execute, NoIdentityError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

@@ -177,7 +177,7 @@ def tool_catalog(user: dict = Depends(get_current_user)):
     from backend.modules.mind.execution.sdk_tools import TOOL_SERVER_TOOLS
     from backend.modules.mind.execution.tool_catalog import TOOL_CATALOG
     from backend.modules.mind.execution import function_tools, perm_link
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
 
     groups = [
         {"group": g,

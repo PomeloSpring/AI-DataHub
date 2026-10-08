@@ -128,8 +128,8 @@ class PermissionEnforcer:
         sensitive_only: bool = False,
     ) -> PermissionResult:
         """check_access 实际实现（不含缓存逻辑）。"""
-        from backend.modules.auth.services.role_service import role_service
-        from backend.modules.auth.services.rls_service import rls_service
+        from backend.core.role_service import role_service
+        from backend.core.rls_service import rls_service
 
         result = PermissionResult()
 
@@ -259,7 +259,7 @@ class PermissionEnforcer:
         table_filters = {}
 
         if not only_sensitive:
-            from backend.modules.auth.services.role_service import role_service
+            from backend.core.role_service import role_service
             # 数据源级访问 — 只查一次（fail-closed：空授权=无权，与 check_access 同口径）
             allowed_ds = role_service.get_user_allowed_datasources(user_id, workspace_id)
             if datasource_id and datasource_id not in allowed_ds:
@@ -325,8 +325,8 @@ class PermissionEnforcer:
         与 check_access 的区别: 调用方已提前校验过数据源/表级访问,
         这里跳过重复查询, 只做表级专属的 3 项检查。
         """
-        from backend.modules.auth.services.role_service import role_service
-        from backend.modules.auth.services.rls_service import rls_service
+        from backend.core.role_service import role_service
+        from backend.core.rls_service import rls_service
 
         result = PermissionResult()
 

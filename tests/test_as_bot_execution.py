@@ -63,7 +63,7 @@ class TestWritePermFailClosed:
 
 class TestRequireWritePerm:
     def _patch_role_perms(self, monkeypatch, role_perms):
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda uid, ws: role_perms)
 
@@ -92,7 +92,7 @@ def _user(uid=7):
 
 class TestAliasDirectExecution:
     def test_approve_without_perm_403(self, monkeypatch):
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms", lambda *a: {})
         approve = lambda *a, **k: (_ for _ in ()).throw(AssertionError("无权限不得执行"))
         monkeypatch.setattr(alias_suggestion, "approve_suggestion", approve)
@@ -102,7 +102,7 @@ class TestAliasDirectExecution:
         assert "ontology:save" in str(exc.value.detail)
 
     def test_read_level_rejected_403(self, monkeypatch):
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:save": {"ai_access": "read", "ai_note": ""}})
         with pytest.raises(HTTPException) as exc:
@@ -110,7 +110,7 @@ class TestAliasDirectExecution:
         assert exc.value.status_code == 403
 
     def test_approve_direct_executes_with_server_decider(self, monkeypatch):
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:save": {"ai_access": "write", "ai_note": ""}})
         captured = {}
@@ -129,7 +129,7 @@ class TestAliasDirectExecution:
         assert captured["term"] == "就诊量"
 
     def test_reject_direct_executes_with_server_decider(self, monkeypatch):
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:save": {"ai_access": "write", "ai_note": ""}})
         captured = {}
@@ -145,7 +145,7 @@ class TestAliasDirectExecution:
         assert captured["suggestion_id"] == 9
 
     def test_writeback_value_error_maps_422(self, monkeypatch):
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:save": {"ai_access": "write", "ai_note": ""}})
         monkeypatch.setattr(alias_suggestion, "approve_suggestion",
@@ -318,7 +318,7 @@ class TestOntologyGenerateToolSemantics:
         from backend.modules.mind.execution.sdk_tools import ontology_tools as ot
         from backend.modules.mind.execution.sdk_tools.context import (
             ExecutionContextVar, set_execution_context)
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         import backend.modules.catalog.services.ontology_service as osvc
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:generate": {"ai_access": "write", "ai_note": ""}})

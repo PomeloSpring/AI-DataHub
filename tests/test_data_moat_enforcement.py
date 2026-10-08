@@ -24,7 +24,7 @@ import pytest
 import backend.common.auth as auth_mod
 from backend.modules.viz.api import chart as chart_api
 from backend.modules.viz.services import report_service as report_svc
-from backend.modules.viz.services.governed_query import governed_execute, NoIdentityError
+from backend.core.governed_query import governed_execute, NoIdentityError
 
 # backend.modules.viz.services 包把同名子模块属性重绑为实例, 故显式取真模块对象
 import importlib as _importlib
@@ -86,7 +86,7 @@ class TestPlaygroundGovernedExecution:
     def test_datamind_execute_is_governed_and_trusts_jwt_identity(self, monkeypatch):
         import pandas as pd
         from backend.modules.mind.api import playground as dm_pg
-        import backend.modules.mind.nl2sql.sql.query_executor as qe
+        import backend.core.query_executor as qe
 
         captured = {}
 
@@ -167,7 +167,7 @@ class TestGovernedExecutor:
             df = df.drop(columns=["phone"])
             return df, 3, 1
 
-        import backend.modules.mind.nl2sql.sql.query_executor as qe
+        import backend.core.query_executor as qe
 
         monkeypatch.setattr(qe, "execute_query_with_permission", fake_exec)
         res = governed_execute("SELECT * FROM t_user", 7, user_id=42,
@@ -388,7 +388,7 @@ class TestJoinGovernedExecution:
 
     def test_inject_row_filter_preserves_alias(self):
         """带别名的 FROM 表被包裹后保留别名(不出现非法的 `AS 表名 别名`)。"""
-        from backend.modules.mind.permission.enforcer import permission_enforcer as enf
+        from backend.core.enforcer import permission_enforcer as enf
         sql = "select t1.* from t_user_customer t1 limit 100"
         out = enf._inject_row_filter(sql, "t_user_customer", "region = 'cn'")
         assert "AS t1" in out
@@ -397,7 +397,7 @@ class TestJoinGovernedExecution:
 
     def test_inject_row_filter_covers_join_table(self):
         """JOIN 侧表也需被包裹, 否则该行级策略会被旁路。"""
-        from backend.modules.mind.permission.enforcer import permission_enforcer as enf
+        from backend.core.enforcer import permission_enforcer as enf
         sql = ("select t1.*, t2.* from t_user_customer t1 "
                "left join t_user_company_relation t2 on t1.account_code = t2.account_code limit 100")
         out = enf._inject_row_filter(sql, "t_user_company_relation", "dept = 'x'")

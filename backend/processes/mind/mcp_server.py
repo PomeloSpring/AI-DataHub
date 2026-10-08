@@ -58,7 +58,7 @@ TOOLS = [
 
 async def handle_execute_sql(arguments: dict) -> str:
     """Execute SQL directly against the datasource (治理入口，统一取数护栏 §1)。"""
-    from backend.modules.mind.nl2sql.sql.query_executor import execute_query_with_permission
+    from backend.core.query_executor import execute_query_with_permission
 
     sql = arguments.get("sql", "")
     datasource_id = arguments.get("datasource_id", 0)

@@ -12,7 +12,7 @@ from typing import Optional
 
 from backend.common.auth import get_current_user, get_workspace_id, require_admin
 from backend.common.db import DBConnection
-from backend.modules.viz.services.governed_query import NoIdentityError
+from backend.core.governed_query import NoIdentityError
 from backend.modules.viz.services.dashboard_service import (
     dashboard_service,
     chart_service,
@@ -443,7 +443,7 @@ def get_visible_roles_endpoint(
     user: dict = Depends(get_current_user),
 ):
     """获取可看到该看板的角色列表."""
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     return role_service.get_dashboard_roles(dashboard_id)
 
 
@@ -454,7 +454,7 @@ def set_visible_roles_endpoint(
     admin: dict = Depends(require_admin),
 ):
     """全量替换看板的可见角色(仅 admin). 空列表=一律不可见(fail-closed)."""
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     if not dashboard_service.get_dashboard(
             dashboard_id, admin["user_id"], admin.get("role") or ""):
         raise HTTPException(status_code=404, detail="Dashboard not found")

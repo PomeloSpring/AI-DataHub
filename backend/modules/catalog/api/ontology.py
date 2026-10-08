@@ -33,7 +33,7 @@ def _allowed_source_ids(user: dict) -> set:
     空集=无任何源本体可见，不得当全量。
     get_current_user 返回 dict（{user_id, username, role}），不得按对象属性取值。
     """
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     return set(role_service.get_user_allowed_datasources(int(user.get("user_id") or 0), 0))
 
 
@@ -342,7 +342,7 @@ async def generate_ontology(request: Request, req: dict, user: dict = Depends(ge
     完成(工具不调 LLM)；SSE 事件契约保持 progress/done/error。
     身份一律服务端注入(不接受请求体 created_by)。
     """
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     from backend.modules.mind.execution.perm_link import require_write_perm
     from backend.common.auth import authorize_workspace, resolve_user_default_workspace_id
 

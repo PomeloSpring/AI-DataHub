@@ -156,7 +156,7 @@ class TestGenerateEndpointFailClosed:
     def test_missing_generate_perm_403(self, monkeypatch):
         """无 ontology:generate 权限码必须 403（fail-closed，拒绝可解释）。"""
         import backend.common.auth as auth_mod
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         monkeypatch.setattr(auth_mod, "resolve_user_default_workspace_id", lambda uid: 5)
         monkeypatch.setattr(auth_mod, "authorize_workspace", lambda *a: 0)
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms", lambda *a: {})
@@ -168,7 +168,7 @@ class TestGenerateEndpointFailClosed:
     def test_unauthorized_datasource_403(self, monkeypatch):
         """授权集为空不得当全量放行（admin 同样纯角色裁决）。"""
         import backend.common.auth as auth_mod
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         from backend.modules.mind.execution import perm_link
         monkeypatch.setattr(auth_mod, "resolve_user_default_workspace_id", lambda uid: 5)
         monkeypatch.setattr(auth_mod, "authorize_workspace", lambda *a: 0)
@@ -181,7 +181,7 @@ class TestGenerateEndpointFailClosed:
 
     def test_datasource_outside_grant_403(self, monkeypatch):
         import backend.common.auth as auth_mod
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         from backend.modules.mind.execution import perm_link
         monkeypatch.setattr(auth_mod, "resolve_user_default_workspace_id", lambda uid: 5)
         monkeypatch.setattr(auth_mod, "authorize_workspace", lambda *a: 0)
@@ -194,7 +194,7 @@ class TestGenerateEndpointFailClosed:
     def test_execution_layer_unavailable_503(self, monkeypatch):
         """执行层不可用必须 fail-loud 503，不做任何静默回退。"""
         import backend.common.auth as auth_mod
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         from backend.modules.mind.execution import perm_link
         from backend.modules.mind.execution import service as exec_service
         monkeypatch.setattr(auth_mod, "resolve_user_default_workspace_id", lambda uid: 5)
@@ -220,7 +220,7 @@ class TestGenerateEndpointFailClosed:
 
     def _run_full(self, monkeypatch, frames, req=None, stream_error=None):
         import backend.common.auth as auth_mod
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         from backend.modules.catalog.api import ontology as ontology_api
         from backend.modules.mind.execution import perm_link
         from backend.modules.mind.execution import service as exec_service
@@ -416,7 +416,7 @@ class TestDraftScope:
 
     def test_task_binding_but_unauthorized_source_rejected(self, monkeypatch):
         """授权集为空 fail-closed：有任务绑定也不得越权写源草案。"""
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         from backend.modules.mind.execution.resource_guard import (
             ResourceScopeError, assert_ontology_draft_scope)
         monkeypatch.setattr(rs.role_service, "get_user_allowed_datasources", lambda *a: [])
@@ -425,7 +425,7 @@ class TestDraftScope:
             assert_ontology_draft_scope(_ctx(5, binding=binding))
 
     def test_task_binding_authorized_passes(self, monkeypatch):
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         from backend.modules.mind.execution.resource_guard import assert_ontology_draft_scope
         monkeypatch.setattr(rs.role_service, "get_user_allowed_datasources", lambda *a: [5])
         binding = {"kind": "ontology_generate", "datasource_id": 5}
@@ -448,12 +448,12 @@ class TestSaveDraftTool:
             ExecutionContextVar.reset(token)
 
     def _grant_generate(self, monkeypatch):
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:generate": {"ai_access": "write", "ai_note": ""}})
 
     def test_missing_generate_perm_rejected(self, monkeypatch):
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms", lambda *a: {})
         p = _payload(self._run(monkeypatch, {"objects": [{"key": "k", "primary_table": "t"}]},
                                _ctx(0)))
@@ -468,7 +468,7 @@ class TestSaveDraftTool:
 
     def test_business_source_unauthorized_rejected(self, monkeypatch):
         """目标源未授权拒（fail-closed：空授权集不放行）。"""
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         self._grant_generate(monkeypatch)
         monkeypatch.setattr(rs.role_service, "get_user_allowed_datasources", lambda *a: [])
         binding = {"kind": "ontology_generate", "datasource_id": 5}
@@ -478,7 +478,7 @@ class TestSaveDraftTool:
 
     def test_append_merges_duplicates_with_warnings(self, monkeypatch):
         """同身份同主表 → 确定性合并，合并事实随 warnings 显式带回。"""
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         import backend.modules.catalog.services.ontology_service as osvc
         self._grant_generate(monkeypatch)
         monkeypatch.setattr(rs.role_service, "get_user_allowed_datasources", lambda *a: [5])
@@ -502,7 +502,7 @@ class TestSaveDraftTool:
 
     def test_same_key_different_table_aborts(self, monkeypatch):
         """同名不同主表是真冲突：中止落库（宁缺勿错），不得静默二选一。"""
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         self._grant_generate(monkeypatch)
         monkeypatch.setattr(rs.role_service, "get_user_allowed_datasources", lambda *a: [5])
         ops = _patch_draft_db(monkeypatch)
@@ -522,7 +522,7 @@ class TestSaveDraftTool:
 
 class TestGenerateDraftTool:
     def _run(self, monkeypatch, args, ctx, materials=("M0", "M1")):
-        import backend.modules.auth.services.role_service as rs
+        import backend.core.role_service as rs
         import backend.modules.catalog.services.ontology_service as osvc
         from backend.modules.mind.execution.sdk_tools import ontology_tools as ot
         from backend.modules.mind.execution.sdk_tools.context import (

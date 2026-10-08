@@ -182,7 +182,7 @@ def _skill_sections(skills: list) -> list[str]:
 def _blocked_columns(workspace_id: int, datasource_id: int) -> list:
     """取当前会话生效的合规屏蔽列(全局 ∪ 指定数据源), 失败返回空不阻断。"""
     try:
-        from backend.modules.mind.permission.enforcer import permission_enforcer
+        from backend.core.enforcer import permission_enforcer
 
         return list(
             permission_enforcer.get_blocked_columns(

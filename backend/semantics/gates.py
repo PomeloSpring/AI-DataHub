@@ -65,7 +65,7 @@ class SemanticExecution:
 
 def _is_admin(user_id: int, workspace_id: int) -> bool:
     try:
-        from backend.modules.auth.services.role_service import role_service
+        from backend.core.role_service import role_service
         roles = role_service.get_user_roles(user_id, workspace_id) or []
         return any((r.get("name") == "admin") for r in roles)
     except Exception as e:  # pragma: no cover — role 服务异常时按非 admin 处理
@@ -98,7 +98,7 @@ def _blocked_column_guard(
     if binding.bind_kind == "sql_template" or not binding.physical_table:
         return None
     try:
-        from backend.modules.mind.permission.enforcer import permission_enforcer
+        from backend.core.enforcer import permission_enforcer
         blocked = permission_enforcer.get_blocked_columns(
             workspace_id, binding.datasource_id, binding.physical_table)
     except Exception as e:  # noqa: BLE001
@@ -147,7 +147,7 @@ def _gate_permission(
     ws = int(q.workspace_id or (user_context or {}).get("workspace_id") or 0)
     toks = list(binding.access.permission_tokens or [])
     try:
-        from backend.modules.mind.permission.enforcer import permission_enforcer
+        from backend.core.enforcer import permission_enforcer
         res = permission_enforcer.check_access(
             user_id=uid, workspace_id=ws,
             datasource_id=binding.datasource_id, table_name=binding.physical_table,
@@ -363,7 +363,7 @@ def execute_semantic(
 
     try:
         import pandas as pd  # noqa: F401  (执行层依赖)
-        from backend.modules.mind.nl2sql.sql.query_executor import execute_query_with_permission
+        from backend.core.query_executor import execute_query_with_permission
         df, exec_ms, row_count = execute_query_with_permission(
             exec_res.secured_sql or exec_res.base_sql,
             binding.datasource_id or q.datasource_id or None,
@@ -398,7 +398,7 @@ def _df_records(df):
 def _audit(q: SemanticQuery, user_context: dict | None, question: str, sql: str,
            status: str, row_count: int = 0, time_ms: int = 0, error: str = "") -> None:
     try:
-        from backend.modules.mind.nl2sql.sql.query_executor import log_audit
+        from backend.core.query_executor import log_audit
         uc = user_context or {}
         log_audit(
             user_id=int(uc.get("user_id") or q.user_id or 0),

@@ -71,7 +71,7 @@ def execute_query_via_engine(
 
     Routes SQL through the Rust DataFusion engine for execution.
     """
-    from backend.modules.mind.nl2sql.sql.query_executor import execute_query_via_engine
+    from backend.core.query_executor import execute_query_via_engine
     try:
         df, elapsed_ms, row_count = execute_query_via_engine(
             sql=req.sql,

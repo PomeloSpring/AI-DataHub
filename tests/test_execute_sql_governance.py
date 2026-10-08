@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-import backend.modules.mind.nl2sql.sql.query_executor as qexec
+import backend.core.query_executor as qexec
 import backend.modules.mind.execution.sdk_tools.query_tools as qt
 from backend.modules.mind.execution.sdk_tools import context as ctxmod
 from backend.modules.mind.execution.sdk_tools.query_tools import execute_sql

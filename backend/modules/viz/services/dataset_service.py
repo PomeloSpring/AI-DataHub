@@ -19,7 +19,7 @@ import logging
 import re
 
 from backend.common.db import execute_query, execute_write
-from backend.modules.viz.services.governed_query import NoIdentityError
+from backend.core.governed_query import NoIdentityError
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +198,7 @@ def _validate_select(sql: str):
 
     缺 LIMIT 的扫描先补默认 LIMIT 再校验(不放行无界扫描, 护栏 §5)。
     """
-    from backend.modules.mind.nl2sql.sql.query_executor import validate_sql
+    from backend.core.query_executor import validate_sql
     probe = sql.strip().rstrip(";")
     if "limit" not in probe.lower():
         probe += f" LIMIT {_INNER_LIMIT}"
@@ -280,7 +280,7 @@ def extract_from_sql(req: dict, identity: dict) -> dict:
     if "limit" not in inner.lower():
         inner += f" LIMIT 1"
     probe = f"SELECT * FROM ({inner}) AS _ds_extract LIMIT 1"
-    from backend.modules.viz.services.governed_query import governed_execute
+    from backend.core.governed_query import governed_execute
     result = governed_execute(probe, datasource_id or None, uid,
                               int(identity.get("workspace_id") or 0),
                               identity.get("username") or "")
@@ -529,8 +529,8 @@ def _query_semantic(ds: dict, params: dict, scopes: list[dict], identity: dict) 
 
 
 def _query_sql(ds: dict, params: dict, scopes: list[dict], identity: dict) -> dict:
-    from backend.modules.mind.nl2sql.sql.query_executor import validate_sql
-    from backend.modules.viz.services.governed_query import governed_execute
+    from backend.core.query_executor import validate_sql
+    from backend.core.governed_query import governed_execute
 
     inner = (ds.get("sql_query") or "").strip().rstrip(";")
     if not inner:

@@ -8,8 +8,8 @@ from typing import Optional
 from backend.common.auth import get_current_user, require_admin
 from backend.common.db import execute_query, execute_write
 from backend.modules.auth.services import rbac_service
-from backend.modules.auth.services.role_service import role_service
-from backend.modules.auth.services.rls_service import rls_service
+from backend.core.role_service import role_service
+from backend.core.rls_service import rls_service
 
 router = APIRouter()
 
@@ -374,7 +374,7 @@ def set_role_rls_policies(role_id: int, req: SetRoleRLSPoliciesRequest,
             (role_id, int(pid)))
     # 使 enforcer 侧访问缓存失效(行/列限制变更需即时生效)
     try:
-        from backend.modules.mind.permission.enforcer import invalidate_access_cache
+        from backend.core.enforcer import invalidate_access_cache
         invalidate_access_cache()
     except Exception:  # noqa: BLE001 — enforcer 不可用时不影响绑定保存
         pass

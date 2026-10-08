@@ -35,7 +35,7 @@ def _resolve_datasource_arg(args, ctx) -> int | None:
 
 async def execute_sql(args):
     from backend.modules.mind.execution.sdk_tools.context import get_execution_context
-    from backend.modules.mind.nl2sql.sql.query_executor import (
+    from backend.core.query_executor import (
         execute_query_with_permission,
         validate_sql,
         _extract_table_names,
@@ -54,7 +54,7 @@ async def execute_sql(args):
         return _text({"error": f"SQL 校验失败: {msg}"}, is_error=True)
 
     try:
-        from backend.modules.mind.nl2sql.sql.sql_validator import add_limit
+        from backend.core.sql_validator import add_limit
         sql = add_limit(sql)
     except Exception:
         pass
@@ -103,7 +103,7 @@ async def check_sql(args):
     以及当前身份对引用表的表级/列级(隐藏/脱敏)/行级(RLS)权限预览。
     """
     from backend.modules.mind.execution.sdk_tools.context import get_execution_context
-    from backend.modules.mind.nl2sql.sql.query_executor import validate_sql
+    from backend.core.query_executor import validate_sql
 
     ctx = get_execution_context()
     sql = (args.get("sql") or "").strip()
@@ -137,7 +137,7 @@ async def check_sql(args):
         "row_filter_tables": [], "policies_applied": [],
     }
     try:
-        from backend.modules.mind.permission.enforcer import permission_enforcer
+        from backend.core.enforcer import permission_enforcer
         tables = permission_enforcer._extract_tables(sql)
         permission["tables"] = tables
         user_id = ctx.user_id if ctx else 0

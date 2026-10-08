@@ -47,7 +47,7 @@ def resolve_table_filters(
     if not tables:
         return filters, column_restriction, applied
 
-    from backend.modules.mind.permission.enforcer import permission_enforcer
+    from backend.core.enforcer import permission_enforcer
 
     for table in tables:
         res = permission_enforcer.check_access(

@@ -26,7 +26,7 @@ from datetime import datetime
 
 from backend.common.db import DBConnection
 from backend.common.auth import authorize_workspace
-from backend.modules.viz.services.governed_query import governed_execute
+from backend.core.governed_query import governed_execute
 from backend.semantics.sql_guard import bounded_query, parse_query
 
 logger = logging.getLogger(__name__)

@@ -199,7 +199,7 @@ def require_write_perm(user_id: int, workspace_id: int, perm_code: str, label: s
     口径与 tool_policy 的功能能力继承一致（adh_user_roles ⋈ adh_role_perms ⋈
     adh_perm_registry.ai_access + 涉密硬上界），不新建第二套判断。
     """
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     role_perms = role_service.get_user_role_ai_perms(int(user_id or 0), int(workspace_id or 0))
     ok, reason = check_write_perm(role_perms, perm_code, label)
     if not ok:

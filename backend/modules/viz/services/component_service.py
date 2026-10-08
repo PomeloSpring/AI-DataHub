@@ -8,7 +8,7 @@ import logging
 import math
 import re
 
-from backend.modules.viz.services.governed_query import governed_execute
+from backend.core.governed_query import governed_execute
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ class ComponentService:
         Returns:
             dict with success, data, total, columns, error fields.
         """
-        from backend.modules.mind.nl2sql.sql.query_executor import validate_sql
+        from backend.core.query_executor import validate_sql
 
         params = params or {}
         sql = sql.strip().rstrip(";")

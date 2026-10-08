@@ -476,7 +476,7 @@ def test_binding_cannot_escape_domain(monkeypatch, system, binding_source):
 @pytest.fixture
 def datasource_scope(monkeypatch):
     from backend.modules.mind.execution import resource_guard as guard
-    from backend.modules.auth.services.role_service import role_service
+    from backend.core.role_service import role_service
     # 纯角色裁决: 数据源可用集 = 用户角色授权(state["user"]); 工作空间不再参与裁决。
     state = {"user": [7, 8], "queries": [], "kbs": []}
 

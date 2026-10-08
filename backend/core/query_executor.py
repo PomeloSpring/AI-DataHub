@@ -272,7 +272,7 @@ def execute_query(
 
     # Ensure LIMIT after extraction — _extract_sql_from_text may strip
     # trailing Chinese explanation that contained the LIMIT added by validate_and_fix
-    from backend.modules.mind.nl2sql.sql.sql_validator import add_limit
+    from backend.core.sql_validator import add_limit
     sql = add_limit(sql)
 
     # For MySQL/Doris, validate SQL
@@ -412,7 +412,7 @@ def execute_query_with_permission(
         ValueError: If SQL validation fails.
         RuntimeError: If query execution fails.
     """
-    from backend.modules.mind.permission.enforcer import permission_enforcer
+    from backend.core.enforcer import permission_enforcer
 
     # 跨源联邦源：服务端按 name 解析（含解密凭据），仅在内部通道下发给 dataengine
     federated = None
@@ -500,7 +500,7 @@ def explain_query_with_permission(
     安全口径：先走 enforce_sql 治理改写（敏感基线/RBAC/RLS）与只读校验，
     再下发 dataengine EXPLAIN；输出仅为计划文本，不返回任何业务数据行。
     """
-    from backend.modules.mind.permission.enforcer import permission_enforcer
+    from backend.core.enforcer import permission_enforcer
     from backend.semantics.sql_guard import parse_query
     parse_query(sql)  # 只读校验（EXPLAIN 前置，拒绝非 SELECT/写操作）
     user_id = (user_context or {}).get("user_id") or 0
@@ -726,7 +726,7 @@ def execute_query_via_engine(
 
     # Clean SQL
     sql = _extract_sql_from_text(sql)
-    from backend.modules.mind.nl2sql.sql.sql_validator import add_limit
+    from backend.core.sql_validator import add_limit
     sql = add_limit(sql)
 
     # Validate SQL
@@ -756,7 +756,7 @@ def execute_query_via_engine(
     if user_context and datasource_id:
         try:
             from backend.common.rls_loader import load_rls_policies_for_query
-            from backend.modules.mind.nl2sql.sql.query_executor import _extract_table_names
+            from backend.core.query_executor import _extract_table_names
             tables = _extract_table_names(sql)
             rls_policies = load_rls_policies_for_query(
                 user_id=user_context.get("user_id", 0),

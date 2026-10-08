@@ -23,8 +23,8 @@ import pytest
 from fastapi import HTTPException
 
 roles_api = importlib.import_module("backend.modules.auth.api.roles")
-rls_svc_mod = importlib.import_module("backend.modules.auth.services.rls_service")
-role_svc_mod = importlib.import_module("backend.modules.auth.services.role_service")
+rls_svc_mod = importlib.import_module("backend.core.rls_service")
+role_svc_mod = importlib.import_module("backend.core.role_service")
 
 ADMIN = {"role": "admin", "user_id": 1}
 VIEWER = {"role": "viewer", "user_id": 9}
@@ -284,7 +284,7 @@ def test_missing_role_attr_replaces_empty_not_legacy(exec_db):
 
 
 def test_put_rls_policies_invalidates_access_cache(store):
-    enforcer_mod = importlib.import_module("backend.modules.mind.permission.enforcer")
+    enforcer_mod = importlib.import_module("backend.core.enforcer")
     enforcer_mod._access_cache["9:5:1:orders"] = (0.0, object())
     roles_api.set_role_rls_policies(7, roles_api.SetRoleRLSPoliciesRequest(policy_ids=[10]),
                                     admin=ADMIN)
