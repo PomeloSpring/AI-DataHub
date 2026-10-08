@@ -2982,7 +2982,7 @@ function ModelConfigTab() {
   const [models, setModels] = useState<LLMModelRow[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<LLMModelRow | null>(null);
-  const [form, setForm] = useState<any>({ provider: 'anthropic', max_tokens: 4096, supports_thinking: true });
+  const [form, setForm] = useState<any>({ provider: 'openai', max_tokens: 4096, supports_thinking: true });
 
   useEffect(() => { loadModels(); }, []);
 
@@ -2995,7 +2995,7 @@ function ModelConfigTab() {
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ provider: 'anthropic', max_tokens: 4096, supports_thinking: true });
+    setForm({ provider: 'openai', max_tokens: 4096, supports_thinking: true });
     setModalOpen(true);
   };
 
@@ -3109,15 +3109,14 @@ function ModelConfigTab() {
             <div className="space-y-2">
               <Label>显示名称</Label>
               <Input value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder="如: Claude 4 Sonnet" />
+                placeholder="如: GPT-4o 旗舰版" />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>提供商</Label>
-                <Select value={form.provider || 'anthropic'} onValueChange={(v) => setForm({ ...form, provider: v })}>
+                <Select value={form.provider || 'openai'} onValueChange={(v) => setForm({ ...form, provider: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="anthropic">Anthropic</SelectItem>
                     <SelectItem value="openai">OpenAI</SelectItem>
                     <SelectItem value="deepseek">DeepSeek</SelectItem>
                     <SelectItem value="zhipu">智谱</SelectItem>
@@ -3128,13 +3127,13 @@ function ModelConfigTab() {
               <div className="space-y-2">
                 <Label>模型名称</Label>
                 <Input value={form.model_name || ''} onChange={(e) => setForm({ ...form, model_name: e.target.value })}
-                  placeholder="claude-sonnet-4-20250514" />
+                  placeholder="gpt-4o-2024-05-13" />
               </div>
             </div>
             <div className="space-y-2">
               <Label>API 地址</Label>
               <Input value={form.base_url || ''} onChange={(e) => setForm({ ...form, base_url: e.target.value })}
-                placeholder="https://api.anthropic.com" />
+                placeholder="https://api.openai.com/v1" />
             </div>
             <div className="space-y-2">
               <Label>API Key {editing && <span className="text-muted-foreground">(留空则不更新)</span>}</Label>

@@ -307,14 +307,61 @@ class TestInternalIdentityHeader:
 
         monkeypatch.setattr(dm_pg, "_proxy_or_502", fake_proxy)
         dm_pg.rls_diff_via_playground(
-            {"sql": "SELECT id FROM t_user", "user_id": 999, "workspace_id": 5},
-            user={"user_id": 42},
+            {"sql": "SELECT id FROM t_user", "user_id": 999, "workspace_id": 888},
+            user={"user_id": 42}, workspace_id=5,
         )
-        # 转发的是 body 剥离 user_id/workspace_id 后的版本
+        # 转发的是 body 剥离 user_id/workspace_id 后的版本(身份不从 body 信任)
         assert "user_id" not in captured["body"]
         assert "workspace_id" not in captured["body"]
         ident = auth_mod.verify_internal_identity(captured["headers"]["X-Internal-Identity"])
-        assert ident and ident["user_id"] == 42
+        assert ident and ident["user_id"] == 42 and ident["workspace_id"] == 5
+
+    def test_all_analysis_proxies_carry_signed_identity(self, monkeypatch):
+        """AST/血缘/溯源 与 rls-diff 同口径: 代理必须签发可信内部头并剥身份字段,
+        否则语义层 _INTERNAL_ROUTES 直接 401"缺少可信身份"。"""
+        from services.datamind.api import playground as dm_pg
+
+        monkeypatch.setattr(auth_mod, "ADH_SECRET_KEY", "unit-test-secret")
+        captured = {}
+
+        def fake_proxy(path, body, headers=None):
+            captured["path"] = path
+            captured["body"] = body
+            captured["headers"] = headers or {}
+            return {"ok": True}
+
+        monkeypatch.setattr(dm_pg, "_proxy_or_502", fake_proxy)
+        for fn, path in (
+            (dm_pg.ast_via_playground, "/ast"),
+            (dm_pg.lineage_via_playground, "/lineage"),
+            (dm_pg.provenance_via_playground, "/provenance"),
+            (dm_pg.rls_diff_via_playground, "/rls-diff"),
+        ):
+            captured.clear()
+            fn({"sql": "SELECT id FROM t_user", "user_id": 999, "workspace_id": 888},
+               user={"user_id": 42}, workspace_id=5)
+            assert captured["path"] == path
+            assert "user_id" not in captured["body"] and "workspace_id" not in captured["body"]
+            ident = auth_mod.verify_internal_identity(captured["headers"].get("X-Internal-Identity", ""))
+            assert ident and ident["user_id"] == 42 and ident["workspace_id"] == 5
+
+    def test_analysis_identity_falls_back_to_default_workspace(self, monkeypatch):
+        """未显式指定 workspace 时解析用户默认工作站, 严禁签 0
+        (0 会被语义层中间件 authorize_workspace 显式拒绝)。"""
+        from services.datamind.api import playground as dm_pg
+
+        monkeypatch.setattr(auth_mod, "ADH_SECRET_KEY", "unit-test-secret")
+        monkeypatch.setattr(dm_pg, "resolve_user_default_workspace_id", lambda uid: 12)
+        captured = {}
+
+        def fake_proxy(path, body, headers=None):
+            captured["headers"] = headers or {}
+            return {"ok": True}
+
+        monkeypatch.setattr(dm_pg, "_proxy_or_502", fake_proxy)
+        dm_pg.ast_via_playground({"sql": "SELECT 1"}, user={"user_id": 42}, workspace_id=0)
+        ident = auth_mod.verify_internal_identity(captured["headers"].get("X-Internal-Identity", ""))
+        assert ident and ident["workspace_id"] == 12
 
 
 class TestJoinGovernedExecution:

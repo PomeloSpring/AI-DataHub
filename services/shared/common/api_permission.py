@@ -47,6 +47,8 @@ _SELF_ROUTES = {
 _SELF_ROUTE_PATTERNS = re.compile(
     r"^/api/workspaces(?:/\d+)?(?:/set-default)?$"
     r"|^/api/workspace-assets/\d+/.+$"
+    # 个人资产域(资产跟随用户, 跨工作空间): 属主校验由路由层 user_id 过滤负责
+    r"|^/api/assets(?:/.*)?$"
     r"|^/api/admin/execution-layers/workspaces/\d+/execution-layer$"
     # 会话文件伺服/结构化预览/编辑(session-file 与 xlsx 读写): 仅本人会话,路由层属主自检
     r"|^/api/chat/session-file(?:/.*)?$"

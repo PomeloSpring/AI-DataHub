@@ -2,7 +2,8 @@
 
 背景：canonical JSON 里出现过 7 对重复对象（`case_file` vs `casefile` 这类
 snake_case / 全小写变体），空壳那侧 0 属性却携带独有 metrics/links。
-根因是 generate_draft 与 palantir_to_canonical 的去重都只按精确字符串判 key。
+根因是生成落库(save_generated_draft，前身为 generate_draft)与 palantir_to_canonical
+的去重都只按精确字符串判 key。
 
 锁住的行为：
 1. 判重走 object_identity_key（忽略大小写与分隔符），命名走 normalize_object_key；
@@ -223,6 +224,147 @@ class TestYamlImportDedup:
             {"name": "AIConversation", "source": "t_ai_conversation"},
         ], monkeypatch)
         assert doc["objects"][0]["key"] == "ai_conversation"
+
+
+# ── save_generated_draft：生成落库的确定性合并（原 generate_draft 合并段）
+
+class _RecCursor:
+    def __init__(self, ops):
+        self.ops = ops
+        self._row = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, sql, params=None):
+        self.ops.append((sql, params))
+        self._row = None
+
+    def fetchone(self):
+        return self._row
+
+
+class _RecConn:
+    def __init__(self, ops):
+        self.ops = ops
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def cursor(self):
+        return _RecCursor(self.ops)
+
+    def commit(self):
+        return None
+
+
+class TestSaveGeneratedDraftDedup:
+    """合并断言直接锁在 save_generated_draft：判重/合并/中止/落库全在这一处。"""
+
+    def _patch_db(self, monkeypatch, existing_objects=None):
+        ops = []
+        monkeypatch.setattr(ontology_service, "get_metadata_conn", lambda: _RecConn(ops))
+        monkeypatch.setattr(
+            ontology_service, "_load_draft_objects",
+            lambda ds: (list(existing_objects or []), "旧域", "旧述"))
+        monkeypatch.setattr(ontology_service, "get_model",
+                            lambda mid: {"id": mid, "object_count": 0})
+        return ops
+
+    def _inserted(self, ops):
+        for sql, params in ops:
+            if "INSERT INTO adh_ontology_models" in sql:
+                return params
+        raise AssertionError("未执行草案落库 INSERT")
+
+    def test_same_identity_same_table_merged_with_warning(self, monkeypatch):
+        """case_file/casefile 同主表 → 合并成一份，合并事实随 generation_warnings 显式带回。"""
+        ops = self._patch_db(monkeypatch)
+        result = ontology_service.save_generated_draft(1, [
+            {"key": "case_file", "primary_table": "t_case_files",
+             "properties": [{"column": "a", "name": "甲"}],
+             "metrics": [{"name": "m1", "formula": "x", "description": ""}],
+             "aliases": ["CaseFile"]},
+            {"key": "casefile", "primary_table": "t_case_files",
+             "properties": [], "aliases": ["案例文件"],
+             "metrics": [{"name": "m2", "formula": "y", "description": "独有"}]},
+        ], domain="案例域", created_by="u7")
+        import json
+        doc = json.loads(self._inserted(ops)[5])
+        assert len(doc["objects"]) == 1
+        merged = doc["objects"][0]
+        assert [m["name"] for m in merged["metrics"]] == ["m1", "m2"]   # 独有指标不丢
+        assert merged["aliases"] == ["CaseFile", "案例文件"]            # 别名并集去重
+        assert len(result["generation_warnings"]) == 1
+        warning = result["generation_warnings"][0]
+        assert "casefile" in warning and "合并" in warning   # 合并事实可见（带被丢弃的重复 key）
+
+    def test_same_identity_different_table_aborts(self, monkeypatch):
+        """同名不同主表是真冲突：中止落库（宁缺勿错），不得静默二选一。"""
+        ops = self._patch_db(monkeypatch)
+        with pytest.raises(ValueError, match="同名不同主表"):
+            ontology_service.save_generated_draft(1, [
+                {"key": "case_file", "primary_table": "t_case_files", "properties": []},
+                {"key": "casefile", "primary_table": "t_other_files", "properties": []},
+            ], append=False)
+        assert not [s for s, _ in ops if "INSERT INTO adh_ontology_models" in s]
+
+    def test_append_merges_into_existing_draft(self, monkeypatch):
+        """分批归纳后续批次：以现有草案为基并入，同身份跨批同样合并不丢。"""
+        ops = self._patch_db(monkeypatch, existing_objects=[
+            {"key": "case_file", "primary_table": "t_case_files", "properties": [
+                {"column": "a", "name": "甲"}], "metrics": [], "aliases": []},
+        ])
+        result = ontology_service.save_generated_draft(1, [
+            {"key": "casefile", "primary_table": "t_case_files", "properties": [],
+             "metrics": [{"name": "m2", "formula": "y", "description": ""}], "aliases": []},
+            {"key": "work_order", "primary_table": "t_work_order", "properties": [],
+             "metrics": [], "aliases": []},
+        ], append=True)
+        import json
+        doc = json.loads(self._inserted(ops)[5])
+        assert {o["key"] for o in doc["objects"]} == {"case_file", "work_order"}
+        case = next(o for o in doc["objects"] if o["key"] == "case_file")
+        assert len(case["properties"]) == 1 and [m["name"] for m in case["metrics"]] == ["m2"]
+        assert doc["domain"] == "旧域" and doc["description"] == "旧述"   # 留空时沿用旧值
+        assert result["generation_warnings"]
+
+    def test_append_false_replaces_without_reading_old_draft(self, monkeypatch):
+        """第一批 append=false：全新归纳，不得并入旧草案（也不读旧草案）。"""
+        ops = self._patch_db(monkeypatch)
+        monkeypatch.setattr(
+            ontology_service, "_load_draft_objects",
+            lambda ds: (_ for _ in ()).throw(AssertionError("append=False 不得读旧草案")))
+        import json
+        ontology_service.save_generated_draft(
+            1, [{"key": "order", "primary_table": "t_order", "properties": []}],
+            append=False, created_by="u7")
+        doc = json.loads(self._inserted(ops)[5])
+        assert [o["key"] for o in doc["objects"]] == ["order"]
+
+    def test_kind_and_created_by_server_injected(self, monkeypatch):
+        """kind 按目标源派生、created_by 服务端注入（不来自 LLM/请求体）。"""
+        ops = self._patch_db(monkeypatch)
+        ontology_service.save_generated_draft(
+            1, [{"key": "order", "primary_table": "t_order", "properties": []}],
+            created_by="u7")
+        params = self._inserted(ops)
+        assert params[2] == "source" and params[9] == "u7"
+        ops2 = self._patch_db(monkeypatch)
+        ontology_service.save_generated_draft(
+            0, [{"key": "order", "primary_table": "t_order", "properties": []}],
+            created_by="u7")
+        assert self._inserted(ops2)[2] == "system"
+
+    def test_empty_objects_rejected(self):
+        with pytest.raises(ValueError, match="非空对象列表"):
+            ontology_service.save_generated_draft(1, [])
 
 
 # ── 合并后的别名归一（否则旧写法会静默解析失败）────────────────

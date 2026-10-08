@@ -1,6 +1,6 @@
-"""Pipeline Execution API — Execute queries via Quick/Agent pipeline.
+"""Pipeline Execution API — Execute queries via the qoder execution layer (agent mode).
 
-Proxies to the existing backend pipeline orchestrator.
+quick 单发管道已退役;非 agent 模式显式报错。
 """
 
 import json
@@ -26,7 +26,7 @@ class PipelineExecuteRequest(BaseModel):
     history: Optional[list[dict]] = []
     datasource_id: Optional[int] = 0
     model_id: Optional[int] = None
-    pipeline_mode: Optional[str] = "quick"  # quick | agent
+    pipeline_mode: Optional[str] = "agent"  # agent(quick 管道已退役)
     retrieval_strategy: Optional[str] = None
     workspace_id: Optional[int] = 0
     attachments: list[dict] = []  # 服务端解析回填的上传附件(send_payload);JSON 请求不得携带
@@ -48,24 +48,9 @@ async def pipeline_send_stream(
     request: Request,
     user: UserInfo = Depends(get_current_user),
 ):
-    """Alias for /execute — matches frontend's expected URL.
+    """Chat 前端的 SSE 流式入口(matches frontend's expected URL)。
 
     请求体双模: JSON(无附件)或 multipart(payload + files,附件随消息上传落盘会话工作区)。
-    """
-    from services.datamind.api.send_payload import parse_send_request
-
-    req = await parse_send_request(request, PipelineExecuteRequest)
-    return await _pipeline_stream(req, request, user)
-
-
-@router.post("/execute")
-async def execute_pipeline(
-    request: Request,
-    user: UserInfo = Depends(get_current_user),
-):
-    """Execute a query through the pipeline (Quick/Agent mode).
-
-    Returns an SSE stream with progress, thinking, token, and done events.
     """
     from services.datamind.api.send_payload import parse_send_request
 
@@ -78,8 +63,6 @@ async def _pipeline_stream(
     request: Request,
     user: UserInfo,
 ):
-    from services.datamind.nl2sql.orchestrator.pipeline_orchestrator import execute_pipeline as _execute_pipeline
-
     from services.datamind.execution.session_workspace import preflight_request
     from starlette.concurrency import run_in_threadpool
     await run_in_threadpool(preflight_request, req, user)
@@ -87,24 +70,31 @@ async def _pipeline_stream(
     history = req.history or []
     datasource_id = req.datasource_id or 0
     model_id = req.model_id
-    pipeline_mode = req.pipeline_mode or "quick"
-    retrieval_strategy = req.retrieval_strategy
+    pipeline_mode = req.pipeline_mode or "agent"
     workspace_id = req.workspace_id or 0
     attachments = req.attachments or []
 
     start_time = time.time()
 
     async def event_generator():
-        # Agent 模式(或携带多模态附件)派发到执行层(默认 qoder);
-        # quick 模式走内置管线
+        # 全部消息派发到执行层(默认 qoder)
         from services.datamind.services.chat_service import ChatService
         from services.shared import observability
 
         user_role = user.get("role") or ""
+        if pipeline_mode not in ("", "agent"):
+            err = f"quick 管道已退役，请使用 agent 模式（收到 pipeline_mode={pipeline_mode!r}）"
+            logger.error(err)
+            yield _sse_event("error", {"message": err})
+            yield _sse_event("done", {
+                "intent": "agent", "reply": err, "sql": None,
+                "warnings": [], "error": err,
+            })
+            return
         # 可观测:一次用户回合 = 一个 trace。前端 Chat 走本端点(/api/pipeline/send/stream),
         # 故必须在此 begin/finalize(与 ChatService.stream_query 对齐);未开启时全程 no-op。
         observability.begin(
-            entrypoint=("agent" if (pipeline_mode == "agent" or attachments) else (pipeline_mode or "chat")),
+            entrypoint="agent",
             user_id=user["user_id"], username=user["username"], user_role=user_role,
             workspace_id=workspace_id, datasource_id=datasource_id or 0,
             conversation_id=req.conversation_id or 0, model_ref=req.model_ref or "",
@@ -112,83 +102,40 @@ async def _pipeline_stream(
         )
         _status, _err, _final = "", "", ""
         try:
-            if pipeline_mode == "agent" or attachments:
-                handled = False
-                stream = ChatService()._try_dispatch_via_execution_layer(
-                    question=question,
-                    datasource_id=datasource_id,
-                    model_id=model_id,
-                    history=history,
-                    workspace_id=workspace_id,
-                    user_id=user["user_id"],
-                    username=user["username"],
-                    request=request,
-                    attachments=attachments,
-                    model_ref=req.model_ref or "",
-                    session_id=req.session_id or "",
-                    conversation_id=req.conversation_id or 0,
-                    user_role=user_role,
-                    as_bot_key=req.as_bot_key or "",
-                )
-                try:
-                    async for event in stream:
-                        handled = True
-                        yield event
-                finally:
-                    await stream.aclose()
-                if handled:
-                    return
-                if attachments:
-                    # 附件消息只能经执行层处理:派发未接住时显式报错,
-                    # 不得静默落入会忽略附件的内置管线(no-silent-degradation)
-                    err = "附件消息需要执行层支持,当前执行层不可用,附件未被处理"
-                    yield _sse_event("error", {"message": err})
-                    yield _sse_event("done", {
-                        "intent": "agent", "reply": err, "sql": None,
-                        "warnings": [], "error": err,
-                    })
-                    return
-
+            handled = False
+            stream = ChatService()._try_dispatch_via_execution_layer(
+                question=question,
+                datasource_id=datasource_id,
+                model_id=model_id,
+                history=history,
+                workspace_id=workspace_id,
+                user_id=user["user_id"],
+                username=user["username"],
+                request=request,
+                attachments=attachments,
+                model_ref=req.model_ref or "",
+                session_id=req.session_id or "",
+                conversation_id=req.conversation_id or 0,
+                user_role=user_role,
+                as_bot_key=req.as_bot_key or "",
+            )
             try:
-                async for event_type, data in _execute_pipeline(
-                    question=question,
-                    history=history,
-                    datasource_id=datasource_id,
-                    model_id=model_id,
-                    pipeline_mode=pipeline_mode,
-                    user_id=user["user_id"],
-                    username=user["username"],
-                    retrieval_strategy=retrieval_strategy,
-                    workspace_id=workspace_id,
-                ):
-                    if await request.is_disconnected():
-                        logger.info("Client disconnected, stopping pipeline (mode=%s)", pipeline_mode)
-                        break
-                    if event_type == "done" and isinstance(data, dict):
-                        _final = data.get("reply") or _final
-                        if data.get("error"):
-                            _status, _err = "error", str(data.get("error"))
-                        # 回传 trace 关联键(只增不改),供前端赞踩/回看关联
-                        tid = observability.trace_id_for_response()
-                        muuid = observability.message_uuid()
-                        if tid:
-                            data.setdefault("trace_id", tid)
-                        if muuid:
-                            data.setdefault("message_uuid", muuid)
-                    yield _sse_event(event_type, data)
-
-            except Exception as e:
-                logger.error("Pipeline stream error: %s", e, exc_info=True)
-                _status, _err = "error", str(e)
-                yield _sse_event("error", {"message": str(e)})
-                yield _sse_event("done", {
-                    "intent": "query",
-                    "reply": f"Error: {str(e)}",
-                    "sql": None,
-                    "warnings": [],
-                    "error": str(e),
-                    "mode": pipeline_mode,
-                })
+                async for event in stream:
+                    handled = True
+                    yield event
+            finally:
+                await stream.aclose()
+            if handled:
+                return
+            # 派发未接住:显式报错,不得静默丢弃本次请求(no-silent-degradation)
+            err = ("附件消息需要执行层支持,当前执行层不可用,附件未被处理" if attachments
+                   else "执行层不可用,本次请求未被处理")
+            _status, _err = "error", err
+            yield _sse_event("error", {"message": err})
+            yield _sse_event("done", {
+                "intent": "agent", "reply": err, "sql": None,
+                "warnings": [], "error": err,
+            })
         finally:
             observability.finalize(status=_status, error=_err, final_answer=_final)
 

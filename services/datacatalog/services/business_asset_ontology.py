@@ -55,7 +55,7 @@ def _collect() -> dict:
         "SELECT product_name, display_name, description, site, domain, classification, "
         "datasource_name FROM adh_data_products WHERE status = 'active'")
     data["datasets"] = _q(
-        "SELECT id, name, description, source_type, object_key, datasource_id, visibility "
+        "SELECT id, name, description, source_type, object_key, datasource_id, chart_type "
         "FROM adh_datasets WHERE status = 'active' ORDER BY name")
     data["sync_tasks"] = _q(
         "SELECT name, description, source_datasource_name, source_table, "
@@ -208,14 +208,16 @@ def _build_asset_objects(data: dict, src_by_ds: dict) -> tuple[list, list]:
             notes.append(f"数据集「{d.get('name')}」的归属数据源已删除，未生成节点（待人工处理）")
             logger.warning("[business-asset] 数据集「%s」的归属数据源已删除，跳过（不猜归属）", d.get("name"))
             continue
+        source_label = {"semantic": "语义对象", "sql": "SQL", "both": "语义对象+SQL"}.get(
+            str(d.get("source_type") or ""), str(d.get("source_type") or ""))
+        chart_seg = f"，预设图表「{d.get('chart_type')}」" if d.get("chart_type") else ""
         objects.append({
             "key": _key("dataset", d["name"], i),
             "display_name": f"数据集·{d['name']}",
             "aliases": [str(d["name"])],
-            "description": (f"发布数据集「{d['name']}」（归属数据源「{ds_name}」，可见性 {d.get('visibility') or ''}"
-                            f"，来源 {'语义对象' if d.get('source_type') == 'semantic' else 'SQL'}）。"
+            "description": (f"发布数据集「{d['name']}」（归属数据源「{ds_name}」，来源 {source_label}{chart_seg}）。"
                             f"{d.get('description') or ''}"),
-            "route": _route(ds_name, str(d.get("object_key") or "") if d.get("source_type") == "semantic" else ""),
+            "route": _route(ds_name, str(d.get("object_key") or "")),
         })
 
     for i, t in enumerate(data["sync_tasks"], 1):

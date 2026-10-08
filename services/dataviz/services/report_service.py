@@ -394,12 +394,11 @@ def execute_report_source(source: dict, identity: dict) -> dict:
         dataset = dataset_service.get_dataset(source["dataset_id"])
         if not dataset or dataset.get("status") != "active":
             raise PermissionError("分析来源不存在或不可用")
-        if dataset.get("visibility") == "private" and dataset.get("owner_id") != identity["user_id"]:
-            raise PermissionError("无权使用该分析来源")
         ds_id = int(dataset.get("datasource_id") or 0)
         dataset_digest = report_access.dataset_snapshot(source["dataset_id"], identity, dataset)
         _authorize_source(identity, ds_id)
-        if dataset.get("source_type") == "semantic":
+        # 执行路径按双定义显式选择: 有执行 SQL 走 SQL 快照; 仅语义对象走编译投影快照。
+        if not (dataset.get("sql_query") or "").strip() and (dataset.get("object_key") or "").strip():
             # 数据集 scope 必须经数据集服务；编译相同投影只用于捕获全部物理来源。
             from services.shared.semantics.binding_resolver import resolve_binding
             from services.shared.semantics.intent import parse_intent

@@ -111,6 +111,35 @@ def authorize_workspace(user: dict, workspace_id: int) -> int:
     return ws
 
 
+def resolve_user_default_workspace_id(user_id: int) -> int:
+    """未指定工作空间时的会话归属解析(唯一口径): 用户默认工作空间。
+
+    工作空间随用户走(个人工作站, 见 authorize_workspace): 默认空间语义随属主落
+    adh_workspaces.is_default(set-default 接口同一口径, 成员表已冻结)。无
+    is_default 标记时取属主最早的工作站; 均无返回 0, 由调用方显式报错——
+    AS-BOT 与 Waker 统一后不再有全局/系统域会话, 严禁落回 workspace 0。
+    """
+    if not user_id or int(user_id) <= 0:
+        raise HTTPException(status_code=401, detail="缺少可信身份")
+    from services.shared.common.db.metadata_db import get_metadata_conn
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM adh_workspaces WHERE owner_id=%s AND is_default=1 LIMIT 1",
+                (int(user_id),))
+            row = cur.fetchone()
+            if row:
+                return int(row["id"])
+            cur.execute(
+                "SELECT id FROM adh_workspaces WHERE owner_id=%s ORDER BY id LIMIT 1",
+                (int(user_id),))
+            row = cur.fetchone()
+            return int(row["id"]) if row else 0
+    finally:
+        conn.close()
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     request: Request = None,

@@ -119,7 +119,8 @@ def get_connection(datasource_id: int = None):
     """Context manager that yields a driver connection to the specified datasource.
 
     按 db_type 分发: mysql/doris → pymysql, postgres/sls → psycopg2(共享工厂
-    datasource_db.get_datasource_conn), 作为 DataEngine 不可用时的直连兜底。
+    datasource_db.get_datasource_conn)。仅供元数据/结构探查等内部非取数路径;
+    取数链路严禁用作 DataEngine 失败的兜底(护栏 §12, 禁止降级直连)。
     """
     from services.shared.common.db.datasource_db import get_datasource_conn
     params = _get_ds_conn_params(datasource_id)
@@ -242,10 +243,10 @@ def execute_query(
 ) -> tuple[pd.DataFrame, int, int]:
     """Execute a validated query against the specified datasource.
 
-    Execution priority:
-    1. DataEngine (Rust DataFusion) — if ENGINE_ENABLED=true and health OK
+    Execution:
+    1. DataEngine (Rust DataFusion) — 唯一执行通道(禁止降级 pymysql 直连):
+       未启用/不可用/执行失败一律 raise 显式暴露(no-silent-degradation)
        - Applies RLS policies (row filtering, column hiding, column masking)
-    2. Direct execution (pymysql) — fallback (no RLS)
 
     Args:
         sql: The SQL query string.

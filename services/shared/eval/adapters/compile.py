@@ -2,7 +2,7 @@
 
 **覆盖范围（引用结论前必读）**：本适配器只走 ``shared/semantics/{intent,planner}``
 的离线确定性编译，用内存语义目录（``fixtures/demo_semantics``）打桩字典加载。
-它**不经过** ``datamind/rag/strategies/graphrag.py`` 与 ``graph_rag/agentic_sparql.py``，
+它**不经过** ``datamind/rag/strategies/graphrag.py``，
 也不度量自然语言→intent 的生成准确率。
 
 因此 ``sources`` 分桶是 **planner 的名字解析档位**（dict_exact / dict_alias /

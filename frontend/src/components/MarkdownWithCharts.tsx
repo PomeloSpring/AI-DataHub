@@ -6,6 +6,7 @@ import MermaidBlock from './MermaidBlock';
 import ArtifactCard from './ArtifactCard';
 import SqlCard from './SqlCard';
 import GraphCard from './GraphCard';
+import DesignCard from './DesignCard';
 import { splitChartBlocks } from '../lib/chartBlocks';
 
 interface Props {
@@ -15,14 +16,17 @@ interface Props {
   conversationId?: number | null;
   /** 图上下钻: 点击图表元素时回传下钻问题(不传则不启用)。 */
   onDrill?: (question: string) => void;
+  /** 设计卡片「返回对话继续完善」时回传追问文本(不传则按钮不可用)。 */
+  onDesignContinue?: (text: string) => void;
 }
 
 /**
  * 渲染助手回答:普通文本走 ReactMarkdown,```chart 块解析后渲染 ChartPicker,
- * ```mermaid 块渲染流程图/时序图,```artifact 块渲染可下载文件产物。
- * 解析失败降级为代码块。图表内嵌于 content,天然随消息持久化与回放。
+ * ```mermaid 块渲染流程图/时序图,```artifact 块渲染可下载文件产物,
+ * ```design 块在该位置内嵌仪表盘设计卡片(LLM 需要用户打开面板时输出)。
+ * 解析失败降级为代码块。图表/卡片内嵌于 content,天然随消息持久化与回放。
  */
-export default function MarkdownWithCharts({ text, className, conversationId, onDrill }: Props) {
+export default function MarkdownWithCharts({ text, className, conversationId, onDrill, onDesignContinue }: Props) {
   const segments = useMemo(() => splitChartBlocks(text || ''), [text]);
   // prose 排版色已由 globals.css 令牌化(--tw-prose-* → 主题变量),自动随主题
   const proseCls = className || 'leading-relaxed prose prose-sm max-w-none';
@@ -68,6 +72,9 @@ export default function MarkdownWithCharts({ text, className, conversationId, on
               conversationId={conversationId}
             />
           );
+        }
+        if (seg.kind === 'design') {
+          return <DesignCard key={i} designId={seg.designId} onContinue={onDesignContinue} />;
         }
         // 解析失败:降级为代码块
         return (

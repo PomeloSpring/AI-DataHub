@@ -743,6 +743,46 @@ class ChartService:
         finally:
             conn.close()
 
+    def _refresh_dataset_chart(self, chart: dict, params: dict,
+                               user_id: int, workspace_id: int, username: str, cur) -> dict:
+        """数据集图表(source_type='dataset'): 统一经数据集治理入口取数.
+
+        不把数据集 SQL 复制进 adh_charts —— 保持数据集单口径(数据集改了图表即生效);
+        取数经 dataset_service.query_dataset(governed_execute/七闸门), 无旁路。
+        结果只回行列(护栏 §7), 执行 SQL/物理细节不入图表响应。
+        """
+        from services.dataviz.services import dataset_service
+        if not user_id:
+            raise NoIdentityError("缺少可信用户身份, 拒绝取数(数据合规护城河)")
+        cfg = _json_loads_safe(chart.get("config")) or {}
+        ds_params = {
+            "filters": params.get("filters") or [],
+            "order": params.get("order") or [],
+            "limit": int(cfg.get("limit") or params.get("limit") or 500),
+        }
+        dims = params.get("dimensions") or cfg.get("dimensions") or []
+        meas = params.get("measures") or params.get("metrics") or cfg.get("measures") or []
+        if dims:
+            ds_params["dimensions"] = dims
+        if meas:
+            ds_params["measures"] = meas
+        # 行级 scope 按角色叠加, 角色由服务端解析(不信任请求体)
+        from services.shared.common import auth as _auth
+        live = _auth.get_user_by_id(user_id) or {}
+        identity = {"user_id": user_id, "username": username,
+                    "role": live.get("user_role") or "", "workspace_id": workspace_id}
+        result = dataset_service.query_dataset(int(chart["source_id"]), ds_params, identity)
+        data = {k: result[k] for k in ("columns", "rows", "row_count", "truncated") if k in result}
+        cache = json.dumps(
+            {"columns": data.get("columns") or [], "rows": data.get("rows") or []},
+            ensure_ascii=False,
+        )
+        cur.execute(
+            "UPDATE adh_charts SET data_cache = %s, updated_at = %s WHERE id = %s",
+            (cache, _now(), chart["id"]),
+        )
+        return data
+
     def refresh_chart(self, dashboard_id: int, chart_id: int, params: dict = None,
                       page_limit: int = None, page_offset: int = None,
                       count_sql: str = None, user_id: int = 0,
@@ -762,7 +802,7 @@ class ChartService:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id,dashboard_id,workspace_id,source_id,semantic_query,query_source,sql_query,config FROM adh_charts "
+                    "SELECT id,dashboard_id,workspace_id,source_type,source_id,semantic_query,query_source,sql_query,config FROM adh_charts "
                     "WHERE id = %s AND dashboard_id = %s",
                     (chart_id, dashboard_id),
                 )
@@ -772,6 +812,8 @@ class ChartService:
 
                 if (_json_loads_safe(chart.get("config")) or {}).get("as_bot_design"):
                     return refresh_designed_chart(chart, user_id)
+                if chart.get("source_type") == "dataset" and chart.get("source_id"):
+                    return self._refresh_dataset_chart(chart, params, user_id, workspace_id, username, cur)
                 sql = chart.get("sql_query", "")
                 if not sql:
                     return {"columns": [], "rows": [], "row_count": 0}
@@ -863,7 +905,7 @@ class ChartService:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id,dashboard_id,workspace_id,source_id,semantic_query,query_source,sql_query,config FROM adh_charts "
+                    "SELECT id,dashboard_id,workspace_id,source_type,source_id,semantic_query,query_source,sql_query,config FROM adh_charts "
                     "WHERE dashboard_id = %s ORDER BY id",
                     (dashboard_id,),
                 )
@@ -876,6 +918,14 @@ class ChartService:
                     cid = chart["id"]
                     if (_json_loads_safe(chart.get("config")) or {}).get("as_bot_design"):
                         results[cid] = refresh_designed_chart(chart, user_id)
+                        continue
+                    if chart.get("source_type") == "dataset" and chart.get("source_id"):
+                        # 数据集图表走数据集治理入口(不复制 SQL, 单口径)
+                        try:
+                            results[cid] = self._refresh_dataset_chart(
+                                chart, params, user_id, workspace_id, username, cur)
+                        except Exception as e:  # noqa: BLE001  可诊断原因(query_dataset 已脱敏)
+                            results[cid] = {"error": str(e)}
                         continue
                     sql = chart.get("sql_query", "")
                     if not sql:

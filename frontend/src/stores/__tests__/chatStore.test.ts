@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useChatStore, deriveTitle, saveMessages, type ChatMessage } from '../chatStore'
+import { ensureUploadName, filesFromClipboard, validateLocalAttachment } from '../chatStore'
 import { useAsBotStore } from '../asBotStore'
 import { toast } from 'sonner'
 
@@ -166,7 +167,7 @@ describe('chatStore', () => {
     it('loads models and auto-selects default', async () => {
       const models = [
         { id: 1, name: 'GPT-4', provider: 'openai', model_name: 'gpt-4', is_default: 0 },
-        { id: 2, name: 'Claude', provider: 'anthropic', model_name: 'claude-3', is_default: 1 },
+        { id: 2, name: 'DeepSeek-V3', provider: 'deepseek', model_name: 'deepseek-chat', is_default: 1 },
       ]
       mockClient.get.mockResolvedValue({ data: models })
 
@@ -563,5 +564,62 @@ describe('chatStore', () => {
       // Should not throw
       useChatStore.getState().cancelMessage()
     })
+  })
+})
+
+describe('附件粘贴(剪贴板提取与命名)', () => {
+  // jsdom 无 DataTransfer 构造器,用只读字段的替身即可覆盖 filesFromClipboard 的读取面
+  const fakeClipboard = (opts: { items?: any[]; files?: File[] }): DataTransfer =>
+    ({ items: opts.items ?? [], files: opts.files ?? [] }) as unknown as DataTransfer
+
+  it('无名截图按 MIME 补全为「截图_时间戳.png」', () => {
+    const shot = new File(['img'], '', { type: 'image/png' })
+    const named = ensureUploadName(shot, Date.parse('2026-10-08T12:34:56Z'))
+    expect(named.name).toBe('截图_20261008123456.png')
+    expect(validateLocalAttachment(named)).toEqual({ category: 'image' })
+  })
+
+  it('带扩展名的文件名原样保留', () => {
+    const f = new File(['img'], 'paste-test.png', { type: 'image/png' })
+    expect(ensureUploadName(f)).toBe(f)
+  })
+
+  it('无扩展名文件名按 MIME 补后缀', () => {
+    const f = new File(['img'], 'paste', { type: 'image/jpeg' })
+    expect(ensureUploadName(f).name).toBe('paste.jpg')
+  })
+
+  it('未知 MIME 且无名 → 保留原样交校验显式拒绝(不静默丢弃)', () => {
+    const f = new File(['x'], '', { type: 'application/x-unknown' })
+    const named = ensureUploadName(f, Date.parse('2026-10-08T12:34:56Z'))
+    expect(named.name).toBe('截图_20261008123456')
+    const v = validateLocalAttachment(named)
+    expect('error' in v && v.error).toContain('不支持的文件类型')
+  })
+
+  it('纯文本粘贴返回空数组(走默认粘贴行为)', () => {
+    const dt = fakeClipboard({ items: [{ kind: 'string', getAsFile: () => null }] })
+    expect(filesFromClipboard(dt)).toEqual([])
+  })
+
+  it('剪贴板为 null 返回空数组', () => {
+    expect(filesFromClipboard(null)).toEqual([])
+  })
+
+  it('截图粘贴(items kind=file)返回补全名的文件', () => {
+    const shot = new File(['img'], '', { type: 'image/png' })
+    const dt = fakeClipboard({
+      items: [{ kind: 'file', type: 'image/png', getAsFile: () => shot }],
+      files: [shot],
+    })
+    const out = filesFromClipboard(dt)
+    expect(out).toHaveLength(1) // items 优先,不与 files 重复计数
+    expect(out[0].name).toMatch(/^截图_\d{14}\.png$/)
+  })
+
+  it('items 不可用时回退 files 提取', () => {
+    const f = new File(['img'], 'a.png', { type: 'image/png' })
+    const dt = fakeClipboard({ items: [], files: [f] })
+    expect(filesFromClipboard(dt).map(x => x.name)).toEqual(['a.png'])
   })
 })

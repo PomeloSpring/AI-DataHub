@@ -24,9 +24,6 @@ x-common-env: &common-env
   REDIS_URL: redis://redis:6379/0
   ADH_SECRET_KEY: ${ADH_SECRET_KEY:-change-me-in-production}
   OXIGRAPH_URL: ${OXIGRAPH_URL:-http://oxigraph:7878}
-  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-  ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
-  ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-20250514}
   ENGINE_SERVER_URL: ${ENGINE_SERVER_URL:-http://dataengine:8082}
   ENGINE_TIMEOUT: ${ENGINE_TIMEOUT:-60}
   ENGINE_ENABLED: ${ENGINE_ENABLED:-true}

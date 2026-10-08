@@ -1,7 +1,7 @@
 """LLM 交互可观测 — 上下文传播 (contextvars)。
 
 一次"用户回合"= 一个 trace_id。中间件设置 trace_id;入口(chat/playground/agent)
-创建 TraceRecorder 并注入身份;深层调用(llm_client / QoderSDKAdapter)通过
+创建 TraceRecorder 并注入身份;深层调用(QoderSDKAdapter)通过
 current_recorder() 记录 llm_call span,无需层层透传参数。
 
 所有 API 均为"未开启即 no-op",且绝不抛出(观测不得影响主链路)。

@@ -44,8 +44,6 @@ export interface DesignPreview {
 }
 export const designPath = (id: string) => `/as-bot/dashboard-designs/${id}`;
 export const getDesign = async (id: string) => (await client.get<DashboardDesign>(designPath(id))).data;
-export const listDesigns = async (conversationId: number) =>
-  (await client.get<DashboardDesign[]>('/as-bot/dashboard-designs', { params: { conversation_id: conversationId } })).data;
 export function designError(error: any): string {
   const detail = error?.response?.data?.detail;
   return typeof detail === 'string' ? detail : detail?.message || '设计操作失败，请重试';

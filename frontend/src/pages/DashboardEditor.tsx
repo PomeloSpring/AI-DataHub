@@ -201,6 +201,9 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
         onApplyVis={applyVis} onVisDragStart={(e, component) => {
           const item = CHART_TYPES.find(c => c.value === (component.category === 'kpi_card' ? 'big_number_trend' : component.chart_type));
           if (item) startDrag(e, item, component); else { e.preventDefault(); toast.info('该字模未指定可创建的图表类型'); }
+        }} onAddFromDataset={(ds) => {
+          // 从数据集引入: 放在现有图表下方, 预设随数据集 chart_preset 搬入
+          charts.handleAddFromDataset(ds, { x: 0, y: allCharts.reduce((bottom, c) => Math.max(bottom, chartRect(c).y + chartRect(c).h), 0) + 16 });
         }} />
       {layoutMode === 'page' ? <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="px-4 py-2 text-xs text-muted-foreground border-b" role="status">

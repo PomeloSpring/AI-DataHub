@@ -146,17 +146,16 @@ def _list_quality_rules(args):
 
 
 def _list_datasets(args):
-    """数据集清单：只回名称/来源类型/可见范围。不含 SQL 原文与字段配置。"""
+    """数据集清单：只回名称/来源类型/预设图表。不含 SQL 原文与字段配置。"""
     ident = _identity()
     if not ident:
         return _text({"error": "无法确认调用者身份"}, is_error=True)
-    uid = int(ident["user_id"])
     rows = _select(
-        "SELECT id, name, description, source_type, object_key, visibility, status, "
+        "SELECT id, name, description, source_type, object_key, chart_type, status, "
         "       created_at, updated_at "
-        "FROM adh_datasets WHERE visibility <> 'private' OR owner_id = %s "
+        "FROM adh_datasets WHERE status = 'active' "
         "ORDER BY updated_at DESC LIMIT %s",
-        (uid, _limit(args)))
+        (_limit(args),))
     return _text({"datasets": [_iso(r, "created_at", "updated_at") for r in rows],
                   "note": "SQL 原文与字段配置不在 AI 可见范围内"})
 

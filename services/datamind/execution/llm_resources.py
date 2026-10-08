@@ -28,7 +28,7 @@ def _decrypt(row: dict) -> dict:
 
 def model_ref(row: dict) -> str:
     """生成模型引用: {provider}/{model_name}."""
-    provider = (row.get("provider") or "anthropic").lower()
+    provider = (row.get("provider") or "openai").lower()
     return f"{provider}/{row.get('model_name') or ''}"
 
 

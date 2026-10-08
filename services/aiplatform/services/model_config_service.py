@@ -5,6 +5,7 @@ Migrated from backend/api/model_config.py.
 
 import json
 import logging
+import os
 import time as _time
 from datetime import datetime
 from typing import Optional
@@ -31,11 +32,6 @@ def _invalidate_models_cache():
     global _models_cache, _models_cache_time
     _models_cache = {}
     _models_cache_time = 0
-    try:
-        from services.shared.common.llm.llm_client import clear_clients_cache
-        clear_clients_cache()
-    except Exception:
-        pass
 
 
 def get_llm_model_config(model_id: int = None) -> dict:
@@ -83,15 +79,14 @@ def get_llm_model_config(model_id: int = None) -> dict:
 
 
 def _fallback_config() -> dict:
-    """Fallback to .env config when no database config exists."""
-    from services.shared.common.config import ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, ANTHROPIC_MODEL
+    """Fallback to .env config when no database config exists (provider 中立)."""
     return {
         "id": 0,
         "name": "Default (from .env)",
-        "provider": "anthropic",
-        "base_url": ANTHROPIC_BASE_URL,
-        "api_key": ANTHROPIC_API_KEY,
-        "model_name": ANTHROPIC_MODEL,
+        "provider": "openai",
+        "base_url": os.getenv("LLM_BASE_URL", ""),
+        "api_key": os.getenv("LLM_API_KEY", ""),
+        "model_name": os.getenv("LLM_MODEL", ""),
         "max_tokens": 4096,
         "supports_thinking": 1,
         "supports_vision": 1,
@@ -144,7 +139,7 @@ def create_llm_model(data: dict) -> int:
         "(id, name, provider, base_url, api_key, model_name, max_tokens, supports_thinking, "
         "is_default, is_active, created_at, updated_at) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, 1, %s, %s)",
-        (row_id, data["name"], data.get("provider", "anthropic"),
+        (row_id, data["name"], data.get("provider", "openai"),
          data["base_url"], encrypted_key, data["model_name"],
          data.get("max_tokens", 4096),
          1 if data.get("supports_thinking", True) else 0, now, now),

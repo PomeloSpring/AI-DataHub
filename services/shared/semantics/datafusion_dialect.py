@@ -14,8 +14,8 @@
     → 严禁把 DATE_FORMAT 转成 TO_CHAR;常见前缀模式转 SUBSTR(CAST(ts AS VARCHAR))
   ✗ `date - date` 返回 Duration(Second),不能用作 DATEDIFF 的天数差
 
-转译失败(未覆盖语法)时 engine_client 保留原 SQL 下发:引擎报错后上层回退
-MySQL 直连执行,正确性优先于引擎加速。
+转译失败(未覆盖语法)时 engine_client 保留原 SQL 下发:引擎报错后上层直接
+raise 显式暴露(禁止降级直连, no-silent-degradation)。
 """
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ def _gen_timetostr(generator, expression: exp.TimeToStr) -> str:
     fmt_text = fmt.name if fmt is not None else ""
     n = _FORMAT_PREFIX_LEN.get(fmt_text)
     if n is None:
-        # 未覆盖的模式 → 抛错走"保留原SQL+引擎报错+直连回退"
+        # 未覆盖的模式 → 抛错走"保留原SQL+引擎报错+上层显式报错"
         raise NotImplementedError(f"DATE_FORMAT pattern {fmt_text!r}")
     this = generator.sql(expression, "this")
     return f"SUBSTR(CAST(CAST({this} AS TIMESTAMP) AS VARCHAR), 1, {n})"

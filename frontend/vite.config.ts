@@ -49,7 +49,9 @@ function createProxyConfig() {
   proxy['/api/as-bot'] = { ...proxyOptions(SERVICES.datamind), timeout: 600000 }
   // Skills 管理(文件夹/SKILL.md)由 datamind 提供,须先于 /api/admin/* → aiplatform 的通用规则
   proxy['/api/admin/skills'] = proxyOptions(SERVICES.datamind)
-  // 工作空间资产清单(OSS 托管)由 datamind 提供
+  // 用户资产清单(资产跟随用户, OSS 托管)由 datamind 提供 —— 注意 /api/assets 与
+  // /api/workspace-assets 是两个前缀, 漏任何一个都会被 SPA 兜底成 index.html(200+HTML)
+  proxy['/api/assets'] = proxyOptions(SERVICES.datamind)
   proxy['/api/workspace-assets'] = proxyOptions(SERVICES.datamind)
 
   // DataGov (Data Governance)

@@ -2,7 +2,7 @@
 
 ontology/ 目录遵循 Palantir Ontology 规范（object_types / properties / link_types /
 cross_domain_links / computed_properties / metrics），与系统内部的 canonical 本体
-JSON（见 ontology_service._SYSTEM_PROMPT，亦是前端与 RDF 入图所消费的结构）不同。
+JSON（见 ontology_service.ONTOLOGY_SCHEMA_SPEC，亦是前端与 RDF 入图所消费的结构）不同。
 
 本模块作为二者的桥：读取 Palantir YAML → 归一化为 canonical doc → 落
 adh_ontology_models（active）+ 展开对象写 adh_ontology_objects → 触发图谱重建，

@@ -295,3 +295,58 @@ class TestDecisionAudit:
                                 {"sid": sid, "status": status, "decider": decider}))
         alias_suggestion.approve_suggestion({"suggestion_id": 5, "decided_by": 42})
         assert recorded == {"sid": 5, "status": "approved", "decider": 42}
+
+
+# ── 本体生成工具语义变化：素材化取数（不再 LLM 单发）+ 域约束 fail-closed ─
+
+class TestOntologyGenerateToolSemantics:
+    """generate_ontology_draft 已改为素材提供工具（不调 LLM）：返回分批素材与
+    归纳指引，归纳由 AS-BOT 会话内 agent 完成后经 save_ontology_draft 提交。
+    业务源仅限『生成本体模型』任务绑定会话（fail-closed，不静默回退系统域）。"""
+
+    def _payload(self, result):
+        import json
+        return json.loads(result["content"][0]["text"])
+
+    def _ctx(self, datasource_id=0, binding=None):
+        from services.datamind.execution.models import ExecutionContext
+        extra = {"task_binding": binding} if binding else {}
+        return ExecutionContext(user_id=7, user_role="admin", workspace_id=3,
+                                datasource_id=datasource_id, extra=extra)
+
+    def _run(self, monkeypatch, args, ctx, materials=("M0", "M1")):
+        from services.datamind.execution.sdk_tools import ontology_tools as ot
+        from services.datamind.execution.sdk_tools.context import (
+            ExecutionContextVar, set_execution_context)
+        import services.authservice.services.role_service as rs
+        import services.datacatalog.services.ontology_service as osvc
+        monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
+                            lambda *a: {"ontology:generate": {"ai_access": "write", "ai_note": ""}})
+        monkeypatch.setattr(osvc, "build_generation_batches", lambda ds: list(materials))
+        token = set_execution_context(ctx)
+        try:
+            return asyncio.run(ot.generate_ontology_draft(args))
+        finally:
+            ExecutionContextVar.reset(token)
+
+    def test_material_provider_not_llm_single_shot(self, monkeypatch):
+        """语义变化锁死：返回素材+指引（batch/total_batches），无任何 LLM 生成产物。"""
+        p = self._payload(self._run(monkeypatch, {"batch": 0}, self._ctx(0)))
+        assert p["material"] == "M0" and p["total_batches"] == 2
+        assert "spec" in p and "save_ontology_draft" in p["note"]
+        assert "objects" not in p and "model_id" not in p
+
+    def test_business_source_requires_task_binding_session(self, monkeypatch):
+        """普通会话给业务源取素材必须拒（任务绑定是服务端注入，LLM 不可伪造）。"""
+        p = self._payload(self._run(monkeypatch, {}, self._ctx(5)))
+        assert "error" in p and "任务会话" in p["error"]
+
+    def test_task_bound_session_for_other_source_rejected(self, monkeypatch):
+        binding = {"kind": "ontology_generate", "datasource_id": 3}
+        p = self._payload(self._run(monkeypatch, {}, self._ctx(5, binding=binding)))
+        assert "error" in p and "任务会话" in p["error"]
+
+    def test_datasource_arg_rejected(self, monkeypatch):
+        """目标源由服务端注入，LLM 传数据源标识显式报错（不静默丢弃）。"""
+        p = self._payload(self._run(monkeypatch, {"datasource_id": 7}, self._ctx(0)))
+        assert "error" in p and "不接受数据源标识" in p["error"]

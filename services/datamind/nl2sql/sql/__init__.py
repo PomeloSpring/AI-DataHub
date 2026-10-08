@@ -1,1 +1,1 @@
-"""SQL modules — validation, execution, template loading."""
+"""SQL modules — validation, governance execution, RLS/sensitive helpers."""

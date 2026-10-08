@@ -1,12 +1,11 @@
-"""GraphRagStrategy — single-route retrieval: agentic text→SPARQL grounding.
+"""GraphRagStrategy — deterministic by-name metadata hydration (no LLM).
 
-Replaces the vector + BM25 retrieval legs. The only *search* step is the LLM
-driving read-only SPARQL over the Oxigraph knowledge graph to ground the
-question onto concrete entities (see ``agentic_sparql.AgenticSparqlRetriever``).
-Grounded entity names are then hydrated into full prompt context via plain,
-deterministic metadata lookups (exact-name/IN queries — no embeddings, no BM25).
+Agentic text→SPARQL grounding（LLM 单发生成 SPARQL）已退役；本策略仅对既有
+候选表（selected_tables/target_tables）做确定性 by-name 元数据回填
+（exact-name/IN 查询 — no embeddings, no BM25, no LLM）。
+keywords/知识库对象 key 仍参与候选挑选（命中线索者优先），不经 LLM 解释。
 
-Returns the uniform strategy dict consumed by ``prompt_builder`` (see base.py):
+Returns the uniform strategy dict consumed by downstream prompt assembly:
     table_info, column_metadata, business_terms, table_relations,
     sql_templates, saved_datasets, rag_source.
 """
@@ -17,13 +16,12 @@ from services.datamind.rag.strategies.base import RetrievalStrategy, empty_resul
 
 logger = logging.getLogger(__name__)
 
-# Cap grounded tables so the prompt stays focused (SPARQL grounding returns
-# importance-ordered names from the model).
+# Cap hydrated tables so the prompt stays focused.
 _MAX_TABLES = 8
 
 
 class GraphRagStrategy(RetrievalStrategy):
-    """Ground a question on the knowledge graph via agentic SPARQL, then hydrate."""
+    """By-name hydration over pre-selected candidate tables (no LLM grounding)."""
 
     name = "graphrag"
 
@@ -36,77 +34,38 @@ class GraphRagStrategy(RetrievalStrategy):
         datasource_id: int = 0,
         extra_object_keys: list[str] = None,
     ) -> dict:
-        from services.datamind.rag.graph_rag.agentic_sparql import AgenticSparqlRetriever
-        from services.datamind.rag.graph_rag.oxigraph_store import OxigraphStore
-
-        store = OxigraphStore()
-        if not store.health():
-            logger.warning("[graphrag] Oxigraph unreachable; returning empty")
-            return empty_result("graphrag:store_unavailable")
-
-        candidate = selected_tables or target_tables
-        # T7: 知识库命中的对象 key 作为额外检索线索注入 grounding(与词法 keywords 合并)
-        grounding_keywords = list(keywords or []) + [str(k) for k in (extra_object_keys or []) if k]
-
-        # ── Grounding: the single (SPARQL) retrieval route ──
-        grounding_failed = False
-        try:
-            grounding = AgenticSparqlRetriever(store=store).ground(
-                question, datasource_id=datasource_id, keywords=grounding_keywords,
-                candidate_tables=candidate,
-            )
-        except Exception as e:
-            logger.error("[graphrag] grounding failed: %s", e, exc_info=True)
-            grounding = {"tables": [], "sql_templates": [], "business_terms": [], "metrics": []}
-            grounding_failed = True
-
-        tables = [t for t in (grounding.get("tables") or []) if t][:_MAX_TABLES]
-        if not tables and candidate:
-            # Graph had nothing to ground on — degrade to by-name hydration of
-            # any pre-selected tables (still no vector/BM25 search here).
-            tables = list(candidate)[:_MAX_TABLES]
-            logger.info("[graphrag] no grounded tables, using %d candidate tables", len(tables))
+        candidate = list(selected_tables or target_tables or [])
+        # T7: 知识库命中的对象 key 与词法 keywords 一并作为候选挑选线索
+        clues = [str(k).lower() for k in (
+            list(keywords or []) + [str(k) for k in (extra_object_keys or []) if k]
+        ) if str(k)]
+        tables = self._select_candidates(candidate, clues)
 
         result = empty_result("graphrag")
         result["table_info"] = self._hydrate_tables(tables, datasource_id)
         result["column_metadata"] = self._hydrate_columns(tables, datasource_id)
-        result["sql_templates"] = self._hydrate_templates(
-            grounding.get("sql_templates") or [], tables, datasource_id,
-        )
-        result["business_terms"] = self._hydrate_terms(
-            grounding.get("business_terms") or [], tables, datasource_id,
-        )
+        result["sql_templates"] = self._hydrate_templates([], tables, datasource_id)
+        result["business_terms"] = self._hydrate_terms([], tables, datasource_id)
         result["table_relations"] = self._hydrate_relations(tables, datasource_id)
-        # Keep grounding for downstream logging/debugging (extra key is harmless).
-        result["ontology_context"] = {
-            "grounding": {
-                "tables": tables,
-                "sql_templates": grounding.get("sql_templates", []),
-                "business_terms": grounding.get("business_terms", []),
-                "metrics": grounding.get("metrics", []),
-                "reasoning": grounding.get("reasoning", ""),
-                "submitted": grounding.get("submitted", False),
-                "turns": grounding.get("turns", 0),
-            },
-        }
+        # agentic grounding 已退役：调试键保留但置空（下游 .get("grounding") 兼容）
+        result["ontology_context"] = {"grounding": {}}
         logger.info(
             "[graphrag] hydrated tables=%d cols=%d templates=%d terms=%d relations=%d",
             len(result["table_info"]), len(result["column_metadata"]),
             len(result["sql_templates"]), len(result["business_terms"]),
             len(result["table_relations"]),
         )
-        # 可诊断性（no-silent-degradation）：LLM/grounding 失败不得被吞成“无结果”。
-        # 命中为空 + ground 失败时标注 degraded + 原因，调用方（eval/前端/Agent）
-        # 必须能区分“真没有”与“检索链路坏了”。
-        trace_errors = [str(t.get("error") or "") for t in (grounding.get("trace") or [])
-                        if t.get("error")]
-        if grounding_failed or trace_errors:
-            reason = (f"agentic-sparql grounding 失败: {trace_errors[0]}" if trace_errors
-                      else "agentic-sparql grounding 异常")
-            result["degraded"] = True
-            result.setdefault("warnings", []).append(reason)
-            result.setdefault("ontology_context", {})["grounding_failure"] = reason
         return result
+
+    def _select_candidates(self, candidate: list[str], clues: list[str]) -> list[str]:
+        """候选挑选：命中线索者优先（确定性排序，无 LLM），截断到 _MAX_TABLES。"""
+        if not candidate:
+            return []
+        if not clues:
+            return candidate[:_MAX_TABLES]
+        hit = [t for t in candidate if any(c in str(t).lower() for c in clues)]
+        rest = [t for t in candidate if t not in hit]
+        return (hit + rest)[:_MAX_TABLES]
 
     # ── Hydration (deterministic metadata lookups, no embedding/BM25) ──
 

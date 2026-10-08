@@ -19,8 +19,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import {
-  BarChart3, Star, MessageSquare, RefreshCw, ThumbsUp, ThumbsDown,
-  CheckCircle, XCircle, AlertCircle, Clock, Zap,
+  BarChart3, Star, MessageSquare, ThumbsUp, ThumbsDown,
+  CheckCircle, XCircle, AlertCircle, Clock,
 } from 'lucide-react';
 import client from '@/api/client';
 
@@ -93,7 +93,6 @@ export default function QualityReview({ workspaceId }: { workspaceId?: number } 
   const [loading, setLoading] = useState(false);
   const [selectedReview, setSelectedReview] = useState<QualityReview | null>(null);
   const [stats, setStats] = useState<QualityStats | null>(null);
-  const [llmReviewing, setLlmReviewing] = useState(false);
 
   // Workspace filter (only for system-level page where workspaceId is undefined)
   const [wsFilter, setWsFilter] = useState<number>(workspaceId ?? 0);
@@ -141,21 +140,6 @@ export default function QualityReview({ workspaceId }: { workspaceId?: number } 
 
   const openDetail = async (review: QualityReview) => {
     setSelectedReview(review);
-  };
-
-  const handleLlmReview = async () => {
-    if (!selectedReview) return;
-    setLlmReviewing(true);
-    try {
-      const { data } = await client.post(`/admin/quality-reviews/${selectedReview.id}/llm-review`);
-      toast.success('AI 评审完成');
-      setSelectedReview(prev => prev ? { ...prev, llm_review: data.analysis } : null);
-      loadReviews();
-    } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'AI 评审失败');
-    } finally {
-      setLlmReviewing(false);
-    }
   };
 
   const formatMs = (ms: number) => {
@@ -437,15 +421,6 @@ export default function QualityReview({ workspaceId }: { workspaceId?: number } 
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setSelectedReview(null)}>关闭</Button>
-            {selectedReview && !selectedReview.llm_review && (
-              <Button onClick={handleLlmReview} disabled={llmReviewing}>
-                {llmReviewing ? (
-                  <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />评审中...</>
-                ) : (
-                  <><Zap className="h-4 w-4 mr-2" />AI 评审</>
-                )}
-              </Button>
-            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

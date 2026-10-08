@@ -1,7 +1,7 @@
-"""assets 工具组 — 工作空间资产清单与磁盘治理（LLM 可感知并与用户交互）。
+"""assets 工具组 — 用户资产清单与磁盘治理（LLM 可感知并与用户交互）。
 
-工作空间是用户的个人工作站：会话产物可"归档收藏"进资产清单（OSS 托管，跨会话共享），
-本地产物受磁盘配额限制，超限会拒绝新建会话。
+资产清单跟随用户(跨工作空间/跨会话)：会话产物可"归档收藏"进清单（OSS 托管），
+一旦归档跟着用户走；本地产物受工作空间磁盘配额限制，超限会拒绝新建会话。
 
 交互契约（写进工具描述，要求 LLM 遵守）：
 - 产物可归档收藏供后续会话复用；本地磁盘受配额限制，用量高时应主动建议用户归档/清理。
@@ -28,33 +28,33 @@ def _ctx_ids():
 
 
 async def asset_list(args):
-    """列出工作空间资产清单（只读）。"""
-    uid, ws, _ = _ctx_ids()
-    if not uid or not ws:
-        return _text({"error": "缺少工作空间上下文"}, is_error=True)
-    from services.datamind.api.workspace_assets import list_workspace_assets
+    """列出我的资产清单（只读, 跟随用户跨工作空间）。"""
+    uid, _, _ = _ctx_ids()
+    if not uid:
+        return _text({"error": "缺少用户上下文"}, is_error=True)
+    from services.datamind.api.user_assets import list_user_assets
     try:
-        items = list_workspace_assets(ws)
+        items = list_user_assets(uid)
     except Exception as e:  # noqa: BLE001
         return _text({"error": f"资产清单不可用: {e}"}, is_error=True)
-    return _text({"workspace_id": ws, "count": len(items), "assets": items,
-                  "note": "资产托管在对象存储，可跨会话引用；download 资产请告知用户在「资产清单」页获取。"})
+    return _text({"count": len(items), "assets": items,
+                  "note": "资产清单跟随用户(跨工作空间/跨会话)，托管在对象存储；download 资产请告知用户在「资产清单」页获取。"})
 
 
 async def asset_get(args):
     """读取资产内容（文本类资产直接返回，二进制只返回元信息）。"""
-    uid, ws, _ = _ctx_ids()
+    uid, _, _ = _ctx_ids()
     asset_id = (args.get("asset_id") or "").strip()
-    if not uid or not ws or not asset_id:
-        return _text({"error": "缺少 asset_id 或工作空间上下文"}, is_error=True)
+    if not uid or not asset_id:
+        return _text({"error": "缺少 asset_id 或用户上下文"}, is_error=True)
     from services.shared.common.db.metadata_db import get_metadata_conn
     from services.shared.common.object_storage import get_object_storage
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT name, filename, object_key, size, category FROM adh_workspace_assets "
-                "WHERE id=%s AND workspace_id=%s", (asset_id, ws))
+                "SELECT name, filename, object_key, size, category FROM adh_user_assets "
+                "WHERE id=%s AND user_id=%s", (asset_id, uid))
             row = cur.fetchone()
     finally:
         conn.close()
@@ -78,19 +78,31 @@ async def asset_archive(args):
     confirm=false（默认）返回将归档的文件预览；confirm=true 执行归档。
     归档后可 delete_source=true 清理本地产物以节省磁盘配额（资产保存在对象存储不受影响）。
     """
-    uid, ws, cid = _ctx_ids()
+    uid, _, cid = _ctx_ids()
     path = (args.get("path") or "").strip()
     name = (args.get("name") or "").strip()
     confirm = bool(args.get("confirm"))
     delete_source = bool(args.get("delete_source"))
-    if not uid or not ws or not path:
-        return _text({"error": "缺少 path 或工作空间上下文"}, is_error=True)
+    if not uid or not path:
+        return _text({"error": "缺少 path 或用户上下文"}, is_error=True)
     conversation_id = int(args.get("conversation_id") or cid or 0)
     if not conversation_id:
         return _text({"error": "缺少 conversation_id（请指定要归档哪个会话的产物）"}, is_error=True)
-    from services.datamind.api.workspace_assets import list_session_files
+    from services.datamind.api.user_assets import list_session_files, archive_session_file
+    from services.shared.common.db.metadata_db import get_metadata_conn
+    # 会话属主定位(不绑定工作空间, 资产跟人走)
+    conn = get_metadata_conn()
     try:
-        files = list_session_files(ws, conversation_id, uid)
+        with conn.cursor() as cur:
+            cur.execute("SELECT workspace_id FROM adh_agent_sessions "
+                        "WHERE conversation_id=%s AND user_id=%s", (conversation_id, uid))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return _text({"error": "会话不存在或无权访问"}, is_error=True)
+    try:
+        files = list_session_files(row["workspace_id"], conversation_id, uid)
     except Exception as e:  # noqa: BLE001
         return _text({"error": f"会话产物不可用: {e}"}, is_error=True)
     match = next((f for f in files if f["path"] == path), None)
@@ -101,9 +113,8 @@ async def asset_archive(args):
     if not confirm:
         return _text({"confirm_required": True, "preview": preview,
                       "note": "请与用户确认归档该产物(及是否删除本地)后，以 confirm=true 再次调用"})
-    from services.datamind.api.workspace_assets import archive_session_file
     try:
-        asset = archive_session_file(ws, conversation_id, path, preview["name"], uid,
+        asset = archive_session_file(uid, conversation_id, path, preview["name"],
                                      delete_source=delete_source)
     except Exception as e:  # noqa: BLE001
         return _text({"error": f"归档失败: {e}"}, is_error=True)
@@ -118,7 +129,7 @@ async def disk_status_tool(args):
     uid, ws, _ = _ctx_ids()
     if not uid or not ws:
         return _text({"error": "缺少工作空间上下文"}, is_error=True)
-    from services.datamind.api.workspace_assets import disk_status
+    from services.datamind.api.user_assets import disk_status
     try:
         status = disk_status(ws)
     except Exception as e:  # noqa: BLE001
@@ -140,7 +151,7 @@ async def cleanup_candidates_tool(args):
     uid, ws, _ = _ctx_ids()
     if not uid or not ws:
         return _text({"error": "缺少工作空间上下文"}, is_error=True)
-    from services.datamind.api.workspace_assets import _cleanup_candidates
+    from services.datamind.api.user_assets import _cleanup_candidates
     try:
         candidates = _cleanup_candidates(ws)
     except Exception as e:  # noqa: BLE001
@@ -157,7 +168,7 @@ async def cleanup_execute_tool(args):
     if not bool(args.get("confirm")):
         return _text({"confirm_required": True,
                       "note": "请先用 cleanup_candidates 列出候选并与用户确认后，以 confirm=true 调用"})
-    from services.datamind.api.workspace_assets import _cleanup_candidates
+    from services.datamind.api.user_assets import _cleanup_candidates
     from services.datamind.execution.session_workspace import (
         session_paths, workspace_base, _remove_session_directory)
     from pathlib import Path
@@ -185,8 +196,8 @@ TOOL_SPECS = [
     {
         "name": "asset_list",
         "description": (
-            "列出当前工作空间的资产清单（共享项目）：用户归档收藏的会话产物（OSS 托管），"
-            "供本工作空间所有会话引用复用。回答“我们之前收藏/归档过哪些成果”类问题用本工具。"
+            "列出我的资产清单（跟随用户，跨工作空间/跨会话）：用户归档收藏的会话产物（OSS 托管），"
+            "供所有会话引用复用。回答“我们之前收藏/归档过哪些成果”类问题用本工具。"
         ),
         "schema": {},
         "handler": asset_list,
@@ -202,8 +213,8 @@ TOOL_SPECS = [
     {
         "name": "asset_archive",
         "description": (
-            "把会话产物归档收藏进资产清单（两步确认）。产物可归档收藏供后续会话复用；"
-            "本地磁盘受配额限制，重要的产物应主动建议用户归档。"
+            "把会话产物归档收藏进我的资产清单（两步确认，资产跟随用户跨工作空间）。"
+            "产物可归档收藏供后续会话复用；本地磁盘受配额限制，重要的产物应主动建议用户归档。"
             "首次调用 confirm=false 预览将归档的文件，与用户确认后再以 confirm=true 执行；"
             "delete_source=true 归档同时删除本地产物以节省磁盘。"
         ),

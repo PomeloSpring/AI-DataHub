@@ -51,7 +51,7 @@ const TYPE_ICONS: Record<ArtifactType, LucideIcon> = {
 /**
  * 会话工作区文件面板:列出当前会话 uploads/ 与 Agent 产物文件,
  * 点击即在画布内预览(复用 ArtifactCard:图片/HTML/CSV 网格/文本),
- * 支持下载与归档收藏到工作空间资产。文件生命周期随会话(清理后面板为空)。
+ * 支持下载与归档收藏到我的资产(跟随用户, 跨工作空间)。文件生命周期随会话(清理后面板为空)。
  */
 export default function SessionFilesPanel({ open, onClose, workspaceId, conversationId }: Props) {
   const [files, setFiles] = useState<SessionFile[]>([]);
@@ -71,7 +71,9 @@ export default function SessionFilesPanel({ open, onClose, workspaceId, conversa
     try {
       const { data } = await client.get(
         `/workspace-assets/${workspaceId}/conversations/${conversationId}/files`);
+      // 非列表结构(如未命中代理拿到 HTML)不静默当空列表, 显式报错
       const list: SessionFile[] = Array.isArray(data) ? data : [];
+      if (!Array.isArray(data)) setError('会话产物响应异常（非列表结构），请检查服务日志');
       setFiles(list);
       setSelected(prev => (prev ? list.find(f => f.path === prev.path) || null : null));
     } catch (e: any) {
@@ -98,13 +100,13 @@ export default function SessionFilesPanel({ open, onClose, workspaceId, conversa
     if (!selected || !archiveName.trim()) return;
     setArchiving(true);
     try {
-      await client.post(`/workspace-assets/${workspaceId}/assets/archive`, {
+      await client.post('/assets/archive', {
         name: archiveName.trim(),
         conversation_id: conversationId,
         path: selected.path,
         delete_source: deleteSource,
       });
-      toast.success('已收藏到工作空间资产');
+      toast.success('已收藏到我的资产');
       setArchiveOpen(false);
       if (deleteSource) {
         setSelected(null);

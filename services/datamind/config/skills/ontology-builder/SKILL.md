@@ -11,9 +11,10 @@ category: ontology
 
 ## 核心能力
 
-### 1. 本体模型生成
-- 使用 `generate_ontology_draft` 工具基于数据源自动生成本体草案
-- 分析表结构、外键关系，自动推断对象（Object）和关系（Relationship）
+### 1. 本体模型生成（归纳由你完成，工具不调 LLM）
+- 使用 `generate_ontology_draft` 分批取归纳素材（表/列/已知关系/术语/指标）与归纳规范（spec）、总批数
+- 你按 spec 从素材中归纳业务对象（对象/属性/关系/指标），再用 `save_ontology_draft` 提交落库
+- 分批提交：第 1 批 `append=false`（覆盖旧草案），第 2 批起 `append=true`（同名对象由服务端确定性合并）
 - 生成后可通过 `save_ontology_model` 保存编辑
 
 ### 2. 本体模型管理
@@ -29,12 +30,12 @@ category: ontology
 ## 工作流程
 
 ### 新建本体模型
-1. 先用 `search_metadata` 或 `get_metadata_summary` 了解可用的数据源和表结构
-2. 用 `generate_ontology_draft` 生成本体草案
-3. 向用户展示草案内容，说明包含的对象数量和关系
-4. **等待用户审批**后执行生成
-5. 生成后用 `save_ontology_model` 保存
-6. 用户确认后使用 `activate_ontology_model` 激活
+1. 先用 `get_metadata_summary` 了解表规模（目标数据源由服务端绑定，工具不接受数据源标识参数）
+2. 用 `generate_ontology_draft`（batch=0）取第 1 批素材（返回含总批数与 spec）
+3. 仅依据素材归纳对象（domain/description/objects 结构严格按 spec），不臆造表/列/口径
+4. 用 `save_ontology_draft` 提交本批对象（**第一批 append=false**）；若有多批，逐批重复 2-4（batch 递增，append=true）
+5. 向用户汇报对象总数、业务域与合并告警（warnings）；业务源草案由用户在建模页检查后激活，
+   系统本体确认后可用 `activate_ontology_model` 激活
 
 ### 编辑已有模型
 1. 用 `list_ontology_models` 或 `search_ontology` 找到目标模型
@@ -43,8 +44,9 @@ category: ontology
 4. **所有修改需用户审批后执行**
 
 ## 约束规则
-- **所有写操作（生成、保存、激活、导入）必须经过用户审批**
+- **写操作（提交草案、保存、激活、导入）由菜单与功能权限码把关后直执行，执行前向用户说明意图与影响**
+- 同名不同主表的对象冲突由服务端中止并报错，需人工裁决，不得自行强行覆盖
 - 不允许直连数据源执行 SQL
 - 不猜测表名或字段名，必须通过工具获取真实元数据
 - 使用中文与用户沟通，专业术语保留英文
-- 生成本体前先确认数据源范围，避免遗漏
+- 生成本体前确认任务目标数据源（任务消息中的业务名），避免遗漏批次

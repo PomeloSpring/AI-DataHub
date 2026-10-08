@@ -82,13 +82,15 @@ ADH_SECRET_KEY = os.getenv("ADH_SECRET_KEY", os.getenv("CHATBI_SECRET_KEY", ""))
 ADH_DEFAULT_ADMIN_PASSWORD = os.getenv("ADH_DEFAULT_ADMIN_PASSWORD", "")
 
 # ── 对象存储 (S3 兼容: MinIO / AWS S3 / 阿里云 OSS 等) ──────────
-# 仅用于归档资产(工作空间资产清单)文件托管,支持分布式多实例共享;
+# 仅用于归档资产(用户资产清单, 资产跟随用户)文件托管,支持分布式多实例共享;
 # 聊天附件是会话工作区文件(ADH_WORKSPACES_DIR),不走对象存储
 OBJECT_STORAGE_ENDPOINT = os.getenv("OBJECT_STORAGE_ENDPOINT", "")  # 如 http://minio:9000
 OBJECT_STORAGE_ACCESS_KEY = os.getenv("OBJECT_STORAGE_ACCESS_KEY", "")
 OBJECT_STORAGE_SECRET_KEY = os.getenv("OBJECT_STORAGE_SECRET_KEY", "")
 OBJECT_STORAGE_BUCKET = os.getenv("OBJECT_STORAGE_BUCKET", "adh-attachments")
 OBJECT_STORAGE_REGION = os.getenv("OBJECT_STORAGE_REGION", "")
+# 对象 key 统一前缀(资产布局: {prefix}/{user_id}/assets/..., 见 object_storage.build_asset_key)
+OBJECT_STORAGE_PREFIX = os.getenv("OBJECT_STORAGE_PREFIX", "ai-datahub").strip("/") or "ai-datahub"
 # 未配置 endpoint 时回退本地磁盘(开发环境兼容)
 OBJECT_STORAGE_ENABLED = bool(OBJECT_STORAGE_ENDPOINT and OBJECT_STORAGE_ACCESS_KEY)
 # 本地回退目录(仅 OBJECT_STORAGE_ENABLED=False 时生效)
@@ -100,14 +102,6 @@ ADH_OBJECT_FALLBACK_DIR = os.getenv("ADH_OBJECT_FALLBACK_DIR", str(_PROJECT_ROOT
 
 # ── Agent 工作空间沙箱根目录(Docker 部署时挂载 named volume) ─────
 ADH_WORKSPACES_DIR = os.getenv("ADH_WORKSPACES_DIR", str(_PROJECT_ROOT / "data" / "workspaces"))
-
-# ══════════════════════════════════════════════════════════════════════════
-# LLM (Anthropic)
-# ══════════════════════════════════════════════════════════════════════════
-
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 
 # ══════════════════════════════════════════════════════════════════════════
 # Observability — LLM 交互可观测(O0: credit/token 用量落库, MySQL)

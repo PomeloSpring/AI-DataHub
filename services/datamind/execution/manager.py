@@ -84,15 +84,11 @@ class ExecutionLayerManager:
             config.pop("allowed_dirs", None)
 
         if layer_type == "cli":
-            # config.mode=sdk 时走各家 SDK 适配器
-            if config.get("mode") == "sdk":
-                if config.get("cli_name") == "qoder":
-                    from services.datamind.execution.adapters.qoder_sdk_adapter import QoderSDKAdapter
-                    return QoderSDKAdapter(name, config)
-                if config.get("cli_name") == "claude":
-                    from services.datamind.execution.adapters.claude_sdk_adapter import ClaudeSDKAdapter
-                    return ClaudeSDKAdapter(name, config)
-            raise ValueError("该 CLI 执行层不支持 AS-BOT 安全执行，仅允许 Qoder/Claude SDK")
+            # config.mode=sdk 时走 Qoder SDK 适配器(claude-agent-sdk 执行层已退役)
+            if config.get("mode") == "sdk" and config.get("cli_name") == "qoder":
+                from services.datamind.execution.adapters.qoder_sdk_adapter import QoderSDKAdapter
+                return QoderSDKAdapter(name, config)
+            raise ValueError("该 CLI 执行层不支持 AS-BOT 安全执行，仅允许 Qoder SDK")
 
         raise ValueError(f"不支持的执行层类型: {layer_type}")
 

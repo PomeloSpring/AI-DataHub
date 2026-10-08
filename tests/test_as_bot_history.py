@@ -92,7 +92,7 @@ def test_create_tags_resolved_as_bot_key(capture, monkeypatch):
     seen = {}
     _stub_policy(monkeypatch, "resolved-bot", seen)
     chat.create_conversation(
-        chat.CreateConversationRequest(workspace_id=0, datasource_id=0, as_bot_key="ops-bot"),
+        chat.CreateConversationRequest(workspace_id=5, datasource_id=0, as_bot_key="ops-bot"),
         user={"user_id": 7})
     sql, params = capture[0]
     assert seen["ctx_as_bot_key"] == "ops-bot"  # 请求标识进入策略解析
@@ -305,14 +305,13 @@ def test_cleanup_rejects_replaced_session_root(deletion_store):
 
 
 def test_cleanup_does_not_create_missing_mount(deletion_store, tmp_path, monkeypatch):
-    from fastapi import HTTPException
+    # 挂载目录不存在 = 无残留可清理 → 放行删除(需求确认语义)；仍不创建挂载目录/标记。
     _, state, root, _ = deletion_store
     missing = tmp_path / 'unmounted'
     monkeypatch.setattr('services.shared.common.config.ADH_WORKSPACES_DIR', str(missing))
-    with pytest.raises(HTTPException) as error:
-        chat.delete_conversation(10, {'user_id': 7})
-    assert error.value.status_code == 503
-    assert not missing.exists() and root.exists() and state['session']['status'] == 'idle'
+    assert chat.delete_conversation(10, {'user_id': 7}) == {'success': True}
+    assert not missing.exists() and root.exists()  # 不重建挂载；原卷内文件不动
+    assert state['session'] is None and state['conversation'] is None
 
 
 def test_cleanup_does_not_create_missing_storage_marker(deletion_store):

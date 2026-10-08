@@ -236,29 +236,100 @@ def test_beat_generates_run_before_publish(monkeypatch):
     assert calls[0][1] == calls[1][1]
 
 
+# ── 定时分析：qodercli -q 一次性任务模式（sdk.query 单发） ──────────
+
+class AssistantMessage:
+    def __init__(self, content): self.content = content
+
+
+class UserMessage:
+    def __init__(self, content): self.content = content
+
+
+class ResultMessage:
+    def __init__(self, result="已完成", is_error=False, subtype="success", terminal_reason=""):
+        self.result, self.is_error = result, is_error
+        self.subtype, self.terminal_reason = subtype, terminal_reason
+
+
+class ToolUseBlock:
+    def __init__(self, call_id, name, args):
+        self.id, self.name, self.input = call_id, name, args
+
+
+class ToolResultBlock:
+    def __init__(self, call_id, content, is_error=False):
+        self.tool_use_id, self.content, self.is_error = call_id, content, is_error
+
+
+def _scripted(calls, final=None):
+    """脚本化一次性消息流：工具调用派发给 run.handle（模拟 qodercli 运行时）。"""
+    async def stream(run):
+        for index, (name, args) in enumerate(calls, 1):
+            call_id = f"t{index}"
+            yield AssistantMessage([ToolUseBlock(call_id, name, args)])
+            result = await run.handle(name, args)
+            yield UserMessage([ToolResultBlock(call_id, str(result))])
+            if run.fatal is not None or run.abort_exc is not None:
+                break
+        yield final or ResultMessage()
+    return stream
+
+
+def _patch_oneshot(monkeypatch, script):
+    """mock 点从 llm_client.generate_with_tools 移到 sdk.query 一次性流（oneshot 测试缝）。"""
+    from services.datamind.execution import scheduled_analysis as sa
+    monkeypatch.setattr(sa, "_build_oneshot_options", lambda run: None)
+    monkeypatch.setattr(sa._ScheduledRun, "oneshot", lambda self, prompt, options: script(self))
+
+
 @pytest.mark.parametrize("call,code", [(None, "NO_QUERY_RESULT"), ("execute_sql", "TOOL_NOT_ALLOWED"),
                                       ("needs_clarification", "NEEDS_CLARIFICATION")])
 def test_agent_never_fakes_completion_or_bypasses_tools(monkeypatch, call, code, scheduled_as_bot):
     from services.datamind.execution.scheduled_analysis import analyze_question
-    from services.shared.common.llm import llm_client
-    response = {"tool_uses": [{"id": "1", "name": call, "input": {}}] if call else [], "text": "已完成"}
-    monkeypatch.setattr(llm_client, "generate_with_tools", lambda *a: response)
+    _patch_oneshot(monkeypatch, _scripted([(call, {})] if call else []))
     result = asyncio.run(analyze_question("统计订单", {"datasource_id": 8, "as_bot_key": "sales"}, {"user_id": 7, "workspace_id": 3}))
     assert result["status"] == "failed" and result["error_code"] == code
 
 
 def test_agent_injects_trusted_identity(monkeypatch, scheduled_as_bot):
     from services.datamind.execution.scheduled_analysis import analyze_question
-    from services.shared.common.llm import llm_client
     from services.dataviz.services import report_service
-    responses = iter([{"tool_uses": [{"id": "1", "name": "run_semantic_query", "input": {"intent": {"object": "订单"}}}]}, {"tool_uses": []}])
-    monkeypatch.setattr(llm_client, "generate_with_tools", lambda *a: next(responses))
+    _patch_oneshot(monkeypatch, _scripted([("run_semantic_query", {"intent": {"object": "订单"}})]))
     execute = Mock(return_value={"status": "success", "rows": [], "columns": []})
     monkeypatch.setattr(report_service, "execute_semantic_source", execute)
     identity = {"user_id": 7, "workspace_id": 3, "username": "创建者", "role": "admin"}
     out = asyncio.run(analyze_question("统计订单", {"datasource_id": 8, "as_bot_key": "sales"}, identity))
     assert out["status"] == "success"
     assert execute.call_args.args[1:] == (identity, 8)
+
+
+def test_scheduled_query_rows_never_reach_llm(monkeypatch, scheduled_as_bot):
+    """治理约束：行数据只入 run 级收集器（_analysis_results 带 _security_context），回 LLM 仅完成回执。"""
+    from services.datamind.execution.scheduled_analysis import analyze_question
+    from services.dataviz.services import report_service
+    captured = {}
+
+    async def stream(run):
+        captured["task_binding"] = run.ctx.extra.get("task_binding")
+        yield AssistantMessage([ToolUseBlock("t1", "run_semantic_query", {"intent": {"object": "订单"}})])
+        result = await run.handle("run_semantic_query", {"intent": {"object": "订单"}})
+        captured["llm_payload"] = str(result)
+        yield UserMessage([ToolResultBlock("t1", str(result))])
+        yield ResultMessage()
+
+    _patch_oneshot(monkeypatch, stream)
+    governed = {"status": "success", "columns": ["金额"], "rows": [{"金额": 12345}],
+                "_security_context": {"sources": [8], "policy_digest": "d"}}
+    monkeypatch.setattr(report_service, "execute_semantic_source", lambda *a: governed)
+    out = asyncio.run(analyze_question("统计", {"datasource_id": 8, "as_bot_key": "sales"},
+                                       {"user_id": 7, "workspace_id": 3}))
+    assert out["status"] == "success"
+    assert out["_analysis_results"] == [governed]  # 受控结果（含 _security_context）原样入收集器
+    assert captured["task_binding"]["kind"] == "scheduled_analysis"
+    assert captured["task_binding"].get("run_id")  # run 标识 LLM 不可见（只随 ctx.extra 注入）
+    assert "12345" not in captured["llm_payload"] and "金额" not in captured["llm_payload"]
+    assert "语义查询已完成" in captured["llm_payload"]  # 行数据不进 LLM，只回完成回执
 
 
 # ── 时区 Beat：墙钟分钟匹配 + DST 安全运行键 ──────────────
@@ -442,16 +513,20 @@ def test_independent_workers_observe_revocation(scheduled_as_bot, revoke):
 
 
 def test_revocation_during_llm_never_reaches_query(monkeypatch, scheduled_as_bot):
-    from services.datamind.execution import scheduled_analysis as sa
-    from services.shared.common.llm import llm_client
+    from services.datamind.execution.scheduled_analysis import analyze_question
     from services.dataviz.services import report_service
-    def revoke(*args):
-        scheduled_as_bot["enabled"] = False
-        return {"tool_uses": [{"id": "1", "name": "run_semantic_query", "input": {"intent": {"object": "订单"}}}]}
-    monkeypatch.setattr(llm_client, "generate_with_tools", revoke)
+
+    async def stream(run):
+        yield AssistantMessage([ToolUseBlock("t1", "run_semantic_query", {"intent": {"object": "订单"}})])
+        scheduled_as_bot["enabled"] = False  # 运行中撤权
+        result = await run.handle("run_semantic_query", {"intent": {"object": "订单"}})
+        yield UserMessage([ToolResultBlock("t1", str(result))])
+        yield ResultMessage()
+
+    _patch_oneshot(monkeypatch, stream)
     query = Mock()
     monkeypatch.setattr(report_service, "execute_semantic_source", query)
-    out = asyncio.run(sa.analyze_question("统计", {"as_bot_key": "sales", "datasource_id": 8}, {"user_id": 7, "workspace_id": 3}))
+    out = asyncio.run(analyze_question("统计", {"as_bot_key": "sales", "datasource_id": 8}, {"user_id": 7, "workspace_id": 3}))
     assert out["status"] == "failed" and not out.get("retryable")
     query.assert_not_called()
 
@@ -501,18 +576,16 @@ def test_propose_intent_accepts_clean_intent(monkeypatch):
 
 
 def test_mcp_unavailable_is_retryable_not_success(monkeypatch, scheduled_as_bot):
-    from services.datamind.execution import scheduled_analysis as sa
-    from services.shared.common.llm import llm_client
+    from services.datamind.execution.scheduled_analysis import analyze_question
     import services.shared.mcp_client.client as mcpmod
     _grant_mcp(scheduled_as_bot)
-    monkeypatch.setattr(llm_client, "generate_with_tools",
-                        lambda *a: {"tool_uses": [{"id": "1", "name": "propose_semantic_intent_1", "input": {}}]})
+    _patch_oneshot(monkeypatch, _scripted([("propose_semantic_intent_1", {})]))
     class DeadClient:
         def __init__(self, *a, **k): pass
         async def connect(self): return False
         async def disconnect(self): pass
     monkeypatch.setattr(mcpmod, "MCPClient", DeadClient)
-    out = asyncio.run(sa.analyze_question("统计", {"datasource_id": 8, "as_bot_key": "sales"}, {"user_id": 7, "workspace_id": 3}))
+    out = asyncio.run(analyze_question("统计", {"datasource_id": 8, "as_bot_key": "sales"}, {"user_id": 7, "workspace_id": 3}))
     assert out["status"] == "failed" and out["error_code"] == "MCP_UNAVAILABLE" and out["retryable"]
 
 
@@ -529,17 +602,18 @@ def _agent_task(**cfg):
 
 def test_agent_retries_transient_llm_then_succeeds(monkeypatch, scheduled_as_bot):
     from services.dataviz.services import report_service
-    from services.shared.common.llm import llm_client
+    from services.datamind.execution import scheduled_analysis as sa
     monkeypatch.setattr(executor, "_check_running", lambda task: None)
     state = {"calls": 0}
-    def gen(messages, tools):
+
+    def oneshot(self, prompt, options):
         state["calls"] += 1
         if state["calls"] == 1:
             raise RuntimeError("LLM 瞬时不可用")
-        if state["calls"] == 2:
-            return {"tool_uses": [{"id": "1", "name": "run_semantic_query", "input": {"intent": {"object": "订单"}}}]}
-        return {"tool_uses": []}
-    monkeypatch.setattr(llm_client, "generate_with_tools", gen)
+        return _scripted([("run_semantic_query", {"intent": {"object": "订单"}})])(self)
+
+    monkeypatch.setattr(sa, "_build_oneshot_options", lambda run: None)
+    monkeypatch.setattr(sa._ScheduledRun, "oneshot", oneshot)
     monkeypatch.setattr(report_service, "execute_semantic_source", lambda *a: {"status": "success", "rows": [], "columns": []})
     out = executor._execute_agent_mode(_agent_task(max_retries=2))
     assert out[0]["status"] == "success" and out[0]["attempts"] == 2
@@ -547,15 +621,14 @@ def test_agent_retries_transient_llm_then_succeeds(monkeypatch, scheduled_as_bot
 
 def test_agent_non_retryable_not_repeated(monkeypatch, scheduled_as_bot):
     from services.dataviz.services import report_service
-    from services.shared.common.llm import llm_client
+    from services.datamind.execution import scheduled_analysis as sa
     monkeypatch.setattr(executor, "_check_running", lambda task: None)
     calls = {"n": 0}
     def execute(*a):
         calls["n"] += 1
         raise ValueError("bad intent")
     monkeypatch.setattr(report_service, "execute_semantic_source", execute)
-    monkeypatch.setattr(llm_client, "generate_with_tools",
-                        lambda *a: {"tool_uses": [{"id": "1", "name": "run_semantic_query", "input": {"intent": {}}}]})
+    _patch_oneshot(monkeypatch, _scripted([("run_semantic_query", {"intent": {}})]))
     out = executor._execute_agent_mode(_agent_task(max_retries=3))
     assert out[0]["status"] == "failed" and out[0]["error_code"] == "QUERY_REJECTED"
     assert calls["n"] == 1  # 需人工处理，不盲目重试

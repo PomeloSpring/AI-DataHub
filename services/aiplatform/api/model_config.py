@@ -24,7 +24,7 @@ router = APIRouter()
 
 class LLMModelCreate(BaseModel):
     name: str
-    provider: str = "anthropic"
+    provider: str = "openai"
     base_url: str
     api_key: str
     model_name: str

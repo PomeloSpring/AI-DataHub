@@ -6,7 +6,6 @@ import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import MarkdownWithCharts from '../MarkdownWithCharts';
 import ProcessTimeline from '../ProcessTimeline';
-import ConversationDesignSection from '../ConversationDesignSection';
 import { useAsBotStore } from '../../stores/asBotStore';
 import type { AsBotMessage } from '../../stores/asBotStore';
 import { useThemeStore, applyTheme } from '../../stores/themeStore';
@@ -202,16 +201,9 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
               msg={msg}
               conversationId={conversationId}
               isStreaming={loading && idx === messages.length - 1}
+              onDesignContinue={text => void sendMessage(text)}
             />
           ))}
-
-          {/* 会话关联的仪表盘设计（与工作空间 Chat 共用同一实现） */}
-          <ConversationDesignSection
-            conversationId={conversationId}
-            refreshSignal={messages.length}
-            disabled={loading}
-            onContinue={text => void sendMessage(text)}
-          />
 
           {/* Loading indicator */}
           {loading && (
@@ -264,11 +256,12 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
 // ── Message Bubble ────────────────────────────────────────────────
 
 function MessageBubble({
-  msg, isStreaming, conversationId,
+  msg, isStreaming, conversationId, onDesignContinue,
 }: {
   msg: AsBotMessage;
   isStreaming: boolean;
   conversationId: number | null;
+  onDesignContinue?: (text: string) => void;
 }) {
   const isUser = msg.role === 'user';
 
@@ -299,8 +292,8 @@ function MessageBubble({
               <p className="whitespace-pre-wrap">{msg.content}</p>
             ) : (
               <div className="prose prose-sm dark:prose-invert max-w-none break-words [&_table]:block [&_table]:overflow-x-auto [&_table]:max-w-full [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_code]:break-all">
-                {/* 与工作空间 Chat 同一渲染（图表契约/表格/代码样式一致） */}
-                <MarkdownWithCharts text={msg.content} conversationId={conversationId} />
+                {/* 与工作空间 Chat 同一渲染（图表契约/表格/代码/设计卡片样式一致） */}
+                <MarkdownWithCharts text={msg.content} conversationId={conversationId} onDesignContinue={onDesignContinue} />
               </div>
             )}
           </div>

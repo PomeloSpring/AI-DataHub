@@ -1,10 +1,16 @@
-"""Dataset Service — BI 治理建模层(语义对象 / SQL 双来源).
+"""Dataset Service — BI 治理建模层(语义对象 × SQL 双定义, 互为转换).
+
+双定义语义(非二选一): 执行 SQL 是查询的实际执行通道; 本体对象绑定供语义层
+检索/业务口径(字段随本体自动演进)。两者可互相转换:
+- compile_from_semantic: 语义意图 → 编译 SQL(固化为执行定义)
+- extract_from_sql:      执行 SQL 输出列 → 语义字段映射建议(未命中回抛待映射)
 
 取数契约(数据护城河):
-- semantic: intent → resolve_binding → plan → execute_semantic(七闸门链, 与 Chat 同源)
-- sql:      validate_sql → 行级 scope 子查询包裹 → governed_execute(敏感基线+RLS+审计)
+- 有执行 SQL: validate_sql → 行级 scope 子查询包裹 → governed_execute(敏感基线+RLS+审计)
+- 仅语义对象: intent → resolve_binding → plan → execute_semantic(七闸门链, 与 Chat 同源)
 - 身份只信服务端 JWT 解析后传入; 无可信身份 fail-closed(NoIdentityError 向上传播)。
 - 数据集级行范围"只收紧不放宽": 与用户查询条件 AND 合并, 叠加在 RLS/敏感屏蔽之上。
+- 可见性功能已退役: 列表不做可见性过滤, 越权防护由取数治理入口承担。
 """
 from __future__ import annotations
 
@@ -51,17 +57,18 @@ def _sql_str(v) -> str:
 # CRUD
 # ═══════════════════════════════════════════════════════════════════
 
+def _derive_source_type(object_key: str, sql_query: str) -> str:
+    """展示用来源标注(不驱动分支): 双定义并存时为 'both'."""
+    has_obj, has_sql = bool(object_key), bool(sql_query)
+    return "both" if has_obj and has_sql else ("semantic" if has_obj else "sql")
+
+
 def list_datasets(identity: dict, keyword: str = "") -> list[dict]:
-    """按可见性列出数据集: public/workspace 全员, private 仅 owner 与 admin."""
-    uid = int(identity.get("user_id") or 0)
-    is_admin = identity.get("role") == "admin"
+    """列出数据集(可见性功能已退役, 取数侧治理不变)."""
     sql = ("SELECT id, name, description, source_type, object_key, datasource_id, "
-           "visibility, owner_id, status, field_config, created_at, updated_at "
+           "chart_type, chart_preset, owner_id, status, field_config, created_at, updated_at "
            "FROM adh_datasets WHERE status='active'")
     params: list = []
-    if not is_admin:
-        sql += " AND (visibility IN ('public','workspace') OR owner_id = %s)"
-        params.append(uid)
     if keyword:
         sql += " AND (name LIKE %s OR description LIKE %s OR object_key LIKE %s)"
         like = f"%{keyword}%"
@@ -69,6 +76,7 @@ def list_datasets(identity: dict, keyword: str = "") -> list[dict]:
     sql += " ORDER BY updated_at DESC LIMIT 200"
     rows = execute_query(sql, tuple(params)) or []
     for r in rows:
+        r["chart_preset"] = _parse_json(r.get("chart_preset"), {})
         r["field_count"] = len(resolve_fields(r))
         r["references"] = _reference_count(int(r["id"]))
     return rows
@@ -90,19 +98,14 @@ def create_dataset(req: dict, identity: dict) -> dict:
     name = (req.get("name") or "").strip()
     if not name:
         raise ValueError("数据集名称必填")
-    source_type = req.get("source_type") or "semantic"
-    if source_type not in ("semantic", "sql"):
-        raise ValueError("source_type 仅支持 semantic|sql")
     object_key = (req.get("object_key") or "").strip()
     sql_query = (req.get("sql_query") or "").strip()
     datasource_id = int(req.get("datasource_id") or 0)
 
-    if source_type == "semantic":
-        if not object_key:
-            raise ValueError("语义数据集必须绑定本体对象(object_key)")
-    else:
-        if not sql_query:
-            raise ValueError("SQL 数据集必须提供 sql_query")
+    # 双定义并存: 至少一种查询定义, 两者可互转
+    if not object_key and not sql_query:
+        raise ValueError("数据集至少需要一种查询定义: 绑定本体对象或提供执行 SQL(两者可并存互转)")
+    if sql_query:
         _validate_select(sql_query)
 
     if execute_query("SELECT id FROM adh_datasets WHERE name=%s", (name,), fetchone=True):
@@ -113,11 +116,14 @@ def create_dataset(req: dict, identity: dict) -> dict:
                                fetchone=True)["n"])
     execute_write(
         "INSERT INTO adh_datasets (id, name, description, source_type, object_key, "
-        "datasource_id, sql_query, field_config, visibility, owner_id, status) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active')",
-        (new_id, name, req.get("description") or "", source_type, object_key,
+        "datasource_id, sql_query, field_config, chart_type, chart_preset, owner_id, status) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active')",
+        (new_id, name, req.get("description") or "",
+         _derive_source_type(object_key, sql_query), object_key,
          datasource_id, sql_query, field_config,
-         req.get("visibility") or "workspace", int(identity.get("user_id") or 0)))
+         (req.get("chart_type") or "").strip(),
+         json.dumps(req.get("chart_preset") or {}, ensure_ascii=False),
+         int(identity.get("user_id") or 0)))
     return get_dataset(new_id)
 
 
@@ -127,10 +133,18 @@ def update_dataset(dataset_id: int, req: dict, identity: dict) -> dict:
         raise ValueError("数据集不存在")
     _require_editor(ds, identity)
     updates, params = [], []
-    for col in ("description", "visibility", "object_key", "sql_query"):
+    for col in ("description", "object_key", "sql_query"):
         if req.get(col) is not None:
             updates.append(f"{col} = %s")
             params.append(req[col])
+    if req.get("chart_type") is not None:
+        updates.append("chart_type = %s")
+        params.append(str(req["chart_type"]).strip())
+    if req.get("chart_preset") is not None:
+        if not isinstance(req["chart_preset"], dict):
+            raise ValueError("chart_preset 必须是对象 {xCol,yCol,groupCol,limit}")
+        updates.append("chart_preset = %s")
+        params.append(json.dumps(req["chart_preset"], ensure_ascii=False))
     if req.get("datasource_id") is not None:
         updates.append("datasource_id = %s")
         params.append(int(req["datasource_id"]))
@@ -143,6 +157,15 @@ def update_dataset(dataset_id: int, req: dict, identity: dict) -> dict:
     # 改 SQL 必须重新过校验
     if req.get("sql_query"):
         _validate_select(str(req["sql_query"]).strip())
+    # 更新后至少保留一种查询定义(语义对象/执行 SQL), source_type 随之重算
+    object_key = str(req["object_key"] if req.get("object_key") is not None
+                     else ds.get("object_key") or "").strip()
+    sql_query = str(req["sql_query"] if req.get("sql_query") is not None
+                    else ds.get("sql_query") or "").strip()
+    if not object_key and not sql_query:
+        raise ValueError("数据集至少需要一种查询定义: 绑定本体对象或提供执行 SQL(两者可并存互转)")
+    updates.append("source_type = %s")
+    params.append(_derive_source_type(object_key, sql_query))
     if updates:
         execute_write(f"UPDATE adh_datasets SET {', '.join(updates)} WHERE id = %s",
                       tuple(params) + (dataset_id,))
@@ -185,15 +208,149 @@ def _validate_select(sql: str):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# 语义对象 × SQL 互转(双定义)
+# ═══════════════════════════════════════════════════════════════════
+
+def _require_manage(identity: dict, path: str):
+    """编译/映射类操作把关: 角色须持有 dataset:manage(fail-closed, 与 API 中间件同口径)."""
+    from services.shared.common.api_permission import check_api_permission
+    if not check_api_permission(identity.get("role") or "", "POST", path):
+        raise PermissionError("角色未授予「dataset:manage」权限, 无法编译 SQL 或对齐语义字段")
+
+
+def compile_from_semantic(req: dict, identity: dict) -> dict:
+    """语义对象 → 执行 SQL: 把声明式意图编译为 SQL, 供固化为数据集执行定义.
+
+    护栏 §7 例外: 编译 SQL 仅回显给持有 dataset:manage 的数据集编辑者(人工编辑面板),
+    不进 LLM/聊天/图表响应。未解析词直接拒绝(宁缺勿错, 不静默绑定)。
+    """
+    _require_manage(identity, "/api/datasets/compile-from-semantic")
+    object_key = (req.get("object_key") or "").strip()
+    if not object_key:
+        raise ValueError("object_key 必填(请先选择本体对象)")
+    datasource_id = int(req.get("datasource_id") or 0)
+    from services.shared.semantics.binding_resolver import resolve_binding
+    from services.shared.semantics.intent import parse_intent
+    from services.shared.semantics.planner import plan
+
+    payload = {
+        "object": object_key,
+        "metrics": req.get("measures") or req.get("metrics") or [],
+        "dimensions": req.get("dimensions") or [],
+        "filters": req.get("filters") or [],
+        "order": req.get("order") or [],
+        "limit": min(int(req.get("limit") or _DEFAULT_LIMIT), _MAX_LIMIT),
+        "datasource_id": datasource_id,
+    }
+    q, err, _notes = parse_intent(payload)
+    if err:
+        raise ValueError(f"查询意图非法: {err}")
+    binding, _bw = resolve_binding(q.object, datasource_id=q.datasource_id)
+    if binding is None:
+        raise ValueError(f"对象 '{q.object}' 未绑定到任何物理表, 请检查本体模型")
+    p = plan(q, binding)
+    unresolved = list((p.provenance or {}).get("unresolved_terms") or [])
+    if unresolved:
+        raise ValueError("存在未解析的业务词, 拒绝编译(请先在语义层补齐字典/别名): "
+                         + ", ".join(str(t) for t in unresolved))
+    if not p.sql:
+        raise ValueError("语义层护栏拒绝了本次编译: "
+                         + "; ".join(str(w) for w in (p.warnings or [])))
+    return {"sql": p.sql, "dialect": p.dialect,
+            "dimensions": list(q.dimensions or []), "measures": list(q.metrics or []),
+            "warnings": list(p.warnings or [])}
+
+
+def extract_from_sql(req: dict, identity: dict) -> dict:
+    """执行 SQL → 语义字段映射建议: 探测输出列, 按 精确名→name_en→别名 匹配语义字段.
+
+    未命中列显式回抛待映射(maps_to 为空 + 候选业务名), 不静默绑定
+    (ontology-modeling §7 宁缺勿错)。探测取数经 governed_execute 治理入口。
+    """
+    _require_manage(identity, "/api/datasets/extract-from-sql")
+    sql = (req.get("sql_query") or "").strip()
+    if not sql:
+        raise ValueError("SQL 不能为空")
+    _validate_select(sql)
+    uid = int(identity.get("user_id") or 0)
+    if not uid:
+        raise NoIdentityError("缺少可信用户身份, 拒绝探测取数")
+    datasource_id = int(req.get("datasource_id") or 0)
+    inner = sql.rstrip(";")
+    if "limit" not in inner.lower():
+        inner += f" LIMIT 1"
+    probe = f"SELECT * FROM ({inner}) AS _ds_extract LIMIT 1"
+    from services.dataviz.services.governed_query import governed_execute
+    result = governed_execute(probe, datasource_id or None, uid,
+                              int(identity.get("workspace_id") or 0),
+                              identity.get("username") or "")
+    columns = [str(c) for c in (result.get("columns") or [])]
+    first_row = (result.get("rows") or [{}])[0]
+    semantic = _semantic_fields(datasource_id, (req.get("object_key") or "").strip())
+    by_name = {f["field"]: f for f in semantic}
+    by_en = {str(f.get("label") or ""): f for f in semantic if f.get("label")}
+    by_alias: dict = {}
+    for f in semantic:
+        for a in f.get("aliases") or []:
+            by_alias.setdefault(str(a), f)
+
+    fields = []
+    for col in columns:
+        f = by_name.get(col)
+        source = "name"
+        if f is None:
+            f = by_en.get(col)
+            source = "name_en"
+        if f is None:
+            f = by_alias.get(col)
+            source = "alias"
+        if f is not None:
+            fields.append({"field": col, "maps_to": f["field"],
+                           "role": f.get("role") or "dimension", "match_source": source})
+        else:
+            v = (first_row or {}).get(col)
+            role = "measure" if isinstance(v, (int, float)) and not isinstance(v, bool) else "dimension"
+            fields.append({"field": col, "maps_to": "", "role": role, "match_source": "none",
+                           "candidates": [sf["field"] for sf in semantic][:10]})
+    return {"fields": fields,
+            "semantic_fields": [f["field"] for f in semantic],
+            "unmapped": [f["field"] for f in fields if not f["maps_to"]]}
+
+
+# ═══════════════════════════════════════════════════════════════════
 # 字段定义
 # ═══════════════════════════════════════════════════════════════════
 
 def resolve_fields(ds: dict) -> list[dict]:
-    """数据集字段: semantic 源动态读语义字典; sql 源读 field_config."""
-    if (ds.get("source_type") or "") == "semantic":
-        return _semantic_fields(int(ds.get("datasource_id") or 0),
-                                ds.get("object_key") or "")
-    return _parse_json(ds.get("field_config"), [])
+    """数据集字段: 绑定语义对象时以语义字典为主(随本体自动演进),
+    field_config 保存「SQL 输出列 → 语义字段」映射(maps_to)与 SQL 独有列;纯 SQL 源读 field_config.
+
+    每项带 from 标记('semantic' 语义字典演进 | 'config' field_config 手工),
+    供前端区分可编辑范围(仅 config 项可改名/改角色)。
+    """
+    config = _parse_json(ds.get("field_config"), [])
+    object_key = (ds.get("object_key") or "").strip()
+    if not object_key:
+        for e in config:
+            e["from"] = "config"
+        return config
+    semantic = _semantic_fields(int(ds.get("datasource_id") or 0), object_key)
+    for f in semantic:
+        f["from"] = "semantic"
+    if not config:
+        return semantic
+    by_name = {f["field"]: dict(f) for f in semantic}
+    fields = list(by_name.values())
+    for e in config:
+        target = str(e.get("maps_to") or "")
+        if target in by_name:
+            by_name[target]["sql_column"] = str(e.get("field") or "")
+        else:
+            extra = dict(e)
+            extra["from"] = "config"
+            extra["unmapped"] = bool(target)  # 有 maps_to 但语义字段不存在 = 悬空映射
+            fields.append(extra)
+    return fields
 
 
 def _semantic_fields(datasource_id: int, object_key: str) -> list[dict]:
@@ -309,9 +466,12 @@ def query_dataset(dataset_id: int, params: dict, identity: dict) -> dict:
     if not ds or ds.get("status") != "active":
         raise ValueError("数据集不存在或已停用")
     scopes = _scope_filters(dataset_id, identity)
-    if (ds.get("source_type") or "") == "semantic":
+    # 执行路径显式选择(非降级): 执行 SQL 是实际执行通道; 仅绑定语义对象时走七闸门语义链。
+    if (ds.get("sql_query") or "").strip():
+        return _query_sql(ds, params, scopes, identity)
+    if (ds.get("object_key") or "").strip():
         return _query_semantic(ds, params, scopes, identity)
-    return _query_sql(ds, params, scopes, identity)
+    raise ValueError("数据集缺少执行定义: 请配置执行 SQL 或绑定本体对象")
 
 
 def _query_semantic(ds: dict, params: dict, scopes: list[dict], identity: dict) -> dict:
@@ -364,7 +524,7 @@ def _query_semantic(ds: dict, params: dict, scopes: list[dict], identity: dict) 
     result["applied_rls"] = se.applied_rls
     result["masked_columns"] = se.masked_columns
     result["dataset"] = ds.get("name")
-    result["source_type"] = "semantic"
+    result["execution_mode"] = "semantic"
     return result
 
 
@@ -402,7 +562,7 @@ def _query_sql(ds: dict, params: dict, scopes: list[dict], identity: dict) -> di
         logger.error("[dataset] sql execution failed ds=%s: %s", ds.get("id"), e)
         raise ValueError(_EXEC_FAIL_HINT)
     result["dataset"] = ds.get("name")
-    result["source_type"] = "sql"
+    result["execution_mode"] = "sql"
     return result
 
 

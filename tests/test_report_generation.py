@@ -123,7 +123,7 @@ def test_semantic_source_rejects_identity_override():
 def test_dataset_scope_change_invalidates_report(monkeypatch):
     from services.dataviz.services import report_access, dataset_service
     from services.shared.common import auth
-    dataset = {"id": 1, "status": "active", "visibility": "private", "owner_id": 7}
+    dataset = {"id": 1, "status": "active", "owner_id": 7}
     monkeypatch.setattr(dataset_service, "get_dataset", lambda did: dataset)
     scopes = []
     monkeypatch.setattr(dataset_service, "_scope_filters", lambda *a: scopes)

@@ -18,7 +18,7 @@ def _get_workspaces_dir() -> Path:
 
 
 def workspace_root(workspace_id: int) -> Path:
-    """工作空间文件根目录(不存在则创建);workspace_id=0 用 global."""
+    """工作空间文件根目录(不存在则创建);workspace_id=0 用 global(历史遗留，仅兼容保留)。"""
     name = f"ws_{workspace_id}" if workspace_id else "global"
     root = _get_workspaces_dir() / name
     root.mkdir(parents=True, exist_ok=True)

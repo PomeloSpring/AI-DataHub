@@ -1,7 +1,11 @@
 """Ontology Modeling Service — FDE 对象中心本体（本地轻量实现）。
 
-工作流：页面触发 LLM 生成草案(JSON 事实源) → 用户检查/编辑 → 确认激活 →
+工作流：页面发起『生成本体模型』任务（自动创建 AS-BOT 会话，归纳由 qoder agent 完成）→
+服务端确定性校验/合并后落库生成草案(JSON 事实源) → 用户检查/编辑 → 确认激活 →
 逐对象 MD 段写入 adh_ontology_objects（元数据库，供对象关键词检索与前端预览）。
+
+本模块不调用任何 LLM：归纳属 AS-BOT 会话任务，这里只提供素材（build_generation_batches）
+与确定性落库（save_generated_draft），避免出现第二条 LLM 生成通道。
 
 三格式：JSON（接口流转，唯一事实源）/ YAML（结构可读）/ MD（AI 识别与检索）。
 保存 JSON 时服务端重新派生 YAML/MD，保证三格式一致。
@@ -20,7 +24,7 @@ from services.shared.common.db.metadata_db import get_metadata_conn
 
 logger = logging.getLogger(__name__)
 
-# 每批送入 LLM 的最大表数（超出按 domain_tag 分批后合并）
+# 每批归纳素材的最大表数（超出按 domain_tag 分批，由 AS-BOT 分批归纳后合并）
 BATCH_MAX_TABLES = 20
 
 
@@ -212,13 +216,13 @@ def _schema_text(batch_tables: list, meta: dict) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# LLM 生成
+# 归纳 schema 规范（本体 JSON 结构约定，供 AS-BOT 任务消息引用）
 # ═══════════════════════════════════════════════════════════════════
 
-_SYSTEM_PROMPT = """你是数据架构师，负责从物理表结构中归纳业务本体（Ontology）。
+ONTOLOGY_SCHEMA_SPEC = """你是数据架构师，负责从物理表结构中归纳业务本体（Ontology）。
 本体以"业务对象"为中心（而非物理表）：对象可对应一张主表，也可聚合多张表。
 
-输出严格 JSON（不要任何解释文字、不要 markdown 代码块），结构：
+归纳产物按以下结构组织（domain / description / objects 三个字段）：
 {
   "domain": "业务领域名称",
   "description": "该数据源业务概述，2-3句",
@@ -264,23 +268,10 @@ _SYSTEM_PROMPT = """你是数据架构师，负责从物理表结构中归纳业
 6. 指标优先采用给定 Metrics/Terms 中的口径"""
 
 
-def _extract_json(text: str) -> dict:
-    """从 LLM 输出中稳健提取 JSON 对象。"""
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    start = text.find("{")
-    end = text.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError("LLM 输出中未找到 JSON 对象")
-    return json.loads(text[start:end + 1])
-
-
 # ═══════════════════════════════════════════════════════════════════
 # 对象 key 规范与重复检测
 # ═══════════════════════════════════════════════════════════════════
-# 历史缺陷根因：generate_draft 与 palantir_to_canonical 的去重都只按精确字符串
+# 历史缺陷根因：本体生成链路与 palantir_to_canonical 的去重都只按精确字符串
 # 判 key，`case_file` 与 `casefile` 被当成两个对象，于是产生一批 0 属性空壳重复。
 # 判重一律走 object_identity_key(忽略大小写与分隔符)，命名走 normalize_object_key。
 
@@ -388,27 +379,15 @@ def merge_object_pair(a: dict, b: dict) -> tuple:
                     "gained_metrics": sorted(gained)}
 
 
-def generate_draft(datasource_id: int, progress_cb=None, created_by: str = "") -> dict:
-    """LLM 归纳本体草案并落库（替换该数据源已有 draft）。
+def build_generation_batches(datasource_id: int) -> list[str]:
+    """采集数据源元数据并按批产出归纳素材文本（确定性，无 LLM 调用）。
 
-    Args:
-        datasource_id: 数据源 ID
-        progress_cb: 可选进度回调 fn(stage: str, detail: str)
-        created_by: 创建人
+    每批不超过 BATCH_MAX_TABLES 张表（按 domain_tag 分组后切批），批序确定，
+    供 AS-BOT 会话任务分批归纳后经 save_generated_draft 提交合并。
 
     Returns:
-        保存后的模型记录 dict
+        素材文本列表（每批一条，同 _schema_text 输出）
     """
-    from services.shared.common.llm.llm_client import generate_sql
-
-    def _progress(stage, detail=""):
-        if progress_cb:
-            try:
-                progress_cb(stage, detail)
-            except Exception:
-                pass
-
-    _progress("collect", "采集表结构与业务知识")
     meta = _collect_metadata(datasource_id)
     tables = meta["tables"]
     if not tables:
@@ -423,52 +402,98 @@ def generate_draft(datasource_id: int, progress_cb=None, created_by: str = "") -
         for i in range(0, len(group_tables), BATCH_MAX_TABLES):
             batches.append(group_tables[i:i + BATCH_MAX_TABLES])
 
-    _progress("generate", f"共 {len(tables)} 张表，分 {len(batches)} 批归纳")
+    return [_schema_text(batch, meta) for batch in batches]
+
+
+def _load_draft_objects(datasource_id: int) -> tuple[list, str, str]:
+    """读取该源当前草案的 (objects, domain, description)；无草案返回空。
+
+    按 (datasource_id, kind) 定位，避免误读同 datasource_id 下其他域的草案。
+    现有草案内容损坏时 fail-loud（不得静默丢弃旧对象再覆盖，会丢用户数据）。
+    """
+    kind = "source" if datasource_id > 0 else "system"
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT json_content FROM adh_ontology_models "
+                "WHERE datasource_id = %s AND kind = %s AND status = 'draft' "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (datasource_id, kind))
+            row = cur.fetchone()
+    if not row:
+        return [], "", ""
+    try:
+        doc = json.loads(row.get("json_content") or "{}")
+    except (json.JSONDecodeError, TypeError) as e:
+        raise ValueError(
+            "现有草案内容损坏，无法并入新归纳结果；请删除该草案后重新生成") from e
+    return (doc.get("objects") or [], doc.get("domain", "") or "",
+            doc.get("description", "") or "")
+
+
+def save_generated_draft(datasource_id: int, objects: list, domain: str = "",
+                         description: str = "", append: bool = False,
+                         created_by: str = "") -> dict:
+    """把归纳出的业务对象落成草案（确定性校验/合并 + 三格式派生，无 LLM 调用）。
+
+    Args:
+        datasource_id: 目标源（0=系统本体域）；模型 kind 由其派生（>0 → source，0 → system）
+        objects: 归纳出的对象列表（canonical JSON 的 objects[]）
+        domain/description: 业务领域与概述（留空时并入模式下沿用现有草案的值）
+        append: False=替换该源已有草案（全新归纳）；True=并入现有草案（分批归纳的后续批次）
+        created_by: 创建人（服务端注入，不来自 LLM/请求体）
+
+    同身份对象合并/并入指标等合并事实随 generation_warnings 显式带回，不静默；
+    同身份不同主表是真冲突，直接中止（宁缺勿错，需人工裁决）。
+
+    Returns:
+        保存后的模型记录 dict（含 generation_warnings 合并告警）
+    """
+    if not isinstance(objects, list) or not objects:
+        raise ValueError("objects 必须是非空对象列表")
+
     merged_objects: dict = {}          # 对象身份键 -> obj（按 object_identity_key 判重）
     merge_warnings: list = []          # 合并事实必须对外可见，不得静默
-    domain, description = "", ""
-    for idx, batch in enumerate(batches, 1):
-        user_prompt = (
-            f"以下是数据源 {datasource_id} 第 {idx}/{len(batches)} 批物理表与业务知识：\n\n"
-            f"{_schema_text(batch, meta)}\n\n"
-            "请输出该批数据归纳的本体 JSON。"
-        )
-        result = generate_sql(
-            [
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=8192,
-        )
-        doc = _extract_json(result["sql"])
-        domain = domain or doc.get("domain", "")
-        description = description or doc.get("description", "")
-        for obj in doc.get("objects", []):
-            key = normalize_object_key(obj.get("key")) or str(obj.get("primary_table") or "")
-            if not key:
-                continue
-            obj["key"] = key
-            ik = object_identity_key(key)
-            prev = merged_objects.get(ik)
-            if prev is None:
-                merged_objects[ik] = obj
-                continue
-            # 同身份重复：主表一致才可合并；主表不同是真冲突，必须人工裁决（宁缺勿错）
-            if str(prev.get("primary_table") or "") != str(obj.get("primary_table") or ""):
-                raise ValueError(
-                    "本体生成出现同名不同主表的对象冲突, 已中止(需人工裁决): "
-                    f"key={prev.get('key')}({prev.get('primary_table')}) vs "
-                    f"{obj.get('key')}({obj.get('primary_table')})")
-            merged_objects[ik], _detail = merge_object_pair(prev, obj)
-            merge_warnings.append(
-                f"对象 '{key}' 在归纳中重复出现, 已合并为一份（丢弃 {_detail['dropped']}"
-                + (f"，并入指标 {_detail['gained_metrics']}" if _detail["gained_metrics"] else "")
-                + "）")
-        _progress("batch_done", f"第 {idx}/{len(batches)} 批完成，累计 {len(merged_objects)} 个对象")
+    base_domain, base_description = "", ""
+    if append:
+        existing_objects, base_domain, base_description = _load_draft_objects(datasource_id)
+        if existing_objects:
+            for obj in existing_objects:
+                ik = object_identity_key(obj.get("key"))
+                if ik:
+                    merged_objects[ik] = obj
+        else:
+            merge_warnings.append("未找到可并入的已有草案，本批按全新草案落库")
+
+    for obj in objects:
+        if not isinstance(obj, dict):
+            raise ValueError("objects 元素必须是对象")
+        key = normalize_object_key(obj.get("key")) or str(obj.get("primary_table") or "")
+        if not key:
+            continue
+        obj["key"] = key
+        ik = object_identity_key(key)
+        prev = merged_objects.get(ik)
+        if prev is None:
+            merged_objects[ik] = obj
+            continue
+        # 同身份重复：主表一致才可合并；主表不同是真冲突，必须人工裁决（宁缺勿错）
+        if str(prev.get("primary_table") or "") != str(obj.get("primary_table") or ""):
+            raise ValueError(
+                "本体生成出现同名不同主表的对象冲突, 已中止(需人工裁决): "
+                f"key={prev.get('key')}({prev.get('primary_table')}) vs "
+                f"{obj.get('key')}({obj.get('primary_table')})")
+        merged_objects[ik], _detail = merge_object_pair(prev, obj)
+        merge_warnings.append(
+            f"对象 '{key}' 重复出现, 已合并为一份（丢弃 {_detail['dropped']}"
+            + (f"，并入指标 {_detail['gained_metrics']}" if _detail["gained_metrics"] else "")
+            + "）")
 
     if not merged_objects:
-        raise ValueError("LLM 未归纳出任何业务对象")
+        raise ValueError("未归纳出任何业务对象")
 
+    domain = (domain or "").strip() or base_domain
+    description = (description or "").strip() or base_description
     doc = {
         "datasource_id": datasource_id,
         "domain": domain,
@@ -476,34 +501,35 @@ def generate_draft(datasource_id: int, progress_cb=None, created_by: str = "") -
         "objects": list(merged_objects.values()),
     }
 
-    # 落库：替换已有 draft
+    # 落库：替换该源已有 draft（按 kind 限定，不动同 datasource_id 下其他域的草案）
     model_id = _gen_id()
     json_content = json.dumps(doc, ensure_ascii=False, indent=2)
     yaml_content = to_yaml(doc)
     md_content = to_md(doc)
+    kind = "source" if datasource_id > 0 else "system"
     now = _now()
 
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "DELETE FROM adh_ontology_models WHERE datasource_id = %s AND status = 'draft'",
-                (datasource_id,),
+                "DELETE FROM adh_ontology_models WHERE datasource_id = %s AND kind = %s "
+                "AND status = 'draft'",
+                (datasource_id, kind),
             )
             cur.execute(
                 "INSERT INTO adh_ontology_models "
-                "(id, datasource_id, name, status, json_content, yaml_content, md_content, "
+                "(id, datasource_id, kind, domain, name, status, json_content, yaml_content, md_content, "
                 "object_count, created_by, created_at, updated_at) "
-                "VALUES (%s, %s, %s, 'draft', %s, %s, %s, %s, %s, %s, %s)",
-                (model_id, datasource_id, f"{domain or '本体模型'}-draft",
+                "VALUES (%s, %s, %s, %s, %s, 'draft', %s, %s, %s, %s, %s, %s, %s)",
+                (model_id, datasource_id, kind, domain, f"{domain or '本体模型'}-draft",
                  json_content, yaml_content, md_content,
                  len(doc["objects"]), created_by, now, now),
             )
         conn.commit()
 
-    _progress("done", f"草案已生成：{len(doc['objects'])} 个业务对象")
     result = get_model(model_id)
     if merge_warnings:
-        logger.warning("[Ontology] generate_draft 合并重复对象 %d 处: %s",
+        logger.warning("[Ontology] save_generated_draft 合并重复对象 %d 处: %s",
                        len(merge_warnings), merge_warnings)
         # 合并事实显式带回给调用方，避免被当成"生成结果本来就干净"
         result["generation_warnings"] = merge_warnings

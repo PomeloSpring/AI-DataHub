@@ -143,7 +143,7 @@ def _lock_conversation_for_deletion(cur, conversation_id, user_id):
         raise HTTPException(404, "会话不存在或无权访问")
     if conversation and session and int(conversation.get("workspace_id") or 0) != session["workspace_id"] \
             and int(conversation.get("workspace_id") or 0) != 0 and int(session.get("workspace_id") or 0) != 0:
-        # 全局会话(ws=0)跨入口执行时执行映射可能落在入口空间，属合法；其余不一致仍阻断。
+        # 遗留会话(ws=0，统一改造前的全局归属)跨入口执行时执行映射可能落在入口空间，属合法；其余不一致仍阻断。
         raise HTTPException(409, "会话工作区归属不一致，请联系管理员核对后重试")
     return session
 
@@ -151,8 +151,9 @@ def _lock_conversation_for_deletion(cur, conversation_id, user_id):
 def _session_cleanup_root(session):
     """定位待清理目录；返回 None 表示目录已不存在（工作区为空），无需清理。
 
-    仅当目录确实存在时才核验存储节点归属；目录缺失时不阻断删除，
-    但绝不创建存储卷或标记文件（避免挂载丢失被误判为已清理）。
+    仅当目录确实存在时才核验存储节点归属；会话目录或存储卷目录缺失均不阻断
+    删除（需求确认语义：目录已不存在即无残留妨碍，删除记录无风险）；
+    仍绝不创建存储卷或标记文件。
     """
     if session["status"] not in ("idle", "interrupted", "closed", "deleting") or session.get("execution_token"):
         raise HTTPException(409, "会话仍在执行或尚未确认停止，请停止后再删除")
@@ -163,7 +164,9 @@ def _session_cleanup_root(session):
         raise HTTPException(409, "会话目录映射不一致，未执行清理，请联系管理员")
     base = Path(ADH_WORKSPACES_DIR).resolve()
     if not base.is_dir():
-        raise HTTPException(503, "会话存储卷未挂载，无法确认目录已清理，请在对应节点重试删除")
+        # 存储卷目录整体不存在（挂载点丢失/卷已清）：会话文件必然不存在，
+        # 无残留可清理，放行删除记录（不阻断、不创建存储卷）。
+        return None
     root = base / expected
     import os
     if not os.path.lexists(root):
@@ -238,7 +241,8 @@ def preflight_request(req, user):
     from services.shared.common.auth import authorize_workspace
     from services.datamind.execution.models import ExecutionContext
     from services.datamind.execution.tool_policy import resolve_policy
-    # workspace_id=0 为全局助手会话，仅按 user_id 隔离，无需工作空间授权
+    # workspace_id 未指定(0)时入口不做工作空间授权，归属最终由会话自身工作空间归一
+    # (validate_conversation)；历史 ws=0 会话为统一改造前的遗留全局归属，仅兼容保留。
     workspace_id = req.workspace_id or 0
     if workspace_id:
         authorize_workspace(user, workspace_id)
@@ -279,13 +283,13 @@ def validate_conversation(ctx, conversation_id):
         raise HTTPException(404, "会话不存在或无权访问")
     conv_ws = int(row.get("workspace_id") or 0)
     # 会话归属的工作空间是固有属性：看得到就用得了（列表互见后语义一致）。
-    # 授权按会话归属校验；全局会话(ws=0)按 user_id 隔离，入口空间照常校验。
+    # 授权按会话归属校验；遗留会话(ws=0，统一改造前的全局归属)按 user_id 隔离，入口空间照常校验。
     if conv_ws:
         authorize_workspace({"user_id": ctx.user_id, "role": ctx.user_role}, conv_ws)
     elif ctx.workspace_id:
         authorize_workspace({"user_id": ctx.user_id, "role": ctx.user_role}, ctx.workspace_id)
     # 执行归属跟随会话自身的工作空间，跨入口打开同一会话执行语义一致。
-    # （conv_ws=0 是合法的全局归属，不能用 or 回退到入口空间）
+    # （conv_ws=0 是遗留会话的合法归属，不能用 or 回退到入口空间）
     ctx.workspace_id = conv_ws
     chosen = ctx.extra.get("as_bot_key")
     if row.get("as_bot_key") and chosen and row["as_bot_key"] != chosen:

@@ -22,6 +22,7 @@ export type ChartSegment =
   | { kind: 'artifact'; type: 'excel' | 'pdf' | 'html' | 'md' | 'png' | 'jpg' | 'gif' | 'webp' | 'csv'; filename: string; content?: string; path?: string; theme?: string; description?: string }
   | { kind: 'sql'; code: string }
   | { kind: 'graph'; title?: string; nodes: { id: string; label?: string; type?: string }[]; edges: { source: string; target: string; label?: string }[] }
+  | { kind: 'design'; designId: string }
   | { kind: 'raw'; text: string }; // 解析失败 → 原样代码文本
 
 // 匹配 ```chart ... ``` 围栏(语言标注为 chart,大小写不敏感)
@@ -34,6 +35,8 @@ const ARTIFACT_FENCE = /```artifact[ \t]*\r?\n([\s\S]*?)```/gi;
 const SQL_FENCE = /```sql[ \t]*\r?\n([\s\S]*?)```/gi;
 // 匹配 ```graph ... ``` 围栏(关系图谱 JSON: {title?, nodes:[{id,label?,type?}], edges:[{source,target,label?}]})
 const GRAPH_FENCE = /```graph[ \t]*\r?\n([\s\S]*?)```/gi;
+// 匹配 ```design ... ``` 围栏(仪表盘设计卡片引用 JSON: {"design_id":"..."},由 LLM 需要用户打开面板时内嵌)
+const DESIGN_FENCE = /```design[ \t]*\r?\n([\s\S]*?)```/gi;
 
 /** 把 rows(数组的数组 或 对象的数组)归一化为对象数组。 */
 export function normalizeRows(columns: string[], rawRows: any[]): Record<string, any>[] {
@@ -128,7 +131,22 @@ export function parseArtifactBody(body: string): ChartSegment {
   }
 }
 
-/** 把整段回答文本切分为 markdown / chart / mermaid / artifact / sql / graph / raw 交替片段。 */
+/** 解析 ```design 块 body(JSON)→ design 段或 raw 段(降级)。
+ *  仅携带 design_id(展示字段由前端经鉴权 REST 实时拉取,块内不落静态快照/SQL)。 */
+export function parseDesignBody(body: string): ChartSegment {
+  const text = body.trim();
+  try {
+    const obj = JSON.parse(text);
+    const designId = obj?.design_id;
+    if (typeof designId !== 'string' || !designId.trim()) throw new Error('missing design_id');
+    return { kind: 'design', designId: designId.trim() };
+  } catch {
+    return { kind: 'raw', text };
+  }
+}
+
+/** 把整段回答文本切分为 markdown / chart / mermaid / artifact / sql / graph / design / raw 交替片段。
+ *  同一回答内相同 design_id 只保留第一个 design 块(重复引用不重复弹卡片)。 */
 export function splitChartBlocks(text: string): ChartSegment[] {
   const segs: ChartSegment[] = [];
   if (!text) return segs;
@@ -142,6 +160,7 @@ export function splitChartBlocks(text: string): ChartSegment[] {
     { regex: ARTIFACT_FENCE, kind: 'artifact' },
     { regex: SQL_FENCE, kind: 'sql' },
     { regex: GRAPH_FENCE, kind: 'graph' },
+    { regex: DESIGN_FENCE, kind: 'design' },
   ];
 
   // 收集所有匹配
@@ -158,6 +177,7 @@ export function splitChartBlocks(text: string): ChartSegment[] {
   matches.sort((a, b) => a.index - b.index);
 
   // 构建片段
+  const seenDesignIds = new Set<string>();
   for (const match of matches) {
     if (match.index > last) {
       segs.push({ kind: 'markdown', text: src.slice(last, match.index) });
@@ -172,6 +192,17 @@ export function splitChartBlocks(text: string): ChartSegment[] {
       segs.push({ kind: 'sql', code: match.body.trim() });
     } else if (match.kind === 'graph') {
       segs.push(parseGraphBody(match.body));
+    } else if (match.kind === 'design') {
+      const seg = parseDesignBody(match.body);
+      if (seg.kind === 'design') {
+        // 同一回答内重复引用同一设计只渲染一次卡片;块本身仍消耗,不再回退代码文本
+        if (!seenDesignIds.has(seg.designId)) {
+          seenDesignIds.add(seg.designId);
+          segs.push(seg);
+        }
+      } else {
+        segs.push(seg);
+      }
     }
     last = match.index + match.length;
   }

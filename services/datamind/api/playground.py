@@ -7,7 +7,8 @@ Playground 定位: 不是数据库直连工具 —— 返回数据行的执行�
 保留路径 `/api/playground/*`:
   - execute -> 受治理取数(当前用户角色权限), 本服务内经护城河执行
   - ast/lineage/rls-diff/provenance -> 透传语义层(不返回数据行)
-  - rls-diff 以服务端 JWT 身份签发可信内部头透传, 供语义层解析该用户的改写预览
+  - 语义层侧这些路径属 _INTERNAL_ROUTES: 代理一律以服务端 JWT 身份签发可信内部头
+    (X-Internal-Identity)透传; 缺头即被语义层 401"缺少可信身份"拒(fail-closed)
   - 已保存查询(adh_saved_queries)CRUD 与语义无关, 仍由本服务落库
 
 Tables: adh_saved_queries
@@ -23,7 +24,9 @@ import requests
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from services.shared.common.auth import get_current_user, get_workspace_id, sign_internal_identity
+from services.shared.common.auth import (
+    get_current_user, get_workspace_id, resolve_user_default_workspace_id, sign_internal_identity,
+)
 from services.shared.common.db import DBConnection, execute_query, execute_insert, execute_write
 
 logger = logging.getLogger(__name__)
@@ -35,7 +38,7 @@ _PG_PREFIX = "/api/semantic/playground"
 
 def _proxy_pg(path: str, body: dict[str, Any], timeout: int = 60, headers: Optional[dict] = None):
     """POST 到语义层 playground。返回 (status_code, json_or_text, conn_error)。
-    headers: 透传可信内部身份头(仅 rls-diff 预览需要), 下游据此解析 user, 不信任 body。"""
+    headers: 透传可信内部身份头(分析端点一律携带), 下游据此解析 user, 不信任 body。"""
     url = f"{SEMANTIC_SERVICE_URL}{_PG_PREFIX}{path}"
     try:
         r = requests.post(url, json=body, timeout=timeout, headers=headers or None)
@@ -62,7 +65,6 @@ class SavedQueryCreate(BaseModel):
     dataset_keywords: str = ""
     # 保存为数据集时的联动参数(前端传当前选中数据源与最近一次执行结果列/首行)
     datasource_id: int = 0
-    dataset_visibility: str = "workspace"
     result_columns: Optional[list] = None
     result_first_row: Optional[dict] = None
 
@@ -96,32 +98,49 @@ def _proxy_or_502(path: str, req: dict, headers: Optional[dict] = None) -> dict:
     return payload
 
 
+def _scrub_body(req: dict) -> dict:
+    """body 里的 user_id/workspace_id 不信任(身份只信服务端 JWT), 透传前剔除。"""
+    return {k: v for k, v in req.items() if k not in ("user_id", "workspace_id")}
+
+
+def _analysis_identity_headers(user: dict, workspace_id: int = 0) -> dict:
+    """为语义层分析代理签发可信内部身份头(I2/I4): 身份只信服务端 JWT 解析结果。
+    workspace 未显式指定时解析用户默认工作站(resolve_user_default_workspace_id),
+    严禁落 0 —— 语义层中间件对 _INTERNAL_ROUTES 会再做 authorize_workspace,
+    0 会被显式拒绝; 缺头则整体 401"缺少可信身份"(fail-closed, 不静默降级)。"""
+    uid = int(user.get("user_id") or 0)
+    ws = workspace_id if isinstance(workspace_id, int) else 0
+    ws = ws or resolve_user_default_workspace_id(uid)
+    return {"X-Internal-Identity": sign_internal_identity(uid, ws)}
+
+
 @router.post("/ast")
-def ast_via_playground(req: dict):
-    """SQL -> JSON AST + 引用表(语义层 sqlglot)。"""
-    return _proxy_or_502("/ast", req)
+def ast_via_playground(req: dict, user: dict = Depends(get_current_user),
+                       workspace_id: int = Depends(get_workspace_id)):
+    """SQL -> JSON AST + 引用表(语义层 sqlglot)。不返回数据行; 身份经签名内部头透传。"""
+    return _proxy_or_502("/ast", _scrub_body(req), _analysis_identity_headers(user, workspace_id))
 
 
 @router.post("/lineage")
-def lineage_via_playground(req: dict):
-    """SQL -> 列级血缘(语义层 sqlglot.lineage)。"""
-    return _proxy_or_502("/lineage", req)
+def lineage_via_playground(req: dict, user: dict = Depends(get_current_user),
+                           workspace_id: int = Depends(get_workspace_id)):
+    """SQL -> 列级血缘(语义层 sqlglot.lineage)。不返回数据行; 身份经签名内部头透传。"""
+    return _proxy_or_502("/lineage", _scrub_body(req), _analysis_identity_headers(user, workspace_id))
 
 
 @router.post("/rls-diff")
-def rls_diff_via_playground(req: dict, user: dict = Depends(get_current_user)):
+def rls_diff_via_playground(req: dict, user: dict = Depends(get_current_user),
+                            workspace_id: int = Depends(get_workspace_id)):
     """baseSql vs securedSql 行级+列级改写预览(不返回数据行)。
     身份取自 JWT(服务端解析), 经签名内部头透传语义层; body 里的 user_id/workspace_id 不信任。"""
-    body = {k: v for k, v in req.items() if k not in ("user_id", "workspace_id")}
-    headers = {"X-Internal-Identity": sign_internal_identity(
-        user.get("user_id") or 0, req.get("workspace_id") or 0)}
-    return _proxy_or_502("/rls-diff", body, headers)
+    return _proxy_or_502("/rls-diff", _scrub_body(req), _analysis_identity_headers(user, workspace_id))
 
 
 @router.post("/provenance")
-def provenance_via_playground(req: dict):
-    """object -> binding / query_mode / size_class 溯源。"""
-    return _proxy_or_502("/provenance", req)
+def provenance_via_playground(req: dict, user: dict = Depends(get_current_user),
+                              workspace_id: int = Depends(get_workspace_id)):
+    """object -> binding / query_mode / size_class 溯源。不返回数据行; 身份经签名内部头透传。"""
+    return _proxy_or_502("/provenance", _scrub_body(req), _analysis_identity_headers(user, workspace_id))
 
 
 @router.post("/execute")
@@ -263,11 +282,9 @@ def _create_linked_dataset(req: SavedQueryCreate, qid: int, user: dict, workspac
         ds = dataset_service.create_dataset({
             "name": name,
             "description": req.description or f"由 SQL Playground 保存创建: {req.name}",
-            "source_type": "sql",
             "datasource_id": req.datasource_id or 0,
             "sql_query": req.sql_query,
             "field_config": _infer_field_config(req.result_columns or [], req.result_first_row or {}),
-            "visibility": req.dataset_visibility if req.dataset_visibility in ("private", "workspace", "public") else "workspace",
         }, identity)
         return int(ds["id"])
     except Exception as e:  # noqa: BLE001

@@ -4,17 +4,19 @@
 - MinIO / AWS S3 / 阿里云 OSS / 腾讯云 COS 等 S3 兼容接口
 - 未配置时自动回退到本地磁盘(开发环境兼容,ADH_OBJECT_FALLBACK_DIR)
 
-仅承载工作空间归档资产(workspace_assets);聊天附件是会话工作区文件,
+仅承载用户归档资产(user_assets, 资产跟随用户跨工作空间);聊天附件是会话工作区文件,
 不经本模块(见 services.datamind.multimodal.loader)。
 
 Usage:
-    from services.shared.common.object_storage import ObjectStorage
+    from services.shared.common.object_storage import build_asset_key, get_object_storage
 
-    storage = ObjectStorage()
-    storage.upload_bytes("workspaces/3/assets/abc_report.pdf", data, content_type="application/pdf")
-    data = storage.download_bytes("workspaces/3/assets/abc_report.pdf")
-    storage.delete("workspaces/3/assets/abc_report.pdf")
-    url = storage.get_presigned_url("workspaces/3/assets/abc_report.pdf", expires=3600)
+    key = build_asset_key(user_id=9, asset_id="abc123...", filename="报告.pdf")
+    # -> "ai-datahub/9/assets/abc123..._报告.pdf"
+    storage = get_object_storage()
+    storage.upload_bytes(key, data, content_type="application/pdf")
+    data = storage.download_bytes(key)
+    storage.delete(key)
+    url = storage.get_presigned_url(key, expires=3600)
 """
 
 import io
@@ -24,6 +26,19 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def build_asset_key(user_id: int, asset_id: str, filename: str) -> str:
+    """资产对象 key — 唯一构建点: {prefix}/{user_id}/assets/{asset_id}_{filename}。
+
+    资产跟随用户: 首段用用户 ID(不受工作空间/改名影响); asset_id 前缀保证
+    同名文件不互相覆盖; 文件名做路径安全清洗(去斜杠/控制字符)。
+    任何读写资产对象的代码不得自行拼 key(迁移脚本同用本函数)。
+    """
+    from services.shared.common.config import OBJECT_STORAGE_PREFIX
+    safe = "".join(ch for ch in (filename or "asset") if ch.isprintable())
+    safe = safe.replace("/", "_").replace("\\", "_").strip(" .") or "asset"
+    return f"{OBJECT_STORAGE_PREFIX}/{int(user_id)}/assets/{asset_id}_{safe}"
 
 
 def _describe_boto_error(e: Exception) -> str:
@@ -150,7 +165,7 @@ class ObjectStorage:
         """上传字节数据.
 
         Args:
-            key: 对象键(如 "workspaces/3/assets/abc_report.pdf")
+            key: 对象键(如 "ai-datahub/9/assets/abc_report.pdf", 见 build_asset_key)
             data: 文件字节内容
             content_type: MIME 类型
         """

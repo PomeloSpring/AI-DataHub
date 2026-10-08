@@ -9,10 +9,15 @@ handler 为 SDK 无关的纯函数, 由 build_ontology_server(backend) 包装.
 - get_metadata_summary — 获取元数据摘要(表数/列数/术语数)
 
 写操作工具(菜单与功能权限码把关后直执行, 不再走审批回路):
-- generate_ontology_draft — 生成本体草案 (ontology:generate)
+- generate_ontology_draft — 取本体归纳素材(分批, 不调 LLM) (ontology:generate)
+- save_ontology_draft     — 提交归纳对象落成草案 (ontology:generate)
 - save_ontology_model     — 保存本体模型编辑 (ontology:save)
 - activate_ontology_model — 激活本体模型 (ontology:activate)
 - import_ontology_yaml    — 导入 Palantir YAML (ontology:import)
+
+本体生成唯一回路：generate_ontology_draft 取素材 → 会话内 agent(qoder) 归纳 →
+save_ontology_draft 提交；工具本身**不调用任何 LLM**（归纳属 AS-BOT 会话任务，
+不得在工具内另起第二条 LLM 生成通道）。
 
 安全约束: 本工具组**不包含** execute_sql 或任何直连数据源的工具.
 """
@@ -186,9 +191,13 @@ async def get_metadata_summary(args):
                     )
                     metrics = cur.fetchone().get("cnt", 0)
 
+                    model_filter = (
+                        "AND (kind = 'business' OR (kind = 'source' AND datasource_id = %s))"
+                        if datasource_id
+                        else "AND kind = 'system'"
+                    )
                     cur.execute(
-                        f"SELECT COUNT(*) as cnt FROM adh_ontology_models WHERE status = 'active' "
-                        f"{('AND kind = \'system\'' if not datasource_id else 'AND (kind = \'business\' OR (kind = \'source\' AND datasource_id = %s))')}",
+                        f"SELECT COUNT(*) as cnt FROM adh_ontology_models WHERE status = 'active' {model_filter}",
                         params if datasource_id else (),
                     )
                     active_models = cur.fetchone().get("cnt", 0)
@@ -224,29 +233,101 @@ def _require_write_perm(perm_code: str, label: str) -> None:
 
 
 async def generate_ontology_draft(args):
-    """生成本体草案 — 菜单与功能权限码把关后直执行。
+    """取本体归纳素材（分批）— 素材提供工具，**不调用 LLM**。
 
-    本体写动作限**系统本体域**（as-bot-system-waker §4）：
-    目标数据源固定为系统元库(datasource_id=0)，**不接受 LLM 传数据源标识**
-    —— LLM 拿不到真实 id，猜值只会被资源护栏拒（waker-datasource-domain §2）。
-    业务侧建模属用户在业务工作空间的操作，不经本通道。
+    归纳由 AS-BOT 会话内的 agent 完成（唯一回路：取素材 → 归纳 → save_ontology_draft）。
+    本体生成的域约束（as-bot-system-waker §2）：目标源固定为执行上下文会话绑定源
+    ctx.datasource_id（0=系统本体域），**不接受** LLM 传数据源标识（_reject_datasource_arg）；
+    业务源仅限『生成本体模型』任务绑定会话取素材（assert_ontology_draft_scope，fail-closed）。
     """
     from services.datamind.execution.sdk_tools.context import get_execution_context
+    from services.datamind.execution.resource_guard import assert_ontology_draft_scope
 
     ctx = get_execution_context()
-    _reject_datasource_arg(args)
-    _require_write_perm("ontology:generate", "生成本体草案")
-    datasource_id = 0  # 系统本体域固定值，服务端注入，不来自工具入参
+    try:
+        _reject_datasource_arg(args)
+        target = assert_ontology_draft_scope(ctx)
+        _require_write_perm("ontology:generate", "生成本体草案")
+    except (ValueError, PermissionError) as e:
+        return _text({"error": str(e)}, is_error=True)
 
     def _run():
         from services.datacatalog.services import ontology_service
-        return ontology_service.generate_draft(
-            datasource_id, created_by=ctx.username if ctx else "")
+        return ontology_service.build_generation_batches(target)
 
-    model = await asyncio.to_thread(_run)
-    return _text({"success": True, "model_id": model["id"],
-                  "object_count": model.get("object_count", 0),
-                  "note": "草案已生成；如需生效请继续调用 activate_ontology_model"})
+    try:
+        batches = await asyncio.to_thread(_run)
+    except ValueError as e:
+        return _text({"error": str(e)}, is_error=True)
+
+    batch = int(args.get("batch") or 0)
+    if batch < 0 or batch >= len(batches):
+        return _text({"error": f"batch 越界：有效范围 0..{len(batches) - 1}"}, is_error=True)
+
+    from services.datacatalog.services.ontology_service import ONTOLOGY_SCHEMA_SPEC
+    return _text({
+        "batch": batch,
+        "total_batches": len(batches),
+        "material": batches[batch],
+        "spec": ONTOLOGY_SCHEMA_SPEC,
+        "note": ("请归纳本批材料的业务对象（结构见 spec），逐批调用 save_ontology_draft 提交："
+                 f"第 1 批用 append=false，第 2 批起 append=true；共 {len(batches)} 批"),
+    })
+
+
+async def save_ontology_draft(args):
+    """提交归纳出的业务对象，落成该源本体草案 — 菜单与功能权限码把关后直执行。
+
+    分批归纳时第一批 append=false（替换旧草案），后续批次 append=true（并入合并）；
+    同身份对象由服务端确定性合并（合并事实随 warnings 显式带回），同名不同主表
+    冲突直接中止（宁缺勿错，需人工裁决）。域约束同 generate_ontology_draft：
+    目标源=会话绑定源，业务源仅限『生成本体模型』任务绑定会话。
+    """
+    from services.datamind.execution.sdk_tools.context import get_execution_context
+    from services.datamind.execution.resource_guard import assert_ontology_draft_scope
+
+    ctx = get_execution_context()
+    objects = args.get("objects")
+    if isinstance(objects, str):
+        try:
+            objects = json.loads(objects)
+        except ValueError as e:
+            return _text({"error": f"objects 不是合法 JSON: {e}"}, is_error=True)
+    if not isinstance(objects, list) or not objects:
+        return _text({"error": "objects 必填（归纳出的对象数组）"}, is_error=True)
+
+    try:
+        _reject_datasource_arg(args)
+        target = assert_ontology_draft_scope(ctx)
+        _require_write_perm("ontology:generate", "生成本体草案")
+    except (ValueError, PermissionError) as e:
+        return _text({"error": str(e)}, is_error=True)
+
+    def _run():
+        from services.datacatalog.services import ontology_service
+        return ontology_service.save_generated_draft(
+            target, objects,
+            domain=str(args.get("domain") or ""),
+            description=str(args.get("description") or ""),
+            append=bool(args.get("append")),
+            created_by=ctx.username if ctx else "",
+        )
+
+    try:
+        model = await asyncio.to_thread(_run)
+    except ValueError as e:
+        return _text({"error": str(e)}, is_error=True)
+
+    warnings = model.get("generation_warnings") or []
+    return _text({
+        "success": True,
+        "model_id": model["id"],
+        "object_count": model.get("object_count", 0),
+        "merged": len(warnings),
+        "warnings": warnings,
+        "note": ("草案已落库；系统本体如需生效请继续调用 activate_ontology_model，"
+                 "业务源草案请用户在建模页检查后激活"),
+    })
 
 
 async def save_ontology_model(args):
@@ -425,15 +506,34 @@ TOOL_SPECS = [
     {
         "name": "generate_ontology_draft",
         "description": (
-            "Generate an ontology model draft from metadata using LLM. "
-            "Analyzes tables, columns, terms, metrics and relations to produce "
-            "a structured ontology model."
+            "Fetch one batch of modeling material (tables, columns, known relations, "
+            "business terms/metrics) for ontology draft induction, plus the required "
+            "output structure (spec). This tool does NOT use LLM — YOU induce the "
+            "business objects from the material and submit them via save_ontology_draft "
+            "(first batch append=false, later batches append=true)."
         ),
         "schema": {
-            # 不接受任何入参：目标域固定为系统本体，服务端注入 datasource_id=0。
-            # 刻意不暴露数据源标识，避免 LLM 猜值（waker-datasource-domain §2）。
+            # 目标源由服务端按会话绑定源注入；刻意不暴露数据源标识（waker-datasource-domain §2）。
+            "batch": Annotated[Optional[int], "0-based batch index; omit for the first batch"],
         },
         "handler": generate_ontology_draft,
+        "readonly": True,
+    },
+    {
+        "name": "save_ontology_draft",
+        "description": (
+            "Submit induced ontology objects to create/replace the ontology draft of the "
+            "session's bound source. Server-side deterministic validation merges duplicate "
+            "objects by identity and aborts on same-key/different-primary-table conflicts. "
+            "Returns model_id, object_count and merge warnings."
+        ),
+        "schema": {
+            "objects": Annotated[list, "Induced ontology objects (structure per spec from generate_ontology_draft)"],
+            "domain": Annotated[Optional[str], "Business domain name of the source"],
+            "description": Annotated[Optional[str], "2-3 sentence business overview"],
+            "append": Annotated[Optional[bool], "true = merge into current draft (batch 2+); false/omit = replace draft"],
+        },
+        "handler": save_ontology_draft,
         "readonly": False,
     },
     {

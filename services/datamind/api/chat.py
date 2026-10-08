@@ -1,12 +1,11 @@
-"""Chat/NL2SQL API — Send messages, manage conversations.
+"""Chat API — Send messages, manage conversations.
 
-Delegates to existing backend chat logic for NL2SQL pipeline.
+消息派发 qoder 执行层(agent 模式);quick 单发管道已退役。
 """
 
 import json
 import logging
 import mimetypes
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -16,8 +15,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
-from services.shared.common.auth import get_current_user, authorize_workspace, get_file_user
-from services.shared.models.schemas import ChatRequest, UserInfo
+from services.shared.common.auth import (
+    get_current_user, authorize_workspace, get_file_user, resolve_user_default_workspace_id,
+)
+from services.shared.models.schemas import UserInfo
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -30,7 +31,7 @@ class SendMessageRequest(BaseModel):
     history: Optional[list[dict]] = []
     datasource_id: Optional[int] = 0
     model_id: Optional[int] = None
-    pipeline_mode: Optional[str] = "quick"
+    pipeline_mode: Optional[str] = "agent"  # agent(quick 管道已退役)
     retrieval_strategy: Optional[str] = None
     workspace_id: Optional[int] = 0
     attachments: list[dict] = []  # 服务端解析回填的上传附件(send_payload);JSON 请求不得携带
@@ -50,7 +51,7 @@ async def chat_send_stream(
 ):
     """Send a message with SSE streaming response.
 
-    Proxies to the existing backend pipeline orchestrator for NL2SQL.
+    消息派发 qoder 执行层(agent 模式)。
     请求体双模: JSON(无附件)或 multipart(payload + files,附件随消息上传落盘会话工作区)。
     """
     from services.datamind.api.send_payload import parse_send_request
@@ -67,7 +68,7 @@ async def chat_send_stream(
             history=req.history or [],
             datasource_id=req.datasource_id or 0,
             model_id=req.model_id,
-            pipeline_mode=req.pipeline_mode or "quick",
+            pipeline_mode=req.pipeline_mode or "agent",
             retrieval_strategy=req.retrieval_strategy,
             workspace_id=req.workspace_id or 0,
             user_id=user["user_id"],
@@ -119,7 +120,7 @@ def list_chat_as_bots(
     ]
 
 
-# ── Chat Send (Non-Streaming) ────────────────────────────────────────
+# ── Chat Feedback ────────────────────────────────────────
 
 class FeedbackRequest(BaseModel):
     question: str = ""
@@ -167,84 +168,9 @@ def save_message_feedback(req: FeedbackRequest, user: UserInfo = Depends(get_cur
     return {"ok": True, "message_uuid": message_uuid}
 
 
-@router.post("/send")
-async def chat_send(
-    request: Request,
-    user: UserInfo = Depends(get_current_user),
-):
-    """Send a message and get a non-streaming response.
-
-    Runs the full NL2SQL pipeline and returns the final result.
-    非流式接口不支持附件(附件需执行层处理),携带附件显式拒绝而非静默忽略。
-    """
-    from services.datamind.api.send_payload import parse_send_request
-    from services.datamind.services.chat_service import ChatService
-
-    req = await parse_send_request(request, SendMessageRequest)
-    if req.attachments:
-        raise HTTPException(status_code=400, detail="附件消息需要执行层处理,请使用 /send/stream 流式接口")
-    service = ChatService()
-    result = await service.query(
-        question=req.question,
-        history=req.history or [],
-        datasource_id=req.datasource_id or 0,
-        model_id=req.model_id,
-        pipeline_mode=req.pipeline_mode or "quick",
-        retrieval_strategy=req.retrieval_strategy,
-        workspace_id=req.workspace_id or 0,
-        user_id=user["user_id"],
-        username=user["username"],
-    )
-    return result
-
-
 # ── Conversation Management ──────────────────────────────────────
 
-class FollowupsRequest(BaseModel):
-    question: str = ""
-    answer: str = ""
-    model_id: Optional[int] = None
 
-
-def _parse_followups(raw: str) -> list[str]:
-    """从 LLM 文本中抽取 JSON 字符串数组(容忍 ```json 围栏与前后缀文字)。"""
-    m = re.search(r"\[.*\]", raw or "", re.DOTALL)
-    if not m:
-        return []
-    try:
-        arr = json.loads(m.group(0))
-    except (ValueError, TypeError):
-        return []
-    return [str(x).strip() for x in arr if isinstance(x, str) and str(x).strip()]
-
-
-@router.post("/followups")
-def chat_followups(req: FollowupsRequest, user: UserInfo = Depends(get_current_user)):
-    """基于本轮问答上文, 由 LLM 推断 2-4 条"继续探索"追问。
-
-    失败/无内容返回空数组(不阻断主回答); 追问仅为自然语言问题, 不返回数据行。
-    """
-    from services.shared.common.llm.llm_client import generate_sql
-
-    q = (req.question or "").strip()
-    a = (req.answer or "").strip()
-    if not q and not a:
-        return {"followups": []}
-    system_prompt = (
-        "你是数据分析助手的追问推荐器。根据用户本轮的问题与助手回答, 推断用户接下来最可能想继续探索的 2-4 个具体问题。"
-        "要求: 每个都是一句可直接发送的自然语言分析请求, 贴合上文的数据/指标/维度/结论, 不泛泛而谈, 不重复原问题, 不解释。"
-        '仅返回 JSON 字符串数组, 例如 ["按渠道拆分看各渠道占比变化", "定位环比下降最多的细分并分析原因"]。'
-    )
-    user_content = f"用户问题：{q}\n\n助手回答：{a[:2000]}"
-    try:
-        resp = generate_sql(
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
-            max_tokens=512, model_id=req.model_id,
-        )
-        return {"followups": _parse_followups(resp.get("sql", ""))[:4]}
-    except Exception as e:  # noqa: BLE001
-        logger.warning("生成追问失败: %s", e)
-        return {"followups": []}
 
 
 @router.get("/session-file")
@@ -317,8 +243,8 @@ def list_conversations(
             where = ["user_id = %s"]
             params: list = [user["user_id"]]
             if workspace_id:
-                # 合并共用：工作空间列表含全局(ws=0)会话（AS-BOT 面板等全局入口所建），
-                # 反向（全局查询不过滤）同样互见，不按入口区分。
+                # 合并共用：工作空间列表含遗留 ws=0 会话（统一改造前的全局归属，仅兼容保留），
+                # 反向（不带空间过滤）同样互见，不按入口区分。
                 where.append("workspace_id IN (%s, 0)")
                 params.append(workspace_id)
             if as_bot_key:
@@ -382,18 +308,23 @@ def create_conversation(
 ):
     """Create a new conversation.
 
-    workspace_id=0 表示全局/智能助手会话，按 user_id 隔离，不要求工作空间授权。
+    workspace_id 未指定(0/缺省)时归属用户默认工作空间(个人工作站, 随用户自动创建)。
+    AS-BOT 与 Waker 统一后不再有全局/系统域会话(历史 ws=0 会话仅兼容保留)。
     """
-    # workspace_id=0 为全局助手会话，仅按 user_id 隔离，无需工作空间授权
-    if req.workspace_id:
-        authorize_workspace(user, req.workspace_id)
+    # 未指定工作空间 → 解析用户默认工作空间(唯一口径, 见 resolve_user_default_workspace_id)
+    workspace_id = req.workspace_id or 0
+    if not workspace_id:
+        workspace_id = resolve_user_default_workspace_id(user["user_id"])
+        if not workspace_id:
+            raise HTTPException(status_code=422, detail="未找到您的默认工作空间，请先创建工作空间后再试")
+    authorize_workspace(user, workspace_id)
     # AS-BOT 与角色强绑定(一对一)：会话归属直接取当前用户角色的 AS-BOT，
     # 不再依赖页面传标识；无授权 AS-BOT 则 fail-closed。
     as_bot_key = ""
     from services.datamind.execution.models import ExecutionContext
     from services.datamind.execution.tool_policy import resolve_policy
     ctx = ExecutionContext(user_id=user["user_id"], user_role=user.get("role", ""),
-                           workspace_id=req.workspace_id or 0, extra={"as_bot_key": req.as_bot_key or ""})
+                           workspace_id=workspace_id, extra={"as_bot_key": req.as_bot_key or ""})
     try:
         as_bot_key = resolve_policy(ctx).as_bot["as_bot_key"]
     except PermissionError as exc:
@@ -408,7 +339,7 @@ def create_conversation(
             cur.execute(
                 "INSERT INTO adh_conversations (user_id, title, datasource_id, workspace_id, as_bot_key, messages, created_at, updated_at) "
                 "VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())",
-                (user["user_id"], "新对话", req.datasource_id or 0, req.workspace_id or 0,
+                (user["user_id"], "新对话", req.datasource_id or 0, workspace_id,
                  as_bot_key, "[]"),
             )
             conn.commit()
@@ -417,7 +348,7 @@ def create_conversation(
                 "id": conv_id,
                 "title": "新对话",
                 "datasource_id": req.datasource_id or 0,
-                "workspace_id": req.workspace_id or 0,
+                "workspace_id": workspace_id,
                 "as_bot_key": as_bot_key,
                 "created_at": datetime.now().isoformat(),
             }

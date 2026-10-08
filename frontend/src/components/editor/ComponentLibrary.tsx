@@ -1,14 +1,19 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { VIS_CATEGORIES, type VisComponent } from '@/api/visLibrary';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
 import VisComponentPreview, { ShapePreview } from '@/components/VisComponentPreview';
 import { resolveDashboardDesign } from '@/lib/dashboardDesign';
-import { Layers, BarChart3, Settings, PanelLeftClose } from 'lucide-react';
+import { Layers, BarChart3, Settings, PanelLeftClose, Database, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import client from '@/api/client';
 import { CHART_TYPES, CHART_TYPE_CATEGORIES, ChartIcon, type ChartTypeItem } from '../DashboardChart';
+
+const CHART_TYPE_LABELS: Record<string, string> = Object.fromEntries(
+  CHART_TYPES.map(t => [t.value, t.label]),
+);
 
 interface Props {
   allCharts: any[];
@@ -20,14 +25,26 @@ interface Props {
   onSelectChart: (chart: any) => void;
   onApplyVis: (component: VisComponent) => void;
   onVisDragStart: (e: React.DragEvent, component: VisComponent) => void;
+  onAddFromDataset: (dataset: any) => void;
   design: ReturnType<typeof resolveDashboardDesign>;
 }
 
 export default function ComponentLibrary({
-  allCharts, selectedChart, isOpen, onClose, onDragStart, onDragEnd, onSelectChart, onApplyVis, onVisDragStart, design,
+  allCharts, selectedChart, isOpen, onClose, onDragStart, onDragEnd, onSelectChart, onApplyVis, onVisDragStart, onAddFromDataset, design,
 }: Props) {
   const library = useVisLibrary();
   const [category, setCategory] = useState('theme_pack');
+  // 从数据集引入: 按 name 显示(ui-resource-display), 点「引入」生成预设图表卡片
+  const [datasets, setDatasets] = useState<any[]>([]);
+  const [datasetsLoading, setDatasetsLoading] = useState(false);
+  useEffect(() => {
+    if (!isOpen) return;
+    setDatasetsLoading(true);
+    client.get('/datasets/')
+      .then(({ data }) => setDatasets(data.items || []))
+      .catch(() => setDatasets([]))
+      .finally(() => setDatasetsLoading(false));
+  }, [isOpen]);
   const chartGroups = (() => {
     const groups: { category: typeof CHART_TYPE_CATEGORIES[number]; items: ChartTypeItem[] }[] = [];
     for (const cat of CHART_TYPE_CATEGORIES) {
@@ -62,6 +79,7 @@ export default function ComponentLibrary({
         <TabsList className="w-full rounded-none border-b">
           <TabsTrigger value="vis" className="flex-1 text-xs">字模</TabsTrigger>
           <TabsTrigger value="charts" className="flex-1 text-xs">图表</TabsTrigger>
+          <TabsTrigger value="datasets" className="flex-1 text-xs">数据集</TabsTrigger>
           <TabsTrigger value="widgets" className="flex-1 text-xs">控件</TabsTrigger>
           <TabsTrigger value="layers" className="flex-1 text-xs">图层</TabsTrigger>
         </TabsList>
@@ -107,6 +125,38 @@ export default function ComponentLibrary({
               </div>
             ))}
           </ScrollArea>
+        </TabsContent>
+
+        {/* 从数据集引入: 一键生成已配置图表(类型/字段映射取数据集预设) */}
+        <TabsContent value="datasets" className="flex-1 min-h-0 mt-0 overflow-auto">
+          <div className="p-2">
+            <p className="text-[10px] text-muted-foreground px-2 mb-1.5">
+              从数据集引入：按预设图表类型/字段映射一键生成图表卡片，取数走数据集统一治理入口
+            </p>
+            {datasetsLoading ? (
+              <p className="text-xs px-2 text-muted-foreground">正在加载数据集…</p>
+            ) : datasets.length === 0 ? (
+              <p className="text-xs px-2 text-muted-foreground">暂无数据集，请先在「数据集」页创建</p>
+            ) : (
+              <div className="space-y-0.5">
+                {datasets.map(ds => (
+                  <div key={ds.id} className="flex items-center gap-2 px-2 py-1.5 rounded-md border border-transparent hover:bg-muted">
+                    <Database className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs truncate">{ds.name}</div>
+                      <div className="text-[10px] text-muted-foreground truncate">
+                        {ds.chart_type ? (CHART_TYPE_LABELS[ds.chart_type] || ds.chart_type) : '未预设图表类型(默认柱状图)'}
+                      </div>
+                    </div>
+                    <Button size="sm" variant="outline" className="h-6 px-2 text-[11px] flex-shrink-0"
+                      onClick={() => onAddFromDataset(ds)}>
+                      <Download className="h-3 w-3 mr-1" /> 引入
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </TabsContent>
 
         <TabsContent value="widgets" className="flex-1 min-h-0 mt-0">

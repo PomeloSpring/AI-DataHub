@@ -1,7 +1,7 @@
 """本体层检索适配器：跑真实检索链路，产出命中集合与**检索来源**分桶。
 
 **这是补 pitfall 缺口的关键**：早期的 tests/eval/runner.py 完全不经过
-``datamind/rag/strategies/graphrag.py`` 与 ``graph_rag/agentic_sparql.py``，
+``datamind/rag/strategies/graphrag.py``，
 所以"eval 全绿"从未覆盖 GraphRAG/SPARQL 路径。本适配器显式走
 ``rag_retriever.retrieve_with_strategy``（策略总入口），``rag_source`` 即策略名，
 分桶语义与 compile 适配器的"解析档位"完全不同，报告里分开呈现。

@@ -65,6 +65,38 @@ export function validateLocalAttachment(file: File): { error: string } | { categ
   return { category };
 }
 
+// 剪贴板粘贴的截图/文件常缺文件名与扩展名(如 image blob),按 MIME 补全,避免本地校验误拒
+const CLIPBOARD_MIME_EXT: Record<string, string> = {
+  'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp',
+  'text/csv': '.csv', 'text/plain': '.txt', 'text/markdown': '.md', 'application/pdf': '.pdf',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+};
+
+/** 粘贴文件补全上传名:无名截图命名为「截图_时间戳.ext」,无扩展名按 MIME 补后缀;无法补全时保留原样(交给 validateLocalAttachment 显式报错,不静默丢弃) */
+export function ensureUploadName(file: File, now: number = Date.now()): File {
+  if (file.name && /\.[^.]+$/.test(file.name)) return file;
+  const ext = CLIPBOARD_MIME_EXT[file.type] || '';
+  const base = file.name || `截图_${new Date(now).toISOString().replace(/[-:T]/g, '').slice(0, 14)}`;
+  return new File([file], `${base}${ext}`, { type: file.type });
+}
+
+/** 从粘贴事件剪贴板提取文件并补全上传名(items 优先,避免与 files 重复计数);纯文本粘贴返回空数组(走默认粘贴行为) */
+export function filesFromClipboard(clipboardData: DataTransfer | null): File[] {
+  if (!clipboardData) return [];
+  const out: File[] = [];
+  for (const item of Array.from(clipboardData.items || [])) {
+    if (item.kind === 'file') {
+      const f = item.getAsFile();
+      if (f) out.push(ensureUploadName(f));
+    }
+  }
+  if (out.length === 0) {
+    for (const f of Array.from(clipboardData.files || [])) out.push(ensureUploadName(f));
+  }
+  return out;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -86,7 +118,6 @@ export interface ChatMessage {
   ai_raw_response?: string;
   timings?: Record<string, number>;
   analysis?: string;
-  followups?: string[];  // 基于本轮上文由 LLM 推断的"继续探索"追问(异步拉取后回填)
   prediction?: string;
   analyzing?: boolean;
   predicting?: boolean;
@@ -164,7 +195,7 @@ interface ChatState {
   datasources: { id: number; name: string; db_type: string }[];
   selectedModelId: number | null;
   llmModels: LLMModel[];
-  pipelineMode: 'quick' | 'agent' | null;  // null = use legacy endpoints
+  pipelineMode: 'agent' | null;  // null = use legacy endpoints
   retrievalStrategy: string;  // hybrid only
 
   // Workspace state (for Agent mode)
@@ -203,7 +234,7 @@ interface ChatState {
   setSelectedModelRef: (ref: string | null) => void;
   setSelectedDsId: (id: number) => void;
   setSelectedModelId: (id: number | null) => void;
-  setPipelineMode: (mode: 'quick' | 'agent' | null) => void;
+  setPipelineMode: (mode: 'agent' | null) => void;
   setRetrievalStrategy: (strategy: string) => void;
   setSelectedWorkspaceId: (id: number) => void;
   loadMcpTools: () => Promise<void>;
@@ -213,7 +244,6 @@ interface ChatState {
   deleteConversation: (convId: number) => Promise<void>;
   renameConversation: (convId: number, title: string) => Promise<void>;
   sendMessage: (question: string, mcpTools?: string[], attachments?: PendingAttachment[]) => Promise<void>;
-  loadFollowups: (convId: number | null, question: string, answer: string) => Promise<void>;
   cancelMessage: () => void;
   respondToAsk: (requestId: string, response: string) => Promise<void>;
   cancelAsk: (requestId: string) => void;
@@ -1028,8 +1058,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const title = deriveTitle(msgs);
         await saveMessages(convId, msgs, title);
         persisted = true;
-        // 本轮回答成功后，异步推断“继续探索”追问（不阻断 done 渲染）。
-        if (!finalMsg.error) void get().loadFollowups(convId, question, finalMsg.content || finalMsg.reply || '');
         if (title) {
           set(s => ({
             conversations: s.conversations.map(c =>
@@ -1078,26 +1106,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // 本次新建但未成功落库的会话统一回滚(成功保存过则 persisted=true 不删)。
       await rollbackEmptyConv();
     }
-  },
-
-  // 基于本轮问答上文异步拉取“继续探索”追问，回填到当前会话最后一条助手消息。
-  loadFollowups: async (convId, question, answer) => {
-    if (!question && !answer) return;
-    try {
-      const { data } = await client.post('/chat/followups', {
-        question, answer, model_id: get().selectedModelId ?? undefined,
-      });
-      const followups: string[] = Array.isArray(data?.followups) ? data.followups : [];
-      if (followups.length === 0) return;
-      set(state => {
-        if (state.currentConvId !== convId) return state;  // 用户已切走，不回填
-        const msgs = [...state.messages];
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          if (msgs[i].role === 'assistant') { msgs[i] = { ...msgs[i], followups }; break; }
-        }
-        return { messages: msgs };
-      });
-    } catch { /* 追问为增强项，失败静默不阻断 */ }
   },
 
   cancelMessage: () => {

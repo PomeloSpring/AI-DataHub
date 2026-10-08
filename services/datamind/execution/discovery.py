@@ -22,26 +22,6 @@ EXTRA_SEARCH_DIRS = [
 ]
 
 
-def claude_bundled_cli() -> str:
-    """claude-agent-sdk 内置运行时二进制路径(自包含原生二进制,无需 Node).
-
-    未安装 SDK 或运行时缺失时返回空串。
-    """
-    try:
-        import claude_agent_sdk
-        p = os.path.join(os.path.dirname(claude_agent_sdk.__file__), "_bundled", "claude")
-        return p if os.path.isfile(p) and os.access(p, os.X_OK) else ""
-    except Exception:
-        return ""
-
-
-# claude 执行层无外部 CLI,运行时随 pip 包内置;将其目录纳入扫描以便发现页展示
-_bundled_cli = claude_bundled_cli()
-if _bundled_cli:
-    _bundled_dir = os.path.dirname(_bundled_cli)
-    if _bundled_dir not in EXTRA_SEARCH_DIRS:
-        EXTRA_SEARCH_DIRS.append(_bundled_dir)
-
 # 已知 CLI 白名单:binary / version_cmd / 默认命令模板 / 能力标签
 # model_flag: 指定模型的命令行参数;models_cmd: 列出可用模型的命令
 KNOWN_CLIS = {
@@ -54,16 +34,6 @@ KNOWN_CLIS = {
         "models_cmd": ["qodercli", "--list-models"],
         "capabilities": ["code", "search", "read", "write", "mcp"],
         "display_name": "Qoder CLI",
-    },
-    # claude-agent-sdk:无子进程命令模板(仅 mode=sdk),运行时随 SDK 内置
-    "claude": {
-        "binary": "claude",
-        "version_cmd": ["claude", "--version"],
-        "command": [],
-        "model_flag": [],
-        "models_cmd": [],
-        "capabilities": ["code", "search", "read", "write", "mcp", "sdk"],
-        "display_name": "Claude Agent SDK",
     },
 }
 

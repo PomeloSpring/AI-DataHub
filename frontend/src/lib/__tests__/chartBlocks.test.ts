@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseChartBody, parseArtifactBody, normalizeRows, splitChartBlocks } from '../chartBlocks';
+import { parseChartBody, parseArtifactBody, parseDesignBody, normalizeRows, splitChartBlocks } from '../chartBlocks';
 
 describe('splitChartBlocks', () => {
   it('提取 chart 块并保留其余 markdown', () => {
@@ -111,5 +111,40 @@ describe('parseArtifactBody', () => {
     const text = '结论。\n```artifact\n{"type":"excel","filename":"r.xlsx","path":"r.xlsx"}\n```';
     const segs = splitChartBlocks(text);
     expect(segs.map(s => s.kind)).toContain('artifact');
+  });
+});
+
+describe('parseDesignBody', () => {
+  it('合法 design 块仅携带 design_id', () => {
+    const seg = parseDesignBody('{"design_id":"abc123"}') as any;
+    expect(seg.kind).toBe('design');
+    expect(seg.designId).toBe('abc123');
+  });
+
+  it('缺 design_id / 非法 JSON → 降级 raw', () => {
+    expect(parseDesignBody('{"name":"x"}').kind).toBe('raw');
+    expect(parseDesignBody('{ not json }').kind).toBe('raw');
+    expect(parseDesignBody('{"design_id":""}').kind).toBe('raw');
+  });
+
+  it('splitChartBlocks 在回答内嵌 design 卡片', () => {
+    const id = 'a'.repeat(32);
+    const text = `请完成选择。\n\`\`\`design\n{"design_id":"${id}"}\n\`\`\`\n完成后告诉我。`;
+    const segs = splitChartBlocks(text);
+    expect(segs.map(s => s.kind)).toEqual(['markdown', 'design', 'markdown']);
+    expect((segs[1] as any).designId).toBe(id);
+  });
+
+  it('同一回答重复引用同一设计只保留一块（不重复弹卡片）', () => {
+    const block = '```design\n{"design_id":"same"}\n```';
+    const text = `${block}\n中间文字\n${block}`;
+    const segs = splitChartBlocks(text);
+    expect(segs.filter(s => s.kind === 'design')).toHaveLength(1);
+  });
+
+  it('不同 design_id 的块各自保留', () => {
+    const text = '```design\n{"design_id":"d1"}\n```\n```design\n{"design_id":"d2"}\n```';
+    const segs = splitChartBlocks(text);
+    expect(segs.filter(s => s.kind === 'design')).toHaveLength(2);
   });
 });

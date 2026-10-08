@@ -86,7 +86,63 @@ def validate_sql_endpoint(
         _raise(e)
 
 
-# ── CRUD ───────────────────────────────────────────────────────────────
+# ── 语义对象 × SQL 互转(双定义; 编译 SQL 仅回显给 dataset:manage 编辑者) ────
+
+@router.get("/semantic-fields")
+def semantic_fields(
+    datasource_id: int = QueryParam(0, description="对象所属数据源"),
+    object_key: str = QueryParam("", description="本体对象 key"),
+    user: dict = Depends(get_current_user),
+):
+    """按本体对象返回语义字段(指标/维度, 业务名级), 供图表预设与互转映射选择。
+
+    必须在 GET /{dataset_id} 之前注册。"""
+    if not (object_key or "").strip():
+        raise HTTPException(status_code=400, detail="object_key 必填")
+    return {"fields": dataset_service._semantic_fields(int(datasource_id or 0), object_key.strip())}
+
+
+@router.post("/compile-from-semantic")
+def compile_from_semantic(
+    req: dict,
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
+    """语义对象 → 执行 SQL: 编译声明式意图, 供固化为数据集执行定义。
+
+    护栏 §7 例外: 编译 SQL 仅回显给持有 dataset:manage 的数据集编辑者
+    (人工编辑面板), 不进 LLM/聊天/图表响应。
+    """
+    ident = _identity(user, workspace_id)
+    if not ident["user_id"]:
+        raise HTTPException(status_code=403, detail="缺少可信用户身份, 拒绝编译")
+    try:
+        return dataset_service.compile_from_semantic(req, ident)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        _raise(e)
+
+
+@router.post("/extract-from-sql")
+def extract_from_sql(
+    req: dict,
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
+    """执行 SQL → 语义字段映射建议(未命中列回抛待映射, 不静默绑定)。"""
+    ident = _identity(user, workspace_id)
+    if not ident["user_id"]:
+        raise HTTPException(status_code=403, detail="缺少可信用户身份, 拒绝探测取数")
+    try:
+        return dataset_service.extract_from_sql(req, ident)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        _raise(e)
+
+
+# ── CRUD ──────────────────────────────────────────────────────────────────
 
 @router.get("/")
 def list_datasets(
@@ -94,7 +150,7 @@ def list_datasets(
     user: dict = Depends(get_current_user),
     workspace_id: int = Depends(get_workspace_id),
 ):
-    """按可见性列出数据集。"""
+    """列出数据集(可见性功能已退役, 取数侧治理不变)。"""
     try:
         items = dataset_service.list_datasets(_identity(user, workspace_id), keyword=keyword)
         return {"items": items}
@@ -108,7 +164,7 @@ def create_dataset(
     user: dict = Depends(get_current_user),
     workspace_id: int = Depends(get_workspace_id),
 ):
-    """新建数据集(语义对象或 SQL 源)。"""
+    """新建数据集(语义对象 × SQL 双定义, 可预设图表类型/字段映射)。"""
     try:
         ds = dataset_service.create_dataset(req, _identity(user, workspace_id))
         return ds
@@ -118,10 +174,11 @@ def create_dataset(
 
 @router.get("/{dataset_id}")
 def get_dataset(dataset_id: int):
-    """数据集详情: 附字段定义(semantic 动态解析 / sql 读 field_config)与看板引用。"""
+    """数据集详情: 附字段定义(语义字典×field_config 合并)与看板引用。"""
     ds = dataset_service.get_dataset(dataset_id)
     if not ds:
         raise HTTPException(status_code=404, detail="数据集不存在")
+    ds["chart_preset"] = dataset_service._parse_json(ds.get("chart_preset"), {})
     ds["fields"] = dataset_service.resolve_fields(ds)
     ds["references"] = dataset_service._references(dataset_id)
     return ds

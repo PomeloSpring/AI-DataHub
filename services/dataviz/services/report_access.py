@@ -44,13 +44,15 @@ def policy_snapshot(owner_id: int, workspace_id: int, sources: list[dict]) -> di
 
 
 def dataset_snapshot(dataset_id: int, identity: dict, dataset: dict = None) -> str:
-    """数据集配置与当前主体行范围也属于报告授权快照，收紧后禁止历史重放。"""
+    """数据集配置与当前主体行范围也属于报告授权快照，收紧后禁止历史重放。
+
+    可见性功能已退役: 访问控制由取数治理入口(governed_execute/七闸门)与
+    数据源授权(_authorize_source)承担, 此处只锁配置/行范围快照。
+    """
     from services.dataviz.services import dataset_service
     dataset = dataset if dataset is not None else dataset_service.get_dataset(dataset_id)
     if not dataset or dataset.get("status") != "active":
         raise PermissionError("数据集不可用")
-    if dataset.get("visibility") == "private" and int(dataset.get("owner_id") or 0) != identity["user_id"]:
-        raise PermissionError("数据集不可访问")
     scopes = dataset_service._scope_filters(dataset_id, identity)
     return hashlib.sha256(json.dumps({"dataset": dataset, "scopes": scopes}, sort_keys=True,
                                     ensure_ascii=False, default=str).encode()).hexdigest()

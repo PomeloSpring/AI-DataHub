@@ -40,14 +40,14 @@ class MCPToolCaller:
         """List available tools from server configs (no live connection needed)."""
         configs = self._registry.load_configs()
         tools = []
-        from services.shared.mcp_client.tools import convert_tools_for_anthropic
+        from services.shared.mcp_client.tools import convert_tools_for_llm
         for cfg in configs:
             if not cfg.is_active:
                 continue
             if self._server_ids and cfg.id not in self._server_ids:
                 continue
             server_tools = cfg.tools_config or []
-            tools.extend(convert_tools_for_anthropic(server_tools, cfg.name))
+            tools.extend(convert_tools_for_llm(server_tools, cfg.name))
         return tools
 
     async def list_tools_for_prompt(self) -> str:
@@ -114,15 +114,15 @@ class MCPToolCaller:
         return await self.call(f"{server_name}__{tool_name}", arguments)
 
 
-def convert_tools_for_anthropic(tools: list[dict], server_name: str = "") -> list[dict]:
-    """Convert MCP tool schemas to Anthropic tool_use format.
+def convert_tools_for_llm(tools: list[dict], server_name: str = "") -> list[dict]:
+    """Convert MCP tool schemas to LLM tool_use format.
 
     Args:
         tools: List of MCP tool dicts with 'name', 'description', 'input_schema'
         server_name: MCP server name to use as prefix
 
     Returns:
-        List of tool dicts in Anthropic tool_use format
+        List of tool dicts in LLM tool_use format
     """
     result = []
     for t in tools:

@@ -40,7 +40,8 @@ from services.datamind.api.playground import router as playground_router
 from services.datamind.api.model_config import router as model_config_router
 from services.datamind.api.execution import router as execution_router
 from services.datamind.api.as_bot import router as as_bot_router
-from services.datamind.api.workspace_assets import router as workspace_assets_router
+from services.datamind.api.user_assets import router as user_assets_router
+from services.datamind.api.user_assets import workspace_router as workspace_artifacts_router
 
 app = FastAPI(
     title="DataMind API",
@@ -88,7 +89,8 @@ app.include_router(playground_router, prefix="/api/playground", tags=["SQL Playg
 app.include_router(model_config_router, prefix="/api/model-config", tags=["Model Config"])
 app.include_router(execution_router, prefix="/api/execution", tags=["Execution Layers"])
 app.include_router(as_bot_router, prefix="/api/as-bot", tags=["AS-BOT System Assistant"])
-app.include_router(workspace_assets_router, prefix="/api/workspace-assets", tags=["Workspace Assets"])
+app.include_router(user_assets_router, prefix="/api/assets", tags=["User Assets"])
+app.include_router(workspace_artifacts_router, prefix="/api/workspace-assets", tags=["Workspace Session Artifacts"])
 
 # Node metrics for distributed monitoring
 from services.shared.common.system_metrics import router as node_metrics_router

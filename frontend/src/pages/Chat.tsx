@@ -22,11 +22,10 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useChatStore } from '../stores/chatStore';
 import type { AttachmentInfo, PendingAttachment } from '../stores/chatStore';
-import { ATTACH_MAX_FILES, validateLocalAttachment } from '../stores/chatStore';
+import { ATTACH_MAX_FILES, validateLocalAttachment, filesFromClipboard } from '../stores/chatStore';
 import ChartPicker from '../components/ChartPicker';
 import { CHART_TYPES } from '../components/DashboardChart';
 import MarkdownWithCharts from '../components/MarkdownWithCharts';
-import ConversationDesignSection from '../components/ConversationDesignSection';
 import ExecutionProcess from '../components/ExecutionProcess';
 import InlineDetails from '../components/InlineDetails';
 import Model3DViewer from '../components/chat/Model3DViewer';
@@ -91,13 +90,12 @@ export default function Chat() {
   const {
     conversations, currentConvId, messages, loading,
     selectedDsId,
-    pipelineMode: chatPipelineMode,
     selectedWorkspaceId, setSelectedWorkspaceId, loadWorkspaceConfig,
     executionLayer, selectedModelRef, loadExecutionLayer, setSelectedModelRef,
     asBots, loadAsBots,
     reportTheme, setReportTheme,
     loadConversations, loadDatasources, loadLLMModels, loadSystemConfig,
-    setSelectedDsId, setSelectedModelId, setPipelineMode,
+    setSelectedDsId, setSelectedModelId,
     startNewConversation, switchConversation, deleteConversation, renameConversation,
     sendMessage, cancelMessage, respondToAsk, cancelAsk, updateMessageFeedback, setViewMode, analyzeData, predictData, clear,
   } = useChatStore();
@@ -266,12 +264,6 @@ export default function Chat() {
     setPendingAtts([]);
   };
 
-  // 推荐追问/快捷动作：以按钮形式直接发起一轮对话（不污染输入框）
-  const runQuestion = (text: string) => {
-    if (loading || !text.trim()) return;
-    sendMessage(text);
-  };
-
   // 赞踩打标渲染 — 内置结果卡与 Agent 输出共用(外层需 flex flex-wrap 容器)
   const renderFeedback = (idx: number, msg: any) => {
     const fb = msg.feedback || feedbackMap[idx];
@@ -318,11 +310,8 @@ export default function Chat() {
     );
   };
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = '';
-    if (files.length === 0) return;
-    // 本地校验 + blob 预览;文件随消息以 multipart 上传,服务端落盘到会话工作区
+  // 本地校验 + blob 预览,暂存待发附件;文件随消息以 multipart 上传,服务端落盘到会话工作区
+  const addPendingFiles = (files: File[]): number => {
     const next = [...pendingAtts];
     for (const f of files) {
       if (next.length >= ATTACH_MAX_FILES) {
@@ -336,7 +325,25 @@ export default function Chat() {
       }
       next.push({ file: f, filename: f.name, category: v.category, size: f.size, blobUrl: URL.createObjectURL(f) });
     }
-    setPendingAtts(next);
+    const added = next.length - pendingAtts.length;
+    if (added > 0) setPendingAtts(next);
+    return added;
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (files.length === 0) return;
+    addPendingFiles(files);
+  };
+
+  // Ctrl+V 粘贴截图/文件 → 直接放入待发附件,随消息一起发给模型;纯文本粘贴走默认行为
+  const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const files = filesFromClipboard(e.clipboardData);
+    if (files.length === 0) return;
+    e.preventDefault();
+    const added = addPendingFiles(files);
+    if (added > 0) toast.success(`已放入 ${added} 个附件，将随消息一起发送`);
   };
 
   const removePendingAtt = (att: PendingAttachment) => {
@@ -483,46 +490,10 @@ export default function Chat() {
             <h1 className="text-lg font-bold">{independent ? '工作空间' : 'Chat 数据分析'}</h1>
           </div>
           <div className="flex items-center gap-2">
-            {/* Mode Selector — 全面转向 Qoder 执行层 */}
-            {(() => {
-              const modes: string[] = ['agent'];
-              const modeLabel: Record<string, { icon: any; text: string }> = {
-                agent: { icon: <Bot className="h-3 w-3 inline mr-1" />, text: 'Qoder' },
-              };
-              const currentMode = modes.includes(chatPipelineMode || '') ? chatPipelineMode! : (modes[0] || 'agent');
-              if (modes.length <= 1) {
-                const m = modes[0] || 'agent';
-                return (
-                  <div className="h-8 px-3 flex items-center text-xs border rounded-md bg-background">
-                    {modeLabel[m]?.icon}{modeLabel[m]?.text || m}
-                  </div>
-                );
-              }
-              return (
-                <Select
-                  key={`mode-${selectedWorkspaceId}`}
-                  value={currentMode}
-                  onValueChange={(v) => {
-                    setPipelineMode(v as 'quick' | 'agent');
-                    const msgs: Record<string, string> = {
-                      agent: 'Qoder 执行层：角色化智能体，自主工具调用与可视化',
-                    };
-                    toast.info(msgs[v] || '');
-                  }}
-                >
-                  <SelectTrigger className="w-[120px] h-8">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {modes.map(m => (
-                      <SelectItem key={m} value={m}>
-                        {modeLabel[m]?.icon}{modeLabel[m]?.text || m}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              );
-            })()}
+            {/* 执行层标识 — quick 管道已退役，全面转向 Qoder 执行层（无模式可选） */}
+            <div className="h-8 px-3 flex items-center text-xs border rounded-md bg-background">
+              <Bot className="h-3 w-3 inline mr-1" />Qoder 执行层
+            </div>
 
             {/* 模型选择器:
                 - 有 AS-BOT 时: 候选 = AS-BOT 的可用模型; >1 才展示 (=1 自动选中 / 留空用执行层默认)
@@ -727,8 +698,8 @@ export default function Chat() {
                       />
                     )}
 
-                    {/* 流式 token 输出(intent 未确定前,如执行层 CLI 的流式回复,含内嵌图表块) */}
-                    {!msg.intent && msg.content && <MarkdownWithCharts text={msg.content} conversationId={currentConvId} />}
+                    {/* 流式 token 输出(intent 未确定前,如执行层 CLI 的流式回复,含内嵌图表/设计卡片块) */}
+                    {!msg.intent && msg.content && <MarkdownWithCharts text={msg.content} conversationId={currentConvId} onDesignContinue={text => { void sendMessage(text); }} />}
 
                     {msg.intent && ['chat', 'explain'].includes(msg.intent) && msg.reply && (
                       <div className="leading-relaxed prose prose-sm max-w-none">
@@ -743,10 +714,10 @@ export default function Chat() {
                       </div>
                     )}
 
-                    {/* Agent/执行层最终回复(无 SQL 结果,如 qoder 执行层,含内嵌图表块)+ 赞踩打标 */}
+                    {/* Agent/执行层最终回复(无 SQL 结果,如 qoder 执行层,含内嵌图表/设计卡片块)+ 赞踩打标 */}
                     {msg.reply && !msg.sql && !msg.error && msg.intent === 'agent' && (
                       <>
-                        <MarkdownWithCharts text={msg.reply} conversationId={currentConvId} onDrill={handleDrill} />
+                        <MarkdownWithCharts text={msg.reply} conversationId={currentConvId} onDrill={handleDrill} onDesignContinue={text => { void sendMessage(text); }} />
                         <div className="flex gap-2 mt-1 flex-wrap items-center">{renderFeedback(idx, msg)}</div>
                       </>
                     )}
@@ -945,28 +916,6 @@ export default function Chat() {
             </div>
           ))}
 
-          {/* 会话关联的仪表盘设计（与 AS-BOT 侧栏共用同一实现，入口不同、体验一致） */}
-          <ConversationDesignSection
-            conversationId={currentConvId}
-            refreshSignal={messages.length}
-            disabled={loading}
-            onContinue={text => { void sendMessage(text); }}
-          />
-
-          {/* 继续探索 — 基于本轮上文由模型推断的追问(回答完成后异步回填);无内容则不展示 */}
-          {!loading && messages.length > 0 && messages[messages.length - 1]?.role === 'assistant'
-            && (messages[messages.length - 1]?.followups?.length ?? 0) > 0 && (
-            <div className="pl-12 flex flex-wrap gap-2 items-center pt-1">
-              <span className="text-xs text-muted-foreground"><Lightbulb className="h-3 w-3 inline mr-1" />继续探索：</span>
-              {messages[messages.length - 1].followups!.map((fu, i) => (
-                <Button key={i} variant="outline" size="sm" className="h-7 text-xs max-w-[320px]" title={fu}
-                  onClick={() => runQuestion(fu)}>
-                  <span className="truncate">{fu}</span>
-                </Button>
-              ))}
-            </div>
-          )}
-
           {/* Loading indicator (when no assistant message exists yet) */}
           {loading && !(messages.length > 0 && messages[messages.length - 1]?.role === 'assistant' && !messages[messages.length - 1]?.sql && !messages[messages.length - 1]?.intent) && (
             <div className="flex gap-3">
@@ -1024,7 +973,7 @@ export default function Chat() {
                 onChange={handleFileSelect}
               />
               <Button variant="outline" size="icon" className="flex-shrink-0" disabled={loading}
-                title="上传附件(图片/表格/文档/3D 模型,随消息发送并存入会话工作区)"
+                title="上传附件(图片/表格/文档/3D 模型,支持 Ctrl+V 粘贴截图;随消息发送并存入会话工作区)"
                 onClick={() => fileInputRef.current?.click()}>
                 <Paperclip className="h-4 w-4" />
               </Button>
@@ -1037,6 +986,7 @@ export default function Chat() {
                 ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
+                onPaste={handlePaste}
                 placeholder="输入你的数据查询问题..."
                 className="flex-1"
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}

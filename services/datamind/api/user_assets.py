@@ -1,9 +1,16 @@
-"""Workspace Assets API — 工作空间资产清单(OSS 托管, 跨会话共享项目)。
+"""User Assets API — 用户资产清单(OSS 托管, 资产跟随用户跨工作空间)。
 
-工作空间是用户个人工作站。会话产物经"归档收藏"进入资产清单:
-  * 资产本体托管对象存储(OSS/MinIO, 未配置回退本地), 对象 key 为真值;
+资产归属是**用户**而非工作空间: 会话产物经"归档收藏"进入个人资产清单, 一旦归档
+跟着用户走, 不受工作空间限制:
+  * 资产本体托管对象存储(OSS/MinIO, 未配置回退本地), 对象 key 为真值
+    ({prefix}/{user_id}/assets/{asset_id}_{filename}, 见 object_storage.build_asset_key);
+  * origin_workspace_id/source_conversation_id 仅作溯源展示与本地产物清理定位;
   * 归档后会话本地产物可基于磁盘配额清理(资产不受影响);
   * LLM 经 assets 工具组感知清单并与用户确认归档/清理。
+
+路由分两域:
+  * /api/assets          — 用户资产域(跨工作空间), 属主校验 = user_id 过滤(fail-closed);
+  * /api/workspace-assets — 工作空间本地产物域(会话文件/磁盘配额/清理), 仍按工作空间治理。
 """
 from __future__ import annotations
 
@@ -19,10 +26,14 @@ from pydantic import BaseModel
 
 from services.shared.common.auth import get_current_user, authorize_workspace
 from services.shared.common.db.metadata_db import get_metadata_conn
-from services.shared.common.object_storage import get_object_storage
+from services.shared.common.object_storage import build_asset_key, get_object_storage
 
 logger = logging.getLogger(__name__)
+
+# 用户资产域: 资产跟随用户, 跨工作空间
 router = APIRouter()
+# 工作空间本地产物域: 会话文件/磁盘用量/清理仍按工作空间治理
+workspace_router = APIRouter()
 
 
 class ArchiveRequest(BaseModel):
@@ -36,23 +47,35 @@ class CleanupRequest(BaseModel):
     confirm: bool = False
 
 
-def _locate_session_file(workspace_id: int, conversation_id: int, rel_path: str, user_id: int):
-    """定位会话产物文件(仅属主, 防目录穿越/符号链接逃逸)。"""
+def _locate_session_file(user_id: int, conversation_id: int, rel_path: str,
+                         workspace_id: Optional[int] = None):
+    """定位会话产物文件(仅属主, 防目录穿越/符号链接逃逸)。
+
+    workspace_id 给定时叠加工作空间过滤(本地产物域端点用); 用户资产域按
+    conversation_id + user_id 定位(资产跟人走, 不限定工作空间)。
+    返回 (target, workspace_id, 规范化相对路径)。
+    """
     from services.datamind.execution import session_workspace as sw
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT session_key, workspace_id FROM adh_agent_sessions "
-                "WHERE conversation_id=%s AND user_id=%s AND workspace_id=%s",
-                (conversation_id, user_id, workspace_id))
+            if workspace_id is None:
+                cur.execute(
+                    "SELECT session_key, workspace_id FROM adh_agent_sessions "
+                    "WHERE conversation_id=%s AND user_id=%s",
+                    (conversation_id, user_id))
+            else:
+                cur.execute(
+                    "SELECT session_key, workspace_id FROM adh_agent_sessions "
+                    "WHERE conversation_id=%s AND user_id=%s AND workspace_id=%s",
+                    (conversation_id, user_id, workspace_id))
             row = cur.fetchone()
     finally:
         conn.close()
     if not row or not row.get("session_key"):
         raise HTTPException(status_code=404, detail="会话不存在或无权访问")
     base = sw.workspace_base(create=False)
-    root = sw.session_paths(base, row["session_key"], workspace_id, create=False)
+    root = sw.session_paths(base, row["session_key"], row["workspace_id"], create=False)
     ws_dir = (root / "workspace").resolve()
     rel = (rel_path or "").strip()
     for prefix in ("/workspace/", "/workspace", "workspace/", "./", "/"):
@@ -72,29 +95,33 @@ def _locate_session_file(workspace_id: int, conversation_id: int, rel_path: str,
             raise HTTPException(status_code=403, detail="非法文件路径")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
-    return target
+    return target, row["workspace_id"], rel
 
 
-def archive_session_file(workspace_id: int, conversation_id: int, rel_path: str,
-                         name: str, user_id: int, delete_source: bool = False) -> dict:
-    """归档会话产物到资产清单(供 LLM 工具与 API 共用)。"""
-    target = _locate_session_file(workspace_id, conversation_id, rel_path, user_id)
+def archive_session_file(user_id: int, conversation_id: int, rel_path: str,
+                         name: str, delete_source: bool = False) -> dict:
+    """归档会话产物到**用户**资产清单(供 LLM 工具与 API 共用)。
+
+    资产归属 user_id(跨工作空间随用户走); 来源工作空间/会话仅作溯源。
+    返回体不含 object_key(内部存储标识, 不外露)。
+    """
+    target, origin_ws, rel = _locate_session_file(user_id, conversation_id, rel_path)
     data = target.read_bytes()
     filename = target.name
     asset_id = uuid.uuid4().hex
-    object_key = f"workspaces/{workspace_id}/assets/{asset_id}_{filename}"
+    object_key = build_asset_key(user_id, asset_id, filename)
     storage = get_object_storage()
     storage.upload_bytes(object_key, data, content_type=mimetypes.guess_type(filename)[0] or "application/octet-stream")
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO adh_workspace_assets "
-                "(id, workspace_id, name, filename, category, object_key, storage_type, size, "
-                " source_conversation_id, created_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                (asset_id, workspace_id, name or filename, filename, _category(filename),
+                "INSERT INTO adh_user_assets "
+                "(id, user_id, origin_workspace_id, name, filename, category, object_key, storage_type, size, "
+                " source_conversation_id, source_path, created_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (asset_id, user_id, origin_ws, name or filename, filename, _category(filename),
                  object_key, "object" if storage.is_object_storage else "local", len(data),
-                 conversation_id, user_id))
+                 conversation_id, rel, user_id))
             conn.commit()
     finally:
         conn.close()
@@ -104,7 +131,7 @@ def archive_session_file(workspace_id: int, conversation_id: int, rel_path: str,
         except OSError:
             logger.warning("归档成功但删除本地产物失败: %s", target)
     return {"id": asset_id, "name": name or filename, "filename": filename, "size": len(data),
-            "object_key": object_key, "source_conversation_id": conversation_id}
+            "source_conversation_id": conversation_id, "origin_workspace_id": origin_ws}
 
 
 def _category(filename: str) -> str:
@@ -118,53 +145,43 @@ def _category(filename: str) -> str:
     return "file"
 
 
-def list_workspace_assets(workspace_id: int) -> list:
+def list_user_assets(user_id: int) -> list:
+    """用户资产清单(跨工作空间); origin_workspace_name 供前端溯源展示。"""
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, name, filename, category, size, source_conversation_id, created_by, created_at "
-                "FROM adh_workspace_assets WHERE workspace_id=%s ORDER BY created_at DESC",
-                (workspace_id,))
+                "SELECT a.id, a.name, a.filename, a.category, a.size, a.source_conversation_id, "
+                "a.origin_workspace_id, w.name AS origin_workspace_name, a.created_at "
+                "FROM adh_user_assets a LEFT JOIN adh_workspaces w ON w.id = a.origin_workspace_id "
+                "WHERE a.user_id=%s ORDER BY a.created_at DESC",
+                (user_id,))
             return cur.fetchall()
     finally:
         conn.close()
 
 
-@router.get("/{workspace_id}/assets")
-def list_assets_endpoint(workspace_id: int, user: dict = Depends(get_current_user)):
-    """工作空间资产清单(该空间所有会话共享)。"""
-    authorize_workspace(user, workspace_id)
-    return list_workspace_assets(workspace_id)
+@router.get("")
+def list_assets_endpoint(user: dict = Depends(get_current_user)):
+    """我的资产清单(跟随用户, 跨工作空间)。"""
+    return list_user_assets(user["user_id"])
 
 
-@router.post("/{workspace_id}/assets/archive")
-def archive_asset_endpoint(workspace_id: int, req: ArchiveRequest, user: dict = Depends(get_current_user)):
-    """归档会话产物到资产清单(OSS 托管); delete_source=true 归档后清理本地产物。"""
-    authorize_workspace(user, workspace_id)
-    return archive_session_file(workspace_id, req.conversation_id, req.path, req.name,
-                                user["user_id"], delete_source=req.delete_source)
+@router.post("/archive")
+def archive_asset_endpoint(req: ArchiveRequest, user: dict = Depends(get_current_user)):
+    """归档会话产物到我的资产清单(OSS 托管); delete_source=true 归档后清理本地产物。"""
+    return archive_session_file(user["user_id"], req.conversation_id, req.path, req.name,
+                                delete_source=req.delete_source)
 
 
-@router.get("/{workspace_id}/assets/{asset_id}/download-url")
-def asset_download_url(workspace_id: int, asset_id: str, user: dict = Depends(get_current_user)):
+@router.get("/{asset_id}/download-url")
+def asset_download_url(asset_id: str, user: dict = Depends(get_current_user)):
     """OSS 直链下载: 返回 presigned URL, 浏览器直连对象存储下载(不经服务端回源)。
 
     归档入对象存储的资产, 下载与归档同源(都在 OSS); 本地回退模式无直链,
     显式报错引导用 /download 代理下载, 不静默降级。
     """
-    authorize_workspace(user, workspace_id)
-    conn = get_metadata_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT filename, object_key FROM adh_workspace_assets WHERE id=%s AND workspace_id=%s",
-                (asset_id, workspace_id))
-            row = cur.fetchone()
-    finally:
-        conn.close()
-    if not row:
-        raise HTTPException(status_code=404, detail="资产不存在")
+    row = _get_asset(asset_id, user["user_id"])
     storage = get_object_storage()
     if not storage.is_object_storage:
         raise HTTPException(status_code=400, detail="当前资产存储为本地模式，无 OSS 直链；请用 /download 代理下载")
@@ -175,21 +192,10 @@ def asset_download_url(workspace_id: int, asset_id: str, user: dict = Depends(ge
     return {"url": url, "filename": row["filename"], "expires_in": 1800}
 
 
-@router.get("/{workspace_id}/assets/{asset_id}/download")
-def download_asset_endpoint(workspace_id: int, asset_id: str, user: dict = Depends(get_current_user)):
+@router.get("/{asset_id}/download")
+def download_asset_endpoint(asset_id: str, user: dict = Depends(get_current_user)):
     """服务端代理下载(本地存储模式/兼容入口); OSS 直链见 /download-url。"""
-    authorize_workspace(user, workspace_id)
-    conn = get_metadata_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT filename, object_key FROM adh_workspace_assets WHERE id=%s AND workspace_id=%s",
-                (asset_id, workspace_id))
-            row = cur.fetchone()
-    finally:
-        conn.close()
-    if not row:
-        raise HTTPException(status_code=404, detail="资产不存在")
+    row = _get_asset(asset_id, user["user_id"])
     data = get_object_storage().download_bytes(row["object_key"])
     if data is None:
         raise HTTPException(status_code=404, detail="资产内容不可用")
@@ -200,20 +206,15 @@ def download_asset_endpoint(workspace_id: int, asset_id: str, user: dict = Depen
                     headers={"Content-Disposition": f'attachment; filename="{quoted}"; filename*=UTF-8\'\'{quoted}'})
 
 
-@router.delete("/{workspace_id}/assets/{asset_id}")
-def delete_asset_endpoint(workspace_id: int, asset_id: str, user: dict = Depends(get_current_user)):
+@router.delete("/{asset_id}")
+def delete_asset_endpoint(asset_id: str, user: dict = Depends(get_current_user)):
     """删除资产(仅属主)。"""
-    authorize_workspace(user, workspace_id)
+    row = _get_asset(asset_id, user["user_id"])
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT object_key FROM adh_workspace_assets WHERE id=%s AND workspace_id=%s",
-                (asset_id, workspace_id))
-            row = cur.fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="资产不存在")
-            cur.execute("DELETE FROM adh_workspace_assets WHERE id=%s", (asset_id,))
+            cur.execute("DELETE FROM adh_user_assets WHERE id=%s AND user_id=%s",
+                        (asset_id, user["user_id"]))
             conn.commit()
     finally:
         conn.close()
@@ -221,23 +222,44 @@ def delete_asset_endpoint(workspace_id: int, asset_id: str, user: dict = Depends
     return {"success": True}
 
 
-@router.get("/{workspace_id}/conversations/{conversation_id}/files")
+def _get_asset(asset_id: str, user_id: int) -> dict:
+    """按 (asset_id, user_id) 取资产(属主 fail-closed: 他人的资产一律 404)。"""
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT filename, object_key FROM adh_user_assets WHERE id=%s AND user_id=%s",
+                (asset_id, user_id))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="资产不存在")
+    return row
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 工作空间本地产物域(会话文件/磁盘配额/清理) — 仍按工作空间治理
+# ═══════════════════════════════════════════════════════════════════
+
+
+@workspace_router.get("/{workspace_id}/conversations/{conversation_id}/files")
 def list_session_files_endpoint(workspace_id: int, conversation_id: int,
-                               user: dict = Depends(get_current_user)):
+                                user: dict = Depends(get_current_user)):
     """列出会话工作区产物文件(供归档选择, 非手填路径)。"""
     authorize_workspace(user, workspace_id)
     return list_session_files(workspace_id, conversation_id, user["user_id"])
 
 
-@router.delete("/{workspace_id}/conversations/{conversation_id}/files")
+@workspace_router.delete("/{workspace_id}/conversations/{conversation_id}/files")
 def delete_session_file_endpoint(workspace_id: int, conversation_id: int,
-                                path: str = Query(..., description="工作区相对路径"),
-                                user: dict = Depends(get_current_user)):
+                                 path: str = Query(..., description="工作区相对路径"),
+                                 user: dict = Depends(get_current_user)):
     """手动删除会话工作区产物文件(仅属主, 防目录穿越/符号链接逃逸)。
 
     删除物理文件, 不可恢复; 归档过的资产不受影响(资产是独立副本)。"""
     authorize_workspace(user, workspace_id)
-    target = _locate_session_file(workspace_id, conversation_id, path, user["user_id"])
+    target, _, _ = _locate_session_file(user["user_id"], conversation_id, path, workspace_id)
     try:
         target.unlink()
     except OSError as e:
@@ -246,21 +268,8 @@ def delete_session_file_endpoint(workspace_id: int, conversation_id: int,
 
 
 def list_session_files(workspace_id: int, conversation_id: int, user_id: int) -> list:
-    from services.datamind.execution import session_workspace as sw
-    conn = get_metadata_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT session_key FROM adh_agent_sessions "
-                "WHERE conversation_id=%s AND user_id=%s AND workspace_id=%s",
-                (conversation_id, user_id, workspace_id))
-            row = cur.fetchone()
-    finally:
-        conn.close()
-    if not row or not row.get("session_key"):
-        raise HTTPException(status_code=404, detail="会话不存在或无权访问")
-    base = sw.workspace_base(create=False)
-    ws_dir = (sw.session_paths(base, row["session_key"], workspace_id, create=False) / "workspace").resolve()
+    target_root, _, _ = _locate_session_file_root(workspace_id, conversation_id, user_id)
+    ws_dir = (target_root / "workspace").resolve()
     if not ws_dir.is_dir():
         return []
     files = []
@@ -273,7 +282,26 @@ def list_session_files(workspace_id: int, conversation_id: int, user_id: int) ->
     return files
 
 
-@router.get("/{workspace_id}/disk-status")
+def _locate_session_file_root(workspace_id: int, conversation_id: int, user_id: int):
+    """定位会话目录根(仅属主); 返回 (session_root, workspace_id, "")。"""
+    from services.datamind.execution import session_workspace as sw
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT session_key, workspace_id FROM adh_agent_sessions "
+                "WHERE conversation_id=%s AND user_id=%s AND workspace_id=%s",
+                (conversation_id, user_id, workspace_id))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row or not row.get("session_key"):
+        raise HTTPException(status_code=404, detail="会话不存在或无权访问")
+    base = sw.workspace_base(create=False)
+    return sw.session_paths(base, row["session_key"], row["workspace_id"], create=False), row["workspace_id"], ""
+
+
+@workspace_router.get("/{workspace_id}/disk-status")
 def disk_status_endpoint(workspace_id: int, user: dict = Depends(get_current_user)):
     """工作空间磁盘用量/配额/会话产物清单(LLM disk_status 工具同源)。"""
     authorize_workspace(user, workspace_id)
@@ -282,7 +310,6 @@ def disk_status_endpoint(workspace_id: int, user: dict = Depends(get_current_use
 
 def disk_status(workspace_id: int) -> dict:
     from services.datamind.execution.session_workspace import workspace_disk_usage
-    from services.authservice.services.role_service import role_service
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
@@ -324,7 +351,7 @@ def _session_dir_bytes(workspace_id: int, session_key: str) -> int:
     return total
 
 
-@router.post("/{workspace_id}/cleanup")
+@workspace_router.post("/{workspace_id}/cleanup")
 def cleanup_endpoint(workspace_id: int, req: CleanupRequest, user: dict = Depends(get_current_user)):
     """清理本地产物: 候选=已归档来源文件 + 已关闭会话目录(资产在 OSS 不受影响)。
 
@@ -355,15 +382,15 @@ def cleanup_endpoint(workspace_id: int, req: CleanupRequest, user: dict = Depend
 
 
 def _cleanup_candidates(workspace_id: int) -> list:
-    """已归档来源文件 + 已关闭会话目录。"""
+    """已归档来源文件(按资产 source_path 定位) + 已关闭会话目录。"""
     import re
     from pathlib import Path
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT object_key, filename, source_conversation_id FROM adh_workspace_assets "
-                "WHERE workspace_id=%s AND source_conversation_id > 0", (workspace_id,))
+                "SELECT user_id, filename, source_path, source_conversation_id FROM adh_user_assets "
+                "WHERE origin_workspace_id=%s AND source_conversation_id > 0", (workspace_id,))
             assets = cur.fetchall()
             cur.execute(
                 "SELECT session_key, conversation_id, status FROM adh_agent_sessions "
@@ -373,16 +400,16 @@ def _cleanup_candidates(workspace_id: int) -> list:
         conn.close()
     candidates = []
     for a in assets:
-        m = re.match(r"^workspaces/\d+/assets/[0-9a-f]{32}_(.+)$", a.get("object_key") or "")
-        if not m:
-            continue
         # 归档来源文件(会话 workspace 内)仍存在则列为候选
         try:
-            target = _locate_session_file(workspace_id, int(a["source_conversation_id"]), m.group(1), _asset_owner(a))
-        except HTTPException:
+            target, _, _ = _locate_session_file(
+                int(a["user_id"]), int(a["source_conversation_id"]),
+                a.get("source_path") or a.get("filename") or "", workspace_id)
+        except (HTTPException, KeyError, TypeError, ValueError):
             continue
         candidates.append({"kind": "file", "path": str(target), "bytes": target.stat().st_size,
-                           "conversation_id": a["source_conversation_id"], "filename": m.group(1)})
+                           "conversation_id": a["source_conversation_id"],
+                           "filename": a.get("filename") or target.name})
     for s in sessions:
         key = s.get("session_key") or ""
         if s.get("status") != "closed" or not re.fullmatch(r"[a-f0-9]{32}", key):
@@ -390,16 +417,3 @@ def _cleanup_candidates(workspace_id: int) -> list:
         candidates.append({"kind": "session", "session_key": key,
                            "conversation_id": s.get("conversation_id"), "bytes": _session_dir_bytes(workspace_id, key)})
     return candidates
-
-
-def _asset_owner(asset: dict) -> int:
-    """归档来源文件归属校验用: 取资产归档人。"""
-    conn = get_metadata_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT created_by FROM adh_workspace_assets WHERE object_key=%s",
-                        (asset.get("object_key"),))
-            row = cur.fetchone()
-            return int((row or {}).get("created_by") or 0)
-    finally:
-        conn.close()

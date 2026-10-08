@@ -167,7 +167,7 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
         """执行层可访问目录白名单(绝对路径字符串列表).
 
         取 config.allowed_dirs(manager 已归一化);为空时回退工作空间
-        沙箱目录 data/workspaces/ws_{id}(workspace_id=0 → global)。
+        沙箱目录 data/workspaces/ws_{id}(workspace_id=0 → global, 历史遗留仅兼容保留)。
         """
         dirs = [str(d).strip() for d in (self.config.get("allowed_dirs") or []) if str(d or "").strip()]
         if dirs:

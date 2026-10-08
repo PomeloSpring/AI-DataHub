@@ -143,6 +143,26 @@ export function useEditorCharts(dashboardId: number | undefined) {
     });
     return chart;
   }, [id, mutate, current]);
+  // 从数据集引入: 生成 source_type='dataset' 图表卡片(预设图表类型/字段映射搬入 config),
+  // 不复制 SQL 到 adh_charts.sql_query, 取数统一走数据集治理入口(单口径)。
+  const handleAddFromDataset = useCallback((dataset: {
+    id: number; name: string; chart_type?: string; chart_preset?: Record<string, any>;
+  }, position: { x: number; y: number }) => {
+    if (savingLock.current) return;
+    const preset = dataset.chart_preset || {};
+    const config: Record<string, any> = {};
+    if (preset.xCol) config.xCol = preset.xCol;
+    if (preset.yCol) config.yCol = preset.yCol;
+    if (preset.groupCol) config.groupCol = preset.groupCol;
+    if (preset.limit) config.limit = preset.limit;
+    const chart: DashboardChart = {
+      id: tempIdCounter--, dashboard_id: id, name: dataset.name,
+      chart_type: dataset.chart_type || 'bar',
+      sql_query: '', source_type: 'dataset', source_id: dataset.id, data_cache: null,
+      config, position: { ...position, ...DEFAULT_CHART_SIZE }, created_at: '', updated_at: '' };
+    mutate(d => ({ ...d, added: [...d.added, chart], selectedId: chart.id }));
+    return chart;
+  }, [id, mutate]);
   const handleDragEnd = (chartId: number, position: { x: number; y: number }) => {
     const chart = allCharts.find(c => c.id === chartId);
     if (chart) updateLocalChart(chartId, { position: { ...chartRect(chart), ...position } });
@@ -214,6 +234,7 @@ export function useEditorCharts(dashboardId: number | undefined) {
     hasUnsavedChanges: pendingCount > 0, pendingCount, pendingChangeCount, pendingDeleteCount: draft.deleted.length,
     updateMetadata, updateCanvas, updatePageLayout, getChartData: chartData, isNewChart: (chartId: number) => chartId < 0,
     updateLocalChart, handlePropertyChange, handlePositionChange, handleWidgetConfigChange, handleAddFromPanel,
+    handleAddFromDataset,
     handleDragEnd, handleResizeEnd, handleDeleteSelected, handleSaveChartConfig, saveAllChanges, handleSelectElement,
     createFromTemplate: store.createFromTemplate };
 }

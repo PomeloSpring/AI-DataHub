@@ -134,24 +134,6 @@ def load_prompt(skill: str, component: str, dialect: str = None, workspace_id: i
     return result
 
 
-def load_nl2sql_prompt(dialect: str = None, workspace_id: int = 0) -> dict:
-    """Load all NL2SQL prompt components.
-
-    Args:
-        dialect: Database dialect (e.g., 'mysql', 'doris')
-        workspace_id: Workspace scope for DB override (0 = global default)
-
-    Returns:
-        Dict with 'system', 'rules', 'examples', 'dialect' keys
-    """
-    return {
-        "system": load_prompt("nl2sql", "system", workspace_id=workspace_id),
-        "rules": load_prompt("nl2sql", "rules", workspace_id=workspace_id),
-        "examples": load_prompt("nl2sql", "examples", workspace_id=workspace_id),
-        "dialect": load_prompt("nl2sql", None, dialect=dialect, workspace_id=workspace_id) if dialect else None,
-    }
-
-
 def load_shared_rules() -> dict:
     """Load all shared rules from rules/ directory.
 

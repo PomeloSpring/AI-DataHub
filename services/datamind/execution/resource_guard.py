@@ -41,6 +41,30 @@ def bind_resources(ctx, policy):
     return allowed
 
 
+def assert_ontology_draft_scope(ctx) -> int:
+    """『生成本体模型』草案工具(generate/save_ontology_draft)的域约束，返回目标源 id（0=系统域）。
+
+    系统域（ctx.datasource_id<=0）维持 AS-BOT 自主可用（as-bot-system-waker §4）；
+    业务源仅限**任务绑定会话**（ctx.extra["task_binding"] == {"kind": "ontology_generate",
+    "datasource_id": target}，由 datacatalog /generate 端点服务端注入，LLM 不可见不可伪造），
+    且目标源必须在用户角色授权集内（fail-closed：空授权集不放行）。
+    其余任何情形一律拒绝，不静默回退到系统域。
+    """
+    from services.authservice.services.role_service import role_service
+    target = int(getattr(ctx, "datasource_id", 0) or 0)
+    if target <= 0:
+        return 0
+    binding = (getattr(ctx, "extra", None) or {}).get("task_binding") or {}
+    if (binding.get("kind") != "ontology_generate"
+            or int(binding.get("datasource_id") or 0) != target):
+        raise ResourceScopeError(
+            "业务数据源的本体草案生成仅限『生成本体模型』任务会话，请在本体建模页发起生成任务")
+    allowed = set(role_service.get_user_allowed_datasources(ctx.user_id, ctx.workspace_id))
+    if target not in allowed:
+        raise ResourceScopeError("当前用户无权使用该数据源，请选择已授权数据源")
+    return target
+
+
 def validate_knowledge_binding(ids):
     """知识库权限只来自 AS-BOT；状态仍实时校验，空绑定明确拒绝。"""
     if not ids:
@@ -150,18 +174,27 @@ def validate_tool_resources(ctx, qualified_name, args):
         ctx.extra["tag_authorized_datasource_ids"] = sorted(int(s) for s in (available_sources or set()))
     if name == "knowledge_search":
         validate_knowledge_binding(ctx.extra["bound_knowledge_base_ids"])
-    if name in ("generate_ontology_draft", "save_ontology_model", "activate_ontology_model", "import_ontology_yaml"):
-        # 本体写操作限**系统本体域**（as-bot-system-waker §4）；动作权限由菜单与功能
+    if name in ("generate_ontology_draft", "save_ontology_draft", "save_ontology_model",
+                "activate_ontology_model", "import_ontology_yaml"):
+        # 本体写操作的域把关（as-bot-system-waker §4）；动作权限由菜单与功能
         # 权限码在工具 handler 内把关（ontology:generate/save/activate/import）。
         # 域判定显式覆盖两种寻址方式（model_id / datasource_id）——
         # 不依赖 _check_source 或 handler 的副作用碰巧挡住，那是意外正确，
         # schema 一变就会漏（历史就漏了 datasource_id 寻址的两个工具）。
-        if args.get("model_id"):
-            model = execute_query("SELECT kind FROM adh_ontology_models WHERE id=%s", (args["model_id"],), fetchone=True)
-            if model is None or str(model.get("kind") or "") != "system":
-                raise PermissionError("AS-BOT 不能操作业务本体")
-        if args.get("datasource_id") not in (None, "", 0, "0"):
-            raise PermissionError("AS-BOT 只能写系统本体，不接受业务数据源标识")
+        if name in ("generate_ontology_draft", "save_ontology_draft"):
+            # 草案生成/提交：目标源=会话绑定源（系统域=0）；业务源仅限『生成本体模型』
+            # 任务绑定会话（服务端注入 task_binding），fail-closed（见 assert_ontology_draft_scope）。
+            if args.get("model_id") or args.get("datasource_id") not in (None, "", 0, "0"):
+                raise PermissionError("该工具不接受模型/数据源标识参数；目标源由服务端按会话绑定源注入")
+            assert_ontology_draft_scope(ctx)
+        else:
+            # 其余本体写操作限**系统本体域**（模型寻址要求 kind='system'）。
+            if args.get("model_id"):
+                model = execute_query("SELECT kind FROM adh_ontology_models WHERE id=%s", (args["model_id"],), fetchone=True)
+                if model is None or str(model.get("kind") or "") != "system":
+                    raise PermissionError("AS-BOT 不能操作业务本体")
+            if args.get("datasource_id") not in (None, "", 0, "0"):
+                raise PermissionError("AS-BOT 只能写系统本体，不接受业务数据源标识")
     return dict(args)
 
 

@@ -4,15 +4,13 @@
 stdio 形态已废弃（分帧为 LSP 风格 Content-Length，与 MCP 标准 newline-delimited
 不兼容，标准客户端无法连接）；仅保留代码供内部调试，不再维护。
 
-This MCP server provides three tools:
-- query_data: Natural language data query (NL2SQL)
+This MCP server provides one tool:
 - execute_sql: Direct SQL execution against a datasource
-- analyze_data: Multi-dimensional data analysis
 
-安全约定（数据护城河）：三个工具的取数全部经治理入口——
-query_data/analyze_data 走 NL2SQL 管道（内部 execute_query_with_permission），
-execute_sql 直接走 execute_query_with_permission；身份为系统调用
-(user_id=0 → sensitive_only 基线，护栏 §2)，无 RBAC/RLS 但敏感基线强制生效。
+安全约定（数据护城河）：取数经治理入口 execute_query_with_permission；
+身份为系统调用(user_id=0 → sensitive_only 基线，护栏 §2)，
+无 RBAC/RLS 但敏感基线强制生效。
+(query_data/analyze_data 依赖的 NL2SQL 单发管道已退役，随之下线。)
 """
 
 import asyncio
@@ -40,28 +38,6 @@ logger = logging.getLogger("datamind-mcp")
 
 TOOLS = [
     {
-        "name": "query_data",
-        "description": (
-            "Query data using natural language. Converts the question to SQL "
-            "via NL2SQL pipeline, executes it, and returns results with analysis."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "Natural language question about the data",
-                },
-                "datasource_id": {
-                    "type": "integer",
-                    "description": "Datasource ID (0 = default)",
-                    "default": 0,
-                },
-            },
-            "required": ["question"],
-        },
-    },
-    {
         "name": "execute_sql",
         "description": (
             "Execute a SQL query directly against the specified datasource. "
@@ -83,84 +59,7 @@ TOOLS = [
             "required": ["sql"],
         },
     },
-    {
-        "name": "analyze_data",
-        "description": (
-            "Analyze data using multi-dimensional analysis. "
-            "Supports trend, distribution, anomaly detection, and general analysis."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "Analysis question or data description",
-                },
-                "analysis_type": {
-                    "type": "string",
-                    "description": "Type of analysis: trend, distribution, anomaly, general",
-                    "enum": ["trend", "distribution", "anomaly", "general"],
-                    "default": "general",
-                },
-                "datasource_id": {
-                    "type": "integer",
-                    "description": "Datasource ID (0 = default)",
-                    "default": 0,
-                },
-            },
-            "required": ["question"],
-        },
-    },
 ]
-
-
-async def handle_query_data(arguments: dict) -> str:
-    """Execute NL2SQL pipeline for a natural language question."""
-    from services.datamind.nl2sql.orchestrator.pipeline_orchestrator import execute_pipeline
-
-    question = arguments.get("question", "")
-    datasource_id = arguments.get("datasource_id", 0)
-
-    if not question:
-        return json.dumps({"error": "question is required"})
-
-    result = {}
-    try:
-        async for event_type, data in execute_pipeline(
-            question=question,
-            history=[],
-            datasource_id=datasource_id,
-            pipeline_mode="quick",
-            user_id=0,
-            username="mcp",
-        ):
-            if event_type == "done":
-                result = data
-            elif event_type == "error":
-                result["error"] = data.get("message", str(data))
-    except PermissionError as e:
-        # 治理层拒绝是面向用户的可诊断提示，直接回显（含错因，护栏 §7 例外）。
-        result = {"error": str(e)}
-    except Exception:
-        # 原始报错可能含连接串/主机等物理信息，仅进服务端日志（护栏 §7）。
-        logger.exception("query_data failed")
-        result = {"error": "查询执行失败，请联系管理员查看服务端日志"}
-
-    # Format for MCP response
-    response = {
-        "sql": result.get("sql"),
-        "reply": result.get("reply", ""),
-        "row_count": 0,
-        "columns": [],
-        "rows_preview": [],
-    }
-    query_result = result.get("result", {})
-    if query_result:
-        response["row_count"] = query_result.get("row_count", 0)
-        response["columns"] = query_result.get("columns", [])
-        response["rows_preview"] = query_result.get("rows", [])[:20]
-
-    return json.dumps(response, ensure_ascii=False, default=str)
 
 
 async def handle_execute_sql(arguments: dict) -> str:
@@ -211,85 +110,10 @@ async def handle_execute_sql(arguments: dict) -> str:
         return json.dumps({"error": "SQL 执行失败，请联系管理员查看服务端日志"}, ensure_ascii=False)
 
 
-async def handle_analyze_data(arguments: dict) -> str:
-    """Analyze data using the analysis pipeline."""
-    from services.shared.common.llm.llm_client import generate_sql as call_llm
-    from services.datamind.nl2sql.sql.template_loader import get_analysis_prompt
-
-    question = arguments.get("question", "")
-    analysis_type = arguments.get("analysis_type", "general")
-    datasource_id = arguments.get("datasource_id", 0)
-
-    if not question:
-        return json.dumps({"error": "question is required"})
-
-    # First, get relevant data via NL2SQL
-    from services.datamind.nl2sql.orchestrator.pipeline_orchestrator import execute_pipeline
-
-    query_result = None
-    try:
-        async for event_type, data in execute_pipeline(
-            question=question,
-            history=[],
-            datasource_id=datasource_id,
-            pipeline_mode="quick",
-            user_id=0,
-            username="mcp",
-        ):
-            if event_type == "done":
-                query_result = data
-    except PermissionError as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-    except Exception:
-        logger.exception("analyze_data query failed")
-        return json.dumps({"error": "查询执行失败，请联系管理员查看服务端日志"}, ensure_ascii=False)
-
-    if not query_result or not query_result.get("result"):
-        return json.dumps({
-            "error": "No data retrieved for analysis",
-            "reply": query_result.get("reply", "") if query_result else "",
-        })
-
-    result_data = query_result["result"]
-    columns = result_data.get("columns", [])
-    rows = result_data.get("rows", [])
-
-    if not columns or not rows:
-        return json.dumps({"reply": "No data to analyze"})
-
-    # Run LLM analysis
-    try:
-        tpl = get_analysis_prompt()
-        fields_text = "\n".join([f"- {c}" for c in columns])
-        data_text = json.dumps(rows[:100], ensure_ascii=False, default=str)
-
-        analysis_prompt = f"分析类型: {analysis_type}\n"
-        user_content = tpl["user_tpl"].format(fields=fields_text, data=data_text)
-        messages = [
-            {"role": "system", "content": tpl["system"]},
-            {"role": "user", "content": f"{analysis_prompt}用户问题: {question}\n\n{user_content}"},
-        ]
-
-        llm_result = call_llm(messages)
-        return json.dumps({
-            "analysis_type": analysis_type,
-            "reply": llm_result.get("sql", ""),
-            "data_columns": columns,
-            "data_row_count": len(rows),
-            "tokens": llm_result.get("tokens", {}),
-        }, ensure_ascii=False, default=str)
-
-    except Exception as e:
-        logger.error("analyze_data LLM failed: %s", e)
-        return json.dumps({"error": f"Analysis failed: {str(e)}"})
-
-
 # ── MCP JSON-RPC Handler ─────────────────────────────────────────────
 
 TOOL_HANDLERS = {
-    "query_data": handle_query_data,
     "execute_sql": handle_execute_sql,
-    "analyze_data": handle_analyze_data,
 }
 
 
@@ -432,7 +256,7 @@ def create_mcp_app():
 
     server = create_mcp_server(
         "datamind",
-        "DataMind MCP Server: NL2SQL query, governed SQL execution, data analysis",
+        "DataMind MCP Server: governed SQL execution",
     )
 
     @server.list_tools()

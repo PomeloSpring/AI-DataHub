@@ -174,13 +174,13 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
     if (!convId) {
       try {
         const { data } = await client.post('/chat/conversations', {
-          workspace_id: 0, datasource_id: 0,
+          workspace_id: 0, datasource_id: 0,  // workspace_id=0 未指定 → 服务端解析为用户默认工作空间
         });
         if (!ownsRequest() || abortController.signal.aborted) return;
         convId = data.id;
         set(s => ({
           conversationId: data.id,
-          conversations: [{ id: data.id, title: data.title, workspace_id: 0, datasource_id: 0,
+          conversations: [{ id: data.id, title: data.title, workspace_id: data.workspace_id || 0, datasource_id: 0,
             as_bot_key: data.as_bot_key || '', created_at: data.created_at, updated_at: data.created_at },
             ...s.conversations],
         }));

@@ -11,8 +11,8 @@ import { toast } from 'sonner';
 import { Archive, Download, Trash2, HardDrive, Sparkles, RefreshCw, Search } from 'lucide-react';
 import client from '@/api/client';
 
-// 工作空间资产清单(共享项目): 会话产物"归档收藏"后进入清单, 供本空间所有会话引用;
-// 资产托管对象存储(OSS), 归档后可清理本地产物(受磁盘配额约束)。
+// 用户资产清单(资产跟随用户, 跨工作空间): 会话产物"归档收藏"后进入清单, 跟随账号复用;
+// 资产托管对象存储(OSS), 归档后可清理本地产物(受工作空间磁盘配额约束)。
 
 interface Asset {
   id: string;
@@ -21,6 +21,8 @@ interface Asset {
   category: string;
   size: number;
   source_conversation_id: number;
+  origin_workspace_id: number;
+  origin_workspace_name: string | null;
   created_at: string;
 }
 
@@ -60,11 +62,23 @@ export default function WorkspaceAssets() {
     setLoading(true);
     try {
       const [a, d] = await Promise.all([
-        client.get(`/workspace-assets/${ws}/assets`),
+        client.get('/assets'),
         client.get(`/workspace-assets/${ws}/disk-status`),
       ]);
-      setAssets(a.data || []);
-      setDisk(d.data);
+      // 响应形状校验: 未命中代理/网关误路由时会拿到 HTML/错误对象(200+非列表),
+      // 不静默当空列表, 显式报错(no-silent-degradation)
+      if (!Array.isArray(a.data)) {
+        toast.error('资产清单响应异常（非列表结构），请检查前端代理配置或服务日志');
+        setAssets([]);
+      } else {
+        setAssets(a.data);
+      }
+      if (!d.data || typeof d.data !== 'object' || Array.isArray(d.data)) {
+        toast.error('磁盘用量响应异常，请检查服务日志');
+        setDisk(null);
+      } else {
+        setDisk(d.data);
+      }
     } catch {
       toast.error('加载资产清单失败');
     } finally {
@@ -87,7 +101,12 @@ export default function WorkspaceAssets() {
     if (!id) return;
     try {
       const { data } = await client.get(`/workspace-assets/${ws}/conversations/${id}/files`);
-      setFiles(data || []);
+      if (!Array.isArray(data)) {
+        toast.error('会话产物响应异常（非列表结构），请检查服务日志');
+        setFiles([]);
+      } else {
+        setFiles(data);
+      }
     } catch {
       toast.error('加载会话产物失败');
     }
@@ -97,13 +116,13 @@ export default function WorkspaceAssets() {
     if (!convId || !filePath) { toast.error('请选择会话与产物文件'); return; }
     setArchiving(true);
     try {
-      await client.post(`/workspace-assets/${ws}/assets/archive`, {
+      await client.post('/assets/archive', {
         name: assetName.trim() || filePath.split('/').pop(),
         conversation_id: Number(convId),
         path: filePath,
         delete_source: deleteSource,
       });
-      toast.success(deleteSource ? '已归档并清理本地产物' : '已归档到资产清单');
+      toast.success(deleteSource ? '已归档并清理本地产物' : '已归档到我的资产');
       setArchiveOpen(false);
       load();
     } catch (e: any) {
@@ -141,7 +160,7 @@ export default function WorkspaceAssets() {
   const download = async (a: Asset) => {
     // OSS 直链优先: 浏览器直连对象存储下载(与归档同源), 不经服务端回源
     try {
-      const direct = await client.get(`/workspace-assets/${ws}/assets/${a.id}/download-url`);
+      const direct = await client.get(`/assets/${a.id}/download-url`);
       if (direct.data?.url) {
         window.open(direct.data.url, '_blank');
         return;
@@ -156,7 +175,7 @@ export default function WorkspaceAssets() {
       // 400=本地存储模式(未配置对象存储)，回落服务端代理下载
     }
     try {
-      const res = await client.get(`/workspace-assets/${ws}/assets/${a.id}/download`, { responseType: 'blob' });
+      const res = await client.get(`/assets/${a.id}/download`, { responseType: 'blob' });
       const url = URL.createObjectURL(res.data as Blob);
       const link = document.createElement('a');
       link.href = url;
@@ -170,7 +189,7 @@ export default function WorkspaceAssets() {
 
   const remove = async (a: Asset) => {
     try {
-      await client.delete(`/workspace-assets/${ws}/assets/${a.id}`);
+      await client.delete(`/assets/${a.id}`);
       toast.success('资产已删除');
       load();
     } catch (e: any) {
@@ -190,7 +209,7 @@ export default function WorkspaceAssets() {
           <div>
             <h1 className="text-2xl font-bold flex items-center gap-2"><Archive className="h-6 w-6" />资产清单</h1>
             <p className="text-muted-foreground mt-1 text-sm">
-              会话产物"归档收藏"后进入清单，供本工作空间所有会话引用（共享项目）；资产托管在对象存储，本地产物可按磁盘配额清理。
+              会话产物"归档收藏"后进入清单，跟随账号跨工作空间复用；资产托管在对象存储，本地会话产物可按磁盘配额清理。
             </p>
           </div>
           <div className="flex gap-2">
@@ -236,6 +255,7 @@ export default function WorkspaceAssets() {
                   <div className="text-xs text-muted-foreground truncate">
                     {a.filename}
                     {a.source_conversation_id > 0 && <> · 来自会话 #{a.source_conversation_id}</>}
+                    {a.origin_workspace_id > 0 && <> · {a.origin_workspace_name || '工作空间已删除'}</>}
                     {a.created_at && <> · {new Date(a.created_at).toLocaleString('zh-CN')}</>}
                   </div>
                 </div>

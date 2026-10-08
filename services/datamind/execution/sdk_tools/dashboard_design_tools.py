@@ -53,7 +53,7 @@ async def prepare_dashboard_design(args):
 DESIGN_ID = Annotated[str, "当前设计 ID，必须来自本会话的设计卡片"]
 SCREEN_SPECS = [
     {"name": "request_dashboard_design", "handler": request_dashboard_design,
-     "description": "仅在用户要求新建/追加/修改仪表盘时提出设计草稿。先让用户在面板确认目标和业务范围，再查业务知识；不直接创建正式图表。系统用量/健康问题不要调用。",
+     "description": "仅在用户要求新建/追加/修改仪表盘时提出设计草稿。先让用户在面板确认目标和业务范围，再查业务知识；不直接创建正式图表。系统用量/健康问题不要调用。提出设计后，若需用户在面板完成选择，在回答中输出 ```design 代码块（严格 JSON：{\"design_id\": \"<设计ID>\"}）内嵌设计卡片。",
      "schema": {"request": Annotated[str, "用户的业务设计诉求"],
                 "operation": Annotated[str, "create=新建，append=追加，update=修改单图"],
                 "name": Annotated[Optional[str], "新仪表盘名称或用户提及的目标名称"]}},
@@ -61,7 +61,7 @@ SCREEN_SPECS = [
      "description": "读取本会话设计状态、用户已确认的范围和口径、当前版本；不返回 SQL。用户完成选择后先读这里，不重建设计。",
      "schema": {"design_id": DESIGN_ID}},
     {"name": "prepare_dashboard_design", "handler": prepare_dashboard_design,
-     "description": "按用户确认的选择准备图表语义意图和设计步骤。存疑时用 questions 提出选项并等待回答，可传空 widgets。方案准备完成后提示用户打开面板查看 SQL、真实预览并确认发布。禁止 SQL 字段。",
+     "description": "按用户确认的选择准备图表语义意图和设计步骤。存疑时用 questions 提出选项并等待回答，可传空 widgets。方案准备完成后提示用户打开面板查看 SQL、真实预览并确认发布，并在回答中输出 ```design 代码块（严格 JSON：{\"design_id\": \"<设计ID>\"}）内嵌设计卡片。禁止 SQL 字段。",
      "schema": {"design_id": DESIGN_ID, "expected_version": Annotated[int, "get_dashboard_design 返回的当前版本"],
                 "widgets": Annotated[list, "图表数组：{title,chart_type,query:{object,metrics,dimensions,time_window,time_column,time_grain},config,position:{x,y,w,h}}。"
                                              "position 是 12 列网格坐标（整数）：x/y 为列/行起点、w/h 为跨度，例如两列布局用 {x:0,w:6}+{x:6,w:6}，"

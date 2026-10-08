@@ -42,8 +42,8 @@ def _transpile_for_engine(sql: str) -> str:
 
     DataFusion 规划层不认 MySQL 函数(DATE_SUB/DATE_FORMAT/IFNULL 等),
     会在 plan 期报 Invalid function。方言映射见 shared/semantics/datafusion_dialect。
-    任何转译失败都保留原 SQL 下发(引擎报错 → 上层回退 MySQL 直连),
-    正确性优先;调用方持有的原 sql 不变,回退路径不受影响。
+    任何转译失败都保留原 SQL 下发(引擎报错 → 上层直接 raise 显式暴露,
+    禁止降级直连);调用方持有的原 sql 不变。
     """
     try:
         from services.shared.semantics.datafusion_dialect import to_datafusion
