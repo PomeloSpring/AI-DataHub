@@ -1,4 +1,4 @@
-"""Unit tests for multimodal package — 分类/解析器/工作区落盘/OpenCV工具/content blocks/发送解析.
+"""Unit tests for multimodal package — 分类/解析器/工作区落盘/content blocks/发送解析.
 
 附件即会话工作区文件:无附件 ID、无 adh_chat_attachments 表、无独立附件存储。
 """
@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from services.datamind.multimodal import (
     ALLOWED_EXTENSIONS, MAX_FILE_SIZE, MAX_FILES_PER_REQUEST, classify_extension,
 )
-from services.datamind.multimodal import loader, opencv_tools
+from services.datamind.multimodal import loader
 from services.datamind.multimodal.loader import (
     build_user_content, normalize_rel_path, resolve_workspace_file,
     save_derived_file, write_upload_file,
@@ -298,93 +298,6 @@ class TestBuildUserContent:
         assert "uploads/a.glb" in blocks[0]["text"]
 
 
-# ── opencv_tools (工作区契约,派生图写回 uploads/) ──────────────────
-
-@pytest.fixture
-def sample_image_att(tmp_path):
-    """在会话工作区生成一张 100x80 的测试 PNG 图片附件描述."""
-    import cv2
-    import numpy as np
-
-    img = np.full((80, 100, 3), 200, dtype=np.uint8)
-    cv2.rectangle(img, (20, 20), (80, 60), (0, 0, 0), 2)
-    path = tmp_path / "uploads"
-    path.mkdir(exist_ok=True)
-    file = path / "test_img.png"
-    cv2.imwrite(str(file), img)
-    return {"filename": "test_img.png", "category": "image",
-            "path": "uploads/test_img.png", "size": file.stat().st_size}, tmp_path
-
-
-class TestOpenCVTools:
-    def test_image_info(self, sample_image_att):
-        att, ws = sample_image_att
-        info = opencv_tools.image_info(att, ws)
-        assert info["width"] == 100
-        assert info["height"] == 80
-        assert info["channels"] == 3
-        assert "mean_brightness" in info and "contrast_std" in info
-
-    def test_image_info_missing_file(self, tmp_path):
-        result = opencv_tools.image_info(
-            {"filename": "x.png", "path": "uploads/x.png"}, tmp_path)
-        assert result["error"]
-
-    def test_image_process_resize_writes_derived(self, sample_image_att):
-        att, ws = sample_image_att
-        result = opencv_tools.image_process(att, "resize", {"width": 50}, ws)
-        assert result["success"]
-        assert result["width"] == 50
-        assert result["height"] == 40  # 等比缩放
-        # 派生图写回同一工作区 uploads/,无 attachment_id/外部 URL
-        assert result["path"].startswith("uploads/")
-        assert "attachment_id" not in result and "url" not in result
-        assert (ws / result["path"]).exists()
-
-    def test_image_process_crop_and_grayscale_and_edges(self, sample_image_att):
-        att, ws = sample_image_att
-        crop = opencv_tools.image_process(att, "crop", {"x": 10, "y": 10, "width": 30, "height": 20}, ws)
-        gray = opencv_tools.image_process(att, "grayscale", None, ws)
-        edges = opencv_tools.image_process(att, "edges", None, ws)
-        assert crop["success"] and crop["width"] == 30 and crop["height"] == 20
-        assert gray["success"] and gray["width"] == 100
-        assert edges["success"]
-
-    def test_image_process_invalid_op(self, sample_image_att):
-        att, ws = sample_image_att
-        result = opencv_tools.image_process(att, "blur_all", None, ws)
-        assert result["error"]
-
-    def test_image_process_crop_out_of_range(self, sample_image_att):
-        att, ws = sample_image_att
-        result = opencv_tools.image_process(att, "crop", {"x": 200, "y": 200, "width": 10, "height": 10}, ws)
-        assert result["error"]
-
-    def test_detect_table_region(self, tmp_path):
-        import cv2
-        import numpy as np
-
-        img = np.full((300, 400, 3), 255, dtype=np.uint8)
-        cv2.rectangle(img, (50, 50), (350, 250), (0, 0, 0), 2)
-        (tmp_path / "uploads").mkdir()
-        file = tmp_path / "uploads" / "table.png"
-        cv2.imwrite(str(file), img)
-        att = {"filename": "table.png", "category": "image",
-               "path": "uploads/table.png", "size": file.stat().st_size}
-        result = opencv_tools.detect_table_region(att, tmp_path)
-        assert "error" not in result
-        if result.get("detected"):
-            assert result["region"]["width"] > 0
-            assert result["path"].startswith("uploads/")
-            assert (tmp_path / result["path"]).exists()
-
-    def test_summarize_image(self, sample_image_att):
-        att, ws = sample_image_att
-        summary = opencv_tools.summarize_image(att, ws)
-        data = json.loads(summary)
-        assert data["width"] == 100
-
-
 # ── send_payload: 上传校验(替代旧 Upload API 用例) ────────────────
 
 class TestUploadValidation:
@@ -510,7 +423,7 @@ class TestAttachmentsFailLoud:
             out = []
             async for ev in service.stream_query(
                 question="分析这张图", history=[], datasource_id=0, model_id=None,
-                pipeline_mode="quick", retrieval_strategy=None, workspace_id=0,
+                pipeline_mode="agent", retrieval_strategy=None, workspace_id=0,
                 user_id=1, username="tester", request=request,
                 attachments=[{"filename": "a.png", "category": "image", "size": 1, "content": b"x"}],
             ):
