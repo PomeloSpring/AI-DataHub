@@ -12,7 +12,7 @@ import asyncio
 import logging
 import time
 from billiard.exceptions import SoftTimeLimitExceeded
-from backend.common.task_runtime import guarded_call, RunInterrupted
+from backend.core.task_runtime import guarded_call, RunInterrupted, call, send_task
 
 from backend.modules.flow.tasks.celery_app import app
 
@@ -56,8 +56,7 @@ def _collect_lineage(sql: str, datasource_id: int, workspace_id: int, title: str
     纯 SELECT 无写目标不会产生血缘边；解析/写入失败不影响任务本身。
     """
     try:
-        from backend.modules.gov.services.lineage_service import persist_sql_lineage
-        result = persist_sql_lineage(sql, datasource_id, workspace_id)
+        result = call("gov.persist_sql_lineage", sql, datasource_id, workspace_id)
         if result["edges_created"]:
             logger.info(
                 "[Executor] Lineage collected for '%s': %d nodes, %d edges",
@@ -85,8 +84,7 @@ def _execute_sql_mode(task: dict) -> list:
         try:
             security = None
             if task.get("report_template_key"):
-                from backend.modules.viz.services import report_service
-                security = report_service._snapshot(task["_identity"], sql, datasource_id)
+                security = call("report.security_snapshot", task["_identity"], sql, datasource_id)
             for attempt in range(max(0, min(int(task.get("max_retries") or 0), 3)) + 1):
                 _check_running(task)
                 try:
@@ -98,7 +96,7 @@ def _execute_sql_mode(task: dict) -> list:
                     if attempt >= min(int(task.get("max_retries") or 0), 3):
                         raise
             if security:
-                report_service._verify_snapshot(task["_identity"], security)
+                call("report.verify_snapshot", task["_identity"], security)
             if result.get("error"):
                 raise RuntimeError("查询未完成")
             results.append({
@@ -163,13 +161,12 @@ def _run_async(coro_or_gen):
 def _execute_agent_mode(task: dict) -> list:
     """无人值守分析复用 SDK 语义工具链，身份来自任务创建者。"""
     import asyncio
-    from backend.modules.mind.execution.scheduled_analysis import analyze_question
     results = task.setdefault("_results", [])
     for q in task["task_config"].get("questions", []):
         _check_running(task)
         try:
             for attempt in range(max(0, min(int(task.get("max_retries") or 0), 3)) + 1):
-                response = _wait(task, lambda: _run_async(analyze_question(
+                response = _wait(task, lambda: _run_async(call("mind.analyze_question", 
                     q.get("question", ""), task["task_config"], task["_identity"],
                     check=lambda: _check_running(task))))
                 if not response.get("retryable") or response.get("_analysis_results") or attempt >= min(int(task.get("max_retries") or 0), 3):
@@ -187,7 +184,6 @@ def _execute_agent_mode(task: dict) -> list:
 
 
 def _generate_report(task: dict, results: list) -> tuple[str, str]:
-    from backend.modules.viz.services import report_service, report_access
     flattened = [item for result in results for item in result.get("_analysis_results", [result])]
     sources = []
     for result in flattened:
@@ -196,12 +192,12 @@ def _generate_report(task: dict, results: list) -> tuple[str, str]:
         security = result.get("_security_context")
         if not security:
             raise PermissionError("报告缺少来源权限快照")
-        report_service._verify_snapshot(task["_identity"], security)
+        call("report.verify_snapshot", task["_identity"], security)
         for source in security["sources"]:
             if source not in sources:
                 sources.append(source)
-    task["_security_context"] = report_access.policy_snapshot(task["owner_id"], task["workspace_id"], sources)
-    return report_service.render_fact_report(task.get("name", "分析报告"), flattened), "markdown"
+    task["_security_context"] = call("report.policy_snapshot", task["owner_id"], task["workspace_id"], sources)
+    return call("report.render_fact", task.get("name", "分析报告"), flattened), "markdown"
 
 
 def _send_notification(task: dict, results: list, report_content: str = None,
@@ -356,8 +352,7 @@ def _execute_core(task_id, trigger_type, run_key=None, worker_id="sync-process")
         if not task.get("owner_id"):
             error_code = "OWNER_REQUIRED"
         task["_identity"] = _resolve_owner(task)
-        from backend.modules.mind.execution.scheduled_analysis import validate_task_as_bot
-        validate_task_as_bot(task)
+        call("mind.validate_task_as_bot", task)
         _check_datasource(task, task["_identity"])
         _check_running(task)
         config = task["task_config"]
@@ -426,10 +421,9 @@ def _execute_core(task_id, trigger_type, run_key=None, worker_id="sync-process")
             "run_key": run_key, "succeeded": succeeded, "failed": failed, "elapsed_ms": elapsed}
 
 
-@app.task(name="backend.modules.flow.tasks.executor.generate_report_task", queue="scheduled", acks_late=True)
+@app.task(name="flow.generate_report", queue="scheduled", acks_late=True)
 def generate_report_task(report_id: int):
-    from backend.modules.viz.services.report_service import run_report
-    return run_report(report_id)
+    return call("report.run", report_id)
 
 
 @app.task(name="backend.modules.flow.tasks.executor.reconcile_runs", queue="scheduled")
@@ -440,10 +434,9 @@ def reconcile_runs():
         logger.info("[Reconcile] 内置任务已人工暂停，本轮对账跳过")
         return {"skipped": "paused"}
     from backend.modules.flow.services.scheduled_task_service import scheduled_task_service
-    from backend.modules.viz.services.report_service import cleanup_stale_reports
     try:
         result = {"tasks": scheduled_task_service.cleanup_stale_running_logs(),
-                  "reports": cleanup_stale_reports()}
+                  "reports": call("report.cleanup_stale")}
         system_jobs.record_run("runs_reconcile", "success",
                                f"清理卡死执行实例 {result['tasks']} 个、报表生成 {result['reports']} 个")
         return result

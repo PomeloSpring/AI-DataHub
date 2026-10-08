@@ -259,7 +259,7 @@ def apply_contract_change(product_name: str, schema_version: int,
     if not approved_by:
         raise ValueError("应用契约变更必须提供 approved_by（审计溯源）")
     # 写动作直执行把关：dataset:manage（菜单与功能权限码）fail-closed
-    from backend.modules.mind.execution.perm_link import require_write_perm
+    from backend.core.perm_link import require_write_perm
     require_write_perm(_safe_user_id(approved_by), 0, "dataset:manage", "数据产品契约变更")
 
     cols = row.get("columns_snapshot") or []

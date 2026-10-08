@@ -15,7 +15,7 @@ import pytest
 from fastapi import HTTPException
 
 from backend.modules.mind.api import as_bot
-from backend.modules.mind.execution import perm_link
+from backend.core import perm_link
 from backend.modules.mind.rag import alias_suggestion
 
 

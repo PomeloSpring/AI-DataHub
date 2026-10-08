@@ -343,7 +343,7 @@ async def generate_ontology(request: Request, req: dict, user: dict = Depends(ge
     身份一律服务端注入(不接受请求体 created_by)。
     """
     from backend.core.role_service import role_service
-    from backend.modules.mind.execution.perm_link import require_write_perm
+    from backend.core.perm_link import require_write_perm
     from backend.common.auth import authorize_workspace, resolve_user_default_workspace_id
 
     datasource_id = int(req.get("datasource_id") or 0)

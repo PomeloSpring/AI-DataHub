@@ -75,8 +75,8 @@ class ScheduledTaskService:
         """Create a new scheduled task. Returns the new task ID."""
         if int(owner_id or 0) <= 0:
             raise PermissionError("创建任务必须有可信创建者")
-        from backend.modules.mind.execution.scheduled_analysis import validate_task_as_bot
-        validate_task_as_bot({**data, "owner_id": owner_id, "workspace_id": workspace_id})
+        from backend.core.task_runtime import call
+        call("mind.validate_task_as_bot", {**data, "owner_id": owner_id, "workspace_id": workspace_id})
         task_id = _generate_id()
         now = _now()
         conn = get_metadata_conn()
@@ -142,9 +142,9 @@ class ScheduledTaskService:
                 self._normalize_task(existing)
                 merged = {**existing, **{k: v for k, v in data.items() if v is not None},
                           "owner_id": existing.get("owner_id"), "workspace_id": existing.get("workspace_id") or 0}
-                from backend.modules.mind.execution.scheduled_analysis import validate_task_as_bot
+                from backend.core.task_runtime import call
                 if data != {"is_active": False}:
-                    validate_task_as_bot(merged)
+                    call("mind.validate_task_as_bot", merged)
                 updates = ["updated_at = %s"]
                 params = [_now()]
 
@@ -235,8 +235,8 @@ class ScheduledTaskService:
         for field in ("task_config",):
             if isinstance(row.get(field), str):
                 row[field] = json.loads(row[field])
-        from backend.modules.mind.execution.scheduled_analysis import needs_as_bot_migration
-        row["requires_as_bot_migration"] = needs_as_bot_migration(row)
+        from backend.core.task_runtime import call
+        row["requires_as_bot_migration"] = call("mind.needs_as_bot_migration", row)
         for ts in ("created_at", "updated_at", "last_run_at"):
             if hasattr(row.get(ts), "isoformat"):
                 row[ts] = row[ts].isoformat()
@@ -748,13 +748,13 @@ class ScheduledTaskService:
     def create_report(self, task_id: int, log_id: int, title: str, content: str,
                       format: str = "markdown", access_mode: str = "private",
                       workspace_id: int = 0, owner_id: int = 0, **metadata) -> dict:
-        from backend.modules.viz.services.report_service import create_report
-        return create_report(task_id=task_id, log_id=log_id, title=title, content=content,
-                             format=format, workspace_id=workspace_id, owner_id=owner_id, **metadata)
+        from backend.core.task_runtime import call
+        return call("report.create", task_id=task_id, log_id=log_id, title=title, content=content,
+                    format=format, workspace_id=workspace_id, owner_id=owner_id, **metadata)
 
     def get_report(self, report_id: int, access_token: str = None, user: dict = None) -> Optional[dict]:
-        from backend.modules.viz.services.report_service import get_report
-        return get_report(report_id, access_token=access_token, user=user)
+        from backend.core.task_runtime import call
+        return call("report.get", report_id, access_token=access_token, user=user)
 
     def _normalize_report(self, row):
         """Normalize report row."""
@@ -762,8 +762,8 @@ class ScheduledTaskService:
             row["created_at"] = row["created_at"].isoformat()
 
     def list_reports(self, workspace_id: int = 0, user: dict = None) -> list:
-        from backend.modules.viz.services.report_service import list_reports
-        return list_reports((user or {}).get("user_id", 0), workspace_id, size=100, user=user)["items"]
+        from backend.core.task_runtime import call
+        return call("report.list", (user or {}).get("user_id", 0), workspace_id, size=100, user=user)["items"]
 
     def get_report_detail(self, report_id: int, user: dict = None) -> Optional[dict]:
         return self.get_report(report_id, user=user)

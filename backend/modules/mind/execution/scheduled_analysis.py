@@ -16,8 +16,7 @@ from backend.modules.mind.execution.models import ExecutionContext
 from backend.modules.mind.execution.sdk_tools.context import set_execution_context, ExecutionContextVar
 from backend.modules.mind.execution.sdk_tools import semantic_tools
 from backend.modules.mind.execution.stream_utils import ToolEventTracker
-from backend.modules.viz.services import report_service
-from backend.common.task_runtime import RunInterrupted
+from backend.core.task_runtime import RunInterrupted
 
 
 def _tool(name, description, properties):
@@ -316,6 +315,7 @@ class _ScheduledRun:
 
     async def _execute_query(self, intent):
         """受控取数：结果（含 _security_context）只进 run 级收集器，行数据不进 LLM。"""
+        from backend.modules.viz.services import report_service
         from backend.modules.mind.execution.sdk_tools.catalog_tools import _text
         try:
             if self.check:

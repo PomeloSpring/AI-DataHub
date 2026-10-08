@@ -57,14 +57,14 @@ def _record_lineage(sql_for_lineage: str, datasource_name: str, context: dict,
     """
     try:
         from backend.common.db import get_datasource_by_name
-        from backend.modules.gov.services.lineage_service import persist_sql_lineage
+        from backend.core.task_runtime import call
         source = get_datasource_by_name(datasource_name)
         if not source:
             logger.warning("[Lineage] 数据源 %s 不存在，跳过血缘采集", datasource_name)
             return
         qualified = _qualify_lineage_sql(
             sql_for_lineage, datasource_name, target_datasource_name)
-        result = persist_sql_lineage(
+        result = call("gov.persist_sql_lineage", 
             qualified, int(source["id"]), context.get("workspace_id") or 0)
         logger.info("[Lineage] run=%s node=%s 血缘已记录 edges=%d column_edges=%d",
                     context.get("run_id"), context.get("node_key"),
@@ -104,7 +104,7 @@ def _run_quality_checks(config: dict, context: dict, target_ds_name: str,
     summary = {"checks": 0, "passed": 0, "failed": 0}
     try:
         from backend.common.db import get_datasource_by_name, execute_query, execute_write
-        from backend.modules.gov.services.quality_engine import execute_single_rule
+        from backend.core.task_runtime import call
         source = get_datasource_by_name(target_ds_name)
         if not source:
             summary["error"] = f"目标数据源 '{target_ds_name}' 不存在"
@@ -139,7 +139,7 @@ def _run_quality_checks(config: dict, context: dict, target_ds_name: str,
 
         for rule in rules:
             try:
-                result = execute_single_rule(
+                result = call("gov.execute_quality_rule", 
                     rule, context["owner_identity"],
                     source={"kind": f"{kind}_auto", "run_key": str(context.get("run_id")),
                             "node": context.get("node_key")})
@@ -172,7 +172,8 @@ def _register_product_after_write(df, target_ds: str, target_table: str,
     out = {"registered": False, "product_name": "", "schema_changed": False,
            "is_breaking": False, "warnings": [], "error": ""}
     try:
-        from backend.modules.catalog.services import data_product_service as dps
+        from backend.core.task_runtime import get_callback
+        dps = get_callback("catalog.data_product_service")
 
         columns = []
         if df is not None and hasattr(df, "columns"):

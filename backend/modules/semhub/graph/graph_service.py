@@ -6,9 +6,9 @@ Provides graph query, edit, and sync capabilities using Oxigraph/SPARQL.
 import logging
 from typing import Optional, List, Dict, Any
 
-from backend.modules.mind.rag.graph_rag.oxigraph_store import OxigraphStore
-from backend.modules.mind.rag.graph_rag.graph_builder import GraphBuilder
-from backend.modules.mind.rag.graph_rag.graph_retriever import GraphRetriever
+from backend.semantics.graph_rag.oxigraph_store import OxigraphStore
+from backend.semantics.graph_rag.graph_builder import GraphBuilder
+from backend.semantics.graph_rag.graph_retriever import GraphRetriever
 from backend.common.rdf.sparql_client import get_sparql_client
 from backend.common.rdf.namespaces import ADH_NS, SPARQL_PREFIXES
 from backend.models.graph import (

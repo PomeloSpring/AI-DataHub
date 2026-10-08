@@ -96,7 +96,7 @@ def list_perm_registry(user: dict = Depends(get_current_user)):
 
     # 涉密硬上界在代码层（perm_link），DB 配置抬不上去；
     # 前端需要同时看到「配置值」与「生效值」，否则会以为改了就生效。
-    from backend.modules.mind.execution import perm_link
+    from backend.core import perm_link
 
     def _item(r):
         code = r["perm_code"]
@@ -153,7 +153,7 @@ def set_perm_ai_access(perm_code: str, body: SetAiAccessRequest,
     更高级别时**明确拒绝并说明原因**，不做静默降级 —— 让管理员知道改不动，
     而不是以为改成功了（no-silent-degradation §1）。
     """
-    from backend.modules.mind.execution import perm_link
+    from backend.core import perm_link
 
     try:
         level = perm_link.normalize_level(body.ai_access)

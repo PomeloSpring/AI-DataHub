@@ -12,7 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.modules.mind.execution import function_tools, outbound_guard, perm_link
+from backend.core import perm_link
+from backend.modules.mind.execution import function_tools, outbound_guard
 from backend.modules.mind.execution import tool_policy as policies
 
 

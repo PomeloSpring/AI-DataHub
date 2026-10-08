@@ -9,7 +9,7 @@ from typing import Any
 
 from backend.common.rdf.sparql_client import get_sparql_client, OxigraphClient
 from backend.common.rdf.namespaces import ADH_NS, SPARQL_PREFIXES
-from backend.modules.mind.rag.graph_rag.oxigraph_store import OxigraphStore, _safe
+from backend.semantics.graph_rag.oxigraph_store import OxigraphStore, _safe
 
 logger = logging.getLogger(__name__)
 

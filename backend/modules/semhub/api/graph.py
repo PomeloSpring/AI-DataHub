@@ -10,7 +10,7 @@ from typing import Optional, List
 from backend.common.rdf.sparql_client import get_sparql_client
 from backend.common.rdf.namespaces import ADH_NS, SPARQL_PREFIXES
 from backend.common.config import REDIS_URL
-from backend.modules.mind.rag.graph_rag.oxigraph_store import SYSTEM_DATASOURCE_ID
+from backend.semantics.graph_rag.oxigraph_store import SYSTEM_DATASOURCE_ID
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -295,7 +295,7 @@ async def get_neighbors(node_iri: str, depth: int = Query(1, ge=1, le=3),
 async def create_node(req: NodeCreate):
     """创建节点."""
     try:
-        from backend.modules.mind.rag.graph_rag.oxigraph_store import OxigraphStore
+        from backend.semantics.graph_rag.oxigraph_store import OxigraphStore
         store = OxigraphStore()
 
         name = req.properties.get("name", req.properties.get("label", "unnamed"))
@@ -334,7 +334,7 @@ async def create_node(req: NodeCreate):
 async def create_relation(req: RelationCreate):
     """创建关系."""
     try:
-        from backend.modules.mind.rag.graph_rag.oxigraph_store import OxigraphStore
+        from backend.semantics.graph_rag.oxigraph_store import OxigraphStore
         store = OxigraphStore()
 
         rel_lower = req.relation_type.lower()

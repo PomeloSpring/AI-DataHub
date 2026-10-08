@@ -170,8 +170,8 @@ def dispatch_report(report_id, run_id, background_tasks):
     if mode == "background":
         background_tasks.add_task(run_report, report_id)
     elif mode == "celery":
-        from backend.modules.flow.tasks.executor import generate_report_task
-        generate_report_task.apply_async(args=(report_id,), task_id=run_id)
+        from backend.core.task_runtime import send_task
+        send_task("flow.generate_report", args=(report_id,), task_id=run_id, queue="scheduled")
     else:
         raise ValueError("不支持的执行适配器")
 
@@ -201,13 +201,13 @@ def finish_report(report_id, **values):
 
 def run_report(report_id):
     from billiard.exceptions import SoftTimeLimitExceeded
-    from backend.common.task_runtime import RunInterrupted
+    from backend.core.task_runtime import RunInterrupted
     report = load_report(report_id)
     if not report or not claim_report(report_id):
         return {"report_id": report_id, "duplicate": True}
     try:
         identity = resolve_execution_owner(report["owner_id"], report["workspace_id"])
-        from backend.common.task_runtime import guarded_call
+        from backend.core.task_runtime import guarded_call
         result = guarded_call(execute_report_source, json_object(report["analysis_source"]), identity,
                               deadline=time.monotonic() + 600)
         content = render_fact_report(report["title"], [result])

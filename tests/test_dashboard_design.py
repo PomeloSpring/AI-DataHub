@@ -134,7 +134,7 @@ def test_manual_sql_must_remain_single_readonly_query(sql):
 
 def test_publish_direct_requires_valid_preview(monkeypatch):
     """直执行发布：无有效预览即拒（不再有审批单可绕过预览）。"""
-    from backend.modules.mind.execution import perm_link
+    from backend.core import perm_link
     monkeypatch.setattr(perm_link, 'require_write_perm', lambda *a, **k: None)
     row = {'id': 'a' * 32, 'version': 2, 'status': 'designing', 'preview': None,
            'preview_valid': 0, 'content': {'widgets': []}, 'result': None}

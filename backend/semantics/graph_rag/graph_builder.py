@@ -8,7 +8,7 @@ Also merges active ontology models from adh_ontology_models.
 import logging
 from typing import Any
 
-from backend.modules.mind.rag.graph_rag.oxigraph_store import (
+from backend.semantics.graph_rag.oxigraph_store import (
     OxigraphStore,
     SYSTEM_DATASOURCE_ID,
     is_system_scope,

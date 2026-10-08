@@ -638,7 +638,7 @@ def test_agent_non_retryable_not_repeated(monkeypatch, scheduled_as_bot):
 
 def test_guarded_call_stops_on_cancel_event():
     import threading, time as _t
-    from backend.common.task_runtime import guarded_call, RunInterrupted
+    from backend.core.task_runtime import guarded_call, RunInterrupted
     stop, started = threading.Event(), threading.Event()
     def slow():
         started.set()

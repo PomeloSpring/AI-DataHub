@@ -10,7 +10,10 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Depends, Request
 from backend.common.auth import get_current_user, authorize_workspace, resolve_current_user
-from backend.modules.viz.services import report_service
+# 报表提交契约与派发经任务壳回调表（白名单②）解析，顶层跨模块 import 清零。
+from backend.core.task_runtime import call, get_callback
+
+ReportSubmission = get_callback("report.submission_model")
 from pydantic import BaseModel
 
 from backend.modules.flow.services.scheduled_task_service import scheduled_task_service
@@ -36,7 +39,7 @@ async def _scheduled_access(request: Request):
         log = scheduled_task_service.get_log(int(params["log_id"]))
         resource = scheduled_task_service.get_task(log["scheduled_task_id"]) if log else None
     elif params.get("report_id"):
-        resource = report_service.load_report(int(params["report_id"]))
+        resource = call("report.load", int(params["report_id"]))
     elif params.get("channel_id"):
         resource = scheduled_task_service.get_channel(int(params["channel_id"]))
     elif params.get("template_id"):
@@ -187,18 +190,16 @@ def _as_bot_checked(operation, *args, **kwargs):
 
 @router.get("/as-bot-options")
 def scheduled_as_bot_options(workspace_id: int = Query(0), user: dict = Depends(get_current_user)):
-    from backend.modules.mind.execution.scheduled_analysis import as_bot_options
     authorize_workspace(user, workspace_id)
-    return _as_bot_checked(as_bot_options, user["user_id"], workspace_id)
+    return _as_bot_checked(get_callback("mind.as_bot_options"), user["user_id"], workspace_id)
 
 
 @router.get("/tasks/{task_id}/as-bot-options")
 def existing_task_as_bot_options(task_id: int):
-    from backend.modules.mind.execution.scheduled_analysis import as_bot_options
     task = scheduled_task_service.get_task(task_id)
     if not task:
         raise HTTPException(404, "定时任务不存在")
-    return _as_bot_checked(as_bot_options, task["owner_id"], task.get("workspace_id") or 0)
+    return _as_bot_checked(get_callback("mind.as_bot_options"), task["owner_id"], task.get("workspace_id") or 0)
 
 
 @router.post("/tasks")
@@ -287,8 +288,7 @@ async def manual_trigger_scheduled_task(task_id: int, background_tasks: Backgrou
     if not existing:
         raise HTTPException(status_code=404, detail="定时任务不存在")
 
-    from backend.modules.mind.execution.scheduled_analysis import validate_task_as_bot
-    _as_bot_checked(validate_task_as_bot, existing)
+    _as_bot_checked(get_callback("mind.validate_task_as_bot"), existing)
     # Auto-cleanup stale running logs before triggering
     scheduled_task_service.cleanup_stale_running_logs(timeout_minutes=10)
 
@@ -558,10 +558,10 @@ def list_reports(
 
 
 @router.post("/reports/generate", status_code=202)
-def generate_report_alias(req: report_service.ReportSubmission, background_tasks: BackgroundTasks,
+def generate_report_alias(req: ReportSubmission, background_tasks: BackgroundTasks,
                           user: dict = Depends(get_current_user)):
     authorize_workspace(user, req.workspace_id)
-    return report_service.submit_report(req.model_dump(), user, background_tasks)
+    return call("report.submit", req.model_dump(), user, background_tasks)
 
 
 @router.get("/reports/{report_id}/detail")

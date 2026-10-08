@@ -667,7 +667,7 @@ def _rebuild_graph(datasource_id: int, kind: str = "") -> dict:
     - kind=source  → 源图 ds:{datasource_id}。
     """
     try:
-        from backend.modules.mind.rag.graph_rag.oxigraph_store import SYSTEM_DATASOURCE_ID
+        from backend.semantics.graph_rag.oxigraph_store import SYSTEM_DATASOURCE_ID
         from backend.modules.semhub.graph.graph_service import GraphService
         if kind == "system":
             ds = SYSTEM_DATASOURCE_ID

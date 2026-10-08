@@ -327,9 +327,9 @@ class TaskMonitorService:
     def cleanup_stale(self, timeout_minutes: int = 10) -> dict:
         """手动卡死清理：定时执行实例 + 报表生成 + 同步执行，全部条件更新为超时。"""
         from backend.modules.flow.services.scheduled_task_service import scheduled_task_service
-        from backend.modules.viz.services.report_service import cleanup_stale_reports
+        from backend.core.task_runtime import call
         sched = scheduled_task_service.cleanup_stale_running_logs(timeout_minutes)
-        reports = cleanup_stale_reports()
+        reports = call("report.cleanup_stale")
         sync = execute_write(
             "UPDATE adh_sync_logs SET status='failed', finished_at=NOW(), "
             "error_message='执行超过租约未完成，已按超时清理' "

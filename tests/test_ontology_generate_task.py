@@ -169,7 +169,7 @@ class TestGenerateEndpointFailClosed:
         """授权集为空不得当全量放行（admin 同样纯角色裁决）。"""
         import backend.common.auth as auth_mod
         import backend.core.role_service as rs
-        from backend.modules.mind.execution import perm_link
+        from backend.core import perm_link
         monkeypatch.setattr(auth_mod, "resolve_user_default_workspace_id", lambda uid: 5)
         monkeypatch.setattr(auth_mod, "authorize_workspace", lambda *a: 0)
         monkeypatch.setattr(perm_link, "require_write_perm", lambda *a, **k: None)
@@ -182,7 +182,7 @@ class TestGenerateEndpointFailClosed:
     def test_datasource_outside_grant_403(self, monkeypatch):
         import backend.common.auth as auth_mod
         import backend.core.role_service as rs
-        from backend.modules.mind.execution import perm_link
+        from backend.core import perm_link
         monkeypatch.setattr(auth_mod, "resolve_user_default_workspace_id", lambda uid: 5)
         monkeypatch.setattr(auth_mod, "authorize_workspace", lambda *a: 0)
         monkeypatch.setattr(perm_link, "require_write_perm", lambda *a, **k: None)
@@ -195,7 +195,7 @@ class TestGenerateEndpointFailClosed:
         """执行层不可用必须 fail-loud 503，不做任何静默回退。"""
         import backend.common.auth as auth_mod
         import backend.core.role_service as rs
-        from backend.modules.mind.execution import perm_link
+        from backend.core import perm_link
         from backend.modules.mind.execution import service as exec_service
         monkeypatch.setattr(auth_mod, "resolve_user_default_workspace_id", lambda uid: 5)
         monkeypatch.setattr(auth_mod, "authorize_workspace", lambda *a: 0)
@@ -222,7 +222,7 @@ class TestGenerateEndpointFailClosed:
         import backend.common.auth as auth_mod
         import backend.core.role_service as rs
         from backend.modules.catalog.api import ontology as ontology_api
-        from backend.modules.mind.execution import perm_link
+        from backend.core import perm_link
         from backend.modules.mind.execution import service as exec_service
         from backend.modules.mind.execution import tool_policy
 

@@ -74,7 +74,7 @@ class TestGraphQueryTargetsNamedGraph:
         assert err is not None and "oxigraph down" in err
 
     def test_does_not_import_graph_rag(self):
-        """锁住隔离：不得 import `backend.modules.mind.rag.graph_rag`。
+        """锁住隔离：不得 import `backend.semantics.graph_rag`。
 
         该包 __init__ 会连带加载 GraphRetriever 并缓存 OxigraphStore 实例，
         测试注入的假 client 就会焊进共享单例。实测后果：eval 检索链路

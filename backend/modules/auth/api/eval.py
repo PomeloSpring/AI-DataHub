@@ -160,8 +160,9 @@ def create_run(body: RunRequest, user: dict = Depends(require_admin)):
     owner = str(user.get("username") or "")
     if body.mode == "async":
         try:
-            from backend.modules.flow.tasks.eval_tasks import run_eval
-            run_eval.delay(body.suite, body.trigger_type, owner)
+            from backend.core.task_runtime import send_task
+            send_task("backend.modules.flow.tasks.eval_tasks.run_eval",
+                      args=(body.suite, body.trigger_type, owner))
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=503, detail=f"评测任务投递失败：{e}") from e
         return {"accepted": True, "mode": "async", "suite": body.suite,

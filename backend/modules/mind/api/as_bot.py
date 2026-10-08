@@ -57,7 +57,7 @@ async def approve_alias_suggestion(
     user: UserInfo = Depends(get_current_user),
 ):
     """别名回写直执行：菜单与功能权限码 ontology:save 把关后写回字典/对象别名。"""
-    from backend.modules.mind.execution.perm_link import require_write_perm
+    from backend.core.perm_link import require_write_perm
     from backend.modules.mind.rag.alias_suggestion import approve_suggestion
 
     try:
@@ -85,7 +85,7 @@ async def reject_alias_suggestion(
     user: UserInfo = Depends(get_current_user),
 ):
     """别名驳回直执行：ontology:save 权限码把关（与回写同一把关口径）。"""
-    from backend.modules.mind.execution.perm_link import require_write_perm
+    from backend.core.perm_link import require_write_perm
     from backend.modules.mind.rag.alias_suggestion import reject_suggestion
 
     try:

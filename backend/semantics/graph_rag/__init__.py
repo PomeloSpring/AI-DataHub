@@ -6,8 +6,8 @@ This module provides:
 - GraphRetriever: SPARQL-based graph retrieval
 """
 
-from backend.modules.mind.rag.graph_rag.oxigraph_store import OxigraphStore
-from backend.modules.mind.rag.graph_rag.graph_builder import GraphBuilder
-from backend.modules.mind.rag.graph_rag.graph_retriever import GraphRetriever
+from backend.semantics.graph_rag.oxigraph_store import OxigraphStore
+from backend.semantics.graph_rag.graph_builder import GraphBuilder
+from backend.semantics.graph_rag.graph_retriever import GraphRetriever
 
 __all__ = ["OxigraphStore", "GraphBuilder", "GraphRetriever"]

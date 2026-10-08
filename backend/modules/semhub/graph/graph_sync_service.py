@@ -51,7 +51,7 @@ class GraphSyncService:
     def store(self):
         """懒加载 OxigraphStore."""
         if self._store is None:
-            from backend.modules.mind.rag.graph_rag.oxigraph_store import OxigraphStore
+            from backend.semantics.graph_rag.oxigraph_store import OxigraphStore
             self._store = OxigraphStore()
         return self._store
 
@@ -124,7 +124,7 @@ class GraphSyncService:
 
     def _sync_table_updated(self, data: Dict[str, Any]):
         """同步更新的表."""
-        from backend.modules.mind.rag.graph_rag.oxigraph_store import _safe
+        from backend.semantics.graph_rag.oxigraph_store import _safe
         table_name = data.get("table_name")
         if not table_name:
             return
@@ -155,7 +155,7 @@ class GraphSyncService:
 
     def _sync_table_deleted(self, data: Dict[str, Any]):
         """同步删除的表."""
-        from backend.modules.mind.rag.graph_rag.oxigraph_store import _safe
+        from backend.semantics.graph_rag.oxigraph_store import _safe
         table_name = data.get("table_name")
         if not table_name:
             return
@@ -194,7 +194,7 @@ class GraphSyncService:
 
     def _sync_column_updated(self, data: Dict[str, Any]):
         """同步更新的字段."""
-        from backend.modules.mind.rag.graph_rag.oxigraph_store import _safe
+        from backend.semantics.graph_rag.oxigraph_store import _safe
         table_name = data.get("table_name")
         column_name = data.get("column_name")
         if not table_name or not column_name:
@@ -222,7 +222,7 @@ class GraphSyncService:
 
     def _sync_column_deleted(self, data: Dict[str, Any]):
         """同步删除的字段."""
-        from backend.modules.mind.rag.graph_rag.oxigraph_store import _safe
+        from backend.semantics.graph_rag.oxigraph_store import _safe
         table_name = data.get("table_name")
         column_name = data.get("column_name")
         if not table_name or not column_name:
@@ -269,7 +269,7 @@ class GraphSyncService:
         if not source_table or not target_table:
             return
 
-        from backend.modules.mind.rag.graph_rag.oxigraph_store import _safe
+        from backend.semantics.graph_rag.oxigraph_store import _safe
         from backend.common.rdf.namespaces import ADH_NS
         ds_id = data.get("datasource_id", 0)
         graph = self.store.graph_uri(ds_id)
@@ -320,7 +320,7 @@ class GraphSyncService:
 
     def _sync_term_deleted(self, data: Dict[str, Any]):
         """同步删除的术语."""
-        from backend.modules.mind.rag.graph_rag.oxigraph_store import _safe
+        from backend.semantics.graph_rag.oxigraph_store import _safe
         term_cn = data.get("term_cn")
         if not term_cn:
             return
@@ -372,7 +372,7 @@ class GraphSyncService:
 
     def _sync_metric_deleted(self, data: Dict[str, Any]):
         """同步删除的指标."""
-        from backend.modules.mind.rag.graph_rag.oxigraph_store import _safe
+        from backend.semantics.graph_rag.oxigraph_store import _safe
         metric_name = data.get("name")
         if not metric_name:
             return
@@ -400,7 +400,7 @@ class GraphSyncService:
             return
 
         ds_id = data.get("datasource_id", 0)
-        from backend.modules.mind.rag.graph_rag.oxigraph_store import _safe
+        from backend.semantics.graph_rag.oxigraph_store import _safe
         from backend.common.rdf.namespaces import ADH_NS
         iri = f"{ADH_NS}dimension:{_safe(dim_name)}"
         graph = self.store.graph_uri(ds_id)
@@ -427,7 +427,7 @@ class GraphSyncService:
 
     def _sync_dimension_deleted(self, data: Dict[str, Any]):
         """同步删除的维度."""
-        from backend.modules.mind.rag.graph_rag.oxigraph_store import _safe
+        from backend.semantics.graph_rag.oxigraph_store import _safe
         from backend.common.rdf.namespaces import ADH_NS
         dim_name = data.get("name")
         if not dim_name:
@@ -458,7 +458,7 @@ class GraphSyncService:
 
     @property
     def builder(self):
-        from backend.modules.mind.rag.graph_rag.graph_builder import GraphBuilder
+        from backend.semantics.graph_rag.graph_builder import GraphBuilder
         return GraphBuilder(store=self.store)
 
 

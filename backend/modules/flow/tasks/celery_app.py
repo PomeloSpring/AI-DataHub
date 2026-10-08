@@ -73,6 +73,8 @@ app.conf.update(
     task_default_queue="default",
     task_routes={
         "backend.modules.flow.tasks.executor.*": {"queue": "scheduled"},
+        # 显式命名的报表生成任务（按名派发，见 core/task_runtime.send_task）
+        "flow.generate_report": {"queue": "scheduled"},
         # 评测任务耗时不定（检索/LLM 集），与定时分析同走 scheduled 队列；
         # 不注册进 imports 的话 worker 启动时看不到它，投递会报 unregistered task。
         "backend.modules.flow.tasks.eval_tasks.*": {"queue": "scheduled"},

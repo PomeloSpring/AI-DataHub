@@ -4,10 +4,10 @@ from typing import Annotated, Optional
 
 from backend.modules.mind.execution.sdk_tools.catalog_tools import _text
 from backend.modules.mind.execution.sdk_tools.context import get_execution_context
-from backend.modules.viz.services import dashboard_design_service as designs
 
 
 def design_actor():
+    from backend.modules.viz.services import dashboard_design_service as designs
     ctx = get_execution_context()
     if not ctx or not ctx.extra.get("secure_runtime"):
         raise designs.DesignError("仪表盘设计仅可通过可信 AS-BOT 会话使用", "forbidden", 403)
@@ -18,6 +18,7 @@ def design_actor():
 
 
 async def request_dashboard_design(args):
+    from backend.modules.viz.services import dashboard_design_service as designs
     user, cid = design_actor()
     designs.reject_private(args)
     result = await asyncio.to_thread(designs.request_design, user, cid,
@@ -26,11 +27,13 @@ async def request_dashboard_design(args):
 
 
 async def get_dashboard_design(args):
+    from backend.modules.viz.services import dashboard_design_service as designs
     user, cid = design_actor()
     return _text(await asyncio.to_thread(designs.get_design, args["design_id"], user, cid))
 
 
 async def get_business_semantics(args):
+    from backend.modules.viz.services import dashboard_design_service as designs
     user, cid = design_actor()
     result = await asyncio.to_thread(designs.semantics, args["design_id"], user, args.get("keyword") or "", cid)
     result["design"] = await asyncio.to_thread(designs.get_design, args["design_id"], user, cid)
@@ -38,11 +41,13 @@ async def get_business_semantics(args):
 
 
 async def search_business_knowledge(args):
+    from backend.modules.viz.services import dashboard_design_service as designs
     user, cid = design_actor()
     return _text(await asyncio.to_thread(designs.business_knowledge, args["design_id"], user, args["questions"], cid))
 
 
 async def prepare_dashboard_design(args):
+    from backend.modules.viz.services import dashboard_design_service as designs
     user, cid = design_actor()
     designs.reject_private(args)
     result = await asyncio.to_thread(designs.prepare, args["design_id"], user, args["expected_version"],

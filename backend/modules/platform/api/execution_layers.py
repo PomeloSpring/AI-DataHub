@@ -11,8 +11,6 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.modules.mind.execution import service as exec_service
-from backend.modules.mind.execution.manager import get_execution_layer_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -89,6 +87,7 @@ async def list_tool_catalog():
 @router.get("/available")
 def discover_available_layers(capability: Optional[str] = None):
     """发现端点 — 返回健康可用的执行层列表(可按能力过滤)."""
+    from backend.modules.mind.execution import service as exec_service
     try:
         return exec_service.discover_layers(capability=capability or "")
     except Exception as e:
@@ -99,6 +98,7 @@ def discover_available_layers(capability: Optional[str] = None):
 @router.post("/register")
 def register_execution_layer(req: LayerRegister):
     """执行层自注册端点 — 由 SDK Adapter / 远程执行层启动时调用."""
+    from backend.modules.mind.execution import service as exec_service
     try:
         if req.layer_type not in VALID_LAYER_TYPES:
             raise HTTPException(status_code=400, detail=f"不支持的执行层类型: {req.layer_type}")
@@ -118,6 +118,7 @@ async def list_cli_models(layer_id: Optional[int] = None, cli_name: str = ""):
     优先按 layer_id 使用已配置执行层(含 env/路径),
     否则按 cli_name 构建临时适配器查询。
     """
+    from backend.modules.mind.execution.manager import get_execution_layer_manager
     try:
         manager = get_execution_layer_manager()
         if layer_id:
@@ -148,6 +149,7 @@ async def list_cli_models(layer_id: Optional[int] = None, cli_name: str = ""):
 @router.get("")
 def list_execution_layers():
     """列出所有执行层."""
+    from backend.modules.mind.execution import service as exec_service
     try:
         return exec_service.list_layers()
     except Exception as e:
@@ -158,6 +160,7 @@ def list_execution_layers():
 @router.post("")
 def create_execution_layer(req: ExecutionLayerCreate):
     """创建执行层."""
+    from backend.modules.mind.execution import service as exec_service
     try:
         if req.layer_type not in VALID_LAYER_TYPES:
             raise HTTPException(status_code=400, detail=f"不支持的执行层类型: {req.layer_type}")
@@ -188,6 +191,7 @@ async def get_workspace_execution_layer(workspace_id: int):
     chat 页面据此调整模型框:
     - cli(qoder 等): 候选来自执行层 list_models(model_source=execution_layer)
     """
+    from backend.modules.mind.execution.manager import get_execution_layer_manager
     try:
         manager = get_execution_layer_manager()
         row = await manager.resolve_workspace_layer(workspace_id)
@@ -218,6 +222,7 @@ async def get_workspace_execution_layer(workspace_id: int):
 @router.get("/{layer_id}")
 def get_execution_layer(layer_id: int):
     """获取单个执行层."""
+    from backend.modules.mind.execution import service as exec_service
     try:
         row = exec_service.get_layer(layer_id)
         if not row:
@@ -233,6 +238,7 @@ def get_execution_layer(layer_id: int):
 @router.put("/{layer_id}")
 def update_execution_layer(layer_id: int, req: ExecutionLayerUpdate):
     """更新执行层."""
+    from backend.modules.mind.execution import service as exec_service
     try:
         if not exec_service.get_layer(layer_id):
             raise HTTPException(status_code=404, detail="执行层不存在")
@@ -257,6 +263,7 @@ def update_execution_layer(layer_id: int, req: ExecutionLayerUpdate):
 @router.delete("/{layer_id}")
 def delete_execution_layer(layer_id: int):
     """删除执行层(同时清理工作空间绑定)."""
+    from backend.modules.mind.execution import service as exec_service
     try:
         row = exec_service.get_layer(layer_id)
         if not row:
@@ -273,6 +280,8 @@ def delete_execution_layer(layer_id: int):
 @router.post("/{layer_id}/test")
 async def test_execution_layer(layer_id: int):
     """测试执行层连通性(运行健康检查)."""
+    from backend.modules.mind.execution import service as exec_service
+    from backend.modules.mind.execution.manager import get_execution_layer_manager
     try:
         row = exec_service.get_layer(layer_id)
         if not row:
@@ -304,6 +313,7 @@ async def test_execution_layer(layer_id: int):
 @router.post("/{layer_id}/heartbeat")
 def heartbeat_execution_layer(layer_id: int, req: LayerHeartbeat):
     """心跳上报 — 刷新执行层存活时间(可选同时更新工具目录)."""
+    from backend.modules.mind.execution import service as exec_service
     try:
         ok = exec_service.heartbeat(name=req.name, layer_id=layer_id, tools=req.tools)
         if not ok:
@@ -319,6 +329,7 @@ def heartbeat_execution_layer(layer_id: int, req: LayerHeartbeat):
 @router.post("/{layer_id}/deregister")
 def deregister_execution_layer(layer_id: int, req: Optional[LayerDeregister] = None):
     """注销自注册执行层(置为 inactive)."""
+    from backend.modules.mind.execution import service as exec_service
     try:
         ok = exec_service.deregister(name=(req.name if req else ""), layer_id=layer_id)
         if not ok:
@@ -334,6 +345,8 @@ def deregister_execution_layer(layer_id: int, req: Optional[LayerDeregister] = N
 @router.get("/{layer_id}/tools")
 async def get_execution_layer_tools(layer_id: int):
     """动态工具目录 — 优先实询适配器 list_tools 并刷新缓存,失败时回退已缓存目录."""
+    from backend.modules.mind.execution import service as exec_service
+    from backend.modules.mind.execution.manager import get_execution_layer_manager
     row = exec_service.get_layer(layer_id)
     if not row:
         raise HTTPException(status_code=404, detail="执行层不存在")

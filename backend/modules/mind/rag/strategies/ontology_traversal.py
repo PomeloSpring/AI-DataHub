@@ -14,7 +14,7 @@ import logging
 import re
 
 from backend.modules.mind.rag.strategies.base import RetrievalStrategy, empty_result
-from backend.modules.mind.rag.graph_rag.oxigraph_store import OxigraphStore
+from backend.semantics.graph_rag.oxigraph_store import OxigraphStore
 from backend.common.rdf.sparql_client import get_sparql_client, OxigraphClient
 from backend.common.rdf.namespaces import ADH_NS
 

@@ -146,7 +146,8 @@ def compile_policy(as_bot, ceiling=None, role_perms=None):
     allowed.difference_update(unavailable)
 
     # ── 功能能力（A 维度）：角色权限码自动继承，AS-BOT 仅做减法 ───────────────
-    from backend.modules.mind.execution import function_tools, perm_link
+    from backend.core import perm_link
+    from backend.modules.mind.execution import function_tools
     function_names: tuple = ()
     if role_perms is None:
         # 本次调用不参与功能能力继承（非生产路径）。不产生 unavailable 条目：

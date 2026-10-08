@@ -225,7 +225,7 @@ async def get_metadata_summary(args):
 def _require_write_perm(perm_code: str, label: str) -> None:
     """写动作直执行前的权限码把关（fail-closed，拒绝原因可解释）。"""
     from backend.modules.mind.execution.sdk_tools.context import get_execution_context
-    from backend.modules.mind.execution.perm_link import require_write_perm
+    from backend.core.perm_link import require_write_perm
 
     ctx = get_execution_context()
     require_write_perm(getattr(ctx, "user_id", 0) or 0, getattr(ctx, "workspace_id", 0) or 0,

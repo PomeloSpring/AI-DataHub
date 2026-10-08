@@ -633,7 +633,7 @@ def publish(design_id, user, expected_version):
     并发/重复发布：事务内以行锁 + 状态条件更新仲裁（重复调用返回已发布结果，不重复落图）。
     """
     live = identity(user)
-    from backend.modules.mind.execution.perm_link import require_write_perm
+    from backend.core.perm_link import require_write_perm
     require_write_perm(live["user_id"], 0, "dashboard:manage", "发布仪表盘")
     row, live = load(design_id, live)
     if row["status"] == "published":

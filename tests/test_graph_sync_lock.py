@@ -143,7 +143,7 @@ def test_system_scope_locks_and_rebuilds_system_graph_only(client, service, monk
                        params={"datasource_id": 1, "system_scope": True})
 
     assert resp.status_code == 200
-    from backend.modules.mind.rag.graph_rag.oxigraph_store import SYSTEM_DATASOURCE_ID
+    from backend.semantics.graph_rag.oxigraph_store import SYSTEM_DATASOURCE_ID
     assert fake.lock_keys == [f"adh_graph_sync:ds:{SYSTEM_DATASOURCE_ID}"]
     service.sync_from_metadata.assert_called_once_with(SYSTEM_DATASOURCE_ID)
 
