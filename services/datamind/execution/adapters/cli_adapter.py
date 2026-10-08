@@ -26,6 +26,11 @@ from services.shared.common.config import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
+# qoder 系 CLI 命令名 → 一律钉死项目内置 runtime wrapper(qodercn 体系):
+# PATH/宿主机查找会短路到旧 Global CLI, 与 qodercn SDK/网关不匹配(历史缺陷根因)。
+_QODER_CLI_COMMANDS = {"qodercli", "qoderclicn", "qodercn", "qoder"}
+_RUNTIME_QODER_CLI = PROJECT_ROOT / "runtime" / "qodercli" / "bin" / "qodercli"
+
 
 class CLIProcessAdapter(ExecutionLayerAdapter):
     """本地 CLI 进程执行层适配器."""
@@ -67,22 +72,27 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
         """把执行层 cli_path 配置解析为子进程可用的路径(不写死机器绝对路径).
 
         解析优先级:
-        - 空: PATH 查找 binary(找不到保留命令名; SDK 模式会进一步回退内置运行时);
+        - qoder 系命令名/空: 钉死项目内置 runtime wrapper(qodercn 体系) ——
+          PATH/宿主机查找会短路到旧 Global CLI(如 ~/.local/bin、~/.npm-global),
+          与 qodercn SDK/网关不匹配(模型列表空、initialize 卡死, 历史缺陷根因);
         - `$VAR`/`~` 展开(如 $QODERCLI_HOME/bin/qodercli、~/.qoder/bin/qodercli);
         - 绝对路径: 原样使用;
         - 相对路径(含分隔符或以 . 开头): 锚定**项目根**解析为绝对路径, 使配置随
           代码库迁移/换目录/容器部署保持有效(如 'runtime/qodercli/bin/qodercli');
-        - 纯命令名: PATH 查找, 找不到保留命令名。
+        - 其他纯命令名: PATH 查找, 找不到保留命令名。
         存在性不在此校验: 无效路径由执行/SDK 侧 fail-loud 报错(不静默回退)。
         """
         raw = (raw or "").strip()
         if not raw:
-            return shutil.which(self.binary) or self.binary
+            return str(_RUNTIME_QODER_CLI) if _RUNTIME_QODER_CLI.is_file() else (
+                shutil.which(self.binary) or self.binary)
         expanded = os.path.expanduser(os.path.expandvars(raw))
         if os.path.isabs(expanded):
             return expanded
         if os.sep in expanded or "/" in expanded or expanded.startswith("."):
             return str((PROJECT_ROOT / expanded).resolve())
+        if expanded in _QODER_CLI_COMMANDS:
+            return str(_RUNTIME_QODER_CLI)
         return shutil.which(expanded) or expanded
 
     @property
@@ -200,6 +210,11 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
     def _build_env(self, task: ExecutionTask) -> dict:
         env = os.environ.copy()
         env.update({k: str(v) for k, v in (self.config.get("env") or {}).items()})
+        # qodercn 体系 CLI 只认 QODERCN_ 前缀凭据变量; 旧变量名兜底映射
+        # (与 secure_sdk.resolve_access_token 同口径), 否则 --list-models 等
+        # 探测命令拿不到登录态, 模型列表/版本探测静默变空。
+        if not env.get("QODERCN_PERSONAL_ACCESS_TOKEN") and env.get("QODER_PERSONAL_ACCESS_TOKEN"):
+            env["QODERCN_PERSONAL_ACCESS_TOKEN"] = env["QODER_PERSONAL_ACCESS_TOKEN"]
         return env
 
     async def execute(self, task: ExecutionTask) -> ExecutionResult:

@@ -15,15 +15,29 @@ from services.datamind.execution.session_workspace import run_owned_sync
 
 logger = logging.getLogger(__name__)
 
+# 执行层 CLI 的唯一入口(项目内置 runtime, qodercn 体系): 命令名/空配置一律钉死
+# 到该 wrapper，绝不交给 SDK 自由查找 —— SDK 的查找链(QODERCLI_PATH → bundled →
+# PATH → ~/.npm-global → ~/.local/bin)会短路到宿主机残留的旧 Global CLI，
+# 与 qodercn SDK 协议/目标不匹配，initialize 无响应卡超时(历史缺陷根因)。
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_RUNTIME_CLI = _PROJECT_ROOT / "runtime" / "qodercli" / "bin" / "qodercli"
 
-def _sdk_cli_path(adapter) -> str | None:
-    """SDK 子进程 env 剔除了 PATH(安全隔离), 相对命令名无法解析:
-    - cli_path 为绝对路径(含相对项目根解析后的)→ 交给 SDK 直接 spawn;
-      不存在时由 SDK fail-loud(CLINotFoundError), 不静默回退;
-    - 纯命令名/空 → None, 让 SDK 走内置查找(QODERCLI_PATH → SDK 自带 bundled runtime → PATH)。
+
+def _sdk_cli_path(adapter) -> str:
+    """解析 SDK 子进程 spawn 的 CLI 路径(按**原始配置意图**判定, 不看解析结果):
+    - 配置了显式路径(绝对/相对项目根/~/$VAR)→ 用 cli_adapter 解析后的路径;
+      不存在时由 SDK fail-loud(CLINotFoundError), 尊重管理员显式配置;
+    - 纯命令名/空 → 项目内置 runtime wrapper(_RUNTIME_CLI); 缺失则显式报错
+      (提示跑 setup.sh)。命令名绝不走 PATH 解析 —— 会短路到宿主机残留的旧
+      Global CLI(如 ~/.npm-global), 与 qodercn SDK 协议不匹配致 initialize 卡死。
     """
-    p = getattr(adapter, "cli_path", "") or ""
-    return p if os.path.isabs(p) else None
+    raw = (getattr(adapter, "config", None) or {}).get("cli_path") or ""
+    if os.path.isabs(raw) or "/" in raw or raw.startswith("~"):
+        return getattr(adapter, "cli_path", "") or raw
+    if not _RUNTIME_CLI.is_file():
+        raise FileNotFoundError(
+            f"执行层 CLI 缺失: {_RUNTIME_CLI}，请先执行 bash runtime/qodercli/setup.sh")
+    return str(_RUNTIME_CLI)
 
 
 def resolve_access_token(env_map: dict | None = None) -> str:
@@ -312,7 +326,17 @@ async def _execute_stream(adapter, task, backend):
                     process = getattr(getattr(client, "_transport", None), "_process", None)
                     if process is not None and runtime is not None and not runtime.sdk_pid:
                         await run_owned_sync(runtime.record_client, client)
-                    await client.disconnect()
+                    # disconnect 必须限时: CLI 子进程卡死(如协议不匹配不退)时无限挂起,
+                    # 尾部 done 事件发不出去, 前端一直转圈(no-silent-degradation)。
+                    with anyio.move_on_after(15) as dc:
+                        await client.disconnect()
+                    if dc.cancelled_caught:
+                        logger.warning("SDK disconnect 超时(15s)，强制终止 CLI 子进程")
+                        if process is not None and process.returncode is None:
+                            try:
+                                process.kill()
+                            except Exception:
+                                logger.exception("强制终止 CLI 子进程失败")
                     stopped = True
                 except BaseException:
                     logger.exception("无法确认 SDK 已停止，会话保持阻断")

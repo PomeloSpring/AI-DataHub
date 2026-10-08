@@ -2,9 +2,11 @@
 
 回归背景: DB 曾把 cli-qoder 的 cli_path 写死成机器绝对路径
 (/home/.../runtime/qodercli/bin/qodercli), 项目一挪位置就失效。
-修复后 cli_path 支持相对**项目根**解析, SDK 模式下命令名回退内置 bundled runtime。
+修复后 cli_path 支持相对**项目根**解析, SDK 模式下命令名/空配置钉死项目内置 runtime wrapper。
 """
 import os
+
+import pytest
 
 from services.datamind.execution import secure_sdk
 from services.datamind.execution.adapters.cli_adapter import CLIProcessAdapter
@@ -76,9 +78,50 @@ def test_sdk_cli_path_absolute_passthrough():
     assert os.path.isabs(resolved)
 
 
-def test_sdk_cli_path_command_name_becomes_none():
-    """SDK 模式: 命令名/空 → None, 让 SDK 走内置 bundled runtime(子进程 env 无 PATH)."""
-    assert secure_sdk._sdk_cli_path(_adapter("qodercli-does-not-exist-xyz")) is None
-    assert secure_sdk._sdk_cli_path(_adapter(None)) is None or os.path.isabs(
-        secure_sdk._sdk_cli_path(_adapter(None))
-    )
+def test_sdk_cli_path_command_name_pins_runtime_wrapper():
+    """SDK 模式: 命令名/空 → 钉死项目内置 runtime wrapper(qodercn 体系)。
+
+    绝不返回 None 交给 SDK 自由查找 —— 查找链(QODERCLI_PATH → bundled →
+    PATH → ~/.npm-global → ~/.local/bin)会短路到宿主机残留的旧 Global CLI，
+    与 qodercn SDK 协议不匹配导致 initialize 卡死(历史缺陷根因)。
+    """
+    for cfg in ("qodercli-does-not-exist-xyz", None, "qodercli"):
+        resolved = secure_sdk._sdk_cli_path(_adapter(cfg))
+        assert resolved == str(secure_sdk._RUNTIME_CLI), f"cfg={cfg!r} 须钉死 runtime wrapper"
+        assert os.path.isabs(resolved)
+        assert "runtime" in resolved and "qodercli" in resolved
+
+
+def test_sdk_cli_path_missing_wrapper_fails_loud(monkeypatch, tmp_path):
+    """runtime wrapper 缺失 → 显式报错(提示跑 setup.sh), 不静默回退 PATH 查找."""
+    monkeypatch.setattr(secure_sdk, "_RUNTIME_CLI", tmp_path / "no-such-qodercli")
+    with pytest.raises(FileNotFoundError, match="runtime/qodercli/setup.sh"):
+        secure_sdk._sdk_cli_path(_adapter("qodercli"))
+
+
+def test_resolve_cli_path_pins_qoder_commands_to_runtime_wrapper():
+    """CLIProcessAdapter: qoder 系命令名/空配置也钉死 runtime wrapper.
+
+    PATH 查找会短路到宿主机旧 Global CLI(~/.local/bin 等)，模型列表探测
+    (list_models)会拿空/错网关模型(历史缺陷根因)。
+    """
+    expected = str(PROJECT_ROOT / "runtime" / "qodercli" / "bin" / "qodercli")
+    for cfg in ("qodercli", "qoderclicn", "qodercn", None, ""):
+        assert _adapter(cfg).cli_path == expected, f"cfg={cfg!r} 须钉死 runtime wrapper"
+    # 非 qoder 系命令名不受影响(保留原行为)
+    assert _adapter("qodercli-does-not-exist-xyz").cli_path == "qodercli-does-not-exist-xyz"
+
+
+def test_build_env_maps_legacy_pat_to_cn_var(monkeypatch):
+    """_build_env 把旧变量名 PAT 映射到 QODERCN_ 前缀(qodercn CLI 只认该名)."""
+    monkeypatch.setenv("QODER_PERSONAL_ACCESS_TOKEN", "pt-TESTONLY0001")
+    monkeypatch.delenv("QODERCN_PERSONAL_ACCESS_TOKEN", raising=False)
+    env = _adapter("qodercli")._build_env(None)
+    assert env["QODERCN_PERSONAL_ACCESS_TOKEN"] == "pt-TESTONLY0001"
+
+
+def test_build_env_keeps_explicit_cn_pat(monkeypatch):
+    monkeypatch.setenv("QODER_PERSONAL_ACCESS_TOKEN", "pt-OLD0002")
+    monkeypatch.setenv("QODERCN_PERSONAL_ACCESS_TOKEN", "pt-CN0002")
+    env = _adapter("qodercli")._build_env(None)
+    assert env["QODERCN_PERSONAL_ACCESS_TOKEN"] == "pt-CN0002", "显式 CN 变量优先"
