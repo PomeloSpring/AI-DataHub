@@ -20,8 +20,8 @@ def make_task(tmp_path, tools=None):
 
 
 def build(tmp_path, monkeypatch, tools=None):
-    pytest.importorskip("qoder_agent_sdk")
-    monkeypatch.setenv("QODER_PERSONAL_ACCESS_TOKEN", "test-only-token")
+    pytest.importorskip("qodercn_agent_sdk")
+    monkeypatch.setenv("QODERCN_PERSONAL_ACCESS_TOKEN", "test-only-token")
     monkeypatch.setenv("TEST_PLATFORM_SECRET", "must-not-inherit")
     task = make_task(tmp_path, tools)
     adapter = QoderSDKAdapter("test", {"cli_name": "qoder", "mode": "sdk"})
@@ -48,7 +48,7 @@ def test_empty_tools_disable_native_mcp_agents(tmp_path, monkeypatch):
 
 def test_sdk_serializes_empty_base_tools(tmp_path, monkeypatch):
     options, _ = build(tmp_path, monkeypatch)
-    from qoder_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+    from qodercn_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
     transport = SubprocessCLITransport(prompt="hello", options=options)
     command = transport._build_command()
     assert command[command.index("--tools") + 1] == ""
@@ -83,7 +83,7 @@ def test_permission_and_hook_reject_unknown_tool(tmp_path, monkeypatch):
 
 
 def test_no_trusted_session_cannot_build(monkeypatch):
-    pytest.importorskip("qoder_agent_sdk")
+    pytest.importorskip("qodercn_agent_sdk")
     adapter = QoderSDKAdapter("test", {"cli_name": "qoder"})
     with pytest.raises(PermissionError):
         adapter._build_options(ExecutionTask(task_id="t", question="hi"))

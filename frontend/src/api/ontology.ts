@@ -38,7 +38,9 @@ export interface GenerateProgress {
   detail: string;
 }
 
-/** SSE 生成本体草案，逐事件回调，返回 AbortController 供取消 */
+/** SSE 生成本体草案（自动建 AS-BOT 会话派发任务），逐事件回调，返回 AbortController 供取消。
+ * 契约：progress({stage,detail}) / done({model_id,object_count,conversation_id,workspace_id,completed,...}) /
+ * error({message,conversation_id?})。 */
 export function generateOntologyDraft(
   datasourceId: number,
   onEvent: (event: 'progress' | 'done' | 'error', data: any) => void,
@@ -61,7 +63,14 @@ export function generateOntologyDraft(
       );
       if (!response.ok) {
         const text = await response.text();
-        throw new Error(text || `HTTP ${response.status}`);
+        // 错误显式展示服务端 detail（执行层不可用/无权限/数据源未授权），不吞异常
+        let detail = text;
+        try {
+          detail = JSON.parse(text)?.detail || text;
+        } catch {
+          // 非 JSON 错误体原样展示
+        }
+        throw new Error(detail || `HTTP ${response.status}`);
       }
 
       const reader = response.body?.getReader();
@@ -117,7 +126,7 @@ export const ontologyApi = {
   activate: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/activate`),
   archive: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/archive`),
   restore: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/restore`),
-  syncKb: (id: number) => client.post<{ synced?: number; removed?: number; skipped?: string; targets?: string[] }>(
+  syncKb: (id: number) => client.post<{ synced?: number; removed?: number; skipped?: string; targets?: string[]; error?: string }>(
     `/catalog/ontology/models/${id}/kb-sync`),
   remove: (id: number) => client.delete(`/catalog/ontology/models/${id}`),
   search: (q: string, datasourceId: number, limit = 5) =>

@@ -1,7 +1,7 @@
 """标准工具目录 — 工作空间执行层 tools 权限白名单的通用抽象.
 
 标准工具名(bash/edit/glob/grep/read/write/webfetch/task)经 TOOL_NAME_MAP
-映射到各执行层后端的实际工具名(qoder/claude 为 Pascal 命名).
+映射到执行层后端的实际工具名(qoder 为 Pascal 命名).
 
 目录列表能力已并入 `glob`,不单独列目录项.
 """
@@ -22,13 +22,8 @@ TOOL_CATALOG = [
 
 # 标准名 → 各后端实际工具名;None 表示该后端无此工具
 TOOL_NAME_MAP = {
-    # qoder CLI / qoder-agent-sdk 工具名(Claude Code 风格)
+    # qodercn CLI / qodercn-agent-sdk 工具名(Claude Code 风格)
     "qoder": {
-        "read": "Read", "write": "Write", "edit": "Edit", "glob": "Glob",
-        "grep": "Grep", "bash": "Bash", "webfetch": "WebFetch", "task": "Task",
-    },
-    # claude-agent-sdk 工具名(Claude Code 原生,Pascal 命名)
-    "claude": {
         "read": "Read", "write": "Write", "edit": "Edit", "glob": "Glob",
         "grep": "Grep", "bash": "Bash", "webfetch": "WebFetch", "task": "Task",
     },
@@ -104,7 +99,7 @@ def expand_allowed_tools(allowed_tools, flavor: str) -> set:
 def disallowed_tools(allowed_tools, flavor: str) -> list:
     """白名单 → 该后端目录内未被允许的工具列表(deny-list).
 
-    用于 qoder/claude:只禁用目录内未勾选的标准工具,
+    用于 qoder:只禁用目录内未勾选的标准工具,
     不影响 MCP/自定义等目录外工具.
     """
     allowed = parse_allowed_tools(allowed_tools)

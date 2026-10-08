@@ -17,10 +17,8 @@ huggingface_hub>=0.19.0
 # These are already installed in the main backend environment:
 # - pymysql
 # - pandas
-# - anthropic
 # - numpy
-qoder-agent-sdk>=1.0.12
-claude-agent-sdk>=0.2.0
+qodercn-agent-sdk>=1.0.15
 
 # Multimodal processing (chat attachments)
 opencv-python-headless>=4.8.0

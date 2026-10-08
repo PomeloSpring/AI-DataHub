@@ -13,6 +13,7 @@ source_config.sync_ontology=true 的条目(source_config.notebook_id 须为真�
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -21,6 +22,29 @@ logger = logging.getLogger(__name__)
 
 # 同步文档标题前缀(按此前缀+模型名匹配旧 source 并替换)
 TITLE_PREFIX = "本体模型-"
+
+# 对外错误文本脱敏: token 形态串(pt-/jt-/qt-开头)不得出站(护栏§7)
+_TOKEN_RE = re.compile(r"\b(?:pt|jt|qt)-[A-Za-z0-9_\-]{4,}")
+
+
+def _safe_err(msg: str) -> str:
+    """错误文本脱敏截断后随响应回传(可诊断但不泄凭据)."""
+    return _TOKEN_RE.sub("***", (msg or "")).strip()[:300]
+
+
+# 凭据类失败的可操作提示(提醒用户而非只丢原始 stderr; qodercn 口径)
+_CRED_HINT = ("qmind 凭据未通过 Qoder 平台认证：请在 qoder.cn 账号中心"
+              "(qoder.cn/account/integrations)生成有效的 Personal Access Token(pt- 开头),"
+              "更新 services/.env 的 QODERCN_PERSONAL_ACCESS_TOKEN 后重启服务；"
+              "或配置 QMIND_TOKEN=jt- 开头的 job token 直连")
+
+
+def _cred_hint(err: str) -> str | None:
+    """识别凭据无效类错误(认证失败/令牌交换被拒), 返回可操作提示."""
+    e = (err or "").lower()
+    if "unauthorized" in e or "not authenticated" in e or "exchange" in e:
+        return _CRED_HINT
+    return None
 
 
 def _parse_cfg(value) -> dict:
@@ -232,30 +256,37 @@ def list_bindable_kbs() -> list[dict]:
 
 def _run_cli(args: list[str]) -> dict | None:
     """qmind CLI 执行(复用 datamind 的轻量封装, 顶层仅标准库, 失败返回 None)."""
+    data, _err = _run_cli_ex(args)
+    return data
+
+
+def _run_cli_ex(args: list[str]) -> tuple[dict | None, str]:
+    """qmind CLI 执行并透出 stderr 错因(供失败显式回传, 不吞成返回空)."""
     try:
-        from services.datamind.rag.qmind_retriever import _run_cli as cli
+        from services.datamind.rag.qmind_retriever import _run_cli_ex as cli
         return cli(args)
     except Exception as e:  # noqa: BLE001
         logger.warning("[OntoSync] qmind CLI unavailable: %s", e)
-        return None
+        return None, f"qmind CLI unavailable: {e}"
 
 
 def _delete_old_sources(notebook_id: str, title: str) -> int:
     """删除 notebook 下同名旧 source(整篇替换), 返回删除数."""
-    data = _run_cli(["source", "list", "-nb", notebook_id, "-all", "-format", "json"])
+    data = _run_cli(["source", "list", "--nb", notebook_id, "--format", "json"])
     if not data:
         return 0
     removed = 0
     for s in data.get("sources") or []:
         if (s.get("title") or "") == title and s.get("id"):
-            res = _run_cli(["source", "delete", "-nb", notebook_id, s["id"]])
+            res = _run_cli(["source", "delete", "--nb", notebook_id,
+                           "--force", s["id"]])
             if res is not None:
                 removed += 1
     return removed
 
 
-def _upload_markdown(notebook_id: str, title: str, md: str) -> bool:
-    """写临时 md 文件并上传为 source."""
+def _upload_markdown(notebook_id: str, title: str, md: str) -> tuple[bool, str]:
+    """写临时 md 文件并上传为 source; 返回 (ok, err), err 为 CLI 错因透传."""
     path = ""
     try:
         with tempfile.NamedTemporaryFile(
@@ -263,9 +294,9 @@ def _upload_markdown(notebook_id: str, title: str, md: str) -> bool:
         ) as f:
             f.write(md)
             path = f.name
-        data = _run_cli(["source", "upload", "-nb", notebook_id,
-                         "-file", path, "-title", title, "-format", "json"])
-        return data is not None
+        data, err = _run_cli_ex(["source", "upload", "--nb", notebook_id,
+                                "--file", path, "--title", title, "--format", "json"])
+        return (data is not None), ("" if data is not None else (err or "返回空"))
     finally:
         if path:
             try:
@@ -450,10 +481,11 @@ def sync_model_to_qmind(model_id: int) -> dict:
                 continue
             kb["notebook_id"] = nb  # 重建后水位线与后续引用使用新 id
             _delete_old_sources(nb, title)
-            if _upload_markdown(nb, title, md):
+            ok, up_err = _upload_markdown(nb, title, md)
+            if ok:
                 synced.append(kb["name"] or str(kb["id"]))
             else:
-                last_err = f"upload to kb={kb['id']} failed(返回空)"
+                last_err = up_err or f"upload to kb={kb['id']} failed(返回空)"
                 logger.error("[OntoSync] %s", last_err)
         except Exception as e:  # noqa: BLE001
             last_err = str(e)[:400]
@@ -465,7 +497,15 @@ def sync_model_to_qmind(model_id: int) -> dict:
                  _model_version(model),
                  "success" if synced else "failed",
                  "" if synced else (last_err or "no target synced"))
-    return {"synced": len(synced), "targets": synced}
+    result = {"synced": len(synced), "targets": synced}
+    if last_err:
+        # 失败必须显式可诊断(no-silent-degradation): 脱敏错因随响应回传,
+        # 全部失败由 API 层转 502, 部分成功随结果附 error 供前端警示。
+        result["error"] = _safe_err(last_err)
+        hint = _cred_hint(last_err)
+        if hint:
+            result["error_hint"] = hint
+    return result
 
 
 def _remove_from_targets(model_name: str, targets: list[dict]) -> dict:

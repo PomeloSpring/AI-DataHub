@@ -26,6 +26,15 @@ def _sdk_cli_path(adapter) -> str | None:
     return p if os.path.isabs(p) else None
 
 
+def resolve_access_token(env_map: dict | None = None) -> str:
+    """解析执行层访问令牌(qodercn 口径): `QODERCN_PERSONAL_ACCESS_TOKEN` 优先,
+    旧变量名 `QODER_PERSONAL_ACCESS_TOKEN` 兜底; 显式 env_map(如 adapter 配置)先于进程环境."""
+    m = env_map or {}
+    return (m.get("QODERCN_PERSONAL_ACCESS_TOKEN") or m.get("QODER_PERSONAL_ACCESS_TOKEN")
+            or os.environ.get("QODERCN_PERSONAL_ACCESS_TOKEN")
+            or os.environ.get("QODER_PERSONAL_ACCESS_TOKEN", ""))
+
+
 def build_options(adapter, task, backend):
     from services.datamind.execution.sdk_tools.compat import load_sdk
     from services.datamind.execution.sdk_tools import build_tool_servers
@@ -67,10 +76,10 @@ def build_options(adapter, task, backend):
             return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                            "permissionDecisionReason": "当前会话未授权该工具或权限已变化"}}
 
-    env = {k: None if backend == "qoder" else "" for k in os.environ if k not in ("PATH", "LANG", "LC_ALL")}
+    env = {k: None for k in os.environ if k not in ("PATH", "LANG", "LC_ALL")}
     home = str(runtime.runtime_dir)
     env.update({"HOME": home, "XDG_CONFIG_HOME": home, "TMPDIR": str(runtime.runtime_dir / "tmp"),
-                "QODER_CONFIG_DIR": home + "/qoder", "CLAUDE_CONFIG_DIR": home + "/claude"})
+                "QODERCN_CONFIG_DIR": home + "/qoder-cn"})
     prompt = compose_system_prompt(
         policy.as_bot, [policy.as_bot], ctx.username, ctx.user_role,
         knowledge_bases=as_bots.load_knowledge_bases(policy.as_bot.get("knowledge_base_ids") or []),
@@ -84,18 +93,14 @@ def build_options(adapter, task, backend):
                   mcp_servers=servers, agents={}, system_prompt=prompt, resume=runtime.sdk_session_id or None,
                   max_turns=int(adapter.config.get("max_turns") or 20), include_partial_messages=True,
                   can_use_tool=permit, hooks={"PreToolUse": [sdk.HookMatcher(hooks=[before_tool])]})
-    if backend == "qoder":
-        from qoder_agent_sdk.auth import AccessTokenAuthOptions
-        token = (adapter.config.get("env") or {}).get("QODER_PERSONAL_ACCESS_TOKEN") or os.environ.get("QODER_PERSONAL_ACCESS_TOKEN")
-        if not token:
-            raise ValueError("Qoder 模型凭据未配置")
-        return sdk.QoderAgentOptions(**common, cli_path=_sdk_cli_path(adapter),
-                                    model=ctx.extra.get("model_ref") or adapter.model or None,
-                                    auth=AccessTokenAuthOptions(access_token=token),
-                                    strict_mcp_config=True, allowed_mcp_server_names=list(servers), skills=[])
-    llm_env, model = adapter._resolve_llm(task)
-    env.update(llm_env)
-    return sdk.ClaudeAgentOptions(**common, cli_path=_sdk_cli_path(adapter), model=model or adapter.model or None)
+    from qodercn_agent_sdk.auth import AccessTokenAuthOptions
+    token = resolve_access_token(adapter.config.get("env") or {})
+    if not token:
+        raise ValueError("执行层凭据未配置(QODERCN_PERSONAL_ACCESS_TOKEN)")
+    return sdk.QoderAgentOptions(**common, cli_path=_sdk_cli_path(adapter),
+                                model=ctx.extra.get("model_ref") or adapter.model or None,
+                                auth=AccessTokenAuthOptions(access_token=token),
+                                strict_mcp_config=True, allowed_mcp_server_names=list(servers), skills=[])
 
 
 def place_attachments(task, runtime):
@@ -215,7 +220,7 @@ async def _execute_stream(adapter, task, backend):
         options = build_options(adapter, task, backend)
         context_token = set_execution_context(task.context)
         sdk = load_sdk(backend)
-        client_type = sdk.QoderSDKClient if backend == "qoder" else sdk.ClaudeSDKClient
+        client_type = sdk.QoderSDKClient
         starting_sdk = True
         client = client_type(options=options)
         await client.connect()

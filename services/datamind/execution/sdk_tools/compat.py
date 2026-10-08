@@ -1,15 +1,15 @@
-"""SDK 兼容层 — 统一加载 qoder-agent-sdk / claude-agent-sdk 的工具构造器.
+"""SDK 兼容层 — 统一加载 qodercn-agent-sdk 的工具构造器.
 
-两家 SDK 的 @tool / create_sdk_mcp_server 接口基本一致(
-claude-agent-sdk 为原型,qoder-agent-sdk 与其对称),
-本模块屏蔽 import 差异,使工具 handler 只写一份。
+qoder-agent-sdk(Global)与 qodercn-agent-sdk(qoder.cn)的 @tool /
+create_sdk_mcp_server 接口对称, 项目已统一切换 qodercn 体系(2026-10),
+本模块屏蔽 import 细节, 使工具 handler 只写一份。
 """
 
 import logging
 
 logger = logging.getLogger(__name__)
 
-SDK_BACKENDS = ("qoder", "claude")
+SDK_BACKENDS = ("qoder",)
 
 # 可写 SQL 的 AS-BOT（授权了 execute_sql）需要真实表/列元数据来拼 SQL；
 # 其 search_metadata / get_table_schema 走原始 handler（物理元数据，已剥除 datasource_id），
@@ -24,11 +24,13 @@ def _as_bot_can_write_sql(runtime) -> bool:
 
 
 def load_sdk(backend: str):
-    """按后端加载 SDK 模块;未安装时抛 ImportError."""
-    if backend == "claude":
-        import claude_agent_sdk as sdk
-    else:
-        import qoder_agent_sdk as sdk
+    """加载 qodercn-agent-sdk 模块;未安装时抛 ImportError.
+
+    执行层唯一后端为 qoder(claude-agent-sdk 已退役),其他 backend 显式拒绝。
+    """
+    if backend != "qoder":
+        raise ValueError(f"不支持的 SDK 后端: {backend}（仅允许 qoder）")
+    import qodercn_agent_sdk as sdk
     return sdk
 
 

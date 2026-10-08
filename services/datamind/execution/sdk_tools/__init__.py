@@ -1,4 +1,4 @@
-"""SDK 进程内自定义工具 — 通过 qoder-agent-sdk / claude-agent-sdk @tool 注册.
+"""SDK 进程内自定义工具 — 通过 qodercn-agent-sdk @tool 注册.
 
 工具 handler 运行在 datamind 进程内,直接调用现有 service 层,
 不走网络;工作空间/用户上下文由 SDK 适配器派发时经
@@ -58,7 +58,7 @@ TOOL_SERVER_TOOLS = {
     ]),
     "ontology": ("datahub_ontology", [
         "search_ontology", "get_ontology_model", "list_ontology_models",
-        "get_metadata_summary", "generate_ontology_draft",
+        "get_metadata_summary", "generate_ontology_draft", "save_ontology_draft",
         "save_ontology_model", "activate_ontology_model", "import_ontology_yaml",
     ]),
     "screen": ("datahub_screen", [

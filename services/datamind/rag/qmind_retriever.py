@@ -1,13 +1,16 @@
 """QMind 客户端 — 通过 qmind CLI 对接 Qoder 云端知识库(notebook).
 
 QMind 是 Qoder 的知识库能力,以「笔记本(notebook)」为单位。它与本系统之间不是
-自建 HTTP 服务,而是通过 qoder 生态里的 `qmind` 命令行交互(与 qmind 技能用法一致):
+自建 HTTP 服务,而是通过 qoder 生态里的 `qmind` 命令行交互(与 qmind 技能用法一致)。
 
-- 二进制放置于项目 `runtime/qmind/qmind`(与 qodercli 同层, 随仓库走);
-- 缺失时按需下载到 `runtime/qmind/`; 也可通过 setup.sh 预装;
-- 认证凭据由 `qmind login` 落盘在 `~/.qmind/credentials.json`,本模块不接触 token;
-- `qmind notebook list -format json`  → 列出(检索)全部 Qoder 知识库;
-- `qmind retrieve -nb <id> -q <q> -format json` → 对指定笔记本做知识检索。
+运行时口径(qodercn 独立工作空间, 2026-10 切换):
+- CLI 为 npm 包 `@qoder-ai/qmind-cli`(Node 版), 缓存于项目 `runtime/qmind-cli/`,
+  由项目内 `runtime/node` 驱动; 缺失时 npm 自动缓存安装(或 setup.sh 预装);
+- 目标是 **qoder.cn(qodercn)体系**: CLI 用成对 `--sash/--dashboard` flag 指到
+  CN 网关(`--env` 只有 Global 的 prod/test/daily, 环境变量形态会被 CLI 拒);
+- 凭据/缓存一律落在 `runtime/qmind/home/`(QMIND_HOME), 不读宿主机用户环境;
+- `qmind notebook list --format json`  → 列出(检索)全部 Qoder 知识库;
+- `qmind retrieve --nb <id> -q <q> --format json` → 对指定笔记本做知识检索。
 
 对外暴露:
 - list_notebooks()            供后台「从 Qoder 检索知识库」列出多个知识库
@@ -18,16 +21,15 @@ QMind 是 Qoder 的知识库能力,以「笔记本(notebook)」为单位。它�
 import json
 import logging
 import os
-import platform
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _CLI_TIMEOUT = 60
-_OSS_BASE = "https://qoder-ide-cn.oss-accelerate.aliyuncs.com/qmind/cli"
+# npm 包名与项目内缓存目录(qodercn 口径, 见模块 docstring)
+_QMIND_CLI_PKG = "@qoder-ai/qmind-cli"
 
 # ── 简易熔断: 连续失败达阈值后短路一段时间, 避免每次问答都 spawn CLI 子进程 ──
 _CB_FAIL_THRESHOLD = 3
@@ -58,94 +60,121 @@ def _breaker_record(success: bool, now: float = None):
         "1" if success else "0", _CB_FAIL_THRESHOLD, _CB_COOLDOWN_SEC)
 
 
-# ── CLI 解析 / 按需下载 ──────────────────────────────────────────────
+# ── CLI 解析 / 按需安装(qodercn Node 版) ────────────────────────────
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]  # → 仓库根
-_RUNTIME_QMIND_DIR = _PROJECT_ROOT / "runtime" / "qmind"
+_RUNTIME_DIR = _PROJECT_ROOT / "runtime"
+_RUNTIME_QMIND_DIR = _RUNTIME_DIR / "qmind"           # HOME/凭据隔离目录
+_RUNTIME_QMIND_CLI_DIR = _RUNTIME_DIR / "qmind-cli"   # npm 缓存的 qmind-cli
+_NODE_BIN = _RUNTIME_DIR / "node" / "bin" / "node"
+
+# qodercn 目标(CN 网关): 必须用成对 --sash/--dashboard 指定(实测验证);
+# CLI 的 --env 只有 Global 的 prod/test/daily, QMIND_ENV 等环境变量形态会被 CLI 拒。
+_DEFAULT_SASH = "https://openapi.qoder.com.cn"
+_DEFAULT_DASHBOARD = "https://qoder.cn"
 
 
-def _platform_slug() -> tuple[str, str, str]:
-    """返回 (os, arch, ext),与 qmind 技能下载脚本保持一致."""
-    u = platform.system().lower()
-    if u.startswith("win") or u in ("msys", "mingw", "cygwin"):
-        os_name = "windows"
-    elif u == "darwin":
-        os_name = "darwin"
-    else:
-        os_name = "linux"
-    m = platform.machine().lower()
-    arch = "amd64" if m in ("x86_64", "amd64") else "arm64" if m in ("aarch64", "arm64") else m
-    ext = ".exe" if os_name == "windows" else ""
-    return os_name, arch, ext
+def _cn_target() -> tuple[str, str]:
+    """解析 qodercn 目标网关(允许环境变量覆盖, 默认 CN)."""
+    sash = os.environ.get("QMIND_SASH_TARGET") or _DEFAULT_SASH
+    dash = os.environ.get("QMIND_DASHBOARD_TARGET") or _DEFAULT_DASHBOARD
+    return sash, dash
 
 
-def _qmind_candidates() -> list[Path]:
-    """二进制自动识别顺序: 项目 runtime/qmind → 用户缓存 ~/.cache/qmind/bin。
-
-    项目目录随仓库走, 与运行用户无关(修复以 root 跑时 home 漂移), 也免逐节点手配。
-    显式 QMIND_BIN 由 qmind_bin_path() 单独短路, 不进入本清单。
-    """
-    os_name, arch, ext = _platform_slug()
-    name = f"qmind-{os_name}-{arch}{ext}"
-    return [
-        _RUNTIME_QMIND_DIR / "qmind",       # 项目固定单文件(推荐部署形态)
-        _RUNTIME_QMIND_DIR / name,          # 项目带平台后缀
-        Path.home() / ".cache" / "qmind" / "bin" / name,  # 兼容旧缓存
-    ]
+def qmind_cli_entry() -> Path:
+    """npm 缓存的 qmind-cli 入口(项目内固定路径, 不依赖宿主机)."""
+    return (_RUNTIME_QMIND_CLI_DIR / "node_modules" / "@qoder-ai"
+            / "qmind-cli" / "bin" / "cli.js")
 
 
-def qmind_bin_path() -> Path:
-    """解析 qmind 可执行文件位置。
-
-    QMIND_BIN 显式设置时以其为唯一答案(便于 CI/临时覆盖, 不做二次回退);
-    否则在 runtime/qmind/ 目录中自动挑选第一个真实可执行文件,
-    未命中返回项目规范路径供下载/错误提示。
-    """
-    override = os.environ.get("QMIND_BIN")
-    if override:
-        return Path(override).expanduser()
-    for candidate in _qmind_candidates():
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return candidate
-    return _RUNTIME_QMIND_DIR / "qmind"
+def qmind_cli_argv(args: list[str]) -> list[str]:
+    """完整命令行: node cli.js <args...> --sash <cn-sash> --dashboard <cn-dashboard>."""
+    sash, dash = _cn_target()
+    return [str(_NODE_BIN), str(qmind_cli_entry()), *args,
+            "--sash", sash, "--dashboard", dash]
 
 
 def ensure_qmind_cli() -> Path | None:
-    """确保 qmind CLI 可用;缺失时从公共 OSS 下载到 runtime/qmind/.
+    """确保 npm 版 qmind-cli 就位;缺失时用项目内 npm 缓存安装到 runtime/qmind-cli/.
 
-    也可通过 bash runtime/qmind/setup.sh 预装。
+    也可通过 bash runtime/qmind/setup.sh 预装。安装的是 qodercn(qoder.cn)体系
+    的 CLI(CN 网关域名内置于包内, 目标由 qmind_cli_argv 的成对 flag 指定)。
     """
-    bin_path = qmind_bin_path()
-    if bin_path.exists() and os.access(bin_path, os.X_OK):
-        return bin_path
-    os_name, arch, ext = _platform_slug()
-    url = f"{_OSS_BASE}/qmind-{os_name}-{arch}{ext}"
+    entry = qmind_cli_entry()
+    if entry.is_file():
+        return entry
+    npm = _RUNTIME_DIR / "node" / "bin" / "npm"
+    if not npm.is_file():
+        logger.warning("[qmind] npm not found at %s; run bash runtime/qmind/setup.sh", npm)
+        return None
     try:
-        bin_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.info("[qmind] downloading CLI from %s", url)
-        subprocess.run(["curl", "-fsSL", "-o", str(bin_path), url], check=True, timeout=120)
-        if ext != ".exe":
-            bin_path.chmod(0o755)
-        return bin_path
-    except Exception as e:  # noqa: BLE001  下载失败不致命,调用方按空结果处理
-        logger.warning("[qmind] CLI download failed: %s", e)
+        logger.info("[qmind] caching %s to %s", _QMIND_CLI_PKG, _RUNTIME_QMIND_CLI_DIR)
+        subprocess.run(
+            [str(npm), "install", "--prefix", str(_RUNTIME_QMIND_CLI_DIR),
+             "--no-bin-links", "--no-audit", "--no-fund", "--save=false",
+             _QMIND_CLI_PKG],
+            check=True, timeout=600,
+            env={**os.environ, "npm_config_cache": str(_RUNTIME_DIR / ".npm-cache")},
+        )
+        return entry if entry.is_file() else None
+    except Exception as e:  # noqa: BLE001  安装失败不致命,调用方按空结果处理
+        logger.warning("[qmind] npm install %s failed: %s", _QMIND_CLI_PKG, e)
         return None
 
 
 def _cli_env() -> dict:
-    """构造 qmind CLI 子进程环境.
+    """构造 qmind CLI 子进程环境(运行时独立于宿主机用户环境)。
 
-    CLI 支持两种认证:交互式 `qmind login` 落盘 credentials,或设置 `QMIND_TOKEN`
-    为个人 token(`pt-...`,CLI 会自动换取短期 job token)。服务器/容器无交互登录时,
-    用 `.env` 的 `QODER_PERSONAL_ACCESS_TOKEN`(即 pt-... PAT)注入 `QMIND_TOKEN`,
-    使知识库检索无需依赖 `qmind login`。已有 `QMIND_TOKEN` 时优先保留。
+    HOME/XDG/QMIND_HOME 一律收敛到 runtime/qmind/home: `qmind login` 的
+    credentials 与 CLI 缓存都落在项目内, 不读宿主机 ~/.config、~/.cache(旧账号
+    credentials/缓存曾与项目凭据串源, 换机器/换用户行为不一致)。PATH 前插项目
+    node, 供子进程 shebang 解析。
+
+    CLI 认证: 设置 `QMIND_TOKEN` 为个人 token(`pt-...`,qoder.cn 的 Personal
+    Access Token, CLI 自动换取短期 job token)。注意 Node 版 CLI 对自定义
+    `--sash/--dashboard` 目标(custom-<hash>)只读 `QMIND_DEBUG_TOKEN`, 故两者同置;
+    并置 `QMIND_NON_INTERACTIVE=1` 禁止服务器环境下弹交互登录(fail-loud)。
+    服务器/容器无交互登录时,用 `services/.env` 注入的
+    `QODERCN_PERSONAL_ACCESS_TOKEN`/`QODER_PERSONAL_ACCESS_TOKEN` 兜底, 已有
+    `QMIND_TOKEN` 时优先保留。
     """
     env = dict(os.environ)
+    home = _RUNTIME_QMIND_DIR / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    env["HOME"] = str(home)
+    env["XDG_CONFIG_HOME"] = str(home / ".config")
+    env["XDG_CACHE_HOME"] = str(home / ".cache")
+    env["QMIND_HOME"] = str(home)
+    env["QMIND_NON_INTERACTIVE"] = "1"
+    node_bin = str(_NODE_BIN.parent)
+    if node_bin not in (env.get("PATH") or ""):
+        env["PATH"] = node_bin + os.pathsep + (env.get("PATH") or "")
     if not env.get("QMIND_TOKEN"):
-        pat = env.get("QODER_PERSONAL_ACCESS_TOKEN", "")
+        pat = (env.get("QODERCN_PERSONAL_ACCESS_TOKEN")
+               or env.get("QODER_PERSONAL_ACCESS_TOKEN", ""))
         if pat:
             env["QMIND_TOKEN"] = pat
+    # custom --sash/--dashboard 目标下 CLI 只认 QMIND_DEBUG_TOKEN(见模块 docstring)
+    if env.get("QMIND_TOKEN") and not env.get("QMIND_DEBUG_TOKEN"):
+        env["QMIND_DEBUG_TOKEN"] = env["QMIND_TOKEN"]
     return env
+
+
+def _extract_err(stdout: str, stderr: str) -> str:
+    """提取 CLI 错因: Node 版错误以 JSON 打在 stdout(rc=1, stderr 常为空),
+    兼顾旧版 stderr 文本形态。JSON 形如 {"error": {"code": ..., "message": ...}}."""
+    out = (stdout or "").strip()
+    try:
+        err = json.loads(out or "{}").get("error")
+        if isinstance(err, dict):
+            code = (err.get("code") or "").strip()
+            msg = (err.get("message") or "").strip()
+            return (f"{code}: {msg}" if code and msg else code or msg)[:300]
+        if isinstance(err, str) and err.strip():
+            return err.strip()[:300]
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return (out or (stderr or "").strip())[:300] or "rc 非 0 且无错误输出"
 
 
 def _run_cli_ex(args: list[str]) -> tuple[dict | None, str]:
@@ -156,12 +185,12 @@ def _run_cli_ex(args: list[str]) -> tuple[dict | None, str]:
         return None, "qmind CLI 不可用"
     try:
         proc = subprocess.run(
-            [str(bin_path), *args],
+            qmind_cli_argv(args),
             capture_output=True, text=True, timeout=_CLI_TIMEOUT,
             env=_cli_env(),
         )
         if proc.returncode != 0:
-            err = (proc.stderr or "").strip()[:300]
+            err = _extract_err(proc.stdout, proc.stderr)
             logger.warning("[qmind] `%s` failed (rc=%s): %s",
                            " ".join(args), proc.returncode, err)
             _breaker_record(False)
@@ -200,12 +229,14 @@ def is_unavailable_error(err: str) -> bool:
     """判定错误属于「当前凭据对目标 notebook 不可用」(无权/不存在, 如切换账号)。
 
     仅此类错误允许触发 notebook 自动重建; 网络抖动/服务端 5xx 不在此列,
-    避免故障期间误建一堆重复知识库。
+    避免故障期间误建一堆重复知识库。凭据类(AUTH_REQUIRED)也不在此列 ——
+    那是 token 无效, 重建 notebook 无意义。
     """
     e = (err or "").lower()
     return ("insufficient notebook permission" in e
-            or '"errorcode":"forbidden"' in e
-            or "not found" in e)
+            or "forbidden" in e
+            or "not found" in e
+            or "not_found" in e)
 
 
 def probe_notebook(notebook_id: str) -> tuple[bool, str]:
@@ -219,13 +250,13 @@ def probe_notebook(notebook_id: str) -> tuple[bool, str]:
         return False, "qmind CLI 不可用"
     try:
         proc = subprocess.run(
-            [str(bin_path), "notebook", "get", notebook_id],
+            qmind_cli_argv(["notebook", "get", notebook_id]),
             capture_output=True, text=True, timeout=_CLI_TIMEOUT,
             env=_cli_env(),
         )
         if proc.returncode == 0:
             return True, ""
-        return False, (proc.stderr or "").strip()[:300]
+        return False, _extract_err(proc.stdout, proc.stderr)
     except subprocess.TimeoutExpired:
         return False, "timeout"
     except Exception as e:  # noqa: BLE001
@@ -234,9 +265,9 @@ def probe_notebook(notebook_id: str) -> tuple[bool, str]:
 
 def create_notebook(title: str, description: str = "") -> str | None:
     """在当前凭据账号下新建 notebook, 返回新 notebook_id(失败返回 None)。"""
-    args = ["notebook", "create", "-title", title, "-format", "json"]
+    args = ["notebook", "create", "--title", title, "--format", "json"]
     if description:
-        args += ["-desc", description]
+        args += ["--desc", description]
     data, err = _run_cli_ex(args)
     if not data:
         logger.warning("[qmind] notebook create failed: %s", err)
@@ -249,7 +280,7 @@ def list_notebooks() -> list[dict]:
 
     Returns: [{notebook_id, title, org_id, description, status}] —— 失败/无凭据时返回 []。
     """
-    data = _run_cli(["notebook", "list", "-format", "json"])
+    data = _run_cli(["notebook", "list", "--format", "json"])
     if not data:
         return []
     notebooks = data.get("notebooks") or data.get("data") or []
@@ -274,7 +305,7 @@ def list_notebooks() -> list[dict]:
 
 def retrieve_notebook(notebook_id: str, question: str, top_k: int = 5) -> list[dict]:
     """对单个笔记本检索,返回标准化 chunk 列表(失败返回 [])."""
-    data = _run_cli(["retrieve", "-nb", notebook_id, "-q", question, "-format", "json"])
+    data = _run_cli(["retrieve", "--nb", notebook_id, "-q", question, "--format", "json"])
     if not data:
         return []
     raw = data.get("results") or data.get("chunks") or data.get("data") or []
@@ -297,7 +328,7 @@ def retrieve_notebook_strict(notebook_id: str, question: str, top_k: int = 5) ->
     """设计任务检索：失败与无命中严格区分，不执行任何回退。"""
     if not _breaker_allowed():
         raise RuntimeError("知识库熔断中，请稍后重试")
-    data = _run_cli(["retrieve", "-nb", notebook_id, "-q", question, "-format", "json"])
+    data = _run_cli(["retrieve", "--nb", notebook_id, "-q", question, "--format", "json"])
     if data is None:
         raise RuntimeError("业务知识库检索失败")
     raw = data.get("results") or data.get("chunks") or data.get("data") or []

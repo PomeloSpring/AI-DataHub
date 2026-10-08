@@ -296,7 +296,7 @@ System
 
 | Layer | Technology |
 |-------|-----------|
-| **Backend** | Python 3.9+, FastAPI, Anthropic SDK |
+| **Backend** | Python 3.9+, FastAPI, Qoder Agent SDK |
 | **Frontend** | React 18, TypeScript, Vite, Tailwind CSS, Zustand |
 | **Database** | Apache Doris (analytics + vectors), MySQL (metadata) |
 | **AI/ML** | Multi-provider LLM, text2vec-base-chinese embeddings (768-dim) |
@@ -483,10 +483,10 @@ VECTOR_DB_HOST=127.0.0.1
 VECTOR_DB_PORT=9030
 VECTOR_DB_DATABASE=adh
 
-# LLM
-ANTHROPIC_API_KEY=your-key
-ANTHROPIC_BASE_URL=https://api.anthropic.com
-ANTHROPIC_MODEL=claude-sonnet-4-20250514
+# Qoder 执行层（qodercn agent SDK，唯一执行层; PAT 在 qoder.cn/account/integrations 生成）
+QODERCN_PERSONAL_ACCESS_TOKEN=pt-your-token
+QODER_MODEL=
+QODER_CLI_PATH=
 
 # Embedding
 EMBEDDING_MODEL_PATH=shibing624/text2vec-base-chinese

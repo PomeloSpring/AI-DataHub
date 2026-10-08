@@ -20,6 +20,9 @@ runtime/node/
 runtime/*/node_modules/
 runtime/qmind/qmind
 runtime/qmind/qmind-*
+runtime/qmind/home/
+runtime/qmind-cli/
+runtime/.npm-cache/
 
 # IDE
 .idea/

@@ -168,15 +168,10 @@ METADATA_DB_DATABASE=adh2
 ADH_SECRET_KEY=
 
 # --- Qoder 执行层 / QMind 知识库检索 (必填 PAT: pt- 开头) ---
-QODER_PERSONAL_ACCESS_TOKEN=
+QODERCN_PERSONAL_ACCESS_TOKEN=
 QODER_MODEL=
 QODER_CLI_PATH=
 QODER_RUNTIME_CWD=
-
-# --- LLM (Anthropic / 兼容网关) ---
-ANTHROPIC_API_KEY=
-ANTHROPIC_BASE_URL=
-ANTHROPIC_MODEL=
 TPL
     log_warn "services/.env: 已生成占位模板 —— 数据源与密钥需自行填写(服务连库依赖它)"
 else

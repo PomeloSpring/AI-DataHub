@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import client from '@/api/client';
 import {
   ontologyApi,
@@ -126,6 +127,7 @@ function ModelGroup({ title, list, selectedId, onPick }: {
 }
 
 export default function OntologyModeling() {
+  const navigate = useNavigate();
   // ── 数据源 ──
   const [datasources, setDatasources] = useState<Datasource[]>([]);
   const [datasourceId, setDatasourceId] = useState<number>(0);
@@ -263,7 +265,7 @@ export default function OntologyModeling() {
     }
   }, []);
 
-  // ── 生成草案（SSE） ──
+  // ── 生成草案（SSE）：自动建 AS-BOT 会话派发任务，归纳由会话内 agent 完成 ──
   const handleGenerate = () => {
     if (!datasourceId) {
       toast.warning('请先选择数据源');
@@ -271,17 +273,47 @@ export default function OntologyModeling() {
     }
     setGenerating(true);
     setProgressLogs([]);
+    // 跳转会话（回看执行过程/追问）：会话 id 经 sessionStorage 一次性携带，
+    // 与 AS-BOT 面板同惯例，由 Chat 挂载时消费并 switchConversation。
+    const jumpToConversation = (convId: number, wsId: number) => {
+      sessionStorage.setItem('asbot_open_conversation', String(convId));
+      navigate(wsId ? `/ws/${wsId}/chat` : '/ask');
+    };
     abortRef.current = generateOntologyDraft(datasourceId, (event, data) => {
       if (event === 'progress') {
+        // 进度日志直接显示 agent 过程（token 转进度行、工具调用进度）
         setProgressLogs((prev) => [...prev, data.detail || data.stage]);
       } else if (event === 'done') {
         setGenerating(false);
-        toast.success(`草案已生成：${data.object_count} 个业务对象`);
         loadModels(datasourceId);
         if (data.model_id) loadModel(data.model_id);
+        const convAction = data.conversation_id
+          ? { label: '查看对话', onClick: () => jumpToConversation(data.conversation_id, data.workspace_id || 0) }
+          : undefined;
+        if (data.model_id) {
+          toast.success(`草案已生成：${data.object_count} 个业务对象`, {
+            description: '可在对话中查看执行过程',
+            action: convAction,
+            duration: 10000,
+          });
+        } else {
+          // 任务结束但未提交草案：显式告知，不假报成功
+          toast.warning('任务已结束，但未提交草案', {
+            description: '请在对话中查看执行过程',
+            action: convAction,
+            duration: 10000,
+          });
+        }
       } else {
         setGenerating(false);
-        toast.error(data.message || '生成失败');
+        // 错误显式展示服务端 detail（执行层不可用/无权限/数据源未授权），不吞异常
+        toast.error(data.message || '生成失败', {
+          description: data.conversation_id ? '可在对话中查看执行过程' : undefined,
+          action: data.conversation_id
+            ? { label: '查看对话', onClick: () => jumpToConversation(data.conversation_id, data.workspace_id || 0) }
+            : undefined,
+          duration: 10000,
+        });
       }
     });
   };
@@ -435,7 +467,9 @@ export default function OntologyModeling() {
     try {
       const { data } = await ontologyApi.syncKb(model.id);
       if (data.removed) toast.success(`已从 ${data.removed} 个知识库下线旧文档`);
+      else if (data.synced && data.error) toast.warning(`已同步 ${data.synced} 个知识库，但部分目标失败：${data.error}`);
       else if (data.synced) toast.success(`已同步到 ${data.synced} 个知识库`);
+      else if (data.error) toast.error(`知识库同步失败：${data.error}`);
       else toast.warning(data.skipped ? `未同步：${KB_SKIP_LABEL[data.skipped] || data.skipped}` : '本次未产生同步');
     } catch (e: any) {
       toast.error(e?.response?.data?.detail || '知识库同步失败');

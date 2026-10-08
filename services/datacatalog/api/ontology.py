@@ -1,7 +1,7 @@
 """Ontology Modeling API — 本体模型生成/编辑/激活/检索。
 
 挂载在 /api/catalog/ontology 前缀下:
-    POST   /generate              SSE 流式生成本体草案
+    POST   /generate              SSE 流式生成本体草案(自动建 AS-BOT 会话派发任务)
     GET    /models                模型列表
     GET    /models/{id}           模型详情（含三格式内容）
     PUT    /models/{id}           保存草案编辑（JSON 事实源）
@@ -14,10 +14,9 @@
 
 import json
 import logging
-import queue
-import threading
+import re
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from ..services import ontology_service
@@ -42,44 +41,351 @@ def _sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+# ═══════════════════════════════════════════════════════════════════
+# 生成本体草案：自动创建 AS-BOT 会话 + 派发『生成本体模型』任务
+# ═══════════════════════════════════════════════════════════════════
+# 归纳由 AS-BOT 会话内的 qoder agent 完成(generate_ontology_draft 取素材 →
+# agent 归纳 → save_ontology_draft 提交)，端点与工具均**不调用任何 LLM**；
+# 确定性校验/合并/落库留在 ontology_service。目标数据源业务名进 prompt，
+# 内部 id 对 LLM 黑盒；身份一律服务端注入(不接受请求体 created_by)。
+
+
+def _datasource_brief(datasource_id: int) -> tuple:
+    """(数据源业务名, 表规模) — 任务消息用；数据源不存在显式 404。"""
+    from services.shared.common.db.metadata_db import get_metadata_conn
+
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name FROM adh_datasources WHERE id = %s", (datasource_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="数据源不存在")
+            cur.execute(
+                "SELECT COUNT(*) AS cnt FROM adh_table_info "
+                "WHERE datasource_id = %s AND is_active = 1",
+                (datasource_id,))
+            count = int((cur.fetchone() or {}).get("cnt") or 0)
+    return str(row.get("name") or ""), count
+
+
+def _resolve_task_as_bot(user: dict, workspace_id: int) -> str:
+    """AS-BOT 解析口径与 chat 创建会话一致(角色强绑定，fail-closed)。"""
+    from services.datamind.execution.models import ExecutionContext
+    from services.datamind.execution.tool_policy import resolve_policy
+
+    ctx = ExecutionContext(user_id=int(user.get("user_id") or 0),
+                           user_role=user.get("role") or "",
+                           workspace_id=workspace_id,
+                           extra={"as_bot_key": ""})
+    try:
+        return resolve_policy(ctx).as_bot["as_bot_key"]
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _assert_dispatchable(workspace_id: int) -> None:
+    """执行层可用性 fail-loud 预检(口径与 ChatService._try_dispatch_via_execution_layer 一致)。
+
+    无可用外部执行层(qoder 层缺失/未启用)时显式报错，不做任何静默回退
+    (no-silent-degradation)；PAT 未配等运行期不可用由派发流转译为 error 事件。
+    """
+    from services.datamind.execution import service as exec_service
+
+    try:
+        layers = exec_service.get_workspace_layers(workspace_id)
+    except Exception as e:
+        logger.error("execution layer resolve failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=503, detail="执行层权限配置暂不可用，生成任务未派发") from e
+    row, fallback = None, None
+    for layer in layers or []:
+        if layer.get("status") != "active" or not exec_service.is_healthy_layer(layer):
+            continue
+        if layer.get("is_default"):
+            row = layer
+            break
+        fallback = fallback or layer
+    row = row or fallback
+    if row is None:
+        row = exec_service.get_default_external_layer()
+    if row is None or row.get("status") != "active":
+        raise HTTPException(
+            status_code=503,
+            detail="生成任务无法派发：未找到可用的外部执行层(qoder 层缺失或未启用)")
+
+
+def _build_task_message(ds_name: str, table_count: int) -> str:
+    """服务端组装『生成本体模型』任务消息(数据源业务名，内部 id 对 LLM 黑盒)。"""
+    from ..services.ontology_service import ONTOLOGY_SCHEMA_SPEC
+
+    return f"""请执行『生成本体模型』任务：为数据源「{ds_name}」(业务名，共 {table_count} 张业务表)归纳源本体草案。
+
+归纳规范(输出结构 domain / description / objects 必须严格遵守)：
+{ONTOLOGY_SCHEMA_SPEC}
+
+执行流程(严格遵守)：
+1. 调用 generate_ontology_draft 取第 1 批素材(batch=0，返回里含总批数)；
+2. 仅依据素材归纳出本批业务对象(不要臆造表/列/口径)；
+3. 调用 save_ontology_draft 提交本批对象：**第一批必须 append=false**(覆盖旧草案)，
+   第 2 批起 append=true(并入既有草案，同名对象由服务端确定性合并)；
+4. 若总批数 > 1，逐批重复 1-3(batch 递增)；
+5. 全部批次完成后汇报：对象总数、业务域、合并告警(warnings)。
+
+注意：工具不接受任何数据源标识参数，目标数据源由服务端绑定；本任务只做归纳与提交，
+是否激活由用户在建模页决定。
+"""
+
+
+def _create_task_conversation(user: dict, workspace_id: int, datasource_id: int,
+                              as_bot_key: str, ds_name: str, task_message: str) -> int:
+    """自动创建任务会话(写 adh_conversations，口径与 chat 创建会话一致)。"""
+    from services.shared.common.db.metadata_db import get_metadata_conn
+
+    messages = [{"role": "user", "content": task_message, "question": task_message}]
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO adh_conversations "
+                "(user_id, title, datasource_id, workspace_id, as_bot_key, messages, created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())",
+                (int(user.get("user_id") or 0), f"生成本体模型：{ds_name}",
+                 datasource_id, workspace_id, as_bot_key,
+                 json.dumps(messages, ensure_ascii=False)),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+
+def _persist_task_reply(conversation_id: int, task_message: str, reply: str,
+                        tool_calls: list, error_message: str) -> None:
+    """执行回复回写会话历史(聊天侧可回看/追问)；旁路持久化失败不回滚主流程，但显式记日志。"""
+    from services.shared.common.db.metadata_db import get_metadata_conn
+
+    assistant = {
+        "role": "assistant",
+        "content": reply or error_message or "",
+        "question": task_message,
+        "intent": "agent",
+        "reply": reply or error_message or "",
+        "tool_calls": list(tool_calls or []),
+    }
+    if error_message:
+        assistant["error"] = error_message
+    try:
+        with get_metadata_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT messages FROM adh_conversations WHERE id = %s", (conversation_id,))
+                row = cur.fetchone()
+                messages = []
+                if row and row.get("messages"):
+                    try:
+                        messages = json.loads(row["messages"])
+                    except ValueError:
+                        logger.error("会话 %s 历史消息损坏，已重置后回写", conversation_id)
+                        messages = []
+                messages.append(assistant)
+                cur.execute("UPDATE adh_conversations SET messages = %s, updated_at = NOW() WHERE id = %s",
+                            (json.dumps(messages, ensure_ascii=False), conversation_id))
+                conn.commit()
+    except Exception as e:
+        logger.error("任务回复回写会话 %s 失败: %s", conversation_id, e, exc_info=True)
+
+
+def _parse_sse_frame(frame: str) -> tuple:
+    """执行层 SSE 帧(event: X / data: {...}) → (事件名, 数据)。"""
+    event, payload = "", {}
+    for line in frame.splitlines():
+        if line.startswith("event:"):
+            event = line[6:].strip()
+        elif line.startswith("data:"):
+            try:
+                payload = json.loads(line[6:].strip())
+            except ValueError:
+                payload = {"raw": line[6:].strip()}
+    return event, payload
+
+
+def _tool_name(tool: str) -> str:
+    """mcp__server__tool 形态归一为尾段工具名。"""
+    return str(tool or "").rsplit("__", 1)[-1]
+
+
+def _capture_draft_result(captured: dict, output) -> None:
+    """从 save_ontology_draft 工具输出提取落库结果(model_id/对象数/合并告警)。"""
+    try:
+        data = json.loads(output) if isinstance(output, str) else (output or {})
+    except ValueError:
+        # 展示限长截断时退化为正则提取 model_id(宁可少带字段，不误报未完成)
+        match = re.search(r'"model_id"\s*:\s*(\d+)', str(output or ""))
+        if match:
+            captured["model_id"] = int(match.group(1))
+        return
+    if not isinstance(data, dict) or not data.get("success"):
+        return
+    captured["model_id"] = data.get("model_id")
+    captured["object_count"] = int(data.get("object_count") or 0)
+    captured["merged"] = int(data.get("merged") or 0)
+    captured["warnings"] = list(data.get("warnings") or [])
+
+
+async def _generate_task_events(request: Request, *, task_message: str, conversation_id: int,
+                                datasource_id: int, workspace_id: int, user: dict,
+                                as_bot_key: str, task_binding: dict):
+    """派发『生成本体模型』任务并把 agent 事件流转译为前端契约(progress/done/error)。"""
+    from services.datamind.services.chat_service import ChatService
+
+    stream = ChatService().stream_query(
+        question=task_message,
+        history=[],
+        datasource_id=datasource_id,
+        model_id=None,
+        pipeline_mode="agent",
+        retrieval_strategy=None,
+        workspace_id=workspace_id,
+        user_id=int(user.get("user_id") or 0),
+        username=str(user.get("username") or ""),
+        request=request,
+        conversation_id=conversation_id,
+        user_role=str(user.get("role") or ""),
+        as_bot_key=as_bot_key,
+        task_binding=task_binding,
+    )
+
+    token_buf = ""
+    captured: dict = {}
+    terminal: dict = {}
+    error_message = ""
+
+    def _flush_tokens(force: bool = False):
+        nonlocal token_buf
+        events = []
+        lines = token_buf.split("\n")
+        token_buf = "" if force else lines.pop()
+        for line in lines:
+            if line.strip():
+                events.append(("progress", {"stage": "agent", "detail": line.strip()}))
+        if force and token_buf.strip():
+            events.append(("progress", {"stage": "agent", "detail": token_buf.strip()}))
+            token_buf = ""
+        return events
+
+    try:
+        buf = ""
+        async for chunk in stream:
+            buf += chunk.decode("utf-8") if isinstance(chunk, (bytes, bytearray)) else str(chunk)
+            frames = buf.split("\n\n")
+            buf = frames.pop()  # 末段可能是跨 chunk 的半帧，压回 buf 等下一块
+            for frame in frames:
+                event, data = _parse_sse_frame(frame)
+                if event == "token":
+                    token_buf += str(data.get("text") or "")
+                    for ev in _flush_tokens():
+                        yield ev
+                elif event == "progress":
+                    yield ("progress", {
+                        "stage": str(data.get("stage") or "agent"),
+                        "detail": str(data.get("message") or data.get("detail") or ""),
+                    })
+                elif event == "tool_start":
+                    yield ("progress", {"stage": "tool",
+                                        "detail": f"调用工具 {_tool_name(data.get('tool'))}"})
+                elif event == "tool_result":
+                    name = _tool_name(data.get("tool"))
+                    err = str(data.get("error") or "")
+                    if name == "save_ontology_draft" and not err:
+                        _capture_draft_result(captured, data.get("output"))
+                    yield ("progress", {"stage": "tool",
+                                        "detail": f"工具 {name} {'失败: ' + err if err else '完成'}"})
+                elif event == "error":
+                    error_message = str(data.get("message") or "生成任务执行失败")
+                elif event == "done":
+                    terminal = dict(data or {})
+    except Exception as e:  # noqa: BLE001 — 转译层兜底，不得吞掉失败静默结成“成功”
+        logger.error("ontology generate task dispatch failed: %s", e, exc_info=True)
+        error_message = error_message or f"生成任务派发失败: {e}"
+    finally:
+        await stream.aclose()
+
+    for ev in _flush_tokens(force=True):
+        yield ev
+    reply = str(terminal.get("reply") or "")
+    tool_calls = list(terminal.get("tool_calls") or [])
+    if terminal.get("error"):
+        error_message = error_message or str(terminal.get("error"))
+    if not terminal and not error_message:
+        error_message = "生成任务未返回结果，请在会话中查看执行过程"
+
+    # 回写会话消息(任务消息在建会话时已落，这里补执行回复)
+    _persist_task_reply(conversation_id, task_message, reply, tool_calls, error_message)
+
+    if error_message:
+        yield ("error", {"message": error_message, "conversation_id": conversation_id,
+                        "workspace_id": workspace_id})
+        return
+    yield ("done", {
+        "model_id": captured.get("model_id"),
+        "object_count": int(captured.get("object_count") or 0),
+        "merged": int(captured.get("merged") or 0),
+        "warnings": list(captured.get("warnings") or []),
+        "conversation_id": conversation_id,
+        "workspace_id": workspace_id,
+        "completed": bool(captured.get("model_id")),
+    })
+
+
 @router.post("/generate")
-def generate_ontology(req: dict):
-    """LLM 生成本体草案（SSE 流式返回进度，最终事件携带 model_id）。"""
+async def generate_ontology(request: Request, req: dict, user: dict = Depends(get_current_user)):
+    """生成本体草案（SSE 流式进度，最终事件携带 model_id 与 conversation_id）。
+
+    自动创建 AS-BOT 会话并派发『生成本体模型』任务，归纳由会话内 qoder agent
+    完成(工具不调 LLM)；SSE 事件契约保持 progress/done/error。
+    身份一律服务端注入(不接受请求体 created_by)。
+    """
+    from services.authservice.services.role_service import role_service
+    from services.datamind.execution.perm_link import require_write_perm
+    from services.shared.common.auth import authorize_workspace, resolve_user_default_workspace_id
+
     datasource_id = int(req.get("datasource_id") or 0)
     if not datasource_id:
         raise HTTPException(status_code=400, detail="datasource_id 必填")
 
-    q: queue.Queue = queue.Queue()
+    user_id = int(user.get("user_id") or 0)
+    workspace_id = resolve_user_default_workspace_id(user_id) or 0
+    if not workspace_id:
+        raise HTTPException(status_code=422, detail="未找到您的默认工作空间，请先创建工作空间后再试")
+    authorize_workspace(user, workspace_id)
 
-    def progress(stage: str, detail: str):
-        q.put(("progress", {"stage": stage, "detail": detail}))
+    # 权限把关(fail-closed，拒绝可解释)
+    try:
+        require_write_perm(user_id, workspace_id, "ontology:generate", "生成本体草案")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
-    def worker():
-        try:
-            model = ontology_service.generate_draft(
-                datasource_id,
-                progress_cb=progress,
-                created_by=str(req.get("created_by") or ""),
-            )
-            q.put(("done", {"model_id": model["id"], "object_count": model["object_count"]}))
-        except Exception as e:
-            logger.error("ontology generate failed: %s", e)
-            q.put(("error", {"message": str(e)}))
-        finally:
-            q.put(None)
+    # 目标数据源必须 ∈ 用户角色授权集(fail-closed：空授权集不放行)
+    allowed = set(role_service.get_user_allowed_datasources(user_id, workspace_id))
+    if datasource_id not in allowed:
+        raise HTTPException(status_code=403, detail="当前用户无权使用该数据源，请选择已授权数据源")
 
-    threading.Thread(target=worker, daemon=True).start()
+    ds_name, table_count = _datasource_brief(datasource_id)
+    _assert_dispatchable(workspace_id)
+    as_bot_key = _resolve_task_as_bot(user, workspace_id)
 
-    def stream():
-        while True:
-            item = q.get()
-            if item is None:
-                break
-            event, data = item
+    task_message = _build_task_message(ds_name, table_count)
+    conversation_id = _create_task_conversation(
+        user, workspace_id, datasource_id, as_bot_key, ds_name, task_message)
+    # 任务绑定标记：业务源草案写入仅限本任务会话(resource_guard.assert_ontology_draft_scope)
+    task_binding = {"kind": "ontology_generate", "datasource_id": datasource_id}
+
+    async def event_stream():
+        async for event, data in _generate_task_events(
+                request, task_message=task_message, conversation_id=conversation_id,
+                datasource_id=datasource_id, workspace_id=workspace_id, user=user,
+                as_bot_key=as_bot_key, task_binding=task_binding):
             yield _sse_event(event, data)
 
     return StreamingResponse(
-        stream(),
+        event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -183,12 +489,19 @@ def sync_model_kb(model_id: int):
     """
     from ..services import ontology_kb_sync
     try:
-        return ontology_kb_sync.sync_model_to_qmind(model_id)
+        result = ontology_kb_sync.sync_model_to_qmind(model_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error("manual kb sync failed for model %s: %s", model_id, e, exc_info=True)
         raise HTTPException(status_code=502, detail="知识库同步未完成，请查看服务端日志") from e
+    if result.get("error") and not (result.get("synced") or result.get("removed")):
+        # 全部目标失败: 显式报错(no-silent-degradation), 不吞成 synced=0 成功响应
+        detail = f"知识库同步失败：{result['error']}"
+        if result.get("error_hint"):
+            detail += f"。{result['error_hint']}"
+        raise HTTPException(status_code=502, detail=detail)
+    return result
 
 
 @router.delete("/models/{model_id}")
