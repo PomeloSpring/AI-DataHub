@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datamind.execution.stream_utils import (
+from backend.modules.mind.execution.stream_utils import (
     DEFAULT_TOOL_DISPLAY_LIMIT,
     ToolEventTracker,
     cap_arguments,

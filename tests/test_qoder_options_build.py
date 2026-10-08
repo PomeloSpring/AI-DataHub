@@ -5,10 +5,10 @@ from unittest.mock import patch
 
 import pytest
 
-from services.datamind.execution.adapters.qoder_sdk_adapter import QoderSDKAdapter
-from services.datamind.execution.models import ExecutionContext, ExecutionTask
-from services.datamind.execution.session_workspace import SessionWorkspace
-from services.datamind.execution.tool_policy import compile_policy
+from backend.modules.mind.execution.adapters.qoder_sdk_adapter import QoderSDKAdapter
+from backend.modules.mind.execution.models import ExecutionContext, ExecutionTask
+from backend.modules.mind.execution.session_workspace import SessionWorkspace
+from backend.modules.mind.execution.tool_policy import compile_policy
 
 
 def make_task(tmp_path, tools=None):
@@ -25,8 +25,8 @@ def build(tmp_path, monkeypatch, tools=None):
     monkeypatch.setenv("TEST_PLATFORM_SECRET", "must-not-inherit")
     task = make_task(tmp_path, tools)
     adapter = QoderSDKAdapter("test", {"cli_name": "qoder", "mode": "sdk"})
-    with patch("services.datamind.execution.prompt_composer._permission_summary", return_value="权限"), \
-         patch("services.datamind.execution.as_bots.load_skills", return_value=[]):
+    with patch("backend.modules.mind.execution.prompt_composer._permission_summary", return_value="权限"), \
+         patch("backend.modules.mind.execution.as_bots.load_skills", return_value=[]):
         return adapter._build_options(task), task
 
 
@@ -73,7 +73,7 @@ def test_standard_tools_are_session_proxies(tmp_path, monkeypatch):
 def test_permission_and_hook_reject_unknown_tool(tmp_path, monkeypatch):
     options, _ = build(tmp_path, monkeypatch)
     async def run():
-        with patch("services.datamind.execution.secure_sdk.check_tool", side_effect=PermissionError("拒绝")):
+        with patch("backend.modules.mind.execution.secure_sdk.check_tool", side_effect=PermissionError("拒绝")):
             denied = await options.can_use_tool("Bash", {"command": "pwd"}, SimpleNamespace())
             hook = options.hooks["PreToolUse"][0].hooks[0]
             response = await hook({"tool_name": "Workflow"}, "id", {})

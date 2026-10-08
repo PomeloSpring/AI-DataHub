@@ -5,9 +5,9 @@
 
 门禁命令已从 ``python -m tests.eval.runner`` 迁到::
 
-    venv/bin/python -m services.shared.eval.runner
+    venv/bin/python -m backend.eval.runner
 
-（评测核心放在 services/shared/eval，供生产侧正向导入；不放 tests/ 供反向依赖。）
+（评测核心放在 backend/eval，供生产侧正向导入；不放 tests/ 供反向依赖。）
 """
 import os
 import sys
@@ -16,8 +16,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest  # noqa: E402
 
-from services.shared.eval import store  # noqa: E402
-from services.shared.eval.runner import run_suite  # noqa: E402
+from backend.eval import store  # noqa: E402
+from backend.eval.runner import run_suite  # noqa: E402
 
 # 基线门槛: 语义层编译集应全部可被确定性编译层正确解析。
 # 未来若引入解析回退(如错误地把 fuzzy 当命中), 此门槛会拦住回归。
@@ -90,7 +90,7 @@ class TestLLMSuiteDeterministic:
 
     def test_score_never_affects_pass(self):
         """把 score 置为 0 也不得改变 passed（防止日后有人拿评分当判定）。"""
-        from services.shared.eval.contract import check
+        from backend.eval.contract import check
         observed = {"tool_calls": [{"name": "list_reports", "args": {}, "is_error": False,
                                     "is_write": False, "text": "报表标题: 季度分析"}],
                     "answer": "已列出报表", "user_confirmed": True}

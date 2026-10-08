@@ -20,7 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datacatalog.services.ontology_service import (  # noqa: E402
+from backend.modules.catalog.services.ontology_service import (  # noqa: E402
     check_doc_quality,
     find_m234_issues,
     to_cloud_md,
@@ -242,7 +242,7 @@ class TestRdfSemanticExpansion:
                         "uses_rules": ["rule_exclude_deleted"]}])
 
     def test_emits_semantic_nodes_and_edges(self):
-        from services.shared.common.rdf.ontology_to_rdf import ontology_json_to_turtle
+        from backend.common.rdf.ontology_to_rdf import ontology_json_to_turtle
         ttl = ontology_json_to_turtle(self._doc(), 0)
         # 节点类型声明
         assert "a adh:Action" in ttl and "a adh:Property" in ttl
@@ -259,7 +259,7 @@ class TestRdfSemanticExpansion:
 
     def test_rule_enforcement_filter_not_in_label(self):
         """规则 label 用 statement（人话），enforcement.filter 不进 rdfs:label。"""
-        from services.shared.common.rdf.ontology_to_rdf import ontology_json_to_turtle
+        from backend.common.rdf.ontology_to_rdf import ontology_json_to_turtle
         ttl = ontology_json_to_turtle(self._doc(), 0)
         for line in ttl.splitlines():
             if "rule_exclude_deleted" in line and "rdfs:label" in line:
@@ -267,6 +267,6 @@ class TestRdfSemanticExpansion:
 
     def test_legacy_doc_without_m234_emits_nothing_new(self):
         """旧模型（无 actions/rules/scenarios）→ 无语义展开节点，存量零影响。"""
-        from services.shared.common.rdf.ontology_to_rdf import ontology_json_to_turtle
+        from backend.common.rdf.ontology_to_rdf import ontology_json_to_turtle
         ttl = ontology_json_to_turtle({"objects": [{"key": "a", "display_name": "甲"}]}, 0)
         assert "adh:Action" not in ttl and "adh:Rule" not in ttl and "adh:Scenario" not in ttl

@@ -18,15 +18,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest  # noqa: E402
 
-from services.datamind.rag.graph_rag.graph_builder import (  # noqa: E402
+from backend.modules.mind.rag.graph_rag.graph_builder import (  # noqa: E402
     GraphBuilder, _ds_scope,
 )
-from services.datamind.rag.graph_rag.oxigraph_store import (  # noqa: E402
+from backend.modules.mind.rag.graph_rag.oxigraph_store import (  # noqa: E402
     SYSTEM_DATASOURCE_ID, OxigraphStore, is_system_scope,
 )
-from services.semhub.graph.graph_service import GraphService  # noqa: E402
-from services.semhub.api.graph import _effective_ds  # noqa: E402
-from services.shared.common.rdf.namespaces import ADH_NS  # noqa: E402
+from backend.modules.semhub.graph.graph_service import GraphService  # noqa: E402
+from backend.modules.semhub.api.graph import _effective_ds  # noqa: E402
+from backend.common.rdf.namespaces import ADH_NS  # noqa: E402
 
 
 # ── 假 DB 连接: 捕获 (sql, params) ──────────────────────────────────
@@ -69,7 +69,7 @@ def capture(monkeypatch):
         def get_metadata_conn():
             return _FakeConn(sink)
 
-    import services.shared.common.db.metadata_db as mdb
+    import backend.common.db.metadata_db as mdb
     monkeypatch.setattr(mdb, "get_metadata_conn", _ConnMod.get_metadata_conn)
     return sink
 
@@ -154,7 +154,7 @@ def test_get_graph_data_system_scope_queries_only_minus1():
     client = _CapturingClient()
     svc._store = store
     svc._client = client
-    from services.shared.models.graph import GraphType
+    from backend.models.graph import GraphType
     for gt in (GraphType.TABLE_RELATION, GraphType.BUSINESS_KNOWLEDGE, GraphType.ONTOLOGY_OVERVIEW):
         client.queries.clear()
         svc.get_graph_data(graph_type=gt, datasource_id=SYSTEM_DATASOURCE_ID)
@@ -181,7 +181,7 @@ def test_load_terms_system_scope_skipped(capture):
 
 def test_load_metrics_system_scope_filters_by_bound_object_keys(capture, monkeypatch):
     """字典行 datasource_id 恒为 0: 系统域只能按绑定对象∈系统模型对象筛, 不得按 datasource 列筛。"""
-    from services.datamind.rag.graph_rag import graph_builder as gb
+    from backend.modules.mind.rag.graph_rag import graph_builder as gb
     monkeypatch.setattr(gb, "_system_object_keys", lambda: ["as_bot_approval", "as_bot"])
     b = GraphBuilder(store=OxigraphStore.__new__(OxigraphStore))
     b._load_metrics(SYSTEM_DATASOURCE_ID)
@@ -194,7 +194,7 @@ def test_load_metrics_system_scope_filters_by_bound_object_keys(capture, monkeyp
 
 def test_load_metrics_system_scope_without_keys_loads_nothing(capture, monkeypatch):
     """无系统模型对象时宁缺勿错: 不查库、不收任何指标(未绑定指标如 GMV 永远不进系统图)。"""
-    from services.datamind.rag.graph_rag import graph_builder as gb
+    from backend.modules.mind.rag.graph_rag import graph_builder as gb
     monkeypatch.setattr(gb, "_system_object_keys", lambda: [])
     b = GraphBuilder(store=OxigraphStore.__new__(OxigraphStore))
     assert b._load_metrics(SYSTEM_DATASOURCE_ID) == []
@@ -231,7 +231,7 @@ def test_build_system_scope_skips_datasource_nodes(capture, monkeypatch):
 
 def test_system_object_keys_parses_json_extract(monkeypatch):
     """对象 key 来自系统域 active 模型的 json_content, 业务模型不参与。"""
-    from services.datamind.rag.graph_rag import graph_builder as gb
+    from backend.modules.mind.rag.graph_rag import graph_builder as gb
     sink: list = []
 
     class _Conn:
@@ -240,7 +240,7 @@ def test_system_object_keys_parses_json_extract(monkeypatch):
         def close(self):
             pass
 
-    import services.shared.common.db.metadata_db as mdb
+    import backend.common.db.metadata_db as mdb
     monkeypatch.setattr(mdb, "get_metadata_conn", lambda: _Conn())
     keys = gb._system_object_keys()
     assert keys == ["as_bot", "as_bot_approval"]   # 去重+排序(sorted)

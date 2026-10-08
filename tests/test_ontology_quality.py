@@ -14,7 +14,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datacatalog.services.ontology_service import (
+from backend.modules.catalog.services.ontology_service import (
     _cert_label,
     check_doc_quality,
     to_cloud_md,

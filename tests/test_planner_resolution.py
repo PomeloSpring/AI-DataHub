@@ -8,9 +8,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from services.shared.semantics import planner
-from services.shared.semantics.planner import _ColumnResolver, plan, _norm_name
-from services.shared.semantics.models import (
+from backend.semantics import planner
+from backend.semantics.planner import _ColumnResolver, plan, _norm_name
+from backend.semantics.models import (
     ResolvedBinding, SemanticQuery, SemanticFilter,
 )
 

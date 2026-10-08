@@ -9,10 +9,10 @@ import uuid
 import pytest
 from fastapi import HTTPException
 
-from services.datamind.execution import tool_policy as policies
-from services.datamind.execution import session_workspace as sessions
-from services.datamind.execution.manager import _merge_allowed_tools
-from services.datamind.execution.models import ExecutionContext, ExecutionTask
+from backend.modules.mind.execution import tool_policy as policies
+from backend.modules.mind.execution import session_workspace as sessions
+from backend.modules.mind.execution.manager import _merge_allowed_tools
+from backend.modules.mind.execution.models import ExecutionContext, ExecutionTask
 
 
 @pytest.mark.parametrize("raw", [None, {}, [], "{}", "[]", "null", {"groups": ["semantic"], "mcp": {}},
@@ -81,7 +81,7 @@ def test_parallel_storage_node_publication_is_atomic(tmp_path):
                                       ("grep", {"path": ".", "pattern": "SECRET"}),
                                       ("write", {"path": "../outside", "content": "bad"})])
 def test_worker_rejects_escape_and_symlink(tmp_path, monkeypatch, name, args):
-    from services.datamind.execution import sandbox_worker
+    from backend.modules.mind.execution import sandbox_worker
     root = tmp_path / "work"
     root.mkdir()
     outside = tmp_path / "outside"
@@ -94,7 +94,7 @@ def test_worker_rejects_escape_and_symlink(tmp_path, monkeypatch, name, args):
 
 
 def test_sandbox_command_mounts_only_session_and_has_no_network(tmp_path):
-    from services.aiplatform.services.sandbox_executor import SessionToolSandbox
+    from backend.modules.platform.services.sandbox_executor import SessionToolSandbox
     p = policies.compile_policy({"as_bot_key": "test", "tools": {"standard": ["read", "bash"]}})
     runtime = sessions.SessionWorkspace("a" * 32, "b" * 32, tmp_path, p, None)
     _, command = SessionToolSandbox.command(runtime, "bash")
@@ -122,8 +122,8 @@ def test_missing_runtime_cannot_execute():
 
 
 def test_tool_handler_rechecks_permissions_before_side_effect(monkeypatch):
-    from services.datamind.execution.sdk_tools import compat
-    from services.datamind.execution.sdk_tools.context import set_execution_context, ExecutionContextVar
+    from backend.modules.mind.execution.sdk_tools import compat
+    from backend.modules.mind.execution.sdk_tools.context import set_execution_context, ExecutionContextVar
     sdk = SimpleNamespace(tool=lambda *a, **k: lambda handler: handler)
     monkeypatch.setattr(compat, "load_sdk", lambda *a: sdk)
     monkeypatch.setattr(policies, "check_tool", Mock(side_effect=PermissionError("未授权")))
@@ -142,7 +142,7 @@ def test_tool_handler_rechecks_permissions_before_side_effect(monkeypatch):
 
 
 def test_external_tools_are_discovered_and_registered_exactly(monkeypatch):
-    from services.datamind.execution.sdk_tools import external_tools
+    from backend.modules.mind.execution.sdk_tools import external_tools
     from contextlib import asynccontextmanager
     p = policies.compile_policy({"as_bot_key": "test", "mcp_server_ids": [9],
                                  "tools": {"external": {"9": ["report"]}}})
@@ -179,15 +179,15 @@ def test_failed_cleanup_cannot_release_claim(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("url", ["http://127.0.0.1/", "http://169.254.169.254/", "http://[::1]/", "file:///etc/passwd"])
 def test_webfetch_denies_private_and_file_urls(url):
-    from services.datamind.execution.sdk_tools.workspace_tools import fetch_public_url
+    from backend.modules.mind.execution.sdk_tools.workspace_tools import fetch_public_url
     with pytest.raises(PermissionError):
         asyncio.run(fetch_public_url(url))
 
 
 @pytest.mark.skipif(os.getenv("ADH_TEST_AGENT_MYSQL") != "1", reason="需显式启用隔离测试记录的真实 MySQL 回归")
 def test_mysql_claim_concurrency_ownership_and_resume(tmp_path, monkeypatch):
-    from services.shared.common.db import execute_insert, execute_write, execute_query
-    from services.shared.common import auth
+    from backend.common.db import execute_insert, execute_write, execute_query
+    from backend.common import auth
     uid = 2**60 + uuid.uuid4().int % 10**10
     cid = execute_insert("INSERT INTO adh_conversations (user_id,title,workspace_id,as_bot_key,messages) "
                          "VALUES (%s,%s,0,%s,'[]')", (uid, "__agent_security_test__", "security-test"))
@@ -231,7 +231,7 @@ def test_mysql_claim_concurrency_ownership_and_resume(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(os.getenv("ADH_TEST_AGENT_DOCKER") != "1", reason="需显式启用真实 Docker 沙箱实测")
 def test_real_docker_session_isolation_and_readonly(tmp_path):
-    from services.aiplatform.services.sandbox_executor import SessionToolSandbox
+    from backend.modules.platform.services.sandbox_executor import SessionToolSandbox
     writable = policies.compile_policy({"as_bot_key": "test", "tools": {"standard": ["read", "write", "bash"]}})
     readonly = policies.compile_policy({"as_bot_key": "test", "tools": {"standard": ["read", "bash"]}})
     a = sessions.SessionWorkspace("a" * 32, uuid.uuid4().hex,
@@ -275,7 +275,7 @@ def test_unimplemented_tools_are_reported_but_never_registered():
 
 
 def test_tag_datasource_filter_failclosed_branches():
-    from services.datacatalog.services import tags_service as ts
+    from backend.modules.catalog.services import tags_service as ts
     rows = [{"entity_type": "table", "entity_id": "t_a"}, {"entity_type": "table", "entity_id": "t_b"}]
     assert ts._filter_by_datasource(rows, None) is rows   # 不传=旧 REST 行为, 不过滤
     assert ts._filter_by_datasource(rows, []) == []        # fail-closed: 空授权不返回
@@ -284,7 +284,7 @@ def test_tag_datasource_filter_failclosed_branches():
 
 def test_tag_datasource_filter_scopes_by_datasource(monkeypatch):
     # A 源 AS-BOT 查不到 B 源 tagged 实体: 仅 t_a 属于授权数据源。
-    from services.datacatalog.services import tags_service as ts
+    from backend.modules.catalog.services import tags_service as ts
 
     class _Cur:
         def __enter__(self): return self
@@ -310,7 +310,7 @@ def test_scoped_get_metrics_business_includes_global_dicts_gated_by_model(monkey
     # 同时模型查询仍严格限定本数据源(不纳入系统模型)。
     import json
     from types import SimpleNamespace
-    from services.datamind.execution.sdk_tools import scoped_metadata as sm
+    from backend.modules.mind.execution.sdk_tools import scoped_metadata as sm
 
     sqls = []
     def fake_exec(sql, params=None, fetchone=False):
@@ -338,7 +338,7 @@ def test_scoped_get_metrics_business_includes_global_dicts_gated_by_model(monkey
 
 
 def test_broken_as_bot_is_visible_without_hiding_valid_candidates(monkeypatch):
-    from services.datamind.execution import as_bots
+    from backend.modules.mind.execution import as_bots
     rows = [{"id": 1, "as_bot_key": "bad", "tools": "broken"},
             {"id": 2, "as_bot_key": "good", "tools": {}}]
     monkeypatch.setattr(as_bots, "_query", lambda *a: rows)
@@ -351,7 +351,7 @@ def test_broken_as_bot_is_visible_without_hiding_valid_candidates(monkeypatch):
 
 
 def test_screen_guard_rejects_other_workspace_and_nonowner_write(monkeypatch):
-    from services.datamind.execution import resource_guard
+    from backend.modules.mind.execution import resource_guard
     policy = policies.compile_policy({"as_bot_key": "test"})
     ctx = ExecutionContext(user_id=1, user_role="admin", workspace_id=3, datasource_id=7,
                            extra={"secure_runtime": SimpleNamespace(policy=policy)})
@@ -367,7 +367,7 @@ def test_screen_guard_rejects_other_workspace_and_nonowner_write(monkeypatch):
 
 def test_live_upper_limits_and_binding_revocation(monkeypatch):
     """执行层全局生效(不按工作空间绑定): 工具上限取执行层配置, 与绑定无关; 停用仍立即拒绝。"""
-    from services.datamind.execution import service
+    from backend.modules.mind.execution import service
     row = {"id": 4, "status": "active", "config": {"mode": "sdk", "cli_name": "qoder", "allowed_tools": ["read"]}}
     monkeypatch.setattr(service, "get_layer", lambda _: row)
     monkeypatch.setattr(service, "get_workspace_layers", lambda _: [])
@@ -382,7 +382,7 @@ def test_live_upper_limits_and_binding_revocation(monkeypatch):
 
 def test_live_ceiling_allows_inherit_when_workspace_has_no_external_bindings(monkeypatch):
     """默认工作空间未绑定任何外部层时, Agent 模式应允许继承系统默认外部层, 不误报撤回。"""
-    from services.datamind.execution import service
+    from backend.modules.mind.execution import service
     row = {"id": 6, "status": "active", "config": {"mode": "sdk", "cli_name": "qoder", "allowed_tools": ["read"]}}
     monkeypatch.setattr(service, "get_layer", lambda _: row)
     # 工作空间未绑定任何层
@@ -395,7 +395,7 @@ def test_live_ceiling_allows_inherit_when_workspace_has_no_external_bindings(mon
 
 def test_live_ceiling_still_revokes_when_other_external_layer_bound(monkeypatch):
     """执行层不按工作空间绑定: 无关绑定不影响本层生效(空间绑定概念已退役)。"""
-    from services.datamind.execution import service
+    from backend.modules.mind.execution import service
     row = {"id": 6, "status": "active", "config": {"mode": "sdk", "cli_name": "qoder", "allowed_tools": ["read"]}}
     monkeypatch.setattr(service, "get_layer", lambda _: row)
     monkeypatch.setattr(service, "get_workspace_layers",
@@ -406,7 +406,7 @@ def test_live_ceiling_still_revokes_when_other_external_layer_bound(monkeypatch)
 
 @pytest.mark.parametrize("transport", ["http", "sse", "streamable_http"])
 def test_remote_mcp_without_trust_contract_cannot_connect(transport):
-    from services.datamind.execution.sdk_tools.external_tools import connection
+    from backend.modules.mind.execution.sdk_tools.external_tools import connection
     async def run():
         with pytest.raises(PermissionError, match="可信身份"):
             async with connection({"transport": transport, "url": "http://127.0.0.1"}, None, None):
@@ -416,7 +416,7 @@ def test_remote_mcp_without_trust_contract_cannot_connect(transport):
 
 def test_webfetch_reads_all_chunks_and_reports_truncation(monkeypatch):
     import aiohttp
-    from services.datamind.execution.sdk_tools.workspace_tools import fetch_public_url
+    from backend.modules.mind.execution.sdk_tools.workspace_tools import fetch_public_url
     chunks = [b"first", b"second", b""]
     class Response:
         status = 200
@@ -440,8 +440,8 @@ def test_webfetch_reads_all_chunks_and_reports_truncation(monkeypatch):
 
 
 def test_bash_nonzero_is_mcp_error(monkeypatch):
-    from services.datamind.execution.sdk_tools import workspace_tools
-    from services.aiplatform.services.sandbox_executor import SessionToolSandbox
+    from backend.modules.mind.execution.sdk_tools import workspace_tools
+    from backend.modules.platform.services.sandbox_executor import SessionToolSandbox
     monkeypatch.setattr(workspace_tools, "make_tool", lambda b, n, d, s, h, **kw: h)
     monkeypatch.setattr(workspace_tools, "make_server", lambda b, n, tools: tools)
     async def run(*args):
@@ -462,7 +462,7 @@ def test_live_sdk_process_cannot_be_released(tmp_path):
 
 @pytest.mark.parametrize("system,binding_source", [(False, 2), (False, 0), (True, 2)])
 def test_binding_cannot_escape_domain(monkeypatch, system, binding_source):
-    from services.datamind.execution import resource_guard
+    from backend.modules.mind.execution import resource_guard
     # 域判定口径 = 工具授权（system 组），不再看 as_bot_key 哨兵
     tools = {"mcp": {"system": ["system_usage"]}} if system else {}
     policy = policies.compile_policy({"as_bot_key": "test", "tools": tools})
@@ -475,8 +475,8 @@ def test_binding_cannot_escape_domain(monkeypatch, system, binding_source):
 
 @pytest.fixture
 def datasource_scope(monkeypatch):
-    from services.datamind.execution import resource_guard as guard
-    from services.authservice.services.role_service import role_service
+    from backend.modules.mind.execution import resource_guard as guard
+    from backend.modules.auth.services.role_service import role_service
     # 纯角色裁决: 数据源可用集 = 用户角色授权(state["user"]); 工作空间不再参与裁决。
     state = {"user": [7, 8], "queries": [], "kbs": []}
 
@@ -666,8 +666,8 @@ def test_empty_knowledge_binding_never_inherits_all_kbs(datasource_scope):
 
 
 def test_resource_scope_failure_keeps_actionable_safe_message(datasource_scope, monkeypatch):
-    from services.datamind.execution.sdk_tools import compat
-    from services.datamind.execution.sdk_tools.context import set_execution_context, ExecutionContextVar
+    from backend.modules.mind.execution.sdk_tools import compat
+    from backend.modules.mind.execution.sdk_tools.context import set_execution_context, ExecutionContextVar
     guard, state, context = datasource_scope
     ctx, _ = context(0)
     monkeypatch.setattr(compat, "load_sdk", lambda *a: SimpleNamespace(tool=lambda *a, **k: lambda h: h))
@@ -690,11 +690,11 @@ def test_resource_scope_failure_keeps_actionable_safe_message(datasource_scope, 
 def mysql_cleanup_session(tmp_path, monkeypatch):
     if os.getenv("ADH_TEST_AGENT_MYSQL") != "1":
         pytest.skip("需显式启用隔离测试记录的真实 MySQL 回归")
-    from services.shared.common.db import execute_insert, execute_write, execute_query
-    from services.shared.common import auth
+    from backend.common.db import execute_insert, execute_write, execute_query
+    from backend.common import auth
     uid = 2**60 + uuid.uuid4().int % 10**10
     key = uuid.uuid4().hex
-    monkeypatch.setattr("services.shared.common.config.ADH_WORKSPACES_DIR", str(tmp_path))
+    monkeypatch.setattr("backend.common.config.ADH_WORKSPACES_DIR", str(tmp_path))
     node = sessions.storage_node(tmp_path)
     root = sessions.session_paths(tmp_path, key, 0, create=True)
     (root / "workspace" / "example.txt").write_text("仅清理本测试目录")
@@ -714,7 +714,7 @@ def mysql_cleanup_session(tmp_path, monkeypatch):
 
 
 def test_mysql_parallel_delete_cleans_once(mysql_cleanup_session, monkeypatch):
-    from services.datamind.api.chat import delete_conversation
+    from backend.modules.mind.api.chat import delete_conversation
     f = mysql_cleanup_session
     removed = []
     remove = sessions._remove_session_directory
@@ -733,7 +733,7 @@ def test_mysql_parallel_delete_cleans_once(mysql_cleanup_session, monkeypatch):
 
 
 def test_mysql_failed_cleanup_blocks_resume_but_allows_delete_retry(mysql_cleanup_session, monkeypatch):
-    from services.datamind.api.chat import delete_conversation
+    from backend.modules.mind.api.chat import delete_conversation
     f = mysql_cleanup_session
     remove = sessions._remove_session_directory
     monkeypatch.setattr(sessions, "_remove_session_directory", Mock(side_effect=OSError("清理故障")))
@@ -755,7 +755,7 @@ def test_mysql_failed_cleanup_blocks_resume_but_allows_delete_retry(mysql_cleanu
 
 def test_mysql_delete_and_claim_cannot_race(mysql_cleanup_session, monkeypatch):
     from threading import Event
-    from services.datamind.api.chat import delete_conversation
+    from backend.modules.mind.api.chat import delete_conversation
     f = mysql_cleanup_session
     entered, release = Event(), Event()
     remove = sessions._remove_session_directory
@@ -784,8 +784,8 @@ def test_mysql_delete_and_claim_cannot_race(mysql_cleanup_session, monkeypatch):
 
 def test_mysql_clear_messages_resets_context_and_keeps_conversation_usable(mysql_cleanup_session):
     """清空 = 清理历史并重置模型上下文；会话保持 idle 可继续聊，不再被 closed 409 阻断。"""
-    from services.shared.common.db import execute_write
-    from services.datamind.api.chat import update_conversation, UpdateConversationRequest
+    from backend.common.db import execute_write
+    from backend.modules.mind.api.chat import update_conversation, UpdateConversationRequest
     f = mysql_cleanup_session
     # 存量旧行处于被误判的 closed，且残留可 resume 的 sdk_session_id
     execute_write("UPDATE adh_agent_sessions SET status='closed', sdk_session_id='old-sdk' WHERE session_key=%s", (f['key'],))
@@ -799,8 +799,8 @@ def test_mysql_clear_messages_resets_context_and_keeps_conversation_usable(mysql
 
 def test_mysql_clear_messages_blocked_while_running(mysql_cleanup_session):
     """执行中不得清空：拒绝且不把 running 会话重置成 idle。"""
-    from services.shared.common.db import execute_write
-    from services.datamind.api.chat import update_conversation, UpdateConversationRequest
+    from backend.common.db import execute_write
+    from backend.modules.mind.api.chat import update_conversation, UpdateConversationRequest
     f = mysql_cleanup_session
     execute_write("UPDATE adh_agent_sessions SET status='running', execution_token=%s WHERE session_key=%s",
                   (uuid.uuid4().hex, f['key']))
@@ -813,7 +813,7 @@ def test_mysql_clear_messages_blocked_while_running(mysql_cleanup_session):
 
 def test_metadata_projection_excludes_physical_structure(monkeypatch):
     import json
-    from services.datamind.execution.sdk_tools import scoped_metadata
+    from backend.modules.mind.execution.sdk_tools import scoped_metadata
     calls = []
     def query(sql, params):
         calls.append((sql, params))
@@ -830,7 +830,7 @@ def test_metadata_projection_excludes_physical_structure(monkeypatch):
 
 
 def test_list_datasources_projection_returns_authorized_names_no_id(monkeypatch):
-    from services.datamind.execution.sdk_tools import scoped_metadata
+    from backend.modules.mind.execution.sdk_tools import scoped_metadata
     seen = {}
     def query(sql, params=(), **kw):
         seen["sql"], seen["params"] = sql, params
@@ -844,7 +844,7 @@ def test_list_datasources_projection_returns_authorized_names_no_id(monkeypatch)
 
 
 def test_catalog_strip_physical_ids_keeps_modeling_columns():
-    from services.datamind.execution.sdk_tools.catalog_tools import _strip_physical_ids
+    from backend.modules.mind.execution.sdk_tools.catalog_tools import _strip_physical_ids
     data = {"tables": [{"id": 1, "datasource_id": 7, "table_name": "t_case", "table_comment": "案件"}],
             "columns": [{"id": 2, "datasource_id": 7, "column_name": "amount", "data_type": "decimal"}]}
     out = _strip_physical_ids(data)
@@ -854,7 +854,7 @@ def test_catalog_strip_physical_ids_keeps_modeling_columns():
 
 
 def test_as_bot_can_write_sql_detection():
-    from services.datamind.execution.sdk_tools.compat import _as_bot_can_write_sql
+    from backend.modules.mind.execution.sdk_tools.compat import _as_bot_can_write_sql
     sql = SimpleNamespace(policy=SimpleNamespace(allowed=frozenset({"mcp__datahub_query__execute_sql"})))
     sem = SimpleNamespace(policy=SimpleNamespace(allowed=frozenset({"mcp__datahub_semantic__get_metrics"})))
     assert _as_bot_can_write_sql(sql) is True
@@ -865,8 +865,8 @@ def test_as_bot_can_write_sql_detection():
 def test_sql_capable_as_bot_metadata_tools_bypass_projection(monkeypatch):
     import asyncio
     import json
-    from services.datamind.execution.sdk_tools import compat, scoped_metadata
-    from services.datamind.execution.sdk_tools.context import set_execution_context, ExecutionContextVar, ExecutionContext
+    from backend.modules.mind.execution.sdk_tools import compat, scoped_metadata
+    from backend.modules.mind.execution.sdk_tools.context import set_execution_context, ExecutionContextVar, ExecutionContext
     called = {"handler": 0, "projection": 0}
 
     async def physical_handler(args):
@@ -879,8 +879,8 @@ def test_sql_capable_as_bot_metadata_tools_bypass_projection(monkeypatch):
 
     monkeypatch.setattr(scoped_metadata, "execute", fake_execute)
     monkeypatch.setattr(compat, "load_sdk", lambda *a: SimpleNamespace(tool=lambda *x, **k: (lambda h: h)))
-    monkeypatch.setattr("services.datamind.execution.tool_policy.check_tool", lambda *a: None)
-    monkeypatch.setattr("services.datamind.execution.resource_guard.validate_tool_resources", lambda *a: a[2])
+    monkeypatch.setattr("backend.modules.mind.execution.tool_policy.check_tool", lambda *a: None)
+    monkeypatch.setattr("backend.modules.mind.execution.resource_guard.validate_tool_resources", lambda *a: a[2])
 
     def run(allowed):
         runtime = SimpleNamespace(policy=SimpleNamespace(allowed=allowed), tool_tasks=set())
@@ -903,7 +903,7 @@ def test_sql_capable_as_bot_metadata_tools_bypass_projection(monkeypatch):
 @pytest.mark.skipif(os.getenv("ADH_TEST_AGENT_DOCKER") != "1", reason="需显式启用真实 Docker 沙箱实测")
 def test_docker_cancellation_waits_for_container_removal(tmp_path):
     import subprocess
-    from services.aiplatform.services.sandbox_executor import SessionToolSandbox
+    from backend.modules.platform.services.sandbox_executor import SessionToolSandbox
     policy = policies.compile_policy({"as_bot_key": "test", "tools": {"standard": ["read", "bash"]}})
     runtime = sessions.SessionWorkspace("c" * 32, uuid.uuid4().hex,
         sessions.session_paths(tmp_path, "c" * 32, 1, create=True), policy, None)

@@ -7,10 +7,10 @@ from uuid import uuid4
 import pymysql
 import pytest
 
-from services.shared.common import db
-from services.dataflow.services import scheduled_task_service as scheduled
-from services.dataviz.services import report_service as reports
-from services.datamind.execution import as_bots
+from backend.common import db
+from backend.modules.flow.services import scheduled_task_service as scheduled
+from backend.modules.viz.services import report_service as reports
+from backend.modules.mind.execution import as_bots
 
 pytestmark = pytest.mark.skipif(os.getenv("ADH_TEST_MYSQL_ENABLE") != "1", reason="仅限显式隔离 MySQL")
 
@@ -57,7 +57,7 @@ def isolated(monkeypatch):
             _script(cur, root / "docker/mysql/trusted_execution_migration.sql")
         monkeypatch.setattr(db, "get_metadata_conn", factory)
         monkeypatch.setattr(scheduled, "get_metadata_conn", factory)
-        from services.shared.common import auth as _auth
+        from backend.common import auth as _auth
         monkeypatch.setattr(_auth, "get_metadata_conn", factory)
         yield factory
     finally:
@@ -144,7 +144,7 @@ def test_report_finish_rejects_invalid_status(isolated):
 
 
 def test_owner_claim_is_conditional_and_keeps_history(isolated, monkeypatch):
-    from services.shared.common import auth
+    from backend.common import auth
     service = scheduled.scheduled_task_service
     tid = _task()
     db.execute_write("UPDATE adh_scheduled_tasks SET owner_id=0 WHERE id=%s", (tid,))
@@ -186,7 +186,7 @@ def _seed_owner(factory):
 
 def test_execute_core_full_path_and_idempotent(isolated, monkeypatch):
     """真实 MySQL 上跑完整 _execute_core（仅 mock 叶子取数）：终态、run_count、幂等。"""
-    from services.dataflow.tasks import executor
+    from backend.modules.flow.tasks import executor
     _seed_owner(isolated)
     tid = _task()
     # 叶子取数 mock：不连真实数据源，返回已治理结果形状
@@ -208,7 +208,7 @@ def test_execute_core_full_path_and_idempotent(isolated, monkeypatch):
 
 
 def test_execute_core_rejects_unowned_task(isolated, monkeypatch):
-    from services.dataflow.tasks import executor
+    from backend.modules.flow.tasks import executor
     _seed_owner(isolated)
     tid = _task()
     db.execute_write("UPDATE adh_scheduled_tasks SET owner_id=0 WHERE id=%s", (tid,))

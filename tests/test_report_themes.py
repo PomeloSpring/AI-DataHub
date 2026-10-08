@@ -1,6 +1,6 @@
 """report_themes 注册表与主题注入回归。"""
-from services.datamind.execution import report_themes as rt
-from services.datamind.execution.prompt_composer import compose_system_prompt
+from backend.modules.mind.execution import report_themes as rt
+from backend.modules.mind.execution.prompt_composer import compose_system_prompt
 
 ALL = {"dark", "light", "tech", "finance", "bento", "glass", "ainative", "medical", "datafoundry"}
 

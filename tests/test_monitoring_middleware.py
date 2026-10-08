@@ -3,7 +3,7 @@ import importlib
 
 import pytest
 
-mon = importlib.import_module("services.authservice.api.monitoring")
+mon = importlib.import_module("backend.modules.auth.api.monitoring")
 
 
 def _item(key, status, required=False, configured=True):
@@ -42,7 +42,7 @@ def test_endpoint_registered_and_admin_gated():
 
 
 def test_unconfigured_object_storage_is_skipped(monkeypatch):
-    from services.shared.common import config as cfg
+    from backend.common import config as cfg
     monkeypatch.setattr(cfg, "OBJECT_STORAGE_ENDPOINT", "", raising=False)
     r = mon._check_object_storage()
     assert r["status"] == "skipped" and r["configured"] is False
@@ -55,7 +55,7 @@ def test_doris_not_in_middleware_registry():
 
 
 def test_oxigraph_probe_never_raises(monkeypatch):
-    from services.shared.common import config as cfg
+    from backend.common import config as cfg
     monkeypatch.setattr(cfg, "OXIGRAPH_URL", "http://127.0.0.1:59999", raising=False)
     r = mon._check_oxigraph()
     assert r["status"] in ("healthy", "down")  # 不可达 → down，不抛异常

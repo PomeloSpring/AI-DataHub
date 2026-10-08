@@ -21,8 +21,8 @@ import importlib
 import pytest
 from fastapi import HTTPException
 
-roles_api = importlib.import_module("services.authservice.api.roles")
-api_permission = importlib.import_module("services.shared.common.api_permission")
+roles_api = importlib.import_module("backend.modules.auth.api.roles")
+api_permission = importlib.import_module("backend.common.api_permission")
 
 ADMIN = {"role": "admin", "user_id": 1}
 VIEWER = {"role": "viewer", "user_id": 9}
@@ -219,7 +219,7 @@ def test_invalidate_perm_cache_exists_and_clears_on_put(store, monkeypatch):
     # PUT 后缓存被清空, 下一次判定重新从注册表取规则(旧规则不再放行)
     assert api_permission._cache == {}
 
-    import services.shared.common.db as db_mod
+    import backend.common.db as db_mod
 
     def fake_db_query(sql, params=None, fetchone=False):
         s = " ".join(sql.split())

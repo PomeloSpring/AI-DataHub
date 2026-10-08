@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datamind.rag.strategies import graphrag as gr  # noqa: E402
+from backend.modules.mind.rag.strategies import graphrag as gr  # noqa: E402
 
 
 def _patch_hydration(monkeypatch):

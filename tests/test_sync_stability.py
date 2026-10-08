@@ -5,8 +5,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from services.datamind.rag import qmind_retriever as qr
-from services.datacatalog.services import ontology_kb_sync as ks
+from backend.modules.mind.rag import qmind_retriever as qr
+from backend.modules.catalog.services import ontology_kb_sync as ks
 
 
 @pytest.fixture(autouse=True)
@@ -82,7 +82,7 @@ class TestReconcile:
              "synced_version": None, "status": None},                          # 从未同步 → 推
         ]
         fake, _ = self._fake_exec(rows)
-        monkeypatch.setattr("services.shared.common.db.execute_query", fake)
+        monkeypatch.setattr("backend.common.db.execute_query", fake)
         monkeypatch.setattr(ks, "sync_targets", lambda: [{"id": 9, "name": "kb", "notebook_id": "nb"}])
         pushed = []
         monkeypatch.setattr(ks, "sync_model_to_qmind",
@@ -97,7 +97,7 @@ class TestReconcile:
         rows = [{"id": 7, "updated_at": _DT("2026-09-22T09:00:00"),
                  "synced_version": None, "status": None}]
         fake, _ = self._fake_exec(rows)
-        monkeypatch.setattr("services.shared.common.db.execute_query", fake)
+        monkeypatch.setattr("backend.common.db.execute_query", fake)
         monkeypatch.setattr(ks, "sync_targets", lambda: [])   # 系统全局无库
         pushed = []
         monkeypatch.setattr(ks, "sync_model_to_qmind",

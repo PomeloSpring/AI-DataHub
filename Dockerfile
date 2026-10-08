@@ -9,11 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-COPY services/shared/common/requirements.txt ./shared-requirements.txt
+COPY backend/common/requirements.txt ./shared-requirements.txt
 RUN pip install --no-cache-dir -r shared-requirements.txt
 
 # Copy application code
-COPY services/ ./services/
+COPY backend/ ./backend/
 COPY sync/ ./sync/
 
 # Create directory for embedding model cache
@@ -21,4 +21,4 @@ RUN mkdir -p /root/.cache/huggingface
 
 EXPOSE 8001-8011
 
-CMD ["python", "-m", "uvicorn", "services.datamind.main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["python", "-m", "uvicorn", "backend.processes.mind.main:app", "--host", "0.0.0.0", "--port", "8001"]

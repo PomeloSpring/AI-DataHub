@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from services.datacatalog.services import ontology_service
-from services.shared.eval.contract import check_retrieval
+from backend.modules.catalog.services import ontology_service
+from backend.eval.contract import check_retrieval
 
 SRC_INDEX = {
     "源本体A": {"id": 1, "datasource_name": "ds-a", "object_keys": {"order", "site"}},
@@ -189,12 +189,12 @@ _BIZ_DOC = {
 
 
 def _patch_biz_rows(monkeypatch, rows):
-    import services.shared.common.db.metadata_db as mdb
+    import backend.common.db.metadata_db as mdb
     monkeypatch.setattr(mdb, "get_metadata_conn", lambda: _FakeConn(rows))
 
 
 def test_resolve_routes_with_scenario(monkeypatch):
-    from services.datamind.rag.business_route import resolve_business_routes
+    from backend.modules.mind.rag.business_route import resolve_business_routes
     import json as _json
     _patch_biz_rows(monkeypatch, [
         {"name": "业务本体", "json_content": _json.dumps(_BIZ_DOC, ensure_ascii=False)}])
@@ -208,7 +208,7 @@ def test_resolve_routes_with_scenario(monkeypatch):
 
 
 def test_resolve_routes_empty_input(monkeypatch):
-    from services.datamind.rag.business_route import resolve_business_routes
+    from backend.modules.mind.rag.business_route import resolve_business_routes
     _patch_biz_rows(monkeypatch, [])
     assert resolve_business_routes([]) == []
     assert resolve_business_routes(["ghost"]) == []
@@ -216,13 +216,13 @@ def test_resolve_routes_empty_input(monkeypatch):
 
 def test_resolve_routes_db_failure_raises(monkeypatch):
     """canonical 读取失败必须抛异常（调用方标注 failed），不得返回 [] 冒充无路由"""
-    import services.shared.common.db.metadata_db as mdb
+    import backend.common.db.metadata_db as mdb
 
     def _boom():
         raise RuntimeError("db down")
 
     monkeypatch.setattr(mdb, "get_metadata_conn", _boom)
-    from services.datamind.rag.business_route import resolve_business_routes
+    from backend.modules.mind.rag.business_route import resolve_business_routes
     with pytest.raises(RuntimeError):
         resolve_business_routes(["order"])
 
@@ -230,8 +230,8 @@ def test_resolve_routes_db_failure_raises(monkeypatch):
 # ── 3. _attach_routes：失败可区分（no-silent-degradation）──────────────
 
 def test_attach_routes_marks_failed(monkeypatch):
-    import services.datamind.rag.business_route as br
-    from services.datamind.execution.sdk_tools.semantic_tools import _attach_routes
+    import backend.modules.mind.rag.business_route as br
+    from backend.modules.mind.execution.sdk_tools.semantic_tools import _attach_routes
 
     def _boom(keys):
         raise RuntimeError("canonical down")
@@ -243,8 +243,8 @@ def test_attach_routes_marks_failed(monkeypatch):
 
 
 def test_attach_routes_ok_and_no_route(monkeypatch):
-    import services.datamind.rag.business_route as br
-    from services.datamind.execution.sdk_tools.semantic_tools import _attach_routes
+    import backend.modules.mind.rag.business_route as br
+    from backend.modules.mind.execution.sdk_tools.semantic_tools import _attach_routes
 
     monkeypatch.setattr(br, "resolve_business_routes", lambda keys: [{"object_key": "order"}])
     out = _attach_routes({"hit_object_keys": ["order"]})

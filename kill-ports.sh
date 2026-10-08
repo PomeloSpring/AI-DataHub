@@ -22,10 +22,10 @@ declare -A PORT_SERVICE=(
     [3000]="frontend-dev"
     [8082]="dataengine"
 )
-if [ -f "$SCRIPT_DIR/services/shared/scripts/services.conf" ]; then
+if [ -f "$SCRIPT_DIR/backend/scripts/services.conf" ]; then
     while IFS=: read -r _name _module _port; do
         PORT_SERVICE[$_port]="$_name"
-    done < <(grep -vE '^\s*(#|$)' "$SCRIPT_DIR/services/shared/scripts/services.conf")
+    done < <(grep -vE '^\s*(#|$)' "$SCRIPT_DIR/backend/scripts/services.conf")
 else
     log_error "缺少 services.conf，仅处理特殊端口"
 fi
@@ -65,7 +65,7 @@ pids_on_port() {
 # API 服务全停后 celery 幸存继续刷日志(造成"celery 日志在跑但 API 全 pending"的误关联),
 # 且下次启动叠加成双 worker/双 beat 致定时任务双发.
 celery_pids() {
-    ps -eo pid,cmd | awk -v app="services.dataflow.tasks.celery_app" \
+    ps -eo pid,cmd | awk -v app="backend.modules.flow.tasks.celery_app" \
         '$2 != "awk" && index($0, "-m celery -A " app) > 0 {print $1}' | sort -u
 }
 

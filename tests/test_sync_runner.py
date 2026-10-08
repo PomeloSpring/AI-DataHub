@@ -7,8 +7,8 @@ sql_task 节点 UDF 版本锁定、源码级治理通道守卫（禁止裸直连
 import pandas as pd
 import pytest
 
-from services.dataflow.dag import node_runners
-from services.dataflow.dag.node_runners import NodeExecutionError
+from backend.modules.flow.dag import node_runners
+from backend.modules.flow.dag.node_runners import NodeExecutionError
 
 
 def _ctx(**overrides):
@@ -39,8 +39,8 @@ def test_sync_full_mode_reads_and_writes(monkeypatch):
         calls["write"] = (ds, table, mode)
         return len(frame)
 
-    monkeypatch.setattr("services.dataflow.dag.federated_reader.governed_read_dataframe", fake_read)
-    monkeypatch.setattr("services.dataflow.dag.target_writer.write_dataframe", fake_write)
+    monkeypatch.setattr("backend.modules.flow.dag.federated_reader.governed_read_dataframe", fake_read)
+    monkeypatch.setattr("backend.modules.flow.dag.target_writer.write_dataframe", fake_write)
     monkeypatch.setattr(node_runners, "_record_lineage",
                         lambda sql, ds, ctx: calls.setdefault("lineage_sql", sql))
     monkeypatch.setattr(node_runners, "_run_quality_checks",
@@ -68,16 +68,16 @@ def test_sync_transform_sql_applies_udf(monkeypatch):
         calls["sql"] = sql
         return df
 
-    monkeypatch.setattr("services.dataflow.dag.federated_reader.governed_read_dataframe", fake_read)
-    monkeypatch.setattr("services.dataflow.dag.target_writer.write_dataframe",
+    monkeypatch.setattr("backend.modules.flow.dag.federated_reader.governed_read_dataframe", fake_read)
+    monkeypatch.setattr("backend.modules.flow.dag.target_writer.write_dataframe",
                         lambda frame, ds, table, mode, batch_size, context="": len(frame))
     monkeypatch.setattr(node_runners, "_record_lineage", lambda *a, **k: None)
     monkeypatch.setattr(node_runners, "_run_quality_checks", lambda *a, **k: {"checks": 0, "passed": 0, "failed": 0})
-    monkeypatch.setattr("services.dataflow.dag.udf_registry.expand_udfs",
+    monkeypatch.setattr("backend.modules.flow.dag.udf_registry.expand_udfs",
                         lambda sql, refs: (calls.setdefault("refs", refs) and sql.replace(
                             "phone_mask(phone)", "CASE WHEN phone THEN phone END"),
                             [{"name": "phone_mask", "version": 1, "id": 9}]))
-    monkeypatch.setattr("services.dataflow.dag.udf_registry.udf_registry.bump_usage",
+    monkeypatch.setattr("backend.modules.flow.dag.udf_registry.udf_registry.bump_usage",
                         lambda names: calls.setdefault("bumped", names))
 
     config = {
@@ -110,11 +110,11 @@ def test_sync_incremental_uses_and_advances_watermark(monkeypatch):
     df = pd.DataFrame({"id": [10, 11], "updated_at": ["2026-10-01", "2026-10-02"]})
     calls = {"advance": []}
 
-    monkeypatch.setattr("services.dataflow.dag.federated_reader.governed_read_dataframe",
+    monkeypatch.setattr("backend.modules.flow.dag.federated_reader.governed_read_dataframe",
                         lambda sql, ds, identity, ws: (calls.setdefault("sql", sql), df)[1])
-    monkeypatch.setattr("services.dataflow.dag.target_writer.write_dataframe",
+    monkeypatch.setattr("backend.modules.flow.dag.target_writer.write_dataframe",
                         lambda frame, ds, table, mode, batch_size, context="": len(frame))
-    from services.dataflow.dag.dag_service import dag_service
+    from backend.modules.flow.dag.dag_service import dag_service
     monkeypatch.setattr(node_runners, "_record_lineage", lambda *a, **k: None)
     monkeypatch.setattr(node_runners, "_run_quality_checks", lambda *a, **k: {"checks": 0, "passed": 0, "failed": 0})
     monkeypatch.setattr(dag_service, "get_watermark", lambda key: "2026-10-01")
@@ -137,13 +137,13 @@ def test_sync_incremental_uses_and_advances_watermark(monkeypatch):
 def test_sync_write_failure_is_explicit(monkeypatch):
     """写失败必须显式抛出，不得返回假成功（no-silent-degradation）。"""
     df = pd.DataFrame({"id": [1]})
-    monkeypatch.setattr("services.dataflow.dag.federated_reader.governed_read_dataframe",
+    monkeypatch.setattr("backend.modules.flow.dag.federated_reader.governed_read_dataframe",
                         lambda sql, ds, identity, ws: df)
 
     def boom(*args, **kwargs):
         raise RuntimeError("target down")
 
-    monkeypatch.setattr("services.dataflow.dag.target_writer.write_dataframe", boom)
+    monkeypatch.setattr("backend.modules.flow.dag.target_writer.write_dataframe", boom)
     config = {
         "source_datasource": "src", "source_table": "t",
         "target_datasource": "dst", "target_table": "t2", "sync_mode": "full",
@@ -163,12 +163,12 @@ def test_sql_task_locks_udf_versions_and_writes_target(monkeypatch):
         calls["refs"] = refs
         return "SELECT 1 AS x", [{"name": "my_udf", "version": 3, "id": 55}]
 
-    monkeypatch.setattr("services.dataflow.dag.udf_registry.expand_udfs", fake_expand)
-    monkeypatch.setattr("services.dataflow.dag.udf_registry.udf_registry.bump_usage",
+    monkeypatch.setattr("backend.modules.flow.dag.udf_registry.expand_udfs", fake_expand)
+    monkeypatch.setattr("backend.modules.flow.dag.udf_registry.udf_registry.bump_usage",
                         lambda names: calls.setdefault("bumped", names))
-    monkeypatch.setattr("services.dataflow.dag.federated_reader.governed_federated_read",
+    monkeypatch.setattr("backend.modules.flow.dag.federated_reader.governed_federated_read",
                         lambda sql, ds, identity, ws: (df, 1))
-    monkeypatch.setattr("services.dataflow.dag.target_writer.write_dataframe",
+    monkeypatch.setattr("backend.modules.flow.dag.target_writer.write_dataframe",
                         lambda frame, ds, table, mode, batch_size, context="": calls.setdefault("target", (ds, table, mode)) and 1)
     monkeypatch.setattr(node_runners, "_record_lineage", lambda *a, **k: None)
     monkeypatch.setattr(node_runners, "_run_quality_checks", lambda *a, **k: {"checks": 0, "passed": 0, "failed": 0})
@@ -188,12 +188,12 @@ def test_sql_task_locks_udf_versions_and_writes_target(monkeypatch):
 
 
 def test_sql_task_udf_expand_failure_is_explicit(monkeypatch):
-    from services.dataflow.dag.udf_registry import UdfValidationError
+    from backend.modules.flow.dag.udf_registry import UdfValidationError
 
     def boom(sql, refs):
         raise UdfValidationError("UDF 'x' 不存在或未启用")
 
-    monkeypatch.setattr("services.dataflow.dag.udf_registry.expand_udfs", boom)
+    monkeypatch.setattr("backend.modules.flow.dag.udf_registry.expand_udfs", boom)
     config = {"source_datasource": "src", "sql": "SELECT x(t) FROM t", "udf_refs": ["x"]}
     with pytest.raises(NodeExecutionError) as exc:
         node_runners.run_sql_task_node(config, _ctx())
@@ -216,7 +216,7 @@ def test_control_fail_node_is_explicit():
 def test_source_level_no_bypass_channels():
     """同步/SQL 任务的读写通道不得出现裸直连取数（get_connection/裸 execute_query）。"""
     import inspect
-    from services.dataflow.dag import node_runners as nr, federated_reader as fr
+    from backend.modules.flow.dag import node_runners as nr, federated_reader as fr
     for module in (nr, fr):
         source = inspect.getsource(module)
         assert "get_connection" not in source, f"{module.__name__} 出现直连取数旁路"

@@ -8,9 +8,9 @@ import os
 
 import pytest
 
-from services.datamind.execution import secure_sdk
-from services.datamind.execution.adapters.cli_adapter import CLIProcessAdapter
-from services.shared.common.config import PROJECT_ROOT
+from backend.modules.mind.execution import secure_sdk
+from backend.modules.mind.execution.adapters.cli_adapter import CLIProcessAdapter
+from backend.common.config import PROJECT_ROOT
 
 
 def _adapter(cli_path=None, cli_name="qoder"):

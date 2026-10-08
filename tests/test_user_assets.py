@@ -21,9 +21,9 @@ import importlib
 
 import pytest
 
-ua_api = importlib.import_module("services.datamind.api.user_assets")
-sw = importlib.import_module("services.datamind.execution.session_workspace")
-asset_tools = importlib.import_module("services.datamind.execution.sdk_tools.asset_tools")
+ua_api = importlib.import_module("backend.modules.mind.api.user_assets")
+sw = importlib.import_module("backend.modules.mind.execution.session_workspace")
+asset_tools = importlib.import_module("backend.modules.mind.execution.sdk_tools.asset_tools")
 mig = importlib.import_module("scripts.migrate_user_assets_objects")
 
 
@@ -152,12 +152,12 @@ def env(monkeypatch, tmp_path):
         "workspaces": [{"id": 3, "name": "分析工作站"}, {"id": 8, "name": "实验空间"}],
     }
     storage = FakeStorage()
-    monkeypatch.setattr("services.shared.common.config.ADH_WORKSPACES_DIR", str(tmp_path))
-    monkeypatch.setattr("services.shared.common.config.OBJECT_STORAGE_PREFIX", "ai-datahub")
-    monkeypatch.setattr("services.shared.common.db.metadata_db.get_metadata_conn", lambda: FakeConn(db))
+    monkeypatch.setattr("backend.common.config.ADH_WORKSPACES_DIR", str(tmp_path))
+    monkeypatch.setattr("backend.common.config.OBJECT_STORAGE_PREFIX", "ai-datahub")
+    monkeypatch.setattr("backend.common.db.metadata_db.get_metadata_conn", lambda: FakeConn(db))
     monkeypatch.setattr(ua_api, "get_metadata_conn", lambda: FakeConn(db))
     monkeypatch.setattr(ua_api, "get_object_storage", lambda: storage)
-    monkeypatch.setattr("services.shared.common.object_storage.get_object_storage", lambda: storage)
+    monkeypatch.setattr("backend.common.object_storage.get_object_storage", lambda: storage)
     # 建会话目录(两个工作空间)并放产物文件
     root = sw.session_paths(tmp_path, "a" * 32, 3, create=True)
     (root / "workspace" / "report.txt").write_text("分析结果", encoding="utf-8")
@@ -300,7 +300,7 @@ def test_workspace_disk_usage_recursive(env):
 
 
 def test_assets_tool_group_registered():
-    from services.datamind.execution.sdk_tools import TOOL_SERVER_BUILDERS, TOOL_SERVER_TOOLS
+    from backend.modules.mind.execution.sdk_tools import TOOL_SERVER_BUILDERS, TOOL_SERVER_TOOLS
     assert "assets" in TOOL_SERVER_BUILDERS
     assert TOOL_SERVER_TOOLS["assets"][0] == "datahub_assets"
     assert set(TOOL_SERVER_TOOLS["assets"][1]) == {

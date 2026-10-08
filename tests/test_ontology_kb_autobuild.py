@@ -13,8 +13,8 @@ import json
 
 import pytest
 
-from services.datacatalog.services import ontology_kb_sync as oks
-from services.datamind.rag import qmind_retriever as qr
+from backend.modules.catalog.services import ontology_kb_sync as oks
+from backend.modules.mind.rag import qmind_retriever as qr
 
 
 class _FakeCursor:
@@ -71,7 +71,7 @@ def _patch(monkeypatch, *, probe=(True, ""), create="nb-new", row=None, lock_ok=
 
     monkeypatch.setattr(qr, "probe_notebook", fake_probe)
     monkeypatch.setattr(qr, "create_notebook", fake_create)
-    import services.shared.common.db.metadata_db as mdb
+    import backend.common.db.metadata_db as mdb
     monkeypatch.setattr(mdb, "get_metadata_conn", lambda: _FakeConn(cur))
     return calls, cur
 

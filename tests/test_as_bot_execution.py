@@ -14,9 +14,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from services.datamind.api import as_bot
-from services.datamind.execution import perm_link
-from services.datamind.rag import alias_suggestion
+from backend.modules.mind.api import as_bot
+from backend.modules.mind.execution import perm_link
+from backend.modules.mind.rag import alias_suggestion
 
 
 # ── 写动作权限码 fail-closed（check_write_perm） ─────────────────
@@ -63,7 +63,7 @@ class TestWritePermFailClosed:
 
 class TestRequireWritePerm:
     def _patch_role_perms(self, monkeypatch, role_perms):
-        import services.authservice.services.role_service as rs
+        import backend.modules.auth.services.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda uid, ws: role_perms)
 
@@ -92,7 +92,7 @@ def _user(uid=7):
 
 class TestAliasDirectExecution:
     def test_approve_without_perm_403(self, monkeypatch):
-        import services.authservice.services.role_service as rs
+        import backend.modules.auth.services.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms", lambda *a: {})
         approve = lambda *a, **k: (_ for _ in ()).throw(AssertionError("无权限不得执行"))
         monkeypatch.setattr(alias_suggestion, "approve_suggestion", approve)
@@ -102,7 +102,7 @@ class TestAliasDirectExecution:
         assert "ontology:save" in str(exc.value.detail)
 
     def test_read_level_rejected_403(self, monkeypatch):
-        import services.authservice.services.role_service as rs
+        import backend.modules.auth.services.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:save": {"ai_access": "read", "ai_note": ""}})
         with pytest.raises(HTTPException) as exc:
@@ -110,7 +110,7 @@ class TestAliasDirectExecution:
         assert exc.value.status_code == 403
 
     def test_approve_direct_executes_with_server_decider(self, monkeypatch):
-        import services.authservice.services.role_service as rs
+        import backend.modules.auth.services.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:save": {"ai_access": "write", "ai_note": ""}})
         captured = {}
@@ -129,7 +129,7 @@ class TestAliasDirectExecution:
         assert captured["term"] == "就诊量"
 
     def test_reject_direct_executes_with_server_decider(self, monkeypatch):
-        import services.authservice.services.role_service as rs
+        import backend.modules.auth.services.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:save": {"ai_access": "write", "ai_note": ""}})
         captured = {}
@@ -145,7 +145,7 @@ class TestAliasDirectExecution:
         assert captured["suggestion_id"] == 9
 
     def test_writeback_value_error_maps_422(self, monkeypatch):
-        import services.authservice.services.role_service as rs
+        import backend.modules.auth.services.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:save": {"ai_access": "write", "ai_note": ""}})
         monkeypatch.setattr(alias_suggestion, "approve_suggestion",
@@ -165,10 +165,10 @@ class TestSendPreflightStatusGate:
                                as_bot_key="", conversation_id=5)
 
     def _run(self, monkeypatch, status):
-        from services.datamind.execution import session_workspace as sw
-        from services.datamind.execution import tool_policy
+        from backend.modules.mind.execution import session_workspace as sw
+        from backend.modules.mind.execution import tool_policy
         monkeypatch.setattr(sw, "execute_query", lambda *a, **k: {"status": status})
-        monkeypatch.setattr("services.shared.common.auth.authorize_workspace", lambda *a: 0)
+        monkeypatch.setattr("backend.common.auth.authorize_workspace", lambda *a: 0)
         monkeypatch.setattr(sw, "validate_conversation", lambda *a: None)
         monkeypatch.setattr(tool_policy, "resolve_policy",
                             lambda ctx, *a, **k: SimpleNamespace(as_bot={"as_bot_key": "admin"}))
@@ -195,12 +195,12 @@ class TestConversationOwnership:
     """会话归属是固有属性：看得到就用得了（互见语义贯穿执行链，不再出现 403 卡死）。"""
 
     def _run(self, monkeypatch, conv_ws, ctx_ws):
-        from services.datamind.execution import session_workspace as sw
-        from services.datamind.execution.models import ExecutionContext
+        from backend.modules.mind.execution import session_workspace as sw
+        from backend.modules.mind.execution.models import ExecutionContext
         monkeypatch.setattr(sw, "execute_query",
                             lambda *a, **k: {"id": 5, "user_id": 7, "workspace_id": conv_ws,
                                              "as_bot_key": ""})
-        monkeypatch.setattr("services.shared.common.auth.authorize_workspace", lambda *a: 0)
+        monkeypatch.setattr("backend.common.auth.authorize_workspace", lambda *a: 0)
         ctx = ExecutionContext(user_id=7, user_role="admin", workspace_id=ctx_ws,
                                extra={"as_bot_key": ""})
         sw.validate_conversation(ctx, 5)
@@ -217,8 +217,8 @@ class TestConversationOwnership:
         assert ctx.workspace_id == 300
 
     def test_foreign_conversation_still_404(self, monkeypatch):
-        from services.datamind.execution import session_workspace as sw
-        from services.datamind.execution.models import ExecutionContext
+        from backend.modules.mind.execution import session_workspace as sw
+        from backend.modules.mind.execution.models import ExecutionContext
         monkeypatch.setattr(sw, "execute_query", lambda *a, **k: None)
         with pytest.raises(HTTPException) as exc:
             sw.validate_conversation(ExecutionContext(user_id=7, user_role="admin",
@@ -232,10 +232,10 @@ class TestToolHandlerCompat:
     def _call(self, monkeypatch, handler, name="list_datasets",
               qualified="mcp__datahub_functions__list_datasets"):
         from types import SimpleNamespace
-        from services.datamind.execution import tool_policy, resource_guard
-        from services.datamind.execution.models import ExecutionContext
-        from services.datamind.execution.sdk_tools import compat
-        from services.datamind.execution.sdk_tools.context import (
+        from backend.modules.mind.execution import tool_policy, resource_guard
+        from backend.modules.mind.execution.models import ExecutionContext
+        from backend.modules.mind.execution.sdk_tools import compat
+        from backend.modules.mind.execution.sdk_tools.context import (
             ExecutionContextVar, set_execution_context)
         monkeypatch.setattr(tool_policy, "check_tool", lambda *a, **k: None)
         monkeypatch.setattr(resource_guard, "validate_tool_resources", lambda ctx, n, args: args)
@@ -264,7 +264,7 @@ class TestToolHandlerCompat:
 
 class TestDecisionAudit:
     def test_set_status_persists_decided_by(self, monkeypatch):
-        from services.shared.common import db
+        from backend.common import db
         rows = []
         monkeypatch.setattr(db, "execute_query",
                             lambda sql, params=None: rows.append((sql, params)))
@@ -309,17 +309,17 @@ class TestOntologyGenerateToolSemantics:
         return json.loads(result["content"][0]["text"])
 
     def _ctx(self, datasource_id=0, binding=None):
-        from services.datamind.execution.models import ExecutionContext
+        from backend.modules.mind.execution.models import ExecutionContext
         extra = {"task_binding": binding} if binding else {}
         return ExecutionContext(user_id=7, user_role="admin", workspace_id=3,
                                 datasource_id=datasource_id, extra=extra)
 
     def _run(self, monkeypatch, args, ctx, materials=("M0", "M1")):
-        from services.datamind.execution.sdk_tools import ontology_tools as ot
-        from services.datamind.execution.sdk_tools.context import (
+        from backend.modules.mind.execution.sdk_tools import ontology_tools as ot
+        from backend.modules.mind.execution.sdk_tools.context import (
             ExecutionContextVar, set_execution_context)
-        import services.authservice.services.role_service as rs
-        import services.datacatalog.services.ontology_service as osvc
+        import backend.modules.auth.services.role_service as rs
+        import backend.modules.catalog.services.ontology_service as osvc
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:generate": {"ai_access": "write", "ai_note": ""}})
         monkeypatch.setattr(osvc, "build_generation_batches", lambda ds: list(materials))

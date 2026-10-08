@@ -1,0 +1,2 @@
+# SemanticLayer service specific dependencies
+# Base dependencies are in backend/common/requirements.txt

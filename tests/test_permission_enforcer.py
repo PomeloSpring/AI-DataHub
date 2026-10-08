@@ -8,12 +8,12 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datamind.permission.enforcer import PermissionEnforcer, PermissionResult
+from backend.modules.mind.permission.enforcer import PermissionEnforcer, PermissionResult
 
 
 @pytest.fixture
 def enforcer():
-    from services.datamind.permission.enforcer import invalidate_access_cache
+    from backend.modules.mind.permission.enforcer import invalidate_access_cache
     invalidate_access_cache()  # 清空 TTL 缓存, 避免跨测试泄漏
     return PermissionEnforcer()
 
@@ -149,8 +149,8 @@ class TestPostProcessing:
 # ── Access check with mocked services ───────────────────────────────
 
 class TestCheckAccess:
-    @patch("services.authservice.services.role_service.role_service")
-    @patch("services.authservice.services.rls_service.rls_service")
+    @patch("backend.modules.auth.services.role_service.role_service")
+    @patch("backend.modules.auth.services.rls_service.rls_service")
     def test_admin_follows_role_permissions(self, mock_rls, mock_role, enforcer):
         """Admin role follows role-based permission checks (no automatic bypass)."""
         mock_role.get_user_roles.return_value = [{"id": 1, "name": "admin"}]
@@ -161,8 +161,8 @@ class TestCheckAccess:
         result = enforcer.check_access(user_id=1, workspace_id=0, datasource_id=1)
         assert result.allowed is True
 
-    @patch("services.authservice.services.role_service.role_service")
-    @patch("services.authservice.services.rls_service.rls_service")
+    @patch("backend.modules.auth.services.role_service.role_service")
+    @patch("backend.modules.auth.services.rls_service.rls_service")
     def test_datasource_denied(self, mock_rls, mock_role, enforcer):
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "viewer"}]
         mock_role.get_user_allowed_datasources.return_value = [1, 2]  # Only DS 1, 2
@@ -170,8 +170,8 @@ class TestCheckAccess:
         assert result.allowed is False
         assert "数据源" in result.reason
 
-    @patch("services.authservice.services.role_service.role_service")
-    @patch("services.authservice.services.rls_service.rls_service")
+    @patch("backend.modules.auth.services.role_service.role_service")
+    @patch("backend.modules.auth.services.rls_service.rls_service")
     def test_table_denied(self, mock_rls, mock_role, enforcer):
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "viewer"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # 显式授权 DS1（fail-closed：空=拒绝，不再是 No restriction）
@@ -183,8 +183,8 @@ class TestCheckAccess:
         assert "表" in result.reason
 
     @patch.object(PermissionEnforcer, "_get_sensitive_policies", return_value=({}, []))
-    @patch("services.authservice.services.role_service.role_service")
-    @patch("services.authservice.services.rls_service.rls_service")
+    @patch("backend.modules.auth.services.role_service.role_service")
+    @patch("backend.modules.auth.services.rls_service.rls_service")
     def test_allowed_with_restrictions(self, mock_rls, mock_role, mock_sens, enforcer):
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "analyst"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
@@ -209,8 +209,8 @@ class TestCheckAccess:
         assert 123 in result.policies_applied
 
     @patch.object(PermissionEnforcer, "_get_sensitive_policies", return_value=({}, []))
-    @patch("services.authservice.services.role_service.role_service")
-    @patch("services.authservice.services.rls_service.rls_service")
+    @patch("backend.modules.auth.services.role_service.role_service")
+    @patch("backend.modules.auth.services.rls_service.rls_service")
     def test_no_restrictions_empty_result(self, mock_rls, mock_role, mock_sens, enforcer):
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "analyst"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
@@ -237,8 +237,8 @@ class TestCheckAccess:
 # ── Enforce SQL ─────────────────────────────────────────────────────
 
 class TestEnforceSQL:
-    @patch("services.authservice.services.role_service.role_service")
-    @patch("services.authservice.services.rls_service.rls_service")
+    @patch("backend.modules.auth.services.role_service.role_service")
+    @patch("backend.modules.auth.services.rls_service.rls_service")
     def test_sql_rewrite_with_row_filter(self, mock_rls, mock_role, enforcer):
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "analyst"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
@@ -261,8 +261,8 @@ class TestEnforceSQL:
         assert "region = '华东'" in modified_sql
         assert result.allowed is True
 
-    @patch("services.authservice.services.role_service.role_service")
-    @patch("services.authservice.services.rls_service.rls_service")
+    @patch("backend.modules.auth.services.role_service.role_service")
+    @patch("backend.modules.auth.services.rls_service.rls_service")
     def test_permission_denied_raises(self, mock_rls, mock_role, enforcer):
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "viewer"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # Only DS 1

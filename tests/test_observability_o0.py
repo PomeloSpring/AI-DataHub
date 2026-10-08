@@ -17,10 +17,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-import services.shared.common.config as config_mod
-from services.shared.observability import recorder as rec_mod
-from services.shared.observability import store as store_mod
-from services.shared import observability
+import backend.common.config as config_mod
+from backend.observability import recorder as rec_mod
+from backend.observability import store as store_mod
+from backend import observability
 
 
 class _InlineExecutor:
@@ -40,7 +40,7 @@ def captured(monkeypatch):
     monkeypatch.setattr(rec_mod, "_get_flush_pool", lambda: _InlineExecutor())
     monkeypatch.setattr(store_mod, "save_trace", lambda summary, spans: calls.append((summary, spans)))
 
-    from services.shared.observability.context import set_recorder
+    from backend.observability.context import set_recorder
     set_recorder(None)
     yield calls
     set_recorder(None)
@@ -49,7 +49,7 @@ def captured(monkeypatch):
 @pytest.fixture
 def disabled(monkeypatch):
     monkeypatch.setattr(config_mod, "OBSERVABILITY_ENABLED", False, raising=False)
-    from services.shared.observability.context import set_recorder
+    from backend.observability.context import set_recorder
     set_recorder(None)
     yield
     set_recorder(None)
@@ -133,7 +133,7 @@ def test_explicit_finalize_overrides_set_result(captured):
 
 
 def test_qoder_helpers_parse_sdk_fields(captured):
-    from services.datamind.execution.adapters import qoder_sdk_adapter as qmod
+    from backend.modules.mind.execution.adapters import qoder_sdk_adapter as qmod
 
     observability.begin(entrypoint="chat", user_id=1)
 
@@ -165,7 +165,7 @@ def test_qoder_helpers_parse_sdk_fields(captured):
 
 def test_qoder_helpers_tolerate_missing_usage(disabled):
     # 未开启时 Qoder 辅助也不应抛异常
-    from services.datamind.execution.adapters import qoder_sdk_adapter as qmod
+    from backend.modules.mind.execution.adapters import qoder_sdk_adapter as qmod
 
     class _NoUsage:
         pass
@@ -202,7 +202,7 @@ def test_record_span_keeps_artifacts_without_token_accumulation(captured):
 def test_qoder_tool_and_assistant_output_spans(captured):
     import json as _json
 
-    from services.datamind.execution.adapters import qoder_sdk_adapter as qmod
+    from backend.modules.mind.execution.adapters import qoder_sdk_adapter as qmod
 
     observability.begin(entrypoint="agent", user_id=1)
 
@@ -225,7 +225,7 @@ def test_qoder_tool_and_assistant_output_spans(captured):
     qmod._obs_record_assistant(_Assistant())
 
     # 工具结果 span:入参从 tracker.arguments_of 取回,输出/错误/耗时来自事件
-    from services.datamind.execution.stream_utils import ToolEventTracker
+    from backend.modules.mind.execution.stream_utils import ToolEventTracker
 
     class _Use:
         id = "tc-1"

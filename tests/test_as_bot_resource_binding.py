@@ -9,9 +9,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from services.shared.common import auth
-from services.datamind.execution import as_bots, tool_policy, scheduled_analysis as sa
-from services.datamind.execution.sdk_tools import external_tools
+from backend.common import auth
+from backend.modules.mind.execution import as_bots, tool_policy, scheduled_analysis as sa
+from backend.modules.mind.execution.sdk_tools import external_tools
 from tests.test_scheduled_execution import scheduled_as_bot
 
 
@@ -19,16 +19,16 @@ from tests.test_scheduled_execution import scheduled_as_bot
 def kb_api():
     # 导入时的兼容建表不访问真实元库。
     conn = MagicMock()
-    from services.shared.common.db import get_metadata_conn
-    with patch('services.shared.common.db.get_metadata_conn', return_value=conn):
-        module = importlib.import_module('services.datamind.api.knowledge_bases')
+    from backend.common.db import get_metadata_conn
+    with patch('backend.common.db.get_metadata_conn', return_value=conn):
+        module = importlib.import_module('backend.modules.mind.api.knowledge_bases')
     module.get_metadata_conn = get_metadata_conn
     return module
 
 
 @pytest.mark.parametrize('field', ['workspace_id', 'workspace_ids'])
 def test_resource_payload_rejects_legacy_binding(kb_api, field):
-    from services.aiplatform.api.mcp_servers import MCPServerCreate, MCPServerUpdate
+    from backend.modules.platform.api.mcp_servers import MCPServerCreate, MCPServerUpdate
     for model, required in [(MCPServerCreate, {'name': 'm'}), (MCPServerUpdate, {}),
                              (kb_api.KnowledgeBaseCreate, {'name': 'k', 'kb_type': 'qmind'}),
                              (kb_api.KnowledgeBaseUpdate, {})]:
@@ -38,14 +38,14 @@ def test_resource_payload_rejects_legacy_binding(kb_api, field):
 
 @pytest.mark.parametrize('field', ['mcp_server_ids', 'mcp_server_id', 'knowledge_base_ids'])
 def test_workspace_payload_cannot_bind_resources(field):
-    from services.authservice.api.workspaces import CreateWorkspaceRequest, UpdateWorkspaceRequest
+    from backend.modules.auth.api.workspaces import CreateWorkspaceRequest, UpdateWorkspaceRequest
     for model in (CreateWorkspaceRequest, UpdateWorkspaceRequest):
         with pytest.raises(ValidationError, match='AS-BOT'):
             model(name='空间', **{field: [1]})
 
 
 def test_old_mcp_routes_return_410_after_authorization(monkeypatch):
-    from services.authservice.api import workspaces as api
+    from backend.modules.auth.api import workspaces as api
     member = Mock()
     conn = MagicMock()
     monkeypatch.setattr(api, '_check_membership', member)
@@ -74,7 +74,7 @@ def test_as_bot_directory_projection_does_not_use_workspace_resource_table(monke
 
 
 def test_mcp_scoped_directory_redacts_secrets(monkeypatch):
-    from services.aiplatform.api import mcp_servers as api
+    from backend.modules.platform.api import mcp_servers as api
     monkeypatch.setattr(as_bots, 'visible_resource_ids', lambda *a: [9])
     monkeypatch.setattr(api, 'execute_query', lambda *a: [{'id': 9, 'name': 'MCP', 'is_active': 1,
         'env': {'TOKEN': 'secret'}, 'url': 'private', 'command': 'private', 'workspace_id': 8}])
@@ -118,11 +118,11 @@ def test_external_service_requires_as_bot_and_live_enabled_resource(monkeypatch)
 
 
 def test_design_candidates_require_as_bot_kb_binding(monkeypatch):
-    from services.dataviz.services import dashboard_design_service as ds
+    from backend.modules.viz.services import dashboard_design_service as ds
     state = {'knowledge_base_ids': []}
     monkeypatch.setattr(as_bots, 'resolve_as_bots', lambda *a, **k: [state])
     monkeypatch.setattr(as_bots, 'default_as_bot', lambda bots: bots[0] if bots else None)
-    monkeypatch.setattr('services.shared.common.auth.authorize_workspace', lambda *a, **k: None)
+    monkeypatch.setattr('backend.common.auth.authorize_workspace', lambda *a, **k: None)
     query = Mock(return_value=[{'id': 4, 'name': '库', 'workspace_ids': [99]}])
     monkeypatch.setattr(ds, 'execute_query', query)
     user = {'user_id': 7, 'role': 'admin'}
@@ -138,7 +138,7 @@ def test_design_candidates_require_as_bot_kb_binding(monkeypatch):
 
 
 def test_task_partial_update_and_enable_validate_persisted_owner(monkeypatch, scheduled_as_bot):
-    from services.dataflow.services import scheduled_task_service as module
+    from backend.modules.flow.services import scheduled_task_service as module
     task = {'id': 12, 'owner_id': 7, 'workspace_id': 3, 'task_type': 'agent', 'is_active': False,
             'task_config': {'datasource_id': 8, 'agent_name': 'old'}}
     conn = MagicMock()
@@ -164,7 +164,7 @@ def test_task_partial_update_and_enable_validate_persisted_owner(monkeypatch, sc
 
 
 def test_admin_edit_options_use_task_owner_not_requester(monkeypatch):
-    from services.dataflow.api import scheduled as api
+    from backend.modules.flow.api import scheduled as api
     monkeypatch.setattr(api.scheduled_task_service, 'get_task', lambda tid: {'owner_id': 7, 'workspace_id': 3})
     load = Mock(return_value=[])
     monkeypatch.setattr(sa, 'as_bot_options', load)
@@ -178,7 +178,7 @@ def test_unknown_as_bot_never_uses_default(scheduled_as_bot):
 
 
 def test_knowledge_binding_revocation_between_workers(scheduled_as_bot):
-    from services.datamind.execution.resource_guard import validate_knowledge_binding
+    from backend.modules.mind.execution.resource_guard import validate_knowledge_binding
     validate_knowledge_binding([4])
     scheduled_as_bot['kbs'] = []
     for _ in range(2):
@@ -188,7 +188,7 @@ def test_knowledge_binding_revocation_between_workers(scheduled_as_bot):
 
 def test_dangling_kb_binding_error_names_missing_ids(monkeypatch):
     """悬空绑定必须 fail-loud 且可诊断：报错带缺失 id，不静默缩小知识边界。"""
-    from services.datamind.execution import resource_guard
+    from backend.modules.mind.execution import resource_guard
     monkeypatch.setattr(resource_guard, 'execute_query',
                         lambda *a, **k: [{'id': 4}])
     with pytest.raises(PermissionError) as exc:
@@ -197,7 +197,7 @@ def test_dangling_kb_binding_error_names_missing_ids(monkeypatch):
 
 
 def test_load_knowledge_bases_error_names_missing_ids(monkeypatch):
-    from services.datamind.execution import as_bots
+    from backend.modules.mind.execution import as_bots
     monkeypatch.setattr(as_bots, '_query',
                         lambda *a, **k: [{'id': 4, 'name': 'kb4', 'kb_type': 'local', 'status': 'active'}])
     with pytest.raises(ValueError) as exc:

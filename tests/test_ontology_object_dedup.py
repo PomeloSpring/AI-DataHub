@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datacatalog.services import ontology_service, ontology_yaml_import
+from backend.modules.catalog.services import ontology_service, ontology_yaml_import
 
 
 # ── 判重与命名 ────────────────────────────────────────────────────
@@ -411,7 +411,7 @@ class TestAliasNormalizationAfterMerge:
     ]
 
     def _resolve(self, key, rows=None, warnings=None):
-        from services.shared.semantics.binding_resolver import _resolve_key_by_alias
+        from backend.semantics.binding_resolver import _resolve_key_by_alias
         return _resolve_key_by_alias(
             _FakeConn(self.ROWS if rows is None else rows), key, 1,
             warnings if warnings is not None else [])
@@ -444,5 +444,5 @@ class TestAliasNormalizationAfterMerge:
         assert "order" in warnings[0] and "dc_case_record" in warnings[0]
 
     def test_db_failure_does_not_block_resolution(self):
-        from services.shared.semantics.binding_resolver import _resolve_key_by_alias
+        from backend.semantics.binding_resolver import _resolve_key_by_alias
         assert _resolve_key_by_alias(_ExplodingConn(), "casefile", 1, []) == "casefile"

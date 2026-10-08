@@ -21,14 +21,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pandas as pd
 import pytest
 
-import services.shared.common.auth as auth_mod
-from services.dataviz.api import chart as chart_api
-from services.dataviz.services import report_service as report_svc
-from services.dataviz.services.governed_query import governed_execute, NoIdentityError
+import backend.common.auth as auth_mod
+from backend.modules.viz.api import chart as chart_api
+from backend.modules.viz.services import report_service as report_svc
+from backend.modules.viz.services.governed_query import governed_execute, NoIdentityError
 
-# services.dataviz.services 包把同名子模块属性重绑为实例, 故显式取真模块对象
+# backend.modules.viz.services 包把同名子模块属性重绑为实例, 故显式取真模块对象
 import importlib as _importlib
-dash_svc = _importlib.import_module("services.dataviz.services.dashboard_service")
+dash_svc = _importlib.import_module("backend.modules.viz.services.dashboard_service")
 
 
 def _route_paths(router):
@@ -78,15 +78,15 @@ def _raw_chart_row():
 class TestPlaygroundGovernedExecution:
     def test_datamind_no_bare_executor(self):
         # 裸连数据源降级路径(DB 工具后门)必须不存在; 取数只能走护城河
-        from services.datamind.api import playground as dm_pg
+        from backend.modules.mind.api import playground as dm_pg
 
         assert not hasattr(dm_pg, "_execute_local")
         assert not hasattr(dm_pg, "_get_datasource_conn")
 
     def test_datamind_execute_is_governed_and_trusts_jwt_identity(self, monkeypatch):
         import pandas as pd
-        from services.datamind.api import playground as dm_pg
-        import services.datamind.nl2sql.sql.query_executor as qe
+        from backend.modules.mind.api import playground as dm_pg
+        import backend.modules.mind.nl2sql.sql.query_executor as qe
 
         captured = {}
 
@@ -113,7 +113,7 @@ class TestPlaygroundGovernedExecution:
 
     def test_datamind_execute_fail_closed_no_identity(self):
         from fastapi import HTTPException
-        from services.datamind.api import playground as dm_pg
+        from backend.modules.mind.api import playground as dm_pg
 
         # 无可信身份(JWT 解析不到 user) -> 4xx, 绝不降级为不过滤执行(I5)
         with pytest.raises(HTTPException) as ei:
@@ -124,7 +124,7 @@ class TestPlaygroundGovernedExecution:
 
     def test_semantic_playground_has_no_data_execute_route(self):
         # 语义层只留静态/预览(不返回数据行); 取数在 datamind 侧经护城河执行
-        from services.semhub.api import playground as sem_pg
+        from backend.modules.semhub.api import playground as sem_pg
 
         paths = _route_paths(sem_pg.router)
         assert not any(p.rstrip("/").endswith("/execute") for p in paths), paths
@@ -136,11 +136,11 @@ class TestPlaygroundGovernedExecution:
 
 class TestQueryEndpointRemoved:
     def test_query_module_gone(self):
-        assert importlib.util.find_spec("services.datamind.api.query") is None
+        assert importlib.util.find_spec("backend.modules.mind.api.query") is None
 
     def test_main_does_not_mount_query(self):
         root = os.path.join(os.path.dirname(__file__), "..")
-        with open(os.path.join(root, "services", "datamind", "main.py"), encoding="utf-8") as f:
+        with open(os.path.join(root, "backend", "processes", "mind", "main.py"), encoding="utf-8") as f:
             src = f.read()
         assert "/api/query" not in src
         assert "api.query" not in src
@@ -167,7 +167,7 @@ class TestGovernedExecutor:
             df = df.drop(columns=["phone"])
             return df, 3, 1
 
-        import services.datamind.nl2sql.sql.query_executor as qe
+        import backend.modules.mind.nl2sql.sql.query_executor as qe
 
         monkeypatch.setattr(qe, "execute_query_with_permission", fake_exec)
         res = governed_execute("SELECT * FROM t_user", 7, user_id=42,
@@ -271,7 +271,7 @@ class TestInternalIdentityHeader:
         assert auth_mod.verify_internal_identity("") is None                 # 缺失
 
     def test_semantic_rls_diff_ignores_body_user_id(self, monkeypatch):
-        from services.semhub.api import playground as sem_pg
+        from backend.modules.semhub.api import playground as sem_pg
 
         monkeypatch.setattr(auth_mod, "ADH_SECRET_KEY", "unit-test-secret")
         monkeypatch.setattr(sem_pg, "_sqlglot_or_503", lambda: None)
@@ -294,7 +294,7 @@ class TestInternalIdentityHeader:
         assert captured["workspace_id"] == 3
 
     def test_datamind_forwards_signed_identity_and_strips_body(self, monkeypatch):
-        from services.datamind.api import playground as dm_pg
+        from backend.modules.mind.api import playground as dm_pg
 
         monkeypatch.setattr(auth_mod, "ADH_SECRET_KEY", "unit-test-secret")
         captured = {}
@@ -319,7 +319,7 @@ class TestInternalIdentityHeader:
     def test_all_analysis_proxies_carry_signed_identity(self, monkeypatch):
         """AST/血缘/溯源 与 rls-diff 同口径: 代理必须签发可信内部头并剥身份字段,
         否则语义层 _INTERNAL_ROUTES 直接 401"缺少可信身份"。"""
-        from services.datamind.api import playground as dm_pg
+        from backend.modules.mind.api import playground as dm_pg
 
         monkeypatch.setattr(auth_mod, "ADH_SECRET_KEY", "unit-test-secret")
         captured = {}
@@ -348,7 +348,7 @@ class TestInternalIdentityHeader:
     def test_analysis_identity_falls_back_to_default_workspace(self, monkeypatch):
         """未显式指定 workspace 时解析用户默认工作站, 严禁签 0
         (0 会被语义层中间件 authorize_workspace 显式拒绝)。"""
-        from services.datamind.api import playground as dm_pg
+        from backend.modules.mind.api import playground as dm_pg
 
         monkeypatch.setattr(auth_mod, "ADH_SECRET_KEY", "unit-test-secret")
         monkeypatch.setattr(dm_pg, "resolve_user_default_workspace_id", lambda uid: 12)
@@ -369,7 +369,7 @@ class TestJoinGovernedExecution:
 
     def test_df_to_columns_rows_disambiguates_duplicate_columns(self):
         """JOIN 产生的重名列应被无损消歧(全部列保留且可按列名寻址)。"""
-        from services.shared.common.df_serialize import df_to_columns_rows
+        from backend.common.df_serialize import df_to_columns_rows
         import pandas as _pd
         df = _pd.DataFrame([[1, "a", 2, "b"]], columns=["id", "name", "id", "name"])
         columns, rows = df_to_columns_rows(df)
@@ -380,7 +380,7 @@ class TestJoinGovernedExecution:
 
     def test_df_to_columns_rows_unique_columns_untouched(self):
         """本就唯一的列名不应被改写。"""
-        from services.shared.common.df_serialize import df_to_columns_rows
+        from backend.common.df_serialize import df_to_columns_rows
         import pandas as _pd
         columns, rows = df_to_columns_rows(_pd.DataFrame([[1, 2]], columns=["a", "b"]))
         assert columns == ["a", "b"]
@@ -388,7 +388,7 @@ class TestJoinGovernedExecution:
 
     def test_inject_row_filter_preserves_alias(self):
         """带别名的 FROM 表被包裹后保留别名(不出现非法的 `AS 表名 别名`)。"""
-        from services.datamind.permission.enforcer import permission_enforcer as enf
+        from backend.modules.mind.permission.enforcer import permission_enforcer as enf
         sql = "select t1.* from t_user_customer t1 limit 100"
         out = enf._inject_row_filter(sql, "t_user_customer", "region = 'cn'")
         assert "AS t1" in out
@@ -397,7 +397,7 @@ class TestJoinGovernedExecution:
 
     def test_inject_row_filter_covers_join_table(self):
         """JOIN 侧表也需被包裹, 否则该行级策略会被旁路。"""
-        from services.datamind.permission.enforcer import permission_enforcer as enf
+        from backend.modules.mind.permission.enforcer import permission_enforcer as enf
         sql = ("select t1.*, t2.* from t_user_customer t1 "
                "left join t_user_company_relation t2 on t1.account_code = t2.account_code limit 100")
         out = enf._inject_row_filter(sql, "t_user_company_relation", "dept = 'x'")

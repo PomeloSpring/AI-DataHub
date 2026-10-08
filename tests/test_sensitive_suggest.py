@@ -1,4 +1,4 @@
-"""敏感字段识别口径回归（services/datagov/services/sensitive_suggest.py）。
+"""敏感字段识别口径回归（backend/modules/gov/services/sensitive_suggest.py）。
 
 背景：`adh_sensitive_fields` 现存 14 条**全局精确列名**规则（`phone`/`email`/`id_card`），
 真实列名带业务前缀（`patient_phone`/`charger_id_no`/`patient_user_name`），
@@ -19,7 +19,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datagov.services.sensitive_suggest import (
+from backend.modules.gov.services.sensitive_suggest import (
     classify_column,
     suggest_for_table,
 )

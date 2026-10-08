@@ -54,7 +54,7 @@ stop_service() {
             celery-worker|celery-beat)
                 # celery 无端口，按 cmdline 兜底查找；取最小 PID 为 worker 主进程
                 # （TERM 主进程会带走池子进程，下方 pkill -P 再兜底清子进程）
-                pid=$(ps -eo pid,cmd | awk -v app="services.dataflow.tasks.celery_app" \
+                pid=$(ps -eo pid,cmd | awk -v app="backend.modules.flow.tasks.celery_app" \
                     -v kw=" ${name#celery-}" \
                     '$2 != "awk" && index($0, "-m celery -A " app) > 0 && index($0, kw) > 0 {print $1}' \
                     | sort -n | head -1)
@@ -63,7 +63,7 @@ stop_service() {
             backend)    port=8000 ;;
             dataengine) port=8082 ;;
             *)
-                port=$(grep -E "^${name}:" "$PROJECT_ROOT/services/shared/scripts/services.conf" 2>/dev/null | head -1 | cut -d: -f3)
+                port=$(grep -E "^${name}:" "$PROJECT_ROOT/backend/scripts/services.conf" 2>/dev/null | head -1 | cut -d: -f3)
                 ;;
         esac
         if [ -n "$port" ]; then

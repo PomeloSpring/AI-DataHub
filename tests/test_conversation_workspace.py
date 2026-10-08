@@ -4,9 +4,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from services.datamind.api import chat
-from services.datamind.execution import tool_policy
-from services.shared.common.db import metadata_db
+from backend.modules.mind.api import chat
+from backend.modules.mind.execution import tool_policy
+from backend.common.db import metadata_db
 
 
 class _FakeCursor:

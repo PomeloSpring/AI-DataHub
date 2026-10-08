@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datacatalog.services import metrics_service as ms
+from backend.modules.catalog.services import metrics_service as ms
 
 
 class _FakeCursor:
@@ -172,14 +172,14 @@ class TestCertificationSummary:
 class TestApiValidation:
     def test_invalid_scope_rejected(self):
         from fastapi import HTTPException
-        from services.datacatalog.api import metrics as api
+        from backend.modules.catalog.api import metrics as api
         with pytest.raises(HTTPException) as e:
             api.certify_scope({"scope": "hack", "id": 1, "certified": True, "owner": "x"})
         assert e.value.status_code == 400
 
     def test_invalid_id_rejected(self):
         from fastapi import HTTPException
-        from services.datacatalog.api import metrics as api
+        from backend.modules.catalog.api import metrics as api
         for bad in ({"scope": "metric", "id": "abc", "certified": True, "owner": "x"},
                     {"scope": "metric", "id": 0, "certified": True, "owner": "x"}):
             with pytest.raises(HTTPException) as e:

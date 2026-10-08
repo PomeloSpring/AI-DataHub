@@ -8,15 +8,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from services.shared.common import api_permission as api
-from services.shared.common import auth
-from services.datamind.permission.enforcer import PermissionEnforcer
+from backend.common import api_permission as api
+from backend.common import auth
+from backend.modules.mind.permission.enforcer import PermissionEnforcer
 
 
 @pytest.fixture(autouse=True)
 def isolated_metadata(monkeypatch):
     api._cache.clear()
-    monkeypatch.setattr("services.shared.common.db.execute_query", lambda *a, **k: [])
+    monkeypatch.setattr("backend.common.db.execute_query", lambda *a, **k: [])
     yield
     api._cache.clear()
 
@@ -35,13 +35,13 @@ def test_registry_expands_patterns_and_methods(monkeypatch):
         if "adh_perm_registry" in sql:
             return [{"perm_code": "quality:read", "api_pattern": "/api/quality/*,/api/lineage/*", "api_method": "GET,POST"}]
         return []
-    monkeypatch.setattr("services.shared.common.db.execute_query", query)
+    monkeypatch.setattr("backend.common.db.execute_query", query)
     assert api.check_api_permission("viewer", "POST", "/api/lineage/preview")
     assert not api.check_api_permission("viewer", "DELETE", "/api/lineage/preview")
 
 
 def test_policy_failure_deny(monkeypatch):
-    monkeypatch.setattr("services.shared.common.db.execute_query", Mock(side_effect=RuntimeError("offline")))
+    monkeypatch.setattr("backend.common.db.execute_query", Mock(side_effect=RuntimeError("offline")))
     assert not api.check_api_permission("viewer", "GET", "/api/quality/results")
 
 
@@ -79,7 +79,7 @@ def test_workspace_zero_not_global_access():
 
 
 def test_workspace_access_requires_scoped_role(monkeypatch):
-    from services.authservice.services.role_service import role_service
+    from backend.modules.auth.services.role_service import role_service
     # 工作空间属主制(个人工作站): 授权口径是 check_workspace_owner,
     # 旧成员体系的 check_user_workspace_access 已退役, 打桩须对准现行方法
     monkeypatch.setattr(role_service, "check_workspace_owner", lambda uid, ws: ws == 3)
@@ -114,7 +114,7 @@ def test_rls_cte_does_not_filter_virtual_reference():
 
 
 def test_sensitive_policy_failure_is_closed(monkeypatch):
-    monkeypatch.setattr("services.shared.common.db.execute_query", Mock(side_effect=RuntimeError("offline")))
+    monkeypatch.setattr("backend.common.db.execute_query", Mock(side_effect=RuntimeError("offline")))
     with pytest.raises(PermissionError):
         PermissionEnforcer()._get_sensitive_policies(3, 1, "orders")
 

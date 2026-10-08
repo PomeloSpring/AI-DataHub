@@ -101,14 +101,14 @@ class _Conn:
 def _patch_meta_db(monkeypatch):
     """端点侧 fake 元数据库（数据源简报/建会话/回写会话共用）。"""
     ops = []
-    import services.shared.common.db.metadata_db as mdb
+    import backend.common.db.metadata_db as mdb
     monkeypatch.setattr(mdb, "get_metadata_conn", lambda: _Conn(ops))
     return ops
 
 
 def _patch_draft_db(monkeypatch, existing_objects=None):
     """save_generated_draft 落库段 fake（ontology_service 内部引用）。"""
-    import services.datacatalog.services.ontology_service as osvc
+    import backend.modules.catalog.services.ontology_service as osvc
     ops = []
     monkeypatch.setattr(osvc, "get_metadata_conn", lambda: _Conn(ops))
     monkeypatch.setattr(osvc, "_load_draft_objects",
@@ -138,7 +138,7 @@ def _inserted_doc(ops):
 
 class TestGenerateEndpointFailClosed:
     def _call(self, req, user=None):
-        from services.datacatalog.api import ontology as ontology_api
+        from backend.modules.catalog.api import ontology as ontology_api
         return asyncio.run(ontology_api.generate_ontology(None, req, user or _user()))
 
     def test_missing_datasource_400(self):
@@ -147,7 +147,7 @@ class TestGenerateEndpointFailClosed:
         assert exc.value.status_code == 400
 
     def test_no_default_workspace_422(self, monkeypatch):
-        import services.shared.common.auth as auth_mod
+        import backend.common.auth as auth_mod
         monkeypatch.setattr(auth_mod, "resolve_user_default_workspace_id", lambda uid: 0)
         with pytest.raises(HTTPException) as exc:
             self._call({"datasource_id": DS_ID})
@@ -155,8 +155,8 @@ class TestGenerateEndpointFailClosed:
 
     def test_missing_generate_perm_403(self, monkeypatch):
         """无 ontology:generate 权限码必须 403（fail-closed，拒绝可解释）。"""
-        import services.shared.common.auth as auth_mod
-        import services.authservice.services.role_service as rs
+        import backend.common.auth as auth_mod
+        import backend.modules.auth.services.role_service as rs
         monkeypatch.setattr(auth_mod, "resolve_user_default_workspace_id", lambda uid: 5)
         monkeypatch.setattr(auth_mod, "authorize_workspace", lambda *a: 0)
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms", lambda *a: {})
@@ -167,9 +167,9 @@ class TestGenerateEndpointFailClosed:
 
     def test_unauthorized_datasource_403(self, monkeypatch):
         """授权集为空不得当全量放行（admin 同样纯角色裁决）。"""
-        import services.shared.common.auth as auth_mod
-        import services.authservice.services.role_service as rs
-        from services.datamind.execution import perm_link
+        import backend.common.auth as auth_mod
+        import backend.modules.auth.services.role_service as rs
+        from backend.modules.mind.execution import perm_link
         monkeypatch.setattr(auth_mod, "resolve_user_default_workspace_id", lambda uid: 5)
         monkeypatch.setattr(auth_mod, "authorize_workspace", lambda *a: 0)
         monkeypatch.setattr(perm_link, "require_write_perm", lambda *a, **k: None)
@@ -180,9 +180,9 @@ class TestGenerateEndpointFailClosed:
         assert "数据源" in str(exc.value.detail)
 
     def test_datasource_outside_grant_403(self, monkeypatch):
-        import services.shared.common.auth as auth_mod
-        import services.authservice.services.role_service as rs
-        from services.datamind.execution import perm_link
+        import backend.common.auth as auth_mod
+        import backend.modules.auth.services.role_service as rs
+        from backend.modules.mind.execution import perm_link
         monkeypatch.setattr(auth_mod, "resolve_user_default_workspace_id", lambda uid: 5)
         monkeypatch.setattr(auth_mod, "authorize_workspace", lambda *a: 0)
         monkeypatch.setattr(perm_link, "require_write_perm", lambda *a, **k: None)
@@ -193,10 +193,10 @@ class TestGenerateEndpointFailClosed:
 
     def test_execution_layer_unavailable_503(self, monkeypatch):
         """执行层不可用必须 fail-loud 503，不做任何静默回退。"""
-        import services.shared.common.auth as auth_mod
-        import services.authservice.services.role_service as rs
-        from services.datamind.execution import perm_link
-        from services.datamind.execution import service as exec_service
+        import backend.common.auth as auth_mod
+        import backend.modules.auth.services.role_service as rs
+        from backend.modules.mind.execution import perm_link
+        from backend.modules.mind.execution import service as exec_service
         monkeypatch.setattr(auth_mod, "resolve_user_default_workspace_id", lambda uid: 5)
         monkeypatch.setattr(auth_mod, "authorize_workspace", lambda *a: 0)
         monkeypatch.setattr(perm_link, "require_write_perm", lambda *a, **k: None)
@@ -219,12 +219,12 @@ class TestGenerateEndpointFailClosed:
     # ── 全流程公共脚手架（鉴权全放行，聚焦派发/转译）──────────────
 
     def _run_full(self, monkeypatch, frames, req=None, stream_error=None):
-        import services.shared.common.auth as auth_mod
-        import services.authservice.services.role_service as rs
-        from services.datacatalog.api import ontology as ontology_api
-        from services.datamind.execution import perm_link
-        from services.datamind.execution import service as exec_service
-        from services.datamind.execution import tool_policy
+        import backend.common.auth as auth_mod
+        import backend.modules.auth.services.role_service as rs
+        from backend.modules.catalog.api import ontology as ontology_api
+        from backend.modules.mind.execution import perm_link
+        from backend.modules.mind.execution import service as exec_service
+        from backend.modules.mind.execution import tool_policy
 
         monkeypatch.setattr(auth_mod, "resolve_user_default_workspace_id", lambda uid: 5)
         monkeypatch.setattr(auth_mod, "authorize_workspace", lambda *a: 0)
@@ -249,7 +249,7 @@ class TestGenerateEndpointFailClosed:
                     yield f
             return _gen()
 
-        from services.datamind.services import chat_service
+        from backend.modules.mind.services import chat_service
         monkeypatch.setattr(chat_service.ChatService, "stream_query", fake_stream_query)
 
         async def _call():
@@ -302,7 +302,7 @@ _DONE_FRAMES = [
 
 class TestTaskMessage:
     def test_message_carries_business_name_not_internal_id(self):
-        from services.datacatalog.api import ontology as ontology_api
+        from backend.modules.catalog.api import ontology as ontology_api
         msg = ontology_api._build_task_message(DS_NAME, 42)
         assert DS_NAME in msg and "42" in msg
         assert "save_ontology_draft" in msg and "append=false" in msg
@@ -388,7 +388,7 @@ class TestSseEventContract:
 # ═══════════════════════════════════════════════════════════════════
 
 def _ctx(datasource_id=0, binding=None, username="u7"):
-    from services.datamind.execution.models import ExecutionContext
+    from backend.modules.mind.execution.models import ExecutionContext
     extra = {}
     if binding is not None:
         extra["task_binding"] = binding
@@ -398,17 +398,17 @@ def _ctx(datasource_id=0, binding=None, username="u7"):
 
 class TestDraftScope:
     def test_system_domain_always_allowed(self):
-        from services.datamind.execution.resource_guard import assert_ontology_draft_scope
+        from backend.modules.mind.execution.resource_guard import assert_ontology_draft_scope
         assert assert_ontology_draft_scope(_ctx(0)) == 0
 
     def test_business_source_without_task_binding_rejected(self):
-        from services.datamind.execution.resource_guard import (
+        from backend.modules.mind.execution.resource_guard import (
             ResourceScopeError, assert_ontology_draft_scope)
         with pytest.raises(ResourceScopeError, match="任务会话"):
             assert_ontology_draft_scope(_ctx(5))
 
     def test_task_binding_mismatch_rejected(self):
-        from services.datamind.execution.resource_guard import (
+        from backend.modules.mind.execution.resource_guard import (
             ResourceScopeError, assert_ontology_draft_scope)
         binding = {"kind": "ontology_generate", "datasource_id": 3}
         with pytest.raises(ResourceScopeError):
@@ -416,8 +416,8 @@ class TestDraftScope:
 
     def test_task_binding_but_unauthorized_source_rejected(self, monkeypatch):
         """授权集为空 fail-closed：有任务绑定也不得越权写源草案。"""
-        import services.authservice.services.role_service as rs
-        from services.datamind.execution.resource_guard import (
+        import backend.modules.auth.services.role_service as rs
+        from backend.modules.mind.execution.resource_guard import (
             ResourceScopeError, assert_ontology_draft_scope)
         monkeypatch.setattr(rs.role_service, "get_user_allowed_datasources", lambda *a: [])
         binding = {"kind": "ontology_generate", "datasource_id": 5}
@@ -425,8 +425,8 @@ class TestDraftScope:
             assert_ontology_draft_scope(_ctx(5, binding=binding))
 
     def test_task_binding_authorized_passes(self, monkeypatch):
-        import services.authservice.services.role_service as rs
-        from services.datamind.execution.resource_guard import assert_ontology_draft_scope
+        import backend.modules.auth.services.role_service as rs
+        from backend.modules.mind.execution.resource_guard import assert_ontology_draft_scope
         monkeypatch.setattr(rs.role_service, "get_user_allowed_datasources", lambda *a: [5])
         binding = {"kind": "ontology_generate", "datasource_id": 5}
         assert assert_ontology_draft_scope(_ctx(5, binding=binding)) == 5
@@ -438,8 +438,8 @@ class TestDraftScope:
 
 class TestSaveDraftTool:
     def _run(self, monkeypatch, args, ctx):
-        from services.datamind.execution.sdk_tools import ontology_tools as ot
-        from services.datamind.execution.sdk_tools.context import (
+        from backend.modules.mind.execution.sdk_tools import ontology_tools as ot
+        from backend.modules.mind.execution.sdk_tools.context import (
             ExecutionContextVar, set_execution_context)
         token = set_execution_context(ctx)
         try:
@@ -448,12 +448,12 @@ class TestSaveDraftTool:
             ExecutionContextVar.reset(token)
 
     def _grant_generate(self, monkeypatch):
-        import services.authservice.services.role_service as rs
+        import backend.modules.auth.services.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:generate": {"ai_access": "write", "ai_note": ""}})
 
     def test_missing_generate_perm_rejected(self, monkeypatch):
-        import services.authservice.services.role_service as rs
+        import backend.modules.auth.services.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms", lambda *a: {})
         p = _payload(self._run(monkeypatch, {"objects": [{"key": "k", "primary_table": "t"}]},
                                _ctx(0)))
@@ -468,7 +468,7 @@ class TestSaveDraftTool:
 
     def test_business_source_unauthorized_rejected(self, monkeypatch):
         """目标源未授权拒（fail-closed：空授权集不放行）。"""
-        import services.authservice.services.role_service as rs
+        import backend.modules.auth.services.role_service as rs
         self._grant_generate(monkeypatch)
         monkeypatch.setattr(rs.role_service, "get_user_allowed_datasources", lambda *a: [])
         binding = {"kind": "ontology_generate", "datasource_id": 5}
@@ -478,8 +478,8 @@ class TestSaveDraftTool:
 
     def test_append_merges_duplicates_with_warnings(self, monkeypatch):
         """同身份同主表 → 确定性合并，合并事实随 warnings 显式带回。"""
-        import services.authservice.services.role_service as rs
-        import services.datacatalog.services.ontology_service as osvc
+        import backend.modules.auth.services.role_service as rs
+        import backend.modules.catalog.services.ontology_service as osvc
         self._grant_generate(monkeypatch)
         monkeypatch.setattr(rs.role_service, "get_user_allowed_datasources", lambda *a: [5])
         ops = _patch_draft_db(monkeypatch)
@@ -502,7 +502,7 @@ class TestSaveDraftTool:
 
     def test_same_key_different_table_aborts(self, monkeypatch):
         """同名不同主表是真冲突：中止落库（宁缺勿错），不得静默二选一。"""
-        import services.authservice.services.role_service as rs
+        import backend.modules.auth.services.role_service as rs
         self._grant_generate(monkeypatch)
         monkeypatch.setattr(rs.role_service, "get_user_allowed_datasources", lambda *a: [5])
         ops = _patch_draft_db(monkeypatch)
@@ -522,10 +522,10 @@ class TestSaveDraftTool:
 
 class TestGenerateDraftTool:
     def _run(self, monkeypatch, args, ctx, materials=("M0", "M1")):
-        import services.authservice.services.role_service as rs
-        import services.datacatalog.services.ontology_service as osvc
-        from services.datamind.execution.sdk_tools import ontology_tools as ot
-        from services.datamind.execution.sdk_tools.context import (
+        import backend.modules.auth.services.role_service as rs
+        import backend.modules.catalog.services.ontology_service as osvc
+        from backend.modules.mind.execution.sdk_tools import ontology_tools as ot
+        from backend.modules.mind.execution.sdk_tools.context import (
             ExecutionContextVar, set_execution_context)
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:generate": {"ai_access": "write", "ai_note": ""}})

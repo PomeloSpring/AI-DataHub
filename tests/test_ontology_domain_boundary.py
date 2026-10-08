@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datamind.execution.sdk_tools import ontology_tools as ot
+from backend.modules.mind.execution.sdk_tools import ontology_tools as ot
 
 
 def _payload(result):
@@ -64,7 +64,7 @@ class _FakeConn:
 
 def _patch_model(monkeypatch, rows):
     """注入本体模型查询结果（_assert_system_model 走 get_metadata_conn）。"""
-    import services.shared.common.db.metadata_db as mdb
+    import backend.common.db.metadata_db as mdb
     monkeypatch.setattr(mdb, "get_metadata_conn", lambda: _FakeConn(rows))
 
 
@@ -125,7 +125,7 @@ class TestWriteOpsEnforceDomain:
     def test_save_system_model_without_perm_fail_closed(self, monkeypatch):
         """直执行口径：无 ontology:save 权限码即拒（审批回路已退役，不再生成审批单）。"""
         _patch_model(monkeypatch, [{"name": "AS-BOT 系统能力本体", "kind": "system"}])
-        import services.authservice.services.role_service as rs
+        import backend.modules.auth.services.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms", lambda *a: {})
         import asyncio
         result = asyncio.run(ot.save_ontology_model(
@@ -139,7 +139,7 @@ class TestWriteOpsEnforceDomain:
         _patch_model(monkeypatch, [{"name": "AS-BOT 系统能力本体", "kind": "system"}])
         saved = {}
         monkeypatch.setattr(ot, "_require_write_perm", lambda *a, **k: None)
-        import services.datacatalog.services.ontology_service as osvc
+        import backend.modules.catalog.services.ontology_service as osvc
 
         def fake_save(mid, content, name=None):
             saved.update({"id": mid, "content": content})
@@ -185,7 +185,7 @@ class TestListModelsVisibility:
         业务本体凭空消失（它们 datasource_id=0）——过滤反了。
         """
         import inspect
-        from services.datacatalog.services import ontology_service as osvc
+        from backend.modules.catalog.services import ontology_service as osvc
         src = inspect.getsource(osvc.list_models)
         # 必须含“非源本体恒可见”子句
         assert "kind <> 'source'" in src or "kind != 'source'" in src
@@ -201,7 +201,7 @@ class TestDictScopeUnaffected:
         若有人把本体的 kind 口径照搬到字典查询，会查空（列不存在）。
         """
         import inspect
-        from services.datamind.execution.sdk_tools import scoped_metadata as sm
+        from backend.modules.mind.execution.sdk_tools import scoped_metadata as sm
         src = inspect.getsource(sm.execute)
         # 字典查询仍按 datasource_id 作用域（含全局 0）
         assert "datasource_id = %s OR datasource_id = 0" in src

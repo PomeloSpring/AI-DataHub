@@ -10,7 +10,7 @@ from unittest.mock import Mock
 import pytest
 from fastapi import HTTPException
 
-from services.dataviz.services import dashboard_design_service as ds
+from backend.modules.viz.services import dashboard_design_service as ds
 
 USER = {"user_id": 7, "role": "admin", "username": "designer", "workspace_id": 0}
 WIDGET = {"title": "案例数量", "chart_type": "bar", "query": {"object": "case", "metrics": ["案例数量"],
@@ -32,7 +32,7 @@ def test_projection_never_contains_manual_sql_or_preview_rows():
 
 
 def test_sql_requires_extra_permission(monkeypatch):
-    monkeypatch.setattr('services.shared.common.api_permission.check_api_permission', lambda *a: False)
+    monkeypatch.setattr('backend.common.api_permission.check_api_permission', lambda *a: False)
     with pytest.raises(ds.DesignError, match="SQL"):
         ds.require_sql_permission(USER)
 
@@ -44,9 +44,9 @@ def test_no_selection_is_not_global_scope():
 
 def test_domains_discovered_without_as_bot_datasource_bindings(monkeypatch):
     """业务域不依赖 AS-BOT 数据源，但知识库必须显式绑定。"""
-    monkeypatch.setattr('services.datamind.execution.as_bots.resolve_as_bots',
+    monkeypatch.setattr('backend.modules.mind.execution.as_bots.resolve_as_bots',
                         lambda *a, **k: [{"as_bot_key": "a", "knowledge_base_ids": [4]}])
-    monkeypatch.setattr('services.datamind.execution.as_bots.default_as_bot',
+    monkeypatch.setattr('backend.modules.mind.execution.as_bots.default_as_bot',
                         lambda bots: bots[0] if bots else None)
     def fake(sql, params=None, fetchone=False):
         if 'adh_ontology_models' in sql:
@@ -68,9 +68,9 @@ def _scope_fake(rows_map):
 
 
 def test_workspace_derived_from_dashboard_not_user_choice(monkeypatch):
-    monkeypatch.setattr('services.datamind.execution.as_bots.resolve_as_bots',
+    monkeypatch.setattr('backend.modules.mind.execution.as_bots.resolve_as_bots',
                         lambda *a, **k: [{"as_bot_key": "a", "knowledge_base_ids": []}])
-    monkeypatch.setattr('services.datamind.execution.as_bots.default_as_bot',
+    monkeypatch.setattr('backend.modules.mind.execution.as_bots.default_as_bot',
                         lambda bots: bots[0] if bots else None)
     monkeypatch.setattr(ds, 'execute_query', _scope_fake({
         'adh_ontology_models': {'id': 7}, 'adh_dashboards': {'id': 5, 'workspace_id': 1, 'owner_id': USER['user_id']},
@@ -87,15 +87,15 @@ def test_domain_without_active_ontology_fails_loud(monkeypatch):
 
 
 def test_empty_kb_scope_does_not_query_all(monkeypatch):
-    from services.datamind.rag import qmind_retriever as qr
+    from backend.modules.mind.rag import qmind_retriever as qr
     q = Mock(side_effect=AssertionError("不应查询全库"))
-    monkeypatch.setattr('services.shared.common.db.execute_query', q)
+    monkeypatch.setattr('backend.common.db.execute_query', q)
     assert qr._bound_qmind_kbs([]) == []
     q.assert_not_called()
 
 
 def test_unknown_source_chunk_never_reaches_agent(monkeypatch):
-    from services.datamind.rag import qmind_retriever as qr
+    from backend.modules.mind.rag import qmind_retriever as qr
     row = {"content": {}, "status": "designing"}
     scope = {"datasource_id": 5, "knowledge_bases": [{"id": 1, "name": "kb", "kb_type": "qmind",
               "source_config": {"notebook_id": "test"}}]}
@@ -108,7 +108,7 @@ def test_unknown_source_chunk_never_reaches_agent(monkeypatch):
 
 
 def test_same_object_key_does_not_authorize_other_domain(monkeypatch):
-    from services.datamind.rag import qmind_retriever as qr
+    from backend.modules.mind.rag import qmind_retriever as qr
     monkeypatch.setattr(ds, 'load', lambda *a: ({"content": {}, "status": "designing"}, USER))
     monkeypatch.setattr(ds, 'resolve_scope', lambda *a: {"datasource_id": 5, "knowledge_bases": [
         {"id": 1, "name": "kb", "kb_type": "qmind", "source_config": {"notebook_id": "test"}}]})
@@ -134,7 +134,7 @@ def test_manual_sql_must_remain_single_readonly_query(sql):
 
 def test_publish_direct_requires_valid_preview(monkeypatch):
     """直执行发布：无有效预览即拒（不再有审批单可绕过预览）。"""
-    from services.datamind.execution import perm_link
+    from backend.modules.mind.execution import perm_link
     monkeypatch.setattr(perm_link, 'require_write_perm', lambda *a, **k: None)
     row = {'id': 'a' * 32, 'version': 2, 'status': 'designing', 'preview': None,
            'preview_valid': 0, 'content': {'widgets': []}, 'result': None}
@@ -146,14 +146,14 @@ def test_publish_direct_requires_valid_preview(monkeypatch):
 
 def test_rest_publish_requires_expected_version():
     """REST 发布必须带 expected_version（乐观锁），伪造载荷被 schema 拒。"""
-    from services.datamind.api.as_bot import DesignVersion
+    from backend.modules.mind.api.as_bot import DesignVersion
     with pytest.raises(Exception):
         DesignVersion()  # 缺 expected_version
 
 
 def test_position_normalized_to_pixels_for_canvas():
     """设计 12 列网格 position 发布时换算为像素（看板画布是像素绝对定位，否则图表缩成 4x2px）。"""
-    from services.dataviz.services.dashboard_service import _position_to_pixels
+    from backend.modules.viz.services.dashboard_service import _position_to_pixels
     # 网格制两列布局 → 像素（1 列=80px、1 行=90px）
     assert _position_to_pixels({"x": 6, "y": 2, "w": 6, "h": 4}) == {
         "x": 480.0, "y": 180.0, "w": 480.0, "h": 360.0}
@@ -166,7 +166,7 @@ def test_position_normalized_to_pixels_for_canvas():
 
 def test_system_scope_metadata_superposes_business(monkeypatch):
     """能力叠加（域规则更新）：system 能力元数据可见系统本体 ∪ 业务域，字典按本源+全局口径。"""
-    from services.datamind.execution.sdk_tools import scoped_metadata
+    from backend.modules.mind.execution.sdk_tools import scoped_metadata
     from types import SimpleNamespace
     policy = SimpleNamespace(selection={"system": ["system_usage"]}, as_bot={})
     ctx = SimpleNamespace(datasource_id=0,
@@ -188,9 +188,9 @@ def test_system_scope_metadata_superposes_business(monkeypatch):
 def mysql_design(monkeypatch):
     if os.getenv('ADH_TEST_DESIGN_MYSQL') != '1':
         pytest.skip('需显式启用隔离 MySQL 设计回归')
-    from services.shared.common.db import execute_query, execute_insert, execute_write
-    from services.shared.common.db.metadata_db import get_metadata_conn
-    from services.dataviz.services import governed_query
+    from backend.common.db import execute_query, execute_insert, execute_write
+    from backend.common.db.metadata_db import get_metadata_conn
+    from backend.modules.viz.services import governed_query
     uid = 2**52 + uuid.uuid4().int % 100000000
     user = {**USER, 'user_id': uid}
     monkeypatch.setattr(ds, 'identity', lambda u: user if u.get('user_id') == uid else (_ for _ in ()).throw(ds.DesignError('无权访问')))
@@ -275,7 +275,7 @@ def test_mysql_two_connections_publish_only_once(mysql_design):
 
 def test_mysql_fault_rolls_back_chart_and_design(mysql_design, monkeypatch):
     import importlib
-    dashboard_service = importlib.import_module('services.dataviz.services.dashboard_service')
+    dashboard_service = importlib.import_module('backend.modules.viz.services.dashboard_service')
     f = mysql_design
     p = ds.preview(f['design']['design_id'], f['user'], f['design']['version'])
     real = dashboard_service.publish_design_in_transaction

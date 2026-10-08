@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from services.shared.semantics.datafusion_dialect import to_datafusion
+from backend.semantics.datafusion_dialect import to_datafusion
 
 
 def test_date_sub_add_to_interval():
@@ -64,7 +64,7 @@ def test_group_concat_and_plain_passthrough():
 
 def test_engine_client_fallback_keeps_original_sql():
     """转译失败时 _transpile_for_engine 必须原样返回,不吞查询。"""
-    from services.shared.common.engine_client import _transpile_for_engine
+    from backend.common.engine_client import _transpile_for_engine
     weird = "SELECT DATE_FORMAT(dt, '%x%v') FROM t"
     assert _transpile_for_engine(weird) == weird
     ok = "SELECT DATE_SUB(NOW(), INTERVAL 7 DAY) FROM t"

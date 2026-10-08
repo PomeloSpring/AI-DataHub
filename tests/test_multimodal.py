@@ -15,18 +15,18 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datamind.multimodal import (
+from backend.modules.mind.multimodal import (
     ALLOWED_EXTENSIONS, MAX_FILE_SIZE, MAX_FILES_PER_REQUEST, classify_extension,
 )
-from services.datamind.multimodal import loader
-from services.datamind.multimodal.loader import (
+from backend.modules.mind.multimodal import loader
+from backend.modules.mind.multimodal.loader import (
     build_user_content, normalize_rel_path, resolve_workspace_file,
     save_derived_file, write_upload_file,
 )
-from services.datamind.multimodal.table_parser import parse_table_file
-from services.datamind.multimodal.doc_parser import extract_document_text
-from services.datamind.execution.secure_sdk import place_attachments
-from services.datamind.api.send_payload import _validate_upload
+from backend.modules.mind.multimodal.table_parser import parse_table_file
+from backend.modules.mind.multimodal.doc_parser import extract_document_text
+from backend.modules.mind.execution.secure_sdk import place_attachments
+from backend.modules.mind.api.send_payload import _validate_upload
 
 
 # ── classify_extension ─────────────────────────────────────────────
@@ -332,8 +332,8 @@ class TestParseSendRequest:
     def client(self):
         from fastapi import FastAPI, Request
         from fastapi.testclient import TestClient
-        from services.datamind.api.pipeline import PipelineExecuteRequest
-        from services.datamind.api.send_payload import parse_send_request
+        from backend.modules.mind.api.pipeline import PipelineExecuteRequest
+        from backend.modules.mind.api.send_payload import parse_send_request
 
         app = FastAPI()
 
@@ -403,7 +403,7 @@ class TestParseSendRequest:
 
 class TestAttachmentsFailLoud:
     def test_unhandled_attachments_yield_error_not_fallback(self):
-        from services.datamind.services.chat_service import ChatService
+        from backend.modules.mind.services.chat_service import ChatService
 
         service = ChatService()
 

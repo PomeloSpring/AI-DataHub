@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datacatalog.services import ontology_kb_sync, ontology_service  # noqa: E402
+from backend.modules.catalog.services import ontology_kb_sync, ontology_service  # noqa: E402
 
 
 # ── 语义取数真源（按 kind 裁决）─────────────────────────────
@@ -29,7 +29,7 @@ class TestSemanticBindingSourceOfTruth:
     def test_bindings_query_filters_by_kind(self):
         """Level 1/2 档位 SQL 必须 JOIN models 按 kind 裁决，business 不参与取数。"""
         import inspect
-        from services.shared.semantics import binding_resolver as br
+        from backend.semantics import binding_resolver as br
         src = inspect.getsource(br._resolve_from_bindings)
         assert "JOIN adh_ontology_models" in src
         assert "m.kind = 'source'" in src and "m.kind = 'system'" in src
@@ -38,7 +38,7 @@ class TestSemanticBindingSourceOfTruth:
 
     def test_objects_inline_same_scope(self):
         import inspect
-        from services.shared.semantics import binding_resolver as br
+        from backend.semantics import binding_resolver as br
         src = inspect.getsource(br._resolve_from_objects_inline)
         assert "JOIN adh_ontology_models" in src and "m.kind = 'source'" in src
 
@@ -55,7 +55,7 @@ class TestModelVisibility:
         历史缺陷：`user.id` 对 dict 取属性 → AttributeError → GET /models 500，
         前端模型列表整页空白（"本体怎么都没了"）。
         """
-        from services.datacatalog.api import ontology as ontology_api
+        from backend.modules.catalog.api import ontology as ontology_api
         calls = []
 
         class _FakeRoleService:
@@ -64,7 +64,7 @@ class TestModelVisibility:
                 calls.append((uid, ws))
                 return [7, 8]
 
-        monkeypatch.setattr("services.authservice.services.role_service.role_service",
+        monkeypatch.setattr("backend.modules.auth.services.role_service.role_service",
                             _FakeRoleService)
         allowed = ontology_api._allowed_source_ids(
             {"user_id": 42, "username": "u", "role": "admin"})
@@ -104,7 +104,7 @@ class TestKbRouting:
 
     def test_source_skip_reason_is_decision_not_misconfig(self, monkeypatch):
         """源本体不同步要标注裁决原因，不伪装成 no_kb_bound 配置遗漏。"""
-        from services.datacatalog.services.ontology_service import get_model
+        from backend.modules.catalog.services.ontology_service import get_model
         monkeypatch.setattr(ontology_service, "get_model",
                             lambda mid: {"id": mid, "kind": "source", "datasource_id": 9,
                                          "name": "s", "status": "active"})
@@ -123,7 +123,7 @@ class TestEnforcerFailClosed:
     def test_datasource_step_never_skips_on_empty_grant(self):
         """历史缺陷回归：`if allowed_ds and ...` 空授权跳过检查（fail-open）。"""
         import inspect
-        from services.datamind.permission import enforcer
+        from backend.modules.mind.permission import enforcer
         src = inspect.getsource(enforcer.PermissionEnforcer)
         # 只看代码行（历史缺陷描述在注释里，不算）
         code_lines = [ln for ln in src.splitlines()
@@ -135,6 +135,6 @@ class TestEnforcerFailClosed:
 
     def test_role_service_doc_is_fail_closed(self):
         import inspect
-        from services.authservice.services.role_service import role_service
+        from backend.modules.auth.services.role_service import role_service
         doc = inspect.getdoc(role_service.get_user_allowed_datasources)
         assert "fail-closed" in doc and "no restriction" not in doc.lower()

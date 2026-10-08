@@ -1,0 +1,856 @@
+"""Authentication module — JWT validation + bcrypt password verification against adh_users.
+
+Includes:
+- JWT token validation (decode_token, get_current_user, require_admin, get_workspace_id)
+- User management (CRUD, password policy, login lockout, audit logging)
+Sensitive fields (email, phone) are encrypted with AES-256-GCM.
+"""
+from __future__ import annotations
+
+import logging
+import re
+import time as _time
+from contextlib import contextmanager
+from datetime import datetime, timedelta
+from functools import wraps
+
+import bcrypt
+import jwt
+import pymysql
+from fastapi import HTTPException, Depends, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+from backend.common.config import (
+    DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, METADATA_DB_DATABASE,
+    ADH_DEFAULT_ADMIN_PASSWORD, ADH_SECRET_KEY,
+)
+from backend.common.db.metadata_db import get_metadata_conn
+from backend.common.crypto import encrypt_password, decrypt_password, is_encrypted
+
+logger = logging.getLogger(__name__)
+
+# ── JWT Configuration ──────────────────────────────────────────────────
+
+security = HTTPBearer()
+
+ALGORITHM = "HS256"
+
+
+# ── JWT Token Validation ──────────────────────────────────────────────
+
+def decode_token(token: str) -> dict:
+    """Decode and validate a JWT token.
+
+    Returns:
+        dict with user info: {user_id, username, role, workspace_id}
+    Raises:
+        jwt.InvalidTokenError on invalid token
+    """
+    payload = jwt.decode(token, ADH_SECRET_KEY, algorithms=[ALGORITHM])
+
+    # Check expiration
+    if payload.get("exp", 0) < _time.time():
+        raise jwt.ExpiredSignatureError("Token has expired")
+
+    return payload
+
+
+def resolve_current_user(token: str) -> dict:
+    """验签后读取当前用户状态与角色，旧 JWT 不保留已撤销的权限。"""
+    try:
+        payload = decode_token(token)
+        uid = int(payload.get("user_id") or 0)
+        if uid <= 0:
+            raise HTTPException(status_code=401, detail="无效身份")
+        live = get_user_by_id(uid)
+        if not live or live.get("status") != "active":
+            raise HTTPException(status_code=401, detail="用户不存在或已停用")
+        return {"user_id": uid, "username": live.get("username") or "",
+                "role": live.get("user_role") or "viewer"}
+    except (jwt.InvalidTokenError, ValueError, TypeError):
+        raise HTTPException(status_code=401, detail="登录已失效，请重新登录") from None
+
+
+def resolve_execution_owner(owner_id: int, workspace_id: int) -> dict:
+    """后台任务只接受持久化创建者；每次运行重新读取状态、角色和工作空间授权。"""
+    uid = int(owner_id or 0)
+    if uid <= 0:
+        raise PermissionError("任务待认领，缺少可信创建者")
+    live = get_user_by_id(uid)
+    if not live or live.get("status") != "active":
+        raise PermissionError("任务创建者不存在或已停用")
+    user = {"user_id": uid, "username": live.get("username") or "",
+            "role": live.get("user_role") or "viewer"}
+    user["workspace_id"] = authorize_workspace(user, workspace_id)
+    return user
+
+
+def authorize_workspace(user: dict, workspace_id: int) -> int:
+    """客户端工作空间仅作选择；资源访问必须通过服务端授权。"""
+    if not isinstance(user, dict) or not user.get("user_id"):
+        raise HTTPException(status_code=401, detail="缺少可信身份")
+    try:
+        ws = int(workspace_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="工作空间无效") from None
+    if ws < 0:
+        raise HTTPException(status_code=400, detail="工作空间无效")
+    if user.get("role") == "admin":
+        return ws
+    if not ws:
+        raise HTTPException(status_code=403, detail="请选择已授权工作空间")
+    from backend.modules.auth.services.role_service import role_service
+    try:
+        # 工作空间随用户走(个人工作站): 仅属主可访问, 成员体系已退役
+        allowed = role_service.check_workspace_owner(int(user["user_id"]), ws)
+    except Exception:
+        logger.exception("工作空间授权校验不可用")
+        raise HTTPException(status_code=503, detail="权限服务暂不可用") from None
+    if not allowed:
+        raise HTTPException(status_code=403, detail="无权访问该工作空间")
+    return ws
+
+
+def resolve_user_default_workspace_id(user_id: int) -> int:
+    """未指定工作空间时的会话归属解析(唯一口径): 用户默认工作空间。
+
+    工作空间随用户走(个人工作站, 见 authorize_workspace): 默认空间语义随属主落
+    adh_workspaces.is_default(set-default 接口同一口径, 成员表已冻结)。无
+    is_default 标记时取属主最早的工作站; 均无返回 0, 由调用方显式报错——
+    AS-BOT 与 Waker 统一后不再有全局/系统域会话, 严禁落回 workspace 0。
+    """
+    if not user_id or int(user_id) <= 0:
+        raise HTTPException(status_code=401, detail="缺少可信身份")
+    from backend.common.db.metadata_db import get_metadata_conn
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM adh_workspaces WHERE owner_id=%s AND is_default=1 LIMIT 1",
+                (int(user_id),))
+            row = cur.fetchone()
+            if row:
+                return int(row["id"])
+            cur.execute(
+                "SELECT id FROM adh_workspaces WHERE owner_id=%s ORDER BY id LIMIT 1",
+                (int(user_id),))
+            row = cur.fetchone()
+            return int(row["id"]) if row else 0
+    finally:
+        conn.close()
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    request: Request = None,
+) -> dict:
+    """FastAPI dependency that extracts and validates the current user from JWT.
+
+    Returns:
+        dict with {user_id, username, role}
+    """
+    cached = getattr(request.state, "current_user", None) if request else None
+    if cached:
+        return cached
+    if not isinstance(credentials, HTTPAuthorizationCredentials):
+        raise HTTPException(status_code=401, detail="缺少可信身份")
+    from starlette.concurrency import run_in_threadpool
+    return await run_in_threadpool(resolve_current_user, credentials.credentials)
+
+
+_bearer_optional = HTTPBearer(auto_error=False)
+
+
+async def get_file_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_optional),
+) -> dict:
+    """文件下载鉴权: 支持 Authorization header 或 ?token= 查询参数。
+
+    查询参数回退用于 <img src> / three.js 等无法携带自定义 header 的场景。
+    (会话工作区文件伺服 /api/chat/session-file 与产物下载共用)
+    """
+    token = credentials.credentials if credentials else request.query_params.get("token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = decode_token(token)
+        return {
+            "user_id": payload.get("user_id"),
+            "username": payload.get("username"),
+            "role": payload.get("role", "viewer"),
+        }
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
+async def require_admin(
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """FastAPI dependency that requires admin role."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
+async def get_workspace_id(request: Request) -> int:
+    """Extract workspace_id from query params or headers."""
+    ws_id = request.query_params.get("workspace_id")
+    if not ws_id:
+        ws_id = request.headers.get("X-Workspace-Id")
+    if not ws_id:
+        return 0
+    try:
+        return int(ws_id)
+    except (ValueError, TypeError):
+        return 0
+
+
+async def require_workspace_access(
+    request: Request, user: dict = Depends(get_current_user),
+) -> int:
+    from starlette.concurrency import run_in_threadpool
+    selected = await get_workspace_id(request)
+    return await run_in_threadpool(authorize_workspace, user, selected)
+
+
+# ── Internal service-to-service identity (signed header for proxied calls) ──
+# 下游(语义层)只信由此头传入、由带 JWT 的入口服务签发的身份, 绝不信任请求体里的
+# user_id(I2/I4)。密钥用 ADH_SECRET_KEY(HMAC-SHA256), 防伪造/篡改。
+
+_ID_HEADER = "X-Internal-Identity"
+_ID_SALT = "adh-internal-id-v1"
+
+
+def sign_internal_identity(user_id: int, workspace_id: int = 0) -> str:
+    """生成内部身份头值 '<uid>:<ws>:<hmac>'。仅供可信入口服务(datamind)签发。"""
+    import hmac as _hmac
+    import hashlib as _hashlib
+    uid, ws = int(user_id or 0), int(workspace_id or 0)
+    payload = f"{_ID_SALT}:{uid}:{ws}"
+    sig = _hmac.new(
+        ADH_SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), _hashlib.sha256,
+    ).hexdigest()[:32]
+    return f"{uid}:{ws}:{sig}"
+
+
+def verify_internal_identity(value: str) -> dict | None:
+    """校验内部身份头; 返回 {user_id, workspace_id}, 缺失/篡改返回 None。"""
+    import hmac as _hmac
+    import hashlib as _hashlib
+    if not value or not ADH_SECRET_KEY:
+        return None
+    parts = value.split(":")
+    if len(parts) != 3:
+        return None
+    uid_s, ws_s, sig = parts
+    try:
+        uid, ws = int(uid_s), int(ws_s)
+    except (TypeError, ValueError):
+        return None
+    payload = f"{_ID_SALT}:{uid}:{ws}"
+    expect = _hmac.new(
+        ADH_SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), _hashlib.sha256,
+    ).hexdigest()[:32]
+    if not _hmac.compare_digest(sig, expect):
+        return None
+    return {"user_id": uid, "workspace_id": ws}
+
+
+# ── Lightweight Permission Check ────────────────────────────────────────
+
+def require_permission(
+    datasource_id: int = 0,
+    table: str = "",
+    workspace_id: int = 0,
+):
+    """Factory for a FastAPI dependency that checks data-level access via role_service + rls_service.
+
+    Usage:
+        @router.post("/query")
+        async def run_query(
+            req: QueryRequest,
+            user: dict = Depends(require_permission(datasource_id=1, table="orders")),
+        ):
+            ...
+
+    This uses the lightweight permission system (role_service + rls_service).
+    No external dependencies (Ranger/LDAP/Kerberos).
+    """
+    async def _check(
+        user: dict = Depends(get_current_user),
+        ws_id: int = Depends(get_workspace_id),
+    ) -> dict:
+        effective_ws = workspace_id or ws_id
+
+        try:
+            from backend.modules.mind.permission.enforcer import permission_enforcer
+
+            result = permission_enforcer.check_access(
+                user_id=user["user_id"],
+                workspace_id=effective_ws,
+                datasource_id=datasource_id,
+                table_name=table,
+            )
+
+            if not result.allowed:
+                raise HTTPException(
+                    status_code=403,
+                    detail=result.reason,
+                )
+
+            # Attach permission context for downstream use
+            user["permission_result"] = result
+            user["workspace_id"] = effective_ws
+            return user
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning("权限校验失败，拒绝访问: %s", e)
+            raise HTTPException(status_code=503, detail="权限服务暂不可用") from None
+
+    return _check
+
+
+# ── Security constants ──────────────────────────────────────────────────
+MAX_LOGIN_ATTEMPTS = 5
+LOCKOUT_MINUTES = 15
+MIN_PASSWORD_LENGTH = 8
+
+
+@contextmanager
+def _get_connection():
+    conn = get_metadata_conn()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _now_str():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _ts_id():
+    return int(_time.time() * 1000)
+
+
+# ── Sensitive field encryption helpers ──────────────────────────────────
+
+def _encrypt_field(value: str) -> str:
+    """Encrypt a sensitive field (email, phone). Returns empty string for empty input."""
+    if not value:
+        return ""
+    try:
+        return encrypt_password(value)
+    except Exception as e:
+        logger.warning("Failed to encrypt field: %s", e)
+        return value  # Fallback to plaintext on error
+
+
+def _decrypt_field(value: str) -> str:
+    """Decrypt a sensitive field. Returns empty string for empty input."""
+    if not value:
+        return ""
+    try:
+        if is_encrypted(value):
+            return decrypt_password(value)
+        return value  # Not encrypted (legacy data), return as-is
+    except Exception as e:
+        logger.warning("Failed to decrypt field: %s", e)
+        return "***"  # Return masked value on error
+
+
+def _decrypt_user_row(row: dict) -> dict:
+    """Decrypt sensitive fields in a user row."""
+    if row:
+        row["email"] = _decrypt_field(row.get("email", ""))
+        row["phone"] = _decrypt_field(row.get("phone", ""))
+    return row
+
+
+def _decrypt_user_rows(rows: list) -> list:
+    """Decrypt sensitive fields in a list of user rows."""
+    return [_decrypt_user_row(row) for row in rows]
+
+
+# ── Password policy ─────────────────────────────────────────────────────
+
+def validate_password_strength(password: str) -> tuple[bool, str]:
+    """Check password meets minimum requirements. Returns (valid, message)."""
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return False, f"密码长度不能少于{MIN_PASSWORD_LENGTH}个字符"
+    if not re.search(r"[a-zA-Z]", password):
+        return False, "密码必须包含字母"
+    if not re.search(r"\d", password):
+        return False, "密码必须包含数字"
+    return True, ""
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def check_password(password: str, pw_hash: str) -> bool:
+    return bcrypt.checkpw(password.encode("utf-8"), pw_hash.encode("utf-8"))
+
+
+# ── Audit logging ───────────────────────────────────────────────────────
+
+def log_audit(user_id: int, username: str, action: str,
+              target_type: str = "", target_id: int = 0,
+              detail: str = "", ip_address: str = "", module: str = ""):
+    """Write an audit log entry."""
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO adh_audit_logs "
+                    "(id, user_id, username, action, target_type, target_id, detail, ip_address, module, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (_ts_id(), user_id, username, action, target_type, target_id,
+                     detail, ip_address, module, _now_str()),
+                )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Failed to write audit log: %s", e)
+
+
+# ── Ensure admin user ───────────────────────────────────────────────────
+
+def _ensure_admin_user():
+    """Create default admin user if no users exist."""
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) AS cnt FROM adh_users")
+                row = cur.fetchone()
+                if row and row["cnt"] > 0:
+                    return
+
+                pw_hash = hash_password(ADH_DEFAULT_ADMIN_PASSWORD)
+                now = _now_str()
+                cur.execute(
+                    "INSERT INTO adh_users "
+                    "(id, username, password_hash, email, phone, avatar, user_role, status, "
+                    "login_attempts, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (_ts_id(), "admin", pw_hash, "", "", "", "admin", "active", 0, now, now),
+                )
+            conn.commit()
+            logger.info("Default admin user created.")
+    except Exception as e:
+        logger.warning("Failed to ensure admin user: %s", e)
+
+
+# ── Authentication ──────────────────────────────────────────────────────
+
+def authenticate(username: str, password: str, ip_address: str = "") -> dict | None:
+    """Verify credentials and return user dict or None.
+
+    Handles login-attempt counting and account lockout.
+    """
+    _ensure_admin_user()
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, username, password_hash, user_role, status, "
+                    "login_attempts, locked_until "
+                    "FROM adh_users WHERE username = %s",
+                    (username,),
+                )
+                user = cur.fetchone()
+
+        if not user:
+            return None
+
+        # Check account status
+        if user["status"] == "disabled":
+            return {"error": "disabled", "message": "账号已被禁用，请联系管理员"}
+
+        # Check lockout
+        if user.get("locked_until"):
+            locked_until = user["locked_until"]
+            if isinstance(locked_until, str):
+                locked_until = datetime.strptime(locked_until, "%Y-%m-%d %H:%M:%S")
+            if datetime.now() < locked_until:
+                remaining = int((locked_until - datetime.now()).total_seconds() / 60) + 1
+                return {"error": "locked", "message": f"账号已锁定，请{remaining}分钟后重试"}
+            else:
+                # Lockout expired, reset attempts
+                _reset_login_attempts(user["id"])
+
+        # Check password
+        if not check_password(password, user["password_hash"]):
+            _increment_login_attempts(user["id"], username)
+            return None
+
+        # Success — reset attempts and update last_login
+        _reset_login_attempts(user["id"])
+        _update_last_login(user["id"])
+
+        log_audit(user["id"], username, "login", detail="登录成功", ip_address=ip_address)
+
+        return {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["user_role"],
+            "status": user["status"],
+        }
+    except Exception as e:
+        logger.error("Authentication error: %s", e)
+        return None
+
+
+def _increment_login_attempts(user_id: int, username: str):
+    """Increment login attempts and lock account if threshold reached."""
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE adh_users SET login_attempts = login_attempts + 1, updated_at = %s WHERE id = %s",
+                    (_now_str(), user_id),
+                )
+                cur.execute("SELECT login_attempts FROM adh_users WHERE id = %s", (user_id,))
+                row = cur.fetchone()
+                if row and row["login_attempts"] >= MAX_LOGIN_ATTEMPTS:
+                    locked_until = (datetime.now() + timedelta(minutes=LOCKOUT_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+                    cur.execute(
+                        "UPDATE adh_users SET locked_until = %s, updated_at = %s WHERE id = %s",
+                        (locked_until, _now_str(), user_id),
+                    )
+                    log_audit(user_id, username, "account_locked",
+                              detail=f"连续{MAX_LOGIN_ATTEMPTS}次登录失败，锁定{LOCKOUT_MINUTES}分钟")
+            conn.commit()
+    except Exception as e:
+        logger.warning("Failed to increment login attempts: %s", e)
+
+
+def _reset_login_attempts(user_id: int):
+    """Reset login attempts and clear lockout."""
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE adh_users SET login_attempts = 0, locked_until = NULL, updated_at = %s WHERE id = %s",
+                    (_now_str(), user_id),
+                )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Failed to reset login attempts: %s", e)
+
+
+def _update_last_login(user_id: int):
+    """Update last login timestamp."""
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE adh_users SET last_login = %s, updated_at = %s WHERE id = %s",
+                    (_now_str(), _now_str(), user_id),
+                )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Failed to update last login: %s", e)
+
+
+# ── User CRUD ───────────────────────────────────────────────────────────
+
+def get_user_by_id(user_id: int) -> dict | None:
+    """Get user by ID (without password hash). Sensitive fields are decrypted."""
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, username, email, phone, avatar, user_role, status, "
+                    "last_login, login_attempts, locked_until, created_at, updated_at "
+                    "FROM adh_users WHERE id = %s",
+                    (user_id,),
+                )
+                row = cur.fetchone()
+                return _decrypt_user_row(row)
+    except Exception as e:
+        logger.error("Failed to get user: %s", e)
+        return None
+
+
+def list_users(page: int = 1, size: int = 50, search: str = "", role: str = "") -> tuple[list[dict], int]:
+    """List users with pagination and filtering. Returns (items, total).
+
+    Note: Search on encrypted fields (email, phone) won't work with encrypted storage.
+    Only username search is supported for encrypted fields.
+    """
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                where_clauses = []
+                params = []
+                if search:
+                    # Can only search username directly; email/phone are encrypted
+                    where_clauses.append("username LIKE %s")
+                    like = f"%{search}%"
+                    params.append(like)
+                if role:
+                    where_clauses.append("user_role = %s")
+                    params.append(role)
+
+                where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+                # Count
+                cur.execute(f"SELECT COUNT(*) AS cnt FROM adh_users{where_sql}", params)
+                total = cur.fetchone()["cnt"]
+
+                # Fetch page
+                offset = (page - 1) * size
+                cur.execute(
+                    f"SELECT id, username, email, phone, avatar, user_role, status, "
+                    f"last_login, login_attempts, locked_until, created_at, updated_at "
+                    f"FROM adh_users{where_sql} ORDER BY id DESC LIMIT %s OFFSET %s",
+                    params + [size, offset],
+                )
+                items = cur.fetchall()
+                return _decrypt_user_rows(items), total
+    except Exception as e:
+        logger.error("Failed to list users: %s", e)
+        return [], 0
+
+
+def create_user(username: str, password: str, role: str = "viewer",
+                email: str = "", phone: str = "") -> tuple[bool, str, int]:
+    """Create a new user. Returns (success, message, user_id).
+
+    Email and phone are encrypted before storage.
+    """
+    valid, msg = validate_password_strength(password)
+    if not valid:
+        return False, msg, 0
+
+    try:
+        pw_hash = hash_password(password)
+        user_id = _ts_id()
+        now = _now_str()
+        enc_email = _encrypt_field(email)
+        enc_phone = _encrypt_field(phone)
+
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM adh_users WHERE username = %s", (username,))
+                if cur.fetchone():
+                    return False, "用户名已存在", 0
+                if enc_email:
+                    # Check uniqueness by comparing encrypted values
+                    cur.execute("SELECT id FROM adh_users WHERE email = %s AND email != ''", (enc_email,))
+                    if cur.fetchone():
+                        return False, "邮箱已被使用", 0
+                cur.execute(
+                    "INSERT INTO adh_users "
+                    "(id, username, password_hash, email, phone, avatar, user_role, status, "
+                    "login_attempts, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (user_id, username, pw_hash, enc_email, enc_phone, "", role, "active", 0, now, now),
+                )
+                # 全局角色双写：adh_user_roles(ws=0) 镜像随 user_role 列缓存同事务写入。
+                # 历史缺陷：只写列不写镜像 → 用户零权限码被 API 门控 403（建号后无法发消息）。
+                from backend.modules.auth.services.role_service import role_service as _role_svc
+                _role_svc.write_global_role_mirror(cur, user_id, role)
+            conn.commit()
+        return True, "创建成功", user_id
+    except Exception as e:
+        logger.error("Failed to create user: %s", e)
+        return False, "创建失败", 0
+
+
+def update_user(user_id: int, username: str = None, email: str = None,
+                phone: str = None, role: str = None) -> tuple[bool, str]:
+    """Update user info. Returns (success, message).
+
+    Email and phone are encrypted before storage.
+    """
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                # Check user exists
+                cur.execute("SELECT id, username FROM adh_users WHERE id = %s", (user_id,))
+                existing = cur.fetchone()
+                if not existing:
+                    return False, "用户不存在"
+
+                updates = []
+                params = []
+                if username is not None and username != existing["username"]:
+                    cur.execute("SELECT id FROM adh_users WHERE username = %s AND id != %s", (username, user_id))
+                    if cur.fetchone():
+                        return False, "用户名已存在"
+                    updates.append("username = %s")
+                    params.append(username)
+                if email is not None:
+                    enc_email = _encrypt_field(email)
+                    if enc_email:
+                        cur.execute("SELECT id FROM adh_users WHERE email = %s AND id != %s AND email != ''",
+                                    (enc_email, user_id))
+                        if cur.fetchone():
+                            return False, "邮箱已被使用"
+                    updates.append("email = %s")
+                    params.append(enc_email)
+                if phone is not None:
+                    enc_phone = _encrypt_field(phone)
+                    updates.append("phone = %s")
+                    params.append(enc_phone)
+                if role is not None:
+                    updates.append("user_role = %s")
+                    params.append(role)
+
+                if not updates:
+                    return True, "无需更新"
+
+                updates.append("updated_at = %s")
+                params.append(_now_str())
+                params.append(user_id)
+
+                cur.execute(
+                    f"UPDATE adh_users SET {', '.join(updates)} WHERE id = %s",
+                    params,
+                )
+                # 改角色同步全局镜像（列与 adh_user_roles(ws=0) 同事务双写）
+                if role is not None:
+                    from backend.modules.auth.services.role_service import role_service as _role_svc
+                    _role_svc.write_global_role_mirror(cur, user_id, role)
+            conn.commit()
+        return True, "更新成功"
+    except Exception as e:
+        logger.error("Failed to update user: %s", e)
+        return False, "更新失败"
+
+
+def update_user_status(user_id: int, status: str) -> tuple[bool, str]:
+    """Enable or disable a user. Returns (success, message)."""
+    if status not in ("active", "disabled"):
+        return False, "无效的状态值"
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM adh_users WHERE id = %s", (user_id,))
+                if not cur.fetchone():
+                    return False, "用户不存在"
+                cur.execute(
+                    "UPDATE adh_users SET status = %s, login_attempts = 0, locked_until = NULL, updated_at = %s WHERE id = %s",
+                    (status, _now_str(), user_id),
+                )
+            conn.commit()
+        return True, "状态已更新"
+    except Exception as e:
+        logger.error("Failed to update user status: %s", e)
+        return False, "更新失败"
+
+
+def change_password(user_id: int, old_password: str, new_password: str) -> tuple[bool, str]:
+    """Change user's own password. Returns (success, message)."""
+    valid, msg = validate_password_strength(new_password)
+    if not valid:
+        return False, msg
+
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, password_hash FROM adh_users WHERE id = %s", (user_id,))
+                user = cur.fetchone()
+                if not user:
+                    return False, "用户不存在"
+                if not check_password(old_password, user["password_hash"]):
+                    return False, "旧密码不正确"
+                new_hash = hash_password(new_password)
+                cur.execute(
+                    "UPDATE adh_users SET password_hash = %s, updated_at = %s WHERE id = %s",
+                    (new_hash, _now_str(), user_id),
+                )
+            conn.commit()
+        return True, "密码修改成功"
+    except Exception as e:
+        logger.error("Failed to change password: %s", e)
+        return False, "密码修改失败"
+
+
+def reset_password(user_id: int, new_password: str) -> tuple[bool, str]:
+    """Admin reset user password. Returns (success, message)."""
+    valid, msg = validate_password_strength(new_password)
+    if not valid:
+        return False, msg
+
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM adh_users WHERE id = %s", (user_id,))
+                if not cur.fetchone():
+                    return False, "用户不存在"
+                new_hash = hash_password(new_password)
+                cur.execute(
+                    "UPDATE adh_users SET password_hash = %s, login_attempts = 0, "
+                    "locked_until = NULL, updated_at = %s WHERE id = %s",
+                    (new_hash, _now_str(), user_id),
+                )
+            conn.commit()
+        return True, "密码重置成功"
+    except Exception as e:
+        logger.error("Failed to reset password: %s", e)
+        return False, "密码重置失败"
+
+
+def delete_user(user_id: int) -> tuple[bool, str]:
+    """Delete a user by ID. Returns (success, message)."""
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, username FROM adh_users WHERE id = %s", (user_id,))
+                user = cur.fetchone()
+                if not user:
+                    return False, "用户不存在"
+                # 级联清理角色镜像（含工作空间级绑定），否则残留孤儿行——
+                # 历史缺陷：只删用户不删 adh_user_roles，孤儿镜像长期悬挂
+                cur.execute("DELETE FROM adh_user_roles WHERE user_id = %s", (user_id,))
+                cur.execute("DELETE FROM adh_users WHERE id = %s", (user_id,))
+            conn.commit()
+        return True, "删除成功"
+    except Exception as e:
+        logger.error("Failed to delete user: %s", e)
+        return False, "删除失败"
+
+
+# ── Audit logs ──────────────────────────────────────────────────────────
+
+def list_audit_logs(page: int = 1, size: int = 50, user_id: int = 0,
+                    action: str = "", module: str = "") -> tuple[list[dict], int]:
+    """List audit logs with pagination. Returns (items, total)."""
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                where_clauses = []
+                params = []
+                if user_id:
+                    where_clauses.append("user_id = %s")
+                    params.append(user_id)
+                if action:
+                    where_clauses.append("action = %s")
+                    params.append(action)
+                if module:
+                    where_clauses.append("module = %s")
+                    params.append(module)
+
+                where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+                cur.execute(f"SELECT COUNT(*) AS cnt FROM adh_audit_logs{where_sql}", params)
+                total = cur.fetchone()["cnt"]
+
+                offset = (page - 1) * size
+                cur.execute(
+                    f"SELECT id, user_id, username, action, target_type, target_id, "
+                    f"detail, ip_address, module, created_at "
+                    f"FROM adh_audit_logs{where_sql} ORDER BY id DESC LIMIT %s OFFSET %s",
+                    params + [size, offset],
+                )
+                return cur.fetchall(), total
+    except Exception as e:
+        logger.error("Failed to list audit logs: %s", e)
+        return [], 0

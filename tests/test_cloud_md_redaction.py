@@ -6,7 +6,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datacatalog.services.ontology_service import to_md, to_cloud_md
+from backend.modules.catalog.services.ontology_service import to_md, to_cloud_md
 
 
 DOC = {

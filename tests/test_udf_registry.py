@@ -7,7 +7,7 @@
 
 import pytest
 
-from services.dataflow.dag.udf_registry import (
+from backend.modules.flow.dag.udf_registry import (
     validate_expression, expand_udfs, UdfValidationError, _load_definitions,
 )
 
@@ -82,9 +82,9 @@ def _defs():
 
 
 def test_expand_inlines_expression_with_args(monkeypatch):
-    monkeypatch.setattr("services.dataflow.dag.udf_registry._load_definitions",
+    monkeypatch.setattr("backend.modules.flow.dag.udf_registry._load_definitions",
                         lambda refs: {k: v for k, v in _defs().items() if k in ["phone_mask"]})
-    monkeypatch.setattr("services.dataflow.dag.udf_registry.udf_registry.known_udf_names",
+    monkeypatch.setattr("backend.modules.flow.dag.udf_registry.udf_registry.known_udf_names",
                         lambda: {"phone_mask"})
     sql, used = expand_udfs("SELECT phone_mask(phone) AS p FROM users LIMIT 10", ["phone_mask:2"])
     assert "CASE WHEN LENGTH(phone) = 11" in sql
@@ -93,9 +93,9 @@ def test_expand_inlines_expression_with_args(monkeypatch):
 
 
 def test_expand_nested_udf_calls(monkeypatch):
-    monkeypatch.setattr("services.dataflow.dag.udf_registry._load_definitions",
+    monkeypatch.setattr("backend.modules.flow.dag.udf_registry._load_definitions",
                         lambda refs: _defs())
-    monkeypatch.setattr("services.dataflow.dag.udf_registry.udf_registry.known_udf_names",
+    monkeypatch.setattr("backend.modules.flow.dag.udf_registry.udf_registry.known_udf_names",
                         lambda: {"phone_mask", "double_it", "wrap_it"})
     sql, used = expand_udfs("SELECT wrap_it(a) AS v FROM t LIMIT 5", ["wrap_it", "double_it"])
     # 内层 double_it 也展开：x*2 的 x 代入 a
@@ -106,9 +106,9 @@ def test_expand_nested_udf_calls(monkeypatch):
 
 
 def test_expand_rejects_wrong_arity(monkeypatch):
-    monkeypatch.setattr("services.dataflow.dag.udf_registry._load_definitions",
+    monkeypatch.setattr("backend.modules.flow.dag.udf_registry._load_definitions",
                         lambda refs: _defs())
-    monkeypatch.setattr("services.dataflow.dag.udf_registry.udf_registry.known_udf_names",
+    monkeypatch.setattr("backend.modules.flow.dag.udf_registry.udf_registry.known_udf_names",
                         lambda: {"phone_mask", "double_it", "wrap_it"})
     with pytest.raises(UdfValidationError, match="需要 1 个参数"):
         expand_udfs("SELECT phone_mask(a, b) FROM t LIMIT 1", ["phone_mask"])
@@ -116,9 +116,9 @@ def test_expand_rejects_wrong_arity(monkeypatch):
 
 def test_expand_rejects_undeclared_udf_reference(monkeypatch):
     """SQL 引用了未在 udf_refs 声明的 UDF → 显式报错（声明式引用，血缘可追溯）。"""
-    monkeypatch.setattr("services.dataflow.dag.udf_registry._load_definitions",
+    monkeypatch.setattr("backend.modules.flow.dag.udf_registry._load_definitions",
                         lambda refs: {})
-    monkeypatch.setattr("services.dataflow.dag.udf_registry.udf_registry.known_udf_names",
+    monkeypatch.setattr("backend.modules.flow.dag.udf_registry.udf_registry.known_udf_names",
                         lambda: {"phone_mask"})
     with pytest.raises(UdfValidationError, match="未声明"):
         expand_udfs("SELECT phone_mask(a) FROM t LIMIT 1", [])
@@ -128,7 +128,7 @@ def test_expand_rejects_undeclared_udf_reference(monkeypatch):
 
 
 def test_load_definitions_resolves_version_and_rejects_missing(monkeypatch):
-    from services.dataflow.dag.udf_registry import udf_registry
+    from backend.modules.flow.dag.udf_registry import udf_registry
     monkeypatch.setattr(udf_registry, "get_version", lambda name, ver: _defs().get(name) if ver == 2 else None)
     monkeypatch.setattr(udf_registry, "get_active", lambda name: _defs().get(name))
 
@@ -143,7 +143,7 @@ def test_load_definitions_resolves_version_and_rejects_missing(monkeypatch):
 
 
 def test_load_definitions_rejects_disabled_udf(monkeypatch):
-    from services.dataflow.dag.udf_registry import udf_registry
+    from backend.modules.flow.dag.udf_registry import udf_registry
     disabled = {**_defs()["double_it"], "is_active": 0}
     monkeypatch.setattr(udf_registry, "get_active", lambda name: disabled if name == "double_it" else None)
     with pytest.raises(UdfValidationError, match="已停用"):

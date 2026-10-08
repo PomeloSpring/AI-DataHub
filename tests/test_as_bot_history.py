@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from services.datamind.api import chat
-from services.shared.common.db import metadata_db
+from backend.modules.mind.api import chat
+from backend.common.db import metadata_db
 
 
 class _FakeCursor:
@@ -52,7 +52,7 @@ def capture(monkeypatch):
 
 def _stub_policy(monkeypatch, as_bot_key, seen=None):
     """桩掉 resolve_policy：返回带 as_bot 的策略对象（可记录 ctx）。"""
-    from services.datamind.execution import tool_policy
+    from backend.modules.mind.execution import tool_policy
 
     def fake_resolve(ctx, *a, **k):
         if seen is not None:
@@ -121,9 +121,9 @@ def test_create_permission_denied_before_insert(capture, monkeypatch):
 def deletion_store(tmp_path, monkeypatch):
     """事务替身保留已提交状态；磁盘使用真实临时目录。"""
     import copy
-    from services.datamind.execution import session_workspace as sessions
+    from backend.modules.mind.execution import session_workspace as sessions
     key = 'a' * 32
-    monkeypatch.setattr('services.shared.common.config.ADH_WORKSPACES_DIR', str(tmp_path))
+    monkeypatch.setattr('backend.common.config.ADH_WORKSPACES_DIR', str(tmp_path))
     node = sessions.storage_node(tmp_path)
     root = sessions.session_paths(tmp_path, key, 3, create=True)
     (root / 'workspace' / 'result.txt').write_text('本会话文件')
@@ -308,7 +308,7 @@ def test_cleanup_does_not_create_missing_mount(deletion_store, tmp_path, monkeyp
     # 挂载目录不存在 = 无残留可清理 → 放行删除(需求确认语义)；仍不创建挂载目录/标记。
     _, state, root, _ = deletion_store
     missing = tmp_path / 'unmounted'
-    monkeypatch.setattr('services.shared.common.config.ADH_WORKSPACES_DIR', str(missing))
+    monkeypatch.setattr('backend.common.config.ADH_WORKSPACES_DIR', str(missing))
     assert chat.delete_conversation(10, {'user_id': 7}) == {'success': True}
     assert not missing.exists() and root.exists()  # 不重建挂载；原卷内文件不动
     assert state['session'] is None and state['conversation'] is None
@@ -345,8 +345,8 @@ def test_partial_layout_can_be_cleaned_on_retry(deletion_store):
 def test_deleting_session_is_blocked_by_preflight(monkeypatch):
     from types import SimpleNamespace
     from fastapi import HTTPException
-    from services.datamind.execution import session_workspace as sessions
-    monkeypatch.setattr('services.shared.common.auth.authorize_workspace', lambda *a: 3)
+    from backend.modules.mind.execution import session_workspace as sessions
+    monkeypatch.setattr('backend.common.auth.authorize_workspace', lambda *a: 3)
     monkeypatch.setattr(sessions, 'validate_conversation', lambda *a: None)
     monkeypatch.setattr(sessions, 'execute_query', lambda *a, **k: {'status': 'deleting'})
     req = SimpleNamespace(workspace_id=3, pipeline_mode='agent', attachments=[], conversation_id=10, as_bot_key='test')

@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pytest
 import redis
 
-from services.semhub.api import graph
+from backend.modules.semhub.api import graph
 
 
 class _FakeLock:
@@ -68,7 +68,7 @@ def client():
 @pytest.fixture
 def service(monkeypatch):
     """替掉真实 GraphService, 记录重建是否被执行及入参。"""
-    import services.semhub.graph.graph_service as gs_mod
+    import backend.modules.semhub.graph.graph_service as gs_mod
 
     inst = MagicMock()
     inst.sync_from_metadata.return_value = {
@@ -143,7 +143,7 @@ def test_system_scope_locks_and_rebuilds_system_graph_only(client, service, monk
                        params={"datasource_id": 1, "system_scope": True})
 
     assert resp.status_code == 200
-    from services.datamind.rag.graph_rag.oxigraph_store import SYSTEM_DATASOURCE_ID
+    from backend.modules.mind.rag.graph_rag.oxigraph_store import SYSTEM_DATASOURCE_ID
     assert fake.lock_keys == [f"adh_graph_sync:ds:{SYSTEM_DATASOURCE_ID}"]
     service.sync_from_metadata.assert_called_once_with(SYSTEM_DATASOURCE_ID)
 

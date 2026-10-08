@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import pytest
 from pydantic import ValidationError
 
-from services.dataviz.services import report_service as reports
+from backend.modules.viz.services import report_service as reports
 
 
 @pytest.mark.parametrize("source", [{}, {"intent": {}, "dataset_id": 1}, {"saved_query_id": 0},
@@ -86,13 +86,13 @@ def test_report_dispatch_failure_persisted(monkeypatch):
 def test_generate_api_persists_then_dispatches_and_returns_202(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from services.dataviz.api.report import router
-    from services.shared.common.auth import get_current_user
+    from backend.modules.viz.api.report import router
+    from backend.common.auth import get_current_user
     app = FastAPI()
     app.include_router(router, prefix="/api/reports")
     app.dependency_overrides[get_current_user] = lambda: {"user_id": 7}
     monkeypatch.setattr(reports, "authorize_workspace", lambda *a: 3)
-    monkeypatch.setattr("services.dataviz.api.report.authorize_workspace", lambda *a: 3)
+    monkeypatch.setattr("backend.modules.viz.api.report.authorize_workspace", lambda *a: 3)
     calls = []
     monkeypatch.setattr(reports, "create_report", lambda **kw: calls.append("persist") or {"id": 1})
     monkeypatch.setattr(reports, "dispatch_report", lambda *a: calls.append("dispatch"))
@@ -104,7 +104,7 @@ def test_generate_api_persists_then_dispatches_and_returns_202(monkeypatch):
 
 
 def test_saved_query_is_owner_and_workspace_scoped(monkeypatch):
-    from services.shared.common import db
+    from backend.common import db
     select = Mock(return_value=None)
     monkeypatch.setattr(db, "execute_query", select)
     execute = Mock()
@@ -121,8 +121,8 @@ def test_semantic_source_rejects_identity_override():
 
 
 def test_dataset_scope_change_invalidates_report(monkeypatch):
-    from services.dataviz.services import report_access, dataset_service
-    from services.shared.common import auth
+    from backend.modules.viz.services import report_access, dataset_service
+    from backend.common import auth
     dataset = {"id": 1, "status": "active", "owner_id": 7}
     monkeypatch.setattr(dataset_service, "get_dataset", lambda did: dataset)
     scopes = []
@@ -139,14 +139,14 @@ def test_dataset_scope_change_invalidates_report(monkeypatch):
 
 
 def test_cancelled_run_cannot_expose_saved_report(monkeypatch):
-    from services.dataviz.services import report_access
-    from services.shared.common import db
+    from backend.modules.viz.services import report_access
+    from backend.common import db
     monkeypatch.setattr(db, "execute_query", lambda *a, **kw: {"status": "cancelled"})
     row = {"log_id": 1, "owner_id": 7, "security_context": {"version": 1, "policy_digest": "p1"}}
     assert not report_access.snapshot_is_current(row)
 
 
 def test_pending_report_never_serves_body_to_owner(monkeypatch):
-    from services.dataviz.services import report_access
+    from backend.modules.viz.services import report_access
     monkeypatch.setattr(report_access, "snapshot_is_current", lambda *a: True)
     assert not report_access.can_access_report({"generation_status": "running", "owner_id": 7}, {"user_id": 7})

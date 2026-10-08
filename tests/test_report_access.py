@@ -3,7 +3,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from services.dataviz.services import report_access as access
+from backend.modules.viz.services import report_access as access
 
 
 @pytest.fixture

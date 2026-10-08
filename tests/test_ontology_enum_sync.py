@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from services.datacatalog.services.ontology_service import (
+from backend.modules.catalog.services.ontology_service import (
     _enum_item_to_label, sync_enums_to_dimensions,
 )
 
@@ -91,7 +91,7 @@ class TestSyncMerge:
     def test_writes_labels_and_aliases(self):
         cur = FakeCursor([(10, "t_case_records", "case_status", "案例状态", None, None),
                           (11, "t_case_records", "create_time", "创建日期", '["旧别名"]', None)])
-        with patch("services.datacatalog.services.ontology_service.get_metadata_conn",
+        with patch("backend.modules.catalog.services.ontology_service.get_metadata_conn",
                    return_value=_conn_for(cur)):
             res = sync_enums_to_dimensions(DOC, datasource_id=1)
         assert res["updated"] == 2
@@ -108,7 +108,7 @@ class TestSyncMerge:
     def test_manual_labels_not_overwritten_and_gap(self):
         cur = FakeCursor([(10, "t_case_records", "case_status", "案例状态", None,
                            '{"0": "人工标签A", "9": "自定义"}')])
-        with patch("services.datacatalog.services.ontology_service.get_metadata_conn",
+        with patch("backend.modules.catalog.services.ontology_service.get_metadata_conn",
                    return_value=_conn_for(cur)):
             res = sync_enums_to_dimensions(DOC, datasource_id=1)
         # 人工已有值保留("0"→人工标签A), 本体新码("3")补入; 差异记入 conflicts
@@ -123,7 +123,7 @@ class TestSyncMerge:
         rows = [(10, "t_case_records", "case_status", "案例状态",
                  '["case状态"]', '{"0": "仅表单", "3": "已上传"}')]
         cur = FakeCursor(rows)
-        with patch("services.datacatalog.services.ontology_service.get_metadata_conn",
+        with patch("backend.modules.catalog.services.ontology_service.get_metadata_conn",
                    return_value=_conn_for(cur)):
             res = sync_enums_to_dimensions(DOC, datasource_id=1)
         assert res["updated"] == 0  # labels/aliases 均已一致 → 不再发 UPDATE

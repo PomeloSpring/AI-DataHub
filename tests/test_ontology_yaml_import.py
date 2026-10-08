@@ -8,13 +8,13 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datacatalog.services.ontology_yaml_import import (
+from backend.modules.catalog.services.ontology_yaml_import import (
     parse_palantir_dir,
     palantir_to_canonical,
     _clean_table,
     _enum_list,
 )
-from services.shared.common.rdf.ontology_to_rdf import ontology_json_to_turtle
+from backend.common.rdf.ontology_to_rdf import ontology_json_to_turtle
 
 _ONTOLOGY_DIR = os.path.join(os.path.dirname(__file__), "..", "ontology")
 

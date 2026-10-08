@@ -8,7 +8,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-# 镜像名与代码默认值保持一致（services/aiplatform/services/sandbox_executor.py）
+# 镜像名与代码默认值保持一致（backend/modules/platform/services/sandbox_executor.py）
 IMAGE="${ADH_AGENT_SANDBOX_IMAGE:-adh-python-runtime:1}"
 
 echo "[python_runtime] 构建镜像 $IMAGE （上下文: $ROOT）"

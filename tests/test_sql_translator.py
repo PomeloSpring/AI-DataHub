@@ -6,8 +6,8 @@
 
 import pytest
 
-from services.dataflow.dag.sql_translator import sql_to_dag, dag_to_sql
-from services.dataflow.dag.dag_validator import DagValidationError
+from backend.modules.flow.dag.sql_translator import sql_to_dag, dag_to_sql
+from backend.modules.flow.dag.dag_validator import DagValidationError
 
 
 def test_sql_to_dag_builds_dependencies():

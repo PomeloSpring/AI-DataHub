@@ -2,7 +2,7 @@
 from unittest.mock import Mock
 
 import pytest
-from services.datagov.services import quality_engine as quality
+from backend.modules.gov.services import quality_engine as quality
 
 
 def test_quality_requires_identity_before_any_database_access(monkeypatch):
@@ -25,7 +25,7 @@ def test_check_query_uses_governance_and_binds_values(monkeypatch):
         {"target_datasource_id": 7, "workspace_id": 3}, {"user_id": 42}, False)
     assert quality._fetch_one(context, "SELECT COUNT(*) c FROM t WHERE name REGEXP %s", ("x' OR 1=1 --",)) == {"c": 4}
     assert seen["user_id"] == 42 and seen["workspace_id"] == 3
-    from services.shared.semantics.sql_guard import parse_query
+    from backend.semantics.sql_guard import parse_query
     assert parse_query(seen["sql"]) is not None
 
 

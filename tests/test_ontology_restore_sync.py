@@ -6,9 +6,9 @@
 import pytest
 from fastapi import HTTPException
 
-from services.datacatalog.services import ontology_service
-from services.datacatalog.services import ontology_kb_sync
-from services.datacatalog.api import ontology as ontology_api
+from backend.modules.catalog.services import ontology_service
+from backend.modules.catalog.services import ontology_kb_sync
+from backend.modules.catalog.api import ontology as ontology_api
 
 
 class FakeCursor:

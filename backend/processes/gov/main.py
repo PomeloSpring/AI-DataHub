@@ -1,0 +1,58 @@
+"""DataGov Microservice — Data Quality, Lineage, Standards, and Security.
+
+Run: uvicorn backend.processes.gov.main:app --host 0.0.0.0 --port 8002 --reload
+"""
+
+import logging
+import os
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from backend.modules.gov.api.quality import router as quality_router
+from backend.modules.gov.api.lineage import router as lineage_router
+from backend.modules.gov.api.standards import router as standards_router
+from backend.modules.gov.api.security import router as security_router
+
+# ── Logging ──────────────────────────────────────────────────────────
+_log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, _log_level, logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("datagov")
+
+# ── App ──────────────────────────────────────────────────────────────
+app = FastAPI(redirect_slashes=True,
+    title="DataGov API",
+    description="数据治理服务 — 数据质量、数据血缘、数据标准、敏感数据管理",
+    version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+from backend.common.api_permission import add_api_permission_middleware
+add_api_permission_middleware(app)
+
+# ── Routers ──────────────────────────────────────────────────────────
+app.include_router(quality_router, prefix="/api/quality", tags=["数据质量"])
+app.include_router(lineage_router, prefix="/api/lineage", tags=["数据血缘"])
+app.include_router(standards_router, prefix="/api/standards", tags=["数据标准"])
+app.include_router(security_router, prefix="/api/security", tags=["敏感数据"])
+
+# Node metrics for distributed monitoring
+from backend.common.system_metrics import router as node_metrics_router
+app.include_router(node_metrics_router, tags=["node-metrics"])
+
+
+@app.get("/api/health")
+def health():
+    """Health check endpoint."""
+    return {"status": "ok", "service": "datagov", "port": 8002}

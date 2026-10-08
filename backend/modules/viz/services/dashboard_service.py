@@ -1,0 +1,1193 @@
+"""Dashboard Service -- Business logic for dashboards, charts, and snapshots.
+
+Migrated from backend/api/dashboard.py into service classes:
+- DashboardService: Dashboard CRUD, reorder, copy
+- ChartService: Chart CRUD, refresh, batch refresh, layout
+- SnapshotService: Chart snapshot save/list/get
+
+Uses shared DB connection from backend/common/db.
+Tables: adh_dashboards, adh_charts, adh_chart_snapshots, adh_saved_queries
+"""
+
+import json
+import logging
+import math
+import re
+import time
+from datetime import datetime, date, timedelta
+from decimal import Decimal
+from typing import Optional
+
+from backend.common.db.metadata_db import get_metadata_conn
+from backend.common.ttl_cache import dashboard_cache
+from backend.modules.viz.services.governed_query import governed_execute, NoIdentityError
+
+logger = logging.getLogger(__name__)
+
+
+# ── Utility Functions ────────────────────────────────────────────────────────
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _ts_id() -> int:
+    return int(time.time() * 1000)
+
+
+def _sanitize_floats(obj):
+    """Replace NaN/inf/-inf with None and datetime with ISO string for JSON compliance."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, (set, frozenset)):
+        return list(obj)
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, timedelta):
+        return str(obj)
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="replace")
+    if isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_floats(v) for v in obj]
+    return obj
+
+
+def _json_loads_safe(val):
+    """Parse JSON string, return original if already dict/list."""
+    if isinstance(val, str):
+        try:
+            return json.loads(val)
+        except (json.JSONDecodeError, TypeError):
+            return val
+    return val
+
+
+def _normalize_dashboard(row: dict) -> dict:
+    """Normalize dashboard row for JSON serialization."""
+    for field in ("layout", "filters", "params"):
+        row[field] = _json_loads_safe(row.get(field))
+    for ts in ("created_at", "updated_at"):
+        if hasattr(row.get(ts), "isoformat"):
+            row[ts] = row[ts].isoformat()
+    row.setdefault("is_default", 0)
+    row.setdefault("carousel_interval", 0)
+    row.setdefault("params", [])
+    row.setdefault("status", "designing")
+    return row
+
+
+def _normalize_chart(row: dict) -> dict:
+    """Normalize chart row for JSON serialization."""
+    for field in ("config", "position", "semantic_query"):
+        row[field] = _json_loads_safe(row.get(field))
+    for ts in ("created_at", "updated_at"):
+        if hasattr(row.get(ts), "isoformat"):
+            row[ts] = row[ts].isoformat()
+    row.setdefault("source_type", "query")
+    row.setdefault("source_id", None)
+    row.setdefault("data_cache", None)
+    row.setdefault("query_source", "raw_sql")
+    if (row.get("config") or {}).get("as_bot_design"):
+        # 设计者的 SQL/预览不能经普通图表详情或共享缓存分发。
+        row.pop("sql_query", None)
+        row["data_cache"] = None
+    return row
+
+
+def _sanitize_param_value(val: str) -> str:
+    """Escape a string parameter value to prevent SQL injection.
+
+    - Backslash-escapes single quotes, backslashes, and NUL bytes.
+    - Rejects values containing semicolons (statement separator).
+    - Rejects values containing comment markers.
+    """
+    if any(marker in val for marker in (";", "--", "/*", "*/", "\x00")):
+        raise ValueError(f"参数值包含非法字符: {val[:50]}")
+    val = val.replace("\\", "\\\\").replace("'", "\\'")
+    return val
+
+
+def _flatten_params(params: dict, prefix: str = "") -> dict:
+    """Flatten nested dict: {time: {start: "x"}} -> {"time.start": "x"}."""
+    flat = {}
+    for k, v in params.items():
+        key = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            flat.update(_flatten_params(v, key))
+        else:
+            flat[key] = v
+    return flat
+
+
+def _substitute_params(sql: str, params: dict) -> str:
+    """Replace {{param_name}} placeholders in SQL with parameter values.
+
+    Supports nested keys via dot notation: {{time.start}}, {{time.end}}.
+    String values are escaped to prevent SQL injection.
+    """
+    if params is None or not sql:
+        return sql
+
+    flat = _flatten_params(params)
+
+    _PAGINATION_DEFAULTS = {"page_limit": "20", "page_offset": "0"}
+
+    def replacer(m):
+        key = m.group(1).strip()
+        val = flat.get(key, _PAGINATION_DEFAULTS.get(key, ""))
+        if val is None or val == "":
+            val = _PAGINATION_DEFAULTS.get(key, "")
+        val_str = str(val)
+        try:
+            float(val_str)
+            return val_str
+        except ValueError:
+            pass
+        return _sanitize_param_value(val_str)
+
+    return re.sub(r'\{\{(\w+(?:\.\w+)*)\}\}', replacer, sql)
+
+
+def _get_chart_datasource_id(chart: dict) -> int:
+    """Extract datasource_id from chart config."""
+    config = chart.get("config")
+    config = _json_loads_safe(config)
+    if isinstance(config, dict):
+        return config.get("datasource_id", 0)
+    return 0
+
+
+def _clear_default(user_id: int, workspace_id: int = 0):
+    """Clear is_default flag for all dashboards of a user within a workspace."""
+    try:
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                if workspace_id:
+                    cur.execute(
+                        "UPDATE adh_dashboards SET is_default = 0 "
+                        "WHERE owner_id = %s AND workspace_id = %s AND is_default = 1",
+                        (user_id, workspace_id),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE adh_dashboards SET is_default = 0 "
+                        "WHERE owner_id = %s AND is_default = 1",
+                        (user_id,),
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("Failed to clear default dashboard: %s", e)
+
+
+def _invalidate_dashboard_cache(user_id: int = None):
+    """Clear dashboard cache. user_id=None clears all."""
+    if user_id is None:
+        dashboard_cache.invalidate()
+    else:
+        dashboard_cache.invalidate_prefix(f"dash:{user_id}:")
+
+
+def _position_to_pixels(pos, index: int = 0) -> dict:
+    """设计 position 是 12 列网格制（x/y/w/h 为小整数），看板画布是像素绝对定位。
+
+    发布时换算成像素（1 列=80px、1 行=90px，与默认全宽卡 960x360 对齐）；
+    已是像素值则原样保留。position 缺失/非法时按全宽流式堆叠兜底（auto-layout），
+    保证发布后排版可用（LLM 未给排版也不塌）。"""
+    pos = pos if isinstance(pos, dict) else {}
+    try:
+        x, y, w, h = (float(pos.get(k) or 0) for k in ("x", "y", "w", "h"))
+    except (TypeError, ValueError):
+        x = y = w = h = 0.0
+    if max(w, h) <= 24:  # 网格制（像素值不会这么小）
+        if w <= 0:
+            w = 12.0
+        if h <= 0:
+            h = 4.0
+        if x == 0 and y == 0 and index > 0:
+            y = 4.0 * index  # 未给排版时按全宽流式错开，不重叠
+        return {"x": x * 80, "y": y * 90, "w": w * 80, "h": h * 90}
+    return {"x": x, "y": y, "w": w if w > 0 else 960, "h": h if h > 0 else 360}
+
+
+def publish_design_in_transaction(cur, doc, queries, scope, user):
+    """仅由已锁定并校验的审批事务调用，不自行提交。"""
+    from backend.modules.viz.services.dashboard_design_service import dump
+    selection = doc["selection"]
+    if doc["operation"] == "create":
+        cur.execute("INSERT INTO adh_dashboards (name,description,workspace_id,owner_id,status,is_public,created_at,updated_at) "
+                    "VALUES (%s,%s,%s,%s,'enabled',0,UTC_TIMESTAMP(),UTC_TIMESTAMP())",
+                    (doc["name"], doc["request"], scope["workspace"], user["user_id"]))
+        dashboard_id = cur.lastrowid
+    else:
+        dashboard_id = selection["dashboard_id"]
+    chart_ids = []
+    for widget, sql in zip(doc["widgets"], queries):
+        cfg = {**widget["config"], "datasource_id": scope["datasource_id"], "as_bot_design": True}
+        query = dump(widget["query"]) if widget["query_source"] == "semantic" else None
+        values = (widget["title"], widget["chart_type"], sql, dump(cfg),
+                  dump(_position_to_pixels(widget.get("position"), len(chart_ids))),
+                  scope["datasource_id"], query, widget["query_source"], scope["workspace"])
+        if doc["operation"] == "update":
+            cid = selection["chart_id"]
+            cur.execute("UPDATE adh_charts SET name=%s,chart_type=%s,sql_query=%s,config=%s,position=%s,source_id=%s,"
+                        "semantic_query=%s,query_source=%s,workspace_id=%s,data_cache=NULL,updated_at=UTC_TIMESTAMP() "
+                        "WHERE id=%s AND dashboard_id=%s", (*values, cid, dashboard_id))
+        else:
+            cur.execute("INSERT INTO adh_charts (name,chart_type,sql_query,config,position,source_id,semantic_query,"
+                        "query_source,workspace_id,dashboard_id,source_type,created_at,updated_at) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'query',UTC_TIMESTAMP(),UTC_TIMESTAMP())",
+                        (*values, dashboard_id))
+            cid = cur.lastrowid
+        chart_ids.append(cid)
+    return {"success": True, "dashboard_id": dashboard_id, "chart_ids": chart_ids,
+            "operation": doc["operation"], "url": f"/dashboard/editor/{dashboard_id}"}
+
+
+# ── Dashboard Visibility (看板可见性按角色授权) ───────────────────────────
+#
+# 可见性唯一裁决 = 用户角色授权(adh_user_roles ⋈ adh_role_dashboard_access，
+# 经 role_service.get_user_allowed_dashboards 解析):
+#   * admin 始终全可见(展示范围语义; 图表数据仍由 permission_enforcer 按查看者治理);
+#   * 其余角色 fail-closed: 未配置授权 = 一律不可见(owner/is_public 不再授予“可看”);
+#   * 可见性裁决必须实时查询共享层，不进任何进程内 TTL 缓存(撤权后不得留可见窗口)。
+
+
+def _is_admin_user(user_id: int, user_role: str = "") -> bool:
+    """admin 判定以服务端身份为准：优先信任服务端注入的 user_role，缺失时回查授权表。"""
+    if (user_role or "").lower() == "admin":
+        return True
+    if not user_id:
+        return False
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS cnt FROM adh_user_roles ur "
+                "JOIN adh_roles r ON r.id = ur.role_id "
+                "WHERE ur.user_id = %s AND r.name = 'admin'",
+                (user_id,),
+            )
+            return int((cur.fetchone() or {}).get("cnt") or 0) > 0
+    finally:
+        conn.close()
+
+
+def visible_dashboard_ids(user_id: int, user_role: str = "", workspace_id: int = 0):
+    """返回用户可见看板 id 集；admin 返回 None 表示全可见；空集 = 全不可见(fail-closed)。"""
+    if _is_admin_user(user_id, user_role):
+        return None
+    from backend.modules.auth.services.role_service import role_service
+    return set(role_service.get_user_allowed_dashboards(user_id, workspace_id))
+
+
+def check_dashboard_visible(dashboard_id: int, user_id: int, user_role: str = "",
+                            workspace_id: Optional[int] = None) -> bool:
+    """单看板可见性裁决（查看链路唯一入口）。workspace_id 缺省时按看板归属解析。"""
+    if not user_id:
+        return False
+    if _is_admin_user(user_id, user_role):
+        return True
+    if workspace_id is None:
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT workspace_id FROM adh_dashboards WHERE id = %s", (dashboard_id,))
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return False
+        workspace_id = int(row["workspace_id"] or 0)
+    from backend.modules.auth.services.role_service import role_service
+    return int(dashboard_id) in set(
+        role_service.get_user_allowed_dashboards(user_id, workspace_id))
+
+
+def refresh_designed_chart(chart, user_id):
+    """设计图表不复用跨用户 data_cache；每次按查看者身份重新治理。"""
+    from backend.common.auth import resolve_execution_owner
+    from backend.common.db import execute_query
+    from backend.modules.viz.services.dashboard_design_service import compile_widget, validate_query_sources, decoded, DesignError
+    uid = int(user_id or 0)
+    if not uid:
+        raise NoIdentityError("缺少可信身份")
+    dashboard = execute_query("SELECT owner_id,workspace_id,is_public FROM adh_dashboards WHERE id=%s",
+                              (chart["dashboard_id"],), fetchone=True)
+    if not dashboard or not check_dashboard_visible(
+            chart["dashboard_id"], uid, workspace_id=int(dashboard["workspace_id"] or 0)):
+        raise PermissionError("无权访问该仪表盘")
+    live = resolve_execution_owner(uid, int(dashboard["workspace_id"] or 0))
+    config = decoded(chart["config"], {})
+    ds = int(chart.get("source_id") or config.get("datasource_id") or 0)
+    if not ds:
+        raise DesignError("图表业务绑定已失效")
+    source = execute_query("SELECT db_type FROM adh_datasources WHERE id=%s", (ds,), fetchone=True)
+    if not source:
+        raise DesignError("图表业务域已失效")
+    scope = {"datasource_id": ds, "workspace": live["workspace_id"],
+             "dialect": "postgres" if source["db_type"] in ("postgres", "postgresql", "pg", "sls") else "mysql"}
+    widget = {"query_source": chart["query_source"], "query": decoded(chart.get("semantic_query"), {}),
+              "manual_sql": chart.get("sql_query")}
+    sql, _ = compile_widget(widget, scope)
+    validate_query_sources(sql, scope)
+    return governed_execute(sql, ds, uid, scope["workspace"], live["username"])
+
+
+# ── DashboardService ─────────────────────────────────────────────────────────
+
+
+class DashboardService:
+    """Dashboard CRUD operations."""
+
+    def list_dashboards(self, user_id: int, workspace_id: int = 0, user_role: str = "") -> list:
+        """List dashboards scoped by workspace and role visibility.
+
+        可见性按请求实时裁决（不走 TTL 缓存）：进程内缓存无法跨实例失效，
+        撤权后不得留可见窗口（分布式约束）。
+        """
+        return self._fetch_dashboards_from_db(user_id, workspace_id, user_role)
+
+    def _fetch_dashboards_from_db(self, user_id: int, workspace_id: int = 0,
+                                  user_role: str = "") -> list:
+        """Fetch dashboards from database (角色可见集过滤, fail-closed)."""
+        visible = visible_dashboard_ids(user_id, user_role, workspace_id)
+        if visible is not None and not visible:
+            return []
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                sql = "SELECT * FROM adh_dashboards"
+                params: list = []
+                conds = []
+                if workspace_id:
+                    conds.append("workspace_id = %s")
+                    params.append(workspace_id)
+                if visible is not None:
+                    marks = ",".join(["%s"] * len(visible))
+                    conds.append(f"id IN ({marks})")
+                    params.extend(sorted(visible))
+                if conds:
+                    sql += " WHERE " + " AND ".join(conds)
+                sql += " ORDER BY is_default DESC, sort_order ASC, updated_at DESC"
+                cur.execute(sql, params)
+                dashboards = cur.fetchall()
+                if not dashboards:
+                    return []
+
+                dash_ids = [d["id"] for d in dashboards]
+                placeholders = ",".join(["%s"] * len(dash_ids))
+                cur.execute(
+                    f"SELECT * FROM adh_charts WHERE dashboard_id IN ({placeholders}) ORDER BY id",
+                    dash_ids,
+                )
+                all_charts = cur.fetchall()
+
+                charts_map: dict = {}
+                for c in all_charts:
+                    _normalize_chart(c)
+                    charts_map.setdefault(c["dashboard_id"], []).append(c)
+
+                for d in dashboards:
+                    _normalize_dashboard(d)
+                    d["charts"] = charts_map.get(d["id"], [])
+                return dashboards
+        finally:
+            conn.close()
+
+    def get_dashboard(self, dashboard_id: int, user_id: int, user_role: str = "",
+                      enforce_visibility: bool = True) -> Optional[dict]:
+        """Get a single dashboard with its charts (角色不可见返回 None → API 404)。
+
+        enforce_visibility=False 仅供 AS-BOT 大屏设计通道使用：该通道的访问控制
+        仍由 resource_guard 的 owner/is_public 策略承担(本次改造边界外)，
+        不适用角色可见性裁决。
+        """
+        if enforce_visibility and not check_dashboard_visible(dashboard_id, user_id, user_role):
+            return None
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM adh_dashboards WHERE id = %s", (dashboard_id,))
+                dashboard = cur.fetchone()
+                if not dashboard:
+                    return None
+
+                cur.execute(
+                    "SELECT * FROM adh_charts WHERE dashboard_id = %s ORDER BY id",
+                    (dashboard_id,),
+                )
+                charts = cur.fetchall()
+                for c in charts:
+                    _normalize_chart(c)
+
+                _normalize_dashboard(dashboard)
+                dashboard["charts"] = charts
+                return dashboard
+        finally:
+            conn.close()
+
+    def create_dashboard(self, data: dict, user_id: int) -> int:
+        """Create a new dashboard. Returns the new dashboard ID."""
+        did = _ts_id()
+        now = _now()
+        workspace_id = data.get("workspace_id") or 0
+
+        if data.get("is_default"):
+            _clear_default(user_id, workspace_id)
+
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO adh_dashboards "
+                    "(`id`, `name`, `description`, `layout`, `filters`, `params`, `status`, "
+                    "`owner_id`, `workspace_id`, `is_public`, `is_default`, `carousel_interval`, "
+                    "`created_at`, `updated_at`) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        did,
+                        data["name"],
+                        data.get("description", ""),
+                        json.dumps(data.get("layout") or []),
+                        json.dumps(data.get("filters") or {}),
+                        json.dumps(data.get("params") or []),
+                        data.get("status", "designing"),
+                        user_id,
+                        workspace_id,
+                        1 if data.get("is_public") else 0,
+                        1 if data.get("is_default") else 0,
+                        data.get("carousel_interval", 0),
+                        now,
+                        now,
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        _invalidate_dashboard_cache(user_id)
+        return did
+
+    def update_dashboard(self, dashboard_id: int, data: dict, user_id: int) -> bool:
+        """Update a dashboard. Returns True if updated."""
+        if not data:
+            return False
+
+        now = _now()
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                if data.get("is_default"):
+                    cur.execute(
+                        "SELECT workspace_id FROM adh_dashboards WHERE id = %s",
+                        (dashboard_id,),
+                    )
+                    row = cur.fetchone()
+                    ws_id = row["workspace_id"] if row else 0
+                    _clear_default(user_id, ws_id)
+
+                updates = ["updated_at = %s"]
+                params = [now]
+
+                field_map = {
+                    "name": "name",
+                    "description": "description",
+                    "status": "`status`",
+                }
+                for key, col in field_map.items():
+                    if key in data and data[key] is not None:
+                        updates.append(f"{col} = %s")
+                        params.append(data[key])
+
+                for json_field in ("layout", "filters", "params"):
+                    if json_field in data and data[json_field] is not None:
+                        updates.append(f"`{json_field}` = %s")
+                        params.append(json.dumps(data[json_field]))
+
+                for bool_field in ("is_public", "is_default"):
+                    if bool_field in data and data[bool_field] is not None:
+                        updates.append(f"{bool_field} = %s")
+                        params.append(1 if data[bool_field] else 0)
+
+                if "carousel_interval" in data and data["carousel_interval"] is not None:
+                    updates.append("carousel_interval = %s")
+                    params.append(data["carousel_interval"])
+
+                params.append(dashboard_id)
+                cur.execute(
+                    f"UPDATE adh_dashboards SET {', '.join(updates)} WHERE id = %s",
+                    params,
+                )
+            conn.commit()
+            _invalidate_dashboard_cache(user_id)
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def delete_dashboard(self, dashboard_id: int, user_id: int) -> bool:
+        """Delete a dashboard and all its charts."""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM adh_charts WHERE dashboard_id = %s", (dashboard_id,))
+                # 级联清理角色可见性授权, 避免悬空授权行
+                cur.execute("DELETE FROM adh_role_dashboard_access WHERE dashboard_id = %s", (dashboard_id,))
+                cur.execute(
+                    "DELETE FROM adh_dashboards WHERE id = %s AND owner_id = %s",
+                    (dashboard_id, user_id),
+                )
+            conn.commit()
+            _invalidate_dashboard_cache(user_id)
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def reorder_dashboards(self, user_id: int, orders: list) -> bool:
+        """Update sort_order for dashboards."""
+        if not orders:
+            return True
+        now = _now()
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                for item in orders:
+                    cur.execute(
+                        "UPDATE adh_dashboards SET sort_order=%s, updated_at=%s "
+                        "WHERE id=%s AND owner_id=%s",
+                        (item.get("sort_order", 0), now, item["id"], user_id),
+                    )
+            conn.commit()
+            _invalidate_dashboard_cache(user_id)
+            return True
+        finally:
+            conn.close()
+
+    def copy_dashboard(self, dashboard_id: int, user_id: int, new_name: str = None) -> Optional[dict]:
+        """Copy a dashboard with all its charts (deep copy)."""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM adh_dashboards WHERE id = %s", (dashboard_id,))
+                src = cur.fetchone()
+                if not src:
+                    return None
+
+                cur.execute(
+                    "SELECT * FROM adh_charts WHERE dashboard_id = %s ORDER BY id",
+                    (dashboard_id,),
+                )
+                charts = cur.fetchall()
+
+                now = _now()
+                new_id = _ts_id()
+                name = new_name or f"{src['name']} (副本)"
+
+                cur.execute(
+                    "INSERT INTO adh_dashboards "
+                    "(`id`, `name`, `description`, `layout`, `filters`, `params`, `status`, "
+                    "`owner_id`, `workspace_id`, `is_public`, `is_default`, "
+                    "`carousel_interval`, `sort_order`, `created_at`, `updated_at`) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        new_id, name, src.get("description"),
+                        src.get("layout"), src.get("filters"), src.get("params"),
+                        "designing", user_id, src.get("workspace_id", 0), 0, 0,
+                        src.get("carousel_interval", 0), 0, now, now,
+                    ),
+                )
+
+                for c in charts:
+                    cid = _ts_id()
+                    time.sleep(0.001)
+                    cur.execute(
+                        "INSERT INTO adh_charts "
+                        "(`id`, `dashboard_id`, `name`, `chart_type`, `sql_query`, "
+                        "`config`, `position`, `source_type`, `source_id`, `data_cache`, "
+                        "`semantic_query`, `query_source`, `created_at`, `updated_at`) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (
+                            cid, new_id, c["name"], c["chart_type"], c.get("sql_query"),
+                            c.get("config"), c.get("position"),
+                            c.get("source_type", "query"),
+                            c.get("source_id"), c.get("data_cache"),
+                            c.get("semantic_query"), c.get("query_source") or "raw_sql",
+                            now, now,
+                        ),
+                    )
+
+                conn.commit()
+
+                # Fetch the newly created dashboard with charts
+                cur.execute("SELECT * FROM adh_dashboards WHERE id = %s", (new_id,))
+                new_dashboard = cur.fetchone()
+                cur.execute(
+                    "SELECT * FROM adh_charts WHERE dashboard_id = %s ORDER BY id",
+                    (new_id,),
+                )
+                new_charts = cur.fetchall()
+
+                _normalize_dashboard(new_dashboard)
+                for c in new_charts:
+                    _normalize_chart(c)
+                new_dashboard["charts"] = new_charts
+
+                _invalidate_dashboard_cache(user_id)
+                return new_dashboard
+        finally:
+            conn.close()
+
+
+# ── ChartService ─────────────────────────────────────────────────────────────
+
+
+class ChartService:
+    """Chart CRUD, refresh, and layout operations."""
+
+    def create_chart(self, dashboard_id: int, data: dict) -> int:
+        """Add a chart to a dashboard. Returns the new chart ID."""
+        cid = _ts_id()
+        now = _now()
+
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO adh_charts "
+                    "(`id`, `dashboard_id`, `name`, `chart_type`, `sql_query`, "
+                    "`config`, `position`, `source_type`, `source_id`, `data_cache`, "
+                    "`semantic_query`, `query_source`, `created_at`, `updated_at`) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        cid, dashboard_id,
+                        data["name"], data["chart_type"], data.get("sql_query"),
+                        json.dumps(data.get("config") or {}),
+                        json.dumps(data.get("position") or {}),
+                        data.get("source_type", "query"),
+                        data.get("source_id"), data.get("data_cache"),
+                        json.dumps(data.get("semantic_query"), ensure_ascii=False) if data.get("semantic_query") else None,
+                        data.get("query_source") or "raw_sql",
+                        now, now,
+                    ),
+                )
+            conn.commit()
+            return cid
+        finally:
+            conn.close()
+
+    def update_chart(self, dashboard_id: int, chart_id: int, data: dict) -> bool:
+        """Update a chart within a dashboard."""
+        now = _now()
+
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                # 只更新已提交的白名单字段，视觉编辑不得清空查询和缓存。
+                allowed = (
+                    "name", "chart_type", "sql_query", "config", "position",
+                    "source_type", "source_id", "data_cache", "semantic_query", "query_source",
+                )
+                sets, params = [], []
+                for field in allowed:
+                    if field not in data:
+                        continue
+                    value = data[field]
+                    if field in ("name", "chart_type", "source_type", "query_source") and not value:
+                        raise ValueError(f"{field} cannot be empty")
+                    if field in ("config", "position", "semantic_query"):
+                        value = json.dumps(value, ensure_ascii=False) if value is not None else None
+                    sets.append(f"`{field}`=%s")
+                    params.append(value)
+                if sets:
+                    sets.append("updated_at=%s")
+                    params.extend([now, chart_id, dashboard_id])
+                    cur.execute(
+                        f"UPDATE adh_charts SET {', '.join(sets)} "
+                        "WHERE id=%s AND dashboard_id=%s",
+                        params,
+                    )
+                    if cur.rowcount > 0:
+                        conn.commit()
+                        return True
+                # 空更新和相同值更新也是成功，只有对象确实不存在才返回 False。
+                cur.execute(
+                    "SELECT id FROM adh_charts WHERE id=%s AND dashboard_id=%s",
+                    (chart_id, dashboard_id),
+                )
+                exists = cur.fetchone() is not None
+            conn.commit()
+            return exists
+        finally:
+            conn.close()
+
+    def delete_chart(self, dashboard_id: int, chart_id: int) -> bool:
+        """Remove a chart from a dashboard."""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM adh_charts WHERE id = %s AND dashboard_id = %s",
+                    (chart_id, dashboard_id),
+                )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def _refresh_dataset_chart(self, chart: dict, params: dict,
+                               user_id: int, workspace_id: int, username: str, cur) -> dict:
+        """数据集图表(source_type='dataset'): 统一经数据集治理入口取数.
+
+        不把数据集 SQL 复制进 adh_charts —— 保持数据集单口径(数据集改了图表即生效);
+        取数经 dataset_service.query_dataset(governed_execute/七闸门), 无旁路。
+        结果只回行列(护栏 §7), 执行 SQL/物理细节不入图表响应。
+        """
+        from backend.modules.viz.services import dataset_service
+        if not user_id:
+            raise NoIdentityError("缺少可信用户身份, 拒绝取数(数据合规护城河)")
+        cfg = _json_loads_safe(chart.get("config")) or {}
+        ds_params = {
+            "filters": params.get("filters") or [],
+            "order": params.get("order") or [],
+            "limit": int(cfg.get("limit") or params.get("limit") or 500),
+        }
+        dims = params.get("dimensions") or cfg.get("dimensions") or []
+        meas = params.get("measures") or params.get("metrics") or cfg.get("measures") or []
+        if dims:
+            ds_params["dimensions"] = dims
+        if meas:
+            ds_params["measures"] = meas
+        # 行级 scope 按角色叠加, 角色由服务端解析(不信任请求体)
+        from backend.common import auth as _auth
+        live = _auth.get_user_by_id(user_id) or {}
+        identity = {"user_id": user_id, "username": username,
+                    "role": live.get("user_role") or "", "workspace_id": workspace_id}
+        result = dataset_service.query_dataset(int(chart["source_id"]), ds_params, identity)
+        data = {k: result[k] for k in ("columns", "rows", "row_count", "truncated") if k in result}
+        cache = json.dumps(
+            {"columns": data.get("columns") or [], "rows": data.get("rows") or []},
+            ensure_ascii=False,
+        )
+        cur.execute(
+            "UPDATE adh_charts SET data_cache = %s, updated_at = %s WHERE id = %s",
+            (cache, _now(), chart["id"]),
+        )
+        return data
+
+    def refresh_chart(self, dashboard_id: int, chart_id: int, params: dict = None,
+                      page_limit: int = None, page_offset: int = None,
+                      count_sql: str = None, user_id: int = 0,
+                      workspace_id: int = 0, username: str = "") -> dict:
+        """Re-execute a chart's SQL query on its configured datasource.
+
+        Supports param substitution, server-side pagination, and cache update.
+        raw_sql 取数一律走治理护城河(身份由服务端传入, 无身份 fail-closed)。
+        """
+        from backend.modules.mind.nl2sql.sql.query_executor import validate_sql
+
+        if not check_dashboard_visible(dashboard_id, user_id):
+            raise PermissionError("无权访问该仪表盘")
+
+        params = params or {}
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id,dashboard_id,workspace_id,source_type,source_id,semantic_query,query_source,sql_query,config FROM adh_charts "
+                    "WHERE id = %s AND dashboard_id = %s",
+                    (chart_id, dashboard_id),
+                )
+                chart = cur.fetchone()
+                if not chart:
+                    raise ValueError("图表不存在")
+
+                if (_json_loads_safe(chart.get("config")) or {}).get("as_bot_design"):
+                    return refresh_designed_chart(chart, user_id)
+                if chart.get("source_type") == "dataset" and chart.get("source_id"):
+                    return self._refresh_dataset_chart(chart, params, user_id, workspace_id, username, cur)
+                sql = chart.get("sql_query", "")
+                if not sql:
+                    return {"columns": [], "rows": [], "row_count": 0}
+
+                datasource_id = _get_chart_datasource_id(chart)
+                sql = _substitute_params(sql, params)
+                sql = sql.strip().rstrip(";")
+
+                total = None
+
+                if page_limit is not None:
+                    # Count query
+                    if count_sql:
+                        count_sql = _substitute_params(count_sql, params).strip().rstrip(";")
+                    else:
+                        base_sql = re.sub(
+                            r'\bLIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$', '',
+                            sql, flags=re.IGNORECASE,
+                        ).strip()
+                        count_sql = f"SELECT COUNT(*) AS cnt FROM ({base_sql}) _t"
+
+                    ok, msg = validate_sql(count_sql, require_limit=False)
+                    if ok:
+                        try:
+                            count_result = governed_execute(count_sql, datasource_id, user_id, workspace_id, username)
+                            if count_result.get("rows"):
+                                row = count_result["rows"][0]
+                                total = (
+                                    row.get("cnt")
+                                    or row.get("count(*)")
+                                    or row.get("COUNT(*)")
+                                    or (list(row.values())[0] if row else 0)
+                                )
+                        except Exception as e:
+                            logger.warning("[ChartRefresh] count query failed: %s", e)
+                    else:
+                        logger.warning("[ChartRefresh] count SQL validation failed: %s", msg)
+
+                    sql = f"{sql} LIMIT {int(page_limit)} OFFSET {int(page_offset or 0)}"
+                elif "limit" not in sql.lower():
+                    sql += " LIMIT 500"
+
+                # Validate SQL safety before execution
+                ok, msg = validate_sql(sql)
+                if not ok:
+                    raise ValueError(f"SQL 校验失败: {msg}")
+
+                logger.info(
+                    "[ChartRefresh] chart_id=%s, params=%s, page_limit=%s, sql=%s",
+                    chart_id, params, page_limit, sql,
+                )
+
+                result = governed_execute(sql, datasource_id, user_id, workspace_id, username)
+                if total is not None:
+                    result["total"] = total
+
+                # Update data_cache
+                now = _now()
+                cache = json.dumps(
+                    {"columns": result["columns"], "rows": result["rows"]},
+                    ensure_ascii=False,
+                )
+                cur.execute(
+                    "UPDATE adh_charts SET data_cache = %s, updated_at = %s WHERE id = %s",
+                    (cache, now, chart_id),
+                )
+                conn.commit()
+
+                return result
+        finally:
+            conn.close()
+
+    def refresh_all_charts(self, dashboard_id: int, params: dict = None,
+                           user_id: int = 0, workspace_id: int = 0,
+                           username: str = "") -> dict:
+        """Re-execute all charts' SQL in a dashboard on their respective datasources.
+
+        取数走治理护城河; 无可信身份 -> fail-closed 整体拒绝(I5)。
+        """
+        from backend.modules.mind.nl2sql.sql.query_executor import validate_sql
+
+        if not user_id:
+            raise NoIdentityError("缺少可信用户身份, 拒绝批量取数(数据合规护城河)")
+        if not check_dashboard_visible(dashboard_id, user_id):
+            raise PermissionError("无权访问该仪表盘")
+
+        params = params or {}
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id,dashboard_id,workspace_id,source_type,source_id,semantic_query,query_source,sql_query,config FROM adh_charts "
+                    "WHERE dashboard_id = %s ORDER BY id",
+                    (dashboard_id,),
+                )
+                charts = cur.fetchall()
+
+                results = {}
+                now = _now()
+
+                for chart in charts:
+                    cid = chart["id"]
+                    if (_json_loads_safe(chart.get("config")) or {}).get("as_bot_design"):
+                        results[cid] = refresh_designed_chart(chart, user_id)
+                        continue
+                    if chart.get("source_type") == "dataset" and chart.get("source_id"):
+                        # 数据集图表走数据集治理入口(不复制 SQL, 单口径)
+                        try:
+                            results[cid] = self._refresh_dataset_chart(
+                                chart, params, user_id, workspace_id, username, cur)
+                        except Exception as e:  # noqa: BLE001  可诊断原因(query_dataset 已脱敏)
+                            results[cid] = {"error": str(e)}
+                        continue
+                    sql = chart.get("sql_query", "")
+                    if not sql:
+                        results[cid] = {"columns": [], "rows": [], "row_count": 0}
+                        continue
+
+                    datasource_id = _get_chart_datasource_id(chart)
+                    sql = _substitute_params(sql, params)
+                    sql = sql.strip().rstrip(";")
+                    if "limit" not in sql.lower():
+                        sql += " LIMIT 500"
+
+                    ok, msg = validate_sql(sql)
+                    if not ok:
+                        results[cid] = {"error": f"SQL 校验失败: {msg}"}
+                        continue
+
+                    logger.info(
+                        "[ChartRefresh] chart_id=%s, params=%s, sql=%s",
+                        cid, params, sql,
+                    )
+
+                    try:
+                        result = governed_execute(sql, datasource_id, user_id, workspace_id, username)
+                        results[cid] = result
+
+                        cache = json.dumps(
+                            {"columns": result["columns"], "rows": result["rows"]},
+                            ensure_ascii=False,
+                        )
+                        cur.execute(
+                            "UPDATE adh_charts SET data_cache = %s, updated_at = %s WHERE id = %s",
+                            (cache, now, cid),
+                        )
+                    except Exception as e:
+                        results[cid] = {"error": str(e)}
+
+                conn.commit()
+                return {"charts": results}
+        finally:
+            conn.close()
+
+    def update_layout(self, dashboard_id: int, layouts: list) -> bool:
+        """Batch update chart positions (layout save)."""
+        if not layouts:
+            return True
+
+        now = _now()
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                for item in layouts:
+                    chart_id = item.get("chart_id")
+                    position = item.get("position", {})
+                    if chart_id:
+                        cur.execute(
+                            "UPDATE adh_charts SET `position`=%s, updated_at=%s "
+                            "WHERE id=%s AND dashboard_id=%s",
+                            (json.dumps(position), now, chart_id, dashboard_id),
+                        )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+
+# ── SnapshotService ──────────────────────────────────────────────────────────
+
+
+class SnapshotService:
+    """Chart snapshot save/list/get operations."""
+
+    def save_snapshot(
+        self,
+        user_id: int,
+        question: str,
+        sql_query: str,
+        chart_type: str,
+        brief: str,
+        columns: list,
+        rows: list,
+        row_count: int,
+        datasource_id: int = 0,
+    ) -> int:
+        """Save a chart snapshot after successful query execution. Returns snapshot ID."""
+        sid = _ts_id()
+        now = _now()
+        try:
+            conn = get_metadata_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO adh_chart_snapshots "
+                        "(`id`, `user_id`, `datasource_id`, `question`, `sql_query`, "
+                        "`chart_type`, `brief`, `columns`, `data_snapshot`, "
+                        "`row_count`, `created_at`) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (
+                            sid, user_id, datasource_id, question, sql_query,
+                            chart_type, brief,
+                            json.dumps(columns),
+                            json.dumps(_sanitize_floats(rows[:500]), ensure_ascii=False),
+                            row_count, now,
+                        ),
+                    )
+                conn.commit()
+                return sid
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning("Failed to save chart snapshot: %s", e)
+            return 0
+
+    def list_snapshots(self, user_id: int, days: int = 7) -> list:
+        """Get recent chart snapshots from chat executions."""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, user_id, question, sql_query, chart_type, brief, "
+                    "`columns`, row_count, created_at "
+                    "FROM adh_chart_snapshots "
+                    "WHERE user_id = %s AND created_at >= DATE_SUB(NOW(), INTERVAL %s DAY) "
+                    "ORDER BY created_at DESC LIMIT 100",
+                    (user_id, days),
+                )
+                rows = cur.fetchall()
+                for r in rows:
+                    if hasattr(r.get("created_at"), "isoformat"):
+                        r["created_at"] = r["created_at"].isoformat()
+                    if isinstance(r.get("columns"), str):
+                        r["columns"] = json.loads(r["columns"])
+                return rows
+        finally:
+            conn.close()
+
+    def get_snapshot_data(self, snapshot_id: int, user_id: int) -> Optional[dict]:
+        """Get full snapshot data including data rows."""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM adh_chart_snapshots WHERE id = %s AND user_id = %s",
+                    (snapshot_id, user_id),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                if hasattr(row.get("created_at"), "isoformat"):
+                    row["created_at"] = row["created_at"].isoformat()
+                if isinstance(row.get("columns"), str):
+                    row["columns"] = json.loads(row["columns"])
+                if isinstance(row.get("data_snapshot"), str):
+                    row["data_snapshot"] = _sanitize_floats(json.loads(row["data_snapshot"]))
+                return row
+        finally:
+            conn.close()
+
+
+# ── Preview / Datasource Aggregation ────────────────────────────────────────
+
+
+def preview_saved_query(user_id: int, source_type: str, source_id: int,
+                        workspace_id: int = 0) -> dict:
+    """Execute a saved query/dataset SQL and return preview data.
+
+    元数据查询仍走 metadata 库, 但返回数据行的取数一律经统一治理护城河
+    (敏感 block/mask + RLS + 审计), 无可信身份 -> fail-closed(I1/I2/I3/I5)。
+    """
+    from backend.modules.mind.nl2sql.sql.query_executor import validate_sql
+
+    if not source_id:
+        return {"error": "Missing source_id"}
+
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            sql_query = None
+            if source_type in ("query", "dataset"):
+                cur.execute(
+                    "SELECT sql_query FROM adh_saved_queries WHERE id = %s AND owner_id = %s",
+                    (source_id, user_id),
+                )
+                row = cur.fetchone()
+                if row:
+                    sql_query = row.get("sql_query")
+
+            if not sql_query:
+                return {"error": "Query not found"}
+
+            execute_sql = sql_query.strip().rstrip(";")
+            if "limit" not in execute_sql.lower():
+                execute_sql += " LIMIT 200"
+
+            ok, msg = validate_sql(execute_sql)
+            if not ok:
+                return {"error": f"SQL 校验失败: {msg}"}
+
+        return governed_execute(execute_sql, 0, user_id, workspace_id)
+    except NoIdentityError:
+        raise
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+def list_datasource_aggregations(user_id: int) -> list:
+    """Aggregate available data sources: snapshots, saved queries, datasets."""
+    result = []
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            # Recent chart snapshots (last 7 days)
+            cur.execute(
+                "SELECT id, question AS name, chart_type, brief AS description, created_at "
+                "FROM adh_chart_snapshots "
+                "WHERE user_id = %s AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) "
+                "ORDER BY created_at DESC LIMIT 50",
+                (user_id,),
+            )
+            for r in cur.fetchall():
+                if hasattr(r.get("created_at"), "isoformat"):
+                    r["created_at"] = r["created_at"].isoformat()
+                r["type"] = "snapshot"
+                result.append(r)
+
+            # Saved queries
+            cur.execute(
+                "SELECT id, name, description, created_at FROM adh_saved_queries "
+                "WHERE owner_id = %s AND (is_dataset = 0 OR is_dataset IS NULL) "
+                "ORDER BY updated_at DESC LIMIT 50",
+                (user_id,),
+            )
+            for r in cur.fetchall():
+                if hasattr(r.get("created_at"), "isoformat"):
+                    r["created_at"] = r["created_at"].isoformat()
+                r["type"] = "query"
+                r["chart_type"] = None
+                result.append(r)
+
+            # Saved datasets
+            cur.execute(
+                "SELECT id, name, description, created_at FROM adh_saved_queries "
+                "WHERE owner_id = %s AND is_dataset = 1 "
+                "ORDER BY updated_at DESC LIMIT 50",
+                (user_id,),
+            )
+            for r in cur.fetchall():
+                if hasattr(r.get("created_at"), "isoformat"):
+                    r["created_at"] = r["created_at"].isoformat()
+                r["type"] = "dataset"
+                r["chart_type"] = None
+                result.append(r)
+
+        return result
+    finally:
+        conn.close()
+
+
+# ── Module-level singletons ──────────────────────────────────────────────────
+
+dashboard_service = DashboardService()
+chart_service = ChartService()
+snapshot_service = SnapshotService()

@@ -11,8 +11,8 @@ credentials 与项目凭据串源; kb 同步失败被吞成 synced=0 + HTTP 200(
 
 import pytest
 
-from services.datamind.rag import qmind_retriever as qr
-from services.datacatalog.services import ontology_kb_sync as ks
+from backend.modules.mind.rag import qmind_retriever as qr
+from backend.modules.catalog.services import ontology_kb_sync as ks
 
 
 # ── 运行时隔离 ─────────────────────────────────────────────────────
@@ -128,7 +128,7 @@ class TestSyncFailureSurfaces:
 
     def test_sync_failure_returns_redacted_error(self, monkeypatch):
         """全部目标失败: 返回体带 error(脱敏), 供 API 层转 502 / 前端展示."""
-        monkeypatch.setattr("services.datacatalog.services.ontology_service.get_model",
+        monkeypatch.setattr("backend.modules.catalog.services.ontology_service.get_model",
                             lambda mid: {"id": mid, "kind": "system", "datasource_id": 0,
                                          "name": "sys", "status": "active"})
         monkeypatch.setattr(ks, "sync_targets_for_model",
@@ -147,7 +147,7 @@ class TestSyncFailureSurfaces:
 
     def test_api_returns_502_on_total_failure(self, monkeypatch):
         from fastapi import HTTPException
-        from services.datacatalog.api import ontology as api_ontology
+        from backend.modules.catalog.api import ontology as api_ontology
         monkeypatch.setattr(ks, "sync_model_to_qmind",
                             lambda mid: {"synced": 0, "targets": [], "error": "exchange 400"})
         with pytest.raises(HTTPException) as e:
@@ -156,7 +156,7 @@ class TestSyncFailureSurfaces:
         assert "exchange 400" in str(e.value.detail)
 
     def test_api_partial_success_keeps_200_with_error(self, monkeypatch):
-        from services.datacatalog.api import ontology as api_ontology
+        from backend.modules.catalog.api import ontology as api_ontology
         monkeypatch.setattr(ks, "sync_model_to_qmind",
                             lambda mid: {"synced": 1, "targets": ["全局库"], "error": "kb=6 upload failed"})
         r = api_ontology.sync_model_kb(1)
@@ -173,7 +173,7 @@ class TestCredHint:
         assert ks._cred_hint("connection timeout") is None
 
     def test_sync_failure_carries_cred_hint(self, monkeypatch):
-        monkeypatch.setattr("services.datacatalog.services.ontology_service.get_model",
+        monkeypatch.setattr("backend.modules.catalog.services.ontology_service.get_model",
                             lambda mid: {"id": mid, "kind": "system", "datasource_id": 0,
                                          "name": "sys", "status": "active"})
         monkeypatch.setattr(ks, "sync_targets_for_model",
@@ -189,7 +189,7 @@ class TestCredHint:
 
     def test_api_detail_includes_cred_hint(self, monkeypatch):
         from fastapi import HTTPException
-        from services.datacatalog.api import ontology as api_ontology
+        from backend.modules.catalog.api import ontology as api_ontology
         monkeypatch.setattr(ks, "sync_model_to_qmind",
                             lambda mid: {"synced": 0, "targets": [], "error": "exchange 400",
                                          "error_hint": ks._CRED_HINT})

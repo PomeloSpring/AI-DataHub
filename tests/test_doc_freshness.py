@@ -8,8 +8,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from services.datacatalog.services.ontology_kb_sync import _version_header
-from services.datamind.rag import qmind_retriever as qr
+from backend.modules.catalog.services.ontology_kb_sync import _version_header
+from backend.modules.mind.rag import qmind_retriever as qr
 
 
 class TestStampContract:
@@ -32,21 +32,21 @@ class TestFreshness:
 
     def test_stale_when_version_differs(self, monkeypatch):
         monkeypatch.setattr(
-            "services.datacatalog.services.ontology_kb_sync.current_active_version",
+            "backend.modules.catalog.services.ontology_kb_sync.current_active_version",
             lambda ds: {"model_id": 1, "model_version": "v2"})
         out = qr._evaluate_doc_freshness(1, self._chunks("v1"))
         assert out["doc_stale"] is True
 
     def test_fresh_when_version_matches(self, monkeypatch):
         monkeypatch.setattr(
-            "services.datacatalog.services.ontology_kb_sync.current_active_version",
+            "backend.modules.catalog.services.ontology_kb_sync.current_active_version",
             lambda ds: {"model_id": 1, "model_version": "v2"})
         out = qr._evaluate_doc_freshness(1, self._chunks("v2"))
         assert out["doc_stale"] is False
 
     def test_unknown_when_no_active(self, monkeypatch):
         monkeypatch.setattr(
-            "services.datacatalog.services.ontology_kb_sync.current_active_version",
+            "backend.modules.catalog.services.ontology_kb_sync.current_active_version",
             lambda ds: None)
         out = qr._evaluate_doc_freshness(1, self._chunks("v1"))
         assert out["doc_stale"] is None
@@ -60,7 +60,7 @@ class TestKbSeedExtraction:
     """T7 同源契约: to_cloud_md 渲染的对象标题必须能被 extract_object_keys 抽回 key。"""
 
     def test_render_then_extract(self):
-        from services.datacatalog.services.ontology_service import to_cloud_md
+        from backend.modules.catalog.services.ontology_service import to_cloud_md
         doc = {"domain": "医疗", "objects": [
             {"key": "case", "display_name": "案例", "aliases": ["工单"]},
             {"key": "hospital", "display_name": "医院"},

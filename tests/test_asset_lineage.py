@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datagov.services import lineage_service as ls
+from backend.modules.gov.services import lineage_service as ls
 
 
 class FakeDB:

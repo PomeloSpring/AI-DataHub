@@ -15,12 +15,12 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-import services.datamind.nl2sql.sql.query_executor as qexec
-import services.datamind.execution.sdk_tools.query_tools as qt
-from services.datamind.execution.sdk_tools import context as ctxmod
-from services.datamind.execution.sdk_tools.query_tools import execute_sql
+import backend.modules.mind.nl2sql.sql.query_executor as qexec
+import backend.modules.mind.execution.sdk_tools.query_tools as qt
+from backend.modules.mind.execution.sdk_tools import context as ctxmod
+from backend.modules.mind.execution.sdk_tools.query_tools import execute_sql
 
-QUERY_TOOLS = Path(__file__).resolve().parents[1] / "services/datamind/execution/sdk_tools/query_tools.py"
+QUERY_TOOLS = Path(__file__).resolve().parents[1] / "backend/modules/mind/execution/sdk_tools/query_tools.py"
 
 
 def _set_ctx():

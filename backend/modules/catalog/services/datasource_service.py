@@ -1,0 +1,724 @@
+"""数据源服务 — 管理数据库连接的业务逻辑。
+
+从 backend/api/datasource.py 迁移而来。
+提供数据源的 CRUD、连接测试、表/列查询、SQL 执行等功能。
+"""
+
+import logging
+import time
+from datetime import datetime
+from typing import Optional
+
+import pymysql
+
+from backend.common.config import (
+    DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, DORIS_DATABASE,
+)
+from backend.common.crypto import encrypt_password, decrypt_password, is_encrypted
+from backend.common.db.metadata_db import get_metadata_conn
+from backend.common.ttl_cache import datasource_cache
+
+logger = logging.getLogger(__name__)
+
+# Try to import psycopg2 (PostgreSQL / SLS-PG 协议)
+try:
+    import psycopg2
+    import psycopg2.extras
+    HAS_PSYCOPG2 = True
+except ImportError:
+    HAS_PSYCOPG2 = False
+
+# 走 PG 协议/语法的数据源类型(SLS 以 PG 兼容协议接入)
+POSTGRES_DB_TYPES = ("postgres", "postgresql", "pg", "sls")
+
+
+# ── 模块级状态 ────────────────────────────────────────────────────────
+
+_default_ds_checked = False
+
+
+# ── 辅助函数 ──────────────────────────────────────────────────────────
+
+def _now() -> str:
+    """返回当前时间字符串。"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _ts_id() -> int:
+    """生成基于时间戳的 ID。"""
+    return int(time.time() * 1000)
+
+
+def _sanitize_row(row: dict) -> dict:
+    """将行中的 datetime 字段转换为 ISO 字符串。"""
+    if not row:
+        return row
+    for key in ("created_at", "updated_at"):
+        if hasattr(row.get(key), "isoformat"):
+            row[key] = row[key].isoformat()
+    return row
+
+
+def _sanitize_rows(rows: list) -> list:
+    """批量转换行中的 datetime 字段。"""
+    return [_sanitize_row(r) for r in rows]
+
+
+# ── 数据源服务 ────────────────────────────────────────────────────────
+
+class DatasourceService:
+    """数据源管理服务。"""
+
+    async def list_datasources(self, workspace_id: int = 0, user_id: int = 0) -> list[dict]:
+        """列出所有数据源。
+
+        Args:
+            workspace_id: 工作空间 ID，0 表示不限制（全局管理列表）。
+            user_id: 请求用户 ID；workspace_id>0 时按其角色授权集过滤（纯角色裁决）。
+
+        Returns:
+            数据源列表，密码已脱敏。
+        """
+        self._ensure_default_datasource()
+        try:
+            conn = get_metadata_conn()
+            try:
+                with conn.cursor() as cur:
+                    if workspace_id:
+                        # 纯角色裁决: 工作空间不再绑定数据源(adh_workspace_datasources 退役);
+                        # 按请求用户角色授权集过滤, 空授权 fail-closed 返回空列表。
+                        from backend.modules.auth.services.role_service import role_service
+                        allowed = sorted(set(role_service.get_user_allowed_datasources(
+                            user_id, workspace_id)))
+                        if not allowed:
+                            return []
+                        marks = ','.join(['%s'] * len(allowed))
+                        cur.execute(
+                            "SELECT d.id, d.name, d.db_type, d.host, d.port, d.username, "
+                            "d.database_name, d.is_default, d.`ssl`, d.owner_id, d.created_at, d.updated_at "
+                            f"FROM adh_datasources d WHERE d.id IN ({marks}) "
+                            "ORDER BY d.is_default DESC, d.name ASC",
+                            tuple(allowed),
+                        )
+                    else:
+                        cur.execute(
+                            "SELECT id, name, db_type, host, port, username, database_name, "
+                            "is_default, `ssl`, owner_id, created_at, updated_at "
+                            "FROM adh_datasources ORDER BY is_default DESC, name ASC"
+                        )
+                    rows = cur.fetchall()
+                    return _sanitize_rows(rows)
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.error("列出数据源失败: %s", e)
+            # MySQL 不可用时返回默认 Doris 配置
+            return [{
+                "id": 0,
+                "name": f"Doris ({DORIS_HOST})",
+                "db_type": "doris",
+                "host": DORIS_HOST,
+                "port": DORIS_PORT,
+                "database_name": DORIS_DATABASE,
+                "is_default": 1,
+                "ssl": 0,
+                "owner_id": 0,
+                "created_at": "",
+                "updated_at": "",
+            }]
+
+    async def list_authorized_datasources(self, user_id: int, workspace_id: int = 0) -> list[dict]:
+        """列出当前用户角色授权的数据源（纯角色裁决；聊天选择器等“我的可用数据源”消费）。
+
+        数据源可用集 = 用户角色授权(adh_user_roles ⋈ adh_role_datasource_access)；
+        空授权 fail-closed 返回空列表（不解释为全量）。仅回传选择器所需最小字段
+        (id/name/db_type/is_default)，不含主机/账号等连接信息（守 security §7）。
+        """
+        from backend.modules.auth.services.role_service import role_service
+        allowed = sorted(set(role_service.get_user_allowed_datasources(user_id, workspace_id)))
+        if not allowed:
+            return []
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                marks = ','.join(['%s'] * len(allowed))
+                cur.execute(
+                    "SELECT id, name, db_type, is_default "
+                    f"FROM adh_datasources WHERE id IN ({marks}) "
+                    "ORDER BY is_default DESC, name ASC",
+                    tuple(allowed),
+                )
+                return cur.fetchall()
+        finally:
+            conn.close()
+
+    async def get_datasource(self, ds_id: int) -> Optional[dict]:
+        """获取单个数据源（密码已脱敏）。
+
+        Args:
+            ds_id: 数据源 ID。
+
+        Returns:
+            数据源字典，不存在返回 None。
+        """
+        ds = await self.get_datasource_raw(ds_id)
+        if ds and ds.get("password"):
+            ds["password"] = "***"
+        return ds
+
+    async def get_datasource_raw(self, ds_id: int) -> Optional[dict]:
+        """获取单个数据源（包含解密后的密码）。
+
+        Args:
+            ds_id: 数据源 ID。
+
+        Returns:
+            数据源字典，密码已解密。不存在返回 None。
+        """
+        try:
+            conn = get_metadata_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT * FROM adh_datasources WHERE id = %s", (ds_id,))
+                    row = cur.fetchone()
+                    if row and row.get("password"):
+                        password = row["password"]
+                        if is_encrypted(password):
+                            try:
+                                row["password"] = decrypt_password(password)
+                            except ValueError as e:
+                                logger.warning(
+                                    "解密数据源 %s 密码失败: %s", ds_id, e
+                                )
+                    return row
+            finally:
+                conn.close()
+        except Exception:
+            # MySQL 不可用时，对 id=0 返回默认 Doris 配置
+            if ds_id == 0:
+                return {
+                    "id": 0, "name": f"Doris ({DORIS_HOST})", "db_type": "doris",
+                    "host": DORIS_HOST, "port": DORIS_PORT, "username": DORIS_USER,
+                    "password": DORIS_PASSWORD, "database_name": DORIS_DATABASE,
+                    "is_default": 1, "ssl": 0, "owner_id": 0,
+                }
+            return None
+
+    async def create_datasource(self, data: dict, owner_id: int = 0) -> dict:
+        """创建数据源。
+
+        Args:
+            data: 数据源信息字典，包含 name, db_type, host, port, username, password 等。
+            owner_id: 创建者用户 ID。
+
+        Returns:
+            包含新数据源 ID 的字典。
+        """
+        ds_id = _ts_id()
+        now = _now()
+        ds_name = (data.get("name") or "").strip()
+        if not ds_name:
+            raise ValueError("数据源名称不能为空")
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                # name 为全局唯一标识：先查重，给出友好提示（DB 层另有 UNIQUE 兜底）
+                cur.execute("SELECT 1 FROM adh_datasources WHERE name = %s LIMIT 1", (ds_name,))
+                if cur.fetchone():
+                    raise ValueError(f"数据源名称「{ds_name}」已存在；名称为全局唯一标识，请换一个")
+                if data.get("is_default"):
+                    cur.execute("UPDATE adh_datasources SET is_default = 0")
+                ssl_mode = (data.get("ssl_mode") or "disabled")
+                try:
+                    cur.execute(
+                        "INSERT INTO adh_datasources "
+                        "(id, name, db_type, host, port, username, password, database_name, "
+                        "is_default, `ssl`, ssl_mode, owner_id, created_at, updated_at) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (
+                            ds_id, ds_name, data.get("db_type", "mysql"),
+                            data["host"], data.get("port", 3306),
+                            data.get("username", ""),
+                            encrypt_password(data.get("password", "")),
+                            data.get("database_name") or "",
+                            1 if data.get("is_default") else 0,
+                            1 if data.get("ssl") else 0,
+                            ssl_mode,
+                            owner_id, now, now,
+                        ),
+                    )
+                except Exception:
+                    # ssl_mode 列为迁移新增(未迁移时回落旧列清单)
+                    conn.rollback()
+                    cur.execute(
+                        "INSERT INTO adh_datasources "
+                        "(id, name, db_type, host, port, username, password, database_name, "
+                        "is_default, `ssl`, owner_id, created_at, updated_at) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (
+                            ds_id, ds_name, data.get("db_type", "mysql"),
+                            data["host"], data.get("port", 3306),
+                            data.get("username", ""),
+                            encrypt_password(data.get("password", "")),
+                            data.get("database_name") or "",
+                            1 if data.get("is_default") else 0,
+                            1 if data.get("ssl") else 0,
+                            owner_id, now, now,
+                        ),
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # 清除缓存
+        datasource_cache.invalidate(f"ds_{ds_id}")
+        return {"id": ds_id}
+
+    async def update_datasource(self, ds_id: int, data: dict) -> dict:
+        """更新数据源。
+
+        Args:
+            ds_id: 数据源 ID。
+            data: 要更新的字段字典。
+
+        Returns:
+            操作结果字典。
+        """
+        now = _now()
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                updates = ["updated_at = %s"]
+                params = [now]
+
+                if data.get("name") is not None:
+                    new_name = (data["name"] or "").strip()
+                    if not new_name:
+                        raise ValueError("数据源名称不能为空")
+                    cur.execute(
+                        "SELECT 1 FROM adh_datasources WHERE name = %s AND id <> %s LIMIT 1",
+                        (new_name, ds_id),
+                    )
+                    if cur.fetchone():
+                        raise ValueError(f"数据源名称「{new_name}」已存在；名称为全局唯一标识，请换一个")
+                    updates.append("name = %s")
+                    params.append(new_name)
+                if data.get("db_type") is not None:
+                    updates.append("db_type = %s")
+                    params.append(data["db_type"])
+                if data.get("host") is not None:
+                    updates.append("host = %s")
+                    params.append(data["host"])
+                if data.get("port") is not None:
+                    updates.append("port = %s")
+                    params.append(data["port"])
+                if data.get("username") is not None:
+                    updates.append("username = %s")
+                    params.append(data["username"])
+                if data.get("password"):  # 跳过空密码，避免覆盖已有密码
+                    updates.append("password = %s")
+                    params.append(encrypt_password(data["password"]))
+                if data.get("database_name") is not None:
+                    updates.append("database_name = %s")
+                    params.append(data["database_name"])
+                if data.get("is_default") is not None:
+                    if data["is_default"]:
+                        cur.execute("UPDATE adh_datasources SET is_default = 0")
+                    updates.append("is_default = %s")
+                    params.append(1 if data["is_default"] else 0)
+                if data.get("ssl") is not None:
+                    updates.append("`ssl` = %s")
+                    params.append(1 if data["ssl"] else 0)
+                if data.get("ssl_mode") is not None:
+                    updates.append("ssl_mode = %s")
+                    params.append(data["ssl_mode"])
+
+                params.append(ds_id)
+                try:
+                    cur.execute(
+                        f"UPDATE adh_datasources SET {', '.join(updates)} WHERE id = %s",
+                        params,
+                    )
+                except Exception:
+                    # ssl_mode 列未迁移时剔除该字段重试
+                    if "ssl_mode = %s" not in updates:
+                        raise
+                    conn.rollback()
+                    idx = updates.index("ssl_mode = %s")
+                    updates.pop(idx)
+                    params.pop(idx + 1)  # 首位是 updated_at, 字段参数同下标+1
+                    cur.execute(
+                        f"UPDATE adh_datasources SET {', '.join(updates)} WHERE id = %s",
+                        params,
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # 清除缓存
+        datasource_cache.invalidate(f"ds_{ds_id}")
+        return {"success": True}
+
+    async def delete_datasource(self, ds_id: int) -> dict:
+        """删除数据源。
+
+        Args:
+            ds_id: 数据源 ID。
+
+        Returns:
+            操作结果字典。
+        """
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM adh_datasources WHERE id = %s", (ds_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+        # 清除缓存
+        datasource_cache.invalidate(f"ds_{ds_id}")
+        return {"success": True}
+
+    async def test_connection(self, ds_id: int) -> dict:
+        """测试数据源连接 — 必须经 DataEngine 执行通道探测(与查询执行同链路)。
+
+        禁止降级为 pymysql 直连探测: 直连只验证配置写对, 会"测试通过但查询失败"
+        (执行走 DataEngine), 通道不一致本身就是缺陷。
+
+        Args:
+            ds_id: 数据源 ID。
+
+        Returns:
+            包含 success 和 message 的字典。
+        """
+        ds = await self.get_datasource_raw(ds_id)
+        if not ds:
+            return {"success": False, "message": "数据源不存在"}
+
+        try:
+            from backend.common.engine_client import engine_client, ENGINE_ENABLED
+            if not ENGINE_ENABLED:
+                return {"success": False, "message": "执行引擎(DataEngine)未启用，无法测试连接（禁止降级直连）"}
+            if not engine_client.health():
+                return {"success": False, "message": "执行引擎(DataEngine)不可用，无法测试连接（禁止降级直连）"}
+            engine_ds_id = engine_client.get_or_create_datasource(
+                name=f"adh-{ds_id}",
+                db_type=ds.get("db_type") or "mysql",
+                host=str(ds.get("host") or ""),
+                port=int(ds.get("port") or 3306),
+                username=str(ds.get("username") or ""),
+                password=str(ds.get("password") or ""),
+                database=str(ds.get("database_name") or ""),
+                ssl_mode=ds.get("ssl_mode"),
+            )
+            engine_client.query(sql="SELECT 1", datasource_id=engine_ds_id, rls_policies=[])
+            return {"success": True, "message": "连接成功（经 DataEngine 执行通道）"}
+        except Exception as e:
+            logger.error(
+                "数据源连接测试失败 ds_id=%s: %s (type=%s)",
+                ds_id, e, type(e).__name__,
+                exc_info=True,
+            )
+            error_msg = str(e)
+            if hasattr(e, "errno"):
+                error_msg = f"[{e.errno}] {getattr(e, 'errmsg', str(e))}"
+            return {"success": False, "message": error_msg}
+
+    async def list_tables(self, ds_id: int) -> list:
+        """列出数据源中的表。
+
+        Args:
+            ds_id: 数据源 ID。
+
+        Returns:
+            表信息列表。
+
+        Raises:
+            ValueError: 数据源不存在时抛出。
+        """
+        ds = await self.get_datasource_raw(ds_id)
+        if not ds:
+            raise ValueError("数据源不存在")
+
+        return await self._list_db_tables(ds)
+
+    async def list_columns(self, ds_id: int, table_name: str) -> list:
+        """列出表的列信息。
+
+        Args:
+            ds_id: 数据源 ID。
+            table_name: 表名。
+
+        Returns:
+            列信息列表。
+
+        Raises:
+            ValueError: 数据源不存在时抛出。
+        """
+        ds = await self.get_datasource_raw(ds_id)
+        if not ds:
+            raise ValueError("数据源不存在")
+
+        return await self._list_db_columns(ds, table_name)
+
+    async def execute_sql(self, ds_id: int, sql: str, limit: int = 200) -> dict:
+        """执行 SQL 查询。
+
+        Args:
+            ds_id: 数据源 ID。
+            sql: SQL 语句。
+            limit: 结果行数限制。
+
+        Returns:
+            包含 columns, rows, row_count, elapsed_ms 的字典。
+
+        Raises:
+            ValueError: 数据源不存在或 SQL 为空时抛出。
+            PermissionError: 非查询语句时抛出。
+        """
+        ds = await self.get_datasource_raw(ds_id)
+        if not ds:
+            raise ValueError("数据源不存在")
+
+        sql = sql.strip()
+        if not sql:
+            raise ValueError("SQL 不能为空")
+
+        start = time.time()
+
+        return await self._execute_db_sql(ds, sql, start)
+
+    def get_datasource_conn(
+        self, db_type: str, host: str, port: int,
+        user: str, password: str, database: str = None, ssl: bool = False,
+        ssl_mode: str = None,
+    ):
+        """创建数据库连接（工厂方法）。
+
+        Args:
+            db_type: 数据库类型 (mysql/doris/postgres/sls)。
+            host: 主机地址。
+            port: 端口。
+            user: 用户名。
+            password: 密码。
+            database: 数据库名。
+            ssl: 是否启用 SSL（兼容旧字段）。
+            ssl_mode: SSL 模式 (disabled/preferred/required)，设置时优先于 ssl。
+
+        Returns:
+            pymysql / psycopg2 连接。
+        """
+        db_type = (db_type or "mysql").lower()
+        # 归一化有效 ssl_mode(MySQL 列可能回传 bytes)
+        if isinstance(ssl_mode, bytes):
+            ssl_mode = ssl_mode.decode("utf-8", errors="replace")
+        effective_ssl_mode = ssl_mode or "disabled"
+        if effective_ssl_mode == "disabled" and ssl:
+            effective_ssl_mode = "required"
+
+        if db_type in POSTGRES_DB_TYPES:
+            if not HAS_PSYCOPG2:
+                raise ValueError("psycopg2 未安装，请执行: pip install psycopg2-binary")
+            pg_kwargs = {
+                "host": host,
+                "port": port,
+                "user": user,
+                "password": password,
+                "dbname": database or "postgres",
+                "cursor_factory": psycopg2.extras.RealDictCursor,
+                "connect_timeout": 10,
+            }
+            if effective_ssl_mode == "required":
+                pg_kwargs["sslmode"] = "require"
+            elif effective_ssl_mode == "preferred":
+                pg_kwargs["sslmode"] = "prefer"
+            return psycopg2.connect(**pg_kwargs)
+        else:
+            conn_kwargs = {
+                "host": host,
+                "port": port,
+                "user": user,
+                "password": password,
+                "database": database or None,
+                "charset": "utf8mb4",
+                "cursorclass": pymysql.cursors.DictCursor,
+                "connect_timeout": 10,
+                "read_timeout": 30,
+            }
+            if effective_ssl_mode == "required":
+                conn_kwargs["ssl"] = {"ssl_mode": "REQUIRED"}
+                conn_kwargs["ssl_disabled"] = False
+            elif effective_ssl_mode == "preferred":
+                conn_kwargs["ssl"] = {"ssl_mode": "PREFERRED"}
+                conn_kwargs["ssl_disabled"] = False
+            return pymysql.connect(**conn_kwargs)
+
+    def get_datasource_conn_from_dict(self, ds: dict):
+        """从数据源字典创建连接。
+
+        Args:
+            ds: 数据源配置字典。
+
+        Returns:
+            数据库连接对象。
+        """
+        return self.get_datasource_conn(
+            db_type=ds.get("db_type", "mysql"),
+            host=ds["host"],
+            port=ds["port"],
+            user=ds.get("username", ""),
+            password=ds.get("password", ""),
+            database=ds.get("database_name"),
+            ssl=bool(ds.get("ssl", 0)),
+            ssl_mode=ds.get("ssl_mode"),
+        )
+
+    async def get_datasource_by_id(self, ds_id: int) -> Optional[dict]:
+        """获取数据源（带解密和缓存）。
+
+        先查缓存，未命中则查数据库并缓存结果。
+
+        Args:
+            ds_id: 数据源 ID。
+
+        Returns:
+            数据源字典（密码已解密），不存在返回 None。
+        """
+        cache_key = f"ds_{ds_id}"
+        cached = datasource_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        ds = await self.get_datasource_raw(ds_id)
+        if ds:
+            datasource_cache.set(cache_key, ds)
+        return ds
+
+    def _ensure_default_datasource(self):
+        """自动创建默认 Doris 数据源（如果表为空）。"""
+        global _default_ds_checked
+        if _default_ds_checked:
+            return
+        try:
+            conn = get_metadata_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COUNT(*) AS cnt FROM adh_datasources")
+                    row = cur.fetchone()
+                    if row and row["cnt"] > 0:
+                        _default_ds_checked = True
+                        return
+
+                    ds_id = _ts_id()
+                    now = _now()
+                    cur.execute(
+                        "INSERT INTO adh_datasources "
+                        "(id, name, db_type, host, port, username, password, database_name, "
+                        "is_default, owner_id, created_at, updated_at) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (
+                            ds_id, f"Doris ({DORIS_HOST})", "doris",
+                            DORIS_HOST, DORIS_PORT, DORIS_USER,
+                            encrypt_password(DORIS_PASSWORD), DORIS_DATABASE,
+                            1, 0, now, now,
+                        ),
+                    )
+                conn.commit()
+                _default_ds_checked = True
+            finally:
+                conn.close()
+        except Exception:
+            pass  # MySQL 不可用，跳过默认数据源创建
+
+    async def _list_db_tables(self, ds: dict) -> list:
+        """列出 MySQL/Doris/Postgres 数据库的表。"""
+        conn = self.get_datasource_conn_from_dict(ds)
+        try:
+            with conn.cursor() as cur:
+                if (ds.get("db_type") or "").lower() in POSTGRES_DB_TYPES:
+                    cur.execute(
+                        "SELECT table_name AS \"TABLE_NAME\", "
+                        "obj_description((table_schema || '.' || table_name)::regclass, 'pg_class', 'comment') AS \"TABLE_COMMENT\", "
+                        "NULL AS \"TABLE_ROWS\", NULL AS \"DATA_LENGTH\" "
+                        "FROM information_schema.tables "
+                        "WHERE table_catalog = %s AND table_type = 'BASE TABLE' "
+                        "AND table_schema NOT IN ('pg_catalog', 'information_schema') "
+                        "ORDER BY table_schema, table_name",
+                        (ds.get("database_name") or "",),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT TABLE_NAME, TABLE_COMMENT, TABLE_ROWS, DATA_LENGTH "
+                        "FROM information_schema.TABLES "
+                        "WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE' "
+                        "ORDER BY TABLE_NAME",
+                        (ds.get("database_name") or "",),
+                    )
+                return cur.fetchall()
+        finally:
+            conn.close()
+
+    async def _list_db_columns(self, ds: dict, table_name: str) -> list:
+        """列出 MySQL/Doris/Postgres 表的列。"""
+        conn = self.get_datasource_conn_from_dict(ds)
+        try:
+            with conn.cursor() as cur:
+                if (ds.get("db_type") or "").lower() in POSTGRES_DB_TYPES:
+                    cur.execute(
+                        "SELECT column_name AS \"COLUMN_NAME\", data_type AS \"DATA_TYPE\", "
+                        "col_description((table_schema || '.' || table_name)::regclass, ordinal_position) AS \"COLUMN_COMMENT\", "
+                        "'' AS \"COLUMN_KEY\", is_nullable AS \"IS_NULLABLE\" "
+                        "FROM information_schema.columns "
+                        "WHERE table_catalog = %s AND table_name = %s "
+                        "AND table_schema NOT IN ('pg_catalog', 'information_schema') "
+                        "ORDER BY table_schema, ordinal_position",
+                        (ds.get("database_name") or "", table_name),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_COMMENT, COLUMN_KEY, IS_NULLABLE "
+                        "FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s "
+                        "ORDER BY ORDINAL_POSITION",
+                        (ds.get("database_name") or "", table_name),
+                    )
+                return cur.fetchall()
+        finally:
+            conn.close()
+
+    async def _execute_db_sql(self, ds: dict, sql: str, start: float) -> dict:
+        """执行 MySQL/Doris SQL 查询。"""
+        upper = sql.upper().lstrip()
+        if not (
+            upper.startswith("SELECT")
+            or upper.startswith("WITH")
+            or upper.startswith("SHOW")
+            or upper.startswith("DESC")
+        ):
+            raise PermissionError("仅允许 SELECT/SHOW/DESC 查询")
+
+        conn = self.get_datasource_conn_from_dict(ds)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                rows = cur.fetchall()
+            elapsed_ms = int((time.time() - start) * 1000)
+            columns = list(rows[0].keys()) if rows else []
+            for row in rows:
+                for k, v in row.items():
+                    if hasattr(v, "isoformat"):
+                        row[k] = v.isoformat()
+                    elif isinstance(v, bytes):
+                        row[k] = v.decode("utf-8", errors="replace")
+            return {
+                "columns": columns, "rows": rows,
+                "row_count": len(rows), "elapsed_ms": elapsed_ms,
+            }
+        finally:
+            conn.close()
+
+
+# ── 模块级单例 ────────────────────────────────────────────────────────
+
+datasource_service = DatasourceService()

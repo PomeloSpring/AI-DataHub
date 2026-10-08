@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-screen_tools = importlib.import_module("services.datamind.execution.sdk_tools.screen_tools")
+screen_tools = importlib.import_module("backend.modules.mind.execution.sdk_tools.screen_tools")
 
 
 def _is_err(result: dict) -> bool:
@@ -58,8 +58,8 @@ def test_create_screen_empty_widgets():
 
 def test_create_screen_unbound_object_fails_closed(monkeypatch):
     # 让 resolve_binding 返回 None(未绑定), 应在建大屏/建图前就返回声明式错误
-    import services.shared.semantics.intent as intent_mod
-    import services.shared.semantics.binding_resolver as br_mod
+    import backend.semantics.intent as intent_mod
+    import backend.semantics.binding_resolver as br_mod
 
     class _Q:
         object = "NoSuchObj"
@@ -79,7 +79,7 @@ def test_create_screen_unbound_object_fails_closed(monkeypatch):
 # ── vis_library: 内置字模 admin-only 保护 ─────────────────────────────
 
 def test_vis_library_builtin_admin_only(monkeypatch):
-    vls = importlib.import_module("services.dataviz.services.vis_library_service")
+    vls = importlib.import_module("backend.modules.viz.services.vis_library_service")
     builtin_row = {"id": 7, "code": "cs_x", "name": "内置", "category": "chart_style",
                    "chart_type": "bar", "style_config": {}, "query_template": None,
                    "is_builtin": 1, "is_active": 1, "source": "system"}
@@ -101,7 +101,7 @@ def test_vis_library_builtin_admin_only(monkeypatch):
 
 
 def test_vis_library_rejects_unknown_category():
-    vls = importlib.import_module("services.dataviz.services.vis_library_service")
+    vls = importlib.import_module("backend.modules.viz.services.vis_library_service")
     svc = vls.VisLibraryService()
     with pytest.raises(ValueError):
         svc.create_component({"name": "x", "category": "not_a_category"}, user_id=1, is_admin=False)
@@ -110,7 +110,7 @@ def test_vis_library_rejects_unknown_category():
 # ── datahub_screen 工具组注册 ──────────────────────────────────────────
 
 def test_screen_group_registered():
-    sdk = importlib.import_module("services.datamind.execution.sdk_tools")
+    sdk = importlib.import_module("backend.modules.mind.execution.sdk_tools")
     assert "screen" in sdk.TOOL_SERVER_BUILDERS
     srv_name, tools = sdk.TOOL_SERVER_TOOLS["screen"]
     assert srv_name == "datahub_screen"
@@ -123,7 +123,7 @@ def test_screen_group_registered():
 def test_asbot_tool_selection_includes_screen_excludes_query():
     """工具去留完全由 as_bot.tools.mcp 逐工具勾选裁决：
     勾了 screen/semantic 即注册，未勾 query 即不注册（LLM 无从调用）。"""
-    tool_policy = importlib.import_module("services.datamind.execution.tool_policy")
+    tool_policy = importlib.import_module("backend.modules.mind.execution.tool_policy")
     policy = tool_policy.compile_policy({
         "as_bot_key": "as_bot", "mcp_server_ids": [],
         "tools": {"mcp": {"screen": ["create_data_screen", "get_data_screen"],

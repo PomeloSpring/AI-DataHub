@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from services.datamind.execution import function_tools, outbound_guard, perm_link
-from services.datamind.execution import tool_policy as policies
+from backend.modules.mind.execution import function_tools, outbound_guard, perm_link
+from backend.modules.mind.execution import tool_policy as policies
 
 
 # ── 夹具：一份"全权限"的角色授权 ───────────────────────────────────────────────
@@ -274,7 +274,7 @@ def test_report_view_excludes_content_and_share_tokens():
 
 def test_quality_check_result_projects_away_physical_table(monkeypatch):
     """质量检核结果要投影掉 target_table（物理表名）与采样。"""
-    from services.datamind.execution import function_tools as ft
+    from backend.modules.mind.execution import function_tools as ft
 
     monkeypatch.setattr(ft, "_identity",
                         lambda: {"user_id": 1, "workspace_id": 1, "role": "admin"})
@@ -282,7 +282,7 @@ def test_quality_check_result_projects_away_physical_table(monkeypatch):
         "id": 7, "workspace_id": 1, "rule_name": "非空校验", "rule_type": "not_null",
         "rule_config": {}, "target_table": "secret_table", "target_column": "c", "severity": "high"}])
 
-    import services.datagov.services.quality_engine as qe
+    import backend.modules.gov.services.quality_engine as qe
     monkeypatch.setattr(qe, "execute_single_rule", lambda *a, **k: {
         "rule_name": "非空校验", "rule_type": "not_null", "target_table": "secret_table",
         "passed": True, "total_rows": 10, "failed_rows": 0, "pass_rate": 100.0,
@@ -311,15 +311,15 @@ def test_resolve_policy_always_supplies_role_perms(monkeypatch):
         return real_compile(as_bot, ceiling, role_perms={})
 
     monkeypatch.setattr(policies, "compile_policy", fake_compile)
-    monkeypatch.setattr("services.shared.common.auth.resolve_execution_owner",
+    monkeypatch.setattr("backend.common.auth.resolve_execution_owner",
                         lambda *a, **k: {"role": "admin", "username": "u"})
-    from services.datamind.execution import as_bots
+    from backend.modules.mind.execution import as_bots
     monkeypatch.setattr(as_bots, "resolve_as_bots",
                         lambda *a, **k: [{"as_bot_key": "a", "tools": {}, "mcp_server_ids": [],
                                          "models": []}])
     monkeypatch.setattr(as_bots, "default_as_bot", lambda bots: bots[0] if bots else None)
 
-    import services.authservice.services.role_service as rs
+    import backend.modules.auth.services.role_service as rs
     monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                         lambda *a, **k: {"report:read": {"ai_access": "read", "label": "x", "ai_note": ""}})
 

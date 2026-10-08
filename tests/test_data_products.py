@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datacatalog.services import data_product_service as dps
+from backend.modules.catalog.services import data_product_service as dps
 
 
 # ── fake DB ─────────────────────────────────────────────────────
@@ -206,7 +206,7 @@ class TestAutoRegisterFromDataflow:
         return pd.DataFrame({"id": [1], "phone": ["138"]})
 
     def test_registers_with_producer_ref(self, monkeypatch):
-        from services.dataflow.dag import node_runners as nr
+        from backend.modules.flow.dag import node_runners as nr
         captured = {}
         monkeypatch.setattr(
             dps, "register_product",
@@ -225,7 +225,7 @@ class TestAutoRegisterFromDataflow:
 
     def test_failure_does_not_block_but_is_surfaced(self, monkeypatch):
         """登记失败必须显式带回 error/warnings，不得静默吞掉。"""
-        from services.dataflow.dag import node_runners as nr
+        from backend.modules.flow.dag import node_runners as nr
 
         def _boom(*a, **k):
             raise RuntimeError("db down")
@@ -345,7 +345,7 @@ class TestContractChangeDirect:
     apply 由 dataset:manage 把关后直执行（审批回路已退役）。"""
 
     def _grant_dataset_manage(self, monkeypatch):
-        import services.authservice.services.role_service as rs
+        import backend.modules.auth.services.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"dataset:manage": {"ai_access": "write", "ai_note": ""}})
 
@@ -381,7 +381,7 @@ class TestContractChangeDirect:
 
     def test_apply_without_dataset_manage_fail_closed(self, monkeypatch):
         """直执行把关：approved_by 未持 dataset:manage 写权限即拒（fail-closed）。"""
-        import services.authservice.services.role_service as rs
+        import backend.modules.auth.services.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms", lambda *a: {})
         monkeypatch.setattr(dps, "get_product", lambda n: {"product_name": n})
         monkeypatch.setattr(dps, "execute_query",
@@ -415,7 +415,7 @@ class TestActionDeclaration:
 
     def test_contract_change_action_declared_in_canonical(self):
         """product.contract_change 声明在系统本体 actions[]（种子脚本已退役，直接查 canonical）。"""
-        from services.shared.common.db import execute_query
+        from backend.common.db import execute_query
         try:
             rows = execute_query(
                 "SELECT json_content FROM adh_ontology_models WHERE kind='system' AND status='active'") or []

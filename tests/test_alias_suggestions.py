@@ -9,10 +9,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from services.datamind.rag import alias_suggestion
-from services.shared.semantics.planner import _ColumnResolver, plan
-from services.shared.semantics.models import ResolvedBinding, SemanticQuery
-from services.datacatalog.services import ontology_service
+from backend.modules.mind.rag import alias_suggestion
+from backend.semantics.planner import _ColumnResolver, plan
+from backend.semantics.models import ResolvedBinding, SemanticQuery
+from backend.modules.catalog.services import ontology_service
 
 
 # ── 别名回写直执行：参数校验（fail-loud，不静默丢参数） ─────────

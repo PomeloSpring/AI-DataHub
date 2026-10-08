@@ -7,9 +7,9 @@
 
 import pytest
 
-from services.dataflow.dag.dag_validator import validate_graph, DagValidationError
-from services.dataflow.dag import dag_planner as planner
-from services.dataflow.dag import dag_executor
+from backend.modules.flow.dag.dag_validator import validate_graph, DagValidationError
+from backend.modules.flow.dag import dag_planner as planner
+from backend.modules.flow.dag import dag_executor
 
 
 def _graph(nodes, edges):

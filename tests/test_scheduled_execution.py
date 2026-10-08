@@ -4,16 +4,16 @@ from unittest.mock import Mock
 
 import pytest
 
-from services.dataflow.tasks import executor
+from backend.modules.flow.tasks import executor
 
 
 @pytest.fixture
 def scheduled_as_bot(monkeypatch):
     import copy
-    from services.shared.common import db, auth
-    from services.datamind.execution import resource_guard
-    from services.datamind.execution.sdk_tools import external_tools
-    from services.authservice.services.role_service import role_service
+    from backend.common import db, auth
+    from backend.modules.mind.execution import resource_guard
+    from backend.modules.mind.execution.sdk_tools import external_tools
+    from backend.modules.auth.services.role_service import role_service
     state = {"as_bot": {"id": 1, "as_bot_key": "sales", "name": "销售分析", "is_default": 1,
              "system_prompt": "你是销售分析", "knowledge_base_ids": [],
              "mcp_server_ids": [], "tools": {"mcp": {"semantic": ["get_metrics", "run_semantic_query"]}}},
@@ -64,7 +64,7 @@ def test_truthful_status(results, required, report_ok, expected):
 
 @pytest.mark.parametrize("owner", [0, -1, None])
 def test_missing_owner_never_queries(owner, monkeypatch):
-    from services.shared.common import auth
+    from backend.common import auth
     lookup = Mock()
     monkeypatch.setattr(auth, "get_user_by_id", lookup)
     with pytest.raises(PermissionError):
@@ -73,14 +73,14 @@ def test_missing_owner_never_queries(owner, monkeypatch):
 
 
 def test_disabled_owner_rejected(monkeypatch):
-    from services.shared.common import auth
+    from backend.common import auth
     monkeypatch.setattr(auth, "get_user_by_id", lambda uid: {"status": "disabled"})
     with pytest.raises(PermissionError):
         auth.resolve_execution_owner(7, 3)
 
 
 def test_sql_uses_governance_and_outer_limit(monkeypatch):
-    from services.dataviz.services import governed_query
+    from backend.modules.viz.services import governed_query
     governed = Mock(return_value={"columns": ["数量"], "rows": [{"数量": 4}], "row_count": 1})
     monkeypatch.setattr(governed_query, "governed_execute", governed)
     out = executor._execute_sql_on_datasource("SELECT 'limit' AS label", 8,
@@ -91,7 +91,7 @@ def test_sql_uses_governance_and_outer_limit(monkeypatch):
 
 
 def test_write_sql_never_reaches_governance(monkeypatch):
-    from services.dataviz.services import governed_query
+    from backend.modules.viz.services import governed_query
     governed = Mock()
     monkeypatch.setattr(governed_query, "governed_execute", governed)
     with pytest.raises(PermissionError):
@@ -101,7 +101,7 @@ def test_write_sql_never_reaches_governance(monkeypatch):
 
 
 def test_log_projection_drops_legacy_tokens():
-    from services.dataflow.api.scheduled import _safe_log
+    from backend.modules.flow.api.scheduled import _safe_log
     out = _safe_log({"id": 1, "report_access_token": "secret", "access_token": "old",
                      "result_data": [{"sql": "secret"}], "error_message": "host password"})
     assert out == {"id": 1}
@@ -109,7 +109,7 @@ def test_log_projection_drops_legacy_tokens():
 
 @pytest.fixture
 def runtime(monkeypatch):
-    from services.dataflow.services.scheduled_task_service import scheduled_task_service as service
+    from backend.modules.flow.services.scheduled_task_service import scheduled_task_service as service
     task = {"id": 1, "owner_id": 7, "workspace_id": 3, "is_active": True,
             "task_type": "query", "timeout_seconds": 30, "max_retries": 0,
             "task_config": {"datasource_id": 8, "questions": [{"title": "统计", "sql": "SELECT 1"}]}}
@@ -134,7 +134,7 @@ def runtime(monkeypatch):
     monkeypatch.setattr(executor, "_resolve_owner", lambda t: {"user_id": 7, "workspace_id": 3})
     monkeypatch.setattr(executor, "_check_datasource", lambda *a: None)
     monkeypatch.setattr(executor, "_collect_lineage", lambda *a: None)
-    from services.dataviz.services import report_service
+    from backend.modules.viz.services import report_service
     monkeypatch.setattr(report_service, "_snapshot", lambda *a: {"sources": [], "policy_digest": "test"})
     monkeypatch.setattr(report_service, "_verify_snapshot", lambda *a: None)
     return task, log
@@ -206,8 +206,8 @@ def test_expired_deadline_never_overwrites_timeout(runtime, monkeypatch):
 
 
 def test_notification_contains_no_business_content(monkeypatch):
-    from services.dataflow.tasks.notification import notification_sender
-    from services.dataflow.services.scheduled_task_service import scheduled_task_service as service
+    from backend.modules.flow.tasks.notification import notification_sender
+    from backend.modules.flow.services.scheduled_task_service import scheduled_task_service as service
     monkeypatch.setattr(service, "get_channel", lambda cid: {"workspace_id": 3, "is_active": True})
     monkeypatch.setattr(service, "update_channel_test_status", lambda *a: None)
     send = Mock()
@@ -222,15 +222,15 @@ def test_notification_contains_no_business_content(monkeypatch):
 
 def test_beat_generates_run_before_publish(monkeypatch):
     from celery.beat import Scheduler, ScheduleEntry
-    from services.dataflow.tasks.beat_schedule import DatabaseScheduler
-    from services.dataflow.tasks.celery_app import app
-    from services.dataflow.services.scheduled_task_service import scheduled_task_service as service
+    from backend.modules.flow.tasks.beat_schedule import DatabaseScheduler
+    from backend.modules.flow.tasks.celery_app import app
+    from backend.modules.flow.services.scheduled_task_service import scheduled_task_service as service
     calls = []
     monkeypatch.setattr(service, "get_task", lambda tid: {"id": tid, "owner_id": 7, "is_active": 1, "workspace_id": 3})
     monkeypatch.setattr(service, "create_log", lambda *a, **kw: calls.append(("log", kw["run_key"])))
     monkeypatch.setattr(Scheduler, "apply_async", lambda self, entry, *a, **kw: calls.append(("publish", entry.kwargs["run_key"])))
     scheduler = DatabaseScheduler(app=app, lazy=True)
-    entry = ScheduleEntry(name="task", task="services.dataflow.tasks.executor.execute_scheduled_task", args=(1,), app=app)
+    entry = ScheduleEntry(name="task", task="backend.modules.flow.tasks.executor.execute_scheduled_task", args=(1,), app=app)
     scheduler.apply_async(entry)
     assert calls[0][0] == "log" and calls[1][0] == "publish"
     assert calls[0][1] == calls[1][1]
@@ -278,7 +278,7 @@ def _scripted(calls, final=None):
 
 def _patch_oneshot(monkeypatch, script):
     """mock 点从 llm_client.generate_with_tools 移到 sdk.query 一次性流（oneshot 测试缝）。"""
-    from services.datamind.execution import scheduled_analysis as sa
+    from backend.modules.mind.execution import scheduled_analysis as sa
     monkeypatch.setattr(sa, "_build_oneshot_options", lambda run: None)
     monkeypatch.setattr(sa._ScheduledRun, "oneshot", lambda self, prompt, options: script(self))
 
@@ -286,15 +286,15 @@ def _patch_oneshot(monkeypatch, script):
 @pytest.mark.parametrize("call,code", [(None, "NO_QUERY_RESULT"), ("execute_sql", "TOOL_NOT_ALLOWED"),
                                       ("needs_clarification", "NEEDS_CLARIFICATION")])
 def test_agent_never_fakes_completion_or_bypasses_tools(monkeypatch, call, code, scheduled_as_bot):
-    from services.datamind.execution.scheduled_analysis import analyze_question
+    from backend.modules.mind.execution.scheduled_analysis import analyze_question
     _patch_oneshot(monkeypatch, _scripted([(call, {})] if call else []))
     result = asyncio.run(analyze_question("统计订单", {"datasource_id": 8, "as_bot_key": "sales"}, {"user_id": 7, "workspace_id": 3}))
     assert result["status"] == "failed" and result["error_code"] == code
 
 
 def test_agent_injects_trusted_identity(monkeypatch, scheduled_as_bot):
-    from services.datamind.execution.scheduled_analysis import analyze_question
-    from services.dataviz.services import report_service
+    from backend.modules.mind.execution.scheduled_analysis import analyze_question
+    from backend.modules.viz.services import report_service
     _patch_oneshot(monkeypatch, _scripted([("run_semantic_query", {"intent": {"object": "订单"}})]))
     execute = Mock(return_value={"status": "success", "rows": [], "columns": []})
     monkeypatch.setattr(report_service, "execute_semantic_source", execute)
@@ -306,8 +306,8 @@ def test_agent_injects_trusted_identity(monkeypatch, scheduled_as_bot):
 
 def test_scheduled_query_rows_never_reach_llm(monkeypatch, scheduled_as_bot):
     """治理约束：行数据只入 run 级收集器（_analysis_results 带 _security_context），回 LLM 仅完成回执。"""
-    from services.datamind.execution.scheduled_analysis import analyze_question
-    from services.dataviz.services import report_service
+    from backend.modules.mind.execution.scheduled_analysis import analyze_question
+    from backend.modules.viz.services import report_service
     captured = {}
 
     async def stream(run):
@@ -336,7 +336,7 @@ def test_scheduled_query_rows_never_reach_llm(monkeypatch, scheduled_as_bot):
 
 def test_wallclock_run_key_uses_task_timezone():
     from datetime import datetime, timezone
-    from services.dataflow.tasks.beat_schedule import WallClockCrontab
+    from backend.modules.flow.tasks.beat_schedule import WallClockCrontab
     now = datetime(2026, 9, 21, 4, 0, tzinfo=timezone.utc)  # 00:00 EDT / 12:00 CST
     assert WallClockCrontab("0 0 * * *", "America/New_York").run_key(5, now=now) == \
         "cron:5:America/New_York:202609210000"
@@ -347,7 +347,7 @@ def test_wallclock_run_key_uses_task_timezone():
 def test_wallclock_is_due_matches_local_not_utc(monkeypatch):
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
-    from services.dataflow.tasks.beat_schedule import WallClockCrontab
+    from backend.modules.flow.tasks.beat_schedule import WallClockCrontab
     cron = WallClockCrontab("30 9 * * *", "America/New_York")
     local = datetime(2026, 3, 10, 9, 30, tzinfo=ZoneInfo("America/New_York"))
     monkeypatch.setattr(cron, "now", lambda: local)
@@ -363,7 +363,7 @@ def test_wallclock_is_due_matches_local_not_utc(monkeypatch):
 def test_wallclock_no_backfill_after_downtime(monkeypatch):
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
-    from services.dataflow.tasks.beat_schedule import WallClockCrontab
+    from backend.modules.flow.tasks.beat_schedule import WallClockCrontab
     cron = WallClockCrontab("0 * * * *", "Asia/Shanghai")
     now = datetime(2026, 9, 21, 15, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
     monkeypatch.setattr(cron, "now", lambda: now)
@@ -394,7 +394,7 @@ class _FakeLock:
 
 
 def _lease(lock):
-    from services.dataflow.tasks.celery_app import BeatLease
+    from backend.modules.flow.tasks.celery_app import BeatLease
     class Client:
         def lock(self, *a, **k):
             return lock
@@ -424,8 +424,8 @@ def test_beat_lease_lost_lock_reacquires():
 
 def test_beat_tick_pauses_without_lease(monkeypatch):
     from celery.beat import Scheduler
-    from services.dataflow.tasks.beat_schedule import DatabaseScheduler
-    from services.dataflow.tasks.celery_app import app
+    from backend.modules.flow.tasks.beat_schedule import DatabaseScheduler
+    from backend.modules.flow.tasks.celery_app import app
     monkeypatch.setattr(Scheduler, "__init__", lambda self, *a, **k: None)
     sched = DatabaseScheduler.__new__(DatabaseScheduler)
     sched._lease = _lease(_FakeLock(fail=True))
@@ -437,21 +437,21 @@ def test_beat_tick_pauses_without_lease(monkeypatch):
 
 def test_agent_datasource_scope_enforced(scheduled_as_bot):
     """AS-BOT 不持有数据源边界：任务源不在创建者角色授权范围 → 拒绝。"""
-    from services.datamind.execution import scheduled_analysis as sa
+    from backend.modules.mind.execution import scheduled_analysis as sa
     scheduled_as_bot["sources"] = [7]
     with pytest.raises(PermissionError, match="当前用户无权使用该数据源"):
         sa.load_profile({"as_bot_key": "sales", "datasource_id": 8}, {"workspace_id": 3, "user_id": 7})
 
 
 def test_agent_prompt_scoped_but_allowed(scheduled_as_bot):
-    from services.datamind.execution import scheduled_analysis as sa
+    from backend.modules.mind.execution import scheduled_analysis as sa
     profile = sa.load_profile({"as_bot_key": "sales", "datasource_id": 8}, {"workspace_id": 3, "user_id": 7})
     assert profile["policy"].as_bot["system_prompt"] == "你是销售分析"
     assert profile["servers"] == []
 
 
 def test_mcp_requires_explicit_intent_contract(scheduled_as_bot):
-    from services.datamind.execution import scheduled_analysis as sa
+    from backend.modules.mind.execution import scheduled_analysis as sa
     _grant_mcp(scheduled_as_bot)
     scheduled_as_bot["server"]["tools_config"] = [{"name": "other"}]
     with pytest.raises(PermissionError, match="契约工具"):
@@ -459,7 +459,7 @@ def test_mcp_requires_explicit_intent_contract(scheduled_as_bot):
 
 
 def test_mcp_stdio_transport_explicitly_unavailable(scheduled_as_bot):
-    from services.datamind.execution import scheduled_analysis as sa
+    from backend.modules.mind.execution import scheduled_analysis as sa
     _grant_mcp(scheduled_as_bot)
     scheduled_as_bot["server"]["transport"] = "stdio"
     p = sa.load_profile({"as_bot_key": "sales", "datasource_id": 8}, {"workspace_id": 3, "user_id": 7})
@@ -468,7 +468,7 @@ def test_mcp_stdio_transport_explicitly_unavailable(scheduled_as_bot):
 
 
 def test_mcp_intent_tool_accepted_under_role_scope(scheduled_as_bot):
-    from services.datamind.execution import scheduled_analysis as sa
+    from backend.modules.mind.execution import scheduled_analysis as sa
     _grant_mcp(scheduled_as_bot)
     p = sa.load_profile({"as_bot_key": "sales", "datasource_id": 8}, {"workspace_id": 3, "user_id": 7})
     assert p["servers"][0]["id"] == 9
@@ -477,7 +477,7 @@ def test_mcp_intent_tool_accepted_under_role_scope(scheduled_as_bot):
 @pytest.mark.parametrize("legacy", [{}, {"agent_name": "sales"}, {"mcp_server_id": 9},
                                     {"as_bot_key": "sales", "mcp_server_ids": []}])
 def test_old_task_requires_explicit_as_bot(legacy, scheduled_as_bot):
-    from services.datamind.execution import scheduled_analysis as sa
+    from backend.modules.mind.execution import scheduled_analysis as sa
     with pytest.raises(sa.ScheduledScopeError) as exc:
         sa.load_profile({"datasource_id": 8, **legacy}, {"workspace_id": 3, "user_id": 7})
     assert exc.value.code == "ASBOT_REQUIRED"
@@ -486,7 +486,7 @@ def test_old_task_requires_explicit_as_bot(legacy, scheduled_as_bot):
 
 def test_task_config_dual_key_reads_legacy_waker_key():
     """task_config 双键兼容：读侧 as_bot_key 优先、waker_key 存量回退，写侧只写 as_bot_key。"""
-    from services.datamind.execution import scheduled_analysis as sa
+    from backend.modules.mind.execution import scheduled_analysis as sa
     assert sa._config_as_bot_key({"as_bot_key": "sales", "waker_key": "old"}) == "sales"
     assert sa._config_as_bot_key({"waker_key": "old"}) == "old"   # 存量任务不丢绑定
     assert sa._config_as_bot_key({}) == ""
@@ -494,7 +494,7 @@ def test_task_config_dual_key_reads_legacy_waker_key():
 
 @pytest.mark.parametrize("revoke", ["as_bot", "tool", "datasource", "mcp", "knowledge"])
 def test_independent_workers_observe_revocation(scheduled_as_bot, revoke):
-    from services.datamind.execution import scheduled_analysis as sa
+    from backend.modules.mind.execution import scheduled_analysis as sa
     _grant_mcp(scheduled_as_bot)
     scheduled_as_bot["as_bot"]["knowledge_base_ids"] = [4]
     scheduled_as_bot["as_bot"]["tools"]["mcp"]["semantic"].append("knowledge_search")
@@ -513,8 +513,8 @@ def test_independent_workers_observe_revocation(scheduled_as_bot, revoke):
 
 
 def test_revocation_during_llm_never_reaches_query(monkeypatch, scheduled_as_bot):
-    from services.datamind.execution.scheduled_analysis import analyze_question
-    from services.dataviz.services import report_service
+    from backend.modules.mind.execution.scheduled_analysis import analyze_question
+    from backend.modules.viz.services import report_service
 
     async def stream(run):
         yield AssistantMessage([ToolUseBlock("t1", "run_semantic_query", {"intent": {"object": "订单"}})])
@@ -548,8 +548,8 @@ def test_legacy_worker_stops_before_llm(runtime, monkeypatch):
     '{"intent":{"object":"订单"},"extra":1}',
 ])
 def test_propose_intent_rejects_bad_contract(monkeypatch, payload):
-    from services.datamind.execution import scheduled_analysis as sa
-    import services.shared.mcp_client.client as mcpmod
+    from backend.modules.mind.execution import scheduled_analysis as sa
+    import backend.mcp_client.client as mcpmod
     class FakeClient:
         def __init__(self, *a, **k): pass
         async def connect(self): return True
@@ -561,8 +561,8 @@ def test_propose_intent_rejects_bad_contract(monkeypatch, payload):
 
 
 def test_propose_intent_accepts_clean_intent(monkeypatch):
-    from services.datamind.execution import scheduled_analysis as sa
-    import services.shared.mcp_client.client as mcpmod
+    from backend.modules.mind.execution import scheduled_analysis as sa
+    import backend.mcp_client.client as mcpmod
     class FakeClient:
         def __init__(self, *a, **k): pass
         async def connect(self): return True
@@ -576,8 +576,8 @@ def test_propose_intent_accepts_clean_intent(monkeypatch):
 
 
 def test_mcp_unavailable_is_retryable_not_success(monkeypatch, scheduled_as_bot):
-    from services.datamind.execution.scheduled_analysis import analyze_question
-    import services.shared.mcp_client.client as mcpmod
+    from backend.modules.mind.execution.scheduled_analysis import analyze_question
+    import backend.mcp_client.client as mcpmod
     _grant_mcp(scheduled_as_bot)
     _patch_oneshot(monkeypatch, _scripted([("propose_semantic_intent_1", {})]))
     class DeadClient:
@@ -601,8 +601,8 @@ def _agent_task(**cfg):
 
 
 def test_agent_retries_transient_llm_then_succeeds(monkeypatch, scheduled_as_bot):
-    from services.dataviz.services import report_service
-    from services.datamind.execution import scheduled_analysis as sa
+    from backend.modules.viz.services import report_service
+    from backend.modules.mind.execution import scheduled_analysis as sa
     monkeypatch.setattr(executor, "_check_running", lambda task: None)
     state = {"calls": 0}
 
@@ -620,8 +620,8 @@ def test_agent_retries_transient_llm_then_succeeds(monkeypatch, scheduled_as_bot
 
 
 def test_agent_non_retryable_not_repeated(monkeypatch, scheduled_as_bot):
-    from services.dataviz.services import report_service
-    from services.datamind.execution import scheduled_analysis as sa
+    from backend.modules.viz.services import report_service
+    from backend.modules.mind.execution import scheduled_analysis as sa
     monkeypatch.setattr(executor, "_check_running", lambda task: None)
     calls = {"n": 0}
     def execute(*a):
@@ -638,7 +638,7 @@ def test_agent_non_retryable_not_repeated(monkeypatch, scheduled_as_bot):
 
 def test_guarded_call_stops_on_cancel_event():
     import threading, time as _t
-    from services.shared.common.task_runtime import guarded_call, RunInterrupted
+    from backend.common.task_runtime import guarded_call, RunInterrupted
     stop, started = threading.Event(), threading.Event()
     def slow():
         started.set()

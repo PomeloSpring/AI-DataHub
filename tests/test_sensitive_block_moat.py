@@ -15,11 +15,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pandas as pd
 
-from services.datamind.permission.enforcer import (
+from backend.modules.mind.permission.enforcer import (
     PermissionEnforcer, PermissionResult, permission_enforcer,
 )
-from services.shared.semantics import gates, planner
-from services.shared.semantics.models import PlannedExecution, ResolvedBinding, SemanticQuery
+from backend.semantics import gates, planner
+from backend.semantics.models import PlannedExecution, ResolvedBinding, SemanticQuery
 
 
 # ── M3: _get_sensitive_policies 全局 ∪ 指定并集 ─────────────────
@@ -39,7 +39,7 @@ class TestSensitivePoliciesUnion:
                 {"column_name": None, "mask_type": "block"},       # 脏行忽略
             ]
 
-        monkeypatch.setattr("services.shared.common.db.execute_query", fake_exec)
+        monkeypatch.setattr("backend.common.db.execute_query", fake_exec)
         masks, blocks = permission_enforcer._get_sensitive_policies(3, 7, "t_user")
         # block 归 blocks 并去重(大小写按原样保留), 其余归 masks
         assert sorted(blocks) == sorted(["phone", "EMAIL"])
@@ -54,7 +54,7 @@ class TestSensitivePoliciesUnion:
             captured["params"] = list(params or [])
             return []
 
-        monkeypatch.setattr("services.shared.common.db.execute_query", fake_exec)
+        monkeypatch.setattr("backend.common.db.execute_query", fake_exec)
         permission_enforcer._get_sensitive_policies(3, 7, "t_user")
         sql = captured["sql"]
         # 全局(datasource_id=0 / table_name='') ∪ 指定, workspace_id 也含 0
@@ -91,7 +91,7 @@ class TestBlockHelpers:
 
 class TestCheckAccessAdmin:
     def test_admin_still_blocks_sensitive_columns(self, monkeypatch):
-        from services.authservice.services.role_service import role_service
+        from backend.modules.auth.services.role_service import role_service
 
         monkeypatch.setattr(
             PermissionEnforcer, "_get_sensitive_policies",
@@ -120,7 +120,7 @@ class TestCheckAccessAdmin:
             PermissionEnforcer, "_get_sensitive_policies",
             lambda self, ws, ds, table: ({}, ["phone"]),
         )
-        from services.authservice.services.role_service import role_service
+        from backend.modules.auth.services.role_service import role_service
         monkeypatch.setattr(role_service, "get_user_roles", _boom)
         res = permission_enforcer.check_access(
             user_id=0, workspace_id=0, datasource_id=7, table_name="t_user",
@@ -188,7 +188,7 @@ class TestSemanticGuard:
 
 class TestExecutorMoat:
     def test_no_user_context_still_drops_blocked(self, monkeypatch):
-        from services.datamind.nl2sql.sql import query_executor as qe
+        from backend.modules.mind.nl2sql.sql import query_executor as qe
 
         seen = {}
 

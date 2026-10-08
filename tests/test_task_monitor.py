@@ -7,9 +7,9 @@ import asyncio
 
 import pytest
 
-from services.dataflow.services import task_monitor_service as monitor
-from services.shared.common import system_jobs
-from services.dataflow.tasks import executor
+from backend.modules.flow.services import task_monitor_service as monitor
+from backend.common import system_jobs
+from backend.modules.flow.tasks import executor
 
 
 # ── 系统内置任务 ─────────────────────────────────────────────────────
@@ -31,8 +31,8 @@ def test_reconcile_records_run_state(monkeypatch):
     monkeypatch.setattr(system_jobs, "is_job_active", lambda key: True)
     monkeypatch.setattr(system_jobs, "record_run", lambda *a, **k: recorded.append((a, k)))
 
-    from services.dataflow.services import scheduled_task_service as sched
-    from services.dataviz.services import report_service
+    from backend.modules.flow.services import scheduled_task_service as sched
+    from backend.modules.viz.services import report_service
     monkeypatch.setattr(sched.scheduled_task_service, "cleanup_stale_running_logs", lambda timeout_minutes=10: 2)
     monkeypatch.setattr(report_service, "cleanup_stale_reports", lambda: 1)
 
@@ -48,7 +48,7 @@ def test_reconcile_failure_recorded_and_reraised(monkeypatch):
     recorded = []
     monkeypatch.setattr(system_jobs, "is_job_active", lambda key: True)
     monkeypatch.setattr(system_jobs, "record_run", lambda *a, **k: recorded.append(a))
-    from services.dataflow.services import scheduled_task_service as sched
+    from backend.modules.flow.services import scheduled_task_service as sched
     monkeypatch.setattr(sched.scheduled_task_service, "cleanup_stale_running_logs",
                         lambda timeout_minutes=10: (_ for _ in ()).throw(RuntimeError("db down")))
     with pytest.raises(RuntimeError):
@@ -81,7 +81,7 @@ def test_pause_writes_shared_state_not_process_memory(monkeypatch):
 
 def test_stop_run_rejects_finished_instance(monkeypatch):
     """已结束的实例拒绝二次停止（终态保护），重复投递不产生重复副作用。"""
-    from services.dataflow.services import scheduled_task_service as sched
+    from backend.modules.flow.services import scheduled_task_service as sched
     monkeypatch.setattr(sched.scheduled_task_service, "finish_log", lambda log_id, **kw: False)
     with pytest.raises(ValueError, match="已结束"):
         monitor.task_monitor_service.stop_run("scheduled", 1)
@@ -209,8 +209,8 @@ def test_kb_sync_query_uses_real_schema_columns(monkeypatch):
 
 def test_progress_update_only_touches_active_runs(monkeypatch):
     """逐题进度只写未结束实例，终态由 finish_log 保护。"""
-    from services.shared.common import db
-    from services.dataflow.services import scheduled_task_service as sched
+    from backend.common import db
+    from backend.modules.flow.services import scheduled_task_service as sched
     captured = {}
     monkeypatch.setattr(db, "execute_write", lambda sql, params=None: captured.update(sql=sql, params=params) or 1)
     assert sched.scheduled_task_service.update_progress(5, 2, 1) is True
@@ -220,7 +220,7 @@ def test_progress_update_only_touches_active_runs(monkeypatch):
 
 def test_persist_progress_never_breaks_execution(monkeypatch):
     """进度落库是旁路观测：失败不得影响执行主链路。"""
-    from services.dataflow.services import scheduled_task_service as sched
+    from backend.modules.flow.services import scheduled_task_service as sched
     monkeypatch.setattr(sched.scheduled_task_service, "update_progress",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down")))
     executor._persist_progress({"_log_id": 1, "_results": [{"status": "success"}]})  # 不抛即通过
@@ -231,7 +231,7 @@ def test_persist_progress_never_breaks_execution(monkeypatch):
 
 def test_monitor_api_rejects_non_admin(monkeypatch):
     """任务监控仅管理员可用，身份只信服务端解析。"""
-    from services.dataflow.api import task_monitor as api
+    from backend.modules.flow.api import task_monitor as api
 
     class FakeState:
         current_user = None
@@ -256,7 +256,7 @@ def test_monitor_api_rejects_non_admin(monkeypatch):
 def test_api_maps_missing_and_terminal_errors():
     """不存在→404，已结束/不可移除→409。"""
     from fastapi import HTTPException
-    from services.dataflow.api import task_monitor as api
+    from backend.modules.flow.api import task_monitor as api
 
     def missing():
         raise ValueError("定时任务不存在")

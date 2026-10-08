@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-dash = importlib.import_module("services.dataviz.services.dashboard_service")
+dash = importlib.import_module("backend.modules.viz.services.dashboard_service")
 
 
 class FakeCursor:
@@ -104,7 +104,7 @@ def test_update_chart_missing_returns_false(monkeypatch):
 
 
 def test_vis_library_accepts_theme_pack_category(monkeypatch):
-    vls = importlib.import_module("services.dataviz.services.vis_library_service")
+    vls = importlib.import_module("backend.modules.viz.services.vis_library_service")
     assert "theme_pack" in vls.CATEGORIES
     captured = {}
     monkeypatch.setattr(vls, "execute_insert", lambda sql, params: (captured.update(params=params), 77)[1])

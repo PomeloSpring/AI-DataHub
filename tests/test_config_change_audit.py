@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from services.shared.common import api_permission as ap
+from backend.common import api_permission as ap
 
 
 class _Recorder:
@@ -32,7 +32,7 @@ class _Recorder:
 @pytest.fixture
 def recorder(monkeypatch):
     rec = _Recorder()
-    import services.shared.common.auth as auth_mod
+    import backend.common.auth as auth_mod
     monkeypatch.setattr(auth_mod, "log_audit", rec)
 
     # 身份解析：固定返回 admin，权限放行
@@ -183,7 +183,7 @@ def test_module_mapping_covers_admin_config():
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_audit_failure_does_not_break_request(recorder, monkeypatch):
-    import services.shared.common.auth as auth_mod
+    import backend.common.auth as auth_mod
 
     def _boom(*a, **k):
         raise RuntimeError("db down")
@@ -208,14 +208,14 @@ def test_write_statement_returns_affected_rows_not_none():
     """store._exec 对写语句必须回受影响行数；回 None 会让 bool() 恒 False，
     接口把成功报成失败（假失败，比报错更骗人）。"""
     import inspect
-    from services.shared.eval import store
+    from backend.eval import store
     src = inspect.getsource(store._exec)
     assert "cur.rowcount" in src, "写语句应回受影响行数，不能回 None"
 
 
 def test_delete_case_returns_true_on_success(monkeypatch):
     """删成功必须回 True（实测曾恒回 False）。"""
-    from services.shared.eval import store
+    from backend.eval import store
     monkeypatch.setattr(store, "_exec", lambda *a, **k: 1)
     assert store.delete_case(1) is True
     monkeypatch.setattr(store, "_exec", lambda *a, **k: 0)

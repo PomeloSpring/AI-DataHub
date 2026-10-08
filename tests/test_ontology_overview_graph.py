@@ -10,8 +10,8 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.semhub.graph.graph_service import GraphService
-from services.shared.common.rdf.namespaces import ADH_NS
+from backend.modules.semhub.graph.graph_service import GraphService
+from backend.common.rdf.namespaces import ADH_NS
 
 
 class FakeStore:

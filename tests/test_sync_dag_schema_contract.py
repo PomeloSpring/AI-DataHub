@@ -14,7 +14,7 @@ DDL_FILES = {
     "authority": REPO / "docker/mysql/sync_dag_migration.sql",
     "realign": REPO / "docker/mysql/sync_dag_schema_realign_migration.sql",
 }
-CODE_DIR = REPO / "services/dataflow"
+CODE_DIR = REPO / "backend/modules/flow"
 TABLES = ("adh_sync_tasks", "adh_sync_logs")
 
 _SQL_KEYWORDS = {
@@ -57,7 +57,7 @@ def _clean_token(token: str):
 
 
 def _referenced_columns() -> tuple:
-    """扫描 services/dataflow 的 SQL 字面量，收集对两张表的列引用。
+    """扫描 backend/modules/flow 的 SQL 字面量，收集对两张表的列引用。
 
     返回 (按表归属的列引用, 带表别名前缀的列引用)。后者来自 JOIN 查询，无法
     静态归属到具体表，只要求存在于两张表的并集中。

@@ -12,9 +12,9 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.shared.semantics import planner
-from services.shared.semantics import binding_resolver
-from services.shared.semantics.models import (
+from backend.semantics import planner
+from backend.semantics import binding_resolver
+from backend.semantics.models import (
     Guardrail, ResolvedBinding, SemanticFilter, SemanticQuery,
 )
 

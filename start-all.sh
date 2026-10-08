@@ -35,9 +35,9 @@ FG_PIDS=()        # 前台模式追踪的所有进程 PID
 FG_MODE=false     # 是否前台模式运行
 
 # ═══════════════════════════════════════════════════════════════
-# 服务定义: name:module:port —— 唯一权威清单在 services/shared/scripts/services.conf
+# 服务定义: name:module:port —— 唯一权威清单在 backend/scripts/services.conf
 # ═══════════════════════════════════════════════════════════════
-SERVICES_CONF="$PROJECT_ROOT/services/shared/scripts/services.conf"
+SERVICES_CONF="$PROJECT_ROOT/backend/scripts/services.conf"
 if [ ! -f "$SERVICES_CONF" ]; then
     log_error "缺少服务注册表: $SERVICES_CONF"
     exit 1
@@ -51,7 +51,7 @@ DATAENGINE_LOG="$LOG_DIR/dataengine.log"
 DATAENGINE_PID="$PID_DIR/dataengine.pid"
 
 # Celery 定时任务进程（无端口，经 Redis broker 通信；beat 有 Redis 租约防多实例）
-CELERY_APP="services.dataflow.tasks.celery_app"
+CELERY_APP="backend.modules.flow.tasks.celery_app"
 CELERY_PROCS=("celery-worker" "celery-beat")
 
 # 前端服务（特殊处理）

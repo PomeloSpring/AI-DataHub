@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from services.datamind.rag import terminology_manager as tm
+from backend.modules.mind.rag import terminology_manager as tm
 
 
 TERMS = [

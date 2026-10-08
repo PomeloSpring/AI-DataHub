@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from services.datacatalog.services import metrics_service as ms
+from backend.modules.catalog.services import metrics_service as ms
 
 
 class _Cur:
@@ -121,7 +121,7 @@ class TestAssetPoolDelete:
         assert not any(s.startswith("DELETE") for s, _ in conn.cur.calls)
 
     def test_delete_dimension_route_registered(self):
-        from services.datacatalog.api import metrics as metrics_api
+        from backend.modules.catalog.api import metrics as metrics_api
         routes = {(r.path, tuple(sorted(r.methods))) for r in metrics_api.router.routes}
         assert ("/dimensions/{dim_id}", ("DELETE",)) in routes
 

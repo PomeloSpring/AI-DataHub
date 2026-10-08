@@ -18,9 +18,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pytest
 from fastapi import HTTPException
 
-sf = importlib.import_module("services.datamind.api.session_files")
-sw = importlib.import_module("services.datamind.execution.session_workspace")
-metadata_db = importlib.import_module("services.shared.common.db.metadata_db")
+sf = importlib.import_module("backend.modules.mind.api.session_files")
+sw = importlib.import_module("backend.modules.mind.execution.session_workspace")
+metadata_db = importlib.import_module("backend.common.db.metadata_db")
 
 USER = {"user_id": 7, "username": "tester", "role": "analyst"}
 SESSION_KEY = "a" * 32
@@ -57,7 +57,7 @@ class _FakeConn:
 @pytest.fixture
 def ws(tmp_path, monkeypatch):
     """临时会话工作区 + 假 DB(仅本人会话)。"""
-    monkeypatch.setattr("services.shared.common.config.ADH_WORKSPACES_DIR", str(tmp_path))
+    monkeypatch.setattr("backend.common.config.ADH_WORKSPACES_DIR", str(tmp_path))
     monkeypatch.setattr(metadata_db, "get_metadata_conn",
                         lambda: _FakeConn({"session_key": SESSION_KEY, "workspace_id": 3}))
     root = sw.session_paths(tmp_path, SESSION_KEY, 3, create=True)

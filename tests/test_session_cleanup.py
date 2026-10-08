@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from services.datamind.execution import session_workspace as sw
+from backend.modules.mind.execution import session_workspace as sw
 
 
 def _session(**over):
@@ -30,7 +30,7 @@ def workspaces(tmp_path, monkeypatch):
         root = tmp_path / "workspaces"
         if exists:
             root.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setattr("services.shared.common.config.ADH_WORKSPACES_DIR", str(root))
+        monkeypatch.setattr("backend.common.config.ADH_WORKSPACES_DIR", str(root))
         return root
     return _set
 

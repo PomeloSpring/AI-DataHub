@@ -1,9 +1,9 @@
 """统一 Redis 缓存后端回归：TTLCache 行为一致性 + 无本地后端（离线，假缓存后端）。"""
 import pytest
 
-from services.shared.common.cache import factory
-from services.shared.common.cache.redis_cache import RedisCache
-from services.shared.common import ttl_cache as tc
+from backend.common.cache import factory
+from backend.common.cache.redis_cache import RedisCache
+from backend.common import ttl_cache as tc
 
 
 class _FakeBackend:
@@ -94,11 +94,11 @@ def test_factory_returns_redis_only(monkeypatch):
 
 def test_local_backend_removed():
     # 本地缓存后端应已从包中移除
-    from services.shared.common import cache
+    from backend.common import cache
     assert not hasattr(cache, "LocalCache")
     import importlib
     with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("services.shared.common.cache.local")
+        importlib.import_module("backend.common.cache.local")
 
 
 def test_redis_cache_degrades_to_no_cache_when_down(monkeypatch):

@@ -1,12 +1,12 @@
 """AS-BOT 解析服务单元测试 — 对应计划 test_as_bot_resolution.
 
-覆盖 services/datamind/execution/as_bots.py:
+覆盖 backend/modules/mind/execution/as_bots.py:
 - resolve_as_bots: 角色-AS-BOT 一对一绑定(按 role_id 直查 adh_as_bots)
 - _normalize: DB JSON 字段(persona/tools/mcp_server_ids/skills)解析
 - default_as_bot: is_default 优先,否则首个
 - collect_mcp_server_ids / collect_tool_groups / collect_standard_tools 合并去重
 
-DB 通过 mock services.shared.common.db.execute_query 隔离。
+DB 通过 mock backend.common.db.execute_query 隔离。
 """
 
 import json
@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datamind.execution import as_bots as w
+from backend.modules.mind.execution import as_bots as w
 
 
 # ── 测试辅助 ──────────────────────────────────────────────────────
@@ -66,28 +66,28 @@ class TestResolveOneToOne:
         """角色有对应 AS-BOT 时直接返回."""
         rows = [_row(1, "analyst")]
         fq = _fake_query(role_rows=[{"id": 2}], as_bot_rows=rows)
-        with patch("services.shared.common.db.execute_query", fq):
+        with patch("backend.common.db.execute_query", fq):
             result = w.resolve_as_bots(5, "analyst")
         assert [x["name"] for x in result] == ["analyst"]
 
     def test_role_without_as_bot_returns_empty(self):
         """角色存在但无 AS-BOT 时返回空列表."""
         fq = _fake_query(role_rows=[{"id": 10}], as_bot_rows=[])
-        with patch("services.shared.common.db.execute_query", fq):
+        with patch("backend.common.db.execute_query", fq):
             result = w.resolve_as_bots(5, "viewer")
         assert result == []
 
     def test_unknown_role_returns_empty(self):
         """角色不存在时返回空列表."""
         fq = _fake_query(role_rows=[], as_bot_rows=[])
-        with patch("services.shared.common.db.execute_query", fq):
+        with patch("backend.common.db.execute_query", fq):
             result = w.resolve_as_bots(5, "ghost")
         assert result == []
 
     def test_no_role_specified_returns_empty(self):
         """未指定角色时返回空列表."""
         fq = _fake_query(role_rows=[], as_bot_rows=[])
-        with patch("services.shared.common.db.execute_query", fq):
+        with patch("backend.common.db.execute_query", fq):
             result = w.resolve_as_bots(5, "")
         assert result == []
 
@@ -95,7 +95,7 @@ class TestResolveOneToOne:
         """指定 as_bot_key 但与角色绑定的不匹配时抛 PermissionError."""
         rows = [_row(1, "analyst")]
         fq = _fake_query(role_rows=[{"id": 2}], as_bot_rows=rows)
-        with patch("services.shared.common.db.execute_query", fq):
+        with patch("backend.common.db.execute_query", fq):
             with pytest.raises(PermissionError, match="未授权"):
                 w.resolve_as_bots(5, "analyst", as_bot_key="wrong_key")
 

@@ -4,10 +4,10 @@ import json
 
 import pytest
 
-from services.datamind.execution.models import ExecutionContext
-from services.datamind.execution.sdk_tools import system_tools as st
-from services.datamind.execution.sdk_tools.context import set_execution_context, ExecutionContextVar
-from services.datamind.rag import qmind_retriever as qr
+from backend.modules.mind.execution.models import ExecutionContext
+from backend.modules.mind.execution.sdk_tools import system_tools as st
+from backend.modules.mind.execution.sdk_tools.context import set_execution_context, ExecutionContextVar
+from backend.modules.mind.rag import qmind_retriever as qr
 
 
 def _payload(result):
@@ -22,7 +22,7 @@ def ctx():
 
 
 def _patch_role(monkeypatch, role):
-    from services.shared.common import auth
+    from backend.common import auth
     monkeypatch.setattr(auth, "resolve_execution_owner",
                         lambda uid, ws: {"user_id": uid, "workspace_id": ws, "role": role})
 
@@ -30,7 +30,7 @@ def _patch_role(monkeypatch, role):
 # ── 管理员门禁（fail-closed）──────────────────────────────────────
 
 def test_admin_identity_fail_closed_without_user(monkeypatch):
-    from services.shared.common import auth
+    from backend.common import auth
     called = []
     monkeypatch.setattr(auth, "resolve_execution_owner", lambda uid, ws: called.append(uid))
     token = ExecutionContextVar.set(ExecutionContext(user_id=0))
@@ -58,7 +58,7 @@ def test_system_overview_denies_non_admin(ctx, monkeypatch):
 
 def test_system_usage_answers_chat_activity(ctx, monkeypatch):
     _patch_role(monkeypatch, "admin")
-    from services.authservice.services import observability_service as obs
+    from backend.modules.auth.services import observability_service as obs
     captured = {}
     def fake_summary(params):
         captured.update(params)
@@ -72,7 +72,7 @@ def test_system_usage_answers_chat_activity(ctx, monkeypatch):
 
 def test_system_usage_rejects_bad_entrypoint(ctx, monkeypatch):
     _patch_role(monkeypatch, "admin")
-    from services.authservice.services import observability_service as obs
+    from backend.modules.auth.services import observability_service as obs
     captured = {}
     monkeypatch.setattr(obs, "usage_summary", lambda p: captured.update(p) or {"summary": {}, "daily": []})
     asyncio.run(st.system_usage({"days": 3, "entrypoint": "'; DROP TABLE x;--"}))
@@ -81,7 +81,7 @@ def test_system_usage_rejects_bad_entrypoint(ctx, monkeypatch):
 
 def test_system_usage_by_user_grouping(ctx, monkeypatch):
     _patch_role(monkeypatch, "admin")
-    from services.authservice.services import observability_service as obs
+    from backend.modules.auth.services import observability_service as obs
     monkeypatch.setattr(obs, "usage_by_user", lambda p: [{"user_id": 7, "turns": 5}])
     out = _payload(asyncio.run(st.system_usage({"days": 3, "group_by": "user"})))
     assert out["group_by"] == "user" and out["users"] == [{"user_id": 7, "turns": 5}]
@@ -91,7 +91,7 @@ def test_system_usage_by_user_grouping(ctx, monkeypatch):
 
 def test_system_overview_counts_and_degrades(ctx, monkeypatch):
     _patch_role(monkeypatch, "admin")
-    from services.shared.common import db
+    from backend.common import db
     def fake_query(sql, params=None, fetchone=False):
         if "adh_table_info" in sql:
             raise RuntimeError("模拟单指标查询失败")  # 该项降级为 None，不阻断整体
@@ -147,15 +147,15 @@ def _system_ctx(kb_ids=None):
 
 
 def test_knowledge_search_system_scope_passes_through(monkeypatch):
-    from services.datamind.execution.sdk_tools import semantic_tools as stl
+    from backend.modules.mind.execution.sdk_tools import semantic_tools as stl
     token = set_execution_context(_system_ctx([11]))
     seen = {}
     def fake_retrieve(q, ds, kb_ids, system_scope=False):
         seen["system_scope"] = system_scope
         seen["kb_ids"] = kb_ids
         return {"chunks": [], "count": 0, "rag_source": "system_kb_only"}
-    monkeypatch.setattr("services.datamind.rag.qmind_retriever.qmind_retrieve", fake_retrieve)
-    monkeypatch.setattr("services.datamind.execution.resource_guard.execute_query", lambda *a: [{"id": 11}])
+    monkeypatch.setattr("backend.modules.mind.rag.qmind_retriever.qmind_retrieve", fake_retrieve)
+    monkeypatch.setattr("backend.modules.mind.execution.resource_guard.execute_query", lambda *a: [{"id": 11}])
     try:
         asyncio.run(stl.knowledge_search({"question": "近3天有谁用chat"}))
     finally:
@@ -164,7 +164,7 @@ def test_knowledge_search_system_scope_passes_through(monkeypatch):
 
 
 def test_knowledge_search_business_scope_not_system(monkeypatch):
-    from services.datamind.execution.sdk_tools import semantic_tools as stl
+    from backend.modules.mind.execution.sdk_tools import semantic_tools as stl
     from types import SimpleNamespace
     policy = SimpleNamespace(selection={"semantic": ["knowledge_search"]}, as_bot={})
     token = set_execution_context(ExecutionContext(
@@ -175,8 +175,8 @@ def test_knowledge_search_business_scope_not_system(monkeypatch):
     def fake_retrieve(q, ds, kb_ids, system_scope=False):
         seen["system_scope"] = system_scope
         return {"chunks": [], "count": 0, "rag_source": "none"}
-    monkeypatch.setattr("services.datamind.rag.qmind_retriever.qmind_retrieve", fake_retrieve)
-    monkeypatch.setattr("services.datamind.execution.resource_guard.execute_query", lambda *a: [{"id": 22}])
+    monkeypatch.setattr("backend.modules.mind.rag.qmind_retriever.qmind_retrieve", fake_retrieve)
+    monkeypatch.setattr("backend.modules.mind.execution.resource_guard.execute_query", lambda *a: [{"id": 22}])
     try:
         asyncio.run(stl.knowledge_search({"question": "销售额"}))
     finally:
@@ -187,7 +187,7 @@ def test_knowledge_search_business_scope_not_system(monkeypatch):
 # ── 工具组注册 ────────────────────────────────────────────────────
 
 def test_system_group_registered():
-    from services.datamind.execution.sdk_tools import TOOL_SERVER_BUILDERS, TOOL_SERVER_TOOLS
+    from backend.modules.mind.execution.sdk_tools import TOOL_SERVER_BUILDERS, TOOL_SERVER_TOOLS
     assert "system" in TOOL_SERVER_BUILDERS
     srv, tools = TOOL_SERVER_TOOLS["system"]
     assert srv == "datahub_system" and set(tools) == {"system_usage", "system_overview"}
@@ -196,7 +196,7 @@ def test_system_group_registered():
 def test_system_scope_requires_system_tool_group():
     """系统/业务域边界由工具授权承担（取代旧 __system_bot__ 哨兵）。"""
     from types import SimpleNamespace
-    from services.datamind.execution.tool_policy import is_system_scope
+    from backend.modules.mind.execution.tool_policy import is_system_scope
     sys_policy = SimpleNamespace(selection={"system": ["system_usage"]}, as_bot={})
     biz_policy = SimpleNamespace(selection={"semantic": ["get_metrics"]}, as_bot={})
     assert is_system_scope(sys_policy) is True
@@ -219,7 +219,7 @@ class TestScopedMetadataViewsByToolAuth:
 
     def test_system_scope_sees_system_plus_business(self, monkeypatch):
         """能力叠加：system 能力可见系统本体 ∪ 业务域（不互斥）。"""
-        from services.datamind.execution.sdk_tools import scoped_metadata as sm
+        from backend.modules.mind.execution.sdk_tools import scoped_metadata as sm
         calls = []
         monkeypatch.setattr(sm, "execute_query",
                             lambda sql, params=None, fetchone=False: calls.append((sql, params)) or [])
@@ -230,7 +230,7 @@ class TestScopedMetadataViewsByToolAuth:
         assert params == (1,)
 
     def test_business_scope_sees_business_and_own_source(self, monkeypatch):
-        from services.datamind.execution.sdk_tools import scoped_metadata as sm
+        from backend.modules.mind.execution.sdk_tools import scoped_metadata as sm
         calls = []
         monkeypatch.setattr(sm, "execute_query",
                             lambda sql, params=None, fetchone=False: calls.append((sql, params)) or [])
@@ -241,7 +241,7 @@ class TestScopedMetadataViewsByToolAuth:
         assert params == (1,)
 
     def test_business_scope_requires_datasource_fail_closed(self):
-        from services.datamind.execution.sdk_tools import scoped_metadata as sm
+        from backend.modules.mind.execution.sdk_tools import scoped_metadata as sm
         ctx = self._ctx(system=False)
         ctx.datasource_id = 0
         with pytest.raises(PermissionError, match="数据源"):
@@ -249,7 +249,7 @@ class TestScopedMetadataViewsByToolAuth:
 
     def test_unselected_source_marks_incomplete_scope(self, monkeypatch):
         """未选源时目录不完整必须显式标注（防'上下文不完整'被误报成'对象不存在'）。"""
-        from services.datamind.execution.sdk_tools import scoped_metadata as sm
+        from backend.modules.mind.execution.sdk_tools import scoped_metadata as sm
         monkeypatch.setattr(sm, "execute_query",
                             lambda sql, params=None, fetchone=False: [])
         ctx = self._ctx(system=True)
@@ -263,7 +263,7 @@ class TestScopedMetadataViewsByToolAuth:
 
     def test_system_scope_dict_condition_unified(self, monkeypatch):
         """get_metrics 字典作用域统一 `(本源 OR 全局)`（系统对象字典行在 ds=0 内）。"""
-        from services.datamind.execution.sdk_tools import scoped_metadata as sm
+        from backend.modules.mind.execution.sdk_tools import scoped_metadata as sm
         for system in (True, False):
             calls = []
             monkeypatch.setattr(sm, "execute_query",

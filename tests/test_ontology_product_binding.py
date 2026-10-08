@@ -21,9 +21,9 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datacatalog.services import ontology_service
-from services.shared.semantics import binding_resolver
-from services.shared.semantics.models import ResolvedBinding
+from backend.modules.catalog.services import ontology_service
+from backend.semantics import binding_resolver
+from backend.semantics.models import ResolvedBinding
 
 
 # ── fake DB ─────────────────────────────────────────────────────
@@ -75,7 +75,7 @@ def _patch_products(monkeypatch, registered_tables):
     `find_unregistered_tables` 现在走 `data_product_service.find_by_table`，
     故 patch 该模块的 `execute_query`（patch 其他命名空间无效）。
     """
-    from services.datacatalog.services import data_product_service as dps
+    from backend.modules.catalog.services import data_product_service as dps
 
     def q(sql, params=None, fetchone=False):
         s = " ".join(str(sql).split())
@@ -109,7 +109,7 @@ class TestFindUnregisteredTables:
 
     def test_datasource_name_is_part_of_identity(self, monkeypatch):
         """同名表跨数据源：另一数据源的登记不算数。"""
-        from services.datacatalog.services import data_product_service as dps
+        from backend.modules.catalog.services import data_product_service as dps
 
         def q(sql, params=None, fetchone=False):
             # 只认 test-alb 的登记，other-src 下的同名表未登记
@@ -127,7 +127,7 @@ class TestFindUnregisteredTables:
         回归：曾因两处口径不一致（一处按 ds+table、一处回落按 table）导致
         解析说“未登记”、门禁说“已登记”，AS-BOT 的 11 个元数据表全部误报。
         """
-        from services.datacatalog.services import data_product_service as dps
+        from backend.modules.catalog.services import data_product_service as dps
 
         def q(sql, params=None, fetchone=False):
             s = " ".join(str(sql).split())
@@ -145,7 +145,7 @@ class TestFindUnregisteredTables:
         这两处一个在 shared、一个在 datacatalog，不能互相 import，
         只能靠本断言锁住行为一致（否则会出现“解析说未登记、门禁说已登记”）。
         """
-        from services.datacatalog.services import data_product_service as dps
+        from backend.modules.catalog.services import data_product_service as dps
         rows = [{"product_name": "ds0.adh_as_bots", "status": "draft"}]
 
         def q(sql, params=None, fetchone=False):
@@ -350,23 +350,23 @@ class TestMultiSiteRouting:
 
 class TestProductRefPersistence:
     def test_product_ref_for_returns_name(self, monkeypatch):
-        from services.datacatalog.services import ontology_yaml_import as yi
-        from services.datacatalog.services import data_product_service as dps
+        from backend.modules.catalog.services import ontology_yaml_import as yi
+        from backend.modules.catalog.services import data_product_service as dps
         monkeypatch.setattr(dps, "find_by_table",
                             lambda ds, t: {"product_name": "test-alb.t_case_records"})
         monkeypatch.setattr(yi, "_product_ref_for", yi._product_ref_for)
         assert yi._product_ref_for("test-alb", "t_case_records") == "test-alb.t_case_records"
 
     def test_product_ref_for_empty_when_unregistered(self, monkeypatch):
-        from services.datacatalog.services import ontology_yaml_import as yi
-        from services.datacatalog.services import data_product_service as dps
+        from backend.modules.catalog.services import ontology_yaml_import as yi
+        from backend.modules.catalog.services import data_product_service as dps
         monkeypatch.setattr(dps, "find_by_table", lambda ds, t: None)
         assert yi._product_ref_for("test-alb", "t_x") == ""
 
     def test_product_ref_for_never_raises(self, monkeypatch):
         """查不到/查询失败都回空，不阻断绑定构建。"""
-        from services.datacatalog.services import ontology_yaml_import as yi
-        from services.datacatalog.services import data_product_service as dps
+        from backend.modules.catalog.services import ontology_yaml_import as yi
+        from backend.modules.catalog.services import data_product_service as dps
 
         def _boom(*a, **k):
             raise RuntimeError("db down")
@@ -376,8 +376,8 @@ class TestProductRefPersistence:
 
     def test_execution_binding_carries_product_ref(self, monkeypatch):
         """_build_execution_binding 产出的绑定必须带 product_ref。"""
-        from services.datacatalog.services import ontology_yaml_import as yi
-        from services.datacatalog.services import data_product_service as dps
+        from backend.modules.catalog.services import ontology_yaml_import as yi
+        from backend.modules.catalog.services import data_product_service as dps
         monkeypatch.setattr(dps, "find_by_table",
                             lambda ds, t: {"product_name": "test-alb.t_case_records"})
         b = yi._build_execution_binding("t_case_records", 1, {},
@@ -386,7 +386,7 @@ class TestProductRefPersistence:
         assert b["physical_table"] == "t_case_records"
 
     def test_unbound_binding_has_empty_product_ref(self, monkeypatch):
-        from services.datacatalog.services import ontology_yaml_import as yi
+        from backend.modules.catalog.services import ontology_yaml_import as yi
         b = yi._build_execution_binding("", 1, {}, datasource_name="test-alb")
         assert b["product_ref"] == ""
         assert b["sync_state"] == "unbound"

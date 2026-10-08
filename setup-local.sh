@@ -89,18 +89,18 @@ PIP="venv/bin/pip"
 if [ -x "$PIP" ]; then
     $PIP install "${PIP_ARGS[@]}" -q -U pip setuptools wheel || log_warn "pip 基础工具链升级失败(继续)"
     # 本地非容器模式下所有服务共用一个 venv: 先装 shared, 再逐服务安装
-    # (清单与 services/*/requirements.txt 对齐; datagov/dataviz 复用 shared 依赖)
+    # (清单与 backend/modules/*/requirements.txt 对齐; gov/viz 复用 common 依赖)
     REQ_FILES=(
-        services/shared/requirements.txt
-        services/shared/common/requirements.txt
-        services/authservice/requirements.txt
-        services/datacatalog/requirements.txt
-        services/datagov/requirements.txt
-        services/datamind/requirements.txt
-        services/dataflow/requirements.txt
-        services/dataviz/requirements.txt
-        services/aiplatform/requirements.txt
-        services/semhub/requirements.txt
+        backend/requirements.txt
+        backend/common/requirements.txt
+        backend/modules/auth/requirements.txt
+        backend/modules/catalog/requirements.txt
+        backend/modules/gov/requirements.txt
+        backend/modules/mind/requirements.txt
+        backend/modules/flow/requirements.txt
+        backend/modules/viz/requirements.txt
+        backend/modules/platform/requirements.txt
+        backend/modules/semhub/requirements.txt
     )
     for req in "${REQ_FILES[@]}"; do
         if [ -f "$req" ]; then

@@ -19,8 +19,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.datacatalog.services import tags_service
-from services.datacatalog.services.metadata_sync import extract_domain_tag
+from backend.modules.catalog.services import tags_service
+from backend.modules.catalog.services.metadata_sync import extract_domain_tag
 
 
 class _FakeCursor:
@@ -163,7 +163,7 @@ class TestSyncDoesNotOverwriteLabels:
 
     def test_update_branch_keeps_existing_tags(self):
         import inspect
-        from services.datacatalog.services import metadata_sync
+        from backend.modules.catalog.services import metadata_sync
         src = inspect.getsource(metadata_sync._sync_mysql_metadata)
         # 更新分支必须取旧值兜底（同步不覆盖派生/人工标注）
         # ↑ 兜底：old.get(...) 优先，推断值仅在列为空时填入
@@ -173,7 +173,7 @@ class TestSyncDoesNotOverwriteLabels:
     def test_change_detection_ignores_tags(self):
         """变更判定不得再把 region_tag/domain_tag 纳入，否则每次同步都会触发写回。"""
         import inspect
-        from services.datacatalog.services import metadata_sync
+        from backend.modules.catalog.services import metadata_sync
         src = inspect.getsource(metadata_sync._sync_mysql_metadata)
         assert 'or (old.get("region_tag") or "") != region_tag' not in src
         assert 'or (old.get("domain_tag") or "") != domain_tag' not in src

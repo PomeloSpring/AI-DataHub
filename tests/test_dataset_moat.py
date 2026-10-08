@@ -16,8 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from services.dataviz.services import dataset_service as svc
-from services.dataviz.services.governed_query import NoIdentityError
+from backend.modules.viz.services import dataset_service as svc
+from backend.modules.viz.services.governed_query import NoIdentityError
 
 
 # ── SQL 来源校验 ─────────────────────────────────────────────────────
@@ -109,7 +109,7 @@ class TestSqlWrappingShape:
             captured["sql"] = sql
             return {"columns": [], "rows": [], "row_count": 0, "elapsed_ms": 0}
 
-        import services.dataviz.services.governed_query as gq
+        import backend.modules.viz.services.governed_query as gq
         monkeypatch.setattr(gq, "governed_execute", fake_governed)
 
         ds_stub = {"source_type": "sql",
@@ -230,7 +230,7 @@ class TestExecutionPathSelection:
 
 class TestInteropGuards:
     def test_compile_requires_dataset_manage_and_never_echoes_sql(self, monkeypatch):
-        monkeypatch.setattr("services.shared.common.api_permission.check_api_permission",
+        monkeypatch.setattr("backend.common.api_permission.check_api_permission",
                             lambda role, method, path: False)
         with pytest.raises(PermissionError) as ei:
             svc.compile_from_semantic({"object_key": "obj", "measures": ["m"]},
@@ -239,23 +239,23 @@ class TestInteropGuards:
         assert "SELECT" not in str(ei.value).upper()
 
     def test_extract_requires_dataset_manage(self, monkeypatch):
-        monkeypatch.setattr("services.shared.common.api_permission.check_api_permission",
+        monkeypatch.setattr("backend.common.api_permission.check_api_permission",
                             lambda role, method, path: False)
         with pytest.raises(PermissionError):
             svc.extract_from_sql({"sql_query": "SELECT 1 AS a"},
                                  {"user_id": 7, "role": "viewer"})
 
     def test_compile_refuses_unresolved_terms(self, monkeypatch):
-        monkeypatch.setattr("services.shared.common.api_permission.check_api_permission",
+        monkeypatch.setattr("backend.common.api_permission.check_api_permission",
                             lambda role, method, path: True)
-        monkeypatch.setattr("services.shared.semantics.intent.parse_intent",
+        monkeypatch.setattr("backend.semantics.intent.parse_intent",
                             lambda payload: (SimpleNamespace(**{
                                 "object": payload["object"], "dimensions": payload["dimensions"],
                                 "metrics": payload["metrics"], "datasource_id": payload["datasource_id"],
                                 "filters": [], "order": [], "limit": 200}), None, []))
-        monkeypatch.setattr("services.shared.semantics.binding_resolver.resolve_binding",
+        monkeypatch.setattr("backend.semantics.binding_resolver.resolve_binding",
                             lambda *a, **k: (object(), []))
-        monkeypatch.setattr("services.shared.semantics.planner.plan",
+        monkeypatch.setattr("backend.semantics.planner.plan",
                             lambda q, b: SimpleNamespace(
                                 sql="SELECT 1", dialect="mysql",
                                 provenance={"unresolved_terms": ["未知词"]}, warnings=[]))
@@ -265,16 +265,16 @@ class TestInteropGuards:
         assert "未解析" in str(ei.value)  # 宁缺勿错, 不静默绑定
 
     def test_compile_returns_sql_for_editor_when_resolved(self, monkeypatch):
-        monkeypatch.setattr("services.shared.common.api_permission.check_api_permission",
+        monkeypatch.setattr("backend.common.api_permission.check_api_permission",
                             lambda role, method, path: True)
-        monkeypatch.setattr("services.shared.semantics.intent.parse_intent",
+        monkeypatch.setattr("backend.semantics.intent.parse_intent",
                             lambda payload: (SimpleNamespace(**{
                                 "object": payload["object"], "dimensions": payload["dimensions"],
                                 "metrics": payload["metrics"], "datasource_id": payload["datasource_id"],
                                 "filters": [], "order": [], "limit": 200}), None, []))
-        monkeypatch.setattr("services.shared.semantics.binding_resolver.resolve_binding",
+        monkeypatch.setattr("backend.semantics.binding_resolver.resolve_binding",
                             lambda *a, **k: (object(), []))
-        monkeypatch.setattr("services.shared.semantics.planner.plan",
+        monkeypatch.setattr("backend.semantics.planner.plan",
                             lambda q, b: SimpleNamespace(
                                 sql="SELECT `region`, COUNT(*) FROM t GROUP BY `region`",
                                 dialect="mysql", provenance={}, warnings=[]))
@@ -283,9 +283,9 @@ class TestInteropGuards:
         assert out["sql"].startswith("SELECT")
 
     def test_extract_unmatched_column_returned_pending(self, monkeypatch):
-        monkeypatch.setattr("services.shared.common.api_permission.check_api_permission",
+        monkeypatch.setattr("backend.common.api_permission.check_api_permission",
                             lambda role, method, path: True)
-        monkeypatch.setattr("services.dataviz.services.governed_query.governed_execute",
+        monkeypatch.setattr("backend.modules.viz.services.governed_query.governed_execute",
                             lambda *a, **k: {
                                 "columns": ["region", "cnt_x", "amount"],
                                 "rows": [{"region": "华东", "cnt_x": 1, "amount": 2.5}],
@@ -307,9 +307,9 @@ class TestInteropGuards:
         assert out["unmapped"] == ["cnt_x"]
 
     def test_extract_matches_alias(self, monkeypatch):
-        monkeypatch.setattr("services.shared.common.api_permission.check_api_permission",
+        monkeypatch.setattr("backend.common.api_permission.check_api_permission",
                             lambda role, method, path: True)
-        monkeypatch.setattr("services.dataviz.services.governed_query.governed_execute",
+        monkeypatch.setattr("backend.modules.viz.services.governed_query.governed_execute",
                             lambda *a, **k: {"columns": ["地区"], "rows": [{"地区": "华东"}],
                                              "row_count": 1})
         monkeypatch.setattr(svc, "_semantic_fields", lambda ds, obj: [
@@ -327,20 +327,20 @@ class TestInteropGuards:
 
 class TestDatasetChartRefreshGoverned:
     def test_refresh_dataset_chart_uses_dataset_governed_entry(self):
-        from services.dataviz.services.dashboard_service import ChartService
+        from backend.modules.viz.services.dashboard_service import ChartService
         src = inspect.getsource(ChartService._refresh_dataset_chart)
         assert "query_dataset" in src        # 统一治理入口
         assert "governed_execute(" not in src  # 无旁路裸执行
         assert "sql_query" not in src        # 不读/不复制数据集 SQL(单口径)
 
     def test_refresh_chart_routes_dataset_charts(self):
-        from services.dataviz.services.dashboard_service import ChartService
+        from backend.modules.viz.services.dashboard_service import ChartService
         src = inspect.getsource(ChartService.refresh_chart)
         assert '_refresh_dataset_chart' in src
         assert 'source_type' in src
 
     def test_dataset_chart_requires_identity(self):
-        from services.dataviz.services.dashboard_service import ChartService
+        from backend.modules.viz.services.dashboard_service import ChartService
         with pytest.raises(NoIdentityError):
             ChartService()._refresh_dataset_chart(
                 {"id": 1, "source_id": 2, "config": "{}"}, {}, 0, 0, "", None)
