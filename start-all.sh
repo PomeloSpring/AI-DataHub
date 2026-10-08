@@ -111,6 +111,59 @@ start_service() {
 }
 
 # ═══════════════════════════════════════════════════════════════
+# 函数: 启动 web（合并入口，单进程绑定全部契约端口 —— Phase 4 进程终态）
+# ═══════════════════════════════════════════════════════════════
+# 全部模块 router 拼进一个 FastAPI app（backend/processes/main.py），
+# 经 backend.processes.serve 一个进程绑定 services.conf 全部端口。
+all_service_ports() {
+    printf '%s\n' "${SERVICES[@]}" | cut -d: -f3
+}
+
+start_web() {
+    local pid_file="$PID_DIR/web.pid"
+    local log_file="$LOG_DIR/web.log"
+
+    if [ -f "$pid_file" ]; then
+        local old_pid=$(cat "$pid_file")
+        if kill -0 "$old_pid" 2>/dev/null; then
+            log_warn "web 已在运行 (PID: $old_pid)"
+            return 0
+        else
+            rm -f "$pid_file"
+        fi
+    fi
+
+    # 全部契约端口必须空闲（单进程一次绑定）
+    local ports=""
+    while read -r port; do
+        ports="$ports $port"
+        if lsof -i :"$port" -sTCP:LISTEN -t >/dev/null 2>&1; then
+            local occupied_pid=$(lsof -i :"$port" -sTCP:LISTEN -t 2>/dev/null | head -1)
+            log_error "web 端口 $port 已被进程 $occupied_pid 占用"
+            return 1
+        fi
+    done < <(all_service_ports)
+
+    log_info "启动 web 合并入口 (端口:${ports})..."
+    cd "$PROJECT_ROOT"
+    PYTHONPATH="$PYTHONPATH" nohup "$PYTHON" -m backend.processes.serve \
+        --host 0.0.0.0 --log-level info \
+        >> "$log_file" 2>&1 < /dev/null &
+
+    local pid=$!
+    echo "$pid" > "$pid_file"
+
+    sleep 2
+    if kill -0 "$pid" 2>/dev/null; then
+        log_info "web 启动成功 (PID: $pid, 端口:${ports})"
+    else
+        log_error "web 启动失败，查看日志: $log_file"
+        rm -f "$pid_file"
+        return 1
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════
 # 函数: 启动 Celery worker / beat（后台守护模式）
 # ═══════════════════════════════════════════════════════════════
 # 按 cmdline 查找 celery 实例（前台实例不写 pid 文件，只靠 pid 文件查重会漏，
@@ -564,6 +617,40 @@ start_celery_fg() {
     FG_PIDS+=("$!")
 }
 
+# 前台模式启动 web 合并入口（单进程多端口）
+start_web_fg() {
+    local color="$1"
+
+    local ports=""
+    while read -r port; do
+        ports="$ports $port"
+        if lsof -i :"$port" -sTCP:LISTEN -t >/dev/null 2>&1; then
+            log_error "web 端口 $port 已被占用"
+            return 1
+        fi
+    done < <(all_service_ports)
+
+    log_info "启动 web 合并入口 (端口:${ports})"
+
+    (
+        cd "$PROJECT_ROOT"
+        PYTHONPATH="$PYTHONPATH" exec "$PYTHON" -m backend.processes.serve \
+            --host 0.0.0.0 --log-level info 2>&1
+    ) | tee -a "$LOG_DIR/web.log" | awk -v svc="web" -v c="$color" -v n="\033[0m" \
+        '{printf "%s[%-12s]%s %s\n", c, svc, n, $0; fflush()}' &
+
+    local pid=$!
+    FG_PIDS+=("$pid")
+
+    sleep 1
+    if ! kill -0 "$pid" 2>/dev/null; then
+        log_error "web 启动失败"
+        return 1
+    fi
+
+    write_fg_port_pid "web" "$(all_service_ports | head -1)"
+}
+
 # 前台模式主流程
 run_foreground() {
     FG_MODE=true
@@ -582,13 +669,10 @@ run_foreground() {
     ((ci++))
     if [ $? -eq 0 ]; then ((success++)); else ((fail++)); fi
 
-    # 启动 Python 微服务
-    for svc in "${SERVICES[@]}"; do
-        IFS=':' read -r name module port <<< "$svc"
-        start_service_fg "$name" "$module" "$port" "${FG_COLORS[$ci]}"
-        ((ci++))
-        if [ $? -eq 0 ]; then ((success++)); else ((fail++)); fi
-    done
+    # 启动 web 合并入口（单进程多端口）
+    start_web_fg "${FG_COLORS[$ci]}"
+    ((ci++))
+    if [ $? -eq 0 ]; then ((success++)); else ((fail++)); fi
 
     # 启动 Celery worker + beat
     for cname in "${CELERY_PROCS[@]}"; do
@@ -642,25 +726,22 @@ show_status() {
     printf "  %-20s %-8s %-8s " "dataengine" "$DATAENGINE_PORT" "$de_pid"
     echo -e "$de_status"
 
-    for svc in "${SERVICES[@]}"; do
-        IFS=':' read -r name module port <<< "$svc"
-        local pid_file="$PID_DIR/${name}.pid"
-        local status="未运行"
-        local pid="-"
-
-        if [ -f "$pid_file" ]; then
-            pid=$(cat "$pid_file")
-            if kill -0 "$pid" 2>/dev/null; then
-                status="${GREEN}运行中${NC}"
-            else
-                status="${RED}已停止${NC}"
-                pid="-"
-            fi
+    # web 合并入口（单进程承载全部契约端口）
+    local web_pid_file="$PID_DIR/web.pid"
+    local web_status="未运行"
+    local web_pid="-"
+    if [ -f "$web_pid_file" ]; then
+        web_pid=$(cat "$web_pid_file")
+        if kill -0 "$web_pid" 2>/dev/null; then
+            web_status="${GREEN}运行中${NC}"
+        else
+            web_status="${RED}已停止${NC}"
+            web_pid="-"
         fi
-
-        printf "  %-20s %-8s %-8s " "$name" "$port" "$pid"
-        echo -e "$status"
-    done
+    fi
+    local web_ports=$(all_service_ports | paste -sd, -)
+    printf "  %-20s %-16s %-8s " "web" "$web_ports" "$web_pid"
+    echo -e "$web_status"
 
     # 前端状态
     local frontend_pid_file="$PID_DIR/frontend.pid"
@@ -733,15 +814,12 @@ case "${1:-all}" in
             ((fail++))
         fi
 
-        # 启动 Python 微服务
-        for svc in "${SERVICES[@]}"; do
-            IFS=':' read -r name module port <<< "$svc"
-            if start_service "$name" "$module" "$port"; then
-                ((success++))
-            else
-                ((fail++))
-            fi
-        done
+        # 启动 web 合并入口（单进程多端口，替代原 8 个微服务进程）
+        if start_web; then
+            ((success++))
+        else
+            ((fail++))
+        fi
 
         # 启动 Celery worker + beat（依赖 dataflow 任务模块，排在微服务之后）
         if start_celery; then

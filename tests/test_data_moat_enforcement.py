@@ -140,7 +140,8 @@ class TestQueryEndpointRemoved:
 
     def test_main_does_not_mount_query(self):
         root = os.path.join(os.path.dirname(__file__), "..")
-        with open(os.path.join(root, "backend", "processes", "mind", "main.py"), encoding="utf-8") as f:
+        # Phase 4 后唯一 web 入口为合并入口 backend/processes/main.py（旧 8 壳已删）
+        with open(os.path.join(root, "backend", "processes", "main.py"), encoding="utf-8") as f:
             src = f.read()
         assert "/api/query" not in src
         assert "api.query" not in src

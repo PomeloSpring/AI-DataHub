@@ -20,16 +20,9 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 
 SERVICES=(
     "dataengine"
-    "authservice"
-    "datacatalog"
-    "datagov"
-    "dataviz"
-    "datamind"
-    "celery-beat"    # 先停调度派发，再停 worker，最后停 dataflow
+    "web"          # 合并 web 入口（单进程承载全部契约端口，Phase 4）
+    "celery-beat"    # 先停调度派发，再停 worker
     "celery-worker"
-    "dataflow"
-    "aiplatform"
-    "semhub"
     "frontend"
 )
 
@@ -62,6 +55,7 @@ stop_service() {
             frontend)   port=3000 ;;
             backend)    port=8000 ;;
             dataengine) port=8082 ;;
+            web)        port=$(grep -vE '^\s*(#|$)' "$PROJECT_ROOT/backend/scripts/services.conf" 2>/dev/null | head -1 | cut -d: -f3) ;;
             *)
                 port=$(grep -E "^${name}:" "$PROJECT_ROOT/backend/scripts/services.conf" 2>/dev/null | head -1 | cut -d: -f3)
                 ;;
@@ -113,6 +107,13 @@ case "${1:-all}" in
             stop_service "$name"
         done
 
+        # 兜底：开发单端口模式（start-service.sh / start-all.sh <name>）遗留的分服务进程
+        if [ -f "$PROJECT_ROOT/backend/scripts/services.conf" ]; then
+            while IFS=':' read -r name _module _port; do
+                [ -f "$PID_DIR/${name}.pid" ] && stop_service "$name"
+            done < <(grep -vE '^\s*(#|$)' "$PROJECT_ROOT/backend/scripts/services.conf")
+        fi
+
         echo ""
         log_info "所有服务已停止"
         ;;
@@ -120,9 +121,16 @@ case "${1:-all}" in
         # celery 别名 → 一次停 worker + beat
         targets=("$1")
         [ "$1" = "celery" ] && targets=("celery-beat" "celery-worker")
+        # 可停对象：常驻进程 + services.conf 分服务名（开发单端口模式）
+        known_names=("${SERVICES[@]}")
+        if [ -f "$PROJECT_ROOT/backend/scripts/services.conf" ]; then
+            while IFS=':' read -r name _module _port; do
+                known_names+=("$name")
+            done < <(grep -vE '^\s*(#|$)' "$PROJECT_ROOT/backend/scripts/services.conf")
+        fi
         found=false
         for name in "${targets[@]}"; do
-            for known in "${SERVICES[@]}"; do
+            for known in "${known_names[@]}"; do
                 if [ "$name" = "$known" ]; then
                     stop_service "$name"
                     found=true
@@ -132,7 +140,7 @@ case "${1:-all}" in
         done
         if [ "$found" = false ]; then
             echo -e "${RED}未知服务: $1${NC}"
-            echo "可用服务: ${SERVICES[*]} celery"
+            echo "可用服务: ${known_names[*]} celery"
             exit 1
         fi
         ;;
