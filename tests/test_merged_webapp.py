@@ -43,6 +43,7 @@ CONTRACT_ROUTES = {
     ("GET", "/api/admin/as-bots/roles"),                # platform
     ("GET", "/"),                                       # semhub
     ("GET", "/api/graph/query"),                        # semhub
+    ("GET", "/api/semantic/schema"),                    # semhub（Phase 6 契约导出）
     ("GET", "/api/dashboard/groups"),                   # viz
 }
 

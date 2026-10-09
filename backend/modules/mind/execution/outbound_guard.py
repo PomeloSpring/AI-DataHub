@@ -84,7 +84,7 @@ _VALUE_RES: tuple[tuple[str, re.Pattern], ...] = (
         r"Traceback \(most recent call last\)|\bFile \"[^\"]+\.py\", line \d+")),
 )
 
-# 与 semantic_query._LEAK_KEYWORDS 同源的历史口径，保留兼容（旧告警文本里出现即算命中）。
+# 与 semantics.contract.LEAK_KEYWORDS 同源的历史口径，保留兼容（旧告警文本里出现即算命中）。
 _LEGACY_LEAK_KEYWORDS = ("physical_table", "catalog_ref", "not in adh_table_info")
 
 

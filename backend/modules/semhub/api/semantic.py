@@ -48,6 +48,13 @@ def _parse_query_or_400(body: dict[str, Any]) -> SemanticQuery:
 
 # ── endpoints ──────────────────────────────────────────────────
 
+@router.get("/schema", summary="跨语言唯一契约 JSON Schema（SemanticQuery/SemanticResult）")
+async def schema() -> dict[str, Any]:
+    """导出语义层唯一契约的 JSON Schema（Phase 6 契约先行，护栏 §7 错误口径随附）。"""
+    from backend.semantics.contract import export_schemas
+    return export_schemas()
+
+
 @router.post("/resolve", summary="intent -> binding + compiled plan preview (no execution)")
 async def resolve(body: dict[str, Any]) -> dict[str, Any]:
     q = _parse_query_or_400(body)

@@ -4,8 +4,9 @@ LLM 侧只允许产出**声明式意图**(SemanticQuery)：{object, metrics[], d
 filters[], order[], limit, time_grain}；本工具在进程内直调语义层
 (`backend.semantics.*`) 完成 intent -> binding -> plan -> 执行。
 
-Phase 4 之前，实际执行仍复用 `execute_query_with_permission`(带权限 + 审计) 走
- secured_sql；Phase 4 会切至 DataFusion sidecar 通道，本工具的对外契约不变。
+Phase 6 之前，实际执行仍复用 `execute_query_with_permission`(带权限 + 审计) 走
+secured_sql；Phase 6.2 将切至 `backend.semantics.execution`（datafusion-python 内嵌引擎），
+本工具的对外契约不变。对外失败文案/泄露过滤口径唯一真源在 `backend.semantics.contract`。
 
 约定：任何 SQL 字段(sql/raw_sql/statement/…) 都会在 intent 层直接拒绝，
       从而强制 LLM 用"对象 + 指标 + 维度 + 过滤"表达查询意图。
@@ -17,42 +18,26 @@ import logging
 from typing import Annotated, Optional
 
 from backend.modules.mind.execution.sdk_tools.catalog_tools import _text
+from backend.semantics.contract import (
+    EXEC_FAIL_HINT as _EXEC_FAIL_HINT,
+    LEAK_KEYWORDS as _LEAK_KEYWORDS,
+    safe_warnings as _safe_warnings,
+    sanitize_execute_reason as _sanitize_execute_reason,
+)
 
 logger = logging.getLogger(__name__)
 
 _MAX_ROWS = 200
 
-# 执行阶段失败时向 LLM 回输的通用文案:不暴露主机/账号/IP/SQL/密码等基础设施细节。
-_EXEC_FAIL_HINT = (
-    "取数在执行阶段失败（通常是数据源连接/凭据或物理表暂不可用）。这是系统侧问题，"
-    "与你的查询意图无关。请勿猜测或向用户展示数据源主机、账号、IP、生成的 SQL 等细节，"
-    "建议稍后重试或联系管理员核实数据源可用性。"
-)
-
-# 可能泄露物理表/数据源/catalog 的告警关键字，不随工具结果回输 LLM。
-_LEAK_KEYWORDS = ("physical_table", "catalog", "datasource", "catalog_ref", "not in adh_table_info")
-
-
-def _safe_warnings(*groups) -> list[str]:
-    """过滤掉会泄露物理表/数据源/catalog 细节的告警。"""
-    out: list[str] = []
-    for ws in groups:
-        for w in (ws or []):
-            lw = str(w).lower()
-            if any(k in lw for k in _LEAK_KEYWORDS):
-                continue
-            if w and w not in out:
-                out.append(w)
-    return out
-
 
 def _sanitize_execute_error(se) -> str:
-    """执行阶段原始报错(可含 MySQL Access denied/IP)仅进服务端日志,对 LLM 回通用文案。"""
-    reason = getattr(se, "reason", "") or ""
-    if getattr(se, "blocked_at", "") == "execute" or reason.startswith("执行失败"):
-        logger.error("[run_semantic_query] execute-stage failed (detail server-side only): %s", reason)
-        return _EXEC_FAIL_HINT
-    return reason
+    """执行阶段原始报错(可含 MySQL Access denied/IP)仅进服务端日志,对 LLM 回通用文案。
+
+    口径委托 `semantics.contract.sanitize_execute_reason`（唯一真源）。
+    """
+    return _sanitize_execute_reason(
+        getattr(se, "reason", "") or "", getattr(se, "blocked_at", "") or "",
+    )
 
 
 async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
