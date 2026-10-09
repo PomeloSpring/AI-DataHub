@@ -212,7 +212,6 @@ interface ChatState {
   // Chat 端可选的 AS-BOT 清单与当前选中(空=未配置 AS-BOT,模型候选回退执行层)
   asBots: ChatAsBot[];
   selectedAsBotKey: string | null;
-  reportTheme: string;  // 报告交付主题 id; '' = 跟随当前 App 主题
   capabilities: { tools: { name: string; description: string }[]; version: string; empty: boolean;
     unavailable_tools?: { name: string; reason: string }[] } | null;
   // 执行层 SDK 会话 ID(多轮对话 resume,done 事件回传)
@@ -230,7 +229,6 @@ interface ChatState {
   loadExecutionLayer: (workspaceId: number) => Promise<void>;
   loadAsBots: (workspaceId: number) => Promise<void>;
   setSelectedAsBotKey: (key: string | null) => void;
-  setReportTheme: (t: string) => void;
   setSelectedModelRef: (ref: string | null) => void;
   setSelectedDsId: (id: number) => void;
   setSelectedModelId: (id: number | null) => void;
@@ -372,7 +370,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   selectedModelRef: null,
   asBots: [],
   selectedAsBotKey: null,
-  reportTheme: '',
   capabilities: null,
   executorSessionId: null,
 
@@ -510,7 +507,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setSelectedDsId: (id) => set({ selectedDsId: id }),
-  setReportTheme: (t) => set({ reportTheme: t }),
 
   loadLLMModels: async () => {
     const context = chatContextVersion;
@@ -705,7 +701,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       mcp_tools: mcpTools || [],
       workspace_id: state.selectedWorkspaceId,
       // 报告交付主题: 选择"跟随"(空)时回落当前 App 主题
-      report_theme: state.reportTheme || useThemeStore.getState().theme,
+      report_theme: useThemeStore.getState().theme,  // 对话内切换已移除：默认继承用户主题
     };
 
     if (state.pipelineMode) {

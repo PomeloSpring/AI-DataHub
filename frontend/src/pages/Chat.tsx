@@ -40,19 +40,6 @@ const CATEGORY_LABELS: Record<string, string> = {
   image: '图片', table: '表格', document: '文档', model3d: '3D 模型',
 };
 
-// 报告/产物可选主题(与后端 report_themes 一致); 默认"跟随当前主题"不在列表内。
-const THEME_OPTIONS: { id: string; label: string }[] = [
-  { id: 'datafoundry', label: 'DataFoundry' },
-  { id: 'light', label: '浅色' },
-  { id: 'dark', label: '深色' },
-  { id: 'tech', label: '科技' },
-  { id: 'finance', label: '金融' },
-  { id: 'bento', label: '便当格' },
-  { id: 'glass', label: '玻璃' },
-  { id: 'ainative', label: 'AI 原生' },
-  { id: 'medical', label: '医疗' },
-];
-
 // 附件 URL:待发/刚发送的本轮附件用本地 blob 预览;
 // 历史消息附件按工作区相对路径走 session-file 伺服(带 token,供 <img>/three.js 加载)
 function attUrl(att: AttachmentInfo, conversationId?: number | null): string {
@@ -93,7 +80,6 @@ export default function Chat() {
     selectedWorkspaceId, setSelectedWorkspaceId, loadWorkspaceConfig,
     executionLayer, selectedModelRef, loadExecutionLayer, setSelectedModelRef,
     asBots, loadAsBots,
-    reportTheme, setReportTheme,
     loadConversations, loadDatasources, loadLLMModels, loadSystemConfig,
     setSelectedDsId, setSelectedModelId,
     startNewConversation, switchConversation, deleteConversation, renameConversation,
@@ -487,7 +473,7 @@ export default function Chat() {
           <div className="flex shrink-0 items-center gap-2">
             {!focusMode && <Button className="md:hidden" variant="ghost" size="icon" aria-label="打开会话列表" onClick={() => setConversationsOpen(true)}><MessageSquare className="h-4 w-4" /></Button>}
             <Bot className="h-6 w-6 text-primary" />
-            <h1 className="text-lg font-bold">{independent ? '工作空间' : 'Chat 数据分析'}</h1>
+            <h1 className="text-lg font-bold">{independent ? '工作空间' : '智能问数'}</h1>
           </div>
           <div className="flex items-center gap-2">
             {/* 执行层标识 — quick 管道已退役，全面转向 Qoder 执行层（无模式可选） */}
@@ -536,18 +522,6 @@ export default function Chat() {
                 </Select>
               );
             })()}
-
-            {/* 报告主题: 默认跟随当前 App 主题; 可显式选 9 套之一(交付 HTML/Excel 产物用) */}
-            <Select value={reportTheme || 'follow'} onValueChange={(v) => setReportTheme(v === 'follow' ? '' : v)}>
-              <SelectTrigger className="w-[150px] h-8" title="报告/产物主题(默认跟随当前主题)">
-                <Lightbulb className="h-3.5 w-3.5 mr-1.5" />
-                <SelectValue placeholder="报告主题" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="follow">跟随当前主题</SelectItem>
-                {THEME_OPTIONS.map((t) => (<SelectItem key={t.id} value={t.id}>{t.label}</SelectItem>))}
-              </SelectContent>
-            </Select>
 
             <Button variant="outline" size="sm" onClick={clear} disabled={messages.length === 0}>
               <Trash2 className="h-4 w-4 mr-2" />
