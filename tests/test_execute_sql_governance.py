@@ -111,7 +111,9 @@ def test_handler_has_no_bypass_reference():
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.AsyncFunctionDef) and n.name == "execute_sql")
     body = ast.unparse(fn)
-    assert "execute_query_with_permission" in body, "execute_sql 必须经统一治理入口"
+    # Phase 7.2：执行口统一为 semantics.execute.execute_sql（内部经 execute_query_with_permission）
+    assert "semantics.execute" in body and "execute_sql" in body, \
+        "execute_sql 必须经 semantics.execute 统一取数执行口"
     # 禁止绕过治理的直连符号
     assert "get_connection" not in body, "execute_sql 不得直连数据源"
     assert not re.search(r"\bexecute_query\b(?!_with_permission)", body), "execute_sql 不得调用未治理的 execute_query"

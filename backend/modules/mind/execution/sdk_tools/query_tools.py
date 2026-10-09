@@ -36,10 +36,10 @@ def _resolve_datasource_arg(args, ctx) -> int | None:
 async def execute_sql(args):
     from backend.modules.mind.execution.sdk_tools.context import get_execution_context
     from backend.core.query_executor import (
-        execute_query_with_permission,
         validate_sql,
         _extract_table_names,
     )
+    from backend.semantics.contract import EXEC_FAIL_HINT, SemanticError
 
     ctx = get_execution_context()
     sql = (args.get("sql") or "").strip()
@@ -71,27 +71,38 @@ async def execute_sql(args):
     if guardrail_err:
         return _text({"error": guardrail_err, "hint": "为 large/huge 表加过滤谓词, 或改用 run_semantic_query。"}, is_error=True)
 
-    user_context = {"user_id": ctx.user_id, "username": ctx.username}
     try:
-        # 签名: execute_query_with_permission(sql, datasource_id, user_context, workspace_id, ...)
-        df, exec_ms, row_count = await asyncio.to_thread(
-            execute_query_with_permission,
+        # Phase 7.2：执行统一经 semantics.execute.execute_sql（护栏 §1 全平台唯一
+        # 取数执行口，内部经 execute_query_with_permission 治理+审计）；
+        # 对外错误文案已脱敏（权限拒绝保留声明式文案，执行失败回通用文案，护栏 §7）。
+        from backend.semantics.execute import PolicyContext, execute_sql
+
+        result = await asyncio.to_thread(
+            execute_sql,
             sql,
-            ds_id,
-            user_context,
-            ctx.workspace_id,
+            PolicyContext(
+                user_id=int(ctx.user_id or 0),
+                username=ctx.username or "",
+                workspace_id=int(ctx.workspace_id or 0),
+                datasource_id=int(ds_id or 0),
+            ),
         )
+    except SemanticError as e:
+        logger.error("execute_sql denied/failed: %s", e.message)
+        return _text({"error": e.message}, is_error=True)
     except Exception as e:
         logger.error("execute_sql error: %s", e)
-        return _text({"error": str(e)}, is_error=True)
+        return _text({"error": EXEC_FAIL_HINT}, is_error=True)
 
+    names = [c.name for c in result.columns]
+    row_count = int(result.row_count)
     truncated = row_count > MAX_ROWS
-    records = json.loads(df.head(MAX_ROWS).to_json(orient="records", force_ascii=False))
+    records = [dict(zip(names, row)) for row in result.rows[:MAX_ROWS]]
     return _text({
         "row_count": row_count,
-        "execution_ms": exec_ms,
+        "execution_ms": result.elapsed_ms,
         "truncated": truncated,
-        "columns": list(df.columns),
+        "columns": names,
         "rows": records,
     })
 

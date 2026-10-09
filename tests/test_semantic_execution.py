@@ -190,3 +190,48 @@ def test_connector_factory_fail_loud():
         get_connector("postgres")
     with pytest.raises(ValueError):
         get_connector("oracle")
+
+
+# ── Phase 7.2 切流分派 ────────────────────────────────────────
+
+
+def test_execute_query_switch_to_semantic_engine(monkeypatch):
+    """SEMANTIC_ENGINE_ENABLED 开启时，执行载体走 semantics.execution 远程下推。"""
+    from backend.core import query_executor
+
+    monkeypatch.setattr("backend.common.config.SEMANTIC_ENGINE_ENABLED", True)
+    monkeypatch.setattr(
+        "backend.common.db.datasource_db.get_datasource_by_id",
+        lambda ds: {"db_type": "mysql", "host": "h", "port": 3306,
+                    "user": "u", "password": "p", "database": "d"},
+    )
+    captured = {}
+
+    def fake_pushdown(self, sql, **kw):
+        captured.update(sql=sql, **kw)
+        return pa.table({"a": [1, 2]})
+
+    monkeypatch.setattr(
+        "backend.semantics.execution.engine.SemanticEngine.execute_pushdown", fake_pushdown)
+    df, elapsed_ms, row_count = query_executor.execute_query(
+        "SELECT a FROM t LIMIT 2", 7, user_id=0)
+    assert row_count == 2 and list(df.columns) == ["a"]
+    assert captured["datasource_id"] == 7 and captured["db_type"] == "mysql"
+
+
+def test_execute_query_federated_falls_back_to_dataengine(monkeypatch):
+    """federated 跨源联邦暂留 dataengine 适配器路径（新引擎未承载联邦）。"""
+    from backend.core import query_executor
+
+    monkeypatch.setattr("backend.common.config.SEMANTIC_ENGINE_ENABLED", True)
+    hit = {"n": 0}
+    monkeypatch.setattr(
+        "backend.semantics.execution.engine.SemanticEngine.execute_pushdown",
+        lambda self, sql, **kw: hit.__setitem__("n", hit["n"] + 1),
+    )
+    monkeypatch.setattr("backend.common.engine_client.engine_client.health", lambda: False)
+    # 走 dataengine 适配器路径（health 失败 → 拒绝执行，未触新引擎）
+    with pytest.raises(RuntimeError):
+        query_executor.execute_query("SELECT a FROM t LIMIT 2", 7, user_id=0,
+                                     federated=[{"name": "x", "config": {}}])
+    assert hit["n"] == 0

@@ -280,6 +280,14 @@ def execute_query(
     if not valid:
         raise ValueError(f"SQL validation failed: {reason}")
 
+    # Phase 7.2 切流：SEMANTIC_ENGINE_ENABLED → semantics.execution 远程下推载体；
+    # federated 跨源联邦暂回落 dataengine 适配器（能力对齐后随 engine_client 退役）
+    from backend.common.config import SEMANTIC_ENGINE_ENABLED
+    if SEMANTIC_ENGINE_ENABLED and not federated:
+        return _execute_via_semantic_execution(
+            sql, datasource_id, user_id=user_id, workspace_id=workspace_id,
+            user_role=user_role)
+
     # DataEngine 是唯一执行通道（禁止降级 pymysql 直连）
     from backend.common.engine_client import engine_client, ENGINE_ENABLED
     if not ENGINE_ENABLED:
@@ -372,6 +380,53 @@ def _extract_table_names(sql: str) -> list[str]:
     from backend.semantics.sql_guard import extract_tables
     return extract_tables(sql)
 
+
+
+def _execute_via_semantic_execution(
+    sql: str,
+    datasource_id: int,
+    user_id: int = 0,
+    workspace_id: int = 0,
+    user_role: str = "",
+) -> tuple[pd.DataFrame, int, int]:
+    """Phase 7.2 切流执行载体：semantics.execution 远程下推（替代 dataengine HTTP）。
+
+    治理语义与 dataengine 路径等价：上游 enforce_sql 已改写；此处保留 RLS 策略
+    **二次注入**（纵深防御，与 dataengine SecureTableProvider plan 期二次校验同语义；
+    hidden/masked 由上游 apply_post_processing 施加）；解析/注入失败保守上抛拒绝。
+    """
+    from backend.common.db.datasource_db import get_datasource_by_id
+    from backend.semantics.execution.engine import SemanticEngine
+
+    row = get_datasource_by_id(int(datasource_id or 0)) or {}
+    db_type = (row.get("db_type") or "mysql").lower()
+
+    if user_id and workspace_id and datasource_id:
+        from backend.common.rls_loader import load_rls_policies_for_query
+        from backend.semantics.sql_guard import inject_filters
+
+        policies = load_rls_policies_for_query(
+            user_id=user_id, workspace_id=workspace_id, datasource_id=datasource_id,
+            tables=_extract_table_names(sql), user_role=user_role or "user",
+        )
+        # {table: 谓词} 展平（同表多 policy AND 合并），二次织入
+        filters: dict[str, str] = {}
+        for pol in policies or []:
+            pred = (pol.get("row_filter") or "").strip()
+            for t in pol.get("tables") or []:
+                if not pred:
+                    continue
+                filters[t] = f"({filters[t]}) AND ({pred})" if t in filters else pred
+        if filters:
+            dialect = "postgres" if db_type in ("postgres", "postgresql", "pg") else "mysql"
+            sql, _applied = inject_filters(sql, filters, dialect=dialect)
+
+    start = time.time()
+    table = SemanticEngine().execute_pushdown(
+        sql, datasource_id=int(datasource_id or 0), db_type=db_type)
+    df = table.to_pandas()
+    elapsed_ms = int((time.time() - start) * 1000)
+    return df, elapsed_ms, int(table.num_rows)
 
 
 def execute_query_with_permission(
