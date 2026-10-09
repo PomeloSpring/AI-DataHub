@@ -10,7 +10,6 @@
 #   ./setup-local.sh --check-only    仅检查环境, 不安装任何东西
 #   ./setup-local.sh --skip-frontend 只装 Python 依赖
 #   ./setup-local.sh --force         前端强制重装(node_modules 推倒重来)
-#   ./setup-local.sh --with-engine   额外编译 Rust dataengine(需 cargo, 耗时)
 #   ./setup-local.sh --start         安装完成后启动全部服务(= ./start-all.sh -d)
 # ═══════════════════════════════════════════════════════════════
 
@@ -24,15 +23,14 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step()  { echo -e "\n${BLUE}━━━ $1 ━━━${NC}"; }
 
-SKIP_FRONTEND=0; FORCE=0; WITH_ENGINE=0; START=0; CHECK_ONLY=0
+SKIP_FRONTEND=0; FORCE=0; START=0; CHECK_ONLY=0
 for arg in "$@"; do
     case "$arg" in
         --check-only)    CHECK_ONLY=1 ;;
         --skip-frontend) SKIP_FRONTEND=1 ;;
         --force)         FORCE=1 ;;
-        --with-engine)   WITH_ENGINE=1 ;;
         --start)         START=1 ;;
-        -h|--help)       sed -n '2,16p' "$0"; exit 0 ;;
+        -h|--help)       sed -n '2,14p' "$0"; exit 0 ;;
         *) log_error "未知参数: $arg (见 --help)"; exit 1 ;;
     esac
 done
@@ -66,11 +64,6 @@ if command -v node >/dev/null 2>&1; then
 else log_error "未找到 Node.js (前端无法运行)"; FAILURES=$((FAILURES+1)); fi
 
 command -v git >/dev/null 2>&1 && log_info "git: 可用" || log_warn "git 不可用(拉依赖不受影响)"
-
-if [ $WITH_ENGINE -eq 1 ]; then
-    command -v cargo >/dev/null 2>&1 && log_info "cargo: $(cargo --version)" \
-        || { log_error "--with-engine 需要 Rust 工具链 cargo"; FAILURES=$((FAILURES+1)); }
-fi
 
 if [ $CHECK_ONLY -eq 1 ]; then
     [ $FAILURES -eq 0 ] && log_info "环境检查通过" || log_error "存在 $FAILURES 项问题"
@@ -178,16 +171,8 @@ else
     log_info "services/.env: 已存在, 不覆盖"
 fi
 
-# ═══════════════ 5. 可选: Rust dataengine ═══════════════
+# ═══════════════ 5. 可选组件 (qmind CLI) ═══════════════
 log_step "5/5 可选组件"
-
-if [ $WITH_ENGINE -eq 1 ] && command -v cargo >/dev/null 2>&1; then
-    log_info "编译 dataengine (cargo build --release, 首次较慢)..."
-    (cd services/dataengine && cargo build --release) && log_info "dataengine 编译完成" \
-        || { log_error "dataengine 编译失败"; FAILURES=$((FAILURES+1)); }
-else
-    log_info "跳过 dataengine 编译 (需要时加 --with-engine)"
-fi
 
 # qmind CLI 预装(知识库检索依赖; 不预装则首次调用时自动下载)
 if [ -x "runtime/qmind/qmind" ]; then
@@ -207,7 +192,7 @@ else
 fi
 echo -e "${BLUE}端口约定:${NC} frontend 3000 | datamind 8001 | datagov 8002 | dataflow 8003 \
 | dataviz 8004 | datacatalog 8005 | authservice 8006 | aiplatform 8007 \
-| semhub 8012 | dataengine 8082"
+| semhub 8012"
 echo -e "${BLUE}下一步:${NC}"
 echo "  1) 填写 services/.env 的数据源与密钥"
 echo "  2) ./start-all.sh -d      启动全部后端   |   cd frontend && npm run dev   启动前端"

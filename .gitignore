@@ -86,3 +86,4 @@ jieba.cache
 scripts
 # pytest tmp artifacts
 pytest-of-*/
+.qoder/plan

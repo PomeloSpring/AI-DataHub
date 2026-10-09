@@ -19,8 +19,7 @@ log_info()  { echo -e "${GREEN}[INFO]${NC}  $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 
 SERVICES=(
-    "dataengine"
-    "web"          # web 入口（单进程承载全部契约端口，Phase 4）
+    "web"          # web 入口（单进程承载全部契约端口，Phase 4；dataengine 已退役）
     "celery-beat"    # 先停调度派发，再停 worker
     "celery-worker"
     "frontend"
@@ -54,7 +53,6 @@ stop_service() {
                 ;;
             frontend)   port=3000 ;;
             backend)    port=8000 ;;
-            dataengine) port=8082 ;;
             web)        port=$(grep -vE '^\s*(#|$)' "$PROJECT_ROOT/backend/scripts/services.conf" 2>/dev/null | head -1 | cut -d: -f3) ;;
             *)
                 port=$(grep -E "^${name}:" "$PROJECT_ROOT/backend/scripts/services.conf" 2>/dev/null | head -1 | cut -d: -f3)

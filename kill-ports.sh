@@ -18,9 +18,9 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # 端口 → 服务名: Python 微服务读 services.conf（唯一权威清单），其余特殊进程在此补充
+# （dataengine/8082 已退役，services/dataengine 删净——见 commit 6391e6c，不再登记）
 declare -A PORT_SERVICE=(
     [3000]="frontend-dev"
-    [8082]="dataengine"
 )
 if [ -f "$SCRIPT_DIR/backend/scripts/services.conf" ]; then
     while IFS=: read -r _name _module _port; do
