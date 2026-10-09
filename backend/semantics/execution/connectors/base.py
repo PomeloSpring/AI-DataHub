@@ -53,6 +53,15 @@ def rows_to_arrow(columns: list[str], rows: list[tuple]) -> pa.Table:
     return pa.Table.from_arrays(arrays, names=names)
 
 
+def dedup_columns(table: pa.Table) -> pa.Table:
+    """Arrow 表重复列名无损消歧（护栏 §8，col__1…）。"""
+    from backend.common.df_serialize import _unique_columns
+
+    names = [str(c) for c in table.column_names]
+    unique = _unique_columns(names)
+    return table.rename_columns(unique) if unique != names else table
+
+
 def truncate_rows(table: pa.Table, max_rows: Optional[int]) -> pa.Table:
     """拉回行数上限（引擎层执行前强制的最后一道）。"""
     if max_rows is not None and table.num_rows > max_rows:

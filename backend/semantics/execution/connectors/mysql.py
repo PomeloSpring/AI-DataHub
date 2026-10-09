@@ -11,7 +11,11 @@ from typing import Any, Callable, Optional
 
 import pyarrow as pa
 
-from backend.semantics.execution.connectors.base import rows_to_arrow, truncate_rows
+from backend.semantics.execution.connectors.base import (
+    dedup_columns,
+    rows_to_arrow,
+    truncate_rows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,28 +31,31 @@ class MySQLConnector:
         self,
         datasource_id: int = 0,
         *,
+        config: Optional[dict[str, Any]] = None,
         conn_factory: Optional[Callable[[], Any]] = None,
     ):
         self._datasource_id = int(datasource_id or 0)
+        self._config = config  # 跨源联邦随请求下发的连接配置（凭据不进 LLM/前端）
         self._conn_factory = conn_factory  # 测试注入：返回已就绪连接
 
     def _connect(self, timeout_sec: Optional[int]) -> Any:
         if self._conn_factory is not None:
             return self._conn_factory()
-        from backend.common.db.datasource_db import (
-            get_datasource_by_id,
-            get_datasource_conn,
-        )
+        from backend.common.db.datasource_db import get_datasource_conn
 
-        row = get_datasource_by_id(self._datasource_id)
+        row = dict(self._config or {})
         if not row:
-            raise ValueError(f"数据源不存在: datasource_id={self._datasource_id}")
+            from backend.common.db.datasource_db import get_datasource_by_id
+
+            row = get_datasource_by_id(self._datasource_id) or {}
+            if not row:
+                raise ValueError(f"数据源不存在: datasource_id={self._datasource_id}")
         return get_datasource_conn(
             row.get("db_type") or "mysql",
             row.get("host"), int(row.get("port") or 3306),
             row.get("user") or row.get("username") or "",
             row.get("password") or "",
-            row.get("database"),
+            row.get("database") or row.get("database_name"),
             ssl=bool(row.get("ssl")), ssl_mode=row.get("ssl_mode"),
             read_timeout=int(timeout_sec or _DEFAULT_READ_TIMEOUT),
         )
@@ -72,4 +79,4 @@ class MySQLConnector:
             except Exception:  # noqa: BLE001 — 关闭失败不影响结果返回
                 logger.warning("[mysql-connector] connection close failed", exc_info=True)
         table = rows_to_arrow(columns, [tuple(r) for r in rows])
-        return truncate_rows(table, max_rows)
+        return truncate_rows(dedup_columns(table), max_rows)

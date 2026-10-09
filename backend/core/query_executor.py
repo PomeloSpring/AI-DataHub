@@ -280,13 +280,13 @@ def execute_query(
     if not valid:
         raise ValueError(f"SQL validation failed: {reason}")
 
-    # Phase 7.2 切流：SEMANTIC_ENGINE_ENABLED → semantics.execution 远程下推载体；
-    # federated 跨源联邦暂回落 dataengine 适配器（能力对齐后随 engine_client 退役）
+    # Phase 7.2 切流：SEMANTIC_ENGINE_ENABLED → semantics.execution 载体
+    # （单源远程下推 / 跨源联邦），不再回落 dataengine
     from backend.common.config import SEMANTIC_ENGINE_ENABLED
-    if SEMANTIC_ENGINE_ENABLED and not federated:
+    if SEMANTIC_ENGINE_ENABLED:
         return _execute_via_semantic_execution(
             sql, datasource_id, user_id=user_id, workspace_id=workspace_id,
-            user_role=user_role)
+            user_role=user_role, federated=federated)
 
     # DataEngine 是唯一执行通道（禁止降级 pymysql 直连）
     from backend.common.engine_client import engine_client, ENGINE_ENABLED
@@ -388,12 +388,15 @@ def _execute_via_semantic_execution(
     user_id: int = 0,
     workspace_id: int = 0,
     user_role: str = "",
+    federated: list = None,
 ) -> tuple[pd.DataFrame, int, int]:
-    """Phase 7.2 切流执行载体：semantics.execution 远程下推（替代 dataengine HTTP）。
+    """Phase 7.2 切流执行载体：semantics.execution（远程下推 / 跨源联邦）。
 
     治理语义与 dataengine 路径等价：上游 enforce_sql 已改写；此处保留 RLS 策略
     **二次注入**（纵深防御，与 dataengine SecureTableProvider plan 期二次校验同语义；
     hidden/masked 由上游 apply_post_processing 施加）；解析/注入失败保守上抛拒绝。
+    federated（跨源联邦）由 semantics.execution.execute_federated 承载
+    （各源下推拉回 Arrow + DataFusion 本地联邦规划）。
     """
     from backend.common.db.datasource_db import get_datasource_by_id
     from backend.semantics.execution.engine import SemanticEngine
@@ -421,9 +424,26 @@ def _execute_via_semantic_execution(
             dialect = "postgres" if db_type in ("postgres", "postgresql", "pg") else "mysql"
             sql, _applied = inject_filters(sql, filters, dialect=dialect)
 
+    engine = SemanticEngine()
     start = time.time()
-    table = SemanticEngine().execute_pushdown(
-        sql, datasource_id=int(datasource_id or 0), db_type=db_type)
+    if federated:
+        # 跨源联邦：主源 + 辅源（federated 条目携连接配置直传，凭据不进 LLM/前端）
+        sources = [{
+            "name": "", "datasource_id": int(datasource_id or 0),
+            "db_type": db_type, "config": None,
+            "tables": _extract_table_names(sql),
+        }]
+        for fed in federated or []:
+            cfg = dict(fed.get("config") or {})
+            sources.append({
+                "name": str(fed.get("name") or ""), "datasource_id": 0,
+                "db_type": cfg.get("db_type") or "mysql", "config": cfg,
+                "tables": [],  # 由 execute_federated 从 SQL 限定引用推导
+            })
+        table = engine.execute_federated(sql, sources)
+    else:
+        table = engine.execute_pushdown(
+            sql, datasource_id=int(datasource_id or 0), db_type=db_type)
     df = table.to_pandas()
     elapsed_ms = int((time.time() - start) * 1000)
     return df, elapsed_ms, int(table.num_rows)
