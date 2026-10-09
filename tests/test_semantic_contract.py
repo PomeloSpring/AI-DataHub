@@ -178,6 +178,32 @@ def test_execute_facade_rejects_sql_intent():
     assert ei.value.code is ErrorCode.INVALID_INTENT
 
 
+def test_execute_plan_error_detail_service_payload(monkeypatch):
+    """execute_plan（run_semantic_query 等调用方的执行段）：错误 detail 带服务内消费产物，
+    对外投影（to_dict）不泄 detail。"""
+    monkeypatch.setattr(facade, "resolve_binding", lambda obj, datasource_id=0: (_fake_binding(), []))
+    monkeypatch.setattr(facade, "plan", lambda q, b: _fake_plan())
+    monkeypatch.setattr(
+        facade, "execute_semantic",
+        lambda q, b, p, uc, question: SemanticExecution(
+            allowed=False, blocked_at="approval", needs_approval=True,
+            proposed_edit={"op": "alias"}, applied_rls=["p1"], masked_columns=["phone"],
+            reason="高风险需审批",
+        ),
+    )
+    q = SemanticQuery(object="Case", metrics=["m1"], datasource_id=7)
+    b, _ = facade.resolve_binding("Case")
+    p = facade.plan(q, b)
+    with pytest.raises(SemanticError) as ei:
+        facade.execute_plan(q, b, p, {"user_id": 42})
+    assert ei.value.code is ErrorCode.APPROVAL_REQUIRED
+    assert ei.value.detail["needs_approval"] is True
+    assert ei.value.detail["proposed_edit"] == {"op": "alias"}
+    assert ei.value.detail["applied_rls"] == ["p1"]
+    assert ei.value.detail["masked_columns"] == ["phone"]
+    assert "proposed_edit" not in ei.value.to_dict()  # 对外投影不含 detail
+
+
 # ── execute_sql 门面 ─────────────────────────────────────────────
 
 

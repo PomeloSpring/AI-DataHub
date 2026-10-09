@@ -33,11 +33,11 @@ _MAX_ROWS = 200
 def _sanitize_execute_error(se) -> str:
     """执行阶段原始报错(可含 MySQL Access denied/IP)仅进服务端日志,对 LLM 回通用文案。
 
-    口径委托 `semantics.contract.sanitize_execute_reason`（唯一真源）。
+    口径委托 `semantics.contract.sanitize_execute_reason`（唯一真源）；
+    兼容 SemanticExecution（.reason）与 SemanticError（.message）。
     """
-    return _sanitize_execute_reason(
-        getattr(se, "reason", "") or "", getattr(se, "blocked_at", "") or "",
-    )
+    reason = getattr(se, "reason", "") or getattr(se, "message", "") or ""
+    return _sanitize_execute_reason(reason, getattr(se, "blocked_at", "") or "")
 
 
 async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
@@ -116,47 +116,64 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
             },
         }, True)
 
-    # Phase 4：统一走七闸门链(identity->permission->preflight->proposal->approval->execute->audit)。
-    # RLS sqlglot 改写(语义层唯一可见改写)与审计都在 gates 内完成。
-    from backend.semantics.gates import execute_semantic
+    # Phase 6.4：执行段统一经 semantics.execute.execute_plan（护栏 §1 统一执行口）；
+    # 上方 bind/plan 间的 L2 职责（资源护栏/别名回流）保持不变。
+    from backend.semantics.contract import SemanticError
+    from backend.semantics.execute import PolicyContext, execute_plan
 
-    user_context = {
-        "user_id": (ctx.user_id if ctx else None),
-        "username": (ctx.username if ctx else None),
-        "workspace_id": ((ctx.workspace_id if ctx else 0) or 0),
-    }
-    se = await asyncio.to_thread(execute_semantic, q, binding, p, user_context, "")
+    policy_ctx = PolicyContext(
+        user_id=int((ctx.user_id if ctx else 0) or 0),
+        username=(ctx.username if ctx else "") or "",
+        workspace_id=int(((ctx.workspace_id if ctx else 0) or 0)),
+        datasource_id=int(q.datasource_id or 0),
+    )
 
-    rows_result = se.result or {
-        "columns": [], "rows": [], "row_count": 0, "execution_ms": None,
-    }
-    if isinstance(rows_result, dict) and rows_result.get("row_count", 0) > _MAX_ROWS:
-        rows_result = {**rows_result, "truncated": True,
-                       "rows": rows_result.get("rows", [])[:_MAX_ROWS]}
-
-    # 数据源对 LLM 是黑盒：只回声明式结果 + 安全告警,
-    # 剥离 base_sql / secured_sql / datasource_id / catalog_ref / provenance / 原始报错。
     # intent 回显中剔除系统注入的基础设施标识(datasource/workspace/user id)。
     intent_echo = {k: v for k, v in q.model_dump().items()
                    if k not in ("datasource_id", "workspace_id", "user_id")}
+
+    try:
+        result = await asyncio.to_thread(execute_plan, q, binding, p, policy_ctx, "")
+    except SemanticError as e:
+        payload_out = {
+            "object": binding.object_key,
+            "intent": intent_echo,
+            "query_mode": binding.guardrail.query_mode,
+            "applied_rls": list((e.detail or {}).get("applied_rls") or []),
+            "masked_columns": list((e.detail or {}).get("masked_columns") or []),
+            "warnings": _safe_warnings(p.warnings, bind_warnings),
+            "columns": [], "rows": [], "row_count": 0, "execution_ms": None,
+            "error": _sanitize_execute_error(e),
+            "blocked_at": e.blocked_at,
+            "needs_approval": bool((e.detail or {}).get("needs_approval")),
+        }
+        if (e.detail or {}).get("proposed_edit"):
+            payload_out["proposed_edit"] = e.detail["proposed_edit"]
+        return payload_out, True
+
+    names = [c.name for c in result.columns]
+    rows_records = [dict(zip(names, row)) for row in result.rows]  # LLM 契约为 records
+    rows_result = {
+        "columns": names,
+        "rows": rows_records,
+        "row_count": int(result.row_count),
+        "execution_ms": result.elapsed_ms,
+    }
+    if int(result.row_count) > _MAX_ROWS:
+        rows_result = {**rows_result, "truncated": True, "rows": rows_records[:_MAX_ROWS]}
+
+    # 数据源对 LLM 是黑盒：只回声明式结果 + 安全告警,
+    # 剥离 base_sql / secured_sql / datasource_id / catalog_ref / provenance / 原始报错。
     payload_out = {
         "object": binding.object_key,
         "intent": intent_echo,
         "query_mode": binding.guardrail.query_mode,
-        "applied_rls": se.applied_rls,
-        "masked_columns": se.masked_columns,
+        "applied_rls": result.applied_rls,
+        "masked_columns": result.masked_columns,
         "warnings": _safe_warnings(p.warnings, bind_warnings),
         **{k: rows_result[k] for k in
            ("columns", "rows", "row_count", "execution_ms", "truncated") if k in rows_result},
     }
-
-    if not se.allowed:
-        payload_out["error"] = _sanitize_execute_error(se)
-        payload_out["blocked_at"] = se.blocked_at
-        payload_out["needs_approval"] = se.needs_approval
-        if se.proposed_edit:
-            payload_out["proposed_edit"] = se.proposed_edit
-        return payload_out, True
     return payload_out, False
 
 

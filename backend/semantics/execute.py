@@ -46,7 +46,6 @@ from backend.semantics.models import (
     SemanticResult,
 )
 from backend.semantics.planner import plan
-
 logger = logging.getLogger(__name__)
 
 
@@ -160,7 +159,6 @@ def execute(
     """
     ctx = _policy_ctx(policy_ctx)
     q = _as_query(query, ctx)
-    t0 = time.monotonic()
 
     binding, bind_warnings = resolve_binding(q.object, datasource_id=q.datasource_id)
     if binding is None:
@@ -175,19 +173,44 @@ def execute(
             detail={"reason": safe_warnings(p.warnings)},
         )
 
-    se = execute_semantic(q, binding, p, _user_context(ctx), "")
+    return execute_plan(q, binding, p, ctx, "", bind_warnings=bind_warnings)
+
+
+def execute_plan(
+    q: SemanticQuery,
+    binding: ResolvedBinding,
+    p: PlannedExecution,
+    policy_ctx: PolicyLike = None,
+    question: str = "",
+    *,
+    bind_warnings: Optional[list[str]] = None,
+) -> SemanticResult:
+    """已解析绑定/计划的**执行段**（七闸门 + 执行 + 审计）→ SemanticResult。
+
+    供需要在 bind/plan 间插入自身逻辑（资源护栏/别名回流等 L2 职责）的调用方
+    （如 run_semantic_query）复用同一执行口；拒绝/失败抛 SemanticError
+    （detail 含 applied_rls/masked_columns/needs_approval 等服务内消费产物，
+    不入对外投影）。
+    """
+    ctx = _policy_ctx(policy_ctx)
+    t0 = time.monotonic()
+    se = execute_semantic(q, binding, p, _user_context(ctx), question)
     if not se.allowed:
         code = block_code(se.blocked_at)
         message = sanitize_execute_reason(se.reason, se.blocked_at)
-        detail: dict[str, Any] = {}
-        if se.needs_approval:
+        detail: dict[str, Any] = {
+            "applied_rls": list(se.applied_rls),
+            "masked_columns": list(se.masked_columns),
+            "needs_approval": bool(se.needs_approval),
+        }
+        if se.needs_approval and se.proposed_edit:
             detail["proposed_edit"] = se.proposed_edit
         raise SemanticError(
             code, message, blocked_at=se.blocked_at or "execute", detail=detail,
         )
 
     return _to_result(
-        q, binding, p, se, bind_warnings,
+        q, binding, p, se, list(bind_warnings or []),
         elapsed_ms=int((time.monotonic() - t0) * 1000),
     )
 
