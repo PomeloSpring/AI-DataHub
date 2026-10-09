@@ -13,7 +13,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from backend.common.auth import require_admin
+from backend.common.auth import get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ def list_rls_policies(
     table_name: str = Query(None),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
-    _admin: dict = Depends(require_admin),
+    _admin: dict = Depends(get_current_user),
 ):
     """List RLS policies."""
     from backend.core.rls_service import rls_service
@@ -75,7 +75,7 @@ def list_rls_policies(
 
 
 @router.get("/rls-policies/{policy_id}")
-def get_rls_policy(policy_id: int, _admin: dict = Depends(require_admin)):
+def get_rls_policy(policy_id: int, _admin: dict = Depends(get_current_user)):
     """Get a single RLS policy."""
     from backend.core.rls_service import rls_service
     policy = rls_service.get_policy(policy_id)
@@ -85,7 +85,7 @@ def get_rls_policy(policy_id: int, _admin: dict = Depends(require_admin)):
 
 
 @router.post("/rls-policies")
-def create_rls_policy(req: RLSPolicyCreate, admin: dict = Depends(require_admin)):
+def create_rls_policy(req: RLSPolicyCreate, admin: dict = Depends(get_current_user)):
     """Create a new RLS policy."""
     from backend.core.rls_service import rls_service
     try:
@@ -119,7 +119,7 @@ def create_rls_policy(req: RLSPolicyCreate, admin: dict = Depends(require_admin)
 
 
 @router.put("/rls-policies/{policy_id}")
-def update_rls_policy(policy_id: int, req: RLSPolicyUpdate, admin: dict = Depends(require_admin)):
+def update_rls_policy(policy_id: int, req: RLSPolicyUpdate, admin: dict = Depends(get_current_user)):
     """Update an RLS policy."""
     from backend.core.rls_service import rls_service
     try:
@@ -150,7 +150,7 @@ def update_rls_policy(policy_id: int, req: RLSPolicyUpdate, admin: dict = Depend
 
 
 @router.delete("/rls-policies/{policy_id}")
-def delete_rls_policy(policy_id: int, admin: dict = Depends(require_admin)):
+def delete_rls_policy(policy_id: int, admin: dict = Depends(get_current_user)):
     """Delete a RLS policy and its column policies."""
     from backend.core.rls_service import rls_service
     try:
@@ -177,14 +177,14 @@ def delete_rls_policy(policy_id: int, admin: dict = Depends(require_admin)):
 # ── Column Policy Endpoints ──────────────────────────────────────
 
 @router.get("/rls-policies/{policy_id}/columns")
-def get_column_policies(policy_id: int, _admin: dict = Depends(require_admin)):
+def get_column_policies(policy_id: int, _admin: dict = Depends(get_current_user)):
     """Get column policies for a given RLS policy."""
     from backend.core.rls_service import rls_service
     return rls_service.get_column_policies(policy_id)
 
 
 @router.put("/rls-policies/{policy_id}/columns")
-def set_column_policies(policy_id: int, body: ColumnPoliciesBody, admin: dict = Depends(require_admin)):
+def set_column_policies(policy_id: int, body: ColumnPoliciesBody, admin: dict = Depends(get_current_user)):
     """Replace all column policies for a given RLS policy."""
     from backend.core.rls_service import rls_service
     try:
@@ -215,7 +215,7 @@ def list_audit_logs(
     user_id: int = Query(None),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
-    _admin: dict = Depends(require_admin),
+    _admin: dict = Depends(get_current_user),
 ):
     """List RLS audit logs."""
     from backend.core.rls_service import rls_service
@@ -228,7 +228,7 @@ def list_audit_logs(
 def match_rls_policies(
     datasource_id: int,
     table_name: str = Query(...),
-    _admin: dict = Depends(require_admin),
+    _admin: dict = Depends(get_current_user),
 ):
     """Get matching RLS policies for a datasource table."""
     from backend.core.rls_service import rls_service
