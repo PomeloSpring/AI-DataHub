@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Download, FileText, FileSpreadsheet, FileImage, Code, FileType } from 'lucide-react';
+import { Download, FileText, FileSpreadsheet, FileImage, Code, FileType, Archive } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { toast } from 'sonner';
+import client from '@/api/client';
 import DataGrid from '@/components/DataGrid';
 import ExcelPreview from '@/components/ExcelPreview';
 import { parseCsv } from '@/lib/dataGrid';
@@ -123,6 +125,24 @@ export default function ArtifactCard({ type, filename, content, path, descriptio
 
   const canDownload = byRef || !!content;
 
+  // 归档：存入资产清单(资产跟随账号, 跨工作空间复用)。仅按引用的会话产物可归档
+  // (内嵌 content 无源文件路径); 归档后按钮置灰防重复提交。
+  const [archived, setArchived] = useState(false);
+  const onArchive = async () => {
+    if (!byRef || archived) return;
+    try {
+      await client.post('/user-assets/archive', {
+        name: filename,
+        conversation_id: conversationId,
+        path,
+      });
+      setArchived(true);
+      toast.success(`「${filename}」已存入资产清单`);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || '归档失败，请重试');
+    }
+  };
+
   return (
     <div className="my-3 rounded-lg border bg-card overflow-hidden">
       <div className="px-3 py-2 border-b bg-muted/50 flex items-center justify-between gap-2">
@@ -132,9 +152,17 @@ export default function ArtifactCard({ type, filename, content, path, descriptio
           <Badge variant="outline" className="text-[10px] shrink-0">{config.label}</Badge>
           {theme && <Badge variant="outline" className="text-[10px] shrink-0 font-normal text-muted-foreground">{theme}</Badge>}
         </div>
-        <Button variant="default" size="sm" className="h-7 text-xs" onClick={onDownload} disabled={!canDownload}>
-          <Download className="h-3 w-3 mr-1" />下载
-        </Button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <Button variant="default" size="sm" className="h-7 text-xs" onClick={onDownload} disabled={!canDownload}>
+            <Download className="h-3 w-3 mr-1" />下载
+          </Button>
+          {byRef && (
+            <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onArchive}
+                    disabled={archived} title="存入资产清单(跨工作空间跟随账号)">
+              <Archive className="h-3 w-3 mr-1" />{archived ? '已归档' : '归档'}
+            </Button>
+          )}
+        </div>
       </div>
 
       {description && (
