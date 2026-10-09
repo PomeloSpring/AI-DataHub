@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 from collections import OrderedDict
 from typing import Any, Optional
 
 from backend.semantics.execution import adapter
+
+logger = logging.getLogger(__name__)
 
 
 def policy_fingerprint(policy: Optional[dict[str, Any]], *, extra: str = "") -> str:
@@ -71,8 +74,19 @@ class SessionPool:
         ctx.register_view(name, ctx.sql(view_sql))
 
     def _rehydrate_views(self, fingerprint: str, ctx: Any) -> None:
+        """桶重建时复放视图登记。单个复放失败仅告警跳过（登记保留）——
+        datafusion 视图注册为**急切解析**（依赖底层表已注册），表未就绪时跳过是
+        fail-safe 的：强制视图缺失时查询会因缺表拒绝，不会未过滤放行；
+        表就绪后由调用方重新 apply/复放（幂等）。
+        """
         for name, view_sql in (self._views.get(fingerprint) or {}).items():
-            self._replace_view(ctx, name, view_sql)
+            try:
+                self._replace_view(ctx, name, view_sql)
+            except Exception as e:  # noqa: BLE001 — 保留登记，表就绪后复放
+                logger.warning(
+                    "[session] 视图复放暂跳过（底层表未就绪）fp=%s view=%s: %s",
+                    fingerprint, name, e,
+                )
 
     def drop(self, fingerprint: str) -> None:
         with self._lock:
