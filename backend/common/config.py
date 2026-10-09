@@ -18,7 +18,7 @@ Usage:
 import os
 from pathlib import Path
 
-# Load .env — try services/.env first, then backend/.env as fallback
+# Load .env —— 唯一来源 backend/.env（Phase 7：旧 services/.env 已并入）
 def _manual_load_env(path: Path) -> None:
     """无 python-dotenv 时的兜底解析:KEY=VALUE(忽略注释/空行,去包裹引号,不覆盖已有环境变量)."""
     try:
@@ -42,19 +42,13 @@ def _manual_load_env(path: Path) -> None:
 
 try:
     from dotenv import load_dotenv
-    _services_env = Path(__file__).resolve().parent.parent.parent / "services" / ".env"
     _backend_env = Path(__file__).resolve().parent.parent / ".env"
-    if _services_env.exists():
-        load_dotenv(_services_env, override=True)
-    elif _backend_env.exists():
+    if _backend_env.exists():
         load_dotenv(_backend_env, override=True)
 except ImportError:
     # python-dotenv 未安装:手动解析,避免静默回退到 localhost
-    _services_env = Path(__file__).resolve().parent.parent.parent / "services" / ".env"
     _backend_env = Path(__file__).resolve().parent.parent / ".env"
-    if _services_env.exists():
-        _manual_load_env(_services_env)
-    elif _backend_env.exists():
+    if _backend_env.exists():
         _manual_load_env(_backend_env)
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -157,24 +151,11 @@ DORIS_DATABASE = os.getenv("DORIS_DATABASE", "alliedstar")
 # DataEngine — Rust SQL 语义引擎 (MDL/RLS/方言转译)
 # ══════════════════════════════════════════════════════════════════════════
 
-ENGINE_SERVER_URL = os.getenv("ENGINE_SERVER_URL", "http://localhost:8082")
-ENGINE_TIMEOUT = int(os.getenv("ENGINE_TIMEOUT", "60"))
-ENGINE_ENABLED = os.getenv("ENGINE_ENABLED", "true").lower() == "true"
-# Phase 7.2 切流（已生效）：true = 执行载体走 semantics.execution（远程下推/跨源联邦，
-# datafusion-python）；false = dataengine (Rust) HTTP 适配器（留一个版本周期）。
-# dataengine 已退役（进程下线），回退开关仅供应急对拍。
-SEMANTIC_ENGINE_ENABLED = os.getenv("SEMANTIC_ENGINE_ENABLED", "true").lower() == "true"
-
 # ══════════════════════════════════════════════════════════════════════════
 # SemanticLayer — semhub (:8012) 声明式查询入口 (ChatBI/大屏同源)
 # ══════════════════════════════════════════════════════════════════════════
 
 SEMANTIC_SERVICE_URL = os.getenv("SEMANTIC_SERVICE_URL", "http://localhost:8012")
 SEMANTIC_TIMEOUT = int(os.getenv("SEMANTIC_TIMEOUT", "60"))
-
-# Backward compatibility aliases (deprecated)
-GATEWAY_URL = ENGINE_SERVER_URL
-GATEWAY_TIMEOUT = ENGINE_TIMEOUT
-GATEWAY_ENABLED = ENGINE_ENABLED
 
 

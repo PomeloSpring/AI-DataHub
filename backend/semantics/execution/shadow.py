@@ -5,9 +5,9 @@
 差异落结构化日志供 eval + 护城河回归归因；任何不一致**先修根因再切**
 （no-silent-degradation）。shadow 侧异常仅记日志，绝不影响主链路（fail-safe）。
 
-- 开关：`SEMANTIC_ENGINE_SHADOW=true` 开启双跑（默认关）；
+- 开关：`SEMANTIC_ENGINE_SHADOW=true` 开启双跑（默认关）；供引擎升级/连接器切换时对拍。
 - 行数对拍口径 `min(len, 5000)`（与 gates 执行截断边界对齐）、行值对拍前 100 行；
-- Phase 7.2 切流开关 `SEMANTIC_ENGINE_ENABLED` 落地后本通道转正、dataengine 退役。
+- Phase 7 已完成切流与 dataengine 退役；本机制保留为引擎升级/连接器切换的对拍设施。
 """
 
 from __future__ import annotations

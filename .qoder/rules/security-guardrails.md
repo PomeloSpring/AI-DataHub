@@ -78,7 +78,7 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
 - 触碰 `enforcer.py` / `query_executor.py` / `governed_query.py` / `playground.py` / `semantic_query.py` / `df_serialize.py` 后，**必须**跑：
   `tests/test_data_moat_enforcement.py`、`tests/test_permission_enforcer.py`、`tests/test_permission_e2e.py`，并为新分支补用例（尤其：带别名 JOIN 的 RLS、重名列、无可信身份拒绝、敏感 block 对 admin 生效）。
 - 触碰 `sdk_tools/query_tools.py`（`execute_sql` / `check_sql`）后，**必须**跑 `tests/test_execute_sql_governance.py`：它锁定 execute_sql 只经 `execute_query_with_permission`、权限拒绝在执行前即中止、以及源码级禁止 `get_connection`/裸 `execute_query` 旁路。新增取数工具不得绕过该门禁。
-- 服务以 uvicorn **无 `--reload`** 常驻（Phase 4 起 **web 单进程** `backend/processes/main.py` 单进程绑定 8001-8007/8012 全部契约端口）：接口/权限代码改动后重启 web 即全局生效（`./stop-all.sh web && ./start-all.sh -d`），另有 celery-worker/beat（dataengine 已退役）；数据源配置来自 `.env`（`services/.env` 优先、`backend/.env` 兜底，见 `backend/common/config.py`）。
+- 服务以 uvicorn **无 `--reload`** 常驻（Phase 4 起 **web 单进程** `backend/app/main.py` 单进程绑定 8001-8007/8012 全部契约端口）：接口/权限代码改动后重启 web 即全局生效（`./stop-all.sh web && ./start-all.sh -d`），另有 celery-worker/beat（dataengine 已退役）；数据源配置来自 `.env`（唯一来源 `backend/.env`，见 `backend/common/config.py`）。
 
 ## 12. 禁止的反模式（速查）
 - ❌ 为图方便直连数据源返回数据；❌ 从请求体读用户身份；❌ 让角色/RLS 弱化敏感基线；

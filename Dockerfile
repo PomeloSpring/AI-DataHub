@@ -21,6 +21,6 @@ RUN mkdir -p /root/.cache/huggingface
 
 EXPOSE 8000-8007 8012
 
-# 合并 web 入口：单进程绑定全部契约端口（vite/监控口径不变）；
+# web 入口：单进程绑定全部契约端口（vite/监控口径不变）；
 # 8000 为 frontend/nginx.conf 上游（backend:8000）的汇聚端口。
-CMD ["python", "-m", "backend.processes.serve", "--host", "0.0.0.0", "--ports", "8000,8001,8002,8003,8004,8005,8006,8007,8012"]
+CMD ["python", "-m", "backend.app.serve", "--host", "0.0.0.0", "--ports", "8000,8001,8002,8003,8004,8005,8006,8007,8012"]

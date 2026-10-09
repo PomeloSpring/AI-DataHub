@@ -134,7 +134,7 @@ def _cli_env() -> dict:
     Access Token, CLI 自动换取短期 job token)。注意 Node 版 CLI 对自定义
     `--sash/--dashboard` 目标(custom-<hash>)只读 `QMIND_DEBUG_TOKEN`, 故两者同置;
     并置 `QMIND_NON_INTERACTIVE=1` 禁止服务器环境下弹交互登录(fail-loud)。
-    服务器/容器无交互登录时,用 `services/.env` 注入的
+    服务器/容器无交互登录时,用 `backend/.env` 注入的
     `QODERCN_PERSONAL_ACCESS_TOKEN`/`QODER_PERSONAL_ACCESS_TOKEN` 兜底, 已有
     `QMIND_TOKEN` 时优先保留。
     """

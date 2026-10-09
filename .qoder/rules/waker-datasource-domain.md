@@ -25,5 +25,5 @@ description: 数据源可用性唯一由"用户角色授权"裁决（工作空�
 
 ## 4. 改动纪律与回归
 - 触碰 `resource_guard.py` / `sdk_tools/compat.py` / `scoped_metadata.py` / `catalog_tools.py` / `query_tools.py` 的数据源作用域或元数据返回逻辑后，必须跑 `tests/test_as_bot_security.py`（含 `test_sql_capable_as_bot_metadata_tools_bypass_projection`、`test_tool_selects_source_by_authorized_name`、`test_tool_rejects_unknown_datasource_name`、`test_catalog_strip_physical_ids_keeps_modeling_columns`）+ 护城河三件套，并为新分支补用例。
-- 这些是 web 单进程（`backend/processes/main.py`，绑 8001-8007/8012，无 `--reload`）常驻代码，改后重启 web 即生效；AS-BOT 的 `tools`/`system_prompt` 存 `adh_as_bots`，按 `as_bot_key` 幂等更新且注意 DB 常比迁移文件新（只应用目标那条 UPDATE，勿整体重跑）。
+- 这些是 web 单进程（`backend/app/main.py`，绑 8001-8007/8012，无 `--reload`）常驻代码，改后重启 web 即生效；AS-BOT 的 `tools`/`system_prompt` 存 `adh_as_bots`，按 `as_bot_key` 幂等更新且注意 DB 常比迁移文件新（只应用目标那条 UPDATE，勿整体重跑）。
 - 与 `security-guardrails.md` §7、`as-bot-system-waker.md` 域边界保持一致；冲突时以**更严**的脱敏/域约束为准。

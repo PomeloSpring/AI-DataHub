@@ -35,7 +35,7 @@ def _safe_err(msg: str) -> str:
 # 凭据类失败的可操作提示(提醒用户而非只丢原始 stderr; qodercn 口径)
 _CRED_HINT = ("qmind 凭据未通过 Qoder 平台认证：请在 qoder.cn 账号中心"
               "(qoder.cn/account/integrations)生成有效的 Personal Access Token(pt- 开头),"
-              "更新 services/.env 的 QODERCN_PERSONAL_ACCESS_TOKEN 后重启服务；"
+              "更新 backend/.env 的 QODERCN_PERSONAL_ACCESS_TOKEN 后重启服务；"
               "或配置 QMIND_TOKEN=jt- 开头的 job token 直连")
 
 

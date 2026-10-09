@@ -45,10 +45,6 @@ fi
 mapfile -t SERVICES < <(grep -vE '^\s*(#|$)' "$SERVICES_CONF")
 
 # DataEngine 服务（Rust 二进制）
-DATAENGINE_BIN="$PROJECT_ROOT/services/dataengine/target/release/datafusion-gateway"
-DATAENGINE_PORT=8082
-DATAENGINE_LOG="$LOG_DIR/dataengine.log"
-DATAENGINE_PID="$PID_DIR/dataengine.pid"
 
 # Celery 定时任务进程（无端口，经 Redis broker 通信；beat 有 Redis 租约防多实例）
 CELERY_APP="backend.modules.flow.tasks.celery_app"
@@ -111,10 +107,10 @@ start_service() {
 }
 
 # ═══════════════════════════════════════════════════════════════
-# 函数: 启动 web（合并入口，单进程绑定全部契约端口 —— Phase 4 进程终态）
+# 函数: 启动 web（web 入口，单进程绑定全部契约端口 —— Phase 4 进程终态）
 # ═══════════════════════════════════════════════════════════════
-# 全部模块 router 拼进一个 FastAPI app（backend/processes/main.py），
-# 经 backend.processes.serve 一个进程绑定 services.conf 全部端口。
+# 全部模块 router 拼进一个 FastAPI app（backend/app/main.py），
+# 经 backend.app.serve 一个进程绑定 services.conf 全部端口。
 all_service_ports() {
     printf '%s\n' "${SERVICES[@]}" | cut -d: -f3
 }
@@ -144,9 +140,9 @@ start_web() {
         fi
     done < <(all_service_ports)
 
-    log_info "启动 web 合并入口 (端口:${ports})..."
+    log_info "启动 web (端口:${ports})..."
     cd "$PROJECT_ROOT"
-    PYTHONPATH="$PYTHONPATH" nohup "$PYTHON" -m backend.processes.serve \
+    PYTHONPATH="$PYTHONPATH" nohup "$PYTHON" -m backend.app.serve \
         --host 0.0.0.0 --log-level info \
         >> "$log_file" 2>&1 < /dev/null &
 
@@ -274,92 +270,9 @@ stop_service() {
 # ═══════════════════════════════════════════════════════════════
 # 函数: 启动 DataEngine（Rust 二进制）
 # ═══════════════════════════════════════════════════════════════
-start_dataengine() {
-    local pid_file="$DATAENGINE_PID"
-    local log_file="$DATAENGINE_LOG"
-
-    # 检查二进制文件
-    if [ ! -f "$DATAENGINE_BIN" ]; then
-        log_error "DataEngine 二进制不存在: $DATAENGINE_BIN"
-        log_info "请先编译: cd services/dataengine && cargo build --release"
-        return 1
-    fi
-
-    # 检查是否已运行
-    if [ -f "$pid_file" ]; then
-        local old_pid=$(cat "$pid_file")
-        if kill -0 "$old_pid" 2>/dev/null; then
-            log_warn "dataengine 已在运行 (PID: $old_pid, 端口: $DATAENGINE_PORT)"
-            return 0
-        else
-            rm -f "$pid_file"
-        fi
-    fi
-
-    # 检查端口是否被占用
-    if lsof -i :"$DATAENGINE_PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
-        local occupied_pid=$(lsof -i :"$DATAENGINE_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
-        log_error "dataengine 端口 $DATAENGINE_PORT 已被进程 $occupied_pid 占用"
-        return 1
-    fi
-
-    log_info "启动 dataengine (端口: $DATAENGINE_PORT)..."
-
-    # 启动 DataEngine
-    cd "$PROJECT_ROOT/services/dataengine"
-    nohup env GATEWAY_PORT="$DATAENGINE_PORT" "$DATAENGINE_BIN" \
-        >> "$log_file" 2>&1 < /dev/null &
-
-    local pid=$!
-    echo "$pid" > "$pid_file"
-
-    # 等待启动
-    sleep 2
-    if kill -0 "$pid" 2>/dev/null; then
-        log_info "dataengine 启动成功 (PID: $pid, 端口: $DATAENGINE_PORT)"
-    else
-        log_error "dataengine 启动失败，查看日志: $log_file"
-        rm -f "$pid_file"
-        return 1
-    fi
-}
-
 # ═══════════════════════════════════════════════════════════════
 # 函数: 停止 DataEngine
 # ═══════════════════════════════════════════════════════════════
-stop_dataengine() {
-    local name="dataengine"
-    local pid_file="$DATAENGINE_PID"
-
-    if [ -f "$pid_file" ]; then
-        local pid=$(cat "$pid_file")
-        if kill -0 "$pid" 2>/dev/null; then
-            echo -e "  停止 ${name} (PID: $pid)..."
-            kill "$pid" 2>/dev/null
-            sleep 2
-            if kill -0 "$pid" 2>/dev/null; then
-                kill -9 "$pid" 2>/dev/null
-            fi
-            rm -f "$pid_file"
-            echo -e "  ${GREEN}${name} 已停止${NC}"
-            return 0
-        fi
-        rm -f "$pid_file"
-    fi
-
-    # PID 文件不存在时，通过端口查找进程
-    local de_pid=$(lsof -i :"$DATAENGINE_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
-    if [ -n "$de_pid" ]; then
-        echo -e "  停止 ${name} (PID: $de_pid, 通过端口发现)..."
-        kill "$de_pid" 2>/dev/null
-        sleep 2
-        if kill -0 "$de_pid" 2>/dev/null; then
-            kill -9 "$de_pid" 2>/dev/null
-        fi
-        echo -e "  ${GREEN}${name} 已停止${NC}"
-    fi
-}
-
 # ═══════════════════════════════════════════════════════════════
 # 函数: 启动前端
 # ═══════════════════════════════════════════════════════════════
@@ -534,37 +447,6 @@ start_service_fg() {
 }
 
 # 前台模式启动 DataEngine
-start_dataengine_fg() {
-    local color="$1"
-
-    if [ ! -f "$DATAENGINE_BIN" ]; then
-        log_error "DataEngine 二进制不存在: $DATAENGINE_BIN"
-        return 1
-    fi
-
-    if lsof -i :"$DATAENGINE_PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
-        log_error "dataengine 端口 $DATAENGINE_PORT 已被占用"
-        return 1
-    fi
-
-    log_info "启动 dataengine (端口: $DATAENGINE_PORT)"
-
-    (
-        cd "$PROJECT_ROOT/services/dataengine"
-        exec env GATEWAY_PORT="$DATAENGINE_PORT" "$DATAENGINE_BIN" 2>&1
-    ) | tee -a "$DATAENGINE_LOG" | awk -v svc="dataengine" -v c="$color" -v n="\033[0m" \
-        '{printf "%s[%-12s]%s %s\n", c, svc, n, $0; fflush()}' &
-
-    local pid=$!
-    FG_PIDS+=("$pid")
-
-    sleep 1
-    if ! kill -0 "$pid" 2>/dev/null; then
-        log_error "dataengine 启动失败"
-        return 1
-    fi
-}
-
 # 前台模式启动前端
 start_frontend_fg() {
     local color="$1"
@@ -617,7 +499,7 @@ start_celery_fg() {
     FG_PIDS+=("$!")
 }
 
-# 前台模式启动 web 合并入口（单进程多端口）
+# 前台模式启动 web 入口（单进程多端口）
 start_web_fg() {
     local color="$1"
 
@@ -630,11 +512,11 @@ start_web_fg() {
         fi
     done < <(all_service_ports)
 
-    log_info "启动 web 合并入口 (端口:${ports})"
+    log_info "启动 web (端口:${ports})"
 
     (
         cd "$PROJECT_ROOT"
-        PYTHONPATH="$PYTHONPATH" exec "$PYTHON" -m backend.processes.serve \
+        PYTHONPATH="$PYTHONPATH" exec "$PYTHON" -m backend.app.serve \
             --host 0.0.0.0 --log-level info 2>&1
     ) | tee -a "$LOG_DIR/web.log" | awk -v svc="web" -v c="$color" -v n="\033[0m" \
         '{printf "%s[%-12s]%s %s\n", c, svc, n, $0; fflush()}' &
@@ -664,10 +546,9 @@ run_foreground() {
     local success=0
     local fail=0
 
-    # dataengine 已退役（Phase 7.3）：执行载体由 semantics.execution 内嵌；
-    # 应急回退（SEMANTIC_ENGINE_ENABLED=false）时手动运行 start_dataengine_fg
+    # dataengine 已退役：执行载体由 semantics.execution 内嵌
 
-    # 启动 web 合并入口（单进程多端口）
+    # 启动 web 入口（单进程多端口）
     start_web_fg "${FG_COLORS[$ci]}"
     ((ci++))
     if [ $? -eq 0 ]; then ((success++)); else ((fail++)); fi
@@ -708,9 +589,9 @@ show_status() {
     printf "  %-20s %-8s %-8s %-10s\n" "服务名" "端口" "PID" "状态"
     echo "  ─────────────────────────────────────────────────────"
 
-    # dataengine 已退役（Phase 7.3），状态行不再展示；应急手动启动见 start_dataengine
+    # dataengine 已退役，状态行不再展示
 
-    # web 合并入口（单进程承载全部契约端口）
+    # web 入口（单进程承载全部契约端口）
     local web_pid_file="$PID_DIR/web.pid"
     local web_status="未运行"
     local web_pid="-"
@@ -791,10 +672,9 @@ case "${1:-all}" in
         success=0
         fail=0
 
-        # dataengine 已退役（Phase 7.3）：执行载体由 semantics.execution 内嵌；
-        # 应急回退（SEMANTIC_ENGINE_ENABLED=false）时手动运行 start_dataengine
+        # dataengine 已退役：执行载体由 semantics.execution 内嵌
 
-        # 启动 web 合并入口（单进程多端口，替代原 8 个微服务进程）
+        # 启动 web 入口（单进程多端口，替代原 8 个微服务进程）
         if start_web; then
             ((success++))
         else

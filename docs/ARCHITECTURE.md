@@ -17,7 +17,7 @@ flowchart TB
         SDK["Embed SDK（AK 嵌入看板/大屏）"]
     end
     GW["Nginx :80（生产）/ Vite Proxy（开发）— 按 /api/* 前缀路由到 web 单进程（契约端口）"]
-    subgraph SVC["web 单进程 backend/processes/main.py（uvicorn 无 --reload）— 模块化单体，单进程绑定 8001-8007/8012 全部契约端口"]
+    subgraph SVC["web 单进程 backend/app/main.py（uvicorn 无 --reload）— 模块化单体，单进程绑定 8001-8007/8012 全部契约端口"]
         AUTH["auth :8006<br/>JWT·用户·角色·权限码·RLS·审计"]
         DM["mind :8001<br/>Chat/Agent 编排·Playground·AS-BOT·知识库·执行层适配"]
         DC["catalog :8005<br/>数据源·元数据·本体建模·术语·标签·指标字典·数据集API"]
@@ -81,13 +81,13 @@ flowchart LR
         M["modules/: catalog·gov·viz·flow<br/>auth·mind·platform·semhub"]
     end
     subgraph L3["进程壳（L3）"]
-        P["processes/: main.py（web 合并入口）<br/>serve.py（多 socket 启动器）·celery 入口·mcp_server"]
+        P["processes/: main.py（web 入口）<br/>serve.py（多 socket 启动器）·celery 入口·mcp_server"]
     end
     L0 --> L1 --> L2 --> L3
 ```
 
 - 依赖规则：`common ← core/semantics ← modules ← processes` 箭头单向；**L2 之间横向 import 禁止**，由 `tests/test_layering_contract.py` AST 门禁强制（白名单登记：eval/adapters、core/task_runtime 回调表、mind→其他 modules 编排调用）。
-- 部署拓扑（`start-all.sh` 11→4→3 进程）：**web**（合并入口，单进程绑 8001-8007/8012）+ **celery-worker** + **celery-beat**；dataengine 已退役（Phase 7，执行载体由 `semantics.execution` 内嵌，Rust 工程保留为可选适配器一个版本周期）；开发可选 `python -m backend.processes.serve --reload` 单进程热重载（同为多端口，vite 代理零改动）。
+- 部署拓扑（`start-all.sh` 11→4→3 进程）：**web**（web 入口 `backend/app/main.py`，单进程绑 8001-8007/8012）+ **celery-worker** + **celery-beat**；dataengine 已退役删除（执行载体由 `semantics.execution` 内嵌）；开发可选 `python -m backend.app.serve --reload` 单进程热重载（同为多端口，vite 代理零改动）。
 
 ---
 
@@ -167,9 +167,9 @@ flowchart LR
 | 层 | 选型 | 备注 |
 |---|---|---|
 | 前端 | React 18 + TypeScript + Vite + Tailwind + shadcn/Radix + Zustand + G2/ECharts + ReactFlow + react-markdown | vitest 单测；vite 改 config 自动重启 |
-| 后端 | Python 3.10 + FastAPI **web 单进程**（`backend/processes/main.py`，模块化单体分层） | uvicorn **无 --reload**，改代码/路由重启 web（`./stop-all.sh web && ./start-all.sh -d`）；进程拓扑 = web + celery-worker + celery-beat |
-| 数据访问 | DBUtils 连接池 + PyMySQL；`backend/common/db`（元数据）/ `datasource_db`（业务源） | 数据源配置来自 `.env`（`services/.env` 优先、`backend/.env` 兜底） |
-| 查询引擎 | `semantics.execution`（datafusion-python 54.1.0 锁版本）：远程下推（MySQL 协议/Postgres ADBC）拉回 Arrow + DataFusion 本地联邦；护栏 §5 执行前强制 | dataengine (Rust) 已退役，engine_client 降为可选适配器（`SEMANTIC_ENGINE_ENABLED=false` 应急回退） |
+| 后端 | Python 3.10 + FastAPI **web 单进程**（`backend/app/main.py`，模块化单体分层） | uvicorn **无 --reload**，改代码/路由重启 web（`./stop-all.sh web && ./start-all.sh -d`）；进程拓扑 = web + celery-worker + celery-beat |
+| 数据访问 | DBUtils 连接池 + PyMySQL；`backend/common/db`（元数据）/ `datasource_db`（业务源） | 数据源配置来自 `.env`（唯一来源 `backend/.env`） |
+| 查询引擎 | `semantics.execution`（datafusion-python 54.1.0 锁版本）：远程下推（MySQL 协议/Postgres ADBC）拉回 Arrow + DataFusion 本地联邦；护栏 §5 执行前强制 | dataengine (Rust) 与其 engine_client 已删除 |
 | 存储 | MySQL（OLTP 元数据，全部 `adh_*` 表）；Oxigraph（RDF 命名图，Docker 命名卷）；Doris（可选 OLAP / 可观测大表） | embedding 与 Doris 向量检索已全量移除，统一 GraphRAG + 关键词/BM25 |
 | LLM | Qoder 平台（qoder-agent-sdk）；`QoderSDKClient` 按会话长对话池，失败回落单发 `query()+resume` | 认证 `QODER_PERSONAL_ACCESS_TOKEN` |
 | 知识库 | Qoder qMind 云端 Notebook（qmind CLI 子进程，`QMIND_TOKEN` 自动换取 job token） | 真实 notebook 由 CLI 创建后产品页导入，禁止 SQL 种子假条目 |

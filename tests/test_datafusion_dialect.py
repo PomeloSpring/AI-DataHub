@@ -4,7 +4,7 @@
 - date_sub/date_add → interval 算术;IFNULL→COALESCE;CURDATE→CURRENT_DATE
 - DATE_FORMAT 严禁转 TO_CHAR(引擎对 timestamp 原样返回格式串=静默错值)
 - DATEDIFF/TIMESTAMPDIFF → epoch 差(date-date 在引擎返回 Duration,不可用)
-- 未覆盖语法必须抛错,由 engine_client 保留原 SQL(引擎报错→直连回退),绝不静默出错值
+- 未覆盖语法必须抛错,由 to_pushdown_sql 保留原 SQL(引擎报错可诊断),绝不静默出错值
 """
 
 import os
@@ -62,10 +62,10 @@ def test_group_concat_and_plain_passthrough():
     assert to_datafusion(plain).startswith("SELECT a, b FROM t")
 
 
-def test_engine_client_fallback_keeps_original_sql():
-    """转译失败时 _transpile_for_engine 必须原样返回,不吞查询。"""
-    from backend.common.engine_client import _transpile_for_engine
+def test_to_pushdown_sql_fallback_keeps_original_sql():
+    """转译失败时 to_pushdown_sql 必须原样返回,不吞查询。"""
+    from backend.semantics.execution.connectors.base import to_pushdown_sql
     weird = "SELECT DATE_FORMAT(dt, '%x%v') FROM t"
-    assert _transpile_for_engine(weird) == weird
+    assert to_pushdown_sql(weird, "datafusion") == weird
     ok = "SELECT DATE_SUB(NOW(), INTERVAL 7 DAY) FROM t"
-    assert "INTERVAL" in _transpile_for_engine(ok)
+    assert "INTERVAL" in to_pushdown_sql(ok, "datafusion")

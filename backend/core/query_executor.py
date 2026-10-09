@@ -120,7 +120,7 @@ def get_connection(datasource_id: int = None):
 
     按 db_type 分发: mysql/doris → pymysql, postgres/sls → psycopg2(共享工厂
     datasource_db.get_datasource_conn)。仅供元数据/结构探查等内部非取数路径;
-    取数链路严禁用作 DataEngine 失败的兜底(护栏 §12, 禁止降级直连)。
+    取数链路严禁用作执行失败的兜底(护栏 §12, 禁止降级直连)。
     """
     from backend.common.db.datasource_db import get_datasource_conn
     params = _get_ds_conn_params(datasource_id)
@@ -244,7 +244,7 @@ def execute_query(
     """Execute a validated query against the specified datasource.
 
     Execution:
-    1. DataEngine (Rust DataFusion) — 唯一执行通道(禁止降级 pymysql 直连):
+    1. semantics.execution — 唯一执行载体(远程下推/跨源联邦，禁止降级 pymysql 直连):
        未启用/不可用/执行失败一律 raise 显式暴露(no-silent-degradation)
        - Applies RLS policies (row filtering, column hiding, column masking)
 
@@ -265,8 +265,6 @@ def execute_query(
         ValueError: If SQL validation fails.
         RuntimeError: If query execution fails.
     """
-    params = _get_ds_conn_params(datasource_id)
-
     # Clean SQL: strip leading prose, markdown fences, etc.
     sql = _extract_sql_from_text(sql)
 
@@ -280,94 +278,10 @@ def execute_query(
     if not valid:
         raise ValueError(f"SQL validation failed: {reason}")
 
-    # Phase 7.2 切流：SEMANTIC_ENGINE_ENABLED → semantics.execution 载体
-    # （单源远程下推 / 跨源联邦），不再回落 dataengine
-    from backend.common.config import SEMANTIC_ENGINE_ENABLED
-    if SEMANTIC_ENGINE_ENABLED:
-        return _execute_via_semantic_execution(
-            sql, datasource_id, user_id=user_id, workspace_id=workspace_id,
-            user_role=user_role, federated=federated)
-
-    # DataEngine 是唯一执行通道（禁止降级 pymysql 直连）
-    from backend.common.engine_client import engine_client, ENGINE_ENABLED
-    if not ENGINE_ENABLED:
-        raise RuntimeError("DataEngine 未启用，拒绝执行（禁止降级直连）")
-    if not engine_client.health():
-        raise RuntimeError("DataEngine 不可用，拒绝执行（禁止降级直连）")
-    try:
-        # Get or create datasource in DataEngine
-        ds_name = f"adh-{datasource_id}" if datasource_id else "adh-default"
-        engine_ds_id = engine_client.get_or_create_datasource(
-            name=ds_name,
-            db_type=params.get("db_type", "doris"),
-            host=str(params.get("host", "")),
-            port=int(params.get("port", 3306)),
-            username=str(params.get("user", "")),
-            password=str(params.get("password", "")),
-            database=str(params.get("database", "")),
-            ssl_mode=params.get("ssl_mode"),
-        )
-
-        # Load RLS policies for DataEngine
-        # 策略加载失败 = fail-closed 拒绝（rls_loader 内部已 raise），
-        # 不得降级为无 RLS 执行、也不得回落直连绕过拒绝决定
-        rls_policies = []
-        if user_id and workspace_id and datasource_id:
-            from backend.common.rls_loader import load_rls_policies_for_query
-            # Extract table names from SQL for policy lookup
-            tables = _extract_table_names(sql)
-            rls_policies = load_rls_policies_for_query(
-                user_id=user_id,
-                workspace_id=workspace_id,
-                datasource_id=datasource_id,
-                tables=tables,
-                user_role=user_role or "user",
-            )
-            if rls_policies:
-                logger.info("Loaded %d RLS policies for tables: %s", len(rls_policies), tables)
-
-        start = time.time()
-        try:
-            result = engine_client.query(
-                sql=sql, datasource_id=engine_ds_id, rls_policies=rls_policies,
-                federated=federated,
-            )
-        except Exception as exc:  # noqa: BLE001 — 仅瞬时故障重试，其余原样抛
-            # 只读查询幂等：上游瞬时抖动（连接/发现挂死）在超时取消后立即重试一次可自愈
-            # （实测取消后重试 <1s 成功）；语法/权限类错误不重试。
-            if not _is_transient_engine_error(exc):
-                raise
-            logger.warning("DataEngine 瞬时故障，重试一次: %s", exc)
-            result = engine_client.query(
-                sql=sql, datasource_id=engine_ds_id, rls_policies=rls_policies,
-                federated=federated,
-            )
-        elapsed_ms = int((time.time() - start) * 1000)
-
-        df = result.to_dataframe()
-        logger.info(
-            "DataEngine query: %d rows, %d ms, ds=%s",
-            len(df), elapsed_ms, datasource_id,
-        )
-        return df, elapsed_ms, len(df)
-    except PermissionError:
-        # 安全拒绝决定不得被任何回退路径吞掉（fail-loud）
-        raise
-    except Exception as e:
-        if federated:
-            # 跨源联邦查询只有 DataFusion 能执行
-            raise RuntimeError(f"跨源联邦查询执行失败: {e}") from e
-        # 不允许降级直连（用户指令 + no-silent-degradation）：DataEngine 失败必须显式暴露
-        raise RuntimeError(f"DataEngine 查询失败: {e}") from e
-
-
-def _is_transient_engine_error(exc: Exception) -> bool:
-    """引擎瞬时故障（上游超时/网关 5xx/连接不可用）可安全重试；语法/校验类不重试。"""
-    status = getattr(exc, "status_code", None)
-    if status in (502, 503, 504):
-        return True
-    msg = str(exc)
-    return "timed out" in msg or "Cannot connect to engine" in msg
+    # 执行载体：semantics.execution（远程下推 / 跨源联邦）
+    return _execute_via_semantic_execution(
+        sql, datasource_id, user_id=user_id, workspace_id=workspace_id,
+        user_role=user_role, federated=federated)
 
 
 def _extract_table_names(sql: str) -> list[str]:
@@ -604,33 +518,20 @@ def explain_query_with_permission(
                 },
             })
 
-    params = _get_ds_conn_params(datasource_id)
-    from backend.common.engine_client import engine_client, ENGINE_ENABLED
-    if not ENGINE_ENABLED or not engine_client.health():
-        raise RuntimeError("DataEngine 不可用，拒绝执行（禁止降级直连）")
-    # 与 execute_query 同口径：引擎侧注册数据源 + RLS 计划反映治理后形态
-    ds_name = f"adh-{datasource_id}" if datasource_id else "adh-default"
-    engine_ds_id = engine_client.get_or_create_datasource(
-        name=ds_name,
-        db_type=params.get("db_type", "doris"),
-        host=str(params.get("host", "")),
-        port=int(params.get("port", 3306)),
-        username=str(params.get("user", "")),
-        password=str(params.get("password", "")),
-        database=str(params.get("database", "")),
-        ssl_mode=params.get("ssl_mode"),
-    )
-    rls_policies = []
-    if user_id and workspace_id and datasource_id:
-        from backend.common.rls_loader import load_rls_policies_for_query
-        rls_policies = load_rls_policies_for_query(
-            user_id=user_id, workspace_id=workspace_id,
-            datasource_id=datasource_id,
-            tables=_extract_table_names(sql),
-            user_role=(user_context or {}).get("user_role") or "user")
-    return engine_client.explain(
-        modified_sql, engine_ds_id, rls_policies=rls_policies or None,
-        federated=federated)
+    import json as _json
+
+    from backend.common.db.datasource_db import get_datasource_by_id
+    from backend.semantics.execution.connectors import get_connector
+
+    row = get_datasource_by_id(int(datasource_id or 0)) or {}
+    db_type = (row.get("db_type") or "mysql").lower()
+    notes = []
+    if federated:
+        notes.append("(跨源联邦查询，仅展示主源执行计划)")
+    # 远程 EXPLAIN：计划文本行，不返回任何数据行（护栏 §5 限流对 EXPLAIN 不适用）
+    table = get_connector(db_type, datasource_id=int(datasource_id or 0)).execute_pushdown(
+        f"EXPLAIN {modified_sql}", max_rows=200)
+    return notes + [_json.dumps(r, ensure_ascii=False, default=str) for r in table.to_pylist()]
 
 
 def _log_permission_audit(
@@ -752,155 +653,3 @@ def log_audit(
         # Audit logging should never crash the main flow
         logger.warning("Failed to write audit log: %s", e)
 
-
-# ══════════════════════════════════════════════════════════════════════
-# Engine Server Integration — SQL execution via engine-server-rust
-# ══════════════════════════════════════════════════════════════════════
-
-def execute_query_via_engine(
-    sql: str,
-    datasource_id: int = None,
-    user_context: dict = None,
-    table_names: list[str] = None,
-    workspace_id: int = 0,
-) -> tuple[pd.DataFrame, int, int]:
-    """Execute SQL through DataEngine (Rust DataFusion Gateway).
-
-    This is an alternative to execute_query() that routes SQL through
-    the Rust DataFusion engine for:
-    - SQL execution against MySQL/Doris
-    - Query result caching
-    - Datasource management
-
-    Args:
-        sql: The SQL query string.
-        datasource_id: Datasource ID.
-        user_context: User context dict for RLS (user_id, username, role, workspace_id).
-        table_names: Optional list of table names to include in manifest.
-        workspace_id: Workspace ID for RLS policy filtering.
-
-    Returns:
-        (DataFrame, execution_time_ms, row_count)
-
-    Raises:
-        RuntimeError: If engine execution fails.
-    """
-    from backend.common.engine_client import engine_client, EngineError, ENGINE_ENABLED
-
-    # Check if engine is enabled — 禁止降级: DataEngine 是唯一执行通道
-    if not ENGINE_ENABLED:
-        raise RuntimeError("DataEngine 未启用，拒绝执行（禁止降级直连）")
-
-    # Check engine health — 不健康即显式拒绝，不回落直连
-    if not engine_client.health():
-        raise RuntimeError("DataEngine 不可用，拒绝执行（禁止降级直连）")
-
-    # Get connection info
-    params = _get_ds_conn_params(datasource_id)
-    db_type = params.get("db_type", "doris")
-
-    # Clean SQL
-    sql = _extract_sql_from_text(sql)
-    from backend.core.sql_validator import add_limit
-    sql = add_limit(sql)
-
-    # Validate SQL
-    valid, reason = validate_sql(sql)
-    if not valid:
-        raise ValueError(f"SQL validation failed: {reason}")
-
-    # Get or create datasource in DataEngine
-    try:
-        ds_name = f"adh-{datasource_id}" if datasource_id else "adh-default"
-        engine_ds_id = engine_client.get_or_create_datasource(
-            name=ds_name,
-            db_type=db_type,
-            host=str(params.get("host", "")),
-            port=int(params.get("port", 3306)),
-            username=str(params.get("user", "")),
-            password=str(params.get("password", "")),
-            database=str(params.get("database", "")),
-            ssl_mode=params.get("ssl_mode"),
-        )
-    except Exception as e:
-        logger.warning("Failed to get/create engine datasource: %s", e)
-        return execute_query(sql, datasource_id)
-
-    # Load RLS policies for DataEngine
-    rls_policies = []
-    if user_context and datasource_id:
-        try:
-            from backend.common.rls_loader import load_rls_policies_for_query
-            from backend.core.query_executor import _extract_table_names
-            tables = _extract_table_names(sql)
-            rls_policies = load_rls_policies_for_query(
-                user_id=user_context.get("user_id", 0),
-                workspace_id=workspace_id or user_context.get("workspace_id", 0),
-                datasource_id=datasource_id,
-                tables=tables,
-                user_role=user_context.get("role", "user"),
-            )
-            if rls_policies:
-                logger.info("Loaded %d RLS policies for tables: %s", len(rls_policies), tables)
-        except Exception as e:
-            logger.warning("Failed to load RLS policies: %s", e)
-
-    start = time.time()
-    try:
-        result = engine_client.query(
-            sql=sql,
-            datasource_id=engine_ds_id,
-            rls_policies=rls_policies,
-        )
-
-        elapsed_ms = int((time.time() - start) * 1000)
-
-        # Convert to DataFrame
-        df = result.to_dataframe()
-        row_count = len(df)
-
-        logger.info(
-            "Engine query completed: %d rows, %d ms, columns=%s",
-            row_count, elapsed_ms, result.columns,
-        )
-
-        return df, elapsed_ms, row_count
-
-    except EngineError as e:
-        elapsed_ms = int((time.time() - start) * 1000)
-        logger.error("Engine query failed (%d ms): %s", elapsed_ms, e)
-
-        # Fallback to direct execution on engine error
-        logger.info("Falling back to direct execution")
-        return execute_query(sql, datasource_id)
-
-    except Exception as e:
-        elapsed_ms = int((time.time() - start) * 1000)
-        logger.error("Engine query error (%d ms): %s", elapsed_ms, e)
-        raise RuntimeError(f"Engine query failed: {e}") from e
-
-
-def dry_plan_sql(
-    sql: str,
-    datasource_id: int = None,
-    user_context: dict = None,
-    table_names: list[str] = None,
-    workspace_id: int = 0,
-) -> str:
-    """Rewrite SQL through DataEngine without executing.
-
-    Note: Current DataEngine implementation executes SQL directly.
-    This function is kept for API compatibility but returns the original SQL.
-
-    Args:
-        sql: The SQL query string.
-        datasource_id: Datasource ID.
-        user_context: User context dict for RLS.
-        table_names: Optional table names for manifest.
-        workspace_id: Workspace ID for RLS.
-
-    Returns:
-        Original SQL string (DataEngine executes directly).
-    """
-    # DataEngine executes SQL directly, no dry-plan mode available
-    return sql

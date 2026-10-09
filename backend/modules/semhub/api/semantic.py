@@ -5,7 +5,7 @@
 - POST /api/semantic/query   : SemanticQuery -> SemanticResult
   * Phase 1: 编译并返回 baseSql/securedSql + provenance, rows 为空 (executor stub)
   * Phase 4: 由 planner 选路 + DataFusion RLS 路径执行, 同 contract 不变
-- GET  /api/semantic/health  : 语义层依赖健康检查 (metadata_db / engine_client / oxigraph)
+- GET  /api/semantic/health  : 语义层依赖健康检查 (metadata_db / engine / oxigraph)
 
 设计原则:
 - 只接受**声明式意图**, 拒绝任何 SQL 字段(intent.py 已过滤)
@@ -154,17 +154,12 @@ async def health() -> dict[str, Any]:
         out["metadata_db"] = "ok"
     except Exception as e:
         out["metadata_db"] = f"error: {e}"; out["ok"] = False
-    # engine（Phase 7.2 切流后为 semantics.execution；dataengine 适配器保留一个版本周期）
+    # engine（semantics.execution）
     try:
-        from backend.common.config import SEMANTIC_ENGINE_ENABLED
-        if SEMANTIC_ENGINE_ENABLED:
-            from backend.semantics.execution import check_version
+        from backend.semantics.execution import check_version
 
-            check_version()
-            out["engine"] = "ok"
-        else:
-            from backend.common.engine_client import EngineClient
-            out["engine"] = "ok" if EngineClient().health() else "unreachable"
+        check_version()
+        out["engine"] = "ok"
     except Exception as e:
         out["engine"] = f"error: {e}"
     # oxigraph
@@ -176,58 +171,3 @@ async def health() -> dict[str, Any]:
     return out
 
 
-# ── executor adapter (Phase 4 will replace this stub) ─────────
-
-def _execute_via_engine(p, q: SemanticQuery) -> SemanticResult | None:
-    """尝试走 DataEngine(Rust DataFusion); 不可达时返回 None, 上层回退 preview。
-
-    Phase 1 stub: 目前只识别"能连通 + datasource_id 已在 engine 注册为 UUID"的情况;
-    未注册的 datasource_id 会返回 None, 让 /query 保持 compile-only 语义。
-    Phase 4 会补齐 UUID 映射 / RLS sidecar / 方言。
-    """
-    try:
-        from backend.common.engine_client import EngineClient, EngineError
-    except Exception:
-        return None
-    ec = EngineClient()
-    if not ec.health():
-        return None
-    ds_uuid = _resolve_engine_datasource_uuid(q.datasource_id)
-    if not ds_uuid:
-        return None
-    try:
-        res = ec.query(sql=p.secured_sql or p.sql, datasource_id=ds_uuid)
-    except EngineError as e:
-        logger.warning("[semantic/query] engine execution failed: %s", e)
-        return None
-    cols = [{"name": c, "role": "plain", "data_type": ""} for c in res.columns]
-    return SemanticResult(
-        columns=cols, rows=res.data, row_count=res.row_count,
-        applied_rls=res.rls_applied,
-        resolved_tables=list(p.resolved_tables),
-        provenance=p.provenance,
-        warnings=list(p.warnings),
-        elapsed_ms=res.execution_time_ms,
-        debug={
-            "baseSql": p.sql, "securedSql": p.secured_sql,
-            "route": p.route, "engine_datasource": ds_uuid,
-        },
-    )
-
-
-def _resolve_engine_datasource_uuid(datasource_id: int) -> str | None:
-    """把平台 datasource_id -> DataEngine 的 UUID。
-
-    DataFusion 侧目前用 name 注册;这里先按 id 直查缓存, 拿不到就返回 None。
-    Phase 4 会补 register_datasource 流程, 让 semhub 自维护映射。
-    """
-    try:
-        from backend.common.engine_client import EngineClient
-        ec = EngineClient()
-        cache = getattr(ec, "_datasource_cache", {}) or {}
-        for name, uuid in cache.items():
-            if str(datasource_id) in str(name):
-                return uuid
-    except Exception:
-        return None
-    return None

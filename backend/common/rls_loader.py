@@ -9,7 +9,7 @@ Usage:
     policies = load_rls_policies_for_query(
         user_id=123, workspace_id=1, datasource_id=456, tables=["orders", "users"]
     )
-    result = engine_client.query(sql, datasource_id, rls_policies=policies)
+    # 消费方：语义执行引擎 RLS 二次注入（_execute_via_semantic_execution 纵深防御）
 """
 
 import hashlib

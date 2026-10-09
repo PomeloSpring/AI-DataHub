@@ -1,8 +1,8 @@
-"""AI-DataHub 合并 web 入口 —— 全部模块 router 拼装进一个 FastAPI app（Phase 4 单进程终态）。
+"""AI-DataHub web 入口 —— 全部模块 router 拼装进一个 FastAPI app（Phase 4 单进程终态）。
 
-Run: python -m backend.processes.serve        # 单进程绑定全部契约端口（生产/开发）
-     python -m backend.processes.serve --reload   # 开发热重载（同为多端口）
-     uvicorn backend.processes.main:app --port 8001   # 单端口调试
+Run: python -m backend.app.serve        # 单进程绑定全部契约端口（生产/开发）
+     python -m backend.app.serve --reload   # 开发热重载（同为多端口）
+     uvicorn backend.app.main:app --port 8001   # 单端口调试
 
 装配口径（以原 8 个进程壳 processes/<名>/main.py 为源逐模块迁移，壳已删除）：
 
@@ -123,7 +123,7 @@ def assert_no_duplicate_routes(mounts):
 
     if problems:
         raise RuntimeError(
-            "合并入口路由真撞（fail-loud）——请按文件头「真撞裁决」消解或登记:\n"
+            "web 入口路由真撞（fail-loud）——请按文件头「真撞裁决」消解或登记:\n"
             + "\n".join(sorted(set(problems)))
         )
 
@@ -157,7 +157,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="AI-DataHub API",
-        description="AI-DataHub 数据中台合并入口 —— 目录/治理/可视化/编排/流程/认证/平台/语义层",
+        description="AI-DataHub 数据中台web 入口 —— 目录/治理/可视化/编排/流程/认证/平台/语义层",
         version="1.0.0",
         lifespan=lifespan,
     )

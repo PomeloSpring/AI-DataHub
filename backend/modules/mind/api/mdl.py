@@ -63,7 +63,7 @@ def get_manifest(req: ManifestRequest, admin: dict = Depends(require_admin)):
 
 
 @router.post("/query")
-def execute_query_via_engine(
+def run_mdl_query(
     req: DryPlanRequest,
     admin: dict = Depends(require_admin),
 ):
@@ -116,14 +116,7 @@ def validate_column(req: ValidateColumnRequest, admin: dict = Depends(require_ad
 
 @router.get("/health")
 def engine_health():
-    """语义执行引擎健康（Phase 7.2 切流后为 semantics.execution；适配器路径保留一个版本周期）。"""
-    from backend.common.config import SEMANTIC_ENGINE_ENABLED
-    if not SEMANTIC_ENGINE_ENABLED:
-        from backend.common.engine_client import engine_client, ENGINE_ENABLED
-        if not ENGINE_ENABLED:
-            return {"status": "disabled", "healthy": False}
-        healthy = engine_client.health()
-        return {"status": "ok" if healthy else "unhealthy", "healthy": healthy}
+    """语义执行引擎健康（semantics.execution）。"""
     try:
         from backend.semantics.execution import check_version
 

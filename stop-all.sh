@@ -20,7 +20,7 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 
 SERVICES=(
     "dataengine"
-    "web"          # 合并 web 入口（单进程承载全部契约端口，Phase 4）
+    "web"          # web 入口（单进程承载全部契约端口，Phase 4）
     "celery-beat"    # 先停调度派发，再停 worker
     "celery-worker"
     "frontend"

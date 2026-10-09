@@ -1,6 +1,6 @@
-"""Phase 4 合并 web 入口契约 —— 单 app 装配护栏。
+"""Phase 4 web 入口契约 —— 单 app 装配护栏。
 
-- 对外 REST 路径不变：代表性契约路由必须存在于合并入口路由表（逐模块取样）；
+- 对外 REST 路径不变：代表性契约路由必须存在于web 入口路由表（逐模块取样）；
 - 去重 fail-loud：跨模块真撞（精确重复/参数模式互匹配）启动即报；同模块内按注册序生效；
 - health 按端口还原旧服务口径（monitoring 探测读 status/version 字段）；
 - 单进程附带收益：跨模块内存缓存一致性（mind 触发的失效与 viz 读取面同一实例）。
@@ -9,7 +9,7 @@
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 
-from backend.processes.main import (
+from backend.app.main import (
     _health_body,
     _iter_effective_routes,
     _patterns_conflict,
@@ -51,7 +51,7 @@ CONTRACT_ROUTES = {
 def test_merged_app_route_table_covers_contract():
     table = _route_table(web_app)
     missing = sorted(f"{m} {p}" for m, p in CONTRACT_ROUTES - table)
-    assert not missing, f"合并入口缺失契约路由: {missing}"
+    assert not missing, f"web 入口缺失契约路由: {missing}"
 
 
 def test_adjudicated_routes_have_single_owner():

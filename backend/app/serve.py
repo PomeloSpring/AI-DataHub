@@ -1,9 +1,9 @@
-"""web 单进程启动器 —— 合并入口在全部契约端口各绑一个 socket（Phase 4 进程终态）。
+"""web 单进程启动器 —— web 入口在全部契约端口各绑一个 socket（Phase 4 进程终态）。
 
 用法:
-    python -m backend.processes.serve              # 生产/开发：单进程绑定 services.conf 全部端口
-    python -m backend.processes.serve --reload     # 开发热重载（同为多端口，vite 代理无需改动）
-    python -m backend.processes.serve --ports 8001 # 单端口调试
+    python -m backend.app.serve              # 生产/开发：单进程绑定 services.conf 全部端口
+    python -m backend.app.serve --reload     # 开发热重载（同为多端口，vite 代理无需改动）
+    python -m backend.app.serve --ports 8001 # 单端口调试
 
 端口清单缺省读 backend/scripts/services.conf（唯一权威登记，对外端口不变）；
 PID/日志由 start-all.sh 纳管（pids/web.pid、logs/web.log）。
@@ -42,7 +42,7 @@ def _bind(host: str, port: int) -> socket.socket:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="AI-DataHub web 合并入口启动器（单进程多端口）")
+        description="AI-DataHub web 入口启动器（单进程多端口）")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--ports", default="",
                         help="逗号分隔端口，缺省取 services.conf 全部契约端口")
@@ -60,10 +60,10 @@ def main() -> int:
         except OSError as e:
             print(f"[serve] 端口 {port} 绑定失败: {e}", file=sys.stderr)
             return 1
-    print(f"[serve] web 合并入口监听: {args.host}:{ports}", flush=True)
+    print(f"[serve] web 入口监听: {args.host}:{ports}", flush=True)
 
     config = uvicorn.Config(
-        "backend.processes.main:app",
+        "backend.app.main:app",
         host=args.host,
         log_level=args.log_level,
         reload=args.reload,

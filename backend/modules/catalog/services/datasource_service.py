@@ -397,34 +397,15 @@ class DatasourceService:
             return {"success": False, "message": "数据源不存在"}
 
         try:
-            from backend.common.config import SEMANTIC_ENGINE_ENABLED
-            if SEMANTIC_ENGINE_ENABLED:
-                # Phase 7.2 切流：经 semantics.execution 远程下推测连（动态连接，无需预注册）
-                from backend.semantics.execution.engine import SemanticEngine
+            # 经 semantics.execution 远程下推测连（动态连接，无需预注册）
+            from backend.semantics.execution.engine import SemanticEngine
 
-                SemanticEngine().execute_pushdown(
-                    "SELECT 1 LIMIT 1",
-                    datasource_id=int(ds_id),
-                    db_type=ds.get("db_type") or "mysql",
-                )
-                return {"success": True, "message": "连接成功（经语义执行引擎）"}
-            from backend.common.engine_client import engine_client, ENGINE_ENABLED
-            if not ENGINE_ENABLED:
-                return {"success": False, "message": "执行引擎(DataEngine)未启用，无法测试连接（禁止降级直连）"}
-            if not engine_client.health():
-                return {"success": False, "message": "执行引擎(DataEngine)不可用，无法测试连接（禁止降级直连）"}
-            engine_ds_id = engine_client.get_or_create_datasource(
-                name=f"adh-{ds_id}",
+            SemanticEngine().execute_pushdown(
+                "SELECT 1 LIMIT 1",
+                datasource_id=int(ds_id),
                 db_type=ds.get("db_type") or "mysql",
-                host=str(ds.get("host") or ""),
-                port=int(ds.get("port") or 3306),
-                username=str(ds.get("username") or ""),
-                password=str(ds.get("password") or ""),
-                database=str(ds.get("database_name") or ""),
-                ssl_mode=ds.get("ssl_mode"),
             )
-            engine_client.query(sql="SELECT 1", datasource_id=engine_ds_id, rls_policies=[])
-            return {"success": True, "message": "连接成功（经 DataEngine 执行通道）"}
+            return {"success": True, "message": "连接成功（经语义执行引擎）"}
         except Exception as e:
             logger.error(
                 "数据源连接测试失败 ds_id=%s: %s (type=%s)",

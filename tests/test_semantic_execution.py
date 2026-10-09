@@ -194,10 +194,9 @@ def test_connector_factory_fail_loud():
 
 
 def test_execute_query_switch_to_semantic_engine(monkeypatch):
-    """SEMANTIC_ENGINE_ENABLED 开启时，执行载体走 semantics.execution 远程下推。"""
+    """执行载体走 semantics.execution 远程下推（dataengine 退役后唯一载体）。"""
     from backend.core import query_executor
 
-    monkeypatch.setattr("backend.common.config.SEMANTIC_ENGINE_ENABLED", True)
     monkeypatch.setattr(
         "backend.common.db.datasource_db.get_datasource_by_id",
         lambda ds: {"db_type": "mysql", "host": "h", "port": 3306,
@@ -218,10 +217,9 @@ def test_execute_query_switch_to_semantic_engine(monkeypatch):
 
 
 def test_execute_query_federated_via_semantic_engine(monkeypatch):
-    """federated 跨源联邦由新引擎 execute_federated 承载（dataengine 退役前提）。"""
+    """federated 跨源联邦由新引擎 execute_federated 承载。"""
     from backend.core import query_executor
 
-    monkeypatch.setattr("backend.common.config.SEMANTIC_ENGINE_ENABLED", True)
     monkeypatch.setattr(
         "backend.common.db.datasource_db.get_datasource_by_id",
         lambda ds: {"db_type": "mysql", "host": "h", "port": 3306,

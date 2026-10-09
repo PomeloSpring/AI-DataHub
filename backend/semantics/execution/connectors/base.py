@@ -38,7 +38,10 @@ def to_pushdown_sql(sql: str, target: str) -> str:
     if target == "datafusion":
         from backend.semantics.execution.datafusion_dialect import to_datafusion
 
-        return to_datafusion(sql)
+        try:
+            return to_datafusion(sql)
+        except Exception:  # noqa: BLE001 — 转译失败保留原 SQL（引擎报错可诊断，不吞查询）
+            return sql
     return sql
 
 
