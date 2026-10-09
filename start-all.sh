@@ -664,10 +664,8 @@ run_foreground() {
     local success=0
     local fail=0
 
-    # 启动 DataEngine
-    start_dataengine_fg "${FG_COLORS[$ci]}"
-    ((ci++))
-    if [ $? -eq 0 ]; then ((success++)); else ((fail++)); fi
+    # dataengine 已退役（Phase 7.3）：执行载体由 semantics.execution 内嵌；
+    # 应急回退（SEMANTIC_ENGINE_ENABLED=false）时手动运行 start_dataengine_fg
 
     # 启动 web 合并入口（单进程多端口）
     start_web_fg "${FG_COLORS[$ci]}"
@@ -710,21 +708,7 @@ show_status() {
     printf "  %-20s %-8s %-8s %-10s\n" "服务名" "端口" "PID" "状态"
     echo "  ─────────────────────────────────────────────────────"
 
-    # DataEngine 状态
-    local de_pid_file="$DATAENGINE_PID"
-    local de_status="未运行"
-    local de_pid="-"
-    if [ -f "$de_pid_file" ]; then
-        de_pid=$(cat "$de_pid_file")
-        if kill -0 "$de_pid" 2>/dev/null; then
-            de_status="${GREEN}运行中${NC}"
-        else
-            de_status="${RED}已停止${NC}"
-            de_pid="-"
-        fi
-    fi
-    printf "  %-20s %-8s %-8s " "dataengine" "$DATAENGINE_PORT" "$de_pid"
-    echo -e "$de_status"
+    # dataengine 已退役（Phase 7.3），状态行不再展示；应急手动启动见 start_dataengine
 
     # web 合并入口（单进程承载全部契约端口）
     local web_pid_file="$PID_DIR/web.pid"
@@ -807,12 +791,8 @@ case "${1:-all}" in
         success=0
         fail=0
 
-        # 启动 DataEngine
-        if start_dataengine; then
-            ((success++))
-        else
-            ((fail++))
-        fi
+        # dataengine 已退役（Phase 7.3）：执行载体由 semantics.execution 内嵌；
+        # 应急回退（SEMANTIC_ENGINE_ENABLED=false）时手动运行 start_dataengine
 
         # 启动 web 合并入口（单进程多端口，替代原 8 个微服务进程）
         if start_web; then

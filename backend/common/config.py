@@ -160,10 +160,10 @@ DORIS_DATABASE = os.getenv("DORIS_DATABASE", "alliedstar")
 ENGINE_SERVER_URL = os.getenv("ENGINE_SERVER_URL", "http://localhost:8082")
 ENGINE_TIMEOUT = int(os.getenv("ENGINE_TIMEOUT", "60"))
 ENGINE_ENABLED = os.getenv("ENGINE_ENABLED", "true").lower() == "true"
-# Phase 7.2 切流：true = 执行载体走 semantics.execution（远程下推，datafusion-python）；
-# false = 走 dataengine (Rust) HTTP 适配器。federated 跨源联邦暂留适配器路径，
-# shadow 对拍（SEMANTIC_ENGINE_SHADOW）全绿后默认开启，dataengine 退役。
-SEMANTIC_ENGINE_ENABLED = os.getenv("SEMANTIC_ENGINE_ENABLED", "false").lower() == "true"
+# Phase 7.2 切流（已生效）：true = 执行载体走 semantics.execution（远程下推/跨源联邦，
+# datafusion-python）；false = dataengine (Rust) HTTP 适配器（留一个版本周期）。
+# dataengine 已退役（进程下线），回退开关仅供应急对拍。
+SEMANTIC_ENGINE_ENABLED = os.getenv("SEMANTIC_ENGINE_ENABLED", "true").lower() == "true"
 
 # ══════════════════════════════════════════════════════════════════════════
 # SemanticLayer — semhub (:8012) 声明式查询入口 (ChatBI/大屏同源)

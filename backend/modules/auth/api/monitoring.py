@@ -49,7 +49,7 @@ SERVICE_REGISTRY = [
     {"key": "datagov", "name": "DataGov", "desc": "数据治理 / 质量 / 血缘", "port": 8002, "path": "/api/health", "layer": "app"},
     {"key": "aiplatform", "name": "AI Platform", "desc": "MCP / Agent / 模型管理", "port": 8007, "path": "/health", "layer": "ai"},
     {"key": "datamind", "name": "DataMind", "desc": "NL2SQL / Agent / RAG", "port": 8001, "path": "/api/health", "layer": "ai"},
-    {"key": "dataengine", "name": "DataEngine", "desc": "Rust 查询引擎网关", "port": 8082, "path": "/api/health", "layer": "infra"},
+    # dataengine 已退役（Phase 7.3）：执行载体由 semantics.execution 内嵌（web 进程内）
     {"key": "semhub", "name": "SemanticLayer", "desc": "语义层 + Oxigraph 知识图谱", "port": 8012, "path": "/api/health", "layer": "infra"},
 ]
 
@@ -162,7 +162,7 @@ def get_system_metrics(admin: dict = Depends(require_admin)):
 
     Queries each service's local /system-metrics endpoint concurrently and
     deduplicates by hostname, so each physical/virtual node appears once.
-    Non-Python services (frontend, dataengine) don't expose the endpoint
+    Non-Python services (frontend) don't expose the endpoint
     and are skipped; the monitoring service's own node is always included.
     """
     # Always include this node even if its own probe is flaky
@@ -171,7 +171,7 @@ def get_system_metrics(admin: dict = Depends(require_admin)):
     local["source_host"] = _service_host("authservice")
 
     # Python services that mount the node-metrics router
-    probes = [s for s in SERVICE_REGISTRY if s["key"] not in ("frontend", "dataengine")]
+    probes = [s for s in SERVICE_REGISTRY if s["key"] not in ("frontend",)]
     with ThreadPoolExecutor(max_workers=len(probes)) as pool:
         fetched = list(pool.map(_fetch_node_metrics, probes))
 

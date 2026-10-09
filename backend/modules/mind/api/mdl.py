@@ -67,25 +67,28 @@ def execute_query_via_engine(
     req: DryPlanRequest,
     admin: dict = Depends(require_admin),
 ):
-    """Execute SQL through DataEngine.
+    """Execute SQL through the unified governed executor.
 
-    Routes SQL through the Rust DataFusion engine for execution.
+    MDL/引擎管理面的 SQL 试跑：统一经 `semantics.execute.execute_sql`
+    （护栏 §1 全平台唯一取数执行口，Phase 6.4 收口），admin 门禁保留。
     """
-    from backend.core.query_executor import execute_query_via_engine
+    from backend.semantics.contract import SemanticError
+    from backend.semantics.execute import PolicyContext, execute_sql
     try:
-        df, elapsed_ms, row_count = execute_query_via_engine(
-            sql=req.sql,
-            datasource_id=req.datasource_id,
-            user_context=admin,
-            table_names=req.table_names,
-            workspace_id=req.workspace_id,
-        )
+        result = execute_sql(req.sql, PolicyContext(
+            user_id=int(admin.get("user_id") or 0),
+            username=str(admin.get("username") or ""),
+            workspace_id=int(req.workspace_id or 0),
+            datasource_id=int(req.datasource_id or 0),
+        ))
         return {
-            "columns": list(df.columns) if not df.empty else [],
-            "rows": df.values.tolist() if not df.empty else [],
-            "row_count": row_count,
-            "execution_time_ms": elapsed_ms,
+            "columns": [c.name for c in result.columns],
+            "rows": [list(row) for row in result.rows],
+            "row_count": result.row_count,
+            "execution_time_ms": result.elapsed_ms,
         }
+    except SemanticError as e:
+        raise HTTPException(status_code=400, detail=e.message)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -113,9 +116,18 @@ def validate_column(req: ValidateColumnRequest, admin: dict = Depends(require_ad
 
 @router.get("/health")
 def engine_health():
-    """Check engine-server-rust health."""
-    from backend.common.engine_client import engine_client, ENGINE_ENABLED
-    if not ENGINE_ENABLED:
-        return {"status": "disabled", "healthy": False}
-    healthy = engine_client.health()
-    return {"status": "ok" if healthy else "unhealthy", "healthy": healthy}
+    """语义执行引擎健康（Phase 7.2 切流后为 semantics.execution；适配器路径保留一个版本周期）。"""
+    from backend.common.config import SEMANTIC_ENGINE_ENABLED
+    if not SEMANTIC_ENGINE_ENABLED:
+        from backend.common.engine_client import engine_client, ENGINE_ENABLED
+        if not ENGINE_ENABLED:
+            return {"status": "disabled", "healthy": False}
+        healthy = engine_client.health()
+        return {"status": "ok" if healthy else "unhealthy", "healthy": healthy}
+    try:
+        from backend.semantics.execution import check_version
+
+        check_version()
+        return {"status": "ok", "healthy": True}
+    except Exception as e:  # noqa: BLE001 — 健康面只报状态不抛
+        return {"status": "unhealthy", "healthy": False, "error": str(e)}

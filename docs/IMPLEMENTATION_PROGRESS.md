@@ -9,7 +9,7 @@
 > `services/shared/common/` → `backend/common/`；`services/shared/semantics/` → `backend/semantics/`；`services/shared/eval/` → `backend/eval/`；
 > `services/{datamind,datacatalog,dataviz,datagov,dataflow,aiplatform,authservice,semhub}/` → `backend/modules/{mind,catalog,viz,gov,flow,platform,auth,semhub}/`；
 > `services/graphservice/`（已并入 semhub）→ `backend/modules/semhub/graph/`；治理内核（query_executor/governed_query/enforcer/role_service/rls_service/task_runtime/perm_link）→ `backend/core/`；
-> 各 `services/<svc>/main.py` 进程壳已删（Phase 4）→ 唯一 web 入口 `backend/processes/main.py`（单进程绑 8001-8007/8012），进程拓扑 = web + celery-worker + celery-beat + dataengine；
+> 各 `services/<svc>/main.py` 进程壳已删（Phase 4）→ 唯一 web 入口 `backend/processes/main.py`（单进程绑 8001-8007/8012），进程拓扑 = web + celery-worker + celery-beat（dataengine 已退役，Phase 7 执行载体由 semantics.execution 内嵌）；
 > eval 命令 `services.shared.eval.runner`/`tests.eval.runner` → `venv/bin/python -m backend.eval.runner`；`.env` 加载口径（`services/.env` 优先、`backend/.env` 兜底）见 `backend/common/config.py`。
 
 ---

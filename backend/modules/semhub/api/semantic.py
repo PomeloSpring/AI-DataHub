@@ -154,12 +154,19 @@ async def health() -> dict[str, Any]:
         out["metadata_db"] = "ok"
     except Exception as e:
         out["metadata_db"] = f"error: {e}"; out["ok"] = False
-    # engine
+    # engine（Phase 7.2 切流后为 semantics.execution；dataengine 适配器保留一个版本周期）
     try:
-        from backend.common.engine_client import EngineClient
-        out["dataengine"] = "ok" if EngineClient().health() else "unreachable"
+        from backend.common.config import SEMANTIC_ENGINE_ENABLED
+        if SEMANTIC_ENGINE_ENABLED:
+            from backend.semantics.execution import check_version
+
+            check_version()
+            out["engine"] = "ok"
+        else:
+            from backend.common.engine_client import EngineClient
+            out["engine"] = "ok" if EngineClient().health() else "unreachable"
     except Exception as e:
-        out["dataengine"] = f"error: {e}"
+        out["engine"] = f"error: {e}"
     # oxigraph
     try:
         from backend.common.rdf.sparql_client import get_sparql_client

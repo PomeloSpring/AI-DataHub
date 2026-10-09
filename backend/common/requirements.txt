@@ -17,3 +17,5 @@ celery[redis]>=5.3,<6
 boto3>=1.28.0
 # 语义执行引擎层（Phase 6.2）：锁版本，升级走 backend/semantics/execution/adapter.py 薄适配回归
 datafusion==54.1.0
+# Postgres 远程连接器（ADBC，Arrow 原生拉取）
+adbc-driver-postgresql==1.12.0

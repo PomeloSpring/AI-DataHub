@@ -1,5 +1,10 @@
 """DataEngine Client — Python client for DataEngine (Rust DataFusion Gateway).
 
+**DEPRECATED · 可选后端适配器（留一个版本周期）**：Phase 7.2 起执行载体默认走
+`backend.semantics.execution`（datafusion-python 远程下推/跨源联邦），dataengine
+进程已退役下线。本客户端仅在 `SEMANTIC_ENGINE_ENABLED=false` 应急回退时使用，
+新代码不得依赖本模块（统一走 `semantics.execute` 门面）。
+
 Communicates with the Rust DataFusion Gateway for:
 - SQL execution against MySQL/Doris/PostgreSQL
 - Datasource management

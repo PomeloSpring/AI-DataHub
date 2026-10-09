@@ -87,7 +87,7 @@ flowchart LR
 ```
 
 - 依赖规则：`common ← core/semantics ← modules ← processes` 箭头单向；**L2 之间横向 import 禁止**，由 `tests/test_layering_contract.py` AST 门禁强制（白名单登记：eval/adapters、core/task_runtime 回调表、mind→其他 modules 编排调用）。
-- 部署拓扑（`start-all.sh` 11→4 进程）：**web**（合并入口，单进程绑 8001-8007/8012）+ **celery-worker** + **celery-beat** + **dataengine**(Rust)；开发可选 `python -m backend.processes.serve --reload` 单进程热重载（同为多端口，vite 代理零改动）。
+- 部署拓扑（`start-all.sh` 11→4→3 进程）：**web**（合并入口，单进程绑 8001-8007/8012）+ **celery-worker** + **celery-beat**；dataengine 已退役（Phase 7，执行载体由 `semantics.execution` 内嵌，Rust 工程保留为可选适配器一个版本周期）；开发可选 `python -m backend.processes.serve --reload` 单进程热重载（同为多端口，vite 代理零改动）。
 
 ---
 
@@ -167,13 +167,13 @@ flowchart LR
 | 层 | 选型 | 备注 |
 |---|---|---|
 | 前端 | React 18 + TypeScript + Vite + Tailwind + shadcn/Radix + Zustand + G2/ECharts + ReactFlow + react-markdown | vitest 单测；vite 改 config 自动重启 |
-| 后端 | Python 3.10 + FastAPI **web 单进程**（`backend/processes/main.py`，模块化单体分层） | uvicorn **无 --reload**，改代码/路由重启 web（`./stop-all.sh web && ./start-all.sh -d`）；进程拓扑 = web + celery-worker + celery-beat + dataengine |
+| 后端 | Python 3.10 + FastAPI **web 单进程**（`backend/processes/main.py`，模块化单体分层） | uvicorn **无 --reload**，改代码/路由重启 web（`./stop-all.sh web && ./start-all.sh -d`）；进程拓扑 = web + celery-worker + celery-beat |
 | 数据访问 | DBUtils 连接池 + PyMySQL；`backend/common/db`（元数据）/ `datasource_db`（业务源） | 数据源配置来自 `.env`（`services/.env` 优先、`backend/.env` 兜底） |
-| 查询引擎 | Rust DataFusion Gateway（axum 0.7 路由语法 `:id`），MySQL/Doris/SLS provider；不可用时 pymysql/psycopg2 直连兜底 | 连接池 key 不含凭据 → 密码轮换需 PUT 下推或重启引擎 |
+| 查询引擎 | `semantics.execution`（datafusion-python 54.1.0 锁版本）：远程下推（MySQL 协议/Postgres ADBC）拉回 Arrow + DataFusion 本地联邦；护栏 §5 执行前强制 | dataengine (Rust) 已退役，engine_client 降为可选适配器（`SEMANTIC_ENGINE_ENABLED=false` 应急回退） |
 | 存储 | MySQL（OLTP 元数据，全部 `adh_*` 表）；Oxigraph（RDF 命名图，Docker 命名卷）；Doris（可选 OLAP / 可观测大表） | embedding 与 Doris 向量检索已全量移除，统一 GraphRAG + 关键词/BM25 |
 | LLM | Qoder 平台（qoder-agent-sdk）；`QoderSDKClient` 按会话长对话池，失败回落单发 `query()+resume` | 认证 `QODER_PERSONAL_ACCESS_TOKEN` |
 | 知识库 | Qoder qMind 云端 Notebook（qmind CLI 子进程，`QMIND_TOKEN` 自动换取 job token） | 真实 notebook 由 CLI 创建后产品页导入，禁止 SQL 种子假条目 |
-| 网关 | Nginx（生产，`services/dataengine/nginx.conf`）/ Vite proxy（开发，`frontend/vite.config.ts`） | 新增服务前缀两处都要配 |
+| 网关 | Nginx（生产）/ Vite proxy（开发，`frontend/vite.config.ts`） | 新增服务前缀两处都要配 |
 | 可观测 | 自研 span/用量采集（`backend/observability`），MySQL=OLTP / Doris=OLAP 分库 | 未开启即全链路 no-op、绝不抛出 |
 | 迁移 | `docker/mysql/*.sql` 幂等脚本（CREATE IF NOT EXISTS + INSERT IGNORE + information_schema 判列） | 应用时**必须引号感知分词**，禁止按 `;` 朴素切分 |
 

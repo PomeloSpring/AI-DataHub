@@ -397,6 +397,17 @@ class DatasourceService:
             return {"success": False, "message": "数据源不存在"}
 
         try:
+            from backend.common.config import SEMANTIC_ENGINE_ENABLED
+            if SEMANTIC_ENGINE_ENABLED:
+                # Phase 7.2 切流：经 semantics.execution 远程下推测连（动态连接，无需预注册）
+                from backend.semantics.execution.engine import SemanticEngine
+
+                SemanticEngine().execute_pushdown(
+                    "SELECT 1 LIMIT 1",
+                    datasource_id=int(ds_id),
+                    db_type=ds.get("db_type") or "mysql",
+                )
+                return {"success": True, "message": "连接成功（经语义执行引擎）"}
             from backend.common.engine_client import engine_client, ENGINE_ENABLED
             if not ENGINE_ENABLED:
                 return {"success": False, "message": "执行引擎(DataEngine)未启用，无法测试连接（禁止降级直连）"}
