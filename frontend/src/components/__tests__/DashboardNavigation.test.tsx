@@ -123,8 +123,9 @@ describe('数据看板 — 仪表盘组维度导航', () => {
     const view = render(<TooltipProvider><MemoryRouter><SectionSwitcher current="home" /></MemoryRouter></TooltipProvider>);
     fireEvent.keyDown(screen.getByRole('button', { name: '切换模块' }), { key: 'Enter' });
     const labels = (await screen.findAllByRole('menuitem')).map(i => i.textContent);
-    // 无 dashboard 权限码 → 无数据看板入口; 无 data:* 菜单 → 无数据中台入口; 仅保留有权限的
-    expect(labels).toEqual(['首页', '工作空间']);
+    // 数据看板对登录用户恒可见(产品决策, 不参与权限码显隐, 内容级可见性由数据层裁决);
+    // 无 data:* 菜单 → 无数据中台入口; 其余仅保留有权限的
+    expect(labels).toEqual(['首页', '数据看板', '工作空间']);
     view.unmount();
     usePermissionStore.setState({ loaded: false, unrestricted: true, perms: null, allowedMenus: null });
   });
