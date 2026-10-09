@@ -301,7 +301,7 @@ def set_role_permissions(role_id: int, req: SetPermissionsRequest,
     for pc in set(req.permissions or []):
         pc = (pc or "").strip()
         if pc:
-            execute_write("INSERT IGNORE INTO adh_role_perms (role_id, perm_code) VALUES (%s,%s)", (role_id, pc))
+            execute_write("INSERT INTO adh_role_perms (role_id, perm_code) VALUES (%s,%s)", (role_id, pc))
     # 使中间件缓存失效
     try:
         from backend.common.api_permission import invalidate_perm_cache
@@ -370,7 +370,7 @@ def set_role_rls_policies(role_id: int, req: SetRoleRLSPoliciesRequest,
     execute_write("DELETE FROM adh_role_rls_policies WHERE role_id=%s", (role_id,))
     for pid in set(req.policy_ids or []):
         execute_write(
-            "INSERT IGNORE INTO adh_role_rls_policies (role_id, policy_id) VALUES (%s,%s)",
+            "INSERT INTO adh_role_rls_policies (role_id, policy_id) VALUES (%s,%s)",
             (role_id, int(pid)))
     # 使 enforcer 侧访问缓存失效(行/列限制变更需即时生效)
     try:

@@ -219,11 +219,12 @@ def test_revocation_takes_effect_immediately(db, monkeypatch):
 
 
 def test_ws_mirror_bucket_in_sql(db):
+    """工作空间角色已下线：可见性按真值源全量角色裁决（SQL 无 workspace 维度）。"""
     db.allowed = [101]
     assert role_service.get_user_allowed_dashboards(9, 3) == [101]
     sql, params = db.log[-1]
-    assert "ur.workspace_id = %s OR ur.workspace_id = 0" in sql
-    assert params == [9, 3]
+    assert "workspace_id" not in sql
+    assert params == [9]
 
 
 # ── V5 授权写路径全量替换幂等 ─────────────────────────────────────────

@@ -29,21 +29,12 @@ class RoleService:
     # ── Role CRUD ──────────────────────────────────────────────────
 
     def list_roles(self, workspace_id: int = None) -> list:
-        """List all roles. If workspace_id given, mark which roles are assigned."""
+        """List all roles（workspace_id 参数已废弃：工作空间角色下线，保留签名兼容）。"""
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM adh_roles WHERE is_active = 1 ORDER BY is_system DESC, name")
-                roles = cur.fetchall()
-                if workspace_id:
-                    cur.execute(
-                        "SELECT role_id FROM adh_workspace_roles WHERE workspace_id = %s",
-                        (workspace_id,)
-                    )
-                    assigned = {r["role_id"] for r in cur.fetchall()}
-                    for role in roles:
-                        role["in_workspace"] = role["id"] in assigned
-                return roles
+                return cur.fetchall()
         finally:
             conn.close()
 
@@ -147,7 +138,6 @@ class RoleService:
                 logger.info(f"Deleted AS-BOT for role '{role.get('name')}' (role_id={role_id})")
                 cur.execute("DELETE FROM adh_role_attributes WHERE role_id = %s", (role_id,))
                 cur.execute("DELETE FROM adh_user_roles WHERE role_id = %s", (role_id,))
-                cur.execute("DELETE FROM adh_workspace_roles WHERE role_id = %s", (role_id,))
                 cur.execute("DELETE FROM adh_role_dashboard_access WHERE role_id = %s", (role_id,))
                 cur.execute("DELETE FROM adh_roles WHERE id = %s", (role_id,))
                 conn.commit()
@@ -197,14 +187,14 @@ class RoleService:
 
     # ── User-Role Assignment ───────────────────────────────────────
 
-    def write_global_role_mirror(self, cur, user_id: int, role_name: str) -> int:
-        """全局角色双写（唯一镜像写入口）：adh_user_roles(ws=0) 行随 user_role 列同事务写入。
+    def write_user_role_binding(self, cur, user_id: int, role_name: str) -> int:
+        """用户-角色绑定唯一写入口：adh_user_roles（真值源）同事务写入。
 
-        adh_user_roles 的 workspace_id=0 行是全局角色的**唯一真值源镜像**（数据权限/
-        API 权限码门控均经它消费）；adh_users.user_role 列仅是登录/JWT 的缓存。
-        两者必须同事务双写——历史缺陷：两条写路径各写一处，列有值但镜像无行，
-        用户零权限码被 API 门控 403（如建号后无法发消息）。
-        调用方持有事务游标（与 user_role 列更新同事务，失败一起回滚）。
+        设计口径（2026-10 收口）：adh_user_roles 是用户→角色的**唯一真值源**
+        （数据权限/API 权限码门控均经它消费）；adh_users.role_id 绑定角色 id、
+        user_role 名列仅是登录/JWT 的显示缓存，随真值源同事务同步。
+        **工作空间角色已废除**（无 workspace 维度）。调用方持有事务游标
+        （失败一起回滚）。
 
         role_name→role_id 按 adh_roles.name 解析；未知名 fail-loud 抛 ValueError，
         不静默写 0/跳过。返回 role_id。
@@ -214,98 +204,84 @@ class RoleService:
         if not row:
             raise ValueError(f"角色不存在: {role_name!r}（请先在角色管理中创建）")
         role_id = int(row["id"])
-        cur.execute("DELETE FROM adh_user_roles WHERE user_id = %s AND workspace_id = 0",
-                    (user_id,))
+        cur.execute("DELETE FROM adh_user_roles WHERE user_id = %s", (user_id,))
         cur.execute(
-            "INSERT INTO adh_user_roles (id, user_id, role_id, workspace_id) VALUES (%s, %s, %s, 0)",
+            "INSERT INTO adh_user_roles (id, user_id, role_id) VALUES (%s, %s, %s)",
             (_gen_id(), user_id, role_id))
         return role_id
 
-    def _apply_global_role(self, cur, user_id: int, role_name: str) -> int:
-        """游标版全局角色双写（镜像 + 列缓存同事务），供各写入口共用。"""
-        role_id = self.write_global_role_mirror(cur, user_id, role_name)
-        cur.execute("UPDATE adh_users SET user_role = %s, updated_at = %s WHERE id = %s",
-                    (str(role_name), time.strftime("%Y-%m-%d %H:%M:%S"), user_id))
+    def _apply_user_role(self, cur, user_id: int, role_name: str) -> int:
+        """游标版绑定写入（真值源 + adh_users.role_id 绑定 + 名缓存同事务）。"""
+        role_id = self.write_user_role_binding(cur, user_id, role_name)
+        cur.execute(
+            "UPDATE adh_users SET role_id = %s, user_role = %s, updated_at = %s WHERE id = %s",
+            (role_id, str(role_name), time.strftime("%Y-%m-%d %H:%M:%S"), user_id))
         return role_id
 
     def set_global_role(self, user_id: int, role_name: str) -> bool:
-        """独立事务版全局角色分配（管理接口/数据修复用）：镜像与列缓存同事务双写。"""
+        """独立事务版全局角色分配（管理接口/数据修复用）。"""
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                self._apply_global_role(cur, user_id, role_name)
+                self._apply_user_role(cur, user_id, role_name)
             conn.commit()
             return True
         finally:
             conn.close()
 
     def assign_user_role(self, user_id: int, role_id: int, workspace_id: int = 0) -> bool:
-        """Assign a role to a user.
+        """Assign a role to a user（全局绑定）。
 
-        ws=0 是全局角色分配——必须走双写入口（镜像+列同事务），不得只写镜像
-        （历史缺陷的另一半：列与镜像各写一处）；ws>0 是工作空间级绑定，不影响全局列。
+        必须走绑定唯一写入口（真值源 + role_id 绑定 + 名缓存同事务），不得只写
+        一处（历史缺陷：列有值真值源无行 → 零权限码被 API 门控 403）。
+        workspace_id 参数已废弃（工作空间角色下线），保留签名兼容调用方。
         """
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                if int(workspace_id or 0) == 0:
-                    cur.execute("SELECT name FROM adh_roles WHERE id = %s", (role_id,))
-                    row = cur.fetchone()
-                    if not row:
-                        logger.warning("[role_service] assign_user_role 角色不存在: role_id=%s", role_id)
-                        return False
-                    self._apply_global_role(cur, user_id, str(row["name"]))
-                else:
-                    cur.execute(
-                        "INSERT IGNORE INTO adh_user_roles (id, user_id, role_id, workspace_id) VALUES (%s, %s, %s, %s)",
-                        (_gen_id(), user_id, role_id, workspace_id)
-                    )
+                cur.execute("SELECT name FROM adh_roles WHERE id = %s", (role_id,))
+                row = cur.fetchone()
+                if not row:
+                    logger.warning("[role_service] assign_user_role 角色不存在: role_id=%s", role_id)
+                    return False
+                self._apply_user_role(cur, user_id, str(row["name"]))
                 conn.commit()
                 return True
         finally:
             conn.close()
 
     def remove_user_role(self, user_id: int, role_id: int, workspace_id: int = 0) -> bool:
-        """Remove a role from a user.
+        """Remove a role from a user（workspace_id 参数已废弃，保留签名兼容）。
 
-        ws=0 移除全局角色后**回落 viewer**（口径：全局角色不可为空——登录/JWT 与
-        API 门控都消费列缓存，空角色=零权限码死号），镜像与列同步回落；
-        ws>0 只删工作空间绑定。
+        移除后**回落 viewer**（口径：全局角色不可为空——登录/JWT 与 API 门控
+        都消费绑定，空角色=零权限码死号）。
         """
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "DELETE FROM adh_user_roles WHERE user_id = %s AND role_id = %s AND workspace_id = %s",
-                    (user_id, role_id, workspace_id)
+                    "DELETE FROM adh_user_roles WHERE user_id = %s AND role_id = %s",
+                    (user_id, role_id)
                 )
                 removed = cur.rowcount > 0
-                if int(workspace_id or 0) == 0 and removed:
-                    self._apply_global_role(cur, user_id, "viewer")
+                if removed:
+                    self._apply_user_role(cur, user_id, "viewer")
                 conn.commit()
                 return removed
         finally:
             conn.close()
 
     def get_user_roles(self, user_id: int, workspace_id: int = None) -> list:
-        """Get roles assigned to a user."""
+        """Get roles assigned to a user（真值源 adh_user_roles；workspace_id 参数已废弃）。"""
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                if workspace_id is not None:
-                    cur.execute(
-                        """SELECT r.* FROM adh_roles r
-                           JOIN adh_user_roles ur ON ur.role_id = r.id
-                           WHERE ur.user_id = %s AND (ur.workspace_id = %s OR ur.workspace_id = 0) AND r.is_active = 1""",
-                        (user_id, workspace_id)
-                    )
-                else:
-                    cur.execute(
-                        """SELECT r.* FROM adh_roles r
-                           JOIN adh_user_roles ur ON ur.role_id = r.id
-                           WHERE ur.user_id = %s AND r.is_active = 1""",
-                        (user_id,)
-                    )
+                cur.execute(
+                    """SELECT r.* FROM adh_roles r
+                       JOIN adh_user_roles ur ON ur.role_id = r.id
+                       WHERE ur.user_id = %s AND r.is_active = 1""",
+                    (user_id,)
+                )
                 return cur.fetchall()
         finally:
             conn.close()
@@ -396,117 +372,10 @@ class RoleService:
             merged.update(attrs)
         return merged
 
-    # ── Workspace-Role Association ─────────────────────────────────
-
-    def authorize_workspace_role(self, workspace_id: int, role_id: int) -> bool:
-        """Authorize a role to access a workspace."""
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT IGNORE INTO adh_workspace_roles (id, workspace_id, role_id) VALUES (%s, %s, %s)",
-                    (_gen_id(), workspace_id, role_id)
-                )
-                conn.commit()
-                return True
-        finally:
-            conn.close()
-
-    def revoke_workspace_role(self, workspace_id: int, role_id: int) -> bool:
-        """Revoke a role's access to a workspace.
-
-        Also removes workspace-scoped user assignments for this role.
-        """
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM adh_workspace_roles WHERE workspace_id = %s AND role_id = %s",
-                    (workspace_id, role_id)
-                )
-                revoked = cur.rowcount > 0
-                cur.execute(
-                    "DELETE FROM adh_user_roles WHERE role_id = %s AND workspace_id = %s",
-                    (role_id, workspace_id)
-                )
-                conn.commit()
-                return revoked
-        finally:
-            conn.close()
-
-    def get_workspace_roles(self, workspace_id: int) -> list:
-        """Get roles authorized for a workspace."""
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """SELECT r.* FROM adh_roles r
-                       JOIN adh_workspace_roles wr ON wr.role_id = r.id
-                       WHERE wr.workspace_id = %s AND r.is_active = 1""",
-                    (workspace_id,)
-                )
-                return cur.fetchall()
-        finally:
-            conn.close()
-
-    def get_workspace_role_member_counts(self, workspace_id: int) -> dict:
-        """Count workspace members holding each role (workspace-scoped or global).
-
-        Returns {role_id: member_count}.
-        """
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """SELECT ur.role_id, COUNT(DISTINCT ur.user_id) AS cnt
-                       FROM adh_user_roles ur
-                       JOIN adh_workspace_users wu
-                         ON wu.user_id = ur.user_id AND wu.workspace_id = %s
-                       WHERE ur.workspace_id = %s OR ur.workspace_id = 0
-                       GROUP BY ur.role_id""",
-                    (workspace_id, workspace_id)
-                )
-                return {r["role_id"]: r["cnt"] for r in cur.fetchall()}
-        finally:
-            conn.close()
-
-    def get_workspace_role_users(self, workspace_id: int, role_id: int) -> list:
-        """Get workspace members holding a role, with the assignment scope.
-
-        role_scope: workspace = assigned within this workspace, global = workspace_id 0.
-        """
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """SELECT u.id, u.username, u.email,
-                              CASE WHEN ur.workspace_id = 0 THEN 'global' ELSE 'workspace' END AS role_scope
-                       FROM adh_user_roles ur
-                       JOIN adh_users u ON u.id = ur.user_id
-                       JOIN adh_workspace_users wu
-                         ON wu.user_id = ur.user_id AND wu.workspace_id = %s
-                       WHERE ur.role_id = %s AND (ur.workspace_id = %s OR ur.workspace_id = 0)
-                       ORDER BY role_scope, u.username""",
-                    (workspace_id, role_id, workspace_id)
-                )
-                return cur.fetchall()
-        finally:
-            conn.close()
-
     def check_user_workspace_access(self, user_id: int, workspace_id: int) -> bool:
-        """Check if a user has access to a workspace via any of their roles."""
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """SELECT COUNT(*) as cnt FROM adh_user_roles ur
-                       JOIN adh_workspace_roles wr ON wr.role_id = ur.role_id AND wr.workspace_id = %s
-                       WHERE ur.user_id = %s AND ur.workspace_id IN (0, %s)""",
-                    (workspace_id, user_id, workspace_id)
-                )
-                return cur.fetchone()["cnt"] > 0
-        finally:
-            conn.close()
+        """已退役：工作空间随用户走（仅属主，见 check_workspace_owner），
+        工作空间角色体系已下线；保留方法体仅为兼容旧调用点（均无）。"""
+        return self.check_workspace_owner(user_id, workspace_id)
 
     # ── Datasource Access ──────────────────────────────────────────
 
@@ -556,8 +425,8 @@ class RoleService:
                     """SELECT DISTINCT rda.datasource_id
                        FROM adh_user_roles ur
                        JOIN adh_role_datasource_access rda ON rda.role_id = ur.role_id
-                       WHERE ur.user_id = %s AND (ur.workspace_id = %s OR ur.workspace_id = 0)""",
-                    (user_id, workspace_id)
+                       WHERE ur.user_id = %s""",
+                    (user_id,)
                 )
                 return [r["datasource_id"] for r in cur.fetchall()]
         finally:
@@ -572,8 +441,8 @@ class RoleService:
         ``tool_policy.compile_policy`` 做功能能力继承判定（AS-BOT 自动继承，
         AS-BOT 仅做减法）。
 
-        口径与其它数据权限路径一致：走 ``adh_user_roles``（全局行 workspace_id=0
-        + 工作空间行），不走 JWT 里的 ``user_role`` 列缓存。
+        口径与其它数据权限路径一致：走 ``adh_user_roles``（唯一真值源，无 workspace
+        维度——工作空间角色已下线），不走 JWT 里的 ``user_role`` 列缓存。
 
         ``ai_access`` 取 ``adh_perm_registry`` 的配置值（管理员可调），
         但它不是最终裁决：涉密硬上界由 ``perm_link`` 再收窄一次，
@@ -587,9 +456,9 @@ class RoleService:
                        FROM adh_user_roles ur
                        JOIN adh_role_perms rp ON rp.role_id = ur.role_id
                        JOIN adh_perm_registry p ON p.perm_code = rp.perm_code
-                       WHERE ur.user_id = %s AND (ur.workspace_id = %s OR ur.workspace_id = 0)
+                       WHERE ur.user_id = %s
                          AND p.is_active = 1""",
-                    (user_id, workspace_id)
+                    (user_id,)
                 )
                 return {
                     r["perm_code"]: {
@@ -675,8 +544,9 @@ class RoleService:
     def get_user_allowed_dashboards(self, user_id: int, workspace_id: int = 0) -> list:
         """Get dashboard IDs a user can see via their roles (可见性唯一裁决).
 
-        adh_user_roles ⋈ adh_role_dashboard_access; ws=0 镜像角色同样生效。
-        **fail-closed**: 空授权返回空列表 = 一律不可见, 不解释为全量。
+        adh_user_roles ⋈ adh_role_dashboard_access（真值源无 workspace 维度——
+        工作空间角色已下线）。**fail-closed**: 空授权返回空列表 = 一律不可见,
+        不解释为全量。workspace_id 参数已废弃，保留签名兼容。
         """
         conn = get_metadata_conn()
         try:
@@ -685,8 +555,8 @@ class RoleService:
                     """SELECT DISTINCT rda.dashboard_id
                        FROM adh_user_roles ur
                        JOIN adh_role_dashboard_access rda ON rda.role_id = ur.role_id
-                       WHERE ur.user_id = %s AND (ur.workspace_id = %s OR ur.workspace_id = 0)""",
-                    (user_id, workspace_id)
+                       WHERE ur.user_id = %s""",
+                    (user_id,)
                 )
                 return [r["dashboard_id"] for r in cur.fetchall()]
         finally:
@@ -757,8 +627,8 @@ class RoleService:
                        JOIN adh_role_table_access rta ON rta.role_id = ur.role_id
                        WHERE ur.user_id = %s
                          AND (rta.datasource_id = %s OR rta.datasource_id = 0)
-                         AND (ur.workspace_id = %s OR ur.workspace_id = 0)""",
-                    (user_id, datasource_id, workspace_id)
+                        """,
+                    (user_id, datasource_id)
                 )
                 return [r["table_name"] for r in cur.fetchall()]
         finally:
@@ -825,8 +695,8 @@ class RoleService:
                        WHERE ur.user_id = %s
                          AND (rca.datasource_id = %s OR rca.datasource_id = 0)
                          AND rca.table_name = %s
-                         AND (ur.workspace_id = %s OR ur.workspace_id = 0)""",
-                    (user_id, datasource_id, table_name, workspace_id)
+                        """,
+                    (user_id, datasource_id, table_name)
                 )
                 for r in cur.fetchall():
                     if r["access_type"] == "hidden":

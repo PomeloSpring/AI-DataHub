@@ -655,7 +655,7 @@ def create_user(username: str, password: str, role: str = "viewer",
                 # 全局角色双写：adh_user_roles(ws=0) 镜像随 user_role 列缓存同事务写入。
                 # 历史缺陷：只写列不写镜像 → 用户零权限码被 API 门控 403（建号后无法发消息）。
                 from backend.core.role_service import role_service as _role_svc
-                _role_svc.write_global_role_mirror(cur, user_id, role)
+                _role_svc.write_user_role_binding(cur, user_id, role)
             conn.commit()
         return True, "创建成功", user_id
     except Exception as e:
@@ -717,7 +717,7 @@ def update_user(user_id: int, username: str = None, email: str = None,
                 # 改角色同步全局镜像（列与 adh_user_roles(ws=0) 同事务双写）
                 if role is not None:
                     from backend.core.role_service import role_service as _role_svc
-                    _role_svc.write_global_role_mirror(cur, user_id, role)
+                    _role_svc.write_user_role_binding(cur, user_id, role)
             conn.commit()
         return True, "更新成功"
     except Exception as e:

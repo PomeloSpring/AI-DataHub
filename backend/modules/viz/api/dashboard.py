@@ -353,7 +353,7 @@ def set_group_roles_endpoint(group_id: int, req: GroupRolesRequest,
     execute_write("DELETE FROM adh_role_dashboard_groups WHERE group_id=%s", (group_id,))
     for rid in set(req.role_ids or []):
         execute_write(
-            "INSERT IGNORE INTO adh_role_dashboard_groups (role_id, group_id) VALUES (%s,%s)",
+            "INSERT INTO adh_role_dashboard_groups (role_id, group_id) VALUES (%s,%s)",
             (int(rid), group_id))
     return {"success": True, "count": len(set(req.role_ids or []))}
 

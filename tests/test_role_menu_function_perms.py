@@ -93,7 +93,7 @@ def store(monkeypatch):
         st.writes.append((s, p))
         if "DELETE FROM adh_role_perms" in s:
             st.perms[p[0]] = set()
-        elif "INSERT IGNORE INTO adh_role_perms" in s:
+        elif "INSERT INTO adh_role_perms" in s:
             st.perms.setdefault(p[0], set()).add(p[1])
 
     monkeypatch.setattr(roles_api, "execute_query", fake_query)
@@ -142,7 +142,7 @@ def test_permissions_roundtrip_and_full_replace(store):
     assert store.perms[7] == {"ontology:save", "report:view"}
     # 写序列: 先全量 DELETE 再逐条 INSERT(全量替换语义)
     assert store.writes[0][0].startswith("DELETE FROM adh_role_perms")
-    assert all(s.startswith("INSERT IGNORE") for s, _ in store.writes[1:])
+    assert all(s.startswith("INSERT INTO") for s, _ in store.writes[1:])
 
     got = roles_api.get_role_permissions(7, user=VIEWER)
     assert got == {"role_id": 7, "permissions": ["ontology:save", "report:view"]}
