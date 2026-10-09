@@ -9,9 +9,10 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
 > 违反以下任一条即视为安全缺陷，必须修复而非妥协。改错代价：敏感数据泄露 / RLS 旁路 / 越权。
 
 ## 1. 统一取数入口（不可旁路）
-- 任何返回数据行的执行**必须**经 `backend/core/query_executor.py: execute_query_with_permission`（或其封装 `backend/core/governed_query.py: governed_execute`）。
+- **`backend.semantics.execute` 是全平台唯一取数执行口**（Phase 6.4 起，语义/nl2sql 双轨执行就此统一）：声明式意图走 `execute()` / `execute_plan()`，SQL 形状走 `execute_sql()`；内部统一经 `backend/core/query_executor.py: execute_query_with_permission`（permission_enforcer 敏感/RLS/RBAC + 审计）。
+- 任何返回数据行的执行**必须**经该执行口（或其既有封装 `backend/core/governed_query.py: governed_execute`——内部已收口 `execute_sql`）。
 - **禁止**新增任何直连数据源、绕过 `permission_enforcer` 的裸执行通道；**禁止**新增"返回数据行但不经治理"的 `/execute` 类端点。
-- 语义层 `run_semantic_query` 与 nl2sql `execute_sql` 是**两条并列的受治理入口**（都满足本护栏），不是"一条合规一条旁路"；判合不合规只看**是否过治理入口**，不看走的是语义层还是 SQL。
+- 语义层 `run_semantic_query` 与 nl2sql `execute_sql` 是**同一执行口的两条入口**（都过 `semantics.execute`），不是"一条合规一条旁路"；判合不合规只看**是否过治理入口**，不看走的是语义层还是 SQL。
 - SQL Playground / 看板 / 报表 / 组件的 raw_sql 取数一律走治理入口，与主链路同源（`execute_via_playground`、`governed_execute`）。
 
 ## 2. 身份 fail-closed

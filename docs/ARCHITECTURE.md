@@ -215,7 +215,7 @@ flowchart TB
 
 ### 数据权限要点（详见 `.qoder/rules/security-guardrails.md`）
 
-- 任何返回数据行的执行必须经 `execute_query_with_permission`（或封装 `governed_execute`）。
+- 任何返回数据行的执行必须经 `semantics.execute`（全平台唯一取数执行口，内部经 `execute_query_with_permission` / 封装 `governed_execute`）。
 - RLS 行过滤以包裹子查询注入，保留原表别名，覆盖 FROM 与 JOIN 两侧。
 - `validate_sql`：仅 SELECT/WITH，禁 DDL/DML/多语句，缺 LIMIT 自动补默认后再校验。
 - 结果序列化经 `df_to_columns_rows` 无损消歧重名列。
