@@ -27,7 +27,6 @@ from typing import Any, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.common.df_serialize import df_to_columns_rows
-from backend.core.query_executor import execute_query_with_permission
 from backend.semantics.binding_resolver import resolve_binding
 from backend.semantics.contract import (
     EXEC_FAIL_HINT,
@@ -204,12 +203,15 @@ def execute_sql(
     """
     ctx = _policy_ctx(policy_ctx)
     t0 = time.monotonic()
+    # 函数内经模块取（与 gates 同风格）：护栏测试可对 query_executor 模块属性打桩
+    from backend.core import query_executor
+
     try:
-        df, exec_ms, row_count = execute_query_with_permission(
+        df, exec_ms, row_count = query_executor.execute_query_with_permission(
             sql,
-            ctx.datasource_id or None,
-            {"user_id": ctx.user_id, "username": ctx.username},
-            ctx.workspace_id,
+            datasource_id=ctx.datasource_id or None,
+            user_context={"user_id": ctx.user_id, "username": ctx.username},
+            workspace_id=ctx.workspace_id,
         )
     except PermissionError as e:
         raise SemanticError(ErrorCode.FORBIDDEN, str(e), blocked_at="permission") from e

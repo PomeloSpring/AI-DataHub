@@ -189,7 +189,7 @@ def test_execute_sql_facade_governed_and_serialized(monkeypatch):
                         user_context=user_context, workspace_id=workspace_id)
         return pd.DataFrame([{"a": 1}]), 5, 1
 
-    monkeypatch.setattr(facade, "execute_query_with_permission", fake_exec)
+    monkeypatch.setattr("backend.core.query_executor.execute_query_with_permission", fake_exec)
     res = facade.execute_sql("SELECT 1 AS a", {"user_id": 9, "username": "u", "workspace_id": 3, "datasource_id": 7})
 
     assert captured["sql"] == "SELECT 1 AS a" and captured["datasource_id"] == 7
@@ -201,7 +201,7 @@ def test_execute_sql_facade_error_mapping(monkeypatch):
     def fail(sql, datasource_id=None, user_context=None, workspace_id=0):
         raise RuntimeError("Access denied for user 'root'@'10.0.0.9'")
 
-    monkeypatch.setattr(facade, "execute_query_with_permission", fail)
+    monkeypatch.setattr("backend.core.query_executor.execute_query_with_permission", fail)
     with pytest.raises(SemanticError) as ei:
         facade.execute_sql("SELECT 1", {"datasource_id": 7})
     assert ei.value.code is ErrorCode.EXEC_FAILED
@@ -210,7 +210,7 @@ def test_execute_sql_facade_error_mapping(monkeypatch):
     def denied(sql, datasource_id=None, user_context=None, workspace_id=0):
         raise PermissionError("角色无该数据源权限")
 
-    monkeypatch.setattr(facade, "execute_query_with_permission", denied)
+    monkeypatch.setattr("backend.core.query_executor.execute_query_with_permission", denied)
     with pytest.raises(SemanticError) as ei:
         facade.execute_sql("SELECT 1", {"datasource_id": 7})
     assert ei.value.code is ErrorCode.FORBIDDEN
