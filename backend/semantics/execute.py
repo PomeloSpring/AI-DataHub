@@ -49,6 +49,22 @@ from backend.semantics.planner import plan
 logger = logging.getLogger(__name__)
 
 
+def _shadow_check(sql: str, *, tag: str, columns: list[str], records_fn, **kwargs: Any) -> None:
+    """shadow 双跑对拍钩子（Phase 7.1，`SEMANTIC_ENGINE_SHADOW` 开启时生效）。
+
+    fail-safe：任何异常（含 records 构造）不影响主链路返回；对拍差异在
+    `execution.shadow` 内结构化落日志。
+    """
+    try:
+        from backend.semantics.execution import shadow
+
+        if not shadow.SHADOW_ENABLED:
+            return
+        shadow.shadow_check(sql, main_columns=columns, main_rows=records_fn(), tag=tag, **kwargs)
+    except Exception:  # noqa: BLE001 — 对拍钩子绝不影响主链路
+        logger.debug("[semantics.execute] shadow check skipped", exc_info=True)
+
+
 class PolicyContext(BaseModel):
     """执行策略上下文：可信身份 + enforcer 裁决产物。
 
@@ -209,10 +225,19 @@ def execute_plan(
             code, message, blocked_at=se.blocked_at or "execute", detail=detail,
         )
 
-    return _to_result(
+    result = _to_result(
         q, binding, p, se, list(bind_warnings or []),
         elapsed_ms=int((time.monotonic() - t0) * 1000),
     )
+    res_names = [c.name for c in result.columns]
+    _shadow_check(
+        p.secured_sql or p.sql, tag="execute_plan",
+        columns=res_names,
+        records_fn=lambda: [dict(zip(res_names, row)) for row in result.rows],
+        datasource_id=binding.datasource_id or q.datasource_id,
+        db_type=binding.db_type, guardrail=p.guardrail,
+    )
+    return result
 
 
 def execute_sql(
@@ -244,6 +269,8 @@ def execute_sql(
 
     names, records = df_to_columns_rows(df)
     rows = [[rec.get(n) for n in names] for rec in records]
+    _shadow_check(sql, tag="execute_sql", columns=names, records_fn=lambda: records,
+                  datasource_id=ctx.datasource_id)
     return SemanticResult(
         columns=[ResultColumn(name=n) for n in names],
         rows=rows,
