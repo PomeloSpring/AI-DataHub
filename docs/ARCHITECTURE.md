@@ -16,17 +16,16 @@ flowchart TB
         Store["Zustand: authStore / chatStore / asBotStore / permissionStore / workspaceStore"]
         SDK["Embed SDK（AK 嵌入看板/大屏）"]
     end
-    GW["Nginx :80（生产）/ Vite Proxy（开发）— 按 /api/* 前缀路由到微服务"]
-    subgraph SVC["微服务层（uvicorn, 无 --reload）"]
-        AUTH["authservice :8006<br/>JWT·用户·角色·权限码·RLS·审计"]
-        DM["datamind :8001<br/>Chat/Agent 编排·Playground·AS-BOT·知识库·执行层适配"]
-        DC["datacatalog :8005<br/>数据源·元数据·本体建模·术语·标签·指标字典·数据集API"]
-        DV["dataviz :8004<br/>看板·图表·报表·Datasets·治理取数"]
-        DG["datagov :8002<br/>质量·血缘·标准·敏感数据"]
-        DF["dataflow :8003<br/>同步·调度·通知"]
-        AI["aiplatform :8007<br/>AS-BOT·MCP·模型配置·Prompt"]
-        GS["graphservice :8011<br/>Oxigraph 知识图谱/SPARQL"]
-        SS["semhub :8012<br/>语义层只读契约(ast/lineage/rls-diff)"]
+    GW["Nginx :80（生产）/ Vite Proxy（开发）— 按 /api/* 前缀路由到 web 单进程（契约端口）"]
+    subgraph SVC["web 单进程 backend/processes/main.py（uvicorn 无 --reload）— 模块化单体，单进程绑定 8001-8007/8012 全部契约端口"]
+        AUTH["auth :8006<br/>JWT·用户·角色·权限码·RLS·审计"]
+        DM["mind :8001<br/>Chat/Agent 编排·Playground·AS-BOT·知识库·执行层适配"]
+        DC["catalog :8005<br/>数据源·元数据·本体建模·术语·标签·指标字典·数据集API"]
+        DV["viz :8004<br/>看板·图表·报表·Datasets·治理取数"]
+        DG["gov :8002<br/>质量·血缘·标准·敏感数据"]
+        DF["flow :8003<br/>同步·调度·通知"]
+        AI["platform :8007<br/>AS-BOT·MCP·模型配置·Prompt"]
+        SS["semhub :8012<br/>语义层只读契约(ast/lineage/rls-diff)·知识图谱 Oxigraph/SPARQL<br/>(原 graphservice 已并入)"]
     end
     subgraph EXEC["LLM 执行层（Harness）"]
         QSA["QoderSDKAdapter<br/>按会话 QoderSDKClient 长对话池"]
@@ -45,26 +44,50 @@ flowchart TB
     DM --> QSA --> LLM
     QSA --> MCP --> SS
     MCP --> DE --> DS
-    DC --> GS --> OXI
+    DC -->|本体激活·graph_sync| SS --> OXI
     DM --> QMIND
     SVC --> MDB
     DG --> DS
 ```
 
-### 服务职责速查
+### 模块职责速查（web 单进程内）
 
-| 服务 | 端口 | 职责 | 关键模块 |
+> 下表前缀均为 `backend/`。Phase 4 起对外 REST 路径/端口与微服务时代**完全一致**（web 单进程同时绑定全部契约端口），服务名仅作为端口 health body 的 `service` 字段保留旧口径。
+
+| 模块 | 契约端口 | 职责 | 关键代码 |
 |---|---|---|---|
-| authservice | 8006 | JWT 认证、用户/角色、权限码注册表、RLS 策略、审计、系统监控 | `api/roles.py`、`services/rls_service.py` |
-| datamind | 8001 | Chat/Agent 编排（SSE 管道）、SQL Playground、AS-BOT API、知识库管理、执行层适配 | `agent/`、`execution/`、`api/playground.py`、`api/as_bot.py`、`rag/qmind_retriever.py` |
-| datacatalog | 8005 | 数据源、元数据、本体建模（生成/激活/YAML 导入）、业务术语、标签、指标/维度字典、本体→知识库同步 | `services/ontology_service.py`、`ontology_kb_sync.py`、`api/metrics.py` |
-| dataviz | 8004 | 看板、图表、报表、可视化大屏、UI 字模库、Datasets 治理建模层、治理取数 | `services/dataset_service.py`、`governed_query.py` |
-| datagov | 8002 | 数据质量、血缘、数据标准、敏感字段治理（敏感基线唯一来源） | — |
-| dataflow | 8003 | 元数据/数据同步任务、定时调度、通知渠道、报告模板 | — |
-| aiplatform | 8007 | AS-BOT 管理、MCP 服务市场、模型配置、Prompt 版本、执行层注册表 | `api/as_bots.py` |
-| graphservice | 8011 | 知识图谱查询（Oxigraph SPARQL）；字典端点已全部下线（读写归指标中心/datacatalog） | `api/graph.py` |
-| semhub | 8012 | 语义层只读契约端点（AST/血缘/RLS diff 预览/provenance） | — |
-| dataengine | (GATEWAY_PORT) | Rust DataFusion 联邦查询网关，MySQL/Doris/SLS provider，RLS 二次校验 | `src/` |
+| modules/auth | 8006 | JWT 认证、用户/角色、权限码注册表、RLS 策略、审计、系统监控 | `api/roles.py`、`core/rls_service.py` |
+| modules/mind | 8001 | Chat/Agent 编排（SSE 管道）、SQL Playground、AS-BOT API、知识库管理、执行层适配 | `agent/`、`execution/`、`api/playground.py`、`api/as_bot.py`、`rag/qmind_retriever.py` |
+| modules/catalog | 8005 | 数据源、元数据、本体建模（生成/激活/YAML 导入）、业务术语、标签、指标/维度字典、本体→知识库同步 | `modules/catalog/services/ontology_service.py`、`ontology_kb_sync.py`、`api/metrics.py` |
+| modules/viz | 8004 | 看板、图表、报表、可视化大屏、UI 字模库、Datasets 治理建模层、治理取数 | `modules/viz/services/dataset_service.py`、`core/governed_query.py` |
+| modules/gov | 8002 | 数据质量、血缘、数据标准、敏感字段治理（敏感基线唯一来源） | — |
+| modules/flow | 8003 | 元数据/数据同步任务、定时调度、通知渠道、报告模板 | — |
+| modules/platform | 8007 | AS-BOT 管理、MCP 服务市场、模型配置、Prompt 版本、执行层注册表 | `api/as_bots.py` |
+| modules/semhub | 8012 | 语义层只读契约端点（AST/血缘/RLS diff 预览/provenance）、知识图谱查询（Oxigraph SPARQL，原 graphservice :8011 已并入退役） | `graph/graph_service.py` |
+| dataengine | 8082 (GATEWAY_PORT) | Rust DataFusion 联邦查询网关，MySQL/Doris/SLS provider，RLS 二次校验（Phase 7 将被 semantics 内嵌引擎替代后退役） | `src/` |
+
+### 分层模块图与部署视图（Phase 4 起）
+
+```mermaid
+flowchart LR
+    subgraph L0["common（L0 纯工具）"]
+        C["db/config/cache/crypto<br/>df_serialize/utils — 禁止 import 其他层"]
+    end
+    subgraph L1["治理与语义内核（L1）"]
+        CORE["core/: enforcer·query_executor·governed_query<br/>role_service·rls_service·task_runtime·perm_link·sql_validator"]
+        SEM["semantics/: gates·rls·planner·intent·models<br/>binding_resolver·sql_guard·mdl_compiler·graph_rag"]
+    end
+    subgraph L2["业务模块（L2）"]
+        M["modules/: catalog·gov·viz·flow<br/>auth·mind·platform·semhub"]
+    end
+    subgraph L3["进程壳（L3）"]
+        P["processes/: main.py（web 合并入口）<br/>serve.py（多 socket 启动器）·celery 入口·mcp_server"]
+    end
+    L0 --> L1 --> L2 --> L3
+```
+
+- 依赖规则：`common ← core/semantics ← modules ← processes` 箭头单向；**L2 之间横向 import 禁止**，由 `tests/test_layering_contract.py` AST 门禁强制（白名单登记：eval/adapters、core/task_runtime 回调表、mind→其他 modules 编排调用）。
+- 部署拓扑（`start-all.sh` 11→4 进程）：**web**（合并入口，单进程绑 8001-8007/8012）+ **celery-worker** + **celery-beat** + **dataengine**(Rust)；开发可选 `python -m backend.processes.serve --reload` 单进程热重载（同为多端口，vite 代理零改动）。
 
 ---
 
@@ -144,14 +167,14 @@ flowchart LR
 | 层 | 选型 | 备注 |
 |---|---|---|
 | 前端 | React 18 + TypeScript + Vite + Tailwind + shadcn/Radix + Zustand + G2/ECharts + ReactFlow + react-markdown | vitest 单测；vite 改 config 自动重启 |
-| 后端 | Python 3.10 + FastAPI × 9 服务 | uvicorn **无 --reload**，改代码/路由必须 `bash services/<svc>/start.sh restart` |
-| 数据访问 | DBUtils 连接池 + PyMySQL；`services/shared/common/db`（元数据）/ `datasource_db`（业务源） | 数据源配置来自 `services/.env` |
+| 后端 | Python 3.10 + FastAPI **web 单进程**（`backend/processes/main.py`，模块化单体分层） | uvicorn **无 --reload**，改代码/路由重启 web（`./stop-all.sh web && ./start-all.sh -d`）；进程拓扑 = web + celery-worker + celery-beat + dataengine |
+| 数据访问 | DBUtils 连接池 + PyMySQL；`backend/common/db`（元数据）/ `datasource_db`（业务源） | 数据源配置来自 `.env`（`services/.env` 优先、`backend/.env` 兜底） |
 | 查询引擎 | Rust DataFusion Gateway（axum 0.7 路由语法 `:id`），MySQL/Doris/SLS provider；不可用时 pymysql/psycopg2 直连兜底 | 连接池 key 不含凭据 → 密码轮换需 PUT 下推或重启引擎 |
 | 存储 | MySQL（OLTP 元数据，全部 `adh_*` 表）；Oxigraph（RDF 命名图，Docker 命名卷）；Doris（可选 OLAP / 可观测大表） | embedding 与 Doris 向量检索已全量移除，统一 GraphRAG + 关键词/BM25 |
 | LLM | Qoder 平台（qoder-agent-sdk）；`QoderSDKClient` 按会话长对话池，失败回落单发 `query()+resume` | 认证 `QODER_PERSONAL_ACCESS_TOKEN` |
 | 知识库 | Qoder qMind 云端 Notebook（qmind CLI 子进程，`QMIND_TOKEN` 自动换取 job token） | 真实 notebook 由 CLI 创建后产品页导入，禁止 SQL 种子假条目 |
 | 网关 | Nginx（生产，`services/dataengine/nginx.conf`）/ Vite proxy（开发，`frontend/vite.config.ts`） | 新增服务前缀两处都要配 |
-| 可观测 | 自研 span/用量采集（`services/shared/observability`），MySQL=OLTP / Doris=OLAP 分库 | 未开启即全链路 no-op、绝不抛出 |
+| 可观测 | 自研 span/用量采集（`backend/observability`），MySQL=OLTP / Doris=OLAP 分库 | 未开启即全链路 no-op、绝不抛出 |
 | 迁移 | `docker/mysql/*.sql` 幂等脚本（CREATE IF NOT EXISTS + INSERT IGNORE + information_schema 判列） | 应用时**必须引号感知分词**，禁止按 `;` 朴素切分 |
 
 ---
@@ -163,7 +186,7 @@ flowchart TB
     subgraph L1["① 功能权限（权限码注册表驱动）"]
         PR["adh_perm_registry<br/>perm_code(module:action)<br/>+ api_pattern/api_method(逗号多值) + menu_key"]
         RP["adh_role_perms: 角色→权限码"]
-        MW["api_permission 中间件（9 服务全注册）<br/>路径+方法命中声明 → 角色需具备任一权限码<br/>admin 放行; 角色未配置=不限制(向后兼容)"]
+        MW["api_permission 中间件（web 单进程注册一次）<br/>路径+方法命中声明 → 角色需具备任一权限码<br/>admin 放行; 角色未配置=不限制(向后兼容)"]
         FS["前端 permissionStore<br/>/roles/current/permissions 一次拉取<br/>→ 菜单显隐 + 按钮 hasPerm"]
         PR --> MW
         RP --> MW
@@ -230,7 +253,7 @@ sequenceDiagram
     participant H as QoderSDKAdapter(Harness)
     participant L as Qoder LLM
     participant T as 进程内MCP工具
-    participant SL as 语义层(shared.semantics)
+    participant SL as 语义层(backend.semantics)
     participant E as DataFusion/直连
     U->>DM: 提问(as_bot_key/workspace)
     DM->>H: ExecutionTask(ctx: 身份ContextVar)
@@ -280,7 +303,7 @@ intent(JSON) ──intent.py 解析(拒 sql/raw_sql/statement)──▶ Semantic
 
 ## 附：关键约定与红线
 
-- 服务以 uvicorn 无 `--reload` 常驻：接口/权限代码改动后必须重启对应服务。
+- 服务以 uvicorn 无 `--reload` 常驻：接口/权限代码改动后重启 **web 单进程**（绑 8001-8007/8012）方生效。
 - 触碰 `enforcer.py / query_executor.py / governed_query.py / playground.py /
   semantic_query.py / df_serialize.py` 后必须跑护城河三套回归测试。
 - 长对话池：流中断/异常即退役回落单发；跨线程埋点须 `contextvars.copy_context().run` 传播 recorder。

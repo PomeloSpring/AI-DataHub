@@ -9,13 +9,13 @@ description: FDE 迭代方法论（Forward Deployed Engineer）。本项目按 P
 > 准确率不是模型属性，是**评测驱动的工程质量**。三因子：意图约束（intent 拒 SQL）× 确定性编译（planner）× 种子解析质量（别名/KB），任何一项改动都要能回答"eval 数据上前进了还是退步了"。
 
 ## 1. Eval 是本体的 CI（先度量，后优化）
-- 评测是**项目内可复用的工程能力**（`services/shared/eval/`），不是 tests/ 下的附属脚本——生产侧（Celery 业务评测、管理页）要能正向导入，评测核心**不得**放 tests/ 供反向依赖。用例存元数据库 `adh_eval_cases`（页面可增删改查），运行结果存 `adh_eval_runs`/`adh_eval_results`，支持版本对比与发布前检查。
+- 评测是**项目内可复用的工程能力**（`backend/eval/`），不是 tests/ 下的附属脚本——生产侧（Celery 业务评测、管理页）要能正向导入，评测核心**不得**放 tests/ 供反向依赖。用例存元数据库 `adh_eval_cases`（页面可增删改查），运行结果存 `adh_eval_runs`/`adh_eval_results`，支持版本对比与发布前检查。
 - 三个评测集（suite）共用一套契约/评分/对比/落库，各层只提供执行适配器：
   - `compile` = **语义层编译**（`intent→binding→plan`），断言解析档位/SQL 形状/拒收/候选回抛，不依赖 LLM 与真实数据行；
   - `retrieval` = **本体层检索**（真跑 `rag_retriever.retrieve_with_strategy`，含 GraphRAG/ontology_traversal），断言命中集合与**检索来源**分桶；
   - `llm` = **LLM 功能**（工具调用轨迹 / 出站脱敏 / 涉密拒绝），三种模式：`trace` 轨迹回放、`handler` 真调工具 handler、`live` 真调 LLM。
   **两类分桶语义不同**：`compile` 的 `dict_exact/dict_alias/phys_col` 是 planner 的名字解析档位，`retrieval` 的 `qmind_hit/graphrag/bm25` 是检索来源。报告里必须分开呈现，**不得拿编译集通过率为检索层背书**。
-- **任何**触碰 prompt（`prompt_composer.py`）、别名/字典、planner、检索策略、本体导入导出的提交，必须跑 `venv/bin/python -m services.shared.eval.runner` 并对比基线：**总正确率与分 tag 正确率不得低于改前**；`tests/test_eval_baseline.py` 作为 pytest 门禁。
+- **任何**触碰 prompt（`prompt_composer.py`）、别名/字典、planner、检索策略、本体导入导出的提交，必须跑 `venv/bin/python -m backend.eval.runner` 并对比基线：**总正确率与分 tag 正确率不得低于改前**；`tests/test_eval_baseline.py` 作为 pytest 门禁。
 - 新解析/检索行为必须**先加 eval 用例再实现**（或同批落地）；只加功能不加用例视为未完成。用例覆盖维度以既有 tag 为准：exact/alias/enum/time_window/time_grain/template/cross_source/unbound/fuzzy/reject/unresolved(no_leak)/combo。
 - 归因优先于调优：解析档位（`provenance.resolution_sources`）、检索来源（knowledge_search 的 `retrieval_source` + observability `kind="retrieval"` span）是决策数据源。**没有分桶数据不做任何检索/解析策略取舍**（如"双发是否拆回按需路由"只能由 eval 与命中率数据判定）。
 
@@ -40,7 +40,7 @@ description: FDE 迭代方法论（Forward Deployed Engineer）。本项目按 P
 - 每次迭代收尾输出：eval 报告（总/分 tag/分来源档位）+ 新增红/修掉的红 + 是否触发回退决策（如拆双发）。
 
 ## 6. 相关门禁速查
-- eval：`venv/bin/python -m services.shared.eval.runner`（`--suite compile|retrieval|llm` 选集，`--json` 供 CI，`--no-persist` 只跑不落库）
+- eval：`venv/bin/python -m backend.eval.runner`（`--suite compile|retrieval|llm` 选集，`--json` 供 CI，`--no-persist` 只跑不落库）
 - 建模回归：见 `ontology-modeling.md` §8
 - 护城河三件套：`tests/test_data_moat_enforcement.py` `tests/test_permission_enforcer.py` `tests/test_permission_e2e.py`
-- 服务重启方生效：datamind=8001、datacatalog=8005（uvicorn 无 --reload）
+- 代码重启方生效：**web 单进程**（`backend/processes/main.py`，绑 8001-8007/8012 全部契约端口，datamind/datacatalog 等旧分服务口径已退役）+ celery-worker/beat（uvicorn 无 --reload）

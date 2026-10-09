@@ -6,7 +6,7 @@ description: 本体建模规范（Ontology Modeling Spec）。本体是唯一语
 # 本体建模规范（Ontology Modeling Spec）— 强制规范
 
 > 本体是 ChatBI 的唯一权威语义层（对标 Palantir Ontology）。以下任一条被违反即视为建模缺陷，必须修复而非妥协。
-> 事实源代码：`services/datacatalog/services/ontology_service.py`（canonical JSON）、`services/shared/semantics/`（planner/binding/models/intent）。
+> 事实源代码：`backend/modules/catalog/services/ontology_service.py`（canonical JSON）、`backend/semantics/`（planner/binding/models/intent）。
 
 ## 1. 事实源与派生分层（单一可编辑源）
 - **canonical JSON doc 是唯一可编辑事实源**（`adh_ontology_models.json_content`）；YAML、内部 md（`to_md`）、RDF 图谱、qmind 上云文档（`to_cloud_md`）、`adh_ontology_objects` 展开行**全部是派生视图**，严禁独立编辑派生物。
@@ -47,8 +47,8 @@ description: 本体建模规范（Ontology Modeling Spec）。本体是唯一语
 - 解析失败/未解析提示只允许出现业务名候选与字典清单，**不得含任何物理表/列名**（有 no_leak 用例把门）。
 
 ## 8. 建模回归门禁
-触碰 `ontology_service.py` / `ontology_kb_sync.py` / `shared/semantics/{planner,models,intent,binding_resolver}.py` / `terminology_manager.py` 后必须跑：
-- `venv/bin/python -m services.shared.eval.runner`（golden-question，**正确率不得回退**；`--suite retrieval` 另跑本体层检索评测）；
+触碰 `ontology_service.py` / `ontology_kb_sync.py` / `backend/semantics/{planner,models,intent,binding_resolver}.py` / `terminology_manager.py` 后必须跑：
+- `venv/bin/python -m backend.eval.runner`（golden-question，**正确率不得回退**；`--suite retrieval` 另跑本体层检索评测）；
 - `tests/test_cloud_md_redaction.py`、`tests/test_doc_freshness.py`、`tests/test_alias_suggestions.py`、`tests/test_terminology_scoping.py`、`tests/test_planner_resolution.py`；
 - 涉及取数执行链（planner/semantic_query/gates）另按护栏 §11 跑护城河三件套。
 新增建模/解析行为分支必须同步新增 eval 用例（尤其：别名命中档位、孤儿引用阻断、上云脱敏、模糊回抛）。

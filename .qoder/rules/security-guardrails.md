@@ -9,7 +9,7 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
 > 违反以下任一条即视为安全缺陷，必须修复而非妥协。改错代价：敏感数据泄露 / RLS 旁路 / 越权。
 
 ## 1. 统一取数入口（不可旁路）
-- 任何返回数据行的执行**必须**经 `services/datamind/nl2sql/sql/query_executor.py: execute_query_with_permission`（或其封装 `services/dataviz/services/governed_query.py: governed_execute`）。
+- 任何返回数据行的执行**必须**经 `backend/core/query_executor.py: execute_query_with_permission`（或其封装 `backend/core/governed_query.py: governed_execute`）。
 - **禁止**新增任何直连数据源、绕过 `permission_enforcer` 的裸执行通道；**禁止**新增"返回数据行但不经治理"的 `/execute` 类端点。
 - 语义层 `run_semantic_query` 与 nl2sql `execute_sql` 是**两条并列的受治理入口**（都满足本护栏），不是"一条合规一条旁路"；判合不合规只看**是否过治理入口**，不看走的是语义层还是 SQL。
 - SQL Playground / 看板 / 报表 / 组件的 raw_sql 取数一律走治理入口，与主链路同源（`execute_via_playground`、`governed_execute`）。
@@ -44,7 +44,7 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
 > 只要满足本护栏全部安全要求（§1–§5、§7–§10），**语义层与 nl2sql 都是允许的取数路径**；
 > 二者不是"合规 vs 裸连"的关系，只是**权限施加机制**不同。走哪条由 **Waker 职责**划分，不是代码硬禁。
 - **语义层 `run_semantic_query`（主路）**：LLM 只产**声明式意图** `{object, metrics[], dimensions[], filters[], order[], limit, time_window…}`，
-  经 intent→binding→plan→**七闸门**（identity / permission / preflight / proposal / approval / execute / audit，`services/shared/semantics/gates.py`）执行；
+  经 intent→binding→plan→**七闸门**（identity / permission / preflight / proposal / approval / execute / audit，`backend/semantics/gates.py`）执行；
   **权限由语义层自身控制**（`permission_token` 校验 + RLS sqlglot 改写 + 审计）。
 - **nl2sql `execute_sql`（受治理旁路）**：只读 `SELECT`/`WITH`，**必须**经 `execute_query_with_permission` → `permission_enforcer.enforce_sql`（敏感基线/RBAC/列级）改写后才执行，
   **行级权限识别由 DataFusion（Rust 引擎 `SecureTableProvider`）在 plan 期施加**，成功/拒绝均落审计。用于语义层无法表达的形状（多表 JOIN、窗口函数、未建模对象）。
@@ -61,12 +61,12 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
 - 相对时间用 `time_window`（`7d/24h/2w/1M`），不得让 LLM 手算绝对日期。
 
 ## 8. 结果序列化无损
-- JOIN `t1.*, t2.*` 等产生的**重复列名**必须经 `services/shared/common/df_serialize.py: df_to_columns_rows` 无损消歧（`col__1…`），再序列化。
+- JOIN `t1.*, t2.*` 等产生的**重复列名**必须经 `backend/common/df_serialize.py: df_to_columns_rows` 无损消歧（`col__1…`），再序列化。
 - **禁止**直接 `df.to_json(orient="records")`（重名列抛 `ValueError` → 500）或用 `try/except` 把失败吞成 `rows=[]`。
 
 ## 9. 审计与可观测不得旁路 / 不得影响主链路
 - 成功与拒绝均落审计（`_log_permission_audit`）；仅真实用户调用落审计行；`policy_id` 数字入数值列、字符串标记入 `policy_name`，不得类型错配。
-- 可观测（`services/shared/observability`）**未开启即全链路 no-op、绝不抛出**；span 文本按 `OBSERVABILITY_SPAN_MAX_CHARS` 截断，**不得**把敏感 SQL/PII 无上限写入。
+- 可观测（`backend/observability`）**未开启即全链路 no-op、绝不抛出**；span 文本按 `OBSERVABILITY_SPAN_MAX_CHARS` 截断，**不得**把敏感 SQL/PII 无上限写入。
 - 深层埋点跨线程（`run_in_executor`）须 `contextvars.copy_context().run` 传播 recorder，否则用量静默丢失。
 
 ## 10. 元数据与视图一致性
@@ -77,7 +77,7 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
 - 触碰 `enforcer.py` / `query_executor.py` / `governed_query.py` / `playground.py` / `semantic_query.py` / `df_serialize.py` 后，**必须**跑：
   `tests/test_data_moat_enforcement.py`、`tests/test_permission_enforcer.py`、`tests/test_permission_e2e.py`，并为新分支补用例（尤其：带别名 JOIN 的 RLS、重名列、无可信身份拒绝、敏感 block 对 admin 生效）。
 - 触碰 `sdk_tools/query_tools.py`（`execute_sql` / `check_sql`）后，**必须**跑 `tests/test_execute_sql_governance.py`：它锁定 execute_sql 只经 `execute_query_with_permission`、权限拒绝在执行前即中止、以及源码级禁止 `get_connection`/裸 `execute_query` 旁路。新增取数工具不得绕过该门禁。
-- 服务以 uvicorn **无 `--reload`** 常驻：接口/权限代码改动后须重启对应服务（datamind=8001、dataviz=8004、aiplatform=8007 等）方生效；数据源配置来自 `services/.env`。
+- 服务以 uvicorn **无 `--reload`** 常驻（Phase 4 起 **web 单进程** `backend/processes/main.py` 单进程绑定 8001-8007/8012 全部契约端口）：接口/权限代码改动后重启 web 即全局生效（`./stop-all.sh web && ./start-all.sh -d`），另有 celery-worker/beat、dataengine；数据源配置来自 `.env`（`services/.env` 优先、`backend/.env` 兜底，见 `backend/common/config.py`）。
 
 ## 12. 禁止的反模式（速查）
 - ❌ 为图方便直连数据源返回数据；❌ 从请求体读用户身份；❌ 让角色/RLS 弱化敏感基线；

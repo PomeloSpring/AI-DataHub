@@ -7,7 +7,7 @@ description: AS-BOT=角色智能体（与智能问数同载体、不同入口）
 
 > AS-BOT 与智能问数中的 LLM 是**同一载体、不同入口**：配置随角色继承（`adh_as_bots`，键 `as_bot_key`），
 > 不再有独立的「AS-BOT 动作」配置面，也没有 `__system_bot__` 哨兵。写动作由**菜单与功能权限码**
-> （`adh_role_perms` + `adh_perm_registry.ai_access`，经 `services/datamind/execution/perm_link.py` 裁决）
+> （`adh_role_perms` + `adh_perm_registry.ai_access`，经 `backend/core/perm_link.py` 裁决）
 > + **AS-BOT 工具授权**直接把关执行（fail-closed），无提议→审批→执行回路。
 
 ## 1. 本体可见域（kind 硬边界 + 能力叠加）

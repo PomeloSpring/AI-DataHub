@@ -5,6 +5,13 @@
 > 本文档用于跨 session 续接。完整执行计划见 `/root/.config/Qoder/SharedClientCache/cache/plans/可信分析平台执行计划_c79b35e8.md`（本地缓存），或重新根据对话上下文重建。
 > 最后更新：2026-09-21
 
+> **路径迁移映射（防口径漂移，2026-10 架构重构后适用）**：下文历史叙述中的路径为迁移前旧路径，按此表换算为当前真源——
+> `services/shared/common/` → `backend/common/`；`services/shared/semantics/` → `backend/semantics/`；`services/shared/eval/` → `backend/eval/`；
+> `services/{datamind,datacatalog,dataviz,datagov,dataflow,aiplatform,authservice,semhub}/` → `backend/modules/{mind,catalog,viz,gov,flow,platform,auth,semhub}/`；
+> `services/graphservice/`（已并入 semhub）→ `backend/modules/semhub/graph/`；治理内核（query_executor/governed_query/enforcer/role_service/rls_service/task_runtime/perm_link）→ `backend/core/`；
+> 各 `services/<svc>/main.py` 进程壳已删（Phase 4）→ 唯一 web 入口 `backend/processes/main.py`（单进程绑 8001-8007/8012），进程拓扑 = web + celery-worker + celery-beat + dataengine；
+> eval 命令 `services.shared.eval.runner`/`tests.eval.runner` → `venv/bin/python -m backend.eval.runner`；`.env` 加载口径（`services/.env` 优先、`backend/.env` 兜底）见 `backend/common/config.py`。
+
 ---
 
 ## 一、核心定位（不可遗忘）
