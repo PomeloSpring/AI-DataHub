@@ -1,1 +1,0 @@
-No build or test scripts are specific to this module; pages are consumed by the app router as-is. `GraphEntities` expects a `token` value in `localStorage` and targets the `/api/graph` backend endpoints, while other pages target `/admin/*` and `/report-templates` routes.

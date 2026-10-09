@@ -1,1 +1,0 @@
-Provides a pluggable agent framework with an intent router, built-in SQL/analysis agents, and a DB-driven configurable agent that executes LLM tool-calling loops over MCP tools.

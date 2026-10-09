@@ -1,1 +1,0 @@
-None — these are plain React page components consumed by the application router; no build or test scripts are scoped to this module.

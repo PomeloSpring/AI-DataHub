@@ -1,1 +1,0 @@
-Interactive knowledge graph visualization and management UI for table relations, business metrics/dimensions, and data lineage, built on React Flow with Dagre layout.

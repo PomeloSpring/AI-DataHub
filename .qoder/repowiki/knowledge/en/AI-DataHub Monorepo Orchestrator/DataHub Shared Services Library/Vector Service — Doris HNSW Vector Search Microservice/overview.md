@@ -1,1 +1,0 @@
-FastAPI microservice exposing REST and MCP SSE APIs for vector similarity search, upsert, delete, and table discovery against a Doris database with HNSW indexes.

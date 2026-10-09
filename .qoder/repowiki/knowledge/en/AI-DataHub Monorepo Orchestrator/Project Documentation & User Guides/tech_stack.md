@@ -1,1 +1,0 @@
-Plain Markdown files; no static-site generator or framework is configured in this scope.

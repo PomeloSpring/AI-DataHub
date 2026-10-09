@@ -1,1 +1,0 @@
-React + TypeScript with shadcn/ui primitives (Dialog, Select, Switch, Badge, Button), lucide-react icons, sonner for toast notifications, and a custom `CronInput` component for cron expression editing.

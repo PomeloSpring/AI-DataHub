@@ -1,1 +1,0 @@
-Vite/React frontend that serves the ChatBI web app, admin console, and a separate embeddable SDK bundle, all sharing one global state layer and API client.

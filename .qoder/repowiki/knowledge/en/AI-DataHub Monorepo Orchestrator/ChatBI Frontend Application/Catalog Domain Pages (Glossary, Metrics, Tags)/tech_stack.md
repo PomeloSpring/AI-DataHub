@@ -1,1 +1,0 @@
-React functional components with TypeScript, Tailwind CSS styling, shadcn/ui primitives (Dialog, Select, Button, Input, Badge), Lucide icons, Sonner for toasts, and Axios-based API clients under `@/api/*`.

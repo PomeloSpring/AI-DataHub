@@ -1,1 +1,0 @@
-Browser-facing Web Component SDK that embeds ChatBI chat and dashboard widgets into third-party pages via a UMD bundle with streaming SSE support.

@@ -1,1 +1,0 @@
-The page reads `token` from `localStorage` and attaches it as an `Authorization: Bearer <token>` header on all `/api/graph/*` requests; graph behavior is driven entirely by URL query params `type` (table-relation | business-knowledge | data-lineage) and `mode` (view | edit | ask).

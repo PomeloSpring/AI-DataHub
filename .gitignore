@@ -87,3 +87,5 @@ scripts
 # pytest tmp artifacts
 pytest-of-*/
 .qoder/plan
+.qoder/plan
+.qoder/repowiki

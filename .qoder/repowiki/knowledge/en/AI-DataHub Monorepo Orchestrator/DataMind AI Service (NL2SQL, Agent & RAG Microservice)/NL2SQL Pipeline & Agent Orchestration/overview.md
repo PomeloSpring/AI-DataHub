@@ -1,1 +1,0 @@
-Natural-language-to-SQL pipeline that routes user queries through quick, deep, or agent modes, orchestrating intent classification, RAG metadata retrieval, LLM SQL generation, validation, execution, and workflow-based multi-step analysis.

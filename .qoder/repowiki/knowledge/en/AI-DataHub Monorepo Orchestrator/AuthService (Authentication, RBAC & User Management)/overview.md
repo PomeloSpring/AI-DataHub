@@ -1,1 +1,0 @@
-FastAPI service providing user authentication with JWT, role-based access control, workspace membership, and audit logging backed by a shared MySQL database.

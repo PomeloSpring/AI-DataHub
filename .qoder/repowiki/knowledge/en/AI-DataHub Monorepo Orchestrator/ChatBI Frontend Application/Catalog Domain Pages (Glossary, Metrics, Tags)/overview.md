@@ -1,1 +1,0 @@
-React page components for the catalog domain that provide CRUD and query UIs for business glossary terms, metrics with dimensions, and hierarchical tag categories.

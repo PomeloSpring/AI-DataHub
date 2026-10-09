@@ -1,1 +1,0 @@
-FastAPI microservice that manages data sync tasks, generates Airflow DAGs, runs scheduled jobs via Celery/Redis, and exposes MCP tools for orchestrating ETL workflows.

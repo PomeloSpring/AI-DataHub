@@ -1,1 +1,0 @@
-Retrieves metadata (tables, columns, SQL templates, business terms, relations, saved datasets) via vector search, BM25, and graph traversal to build prompts for NL2SQL generation.

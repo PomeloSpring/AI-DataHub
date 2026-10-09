@@ -1,1 +1,0 @@
-TypeScript (ES2020 target, strict mode) compiled to a UMD bundle via Vite 5; uses native Web Components (`customElements.define`), Shadow DOM, Fetch API, and ReadableStream/SSE parsing — no external runtime dependencies.

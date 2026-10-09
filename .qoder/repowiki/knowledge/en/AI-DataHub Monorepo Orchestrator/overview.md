@@ -1,1 +1,0 @@
-Top-level orchestrator that wires the ChatBI frontend, nine FastAPI microservices, shared graph/vector services, and Docker/DevOps tooling into a single AI-powered data hub platform.

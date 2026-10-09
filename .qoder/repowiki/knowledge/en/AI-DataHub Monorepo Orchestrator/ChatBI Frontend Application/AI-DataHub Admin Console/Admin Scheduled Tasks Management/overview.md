@@ -1,1 +1,0 @@
-Admin UI for creating, editing, listing, and monitoring scheduled SQL/Agent tasks with execution history, status management, and cleanup operations.

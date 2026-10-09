@@ -1,1 +1,0 @@
-React admin pages for managing LLM prompt templates, report templates, graph metrics/dimensions, notification channels, and data source metadata within the AI-DataHub admin interface.

@@ -1,1 +1,0 @@
-React Flow (`@xyflow/react`) for the DAG canvas, Zustand (`zustand/create`) for global editor state, lucide-react icons, shadcn/ui primitives (Button, Input, Dialog, etc.), and a shared `@/api/client` HTTP client for REST calls to `/admin/workflows*`.

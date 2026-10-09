@@ -1,1 +1,0 @@
-FastAPI microservice on port 8007 exposing REST endpoints for managing AI agents, MCP servers/marketplace, model configuration/lab/training, workflows, brand, cache, and embed operations.

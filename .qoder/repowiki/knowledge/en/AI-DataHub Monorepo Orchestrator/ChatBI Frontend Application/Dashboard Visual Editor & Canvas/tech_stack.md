@@ -1,1 +1,0 @@
-React + TypeScript with React Router for routing; Tailwind CSS for styling; lucide-react icons; sonner for toast notifications; custom `useCanvasInteraction` / `useEditorCharts` hooks for canvas and chart state; shadcn-style primitive components under `components/ui`.
