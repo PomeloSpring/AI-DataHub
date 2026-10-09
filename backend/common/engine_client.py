@@ -41,12 +41,12 @@ def _transpile_for_engine(sql: str) -> str:
     """MySQL/Doris 方言 → DataFusion 方言(引擎边界唯一转译点)。
 
     DataFusion 规划层不认 MySQL 函数(DATE_SUB/DATE_FORMAT/IFNULL 等),
-    会在 plan 期报 Invalid function。方言映射见 shared/semantics/datafusion_dialect。
+    会在 plan 期报 Invalid function。方言映射见 semantics/execution/datafusion_dialect。
     任何转译失败都保留原 SQL 下发(引擎报错 → 上层直接 raise 显式暴露,
     禁止降级直连);调用方持有的原 sql 不变。
     """
     try:
-        from backend.semantics.datafusion_dialect import to_datafusion
+        from backend.semantics.execution.datafusion_dialect import to_datafusion
         out = to_datafusion(sql)
         if out != sql:
             logger.debug("DataFusion dialect transpiled SQL")

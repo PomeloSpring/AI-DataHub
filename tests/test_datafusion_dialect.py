@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from backend.semantics.datafusion_dialect import to_datafusion
+from backend.semantics.execution.datafusion_dialect import to_datafusion
 
 
 def test_date_sub_add_to_interval():

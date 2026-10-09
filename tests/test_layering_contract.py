@@ -33,8 +33,8 @@ EDGE_EXCEPTIONS = [
      "common/auth.py 执行身份/角色解析桥接（函数级）；下沉 core 或经回调表注入列入 backlog"),
     ("common", "core.enforcer", "legacy-bridge",
      "common/auth.py 权限裁决桥接（函数级）；同上"),
-    ("common", "semantics.datafusion_dialect", "legacy-bridge",
-     "common/engine_client.py 方言适配（函数级）；随统一语义层（Phase 6）引擎迁移"),
+    ("common", "semantics.execution.datafusion_dialect", "legacy-bridge",
+     "common/engine_client.py 方言适配（函数级）；方言已移入引擎层，随 Phase 6.2 引擎迁移收口"),
     # ── L2 横向登记豁免（函数级惰性导入）──
     ("platform", "modules.mind.execution", "control-plane",
      "执行层控制面管理 SDK 执行运行时（as_bots/tool_catalog/tool_policy/manager/discovery/session_workspace）；"
