@@ -11,6 +11,7 @@ cleaned up within the same task.
 
 import json
 import logging
+from typing import TYPE_CHECKING
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -20,6 +21,9 @@ import pymysql
 from backend.common.db import get_metadata_conn
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from backend.mcp_client.client import MCPClient
 
 
 @dataclass

@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Depends, Request
-from backend.common.auth import get_current_user, authorize_workspace, resolve_current_user
+from backend.common.auth import authorize_resource_scope, get_current_user, authorize_workspace, resolve_current_user
 # 报表提交契约与派发经任务壳回调表（白名单②）解析，顶层跨模块 import 清零。
 from backend.core.task_runtime import call, get_callback
 

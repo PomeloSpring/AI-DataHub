@@ -509,6 +509,10 @@ def get_workspace_skills(workspace_id: int, user: dict = Depends(get_current_use
         raise HTTPException(status_code=500, detail="获取工作空间技能配置失败")
 
 
+class SkillConfigRequest(BaseModel):
+    is_enabled: bool = True
+
+
 @router.put("/{workspace_id}/skills/{skill_key}")
 def update_workspace_skill(workspace_id: int, skill_key: str, req: SkillConfigRequest,
                            user: dict = Depends(get_current_user)):

@@ -219,6 +219,8 @@ def _huge_scan_guard(sql: str, datasource_id) -> str | None:
     """raw_source/huge 表若无 WHERE 则拒绝(消除无界全表扫旁路)。"""
     try:
         from backend.common.db.metadata_db import get_metadata_conn
+        from backend.core.query_executor import _extract_table_names
+
         tables = _extract_table_names(sql)
         if not tables:
             return None

@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends, Request
-from backend.common.auth import get_current_user, authorize_workspace
+from backend.common.auth import authorize_resource_scope, get_current_user
 from pydantic import BaseModel, Field
 
 from backend.common.db import DBConnection
