@@ -78,5 +78,10 @@ class MySQLConnector:
                 conn.close()
             except Exception:  # noqa: BLE001 — 关闭失败不影响结果返回
                 logger.warning("[mysql-connector] connection close failed", exc_info=True)
-        table = rows_to_arrow(columns, [tuple(r) for r in rows])
+        # 工厂连接为 DictCursor（fetchall 返回 dict 行）；按列名取值，兼容 tuple 行
+        tuples = [
+            tuple(r.get(c) for c in columns) if isinstance(r, dict) else tuple(r)
+            for r in rows
+        ]
+        table = rows_to_arrow(columns, tuples)
         return truncate_rows(dedup_columns(table), max_rows)

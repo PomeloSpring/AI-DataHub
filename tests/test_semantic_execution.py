@@ -172,6 +172,15 @@ def test_mysql_connector_pushdown_pulls_arrow():
     assert table.num_rows == 2 and conn.closed  # max_rows 截断 + 连接关闭
 
 
+def test_mysql_connector_dict_cursor_rows():
+    """工厂连接为 DictCursor（fetchall 返回 dict 行）：值必须按列名取，不得把键当值。"""
+    cur = _FakeCursor(["案例数量"], [{"案例数量": 7}])
+    conn = _FakeConn(cur)
+    c = MySQLConnector(datasource_id=7, conn_factory=lambda: conn)
+    table = c.execute_pushdown("SELECT COUNT(*) AS `案例数量` FROM t LIMIT 10")
+    assert table.to_pydict() == {"案例数量": [7]}  # 值为 7，而非列名
+
+
 def test_rows_to_arrow_dedups_repeated_columns():
     table = rows_to_arrow(["a", "a"], [(1, 2)])
     assert table.column_names == ["a", "a__1"]  # 护栏 §8 无损消歧口径
