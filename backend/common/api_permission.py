@@ -65,9 +65,11 @@ _REPORT_SHARE = re.compile(r"^/api/(?:reports/\d+(?:/public)?|scheduled-tasks/re
 _OPEN_READ_ROUTES = re.compile(
     r"^/api/udfs(?:/.*)?$"
     # 应用壳读（登录后外壳必需，所有角色可见；对应写仍按码门控）：
-    # 品牌配置/菜单树是应用外壳渲染必需读，菜单树本身按角色过滤可见项
-    r"|^/api/admin/brand$"
-    r"|^/api/(?:admin/)?menu-tree(?:/.*)?$")
+    # 品牌配置/菜单树是应用壳渲染必需读，菜单树本身按角色过滤可见项
+    r"|^/api/admin/brand(?:/.*)?$"
+    r"|^/api/(?:admin/)?menu-tree(?:/.*)?$"
+    # 字模库读（看板/大屏渲染必需的样式资产，与品牌同类；管理写仍按码门控）
+    r"|^/api/vis-library/(?:categories|components)(?:/.*)?$")
 # SQL Playground 的纯分析端点（AST / 血缘 / RLS 改写预览 / 溯源）：
 # 只做语法解析与绑定解析，**不返回任何数据行**，因此不按权限码门控，但仍要求登录。
 # 注意同时覆盖 datamind 侧(/api/playground/*) 与语义层侧(/api/semantic/playground/*)，
@@ -362,10 +364,10 @@ def add_api_permission_middleware(app: FastAPI):
             else:
                 raise HTTPException(status_code=401, detail="请先登录")
             if route not in _SELF_ROUTES and not _SELF_ROUTE_PATTERNS.fullmatch(path.rstrip("/")) \
-                    and not (request.method == "GET" and _OPEN_READ_ROUTES.fullmatch(path)) \
-                    and not _OPEN_ANALYZE_ROUTES.fullmatch(path) \
+                    and not (request.method == "GET" and _OPEN_READ_ROUTES.fullmatch(path.rstrip("/"))) \
+                    and not _OPEN_ANALYZE_ROUTES.fullmatch(path.rstrip("/")) \
                     and not await run_in_threadpool(
-                check_api_permission, user["role"], request.method, path,
+                check_api_permission, user["role"], request.method, path.rstrip("/"),
             ):
                 # 被拒的变更同样要落审计（护栏 §9：成功与拒绝均落审计）
                 await run_in_threadpool(
