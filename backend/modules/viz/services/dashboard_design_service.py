@@ -239,8 +239,8 @@ def resolve_scope(doc, user, cur=None):
     if not model:
         raise DesignError("该业务域没有生效的业务本体模型，请先完成建模或选择其他业务域", "no_ontology", 409)
     ws = _derive_workspace(s, ds["id"], user)
-    from backend.common.auth import authorize_workspace
-    authorize_workspace(user, ws)
+    from backend.common.auth import authorize_resource_scope
+    authorize_resource_scope(user, ws)
     allowed = _accessible_datasource_ids(user, ws)
     if allowed is not None and ds["id"] not in allowed:
         raise DesignError("业务域未授权给当前用户", "forbidden", 403)

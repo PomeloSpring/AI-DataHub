@@ -6,7 +6,7 @@ import hmac
 import json
 from datetime import datetime, timezone
 
-from backend.common.auth import authorize_workspace, get_user_by_id
+from backend.common.auth import authorize_resource_scope, authorize_workspace, get_user_by_id
 
 
 def json_object(value) -> dict:

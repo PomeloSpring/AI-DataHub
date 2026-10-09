@@ -34,7 +34,7 @@ async def _quality_access(request: Request, user: dict = Depends(get_current_use
             ws = body.get("workspace_id", 0) if isinstance(body, dict) else 0
         except ValueError:
             ws = 0
-    authorize_workspace(user, ws or 0)
+    authorize_resource_scope(user, ws)
 
 
 router = APIRouter(dependencies=[Depends(_quality_access)])

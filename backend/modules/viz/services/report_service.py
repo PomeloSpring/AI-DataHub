@@ -12,7 +12,7 @@ from typing import Optional
 
 from backend.common.db import DBConnection
 from backend.core.governed_query import governed_execute
-from backend.common.auth import authorize_workspace, resolve_execution_owner
+from backend.common.auth import authorize_resource_scope, authorize_workspace, resolve_execution_owner
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from backend.modules.viz.services import report_access
 

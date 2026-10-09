@@ -49,7 +49,7 @@ async def _scheduled_access(request: Request):
     if resource:
         if resource.get("is_system") and request.method == "GET":
             return
-        authorize_workspace(user, resource.get("workspace_id") or 0)
+        authorize_resource_scope(user, resource.get("workspace_id"))
         if ("task_id" in params or "log_id" in params) and user.get("role") != "admin":
             if int(resource.get("owner_id") or 0) != int(user["user_id"]):
                 raise HTTPException(status_code=404, detail="资源不存在或无权访问")

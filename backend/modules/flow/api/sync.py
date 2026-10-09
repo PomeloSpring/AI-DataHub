@@ -12,7 +12,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
-from backend.common.auth import authorize_workspace, resolve_current_user
+from backend.common.auth import authorize_resource_scope, authorize_workspace, resolve_current_user
 
 from backend.modules.flow.services.sync_service import sync_service, dispatch_sync_task
 
@@ -37,7 +37,7 @@ async def _sync_access(request: Request):
         if resource is None:
             raise HTTPException(status_code=404, detail="同步任务不存在或无权访问")
     if resource:
-        authorize_workspace(user, resource.get("workspace_id") or 0)
+        authorize_resource_scope(user, resource.get("workspace_id"))
         if user.get("role") != "admin" and int(resource.get("owner_id") or 0) != int(user["user_id"]):
             raise HTTPException(status_code=404, detail="同步任务不存在或无权访问")
     else:
@@ -48,7 +48,7 @@ async def _sync_access(request: Request):
                 ws = body.get("workspace_id", 0) if isinstance(body, dict) else 0
             except ValueError:
                 ws = 0
-        authorize_workspace(user, ws or 0)
+        authorize_resource_scope(user, ws)
 
 
 router = APIRouter(dependencies=[Depends(_sync_access)])

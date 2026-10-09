@@ -71,3 +71,35 @@ def test_middleware_trailing_slash_exempt(monkeypatch):
     h = {"Authorization": "Bearer t"}
     assert client.get("/api/admin/brand/", headers=h).status_code == 200
     assert client.get("/api/vis-library/components", headers=h).status_code == 200
+
+
+# ── 资源归属校验（会话语义 vs 资源语义拆分） ───────────────────
+
+
+def test_resource_scope_global_resource_passes():
+    """全局资源（ws=0）不被会话语义误拦（勾了权限码即可见）；会话语义 ws=0 仍拒。"""
+    import pytest as _pytest
+    from fastapi import HTTPException
+
+    from backend.common.auth import authorize_resource_scope, authorize_workspace
+
+    u = {"user_id": 9, "role": "analyst"}
+    assert authorize_resource_scope(u, 0) == 0
+    assert authorize_resource_scope(u, None) == 0
+    with _pytest.raises(HTTPException) as ei:
+        authorize_workspace(u, 0)  # 会话未选空间仍拒（语义保留）
+    assert ei.value.status_code == 403
+
+
+def test_resource_scope_owned_workspace_and_foreign_denied(monkeypatch):
+    import pytest as _pytest
+    from fastapi import HTTPException
+
+    from backend.common.auth import authorize_resource_scope
+    from backend.core.role_service import role_service
+
+    monkeypatch.setattr(role_service, "check_workspace_owner", lambda uid, ws: uid == 9 and ws == 305)
+    u = {"user_id": 9, "role": "analyst"}
+    assert authorize_resource_scope(u, 305) == 305
+    with _pytest.raises(HTTPException):
+        authorize_resource_scope(u, 999)  # 他人空间拒绝

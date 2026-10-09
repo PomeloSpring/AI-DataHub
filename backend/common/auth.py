@@ -111,6 +111,20 @@ def authorize_workspace(user: dict, workspace_id: int) -> int:
     return ws
 
 
+def authorize_resource_scope(user: dict, workspace_id) -> int:
+    """资源归属校验（与 authorize_workspace 的**会话语义**区分）。
+
+    资源归属空间（非 0）时仅属主可访问（同 authorize_workspace）；
+    workspace_id=0/None = **全局/未分域资源**——权限码已由中间件把关，
+    不在此拦（历史缺陷：`authorize_workspace(user, ws or 0)` 把全局资源
+    当未选会话误 403，勾了权限码也进不了页面）。返回归属空间 id。
+    """
+    ws = int(workspace_id or 0)
+    if ws:
+        authorize_workspace(user, ws)
+    return ws
+
+
 def resolve_user_default_workspace_id(user_id: int) -> int:
     """未指定工作空间时的会话归属解析(唯一口径): 用户默认工作空间。
 
