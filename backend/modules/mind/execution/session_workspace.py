@@ -148,6 +148,81 @@ def _lock_conversation_for_deletion(cur, conversation_id, user_id):
     return session
 
 
+def _proc_holds_session(key: str) -> list[int]:
+    """扫描 /proc：cmdline 或 cwd 引用会话 key 的活进程 pid（孤儿 SDK 证据）。"""
+    import os as _os
+    hits: list[int] = []
+    for p in Path("/proc").iterdir():
+        if not p.name.isdigit():
+            continue
+        pid = int(p.name)
+        try:
+            if key in (p / "cmdline").read_bytes().decode("utf-8", "ignore"):
+                hits.append(pid)
+                continue
+            if key in _os.readlink(p / "cwd"):
+                hits.append(pid)
+        except OSError:
+            continue
+    return hits
+
+
+def _remove_token_sandbox(token: str) -> None:
+    """清理执行 token 标记的沙箱容器（清完即无沙箱残留）。"""
+    import subprocess
+    if not re.fullmatch(r"[a-f0-9]{32}", token or ""):
+        raise RuntimeError("执行标识无效")
+    listing = subprocess.run(["docker", "ps", "-aq", "--filter", f"label=adh.agent.execution={token}"],
+                             capture_output=True, text=True, timeout=15, check=True)
+    ids = listing.stdout.split()
+    if any(not re.fullmatch(r"[a-f0-9]{12,64}", cid) for cid in ids):
+        raise RuntimeError("容器标识无效")
+    if ids:
+        subprocess.run(["docker", "rm", "-f", *ids], capture_output=True, timeout=15, check=True)
+
+
+def _dead_execution_evidence(session) -> bool:
+    """执行权残留的否证口径：owner/sdk 均退出 + token 沙箱清完 + /proc 无会话进程。
+
+    任一存活证据存在即 False（绝不误杀活执行）；无证据即可安全回收。
+    """
+    import logging as _logging
+    if process_identity(session.get("owner_pid")) == session.get("owner_start"):
+        return False                      # 宿主仍存活
+    if session.get("sdk_pid") and process_identity(session["sdk_pid"]) == session.get("sdk_start"):
+        return False                      # SDK 仍存活
+    _remove_token_sandbox(session.get("execution_token") or "")
+    held = _proc_holds_session(session["session_key"])
+    if held:
+        _logging.getLogger(__name__).error(
+            "会话仍有存活进程，保持阻断: %s pids=%s", session["session_key"], held)
+        return False
+    return True
+
+
+def _reclaim_dead_execution(session, write=None) -> bool:
+    """回收 running 执行权残留 → interrupted 并释放 token（证据口径，见上）。
+
+    write(sql, params)->rowcount 可注入（删除路径传当前事务游标，避免跨连接死锁）。
+    """
+    import logging as _logging
+    write = write or execute_write
+    token = session.get("execution_token") or ""
+    if not token and session.get("status") != "running":
+        return False
+    if not _dead_execution_evidence(session):
+        return False
+    released = write(
+        "UPDATE adh_agent_sessions SET status='interrupted',execution_token=NULL,"
+        "updated_at=UTC_TIMESTAMP(6) WHERE session_key=%s AND status='running' "
+        "AND (execution_token <=> %s)",
+        (session["session_key"], token))
+    if released:
+        _logging.getLogger(__name__).warning(
+            "执行权残留已回收(owner/sdk 均已退出且无沙箱/进程证据): %s", session["session_key"])
+    return bool(released)
+
+
 def _session_cleanup_root(session):
     """定位待清理目录；返回 None 表示目录已不存在（工作区为空），无需清理。
 
@@ -202,6 +277,15 @@ def delete_conversation_workspace(conversation_id, user_id):
         conn.begin()
         with conn.cursor() as cur:
             session = _lock_conversation_for_deletion(cur, conversation_id, user_id)
+            if session is not None and session.get("execution_token"):
+                # 执行权残留自愈（证据口径）：owner/sdk 均退出且无沙箱/进程证据时
+                # 回收 running 残留，删除不再被僵尸状态永久卡死；有存活证据仍走 409。
+                # write 走当前事务游标，避免跨连接对同行加锁死锁。
+                def _tx_write(sql, params):
+                    cur.execute(sql, params)
+                    return cur.rowcount
+                if _reclaim_dead_execution(session, write=_tx_write):
+                    session = {**session, "status": "interrupted", "execution_token": None}
             if session is None:
                 # 非 Agent 会话无独立目录；绝不根据会话 ID 猜目录或删共享空间。
                 cur.execute("DELETE FROM adh_conversations WHERE id=%s AND user_id=%s", (conversation_id, user_id))
@@ -487,7 +571,13 @@ def reconcile_stale_sessions():
         if process_identity(row.get("owner_pid")) == row.get("owner_start"):
             continue
         if not row.get("sdk_pid") or not row.get("sdk_start"):
-            logging.getLogger(__name__).error("会话未记录 SDK 进程，保持阻断: %s", row["session_key"])
+            # 未登记 SDK 进程：不再无条件永久阻断——按证据口径回收
+            # （owner/sdk 均退出 + token 沙箱清完 + /proc 无会话进程）；
+            # 有存活证据才保持阻断。
+            if _reclaim_dead_execution(row):
+                repaired += 1
+                continue
+            logging.getLogger(__name__).error("会话未记录 SDK 进程且存在存活证据，保持阻断: %s", row["session_key"])
             continue
         try:
             pid = row["sdk_pid"]

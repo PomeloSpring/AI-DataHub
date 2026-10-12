@@ -139,8 +139,9 @@ def create_app() -> FastAPI:
         # flow: 内置任务注册表落库(名称/职责/周期以代码为准，不覆盖暂停开关与运行态)
         from backend.common.system_jobs import ensure_seeded
         ensure_seeded()
-        # catalog: 本体→知识库同步对账循环(T9)；KB_SYNC_RECONCILE=0 可关闭
-        if os.getenv("KB_SYNC_RECONCILE", "1") != "0":
+        # catalog: 本体→知识库同步对账循环；**默认关闭（用户拍板：知识库同步纯手动，
+        # 「同步知识库」按钮是唯一推送路径）**；需临时开自动时设 KB_SYNC_RECONCILE=1
+        if os.getenv("KB_SYNC_RECONCILE", "0") != "0":
             try:
                 from backend.modules.catalog.services.ontology_kb_sync import start_reconciler
                 start_reconciler(int(os.getenv("KB_SYNC_RECONCILE_INTERVAL", "600")))

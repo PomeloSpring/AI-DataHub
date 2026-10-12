@@ -179,6 +179,37 @@ def _skill_sections(skills: list) -> list[str]:
     return sections
 
 
+def _quick_path_lines(paths: list) -> list[str]:
+    """命中快速路径的方案展开(供 Agent 遵循当前问题的权威取数思路)."""
+    lines: list[str] = []
+    for p in paths or []:
+        if not isinstance(p, dict):
+            continue
+        title = (p.get("title") or "").strip()
+        content = (p.get("content") or "").strip()
+        if not title and not content:
+            continue
+        hits = p.get("matched_triggers") or []
+        hint = f"（命中触发词: {', '.join(hits)}）" if hits else ""
+        lines.append(f"### 快速路径:{title or '未命名'}{hint}")
+        if p.get("scenario"):
+            lines.append(f"适用场景: {p['scenario']}")
+        if content:
+            lines.append(content)
+        lines.append("")  # 空行分隔
+    if not lines:
+        return []
+    header = [
+        "## 命中的快速路径查询方案",
+        "以下方案由服务端按用户问题触发词命中,是本轮取数的**权威指引**;",
+        "命中方案中指定的查询思路、示例 SQL 形态或对象/字段引用,应优先遵循,",
+        "在遵循方案的同时仍需满足上/下文所有取数安全约束(护栏、RLS、敏感屏蔽、只读等)。",
+        "方案与本会话工具清单冲突时以工具清单为准;方案内出现的物理信息不得回显给用户。",
+        "",
+    ]
+    return header + lines
+
+
 def _blocked_columns(workspace_id: int, datasource_id: int) -> list:
     """取当前会话生效的合规屏蔽列(全局 ∪ 指定数据源), 失败返回空不阻断。"""
     try:
@@ -298,6 +329,7 @@ def compose_system_prompt(
     user_role: str = "",
     knowledge_bases: list | None = None,
     skills: list | None = None,
+    quick_paths: list | None = None,
     user_id: int = 0,
     workspace_id: int = 0,
     datasource_id: int = 0,
@@ -312,11 +344,14 @@ def compose_system_prompt(
         username / user_role: 当前用户身份,用于自动注入角色与权限
         knowledge_bases: 生效 AS-BOT 绑定的知识库(已归一化,含 name/kb_type),可为 None
         skills: 生效 AS-BOT 勾选绑定并已加载的技能 [{name, display_name, system_prompt}]
+        quick_paths: 命中当前用户问题的快速路径方案 [{title, content, scenario, matched_triggers}],
+            由 backend.modules.mind.execution.quick_paths.match_quick_paths 产出;可为 None
         user_id / workspace_id / datasource_id: 当前会话身份与数据源,用于强制加载
             生效的合规屏蔽列与 RLS 行范围(L1 护城河; datasource_id=0 仍加载全局屏蔽列)
     """
     as_bots = as_bots or []
     skills = skills or []
+    quick_paths = quick_paths or []
     sections: list[str] = []
 
     if default_as_bot:
@@ -337,6 +372,11 @@ def compose_system_prompt(
         skill_sections = _skill_sections(skills)
         if skill_sections:
             sections.append("## 技能详细指引\n\n" + "\n\n".join(skill_sections))
+
+    # 命中的快速路径方案(按用户问题触发词命中,权威指引,先于通用取数规则)
+    qp_lines = _quick_path_lines(quick_paths)
+    if qp_lines:
+        sections.append("\n".join(qp_lines).rstrip())
 
     # 已绑定知识库: 仅作口径/背景补充(回退用), 不作对象/指标/维度名称来源; 取数以语义层为先。
     # (与 SEMANTIC_QUERY_RULES 的"语义层优先"一致, 不再引导"回答前先 knowledge_search")。

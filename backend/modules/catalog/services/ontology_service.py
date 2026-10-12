@@ -252,9 +252,7 @@ ONTOLOGY_SCHEMA_SPEC = """你是数据架构师，负责从物理表结构中归
           "description": ""
         }
       ],
-      "metrics": [
-        {"name": "GMV", "formula": "SUM(pay_amount)", "description": ""}
-      ]
+      "metrics": ["指标名1", "指标名2"]
     }
   ]
 }
@@ -263,9 +261,13 @@ ONTOLOGY_SCHEMA_SPEC = """你是数据架构师，负责从物理表结构中归
 1. 对象命名面向业务（订单、客户、商品），不要直接照搬表名堆砌
 2. 每张重要业务表至少被一个对象覆盖；日志/配置/临时表可忽略
 3. properties 只列业务相关列（主键、业务字段、状态枚举），忽略纯技术字段
-4. enum 仅对低基数状态/类型字段填写，格式 "值=含义"，不确定就留空数组
+4. enum 仅对低基数状态/类型字段填写，格式 {"0": "待支付", "1": "已支付"}（code→业务标签），不确定就留空对象
 5. links 优先使用已知 relations，其次根据列名语义推断（需给出 join 表达式）
-6. 指标优先采用给定 Metrics/Terms 中的口径"""
+6. metrics 只引用指标名字符串（口径/formula/单位统一登记在指标字典，对象不内嵌口径）；
+   指标优先采用给定 Metrics/Terms 中的名字
+7. 描述按 5W2H 槽位组织（与检索侧槽位规划同骨架）：what=业务含义/口径、when=时间口径、
+   who/where=归属主体/维度范围、howMuch=单位量纲；指标的 what/how/howMuch（口径文字、聚合、单位）
+   写进指标字典 description，不在对象里重复"""
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -304,6 +306,131 @@ def normalize_object_key(key: str) -> str:
     s = s.lower()
     s = _KEY_NON_ALNUM.sub("_", s).strip("_")
     return re.sub(r"_{2,}", "_", s)
+
+
+# ── 指标/枚举条目格式（单一登记后的规范形态） ──────────────────────
+# metrics 仅存指标名字符串（口径唯一登记在 adh_metrics 字典）；
+# enum 仅存 {code: label} 对象（与 adh_dimensions.value_labels 同构）。
+# 读路径对旧格式容错+告警（可诊断），写路径 fail-loud 拒收（见 validate_doc_formats）。
+
+def _metric_name(m) -> str:
+    """指标条目取名：新格式 str（唯一合法）；旧格式 dict 容错读并告警。"""
+    if isinstance(m, str):
+        return m.strip()
+    if isinstance(m, dict):
+        logger.warning("[ontology] 读到旧格式指标条目(dict) %r，按名字引用处理", m.get("name"))
+        return str(m.get("name") or "").strip()
+    return str(m or "").strip()
+
+
+def enum_pairs(enum) -> list[tuple[str, str]]:
+    """枚举取 (code, label) 对：新格式 dict（唯一合法）；旧格式 [\"0=否\"] 容错解析并告警。"""
+    if isinstance(enum, dict):
+        return [(str(k), str(v)) for k, v in enum.items()]
+    if isinstance(enum, (list, tuple)):
+        pairs = [p for p in (_enum_item_to_label(it) for it in enum) if p]
+        if pairs:
+            logger.warning("[ontology] 读到旧格式 enum(字符串列表)，已容错解析，请迁移为 {code: label}")
+        return pairs
+    return []
+
+
+def validate_doc_formats(doc: dict) -> list[str]:
+    """写闸（迁移后 fail-loud）：metrics 仅接受名字字符串、enum 仅接受 {code: label} 对象。"""
+    errors: list[str] = []
+    for o in doc.get("objects") or []:
+        key = o.get("key") or ""
+        for m in o.get("metrics") or []:
+            if not isinstance(m, str):
+                errors.append(
+                    f"对象 {key} 的指标条目 {m!r} 为旧格式(dict)；口径唯一登记在指标字典，"
+                    "对象 metrics 只接受指标名字符串")
+        for p in o.get("properties") or []:
+            en = p.get("enum")
+            if en and not isinstance(en, dict):
+                errors.append(
+                    f"对象 {key} 属性 {p.get('column') or p.get('name')!r} 的 enum 为旧格式；"
+                    "仅接受 {code: label} 对象（与 value_labels 同构）")
+    return errors
+
+
+def _infer_agg(formula: str) -> str:
+    m = re.match(r"(?is)^\s*(SUM|AVG|COUNT|MIN|MAX)\s*\(", formula or "")
+    return m.group(1).upper() if m else "CUSTOM"
+
+
+def absorb_object_metric_specs(doc: dict, datasource_id: int = 0,
+                               persist: bool = True) -> dict:
+    """把对象内旧格式指标条目({name,formula,description})归并进指标字典并降为名字引用。
+
+    口径唯一登记 = adh_metrics（规则 §3）；幂等；已登记口径非空且不一致→告警不覆盖
+    （人工口径优先）。persist=False 只归一 doc（dry-run）。
+    """
+    specs: list[tuple[str, str, str, str]] = []
+    for o in doc.get("objects") or []:
+        names: list[str] = []
+        for m in o.get("metrics") or []:
+            if isinstance(m, str):
+                if m.strip():
+                    names.append(m.strip())
+                continue
+            if not isinstance(m, dict):
+                continue
+            name = str(m.get("name") or "").strip()
+            if not name:
+                continue
+            specs.append((str(o.get("key") or ""), name,
+                          str(m.get("formula") or "").strip(),
+                          str(m.get("description") or "").strip()))
+            names.append(name)
+        o["metrics"] = names
+    if not specs or not persist:
+        return doc
+
+    from backend.common.db.metadata_db import get_metadata_conn
+    # adh_metrics.datasource_id 是 INT：雪花 id 超出范围时新行落 0（全局口径），显式告警不硬塞
+    ds_val = int(datasource_id or 0)
+    if not (0 <= ds_val <= 2**31 - 1):
+        logger.warning("[ontology] 数据源 id %s 超出字典 INT 列范围，新增指标行按全局(0)登记", ds_val)
+        ds_val = 0
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            for obj_key, name, formula, desc in specs:
+                cur.execute(
+                    "SELECT id, formula, description, bound_object_key FROM adh_metrics "
+                    "WHERE name = %s AND is_active = 1 "
+                    "AND (datasource_id = 0 OR datasource_id = %s) "
+                    "ORDER BY datasource_id DESC LIMIT 1",
+                    (name, ds_val))
+                row = cur.fetchone()
+                if row:
+                    if formula and (row.get("formula") or "") and row["formula"] != formula:
+                        logger.warning("[ontology] 指标 %s 口径冲突(字典优先,未覆盖): %r vs %r",
+                                       name, row["formula"], formula)
+                    if formula and not (row.get("formula") or ""):
+                        cur.execute("UPDATE adh_metrics SET formula = %s WHERE id = %s",
+                                    (formula, row["id"]))
+                    if desc and not (row.get("description") or ""):
+                        cur.execute("UPDATE adh_metrics SET description = %s WHERE id = %s",
+                                    (desc, row["id"]))
+                    if obj_key and not (row.get("bound_object_key") or ""):
+                        cur.execute("UPDATE adh_metrics SET bound_object_key = %s WHERE id = %s",
+                                    (obj_key, row["id"]))
+                else:
+                    now = _now()
+                    cur.execute("SELECT COALESCE(MAX(id), 0) + 1 AS nid FROM adh_metrics")
+                    row_id = cur.fetchone()["nid"]
+                    agg = _infer_agg(formula)
+                    cur.execute(
+                        "INSERT INTO adh_metrics "
+                        "(id, workspace_id, name, formula, agg_type, description, "
+                        "target_table, target_column, datasource_id, is_active, "
+                        "created_at, updated_at, default_agg, bound_object_key) "
+                        "VALUES (%s, 0, %s, %s, %s, %s, '', '', %s, 1, %s, %s, %s, %s)",
+                        (row_id, name, formula or "", agg, desc or "",
+                         ds_val, now, now, agg, obj_key or None))
+        conn.commit()
+    return doc
 
 
 def find_duplicate_object_keys(doc: dict) -> list:
@@ -369,12 +496,12 @@ def merge_object_pair(a: dict, b: dict) -> tuple:
     merged["links"] = _union_items(
         lambda x: (str(x.get("target") or ""), str(x.get("join") or "")),
         base.get("links"), other.get("links"))
-    merged["metrics"] = _union_items(
-        lambda x: str(x.get("name") or ""), base.get("metrics"), other.get("metrics"))
+    merged["metrics"] = [_metric_name(x) for x in _union_items(
+        _metric_name, base.get("metrics"), other.get("metrics")) if _metric_name(x)]
     if not (merged.get("description") or "").strip():
         merged["description"] = other.get("description") or ""
-    gained = ({str(m.get("name")) for m in merged.get("metrics") or []}
-              - {str(m.get("name")) for m in base.get("metrics") or []})
+    gained = (set(merged["metrics"])
+              - {_metric_name(m) for m in base.get("metrics") or []})
     return merged, {"key": merged.get("key"), "dropped": other.get("key"),
                     "gained_metrics": sorted(gained)}
 
@@ -597,9 +724,9 @@ def _object_md(obj: dict) -> str:
                 seg += f": {p.get('name', '')}"
                 if p.get("description") and p["description"] != p.get("name"):
                     seg += f"，{p['description']}"
-            enum = p.get("enum") or []
+            enum = p.get("enum") or {}
             if enum:
-                seg += f"；枚举: {'; '.join(str(e) for e in enum)}"
+                seg += f"；枚举: {'; '.join(f'{c}={l}' for c, l in enum_pairs(enum))}"
             lines.append(seg)
 
     links = obj.get("links") or []
@@ -621,7 +748,10 @@ def _object_md(obj: dict) -> str:
         lines.append("")
         lines.append("### 指标")
         for m in metrics:
-            seg = f"- {m.get('name', '')}"
+            if isinstance(m, str):
+                lines.append(f"- {m}")
+                continue
+            seg = f"- {_metric_name(m)}"
             if m.get("formula"):
                 seg += f" = {m['formula']}"
             if m.get("description"):
@@ -732,8 +862,11 @@ def _cloud_object_md(obj: dict, template_vars_fn=None, dict_metrics: dict = None
             seg += ")"
         if p.get("description") and p["description"] != biz:
             seg += f": {p['description']}"
-        enum = p.get("enum") or []
-        if enum:
+        enum = p.get("enum") or {}
+        if isinstance(enum, dict) and enum:
+            seg += "；枚举: " + "; ".join(
+                f"{k}:{v}" for k, v in sorted(enum.items(), key=lambda kv: str(kv[0])))
+        elif isinstance(enum, list) and enum:
             seg += f"；枚举: {'; '.join(str(e) for e in enum)}"
         rendered_props.append(seg)
     if rendered_props:
@@ -790,7 +923,11 @@ def _cloud_object_md(obj: dict, template_vars_fn=None, dict_metrics: dict = None
         lines.append("### 派生字段（对象上的计算字段，非口径）")
         for m in derived:
             # 保留名称与文字说明, 剔除 formula 原文（可能含物理列名）
-            seg = f"- {m.get('name', '')}"
+            name = _metric_name(m)
+            if isinstance(m, str):
+                lines.append(f"- {name}")
+                continue
+            seg = f"- {name}"
             if m.get("description"):
                 seg += f"（{m['description']}）"
             lines.append(seg)
@@ -986,6 +1123,11 @@ def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
     if not isinstance(doc.get("objects"), list) or not doc["objects"]:
         raise ValueError("JSON 必须包含非空 objects 数组")
 
+    # 迁移后写闸（fail-loud）：metrics 仅名字字符串、enum 仅 {code: label} 对象
+    fmt_errors = validate_doc_formats(doc)
+    if fmt_errors:
+        raise ValueError("本体条目格式不符合规范，拒绝保存: " + "; ".join(fmt_errors[:10]))
+
     # 补齐上下文，供绑定重算 / 派生使用。**按 kind 归一**（x4 归属改造）：
     # 源本体的 datasource_id 是物理来源（保留）；业务/系统本体的归属是 domain+kind，
     # 不得把 datasource_id 写回 doc —— 否则会把新结构（domain+kind+sources）的业务本体
@@ -1000,6 +1142,12 @@ def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
         doc.setdefault("sources", [])
     doc.setdefault("domain", model.get("domain") or "")
     doc.setdefault("description", "")
+
+    # v0.5(B6b): execution_binding 不再是 doc 可编辑事实源——物理绑定唯一在部署
+    # 绑定层(adh_ontology_bindings)。存量/误编辑带入的字段在此迁移性剥离(非静默，log 注明)。
+    _stripped = _strip_execution_bindings(doc)
+    if _stripped:
+        logger.info("[ontology] save_draft: 剥离 %d 处 execution_binding（部署绑定层唯一事实）", _stripped)
 
     # 业务本体路由化校验（§4 宁阻断勿悬空）：结构/引用错误拒绝保存，不静默落库。
     # 旧形态业务本体（带物理绑定）在迁移前保存即被拒（fail-loud），提示走迁移脚本。
@@ -1188,10 +1336,8 @@ def sync_enums_to_dimensions(doc: dict, datasource_id: int) -> dict:
                 continue
             tbl, col = col_ref.split(".", 1)
             entry = by_col.setdefault((tbl, col), {"labels": {}, "aliases": set()})
-            for it in (p.get("enum") or []):
-                parsed = _enum_item_to_label(it)
-                if parsed:
-                    entry["labels"][parsed[0]] = parsed[1]
+            for code, label in enum_pairs(p.get("enum")):
+                entry["labels"][code] = label
             for a in (p.get("name"), p.get("description")):
                 a = str(a or "").strip()
                 if not a or a == col:
@@ -1277,32 +1423,80 @@ def sync_enums_to_dimensions(doc: dict, datasource_id: int) -> dict:
 
 
 def _sync_active_model(doc: dict, model_id: int, datasource_id: int) -> None:
-    """激活态编辑保存时的联动刷新：重算 binding → 重展开对象 → 重写绑定。
+    """激活态编辑保存时的联动刷新（v0.5 B6b）：重展开对象 + 内嵌绑定回填 + enum→字典联动。
 
-    会就地修改 doc.objects[].execution_binding，使回写的 JSON 与结构化绑定保持权威一致。
+    execution_binding 不再是 doc 可编辑事实源：物理绑定唯一在部署绑定层
+    （adh_ontology_bindings，deploy_contract_bindings 管理），保存不重算/不重写
+    绑定行；对象展开行的 execution_binding 内嵌列由 _backfill_execution_binding
+    从绑定行回填（派生投影，供检索/展示与 Level 2 兑底）。
     图谱重建不在此处触发：需等 save_draft 将最新 json_content 落库后再调，
     否则 _merge_ontology_models 会读到旧内容，使图谱滞后一次保存。
     """
     from backend.modules.catalog.services import ontology_yaml_import as _yimp
 
-    kind = str(doc.get("kind") or "")
-    # 业务本体是路由索引层：对象无 primary_table、不产生物理绑定
-    # （执行真源是源本体，binding_resolver 只认 source/system），只做对象展开；
-    # enum→字典联动对无物理列对象天然 no-op，不必跑。
-    if kind == "business":
-        _expand_objects(doc, model_id, datasource_id, kind=kind)
-        return
-
-    table_info = _yimp._load_table_info_map(datasource_id)
     ds_name = _yimp._datasource_name_by_id(datasource_id)
-    doc["datasource_name"] = ds_name
-    for obj in doc.get("objects") or []:
-        obj["execution_binding"] = _yimp._build_execution_binding(
-            obj.get("primary_table") or "", datasource_id, table_info, datasource_name=ds_name)
-    _expand_objects(doc, model_id, datasource_id, kind=kind)
-    _yimp._persist_bindings(doc, model_id)
-    # 本体 enum/属性中文名 → 语义维度字典(别名与枚举标签的唯一联动点)
+    if ds_name:
+        doc["datasource_name"] = ds_name
+    _expand_objects(doc, model_id, datasource_id, kind=str(doc.get("kind") or ""))
+    _backfill_execution_binding(model_id)
+    # 本体 enum/属性中文名 → 语义维度字典(别名与枚举标签的唯一联动点，各 kind 统一)
     sync_enums_to_dimensions(doc, datasource_id)
+
+
+def _strip_execution_bindings(doc: dict) -> int:
+    """剥离 doc.objects[].execution_binding（v0.5 B6b：物理绑定唯一在部署绑定层）。"""
+    n = 0
+    for o in doc.get("objects") or []:
+        if "execution_binding" in (o or {}):
+            o.pop("execution_binding", None)
+            n += 1
+    return n
+
+
+def _backfill_execution_binding(model_id: int) -> int:
+    """对象展开行 execution_binding 内嵌列从部署绑定行回填（派生投影）。
+
+    事实源唯一是 adh_ontology_bindings；内嵌列仅供检索/展示与
+    binding_resolver Level 2 兑底，不参与写回。
+    """
+    import json as _json
+    from backend.common.db.metadata_db import get_metadata_conn
+
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT object_key, product_ref, physical_table, column_map, bind_kind, "
+                "query_mode, sync_state, template_ref FROM adh_ontology_bindings "
+                "WHERE model_id = %s AND status = 'active'", (model_id,))
+            rows = cur.fetchall() or []
+        agg: dict[str, dict] = {}
+        for r in rows:
+            key = str(r["object_key"])
+            cm = r.get("column_map")
+            if isinstance(cm, str):
+                try:
+                    cm = _json.loads(cm or "{}")
+                except ValueError:
+                    cm = {}
+            eb = {
+                "product_ref": str(r.get("product_ref") or ""),
+                "physical_table": str(r.get("physical_table") or ""),
+                "column_map": cm or {},
+                "bind_kind": str(r.get("bind_kind") or ""),
+                "query_mode": str(r.get("query_mode") or ""),
+                "sync_state": str(r.get("sync_state") or ""),
+                "template_ref": str(r.get("template_ref") or ""),
+            }
+            if key not in agg or (not agg[key].get("product_ref") and eb["product_ref"]):
+                agg[key] = eb
+        with conn.cursor() as cur:
+            for key, eb in agg.items():
+                cur.execute(
+                    "UPDATE adh_ontology_objects SET execution_binding = %s "
+                    "WHERE model_id = %s AND object_key = %s AND is_active = 1",
+                    (_json.dumps(eb, ensure_ascii=False), model_id, key))
+        conn.commit()
+    return len(agg)
 
 
 def find_unregistered_tables(doc: dict) -> list:
@@ -1610,8 +1804,8 @@ def _datasource_name_set() -> set:
             return {str(r["name"] or "").strip() for r in cur.fetchall()} - {""}
 
 
-def find_business_route_issues(doc: dict) -> list:
-    """业务本体（kind=business）路由化校验：路由索引层的结构与引用一致性。
+def _retired_find_business_route_issues_v04(doc: dict) -> list:
+    """【已退役 v0.5，保留供审计追溯，不再被调用】业务本体（kind=business）路由化校验：路由索引层的结构与引用一致性。
 
     业务本体是「概念 → 数据源」的路由索引层（数据资产路由图，不是源本体副本），
     三类缺陷按 §4 宁阻断勿悬空给 error：
@@ -1708,6 +1902,17 @@ def find_business_route_issues(doc: dict) -> list:
     return issues
 
 
+def find_business_route_issues(doc: dict) -> list:
+    """【v0.5 退役】业务本体"路由索引层"校验已随多站点语义网退场（B5/B6）。
+
+    v0.4 终态（GLOBAL_SEMANTIC_LAYER_DESIGN §3）：业务本体=人编业务知识图谱（契约），
+    可携带物理绑定（B6b 前暂存 doc，之后移出至部署绑定层）；route 层已退役。
+    恒返回空——不再阻断契约形态的保存；旧范式实现在
+    _retired_find_business_route_issues_v04（仅供审计追溯）。
+    """
+    return []
+
+
 # 历史背景：objects[].actions[] 与 rules[] permission 声明曾投影到
 # adh_as_bot_action_registry / adh_as_bot_role_actions（AS-BOT 动作权限矩阵 +
 # 审批通道）。AS-BOT 与 AS-BOT 统一后该机制整体退役：动作权限由菜单与功能
@@ -1732,6 +1937,11 @@ def activate(model_id: int) -> dict:
     objects = doc.get("objects") or []
     if not objects:
         raise ValueError("模型无对象，无法激活")
+
+    # 迁移后写闸（fail-loud）：metrics 仅名字字符串、enum 仅 {code: label} 对象
+    fmt_errors = validate_doc_formats(doc)
+    if fmt_errors:
+        raise ValueError("本体条目格式不符合规范，拒绝激活: " + "; ".join(fmt_errors[:10]))
 
     dups = find_duplicate_object_keys(doc)
     if dups:
@@ -1982,8 +2192,10 @@ def check_doc_quality(doc: dict) -> dict:
                     "message": f"对象 {key} 的关系指向不存在的对象 {lk.get('target')!r}"
                                f"（悬空引用，§4 宁阻断勿悬空）"})
 
-        # 4) 指标 formula 形状
+        # 4) 指标 formula 形状（仅旧格式 dict 条目；新格式名字引用的口径在字典层）
         for m in (o.get("metrics") or []):
+            if not isinstance(m, dict):
+                continue
             formula = str(m.get("formula") or "").strip()
             if not formula:
                 continue

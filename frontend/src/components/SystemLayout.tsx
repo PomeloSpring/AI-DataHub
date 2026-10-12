@@ -50,7 +50,7 @@ const SYSTEM_MENU_ITEMS = [
   { key: '/system/config-versions', icon: GitBranch, label: 'Prompt配置' },
   { section: '知识管理' },
   { key: '/system/knowledge-base', icon: BookOpen, label: '知识库' },
-  { key: '/system/knowledge-management', icon: BookOpen, label: '知识管理' },
+  { key: '/system/knowledge-management', icon: BookOpen, label: '快速路径' },
   { section: '可视化配置' },
   { key: '/system/dashboards', icon: BarChart3, label: '看板管理' },
   { key: '/system/vis-library', icon: LayoutTemplate, label: 'UI 字模库' },

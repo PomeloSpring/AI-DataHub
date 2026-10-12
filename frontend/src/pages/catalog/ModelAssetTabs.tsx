@@ -29,6 +29,61 @@ const GRAPH_VIEWS = [
   { key: 'data-lineage', label: '血缘桥接' },
 ];
 
+/** 部署绑定子页：对象 × 站点部署绑定表（事实源=部署绑定；显示 name 不裸 id，ui-resource-display）。 */
+export function ModelDeploymentsTab({ modelId }: { modelId: number }) {
+  const [rows, setRows] = useState<any[]>([]);
+  const [error, setError] = useState('');
+  const load = useCallback(() => {
+    if (!modelId) return;
+    ontologyApi.deployments(modelId).then((r: any) => {
+      setRows(r?.data?.items || []);
+      setError('');
+    }).catch((e: any) => setError(String(e?.response?.data?.detail || e?.message || e)));
+  }, [modelId]);
+  useEffect(() => { load(); }, [load]);
+  return (
+    <ScrollArea className="h-full">
+      <div className="p-3">
+        <div className="text-xs font-medium text-muted-foreground mb-2">
+          对象 × 站点部署绑定（一份契约 × N 站部署；映射由工具辅助生成/校验，人工审业务层）
+        </div>
+        {error && <div className="text-xs text-destructive mb-2">部署清单加载失败: {error}</div>}
+        {!error && !rows.length && <div className="text-sm text-muted-foreground">暂无部署绑定</div>}
+        {!!rows.length && (
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-muted-foreground border-b">
+                <th className="py-1.5 pr-2 font-medium">对象</th>
+                <th className="py-1.5 pr-2 font-medium">站点</th>
+                <th className="py-1.5 pr-2 font-medium">数据源</th>
+                <th className="py-1.5 pr-2 font-medium">物理表</th>
+                <th className="py-1.5 pr-2 font-medium">数据产品</th>
+                <th className="py-1.5 pr-2 font-medium">状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r: any, i: number) => (
+                <tr key={`${r.object_key}-${r.datasource}-${i}`} className="border-b last:border-0">
+                  <td className="py-1.5 pr-2">{r.object_name}</td>
+                  <td className="py-1.5 pr-2">{r.site}</td>
+                  <td className="py-1.5 pr-2">{r.datasource}</td>
+                  <td className="py-1.5 pr-2 font-mono">{r.physical_table || '—'}</td>
+                  <td className="py-1.5 pr-2">{r.product_ref || '—'}</td>
+                  <td className="py-1.5 pr-2">
+                    <Badge variant="outline" className={r.status === 'active' ? 'text-green-600 border-green-300' : 'text-muted-foreground'}>
+                      {r.status === 'active' ? '✓ 已绑定' : (r.status || '—')}
+                    </Badge>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </ScrollArea>
+  );
+}
+
 export function ModelGraphTab({ datasourceId, kind, domain, singleView }: {
   datasourceId: number;
   /** 本体类型：source/business/system。图谱归属与标题按 kind，**不按 datasource_id**——
@@ -346,7 +401,7 @@ function useSourceOntologies() {
   useEffect(() => {
     ontologyApi.list().then((r) => {
       setSources((r.data.items || [])
-        .filter((m) => m.status === 'active' && (m.kind === 'source' || !m.kind))
+        .filter((m) => m.status === 'active' && m.kind !== 'system')
         .map((m) => ({ name: m.name, id: m.id })));
     }).catch(() => setSources([]));
   }, []);

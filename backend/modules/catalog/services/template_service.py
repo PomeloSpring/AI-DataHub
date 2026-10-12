@@ -14,18 +14,6 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-_EMBEDDING_DIM = 768
-
-
-def _placeholder_embedding() -> str:
-    """Zero-vector placeholder for the logically-disabled embedding column.
-
-    The column is retained (Doris ARRAY<FLOAT> NOT NULL / MySQL JSON) but is no
-    longer produced by an embedding model nor read by any retrieval path.
-    """
-    return "[" + ", ".join(["0.0"] * _EMBEDDING_DIM) + "]"
-
-
 class TemplateService:
     """SQL模板服务 — 管理 SQL 模板的增删改查。"""
 
@@ -100,18 +88,17 @@ class TemplateService:
 
                 now = _now()
                 row_id = int(_time.time() * 1000000)
-                vec_literal = _placeholder_embedding()
 
                 cur.execute(
                     "INSERT INTO adh_sql_templates "
                     "(id, template_id, template_name, category, intent_keywords, "
                     "sql_template, variables, description, rules, usage_count, is_active, "
-                    "datasource_id, created_at, updated_at, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, %s, %s, %s, %s)",
+                    "datasource_id, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, %s, %s, %s)",
                     (row_id, data["template_id"], data["template_name"], data.get("category", ""),
                      data.get("intent_keywords", ""), data["sql_template"], data.get("variables") or "",
                      data.get("description") or "", data.get("rules") or "", 1 if data.get("is_active", True) else 0,
-                     data.get("datasource_id") or 0, now, now, vec_literal),
+                     data.get("datasource_id") or 0, now, now),
                 )
             conn.commit()
             return {"success": True, "id": row_id}
@@ -144,7 +131,6 @@ class TemplateService:
                         fields[f] = row.get(f) or ""
                 is_active = data.get("is_active") if data.get("is_active") is not None else bool(row["is_active"])
 
-                vec_literal = _placeholder_embedding()
                 now = _now()
 
                 datasource_id = data.get("datasource_id") if data.get("datasource_id") is not None else row.get("datasource_id", 0)
@@ -156,12 +142,12 @@ class TemplateService:
                     "INSERT INTO adh_sql_templates "
                     "(id, template_id, template_name, category, intent_keywords, "
                     "sql_template, variables, description, rules, usage_count, is_active, "
-                    "datasource_id, created_at, updated_at, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "datasource_id, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (row_id, row.get("template_id", ""), fields["template_name"], fields["category"],
                      fields["intent_keywords"], fields["sql_template"], fields["variables"],
                      fields["description"], fields.get("rules", ""), row.get("usage_count", 0),
-                     1 if is_active else 0, datasource_id, now, now, vec_literal),
+                     1 if is_active else 0, datasource_id, now, now),
                 )
             conn.commit()
             return {"success": True}

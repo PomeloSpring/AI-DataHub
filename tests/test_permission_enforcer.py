@@ -58,6 +58,25 @@ class TestExtractTables:
         assert "Orders" in tables
         assert "Users" in tables
 
+    def test_qualified_db_table_join(self, enforcer):
+        """限定名 db.table 提取保留限定段，JOIN 两侧都在（护栏 §10）。"""
+        sql = "SELECT * FROM shop.orders o JOIN shop.users u ON o.uid = u.id"
+        tables = set(enforcer._extract_tables(sql))
+        assert tables == {"shop.orders", "shop.users"}
+
+    def test_qualified_three_segment(self, enforcer):
+        """三段 catalog.db.table 同样保留全限定名，不得丢段。"""
+        sql = "SELECT * FROM src1.shop.orders"
+        assert enforcer._extract_tables(sql) == ["src1.shop.orders"]
+
+    def test_cte_name_not_extracted(self, enforcer):
+        """CTE 名不是物理表（Scope 解析，不按名字全局排除/误报）。"""
+        sql = ("WITH recent AS (SELECT * FROM orders) "
+               "SELECT * FROM recent JOIN users ON recent.uid = users.id")
+        tables = enforcer._extract_tables(sql)
+        assert "recent" not in tables
+        assert "orders" in tables and "users" in tables
+
 
 # ── Row filter injection ────────────────────────────────────────────
 
@@ -77,6 +96,63 @@ class TestInjectRowFilter:
         sql = "SELECT * FROM users"
         result = enforcer._inject_row_filter(sql, "orders", "region = '华东'")
         assert result == sql  # Unchanged
+
+    def test_alias_preserved_no_double_alias(self, enforcer):
+        """别名保留，不产生非法双重别名（护栏 §4）。"""
+        from backend.semantics.sql_guard import parse_query
+        sql = "SELECT o.id FROM orders o JOIN users u ON o.uid = u.id"
+        result = enforcer._inject_row_filter(sql, "orders", "region = '华东'")
+        assert "AS o" in result                # 原别名保留
+        assert "AS orders o" not in result     # 无非法双重别名
+        parse_query(result, "mysql")           # 可再解析 = 语法合法
+
+    def test_join_side_table_injected(self, enforcer):
+        """JOIN 侧表同样被包子查询，杜绝关联查询旁路（护栏 §4）。"""
+        sql = "SELECT * FROM orders o JOIN users u ON o.uid = u.id"
+        result = enforcer._inject_row_filter(sql, "users", "dept = 'a'")
+        assert result != sql
+        assert "dept = 'a'" in result
+        assert "AS u" in result
+
+    def test_both_sides_injected(self):
+        """两张表都有行策略时 FROM 与 JOIN 两侧同时注入。"""
+        from backend.semantics.sql_guard import inject_filters, parse_query
+        sql = "SELECT * FROM orders o JOIN users u ON o.uid = u.id"
+        out, applied = inject_filters(
+            sql, {"orders": "region = '华东'", "users": "dept = 1"})
+        assert set(applied) == {"orders", "users"}
+        # 外层 1 + 两表内层各 1 = 3 处 SELECT，说明 FROM 与 JOIN 两侧都包子查询
+        assert out.count("SELECT * FROM") == 3
+        parse_query(out, "mysql")
+
+    def test_same_table_two_refs_both_injected(self):
+        """同一张表 FROM 与 JOIN 各出现一次时两处都要注入（历史旁路形态）。"""
+        from backend.semantics.sql_guard import inject_filters
+        sql = "SELECT * FROM orders a JOIN orders b ON a.id = b.parent_id"
+        out, applied = inject_filters(sql, {"orders": "region = '华东'"})
+        assert applied == ["orders"]
+        assert out.count("region = '华东'") == 2   # 两处引用都注入
+
+    def test_reserved_word_after_table_not_alias(self, enforcer):
+        """FROM 后跟保留字（ORDER）不得误当别名吞掉排序（边界覆盖）。"""
+        sql = "SELECT * FROM orders ORDER BY id"
+        result = enforcer._inject_row_filter(sql, "orders", "region = '华东'")
+        assert "AS orders" in result    # 无别名时回退表名作别名
+        assert "ORDER BY id" in result  # ORDER 未被当别名，排序保留
+
+    def test_filter_with_subquery_rejected(self, enforcer):
+        """行策略含子查询必须拒收，不得注入（防止行策略扩权）。"""
+        with pytest.raises(PermissionError):
+            enforcer._inject_row_filter(
+                "SELECT * FROM orders", "orders",
+                "region IN (SELECT region FROM allowed_regions)")
+
+    def test_qualified_table_injection(self, enforcer):
+        """限定名引用按全限定键注入，不丢限定段。"""
+        sql = "SELECT * FROM shop.orders"
+        result = enforcer._inject_row_filter(sql, "shop.orders", "region = '华东'")
+        assert result != sql
+        assert "region = '华东'" in result
 
 
 # ── Value masking ───────────────────────────────────────────────────

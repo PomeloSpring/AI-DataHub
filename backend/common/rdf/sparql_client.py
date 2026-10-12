@@ -50,7 +50,9 @@ class OxigraphClient:
             For SELECT: list of dicts, e.g. [{"s": "...", "p": "..."}, ...]
             For ASK: [{"result": True/False}]
         """
+        import time as _time
         full_query = f"{SPARQL_PREFIXES}\n{sparql}" if prefix else sparql
+        t0 = _time.perf_counter()
         resp = self._client.get(
             "/query",
             params={"query": full_query},
@@ -60,9 +62,14 @@ class OxigraphClient:
         data = resp.json()
 
         if data.get("boolean") is not None:
+            logger.info("[sparql] ASK %dms | %s", int((_time.perf_counter() - t0) * 1000),
+                        sparql.strip().replace("\n", " ")[:200])
             return [{"result": data["boolean"]}]
 
         bindings = data.get("results", {}).get("bindings", [])
+        logger.info("[sparql] SELECT %dms rows=%d | %s",
+                    int((_time.perf_counter() - t0) * 1000), len(bindings),
+                    sparql.strip().replace("\n", " ")[:200])
         return [
             {var: _extract_value(binding[var]) for var in binding}
             for binding in bindings

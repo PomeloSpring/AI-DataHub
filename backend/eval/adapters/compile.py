@@ -55,6 +55,11 @@ def _patched_resolver_catalog():
     _ColumnResolver._load_dims = _load_dims
     _ColumnResolver._load_metrics = _load_metrics
     planner._load_template_row = _load_template_row
+    # B2/B3: 跨对象 JOIN 素材打桩(links 邻接 + 跨对象 binding)
+    orig_links = planner._load_object_links
+    orig_fbind = planner._resolve_foreign_binding
+    planner._load_object_links = lambda ds=0: demo.links_for(ds)
+    planner._resolve_foreign_binding = lambda key, ds=0: demo.foreign_binding_for(key, ds)
     try:
         yield
     finally:
@@ -62,6 +67,8 @@ def _patched_resolver_catalog():
         _ColumnResolver._load_dims = orig_dims
         _ColumnResolver._load_metrics = orig_metrics
         planner._load_template_row = orig_tpl
+        planner._load_object_links = orig_links
+        planner._resolve_foreign_binding = orig_fbind
 
 
 def run_case(case: Case) -> dict:

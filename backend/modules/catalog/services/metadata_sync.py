@@ -151,20 +151,17 @@ def _get_datasource_config(ds_id: int) -> dict:
 # Sync logic — MySQL / Doris (information_schema)
 # ---------------------------------------------------------------------------
 
-def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> None:
-    """Full sync for MySQL/Doris datasources."""
-    src_conn = pymysql.connect(
-        host=ds_config["host"], port=ds_config["port"],
-        user=ds_config["user"], password=ds_config["password"],
-        database="information_schema",
-        charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor,
-    )
-    dst_conn = _get_doris_conn(METADATA_DB_DATABASE)
-    target_schema = ds_config["database"]
+def _apply_sync(ds_id: int, dst_conn, tables: list, fetch_columns) -> None:
+    """通用元数据回写（MySQL/Doris 与 SLS 共用）：diff adh_table_info / adh_column_metadata。
 
+    tables: [{TABLE_NAME, TABLE_COMMENT}]；fetch_columns(table_name) -> [{COLUMN_NAME, DATA_TYPE,
+    COLUMN_COMMENT, COLUMN_KEY, IS_NULLABLE}]。src_conn/dst_conn 生命周期由调用方
+    （_sync_mysql_metadata / _sync_sls_metadata）负责，本函数只管回写 + commit/rollback。
+    更新分支只用系统字段判变更、保留人工 business_desc 与派生 region_tag/domain_tag
+    （同步不得覆盖人工标注——见 test_domain_tag_derivation）。
+    """
     try:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        tables = _fetch_tables(src_conn, target_schema)
 
         # ── 1. Sync table info ──────────────────────────────────────────
         existing_tables = {}
@@ -221,25 +218,23 @@ def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> None:
                 cur.execute("DELETE FROM adh_table_info WHERE table_name = %s AND datasource_id = %s", (tname, ds_id))
 
             for r in tables_to_update:
-                vec_literal = _placeholder_embedding()
                 cur.execute("DELETE FROM adh_table_info WHERE id = %s", (r["id"],))
                 cur.execute(
                     "INSERT INTO adh_table_info "
-                    "(id, datasource_id, table_name, table_comment, table_business_desc, keywords, region_tag, domain_tag, is_active, sync_time, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "(id, datasource_id, table_name, table_comment, table_business_desc, keywords, region_tag, domain_tag, is_active, sync_time) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (r["id"], ds_id, r["table_name"], r["table_comment"], r["table_business_desc"],
-                     r.get("keywords") or "", r["region_tag"], r["domain_tag"], r["is_active"], now, vec_literal),
+                     r.get("keywords") or "", r["region_tag"], r["domain_tag"], r["is_active"], now),
                 )
 
             for r in tables_to_insert:
                 row_id = int(_time.time() * 1000000) + tables_to_insert.index(r)
-                vec_literal = _placeholder_embedding()
                 cur.execute(
                     "INSERT INTO adh_table_info "
-                    "(id, datasource_id, table_name, table_comment, table_business_desc, keywords, region_tag, domain_tag, is_active, sync_time, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)",
+                    "(id, datasource_id, table_name, table_comment, table_business_desc, keywords, region_tag, domain_tag, is_active, sync_time) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, %s)",
                     (row_id, ds_id, r["table_name"], r["table_comment"], "", "",
-                     r["region_tag"], r["domain_tag"], now, vec_literal),
+                     r["region_tag"], r["domain_tag"], now),
                 )
 
         # ── 2. Sync column metadata ─────────────────────────────────────
@@ -261,7 +256,7 @@ def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> None:
 
         for tbl in tables:
             table_name = tbl["TABLE_NAME"]
-            columns = _fetch_columns(src_conn, table_name, target_schema)
+            columns = fetch_columns(table_name)
             for col in columns:
                 col_name = col["COLUMN_NAME"]
                 key = (table_name, col_name)
@@ -313,29 +308,27 @@ def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> None:
                 )
 
             for r in cols_to_update:
-                vec_literal = _placeholder_embedding()
                 cur.execute("DELETE FROM adh_column_metadata WHERE id = %s", (r["id"],))
                 cur.execute(
                     "INSERT INTO adh_column_metadata "
                     "(id, datasource_id, table_name, column_name, data_type, column_comment, "
-                    "business_desc, keywords, is_key, is_nullable, is_active, sync_time, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "business_desc, keywords, is_key, is_nullable, is_active, sync_time) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (r["id"], ds_id, r["table_name"], r["column_name"], r["data_type"],
                      r["column_comment"], r["business_desc"], r.get("keywords") or "",
-                     r["is_key"], r["is_nullable"], r["is_active"], now, vec_literal),
+                     r["is_key"], r["is_nullable"], r["is_active"], now),
                 )
 
             for r in cols_to_insert:
                 row_id = int(_time.time() * 1000000) + cols_to_insert.index(r) + 500000
-                vec_literal = _placeholder_embedding()
                 cur.execute(
                     "INSERT INTO adh_column_metadata "
                     "(id, datasource_id, table_name, column_name, data_type, column_comment, "
-                    "business_desc, keywords, is_key, is_nullable, is_active, sync_time, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)",
+                    "business_desc, keywords, is_key, is_nullable, is_active, sync_time) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s)",
                     (row_id, ds_id, r["table_name"], r["column_name"], r["data_type"],
                      r["column_comment"], "", "", r["is_key"], r["is_nullable"],
-                     now, vec_literal),
+                     now),
                 )
 
         dst_conn.commit()
@@ -346,31 +339,87 @@ def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> None:
         dst_conn.rollback()
         print(f"[metadata_sync] ERROR: {exc}")
         raise
+
+
+def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> None:
+    """Full sync for MySQL/Doris datasources（information_schema 探查 + 通用回写）。"""
+    src_conn = pymysql.connect(
+        host=ds_config["host"], port=ds_config["port"],
+        user=ds_config["user"], password=ds_config["password"],
+        database="information_schema",
+        charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor,
+    )
+    dst_conn = _get_doris_conn(METADATA_DB_DATABASE)
+    target_schema = ds_config["database"]
+    try:
+        tables = _fetch_tables(src_conn, target_schema)
+        _apply_sync(ds_id, dst_conn, tables,
+                    lambda t: _fetch_columns(src_conn, t, target_schema))
     finally:
         src_conn.close()
         dst_conn.close()
 
 
 # ---------------------------------------------------------------------------
-# Public API — auto-dispatch by db_type
+# Sync logic — SLS（阿里云日志服务，PG 协议接入）
 # ---------------------------------------------------------------------------
+# SLS 的 PG 端点支持 information_schema（官方文档"查询元数据"），但 LogStore 映射在
+# 同名 project 的 schema 下，且不填 table_catalog / 不支持 ::regclass/obj_description/
+# ordinal_position。故 SLS 专用 fetcher 只用文档保证的字段，输出与 MySQL 同构的
+# {TABLE_NAME/TABLE_COMMENT} / {COLUMN_NAME/DATA_TYPE/COLUMN_COMMENT/COLUMN_KEY/IS_NULLABLE}，
+# 以复用 _apply_sync（含 tag/business_desc 保留）。SLS 不支持主键 → COLUMN_KEY 恒 ''。
 
-_EMBEDDING_DIM = 768
+def _fetch_tables_sls(conn, project_schema: str) -> list:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT table_name AS \"TABLE_NAME\", '' AS \"TABLE_COMMENT\" "
+            "FROM information_schema.tables WHERE table_schema = %s ORDER BY table_name",
+            (project_schema,),
+        )
+        return [dict(r) for r in (cur.fetchall() or [])]
 
 
-def _placeholder_embedding() -> str:
-    """Zero-vector placeholder for the logically-disabled embedding column.
+def _fetch_columns_sls(conn, table_name: str, project_schema: str = None) -> list:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT column_name AS \"COLUMN_NAME\", data_type AS \"DATA_TYPE\", "
+            "'' AS \"COLUMN_COMMENT\", '' AS \"COLUMN_KEY\", 'YES' AS \"IS_NULLABLE\" "
+            "FROM information_schema.columns WHERE table_name = %s ORDER BY column_name",
+            (table_name,),
+        )
+        return [dict(r) for r in (cur.fetchall() or [])]
 
-    The column is retained (Doris ARRAY<FLOAT> NOT NULL) but is no longer
-    produced by an embedding model nor read by any retrieval path.
-    """
-    return "[" + ", ".join(["0.0"] * _EMBEDDING_DIM) + "]"
+
+def _open_sls_conn(ds_config: dict):
+    """SLS 走 psycopg2（simple 协议，客户端参数插值），复用 datasource_db PG 工厂。"""
+    from backend.common.db.datasource_db import get_datasource_conn
+
+    return get_datasource_conn(
+        "sls", ds_config["host"], ds_config["port"],
+        ds_config["user"], ds_config["password"], ds_config["database"],
+        ssl=bool(ds_config.get("ssl", False)),
+    )
+
+
+def _sync_sls_metadata(ds_id: int, ds_config: dict) -> None:
+    """Full sync for SLS（PG 协议）datasources：LogStore→表、字段→列元数据。"""
+    src_conn = _open_sls_conn(ds_config)
+    dst_conn = _get_doris_conn(METADATA_DB_DATABASE)
+    project_schema = ds_config["database"]
+    try:
+        tables = _fetch_tables_sls(src_conn, project_schema)
+        _apply_sync(ds_id, dst_conn, tables,
+                    lambda t: _fetch_columns_sls(src_conn, t, project_schema))
+    finally:
+        src_conn.close()
+        dst_conn.close()
 
 
 def sync_metadata(ds_id: int = 0) -> None:
     """Incremental sync: sync table info and column metadata.
 
-    Dispatches to the MySQL/Doris handler based on datasource type.
+    Dispatches by datasource type: mysql/doris → information_schema(pymysql);
+    sls → PG 协议 information_schema(psycopg2)。其余类型 fail-loud 拒绝。
     """
     if not ds_id:
         raise ValueError("datasource_id is required")
@@ -380,6 +429,8 @@ def sync_metadata(ds_id: int = 0) -> None:
 
     if db_type in ("mysql", "doris"):
         _sync_mysql_metadata(ds_id, ds_config)
+    elif db_type == "sls":
+        _sync_sls_metadata(ds_id, ds_config)
     else:
         raise ValueError(f"暂不支持从 {db_type} 类型数据源同步元数据")
 
@@ -387,8 +438,8 @@ def sync_metadata(ds_id: int = 0) -> None:
 def sync_table_columns(ds_id: int, table_name: str) -> dict:
     """Sync column metadata for a single table.
 
-    Dispatches to the MySQL/Doris handler based on datasource type.
-    Returns a summary dict with counts of inserted/updated/deleted columns.
+    Dispatches by datasource type (mysql/doris 与 sls)。Returns a summary dict
+    with counts of inserted/updated/deleted columns.
     """
     if not ds_id:
         raise ValueError("datasource_id is required")
@@ -400,6 +451,8 @@ def sync_table_columns(ds_id: int, table_name: str) -> dict:
 
     if db_type in ("mysql", "doris"):
         return _sync_mysql_table_columns(ds_id, ds_config, table_name)
+    elif db_type == "sls":
+        return _sync_sls_table_columns(ds_id, ds_config, table_name)
     else:
         raise ValueError(f"暂不支持从 {db_type} 类型数据源同步元数据")
 
@@ -498,16 +551,15 @@ def sync_table_relations(ds_id: int) -> dict:
 
             for idx, fk in enumerate(to_insert):
                 row_id = int(_time.time() * 1000000) + idx
-                vec_literal = _placeholder_embedding()
                 description = f"{fk['source_table']}.{fk['source_column']} 关联 {fk['target_table']}.{fk['target_column']}"
                 cur.execute(
                     "INSERT INTO adh_table_relations "
                     "(id, datasource_id, source_table, source_column, target_table, target_column, "
-                    "relation_type, join_type, description, is_active, created_at, updated_at, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s)",
+                    "relation_type, join_type, description, is_active, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)",
                     (row_id, ds_id, fk["source_table"], fk["source_column"],
                      fk["target_table"], fk["target_column"], "1:N", "INNER",
-                     description, now, now, vec_literal),
+                     description, now, now),
                 )
 
         dst_conn.commit()
@@ -529,21 +581,15 @@ def sync_table_relations(ds_id: int) -> dict:
         dst_conn.close()
 
 
-def _sync_mysql_table_columns(ds_id: int, ds_config: dict, table_name: str) -> dict:
-    """Sync column metadata for a single MySQL/Doris table."""
-    src_conn = pymysql.connect(
-        host=ds_config["host"], port=ds_config["port"],
-        user=ds_config["user"], password=ds_config["password"],
-        database="information_schema",
-        charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor,
-    )
-    dst_conn = _get_doris_conn(METADATA_DB_DATABASE)
-    target_schema = ds_config["database"]
+def _apply_columns_sync(ds_id: int, dst_conn, table_name: str, columns: list) -> dict:
+    """单表列元数据通用回写（MySQL/Doris 与 SLS 共用）；返回 summary dict。
 
+    columns: [{COLUMN_NAME, DATA_TYPE, COLUMN_COMMENT, COLUMN_KEY, IS_NULLABLE}]；
+    dst_conn 生命周期由调用方负责，本函数只管回写 + commit/rollback（保留人工 business_desc）。
+    """
     try:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        columns = _fetch_columns(src_conn, table_name, target_schema)
         if not columns:
             raise ValueError(f"表 '{table_name}' 在数据源中不存在或无字段")
 
@@ -611,29 +657,27 @@ def _sync_mysql_table_columns(ds_id: int, ds_config: dict, table_name: str) -> d
                 )
 
             for r in cols_to_update:
-                vec_literal = _placeholder_embedding()
                 cur.execute("DELETE FROM adh_column_metadata WHERE id = %s", (r["id"],))
                 cur.execute(
                     "INSERT INTO adh_column_metadata "
                     "(id, datasource_id, table_name, column_name, data_type, column_comment, "
-                    "business_desc, keywords, is_key, is_nullable, is_active, sync_time, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "business_desc, keywords, is_key, is_nullable, is_active, sync_time) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (r["id"], ds_id, r["table_name"], r["column_name"], r["data_type"],
                      r["column_comment"], r["business_desc"], r.get("keywords") or "",
-                     r["is_key"], r["is_nullable"], r["is_active"], now, vec_literal),
+                     r["is_key"], r["is_nullable"], r["is_active"], now),
                 )
 
             for idx, r in enumerate(cols_to_insert):
                 row_id = int(_time.time() * 1000000) + idx + 500000
-                vec_literal = _placeholder_embedding()
                 cur.execute(
                     "INSERT INTO adh_column_metadata "
                     "(id, datasource_id, table_name, column_name, data_type, column_comment, "
-                    "business_desc, keywords, is_key, is_nullable, is_active, sync_time, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)",
+                    "business_desc, keywords, is_key, is_nullable, is_active, sync_time) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s)",
                     (row_id, ds_id, r["table_name"], r["column_name"], r["data_type"],
                      r["column_comment"], "", "", r["is_key"], r["is_nullable"],
-                     now, vec_literal),
+                     now),
                 )
 
         dst_conn.commit()
@@ -647,6 +691,34 @@ def _sync_mysql_table_columns(ds_id: int, ds_config: dict, table_name: str) -> d
     except Exception as exc:
         dst_conn.rollback()
         raise
+
+
+def _sync_mysql_table_columns(ds_id: int, ds_config: dict, table_name: str) -> dict:
+    """Sync column metadata for a single MySQL/Doris table."""
+    src_conn = pymysql.connect(
+        host=ds_config["host"], port=ds_config["port"],
+        user=ds_config["user"], password=ds_config["password"],
+        database="information_schema",
+        charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor,
+    )
+    dst_conn = _get_doris_conn(METADATA_DB_DATABASE)
+    target_schema = ds_config["database"]
+    try:
+        columns = _fetch_columns(src_conn, table_name, target_schema)
+        return _apply_columns_sync(ds_id, dst_conn, table_name, columns)
+    finally:
+        src_conn.close()
+        dst_conn.close()
+
+
+def _sync_sls_table_columns(ds_id: int, ds_config: dict, table_name: str) -> dict:
+    """Sync column metadata for a single SLS（PG 协议）表/LogStore。"""
+    src_conn = _open_sls_conn(ds_config)
+    dst_conn = _get_doris_conn(METADATA_DB_DATABASE)
+    project_schema = ds_config["database"]
+    try:
+        columns = _fetch_columns_sls(src_conn, table_name, project_schema)
+        return _apply_columns_sync(ds_id, dst_conn, table_name, columns)
     finally:
         src_conn.close()
         dst_conn.close()

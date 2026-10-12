@@ -55,6 +55,7 @@ def build_options(adapter, task, backend):
     from backend.modules.mind.execution.sdk_tools.workspace_tools import build_workspace_server
     from backend.modules.mind.execution.prompt_composer import compose_system_prompt
     from backend.modules.mind.execution import as_bots
+    from backend.modules.mind.execution.quick_paths import match_quick_paths
     sdk = load_sdk(backend)
     ctx = task.context
     runtime = ctx.extra.get("secure_runtime")
@@ -98,6 +99,7 @@ def build_options(adapter, task, backend):
         policy.as_bot, [policy.as_bot], ctx.username, ctx.user_role,
         knowledge_bases=as_bots.load_knowledge_bases(policy.as_bot.get("knowledge_base_ids") or []),
         skills=as_bots.load_skills(as_bots.collect_skill_names([policy.as_bot])),
+        quick_paths=match_quick_paths(task.question, ctx.workspace_id, ctx.datasource_id),
         user_id=ctx.user_id, workspace_id=ctx.workspace_id, datasource_id=ctx.datasource_id,
         capabilities=policy.manifest(),
         report_theme_id=ctx.extra.get("report_theme") or "",

@@ -1,6 +1,6 @@
 -- AI-DataHub Tables (MySQL 8.0+ compatible)
 -- This script creates all tables with adh_ prefix for AI-DataHub.
--- Note: Vector search (HNSW) is not available in MySQL; embedding columns stored as JSON.
+-- Note: 向量检索已全量移除，历史 embedding 占位列已退役（见 retire_embedding_columns_migration.sql）。
 
 CREATE DATABASE IF NOT EXISTS adh DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE adh;
@@ -39,7 +39,6 @@ CREATE TABLE IF NOT EXISTS adh_table_info (
     domain_tag          VARCHAR(64)  DEFAULT '',
     is_active           TINYINT      DEFAULT 1,
     sync_time           DATETIME     NOT NULL,
-    embedding           JSON,
     PRIMARY KEY (id),
     INDEX idx_ds_table (datasource_id, table_name),
     INDEX idx_active (is_active)
@@ -60,7 +59,7 @@ CREATE TABLE IF NOT EXISTS adh_column_metadata (
     is_nullable     VARCHAR(8)   DEFAULT 'YES',
     is_active       TINYINT      DEFAULT 1,
     sync_time       DATETIME     NOT NULL,
-    embedding       JSON,
+
     PRIMARY KEY (id),
     INDEX idx_ds_table_col (datasource_id, table_name, column_name),
     INDEX idx_active (is_active)
@@ -84,7 +83,6 @@ CREATE TABLE IF NOT EXISTS adh_sql_templates (
     is_active       TINYINT      DEFAULT 1,
     created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    embedding       JSON,
     PRIMARY KEY (id),
     UNIQUE KEY uk_template_id (template_id),
     INDEX idx_active (is_active)
@@ -108,7 +106,6 @@ CREATE TABLE IF NOT EXISTS adh_business_terms (
     is_active       TINYINT      DEFAULT 1,
     created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    embedding       JSON,
     PRIMARY KEY (id),
     INDEX idx_term_cn (term_cn),
     INDEX idx_active (is_active)
@@ -260,7 +257,6 @@ CREATE TABLE IF NOT EXISTS adh_table_relations (
     is_active         TINYINT      DEFAULT 1,
     created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    embedding         JSON,
     PRIMARY KEY (id),
     INDEX idx_source (source_table),
     INDEX idx_target (target_table),
@@ -488,7 +484,6 @@ CREATE TABLE IF NOT EXISTS adh_sql_corrections (
     usage_count     INT DEFAULT 0,
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    embedding       JSON,
     PRIMARY KEY (id),
     INDEX idx_status (status)
 ) ENGINE=InnoDB;

@@ -624,11 +624,23 @@ class DatasourceService:
             pass  # MySQL 不可用，跳过默认数据源创建
 
     async def _list_db_tables(self, ds: dict) -> list:
-        """列出 MySQL/Doris/Postgres 数据库的表。"""
+        """列出 MySQL/Doris/Postgres/SLS 数据库的表。"""
         conn = self.get_datasource_conn_from_dict(ds)
+        db_type = (ds.get("db_type") or "").lower()
         try:
             with conn.cursor() as cur:
-                if (ds.get("db_type") or "").lower() in POSTGRES_DB_TYPES:
+                if db_type == "sls":
+                    # SLS PG 协议把 LogStore 映射在同名 project 的 schema 下（官方文档"查询元数据"）；
+                    # 仅用文档保证的 information_schema 字段，不依赖 table_catalog/::regclass/
+                    # obj_description/table_type（SLS 不填充或不支持）。
+                    cur.execute(
+                        "SELECT table_name AS \"TABLE_NAME\", "
+                        "NULL AS \"TABLE_COMMENT\", NULL AS \"TABLE_ROWS\", NULL AS \"DATA_LENGTH\" "
+                        "FROM information_schema.tables "
+                        "WHERE table_schema = %s ORDER BY table_name",
+                        (ds.get("database_name") or "",),
+                    )
+                elif db_type in POSTGRES_DB_TYPES:
                     cur.execute(
                         "SELECT table_name AS \"TABLE_NAME\", "
                         "obj_description((table_schema || '.' || table_name)::regclass, 'pg_class', 'comment') AS \"TABLE_COMMENT\", "
@@ -652,11 +664,22 @@ class DatasourceService:
             conn.close()
 
     async def _list_db_columns(self, ds: dict, table_name: str) -> list:
-        """列出 MySQL/Doris/Postgres 表的列。"""
+        """列出 MySQL/Doris/Postgres/SLS 表的列。"""
         conn = self.get_datasource_conn_from_dict(ds)
+        db_type = (ds.get("db_type") or "").lower()
         try:
             with conn.cursor() as cur:
-                if (ds.get("db_type") or "").lower() in POSTGRES_DB_TYPES:
+                if db_type == "sls":
+                    # SLS 仅保证 column_name/data_type（按官方文档"查询字段结构"），
+                    # 不依赖 ordinal_position/col_description/table_catalog。
+                    cur.execute(
+                        "SELECT column_name AS \"COLUMN_NAME\", data_type AS \"DATA_TYPE\", "
+                        "'' AS \"COLUMN_COMMENT\", '' AS \"COLUMN_KEY\", 'YES' AS \"IS_NULLABLE\" "
+                        "FROM information_schema.columns "
+                        "WHERE table_name = %s ORDER BY column_name",
+                        (table_name,),
+                    )
+                elif db_type in POSTGRES_DB_TYPES:
                     cur.execute(
                         "SELECT column_name AS \"COLUMN_NAME\", data_type AS \"DATA_TYPE\", "
                         "col_description((table_schema || '.' || table_name)::regclass, ordinal_position) AS \"COLUMN_COMMENT\", "

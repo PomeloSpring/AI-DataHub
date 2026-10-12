@@ -74,6 +74,42 @@ def test_cleanup_rejects_running_session(workspaces):
     assert exc.value.status_code == 409
 
 
+# ── 执行权残留自愈（证据口径）─────────────────────────────────
+
+def _reclaim_fixture(monkeypatch, *, owner_start=999, sdk_alive=False, proc_hits=()):
+    """process_identity 恒回 999：仅当记录值==999 才算存活。"""
+    monkeypatch.setattr(sw, "process_identity", lambda pid: 999)
+    monkeypatch.setattr(sw, "_proc_holds_session", lambda key: list(proc_hits))
+    monkeypatch.setattr(sw, "_remove_token_sandbox", lambda token: None)
+    return _session(status="running", execution_token="a" * 32,
+                    owner_pid=1, owner_start=owner_start,
+                    sdk_pid=None, sdk_start=None)
+
+
+def test_reclaim_dead_execution_recovers(monkeypatch):
+    """owner/sdk 均退出且无进程证据: running 残留 → interrupted, 删除不再卡死。"""
+    sess = _reclaim_fixture(monkeypatch, owner_start=1)   # 1 != 999 = owner 已死
+    writes = []
+    assert sw._reclaim_dead_execution(sess, write=lambda sql, p: writes.append((sql, p)) or 1)
+    assert writes and "interrupted" in writes[0][0]
+
+
+def test_reclaim_blocks_when_owner_alive(monkeypatch):
+    """宿主仍存活: 绝不回收(不误杀活执行)。"""
+    sess = _reclaim_fixture(monkeypatch, owner_start=999)  # 999 == 999 = 存活
+    writes = []
+    assert not sw._reclaim_dead_execution(sess, write=lambda sql, p: writes.append(1) or 1)
+    assert not writes
+
+
+def test_reclaim_blocks_when_process_holds(monkeypatch):
+    """/proc 发现持有会话 key 的活进程(孤儿 SDK): 保持阻断。"""
+    sess = _reclaim_fixture(monkeypatch, owner_start=1, proc_hits=[4242])
+    writes = []
+    assert not sw._reclaim_dead_execution(sess, write=lambda sql, p: writes.append(1) or 1)
+    assert not writes
+
+
 class _Cursor:
     def __init__(self, log, rows):
         self.log = log

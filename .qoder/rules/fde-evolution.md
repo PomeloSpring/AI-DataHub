@@ -27,7 +27,7 @@ description: FDE 迭代方法论（Forward Deployed Engineer）。本项目按 P
 ## 3. 失败数据驱动建模 backlog（自进化闭环）
 - 解析失败/模糊被拒的业务词自动落入 `adh_alias_suggestions`（planner `unresolved_terms` → `alias_suggestion.record_unresolved_terms`，best-effort 永不影响取数主链路）；**建模待办由失败数据生成，不靠拍脑袋堆别名**。
 - 审核经别名直审端点写回（`POST /api/as-bot/alias-suggestions/{id}/approve|reject`，`ontology:save` 把关后直执行）：字典行 aliases 或 active 模型对象 aliases（后者走 `save_draft` 级联重建图谱+重推知识库）。闭环 = 落入 → 审核(eval 佐证) → 回写 → 重评。
-- 反复"未绑定走旁路/找不到对象"的对象缺口，应转化为本体建模项而不是检索侧 hack；巡检 `scripts/check_alias_drift.py` 输出派生物漂移报告。
+- 反复"未绑定走旁路/找不到对象"的对象缺口，应转化为本体建模项而不是检索侧 hack；巡检 `backend/scripts/check_alias_projection.py` 输出派生物漂移报告。
 
 ## 4. Fail-safe 与降级守则
 - 观测/队列/同步类改动**不得影响取数主链路**：全部 try/except 降级 + debug/warning，观测未开启即全链路 no-op（护栏 §9）。

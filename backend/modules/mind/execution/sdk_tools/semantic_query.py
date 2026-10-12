@@ -19,8 +19,6 @@ from typing import Annotated, Optional
 
 from backend.modules.mind.execution.sdk_tools.catalog_tools import _text
 from backend.semantics.contract import (
-    EXEC_FAIL_HINT as _EXEC_FAIL_HINT,
-    LEAK_KEYWORDS as _LEAK_KEYWORDS,
     safe_warnings as _safe_warnings,
     sanitize_execute_reason as _sanitize_execute_reason,
 )
@@ -52,12 +50,21 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
 
     payload = dict(raw_payload or {})
 
-    # 数据源黑盒: datasource_id 以执行上下文(会话选定数据源)为权威,
-    # 只有上下文没有时才回落到显式入参。否则 LLM 瞎猜的 datasource_id(如 1)
-    # 会覆盖真实 id, 导致 resolve_binding 只扫 datasource_id IN(1,0) 全落空 ->
-    # 误报 "object 'case' 未绑定到任何物理表"。
-    if ctx:
+    # 数据源寻址(v0.5): `datasource`(业务名) → 角色授权集内解析(waker-datasource-domain §2,
+    # 复用 query_tools._resolve_datasource_arg / resource_guard._resolve_authorized_source);
+    # 未传 → 会话生效源(权威)。禁止消费 LLM 传的数值 datasource_id(黑盒): 瞎猜的 id
+    # 会让 resolve_binding 扫错范围, 误报 "object 'case' 未绑定到任何物理表"。
+    # 服务端内部调用(eval/playground)直传 id 不受限。多站点=LLM 逐站编排(各带 datasource 名)。
+    if (payload.get("datasource") or "").strip():
+        from backend.modules.mind.execution.sdk_tools.query_tools import _resolve_datasource_arg
+        try:
+            payload["datasource_id"] = int(_resolve_datasource_arg(payload, ctx) or 0)
+        except (ValueError, PermissionError) as exc:
+            return ({"error": str(exc),
+                     "hint": "datasource 传 list_datasources 显示的业务名; 不确定就问用户, 不要猜。"}, True)
+    elif ctx:
         payload["datasource_id"] = int(ctx.datasource_id or 0)
+    if ctx:
         payload["workspace_id"] = int(ctx.workspace_id or 0)
         payload["user_id"] = int(ctx.user_id or 0)
 
@@ -75,6 +82,10 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
             "notes": notes,
             "hint": "只允许 {object, metrics[], dimensions[], filters[], order[], limit}；禁止传任何 SQL 字段。",
         }, True)
+
+    # v0.5: 服务端跨站展开已退役——全球/多站点由 LLM 按站点编排多次单站查询
+    # (各带 datasource 名, 见 GLOBAL_SEMANTIC_LAYER_DESIGN.md §7/§8);
+    # 站点维度已在 parse_intent 拒收, 勿再引入服务端展开/合并(防旧机制回潮)。
 
     binding, bind_warnings = await asyncio.to_thread(
         resolve_binding, q.object, datasource_id=q.datasource_id,
@@ -245,14 +256,24 @@ TOOL_SPECS = [
             '"dimensions": ["<dim_name>", ...], '
             '"filters": [{"dim": "...", "op": "eq|ne|gt|gte|lt|lte|in|like", "value": ...}], '
             '"order": [{"by": "...", "desc": false}], '
-            '"limit": 100, "time_grain": "day|week|month|null", "dry_run": false, '
+            '"limit": 100, "time_grain": "day|week|month|null", "datasource": "<source business name>", "dry_run": false, '
             '"time_window": "7d", "time_range": "last_week", "time_column": "<dim_name>", "params": {"<tpl_var>": ...}}. '
+            "For multi-site/global questions: query each site separately by calling this tool once per site with "
+            "\"datasource\" (business name as shown by list_datasources; site↔source mapping lives in the "
+            "data-analysis skill) — sites are NOT a dimension and \"站点\" in dimensions is rejected. "
             "Extract all three elements (metrics / dimensions / time) from the question; NEVER drop a "
             "time expression. Relative rolling windows (e.g. last 7 days) MUST use time_window "
             "(Ns/Nm/Nh/Nd/Nw/NM like '7d','24h','2w','1M'); calendar ranges (e.g. last week / this month / "
             "last quarter) MUST use time_range (today|yesterday|this_week|last_week|this_month|last_month|"
             "this_quarter|last_quarter|this_year|last_year); never hand-computed absolute dates; "
             "time_column picks the event-time dimension (defaults to the bound time dimension). "
+            "Cross-object references use qualified business names '<object_name>.<metric|dim_name>' "
+            "(join paths are resolved from ontology links server-side; NEVER provide join/SQL). "
+            "Structured window: {\"type\": \"rank|rolling|period_compare|share\", \"metric\": \"<measure_name>\"} "
+            "compiles window functions server-side (free-form window SQL is not accepted). "
+            "For multi-site/global questions: call this tool once per site with \"datasource\" "
+            "(business name shown by list_datasources) and merge results yourself; sites are NOT a "
+            "dimension — '站点' in dimensions is rejected with guidance. "
             "If the object is bound to a SQL template (bind_kind=sql_template), pass declared "
             "variables via params — run knowledge_search first to see the template's variables. "
             "Use knowledge_search first to discover legal object/metric/dimension names. "

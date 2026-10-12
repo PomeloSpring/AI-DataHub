@@ -85,16 +85,16 @@ export default function Chat() {
     startNewConversation, switchConversation, deleteConversation, renameConversation,
     sendMessage, cancelMessage, respondToAsk, cancelAsk, updateMessageFeedback, setViewMode, analyzeData, predictData, clear,
   } = useChatStore();
-  // 加载推荐问题（Chat 空白时展示）
+  // 加载快速路径示例（Chat 空白时展示）
   useEffect(() => {
     client.get('/admin/knowledge/random', {
-      params: { knowledge_type: 'recommend_question', limit: 3, workspace_id: 0 },
+      params: { knowledge_type: 'quick_path', limit: 3, workspace_id: 0 },
     })
       .then(({ data }) => {
         const qs = (data.items || []).map((it: any) => it.title).filter(Boolean);
         if (qs.length > 0) setRecommendedQuestions(qs);
       })
-      .catch(() => { /* 静默:无推荐问题时使用默认 */ });
+      .catch(() => { /* 静默:无快速路径时使用默认 */ });
   }, []);
 
   // 首页「试试这样问」跳转带入的问题:挂载时消费一次并预填输入框

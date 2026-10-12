@@ -7,7 +7,11 @@
           force_limit 生效时, 若未指定 LIMIT -> 补默认值
   ④ provenance / warnings 输出, 供 Playground 与审计面板展示
 
-Phase 1 只做**单对象**编译;跨对象 join 在 Phase 4 与语义层查询合并时引入。
+跨对象与窗口(Phase 2「Link 参与编译」):
+  - 限定业务名(对象名.业务名)引用跨对象字段, join 路径从 canonical links[]确定性
+    解出(≤2 跳, 无路径回抛候选不猜 join), 产出 LEFT JOIN 链;
+  - 结构化窗口模式(window 字段)编译为"内层聚合 + 外层窗口"两层结构;
+    窗口表达式仅进 SELECT 投影层; 自由形状 SQL 不在本层(走 nl2sql)。
 """
 
 from __future__ import annotations
@@ -15,11 +19,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any, Optional
 
 from backend.common.db.metadata_db import get_metadata_conn
 from backend.semantics.models import (
-    PlannedExecution, ResolvedBinding, SemanticFilter, SemanticQuery,
+    PlannedExecution, ResolvedBinding, SemanticFilter, SemanticQuery, SemanticWindow,
 )
 
 logger = logging.getLogger(__name__)
@@ -127,6 +132,98 @@ def _dialect_of(db_type: str) -> str:
     return _DIALECT_OF_DBTYPE.get((db_type or "mysql").lower(), "mysql")
 
 
+# ── 跨对象 JOIN（Phase 2「Link 参与编译」）────────────────────────
+# LLM 只用限定业务名(对象名.业务名)引用跨对象字段; join 路径由语义层从
+# canonical links[] 确定性解出(≤2 跳), 无路径回抛候选, 不猜 join(宁缺勿错)。
+
+_JOIN_MAX_HOPS = 2
+_links_cache: dict[int, tuple[float, dict]] = {}
+_LINKS_TTL_SEC = 60.0
+
+
+def _identity(s: str) -> str:
+    """对象身份键: 忽略大小写与分隔符(与 object_identity_key 同口径)。"""
+    return re.sub(r"[^a-z0-9]+", "", str(s or "").lower())
+
+
+def _ref_key(s: str) -> str:
+    """限定名对象引用归一: 去空白/分隔符但保留中文(_identity 会把中文剥空)。"""
+    return re.sub(r"[\s_\-]+", "", str(s or "").strip().lower())
+
+
+def _split_qualified(name) -> tuple[str, str]:
+    """限定业务名拆分: "客户.行业" -> ("客户", "行业"); 无限定 -> ("", name)。"""
+    s = str(name or "").strip()
+    if "." in s:
+        obj, _, rest = s.partition(".")
+        return obj.strip(), rest.strip()
+    return "", s
+
+
+def _alias_of(name: str) -> str:
+    """SELECT AS 用别名: 限定名的 '.' 换 '_'(点号会破坏标识符/ORDER BY)。"""
+    return str(name or "").strip().replace(".", "_")
+
+
+def _qualify_bare(expr: str, alias: str, cols: set[str]) -> str:
+    """给公式文本中未限定的裸列名加表别名(已限定/引号内不碰)。"""
+    out = str(expr or "")
+    for c in sorted({x for x in cols if x}, key=len, reverse=True):
+        out = re.sub(rf"(?<![\w.`\"])({re.escape(c)})(?![\w`\"])", f"{alias}.\\1", out)
+    return out
+
+
+def _load_object_links(datasource_id: int = 0) -> dict:
+    """对象关系邻接（C1：Oxigraph/SPARQL）。
+
+    来源 = 知识图谱 reified adh:Link（canonical links[] 的图投影）+ label/altLabel
+    实体对齐（客户→customer）；图不可用抛 RuntimeError（fail-loud，不回退其他
+    关系源）。60s TTL 缓存，评测/单测可打桩本函数。
+    """
+    now = time.time()
+    hit = _links_cache.get(datasource_id)
+    if hit and now - hit[0] < _LINKS_TTL_SEC:
+        logger.debug("[planner] 关系图缓存命中(ds=%s, 剩余 %ds)",
+                     datasource_id, int(_LINKS_TTL_SEC - (now - hit[0])))
+        return hit[1]
+    from backend.semantics.graph_rag.link_graph import load_link_graph
+    data = load_link_graph()
+    _links_cache[datasource_id] = (now, data)
+    logger.info("[planner] 跨对象关系图已加载(Oxigraph/SPARQL, ds=%s): 名 %d 个/边 %d 条",
+                datasource_id, len(data.get("names") or {}),
+                sum(len(v) for v in (data.get("edges") or {}).values()))
+    return data
+
+
+def _link_chain(edges: dict[str, list[tuple[str, str]]], src: str, dst: str,
+                max_hops: int = _JOIN_MAX_HOPS) -> Optional[list[tuple[str, str]]]:
+    """BFS 求 src→dst 关系链(≤max_hops 跳); 无路径 None(回抛, 不猜 join)。"""
+    if src == dst:
+        return []
+    frontier = [(src, [])]
+    seen = {src}
+    for _ in range(max_hops):
+        nxt: list[tuple[str, list]] = []
+        for node, path in frontier:
+            for tgt, join in edges.get(node, []):
+                if not join:
+                    continue        # 语义关系(无物理 join)不构成 SQL 链(宁缺勿错)
+                if tgt == dst:
+                    return path + [(tgt, join)]
+                if tgt not in seen:
+                    seen.add(tgt)
+                    nxt.append((tgt, path + [(tgt, join)]))
+        frontier = nxt
+    return None
+
+
+def _resolve_foreign_binding(obj_key: str, datasource_id: int):
+    """跨对象 binding 解析(与主对象同一裁决源 binding_resolver)。"""
+    from backend.semantics.binding_resolver import resolve_binding
+    binding, _warns = resolve_binding(obj_key, datasource_id=datasource_id)
+    return binding
+
+
 # ── public API ───────────────────────────────────────────────────
 
 def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
@@ -140,6 +237,15 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
     if (binding.db_type or "").lower() not in _DIALECT_OF_DBTYPE:
         warnings.append(
             f"unknown db_type '{binding.db_type}', compiled with mysql dialect fallback")
+
+    # 结构化窗口与 SQL 模板对象互斥(fail-loud, 不静默忽略窗口诉求)
+    if query.window and binding.bind_kind == "sql_template":
+        warnings.append("window 不支持 sql_template 对象; 请去掉 window 或改用普通对象")
+        return PlannedExecution(
+            sql="", secured_sql="", route=g.query_mode, dialect=dialect,
+            datasource_id=binding.datasource_id,
+            resolved_tables=[binding.physical_table],
+            guardrail=g, access=binding.access, warnings=warnings)
 
     # SQL 模板对象: 绑定的是参数化模板而非单表聚合, 走独立编译分支
     if binding.bind_kind == "sql_template":
@@ -159,42 +265,145 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
 
     # ② 解析: measure/dim 名 -> 物理列/表达式
     resolver = _ColumnResolver(binding, dialect=dialect)
+
+    # ①.5 跨对象引用: 限定业务名(对象名.业务名) -> links 解链 JOIN(≤2 跳)
+    join_ctx: dict[str, tuple[_ColumnResolver, str]] = {}   # obj_ref -> (resolver, alias)
+    join_parts: list[str] = []
+    alias_by_obj: dict[str, str] = {}          # obj_key -> tN 别名(确定性首现序)
+    fb_by_obj: dict[str, ResolvedBinding] = {}
+    resolve_failed: set[str] = set()           # 无路径/无绑定的 obj_ref(名字直接跳过)
+    needed: list[str] = []
+    for name in [*query.dimensions, *query.metrics,
+                 *[f.dim for f in query.filters],
+                 *[o.by for o in query.order],
+                 *([query.window.metric] if query.window and query.window.metric else [])]:
+        obj_ref, _ = _split_qualified(name)
+        if obj_ref and obj_ref not in needed:
+            needed.append(obj_ref)
+    if needed:
+        links_data = _load_object_links(binding.datasource_id)
+        src_key = str(binding.object_key or query.object or "").strip()
+        edges_seq: list[tuple[str, str, str]] = []   # (prev_key, tgt_key, join)
+        chain_ok: set[str] = set()
+        for obj_ref in sorted(needed):
+            tgt_key = links_data["names"].get(_ref_key(obj_ref)) or _ref_key(obj_ref)
+            if tgt_key == _identity(src_key) or tgt_key == src_key:
+                chain_ok.add(obj_ref)   # 限定到主对象自身: 退化主表查询
+                continue
+            chain = _link_chain(links_data["edges"], src_key, tgt_key)
+            if chain is None:
+                warnings.append(
+                    f"跨对象引用「{obj_ref}.…」无关联路径(≤{_JOIN_MAX_HOPS}跳), 已跳过; "
+                    "请确认对象关系(links)已建模或改用主对象字段")
+                resolve_failed.add(obj_ref)
+                continue
+            prev, ok = src_key, True
+            for tgt, join_expr in chain:
+                if tgt not in fb_by_obj:
+                    fb = _resolve_foreign_binding(tgt, binding.datasource_id)
+                    if fb is None or not fb.physical_table:
+                        ok = False
+                        break
+                    fb_by_obj[tgt] = fb
+                edge = (prev, tgt, join_expr)
+                if edge not in edges_seq:
+                    edges_seq.append(edge)
+                prev = tgt
+            if not ok:
+                warnings.append(f"跨对象引用「{obj_ref}.…」的目标对象未绑定物理表, 已跳过")
+                resolve_failed.add(obj_ref)
+                continue
+            chain_ok.add(obj_ref)
+        for _prev, tgt, _j in edges_seq:
+            if tgt not in alias_by_obj:
+                alias_by_obj[tgt] = f"t{len(alias_by_obj) + 1}"
+        for _prev, tgt, join_expr in edges_seq:
+            tgt_alias = alias_by_obj[tgt]
+            tgt_table = fb_by_obj[tgt].physical_table
+            join_sql = join_expr
+            for obj_k, al in sorted(alias_by_obj.items(), key=lambda kv: -len(kv[1])):
+                tname = fb_by_obj[obj_k].physical_table
+                if tname and al:
+                    # 表名→别名: 命中"整词+可接.列"(t_customer.name -> t1.name),
+                    # 前瞻只挡更长标识符后缀, 不挡列引用的点号
+                    join_sql = re.sub(
+                        rf"(?<![\w.`]){re.escape(tname)}(?!\w)", al, join_sql)
+            join_parts.append(f"LEFT JOIN {tgt_table} AS {tgt_alias} ON {join_sql}")
+        for obj_ref in sorted(needed):
+            if obj_ref in resolve_failed or obj_ref not in chain_ok:
+                continue
+            tgt_key = links_data["names"].get(_ref_key(obj_ref)) or _ref_key(obj_ref)
+            if tgt_key == src_key or tgt_key == _identity(src_key):
+                join_ctx[obj_ref] = (resolver, "")   # 主对象别名: 不限定
+                continue
+            join_ctx[obj_ref] = (
+                _ColumnResolver(fb_by_obj[tgt_key], dialect=dialect,
+                                column_prefix=alias_by_obj[tgt_key]),
+                alias_by_obj[tgt_key],
+            )
+
+    def _pick(name: str) -> tuple[Optional[_ColumnResolver], str, bool]:
+        """无限定 -> 主 resolver; 限定 -> 链上对象 resolver(列已带表别名)。"""
+        obj_ref, rest = _split_qualified(name)
+        if not obj_ref:
+            return resolver, name, True
+        if obj_ref in resolve_failed:
+            return None, rest, False
+        ctx = join_ctx.get(obj_ref)
+        if ctx is None:
+            return None, rest, False
+        return ctx[0], rest, True
+
     select_items: list[tuple[str, str]] = []   # (expr, alias)
     group_by: list[str] = []
     col_roles: dict[str, str] = {}
     unresolved: list[dict] = []   # 结构化未解析项(供别名回流队列, 只含业务词)
 
     for d in query.dimensions:
-        expr, role = resolver.resolve_dimension(d, time_grain=query.time_grain)
+        r, d_rest, ok = _pick(d)
+        if not ok or r is None:
+            warnings.append(f"无法解析维度「{d}」(跨对象引用未关联/无路径), 已跳过")
+            unresolved.append({"term": d, "type": "dimension",
+                               "reason": "no_join_path", "candidates": []})
+            continue
+        expr, role = r.resolve_dimension(d_rest, time_grain=query.time_grain)
         if expr is None:
-            hint = resolver.fuzzy_hint(d)
+            hint = r.fuzzy_hint(d_rest)
             warnings.append(
-                f"无法解析维度「{d}」, 已跳过。{hint or f'本对象可用维度: {resolver.suggest_dimensions()}; 请用字典名或其别名重试'}")
+                f"无法解析维度「{d}」, 已跳过。{hint or f'本对象可用维度: {r.suggest_dimensions()}; 请用字典名或其别名重试'}")
             unresolved.append({
                 "term": d, "type": "dimension",
-                "reason": resolver.resolution_sources().get(d) or "unresolved",
-                "candidates": resolver.fuzzy_candidates(d),
+                "reason": r.resolution_sources().get(d_rest) or "unresolved",
+                "candidates": r.fuzzy_candidates(d_rest),
             })
             continue
-        select_items.append((expr, d))
-        col_roles[d] = role
+        alias = _alias_of(d)
+        select_items.append((expr, alias))
+        col_roles[alias] = role
         group_by.append(expr)
 
     for m in query.metrics:
-        expr, agg_type, unit, unsupported = resolver.resolve_measure(m)
+        r, m_rest, ok = _pick(m)
+        if not ok or r is None:
+            warnings.append(f"无法解析指标「{m}」(跨对象引用未关联/无路径), 已跳过")
+            unresolved.append({"term": m, "type": "metric",
+                               "reason": "no_join_path", "candidates": []})
+            continue
+        expr, agg_type, unit, unsupported = r.resolve_measure(m_rest)
         if unsupported:
             warnings.append(
                 f"指标「{m}」未配置 {dialect} 方言表达式(formula_dialects), 已跳过")
         if expr is None:
             warnings.append(
                 f"无法解析指标「{m}」, 已跳过。本对象可用指标: "
-                f"{resolver.suggest_metrics()}; 请用字典名或其别名重试")
+                f"{r.suggest_metrics()}; 请用字典名或其别名重试")
             unresolved.append({
                 "term": m, "type": "metric", "reason": "unresolved", "candidates": [],
             })
             continue
-        select_items.append((expr, m))
-        col_roles[m] = "measure"
+        alias = _alias_of(m)
+        select_items.append((expr, alias))
+        col_roles[alias] = "measure"
         # 附带单位与聚合信息供溯源
     if not select_items:
         # 至少给一个 "*" 的兜底, 但更常见是调用方忘了 metrics/dimensions
@@ -204,18 +413,26 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
     # ③ WHERE
     where_parts: list[str] = []
     for f in query.filters:
-        cond = resolver.render_filter(f)
+        r, f_rest, ok = _pick(f.dim)
+        if not ok or r is None:
+            warnings.append(f"无法解析过滤维度「{f.dim}」(跨对象引用未关联/无路径)")
+            if not any(u["term"] == f.dim and u["type"] == "dimension" for u in unresolved):
+                unresolved.append({"term": f.dim, "type": "dimension",
+                                   "reason": "no_join_path", "candidates": []})
+            continue
+        f_arg = f.model_copy(update={"dim": f_rest}) if f_rest != f.dim else f
+        cond = r.render_filter(f_arg)
         if cond:
             where_parts.append(cond)
         else:
-            hint = resolver.fuzzy_hint(f.dim)
+            hint = r.fuzzy_hint(f_rest)
             warnings.append(
-                f"无法解析过滤维度「{f.dim}」。{hint or f'本对象可用维度: {resolver.suggest_dimensions()}'}")
+                f"无法解析过滤维度「{f.dim}」。{hint or f'本对象可用维度: {r.suggest_dimensions()}'}")
             if not any(u["term"] == f.dim and u["type"] == "dimension" for u in unresolved):
                 unresolved.append({
                     "term": f.dim, "type": "dimension",
-                    "reason": resolver.resolution_sources().get(f.dim) or "unresolved",
-                    "candidates": resolver.fuzzy_candidates(f.dim),
+                    "reason": r.resolution_sources().get(f_rest) or "unresolved",
+                    "candidates": r.fuzzy_candidates(f_rest),
                 })
 
     # ③.5 时间条件(优先级): time_range(日历) > time_start/time_end(绝对) > time_window(相对滚动)
@@ -238,8 +455,9 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
     # ④ ORDER BY
     order_parts: list[str] = []
     for o in query.order:
-        if o.by in col_roles:
-            order_parts.append(f"{_quote_ident(o.by, dialect)} {'DESC' if o.desc else 'ASC'}")
+        key = o.by if o.by in col_roles else _alias_of(o.by)
+        if key in col_roles:
+            order_parts.append(f"{_quote_ident(key, dialect)} {'DESC' if o.desc else 'ASC'}")
         else:
             warnings.append(f"order-by references unknown field: {o.by}")
 
@@ -255,21 +473,45 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
         limit_val = g.max_rows
         warnings.append(f"guardrail: limit clamped to max_rows ({limit_val})")
 
-    sql = _render_sql(
-        table_ref=_exec_table_ref(binding, dialect),
-        select_items=select_items,
-        where_parts=where_parts,
-        group_by=group_by,
-        order_parts=order_parts,
-        limit=limit_val,
-        dialect=dialect,
-    )
+    table_ref = _exec_table_ref(binding, dialect)
+    if join_parts:
+        table_ref = " ".join([table_ref, *join_parts])
+
+    if query.window:
+        win_sql = _render_window_sql(
+            query.window, table_ref, select_items, where_parts, group_by,
+            order_parts, limit_val, dialect, col_roles, warnings)
+        if not win_sql:
+            return PlannedExecution(
+                sql="", secured_sql="", route=g.query_mode, dialect=dialect,
+                datasource_id=binding.datasource_id,
+                resolved_tables=[binding.physical_table],
+                guardrail=g, access=binding.access,
+                provenance=_provenance(binding, query), warnings=warnings)
+        sql = win_sql
+    else:
+        sql = _render_sql(
+            table_ref=table_ref,
+            select_items=select_items,
+            where_parts=where_parts,
+            group_by=group_by,
+            order_parts=order_parts,
+            limit=limit_val,
+            dialect=dialect,
+        )
 
     prov = _provenance(binding, query)
     # 服务端诊断用(工具侧 provenance 已剥离): 供 gates/Playground 在解析失败时给出候选
     prov["available_dimensions"] = resolver.available_dimension_names()
     # 归因: 每个请求名字的解析来源(dict_exact/dict_alias/column_map/physical_desc/phys_col/fuzzy_rejected)
-    prov["resolution_sources"] = resolver.resolution_sources()
+    combined_sources = dict(resolver.resolution_sources())
+    for _n in [*query.dimensions, *query.metrics, *[f.dim for f in query.filters]]:
+        _o, _rest = _split_qualified(_n)
+        if _o and _o in join_ctx:
+            got = join_ctx[_o][0]._res_trace.get(_rest)
+            if got:
+                combined_sources[_n] = got
+    prov["resolution_sources"] = combined_sources
     # 结构化未解析项(业务词+候选), 供别名回流队列自动落入(不含物理细节)
     prov["unresolved_terms"] = unresolved
 
@@ -279,7 +521,8 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
         dialect=dialect,
         route=g.query_mode,
         datasource_id=binding.datasource_id,
-        resolved_tables=[binding.physical_table],
+        resolved_tables=[binding.physical_table]
+        + [fb.physical_table for fb in fb_by_obj.values()],
         guardrail=g,
         access=binding.access,
         provenance=prov,
@@ -310,6 +553,107 @@ def _render_sql(
         parts.append("GROUP BY " + ", ".join(group_by))
     if order_parts:
         parts.append("ORDER BY " + ", ".join(order_parts))
+    if limit is not None:
+        parts.append(f"LIMIT {int(limit)}")
+    return "\n".join(parts)
+
+
+def _render_window_sql(
+    w: SemanticWindow,
+    table_ref: str,
+    select_items: list[tuple[str, str]],
+    where_parts: list[str],
+    group_by: list[str],
+    order_parts: list[str],
+    limit: Optional[int],
+    dialect: str,
+    col_roles: dict[str, str],
+    warnings: list[str],
+) -> Optional[str]:
+    """结构化窗口 -> "内层聚合 + 外层窗口" 两层结构(窗口与 GROUP BY 不同层)。
+
+    partition←dimensions(rolling/period_compare 剔除时间维)、order←order[];
+    窗口表达式仅进 SELECT 投影层。配置非法返回 None 并记 warnings(宁缺勿错)。
+    """
+    metric_aliases = [a for a, r in col_roles.items() if r == "measure"]
+    dim_aliases = [a for a, r in col_roles.items() if r != "measure"]
+    time_aliases = [a for a, r in col_roles.items() if r == "time"]
+
+    if w.metric:
+        target = _alias_of(w.metric)
+    else:
+        target = metric_aliases[0] if metric_aliases else ""
+    if w.type != "rank" and target not in metric_aliases:
+        warnings.append(
+            f"window.{w.type} 需要已解析的目标指标, 「{w.metric or ''}」未命中; "
+            f"可用指标: {metric_aliases}")
+        return None
+    if not select_items:
+        warnings.append("window 需要至少一个已解析的指标/维度")
+        return None
+
+    inner = _render_sql(table_ref, select_items, where_parts, group_by, [], None, dialect)
+    m_q = _quote_ident(target, dialect) if target else ""
+    part_all = [_quote_ident(a, dialect) for a in dim_aliases]
+    part_no_time = [_quote_ident(a, dialect) for a in dim_aliases if a not in time_aliases]
+    t_q = _quote_ident(time_aliases[0], dialect) if time_aliases else ""
+
+    def _over(part: list[str], tail: str = "") -> str:
+        seg = []
+        if part:
+            seg.append("PARTITION BY " + ", ".join(part))
+        if tail:
+            seg.append(tail)
+        return "OVER (" + " ".join(seg) + ")"
+
+    win_cols: list[str] = []
+    ord_sql = ", ".join(order_parts)
+
+    if w.type == "rank":
+        ord_sql = ord_sql or (f"{m_q} DESC" if m_q else "")
+        if not ord_sql:
+            warnings.append("window.rank 需要 order[] 或至少一个指标用于排序")
+            return None
+        win_cols.append(
+            f"RANK() {_over(part_all, 'ORDER BY ' + ord_sql)} AS {_quote_ident('rank', dialect)}")
+    elif w.type == "rolling":
+        n = int((w.params or {}).get("preceding", 2))
+        if n < 0:
+            warnings.append("window.rolling.params.preceding 必须为非负整数")
+            return None
+        if not t_q:
+            warnings.append("window.rolling 需要时间维度参与分组(先给时间维度+time_grain)")
+            return None
+        win_cols.append(
+            f"SUM({m_q}) {_over(part_no_time, f'ORDER BY {t_q} ROWS BETWEEN {n} PRECEDING AND CURRENT ROW')} "
+            f"AS {_quote_ident(target + '_rolling', dialect)}")
+    elif w.type == "period_compare":
+        lag = int((w.params or {}).get("lag", 1))
+        if lag < 1:
+            warnings.append("window.period_compare.params.lag 必须为正整数")
+            return None
+        if not t_q:
+            warnings.append("window.period_compare 需要时间维度参与分组(先给时间维度+time_grain)")
+            return None
+        over = _over(part_no_time, f"ORDER BY {t_q}")
+        win_cols.append(
+            f"LAG({m_q}, {lag}) {over} AS {_quote_ident(target + '_prev', dialect)}")
+        win_cols.append(
+            f"({m_q} / NULLIF(LAG({m_q}, {lag}) {over}, 0) - 1) "
+            f"AS {_quote_ident(target + '_pct', dialect)}")
+    elif w.type == "share":
+        # share 语义: 各分组占总量比例; partition=时间维(同周期内比), 无时间维=全局总量
+        part = [_quote_ident(a, dialect) for a in time_aliases[:1]]
+        win_cols.append(
+            f"{m_q} / NULLIF(SUM({m_q}) {_over(part)}, 0) "
+            f"AS {_quote_ident(target + '_share', dialect)}")
+    else:
+        warnings.append(f"未知 window.type: {w.type}")
+        return None
+
+    parts = [f"SELECT *, {', '.join(win_cols)}", f"FROM ({inner}) AS _agg"]
+    if ord_sql:
+        parts.append("ORDER BY " + ord_sql)
     if limit is not None:
         parts.append(f"LIMIT {int(limit)}")
     return "\n".join(parts)
@@ -379,9 +723,11 @@ class _ColumnResolver:
 
     _TIME_TYPES = {"date", "datetime", "timestamp", "time"}
 
-    def __init__(self, binding: ResolvedBinding, dialect: str = "mysql"):
+    def __init__(self, binding: ResolvedBinding, dialect: str = "mysql",
+                 column_prefix: str = ""):
         self.binding = binding
         self.dialect = dialect
+        self._prefix = column_prefix   # JOIN 侧表别名: 列引用统一限定; 空=主表不限定
         self._phys: dict[str, dict[str, Any]] | None = None
         self._metrics: dict[str, dict[str, Any]] | None = None
         self._dims: dict[str, dict[str, Any]] | None = None
@@ -391,6 +737,19 @@ class _ColumnResolver:
         self._res_trace: dict[str, str] = {}
         # T5: 包含式模糊命中不再静默绑定, 只回抛候选(宁缺勿错)
         self._fuzzy_candidates: dict[str, list[str]] = {}
+
+    def _col(self, col: str) -> str:
+        """列引用: 主表原样; JOIN 侧统一带表别名前缀(源头限定, 不做事后正则)。"""
+        q = _quote_ident(col, self.dialect)
+        return f"{self._prefix}.{q}" if self._prefix else q
+
+    def _fix_formula(self, expr: Optional[str]) -> Optional[str]:
+        """JOIN 侧指标公式文本中的裸列名补表别名(公式不经 _col 路径)。"""
+        if not self._prefix or not expr:
+            return expr
+        cols = (set(self._load_phys().keys())
+                | {str(v) for v in (self.binding.column_map or {}).values()})
+        return _qualify_bare(expr, self._prefix, cols)
 
     def fuzzy_hint(self, name: str) -> str:
         """若该名称是被拒的模糊命中, 给出候选提示文案(仅业务名, 不暴露物理列)。"""
@@ -652,11 +1011,11 @@ class _ColumnResolver:
         if entry.get("time"):
             # time_grain 只对时间类维度生效(枚举/类别维度不受全局粒度影响)
             return self._maybe_wrap_time(entry["col"], time_grain), "time"
-        return _quote_ident(entry["col"], self.dialect), "dimension"
+        return self._col(entry["col"]), "dimension"
     
     def _label_case_expr(self, col: str, labels: dict[str, str]) -> str:
         """枚举码→业务标签的 CASE 表达式; 未命中码值原样输出(转文本避免混型)。"""
-        q = _quote_ident(col, self.dialect)
+        q = self._col(col)
         whens = " ".join(
             f"WHEN {_lit(str(code))} THEN {_lit(label)}"
             for code, label in sorted(labels.items()))
@@ -673,7 +1032,7 @@ class _ColumnResolver:
         return rev.get(_norm_name(value), value)
     
     def _maybe_wrap_time(self, col: str, grain: Optional[str]) -> str:
-        q = _quote_ident(col, self.dialect)
+        q = self._col(col)
         if not grain:
             return q
         if self.dialect == "postgres":
@@ -697,6 +1056,7 @@ class _ColumnResolver:
             expr, unsupported = self._pick_dialect_expr(m)
             if unsupported:
                 return None, None, m.get("unit") or "", True
+            expr = self._fix_formula(expr)
             agg = (m.get("default_agg") or m.get("agg_type") or "").upper() or None
             return expr or None, agg, m.get("unit") or "", False
         # 兑底: 直接把 name 当物理列 SUM(归一化比较)
@@ -704,7 +1064,7 @@ class _ColumnResolver:
         col = phys.get(_norm_name(name))
         if col:
             self._res_trace[name] = "phys_col"
-            return f"SUM({_quote_ident(col, self.dialect)})", "SUM", "", False
+            return f"SUM({self._col(col)})", "SUM", "", False
         return None, None, "", False
     
     def _lookup_metric(self, name: str) -> Optional[dict[str, Any]]:
@@ -753,7 +1113,7 @@ class _ColumnResolver:
         if not entry:
             return None
         # WHERE 永远打在原始列上(标签只在结果集展示), 值支持业务名→码值反查
-        expr = _quote_ident(entry["col"], self.dialect)
+        expr = self._col(entry["col"])
         if entry.get("time") and f.grain:
             expr = self._maybe_wrap_time(entry["col"], f.grain)
         if entry.get("labels"):
@@ -777,15 +1137,15 @@ class _ColumnResolver:
                     f"时间维度「{time_column}」无法解析, 可用时间维度: "
                     f"{self.suggest_time_dimensions() or '无'}")
                 return None
-            return _quote_ident(entry["col"], self.dialect)
+            return self._col(entry["col"])
         for d in self._load_dims().values():
             if (d.get("category") or "") == "时间" and d.get("target_column"):
-                return _quote_ident(d["target_column"], self.dialect)
+                return self._col(d["target_column"])
         tcols = [c for c, meta in self._load_phys().items()
                  if str(meta.get("data_type") or "").split("(")[0].lower()
                  in self._TIME_TYPES]
         if len(tcols) == 1:
-            return _quote_ident(tcols[0], self.dialect)
+            return self._col(tcols[0])
         warnings.append(
             "时间条件需要显式 time_column: 本对象未登记时间类维度"
             f"(可用维度: {self.suggest_dimensions()})")

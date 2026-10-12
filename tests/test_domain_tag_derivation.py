@@ -164,7 +164,8 @@ class TestSyncDoesNotOverwriteLabels:
     def test_update_branch_keeps_existing_tags(self):
         import inspect
         from backend.modules.catalog.services import metadata_sync
-        src = inspect.getsource(metadata_sync._sync_mysql_metadata)
+        # 回写逻辑已抽到 _apply_sync（MySQL/Doris 与 SLS 共用），不变量随之一处锁定
+        src = inspect.getsource(metadata_sync._apply_sync)
         # 更新分支必须取旧值兜底（同步不覆盖派生/人工标注）
         # ↑ 兜底：old.get(...) 优先，推断值仅在列为空时填入
         assert '"region_tag": old.get("region_tag") or region_tag' in src
@@ -174,6 +175,14 @@ class TestSyncDoesNotOverwriteLabels:
         """变更判定不得再把 region_tag/domain_tag 纳入，否则每次同步都会触发写回。"""
         import inspect
         from backend.modules.catalog.services import metadata_sync
-        src = inspect.getsource(metadata_sync._sync_mysql_metadata)
+        src = inspect.getsource(metadata_sync._apply_sync)
         assert 'or (old.get("region_tag") or "") != region_tag' not in src
         assert 'or (old.get("domain_tag") or "") != domain_tag' not in src
+
+    def test_sls_and_mysql_share_writeback(self):
+        """SLS 同步必须复用同一 _apply_sync（继承 tag/business_desc 保留不变量），
+        不得另写一份回写。"""
+        import inspect
+        from backend.modules.catalog.services import metadata_sync
+        assert "_apply_sync(" in inspect.getsource(metadata_sync._sync_sls_metadata)
+        assert "_apply_sync(" in inspect.getsource(metadata_sync._sync_mysql_metadata)

@@ -14,18 +14,6 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-_EMBEDDING_DIM = 768
-
-
-def _placeholder_embedding() -> str:
-    """Zero-vector placeholder for the logically-disabled embedding column.
-
-    The column is retained (Doris ARRAY<FLOAT> NOT NULL / MySQL JSON) but is no
-    longer produced by an embedding model nor read by any retrieval path.
-    """
-    return "[" + ", ".join(["0.0"] * _EMBEDDING_DIM) + "]"
-
-
 def _emit_graph_sync(event_type: str, data: dict):
     """向图谱同步服务发送事件（非关键路径，失败不影响主流程）。"""
     try:
@@ -115,17 +103,16 @@ class TermService:
 
                 now = _now()
                 row_id = int(_time.time() * 1000000)
-                vec_literal = _placeholder_embedding()
 
                 cur.execute(
                     "INSERT INTO adh_business_terms "
                     "(id, term_cn, term_en, term_aliases, term_type, "
                     "target_table, target_column, calculation, description, "
-                    "usage_count, is_active, created_at, updated_at, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 1, %s, %s, %s)",
+                    "usage_count, is_active, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 1, %s, %s)",
                     (row_id, data["term_cn"], data.get("term_en") or "", data.get("term_aliases") or "",
                      data.get("term_type", "dimension"), data.get("target_table") or "", data.get("target_column") or "",
-                     data.get("calculation") or "", data.get("description") or "", now, now, vec_literal),
+                     data.get("calculation") or "", data.get("description") or "", now, now),
                 )
             conn.commit()
 
@@ -169,7 +156,6 @@ class TermService:
                     else:
                         fields[f] = row[f] or ""
 
-                vec_literal = _placeholder_embedding()
                 now = _now()
 
                 # Doris DUPLICATE KEY 表不支持 UPDATE，使用 DELETE + INSERT
@@ -178,12 +164,12 @@ class TermService:
                     "INSERT INTO adh_business_terms "
                     "(id, term_cn, term_en, term_aliases, term_type, "
                     "target_table, target_column, calculation, description, "
-                    "usage_count, is_active, created_at, updated_at, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "usage_count, is_active, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (row_id, fields["term_cn"], fields["term_en"], fields["term_aliases"],
                      fields["term_type"], fields["target_table"], fields["target_column"],
                      fields["calculation"], fields["description"],
-                     row.get("usage_count", 0), row.get("is_active", 1), now, now, vec_literal),
+                     row.get("usage_count", 0), row.get("is_active", 1), now, now),
                 )
             conn.commit()
             return {"success": True}
@@ -239,21 +225,20 @@ class TermService:
                 cur.execute("DELETE FROM adh_business_terms WHERE id = %s", (row_id,))
 
                 now = _now()
-                vec_literal = _placeholder_embedding()
 
                 cur.execute(
                     "INSERT INTO adh_business_terms "
                     "(id, term_cn, term_en, term_aliases, term_type, "
                     "target_table, target_column, calculation, description, "
-                    "usage_count, is_active, created_at, updated_at, datasource_id, embedding) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "usage_count, is_active, created_at, updated_at, datasource_id) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (row_id, full_row["term_cn"], full_row.get("term_en") or "",
                      full_row.get("term_aliases") or "", full_row.get("term_type") or "",
                      full_row.get("target_table") or "", full_row.get("target_column") or "",
                      full_row.get("calculation") or "", full_row.get("description") or "",
                      full_row.get("usage_count") or 0, new_val,
                      full_row.get("created_at") or now, now,
-                     full_row.get("datasource_id") or 0, vec_literal),
+                     full_row.get("datasource_id") or 0),
                 )
             conn.commit()
             return {"success": True, "is_active": new_val}

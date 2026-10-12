@@ -306,7 +306,12 @@ class PermissionEnforcer:
             combined_result.policies_applied.extend(result.policies_applied)
 
         self._protect_projection(sql, combined_result)
-        modified_sql, _ = inject_filters(sql, table_filters)
+        modified_sql, applied = inject_filters(sql, table_filters)
+        # fail-loud: 行策略必须全部落到表引用上。键与引用不匹配时宁拒绝勿旁路，
+        # 杜绝未来重构（如提取键与注入键口径不一致）导致 RLS 静默失效。
+        missing = set(table_filters) - set(applied)
+        if missing:
+            raise PermissionError("行级策略未能应用到查询，已拒绝执行")
         combined_result.row_filter = modified_sql != sql
         return modified_sql, combined_result
 

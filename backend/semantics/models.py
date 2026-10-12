@@ -53,6 +53,22 @@ class SemanticOrder(BaseModel):
     desc: bool = False
 
 
+class SemanticWindow(BaseModel):
+    """结构化窗口模式（由 planner 确定性编译为窗口函数/两层结构，禁止自由窗口表达式）。
+
+    partition←dimensions、order←order[]；窗口表达式仅进 SELECT 投影层，
+    与 GROUP BY 不同层（内层聚合 + 外层窗口）。
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["rank", "rolling", "period_compare", "share"]
+    metric: Optional[str] = Field(
+        None, description="目标指标名（可含 对象名.指标名 限定；rank 可省省，默认按 order[]）")
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        description='附加参数: rolling 用 {"preceding": N}; period_compare 用 {"lag": N}')
+
+
 class SemanticQuery(BaseModel):
     """LLM/大屏对语义层的唯一入口契约。
 
@@ -61,8 +77,13 @@ class SemanticQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     object: str = Field(..., description="本体对象 IRI 或 object_key, e.g. 'Patient' / 'obj:Patient'")
-    metrics: list[str] = Field(default_factory=list, description="指标名列表(adh_metrics.name)")
-    dimensions: list[str] = Field(default_factory=list, description="分组维度(adh_dimensions.name 或对象属性)")
+    metrics: list[str] = Field(
+        default_factory=list,
+        description="指标名列表(adh_metrics.name 或其别名)；跨对象引用用限定业务名 '对象名.指标名'，"
+                    "join 路径由语义层从 links 解出（LLM 不指定 join 表达式）")
+    dimensions: list[str] = Field(
+        default_factory=list,
+        description="分组维度(adh_dimensions.name 或对象属性)；跨对象引用用限定业务名 '对象名.维度名'")
     filters: list[SemanticFilter] = Field(default_factory=list)
     order: list[SemanticOrder] = Field(default_factory=list)
     limit: Optional[int] = Field(None, ge=1, le=10000)
@@ -90,6 +111,17 @@ class SemanticQuery(BaseModel):
         default_factory=dict,
         description="SQL 模板对象的具名参数(仅 bind_kind='sql_template' 接受); "
                     "键必须在模板 variables 声明内, 值按声明类型校验后渲染",
+    )
+    window: Optional[SemanticWindow] = Field(
+        None,
+        description="结构化窗口模式(rank/rolling/period_compare/share)，由编译层生成窗口函数；"
+                    "不接受自由窗口表达式文本",
+    )
+    datasource: str = Field(
+        default="",
+        description="目标数据源业务名(如 'prd-en', 与 list_datasources 显示一致); 缺省=会话数据源。"
+                    "全球/多站点问题: 对每个站点数据源分别调用本工具逐站查询(站点不是维度), "
+                    "站点↔数据源映射见数据分析技能; 未命中授权集会回抛候选名, 不要猜",
     )
     datasource_id: int = 0
     workspace_id: int = 0

@@ -25,7 +25,7 @@ router = APIRouter()
 class KnowledgeCreate(BaseModel):
     workspace_id: int = 0
     datasource_id: int = 0
-    knowledge_type: str  # recommend_question / sql_pair
+    knowledge_type: str  # quick_path / sql_pair / recommend_question / followup_case
     title: str
     content: str
     metadata: Optional[dict] = None
@@ -54,6 +54,15 @@ def _serialize_row(row: dict) -> dict:
         except (json.JSONDecodeError, TypeError):
             out["metadata"] = None
     return out
+
+
+def _invalidate_quick_paths() -> None:
+    """快速路径写操作后失效命中缓存，使配置立即生效（best-effort，失败不阻断写入）。"""
+    try:
+        from backend.modules.mind.execution.quick_paths import clear_cache
+        clear_cache()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Knowledge] quick_path cache invalidate skipped: %s", e)
 
 
 # ── Endpoints ──────────────────────────────────────────────────────
@@ -183,6 +192,7 @@ def create_knowledge(body: KnowledgeCreate, admin: dict = None):
                  body.priority, body.is_active),
             )
 
+    _invalidate_quick_paths()
     return {"id": item_id, "message": "created"}
 
 
@@ -214,6 +224,7 @@ def update_knowledge(item_id: int, body: KnowledgeUpdate, admin: dict = None):
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="Knowledge item not found")
 
+    _invalidate_quick_paths()
     return {"message": "updated"}
 
 
@@ -229,6 +240,7 @@ def toggle_knowledge(item_id: int, admin: dict = None):
             new_val = 0 if row["is_active"] else 1
             cur.execute("UPDATE adh_knowledge_items SET is_active = %s WHERE id = %s", (new_val, item_id))
 
+    _invalidate_quick_paths()
     return {"is_active": new_val}
 
 
@@ -241,4 +253,5 @@ def delete_knowledge(item_id: int, admin: dict = None):
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="Knowledge item not found")
 
+    _invalidate_quick_paths()
     return {"message": "deleted"}

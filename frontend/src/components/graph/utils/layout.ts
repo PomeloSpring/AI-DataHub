@@ -129,13 +129,29 @@ export function applyForceLayout(
   edges: Edge[],
   options: { width?: number; height?: number; iterations?: number } = {}
 ): LayoutResult {
-  const { width = 800, height = 600, iterations = 50 } = options;
+  const { width = 1400, height = 1000, iterations = 240 } = options;
 
-  // Initialize positions randomly
+  // 尺寸感知: 圆节点以 width/height 为准(缺省 72)
+  const sizeOf = (n: Node) => ({
+    w: n.measured?.width ?? n.width ?? 72,
+    h: n.measured?.height ?? n.height ?? 72,
+  });
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+
+  // 确定性放射状播种: 高度数节点(hub)居中, 黄金角铺盘, 无随机数(可复现)
+  const degree = new Map<string, number>(nodes.map((n) => [n.id, 0]));
+  edges.forEach((e) => {
+    degree.set(e.source, (degree.get(e.source) || 0) + 1);
+    degree.set(e.target, (degree.get(e.target) || 0) + 1);
+  });
+  const byHub = [...nodes].sort(
+    (a, b) => (degree.get(b.id)! - degree.get(a.id)!) || a.id.localeCompare(b.id)
+  );
   const positions = new Map<string, { x: number; y: number }>();
-  nodes.forEach((node, i) => {
-    const angle = (2 * Math.PI * i) / nodes.length;
-    const radius = Math.min(width, height) * 0.3;
+  byHub.forEach((node, i) => {
+    const ring = Math.sqrt(i + 0.5);
+    const angle = i * 2.399963229728653; // 黄金角
+    const radius = ring * Math.min(width, height) * 0.12;
     positions.set(node.id, {
       x: width / 2 + radius * Math.cos(angle),
       y: height / 2 + radius * Math.sin(angle),
@@ -151,73 +167,86 @@ export function applyForceLayout(
     adjacency.get(edge.target)!.push(edge.source);
   });
 
-  // Simple force simulation
-  const repulsion = 1000;
-  const attraction = 0.01;
-  const damping = 0.9;
+  const repulsion = 60000;
+  const attraction = 0.06;
+  const centerPull = 0.012;
 
   for (let iter = 0; iter < iterations; iter++) {
     const forces = new Map<string, { fx: number; fy: number }>();
+    nodes.forEach((n) => forces.set(n.id, { fx: 0, fy: 0 }));
 
-    // Initialize forces
-    nodes.forEach((node) => {
-      forces.set(node.id, { fx: 0, fy: 0 });
-    });
-
-    // Repulsion between all nodes
+    // 斥力(尺寸感知: 节点重叠时斥力显著加大)
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
-        const posA = positions.get(nodes[i].id)!;
-        const posB = positions.get(nodes[j].id)!;
-        const dx = posA.x - posB.x;
-        const dy = posA.y - posB.y;
+        const a = nodes[i];
+        const b = nodes[j];
+        const pa = positions.get(a.id)!;
+        const pb = positions.get(b.id)!;
+        const dx = pa.x - pb.x;
+        const dy = pa.y - pb.y;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const force = repulsion / (dist * dist);
-
-        const forceA = forces.get(nodes[i].id)!;
-        const forceB = forces.get(nodes[j].id)!;
-        forceA.fx += (dx / dist) * force;
-        forceA.fy += (dy / dist) * force;
-        forceB.fx -= (dx / dist) * force;
-        forceB.fy -= (dy / dist) * force;
+        const sa = sizeOf(a);
+        const sb = sizeOf(b);
+        const minDist = (Math.max(sa.w, sa.h) + Math.max(sb.w, sb.h)) / 2 + 40;
+        const overlapBoost = 1 + Math.max(0, minDist - dist) / minDist * 4;
+        const force = (repulsion / (dist * dist)) * overlapBoost;
+        const fa = forces.get(a.id)!;
+        const fb = forces.get(b.id)!;
+        fa.fx += (dx / dist) * force;
+        fa.fy += (dy / dist) * force;
+        fb.fx -= (dx / dist) * force;
+        fb.fy -= (dy / dist) * force;
       }
     }
 
-    // Attraction along edges
+    // 弹力(静止距离随两侧节点尺寸)
     edges.forEach((edge) => {
-      const posA = positions.get(edge.source)!;
-      const posB = positions.get(edge.target)!;
-      const dx = posB.x - posA.x;
-      const dy = posB.y - posA.y;
+      const na = nodeById.get(edge.source);
+      const nb = nodeById.get(edge.target);
+      if (!na || !nb) return;
+      const pa = positions.get(edge.source)!;
+      const pb = positions.get(edge.target)!;
+      const dx = pb.x - pa.x;
+      const dy = pb.y - pa.y;
       const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      const force = dist * attraction;
-
-      const forceA = forces.get(edge.source)!;
-      const forceB = forces.get(edge.target)!;
-      forceA.fx += (dx / dist) * force;
-      forceA.fy += (dy / dist) * force;
-      forceB.fx -= (dx / dist) * force;
-      forceB.fy -= (dy / dist) * force;
+      const rest = (Math.max(sizeOf(na).w, sizeOf(na).h) + Math.max(sizeOf(nb).w, sizeOf(nb).h)) / 2 + 90;
+      const force = (dist - rest) * attraction;
+      const fa = forces.get(edge.source)!;
+      const fb = forces.get(edge.target)!;
+      fa.fx += (dx / dist) * force;
+      fa.fy += (dy / dist) * force;
+      fb.fx -= (dx / dist) * force;
+      fb.fy -= (dy / dist) * force;
     });
 
-    // Apply forces with damping
-    const factor = damping / (iter + 1);
-    nodes.forEach((node) => {
-      const pos = positions.get(node.id)!;
-      const force = forces.get(node.id)!;
-      pos.x += force.fx * factor;
-      pos.y += force.fy * factor;
+    // 向心力(防飞出)
+    nodes.forEach((n) => {
+      const p = positions.get(n.id)!;
+      const f = forces.get(n.id)!;
+      f.fx += (width / 2 - p.x) * centerPull;
+      f.fy += (height / 2 - p.y) * centerPull;
+    });
 
-      // Keep within bounds
-      pos.x = Math.max(50, Math.min(width - 50, pos.x));
-      pos.y = Math.max(50, Math.min(height - 50, pos.y));
+    // 逐步收敛 + 边界夹紧
+    const factor = 2.2 / (iter + 8);
+    nodes.forEach((n) => {
+      const p = positions.get(n.id)!;
+      const f = forces.get(n.id)!;
+      p.x = Math.max(40, Math.min(width - 40, p.x + f.fx * factor));
+      p.y = Math.max(40, Math.min(height - 40, p.y + f.fy * factor));
     });
   }
 
-  // Apply positions to nodes
+  // Apply positions to nodes (力导向无固定方向, 连接点沿用 TB 口径)
+  const sourcePosition = Position.Bottom;
+  const targetPosition = Position.Top;
   const layoutedNodes = nodes.map((node) => ({
     ...node,
     position: positions.get(node.id)!,
+    sourcePosition,
+    targetPosition,
+    // 自定义节点的 Handle 读取 data；只设置 Node 顶层方向不会改变其连接点。
+    data: { ...node.data, sourcePosition, targetPosition },
   }));
 
   return {

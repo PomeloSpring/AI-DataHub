@@ -42,7 +42,7 @@ def test_sync_full_mode_reads_and_writes(monkeypatch):
     monkeypatch.setattr("backend.modules.flow.dag.federated_reader.governed_read_dataframe", fake_read)
     monkeypatch.setattr("backend.modules.flow.dag.target_writer.write_dataframe", fake_write)
     monkeypatch.setattr(node_runners, "_record_lineage",
-                        lambda sql, ds, ctx: calls.setdefault("lineage_sql", sql))
+                        lambda sql, ds, ctx, **kw: calls.setdefault("lineage_sql", sql))
     monkeypatch.setattr(node_runners, "_run_quality_checks",
                         lambda *a, **k: calls.setdefault("quality", {"checks": 1, "passed": 1, "failed": 0}))
 

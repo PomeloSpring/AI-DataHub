@@ -289,9 +289,76 @@ def test_postgres_connector_fetch_arrow():
 
 def test_connector_factory_postgres():
     from backend.semantics.execution.connectors.postgres import PostgresConnector
+    from backend.semantics.execution.connectors.sls import SlsConnector
 
     assert isinstance(get_connector("postgres"), PostgresConnector)
     assert isinstance(get_connector("postgresql"), PostgresConnector)
+    # SLS 不支持 prepared statement，不能走 ADBC PostgresConnector，必须走 psycopg2 SlsConnector
+    assert isinstance(get_connector("sls"), SlsConnector)
+    assert not isinstance(get_connector("sls"), PostgresConnector)
+
+
+def test_sls_connector_uses_simple_protocol():
+    """SLS 连接器走 psycopg2（无参数 execute = simple 协议），不得依赖 ADBC prepared statement。"""
+    from backend.semantics.execution.connectors.sls import SlsConnector
+
+    calls = {}
+
+    class _FakeCur:
+        description = [("a",), ("b",)]
+
+        def execute(self, sql, *args, **kwargs):
+            calls["sql"] = sql
+            calls["args"] = args  # 必须为空：有参数则 psycopg2 走扩展协议，SLS 会拒
+
+        def fetchall(self):
+            return [{"a": 1, "b": "x"}, {"a": 2, "b": "y"}]  # RealDictCursor 行
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _FakeConn:
+        def cursor(self):
+            return _FakeCur()
+
+        def close(self):
+            calls["closed"] = True
+
+    c = SlsConnector(conn_factory=lambda: _FakeConn())
+    table = c.execute_pushdown("SELECT a, b FROM t")
+    assert calls["args"] == ()  # 无绑定参数 → simple 协议
+    assert table.to_pydict() == {"a": [1, 2], "b": ["x", "y"]}
+    assert calls.get("closed")
+
+
+def test_postgres_connector_statement_timeout_via_uri(monkeypatch):
+    """ADBC postgresql 驱动只从 URI 解析连接参数：statement_timeout 必须经 URI
+    查询参数 options 下发，不得放进 db_kwargs/conn_kwargs（否则报 Unknown option）。"""
+    import adbc_driver_postgresql.dbapi as pg_adbc
+    from backend.semantics.execution.connectors.postgres import PostgresConnector
+
+    captured = {}
+
+    def _fake_connect(uri, **kwargs):
+        captured["uri"] = uri
+        captured["kwargs"] = kwargs
+        return _FakePgConn(pa.table({"a": [1]}))
+
+    monkeypatch.setattr(pg_adbc, "connect", _fake_connect)
+    c = PostgresConnector(config={
+        "host": "h", "port": 5432, "user": "u", "password": "p", "database": "alliedstar-prd",
+    })
+    c.execute_pushdown("SELECT 1", timeout_sec=30)
+
+    uri = captured["uri"]
+    kw = captured["kwargs"]
+    assert "?options=" in uri and "statement_timeout" in uri
+    # 驱动拒的两种传法都不得出现
+    for d in ("db_kwargs", "conn_kwargs"):
+        assert "options" not in (kw.get(d) or {})
 
 
 # ── 结果缓存（性能旁路） ──────────────────────────────────────

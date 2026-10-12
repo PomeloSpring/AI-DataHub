@@ -29,7 +29,7 @@ description: 本体建模规范（Ontology Modeling Spec）。本体是唯一语
 - 触碰对象 key 的任何变更（重命名/删除/合并），必须保证字典 `bound_object_key` 不悬空：
   - `save_draft`（草案）→ `find_orphan_dict_bindings` 告警不阻断（返回 `validation_warnings`）；
   - `activate` → 孤儿引用**硬阻断**（ValueError），不得为"先激活再修"开口子。
-- 定期巡检：`scripts/check_alias_drift.py` 比对 字典 aliases / 图谱 skos:altLabel / business_terms 三处漂移，只报告不自动改。
+- 定期巡检：`backend/scripts/check_alias_projection.py` 单向校验「对象 aliases（源）→ 图谱 skos:altLabel（投影）」一致性并报术语-字典重叠（明细跑 `backend/scripts/absorb_business_terms.py`），只报告不自动改。
 
 ## 5. 术语分层（business_terms 是缓冲区，不是第二事实源）
 - `adh_business_terms` 只保留**尚未绑定到任何对象/字典的纯业务黑话**；一旦收编，其同义词应落对象/字典 aliases，术语行退役或改为溯源注释。

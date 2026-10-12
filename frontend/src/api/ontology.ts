@@ -12,6 +12,9 @@ export interface OntologyModelSummary {
   domain?: string;
   status: OntologyStatus;
   object_count: number;
+  /** 部署摘要（部署绑定派生，事实源=部署绑定）：≥2 站即契约模型 */
+  deployment_count?: number;
+  deployments?: { site: string; datasource: string }[];
   kb_id?: number | null;
   created_by: string;
   created_at: string;
@@ -22,6 +25,17 @@ export interface OntologyModel extends OntologyModelSummary {
   json_content: string;
   yaml_content: string;
   md_content: string;
+}
+
+export interface DeploymentRow {
+  object_key: string;
+  object_name: string;
+  site: string;
+  datasource: string;
+  physical_table: string;
+  product_ref: string;
+  sync_state: string;
+  status: string;
 }
 
 export interface OntologyObjectHit {
@@ -116,6 +130,10 @@ export const ontologyApi = {
       params: { ...(datasourceId ? { datasource_id: datasourceId } : {}), include_archived: includeArchived },
     }),
   get: (id: number) => client.get<OntologyModel>(`/catalog/ontology/models/${id}`),
+  deployments: (id: number) =>
+    client.get<{ items: DeploymentRow[] }>(`/catalog/ontology/models/${id}/deployments`),
+  syncDoc: (id: number) =>
+    client.get<{ markdown: string }>(`/catalog/ontology/models/${id}/sync-doc`),
   versions: (id: number) =>
     client.get<{ items: OntologyModelSummary[] }>(`/catalog/ontology/models/${id}/versions`),
   save: (id: number, jsonContent: string, name?: string) =>

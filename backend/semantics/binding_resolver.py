@@ -324,15 +324,12 @@ def _resolve_from_bindings(conn, object_key, datasource_id, datasource_name,
         "WHERE b.object_key = %s AND b.status = 'active'"
     )
     params: list[Any] = [object_key]
-    # ── 归属裁决（语义取数真源）：取数绑定只认与查询域同类的模型 ──
-    #   datasource_id>0（业务源取数）→ kind='source'（源本体，语义检索真源）
-    #   datasource_id<=0（系统域）  → kind='system'
-    #   kind='business' 的绑定**永不参与取数**：业务本体是 RAG 知识层（与系统本体
-    #   共用知识库），其绑定行只承载对象→产品治理血缘（analyze_impact 反查用）。
-    #   历史缺陷：业务本体绑定与源本体绑定重复占用同一 object_key，解析靠 id ASC
-    #   意外让源本体赢——真源归属必须显式声明，不靠先来后到。
-    #   空 kind 的存量模型行按旧口径（ds>0=源域）兼容。
-    sql += (" AND ((%s > 0 AND (m.kind = 'source' OR COALESCE(m.kind,'') = '')) "
+    # ── 归属裁决（部署绑定层，v0.4 kind 收缩后）：按**域**裁决 ──
+    #   datasource_id>0（业务域取数）→ 非 system 模型（business，含存量 source/空 kind）
+    #   datasource_id<=0（系统域）   → system 模型
+    #   系统/业务域边界是硬规则（as-bot-system-waker）；kind='source' 已退役
+    #   （本体=人编业务知识图谱、绑定=独立部署层，GLOBAL_SEMANTIC_LAYER_DESIGN §3/§4）。
+    sql += (" AND ((%s > 0 AND COALESCE(m.kind,'') <> 'system') "
             "OR (%s <= 0 AND (m.kind = 'system' OR COALESCE(m.kind,'') = '')))")
     params.append(datasource_id or 0)
     params.append(datasource_id or 0)
@@ -423,15 +420,16 @@ def _resolve_from_bindings(conn, object_key, datasource_id, datasource_name,
 
 def _resolve_from_objects_inline(conn, object_key, datasource_id, datasource_name, warnings) -> ResolvedBinding | None:
     with conn.cursor() as cur:
-        # JOIN models 按 kind 裁决（与 Level 1 同口径）：取数只认 source/system 模型的
-        # 展开行，business 本体行只承载治理血缘不参与取数（否则多模型重复行会靠 id 先后意外命中）
+        # JOIN models 按**域**裁决（与 Level 1 同口径，v0.4 kind 收缩后）：
+        # 业务域取数认非 system 模型展开行，系统域认 system 模型行
+        # （否则多模型重复行会靠 id 先后意外命中；source kind 已退役）
         cur.execute(
             "SELECT o.model_id, o.datasource_id, o.display_name, o.execution_binding "
             "FROM adh_ontology_objects o "
             "JOIN adh_ontology_models m ON m.id = o.model_id "
             "WHERE o.object_key = %s AND o.is_active = 1 "
             "  AND (%s = 0 OR o.datasource_id = %s) "
-            "  AND ((%s > 0 AND (m.kind = 'source' OR COALESCE(m.kind,'') = '')) "
+            "  AND ((%s > 0 AND COALESCE(m.kind,'') <> 'system') "
             "       OR (%s <= 0 AND (m.kind = 'system' OR COALESCE(m.kind,'') = ''))) "
             "ORDER BY (o.datasource_id = %s) DESC, o.id ASC LIMIT 1",
             (object_key, datasource_id, datasource_id, datasource_id, datasource_id, datasource_id),

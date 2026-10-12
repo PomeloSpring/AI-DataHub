@@ -1,7 +1,7 @@
 """Skill Loader — loads skill configs from files and DB with priority merging.
 
 Skills are prompt templates that agents can dynamically load.
-System skills live in config/skills/{name}/ (skill.yaml + system.md).
+System skills live in config/skills/{name}/SKILL.md (Qoder 规范: YAML frontmatter + Markdown 正文)。
 User-created skills live in adh_skills table.
 
 Loading priority:

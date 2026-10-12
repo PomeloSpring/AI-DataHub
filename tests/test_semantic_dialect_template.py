@@ -21,7 +21,12 @@ from backend.semantics.models import (
 
 # ── 测试夹具: 无 DB 的列/指标/维度 ──────────────────────────────
 
-_PHYS = {"create_date", "status", "amount"}
+# 物理列元数据(离线夹具): _dim_index 实际读 _load_phys, 两个入口都要打桩
+_PHYS = {
+    "create_date": {"data_type": "datetime", "business_desc": "创建日期"},
+    "status": {"data_type": "varchar", "business_desc": "状态"},
+    "amount": {"data_type": "decimal", "business_desc": "金额"},
+}
 
 _METRICS = {
     "case_count": {
@@ -49,7 +54,8 @@ def _bind(db_type="mysql", **kw):
 
 
 def _patch_resolver(monkeypatch):
-    monkeypatch.setattr(planner._ColumnResolver, "physical_columns", lambda self: _PHYS)
+    monkeypatch.setattr(planner._ColumnResolver, "physical_columns", lambda self: set(_PHYS))
+    monkeypatch.setattr(planner._ColumnResolver, "_load_phys", lambda self: dict(_PHYS))
     monkeypatch.setattr(planner._ColumnResolver, "_load_metrics", lambda self: _METRICS)
     monkeypatch.setattr(planner._ColumnResolver, "_load_dims", lambda self: _DIMS)
 
@@ -205,7 +211,8 @@ class TestFormulaDialects:
                 "formula_dialects": {"doris": "window_funnel(30)(a,b)=2", "mysql": None},
             },
         }
-        monkeypatch.setattr(planner._ColumnResolver, "physical_columns", lambda self: _PHYS)
+        monkeypatch.setattr(planner._ColumnResolver, "physical_columns", lambda self: set(_PHYS))
+        monkeypatch.setattr(planner._ColumnResolver, "_load_phys", lambda self: dict(_PHYS))
         monkeypatch.setattr(planner._ColumnResolver, "_load_metrics", lambda self: metrics)
         monkeypatch.setattr(planner._ColumnResolver, "_load_dims", lambda self: _DIMS)
         planned = planner.plan(

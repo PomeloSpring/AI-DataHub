@@ -20,300 +20,83 @@ import {
 import '@xyflow/react/dist/style.css';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, ZoomIn, ZoomOut, Maximize2, RefreshCw, Network, Tags } from 'lucide-react';
+import { Loader2, ZoomIn, ZoomOut, Maximize2, RefreshCw, Tags } from 'lucide-react';
 import { useGraphStore } from '@/stores/graphStore';
-import { applyDagreLayout, LayoutOptions } from './utils/layout';
+import { applyDagreLayout, applyForceLayout, LayoutOptions } from './utils/layout';
+
+// ── 图数据库风格基准：分类着色圆形节点 + 顶部图例 + 力导向布局 ──────────
+// 参考图数据库可视化惯例：节点为实心圆、按类型着色、标签压在圆内；
+// 图面只放关系主干，明细一律下钻侧栏（ui-resource-display/graph 规范）。
 
 const getLayoutOptions = (graphType: string): LayoutOptions => ({
   direction: graphType === 'data-lineage' ? 'LR' : 'TB',
-  nodeWidth: 260,
-  nodeHeight: 200,
+  nodeWidth: 120,
+  nodeHeight: 120,
   ranksep: 120,
   nodesep: 72,
   edgesep: 28,
 });
 
-// ── Custom Node Components ─────────────────────────────────────────────
+// ── 节点类型配置（全平台统一配色，图例同源） ─────────────────────────
 
-/** 语义展开节点（行为/属性/规则/场景）：卡片 + 类型徽标，遵守 KnowledgeGraph 卡片基准。 */
-function TaggedNode({ data }: { data: any }) {
-  const cfg: Record<string, { color: string; badge: string }> = {
-    Action: { color: '#10b981', badge: '行为' },
-    Property: { color: '#22c55e', badge: '属性' },
-    Rule: { color: '#f59e0b', badge: '规则' },
-    Scenario: { color: '#8b5cf6', badge: '场景' },
-  };
-  const c = cfg[data.nodeType] || { color: '#64748b', badge: data.nodeType || '语义' };
+export const NODE_CONFIG: Record<string, { color: string; label: string }> = {
+  Object: { color: '#6366f1', label: '业务对象' },
+  Table: { color: '#3b82f6', label: '表' },
+  Column: { color: '#22c55e', label: '字段' },
+  Term: { color: '#a855f7', label: '业务术语' },
+  Metric: { color: '#f97316', label: '指标' },
+  Dimension: { color: '#14b8a6', label: '维度' },
+  DataSource: { color: '#06b6d4', label: '数据源' },
+  ETLTask: { color: '#f59e0b', label: '同步任务' },
+  Action: { color: '#10b981', label: '行为' },
+  Property: { color: '#22c55e', label: '属性' },
+  Rule: { color: '#f59e0b', label: '规则' },
+  Scenario: { color: '#8b5cf6', label: '场景' },
+};
+
+/** 圆节点尺寸随标签长度收敛（参考图：圆的大小托住标签）。 */
+export function circleSize(label: string): number {
+  const chars = Array.from(String(label || '')).length;
+  return Math.max(64, Math.min(150, 44 + chars * 13));
+}
+
+// ── 圆形节点（统一渲染，类型只决定颜色） ─────────────────────────────
+
+function CircleNode({ data, selected }: { data: any; selected?: boolean }) {
+  const cfg = NODE_CONFIG[data.nodeType] || { color: '#64748b', label: data.nodeType || '节点' };
+  const label = String(data.label || cfg.label);
+  const chars = Array.from(label).length;
+  const size = data.size || circleSize(label);
+  const fontSize = chars <= 3 ? 13 : chars <= 5 ? 12 : chars <= 8 ? 11 : 10;
   return (
-    <div className="bg-card border rounded-lg shadow-sm min-w-[150px] max-w-[230px]" style={{ borderColor: c.color }}>
-      <Handle type="target" position={data.targetPosition ?? Position.Left} className="!w-1.5 !h-1.5" style={{ background: c.color }} />
-      <Handle type="source" position={data.sourcePosition ?? Position.Right} className="!w-1.5 !h-1.5" style={{ background: c.color }} />
-      <div className="flex items-center gap-2 px-3 py-2 border-b rounded-t-lg" style={{ background: `${c.color}1a` }}>
-        <div className="w-3 h-3 rounded shrink-0" style={{ background: c.color }} />
-        <span className="font-semibold text-sm truncate">{data.label}</span>
-        <span className="text-[10px] px-1.5 py-0.5 rounded border ml-auto shrink-0" style={{ color: c.color, borderColor: c.color }}>{c.badge}</span>
-      </div>
-      {data.comment && (
-        <div className="px-3 py-2 text-xs text-muted-foreground line-clamp-2">{data.comment}</div>
+    <div
+      className="relative flex items-center justify-center rounded-full text-white shadow-sm select-none transition-shadow"
+      style={{
+        width: size,
+        height: size,
+        background: cfg.color,
+        outline: selected || data.focused ? '2px solid hsl(var(--primary))' : 'none',
+        outlineOffset: 2,
+      }}
+      title={data.comment || label}
+    >
+      <Handle type="target" position={data.targetPosition ?? Position.Top} className="!w-1.5 !h-1.5 !opacity-0" />
+      <Handle type="source" position={data.sourcePosition ?? Position.Bottom} className="!w-1.5 !h-1.5 !opacity-0" />
+      <span className="font-semibold text-center leading-tight px-1.5 line-clamp-2" style={{ fontSize }}>
+        {label}
+      </span>
+      {data.statusDot && (
+        <span
+          className="absolute right-0 bottom-0 w-2.5 h-2.5 rounded-full border-2 border-background"
+          style={{ background: data.statusDot }}
+          title={data.statusText || ''}
+        />
       )}
     </div>
   );
 }
 
-function TableNode({ data }: { data: any }) {
-  return (
-    <div className="bg-card border border-blue-500 rounded-lg shadow-sm min-w-[160px] max-w-[240px]">
-      <Handle type="target" position={data.targetPosition ?? Position.Left} className="!bg-blue-500 !w-1.5 !h-1.5" />
-      <Handle type="source" position={data.sourcePosition ?? Position.Right} className="!bg-blue-500 !w-1.5 !h-1.5" />
-
-      <div className="flex items-center gap-2 px-3 py-2 bg-blue-500/10 border-b rounded-t-lg">
-        <div className="w-3 h-3 rounded bg-blue-500 shrink-0" />
-        <span className="font-semibold text-sm truncate">{data.label}</span>
-      </div>
-
-      {data.comment && (
-        <div className="px-3 py-1 text-xs text-muted-foreground border-b truncate">
-          {data.comment}
-        </div>
-      )}
-
-      {data.columns && data.columns.length > 0 && (
-        <div className="px-3 py-2 space-y-0.5">
-          {data.columns.slice(0, 5).map((col: string) => (
-            <div key={col} className="text-xs font-mono text-muted-foreground truncate">
-              {col}
-            </div>
-          ))}
-          {data.columns.length > 5 && (
-            <div className="text-xs text-muted-foreground italic">
-              +{data.columns.length - 5} 更多...
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TermNode({ data }: { data: any }) {
-  return (
-    <div className="bg-card border border-purple-500 rounded-lg shadow-sm min-w-[160px] max-w-[240px]">
-      <Handle type="target" position={data.targetPosition ?? Position.Left} className="!bg-purple-500 !w-1.5 !h-1.5" />
-      <Handle type="source" position={data.sourcePosition ?? Position.Right} className="!bg-purple-500 !w-1.5 !h-1.5" />
-
-      <div className="flex items-center gap-2 px-3 py-2 bg-purple-500/10 border-b rounded-t-lg">
-        <div className="w-3 h-3 rounded bg-purple-500 shrink-0" />
-        <span className="font-semibold text-sm truncate">{data.name_cn || data.label}</span>
-      </div>
-
-      {data.name_en && (
-        <div className="px-3 py-1 text-xs text-muted-foreground border-b truncate">
-          {data.name_en}
-        </div>
-      )}
-
-      {data.description && (
-        <div className="px-3 py-2 text-xs text-muted-foreground line-clamp-2">
-          {data.description}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function MetricNode({ data }: { data: any }) {
-  return (
-    <div className="bg-card border border-orange-500 rounded-lg shadow-sm min-w-[160px] max-w-[240px]">
-      <Handle type="target" position={data.targetPosition ?? Position.Left} className="!bg-orange-500 !w-1.5 !h-1.5" />
-      <Handle type="source" position={data.sourcePosition ?? Position.Right} className="!bg-orange-500 !w-1.5 !h-1.5" />
-
-      <div className="flex items-center gap-2 px-3 py-2 bg-orange-500/10 border-b rounded-t-lg">
-        <div className="w-3 h-3 rounded bg-orange-500 shrink-0" />
-        <span className="font-semibold text-sm truncate">{data.name || data.label}</span>
-      </div>
-
-      {data.formula && (
-        <div className="px-3 py-1 text-xs font-mono text-muted-foreground border-b truncate">
-          {data.formula}
-        </div>
-      )}
-
-      {data.unit && (
-        <div className="px-3 py-2 text-xs text-muted-foreground">
-          单位: {data.unit}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DimensionNode({ data }: { data: any }) {
-  return (
-    <div className="bg-card border border-teal-500 rounded-lg shadow-sm min-w-[160px] max-w-[240px]">
-      <Handle type="target" position={data.targetPosition ?? Position.Left} className="!bg-teal-500 !w-1.5 !h-1.5" />
-      <Handle type="source" position={data.sourcePosition ?? Position.Right} className="!bg-teal-500 !w-1.5 !h-1.5" />
-
-      <div className="flex items-center gap-2 px-3 py-2 bg-teal-500/10 border-b rounded-t-lg">
-        <div className="w-3 h-3 rounded bg-teal-500 shrink-0" />
-        <span className="font-semibold text-sm truncate">{data.name || data.label}</span>
-      </div>
-
-      {data.level !== undefined && (
-        <div className="px-3 py-1 text-xs text-muted-foreground border-b">
-          层级: {data.level}
-        </div>
-      )}
-
-      {data.description && (
-        <div className="px-3 py-2 text-xs text-muted-foreground line-clamp-2">
-          {data.description}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ColumnNode({ data }: { data: any }) {
-  return (
-    <div className="bg-card border border-green-500 rounded-lg shadow-sm min-w-[140px] max-w-[200px]">
-      <Handle type="target" position={data.targetPosition ?? Position.Left} className="!bg-green-500 !w-1.5 !h-1.5" />
-      <Handle type="source" position={data.sourcePosition ?? Position.Right} className="!bg-green-500 !w-1.5 !h-1.5" />
-
-      <div className="flex items-center gap-2 px-3 py-2 bg-green-500/10 border-b rounded-t-lg">
-        <div className="w-3 h-3 rounded bg-green-500 shrink-0" />
-        <span className="font-semibold text-xs truncate">{data.name || data.label}</span>
-      </div>
-
-      {data.data_type && (
-        <div className="px-3 py-1 text-xs font-mono text-muted-foreground border-b">
-          {data.data_type}
-        </div>
-      )}
-
-      {data.comment && (
-        <div className="px-3 py-2 text-xs text-muted-foreground truncate">
-          {data.comment}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DataSourceNode({ data }: { data: any }) {
-  const statusColors: Record<string, string> = {
-    active: 'bg-green-500',
-    inactive: 'bg-gray-500',
-    error: 'bg-red-500',
-  };
-
-  return (
-    <div className="bg-card border border-cyan-500 rounded-lg shadow-sm min-w-[180px] max-w-[260px]">
-      <Handle type="target" position={data.targetPosition ?? Position.Left} className="!bg-cyan-500 !w-1.5 !h-1.5" />
-      <Handle type="source" position={data.sourcePosition ?? Position.Right} className="!bg-cyan-500 !w-1.5 !h-1.5" />
-
-      <div className="flex items-center gap-2 px-3 py-2 bg-cyan-500/10 border-b rounded-t-lg">
-        <div className="w-3 h-3 rounded bg-cyan-500 shrink-0" />
-        <span className="font-semibold text-sm truncate">{data.name || data.label}</span>
-        <div className={`ml-auto w-2 h-2 rounded-full ${statusColors[data.status] || 'bg-gray-500'}`} />
-      </div>
-
-      <div className="px-3 py-1 text-xs text-muted-foreground border-b">
-        {data.ds_type?.toUpperCase()} {data.host && `• ${data.host}`}
-      </div>
-
-      {data.database_name && (
-        <div className="px-3 py-1 text-xs font-mono text-muted-foreground border-b">
-          {data.database_name}
-        </div>
-      )}
-
-      {data.description && (
-        <div className="px-3 py-2 text-xs text-muted-foreground line-clamp-2">
-          {data.description}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** 本体总览节点: 业务对象卡片(Palantir 式主语视图) —— 名字/key/别名/绑定态, 不展示物理细节 */
-function ObjectNode({ data, selected }: { data: any; selected?: boolean }) {
-  const sync = (data.binding?.sync_state || '').toLowerCase();
-  const syncDot = sync === 'bound' ? 'bg-green-500'
-    : sync === 'drifted' || sync === 'orphaned' ? 'bg-amber-500' : 'bg-gray-500';
-  return (
-    <div className={`w-[232px] h-[112px] bg-card border rounded-xl shadow-sm transition-shadow
-      ${selected || data.focused ? 'border-indigo-400 ring-2 ring-indigo-400/20 shadow-md' : 'border-indigo-200/70 dark:border-indigo-400/30'}`}>
-      <Handle type="target" position={data.targetPosition ?? Position.Left} className="!bg-indigo-400 !w-1.5 !h-1.5" />
-      <Handle type="source" position={data.sourcePosition ?? Position.Right} className="!bg-indigo-400 !w-1.5 !h-1.5" />
-      <div className="flex items-center gap-2.5 px-3 pt-3 pb-2">
-        <div className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-500 shrink-0"><Network className="w-4 h-4" /></div>
-        <div className="min-w-0 flex-1">
-          <div className="font-semibold text-sm truncate" title={data.label || data.object_key}>{data.label || data.object_key}</div>
-          <div className="text-[10px] font-mono text-muted-foreground truncate">{data.object_key || '业务对象'}</div>
-        </div>
-        <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${syncDot}`} title={sync || '未绑定'} />
-      </div>
-      <div className="mx-3 border-t border-border/50 pt-2 text-[11px] leading-4 text-muted-foreground line-clamp-2">
-        {data.comment || '点击查看对象详情与关联关系'}
-      </div>
-    </div>
-  );
-}
-
-function ETLTaskNode({ data }: { data: any }) {
-  const statusColors: Record<string, string> = {
-    active: 'bg-green-500',
-    paused: 'bg-yellow-500',
-    error: 'bg-red-500',
-    running: 'bg-blue-500 animate-pulse',
-  };
-
-  const typeLabels: Record<string, string> = {
-    export: '导出',
-    import: '导入',
-    transform: '转换',
-    sync: '同步',
-  };
-
-  return (
-    <div className="bg-card border border-amber-500 rounded-lg shadow-sm min-w-[180px] max-w-[260px]">
-      <Handle type="target" position={data.targetPosition ?? Position.Left} className="!bg-amber-500 !w-1.5 !h-1.5" />
-      <Handle type="source" position={data.sourcePosition ?? Position.Right} className="!bg-amber-500 !w-1.5 !h-1.5" />
-
-      <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border-b rounded-t-lg">
-        <div className="w-3 h-3 rounded bg-amber-500 shrink-0" />
-        <span className="font-semibold text-sm truncate">{data.name || data.label}</span>
-        <div className={`ml-auto w-2 h-2 rounded-full ${statusColors[data.status] || 'bg-gray-500'}`} />
-      </div>
-
-      <div className="px-3 py-1 text-xs text-muted-foreground border-b flex items-center gap-2">
-        <span>{typeLabels[data.task_type] || data.task_type}</span>
-        {data.schedule && <span>• {data.schedule}</span>}
-      </div>
-
-      {data.source_tables && (
-        <div className="px-3 py-1 text-xs text-muted-foreground border-b">
-          源: {data.source_tables}
-        </div>
-      )}
-
-      {data.target_tables && (
-        <div className="px-3 py-1 text-xs text-muted-foreground border-b">
-          目标: {data.target_tables}
-        </div>
-      )}
-
-      {data.description && (
-        <div className="px-3 py-2 text-xs text-muted-foreground line-clamp-2">
-          {data.description}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Custom Edge Component ──────────────────────────────────────────────
+// ── Custom Edge Component（护栏：BaseEdge + 显式 fill:none） ─────────
 
 function KnowledgeEdge({
   id,
@@ -375,22 +158,25 @@ function KnowledgeEdge({
   );
 }
 
-// ── Node Type Map ──────────────────────────────────────────────────────
+// ── Node Type Map（全部映射到圆节点，类型即配色） ─────────────────────
+
+const circleOf = (type: string) => (props: any) => (
+  <CircleNode {...props} data={{ ...props.data, nodeType: props.data?.nodeType || type }} />
+);
 
 const nodeTypes: Record<string, React.ComponentType<any>> = {
-  Table: TableNode,
-  Column: ColumnNode,
-  Term: TermNode,
-  Metric: MetricNode,
-  Dimension: DimensionNode,
-  DataSource: DataSourceNode,
-  ETLTask: ETLTaskNode,
-  Object: ObjectNode,
-  // 语义展开（M2/M3/M4）：行为/属性/规则/场景
-  Action: TaggedNode,
-  Property: TaggedNode,
-  Rule: TaggedNode,
-  Scenario: TaggedNode,
+  Table: circleOf('Table'),
+  Column: circleOf('Column'),
+  Term: circleOf('Term'),
+  Metric: circleOf('Metric'),
+  Dimension: circleOf('Dimension'),
+  DataSource: circleOf('DataSource'),
+  ETLTask: circleOf('ETLTask'),
+  Object: circleOf('Object'),
+  Action: circleOf('Action'),
+  Property: circleOf('Property'),
+  Rule: circleOf('Rule'),
+  Scenario: circleOf('Scenario'),
 };
 
 const edgeTypes: Record<string, React.ComponentType<any>> = {
@@ -471,6 +257,18 @@ function KnowledgeGraphInner({
     };
   }), [edges, focusedId, hoveredEdgeId, showLabels]);
 
+  // 图例（参考图顶栏样式）：按节点类型取色，与 NODE_CONFIG 同源
+  const legendItems = useMemo(() => {
+    const seen = new Map<string, string>();
+    (nodes as any[]).forEach((node) => {
+      const t = node.data?.nodeType || node.type || '';
+      if (t && !seen.has(t)) seen.set(t, NODE_CONFIG[t]?.label || t);
+    });
+    return [...seen.entries()].map(([type, label]) => ({
+      type, label, color: NODE_CONFIG[type]?.color || '#64748b',
+    }));
+  }, [nodes]);
+
   // ── Transform data to React Flow format ─────────────────────────────
 
   useEffect(() => {
@@ -486,18 +284,30 @@ function KnowledgeGraphInner({
     const nodes = Array.isArray(graphData.nodes) ? graphData.nodes : [];
     const edges = Array.isArray(graphData.edges) ? graphData.edges : [];
 
-    const flowNodes: Node[] = nodes.map((node) => ({
-      id: node.id,
-      type: node.label,
-      ...(node.label === 'Object' ? { width: 232, height: 112 } : {}),
-      position: { x: 0, y: 0 }, // Will be set by layout
-      data: {
-        ...node.properties,
-        // label 键位修复: 后端 properties.label 为主展示名(此前误读 name 导致显示裸 IRI)
-        label: node.properties.label || node.properties.name || node.properties.name_cn || node.id,
-        nodeType: node.label,
-      },
-    }));
+    const flowNodes: Node[] = nodes.map((node) => {
+      // label 键位修复: 后端 properties.label 为主展示名(此前误读 name 导致显示裸 IRI)
+      const label = node.properties.label || node.properties.name || node.properties.name_cn || node.id;
+      const size = circleSize(label);
+      const status = String(node.properties.status || node.properties.binding?.sync_state || '').toLowerCase();
+      const statusDot = ['active', 'bound', 'running'].includes(status) ? '#22c55e'
+        : ['error', 'drifted', 'orphaned'].includes(status) ? '#f59e0b'
+        : status ? '#94a3b8' : '';
+      return {
+        id: node.id,
+        type: node.label,
+        width: size,
+        height: size,
+        position: { x: 0, y: 0 }, // Will be set by layout
+        data: {
+          ...node.properties,
+          label,
+          size,
+          nodeType: node.label,
+          statusDot,
+          statusText: status,
+        },
+      };
+    });
 
     const flowEdges: Edge[] = edges.map((edge) => ({
       id: edge.id,
@@ -519,12 +329,8 @@ function KnowledgeGraphInner({
       },
     }));
 
-    // Apply layout
-    const { nodes: layoutedNodes, edges: layoutedEdges } = applyDagreLayout(
-      flowNodes,
-      flowEdges,
-      getLayoutOptions(graphType)
-    );
+    // 布局: 血缘保留 LR 分层(方向语义); 其余图谱走力导向(图数据库观感)
+    const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(flowNodes, flowEdges);
 
     setNodes(layoutedNodes);
     setEdges(layoutedEdges);
@@ -561,16 +367,17 @@ function KnowledgeGraphInner({
 
   // ── Toolbar actions ─────────────────────────────────────────────────
 
+  const layoutGraph = (inNodes: Node[], inEdges: Edge[]) =>
+    graphType === 'data-lineage'
+      ? applyDagreLayout(inNodes, inEdges, getLayoutOptions(graphType))
+      : applyForceLayout(inNodes, inEdges);
+
   const handleZoomIn = () => reactFlow.zoomIn();
   const handleZoomOut = () => reactFlow.zoomOut();
   const handleFitView = () => reactFlow.fitView({ padding: 0.2 });
 
   const handleReLayout = () => {
-    const { nodes: layoutedNodes, edges: layoutedEdges } = applyDagreLayout(
-      nodes,
-      edges,
-      getLayoutOptions(graphType)
-    );
+    const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(nodes, edges);
     setNodes(layoutedNodes);
     setEdges(layoutedEdges);
     setTimeout(() => reactFlow.fitView({ padding: 0.2 }), 100);
@@ -587,6 +394,18 @@ function KnowledgeGraphInner({
             <Loader2 className="h-4 w-4 animate-spin" />
             <span className="text-sm">加载中...</span>
           </div>
+        </div>
+      )}
+
+      {/* 图例（分类着色，参考图顶栏） */}
+      {legendItems.length > 0 && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-3 py-1.5 rounded-full border bg-card/95 shadow-sm max-w-[80%] flex-wrap justify-center">
+          {legendItems.map((item) => (
+            <span key={item.type} className="flex items-center gap-1.5 text-[11px] text-muted-foreground whitespace-nowrap">
+              <span className="w-2.5 h-2.5 rounded-sm" style={{ background: item.color }} />
+              {item.label}
+            </span>
+          ))}
         </div>
       )}
 
@@ -663,8 +482,8 @@ function KnowledgeGraphInner({
       >
         <Background gap={24} size={0.6} color="hsl(var(--muted-foreground) / 0.2)" />
         <MiniMap
-          nodeColor="#a5b4fc"
-          nodeBorderRadius={4}
+          nodeColor={(node: any) => NODE_CONFIG[node.data?.nodeType]?.color || '#a5b4fc'}
+          nodeBorderRadius={32}
           maskColor="hsl(var(--background) / 0.7)"
           className="!bg-card/80 !border !border-border/60 !rounded-lg !shadow-none"
           style={{ width: 140, height: 90 }}

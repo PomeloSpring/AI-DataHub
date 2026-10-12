@@ -59,7 +59,10 @@ def resolve_business_routes(object_keys: list) -> list:
             if ok not in keys:
                 continue
             route = o.get("route")
-            if not isinstance(route, dict) or not route.get("source_ontology"):
+            # 路由目标：source_ontology（目标源本体）与/或 datasource_name（目标数据源），
+            # 至少一项即成立；两者都缺才跳过（宁缺勿错）。站点/数据源类路由往往只有
+            # datasource_name（其余站点尚未建源本体），同样是合法路由。
+            if not isinstance(route, dict) or not (route.get("source_ontology") or route.get("datasource_name")):
                 continue
             doc_routes.append({
                 "object_key": ok,

@@ -108,7 +108,7 @@ class TestMergeObjectPair:
                               "description": "待处理工单数"}],
                  "aliases": []}
         merged, detail = ontology_service.merge_object_pair(rich, shell)
-        names = [m["name"] for m in merged["metrics"]]
+        names = list(merged["metrics"])   # metrics 已降为名字引用（口径单一登记）
         assert "pending_work_orders" in names
         assert "resolution_hours" in names
         assert detail["gained_metrics"] == ["pending_work_orders"]
@@ -200,7 +200,7 @@ class TestYamlImportDedup:
         keys = [o["key"] for o in doc["objects"]]
         assert keys.count("case_file") == 1
         assert len(doc["objects"]) == 1
-        names = [m["name"] for m in doc["objects"][0]["metrics"]]
+        names = list(doc["objects"][0]["metrics"])   # 名字引用格式
         assert "b_metric" in names and "a_metric" in names
 
     def test_same_identity_different_table_is_rejected(self, monkeypatch):
@@ -299,7 +299,7 @@ class TestSaveGeneratedDraftDedup:
         doc = json.loads(self._inserted(ops)[5])
         assert len(doc["objects"]) == 1
         merged = doc["objects"][0]
-        assert [m["name"] for m in merged["metrics"]] == ["m1", "m2"]   # 独有指标不丢
+        assert merged["metrics"] == ["m1", "m2"]     # 独有指标不丢（名字引用格式）
         assert merged["aliases"] == ["CaseFile", "案例文件"]            # 别名并集去重
         assert len(result["generation_warnings"]) == 1
         warning = result["generation_warnings"][0]
@@ -331,7 +331,7 @@ class TestSaveGeneratedDraftDedup:
         doc = json.loads(self._inserted(ops)[5])
         assert {o["key"] for o in doc["objects"]} == {"case_file", "work_order"}
         case = next(o for o in doc["objects"] if o["key"] == "case_file")
-        assert len(case["properties"]) == 1 and [m["name"] for m in case["metrics"]] == ["m2"]
+        assert len(case["properties"]) == 1 and case["metrics"] == ["m2"]
         assert doc["domain"] == "旧域" and doc["description"] == "旧述"   # 留空时沿用旧值
         assert result["generation_warnings"]
 

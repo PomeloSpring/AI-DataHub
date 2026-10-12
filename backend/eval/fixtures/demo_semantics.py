@@ -23,6 +23,17 @@ PHYS: dict[str, dict[str, dict]] = {
         "revenue": {"data_type": "decimal", "business_desc": "营收"},
         "ticket_id": {"data_type": "bigint", "business_desc": ""},
     },
+    # ── 跨对象 JOIN 素材(B2/B3): case → customer → region ──────────
+    "t_customer": {
+        "id": {"data_type": "bigint", "business_desc": ""},
+        "name": {"data_type": "varchar", "business_desc": "客户名称"},
+        "industry": {"data_type": "varchar", "business_desc": "所属行业"},
+        "region_code": {"data_type": "varchar", "business_desc": ""},
+    },
+    "t_region": {
+        "region_code": {"data_type": "varchar", "business_desc": ""},
+        "region_name": {"data_type": "varchar", "business_desc": "区域名称"},
+    },
 }
 
 # 物理表 -> 维度字典(name 为主键)
@@ -42,6 +53,14 @@ DIMS: dict[str, dict[str, dict]] = {
         "区域": {"name": "区域", "name_en": "region", "target_column": "region",
                 "category": "地理", "aliases": ["地区"],
                 "value_labels": {"EAST": "华东", "SOUTH": "华南"}},
+    },
+    "t_customer": {
+        "行业": {"name": "行业", "name_en": "industry", "target_column": "industry",
+                "category": "分类", "aliases": ["所属行业"], "value_labels": {}},
+    },
+    "t_region": {
+        "区域名": {"name": "区域名", "name_en": "region_name", "target_column": "region_name",
+                 "category": "地理", "aliases": ["大区名"], "value_labels": {}},
     },
 }
 
@@ -66,6 +85,12 @@ METRICS: dict[str, dict[str, dict]] = {
                 "formula_dsl": None, "agg_type": "SUM", "default_agg": "SUM",
                 "unit": "元", "description": "营收合计", "aliases": ["收入"],
                 "formula_dialects": None},
+    },
+    "t_customer": {
+        "客户数": {"name": "客户数", "name_en": "customer_count", "formula": "COUNT(DISTINCT name)",
+                 "formula_dsl": None, "agg_type": "COUNT", "default_agg": "COUNT",
+                 "unit": "个", "description": "客户去重计数", "aliases": [],
+                 "formula_dialects": None},
     },
 }
 
@@ -92,8 +117,35 @@ BINDINGS: dict[tuple[int, str], ResolvedBinding] = {
                       guardrail=Guardrail(query_mode="raw_source")),
     # PG 方言源, 验证时间函数按方言编译
     (3, "case"): _b(3, "case", "t_case_records", db_type="postgres"),
+    # 跨对象 JOIN 素材(B2/B3)
+    (1, "customer"): _b(1, "customer", "t_customer"),
+    (1, "region"): _b(1, "region", "t_region"),
+}
+
+
+# 跨对象关系(canonical links 的评测投影): 供 JOIN 编译用例。
+LINKS: dict = {
+    "edges": {
+        "case": [("customer", "t_case_records.company_name = t_customer.name")],
+        "customer": [("region", "t_customer.region_code = t_region.region_code")],
+    },
+    "names": {
+        "case": "case", "customer": "customer", "客户": "customer",
+        "region": "region", "地区": "region",
+    },
 }
 
 
 def binding_for(datasource_id: int, object_key: str):
     return BINDINGS.get((datasource_id, (object_key or "").strip()))
+
+
+def links_for(datasource_id: int = 0) -> dict:
+    """planner._load_object_links 打桩入口(B2/B3)。"""
+    return LINKS
+
+
+def foreign_binding_for(obj_key: str, datasource_id: int = 0):
+    """planner._resolve_foreign_binding 打桩入口(B2/B3)。"""
+    return BINDINGS.get((datasource_id, (obj_key or "").strip())) \
+        or BINDINGS.get((1, (obj_key or "").strip()))

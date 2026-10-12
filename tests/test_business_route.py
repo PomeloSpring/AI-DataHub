@@ -1,8 +1,8 @@
 """业务本体路由化回归（路由索引层：概念 → 源本体）。
 
-锁住的行为（业务本体路由化改造）：
-1. find_business_route_issues 形态/引用校验：物理绑定拒绝、route 必填、源本体
-   解析（name 稳定键）、datasource_name 错配防呆、object_key 悬空、场景 route 悬空；
+锁住的行为（v0.5 修订：路由索引层范式已退役）：
+1. find_business_route_issues 已退役恒返回空（契约形态带物理绑定不再被阻断）；
+   旧范式实现 _retired_find_business_route_issues_v04 保留断言供审计追溯；
 2. resolve_business_routes：命中路由 + 关联跨源场景、未命中不猜、canonical 失败
    抛异常（不冒充无路由，与 routes=[] 可区分）；
 3. knowledge_search._attach_routes：routes=[]（真无路由）与 route_resolution=failed
@@ -32,11 +32,19 @@ def _fake_source_index(monkeypatch):
 
 
 def _errors(doc: dict) -> list:
-    return [i for i in ontology_service.find_business_route_issues(doc)
+    # 旧范式断言指向留档实现（审计追溯）；现行函数已退役见 test_route_validator_retired_v05
+    return [i for i in ontology_service._retired_find_business_route_issues_v04(doc)
             if i["severity"] == "error"]
 
 
-# ── 1. find_business_route_issues：形态与引用校验 ─────────────────────
+def test_route_validator_retired_v05():
+    """v0.5: 路由索引层校验退役——契约形态（带物理绑定）不再被阻断。"""
+    assert ontology_service.find_business_route_issues({"kind": "business", "objects": [{
+        "key": "order", "primary_table": "t_order",
+        "properties": [{"column": "t_order.id", "name": "id"}], "route": None}]}) == []
+
+
+# ── 1. 旧范式校验（留档实现，审计追溯）─────────────────────────
 
 def test_rejects_physical_binding():
     """业务对象带 primary_table / properties[].column = 形态错误（物理事实唯一在源本体）"""
@@ -99,7 +107,7 @@ def test_rejects_dangling_object_key():
 
 def test_warns_object_filter_without_hints():
     """object_filter 无 filter_hints 是 warn 不是 error（不阻断，但要可见）"""
-    issues = ontology_service.find_business_route_issues({"kind": "business", "objects": [{
+    issues = ontology_service._retired_find_business_route_issues_v04({"kind": "business", "objects": [{
         "key": "order", "route": {"mode": "object_filter",
                                   "source_ontology": "源本体A", "object_key": "order"}}]})
     assert not [i for i in issues if i["severity"] == "error"]
@@ -212,6 +220,22 @@ def test_resolve_routes_empty_input(monkeypatch):
     _patch_biz_rows(monkeypatch, [])
     assert resolve_business_routes([]) == []
     assert resolve_business_routes(["ghost"]) == []
+
+
+def test_resolve_datasource_only_route(monkeypatch):
+    """站点/数据源类路由只有 datasource_name（无 source_ontology）也必须返回（多站点语义网）。"""
+    from backend.modules.mind.rag.business_route import resolve_business_routes
+    import json as _json
+    doc = {"kind": "business", "objects": [
+        {"key": "site_jp", "route": {"mode": "source", "datasource_name": "prd-jp"}},
+        {"key": "no_target", "route": {}},   # 无任何路由目标 → 不返回（宁缺勿错）
+    ]}
+    _patch_biz_rows(monkeypatch, [{"name": "多站点语义网", "json_content": _json.dumps(doc)}])
+    routes = resolve_business_routes(["site_jp", "no_target"])
+    assert len(routes) == 1
+    assert routes[0]["object_key"] == "site_jp"
+    assert routes[0]["datasource_name"] == "prd-jp"
+    assert routes[0]["source_ontology"] == ""
 
 
 def test_resolve_routes_db_failure_raises(monkeypatch):

@@ -92,7 +92,7 @@ function StatCard({ icon: Icon, label, value }: { icon: LucideIcon; label: strin
 /**
  * 默认首页('/' 恒展示本页,模块切换选「首页」即进首页,不再因有看板而跳走):
  * - 登录落地由 Login 决定: 有已启用看板直达数据看板,否则落本首页;
- * - 内容: 问候 Hero + 数据概览 + 看板入口/未分配提示 + 权限过滤的快捷入口 + 推荐问题。
+ * - 内容: 问候 Hero + 数据概览 + 看板入口/未分配提示 + 权限过滤的快捷入口 + 快速路径示例。
  * 全部使用主题变量配色,亮/暗主题下均随系统默认主题生效。
  */
 export default function Home() {
@@ -126,18 +126,18 @@ export default function Home() {
     if (!wsLoaded && !wsLoading) void loadWorkspaces();
   }, [wsLoaded, wsLoading, loadWorkspaces]);
 
-  // 推荐问题:点击带入问数输入框(Chat 挂载时消费)
+  // 快速路径示例:点击带入问数输入框(Chat 挂载时消费)
   useEffect(() => {
     let cancelled = false;
     client.get('/admin/knowledge/random', {
-      params: { knowledge_type: 'recommend_question', limit: 4, workspace_id: 0 },
+      params: { knowledge_type: 'quick_path', limit: 4, workspace_id: 0 },
     })
       .then(({ data }) => {
         if (cancelled) return;
         const qs = (data.items || []).map((it: any) => it.title).filter(Boolean);
         setQuestions(qs);
       })
-      .catch(() => { /* 推荐问题为增强项,失败静默不阻断 */ });
+      .catch(() => { /* 快速路径为增强项,失败静默不阻断 */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -435,7 +435,7 @@ export default function Home() {
           </section>
         )}
 
-        {/* 推荐问题:点击带入问数输入框 */}
+        {/* 快速路径示例:点击带入问数输入框 */}
         {questions.length > 0 && (
           <section className="mt-10">
             <div className="flex items-center gap-2">

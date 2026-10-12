@@ -37,8 +37,9 @@ class TestHelpers:
         assert _clean_table("stardb.t_case_files (分表 0~15)") == "t_case_files"
 
     def test_enum_list(self):
-        assert _enum_list({0: "未知", 1: "男"}) == ["0=未知", "1=男"]
-        assert _enum_list("not-a-dict") == []
+        # enum 与 value_labels 同构：{code: label} 对象（旧字符串列表格式已退役）
+        assert _enum_list({0: "未知", 1: "男"}) == {"0": "未知", "1": "男"}
+        assert _enum_list("not-a-dict") == {}
 
 
 # ── YAML → canonical 归一化 ──────────────────────────────────────

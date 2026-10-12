@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Callable, Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote, quote_plus
 
 import pyarrow as pa
 
@@ -47,21 +47,21 @@ class PostgresConnector:
         if not row.get("host"):
             raise ValueError(f"Postgres 连接配置缺失: datasource_id={self._datasource_id}")
 
-        uri = "postgresql://{}:{}@{}:{}/{}".format(
+        timeout_ms = int((timeout_sec or _DEFAULT_TIMEOUT_SEC) * 1000)
+        # ADBC postgresql 驱动的全部连接参数只从 URI 解析：往 db_kwargs/conn_kwargs 传
+        # options 都会被驱动拒（NOT_IMPLEMENTED: [libpq] Unknown [database ]option options）。
+        # statement_timeout 经 libpq URI 查询参数 options 下发（护栏 §5 执行超时强制）。
+        uri = "postgresql://{}:{}@{}:{}/{}?options={}".format(
             quote_plus(str(row.get("user") or row.get("username") or "")),
             quote_plus(str(row.get("password") or "")),
             row.get("host"),
             int(row.get("port") or 5432),
             row.get("database") or row.get("database_name") or "",
+            quote(f"-c statement_timeout={timeout_ms}", safe=""),
         )
-        timeout_ms = int((timeout_sec or _DEFAULT_TIMEOUT_SEC) * 1000)
         import adbc_driver_postgresql.dbapi as pg_adbc
 
-        return pg_adbc.connect(
-            uri,
-            conn_kwargs={"options": f"-c statement_timeout={timeout_ms}"},
-            autocommit=True,
-        )
+        return pg_adbc.connect(uri, autocommit=True)
 
     def execute_pushdown(
         self,

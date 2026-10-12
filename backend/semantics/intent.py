@@ -106,6 +106,24 @@ def _normalize_payload(obj: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     if "limit" in payload and payload["limit"] in (None, "", 0):
         payload.pop("limit")
 
+    # 限定业务名语法校验(B1): "对象名.业务名" 两段均非空; 畸形名显式记 note,
+    # 不静默丢弃(解析层会回抛候选)。join 路径由编译层从 links 解出, LLM 不得指定。
+    def _check_qualified(n):
+        if isinstance(n, str) and "." in n:
+            obj_part, _, rest = n.partition(".")
+            if not obj_part.strip() or not rest.strip():
+                notes.append(f"qualified_name_malformed:{n} — 限定名需为 '对象名.业务名'")
+
+    for k in ("metrics", "dimensions"):
+        for n in (payload.get(k) or []):
+            _check_qualified(n)
+    for f in (payload.get("filters") or []):
+        if isinstance(f, dict):
+            _check_qualified(f.get("dim"))
+    for o in (payload.get("order") or []):
+        if isinstance(o, dict):
+            _check_qualified(o.get("by"))
+
     # timeGrain -> time_grain (GraphQL-subset 驼峰别名)
     if "timeGrain" in payload and "time_grain" not in payload:
         payload["time_grain"] = payload.pop("timeGrain")
@@ -149,6 +167,16 @@ def parse_intent(text_or_dict: Any) -> tuple[SemanticQuery | None, str | None, l
     sql_hit_note = next((n for n in notes if n.startswith("forbidden_keys:")), None)
     if sql_hit_note:
         return None, sql_hit_note, notes
+    # 站点不是 SQL 维度(v0.5): 站点对比由 LLM 按站点编排多次查询(每次带 datasource 名),
+    # 语义层只做单站 SQL 编译——把站点塞进 dimensions 会编译出无绑定的“站点”列(口径事故)。
+    _SITE_DIMS = {"站点", "站点名", "所属站点", "site", "Site", "SITE"}
+    site_dims = [str(d or "").strip() for d in (payload.get("dimensions") or [])
+                 if str(d or "").strip() in _SITE_DIMS]
+    if site_dims:
+        return None, (
+            "站点不是 SQL 维度: 站点对比请按站点编排多次查询——"
+            "对每个站点数据源分别调用 run_semantic_query(带 datasource 名), "
+            "站点↔数据源映射见数据分析技能; 不要在 dimensions 里传站点"), notes
     try:
         q = SemanticQuery.model_validate(payload)
     except Exception as e:

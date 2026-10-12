@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
-import { Plus, Edit, Trash2, HelpCircle, Search, BookOpen } from 'lucide-react';
+import { Plus, Edit, Trash2, Route, Search, BookX } from 'lucide-react';
 import client from '@/api/client';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ interface KnowledgeItem {
   knowledge_type: string;
   title: string;
   content: string;
-  metadata: any;
+  metadata: { triggers?: string[]; scenario?: string } | null;
   related_tables: string;
   priority: number;
   usage_count: number;
@@ -34,7 +34,9 @@ interface KnowledgeItem {
 
 interface FormData {
   title: string;
-  content: string;
+  triggers: string;       // 逗号分隔的触发词
+  scenario: string;       // 适用场景
+  content: string;        // 查询方案说明
   related_tables: string;
   priority: number;
   is_active: boolean;
@@ -42,11 +44,16 @@ interface FormData {
 
 const DEFAULT_FORM: FormData = {
   title: '',
+  triggers: '',
+  scenario: '',
   content: '',
   related_tables: '',
   priority: 0,
   is_active: true,
 };
+
+const splitTriggers = (s: string): string[] =>
+  s.split(/[,，]/).map(t => t.trim()).filter(Boolean);
 
 export default function KnowledgeManagement() {
   const [items, setItems] = useState<KnowledgeItem[]>([]);
@@ -69,7 +76,7 @@ export default function KnowledgeManagement() {
     try {
       const params: Record<string, any> = {
         workspace_id: 0,
-        knowledge_type: 'recommend_question',
+        knowledge_type: 'quick_path',
         page,
         size: PAGE_SIZE,
       };
@@ -101,6 +108,8 @@ export default function KnowledgeManagement() {
     setEditItem(item);
     setForm({
       title: item.title,
+      triggers: (item.metadata?.triggers || []).join(', '),
+      scenario: item.metadata?.scenario || '',
       content: item.content,
       related_tables: item.related_tables || '',
       priority: item.priority,
@@ -110,16 +119,29 @@ export default function KnowledgeManagement() {
   };
 
   const handleSave = async () => {
-    if (!form.title || !form.content) {
-      toast.error('请填写标题和内容');
+    if (!form.title.trim() || !form.content.trim()) {
+      toast.error('请填写路径名称和查询方案说明');
+      return;
+    }
+    if (splitTriggers(form.triggers).length === 0) {
+      toast.error('请至少配置一个触发词');
       return;
     }
     setSaving(true);
     try {
+      const metadata = {
+        triggers: splitTriggers(form.triggers),
+        scenario: form.scenario.trim(),
+      };
       const payload: any = {
         workspace_id: 0,
-        knowledge_type: 'recommend_question',
-        ...form,
+        datasource_id: 0,
+        knowledge_type: 'quick_path',
+        title: form.title,
+        content: form.content,
+        metadata,
+        related_tables: form.related_tables,
+        priority: form.priority,
         is_active: form.is_active ? 1 : 0,
       };
 
@@ -169,15 +191,15 @@ export default function KnowledgeManagement() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
-            <HelpCircle className="h-6 w-6" />
-            推荐问题
+            <Route className="h-6 w-6" />
+            快速路径
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            配置推荐问题，将在 Chat 页面空白时随机展示 3 条引导用户提问
+            配置查询方案路径：用户问题命中触发词时，将该路径的方案说明注入 AI 取数上下文（类似技能）
           </p>
         </div>
         <Button onClick={openCreate}>
-          <Plus className="h-4 w-4 mr-1" />新增推荐问题
+          <Plus className="h-4 w-4 mr-1" />新增快速路径
         </Button>
       </div>
 
@@ -186,7 +208,7 @@ export default function KnowledgeManagement() {
         <div className="relative">
           <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="搜索推荐问题..."
+            placeholder="搜索路径名称或方案..."
             value={searchText}
             onChange={e => { setSearchText(e.target.value); setPage(1); }}
             className="pl-8 w-64"
@@ -199,51 +221,67 @@ export default function KnowledgeManagement() {
         <div className="text-center py-8 text-muted-foreground">加载中...</div>
       ) : items.length === 0 ? (
         <div className="text-center py-16 text-muted-foreground">
-          <BookOpen className="h-10 w-10 mx-auto mb-3 opacity-30" />
-          <p className="text-sm">暂无推荐问题</p>
-          <p className="text-xs mt-1">点击上方按钮创建，Chat 页面将随机展示</p>
+          <BookX className="h-10 w-10 mx-auto mb-3 opacity-30" />
+          <p className="text-sm">暂无快速路径</p>
+          <p className="text-xs mt-1">点击上方按钮创建，命中触发词后将方案注入 AI 上下文</p>
         </div>
       ) : (
         <div className="space-y-2">
-          {items.map(item => (
-            <div
-              key={item.id}
-              className="border rounded-lg p-4 flex items-start justify-between hover:bg-muted/30 transition-colors"
-            >
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <Badge variant="outline" className="text-purple-600 border-purple-200 bg-purple-50">
-                    <HelpCircle className="h-3 w-3 mr-1" />推荐问题
-                  </Badge>
-                  <span className="font-medium">{item.title}</span>
-                  <Badge variant={item.is_active ? 'default' : 'outline'} className="text-xs">
-                    {item.is_active ? '启用' : '禁用'}
-                  </Badge>
-                  {item.priority > 0 && (
-                    <Badge variant="secondary" className="text-xs">优先级: {item.priority}</Badge>
+          {items.map(item => {
+            const triggers = item.metadata?.triggers || [];
+            return (
+              <div
+                key={item.id}
+                className="border rounded-lg p-4 flex items-start justify-between hover:bg-muted/30 transition-colors"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <Badge variant="outline" className="text-indigo-600 border-indigo-200 bg-indigo-50">
+                      <Route className="h-3 w-3 mr-1" />快速路径
+                    </Badge>
+                    <span className="font-medium">{item.title}</span>
+                    <Badge variant={item.is_active ? 'default' : 'outline'} className="text-xs">
+                      {item.is_active ? '启用' : '禁用'}
+                    </Badge>
+                    {item.priority > 0 && (
+                      <Badge variant="secondary" className="text-xs">优先级: {item.priority}</Badge>
+                    )}
+                  </div>
+                  {triggers.length > 0 ? (
+                    <div className="flex items-center gap-1.5 flex-wrap mb-1.5">
+                      <span className="text-xs text-muted-foreground">触发词:</span>
+                      {triggers.map(t => (
+                        <Badge key={t} variant="secondary" className="text-[11px] font-normal">{t}</Badge>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-amber-600 mb-1.5">未配置触发词，该路径不会命中</p>
                   )}
+                  {item.metadata?.scenario && (
+                    <p className="text-xs text-muted-foreground mb-1">场景: {item.metadata.scenario}</p>
+                  )}
+                  <p className="text-sm text-muted-foreground line-clamp-2">{item.content}</p>
+                  <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
+                    {item.related_tables && <span>关联表: {item.related_tables}</span>}
+                    <span>命中: {item.usage_count}</span>
+                    <span>{item.updated_at}</span>
+                  </div>
                 </div>
-                <p className="text-sm text-muted-foreground line-clamp-2">{item.content}</p>
-                <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
-                  {item.related_tables && <span>关联表: {item.related_tables}</span>}
-                  <span>命中: {item.usage_count}</span>
-                  <span>{item.updated_at}</span>
+                <div className="flex items-center gap-2 ml-4 shrink-0">
+                  <Switch
+                    checked={!!item.is_active}
+                    onCheckedChange={() => handleToggle(item)}
+                  />
+                  <Button variant="ghost" size="sm" onClick={() => openEdit(item)}>
+                    <Edit className="h-4 w-4" />
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(item)}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
                 </div>
               </div>
-              <div className="flex items-center gap-2 ml-4 shrink-0">
-                <Switch
-                  checked={!!item.is_active}
-                  onCheckedChange={() => handleToggle(item)}
-                />
-                <Button variant="ghost" size="sm" onClick={() => openEdit(item)}>
-                  <Edit className="h-4 w-4" />
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(item)}>
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -261,29 +299,46 @@ export default function KnowledgeManagement() {
 
       {/* ── Create/Edit Dialog ──────────────────────────────────── */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>{editItem ? '编辑推荐问题' : '新增推荐问题'}</DialogTitle>
+            <DialogTitle>{editItem ? '编辑快速路径' : '新增快速路径'}</DialogTitle>
             <DialogDescription>
-              配置一个问题标题和详细内容，将随机展示在 Chat 页面引导用户
+              配置路径名称、触发词与查询方案说明；命中后将方案注入 AI 取数上下文
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <Label>问题标题 *</Label>
+              <Label>路径名称 *</Label>
               <Input
                 value={form.title}
                 onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
-                placeholder="如: 本月销售额是多少？"
+                placeholder="如: 按月统计销售额"
               />
             </div>
             <div>
-              <Label>问题详情</Label>
+              <Label>触发词 *（逗号分隔）</Label>
+              <Input
+                value={form.triggers}
+                onChange={e => setForm(f => ({ ...f, triggers: e.target.value }))}
+                placeholder="如: 销售额, GMV, 成交金额"
+              />
+              <p className="text-xs text-muted-foreground mt-1">用户问题命中任一触发词即套用本路径方案</p>
+            </div>
+            <div>
+              <Label>适用场景</Label>
+              <Input
+                value={form.scenario}
+                onChange={e => setForm(f => ({ ...f, scenario: e.target.value }))}
+                placeholder="简述这类问题何时出现（可选）"
+              />
+            </div>
+            <div>
+              <Label>查询方案说明 *</Label>
               <Textarea
                 value={form.content}
                 onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
-                placeholder="问题的详细描述或补充说明（可选）"
-                rows={3}
+                placeholder="告诉 AI 该如何查询：涉及的表/对象、口径、推荐步骤、示例 SQL 或查询条件"
+                rows={5}
               />
             </div>
             <div>
@@ -302,7 +357,7 @@ export default function KnowledgeManagement() {
                 onChange={e => setForm(f => ({ ...f, priority: Number(e.target.value) }))}
                 placeholder="0"
               />
-              <p className="text-xs text-muted-foreground mt-1">越高越优先被展示</p>
+              <p className="text-xs text-muted-foreground mt-1">命中同级时越高越优先注入</p>
             </div>
             <div className="flex items-center gap-2">
               <Switch

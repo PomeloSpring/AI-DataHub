@@ -164,11 +164,8 @@ def model_sync_status(model_id: int) -> dict:
     except Exception:  # noqa: BLE001
         pass
     targets = len(targets_list)
-    is_business = int(model.get("datasource_id") or 0) > 0
-    if is_business and not kb_id:
-        # 业务本体未绑定目标库: 无论旧水位线如何都显式提示 no_kb_bound(不拿旧 success 充数)。
-        kb = {"state": "no_kb_bound", "targets": 0, "kb_id": None, "target_names": []}
-        return {"graph": graph, "kb": kb}
+    # v0.5: 业务本体默认同步系统知识库（全局 sync_ontology 库，sync_targets_for_model
+    # 已路由），不需要手动选库——旧 no_kb_bound 口径退役（含 is_business 旧口径判定）。
     try:
         from backend.common.db import execute_query
 
@@ -180,8 +177,6 @@ def model_sync_status(model_id: int) -> dict:
             kb = {"state": str(r.get("status") or "unknown"),
                   "synced_at": str(r.get("synced_at") or ""),
                   "error": str(r.get("error") or "")[:200]}
-        elif is_business and not kb_id:
-            kb = {"state": "no_kb_bound"}
         else:
             kb = {"state": "no_kb" if not targets else "pending"}
     except Exception as e:  # noqa: BLE001 — 水位线表未迁移属正常
@@ -580,11 +575,15 @@ def reconcile() -> dict:
     from backend.common.db import execute_query
 
     try:
+        # 每模型聚合一行水位（历史多 notebook 绑定会留多行，旧格式 kbv_* 行永不对版，
+        # 逐行判会每轮误报漂移——只认 success 行的最大版本，任一对上即收敛）
         rows = execute_query(
-            "SELECT m.id, m.updated_at, s.synced_version, s.status "
+            "SELECT m.id, m.updated_at, "
+            "MAX(CASE WHEN s.status = 'success' THEN s.synced_version ELSE '' END) AS synced_version, "
+            "MAX(CASE WHEN s.status = 'success' THEN 'success' ELSE '' END) AS status "
             "FROM adh_ontology_models m "
             "LEFT JOIN adh_ontology_kb_sync_state s ON s.model_id = m.id "
-            "WHERE m.status = 'active'")
+            "WHERE m.status = 'active' GROUP BY m.id, m.updated_at")
     except Exception as e:  # noqa: BLE001 — 状态表缺失等: 降级不阻断
         logger.warning("[OntoSync] reconcile query failed: %s", e)
         return {"checked": 0, "resynced": 0, "error": str(e)[:200]}

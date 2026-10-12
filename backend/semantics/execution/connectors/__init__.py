@@ -13,6 +13,12 @@ def get_connector(db_type: str, datasource_id: int = 0, **kwargs: Any) -> Remote
         from backend.semantics.execution.connectors.mysql import MySQLConnector
 
         return MySQLConnector(datasource_id=datasource_id, **kwargs)
+    if db_type == "sls":
+        # SLS 虽以 PG 协议接入，但**不支持 prepared statement**（只支持 simple query），
+        # ADBC 驱动会走 describe prepared statement 而失败；故走 psycopg2 专用连接器。
+        from backend.semantics.execution.connectors.sls import SlsConnector
+
+        return SlsConnector(datasource_id=datasource_id, **kwargs)
     if db_type in ("postgres", "postgresql", "pg"):
         from backend.semantics.execution.connectors.postgres import PostgresConnector
 

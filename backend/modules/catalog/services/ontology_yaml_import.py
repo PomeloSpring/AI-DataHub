@@ -45,52 +45,14 @@ _CARD_MAP = {
 
 _TABLE_SUFFIX_NOISE = re.compile(r"[\s(（].*$")
 
-# 中文别名兜底表（skos:altLabel 用；YAML 里的 `aliases:` 优先级更高，会合并去重）。
-# 语义层与 ontology_traversal 依靠此表让中英混排问数都能命中同一对象。
-_ALIAS_ZH: dict[str, list[str]] = {
-    "user":                  ["用户", "客户", "账号"],
-    "company":               ["企业", "机构", "公司"],
-    "role":                  ["角色", "权限角色"],
-    "department":            ["部门", "科室"],
-    "patient":               ["患者", "病人"],
-    "partnership":           ["合作伙伴", "合作关系"],
-    "dentist":               ["牙医", "医师"],
-    "case":                  ["案例", "口扫案例", "病例"],
-    "case_file":             ["案例文件", "病例附件"],
-    "casefile":              ["案例文件", "病例附件"],
-    "case_treatment":        ["治疗", "治疗方案"],
-    "casetreatment":         ["治疗", "治疗方案"],
-    "case_recycle_bin":      ["案例回收站", "回收站"],
-    "caserecyclebin":        ["案例回收站", "回收站"],
-    "order":                 ["订单"],
-    "order_item":            ["订单明细", "订单行"],
-    "orderitem":             ["订单明细", "订单行"],
-    "equipment":             ["设备", "扫描仪"],
-    "product":               ["产品", "商品"],
-    "work_order":            ["工单"],
-    "workorder":             ["工单"],
-    "warranty":              ["保修", "质保"],
-    "isv":                   ["独立软件厂商", "服务商"],
-    "software_version":      ["软件版本", "版本"],
-    "softwareversion":       ["软件版本", "版本"],
-    "ai_conversation":       ["AI 会话", "智能助手会话"],
-    "aiconversation":        ["AI 会话", "智能助手会话"],
-    "disk_file":             ["网盘文件", "素材文件"],
-    "diskfile":              ["网盘文件", "素材文件"],
-    "dc_case_record":        ["数采案例记录"],
-    "dccaserecord":          ["数采案例记录"],
-    "observability_event":   ["可观测事件", "前端埋点"],
-    "observabilityevent":    ["可观测事件", "前端埋点"],
-    "api_request":           ["API 请求", "接口请求"],
-    "apirequest":            ["API 请求", "接口请求"],
-    "system_log":            ["系统日志"],
-    "systemlog":             ["系统日志"],
-}
+# 别名来源只认 YAML `aliases:` 与对象自身的 name/api_name/primary_table 变体。
+# 历史硬编码兜底表 _ALIAS_ZH（暗登记处）已删除，存量别名经
+# backend/scripts/migrate_alias_zh.py 收编进 canonical doc 对象 aliases。
 
 
 def _derive_aliases(name: str, api_name: str, primary_table: str,
                     yaml_aliases: list | None) -> list[str]:
-    """合并 YAML 显式声明、英文名/api_name、常见中文别名，返回去重后的列表。"""
+    """合并 YAML 显式声明、英文名/api_name，返回去重后的列表。"""
     out: list[str] = []
     seen: set[str] = set()
 
@@ -104,8 +66,6 @@ def _derive_aliases(name: str, api_name: str, primary_table: str,
         push(a)
     push(name)
     push(api_name)
-    for a in _ALIAS_ZH.get((api_name or "").strip().lower(), []):
-        push(a)
     if primary_table:
         push(primary_table)
     return out
@@ -126,11 +86,11 @@ def _map_type(palantir_type: str) -> str:
     return _TYPE_MAP.get(str(palantir_type or "").lower(), "string")
 
 
-def _enum_list(values) -> list[str]:
-    """Palantir `values: {0: 未知, 1: 男}` → ["0=未知", "1=男"]。"""
+def _enum_list(values) -> dict:
+    """Palantir `values: {0: 未知, 1: 男}` → {"0": "未知", "1": "男"}（与 value_labels 同构）。"""
     if not isinstance(values, dict):
-        return []
-    return [f"{k}={v}" for k, v in values.items()]
+        return {}
+    return {str(k): str(v) for k, v in values.items()}
 
 
 def _iter_yaml_docs(dir_path: Path) -> list[dict]:
@@ -539,6 +499,10 @@ def import_palantir_yaml(dir_path: str | Path = None, datasource_id: int = 0,
     if not doc["objects"]:
         raise ValueError("未从 YAML 解析出任何 object_types")
 
+    # 口径归并（单一登记）：解析产物里旧格式 dict 指标条目（name/formula/description）
+    # 归并进指标字典并降为名字引用，必须在落库/激活写闸之前完成
+    doc = ontology_service.absorb_object_metric_specs(doc, datasource_id)
+
     model_id = _upsert_active_model(doc, created_by)
     ontology_service.activate(model_id)  # 复用：归档旧 active、展开对象写 adh_ontology_objects
 
@@ -576,11 +540,14 @@ def _persist_bindings(doc: dict, model_id: int) -> dict:
     written = drifted = unbound = 0
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
-            # 1. 本模型旧行失效（保留历史，避免下游误读）
+            # 1. 本模型旧行失效（保留历史，避免下游误读）。范围仅限**模型自有数据源**：
+            #    同构多站点的跨站部署行（deploy_contract_bindings.py 按契约复制到各站，
+            #    一份契约 × N 部署）不在 doc 级联管辖内，否则每次 save_draft 会把
+            #    N 站部署绑定误废弃（历史缺陷：级联后四站取数全挂，仅剩主源可用）。
             cur.execute(
                 "UPDATE adh_ontology_bindings SET status = 'deprecated', updated_at = %s "
-                "WHERE model_id = %s AND status = 'active'",
-                (now, model_id),
+                "WHERE model_id = %s AND status = 'active' AND datasource_id = %s",
+                (now, model_id, datasource_id),
             )
             # 2. 逐对象写入 active 绑定行
             for obj in doc.get("objects") or []:

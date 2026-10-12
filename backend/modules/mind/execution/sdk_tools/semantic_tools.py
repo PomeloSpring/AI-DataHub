@@ -66,10 +66,39 @@ async def get_metrics(args):
             })
         # 排掉 keyword 未命中的空桶
         items = [v for v in objects.values() if v["metrics"] or v["dimensions"]]
-        return _text({"objects": items, "total": len(items),
-                      "usage": "dimensions/metrics 直接复制此处 name 或其 aliases; 按天/月趋势选 is_time=true 的维度并配 time_grain; "
-                               "enum 字段列出码值→业务名, filter 可传业务名也可传码值, 结果自动显示业务名; "
-                               "若报错'无法解析', 从返回的可用清单改名重试。"})
+        # C2: 对象关系上下文（Oxigraph/SPARQL）——让 LLM 看到对象间真实关系；
+        # 物理 join 表达式不外泄（护栏 §7）；图不可用显式降级标注，不静默。
+        relations: list[dict] = []
+        relations_note = ""
+        obj_keys = [it["object"] for it in items if it.get("object")]
+        if obj_keys:
+            try:
+                from backend.semantics.graph_rag.link_graph import object_links
+                relations = [
+                    {k: v for k, v in r.items() if k != "join"}
+                    for r in await asyncio.to_thread(object_links, obj_keys)
+                ]
+            except Exception as rel_err:  # noqa: BLE001
+                relations_note = f"关系上下文不可用(知识图谱): {rel_err}"
+        # 部署清单(v0.5): 对象 × 站点部署事实(事实源=部署绑定)——LLM 逐站编排知识;
+        # 非独立调用(get_metrics 顺风车字段, 职责三分见 GLOBAL_SEMANTIC_LAYER_DESIGN.md §9)。
+        deployments: list[dict] = []
+        try:
+            from backend.semantics.cross_site import list_deployments
+            deployments = await asyncio.to_thread(list_deployments)
+        except Exception as dep_err:  # noqa: BLE001
+            relations_note = relations_note or f"部署清单不可用: {dep_err}"
+        out = {"objects": items, "total": len(items), "relations": relations,
+               "deployments": deployments,
+               "usage": "dimensions/metrics 直接复制此处 name 或其 aliases; 按天/月趋势选 is_time=true 的维度并配 time_grain; "
+                        "enum 字段列出码值→业务名, filter 可传业务名也可传码值, 结果自动显示业务名; "
+                        "relations 列出对象间关联(跨对象字段用 '对象名.业务名' 限定引用); "
+                        "**全球/多站点问题：按 deployments 对每个站点数据源分别调用 run_semantic_query（datasource 参数）逐站查询，"
+                        "站点不是维度；编排方法与站点↔数据源映射见数据分析技能**; "
+                        "若报错'无法解析', 从返回的可用清单改名重试。"}
+        if relations_note:
+            out["relations_degraded"] = relations_note
+        return _text(out)
     except Exception as e:
         logger.error("get_metrics error: %s", e)
         return _text({"error": str(e)}, is_error=True)
@@ -181,6 +210,20 @@ def _attach_routes(result: dict) -> dict:
     return result
 
 
+def _attach_graph_relations(result: dict) -> dict:
+    """C3: 检索命中对象的 Oxigraph 关系展开（1 跳邻接）；图不可用显式降级标注。"""
+    keys = result.get("hit_object_keys") or []
+    if not keys:
+        return result
+    try:
+        from backend.semantics.graph_rag.link_graph import object_links
+        rels = [{k: v for k, v in r.items() if k != "join"} for r in object_links(keys)]
+        return {**result, "graph_relations": rels, "graph_source": "oxigraph"}
+    except Exception as e:  # noqa: BLE001 — 不静默：降级必须可诊断
+        return {**result, "graph_relations": [],
+                "graph_degraded": f"关系展开不可用(知识图谱): {e}"}
+
+
 async def knowledge_search(args):
     """知识库检索; 支持 questions 一次传多个问题, 批量检索减少调用轮次。
 
@@ -217,7 +260,7 @@ async def knowledge_search(args):
             elapsed = int((time.perf_counter() - t0) * 1000)
             source = _classify_retrieval_source(result.get("rag_source"), result.get("count") or 0)
             result = {**result, "retrieval_source": source, "retrieval_ms": elapsed}
-            result = _attach_routes(result)
+            result = _attach_graph_relations(_attach_routes(result))
             # 归因不写敏感 SQL/PII, 仅来源标签 + 耗时(护栏 §9)
             record_span(kind="retrieval", name="knowledge_search", status="success",
                         duration_ms=elapsed, input_text=questions[0][:200],
@@ -235,8 +278,8 @@ async def knowledge_search(args):
                             "knowledge_base": r.get("knowledge_base"),
                             "doc_stale": r.get("doc_stale"),
                             "hit_object_keys": r.get("hit_object_keys") or [],
-                            **{k: v for k, v in _attach_routes(
-                                {"hit_object_keys": r.get("hit_object_keys") or []}).items()
+                            **{k: v for k, v in _attach_graph_relations(_attach_routes(
+                                {"hit_object_keys": r.get("hit_object_keys") or []})).items()
                                if k != "hit_object_keys"},
                             "chunks": r.get("chunks") or [],
                             "count": cnt})

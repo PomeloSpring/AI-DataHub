@@ -336,8 +336,13 @@ async def _generate_task_events(request: Request, *, task_message: str, conversa
 
 @router.post("/generate")
 async def generate_ontology(request: Request, req: dict, user: dict = Depends(get_current_user)):
-    """生成本体草案（SSE 流式进度，最终事件携带 model_id 与 conversation_id）。
+    """【已退役 v0.4】"选择数据源生成本体模型"流程退役（GLOBAL_SEMANTIC_LAYER_DESIGN §3 源本体退役表）。
 
+    终态：本体=人工编辑的业务知识图谱（联耀业务本体，canonical doc）；物理映射由
+    部署绑定引导（backend/scripts/deploy_contract_bindings.py，工具辅助生成）负责。
+    本端点保留兼容壳，新调用将收到显式退役提示而非静默旧行为。
+
+    （历史行为）生成本体草案（SSE 流式进度，最终事件携带 model_id 与 conversation_id）。
     自动创建 AS-BOT 会话并派发『生成本体模型』任务，归纳由会话内 qoder agent
     完成(工具不调 LLM)；SSE 事件契约保持 progress/done/error。
     身份一律服务端注入(不接受请求体 created_by)。
@@ -417,9 +422,86 @@ def list_models(
 ):
     # 可见性：源本体按用户数据源权限分配；业务/系统本体全员可见
     allowed = _allowed_source_ids(user)
-    return {"items": ontology_service.list_models(
+    items = ontology_service.list_models(
         datasource_id, include_archived=include_archived,
-        allowed_datasource_ids=allowed)}
+        allowed_datasource_ids=allowed)
+    # 部署摘要（契约徽标依据，部署绑定派生）：≥2 站 → 前端展示「契约模型 · N 站部署」
+    dep = _deployment_summary()
+    for it in items or []:
+        info = dep.get(int(it.get("id") or 0) if isinstance(it, dict) else 0, {})
+        if isinstance(it, dict):
+            it["deployment_count"] = info.get("deployment_count", 0)
+            it["deployments"] = info.get("deployments", [])
+    return {"items": items}
+
+
+def _deployment_summary() -> dict:
+    """model_id → {deployment_count, deployments:[{site,datasource}]}（事实源=部署绑定）。"""
+    from backend.common.db.metadata_db import get_metadata_conn
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT datasource_name, site FROM adh_data_products "
+                "WHERE site IS NOT NULL AND site <> '' GROUP BY datasource_name, site")
+            site_map = {str(r["datasource_name"]): str(r["site"]) for r in (cur.fetchall() or [])}
+            cur.execute(
+                "SELECT model_id, datasource_name FROM adh_ontology_bindings "
+                "WHERE status = 'active' AND datasource_name <> '' "
+                "GROUP BY model_id, datasource_name")
+            out: dict = {}
+            for r in cur.fetchall() or []:
+                ds = str(r["datasource_name"])
+                entry = out.setdefault(int(r["model_id"]), {"deployment_count": 0, "deployments": []})
+                entry["deployments"].append({"site": site_map.get(ds, ds), "datasource": ds})
+            for entry in out.values():
+                entry["deployments"].sort(key=lambda d: (d["site"], d["datasource"]))
+                entry["deployment_count"] = len(entry["deployments"])
+    return out
+
+
+@router.get("/models/{model_id}/deployments")
+def get_model_deployments(model_id: int, user: dict = Depends(get_current_user)):
+    """对象 × 站点部署绑定表（前端部署绑定子页）。显示 name 不裸 id（ui-resource-display）。"""
+    model = ontology_service.get_model(model_id)
+    if not model or not ontology_service.can_view_model(model, _allowed_source_ids(user)):
+        raise HTTPException(status_code=404, detail="模型不存在")
+    from backend.common.db.metadata_db import get_metadata_conn
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT datasource_name, site FROM adh_data_products "
+                "WHERE site IS NOT NULL AND site <> '' GROUP BY datasource_name, site")
+            site_map = {str(r["datasource_name"]): str(r["site"]) for r in (cur.fetchall() or [])}
+            cur.execute(
+                "SELECT object_key, datasource_name, physical_table, product_ref, sync_state, status "
+                "FROM adh_ontology_bindings WHERE model_id = %s AND status = 'active' "
+                "ORDER BY object_key, datasource_name, product_ref DESC", (model_id,))
+            rows = cur.fetchall() or []
+            cur.execute(
+                "SELECT object_key, display_name FROM adh_ontology_objects "
+                "WHERE model_id = %s AND is_active = 1", (model_id,))
+            names = {str(r["object_key"]): str(r["display_name"] or r["object_key"])
+                     for r in (cur.fetchall() or [])}
+    items = []
+    seen: set = set()
+    for r in rows:
+        ds = str(r["datasource_name"] or "")
+        key = str(r["object_key"])
+        # 同一对象×站点去重（历史多版本行会重复，保留首条=product_ref 优先）
+        if (key, ds) in seen:
+            continue
+        seen.add((key, ds))
+        items.append({
+            "object_key": key,
+            "object_name": names.get(key, key),
+            "site": site_map.get(ds, ds or "—"),
+            "datasource": ds or "—",
+            "physical_table": str(r["physical_table"] or ""),
+            "product_ref": str(r["product_ref"] or ""),
+            "sync_state": str(r["sync_state"] or ""),
+            "status": str(r["status"] or ""),
+        })
+    return {"items": items}
 
 
 @router.get("/models/{model_id}")
@@ -431,6 +513,20 @@ def get_model(model_id: int, user: dict = Depends(get_current_user)):
         # 不泄露存在性：不可见即 404（不回 403 提示“存在但无权”）
         raise HTTPException(status_code=404, detail="模型不存在")
     return model
+
+
+@router.get("/models/{model_id}/sync-doc")
+def get_model_sync_doc(model_id: int, user: dict = Depends(get_current_user)):
+    """同步文档（所见即所推）：「同步知识库」全量推送的那份 MD（脱敏白名单 + 版本戳头）。
+
+    编辑器「MD 预览」渲染此文档，保证所见即所推；内部 md_content（含物理信息）
+    不上云（脱敏红线，见 ontology-modeling §6）。
+    """
+    model = ontology_service.get_model(model_id)
+    if not model or not ontology_service.can_view_model(model, _allowed_source_ids(user)):
+        raise HTTPException(status_code=404, detail="模型不存在")
+    from ..services import ontology_kb_sync
+    return {"markdown": ontology_kb_sync._render_cloud_doc(model)}
 
 
 @router.get("/models/{model_id}/versions")

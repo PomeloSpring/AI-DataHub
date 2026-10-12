@@ -43,7 +43,7 @@ import AssetPoolPanel from './AssetPoolPanel';
 import MetricsCenter from './MetricsCenter';
 import DimensionsDictTab from './DimensionsDictTab';
 import Glossary from './Glossary';
-import { ModelGraphTab, ModelActionsTab, ModelRulesTab, ModelScenariosTab, ObjectCreateButton, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
+import { ModelGraphTab, ModelActionsTab, ModelRulesTab, ModelScenariosTab, ModelDeploymentsTab, ObjectCreateButton, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
 import { metricsApi } from '@/api/metrics';
 
 interface Datasource {
@@ -111,9 +111,16 @@ function ModelGroup({ title, list, selectedId, onPick }: {
             >
               <div className="flex items-center justify-between gap-1">
                 <span className="text-sm font-medium truncate">{m.name}</span>
-                <Badge variant="outline" className={`flex-shrink-0 ${meta.cls}`}>
-                  {meta.label}
-                </Badge>
+                <span className="flex items-center gap-1 flex-shrink-0">
+                  {(m.deployment_count ?? 0) >= 2 && (
+                    <Badge variant="outline" className="border-indigo-300 text-indigo-600">
+                      契约模型 · {m.deployment_count} 站部署
+                    </Badge>
+                  )}
+                  <Badge variant="outline" className={`flex-shrink-0 ${meta.cls}`}>
+                    {meta.label}
+                  </Badge>
+                </span>
               </div>
               <div className="text-xs text-muted-foreground mt-0.5">
                 {m.domain ? `${m.domain} · ` : ''}{m.object_count} 个对象 · {m.updated_at?.slice(0, 16).replace('T', ' ')}
@@ -155,10 +162,6 @@ export default function OntologyModeling() {
   const [sparqlQuery, setSparqlQuery] = useState('');
   const [sparqlResult, setSparqlResult] = useState<any>(null);
   const [sparqlRunning, setSparqlRunning] = useState(false);
-
-  // ── 目标知识库绑定(业务本体同步去向) ──
-  const [kbOptions, setKbOptions] = useState<{ id: number; name: string }[]>([]);
-  const [savingKb, setSavingKb] = useState(false);
 
   // ── 弹窗 ──
   const [activateOpen, setActivateOpen] = useState(false);
@@ -224,15 +227,6 @@ export default function OntologyModeling() {
     }
   }, []);
 
-  const loadKbOptions = useCallback(async () => {
-    try {
-      const { data } = await client.get('/catalog/ontology/kb-options');
-      setKbOptions(Array.isArray(data?.items) ? data.items : []);
-    } catch {
-      setKbOptions([]);
-    }
-  }, []);
-
   const loadModels = useCallback(async (dsId?: number, withArchived = showArchived) => {
     try {
       const { data } = await ontologyApi.list(dsId, withArchived);
@@ -246,12 +240,20 @@ export default function OntologyModeling() {
   useEffect(() => {
     loadDatasources();
     loadModels();
-    loadKbOptions();
-  }, [loadDatasources, loadModels, loadKbOptions]);
+  }, [loadDatasources, loadModels]);
 
   useEffect(() => {
     if (datasourceId) loadModels(datasourceId);
   }, [datasourceId, loadModels]);
+
+  // 同步文档（所见即所推）：MD 预览渲染「同步知识库」全量推送的那份（脱敏白名单+版本戳）
+  const [syncDoc, setSyncDoc] = useState('');
+  useEffect(() => {
+    if (!model?.id) { setSyncDoc(''); return; }
+    ontologyApi.syncDoc(model.id)
+      .then((r: any) => setSyncDoc(r?.data?.markdown || ''))
+      .catch(() => setSyncDoc(''));
+  }, [model?.id, syncTick]);
 
   const loadModel = useCallback(async (id: number) => {
     try {
@@ -413,22 +415,6 @@ export default function OntologyModeling() {
       toast.error(e?.response?.data?.detail || 'SPARQL 查询失败');
     } finally {
       setSparqlRunning(false);
-    }
-  };
-
-  // ── 选定目标知识库(业务本体同步去向); 改绑后后台自动重推/下线旧库 ──
-  const handleBindKb = async (kbId: string) => {
-    if (!model) return;
-    setSavingKb(true);
-    try {
-      const val = kbId && kbId !== 'none' ? Number(kbId) : null;
-      const { data } = await client.put(`/catalog/ontology/models/${model.id}/kb`, { kb_id: val });
-      setModel(data);
-      toast.success(val ? '已绑定目标知识库，正在后台同步' : '已解绑知识库');
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '绑定知识库失败');
-    } finally {
-      setSavingKb(false);
     }
   };
 
@@ -688,17 +674,10 @@ export default function OntologyModeling() {
               {model && (
                 <div className="flex items-center gap-2">
                   {(model.datasource_id || 0) > 0 && (
-                    <Select value={String(model.kb_id ?? 'none')} onValueChange={handleBindKb} disabled={savingKb}>
-                      <SelectTrigger className="h-8 w-[180px]">
-                        <SelectValue placeholder="选择目标知识库" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">未绑定知识库（不同步）</SelectItem>
-                        {kbOptions.map((k) => (
-                          <SelectItem key={k.id} value={String(k.id)}>{k.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    /* v0.5: 业务本体默认同步系统知识库，不再手动选库 */
+                    <Badge variant="outline" className="h-8 px-3 text-muted-foreground">
+                      系统知识库 · 自动同步
+                    </Badge>
                   )}
                   <SyncBadges modelId={model.id} refreshKey={syncTick} />
                   <Button size="sm" variant="outline" onClick={handleSyncKb}
@@ -748,7 +727,7 @@ export default function OntologyModeling() {
             {model && !poolMode && (
               <div className="text-xs text-muted-foreground">
                 {model.status === 'active'
-                  ? '激活模型可直接编辑；保存将依据真实表元数据重算绑定，并同步对象/图谱，与数据目录联动。'
+                  ? '激活模型可直接编辑；保存同步对象/图谱/维度字典；物理绑定由部署绑定层管理（见「部署绑定」页）。'
                   : model.status === 'archived'
                     ? '已归档模型只读；可「还原为草案」继续编辑，或「确认激活」直接恢复为生效（归档数据始终可查看）。'
                     : '草案编辑后保存，确认无误后激活。'}
@@ -770,10 +749,11 @@ export default function OntologyModeling() {
                   <TabsTrigger value="dimensions">维度</TabsTrigger>
                   <TabsTrigger value="terms">业务术语</TabsTrigger>
                   <TabsTrigger value="tags">标签</TabsTrigger>
-                  <TabsTrigger value="m234">行为</TabsTrigger>
-                  <TabsTrigger value="rules">规则</TabsTrigger>
-                  <TabsTrigger value="scenarios">场景</TabsTrigger>
+                  {model.kind !== 'business' && <TabsTrigger value="m234">行为</TabsTrigger>}
+                  {model.kind !== 'business' && <TabsTrigger value="rules">规则</TabsTrigger>}
+                  {model.kind !== 'business' && <TabsTrigger value="scenarios">场景</TabsTrigger>}
                   <TabsTrigger value="graph">图谱</TabsTrigger>
+                  <TabsTrigger value="deployments">部署绑定</TabsTrigger>
                   <TabsTrigger value="editor">编辑器</TabsTrigger>
                 </TabsList>
                 <TabsContent value="hub" className="mt-2 h-[62vh] overflow-hidden">
@@ -811,6 +791,9 @@ export default function OntologyModeling() {
                       会落到 ds:0 聚合图(=全部数据源), 把业务表/test-alb 本体灌进来 */}
                   <ModelGraphTab datasourceId={model.datasource_id} kind={model.kind} domain={model.domain} />
                 </TabsContent>
+                <TabsContent value="deployments" className="mt-2 h-[62vh] overflow-hidden">
+                  <ModelDeploymentsTab modelId={model.id} />
+                </TabsContent>
                 <TabsContent value="editor" className="mt-2">
               <Tabs defaultValue="json">
                 <TabsList>
@@ -846,14 +829,14 @@ export default function OntologyModeling() {
                 </TabsContent>
                 <TabsContent value="md" className="mt-2">
                   <CodeMirror
-                    value={model.md_content || ''}
+                    value={syncDoc || ''}
                     height="60vh"
                     extensions={[markdown()]}
                     editable={false}
                     className="border border-border rounded-md text-xs overflow-hidden"
                   />
                   <div className="text-xs text-muted-foreground mt-1">
-                    MD 按对象分节生成，激活时逐段向量化；直接修改 MD 不会回写结构。
+                    本 MD 即「同步知识库」全量推送的同步文档（脱敏白名单 + 版本戳头），所见即所推；内部 md_content（含物理信息）不上云。
                   </div>
                 </TabsContent>
                 <TabsContent value="sparql" className="mt-2 space-y-3">

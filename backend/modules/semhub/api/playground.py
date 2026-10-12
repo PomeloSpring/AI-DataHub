@@ -148,7 +148,14 @@ def _open_datasource(ds_id: int):
 
 
 def _fetch_table_columns(ds_id: Optional[int], table: str) -> Optional[list[str]]:
-    """表列清单: 优先实连数据源 information_schema(mysql/doris), 兜底元数据库同步快照。"""
+    """表列清单: 优先实连数据源 information_schema, 兜底元数据库同步快照。
+
+    mysql/doris 与 PG 系(postgres/sls) 均走实连 information_schema.columns;
+    SLS 的 PG 协议支持 information_schema(官方文档"查询元数据"), 但只保证
+    column_name/data_type 字段, 故不依赖 ordinal_position/table_catalog。
+    psycopg2 为客户端参数插值(simple 协议), 参数化 execute 不触发 SLS 不支持的
+    prepared statement。
+    """
     if ds_id:
         try:
             conn, db_type = _open_datasource(ds_id)
@@ -159,6 +166,15 @@ def _fetch_table_columns(ds_id: Optional[int], table: str) -> Optional[list[str]
                             "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
                             "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s "
                             "ORDER BY ORDINAL_POSITION", (table,),
+                        )
+                        cols = [list(r.values())[0] for r in (cur.fetchall() or [])]
+                    if cols:
+                        return cols
+                elif db_type in ("postgres", "postgresql", "pg", "sls"):
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT column_name FROM information_schema.columns "
+                            "WHERE table_name = %s ORDER BY column_name", (table,),
                         )
                         cols = [list(r.values())[0] for r in (cur.fetchall() or [])]
                     if cols:
