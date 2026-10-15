@@ -1,11 +1,14 @@
-"""web 单进程启动器 —— web 入口在全部契约端口各绑一个 socket（Phase 4 进程终态）。
+"""web 单进程启动器 —— web 入口绑定 services.conf 登记的监听口（Phase 4 进程终态）。
+
+注册表已收敛为单一 web 端口 8000，故缺省即「一个进程、一个端口」；启动器本身仍按注册表
+取端口（去重升序），不改代码即可临时多口调试。
 
 用法:
-    python -m backend.app.serve              # 生产/开发：单进程绑定 services.conf 全部端口
-    python -m backend.app.serve --reload     # 开发热重载（同为多端口，vite 代理无需改动）
-    python -m backend.app.serve --ports 8001 # 单端口调试
+    python -m backend.app.serve              # 生产/开发：单进程绑定注册表端口（当前 :8000）
+    python -m backend.app.serve --reload     # 开发热重载（同端口）
+    python -m backend.app.serve --ports 8000 # 显式指定端口（调试）
 
-端口清单缺省读 backend/scripts/services.conf（唯一权威登记，对外端口不变）；
+端口清单缺省读 backend/scripts/services.conf（唯一权威登记）；
 PID/日志由 start-all.sh 纳管（pids/web.pid、logs/web.log）。
 """
 
@@ -22,7 +25,10 @@ SERVICES_CONF = PROJECT_ROOT / "backend" / "scripts" / "services.conf"
 
 
 def service_ports() -> list:
-    """从服务注册表读全部契约端口（name:module:port → port）。"""
+    """从服务注册表读监听端口（name:module:port → port，去重升序）。
+
+    注册表缺省只有 web:8000 一行；多行同端口（历史别名）也只会绑一次。
+    """
     ports = []
     for line in SERVICES_CONF.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -42,10 +48,10 @@ def _bind(host: str, port: int) -> socket.socket:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="AI-DataHub web 入口启动器（单进程多端口）")
+        description="AI-DataHub web 入口启动器（单进程，端口取 services.conf）")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--ports", default="",
-                        help="逗号分隔端口，缺省取 services.conf 全部契约端口")
+                        help="逗号分隔端口，缺省取 services.conf 登记的端口（当前 :8000）")
     parser.add_argument("--reload", action="store_true", help="开发热重载")
     parser.add_argument("--log-level", default="info")
     args = parser.parse_args()

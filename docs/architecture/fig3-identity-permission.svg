@@ -1,0 +1,191 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 1010" font-family="Noto Sans CJK SC, PingFang SC, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/>
+    </marker>
+  </defs>
+  <rect width="1560" height="1010" fill="#f8fafc"/>
+
+  <text x="40" y="46" font-size="29" font-weight="700" fill="#0f172a">身份与角色权限模型 · 三维正交</text>
+  <text x="40" y="74" font-size="15.5" fill="#475569">身份只信服务端 → 角色唯一真值源 → 功能能力 / 数据资源 / AI 工具面三维正交（不得互相顶替）→ 生效能力 = 四源交集</text>
+
+  <!-- ═══ 列1 身份来源 ═══ -->
+  <rect x="60" y="104" width="300" height="568" rx="12" fill="#ffffff" stroke="#bae6fd"/>
+  <text x="78" y="132" font-size="15.5" font-weight="700" fill="#0284c7">身份来源（9 类）</text>
+  <g font-size="12.5" fill="#1e293b">
+    <rect x="78" y="146" width="264" height="44" rx="7" fill="#e0f2fe"/><text x="90" y="166" font-weight="700">Web UI / API</text><text x="90" y="182" fill="#475569">JWT 验签后重读状态与角色</text>
+    <rect x="78" y="198" width="264" height="44" rx="7" fill="#e0f2fe"/><text x="90" y="218" font-weight="700">文件 / 会话产物</text><text x="90" y="234" fill="#475569">header 或 ?token=（属主自检）</text>
+    <rect x="78" y="250" width="264" height="44" rx="7" fill="#e0f2fe"/><text x="90" y="270" font-weight="700">AS-BOT 会话</text><text x="90" y="286" fill="#475569">服务端注入 ctx.user_id</text>
+    <rect x="78" y="302" width="264" height="44" rx="7" fill="#e0f2fe"/><text x="90" y="322" font-weight="700">后台 / 定时任务</text><text x="90" y="338" fill="#475569">只认持久化创建者，每次重读</text>
+    <rect x="78" y="354" width="264" height="44" rx="7" fill="#e0f2fe"/><text x="90" y="374" font-weight="700">嵌入页 / 第三方</text><text x="90" y="390" fill="#475569">AK(bcrypt) → embed token 30m</text>
+    <rect x="78" y="406" width="264" height="44" rx="7" fill="#e0f2fe"/><text x="90" y="426" font-weight="700">报表 / 看板分享</text><text x="90" y="442" fill="#475569">创建者身份 + 角色可见性</text>
+    <rect x="78" y="458" width="264" height="44" rx="7" fill="#e0f2fe"/><text x="90" y="478" font-weight="700">内部服务间</text><text x="90" y="494" fill="#475569">X-Internal-Identity HMAC</text>
+    <rect x="78" y="510" width="264" height="44" rx="7" fill="#dbeafe"/><text x="90" y="530" font-weight="700">系统 / 无身份调用</text><text x="90" y="546" fill="#475569">user_id=0 → sensitive_only</text>
+    <rect x="78" y="562" width="264" height="44" rx="7" fill="#fee2e2" stroke="#fca5a5"/><text x="90" y="582" font-weight="700" fill="#991b1b">无可信身份取数</text><text x="90" y="598" fill="#b91c1c">NoIdentityError 拒绝，不裸连</text>
+  </g>
+  <text x="78" y="636" font-size="12.4" font-weight="700" fill="#dc2626">绝不从请求体读 body.user_id</text>
+  <text x="78" y="656" font-size="12.4" fill="#94a3b8">工具入参带身份字段 → reject_identity</text>
+
+  <line x1="364" y1="386" x2="398" y2="386" stroke="#475569" stroke-width="2.4" marker-end="url(#ar)"/>
+
+  <!-- ═══ 列2 用户→角色→AS-BOT ═══ -->
+  <rect x="400" y="104" width="300" height="568" rx="12" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="418" y="132" font-size="15.5" font-weight="700" fill="#0f172a">组织与绑定</text>
+  <rect x="418" y="148" width="264" height="52" rx="8" fill="#f1f5f9"/>
+  <text x="430" y="170" font-size="13" font-weight="700" fill="#0f172a">用户 adh_users</text>
+  <text x="430" y="188" font-size="12.4" fill="#475569">凭据 bcrypt · email/phone 加密存储</text>
+  <line x1="550" y1="204" x2="550" y2="222" stroke="#475569" stroke-width="2.2" marker-end="url(#ar)"/>
+  <rect x="418" y="226" width="264" height="66" rx="8" fill="#eef2ff" stroke="#c7d2fe"/>
+  <text x="430" y="248" font-size="13" font-weight="700" fill="#0f172a">角色 adh_roles ⋈ adh_user_roles</text>
+  <text x="430" y="266" font-size="12.4" fill="#475569">唯一真值源，无 workspace 维度</text>
+  <text x="430" y="283" font-size="12.4" fill="#475569">工作空间 = 会话归属与资源属主</text>
+  <line x1="550" y1="296" x2="550" y2="314" stroke="#475569" stroke-width="2.2" marker-end="url(#ar)"/>
+  <rect x="418" y="318" width="264" height="80" rx="8" fill="#f3e8fd" stroke="#c4b5fd"/>
+  <text x="430" y="340" font-size="13" font-weight="700" fill="#0f172a">AS-BOT（角色 1:1 唯一索引）</text>
+  <text x="430" y="360" font-size="12.4" fill="#475569">persona / system_prompt / tools</text>
+  <text x="430" y="377" font-size="12.4" fill="#475569">skills / 图表开关 / 知识库引用</text>
+  <text x="430" y="393" font-size="12.4" fill="#475569">Waker = 历史名，同一载体</text>
+  <rect x="418" y="412" width="264" height="96" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="430" y="434" font-size="13" font-weight="700" fill="#0f172a">本体可见域（只用 kind 判别）</text>
+  <text x="430" y="454" font-size="12.4" fill="#475569">system 系统本体 · business 业务本体</text>
+  <text x="430" y="471" font-size="12.4" fill="#475569">能力叠加：授权 system 组只增能力面，</text>
+  <text x="430" y="488" font-size="12.4" fill="#475569">不屏蔽业务继承；禁以 ds_id=0 判系统域</text>
+  <rect x="418" y="522" width="264" height="76" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="430" y="544" font-size="13" font-weight="700" fill="#0f172a">会话生效源裁决</text>
+  <text x="430" y="564" font-size="12.4" fill="#475569">唯一候选自动选定 · 多候选须显式选</text>
+  <text x="430" y="582" font-size="12.4" fill="#475569">已选源撤回 → 报错，不静默切换</text>
+  <text x="418" y="626" font-size="12.4" fill="#94a3b8">角色无 AS-BOT → 无智能体入口（空列表）</text>
+  <text x="418" y="650" font-size="12.4" fill="#94a3b8">adh_workspace_datasources 已退役为冻结表</text>
+
+  <line x1="704" y1="386" x2="738" y2="386" stroke="#475569" stroke-width="2.4" marker-end="url(#ar)"/>
+
+  <!-- ═══ 列3 三维正交 ═══ -->
+  <rect x="740" y="104" width="420" height="568" rx="12" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="758" y="132" font-size="15.5" font-weight="700" fill="#0f172a">权限三维正交（不得混用）</text>
+
+  <rect x="758" y="148" width="384" height="150" rx="9" fill="#fef9c3" stroke="#facc15"/>
+  <text x="772" y="170" font-size="13.4" font-weight="700" fill="#0f172a">A 功能能力（平台动作：能不能点 / 能不能写）</text>
+  <text x="772" y="191" font-size="12.4" fill="#334155">表：adh_perm_registry（perm_code · menu_key ·</text>
+  <text x="772" y="207" font-size="12.4" fill="#334155">api_pattern · ai_access ∈ none/read/write</text>
+  <text x="772" y="223" font-size="12.4" fill="#334155">　adh_role_perms（角色授予码）</text>
+  <text x="772" y="239" font-size="12.4" fill="#334155">动作登记：FUNCTION_ACTION_SPECS（登记才生工具）</text>
+  <text x="772" y="259" font-size="12.4" font-weight="700" fill="#a16207">裁决点：api_permission 中间件</text>
+  <text x="772" y="278" font-size="12.4" fill="#a16207">＋ perm_link.check_write_perm（写动作把关）</text>
+
+  <rect x="758" y="310" width="384" height="164" rx="9" fill="#fee2e2" stroke="#fca5a5"/>
+  <text x="772" y="332" font-size="13.4" font-weight="700" fill="#0f172a">B 数据资源（能看哪些行 / 列 / 源）</text>
+  <text x="772" y="353" font-size="12.4" fill="#334155">源级 role_datasource_access · 表级 role_table_access</text>
+  <text x="772" y="369" font-size="12.4" fill="#334155">列级 role_column_access · 行级 adh_rls_policies</text>
+  <text x="772" y="385" font-size="12.4" fill="#334155">＋ role_rls_policies（角色绑策略）</text>
+  <text x="772" y="401" font-size="12.4" fill="#334155">看板/数据集 role_dashboard/dataset_access</text>
+  <text x="772" y="417" font-size="12.4" fill="#334155">敏感基线 adh_sensitive_fields（不可被弱化）</text>
+  <text x="772" y="437" font-size="12.4" font-weight="700" fill="#b91c1c">裁决点：core/enforcer（唯一）+ resource_guard 资源域</text>
+  <text x="772" y="456" font-size="12.4" fill="#b91c1c">RLS 变量取角色属性 / 用户有效属性（role_attributes）</text>
+
+  <rect x="758" y="486" width="384" height="150" rx="9" fill="#f3e8fd" stroke="#c4b5fd"/>
+  <text x="772" y="508" font-size="13.4" font-weight="700" fill="#0f172a">C AI 工具面（LLM 能调什么）</text>
+  <text x="772" y="529" font-size="12.4" fill="#334155">adh_as_bots.tools 逐工具勾选（groups/mcp/…）</text>
+  <text x="772" y="545" font-size="12.4" fill="#334155">执行层天花板 allowed_tools（live_ceiling）</text>
+  <text x="772" y="561" font-size="12.4" fill="#334155">涉密硬上界 SECRET_BOUND_*（代码层 cap，配置抬不上去）</text>
+  <text x="772" y="577" font-size="12.4" fill="#334155">A 自动继承，AS-BOT 只能做减法（functions.disabled）</text>
+  <text x="772" y="597" font-size="12.4" font-weight="700" fill="#7c3aed">裁决点：tool_policy.compile_policy（四源取交集）</text>
+  <text x="772" y="616" font-size="12.4" fill="#7c3aed">取数工具授权 ≠ 菜单权限码：路径选择归 Waker 职责划分</text>
+  <text x="758" y="648" font-size="12.4" font-weight="700" fill="#dc2626">拿 A 门控 B ⇒ 权限语义与 enforcer / gates 打架</text>
+  <text x="758" y="664" font-size="12.4" fill="#dc2626">「看板页能读指标」不等于「可以执行 SQL」</text>
+
+  <line x1="1164" y1="386" x2="1198" y2="386" stroke="#475569" stroke-width="2.4" marker-end="url(#ar)"/>
+
+  <!-- ═══ 列4 生效结果 ═══ -->
+  <rect x="1200" y="104" width="300" height="568" rx="12" fill="#ffffff" stroke="#86efac"/>
+  <text x="1218" y="132" font-size="15.5" font-weight="700" fill="#059669">运行时生效结果</text>
+  <rect x="1218" y="148" width="264" height="96" rx="8" fill="#dcfce7" stroke="#4ade80"/>
+  <text x="1230" y="170" font-size="13" font-weight="700" fill="#0f172a">ToolPolicy.allowed</text>
+  <text x="1230" y="190" font-size="12.4" fill="#334155">= C ∩ A 继承 ∩ 天花板 ∩ 涉密上界</text>
+  <text x="1230" y="207" font-size="12.4" fill="#334155">未授权工具不注册，原因进</text>
+  <text x="1230" y="224" font-size="12.4" fill="#334155">unavailable（不静默少注册）</text>
+  <rect x="1218" y="256" width="264" height="88" rx="8" fill="#dcfce7" stroke="#4ade80"/>
+  <text x="1230" y="278" font-size="13" font-weight="700" fill="#0f172a">available_sources</text>
+  <text x="1230" y="298" font-size="12.4" fill="#334155">= 用户角色数据源授权集</text>
+  <text x="1230" y="315" font-size="12.4" fill="#334155">空集 = 无权（fail-closed）</text>
+  <text x="1230" y="332" font-size="12.4" fill="#334155">admin 同样纯角色裁决不 bypass</text>
+  <rect x="1218" y="356" width="264" height="104" rx="8" fill="#dcfce7" stroke="#4ade80"/>
+  <text x="1230" y="378" font-size="13" font-weight="700" fill="#0f172a">数据面施加</text>
+  <text x="1230" y="398" font-size="12.4" fill="#334155">行过滤注入 · 隐藏列剔除</text>
+  <text x="1230" y="415" font-size="12.4" fill="#334155">脱敏表达式按方言生成</text>
+  <text x="1230" y="432" font-size="12.4" fill="#334155">提示词侧仅给业务名摘要</text>
+  <text x="1230" y="449" font-size="12.4" fill="#334155">（RLS 摘要 / 屏蔽列名，不含物理 id）</text>
+  <rect x="1218" y="472" width="264" height="88" rx="8" fill="#f0fdf4" stroke="#4ade80"/>
+  <text x="1230" y="494" font-size="13" font-weight="700" fill="#0f172a">审计与可观测</text>
+  <text x="1230" y="514" font-size="12.4" fill="#334155">成功与拒绝均落库；decided_by</text>
+  <text x="1230" y="531" font-size="12.4" fill="#334155">服务端注入；trace_id 贯穿；</text>
+  <text x="1230" y="548" font-size="12.4" fill="#334155">仅真实用户调用落审计行</text>
+  <text x="1218" y="584" font-size="12.4" fill="#94a3b8">三处裁决点各自唯一：</text>
+  <text x="1218" y="602" font-size="12.4" fill="#94a3b8">A=perm_link B=enforcer C=tool_policy</text>
+  <text x="1218" y="626" font-size="12.4" font-weight="700" fill="#059669">不得另造第二套「谁能做什么」判断</text>
+  <text x="1218" y="650" font-size="12.4" fill="#94a3b8">无执行运行时 → 按业务域处理</text>
+
+  <!-- ═══ 底部左：涉密硬上界 ═══ -->
+  <rect x="60" y="694" width="700" height="272" rx="12" fill="#ffffff" stroke="#fca5a5"/>
+  <text x="78" y="722" font-size="16" font-weight="700" fill="#0f172a">涉密硬上界：配置写 write 也抬不上去（cap_level 取更严者）</text>
+  <g font-size="12.6" fill="#334155">
+    <text x="78" y="750" font-weight="700" fill="#991b1b">SECRET_BOUND_NONE_PERMS —— 恒为 none，根本不进 LLM 工具面</text>
+    <text x="92" y="770">凭据/密钥：datasource:manage · mcp:* · model:manage · notification:*</text>
+    <text x="92" y="788">身份与权限：user:* · role:* · system:users · system:roles</text>
+    <text x="92" y="806">安全边界（可被注入诱导放宽）：rls:* · sandbox:* · asbot:* · sensitive:manage · settings:*</text>
+    <text x="92" y="824">注入面：prompt:* · skill:*　　物理 SQL 与表列名：sql-pairs:*</text>
+    <text x="78" y="852" font-weight="700" fill="#b45309">SECRET_BOUND_READ_ONLY_PERMS —— 上限 read，禁止一切写</text>
+    <text x="92" y="872">datasource:read · model:read · sensitive:read · audit:read · observability:read</text>
+  </g>
+  <g>
+    <rect x="78" y="892" width="200" height="46" rx="8" fill="#fee2e2"/>
+    <text x="92" y="912" font-size="12.6" font-weight="700" fill="#0f172a">DB 配置 ai_access</text>
+    <text x="92" y="930" font-size="12.4" fill="#334155">write（管理员可配）</text>
+    <line x1="284" y1="915" x2="316" y2="915" stroke="#dc2626" stroke-width="2.4" marker-end="url(#arR)"/>
+    <rect x="322" y="892" width="196" height="46" rx="8" fill="#fff1f2"/>
+    <text x="336" y="912" font-size="12.6" font-weight="700" fill="#0f172a">涉密边界 cap</text>
+    <text x="336" y="930" font-size="12.4" fill="#334155">代码层上界，取更严者</text>
+    <line x1="524" y1="915" x2="556" y2="915" stroke="#dc2626" stroke-width="2.4" marker-end="url(#arR)"/>
+    <rect x="562" y="892" width="180" height="46" rx="8" fill="#0f172a"/>
+    <text x="576" y="912" font-size="12.6" font-weight="700" fill="#fff">有效级别</text>
+    <text x="576" y="930" font-size="12.4" fill="#cbd5e1">none / read + 原因可见</text>
+  </g>
+
+  <!-- ═══ 底部右：写动作唯一回路 ═══ -->
+  <rect x="776" y="694" width="700" height="272" rx="12" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="794" y="722" font-size="16" font-weight="700" fill="#0f172a">写动作唯一回路（无提议→审批→执行）</text>
+  <g font-size="12.6">
+    <rect x="794" y="742" width="150" height="66" rx="8" fill="#fef9c3" stroke="#facc15"/>
+    <text x="806" y="764" font-weight="700" fill="#0f172a">动作 → 权限码</text>
+    <text x="806" y="782" fill="#334155">ontology:save</text>
+    <text x="806" y="798" fill="#334155">sync:manage …</text>
+    <line x1="950" y1="775" x2="978" y2="775" stroke="#475569" stroke-width="2.2" marker-end="url(#ar)"/>
+    <rect x="982" y="742" width="156" height="66" rx="8" fill="#fee2e2" stroke="#fca5a5"/>
+    <text x="994" y="764" font-weight="700" fill="#0f172a">require_write_perm</text>
+    <text x="994" y="782" fill="#334155">fail-closed 把关</text>
+    <text x="994" y="798" fill="#334155">拒绝原因可解释</text>
+    <line x1="1144" y1="775" x2="1172" y2="775" stroke="#475569" stroke-width="2.2" marker-end="url(#ar)"/>
+    <rect x="1176" y="742" width="130" height="66" rx="8" fill="#dcfce7" stroke="#4ade80"/>
+    <text x="1188" y="764" font-weight="700" fill="#0f172a">直执行</text>
+    <text x="1188" y="782" fill="#334155">+ 资源域校验</text>
+    <text x="1188" y="798" fill="#334155">（会话绑定源）</text>
+    <line x1="1312" y1="775" x2="1340" y2="775" stroke="#475569" stroke-width="2.2" marker-end="url(#ar)"/>
+    <rect x="1344" y="742" width="116" height="66" rx="8" fill="#e0f2fe" stroke="#7dd3fc"/>
+    <text x="1356" y="764" font-weight="700" fill="#0f172a">审计落库</text>
+    <text x="1356" y="782" fill="#334155">服务端注入</text>
+    <text x="1356" y="798" fill="#334155">decided_by</text>
+  </g>
+  <g font-size="12.6" fill="#334155">
+    <text x="794" y="836">动作→码映射（新增须同批登记）：</text>
+    <text x="794" y="856">ontology.* → ontology:generate/save/activate/import</text>
+    <text x="794" y="876">metadata.sync → sync:manage · alias.approve|reject → ontology:save</text>
+    <text x="794" y="896">dashboard.publish → dashboard:manage · product.contract_change → dataset:manage</text>
+    <text x="794" y="916">task.claim_owner → scheduled:manage · 幂等由状态条件更新仲裁</text>
+    <text x="794" y="936" font-weight="700" fill="#dc2626">执行成功 ≠ 全系统一致：涉派生系统必走服务层级联</text>
+    <text x="794" y="956" font-size="11.6" fill="#94a3b8">本体 actions[]/rules[].permission 仅建模描述；旧审批通道表已退役不得回潮</text>
+  </g>
+
+  <text x="60" y="990" font-size="12.4" fill="#94a3b8">锚点：common/auth.py · core/{role_service,rls_service,enforcer,perm_link}.py · common/api_permission.py · mind/execution/{tool_policy,resource_guard,as_bots}.py · 详见 ARCHITECTURE_OVERVIEW.md §5 §6</text>
+</svg>

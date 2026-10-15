@@ -1,7 +1,11 @@
-"""T6 别名级联校验与回流队列单测(离线, 无 DB)。
+"""T6 进化候选与级联校验单测（离线，无 DB）。
 
-覆盖: 别名回写直执行的参数校验（不再走审批回路）、unresolved_terms 落入 provenance、
-孤儿字典引用的检测与 activate 硬阻断语义。
+覆盖：候选分类的可解释性与歧义不自动合并、别名回写参数校验（不再走审批回路）、
+unresolved_terms 落入 provenance、孤儿字典引用的检测与 activate 硬阻断语义。
+
+历史说明：本文件原先指向 `mind.rag.alias_suggestion`。该模块已被
+`catalog.services.evolution_service` 取代（旧表退役为冻结、单一事实源收口），
+测试跟着迁移而不是留着指向死代码——否则"测试全绿"会掩住"被测物已不存在"。
 """
 import sys
 import os
@@ -9,46 +13,112 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from backend.modules.mind.rag import alias_suggestion
+from backend.modules.catalog.services import evolution_service as evo
 from backend.semantics.planner import _ColumnResolver, plan
 from backend.semantics.models import ResolvedBinding, SemanticQuery
 from backend.modules.catalog.services import ontology_service
 
 
-# ── 别名回写直执行：参数校验（fail-loud，不静默丢参数） ─────────
+# ── 候选分类：可解释、歧义不自动合并、不可误诊 ───────────
 
-class TestAliasDecisionValidation:
-    def test_missing_term_rejected(self, monkeypatch):
-        monkeypatch.setattr(alias_suggestion, "get_suggestion",
-                            lambda sid: {"id": sid, "term": "", "target_type": "metric", "target_ref": "m"})
-        with pytest.raises(ValueError, match="term"):
-            alias_suggestion.approve_suggestion({"suggestion_id": 7})
+class TestClassifyTerm:
+    def test_authoritative_name_hit_is_binding_gap_not_alias(self, monkeypatch):
+        """命中权威名却解析不通 = 绑定不可达，不是缺别名。
 
-    def test_bad_target_type_rejected(self, monkeypatch):
-        monkeypatch.setattr(alias_suggestion, "get_suggestion",
-                            lambda sid: {"id": sid, "term": "x", "target_type": "table", "target_ref": "m"})
+        实测依据：旧队列 9 条里 7 条属此类。归成 alias 会引人去补一个
+        没用的别名，归成 new_* 会造出重复字典行——两个都是错行动。
+        """
+        monkeypatch.setattr(evo, "find_authoritative", lambda t, ds="": [
+            {"kind": "metric", "ref": "activated_devices", "object_key": "equipment",
+             "target_table": "t_product_equipment", "via": "name"}])
+        out = evo.classify_term("activated_devices", hint_type="metric")
+        assert out["kind"] == "binding_gap"
+        assert out["target_ref"] == "activated_devices"
+        assert "绑定" in out["classify_reason"] or "可达" in out["classify_reason"]
+
+    def test_alias_registration_hit_is_adoptable(self, monkeypatch):
+        monkeypatch.setattr(evo, "find_authoritative", lambda t, ds="": [
+            {"kind": "metric", "ref": "案例数量", "object_key": "case",
+             "target_table": "t_case_records", "via": "aliases"}])
+        out = evo.classify_term("病例数")
+        assert out["kind"] == "alias" and out["target_ref"] == "案例数量"
+
+    def test_multiple_hits_are_not_auto_merged(self, monkeypatch):
+        """歧义词只能给人选，自动合并会污染别名（absorb_business_terms 同纪律）。"""
+        monkeypatch.setattr(evo, "find_authoritative", lambda t, ds="": [
+            {"kind": "metric", "ref": "营收", "object_key": "order", "target_table": "a", "via": "name"},
+            {"kind": "dimension", "ref": "营收口径", "object_key": "case", "target_table": "b", "via": "name"}])
+        out = evo.classify_term("营收")
+        assert out["kind"] == "alias" and out["target_ref"] == "" and out["ambiguous"] is True
+        assert "不自动合并" in out["classify_reason"]
+
+    def test_fuzzy_candidates_route_to_adopt_not_new_row(self, monkeypatch):
+        """planner 回了近似候选 = 概念很可能已存在；先走收编，不新建重复行。"""
+        monkeypatch.setattr(evo, "find_authoritative", lambda t, ds="": [])
+        out = evo.classify_term("状态分布", hint_type="dimension",
+                               candidates=["案例状态", "拆牙状态"])
+        assert out["kind"] == "alias" and out["target_ref"] == "案例状态"
+        assert out["ambiguous"] is True
+
+    def test_structured_type_beats_shape_guess(self, monkeypatch):
+        monkeypatch.setattr(evo, "find_authoritative", lambda t, ds="": [])
+        assert evo.classify_term("online_devices", hint_type="metric")["kind"] == "new_metric"
+        assert evo.classify_term("企业省份类型", hint_type="dimension")["kind"] == "new_dimension"
+
+    def test_no_signal_goes_to_term_buffer_not_guessed(self, monkeypatch):
+        """什么信号都看不出来就落缓冲区，不猜建什么——猜错会往字典里插垃圾行。"""
+        monkeypatch.setattr(evo, "find_authoritative", lambda t, ds="": [])
+        out = evo.classify_term("xk9q")
+        assert out["kind"] == "term" and "不猜" in out["classify_reason"]
+
+    def test_feedback_reason_dispatches_kind(self, monkeypatch):
+        monkeypatch.setattr(evo, "find_authoritative", lambda t, ds="": [])
+        got = {r: evo.classify_term("某词" + str(i), origin="feedback",
+                                   feedback_reason=r)["kind"]
+               for i, r in enumerate(evo.FEEDBACK_REASONS)}
+        assert got["missing_metric"] == "new_metric"
+        assert got["missing_dimension"] == "new_dimension"
+
+
+# ── 候选入库与出口参数校验（fail-loud，不静默丢参数）──────
+
+class TestCandidateValidation:
+    def test_missing_classify_reason_rejected(self, monkeypatch):
+        """没分类依据的候选 = 不可审计的黑盒分类，宁可报错也不入库。"""
+        monkeypatch.setattr(evo, "_q", lambda *a, **k: [])
+        monkeypatch.setattr(evo, "_w", lambda *a, **k: 1)
+        with pytest.raises(ValueError, match="classify_reason"):
+            evo.upsert_candidate(term="DAU", kind="new_metric", source="parse_fail",
+                                classify_reason="")
+
+    def test_unknown_kind_and_source_rejected(self):
+        with pytest.raises(ValueError, match="kind"):
+            evo.upsert_candidate(term="x", kind="new_index", source="parse_fail",
+                                classify_reason="r")
+        with pytest.raises(ValueError, match="source"):
+            evo.upsert_candidate(term="x", kind="alias", source="guess",
+                                classify_reason="r")
+
+    def test_blank_term_rejected(self):
+        with pytest.raises(ValueError, match="业务词"):
+            evo.upsert_candidate(term="   ", kind="alias", source="parse_fail",
+                                classify_reason="r")
+
+    def test_bad_target_type_rejected(self):
         with pytest.raises(ValueError, match="target_type"):
-            alias_suggestion.approve_suggestion({"suggestion_id": 7})
+            evo.adopt_alias(term="x", target_type="table", target_ref="m")
 
-    def test_dict_alias_requires_target_ref(self, monkeypatch):
-        monkeypatch.setattr(alias_suggestion, "get_suggestion",
-                            lambda sid: {"id": sid, "term": "x", "target_type": "metric", "target_ref": ""})
-        with pytest.raises(ValueError, match="target_ref"):
-            alias_suggestion.approve_suggestion({"suggestion_id": 7})
+    def test_missing_dict_row_returns_next_action_instead_of_raise(self, monkeypatch):
+        """旧实现在这里 raise，把 8/9 条 pending 卡死。
 
-    def test_reject_requires_suggestion_id(self):
-        with pytest.raises(ValueError, match="suggestion_id"):
-            alias_suggestion.reject_suggestion({})
-
-    def test_valid_payload_passes(self, monkeypatch):
-        monkeypatch.setattr(alias_suggestion, "get_suggestion",
-                            lambda sid: {"id": sid, "term": "就诊量", "target_type": "dimension",
-                                         "target_ref": "量", "datasource_id": 1})
-        monkeypatch.setattr(alias_suggestion, "_approve_dict_alias", lambda *a, **k: None)
-        monkeypatch.setattr(alias_suggestion, "_set_status", lambda *a, **k: None)
-        out = alias_suggestion.approve_suggestion({"suggestion_id": 7, "term": "就诊量",
-                                                  "target_type": "dimension", "target_ref": "量"})
-        assert out["success"] is True and out["term"] == "就诊量"
+        目标字典行不存在不是错误，是"该走另一个出口"：必须回可操作的
+        next_action，而不是抛异常让审核按钮永久点不动。
+        """
+        monkeypatch.setattr(evo, "_q", lambda sql, params=(): [] if "aliases" in sql else [])
+        out = evo.adopt_alias(term="DAU", target_type="metric", target_ref="不存在的指标")
+        assert out["success"] is False
+        assert out["next_action"] == "new_metric"
+        assert "不存在" in out["message"]
 
 
 # ── planner unresolved_terms 结构化产出 ──────────────────

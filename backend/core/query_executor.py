@@ -223,14 +223,18 @@ def validate_sql(sql: str, require_limit: bool = True) -> tuple[bool, str]:
     Returns:
         (True, "") if valid, (False, error_message) if invalid.
     """
-    from backend.semantics.sql_guard import parse_query
+    from backend.semantics.sql_guard import parse_readonly
+    # 方言宽容：同一只读 SQL 在不同目标源方言下形状不同（如 SLS/Presto 的
+    # date_add('month',-3,now())/IF/UNNEST 在 mysql 方言下 sqlglot 解不动）；
+    # parse_readonly 逐方言尝试，安全语义（单语句/无 DDL-DML）仍 fail-closed。
     try:
-        tree = parse_query(sql)
-        if require_limit and tree.args.get("limit") is None:
-            return False, "Query must include a LIMIT clause."
-        return True, ""
-    except (PermissionError, ValueError, TypeError):
-        return False, "仅允许单条 SELECT/WITH 只读查询"
+        tree = parse_readonly(sql)
+    except Exception as e:  # 全方言都解不动：透出真实原因（不再笼统“仅允许单条”，便于定位）
+        cause = getattr(e, "__cause__", None)
+        return False, f"仅允许单条 SELECT/WITH 只读查询（解析失败: {cause or e}）"
+    if require_limit and tree.args.get("limit") is None:
+        return False, "Query must include a LIMIT clause."
+    return True, ""
 
 
 def execute_query(
@@ -314,9 +318,13 @@ def _execute_via_semantic_execution(
     """
     from backend.common.db.datasource_db import get_datasource_by_id
     from backend.semantics.execution.engine import SemanticEngine
+    from backend.semantics.sql_guard import dialect_of_db_type
 
     row = get_datasource_by_id(int(datasource_id or 0)) or {}
     db_type = (row.get("db_type") or "mysql").lower()
+    # 治理回写（LIMIT 强制 / RLS 注入）一律用目标源自己的方言，sls 走 PG 协议属 postgres 族；
+    # 拿错方言（如对 sls 走 mysql 生成器）会破坏 ARRAY[]/双引号标识符 → 目标源 parse 报错。
+    dialect = dialect_of_db_type(db_type)
 
     if user_id and workspace_id and datasource_id:
         from backend.common.rls_loader import load_rls_policies_for_query
@@ -335,7 +343,7 @@ def _execute_via_semantic_execution(
                     continue
                 filters[t] = f"({filters[t]}) AND ({pred})" if t in filters else pred
         if filters:
-            dialect = "postgres" if db_type in ("postgres", "postgresql", "pg") else "mysql"
+            # 用目标源方言（已在上方按 db_type 解析），不再硬编码 mysql 三元式
             sql, _applied = inject_filters(sql, filters, dialect=dialect)
 
     engine = SemanticEngine()
@@ -354,10 +362,10 @@ def _execute_via_semantic_execution(
                 "db_type": cfg.get("db_type") or "mysql", "config": cfg,
                 "tables": [],  # 由 execute_federated 从 SQL 限定引用推导
             })
-        table = engine.execute_federated(sql, sources)
+        table = engine.execute_federated(sql, sources, dialect=dialect)
     else:
         table = engine.execute_pushdown(
-            sql, datasource_id=int(datasource_id or 0), db_type=db_type)
+            sql, datasource_id=int(datasource_id or 0), db_type=db_type, dialect=dialect)
     df = table.to_pandas()
     elapsed_ms = int((time.time() - start) * 1000)
     return df, elapsed_ms, int(table.num_rows)

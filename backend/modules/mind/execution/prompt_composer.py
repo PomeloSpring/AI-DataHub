@@ -132,9 +132,10 @@ AS_BOT_DESIGN_RULES = """## AS-BOT 系统域与仪表盘协作（优先于通用
 - 将用户选择转成 widgets 中的声明式 query，列明目标、来源、指标口径、时间、坐标、图表类型、布局和影响。
   prepare_dashboard_design 只保存设计。用户在面板查看 SQL、可编辑并重新校验、查看真实预览，然后确认发布。
   未取得后端 published 状态不能声称已部署。SQL 由服务端生成并只供授权的人类编辑器，不能要求用户把 SQL 发进聊天。
-- 用户只要求标题、配色等视觉调整时不查询业务知识库。业务本体生成/保存/激活/导入仍禁止；
-  唯一例外是服务端派发的『生成本体模型』任务会话（任务消息即授权）：按任务消息取素材、归纳并
-  save_ontology_draft 提交源本体草案（该工具仍受服务端任务绑定与权限码校验），其余情形一律禁止。
+- 用户只要求标题、配色等视觉调整时不查询业务知识库。本体生成/保存/激活/导入
+  按角色权限模型开放：你的角色拥有对应功能权限码（ontology:generate/save/activate/import）
+  且目标源在角色授权集内即可按工具说明执行；无权时向用户说明拒绝原因，
+  不得绕道其他工具或静默放弃。
 - 业务知识库失败、无绑定或来源不明必须告诉用户，不去系统表、物理元数据或其他业务库充数；由用户决定下一步。
 """
 
@@ -322,6 +323,52 @@ def _knowledge_base_lines(knowledge_bases: list) -> list[str]:
     return lines
 
 
+def _user_memory_lines(user_id: int) -> str:
+    """用户记忆摘要（固定槽位 + 浮动条目），硬上限 800 字符。
+
+    空记忆返回空串（零膨胀）；固定槽位优先保留，浮动条目超长截断。
+    """
+    if not user_id or int(user_id) <= 0:
+        return ""
+    try:
+        from backend.common.db.metadata_db import get_metadata_conn
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT slot_key, content FROM adh_user_memory "
+                    "WHERE user_id=%s ORDER BY slot_key", (int(user_id),))
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — 记忆查询失败不阻断 prompt 组装
+        logger.warning("[prompt] 用户记忆查询失败, 跳过注入", exc_info=True)
+        return ""
+    if not rows:
+        return ""
+    from backend.modules.mind.execution.sdk_tools.memory_tools import FIXED_SLOTS, FLOATING_CATEGORIES
+    fixed_parts = []
+    floating_lines = []
+    for r in rows:
+        key = r["slot_key"]
+        content = r["content"]
+        if key in FIXED_SLOTS:
+            fixed_parts.append(f"{FIXED_SLOTS[key]}: {content}")
+        elif key in FLOATING_CATEGORIES:
+            floating_lines.append(f"- [{key}] {content}")
+    lines = ["## 用户记忆（稳定偏好，非会话上下文）"]
+    if fixed_parts:
+        lines.append("- " + " | ".join(fixed_parts))
+    # 浮动条目按序追加，总长（含换行）超 800 截断（固定槽位已占位，优先保留）
+    total = sum(len(l) for l in lines) + len(lines) - 1  # 含换行符
+    for fl in floating_lines:
+        if total + 1 + len(fl) > 800:
+            break
+        lines.append(fl)
+        total += 1 + len(fl)  # +1 = 换行符
+    return "\n".join(lines)
+
+
 def compose_system_prompt(
     default_as_bot: dict | None,
     as_bots: list[dict],
@@ -377,6 +424,11 @@ def compose_system_prompt(
     qp_lines = _quick_path_lines(quick_paths)
     if qp_lines:
         sections.append("\n".join(qp_lines).rstrip())
+
+    # 用户记忆(稳定偏好/口径/习惯, 非会话上下文): 固定槽位 + 浮动条目, 硬上限 800 字符
+    memory_text = _user_memory_lines(user_id)
+    if memory_text:
+        sections.append(memory_text)
 
     # 已绑定知识库: 仅作口径/背景补充(回退用), 不作对象/指标/维度名称来源; 取数以语义层为先。
     # (与 SEMANTIC_QUERY_RULES 的"语义层优先"一致, 不再引导"回答前先 knowledge_search")。

@@ -107,10 +107,10 @@ start_service() {
 }
 
 # ═══════════════════════════════════════════════════════════════
-# 函数: 启动 web（web 入口，单进程绑定全部契约端口 —— Phase 4 进程终态）
+# 函数: 启动 web（web 入口，单进程绑定注册表监听口——Phase 4 进程终态，当前单一 :8000）
 # ═══════════════════════════════════════════════════════════════
 # 全部模块 router 拼进一个 FastAPI app（backend/app/main.py），
-# 经 backend.app.serve 一个进程绑定 services.conf 全部端口。
+# 经 backend.app.serve 一个进程绑定 services.conf 登记的端口（只有一个监听口）。
 all_service_ports() {
     printf '%s\n' "${SERVICES[@]}" | cut -d: -f3
 }
@@ -129,7 +129,7 @@ start_web() {
         fi
     fi
 
-    # 全部契约端口必须空闲（单进程一次绑定）
+    # 注册表端口必须空闲（单进程一次绑定）
     local ports=""
     while read -r port; do
         ports="$ports $port"
@@ -499,7 +499,7 @@ start_celery_fg() {
     FG_PIDS+=("$!")
 }
 
-# 前台模式启动 web 入口（单进程多端口）
+# 前台模式启动 web 入口（单进程 :8000）
 start_web_fg() {
     local color="$1"
 
@@ -548,7 +548,7 @@ run_foreground() {
 
     # dataengine 已退役：执行载体由 semantics.execution 内嵌
 
-    # 启动 web 入口（单进程多端口）
+    # 启动 web 入口（单进程 :8000，代替原 8 个微服务进程）
     start_web_fg "${FG_COLORS[$ci]}"
     ((ci++))
     if [ $? -eq 0 ]; then ((success++)); else ((fail++)); fi
@@ -568,8 +568,7 @@ run_foreground() {
     log_info "${success} 个服务已启动, ${fail} 个失败"
     echo ""
     echo -e "  ${BLUE}前端:${NC}     http://localhost:${FRONTEND_PORT}"
-    echo -e "  ${BLUE}DataMind:${NC} http://localhost:8001"
-    echo -e "  ${BLUE}AuthService:${NC} http://localhost:8006"
+    echo -e "  ${BLUE}Web API:${NC}    http://localhost:8000（web 单进程，全部模块）"
     echo ""
     echo -e "  ${YELLOW}按 Ctrl+C 停止所有服务${NC}"
     echo ""
@@ -591,7 +590,7 @@ show_status() {
 
     # dataengine 已退役，状态行不再展示
 
-    # web 入口（单进程承载全部契约端口）
+    # web 入口（单进程承载全部模块，监听口取注册表）
     local web_pid_file="$PID_DIR/web.pid"
     local web_status="未运行"
     local web_pid="-"
@@ -646,6 +645,7 @@ show_status() {
     echo -e "  PID目录:  ${PID_DIR}"
     echo ""
     echo -e "  前端:     http://localhost:3000"
+    echo -e "  Web API:  http://localhost:$(all_service_ports | head -1)"
     echo ""
 }
 
@@ -674,7 +674,7 @@ case "${1:-all}" in
 
         # dataengine 已退役：执行载体由 semantics.execution 内嵌
 
-        # 启动 web 入口（单进程多端口，替代原 8 个微服务进程）
+        # 启动 web 入口（单进程绑定注册表监听口，替代原 8 个微服务进程）
         if start_web; then
             ((success++))
         else

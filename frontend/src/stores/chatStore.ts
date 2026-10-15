@@ -1250,15 +1250,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
   clear: async () => {
     const { currentConvId, abortController } = get();
     abortController?.abort();
-    set({ currentConvId: null, messages: [], loading: false, loadingStep: '', executorSessionId: null,
+    // 清空 = 擦除「当前会话」的历史消息并重置模型上下文，但**不脱离/新开窗口**：
+    // 保留 currentConvId，下一轮仍在同一会话以零上下文继续（后端 PUT messages=[] 已按此语义实现，
+    // 会把会话 sdk_session_id 置空但不关闭）。旧实现将 currentConvId 置 null 会让 sendMessage
+    // 懒建新会话，表现为“清空后再对话跳出一个新窗口”——那是错误行为。
+    set({ messages: [], loading: false, loadingStep: '', executorSessionId: null,
       capabilities: null, abortController: null });
-    // Clear conversation messages in database
+    // 已落库会话：清库历史消息；未落库的新会话（currentConvId=null）无需请求。
     if (currentConvId) {
       try {
         await client.put(`/chat/conversations/${currentConvId}`, { messages: [] });
       } catch (e) {
         console.error('Failed to clear conversation:', e);
-        toast.error('旧会话记录未能清空，新对话已与其隔离');
+        toast.error('会话记录未能清空（会话仍在运行中请先停止），请重试');
       }
     }
   },

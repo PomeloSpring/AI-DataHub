@@ -460,9 +460,6 @@ TOOL_SPECS = [
     },
 ]
 
-from backend.modules.mind.execution.sdk_tools.dashboard_design_tools import SEMANTIC_SPECS
-TOOL_SPECS.extend(SEMANTIC_SPECS)
-
 READONLY_ANNOTATIONS = {"readOnlyHint": True}
 
 

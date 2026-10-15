@@ -69,13 +69,10 @@ def storage_node(base, create=True):
     return value
 
 
-def workspace_disk_usage(workspace_id: int) -> int:
-    """工作空间磁盘用量(字节): ws_{id} 下全部文件递归求和。
-
-    单存储节点卷语义; 多节点部署时各节点各自统计(资产真值源在对象存储)。
-    """
+def workspace_disk_usage(workspace_id: int, user_id: int) -> int:
+    """工作空间磁盘用量(字节): {user_id}/workspace/{workspace_id} 下全部文件递归求和。"""
     from backend.common.config import ADH_WORKSPACES_DIR
-    root = Path(ADH_WORKSPACES_DIR).resolve() / f"ws_{workspace_id}"
+    root = Path(ADH_WORKSPACES_DIR).resolve() / str(user_id) / "workspace" / str(workspace_id)
     if not root.is_dir():
         return 0
     total = 0
@@ -88,13 +85,12 @@ def workspace_disk_usage(workspace_id: int) -> int:
     return total
 
 
-def assert_workspace_disk_quota(workspace_id: int) -> None:
+def assert_workspace_disk_quota(workspace_id: int, user_id: int) -> None:
     """空间磁盘配额拦截: 用量已达配额则拒绝新建会话(提示归档/清理后重试)。"""
     from backend.common.db.metadata_db import get_metadata_conn
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
-            # 配额按用户设置, 空间沿用属主的每空间磁盘配额
             cur.execute(
                 "SELECT q.disk_quota_bytes FROM adh_user_workspace_quota q "
                 "JOIN adh_workspaces w ON w.owner_id = q.user_id WHERE w.id = %s",
@@ -105,14 +101,14 @@ def assert_workspace_disk_quota(workspace_id: int) -> None:
     quota = int((row or {}).get("disk_quota_bytes") or 0)
     if quota <= 0:
         return
-    if workspace_disk_usage(workspace_id) >= quota:
+    if workspace_disk_usage(workspace_id, user_id) >= quota:
         raise HTTPException(status_code=409, detail="工作空间磁盘配额已用尽，请先归档收藏产物或清理会话文件")
 
 
-def session_paths(base, key, workspace_id, create=False, require_layout=True):
+def session_paths(base, key, workspace_id, user_id, create=False, require_layout=True):
     if not re.fullmatch(r"[a-f0-9]{32}", key) or workspace_id < 0:
         raise ValueError("会话路径标识无效")
-    root = base / f"ws_{workspace_id}" / "sessions" / key
+    root = base / str(user_id) / "workspace" / str(workspace_id) / "sessions" / key
     # 不接受持久卷内的符号链接替换。
     for p in [root, *root.parents]:
         if p == base:
@@ -234,7 +230,7 @@ def _session_cleanup_root(session):
         raise HTTPException(409, "会话仍在执行或尚未确认停止，请停止后再删除")
     from backend.common.config import ADH_WORKSPACES_DIR
     key = session["session_key"]
-    expected = f"ws_{session['workspace_id']}/sessions/{key}"
+    expected = f"{session['user_id']}/workspace/{session['workspace_id']}/sessions/{key}"
     if not re.fullmatch(r"[a-f0-9]{32}", key or "") or session["relative_dir"] != expected:
         raise HTTPException(409, "会话目录映射不一致，未执行清理，请联系管理员")
     base = Path(ADH_WORKSPACES_DIR).resolve()
@@ -471,18 +467,22 @@ def claim_session(task, backend, config):
     cid = int(ctx.extra.get("conversation_id") or 0)
     if cid:
         validate_conversation(ctx, cid)
+    # 性能：远端 MySQL(跨公网 RTT)下 resolve_policy 内部 3 组 SELECT 是 claim_session
+    # 首字延迟的主要贡献之一。历史实现在 layer_id 存在时会先跑一次不带 ceiling 的
+    # resolve_policy、再跑一次带 live_ceiling 的，两次结果只有 ceiling 收敛差异，
+    # 前一次纯属浪费(_layer_id 由 manager.py 恒注入 → 每轮都跑两次)。
+    # live_ceiling 只读 runtime.layer_id/backend，不依赖 ctx 归一化，可先算 ceiling
+    # 再一次性 resolve_policy。执行层全局生效(不按工作空间绑定); layer_bound 字段
+    # 保留兼容签名(下游无消费方)。
     ceiling = config.get("allowed_tools")
-    policy = resolve_policy(ctx, ceiling)
-    ctx.extra["as_bot_key"] = policy.as_bot["as_bot_key"]
     layer_id = int(config.get("_layer_id") or 0)
     layer_bound = False
     if layer_id:
         from backend.modules.mind.execution.tool_policy import live_ceiling
         from types import SimpleNamespace
-        # 执行层全局生效(不按工作空间绑定); layer_bound 字段保留兼容签名
-        current = live_ceiling(ctx, SimpleNamespace(layer_id=layer_id, layer_bound=True, backend=backend))
-        policy = resolve_policy(ctx, current)
-        ceiling = current
+        ceiling = live_ceiling(ctx, SimpleNamespace(layer_id=layer_id, layer_bound=True, backend=backend))
+    policy = resolve_policy(ctx, ceiling)
+    ctx.extra["as_bot_key"] = policy.as_bot["as_bot_key"]
     base = workspace_base()
     node = storage_node(base)
     token = uuid.uuid4().hex
@@ -514,7 +514,7 @@ def claim_session(task, backend, config):
                     raise HTTPException(409, "该会话已清空，请新建会话")
                 if row["status"] == "running":
                     raise HTTPException(409, "该会话正在执行或上次执行尚未确认停止")
-                root = session_paths(base, row["session_key"], row["workspace_id"])
+                root = session_paths(base, row["session_key"], row["workspace_id"], row["user_id"])
                 if row["status"] == "interrupted":
                     # 上轮执行中断（执行权已释放）。新消息是新一轮请求、不重放中断轮副作用；
                     # 丢弃中断的 SDK 会话（不 resume），复位为可认领状态后从干净执行上下文继续，
@@ -530,9 +530,9 @@ def claim_session(task, backend, config):
                 if cid and conv.get("executor_session_id"):
                     raise HTTPException(409, "旧执行会话需重新建立安全工作区，请新建会话；聊天记录仍保留")
                 # 磁盘配额拦截: 超限不建新会话目录, 引导归档/清理
-                assert_workspace_disk_quota(ctx.workspace_id)
+                assert_workspace_disk_quota(ctx.workspace_id, ctx.user_id)
                 key = uuid.uuid4().hex
-                root = session_paths(base, key, ctx.workspace_id, create=True)
+                root = session_paths(base, key, ctx.workspace_id, ctx.user_id, create=True)
                 row = {"session_key": key, "sdk_session_id": ""}
                 cur.execute(
                     "INSERT INTO adh_agent_sessions (session_key,conversation_id,user_id,workspace_id,as_bot_key,backend,"

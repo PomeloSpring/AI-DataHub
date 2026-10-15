@@ -93,7 +93,8 @@ def usage_summary(params: dict) -> dict:
                    COALESCE(SUM(llm_call_count),0) AS llm_calls,
                    COALESCE(SUM(total_tokens),0) AS total_tokens,
                    COALESCE(SUM(credits),0) AS credits,
-                   COALESCE(SUM(cost_usd),0) AS cost_usd,
+                   COALESCE(SUM(cost_amount),0) AS cost_amount,
+                   MAX(cost_currency) AS cost_currency,
                    SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors,
                    COALESCE(AVG(duration_ms),0) AS avg_duration_ms
             FROM adh_llm_traces t {where}""",
@@ -129,7 +130,8 @@ def usage_by_model(params: dict) -> list:
                    COALESCE(SUM(input_tokens),0) AS input_tokens,
                    COALESCE(SUM(output_tokens),0) AS output_tokens,
                    COALESCE(SUM(credits),0) AS credits,
-                   COALESCE(SUM(cost_usd),0) AS cost_usd
+                   COALESCE(SUM(cost_amount),0) AS cost_amount,
+                   MAX(cost_currency) AS cost_currency
             FROM adh_llm_traces t {where}
             GROUP BY model_ref ORDER BY credits DESC, turns DESC""",
         tuple(args),
@@ -226,7 +228,7 @@ def get_trace(trace_id: str) -> Optional[dict]:
     spans = execute_query(
         """SELECT span_id, trace_id, kind, name, status, duration_ms, model_ref,
                   input_tokens, output_tokens, total_tokens, credits, original_credits,
-                  billable, cost_usd, input_text, output_text, error_text, started_at
+                  billable, cost_amount, input_text, output_text, error_text, started_at
            FROM adh_llm_spans WHERE trace_id = %s ORDER BY started_at ASC""",
         (trace_id,),
     ) or []

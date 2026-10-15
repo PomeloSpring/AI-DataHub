@@ -163,7 +163,7 @@ describe('角色权限 — 数据安全策略页签', () => {
     await openPoliciesTab();
     // 策略名 + 类型徽标 + 目标表 + 过滤表达式(只读 code)
     expect(screen.getByText('华东过滤')).toBeInTheDocument();
-    expect(screen.getByText('行+列')).toBeInTheDocument();
+    expect(screen.getByText('行/列(遗留)')).toBeInTheDocument();
     expect(screen.getByText('orders')).toBeInTheDocument();
     expect(screen.getByText('region = :user_region').tagName).toBe('CODE');
     expect(screen.getByText('已停用策略')).toBeInTheDocument();

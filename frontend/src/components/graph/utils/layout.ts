@@ -129,7 +129,11 @@ export function applyForceLayout(
   edges: Edge[],
   options: { width?: number; height?: number; iterations?: number } = {}
 ): LayoutResult {
-  const { width = 1400, height = 1000, iterations = 240 } = options;
+  // 画布随节点数扩张(保持近似恒定密度): 固定 1400×1000 会把统一大图(可达数百节点)
+  // 挤进小框, 圆节点(最大 150px)必然互相重叠。按 √n 定边长, 每节点约 240×240 网格位。
+  const n = nodes.length;
+  const span = Math.max(1400, Math.round(Math.sqrt(Math.max(n, 1)) * 240));
+  const { width = span, height = span, iterations = n > 200 ? 160 : 240 } = options;
 
   // 尺寸感知: 圆节点以 width/height 为准(缺省 72)
   const sizeOf = (n: Node) => ({
@@ -187,8 +191,8 @@ export function applyForceLayout(
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
         const sa = sizeOf(a);
         const sb = sizeOf(b);
-        const minDist = (Math.max(sa.w, sa.h) + Math.max(sb.w, sb.h)) / 2 + 40;
-        const overlapBoost = 1 + Math.max(0, minDist - dist) / minDist * 4;
+        const minDist = (Math.max(sa.w, sa.h) + Math.max(sb.w, sb.h)) / 2 + 60;
+        const overlapBoost = 1 + Math.max(0, minDist - dist) / minDist * 6;
         const force = (repulsion / (dist * dist)) * overlapBoost;
         const fa = forces.get(a.id)!;
         const fb = forces.get(b.id)!;
@@ -209,7 +213,7 @@ export function applyForceLayout(
       const dx = pb.x - pa.x;
       const dy = pb.y - pa.y;
       const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      const rest = (Math.max(sizeOf(na).w, sizeOf(na).h) + Math.max(sizeOf(nb).w, sizeOf(nb).h)) / 2 + 90;
+      const rest = (Math.max(sizeOf(na).w, sizeOf(na).h) + Math.max(sizeOf(nb).w, sizeOf(nb).h)) / 2 + 120;
       const force = (dist - rest) * attraction;
       const fa = forces.get(edge.source)!;
       const fb = forces.get(edge.target)!;

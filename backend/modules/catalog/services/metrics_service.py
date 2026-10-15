@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import time
 from datetime import datetime
 from typing import Optional
@@ -131,7 +132,12 @@ def list_metrics(
     conditions = []
     params = []
 
-    if workspace_id:
+    # 模型作用域(scope=model / 带 model_id)看的是该模型对象挂接的资产: 本体模型是全局
+    # 语义资产(adh_ontology_models 无 workspace_id 列), 其挂接指标多为全局字典(ws=0),
+    # 不得再叠加当前 UI 工作空间过滤, 否则 bound_object_key 命中的全局指标会被全部排除
+    # (表现为模型「指标」tab“暂无指标数据”)。与 list_all_dimensions 不做 ws 过滤保持一致。
+    is_model_scope = (scope == "model") or bool(model_id)
+    if workspace_id and not is_model_scope:
         conditions.append("workspace_id = %s")
         params.append(workspace_id)
     if metric_type:
@@ -168,6 +174,53 @@ def list_metrics(
     return {"total": total, "items": rows}
 
 
+# 字典写入口统一派生 target_table（与 ontology_service._metric_safe_target /
+# scripts.backfill_dict_target_table 同口径）：bound_object_key→对象主表，且仅当公式为
+# 合法单表聚合。消除"get_metrics 按 bound_object_key 广告、planner 按 target_table 加载"的不一致。
+_METRIC_AGG_HEAD = re.compile(r"^\s*(SUM|AVG|COUNT|MIN|MAX)\s*\(", re.I)
+_METRIC_SELECT = re.compile(r"\bSELECT\b", re.I)
+_METRIC_WHERE = re.compile(r"\bWHERE\b", re.I)
+_METRIC_QUALIFIED = re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)")
+
+
+def _object_primary_table(cur, bound_object_key: str, datasource_id: int = 0) -> str:
+    """按 bound_object_key(+数据源) 从部署绑定层取对象主物理表；唯一命中才返回，歧义/无→''。"""
+    if not bound_object_key:
+        return ""
+    try:
+        if datasource_id:
+            cur.execute(
+                "SELECT DISTINCT physical_table FROM adh_ontology_bindings "
+                "WHERE object_key=%s AND status='active' AND physical_table<>'' "
+                "AND (datasource_id=%s OR datasource_id=0)", (bound_object_key, datasource_id))
+        else:
+            cur.execute(
+                "SELECT DISTINCT physical_table FROM adh_ontology_bindings "
+                "WHERE object_key=%s AND status='active' AND physical_table<>''",
+                (bound_object_key,))
+        tabs = {str(r["physical_table"]).strip() for r in (cur.fetchall() or [])
+                if r.get("physical_table")}
+        tabs.discard("")
+        return tabs.pop() if len(tabs) == 1 else ""
+    except Exception as e:  # noqa: BLE001 — 解析不到不阻断写入，回落空 target_table
+        logger.debug("[metrics] bound_object_key→primary_table 解析失败 obj=%s: %s", bound_object_key, e)
+        return ""
+
+
+def _derive_target_table(cur, bound_object_key, formula, datasource_id: int = 0) -> str:
+    """合法单表聚合且能唯一定位对象主表时返回 target_table，否则 ''（宁缺勿错，不猜）。"""
+    table = _object_primary_table(cur, bound_object_key, datasource_id)
+    if not table:
+        return ""
+    f = (formula or "").strip()
+    if not f or _METRIC_SELECT.search(f) or _METRIC_WHERE.search(f):
+        return ""
+    for pref, _c in _METRIC_QUALIFIED.findall(f):
+        if pref.lower() != table.lower():
+            return ""
+    return table if _METRIC_AGG_HEAD.match(f) else ""
+
+
 def create_metric(data: dict) -> dict:
     """Create a new metric.
 
@@ -201,6 +254,10 @@ def create_metric(data: dict) -> dict:
             # 字典写入口的引用完整性: bound_object_key 必须指向当前生效对象(ontology-modeling §4),
             # 悬空创建即拒, 不等到激活阶段才暴露
             _require_object_keys(cur, [data.get("bound_object_key")])
+            # target_table 未显式给出时，按 bound_object_key→对象主表派生（与生成路径同口径），
+            # 使 get_metrics 广告的指标 planner 也能加载编译。
+            target_table = (data.get("target_table") or "").strip() or _derive_target_table(
+                cur, data.get("bound_object_key"), formula, data.get("datasource_id", 0))
 
             # adh_metrics.id 是 INT, 不能用时间戳主键
             cur.execute("SELECT COALESCE(MAX(id), 0) + 1 AS nid FROM adh_metrics")
@@ -219,7 +276,7 @@ def create_metric(data: dict) -> dict:
                     formula,
                     data.get("unit", ""),
                     agg_type,
-                    data.get("target_table", ""),
+                    target_table,
                     data.get("target_column", ""),
                     data.get("description", ""),
                     data.get("owner", ""),
@@ -327,6 +384,16 @@ def update_metric(metric_id: int, data: dict) -> bool:
             if "aliases" in data:
                 fields.append("aliases = %s")
                 params.append(_norm_aliases(data["aliases"]))
+
+            # bound_object_key 在更新且未显式改 target_table 时，按对象主表派生补齐（同 create 口径）
+            if data.get("bound_object_key") and "target_table" not in mapped:
+                _f = data.get("expression") or data.get("formula") or ""
+                _tt = _derive_target_table(
+                    cur, data.get("bound_object_key"), _f,
+                    data.get("datasource_id", 0)) if _f else ""
+                if _tt:
+                    fields.append("target_table = %s")
+                    params.append(_tt)
 
             if not fields:
                 return True
@@ -490,6 +557,60 @@ def list_all_dimensions(model_id: Optional[int] = None,
     return {"total": len(rows), "items": rows}
 
 
+def create_dimension(data: dict) -> dict:
+    """独立创建维度字典行（与 create_metric 对称，供 AS-BOT 工具与前端复用）。
+
+    data 字段：
+      name / display_name → 业务名（必填）; name_en → 英文标识;
+      target_table / target_column → 物理列; category → 分类（"时间"/"属性"/...）;
+      description / bound_object_key / aliases / value_labels / certified / datasource_id / workspace_id
+    bound_object_key 非空时引用校验（同 create_metric）。
+    """
+    now = _now()
+    biz_name = (data.get("display_name") or data.get("name") or "").strip()
+    if not biz_name:
+        raise ValueError("dimension name is required")
+    name_en = (data.get("name_en") or "").strip()
+
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            # 查重（同中文名或同英文标识）
+            cur.execute(
+                "SELECT id FROM adh_dimensions WHERE (name = %s OR (name_en <> '' AND name_en = %s)) "
+                "LIMIT 1",
+                (biz_name, name_en or biz_name))
+            if cur.fetchone():
+                raise ValueError(f"Dimension '{biz_name}' already exists")
+            _require_object_keys(cur, [data.get("bound_object_key")])
+
+            cur.execute("SELECT COALESCE(MAX(id), 0) + 1 AS nid FROM adh_dimensions")
+            row_id = cur.fetchone()["nid"]
+            cur.execute(
+                "INSERT INTO adh_dimensions "
+                "(id, name, name_en, level, target_table, target_column, description, "
+                "category, datasource_id, is_active, created_at, updated_at, "
+                "bound_object_key, aliases, value_labels, certified) "
+                "VALUES (%s, %s, %s, 0, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s, %s)",
+                (
+                    row_id,
+                    biz_name,
+                    name_en,
+                    data.get("target_table", ""),
+                    data.get("target_column", ""),
+                    data.get("description", ""),
+                    data.get("category") or "属性",
+                    data.get("datasource_id", 0),
+                    now,
+                    now,
+                    data.get("bound_object_key") or None,
+                    _norm_aliases(data.get("aliases")),
+                    json.dumps(data["value_labels"], ensure_ascii=False) if data.get("value_labels") else None,
+                    1 if data.get("certified") else 0,
+                ),
+            )
+    return {"id": row_id, "success": True}
+
+
 def update_dimension(dim_id: int, data: dict) -> bool:
     """编辑全局维度字典白名单列。
 
@@ -555,7 +676,7 @@ def asset_pool() -> dict:
 
     - metrics/dimensions: bound_object_key 为空(unbound) 或指向已不再生效对象的孤儿(orphan);
     - terms: 未绑定任何表的黑话(target_table 为空);
-    - suggestions: 解析失败回流的候选词(adh_alias_suggestions pending, 表未迁移时容错为空)。
+    - suggestions: 进化候选（adh_evolution_candidates pending：待收编别名/待建指标维度/待核绑定）。
     只读聚合, 治理动作(归属/收编/退回)由各自既有写入口完成。
     """
     out: dict = {"metrics": [], "dimensions": [], "terms": [], "suggestions": [], "counts": {}}
@@ -581,15 +702,32 @@ def asset_pool() -> dict:
                 "  AND COALESCE(target_table, '') = '' ORDER BY term_cn LIMIT 200")
             out["terms"] = cur.fetchall()
     try:
+        # 进化候选（已收口到单一事实源）：旧 adh_alias_suggestions 退役为冻结表，
+        # 本面不再读它，避免两处真值源飘移。
+        # 故意在本函数自己的连接里查，不委托 evolution_service：那里会另开一条
+        # 元库连接，既绕开本函数的连接生命周期（调用方/测试只能 mock DBConnection），
+        # 又把"表未迁移 → 容错为空"这条现有语义弄丢。
         with DBConnection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, term, target_type, target_ref, datasource_id, source, "
-                    "       candidates, hit_count, updated_at "
-                    "FROM adh_alias_suggestions WHERE status = 'pending' "
+                    "SELECT id, term, kind, source, datasource_name, object_hint, "
+                    "       target_type, target_ref, classify_reason, evidence, "
+                    "       hit_count, updated_at "
+                    "FROM adh_evolution_candidates WHERE status = 'pending' "
                     "ORDER BY hit_count DESC, updated_at DESC LIMIT 100")
-                out["suggestions"] = cur.fetchall()
-    except Exception as e:  # noqa: BLE001 — 队列表未迁移属正常, 不报错
+                rows = cur.fetchall() or []
+                for r in rows:
+                    ev = r.get("evidence")
+                    if isinstance(ev, str):
+                        try:
+                            ev = json.loads(ev)
+                        except (TypeError, ValueError):
+                            ev = {}
+                    r["evidence"] = ev if isinstance(ev, dict) else {}
+                    # 候选表里带近似候选，旧前端字段名是 candidates，保持兼容
+                    r["candidates"] = r["evidence"].get("candidates") or []
+                out["suggestions"] = rows
+    except Exception as e:  # noqa: BLE001 — 候选表未迁移属正常, 不报错
         logger.debug("[asset_pool] suggestions skipped: %s", e)
     out["counts"] = {k: len(out[k]) for k in ("metrics", "dimensions", "terms", "suggestions")}
     out["counts"]["total"] = sum(out["counts"].values())

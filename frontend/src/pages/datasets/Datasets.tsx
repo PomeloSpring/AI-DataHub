@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Plus, Layers, Database, Code2, Trash2, Eye, Boxes, Loader2, Check,
-  RefreshCw, Wand2, BarChart3,
+  Plus, Layers, Code2, Trash2, Eye, Loader2, Check,
+  RefreshCw, BarChart3,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
@@ -35,7 +35,7 @@ interface Dataset {
 }
 
 const SOURCE_LABELS: Record<string, string> = {
-  semantic: '语义对象', sql: 'SQL', both: '语义+SQL',
+  sql: 'SQL',
 };
 const CHART_TYPE_LABELS: Record<string, string> = Object.fromEntries(
   CHART_TYPES.map(t => [t.value, t.label]),
@@ -101,7 +101,7 @@ export default function Datasets() {
             <Layers className="h-6 w-6" /> 数据集
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            BI 治理建模层：语义对象 × 执行 SQL 双定义互转，看板、报表与 Chat 共用同一口径
+            BI 治理建模层：执行 SQL 取数，看板、报表与 Chat 共用同一口径
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -123,7 +123,7 @@ export default function Datasets() {
 
       <div className="flex gap-2 mb-4">
         <Input
-          placeholder="搜索数据集名称 / 描述 / 对象…"
+          placeholder="搜索数据集名称 / 描述"
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
           className="max-w-xs"
@@ -150,14 +150,11 @@ export default function Datasets() {
                   )}
                 </button>
                 <Badge variant="outline" className="shrink-0 flex items-center gap-1 text-[10px]">
-                  {ds.source_type === 'semantic' ? <Boxes className="h-3 w-3" /> : <Code2 className="h-3 w-3" />}
-                  {SOURCE_LABELS[ds.source_type] || ds.source_type}
+                  <Code2 className="h-3 w-3" />
+                  {SOURCE_LABELS[ds.source_type] || ds.source_type || 'SQL'}
                 </Badge>
               </div>
               <div className="flex items-center gap-2 mt-3 text-xs text-muted-foreground flex-wrap">
-                {ds.object_key && (
-                  <span className="flex items-center gap-1"><Database className="h-3 w-3" />{ds.object_key}</span>
-                )}
                 <span>{ds.field_count} 字段</span>
                 <span>被 {ds.references} 图表引用</span>
                 {ds.chart_type && (
@@ -217,44 +214,20 @@ export default function Datasets() {
   );
 }
 
-// ── Create Dialog：语义对象 × 执行 SQL 组合表单 + 图表预设 ──────────────
-
-function ChipToggle({ active, onClick, children }: {
-  active: boolean; onClick: () => void; children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`px-2 py-0.5 rounded-full border text-[11px] transition-colors ${
-        active
-          ? 'bg-primary text-primary-foreground border-primary'
-          : 'bg-background text-muted-foreground hover:bg-muted'
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
+// ── Create Dialog：执行 SQL + 图表预设 ──────────────────────────────────────
 
 function CreateDatasetDialog({
   open, onClose, onCreated,
 }: { open: boolean; onClose: () => void; onCreated: (id: number) => void }) {
   const [form, setForm] = useState({
-    name: '', description: '', object_key: '', datasource_id: 0, sql_query: '',
+    name: '', description: '', datasource_id: 0, sql_query: '',
     chart_type: '',
   });
   const [preset, setPreset] = useState({ xCol: '', yCol: '', groupCol: '' });
   const [datasources, setDatasources] = useState<any[]>([]);
-  const [objects, setObjects] = useState<any[]>([]);
-  const [modelId, setModelId] = useState('');
-  const [semFields, setSemFields] = useState<any[]>([]);
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState(false);
-  const [compiling, setCompiling] = useState(false);
   const [inferredFields, setInferredFields] = useState<any[]>([]);
-  const [compileDims, setCompileDims] = useState<string[]>([]);
-  const [compileMeasures, setCompileMeasures] = useState<string[]>([]);
 
   useEffect(() => {
     if (!open) return;
@@ -263,73 +236,10 @@ function CreateDatasetDialog({
     }).catch(() => setDatasources([]));
   }, [open]);
 
-  // 选数据源 → 自动取其 active 本体模型的 objects 供选择
-  useEffect(() => {
-    if (!form.datasource_id) { setObjects([]); setModelId(''); return; }
-    client.get('/catalog/ontology/models', { params: { datasource_id: form.datasource_id } })
-      .then(({ data }) => {
-        const ms = (data.items || []).filter((m: any) => m.status === 'active');
-        setModelId(ms.length ? String(ms[0].id) : '');
-      })
-      .catch(() => { setObjects([]); setModelId(''); });
-  }, [form.datasource_id]);
-
-  useEffect(() => {
-    if (!modelId) { setObjects([]); return; }
-    client.get(`/catalog/ontology/models/${modelId}`)
-      .then(({ data }) => {
-        try {
-          const doc = JSON.parse(data.json_content || '{}');
-          setObjects((doc.objects || []).map((o: any) => ({
-            key: o.key, display_name: o.display_name || o.key,
-          })));
-        } catch { setObjects([]); }
-      })
-      .catch(() => setObjects([]));
-  }, [modelId]);
-
-  // 选定本体对象 → 取语义字段(供编译勾选与图表预设列选择)
-  useEffect(() => {
-    setSemFields([]);
-    setCompileDims([]); setCompileMeasures([]);
-    if (!form.object_key) return;
-    client.get('/datasets/semantic-fields', {
-      params: { datasource_id: form.datasource_id, object_key: form.object_key },
-    }).then(({ data }) => setSemFields(data.fields || []))
-      .catch(() => setSemFields([]));
-  }, [form.object_key, form.datasource_id]);
-
-  // 图表预设可选列: 有执行 SQL 时按结果列(SQL 输出列), 仅语义时按语义字段
+  // 图表预设可选列: 按 SQL 结果列
   const presetColumns = inferredFields.length
     ? inferredFields.map((f: any) => f.field)
-    : semFields.map((f: any) => f.field);
-
-  // 由语义对象编译生成执行 SQL(dataset:manage 把关, SQL 仅回显给数据集编辑者)
-  const compileSql = async () => {
-    if (!form.object_key) { toast.error('请先选择本体对象'); return; }
-    if (!form.datasource_id) { toast.error('请先选择数据源'); return; }
-    if (compileDims.length + compileMeasures.length === 0) {
-      toast.error('请勾选参与查询的维度/度量'); return;
-    }
-    setCompiling(true);
-    try {
-      const { data } = await client.post('/datasets/compile-from-semantic', {
-        object_key: form.object_key,
-        datasource_id: form.datasource_id,
-        dimensions: compileDims,
-        measures: compileMeasures,
-        limit: 200,
-      });
-      setForm(f => ({ ...f, sql_query: data.sql }));
-      setInferredFields([]);
-      (data.warnings || []).forEach((w: string) => toast.warning(w));
-      toast.success('已生成执行 SQL（可继续手改，保存前请校验）');
-    } catch (e: any) {
-      toast.error(e.response?.data?.detail || '编译 SQL 失败');
-    } finally {
-      setCompiling(false);
-    }
-  };
+    : [];
 
   const validateSql = async () => {
     if (!form.sql_query.trim()) { toast.error('请先输入 SQL'); return; }
@@ -350,8 +260,8 @@ function CreateDatasetDialog({
 
   const handleSave = async () => {
     if (!form.name.trim()) { toast.error('名称必填'); return; }
-    if (!form.object_key && !form.sql_query.trim()) {
-      toast.error('至少绑定本体对象或提供执行 SQL（两者可并存）'); return;
+    if (!form.sql_query.trim()) {
+      toast.error('请输入执行 SQL'); return;
     }
     if (form.sql_query.trim() && inferredFields.length === 0) {
       toast.error('请先「校验并推断字段」'); return;
@@ -365,13 +275,11 @@ function CreateDatasetDialog({
       const { data } = await client.post('/datasets/', {
         name: form.name.trim(),
         description: form.description,
-        object_key: form.object_key,
         datasource_id: Number(form.datasource_id) || 0,
         sql_query: form.sql_query,
         chart_type: form.chart_type,
         chart_preset: chartPreset,
-        // 双定义时字段映射在详情页「由 SQL 对齐语义字段」生成, 创建时仅纯 SQL 源落 field_config
-        field_config: !form.object_key ? inferredFields : undefined,
+        field_config: inferredFields,
       });
       toast.success('数据集已创建');
       onCreated(data.id);
@@ -388,7 +296,7 @@ function CreateDatasetDialog({
         <DialogHeader>
           <DialogTitle>新建数据集</DialogTitle>
           <DialogDescription>
-            语义对象负责检索与业务口径，执行 SQL 负责取数，两者可并存互转；取数经统一治理入口
+            执行 SQL 负责取数，经统一治理入口；看板、报表与 Chat 共用同一口径
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -401,7 +309,7 @@ function CreateDatasetDialog({
               <Label>数据源</Label>
               <Select
                 value={form.datasource_id ? String(form.datasource_id) : '0'}
-                onValueChange={v => setForm({ ...form, datasource_id: Number(v), object_key: '' })}
+                onValueChange={v => setForm({ ...form, datasource_id: Number(v) })}
               >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -416,82 +324,17 @@ function CreateDatasetDialog({
             <Textarea rows={2} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
           </div>
 
-          {/* ── 语义绑定(可选) ── */}
-          <div className="border rounded-lg p-3 space-y-2">
-            <div className="flex items-center gap-1.5 text-sm font-medium">
-              <Boxes className="h-4 w-4" /> 语义对象绑定
-              <Badge variant="outline" className="text-[10px]">可选 · 与执行 SQL 并存</Badge>
-            </div>
-            <Select
-              value={form.object_key}
-              onValueChange={v => setForm({ ...form, object_key: v })}
-              disabled={!form.datasource_id || objects.length === 0}
-            >
-              <SelectTrigger><SelectValue placeholder={objects.length ? '选择本体对象' : '该数据源暂无 active 本体模型'} /></SelectTrigger>
-              <SelectContent>
-                {objects.map(o => <SelectItem key={o.key} value={o.key}>{o.display_name} ({o.key})</SelectItem>)}
-              </SelectContent>
-            </Select>
-            {form.object_key && (
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground">
-                  语义字段（点选参与「由语义生成 SQL」的维度/度量）：
-                </p>
-                {semFields.length > 0 ? (
-                  <>
-                    <div className="flex flex-wrap gap-1.5">
-                      {semFields.filter(f => f.role === 'dimension').map((f: any) => (
-                        <ChipToggle
-                          key={f.field}
-                          active={compileDims.includes(f.field)}
-                          onClick={() => setCompileDims(prev => prev.includes(f.field)
-                            ? prev.filter(x => x !== f.field) : [...prev, f.field])}
-                        >
-                          {f.label || f.field}
-                        </ChipToggle>
-                      ))}
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {semFields.filter(f => f.role === 'measure').map((f: any) => (
-                        <ChipToggle
-                          key={f.field}
-                          active={compileMeasures.includes(f.field)}
-                          onClick={() => setCompileMeasures(prev => prev.includes(f.field)
-                            ? prev.filter(x => x !== f.field) : [...prev, f.field])}
-                        >
-                          {f.label || f.field}
-                        </ChipToggle>
-                      ))}
-                    </div>
-                  </>
-                ) : (
-                  <p className="text-xs text-muted-foreground">该对象暂无语义字段（指标/维度）</p>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* ── 执行 SQL(可选) ── */}
+          {/* ── 执行 SQL ── */}
           <div className="border rounded-lg p-3 space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5 text-sm font-medium">
                 <Code2 className="h-4 w-4" /> 执行 SQL
-                <Badge variant="outline" className="text-[10px]">可选 · 仅 SELECT/WITH</Badge>
+                <Badge variant="outline" className="text-[10px]">仅 SELECT/WITH</Badge>
               </div>
-              <div className="flex gap-1.5">
-                {form.object_key && (
-                  <Button size="sm" variant="outline" onClick={compileSql} disabled={compiling}>
-                    {compiling
-                      ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
-                      : <Wand2 className="h-3.5 w-3.5 mr-1" />}
-                    由语义对象生成 SQL
-                  </Button>
-                )}
-                <Button size="sm" variant="outline" onClick={validateSql} disabled={validating}>
-                  {validating ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Check className="h-3.5 w-3.5 mr-1" />}
-                  校验并推断字段
-                </Button>
-              </div>
+              <Button size="sm" variant="outline" onClick={validateSql} disabled={validating}>
+                {validating ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Check className="h-3.5 w-3.5 mr-1" />}
+                校验并推断字段
+              </Button>
             </div>
             <Textarea
               rows={6} className="font-mono text-xs"
@@ -510,11 +353,6 @@ function CreateDatasetDialog({
                   ))}
                 </div>
               </div>
-            )}
-            {form.object_key && (
-              <p className="text-xs text-muted-foreground">
-                双定义数据集以执行 SQL 为实际取数通道；字段映射请在详情页「由 SQL 对齐语义字段」确认
-              </p>
             )}
           </div>
 

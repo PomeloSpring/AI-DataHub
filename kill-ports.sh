@@ -6,7 +6,7 @@
 #   ./kill-ports.sh              杀掉全部项目端口占用 (交互确认)
 #   ./kill-ports.sh -y           跳过确认直接杀
 #   ./kill-ports.sh --status     仅查看端口占用, 不杀
-#   ./kill-ports.sh 8001 8012    只杀指定端口
+#   ./kill-ports.sh 8000 3000     只杀指定端口
 # ═══════════════════════════════════════════════════════════════
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -17,8 +17,8 @@ log_info()  { echo -e "${GREEN}[INFO]${NC}  $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# 端口 → 服务名: Python 微服务读 services.conf（唯一权威清单），其余特殊进程在此补充
-# （dataengine/8082 已退役，services/dataengine 删净——见 commit 6391e6c，不再登记）
+# 端口 → 服务名: Python 服务读 services.conf（唯一权威清单），其余特殊进程在此补充
+# （旧 8001-8007/8012 多端口与 dataengine/8082 已退役，监听口收敛为单一 web:8000）
 declare -A PORT_SERVICE=(
     [3000]="frontend-dev"
 )

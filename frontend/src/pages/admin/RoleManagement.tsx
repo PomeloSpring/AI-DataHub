@@ -21,7 +21,7 @@ import {
 import { toast } from 'sonner';
 import {
   Plus, Edit, Trash2, Shield, Users, UserPlus, UserMinus,
-  Database, Lock, Key, Bot, LayoutDashboard, ListChecks, ChevronDown, ChevronUp,
+  Database, Lock, Key, Bot, LayoutDashboard, ListChecks, ChevronDown, ChevronUp, Layers,
 } from 'lucide-react';
 import client from '@/api/client';
 import { listRLSPolicies, type RLSPolicy } from '@/api/rls';
@@ -107,6 +107,10 @@ export default function RoleManagement() {
   // 看板可见范围（看板不按工作空间归属, 平铺勾选; 可见性由角色授权 fail-closed 裁决）
   const [dashboardCatalog, setDashboardCatalog] = useState<Array<{ id: number; name: string; status: string }>>([]);
   const [roleDashboards, setRoleDashboards] = useState<number[]>([]);
+
+  // 数据集可见范围（同看板口径: 角色授权 fail-closed, admin 不受限）
+  const [datasetCatalog, setDatasetCatalog] = useState<Array<{ id: number; name: string }>>([]);
+  const [roleDatasets, setRoleDatasets] = useState<number[]>([]);
 
   // 菜单与功能权限（权限码模型）
   const [permGroups, setPermGroups] = useState<MenuPermGroup[]>([]);
@@ -219,6 +223,12 @@ export default function RoleManagement() {
       setRoleDashboards((grants || []).map((r: any) => r.dashboard_id));
     }, '加载看板可见范围失败');
     await load(async () => {
+      const { data } = await client.get('/roles/dataset-catalog');
+      setDatasetCatalog(Array.isArray(data) ? data : []);
+      const { data: grants } = await client.get(`/roles/${role.id}/datasets`);
+      setRoleDatasets((grants || []).map((r: any) => r.dataset_id));
+    }, '加载数据集权限失败');
+    await load(async () => {
       const { data: reg } = await client.get('/roles/perm-registry');
       setPermGroups(reg.menu_groups || []);
       setStandalonePerms(reg.standalone || []);
@@ -267,6 +277,18 @@ export default function RoleManagement() {
       : [...roleDashboards, dashId];
     client.put(`/roles/${permTarget.id}/dashboards`, { dashboard_ids: next })
       .then(() => { setRoleDashboards(next); toast.success('看板可见范围已保存'); })
+      .catch(() => toast.error('保存失败'));
+  };
+
+  // ── Dataset Access ──────────────────────────────────────
+
+  const toggleDataset = (dsId: number) => {
+    if (!permTarget) return;
+    const next = roleDatasets.includes(dsId)
+      ? roleDatasets.filter(id => id !== dsId)
+      : [...roleDatasets, dsId];
+    client.put(`/roles/${permTarget.id}/datasets`, { dataset_ids: next })
+      .then(() => { setRoleDatasets(next); toast.success('数据集权限已保存'); })
       .catch(() => toast.error('保存失败'));
   };
 
@@ -423,8 +445,9 @@ export default function RoleManagement() {
             <DialogDescription>配置该角色的数据访问范围与功能权限</DialogDescription>
           </DialogHeader>
           <Tabs value={permTab} onValueChange={setPermTab}>
-            <TabsList className="grid grid-cols-4 w-full">
+            <TabsList className="grid grid-cols-5 w-full">
               <TabsTrigger value="datasources"><Database className="h-3.5 w-3.5 mr-1" />数据源</TabsTrigger>
+              <TabsTrigger value="datasets"><Layers className="h-3.5 w-3.5 mr-1" />数据集</TabsTrigger>
               <TabsTrigger value="policies"><Lock className="h-3.5 w-3.5 mr-1" />数据安全策略</TabsTrigger>
               <TabsTrigger value="dashboards"><LayoutDashboard className="h-3.5 w-3.5 mr-1" />看板</TabsTrigger>
               <TabsTrigger value="functions"><ListChecks className="h-3.5 w-3.5 mr-1" />菜单与功能</TabsTrigger>
@@ -449,9 +472,32 @@ export default function RoleManagement() {
               {allDatasources.length === 0 && <p className="text-sm text-muted-foreground py-4 text-center">暂无数据源</p>}
             </TabsContent>
 
+            {/* Dataset Access */}
+            <TabsContent value="datasets" className="space-y-3">
+              <p className="text-sm text-muted-foreground">勾选该角色可查看的数据集。未勾选任何数据集 = 不可见（fail-closed，admin 不受限）</p>
+              {datasetCatalog.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">暂无数据集</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-1.5">
+                  {datasetCatalog.map(ds => (
+                    <div key={ds.id} className="flex items-center justify-between gap-2 border rounded px-2 py-1.5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Layers className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                        <span className="text-xs truncate">{ds.name}</span>
+                      </div>
+                      <Switch
+                        checked={roleDatasets.includes(ds.id)}
+                        onCheckedChange={() => toggleDataset(ds.id)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </TabsContent>
+
             {/* 数据安全策略绑定（勾选才生效; 策略在 数据安全策略 页维护） */}
             <TabsContent value="policies" className="space-y-3">
-              <p className="text-sm text-muted-foreground">勾选该角色生效的数据安全策略。策略在「数据安全策略」页维护（行/列/属性约束），此处仅选择绑定；勾选的策略对该角色生效，未勾选不生效。</p>
+              <p className="text-sm text-muted-foreground">勾选该角色生效的数据安全策略。策略在「数据安全策略」页维护（行策略过滤/列策略黑名单/表策略白名单），此处仅选择绑定；勾选的策略对该角色生效，未勾选不生效。</p>
               {rlsPolicies.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-4">暂无策略，请先在「数据安全策略」页配置</p>
               ) : (
@@ -463,7 +509,7 @@ export default function RoleManagement() {
                           <Lock className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
                           <span className="text-sm font-medium truncate">{p.name}</span>
                           <Badge variant="outline" className="text-xs flex-shrink-0">
-                            {p.policy_type === 'row' ? '行级' : p.policy_type === 'column' ? '列级' : '行+列'}
+                            {p.policy_type === 'row' ? '行策略' : p.policy_type === 'column' ? '列策略' : p.policy_type === 'table' ? '表策略' : '行/列(遗留)'}
                           </Badge>
                           {!p.is_active && <Badge variant="secondary" className="text-xs flex-shrink-0">已停用</Badge>}
                         </div>

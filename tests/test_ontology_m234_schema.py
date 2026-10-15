@@ -250,7 +250,9 @@ class TestRdfSemanticExpansion:
         # 对象为中心的连线
         assert "adh:hasAction adh:act:case_trend" in ttl
         assert "adh:hasProperty adh:prop:case_case_status" in ttl
-        assert "adh:hasMetric adh:objmetric:case_案例数量" in ttl
+        # 指标/维度归属权威在字典 bound_object_key → graph_builder(adh:metric:{name});
+        # canonical 投影不造 objmetric 双 IRI(否则同一指标重复节点)。
+        assert "objmetric" not in ttl
         # 规则作用域 / 场景引用边
         assert "adh:governs adh:obj:case" in ttl
         assert "adh:usesObject adh:obj:case" in ttl

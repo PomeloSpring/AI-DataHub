@@ -9,7 +9,7 @@ export interface RLSPolicy {
   workspace_id: number;
   datasource_id: number;
   table_name: string;
-  policy_type: 'row' | 'column' | 'both';
+  policy_type: 'row' | 'column' | 'table' | 'both';
   filter_type: 'condition' | 'user_attribute';
   filter_expr: string;
   user_attribute: string;
@@ -23,7 +23,8 @@ export interface RLSColumnPolicy {
   id: number;
   policy_id: number;
   column_name: string;
-  access_type: 'visible' | 'hidden' | 'masked';
+  // 列策略是纯黑名单: 行 = 被剔除/脱敏的列; 'visible'(白名单语义)后端写入口拒绝
+  access_type: 'hidden' | 'masked';
   mask_pattern: string;
   description: string;
 }
@@ -94,6 +95,42 @@ export async function setRLSColumnPolicies(
 ): Promise<{ success: boolean }> {
   const { data } = await client.put(`/admin/rls-policies/${policyId}/columns`, { columns });
   return data;
+}
+
+// ── 选择搜索框候选清单 (ui-resource-display §2: 选择用选择框, 不手填) ──
+
+export interface SelectOption {
+  value: string;
+  label?: string;
+  description?: string;
+}
+
+/** 数据源内表清单(源表名 + 注释): 策略表单"目标表"候选 */
+export async function listDatasourceTables(datasourceId: number): Promise<SelectOption[]> {
+  const { data } = await client.get(`/datasources/${datasourceId}/tables`);
+  return (Array.isArray(data) ? data : [])
+    .map((r: any) => ({
+      value: String(r.TABLE_NAME ?? ''),
+      description: r.TABLE_COMMENT ? String(r.TABLE_COMMENT) : undefined,
+    }))
+    .filter(o => o.value);
+}
+
+/** 表内列清单(列名 + 类型/注释): 列策略黑名单"列名"候选 */
+export async function listDatasourceColumns(datasourceId: number, tableName: string): Promise<SelectOption[]> {
+  const { data } = await client.get(`/datasources/${datasourceId}/tables/${encodeURIComponent(tableName)}/columns`);
+  return (Array.isArray(data) ? data : [])
+    .map((r: any) => ({
+      value: String(r.COLUMN_NAME ?? ''),
+      description: [r.DATA_TYPE, r.COLUMN_COMMENT].filter(Boolean).join(' · ') || undefined,
+    }))
+    .filter(o => o.value);
+}
+
+/** 角色属性 key 清单: 行策略"属性名"候选(:user_xxx 替换来源) */
+export async function listRoleAttrKeys(): Promise<SelectOption[]> {
+  const { data } = await client.get('/admin/role-attr-keys');
+  return (Array.isArray(data?.keys) ? data.keys : []).map((k: string) => ({ value: k }));
 }
 
 export async function listRLSAuditLogs(

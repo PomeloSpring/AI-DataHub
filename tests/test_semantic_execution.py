@@ -96,6 +96,110 @@ def test_bounded_sql_force_limit():
     assert need
 
 
+# ── SLS(PG 协议) 方言保真：治理回写不得用 mysql 破坏 Trino/Presto 形状 SQL ──
+
+# 典型 SLS 漏斗查询形状：双引号标识符 + ARRAY[] + UNNEST(...) AS t(col) + 已有外层 LIMIT
+_SLS_SQL = (
+    'WITH f AS (SELECT "pcId", window_funnel(1800, "timestamp", '
+    'ARRAY["event_name" = \'/a/\', "event_name" = \'/b/\']) AS level '
+    'FROM observability_rum WHERE "__time__" >= to_unixtime(now() - interval \'3\' month) '
+    'GROUP BY "pcId"), '
+    'e AS (SELECT "pcId", "level", t.level_index FROM f '
+    'CROSS JOIN UNNEST(sequence(1, "level")) AS t(level_index)) '
+    'SELECT "level_index", count(1) AS user_count FROM e '
+    'GROUP BY "level_index" ORDER BY "level_index" LIMIT 1000'
+)
+
+# date_add('month',-3,now())/IF/UNNEST：mysql 方言 sqlglot 解不动，presto/trino/postgres 可以
+_SLS_FN_SQL = (
+    "WITH f AS (SELECT \"pcId\", window_funnel(1800, \"timestamp\", "
+    "ARRAY[\"event_name\" = '/a/']) AS level FROM ("
+    "SELECT \"timestamp\", \"pcId\" FROM observability_rum "
+    "WHERE \"__time__\" >= to_unixtime(date_add('month', -3, now()))"
+    ") AS base GROUP BY \"pcId\") "
+    "SELECT IF(count(1) > 0, 1, 0) AS ok FROM f GROUP BY \"pcId\" LIMIT 100"
+)
+
+
+def test_dialect_of_db_type_maps_sls_to_postgres():
+    from backend.semantics.sql_guard import dialect_of_db_type
+    assert dialect_of_db_type("sls") == "postgres"      # SLS 走 PG 协议 → postgres 族
+    assert dialect_of_db_type("postgres") == "postgres"
+    assert dialect_of_db_type("doris") == "mysql"
+    assert dialect_of_db_type("mysql") == "mysql"
+    assert dialect_of_db_type("") == "mysql"            # 未知保守回落 mysql
+
+
+def test_bounded_query_keeps_sls_sql_verbatim_when_limit_compliant():
+    """huge 源已带合规外层 LIMIT 时原样返回，绝不 sqlglot 重生成（防 mysql 生成器破坏 SLS 形状）。"""
+    eng = SemanticEngine(pool=SessionPool())
+    out, need = eng.bounded_sql(_SLS_SQL, {"size_class": "huge"}, dialect="postgres", max_rows=1000)
+    assert need
+    assert out == _SLS_SQL                      # 已 ≤ cap 且带外层 LIMIT → 不动
+    assert '"pcId"' in out and 'ARRAY[' in out  # 标识符/数组未被破坏
+
+
+def test_inject_filters_preserves_sls_identifiers_with_postgres_dialect():
+    from backend.semantics.sql_guard import inject_filters
+    out, applied = inject_filters(_SLS_SQL, {"observability_rum": "tenant_id = 42"}, dialect="postgres")
+    assert applied == ["observability_rum"]
+    assert '"pcId"' in out and 'ARRAY[' in out  # 未被 mysql 生成器破坏
+    assert "'pcId'" not in out                  # 标识符没退化成字符串字面量
+
+
+def test_inject_filters_mysql_dialect_silently_corrupts_sls_shape():
+    """反向锁定：同一 SQL 走 mysql 方言不报错而是静默破坏（历史根因）。"""
+    from backend.semantics.sql_guard import inject_filters
+    out, applied = inject_filters(_SLS_SQL, {"observability_rum": "tenant_id = 42"}, dialect="mysql")
+    assert applied == ["observability_rum"]
+    assert '"pcId"' not in out and "'pcId'" in out  # 标识符退化为字符串字面量（脏）
+
+
+def test_validate_sql_accepts_sls_presto_shape():
+    """合法 SLS/Presto 只读查询不得因 mysql 方言解不动而被误拒（历史上报“仅允许单条”）。"""
+    from backend.core.query_executor import validate_sql
+    assert validate_sql(_SLS_FN_SQL, require_limit=False) == (True, "")
+    assert validate_sql(_SLS_FN_SQL, require_limit=True)[0] is True
+
+
+def test_validate_sql_still_rejects_write_and_multi():
+    """方言宽容不得弱化安全：DDL/DML/多语句仍拒（fail-closed）。"""
+    from backend.core.query_executor import validate_sql
+    for bad in ("DROP TABLE t", "INSERT INTO t VALUES (1)", "DELETE FROM t",
+                "UPDATE t SET a=1", "SELECT 1; DROP TABLE t"):
+        assert validate_sql(bad, require_limit=False)[0] is False, bad
+
+
+def test_validate_sql_surfaces_parse_reason():
+    """全方言都解不动时，拒绝文案必须带真实解析原因（不再笼统“仅允许单条”）。"""
+    from backend.core.query_executor import validate_sql
+    ok, msg = validate_sql("SELECT FROM ((( 未闭合", require_limit=False)
+    assert ok is False
+    assert "解析失败" in msg and msg != "仅允许单条 SELECT/WITH 只读查询"
+
+
+def test_parse_readonly_prefers_given_dialect_then_falls_back():
+    from backend.semantics.sql_guard import parse_readonly
+    assert parse_readonly(_SLS_FN_SQL, "mysql") is not None   # mysql 解不动→回退 presto/trino
+    assert parse_readonly(_SLS_FN_SQL, "presto") is not None
+
+
+def test_playground_ast_dialect_tolerant_for_sls(monkeypatch):
+    """Playground AST/血缘静态分析：sls 数据源的 date_add/IF/UNNEST 形状不得因 mysql 方言报
+    'parse failed: INTERVAL expression expected'（按目标源方言/回退族解析）。"""
+    import backend.common.db as cdb
+    monkeypatch.setattr(cdb, "get_datasource_by_id",
+                        lambda i: {"id": i, "db_type": "sls"}, raising=False)
+    from backend.modules.semhub.api import playground as pg
+    assert pg._resolve_dialect({"datasource_id": 7}) == "postgres"
+    tree, used = pg._parse_any(_SLS_FN_SQL, pg._resolve_dialect({"datasource_id": 7}))
+    assert tree is not None and used == "postgres"
+    # 旧行为对照：mysql 硬解会抛错（即截图里的 parse failed）
+    import sqlglot
+    with pytest.raises(Exception):
+        sqlglot.parse_one(_SLS_FN_SQL, dialect="mysql")
+
+
 def test_validate_rejects_dangerous_sql():
     eng = SemanticEngine(pool=SessionPool())
     with pytest.raises(PermissionError):

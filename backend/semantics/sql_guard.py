@@ -1,9 +1,29 @@
-"""SQL 安全解析与按作用域注入 RLS；无法识别时拒绝，不回退裸查询。"""
+"""SQL 安全解析与按作用域注入 RLS；无法识别时拒绝，不回退裸查询。
+
+方言约定（与 semantics.planner._DIALECT_OF_DBTYPE 同一口径，修改需两处同步）：
+mysql/doris 同族（MySQL 协议/语法），postgres 家族含 sls（PG 协议接入）。
+"""
 from __future__ import annotations
 
 import sqlglot
 from sqlglot import exp
 from sqlglot.optimizer.scope import traverse_scope
+
+# db_type -> sqlglot 方言：未知类型保守回落 mysql（与旧行为一致）。
+_DIALECT_OF_DBTYPE = {
+    "mysql": "mysql", "doris": "mysql",
+    "postgres": "postgres", "postgresql": "postgres", "pg": "postgres", "sls": "postgres",
+}
+
+
+def dialect_of_db_type(db_type: str) -> str:
+    """数据源 db_type -> sqlglot 解析/回写方言。
+
+    治理层任何对目标源 SQL 的解析回写（LIMIT 强制、RLS 注入）都必须用该源自己的
+    方言；用错方言（如对 sls/presto 形状走 mysql 生成器）会把 `"quoted_id"` 变成字符串
+    字面量、ARRAY[] 变 ARRAY()、BIGINT 变 SIGNED 等，导致目标源 “failed to parse query”。
+    """
+    return _DIALECT_OF_DBTYPE.get((db_type or "mysql").lower(), "mysql")
 
 
 def parse_query(sql: str, dialect: str = "mysql"):
@@ -21,6 +41,29 @@ def parse_query(sql: str, dialect: str = "mysql"):
         return tree
     except Exception as exc:
         raise PermissionError("查询结构不受支持，已拒绝执行") from exc
+
+
+# 只读校验/结构提取的方言尝试序（SLS/Presto 形状在 mysql 下解不动，需多方言兼容）。
+_READONLY_DIALECT_ORDER = ("mysql", "postgres", "presto", "trino", "hive", "spark")
+
+
+def parse_readonly(sql: str, dialect: str = None) -> "exp.Expression":
+    """只读校验/结构提取用的宽容解析：优先给定方言，失败再试常见方言族。
+
+    安全语义仍 fail-closed：单语句/无 DDL-DML/无外部表函数由每次 `parse_query` 强制
+    （DDL/DML 在任一方言下都解成 DDL/DML 节点而被拒）；只有当所有方言都解不动时，
+    才因“无法解析”而拒绝并透出真实原因。
+    """
+    order = ([dialect] if dialect else []) + [d for d in _READONLY_DIALECT_ORDER if d != dialect]
+    last = None
+    for d in order:
+        try:
+            return parse_query(sql, d)
+        except Exception as e:  # noqa: BLE001 — 逐方言尝试，留最后一个错因用于报错
+            last = e
+    if last is not None:
+        raise last
+    raise PermissionError("查询结构不受支持，已拒绝执行")
 
 
 def table_key(node: exp.Table) -> str:
@@ -43,7 +86,7 @@ def physical_references(tree):
 def extract_tables(sql: str, dialect: str = "mysql") -> list[str]:
     seen = set()
     tables = []
-    for _scope, table in physical_references(parse_query(sql, dialect)):
+    for _scope, table in physical_references(parse_readonly(sql, dialect)):
         key = table_key(table)
         if key.lower() not in seen:
             seen.add(key.lower())
@@ -87,18 +130,24 @@ def inject_filters(sql: str, filters: dict[str, str], dialect: str = "mysql") ->
 
 
 def bounded_query(sql: str, limit: int = 1000, dialect: str = "mysql") -> str:
-    """只在解析成功后补外层 LIMIT；字符串或子查询的 LIMIT 不算外层限流。"""
+    """只在解析成功后补外层 LIMIT；字符串或子查询的 LIMIT 不算外层限流。
+
+    外层已有合规 LIMIT（整数且 ≤ cap）时**原样返回不重生成**：跨方言下 sqlglot 回写
+    会破坏目标源专有语法（如 sls/presto 的 ARRAY[]/双引号标识符/interval 字面量），
+    无需修改就不要动 SQL。
+    """
     tree = parse_query(sql, dialect)
     cap = max(1, int(limit))
     current = tree.args.get("limit")
-    if current is None:
-        tree = tree.limit(cap)
-    else:
+    if current is not None:
         value = current.expression
         if not isinstance(value, exp.Literal) or not value.is_int:
             raise PermissionError("查询行数限制必须为整数")
         if int(value.this) < 0:
             raise PermissionError("查询行数限制无效")
-        if int(value.this) > cap:
-            tree = tree.limit(cap)
+        if int(value.this) <= cap:
+            return sql
+        tree = tree.limit(cap)
+    else:
+        tree = tree.limit(cap)
     return tree.sql(dialect=dialect)

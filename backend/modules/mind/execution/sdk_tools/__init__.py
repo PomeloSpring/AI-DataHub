@@ -7,6 +7,8 @@ ExecutionContextVar 注入(见 context.py)。
 工具组(由 AS-BOT 能力按"逐个工具"粒度勾选控制启用):
 - catalog:  search_metadata / get_table_schema / list_datasources
 - semantic: get_metrics / get_glossary / query_by_tags / knowledge_search / run_semantic_query
+- design:   request_dashboard_design / get_dashboard_design / prepare_dashboard_design /
+            get_business_semantics / search_business_knowledge (仪表盘设计专用, 强制 design_id)
 - query:    check_sql(治理预检) / execute_sql(受治理只读执行;由 AS-BOT 显式授权)
 
 设计理念:代码不再硬删任何工具组,工具的去留完全下放到 AS-BOT 的"工具权限"粒度配置
@@ -31,6 +33,7 @@ from backend.modules.mind.execution.sdk_tools.ontology_tools import build_ontolo
 from backend.modules.mind.execution.sdk_tools.query_tools import build_query_server
 from backend.modules.mind.execution.sdk_tools.screen_tools import build_screen_server
 from backend.modules.mind.execution.sdk_tools.semantic_tools import build_semantic_server
+from backend.modules.mind.execution.sdk_tools.dashboard_design_tools import build_design_server
 from backend.modules.mind.execution.sdk_tools.system_tools import build_system_server
 
 logger = logging.getLogger(__name__)
@@ -43,6 +46,7 @@ TOOL_SERVER_BUILDERS = {
     "query": build_query_server,
     "ontology": build_ontology_server,
     "screen": build_screen_server,
+    "design": build_design_server,
     "system": build_system_server,
     "assets": build_assets_server,
 }
@@ -54,7 +58,7 @@ TOOL_SERVER_TOOLS = {
     "semantic": ("datahub_semantic", [
         "get_metrics", "get_glossary", "query_by_tags", "knowledge_search",
         # Phase 3: 声明式语义查询工具（与 retrieval 同层，LLM 主路）
-        "run_semantic_query", "get_business_semantics", "search_business_knowledge",
+        "run_semantic_query",
     ]),
     "ontology": ("datahub_ontology", [
         "search_ontology", "get_ontology_model", "list_ontology_models",
@@ -63,8 +67,11 @@ TOOL_SERVER_TOOLS = {
     ]),
     "screen": ("datahub_screen", [
         "create_data_screen", "get_data_screen", "update_data_screen_chart",
-        "request_dashboard_design", "get_dashboard_design", "prepare_dashboard_design",
         "list_vis_components", "get_vis_component", "save_vis_component",
+    ]),
+    "design": ("datahub_design", [
+        "request_dashboard_design", "get_dashboard_design", "prepare_dashboard_design",
+        "get_business_semantics", "search_business_knowledge",
     ]),
     "system": ("datahub_system", ["system_usage", "system_overview"]),
     "assets": ("datahub_assets", [
@@ -145,6 +152,7 @@ __all__ = [
     "build_semantic_server",
     "build_ontology_server",
     "build_screen_server",
+    "build_design_server",
     "build_system_server",
     "build_assets_server",
     "ExecutionContextVar",

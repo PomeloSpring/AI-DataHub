@@ -125,10 +125,10 @@ def deletion_store(tmp_path, monkeypatch):
     key = 'a' * 32
     monkeypatch.setattr('backend.common.config.ADH_WORKSPACES_DIR', str(tmp_path))
     node = sessions.storage_node(tmp_path)
-    root = sessions.session_paths(tmp_path, key, 3, create=True)
+    root = sessions.session_paths(tmp_path, key, 3, 7, create=True)
     (root / 'workspace' / 'result.txt').write_text('本会话文件')
     (root / 'runtime' / 'settings.json').write_text('{}')
-    neighbor = sessions.session_paths(tmp_path, 'b' * 32, 3, create=True)
+    neighbor = sessions.session_paths(tmp_path, 'b' * 32, 3, 7, create=True)
     (neighbor / 'workspace' / 'keep.txt').write_text('其他会话文件')
     state = {'conversation': {'id': 10, 'user_id': 7, 'workspace_id': 3},
              'session': {'session_key': key, 'conversation_id': 10, 'user_id': 7, 'workspace_id': 3,
@@ -194,7 +194,7 @@ def test_delete_conversation_cleans_only_its_session(deletion_store, status):
     assert not root.exists()
     assert (neighbor / 'workspace' / 'keep.txt').read_text() == '其他会话文件'
     assert root.parent.is_dir()
-    assert (root.parents[2] / '.storage-node').exists()
+    assert (root.parents[4] / '.storage-node').exists()
     assert state['session'] is None and state['conversation'] is None
     assert chat.delete_conversation(10, {'user_id': 7}) == {'success': True}
 
@@ -317,7 +317,7 @@ def test_cleanup_does_not_create_missing_mount(deletion_store, tmp_path, monkeyp
 def test_cleanup_does_not_create_missing_storage_marker(deletion_store):
     from fastapi import HTTPException
     _, state, root, _ = deletion_store
-    marker = root.parents[2] / '.storage-node'
+    marker = root.parents[4] / '.storage-node'
     marker.rename(marker.with_name('saved-marker'))
     with pytest.raises(HTTPException):
         chat.delete_conversation(10, {'user_id': 7})
@@ -331,7 +331,7 @@ def test_empty_workspace_does_not_block_delete(deletion_store):
     assert chat.delete_conversation(10, {'user_id': 7}) == {'success': True}
     assert not root.exists()
     assert state['session'] is None and state['conversation'] is None
-    assert (root.parents[2] / '.storage-node').exists()  # 不因清理而重建
+    assert (root.parents[4] / '.storage-node').exists()  # 不因清理而重建
 
 
 def test_partial_layout_can_be_cleaned_on_retry(deletion_store):

@@ -10,7 +10,7 @@
 - 仅语义对象: intent → resolve_binding → plan → execute_semantic(七闸门链, 与 Chat 同源)
 - 身份只信服务端 JWT 解析后传入; 无可信身份 fail-closed(NoIdentityError 向上传播)。
 - 数据集级行范围"只收紧不放宽": 与用户查询条件 AND 合并, 叠加在 RLS/敏感屏蔽之上。
-- 可见性功能已退役: 列表不做可见性过滤, 越权防护由取数治理入口承担。
+- 可见性由角色授权裁决(adh_role_dataset_access): admin 全可见, 其余 fail-closed。
 """
 from __future__ import annotations
 
@@ -64,11 +64,26 @@ def _derive_source_type(object_key: str, sql_query: str) -> str:
 
 
 def list_datasets(identity: dict, keyword: str = "") -> list[dict]:
-    """列出数据集(可见性功能已退役, 取数侧治理不变)."""
+    """列出数据集(按角色授权过滤可见性, admin bypass)."""
+    from backend.core.role_service import role_service
+
+    user_id = int(identity.get("user_id") or 0)
+    user_role = identity.get("role") or ""
+
     sql = ("SELECT id, name, description, source_type, object_key, datasource_id, "
            "chart_type, chart_preset, owner_id, status, field_config, created_at, updated_at "
            "FROM adh_datasets WHERE status='active'")
     params: list = []
+
+    # admin 全可见, 其余角色 fail-closed: 只展示已授权的数据集
+    if user_role != "admin":
+        allowed_ids = role_service.get_user_allowed_datasets(user_id)
+        if not allowed_ids:
+            return []
+        ph = ",".join(["%s"] * len(allowed_ids))
+        sql += f" AND id IN ({ph})"
+        params.extend(allowed_ids)
+
     if keyword:
         sql += " AND (name LIKE %s OR description LIKE %s OR object_key LIKE %s)"
         like = f"%{keyword}%"
@@ -182,6 +197,7 @@ def delete_dataset(dataset_id: int, identity: dict) -> dict:
         raise ValueError(
             "数据集被看板引用, 无法删除: " + ", ".join(r["dashboard_name"] for r in refs[:5]))
     execute_write("DELETE FROM adh_dataset_scopes WHERE dataset_id = %s", (dataset_id,))
+    execute_write("DELETE FROM adh_role_dataset_access WHERE dataset_id = %s", (dataset_id,))
     execute_write("DELETE FROM adh_datasets WHERE id = %s", (dataset_id,))
     return {"success": True}
 

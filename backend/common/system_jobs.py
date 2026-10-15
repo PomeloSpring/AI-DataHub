@@ -26,8 +26,16 @@ BUILTIN_JOBS: dict = {
     },
     "kb_sync_reconcile": {
         "name": "知识库同步对账",
-        "description": "周期比对本体模型版本与知识库同步水位线，对漂移/失败的模型重推脱敏语义文档",
+        "description": "周期比对本体模型版本与知识库同步水位线，对漂移或失败的模型重新推送已做敏感信息屏蔽的语义文档",
         "schedule_desc": "每 10 分钟",
+        "owner_service": "datacatalog",
+    },
+    "evolution_digest": {
+        "name": "进化候选归纳",
+        "description": "按日将用户点踩反馈与语义解析失败词归类为待开发指标/维度、待收编别名、"
+                       "待核绑定与术语候选（分类依据逐条可解释，歧义词不自动合并），"
+                       "并回填“已转评测用例”的验证结果（verified/stale）",
+        "schedule_desc": "每日 03:30",
         "owner_service": "datacatalog",
     },
 }

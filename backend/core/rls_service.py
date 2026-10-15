@@ -22,6 +22,13 @@ def _gen_id():
     return int(time.time() * 1000000)
 
 
+# 列策略是纯黑名单: 每一行必须声明要剔除/脱敏的列, 合法 access_type 仅此两种。
+# 'visible'(白名单语义)会被执行层 get_effective_policies 静默忽略——保存它等于把
+# "配了不生效"的缺陷落库, 必须在写入口 fail-loud 拒绝(白名单能力由表策略
+# policy_type='table' 承担, 列的可见性白名单可通过删除列策略或建表策略实现)。
+_VALID_COLUMN_ACCESS = frozenset({"hidden", "masked"})
+
+
 class RLSService:
     """RLS policy management service."""
 
@@ -158,13 +165,31 @@ class RLSService:
             conn.close()
 
     def set_column_policies(self, policy_id: int, columns: list) -> bool:
-        """Replace all column policies for a policy.
+        """Replace all column policies for a policy (纯黑名单: 列出的列被屏蔽/脱敏).
 
-        Each column dict should have: column_name, access_type, mask_pattern (optional), description (optional).
+        Each column dict should have: column_name, access_type('hidden'|'masked'),
+        mask_pattern (optional), description (optional).
+
+        非空列策略必须命中已有列策略本体(调用方应编辑列策略本身, 不新建空壳);
+        黑名单行 access_type 非法(visible 等)时整批拒绝, 不落半成品。
         """
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
+                cur.execute("SELECT policy_id FROM adh_rls_column_policies WHERE policy_id = %s", (policy_id,))
+                has_rows = cur.fetchone() is not None
+                if columns and not has_rows:
+                    # 双保险: roles.py 业务路由同样拒绝; 基线表列策略本体不存在时
+                    # (adh_rls_column_policies 为空) 允许首次建立, 不阻断初始化
+                    cur.execute("SELECT id FROM adh_rls_policies WHERE id = %s", (policy_id,))
+                    if cur.fetchone():
+                        raise ValueError("列策略未建基线，请编辑列策略本体，勿新建空壳策略")
+                for col in columns:
+                    access_type = col.get("access_type", "hidden")
+                    if access_type not in _VALID_COLUMN_ACCESS:
+                        raise ValueError(
+                            f"列 '{col.get('column_name', '')}' 的 access_type={access_type!r} 非法，"
+                            f"列黑名单仅支持 {'/'.join(sorted(_VALID_COLUMN_ACCESS))}")
                 # Delete existing
                 cur.execute("DELETE FROM adh_rls_column_policies WHERE policy_id = %s", (policy_id,))
                 # Insert new
@@ -174,7 +199,7 @@ class RLSService:
                            (id, policy_id, column_name, access_type, mask_pattern, description)
                            VALUES (%s, %s, %s, %s, %s, %s)""",
                         (_gen_id(), policy_id, col["column_name"],
-                         col.get("access_type", "visible"),
+                         col.get("access_type", "hidden"),
                          col.get("mask_pattern", ""),
                          col.get("description", ""))
                     )
@@ -199,6 +224,9 @@ class RLSService:
                 "masked_columns": {"phone": "partial"},   # columns to mask
                 "policies_applied": [policy_id, ...]      # which policies were applied
             }
+
+        表策略(policy_type='table')不在此消费: 它是表级可见性白名单,
+        由 enforcer 在表访问裁决处应用 get_role_table_whitelist()。
         """
         result = {
             "row_filter": "",
@@ -275,8 +303,76 @@ class RLSService:
                                     result["hidden_columns"].append(col)
                             elif cp["access_type"] == "masked":
                                 result["masked_columns"][col] = cp.get("mask_pattern") or "partial"
+                            else:
+                                # 历史脏数据可能残留非法 access_type(如 visible): 忽略其效果
+                                # 但必须显式告警提醒治理, 不得静默当不存在
+                                logger.warning(
+                                    "列策略 %s: 列 %r 的 access_type=%r 未知，已忽略（请修复该列策略）",
+                                    pid, col, cp["access_type"])
 
                 return result
+        finally:
+            conn.close()
+
+    # ── Table Whitelist (policy_type='table') ──────────────────────
+
+    def get_role_table_whitelist(self, user_id: int, workspace_id: int,
+                                 datasource_id: int) -> Optional[set]:
+        """角色绑定的表级白名单(表策略 policy_type='table')。
+
+        语义: 未绑定任何表策略的角色 = 不限制(兼容现状, 表可见性仍由角色数据源
+        授权表决定); 一旦绑定了任何表策略, 该角色对本源的可见表**收窄**为白名单
+        交集(只增严不减, 与"角色策略不得弱化敏感基线"同哲学)。
+
+        Returns:
+            None  — 该用户(经其所有角色)未绑定任何**表策略**(不限制);
+            set() — 绑定了表策略但该源无任何允许表(全部拒绝);
+            set(表名) — 允许的表名集合(小写比较在调用方处理, 与 RLS 行策略同源口径)。
+        """
+        from backend.core.role_service import role_service
+        roles = role_service.get_user_roles(user_id, workspace_id)
+        role_ids = [r["id"] for r in roles]
+        if not role_ids:
+            return None
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                ph = ",".join(["%s"] * len(role_ids))
+                cur.execute(
+                    f"SELECT DISTINCT policy_id FROM adh_role_rls_policies WHERE role_id IN ({ph})",
+                    role_ids)
+                bound_ids = [r["policy_id"] for r in cur.fetchall()]
+                if not bound_ids:
+                    return None
+                ph2 = ",".join(["%s"] * len(bound_ids))
+                cur.execute(
+                    f"""SELECT table_name FROM adh_rls_policies
+                        WHERE id IN ({ph2}) AND policy_type = 'table' AND is_active = 1
+                          AND datasource_id = %s
+                          AND (workspace_id = %s OR workspace_id = 0)""",
+                    (*bound_ids, datasource_id, workspace_id)
+                )
+                rows = cur.fetchall()
+                if not rows:
+                    # 角色只绑了行/列策略未绑表策略 → 表级不限制
+                    return None
+                return {r["table_name"] for r in rows if r.get("table_name")}
+        finally:
+            conn.close()
+
+    # ── Role Attribute Keys (行策略"属性名"选择框清单) ────────────
+
+    def list_role_attr_keys(self) -> list:
+        """全部角色属性 key(去重排序): 行策略表单的属性名候选清单。
+
+        与 rls_loader/mdl_compiler 的 :user_{attr} 替换口径一致——可选属性
+        统一由角色属性(adh_role_attributes)维护, 用户级清单已退役。
+        """
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT attr_key FROM adh_role_attributes ORDER BY attr_key")
+                return [r["attr_key"] for r in cur.fetchall() if r.get("attr_key")]
         finally:
             conn.close()
 

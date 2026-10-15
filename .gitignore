@@ -77,7 +77,7 @@ services/dataengine/target/
 jieba.cache
 
 # 会话运行数据与本地诊断临时文件
-/data/workspaces/
+/data/
 /scripts/_tmp_*.py
 /services/dataengine/*.db
 /services/dataengine/*.db-shm
@@ -87,5 +87,5 @@ scripts
 # pytest tmp artifacts
 pytest-of-*/
 .qoder/plan
-.qoder/plan
+.qoder/plans
 .qoder/repowiki

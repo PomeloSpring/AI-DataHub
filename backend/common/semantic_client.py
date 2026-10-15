@@ -1,7 +1,10 @@
-"""Semantic Layer Client — Python client for semhub (:8012).
+"""Semantic Layer Client — Python client for the semantic layer endpoints.
 
 统一 ChatBI 与大屏(dataviz)对语义层的访问:发送声明式 SemanticQuery,
 拿回 SemanticResult(columns/rows/provenance),绝不下发裸 SQL。
+
+semhub router 已拼进 web 单进程,缺省基准即本进程监听口(config.SEMANTIC_SERVICE_URL,
+当前 http://localhost:8000)—— 端口单一事实源在 backend/common/config.py,不在这里抄旧值。
 
 Usage:
     from backend.common.semantic_client import SemanticClient
@@ -17,15 +20,13 @@ Usage:
 """
 
 import logging
-import os
 from typing import Any, Optional
 
 import requests
 
-logger = logging.getLogger(__name__)
+from backend.common.config import SEMANTIC_SERVICE_URL, SEMANTIC_TIMEOUT
 
-SEMANTIC_SERVICE_URL = os.getenv("SEMANTIC_SERVICE_URL", "http://localhost:8012")
-SEMANTIC_TIMEOUT = int(os.getenv("SEMANTIC_TIMEOUT", "60"))
+logger = logging.getLogger(__name__)
 
 
 class SemanticError(Exception):

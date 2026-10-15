@@ -447,6 +447,29 @@ def reconcile_runs():
         raise
 
 
+@app.task(name="backend.modules.flow.tasks.executor.evolution_digest", queue="scheduled")
+def evolution_digest():
+    """内置任务：进化候选归纳（自进化闭环的周期引擎）。
+
+    失败必须落 `status='failed'` 并抛出：归纳挂了而进化中心看上去"没有新待办"，
+    会把闭环失败掩成"本轮没发现东西"（no-silent-degradation §1）。
+    """
+    from backend.common import system_jobs
+    if not system_jobs.is_job_active("evolution_digest"):
+        logger.info("[Evolution] 内置任务已人工暂停，本轮归纳跳过")
+        return {"skipped": "paused"}
+    try:
+        # 经 core.task_runtime 回调表跨模块调用（分层契约 §0：不新增 L2 横向 import 边）
+        out = call("evolution.run_digest")
+        system_jobs.record_run("evolution_digest", "success", out.get("summary", "")[:500])
+        return out
+    except Exception as exc:  # noqa: BLE001 — 记录后显式抛出，不把失败掩成成功
+        logger.exception("[Evolution] 进化候选归纳失败")
+        system_jobs.record_run("evolution_digest", "failed",
+                               f"归纳失败（{type(exc).__name__}），详见服务端日志")
+        raise
+
+
 def execute_scheduled_task_sync(task_id: int, trigger_type: str = "manual", run_key: str = None):
     """显式同步适配器，与 Celery/后台使用相同执行核心。"""
     return _execute_core(task_id, trigger_type, run_key, "sync-process")

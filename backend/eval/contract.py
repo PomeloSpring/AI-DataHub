@@ -17,26 +17,61 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-SUITES = ("compile", "retrieval", "llm")
+from backend.eval.gate import CAPABILITIES, CASE_STATUSES, SCORED_STATUSES
+
+#: suite 即**被测层**（适配器路由键）。故意不重命名现有值：``case_key`` 跨版本对齐
+#: 依赖历史运行记录，改键会让版本对比集体失踪，那是另一种掩盖。
+#: L2（真实语义）尚未落地时编号留空是**有意的可见缺口**，不是笔误。
+SUITES = ("compile", "semantic", "retrieval", "llm")
 SUITE_LABELS = {
-    "compile": "语义层编译",
-    "retrieval": "本体层检索",
-    "llm": "LLM 功能",
+    "compile": "L1 编译规则（mock 目录）",
+    "semantic": "L2 真实语义（intent→治理改写）",
+    "retrieval": "L3 真实检索",
+    "llm": "L4 端到端行为",
+}
+
+#: 各 suite 的层定位与边界（页面必须原样告知，防止拿弱层给强层背书）
+SUITE_SCOPE_NOTES = {
+    "compile": ("只走离线确定性编译，语义目录被 fixtures/demo_semantics 打桩："
+                "测的是 planner 规则回归，**不反映真实本体/字典/治理**。"),
+    "semantic": ("不打桩：真实 binding + 真实字典 + 真实敏感/RLS 基线，只到闸门改写为止，"
+                 "**不下发数据源、不返数据行、不落审计**。无身份的用例治理段为 unverified，"
+                 "不得当作已验证行级权限。"),
+    "retrieval": "真跑检索策略链（GraphRAG/本体遍历等），按检索来源分桶。",
+    "llm": "trace/handler/live 三档成本与真实度完全不同，必须分标呈现："
+           "trace 是自录轨迹回放，不得当作“LLM 能力”。",
 }
 
 #: 各 suite 支持的期望键（页面表单据此渲染可填字段，写错键直接拒绝而不是静默忽略）
 EXPECTED_KEYS = {
     "compile": {"ok", "unbound", "intent_rejected", "error_contains",
                 "hint_no_physical", "sql_contains", "resolution_source"},
+    "semantic": {
+        # 解析/绑定段
+        "intent_rejected", "reject_reason_contains", "unbound", "bound_object",
+        "binding_source", "resolution_source", "unresolved_terms_contains",
+        "warnings_contains", "hint_no_physical",
+        # 闸门/权限段
+        "allowed", "blocked_at", "block_reason_contains", "gate_bucket",
+        "needs_approval", "blocked_columns_rejected",
+        # 治理段（RLS / 列限制）
+        "governance_verified", "governance_bucket", "rls_applied",
+        "rls_policies_contains", "masked_column_count_min",
+        # 产物结构（admin-only，不进对外通道）
+        "sql_contains", "sql_forbidden", "secured_differs_from_base",
+    },
     "retrieval": {"hit", "retrieval_source", "contains_any", "contains_all",
-                  "forbidden", "no_physical", "max_results",
-                  "routes", "route_bucket"},
+                  "forbidden", "no_physical", "no_credential_leak", "max_results",
+                  "min_results", "routes", "route_bucket"},
     "llm": {"calls_include", "calls_exclude", "max_calls", "denied_tools",
             "no_leak", "answer_contains", "answer_not_contains",
             "write_requires_confirm"},
 }
 
-#: 物理标识泄露检查用的样例词（断言失败提示本身也不得回显物理细节）
+#: 物理标识泄露检查用的样例词（断言失败提示本身也不得回显物理细节）。
+#: 适用边界：仅适用于**面向 LLM / 普通客户端**的通道（intent 回抛文案、LLM 出站结果）。
+#: L3 元数据检索对可写 SQL 的消费方本就该返回真实表列（waker-datasource-domain §3），
+#: 拿这组去卡它会得到"链路越正确越像泄露"——那种场景用 ``no_credential_leak``。
 PHYS_TOKENS = ("t_case_records", "t_ticket_records", "patient_phone", "del_flag",
                "company_name", "case_status", "create_time", "ticket_id")
 
@@ -53,12 +88,20 @@ class Case:
     case_key: str
     suite: str
     question: str
+    capability: str
     tags: list[str] = field(default_factory=list)
     payload: dict = field(default_factory=dict)
     expected: dict = field(default_factory=dict)
     note: str = ""
     id: int = 0
     is_active: int = 1
+    case_status: str = "active"
+    status_note: str = ""
+
+    @property
+    def scored(self) -> bool:
+        """是否计入门禁分母。retired 不跑也不计分母，但条数必须对外可见。"""
+        return self.case_status in SCORED_STATUSES
 
 
 @dataclass
@@ -112,6 +155,28 @@ def normalize_case(row) -> Case:
             f"用例 {key} 的期望键 {sorted(unknown)} 不属于 suite={suite}，"
             f"可用键: {sorted(EXPECTED_KEYS[suite])}")
 
+    # 能力契约是**必填**：没有它就无法回答"这层这块能力有没有用例覆盖"，
+    # 掩盖比缺用更阴：所有用例都算"已覆盖"。与期望键同一纪律：写错直接拒，不静默忽略。
+    capability = (row.get("capability") or "").strip()
+    if capability not in CAPABILITIES:
+        raise CaseContractError(
+            f"用例 {key} 未登记合法的能力契约组（当前 {capability!r}），"
+            f"应为 {list(CAPABILITIES)}")
+
+    case_status = (row.get("case_status") or "active").strip()
+    if case_status not in CASE_STATUSES:
+        raise CaseContractError(
+            f"用例 {key} 的 case_status={case_status!r} 无效，应为 {list(CASE_STATUSES)}")
+    status_note = (row.get("status_note") or "").strip()
+    # 退役与已知缺陷必须说得出原因。没有原因的退役 = 把失败扫到地毯下。
+    if case_status != "active" and not status_note:
+        raise CaseContractError(
+            f"用例 {key} 标为 {case_status} 但未写 status_note（原因必填，"
+            f"例：针对已废弃形态 / 图种子抽取契约缺失）")
+    # is_active 与 case_status 是两个正交开关（启停 vs 语义状态），
+    # 不得拿其中一个悄悄改变另一个的含义。
+    is_active = int(row.get("is_active") or 0)
+
     tags_raw = row.get("tags") or ""
     tags = [t.strip() for t in (tags_raw.split(",") if isinstance(tags_raw, str) else tags_raw) if t and t.strip()]
 
@@ -119,7 +184,8 @@ def normalize_case(row) -> Case:
         case_key=key, suite=suite, question=question, tags=tags,
         payload=payload, expected=expected,
         note=(row.get("note") or ""), id=int(row.get("id") or 0),
-        is_active=int(row.get("is_active") or 0),
+        is_active=is_active,
+        capability=capability, case_status=case_status, status_note=status_note,
     )
 
 
@@ -134,6 +200,21 @@ def _has_leak(text: str) -> str | None:
     for tok in PHYS_TOKENS:
         if tok in text:
             return "physical_token"
+    for pat in LEAK_PATTERNS:
+        if pat.search(text):
+            return "value_pattern"
+    return None
+
+
+def _has_credential_leak(text: str) -> str | None:
+    """只卡凭据/连接地址/报错栈。
+
+    给元数据检索这类**合法包含物理表列名**的通道用。不加这个区分就会得出
+    "检索越正确越像泄露"的结论（护栏 §7 禁的是连接信息/凭据/报错栈外泄与
+    datasource_id 外泄，不是禁止向可写 SQL 的消费方回真实表列元数据）。
+    """
+    if not text:
+        return None
     for pat in LEAK_PATTERNS:
         if pat.search(text):
             return "value_pattern"
@@ -224,6 +305,18 @@ def check_retrieval(observed: dict, expected: dict) -> tuple[bool, str]:
         if leak:
             return False, f"检索结果泄露物理细节({leak})"
 
+    # 元数据检索对可写 SQL 的消费方**就该**返回真实表列（waker-datasource-domain §3）。
+    # 这个键只卡凭据/地址/报错栈，不卡表列名 —— 否则"链路越正确越像泄露"。
+    if expected.get("no_credential_leak"):
+        leak = _has_credential_leak(joined)
+        if leak:
+            return False, f"检索结果泄露凭据/地址/报错栈({leak})"
+
+    min_results = expected.get("min_results")
+    if isinstance(min_results, int) and len(items) < min_results:
+        return False, (f"命中 {len(items)} 条，少于期望下界 {min_results} 条"
+                       f"（空结果不能算通过）")
+
     max_results = expected.get("max_results")
     if isinstance(max_results, int) and len(items) > max_results:
         return False, f"返回 {len(items)} 条，超过上限 {max_results}"
@@ -309,8 +402,151 @@ def check_llm(observed: dict, expected: dict) -> tuple[bool, str]:
     return True, ""
 
 
+def check_semantic(observed: dict, expected: dict) -> tuple[bool, str]:
+    """L2 真实语义层断言：intent → 真实 binding → plan → 闸门（纯判定）的产物。
+
+    与 L1 的分工不能混：L1 答“规则对不对”，L2 答“本平台真实语义资产会不会把这句
+    话编译错/权限施加错”。拿 L1 的 100% 给 L2 背书就是分层契约里要避免的事。
+
+    一条硬约束：**治理类断言必须声明自己真的验证到了治理段**。``gates.run_gates``
+    在 user_id 为空时会整段跳过 RLS/列限制，此时如果用例不断言
+    ``governance_verified``、又恰好“没报错”，就会被当成通过了行级权限验证——
+    比没有测试更危险。本函数把这层伪验证直接判失败。
+    """
+    bound = bool(observed.get("bound"))
+    intent_rejected = bool(observed.get("intent_rejected"))
+    warn_text = " ; ".join(observed.get("warnings") or [])
+    base_sql = str(observed.get("base_sql") or observed.get("sql") or "")
+    secured_sql = str(observed.get("secured_sql") or base_sql)
+    applied = [str(x) for x in (observed.get("applied_rls") or [])]
+    policies = [str(x) for x in (observed.get("rls_policies") or [])]
+    masked = [str(x) for x in (observed.get("masked_columns") or [])]
+    gov_bucket = str(observed.get("governance_bucket") or "")
+
+    # ── intent 解析段 ──
+    if expected.get("intent_rejected"):
+        if not intent_rejected:
+            return False, "期望 intent 被拒收，但实际通过了"
+        needle = str(expected.get("reject_reason_contains") or "")
+        if needle and needle not in str(observed.get("parse_error") or ""):
+            return False, f"拒收原因未含 {needle!r}，实际: {observed.get('parse_error')!r}"
+        return True, ""
+    if intent_rejected:
+        return False, f"intent 意外被拒收: {observed.get('parse_error') or ''}"
+
+    if expected.get("unbound"):
+        return (not bound, "" if not bound else "期望 unbound，但解析出了真实绑定")
+    if not bound:
+        return False, f"意外 unbound（本层不打桩，未绑定即真实本体缺绑定）: {warn_text}"
+
+    want_obj = expected.get("bound_object")
+    if want_obj and str(observed.get("bound_object_key") or "").lower() != str(want_obj).lower():
+        return False, f"绑定对象期望 {want_obj!r}，实际 {observed.get('bound_object_key')!r}"
+
+    want_bsrc = expected.get("binding_source")
+    if want_bsrc and str(observed.get("resolution_source") or "") != want_bsrc:
+        return False, (f"binding 解析档位期望 {want_bsrc!r}，"
+                       f"实际 {observed.get('resolution_source')!r}")
+
+    for name, want in (expected.get("resolution_source") or {}).items():
+        got = (observed.get("resolution_sources") or {}).get(name)
+        if got != want:
+            return False, f"resolution_source[{name}] 期望 {want!r}，实际 {got!r}"
+
+    for term in expected.get("unresolved_terms_contains") or []:
+        got_terms = {str(t.get("term") if isinstance(t, dict) else t)
+                     for t in (observed.get("unresolved_terms") or [])}
+        if str(term) not in got_terms:
+            return False, f"未解析清单缺少 {term!r}，实际 {sorted(got_terms)}"
+
+    for needle in expected.get("warnings_contains") or []:
+        if needle not in warn_text:
+            return False, f"期望告警含 {needle!r}，实际: {warn_text!r}"
+
+    # ── 闸门段 ──
+    if expected.get("allowed") is not None:
+        want = bool(expected["allowed"])
+        if bool(observed.get("allowed")) != want:
+            where = observed.get("blocked_at") or "?"
+            why = str(observed.get("block_reason") or "")[:180]
+            return False, (f"allowed 期望 {want}，实际 {bool(observed.get('allowed'))}"
+                           f"（闸门落点={where}；原因={why or '无'}）")
+
+    want_at = expected.get("blocked_at")
+    if want_at and str(observed.get("blocked_at") or "") != want_at:
+        return False, (f"闸门落点期望 {want_at!r}，实际 {observed.get('blocked_at')!r}"
+                       f"（原因={str(observed.get('block_reason') or '')[:120]!r}）")
+
+    needle = str(expected.get("block_reason_contains") or "")
+    if needle and needle not in str(observed.get("block_reason") or ""):
+        return False, f"拒绝原因未含 {needle!r}（用户拿不到可诊断的理由）"
+
+    want_bucket = expected.get("gate_bucket")
+    if want_bucket:
+        got_b = (observed.get("sources") or {}).get("gate_bucket")
+        if got_b != want_bucket:
+            return False, f"闸门分桶期望 {want_bucket!r}，实际 {got_b!r}"
+
+    if expected.get("needs_approval") is not None:
+        if bool(observed.get("needs_approval")) != bool(expected["needs_approval"]):
+            return False, (f"needs_approval 期望 {bool(expected['needs_approval'])}，"
+                           f"实际 {bool(observed.get('needs_approval'))}")
+
+    if expected.get("blocked_columns_rejected"):
+        if not observed.get("blocked_by_policy"):
+            return False, ("期望因敏感屏蔽列被拒，但闸门并未给出 blocked_by_policy 判定"
+                           "（基线未触发或被掩盖）")
+
+    # ── 治理段 ──
+    if expected.get("governance_verified"):
+        if gov_bucket.startswith("unverified"):
+            return False, (f"用例声称验证治理段，实际未验证（{gov_bucket}）："
+                           f"没身份或没命中表时 RLS 整段被跳过，不得当通过")
+    want_gov = expected.get("governance_bucket")
+    if want_gov and gov_bucket != want_gov:
+        return False, f"治理分桶期望 {want_gov!r}，实际 {gov_bucket!r}"
+
+    if expected.get("rls_applied") is True and not applied:
+        return False, "期望已施加行级过滤，实际 applied_rls 为空"
+    if expected.get("rls_applied") is False and applied:
+        return False, f"期望不施加行级过滤，实际施加了 {len(applied)} 项"
+
+    for name in expected.get("rls_policies_contains") or []:
+        # 子串而非等值：基线伪策略以 ``sensitive_fields:...`` / ``sensitive_block:...``
+        # 形式出现，等值匹配会迫使用例抄下整串列名（那才是真的泄露）。
+        if not any(name in x for x in (applied + policies)):
+            # 故不回显 policies 原文：基线伪策略串里带敏感列名，回显会被下面的
+            # _has_leak 整句隐藏，反而让失败变得不可诊断。只报计数。
+            return False, (f"治理策略未命中 {name!r}（实际命中 "
+                           f"{len(policies)} 条、施加行过滤 {len(applied)} 项）")
+
+    min_masked = expected.get("masked_column_count_min")
+    if isinstance(min_masked, int) and len(masked) < min_masked:
+        return False, f"脱敏列数期望 ≥{min_masked}，实际 {len(masked)}"
+
+    # ── 产物结构 ──
+    for frag in expected.get("sql_contains") or []:
+        if frag not in secured_sql:
+            return False, f"改写后 SQL 缺少片段 {frag!r}"
+    for frag in expected.get("sql_forbidden") or []:
+        if frag in secured_sql:
+            return False, f"改写后 SQL 出现了不应有的片段 {frag!r}"
+
+    if expected.get("secured_differs_from_base"):
+        if secured_sql == base_sql:
+            return False, "期望闸门对基线 SQL 做了改写（RLS/脱敏），实际二者相同即未施加任何限制"
+
+    if expected.get("hint_no_physical"):
+        leak = _has_leak(warn_text)
+        if leak:
+            return False, f"未解析提示泄露物理细节({leak})"
+
+    return True, ""
+
+
 _CHECKERS = {
     "compile": check_compile,
+    "semantic": check_semantic,
     "retrieval": check_retrieval,
     "llm": check_llm,
 }

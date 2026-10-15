@@ -141,7 +141,7 @@ class TestAssetPool:
             ("FROM adh_metrics", [{"name": "退号数", "bound_object_key": "", "pool_reason": "unbound"}]),
             ("FROM adh_dimensions", [{"name": "旧维度", "bound_object_key": "ward", "pool_reason": "orphan"}]),
             ("FROM adh_business_terms", [{"term_cn": "活跃用户", "target_table": ""}]),
-        ]  # suggestions 表未迁移 → 查询异常路径
+        ]  # 候选表未迁移 → 查询异常路径
         conn = _Conn(script)
         monkeypatch.setattr(ms, "DBConnection", lambda: conn)
         out = ms.asset_pool()
@@ -151,6 +151,10 @@ class TestAssetPool:
         assert out["metrics"][0]["pool_reason"] == "unbound"
         msql = [c for c in conn.cur.calls if "FROM adh_metrics"][0][0]
         assert "NOT IN" in msql and "adh_ontology_objects" in msql
+        # 候选必须走本函数自己的 DBConnection，不能委托给另开连接的 service，
+        # 否则下面这个"表未迁移"容错用例会在真库上跑、永远测不到异常分支
+        assert any("adh_evolution_candidates" in c[0] for c in conn.cur.calls), \
+            "资产池未在本连接上查候选表"
 
     def test_suggestions_table_missing_is_tolerated(self, monkeypatch):
         class _Boom(_Conn):
@@ -158,7 +162,8 @@ class TestAssetPool:
                 c = super().cursor()
                 orig = c.execute
                 def boom(sql, params=None):
-                    if "adh_alias_suggestions" in sql:
+                    # 自进化候选表（旧名 adh_alias_suggestions 已退役为冻结表）
+                    if "adh_evolution_candidates" in sql:
                         raise RuntimeError("table doesn't exist")
                     return orig(sql, params)
                 c.execute = boom

@@ -19,6 +19,15 @@ from backend.models.graph import (
 logger = logging.getLogger(__name__)
 
 
+# 统一大图节点类型优先级: 语义主干(Object/Metric/Dimension/Term) 先于
+# 物理叶子(Table/Column/Property), 抗 nodes[:limit] 截断时主干被剔。
+_TYPE_PRIORITY = {
+    "Object": 0, "Metric": 1, "Dimension": 2, "Term": 3,
+    "Table": 4, "Column": 5, "Property": 6,
+}
+_TYPE_PRIORITY_DEFAULT = 99
+
+
 class GraphService:
     """知识图谱服务 — Oxigraph SPARQL backend."""
 
@@ -60,7 +69,8 @@ class GraphService:
         max_depth: int = 2,
         center_node: Optional[str] = None,
         search: Optional[str] = None,
-        limit: int = 200
+        limit: int = 200,
+        include_properties: bool = False
     ) -> GraphData:
         """获取图谱数据."""
         try:
@@ -77,6 +87,9 @@ class GraphService:
                 nodes, edges = self._get_data_lineage_graph(graph, ds_id, limit)
             elif graph_type == GraphType.ONTOLOGY_OVERVIEW:
                 nodes, edges = self._get_ontology_overview_graph(graph, ds_id, limit)
+            elif graph_type == GraphType.UNIFIED:
+                nodes, edges = self._get_unified_graph(
+                    graph, ds_id, limit, include_properties=include_properties)
 
             # Search filter
             if search and nodes:
@@ -109,6 +122,65 @@ class GraphService:
         except Exception as e:
             logger.error("Failed to get graph data: %s", e, exc_info=True)
             return GraphData(stats=GraphStats(connected=False))
+
+    def _get_unified_graph(
+        self, graph: str, ds_id: int, limit: int,
+        include_properties: bool = False
+    ) -> tuple[List[GraphNode], List[GraphEdge]]:
+        """统一大图读侧: 分域组装 本体总览 + 业务知识 + 物理层, 去重/排序/属性剔除。
+
+        - 业务/源域: 物理层只走血缘桥接(对象绑定的表), **不含**全量物理表关系视图
+          (否则不相关表灌进预算、把列截没导致 hasColumn 边全悬空, 历史缺陷 "200 表/0 边");
+        - 系统域(ds=-1): 表/列即主体, 保留表关系视图, **不含**血缘;
+        - 节点/边按 id 去重; 排序 = (类型优先级升序, 连接度降序), 保证截断时高连接语义
+          枢纽与桥接骨架不被剪掉;
+        - include_properties=False(默认) 剔除 Property 明细节点(图面克制), 属性边随之悬空;
+        - 悬空边剪枝统一由 get_graph_data 末尾处理(本方法只重组装/节点)。
+        """
+        from backend.semantics.graph_rag.oxigraph_store import is_system_scope
+
+        overview = self._get_ontology_overview_graph(graph, ds_id, limit)
+        business = self._get_business_knowledge_graph(graph, ds_id, limit)
+        if is_system_scope(ds_id):
+            physical = self._get_table_relation_graph(graph, ds_id, limit)
+        else:
+            physical = self._get_data_lineage_graph(graph, ds_id, limit)
+
+        raw_nodes = [*(overview[0] or []), *(business[0] or []), *(physical[0] or [])]
+        raw_edges = [*(overview[1] or []), *(business[1] or []), *(physical[1] or [])]
+
+        # 节点/边按 id 去重(保序取首次出现)
+        nodes: List[GraphNode] = []
+        seen_ids = set()
+        for n in raw_nodes:
+            if n.id in seen_ids:
+                continue
+            seen_ids.add(n.id)
+            nodes.append(n)
+        edges: List[GraphEdge] = []
+        seen_eids = set()
+        for e in raw_edges:
+            if e.id in seen_eids:
+                continue
+            seen_eids.add(e.id)
+            edges.append(e)
+
+        # 图面克制: 默认不平铺属性明细(超级 hub 图会挤成一团), 开关开时保留
+        if not include_properties:
+            nodes = [n for n in nodes if n.label != "Property"]
+
+        # 连接度(端点命中即计), 用于同类型内 hub 优先
+        degree: Dict[str, int] = {}
+        for e in edges:
+            degree[e.source] = degree.get(e.source, 0) + 1
+            degree[e.target] = degree.get(e.target, 0) + 1
+
+        # 排序 = (类型优先级升序, 连接度降序, id): 语义主干先于物理叶子, 高连接枢纽抗截断
+        nodes.sort(key=lambda n: (
+            _TYPE_PRIORITY.get(n.label, _TYPE_PRIORITY_DEFAULT),
+            -degree.get(n.id, 0), n.id,
+        ))
+        return nodes, edges
 
     def _get_table_relation_graph(
         self, graph: str, ds_id: int, limit: int
@@ -368,7 +440,7 @@ class GraphService:
             SELECT ?iri ?ntype ?label ?extra ?rk WHERE {{
                 GRAPH <{graph}> {{
                     ?iri a ?ntype ; rdfs:label ?label .
-                    FILTER(?ntype IN (adh:Action, adh:Property, adh:Metric, adh:Rule, adh:Scenario))
+                    FILTER(?ntype IN (adh:Action, adh:Property, adh:Metric, adh:Dimension, adh:Rule, adh:Scenario))
                     # 只画**有归属**的语义展开节点（被对象/场景经 has*/uses*/governs/controls
                     # 指向）。字典层孤点（adh:metric:*/adh:term:* 投影，绑定在别的模型对象上）
                     # 不属本体的语义展开，不入本体总览——与「指标/维度/行为」等 Tab 的
@@ -376,6 +448,7 @@ class GraphService:
                     FILTER EXISTS {{
                         ?owner ?rel ?iri .
                         FILTER(?rel IN (adh:hasAction, adh:hasProperty, adh:hasMetric,
+                                        adh:hasDimension,
                                         adh:governs, adh:controls,
                                         adh:usesObject, adh:usesAction, adh:usesRule))
                     }}
@@ -407,6 +480,7 @@ class GraphService:
                 GRAPH <{graph}> {{
                     ?from ?rel ?to .
                     FILTER(?rel IN (adh:hasAction, adh:hasProperty, adh:hasMetric,
+                                    adh:hasDimension,
                                     adh:governs, adh:controls,
                                     adh:usesObject, adh:usesAction, adh:usesRule))
                 }}
@@ -414,6 +488,7 @@ class GraphService:
         """
         rel_names = {
             "hasAction": "行为", "hasProperty": "属性", "hasMetric": "指标",
+            "hasDimension": "维度",
             "governs": "约束", "controls": "管控",
             "usesObject": "场景对象", "usesAction": "场景行为", "usesRule": "场景规则",
         }

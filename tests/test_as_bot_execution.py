@@ -16,7 +16,7 @@ from fastapi import HTTPException
 
 from backend.modules.mind.api import as_bot
 from backend.core import perm_link
-from backend.modules.mind.rag import alias_suggestion
+from backend.modules.catalog.services import evolution_service
 
 
 # ── 写动作权限码 fail-closed（check_write_perm） ─────────────────
@@ -91,11 +91,20 @@ def _user(uid=7):
 
 
 class TestAliasDirectExecution:
+    """别名直执行端点的安全护栏（审核入口已收口到 evolution_service）。
+
+    这里 patch 的必须是**当前真正被调用的模块**：端点改成调 evolution_service
+    后如果还 patch 旧 alias_suggestion，护栏用例会“全绿但什么都没测”。
+    """
+
     def test_approve_without_perm_403(self, monkeypatch):
         import backend.core.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms", lambda *a: {})
-        approve = lambda *a, **k: (_ for _ in ()).throw(AssertionError("无权限不得执行"))
-        monkeypatch.setattr(alias_suggestion, "approve_suggestion", approve)
+        boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("无权限不得执行"))
+        monkeypatch.setattr(evolution_service, "adopt_alias", boom)
+        monkeypatch.setattr(evolution_service, "get_candidate",
+                            lambda cid: {"id": cid, "term": "x", "target_type": "metric",
+                                         "target_ref": "m", "datasource_name": ""})
         with pytest.raises(HTTPException) as exc:
             asyncio.run(as_bot.approve_alias_suggestion(1, None, _user()))
         assert exc.value.status_code == 403
@@ -109,47 +118,65 @@ class TestAliasDirectExecution:
             asyncio.run(as_bot.approve_alias_suggestion(1, None, _user()))
         assert exc.value.status_code == 403
 
+    def test_missing_candidate_404(self, monkeypatch):
+        import backend.core.role_service as rs
+        monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
+                            lambda *a: {"ontology:save": {"ai_access": "write", "ai_note": ""}})
+        monkeypatch.setattr(evolution_service, "get_candidate", lambda cid: None)
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(as_bot.approve_alias_suggestion(999, None, _user()))
+        assert exc.value.status_code == 404
+
     def test_approve_direct_executes_with_server_decider(self, monkeypatch):
         import backend.core.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:save": {"ai_access": "write", "ai_note": ""}})
+        monkeypatch.setattr(evolution_service, "get_candidate",
+                            lambda cid: {"id": cid, "term": "就诊量", "target_type": "dimension",
+                                         "target_ref": "量", "datasource_name": "prd-cn"})
         captured = {}
 
-        def fake_approve(payload):
-            captured.update(payload)
-            return {"success": True, "term": payload.get("term", "")}
+        def fake_adopt(**kw):
+            captured.update(kw)
+            return {"success": True, "term": kw.get("term", "")}
 
-        monkeypatch.setattr(alias_suggestion, "approve_suggestion", fake_approve)
+        monkeypatch.setattr(evolution_service, "adopt_alias", fake_adopt)
         req = as_bot.AliasDecisionRequest(term="就诊量", target_type="dimension", target_ref="量")
         out = asyncio.run(as_bot.approve_alias_suggestion(7, req, _user(uid=42)))
         assert out["success"] is True
-        # decided_by 由服务端注入，与登录用户一致（客户端无法伪造决策人）
-        assert captured["decided_by"] == 42
-        assert captured["suggestion_id"] == 7
+        # decided_by 由服务端从可信身份注入，与登录用户一致（客户端无法伪造决策人）
+        assert captured["decided_by"] == "42"
+        assert captured["candidate_id"] == 7
         assert captured["term"] == "就诊量"
+        assert captured["target_ref"] == "量"
 
     def test_reject_direct_executes_with_server_decider(self, monkeypatch):
         import backend.core.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:save": {"ai_access": "write", "ai_note": ""}})
+        monkeypatch.setattr(evolution_service, "get_candidate",
+                            lambda cid: {"id": cid, "term": "x", "datasource_name": ""})
         captured = {}
 
-        def fake_reject(payload):
-            captured.update(payload)
+        def fake_reject(**kw):
+            captured.update(kw)
             return {"success": True}
 
-        monkeypatch.setattr(alias_suggestion, "reject_suggestion", fake_reject)
+        monkeypatch.setattr(evolution_service, "reject_candidate", fake_reject)
         out = asyncio.run(as_bot.reject_alias_suggestion(9, _user(uid=42)))
         assert out["success"] is True
-        assert captured["decided_by"] == 42
-        assert captured["suggestion_id"] == 9
+        assert captured["decided_by"] == "42"
+        assert captured["candidate_id"] == 9
 
     def test_writeback_value_error_maps_422(self, monkeypatch):
         import backend.core.role_service as rs
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:save": {"ai_access": "write", "ai_note": ""}})
-        monkeypatch.setattr(alias_suggestion, "approve_suggestion",
-                            lambda p: (_ for _ in ()).throw(ValueError("target_ref 必填")))
+        monkeypatch.setattr(evolution_service, "get_candidate",
+                            lambda cid: {"id": cid, "term": "x", "target_type": "metric",
+                                         "target_ref": "", "datasource_name": ""})
+        monkeypatch.setattr(evolution_service, "adopt_alias",
+                            lambda **kw: (_ for _ in ()).throw(ValueError("target_ref 必填")))
         with pytest.raises(HTTPException) as exc:
             asyncio.run(as_bot.approve_alias_suggestion(1, None, _user()))
         assert exc.value.status_code == 422
@@ -263,38 +290,50 @@ class TestToolHandlerCompat:
         assert out["content"][0]["text"] == "ok-async" and not out.get("isError")
 
 class TestDecisionAudit:
-    def test_set_status_persists_decided_by(self, monkeypatch):
-        from backend.common import db
-        rows = []
-        monkeypatch.setattr(db, "execute_query",
-                            lambda sql, params=None: rows.append((sql, params)))
-        alias_suggestion._set_status(7, "approved", 42)
-        assert len(rows) == 1
-        sql, params = rows[0]
-        assert "decided_by" in sql
-        assert 42 in tuple(params)
+    """审核必须落审计字段（决策人不静默丢）。入口已收口到 evolution_service。"""
 
-    def test_reject_records_decider(self, monkeypatch):
-        recorded = {}
-        monkeypatch.setattr(alias_suggestion, "get_suggestion",
-                            lambda sid: {"id": sid, "term": "x", "status": "pending"})
-        monkeypatch.setattr(alias_suggestion, "_set_status",
-                            lambda sid, status, decider: recorded.update(
-                                {"sid": sid, "status": status, "decider": decider}))
-        alias_suggestion.reject_suggestion({"suggestion_id": 5, "decided_by": 42})
-        assert recorded == {"sid": 5, "status": "rejected", "decider": 42}
+    def test_reject_persists_decided_by(self, monkeypatch):
+        written = []
+        monkeypatch.setattr(evolution_service, "_w",
+                            lambda sql, params=(): written.append((sql, params)) or 1)
+        evolution_service.reject_candidate(candidate_id=5, decided_by="42")
+        sql, params = written[0]
+        assert "decided_by=%s" in sql and "decided_at=NOW()" in sql
+        assert "rejected" in sql
+        assert params == ("42", 5)
 
-    def test_approve_records_decider(self, monkeypatch):
-        recorded = {}
-        monkeypatch.setattr(alias_suggestion, "get_suggestion",
-                            lambda sid: {"id": sid, "term": "就诊量", "target_type": "dimension",
-                                         "target_ref": "量", "datasource_id": 1})
-        monkeypatch.setattr(alias_suggestion, "_approve_dict_alias", lambda *a, **k: None)
-        monkeypatch.setattr(alias_suggestion, "_set_status",
-                            lambda sid, status, decider: recorded.update(
-                                {"sid": sid, "status": status, "decider": decider}))
-        alias_suggestion.approve_suggestion({"suggestion_id": 5, "decided_by": 42})
-        assert recorded == {"sid": 5, "status": "approved", "decider": 42}
+    def test_adopt_alias_persists_decided_by_and_ref(self, monkeypatch):
+        """回写成功必须同时留下决策人与产出物引用，否则事后无法追溯改了什么。"""
+        written = []
+        monkeypatch.setattr(evolution_service, "_q",
+                            lambda sql, params=(): [{"id": 9, "aliases": '[]'}
+                                                     if "adh_metrics" in sql else []])
+        monkeypatch.setattr(evolution_service, "_w",
+                            lambda sql, params=(): written.append((sql, params)) or 1)
+        out = evolution_service.adopt_alias(term="就诊量", target_type="metric",
+                                            target_ref="案例数量", decided_by="42",
+                                            candidate_id=7)
+        assert out["success"] is True
+        audit = [w for w in written if "decided_by=%s" in w[0]
+                 and "converted_ref" in w[0]]
+        assert audit, f"回写后未落审核审计: {written}"
+        sql, params = audit[0]
+        assert "converted_kind='alias'" in sql
+        assert "案例数量" in params and "42" in params and 7 in params
+
+    def test_metric_draft_marks_needs_completion_instead_of_fake_success(self, monkeypatch):
+        """缺 formula 的指标草稿不能被报成"完成"：planner 编译不了它。"""
+        monkeypatch.setattr(evolution_service, "_q",
+                            lambda sql, params=(): [{"id": 5}] if "adh_datasources" in sql else [])
+        monkeypatch.setattr(evolution_service, "_w", lambda sql, params=(): 1)
+        monkeypatch.setattr("backend.modules.catalog.services.metrics_service.create_metric",
+                            lambda data: {"id": 88, "success": True})
+        out = evolution_service.create_metric_draft(
+            term="DAU", bound_object_key="user", datasource_name="prd-cn",
+            display_name="日活", formula="", candidate_id=3)
+        assert out["success"] is True
+        assert out["needs_completion"] == ["formula"], out
+        assert "planner" in out["message"] or "无法编译" in out["message"]
 
 
 # ── 本体生成工具语义变化：素材化取数（不再 LLM 单发）+ 域约束 fail-closed ─
@@ -302,7 +341,7 @@ class TestDecisionAudit:
 class TestOntologyGenerateToolSemantics:
     """generate_ontology_draft 已改为素材提供工具（不调 LLM）：返回分批素材与
     归纳指引，归纳由 AS-BOT 会话内 agent 完成后经 save_ontology_draft 提交。
-    业务源仅限『生成本体模型』任务绑定会话（fail-closed，不静默回退系统域）。"""
+    业务源须在用户角色授权集内（角色权限模型，fail-closed，不静默回退系统域）。"""
 
     def _payload(self, result):
         import json
@@ -314,7 +353,7 @@ class TestOntologyGenerateToolSemantics:
         return ExecutionContext(user_id=7, user_role="admin", workspace_id=3,
                                 datasource_id=datasource_id, extra=extra)
 
-    def _run(self, monkeypatch, args, ctx, materials=("M0", "M1")):
+    def _run(self, monkeypatch, args, ctx, materials=("M0", "M1"), allowed=(5, 7)):
         from backend.modules.mind.execution.sdk_tools import ontology_tools as ot
         from backend.modules.mind.execution.sdk_tools.context import (
             ExecutionContextVar, set_execution_context)
@@ -322,7 +361,9 @@ class TestOntologyGenerateToolSemantics:
         import backend.modules.catalog.services.ontology_service as osvc
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:generate": {"ai_access": "write", "ai_note": ""}})
-        monkeypatch.setattr(osvc, "build_generation_batches", lambda ds: list(materials))
+        monkeypatch.setattr(rs.role_service, "get_user_allowed_datasources",
+                            lambda *a: list(allowed))
+        monkeypatch.setattr(osvc, "build_generation_batches", lambda ds, kb_ids=None: list(materials))
         token = set_execution_context(ctx)
         try:
             return asyncio.run(ot.generate_ontology_draft(args))
@@ -336,15 +377,15 @@ class TestOntologyGenerateToolSemantics:
         assert "spec" in p and "save_ontology_draft" in p["note"]
         assert "objects" not in p and "model_id" not in p
 
-    def test_business_source_requires_task_binding_session(self, monkeypatch):
-        """普通会话给业务源取素材必须拒（任务绑定是服务端注入，LLM 不可伪造）。"""
-        p = self._payload(self._run(monkeypatch, {}, self._ctx(5)))
-        assert "error" in p and "任务会话" in p["error"]
+    def test_business_source_unauthorized_rejected(self, monkeypatch):
+        """角色未授权该源：普通会话同样拒（fail-closed，不静默回退系统域）。"""
+        p = self._payload(self._run(monkeypatch, {}, self._ctx(5), allowed=()))
+        assert "error" in p and "无权使用该数据源" in p["error"]
 
-    def test_task_bound_session_for_other_source_rejected(self, monkeypatch):
-        binding = {"kind": "ontology_generate", "datasource_id": 3}
-        p = self._payload(self._run(monkeypatch, {}, self._ctx(5, binding=binding)))
-        assert "error" in p and "任务会话" in p["error"]
+    def test_business_source_authorized_passes_without_task_binding(self, monkeypatch):
+        """角色权限模型：普通会话（无任务绑定）角色有授权同样可取素材。"""
+        p = self._payload(self._run(monkeypatch, {}, self._ctx(5)))
+        assert p["material"] == "M0" and p["total_batches"] == 2
 
     def test_datasource_arg_rejected(self, monkeypatch):
         """目标源由服务端注入，LLM 传数据源标识显式报错（不静默丢弃）。"""

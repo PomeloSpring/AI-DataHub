@@ -95,7 +95,6 @@ export async function setDefaultWorkspace(id: number): Promise<void> {
 export async function getWorkspaceTools(id: number): Promise<{
   datasources: any[];
   mcp_servers: any[];
-  agents: any[];
   mcp_tools: any[];
 }> {
   const res = await client.get(`/workspaces/${id}/tools`);

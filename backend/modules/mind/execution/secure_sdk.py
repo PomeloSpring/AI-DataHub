@@ -113,8 +113,14 @@ def build_options(adapter, task, backend):
     token = resolve_access_token(adapter.config.get("env") or {})
     if not token:
         raise ValueError("执行层凭据未配置(QODERCN_PERSONAL_ACCESS_TOKEN)")
+    # 模型优先级：前端选择/AS-BOT.models[0] → 执行层 adapter.model →
+    # .env QODER_MODEL (AS-BOT 未绑模型时的兜底) → None (SDK 默认 Auto)。
+    # 旧实现只到 adapter.model，AS-BOT 没绑模型且执行层也没配时就直接 Auto，
+    # .env 里的 QODER_MODEL 不生效（子进程 env 已被剥除，仅能走 SDK options）。
+    from backend.common.config import QODER_MODEL
+    model = ctx.extra.get("model_ref") or adapter.model or QODER_MODEL or None
     return sdk.QoderAgentOptions(**common, cli_path=_sdk_cli_path(adapter),
-                                model=ctx.extra.get("model_ref") or adapter.model or None,
+                                model=model,
                                 auth=AccessTokenAuthOptions(access_token=token),
                                 strict_mcp_config=True, allowed_mcp_server_names=list(servers), skills=[])
 

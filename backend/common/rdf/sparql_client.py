@@ -28,6 +28,11 @@ _DEFAULT_TIMEOUT = 30.0
 _BULK_TIMEOUT = 120.0
 
 
+def bulk_timeout() -> float:
+    """给上层（图构建器）用的批量写超时值，避免各处硬编 120。"""
+    return _BULK_TIMEOUT
+
+
 class OxigraphClient:
     """Synchronous HTTP client for Oxigraph SPARQL endpoint."""
 
@@ -94,17 +99,22 @@ class OxigraphClient:
 
     # ── SPARQL UPDATE ────────────────────────────────────────────────
 
-    def update(self, sparql: str, prefix: bool = True) -> None:
+    def update(self, sparql: str, prefix: bool = True,
+               timeout: float = None) -> None:
         """Execute a SPARQL UPDATE (INSERT DATA, DELETE, etc.).
 
         Args:
             sparql: SPARQL UPDATE string.
             prefix: Whether to prepend standard namespace prefixes.
+            timeout: 本次请求的超时秒数；None 用客户端默认（30s）。
+                批量写入（一个 INSERT DATA 里几千条三元组）应传 ``_BULK_TIMEOUT``，
+                否则会被单节点写入的 30s 默认值误杀。
         """
         full_query = f"{SPARQL_PREFIXES}\n{sparql}" if prefix else sparql
         resp = self._client.post(
             "/update",
             data={"update": full_query},
+            timeout=timeout if timeout is not None else self._timeout,
         )
         resp.raise_for_status()
         logger.debug("SPARQL UPDATE executed successfully")

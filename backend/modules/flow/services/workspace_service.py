@@ -1,8 +1,11 @@
 """Workspace Service — manages workspaces and their resources.
 
-A workspace groups datasources, MCP servers, and agents together.
+A workspace groups datasources and MCP servers together.
 In Agent mode, the workspace provides the available tools instead of
 requiring the user to select a datasource manually.
+
+注：旧自研 multi-agent 的 agents 绑定已退役（adh_agents/adh_workspace_agents 下线，
+见 docker/mysql/retire_legacy_agents_migration.sql），本服务不再展开 agents。
 """
 
 import json
@@ -38,12 +41,7 @@ class WorkspaceService:
                 )
                 workspace['mcp_servers'] = cur.fetchall()
 
-                # Get agents (workspace_id field on adh_agents)
-                cur.execute(
-                    "SELECT * FROM adh_agents WHERE workspace_id = %s AND is_active = 1",
-                    (workspace_id,)
-                )
-                workspace['agents'] = cur.fetchall()
+                # agents 查询已随旧自研 multi-agent 配置面退役删除。
 
                 # Parse config JSON
                 if isinstance(workspace.get('config'), str):

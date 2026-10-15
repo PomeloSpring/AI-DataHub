@@ -17,7 +17,7 @@ import json
 import logging
 from typing import Annotated, Optional
 
-from backend.modules.mind.execution.sdk_tools.catalog_tools import _text
+from backend.modules.mind.execution.sdk_tools.catalog_tools import _text, record_execute_error
 from backend.semantics.contract import (
     safe_warnings as _safe_warnings,
     sanitize_execute_reason as _sanitize_execute_reason,
@@ -99,20 +99,26 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
 
     from backend.modules.mind.execution.resource_guard import validate_binding
     try:
-        await asyncio.to_thread(validate_binding, ctx, binding)
+        # 传入本次调用生效源 q.datasource_id（跨站编排时=按 datasource 名在授权集内解析出的源），
+        # 使"会话绑在 A 站、单次查询指向 B 站"的逐站编排不被误拒（GLOBAL_SEMANTIC_LAYER_DESIGN §7/§8）。
+        await asyncio.to_thread(validate_binding, ctx, binding, int(q.datasource_id or 0))
     except PermissionError as exc:
         return ({"error": str(exc)}, True)
 
     p = await asyncio.to_thread(plan, q, binding)
 
-    # 别名回流队列(自进化闭环入口): 被拒近似词/未解析词自动落入待审, best-effort 永不影响取数。
+    # 进化候选入口（自进化闭环）：被拒近似词/未解析词自动落入待审队列。
+    # 写入失败不得影响取数主链（FDE §4 旁路约束），但也不能静默：按 warning 带
+    # 可诊断信息落日志，且落库失败会让“信号没收到”在服务端可查（不假成功）。
     _terms = (p.provenance or {}).get("unresolved_terms")
     if _terms:
         try:
-            from backend.modules.mind.rag.alias_suggestion import record_unresolved_terms
-            await asyncio.to_thread(record_unresolved_terms, q.datasource_id, _terms)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("[run_semantic_query] alias suggestion record skipped: %s", e)
+            from backend.modules.catalog.services.evolution_service import record_parse_fail_terms
+            await asyncio.to_thread(record_parse_fail_terms,
+                                    int(q.datasource_id or 0), _terms, q.object)
+        except Exception as e:  # noqa: BLE001 — 旁路不阻断，但必须留可诊断痕迹
+            logger.warning("[run_semantic_query] 未解析词未能落入进化候选队列（取数不受影响，"
+                           "但本轮自进化信号已丢）: %s: %s", type(e).__name__, e)
 
     # 护栏拒绝：planner 已经产出了空 SQL + warning。数据源对 LLM 是黑盒,
     # 这里只回声明式原因,不回 catalog_ref / provenance / 生成的 SQL。
@@ -146,6 +152,9 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
     try:
         result = await asyncio.to_thread(execute_plan, q, binding, p, policy_ctx, "")
     except SemanticError as e:
+        # 执行阶段原始引擎错因写进管理端 trace(对外仍只回脱敏文案), 供区分
+        # 编译缺陷/连接故障/权限拦截 —— 否则日志滚后无法回溯本轮问答。
+        record_execute_error("run_semantic_query", e)
         payload_out = {
             "object": binding.object_key,
             "intent": intent_echo,
@@ -255,6 +264,11 @@ TOOL_SPECS = [
             '"metrics": ["<measure_name>", ...], '
             '"dimensions": ["<dim_name>", ...], '
             '"filters": [{"dim": "...", "op": "eq|ne|gt|gte|lt|lte|in|like", "value": ...}], '
+            '"having": [{"dim": "<resolved_metric_name>", "op": "gt|gte|lt|lte|eq", "value": ...}], '
+            '"computed_metrics": [{"name": "<derived_name>", "expr": "{<m1>} / {<m2>}", "operands": ["<m1>", "<m2>"]}], '
+            '"nest": {"inner": {"dimensions": [...], "metrics": [...], "filters": [...]}, '
+            '"outer": {"metrics": [{"name": "...", "agg": "SUM|COUNT|AVG|MIN|MAX|COUNT_DISTINCT", "of": "<inner_col|*>"}], '
+            '"dimensions": [...], "filters": [...], "having": [...]}}, '
             '"order": [{"by": "...", "desc": false}], '
             '"limit": 100, "time_grain": "day|week|month|null", "datasource": "<source business name>", "dry_run": false, '
             '"time_window": "7d", "time_range": "last_week", "time_column": "<dim_name>", "params": {"<tpl_var>": ...}}. '
@@ -271,6 +285,15 @@ TOOL_SPECS = [
             "(join paths are resolved from ontology links server-side; NEVER provide join/SQL). "
             "Structured window: {\"type\": \"rank|rolling|period_compare|share\", \"metric\": \"<measure_name>\"} "
             "compiles window functions server-side (free-form window SQL is not accepted). "
+            "having filters AFTER aggregation; its dim MUST be an already-resolved metric name "
+            "(never a raw physical column) and composes with GROUP BY. "
+            "computed_metrics derive a NEW measure by CONTROLLED arithmetic over resolved metrics only: "
+            "expr may contain {operand} placeholders, numbers, parentheses and + - * / (denominators are "
+            "auto-guarded with NULLIF); ANY bare column/table/function name or SQL fragment is REJECTED. "
+            "Conditional aggregates (e.g. completion-rate) belong in the metric dictionary formula, not here. "
+            "nest is a fixed TWO-STAGE aggregate: inner groups by dimensions+metrics, outer re-aggregates "
+            "over the inner output columns (of references an inner column name or '*'). nest takes over the "
+            "projection: leave top-level metrics/dimensions/having/computed_metrics/window empty when using it. "
             "For multi-site/global questions: call this tool once per site with \"datasource\" "
             "(business name shown by list_datasources) and merge results yourself; sites are NOT a "
             "dimension — '站点' in dimensions is rejected with guidance. "

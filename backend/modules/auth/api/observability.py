@@ -41,6 +41,18 @@ def usage_models(
     })}
 
 
+@router.get("/quota")
+async def quota(refresh: bool = Query(False), admin: dict = Depends(require_admin)):
+    """Qoder 账号 credit 配额（执行层实测值，账号级真实消耗）。
+
+    Qoder 不回报美元成本，credit 配额是唯一可审计的实际消耗口径；
+    读取失败返回 `available=false` + 原因（前端可见），不返回空数据掩盖。
+    """
+    from backend.modules.mind.execution.qoder_quota import read_quota
+
+    return await read_quota(refresh=refresh)
+
+
 @router.get("/usage/users")
 def usage_users(
     workspace_id: int = Query(0), datasource_id: int = Query(0), entrypoint: str = Query(""),

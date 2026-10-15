@@ -5,7 +5,7 @@ import {
   Settings, LogOut, Menu, Palette, Sun, Moon, Zap, TrendingUp,
   Grid3x3, GlassWater, Heart, UserCircle, X, ChevronLeft, ChevronRight,
   Clock, Bell, BarChart3, Shield, GitBranch, Eye,
-  Activity, Server, Gem, Sparkles, Waypoints, LayoutTemplate, FlaskConical,
+  Activity, Server, Gem, Sparkles, Waypoints, LayoutTemplate, FlaskConical, Dna,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -69,6 +69,7 @@ const SYSTEM_MENU_ITEMS = [
   { key: '/system/quality-review', icon: BarChart3, label: '质量审查' },
   { key: '/system/observability', icon: Waypoints, label: 'LLM 可观测' },
   { key: '/system/eval', icon: FlaskConical, label: '评测中心' },
+  { key: '/system/evolution', icon: Dna, label: '进化中心' },
   { section: '系统' },
   { key: '/system/settings', icon: Settings, label: '系统设置' },
 ];
@@ -269,6 +270,10 @@ export default function SystemLayout() {
                 <DropdownMenuItem onClick={() => navigate('/system/profile')}>
                   <UserCircle className="h-4 w-4 mr-2" />
                   个人设置
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => navigate('/system/memory')}>
+                  <Brain className="h-4 w-4 mr-2" />
+                  我的记忆
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => { logout(); navigate('/login'); }}>
                   <LogOut className="h-4 w-4 mr-2" />

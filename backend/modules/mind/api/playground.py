@@ -15,7 +15,6 @@ Tables: adh_saved_queries
 """
 
 import logging
-import os
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -24,6 +23,7 @@ import requests
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from backend.common import config as _cfg
 from backend.common.auth import (
     get_current_user, get_workspace_id, resolve_user_default_workspace_id, sign_internal_identity,
 )
@@ -32,7 +32,9 @@ from backend.common.db import DBConnection, execute_query, execute_insert, execu
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-SEMANTIC_SERVICE_URL = os.getenv("SEMANTIC_SERVICE_URL", "http://localhost:8012").rstrip("/")
+# 语义层端点基准：semhub router 已拼进 web 单进程，故经 config 取监听口（缺省 :8000）。
+# 不得在本处抄旧独立服务端口 :8012，否则代理目标不存在、静态分析直接不可用。
+SEMANTIC_SERVICE_URL = _cfg.SEMANTIC_SERVICE_URL.rstrip("/")
 _PG_PREFIX = "/api/semantic/playground"
 
 

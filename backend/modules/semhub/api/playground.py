@@ -74,12 +74,46 @@ def _assert_read_only(sql: str) -> str:
     return sql
 
 
+# 静态分析（AST/血缘/引用表）的方言回退序：SLS/Presto 形状（如 date_add('month',-3,now())/IF/UNNEST）
+# 在 mysql 方言下 sqlglot 解不动，需按目标源方言/多方言族宽容解析（仅展示用，非安全裁决）。
+_DIALECT_FALLBACK = ("mysql", "postgres", "presto", "trino", "hive", "spark")
+
+
+def _resolve_dialect(body: dict[str, Any]) -> str:
+    """显式 dialect > 数据源 db_type 推导 > mysql。"""
+    d = str(body.get("dialect") or "").strip()
+    if d:
+        return d
+    ds_id = body.get("datasource_id")
+    if ds_id:
+        try:
+            from backend.common.db import get_datasource_by_id
+            from backend.semantics.sql_guard import dialect_of_db_type
+            src = get_datasource_by_id(int(ds_id)) or {}
+            return dialect_of_db_type(src.get("db_type") or "mysql")
+        except Exception:  # noqa: BLE001 — 推不到方言就交给回退序
+            pass
+    return "mysql"
+
+
+def _parse_any(sql: str, dialect: str = "mysql"):
+    """优先给定方言、失败回退常见方言族解析。返回 (tree, used_dialect)；全失败抛最后一个异常。"""
+    order = [dialect] + [d for d in _DIALECT_FALLBACK if d != dialect]
+    last = None
+    for d in order:
+        try:
+            return sqlglot.parse_one(sql, dialect=d), d
+        except Exception as e:  # noqa: BLE001
+            last = e
+    raise last
+
+
 def _referenced_tables(sql: str, dialect: str = "mysql") -> list[str]:
-    """从 SQL 抽取被引用的物理表名(去重, 保持出现顺序)。解析失败返回空。"""
+    """从 SQL 抽取被引用的物理表名(去重, 保持出现顺序)。多方言宽容解析，失败返回空。"""
     if not _HAS_SQLGLOT:
         return []
     try:
-        tree = sqlglot.parse_one(sql, dialect=dialect)
+        tree, _ = _parse_any(sql, dialect)
     except Exception as e:  # noqa: BLE001
         logger.debug("[playground] parse for tables failed: %s", e)
         return []
@@ -267,15 +301,15 @@ def _resolve_rls(sql: str, datasource_id: Optional[int], user_id: int, workspace
 def ast(body: dict[str, Any]) -> dict[str, Any]:
     _sqlglot_or_503()
     sql = _require_sql(body)
-    dialect = body.get("dialect") or "mysql"
+    dialect = _resolve_dialect(body)
     try:
-        tree = sqlglot.parse_one(sql, dialect=dialect)
+        tree, used = _parse_any(sql, dialect)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=400, detail={"error": f"parse failed: {e}"})
     return {
-        "sql": tree.sql(dialect=dialect),
+        "sql": tree.sql(dialect=used),
         "ast": _ast_json(tree),
-        "tables": _referenced_tables(sql, dialect),
+        "tables": _referenced_tables(sql, used),
         "command": (tree.key if hasattr(tree, "key") else type(tree).__name__),
     }
 
@@ -309,9 +343,13 @@ def _node_to_dict(node) -> dict[str, Any]:
 def lineage(body: dict[str, Any]) -> dict[str, Any]:
     _sqlglot_or_503()
     sql = _require_sql(body)
-    dialect = body.get("dialect") or "mysql"
     column = body.get("column")
     schema = body.get("schema") or None
+    # 先选出能解析该 SQL 的方言（目标源方言优先，失败回退族），避免 mysql 硬解失败
+    try:
+        _, dialect = _parse_any(sql, _resolve_dialect(body))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail={"error": f"parse failed: {e}"})
     try:
         from sqlglot.lineage import lineage as _lineage
     except Exception as e:  # noqa: BLE001  # pragma: no cover
@@ -353,7 +391,8 @@ def rls_diff(body: dict[str, Any], request: Request) -> dict[str, Any]:
     ident = verify_internal_identity(request.headers.get("X-Internal-Identity", "")) or {}
     user_id = _as_int(ident.get("user_id"), "user_id")
     ws_id = _as_int(ident.get("workspace_id"), "workspace_id")
-    secured, applied, policies, col_restr = _resolve_rls(sql, ds_id, user_id, ws_id)
+    secured, applied, policies, col_restr = _resolve_rls(sql, ds_id, user_id, ws_id,
+                                                          dialect=_resolve_dialect(body))
     error = None
     if secured == "":
         error = (policies[0] if policies else "RLS rewrite failed")

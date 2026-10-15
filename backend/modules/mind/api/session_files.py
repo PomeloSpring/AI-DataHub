@@ -51,7 +51,7 @@ def _resolve_session_ws(conversation_id: int, user_id: int):
     if not row or not row.get("session_key"):
         raise HTTPException(status_code=404, detail="会话不存在或无权访问")
     base = sw.workspace_base(create=False)
-    root = sw.session_paths(base, row["session_key"], int(row["workspace_id"] or 0), create=False)
+    root = sw.session_paths(base, row["session_key"], int(row["workspace_id"] or 0), user_id, create=False)
     return (root / "workspace").resolve()
 
 

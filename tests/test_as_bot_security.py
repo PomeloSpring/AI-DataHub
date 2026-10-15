@@ -59,16 +59,16 @@ def test_external_reference_without_tool_grant_is_not_all():
 
 
 def test_same_session_paths_stable_and_other_sessions_distinct(tmp_path):
-    a = sessions.session_paths(tmp_path, "a" * 32, 1, create=True)
-    b = sessions.session_paths(tmp_path, "b" * 32, 1, create=True)
+    a = sessions.session_paths(tmp_path, "a" * 32, 1, 7, create=True)
+    b = sessions.session_paths(tmp_path, "b" * 32, 1, 7, create=True)
     (a / "workspace" / "sentinel").write_text("A")
-    assert sessions.session_paths(tmp_path, "a" * 32, 1) == a
+    assert sessions.session_paths(tmp_path, "a" * 32, 1, 7) == a
     assert a != b and not (b / "workspace" / "sentinel").exists()
     assert not (a / "workspace" / "runtime").exists()
     with pytest.raises(ValueError):
-        sessions.session_paths(tmp_path, "../escape", 1)
+        sessions.session_paths(tmp_path, "../escape", 1, 7)
     with pytest.raises(RuntimeError, match="禁止自动新建"):
-        sessions.session_paths(tmp_path, "c" * 32, 1)
+        sessions.session_paths(tmp_path, "c" * 32, 1, 7)
 
 
 def test_parallel_storage_node_publication_is_atomic(tmp_path):
@@ -235,9 +235,9 @@ def test_real_docker_session_isolation_and_readonly(tmp_path):
     writable = policies.compile_policy({"as_bot_key": "test", "tools": {"standard": ["read", "write", "bash"]}})
     readonly = policies.compile_policy({"as_bot_key": "test", "tools": {"standard": ["read", "bash"]}})
     a = sessions.SessionWorkspace("a" * 32, uuid.uuid4().hex,
-                                  sessions.session_paths(tmp_path, "a" * 32, 1, create=True), writable, None)
+                                  sessions.session_paths(tmp_path, "a" * 32, 1, 7, create=True), writable, None)
     b = sessions.SessionWorkspace("b" * 32, uuid.uuid4().hex,
-                                  sessions.session_paths(tmp_path, "b" * 32, 1, create=True), readonly, None)
+                                  sessions.session_paths(tmp_path, "b" * 32, 1, 7, create=True), readonly, None)
     a.verify = lambda: None
     b.verify = lambda: None
     host_secret = tmp_path / "host-secret"
@@ -256,7 +256,8 @@ def test_real_docker_session_isolation_and_readonly(tmp_path):
         assert result["exit_code"] != 0 and not (b.workspace / "note.txt").exists()
         result = await SessionToolSandbox.run(a, "bash", {"command": "id -u"})
         assert result["stdout"].strip() != "0"
-        result = await SessionToolSandbox.run(a, "bash", {"command": "python -c \"import socket; socket.create_connection(('127.0.0.1', 8001), timeout=1)\""})
+        # 网络隔离：沙箱内不得反连宿主 web 监听口（:8000，端口收敛终态后的真实服务）
+        result = await SessionToolSandbox.run(a, "bash", {"command": "python -c \"import socket; socket.create_connection(('127.0.0.1', 8000), timeout=1)\""})
         assert result["exit_code"] != 0
     asyncio.run(run())
 
@@ -603,6 +604,30 @@ def test_binding_resolution_rechecks_inherited_authorization(datasource_scope):
         guard.validate_binding(ctx, SimpleNamespace(model_id=3, datasource_id=7))
 
 
+def test_cross_site_effective_source_authorized_passes(datasource_scope):
+    """跨站编排：会话绑在 7 站、本次生效源为授权集内的 8 站 → 不误拒（按生效源比对绑定）。"""
+    guard, state, context = datasource_scope
+    ctx, _ = context(7)
+    guard.validate_binding(ctx, SimpleNamespace(model_id=3, datasource_id=8), 8)
+    assert ctx.datasource_id == 7  # 不静默改会话生效源
+
+
+def test_cross_site_effective_source_outside_grant_rejected(datasource_scope):
+    """生效源不在角色授权集内 → fail-closed 拒绝，不因调用方声明了源就放行。"""
+    guard, state, context = datasource_scope
+    ctx, _ = context(7)
+    with pytest.raises(PermissionError, match="已授权范围"):
+        guard.validate_binding(ctx, SimpleNamespace(model_id=3, datasource_id=9), 9)
+
+
+def test_effective_source_zero_falls_back_to_session_source(datasource_scope):
+    """未传生效源（0）时行为与旧口径一致：仍按会话源裁决。"""
+    guard, state, context = datasource_scope
+    ctx, _ = context(7)
+    with pytest.raises(PermissionError, match="不属于当前会话"):
+        guard.validate_binding(ctx, SimpleNamespace(model_id=3, datasource_id=8), 0)
+
+
 @pytest.mark.parametrize("args", [{}, {"datasource_id": None}, {"datasource_id": 7}])
 def test_tool_source_optional_null_uses_confirmed_scope(datasource_scope, args):
     guard, state, context = datasource_scope
@@ -696,7 +721,7 @@ def mysql_cleanup_session(tmp_path, monkeypatch):
     key = uuid.uuid4().hex
     monkeypatch.setattr("backend.common.config.ADH_WORKSPACES_DIR", str(tmp_path))
     node = sessions.storage_node(tmp_path)
-    root = sessions.session_paths(tmp_path, key, 0, create=True)
+    root = sessions.session_paths(tmp_path, key, 0, uid, create=True)
     (root / "workspace" / "example.txt").write_text("仅清理本测试目录")
     policy = policies.compile_policy({"as_bot_key": "cleanup-test", "tools": {}})
     monkeypatch.setattr(policies, "resolve_policy", lambda *a: policy)
@@ -906,7 +931,7 @@ def test_docker_cancellation_waits_for_container_removal(tmp_path):
     from backend.modules.platform.services.sandbox_executor import SessionToolSandbox
     policy = policies.compile_policy({"as_bot_key": "test", "tools": {"standard": ["read", "bash"]}})
     runtime = sessions.SessionWorkspace("c" * 32, uuid.uuid4().hex,
-        sessions.session_paths(tmp_path, "c" * 32, 1, create=True), policy, None)
+        sessions.session_paths(tmp_path, "c" * 32, 1, 7, create=True), policy, None)
     runtime.verify = lambda: None
     async def run():
         operation = asyncio.create_task(SessionToolSandbox.run(runtime, "bash", {"command": "sleep 60"}))

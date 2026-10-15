@@ -124,25 +124,72 @@ export default function Chat() {
   const prevMsgCountRef = useRef(0);
   const prevConvIdRef = useRef<number | null | undefined>(undefined);
   const [feedbackMap, setFeedbackMap] = useState<Record<number, 'up' | 'down'>>({});
-  const [expectedTableInput, setExpectedTableInput] = useState<Record<number, string>>({});
   const [showExpectedInput, setShowExpectedInput] = useState<Record<number, boolean>>({});
+  // 踩之后的归因与期望业务名：不再让用户输**物理表名**（旧文案 "期望的表名，
+  // 如 t_user_customer" 同时违反 ui-resource-display §2 与护栏 §7，且业务用户根本不知道表名）
+  const [feedbackReason, setFeedbackReason] = useState<Record<number, string>>({});
+  const [feedbackRef, setFeedbackRef] = useState<Record<number, string>>({});
+  const [expectedNoteInput, setExpectedNoteInput] = useState<Record<number, string>>({});
+  const [refOptions, setRefOptions] = useState<{ name: string; kind: string }[]>([]);
+  const [refLoading, setRefLoading] = useState(false);
 
-  const handleFeedback = async (idx: number, satisfied: boolean, note?: string) => {
+  const DISSATISFACTION_REASONS: { key: string; label: string }[] = [
+    { key: 'missing_metric', label: '缺这个指标' },
+    { key: 'missing_dimension', label: '缺这个维度' },
+    { key: 'wrong_answer', label: '结果不对' },
+    { key: 'not_understood', label: '没理解我的问题' },
+    { key: 'data_incomplete', label: '数据不全' },
+  ];
+
+  // 期望值候选：从真实字典清单来（显示 name，选框选择）。
+  // 指标/维度接口只支持 workspace 与模型作用域（无 datasource 过滤项），
+  // 这里按当前工作空间取全量清单，不拿数据源去碰不存在的查询参数。
+  const loadRefOptions = async () => {
+    if (refOptions.length || refLoading) return;
+    setRefLoading(true);
+    try {
+      const [m, d] = await Promise.all([
+        client.get('/metrics', { params: { size: 500, workspace_id: selectedWorkspaceId || 0 } }),
+        client.get('/metrics/dimensions', { params: {} }),
+      ]);
+      const mItems = (m.data?.items ?? m.data ?? []) as any[];
+      const dItems = (d.data?.items ?? d.data ?? []) as any[];
+      const out: { name: string; kind: string }[] = [];
+      if (Array.isArray(mItems)) {
+        for (const it of mItems) if (it?.name) out.push({ name: String(it.name), kind: '指标' });
+      }
+      if (Array.isArray(dItems)) {
+        for (const it of dItems) if (it?.name) out.push({ name: String(it.name), kind: '维度' });
+      }
+      setRefOptions(out);
+    } catch {
+      // 候选拉不到时不伪造成可选：显式告知，并保留自由文字渠道
+      toast.error('业务指标/维度清单未能加载，反馈仍可提交，但“期望哪个业务概念”无法选择');
+    } finally {
+      setRefLoading(false);
+    }
+  };
+
+  const handleFeedback = async (
+    idx: number, satisfied: boolean,
+    opts?: { reason?: string; ref?: string; note?: string },
+  ) => {
     const msg = messages[idx];
     if (!msg) return;
     // Extract tables_used from warnings
     const tablesWarning = msg.warnings?.find((w: string) => w.startsWith('涉及表:'));
     const tablesUsed = tablesWarning ? tablesWarning.replace('涉及表: ', '') : '';
-    const isNl2sql = !!msg.sql;
     try {
       await client.post('/chat/feedback', {
         question: msg.question || msg.content || '',
         tables_used: tablesUsed,
         datasource_id: selectedDsId,
         satisfied,
-        // NL2SQL 结果卡收集"期望表名";Agent/对话输出收集自由原因(reason)
-        expected_table: isNl2sql ? (note || '') : '',
-        reason: isNl2sql ? '' : (note || ''),
+        // 期望值一律用**业务名**（来自字典清单选择框），不再收集物理表名
+        expected_ref: opts?.ref || '',
+        dissatisfaction_reason: opts?.reason || '',
+        // Agent/对话输出的自由补充说明
+        reason: opts?.note || '',
         // 可观测关联键:有 trace 时反馈能在 Trace 列表/详情回显
         trace_id: msg.trace_id || '',
         message_uuid: msg.message_uuid || '',
@@ -150,12 +197,14 @@ export default function Chat() {
         workspace_id: selectedWorkspaceId || 0,
       });
       // Persist feedback in message
-      updateMessageFeedback(idx, satisfied ? 'up' : 'down', isNl2sql ? note : undefined);
+      updateMessageFeedback(idx, satisfied ? 'up' : 'down', opts?.ref || opts?.note);
       setFeedbackMap(prev => ({ ...prev, [idx]: satisfied ? 'up' : 'down' }));
       setShowExpectedInput(prev => ({ ...prev, [idx]: false }));
-      toast.success(satisfied ? '已标记满意，感谢反馈' : '已标记不满意，感谢反馈');
-    } catch {
-      toast.error('反馈失败');
+      toast.success(satisfied
+        ? '已标记满意，感谢反馈'
+        : '已记录。该负反馈会进入每日归纳作业，产出待开发指标/维度或待修绑定的候选');
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || '反馈提交失败');
     }
   };
 
@@ -253,7 +302,6 @@ export default function Chat() {
   // 赞踩打标渲染 — 内置结果卡与 Agent 输出共用(外层需 flex flex-wrap 容器)
   const renderFeedback = (idx: number, msg: any) => {
     const fb = msg.feedback || feedbackMap[idx];
-    const isNl2sql = !!msg.sql;
     return (
       <>
         <div className="flex-1" />
@@ -265,7 +313,10 @@ export default function Chat() {
               <ThumbsUp className="h-3.5 w-3.5" />
             </Button>
             <Button variant="ghost" size="sm" className="h-7 px-2"
-              onClick={() => setShowExpectedInput(prev => ({ ...prev, [idx]: !prev[idx] }))}>
+              onClick={() => {
+                setShowExpectedInput(prev => ({ ...prev, [idx]: !prev[idx] }));
+                if (!showExpectedInput[idx]) void loadRefOptions();
+              }}>
               <ThumbsDown className="h-3.5 w-3.5" />
             </Button>
           </div>
@@ -275,21 +326,64 @@ export default function Chat() {
           </span>
         )}
         {showExpectedInput[idx] && !fb && (
-          <div className="flex items-center gap-2 mt-2 w-full">
-            <Input
-              value={expectedTableInput[idx] || ''}
-              onChange={(e) => setExpectedTableInput(prev => ({ ...prev, [idx]: e.target.value }))}
-              placeholder={isNl2sql ? '期望的表名（可选，如 t_user_customer）' : '补充原因（可选，帮助我们改进）'}
-              className="h-7 text-xs flex-1"
-            />
-            <Button size="sm" variant="default" className="h-7 text-xs"
-              onClick={() => handleFeedback(idx, false, expectedTableInput[idx])}>
-              提交
-            </Button>
-            <Button size="sm" variant="ghost" className="h-7 text-xs"
-              onClick={() => { handleFeedback(idx, false); setShowExpectedInput(prev => ({ ...prev, [idx]: false })); }}>
-              跳过
-            </Button>
+          <div className="mt-2 w-full space-y-2 border border-border/60 rounded-md p-2 bg-muted/20">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-muted-foreground shrink-0">哪里不对?</span>
+              {DISSATISFACTION_REASONS.map(r => (
+                <button key={r.key} type="button"
+                  onClick={() => setFeedbackReason(prev => ({ ...prev, [idx]: r.key }))}
+                  className={`h-6 px-2 rounded-md text-xs border transition-colors ${
+                    feedbackReason[idx] === r.key
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border text-muted-foreground hover:bg-muted'}`}
+                >{r.label}</button>
+              ))}
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-muted-foreground shrink-0">期望的业务指标/维度</span>
+              <Select
+                value={feedbackRef[idx] || 'none'}
+                onValueChange={(v) => setFeedbackRef(prev => ({ ...prev, [idx]: v === 'none' ? '' : v }))}
+                disabled={refLoading && !refOptions.length}
+              >
+                <SelectTrigger className="w-[240px] h-7 text-xs">
+                  <SelectValue placeholder={refLoading ? '清单加载中…' : '从字典清单选择（可不选）'} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">暂不指定</SelectItem>
+                  {refOptions.map(o => (
+                    <SelectItem key={`${o.kind}:${o.name}`} value={o.name}>
+                      {o.name}
+                      <span className="ml-1 text-[10px] text-muted-foreground">({o.kind})</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {refOptions.length === 0 && !refLoading && (
+                <span className="text-[10px] text-amber-600">
+                  字典清单为空——仍可提交，但无法定位到具体业务概念
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                value={expectedNoteInput[idx] || ''}
+                onChange={(e) => setExpectedNoteInput(prev => ({ ...prev, [idx]: e.target.value }))}
+                placeholder="补充说明（可选，只写业务描述，不需要也不应写表名/字段名）"
+                className="h-7 text-xs flex-1"
+              />
+              <Button size="sm" variant="default" className="h-7 text-xs"
+                disabled={!feedbackReason[idx] && !feedbackRef[idx] && !expectedNoteInput[idx]}
+                onClick={() => handleFeedback(idx, false, {
+                  reason: feedbackReason[idx], ref: feedbackRef[idx], note: expectedNoteInput[idx],
+                })}>
+                提交
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 text-xs"
+                onClick={() => { handleFeedback(idx, false); setShowExpectedInput(prev => ({ ...prev, [idx]: false })); }}>
+                跳过
+              </Button>
+            </div>
           </div>
         )}
       </>
@@ -476,11 +570,6 @@ export default function Chat() {
             <h1 className="text-lg font-bold">{independent ? '工作空间' : '智能问数'}</h1>
           </div>
           <div className="flex items-center gap-2">
-            {/* 执行层标识 — quick 管道已退役，全面转向 Qoder 执行层（无模式可选） */}
-            <div className="h-8 px-3 flex items-center text-xs border rounded-md bg-background">
-              <Bot className="h-3 w-3 inline mr-1" />Qoder 执行层
-            </div>
-
             {/* 模型选择器:
                 - 有 AS-BOT 时: 候选 = AS-BOT 的可用模型; >1 才展示 (=1 自动选中 / 留空用执行层默认)
                 - 无 AS-BOT 时: 回退执行层模型候选(原行为) */}

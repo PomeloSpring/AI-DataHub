@@ -43,10 +43,14 @@ async def list_alias_suggestions(
     limit: int = 50,
     user: UserInfo = Depends(get_current_user),
 ):
-    """别名回流建议队列(只读, 供审核展示)。默认列 pending, 按命中次数倒序。"""
-    from backend.modules.mind.rag.alias_suggestion import list_pending
+    """进化候选（别名/待建资产/待核绑定）只读清单，供审核展示。
 
-    items = list_pending(limit=limit) if status == "pending" else []
+    数据源已收口到 ``adh_evolution_candidates``：旧 ``adh_alias_suggestions``
+    退役为冻结表。两处同时当真的迟早飘，所以本端点不再读旧表。
+    """
+    from backend.modules.catalog.services import evolution_service
+
+    items = evolution_service.list_candidates(status=status, limit=min(int(limit), 200))
     return {"suggestions": items, "total": len(items)}
 
 
@@ -56,25 +60,38 @@ async def approve_alias_suggestion(
     req: AliasDecisionRequest = None,
     user: UserInfo = Depends(get_current_user),
 ):
-    """别名回写直执行：菜单与功能权限码 ontology:save 把关后写回字典/对象别名。"""
+    """别名回写直执行：功能权限码 ``ontology:save`` 把关后写回字典/对象别名。
+
+    目标字典行不存在时**不再 raise**：返回 ``next_action`` 引导走“建草稿”出口。
+    旧实现在这条路上把 8/9 条 pending 卡死（越需要归纳的词越点不通）。
+    """
     from backend.core.perm_link import require_write_perm
-    from backend.modules.mind.rag.alias_suggestion import approve_suggestion
+    from backend.modules.catalog.services import evolution_service
 
     try:
         require_write_perm(user["user_id"], 0, "ontology:save", "别名回写")
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    payload = {"suggestion_id": suggestion_id, "decided_by": user["user_id"]}
+    cand = evolution_service.get_candidate(suggestion_id)
+    if not cand:
+        raise HTTPException(status_code=404, detail="候选不存在")
+    payload = {"decided_by": str(user["user_id"])}
     for field in ("term", "target_type", "target_ref"):
         value = getattr(req, field, None) if req else None
         if value:
             payload[field] = value
     try:
-        result = approve_suggestion(payload)
+        result = evolution_service.adopt_alias(
+            term=payload.get("term") or cand["term"],
+            target_type=payload.get("target_type") or cand.get("target_type") or "dimension",
+            target_ref=payload.get("target_ref") or cand.get("target_ref") or "",
+            datasource_id=evolution_service.datasource_id_by_name(
+                cand.get("datasource_name") or ""),
+            decided_by=payload["decided_by"], candidate_id=suggestion_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 — 写回失败细节仅进日志
-        logger.exception("[AS-BOT] 别名回写失败 suggestion=%s", suggestion_id)
+        logger.exception("[AS-BOT] 别名回写失败 candidate=%s", suggestion_id)
         raise HTTPException(status_code=503, detail="别名回写未完成，请稍后重试或联系管理员") from exc
     return {"success": True, **{k: v for k, v in result.items() if k != "success"}}
 
@@ -84,16 +101,19 @@ async def reject_alias_suggestion(
     suggestion_id: int,
     user: UserInfo = Depends(get_current_user),
 ):
-    """别名驳回直执行：ontology:save 权限码把关（与回写同一把关口径）。"""
+    """候选驳回直执行：ontology:save 权限码把关（与回写同一把关口径）。"""
     from backend.core.perm_link import require_write_perm
-    from backend.modules.mind.rag.alias_suggestion import reject_suggestion
+    from backend.modules.catalog.services import evolution_service
 
     try:
         require_write_perm(user["user_id"], 0, "ontology:save", "别名审核")
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not evolution_service.get_candidate(suggestion_id):
+        raise HTTPException(status_code=404, detail="候选不存在")
     try:
-        result = reject_suggestion({"suggestion_id": suggestion_id, "decided_by": user["user_id"]})
+        result = evolution_service.reject_candidate(
+            candidate_id=suggestion_id, decided_by=str(user["user_id"]))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"success": True, **{k: v for k, v in result.items() if k != "success"}}

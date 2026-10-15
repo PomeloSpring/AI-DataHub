@@ -226,6 +226,8 @@ function KnowledgeGraphInner({
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
   const [showLabels, setShowLabels] = useState(false);
+  // 图例即筛选器: 被隐藏的类型(业务对象/维度/指标/属性…)从画布中节点与相关边剔除。
+  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
 
   const { graphData } = useGraphStore();
   const focusedId = hoveredNodeId ?? selectedNodeId;
@@ -242,20 +244,25 @@ function KnowledgeGraphInner({
     }
     return ids;
   }, [focusedId, edges]);
-  const visibleNodes = useMemo(() => nodes.map((node) => ({
-    ...node,
-    data: { ...node.data, focused: node.id === focusedId },
-    style: { ...node.style, opacity: focusedId && !relatedIds.has(node.id) ? 0.3 : 1, transition: 'opacity 150ms' },
-  })), [nodes, focusedId, relatedIds]);
-  const visibleEdges = useMemo(() => edges.map((edge) => {
-    const emphasized = edge.id === hoveredEdgeId || edge.selected ||
-      Boolean(focusedId && (edge.source === focusedId || edge.target === focusedId));
-    return {
-      ...edge,
-      zIndex: emphasized ? 1 : 0,
-      data: { ...edge.data, emphasized, muted: Boolean(focusedId && !emphasized), showLabel: showLabels },
-    };
-  }), [edges, focusedId, hoveredEdgeId, showLabels]);
+  const visibleNodes = useMemo(() => nodes
+    .filter((node) => !hiddenTypes.has(String((node.data as any)?.nodeType || node.type || '')))
+    .map((node) => ({
+      ...node,
+      data: { ...node.data, focused: node.id === focusedId },
+      style: { ...node.style, opacity: focusedId && !relatedIds.has(node.id) ? 0.3 : 1, transition: 'opacity 150ms' },
+    })), [nodes, focusedId, relatedIds, hiddenTypes]);
+  const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((node) => node.id)), [visibleNodes]);
+  const visibleEdges = useMemo(() => edges
+    .filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
+    .map((edge) => {
+      const emphasized = edge.id === hoveredEdgeId || edge.selected ||
+        Boolean(focusedId && (edge.source === focusedId || edge.target === focusedId));
+      return {
+        ...edge,
+        zIndex: emphasized ? 1 : 0,
+        data: { ...edge.data, emphasized, muted: Boolean(focusedId && !emphasized), showLabel: showLabels },
+      };
+    }), [edges, focusedId, hoveredEdgeId, showLabels, visibleNodeIds]);
 
   // 图例（参考图顶栏样式）：按节点类型取色，与 NODE_CONFIG 同源
   const legendItems = useMemo(() => {
@@ -275,6 +282,7 @@ function KnowledgeGraphInner({
     setSelectedNodeId(null);
     setHoveredNodeId(null);
     setHoveredEdgeId(null);
+    setHiddenTypes(new Set());
     if (!graphData) {
       setNodes([]);
       setEdges([]);
@@ -337,7 +345,7 @@ function KnowledgeGraphInner({
 
     // Fit view after layout
     const timer = setTimeout(() => {
-      reactFlow.fitView({ padding: 0.15, maxZoom: 1 });
+      reactFlow.fitView({ padding: 0.15, minZoom: 0.05, maxZoom: 1 });
     }, 100);
     return () => clearTimeout(timer);
   }, [graphData, graphType]);
@@ -399,13 +407,24 @@ function KnowledgeGraphInner({
 
       {/* 图例（分类着色，参考图顶栏） */}
       {legendItems.length > 0 && (
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-3 py-1.5 rounded-full border bg-card/95 shadow-sm max-w-[80%] flex-wrap justify-center">
-          {legendItems.map((item) => (
-            <span key={item.type} className="flex items-center gap-1.5 text-[11px] text-muted-foreground whitespace-nowrap">
-              <span className="w-2.5 h-2.5 rounded-sm" style={{ background: item.color }} />
-              {item.label}
-            </span>
-          ))}
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-3 py-1.5 rounded-full border bg-card/95 shadow-sm max-w-[80%] flex-wrap justify-center">
+          {legendItems.map((item) => {
+            const hidden = hiddenTypes.has(item.type);
+            return (
+              <button key={item.type} type="button"
+                title={hidden ? '点击显示该类型' : '点击隐藏该类型'}
+                aria-pressed={!hidden}
+                onClick={() => setHiddenTypes((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(item.type)) next.delete(item.type); else next.add(item.type);
+                  return next;
+                })}
+                className={`flex items-center gap-1.5 text-[11px] whitespace-nowrap rounded-full px-1.5 py-0.5 transition-colors hover:bg-muted/60 ${hidden ? 'text-muted-foreground/50 line-through' : 'text-muted-foreground'}`}>
+                <span className="w-2.5 h-2.5 rounded-sm" style={{ background: item.color, opacity: hidden ? 0.3 : 1 }} />
+                {item.label}
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -470,7 +489,8 @@ function KnowledgeGraphInner({
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         fitView
-        fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
+        minZoom={0.05}
+        fitViewOptions={{ padding: 0.15, minZoom: 0.05, maxZoom: 1 }}
         defaultEdgeOptions={{
           type: 'knowledge',
           markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color: '#94a3b8' },

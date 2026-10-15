@@ -17,7 +17,7 @@ def _session(**over):
         "status": "idle",
         "execution_token": None,
         "storage_node": "a" * 32,
-        "relative_dir": f"ws_3/sessions/{key}",
+        "relative_dir": f"7/workspace/3/sessions/{key}",
     }
     row.update(over)
     return row
@@ -44,7 +44,7 @@ def test_cleanup_returns_none_when_volume_missing(workspaces):
 def test_cleanup_returns_none_when_session_dir_missing(workspaces):
     root = workspaces(exists=True)
     assert sw._session_cleanup_root(_session()) is None
-    assert not (root / "ws_3").exists()  # 不创建任何目录/标记文件
+    assert not (root / "7").exists()  # 不创建任何目录/标记文件
 
 
 def test_cleanup_rejects_foreign_storage_node(workspaces):

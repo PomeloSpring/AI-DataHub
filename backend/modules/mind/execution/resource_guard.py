@@ -198,22 +198,33 @@ def validate_tool_resources(ctx, qualified_name, args):
     return dict(args)
 
 
-def validate_binding(ctx, binding):
+def validate_binding(ctx, binding, effective_datasource_id=0):
+    """对象绑定是否落在当前 AS-BOT 资源域内。
+
+    effective_datasource_id = 本次调用的生效源（跨站编排时由 LLM 传业务名、服务端在
+    角色授权集内解析，见 semantic_query._execute_single / GLOBAL_SEMANTIC_LAYER_DESIGN §7/§8），
+    0 表示沿用会话绑定源。非会话源同样必须 ∈ 角色授权集（fail-closed），
+    不因"调用方声明了源"就放行。
+    """
     runtime = (getattr(ctx, "extra", None) or {}).get("secure_runtime") if ctx else None
     if runtime is None:
         return
     if binding is None:
         raise PermissionError("对象未绑定到当前 AS-BOT 资源域")
     from backend.modules.mind.execution.tool_policy import is_system_scope
-    # 能力叠加：system 能力额外放行系统本体(kind='system')；业务绑定按会话源裁决。
+    # 能力叠加：system 能力额外放行系统本体(kind='system')；业务绑定按生效源裁决。
     if is_system_scope(runtime.policy):
         row = execute_query("SELECT kind FROM adh_ontology_models WHERE id=%s",
                             (binding.model_id,), fetchone=True)
         if row is not None and str(row.get("kind") or "") == "system":
             return
-    if not ctx.datasource_id or binding.datasource_id != ctx.datasource_id:
+    session_source = int(getattr(ctx, "datasource_id", 0) or 0)
+    source = int(effective_datasource_id or 0) or session_source
+    if not source or int(getattr(binding, "datasource_id", 0) or 0) != source:
         raise ResourceScopeError("对象不属于当前会话选择的数据源")
-    bind_resources(ctx, runtime.policy)
+    allowed = bind_resources(ctx, runtime.policy)
+    if source != session_source and source not in allowed:
+        raise ResourceScopeError("本次查询指定的数据源不在当前用户已授权范围内，请选择已授权数据源")
 
 
 def _check_source(value, allowed_sources):

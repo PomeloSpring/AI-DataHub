@@ -317,24 +317,78 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
         for _prev, tgt, _j in edges_seq:
             if tgt not in alias_by_obj:
                 alias_by_obj[tgt] = f"t{len(alias_by_obj) + 1}"
+        # 表限定名 → 查询内引用: 物理表名 与 对象 key 都按 identity 归一登记。
+        # 建模常以对象显示名(如 Equipment)书写 links[].join, 而物理表却叫 t_product_equipment;
+        # 只按物理表名改写会漏掉显示名限定, 生成 `ON Equipment.company_code` 被数据源拒
+        # (Unknown column) 并被误报成"数据源不可用"(掩盖改写缺口, 违反 no-silent-degradation)。
+        # 故物理表名/对象 key 一并按大小写·分隔符无关的 identity 映射; 主表在 FROM 不限定,
+        # 其限定名改写回物理裸名(与 FROM 中的表名一致)。
+        main_table = str(binding.physical_table or "").strip()
+        ref_alias: dict[str, str] = {}
+
+        def _reg_ref(fb: ResolvedBinding, as_ref: str) -> None:
+            for token in (fb.physical_table, fb.object_key):
+                idk = _identity(token)
+                if idk and as_ref:
+                    ref_alias.setdefault(idk, as_ref)
+
+        _reg_ref(binding, main_table)
+        for obj_k, al in alias_by_obj.items():
+            _reg_ref(fb_by_obj[obj_k], al)
+
+        def _rewrite_join(expr: str) -> tuple[str, list[str]]:
+            """把 join 条件里的表限定名改写为查询内引用; 返回(改写结果, 无法解析的限定名)。"""
+            unknown: list[str] = []
+
+            def _repl(m):
+                tok = m.group(1)
+                ref = ref_alias.get(_identity(tok))
+                if ref is None:
+                    if tok not in unknown:
+                        unknown.append(tok)
+                    return m.group(0)
+                return f"{ref}{m.group(0)[len(tok):]}"
+
+            out = re.sub(r"(?<![\w.`])([A-Za-z_]\w*)\.(?=\w)", _repl, str(expr or ""))
+            return out, unknown
+
+        # 逐边改写; 含无法解析限定名 / 跨跳占位箭头(→) 的关联视为不可用(不硬造)。
+        rewritten: list[tuple[str, str, str]] = []   # (prev, tgt, join_sql)
         for _prev, tgt, join_expr in edges_seq:
-            tgt_alias = alias_by_obj[tgt]
-            tgt_table = fb_by_obj[tgt].physical_table
-            join_sql = join_expr
-            for obj_k, al in sorted(alias_by_obj.items(), key=lambda kv: -len(kv[1])):
-                tname = fb_by_obj[obj_k].physical_table
-                if tname and al:
-                    # 表名→别名: 命中"整词+可接.列"(t_customer.name -> t1.name),
-                    # 前瞻只挡更长标识符后缀, 不挡列引用的点号
-                    join_sql = re.sub(
-                        rf"(?<![\w.`]){re.escape(tname)}(?!\w)", al, join_sql)
-            join_parts.append(f"LEFT JOIN {tgt_table} AS {tgt_alias} ON {join_sql}")
+            join_sql, unknown = _rewrite_join(join_expr)
+            if unknown or "→" in join_sql or "—" in join_sql:
+                warnings.append(
+                    f"跨对象关联「{_prev}→{_identity(tgt)}」的 join 条件引用了未建模/无法解析"
+                    "的对象或含跨跳占位符, 已跳过该关联; 请在本体中补全对应对象或修正 links 关系")
+                continue
+            rewritten.append((_prev, tgt, join_sql))
+        # 反复剔除引用了"被丢弃关联别名"(该别名对应表不在 FROM)的下游边, 直到收敛,
+        # 防止只跳过中间边却留下引用其别名的边再次生成非法 SQL。
+        while True:
+            kept_refs = {alias_by_obj[t] for (_p, t, _j) in rewritten}
+            dropped = [it for it in rewritten
+                       if any(m.group(1) not in kept_refs
+                              for m in re.finditer(r"(?<![\w.`])(t\d+)\.(?=\w)", it[2]))]
+            if not dropped:
+                break
+            for (_p, _t, _j) in dropped:
+                warnings.append(f"跨对象关联「{_p}→{_t}」依赖的关联已跳过, 一并跳过")
+            rewritten = [it for it in rewritten if it not in dropped]
+        bad_edge_tgts = ({t for (_p, t, _j) in edges_seq}
+                         - {t for (_p, t, _j) in rewritten})
+        for _prev, tgt, join_sql in rewritten:
+            join_parts.append(
+                f"LEFT JOIN {fb_by_obj[tgt].physical_table} AS {alias_by_obj[tgt]} ON {join_sql}")
         for obj_ref in sorted(needed):
             if obj_ref in resolve_failed or obj_ref not in chain_ok:
                 continue
             tgt_key = links_data["names"].get(_ref_key(obj_ref)) or _ref_key(obj_ref)
             if tgt_key == src_key or tgt_key == _identity(src_key):
                 join_ctx[obj_ref] = (resolver, "")   # 主对象别名: 不限定
+                continue
+            chain = _link_chain(links_data["edges"], src_key, tgt_key) or []
+            if any(t in bad_edge_tgts for (t, _j) in chain):
+                resolve_failed.add(obj_ref)   # 关联被跳过: 回抛候选, 不留悬空别名
                 continue
             join_ctx[obj_ref] = (
                 _ColumnResolver(fb_by_obj[tgt_key], dialect=dialect,

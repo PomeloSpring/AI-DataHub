@@ -1,0 +1,206 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 1010" font-family="Noto Sans CJK SC, PingFang SC, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arI" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <rect width="1560" height="1010" fill="#f8fafc"/>
+  <text x="40" y="46" font-size="29" font-weight="700" fill="#0f172a">AI-DataHub 分层架构全景</text>
+  <text x="40" y="74" font-size="15.5" fill="#475569">本体 = 唯一权威语义层 · semantics.execute = 唯一取数口 · 身份只信服务端　｜　↓ 请求与取数　↑ 结果 / 审计 / 证据</text>
+
+  <!-- 主轴箭头 -->
+  <line x1="26" y1="120" x2="26" y2="930" stroke="#475569" stroke-width="2.6" marker-end="url(#ar)"/>
+  <line x1="1094" y1="930" x2="1094" y2="120" stroke="#94a3b8" stroke-width="2.2" stroke-dasharray="7 5" marker-end="url(#arI)"/>
+  <text x="12" y="530" font-size="12.5" fill="#475569" transform="rotate(-90 12 530)">请求 · 工具调用 · 取数</text>
+  <text x="1112" y="560" font-size="12.5" fill="#94a3b8" transform="rotate(-90 1112 560)">结果 · 审计 · 可观测证据</text>
+
+  <!-- ============ L1 ============ -->
+  <g>
+    <rect x="60" y="104" width="1010" height="92" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+    <rect x="60" y="104" width="8" height="92" rx="4" fill="#6366f1"/>
+    <text x="84" y="130" font-size="19" font-weight="700" fill="#0f172a">L1 接入与呈现层</text>
+    <text x="272" y="130" font-size="13.5" fill="#64748b">只回答：用户看见什么、能点什么（不做权限判定）</text>
+    <g font-size="13" fill="#1e293b">
+      <rect x="84" y="146" width="230" height="26" rx="6" fill="#eef2ff"/><text x="94" y="164">三域 /ask·/ws /data /system</text>
+      <rect x="322" y="146" width="230" height="26" rx="6" fill="#eef2ff"/><text x="332" y="164">permissionStore 按码裁菜单</text>
+      <rect x="560" y="146" width="230" height="26" rx="6" fill="#eef2ff"/><text x="570" y="164">图可视化基准 KnowledgeGraph</text>
+      <rect x="798" y="146" width="230" height="26" rx="6" fill="#eef2ff"/><text x="808" y="164">显示 name · 选择用选择框</text>
+    </g>
+    <text x="84" y="188" font-size="12.5" fill="#94a3b8">frontend/src/{pages,stores,components/graph} · sdk/ 嵌入</text>
+  </g>
+
+  <!-- ============ L2 ============ -->
+  <g>
+    <rect x="60" y="210" width="1010" height="92" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+    <rect x="60" y="210" width="8" height="92" rx="4" fill="#0ea5e9"/>
+    <text x="84" y="236" font-size="19" font-weight="700" fill="#0f172a">L2 应用壳 · web 单进程</text>
+    <text x="330" y="236" font-size="13.5" fill="#64748b">只回答：请求能不能进、身份是谁、trace 是谁</text>
+    <g font-size="13" fill="#1e293b">
+      <rect x="84" y="252" width="230" height="26" rx="6" fill="#e0f2fe"/><text x="94" y="270">CORS → API 权限码 → Trace</text>
+      <rect x="322" y="252" width="230" height="26" rx="6" fill="#e0f2fe"/><text x="332" y="270">重复路由 fail-loud 启动即报</text>
+      <rect x="560" y="252" width="230" height="26" rx="6" fill="#e0f2fe"/><text x="570" y="270">JWT/AK/owner 解析为可信身份</text>
+      <rect x="798" y="252" width="230" height="26" rx="6" fill="#e0f2fe"/><text x="808" y="270">:8000 无 --reload，重启即生效</text>
+    </g>
+    <text x="84" y="294" font-size="12.5" fill="#94a3b8">backend/app/main.py · common/{auth,api_permission}.py · services.conf 端口收敛</text>
+  </g>
+
+  <!-- ============ L3 ============ -->
+  <g>
+    <rect x="60" y="316" width="1010" height="92" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+    <rect x="60" y="316" width="8" height="92" rx="4" fill="#14b8a6"/>
+    <text x="84" y="342" font-size="19" font-weight="700" fill="#0f172a">L3 业务模块层 ×8</text>
+    <text x="284" y="342" font-size="13.5" fill="#64748b">领域能力与编排 —— 不得直连数据源返回数据行</text>
+    <g font-size="13" fill="#0f172a" font-weight="600">
+      <rect x="84" y="358" width="120" height="26" rx="6" fill="#ccfbf1"/><text x="100" y="376">auth 身份</text>
+      <rect x="212" y="358" width="120" height="26" rx="6" fill="#ccfbf1"/><text x="228" y="376">catalog 本体</text>
+      <rect x="340" y="358" width="120" height="26" rx="6" fill="#ccfbf1"/><text x="356" y="376">gov 敏感基线</text>
+      <rect x="468" y="358" width="120" height="26" rx="6" fill="#ccfbf1"/><text x="484" y="376">flow 编排</text>
+      <rect x="596" y="358" width="120" height="26" rx="6" fill="#ccfbf1"/><text x="612" y="376">mind 智能体</text>
+      <rect x="724" y="358" width="120" height="26" rx="6" fill="#ccfbf1"/><text x="740" y="376">viz 看板报表</text>
+      <rect x="852" y="358" width="108" height="26" rx="6" fill="#ccfbf1"/><text x="868" y="376">platform</text>
+      <rect x="968" y="358" width="90" height="26" rx="6" fill="#ccfbf1"/><text x="984" y="376">semhub</text>
+    </g>
+    <text x="84" y="400" font-size="12.5" fill="#94a3b8">跨模块只调 service 或 backend/core·semantics 公共层，不得互相 import router / 自建取数通道</text>
+  </g>
+
+  <!-- ============ L4 ============ -->
+  <g>
+    <rect x="60" y="422" width="1010" height="92" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+    <rect x="60" y="422" width="8" height="92" rx="4" fill="#a855f7"/>
+    <text x="84" y="448" font-size="19" font-weight="700" fill="#0f172a">L4 智能体执行层</text>
+    <text x="272" y="448" font-size="13.5" fill="#64748b">LLM 能调哪些工具、以谁的身份调 —— 不持有数据源边界</text>
+    <g font-size="13" fill="#1e293b">
+      <rect x="84" y="464" width="230" height="26" rx="6" fill="#f3e8fd"/><text x="94" y="482">AS-BOT（角色 1:1）+ persona</text>
+      <rect x="322" y="464" width="230" height="26" rx="6" fill="#f3e8fd"/><text x="332" y="482">ToolPolicy 四源交集编译</text>
+      <rect x="560" y="464" width="230" height="26" rx="6" fill="#f3e8fd"/><text x="570" y="482">resource_guard 资源域裁决</text>
+      <rect x="798" y="464" width="230" height="26" rx="6" fill="#f3e8fd"/><text x="808" y="482">CLI/SDK + MCP 工具组 + 沙箱</text>
+    </g>
+    <text x="84" y="506" font-size="12.5" fill="#94a3b8">prompt_composer 注入护栏/角色与 RLS 摘要 · outbound_guard 出站收口 · 会话工作区按 user/workspace 分片</text>
+  </g>
+
+  <!-- ============ L5 ============ -->
+  <g>
+    <rect x="60" y="528" width="1010" height="92" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+    <rect x="60" y="528" width="8" height="92" rx="4" fill="#f59e0b"/>
+    <text x="84" y="554" font-size="19" font-weight="700" fill="#0f172a">L5 统一语义层（确定性，无 LLM）</text>
+    <text x="404" y="554" font-size="13.5" fill="#64748b">业务意图 → 已施加治理的 SQL；本层不吃裸 SQL</text>
+    <g font-size="13" fill="#1e293b">
+      <rect x="84" y="570" width="180" height="26" rx="6" fill="#fef3c7"/><text x="94" y="588">parse_intent 拒 SQL</text>
+      <rect x="272" y="570" width="180" height="26" rx="6" fill="#fef3c7"/><text x="282" y="588">binding 归属裁决</text>
+      <rect x="460" y="570" width="180" height="26" rx="6" fill="#fef3c7"/><text x="470" y="588">planner 五档解析</text>
+      <rect x="648" y="570" width="180" height="26" rx="6" fill="#fef3c7"/><text x="658" y="588">跨对象 JOIN·窗口</text>
+      <rect x="836" y="570" width="192" height="26" rx="6" fill="#fef3c7"/><text x="846" y="588">七闸门 gates·护栏 LIMIT</text>
+    </g>
+    <text x="84" y="612" font-size="12.5" fill="#94a3b8">模糊只回抛候选（fuzzy_rejected → alias_suggestions）· 相对时间走 time_window · 跨站归 LLM 逐站编排</text>
+  </g>
+
+  <!-- ============ L6 ============ -->
+  <g>
+    <rect x="60" y="634" width="1010" height="92" rx="10" fill="#ffffff" stroke="#fca5a5"/>
+    <rect x="60" y="634" width="8" height="92" rx="4" fill="#dc2626"/>
+    <text x="84" y="660" font-size="19" font-weight="700" fill="#0f172a">L6 治理与执行内核（数据护城河）</text>
+    <text x="404" y="660" font-size="13.5" fill="#64748b">谁可看哪些行/列/是否脱敏 —— 不外泄物理细节</text>
+    <g font-size="13" fill="#1e293b">
+      <rect x="84" y="676" width="230" height="26" rx="6" fill="#fee2e2"/><text x="94" y="694">enforcer 顺序裁决·只增不减</text>
+      <rect x="322" y="676" width="230" height="26" rx="6" fill="#fee2e2"/><text x="332" y="694">query_executor 唯一执行口</text>
+      <rect x="560" y="676" width="230" height="26" rx="6" fill="#fee2e2"/><text x="570" y="694">DataFusion 下推 / 跨源联邦</text>
+      <rect x="798" y="676" width="230" height="26" rx="6" fill="#fee2e2"/><text x="808" y="694">RLS 二次注入纵深·按源方言</text>
+    </g>
+    <text x="84" y="718" font-size="12.5" fill="#94a3b8">connector 不可用/失败一律 raise（禁裸连回退）· 成功与拒绝均落审计 · df_to_columns_rows 无损消歧</text>
+  </g>
+
+  <!-- ============ L7 ============ -->
+  <g>
+    <rect x="60" y="740" width="1010" height="92" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+    <rect x="60" y="740" width="8" height="92" rx="4" fill="#64748b"/>
+    <text x="84" y="766" font-size="19" font-weight="700" fill="#0f172a">L7 存储与知识层</text>
+    <text x="252" y="766" font-size="13.5" fill="#64748b">事实存在哪 —— 不承担鉴权</text>
+    <g font-size="13" fill="#1e293b">
+      <rect x="84" y="782" width="196" height="26" rx="6" fill="#e2e8f0"/><text x="94" y="800">MySQL 元库 adh_*</text>
+      <rect x="288" y="782" width="196" height="26" rx="6" fill="#e2e8f0"/><text x="298" y="800">Oxigraph RDF·SPARQL</text>
+      <rect x="492" y="782" width="160" height="26" rx="6" fill="#e2e8f0"/><text x="502" y="800">Redis 缓存/broker</text>
+      <rect x="660" y="782" width="160" height="26" rx="6" fill="#e2e8f0"/><text x="670" y="800">对象存储/工作区</text>
+      <rect x="828" y="782" width="200" height="26" rx="6" fill="#e2e8f0"/><text x="838" y="800">业务源 Doris·PG·SLS…</text>
+    </g>
+    <text x="84" y="824" font-size="12.5" fill="#94a3b8">canonical JSON 为唯一可编辑源；YAML/MD/RDF/云文档/展开行全部派生 · QMind 云知识库（本体经白名单渲染上云）</text>
+  </g>
+
+  <!-- ============ L8 横切 ============ -->
+  <g>
+    <rect x="60" y="846" width="1010" height="88" rx="10" fill="#ffffff" stroke="#a7f3d0" stroke-dasharray="7 5"/>
+    <rect x="60" y="846" width="8" height="88" rx="4" fill="#059669"/>
+    <text x="84" y="872" font-size="19" font-weight="700" fill="#0f172a">L8 评测与自进化（横切·离线）</text>
+    <text x="404" y="872" font-size="13.5" fill="#64748b">改动是否让能力回退 —— 不参与在线请求</text>
+    <g font-size="13" fill="#1e293b">
+      <rect x="84" y="888" width="216" height="26" rx="6" fill="#d1fae5"/><text x="94" y="906">eval 四适配器 L1-L3+LLM</text>
+      <rect x="308" y="888" width="236" height="26" rx="6" fill="#d1fae5"/><text x="318" y="906">双口径门禁 baseline/floor</text>
+      <rect x="552" y="888" width="240" height="26" rx="6" fill="#d1fae5"/><text x="562" y="906">evolution 失败→候选→四出口</text>
+      <rect x="800" y="888" width="228" height="26" rx="6" fill="#d1fae5"/><text x="810" y="906">巡检脚本（只报告不自动改）</text>
+    </g>
+    <text x="84" y="928" font-size="12.5" fill="#94a3b8">准确率三因子：意图约束 × 确定性编译 × 种子解析质量；归因优先——无分桶数据不做策略取舍</text>
+  </g>
+
+  <!-- ============ 右侧：三中枢 ============ -->
+  <g>
+    <rect x="1150" y="104" width="370" height="216" rx="10" fill="#0f172a"/>
+    <text x="1170" y="132" font-size="16" font-weight="700" fill="#ffffff">三个不可动摇的中枢</text>
+    <g font-size="12.8" fill="#cbd5e1">
+      <text x="1170" y="160">① 单一语义事实源</text>
+      <text x="1184" y="180">本体 canonical JSON 唯一可编辑；</text>
+      <text x="1184" y="197">派生视图严禁独立编辑</text>
+      <text x="1170" y="224">② 单一取数执行口</text>
+      <text x="1184" y="244">semantics.execute → 统一治理链，</text>
+      <text x="1184" y="261">杜绝「一条合规一条旁路」</text>
+      <text x="1170" y="288">③ 单一身份口径</text>
+      <text x="1184" y="306">只信服务端解析，绝不读 body.user_id</text>
+    </g>
+  </g>
+
+  <!-- 右侧：权限三维 -->
+  <g>
+    <rect x="1150" y="336" width="370" height="188" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+    <text x="1170" y="364" font-size="16" font-weight="700" fill="#0f172a">权限三维正交（不得混用）</text>
+    <rect x="1170" y="378" width="330" height="34" rx="6" fill="#fef9c3"/>
+    <text x="1180" y="399" font-size="12.8" fill="#1e293b">A 功能能力：perm_code + ai_access</text>
+    <rect x="1170" y="418" width="330" height="34" rx="6" fill="#fee2e2"/>
+    <text x="1180" y="439" font-size="12.8" fill="#1e293b">B 数据资源：源/表/列/行 + 敏感基线</text>
+    <rect x="1170" y="458" width="330" height="34" rx="6" fill="#f3e8fd"/>
+    <text x="1180" y="479" font-size="12.8" fill="#1e293b">C AI 工具面：AS-BOT 勾选 + 涉密上界</text>
+    <text x="1170" y="510" font-size="12.2" fill="#94a3b8">拿 A 门控 B → 权限语义与 enforcer/gates 打架</text>
+  </g>
+
+  <!-- 右侧：围栏纵深 -->
+  <g>
+    <rect x="1150" y="540" width="370" height="230" rx="10" fill="#ffffff" stroke="#fca5a5"/>
+    <text x="1170" y="568" font-size="16" font-weight="700" fill="#0f172a">安全围栏 · 十二道纵深</text>
+    <g font-size="12.6" fill="#1e293b">
+      <text x="1170" y="594">入口身份 · API 权限码 · 提示词护栏</text>
+      <text x="1170" y="618">工具面 · 参数与资源域 · 意图契约</text>
+      <text x="1170" y="642">七闸门 · SQL 语法 · 数据护城河</text>
+      <text x="1170" y="666">引擎纵深 · 序列化与出站 · 旁路隔离</text>
+      <text x="1170" y="690">运行环境沙箱</text>
+    </g>
+    <line x1="1170" y1="706" x2="1500" y2="706" stroke="#fecaca"/>
+    <text x="1170" y="728" font-size="12.4" font-weight="700" fill="#dc2626">全部 fail-closed：拒绝必须可解释、可审计</text>
+    <text x="1170" y="750" font-size="12.4" fill="#dc2626">禁止用降级分支掩藏功能失败</text>
+  </g>
+
+  <!-- 右侧：跨站与执行 -->
+  <g>
+    <rect x="1150" y="786" width="370" height="148" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+    <text x="1170" y="814" font-size="16" font-weight="700" fill="#0f172a">跨站 = 编排问题，不是 SQL 维度</text>
+    <g font-size="12.6" fill="#1e293b">
+      <text x="1170" y="842">LLM 逐站各发一次单站受治理执行</text>
+      <text x="1170" y="864">服务端跨站展开/合计行已退役</text>
+      <text x="1170" y="886">未授权站静默裁剪；显式越权即拒绝</text>
+      <text x="1170" y="908">执行失败标 degraded，不冒充完整数据</text>
+    </g>
+  </g>
+
+  <text x="60" y="970" font-size="12.6" fill="#475569">异步执行面：celery worker + beat（Redis broker，租约单实例）· dataengine 已退役　｜　配置唯一来源 backend/.env</text>
+  <text x="60" y="992" font-size="12.6" fill="#94a3b8">细节与时序见 docs/ARCHITECTURE_OVERVIEW.md §3-§6；本图为 §1 的矢量版本，改动需同步两处</text>
+</svg>

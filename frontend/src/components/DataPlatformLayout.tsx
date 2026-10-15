@@ -5,7 +5,7 @@ import {
   Sun, Moon, Palette, Zap, TrendingUp, Grid3x3, GlassWater, Heart,
   UserCircle, X, ChevronLeft, ChevronRight, GitBranch,
   RefreshCw, Activity, Shield, ShieldCheck, Ruler, Brain, Gem, Boxes, Terminal, Layers,
-  FunctionSquare,
+  FunctionSquare, Network, BarChart3,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -48,6 +48,8 @@ const DATA_PLATFORM_MENU_ITEMS = [
   { section: '数据目录' },
   { key: '/data/datasets', icon: Layers, label: '数据集' },
   { key: '/data/ontology', icon: Boxes, label: '数据建模' },
+  { key: '/data/metrics', icon: BarChart3, label: '指标与维度' },
+  { key: '/data/knowledge-graph', icon: Network, label: '本体图谱' },
   { section: '数据安全配置' },
   { key: '/data/sensitive', icon: Shield, label: '敏感数据' },
   { key: '/data/rls', icon: ShieldCheck, label: '安全策略' },

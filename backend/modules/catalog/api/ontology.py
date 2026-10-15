@@ -115,11 +115,14 @@ def _assert_dispatchable(workspace_id: int) -> None:
             detail="生成任务无法派发：未找到可用的外部执行层(qoder 层缺失或未启用)")
 
 
-def _build_task_message(ds_name: str, table_count: int) -> str:
+def _build_task_message(ds_name: str, table_count: int, kb_count: int = 0) -> str:
     """服务端组装『生成本体模型』任务消息(数据源业务名，内部 id 对 LLM 黑盒)。"""
     from ..services.ontology_service import ONTOLOGY_SCHEMA_SPEC
 
-    return f"""请执行『生成本体模型』任务：为数据源「{ds_name}」(业务名，共 {table_count} 张业务表)归纳源本体草案。
+    kb_note = (f"\n本次生成已选定 {kb_count} 个业务知识库，素材里会附带检索到的业务线索"
+               "（实体关系/统计维度），请据此推断 links 与 dimensions（仅参考，不臆造）。"
+               if kb_count else "")
+    return f"""请执行『生成本体模型』任务：为数据源「{ds_name}」(业务名，共 {table_count} 张业务表)归纳源本体草案。{kb_note}
 
 归纳规范(输出结构 domain / description / objects 必须严格遵守)：
 {ONTOLOGY_SCHEMA_SPEC}
@@ -372,15 +375,34 @@ async def generate_ontology(request: Request, req: dict, user: dict = Depends(ge
     if datasource_id not in allowed:
         raise HTTPException(status_code=403, detail="当前用户无权使用该数据源，请选择已授权数据源")
 
+    # 辅助生成知识库（可选）：服务端校验归属/启用（fail-closed，越界拒），
+    # kb_ids 经任务绑定注入工具侧检索通道，不进 LLM 视野（护栏 §7）。
+    raw_kb_ids = req.get("kb_ids") or []
+    if not isinstance(raw_kb_ids, list):
+        raise HTTPException(status_code=400, detail="kb_ids 需为数组")
+    kb_ids = []
+    for x in raw_kb_ids:
+        try:
+            kb_ids.append(int(x))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="kb_ids 需为知识库 id 数组")
+    if kb_ids:
+        from backend.modules.mind.execution.resource_guard import validate_knowledge_binding
+        try:
+            validate_knowledge_binding(kb_ids)
+        except PermissionError as e:
+            raise HTTPException(status_code=400, detail=f"知识库校验失败: {e}")
+
     ds_name, table_count = _datasource_brief(datasource_id)
     _assert_dispatchable(workspace_id)
     as_bot_key = _resolve_task_as_bot(user, workspace_id)
 
-    task_message = _build_task_message(ds_name, table_count)
+    task_message = _build_task_message(ds_name, table_count, len(kb_ids))
     conversation_id = _create_task_conversation(
         user, workspace_id, datasource_id, as_bot_key, ds_name, task_message)
-    # 任务绑定标记：业务源草案写入仅限本任务会话(resource_guard.assert_ontology_draft_scope)
-    task_binding = {"kind": "ontology_generate", "datasource_id": datasource_id}
+    # 任务绑定标记：仅作任务派发溯源 + kb_ids 服务端传递（角色权限模型下不作工具把关条件，
+    # 把关见 resource_guard：目标源 ∈ 角色授权集 + 权限码）
+    task_binding = {"kind": "ontology_generate", "datasource_id": datasource_id, "kb_ids": kb_ids}
 
     async def event_stream():
         async for event, data in _generate_task_events(
@@ -513,6 +535,49 @@ def get_model(model_id: int, user: dict = Depends(get_current_user)):
         # 不泄露存在性：不可见即 404（不回 403 提示“存在但无权”）
         raise HTTPException(status_code=404, detail="模型不存在")
     return model
+
+
+@router.get("/models/{model_id}/view")
+def view_model(
+    model_id: int,
+    fmt: str = Query("internal", alias="format", description="internal|palantir"),
+    as_: str = Query("json", alias="as", description="json|yaml|md"),
+    user: dict = Depends(get_current_user),
+):
+    """本体结构化查看器（只读投影）：format=internal|palantir × as=json|yaml|md。
+
+    读当前模型 json_content → hydrate_doc（按 bound_object_key 注入字典口径/维度）
+    → 按 format 选 canonical/to_palantir → 按 as 选 json/yaml/md。只读，
+    不改 save_draft/activate 路径，存储的 canonical json_content 保持不变。
+    """
+    model = ontology_service.get_model(model_id)
+    if not model or not ontology_service.can_view_model(model, _allowed_source_ids(user)):
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if fmt not in ("internal", "palantir"):
+        raise HTTPException(status_code=400, detail="format 仅支持 internal|palantir")
+    if as_ not in ("json", "yaml", "md"):
+        raise HTTPException(status_code=400, detail="as 仅支持 json|yaml|md")
+    try:
+        doc = json.loads(model.get("json_content") or "{}")
+    except (json.JSONDecodeError, TypeError) as e:
+        raise HTTPException(status_code=400, detail="模型内容损坏，无法生成视图") from e
+    hydrated = ontology_service.hydrate_doc(doc, int(model.get("datasource_id") or 0))
+    if fmt == "palantir":
+        pal = ontology_service.to_palantir(hydrated)
+        if as_ == "yaml":
+            text = ontology_service.to_palantir_yaml(hydrated)
+        elif as_ == "md":
+            text = "# Palantir 视图\n\n```yaml\n" + ontology_service.to_palantir_yaml(hydrated) + "\n```\n"
+        else:
+            text = json.dumps(pal, ensure_ascii=False, indent=2)
+    else:
+        if as_ == "yaml":
+            text = ontology_service.to_yaml(hydrated)
+        elif as_ == "md":
+            text = ontology_service.to_md(hydrated)
+        else:
+            text = json.dumps(hydrated, ensure_ascii=False, indent=2)
+    return {"format": fmt, "as": as_, "text": text}
 
 
 @router.get("/models/{model_id}/sync-doc")

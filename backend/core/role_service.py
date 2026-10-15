@@ -139,6 +139,8 @@ class RoleService:
                 cur.execute("DELETE FROM adh_role_attributes WHERE role_id = %s", (role_id,))
                 cur.execute("DELETE FROM adh_user_roles WHERE role_id = %s", (role_id,))
                 cur.execute("DELETE FROM adh_role_dashboard_access WHERE role_id = %s", (role_id,))
+                cur.execute("DELETE FROM adh_role_dataset_access WHERE role_id = %s", (role_id,))
+                cur.execute("DELETE FROM adh_role_datasource_access WHERE role_id = %s", (role_id,))
                 cur.execute("DELETE FROM adh_roles WHERE id = %s", (role_id,))
                 conn.commit()
                 return True
@@ -571,6 +573,73 @@ class RoleService:
                     """SELECT d.id, d.name, d.status
                        FROM adh_dashboards d
                        ORDER BY d.name"""
+                )
+                return cur.fetchall()
+        finally:
+            conn.close()
+
+    # ── Dataset Access (数据集可见性按角色授权) ────────────────────────
+
+    def get_role_datasets(self, role_id: int) -> list:
+        """Get dataset IDs visible to a role, with display info."""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT rda.dataset_id, d.name
+                       FROM adh_role_dataset_access rda
+                       LEFT JOIN adh_datasets d ON d.id = rda.dataset_id
+                       WHERE rda.role_id = %s ORDER BY d.name""",
+                    (role_id,)
+                )
+                return cur.fetchall()
+        finally:
+            conn.close()
+
+    def set_role_datasets(self, role_id: int, dataset_ids: list) -> bool:
+        """Replace all dataset visibility grants for a role (full replace, idempotent)."""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM adh_role_dataset_access WHERE role_id = %s", (role_id,))
+                for ds_id in set(dataset_ids or []):
+                    cur.execute(
+                        "INSERT IGNORE INTO adh_role_dataset_access (role_id, dataset_id) VALUES (%s, %s)",
+                        (role_id, int(ds_id))
+                    )
+                conn.commit()
+                return True
+        finally:
+            conn.close()
+
+    def get_user_allowed_datasets(self, user_id: int) -> list:
+        """Get dataset IDs a user can see via their roles (可见性唯一裁决).
+
+        **fail-closed**: 空授权返回空列表 = 一律不可见, 不解释为全量。
+        admin 在调用方 bypass。
+        """
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT DISTINCT rda.dataset_id
+                       FROM adh_user_roles ur
+                       JOIN adh_role_dataset_access rda ON rda.role_id = ur.role_id
+                       WHERE ur.user_id = %s""",
+                    (user_id,)
+                )
+                return [r["dataset_id"] for r in cur.fetchall()]
+        finally:
+            conn.close()
+
+    def list_dataset_catalog(self) -> list:
+        """All active datasets (admin 配置选择器用)."""
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT d.id, d.name FROM adh_datasets d
+                       WHERE d.status = 'active' ORDER BY d.name"""
                 )
                 return cur.fetchall()
         finally:

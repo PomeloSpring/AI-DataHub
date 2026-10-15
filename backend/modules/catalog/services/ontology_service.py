@@ -127,8 +127,12 @@ def _collect_metadata(datasource_id: int) -> dict:
     }
 
 
-def _schema_text(batch_tables: list, meta: dict) -> str:
-    """把一批表及其列、相关术语/指标/关系拼成 LLM 输入文本。"""
+def _schema_text(batch_tables: list, meta: dict, kb_text: str = "") -> str:
+    """把一批表及其列、相关术语/指标/关系拼成 LLM 输入文本。
+
+    kb_text 非空时（会话选定了辅助知识库）在末尾追加「Business knowledge」段，
+    引导 agent 依据业务知识推断 links/dimensions（仅作输入上下文，不改事实源）。
+    """
     table_names = {t["table_name"] for t in batch_tables}
     lines = []
     for t in batch_tables:
@@ -212,6 +216,11 @@ def _schema_text(batch_tables: list, meta: dict) -> str:
                 line += " | 枚举: " + ", ".join(f"{k}={v}" for k, v in sorted(vl.items()))
             lines.append(line)
 
+    if kb_text:
+        lines.append("")
+        lines.append("Business knowledge (from selected KB):")
+        lines.append(kb_text.strip())
+
     return "\n".join(lines)
 
 
@@ -248,6 +257,7 @@ ONTOLOGY_SCHEMA_SPEC = """你是数据架构师，负责从物理表结构中归
           "target": "目标对象 key",
           "type": "belongs_to / has_many / references",
           "join": "a.col = b.col",
+          "join_type": "left | inner（可选，缺省 left）",
           "cardinality": "N:1",
           "description": ""
         }
@@ -262,7 +272,7 @@ ONTOLOGY_SCHEMA_SPEC = """你是数据架构师，负责从物理表结构中归
 2. 每张重要业务表至少被一个对象覆盖；日志/配置/临时表可忽略
 3. properties 只列业务相关列（主键、业务字段、状态枚举），忽略纯技术字段
 4. enum 仅对低基数状态/类型字段填写，格式 {"0": "待支付", "1": "已支付"}（code→业务标签），不确定就留空对象
-5. links 优先使用已知 relations，其次根据列名语义推断（需给出 join 表达式）
+5. links 优先使用已知 relations，其次根据列名语义推断（需给出 join 表达式）；join_type 可选（inner 仅保留匹配行，其余/缺省一律 left，保守不丢主表行）
 6. metrics 只引用指标名字符串（口径/formula/单位统一登记在指标字典，对象不内嵌口径）；
    指标优先采用给定 Metrics/Terms 中的名字
 7. 描述按 5W2H 槽位组织（与检索侧槽位规划同骨架）：what=业务含义/口径、when=时间口径、
@@ -359,6 +369,33 @@ def _infer_agg(formula: str) -> str:
     return m.group(1).upper() if m else "CUSTOM"
 
 
+# 指标公式"合法单表聚合"判定（与 scripts/backfill_dict_target_table.py 同口径）：
+# 仅当公式以聚合函数开头、不含内联 WHERE/子查询/跨表限定时，才可安全绑定 target_table。
+_METRIC_AGG_HEAD = re.compile(r"^\s*(SUM|AVG|COUNT|MIN|MAX)\s*\(", re.I)
+_METRIC_SELECT = re.compile(r"\bSELECT\b", re.I)
+_METRIC_WHERE = re.compile(r"\bWHERE\b", re.I)
+_METRIC_QUALIFIED = re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)")
+
+
+def _metric_safe_target(formula: str, primary_table: str) -> str:
+    """公式为"合法单表聚合"时返回其 target_table(=对象主表), 否则空串。
+
+    排除内联 WHERE / 子查询 / 跨表限定 / 非聚合(布尔标记·标量) —— 这些属建模回炉项,
+    激活会让 planner 生成非法/错误 SQL, 故留空 target_table 使其维持 fail-loud
+    (宁缺勿错, 不把"目录挂着、编译用不了"变成"生成坏 SQL")。
+    """
+    f = (formula or "").strip()
+    t = (primary_table or "").strip()
+    if not f or not t:
+        return ""
+    if _METRIC_SELECT.search(f) or _METRIC_WHERE.search(f):
+        return ""
+    for pref, _c in _METRIC_QUALIFIED.findall(f):
+        if pref.lower() != t.lower():
+            return ""
+    return t if _METRIC_AGG_HEAD.match(f) else ""
+
+
 def absorb_object_metric_specs(doc: dict, datasource_id: int = 0,
                                persist: bool = True) -> dict:
     """把对象内旧格式指标条目({name,formula,description})归并进指标字典并降为名字引用。
@@ -366,7 +403,7 @@ def absorb_object_metric_specs(doc: dict, datasource_id: int = 0,
     口径唯一登记 = adh_metrics（规则 §3）；幂等；已登记口径非空且不一致→告警不覆盖
     （人工口径优先）。persist=False 只归一 doc（dry-run）。
     """
-    specs: list[tuple[str, str, str, str]] = []
+    specs: list[tuple[str, str, str, str, str]] = []
     for o in doc.get("objects") or []:
         names: list[str] = []
         for m in o.get("metrics") or []:
@@ -381,7 +418,8 @@ def absorb_object_metric_specs(doc: dict, datasource_id: int = 0,
                 continue
             specs.append((str(o.get("key") or ""), name,
                           str(m.get("formula") or "").strip(),
-                          str(m.get("description") or "").strip()))
+                          str(m.get("description") or "").strip(),
+                          str(o.get("primary_table") or "").strip()))
             names.append(name)
         o["metrics"] = names
     if not specs or not persist:
@@ -395,9 +433,10 @@ def absorb_object_metric_specs(doc: dict, datasource_id: int = 0,
         ds_val = 0
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
-            for obj_key, name, formula, desc in specs:
+            for obj_key, name, formula, desc, primary_table in specs:
+                safe_tt = _metric_safe_target(formula, primary_table)
                 cur.execute(
-                    "SELECT id, formula, description, bound_object_key FROM adh_metrics "
+                    "SELECT id, formula, description, bound_object_key, target_table FROM adh_metrics "
                     "WHERE name = %s AND is_active = 1 "
                     "AND (datasource_id = 0 OR datasource_id = %s) "
                     "ORDER BY datasource_id DESC LIMIT 1",
@@ -416,6 +455,10 @@ def absorb_object_metric_specs(doc: dict, datasource_id: int = 0,
                     if obj_key and not (row.get("bound_object_key") or ""):
                         cur.execute("UPDATE adh_metrics SET bound_object_key = %s WHERE id = %s",
                                     (obj_key, row["id"]))
+                    # 存量行 target_table 为空且公式为合法单表聚合 → 回填(否则留空维持 fail-loud)
+                    if safe_tt and not (row.get("target_table") or ""):
+                        cur.execute("UPDATE adh_metrics SET target_table = %s WHERE id = %s",
+                                    (safe_tt, row["id"]))
                 else:
                     now = _now()
                     cur.execute("SELECT COALESCE(MAX(id), 0) + 1 AS nid FROM adh_metrics")
@@ -426,8 +469,8 @@ def absorb_object_metric_specs(doc: dict, datasource_id: int = 0,
                         "(id, workspace_id, name, formula, agg_type, description, "
                         "target_table, target_column, datasource_id, is_active, "
                         "created_at, updated_at, default_agg, bound_object_key) "
-                        "VALUES (%s, 0, %s, %s, %s, %s, '', '', %s, 1, %s, %s, %s, %s)",
-                        (row_id, name, formula or "", agg, desc or "",
+                        "VALUES (%s, 0, %s, %s, %s, %s, %s, '', %s, 1, %s, %s, %s, %s)",
+                        (row_id, name, formula or "", agg, desc or "", safe_tt,
                          ds_val, now, now, agg, obj_key or None))
         conn.commit()
     return doc
@@ -506,11 +549,15 @@ def merge_object_pair(a: dict, b: dict) -> tuple:
                     "gained_metrics": sorted(gained)}
 
 
-def build_generation_batches(datasource_id: int) -> list[str]:
+def build_generation_batches(datasource_id: int, kb_ids: list | None = None) -> list[str]:
     """采集数据源元数据并按批产出归纳素材文本（确定性，无 LLM 调用）。
 
     每批不超过 BATCH_MAX_TABLES 张表（按 domain_tag 分组后切批），批序确定，
     供 AS-BOT 会话任务分批归纳后经 save_generated_draft 提交合并。
+
+    kb_ids 非空时（会话选定了辅助知识库），按批以表名为线索检索业务知识，
+    拼成「Business knowledge」段附于素材末尾，引导 agent 推断 links/dimensions。
+    检索沿用现有 qmind/rag 通道；无命中时显式标注（不静默伪装成已补充）。
 
     Returns:
         素材文本列表（每批一条，同 _schema_text 输出）
@@ -529,7 +576,46 @@ def build_generation_batches(datasource_id: int) -> list[str]:
         for i in range(0, len(group_tables), BATCH_MAX_TABLES):
             batches.append(group_tables[i:i + BATCH_MAX_TABLES])
 
-    return [_schema_text(batch, meta) for batch in batches]
+    kb_texts = _retrieve_kb_texts(batches, datasource_id, kb_ids) if kb_ids else [""] * len(batches)
+    return [_schema_text(batch, meta, kb_text=txt) for batch, txt in zip(batches, kb_texts)]
+
+
+def _retrieve_kb_texts(batches: list[list], datasource_id: int, kb_ids: list) -> list[str]:
+    """逐批以表名作为线索从选定知识库检索业务知识（同步 qmind_retrieve）。
+
+    返回与 batches 对齐的文本列表；无命中/检索不可用时返回带说明的标注（显式暴露，
+    不回退成静默空段）。本函数在 to_thread 内同步执行，qmind CLI 子进程自带超时/熔断。
+    """
+    from backend.modules.mind.rag.qmind_retriever import qmind_retrieve
+
+    ids = [int(x) for x in (kb_ids or []) if str(x).strip()]
+    texts: list[str] = []
+    for batch in batches:
+        names = [t["table_name"] for t in batch][:8]
+        question = "业务对象与关系、统计维度、指标口径：" + "、".join(names)
+        try:
+            res = qmind_retrieve(question, datasource_id=datasource_id, kb_ids=ids, top_k=5)
+        except Exception as e:  # noqa: BLE001 — 检索失败不得影响主链，但要显式标注
+            logger.warning("[ontology] KB retrieve failed (ds=%s): %s", datasource_id, e)
+            texts.append(f"（知识库检索不可用: {e}）")
+            continue
+        chunks = (res or {}).get("chunks") or []
+        if not chunks:
+            rag_src = (res or {}).get("rag_source") or ""
+            note = "（所选知识库未命中相关片段"
+            if (res or {}).get("degraded"):
+                note += f"，当前降级: {rag_src}"
+            texts.append(note + "）")
+            continue
+        segs = []
+        for c in chunks:
+            title = str((c or {}).get("title") or "").strip()
+            body = str((c or {}).get("content") or "").strip()
+            if not body:
+                continue
+            segs.append(f"### {title}\n{body}" if title else body)
+        texts.append("\n\n".join(segs))
+    return texts
 
 
 def _load_draft_objects(datasource_id: int) -> tuple[list, str, str]:
@@ -737,6 +823,8 @@ def _object_md(obj: dict) -> str:
             seg = f"- {lk.get('type', 'references')} {lk.get('target', '')}"
             if lk.get("join"):
                 seg += f"，join: {lk['join']}"
+            if lk.get("join_type"):
+                seg += f"，{lk['join_type']}"
             if lk.get("cardinality"):
                 seg += f" ({lk['cardinality']})"
             if lk.get("description"):
@@ -754,8 +842,35 @@ def _object_md(obj: dict) -> str:
             seg = f"- {_metric_name(m)}"
             if m.get("formula"):
                 seg += f" = {m['formula']}"
+            if m.get("agg_type"):
+                seg += f"（聚合: {m['agg_type']}"
+                seg += f"，单位: {m['unit']}）" if m.get("unit") else "）"
+            elif m.get("unit"):
+                seg += f"（单位: {m['unit']}）"
             if m.get("description"):
                 seg += f"（{m['description']}）"
+            lines.append(seg)
+
+    # hydrate 视图补充：对象维度清单（存储 canonical 无 dimensions 时此段不渲染）
+    dims = obj.get("dimensions") or []
+    if dims:
+        lines.append("")
+        lines.append("### 维度")
+        for d in dims:
+            if isinstance(d, str):
+                lines.append(f"- {d}")
+                continue
+            seg = f"- {d.get('display_name') or d.get('name', '')}"
+            if d.get("target_column"):
+                seg += f" ({d['target_column']})"
+            if d.get("is_time"):
+                seg += " [时间维度]"
+            vl = d.get("value_labels") or {}
+            if isinstance(vl, dict) and vl:
+                seg += "；枚举: " + "; ".join(
+                    f"{k}={v}" for k, v in sorted(vl.items(), key=lambda kv: str(kv[0])))
+            if d.get("description"):
+                seg += f"：{d['description']}"
             lines.append(seg)
 
     return "\n".join(lines)
@@ -932,6 +1047,29 @@ def _cloud_object_md(obj: dict, template_vars_fn=None, dict_metrics: dict = None
                 seg += f"（{m['description']}）"
             lines.append(seg)
 
+    # ── 维度（业务）：只出业务名/时间标注/枚举标签，剔 target_column 物理列（护栏 §7）──
+    dims = obj.get("dimensions") or []
+    if dims:
+        lines.append("")
+        lines.append("### 维度（业务）")
+        for d in dims:
+            if isinstance(d, str):
+                lines.append(f"- {d}")
+                continue
+            biz = (d.get("display_name") or d.get("name") or "").strip()
+            if not biz:
+                continue
+            seg = f"- {biz}"
+            if d.get("is_time"):
+                seg += "（时间维度）"
+            vl = d.get("value_labels") or {}
+            if isinstance(vl, dict) and vl:
+                seg += "；枚举: " + "; ".join(
+                    f"{k}:{v}" for k, v in sorted(vl.items(), key=lambda kv: str(kv[0])))
+            if d.get("description"):
+                seg += f"：{d['description']}"
+            lines.append(seg)
+
     return "\n".join(lines)
 
 
@@ -985,6 +1123,205 @@ def to_cloud_md(doc: dict, template_vars_fn=None, dict_metrics: dict = None) -> 
                 parts.append(f"  · 跨源关联说明: {sroute['join_hint']}")
         parts.append("")
     return "\n".join(parts)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 读时 hydrate + Palantir 只读投影（结构化查看器专用，零写入）
+# ═══════════════════════════════════════════════════════════════
+
+def _hydrate_json(v):
+    """字典 JSON 列（aliases/value_labels）可能是字符串，归一为对象；解析失败返回 None。"""
+    if isinstance(v, (str, bytes)):
+        try:
+            return json.loads(v)
+        except (ValueError, TypeError):
+            return None
+    return v
+
+
+def _load_dict_by_object(keys: list, table: str, cols: str) -> dict:
+    """按 bound_object_key 批量查字典（adh_metrics/adh_dimensions）生效行，分组返回。
+
+    复用图谱侧同口径（bound_object_key 关联，字典为唯一权威 ontology-modeling §3）；
+    只读、不落库。
+    """
+    keys = [str(k) for k in (keys or []) if k]
+    if not keys:
+        return {}
+    marks = ",".join(["%s"] * len(keys))
+    out: dict = {}
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {cols}, bound_object_key FROM {table} "
+                f"WHERE is_active = 1 AND bound_object_key IN ({marks})",
+                keys)
+            for row in cur.fetchall() or []:
+                out.setdefault(str(row.get("bound_object_key") or ""), []).append(row)
+    return out
+
+
+def hydrate_doc(doc: dict, datasource_id: int = 0) -> dict:
+    """查看器读时投影：把对象 metrics 名字引用升为带口径对象、补 dimensions 清单。
+
+    来源 = adh_metrics / adh_dimensions 按 bound_object_key（字典为唯一权威）；
+    存储的 json_content 不变，本函数只读、不落库。datasource_id 仅为接口对齐保留
+    （字典行 bound_object_key 全局唯一，无需额外数据源过滤）。
+    """
+    if not isinstance(doc, dict):
+        return doc
+    objects = doc.get("objects") or []
+    keys = [str(o.get("key") or "") for o in objects if o.get("key")]
+    metric_rows = _load_dict_by_object(
+        keys, "adh_metrics",
+        "name, name_en, formula, agg_type, unit, description, "
+        "COALESCE(certified, 0) AS certified")
+    dim_rows = _load_dict_by_object(
+        keys, "adh_dimensions",
+        "name, name_en, target_column, category, aliases, value_labels, description")
+    out = json.loads(json.dumps(doc, ensure_ascii=False, default=str))  # 深拷贝，不改原 doc
+    for obj in out.get("objects") or []:
+        key = str(obj.get("key") or "")
+        refs = [_metric_name(m) for m in (obj.get("metrics") or [])]
+        hydrated: list = []
+        seen: set = set()
+        for row in metric_rows.get(key, []):
+            nm = str(row.get("name") or "").strip()
+            if not nm or nm in seen:
+                continue
+            seen.add(nm)
+            hydrated.append({
+                "name": nm,
+                "display_name": nm,
+                "name_en": str(row.get("name_en") or "").strip(),
+                "formula": str(row.get("formula") or "").strip(),
+                "agg_type": str(row.get("agg_type") or "").strip(),
+                "unit": str(row.get("unit") or "").strip(),
+                "description": str(row.get("description") or "").strip(),
+                "certified": bool(row.get("certified")),
+            })
+        # 保留字典未登记的既有引用（不丢对象级派生字段），标 unbound 供视图区分
+        dict_names = ({h["name"] for h in hydrated} | {h["name_en"] for h in hydrated})
+        for r in refs:
+            if r and r not in dict_names and r not in seen:
+                seen.add(r)
+                hydrated.append({"name": r, "unbound": True})
+        if refs or hydrated:
+            obj["metrics"] = hydrated
+        dims: list = []
+        for row in dim_rows.get(key, []):
+            nm = str(row.get("name") or "").strip()
+            if not nm:
+                continue
+            dims.append({
+                "name": nm,
+                "display_name": nm,
+                "name_en": str(row.get("name_en") or "").strip(),
+                "target_column": str(row.get("target_column") or "").strip(),
+                "category": str(row.get("category") or "").strip(),
+                "is_time": (str(row.get("category") or "") == "时间"),
+                "value_labels": _hydrate_json(row.get("value_labels")) or {},
+                "aliases": _hydrate_json(row.get("aliases")) or [],
+                "description": str(row.get("description") or "").strip(),
+            })
+        obj["dimensions"] = dims
+    return out
+
+
+# Palantir cardinality 反向映射（镜像 ontology_yaml_import._CARD_MAP）
+_CARD_REVERSE = {"1:N": "one_to_many", "N:1": "many_to_one",
+                 "M:N": "many_to_many", "1:1": "one_to_one"}
+
+
+def to_palantir(doc_hydrated: dict) -> dict:
+    """canonical(已 hydrate) → Palantir 结构（只读投影，镜像 palantir_to_canonical 反向）。
+
+    映射：object→object_type；property.enum→values；link→link_types（cardinality 反向）；
+    hydrated metric.formula→computed_properties/expression；维度归入 properties
+    （Palantir 无独立维度概念）。只读，不落库。
+    """
+    objs = (doc_hydrated or {}).get("objects") or []
+    key_to_name = {str(o.get("key") or ""): str(o.get("display_name") or o.get("key") or "")
+                   for o in objs}
+    object_types: list = []
+    all_metrics: list = []
+    for o in objs:
+        name = str(o.get("display_name") or o.get("key") or "")
+        props: list = []
+        for p in o.get("properties") or []:
+            col = str(p.get("column") or "")
+            pname = col.rsplit(".", 1)[-1] if col else str(p.get("name") or "")
+            entry = {
+                "name": pname or str(p.get("name") or ""),
+                "type": str(p.get("type") or "string"),
+                "is_primary_key": bool(p.get("is_key")),
+                "description": str(p.get("description") or "").strip(),
+            }
+            enum = p.get("enum") or {}
+            if isinstance(enum, dict) and enum:
+                entry["values"] = {str(k): str(v) for k, v in enum.items()}
+            props.append(entry)
+        for d in o.get("dimensions") or []:
+            tc = str(d.get("target_column") or "")
+            dname = tc.rsplit(".", 1)[-1] if tc else str(d.get("name") or "")
+            entry = {
+                "name": dname,
+                "type": "string",
+                "is_primary_key": False,
+                "description": str(d.get("description") or d.get("display_name") or "").strip(),
+            }
+            vl = d.get("value_labels") or {}
+            if isinstance(vl, dict) and vl:
+                entry["values"] = {str(k): str(v) for k, v in vl.items()}
+            props.append(entry)
+        link_types: list = []
+        for lk in o.get("links") or []:
+            tgt_key = str(lk.get("target") or "")
+            card = str(lk.get("cardinality") or "")
+            link_types.append({
+                "name": lk.get("type") or "references",
+                "target": key_to_name.get(tgt_key, tgt_key),
+                "cardinality": _CARD_REVERSE.get(card, card),
+                "join": str(lk.get("join") or ""),
+                "description": str(lk.get("description") or "").strip(),
+            })
+        computed: list = []
+        for m in o.get("metrics") or []:
+            if isinstance(m, str):
+                m = {"name": m}
+            mn = str(m.get("name") or m.get("display_name") or "").strip()
+            if not mn:
+                continue
+            expr = str(m.get("formula") or "").strip()
+            desc = str(m.get("description") or "").strip()
+            computed.append({"name": mn, "expression": expr, "description": desc})
+            all_metrics.append({
+                "name": mn, "object_type": name, "expression": expr,
+                "filters": [], "description": desc,
+            })
+        object_types.append({
+            "name": name,
+            "api_name": str(o.get("key") or ""),
+            "aliases": list(o.get("aliases") or []),
+            "description": str(o.get("description") or "").strip(),
+            "source": str(o.get("source_ref") or o.get("primary_table") or ""),
+            "properties": props,
+            "link_types": link_types,
+            "computed_properties": computed,
+        })
+    domain = (doc_hydrated or {}).get("domain") or ""
+    return {
+        "platform": domain,
+        "domain": domain,
+        "description": (doc_hydrated or {}).get("description") or "",
+        "object_types": object_types,
+        "metrics": all_metrics,
+        "cross_domain_links": [],
+    }
+
+
+def to_palantir_yaml(doc_hydrated: dict) -> str:
+    return yaml.safe_dump(to_palantir(doc_hydrated), allow_unicode=True, sort_keys=False, width=120)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1172,6 +1509,28 @@ def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
 
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
+            # 改名（可选 name）：版本家族按 datasource_id+name 归组（list_versions），
+            # 故同名归档历史版本须同步改名，否则 rename 后版本管理视图丢失历史；
+            # 撞名（另一家族已占用新名）fail-loud 拒绝，不静默合并家族。
+            if name is not None:
+                name = name.strip()
+                if not name:
+                    raise ValueError("模型名字不能为空")
+                if name != str(model.get("name") or ""):
+                    cur.execute(
+                        "SELECT id FROM adh_ontology_models "
+                        "WHERE COALESCE(datasource_id, 0) = COALESCE(%s, 0) "
+                        "AND name = %s AND id <> %s LIMIT 1",
+                        (model["datasource_id"], name, model_id),
+                    )
+                    if cur.fetchone():
+                        raise ValueError(f"已存在同名模型（含历史版本）: {name}")
+                    cur.execute(
+                        "UPDATE adh_ontology_models SET name = %s "
+                        "WHERE COALESCE(datasource_id, 0) = COALESCE(%s, 0) "
+                        "AND name = %s AND id <> %s",
+                        (name, model["datasource_id"], model["name"], model_id),
+                    )
             cur.execute(
                 "UPDATE adh_ontology_models SET json_content = %s, yaml_content = %s, "
                 "md_content = %s, object_count = %s, updated_at = %s"
@@ -1184,9 +1543,16 @@ def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
 
     # 激活态编辑：json_content 已落库，此时再重建图谱，确保 _merge_ontology_models
     # 读到最新对象集（否则图谱会滞后一次保存）。
+    #
+    # 重建结果必须进下面的 validation_warnings：以前这里直接丢弃返回值，图谱没建成
+    # 只有服务端日志知道，页面上是"保存成功"——那是把失败掩成成功的降级掩盖
+    # (no-silent-degradation §1)。也不反过来让保存失败：图谱不可用时本体编辑
+    # 仍应可行（图是派生投影，事实源是 json_content），所以取**显式告警**口径。
+    graph_rebuild: dict | None = None
     if model["status"] == "active":
         from backend.modules.catalog.services import ontology_yaml_import as _yimp
-        _yimp._rebuild_graph(model["datasource_id"], str(model.get("kind") or ""))
+        graph_rebuild = _yimp._rebuild_graph(model["datasource_id"],
+                                             str(model.get("kind") or ""))
     updated = get_model(model_id)
 
     # 缺陷显式暴露(no-silent-degradation)：
@@ -1224,6 +1590,13 @@ def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
                 warnings.append(f"[{it['category']}] {it['message']}")
     except Exception as e:  # noqa: BLE001 — 校验不影响保存主链路
         logger.warning("[Ontology] save_draft m234 check failed: %s", e)
+    if graph_rebuild and not graph_rebuild.get("success"):
+        warnings.append(
+            "[图谱] 本次保存后的图重建未完成（文档已存库，图是滞后状态）："
+            f"{str(graph_rebuild.get('error') or graph_rebuild.get('message') or '未给出原因')[:240]}；"
+            "可手动触发 POST /api/graph/sync 重建，或调 GRAPH_BUILD_DEADLINE_S / "
+            "GRAPH_WRITE_CHUNK 后重试")
+
     if warnings:
         updated["validation_warnings"] = warnings
     return updated

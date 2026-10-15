@@ -83,16 +83,21 @@ def _exec(sql: str, params: tuple = (), *, fetchone=False, fetchall=False):
 # 用例 CRUD（页面调用）
 # ═══════════════════════════════════════════════════════════════════════════
 
-_CASE_COLS = "id, case_key, suite, question, tags, payload, expected, note, is_active, sort, created_by, created_at, updated_at"
+_CASE_COLS = ("id, case_key, suite, question, capability, case_status, status_note, tags, "
+              "payload, expected, note, is_active, sort, created_by, created_at, updated_at")
 
 
-def list_cases(suite: str = "", tags: str = "", active_only: bool = True) -> list[dict]:
+def list_cases(suite: str = "", tags: str = "", active_only: bool = True,
+               case_status: str = "") -> list[dict]:
     cond, params = [], []
     if suite:
         cond.append("suite = %s")
         params.append(suite)
     if active_only:
         cond.append("is_active = 1")
+    if case_status:
+        cond.append("case_status = %s")
+        params.append(case_status)
     if tags:
         for t in [x.strip() for x in tags.split(",") if x.strip()]:
             cond.append("FIND_IN_SET(%s, tags)")
@@ -121,9 +126,11 @@ def create_case(data: dict, created_by: str = "") -> int:
     if get_case_by_key(case.suite, case.case_key):
         raise EvalStoreError(f"用例标识「{case.case_key}」在 {case.suite} 集内已存在，请换一个")
     _exec(
-        "INSERT INTO adh_eval_cases (case_key, suite, question, tags, payload, expected, note, is_active, sort, created_by) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-        (case.case_key, case.suite, case.question, ",".join(case.tags),
+        "INSERT INTO adh_eval_cases (case_key, suite, question, capability, case_status, "
+        "status_note, tags, payload, expected, note, is_active, sort, created_by) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        (case.case_key, case.suite, case.question, case.capability, case.case_status,
+         case.status_note, ",".join(case.tags),
          json.dumps(case.payload, ensure_ascii=False, default=str),
          json.dumps(case.expected, ensure_ascii=False, default=str),
          case.note, case.is_active, int(data.get("sort") or 0), created_by))
@@ -146,9 +153,11 @@ def update_case(case_id: int, data: dict) -> bool:
     if dup and int(dup["id"]) != int(case_id):
         raise EvalStoreError(f"用例标识「{case.case_key}」在 {case.suite} 集内已被 {dup['id']} 占用")
     _exec(
-        "UPDATE adh_eval_cases SET case_key=%s, suite=%s, question=%s, tags=%s, payload=%s, "
+        "UPDATE adh_eval_cases SET case_key=%s, suite=%s, question=%s, capability=%s, "
+        "case_status=%s, status_note=%s, tags=%s, payload=%s, "
         "expected=%s, note=%s, is_active=%s, sort=%s WHERE id=%s",
-        (case.case_key, case.suite, case.question, ",".join(case.tags),
+        (case.case_key, case.suite, case.question, case.capability, case.case_status,
+         case.status_note, ",".join(case.tags),
          json.dumps(case.payload, ensure_ascii=False, default=str),
          json.dumps(case.expected, ensure_ascii=False, default=str),
          case.note, case.is_active, int(merged.get("sort") or 0), int(case_id)))
@@ -193,23 +202,32 @@ def mark_run_running(run_id: int) -> None:
 def finish_run(run_id: int, *, total: int, passed: int, accuracy: float,
                by_tag: dict, by_source: dict, baseline_run_id=None,
                baseline_ok: bool = True, regression: dict | None = None,
-               error: str = "") -> None:
+               floor_ok: bool = True, gate_verdict: str = "",
+               active_count: int = 0, known_defect_count: int = 0,
+               retired_count: int = 0, error: str = "") -> None:
     """落一条运行的最终结果。
 
     error 非空表示运行级失败（如适配器异常）——照样落库并置 status='failed'，
-    绝不静默留下一条"看起来跑过了"的记录。
+    绝不静默留下一条“看起来跑过了”的记录。
+
+    ``baseline_ok``（相对回退）与 ``floor_ok``（绝对下限）是两个正交口径，
+    各存各列不得顶替：只存相对会造成“长期坏掉却报绿”（已发生的真实事故）。
+    ``retired_count`` 一并落库，使“退役了多少”在历史运行里也可审计。
     """
     status = "failed" if error else "done"
     _exec(
         "UPDATE adh_eval_runs SET status=%s, total=%s, passed=%s, accuracy=%s, by_tag=%s, "
-        "by_source=%s, baseline_run_id=%s, baseline_ok=%s, regression=%s, error=%s, finished_at=NOW() "
-        "WHERE id=%s",
+        "by_source=%s, baseline_run_id=%s, baseline_ok=%s, regression=%s, "
+        "floor_ok=%s, gate_verdict=%s, active_count=%s, known_defect_count=%s, retired_count=%s, "
+        "error=%s, finished_at=NOW() WHERE id=%s",
         (status, int(total), int(passed), float(accuracy),
          json.dumps(by_tag or {}, ensure_ascii=False, default=str),
          json.dumps(by_source or {}, ensure_ascii=False, default=str),
          int(baseline_run_id) if baseline_run_id else None,
          1 if baseline_ok else 0,
          json.dumps(regression or {}, ensure_ascii=False, default=str),
+         1 if floor_ok else 0, gate_verdict or "", int(active_count),
+         int(known_defect_count), int(retired_count),
          (error or "")[:1024], int(run_id)))
 
 
@@ -278,3 +296,85 @@ def latest_done_run(suite: str, exclude_run_id=None) -> dict | None:
     return _exec(
         "SELECT * FROM adh_eval_runs WHERE suite=%s AND status='done' ORDER BY id DESC LIMIT 1",
         (suite,), fetchone=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 门禁策略与覆盖矩阵
+# ═══════════════════════════════════════════════════════════════════════
+
+def list_gate_policies() -> list[dict]:
+    """全部门禁策略（页面可编辑，能力级行覆盖层级的整体行）。"""
+    return _exec(
+        "SELECT id, suite, capability, floor_accuracy, min_cases, max_live_cases_per_run, "
+        "enabled, updated_by, updated_at FROM adh_eval_gate_policy "
+        "ORDER BY suite, capability", (), fetchall=True) or []
+
+
+def upsert_gate_policy(data: dict, updated_by: str = "") -> dict:
+    """按 (suite, capability) 幂等写入策略。不合法由 ``gate.check_policy`` 抛错，不默认成“通过”。"""
+    from backend.eval.gate import GateError, check_policy
+    row = check_policy(data)
+    if row["suite"] not in _known_suites():
+        raise GateError(f"未知被测层 {row['suite']!r}，应为 {list(_known_suites())}")
+    _exec(
+        "INSERT INTO adh_eval_gate_policy (suite, capability, floor_accuracy, min_cases, "
+        "max_live_cases_per_run, enabled, updated_by) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+        "ON DUPLICATE KEY UPDATE floor_accuracy=VALUES(floor_accuracy), "
+        "min_cases=VALUES(min_cases), max_live_cases_per_run=VALUES(max_live_cases_per_run), "
+        "enabled=VALUES(enabled), updated_by=VALUES(updated_by)",
+        (row["suite"], row["capability"], row["floor_accuracy"], row["min_cases"],
+         data.get("max_live_cases_per_run"), 1 if row["enabled"] else 0, updated_by))
+    return _exec("SELECT id, suite, capability, floor_accuracy, min_cases, "
+                 "max_live_cases_per_run, enabled FROM adh_eval_gate_policy "
+                 "WHERE suite=%s AND capability=%s",
+                 (row["suite"], row["capability"]), fetchone=True) or {}
+
+
+def delete_gate_policy(policy_id: int) -> bool:
+    return _exec("DELETE FROM adh_eval_gate_policy WHERE id=%s", (int(policy_id),)) > 0
+
+
+def coverage_matrix() -> list[dict]:
+    """capability × layer 覆盖矩阵。
+
+    从 ``adh_eval_cases`` 直接算（不落反范式列），避免矩阵与用例表飘移。
+    返回每格 ``{suite, capability, total, scored, retired, known_defect}``；
+    实跑结果由 ``latest_result_matrix`` 联合得出（本函数只回答“有没有用例”）。
+    """
+    return _exec(
+        """SELECT c.suite, c.capability,
+                  COUNT(*) AS total,
+                  SUM(CASE WHEN c.case_status IN ('active','known_defect') THEN 1 ELSE 0 END) AS scored,
+                  SUM(CASE WHEN c.case_status = 'retired' THEN 1 ELSE 0 END) AS retired,
+                  SUM(CASE WHEN c.case_status = 'known_defect' THEN 1 ELSE 0 END) AS known_defect
+           FROM adh_eval_cases c GROUP BY c.suite, c.capability""", (), fetchall=True) or []
+
+
+def latest_result_matrix(suite: str) -> dict:
+    """最近一次完成运行的逐用例通过情况，按 capability 聚（联选用例表取契约，不反范式存）。"""
+    run = latest_done_run(suite)
+    if not run:
+        return {}
+    rows = _exec(
+        "SELECT c.capability, r.passed, COUNT(*) AS total "
+        "FROM adh_eval_results r JOIN adh_eval_cases c "
+        "  ON c.suite=%s AND c.case_key = r.case_key "
+        "WHERE r.run_id=%s AND c.case_status IN ('active','known_defect') "
+        "GROUP BY c.capability, r.passed", (suite, int(run["id"])), fetchall=True) or []
+    out: dict[str, dict] = {}
+    for r in rows:
+        cap = r.get("capability") or ""
+        b = out.setdefault(cap, {"passed": 0, "total": 0})
+        n = int(r.get("total") or 0)
+        b["total"] += n
+        if int(r.get("passed") or 0):
+            b["passed"] += n
+    for cap, b in out.items():
+        b["accuracy"] = round(b["passed"] / b["total"], 4) if b["total"] else 0.0
+        b["run_id"] = int(run["id"])
+    return out
+
+
+def _known_suites() -> tuple:
+    from backend.eval.contract import SUITES
+    return SUITES

@@ -18,6 +18,7 @@ import Playground from './pages/Playground';
 import Screen from './pages/Screen';
 import Analysis from './pages/Analysis';
 import Profile from './pages/Profile';
+import MemorySettings from './pages/MemorySettings';
 import WorkspaceManagerV2 from './pages/WorkspaceManagerV2';
 import ModelCenter from './pages/admin/ModelCenter';
 import MCPAgentConfig from './pages/admin/MCPAgentConfig';
@@ -30,7 +31,6 @@ import VisLibrary from './pages/admin/VisLibrary';
 import ReportTemplates from './pages/admin/ReportTemplates';
 import ReportView from './pages/ReportView';
 import KnowledgeBase from './pages/admin/KnowledgeBase';
-import KnowledgeGraph from './pages/KnowledgeGraph';
 import VersionedConfigEditor, { createPromptAdapter } from './pages/admin/VersionedConfigEditor';
 import ReportsCenter from './pages/ReportsCenter';
 import AsBotPanel from './components/asbot/AsBotPanel';
@@ -40,6 +40,8 @@ import QualityOverview from './pages/quality/QualityOverview';
 import QualityRules from './pages/quality/QualityRules';
 import LineageGraph from './pages/lineage/LineageGraph';
 import OntologyModeling from './pages/catalog/OntologyModeling';
+import OntologyGraphView from './pages/catalog/OntologyGraphView';
+import MetricsCenter from './pages/catalog/MetricsCenter';
 import TagsManager from './pages/catalog/TagsManager';
 import SqlPairs from './pages/catalog/SqlPairs';
 import Glossary from './pages/catalog/Glossary';
@@ -60,6 +62,7 @@ import SandboxManagement from './pages/admin/SandboxManagement';
 import QualityReview from './pages/admin/QualityReview';
 import Observability from './pages/admin/Observability';
 import EvalManagement from './pages/admin/EvalManagement';
+import EvolutionCenter from './pages/admin/EvolutionCenter';
 import KnowledgeManagement from './pages/admin/KnowledgeManagement';
 import Monitoring from './pages/admin/Monitoring';
 import TaskMonitor from './pages/admin/TaskMonitor';
@@ -130,6 +133,7 @@ export default function App() {
           <Route path="reports" element={<ReportsCenter />} />
           {/* 个人设置:在原本的框架(侧边栏/顶栏)下渲染, 非独立全屏页 */}
           <Route path="profile" element={<Profile />} />
+          <Route path="memory" element={<MemorySettings />} />
           {/* 仪表盘/可视化大屏菜单: 默认内嵌展示（保留工作空间侧栏），需要播放/轮播时由页面内按钮跳转 /screen/:id */}
           <Route path="page/:dashboardId" element={<Analysis />} />
         </Route>
@@ -140,8 +144,8 @@ export default function App() {
           <Route path="datasources" element={<Admin embeddedTab="datasources" />} />
           <Route path="tables" element={<Admin embeddedTab="metadata" />} />
           <Route path="ontology" element={<OntologyModeling />} />
-          {/* 指标中心已并入模型工作区页签; 旧路由重定向兼容书签(本体可视化路由保留) */}
-          <Route path="metrics" element={<Navigate to="/data/ontology" replace />} />
+          {/* 指标与维度: 语义模型层全局权威主页(唯一编辑源); 本体页仅保留结构编辑 */}
+          <Route path="metrics" element={<MetricsCenter />} />
           <Route path="datasets" element={<Datasets />} />
           <Route path="datasets/:id" element={<DatasetDetail />} />
           <Route path="tags" element={<TagsManager />} />
@@ -161,10 +165,12 @@ export default function App() {
           <Route path="sync/dag/:workflowId" element={<DagEditor />} />
           <Route path="sync/dag-runs/:runId" element={<DagRunDetail />} />
           <Route path="udfs" element={<UdfManagement />} />
-          <Route path="knowledge-graph" element={<KnowledgeGraph />} />
+          {/* 本体图谱: 语义层关系只读视图(图谱+结构化投影), 独立模型选择器 */}
+          <Route path="knowledge-graph" element={<OntologyGraphView />} />
           <Route path="playground" element={<Playground />} />
           {/* 个人设置:在数据中台框架下渲染 */}
           <Route path="profile" element={<Profile />} />
+          <Route path="memory" element={<MemorySettings />} />
         </Route>
 
         {/* System config mode: /system/* */}
@@ -200,6 +206,7 @@ export default function App() {
           <Route path="quality-review" element={<QualityReview />} />
           <Route path="observability" element={<Observability />} />
           <Route path="eval" element={<EvalManagement />} />
+          <Route path="evolution" element={<EvolutionCenter />} />
           <Route path="knowledge-management" element={<KnowledgeManagement />} />
           <Route path="dashboards" element={<Dashboard />} />
           <Route path="dashboards/:dashboardId" element={<Analysis />} />
@@ -209,6 +216,7 @@ export default function App() {
           <Route path="task-monitor" element={<TaskMonitor />} />
           {/* 个人设置:在系统配置框架下渲染 */}
           <Route path="profile" element={<Profile />} />
+          <Route path="memory" element={<MemorySettings />} />
         </Route>
 
         {/* Legacy route redirects */}

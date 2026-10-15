@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { FittedDashboardCanvas } from '@/components/DashboardCanvas';
 import { DashboardRuntimeParams } from '@/components/DashboardParams';
 import { useAuthStore } from '@/stores/authStore';
+import { useDashboardStore } from '@/stores/dashboardStore';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
 import { isEditingTarget } from '@/lib/dashboardDesign';
 import DashboardAutoRefresh from '@/components/DashboardAutoRefresh';
@@ -65,6 +66,7 @@ function ScreenPlayer() {
   const currentMeta = ready ? enabled.find(d => d.id === Number(dashboardId)) : undefined;
   // 完整看板(含 charts/params)按需加载
   const [detail, setDetail] = useState<any>(null);
+  const detailRef = useRef<any>(null); detailRef.current = detail;
   const [detailLoading, setDetailLoading] = useState(false);
   useEffect(() => {
     if (!currentMeta?.id) { setDetail(null); return; }
@@ -84,6 +86,44 @@ function ScreenPlayer() {
       .catch(() => { if (!cancelled) { setError('加载仪表盘组失败'); setReady(true); } });
     return () => { cancelled = true; };
   }, [retry]);
+  // 顶栏“刷新数据”：GET /dashboard/{id} 只回 data_cache（DB 缓存），必须逐个 POST
+  // charts/{id}/refresh 向数据源重查询并回写缓存（口径同 dashboardStore.refreshSingleChart），
+  // 否则刷新按钮只是把旧缓存再读一遍，图表永远不更新。
+  const refreshCharts = useCallback(async (): Promise<boolean> => {
+    const d = detailRef.current;
+    if (!d?.id) return false;
+    const charts: any[] = (d.charts || []).filter((c: any) =>
+      (c.semantic_query || c.sql_query) && !String(c.chart_type || '').startsWith('widget_'));
+    if (!charts.length) return true;
+    const { paramValues, pageParamValues } = useDashboardStore.getState();
+    const params = { ...paramValues, ...pageParamValues };
+    const dashboardId = d.id;
+    const updates: Record<number, string> = {};
+    const results = await Promise.all(charts.map(async (c: any) => {
+      const cfg = c.config || {};
+      const body: any = { params };
+      if (cfg.enableServerPagination) {
+        body.page_limit = cfg.pageLimit || 20;
+        body.page_offset = 0;
+        if (cfg.countSql) body.count_sql = cfg.countSql;
+      }
+      try {
+        const { data } = await client.post(`/dashboard/${dashboardId}/charts/${c.id}/refresh`, body);
+        if (data && !data.error) {
+          const cache: any = { columns: data.columns, rows: data.rows };
+          if (data.total != null) cache.total = data.total;
+          updates[c.id] = JSON.stringify(cache);
+          return true;
+        }
+        return false;
+      } catch { return false; }
+    }));
+    // 轮播切板后旧刷新结果不得写入新看板
+    setDetail((prev: any) => (prev && prev.id === dashboardId)
+      ? { ...prev, charts: prev.charts.map((x: any) => (updates[x.id] ? { ...x, data_cache: updates[x.id] } : x)) }
+      : prev);
+    return results.every(Boolean);
+  }, []);
   const index = enabled.findIndex(d => d.id === currentMeta?.id);
   const go = useCallback((delta: number) => {
     if (!enabled.length) return;
@@ -112,7 +152,7 @@ function ScreenPlayer() {
     <header className={`z-10 flex h-12 shrink-0 items-center gap-1 border-b bg-background/95 px-3 ${fullscreen ? `absolute inset-x-0 top-0 transition-opacity ${visible ? '' : 'opacity-0 focus-within:opacity-100 hover:opacity-100'}` : ''}`}>
       <Button size="sm" variant="ghost" onClick={() => navigate(returnPath)}><ArrowLeft className="h-4 w-4" /><span className="sr-only">退出大屏</span></Button>
       <h1 className="min-w-0 flex-1 truncate font-semibold">{detail.name}</h1>
-      <DashboardAutoRefresh key={detail.id} onRefresh={() => setRetry(v => v + 1)} loading={detailLoading} menuItems={<>
+      <DashboardAutoRefresh key={detail.id} onRefresh={refreshCharts} loading={detailLoading} menuItems={<>
         <div className="space-y-2 p-2">
           <label className="block text-xs">切换看板<select aria-label="切换看板" className="mt-1 w-full rounded border bg-background p-2" value={detail.id} onChange={e => navigate(`/screen/${e.target.value}${location.search}`, { replace: true, state: location.state })}>{enabled.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
           <label className="block text-xs">轮播间隔<select aria-label="轮播间隔" className="mt-1 w-full rounded border bg-background p-2" value={interval} onChange={e => setIntervalValue(Number(e.target.value))}>{[...new Set([0, 5, 10, 15, 30, 60, 120, 300, interval])].sort((a, b) => a - b).map(v => <option key={v} value={v}>{v ? `每 ${v} 秒` : '关闭轮播'}</option>)}</select></label>

@@ -1,15 +1,15 @@
 """AI-DataHub web 入口 —— 全部模块 router 拼装进一个 FastAPI app（Phase 4 单进程终态）。
 
-Run: python -m backend.app.serve        # 单进程绑定全部契约端口（生产/开发）
-     python -m backend.app.serve --reload   # 开发热重载（同为多端口）
-     uvicorn backend.app.main:app --port 8001   # 单端口调试
+Run: python -m backend.app.serve        # 单进程绑定单一 web 端口 8000（生产/开发）
+     python -m backend.app.serve --reload   # 开发热重载（同单端口）
+     uvicorn backend.app.main:app --port 8000   # 单端口调试（等同 serve 缺省）
 
 装配口径（以原 8 个进程壳 processes/<名>/main.py 为源逐模块迁移，壳已删除）：
 
-- 对外 REST 路径/端口不变：router prefix 保持现状（/api/catalog、/api/quality、/api/chat…），
-  vite/nginx 代理与 monitoring 探测无需改动；
+- 对外 REST 路径不变：router prefix 保持现状（/api/catalog、/api/quality、/api/chat…）；
+  端口已收敛为单一 web 端口 8000，vite/nginx 代理与 monitoring 探测统一指向 8000；
 - 去重：node-metrics 只挂一次；/health 与 /api/health 各留一个 handler，
-  响应 body 按请求端口还原旧服务口径（monitoring 探测读 status/version 字段，逐字保留）；
+  响应 body 为合并口径（monitoring 探测读 status/version 字段）；
 - CORS 取并集（各壳同为 allow_origins=["*"]）、API 权限中间件只注册一次、
   trace 中间件（原 datamind 独有，X-Trace-Id）合并为全局、logging.basicConfig 收敛一份；
 - startup 合并：flow 内置任务注册表落库 ensure_seeded + catalog KB 对账循环 +
@@ -21,7 +21,7 @@ Run: python -m backend.app.serve        # 单进程绑定全部契约端口（�
 1. POST /api/admin/sync/metadata[/columns]：catalog MetadataService 真实现胜出——
    platform 侧为 TODO 桩（假成功），响应同形 {success,message}，前端契约兼容，桩已删；
 2. /api/admin/skills 命名空间：mind 技能管理胜出（前端 SkillsManager/AsBotManager 契约，
-   vite /api/admin/skills → 8001）；platform 技能模板 API（adh_skill_templates，
+   vite /api/admin/skills → 8000）；platform 技能模板 API（adh_skill_templates，
    前端/测试/内部调用方为 0）与之真撞，不予挂载。
 """
 
@@ -41,27 +41,14 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-# ── 旧服务 health 口径（按端口还原）────────────────────────────────────
-# auth/api/monitoring.py 的探测读 body 的 status/version 字段，逐字保留不变。
-_HEALTH_BODIES = {
-    8001: {"status": "ok", "service": "datamind", "version": "1.0.0"},
-    8002: {"status": "ok", "service": "datagov", "port": 8002},
-    8003: {"status": "healthy", "service": "dataflow", "version": "1.0.0"},
-    8004: {"status": "ok", "service": "dataviz", "port": 8004},
-    8005: {"status": "ok", "service": "datacatalog"},
-    8006: {"status": "ok", "service": "authservice"},
-    8007: {"status": "ok", "service": "aiplatform", "version": "1.0.0"},
-    8012: {"status": "ok", "service": "semhub", "port": 8012},
-}
+# ── 单进程 health 口径（合并口径）────────────────────────────────────
+# monitoring 探测读 body 的 status/version 字段；单进程下不再按端口区分。
 
 
 # ── health 口径 / 重复路由 fail-loud 检查 ────────────────────────────────────────────
 def _health_body(request: Request) -> dict:
-    """按请求端口还原旧服务 health 口径；非契约端口（容器汇聚口）返回合并口径。"""
-    port = (request.scope.get("server") or (None, None))[1]
-    return _HEALTH_BODIES.get(port) or {
-        "status": "ok", "service": "ai-datahub", "version": "1.0.0",
-    }
+    """单进程合并口径：monitoring 探测读 status/version 字段。"""
+    return {"status": "ok", "service": "ai-datahub", "version": "1.0.0"}
 
 
 def _iter_effective_routes(routes):
@@ -153,6 +140,18 @@ def create_app() -> FastAPI:
         from backend.modules.mind.execution.session_workspace import reconcile_stale_sessions
         repaired = await asyncio.to_thread(reconcile_stale_sessions)
         logger.info("Waker 会话恢复检查完成，中断执行数=%s", repaired)
+        # mind: 会话工具沙箱预热（docker image inspect）
+        # secure_sdk._execute_stream 首轮命中 sandbox_ensure 时 p95~635ms、max~1.7s
+        # (docker daemon 唤醒 + image inspect)；预热把该成本从“首个用户请求”前置到
+        # web 启动，失败不阻启动(记 warning)；只预热不创建容器，无副作用。
+        async def _prewarm_sandbox():
+            try:
+                from backend.modules.platform.services.sandbox_executor import SessionToolSandbox
+                await asyncio.to_thread(SessionToolSandbox.ensure_available)
+                logger.info("会话工具沙箱预热完成")
+            except Exception as e:  # noqa: BLE001 预热失败不阻服务，首轮请求会自己报错
+                logger.warning("会话工具沙箱预热失败（不阻启动，首轮请求会承担冷启动）: %s", e)
+        asyncio.create_task(_prewarm_sandbox())
         yield
         logger.info("AI-DataHub web shut down")
 
@@ -208,6 +207,7 @@ def create_app() -> FastAPI:
     from backend.modules.auth.api.observability import router as observability_router
     from backend.modules.auth.api.knowledge import router as knowledge_router
     from backend.modules.auth.api.eval import router as eval_router
+    from backend.modules.auth.api.memory import router as memory_router
 
     mount("auth", auth_router, "/api/auth", ["auth"])
     mount("auth", users_router, "/api/users", ["users"])
@@ -219,6 +219,7 @@ def create_app() -> FastAPI:
     mount("auth", observability_router, "/api/observability", ["observability"])
     mount("auth", knowledge_router, "/api/admin", ["knowledge"])
     mount("auth", eval_router, "/api/eval", ["eval"])
+    mount("auth", memory_router, "/api/memory", ["memory"])
 
     # ── catalog（原 processes/catalog/main.py，8005）──────────────────
     from backend.modules.catalog.api.catalog import router as catalog_router
@@ -233,6 +234,7 @@ def create_app() -> FastAPI:
     from backend.modules.catalog.api.admin_compat import router as admin_compat_router
     from backend.modules.catalog.api.ontology import router as ontology_router
     from backend.modules.catalog.api.data_products import router as data_products_router
+    from backend.modules.catalog.api.evolution import router as evolution_router
 
     mount("catalog", catalog_router, "/api/catalog", ["Catalog"])
     mount("catalog", metadata_router, "/api/admin", ["Metadata Admin"])
@@ -250,6 +252,8 @@ def create_app() -> FastAPI:
     mount("catalog", menu_router, "/api/admin", ["Menu Admin Compat"])
     mount("catalog", admin_compat_router, "/api/admin", ["Admin Compat"])
     mount("catalog", ontology_router, "/api/catalog/ontology", ["Ontology Modeling"])
+    # 自进化闭环：反馈/解析失败 → 归纳候选 → 人工四出口 → 评测回归验证
+    mount("catalog", evolution_router, "/api/evolution", ["Evolution"])
 
     # ── flow（原 processes/flow/main.py，8003）────────────────────────
     from backend.modules.flow.api.sync import router as sync_router
@@ -307,10 +311,10 @@ def create_app() -> FastAPI:
     mount("mind", workspace_artifacts_router, "/api/workspace-assets", ["Workspace Session Artifacts"])
 
     # ── platform（原 processes/platform/main.py，8007）────────────────
-    # skills_router（技能模板）与 mind 技能管理真撞且消费方为 0，不予挂载（见文件头裁决②）；
+    # skills_router（技能模板，adh_skill_templates 等三表）与 mind 技能管理真撞且消费方为 0，
+    # 不予挂载且已整体退役删除（platform/api/skills.py 及三张遗留表，见文件头裁决②）；
     # sync_metadata（TODO 桩）已删，/api/admin/sync/metadata 由 catalog 真实现承载（裁决①）。
     from backend.modules.platform.api.mcp_servers import router as mcp_servers_router
-    from backend.modules.platform.api.agents import router as agents_router
     from backend.modules.platform.api.embed import router as embed_router
     from backend.modules.platform.api.model_train import router as model_train_router
     from backend.modules.platform.api.mcp_market import router as mcp_market_router
@@ -323,7 +327,6 @@ def create_app() -> FastAPI:
     from backend.modules.platform.api.sandbox import router as sandbox_router
 
     mount("platform", mcp_servers_router, "/api/admin/mcp-servers", ["MCP Servers"])
-    mount("platform", agents_router, "/api/admin/agents", ["Agents"])
     mount("platform", embed_router, "/api/embed", ["Embed"])
     mount("platform", model_train_router, "/api/model-train", ["Model Train"])
     mount("platform", mcp_market_router, "/api/mcp-market", ["MCP Market"])
@@ -370,12 +373,12 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["health"])
     def health(request: Request):
-        """Health check endpoint（body 按端口还原旧服务口径）。"""
+        """Health check endpoint（单进程合并口径）。"""
         return _health_response(request)
 
     @app.get("/api/health", tags=["health"])
     def api_health(request: Request):
-        """Health check endpoint（body 按端口还原旧服务口径）。"""
+        """Health check endpoint（单进程合并口径）。"""
         return _health_response(request)
 
     @app.get("/", tags=["semhub"])

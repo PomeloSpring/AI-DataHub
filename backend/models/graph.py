@@ -13,6 +13,7 @@ class GraphType(str, Enum):
     BUSINESS_KNOWLEDGE = "business-knowledge"
     DATA_LINEAGE = "data-lineage"
     ONTOLOGY_OVERVIEW = "ontology-overview"   # 本体总览: 对象=点, Link=名边(随边取端点)
+    UNIFIED = "unified"                        # 统一大图: 分域组装 总览+业务知识+物理层, 去重/排序/剪悬空边
 
 
 class NodeType(str, Enum):

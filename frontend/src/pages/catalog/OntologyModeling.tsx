@@ -31,19 +31,13 @@ import { Switch } from '@/components/ui/switch';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from 'sonner';
 import {
-  Boxes, Sparkles, Save, CheckCircle2, Archive, RefreshCw, Loader2, Trash2, Code2, Play, History, AlertTriangle,
+  Boxes, Sparkles, Save, CheckCircle2, Archive, RefreshCw, Loader2, Trash2, History, AlertTriangle,
   Upload, Undo2,
 } from 'lucide-react';
-import CodeMirror from '@uiw/react-codemirror';
-import { json } from '@codemirror/lang-json';
-import { yaml } from '@codemirror/lang-yaml';
-import { markdown } from '@codemirror/lang-markdown';
 import ObjectHubTab, { type HubObject } from './ObjectHubTab';
 import AssetPoolPanel from './AssetPoolPanel';
-import MetricsCenter from './MetricsCenter';
-import DimensionsDictTab from './DimensionsDictTab';
 import Glossary from './Glossary';
-import { ModelGraphTab, ModelActionsTab, ModelRulesTab, ModelScenariosTab, ModelDeploymentsTab, ObjectCreateButton, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
+import { ModelActionsTab, ModelRulesTab, ModelScenariosTab, ModelDeploymentsTab, ObjectCreateButton, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
 import { metricsApi } from '@/api/metrics';
 
 interface Datasource {
@@ -77,13 +71,6 @@ function parseObjects(jsonContent: string): any[] {
   } catch {
     return [];
   }
-}
-
-/** SPARQL 结果单元格归一: 兼容 {value,type,datatype} 绑定对象与裸字符串。 */
-function formatSparqlCell(v: any): string {
-  if (v == null) return '';
-  if (typeof v === 'object') return String(v.value ?? JSON.stringify(v));
-  return String(v);
 }
 
 /** 模型列表分组(业务/系统能力): 只列本体模型 —— 指标/维度/术语是模型内容, 在模型工作区内配置 */
@@ -153,15 +140,6 @@ export default function OntologyModeling() {
   const [generating, setGenerating] = useState(false);
   const [progressLogs, setProgressLogs] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
-
-  // ── SPARQL 预览 ──
-  const [sparqlPreview, setSparqlPreview] = useState('');
-  const [sparqlLoading, setSparqlLoading] = useState(false);
-
-  // ── SPARQL 查询控制台 ──
-  const [sparqlQuery, setSparqlQuery] = useState('');
-  const [sparqlResult, setSparqlResult] = useState<any>(null);
-  const [sparqlRunning, setSparqlRunning] = useState(false);
 
   // ── 弹窗 ──
   const [activateOpen, setActivateOpen] = useState(false);
@@ -245,15 +223,6 @@ export default function OntologyModeling() {
   useEffect(() => {
     if (datasourceId) loadModels(datasourceId);
   }, [datasourceId, loadModels]);
-
-  // 同步文档（所见即所推）：MD 预览渲染「同步知识库」全量推送的那份（脱敏白名单+版本戳）
-  const [syncDoc, setSyncDoc] = useState('');
-  useEffect(() => {
-    if (!model?.id) { setSyncDoc(''); return; }
-    ontologyApi.syncDoc(model.id)
-      .then((r: any) => setSyncDoc(r?.data?.markdown || ''))
-      .catch(() => setSyncDoc(''));
-  }, [model?.id, syncTick]);
 
   const loadModel = useCallback(async (id: number) => {
     try {
@@ -376,45 +345,6 @@ export default function OntologyModeling() {
       toast.error(e.response?.data?.detail || '激活失败');
     } finally {
       setActivating(false);
-    }
-  };
-
-  // ── SPARQL 预览 ──
-  const handleLoadSparqlPreview = async () => {
-    if (!model) return;
-    setSparqlLoading(true);
-    try {
-      const { data } = await client.get(`/ontology/${model.id}/sparql-preview`);
-      setSparqlPreview(data.turtle || data.sparql || '');
-    } catch {
-      setSparqlPreview('# 无法生成 RDF 预览，请确认模型已激活');
-    } finally {
-      setSparqlLoading(false);
-    }
-  };
-
-  // ── SPARQL 查询控制台(对当前模型命名图执行) ──
-  useEffect(() => {
-    if (!model) return;
-    const ds = (model as any).datasource_id || 0;
-    setSparqlQuery(
-      `PREFIX adh: <http://ai-datahub.org/ontology/>\n` +
-      `SELECT ?s ?p ?o WHERE { GRAPH <http://ai-datahub.org/ontology/ds:${ds}> { ?s ?p ?o } } LIMIT 50`);
-    setSparqlResult(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [(model as any)?.id]);
-
-  const handleRunSparql = async () => {
-    if (!sparqlQuery.trim()) return;
-    setSparqlRunning(true);
-    setSparqlResult(null);
-    try {
-      const { data } = await client.post('/graph/query', { query: sparqlQuery });
-      setSparqlResult(data);
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || 'SPARQL 查询失败');
-    } finally {
-      setSparqlRunning(false);
     }
   };
 
@@ -745,16 +675,12 @@ export default function OntologyModeling() {
               <Tabs key={model.id} defaultValue="hub">
                 <TabsList>
                   <TabsTrigger value="hub">对象 · Link</TabsTrigger>
-                  <TabsTrigger value="metrics">指标</TabsTrigger>
-                  <TabsTrigger value="dimensions">维度</TabsTrigger>
                   <TabsTrigger value="terms">业务术语</TabsTrigger>
                   <TabsTrigger value="tags">标签</TabsTrigger>
                   {model.kind !== 'business' && <TabsTrigger value="m234">行为</TabsTrigger>}
                   {model.kind !== 'business' && <TabsTrigger value="rules">规则</TabsTrigger>}
                   {model.kind !== 'business' && <TabsTrigger value="scenarios">场景</TabsTrigger>}
-                  <TabsTrigger value="graph">图谱</TabsTrigger>
                   <TabsTrigger value="deployments">部署绑定</TabsTrigger>
-                  <TabsTrigger value="editor">编辑器</TabsTrigger>
                 </TabsList>
                 <TabsContent value="hub" className="mt-2 h-[62vh] overflow-hidden">
                   <div className="flex items-center gap-2 mb-2">
@@ -763,12 +689,6 @@ export default function OntologyModeling() {
                   <div className="h-[calc(62vh-2.5rem)] overflow-auto">
                     <ObjectHubTab modelId={model.id} objects={hubObjects} />
                   </div>
-                </TabsContent>
-                <TabsContent value="metrics" className="mt-2 h-[62vh] overflow-auto">
-                  <MetricsCenter embedded view="metrics" modelId={model.id} objects={objectOptions} />
-                </TabsContent>
-                <TabsContent value="dimensions" className="mt-2 h-[62vh] overflow-auto">
-                  <DimensionsDictTab modelId={model.id} scope="model" />
                 </TabsContent>
                 <TabsContent value="terms" className="mt-2 h-[62vh] overflow-auto">
                   <Glossary embedded datasourceId={model.datasource_id}
@@ -786,125 +706,8 @@ export default function OntologyModeling() {
                 <TabsContent value="scenarios" className="mt-2 h-[62vh] overflow-hidden">
                   <ModelScenariosTab jsonContent={jsonDraft} onSave={saveDocFromTab} />
                 </TabsContent>
-                <TabsContent value="graph" className="mt-2 h-[62vh] overflow-hidden">
-                  {/* 系统模型(datasource_id 空/0)的图在专用系统图 ds:-1: 不带 system_scope
-                      会落到 ds:0 聚合图(=全部数据源), 把业务表/test-alb 本体灌进来 */}
-                  <ModelGraphTab datasourceId={model.datasource_id} kind={model.kind} domain={model.domain} />
-                </TabsContent>
                 <TabsContent value="deployments" className="mt-2 h-[62vh] overflow-hidden">
                   <ModelDeploymentsTab modelId={model.id} />
-                </TabsContent>
-                <TabsContent value="editor" className="mt-2">
-              <Tabs defaultValue="json">
-                <TabsList>
-                  <TabsTrigger value="json">JSON</TabsTrigger>
-                  <TabsTrigger value="yaml">YAML</TabsTrigger>
-                  <TabsTrigger value="md">MD 预览</TabsTrigger>
-                  <TabsTrigger value="sparql">SPARQL 查询</TabsTrigger>
-                </TabsList>
-                <TabsContent value="json" className="mt-2">
-                  <CodeMirror
-                    value={jsonDraft}
-                    height="60vh"
-                    extensions={[json()]}
-                    editable={editable}
-                    onChange={(v) => {
-                      setJsonDraft(v);
-                      setDirty(true);
-                    }}
-                    className="border border-border rounded-md text-xs overflow-hidden"
-                  />
-                  <div className="text-xs text-muted-foreground mt-1">
-                    JSON 为唯一事实源；保存后服务端自动重新派生 YAML 与 MD。
-                  </div>
-                </TabsContent>
-                <TabsContent value="yaml" className="mt-2">
-                  <CodeMirror
-                    value={model.yaml_content || ''}
-                    height="60vh"
-                    extensions={[yaml()]}
-                    editable={false}
-                    className="border border-border rounded-md text-xs overflow-hidden"
-                  />
-                </TabsContent>
-                <TabsContent value="md" className="mt-2">
-                  <CodeMirror
-                    value={syncDoc || ''}
-                    height="60vh"
-                    extensions={[markdown()]}
-                    editable={false}
-                    className="border border-border rounded-md text-xs overflow-hidden"
-                  />
-                  <div className="text-xs text-muted-foreground mt-1">
-                    本 MD 即「同步知识库」全量推送的同步文档（脱敏白名单 + 版本戳头），所见即所推；内部 md_content（含物理信息）不上云。
-                  </div>
-                </TabsContent>
-                <TabsContent value="sparql" className="mt-2 space-y-3">
-                  <div className="text-xs text-muted-foreground">
-                    对当前模型所在命名图（ds:{model.datasource_id || 0}）执行 SPARQL；可编辑语句后点“执行查询”。
-                  </div>
-                  <CodeMirror
-                    value={sparqlQuery}
-                    height="170px"
-                    editable
-                    onChange={(v) => setSparqlQuery(v)}
-                    className="border border-border rounded-md text-xs overflow-hidden"
-                  />
-                  <div className="flex items-center gap-2">
-                    <Button size="sm" onClick={handleRunSparql} disabled={sparqlRunning}>
-                      {sparqlRunning ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Play className="h-3.5 w-3.5 mr-1" />}
-                      执行查询
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={handleLoadSparqlPreview} disabled={sparqlLoading}>
-                      {sparqlLoading ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Code2 className="h-3.5 w-3.5 mr-1" />}
-                      查看静态 RDF/Turtle
-                    </Button>
-                  </div>
-                  {sparqlResult && (
-                    <div className="border border-border rounded-md overflow-auto max-h-[38vh]">
-                      {Array.isArray(sparqlResult.records) && sparqlResult.records.length ? (
-                        <table className="w-full text-xs">
-                          <thead>
-                            <tr className="bg-muted/50">
-                              {Object.keys(sparqlResult.records[0]).map((k) => (
-                                <th key={k} className="text-left px-2 py-1 border-b font-medium">{k}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {sparqlResult.records.map((r: any, i: number) => (
-                              <tr key={i} className="border-b last:border-0">
-                                {Object.keys(sparqlResult.records[0]).map((k) => (
-                                  <td key={k} className="px-2 py-1 align-top whitespace-pre-wrap break-all">
-                                    {formatSparqlCell(r?.[k])}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      ) : (
-                        <pre className="p-3 text-xs overflow-auto">{JSON.stringify(sparqlResult, null, 2)}</pre>
-                      )}
-                    </div>
-                  )}
-                  {sparqlResult && (
-                    <div className="text-xs text-muted-foreground">结果条数：{sparqlResult.count ?? 0}</div>
-                  )}
-                  {sparqlPreview && (
-                    <CodeMirror
-                      value={sparqlPreview}
-                      height="30vh"
-                      extensions={[markdown()]}
-                      editable={false}
-                      className="border border-border rounded-md text-xs overflow-hidden"
-                    />
-                  )}
-                  <div className="text-xs text-muted-foreground">
-                    激活时本体模型自动转换为 RDF/Turtle 写入 Oxigraph；本页签可直接查询该图。
-                  </div>
-                </TabsContent>
-              </Tabs>
                 </TabsContent>
               </Tabs>
             )}

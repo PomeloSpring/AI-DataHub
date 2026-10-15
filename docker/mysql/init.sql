@@ -556,27 +556,10 @@ CREATE TABLE IF NOT EXISTS adh_mcp_server_versions (
 ) ENGINE=InnoDB;
 
 -- ============================================================================
--- Agent 配置表
+-- Agent 配置表已退役（旧自研 multi-agent，执行层唯一后端为 qodercli，AS-BOT 配置统一由
+-- adh_as_bots 承载）。存量库清理见 docker/mysql/retire_legacy_agents_migration.sql；
+-- 新库不再预建 adh_agents / adh_workspace_agents。
 -- ============================================================================
-CREATE TABLE IF NOT EXISTS adh_agents (
-    id BIGINT NOT NULL AUTO_INCREMENT,
-    name VARCHAR(100) NOT NULL,
-    display_name VARCHAR(100) DEFAULT '',
-    description VARCHAR(500) DEFAULT '',
-    agent_type VARCHAR(20) NOT NULL DEFAULT 'custom',
-    system_prompt TEXT,
-    mcp_server_ids VARCHAR(500) DEFAULT '',
-    datasource_ids VARCHAR(500) DEFAULT '',
-    tools TEXT,
-    config TEXT,
-    route_patterns TEXT,
-    is_active TINYINT NOT NULL DEFAULT 1,
-    is_default TINYINT NOT NULL DEFAULT 0,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_name (name)
-) ENGINE=InnoDB;
 
 -- ============================================================================
 -- MCP 服务注册表（市场目录）

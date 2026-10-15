@@ -131,7 +131,7 @@ async def disk_status_tool(args):
         return _text({"error": "缺少工作空间上下文"}, is_error=True)
     from backend.modules.mind.api.user_assets import disk_status
     try:
-        status = disk_status(ws)
+        status = disk_status(ws, uid)
     except Exception as e:  # noqa: BLE001
         return _text({"error": f"用量查询不可用: {e}"}, is_error=True)
     quota = status.get("quota_bytes") or 0
@@ -153,7 +153,7 @@ async def cleanup_candidates_tool(args):
         return _text({"error": "缺少工作空间上下文"}, is_error=True)
     from backend.modules.mind.api.user_assets import _cleanup_candidates
     try:
-        candidates = _cleanup_candidates(ws)
+        candidates = _cleanup_candidates(ws, uid)
     except Exception as e:  # noqa: BLE001
         return _text({"error": f"清理候选不可用: {e}"}, is_error=True)
     return _text({"count": len(candidates), "candidates": candidates,
@@ -174,7 +174,7 @@ async def cleanup_execute_tool(args):
     from pathlib import Path
     freed = 0
     cleaned = 0
-    for c in _cleanup_candidates(ws):
+    for c in _cleanup_candidates(ws, uid):
         try:
             if c["kind"] == "file":
                 p = Path(c["path"])
@@ -183,7 +183,7 @@ async def cleanup_execute_tool(args):
                     p.unlink()
                     cleaned += 1
             elif c["kind"] == "session":
-                root = session_paths(workspace_base(create=False), c["session_key"], ws, create=False)
+                root = session_paths(workspace_base(create=False), c["session_key"], ws, uid, create=False)
                 freed += c.get("bytes") or 0
                 _remove_session_directory(root)
                 cleaned += 1

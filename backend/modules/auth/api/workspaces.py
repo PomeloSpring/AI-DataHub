@@ -61,7 +61,7 @@ def list_workspace_quotas(admin: dict = Depends(require_admin)):
     users = role_service.list_workspace_quotas()
     for item in users:
         for ws in item.get("workspaces", []):
-            ws["disk_usage_bytes"] = workspace_disk_usage(ws["id"])
+            ws["disk_usage_bytes"] = workspace_disk_usage(ws["id"], item["user_id"])
     return users
 
 
@@ -403,7 +403,11 @@ def set_default_workspace(workspace_id: int, user: dict = Depends(get_current_us
 
 @router.get("/{workspace_id}/tools")
 def get_workspace_tools(workspace_id: int, user: dict = Depends(get_current_user)):
-    """Get datasources, MCP servers and agents bound to a workspace."""
+    """Get datasources and MCP servers available to a workspace.
+
+    旧自研 multi-agent 的 agents 绑定已退役（adh_agents/adh_workspace_agents 下线），
+    此处不再返回 agents 键；数据源可用集由用户角色授权唯一裁决。
+    """
     try:
         with DBConnection() as conn:
             with conn.cursor() as cur:
@@ -433,19 +437,12 @@ def get_workspace_tools(workspace_id: int, user: dict = Depends(get_current_user
                                 f"WHERE id IN ({marks}) AND is_active=1 ORDER BY name", tuple(ids))
                     mcp_servers = cur.fetchall()
 
-                cur.execute(
-                    """SELECT a.id, a.name, a.display_name, a.description, wa.is_enabled
-                       FROM adh_workspace_agents wa
-                       JOIN adh_agents a ON a.name = wa.agent_name
-                       WHERE wa.workspace_id = %s""",
-                    (workspace_id,),
-                )
-                agents = cur.fetchall()
+                # 旧自研 multi-agent 的 agents 绑定已退役（adh_agents/adh_workspace_agents
+                # 下线，见 docker/mysql/retire_legacy_agents_migration.sql），不再返回 agents 键。
 
                 return {
                     "datasources": datasources,
                     "mcp_servers": mcp_servers,
-                    "agents": agents,
                     "mcp_tools": [],
                 }
     except HTTPException:

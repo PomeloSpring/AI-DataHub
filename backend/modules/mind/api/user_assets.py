@@ -75,7 +75,7 @@ def _locate_session_file(user_id: int, conversation_id: int, rel_path: str,
     if not row or not row.get("session_key"):
         raise HTTPException(status_code=404, detail="会话不存在或无权访问")
     base = sw.workspace_base(create=False)
-    root = sw.session_paths(base, row["session_key"], row["workspace_id"], create=False)
+    root = sw.session_paths(base, row["session_key"], row["workspace_id"], user_id, create=False)
     ws_dir = (root / "workspace").resolve()
     rel = (rel_path or "").strip()
     for prefix in ("/workspace/", "/workspace", "workspace/", "./", "/"):
@@ -298,17 +298,17 @@ def _locate_session_file_root(workspace_id: int, conversation_id: int, user_id: 
     if not row or not row.get("session_key"):
         raise HTTPException(status_code=404, detail="会话不存在或无权访问")
     base = sw.workspace_base(create=False)
-    return sw.session_paths(base, row["session_key"], row["workspace_id"], create=False), row["workspace_id"], ""
+    return sw.session_paths(base, row["session_key"], row["workspace_id"], user_id, create=False), row["workspace_id"], ""
 
 
 @workspace_router.get("/{workspace_id}/disk-status")
 def disk_status_endpoint(workspace_id: int, user: dict = Depends(get_current_user)):
     """工作空间磁盘用量/配额/会话产物清单(LLM disk_status 工具同源)。"""
     authorize_workspace(user, workspace_id)
-    return disk_status(workspace_id)
+    return disk_status(workspace_id, int(user["user_id"]))
 
 
-def disk_status(workspace_id: int) -> dict:
+def disk_status(workspace_id: int, user_id: int) -> dict:
     from backend.modules.mind.execution.session_workspace import workspace_disk_usage
     conn = get_metadata_conn()
     try:
@@ -325,20 +325,20 @@ def disk_status(workspace_id: int) -> dict:
     finally:
         conn.close()
     quota = int((quota_row or {}).get("disk_quota_bytes") or 0)
-    usage = workspace_disk_usage(workspace_id)
+    usage = workspace_disk_usage(workspace_id, user_id)
     for s in sessions:
-        s["bytes"] = _session_dir_bytes(workspace_id, s.get("session_key") or "")
+        s["bytes"] = _session_dir_bytes(workspace_id, user_id, s.get("session_key") or "")
     return {"workspace_id": workspace_id, "usage_bytes": usage, "quota_bytes": quota,
             "sessions": sessions}
 
 
-def _session_dir_bytes(workspace_id: int, session_key: str) -> int:
+def _session_dir_bytes(workspace_id: int, user_id: int, session_key: str) -> int:
     from backend.modules.mind.execution.session_workspace import session_paths, workspace_base
     import re
     if not re.fullmatch(r"[a-f0-9]{32}", session_key or ""):
         return 0
     try:
-        root = session_paths(workspace_base(create=False), session_key, workspace_id, create=False)
+        root = session_paths(workspace_base(create=False), session_key, workspace_id, user_id, create=False)
     except Exception:  # noqa: BLE001 — 目录缺失/布局异常按 0 计
         return 0
     total = 0
@@ -358,7 +358,8 @@ def cleanup_endpoint(workspace_id: int, req: CleanupRequest, user: dict = Depend
     confirm=false 仅列候选(dry-run); confirm=true 执行删除。
     """
     authorize_workspace(user, workspace_id)
-    candidates = _cleanup_candidates(workspace_id)
+    uid = int(user["user_id"])
+    candidates = _cleanup_candidates(workspace_id, uid)
     if not req.confirm:
         return {"dry_run": True, "candidates": candidates}
     freed = 0
@@ -373,7 +374,7 @@ def cleanup_endpoint(workspace_id: int, req: CleanupRequest, user: dict = Depend
             elif c["kind"] == "session":
                 from backend.modules.mind.execution.session_workspace import (
                     session_paths, workspace_base, _remove_session_directory)
-                root = session_paths(workspace_base(create=False), c["session_key"], workspace_id, create=False)
+                root = session_paths(workspace_base(create=False), c["session_key"], workspace_id, uid, create=False)
                 freed += c["bytes"]
                 _remove_session_directory(root)
         except Exception as e:  # noqa: BLE001 — 单项失败不阻断整体清理
@@ -381,7 +382,7 @@ def cleanup_endpoint(workspace_id: int, req: CleanupRequest, user: dict = Depend
     return {"dry_run": False, "freed_bytes": freed, "cleaned": len(candidates)}
 
 
-def _cleanup_candidates(workspace_id: int) -> list:
+def _cleanup_candidates(workspace_id: int, user_id: int) -> list:
     """已归档来源文件(按资产 source_path 定位) + 已关闭会话目录。"""
     import re
     from pathlib import Path
@@ -415,5 +416,5 @@ def _cleanup_candidates(workspace_id: int) -> list:
         if s.get("status") != "closed" or not re.fullmatch(r"[a-f0-9]{32}", key):
             continue
         candidates.append({"kind": "session", "session_key": key,
-                           "conversation_id": s.get("conversation_id"), "bytes": _session_dir_bytes(workspace_id, key)})
+                           "conversation_id": s.get("conversation_id"), "bytes": _session_dir_bytes(workspace_id, user_id, key)})
     return candidates

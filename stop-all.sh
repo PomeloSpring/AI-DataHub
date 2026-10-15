@@ -19,7 +19,7 @@ log_info()  { echo -e "${GREEN}[INFO]${NC}  $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 
 SERVICES=(
-    "web"          # web 入口（单进程承载全部契约端口，Phase 4；dataengine 已退役）
+    "web"          # web 入口（单进程承载全部模块，监听口取 services.conf，Phase 4；dataengine 已退役）
     "celery-beat"    # 先停调度派发，再停 worker
     "celery-worker"
     "frontend"

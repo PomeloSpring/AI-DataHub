@@ -89,6 +89,9 @@ _CALLBACKS: dict[str, str | Callable[..., Any]] = {
     "gov.execute_quality_rule": "backend.modules.gov.services.quality_engine:execute_single_rule",
     # 数据产品域（catalog）
     "catalog.data_product_service": "backend.modules.catalog.services:data_product_service",
+    # 自进化域（catalog）：flow 的执行器要调它，走本表登记而不是 import，
+    # 否则新增一条 L2 横向边（分层契约 §0 禁）
+    "evolution.run_digest": "backend.modules.catalog.services.evolution_service:run_digest",
 }
 
 # Celery app 绑定：任务派发与任务对象解耦（同一白名单②通道）。

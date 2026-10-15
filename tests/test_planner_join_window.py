@@ -66,6 +66,51 @@ class TestCrossObjectJoin:
         assert "COUNT(DISTINCT t1.name)" in p.sql
         assert "LEFT JOIN t_customer AS t1" in p.sql
 
+    def test_join_qualifier_written_as_display_name_is_rewritten(self):
+        """建模常以对象显示名(Case/Customer)书写 links.join, 而非物理表名;
+        改写必须同时识别显示名(与物理表名/对象 key 按 identity 归一), 不得把
+        Case./Customer. 残留进 ON 子句(否则被数据源拒 Unknown column 并误报数据源不可用)。"""
+        orig = list(demo.LINKS["edges"].get("case") or [])
+        try:
+            demo.LINKS["edges"]["case"] = [("customer", "Case.company_name = Customer.name")]
+            p = _plan({"object": "case", "metrics": ["案例数量"],
+                       "dimensions": ["客户.行业"], "limit": 10})
+            assert p.sql, p.warnings
+            assert "LEFT JOIN t_customer AS t1" in p.sql
+            assert "t_case_records.company_name = t1.name" in p.sql
+            assert "Case." not in p.sql and "Customer." not in p.sql   # 显示名限定已全部改写
+        finally:
+            demo.LINKS["edges"]["case"] = orig
+
+    def test_unresolvable_join_qualifier_is_skipped_not_guessed(self):
+        """join 条件引用了未参与本次关联/未建模的对象(Membership)时, 不得硬造 JOIN
+        生成非法 SQL, 而应跳过该关联 + 显式告警(no-silent-degradation); 主指标照常编译。"""
+        orig = list(demo.LINKS["edges"].get("case") or [])
+        try:
+            demo.LINKS["edges"]["case"] = [("customer", "t_case_records.user_code = Membership.user_code")]
+            p = _plan({"object": "case", "metrics": ["案例数量"],
+                       "dimensions": ["客户.行业"], "limit": 10})
+            assert p.sql                                   # 主指标(案例数量)仍可编译
+            assert any("无法解析" in w or "跳过" in w for w in p.warnings)
+            assert "JOIN" not in p.sql                     # 关联不可用: 不硬造, 不留悬空别名
+        finally:
+            demo.LINKS["edges"]["case"] = orig
+
+    def test_multihop_arrow_placeholder_is_skipped_not_guessed(self):
+        """建模把多跳路径塑进单条 link 的 join(用 → 连接), 不是合法单条 ON 条件;
+        必须显式跳过该关联并告警, 不得将 → 直出进 SQL。"""
+        orig = list(demo.LINKS["edges"].get("case") or [])
+        try:
+            demo.LINKS["edges"]["case"] = [
+                ("customer", "t_case_records.user_code = User.user_code → User.code = t_customer.code")]
+            p = _plan({"object": "case", "metrics": ["案例数量"],
+                       "dimensions": ["客户.行业"], "limit": 10})
+            assert p.sql
+            assert "→" not in p.sql
+            assert any("跳过" in w for w in p.warnings)
+        finally:
+            demo.LINKS["edges"]["case"] = orig
+
 
 class TestStructuredWindow:
     def test_rank_two_level(self):

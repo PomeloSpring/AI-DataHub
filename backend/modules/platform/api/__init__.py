@@ -1,5 +1,5 @@
 # AI Platform API routers
-from backend.modules.platform.api.agents import router as agents_router
+# agents_router 已随旧自研 multi-agent 配置面退役删除（见 docker/mysql/retire_legacy_agents_migration.sql）。
 from backend.modules.platform.api.mcp_servers import router as mcp_servers_router
 from backend.modules.platform.api.mcp_market import router as mcp_market_router
 from backend.modules.platform.api.model_config import router as model_config_router

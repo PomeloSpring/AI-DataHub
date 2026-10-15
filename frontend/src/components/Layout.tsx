@@ -65,7 +65,7 @@ export default function AppLayout() {
     { key: '/history', icon: History, label: '查询历史' },
     ...(user?.role === 'admin' ? [
       { key: '/admin/model', icon: Brain, label: '模型中心' },
-      { key: '/admin/mcp-agent', icon: LucideIcons.Bot, label: 'MCP / Agent' },
+      { key: '/admin/mcp-agent', icon: LucideIcons.Bot, label: 'MCP 服务' },
       { key: '/admin', icon: Settings, label: '系统设置' },
     ] : []),
   ];

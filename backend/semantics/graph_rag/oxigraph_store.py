@@ -48,36 +48,77 @@ class OxigraphStore:
 
     def create_table_node(self, name: str, comment: str = "",
                           business_desc: str = "", datasource_id: int = 0):
-        iri = f"{ADH_NS}table:{_safe(name)}"
+        self.create_table_nodes(
+            [{"name": name, "comment": comment, "business_desc": business_desc}],
+            datasource_id=datasource_id)
+
+    def create_table_nodes(self, items: list[dict], datasource_id: int = 0,
+                           timeout: float = None) -> int:
+        """批量建表节点（一个 INSERT DATA 装整批）—— 理由见 create_column_nodes。"""
         graph = self.graph_uri(datasource_id)
-        self._client.update(f"""
-            INSERT DATA {{
-                GRAPH <{graph}> {{
-                    <{iri}> a <{ADH_NS}Table> ;
-                        <http://www.w3.org/2000/01/rdf-schema#label> "{_esc(name)}" ;
-                        <{ADH_NS}comment> "{_esc(comment)}" ;
-                        <{ADH_NS}businessDesc> "{_esc(business_desc)}" .
-                }}
-            }}
-        """)
+        body: list[str] = []
+        for t in items or []:
+            # 先 strip 再判空：只判 falsy 会让 "  " 这类空白值逃过校验，
+            # 生成一个 label 为空白的垃圾节点（图里不可用、又占指标数）。
+            name = str(t.get("name") or "").strip()
+            if not name:
+                continue
+            iri = f"{ADH_NS}table:{_safe(name)}"
+            body.append(
+                f"<{iri}> a <{ADH_NS}Table> ;"
+                f" <http://www.w3.org/2000/01/rdf-schema#label> \"{_esc(name)}\" ;"
+                f" <{ADH_NS}comment> \"{_esc(t.get('comment') or '')}\" ;"
+                f" <{ADH_NS}businessDesc> \"{_esc(t.get('business_desc') or '')}\" ."
+            )
+        if not body:
+            return 0
+        self._client.update(
+            f"INSERT DATA {{ GRAPH <{graph}> {{ {' '.join(body)} }} }}",
+            timeout=timeout)
+        return len(body)
 
     def create_column_node(self, table: str, column: str, data_type: str = "",
                            comment: str = "", datasource_id: int = 0):
-        col_iri = f"{ADH_NS}col:{_safe(table)}.{_safe(column)}"
-        tbl_iri = f"{ADH_NS}table:{_safe(table)}"
+        self.create_column_nodes(
+            [{"table": table, "column": column,
+              "data_type": data_type, "comment": comment}],
+            datasource_id=datasource_id)
+
+    def create_column_nodes(self, items: list[dict], datasource_id: int = 0,
+                            timeout: float = None) -> int:
+        """批量建列节点：一个 INSERT DATA 内装整批三元组。
+
+        为什么必须批量：旧实现每列一次 ``update()`` —— 一次 HTTP 往返。全目录重建
+        （``datasource_id=0`` 是「聚合全部」语义）要写 1.5 万+ 列，就是 1.5 万次
+        串行往返 —— 实测表现为 ``save_draft`` 卡死数百秒不返回（不是网络慢，
+        是次数错）。
+
+        返回写入节点数。空批不发请求（避免空 INSERT 被引擎拒）。
+        """
         graph = self.graph_uri(datasource_id)
-        self._client.update(f"""
-            INSERT DATA {{
-                GRAPH <{graph}> {{
-                    <{col_iri}> a <{ADH_NS}Column> ;
-                        <http://www.w3.org/2000/01/rdf-schema#label> "{_esc(column)}" ;
-                        <{ADH_NS}dataType> "{_esc(data_type)}" ;
-                        <{ADH_NS}comment> "{_esc(comment)}" ;
-                        <{ADH_NS}tableName> "{_esc(table)}" .
-                    <{tbl_iri}> <{ADH_NS}hasColumn> <{col_iri}> .
-                }}
-            }}
-        """)
+        body: list[str] = []
+        for c in items or []:
+            # 同上：必须先 strip 再判空，否则空白列名会生成垃圾节点
+            table = str(c.get("table") or "").strip()
+            column = str(c.get("column") or "").strip()
+            if not table or not column:
+                continue
+            col_iri = f"{ADH_NS}col:{_safe(table)}.{_safe(column)}"
+            tbl_iri = f"{ADH_NS}table:{_safe(table)}"
+            body.append(
+                f"<{col_iri}> a <{ADH_NS}Column> ;"
+                f" <http://www.w3.org/2000/01/rdf-schema#label> \"{_esc(column)}\" ;"
+                f" <{ADH_NS}dataType> \"{_esc(c.get('data_type') or '')}\" ;"
+                f" <{ADH_NS}comment> \"{_esc(c.get('comment') or '')}\" ;"
+                f" <{ADH_NS}tableName> \"{_esc(table)}\" ."
+                f" <{tbl_iri}> <{ADH_NS}hasColumn> <{col_iri}> ."
+            )
+        if not body:
+            return 0
+        self._client.update(
+            f"INSERT DATA {{ GRAPH <{graph}> {{ {' '.join(body)} }} }}",
+            timeout=timeout)
+        return len(body)
 
     def create_term_node(self, name_cn: str, name_en: str = "",
                          description: str = "", calculation: str = "",
@@ -162,6 +203,75 @@ class OxigraphStore:
             INSERT DATA {{
                 GRAPH <{graph}> {{
                     <{m_iri}> <{ADH_NS}defines> <{col_iri}> .
+                }}
+            }}
+        """)
+
+    def create_dimension_node(self, name: str, description: str = "",
+                              category: str = "", datasource_id: int = 0):
+        iri = f"{ADH_NS}dimension:{_safe(name)}"
+        graph = self.graph_uri(datasource_id)
+        description = description or ""
+        category = category or ""
+        self._client.update(f"""
+            INSERT DATA {{
+                GRAPH <{graph}> {{
+                    <{iri}> a <{ADH_NS}Dimension> ;
+                        <http://www.w3.org/2000/01/rdf-schema#label> "{_esc(name)}" ;
+                        <{ADH_NS}comment> "{_esc(description)}" ;
+                        <{ADH_NS}category> "{_esc(category)}" .
+                }}
+            }}
+        """)
+
+    def create_dimension_column_relation(self, dimension_name: str, table: str,
+                                         column: str, datasource_id: int = 0):
+        d_iri = f"{ADH_NS}dimension:{_safe(dimension_name)}"
+        col_iri = f"{ADH_NS}col:{_safe(table)}.{_safe(column)}"
+        graph = self.graph_uri(datasource_id)
+        self._client.update(f"""
+            INSERT DATA {{
+                GRAPH <{graph}> {{
+                    <{d_iri}> <{ADH_NS}usesDimension> <{col_iri}> .
+                }}
+            }}
+        """)
+
+    def create_object_metric_relation(self, object_key: str, metric_name: str,
+                                      datasource_id: int = 0):
+        """对象→指标(归属): 源于字典 bound_object_key, 与 hasProperty/hasDimension 对称。
+
+        指标节点唯一 IRI = adh:metric:{name}(字典权威), 不再生成 objmetric 重复节点。
+        """
+        object_key = (object_key or "").strip()
+        metric_name = (metric_name or "").strip()
+        if not object_key or not metric_name:
+            return
+        obj_iri = f"{ADH_NS}obj:{_safe(object_key)}"
+        m_iri = f"{ADH_NS}metric:{_safe(metric_name)}"
+        graph = self.graph_uri(datasource_id)
+        self._client.update(f"""
+            INSERT DATA {{
+                GRAPH <{graph}> {{
+                    <{obj_iri}> <{ADH_NS}hasMetric> <{m_iri}> .
+                }}
+            }}
+        """)
+
+    def create_object_dimension_relation(self, object_key: str, dimension_name: str,
+                                         datasource_id: int = 0):
+        """对象→维度(归属): 源于字典 bound_object_key, 与对象→指标对称。"""
+        object_key = (object_key or "").strip()
+        dimension_name = (dimension_name or "").strip()
+        if not object_key or not dimension_name:
+            return
+        obj_iri = f"{ADH_NS}obj:{_safe(object_key)}"
+        d_iri = f"{ADH_NS}dimension:{_safe(dimension_name)}"
+        graph = self.graph_uri(datasource_id)
+        self._client.update(f"""
+            INSERT DATA {{
+                GRAPH <{graph}> {{
+                    <{obj_iri}> <{ADH_NS}hasDimension> <{d_iri}> .
                 }}
             }}
         """)

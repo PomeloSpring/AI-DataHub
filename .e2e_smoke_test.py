@@ -110,7 +110,6 @@ check("mind: llm config",     "GET", "/api/model-config/llm")
 
 # ── AIPlatform ──
 check("ai: mcp servers",      "GET", "/api/admin/mcp-servers/")
-check("ai: agents",           "GET", "/api/admin/agents/")
 check("ai: embed apps",       "GET", "/api/embed/applications")
 check("ai: mcp market",       "GET", "/api/mcp-market/")
 check("ai: model train stat", "GET", "/api/model-train/stats")

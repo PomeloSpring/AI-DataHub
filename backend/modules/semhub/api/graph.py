@@ -77,7 +77,7 @@ async def execute_sparql(req: SparqlQuery):
 
 @router.get("/query")
 async def get_graph_visualization(
-    graph_type: str = Query("table-relation", description="table-relation | business-knowledge | data-lineage"),
+    graph_type: str = Query("table-relation", description="table-relation | business-knowledge | data-lineage | ontology-overview | unified"),
     datasource_id: int = Query(0, ge=0),
     system_scope: bool = Query(False, description="系统域(AS-BOT): 仅查系统图 ds:-1, 隔离业务本体(test-alb 等)"),
     node_types: Optional[List[str]] = Query(None),
@@ -85,6 +85,7 @@ async def get_graph_visualization(
     center_node: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     limit: int = Query(200, ge=1, le=500),
+    include_properties: bool = Query(False, description="统一大图是否平铺属性(Property)明细; 默认否"),
 ):
     """获取图谱可视化数据（节点 + 边 + 统计），供前端 React Flow 渲染。"""
     try:
@@ -115,6 +116,7 @@ async def get_graph_visualization(
             center_node=center_node,
             search=search,
             limit=limit,
+            include_properties=include_properties,
         )
     except Exception as e:
         logger.error("Graph visualization query failed: %s", e, exc_info=True)

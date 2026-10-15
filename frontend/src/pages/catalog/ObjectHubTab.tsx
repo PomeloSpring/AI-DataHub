@@ -1,17 +1,14 @@
 /**
  * ObjectHubTab — 模型工作区「对象 · Link」中枢页签。
  *
- * 一个本体对象的所有建模信息在同一屏配置/查看：属性、关系(Link)、挂接指标、维度、绑定术语。
- * 数据全部走"模型作用域"接口（scope=model），只显示 bound_object_key ∈ 本模型对象 的资产。
- * 编辑入口唯一性：此处只做 归属/跳转/概览，字段编辑仍在各自主编辑器（此处即调用同一列表 API）。
+ * 职责边界（memory「对象Link页面展示规范」）：本页**仅展示属性与关系(Link)**。
+ * 指标、维度、术语已迁至独立的「指标与维度」全局页，此处不再显示其面板/计数徽标，
+ * 避免语义资产在本体页与专属页两处呈现造成归属错觉。
  */
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import client from '@/api/client';
-import { metricsApi } from '@/api/metrics';
+import { useState, useMemo } from 'react';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Layers, Link2, BarChart3, BookOpen, AlertTriangle, Boxes } from 'lucide-react';
+import { Layers, Link2, AlertTriangle, Boxes } from 'lucide-react';
 
 export interface HubObject {
   key: string;
@@ -29,88 +26,22 @@ export interface HubObject {
   execution_binding?: { query_mode?: string; size_class?: string; physical_table?: string; bind_kind?: string; template_ref?: string };
 }
 
-interface BoundMetric {
-  id: number; name: string; name_en?: string; display_name?: string;
-  bound_object_key?: string; agg_type?: string; unit?: string;
-}
-interface BoundDim {
-  id: number; name: string; bound_object_key?: string; category?: string;
-  target_column?: string; value_labels?: any;
-}
-interface BoundTerm {
-  id: number; term_cn: string; term_type?: string; target_table?: string;
-  target_column?: string; description?: string;
-}
-
-function parseJson<T>(v: unknown, fallback: T): T {
-  if (v == null) return fallback;
-  if (typeof v === 'string') { try { return JSON.parse(v) as T; } catch { return fallback; } }
-  return v as T;
-}
-
-export default function ObjectHubTab({ modelId, objects }: { modelId: number; objects: HubObject[] }) {
+export default function ObjectHubTab({ objects }: { modelId: number; objects: HubObject[] }) {
   const [selKey, setSelKey] = useState<string>('');
-  const [metrics, setMetrics] = useState<BoundMetric[]>([]);
-  const [dims, setDims] = useState<BoundDim[]>([]);
-  const [terms, setTerms] = useState<BoundTerm[]>([]);
-  const [metricsErr, setMetricsErr] = useState('');
-  const [dimsErr, setDimsErr] = useState('');
 
   const obj = useMemo(
     () => objects.find((o) => o.key === selKey) || objects[0] || null,
     [objects, selKey]);
 
-  // 模型作用域资产: 指标/维度 **各自独立加载**(不共用 Promise.all+catch),
-  // 避免维度一次失败把已取回的指标一并清 0(旧行为=静默降级, 把"加载失败"伪装成"0 指标0维度")。
-  const loadScoped = useCallback(async () => {
-    setMetricsErr(''); setDimsErr('');
-    try {
-      const { data: m } = await metricsApi.list({ model_id: modelId, scope: 'model', page: 1, size: 200 });
-      setMetrics(m?.items || []);
-    } catch (e: any) {
-      setMetrics([]);
-      setMetricsErr(e?.response?.data?.detail || e?.message || '指标加载失败');
-    }
-    try {
-      const { data: d } = await metricsApi.listAllDimensions({ model_id: modelId, scope: 'model' });
-      setDims(d?.items || []);
-    } catch (e: any) {
-      setDims([]);
-      setDimsErr(e?.response?.data?.detail || e?.message || '维度加载失败');
-    }
-    try {
-      // 术语: 按数据源的模型对象表集合前端过滤(size 上限 200)
-      const { data } = await client.get('/admin/terms', { params: { page: 1, size: 200 } });
-      const rows = data?.items || data || [];
-      setTerms(Array.isArray(rows) ? rows.filter((t: BoundTerm) => t.target_table) : []);
-    } catch { setTerms([]); }
-  }, [modelId]);
-
-  useEffect(() => { loadScoped(); }, [loadScoped]);
-
   const objKeys = useMemo(() => new Set(objects.map((o) => o.key.toLowerCase())), [objects]);
-  const objMetrics = metrics.filter((m) => (m.bound_object_key || '').toLowerCase() === obj?.key.toLowerCase());
-  const objDims = dims.filter((d) => (d.bound_object_key || '').toLowerCase() === obj?.key.toLowerCase());
-  const objTerms = obj?.primary_table
-    ? terms.filter((t) => (t.target_table || '').toLowerCase() === obj.primary_table!.toLowerCase())
-    : [];
   const orphanLinks = (obj?.links || []).filter(
     (l) => l.target && !objKeys.has(String(l.target).toLowerCase()));
-
-  const metricsByObj = useMemo(() => {
-    const map = new Map<string, number>();
-    metrics.forEach((m) => {
-      const k = (m.bound_object_key || '').toLowerCase();
-      map.set(k, (map.get(k) || 0) + 1);
-    });
-    return map;
-  }, [metrics]);
 
   return (
     <div className="flex gap-4 min-h-[60vh]">
       {/* 对象清单 */}
       <div className="w-60 shrink-0 border-r pr-3">
-        <div className="text-xs text-muted-foreground mb-2">对象（{objects.length}）· 徽标=模型内挂接数</div>
+        <div className="text-xs text-muted-foreground mb-2">对象（{objects.length}）</div>
         <ScrollArea className="h-[62vh]">
           <div className="space-y-1.5 pr-2">
             {objects.map((o) => (
@@ -124,7 +55,6 @@ export default function ObjectHubTab({ modelId, objects }: { modelId: number; ob
                 <div className="flex items-center gap-1.5 mt-1 text-[11px] text-muted-foreground">
                   <span className="font-mono">{o.key}</span>
                   <span className="ml-auto" />
-                  <span title="模型内挂接指标数">◆{metricsByObj.get(o.key.toLowerCase()) || 0}</span>
                   {o.route?.source_ontology
                     ? <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-green-600 border-green-500/30"
                         title={`路由至 ${o.route.source_ontology}${o.route.object_key ? ' · ' + o.route.object_key : ''}`}>route</Badge>
@@ -186,8 +116,6 @@ export default function ObjectHubTab({ modelId, objects }: { modelId: number; ob
                       <span className="ml-auto flex items-center gap-1">
                         {p.is_key && <Badge variant="outline" className="text-[10px] px-1 h-4">PK</Badge>}
                         {p.enum?.length ? <Badge variant="outline" className="text-[10px] px-1 h-4">枚举{p.enum.length}</Badge> : null}
-                        {!dims.some((d) => (d.target_column || '').toLowerCase() === (p.column || '').toLowerCase())
-                          && <Badge variant="outline" className="text-[10px] px-1 h-4 text-muted-foreground">未建维度</Badge>}
                       </span>
                     </div>
                   ))}
@@ -224,66 +152,6 @@ export default function ObjectHubTab({ modelId, objects }: { modelId: number; ob
                     </div>
                   )}
                   {!(obj.links || []).length && <div className="text-xs text-muted-foreground p-3">暂无关系</div>}
-                </div>
-              </ScrollArea>
-            </div>
-
-            {/* 本对象指标 */}
-            <div className="rounded-lg border">
-              <div className="px-3 py-2 border-b text-sm font-medium flex items-center gap-2">
-                <BarChart3 className="h-4 w-4 text-muted-foreground" /> 本对象指标（{objMetrics.length}）
-                <Button variant="ghost" size="sm" className="ml-auto text-xs h-6" onClick={loadScoped}>
-                  刷新
-                </Button>
-              </div>
-              <ScrollArea className="h-56">
-                <div className="p-1">
-                  {objMetrics.map((m) => (
-                    <div key={m.id} className="px-2 py-1.5 text-[13px] border-b last:border-0">
-                      {m.name}{m.unit && <span className="text-xs text-muted-foreground"> · {m.unit}</span>}
-                      {m.agg_type && <span className="text-xs text-muted-foreground font-mono ml-1">{m.agg_type}</span>}
-                    </div>
-                  ))}
-                  {metricsErr && (
-                    <div className="px-3 py-2 text-xs text-destructive">指标加载失败: {metricsErr}</div>)}
-                  {!objMetrics.length && !metricsErr && (
-                    <div className="text-xs text-muted-foreground p-3">
-                      无挂接指标 — 去「指标」页签新建（归属对象将锁定为 {obj.key}）
-                    </div>)}
-                </div>
-              </ScrollArea>
-            </div>
-
-            {/* 维度 + 术语 */}
-            <div className="rounded-lg border">
-              <div className="px-3 py-2 border-b text-sm font-medium flex items-center gap-2">
-                <BookOpen className="h-4 w-4 text-muted-foreground" /> 维度（{objDims.length}）· 绑定术语（{objTerms.length}）
-              </div>
-              <ScrollArea className="h-56">
-                <div className="p-1">
-                  {objDims.map((d) => (
-                    <div key={d.id} className="px-2 py-1.5 text-[13px] border-b last:border-0 flex items-center gap-2">
-                      <span>{d.name}</span>
-                      {d.category && <Badge variant="outline" className="text-[10px] px-1 h-4">{d.category}</Badge>}
-                      {parseJson<Record<string, string>>(d.value_labels, {}) &&
-                        Object.keys(parseJson<Record<string, string>>(d.value_labels, {})).length > 0 && (
-                        <span className="ml-auto text-[11px] text-muted-foreground truncate">
-                          枚举 {Object.keys(parseJson<Record<string, string>>(d.value_labels, {})).length} 值
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                  {objTerms.map((t) => (
-                    <div key={`t${t.id}`} className="px-2 py-1.5 text-[13px] border-b last:border-0 flex items-center gap-2">
-                      <span className="text-amber-500">❝</span>
-                      <span>{t.term_cn}</span>
-                      <Badge variant="outline" className="text-[10px] px-1 h-4 ml-auto">{t.term_type || '术语'}</Badge>
-                    </div>
-                  ))}
-                  {!objDims.length && !dimsErr && !objTerms.length && (
-                    <div className="text-xs text-muted-foreground p-3">暂无维度/术语绑定</div>)}
-                  {dimsErr && (
-                    <div className="px-2 py-1.5 text-xs text-destructive">维度加载失败: {dimsErr}</div>)}
                 </div>
               </ScrollArea>
             </div>

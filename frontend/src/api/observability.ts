@@ -53,7 +53,9 @@ export interface UsageSummary {
   llm_calls: number;
   total_tokens: number;
   credits: number | null;
-  cost_usd: number | null;
+  /** 本回合成本：CLI 上报（USD）或按 credit 单价折算（币种由 OBSERVABILITY_CREDIT_COST_* 配置） */
+  cost_amount: number | null;
+  cost_currency: string | null;
   errors: number | null;
   avg_duration_ms: number | null;
   thumbs_up: number | null;
@@ -75,7 +77,8 @@ export interface ModelUsage {
   input_tokens: number;
   output_tokens: number;
   credits: number | null;
-  cost_usd: number | null;
+  cost_amount: number | null;
+  cost_currency: string | null;
 }
 
 export interface UserUsage {
@@ -141,7 +144,7 @@ export interface SpanRow {
   credits: number | null;
   original_credits: number | null;
   billable: number | null;
-  cost_usd: number | null;
+  cost_amount: number | null;
   input_text: string | null;
   output_text: string | null;
   error_text: string | null;
@@ -151,6 +154,34 @@ export interface SpanRow {
 export interface TraceDetail {
   trace: TraceRow & { final_answer: string | null; input_tokens: number; output_tokens: number; feedback_reason?: string | null };
   spans: SpanRow[];
+}
+
+/** Qoder 账号 credit 配额桶（执行层 get_usage_info 实测值；Qoder 不回报美元成本） */
+export interface QuotaBucket {
+  source: string;
+  label: string;
+  unit: string;
+  used: number | null;
+  total: number | null;
+  remaining: number | null;
+  percentage: number | null;
+  available: boolean;
+  detail_url: string;
+}
+
+export interface QuotaInfo {
+  available: boolean;
+  reason?: string;
+  cached?: boolean;
+  layer?: string;
+  user_type?: string;
+  unit?: string;
+  buckets?: QuotaBucket[];
+  total_usage_percentage?: number | null;
+  is_quota_exceeded?: boolean;
+  expires_at?: string;
+  upgrade_url?: string;
+  fetched_at?: string;
 }
 
 export async function getUsageSummary(f: CommonFilters = {}) {
@@ -181,4 +212,10 @@ export async function listTraces(f: CommonFilters & { conversation_id?: number; 
 export async function getTrace(traceId: string) {
   const { data } = await client.get(`/observability/traces/${traceId}`);
   return data as TraceDetail;
+}
+
+/** Qoder 账号 credit 配额（需起一次执行层 CLI，服务端带 TTL 缓存；refresh=true 强制回源） */
+export async function getQuota(refresh = false) {
+  const { data } = await client.get('/observability/quota', { params: { refresh } });
+  return data as QuotaInfo;
 }

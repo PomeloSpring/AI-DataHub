@@ -58,6 +58,13 @@ Object.defineProperty(window, 'scrollTo', {
   value: () => {},
 });
 
+// jsdom 未实现 Pointer Capture / scrollIntoView —— Radix Select/Popover 交互依赖它们，
+// 缺失时 userEvent 点开下拉报 target.hasPointerCapture is not a function，选项永不渲染
+Element.prototype.hasPointerCapture = () => false;
+Element.prototype.setPointerCapture = () => {};
+Element.prototype.releasePointerCapture = () => {};
+Element.prototype.scrollIntoView = () => {};
+
 // Suppress console.error in tests (optional, comment out for debugging)
 // const originalError = console.error;
 // console.error = (...args: any[]) => {

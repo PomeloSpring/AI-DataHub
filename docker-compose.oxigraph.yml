@@ -1,0 +1,40 @@
+# ══════════════════════════════════════════════════════════════════════════
+# Oxigraph 单独部署 —— SPARQL 1.1 三元组存储（GraphRAG 本体检索后端）
+#
+# 与项目对接的唯一权威配置：backend/.env 的 OXIGRAPH_URL（默认 http://localhost:7878）
+# 客户端 backend/common/rdf/sparql_client.py 使用官方 server 的 Fuseki 兼容端点：
+#   GET/POST /query      — SPARQL SELECT / ASK / CONSTRUCT / DESCRIBE
+#   POST       /update    — SPARQL UPDATE（INSERT DATA 等）
+#   PUT/DELETE /store     — 批量 RDF 载入 / 清空命名图（带 ?graph= & ?noreplace=true）
+#   GET        /          — 健康探测（health() 判 status<500）
+# 以上端点由 `oxigraph serve` 原生提供，无需额外适配。
+#
+# 启动：  docker compose -f docker-compose.oxigraph.yml up -d
+# 停止：  docker compose -f docker-compose.oxigraph.yml down
+# 日志：  docker logs -f chatbi-oxigraph
+#
+# 数据持久化在 ./oxigraph-data（RocksDB 风格，重启秒级可用；建议加入 .gitignore）。
+# ⚠ 换存储 / 清空数据后，命名图为空：后端启动后在本体建模页点「同步图谱」
+#    （POST /api/graph/rebuild-all）一键基于现有元数据+本体重建全部命名图。
+#
+# 版本兼容：command 采用 Oxigraph 0.4.x 语法（--location + --bind）。
+#   若使用 0.3.x 及更早镜像报「未知参数」，把 --location 改为 --file、
+#   --bind 0.0.0.0:7878 改为 --host 0.0.0.0 --port 7878（以所选镜像文档为准）。
+# ══════════════════════════════════════════════════════════════════════════
+
+services:
+  oxigraph:
+    image: oxigraph/oxigraph:latest
+    container_name: chatbi-oxigraph
+    restart: unless-stopped
+    # 镜像 ENTRYPOINT 已提供 oxigraph 二进制，command 从子命令 serve 开始
+    command:
+      - serve
+      - --location
+      - /data
+      - --bind
+      - 0.0.0.0:7878
+    ports:
+      - "7878:7878"
+    volumes:
+      - ./oxigraph-data:/data

@@ -127,7 +127,12 @@ class FeedbackRequest(BaseModel):
     tables_used: str = ""
     datasource_id: int = 0
     satisfied: bool
+    # expected_table 已冻结：它让业务用户手输**物理表名**，同时违反
+    # ui-resource-display §2（不得依赖人填内部标识）与护栏 §7（物理表名不得
+    # 面向客户端）。新口径走 expected_ref（业务对象/指标/维度名）。
     expected_table: str = ""
+    expected_ref: str = ""
+    dissatisfaction_reason: str = ""
     reason: str = ""
     trace_id: str = ""
     message_uuid: str = ""
@@ -137,35 +142,57 @@ class FeedbackRequest(BaseModel):
 
 @router.post("/feedback")
 def save_message_feedback(req: FeedbackRequest, user: UserInfo = Depends(get_current_user)):
-    """消息赞踩反馈 → adh_message_feedback。
+    """消息赞踩反馈 → adh_message_feedback（自进化闭环的采集口）。
 
     按 message_uuid 幂等 upsert(唯一键 uk_msg);携带 trace 关联键时
     可观测页(Trace 列表/满意率 KPI)能直接联表命中该回合。
     无 message_uuid 的旧消息前端不传,此处兼容生成,仅计入满意度不关联 trace。
+
+    踩 + 原因/期望业务名会被每日归纳作业转成进化候选（待开发指标/维度/
+    待收编别名/待核绑定）。`digest_status='new'` 是作业水位线，保证同一批
+    负反馈不被反复归类。
     """
     import uuid as _uuid
 
     from backend.common.db import execute_write
+    from backend.modules.catalog.services.evolution_service import FEEDBACK_REASONS
+
+    reason_key = (req.dissatisfaction_reason or "").strip()
+    if reason_key and reason_key not in FEEDBACK_REASONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不满意的归因取值不合法: {reason_key!r}，应为 {list(FEEDBACK_REASONS)}")
+    if req.satisfied:
+        # 点赞不该带"缺哪个指标"这类归因；默默收下会让后面的归纳读到脏信号
+        reason_key, expected_ref = "", ""
+    else:
+        expected_ref = (req.expected_ref or "").strip()[:128]
 
     message_uuid = req.message_uuid or _uuid.uuid4().hex
     tags = {"tables_used": req.tables_used, "datasource_id": req.datasource_id} if req.tables_used else None
     execute_write(
         """INSERT INTO adh_message_feedback
            (trace_id, conversation_id, message_uuid, user_id, workspace_id,
-            satisfied, expected_table, reason, tags)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            satisfied, expected_table, expected_ref, dissatisfaction_reason, reason,
+            tags, digest_status)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'new')
            ON DUPLICATE KEY UPDATE
              satisfied=VALUES(satisfied), expected_table=VALUES(expected_table),
+             expected_ref=VALUES(expected_ref),
+             dissatisfaction_reason=VALUES(dissatisfaction_reason),
              reason=VALUES(reason), tags=VALUES(tags),
+             digest_status='new',
              trace_id=IF(VALUES(trace_id)='', trace_id, VALUES(trace_id))""",
         (
             req.trace_id or "", req.conversation_id or 0, message_uuid,
             user["user_id"], req.workspace_id or 0,
-            1 if req.satisfied else 0, req.expected_table or "", req.reason or "",
+            1 if req.satisfied else 0, req.expected_table or "", expected_ref,
+            reason_key, req.reason or "",
             json.dumps(tags, ensure_ascii=False) if tags else None,
         ),
     )
-    return {"ok": True, "message_uuid": message_uuid}
+    return {"ok": True, "message_uuid": message_uuid,
+            "will_be_digested": bool(not req.satisfied and (expected_ref or reason_key))}
 
 
 # ── Conversation Management ──────────────────────────────────────
@@ -202,7 +229,7 @@ def get_session_file(
         raise HTTPException(status_code=404, detail="会话不存在或无权访问")
 
     base = sw.workspace_base(create=False)
-    root = sw.session_paths(base, row["session_key"], int(row["workspace_id"] or 0), create=False)
+    root = sw.session_paths(base, row["session_key"], int(row["workspace_id"] or 0), int(user["user_id"]), create=False)
     ws_dir = (root / "workspace").resolve()
 
     from backend.modules.mind.multimodal.loader import normalize_rel_path, resolve_workspace_file

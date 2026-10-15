@@ -105,12 +105,14 @@ def record_span(
         logger.debug("record_span ignored: %s", e)
 
 
-def set_session_credits(total_credits: Optional[float], model_usage: Optional[dict]) -> None:
-    """记录会话累计 credit(Qoder Result.total_credits / model_usage),写 trace 级。"""
+def set_session_credits(total_credits: Optional[float], model_usage: Optional[dict], *,
+                        usage: Optional[dict] = None,
+                        cost_usd: Optional[float] = None) -> None:
+    """记录会话累计 credit(Qoder Result.total_credits / model_usage)与回合 token/成本,写 trace 级。"""
     rec = _recorder.get()
     if rec is None:
         return
     try:
-        rec.set_session_credits(total_credits, model_usage)
+        rec.set_session_credits(total_credits, model_usage, usage=usage, cost_usd=cost_usd)
     except Exception as e:  # noqa: BLE001
         logger.debug("set_session_credits ignored: %s", e)

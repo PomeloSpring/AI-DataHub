@@ -93,7 +93,7 @@ def test_missing_credit_stays_none(captured):
 
     summary, spans = captured[0]
     assert summary["credits"] is None
-    assert summary["cost_usd"] is None
+    assert summary["cost_amount"] is None
     assert spans[0]["credits"] is None
     assert summary["input_tokens"] == 5
 
@@ -172,6 +172,176 @@ def test_qoder_helpers_tolerate_missing_usage(disabled):
 
     qmod._obs_record_assistant(_NoUsage())
     qmod._obs_record_result(_NoUsage())
+
+
+# ── 回合 credit / 模型名 / token 的真实来源补算 ─────────────────────
+
+def _stub_baseline(monkeypatch, status, value=None):
+    """假扮 store.prior_session_credits，并记录被调用次数。"""
+    called = []
+
+    def _fake(conversation_id, trace_id):
+        called.append((conversation_id, trace_id))
+        return (status, value)
+
+    monkeypatch.setattr(store_mod, "prior_session_credits", _fake)
+    return called
+
+
+def test_turn_credits_derived_from_session_cumulative_delta(captured, monkeypatch):
+    # 流式模式下 CLI 不给请求级 credit，只给会话累计 → 本回合 credit = 累计增量
+    called = _stub_baseline(monkeypatch, "ok", 4.584346)
+    observability.begin(entrypoint="agent", user_id=1, conversation_id=900)
+    observability.record_llm_call(name="r", model_ref="Qwen3.7-Plus")
+    observability.set_session_credits(5.101405, {"qmodel": {"credits": 5.101405}})
+    observability.finalize()
+
+    summary, _ = captured[0]
+    assert called and called[0][0] == 900
+    assert abs(summary["credits"] - (5.101405 - 4.584346)) < 1e-6
+    assert abs(summary["session_credits"] - 5.101405) < 1e-9  # 累计仍单列，不被覆盖
+
+
+def test_first_turn_counts_full_cumulative(captured, monkeypatch):
+    _stub_baseline(monkeypatch, "first")
+    observability.begin(entrypoint="agent", user_id=1, conversation_id=900)
+    observability.set_session_credits(2.461372, {"qmodel": {"credits": 2.461372}})
+    observability.finalize()
+    assert abs(captured[0][0]["credits"] - 2.461372) < 1e-9
+
+
+def test_credit_reset_within_conversation_counts_full(captured, monkeypatch):
+    # 清上下文/新建 session 后累计回落：不能算出负数，也不能拿旧基线抵扣
+    _stub_baseline(monkeypatch, "ok", 7.602884)
+    observability.begin(entrypoint="agent", user_id=1, conversation_id=900)
+    observability.set_session_credits(3.804337, {"qmodel": {"credits": 3.804337}})
+    observability.finalize()
+    assert abs(captured[0][0]["credits"] - 3.804337) < 1e-9
+
+
+def test_unknown_baseline_keeps_credit_none(captured, monkeypatch):
+    # 基线查不到时不猜测：credit 保持 NULL（前端显示 —），绝不拿累计值充数
+    _stub_baseline(monkeypatch, "unknown")
+    observability.begin(entrypoint="agent", user_id=1, conversation_id=900)
+    observability.set_session_credits(6.595985, {"qmodel": {"credits": 6.595985}})
+    observability.finalize()
+
+    summary, _ = captured[0]
+    assert summary["credits"] is None
+    assert abs(summary["session_credits"] - 6.595985) < 1e-9
+
+
+def test_request_level_credit_wins_over_cumulative_delta(captured, monkeypatch):
+    called = _stub_baseline(monkeypatch, "ok", 1.0)
+    observability.begin(entrypoint="agent", user_id=1, conversation_id=900)
+    observability.record_llm_call(name="r", credits=0.21)
+    observability.set_session_credits(9.0, {"qmodel": {"credits": 9.0}})
+    observability.finalize()
+
+    summary, _ = captured[0]
+    assert abs(summary["credits"] - 0.21) < 1e-9
+    assert called == []  # 已有请求级值，不查基线
+
+
+def test_model_ref_backfilled_from_llm_call_span(captured):
+    # 入口未传 model_ref（走默认模型）→ 回填执行层上报的真实生效模型
+    observability.begin(entrypoint="agent", user_id=1, model_ref="")
+    observability.record_llm_call(name="r", model_ref="Qwen3.7-Plus")
+    observability.finalize()
+    assert captured[0][0]["model_ref"] == "Qwen3.7-Plus"
+
+
+def test_explicit_model_ref_not_overwritten(captured):
+    observability.begin(entrypoint="agent", user_id=1, model_ref="Efficient")
+    observability.record_llm_call(name="r", model_ref="Qwen3.7-Plus")
+    observability.finalize()
+    assert captured[0][0]["model_ref"] == "Efficient"
+
+
+def test_result_usage_tokens_fill_when_request_level_zero(captured):
+    observability.begin(entrypoint="agent", user_id=1)
+    observability.record_llm_call(name="r", model_ref="m", input_tokens=0, output_tokens=0)
+    observability.set_session_credits(
+        None, None, usage={"input_tokens": 51200, "output_tokens": 640})
+    observability.finalize()
+
+    summary, _ = captured[0]
+    assert summary["input_tokens"] == 51200
+    assert summary["output_tokens"] == 640
+    assert summary["total_tokens"] == 51840
+
+
+def test_cost_amount_only_from_cli_or_configured_rate(captured, monkeypatch):
+    monkeypatch.setattr(config_mod, "OBSERVABILITY_CREDIT_COST_RATE", 0, raising=False)
+    observability.begin(entrypoint="agent", user_id=1)
+    observability.record_llm_call(name="r", credits=0.5)
+    observability.finalize()
+    # 单价未配置 + CLI 未报成本 → 保持 NULL（显示 —），不臆造价格
+    assert captured[0][0]["cost_amount"] is None
+
+    monkeypatch.setattr(config_mod, "OBSERVABILITY_CREDIT_COST_RATE", 0.04, raising=False)
+    monkeypatch.setattr(config_mod, "OBSERVABILITY_CREDIT_COST_CURRENCY", "CNY", raising=False)
+    observability.begin(entrypoint="agent", user_id=1)
+    observability.record_llm_call(name="r", credits=0.5)
+    observability.finalize()
+    summary = captured[1][0]
+    assert abs(summary["cost_amount"] - 0.02) < 1e-9
+    assert summary["cost_currency"] == "CNY"     # 折算币种随行携带，不把人民币当美元展示
+
+    monkeypatch.setattr(config_mod, "OBSERVABILITY_CREDIT_COST_RATE", 0, raising=False)
+    observability.begin(entrypoint="agent", user_id=1)
+    observability.set_session_credits(None, None, cost_usd=1.25)
+    observability.finalize()
+    summary = captured[2][0]
+    # CLI 上报的成本是美元，直存并标 USD（不被配置币种覆盖）
+    assert abs(summary["cost_amount"] - 1.25) < 1e-9
+    assert summary["cost_currency"] == "USD"
+
+
+# ── 账号 credit 配额（Qoder 不回报美元，credit 配额是“实际消耗”的唯一可信口径）──
+
+def test_quota_bucket_normalization():
+    from backend.modules.mind.execution.qoder_quota import _normalize_buckets
+
+    info = {
+        "userQuota": {"total": 100.0, "used": 40.0, "percentage": 40.0, "unit": "credits"},
+        "addOnQuota": {"total": 50, "used": 10, "remaining": 40, "unit": "credits",
+                       "detailUrl": "https://example.invalid/x"},
+        # 组织资源包用 cap 而非 total，且不给 remaining —— 均需收敛
+        "orgResourcePackage": {"cap": 6000.0, "used": 5334.0, "percentage": 89.0,
+                               "available": True, "unit": "credits"},
+    }
+    buckets = {b["source"]: b for b in _normalize_buckets(info)}
+    assert list(buckets) == ["userQuota", "addOnQuota", "orgResourcePackage"]
+    assert buckets["userQuota"]["remaining"] == 60.0        # total-used 推导
+    assert buckets["addOnQuota"]["detail_url"] == "https://example.invalid/x"
+    assert buckets["orgResourcePackage"]["total"] == 6000.0  # cap → total
+    assert buckets["orgResourcePackage"]["remaining"] == 666.0
+
+
+def test_quota_normalization_skips_empty_buckets():
+    from backend.modules.mind.execution.qoder_quota import _normalize_buckets
+
+    # 只有 orgResourcePackage 的账号（实测企业版就是这样）不得被空桶噪出多条
+    assert [b["source"] for b in _normalize_buckets(
+        {"userQuota": {}, "orgResourcePackage": {"cap": 6000.0, "used": 5334.0}})] == ["orgResourcePackage"]
+    # 无任何额度数值 → 空清单（上层据此返回 available=false，不画空进条）
+    assert _normalize_buckets({"userQuota": {"unit": "credits"}}) == []
+
+
+def test_quota_failure_is_explicit_not_empty(monkeypatch):
+    """读不到配额必须带原因对外暴露，不得回退成空数据（no-silent-degradation）。"""
+    import asyncio
+
+    from backend.modules.mind.execution import qoder_quota as qmod
+
+    async def _unavailable():
+        return {"available": False, "reason": "执行层凭据未配置"}
+
+    monkeypatch.setattr(qmod, "_fetch_from_cli", _unavailable)
+    payload = asyncio.run(qmod.read_quota(refresh=True))
+    assert payload["available"] is False
+    assert payload["reason"] == "执行层凭据未配置"
 
 
 def test_record_span_keeps_artifacts_without_token_accumulation(captured):

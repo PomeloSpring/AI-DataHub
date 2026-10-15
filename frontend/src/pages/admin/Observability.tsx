@@ -14,15 +14,15 @@ import { toast } from 'sonner';
 import {
   Activity, MessagesSquare, GitBranch, Users as UsersIcon, RefreshCw,
   ThumbsUp, ThumbsDown, AlertCircle, Sparkles, ChevronDown, ChevronRight, Calendar,
-  History as HistoryIcon,
+  Gauge, History as HistoryIcon,
 } from 'lucide-react';
 import History from '@/pages/History';
 import {
-  getUsageSummary, getUsageByModel, getUsageByUser, listSessions, listTraces, getTrace,
+  getUsageSummary, getUsageByModel, getUsageByUser, listSessions, listTraces, getTrace, getQuota,
   parseObservabilityTime, observabilityTimeRange,
   observabilityTimeFromInput as toApiDT, observabilityTimeToInput as toInputDT,
   type UsageSummary, type DailyPoint, type ModelUsage, type UserUsage,
-  type SessionRow, type TraceRow, type TraceDetail, type CommonFilters,
+  type SessionRow, type TraceRow, type TraceDetail, type CommonFilters, type QuotaInfo,
 } from '@/api/observability';
 import client from '@/api/client';
 
@@ -31,6 +31,14 @@ const fmt = (n: number | null | undefined, digits = 0) =>
 
 const fmtTime = (s: string | null | undefined) =>
   (s ? parseObservabilityTime(s).toLocaleString('zh-CN', { hour12: false }) : '—');
+
+// 成本按行内币种显示（CLI 上报=USD，折算=配置币种，典型为 CNY），不强行把人民币标成 $。
+const CURRENCY_SYMBOL: Record<string, string> = { CNY: '¥', USD: '$', EUR: '€', JPY: '¥' };
+const fmtCost = (amount: number | null | undefined, currency?: string | null) => {
+  if (!amount) return '—';
+  const ccy = (currency || '').toUpperCase();
+  return `${CURRENCY_SYMBOL[ccy] || (ccy ? ccy + ' ' : '')}${fmt(amount, 4)}`;
+};
 
 // 自定义时间范围触发按钮的紧凑显示(本地 YYYY-MM-DD HH:mm)
 const fmtShort = (s: string) => { const v = toInputDT(s); return v ? v.replace('T', ' ') : '—'; };
@@ -288,10 +296,11 @@ export default function Observability() {
             <StatCard icon={Sparkles} label="模型请求" value={fmt(s?.llm_calls)} hint={`平均耗时 ${fmt(s?.avg_duration_ms)}ms`} />
             <StatCard icon={AlertCircle} label="错误" value={fmt(s?.errors)} />
             <StatCard icon={Activity} label="总 Token" value={fmt(s?.total_tokens)} />
-            <StatCard icon={Activity} label="Credit（主口径）" value={fmt(s?.credits, 2)} />
-            <StatCard icon={Activity} label="成本 USD（估算）" value={s?.cost_usd ? '$' + fmt(s.cost_usd, 4) : '—'} />
+            <StatCard icon={Activity} label="Credit（主口径）" value={fmt(s?.credits, 4)} />
+            <StatCard icon={Activity} label="成本（估算）" value={fmtCost(s?.cost_amount, s?.cost_currency)} />
             <StatCard icon={ThumbsUp} label="满意率" value={satRate === null ? '—' : satRate + '%'} hint={`👍${fmt(s?.thumbs_up)} 👎${fmt(s?.thumbs_down)}`} />
           </div>
+          <QuotaPanel />
           <div className="rounded-lg border bg-card p-4">
             <div className="text-sm font-medium mb-2">按日趋势</div>
             {summary?.daily?.length ? (
@@ -347,9 +356,14 @@ export default function Observability() {
 
         <TabsContent value="models">
           <DataTable
-            head={['模型', '回合', '请求数', '输入Token', '输出Token', 'Credit', '成本USD']}
-            rows={models.map(m => [m.model_ref || '—', fmt(m.turns), fmt(m.llm_calls), fmt(m.input_tokens), fmt(m.output_tokens), fmt(m.credits, 2), m.cost_usd ? '$' + fmt(m.cost_usd, 4) : '—'])}
+            head={['模型', '回合', '请求数', '输入Token', '输出Token', 'Credit', '成本']}
+            rows={models.map(m => [m.model_ref || '—', fmt(m.turns), fmt(m.llm_calls), fmt(m.input_tokens), fmt(m.output_tokens), fmt(m.credits, 4), fmtCost(m.cost_amount, m.cost_currency)])}
           />
+          <p className="mt-2 text-xs text-muted-foreground">
+            模型为回合内实际生效模型（未指定时由执行层上报的模型名回填）；Credit 为回合增量（会话累计值之差）；
+            成本 = credit × 单价（默认取 Qoder CN 企业资源包官方价 80 元 / 2,000 Credits = ¥0.04/Credit，
+            可用 OBSERVABILITY_CREDIT_COST_RATE / _CURRENCY 改为你自己的实际采购价），属估算而非账单值。
+          </p>
         </TabsContent>
 
         <TabsContent value="users">
@@ -418,6 +432,90 @@ export default function Observability() {
           )}
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+/**
+ * Qoder 账号 credit 配额（执行层实测值）。
+ *
+ * 为什么需要它：Qoder 按 credit 计量、不回报账单成本（total_cost_usd / costUSD 实测恒为 0），
+ * 所以账号级“实际花了多少配额”的唯一可信口径就是这个面板。
+ * 读取要起一次执行层 CLI（服务端带 TTL 缓存），故独立于概览刷新节律自己加载。
+ */
+function QuotaPanel() {
+  const [quota, setQuota] = useState<QuotaInfo | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async (refresh = false) => {
+    setBusy(true);
+    try {
+      setQuota(await getQuota(refresh));
+    } catch (e: any) {
+      setQuota({ available: false, reason: e?.response?.data?.detail || e?.message || String(e) });
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  const bar = (pct: number | null | undefined) => (
+    <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+      <div className="h-2 rounded-full bg-primary transition-all"
+        style={{ width: `${Math.max(0, Math.min(100, pct ?? 0))}%` }} />
+    </div>
+  );
+
+  return (
+    <div className="rounded-lg border bg-card p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <Gauge className="h-4 w-4" /> Qoder Credit 配额（账号级真实消耗）
+          {quota?.is_quota_exceeded && <Badge variant="destructive">配额已耗尽</Badge>}
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          {quota?.available && (
+            <span>
+              {quota.layer ? `执行层：${quota.layer} · ` : ''}
+              {quota.cached ? '缓存值' : '实时读取'} · 采集于 {fmtTime(quota.fetched_at)}
+            </span>
+          )}
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => load(true)}>
+            <RefreshCw className={`h-3.5 w-3.5 mr-1 ${busy ? 'animate-spin' : ''}`} /> 重读
+          </Button>
+        </div>
+      </div>
+
+      {!quota && <div className="text-sm text-muted-foreground">正在读取账号 credit 配额…（需起一次执行层 CLI）</div>}
+      {quota && !quota.available && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+          <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+          <span>credit 配额不可用：{quota.reason || '未知原因'}（下方表格的 credit 仍为回合真实累加值，不受影响）</span>
+        </div>
+      )}
+      {quota?.available && (
+        <div className="space-y-3">
+          {(quota.buckets || []).map(b => (
+            <div key={b.source} className="space-y-1">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-medium">{b.label}{b.available ? '' : '（不可用）'}</span>
+                <span className="tabular-nums text-muted-foreground">
+                  {fmt(b.used)} / {fmt(b.total)} {b.unit} · 剩 {fmt(b.remaining)}
+                </span>
+              </div>
+              {bar(b.percentage)}
+              {b.percentage != null && (
+                <div className="text-[11px] text-muted-foreground tabular-nums">已用 {fmt(b.percentage, 1)}%</div>
+              )}
+            </div>
+          ))}
+          <div className="text-[11px] text-muted-foreground">
+            口径：Qoder 按 credit 计量计费，不回报账单成本（实测 total_cost_usd / costUSD 恒为 0），
+            因此本面板是“实际花了多少配额”的权威口径；下方「成本」列是按资源包官方单价折算的估算值。
+            {quota.expires_at ? ` 配额到期：${fmtTime(quota.expires_at)}` : ''}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

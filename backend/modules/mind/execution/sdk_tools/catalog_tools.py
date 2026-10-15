@@ -18,6 +18,24 @@ def _text(data, is_error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": text}], **({"isError": True} if is_error else {})}
 
 
+def record_execute_error(tool_name: str, exc: Exception) -> None:
+    """把执行阶段原始引擎错因写入管理端观测 trace（供运维区分编译缺陷/连接故障/权限拦截）。
+
+    护栏 §7：原始报错栈只进服务端日志 + admin trace，**绝不**回给 LLM/前端（对外仍由调用方
+    回脱敏文案）；护栏 §9 / FDE §4：观测未开启即 no-op、本函数永不抛出、不影响取数主链路。
+    """
+    import traceback
+    detail = f"{type(exc).__name__}: {exc}"
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    logger.error("[%s] 执行失败（原始错因，仅服务端/管理端 trace）: %s\n%s", tool_name, detail, tb)
+    try:
+        from backend.observability import record_span
+        record_span(kind="tool_call", name=tool_name, status="error",
+                    error_text=f"{detail}\n{tb}")
+    except Exception as e:  # noqa: BLE001 — 观测写入不得影响主链路
+        logger.debug("[%s] record_execute_error trace write skipped: %s", tool_name, e)
+
+
 # §7 数据源黑盒：物理元数据回给 LLM 前剥除内部 id（datasource_id/行 id），
 # 仅保留写 SQL 所需的建模信息（表名/列名/类型/注释/business_desc 等）。
 _PHYSICAL_ID_KEYS = {"datasource_id", "id"}

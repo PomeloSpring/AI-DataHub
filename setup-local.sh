@@ -190,9 +190,7 @@ if [ $FAILURES -eq 0 ]; then
 else
     log_error "完成, 但有 $FAILURES 项失败(见上方)"
 fi
-echo -e "${BLUE}端口约定:${NC} frontend 3000 | datamind 8001 | datagov 8002 | dataflow 8003 \
-| dataviz 8004 | datacatalog 8005 | authservice 8006 | aiplatform 8007 \
-| semhub 8012"
+echo -e "${BLUE}端口约定:${NC} frontend 3000 | web 8000（单进程承载全部模块，旧 8001-8007/8012 已退役）"
 echo -e "${BLUE}下一步:${NC}"
 echo "  1) 填写 services/.env 的数据源与密钥"
 echo "  2) ./start-all.sh -d      启动全部后端   |   cd frontend && npm run dev   启动前端"

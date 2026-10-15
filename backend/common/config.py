@@ -11,7 +11,7 @@ Usage:
         ADH_SECRET_KEY, ADH_DEFAULT_ADMIN_PASSWORD,
         METADATA_DB_HOST, METADATA_DB_PORT, METADATA_DB_USER, METADATA_DB_PASSWORD, METADATA_DB_DATABASE,
         OXIGRAPH_URL,
-        SERVICE_PORTS, MCP_PORTS,
+        WEB_PORT, SEMANTIC_SERVICE_URL,
     )
 """
 
@@ -95,7 +95,8 @@ PROJECT_ROOT = _PROJECT_ROOT
 ADH_OBJECT_FALLBACK_DIR = os.getenv("ADH_OBJECT_FALLBACK_DIR", str(_PROJECT_ROOT / "data" / "object_storage"))
 
 # ── Agent 工作空间沙箱根目录(Docker 部署时挂载 named volume) ─────
-ADH_WORKSPACES_DIR = os.getenv("ADH_WORKSPACES_DIR", str(_PROJECT_ROOT / "data" / "workspaces"))
+# 目录布局: {ADH_WORKSPACES_DIR}/{user_id}/workspace/{workspace_id}/sessions/{key}/...
+ADH_WORKSPACES_DIR = os.getenv("ADH_WORKSPACES_DIR", str(_PROJECT_ROOT / "data" / "user"))
 
 # ══════════════════════════════════════════════════════════════════════════
 # Observability — LLM 交互可观测(O0: credit/token 用量落库, MySQL)
@@ -103,6 +104,22 @@ ADH_WORKSPACES_DIR = os.getenv("ADH_WORKSPACES_DIR", str(_PROJECT_ROOT / "data" 
 
 OBSERVABILITY_ENABLED = os.getenv("OBSERVABILITY_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
 OBSERVABILITY_SPAN_MAX_CHARS = int(os.getenv("OBSERVABILITY_SPAN_MAX_CHARS", "4096"))
+# credit → 成本折算单价（仅当 CLI 未上报 total_cost_usd 时用于“成本”列，单位见下方币种）。
+# 默认 0.04 CNY = Qoder CN 企业资源包官方起购价 80 元 / 2,000 Credits
+# （源：docs.qoder.cn/product-overview/billing-description；国际版对照 $0.02/Credit）。
+# 填 0 = 不折算，成本列保持 NULL 并在前端显示 —（不臆造价格）。
+OBSERVABILITY_CREDIT_COST_RATE = float(os.getenv("OBSERVABILITY_CREDIT_COST_RATE", "0.04") or 0)
+OBSERVABILITY_CREDIT_COST_CURRENCY = (os.getenv("OBSERVABILITY_CREDIT_COST_CURRENCY", "CNY") or "CNY").strip().upper()
+
+# ══════════════════════════════════════════════════════════════════════════
+# Qoder 执行层默认 —— AS-BOT 未绑定模型时的兜底默认
+# ══════════════════════════════════════════════════════════════════════════
+
+# 名称对齐 qodercli 自身的环境变量约定(README 中 QODER_MODEL ↔ -m/--model)；
+# secure_sdk.build_options 会剥除子进程 env，本项仅作为本侧读取入口，不直接
+# 依赖子进程继承。优先级：前端选择/AS-BOT.models[0] > 执行层 adapter.model >
+# QODER_MODEL > SDK 默认(Auto)。支持 `{provider}/{model}` 形式(见 llm_resources)。
+QODER_MODEL = os.getenv("QODER_MODEL", "").strip()
 
 # ══════════════════════════════════════════════════════════════════════════
 # Oxigraph — RDF Triple Store (SPARQL 1.1)
@@ -111,27 +128,15 @@ OBSERVABILITY_SPAN_MAX_CHARS = int(os.getenv("OBSERVABILITY_SPAN_MAX_CHARS", "40
 OXIGRAPH_URL = os.getenv("OXIGRAPH_URL", "http://localhost:7878")
 
 # ══════════════════════════════════════════════════════════════════════════
-# Service & MCP Ports
+# Web 监听口 —— Phase 4 终态：后端只有一个 web 进程、一个端口
 # ══════════════════════════════════════════════════════════════════════════
+#
+# 与 backend/scripts/services.conf（唯一权威登记）/ vite 代理 / nginx 上游
+# backend:8000 / Dockerfile EXPOSE / monitoring 探测同源。旧 8 个契约端口
+# （8001-8007/8012）与 SERVICE_PORTS / MCP_PORTS 映射随进程壳退役（无消费方）。
+# 口径不一致会直接表现为前端 ECONNREFUSED，tests/test_merged_webapp.py 有护栏用例。
 
-SERVICE_PORTS = {
-    "datamind": 8001,
-    "datagov": 8002,
-    "dataflow": 8003,
-    "dataviz": 8004,
-    "datacatalog": 8005,
-    "authservice": 8006,
-    "semhub": 8012,
-}
-
-MCP_PORTS = {
-    "datamind": 31001,
-    "datagov": 31002,
-    "dataflow": 31003,
-    "dataviz": 31004,
-    "datacatalog": 31005,
-    "authservice": 31006,
-}
+WEB_PORT = int(os.getenv("ADH_WEB_PORT", "8000"))
 
 # ══════════════════════════════════════════════════════════════════════════
 # Backward Compatibility Aliases (deprecated — use ADH_* / METADATA_DB_*)
@@ -152,10 +157,11 @@ DORIS_DATABASE = os.getenv("DORIS_DATABASE", "alliedstar")
 # ══════════════════════════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════════════════════════
-# SemanticLayer — semhub (:8012) 声明式查询入口 (ChatBI/大屏同源)
+# SemanticLayer — 语义层声明式查询入口 (ChatBI/大屏同源)
 # ══════════════════════════════════════════════════════════════════════════
+# semhub router 已拼进 web 单进程，故默认指向本进程监听口（旧 :8012 独立服务已退役）。
 
-SEMANTIC_SERVICE_URL = os.getenv("SEMANTIC_SERVICE_URL", "http://localhost:8012")
+SEMANTIC_SERVICE_URL = os.getenv("SEMANTIC_SERVICE_URL", f"http://localhost:{WEB_PORT}")
 SEMANTIC_TIMEOUT = int(os.getenv("SEMANTIC_TIMEOUT", "60"))
 
 

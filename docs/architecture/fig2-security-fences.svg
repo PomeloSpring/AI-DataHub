@@ -1,0 +1,201 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 1010" font-family="Noto Sans CJK SC, PingFang SC, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/>
+    </marker>
+    <marker id="arG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+  </defs>
+  <rect width="1560" height="1010" fill="#f8fafc"/>
+
+  <text x="40" y="46" font-size="29" font-weight="700" fill="#0f172a">安全围栏 · 十二道纵深防御</text>
+  <text x="40" y="74" font-size="15.5" fill="#475569">原则：同一件事只有一个裁决点；每道围栏 fail-closed（拒绝必须可解释、可审计）；不得用降级分支掩藏功能失败</text>
+
+  <!-- ═══════ Zone 1 入口域 ═══════ -->
+  <rect x="60" y="106" width="336" height="462" rx="12" fill="#ffffff" stroke="#bae6fd"/>
+  <text x="78" y="134" font-size="15.5" font-weight="700" fill="#0284c7">入口域 · L1-L2</text>
+  <g>
+    <rect x="78" y="148" width="300" height="104" rx="8" fill="#e0f2fe" stroke="#7dd3fc"/>
+    <text x="90" y="170" font-size="13.6" font-weight="700" fill="#0f172a">① 入口围栏 · 身份 + API 权限码</text>
+    <text x="90" y="191" font-size="12.4" fill="#334155">依据：JWT 验签后重读状态/角色；</text>
+    <text x="90" y="208" font-size="12.4" fill="#334155">perm_code → api_pattern 白名单门控</text>
+    <text x="90" y="230" font-size="12.4" font-weight="700" fill="#dc2626">不过：401 / 拒绝；未配码角色=全拒</text>
+  </g>
+  <g>
+    <rect x="78" y="262" width="300" height="128" rx="8" fill="#f1f5f9"/>
+    <text x="90" y="284" font-size="13" font-weight="700" fill="#0f172a">身份只信服务端（9 类来源）</text>
+    <text x="90" y="305" font-size="12.2" fill="#334155">JWT · 文件 token · AS-BOT 会话注入</text>
+    <text x="90" y="323" font-size="12.2" fill="#334155">任务持久化创建者 · 嵌入 AK(30m)</text>
+    <text x="90" y="341" font-size="12.2" fill="#334155">报表创建者 · X-Internal-Identity HMAC</text>
+    <text x="90" y="359" font-size="12.2" fill="#334155">user_id=0 → sensitive_only · 无身份即拒</text>
+    <text x="90" y="380" font-size="12.2" font-weight="700" fill="#0369a1">绝不读 body.user_id</text>
+  </g>
+  <g>
+    <rect x="78" y="400" width="300" height="120" rx="8" fill="#fff7ed" stroke="#fed7aa"/>
+    <text x="90" y="422" font-size="13" font-weight="700" fill="#0f172a">admin 语义（易误判）</text>
+    <text x="90" y="443" font-size="12.3" fill="#334155">✅ API 权限中间件放行</text>
+    <text x="90" y="461" font-size="12.3" fill="#334155">✅ 闸门 approval 免审批</text>
+    <text x="90" y="479" font-size="12.3" fill="#334155">❌ 数据面不做 RBAC/RLS 旁路</text>
+    <text x="90" y="500" font-size="12.3" font-weight="700" fill="#c2410c">敏感基线对 admin 同样生效</text>
+  </g>
+
+  <line x1="400" y1="330" x2="418" y2="330" stroke="#64748b" stroke-width="2.4" marker-end="url(#arG)"/>
+
+  <!-- ═══════ Zone 2 智能体域 ═══════ -->
+  <rect x="420" y="106" width="336" height="462" rx="12" fill="#ffffff" stroke="#ddd6fe"/>
+  <text x="438" y="134" font-size="15.5" font-weight="700" fill="#7c3aed">智能体域 · L4</text>
+  <g>
+    <rect x="438" y="148" width="300" height="86" rx="8" fill="#f3e8fd" stroke="#c4b5fd"/>
+    <text x="450" y="170" font-size="13.6" font-weight="700" fill="#0f172a">② 提示词护栏</text>
+    <text x="450" y="190" font-size="12.4" fill="#334155">permission_boundary + 语义层强制规范</text>
+    <text x="450" y="207" font-size="12.4" fill="#334155">+ 角色/RLS 摘要 + 屏蔽列 + 图表契约</text>
+    <text x="450" y="225" font-size="12.4" font-weight="700" fill="#dc2626">引导不走裸 SQL；违规仍被⑤硬拦</text>
+  </g>
+  <g>
+    <rect x="438" y="244" width="300" height="106" rx="8" fill="#f3e8fd" stroke="#c4b5fd"/>
+    <text x="450" y="266" font-size="13.6" font-weight="700" fill="#0f172a">③ 工具面围栏 ToolPolicy</text>
+    <text x="450" y="287" font-size="12.4" fill="#334155">= AS-BOT 逐工具勾选</text>
+    <text x="450" y="304" font-size="12.4" fill="#334155">∩ 角色权限码继承（只能做减法）</text>
+    <text x="450" y="321" font-size="12.4" fill="#334155">∩ 执行层天花板 ∩ 涉密硬上界</text>
+    <text x="450" y="341" font-size="12.4" font-weight="700" fill="#dc2626">未授权即不注册，原因进 unavailable</text>
+  </g>
+  <g>
+    <rect x="438" y="360" width="300" height="106" rx="8" fill="#f3e8fd" stroke="#c4b5fd"/>
+    <text x="450" y="382" font-size="13.6" font-weight="700" fill="#0f172a">④ 参数与资源域围栏</text>
+    <text x="450" y="403" font-size="12.4" fill="#334155">reject_identity：禁身份字段入参</text>
+    <text x="450" y="420" font-size="12.4" fill="#334155">禁要求 LLM 传 datasource_id（只能猜）</text>
+    <text x="450" y="437" font-size="12.4" fill="#334155">选源用业务名，服务端在授权集解析</text>
+    <text x="450" y="457" font-size="12.4" font-weight="700" fill="#dc2626">越权 → ResourceScopeError（含候选名）</text>
+  </g>
+  <g>
+    <rect x="438" y="476" width="300" height="76" rx="8" fill="#f5f3ff" stroke="#c4b5fd" stroke-dasharray="6 4"/>
+    <text x="450" y="498" font-size="13.4" font-weight="700" fill="#0f172a">⑫ 运行环境围栏（约束本域）</text>
+    <text x="450" y="518" font-size="12.4" fill="#334155">沙箱 --network=none --read-only</text>
+    <text x="450" y="536" font-size="12.4" fill="#334155">uid 65534 · AST 校验 · 工作区分片</text>
+  </g>
+
+  <line x1="760" y1="330" x2="778" y2="330" stroke="#64748b" stroke-width="2.4" marker-end="url(#arG)"/>
+
+  <!-- ═══════ Zone 3 语义编译域 ═══════ -->
+  <rect x="780" y="106" width="336" height="462" rx="12" fill="#ffffff" stroke="#fde68a"/>
+  <text x="798" y="134" font-size="15.5" font-weight="700" fill="#b45309">语义编译域 · L5</text>
+  <g>
+    <rect x="798" y="148" width="300" height="100" rx="8" fill="#fef3c7" stroke="#fcd34d"/>
+    <text x="810" y="170" font-size="13.6" font-weight="700" fill="#0f172a">⑤ 意图契约围栏</text>
+    <text x="810" y="191" font-size="12.4" fill="#334155">extra=forbid；拒收 sql/rawSql/statement</text>
+    <text x="810" y="208" font-size="12.4" fill="#334155">/table/tables（语义层不吃裸 SQL）</text>
+    <text x="810" y="225" font-size="12.4" fill="#334155">包含式模糊只回抛候选 fuzzy_rejected</text>
+    <text x="810" y="242" font-size="12.4" font-weight="700" fill="#dc2626">错误回喂 LLM 自纠；不静默绑定</text>
+  </g>
+  <g>
+    <rect x="798" y="258" width="300" height="140" rx="8" fill="#fef3c7" stroke="#fcd34d"/>
+    <text x="810" y="280" font-size="13.6" font-weight="700" fill="#0f172a">⑥ 七闸门 gates</text>
+    <text x="810" y="301" font-size="12.4" fill="#334155">identity 请求者身份（非 dry_run）</text>
+    <text x="810" y="318" font-size="12.4" fill="#334155">permission 表级 + token + block 列</text>
+    <text x="810" y="335" font-size="12.4" fill="#334155">preflight 绑定/字典无孤儿漂移</text>
+    <text x="810" y="352" font-size="12.4" fill="#334155">proposal + approval 高风险挂起</text>
+    <text x="810" y="369" font-size="12.4" fill="#334155">execute → audit（成功/拒绝均留痕）</text>
+    <text x="810" y="389" font-size="12.4" font-weight="700" fill="#dc2626">任一道拒 → allowed=false + gate_trail</text>
+  </g>
+  <g>
+    <rect x="798" y="408" width="300" height="112" rx="8" fill="#fef3c7" stroke="#fcd34d"/>
+    <text x="810" y="430" font-size="13.6" font-weight="700" fill="#0f172a">⑦ SQL 语法围栏</text>
+    <text x="810" y="451" font-size="12.4" fill="#334155">仅 SELECT / WITH(CTE)</text>
+    <text x="810" y="468" font-size="12.4" fill="#334155">禁 DDL/DML/REPLACE/GRANT/多语句</text>
+    <text x="810" y="485" font-size="12.4" fill="#334155">默认要求 LIMIT；huge/raw_source 先补</text>
+    <text x="810" y="502" font-size="12.4" fill="#334155">LIMIT 再校验（缺 LIMIT 不得放行）</text>
+    <text x="810" y="516" font-size="12.4" font-weight="700" fill="#dc2626">ValueError 带原因，执行前中止</text>
+  </g>
+
+  <line x1="1120" y1="330" x2="1138" y2="330" stroke="#64748b" stroke-width="2.4" marker-end="url(#arG)"/>
+
+  <!-- ═══════ Zone 4 治理执行与出站 ═══════ -->
+  <rect x="1140" y="106" width="336" height="462" rx="12" fill="#ffffff" stroke="#fecaca"/>
+  <text x="1158" y="134" font-size="15.5" font-weight="700" fill="#dc2626">治理执行与出站 · L6-L7</text>
+  <g>
+    <rect x="1158" y="148" width="300" height="128" rx="8" fill="#fee2e2" stroke="#fca5a5"/>
+    <text x="1170" y="170" font-size="13.6" font-weight="700" fill="#0f172a">⑧ 数据护城河围栏（见下方顺序）</text>
+    <text x="1170" y="191" font-size="12.4" fill="#334155">敏感基线 → RBAC → 表 → 列 → RLS 行级</text>
+    <text x="1170" y="208" font-size="12.4" fill="#334155">表级双白名单取交集；列级只增不减</text>
+    <text x="1170" y="225" font-size="12.4" fill="#334155">RLS 包裹子查询、保留别名、覆盖 JOIN</text>
+    <text x="1170" y="242" font-size="12.4" fill="#334155">方言按目标源（sls→postgres 族）</text>
+    <text x="1170" y="262" font-size="12.4" font-weight="700" fill="#dc2626">PermissionError → 到达数据源前中止</text>
+  </g>
+  <g>
+    <rect x="1158" y="286" width="300" height="98" rx="8" fill="#fee2e2" stroke="#fca5a5"/>
+    <text x="1170" y="308" font-size="13.6" font-weight="700" fill="#0f172a">⑨ 引擎纵深围栏</text>
+    <text x="1170" y="329" font-size="12.4" fill="#334155">上游改写后 RLS 策略二次注入</text>
+    <text x="1170" y="346" font-size="12.4" fill="#334155">过滤视图 plan 期强制（覆盖 JOIN 两侧）</text>
+    <text x="1170" y="363" font-size="12.4" fill="#334155">connector 不可用/失败一律 raise</text>
+    <text x="1170" y="377" font-size="12.4" font-weight="700" fill="#dc2626">禁回退裸 execute_query/get_connection</text>
+  </g>
+  <g>
+    <rect x="1158" y="394" width="300" height="96" rx="8" fill="#fee2e2" stroke="#fca5a5"/>
+    <text x="1170" y="416" font-size="13.6" font-weight="700" fill="#0f172a">⑩ 序列化与出站围栏</text>
+    <text x="1170" y="437" font-size="12.4" fill="#334155">df_to_columns_rows 重名列无损消歧</text>
+    <text x="1170" y="454" font-size="12.4" fill="#334155">outbound_guard 统一收口：剥 SQL/内部 id/</text>
+    <text x="1170" y="471" font-size="12.4" fill="#334155">物理表列/凭据/报错栈；对外 EXEC_FAIL_HINT</text>
+    <text x="1170" y="485" font-size="12.4" font-weight="700" fill="#dc2626">禁止 to_json 裸序列化或吞异常返空行</text>
+  </g>
+  <g>
+    <rect x="1158" y="500" width="300" height="52" rx="8" fill="#fff1f2" stroke="#fca5a5" stroke-dasharray="6 4"/>
+    <text x="1170" y="522" font-size="13.4" font-weight="700" fill="#0f172a">⑪ 旁路隔离围栏（跨域）</text>
+    <text x="1170" y="542" font-size="12.4" fill="#334155">未开启即全链路 no-op，不得影响取数主链路</text>
+  </g>
+
+  <!-- ═══════ 护城河顺序条 ═══════ -->
+  <rect x="60" y="588" width="1416" height="176" rx="12" fill="#ffffff" stroke="#fca5a5"/>
+  <text x="78" y="616" font-size="16" font-weight="700" fill="#0f172a">护城河生效顺序（enforcer.check_access）—— 缺一不可，且「只增不减」</text>
+  <text x="78" y="638" font-size="12.8" fill="#64748b">硬约束：角色策略 / RLS 列策略永远不得弱化或覆盖敏感基线 —— 不得把已 block 的列放行、不得改已 mask 的方式</text>
+  <g font-size="12.6">
+    <rect x="78" y="654" width="216" height="88" rx="8" fill="#fee2e2"/><text x="92" y="676" font-weight="700" fill="#0f172a">1 敏感字段基线</text><text x="92" y="696" fill="#334155">block→剔除 · mask</text><text x="92" y="713" fill="#334155">full/partial/hash</text><text x="92" y="731" fill="#334155">含 admin 全员生效</text>
+    <rect x="312" y="654" width="216" height="88" rx="8" fill="#fee2e2"/><text x="326" y="676" font-weight="700" fill="#0f172a">2 sensitive_only 返回</text><text x="326" y="696" fill="#334155">无身份 user_id=0</text><text x="326" y="713" fill="#334155">只做基线</text><text x="326" y="731" fill="#334155">不做 RBAC/RLS</text>
+    <rect x="546" y="654" width="216" height="88" rx="8" fill="#ffe4e6"/><text x="560" y="676" font-weight="700" fill="#0f172a">3 数据源 RBAC</text><text x="560" y="696" fill="#334155">空授权 = 无权</text><text x="560" y="713" fill="#334155">fail-closed</text><text x="560" y="731" fill="#334155">admin 不 bypass</text>
+    <rect x="780" y="654" width="216" height="88" rx="8" fill="#ffe4e6"/><text x="794" y="676" font-weight="700" fill="#0f172a">4 表级白名单</text><text x="794" y="696" fill="#334155">role ∩ rls(table)</text><text x="794" y="713" fill="#334155">任一未授权即拒</text><text x="794" y="731" fill="#334155">不得相互弱化</text>
+    <rect x="1014" y="654" width="216" height="88" rx="8" fill="#fff1f2"/><text x="1028" y="676" font-weight="700" fill="#0f172a">5 列级限制</text><text x="1028" y="696" fill="#334155">只能追加 hidden</text><text x="1028" y="713" fill="#334155">只能对非敏感列</text><text x="1028" y="731" fill="#334155">追加 mask</text>
+    <rect x="1248" y="654" width="210" height="88" rx="8" fill="#fff1f2"/><text x="1262" y="676" font-weight="700" fill="#0f172a">6 RLS 行过滤</text><text x="1262" y="696" fill="#334155">包裹子查询注入</text><text x="1262" y="713" fill="#334155">保留原别名</text><text x="1262" y="731" fill="#334155">FROM+JOIN 全覆盖</text>
+  </g>
+  <g stroke="#dc2626" stroke-width="2" fill="none">
+    <line x1="296" y1="698" x2="310" y2="698" marker-end="url(#ar)"/>
+    <line x1="530" y1="698" x2="544" y2="698" marker-end="url(#ar)"/>
+    <line x1="764" y1="698" x2="778" y2="698" marker-end="url(#ar)"/>
+    <line x1="998" y1="698" x2="1012" y2="698" marker-end="url(#ar)"/>
+    <line x1="1232" y1="698" x2="1246" y2="698" marker-end="url(#ar)"/>
+  </g>
+
+  <!-- ═══════ 降级边界 ═══════ -->
+  <rect x="60" y="784" width="700" height="196" rx="12" fill="#ffffff" stroke="#86efac"/>
+  <text x="78" y="812" font-size="16" font-weight="700" fill="#0f172a">降级 ≠ 遮羞布（围栏的元规则）</text>
+  <g font-size="12.8" fill="#334155">
+    <text x="78" y="838" font-weight="700" fill="#059669">允许：旁路 no-op</text>
+    <text x="92" y="858">观测/队列/同步类旁路失败，不得影响主链路</text>
+    <text x="78" y="884" font-weight="700" fill="#dc2626">禁止：功能主逻辑掩藏失败</text>
+    <text x="92" y="904">不得写「失败→回退旧逻辑/另一通道/假成功」</text>
+    <text x="78" y="930" font-weight="700" fill="#b45309">合格回退的两条标准</text>
+    <text x="92" y="950">可诊断（标原因来源）+ 可区分（评测审计可辨）</text>
+    <text x="430" y="838" font-weight="700" fill="#334155">例（现状实现）</text>
+    <text x="430" y="858">KB 熔断 → 回退本地 hybrid</text>
+    <text x="430" y="876">且标 degraded + qmind_circuit_open</text>
+    <text x="430" y="896">跨站单站执行失败 → 标 degraded</text>
+    <text x="430" y="914">轻描「部分站点暂无数据」</text>
+    <text x="430" y="934">权限裁剪 → 静默收窄（非失败）</text>
+    <text x="430" y="952">显式越权 → 拒绝 fail-closed</text>
+  </g>
+
+  <!-- ═══════ §7 黑盒 ═══════ -->
+  <rect x="776" y="784" width="700" height="196" rx="12" fill="#0f172a"/>
+  <text x="794" y="812" font-size="16" font-weight="700" fill="#ffffff">§7 黑盒 · 对 LLM 与普通客户端永不出现</text>
+  <g font-size="12.8" fill="#cbd5e1">
+    <text x="794" y="838">生成 SQL（base_sql / secured_sql）· provenance</text>
+    <text x="794" y="858">datasource_id · catalog_ref · physical_table · 物理列名</text>
+    <text x="794" y="878">账号 / IP / 主机 / 连接串 · 原始报错栈（只进服务端日志）</text>
+    <text x="794" y="906" fill="#fbbf24" font-weight="700">唯一例外：用户确认的 AS-BOT 仪表盘设计面板</text>
+    <text x="794" y="926">经 playground:execute + 编辑权校验，专用 REST 查看/编辑业务 SQL；</text>
+    <text x="794" y="944">改动使旧预览 digest 失效；不进 Agent/SSE/历史；改写 SQL 与凭据仍不出</text>
+    <text x="794" y="966" fill="#94a3b8">元数据分域：授权 execute_sql 的 AS-BOT 看真实表列（剥 id）；语义 AS-BOT 只看业务投影</text>
+  </g>
+
+  <text x="60" y="984" font-size="12.4" fill="#94a3b8">锚点：common/{auth,api_permission,embed_auth}.py · core/{enforcer,query_executor,governed_query,perm_link,sql_validator}.py</text>
+  <text x="60" y="1002" font-size="12.4" fill="#94a3b8">　　semantics/{intent,planner,gates,sql_guard,contract,execution,security}.py · mind/execution/{resource_guard,tool_policy,outbound_guard,prompt_composer}.py</text>
+</svg>

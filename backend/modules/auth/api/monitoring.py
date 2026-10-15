@@ -1,11 +1,16 @@
 """Monitoring API routes — aggregated service health probing and node metrics.
 
+进程拓扑（Phase 4 终态）：后端只有一个 web 进程，监听单一端口 8000（旧 8 个契约
+端口 8001-8007/8012 随进程壳退役）。本处登记表因此只列**真实存在的可探测进程**：
+前端 dev server 与 web 单进程。不再按旧微服务名逐个探测同一监听口 —— 那会把
+“一个进程健康”渲染成“8 个服务健康”，是误导信号而不是监控。
+
 Distributed-deployment aware:
-- Each service can live on a different host: override via env
-  MONITOR_HOST_<SERVICE_KEY> (e.g. MONITOR_HOST_DATAMIND=10.0.1.5),
+- Each monitored process can live on a different host: override via env
+  MONITOR_HOST_<SERVICE_KEY> (e.g. MONITOR_HOST_WEB=10.0.1.5),
   falling back to MONITOR_HOST (default 127.0.0.1).
-- Node metrics are collected by calling each service's local
-  /system-metrics endpoint and deduplicating by hostname, so every
+- Node metrics are collected from each service's local
+  /system-metrics endpoint and deduplicated by hostname, so every
   machine hosting services shows up exactly once.
 """
 from __future__ import annotations
@@ -34,23 +39,15 @@ _DEFAULT_HOST = os.getenv("MONITOR_HOST", "127.0.0.1")
 # Architecture layers (order defines display order)
 LAYERS = [
     {"key": "access", "name": "接入层", "desc": "用户界面与请求入口"},
-    {"key": "app", "name": "业务服务层", "desc": "核心业务微服务"},
-    {"key": "ai", "name": "AI 智能层", "desc": "模型管理与智能分析"},
-    {"key": "infra", "name": "基础引擎层", "desc": "查询引擎与向量 / 图数据库服务"},
+    {"key": "app", "name": "业务服务层", "desc": "web 单进程（全部业务模块 router）"},
 ]
 
-# Service registry (ordered by layer)
+# Service registry: 只登记真实监听进程（与 backend/scripts/services.conf 同源）。
+# 中间件/引擎依赖（MySQL/Redis/Oxigraph/对象存储/Celery）在 /api/monitoring/middleware 单独探测。
 SERVICE_REGISTRY = [
     {"key": "frontend", "name": "前端应用", "desc": "React SPA (Vite)", "port": 3000, "path": "/", "layer": "access"},
-    {"key": "authservice", "name": "AuthService", "desc": "认证 / RBAC / 审计", "port": 8006, "path": "/health", "layer": "app"},
-    {"key": "datacatalog", "name": "DataCatalog", "desc": "数据目录 / 元数据", "port": 8005, "path": "/health", "layer": "app"},
-    {"key": "dataviz", "name": "DataViz", "desc": "仪表盘 / 图表 / 报表", "port": 8004, "path": "/health", "layer": "app"},
-    {"key": "dataflow", "name": "DataFlow", "desc": "数据同步 / 工作流调度", "port": 8003, "path": "/health", "layer": "app"},
-    {"key": "datagov", "name": "DataGov", "desc": "数据治理 / 质量 / 血缘", "port": 8002, "path": "/api/health", "layer": "app"},
-    {"key": "aiplatform", "name": "AI Platform", "desc": "MCP / Agent / 模型管理", "port": 8007, "path": "/health", "layer": "ai"},
-    {"key": "datamind", "name": "DataMind", "desc": "NL2SQL / Agent / RAG", "port": 8001, "path": "/api/health", "layer": "ai"},
-    # dataengine 已退役（Phase 7.3）：执行载体由 semantics.execution 内嵌（web 进程内）
-    {"key": "semhub", "name": "SemanticLayer", "desc": "语义层 + Oxigraph 知识图谱", "port": 8012, "path": "/api/health", "layer": "infra"},
+    {"key": "web", "name": "Web 单进程", "desc": "目录/治理/可视化/编排/认证/平台/语义层/图谱",
+     "port": _cfg.WEB_PORT, "path": "/api/health", "layer": "app"},
 ]
 
 _PROBE_TIMEOUT = 3.0  # seconds
@@ -167,8 +164,8 @@ def get_system_metrics(admin: dict = Depends(require_admin)):
     """
     # Always include this node even if its own probe is flaky
     local = collect_local_metrics()
-    local["source_service"] = "authservice"
-    local["source_host"] = _service_host("authservice")
+    local["source_service"] = "web"
+    local["source_host"] = _service_host("web")
 
     # Python services that mount the node-metrics router
     probes = [s for s in SERVICE_REGISTRY if s["key"] not in ("frontend",)]

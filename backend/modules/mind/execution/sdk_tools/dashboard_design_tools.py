@@ -82,3 +82,24 @@ SEMANTIC_SPECS = [
      "description": "按需理解仪表盘场景的业务背景、指标口径和模板参数。只检索用户在此设计中确认的业务知识库；无范围或来源不明时明确拒绝。不回答系统用量/健康问题，无自动回退。",
      "schema": {"design_id": DESIGN_ID, "questions": Annotated[list, "1–8 个业务问题"]}},
 ]
+
+# 看板设计工具组(方案C): 将设计专用工具从 datahub_screen / datahub_semantic 抽出,
+# 收进独立的 datahub_design 组 —— 强制 design_id 闭环、与通用语义/大屏工具解耦。
+DESIGN_SPECS = SCREEN_SPECS + SEMANTIC_SPECS
+_DESIGN_READ_TOOLS = {"get_dashboard_design", "get_business_semantics", "search_business_knowledge"}
+
+
+def build_design_server(backend: str = "qoder", tool_names=None):
+    """构建 datahub_design 进程内 MCP server(qoder / claude)。tool_names 给定时按逐工具注册。"""
+    from backend.modules.mind.execution.sdk_tools.compat import make_server, make_tool
+
+    specs = DESIGN_SPECS
+    if tool_names is not None:
+        selected = set(tool_names)
+        specs = [s for s in DESIGN_SPECS if s["name"] in selected]
+    tools = [
+        make_tool(backend, s["name"], s["description"], s["schema"], s["handler"],
+                  annotations=s.get("annotations") or {"readOnlyHint": s["name"] in _DESIGN_READ_TOOLS})
+        for s in specs
+    ]
+    return make_server(backend, "datahub_design", tools)

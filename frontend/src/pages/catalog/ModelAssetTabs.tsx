@@ -22,12 +22,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { Network, Tag as TagIcon, Maximize2, Minimize2, X, Plus, Pencil, Trash2 } from 'lucide-react';
 
-const GRAPH_VIEWS = [
-  { key: 'ontology-overview', label: '本体总览' },
-  { key: 'table-relation', label: '表关系' },
-  { key: 'business-knowledge', label: '业务知识' },
-  { key: 'data-lineage', label: '血缘桥接' },
-];
+// 视图已收敛为后端 GraphType.UNIFIED 单图(分域组装 总览+业务知识+物理层/血缘),
+// 不再拆四视图切换; singleView 传入时仍锁定旧单视图(系统助手/图谱页兼容)。
 
 /** 部署绑定子页：对象 × 站点部署绑定表（事实源=部署绑定；显示 name 不裸 id，ui-resource-display）。 */
 export function ModelDeploymentsTab({ modelId }: { modelId: number }) {
@@ -96,7 +92,12 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView }: {
 }) {
   // 系统域仅当 kind=system（不是 datasource_id=0）
   const systemScope = kind === 'system';
-  const [view, setView] = useState(singleView || 'ontology-overview');
+  // 工作区默认统一大图(unified); singleView 传入时锁定旧单视图(向后兼容)。
+  const view = singleView || 'unified';
+  const unified = view === 'unified';
+  // 业务本体跨源: 后端按 kind 路由将业务本体建在聚合图 ds:0, 前端取数须对齐(不按 model.datasource_id)。
+  const graphDatasourceId = kind === 'business' ? 0 : datasourceId;
+  const [showProps, setShowProps] = useState(false);
   const [loading, setLoading] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [selected, setSelected] = useState<any | null>(null);
@@ -106,37 +107,38 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView }: {
     setLoading(true);
     setSelected(null);
     try {
-      // 系统域走 ds:-1(system_scope), 否则按当前模型数据源取图
-      await fetchGraphData({ graphType: view, datasourceId, systemScope, limit: 200 });
+      // 系统域走 ds:-1(system_scope), 否则按当前模型数据源取图; 统一大图取跨源聚合图
+      await fetchGraphData({
+        graphType: view,
+        datasourceId: graphDatasourceId,
+        systemScope,
+        limit: unified ? 400 : 200,
+        includeProperties: unified ? showProps : undefined,
+      });
     } finally {
       setLoading(false);
     }
-  }, [view, datasourceId, systemScope, fetchGraphData]);
+  }, [view, unified, graphDatasourceId, systemScope, showProps, fetchGraphData]);
 
   useEffect(() => { load(); }, [load]);
 
   const stale = graphData && (graphData.nodes.length === 0) && !loading;
-  // 系统域不提供血缘桥接(血缘面向业务数据源); AS-BOT 只需 总览/表关系/业务知识。
-  const availableViews = systemScope
-    ? GRAPH_VIEWS.filter((v) => v.key !== 'data-lineage')
-    : GRAPH_VIEWS;
 
   return (
     <div className={fullscreen
       ? 'fixed inset-0 z-50 bg-background p-4 flex flex-col'
       : 'h-[68vh] flex flex-col border rounded-lg overflow-hidden'}>
       <div className="flex items-center gap-1 px-2 py-1.5 border-b bg-muted/30 shrink-0">
-        {!singleView && availableViews.map((v) => (
-          <Button
-            key={v.key}
-            size="sm"
-            variant={view === v.key ? 'secondary' : 'ghost'}
-            className="h-7 text-xs"
-            onClick={() => setView(v.key)}
-          >{v.label}</Button>
-        ))}
-        {singleView && (
+        {unified ? (
+          <span className="text-xs font-medium text-muted-foreground px-1">统一大图（语义主干 · 物理骨架 · 血缘桥接）</span>
+        ) : (
           <span className="text-xs font-medium text-muted-foreground px-1">本体总览（对象为点 · Link 为名边）</span>
+        )}
+        {unified && (
+          <label className="flex items-center gap-1.5 pl-2 text-[11px] text-muted-foreground cursor-pointer select-none">
+            <Switch checked={showProps} onCheckedChange={setShowProps} />
+            显示属性
+          </label>
         )}
         <span className="ml-auto text-[11px] text-muted-foreground">
           {systemScope ? 'AS-BOT 系统能力本体（系统域·已隔离业务本体）'

@@ -1,9 +1,9 @@
-"""RLS (Row-Level Security) API — Policy management endpoints.
+"""RLS (Row-Level Security) API — policy management endpoints.
 
 Covers:
-- RLS policy CRUD (row + column + both)
-- Column policy management (per-policy)
-- User attribute management (for dynamic row filtering)
+- RLS policy CRUD (row + column + table + both)
+- Column policy management (per-policy, 纯黑名单: 列出的列被屏蔽/脱敏)
+- 表策略(policy_type='table'): 角色绑定任一表策略即启用白名单模式, 仅清单内表可访问
 - Audit logs
 """
 
@@ -28,7 +28,7 @@ class RLSPolicyCreate(BaseModel):
     workspace_id: int = 0
     datasource_id: int = 0
     table_name: str
-    policy_type: str = "both"         # row / column / both
+    policy_type: str = "both"         # row / column / table / both(遗留)
     filter_type: str = "condition"    # condition / user_attribute
     filter_expr: str = ""
     user_attribute: str = ""
@@ -49,7 +49,9 @@ class RLSPolicyUpdate(BaseModel):
 
 class ColumnPolicyItem(BaseModel):
     column_name: str
-    access_type: str = "visible"      # visible / hidden / masked
+    # 列策略是纯黑名单: 每行声明被剔除/脱敏的列。默认 hidden(不传即屏蔽),
+    # 'visible' 属白名单语义会被执行层忽略, 由服务层写入口拒绝(见 rls_service)
+    access_type: str = "hidden"       # hidden / masked
     mask_pattern: str = ""
     description: str = ""
 
@@ -205,6 +207,15 @@ def set_column_policies(policy_id: int, body: ColumnPoliciesBody, admin: dict = 
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ── Role Attribute Keys (行策略"属性名"选择框清单) ──────────────
+
+@router.get("/role-attr-keys")
+def list_role_attr_keys(_admin: dict = Depends(get_current_user)):
+    """角色属性 key 清单(行策略表单选择搜索框用, 不手填)。"""
+    from backend.core.rls_service import rls_service
+    return {"keys": rls_service.list_role_attr_keys()}
 
 
 # ── Audit Logs ───────────────────────────────────────────────────

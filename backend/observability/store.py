@@ -29,6 +29,41 @@ def _span_text_limit() -> int:
         return 4096
 
 
+def prior_session_credits(conversation_id: int, trace_id: str) -> tuple:
+    """查同会话上一条 trace 的会话累计 credit(credit 增量补算的基线)。
+
+    返回 `(status, value)`:
+      - `("ok", v)`       存在基线 v
+      - `("first", None)` 该会话无更早累计值 → 本回合即首回合,全额计入
+      - `("unknown", None)` 查询失败 → 调用方不得猜测(宁可显示 —)
+    """
+    from backend.common.db.metadata_db import get_metadata_conn
+
+    conn = None
+    try:
+        conn = get_metadata_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT session_credits FROM adh_llm_traces
+                   WHERE conversation_id = %s AND trace_id <> %s AND session_credits IS NOT NULL
+                   ORDER BY started_at DESC, created_at DESC LIMIT 1""",
+                (conversation_id, trace_id),
+            )
+            row = cur.fetchone()
+        if row is None:
+            return ("first", None)
+        return ("ok", float(row["session_credits"]))
+    except Exception as e:  # noqa: BLE001 — 观测补算失败不得影响主链路,但要可诊断
+        logger.warning("prior_session_credits failed (conv=%s): %s", conversation_id, e)
+        return ("unknown", None)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def save_trace(summary: dict, spans: list[dict]) -> None:
     """写入一条 trace 摘要 + 其 span 明细(单事务内多次 INSERT)。"""
     from backend.common.db.metadata_db import get_metadata_conn
@@ -42,14 +77,16 @@ def save_trace(summary: dict, spans: list[dict]) -> None:
                    (trace_id, message_uuid, conversation_id, user_id, username, user_role,
                     workspace_id, datasource_id, entrypoint, model_ref, question, final_answer,
                     status, error_message, started_at, duration_ms, input_tokens, output_tokens,
-                    total_tokens, credits, cost_usd, session_credits, llm_call_count, span_count)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    total_tokens, credits, cost_amount, cost_currency, session_credits,
+                    llm_call_count, span_count)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON DUPLICATE KEY UPDATE
                      final_answer=VALUES(final_answer), status=VALUES(status),
                      error_message=VALUES(error_message), duration_ms=VALUES(duration_ms),
                      input_tokens=VALUES(input_tokens), output_tokens=VALUES(output_tokens),
                      total_tokens=VALUES(total_tokens), credits=VALUES(credits),
-                     cost_usd=VALUES(cost_usd), session_credits=VALUES(session_credits),
+                     cost_amount=VALUES(cost_amount), cost_currency=VALUES(cost_currency),
+                     session_credits=VALUES(session_credits),
                      llm_call_count=VALUES(llm_call_count), span_count=VALUES(span_count)""",
                 (
                     summary["trace_id"], summary.get("message_uuid"), summary.get("conversation_id", 0),
@@ -61,7 +98,8 @@ def save_trace(summary: dict, spans: list[dict]) -> None:
                     summary.get("started_at") or datetime.now(timezone.utc).replace(tzinfo=None),
                     summary.get("duration_ms", 0), summary.get("input_tokens", 0),
                     summary.get("output_tokens", 0), summary.get("total_tokens", 0),
-                    summary.get("credits"), summary.get("cost_usd"), summary.get("session_credits"),
+                    summary.get("credits"), summary.get("cost_amount"),
+                    summary.get("cost_currency") or None, summary.get("session_credits"),
                     summary.get("llm_call_count", 0), summary.get("span_count", len(spans)),
                 ),
             )
@@ -70,7 +108,7 @@ def save_trace(summary: dict, spans: list[dict]) -> None:
                     """INSERT INTO adh_llm_spans
                        (span_id, trace_id, kind, name, status, duration_ms, model_ref,
                         input_tokens, output_tokens, total_tokens, credits, original_credits,
-                        billable, cost_usd, input_text, output_text, error_text, dt, started_at)
+                        billable, cost_amount, input_text, output_text, error_text, dt, started_at)
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                        ON DUPLICATE KEY UPDATE status=VALUES(status), duration_ms=VALUES(duration_ms)""",
                     (
@@ -79,7 +117,7 @@ def save_trace(summary: dict, spans: list[dict]) -> None:
                         sp.get("input_tokens", 0), sp.get("output_tokens", 0), sp.get("total_tokens", 0),
                         sp.get("credits"), sp.get("original_credits"),
                         (1 if sp.get("billable") else 0) if sp.get("billable") is not None else None,
-                        sp.get("cost_usd"), _truncate(sp.get("input_text", ""), _lim),
+                        sp.get("cost_amount"), _truncate(sp.get("input_text", ""), _lim),
                         _truncate(sp.get("output_text", ""), _lim), _truncate(sp.get("error_text", ""), 2000),
                         sp.get("dt") or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                         sp.get("started_at") or datetime.now(timezone.utc).replace(tzinfo=None),

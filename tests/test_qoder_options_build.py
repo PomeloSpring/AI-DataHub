@@ -87,3 +87,43 @@ def test_no_trusted_session_cannot_build(monkeypatch):
     adapter = QoderSDKAdapter("test", {"cli_name": "qoder"})
     with pytest.raises(PermissionError):
         adapter._build_options(ExecutionTask(task_id="t", question="hi"))
+
+
+def test_model_resolution_priority(tmp_path, monkeypatch):
+    """模型优先级：model_ref > adapter.model > .env QODER_MODEL > None(SDK Auto)。
+
+    历史缺陷：.env 中配的 QODER_MODEL 因 secure_sdk 剥离子进程 env 且
+    build_options 不读 config，造成 AS-BOT 未绑模型时直接落到 SDK Auto。
+    """
+    import backend.common.config as _cfg
+    monkeypatch.setattr(_cfg, "QODER_MODEL", "Qwen3.7-Plus", raising=False)
+
+    # 1) 三层都空 → QODER_MODEL 兜底
+    options, _ = build(tmp_path, monkeypatch)
+    assert options.model == "Qwen3.7-Plus"
+
+    # 2) adapter.model 存在 → 优先于 QODER_MODEL
+    pytest.importorskip("qodercn_agent_sdk")
+    monkeypatch.setenv("QODERCN_PERSONAL_ACCESS_TOKEN", "test-only-token")
+    task = make_task(tmp_path)
+    adapter = QoderSDKAdapter("test", {"cli_name": "qoder", "mode": "sdk", "model": "gpt-4o"})
+    with patch("backend.modules.mind.execution.prompt_composer._permission_summary", return_value="权限"), \
+         patch("backend.modules.mind.execution.as_bots.load_skills", return_value=[]):
+        opts2 = adapter._build_options(task)
+    assert opts2.model == "gpt-4o"
+
+    # 3) ctx.extra.model_ref 存在 → 优先于 adapter.model
+    task3 = make_task(tmp_path)
+    task3.context.extra["model_ref"] = "qoder/Qwen3.7-Max"
+    with patch("backend.modules.mind.execution.prompt_composer._permission_summary", return_value="权限"), \
+         patch("backend.modules.mind.execution.as_bots.load_skills", return_value=[]):
+        opts3 = adapter._build_options(task3)
+    assert opts3.model == "qoder/Qwen3.7-Max"
+
+
+def test_model_env_empty_allows_sdk_auto(tmp_path, monkeypatch):
+    """QODER_MODEL 为空字符串时仍保留 SDK Auto 通道(options.model is None)。"""
+    import backend.common.config as _cfg
+    monkeypatch.setattr(_cfg, "QODER_MODEL", "", raising=False)
+    options, _ = build(tmp_path, monkeypatch)
+    assert options.model is None

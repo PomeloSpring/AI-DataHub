@@ -34,21 +34,34 @@ if [ -f "$PROJECT_ROOT/services/.env" ]; then
     set -a; source "$PROJECT_ROOT/services/.env"; set +a
 fi
 
-# 获取服务配置: module:port（查注册表，不再内置 case 清单）
-get_service_config() {
+# 获取服务配置行: name:module:port（查注册表，不再内置 case 清单）
+#
+# Phase 4 起全部模块 router 合入 web 单进程，注册表只登记 web:backend.app.main:8000。
+# 历史服务名（datamind/datacatalog/…）查不到时**显式**解析为注册表唯一行并播报口径：
+# 同一进程同一端口，同时只能有一个在跑（第二个由端口占用检查报错，不静默换端口）。
+# 返回完整行供调用方解析 name/module/port（服务名归一不在子 shell 里做，否则丢改动）。
+get_service_line() {
     local line
     line=$(grep -E "^${SERVICE_NAME}:" "$SERVICES_CONF" 2>/dev/null | head -1)
     if [ -z "$line" ]; then
-        log_error "Unknown service: $SERVICE_NAME (注册表: $SERVICES_CONF)"
-        exit 1
+        local rows
+        rows=$(grep -vE '^\s*(#|$)' "$SERVICES_CONF" 2>/dev/null)
+        if [ "$(printf '%s\n' "$rows" | wc -l)" -eq 1 ]; then
+            log_info "${SERVICE_NAME} 已并入 web 单进程，按注册表唯一行启动：${rows}"
+            line="$rows"
+        else
+            log_error "Unknown service: $SERVICE_NAME (注册表: $SERVICES_CONF)"
+            exit 1
+        fi
     fi
-    echo "${line#*:}"   # name:module:port → module:port
+    echo "$line"
 }
 
 start() {
-    local config=$(get_service_config)
-    local module=$(echo "$config" | cut -d: -f1)
-    local port=$(echo "$config" | cut -d: -f2)
+    local line=$(get_service_line)
+    SERVICE_NAME=$(echo "$line" | cut -d: -f1)   # 历史别名归一为注册表真名（pid/日志同名）
+    local module=$(echo "$line" | cut -d: -f2)
+    local port=$(echo "$line" | cut -d: -f3)
     local pid_file="$PID_DIR/${SERVICE_NAME}.pid"
     local log_file="$LOG_DIR/${SERVICE_NAME}.log"
 
@@ -91,9 +104,10 @@ start() {
 }
 
 stop() {
+    local line=$(get_service_line)
+    SERVICE_NAME=$(echo "$line" | cut -d: -f1)   # 同上：历史别名归一，不然 pid 文件对不上
+    local port=$(echo "$line" | cut -d: -f3)
     local pid_file="$PID_DIR/${SERVICE_NAME}.pid"
-    local config=$(get_service_config)
-    local port=$(echo "$config" | cut -d: -f2)
 
     if [ ! -f "$pid_file" ]; then
         log_warn "$SERVICE_NAME 未在运行"
@@ -125,8 +139,9 @@ stop() {
 }
 
 status() {
-    local config=$(get_service_config)
-    local port=$(echo "$config" | cut -d: -f2)
+    local line=$(get_service_line)
+    SERVICE_NAME=$(echo "$line" | cut -d: -f1)
+    local port=$(echo "$line" | cut -d: -f3)
     local pid_file="$PID_DIR/${SERVICE_NAME}.pid"
     local status="未运行"
     local pid="-"

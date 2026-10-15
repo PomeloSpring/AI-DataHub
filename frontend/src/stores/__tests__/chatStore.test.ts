@@ -371,7 +371,7 @@ describe('chatStore', () => {
   })
 
   describe('clear', () => {
-    it('resets messages and current conversation', () => {
+    it('擦除当前会话消息但保留会话（不新开窗口）', () => {
       useChatStore.setState({
         messages: [{ role: 'user', content: 'test' }],
         currentConvId: 1,
@@ -381,7 +381,8 @@ describe('chatStore', () => {
 
       useChatStore.getState().clear()
       expect(useChatStore.getState().messages).toEqual([])
-      expect(useChatStore.getState().currentConvId).toBeNull()
+      // 清空只擦历史，不脱离当前会话：currentConvId 必须保留（否则下一句会懒建新会话）
+      expect(useChatStore.getState().currentConvId).toBe(1)
       expect(useChatStore.getState().loading).toBe(false)
       expect(useChatStore.getState().loadingStep).toBe('')
     })

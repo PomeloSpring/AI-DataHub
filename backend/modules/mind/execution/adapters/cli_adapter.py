@@ -173,24 +173,24 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
 
     # ── 目录沙箱(allowed_dirs)───────────────────────────
 
-    def _allowed_dirs(self, workspace_id: int = 0) -> list[str]:
+    def _allowed_dirs(self, workspace_id: int = 0, user_id: int = 0) -> list[str]:
         """执行层可访问目录白名单(绝对路径字符串列表).
 
         取 config.allowed_dirs(manager 已归一化);为空时回退工作空间
-        沙箱目录 data/workspaces/ws_{id}(workspace_id=0 → global, 历史遗留仅兼容保留)。
+        沙箱目录 {ADH_WORKSPACES_DIR}/{user_id}/workspace/{workspace_id}。
         """
         dirs = [str(d).strip() for d in (self.config.get("allowed_dirs") or []) if str(d or "").strip()]
         if dirs:
             return dirs
-        if workspace_id:
+        if workspace_id and user_id:
             try:
                 from backend.modules.mind.execution.workspace import workspace_root
-                return [str(workspace_root(workspace_id))]
+                return [str(workspace_root(workspace_id, user_id))]
             except Exception as e:
                 logger.warning("[ExecLayer:%s] Resolve workspace root failed: %s", self._name, e)
         return []
 
-    def _resolve_cwd(self, workspace_id: int = 0) -> tuple[str, list[str]]:
+    def _resolve_cwd(self, workspace_id: int = 0, user_id: int = 0) -> tuple[str, list[str]]:
         """解析 SDK 工作目录 → (cwd, add_dirs),用于多目录沙箱.
 
         cwd 优先级:config.cwd 显式覆盖 > allowed_dirs[0] > 工作空间沙箱目录。
@@ -204,7 +204,7 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
             return cwd, [d for d in configured if d != cwd]
         if explicit:
             return explicit, []
-        fallback = self._allowed_dirs(workspace_id)
+        fallback = self._allowed_dirs(workspace_id, user_id)
         return (fallback[0] if fallback else ""), []
 
     def _build_env(self, task: ExecutionTask) -> dict:

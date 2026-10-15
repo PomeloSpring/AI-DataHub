@@ -6,8 +6,11 @@ Also merges active ontology models from adh_ontology_models.
 """
 
 import logging
+import os
+import time
 from typing import Any
 
+from backend.common.rdf.sparql_client import bulk_timeout
 from backend.semantics.graph_rag.oxigraph_store import (
     OxigraphStore,
     SYSTEM_DATASOURCE_ID,
@@ -67,11 +70,56 @@ def _system_object_keys() -> list[str]:
     return sorted(keys)
 
 
+class GraphBuildAborted(RuntimeError):
+    """图重建超出总时长预算。
+
+    为什么必须有这个上界：`datasource_id=0` 是「聚合全部数据源」语义，而
+    `kind='business'` 的本体保存正好走这一路径 —— 一次保存就会触发全目录重建。
+    没预算时它要么跑数十分钟，要么在客户端默认超时上逐次报错误导人。
+    超出就抛错带进度，绝不返回部分完成的 success。
+    """
+
+    def __init__(self, message: str, *, stats: dict, elapsed_s: float, budget_s: float):
+        super().__init__(message)
+        self.stats = stats
+        self.elapsed_s = elapsed_s
+        self.budget_s = budget_s
+
+
 class GraphBuilder:
     """Builds the RDF knowledge graph from database metadata."""
 
     def __init__(self, store: OxigraphStore = None):
         self._store = store or OxigraphStore()
+
+    @staticmethod
+    def _write_chunk() -> int:
+        """单次 INSERT DATA 塑多少节点（往返次数的除数）。"""
+        try:
+            n = int(os.getenv("GRAPH_WRITE_CHUNK", "500"))
+        except (TypeError, ValueError):
+            n = 500
+        return max(n, 1)
+
+    @staticmethod
+    def _build_budget_s() -> float:
+        """整场重建的墙钟预算（秒）。<=0 视为不限，仅供显式关闭。"""
+        try:
+            return float(os.getenv("GRAPH_BUILD_DEADLINE_S", "600"))
+        except (TypeError, ValueError):
+            return 600.0
+
+    @staticmethod
+    def _check_deadline(started: float, stats: dict, stage: str, done: int, total: int) -> None:
+        budget = GraphBuilder._build_budget_s()
+        if budget <= 0:
+            return
+        elapsed = time.monotonic() - started
+        if elapsed > budget:
+            raise GraphBuildAborted(
+                f"图重建超出预算 {budget:.0f}s（已进入 {stage} 阶段，已写 {done}/{total}）；"
+                f"可调 GRAPH_BUILD_DEADLINE_S 或缩小重建范围（datasource_id=0 是全目录重建）",
+                stats=dict(stats), elapsed_s=elapsed, budget_s=budget)
 
     def build_from_metadata(self, datasource_id: int = 0, kind: str = "") -> dict[str, Any]:
         """Build the knowledge graph from MySQL metadata tables.
@@ -85,6 +133,7 @@ class GraphBuilder:
             Build statistics.
         """
         logger.info("Building knowledge graph for datasource: %d", datasource_id)
+        started = time.monotonic()
 
         stats = {
             "tables": 0,
@@ -109,29 +158,36 @@ class GraphBuilder:
             ontology_count = self._merge_ontology_models(datasource_id, kind)
             logger.info("Merged %d ontology model(s)", ontology_count)
 
-            # Build table nodes
+            # Build table nodes —— 分块批量写，不再一表一次 HTTP 往返
             tables = self._load_tables(datasource_id)
-            for t in tables:
-                self._store.create_table_node(
-                    name=t["table_name"],
-                    comment=t.get("table_comment", ""),
-                    business_desc=t.get("table_business_desc", ""),
+            chunk = self._write_chunk()
+            for i in range(0, len(tables), chunk):
+                piece = tables[i:i + chunk]
+                stats["tables"] += self._store.create_table_nodes(
+                    [{"name": t["table_name"],
+                      "comment": t.get("table_comment", ""),
+                      "business_desc": t.get("table_business_desc", "")}
+                     for t in piece],
                     datasource_id=datasource_id,
-                )
-                stats["tables"] += 1
+                    timeout=bulk_timeout())
+                self._check_deadline(started, stats, "tables",
+                                     stats["tables"], len(tables))
             logger.info("Created %d table nodes", stats["tables"])
 
-            # Build column nodes
+            # Build column nodes —— 同上；这一步的量级最大（全目录万级列）
             columns = self._load_columns(datasource_id)
-            for c in columns:
-                self._store.create_column_node(
-                    table=c["table_name"],
-                    column=c["column_name"],
-                    data_type=c.get("data_type", ""),
-                    comment=c.get("column_comment", ""),
+            for i in range(0, len(columns), chunk):
+                piece = columns[i:i + chunk]
+                stats["columns"] += self._store.create_column_nodes(
+                    [{"table": c["table_name"],
+                      "column": c["column_name"],
+                      "data_type": c.get("data_type", ""),
+                      "comment": c.get("column_comment", "")}
+                     for c in piece],
                     datasource_id=datasource_id,
-                )
-                stats["columns"] += 1
+                    timeout=bulk_timeout())
+                self._check_deadline(started, stats, "columns",
+                                     stats["columns"], len(columns))
             logger.info("Created %d column nodes", stats["columns"])
 
             # Build business term nodes
@@ -164,6 +220,13 @@ class GraphBuilder:
                     description=m.get("description", ""),
                     datasource_id=datasource_id,
                 )
+                # 对象→指标(归属): 源于字典 bound_object_key, 使指标像属性一样挂在对象上
+                if m.get("bound_object_key"):
+                    self._store.create_object_metric_relation(
+                        object_key=m["bound_object_key"],
+                        metric_name=m.get("name", ""),
+                        datasource_id=datasource_id,
+                    )
                 # Create metric → column relations
                 if m.get("table_name") and m.get("column_name"):
                     self._store.create_metric_column_relation(
@@ -175,6 +238,32 @@ class GraphBuilder:
                     stats["metric_relations"] += 1
                 stats["metrics"] += 1
             logger.info("Created %d metric nodes", stats["metrics"])
+
+            # Build dimension nodes (与指标对称: 字典权威行, 供图谱呈现分析维度)
+            dimensions = self._load_dimensions(datasource_id)
+            for d in dimensions:
+                self._store.create_dimension_node(
+                    name=d.get("name", ""),
+                    description=d.get("description", ""),
+                    category=d.get("category", ""),
+                    datasource_id=datasource_id,
+                )
+                # 对象→维度(归属): 与对象→指标对称, 维度跟着它 bound_object_key 指向的对象
+                if d.get("bound_object_key"):
+                    self._store.create_object_dimension_relation(
+                        object_key=d["bound_object_key"],
+                        dimension_name=d.get("name", ""),
+                        datasource_id=datasource_id,
+                    )
+                if d.get("table_name") and d.get("column_name"):
+                    self._store.create_dimension_column_relation(
+                        dimension_name=d["name"],
+                        table=d["table_name"],
+                        column=d["column_name"],
+                        datasource_id=datasource_id,
+                    )
+                stats["dimensions"] += 1
+            logger.info("Created %d dimension nodes", stats["dimensions"])
 
             # Build datasource nodes —— 系统域不枚举业务数据源(test-alb 等名称不得进系统图)
             datasources = [] if is_system_scope(datasource_id) else self._load_datasources()
@@ -318,7 +407,7 @@ class GraphBuilder:
                         return []
                     ph = ",".join(["%s"] * len(keys))
                     cur.execute(f"""
-                        SELECT name, description,
+                        SELECT name, description, bound_object_key,
                                target_table AS table_name,
                                target_column AS column_name, datasource_id
                         FROM adh_metrics
@@ -327,7 +416,7 @@ class GraphBuilder:
                     return cur.fetchall()
                 ds_filter, params = _ds_scope(datasource_id)
                 cur.execute(f"""
-                    SELECT name, description,
+                    SELECT name, description, bound_object_key,
                            target_table AS table_name,
                            target_column AS column_name, datasource_id
                     FROM adh_metrics
@@ -336,6 +425,40 @@ class GraphBuilder:
                 return cur.fetchall()
         except Exception as e:
             logger.warning("Failed to load metrics: %s", e)
+            return []
+        finally:
+            conn.close()
+
+    def _load_dimensions(self, datasource_id: int) -> list[dict]:
+        """加载分析维度字典行(与指标对称): 系统域仅收录绑到系统模型对象的维度。"""
+        from backend.common.db.metadata_db import get_metadata_conn
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                if is_system_scope(datasource_id):
+                    keys = _system_object_keys()
+                    if not keys:
+                        return []
+                    ph = ",".join(["%s"] * len(keys))
+                    cur.execute(f"""
+                        SELECT name, description, category, bound_object_key,
+                               target_table AS table_name,
+                               target_column AS column_name, datasource_id
+                        FROM adh_dimensions
+                        WHERE is_active = 1 AND bound_object_key IN ({ph})
+                    """, keys)
+                    return cur.fetchall()
+                ds_filter, params = _ds_scope(datasource_id)
+                cur.execute(f"""
+                    SELECT name, description, category, bound_object_key,
+                           target_table AS table_name,
+                           target_column AS column_name, datasource_id
+                    FROM adh_dimensions
+                    WHERE is_active = 1 {ds_filter}
+                """, params)
+                return cur.fetchall()
+        except Exception as e:
+            logger.warning("Failed to load dimensions: %s", e)
             return []
         finally:
             conn.close()

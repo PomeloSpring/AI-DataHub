@@ -197,4 +197,28 @@ describe('数据看板 — 仪表盘组维度导航', () => {
     fireEvent.click(screen.getByRole('button', { name: '退出大屏' })); await screen.findByText('响应式网格');
     expect(screen.getByTestId('path')).toHaveTextContent('/dashboards/7/2');
   });
+  it('大屏顶栏刷新会对每个数据图表 push 重查询（不只回读 DB 缓存）', async () => {
+    // 锁定行为：刷新按钮必须逐个 POST charts/{id}/refresh 向数据源重查询；
+    // widget_ 组件无 SQL 不参与；GET /dashboard/{id} 只回 data_cache，不能当刷新。
+    const withCharts = { ...board(2), charts: [
+      { id: 21, chart_type: 'bar', sql_query: 'SELECT 1', config: {} },
+      { id: 22, chart_type: 'line', semantic_query: { object: 'orders' }, config: {} },
+      { id: 23, chart_type: 'widget_search', config: {} },
+    ] };
+    vi.mocked(client.get).mockImplementation(async url => {
+      if (url === '/dashboard/groups/visible') return { data: groupsFixture() };
+      if (/^\/dashboard\/2$/.test(url)) return { data: withCharts };
+      const m = /^\/dashboard\/(\d+)$/.exec(url);
+      if (m) return { data: board(Number(m[1])) };
+      return { data: [] };
+    });
+    vi.mocked(client.post).mockResolvedValue({ data: { columns: ['c'], rows: [[1]] } } as any);
+    routes('/screen/2?group=7');
+    await screen.findByText('大屏画布');
+    fireEvent.click(await screen.findByRole('button', { name: '刷新数据' }));
+    await waitFor(() => expect(client.post).toHaveBeenCalledTimes(2));
+    const posts = vi.mocked(client.post).mock.calls.map(([url]) => url).sort();
+    expect(posts).toEqual(['/dashboard/2/charts/21/refresh', '/dashboard/2/charts/22/refresh']);
+    expect(vi.mocked(client.post).mock.calls[0][1]).toEqual(expect.objectContaining({ params: expect.any(Object) }));
+  });
 });

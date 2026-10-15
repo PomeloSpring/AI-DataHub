@@ -228,6 +228,7 @@ class TestCheckAccess:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_admin_follows_role_permissions(self, mock_rls, mock_role, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         """Admin role follows role-based permission checks (no automatic bypass)."""
         mock_role.get_user_roles.return_value = [{"id": 1, "name": "admin"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # 显式授权 DS1（fail-closed：空=拒绝，不再是 No restriction）
@@ -240,6 +241,7 @@ class TestCheckAccess:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_datasource_denied(self, mock_rls, mock_role, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "viewer"}]
         mock_role.get_user_allowed_datasources.return_value = [1, 2]  # Only DS 1, 2
         result = enforcer.check_access(user_id=1, workspace_id=0, datasource_id=99)
@@ -249,6 +251,7 @@ class TestCheckAccess:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_table_denied(self, mock_rls, mock_role, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "viewer"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # 显式授权 DS1（fail-closed：空=拒绝，不再是 No restriction）
         mock_role.get_user_allowed_tables.return_value = ["orders", "products"]  # No users table
@@ -262,6 +265,7 @@ class TestCheckAccess:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_allowed_with_restrictions(self, mock_rls, mock_role, mock_sens, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "analyst"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
         mock_role.get_user_allowed_tables.return_value = []
@@ -288,6 +292,7 @@ class TestCheckAccess:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_no_restrictions_empty_result(self, mock_rls, mock_role, mock_sens, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "analyst"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
         mock_role.get_user_allowed_tables.return_value = []
@@ -316,6 +321,7 @@ class TestEnforceSQL:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_sql_rewrite_with_row_filter(self, mock_rls, mock_role, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "analyst"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
         mock_role.get_user_allowed_tables.return_value = []
@@ -340,6 +346,7 @@ class TestEnforceSQL:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_permission_denied_raises(self, mock_rls, mock_role, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         mock_role.get_user_roles.return_value = [{"id": 2, "name": "viewer"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # Only DS 1
 
@@ -350,6 +357,37 @@ class TestEnforceSQL:
                 workspace_id=0,
                 datasource_id=99,
             )
+
+
+class TestProtectProjection:
+    """_protect_projection 对“位置重命名”的保守拒绝不得误拦表生成函数（LATERAL VIEW / UNNEST）
+    的输出列命名；同时不得弱化对 hidden 列的引用拦截。"""
+
+    def _res(self, **kw):
+        return PermissionResult(**kw)
+
+    def test_positional_rename_still_rejected(self, enforcer):
+        sql = "SELECT a, b FROM (SELECT phone, salary FROM t_emp) AS derived(a, b)"
+        res = self._res(masked_columns={"phone": "partial"})
+        with pytest.raises(PermissionError, match="位置重命名"):
+            enforcer._protect_projection(sql, res)
+
+    def test_lateral_view_explode_allowed(self, enforcer):
+        sql = ("SELECT pcid, t.level_index FROM user_funnel "
+               "LATERAL VIEW EXPLODE(ARRAY_RANGE(1, level + 1)) t AS level_index")
+        enforcer._protect_projection(sql, self._res(masked_columns={"phone": "partial"}))
+
+    def test_presto_unnest_column_alias_allowed(self, enforcer):
+        # Presto/Trino `CROSS JOIN UNNEST(expr) AS t(c)`：给展开的虚拟列命名，不得当位置重命名拒（SLS 漏斗常见）
+        sql = ("SELECT pcid, level, t.level_index FROM user_funnel "
+               "CROSS JOIN UNNEST(sequence(1, level)) AS t(level_index)")
+        enforcer._protect_projection(sql, self._res(masked_columns={"phone": "partial"}))
+
+    def test_unnest_still_checks_hidden_refs(self, enforcer):
+        sql = ("SELECT `usercode`, t.level_index FROM user_funnel "
+               "CROSS JOIN UNNEST(sequence(1, level)) AS t(level_index)")
+        with pytest.raises(PermissionError, match="禁止访问"):
+            enforcer._protect_projection(sql, self._res(hidden_columns=["usercode"]))
 
 
 if __name__ == "__main__":

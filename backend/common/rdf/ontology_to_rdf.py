@@ -275,20 +275,12 @@ def _emit_class(lines: list[str], obj: dict, model_name: str):
             lines.append(f'    adh:effect "{pdesc}"^^xsd:string ;')
         lines[-1] = lines[-1].rstrip(" ;") + " ."
         lines.append(f"{class_iri} adh:hasProperty {prop_iri} .")
-    for m in (obj.get("metrics") or []):
-        # 新格式 = 指标名字符串（口径唯一登记在字典）；旧格式 dict 容错取名/说明
-        mname = str(m).strip() if isinstance(m, str) else str(m.get("name") or "").strip()
-        if not mname:
-            continue
-        m_iri = f"adh:objmetric:{_safe_uri(str(key) + '.' + mname)}"
-        lines.append(f"{m_iri} a adh:Metric ;")
-        lines.append(f'    rdfs:label "{_escape(mname)}"@zh ;')
-        if isinstance(m, dict) and m.get("description"):
-            mdesc = _escape(str(m["description"]))
-            lines.append(f'    adh:effect "{mdesc}"^^xsd:string ;')
-        lines[-1] = lines[-1].rstrip(" ;") + " ."
-        lines.append(f"{class_iri} adh:hasMetric {m_iri} .")
-    if (obj.get("actions") or obj.get("properties") or obj.get("metrics")):
+    # 指标/维度归属不在此投影: 单一权威 = 字典 bound_object_key → graph_builder 发
+    # adh:hasMetric/adh:hasDimension 到 adh:metric:{name}/adh:dimension:{name}
+    # (见 store.create_object_metric_relation/create_object_dimension_relation)。
+    # 此处若再从 canonical objects[].metrics[] 造 adh:objmetric:{key}.{name},
+    # 同一指标会双 IRI 重复节点(历史缺陷: Metric=108=47+61), 故不投影。
+    if (obj.get("actions") or obj.get("properties")):
         lines.append("")
 
     # Links → traversable instance edges + reified join expressions.

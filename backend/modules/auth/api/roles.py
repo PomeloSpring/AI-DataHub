@@ -44,6 +44,10 @@ class SetDashboardAccessRequest(BaseModel):
     dashboard_ids: list[int]
 
 
+class SetDatasetAccessRequest(BaseModel):
+    dataset_ids: list[int]
+
+
 class SetRoleRLSPoliciesRequest(BaseModel):
     policy_ids: list[int]
 
@@ -233,6 +237,12 @@ def list_dashboard_catalog(admin: dict = Depends(require_admin)):
     return role_service.list_dashboard_catalog()
 
 
+@router.get("/dataset-catalog")
+def list_dataset_catalog(admin: dict = Depends(require_admin)):
+    """全部数据集清单 — 供角色配置页「数据集」选择器(仅 admin)。"""
+    return role_service.list_dataset_catalog()
+
+
 @router.get("/{role_id}")
 def get_role(role_id: int, user: dict = Depends(get_current_user)):
     """Get a single role with its attributes and assigned users."""
@@ -344,6 +354,25 @@ def set_role_dashboards(role_id: int, req: SetDashboardAccessRequest,
         raise HTTPException(status_code=404, detail="角色不存在")
     ok = role_service.set_role_dashboards(role_id, req.dashboard_ids)
     return {"success": ok, "count": len(set(req.dashboard_ids or []))}
+
+
+# ── Dataset Access (数据集可见性按角色授权) ───────────────────────
+
+@router.get("/{role_id}/datasets")
+def get_role_datasets(role_id: int, user: dict = Depends(get_current_user)):
+    """Get dataset IDs visible to a role (fail-closed: 空=一律不可见)."""
+    return role_service.get_role_datasets(role_id)
+
+
+@router.put("/{role_id}/datasets")
+def set_role_datasets(role_id: int, req: SetDatasetAccessRequest,
+                      admin: dict = Depends(require_admin)):
+    """全量替换角色可见数据集(仅 admin). 空列表=全部不可见."""
+    role = execute_query("SELECT id FROM adh_roles WHERE id=%s", (role_id,), fetchone=True)
+    if not role:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    ok = role_service.set_role_datasets(role_id, req.dataset_ids)
+    return {"success": ok, "count": len(set(req.dataset_ids or []))}
 
 
 # ── RLS Policy Binding (数据安全策略绑定: 勾选才生效) ──────────────────
@@ -465,7 +494,14 @@ def set_rls_column_policies(
     req: SetRLSColumnPoliciesRequest,
     admin: dict = Depends(require_admin),
 ):
-    """Set column policies for an RLS policy (admin only)."""
-    ok = rls_service.set_column_policies(policy_id, req.columns)
+    """Set column policies for an RLS policy (admin only).
+
+    列策略写入口的黑名单校验失败(access_type 非法/未建基线)必须 400 带原因，
+    不得把 ValueError 冒成 500 也不得假成功(rls_service.set_column_policies)。
+    """
+    try:
+        ok = rls_service.set_column_policies(policy_id, req.columns)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"success": ok}
 

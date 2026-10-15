@@ -6,6 +6,13 @@ import client from '@/api/client';
 
 vi.mock('@/api/client', () => ({ default: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
 
+const policy = (over: Record<string, any> = {}) => ({
+  id: 1, name: '策略A', description: '', workspace_id: 0, datasource_id: 1,
+  table_name: 'orders', policy_type: 'row', filter_type: 'condition',
+  filter_expr: '', user_attribute: '', is_active: 1, created_by: 1,
+  created_at: '', updated_at: '', ...over,
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(client.get).mockImplementation(async (url: string) => {
@@ -13,6 +20,7 @@ beforeEach(() => {
     return { data: [] };
   });
   vi.mocked(client.put).mockResolvedValue({ data: { success: true } } as any);
+  vi.mocked(client.post).mockResolvedValue({ data: { success: true, id: 99 } } as any);
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -24,8 +32,8 @@ describe('数据安全策略 — 资源显示用 name', () => {
         data: {
           total: 2,
           items: [
-            { id: 1, name: '策略A', description: '', workspace_id: 0, datasource_id: 1, table_name: 'orders', policy_type: 'row', filter_type: 'condition', filter_expr: '', user_attribute: '', is_active: 1, created_by: 1, created_at: '', updated_at: '' },
-            { id: 2, name: '策略B', description: '', workspace_id: 0, datasource_id: 325991609814964, table_name: 'orders', policy_type: 'row', filter_type: 'condition', filter_expr: '', user_attribute: '', is_active: 1, created_by: 1, created_at: '', updated_at: '' },
+            policy(),
+            policy({ id: 2, name: '策略B', datasource_id: 325991609814964 }),
           ],
         },
       };
@@ -46,6 +54,137 @@ describe('数据安全策略 — 用户属性页签已退役', () => {
     expect(screen.queryByRole('tab', { name: /用户属性/ })).not.toBeInTheDocument();
     // 旧的按用户配置接口也不再被调用
     expect(client.get).not.toHaveBeenCalledWith('/admin/rls-user-attributes/10', expect.anything());
+  });
+});
+
+describe('数据安全策略 — 行/列/表完全分开管理', () => {
+  it('三个独立页面签; 列策略不再混入"行+列"混合入口, 新建表单无白名单模式选择器', async () => {
+    vi.mocked(client.get).mockImplementation(async (url: string) => {
+      if (url === '/admin/rls-policies') return {
+        data: {
+          total: 3,
+          items: [
+            policy({ id: 1, policy_type: 'row' }),
+            policy({ id: 2, name: '列黑名单', policy_type: 'column' }),
+            policy({ id: 3, name: '表白名单', policy_type: 'table' }),
+          ],
+        },
+      };
+      return { data: [] };
+    });
+    render(<RLSManagement />);
+    await screen.findByRole('tab', { name: /行策略/ });
+    expect(screen.getByRole('tab', { name: /列策略/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /表策略/ })).toBeInTheDocument();
+    // 遗留 both 类型只读标注, 不再提供新建入口
+    expect(screen.queryByText('行+列')).not.toBeInTheDocument();
+    // 列策略页签: 说明是黑名单语义, 且旧白名单/黑名单模式切换器已退役
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('tab', { name: /列策略/ }));
+    expect(await screen.findByText('列黑名单')).toBeInTheDocument();
+    expect(screen.queryByText(/白名单（仅允许指定列）/)).not.toBeInTheDocument();
+  });
+});
+
+describe('数据安全策略 — 列策略(黑名单)', () => {
+  it('保存列策略提交纯黑名单行, access_type 只允许 hidden/masked, 不出现 visible', async () => {
+    vi.mocked(client.get).mockImplementation(async (url: string) => {
+      if (url === '/datasources/') return { data: [{ id: 1, name: 'test-alb', db_type: 'mysql' }] };
+      if (url === '/admin/rls-policies') return { data: { total: 0, items: [] } };
+      if (url === '/datasources/1/tables') return { data: [{ TABLE_NAME: 'orders' }] };
+      if (url.startsWith('/datasources/1/tables/orders/columns')) return { data: [{ COLUMN_NAME: 'salary', DATA_TYPE: 'decimal' }] };
+      return { data: [] };
+    });
+    const user = userEvent.setup();
+    render(<RLSManagement />);
+    await user.click(await screen.findByRole('tab', { name: /列策略/ }));
+    await user.click(screen.getByRole('button', { name: '新建列策略' }));
+    fireEvent.change(screen.getByPlaceholderText('如: 仅看本区域数据'), { target: { value: '薪资电话黑名单' } });
+    // 选数据源 → 选表 → 选列 → 添加 → 保存
+    await user.click(screen.getByRole('combobox', { name: '数据源' }));
+    await user.click(await screen.findByRole('option', { name: /test-alb/ }));
+    await user.click(screen.getByRole('combobox', { name: '目标表' }));
+    await user.click(await screen.findByRole('option', { name: 'orders' }));
+    await user.click(screen.getByRole('combobox', { name: '列名' }));
+    await user.click(await screen.findByRole('option', { name: /salary/ }));
+    const addBtn = screen.getByRole('button', { name: '添加黑名单列' });
+    await user.click(addBtn);
+    expect(screen.getByRole('button', { name: '移除 salary' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await vi.waitFor(() => {
+      const call = vi.mocked(client.put).mock.calls.find(c => String(c[0]).includes('/columns'));
+      expect(call).toBeTruthy();
+      const body = call![1] as any;
+      expect(body.columns).toEqual([{ column_name: 'salary', access_type: 'hidden', mask_pattern: '' }]);
+      expect(JSON.stringify(body)).not.toContain('visible');
+    });
+  });
+});
+
+describe('数据安全策略 — 选择搜索框(表/列/属性名不手填)', () => {
+  const mockCatalog = () => {
+    vi.mocked(client.get).mockImplementation(async (url: string) => {
+      if (url === '/datasources/') return { data: [{ id: 1, name: 'test-alb', db_type: 'mysql' }] };
+      if (url === '/admin/rls-policies') return { data: { total: 0, items: [] } };
+      if (url === '/datasources/1/tables') return {
+        data: [
+          { TABLE_NAME: 'dwd_t_case_records_all', TABLE_COMMENT: '案件全量表' },
+          { TABLE_NAME: 'orders', TABLE_COMMENT: '订单' },
+        ],
+      };
+      if (url.startsWith('/datasources/1/tables/dwd_t_case_records_all/columns')) return {
+        data: [
+          { COLUMN_NAME: 'salary', DATA_TYPE: 'decimal', COLUMN_COMMENT: '薪酬' },
+          { COLUMN_NAME: 'phone', DATA_TYPE: 'varchar', COLUMN_COMMENT: '电话' },
+        ],
+      };
+      if (url === '/admin/role-attr-keys') return { data: { keys: ['region'] } };
+      return { data: [] };
+    });
+  };
+
+  it('目标表/列名从清单搜索选择; 旧手填输入框退役; 未选数据源时禁用', async () => {
+    mockCatalog();
+    const user = userEvent.setup();
+    render(<RLSManagement />);
+    await user.click(await screen.findByRole('tab', { name: /列策略/ }));
+    await user.click(screen.getByRole('button', { name: '新建列策略' }));
+    // 手填 placeholder 已退役(截图反馈的"目标表名 Input"问题)
+    expect(screen.queryByPlaceholderText('如: orders')).not.toBeInTheDocument();
+    const tableBox = screen.getByRole('combobox', { name: '目标表' });
+    const colBox = screen.getByRole('combobox', { name: '列名' });
+    // 级联禁用: 未选前置资源不得跳到后面手填
+    expect(tableBox).toBeDisabled();
+    expect(colBox).toBeDisabled();
+    await user.click(screen.getByRole('combobox', { name: '数据源' }));
+    await user.click(await screen.findByRole('option', { name: /test-alb/ }));
+    // 表: 搜索 "case" 命中并点选
+    await user.click(tableBox);
+    fireEvent.change(screen.getByPlaceholderText('输入关键词过滤…'), { target: { value: 'case' } });
+    await user.click(await screen.findByRole('option', { name: /dwd_t_case_records_all/ }));
+    expect(tableBox).toHaveTextContent('dwd_t_case_records_all');
+    // 列: 打开即见类型/注释说明, 选 salary 加入黑名单
+    await user.click(colBox);
+    expect(await screen.findByText('decimal · 薪酬')).toBeInTheDocument();
+    await user.click(screen.getByRole('option', { name: /salary/ }));
+    await user.click(screen.getByRole('button', { name: '添加黑名单列' }));
+    expect(screen.getByRole('button', { name: '移除 salary' })).toBeInTheDocument();
+    // 列名选择框复位可继续添加
+    expect(colBox).toHaveTextContent('搜索并选择列');
+  });
+
+  it('行策略"角色属性"过滤的属性名从角色属性清单选择, 不手填', async () => {
+    mockCatalog();
+    const user = userEvent.setup();
+    render(<RLSManagement />);
+    await user.click(await screen.findByRole('tab', { name: /行策略/ }));
+    await user.click(screen.getByRole('button', { name: '新建行策略' }));
+    await user.click(screen.getByRole('combobox', { name: '过滤类型' }));
+    await user.click(await screen.findByRole('option', { name: '角色属性' }));
+    const attrBox = screen.getByRole('combobox', { name: '属性名' });
+    await user.click(attrBox);
+    await user.click(await screen.findByRole('option', { name: 'region' }));
+    expect(attrBox).toHaveTextContent('region');
   });
 });
 

@@ -465,13 +465,20 @@ def _build_oneshot_options(run: "_ScheduledRun"):
     token = resolve_access_token()
     if not token:
         raise ValueError("执行层凭据未配置(QODERCN_PERSONAL_ACCESS_TOKEN)")
+    # 无人值守定时分析同交互链路一致的模型优先级：
+    # run.ctx.extra.model_ref (resolve_policy 已从 AS-BOT.models[0] 默认注入)
+    # → AS-BOT.models[0] 直接取 → .env QODER_MODEL 兜底 → None (SDK Auto)。
+    from backend.common.config import QODER_MODEL
+    _sem = (run.ctx.extra or {}).get("model_ref") or ""
+    _asbot_models = run.policy.as_bot.get("models") or []
+    _model = _sem or (_asbot_models[0] if _asbot_models else "") or QODER_MODEL or None
     return sdk.QoderAgentOptions(
         tools=[], allowed_tools=sorted(f"mcp__datahub_scheduled__{t['name']}" for t in run.tools),
         permission_mode="default", setting_sources=[], cwd=str(home / "workspace"), add_dirs=[], env=env,
         mcp_servers={"datahub_scheduled": server}, agents={}, system_prompt=system_prompt,
         resume=None, max_turns=run.max_turns, include_partial_messages=True,
         can_use_tool=permit, hooks={"PreToolUse": [sdk.HookMatcher(hooks=[before_tool])]},
-        cli_path=None, model=None, auth=AccessTokenAuthOptions(access_token=token),
+        cli_path=None, model=_model, auth=AccessTokenAuthOptions(access_token=token),
         strict_mcp_config=True, allowed_mcp_server_names=["datahub_scheduled"], skills=[])
 
 

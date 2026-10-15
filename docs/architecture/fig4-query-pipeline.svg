@@ -1,0 +1,217 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 1010" font-family="Noto Sans CJK SC, PingFang SC, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#f59e0b"/>
+    </marker>
+    <marker id="arR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/>
+    </marker>
+    <marker id="arG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#059669"/>
+    </marker>
+  </defs>
+  <rect width="1560" height="1010" fill="#f8fafc"/>
+
+  <text x="40" y="44" font-size="28" font-weight="700" fill="#0f172a">取数主干 · 双轨入口 → 唯一执行口 → 治理纵深</text>
+  <text x="40" y="72" font-size="15" fill="#475569">语义轨（run_semantic_query）与 nl2sql 轨（execute_sql）是同一执行口的两条入口，合不合规只看是否过治理入口</text>
+
+  <!-- ═════ Lane 1 · L4 智能体执行层 ═════ -->
+  <rect x="60" y="92" width="1416" height="152" rx="12" fill="#ffffff" stroke="#c4b5fd"/>
+  <text x="78" y="116" font-size="14.5" font-weight="700" fill="#7c3aed">L4 智能体执行层（LLM 只产意图，不产 SQL）</text>
+  <g font-size="12.4">
+    <rect x="78" y="130" width="186" height="88" rx="8" fill="#f3e8fd" stroke="#c4b5fd"/>
+    <text x="92" y="152" font-weight="700" fill="#0f172a">用户问题</text>
+    <text x="92" y="172" fill="#334155">+ 服务端可信身份</text>
+    <text x="92" y="190" fill="#334155">workspace / 会话源</text>
+    <text x="92" y="208" fill="#94a3b8">JWT · AK · owner</text>
+
+    <rect x="280" y="130" width="186" height="88" rx="8" fill="#f3e8fd" stroke="#c4b5fd"/>
+    <text x="294" y="152" font-weight="700" fill="#0f172a">prompt_composer</text>
+    <text x="294" y="172" fill="#334155">护栏 + 语义层规范</text>
+    <text x="294" y="190" fill="#334155">角色/RLS 摘要</text>
+    <text x="294" y="208" fill="#334155">技能 + 图表契约</text>
+
+    <rect x="482" y="130" width="186" height="88" rx="8" fill="#f3e8fd" stroke="#c4b5fd"/>
+    <text x="496" y="152" font-weight="700" fill="#0f172a">ToolPolicy.allowed</text>
+    <text x="496" y="172" fill="#334155">工具授权 ∩ 权限码</text>
+    <text x="496" y="190" fill="#334155">∩ 天花板 ∩ 涉密</text>
+    <text x="496" y="208" fill="#94a3b8">未授权不注册</text>
+
+    <rect x="684" y="130" width="186" height="88" rx="8" fill="#ede9fe" stroke="#c4b5fd"/>
+    <text x="698" y="152" font-weight="700" fill="#0f172a">LLM 决策</text>
+    <text x="698" y="172" fill="#1e293b">主路：产 intent</text>
+    <text x="698" y="190" fill="#1e293b">旁路：产只读 SQL</text>
+    <text x="698" y="208" fill="#94a3b8">先 check_sql 预检</text>
+
+    <rect x="886" y="130" width="186" height="88" rx="8" fill="#f3e8fd" stroke="#c4b5fd"/>
+    <text x="900" y="152" font-weight="700" fill="#0f172a">resource_guard</text>
+    <text x="900" y="172" fill="#334155">available_sources</text>
+    <text x="900" y="190" fill="#334155">= 角色数据源授权集</text>
+    <text x="900" y="208" fill="#dc2626">空集=无权 fail-closed</text>
+
+    <rect x="1088" y="130" width="186" height="88" rx="8" fill="#f3e8fd" stroke="#c4b5fd"/>
+    <text x="1102" y="152" font-weight="700" fill="#0f172a">MCP handler 入口</text>
+    <text x="1102" y="172" fill="#334155">compat.make_tool</text>
+    <text x="1102" y="190" fill="#334155">.guarded 收口</text>
+    <text x="1102" y="208" fill="#94a3b8">元数据按授权分域</text>
+
+    <rect x="1290" y="130" width="186" height="88" rx="8" fill="#dcfce7" stroke="#4ade80"/>
+    <text x="1304" y="152" font-weight="700" fill="#0f172a">outbound_guard</text>
+    <text x="1304" y="172" fill="#334155">剥 SQL / 内部 id /</text>
+    <text x="1304" y="190" fill="#334155">物理表列 / 报错栈</text>
+    <text x="1304" y="208" fill="#334155">只回业务视图</text>
+  </g>
+  <g stroke="#7c3aed" stroke-width="2.2" fill="none">
+    <line x1="264" y1="174" x2="280" y2="174" marker-end="url(#ar)"/>
+    <line x1="466" y1="174" x2="482" y2="174" marker-end="url(#ar)"/>
+    <line x1="668" y1="174" x2="684" y2="174" marker-end="url(#ar)"/>
+    <line x1="870" y1="174" x2="886" y2="174" marker-end="url(#ar)"/>
+    <line x1="1072" y1="174" x2="1088" y2="174" marker-end="url(#ar)"/>
+    <line x1="1274" y1="174" x2="1290" y2="174" marker-end="url(#arG)"/>
+  </g>
+
+  <!-- 双轨分流：主轨落入 L5；旁轨沿左侧留白带下行（跳过语义编译层）→ 直接进统一执行口 -->
+  <g stroke="#f59e0b" stroke-width="2.4" fill="none">
+    <path d="M770,218 L770,246 L300,246 L300,276" marker-end="url(#arA)"/>
+  </g>
+  <g stroke="#dc2626" stroke-width="2.4" fill="none" stroke-dasharray="7 5">
+    <path d="M806,218 L806,268 L44,268 L44,597 L74,597" marker-end="url(#arR)"/>
+  </g>
+  <text x="316" y="240" font-size="12.6" font-weight="700" fill="#b45309">主轨 · 声明式 intent → 语义层编译</text>
+  <text x="100" y="262" font-size="12.6" font-weight="700" fill="#dc2626">旁轨 · 只读 SQL 跳过编译层，但绝不跳过治理（仍过 validate_sql + enforcer）</text>
+
+  <!-- ═════ Lane 2 · L5 统一语义层 ═════ -->
+  <rect x="60" y="278" width="1416" height="226" rx="12" fill="#ffffff" stroke="#fcd34d"/>
+  <text x="78" y="302" font-size="14.5" font-weight="700" fill="#b45309">L5 统一语义层（确定性编译 · 无 LLM）　backend.semantics.execute = 全平台唯一取数口</text>
+  <g font-size="12.4">
+    <rect x="78" y="314" width="254" height="76" rx="8" fill="#fef3c7" stroke="#fcd34d"/>
+    <text x="92" y="336" font-weight="700" fill="#0f172a">parse_intent</text>
+    <text x="92" y="355" fill="#334155">宽容抽取 + extra=forbid</text>
+    <text x="92" y="373" fill="#dc2626">拒 sql/rawSql/statement/table</text>
+
+    <rect x="364" y="314" width="254" height="76" rx="8" fill="#fef3c7" stroke="#fcd34d"/>
+    <text x="378" y="336" font-weight="700" fill="#0f172a">binding_resolver</text>
+    <text x="378" y="355" fill="#334155">按域裁决（system vs 业务）</text>
+    <text x="378" y="373" fill="#334155">部署绑定 object_key × 源名</text>
+
+    <rect x="650" y="314" width="254" height="76" rx="8" fill="#fef3c7" stroke="#fcd34d"/>
+    <text x="664" y="336" font-weight="700" fill="#0f172a">planner · 五档名字解析</text>
+    <text x="664" y="355" fill="#334155">dict_exact→alias→column_map→</text>
+    <text x="664" y="373" fill="#334155">business_desc→phys　逐档记来源</text>
+
+    <rect x="936" y="314" width="254" height="76" rx="8" fill="#fef3c7" stroke="#fcd34d"/>
+    <text x="950" y="336" font-weight="700" fill="#0f172a">形状编译</text>
+    <text x="950" y="355" fill="#334155">跨对象 JOIN（无路径回抛候选）</text>
+    <text x="950" y="373" fill="#334155">窗口两层 · time_window 相对时间</text>
+
+    <rect x="1222" y="314" width="254" height="76" rx="8" fill="#fef3c7" stroke="#fcd34d"/>
+    <text x="1236" y="336" font-weight="700" fill="#0f172a">护栏与候选回抛</text>
+    <text x="1236" y="355" fill="#334155">huge/raw_source 先补 LIMIT</text>
+    <text x="1236" y="373" fill="#dc2626">模糊只回抛，绝不静默绑定</text>
+  </g>
+  <g stroke="#b45309" stroke-width="2.2" fill="none">
+    <line x1="350" y1="352" x2="364" y2="352" marker-end="url(#ar)"/>
+    <line x1="636" y1="352" x2="650" y2="352" marker-end="url(#ar)"/>
+    <line x1="922" y1="352" x2="936" y2="352" marker-end="url(#ar)"/>
+    <line x1="1208" y1="352" x2="1222" y2="352" marker-end="url(#ar)"/>
+  </g>
+  <text x="78" y="414" font-size="13.4" font-weight="700" fill="#0f172a">七闸门 gates：任一道拒 → allowed=false + blocked_at + gate_trail（不静默放行）</text>
+  <g font-size="12.2">
+    <rect x="78" y="426" width="186" height="60" rx="8" fill="#fff7ed" stroke="#fdba74"/><text x="92" y="450" font-weight="700" fill="#0f172a">1 identity</text><text x="92" y="470" fill="#334155">非 dry_run 须有身份</text>
+    <rect x="280" y="426" width="186" height="60" rx="8" fill="#fff7ed" stroke="#fdba74"/><text x="294" y="450" font-weight="700" fill="#0f172a">2 permission</text><text x="294" y="470" fill="#334155">表级+token+block列</text>
+    <rect x="482" y="426" width="186" height="60" rx="8" fill="#fff7ed" stroke="#fdba74"/><text x="496" y="450" font-weight="700" fill="#0f172a">3 preflight</text><text x="496" y="470" fill="#334155">绑定/字典无孤儿漂移</text>
+    <rect x="684" y="426" width="186" height="60" rx="8" fill="#fff7ed" stroke="#fdba74"/><text x="698" y="450" font-weight="700" fill="#0f172a">4 proposal</text><text x="698" y="470" fill="#334155">高风险生成预览</text>
+    <rect x="886" y="426" width="186" height="60" rx="8" fill="#fff7ed" stroke="#fdba74"/><text x="900" y="450" font-weight="700" fill="#0f172a">5 approval</text><text x="900" y="470" fill="#334155">未批准则挂起</text>
+    <rect x="1088" y="426" width="186" height="60" rx="8" fill="#fff7ed" stroke="#fdba74"/><text x="1102" y="450" font-weight="700" fill="#0f172a">6 execute</text><text x="1102" y="470" fill="#334155">RLS 改写 + 二次校验</text>
+    <rect x="1290" y="426" width="186" height="60" rx="8" fill="#e0f2fe" stroke="#7dd3fc"/><text x="1304" y="450" font-weight="700" fill="#0f172a">7 audit</text><text x="1304" y="470" fill="#334155">成功/拒绝均留痕</text>
+  </g>
+
+  <!-- ═════ Lane 3 · L6 治理内核 ═════ -->
+  <rect x="60" y="522" width="1416" height="248" rx="12" fill="#ffffff" stroke="#fca5a5"/>
+  <text x="78" y="546" font-size="14.5" font-weight="700" fill="#dc2626">L6 治理与执行内核（数据护城河）　execute_query_with_permission → 引擎执行 → 后处理 → 审计</text>
+  <g font-size="12.4">
+    <rect x="78" y="558" width="340" height="78" rx="8" fill="#fee2e2" stroke="#fca5a5"/>
+    <text x="92" y="580" font-weight="700" fill="#0f172a">validate_sql　（两轨共用）</text>
+    <text x="92" y="600" fill="#334155">仅 SELECT / WITH；禁 DDL/DML/多语句</text>
+    <text x="92" y="620" fill="#334155">默认要求 LIMIT（补后再校验）</text>
+
+    <rect x="430" y="558" width="340" height="78" rx="8" fill="#fee2e2" stroke="#fca5a5"/>
+    <text x="444" y="580" font-weight="700" fill="#0f172a">enforcer.enforce_sql</text>
+    <text x="444" y="600" fill="#334155">sqlglot 真实解析取表（含 CTE/JOIN）</text>
+    <text x="444" y="620" fill="#334155">逐表 check_access：敏感→源→表→列</text>
+
+    <rect x="782" y="558" width="340" height="78" rx="8" fill="#fee2e2" stroke="#fca5a5"/>
+    <text x="796" y="580" font-weight="700" fill="#0f172a">RLS 行过滤注入</text>
+    <text x="796" y="600" fill="#334155">包裹子查询 · 保留原别名 · FROM+JOIN</text>
+    <text x="796" y="620" fill="#334155">两侧全覆盖　方言按目标源</text>
+
+    <rect x="1134" y="558" width="340" height="78" rx="8" fill="#fee2e2" stroke="#fca5a5"/>
+    <text x="1148" y="580" font-weight="700" fill="#0f172a">纵深第二层（引擎内）</text>
+    <text x="1148" y="600" fill="#334155">RLS 策略二次注入（AND 合并）</text>
+    <text x="1148" y="620" fill="#334155">过滤视图 plan 期强制</text>
+  </g>
+  <g font-size="12.4">
+    <rect x="78" y="650" width="340" height="78" rx="8" fill="#fff1f2" stroke="#fca5a5"/>
+    <text x="92" y="672" font-weight="700" fill="#0f172a">SemanticEngine（唯一执行载体）</text>
+    <text x="92" y="692" fill="#334155">远程下推源库执行 → 拉回 Arrow</text>
+    <text x="92" y="712" fill="#dc2626">未启用/不可用/失败一律 raise（禁裸连）</text>
+
+    <rect x="430" y="650" width="340" height="78" rx="8" fill="#fff1f2" stroke="#fca5a5"/>
+    <text x="444" y="672" font-weight="700" fill="#0f172a">apply_post_processing</text>
+    <text x="444" y="692" fill="#334155">hidden/block 列剔除 · mask 表达式</text>
+    <text x="444" y="712" fill="#334155">（null / partial / hash，按方言生成）</text>
+
+    <rect x="782" y="650" width="340" height="78" rx="8" fill="#fff1f2" stroke="#fca5a5"/>
+    <text x="796" y="672" font-weight="700" fill="#0f172a">df_to_columns_rows</text>
+    <text x="796" y="692" fill="#334155">重名列无损消歧 col__1…</text>
+    <text x="796" y="712" fill="#dc2626">禁裸 to_json / 吞异常返空行</text>
+
+    <rect x="1134" y="650" width="340" height="78" rx="8" fill="#e0f2fe" stroke="#7dd3fc"/>
+    <text x="1148" y="672" font-weight="700" fill="#0f172a">审计 + provenance（服务端内部）</text>
+    <text x="1148" y="692" fill="#334155">成功与拒绝落库；gate_trail / 档位留痕</text>
+    <text x="1148" y="712" fill="#334155">原始错因只进日志，对外 EXEC_FAIL_HINT</text>
+  </g>
+  <g stroke="#dc2626" stroke-width="2.2" fill="none">
+    <line x1="418" y1="597" x2="430" y2="597" marker-end="url(#arR)"/>
+    <line x1="770" y1="597" x2="782" y2="597" marker-end="url(#arR)"/>
+    <line x1="1122" y1="597" x2="1134" y2="597" marker-end="url(#arR)"/>
+    <line x1="1304" y1="636" x2="1304" y2="650" marker-end="url(#ar)"/>
+  </g>
+
+  <!-- ═════ Lane 4 · 数据源 ═════ -->
+  <rect x="60" y="786" width="1416" height="98" rx="12" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="78" y="810" font-size="14.5" font-weight="700" fill="#0f172a">外部数据源与连接器（凭据只在服务端，绝不进 LLM/前端）</text>
+  <g font-size="12.4" fill="#0f172a">
+    <rect x="78" y="820" width="254" height="50" rx="8" fill="#f1f5f9"/><text x="92" y="842" font-weight="700">Doris / MySQL</text><text x="92" y="860" fill="#475569">connector mysql · 方言 mysql</text>
+    <rect x="364" y="820" width="254" height="50" rx="8" fill="#f1f5f9"/><text x="378" y="842" font-weight="700">PostgreSQL</text><text x="378" y="860" fill="#475569">ADBC · options 走 URI</text>
+    <rect x="650" y="820" width="254" height="50" rx="8" fill="#f1f5f9"/><text x="664" y="842" font-weight="700">SLS（PG 协议）</text><text x="664" y="860" fill="#475569">方言 postgres，禁 mysql 回写</text>
+    <rect x="936" y="820" width="254" height="50" rx="8" fill="#f1f5f9"/><text x="950" y="842" font-weight="700">跨源联邦</text><text x="950" y="860" fill="#475569">DataFusion 规划 + 各源下推</text>
+    <rect x="1222" y="820" width="254" height="50" rx="8" fill="#f1f5f9"/><text x="1236" y="842" font-weight="700">元库 / 图谱 / 缓存</text><text x="1236" y="860" fill="#475569">MySQL · Oxigraph · Redis</text>
+  </g>
+  <g stroke="#475569" stroke-width="2.4" fill="none">
+    <line x1="214" y1="728" x2="214" y2="820" marker-end="url(#ar)"/>
+    <line x1="600" y1="820" x2="600" y2="728" stroke-dasharray="6 5" marker-end="url(#arG)"/>
+  </g>
+  <text x="226" y="762" font-size="12.4" fill="#475569">改写后 SQL 下发</text>
+  <text x="612" y="762" font-size="12.4" fill="#059669">Arrow 结果回拉</text>
+
+  <!-- 结果回流到 L4 出站 -->
+  <path d="M1304,728 L1520,728 L1520,174 L1476,174" stroke="#059669" stroke-width="2.6" fill="none" marker-end="url(#arG)"/>
+  <text x="1502" y="470" font-size="12.4" font-weight="700" fill="#059669" transform="rotate(-90 1502 470)">结果回流 → 出站脱敏 → LLM / 图表契约</text>
+
+  <!-- ═════ 底部说明 ═════ -->
+  <rect x="60" y="900" width="700" height="96" rx="12" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="78" y="926" font-size="14" font-weight="700" fill="#0f172a">双轨的判定口径（只看是否过治理入口）</text>
+  <text x="78" y="950" font-size="12.6" fill="#334155">语义轨：LLM 产声明式 intent → 七闸门 → 唯一执行口；本体是已建模对象的权威入口</text>
+  <text x="78" y="972" font-size="12.6" fill="#334155">nl2sql 轨：只读 SELECT/WITH，必须先 check_sql 预检，再经 enforcer 改写后才执行</text>
+
+  <rect x="776" y="900" width="700" height="96" rx="12" fill="#0f172a"/>
+  <text x="794" y="926" font-size="14" font-weight="700" fill="#ffffff">红线（不得触碰）</text>
+  <text x="794" y="950" font-size="12.6" fill="#cbd5e1">严禁把 LLM 原始 SQL 直发数据源；PermissionError 必须在到达源之前中止</text>
+  <text x="794" y="972" font-size="12.6" fill="#cbd5e1">不得用 nl2sql 绕过本体查已治理对象；不得把裸 SQL 塞进语义 intent（必拒）</text>
+
+  <text x="40" y="1006" font-size="12.2" fill="#94a3b8">锚点：semantics/{execute,intent,binding_resolver,planner,gates,sql_guard}.py · semantics/execution/{engine,session,connectors}.py · core/{enforcer,query_executor}.py · common/df_serialize.py</text>
+</svg>

@@ -19,8 +19,9 @@ COPY sync/ ./sync/
 # Create directory for embedding model cache
 RUN mkdir -p /root/.cache/huggingface
 
-EXPOSE 8000-8007 8012
+EXPOSE 8000
 
-# web 入口：单进程绑定全部契约端口（vite/监控口径不变）；
-# 8000 为 frontend/nginx.conf 上游（backend:8000）的汇聚端口。
-CMD ["python", "-m", "backend.app.serve", "--host", "0.0.0.0", "--ports", "8000,8001,8002,8003,8004,8005,8006,8007,8012"]
+# web 入口：单进程绑定 services.conf 登记的监听口（当前单一 web :8000，
+# 即 frontend/nginx.conf 上游 backend:8000 / docker-compose 映射 / vite 代理目标）。
+# 端口不在此处再抄一份：改口径只改 backend/scripts/services.conf。
+CMD ["python", "-m", "backend.app.serve", "--host", "0.0.0.0"]

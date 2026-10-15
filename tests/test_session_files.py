@@ -60,7 +60,7 @@ def ws(tmp_path, monkeypatch):
     monkeypatch.setattr("backend.common.config.ADH_WORKSPACES_DIR", str(tmp_path))
     monkeypatch.setattr(metadata_db, "get_metadata_conn",
                         lambda: _FakeConn({"session_key": SESSION_KEY, "workspace_id": 3}))
-    root = sw.session_paths(tmp_path, SESSION_KEY, 3, create=True)
+    root = sw.session_paths(tmp_path, SESSION_KEY, 3, 7, create=True)
     return root / "workspace"
 
 

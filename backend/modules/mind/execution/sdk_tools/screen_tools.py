@@ -600,9 +600,6 @@ TOOL_SPECS = [
     },
 ]
 
-from backend.modules.mind.execution.sdk_tools.dashboard_design_tools import SCREEN_SPECS
-TOOL_SPECS.extend(SCREEN_SPECS)
-
 READONLY_ANNOTATIONS = {"readOnlyHint": True}
 
 

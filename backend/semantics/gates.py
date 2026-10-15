@@ -182,15 +182,59 @@ def _gate_preflight(q: SemanticQuery, binding: ResolvedBinding, planned: Planned
     if planned.sql == "" :
         return GateOutcome("preflight", False, "护栏拒绝了本次查询(见 warnings)",
                            detail={"warnings": planned.warnings})
+
+    # **请求过的字段被静默丢弃 = 回答了另一个问题**（护栏：no-silent-degradation）。
+    # 旧口径只在"一个都没解析出来"时拦，部分丢弃仍放行：用户问"按状态分布"，
+    # 状态分布解析不通被丢掉，结果返回一个不带任何分组的总量——看起来成功，
+    # 实际上口径已被改掉，比不回答更坏（宁缺勿错）。planner 已产出结构化的
+    # unresolved_terms（含指标/维度/过滤/HAVING），以它为准，不靠文案匹配。
+    # 口径与 viz.dataset_service.compile_from_semantic 的"未解析即拒"保持一致。
+    dropped = _dropped_terms(planned)
+    if dropped:
+        detail: dict[str, Any] = {"unresolved": dropped}
+        avail = (planned.provenance or {}).get("available_dimensions")
+        if avail:
+            detail["available_dimensions"] = list(avail)[:20]
+        return GateOutcome(
+            "preflight", False,
+            "本次查询有字段未能解析，已拒绝执行而不给出去掉该条件的结果: "
+            + "、".join(f"{t['name']}({t['kind']})" for t in dropped[:5])
+            + "；请改用本对象已登记的业务名或其别名后重试",
+            detail=detail)
+
     if unresolved and not planned.provenance.get("requested_metrics") and not q.dimensions:
         return GateOutcome("preflight", False, "无有效字段可查询", detail={"unresolved": unresolved})
-    detail: dict[str, Any] = {"sync_state": binding.sync_state}
+    detail = {"sync_state": binding.sync_state}
     if unresolved:
         detail["unresolved"] = unresolved
         avail = planned.provenance.get("available_dimensions")
         if avail:
             detail["available_dimensions"] = avail
     return GateOutcome("preflight", True, detail=detail)
+
+
+def _dropped_terms(planned: PlannedExecution) -> list[dict]:
+    """取 planner 产出的**结构化**未解析清单（只含业务词，不含物理表列）。
+
+    返回 ``[{name, kind, reason, candidates}]``；planner 未给 provenance 时回空
+    （旧链路不阻断，避免拿不到信号就一律拒掉把主链路堵死）。
+    """
+    raw = (planned.provenance or {}).get("unresolved_terms") or []
+    out: list[dict] = []
+    for item in raw:
+        if isinstance(item, dict):
+            name = str(item.get("term") or "").strip()
+            if not name:
+                continue
+            out.append({"name": name, "kind": str(item.get("type") or "field"),
+                        "reason": str(item.get("reason") or "unresolved"),
+                        "candidates": [str(c) for c in (item.get("candidates") or [])][:5]})
+        else:
+            name = str(item or "").strip()
+            if name:
+                out.append({"name": name, "kind": "field", "reason": "unresolved",
+                            "candidates": []})
+    return out
 
 
 def _risk_profile(q: SemanticQuery, binding: ResolvedBinding) -> tuple[bool, list[str]]:

@@ -11,7 +11,13 @@ _OBS_ASSISTANT_TEXT_MAX = 4000
 
 
 def _obs_record_assistant(msg) -> None:
-    """观测是旁路，失败不影响执行。"""
+    """观测是旁路，失败不影响执行。
+
+    注：`build_options` 开了 `include_partial_messages=True`（流式输出必需），实测该模式下
+    CLI **不再**在 AssistantMessage.usage 上附 `credits/billable/request_id`（关掉后立即可见），
+    所以请求级 credit 常态为 None —— 本回合 credit 由 ResultMessage 会话累计值做差得到
+    （见 observability.recorder._resolve_turn_credits），不是解析漏字段。
+    """
     try:
         from backend import observability
         _obs_record_assistant_output(msg)
@@ -71,7 +77,12 @@ def _obs_record_tool_result(ev, arguments: dict) -> None:
 def _obs_record_result(msg) -> None:
     try:
         from backend import observability
-        observability.set_session_credits(getattr(msg, "total_credits", None), getattr(msg, "model_usage", None))
+        # total_credits/model_usage 是会话累计；usage/total_cost_usd 是本回合的 token/成本汇总，
+        # 请求级 usage 缺失时由 recorder 拿它们补齐真实用量。
+        observability.set_session_credits(
+            getattr(msg, "total_credits", None), getattr(msg, "model_usage", None),
+            usage=getattr(msg, "usage", None), cost_usd=getattr(msg, "total_cost_usd", None),
+        )
         observability.record_span(
             kind="result", name="execution_result",
             status="success" if getattr(msg, "subtype", "") == "success" else "error",
@@ -79,7 +90,10 @@ def _obs_record_result(msg) -> None:
             output_text=json.dumps({"subtype": getattr(msg, "subtype", ""),
                                     "num_turns": getattr(msg, "num_turns", None),
                                     "total_credits": getattr(msg, "total_credits", None),
-                                    "model_usage": getattr(msg, "model_usage", None)}, ensure_ascii=False, default=str),
+                                    "total_cost_usd": getattr(msg, "total_cost_usd", None),
+                                    "usage": getattr(msg, "usage", None),
+                                    "model_usage": getattr(msg, "model_usage", None)},
+                                   ensure_ascii=False, default=str),
         )
     except Exception as exc:
         logger.debug("观测记录失败: %s", exc)

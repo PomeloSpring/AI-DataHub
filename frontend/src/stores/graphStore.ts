@@ -51,6 +51,7 @@ interface FetchGraphOptions {
   centerNode?: string;
   search?: string;
   limit?: number;
+  includeProperties?: boolean;
 }
 
 interface GraphStore {
@@ -142,6 +143,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
       if (options.centerNode) params.append('center_node', options.centerNode);
       if (options.search) params.append('search', options.search);
       if (options.limit) params.append('limit', options.limit.toString());
+      if (options.includeProperties) params.append('include_properties', 'true');
 
       const response = await axios.get(`${API_BASE}/query?${params.toString()}`, {
         headers: getAuthHeader(),

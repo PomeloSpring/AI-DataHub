@@ -181,6 +181,16 @@ class PermissionEnforcer:
                 result.reason = f"无权访问表 {table_name}"
                 return result
 
+            # Step 2b: 表策略白名单 (policy_type='table', 角色绑定任一即启用)。
+            # None = 未绑定表策略不限制; 集合 = 仅清单内表可访问(与角色表授权取交集)。
+            table_wl = rls_service.get_role_table_whitelist(user_id, workspace_id, datasource_id)
+            if table_wl is not None and table_name not in table_wl:
+                result.allowed = False
+                result.reason = f"表 {table_name} 不在角色绑定的表级白名单内"
+                return result
+            if table_wl is not None:
+                result.policies_applied.append("table_whitelist")
+
             # Step 3: Get column restrictions (合并, 不得覆盖敏感基线已并入的 hidden/masked)
             col_restrictions = role_service.get_user_column_restrictions(
                 user_id, datasource_id, table_name, workspace_id
@@ -237,9 +247,15 @@ class PermissionEnforcer:
         Returns:
             (modified_sql, PermissionResult)
         """
-        from backend.semantics.sql_guard import extract_tables, inject_filters
+        from backend.semantics.sql_guard import extract_tables, inject_filters, dialect_of_db_type
+        # 目标源方言（一次解析，供表提取/投影保护/RLS 注入统一使用）：sls→postgres 等，未知回 mysql。
+        ds_dialect = "mysql"
+        if datasource_id:
+            from backend.common.db import get_datasource_by_id
+            _src = get_datasource_by_id(int(datasource_id)) or {}
+            ds_dialect = dialect_of_db_type(_src.get("db_type") or "mysql")
         # 总是解析真实查询，调用方传入的表清单不能省略 JOIN 或 CTE 内的表。
-        tables = extract_tables(sql)
+        tables = extract_tables(sql, ds_dialect)
 
         # 无身份(user_id 缺省/0): 仅套治理敏感基线, 不做 RBAC/RLS
         only_sensitive = not user_id
@@ -260,12 +276,15 @@ class PermissionEnforcer:
 
         if not only_sensitive:
             from backend.core.role_service import role_service
+            from backend.core.rls_service import rls_service
             # 数据源级访问 — 只查一次（fail-closed：空授权=无权，与 check_access 同口径）
             allowed_ds = role_service.get_user_allowed_datasources(user_id, workspace_id)
             if datasource_id and datasource_id not in allowed_ds:
                 raise PermissionError(_ds_deny_reason(datasource_id))
             # 表级访问 — 按表所属源缓存（跨源 SQL 每个源只查一次）
             allowed_tables_cache: dict = {}
+            # 表策略白名单同样按源缓存（None=未启用, set=仅清单内表可访问）
+            table_whitelist_cache: dict = {}
 
         for table in tables:
             policy_table, table_ds_id = self._resolve_table_ref(table, datasource_id)
@@ -282,6 +301,13 @@ class PermissionEnforcer:
                 allowed_tables = allowed_tables_cache[table_ds_id]
                 if allowed_tables and policy_table not in allowed_tables:
                     raise PermissionError(f"无权访问表 {table}")
+                # 表策略白名单: 角色绑定任一表策略即启用, 仅清单内表可访问
+                if table_ds_id not in table_whitelist_cache:
+                    table_whitelist_cache[table_ds_id] = rls_service.get_role_table_whitelist(
+                        user_id, workspace_id, table_ds_id)
+                table_wl = table_whitelist_cache[table_ds_id]
+                if table_wl is not None and policy_table not in table_wl:
+                    raise PermissionError(f"表 {table} 不在角色绑定的表级白名单内")
 
             # 仅做表级专属查询: #1 敏感字段 + #4 列限制 + #5 RLS
             # 按表所属源加载策略（跨源不串味）
@@ -305,8 +331,10 @@ class PermissionEnforcer:
                 combined_result.masked_columns[col] = mask if previous in (None, mask) else "null"
             combined_result.policies_applied.extend(result.policies_applied)
 
-        self._protect_projection(sql, combined_result)
-        modified_sql, applied = inject_filters(sql, table_filters)
+        self._protect_projection(sql, combined_result, ds_dialect)
+        # RLS 注入会整条重写 SQL，必须用目标源方言（已在上方按 db_type 解析，sls 属 postgres 族）；
+        # 硬编码 mysql 会把 `"quoted_id"` 变字符串字面量、ARRAY[] 变 ARRAY() → 目标源报语法错。
+        modified_sql, applied = inject_filters(sql, table_filters, dialect=ds_dialect)
         # fail-loud: 行策略必须全部落到表引用上。键与引用不匹配时宁拒绝勿旁路，
         # 杜绝未来重构（如提取键与注入键口径不一致）导致 RLS 静默失效。
         missing = set(table_filters) - set(applied)
@@ -514,19 +542,30 @@ class PermissionEnforcer:
         return self._resolve_table_ref(table, datasource_id)[0]
 
     @staticmethod
-    def _protect_projection(sql: str, result: PermissionResult):
+    def _protect_projection(sql: str, result: PermissionResult, dialect: str = "mysql"):
         """避免通过列别名或计算表达式绕过结果侧隐藏和脱敏。"""
         from sqlglot import exp
-        from backend.semantics.sql_guard import parse_query
+        from backend.semantics.sql_guard import parse_readonly
         if not result.hidden_columns and not result.masked_columns:
             return
-        tree = parse_query(sql)
+        # 宽容解析（优先目标源方言）：SLS/Presto 形状在 mysql 下解不动，不得因此误拒合法只读查询。
+        tree = parse_readonly(sql, dialect)
         hidden = {str(c).lower() for c in result.hidden_columns}
         masks = {str(c).lower(): m for c, m in result.masked_columns.items()}
         if any(c.name.lower() in hidden for c in tree.find_all(exp.Column)):
             raise PermissionError("查询引用了禁止访问的字段")
         # 显式位置列重命名无法用名称可靠传播，保守拒绝。
-        if any(a.args.get("columns") for a in tree.find_all(exp.TableAlias)):
+        # 例外：给“表生成函数”输出列命名的语法不是物理列位置重命名，按名传播仍成立：
+        #   - Hive/Spark `LATERAL VIEW udtf(...) t AS c` → 父节点 exp.Lateral
+        #   - Presto/Trino `CROSS JOIN UNNEST(expr) AS t(c)` → 父节点 exp.Unnest
+        # 此处的 c 是给 UDTF/UNNEST 展开出的虚拟列命名，不涉及物理列位置，不得误拦。
+        # 而 `FROM tbl AS x(a,b)` / `FROM (子查询) AS d(a,b)` 父节点为 exp.Table/exp.Subquery，
+        # 属真正按位重命名物理列，仍走拒绝分支（fail-closed 不变）。
+        if any(
+            a.args.get("columns")
+            and not isinstance(a.parent, (exp.Lateral, exp.Unnest))
+            for a in tree.find_all(exp.TableAlias)
+        ):
             raise PermissionError("受保护字段不支持位置重命名")
         for _ in range(len(list(tree.find_all(exp.Select))) + 1):
             for select in tree.find_all(exp.Select):

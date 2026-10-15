@@ -52,6 +52,7 @@ class TestAdminAccess:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_admin_follows_datasource_permissions(self, mock_rls, mock_role, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         """Admin role is subject to datasource access permissions."""
         mock_role.get_user_roles.return_value = [{"id": 1, "name": "admin"}]
         mock_role.get_user_allowed_datasources.return_value = [1, 2]  # Only DS 1, 2
@@ -70,6 +71,7 @@ class TestAdminAccess:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_admin_sees_all_columns(self, mock_rls, mock_role, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         """Admin sees all columns without masking."""
         mock_role.get_user_roles.return_value = [{"id": 1, "name": "admin"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
@@ -91,6 +93,7 @@ class TestZhangsanEastChina:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_zhangsan_can_access_east_datasource(self, mock_rls, mock_role, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         """zhangsan can access datasource 1 in 华东 workspace."""
         mock_role.get_user_roles.return_value = [{"id": 100, "name": "region_analyst"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # 显式授权 DS1（fail-closed：空=拒绝，不再是 No restriction）
@@ -113,6 +116,7 @@ class TestZhangsanEastChina:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_zhangsan_sql_gets_row_filter(self, mock_rls, mock_role, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         """zhangsan's SQL should have row filter injected."""
         mock_role.get_user_roles.return_value = [{"id": 100, "name": "region_analyst"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
@@ -139,6 +143,7 @@ class TestLisiSouthChina:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_lisi_can_only_see_orders(self, mock_rls, mock_role, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         """lisi can only access orders table, not users or products."""
         mock_role.get_user_roles.return_value = [{"id": 200, "name": "data_viewer"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
@@ -161,6 +166,7 @@ class TestLisiSouthChina:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_lisi_salary_hidden_phone_masked(self, mock_rls, mock_role, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         """lisi should have salary hidden and phone masked."""
         mock_role.get_user_roles.return_value = [{"id": 200, "name": "data_viewer"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
@@ -188,6 +194,7 @@ class TestLisiSouthChina:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_lisi_post_processing(self, mock_rls, mock_role, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         """lisi's query results should have hidden columns removed and masked values."""
         df = pd.DataFrame({
             "id": [1, 2],
@@ -224,6 +231,7 @@ class TestWorkspaceIsolation:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_east_workspace_filters_to_east(self, mock_rls, mock_role, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         """华东 workspace should filter to 华东 data only."""
         mock_role.get_user_roles.return_value = [{"id": 100, "name": "region_analyst"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
@@ -245,6 +253,7 @@ class TestWorkspaceIsolation:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_south_workspace_filters_to_south(self, mock_rls, mock_role, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         """华南 workspace should filter to 华南 data only."""
         mock_role.get_user_roles.return_value = [{"id": 200, "name": "data_viewer"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权
@@ -267,6 +276,7 @@ class TestWorkspaceIsolation:
     @patch("backend.core.role_service.role_service")
     @patch("backend.core.rls_service.rls_service")
     def test_national_workspace_no_filter(self, mock_rls, mock_role, enforcer):
+        mock_rls.get_role_table_whitelist.return_value = None  # 未绑表策略 → 表级不限制
         """全国 workspace should have no row filter."""
         mock_role.get_user_roles.return_value = [{"id": 300, "name": "full_analyst"}]
         mock_role.get_user_allowed_datasources.return_value = [1]  # fail-closed：空=拒绝，须显式授权

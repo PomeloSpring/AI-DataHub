@@ -28,8 +28,9 @@ CREATE TABLE IF NOT EXISTS adh_llm_traces (
     input_tokens    INT          NOT NULL DEFAULT 0,
     output_tokens   INT          NOT NULL DEFAULT 0,
     total_tokens    INT          NOT NULL DEFAULT 0,
-    credits         DECIMAL(18,6) NULL,             -- 本轮各次请求级 credit 之和(Qoder)
-    cost_usd        DECIMAL(18,6) NULL,             -- 兜底估算(直连 token×单价)
+    credits         DECIMAL(18,6) NULL,             -- 本回合 credit 消耗(请求级之和,或会话累计增量)
+    cost_amount     DECIMAL(18,6) NULL,             -- 本回合成本(CLI 上报或按 credit 单价折算,币种见 cost_currency)
+    cost_currency   VARCHAR(8)    NULL,             -- 成本币种: USD=CLI 上报, CNY=按资源包单价折算
     session_credits DECIMAL(18,6) NULL,             -- 会话累计(Result.total_credits, 不与他处相加)
     llm_call_count  INT          NOT NULL DEFAULT 0,
     span_count      INT          NOT NULL DEFAULT 0,
@@ -60,7 +61,7 @@ CREATE TABLE IF NOT EXISTS adh_llm_spans (
     credits          DECIMAL(18,6) NULL,            -- 请求级 credit(Assistant.usage)
     original_credits DECIMAL(18,6) NULL,
     billable         TINYINT      NULL,
-    cost_usd         DECIMAL(18,6) NULL,
+    cost_amount      DECIMAL(18,6) NULL,            -- 币种随所属 trace
     input_text       MEDIUMTEXT,
     output_text      MEDIUMTEXT,
     error_text       TEXT,
