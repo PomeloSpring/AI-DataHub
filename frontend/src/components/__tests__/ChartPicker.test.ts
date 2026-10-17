@@ -25,4 +25,14 @@ describe('Chat 图表类型解析(与看板 CHART_TYPES 对齐)', () => {
     expect(resolveChartType('table')).toBe('bar')      // 历史契约 table → 柱状图(原行为)
     expect(resolveChartType('column')).toBe('bar')     // 旧别名
   })
+
+  it('地图热力(map_heat)及 LLM 常用别名解析到地图热力', () => {
+    expect(resolveChartType('map_heat')).toBe('map_heat')
+    expect(resolveChartType('map')).toBe('map_heat')
+    expect(resolveChartType('heatmap_map')).toBe('map_heat')
+    expect(resolveChartType('geo_heatmap')).toBe('map_heat')
+    expect(resolveChartType('map_heatmap')).toBe('map_heat')
+    // 矩阵热力图(heatmap)是另一类型,不得被吸进地图热力
+    expect(resolveChartType('heatmap')).toBe('heatmap')
+  })
 })

@@ -1,9 +1,15 @@
 import { create } from 'zustand';
 import client from '../api/client';
+import { listOntologyGenerateTasks, type GenerateTask } from '../api/ontology';
 import { toast } from 'sonner';
 
 // AS-BOT 面板与智能问数同一载体、不同入口：会话历史合并共用，
 // 设计会话绑定只校验归属（user_id），不再需要入口哨兵。
+
+// 「正在停止…」轮询参数（与 chatStore 同口径）：点取消只是断开 SSE，
+// 后端要先确认在跑的工具任务与 SDK 子进程已收尾才会释放执行权。
+const STOP_POLL_INTERVAL_MS = 1000;
+const STOP_CONFIRM_TIMEOUT_MS = 120000;
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -27,6 +33,12 @@ export interface AsBotMessage {
     timestamp: number;
   }>;
   error?: string;
+  // 前置意图漏斗：intent_gate = 本地直答（本轮未调用模型），页面必须可见且能转深度分析
+  handledBy?: 'agent' | 'intent_gate';
+  gate?: {
+    mode: string; layer: string; label: string; reason: string;
+    signals?: string[]; latency_ms?: number; gate_error?: string;
+  };
 }
 
 export interface AsBotConversation {
@@ -58,6 +70,9 @@ function slimForStore(messages: AsBotMessage[]): AsBotMessage[] {
     content: m.content,
     thinking: m.thinking ? m.thinking.slice(0, 8000) : undefined,
     error: m.error,
+    // 分流标记必须随会话 JSON 入库，否则历史回放时徽章消失（拦截痕迹丢了就等于隐身）
+    handledBy: m.handledBy,
+    gate: m.gate,
     tool_calls: (m.tool_calls || []).map(tc => ({
       ...tc,
       result: tc.result ? tc.result.slice(0, 4000) : tc.result,
@@ -75,22 +90,34 @@ interface AsBotState {
   loading: boolean;
   loadingStep: string;
   abortController: AbortController | null;
+  /** 已点“取消”但后端尚未释放执行权（断连后收尾核验中）。 */
+  stopping: boolean;
   // Conversation history (persisted to adh_conversations; 两入口合并共用)
   conversationId: number | null;
   conversations: AsBotConversation[];
   executorSessionId: string | null;
+  // 后台静默任务（如『生成本体模型』）：执行在服务端，面板开关不影响它，面板只负责呈现
+  backgroundTasks: GenerateTask[];
+  tasksError: string;
 
   // Actions
   togglePanel: () => void;
   openPanel: () => void;
   closePanel: () => void;
-  sendMessage: (text: string) => Promise<void>;
+  sendMessage: (text: string, opts?: { forceAgent?: boolean }) => Promise<void>;
   cancelMessage: () => void;
+  waitForExecutionRelease: (conversationId: number) => Promise<void>;
   loadConversations: () => Promise<void>;
   newConversation: () => void;
   switchConversation: (convId: number) => Promise<void>;
   deleteConversation: (convId: number) => Promise<void>;
   clearMessages: () => void;
+  /** 打开面板并定位到后台任务的会话（生成入口提交后直接看这里） */
+  openTaskConversation: (convId: number) => Promise<void>;
+  /** 刷新后台任务清单（失败不静默：记 tasksError 供面板提示） */
+  refreshBackgroundTasks: () => Promise<void>;
+  /** 静默重拉当前会话消息（轮询后台任务进度；不中断交互流） */
+  refreshConversation: (convId: number) => Promise<void>;
 }
 
 export const useAsBotStore = create<AsBotState>((set, get) => ({
@@ -99,12 +126,19 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
   loading: false,
   loadingStep: '',
   abortController: null,
+  stopping: false,
   conversationId: null,
   conversations: [],
   executorSessionId: null,
+  backgroundTasks: [],
+  tasksError: '',
 
   togglePanel: () => set(state => ({ panelOpen: !state.panelOpen })),
-  openPanel: () => { set({ panelOpen: true }); void get().loadConversations(); },
+  openPanel: () => {
+    set({ panelOpen: true });
+    void get().loadConversations();
+    void get().refreshBackgroundTasks();
+  },
   closePanel: () => set({ panelOpen: false }),
 
   clearMessages: () => get().newConversation(),
@@ -119,6 +153,36 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
       const { data } = await client.get('/chat/conversations', { params: { workspace_id: 0 } });
       set({ conversations: Array.isArray(data) ? data : [] });
     } catch { toast.error('会话列表加载失败'); }
+  },
+
+  refreshBackgroundTasks: async () => {
+    try {
+      const items = await listOntologyGenerateTasks(true);
+      set({ backgroundTasks: items, tasksError: '' });
+    } catch (e: any) {
+      // 轮询失败不弹错（会反复刷），但必须可见：面板横幅提示“状态刷新失败”
+      set({ tasksError: e?.response?.data?.detail || e?.message || '后台任务状态刷新失败' });
+    }
+  },
+
+  openTaskConversation: async (convId) => {
+    set({ panelOpen: true });
+    await get().loadConversations();
+    await get().switchConversation(convId);
+    void get().refreshBackgroundTasks();
+  },
+
+  refreshConversation: async (convId) => {
+    const st = get();
+    // 交互流进行中不插手（不得把用户自己的回答刷掉），也不在已切走的会话上回写
+    if (st.loading || st.conversationId !== convId) return;
+    try {
+      const { data } = await client.get(`/chat/conversations/${convId}`);
+      if (get().conversationId !== convId) return;
+      set({ messages: Array.isArray(data?.messages) ? data.messages : get().messages });
+    } catch {
+      // 保留上一次成功视图，下轮重试；失败事实由 tasksError 统一提示
+    }
   },
 
   switchConversation: async (convId) => {
@@ -153,9 +217,13 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
     }
   },
 
-  sendMessage: async (text: string) => {
+  sendMessage: async (text: string, opts?: { forceAgent?: boolean }) => {
     const state = get();
     if (state.loading || !text.trim()) return;
+    if (state.stopping) {
+      toast.error('上一轮正在停止，请稍候…');
+      return;
+    }
 
     const userMsg: AsBotMessage = { role: 'user', content: text };
     const currentMessages = state.messages;
@@ -219,6 +287,8 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
       pipeline_mode: 'agent',
       workspace_id: 0,
       conversation_id: convId || 0,
+      // 「转深度分析」：只绕开前置分流，不关任何数据/权限护栏
+      force_agent: !!opts?.forceAgent,
     };
 
     try {
@@ -348,6 +418,8 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
                       thinking: data.thinking || streamingThinking,
                       error: data.error,
                       tool_calls: data.tool_calls || msgs[lastIdx].tool_calls,
+                      handledBy: data.handled_by,
+                      gate: data.gate,
                     };
                   }
                   return { messages: msgs, loading: false, loadingStep: '' };
@@ -436,9 +508,38 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
   },
 
   cancelMessage: () => {
-    const { abortController } = get();
-    if (abortController) {
-      abortController.abort();
+    const { abortController, conversationId } = get();
+    if (!abortController) return;
+    // 先置 stopping 再 abort（与 chatStore 同一口径）：取消只是断开 SSE，
+    // 后端要先确认工具任务与 SDK 子进程已收尾才会释放执行权。
+    set({ stopping: true });
+    abortController.abort();
+    if (!conversationId) { set({ stopping: false }); return; }
+    void get().waitForExecutionRelease(conversationId);
+  },
+
+  waitForExecutionRelease: async (conversationId) => {
+    const deadline = Date.now() + STOP_CONFIRM_TIMEOUT_MS;
+    let released = false;
+    let queryFailed = false;
+    while (Date.now() < deadline) {
+      try {
+        const { data } = await client.get('/pipeline/send/status', {
+          params: { conversation_id: conversationId },
+        });
+        if (!data?.busy) { released = true; break; }
+      } catch {
+        queryFailed = true;
+        break;
+      }
+      await new Promise(r => setTimeout(r, STOP_POLL_INTERVAL_MS));
+    }
+    if (get().conversationId !== conversationId) { set({ stopping: false }); return; }
+    set({ stopping: false });
+    if (!released) {
+      toast.error(queryFailed
+        ? '无法确认上一轮已停止（状态查询失败）。请稍候再发送，或联系管理员查看会话状态。'
+        : '上一轮仍未确认停止（后端需先收尾工具任务与 SDK 子进程）。请稍候再发送，或联系管理员查看会话状态。');
     }
   },
 }));

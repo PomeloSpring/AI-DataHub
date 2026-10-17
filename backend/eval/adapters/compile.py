@@ -30,7 +30,8 @@ def _patched_resolver_catalog():
     orig_phys = _ColumnResolver._load_phys
     orig_dims = _ColumnResolver._load_dims
     orig_metrics = _ColumnResolver._load_metrics
-    orig_tpl = planner._load_template_row
+    orig_tpl = planner._load_dataset_row
+    orig_scopes = planner._dataset_has_scopes
 
     def _load_phys(self):
         return {c: dict(m) for c, m in demo.PHYS.get(self.binding.physical_table, {}).items()}
@@ -45,16 +46,17 @@ def _patched_resolver_catalog():
         src = demo.METRICS.get(self.binding.physical_table, {})
         return {k: dict(v) for k, v in src.items()}
 
-    def _load_template_row(template_ref, warnings):
-        row = demo.TEMPLATES.get(template_ref)
-        if not row:
-            warnings.append(f"SQL 模板 '{template_ref}' 不存在或未启用")
-        return row
+    def _load_dataset_row(dataset_ref):
+        return demo.DATASETS.get(str(dataset_ref or ""))
+
+    def _dataset_has_scopes(_dataset_id):
+        return False        # 评测集不依赖真实 scope 表
 
     _ColumnResolver._load_phys = _load_phys
     _ColumnResolver._load_dims = _load_dims
     _ColumnResolver._load_metrics = _load_metrics
-    planner._load_template_row = _load_template_row
+    planner._load_dataset_row = _load_dataset_row
+    planner._dataset_has_scopes = _dataset_has_scopes
     # B2/B3: 跨对象 JOIN 素材打桩(links 邻接 + 跨对象 binding)
     orig_links = planner._load_object_links
     orig_fbind = planner._resolve_foreign_binding
@@ -66,7 +68,8 @@ def _patched_resolver_catalog():
         _ColumnResolver._load_phys = orig_phys
         _ColumnResolver._load_dims = orig_dims
         _ColumnResolver._load_metrics = orig_metrics
-        planner._load_template_row = orig_tpl
+        planner._load_dataset_row = orig_tpl
+        planner._dataset_has_scopes = orig_scopes
         planner._load_object_links = orig_links
         planner._resolve_foreign_binding = orig_fbind
 

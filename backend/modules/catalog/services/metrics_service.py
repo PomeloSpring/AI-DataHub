@@ -221,6 +221,75 @@ def _derive_target_table(cur, bound_object_key, formula, datasource_id: int = 0)
     return table if _METRIC_AGG_HEAD.match(f) else ""
 
 
+def resolve_object_property(object_key: str, property_name: str) -> dict:
+    """按对象属性的**业务名**解析物理列（维度写入用）。
+
+    物理列不得由 LLM 手敲（护栏 §7 + 拍板“人只审业务层，物理映射由工具对着元数据生成/校验”），
+    事实源是本体 doc 的 `objects[].properties[] = {name(业务名), column("表.列")}`。
+
+    Returns:
+        {"table", "column", "matched"} —— 命中时 matched=True；
+        未命中时 matched=False 且带 `available`（该对象可用属性业务名，供回抛候选）。
+        宁缺勿错：名字对不上就回抛候选，绝不模糊绑一个列。
+    """
+    from backend.modules.catalog.services.ontology_service import object_identity_key
+
+    want = str(property_name or "").strip()
+    obj_key = str(object_key or "").strip()
+    out = {"table": "", "column": "", "matched": False, "available": []}
+    if not obj_key or not want:
+        return out
+    ik = object_identity_key(obj_key)
+    for doc in _iter_active_docs():
+        for o in doc.get("objects") or []:
+            if object_identity_key(o.get("key") or o.get("object_key") or "") != ik:
+                continue
+            props = o.get("properties") or []
+            out["available"] = [str(p.get("name") or p.get("display_name") or "").strip()
+                                for p in props if (p.get("name") or p.get("display_name"))]
+            for p in props:
+                names = [str(p.get("name") or "").strip(), str(p.get("display_name") or "").strip(),
+                         *[str(a).strip() for a in (p.get("aliases") or [])]]
+                if want in [n for n in names if n]:
+                    col = str(p.get("column") or "").strip()
+                    if not col:
+                        break   # 命中了业务名但没有物理列 → 不猜，回抛
+                    table, _, cname = col.rpartition(".")
+                    out.update({"table": table, "column": cname or col, "matched": True})
+                    return out
+            if out["available"]:
+                return out          # 找到对象但未命中属性 → 带候选返回
+    return out
+
+
+def _iter_active_docs() -> list:
+    """加载全部 active 模型的 canonical doc（模型数量级小，一次取完）。"""
+    import json as _json
+
+    from backend.common.db.metadata_db import get_metadata_conn
+    docs = []
+    try:
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT json_content FROM adh_ontology_models WHERE status = 'active'")
+                for row in cur.fetchall() or []:
+                    raw = row.get("json_content")
+                    if not raw:
+                        continue
+                    try:
+                        doc = _json.loads(raw) if isinstance(raw, str) else raw
+                    except ValueError:
+                        continue
+                    if isinstance(doc, dict):
+                        docs.append(doc)
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001 — 解析不到不阻断写入，由调用方回退
+        logger.debug("[metrics] active 模型 doc 加载失败: %s", e)
+    return docs
+
+
 def create_metric(data: dict) -> dict:
     """Create a new metric.
 

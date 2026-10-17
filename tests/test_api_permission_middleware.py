@@ -103,3 +103,44 @@ def test_resource_scope_owned_workspace_and_foreign_denied(monkeypatch):
     assert authorize_resource_scope(u, 305) == 305
     with _pytest.raises(HTTPException):
         authorize_resource_scope(u, 999)  # 他人空间拒绝
+
+
+# ── 图谱生成入口与授权登记一致（「关系图谱」页的「图谱生成」按钮）───────
+
+def test_graph_sync_route_exists():
+    """前端调的是 POST /api/graph/sync；端点改名必须同步注册表与用例。"""
+    from backend.modules.semhub.api.graph import router as graph_router
+
+    assert any(getattr(r, "path", "") == "/sync" and "POST" in (getattr(r, "methods", None) or set())
+               for r in graph_router.routes), "图谱生成端点已变动，请同步 graph:manage 的 api_pattern"
+
+
+def test_graph_manage_pattern_covers_sync_and_stays_narrow():
+    """只写 /api/graph/rebuild* 会漏掉真实端点 → 非 admin 必 403（admin 旁路掩盖缺口）。"""
+    pattern = "/api/graph/rebuild*,/api/graph/sync*"
+    covered = [one.strip() for one in pattern.split(",") if one.strip()]
+    assert any(ap._match_path(one, "/api/graph/sync") for one in covered)
+    assert any(ap._match_path(one, "/api/graph/rebuild") for one in covered)
+    # 不越界：/api/graph 下的其他写口（如 query）不得被该模式顺手放行
+    assert not any(ap._match_path(one, "/api/graph/query") for one in covered)
+
+
+def test_registry_grants_graph_sync_to_modeling_roles():
+    """真实注册表必须覆盖 /api/graph/sync，且建模角色（能 activate）同样能手动重建。"""
+    import pytest as _pytest
+    from backend.common.db import execute_query
+
+    try:
+        row = execute_query("SELECT api_pattern, api_method FROM adh_perm_registry "
+                            "WHERE perm_code='graph:manage'", fetchone=True)
+    except Exception:  # noqa: BLE001  元库不可用时不假绿也不假红
+        _pytest.skip("元数据库不可用，跳过登记一致性断言")
+    if not row:
+        _pytest.skip("元数据库无 graph:manage 登记")
+    patterns = [p.strip() for p in (row["api_pattern"] or "").split(",") if p.strip()]
+    assert any(ap._match_path(p, "/api/graph/sync") for p in patterns), \
+        f"graph:manage 未覆盖图谱生成端点: {patterns}（非 admin 点「图谱生成」必 403）"
+    assert "POST" in (row["api_method"] or "")
+    granted = execute_query("SELECT 1 FROM adh_role_perms p JOIN adh_roles r ON r.id=p.role_id "
+                            "WHERE p.perm_code='graph:manage' AND r.name='analyst'", fetchone=True)
+    assert granted, "analyst 持有 ontology:activate（激活即重建图），应同时被授予手动图谱生成"

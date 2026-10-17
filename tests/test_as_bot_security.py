@@ -77,6 +77,45 @@ def test_parallel_storage_node_publication_is_atomic(tmp_path):
     assert len(set(result)) == 1
 
 
+def _write_resume_transcript(root, sdk_session_id, directories):
+    import json
+    project = root / "runtime" / "qoder-cn" / "projects" / "-any-legacy-slug"
+    project.mkdir(parents=True, exist_ok=True)
+    (project / f"{sdk_session_id}.jsonl").write_text(
+        json.dumps({"type": "workspace-directories", "sessionId": sdk_session_id,
+                    "directories": directories}) + "\n", encoding="utf-8")
+    return project
+
+
+def test_stale_resume_dirs_are_detected_not_repaired(tmp_path):
+    """存量会话路径迁移未完成时：只检出失效目录（提醒用），绝不偷改 CLI 状态。"""
+    root = sessions.session_paths(tmp_path, "a" * 32, 301, 7, create=True)
+    gone = str(tmp_path / "data/workspaces/ws_301/sessions" / ("a" * 32) / "workspace")
+    project = _write_resume_transcript(root, "sdk-1", [gone])
+    assert sessions.stale_resume_directories(root, "sdk-1") == [gone]
+    assert (project / "sdk-1.jsonl").is_file()
+    assert gone in (project / "sdk-1.jsonl").read_text(encoding="utf-8")
+
+    # 改写为现存目录（迁移脚本阶段②的效果）后不再报，不会误拦正常续聊
+    _write_resume_transcript(root, "sdk-2", [str(root / "workspace")])
+    assert sessions.stale_resume_directories(root, "sdk-2") == []
+    # 不 resume / 无状态文件 / 非法 session_id 一律不阻断主链路
+    assert sessions.stale_resume_directories(root, "") == []
+    assert sessions.stale_resume_directories(root, "../../etc/passwd") == []
+    assert sessions.stale_resume_directories(root, "never-seen") == []
+    assert sessions.stale_resume_directories(tmp_path / "no-such", "sdk-1") == []
+
+
+def test_missing_session_dir_asks_for_new_conversation(tmp_path):
+    """存量会话目录已丢：可操作 409，而不是 RuntimeError 伪装成“执行未完成”。"""
+    row = {"session_key": "a" * 32, "workspace_id": 301, "user_id": 7}
+    with pytest.raises(HTTPException) as denied:
+        sessions.locate_existing_session(tmp_path, row)
+    assert denied.value.status_code == 409 and "新建会话" in denied.value.detail
+    sessions.session_paths(tmp_path, "a" * 32, 301, 7, create=True)
+    assert sessions.locate_existing_session(tmp_path, row) == tmp_path / "7" / "workspace" / "301" / "sessions" / ("a" * 32)
+
+
 @pytest.mark.parametrize("name,args", [("read", {"path": "link"}), ("glob", {"path": ".", "pattern": "*"}),
                                       ("grep", {"path": ".", "pattern": "SECRET"}),
                                       ("write", {"path": "../outside", "content": "bad"})])
@@ -103,6 +142,92 @@ def test_sandbox_command_mounts_only_session_and_has_no_network(tmp_path):
     assert command[command.index("--mount") + 1] == f"type=bind,src={tmp_path}/workspace,dst=/workspace,readonly"
     assert not any("docker.sock" in x or ".env" in x for x in command)
     assert "--user" in command
+
+
+def _argv_has(argv, seq):
+    return any(list(argv[i:i + len(seq)]) == seq for i in range(len(argv)))
+
+
+def test_bwrap_command_mounts_only_session_and_no_leak(tmp_path):
+    """bwrap 后端与 Docker 后端等价的租户边界：只挂本会话目录、只读、断网、无宿主泄漏。"""
+    from backend.modules.platform.services.sandbox_executor import SessionToolSandbox
+    p = policies.compile_policy({"as_bot_key": "t", "tools": {"standard": ["read", "bash"]}})
+    runtime = sessions.SessionWorkspace("a" * 32, "b" * 32, tmp_path, p, None)
+    cfg = {"rootfs_dir": "/opt/adh-python-runtime", "cpu_limit": "1.0", "timeout": 120, "memory_limit": ""}
+    cmd = SessionToolSandbox.bwrap_command(runtime, "read", cfg)
+    assert _argv_has(cmd, ["--unshare-net"]) and _argv_has(cmd, ["--unshare-pid"]) and _argv_has(cmd, ["--die-with-parent"])
+    # 只挂本会话 workspace 且只读
+    assert _argv_has(cmd, ["--ro-bind", str(tmp_path / "workspace"), "/workspace"])
+    assert not _argv_has(cmd, ["--bind", str(tmp_path / "workspace"), "/workspace"])
+    # rootfs 只读挂为 /，绝无宿主根可写绑定；内存未配置则不带 RLIMIT_AS
+    assert _argv_has(cmd, ["--ro-bind", "/opt/adh-python-runtime", "/"])
+    assert not _argv_has(cmd, ["--bind", "/", "/"])
+    assert not _argv_has(cmd, ["--setenv", "ADH_RLIMIT_AS_MB", "2048"])
+    # 断网由 --unshare-all 承载；命令不含 docker.sock/.env/宿主运行路径
+    assert not any("docker.sock" in x or ".env" in x or "var/run" in x for x in cmd)
+
+
+def test_bwrap_command_writable_only_when_write_authorized(tmp_path):
+    from backend.modules.platform.services.sandbox_executor import SessionToolSandbox
+    p = policies.compile_policy({"as_bot_key": "t", "tools": {"standard": ["read", "write", "bash"]}})
+    runtime = sessions.SessionWorkspace("a" * 32, "b" * 32, tmp_path, p, None)
+    cfg = {"rootfs_dir": "/opt/adh-python-runtime", "cpu_limit": "1.0", "timeout": 120, "memory_limit": "2g"}
+    cmd = SessionToolSandbox.bwrap_command(runtime, "write", cfg)
+    assert _argv_has(cmd, ["--bind", str(tmp_path / "workspace"), "/workspace"])
+    assert _argv_has(cmd, ["--setenv", "ADH_RLIMIT_AS_MB", "2048"])
+
+
+def test_bwrap_command_host_python_uses_minimal_root(tmp_path):
+    """host-python：空根 + 只绑白名单 /usr /etc，绝不整盘可写/不暴露 /home(含 backend/.env)。"""
+    from backend.modules.platform.services.sandbox_executor import SessionToolSandbox
+    p = policies.compile_policy({"as_bot_key": "t", "tools": {"standard": ["read", "bash"]}})
+    runtime = sessions.SessionWorkspace("a" * 32, "b" * 32, tmp_path, p, None)
+    cfg = {"mode": "host-python", "cpu_limit": "1.0", "timeout": 120, "memory_limit": ""}
+    cmd = SessionToolSandbox.bwrap_command(runtime, "read", cfg)
+    assert _argv_has(cmd, ["--tmpfs", "/"])
+    assert _argv_has(cmd, ["--ro-bind", "/usr", "/usr"])
+    assert _argv_has(cmd, ["--ro-bind", "/etc", "/etc"])
+    assert _argv_has(cmd, ["--ro-bind", str(tmp_path / "workspace"), "/workspace"])
+    # 绝不把宿主根整盘绑进来（无论读写），也不绑 /home 目录
+    assert not _argv_has(cmd, ["--bind", "/", "/"]) and not _argv_has(cmd, ["--ro-bind", "/", "/"])
+    assert not _argv_has(cmd, ["--ro-bind", "/home", "/home"]) and not _argv_has(cmd, ["--bind", "/home", "/home"])
+    assert not any(".env" in x for x in cmd)
+
+
+def test_resolve_backend_prefers_env_and_default_sandbox(monkeypatch):
+    """后端解析：env 覆盖 → 默认沙箱类型（仅 active 的 bwrap 生效）→ docker。"""
+    from backend.modules.platform.services import sandbox_executor as sx
+    monkeypatch.setenv("ADH_SANDBOX_BACKEND", "bwrap")
+    assert sx.resolve_backend() == "bwrap"
+    monkeypatch.setenv("ADH_SANDBOX_BACKEND", "docker")
+    assert sx.resolve_backend() == "docker"
+    monkeypatch.delenv("ADH_SANDBOX_BACKEND", raising=False)
+    saved = dict(sx._DEFAULT_SANDBOX_CACHE)
+    try:
+        sx._DEFAULT_SANDBOX_CACHE.update({"row": {"sandbox_type": "bwrap", "is_active": True}, "expires": 1e18})
+        assert sx.resolve_backend() == "bwrap"
+        sx._DEFAULT_SANDBOX_CACHE.update({"row": {"sandbox_type": "local", "is_active": True}, "expires": 1e18})
+        assert sx.resolve_backend() == "docker"
+        sx._DEFAULT_SANDBOX_CACHE.update({"row": {"sandbox_type": "bwrap", "is_active": False}, "expires": 1e18})
+        assert sx.resolve_backend() == "docker"   # 停用的 bwrap 不当默认
+    finally:
+        sx._DEFAULT_SANDBOX_CACHE.clear()
+        sx._DEFAULT_SANDBOX_CACHE.update(saved)
+
+
+def test_confirm_stopped_bwrap_detects_live_tool_pid(tmp_path):
+    """bwrap 可核验停止：登记的工具 pid 仍存活则阻断执行权释放；干净则放行。"""
+    p = policies.compile_policy({"as_bot_key": "t", "tools": {"standard": ["read"]}})
+    live = sessions.SessionWorkspace("a" * 32, "b" * 32, tmp_path, p, None,
+                                     sandbox_used=True, sandbox_backend="bwrap")
+    live.sandbox_pids.add(os.getpid())
+    with pytest.raises(RuntimeError, match="仍然存在"):
+        live.confirm_stopped()
+    assert live.unsafe
+    clean = sessions.SessionWorkspace("a" * 32, "b" * 32, tmp_path, p, None,
+                                      sandbox_used=True, sandbox_backend="bwrap")
+    clean.confirm_stopped()
+    assert not clean.unsafe
 
 
 def test_permission_revocation_blocks_old_runtime(monkeypatch):
@@ -259,6 +384,42 @@ def test_real_docker_session_isolation_and_readonly(tmp_path):
         # 网络隔离：沙箱内不得反连宿主 web 监听口（:8000，端口收敛终态后的真实服务）
         result = await SessionToolSandbox.run(a, "bash", {"command": "python -c \"import socket; socket.create_connection(('127.0.0.1', 8000), timeout=1)\""})
         assert result["exit_code"] != 0
+    asyncio.run(run())
+
+
+@pytest.mark.skipif(os.getenv("ADH_TEST_AGENT_BWRAP") != "1", reason="需显式启用真实 bwrap 沙箱实测（设 ADH_BWRAP_ROOTFS）")
+def test_real_bwrap_session_isolation_and_readonly(tmp_path, monkeypatch):
+    from backend.modules.platform.services import sandbox_executor as sx
+    monkeypatch.setenv("ADH_SANDBOX_BACKEND", "bwrap")
+    mode = os.getenv("ADH_SANDBOX_BWRAP_MODE", "rootfs")
+    rootfs = os.getenv("ADH_BWRAP_ROOTFS", "")
+    if mode != "host-python" and not rootfs:
+        pytest.skip("rootfs 模式需设 ADH_BWRAP_ROOTFS")
+    monkeypatch.setattr(sx, "_bwrap_config", lambda: {"mode": mode, "rootfs_dir": rootfs, "cpu_limit": "1.0",
+                                                       "timeout": 120, "memory_limit": ""})
+    writable = policies.compile_policy({"as_bot_key": "t", "tools": {"standard": ["read", "write", "bash"]}})
+    readonly = policies.compile_policy({"as_bot_key": "t", "tools": {"standard": ["read", "bash"]}})
+    a = sessions.SessionWorkspace("a" * 32, uuid.uuid4().hex,
+        sessions.session_paths(tmp_path, "a" * 32, 1, 7, create=True), writable, None)
+    b = sessions.SessionWorkspace("b" * 32, uuid.uuid4().hex,
+        sessions.session_paths(tmp_path, "b" * 32, 1, 7, create=True), readonly, None)
+    a.verify = lambda: None
+    b.verify = lambda: None
+    host_secret = tmp_path / "host-secret"
+    host_secret.write_text("DO_NOT_LEAK_HOST")
+
+    async def run():
+        assert (await sx.SessionToolSandbox.run(a, "write", {"path": "note.txt", "content": "SESSION_A"}))["written"]
+        assert (await sx.SessionToolSandbox.run(a, "read", {"path": "note.txt"}))["text"] == "SESSION_A"
+        # 只挂本会话目录：宿主机密文件在沙箱内不存在
+        forbidden = await sx.SessionToolSandbox.run(a, "bash", {"command": f"cat {host_secret}"})
+        assert forbidden["exit_code"] != 0 and "DO_NOT_LEAK_HOST" not in forbidden["stdout"]
+        # 非写授权会话：/workspace 只读挂载，写不进
+        ro = await sx.SessionToolSandbox.run(b, "bash", {"command": "echo x > note.txt"})
+        assert ro["exit_code"] != 0 and not (b.workspace / "note.txt").exists()
+        # 断网：沙箱内无法反连宿主 web 监听口
+        net = await sx.SessionToolSandbox.run(a, "bash", {"command": "python -c \"import socket; socket.create_connection(('127.0.0.1', 8000), timeout=1)\""})
+        assert net["exit_code"] != 0
     asyncio.run(run())
 
 

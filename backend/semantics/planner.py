@@ -11,7 +11,11 @@
   - 限定业务名(对象名.业务名)引用跨对象字段, join 路径从 canonical links[]确定性
     解出(≤2 跳, 无路径回抛候选不猜 join), 产出 LEFT JOIN 链;
   - 结构化窗口模式(window 字段)编译为"内层聚合 + 外层窗口"两层结构;
-    窗口表达式仅进 SELECT 投影层; 自由形状 SQL 不在本层(走 nl2sql)。
+    窗口表达式仅进 SELECT 投影层; 自由形状 SQL 不在本层(走模板对象/nl2sql)。
+
+方言两级口径见 `backend/semantics/dialect.py`: 语法骨架按**方言族**(mysql/postgres)编译,
+函数实现按**引擎**(mysql/doris/postgres/sls)取变体 —— 指标 `formula_dialects` 与模板
+`sql_bodies` 共用同一套 engine → family → 通用回落规则。
 """
 
 from __future__ import annotations
@@ -23,8 +27,12 @@ import time
 from typing import Any, Optional
 
 from backend.common.db.metadata_db import get_metadata_conn
+from backend.semantics import dialect as sem_dialect
 from backend.semantics.models import (
     PlannedExecution, ResolvedBinding, SemanticFilter, SemanticQuery, SemanticWindow,
+)
+from backend.semantics.sql_params import (
+    declared_names, literal as _lit, parse_json_obj, parse_variables, placeholder_names,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,10 +66,8 @@ _TIME_GRAIN_FMT_PG = {
     "year": "YYYY",
 }
 # db_type -> 编译方言族: mysql/doris 同一族(MySQL 协议/语法), postgres 家族含 sls(PG 协议)
-_DIALECT_OF_DBTYPE = {
-    "mysql": "mysql", "doris": "mysql",
-    "postgres": "postgres", "postgresql": "postgres", "pg": "postgres", "sls": "postgres",
-}
+# 单一事实源在 semantics/dialect.py(引擎级变体键同源), 此处仅保留历史导入口径。
+_DIALECT_OF_DBTYPE = sem_dialect.FAMILY_OF_DBTYPE
 # time_window 单位 -> (MySQL INTERVAL 单位, PG INTERVAL 单位)
 _WINDOW_UNIT = {
     "s": ("SECOND", "seconds"),
@@ -120,16 +126,11 @@ _PG_RANGE = {
 # 绝对区间兜底: 仅接受 ISO 日期/日期时间, 防注入
 _ABS_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$")
 _WINDOW_RE = re.compile(r"^(\d{1,4})([smhdwMy])$")
-# SQL 模板占位符与危险片段(参数值内容检查)
-_TPL_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-_FORBIDDEN_VALUE_FRAG = (";", "--", "/*", "*/")
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_DATETIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$")
 
 
 def _dialect_of(db_type: str) -> str:
-    """数据源 db_type -> SQL 编译方言。未知类型保守回落 mysql(与旧行为一致)并出 warning。"""
-    return _DIALECT_OF_DBTYPE.get((db_type or "mysql").lower(), "mysql")
+    """数据源 db_type -> SQL 编译方言族。未知类型保守回落 mysql(与旧行为一致)并出 warning。"""
+    return sem_dialect.family_of(db_type)
 
 
 # ── 跨对象 JOIN（Phase 2「Link 参与编译」）────────────────────────
@@ -163,6 +164,12 @@ def _split_qualified(name) -> tuple[str, str]:
 def _alias_of(name: str) -> str:
     """SELECT AS 用别名: 限定名的 '.' 换 '_'(点号会破坏标识符/ORDER BY)。"""
     return str(name or "").strip().replace(".", "_")
+
+
+# 别名引用：AS/ORDER BY 右侧是**名字不是表达式**，无论含什么字符都必须包引号——
+# 否则「层间转化率(%)」这类业务名会被当表达式透传，生成非法 SQL。
+def _quote_alias(name: str, family: str) -> str:
+    return sem_dialect.quote_alias(name, family)
 
 
 def _qualify_bare(expr: str, alias: str, cols: set[str]) -> str:
@@ -234,22 +241,22 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
     warnings: list[str] = []
     g = binding.guardrail
     dialect = _dialect_of(binding.db_type)
-    if (binding.db_type or "").lower() not in _DIALECT_OF_DBTYPE:
+    if not sem_dialect.is_known_db_type(binding.db_type):
         warnings.append(
             f"unknown db_type '{binding.db_type}', compiled with mysql dialect fallback")
 
-    # 结构化窗口与 SQL 模板对象互斥(fail-loud, 不静默忽略窗口诉求)
-    if query.window and binding.bind_kind == "sql_template":
-        warnings.append("window 不支持 sql_template 对象; 请去掉 window 或改用普通对象")
+    # 结构化窗口与数据集对象互斥(fail-loud, 不静默忽略窗口诉求)
+    if query.window and binding.bind_kind == "dataset":
+        warnings.append("window 不支持数据集对象; 请去掉 window 或改用普通对象")
         return PlannedExecution(
             sql="", secured_sql="", route=g.query_mode, dialect=dialect,
             datasource_id=binding.datasource_id,
             resolved_tables=[binding.physical_table],
             guardrail=g, access=binding.access, warnings=warnings)
 
-    # SQL 模板对象: 绑定的是参数化模板而非单表聚合, 走独立编译分支
-    if binding.bind_kind == "sql_template":
-        return _plan_template(query, binding, dialect, warnings)
+    # 数据集对象: 绑定的是参数化预制 SQL 而非单表聚合, 走独立编译分支
+    if binding.bind_kind == "dataset":
+        return _plan_dataset(query, binding, dialect, warnings)
 
     # ① 护栏预检: huge + raw_source 且未开全表扫 -> 必须有 filters 或 LIMIT
     if g.size_class == "huge" and not g.allow_full_scan:
@@ -445,8 +452,9 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
             continue
         expr, agg_type, unit, unsupported = r.resolve_measure(m_rest)
         if unsupported:
+            _eng = (f"/{r.engine}" if r.engine and r.engine != dialect else "")
             warnings.append(
-                f"指标「{m}」未配置 {dialect} 方言表达式(formula_dialects), 已跳过")
+                f"指标「{m}」未配置 {dialect}{_eng} 方言表达式(formula_dialects), 已跳过")
         if expr is None:
             warnings.append(
                 f"无法解析指标「{m}」, 已跳过。本对象可用指标: "
@@ -511,7 +519,7 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
     for o in query.order:
         key = o.by if o.by in col_roles else _alias_of(o.by)
         if key in col_roles:
-            order_parts.append(f"{_quote_ident(key, dialect)} {'DESC' if o.desc else 'ASC'}")
+            order_parts.append(f"{_quote_alias(key, dialect)} {'DESC' if o.desc else 'ASC'}")
         else:
             warnings.append(f"order-by references unknown field: {o.by}")
 
@@ -597,7 +605,7 @@ def _render_sql(
 ) -> str:
     # 别名引用符随方言: MySQL 反引号 / PG 双引号(否则 PG 下 `AS \`x\`` 非法)
     proj = ", ".join(
-        "*" if expr == "*" else f"{expr} AS {_quote_ident(alias, dialect)}"
+        "*" if expr == "*" else f"{expr} AS {_quote_alias(alias, dialect)}"
         for expr, alias in select_items
     )
     parts = [f"SELECT {proj}", f"FROM {table_ref}"]
@@ -647,10 +655,10 @@ def _render_window_sql(
         return None
 
     inner = _render_sql(table_ref, select_items, where_parts, group_by, [], None, dialect)
-    m_q = _quote_ident(target, dialect) if target else ""
-    part_all = [_quote_ident(a, dialect) for a in dim_aliases]
-    part_no_time = [_quote_ident(a, dialect) for a in dim_aliases if a not in time_aliases]
-    t_q = _quote_ident(time_aliases[0], dialect) if time_aliases else ""
+    m_q = _quote_alias(target, dialect) if target else ""
+    part_all = [_quote_alias(a, dialect) for a in dim_aliases]
+    part_no_time = [_quote_alias(a, dialect) for a in dim_aliases if a not in time_aliases]
+    t_q = _quote_alias(time_aliases[0], dialect) if time_aliases else ""
 
     def _over(part: list[str], tail: str = "") -> str:
         seg = []
@@ -669,7 +677,7 @@ def _render_window_sql(
             warnings.append("window.rank 需要 order[] 或至少一个指标用于排序")
             return None
         win_cols.append(
-            f"RANK() {_over(part_all, 'ORDER BY ' + ord_sql)} AS {_quote_ident('rank', dialect)}")
+            f"RANK() {_over(part_all, 'ORDER BY ' + ord_sql)} AS {_quote_alias('rank', dialect)}")
     elif w.type == "rolling":
         n = int((w.params or {}).get("preceding", 2))
         if n < 0:
@@ -680,7 +688,7 @@ def _render_window_sql(
             return None
         win_cols.append(
             f"SUM({m_q}) {_over(part_no_time, f'ORDER BY {t_q} ROWS BETWEEN {n} PRECEDING AND CURRENT ROW')} "
-            f"AS {_quote_ident(target + '_rolling', dialect)}")
+            f"AS {_quote_alias(target + '_rolling', dialect)}")
     elif w.type == "period_compare":
         lag = int((w.params or {}).get("lag", 1))
         if lag < 1:
@@ -691,16 +699,16 @@ def _render_window_sql(
             return None
         over = _over(part_no_time, f"ORDER BY {t_q}")
         win_cols.append(
-            f"LAG({m_q}, {lag}) {over} AS {_quote_ident(target + '_prev', dialect)}")
+            f"LAG({m_q}, {lag}) {over} AS {_quote_alias(target + '_prev', dialect)}")
         win_cols.append(
             f"({m_q} / NULLIF(LAG({m_q}, {lag}) {over}, 0) - 1) "
-            f"AS {_quote_ident(target + '_pct', dialect)}")
+            f"AS {_quote_alias(target + '_pct', dialect)}")
     elif w.type == "share":
         # share 语义: 各分组占总量比例; partition=时间维(同周期内比), 无时间维=全局总量
-        part = [_quote_ident(a, dialect) for a in time_aliases[:1]]
+        part = [_quote_alias(a, dialect) for a in time_aliases[:1]]
         win_cols.append(
             f"{m_q} / NULLIF(SUM({m_q}) {_over(part)}, 0) "
-            f"AS {_quote_ident(target + '_share', dialect)}")
+            f"AS {_quote_alias(target + '_share', dialect)}")
     else:
         warnings.append(f"未知 window.type: {w.type}")
         return None
@@ -772,15 +780,18 @@ class _ColumnResolver:
     只回抛候选(fuzzy_rejected)由调用方确认后重试(宁缺勿错)。
     字典行携带 value_labels(枚举码→业务标签)时, SELECT/GROUP BY 用同一 CASE 表达式,
     WHERE 则支持 label→code 反查(过滤可传业务名也可传码值)。
-    dialect 决定标识符引用与时间函数(MySQL 系 DATE_FORMAT/反引号 vs PG to_char/双引号)。
+    dialect 决定标识符引用与时间函数(MySQL 系 DATE_FORMAT/反引号 vs PG to_char/双引号);
+    engine 决定函数变体取用(见 semantics/dialect.py: 引擎键优先于族键)。
     """
 
     _TIME_TYPES = {"date", "datetime", "timestamp", "time"}
 
     def __init__(self, binding: ResolvedBinding, dialect: str = "mysql",
-                 column_prefix: str = ""):
+                 column_prefix: str = "", engine: str = ""):
         self.binding = binding
         self.dialect = dialect
+        # 引擎级变体键(Doris/SLS 与同族通用写法的函数差异); 缺省按 binding.db_type 推导
+        self.engine = engine or sem_dialect.engine_of(binding.db_type)
         self._prefix = column_prefix   # JOIN 侧表别名: 列引用统一限定; 空=主表不限定
         self._phys: dict[str, dict[str, Any]] | None = None
         self._metrics: dict[str, dict[str, Any]] | None = None
@@ -1149,15 +1160,19 @@ class _ColumnResolver:
         return seen
     
     def _pick_dialect_expr(self, m: dict[str, Any]) -> tuple[str, bool]:
-        """取式优先级: formula_dialects[当前dialect] -> formula_dsl/formula。
-    
-        formula_dialects 含当前 dialect 键时: 值为空/null 表示"显式声明不支持本方言"
-        (unsupported=True); 键不存在则继续回落通用 formula。
+        """取式优先级: formula_dialects[引擎] -> [方言族] -> formula_dsl/formula。
+
+        formula_dialects 命中引擎键或族键时: 值为空/null 表示"显式声明不支持本引擎"
+        (unsupported=True); 两键都不存在则继续回落通用 formula。
+        引擎键优先, 使 {"mysql": null, "doris": "window_funnel(...)"} 只在 Doris 上生效
+        —— 历史缺陷: 早期只认族键, 按引擎注册的 Doris 函数成了永不命中的死键。
         """
-        fd = m.get("formula_dialects") or {}
-        if self.dialect in fd:
-            expr = str(fd.get(self.dialect) or "").strip()
-            return expr, (not expr)
+        expr, unsupported = sem_dialect.pick_variant(
+            m.get("formula_dialects"), self.engine, self.dialect)
+        if unsupported:
+            return "", True
+        if expr:
+            return expr, False
         return (m.get("formula_dsl") or m.get("formula") or "").strip(), False
     
     # ── filter ──────────────────────────────────────────────
@@ -1267,7 +1282,30 @@ class _ColumnResolver:
         return sorted(set(out))
 
 
-# ── SQL 模板编译 (bind_kind='sql_template') ───────────────────────────
+# ── 数据集对象编译 (bind_kind='dataset') ──────────────────────────────
+
+def _load_dataset_row(ref: str) -> Optional[dict[str, Any]]:
+    """按名/按 id 载数据集行（SQL 形态的"可信任预制查询"）。
+
+    数据集是平台内唯一的预制 SQL 载体：人写 SQL 形状（两级聚合/窗口/自关联），
+    参数与输出列由声明约束，编译规则见 `semantics/dataset_compiler.py`。
+    """
+    key = str(ref or "").strip()
+    if not key:
+        return None
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            if key.isdigit():
+                cur.execute("SELECT * FROM adh_datasets WHERE id = %s AND status='active'",
+                            (int(key),))
+            else:
+                cur.execute("SELECT * FROM adh_datasets WHERE name = %s AND status='active'",
+                            (key,))
+            return cur.fetchone()
+    finally:
+        conn.close()
+
 
 def _empty_plan(
     binding: ResolvedBinding, query: SemanticQuery,
@@ -1283,256 +1321,108 @@ def _empty_plan(
     )
 
 
-def _plan_template(
+def _dataset_has_scopes(dataset_id: int) -> bool:
+    """该数据集是否配了行级范围（直读元库，不在 L1 反向依赖 modules/viz）。"""
+    if not dataset_id:
+        return False
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS n FROM adh_dataset_scopes WHERE dataset_id = %s",
+                        (dataset_id,))
+            row = cur.fetchone() or {}
+        return int(row.get("n") or 0) > 0
+    except Exception:  # noqa: BLE001 — 旧库无该表 = 无 scope 可用，不影响主链路
+        return False
+    finally:
+        conn.close()
+
+
+def _plan_dataset(
     query: SemanticQuery, binding: ResolvedBinding, dialect: str, warnings: list[str],
 ) -> PlannedExecution:
-    """模板对象编译: 载模板 -> 参数校验/渲染 -> 包一层 guardrail LIMIT。
+    """数据集对象编译: 载数据集 -> 委托 dataset_compiler 编译(参数/方言正文/输出列聚合)。
 
-    信任边界: 模板 SQL 由建模人员注册(同 adh_metrics.formula 待遇), 参数值则按
-    声明类型严格校验 + 拒绝危险片段, 不接受任何未声明键。
+    数据集是平台内唯一的"可信任预制 SQL"载体: 语义层编译不出的两级聚合/窗口/自关联
+    由数据集正文承担, 参数与输出列由声明约束(见 semantics/dataset_compiler.py)。
+    编译被拒(未声明参数/无本方言正文)一律 fail-loud 返回空计划 + 原因, 不静默换通道。
     """
+    from backend.semantics.dataset_compiler import DatasetCompileError, compile_dataset
+
     g = binding.guardrail
-    if not binding.template_ref:
-        warnings.append("sql_template binding missing template_ref")
+    ref = str(binding.dataset_ref or "").strip()
+    if not ref:
+        warnings.append("dataset binding missing dataset_ref")
+        return _empty_plan(binding, query, dialect, warnings)
+    ds = _load_dataset_row(ref)
+    if not ds:
+        warnings.append(f"数据集 '{ref}' 不存在或已停用")
         return _empty_plan(binding, query, dialect, warnings)
 
-    tpl = _load_template_row(binding.template_ref, warnings)
-    if not tpl:
-        return _empty_plan(binding, query, dialect, warnings)
-    tpl_dialect = str(tpl.get("tpl_dialect") or "generic").lower()
-    if tpl_dialect not in ("generic", dialect):
+    # 数据集行级范围(scope)只在 query_dataset 通道施加（它拿得到身份）；
+    # 语义层绑定不施加 → 必须拒绝而不是静默少一层过滤（护栏 §2 fail-closed）
+    if _dataset_has_scopes(int(ds.get("id") or 0)):
         warnings.append(
-            f"template dialect '{tpl_dialect}' 与数据源方言 '{dialect}' 不匹配, 拒绝执行")
-        return _empty_plan(binding, query, dialect, warnings)
-    sql_text = str(tpl.get("sql_template") or "").strip()
-    if not sql_text:
-        warnings.append(f"template '{binding.template_ref}' 无 SQL 内容")
+            f"数据集 '{ds.get('name') or ref}' 配了行级范围(scope)，不能作为语义层对象绑定使用；"
+            "请改用 query_dataset 取数（会按身份叠加 scope），或先移除该数据集的 scope")
         return _empty_plan(binding, query, dialect, warnings)
 
-    declared = _parse_variables(tpl.get("variables"))
-    names_in_tpl = set(_TPL_PLACEHOLDER_RE.findall(sql_text))
-    known = set(declared) | names_in_tpl
-
-    if query.metrics or query.dimensions:
-        warnings.append("模板对象忽略 metrics/dimensions(结果形状由模板 SQL 决定)")
-    if query.order:
-        warnings.append("模板对象忽略 order")
-    if query.time_window or query.time_range or query.time_start or query.time_end:
-        warnings.append("模板对象忽略 time_window/time_range/time_start/time_end(时间窗请用模板参数传递)")
-
-    params: dict[str, Any] = dict(query.params or {})
-    # filters 语法糖: dim 与模板参数同名且 params 未显式给出时, 折算为参数值
+    declared = parse_variables(ds.get("variables"))
+    known = declared_names(str(ds.get("sql_query") or ""), declared) | \
+        {n for b in (parse_json_obj(ds.get("sql_bodies"), {}) or {}).values()
+           for n in placeholder_names(str(b or ""))}
+    args: dict[str, Any] = dict(query.params or {})
+    # filters 语法糖: 与参数同名的 filter 折算为参数值(正文里没这个列, 不能当谓词下推)
     for f in query.filters:
-        if f.dim in known and f.dim not in params:
-            params[f.dim] = (f.values
-                             if f.op in ("in", "nin", "between") and f.values
-                             else f.value)
-    for k in params:
-        if k not in known:
-            warnings.append(
-                f"params 键 '{k}' 未在模板声明(可用参数: {sorted(names_in_tpl) or '无'})")
-            return _empty_plan(binding, query, dialect, warnings)
+        if f.dim in known and f.dim not in args:
+            args[f.dim] = (f.values
+                           if f.op in ("in", "nin", "between") and f.values
+                           else f.value)
+    if query.time_window or query.time_range or query.time_start or query.time_end:
+        warnings.append(
+            "数据集对象忽略 time_window/time_range/time_start/time_end: "
+            "时间窗请用 params 传数据集声明的时间参数(否则口径与正文里写死的窗口不一致)")
 
-    errors: list[str] = []
-
-    def _sub(m: "re.Match[str]") -> str:
-        name = m.group(1)
-        decl = declared.get(name) or {}
-        if name in params:
-            val = params[name]
-        elif "default" in decl:
-            val = decl["default"]
-        else:
-            errors.append(f"缺少模板参数: {name}")
-            return m.group(0)
-        out, err = _render_tpl_value(name, val, decl)
-        if err:
-            errors.append(err)
-            return m.group(0)
-        return out
-
-    rendered = _TPL_PLACEHOLDER_RE.sub(_sub, sql_text)
-    if errors:
-        warnings.extend(errors)
+    try:
+        compiled = compile_dataset(
+            ds,
+            args=args,
+            dimensions=query.dimensions,
+            measures=query.metrics,
+            filters=[{"field": f.dim, "op": f.op, "value": f.value, "values": f.values}
+                     for f in query.filters],
+            order=[{"by": o.by, "desc": o.desc} for o in query.order],
+            limit=query.limit if query.limit is not None else (g.max_rows or None),
+            time_grain=query.time_grain,
+            db_type=binding.db_type,
+        )
+    except DatasetCompileError as e:
+        warnings.append(str(e))
         return _empty_plan(binding, query, dialect, warnings)
-    if query.params and not names_in_tpl:
-        warnings.append("模板无任何 ${} 占位符, params 未生效")
 
-    # LIMIT 沿用既有 guardrail 钳制逻辑(⑤)
-    limit_val = query.limit
-    if limit_val is None:
-        if g.force_limit:
-            limit_val = g.max_rows or _DEFAULT_LIMIT
-            warnings.append(f"guardrail: force_limit applied ({limit_val})")
-        elif g.max_rows:
-            limit_val = g.max_rows
-    elif g.max_rows and limit_val > g.max_rows:
-        limit_val = g.max_rows
-        warnings.append(f"guardrail: limit clamped to max_rows ({limit_val})")
-
-    wrapped = f"SELECT * FROM (\n{rendered}\n) tpl_result"
-    if limit_val is not None:
-        wrapped += f"\nLIMIT {int(limit_val)}"
+    warnings.extend(compiled.warnings)
+    if g.force_limit and query.limit is None:
+        warnings.append(f"guardrail: force_limit applied ({g.max_rows or _DEFAULT_LIMIT})")
 
     provenance = _provenance(binding, query)
-    provenance["template_ref"] = binding.template_ref
-    provenance["template_name"] = tpl.get("template_name") or ""
+    provenance["dataset_ref"] = str(ds.get("name") or ref)
+    provenance["dataset_id"] = int(ds.get("id") or 0)
+    provenance["dataset_certified"] = bool(ds.get("certified") or 0)
+    if compiled.resolution_sources:
+        provenance["resolution_sources"] = compiled.resolution_sources
+    if compiled.unresolved:
+        provenance["unresolved_terms"] = compiled.unresolved
     return PlannedExecution(
-        sql=wrapped,
-        secured_sql=wrapped,
+        sql=compiled.sql,
+        secured_sql=compiled.sql,
         dialect=dialect,
         route=g.query_mode,
         datasource_id=binding.datasource_id,
-        resolved_tables=[],
+        resolved_tables=list(compiled.resolved_tables),
         guardrail=g, access=binding.access,
         provenance=provenance,
         warnings=warnings,
     )
-
-
-def _load_template_row(template_ref: str, warnings: list[str]) -> Optional[dict[str, Any]]:
-    conn = get_metadata_conn()
-    try:
-        with conn.cursor() as cur:
-            try:
-                cur.execute(
-                    "SELECT template_id, template_name, sql_template, variables, "
-                    "       dialect AS tpl_dialect "
-                    "FROM adh_sql_templates WHERE template_id = %s AND is_active = 1 LIMIT 1",
-                    (template_ref,),
-                )
-            except Exception:
-                # dialect 列为迁移新增; 旧库上视同为 generic(各方言均可用, 由建模人员保证)
-                cur.execute(
-                    "SELECT template_id, template_name, sql_template, variables, "
-                    "       'generic' AS tpl_dialect "
-                    "FROM adh_sql_templates WHERE template_id = %s AND is_active = 1 LIMIT 1",
-                    (template_ref,),
-                )
-            row = cur.fetchone()
-    finally:
-        conn.close()
-    if not row:
-        warnings.append(f"SQL 模板 '{template_ref}' 不存在或未启用")
-    return row
-
-
-def _parse_variables(raw: Any) -> dict[str, dict[str, Any]]:
-    """adh_sql_templates.variables -> {name: decl}。解析失败视为"无声明"(返回 {})。"""
-    v = raw
-    if isinstance(v, bytes):
-        try:
-            v = v.decode()
-        except Exception:
-            return {}
-    if isinstance(v, str):
-        try:
-            v = json.loads(v)
-        except (ValueError, TypeError):
-            return {}
-    out: dict[str, dict[str, Any]] = {}
-    if isinstance(v, list):
-        for item in v:
-            if isinstance(item, dict) and item.get("name"):
-                out[str(item["name"])] = item
-    elif isinstance(v, dict):
-        for k, item in v.items():
-            if isinstance(item, dict):
-                out[str(k)] = {**item, "name": k}
-            else:
-                out[str(k)] = {"name": k, "type": str(item)}
-    return out
-
-
-def _render_tpl_value(
-    name: str, val: Any, decl: dict[str, Any],
-) -> tuple[str, Optional[str]]:
-    """按声明类型渲染模板参数; 返回 (SQL 片段, 错误)。list 渲染为逗号序列(供 IN ${x})。"""
-    vtype = str(decl.get("type") or "").lower()
-    if isinstance(val, (list, tuple)):
-        if not val:
-            return "", f"模板参数 '{name}' 不接受空列表"
-        # 元素类型: 优先声明的 item_type; list 本身不是元素类型, 不能直接下传
-        declared_item = str(decl.get("item_type") or "").lower()
-        if declared_item:
-            item_type = declared_item
-        elif vtype and vtype != "list":
-            item_type = vtype
-        else:
-            item_type = "string"
-        parts: list[str] = []
-        for it in val:
-            s, err = _render_tpl_scalar(name, it, {**decl, "type": item_type})
-            if err:
-                return "", err
-            parts.append(s)
-        return ", ".join(parts), None
-    return _render_tpl_scalar(name, val, {**decl, "type": vtype if vtype != "list" else "string"})
-
-
-def _render_tpl_scalar(
-    name: str, val: Any, decl: dict[str, Any],
-) -> tuple[str, Optional[str]]:
-    vtype = str(decl.get("type") or "string").lower()
-
-    if vtype in ("int", "integer", "long", "bigint"):
-        if isinstance(val, bool):
-            return "", f"模板参数 '{name}' 需为整数"
-        s = str(val).strip()
-        if not re.match(r"^-?\d+$", s):
-            return "", f"模板参数 '{name}' 需为整数, 实得 {val!r}"
-        return s, None
-    if vtype in ("float", "number", "decimal", "double"):
-        if isinstance(val, bool):
-            return "", f"模板参数 '{name}' 需为数值"
-        try:
-            f = float(str(val).strip())
-        except ValueError:
-            return "", f"模板参数 '{name}' 需为数值, 实得 {val!r}"
-        if f != f or f in (float("inf"), float("-inf")):
-            return "", f"模板参数 '{name}' 需为有限数值"
-        return repr(f), None
-    if vtype in ("bool", "boolean"):
-        if isinstance(val, bool):
-            return ("1" if val else "0"), None
-        if str(val).strip().lower() in ("true", "1"):
-            return "1", None
-        if str(val).strip().lower() in ("false", "0"):
-            return "0", None
-        return "", f"模板参数 '{name}' 需为布尔值, 实得 {val!r}"
-    if vtype == "date":
-        s = str(val).strip()
-        if not _DATE_RE.match(s):
-            return "", f"模板参数 '{name}' 需为日期 YYYY-MM-DD, 实得 {val!r}"
-        return _lit(s), None
-    if vtype in ("datetime", "timestamp"):
-        s = str(val).strip().replace("T", " ")
-        if not _DATETIME_RE.match(str(val).strip()) and not _DATETIME_RE.match(s):
-            return "", f"模板参数 '{name}' 需为日期时间, 实得 {val!r}"
-        return _lit(s), None
-    if vtype == "enum":
-        allowed = [str(x) for x in (decl.get("values") or [])]
-        if allowed and str(val) in allowed:
-            return _lit(str(val)), None
-        return "", f"模板参数 '{name}' 必须为 {allowed} 之一"
-    # string / 未知类型: 严格拒绝危险片段后转义
-    s = str(val)
-    for frag in _FORBIDDEN_VALUE_FRAG:
-        if frag in s:
-            return "", f"模板参数 '{name}' 含非法片段 '{frag}'"
-    return _lit(s), None
-
-
-def _lit(v: Any) -> str:
-    """SQL 字面量渲染(双方言一致: 单引号翻倍转义)。"""
-    if v is None:
-        return "NULL"
-    if isinstance(v, bool):
-        return "1" if v else "0"
-    if isinstance(v, (int, float)):
-        return str(v)
-    s = str(v).replace("'", "''")
-    return f"'{s}'"
 
 
 def _render_condition(lhs: str, op: str, value: Any, values: Optional[list[Any]]) -> Optional[str]:

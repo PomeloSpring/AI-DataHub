@@ -425,6 +425,12 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
                   <UserCircle className="h-4 w-4 mr-2" />
                   个人设置
                 </DropdownMenuItem>
+                {/* 记忆入口: AI 在对话里说"已记住"后, 用户必须能在**同一场景**核对/删除,
+                    而不是只能去系统配置页或手输 URL */}
+                <DropdownMenuItem onClick={() => navigate(module === 'workspace' ? `/ws/${workspaceId}/memory` : `/${module}/${workspaceId}/memory`)}>
+                  <Brain className="h-4 w-4 mr-2" />
+                  我的记忆
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => { logout(); navigate('/login'); }}>
                   <LogOut className="h-4 w-4 mr-2" />
                   退出登录

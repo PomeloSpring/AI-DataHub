@@ -8,8 +8,8 @@
   意图) 以便前端渲染/刷新复用既有治理通道; 数据源对 LLM 是黑盒(结果不回显 SQL/数据源)。
 - 传统 BI 手填 SQL 模板走 dataviz REST(图表配置), 不经本工具; 两者取数最终都过护城河。
 
-字模库(adh_vis_components)是纯配置(背景/卡片/图表样式/布局/配色/SQL模板), 元数据级安全;
-save/list/get 不返回数据行, 且对 LLM 隐藏 sql_template 的裸 SQL。
+字模库(adh_vis_components)是纯配置(背景/卡片/图表样式/布局/配色), 元数据级安全;
+save/list/get 不返回数据行。预制 SQL 属于数据集职责（已治理的查询资产），不在字模库。
 """
 
 import asyncio
@@ -471,7 +471,7 @@ async def update_data_screen_chart(args: dict) -> dict:
     })
 
 
-# ── 字模库取用工具(元数据级, 不返回数据行; 对 LLM 隐藏 sql_template 裸 SQL) ──
+# ── 字模库取用工具（元数据级，不返回数据行）──
 
 async def list_vis_components(args: dict) -> dict:
     """列出可视化字模(按类别过滤)。返回名称/类别/编码/说明, 不含数据行/裸 SQL。"""
@@ -489,7 +489,7 @@ async def list_vis_components(args: dict) -> dict:
 
 
 async def get_vis_component(args: dict) -> dict:
-    """获取单个字模详情(配置级); sql_template 仅回参数定义, 不回裸 SQL。"""
+    """获取单个字模详情（纯视觉配置级）。"""
     args = args or {}
     ref = args.get("component_id") or args.get("code")
     if not ref:
@@ -503,8 +503,6 @@ async def get_vis_component(args: dict) -> dict:
         comp = vis_library_service.get_component_by_code(str(ref))
     if not comp:
         return _error("字模不存在")
-    qt = comp.get("query_template") or {}
-    comp["query_template"] = {"params": qt.get("params", []), "bindTable": qt.get("bindTable", False)} if qt else None
     return _text(comp)
 
 
@@ -574,13 +572,13 @@ TOOL_SPECS = [
     {
         "name": "list_vis_components",
         "description": "List reusable visualization building blocks (vis library / 字模): chart styles, backgrounds, KPI cards, layouts, decorations, color themes. Metadata only.",
-        "schema": {"category": "Optional filter: chart_style|screen_background|kpi_card|layout_template|decoration_frame|color_theme|sql_template"},
+        "schema": {"category": "Optional filter: chart_style|screen_background|kpi_card|layout_template|decoration_frame|color_theme"},
         "handler": list_vis_components,
         "annotations": {"readOnlyHint": True},
     },
     {
         "name": "get_vis_component",
-        "description": "Get a single vis-library block by id or code (config level; sql_template shows param definitions only, not raw SQL).",
+        "description": "Get a single vis-library block by id or code (visual config level only).",
         "schema": {"component_id": "Block id", "code": "Or block code"},
         "handler": get_vis_component,
         "annotations": {"readOnlyHint": True},

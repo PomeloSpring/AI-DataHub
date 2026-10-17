@@ -455,16 +455,27 @@ async def shortest_path(source_iri: str, target_iri: str,
 async def sync_graph(
     datasource_id: int = Query(0, ge=0),
     system_scope: bool = Query(False, description="系统域(AS-BOT): 重建系统图 ds:-1(仅系统元数据与系统本体模型)"),
+    kind: str = Query("", description="本体域 source/business/system；决定合并哪一类 active 模型入图"),
 ):
     """从元数据重建知识图谱（clear + rebuild）。
 
     一次性把表/字段/业务术语/指标/JOIN 关系/SQL 模板 materialize 到 Oxigraph，
     供 GraphRAG 检索路线通过 SPARQL 接地。返回构建统计。
 
+    kind 必须显式传：`_merge_ontology_models` 在 kind 为空时按 datasource_id 推断，
+    而 ds=0 推不出任何 kind → 会把**全部 active 模型**（业务+源+系统）塑进 ds:0，
+    污染业务聚合图（徽章会变成“滞后 33/17”）。调用方（关系图谱页）按当前模型的
+    kind 传值，与写入侧 graph_target_for_model 同一口径。
+
     并发保护：重建按数据源命名图 clear+write，两个重建同时跑会互相擦除。
     锁不可用(Redis 故障)时**直接报错而不裸跑** —— 宁可不成图，不可把已有图清坏。
     """
     ds = _effective_ds(datasource_id, system_scope)
+    kind = (kind or "").strip()
+    if kind not in ("", "source", "business", "system"):
+        raise HTTPException(status_code=422, detail="kind 只能是 source / business / system 或留空")
+    if system_scope and not kind:
+        kind = "system"          # 旧调用只传 system_scope：补上域，不再走“全部模型”分支
     try:
         _client, lock = _acquire_sync_lock(ds)
     except redis.exceptions.RedisError as e:
@@ -482,7 +493,7 @@ async def sync_graph(
         from backend.modules.semhub.graph.graph_service import GraphService
         service = GraphService()
         # sync_from_metadata 是同步阻塞 IO，下放到线程池，避免长时间占住事件循环使整个图服务卡死
-        return await run_in_threadpool(service.sync_from_metadata, ds)
+        return await run_in_threadpool(service.sync_from_metadata, ds, kind)
     except Exception as e:
         logger.error("Graph sync failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

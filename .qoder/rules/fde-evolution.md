@@ -1,4 +1,4 @@
----
+<!-- ---
 trigger: always_on
 description: FDE 迭代方法论（Forward Deployed Engineer）。本项目按 Palantir FDE 方式演进：eval 是本体的 CI、一切变更走 AS-BOT 直执行回路（菜单与功能权限码把关）、失败数据驱动建模 backlog；新增/调整 Chat、检索、本体能力时务必遵循。
 ---
@@ -43,4 +43,4 @@ description: FDE 迭代方法论（Forward Deployed Engineer）。本项目按 P
 - eval：`venv/bin/python -m backend.eval.runner`（`--suite compile|retrieval|llm` 选集，`--json` 供 CI，`--no-persist` 只跑不落库）
 - 建模回归：见 `ontology-modeling.md` §8
 - 护城河三件套：`tests/test_data_moat_enforcement.py` `tests/test_permission_enforcer.py` `tests/test_permission_e2e.py`
-- 代码重启方生效：**web 单进程**（`backend/app/main.py`，绑 8001-8007/8012 全部契约端口，datamind/datacatalog 等旧分服务口径已退役）+ celery-worker/beat（uvicorn 无 --reload）
+- 代码重启方生效：**web 单进程**（`backend/app/main.py`，绑 8001-8007/8012 全部契约端口，datamind/datacatalog 等旧分服务口径已退役）+ celery-worker/beat（uvicorn 无 --reload） -->

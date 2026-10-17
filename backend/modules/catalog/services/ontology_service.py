@@ -364,6 +364,35 @@ def validate_doc_formats(doc: dict) -> list[str]:
     return errors
 
 
+# 对象命名在 canonical 里是 {key, display_name, aliases[]}（建模规范 §2），但历史 doc、
+# LLM 直存与旧导入链常写成 object_key / name。下游只认 canonical 名，不认就会静默失真
+# （实测：源本体 4 个对象在图谱上只剩 1 个 `Unknown` 类）。
+_OBJECT_FIELD_ALIASES = (("key", ("object_key", "id", "class")),
+                        ("display_name", ("name", "label")))
+
+
+def normalize_object_field_aliases(doc: dict) -> list:
+    """把对象上的旧字段名归一到 canonical（key / display_name），返回改动清单。
+
+    仅在 canonical 字段缺失或为空时才从别名取值（不覆盖已有值），所以幂等：
+    对已经规范的 doc 是 no-op。归一发生在写闸之前，让写闸校验的是归一后的形状。
+    """
+    touched = []
+    for o in doc.get("objects") or []:
+        if not isinstance(o, dict):
+            continue
+        for canonical, aliases in _OBJECT_FIELD_ALIASES:
+            if str(o.get(canonical) or "").strip():
+                continue
+            for alias in aliases:
+                val = o.get(alias)
+                if isinstance(val, str) and val.strip():
+                    o[canonical] = val.strip()
+                    touched.append(f"{canonical}<-{alias}")
+                    break
+    return touched
+
+
 def _infer_agg(formula: str) -> str:
     m = re.match(r"(?is)^\s*(SUM|AVG|COUNT|MIN|MAX)\s*\(", formula or "")
     return m.group(1).upper() if m else "CUSTOM"
@@ -908,7 +937,7 @@ def _cert_label(entry: dict = None) -> str:
     return "[已认证]" if (entry or {}).get("certified") else "[草稿]"
 
 
-def _cloud_object_md(obj: dict, template_vars_fn=None, dict_metrics: dict = None) -> str:
+def _cloud_object_md(obj: dict, dataset_vars_fn=None, dict_metrics: dict = None) -> str:
     """单个对象的对外 MD 段(白名单渲染, 不含物理标识)。"""
     lines = [f"## 业务对象: {obj.get('display_name', obj.get('key', ''))} ({obj.get('key', '')})"]
     aliases = obj.get("aliases") or []
@@ -941,19 +970,19 @@ def _cloud_object_md(obj: dict, template_vars_fn=None, dict_metrics: dict = None
                 lines.append(seg)
         lines.append("- 本对象不直接提供数据；请以目标源本体的实时目录（get_metrics）为准解析名称")
 
-    # 逻辑执行视图: 只暴露 bind_kind / query_mode / 模板引用与其参数声明, 不暴露物理表
+    # 逻辑执行视图: 只暴露 bind_kind / query_mode / 数据集名与其参数声明, 不暴露物理表
     binding = obj.get("execution_binding") or {}
     logical: list[str] = []
     if binding.get("bind_kind"):
         logical.append(f"执行方式={binding['bind_kind']}")
     if binding.get("query_mode"):
         logical.append(f"路由={binding['query_mode']}")
-    tpl_ref = binding.get("template_ref") or ""
+    ds_ref = binding.get("dataset_ref") or ""
     if logical:
         lines.append("执行(逻辑): " + " | ".join(logical))
-    if tpl_ref:
-        seg = f"SQL 模板: {tpl_ref}"
-        decl = template_vars_fn(tpl_ref) if template_vars_fn else None
+    if ds_ref:
+        seg = f"查询数据集: {ds_ref}"
+        decl = dataset_vars_fn(ds_ref) if dataset_vars_fn else None
         if decl:
             params = ", ".join(
                 f"{name}({(spec or {}).get('type', 'any')})" for name, spec in decl.items()
@@ -1073,7 +1102,33 @@ def _cloud_object_md(obj: dict, template_vars_fn=None, dict_metrics: dict = None
     return "\n".join(lines)
 
 
-def to_cloud_md(doc: dict, template_vars_fn=None, dict_metrics: dict = None) -> str:
+def _cloud_path_md(path) -> str:
+    """行为路径的对外渲染：只出业务名步骤序列。
+
+    白名单字段：title / 步骤业务名 / 窗口 / 实体与时间维度的**业务名**。
+    dataset_ref、事件谓词、物理列一律不渲染（护栏 §7：上云文档只能出人话）。
+    """
+    if not isinstance(path, dict):
+        return ""
+    steps = [str(s.get("name") or s.get("key") or "").strip()
+             for s in (path.get("steps") or []) if isinstance(s, dict)]
+    steps = [s for s in steps if s]
+    if not steps:
+        return ""
+    seg = "  · 关键路径: " + " → ".join(steps)
+    extras = []
+    win = str(path.get("window_sec") or "").strip()
+    if win.isdigit() and int(win) > 0:
+        _w, _u = (int(win) // 60, "分钟") if int(win) >= 60 else (int(win), "秒")
+        extras.append(f"窗口 {_w} {_u}")
+    if str(path.get("entity") or "").strip():
+        extras.append(f"按「{str(path['entity']).strip()}」判定")
+    if extras:
+        seg += f"（{'，'.join(extras)}）"
+    return seg
+
+
+def to_cloud_md(doc: dict, dataset_vars_fn=None, dict_metrics: dict = None) -> str:
     """把 canonical 本体 doc 渲染为可安全上云的业务语义文档(白名单)。
 
     dict_metrics: {object_key: [{name, description, certified, owner}]}，
@@ -1089,7 +1144,7 @@ def to_cloud_md(doc: dict, template_vars_fn=None, dict_metrics: dict = None) -> 
     parts.append(_CLOUD_STRIP_NOTICE)
     parts.append("")
     for obj in doc.get("objects", []):
-        parts.append(_cloud_object_md(obj, template_vars_fn, dict_metrics))
+        parts.append(_cloud_object_md(obj, dataset_vars_fn, dict_metrics))
         parts.append("")
     # ── M3 规则：只出 statement（人话），enforcement 不上云（可能含过滤表达式/物理列）──
     rules = doc.get("rules") or []
@@ -1111,6 +1166,10 @@ def to_cloud_md(doc: dict, template_vars_fn=None, dict_metrics: dict = None) -> 
             if s.get("goal"):
                 seg += f"：{s['goal']}"
             parts.append(seg)
+            # 行为路径：只渲染业务名步骤序列（dataset_ref/谓词/物理列一律不上云）
+            seg = _cloud_path_md(s.get("path"))
+            if seg:
+                parts.append(seg)
             sroute = s.get("route") or {}
             for e in (sroute.get("sources") or []):
                 e = e or {}
@@ -1459,6 +1518,13 @@ def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
         raise ValueError(f"JSON 解析失败: {e}")
     if not isinstance(doc.get("objects"), list) or not doc["objects"]:
         raise ValueError("JSON 必须包含非空 objects 数组")
+
+    # 字段名归一（防旧字段名漂移）：历史 doc / LLM 直存常写 object_key / name，
+    # 不归一会让图谱类名变成 Unknown、字典 bound_object_key 找不到对象。
+    renamed = normalize_object_field_aliases(doc)
+    if renamed:
+        logger.info("[ontology] 模型 %s 保存前对象字段名归一: %s",
+                    model_id, sorted(set(renamed)))
 
     # 迁移后写闸（fail-loud）：metrics 仅名字字符串、enum 仅 {code: label} 对象
     fmt_errors = validate_doc_formats(doc)
@@ -1839,7 +1905,7 @@ def _backfill_execution_binding(model_id: int) -> int:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT object_key, product_ref, physical_table, column_map, bind_kind, "
-                "query_mode, sync_state, template_ref FROM adh_ontology_bindings "
+                "query_mode, sync_state, dataset_ref FROM adh_ontology_bindings "
                 "WHERE model_id = %s AND status = 'active'", (model_id,))
             rows = cur.fetchall() or []
         agg: dict[str, dict] = {}
@@ -1858,7 +1924,7 @@ def _backfill_execution_binding(model_id: int) -> int:
                 "bind_kind": str(r.get("bind_kind") or ""),
                 "query_mode": str(r.get("query_mode") or ""),
                 "sync_state": str(r.get("sync_state") or ""),
-                "template_ref": str(r.get("template_ref") or ""),
+                "dataset_ref": str(r.get("dataset_ref") or ""),
             }
             if key not in agg or (not agg[key].get("product_ref") and eb["product_ref"]):
                 agg[key] = eb
@@ -2127,11 +2193,82 @@ def validate_scenarios(doc: dict) -> list:
     return issues
 
 
+def validate_paths(doc: dict) -> list:
+    """行为路径（scenarios[].path）结构校验：路径是"有序步骤口径"，不是关联关系。
+
+    语义层只能编译单层聚合，漏斗/路径的"按实体判序 → 再去重计数"靠模板对象承载；
+    本校验保证路径声明本身可确定解析（步序连续、实体/时间可对齐），否则宁拒勿猜。
+    """
+    issues: list = []
+    seen: set = set()
+    for s in (doc.get("scenarios") or []):
+        path = s.get("path")
+        if path is None:
+            continue
+        skey = str(s.get("key") or "").strip()
+        if not isinstance(path, dict):
+            issues.append({"category": "path", "severity": "error", "object": skey,
+                           "message": f"场景 {skey!r} 的 path 不是对象结构"
+                                      "（应为 {entity, event_time, window_sec, steps[]}）"})
+            continue
+        pkey = str(path.get("key") or skey).strip()
+        if not pkey:
+            issues.append({"category": "path", "severity": "error", "object": skey,
+                           "message": "路径缺 key（且所在场景无 key 可推导）"})
+            continue
+        if pkey in seen:
+            issues.append({"category": "path", "severity": "error", "object": skey,
+                           "message": f"路径 key 重复: {pkey!r}（重复会使检索命中歧义）"})
+        seen.add(pkey)
+        for fld in ("entity", "event_time"):
+            val = path.get(fld)
+            if val is not None and not str(val).strip():
+                issues.append({"category": "path", "severity": "error", "object": pkey,
+                               "message": f"路径 {pkey!r} 的 {fld} 为空（要么不写，要么给业务名）"})
+        win = path.get("window_sec")
+        if win is not None:
+            try:
+                if int(win) <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                issues.append({"category": "path", "severity": "error", "object": pkey,
+                               "message": f"路径 {pkey!r} 的 window_sec={win!r} 需为正整数（秒）"})
+        steps = path.get("steps") or []
+        if not isinstance(steps, list) or not steps:
+            issues.append({"category": "path", "severity": "error", "object": pkey,
+                           "message": f"路径 {pkey!r} 缺 steps（至少 2 步才能构成转化路径）"})
+            continue
+        orders: list = []
+        for i, st in enumerate(steps, start=1):
+            if not isinstance(st, dict):
+                issues.append({"category": "path", "severity": "error", "object": pkey,
+                               "message": f"路径 {pkey!r} 第 {i} 步不是对象结构"})
+                continue
+            if not str(st.get("name") or st.get("key") or "").strip():
+                issues.append({"category": "path", "severity": "error", "object": pkey,
+                               "message": f"路径 {pkey!r} 第 {i} 步缺业务名（对用户只能展示业务名）"})
+            if not str(st.get("event") or "").strip():
+                issues.append({"category": "path", "severity": "warn", "object": pkey,
+                               "message": f"路径 {pkey!r} 第 {i} 步未声明 event（该步靠什么事件判定），"
+                                          "漏斗口径易歧义"})
+            raw_order = st.get("order")
+            try:
+                orders.append(int(raw_order if raw_order is not None else i))
+            except (TypeError, ValueError):
+                issues.append({"category": "path", "severity": "error", "object": pkey,
+                               "message": f"路径 {pkey!r} 第 {i} 步 order={raw_order!r} 非整数"})
+        if orders and orders != list(range(1, len(orders) + 1)):
+            issues.append({"category": "path", "severity": "error", "object": pkey,
+                           "message": f"路径 {pkey!r} 步序必须从 1 连续不重复（实得 {orders}），"
+                                      "否则层间转化率无法确定归属"})
+    return issues
+
+
 def find_m234_issues(doc: dict) -> list:
-    """M2/M3/M4 建模位全部校验（行为/规则/场景），供 quality/save_draft/activate 共用。
+    """M2/M3/M4 建模位全部校验（行为/规则/场景/路径），供 quality/save_draft/activate 共用。
 
     旧模型无这三层字段时返回空——存量零影响。"""
-    return validate_actions(doc) + validate_rules(doc) + validate_scenarios(doc)
+    return validate_actions(doc) + validate_rules(doc) + validate_scenarios(doc) + validate_paths(doc)
 
 
 def _active_source_ontology_index() -> dict:
@@ -2310,6 +2447,9 @@ def activate(model_id: int) -> dict:
     objects = doc.get("objects") or []
     if not objects:
         raise ValueError("模型无对象，无法激活")
+
+    # 存量旧 doc 可能从未被再保存：激活前同样先归一字段名（幂等），再走写闸校验。
+    normalize_object_field_aliases(doc)
 
     # 迁移后写闸（fail-loud）：metrics 仅名字字符串、enum 仅 {code: label} 对象
     fmt_errors = validate_doc_formats(doc)

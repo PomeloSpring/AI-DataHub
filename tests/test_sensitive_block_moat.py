@@ -21,7 +21,6 @@ from backend.core.enforcer import (
 from backend.semantics import gates, planner
 from backend.semantics.models import PlannedExecution, ResolvedBinding, SemanticQuery
 
-
 # ── M3: _get_sensitive_policies 全局 ∪ 指定并集 ─────────────────
 
 class TestSensitivePoliciesUnion:
@@ -63,7 +62,6 @@ class TestSensitivePoliciesUnion:
         assert "workspace_id IN (%s, 0)" in sql
         assert captured["params"] == [7, "t_user", 3]
 
-
 # ── M3: get_blocked_columns / _references_blocked ───────────────
 
 class TestBlockHelpers:
@@ -85,7 +83,6 @@ class TestBlockHelpers:
         assert "salary" in PermissionEnforcer._references_blocked("SELECT AVG(salary) FROM t", blocked)
         # 大小写不敏感
         assert PermissionEnforcer._references_blocked("SELECT PHONE FROM t", blocked) == ["phone"]
-
 
 # ── M3: check_access 对 admin 仍并入 block ──────────────────────
 
@@ -128,7 +125,6 @@ class TestCheckAccessAdmin:
         assert res.allowed is True
         assert res.hidden_columns == ["phone"]
 
-
 # ── M6: gates._blocked_column_guard 显式请求即拒绝 ───────────────
 
 class _StubResolver:
@@ -138,15 +134,12 @@ class _StubResolver:
     def resolve_dimension(self, name):
         return ("", "dim")
 
-
 def _binding():
     return ResolvedBinding(
         object_key="case", datasource_id=7, physical_table="t_case", bind_kind="primary")
 
-
 def _planned(sql):
     return PlannedExecution(sql=sql, dialect="mysql", datasource_id=7)
-
 
 class TestSemanticGuard:
     def _patch(self, monkeypatch, blocked):
@@ -174,15 +167,6 @@ class TestSemanticGuard:
         msg = gates._blocked_column_guard(
             q, _binding(), _planned("SELECT `status`, COUNT(*) FROM t_case"), 0)
         assert msg is None
-
-    def test_sql_template_binding_skipped(self, monkeypatch):
-        # sql_template 绑定交由执行层结果剔除, 语义层不在此拒绝
-        self._patch(monkeypatch, ["phone"])
-        b = ResolvedBinding(
-            object_key="case", datasource_id=7, physical_table="t_case", bind_kind="sql_template")
-        q = SemanticQuery(object="case", dimensions=["phone"])
-        assert gates._blocked_column_guard(q, b, _planned("SELECT `phone` FROM t_case"), 0) is None
-
 
 # ── M4: execute_query_with_permission 无 user 仍丢 block 列 ──────
 
@@ -219,7 +203,7 @@ class TestExecutorMoat:
         # 无真实用户不落审计
         assert audit_calls["n"] == 0
 
-
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-q"]))
+

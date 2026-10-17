@@ -251,9 +251,14 @@ async def generate_ontology_draft(args):
     except (ValueError, PermissionError) as e:
         return _text({"error": str(e)}, is_error=True)
 
+    # 辅助生成的知识库：服务端建任务时已校验并写入 task_binding，这里只负责透传检索范围。
+    # kb_ids 不进 LLM 视野（护栏 §7），也不接受工具入参覆盖。
+    binding = (getattr(ctx, "extra", None) or {}).get("task_binding") or {}
+    kb_ids = [int(x) for x in (binding.get("kb_ids") or []) if str(x).strip().isdigit()]
+
     def _run():
         from backend.modules.catalog.services import ontology_service
-        return ontology_service.build_generation_batches(target)
+        return ontology_service.build_generation_batches(target, kb_ids)
 
     try:
         batches = await asyncio.to_thread(_run)
@@ -444,6 +449,153 @@ def _assert_system_model(model_id: int) -> None:
             f"是{kind or '未分类'}本体；业务侧建模属用户在业务工作空间的操作，不经本通道")
 
 
+# 指标/维度字典写工具（权限码 ontology:save 把关，直执行）
+#
+# 字典是指标口径的唯一权威（建模规范 §3），与本体 doc 是两个写入对象：
+#   * 本体写工具受“仅系统本体”域约束（_assert_system_model）；
+#   * 字典写工具不受该约束，但 bound_object_key 必须指向当前生效对象（服层
+#     _require_object_keys fail-closed），悬空即拒；
+#   * 只落库 + 审计，图谱/上云级联由用户在建模页显式触发（受 graph:manage/kb:manage）。
+
+def _dict_payload(args: dict, ctx) -> dict:
+    """字典行公共字段；归属与审计字段一律服务端注入，不接受 LLM 传值。"""
+    aliases = args.get("aliases")
+    if isinstance(aliases, str):
+        try:
+            aliases = json.loads(aliases)
+        except ValueError:
+            aliases = [s.strip() for s in aliases.split(",") if s.strip()]
+    return {
+        "display_name": str(args.get("display_name") or "").strip(),
+        "bound_object_key": str(args.get("bound_object_key") or "").strip(),
+        "description": str(args.get("description") or "").strip(),
+        "aliases": aliases if isinstance(aliases, list) else [],
+        # 字典行是跨数据源口径：datasource_id 恒为 0，物理归属由 bound_object_key 决定
+        "datasource_id": 0,
+        "workspace_id": int(getattr(ctx, "workspace_id", 0) or 0),
+        "owner": str(getattr(ctx, "username", "") or ""),   # 审计：谁写的，服务端注入
+    }
+
+
+def _dict_row(table: str, row_id: int) -> dict:
+    """回读落库结果（只取业务字段），用于把“是否已绑到单一主表”显式告知调用方。"""
+    from backend.common.db.metadata_db import get_metadata_conn
+
+    cols = ("name, name_en, target_table, target_column, agg_type, bound_object_key"
+            if table == "adh_metrics" else
+            "name, name_en, target_table, target_column, category, bound_object_key")
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT {cols} FROM {table} WHERE id = %s", (int(row_id),))
+            return dict(cur.fetchone() or {})
+    finally:
+        conn.close()
+
+
+async def save_metric(args):
+    """创建/更新指标字典行（adh_metrics）—— 有 id 则更新，无 id 则创建。"""
+    from backend.modules.mind.execution.sdk_tools.context import get_execution_context
+
+    ctx = get_execution_context()
+    try:
+        _reject_datasource_arg(args)
+        _require_write_perm("ontology:save", "保存指标字典")
+    except (ValueError, PermissionError) as e:
+        return _text({"error": str(e)}, is_error=True)
+
+    payload = _dict_payload(args, ctx)
+    payload["name"] = str(args.get("name") or "").strip()          # 英文标识 → name_en
+    payload["formula"] = str(args.get("formula") or "").strip()
+    payload["agg_type"] = str(args.get("agg_type") or "").strip().lower()
+    payload["unit"] = str(args.get("unit") or "").strip()
+    payload["category"] = str(args.get("category") or "").strip() or "业务"
+    missing = [k for k in ("display_name", "bound_object_key", "formula", "agg_type")
+               if not payload.get(k)]
+    if missing:
+        return _text({"error": "指标必填项缺失: " + ", ".join(missing)
+                      + "（口径唯一登记在字典，formula 与 agg_type 不可省）"}, is_error=True)
+
+    metric_id = int(args.get("id") or 0)
+
+    def _run():
+        from backend.modules.catalog.services import metrics_service
+        if metric_id:
+            metrics_service.update_metric(metric_id, payload)
+            return metric_id
+        return int(metrics_service.create_metric(payload)["id"])
+
+    try:
+        row_id = await asyncio.to_thread(_run)
+        row = await asyncio.to_thread(_dict_row, "adh_metrics", row_id)
+    except ValueError as e:
+        return _text({"error": str(e)}, is_error=True)
+
+    out = {"success": True, "id": row_id, "metric": row.get("name"),
+           "target_table_bound": bool(row.get("target_table"))}
+    if not out["target_table_bound"]:
+        out["warning"] = ("该指标未能自动绑定到归属对象的单一主表（formula 不是合法单表聚合或"
+                          "对象主表不唯一），语义层可能无法直接编译；请在建模页核对口径。")
+    out["note"] = "字典行已落库；图谱与云端知识库需用户在建模页显式点「同步图谱/同步知识库」才会更新"
+    return _text(out)
+
+
+async def save_dimension(args):
+    """创建/更新维度字典行（adh_dimensions）—— 物理列由服务端按属性**业务名**解析。"""
+    from backend.modules.mind.execution.sdk_tools.context import get_execution_context
+
+    ctx = get_execution_context()
+    try:
+        _reject_datasource_arg(args)
+        _require_write_perm("ontology:save", "保存维度字典")
+    except (ValueError, PermissionError) as e:
+        return _text({"error": str(e)}, is_error=True)
+
+    payload = _dict_payload(args, ctx)
+    payload["name_en"] = str(args.get("name_en") or "").strip()
+    payload["category"] = str(args.get("category") or "").strip() or "属性"
+    prop_name = str(args.get("property_name") or "").strip()
+    value_labels = args.get("value_labels")
+    if isinstance(value_labels, str):
+        try:
+            value_labels = json.loads(value_labels)
+        except ValueError:
+            return _text({"error": "value_labels 不是合法 JSON 对象"}, is_error=True)
+    payload["value_labels"] = value_labels if isinstance(value_labels, dict) else None
+
+    missing = [k for k in ("display_name", "bound_object_key") if not payload.get(k)]
+    if missing:
+        return _text({"error": "维度必填项缺失: " + ", ".join(missing)}, is_error=True)
+
+    def _resolve_and_run():
+        from backend.modules.catalog.services import metrics_service
+        if prop_name:
+            got = metrics_service.resolve_object_property(payload["bound_object_key"], prop_name)
+            if not got.get("matched"):
+                # 宁缺勿错：名字对不上就回抛该对象的可用属性业务名，绝不模糊绑一个列
+                raise ValueError(
+                    f"在对象「{payload['bound_object_key']}」上找不到属性「{prop_name}」；"
+                    f"可用属性业务名: {(got.get('available') or [])[:30] or '（该对象无已登记属性）'}"
+                    + "；若属性确实缺失，请先在本体模型中补该属性再建维度")
+            payload["target_table"] = got["table"]
+            payload["target_column"] = got["column"]
+        dim_id = int(args.get("id") or 0)
+        if dim_id:
+            metrics_service.update_dimension(dim_id, payload)
+            return dim_id
+        return int(metrics_service.create_dimension(payload)["id"])
+
+    try:
+        row_id = await asyncio.to_thread(_resolve_and_run)
+        row = await asyncio.to_thread(_dict_row, "adh_dimensions", row_id)
+    except ValueError as e:
+        return _text({"error": str(e)}, is_error=True)
+
+    return _text({"success": True, "id": row_id, "dimension": row.get("name"),
+                  "bound_column": bool(row.get("target_column")),
+                  "note": "字典行已落库；图谱与云端知识库需用户在建模页显式点「同步图谱/同步知识库」才会更新"})
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 工具规格
 # ═══════════════════════════════════════════════════════════════════
@@ -570,6 +722,55 @@ TOOL_SPECS = [
             "dir": Annotated[Optional[str], "Directory path (default: ontology/)"],
         },
         "handler": import_ontology_yaml,
+        "readonly": False,
+    },
+    {
+        "name": "save_metric",
+        "description": (
+            "创建/更新**指标字典行**（adh_metrics，指标口径的唯一权威）。传 id 则更新，不传则创建。"
+            "必填：display_name(业务名)、bound_object_key(归属对象，必须是已激活对象)、"
+            "formula(聚合口径，列名只能来自已查到的表结构/对象属性，不得臆造)、"
+            "agg_type(sum/count/avg/min/max/custom)。可选：name(英文标识)、unit、description、"
+            "aliases、category。不接受数据源参数（字典是跨源口径，归属由对象决定）。"
+            "只落库+审计；图谱与云端知识库的级联由用户在建模页显式触发。"
+        ),
+        "schema": {
+            "display_name": Annotated[str, "指标业务名（如 案例数量）"],
+            "bound_object_key": Annotated[str, "归属对象 key（必须已激活，如 case）"],
+            "formula": Annotated[str, "聚合口径（如 COUNT(pc_case.id)），列名需来自工具已返回的结构"],
+            "agg_type": Annotated[str, "sum/count/count_distinct/avg/min/max/custom"],
+            "id": Annotated[Optional[int], "更新已有指标时传其 id；新增不传"],
+            "name": Annotated[Optional[str], "英文标识（如 case_count）"],
+            "unit": Annotated[Optional[str], "单位（例/人/元）"],
+            "description": Annotated[Optional[str], "口径文字说明"],
+            "aliases": Annotated[Optional[list], "别名清单（同义词）"],
+            "category": Annotated[Optional[str], "分类（默认 业务）"],
+        },
+        "handler": save_metric,
+        "readonly": False,
+    },
+    {
+        "name": "save_dimension",
+        "description": (
+            "创建/更新**维度字典行**（adh_dimensions）。传 id 则更新，不传则创建。"
+            "必填：display_name(业务名)、bound_object_key(归属对象)；"
+            "强烈建议传 property_name：对象属性的**业务中文名**（如 创建时间），"
+            "服务端会从本体属性解析出物理列（物理列不得手敲；名字对不上会回抛该对象可用属性名让你选）。"
+            "可选：category(时间/属性/状态等)、name_en、aliases、value_labels(枚举 码→业务标签)、description。"
+            "不接受数据源参数；图谱/知识库级联由用户在建模页显式触发。"
+        ),
+        "schema": {
+            "display_name": Annotated[str, "维度业务名（如 注册日期）"],
+            "bound_object_key": Annotated[str, "归属对象 key（必须已激活，如 user）"],
+            "property_name": Annotated[Optional[str], "对象属性的业务中文名（如 创建时间）——服务端据此解析物理列"],
+            "id": Annotated[Optional[int], "更新已有维度时传其 id；新增不传"],
+            "category": Annotated[Optional[str], "分类：时间/属性/状态等（默认 属性）"],
+            "name_en": Annotated[Optional[str], "英文标识"],
+            "aliases": Annotated[Optional[list], "别名清单（同义词）"],
+            "value_labels": Annotated[Optional[dict], "枚举码→业务标签（与本体 enum / 字典 value_labels 同构）"],
+            "description": Annotated[Optional[str], "维度说明"],
+        },
+        "handler": save_dimension,
         "readonly": False,
     },
 ]

@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { ChevronRight, ChevronDown, Brain, Loader2 } from 'lucide-react';
+import { SlideCollapse } from './chat/StageCard';
 
 interface Props {
   content: string;
@@ -32,7 +33,7 @@ export default function ThinkingBlock({ content, isStreaming = false }: Props) {
     : content.replace(/\n/g, ' ');
 
   return (
-    <div className="mb-3 rounded-lg border border-purple-200 dark:border-purple-800/40 bg-purple-50/50 dark:bg-purple-950/20 overflow-hidden">
+    <div className="mb-3 rounded-lg border border-purple-200 dark:border-purple-800/40 bg-purple-50/50 dark:bg-purple-950/20 overflow-hidden animate-stage-in">
       {/* Header */}
       <div
         className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none hover:bg-purple-100/50 dark:hover:bg-purple-900/20 transition-colors"
@@ -60,8 +61,8 @@ export default function ThinkingBlock({ content, isStreaming = false }: Props) {
         </span>
       </div>
 
-      {/* Body — 限高窗口(内联 style 保证生效, 不依赖工具类 CSS), 思考内容再长也不撑高外层 */}
-      {expanded && (
+      {/* Body — 滑动展开的限高窗口(内联 style 保证生效), 思考内容再长也不撑高外层 */}
+      <SlideCollapse open={expanded}>
         <div
           ref={bodyRef}
           className="px-3 pb-3"
@@ -71,7 +72,7 @@ export default function ThinkingBlock({ content, isStreaming = false }: Props) {
             {content}
           </div>
         </div>
-      )}
+      </SlideCollapse>
     </div>
   );
 }

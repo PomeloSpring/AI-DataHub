@@ -18,7 +18,16 @@ import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
 import ASTTreeView from '../components/ASTTreeView';
 import client from '../api/client';
-import { fetchVisComponents, type VisComponent } from '@/api/visLibrary';
+
+/** 数据集列表项（服务端不返 SQL 正文，载入时按 id 取详情） */
+interface DatasetBrief {
+  id: number;
+  name: string;
+  description?: string;
+  source_type?: string;
+  object_key?: string;
+  sql_query?: string;
+}
 
 interface Datasource {
   id: number;
@@ -214,22 +223,43 @@ export default function Playground() {
     }
   }, []);
 
-  // SQL 模板字模(sql_template): 从字模库加载,点击插入编辑器;失败显式提示不阻断编辑
-  const [tpls, setTpls] = useState<VisComponent[]>([]);
-  const [tplError, setTplError] = useState('');
+  // 查询数据集侧栏: 点击载入其已治理的预制 SQL 到编辑器。
+  // 列表不返 SQL 正文，故插入时按 id 取详情；失败显式提示不阻断编辑。
+  const [datasets, setDatasets] = useState<DatasetBrief[]>([]);
+  const [dsError, setDsError] = useState('');
+  const [dsLoadingId, setDsLoadingId] = useState<number | null>(null);
   useEffect(() => {
     let cancelled = false;
-    fetchVisComponents()
-      .then(items => {
-        if (cancelled) return;
-        setTpls(items.filter(i => i.category === 'sql_template' && (i.query_template as any)?.sql));
+    client.get<{ items?: DatasetBrief[] }>('/datasets')
+      .then(res => {
+        if (!cancelled) setDatasets(res.data?.items || []);
       })
       .catch((e: any) => {
-        if (cancelled) return;
-        setTplError(e?.message || 'SQL 模板加载失败，请在字模库检查后重试');
+        if (!cancelled) setDsError(e?.message || '数据集列表加载失败，请在数据集页检查配置');
       });
     return () => { cancelled = true; };
   }, []);
+
+  const loadDatasetSql = async (d: DatasetBrief) => {
+    if (d.source_type && d.source_type !== 'sql' && !d.sql_query) {
+      toast.info('该数据集只绑定语义对象，无预制 SQL；请直接执行语义查询');
+      return;
+    }
+    setDsLoadingId(d.id);
+    try {
+      const { data } = await client.get<DatasetBrief>(`/datasets/${d.id}`);
+      if (typeof data?.sql_query === 'string' && data.sql_query) {
+        setSql(data.sql_query);
+        toast.success(`已载入数据集「${data.name || d.name}」的查询语句`);
+      } else {
+        toast.info('该数据集没有执行 SQL（只绑定语义对象）');
+      }
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || '载入数据集 SQL 失败');
+    } finally {
+      setDsLoadingId(null);
+    }
+  };
 
 
   const ANALYSIS_TABS: { key: ResultTab; label: string; icon: any }[] = [
@@ -544,30 +574,29 @@ export default function Playground() {
 
           <Separator className="shrink-0" />
           <div className="p-3 border-b shrink-0">
-            <h3 className="text-sm font-semibold">SQL 模板（字模库）</h3>
+            <h3 className="text-sm font-semibold">查询数据集</h3>
           </div>
           <ScrollArea className="flex-1 min-h-0 max-h-[220px]">
             <div className="p-2">
-              {tplError ? (
-                <p className="px-2 py-1.5 text-xs text-destructive" role="alert">{tplError}</p>
-              ) : tpls.length === 0 ? (
+              {dsError ? (
+                <p className="px-2 py-1.5 text-xs text-destructive" role="alert">{dsError}</p>
+              ) : datasets.length === 0 ? (
                 <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                  暂无模板（可在聊天 SQL 卡片「存为模板」沉淀）
+                  暂无数据集（可在聊天 SQL 卡片「存为数据集」沉淀，或去数据中台→数据集新建）
                 </p>
-              ) : tpls.map(t => (
+              ) : datasets.map(d => (
                 <div
-                  key={t.id}
+                  key={d.id}
                   className="flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer hover:bg-muted"
-                  title={t.description || t.name}
-                  onClick={() => {
-                    const s = (t.query_template as any)?.sql;
-                    if (typeof s === 'string' && s) setSql(s);
-                  }}
+                  title={d.description || d.name}
+                  onClick={() => void loadDatasetSql(d)}
                 >
-                  <FileText className="h-4 w-4 text-primary flex-shrink-0" />
+                  <Database className="h-4 w-4 text-primary flex-shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm truncate">{t.name}</div>
-                    <div className="text-xs text-muted-foreground">点击插入编辑器</div>
+                    <div className="text-sm truncate">{d.name}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {dsLoadingId === d.id ? '载入中…' : `${d.source_type === 'sql' ? 'SQL' : '语义对象'} · 点击载入查询语句`}
+                    </div>
                   </div>
                 </div>
               ))}

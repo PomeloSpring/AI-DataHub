@@ -1,12 +1,17 @@
-"""Dataset Service — BI 治理建模层(语义对象 × SQL 双定义, 互为转换).
+"""Dataset Service — BI 治理建模层（语义对象 × SQL 双定义，互为转换）。
 
 双定义语义(非二选一): 执行 SQL 是查询的实际执行通道; 本体对象绑定供语义层
 检索/业务口径(字段随本体自动演进)。两者可互相转换:
 - compile_from_semantic: 语义意图 → 编译 SQL(固化为执行定义)
 - extract_from_sql:      执行 SQL 输出列 → 语义字段映射建议(未命中回抛待映射)
 
+数据集同时是平台内**唯一的"可信任预制 SQL"载体**：语义层编译不出的形状（漏斗/路径
+的两级聚合、窗口函数、自关联）由数据集正文承担，参数与输出列由声明约束；
+具体编译在 `semantics/dataset_compiler.py`（与语义层 planner 共用同一实现）。
+
 取数契约(数据护城河):
-- 有执行 SQL: validate_sql → 行级 scope 子查询包裹 → governed_execute(敏感基线+RLS+审计)
+- 有执行 SQL: 保存即只读校验 → 参数渲染/输出列聚合编译 → 行级 scope 子查询包裹
+  → governed_execute(敏感基线+RLS+审计)
 - 仅语义对象: intent → resolve_binding → plan → execute_semantic(七闸门链, 与 Chat 同源)
 - 身份只信服务端 JWT 解析后传入; 无可信身份 fail-closed(NoIdentityError 向上传播)。
 - 数据集级行范围"只收紧不放宽": 与用户查询条件 AND 合并, 叠加在 RLS/敏感屏蔽之上。
@@ -109,6 +114,30 @@ def get_dataset_by_name(name: str) -> dict | None:
         (name,), fetchone=True)
 
 
+def _validate_and_normalize(req: dict, existing: dict | None = None) -> dict:
+    """保存前校验（预制 SQL 正文只读、参数声明可渲染、字段声明合法）。
+
+    不通过直接拒（fail-loud），不存下来等上线静默报错。返回服务端归一化产物
+    （touched_tables 由正文静态提取，不信请求体自报）。
+    """
+    from backend.modules.viz.services.dataset_registry import validate_definition
+
+    merged = dict(existing or {})
+    merged.update({k: v for k, v in (req or {}).items() if k in (
+        "sql_query", "sql_bodies", "variables", "field_config", "dialect")})
+    if not str(merged.get("sql_query") or "").strip() \
+            and not merged.get("sql_bodies"):
+        return {}                      # 纯语义对象数据集: 无预制 SQL, 不跑正文校验
+    try:
+        errors, stored = validate_definition(merged)
+    except Exception as e:  # noqa: BLE001 — 校验器自身异常也必须拒，不得默认放行
+        logger.exception("[dataset] 定义校验异常")
+        raise ValueError(f"数据集校验未完成: {str(e)[:200]}") from e
+    if errors:
+        raise ValueError("数据集定义不符合规范，已拒绝保存: " + "; ".join(errors[:8]))
+    return stored or {}
+
+
 def create_dataset(req: dict, identity: dict) -> dict:
     name = (req.get("name") or "").strip()
     if not name:
@@ -122,6 +151,7 @@ def create_dataset(req: dict, identity: dict) -> dict:
         raise ValueError("数据集至少需要一种查询定义: 绑定本体对象或提供执行 SQL(两者可并存互转)")
     if sql_query:
         _validate_select(sql_query)
+    stored = _validate_and_normalize(req)
 
     if execute_query("SELECT id FROM adh_datasets WHERE name=%s", (name,), fetchone=True):
         raise ValueError(f"数据集名称已存在: {name}")
@@ -131,15 +161,29 @@ def create_dataset(req: dict, identity: dict) -> dict:
                                fetchone=True)["n"])
     execute_write(
         "INSERT INTO adh_datasets (id, name, description, source_type, object_key, "
-        "datasource_id, sql_query, field_config, chart_type, chart_preset, owner_id, status) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active')",
+        "datasource_id, sql_query, sql_bodies, variables, touched_tables, field_config, "
+        "chart_type, chart_preset, owner_id, status) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active')",
         (new_id, name, req.get("description") or "",
          _derive_source_type(object_key, sql_query), object_key,
-         datasource_id, sql_query, field_config,
+         datasource_id, sql_query,
+         stored.get("sql_bodies") or json.dumps(req.get("sql_bodies") or {}, ensure_ascii=False),
+         _as_json_text(req.get("variables"), "{}"),
+         stored.get("touched_tables"),
+         field_config,
          (req.get("chart_type") or "").strip(),
          json.dumps(req.get("chart_preset") or {}, ensure_ascii=False),
          int(identity.get("user_id") or 0)))
     return get_dataset(new_id)
+
+
+def _as_json_text(value, fallback: str) -> str:
+    """声明类字段入库存 JSON 文本（已给字符串则原样保留）。"""
+    if value in (None, ""):
+        return fallback
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
 
 
 def update_dataset(dataset_id: int, req: dict, identity: dict) -> dict:
@@ -152,6 +196,16 @@ def update_dataset(dataset_id: int, req: dict, identity: dict) -> dict:
         if req.get(col) is not None:
             updates.append(f"{col} = %s")
             params.append(req[col])
+    for col in ("sql_bodies", "variables"):
+        if req.get(col) is not None:
+            updates.append(f"{col} = %s")
+            params.append(_as_json_text(req[col], "{}" if col == "variables" else "{}"))
+    if req.get("certified") is not None:
+        # 认证是口径背书：只能由编辑者显式给出，服务端记录认证人
+        updates.append("certified = %s")
+        params.append(1 if req["certified"] else 0)
+        updates.append("approved_by = %s")
+        params.append(str(identity.get("username") or identity.get("user_id") or ""))
     if req.get("chart_type") is not None:
         updates.append("chart_type = %s")
         params.append(str(req["chart_type"]).strip())
@@ -169,9 +223,6 @@ def update_dataset(dataset_id: int, req: dict, identity: dict) -> dict:
     if req.get("status") in ("active", "inactive"):
         updates.append("status = %s")
         params.append(req["status"])
-    # 改 SQL 必须重新过校验
-    if req.get("sql_query"):
-        _validate_select(str(req["sql_query"]).strip())
     # 更新后至少保留一种查询定义(语义对象/执行 SQL), source_type 随之重算
     object_key = str(req["object_key"] if req.get("object_key") is not None
                      else ds.get("object_key") or "").strip()
@@ -179,6 +230,25 @@ def update_dataset(dataset_id: int, req: dict, identity: dict) -> dict:
                     else ds.get("sql_query") or "").strip()
     if not object_key and not sql_query:
         raise ValueError("数据集至少需要一种查询定义: 绑定本体对象或提供执行 SQL(两者可并存互转)")
+    # 改 SQL 必须重新过校验（只读正文 + 参数声明 + 字段声明），不通过不保存
+    body_touched = any(req.get(k) is not None for k in
+                       ("sql_query", "sql_bodies", "variables", "field_config"))
+    if sql_query and (req.get("sql_query") or body_touched):
+        _validate_select(sql_query)
+    stored = _validate_and_normalize(req, existing=ds) if body_touched else {}
+    if stored.get("touched_tables") is not None:
+        updates.append("touched_tables = %s")
+        params.append(stored["touched_tables"])
+    if stored.get("sql_bodies") is not None and req.get("sql_bodies") is None:
+        updates.append("sql_bodies = %s")
+        params.append(stored["sql_bodies"])
+    # 正文/参数/字段变更即认证失效（防"改完仍挂已认证"）
+    if any(req.get(k) is not None for k in ("sql_query", "sql_bodies", "variables",
+                                            "field_config")) and req.get("certified") is None:
+        updates.append("certified = %s")
+        params.append(0)
+        updates.append("approved_by = %s")
+        params.append(None)
     updates.append("source_type = %s")
     params.append(_derive_source_type(object_key, sql_query))
     if updates:
@@ -544,23 +614,62 @@ def _query_semantic(ds: dict, params: dict, scopes: list[dict], identity: dict) 
     return result
 
 
+def _dataset_db_type(ds: dict) -> str:
+    """数据集执行数据源的 db_type（决定正文变体与编译方言）；查不到回落 mysql。"""
+    ds_id = int(ds.get("datasource_id") or 0)
+    if not ds_id:
+        return "mysql"
+    try:
+        from backend.common.db.datasource_db import get_datasource_by_id
+
+        return str((get_datasource_by_id(ds_id) or {}).get("db_type") or "mysql")
+    except Exception as e:  # noqa: BLE001 — 查不到不阻断，但保守用 mysql 族
+        logger.warning("[dataset] db_type lookup failed for ds=%s: %s", ds_id, e)
+        return "mysql"
+
+
+def has_row_scopes(dataset_id: int) -> bool:
+    """该数据集是否配了行级范围（供语义层绑定前判定）。"""
+    row = execute_query(
+        "SELECT COUNT(*) AS n FROM adh_dataset_scopes WHERE dataset_id = %s",
+        (int(dataset_id or 0),), fetchone=True)
+    return bool(row and int(row.get("n") or 0) > 0)
+
+
 def _query_sql(ds: dict, params: dict, scopes: list[dict], identity: dict) -> dict:
+    """SQL 数据集取数：编译委托 `semantics.dataset_compiler`（与语义层同一实现）。
+
+    参数渲染/方言正文选择/输出列聚合全在编译器；本函数只负责把
+    行级 scope 以子查询包裹叠加（只收紧不放宽）并送治理执行口。
+    """
     from backend.core.query_executor import validate_sql
     from backend.core.governed_query import governed_execute
+    from backend.semantics.dataset_compiler import DatasetCompileError, compile_dataset
 
-    inner = (ds.get("sql_query") or "").strip().rstrip(";")
-    if not inner:
-        raise ValueError("SQL 数据集缺少查询语句")
-    # 内层保底 LIMIT
-    if "limit" not in inner.lower():
-        inner += f" LIMIT {_INNER_LIMIT}"
+    args = params.get("args") or params.get("variables") or {}
+    try:
+        compiled = compile_dataset(
+            ds,
+            args=args if isinstance(args, dict) else {},
+            dimensions=params.get("dimensions") or [],
+            measures=params.get("measures") or params.get("metrics") or [],
+            filters=params.get("filters") or [],
+            order=params.get("order") or [],
+            limit=params.get("limit"),
+            time_grain=params.get("time_grain"),
+            db_type=_dataset_db_type(ds),
+        )
+    except DatasetCompileError as e:
+        # 参数非法/无本引擎正文: 直接告诉调用方原因（fail-loud，不换通道不降级）
+        raise ValueError(str(e))
+    for w in compiled.warnings:
+        logger.info("[dataset] %s: %s", ds.get("name"), w)
 
-    # scope/用户过滤以子查询包裹叠加(内层表仍被 RLS/敏感基线注入)
-    conds = [f for f in (params.get("filters") or []) if _FIELD_RE.match(str(f.get("field") or ""))]
-    where = _build_where([{"field": c.get("field"), "op": c.get("op") or "eq",
-                           "value": c.get("value")} for c in conds] + scopes)
-    limit = min(int(params.get("limit") or _DEFAULT_LIMIT), _MAX_LIMIT)
-    sql = f"SELECT * FROM ({inner}) AS _ds_base{where} LIMIT {limit}"
+    sql = compiled.sql
+    if scopes:
+        where = _build_where(scopes)
+        limit = min(int(params.get("limit") or _DEFAULT_LIMIT), _MAX_LIMIT)
+        sql = f"SELECT * FROM ({sql}) AS _ds_scoped{where} LIMIT {limit}"
 
     ok, msg = validate_sql(sql)
     if not ok:
@@ -579,6 +688,8 @@ def _query_sql(ds: dict, params: dict, scopes: list[dict], identity: dict) -> di
         raise ValueError(_EXEC_FAIL_HINT)
     result["dataset"] = ds.get("name")
     result["execution_mode"] = "sql"
+    if compiled.resolved_tables:
+        result["resolved_tables"] = compiled.resolved_tables
     return result
 
 

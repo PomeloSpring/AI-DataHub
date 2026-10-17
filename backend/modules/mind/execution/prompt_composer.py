@@ -32,7 +32,7 @@ SEMANTIC_QUERY_RULES = """## 数据查询规范（统一语义层）
   ③ 知识库仍无结果，**直接告知用户**“该对象/指标尚未建模或无法解析，建议补充建模或转数据分析师”，不得反复换名试探或循环检索。
 - **双路权威划分**（knowledge_search 与 get_metrics 同时可用时）：
   ① 对象/指标/维度的**合法名称**以 `get_metrics` 实时目录为唯一权威（它直接读当前生效本体）；
-  ② `knowledge_search`（知识库）只对**口径解释、业务背景、SQL 模板 variables** 权威；
+  ② `knowledge_search`（知识库）只对**口径解释、业务背景、数据集参数清单** 权威；
   ③ 两者冲突（知识库里的名称/清单与 get_metrics 不一致）时：名称从 get_metrics，
      向用户说明可能存在新旧版本口径差异；若 knowledge_search 结果标注 doc_stale=true，
      说明知识库文档落后于当前本体，其内容仅供参考，**不得**据此发明未出现在 get_metrics 中的名称；
@@ -57,8 +57,16 @@ SEMANTIC_QUERY_RULES = """## 数据查询规范（统一语义层）
   日历时间区间（如“上周/本月/上季度/今年/昨天”）用 intent 的 `time_range` 表达，取值只允许受控 token：
   `today`/`yesterday`/`this_week`/`last_week`/`this_month`/`last_month`/`this_quarter`/`last_quarter`/`this_year`/`last_year`；
   两者都可配 `time_column` 指定事件时间维度，由语义层按数据源方言编译成时间谓词。**禁止**自行推算绝对日期写进 filters。
-- 对象若绑定 SQL 模板（承载漏斗/留存等高级函数，knowledge_search 会标注其 variables），必须用
-  intent 的 `params` 按声明传参；参数名/类型以模板 variables 为准，缺失或多余都会被拒绝执行。
+- 对象若绑定查询数据集（`bind_kind=dataset`，承载漏斗/留存等语义层编译不出的形状），必须用
+  intent 的 `params` 按数据集声明传参；参数名/类型以 `knowledge_search` 回的数据集参数清单为准，
+  缺失或多余都会被拒绝执行。
+- **行为路径/漏斗（关键路径转化）不得拆成多个步骤指标**：把各步 UV 并列查询没有顺序与窗口
+  约束，转化率会系统性偏高（错数比无答案危害大）。正确做法：`knowledge_search` 命中 `paths[]` 后，
+  优先用 `paths[].dataset_hint.dataset` 作为 `query_dataset` 的 `name`、按 `dataset_hint.params` 传 `args`；
+  若 `paths[].query_object` 非空，也可用 `run_semantic_query(object=query_object, params=…)`；
+  `dataset_hint.dimensions/metrics` 非空时，这些业务名可直接进 `dimensions`/`metrics` 下钻；
+  `path_resolution=failed` 或无 `paths[]` 命中时，如实告知“该路径尚未建模/口径不可解析”，
+  **不得**自行用多个步骤指标拼接替代。
 - **探索预算（硬约束）**：整个取数最多 1 次 `get_metrics` + 必要时 1 次 `knowledge_search` + 1–2 次 `run_semantic_query`；
   命中即作答，取不到即按上面③告知用户。严禁循环试探物理结构（list_datasources / get_table_schema / search_metadata），
   严禁同一名目反复改词重试——ChatBI 以准确与快速为先。
@@ -138,6 +146,18 @@ AS_BOT_DESIGN_RULES = """## AS-BOT 系统域与仪表盘协作（优先于通用
   不得绕道其他工具或静默放弃。
 - 业务知识库失败、无绑定或来源不明必须告诉用户，不去系统表、物理元数据或其他业务库充数；由用户决定下一步。
 """
+
+
+MEMORY_RULES = """## 用户记忆读写规范（save_memory / list_memory / delete_memory）
+记忆是**跨会话生效**的稳定画像：它会作为“用户记忆”段注入本用户之后所有会话的提示词。因此：
+- **只记**跨会话稳定事实：常用业务域/默认图表/时间粒度/输出格式/数字精度/角色背景（固定槽位），
+  以及口径纠错与工作习惯（浮动条目）。用户表达“我一般/我习惯/以后都用/默认看/我们口径是”这类长期性说法时才写。
+- **严禁记录**任何一次会话的状态与临时上下文：“正在做 X”“上次问了 Y”“本次结果”“这个对话里的中间结论”，
+  也严禁把查询到的数值/数据行写进记忆（取数必须每次走治理入口实时查询）。服务端会拒绝这类内容。
+- 写入前后都要让用户看得见：保存成功后用一句话复述“已记住：<内容>”，并说明可在“我的记忆”页修改或删除；
+  被服务端拒绝时把原因原样告知用户，不换槽位绕过、不静默放弃。
+- 同一槽位重复表达用覆盖；浮动条目两类合计上限 5 条，超限先 list_memory 查看并与用户确认删哪条，再保存。
+- 记忆只属于当前用户，不得声称能读到其他人的记忆；与语义层/字典口径冲突时以**实时语义层目录**为准，记忆只作个人偏好补充。"""
 
 
 def _persona_lines(persona: dict) -> list[str]:
@@ -327,35 +347,26 @@ def _user_memory_lines(user_id: int) -> str:
     """用户记忆摘要（固定槽位 + 浮动条目），硬上限 800 字符。
 
     空记忆返回空串（零膨胀）；固定槽位优先保留，浮动条目超长截断。
+    内容本身已由 memory_service.validate_content 保证只含跨会话稳定事实，
+    这里不再做二次过滤（标题只用于提醒模型不要把它当会话上下文）。
     """
     if not user_id or int(user_id) <= 0:
         return ""
     try:
-        from backend.common.db.metadata_db import get_metadata_conn
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT slot_key, content FROM adh_user_memory "
-                    "WHERE user_id=%s ORDER BY slot_key", (int(user_id),))
-                rows = cur.fetchall()
-        finally:
-            conn.close()
+        from backend.core import memory_service
+        fixed, floating = memory_service.split_entries(memory_service.list_entries(int(user_id)))
     except Exception:  # noqa: BLE001 — 记忆查询失败不阻断 prompt 组装
         logger.warning("[prompt] 用户记忆查询失败, 跳过注入", exc_info=True)
         return ""
-    if not rows:
+    if not fixed and not floating:
         return ""
-    from backend.modules.mind.execution.sdk_tools.memory_tools import FIXED_SLOTS, FLOATING_CATEGORIES
+    FIXED_SLOTS = memory_service.FIXED_SLOTS
     fixed_parts = []
     floating_lines = []
-    for r in rows:
-        key = r["slot_key"]
-        content = r["content"]
-        if key in FIXED_SLOTS:
-            fixed_parts.append(f"{FIXED_SLOTS[key]}: {content}")
-        elif key in FLOATING_CATEGORIES:
-            floating_lines.append(f"- [{key}] {content}")
+    for r in fixed:
+        fixed_parts.append(f"{FIXED_SLOTS[r['slot_key']]}: {r['content']}")
+    for r in floating:
+        floating_lines.append(f"- [{r['slot_key']}] {r['content']}")
     lines = ["## 用户记忆（稳定偏好，非会话上下文）"]
     if fixed_parts:
         lines.append("- " + " | ".join(fixed_parts))
@@ -437,7 +448,7 @@ def compose_system_prompt(
         sections.append(
             "## 已绑定知识库\n"
             + "\n".join(kb_lines)
-            + "\n- 上述知识库只用于**口径解释 / 业务背景 / SQL 模板 variables** 的补充, 不作为 object/metric/dimension 名称来源;"
+            + "\n- 上述知识库只用于**口径解释 / 业务背景 / 数据集参数清单** 的补充, 不作为 object/metric/dimension 名称来源;"
             "  取数一律先走 `get_metrics` 实时目录 + `run_semantic_query`, **仅当语义层取不到口径含义时**才用 `knowledge_search` 查一次背景;"
             "  知识库内容与本体名称冲突时一律以 `get_metrics` 为准, **不得**据知识库发明未出现在目录中的对象/指标名(如跨数据源/跨方言的幽灵对象)。"
         )
@@ -465,6 +476,12 @@ def compose_system_prompt(
         "request_dashboard_design" in str(t.get("name", "")) for t in (capabilities.get("tools") or []))
     if has_design_tools:
         sections.append(AS_BOT_DESIGN_RULES)
+
+    # 记忆读写纪律: 只有本会话真的注册了 save_memory 才注入（不向模型承诺没有的写能力）
+    has_memory_tools = bool(capabilities) and any(
+        str(t.get("name", "")).endswith("save_memory") for t in (capabilities.get("tools") or []))
+    if has_memory_tools:
+        sections.append(MEMORY_RULES)
 
     # 敏感合规护城河(L1):强制加载当前用户的 RLS 行范围与合规屏蔽列, 越权请求须拒绝
     sections.append(COMPLIANCE_RULES)

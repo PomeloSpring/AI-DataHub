@@ -151,6 +151,12 @@ export default function Home() {
     navigate(wsId ? `/ws/${wsId}/profile` : '/data/profile');
   };
 
+  // 与 goProfile 同一落点规则（无默认工作空间时回落到数据中台框架）
+  const goMemory = () => {
+    const wsId = getDefaultWorkspaceId();
+    navigate(wsId ? `/ws/${wsId}/memory` : '/data/memory');
+  };
+
   // 与模块切换的「工作空间」同一落点(默认工作空间聊天 /ws/{id}/chat),两处入口保持一致;
   // 无默认工作空间时回落 /workspace 由入口页解析,不走 /ask 独立精简布局
   const goAsk = () => {
@@ -250,6 +256,10 @@ export default function Home() {
               <DropdownMenuItem onClick={goProfile}>
                 <UserCircle className="mr-2 h-4 w-4" />
                 个人设置
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={goMemory}>
+                <Brain className="mr-2 h-4 w-4" />
+                我的记忆
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => { logout(); navigate('/login'); }}>
                 <LogOut className="mr-2 h-4 w-4" />

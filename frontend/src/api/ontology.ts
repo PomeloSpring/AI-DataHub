@@ -47,81 +47,51 @@ export interface OntologyObjectHit {
   object: Record<string, any> | null;
 }
 
-export interface GenerateProgress {
-  stage: string;
-  detail: string;
+/** 『生成本体模型』后台任务状态（服务端进程内后台执行，进度同时写 AS-BOT 会话转录）。 */
+export interface GenerateTask {
+  conversation_id: number;
+  workspace_id: number;
+  datasource_id: number;
+  datasource_name: string;
+  /** interrupted = 服务重启导致任务失去宿主（不当成功看） */
+  status: 'running' | 'done' | 'error' | 'cancelled' | 'interrupted';
+  progress: { stage: string; detail: string }[];
+  model_id: number | null;
+  object_count: number;
+  warnings: string[];
+  error: string;
+  started_at?: string | number;
+  finished_at?: string | number;
 }
 
-/** SSE 生成本体草案（自动建 AS-BOT 会话派发任务），逐事件回调，返回 AbortController 供取消。
- * 契约：progress({stage,detail}) / done({model_id,object_count,conversation_id,workspace_id,completed,...}) /
- * error({message,conversation_id?})。 */
-export function generateOntologyDraft(
-  datasourceId: number,
-  onEvent: (event: 'progress' | 'done' | 'error', data: any) => void,
-): AbortController {
-  const abort = new AbortController();
+export const GENERATE_TASK_DONE_STATUSES = ['done', 'error', 'cancelled', 'interrupted'];
 
-  (async () => {
-    try {
-      const response = await fetch(
-        `${client.defaults.baseURL}/catalog/ontology/generate`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('token') || ''}`,
-          },
-          body: JSON.stringify({ datasource_id: datasourceId }),
-          signal: abort.signal,
-        },
-      );
-      if (!response.ok) {
-        const text = await response.text();
-        // 错误显式展示服务端 detail（执行层不可用/无权限/数据源未授权），不吞异常
-        let detail = text;
-        try {
-          detail = JSON.parse(text)?.detail || text;
-        } catch {
-          // 非 JSON 错误体原样展示
-        }
-        throw new Error(detail || `HTTP ${response.status}`);
-      }
+/** 派发『生成本体模型』后台任务（立即返回，不随页面/面板关闭而中止）。
+ * kbIds 为辅助生成的知识库（服务端校验后按名参与检索，id 不进 LLM 视野）。 */
+export async function startOntologyGenerate(datasourceId: number, kbIds: number[] = []): Promise<GenerateTask> {
+  const { data } = await client.post<GenerateTask>('/catalog/ontology/generate',
+    { datasource_id: datasourceId, kb_ids: kbIds });
+  return data;
+}
 
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('无法读取响应流');
+/** 任务进度/终态（轮询用；与 AS-BOT 侧边栏看到的内容同源）。 */
+export async function getOntologyGenerateTask(conversationId: number): Promise<GenerateTask> {
+  const { data } = await client.get<GenerateTask>(`/catalog/ontology/generate/tasks/${conversationId}`);
+  return data;
+}
 
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let currentEvent = 'progress';
+/** 本用户的后台生成任务清单（页面重进时挂回正在跑的任务）。 */
+export async function listOntologyGenerateTasks(activeOnly = true): Promise<GenerateTask[]> {
+  const { data } = await client.get<{ items: GenerateTask[] }>('/catalog/ontology/generate/tasks',
+    { params: { active_only: activeOnly } });
+  return Array.isArray(data?.items) ? data.items : [];
+}
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            currentEvent = line.slice(7).trim();
-          } else if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (currentEvent === 'progress') onEvent('progress', data);
-              else if (currentEvent === 'done') onEvent('done', data);
-              else if (currentEvent === 'error') onEvent('error', data);
-            } catch {
-              // ignore malformed data
-            }
-          }
-        }
-      }
-    } catch (e: any) {
-      if (e.name !== 'AbortError') onEvent('error', { message: e.message || String(e) });
-    }
-  })();
-
-  return abort;
+/** 取消正在后台执行的任务（写动作，服务端同样经权限码把关）。 */
+export async function cancelOntologyGenerateTask(conversationId: number): Promise<GenerateTask> {
+  const { data } = await client.post<GenerateTask>(
+    `/catalog/ontology/generate/tasks/${conversationId}/cancel`);
+  return data;
 }
 
 export const ontologyApi = {

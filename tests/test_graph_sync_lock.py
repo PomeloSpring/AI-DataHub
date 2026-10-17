@@ -103,7 +103,8 @@ def test_sync_acquires_lock_runs_and_releases(client, service, monkeypatch):
     # 租约必须覆盖最坏重建耗时, 不得是短 TTL(提前过期 = 并发互踩重新打开)
     assert fake.lock_kwargs["timeout"] == graph._GRAPH_SYNC_LOCK_TTL
     assert fake.lock_kwargs["blocking"] is False
-    service.sync_from_metadata.assert_called_once_with(1780478236183)
+    # kind 未传时保持旧行为（空串 → 服务端按 datasource_id 推断）
+    service.sync_from_metadata.assert_called_once_with(1780478236183, "")
     assert lock.released is True
 
 
@@ -145,7 +146,32 @@ def test_system_scope_locks_and_rebuilds_system_graph_only(client, service, monk
     assert resp.status_code == 200
     from backend.semantics.graph_rag.oxigraph_store import SYSTEM_DATASOURCE_ID
     assert fake.lock_keys == [f"adh_graph_sync:ds:{SYSTEM_DATASOURCE_ID}"]
-    service.sync_from_metadata.assert_called_once_with(SYSTEM_DATASOURCE_ID)
+    # 只传 system_scope 的旧调用也要补上 kind，不再走“塑入全部 active 模型”分支
+    service.sync_from_metadata.assert_called_once_with(SYSTEM_DATASOURCE_ID, "system")
+
+
+def test_sync_forwards_kind_so_business_rebuild_does_not_swallow_other_domains(
+        client, service, monkeypatch):
+    """kind 必须透传到重建：ds=0 且 kind 为空时 `_merge_ontology_models` 会退化成
+    把**全部** active 模型（业务+源+系统）塑进业务聚合图 ds:0，污染徽章与检索接地。"""
+    _stub_redis(monkeypatch, _FakeRedis(_FakeLock(acquired=True)))
+
+    resp = client.post("/api/graph/sync",
+                       params={"datasource_id": 0, "kind": "business"})
+
+    assert resp.status_code == 200
+    service.sync_from_metadata.assert_called_once_with(0, "business")
+
+
+def test_sync_rejects_unknown_kind(client, service, monkeypatch):
+    """kind 白名单外直接 422，不得默默当成“全部模型”。"""
+    _stub_redis(monkeypatch, _FakeRedis(_FakeLock(acquired=True)))
+
+    resp = client.post("/api/graph/sync", params={"datasource_id": 0, "kind": "everything"})
+
+    assert resp.status_code == 422
+    assert "kind" in resp.json()["detail"]
+    service.sync_from_metadata.assert_not_called()
 
 
 def test_release_failure_does_not_break_success(client, service, monkeypatch):

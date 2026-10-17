@@ -21,6 +21,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Network, Tag as TagIcon, Maximize2, Minimize2, X, Plus, Pencil, Trash2 } from 'lucide-react';
+import { normalizeDocObjects } from '@/lib/ontologyObjects';
 
 // 视图已收敛为后端 GraphType.UNIFIED 单图(分域组装 总览+业务知识+物理层/血缘),
 // 不再拆四视图切换; singleView 传入时仍锁定旧单视图(系统助手/图谱页兼容)。
@@ -157,7 +158,7 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView }: {
           <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
             <div className="text-center text-sm text-muted-foreground bg-card/80 border rounded-lg px-6 py-4">
               该数据源图谱暂无节点
-              <div className="text-xs mt-1">激活模型或保存 active 模型会自动重建图谱</div>
+              <div className="text-xs mt-1">激活模型或保存 active 模型会自动重建图谱；也可点上方「图谱生成」手动重建</div>
             </div>
           </div>
         )}
@@ -288,9 +289,21 @@ export function ObjectTagsTab({ objects }: { objects: { key: string; display_nam
   );
 }
 
-/** 工作区头部同步状态徽章(图谱/知识库) */
-export function SyncBadges({ modelId, refreshKey }: { modelId: number; refreshKey?: number }) {
-  const [st, setSt] = useState<{ graph: { state: string; classes?: number; objects?: number }; kb: { state: string; error?: string } } | null>(null);
+/** 图谱/知识库同步状态徽章（「关系图谱」页与「数据建模」工具栏共用，只读 30s 轮询）。
+ *
+ * 口径全来自服务端 /sync-status：比对哪张命名图由 graph_target_for_model 定，
+ * 目标知识库清单由 sync_targets_for_model 定。徽章只负责把“比对的是什么 / 同步到哪”说人话：
+ * · “滞后”不是错误，是**图里的对象比模型少**（模型改过而图未重建），处置就是点「图谱生成」；
+ * · 知识库面直接带目标库名（不只给“已同步”，也不露裸 id）；
+ * · 源本体按设计不做 RAG（不入知识库），不能当故障黄点吓人。
+ */
+export function SyncBadges({ modelId, refreshKey, kind }: {
+  modelId: number; refreshKey?: number; kind?: string;
+}) {
+  const [st, setSt] = useState<{
+    graph: { state: string; classes?: number; objects?: number; graph_datasource_id?: number };
+    kb: { state: string; error?: string; targets?: number; target_names?: string[]; synced_at?: string };
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -312,13 +325,50 @@ export function SyncBadges({ modelId, refreshKey }: { modelId: number; refreshKe
   const dot = (ok: boolean, warn?: boolean) =>
     <span className={`inline-block w-2 h-2 rounded-full ${ok ? 'bg-green-500' : warn ? 'bg-amber-500' : 'bg-gray-400'}`} />;
   const gOk = g.state === 'synced', gWarn = g.state === 'lagging' || g.state === 'unreachable';
-  const kOk = k.state === 'success', kWarn = k.state === 'failed' || k.state === 'no_kb_bound';
-  const gLabel = ({ synced: '已同步', lagging: `滞后 ${g.classes ?? 0}/${g.objects ?? 0}`, absent: '未生成', draft: '草案未激活', unreachable: '图服务不可达' } as Record<string, string>)[g.state] || g.state;
-  const kLabel = ({ success: '已同步', failed: k.error ? `失败: ${k.error.slice(0, 30)}` : '失败', pending: '待同步', removed: '已下线', no_kb: '未开启同步', no_kb_bound: '未绑定知识库' } as Record<string, string>)[k.state] || k.state;
+  const gLabel = ({
+    synced: '已同步',
+    // 方向写清：旧文案“滞后 1/4”看不出谁多谁少
+    lagging: `滞后（图中 ${g.classes ?? 0}/模型 ${g.objects ?? 0}）`,
+    absent: '未生成', draft: '草案未激活', unreachable: '图服务不可达',
+  } as Record<string, string>)[g.state] || g.state;
+  const gNeedRebuild = g.state === 'lagging' || g.state === 'absent';
+  const gTip = [
+    g.graph_datasource_id == null ? '' : `比对命名图 ds:${g.graph_datasource_id}`,
+    `图中 ${g.classes ?? 0} 个对象类 / 模型 ${g.objects ?? 0} 个对象`,
+    g.state === 'lagging'
+      ? '含义：模型已改过而图没跟着重建（不是数据错），点「图谱生成」重建即对齐'
+      : g.state === 'absent' ? '含义：该命名图里还没有本模型的对象，点「图谱生成」建图' : '',
+  ].filter(Boolean).join('；');
+
+  const kTargets = k.target_names || [];
+  const kOk = k.state === 'success';
+  // 源本体不参与 RAG 上云 = 按设计，不算缺口（旧口径会把它当“未开启同步”让人以为坏了）
+  const kByDesign = (k.state === 'no_kb' || k.state === 'no_kb_bound') && kind === 'source';
+  const kWarn = k.state === 'failed' || k.state === 'no_kb_bound';
+  const kStateLabel = ({
+    success: '已同步',
+    failed: k.error ? `失败: ${k.error.slice(0, 30)}` : '失败',
+    pending: '待同步', removed: '已下线',
+    no_kb: kByDesign ? '不适用（源本体）' : '未开启同步',
+    no_kb_bound: kByDesign ? '不适用（源本体）' : '未绑定知识库',
+  } as Record<string, string>)[k.state] || k.state;
+  const kLabel = kStateLabel + (kTargets.length
+    ? ` → ${kTargets[0]}${kTargets.length > 1 ? ` 等 ${kTargets.length} 个` : ''}` : '');
+  const kTip = [
+    kTargets.length ? `目标知识库：${kTargets.join(' / ')}`
+      : (kByDesign ? '源本体只服务语义检索/取数，按设计不入知识库' : '未解析到目标知识库'),
+    k.synced_at ? `最近同步：${k.synced_at}` : '',
+    k.error ? `错误：${k.error}` : '',
+  ].filter(Boolean).join('；');
   return (
     <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
-      <span className="flex items-center gap-1">{dot(gOk, gWarn)}图谱 {gLabel}</span>
-      <span className="flex items-center gap-1">{dot(kOk, kWarn)}知识库 {kLabel}</span>
+      <span className="flex items-center gap-1" title={gTip}>
+        {dot(gOk, gWarn)}图谱 {gLabel}
+        {gNeedRebuild && <span className="text-amber-600">· 需重建</span>}
+      </span>
+      <span className="flex items-center gap-1" title={kTip}>
+        {dot(kOk, kWarn)}知识库 {kLabel}
+      </span>
     </span>
   );
 }
@@ -336,7 +386,11 @@ type M234Doc = {
 
 function parseM234(jsonContent: string): M234Doc | null {
   try {
-    return JSON.parse(jsonContent || '{}');
+    const doc = JSON.parse(jsonContent || '{}');
+    // 存量源本体 doc 用旧字段名（object_key/name）：在读取边界补齐 key/display_name，
+    // 否则对象下拉与标签会渲染出 undefined（只适配展示，不改写保存内容）
+    if (Array.isArray(doc?.objects)) doc.objects = normalizeDocObjects(doc.objects).objects;
+    return doc as M234Doc;
   } catch {
     return null;
   }
@@ -424,7 +478,8 @@ function RouteEditor({ value, onChange }: { value: RouteValue; onChange: (v: Rou
       if (cancelled) return;
       let doc: any = {};
       try { doc = JSON.parse(r.data.json_content || '{}'); } catch { /* 非法 JSON：对象选项留空 */ }
-      setSrcObjects((doc.objects || []).map((o: any) => ({ key: o.key || '', label: o.display_name || o.key || '' })));
+      setSrcObjects(normalizeDocObjects(doc.objects || []).objects
+        .map((o: any) => ({ key: o.key, label: o.display_name || o.key })));
       const dsName = String(doc.datasource_name || '');
       if (dsName && dsName !== (value.datasource_name || '')) {
         onChange({ ...value, datasource_name: dsName });

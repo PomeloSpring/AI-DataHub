@@ -49,7 +49,7 @@ const DATA_PLATFORM_MENU_ITEMS = [
   { key: '/data/datasets', icon: Layers, label: '数据集' },
   { key: '/data/ontology', icon: Boxes, label: '数据建模' },
   { key: '/data/metrics', icon: BarChart3, label: '指标与维度' },
-  { key: '/data/knowledge-graph', icon: Network, label: '本体图谱' },
+  { key: '/data/knowledge-graph', icon: Network, label: '关系图谱' },
   { section: '数据安全配置' },
   { key: '/data/sensitive', icon: Shield, label: '敏感数据' },
   { key: '/data/rls', icon: ShieldCheck, label: '安全策略' },
@@ -240,7 +240,7 @@ export default function DataPlatformLayout() {
             </DropdownMenu>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
+                <button aria-label="用户菜单" className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
                   <Avatar className="h-6 w-6">
                     <AvatarFallback className="text-xs">{user?.username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
                   </Avatar>
@@ -251,6 +251,10 @@ export default function DataPlatformLayout() {
                 <DropdownMenuItem onClick={() => navigate('/data/profile')}>
                   <UserCircle className="h-4 w-4 mr-2" />
                   个人设置
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => navigate('/data/memory')}>
+                  <Brain className="h-4 w-4 mr-2" />
+                  我的记忆
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => { logout(); navigate('/login'); }}>
                   <LogOut className="h-4 w-4 mr-2" />

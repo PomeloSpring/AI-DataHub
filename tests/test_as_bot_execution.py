@@ -341,7 +341,9 @@ class TestDecisionAudit:
 class TestOntologyGenerateToolSemantics:
     """generate_ontology_draft 已改为素材提供工具（不调 LLM）：返回分批素材与
     归纳指引，归纳由 AS-BOT 会话内 agent 完成后经 save_ontology_draft 提交。
-    业务源须在用户角色授权集内（角色权限模型，fail-closed，不静默回退系统域）。"""
+    域约束（as-bot-system-waker §2 / assert_ontology_draft_scope）：系统源(≤0) AS-BOT 自主可用；
+    业务源仅限『生成本体模型』任务绑定会话（服务端注入 task_binding）取素材，且须在角色
+    授权集内（fail-closed，不静默回退系统域）。"""
 
     def _payload(self, result):
         import json
@@ -377,14 +379,21 @@ class TestOntologyGenerateToolSemantics:
         assert "spec" in p and "save_ontology_draft" in p["note"]
         assert "objects" not in p and "model_id" not in p
 
+    def test_business_source_without_task_binding_rejected(self, monkeypatch):
+        """业务源在普通会话（无任务绑定）一律拒：仅限『生成本体模型』任务会话发起。"""
+        p = self._payload(self._run(monkeypatch, {}, self._ctx(5)))
+        assert "error" in p and "仅限『生成本体模型』任务会话" in p["error"]
+
     def test_business_source_unauthorized_rejected(self, monkeypatch):
-        """角色未授权该源：普通会话同样拒（fail-closed，不静默回退系统域）。"""
-        p = self._payload(self._run(monkeypatch, {}, self._ctx(5), allowed=()))
+        """任务绑定会话内角色未授权该源：仍拒（fail-closed，不静默放行）。"""
+        binding = {"kind": "ontology_generate", "datasource_id": 5}
+        p = self._payload(self._run(monkeypatch, {}, self._ctx(5, binding=binding), allowed=()))
         assert "error" in p and "无权使用该数据源" in p["error"]
 
-    def test_business_source_authorized_passes_without_task_binding(self, monkeypatch):
-        """角色权限模型：普通会话（无任务绑定）角色有授权同样可取素材。"""
-        p = self._payload(self._run(monkeypatch, {}, self._ctx(5)))
+    def test_business_source_task_binding_authorized_returns_material(self, monkeypatch):
+        """任务绑定会话 + 角色已授权该源：正常返回分批素材。"""
+        binding = {"kind": "ontology_generate", "datasource_id": 5}
+        p = self._payload(self._run(monkeypatch, {}, self._ctx(5, binding=binding)))
         assert p["material"] == "M0" and p["total_batches"] == 2
 
     def test_datasource_arg_rejected(self, monkeypatch):

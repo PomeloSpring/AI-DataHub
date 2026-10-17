@@ -9,6 +9,7 @@ import { useState, useMemo } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Layers, Link2, AlertTriangle, Boxes } from 'lucide-react';
+import { normalizeDocObjects, type DocObjectIssue } from '@/lib/ontologyObjects';
 
 export interface HubObject {
   key: string;
@@ -23,17 +24,28 @@ export interface HubObject {
   };
   properties?: { column?: string; name?: string; type?: string; is_key?: boolean; description?: string; enum?: string[] }[];
   links?: { type?: string; target?: string; cardinality?: string; description?: string }[];
-  execution_binding?: { query_mode?: string; size_class?: string; physical_table?: string; bind_kind?: string; template_ref?: string };
+  execution_binding?: { query_mode?: string; size_class?: string; physical_table?: string; bind_kind?: string; dataset_ref?: string };
 }
 
-export default function ObjectHubTab({ objects }: { modelId: number; objects: HubObject[] }) {
+export default function ObjectHubTab({ objects, issues = [] }: {
+  modelId: number;
+  objects: HubObject[];
+  /** doc 里无法定位身份的元素（已由上层归一剔除），必须在页面上显式提示，不得静默当作“无对象” */
+  issues?: DocObjectIssue[];
+}) {
   const [selKey, setSelKey] = useState<string>('');
+  // 上界保护：即便调用方未做归一，也不会因元素缺 key / 非数组而在渲染期崩溃
+  const list = useMemo(
+    () => normalizeDocObjects(objects).objects as HubObject[],
+    [objects]);
 
   const obj = useMemo(
-    () => objects.find((o) => o.key === selKey) || objects[0] || null,
-    [objects, selKey]);
+    () => list.find((o) => o.key === selKey) || list[0] || null,
+    [list, selKey]);
 
-  const objKeys = useMemo(() => new Set(objects.map((o) => o.key.toLowerCase())), [objects]);
+  const objKeys = useMemo(
+    () => new Set(list.map((o) => String(o.key ?? '').toLowerCase()).filter(Boolean)),
+    [list]);
   const orphanLinks = (obj?.links || []).filter(
     (l) => l.target && !objKeys.has(String(l.target).toLowerCase()));
 
@@ -41,10 +53,17 @@ export default function ObjectHubTab({ objects }: { modelId: number; objects: Hu
     <div className="flex gap-4 min-h-[60vh]">
       {/* 对象清单 */}
       <div className="w-60 shrink-0 border-r pr-3">
-        <div className="text-xs text-muted-foreground mb-2">对象（{objects.length}）</div>
+        {issues.length > 0 && (
+          <div className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[11px] text-amber-600">
+            <AlertTriangle className="h-3 w-3 mr-1 inline" />
+            {issues.length} 个对象定义无法展示：{issues.map((e) => `${e.label}${e.hint}`).join('；')}
+            <div className="mt-0.5 text-amber-600/80">请在 JSON 中补齐 key（对象英文标识）后保存</div>
+          </div>
+        )}
+        <div className="text-xs text-muted-foreground mb-2">对象（{list.length}）</div>
         <ScrollArea className="h-[62vh]">
           <div className="space-y-1.5 pr-2">
-            {objects.map((o) => (
+            {list.map((o) => (
               <button
                 key={o.key}
                 onClick={() => setSelKey(o.key)}
@@ -71,7 +90,8 @@ export default function ObjectHubTab({ objects }: { modelId: number; objects: Hu
       {/* 对象中枢详情 */}
       {!obj ? (
         <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
-          <Boxes className="h-8 w-8 mr-2 opacity-40" /> 该模型暂无对象
+          <Boxes className="h-8 w-8 mr-2 opacity-40" />
+          {issues.length > 0 ? '该模型的对象定义均缺少 key，无法展示（见左侧提示）' : '该模型暂无对象'}
         </div>
       ) : (
         <div className="flex-1 min-w-0 space-y-4">
@@ -95,8 +115,8 @@ export default function ObjectHubTab({ objects }: { modelId: number; objects: Hu
               <div className="text-xs text-muted-foreground mt-1">
                 绑定: {obj.execution_binding.physical_table || obj.primary_table || '-'}
                 {obj.execution_binding.query_mode && <> · {obj.execution_binding.query_mode}</>}
-                {obj.execution_binding.bind_kind === 'sql_template' && obj.execution_binding.template_ref &&
-                  <> · SQL 模板 {obj.execution_binding.template_ref}</>}
+                {obj.execution_binding.bind_kind === 'dataset' && obj.execution_binding.dataset_ref &&
+                  <> · 查询数据集 {obj.execution_binding.dataset_ref}</>}
               </div>
             )}
           </div>

@@ -235,29 +235,6 @@ class TableInfoUpdate(BaseModel):
     region_tag: Optional[str] = None
     is_active: Optional[bool] = None
 
-class TemplateCreate(BaseModel):
-    template_id: str
-    template_name: str
-    category: str = ""
-    intent_keywords: str = ""
-    sql_template: str
-    variables: Optional[str] = ""
-    description: Optional[str] = ""
-    rules: Optional[str] = ""
-    is_active: bool = True
-    datasource_id: int = 0
-
-class TemplateUpdate(BaseModel):
-    template_name: Optional[str] = None
-    category: Optional[str] = None
-    intent_keywords: Optional[str] = None
-    sql_template: Optional[str] = None
-    variables: Optional[str] = None
-    description: Optional[str] = None
-    rules: Optional[str] = None
-    is_active: Optional[bool] = None
-    datasource_id: Optional[int] = None
-
 class TermCreate(BaseModel):
     term_cn: str
     term_en: Optional[str] = ""

@@ -4,7 +4,8 @@
 -- 把大屏可复用元素做成一条条"字模"存库: 系统内置(admin-only 保护)+ 新增回存,
 -- 全局共享(workspace_id=0), 供 AS-BOT 与前端组装可视化大屏时取用。
 -- category: chart_style / screen_background / kpi_card / layout_template /
---           decoration_frame / color_theme / sql_template
+--           decoration_frame / color_theme
+-- 预制 SQL（含参数化漏斗/留存等）不在字模库：见 adh_datasets（已治理的查询资产）。
 -- 幂等: 建表 IF NOT EXISTS; 内置种子用 INSERT IGNORE(uk_code 去重)。
 -- ============================================================================
 
@@ -16,7 +17,6 @@ CREATE TABLE IF NOT EXISTS adh_vis_components (
   chart_type     VARCHAR(32)  NULL     COMMENT '图表样式字模适用的图表类型(可空)',
   style_config   TEXT         NULL     COMMENT '样式配置 JSON(前端按 category 解释)',
   thumbnail      TEXT         NULL     COMMENT '预览缩略图(data-uri / url / 内联 svg)',
-  query_template TEXT         NULL     COMMENT 'SQL 模板字模的参数化查询 JSON(仅 sql_template)',
   description    VARCHAR(512) DEFAULT '',
   source         VARCHAR(16)  DEFAULT 'custom' COMMENT 'system=内置 | custom=新增',
   workspace_id   BIGINT       DEFAULT 0 COMMENT '0=全局共享',
@@ -139,19 +139,6 @@ VALUES
   ('cs_funnel_grad', '渐变漏斗', 'chart_style', 'funnel',
    '{"config":{"colorScheme":["#22d3ee","#3b82f6","#8b5cf6","#c084fc"],"gradient":true}}',
    '转化漏斗, 渐变分层', 'system', 1, 67);
-
--- SQL 模板字模(sql_template): 供传统 BI 管理员/数据开发手动配置的参数化模板
-INSERT IGNORE INTO adh_vis_components
-  (code, name, category, chart_type, style_config, query_template, description, source, is_builtin, sort_order)
-VALUES
-  ('sql_trend_daily', '日度趋势(参数化)', 'sql_template', 'line',
-   '{"params":[{"name":"start_date","type":"date"},{"name":"end_date","type":"date"}]}',
-   '{"sql":"SELECT stat_date AS x, SUM(amount) AS y FROM {{table}} WHERE stat_date BETWEEN {{start_date}} AND {{end_date}} GROUP BY stat_date ORDER BY stat_date","bindTable":true}',
-   '按日期区间聚合金额的趋势模板, 人工在图表配置里选表填参', 'system', 1, 70),
-  ('sql_top_n', '维度 TopN(参数化)', 'sql_template', 'bar',
-   '{"params":[{"name":"n","type":"number","default":10}]}',
-   '{"sql":"SELECT {{dim}} AS x, SUM(amount) AS y FROM {{table}} GROUP BY {{dim}} ORDER BY y DESC LIMIT {{n}}","bindTable":true}',
-   '取某维度金额 TopN 的柱图模板', 'system', 1, 71);
 
 -- 主题包(theme_pack): 一个字模=一整套风格, 覆盖全部图表/控件类型。
 -- style_config: { mode, palette, background, card, decoration, charts{default,<type>}, widgets{default,<type>} }

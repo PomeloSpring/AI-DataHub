@@ -16,14 +16,14 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { Plus, Edit, Trash2, RefreshCw, Lock, LayoutTemplate, Palette, Image, Gauge, Grid3x3, Frame, FileCode, BarChart3, Layers, FileText, Map } from 'lucide-react';
+import { Plus, Edit, Trash2, RefreshCw, Lock, LayoutTemplate, Palette, Image, Gauge, Grid3x3, Frame, BarChart3, Layers, FileText, Map } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import client from '@/api/client';
 import { useAuthStore } from '@/stores/authStore';
 
 const ICONS = { theme_pack: Layers, chart_style: BarChart3, screen_background: Image, kpi_card: Gauge,
-  layout_template: Grid3x3, decoration_frame: Frame, color_theme: Palette, sql_template: FileCode, report_template: FileText, map_tile: Map };
+  layout_template: Grid3x3, decoration_frame: Frame, color_theme: Palette, report_template: FileText, map_tile: Map };
 const CATEGORIES = VIS_CATEGORIES.map(c => ({ ...c, icon: ICONS[c.id] }));
 
 export default function VisLibrary() {
@@ -46,53 +46,50 @@ export default function VisLibrary() {
   const [category, setCategory] = useState('chart_style');
   const [chartType, setChartType] = useState('');
   const [styleConfig, setStyleConfig] = useState('{}');
-  const [queryTemplate, setQueryTemplate] = useState('');
   const [reportContent, setReportContent] = useState('');
   const [reportFormat, setReportFormat] = useState<'markdown' | 'html'>('markdown');
   const [mapTileUrl, setMapTileUrl] = useState('');
   const [mapTileProvider, setMapTileProvider] = useState('');
   const [mapTileApiKey, setMapTileApiKey] = useState('');
+  const [mapTileDefault, setMapTileDefault] = useState(false);
   const [description, setDescription] = useState('');
   const [asBuiltin, setAsBuiltin] = useState(false);
 
   const openCreate = () => {
     setEdit(null); setName(''); setCategory('chart_style'); setChartType('');
     setStyleConfig(JSON.stringify({ config: { colorScheme: ['#22d3ee', '#3b82f6'] } }, null, 2));
-    setQueryTemplate(''); setReportContent(''); setReportFormat('markdown');
-    setMapTileUrl(''); setMapTileProvider(''); setMapTileApiKey('');
+    setReportContent(''); setReportFormat('markdown');
+    setMapTileUrl(''); setMapTileProvider(''); setMapTileApiKey(''); setMapTileDefault(false);
     setDescription(''); setAsBuiltin(false); setFormOpen(true);
   };
   const openEdit = (c: VisComponent) => {
     setEdit(c); setName(c.name); setCategory(c.category); setChartType(c.chart_type || '');
     setStyleConfig(JSON.stringify(c.style_config || {}, null, 2));
-    setQueryTemplate(c.query_template ? JSON.stringify(c.query_template, null, 2) : '');
     setReportContent((c.style_config as any)?.content || '');
     setReportFormat((c.style_config as any)?.format || 'markdown');
     setMapTileUrl((c.style_config as any)?.tileUrl || '');
     setMapTileProvider((c.style_config as any)?.provider || '');
     setMapTileApiKey((c.style_config as any)?.apiKey || '');
+    setMapTileDefault(!!(c.style_config as any)?.is_default);
     setDescription(c.description || ''); setAsBuiltin(!!c.is_builtin); setFormOpen(true);
   };
 
   const save = async () => {
-    let sc: any, qt: any = null;
+    let sc: any;
     try { sc = JSON.parse(styleConfig || '{}'); } catch { toast.error('样式配置不是合法 JSON'); return; }
-    if (queryTemplate.trim()) {
-      try { qt = JSON.parse(queryTemplate); } catch { toast.error('SQL 模板不是合法 JSON'); return; }
-    }
     // 报告模板: content/format 存入 style_config
     if (category === 'report_template') {
       sc = { content: reportContent, format: reportFormat };
     }
-    // 地图瓦片: tileUrl/provider/apiKey 存入 style_config
+    // 地图瓦片: tileUrl/provider/apiKey/is_default 存入 style_config
     if (category === 'map_tile') {
-      sc = { tileUrl: mapTileUrl, provider: mapTileProvider, apiKey: mapTileApiKey };
+      sc = { tileUrl: mapTileUrl, provider: mapTileProvider, apiKey: mapTileApiKey, ...(mapTileDefault ? { is_default: true } : {}) };
     }
     setSaving(true);
     try {
       const payload = {
         name, category, chart_type: chartType || null, style_config: sc,
-        query_template: qt, description, is_builtin: asBuiltin && isAdmin,
+        description, is_builtin: asBuiltin && isAdmin,
       };
       if (edit) await client.put(`/vis-library/components/${edit.id}`, payload);
       else await client.post('/vis-library/components', payload);
@@ -252,14 +249,6 @@ export default function VisLibrary() {
               <Label>样式配置 (JSON)</Label>
               <Textarea value={styleConfig} onChange={e => setStyleConfig(e.target.value)} rows={8} className="font-mono text-xs" />
             </div>
-            {category === 'sql_template' && (
-              <div className="space-y-1.5">
-                <Label>SQL 模板 (JSON, 供传统 BI 人工配置)</Label>
-                <Textarea value={queryTemplate} onChange={e => setQueryTemplate(e.target.value)} rows={5}
-                  placeholder='{"sql":"SELECT ... {{table}}","params":[{"name":"n","type":"number"}]}' className="font-mono text-xs" />
-                <p className="text-[11px] text-muted-foreground">SQL 模板仅在图表配置里由管理员/数据开发使用, 不进入 Chat/Agent 取数。</p>
-              </div>
-            )}
             {category === 'report_template' && (
               <div className="space-y-1.5">
                 <Label>模板格式</Label>
@@ -309,6 +298,12 @@ export default function VisLibrary() {
                 <Input value={mapTileApiKey} onChange={e => setMapTileApiKey(e.target.value)}
                   placeholder="输入服务 API Key" type="password" />
               </div>
+            )}
+            {category === 'map_tile' && (
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={mapTileDefault} onChange={e => setMapTileDefault(e.target.checked)} />
+                设为默认瓦片（Chat 地图卡片自动选用；多个默认时取清单首个）
+              </label>
             )}
             <div className="space-y-1.5">
               <Label>描述</Label>

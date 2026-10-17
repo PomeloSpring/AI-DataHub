@@ -1,6 +1,6 @@
-import { Bot } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import BotAvatar from './chat/BotAvatar';
 import { useAsBotStore } from '../stores/asBotStore';
 
 /**
@@ -20,7 +20,7 @@ export default function AsBotButton() {
           onClick={togglePanel}
           aria-label="智能助手"
         >
-          <Bot className="h-4 w-4" />
+          <BotAvatar size={22} active={panelOpen} />
         </Button>
       </TooltipTrigger>
       <TooltipContent>智能助手</TooltipContent>

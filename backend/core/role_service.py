@@ -80,9 +80,11 @@ class RoleService:
                 default_tools = {
                     "mcp": {
                         "semantic": ["get_metrics", "get_glossary", "knowledge_search", "run_semantic_query"],
-                        "catalog": ["search_metadata", "get_table_schema", "list_datasources"]
+                        "catalog": ["search_metadata", "get_table_schema", "list_datasources"],
+                        # 记忆只读写本人行、不返回业务数据行，属个人工作区能力 → 新建角色默认开启
+                        "memory": ["save_memory", "list_memory", "delete_memory"],
                     },
-                    "groups": ["semantic", "catalog"],
+                    "groups": ["semantic", "catalog", "memory"],
                     "external": {},
                     "standard": ["read", "grep", "glob"]
                 }

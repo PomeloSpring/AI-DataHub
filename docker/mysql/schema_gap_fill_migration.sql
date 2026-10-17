@@ -83,14 +83,20 @@ CALL adh_gap_add_column('adh_chat_attachments', 'storage_type',
                         "VARCHAR(16) NOT NULL DEFAULT 'local' COMMENT 'local | object'");
 
 -- ----------------------------------------------------------------------------
--- 3. 语义层多方言编译 + SQL 模板绑定（shared/semantics planner、binding_resolver）
+-- 3. 语义层多方言编译 + 预制 SQL 数据集（planner / dataset_compiler / binding_resolver）
 -- ----------------------------------------------------------------------------
 CALL adh_gap_add_column('adh_metrics', 'formula_dialects',
                         "JSON NULL COMMENT '按方言注册的可下推表达式 {\"mysql\":...,\"postgres\":null}; 键存在值为 null=显式不支持该方言'");
-CALL adh_gap_add_column('adh_ontology_bindings', 'template_ref',
-                        "VARCHAR(64) NULL COMMENT 'bind_kind=sql_template 时指向 adh_sql_templates.template_id'");
-CALL adh_gap_add_column('adh_sql_templates', 'dialect',
-                        "VARCHAR(16) NOT NULL DEFAULT '' COMMENT 'mysql|postgres|generic; 空视同 mysql'");
+CALL adh_gap_add_column('adh_datasets', 'variables',
+                        "JSON NULL COMMENT '参数声明 {name:{type,values,default}}; 正文 ${name} 按类型渲染'");
+CALL adh_gap_add_column('adh_datasets', 'sql_bodies',
+                        "JSON NULL COMMENT '按引擎/方言族注册的正文; 缺本引擎实现即拒绝执行'");
+CALL adh_gap_add_column('adh_datasets', 'touched_tables',
+                        "JSON NULL COMMENT '正文触及的物理表(保存/编译时静态提取), 供 RLS/敏感策略消费'");
+CALL adh_gap_add_column('adh_datasets', 'certified',
+                        "TINYINT NOT NULL DEFAULT 0 COMMENT '口径是否已人工认证'");
+CALL adh_gap_add_column('adh_ontology_bindings', 'dataset_ref',
+                        "VARCHAR(128) NULL COMMENT 'bind_kind=dataset 时指向 adh_datasets.name'");
 CALL adh_gap_add_column('adh_datasources', 'ssl_mode',
                         "VARCHAR(16) NOT NULL DEFAULT 'disabled' COMMENT 'TLS 模式: disabled|prefer|require|disable(PG语义)'");
 
@@ -216,8 +222,11 @@ FROM (
     SELECT 'adh_saved_queries', 'datasource_id' UNION ALL
     SELECT 'adh_chat_attachments', 'storage_type' UNION ALL
     SELECT 'adh_metrics', 'formula_dialects' UNION ALL
-    SELECT 'adh_ontology_bindings', 'template_ref' UNION ALL
-    SELECT 'adh_sql_templates', 'dialect' UNION ALL
+    SELECT 'adh_datasets', 'variables' UNION ALL
+    SELECT 'adh_datasets', 'sql_bodies' UNION ALL
+    SELECT 'adh_datasets', 'touched_tables' UNION ALL
+    SELECT 'adh_datasets', 'certified' UNION ALL
+    SELECT 'adh_ontology_bindings', 'dataset_ref' UNION ALL
     SELECT 'adh_datasources', 'ssl_mode' UNION ALL
     SELECT 'adh_conversations', 'waker_key' UNION ALL
     SELECT 'adh_workspaces', 'workspace_type'

@@ -9,7 +9,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import {
-  Database, Network, GitBranch, Search, RefreshCw, Terminal,
+  Database, Network, GitBranch, Search, Terminal,
 } from 'lucide-react';
 import KnowledgeGraphView from '@/components/graph/KnowledgeGraph';
 import { ModelGraphTab } from './catalog/ModelAssetTabs';
@@ -81,7 +81,7 @@ function KnowledgeGraphFull() {
   // Store
   const {
     selectedNode,
-    fetchGraphData, searchNodes, syncGraph,
+    fetchGraphData, searchNodes,
     getUpstream, getDownstream, getImpactAnalysis,
     setSelectedNode
   } = useGraphStore();
@@ -122,25 +122,8 @@ function KnowledgeGraphFull() {
     }
   };
 
-  const handleSync = async () => {
-    setIsLoading(true);
-    try {
-      const result = await syncGraph(0);
-      if (result.success) {
-        toast.success(
-          `图谱构建完成: ${result.tables} 表, ${result.columns} 字段, ${result.terms} 术语, ` +
-          `${result.metrics ?? 0} 指标, ${result.sql_templates ?? 0} SQL 模板`
-        );
-        await loadGraphData();
-      } else {
-        toast.error(result.message || '图谱构建失败');
-      }
-    } catch (error) {
-      toast.error('图谱构建失败');
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  // 图谱重建（旧「构建图谱」按钮）已移到「关系图谱」页：那里按当前模型的域
+  // （系统/业务/源）选择重建哪张命名图，本页固定 ds=0 会重建错的图。
 
   // ── SPARQL Handler ────────────────────────────────────────────────
 
@@ -179,16 +162,7 @@ function KnowledgeGraphFull() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleSync}
-            disabled={isLoading}
-            title="从元数据重建知识图谱（表/字段/术语/指标/SQL 模板）"
-          >
-            <RefreshCw className={`h-4 w-4 mr-1 ${isLoading ? 'animate-spin' : ''}`} />
-            构建图谱
-          </Button>
+          {/* 图谱生成入口在「关系图谱」页（需按模型域定作用域 + graph:manage 把关） */}
         </div>
       </div>
 

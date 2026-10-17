@@ -43,8 +43,8 @@ export default function MemorySettings() {
   const homePath = (() => {
     const p = location.pathname;
     if (p.startsWith('/system')) return '/system';
-    const ws = p.match(/^(\/ws\/[^/]+)/);
-    if (ws) return `${ws[1]}/chat`;
+    const m = p.match(/^\/(ws|ask)\/([^/]+)/);
+    if (m) return m[1] === 'ws' ? `/${m[1]}/${m[2]}/chat` : `/${m[1]}/${m[2]}`;
     return '/data';
   })();
 

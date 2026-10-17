@@ -38,6 +38,13 @@ BUILTIN_JOBS: dict = {
         "schedule_desc": "每日 03:30",
         "owner_service": "datacatalog",
     },
+    "intent_intercept_retention": {
+        "name": "意图漏斗判定流水清理",
+        "description": "滚动删除超过保留期的 adh_intent_intercepts 判定行（shadow 档每轮都落一行）；"
+                       "已人工复盘的行不删，它是分流阈值迭代的唯一依据",
+        "schedule_desc": "每日 04:10",
+        "owner_service": "datamind",
+    },
 }
 
 

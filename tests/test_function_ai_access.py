@@ -356,7 +356,11 @@ def _db_conn():
 
 
 def test_registry_matches_db_ai_action_keys():
-    """DB 的 ai_action_key 与 FUNCTION_ACTION_SPECS 必须一一对应，perm_code 也要对得上。"""
+    """DB 的 ai_action_key 与 FUNCTION_ACTION_SPECS 必须一一对应，perm_code 也要对得上。
+
+    ai_action_key 与 api_pattern/api_method 同口径：一个权限点可挂多个功能动作（逗号分隔，
+    如 report:manage 同时挂 report.generate 与 report.save），展开后逐项比对。
+    """
     conn = _db_conn()
     if conn is None:
         pytest.skip("元数据库不可用，跳过双侧一致性断言")
@@ -364,9 +368,16 @@ def test_registry_matches_db_ai_action_keys():
         with conn.cursor() as cur:
             cur.execute("SELECT ai_action_key, perm_code FROM adh_perm_registry "
                         "WHERE ai_action_key <> ''")
-            db = {r[0]: r[1] for r in cur.fetchall()}
+            rows = cur.fetchall()
     finally:
         conn.close()
+
+    db: dict[str, str] = {}
+    for raw_key, code in rows:
+        for action in str(raw_key).split(","):
+            action = action.strip()
+            if action:
+                db[action] = code
 
     specs = function_tools.FUNCTION_ACTION_SPECS
     assert set(db) == set(specs), (

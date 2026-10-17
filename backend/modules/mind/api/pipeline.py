@@ -34,13 +34,31 @@ class PipelineExecuteRequest(BaseModel):
     session_id: Optional[str] = ""  # 执行层会话 ID(SDK 多轮对话 resume)
     conversation_id: Optional[int] = 0  # chat 会话 ID(qoder 长对话池 key)
     as_bot_key: Optional[str] = ""  # 聊天端选定的 AS-BOT(空=按工作空间+角色全部生效 AS-BOT 合并)
+    # 前置意图漏斗：True = 「转深度分析」显式绕过分流（只关分流，不关护栏）
+    force_agent: Optional[bool] = False
 
 
 # ── Pipeline Execute ─────────────────────────────────────────────────
 
 def _sse_event(event: str, data: dict) -> bytes:
     """Format a Server-Sent Event."""
+    if event == "done":
+        # 「存为报表」入口由报表域单一口径标注(与 chat_service 同一入口, 前端只消费)
+        from backend.modules.viz.services.report_service import with_reportability
+        data = with_reportability(data)
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n".encode("utf-8")
+
+
+@router.get("/send/status")
+def send_status(conversation_id: int, user: UserInfo = Depends(get_current_user)):
+    """会话执行权只读状态（供前端「正在停止…」轮询）。
+
+    取消/停止没有显式指令端点（只靠断 SSE），释放执行权需几十秒的收尾核验；
+    没这个接口时前端只能在“已停”与“仍在跑”之间猜，猜错就是 409。
+    身份只信服务端（get_current_user），并按 user_id 隔离，不得从参数拿身份。
+    """
+    from backend.modules.mind.execution.session_workspace import execution_status
+    return execution_status(conversation_id, int(user["user_id"]))
 
 
 @router.post("/send/stream")
@@ -65,7 +83,8 @@ async def _pipeline_stream(
 ):
     from backend.modules.mind.execution.session_workspace import preflight_request
     from starlette.concurrency import run_in_threadpool
-    await run_in_threadpool(preflight_request, req, user)
+    # preflight 已解析过一次生效策略，透传给 ChatService 里的前置漏斗，避开重复解析
+    policy = await run_in_threadpool(preflight_request, req, user)
     question = req.question
     history = req.history or []
     datasource_id = req.datasource_id or 0
@@ -118,6 +137,8 @@ async def _pipeline_stream(
                 conversation_id=req.conversation_id or 0,
                 user_role=user_role,
                 as_bot_key=req.as_bot_key or "",
+                force_agent=bool(req.force_agent or False),
+                policy=policy,
             )
             try:
                 async for event in stream:

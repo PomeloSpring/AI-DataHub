@@ -277,35 +277,5 @@ export async function listReportTemplates(workspaceId?: number): Promise<ReportT
   return data;
 }
 
-// ── Reports Center API (自动化任务成功执行生成的报告) ─────────────
-
-export interface ReportSummary {
-  id: number;
-  task_id: number;
-  log_id: number | null;
-  title: string;
-  format: string;
-  access_mode: string;
-  workspace_id: number;
-  view_count: number;
-  created_at: string;
-  task_name: string | null;
-  generation_status?: string;
-}
-
-export interface ReportDetail extends ReportSummary {
-  content: string;
-  access_warning?: string;
-  generation_status?: string;
-  evidence_summary?: { quality?: string; complete?: boolean; semantic_version?: string; period?: string; validated?: boolean };
-}
-
-export async function listReports(workspaceId?: number): Promise<ReportSummary[]> {
-  const { data } = await client.get('/scheduled-tasks/reports', { params: { workspace_id: workspaceId } });
-  return data;
-}
-
-export async function getReportDetail(reportId: number): Promise<ReportDetail> {
-  const { data } = await client.get(`/scheduled-tasks/reports/${reportId}/detail`);
-  return data;
-}
+// 报表中心（含非定时任务产出的报表）的清单/详情/增删改已迁至 `@/api/report`：
+// 报表跟随属主且不再只由任务产出，继续挂在 scheduled-tasks 下会误导页面职责边界。

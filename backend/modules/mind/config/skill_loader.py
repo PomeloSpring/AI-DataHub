@@ -1,15 +1,17 @@
-"""Skill Loader — loads skill configs from files and DB with priority merging.
+"""Skill Loader — 技能唯一事实源是本地文件夹 config/skills/{name}/SKILL.md。
 
 Skills are prompt templates that agents can dynamically load.
-System skills live in config/skills/{name}/SKILL.md (Qoder 规范: YAML frontmatter + Markdown 正文)。
-User-created skills live in adh_skills table.
+系统技能与自定义技能均落盘为 Qoder 规范 SKILL.md（YAML frontmatter + Markdown 正文）。
 
-Loading priority:
-  DB (adh_skills, is_active=1) > File (config/skills/)
-  User-created skills with the same name override system file skills.
+历史上还存在一层“DB 覆盖”（adh_skills 表，DB > File）已**退役删除**：
+  * 全仓无任何建表迁移、无任何生产写入（保存走 save_skill_folder 落盘），
+    旧读路径只会每次技能加载刷一条 `Table 'adh2.adh_skills' doesn't exist` WARNING；
+  * 更危害的是“DB 遮蔽文件”：若某环境手建过该表并残留旧行，改 SKILL.md 会静默不生效。
+单一事实源不得有隐形的第二份：残留数据由 `warn_legacy_db_skills()` 在服务启动时**显式告警**，
+而不是悄悄拿它去覆盖文件（见 no-silent-degradation 规范）。
 
-A TTL cache (default 60s) enables dynamic hot-reload: DB skill edits take
-effect within 60 seconds without restarting the service.
+A TTL cache (default 60s) enables dynamic hot-reload: SKILL.md 修改
+在 60 秒内生效，无需重启服务。
 """
 
 import logging
@@ -129,41 +131,54 @@ def _load_skill_from_file(skill_name: str) -> Optional[dict]:
     return result
 
 
-def _load_skill_from_db(skill_name: str) -> Optional[dict]:
-    """Load a single skill from adh_skills table."""
-    try:
-        from backend.common.db.metadata_db import get_metadata_conn
+def legacy_db_skill_names() -> Optional[list[str]]:
+    """读已退役的 adh_skills 表中仍标为生效的行名。
 
+    Returns:
+        None  —— 表不存在（标准退役态，不是故障）；
+        list  —— 表存在时的生效技能名（可能为空）。
+    只用于启动对账告警，**不得**被任何加载路径消费。
+    """
+    from backend.common.db.metadata_db import get_metadata_conn
+
+    try:
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, name, display_name, description, category, "
-                    "system_prompt, skill_config, source_type, source_skill, "
-                    "is_active, created_at, updated_at "
-                    "FROM adh_skills WHERE name = %s AND is_active = 1",
-                    (skill_name,)
-                )
-                row = cur.fetchone()
-                if row:
-                    # Parse skill_config JSON
-                    config = row.get("skill_config", "")
-                    if config and isinstance(config, str):
-                        import json
-                        try:
-                            row["skill_config"] = json.loads(config)
-                        except json.JSONDecodeError:
-                            row["skill_config"] = {}
-                    return row
+                cur.execute("SELECT name FROM adh_skills WHERE is_active = 1 ORDER BY name")
+                return [r["name"] for r in cur.fetchall()]
         finally:
             conn.close()
-    except Exception as e:
-        logger.warning("Failed to load skill from DB %s: %s", skill_name, e)
-    return None
+    except Exception as e:  # noqa: BLE001
+        if _is_missing_table_error(e):
+            return None
+        logger.warning("[skills] 遗留 adh_skills 对账查询失败（不影响技能加载）: %s", e)
+        return None
+
+
+def _is_missing_table_error(exc: Exception) -> bool:
+    """MySQL 1146 (table doesn't exist) 判定：表缺失是退役后的常态，不当故障报。"""
+    args = getattr(exc, "args", ())
+    return (len(args) >= 1 and args[0] == 1146) or "doesn't exist" in str(exc)
+
+
+def warn_legacy_db_skills() -> Optional[list[str]]:
+    """服务启动对账：已退役的 DB 技能覆盖层若还残留生效数据，必须显式告警。
+
+    这些行**不再被读取**（文件是唯一事实源），静默丢弃会让用户发现“改了 SKILL.md 不生效”
+    而查不到原因，因此这里把名字列出来提醒迁移或清理。表不存在返回 None。
+    """
+    names = legacy_db_skill_names()
+    if names:
+        logger.warning(
+            "[skills] 发现遗留表 adh_skills 中 %d 条生效技能 %s：DB 覆盖层已退役，"
+            "它们**不再生效**；如需保留请迁移到 backend/modules/mind/config/skills/{name}/SKILL.md，"
+            "否则请归档后删除该行。", len(names), names)
+    return names
 
 
 def load_skill(skill_name: str) -> Optional[dict]:
-    """Load a skill by name (cached, TTL 60s). DB (user-created) beats file (system).
+    """Load a skill by name (cached, TTL 60s). 唯一来源: config/skills/{name}/SKILL.md。
 
     Returns:
         Dict with keys: name, display_name, description, category, system_prompt,
@@ -179,36 +194,16 @@ def load_skill(skill_name: str) -> Optional[dict]:
 
 
 def _load_skill_uncached(skill_name: str) -> Optional[dict]:
-    """Load a skill by name. DB (user-created) takes priority over file (system).
-
-    Returns:
-        Dict with keys: name, display_name, description, category, system_prompt,
-                        skill_config, source_type
-        None if not found
-    """
-    # 1. Try DB first (user-created or overridden)
-    db_skill = _load_skill_from_db(skill_name)
-    if db_skill and db_skill.get("system_prompt"):
-        logger.debug("Loaded skill %s from DB", skill_name)
-        return db_skill
-
-    # 2. Fall back to file system
+    """Load a skill by name from the file system (single source of truth)."""
     file_skill = _load_skill_from_file(skill_name)
     if file_skill:
         logger.debug("Loaded skill %s from file", skill_name)
         return file_skill
-
-    # 3. DB skill without system_prompt (partial override) — merge with file
-    if db_skill:
-        file_skill = _load_skill_from_file(skill_name) or {}
-        merged = {**file_skill, **{k: v for k, v in db_skill.items() if v}}
-        return merged
-
     return None
 
 
 def list_skills(category: str = None) -> list[dict]:
-    """List all skills (file + DB merged), cached with TTL 60s.
+    """List all skills (config/skills/ 文件夹), cached with TTL 60s.
 
     Args:
         category: Optional filter by category (e.g., 'analysis')
@@ -226,7 +221,7 @@ def list_skills(category: str = None) -> list[dict]:
 
 
 def _list_skills_uncached(category: str = None) -> list[dict]:
-    """List all skills (file + DB merged). DB entries override same-name file skills.
+    """List all skills from the file system (single source of truth).
 
     Args:
         category: Optional filter by category (e.g., 'analysis')
@@ -250,42 +245,17 @@ def _list_skills_uncached(category: str = None) -> list[dict]:
                     continue
                 skills[d.name] = skill
 
-    # 2. Load from DB (overrides file skills with same name)
-    try:
-        from backend.common.db.metadata_db import get_metadata_conn
-
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, name, display_name, description, category, "
-                    "source_type, source_skill, is_active "
-                    "FROM adh_skills WHERE is_active = 1"
-                )
-                rows = cur.fetchall()
-                for row in rows:
-                    name = row["name"]
-                    # Mark existing file skill as overridden
-                    if name in skills:
-                        skills[name]["_overridden_by_db"] = True
-                    skills[name] = {**skills.get(name, {}), **row, "source_type": row.get("source_type", "user")}
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.warning("Failed to load skills from DB: %s", e)
-
-    # 3. Filter by category if specified
+    # 2. Filter by category if specified
     result = list(skills.values())
     if category:
         result = [s for s in result if s.get("category") == category]
 
-    # 4. Sort: system first, then by name
+    # 3. Sort: system first, then by name
     result.sort(key=lambda s: (s.get("source_type", "") != "system", s.get("name", "")))
 
-    # 5. Remove internal fields and system_prompt from listing
+    # 4. Remove system_prompt from listing
     for s in result:
         s.pop("system_prompt", None)
-        s.pop("_overridden_by_db", None)
 
     return result
 

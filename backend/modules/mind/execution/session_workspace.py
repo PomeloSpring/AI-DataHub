@@ -1,5 +1,6 @@
 """本地持久卷上的独立会话；MySQL 是身份、resume 与执行互斥的唯一真值源。"""
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -105,10 +106,15 @@ def assert_workspace_disk_quota(workspace_id: int, user_id: int) -> None:
         raise HTTPException(status_code=409, detail="工作空间磁盘配额已用尽，请先归档收藏产物或清理会话文件")
 
 
-def session_paths(base, key, workspace_id, user_id, create=False, require_layout=True):
+def session_dir(base, key, workspace_id, user_id) -> Path:
+    """会话目录（纯路径计算，不落盘、不校验布局）。"""
     if not re.fullmatch(r"[a-f0-9]{32}", key) or workspace_id < 0:
         raise ValueError("会话路径标识无效")
-    root = base / str(user_id) / "workspace" / str(workspace_id) / "sessions" / key
+    return base / str(user_id) / "workspace" / str(workspace_id) / "sessions" / key
+
+
+def session_paths(base, key, workspace_id, user_id, create=False, require_layout=True):
+    root = session_dir(base, key, workspace_id, user_id)
     # 不接受持久卷内的符号链接替换。
     for p in [root, *root.parents]:
         if p == base:
@@ -125,6 +131,55 @@ def session_paths(base, key, workspace_id, user_id, create=False, require_layout
     if require_layout and not all((root / name).is_dir() and not (root / name).is_symlink() for name in ("workspace", "runtime")):
         raise RuntimeError("会话工作区不可用，禁止自动新建替代目录")
     return root
+
+
+def locate_existing_session(base, row) -> Path:
+    """续聊时定位既有会话目录：目录不存在时给可操作提示，而不是抛看不懂的内部异常。
+
+    存量会话的工作区可能已经丢失（迁移前旧目录被清理/未随迁移保留），
+    此时聊天历史仍在库里：必须明说“请新建会话继续”，而不把失败伪装成执行异常。
+    """
+    if not session_dir(base, row["session_key"], row["workspace_id"], row["user_id"]).is_dir():
+        raise HTTPException(409, "该会话的工作区目录已不存在（存量数据未迁移或已被清理），"
+                                 "聊天记录仍可查看，请新建会话继续")
+    return session_paths(base, row["session_key"], row["workspace_id"], row["user_id"])
+
+
+def stale_resume_directories(root, sdk_session_id: str) -> list:
+    """resume 转录里记录的会话目录是否已不存在（存量路径迁移未完成的直接表征）。
+
+    执行层 CLI 续聊时会重放转录首条 workspace-directories 并对其中每个目录做存在性
+    校验；目录已随布局迁移消失 → 子进程 exit 1，表现为一句看不出根因的 critical error。
+    这里只做**只读检测**，不自动改写状态文件（改写属于工作空间目录迁移脚本的阶段②，
+    由管理员显式执行），命中即交由调用方报错提醒（no-silent-degradation）。
+    """
+    if not sdk_session_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", sdk_session_id):
+        return []
+    missing = []
+    runtime_dir = Path(root) / "runtime"
+    if not runtime_dir.is_dir():
+        return missing
+    for projects in sorted(runtime_dir.glob("*/projects")):
+        for transcript in projects.glob(f"*/{sdk_session_id}.jsonl"):
+            try:
+                with transcript.open(encoding="utf-8", errors="ignore") as fh:
+                    for index, line in enumerate(fh):
+                        if index >= 200:            # 头部记录之外不做全量扫描
+                            break
+                        try:
+                            record = json.loads(line)
+                        except ValueError:
+                            continue
+                        if not isinstance(record, dict) or record.get("type") != "workspace-directories":
+                            continue
+                        for directory in record.get("directories") or []:
+                            if isinstance(directory, str) and directory and not os.path.isdir(directory) \
+                                    and directory not in missing:
+                                missing.append(directory)
+                        break
+            except OSError:
+                continue
+    return missing
 
 
 def _lock_conversation_for_deletion(cur, conversation_id, user_id):
@@ -317,7 +372,35 @@ def delete_conversation_workspace(conversation_id, user_id):
     return {"success": True}
 
 
+def execution_status(conversation_id: int, user_id: int) -> dict:
+    """会话执行权的**只读**状态（供前端「正在停止…」轮询）。
+
+    背景：取消只是前端断开 SSE，后端靠断连被动收尾（`client.disconnect` + 等在跑的
+    工具任务 + 核验子进程已停）才把 running 释放为 interrupted；这段窗口里重发必 409，
+    用户体感就是「停止没生效」。给一个可轮询的真相，而不是让用户猜。
+
+    只回状态机语义，不回 session_key/execution_token/pid 等内部标识。
+    """
+    row = execute_query(
+        "SELECT status FROM adh_agent_sessions WHERE conversation_id=%s AND user_id=%s",
+        (int(conversation_id or 0), int(user_id or 0)), fetchone=True)
+    status = row["status"] if row else "none"
+    return {
+        "status": status,
+        # busy: 仍持有执行权（仍在执行，或已断连但正在停止核验中）
+        "busy": status == "running",
+        # can_send: 不拦下一条消息（与 preflight_request 的口径一致）
+        "can_send": status not in ("running", "deleting", "closed"),
+    }
+
+
 def preflight_request(req, user):
+    """入口预检（工作空间授权 + 会话执行权 + 生效策略）。
+
+    返回解析出的 AS-BOT 生效策略（非 agent 模式返回 None）：调用方把它透传给
+    前置意图漏斗，避开同一请求内重复解析权限/工具策略（不是新增第二套裁决，
+    只把已有的一次结果传下去）。
+    """
     from backend.common.auth import authorize_workspace
     from backend.modules.mind.execution.models import ExecutionContext
     from backend.modules.mind.execution.tool_policy import resolve_policy
@@ -336,7 +419,7 @@ def preflight_request(req, user):
     if not agent_mode:
         if ctx.extra.get("as_bot_key"):
             raise HTTPException(422, "AS-BOT 会话不能切换到旧执行管线，请新建会话")
-        return
+        return None
     if cid:
         row = execute_query("SELECT status FROM adh_agent_sessions WHERE conversation_id=%s", (cid,), fetchone=True)
         if row and row["status"] == "deleting":
@@ -344,11 +427,14 @@ def preflight_request(req, user):
         if row and row["status"] == "closed":
             raise HTTPException(409, "该会话已清空，请新建会话")
         if row and row["status"] == "running":
-            raise HTTPException(409, "上一轮仍在执行中，请等待完成（或停止后再发送）")
+            raise HTTPException(
+                409,
+                "上一轮仍在执行或正在停止（断开连接后服务端需先确认工具任务与 SDK 子进程已收尾），"
+                "请稍候几秒再发送；若长时间未恢复，请联系管理员查看会话状态")
         # interrupted（上轮执行中断）不拦：执行权已释放（execution_token=NULL），
         # 新消息是新一轮请求、不重放中断轮副作用，交由 claim 认领后从干净上下文继续。
     try:
-        resolve_policy(ctx)
+        return resolve_policy(ctx)
     except PermissionError as exc:
         raise HTTPException(403, str(exc)) from exc
     except ValueError as exc:
@@ -396,6 +482,8 @@ class SessionWorkspace:
     sdk_pid: int = 0
     sdk_start: str = ""
     sandbox_used: bool = False
+    sandbox_backend: str = ""
+    sandbox_pids: set = field(default_factory=set, repr=False)
     tool_tasks: set = field(default_factory=set, repr=False)
 
     @property
@@ -431,14 +519,21 @@ class SessionWorkspace:
             self.unsafe = True
             raise RuntimeError("SDK 进程仍然存活，不能释放执行权")
         if self.sandbox_used:
-            import subprocess
-            listing = subprocess.run(
-                ["docker", "ps", "-aq", "--filter", f"label=adh.agent.execution={self.token}"],
-                capture_output=True, text=True, timeout=15, check=True,
-            )
-            if listing.stdout.strip():
-                self.unsafe = True
-                raise RuntimeError("会话工具容器仍然存在，不能释放执行权")
+            if self.sandbox_backend == "bwrap":
+                # bwrap 是本进程直接子进程；核验登记的 pid 是否仍在（process_identity 空=已退/僵尸）。
+                live = [pid for pid in self.sandbox_pids if process_identity(pid)]
+                if live:
+                    self.unsafe = True
+                    raise RuntimeError("会话工具进程仍然存在，不能释放执行权")
+            else:
+                import subprocess
+                listing = subprocess.run(
+                    ["docker", "ps", "-aq", "--filter", f"label=adh.agent.execution={self.token}"],
+                    capture_output=True, text=True, timeout=15, check=True,
+                )
+                if listing.stdout.strip():
+                    self.unsafe = True
+                    raise RuntimeError("会话工具容器仍然存在，不能释放执行权")
 
     def finish(self, sdk_session_id="", success=False, initialized_only=False):
         if self.unsafe:
@@ -514,7 +609,7 @@ def claim_session(task, backend, config):
                     raise HTTPException(409, "该会话已清空，请新建会话")
                 if row["status"] == "running":
                     raise HTTPException(409, "该会话正在执行或上次执行尚未确认停止")
-                root = session_paths(base, row["session_key"], row["workspace_id"], row["user_id"])
+                root = locate_existing_session(base, row)
                 if row["status"] == "interrupted":
                     # 上轮执行中断（执行权已释放）。新消息是新一轮请求、不重放中断轮副作用；
                     # 丢弃中断的 SDK 会话（不 resume），复位为可认领状态后从干净执行上下文继续，
@@ -524,6 +619,16 @@ def claim_session(task, backend, config):
                                 "WHERE session_key=%s AND status='interrupted'",
                                 (row["session_key"],))
                     row = {**row, "status": "idle", "sdk_session_id": ""}
+                if row.get("sdk_session_id"):
+                    # 续聊前显式校验 resume 状态里的目录：迁移未修完时报可诊断错误，
+                    # 而不是让 CLI 在 initialize 阶段崩成“unknown critical error”（护栏：失败即暴露）。
+                    stale = stale_resume_directories(root, row["sdk_session_id"])
+                    if stale:
+                        logging.getLogger(__name__).error(
+                            "会话 %s 的 SDK 恢复状态指向已不存在的目录: %s", row["session_key"], stale)
+                        raise HTTPException(
+                            409, "该会话的 SDK 恢复状态仍指向迁移前的旧存储目录，继续对话会执行失败；"
+                                 "请联系管理员重跑工作空间目录迁移（含会话内部 CLI 状态的路径改写）后重试")
             else:
                 if ctx.extra.get("session_id"):
                     raise HTTPException(409, "旧 SDK 会话不能直接接管，请新建会话")

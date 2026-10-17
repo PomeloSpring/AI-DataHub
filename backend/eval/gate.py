@@ -25,6 +25,7 @@ from __future__ import annotations
 #: 能力契约组（横轴）。评测集内容"是否符合要求"由 capability × layer 覆盖矩阵判定，
 #: 而不是用例条数 —— 每条用例必须登记其一，未登记视为用例不合法（contract 侧硬校验）。
 CAPABILITIES: tuple[str, ...] = (
+    "dispatch",    # 前置分流：该拦的拦住、该放行的不得误拦（L0 主体）
     "resolution",   # 名字/别名/口径解析落在哪一档
     "calc",         # 计算形状：组合/JOIN/窗口/派生指标/近似去重/百分位/排序分页过滤
     "time",         # 相对时间、日历 vs 滚动优先级、粒度
@@ -38,6 +39,7 @@ CAPABILITIES: tuple[str, ...] = (
 )
 
 CAPABILITY_LABELS: dict[str, str] = {
+    "dispatch": "前置分流",
     "resolution": "口径解析",
     "calc":       "计算形状",
     "time":       "时间语义",
@@ -70,6 +72,8 @@ class GateError(ValueError):
 #: 本轮 L3 实测就是这个情形：不传候选表时 rag_source 仍为 graphrag，
 #: 但六张清单全空，4 条用例靠"命中 0 条"通过了断言。
 POSITIVE_ASSERTIONS: dict[str, frozenset[str]] = {
+    "intent": frozenset({"decision", "label", "label_in", "handled_by",
+                         "signals_include", "reply_contains"}),
     "compile": frozenset({"ok", "sql_contains", "resolution_source"}),
     "semantic": frozenset({"allowed", "bound_object", "binding_source", "resolution_source",
                             "sql_contains", "rls_applied", "masked_column_count_min",

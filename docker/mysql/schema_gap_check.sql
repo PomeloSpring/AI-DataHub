@@ -18,8 +18,11 @@ FROM (
     SELECT 'adh_saved_queries', 'datasource_id' UNION ALL
     SELECT 'adh_chat_attachments', 'storage_type' UNION ALL
     SELECT 'adh_metrics', 'formula_dialects' UNION ALL
-    SELECT 'adh_ontology_bindings', 'template_ref' UNION ALL
-    SELECT 'adh_sql_templates', 'dialect' UNION ALL
+    SELECT 'adh_datasets', 'variables' UNION ALL
+    SELECT 'adh_datasets', 'sql_bodies' UNION ALL
+    SELECT 'adh_datasets', 'touched_tables' UNION ALL
+    SELECT 'adh_datasets', 'certified' UNION ALL
+    SELECT 'adh_ontology_bindings', 'dataset_ref' UNION ALL
     SELECT 'adh_datasources', 'ssl_mode' UNION ALL
     SELECT 'adh_conversations', 'waker_key' UNION ALL
     SELECT 'adh_workspaces', 'workspace_type'

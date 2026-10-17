@@ -68,6 +68,21 @@ SANDBOX_TYPES = {
             "service": {"type": "string", "label": "FC 服务名", "default": "sandbox-hub"},
         },
     },
+    "bwrap": {
+        "label": "本地 bwrap 沙箱",
+        "description": "bubblewrap 用户命名空间隔离（断网、只挂本会话目录、非 root、可核验停止），"
+                       "供 Agent 会话工具沙箱使用；rootfs 由 docker/agent-sandbox/export-rootfs.sh 从 python_runtime 镜像导出。"
+                       "内存/进程硬帽不如 Docker(cgroup)，多租户生产建议仍用本地(Docker) 后端。",
+        "config_schema": {
+            "mode": {"type": "select", "label": "镜像来源模式", "options": ["rootfs", "host-python"], "default": "rootfs",
+                     "description": "rootfs=从镜像导出(可复现)；host-python=直接绑宿主 /usr /etc(本地免 docker，不暴露 /home/.env)"},
+            "rootfs_dir": {"type": "string", "label": "rootfs 目录（仅 rootfs 模式）", "required": False,
+                           "default": "/opt/adh-python-runtime", "placeholder": "export-rootfs.sh 产出的目录"},
+            "memory_limit": {"type": "string", "label": "内存上限(可选,如 2g；留空不设 RLIMIT_AS 以免影响 pandas)", "default": "", "placeholder": "2g，留空=不限内存"},
+            "cpu_limit": {"type": "string", "label": "CPU 时间(核)", "default": "1.0", "placeholder": "换算 RLIMIT_CPU 秒上限"},
+            "timeout": {"type": "number", "label": "超时时间(秒)", "default": 120},
+        },
+    },
 }
 
 
@@ -253,6 +268,8 @@ class SandboxService:
                 return self._test_ssh(config)
             elif sandbox_type == "fc":
                 return self._test_fc(config)
+            elif sandbox_type == "bwrap":
+                return self._test_bwrap(config)
             else:
                 return {"success": False, "message": f"不支持的沙箱类型: {sandbox_type}"}
         except Exception as e:
@@ -392,6 +409,34 @@ class SandboxService:
             return {"success": False, "message": "未配置地域或 AccessKey"}
         # Basic validation — actual FC SDK test would require aliyun-fc2 SDK
         return {"success": True, "message": f"FC 配置验证通过 ({region})，详细测试需部署后验证"}
+
+    def _test_bwrap(self, config: dict) -> dict:
+        """Test local bubblewrap availability per mode；探针复用 bwrap_probe_argv（与运行期同一套绑定）。"""
+        import subprocess
+        from pathlib import Path
+        from backend.modules.platform.services.sandbox_executor import bwrap_probe_argv
+        try:
+            ver = subprocess.run(["bwrap", "--version"], capture_output=True, text=True, timeout=10)
+        except FileNotFoundError:
+            return {"success": False, "message": "未找到 bwrap 命令，请安装 bubblewrap（apt install bubblewrap）"}
+        if ver.returncode != 0:
+            return {"success": False, "message": f"bwrap 不可用: {ver.stderr.strip()[:200]}"}
+        mode = (config.get("mode") or "rootfs").strip().lower()
+        if mode == "host-python":
+            if not Path("/usr/bin/python3").exists():
+                return {"success": False, "message": "host-python 模式需要 /usr/bin/python3（未找到）"}
+            ok_msg = f"bwrap 可用 ({ver.stdout.strip()})，host-python 模式（绑宿主 /usr /etc）"
+        elif mode == "rootfs":
+            rootfs = (config.get("rootfs_dir") or "").strip()
+            if not rootfs or not Path(rootfs).is_dir():
+                return {"success": False, "message": f"rootfs 目录不存在: {rootfs or '未配置'}，请执行 docker/agent-sandbox/export-rootfs.sh（或改用 host-python）"}
+            ok_msg = f"bwrap 可用 ({ver.stdout.strip()})，rootfs 就绪: {rootfs}"
+        else:
+            return {"success": False, "message": f"未知 bwrap mode: {mode}（应为 rootfs 或 host-python）"}
+        probe = subprocess.run(bwrap_probe_argv(config), capture_output=True, text=True, timeout=20)
+        if probe.returncode != 0:
+            return {"success": False, "message": f"bwrap 无法建立隔离沙箱: {probe.stderr.strip()[:200]}"}
+        return {"success": True, "message": ok_msg}
 
     # ── Helpers ───────────────────────────────────────────────────
 

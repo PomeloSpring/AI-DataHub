@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 QueryMode = Literal["materialized", "federated", "raw_source"]
 SizeClass = Literal["small", "large", "huge"]
-BindKind = Literal["primary", "lateral", "bridge", "metric_source", "sql_template"]
+BindKind = Literal["primary", "lateral", "bridge", "metric_source", "dataset"]
 FilterOp = Literal[
     "eq", "ne", "gt", "gte", "lt", "lte",
     "in", "nin", "like", "between", "is_null", "is_not_null",
@@ -109,8 +109,8 @@ class SemanticQuery(BaseModel):
     )
     params: dict[str, Any] = Field(
         default_factory=dict,
-        description="SQL 模板对象的具名参数(仅 bind_kind='sql_template' 接受); "
-                    "键必须在模板 variables 声明内, 值按声明类型校验后渲染",
+        description="数据集对象的具名参数(仅 bind_kind='dataset' 接受); "
+                    "键必须在数据集 variables 声明内, 值按声明类型校验后渲染",
     )
     window: Optional[SemanticWindow] = Field(
         None,
@@ -165,7 +165,8 @@ class ResolvedBinding(BaseModel):
     physical_table: str
     catalog_ref: str = Field("", description="catalog.db.table 三段式")
     bind_kind: BindKind = "primary"
-    template_ref: str = Field("", description="bind_kind='sql_template' 时指向 adh_sql_templates.template_id")
+    dataset_ref: str = Field(
+        "", description="bind_kind='dataset' 时指向 adh_datasets.name(全局唯一, 可跨 id 重建存活)")
     db_type: str = Field("mysql", description="数据源协议/方言族: mysql|doris -> mysql 方言; postgres|postgresql|pg|sls -> PG 方言")
     join_expr: str = ""
     column_map: dict[str, str] = Field(default_factory=dict)

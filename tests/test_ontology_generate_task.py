@@ -6,12 +6,15 @@
 锁住的行为：
 1. 端点鉴权 fail-closed：datasource_id 必填；无 ontology:generate 权限码、
    数据源未授权、授权集为空一律 403；执行层不可用 503 显式报错（不静默回退）；
-2. 任务消息只含数据源**业务名**，内部 id 对 LLM 黑盒；身份/目标源服务端注入；
-3. SSE 事件契约仅 progress/done/error（前端零破坏）；done 带 model_id/
-   conversation_id/completed，未落库不得假报成功；
-4. 工具域约束：业务源草案仅限『生成本体模型』任务绑定会话（fail-closed）；
+2. 任务消息只含数据源**业务名**，内部 id（含选定知识库 id）对 LLM 黑盒；
+   身份/目标源服务端注入；
+3. 后台静默执行：端点立即返回不等任务完成，无客户端（页面已关/面板已关）也跑完；
+   进度与终态回写 AS-BOT 会话转录，状态可轮询、可取消；未提交草案一律显式 error；
+4. 事件转译层契约仅 progress/done/error，done 带 model_id/reply，未落库不得假报成功；
+5. 工具域约束：业务源草案仅限『生成本体模型』任务绑定会话（fail-closed）；
    无 ontology:generate 权限拒、目标源未授权拒、拒收 datasource_id 参数；
-5. save_generated_draft 确定性合并：同身份同主表合并并回带 warnings，
+   选定知识库必须真的传到素材构建（不得只接受不使用）；
+6. save_generated_draft 确定性合并：同身份同主表合并并回带 warnings，
    同名不同主表中止（宁缺勿错）。
 
 纯函数 + fake DB/monkeypatch，不触碰数据库、不派发真实任务。
@@ -253,21 +256,42 @@ class TestGenerateEndpointFailClosed:
         monkeypatch.setattr(chat_service.ChatService, "stream_query", fake_stream_query)
 
         async def _call():
-            resp = await ontology_api.generate_ontology(
+            # 端点只负责派发：立即返回任务句柄，执行在进程内后台任务里完成
+            dispatch = await ontology_api.generate_ontology(
                 None, req or {"datasource_id": DS_ID}, _user())
-            out = []
-            async for chunk in resp.body_iterator:
-                out.append(chunk if isinstance(chunk, str) else chunk.decode("utf-8"))
-            return "".join(out)
+            conv_id = dispatch["conversation_id"]
+            final = await ontology_api.wait_generate_task(conv_id, timeout=5)
+            return dispatch, ontology_api.generate_task_status(conv_id, 7), final
 
-        body = asyncio.run(_call())
+        dispatch, state, final = asyncio.run(_call())
+        captured["dispatch"] = dispatch
+        captured["status"] = state
+        captured["final"] = final
         captured["ops"] = ops
-        captured["events"] = _parse_events(body)
+        captured["events"] = _events_from_state(state)
         return captured
 
 
 def _frame(event, data):
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _events_from_state(state):
+    """任务状态视图 → 事件语义（让“只发 progress/done/error”的旧断言继续成立）。"""
+    events = [("progress", {"stage": p["stage"], "detail": p["detail"]})
+              for p in state.get("progress") or []]
+    if state.get("status") == "error":
+        events.append(("error", {"message": state.get("error") or "",
+                                 "conversation_id": state["conversation_id"],
+                                 "workspace_id": state["workspace_id"]}))
+    else:
+        events.append(("done", {"model_id": state.get("model_id"),
+                                "object_count": state.get("object_count"),
+                                "warnings": state.get("warnings"),
+                                "conversation_id": state["conversation_id"],
+                                "workspace_id": state["workspace_id"],
+                                "completed": bool(state.get("model_id"))}))
+    return events
 
 
 def _parse_events(body):
@@ -321,26 +345,53 @@ class TestTaskMessage:
         task_message = json.loads(messages)[0]["content"]
         assert DS_NAME in task_message
         assert str(DS_ID) not in task_message
-        # 任务派发带着任务绑定标记（工具侧业务源写入仅限该会话）
-        assert cap["task_binding"] == {"kind": "ontology_generate", "datasource_id": DS_ID}
+        # 任务派发带着任务绑定标记（工具侧业务源写入仅限该会话；kb_ids 服务端传递）
+        assert cap["task_binding"] == {"kind": "ontology_generate", "datasource_id": DS_ID,
+                                       "kb_ids": []}
         assert cap["pipeline_mode"] == "agent" and cap["as_bot_key"] == "admin"
         assert cap["question"] == task_message
 
 
 # ═══════════════════════════════════════════════════════════════════
-# SSE 事件契约（前端只识别 progress/done/error，零破坏）
+# 事件转译契约（progress/done/error，不经 HTTP 层）
 # ═══════════════════════════════════════════════════════════════════
 
-class TestSseEventContract:
+def _collect_events(monkeypatch, frames, stream_error=None):
+    """直接驱动派发事件转译层，锁定 progress/done/error 语义。"""
+    from backend.modules.catalog.api import ontology as ontology_api
+    from backend.modules.mind.services import chat_service
+
+    def fake_stream_query(self, question=None, **kwargs):
+        async def _gen():
+            if stream_error:
+                raise RuntimeError(stream_error)
+            for f in frames:
+                yield f
+        return _gen()
+
+    monkeypatch.setattr(chat_service.ChatService, "stream_query", fake_stream_query)
+
+    async def _run():
+        out = []
+        async for ev in ontology_api._generate_task_events(
+                ontology_api._DetachedRequest(), task_message="任务", conversation_id=501,
+                datasource_id=DS_ID, workspace_id=5, user=_user(), as_bot_key="admin",
+                task_binding={"kind": "ontology_generate", "datasource_id": DS_ID}):
+            out.append(ev)
+        return out
+
+    return asyncio.run(_run())
+
+
+class TestEventTranslator:
     def test_only_contract_events_emitted(self, monkeypatch):
-        cap = TestGenerateEndpointFailClosed()._run_full(monkeypatch, frames=_DONE_FRAMES)
-        names = {ev for ev, _ in cap["events"]}
-        assert names <= {"progress", "done", "error"}
-        assert "done" in names
+        events = _collect_events(monkeypatch, _DONE_FRAMES)
+        assert {ev for ev, _ in events} <= {"progress", "done", "error"}
+        assert any(ev == "done" for ev, _ in events)
 
     def test_done_carries_model_and_conversation(self, monkeypatch):
-        cap = TestGenerateEndpointFailClosed()._run_full(monkeypatch, frames=_DONE_FRAMES)
-        done = [d for ev, d in cap["events"] if ev == "done"]
+        events = _collect_events(monkeypatch, _DONE_FRAMES)
+        done = [d for ev, d in events if ev == "done"]
         assert len(done) == 1
         assert done[0]["model_id"] == 501
         assert done[0]["object_count"] == 3
@@ -349,38 +400,275 @@ class TestSseEventContract:
         assert done[0]["conversation_id"] == 501
         assert done[0]["workspace_id"] == 5
         assert done[0]["completed"] is True
+        assert done[0]["reply"] == "归纳完成"      # 正文随终态带回，供会话回写
 
     def test_progress_translates_agent_and_tools(self, monkeypatch):
-        cap = TestGenerateEndpointFailClosed()._run_full(monkeypatch, frames=_DONE_FRAMES)
-        details = [d.get("detail", "") for ev, d in cap["events"] if ev == "progress"]
+        events = _collect_events(monkeypatch, _DONE_FRAMES)
+        details = [d.get("detail", "") for ev, d in events if ev == "progress"]
         assert any("开始归纳" in d for d in details)                 # token → progress 行
         assert any("save_ontology_draft" in d for d in details)      # 工具调用可见
 
-    def test_no_save_result_is_not_reported_completed(self, monkeypatch):
-        """agent 跑完但没提交草案：不得假报成功（completed=false 由前端显式提示）。"""
-        frames = [_frame("token", {"text": "想了想\n"}),
-                  _frame("done", {"reply": "没提交", "tool_calls": []})]
-        cap = TestGenerateEndpointFailClosed()._run_full(monkeypatch, frames=frames)
-        done = [d for ev, d in cap["events"] if ev == "done"]
-        assert done and done[0]["model_id"] is None
-        assert done[0]["completed"] is False
-
     def test_dispatch_failure_emits_error_with_conversation(self, monkeypatch):
-        cap = TestGenerateEndpointFailClosed()._run_full(
-            monkeypatch, frames=[], stream_error="boom")
-        errors = [d for ev, d in cap["events"] if ev == "error"]
-        assert not [d for ev, d in cap["events"] if ev == "done"]   # 失败不得再发 done
+        events = _collect_events(monkeypatch, [], stream_error="boom")
+        errors = [d for ev, d in events if ev == "error"]
+        assert not [d for ev, d in events if ev == "done"]   # 失败不得再发 done
         assert errors and "生成任务派发失败" in errors[0]["message"]
         assert errors[0]["conversation_id"] == 501
         assert errors[0]["workspace_id"] == 5
 
-    def test_reply_is_persisted_to_conversation(self, monkeypatch):
-        """执行回复回写会话历史（聊天侧可回看/追问）。"""
-        cap = TestGenerateEndpointFailClosed()._run_full(monkeypatch, frames=_DONE_FRAMES)
-        updates = [p for s, p in cap["ops"] if s.lower().startswith("update adh_conversations")]
-        assert updates, "执行回复未回写会话"
-        reply = json.loads(updates[0][0])
-        assert reply[-1]["role"] == "assistant" and reply[-1]["reply"] == "归纳完成"
+
+# ═══════════════════════════════════════════════════════════════════
+# 后台静默执行：任务不随请求结束，进度落会话，状态可轮询/可取消
+# ═══════════════════════════════════════════════════════════════════
+
+@pytest.fixture(autouse=True)
+def _clean_runs():
+    """任务注册表是进程内的，用例间必须隔离（否则 409 并发守卫会串干扰）。"""
+    from backend.modules.catalog.api import ontology as ontology_api
+    ontology_api._GENERATE_RUNS.clear()
+    yield
+    ontology_api._GENERATE_RUNS.clear()
+
+
+def _patch_dispatch(monkeypatch):
+    """放行鉴权/执行层并接上 fake 元库（用例只关注后台执行本身）。"""
+    import backend.common.auth as auth_mod
+    import backend.core.role_service as rs
+    from backend.core import perm_link
+    from backend.modules.mind.execution import service as exec_service
+    from backend.modules.mind.execution import tool_policy
+
+    monkeypatch.setattr(auth_mod, "resolve_user_default_workspace_id", lambda uid: 5)
+    monkeypatch.setattr(auth_mod, "authorize_workspace", lambda *a: 0)
+    monkeypatch.setattr(perm_link, "require_write_perm", lambda *a, **k: None)
+    monkeypatch.setattr(rs.role_service, "get_user_allowed_datasources", lambda *a: [DS_ID])
+    monkeypatch.setattr(exec_service, "get_workspace_layers",
+                        lambda ws: [{"status": "active", "is_default": True}])
+    monkeypatch.setattr(exec_service, "is_healthy_layer", lambda layer: True)
+    monkeypatch.setattr(tool_policy, "resolve_policy",
+                        lambda ctx: SimpleNamespace(as_bot={"as_bot_key": "admin"}))
+    return _patch_meta_db(monkeypatch)
+
+
+class TestBackgroundExecution:
+    def test_endpoint_returns_before_task_finishes(self, monkeypatch):
+        """端点不得等任务跑完才响应：旧行为下“离开页面 = 取消”。"""
+        import backend.modules.catalog.api.ontology as ontology_api
+        from backend.modules.mind.services import chat_service
+
+        gate = asyncio.Event()
+        finished = []
+
+        def slow_stream(self, question=None, **kwargs):
+            async def _gen():
+                await gate.wait()
+                yield _frame("tool_result", {"tool": "save_ontology_draft", "output": _SAVE_OUTPUT})
+                yield _frame("done", {"reply": "归纳完成", "tool_calls": []})
+                finished.append(True)
+            return _gen()
+
+        monkeypatch.setattr(chat_service.ChatService, "stream_query", slow_stream)
+        _patch_dispatch(monkeypatch)
+
+        async def _scenario():
+            dispatch = await ontology_api.generate_ontology(None, {"datasource_id": DS_ID}, _user())
+            # 任务还在等素材，端点已经返回（无 SSE、不等完成）
+            assert dispatch["status"] == "running" and dispatch["conversation_id"] == 501
+            assert dispatch["datasource_name"] == DS_NAME
+            assert not finished
+            state = ontology_api.generate_task_status(dispatch["conversation_id"], 7)
+            assert state["status"] == "running"
+            gate.set()
+            final = await ontology_api.wait_generate_task(dispatch["conversation_id"], timeout=5)
+            return final
+
+        assert asyncio.run(_scenario()) == "done"
+        assert finished
+
+    def test_no_client_still_completes_and_persists(self, monkeypatch):
+        """无人读取（页面已关/面板已关）时任务必须跑完，并把进度+终态回写会话。"""
+        import backend.modules.catalog.api.ontology as ontology_api
+        from backend.modules.mind.services import chat_service
+
+        def fake_stream(self, question=None, **kwargs):
+            async def _gen():
+                for f in _DONE_FRAMES:
+                    yield f
+            return _gen()
+
+        monkeypatch.setattr(chat_service.ChatService, "stream_query", fake_stream)
+        ops = _patch_dispatch(monkeypatch)
+
+        async def _scenario():
+            dispatch = await ontology_api.generate_ontology(None, {"datasource_id": DS_ID}, _user())
+            final = await ontology_api.wait_generate_task(dispatch["conversation_id"], timeout=5)
+            return final, ontology_api.generate_task_status(dispatch["conversation_id"], 7)
+
+        final, state = asyncio.run(_scenario())
+        assert final == "done" and state["model_id"] == 501 and state["object_count"] == 3
+        assert any("工具 save_ontology_draft 完成" in p["detail"] for p in state["progress"])
+        updates = [p for s, p in ops if s.lower().startswith("update adh_conversations")]
+        assert updates, "任务终态未回写会话（AS-BOT 侧边栏将看不到进度）"
+        msg = json.loads(updates[-1][0])[-1]
+        assert msg["role"] == "assistant" and msg["task_kind"] == "ontology_generate"
+        assert msg["task_state"] == "done" and msg["reply"] == "归纳完成"
+        assert msg["progressStages"], "进度行未随会话落库"
+        # 只保留一条本任务 assistant 消息（多轮回写不得越写越多）
+        assert len([m for m in json.loads(updates[-1][0]) if m.get("task_kind")]) == 1
+
+    def test_uncommitted_draft_is_explicit_error(self, monkeypatch):
+        """agent 跑完但没提交草案：不得假报成功（旧契约靠 completed=false，现在直接错）。"""
+        import backend.modules.catalog.api.ontology as ontology_api
+        from backend.modules.mind.services import chat_service
+
+        frames = [_frame("token", {"text": "想了想\n"}),
+                  _frame("done", {"reply": "没提交", "tool_calls": []})]
+
+        def fake_stream(self, question=None, **kwargs):
+            async def _gen():
+                for f in frames:
+                    yield f
+            return _gen()
+
+        monkeypatch.setattr(chat_service.ChatService, "stream_query", fake_stream)
+        _patch_dispatch(monkeypatch)
+
+        async def _scenario():
+            dispatch = await ontology_api.generate_ontology(None, {"datasource_id": DS_ID}, _user())
+            final = await ontology_api.wait_generate_task(dispatch["conversation_id"], timeout=5)
+            return ontology_api.generate_task_status(dispatch["conversation_id"], 7), final
+
+        state, final = asyncio.run(_scenario())
+        assert final == "error" and state["status"] == "error"
+        assert state["model_id"] is None and "未提交草案" in state["error"]
+
+    def test_duplicate_submit_on_same_datasource_409(self, monkeypatch):
+        """同一数据源并发生成会互盖草案（首批 append=false）→ 宁阻断勿重复。"""
+        import backend.modules.catalog.api.ontology as ontology_api
+        from backend.modules.mind.services import chat_service
+
+        gate = asyncio.Event()
+
+        def slow_stream(self, question=None, **kwargs):
+            async def _gen():
+                await gate.wait()
+                yield _frame("done", {"reply": "ok", "tool_calls": []})
+            return _gen()
+
+        monkeypatch.setattr(chat_service.ChatService, "stream_query", slow_stream)
+        _patch_dispatch(monkeypatch)
+
+        async def _scenario():
+            first = await ontology_api.generate_ontology(None, {"datasource_id": DS_ID}, _user())
+            with pytest.raises(HTTPException) as exc:
+                await ontology_api.generate_ontology(None, {"datasource_id": DS_ID}, _user())
+            gate.set()
+            await ontology_api.wait_generate_task(first["conversation_id"], timeout=5)
+            return exc.value
+
+        err = asyncio.run(_scenario())
+        assert err.status_code == 409 and DS_NAME in str(err.detail)
+
+    def test_cancel_marks_task_cancelled(self, monkeypatch):
+        import backend.modules.catalog.api.ontology as ontology_api
+        from backend.modules.mind.services import chat_service
+
+        gate = asyncio.Event()
+
+        def slow_stream(self, question=None, **kwargs):
+            async def _gen():
+                await gate.wait()
+                yield _frame("done", {"reply": "ok", "tool_calls": []})
+            return _gen()
+
+        monkeypatch.setattr(chat_service.ChatService, "stream_query", slow_stream)
+        ops = _patch_dispatch(monkeypatch)
+
+        async def _scenario():
+            dispatch = await ontology_api.generate_ontology(None, {"datasource_id": DS_ID}, _user())
+            await ontology_api.cancel_generate_task(dispatch["conversation_id"], _user())
+            gate.set()
+            await ontology_api.wait_generate_task(dispatch["conversation_id"], timeout=5)
+            return ontology_api.generate_task_status(dispatch["conversation_id"], 7)
+
+        state = asyncio.run(_scenario())
+        assert state["status"] == "cancelled" and "取消" in state["error"]
+        assert [s for s, _p in ops if s.lower().startswith("update adh_conversations")]
+
+    def test_other_user_cannot_read_task(self, monkeypatch):
+        import backend.modules.catalog.api.ontology as ontology_api
+        ontology_api._GENERATE_RUNS[501] = {
+            "conversation_id": 501, "user_id": 7, "workspace_id": 5, "datasource_id": DS_ID,
+            "datasource_name": DS_NAME, "status": "running", "progress": [], "task_message": "",
+            "reply": "", "tool_calls": [], "model_id": None, "object_count": 0,
+            "warnings": [], "error": "", "started_at": "", "finished_at": "", "task": None,
+        }
+        with pytest.raises(HTTPException) as exc:
+            ontology_api.generate_task_status(501, 8)
+        assert exc.value.status_code == 403
+
+    def test_orphan_running_record_reported_interrupted(self, monkeypatch):
+        """注册表无此任务但会话仍记 running → 进程重启中断，显式标注不假报成功。"""
+        import backend.modules.catalog.api.ontology as ontology_api
+
+        written = []
+        monkeypatch.setattr(ontology_api, "_load_task_message", lambda cid: {
+            "found": True, "owner_user_id": 7, "workspace_id": 5, "datasource_id": DS_ID,
+            "datasource_name": DS_NAME,
+            "message": {"role": "assistant", "task_kind": "ontology_generate",
+                        "task_state": "running", "question": "任务", "progressStages": []},
+        })
+        monkeypatch.setattr(ontology_api, "_write_task_message", lambda run: written.append(run))
+
+        state = ontology_api.generate_task_status(501, 7)
+        assert state["status"] == "interrupted" and "重启" in state["error"]
+        assert written and written[0]["status"] == "interrupted"
+
+    def test_kb_ids_travel_in_task_binding_not_prompt(self, monkeypatch):
+        """选定知识库只进服务端 task_binding；任务消息只带数量（内部 id 不进 LLM 视野）。"""
+        import backend.modules.catalog.api.ontology as ontology_api
+        from backend.modules.mind.execution import resource_guard
+        from backend.modules.mind.services import chat_service
+
+        monkeypatch.setattr(resource_guard, "validate_knowledge_binding", lambda ids: None)
+        captured = {}
+
+        def fake_stream(self, question=None, **kwargs):
+            captured.update(kwargs)
+            captured["question"] = question
+
+            async def _gen():
+                yield _frame("done", {"reply": "ok", "tool_calls": []})
+            return _gen()
+
+        monkeypatch.setattr(chat_service.ChatService, "stream_query", fake_stream)
+        _patch_dispatch(monkeypatch)
+
+        async def _scenario():
+            d = await ontology_api.generate_ontology(
+                None, {"datasource_id": DS_ID, "kb_ids": [11, 22]}, _user())
+            await ontology_api.wait_generate_task(d["conversation_id"], timeout=5)
+
+        asyncio.run(_scenario())
+        assert captured["task_binding"]["kb_ids"] == [11, 22]
+        assert "11" not in captured["question"] and "2 个业务知识库" in captured["question"]
+
+    def test_invalid_kb_id_rejected_before_dispatch(self, monkeypatch):
+        """kb_ids 越界/未启用 → 400 显式拒，不静默丢掉参考库。"""
+        import backend.modules.catalog.api.ontology as ontology_api
+        from backend.modules.mind.execution import resource_guard
+
+        _patch_dispatch(monkeypatch)
+
+        def _boom(ids):
+            raise PermissionError("知识库不存在或未启用")
+
+        monkeypatch.setattr(resource_guard, "validate_knowledge_binding", _boom)
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(ontology_api.generate_ontology(
+                None, {"datasource_id": DS_ID, "kb_ids": [99]}, _user()))
+        assert exc.value.status_code == 400 and "知识库" in str(exc.value.detail)
+        assert not ontology_api._GENERATE_RUNS
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -521,7 +809,7 @@ class TestSaveDraftTool:
 # ═══════════════════════════════════════════════════════════════════
 
 class TestGenerateDraftTool:
-    def _run(self, monkeypatch, args, ctx, materials=("M0", "M1")):
+    def _run(self, monkeypatch, args, ctx, materials=("M0", "M1"), captured=None):
         import backend.core.role_service as rs
         import backend.modules.catalog.services.ontology_service as osvc
         from backend.modules.mind.execution.sdk_tools import ontology_tools as ot
@@ -529,12 +817,32 @@ class TestGenerateDraftTool:
             ExecutionContextVar, set_execution_context)
         monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms",
                             lambda *a: {"ontology:generate": {"ai_access": "write", "ai_note": ""}})
-        monkeypatch.setattr(osvc, "build_generation_batches", lambda ds: list(materials))
+
+        def _fake_batches(ds, kb_ids=None):
+            if captured is not None:
+                captured["kb_ids"] = kb_ids
+                captured["datasource_id"] = ds
+            return list(materials)
+
+        monkeypatch.setattr(osvc, "build_generation_batches", _fake_batches)
         token = set_execution_context(ctx)
         try:
             return asyncio.run(ot.generate_ontology_draft(args))
         finally:
             ExecutionContextVar.reset(token)
+
+    def test_selected_kb_reaches_retrieval(self, monkeypatch):
+        """选定知识库必须真的参与素材构建（不能只在请求里“接受”不用）。"""
+        cap = {}
+        binding = {"kind": "ontology_generate", "datasource_id": 0, "kb_ids": [11, 22]}
+        p = _payload(self._run(monkeypatch, {"batch": 0}, _ctx(0, binding=binding), captured=cap))
+        assert p["material"] == "M0"
+        assert cap["kb_ids"] == [11, 22] and cap["datasource_id"] == 0
+
+    def test_without_kb_binding_passes_empty(self, monkeypatch):
+        cap = {}
+        self._run(monkeypatch, {"batch": 0}, _ctx(0), captured=cap)
+        assert cap["kb_ids"] == []
 
     def test_returns_material_not_llm_result(self, monkeypatch):
         """语义变化锁死：返回的是分批素材+归纳指引，不是 LLM 生成结果。"""

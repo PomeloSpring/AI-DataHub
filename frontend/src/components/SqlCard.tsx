@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import { createVisComponent } from '@/api/visLibrary';
+import client from '@/api/client';
 
 interface Props {
   code: string;
@@ -15,7 +15,8 @@ interface Props {
 
 /**
  * SQL 卡片:聊天回答中的 ```sql 块与结果卡 SQL 页共用。
- * 动作:复制到剪贴板 / 在 Playground 打开(经 sessionStorage 预填编辑器后跳转)。
+ * 动作:复制到剪贴板 / 在 Playground 打开(经 sessionStorage 预填编辑器后跳转)
+ *      / 存为数据集(已治理的查询资产, Chat/看板/Playground 共用一份定义)。
  */
 export default function SqlCard({ code, maxHeight = 320 }: Props) {
   const navigate = useNavigate();
@@ -40,21 +41,17 @@ export default function SqlCard({ code, maxHeight = 320 }: Props) {
     navigate('/data/playground');
   };
 
-  // 沉淀为字模库 sql_template(可视化配置):可在字模库管理与 Playground「SQL 模板」复用
-  const saveTemplate = async () => {
+  // 沉淀为查询数据集: 数据集是平台内唯一的"可信任预制 SQL"载体，
+  // 可在数据集页补数据源/字段定义/行级范围后供 Chat 与看板取数。
+  const saveDataset = async () => {
     if (!tplName.trim() || savingTpl) return;
     setSavingTpl(true);
     try {
-      await createVisComponent({
-        name: tplName.trim(),
-        category: 'sql_template',
-        style_config: {},
-        query_template: { sql: code },
-      });
-      toast.success(`已存入字模库 SQL 模板「${tplName.trim()}」，可在 Playground 侧栏复用`);
+      await client.post('/datasets', { name: tplName.trim(), sql_query: code });
+      toast.success(`已存为数据集「${tplName.trim()}」，请到数据集页选定执行数据源与字段定义`);
       setTplOpen(false);
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '存模板失败，请稍后重试');
+      toast.error(e?.response?.data?.detail || '存数据集失败，请稍后重试');
     } finally {
       setSavingTpl(false);
     }
@@ -75,11 +72,11 @@ export default function SqlCard({ code, maxHeight = 320 }: Props) {
             在 Playground 打开
           </Button>
           <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => {
-            setTplName(`SQL 模板 ${new Date().toISOString().slice(0, 10)}`);
+            setTplName(`查询数据集 ${new Date().toISOString().slice(0, 10)}`);
             setTplOpen(true);
           }}>
             <BookmarkPlus className="h-3 w-3 mr-1" />
-            存为模板
+            存为数据集
           </Button>
         </div>
       </div>
@@ -93,20 +90,21 @@ export default function SqlCard({ code, maxHeight = 320 }: Props) {
       <Dialog open={tplOpen} onOpenChange={setTplOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>存为字模库 SQL 模板</DialogTitle>
+            <DialogTitle>存为查询数据集</DialogTitle>
           </DialogHeader>
           <div className="space-y-2">
-            <label className="text-xs text-muted-foreground">模板名称（在字模库与 Playground 中展示）</label>
+            <label className="text-xs text-muted-foreground">数据集名称（全局唯一，在数据集页与 Chat 中展示）</label>
             <Input value={tplName} onChange={e => setTplName(e.target.value)} placeholder="如：销售日报核心查询" autoFocus />
             <p className="text-[11px] text-muted-foreground">
-              将以 sql_template 字模存入字模库（query_template），可在 Playground 侧栏一键插入。
+              存入后由服务端执行只读校验；请在数据集页选定执行数据源并声明维度/度量，
+              之后 Chat、看板与 Playground 共用同一份已治理定义。
             </p>
           </div>
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setTplOpen(false)}>取消</Button>
-            <Button size="sm" onClick={() => void saveTemplate()} disabled={savingTpl || !tplName.trim()}>
+            <Button size="sm" onClick={() => void saveDataset()} disabled={savingTpl || !tplName.trim()}>
               {savingTpl && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
-              存入字模库
+              存入数据集
             </Button>
           </DialogFooter>
         </DialogContent>

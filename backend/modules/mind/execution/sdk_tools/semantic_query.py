@@ -297,8 +297,8 @@ TOOL_SPECS = [
             "For multi-site/global questions: call this tool once per site with \"datasource\" "
             "(business name shown by list_datasources) and merge results yourself; sites are NOT a "
             "dimension — '站点' in dimensions is rejected with guidance. "
-            "If the object is bound to a SQL template (bind_kind=sql_template), pass declared "
-            "variables via params — run knowledge_search first to see the template's variables. "
+            "If the object is bound to a governed dataset (bind_kind=dataset), pass its declared "
+            "variables via params — run knowledge_search first to see the dataset's parameter list. "
             "Use knowledge_search first to discover legal object/metric/dimension names. "
             "Prefer this over execute_sql for agent-mode queries."
         ),

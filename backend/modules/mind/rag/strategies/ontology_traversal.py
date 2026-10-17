@@ -327,7 +327,7 @@ SELECT DISTINCT ?from ?to ?join ?card WHERE {{
         result["column_metadata"] = g._hydrate_columns(tables, datasource_id)
         result["table_relations"] = g._hydrate_relations(tables, datasource_id)
         result["business_terms"] = g._hydrate_terms([], tables, datasource_id)
-        result["sql_templates"] = g._hydrate_templates([], tables, datasource_id)
+        result["saved_datasets"] = g._hydrate_datasets([], tables, datasource_id)
         # 用本体 join 补充/合成缺失的关联（physical relations 未覆盖时）
         result["table_relations"] = self._merge_ontology_relations(
             result["table_relations"], links,

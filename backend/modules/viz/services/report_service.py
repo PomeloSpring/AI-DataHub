@@ -6,6 +6,7 @@ Tables: adh_reports, adh_report_templates, adh_saved_queries
 
 import json
 import logging
+import re
 import secrets
 import time
 from typing import Optional
@@ -39,7 +40,8 @@ class ReportSubmission(BaseModel):
             if error or query.dry_run:
                 raise ValueError("报告需要合法的可执行语义意图")
         return self
-from backend.modules.viz.services.report_access import can_access_report, public_report, json_object
+from backend.modules.viz.services.report_access import (
+    can_access_report, public_report, json_object, is_content_report)
 
 logger = logging.getLogger(__name__)
 
@@ -65,24 +67,32 @@ def _normalize_report(row: dict) -> dict:
 
 def list_reports(user_id: int, workspace_id: int = 0, page: int = 1, size: int = 20,
                  user: dict = None) -> dict:
-    """List generated reports with pagination."""
+    """报表清单：报表跟随属主（与资产清单同域），默认跨工作站；workspace_id>0 才收窄。
+
+    可见性 = 仅创建者：查询硬绑 owner_id（fail-closed，缺可信身份直接拒），
+    因此不再叠加 authorize_workspace —— 存量报表的 workspace_id 可能是 0（任务未归属），
+    拿工作空间当过滤条件只会让人看不到自己的报表。
+    """
     if not user or int(user.get("user_id") or 0) != int(user_id):
         raise PermissionError("报告列表缺少可信身份")
-    authorize_workspace(user, workspace_id)
     with DBConnection() as conn:
         with conn.cursor() as cur:
-            conditions = ["owner_id = %s", "workspace_id = %s"]
-            params = [user_id, workspace_id]
+            conditions = ["r.owner_id = %s"]
+            params: list = [user_id]
+            if int(workspace_id or 0) > 0:
+                conditions.append("r.workspace_id = %s")
+                params.append(int(workspace_id))
+            where = "WHERE " + " AND ".join(conditions)
 
-            where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-
-            cur.execute(f"SELECT COUNT(*) AS total FROM adh_reports {where}", params)
+            cur.execute(f"SELECT COUNT(*) AS total FROM adh_reports r {where}", params)
             total = cur.fetchone()["total"]
 
             offset = (page - 1) * size
+            # 任务名 JOIN：列表展示 name 而非裸 id（ui-resource-display）
             cur.execute(
-                f"SELECT * FROM adh_reports {where} "
-                f"ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                f"SELECT r.*, t.name AS task_name FROM adh_reports r "
+                f"LEFT JOIN adh_scheduled_tasks t ON t.id = r.task_id "
+                f"{where} ORDER BY r.created_at DESC LIMIT %s OFFSET %s",
                 params + [size, offset],
             )
             rows = cur.fetchall()
@@ -103,10 +113,11 @@ def get_report(report_id: int, access_token: str = None, user: dict = None) -> O
         return None
     if not can_access_report(row, user, access_token):
         if user and int(row.get("owner_id") or 0) == int(user.get("user_id") or 0):
-            authorize_workspace(user, row.get("workspace_id") or 0)
             result = public_report(row, content=False)
             result["content"] = ""
-            result["access_warning"] = "报告未就绪或权限已变化，请重新生成"
+            result["access_warning"] = (
+                "报表正文为空，请重新保存" if is_content_report(row)
+                else "报告未就绪或权限已变化，请重新生成")
             return result
         return None
     with DBConnection() as conn:
@@ -119,8 +130,12 @@ def create_report(*, task_id: int = None, log_id: int = None, title: str,
                   content: str, format: str = "markdown", workspace_id: int,
                   owner_id: int, security_context: dict = None, run_key: str = None,
                   generation_status: str = "degraded", evidence_summary: dict = None,
-                  analysis_source: dict = None) -> dict:
-    """唯一报告持久化入口；未认证的旧结果只能保存为不可分享的降级报告。"""
+                  analysis_source: dict = None, source_type: str = "scheduled") -> dict:
+    """数据派生报表的唯一持久化入口；未认证的旧结果只能保存为不可分享的降级报告。
+
+    内容型报表（人写/会话保存）走 ``create_content_report``，两者共用一张表但
+    可见性口径不同（见 report_access）。
+    """
     if int(owner_id or 0) <= 0:
         raise PermissionError("报告缺少创建者")
     report_id = _generate_id()
@@ -128,14 +143,14 @@ def create_report(*, task_id: int = None, log_id: int = None, title: str,
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO adh_reports (id, task_id, log_id, title, content, format, access_mode, "
-                "workspace_id, owner_id, created_at, generation_status, publication_status, "
-                "security_context, run_key, evidence_summary, analysis_source, lease_expires_at) "
-                "VALUES (%s,%s,%s,%s,%s,%s,'private',%s,%s,%s,%s,'draft',%s,%s,%s,%s,"
+                "workspace_id, owner_id, created_at, updated_at, generation_status, publication_status, "
+                "security_context, run_key, evidence_summary, analysis_source, source_type, lease_expires_at) "
+                "VALUES (%s,%s,%s,%s,%s,%s,'private',%s,%s,%s,%s,%s,'draft',%s,%s,%s,%s,%s,"
                 "DATE_ADD(NOW(), INTERVAL 10 MINUTE)) ON DUPLICATE KEY UPDATE id=id",
                 (report_id, task_id, log_id, title, content, format, workspace_id, owner_id, _now(),
-                 generation_status, json.dumps(security_context or {}, ensure_ascii=False), run_key,
-                 json.dumps(evidence_summary or {}, ensure_ascii=False, default=str),
-                 json.dumps(analysis_source or {}, ensure_ascii=False, default=str)),
+                 _now(), generation_status, json.dumps(security_context or {}, ensure_ascii=False),
+                 run_key, json.dumps(evidence_summary or {}, ensure_ascii=False, default=str),
+                 json.dumps(analysis_source or {}, ensure_ascii=False, default=str), source_type),
             )
             if run_key:
                 cur.execute("SELECT id, owner_id, workspace_id, generation_status FROM adh_reports WHERE run_key=%s", (run_key,))
@@ -146,6 +161,254 @@ def create_report(*, task_id: int = None, log_id: int = None, title: str,
     return {"id": report_id, "run_id": run_key, "access_mode": "private", "generation_status": generation_status}
 
 
+# ── 内容型报表（人写 / 会话保存）：报表中心的「管理」面 ────────────────────────
+
+CONTENT_FORMATS = ("markdown", "html")
+_MAX_TITLE_CHARS = 200
+_MAX_CONTENT_CHARS = 200_000
+
+
+def create_content_report(*, title: str, content: str, format: str = "markdown",
+                          workspace_id: int, owner_id: int, source_type: str = "manual",
+                          origin: dict = None) -> dict:
+    """保存一份内容型报表：正文由人写或取自会话已展示给属主本人的内容。
+
+    不取数、不过数据源，因此不产生权限快照；相应地只能属主私有查看，
+    不参与外链/公开分享（``publication_status`` 固定 draft，见 report_access）。
+    """
+    if int(owner_id or 0) <= 0:
+        raise PermissionError("报表缺少创建者")
+    if source_type not in report_access.EDITABLE_SOURCES:
+        raise ValueError("内容型报表来源只能是 manual 或 conversation")
+    title = str(title or "").strip()
+    if not title:
+        raise ValueError("报表标题不能为空")
+    if format not in CONTENT_FORMATS:
+        raise ValueError(f"报表格式只能是 {'/'.join(CONTENT_FORMATS)}")
+    content = str(content or "")
+    if not content.strip():
+        raise ValueError("报表正文不能为空")
+    report_id = _generate_id()
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO adh_reports (id, task_id, log_id, title, content, format, access_mode, "
+                "workspace_id, owner_id, created_at, updated_at, generation_status, publication_status, "
+                "security_context, evidence_summary, analysis_source, source_type) "
+                "VALUES (%s,NULL,NULL,%s,%s,%s,'private',%s,%s,%s,%s,'ready','draft',NULL,NULL,%s,%s)"
+                " ON DUPLICATE KEY UPDATE id=id",
+                (report_id, title[:_MAX_TITLE_CHARS], content[:_MAX_CONTENT_CHARS], format,
+                 int(workspace_id or 0), int(owner_id), _now(), _now(),
+                 json.dumps({"origin": origin or {}}, ensure_ascii=False, default=str), source_type),
+            )
+    return {"report_id": report_id, "title": title[:_MAX_TITLE_CHARS], "format": format,
+            "source_type": source_type, "generation_status": "ready"}
+
+
+def _load_owned_report(report_id: int, user: dict) -> dict:
+    """属主自检取行（fail-closed）：无可信身份/非属主一律 PermissionError。"""
+    if not user or int(user.get("user_id") or 0) <= 0:
+        raise PermissionError("缺少可信身份")
+    row = load_report(report_id)
+    if not row:
+        raise ValueError("报表不存在或已删除")
+    if int(row.get("owner_id") or 0) != int(user["user_id"]):
+        raise PermissionError("只能管理自己创建的报表")
+    return row
+
+
+def update_content_report(report_id: int, user: dict, *, title: str = None,
+                          content: str = None, format: str = None) -> dict:
+    """重命名 / 编辑内容型报表正文。数据派生报表正文不可手改（证据链唯一）。"""
+    row = _load_owned_report(report_id, user)
+    if not report_access.is_editable_report(row):
+        if report_access.is_content_report(row):
+            raise ValueError("这是迁移前由定时任务产出的历史报表，只读可查不可改；"
+                             "如需一份可编辑的报表，请新建一份或从会话另存")
+        raise ValueError("定时任务/分析来源产出的报表正文由受治理取数生成，不可在线编辑；"
+                         "如需修改请重新生成，或在会话里另存一份报表")
+    sets, params = ["updated_at=%s"], [_now()]
+    if title is not None:
+        title = str(title).strip()
+        if not title:
+            raise ValueError("报表标题不能为空")
+        sets.append("title=%s")
+        params.append(title[:_MAX_TITLE_CHARS])
+    if content is not None:
+        if not str(content).strip():
+            raise ValueError("报表正文不能为空")
+        sets.append("content=%s")
+        params.append(str(content)[:_MAX_CONTENT_CHARS])
+        sets.append("generation_status=%s")
+        params.append("ready")
+    if format is not None:
+        if format not in CONTENT_FORMATS:
+            raise ValueError(f"报表格式只能是 {'/'.join(CONTENT_FORMATS)}")
+        sets.append("format=%s")
+        params.append(format)
+    from backend.common.db import execute_write
+    execute_write(f"UPDATE adh_reports SET {','.join(sets)} WHERE id=%s AND owner_id=%s",
+                  tuple(params) + (report_id, int(user["user_id"])))
+    return {"report_id": report_id, "updated": True}
+
+
+def delete_report(report_id: int, user: dict) -> dict:
+    """删除报表：仅属主、仅内容型（含历史报表清理）；任务产出的数据派生报表跟执行记录绑定。"""
+    row = _load_owned_report(report_id, user)
+    if not report_access.is_content_report(row):
+        raise ValueError("定时任务/分析来源产出的报表与其执行记录一一对应，"
+                         "请在任务调度的执行记录中管理")
+    from backend.common.db import execute_write
+    if execute_write("DELETE FROM adh_reports WHERE id=%s AND owner_id=%s",
+                     (report_id, int(user["user_id"]))) != 1:
+        raise ValueError("报表删除失败（记录已变化），请刷新后重试")
+    return {"report_id": report_id, "deleted": True}
+
+
+def _md_cell(value) -> str:
+    import html
+    text = html.escape(str(value if value is not None else "")).replace("\n", " ")
+    for marker in (chr(92), "`", "*", "_", "[", "]", "(", ")", "!", "|"):
+        text = text.replace(marker, chr(92) + marker)
+    return text
+
+
+# ── 哪些回合算「报表」：单一口径，同时约束前端按钮展示与保存校验 ──────────────
+# 报表 = 本轮真的产出过数据/分析结果。纯问答、能力介绍、系统操作确认（如“已记住…”）
+# 不是报表，不给归档入口（否则报表中心会堆满无意义条目）。
+# 取数/分析类工具清单与 sdk_tools 注册表对齐（能回数据行的那几条）。
+DATA_BEARING_TOOLS = ("execute_sql", "query_execute", "run_semantic_query",
+                      "query_dataset", "run_quality_check", "generate_report")
+_CHART_BLOCK = re.compile(r"```chart\b")
+
+
+def turn_reportability(turn: dict) -> tuple[bool, str]:
+    """判定一个助手回合是否可存为报表，返回 ``(可存, 可读原因)``。
+
+    入参是 done 事件/已落库消息的形状（reply/content/result/sql/chart_type/tool_calls）。
+    """
+    if not isinstance(turn, dict):
+        return False, "回合记录无效"
+    if turn.get("error"):
+        return False, "该回合执行未完成，没有可归档的结果"
+    result = turn.get("result") or {}
+    if isinstance(result, dict) and (result.get("columns") or []) and (result.get("rows") or []):
+        return True, "含查询结果表"
+    if turn.get("sql"):
+        return True, "含已执行的查询"
+    if turn.get("chart_type"):
+        return True, "含图表产出"
+    body = "\n".join(str(turn.get(k) or "") for k in ("content", "reply", "analysis"))
+    if _CHART_BLOCK.search(body):
+        return True, "含图表产出"
+    for call in turn.get("tool_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        name = str(call.get("tool") or "").rsplit("__", 1)[-1]
+        if name in DATA_BEARING_TOOLS:
+            return True, "本轮已完成取数/分析"
+    return False, "该回合是问答或系统操作说明，不是数据分析结果；如需归档可在报表中心「新建报表」"
+
+
+def with_reportability(payload: dict) -> dict:
+    """给 done 事件/已落库消息补 ``reportable`` + ``reportable_reason``（返回副本）。
+
+    前端只消费这个字段决定「存为报表」按钮是否出现，不得自己再写一套判断。
+    """
+    ok, reason = turn_reportability(payload)
+    out = dict(payload)
+    out["reportable"] = ok
+    out["reportable_reason"] = reason
+    return out
+
+
+def render_conversation_report(*, question: str, answer: str, result: dict = None) -> str:
+    """把会话里一轮已展示给用户的内容拼成报表正文（Markdown）。
+
+    只拼用户已经看到的文字与结果表（最多 200 行），不回捞原始 SQL / 物理标识。
+    """
+    lines = []
+    if question:
+        lines += [f"> 提问：{_md_cell(question)}", ""]
+    lines.append((answer or "").strip())
+    columns = (result or {}).get("columns") or []
+    rows = (result or {}).get("rows") or []
+    keys = [c.get("name", "") if isinstance(c, dict) else str(c) for c in columns]
+    if keys and rows:
+        lines += ["", "## 查询结果", "",
+                  "| " + " | ".join(_md_cell(k) for k in keys) + " |",
+                  "| " + " | ".join("---" for _ in keys) + " |"]
+        for row in rows[:200]:
+            values = [row.get(k) for k in keys] if isinstance(row, dict) else row
+            lines.append("| " + " | ".join(_md_cell(v) for v in values) + " |")
+        if len(rows) > 200:
+            lines += ["", f"> 仅展示前 200 行（共 {len(rows)} 行）。"]
+    return "\n".join(lines).strip()
+
+
+def save_conversation_report(*, user: dict, conversation_id: int, title: str = "",
+                             message_index: int = None, message_uuid: str = "") -> dict:
+    """把智能问数会话里的一轮回答存为报表（内容只从服务端已落库的会话读）。
+
+    正文不信客户端传入：按 ``conversation_id`` + 属主取 ``adh_conversations.messages``，
+    再按 message_uuid（优先）/ 下标定位那一条助手回答。
+    """
+    from backend.common.db import execute_query
+    from backend.modules.mind.execution import outbound_guard
+    if int(conversation_id or 0) <= 0:
+        raise ValueError("缺少会话标识，无法保存报表")
+    conv = execute_query(
+        "SELECT id, workspace_id, title, messages FROM adh_conversations "
+        "WHERE id=%s AND user_id=%s", (conversation_id, int(user["user_id"])), fetchone=True)
+    if not conv:
+        raise PermissionError("会话不存在或不属于当前用户")
+    messages = conv.get("messages")
+    if isinstance(messages, str):
+        messages = json.loads(messages or "[]")
+    messages = messages if isinstance(messages, list) else []
+    answer = None
+    if message_uuid:
+        answer = next((m for m in messages
+                       if isinstance(m, dict) and m.get("role") == "assistant"
+                       and str(m.get("message_uuid") or "") == str(message_uuid)), None)
+    if answer is None and message_index is not None:
+        try:
+            candidate = messages[int(message_index)]
+        except (ValueError, TypeError, IndexError):
+            candidate = None
+        if isinstance(candidate, dict) and candidate.get("role") == "assistant":
+            answer = candidate
+    if answer is None:
+        answer = next((m for m in reversed(messages)
+                       if isinstance(m, dict) and m.get("role") == "assistant"), None)
+    if answer is None:
+        raise ValueError("会话记录尚未保存或没有可存的分析结果，请完成本轮对话后重试")
+    reportable, reason = turn_reportability(answer)
+    if not reportable:
+        # 与前端按钮展示同一口径：不展示的东西也不允许绕过前端存进来（原因可解释）
+        raise ValueError(reason)
+    question = str(answer.get("question") or "").strip()
+    answer_text = str(answer.get("content") or answer.get("reply") or "").strip()
+    if not answer_text:
+        raise ValueError("该回合没有可保存的正文（可能执行失败或被中断）")
+    content = render_conversation_report(question=question, answer=answer_text,
+                                        result=answer.get("result") if isinstance(answer.get("result"), dict) else None)
+    hits = outbound_guard.find_sensitive_hits(content)
+    if hits:
+        raise ValueError("该回答包含不应归档的基础设施信息（命中: "
+                         + ", ".join(hits) + "），不能存为报表；请在对话中重新表述业务结论")
+    report_title = str(title or "").strip() or (question[:60] or str(conv.get("title") or "")) or "会话分析报表"
+    result = create_content_report(
+        title=report_title, content=content, format="markdown",
+        workspace_id=int(conv.get("workspace_id") or 0), owner_id=int(user["user_id"]),
+        source_type="conversation",
+        origin={"channel": "chat", "conversation_id": int(conv["id"]),
+                "conversation_title": conv.get("title") or "",
+                "message_uuid": str(message_uuid or answer.get("message_uuid") or "")})
+    result["workspace_id"] = int(conv.get("workspace_id") or 0)
+    return result
+
+
 def submit_report(request: dict, user: dict, background_tasks) -> dict:
     """先保存可追踪的运行，再真实派发；禁止无来源占位报告。"""
     from uuid import uuid4
@@ -154,7 +417,8 @@ def submit_report(request: dict, user: dict, background_tasks) -> dict:
     authorize_workspace(user, req.workspace_id)
     run_id = uuid4().hex
     report = create_report(title=req.title, content="", workspace_id=req.workspace_id,
-        owner_id=user["user_id"], run_key=run_id, generation_status="queued", analysis_source=req.model_dump())
+        owner_id=user["user_id"], run_key=run_id, generation_status="queued",
+        analysis_source=req.model_dump(), source_type="analysis")
     try:
         dispatch_report(report["id"], run_id, background_tasks)
     except Exception:

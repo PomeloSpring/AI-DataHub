@@ -1,8 +1,9 @@
 """可视化字模库服务(UI 库 / "活字") — 大屏可复用元素的增删改查。
 
 设计:
-- 每个字模(adh_vis_components)是一组**纯配置**(style_config / query_template JSON),
+- 每个字模(adh_vis_components)是一组**纯视觉配置**(style_config JSON),
   不含数据行, 属元数据级资源; 实际取数仍由大屏/图表经 governed_execute 治理。
+- 预制 SQL 属于数据集职责(`adh_datasets`, 已治理的查询资产), 不在字模库。
 - 系统内置字模(is_builtin=1)仅 admin 可编辑/下架(对齐内置组件 admin-only 保护规范);
   自定义字模(source=custom)由创建者/管理员维护, 支持从大屏"存为字模"回存沉淀。
 """
@@ -20,11 +21,11 @@ logger = logging.getLogger(__name__)
 # 字模类别枚举(与迁移/前端管理页保持一致)
 CATEGORIES = {
     "chart_style", "screen_background", "kpi_card",
-    "layout_template", "decoration_frame", "color_theme", "sql_template",
+    "layout_template", "decoration_frame", "color_theme",
     "theme_pack",
 }
 
-_JSON_FIELDS = ("style_config", "query_template")
+_JSON_FIELDS = ("style_config",)
 
 
 class BuiltinProtectedError(PermissionError):
@@ -99,14 +100,13 @@ class VisLibraryService:
 
         cid = execute_insert(
             "INSERT INTO adh_vis_components "
-            "(code, name, category, chart_type, style_config, thumbnail, query_template, "
+            "(code, name, category, chart_type, style_config, thumbnail, "
             " description, source, workspace_id, is_active, is_builtin, sort_order, created_by) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (
                 code, name, category, data.get("chart_type"),
                 json.dumps(data.get("style_config") or {}, ensure_ascii=False),
                 data.get("thumbnail"),
-                json.dumps(data.get("query_template"), ensure_ascii=False) if data.get("query_template") else None,
                 data.get("description", ""), source, int(data.get("workspace_id") or 0),
                 1, is_builtin, int(data.get("sort_order") or 0), user_id or 0,
             ),
@@ -130,9 +130,6 @@ class VisLibraryService:
         if "style_config" in data:
             sets.append("style_config = %s")
             params.append(json.dumps(data.get("style_config") or {}, ensure_ascii=False))
-        if "query_template" in data:
-            sets.append("query_template = %s")
-            params.append(json.dumps(data.get("query_template"), ensure_ascii=False) if data.get("query_template") else None)
         if not sets:
             return False
 

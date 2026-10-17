@@ -59,7 +59,6 @@ import SensitiveData from './pages/admin/SensitiveData';
 import RLSManagement from './pages/admin/RLSManagement';
 import RoleManagement from './pages/admin/RoleManagement';
 import SandboxManagement from './pages/admin/SandboxManagement';
-import QualityReview from './pages/admin/QualityReview';
 import Observability from './pages/admin/Observability';
 import EvalManagement from './pages/admin/EvalManagement';
 import EvolutionCenter from './pages/admin/EvolutionCenter';
@@ -120,6 +119,8 @@ export default function App() {
         <Route path="/ask/:workspaceId" element={<PrivateRoute><WorkspaceBoundary><WorkspaceLayout module="ask" /></WorkspaceBoundary></PrivateRoute>}>
           <Route index element={<Chat />} />
           <Route path="profile" element={<Profile />} />
+          {/* 记忆页与 profile 同框架挂载: 下拉菜单在 ask 模式下也必须有入口 */}
+          <Route path="memory" element={<MemorySettings />} />
         </Route>
 
         {/* Workspace mode: /ws/:workspaceId/* */}
@@ -129,7 +130,7 @@ export default function App() {
           {/* 资产清单: 工作站共享项目(会话产物归档收藏, OSS 托管) */}
           <Route path="assets" element={<WorkspaceAssets />} />
           <Route path="scheduled" element={<ScheduledTasks />} />
-          {/* 报表:自动化任务成功执行的报告,按任务归集 + 历史版本切换 */}
+          {/* 报表中心: 报表跟随属主(跨工作站), 任务产出按版本归集; 会话/手写报表可新建与编辑 */}
           <Route path="reports" element={<ReportsCenter />} />
           {/* 个人设置:在原本的框架(侧边栏/顶栏)下渲染, 非独立全屏页 */}
           <Route path="profile" element={<Profile />} />
@@ -203,7 +204,6 @@ export default function App() {
           {/* 行级安全已迁入数据中台「数据安全配置」(/data/rls), 旧路由重定向兼容书签 */}
           <Route path="rls" element={<Navigate to="/data/rls" replace />} />
           <Route path="sandbox" element={<SandboxManagement />} />
-          <Route path="quality-review" element={<QualityReview />} />
           <Route path="observability" element={<Observability />} />
           <Route path="eval" element={<EvalManagement />} />
           <Route path="evolution" element={<EvolutionCenter />} />

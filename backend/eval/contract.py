@@ -22,8 +22,9 @@ from backend.eval.gate import CAPABILITIES, CASE_STATUSES, SCORED_STATUSES
 #: suite 即**被测层**（适配器路由键）。故意不重命名现有值：``case_key`` 跨版本对齐
 #: 依赖历史运行记录，改键会让版本对比集体失踪，那是另一种掩盖。
 #: L2（真实语义）尚未落地时编号留空是**有意的可见缺口**，不是笔误。
-SUITES = ("compile", "semantic", "retrieval", "llm")
+SUITES = ("intent", "compile", "semantic", "retrieval", "llm")
 SUITE_LABELS = {
+    "intent": "L0 前置分流（确定性规则/词典）",
     "compile": "L1 编译规则（mock 目录）",
     "semantic": "L2 真实语义（intent→治理改写）",
     "retrieval": "L3 真实检索",
@@ -32,6 +33,9 @@ SUITE_LABELS = {
 
 #: 各 suite 的层定位与边界（页面必须原样告知，防止拿弱层给强层背书）
 SUITE_SCOPE_NOTES = {
+    "intent": ("只跑 `execution/intent_gate.route_intent` 的确定性判定（形态规则 + 词典命中），"
+               "不叫模型、不起会话；测的是**分流判定的对错**，"
+               "**不反映模型真实意图理解能力**，也不得拿本集通过率给取数正确率背书。"),
     "compile": ("只走离线确定性编译，语义目录被 fixtures/demo_semantics 打桩："
                 "测的是 planner 规则回归，**不反映真实本体/字典/治理**。"),
     "semantic": ("不打桩：真实 binding + 真实字典 + 真实敏感/RLS 基线，只到闸门改写为止，"
@@ -44,6 +48,8 @@ SUITE_SCOPE_NOTES = {
 
 #: 各 suite 支持的期望键（页面表单据此渲染可填字段，写错键直接拒绝而不是静默忽略）
 EXPECTED_KEYS = {
+    "intent": {"decision", "label", "label_in", "signals_include", "signals_exclude",
+               "handled_by", "reply_contains", "reply_not_contains", "no_leak"},
     "compile": {"ok", "unbound", "intent_rejected", "error_contains",
                 "hint_no_physical", "sql_contains", "resolution_source"},
     "semantic": {
@@ -402,6 +408,69 @@ def check_llm(observed: dict, expected: dict) -> tuple[bool, str]:
     return True, ""
 
 
+def check_intent(observed: dict, expected: dict) -> tuple[bool, str]:
+    """L0 前置分流断言（route_intent 确实定判定）。
+
+    这一层的代价不对称，断言方必须能分别表达：
+      * **该放行的被拦** = 用户拿不到答案（最严重）；
+      * **该拦的没拦** = 白付一个完整 agent 回合。
+    所以用例必须显式写出期望去向（``decision``/``handled_by``），不接受"只看 label"的
+    弱断言（拿 label 推去向会让改标签时把去向期望一并撞翻，归因就花了）。
+    """
+    decision = str(observed.get("decision") or "")      # local / shadow_local / agent
+    label = str(observed.get("label") or "")
+    handled_by = str(observed.get("handled_by") or "")
+    signals = [str(s) for s in (observed.get("signals") or [])]
+    reply = str(observed.get("reply") or "")
+
+    want_decision = expected.get("decision")
+    if want_decision is not None:
+        # 用例写 agent/local；适配器在 shadow 模式下把"判定可拦"报为 shadow_local，
+        # 两者同属"判定结论是可拦"，不能因评测跑在 shadow 就判失败。
+        if str(want_decision) == "agent":
+            if decision != "agent":
+                return False, f"期望放行 agent，实际判定 {decision!r}（误拦）"
+        elif str(want_decision) in ("local", "shadow_local"):
+            if decision == "agent":
+                return False, f"期望本地直答（{want_decision}），实际放行 agent（漏拦）"
+        else:
+            return False, f"用例的 decision 期望不合法: {want_decision!r}（应为 agent/local）"
+
+    want_handled = expected.get("handled_by")
+    if want_handled and handled_by != want_handled:
+        return False, f"处理方期望 {want_handled!r}，实际 {handled_by!r}"
+
+    want_label = expected.get("label")
+    if want_label and label != want_label:
+        return False, f"标签期望 {want_label!r}，实际 {label!r}"
+
+    labels_in = expected.get("label_in")
+    if labels_in and label not in list(labels_in):
+        return False, f"标签应属于 {list(labels_in)}，实际 {label!r}"
+
+    for sig in expected.get("signals_include") or []:
+        if not any(str(sig) in s for s in signals):
+            return False, f"判定信号缺少 {sig!r}，实际 {signals}"
+    for sig in expected.get("signals_exclude") or []:
+        if any(str(sig) in s for s in signals):
+            return False, f"判定信号出现了不该有的 {sig!r}"
+
+    for kw in expected.get("reply_contains") or []:
+        if kw not in reply:
+            return False, f"本地文案缺少 {kw!r}"
+    for kw in expected.get("reply_not_contains") or []:
+        if kw in reply:
+            return False, f"本地文案出现了不该有的 {kw!r}"
+
+    # 本地直答是面向普通客户端的通道，拿护栏 §7 的完整口径卡它（不只是凭据）
+    if expected.get("no_leak"):
+        leak = _has_leak(reply) or _has_leak(json_dumps(signals))
+        if leak:
+            return False, f"前置层出站内容信息泄露({leak})"
+
+    return True, ""
+
+
 def check_semantic(observed: dict, expected: dict) -> tuple[bool, str]:
     """L2 真实语义层断言：intent → 真实 binding → plan → 闸门（纯判定）的产物。
 
@@ -545,6 +614,7 @@ def check_semantic(observed: dict, expected: dict) -> tuple[bool, str]:
 
 
 _CHECKERS = {
+    "intent": check_intent,
     "compile": check_compile,
     "semantic": check_semantic,
     "retrieval": check_retrieval,

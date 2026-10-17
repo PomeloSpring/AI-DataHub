@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { useChatStore, deriveTitle, saveMessages, type ChatMessage } from '../chatStore'
+import { useChatStore, deriveTitle, saveMessages, hasModelStats, type ChatMessage } from '../chatStore'
 import { ensureUploadName, filesFromClipboard, validateLocalAttachment } from '../chatStore'
 import { useAsBotStore } from '../asBotStore'
 import { toast } from 'sonner'
@@ -467,6 +467,17 @@ describe('chatStore', () => {
       await saveMessages(20, [{ role: 'user', content: 'hello' }])
       expect(mockClient.put.mock.calls[0][1]).not.toHaveProperty('executor_session_id')
     })
+
+    it('reportable 是服务端读取时重算的展示标记，不回存会话 JSON', async () => {
+      mockClient.put.mockResolvedValue({})
+      await saveMessages(21, [
+        { role: 'assistant', content: '已记住偏好', reportable: false, reportable_reason: '不是分析结果' },
+      ])
+      const stored = (mockClient.put.mock.calls[0][1] as any).messages[0]
+      expect(stored).not.toHaveProperty('reportable')
+      expect(stored).not.toHaveProperty('reportable_reason')
+      expect(stored.content).toBe('已记住偏好')
+    })
   })
 
   describe('异步上下文隔离', () => {
@@ -565,6 +576,80 @@ describe('chatStore', () => {
       // Should not throw
       useChatStore.getState().cancelMessage()
     })
+
+    /**
+     * 取消只是断开 SSE：后端要先确认在跑的工具任务与 SDK 子进程已收尾才会释放执行权。
+     * 旧实现 abort 完就放开输入框 → 下一句必 409（用户体感“停止没生效”）。
+     */
+    it('释放执行权前保持 stopping，并轮询只读状态接口', async () => {
+      const abortFn = vi.fn()
+      useChatStore.setState({ abortController: { abort: abortFn } as any, currentConvId: 55, stopping: false })
+      mockClient.get.mockResolvedValue({ data: { status: 'idle', busy: false, can_send: true } } as any)
+
+      useChatStore.getState().cancelMessage()
+      expect(abortFn).toHaveBeenCalled()
+      expect(useChatStore.getState().stopping).toBe(true)   // 断连≠已停，先锁住发送
+
+      await vi.waitFor(() => expect(useChatStore.getState().stopping).toBe(false))
+      expect(mockClient.get).toHaveBeenCalledWith('/pipeline/send/status', { params: { conversation_id: 55 } })
+      expect(toast.error).not.toHaveBeenCalled()
+    })
+
+    it('stopping 期间不得发送（不再发请求，并给出可见提示）', async () => {
+      const fetchSpy = vi.fn()
+      vi.stubGlobal('fetch', fetchSpy)
+      try {
+        useChatStore.setState({ loading: false, stopping: true })
+        await useChatStore.getState().sendMessage('再 check 一下权限')
+        expect(fetchSpy).not.toHaveBeenCalled()
+        expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('正在停止'))
+      } finally {
+        vi.unstubAllGlobals()
+        useChatStore.setState({ stopping: false })
+      }
+    })
+
+    it('超时仍未确认停止时如实报错，不假装成功', async () => {
+      vi.useFakeTimers()
+      try {
+        useChatStore.setState({ currentConvId: 66, stopping: false })
+        mockClient.get.mockResolvedValue({ data: { status: 'running', busy: true, can_send: false } } as any)
+        const pending = useChatStore.getState().waitForExecutionRelease(66)
+        await vi.advanceTimersByTimeAsync(125_000)
+        await pending
+        expect(useChatStore.getState().stopping).toBe(false)
+        expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('仍未确认停止'))
+      } finally {
+        vi.useRealTimers()
+        vi.clearAllMocks()
+      }
+    })
+
+    it('状态查询失败不等于已停止（按未确认提示）', async () => {
+      useChatStore.setState({ currentConvId: 77, stopping: false })
+      mockClient.get.mockRejectedValue(new Error('network down'))
+      await useChatStore.getState().waitForExecutionRelease(77)
+      expect(useChatStore.getState().stopping).toBe(false)
+      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('无法确认'))
+    })
+
+    it('用户已切走会话时静默收尾，不弹提示打断新上下文', async () => {
+      vi.useFakeTimers()
+      try {
+        useChatStore.setState({ currentConvId: 88, stopping: false })
+        mockClient.get.mockResolvedValue({ data: { status: 'running', busy: true } } as any)
+        const pending = useChatStore.getState().waitForExecutionRelease(88)
+        await vi.advanceTimersByTimeAsync(2_000)
+        useChatStore.setState({ currentConvId: 99 })   // 切到另一个会话
+        await vi.advanceTimersByTimeAsync(125_000)
+        await pending
+        expect(useChatStore.getState().stopping).toBe(false)
+        expect(toast.error).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+        vi.clearAllMocks()
+      }
+    })
   })
 })
 
@@ -622,5 +707,138 @@ describe('附件粘贴(剪贴板提取与命名)', () => {
     const f = new File(['img'], 'a.png', { type: 'image/png' })
     const dt = fakeClipboard({ items: [], files: [f] })
     expect(filesFromClipboard(dt).map(x => x.name)).toEqual(['a.png'])
+  })
+})
+
+/**
+ * 前置意图漏斗（Intent Gate）在前端的两个硬要求：
+ *   1. 拦截回合必须让用户看见"没走模型"——处理方随 done 落到消息上并持久化，
+ *      历史回放也带徽章（否则拦截痕迹只在实时流里存在过一次）；
+ *   2. 判错了要能救回来——「转深度分析」重发时必须带 force_agent，让服务端绕过分流。
+ */
+describe('前置意图漏斗（handled_by / force_agent）', () => {
+  beforeEach(() => {
+    useChatStore.setState({
+      currentConvId: 7, messages: [], loading: false, stopping: false,
+      abortController: null, pipelineMode: null, selectedDsId: 0, selectedModelId: null,
+      selectedWorkspaceId: 0, executorSessionId: null,
+    })
+    mockClient.put.mockReset()
+    mockClient.put.mockResolvedValue({})
+  })
+
+  function makeSseResponse(events: Array<[string, unknown]>) {
+    const enc = new TextEncoder()
+    const chunks = events.map(([ev, data]) => `event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`)
+    let i = 0
+    return {
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: async () => (i < chunks.length
+            ? { done: false, value: enc.encode(chunks[i++]) }
+            : { done: true, value: undefined }),
+          cancel: async () => {},
+        }),
+      },
+    }
+  }
+
+  it('done 带 handled_by=intent_gate 时消息落 handledBy/gate 并写进会话记录', async () => {
+    const fetchMock = vi.fn(async () => makeSseResponse([
+      ['progress', { stage: 'intent_gate', message: '前置意图层直接应答', gate: { label: 'social_ack' } }],
+      ['token', { text: '你好！' }],
+      ['done', {
+        intent: 'intent_gate', reply: '你好！有什么数据问题需要我帮忙？',
+        handled_by: 'intent_gate',
+        gate: { mode: 'enforce', layer: 'L0', label: 'social_ack', reason: '整句由寒暄/应答词构成' },
+        stats: { num_turns: 0, tool_call_count: 0, duration_ms: 0 },
+      }],
+    ]))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      await useChatStore.getState().sendMessage('你好')
+      const msgs = useChatStore.getState().messages
+      const asst = msgs[msgs.length - 1]
+      expect(asst.handledBy).toBe('intent_gate')
+      expect(asst.gate?.label).toBe('social_ack')
+      // 正文不重复公告（可见性由 handledBy 驱动的徽章承担）
+      expect(asst.content).not.toContain('未调用模型')
+
+      const put = mockClient.put.mock.calls.find(c => String(c[0]).startsWith('/chat/conversations/'))
+      expect(put).toBeTruthy()
+      const stored = (put![1] as any).messages.find((m: any) => m.role === 'assistant')
+      // 处理方必须能回放：只在今晚可见、明天打开会话就"看不出这条没走模型"= 另一种掩盖
+      expect(stored.handledBy).toBe('intent_gate')
+      expect(stored.gate.label).toBe('social_ack')
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('走模型的回合 handledBy=agent，前端不加拦截标记', async () => {
+    const fetchMock = vi.fn(async () => makeSseResponse([
+      ['token', { text: '答案' }],
+      ['done', { intent: 'agent', reply: '答案', handled_by: 'agent',
+        gate: { mode: 'shadow', layer: 'L0', label: 'social_ack', reason: 'shadow 不改变行为' } }],
+    ]))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      await useChatStore.getState().sendMessage('你好')
+      const asst = useChatStore.getState().messages.slice(-1)[0]
+      expect(asst.handledBy).toBe('agent')
+      expect(asst.gate?.mode).toBe('shadow')
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('转深度分析：请求体带 force_agent=true（只绕分流，不关护栏）', async () => {
+    const fetchMock = vi.fn(async () => makeSseResponse([
+      ['done', { intent: 'agent', reply: '深度分析结果', handled_by: 'agent' }],
+    ]))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      await useChatStore.getState().sendMessage('你好', undefined, undefined, { forceAgent: true })
+      const body = JSON.parse((fetchMock.mock.calls[0] as any)[1].body)
+      expect(body.force_agent).toBe(true)
+      expect(body.question).toBe('你好')
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('普通发送不带 force_agent（默认参与分流判定）', async () => {
+    const fetchMock = vi.fn(async () => makeSseResponse([
+      ['done', { intent: 'agent', reply: 'ok', handled_by: 'agent' }],
+    ]))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      await useChatStore.getState().sendMessage('近7天案例数量')
+      const body = JSON.parse((fetchMock.mock.calls[0] as any)[1].body)
+      expect(body.force_agent).toBe(false)
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('全 0 的执行统计不得被渲染成文本 0（hasModelStats 必须返回布尔）', () => {
+    // 前置意图层直答回合 stats 全 0；`a || b || c` 会把数字 0 交给 React 渲染
+    expect(hasModelStats({ num_turns: 0, tool_call_count: 0, duration_ms: 0 })).toBe(false)
+    expect(hasModelStats(undefined)).toBe(false)
+    expect(hasModelStats({ num_turns: 1, tool_call_count: 0, duration_ms: 4700 })).toBe(true)
+    expect(hasModelStats({ num_turns: 0, tool_call_count: 2, duration_ms: 0 })).toBe(true)
+  })
+
+  it('AS-BOT 面板同口径：handled_by 落消息、force_agent 进请求体', async () => {
+    useAsBotStore.setState({ conversationId: 9, messages: [], loading: false, stopping: false,
+      abortController: null })
+    const fetchMock = vi.fn(async () => makeSseResponse([
+      ['done', {
+        intent: 'intent_gate', reply: '我是 ChatBI 分析师。', handled_by: 'intent_gate',
+        gate: { mode: 'enforce', layer: 'L1', label: 'capability_probe', reason: '能力询问' },
+      }],
+    ]))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      await useAsBotStore.getState().sendMessage('你能做什么', { forceAgent: true })
+      const body = JSON.parse((fetchMock.mock.calls[0] as any)[1].body)
+      expect(body.force_agent).toBe(true)
+      const asst = useAsBotStore.getState().messages.slice(-1)[0]
+      expect(asst.handledBy).toBe('intent_gate')
+      expect(asst.gate?.label).toBe('capability_probe')
+    } finally { vi.unstubAllGlobals() }
   })
 })

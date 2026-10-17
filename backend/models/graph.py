@@ -133,7 +133,7 @@ class SyncResponse(BaseModel):
     terms: int = Field(0, description="同步的术语数")
     metrics: int = Field(0, description="同步的指标数")
     dimensions: int = Field(0, description="同步的维度数")
-    sql_templates: int = Field(0, description="同步的 SQL 模板数")
+    datasets: int = Field(0, description="同步的查询数据集数")
     relations: int = Field(0, description="同步的关系数")
     message: Optional[str] = Field(None, description="消息")
 

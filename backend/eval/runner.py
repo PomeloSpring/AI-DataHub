@@ -36,6 +36,7 @@ from backend.eval.contract import (
 )
 
 ADAPTERS = {
+    "intent": "backend.eval.adapters.intent",
     "compile": "backend.eval.adapters.compile",
     "semantic": "backend.eval.adapters.semantic",
     "retrieval": "backend.eval.adapters.retrieval",
@@ -43,6 +44,7 @@ ADAPTERS = {
 }
 
 SOURCES_LABELS = {
+    "intent": "分流层级与判定信号（L0 形态规则 / L1 词典命中 / 直接放行），不是模型行为",
     "compile": "解析命中档位（planner 名字解析，非检索来源）",
     "semantic": "真实语义层归因（解析档位 + 闸门落点 + 治理是否真被验证）",
     "retrieval": "检索来源（retrieval strategy / rag_source，非解析档位）",

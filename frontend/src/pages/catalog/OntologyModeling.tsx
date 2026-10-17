@@ -1,9 +1,12 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import client from '@/api/client';
 import {
   ontologyApi,
-  generateOntologyDraft,
+  startOntologyGenerate,
+  getOntologyGenerateTask,
+  listOntologyGenerateTasks,
+  cancelOntologyGenerateTask,
+  type GenerateTask,
   type OntologyModel,
   type OntologyModelSummary,
   type OntologyStatus,
@@ -27,18 +30,25 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import { Switch } from '@/components/ui/switch';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from 'sonner';
 import {
   Boxes, Sparkles, Save, CheckCircle2, Archive, RefreshCw, Loader2, Trash2, History, AlertTriangle,
-  Upload, Undo2,
+  Upload, Undo2, BookMarked,
 } from 'lucide-react';
 import ObjectHubTab, { type HubObject } from './ObjectHubTab';
+import { normalizeDocObjects, showsM234, showsDeployments, countM234Declarations, type NormalizeDocObjectsResult } from '@/lib/ontologyObjects';
 import AssetPoolPanel from './AssetPoolPanel';
 import Glossary from './Glossary';
 import { ModelActionsTab, ModelRulesTab, ModelScenariosTab, ModelDeploymentsTab, ObjectCreateButton, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
 import { metricsApi } from '@/api/metrics';
+import { useAsBotStore } from '@/stores/asBotStore';
 
 interface Datasource {
   id: number;
@@ -52,25 +62,16 @@ const STATUS_META: Record<OntologyStatus, { label: string; cls: string }> = {
   archived: { label: '已归档', cls: 'bg-gray-500/10 text-gray-500 border-gray-500/20' },
 };
 
-/** 知识库同步跳过原因 → 可读文案（不向用户甩英文码） */
-const KB_SKIP_LABEL: Record<string, string> = {
-  model_not_found: '模型不存在',
-  no_kb_bound: '模型未绑定目标知识库',
-  no_kb_with_sync_ontology: '没有开启同步的目标知识库',
-  status_draft: '草案未激活，不推送知识库',
-  status_archived: '模型已归档，不推送知识库',
-  superseded_by_active_version: '同名已有生效版本，本版本不上云',
-  no_md_content: '无可渲染的语义内容',
-};
-
-/** 从 JSON 内容解析对象列表（预览用，容错） */
-function parseObjects(jsonContent: string): any[] {
+/** 从 JSON 内容解析对象列表（预览用，容错）：旧字段名在本层适配，无法定位身份的元素交 UI 显式提示 */
+function parseObjects(jsonContent: string): NormalizeDocObjectsResult {
+  let raw: unknown = [];
   try {
     const doc = JSON.parse(jsonContent);
-    return Array.isArray(doc?.objects) ? doc.objects : [];
+    raw = Array.isArray(doc?.objects) ? doc.objects : [];
   } catch {
-    return [];
+    raw = [];
   }
+  return normalizeDocObjects(raw);
 }
 
 /** 模型列表分组(业务/系统能力): 只列本体模型 —— 指标/维度/术语是模型内容, 在模型工作区内配置 */
@@ -121,7 +122,6 @@ function ModelGroup({ title, list, selectedId, onPick }: {
 }
 
 export default function OntologyModeling() {
-  const navigate = useNavigate();
   // ── 数据源 ──
   const [datasources, setDatasources] = useState<Datasource[]>([]);
   const [datasourceId, setDatasourceId] = useState<number>(0);
@@ -136,10 +136,11 @@ export default function OntologyModeling() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // ── 生成 SSE ──
-  const [generating, setGenerating] = useState(false);
-  const [progressLogs, setProgressLogs] = useState<string[]>([]);
-  const abortRef = useRef<AbortController | null>(null);
+  // ── 生成任务：服务端后台静默执行，进度在 AS-BOT 侧边栏呈现（页面不再是执行载体）──
+  const [genTask, setGenTask] = useState<GenerateTask | null>(null);
+  // 辅助生成的知识库（可选）：从清单选名，不手输 id
+  const [knowledgeBases, setKnowledgeBases] = useState<{ id: number; name: string }[]>([]);
+  const [kbIds, setKbIds] = useState<number[]>([]);
 
   // ── 弹窗 ──
   const [activateOpen, setActivateOpen] = useState(false);
@@ -150,10 +151,8 @@ export default function OntologyModeling() {
   const [yamlDir, setYamlDir] = useState('ontology');
   const [importing, setImporting] = useState(false);
 
-  // ── 归档可见 / 手动同步知识库 ──
+  // ── 归档可见（手动同步知识库已移到「关系图谱」页，与图谱/知识库状态同屏）──
   const [showArchived, setShowArchived] = useState(false);
-  const [syncingKb, setSyncingKb] = useState(false);
-  const [syncTick, setSyncTick] = useState(0);
 
   const handleImportYaml = async () => {
     if (!datasourceId) {
@@ -167,7 +166,7 @@ export default function OntologyModeling() {
       });
       toast.success(`导入完成：${data.object_count ?? '?'} 对象 / ${data.links ?? '?'} Link，图谱已重建`);
       setYamlOpen(false);
-      await loadModels(datasourceId);
+      await loadModels();
       if (data.model_id) loadModel(data.model_id);
     } catch (e: any) {
       toast.error(e?.response?.data?.detail || '导入失败');
@@ -205,9 +204,22 @@ export default function OntologyModeling() {
     }
   }, []);
 
-  const loadModels = useCallback(async (dsId?: number, withArchived = showArchived) => {
+  // 知识库候选：只列启用中的，选项显示 name（ui-resource-display）
+  const loadKnowledgeBases = useCallback(async () => {
     try {
-      const { data } = await ontologyApi.list(dsId, withArchived);
+      const { data } = await client.get('/knowledge-bases');
+      setKnowledgeBases((Array.isArray(data) ? data : [])
+        .filter((k: any) => k.status === 'active')
+        .map((k: any) => ({ id: k.id, name: k.name })));
+    } catch {
+      setKnowledgeBases([]);
+    }
+  }, []);
+
+  // 模型列表**不按数据源过滤**：右上角数据源只回答“给哪个源生成”，不是筛选器
+  const loadModels = useCallback(async (withArchived = showArchived) => {
+    try {
+      const { data } = await ontologyApi.list(undefined, withArchived);
       setModels(data.items || []);
     } catch {
       setModels([]);
@@ -217,12 +229,21 @@ export default function OntologyModeling() {
 
   useEffect(() => {
     loadDatasources();
+    loadKnowledgeBases();
     loadModels();
-  }, [loadDatasources, loadModels]);
+  }, [loadDatasources, loadKnowledgeBases, loadModels]);
 
+  // 重进页面挂回正在后台跑的生成任务（执行在服务端，不因页面离开而停）
   useEffect(() => {
-    if (datasourceId) loadModels(datasourceId);
-  }, [datasourceId, loadModels]);
+    let cancelled = false;
+    listOntologyGenerateTasks(true)
+      .then((items) => { if (!cancelled && items.length) setGenTask(items[0]); })
+      .catch(() => { /* 列表拉不到不影响页面，任务仍在服务端跑 */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // 任务进度的唯一事实源在服务端会话转录里；页面只关心“有没有在跑”与终态提醒
+  const running = genTask?.status === 'running';
 
   const loadModel = useCallback(async (id: number) => {
     try {
@@ -236,58 +257,69 @@ export default function OntologyModeling() {
     }
   }, []);
 
-  // ── 生成草案（SSE）：自动建 AS-BOT 会话派发任务，归纳由会话内 agent 完成 ──
-  const handleGenerate = () => {
+  // ── 生成草案：只负责“派发”，执行在服务端后台，进度在 AS-BOT 侧边栏呈现 ──
+  const openTaskConversation = useCallback((convId: number) => {
+    void useAsBotStore.getState().openTaskConversation(convId);
+  }, []);
+
+  const applyTaskResult = useCallback((task: GenerateTask) => {
+    setGenTask(task);
+    if (task.status === 'running') return;
+    const viewAction = { label: '在 AS-BOT 中查看', onClick: () => openTaskConversation(task.conversation_id) };
+    void loadModels();
+    if (task.status === 'done' && task.model_id) {
+      void loadModel(task.model_id);
+      toast.success(`草案已生成：${task.object_count} 个业务对象`, { action: viewAction, duration: 10000 });
+      return;
+    }
+    // 未落库/被取消/被重启打断：按真实终态告知，不假报成功
+    const reason = task.status === 'cancelled' ? '生成任务已取消'
+      : task.status === 'interrupted' ? '服务重启，生成任务已中断，请重新发起'
+      : (task.error || '生成失败');
+    toast.error(reason, { description: '执行明细见 AS-BOT 会话', action: viewAction, duration: 12000 });
+  }, [loadModels, loadModel, openTaskConversation]);
+
+  const handleGenerate = async () => {
     if (!datasourceId) {
       toast.warning('请先选择数据源');
       return;
     }
-    setGenerating(true);
-    setProgressLogs([]);
-    // 跳转会话（回看执行过程/追问）：会话 id 经 sessionStorage 一次性携带，
-    // 与 AS-BOT 面板同惯例，由 Chat 挂载时消费并 switchConversation。
-    const jumpToConversation = (convId: number, wsId: number) => {
-      sessionStorage.setItem('asbot_open_conversation', String(convId));
-      navigate(wsId ? `/ws/${wsId}/chat` : '/ask');
-    };
-    abortRef.current = generateOntologyDraft(datasourceId, (event, data) => {
-      if (event === 'progress') {
-        // 进度日志直接显示 agent 过程（token 转进度行、工具调用进度）
-        setProgressLogs((prev) => [...prev, data.detail || data.stage]);
-      } else if (event === 'done') {
-        setGenerating(false);
-        loadModels(datasourceId);
-        if (data.model_id) loadModel(data.model_id);
-        const convAction = data.conversation_id
-          ? { label: '查看对话', onClick: () => jumpToConversation(data.conversation_id, data.workspace_id || 0) }
-          : undefined;
-        if (data.model_id) {
-          toast.success(`草案已生成：${data.object_count} 个业务对象`, {
-            description: '可在对话中查看执行过程',
-            action: convAction,
-            duration: 10000,
-          });
-        } else {
-          // 任务结束但未提交草案：显式告知，不假报成功
-          toast.warning('任务已结束，但未提交草案', {
-            description: '请在对话中查看执行过程',
-            action: convAction,
-            duration: 10000,
-          });
-        }
-      } else {
-        setGenerating(false);
-        // 错误显式展示服务端 detail（执行层不可用/无权限/数据源未授权），不吞异常
-        toast.error(data.message || '生成失败', {
-          description: data.conversation_id ? '可在对话中查看执行过程' : undefined,
-          action: data.conversation_id
-            ? { label: '查看对话', onClick: () => jumpToConversation(data.conversation_id, data.workspace_id || 0) }
-            : undefined,
-          duration: 10000,
-        });
-      }
-    });
+    try {
+      const task = await startOntologyGenerate(datasourceId, kbIds);
+      setGenTask(task);
+      // 直接打开 AS-BOT 侧边窗口看任务（关面板/离开页面都不影响执行）
+      openTaskConversation(task.conversation_id);
+      toast.success('生成任务已在后台开始执行', {
+        description: kbIds.length
+          ? `已带 ${kbIds.length} 个参考知识库；进度见 AS-BOT 侧边栏，可离开本页`
+          : '进度见 AS-BOT 侧边栏，可离开本页',
+        duration: 6000,
+      });
+    } catch (e: any) {
+      // 错误显式展示服务端 detail（执行层不可用/无权限/数据源未授权/已有任务在跑）
+      toast.error(e?.response?.data?.detail || e?.message || '生成任务派发失败');
+    }
   };
+
+  const handleCancelGenerate = async () => {
+    if (!genTask) return;
+    try {
+      applyTaskResult(await cancelOntologyGenerateTask(genTask.conversation_id));
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || '取消失败，任务仍在后台执行');
+    }
+  };
+
+  // 轮询只为页面按钮态与终态提醒（进度正文由 AS-BOT 面板轮询会话呈现）
+  useEffect(() => {
+    if (genTask?.status !== 'running') return;
+    const timer = setInterval(() => {
+      getOntologyGenerateTask(genTask.conversation_id).then(applyTaskResult).catch(() => {
+        // 单次轮询失败保持现状，下轮重试；连续失败由 AS-BOT 面板横幅提示
+      });
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [genTask?.status, genTask?.conversation_id, applyTaskResult]);
 
   // ── 保存（仅 draft） ──
   // 供建模页签（行为/规则/场景/新建对象）落库：改 doc 后走 ontologyApi.save（save_draft 级联重建派生物）
@@ -300,7 +332,7 @@ export default function OntologyModeling() {
       setModel(data);
       setJsonDraft(data.json_content || '');
       setDirty(false);
-      loadModels(datasourceId || undefined);
+      loadModels();
       toast.success(wasActive ? '已保存，并同步刷新对象/绑定/图谱' : '草案已保存，YAML/MD 已同步派生');
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '保存失败');
@@ -316,7 +348,7 @@ export default function OntologyModeling() {
       setModel(data);
       setJsonDraft(data.json_content || '');
       setDirty(false);
-      loadModels(datasourceId || undefined);
+      loadModels();
       toast.success(wasActive ? '已保存，并同步刷新对象/绑定/图谱' : '草案已保存，YAML/MD 已同步派生');
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '保存失败');
@@ -339,7 +371,7 @@ export default function OntologyModeling() {
       }
       toast.success('模型已激活，RDF 已写入 Oxigraph，对象向量已重建');
       setActivateOpen(false);
-      await loadModels(datasourceId || undefined);
+      await loadModels();
       await loadModel(model.id);
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '激活失败');
@@ -354,7 +386,7 @@ export default function OntologyModeling() {
     try {
       await ontologyApi.archive(model.id);
       toast.success('模型已归档');
-      await loadModels(datasourceId || undefined);
+      await loadModels();
       await loadModel(model.id);
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '归档失败');
@@ -369,31 +401,15 @@ export default function OntologyModeling() {
       setModel(data);
       setJsonDraft(data.json_content || '');
       setDirty(false);
-      loadModels(datasourceId || undefined);
+      loadModels();
       toast.success('已还原为草案，可继续编辑后激活');
     } catch (e: any) {
       toast.error(e?.response?.data?.detail || '还原失败');
     }
   };
 
-  // ── 手动同步知识库：把生效模型的脱敏文档推送到目标知识库 ──
-  const handleSyncKb = async () => {
-    if (!model) return;
-    setSyncingKb(true);
-    try {
-      const { data } = await ontologyApi.syncKb(model.id);
-      if (data.removed) toast.success(`已从 ${data.removed} 个知识库下线旧文档`);
-      else if (data.synced && data.error) toast.warning(`已同步 ${data.synced} 个知识库，但部分目标失败：${data.error}`);
-      else if (data.synced) toast.success(`已同步到 ${data.synced} 个知识库`);
-      else if (data.error) toast.error(`知识库同步失败：${data.error}`);
-      else toast.warning(data.skipped ? `未同步：${KB_SKIP_LABEL[data.skipped] || data.skipped}` : '本次未产生同步');
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '知识库同步失败');
-    } finally {
-      setSyncingKb(false);
-      setSyncTick((t) => t + 1);
-    }
-  };
+  // ── 手动同步知识库与图谱重建均在「关系图谱」页（派生重建与状态回显同屏），
+  //    本页只保留状态徽章与保存/激活的自动级联。
 
   const handleDelete = async () => {
     if (!model) return;
@@ -403,7 +419,7 @@ export default function OntologyModeling() {
       setModel(null);
       setSelectedId(null);
       setJsonDraft('');
-      loadModels(datasourceId || undefined);
+      loadModels();
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '删除失败');
     }
@@ -439,7 +455,7 @@ export default function OntologyModeling() {
         // RDF 写入失败不阻塞激活
       }
       toast.success('已回滚并激活该版本');
-      await loadModels(datasourceId || undefined);
+      await loadModels();
       await loadModel(id);
       await fetchVersions(id);
     } catch (e: any) {
@@ -447,11 +463,13 @@ export default function OntologyModeling() {
     }
   };
 
-  const objects = useMemo(() => parseObjects(model ? jsonDraft : ''), [model, jsonDraft]);
+  const { objects, issues: objectIssues } = useMemo(
+    () => model ? parseObjects(jsonDraft) : { objects: [], issues: [] },
+    [model, jsonDraft]);
   const hubObjects = objects as HubObject[];
   const objectOptions = useMemo(
     () => hubObjects.map((o: any) => ({ key: o.key, display_name: o.display_name || o.key })),
-    [objects]);
+    [hubObjects]);
   // 模型分组按 kind（x4 归属改造）：本体归属是 domain+kind，不是数据源。
   // 业务本体的 datasource_id 也是 0，旧的“有合法数据源 → 业务”口径会把它们误归到系统组。
   const byKind = (k: string) => models.filter((m) => (m.kind || '') === k);
@@ -472,6 +490,16 @@ export default function OntologyModeling() {
   }, [jsonDraft, dirty]);
 
   const editable = !!model && model.status !== 'archived';
+  // 源本体不承载 M2/M3/M4：页签隐藏后，若存量 doc 仍声明了行为/规则/场景，
+  // 必须可看到“声明仍在”（不静默藏起来），并引导去清理
+  const m234Declared = useMemo(() => {
+    try {
+      return countM234Declarations(JSON.parse(jsonDraft || '{}'));
+    } catch {
+      return 0;
+    }
+  }, [jsonDraft]);
+  const hiddenM234 = !!model && !showsM234(model.kind) && m234Declared > 0;
 
   return (
     <div className="space-y-4">
@@ -497,41 +525,60 @@ export default function OntologyModeling() {
             ))}
           </SelectContent>
         </Select>
-        <Button onClick={handleGenerate} disabled={generating || !datasourceId}>
-          {generating ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Sparkles className="h-4 w-4 mr-1" />}
-          {generating ? '生成中…' : '生成本体模型'}
+        {/* 辅助生成的参考知识库（多选，选项显示名称）：不选则仅依据表结构归纳 */}
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button variant="outline" className="h-9 font-normal">
+              <BookMarked className="h-4 w-4 mr-1 text-muted-foreground" />
+              参考知识库
+              <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5">
+                {kbIds.length ? `已选 ${kbIds.length}` : '未选'}
+              </Badge>
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-72 p-2">
+            <div className="text-xs text-muted-foreground px-1 pb-1.5">
+              选中知识库会作为业务背景/关系线索辅助归纳（仅参考，不臆造口径）
+            </div>
+            <div className="max-h-64 overflow-y-auto space-y-0.5">
+              {knowledgeBases.map((kb) => (
+                <label key={kb.id}
+                       className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted cursor-pointer">
+                  <input type="checkbox" checked={kbIds.includes(kb.id)}
+                         onChange={() => setKbIds((prev) => (
+                           prev.includes(kb.id) ? prev.filter((x) => x !== kb.id) : [...prev, kb.id]))} />
+                  <span className="truncate">{kb.name}</span>
+                </label>
+              ))}
+              {!knowledgeBases.length && (
+                <div className="px-1.5 py-1 text-xs text-muted-foreground">没有启用中的知识库</div>)}
+            </div>
+          </PopoverContent>
+        </Popover>
+        <Button onClick={handleGenerate} disabled={running || !datasourceId}>
+          {running ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Sparkles className="h-4 w-4 mr-1" />}
+          {running ? '后台执行中…' : '生成本体模型'}
         </Button>
+        {running && (
+          <Button variant="outline" onClick={() => genTask && openTaskConversation(genTask.conversation_id)}>
+            查看进度
+          </Button>
+        )}
+        {running && (
+          <Button variant="ghost" className="text-red-500 hover:text-red-600" onClick={handleCancelGenerate}>
+            取消任务
+          </Button>
+        )}
         <Button variant="outline" onClick={() => setYamlOpen(true)} disabled={!datasourceId}>
           <Upload className="h-4 w-4 mr-1" />导入 YAML
         </Button>
         <Button
           variant="outline"
-          onClick={() => loadModels(datasourceId || undefined)}
+          onClick={() => loadModels()}
         >
           <RefreshCw className="h-4 w-4" />
         </Button>
       </div>
-
-      {/* 生成进度 */}
-      {generating && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">生成进度</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ScrollArea className="h-24">
-              <div className="space-y-1">
-                {progressLogs.map((line, i) => (
-                  <div key={i} className="text-xs text-muted-foreground">• {line}</div>
-                ))}
-                {progressLogs.length === 0 && (
-                  <div className="text-xs text-muted-foreground">正在启动…</div>
-                )}
-              </div>
-            </ScrollArea>
-          </CardContent>
-        </Card>
-      )}
 
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
         {/* 左栏：模型列表(只放本体模型, 分组隔离) + 未归属资产池入口 */}
@@ -542,7 +589,7 @@ export default function OntologyModeling() {
               <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
                 <Switch checked={showArchived} onCheckedChange={(v) => {
                   setShowArchived(v);
-                  loadModels(datasourceId || undefined, v);
+                  loadModels(v);
                 }} />
                 显示归档
               </label>
@@ -609,15 +656,9 @@ export default function OntologyModeling() {
                       系统知识库 · 自动同步
                     </Badge>
                   )}
-                  <SyncBadges modelId={model.id} refreshKey={syncTick} />
-                  <Button size="sm" variant="outline" onClick={handleSyncKb}
-                          disabled={syncingKb || model.status !== 'active'}
-                          title={model.status === 'active' ? '手动把当前生效模型的脱敏文档同步到目标知识库' : '仅生效模型可同步知识库'}>
-                    {syncingKb
-                      ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      : <RefreshCw className="h-3.5 w-3.5 mr-1" />}
-                    同步知识库
-                  </Button>
+                  <span title="派生状态回显（30s 轮询）；手动「图谱生成」与「同步知识库」请到「关系图谱」页">
+                    <SyncBadges modelId={model.id} kind={model.kind} />
+                  </span>
                   <Button size="sm" variant="outline" onClick={handleOpenVersions}>
                     <History className="h-3.5 w-3.5 mr-1" />
                     版本管理
@@ -677,17 +718,25 @@ export default function OntologyModeling() {
                   <TabsTrigger value="hub">对象 · Link</TabsTrigger>
                   <TabsTrigger value="terms">业务术语</TabsTrigger>
                   <TabsTrigger value="tags">标签</TabsTrigger>
-                  {model.kind !== 'business' && <TabsTrigger value="m234">行为</TabsTrigger>}
-                  {model.kind !== 'business' && <TabsTrigger value="rules">规则</TabsTrigger>}
-                  {model.kind !== 'business' && <TabsTrigger value="scenarios">场景</TabsTrigger>}
-                  <TabsTrigger value="deployments">部署绑定</TabsTrigger>
+                  {showsM234(model.kind) && <TabsTrigger value="m234">行为</TabsTrigger>}
+                  {showsM234(model.kind) && <TabsTrigger value="rules">规则</TabsTrigger>}
+                  {showsM234(model.kind) && <TabsTrigger value="scenarios">场景</TabsTrigger>}
+                  {showsDeployments(model.kind) && <TabsTrigger value="deployments">部署绑定</TabsTrigger>}
                 </TabsList>
+                {hiddenM234 && (
+                  <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-600">
+                    <AlertTriangle className="h-3 w-3 mr-1 inline" />
+                    该模型不承载行为/规则/场景建模位（{model.kind === 'source' ? '源本体是物理表语义投影' : '业务本体只做路由索引'}），
+                    但 doc 内仍有 {m234Declared} 条声明未展示：写动作权限请配在菜单与功能权限码，口径规则请登记指标字典，
+                    并从 JSON 内容中删除这些声明。
+                  </div>
+                )}
                 <TabsContent value="hub" className="mt-2 h-[62vh] overflow-hidden">
                   <div className="flex items-center gap-2 mb-2">
                     <ObjectCreateButton jsonContent={jsonDraft} onSave={saveDocFromTab} />
                   </div>
                   <div className="h-[calc(62vh-2.5rem)] overflow-auto">
-                    <ObjectHubTab modelId={model.id} objects={hubObjects} />
+                    <ObjectHubTab modelId={model.id} objects={hubObjects} issues={objectIssues} />
                   </div>
                 </TabsContent>
                 <TabsContent value="terms" className="mt-2 h-[62vh] overflow-auto">
@@ -697,18 +746,26 @@ export default function OntologyModeling() {
                 <TabsContent value="tags" className="mt-2 h-[62vh] overflow-auto">
                   <ObjectTagsTab objects={hubObjects as any} />
                 </TabsContent>
-                <TabsContent value="m234" className="mt-2 h-[62vh] overflow-hidden">
-                  <ModelActionsTab jsonContent={jsonDraft} onSave={saveDocFromTab} />
-                </TabsContent>
-                <TabsContent value="rules" className="mt-2 h-[62vh] overflow-hidden">
-                  <ModelRulesTab jsonContent={jsonDraft} onSave={saveDocFromTab} />
-                </TabsContent>
-                <TabsContent value="scenarios" className="mt-2 h-[62vh] overflow-hidden">
-                  <ModelScenariosTab jsonContent={jsonDraft} onSave={saveDocFromTab} />
-                </TabsContent>
-                <TabsContent value="deployments" className="mt-2 h-[62vh] overflow-hidden">
-                  <ModelDeploymentsTab modelId={model.id} />
-                </TabsContent>
+                {showsM234(model.kind) && (
+                  <TabsContent value="m234" className="mt-2 h-[62vh] overflow-hidden">
+                    <ModelActionsTab jsonContent={jsonDraft} onSave={saveDocFromTab} />
+                  </TabsContent>
+                )}
+                {showsM234(model.kind) && (
+                  <TabsContent value="rules" className="mt-2 h-[62vh] overflow-hidden">
+                    <ModelRulesTab jsonContent={jsonDraft} onSave={saveDocFromTab} />
+                  </TabsContent>
+                )}
+                {showsM234(model.kind) && (
+                  <TabsContent value="scenarios" className="mt-2 h-[62vh] overflow-hidden">
+                    <ModelScenariosTab jsonContent={jsonDraft} onSave={saveDocFromTab} />
+                  </TabsContent>
+                )}
+                {showsDeployments(model.kind) && (
+                  <TabsContent value="deployments" className="mt-2 h-[62vh] overflow-hidden">
+                    <ModelDeploymentsTab modelId={model.id} />
+                  </TabsContent>
+                )}
               </Tabs>
             )}
           </CardContent>

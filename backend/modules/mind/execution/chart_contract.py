@@ -20,6 +20,8 @@ CHART_TYPES = [
     "rose", "radial_bar", "word_cloud",
     # 地理
     "china_map", "world_map",
+    # 地图热力(经度+纬度+数值权重列,前端用 UI 字模库地图瓦片渲染热力)
+    "map_heat",
     # 历史兼容
     "table",
 ]
@@ -44,11 +46,12 @@ CHART_CONTRACT = """\
 - chart_type 只能取以下之一: bar, line, pie, area, scatter, radar, funnel, waterfall, \
 text_display, table_value, big_number_trend, gauge, timeseries_line, timeseries_bar, \
 timeseries_area, calendar_heatmap, bar_race, timeline_play, heatmap, boxplot, bubble, \
-sankey, tree, treemap, rose, radial_bar, word_cloud, china_map, world_map
+sankey, tree, treemap, rose, radial_bar, word_cloud, china_map, world_map, map_heat
 - columns: 字符串数组,表头列名;至少包含一个维度列(字符串)和一个数值列
 - rows: 二维数组,每行元素顺序与 columns 对应;数值列必须是数字(不加引号)
 - 按数据形态选图:雷达图需多指标对比(1-2 行多数值列);词云需 词+频次 两列;\
-地图需首列为地区名(中国地图用省份/城市中文名);桑基/树图需 源→目标(或层级)+数值;\
+地图需首列为地区名(中国地图用省份/城市中文名);地图热力(map_heat)需 经度列+纬度列+数值权重列\
+(列名含 lng/lon/lat 或 经度/纬度),用于展示地理分布热力;桑基/树图需 源→目标(或层级)+数值;\
 时间动画图(bar_race 竞速条形图/timeline_play 时序播放)需 时间列+数值列(bar_race 最好再有系列列,\
 如 月份+产品+销量),按时间演进展示时优先于静态时序图;形态不满足时退回 bar/line/table,不要硬凑字段
 - sql 字段填写生成该图表数据的真实查询语句(前端卡片内置 SQL 视图展示它)

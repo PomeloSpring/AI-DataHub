@@ -86,7 +86,7 @@ export default function ComponentLibrary({
 
         <TabsContent value="vis" className="flex-1 min-h-0 mt-0 overflow-auto p-3 space-y-3">
           <select aria-label="字模分类" className="w-full rounded border bg-background p-2 text-xs" value={category} onChange={e => setCategory(e.target.value)}>
-            {VIS_CATEGORIES.filter(c => c.id !== 'sql_template').map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+            {VIS_CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
           </select>
           <p className="text-xs text-muted-foreground">{category === 'theme_pack' ? '主题包=一整套风格(背景+卡片+全部图表/控件)，点击一键套用。' : '点击应用到选中元素；图表字模可拖入新建。布局应用前可预览。'}</p>
           {library.error && <div role="alert" className="text-xs text-destructive">{library.error}<Button variant="link" onClick={library.refresh}>重试</Button></div>}

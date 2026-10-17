@@ -10,9 +10,10 @@
 import { useState } from 'react';
 import {
   Database, FileSearch, Lightbulb, Clock, Workflow,
-  ChevronRight, ChevronDown,
+  ChevronDown,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { SlideCollapse } from './chat/StageCard';
 import client from '@/api/client';
 
 export interface KnowledgeChunk {
@@ -90,7 +91,7 @@ interface RagData extends KnowledgeResult {
   rag_source?: string;
   table_info_count?: number;
   column_metadata_count?: number;
-  sql_templates_count?: number;
+  datasets_count?: number;
   business_terms_count?: number;
   table_info?: any[];
   column_metadata?: any[];
@@ -100,7 +101,7 @@ function RagSummary({ rag }: { rag: RagData }) {
   const [expanded, setExpanded] = useState(false);
 
   const total = (rag.table_info_count || 0) + (rag.column_metadata_count || 0)
-    + (rag.sql_templates_count || 0) + (rag.business_terms_count || 0);
+    + (rag.datasets_count || 0) + (rag.business_terms_count || 0);
 
   if (rag.status || rag.chunks || rag.results) return <KnowledgeSummary data={rag} />;
   if (total === 0) return null;
@@ -110,24 +111,25 @@ function RagSummary({ rag }: { rag: RagData }) {
     : rag.rag_source || '';
 
   return (
-    <div className="border rounded-lg bg-background mb-2 overflow-hidden">
+    <div className="rounded-xl border bg-card shadow-sm mb-2 overflow-hidden animate-stage-in">
       <div
-        className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-muted/50 transition-colors"
+        className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-muted/40 transition-colors"
         onClick={() => setExpanded(prev => !prev)}
       >
-        <Database className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+        <span className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 bg-blue-500/10">
+          <Database className="h-3.5 w-3.5 text-blue-500" />
+        </span>
         <span className="text-xs font-medium">RAG 检索</span>
         <span className="text-xs text-muted-foreground truncate flex-1 min-w-0">
           {sourceLabel && `${sourceLabel} · `}
           匹配 {rag.table_info_count || 0} 张表、{rag.column_metadata_count || 0} 个字段
         </span>
-        {expanded
-          ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-        }
+        <ChevronDown
+          className={`h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform duration-300 ${expanded ? 'rotate-180' : ''}`}
+        />
       </div>
 
-      {expanded && (
+      <SlideCollapse open={expanded}>
         <div className="px-3 pb-3 space-y-2 border-t">
           {/* Stats badges */}
           <div className="flex gap-1.5 flex-wrap pt-2">
@@ -141,9 +143,9 @@ function RagSummary({ rag }: { rag: RagData }) {
                 <Database className="h-2.5 w-2.5 mr-0.5" />字段 {rag.column_metadata_count}
               </Badge>
             )}
-            {(rag.sql_templates_count || 0) > 0 && (
+            {(rag.datasets_count || 0) > 0 && (
               <Badge variant="outline" className="text-[10px]">
-                <FileSearch className="h-2.5 w-2.5 mr-0.5" />SQL 模板 {rag.sql_templates_count}
+                <FileSearch className="h-2.5 w-2.5 mr-0.5" />数据集 {rag.datasets_count}
               </Badge>
             )}
             {(rag.business_terms_count || 0) > 0 && (
@@ -181,7 +183,7 @@ function RagSummary({ rag }: { rag: RagData }) {
             </div>
           )}
         </div>
-      )}
+      </SlideCollapse>
     </div>
   );
 }
@@ -204,9 +206,11 @@ function TimingsView({ timings, elapsedMs }: { timings: Record<string, number>; 
   if (keys.length === 0) return null;
 
   return (
-    <div className="border rounded-lg bg-background mb-2 px-3 py-2">
+    <div className="rounded-xl border bg-card shadow-sm mb-2 px-3 py-2 animate-stage-in">
       <div className="flex items-center gap-2 mb-2">
-        <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 bg-muted">
+          <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+        </span>
         <span className="text-xs font-medium">分步耗时</span>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1">
@@ -235,9 +239,11 @@ function WorkflowInfo({ info }: { info: any }) {
   if (!info) return null;
 
   return (
-    <div className="border rounded-lg bg-background mb-2 px-3 py-2">
+    <div className="rounded-xl border bg-card shadow-sm mb-2 px-3 py-2 animate-stage-in">
       <div className="flex items-center gap-2 mb-1.5">
-        <Workflow className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 bg-muted">
+          <Workflow className="h-3.5 w-3.5 text-muted-foreground" />
+        </span>
         <span className="text-xs font-medium">工作流信息</span>
       </div>
       <div className="space-y-1 text-xs">

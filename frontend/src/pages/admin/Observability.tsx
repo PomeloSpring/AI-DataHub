@@ -14,11 +14,13 @@ import { toast } from 'sonner';
 import {
   Activity, MessagesSquare, GitBranch, Users as UsersIcon, RefreshCw,
   ThumbsUp, ThumbsDown, AlertCircle, Sparkles, ChevronDown, ChevronRight, Calendar,
-  Gauge, History as HistoryIcon,
+  Gauge, History as HistoryIcon, Filter, CheckCircle2, Undo2,
 } from 'lucide-react';
 import History from '@/pages/History';
 import {
   getUsageSummary, getUsageByModel, getUsageByUser, listSessions, listTraces, getTrace, getQuota,
+  getFunnelStats, listFunnelIntercepts, reviewFunnelIntercept,
+  type FunnelStats, type InterceptRow,
   parseObservabilityTime, observabilityTimeRange,
   observabilityTimeFromInput as toApiDT, observabilityTimeToInput as toInputDT,
   type UsageSummary, type DailyPoint, type ModelUsage, type UserUsage,
@@ -66,6 +68,29 @@ const SPAN_KIND_LABELS: Record<string, string> = {
   assistant: '模型输出',
   tool_call: '工具调用',
   result: '执行结果',
+  intent_route: '前置分流判定',
+};
+
+// 处理方（意图漏斗拦截率口径）与判定标签的中文显示名——页面不得把枚举直给用户看
+const HANDLED_BY_LABELS: Record<string, string> = {
+  agent: '模型（执行层）',
+  intent_gate: '前置意图层直答',
+};
+const LABEL_LABELS: Record<string, string> = {
+  empty_or_noise: '无效输入',
+  social_ack: '寒暄/应答',
+  probe_refuse: '涉密索要拒答',
+  help_usage: '使用说明',
+  capability_probe: '能力/权限询问',
+  data_query: '业务取数',
+  platform_write: '平台功能动作',
+  context_followup: '多轮延续',
+  ambiguous: '判不准（默认放行）',
+};
+const DECISION_LABELS: Record<string, string> = {
+  local: '已本地直答',
+  shadow_local: '判定可拦（shadow未拦）',
+  agent: '已交模型',
 };
 
 function presetRange(key: string): { start: string; end: string } {
@@ -107,6 +132,7 @@ export default function Observability() {
   const [filters, setFilters] = useState<CommonFilters>(() => ({ ...presetRange('1h') }));
   const [entrypoint, setEntrypoint] = useState('all');
   const [status, setStatus] = useState('all');
+  const [handledBy, setHandledBy] = useState('all');
   const [modelRef, setModelRef] = useState('all');
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [rangeOpen, setRangeOpen] = useState(false);
@@ -138,8 +164,9 @@ export default function Observability() {
   const effFilters = useCallback<() => CommonFilters>(() => ({
     entrypoint: entrypoint === 'all' ? '' : entrypoint,
     status: status === 'all' ? '' : status,
+    handled_by: handledBy === 'all' ? '' : handledBy,
     model_ref: modelRef === 'all' ? '' : modelRef, start, end,
-  }), [entrypoint, status, modelRef, start, end]);
+  }), [entrypoint, status, handledBy, modelRef, start, end]);
 
   const applyFilters = () => {
     const r = rangePreset === 'custom' ? { start, end } : presetRange(rangePreset);
@@ -154,9 +181,10 @@ export default function Observability() {
     const r = presetRange(key);
     const ep = entrypoint === 'all' ? '' : entrypoint;
     const st = status === 'all' ? '' : status;
+    const hb = handledBy === 'all' ? '' : handledBy;
     const mr = modelRef === 'all' ? '' : modelRef;
     setRangePreset(key); setAppliedRangePreset(key); setStart(r.start); setEnd(r.end);
-    setFilters({ entrypoint: ep, status: st, model_ref: mr, start: r.start, end: r.end });
+    setFilters({ entrypoint: ep, status: st, handled_by: hb, model_ref: mr, start: r.start, end: r.end });
     setSessPage(1); setTracePage(1); setConvFilter(0);
   };
 
@@ -169,6 +197,7 @@ export default function Observability() {
       else if (tab === 'users') setUsers(await getUsageByUser(f));
       else if (tab === 'sessions') setSessions(await listSessions({ ...f, page: sessPage, size: 20 }));
       else if (tab === 'traces') setTraces(await listTraces({ ...f, conversation_id: convFilter, page: tracePage, size: 20 }));
+      // 'funnel' 页签自己拉数据（面板内 useEffect），不在这条主链重复请求
     } catch (e: any) {
       toast.error('加载失败：' + (e?.response?.data?.detail || e?.message || e));
     } finally {
@@ -236,6 +265,17 @@ export default function Observability() {
           </Select>
         </div>
         <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">处理方式</label>
+          <Select value={handledBy} onValueChange={setHandledBy}>
+            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部</SelectItem>
+              <SelectItem value="agent">模型（执行层）</SelectItem>
+              <SelectItem value="intent_gate">前置意图层直答</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
           <label className="text-xs text-muted-foreground">模型</label>
           <Select value={modelRef} onValueChange={setModelRef}>
             <SelectTrigger className="w-52"><SelectValue placeholder="全部模型" /></SelectTrigger>
@@ -282,6 +322,7 @@ export default function Observability() {
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="overview"><Activity className="h-4 w-4 mr-1" />概览</TabsTrigger>
+          <TabsTrigger value="funnel"><Filter className="h-4 w-4 mr-1" />意图漏斗</TabsTrigger>
           <TabsTrigger value="sessions"><MessagesSquare className="h-4 w-4 mr-1" />会话清单</TabsTrigger>
           <TabsTrigger value="traces"><GitBranch className="h-4 w-4 mr-1" />Trace</TabsTrigger>
           <TabsTrigger value="models"><Sparkles className="h-4 w-4 mr-1" />模型用量</TabsTrigger>
@@ -299,6 +340,17 @@ export default function Observability() {
             <StatCard icon={Activity} label="Credit（主口径）" value={fmt(s?.credits, 4)} />
             <StatCard icon={Activity} label="成本（估算）" value={fmtCost(s?.cost_amount, s?.cost_currency)} />
             <StatCard icon={ThumbsUp} label="满意率" value={satRate === null ? '—' : satRate + '%'} hint={`👍${fmt(s?.thumbs_up)} 👎${fmt(s?.thumbs_down)}`} />
+            {/* 前置意图漏斗：拦截掉的回合不起子进程、不烧 credit */}
+            <StatCard
+              icon={Filter} label="前置拦截率"
+              value={s?.intercept_rate != null ? Math.round(s.intercept_rate * 1000) / 10 + '%' : '—'}
+              hint={`本地直答 ${fmt(s?.intercepted)} / 回合 ${fmt(s?.turns)}`}
+            />
+            <StatCard
+              icon={Activity} label="节省 Credit（估算）"
+              value={fmt(s?.estimated_saved_credits, 2)}
+              hint="拦截回合数 × agent 回合均值 credit；Qoder 不回报单回合实测成本"
+            />
           </div>
           <QuotaPanel />
           <div className="rounded-lg border bg-card p-4">
@@ -317,6 +369,10 @@ export default function Observability() {
               </table>
             ) : <div className="text-sm text-muted-foreground">当前筛选无数据。可切换“全部”时间范围和“全部入口”；Qoder 对话归类为“Chat / Qoder（Agent）”。</div>}
           </div>
+        </TabsContent>
+
+        <TabsContent value="funnel">
+          <FunnelPanel filters={filters} />
         </TabsContent>
 
         <TabsContent value="sessions">
@@ -341,9 +397,13 @@ export default function Observability() {
             </div>
           )}
           <DataTable
-            head={['开始时间', '用户', '入口', '模型', '问题', '状态', 'Credit', '耗时', '反馈', '']}
+            head={['开始时间', '用户', '入口', '处理方式', '模型', '问题', '状态', 'Credit', '耗时', '反馈', '']}
             rows={traces.items.map(r => [
-              fmtTime(r.started_at), `${r.username}`, r.entrypoint, r.model_ref || '—',
+              fmtTime(r.started_at), `${r.username}`, r.entrypoint,
+              <Badge variant={r.handled_by === 'intent_gate' ? 'secondary' : 'outline'}>
+                {HANDLED_BY_LABELS[r.handled_by || 'agent'] || r.handled_by}
+              </Badge>,
+              r.model_ref || (r.handled_by === 'intent_gate' ? '未调用模型' : '—'),
               <span className="truncate max-w-xs inline-block align-bottom" title={r.question}>{r.question}</span>,
               <Badge variant={r.status === 'error' ? 'destructive' : 'outline'}>{r.status}</Badge>,
               fmt(r.credits, 2), `${fmt(r.duration_ms)}ms`,
@@ -553,6 +613,173 @@ function DataTable({ head, rows, total, page, pageSize, onPage }: {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * 意图漏斗面板 —— 拦截率、判定分布与误拦复盘。
+ *
+ * 为什么这页必须存在：分流策略的每一次收紧/放宽都必须由数据说话
+ * （fde-evolution §1「没有分桶数据不做策略取舍」），而 shadow 期的判定
+ * 不改变任何用户可见行为，不在这页看就什么都没有。表不可达时显式提示跑迁移，
+ * 不给一张"看起来正常"的空表（no-silent-degradation）。
+ */
+function FunnelPanel({ filters }: { filters: CommonFilters }) {
+  const [stats, setStats] = useState<FunnelStats | null>(null);
+  const [rows, setRows] = useState<{ items: InterceptRow[]; total: number }>({ items: [], total: 0 });
+  const [decision, setDecision] = useState('all');
+  const [label, setLabel] = useState('all');
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const f = {
+        workspace_id: filters.workspace_id, user_id: filters.user_id,
+        datasource_id: filters.datasource_id, start: filters.start, end: filters.end,
+        decision: decision === 'all' ? '' : decision,
+        label: label === 'all' ? '' : label,
+      };
+      const [st, list] = await Promise.all([
+        getFunnelStats(f),
+        listFunnelIntercepts({ ...f, page, size: 20 }),
+      ]);
+      setStats(st);
+      setRows({ items: list.items, total: list.total });
+      if (!st.available && st.reason) toast.error(st.reason);
+    } catch (e: any) {
+      toast.error('加载意图漏斗数据失败：' + (e?.response?.data?.detail || e?.message || e));
+    } finally {
+      setLoading(false);
+    }
+  }, [filters, decision, label, page]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const markReview = async (row: InterceptRow, reviewed: boolean) => {
+    // reviewed=1 → 判定成立；reviewed=0 → 误拦（这条本该交给模型）
+    try {
+      await reviewFunnelIntercept(row.id, reviewed, reviewed ? '人工确认判定成立' : '误拦：该输入需要模型');
+      setRows(prev => ({
+        ...prev,
+        items: prev.items.map(r => (r.id === row.id ? { ...r, reviewed: reviewed ? 1 : 0,
+          review_note: reviewed ? '人工确认判定成立' : '误拦：该输入需要模型' } : r)),
+      }));
+    } catch (e: any) {
+      toast.error('标注失败：' + (e?.response?.data?.detail || e?.message || e));
+    }
+  };
+
+  const o = stats?.overall;
+  const labels = [...new Set((stats?.by_label || []).map(x => x.label).filter(Boolean))];
+
+  return (
+    <div className="space-y-4">
+      {stats && !stats.available && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+          {stats.reason}
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard icon={Filter} label="本轮判定数" value={fmt(o?.judged)} hint={loading ? '加载中…' : undefined} />
+        <StatCard icon={CheckCircle2} label="已本地直答" value={fmt(o?.local)}
+          hint={stats ? `拦截率 ${stats.intercept_rate != null ? Math.round((stats.intercept_rate || 0) * 1000) / 10 : 0}%` : undefined} />
+        <StatCard icon={Gauge} label="判定可拦（shadow）" value={fmt(o?.shadow_local)}
+          hint={stats ? `可拦比例 ${stats.eligible_rate != null ? Math.round((stats.eligible_rate || 0) * 1000) / 10 : 0}%` : undefined} />
+        <StatCard icon={AlertCircle} label="网关异常/超预算放行" value={fmt(o?.gate_errors)}
+          hint={`主动转深度分析 ${fmt(o?.forced_agent)}；平均判定 ${fmt(o?.avg_latency_ms)}ms`} />
+      </div>
+
+      {stats?.by_label?.length ? (
+        <div className="rounded-lg border bg-card p-4">
+          <div className="text-sm font-medium mb-2">按判定标签分布</div>
+          <table className="w-full text-sm">
+            <thead><tr className="text-muted-foreground text-xs border-b">
+              <th className="text-left py-1">标签</th><th className="text-left">去向</th>
+              <th className="text-right">条数</th><th className="text-right">平均判定耗时</th>
+            </tr></thead>
+            <tbody>{stats.by_label.map((b, i) => (
+              <tr key={i} className="border-b last:border-0">
+                <td className="py-1">{LABEL_LABELS[b.label] || b.label || '—'}</td>
+                <td>{DECISION_LABELS[b.decision] || b.decision}</td>
+                <td className="text-right tabular-nums">{fmt(b.cnt)}</td>
+                <td className="text-right tabular-nums">{fmt(b.avg_latency_ms)}ms</td>
+              </tr>))}</tbody>
+          </table>
+          <p className="mt-2 text-xs text-muted-foreground">
+            shadow 档下「判定可拦」不改变行为（仍由模型回答），只用于评估切 enforce 的把握；
+            切 enforce 是需要人看这些数据决定的事，不由代码默认放行。
+          </p>
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-card p-3">
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">去向</label>
+          <Select value={decision} onValueChange={v => { setDecision(v); setPage(1); }}>
+            <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部</SelectItem>
+              {Object.entries(DECISION_LABELS).map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">判定标签</label>
+          <Select value={label} onValueChange={v => { setLabel(v); setPage(1); }}>
+            <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部</SelectItem>
+              {labels.map(l => <SelectItem key={l} value={l}>{LABEL_LABELS[l] || l}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <Button size="sm" variant="outline" onClick={() => void load()}>
+          <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} /> 刷新
+        </Button>
+      </div>
+
+      <DataTable
+        head={['时间', '用户', 'AS-BOT', '输入摘要', '判定', '去向', '依据', '耗时', '复盘', '']}
+        rows={rows.items.map(r => [
+          fmtTime(r.dt),
+          r.username || `用户已删除(${r.user_id})`,
+          r.as_bot_name || (r.as_bot_key ? 'AS-BOT 已删除' : '—'),
+          <span className="truncate max-w-xs inline-block align-bottom" title={r.question_digest}>
+            {r.question_digest || '—'}
+          </span>,
+          <div>
+            <Badge variant="outline">{LABEL_LABELS[r.label] || r.label}</Badge>
+            <div className="text-[11px] text-muted-foreground mt-1">{r.mode} / {r.layer}</div>
+          </div>,
+          <Badge variant={r.decision === 'local' ? 'secondary' : 'outline'}>
+            {DECISION_LABELS[r.decision] || r.decision}
+          </Badge>,
+          <span className="text-xs break-words max-w-sm" title={r.signals}>
+            {r.gate_error
+              ? <span className="text-destructive">异常放行：{r.gate_error}</span>
+              : (r.reason || '—')}
+          </span>,
+          `${fmt(r.latency_ms)}ms`,
+          r.reviewed
+            ? <span className="text-xs text-muted-foreground">{r.review_note || '已标注'}</span>
+            : <span className="text-xs text-muted-foreground">未标注</span>,
+          <div className="flex gap-1">
+            <Button size="sm" variant="ghost" title="判定成立（这条确实不需要模型）"
+              onClick={() => void markReview(r, true)}>
+              <CheckCircle2 className="h-3.5 w-3.5" />
+            </Button>
+            <Button size="sm" variant="ghost" title="误拦：这条应该交给模型"
+              onClick={() => void markReview(r, false)}>
+              <Undo2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>,
+        ])}
+        total={rows.total} page={page} pageSize={20} onPage={setPage}
+      />
     </div>
   );
 }

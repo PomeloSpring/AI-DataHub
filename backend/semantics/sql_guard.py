@@ -44,7 +44,11 @@ def parse_query(sql: str, dialect: str = "mysql"):
 
 
 # 只读校验/结构提取的方言尝试序（SLS/Presto 形状在 mysql 下解不动，需多方言兼容）。
-_READONLY_DIALECT_ORDER = ("mysql", "postgres", "presto", "trino", "hive", "spark")
+# doris/starrocks 入序：它们有独立语法形状（如 DISTRIBUTE BY / 专有函数列表），
+# 仅靠 mysql 解析会把合法正文误判为“不受支持”。
+_READONLY_DIALECT_ORDER = (
+    "mysql", "postgres", "doris", "starrocks", "presto", "trino", "hive", "spark",
+)
 
 
 def parse_readonly(sql: str, dialect: str = None) -> "exp.Expression":
@@ -103,7 +107,10 @@ def inject_filters(sql: str, filters: dict[str, str], dialect: str = "mysql") ->
     applied = []
     for scope, node in refs:
         key = table_key(node)
-        predicate = filters.get(key.lower())
+        # 先按原始引用形式（可能带 db/catalog 限定）命中，再按裸表名兼容回落：
+        # 策略在元库按裸表名登记，而正文可能写 `db.t`（护栏 §10）。
+        # 回落方向是"多套一层过滤"而非"少套"，与 fail-closed 一致。
+        predicate = filters.get(key.lower()) or filters.get(node.name.lower())
         if not predicate:
             continue
         try:

@@ -4,8 +4,8 @@
       源本体=按用户数据源权限分配、只服务**语义检索/取数**（不做 RAG）。
 
 锁住的行为：
-1. 语义取数真源显式化：resolve 只认 source/system 模型绑定（按查询域），
-   业务本体绑定永不参与取数（历史缺陷：双绑定靠 id ASC 意外命中）；
+1. 语义取数真源显式化：resolve JOIN models 按域裁决（v0.4 kind 收缩，source 已退役），
+   业务域取数认非 system 模型、系统域认 system 模型（不靠 id ASC 意外命中）；
 2. 可见性：源本体按数据源授权过滤（空集=无可见源本体，fail-closed），
    业务/系统本体全员可见；
 3. 知识库路由：business/system → 全局 sync_ontology 库；source → 不做 RAG
@@ -27,20 +27,21 @@ from backend.modules.catalog.services import ontology_kb_sync, ontology_service 
 
 class TestSemanticBindingSourceOfTruth:
     def test_bindings_query_filters_by_kind(self):
-        """Level 1/2 档位 SQL 必须 JOIN models 按 kind 裁决，business 不参与取数。"""
+        """取数解析必须 JOIN models 按**域**裁决（v0.4：source kind 已退役）。"""
         import inspect
         from backend.semantics import binding_resolver as br
         src = inspect.getsource(br._resolve_from_bindings)
         assert "JOIN adh_ontology_models" in src
-        assert "m.kind = 'source'" in src and "m.kind = 'system'" in src
-        # business 不得进入取数解析（其绑定只承载治理血缘）
-        assert "m.kind = 'business'" not in src.replace("kind = 'business' 的绑定", "")
+        # 域边界：system 与非 system 分判；不再按已退役的 'source' kind 取数
+        assert "m.kind = 'system'" in src and "COALESCE(m.kind,'') <> 'system'" in src
+        assert "m.kind = 'source'" not in src
 
     def test_objects_inline_same_scope(self):
         import inspect
         from backend.semantics import binding_resolver as br
         src = inspect.getsource(br._resolve_from_objects_inline)
-        assert "JOIN adh_ontology_models" in src and "m.kind = 'source'" in src
+        assert "JOIN adh_ontology_models" in src
+        assert "COALESCE(m.kind,'') <> 'system'" in src
 
 
 # ── 可见性：源本体按数据源授权，业务/系统全员 ────────────────

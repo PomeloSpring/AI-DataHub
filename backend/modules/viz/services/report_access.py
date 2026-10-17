@@ -8,6 +8,19 @@ from datetime import datetime, timezone
 
 from backend.common.auth import authorize_resource_scope, authorize_workspace, get_user_by_id
 
+# ── 报表来源分型（唯一口径，改动须同步 report_center_management_migration.sql）──
+# 数据派生：正文由受治理取数产出，``security_context`` 是它的授权证据 ——
+#   快照失效即不可读（防历史重放），也不允许在线改正文。
+DATA_SOURCES = ("scheduled", "analysis")
+# 内容型：正文是人写的、或会话里已经展示给属主本人的结论（含 M2 之前的存量 legacy）。
+#   没有可校验的取数快照，因此只开放「属主在应用内实时查看」，一律不参与外链/公开分享。
+CONTENT_SOURCES = ("manual", "conversation", "legacy")
+# 内容型可见的状态：ready/degraded 之外，存量历史行状态是 'legacy'（迁移前的报告）。
+_CONTENT_VIEWABLE = ("ready", "degraded", "legacy")
+# 可在线编辑正文的来源：只有人写与会话保存。存量 legacy 虽属内容型（无快照可校），
+# 但正文当初由任务取数产出 —— 让人改它就等于篡改取数结果，因此只读（可删除清理）。
+EDITABLE_SOURCES = ("manual", "conversation")
+
 
 def json_object(value) -> dict:
     if isinstance(value, dict):
@@ -92,16 +105,38 @@ def _unexpired(value) -> bool:
         return False
 
 
+def is_content_report(report: dict) -> bool:
+    """是否内容型报表。``source_type`` 缺失按数据派生处理（沿用快照口径，不放宽）。"""
+    return (report.get("source_type") or "") in CONTENT_SOURCES
+
+
+def is_editable_report(report: dict) -> bool:
+    """正文可否在线编辑（人写/会话保存可以，任务产出的历史报表只读）。"""
+    return (report.get("source_type") or "") in EDITABLE_SOURCES
+
+
+def _owner_matches(report: dict, user: dict = None) -> bool:
+    """属主 + 工作空间授权（身份只信服务端，异常一律拒）。"""
+    if not user or not user.get("user_id"):
+        return False
+    if int(report.get("owner_id") or 0) != int(user["user_id"]):
+        return False
+    try:
+        authorize_workspace(user, report.get("workspace_id") or 0)
+        return True
+    except Exception:
+        return False
+
+
 def can_access_report(report: dict, user: dict = None, token: str = None) -> bool:
+    if is_content_report(report):
+        # 内容型：仅属主应用内查看；分享/公开分支根本不参与（无快照=无发布依据）。
+        return (report.get("generation_status") in _CONTENT_VIEWABLE
+                and bool(str(report.get("content") or "").strip()) and _owner_matches(report, user))
     if report.get("generation_status") not in ("ready", "degraded") or not snapshot_is_current(report):
         return False
-    if user and user.get("user_id"):
-        try:
-            authorize_workspace(user, report.get("workspace_id") or 0)
-            if int(report.get("owner_id") or 0) == int(user["user_id"]):
-                return True
-        except Exception:
-            return False
+    if _owner_matches(report, user):
+        return True
     security = json_object(report.get("security_context"))
     if (report.get("generation_status") != "ready" or report.get("publication_status") != "published"
             or not security.get("share_eligible") or security.get("restricted")
@@ -115,8 +150,12 @@ def can_access_report(report: dict, user: dict = None, token: str = None) -> boo
 
 def public_report(report: dict, *, content: bool = True) -> dict:
     fields = ("id", "task_id", "log_id", "title", "format", "access_mode", "view_count",
-              "created_at", "generation_status", "publication_status", "run_key", "task_name")
+              "created_at", "updated_at", "generation_status", "publication_status",
+              "run_key", "task_name", "source_type", "workspace_id", "origin")
     result = {key: report.get(key) for key in fields}
+    if result.get("origin") is None:
+        # 溯源只暴露可读信息（来自哪个会话/哪条消息），不外露内部存储标识
+        result["origin"] = json_object(report.get("analysis_source")).get("origin") or {}
     if content:
         result["content"] = report.get("content") or ""
         result["evidence_summary"] = json_object(report.get("evidence_summary"))

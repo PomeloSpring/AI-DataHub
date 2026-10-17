@@ -14,6 +14,7 @@ from backend.common.rdf.sparql_client import bulk_timeout
 from backend.semantics.graph_rag.oxigraph_store import (
     OxigraphStore,
     SYSTEM_DATASOURCE_ID,
+    graph_target_for_model,
     is_system_scope,
 )
 
@@ -145,7 +146,7 @@ class GraphBuilder:
             "joins": 0,
             "term_mappings": 0,
             "metric_relations": 0,
-            "sql_templates": 0,
+            "datasets": 0,
         }
 
         try:
@@ -288,30 +289,26 @@ class GraphBuilder:
                 stats["joins"] += 1
             logger.info("Created %d join relations", stats["joins"])
 
-            # Build SQL template nodes (materialize templates into the graph so
-            # the retriever can ground questions against them via SPARQL).
+            # Build dataset nodes (governed query assets; retriever grounds questions
+            # against them via SPARQL). SQL 正文留在服务端，不入图。
             table_names = [t["table_name"] for t in tables]
-            templates = self._load_sql_templates(datasource_id)
-            for tpl in templates:
-                sql_text = tpl.get("sql_template", "") or ""
-                lowered = sql_text.lower()
+            for ds in self._load_datasets(datasource_id):
+                body = "\n".join([str(ds.get("sql_query") or "")] + [
+                    str(v or "") for v in (ds.get("_bodies") or {}).values()])
+                lowered = body.lower()
                 touched = [tn for tn in table_names
                            if tn and tn.lower() in lowered]
-                self._store.create_sql_template_node(
-                    template_id=tpl.get("template_id", ""),
-                    name=tpl.get("template_name", ""),
-                    sql=sql_text,
-                    intent_keywords=tpl.get("intent_keywords", ""),
-                    category=tpl.get("category", ""),
-                    description=tpl.get("description", ""),
-                    variables=tpl.get("variables", "") or "",
-                    rules=tpl.get("rules", "") or "",
-                    dialect=tpl.get("dialect", "") or "",
+                self._store.create_dataset_node(
+                    name=ds.get("name", ""),
+                    description=ds.get("description", "") or "",
+                    source_type=ds.get("source_type", "") or "",
+                    object_key=ds.get("object_key", "") or "",
+                    variables=ds.get("variables", "") or "",
                     tables=touched,
                     datasource_id=datasource_id,
                 )
-                stats["sql_templates"] += 1
-            logger.info("Created %d SQL template nodes", stats["sql_templates"])
+                stats["datasets"] += 1
+            logger.info("Created %d dataset nodes", stats["datasets"])
 
             # Ontology models were merged at the start (see above).
 
@@ -527,41 +524,35 @@ class GraphBuilder:
         finally:
             conn.close()
 
-    def _load_sql_templates(self, datasource_id: int) -> list[dict]:
-        """Load active SQL templates to materialize as graph nodes.
+    def _load_datasets(self, datasource_id: int) -> list[dict]:
+        """Load active datasets to materialize as graph nodes.
 
-        Best-effort: if the table is absent, return [] so graph build continues.
+        Best-effort: if the table/columns are absent, return [] so graph build continues.
+        数据集是面向业务取数的查询资产，系统域图不收录。
         """
-        # 模板是面向业务取数的查询资产(含业务表 SQL 文本), 系统域图不收录。
         if is_system_scope(datasource_id):
             return []
         from backend.common.db.metadata_db import get_metadata_conn
+        from backend.semantics.sql_params import parse_json_obj
+
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
                 ds_filter, params = _ds_scope(datasource_id)
                 cur.execute(f"""
-                    SELECT template_id, template_name, category, intent_keywords,
-                           sql_template, variables, rules, description, dialect
-                    FROM adh_sql_templates
-                    WHERE is_active = 1 {ds_filter}
-                    ORDER BY template_id
+                    SELECT name, description, source_type, object_key, sql_query,
+                           sql_bodies, variables
+                    FROM adh_datasets
+                    WHERE status = 'active' {ds_filter}
+                    ORDER BY name
                 """, params)
-                return cur.fetchall()
+                rows = cur.fetchall() or []
+            for r in rows:
+                r["_bodies"] = parse_json_obj(r.get("sql_bodies"), {}) or {}
+            return rows
         except Exception as e:
-            try:
-                # dialect 列为迁移新增: 旧库上回落无 dialect 查询, 图谱装载不中断
-                cur.execute(f"""
-                    SELECT template_id, template_name, category, intent_keywords,
-                           sql_template, variables, rules, description
-                    FROM adh_sql_templates
-                    WHERE is_active = 1 {ds_filter}
-                    ORDER BY template_id
-                """, params)
-                return cur.fetchall()
-            except Exception as e2:
-                logger.warning("Failed to load SQL templates: %s", e2)
-                return []
+            logger.warning("Failed to load datasets for graph: %s", e)
+            return []
         finally:
             conn.close()
 
@@ -576,9 +567,11 @@ class GraphBuilder:
     def _merge_ontology_models(self, datasource_id: int, kind: str = "") -> int:
         """Merge active ontology models into the graph as RDF.
 
-        按 **kind** 归属，不用 `datasource_id=0` 判系统域（业务本体跨源 ds_id 也是 0，
+        按 **kind** 归属，不用 `datasource_id=0` 判系统域（业务本体在多站点下 ds_id 也是 0，
         旧口径会把业务本体拉进系统图 ds:-1、污染 AS-BOT 图谱）。
         目标图：business→ds:0(业务图) / system→ds:-1(系统图) / source→ds:N(源图)。
+        选图口径收敛到 `graph_target_for_model`，与状态对账
+        （ontology_kb_sync.model_sync_status）共用一份，不再两处各写一套。
         """
         from backend.common.db.metadata_db import get_metadata_conn
         from backend.common.rdf.ontology_to_rdf import ontology_json_to_turtle
@@ -588,14 +581,7 @@ class GraphBuilder:
             kind = "system" if is_system_scope(datasource_id) else ("source" if datasource_id else "")
 
         # 目标图按 kind（不按 datasource_id）
-        if kind == "system":
-            target_ds = SYSTEM_DATASOURCE_ID
-        elif kind == "business":
-            target_ds = 0          # 业务本体独立图（跨源连通图）
-        elif kind == "source":
-            target_ds = datasource_id
-        else:
-            target_ds = SYSTEM_DATASOURCE_ID if is_system_scope(datasource_id) else datasource_id
+        target_ds = graph_target_for_model(kind, datasource_id)
 
         conn = get_metadata_conn()
         count = 0

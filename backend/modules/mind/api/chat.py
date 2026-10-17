@@ -40,6 +40,9 @@ class SendMessageRequest(BaseModel):
     conversation_id: Optional[int] = 0  # chat 会话 ID(qoder 长对话池 key)
     as_bot_key: Optional[str] = ""  # 聊天端选定的 AS-BOT
     report_theme: Optional[str] = ""  # 报告交付主题 id(前端已将"跟随"解析为当前 App 主题; 空=回落默认)
+    # 前置意图漏斗：True = 用户点「转深度分析」显式绕过分流。
+    # 它只能关"要不要叫模型"，不能关任何数据/权限护栏（护栏仍由执行层统一入口施加）。
+    force_agent: Optional[bool] = False
 
 
 # ── Chat Send (Streaming) ────────────────────────────────────────────
@@ -60,7 +63,8 @@ async def chat_send_stream(
     from backend.modules.mind.execution.session_workspace import preflight_request
     from starlette.concurrency import run_in_threadpool
     req = await parse_send_request(request, SendMessageRequest)
-    await run_in_threadpool(preflight_request, req, user)
+    # preflight 已经解析过一次生效策略，直接透传给漏斗（不重复查权限/工具配置）
+    policy = await run_in_threadpool(preflight_request, req, user)
     service = ChatService()
     return StreamingResponse(
         service.stream_query(
@@ -81,6 +85,8 @@ async def chat_send_stream(
             user_role=user.get("role") or "",
             as_bot_key=req.as_bot_key or "",
             report_theme=req.report_theme or "",
+            force_agent=bool(req.force_agent),
+            policy=policy,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -316,7 +322,12 @@ def get_conversation(
                 if hasattr(row.get(k), "isoformat"):
                     row[k] = row[k].isoformat()
             messages = json.loads(row["messages"]) if row["messages"] else []
-            row["messages"] = messages
+            # 历史回放同样标「可否存为报表」（与 done 事件同一口径, 不靠前端猜）
+            from backend.modules.viz.services.report_service import with_reportability
+            row["messages"] = [
+                with_reportability(m) if isinstance(m, dict) and m.get("role") == "assistant" else m
+                for m in messages
+            ]
             return row
     finally:
         conn.close()

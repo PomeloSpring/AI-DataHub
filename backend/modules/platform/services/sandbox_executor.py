@@ -14,6 +14,7 @@ import os
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 from typing import Optional
 
 from backend.modules.platform.services.code_validator import code_validator
@@ -37,6 +38,92 @@ PYTHON_RUNTIME_IMAGE = "adh-python-runtime:1"
 
 def _python_runtime_image() -> str:
     return os.environ.get("ADH_AGENT_SANDBOX_IMAGE", PYTHON_RUNTIME_IMAGE)
+
+
+# ── 会话工具沙箱后端（docker 默认/生产；bwrap 供本地开发）─────────────
+# 后端是"部署级"选择；租户隔离（只挂本会话目录、断网、非 root、可核验停止）
+# 由 command 构造保证，切换后端不改变多租户权限边界。
+_DEFAULT_SANDBOX_CACHE = {"row": None, "expires": 0.0}
+
+
+def _default_sandbox_row():
+    """读取"系统管理-沙箱管理"里设为默认的沙箱行（30s TTL）；读取失败按无默认处理并记日志
+    （docker 是无显式配置时的安全默认后端，非把 bwrap 失败掩成 docker）。"""
+    now = time.time()
+    if _DEFAULT_SANDBOX_CACHE["expires"] > now:
+        return _DEFAULT_SANDBOX_CACHE["row"]
+    row = None
+    try:
+        from backend.modules.platform.services.sandbox_service import sandbox_service
+        row = sandbox_service.get_default_sandbox()
+    except Exception:
+        logger.warning("读取默认沙箱配置失败，按 Docker 会话沙箱处理", exc_info=True)
+    _DEFAULT_SANDBOX_CACHE["row"] = row
+    _DEFAULT_SANDBOX_CACHE["expires"] = now + 30.0
+    return row
+
+
+def resolve_backend() -> str:
+    """会话工具沙箱后端：ADH_SANDBOX_BACKEND 显式覆盖 → 默认沙箱类型 → docker。"""
+    override = os.environ.get("ADH_SANDBOX_BACKEND", "").strip().lower()
+    if override in ("docker", "bwrap"):
+        return override
+    row = _default_sandbox_row()
+    if row and row.get("sandbox_type") == "bwrap" and row.get("is_active", True):
+        return "bwrap"
+    return "docker"
+
+
+def _bwrap_config() -> dict:
+    """bwrap 后端参数：优先取默认 bwrap 沙箱 config，缺失回落 env 默认（无 rootfs 即报错）。"""
+    row = _default_sandbox_row()
+    cfg = dict(row.get("config") or {}) if (row or {}).get("sandbox_type") == "bwrap" else {}
+    cfg.setdefault("mode", os.environ.get("ADH_SANDBOX_BWRAP_MODE", "rootfs").strip().lower())
+    cfg.setdefault("rootfs_dir", os.environ.get("ADH_SANDBOX_BWRAP_ROOTFS", ""))
+    cfg.setdefault("memory_limit", os.environ.get("ADH_SANDBOX_BWRAP_MEMORY", ""))
+    cfg.setdefault("cpu_limit", os.environ.get("ADH_SANDBOX_BWRAP_CPU", "1.0"))
+    cfg.setdefault("timeout", int(os.environ.get("ADH_SANDBOX_BWRAP_TIMEOUT", "120")))
+    return cfg
+
+
+def _to_mb(value, default_mb: int = 1024) -> int:
+    """把 '512m'/'1g'/'2048' 解析为 MB；无法解析用 default_mb（不做"解析失败=不限制"的静默）。"""
+    s = str(value or "").strip().lower()
+    if not s:
+        return default_mb
+    mult = {"k": 1 / 1024, "m": 1, "g": 1024}.get(s[-1])
+    try:
+        if mult is not None:
+            return max(1, int(float(s[:-1]) * mult))
+        return max(1, int(float(s)))
+    except (TypeError, ValueError):
+        return default_mb
+
+
+def _is_writable_tool(runtime, name: str) -> bool:
+    return name in ("write", "edit") or (
+        name == "bash" and bool(set(runtime.policy.standard) & {"write", "edit"}))
+
+
+def bwrap_host_python_root_args() -> list:
+    """host-python 模式的根绑定（空根 + 白名单）；探针与真实命令共用，避免两者漂移。"""
+    return ["--tmpfs", "/",
+            "--ro-bind", "/usr", "/usr", "--ro-bind", "/etc", "/etc",
+            "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64",
+            "--symlink", "usr/bin", "/bin", "--symlink", "usr/sbin", "/sbin"]
+
+
+def bwrap_probe_argv(cfg: dict) -> list:
+    """就绪/连接测试探针：与 bwrap_command 用同一套 root 绑定（含 /bin 等符号链接），
+    否则 host-python 下 /bin/true 不存在会被误报为“无法建立隔离沙箱”。"""
+    mode = (cfg.get("mode") or "rootfs").strip().lower()
+    root = bwrap_host_python_root_args() if mode == "host-python" \
+        else ["--ro-bind", (cfg.get("rootfs_dir") or "").strip(), "/"]
+    return ["bwrap",
+            "--unshare-net", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup",
+            "--die-with-parent", "--new-session",
+            *root, "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "/bin/true"]
+
 
 # Wrapper script that captures stdout/stderr and return value
 EXECUTION_WRAPPER = '''\
@@ -80,10 +167,17 @@ print(json.dumps(output, ensure_ascii=False))
 
 
 class SessionToolSandbox:
-    """会话工具专用沙箱；不会接受模型提供的镜像、挂载、环境或 Docker 参数。"""
+    """会话工具专用沙箱；后端可插拔（docker 默认 / bwrap 本地开发）。
+
+    模型侧不接受任何镜像、挂载、环境或 Docker/bwrap 参数——命令一律由服务端按会话
+    构造；租户隔离（只挂本会话目录、断网、非 root、可核验停止）与后端无关。
+    """
 
     @staticmethod
     def ensure_available():
+        if resolve_backend() == "bwrap":
+            SessionToolSandbox._ensure_bwrap()
+            return
         image = _python_runtime_image()
         try:
             subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", image],
@@ -98,7 +192,7 @@ class SessionToolSandbox:
         import uuid
         image = _python_runtime_image()
         container = f"adh-agent-{runtime.key}-{uuid.uuid4().hex}"
-        writable = name in ("write", "edit") or (name == "bash" and bool(set(runtime.policy.standard) & {"write", "edit"}))
+        writable = _is_writable_tool(runtime, name)
         mount = f"type=bind,src={runtime.workspace},dst=/workspace" + ("" if writable else ",readonly")
         uid = os.getuid() if os.getuid() else 65534
         gid = os.getgid() if os.getuid() else 65534
@@ -115,6 +209,14 @@ class SessionToolSandbox:
 
     @staticmethod
     async def run(runtime, name, args):
+        # 后端可插拔：docker（默认/生产）或 bwrap（本地开发）；两者均 fail-closed，
+        # 后端不可用即显式报错，绝不回退到宿主裸跑（沙箱安全隔离硬性规范）。
+        if resolve_backend() == "bwrap":
+            return await SessionToolSandbox._run_bwrap(runtime, name, args)
+        return await SessionToolSandbox._run_docker(runtime, name, args)
+
+    @staticmethod
+    async def _run_docker(runtime, name, args):
         import asyncio
         runtime.verify()
         container, command = SessionToolSandbox.command(runtime, name)
@@ -123,6 +225,7 @@ class SessionToolSandbox:
             raise ValueError("工具参数超过大小限制")
         import anyio
         runtime.sandbox_used = True
+        runtime.sandbox_backend = "docker"
         async def launch():
             from functools import partial
             from backend.modules.mind.execution.session_workspace import run_owned_sync
@@ -186,6 +289,143 @@ class SessionToolSandbox:
         if process.returncode and b"No such container" not in stderr:
             logger.error("无法确认沙箱已停止: %s", stderr.decode(errors="replace")[:1000])
             raise RuntimeError("无法确认沙箱停止，会话必须保持阻断")
+
+    # ── bwrap 后端（bubblewrap 用户命名空间；本地开发等价隔离）──────────
+    @staticmethod
+    def bwrap_command(runtime, name, cfg=None):
+        """构造 bwrap argv：只挂本会话目录（非写只读）、断网、非 root、无宿主泄漏。
+
+    两种镜像来源（mode）：
+      - rootfs（默认）：--ro-bind {rootfs} /，rootfs 由 export-rootfs.sh 从 python_runtime 镜像导出，
+        与生产逐字节一致（可复现环境），worker 入口内置于 rootfs。
+      - host-python（本地开发免 docker）：--tmpfs / 先置空根，再只绑白名单 /usr /etc（+重建 /lib /bin 符号链接），
+        绝不 --ro-bind / /——/home（含 backend/.env）、/root、/var 均不可达；worker 直接绑仓库当前文件。
+
+    两模式共用：隔离 net/pid/ipc/uts/cgroup（断网 + pid 隔离）、workspace 仅写权限时 --bind；
+    不启用 --unshare-user（root 应用下会话目录 chown 到 65534，userns 会把 root 映射为内层 uid0 而访问不到），
+    改由 bwrap 以 root 挂载/chdir，worker 启动后降权到 65534（对齐 docker --user 65534）。内存/CPU 帽由 worker 施加 rlimit。
+    """
+        cfg = cfg or _bwrap_config()
+        mode = (cfg.get("mode") or "rootfs").strip().lower()
+        timeout = int(cfg.get("timeout", 120))
+        bind = "--bind" if _is_writable_tool(runtime, name) else "--ro-bind"
+        envs = ["--setenv", "HOME", "/tmp",
+                "--setenv", "MPLCONFIGDIR", "/tmp/matplotlib",
+                "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin",
+                "--setenv", "ADH_RLIMIT_CPU_S", str(timeout + 15)]
+        mem_raw = str(cfg.get("memory_limit") or "").strip()
+        if mem_raw:
+            envs += ["--setenv", "ADH_RLIMIT_AS_MB", str(_to_mb(mem_raw))]
+        if os.geteuid() == 0:
+            # root 应用：worker 降权到 65534（对齐 session_paths 的 chown 与 docker --user 65534）。
+            envs += ["--setenv", "ADH_DROP_UID", "65534", "--setenv", "ADH_DROP_GID", "65534"]
+        if mode == "host-python":
+            from backend.modules.mind.execution import sandbox_worker
+            worker = str(Path(sandbox_worker.__file__).resolve())
+            # 探针不绑 worker（只跑 /bin/true）；真实命令额外绑当前仓库 worker。
+            root_args = bwrap_host_python_root_args() + [
+                "--dir", "/opt", "--dir", "/opt/agent",
+                "--ro-bind", worker, "/opt/agent/sandbox_worker.py"]
+            python = "/usr/bin/python3"
+        else:
+            rootfs = (cfg.get("rootfs_dir") or "").strip()
+            if not rootfs:
+                raise ValueError("bwrap rootfs 模式缺少 rootfs_dir：请配置或改用 mode=host-python")
+            root_args = ["--ro-bind", rootfs, "/"]
+            python = "python"
+        return [
+            "bwrap",
+            "--unshare-net", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup",
+            "--die-with-parent", "--new-session",
+            *root_args,
+            "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+            bind, str(runtime.workspace), "/workspace",
+            *envs,
+            "--chdir", "/workspace",
+            python, "-I", "/opt/agent/sandbox_worker.py",
+        ]
+
+    @staticmethod
+    def _ensure_bwrap():
+        try:
+            subprocess.run(["bwrap", "--version"], capture_output=True, timeout=10, check=True)
+        except Exception as exc:
+            raise ValueError("会话工具沙箱(bwrap)未就绪：请安装 bubblewrap（apt install bubblewrap）") from exc
+        cfg = _bwrap_config()
+        mode = (cfg.get("mode") or "rootfs").strip().lower()
+        if mode == "host-python":
+            if not Path("/usr/bin/python3").exists():
+                raise ValueError("bwrap host-python 模式需要 /usr/bin/python3（未找到）；请装 python3 或改用 rootfs/Docker 后端")
+        elif mode == "rootfs":
+            rootfs = (cfg.get("rootfs_dir") or "").strip()
+            if not rootfs or not Path(rootfs).is_dir():
+                raise ValueError(
+                    f"bwrap 会话沙箱 rootfs 缺失({rootfs or '未配置'})：请执行 docker/agent-sandbox/export-rootfs.sh "
+                    "或在系统管理-沙箱管理配置 rootfs_dir（或改用 mode=host-python）")
+            if not Path(rootfs, "opt/agent/sandbox_worker.py").is_file():
+                raise ValueError(
+                    f"bwrap rootfs 缺 worker 入口({rootfs}/opt/agent/sandbox_worker.py)：请重跑 export-rootfs.sh（它会把当前 sandbox_worker.py 烘入）")
+        else:
+            raise ValueError(f"未知 bwrap mode: {mode}（应为 rootfs 或 host-python）")
+        # 探针与真实 bwrap_command 用同一套 root 绑定（含 /bin 符号链接），携带 stderr 以便诊断。
+        proc = subprocess.run(bwrap_probe_argv(cfg), capture_output=True, text=True, timeout=20)
+        if proc.returncode != 0:
+            raise ValueError(
+                "bwrap 无法建立隔离沙箱：" + (proc.stderr.strip()[:300] or "未知错误") +
+                "（检查 bubblewrap/挂载权限；非 root 部署可能需 user namespace 或改用 Docker 后端）")
+
+    @staticmethod
+    async def _run_bwrap(runtime, name, args):
+        import asyncio
+        runtime.verify()
+        cfg = _bwrap_config()
+        command = SessionToolSandbox.bwrap_command(runtime, name, cfg)
+        payload = json.dumps({"name": name, "args": args}, ensure_ascii=False).encode()
+        if len(payload) > 500_000:
+            raise ValueError("工具参数超过大小限制")
+        import anyio
+        runtime.sandbox_used = True
+        runtime.sandbox_backend = "bwrap"
+        timeout = int(cfg.get("timeout", 120))
+        process = None
+        try:
+            # start_new_session=True → bwrap 为本进程直接会话首领，killpg 可确认整树退出
+            # （--unshare-pid + --die-with-parent 防孤儿）；后端不可用/协议错均显式抛出。
+            process = await asyncio.create_subprocess_exec(
+                *command, start_new_session=True,
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE)
+            runtime.sandbox_pids.add(process.pid)
+            stdout, stderr = await asyncio.wait_for(process.communicate(payload), timeout=timeout + 10)
+            if len(stdout) > 300_000:
+                raise RuntimeError("沙箱输出超过限制")
+            try:
+                result = json.loads(stdout)
+            except (ValueError, UnicodeDecodeError) as exc:
+                logger.error("bwrap 启动/协议失败: %s", stderr.decode(errors="replace")[:2000])
+                raise RuntimeError("会话沙箱(bwrap)不可用，请检查 rootfs 镜像与 python 入口") from exc
+            if result.get("error"):
+                raise ValueError(result["error"])
+            if process.returncode:
+                raise RuntimeError("会话沙箱执行失败")
+            return result["result"]
+        finally:
+            # 未确认停止前不返回；存活 pid 留给 confirm_stopped 阻断执行权释放（对齐 docker stop 语义）。
+            with anyio.CancelScope(shield=True):
+                if process is not None and process.pid is not None:
+                    if process.returncode is None:
+                        try:
+                            import signal
+                            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                        except (ProcessLookupError, PermissionError):
+                            process.kill()
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=15)
+                    except BaseException:
+                        if process.returncode is None:
+                            runtime.unsafe = True
+                            raise RuntimeError("无法确认沙箱(bwrap)停止，会话必须保持阻断")
+                    runtime.sandbox_pids.discard(process.pid)
 
 
 class SandboxExecutor:

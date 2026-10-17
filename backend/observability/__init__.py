@@ -8,6 +8,7 @@
     observability.set_session_credits(total, model_usage)
     observability.set_trace_id() / get_trace_id()       # 中间件
     observability.trace_id_for_response() / message_uuid()
+    observability.set_result(...) / set_handled_by(...)  # 入口回写回合结果/处理方
 所有函数在未开启或无 recorder 时安全 no-op。
 """
 from .context import (
@@ -23,6 +24,7 @@ from .recorder import (
     current,
     finalize,
     message_uuid,
+    set_handled_by,
     set_result,
     trace_id_for_response,
 )
@@ -31,5 +33,5 @@ __all__ = [
     "begin", "current", "finalize",
     "record_llm_call", "record_span", "set_session_credits",
     "set_trace_id", "get_trace_id", "new_uuid",
-    "trace_id_for_response", "message_uuid", "set_result",
+    "trace_id_for_response", "message_uuid", "set_result", "set_handled_by",
 ]

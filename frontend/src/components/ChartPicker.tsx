@@ -7,6 +7,8 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import DashboardChart, { ChartIcon, CHART_TYPES, CHART_TYPE_CATEGORIES } from './DashboardChart';
+import type { ChartTypeItem } from './DashboardChart';
+import MapHeatmap, { detectGeoColumns } from './MapHeatmap';
 import SqlCard from './SqlCard';
 import * as XLSX from 'xlsx';
 import html2canvas from 'html2canvas';
@@ -23,13 +25,16 @@ interface Props {
   onDrill?: (question: string) => void;
 }
 
-// 与看板共用同一套图表类型(系统新增/删减自动同步);排除看板参数控件(非取数图表)
-const PICKABLE = CHART_TYPES.filter(t => t.category !== 'widget');
+// 与看板共用同一套图表类型(系统新增/删减自动同步);排除看板参数控件(非取数图表);
+// 另加 chat 专属「地图热力」(复用 UI 字模库地图瓦片 + 热力层,展示地理分布热力)
+const MAP_HEAT_ITEM: ChartTypeItem = { value: 'map_heat', label: '地图热力', icon: 'Map', category: 'geo' };
+const PICKABLE: ChartTypeItem[] = [...CHART_TYPES.filter(t => t.category !== 'widget'), MAP_HEAT_ITEM];
 const VALID_TYPES = new Set(PICKABLE.map(t => t.value));
 
 // 历史消息兼容别名(LLM 旧契约/看板外叫法)
 const TYPE_ALIASES: Record<string, string> = {
   column: 'bar', table: 'bar',
+  map: 'map_heat', heatmap_map: 'map_heat', geo_heatmap: 'map_heat', map_heatmap: 'map_heat',
 };
 
 export function resolveChartType(llmType?: string): string {
@@ -53,6 +58,17 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
   const [seriesCol, setSeriesCol] = useState('');
   const [selectedSeries, setSelectedSeries] = useState<string[]>([]);
   const [fullscreen, setFullscreen] = useState(false);
+
+  // 经纬度识别:列名明确含经纬度且 LLM 未指定图型时,默认地图热力展示(可手动切换;
+  // 仅取值范围兜底识别的不自动切换,避免普通数值列被误当经纬度)
+  const geoCols = useMemo(() => detectGeoColumns(data?.columns || [], data?.rows || []), [data?.columns, data?.rows]);
+  const autoMapRef = useRef(false);
+  useEffect(() => {
+    if (autoMapRef.current || defaultType) return;
+    if (!geoCols.nameMatched) return;
+    autoMapRef.current = true;
+    setChartType('map_heat');
+  }, [geoCols, defaultType]);
 
   // 图上下钻:点击图形元素 → 生成下钻问题(调用方预填输入框,用户确认后发送)
   const onChartDrill = (datum: Record<string, any>) => {
@@ -121,37 +137,45 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
 
   const chartOptions = PICKABLE;
 
+  // 地图类图型(chat)统一走字模库瓦片热力(MapHeatmap):china_map/world_map 的 G2 底图
+  // 依赖外网 topo 资源常不可达,且不复用字模库瓦片 —— 这里统一复用瓦片 + 地名/经纬度定位
+  const isMapChart = chartType === 'map_heat' || chartType === 'china_map' || chartType === 'world_map';
+
   if (columns.length < 2 || rows.length === 0) return null;
 
   const config = useMemo(() => ({ xCol: x, yCol: y, groupCol: seriesCol || undefined }), [x, y, seriesCol]);
 
+  const typeSelect = (
+    <Select value={chartType} onValueChange={setChartType}>
+      <SelectTrigger className="w-[170px] h-8">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent className="max-h-[70vh]">
+        {CHART_TYPE_CATEGORIES.map(cat => {
+          const opts = chartOptions.filter(o => o.category === cat.key);
+          if (!opts.length) return null;
+          return (
+            <SelectGroup key={cat.key}>
+              <SelectLabel className="text-[10px] text-muted-foreground">{cat.label}</SelectLabel>
+              {opts.map(opt => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  <span className="inline-flex items-center gap-1.5">
+                    <ChartIcon name={opt.icon} className="h-3.5 w-3.5 shrink-0" />
+                    {opt.label}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          );
+        })}
+      </SelectContent>
+    </Select>
+  );
+
   const controlsBlock = (
     <div className="space-y-3">
       <div className="flex gap-2 items-center flex-wrap">
-        <Select value={chartType} onValueChange={setChartType}>
-          <SelectTrigger className="w-[170px] h-8">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="max-h-[70vh]">
-            {CHART_TYPE_CATEGORIES.map(cat => {
-              const opts = chartOptions.filter(o => o.category === cat.key);
-              if (!opts.length) return null;
-              return (
-                <SelectGroup key={cat.key}>
-                  <SelectLabel className="text-[10px] text-muted-foreground">{cat.label}</SelectLabel>
-                  {opts.map(opt => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      <span className="inline-flex items-center gap-1.5">
-                        <ChartIcon name={opt.icon} className="h-3.5 w-3.5 shrink-0" />
-                        {opt.label}
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              );
-            })}
-          </SelectContent>
-        </Select>
+        {typeSelect}
 
         <span className="text-xs text-muted-foreground">X:</span>
         <Select value={x} onValueChange={setXCol}>
@@ -285,20 +309,36 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
       </div>
 
       {view === 'chart' && <>
-        {controlsBlock}
-        <div className="relative mt-3" ref={chartContainerRef}>
-          <div className="h-[360px]">
-            <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={config} onDrill={onDrill ? onChartDrill : undefined} />
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="absolute top-1 right-1"
-            onClick={() => setFullscreen(true)}
-          >
-            <Maximize2 className="h-4 w-4" />
-          </Button>
-        </div>
+        {isMapChart ? (
+          <>
+            <div className="flex gap-2 items-center flex-wrap">
+              {typeSelect}
+              <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setFullscreen(true)}>
+                <Maximize2 className="h-4 w-4" />
+              </Button>
+            </div>
+            <div ref={chartContainerRef}>
+              <MapHeatmap data={{ columns, rows: filteredRows }} />
+            </div>
+          </>
+        ) : (
+          <>
+            {controlsBlock}
+            <div className="relative mt-3" ref={chartContainerRef}>
+              <div className="h-[360px]">
+                <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={config} onDrill={onDrill ? onChartDrill : undefined} />
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="absolute top-1 right-1"
+                onClick={() => setFullscreen(true)}
+              >
+                <Maximize2 className="h-4 w-4" />
+              </Button>
+            </div>
+          </>
+        )}
       </>}
 
       {view === 'table' && (
@@ -331,10 +371,19 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
       <Dialog open={fullscreen} onOpenChange={setFullscreen}>
         <DialogContent className="max-w-[95vw] max-h-[95vh] h-[95vh]">
           <div className="flex flex-col h-full">
-            {controlsBlock}
-            <div className="relative flex-1 mt-3 min-h-0">
-              <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={config} onDrill={onDrill ? onChartDrill : undefined} />
-            </div>
+            {isMapChart ? (
+              <>
+                <div className="flex gap-2 items-center flex-wrap">{typeSelect}</div>
+                <MapHeatmap data={{ columns, rows: filteredRows }} height={520} />
+              </>
+            ) : (
+              <>
+                {controlsBlock}
+                <div className="relative flex-1 mt-3 min-h-0">
+                  <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={config} onDrill={onDrill ? onChartDrill : undefined} />
+                </div>
+              </>
+            )}
           </div>
         </DialogContent>
       </Dialog>

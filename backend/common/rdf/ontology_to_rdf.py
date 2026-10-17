@@ -112,6 +112,11 @@ def ontology_json_to_turtle(json_content: str | dict, datasource_id: int = 0) ->
     if model.get("scenarios"):
         lines.append("")
 
+    # ── 行为路径（scenarios[].path）：关键路径/用户指定路径的有序步骤图 ──
+    # 只参与检索与图展开，不参与 SQL JOIN：link_graph._iri_key 只认 obj: 前缀，
+    # path:/step: 节点天然不会被 planner 误当关系链（路径是口径声明，不是关联关系）。
+    _emit_paths(lines, model.get("scenarios") or [])
+
     # Process enums → owl:Class with owl:oneOf
     for enum in model.get("enums", []):
         _emit_enum(lines, enum, model_name)
@@ -138,6 +143,77 @@ def build_sparql_insert_from_turtle(turtle_str: str, graph_uri: str) -> str:
 
 # ── Internal emitters ────────────────────────────────────────────────
 
+def _path_iri(key: str) -> str:
+    return f"adh:path:{_safe_uri(key)}"
+
+
+def _step_iri(path_key: str, order: Any) -> str:
+    return f"adh:step:{_safe_uri(path_key)}_{_safe_uri(str(order))}"
+
+
+def _emit_paths(lines: list[str], scenarios: list) -> None:
+    """Emit ordered behavior paths (funnel / critical path) as traversable step graphs.
+
+    canonical 位置: scenarios[].path = {entity, event_time, window_sec, steps[]}。
+    投影成 adh:Path + reified adh:PathStep（与 adh:Link 同一手法：可遍历边 +
+    携带实现细节的具化节点），步序用 adh:stepOrder，相邻用 adh:nextStep，
+    便于图检索回答"关键路径有哪些步骤/下一步是什么"。
+    只写业务名：实体/时间/事件均为本体维度或枚举业务名，物理谓词不上图。
+    """
+    emitted = False
+    for scn in scenarios or []:
+        path = scn.get("path")
+        if not isinstance(path, dict):
+            continue
+        pkey = str(path.get("key") or scn.get("key") or "").strip()
+        if not pkey:
+            continue
+        emitted = True
+        p_iri = _path_iri(pkey)
+        scenario_iri = f"adh:scenario:{_safe_uri(str(scn.get('key') or pkey))}"
+        title = _escape(str(path.get("title") or scn.get("title") or pkey))
+        lines.append(f"{p_iri} a adh:Path ;")
+        lines.append(f'    rdfs:label "{title}"@zh ;')
+        lines.append(f"    adh:pathOf {scenario_iri} ;")
+        if path.get("entity"):
+            lines.append(f'    adh:pathEntity "{_escape(str(path["entity"]))}"^^xsd:string ;')
+        if path.get("event_time"):
+            lines.append(f'    adh:pathTime "{_escape(str(path["event_time"]))}"^^xsd:string ;')
+        win = path.get("window_sec")
+        if str(win or "").strip().isdigit():
+            lines.append(f'    adh:pathWindow "{int(win)}"^^xsd:integer ;')
+        lines[-1] = lines[-1].rstrip(" ;") + " ."
+
+        steps = [s for s in (path.get("steps") or []) if isinstance(s, dict)]
+        step_iris: list[tuple[str, dict]] = []
+        for i, st in enumerate(steps, start=1):
+            raw_order = st.get("order") or i
+            try:
+                order = int(raw_order)
+            except (TypeError, ValueError):
+                order = i      # 步序写错时按出现序落图（校验层已在保存侧报错）
+            s_iri = _step_iri(pkey, order)
+            step_iris.append((s_iri, st))
+            sname = _escape(str(st.get("name") or st.get("key") or f"第{order}步"))
+            lines.append(f"{s_iri} a adh:PathStep ;")
+            lines.append(f'    rdfs:label "{sname}"@zh ;')
+            lines.append(f"    adh:stepOf {p_iri} ;")
+            lines.append(f'    adh:stepOrder "{int(order)}"^^xsd:integer ;')
+            if st.get("event"):
+                lines.append(f'    adh:stepEvent "{_escape(str(st["event"]))}"^^xsd:string ;')
+            if st.get("key"):
+                lines.append(f'    adh:stepKey "{_escape(str(st["key"]))}"^^xsd:string ;')
+            lines[-1] = lines[-1].rstrip(" ;") + " ."
+            lines.append(f"{p_iri} adh:hasStep {s_iri} .")
+            obj_ref = str(st.get("object_key") or "").strip()
+            if obj_ref:
+                lines.append(f"{s_iri} adh:stepOn {_class_iri(obj_ref)} .")
+        for (cur, _st), (_nxt_iri, _nxt) in zip(step_iris, step_iris[1:]):
+            lines.append(f"{cur} adh:nextStep {_nxt_iri} .")
+    if emitted:
+        lines.append("")
+
+
 def _class_iri(key: str) -> str:
     """IRI for an ontology object class (namespaced to avoid colliding with
     the physical adh:table: / adh:col: nodes built by the graph store)."""
@@ -156,9 +232,13 @@ def _emit_class(lines: list[str], obj: dict, model_name: str):
     can walk the object graph, plus a reified ``adh:Link`` node carrying the
     physical JOIN expression so it survives one-shot traversal.
     """
-    key = obj.get("key") or obj.get("class") or obj.get("id") or "Unknown"
+    # canonical 字段名是 key / display_name；但历史 doc（尤其 kind='source'）用旧名
+    # object_key / name。不认它们会让同一模型的所有对象都落到同一个 `Unknown` 类上
+    # （实测源图 4 个对象只剩 1 个节点），于是图谱、遍历、同步状态徽章全部失真。
+    key = (obj.get("key") or obj.get("object_key") or obj.get("class") or obj.get("id")
+           or str(obj.get("primary_table") or "").strip() or "Unknown")
     class_iri = _class_iri(key)
-    label = obj.get("display_name") or obj.get("label") or key
+    label = obj.get("display_name") or obj.get("name") or obj.get("label") or key
 
     # Dual-typed: owl:Class (consumed by the ontology_traversal SPARQL) plus
     # adh:Term so the existing "业务知识图" visualization renders it without a

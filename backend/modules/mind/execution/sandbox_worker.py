@@ -99,7 +99,57 @@ def execute(name, args):
     raise PermissionError("沙箱不支持该工具")
 
 
+def _drop_privileges():
+    """bwrap 以 root 完成挂载/chdir 后，工具执行前降权到会话目录属主（对齐 docker --user 65534）。
+
+    仅当 env 指定 ADH_DROP_UID/GID 且当前为 root 时生效（Docker 后端不设这些 env → 无影响）。
+    降权后无法再提权，工具代码以非特权 uid 运行。
+    """
+    if os.geteuid() != 0:
+        return
+    uid, gid = os.environ.get("ADH_DROP_UID"), os.environ.get("ADH_DROP_GID")
+    if uid is None or gid is None:
+        return
+    try:
+        os.setgroups([])
+        os.setgid(int(gid))
+        os.setuid(int(uid))
+    except (ValueError, OSError):
+        pass
+
+
+def _apply_rlimits():
+    """按 env 施加资源上限（bwrap 后端用；Docker 后端不设这些 env → 全部跳过，行为不变）。
+
+    RLIMIT_CPU 限 CPU 秒、RLIMIT_FSIZE 限写文件字节、RLIMIT_AS 限虚拟内存（仅在显式配置时，
+    避免误伤 pandas/numpy 的大 VSZ）。真·每树内存/进程硬帽需 cgroup，由 Docker 后端承担。
+    """
+    import resource
+
+    def _int(name):
+        try:
+            return int(os.environ.get(name, "") or 0)
+        except ValueError:
+            return 0
+    cpu = _int("ADH_RLIMIT_CPU_S")
+    if cpu > 0:
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu + 5))
+    fsize = _int("ADH_RLIMIT_FSIZE_MB")
+    if fsize > 0:
+        limit = fsize * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+    mem = _int("ADH_RLIMIT_AS_MB")
+    if mem > 0:
+        limit = mem * 1024 * 1024
+        try:
+            resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+        except (ValueError, OSError):
+            pass
+
+
 if __name__ == "__main__":
+    _drop_privileges()
+    _apply_rlimits()
     try:
         payload = json.loads(sys.stdin.read(500_001))
         result = execute(payload["name"], payload["args"])

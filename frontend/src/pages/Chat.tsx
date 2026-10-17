@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect } from 'react';
-import { useParams, useLocation } from 'react-router-dom';
+import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import {
   Send, Zap, Trash2, Download, Bot, User, Lightbulb,
   CheckCircle, BarChart3, Table, Code, Clock,
   Plus, MessageSquare, Trash, TrendingUp, X, RefreshCw,
   MoreHorizontal, Pencil, Check, ThumbsUp, ThumbsDown, Cpu,
   Loader2, Maximize2, Minimize2, Paperclip, FileText, Box, FolderOpen, Save, ClipboardList,
+  FileBarChart,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -18,11 +19,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Spinner } from '@/components/ui/spinner';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { useChatStore } from '../stores/chatStore';
 import type { AttachmentInfo, PendingAttachment } from '../stores/chatStore';
-import { ATTACH_MAX_FILES, validateLocalAttachment, filesFromClipboard } from '../stores/chatStore';
+import { ATTACH_MAX_FILES, validateLocalAttachment, filesFromClipboard, hasModelStats } from '../stores/chatStore';
 import ChartPicker from '../components/ChartPicker';
 import { CHART_TYPES } from '../components/DashboardChart';
 import MarkdownWithCharts from '../components/MarkdownWithCharts';
@@ -30,11 +29,16 @@ import ExecutionProcess from '../components/ExecutionProcess';
 import InlineDetails from '../components/InlineDetails';
 import Model3DViewer from '../components/chat/Model3DViewer';
 import SessionFilesPanel from '../components/chat/SessionFilesPanel';
+import StageCard from '../components/chat/StageCard';
+import BotAvatar from '../components/chat/BotAvatar';
+import WaitingIndicator from '../components/chat/WaitingIndicator';
+import { IntentGateBadge } from '../components/chat/IntentGateBadge';
 import DataGrid from '../components/DataGrid';
 import DataProfileCard from '../components/DataProfileCard';
 import SqlCard from '../components/SqlCard';
 import { toCsv } from '../lib/dataGrid';
 import client from '../api/client';
+import { saveConversationAsReport } from '../api/report';
 
 const CATEGORY_LABELS: Record<string, string> = {
   image: '图片', table: '表格', document: '文档', model3d: '3D 模型',
@@ -54,11 +58,14 @@ function attUrl(att: AttachmentInfo, conversationId?: number | null): string {
 const chartTypeLabels: Record<string, string> = {
   timeseries_table: '时间序列表格', timeseries_percent: '时间序列百分比变化',
   timeseries_pivot: '时间序列周期透视', chord: '弦图', column: '柱状图', table: '表格',
+  // 地图热力(chat 图表卡专属,字模库地图瓦片 + 热力层)及其 LLM 常用别名
+  map_heat: '地图热力', map: '地图热力', heatmap_map: '地图热力', geo_heatmap: '地图热力', map_heatmap: '地图热力',
   ...Object.fromEntries(CHART_TYPES.map(t => [t.value, t.label])),
 };
 
 export default function Chat() {
   const { workspaceId: urlWorkspaceId } = useParams<{ workspaceId: string }>();
+  const navigate = useNavigate();
   const independent = useLocation().pathname.startsWith('/ask/');
   const [conversationsOpen, setConversationsOpen] = useState(false);
   const conversationError = useChatStore(s => s.conversationError);
@@ -84,6 +91,7 @@ export default function Chat() {
     setSelectedDsId, setSelectedModelId,
     startNewConversation, switchConversation, deleteConversation, renameConversation,
     sendMessage, cancelMessage, respondToAsk, cancelAsk, updateMessageFeedback, setViewMode, analyzeData, predictData, clear,
+    stopping,
   } = useChatStore();
   // 加载快速路径示例（Chat 空白时展示）
   useEffect(() => {
@@ -304,7 +312,19 @@ export default function Chat() {
     const fb = msg.feedback || feedbackMap[idx];
     return (
       <>
-        <div className="flex-1" />
+        {/* 只有真产出过数据/分析的回合才给报表入口（服务端 reportable 判定）；
+            纯问答/系统操作确认不是报表，不给按钮（否则报表中心会堆满无意义条目） */}
+        {msg.reportable === true && (
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground"
+            disabled={savingReport !== null || loading}
+            title="把本轮分析结论存到报表中心（仅本人可见，可在线查看与编辑）"
+            onClick={() => saveAsReport(idx, msg)}>
+            {savingReport === idx
+              ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+              : <FileBarChart className="h-3.5 w-3.5 mr-1" />}
+            存为报表
+          </Button>
+        )}
         {!fb ? (
           <div className="flex items-center gap-1 ml-auto">
             <span className="text-xs text-muted-foreground mr-1">结果准确?</span>
@@ -454,6 +474,33 @@ export default function Chat() {
       toast.error(e?.response?.data?.detail || '保存失败,请稍后重试');
     } finally {
       setSavingResult(false);
+    }
+  };
+
+  // 存为报表: 本轮已展示的分析结论进报表中心(内容型报表, 仅本人可见、可在线查看与编辑)。
+  // 正文由服务端从已落库的会话读, 前端不传内容(不信任 body 里的正文)。
+  const [savingReport, setSavingReport] = useState<number | null>(null);
+  const saveAsReport = async (idx: number, msg: any) => {
+    if (!currentConvId) {
+      toast.error('会话尚未落库，无法存为报表；请等本轮回答完成后再试');
+      return;
+    }
+    setSavingReport(idx);
+    try {
+      const { title } = await saveConversationAsReport({
+        conversation_id: currentConvId,
+        message_index: idx,
+        message_uuid: msg?.message_uuid || '',
+      });
+      toast.success(`已存入报表中心：${title}`, {
+        // 独立问答页(/ask/)没有工作站侧栏，只提示结果，不给跳转
+        action: independent || !selectedWorkspaceId ? undefined
+          : { label: '去查看', onClick: () => navigate(`/ws/${selectedWorkspaceId}/reports`) },
+      });
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || '存为报表失败，请重试');
+    } finally {
+      setSavingReport(null);
     }
   };
 
@@ -651,11 +698,13 @@ export default function Chat() {
 
           {messages.map((msg, idx) => (
             <div key={idx} className={`flex gap-3 mb-5 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
-              <div className={`w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center ${
-                msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-primary/10 text-primary'
-              }`}>
-                {msg.role === 'user' ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
-              </div>
+              {msg.role === 'user' ? (
+                <div className="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center bg-primary text-primary-foreground">
+                  <User className="h-4 w-4" />
+                </div>
+              ) : (
+                <BotAvatar size={36} active={loading && idx === messages.length - 1} />
+              )}
 
               {/* 卡片宽度固定为容器的固定比例(不随内容变化)：流式思考与最终答案等宽，
                   避免流式期被内容撑到全屏、答案出来又缩窄的宽度跳变；随窗口等比例缩放。 */}
@@ -710,10 +759,7 @@ export default function Chat() {
                     {/* 等待模型响应:气泡还没有任何可见输出时给明确提示(而非空白) */}
                     {/* 仅对当前正在流式的最后一条生效;否则历史里被取消/清空的空 assistant 气泡会随任意新请求的 loading 再次转圈 */}
                     {loading && idx === messages.length - 1 && !msg.content && !msg.reply && !msg.intent && !msg.error && !msg.thinking && !(msg.tool_calls && msg.tool_calls.length > 0) && (
-                      <div className="flex items-center gap-2">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-                        <span className="text-sm text-muted-foreground">等待模型响应...</span>
-                      </div>
+                      <WaitingIndicator />
                     )}
 
                     {/* 执行过程:思考与工具调用收敛进限高窗口, 执行中自动跟随、结束自动折叠 */}
@@ -728,14 +774,12 @@ export default function Chat() {
 
                     {/* 工具已全部结束但模型还在组织最终回答 → 同样给等待提示 */}
                     {loading && idx === messages.length - 1 && !msg.content && !msg.reply && (msg.tool_calls?.length ?? 0) > 0 && msg.tool_calls!.every(t => t.result || t.error) && (
-                      <div className="flex items-center gap-2 mt-1">
-                        <Loader2 className="h-3 w-3 animate-spin text-primary" />
-                        <span className="text-xs text-muted-foreground">等待模型响应...</span>
-                      </div>
+                      <WaitingIndicator size="sm" stage="composing" className="mt-1" />
                     )}
 
-                    {/* 执行层统计摘要条(轮次/工具调用/耗时) */}
-                    {msg.executionStats && (msg.executionStats.num_turns || msg.executionStats.tool_call_count || msg.executionStats.duration_ms) && (
+                    {/* 执行层统计摘要条(轮次/工具调用/耗时)。hasModelStats 显式转布尔：
+                        全 0 时写 `a || b || c` 会把数字 0 当文本渲染到气泡上方。 */}
+                    {msg.executionStats && hasModelStats(msg.executionStats) && (
                       <div className="flex items-center gap-2 mb-2 text-[10px] text-muted-foreground">
                         {msg.executionStats.num_turns != null && (
                           <span className="px-1.5 py-0.5 rounded bg-muted">{msg.executionStats.num_turns} 轮推理</span>
@@ -761,40 +805,66 @@ export default function Chat() {
                       />
                     )}
 
-                    {/* 流式 token 输出(intent 未确定前,如执行层 CLI 的流式回复,含内嵌图表/设计卡片块) */}
-                    {!msg.intent && msg.content && <MarkdownWithCharts text={msg.content} conversationId={currentConvId} onDesignContinue={text => { void sendMessage(text); }} />}
+                    {/* 流式 token 输出(intent 未确定前,如执行层 CLI 的流式回复,含内嵌图表/设计卡片块)。
+                        回答内容按章节切成阶段卡片(卡头滑动展开/收起,逐段滑入) */}
+                    {!msg.intent && msg.content && (
+                      <MarkdownWithCharts
+                        text={msg.content}
+                        sections
+                        streaming={loading && idx === messages.length - 1}
+                        conversationId={currentConvId}
+                        onDesignContinue={text => { void sendMessage(text); }}
+                      />
+                    )}
 
                     {msg.intent && ['chat', 'explain'].includes(msg.intent) && msg.reply && (
-                      <div className="leading-relaxed prose prose-sm max-w-none">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.reply}</ReactMarkdown>
-                      </div>
+                      <MarkdownWithCharts text={msg.reply} sections conversationId={currentConvId} onDesignContinue={text => { void sendMessage(text); }} />
                     )}
                     {msg.reply && !msg.sql && !msg.error && msg.intent === 'query' && (
-                      <div>
-                        <div className="leading-relaxed prose prose-sm max-w-none">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.reply}</ReactMarkdown>
-                        </div>
-                      </div>
+                      <MarkdownWithCharts text={msg.reply} sections conversationId={currentConvId} onDesignContinue={text => { void sendMessage(text); }} />
                     )}
 
                     {/* Agent/执行层最终回复(无 SQL 结果,如 qoder 执行层,含内嵌图表/设计卡片块)+ 赞踩打标 */}
                     {msg.reply && !msg.sql && !msg.error && msg.intent === 'agent' && (
                       <>
-                        <MarkdownWithCharts text={msg.reply} conversationId={currentConvId} onDrill={handleDrill} onDesignContinue={text => { void sendMessage(text); }} />
+                        <MarkdownWithCharts text={msg.reply} sections streaming={loading && idx === messages.length - 1} conversationId={currentConvId} onDrill={handleDrill} onDesignContinue={text => { void sendMessage(text); }} />
                         <div className="flex gap-2 mt-1 flex-wrap items-center">{renderFeedback(idx, msg)}</div>
+                      </>
+                    )}
+
+                    {/* 前置意图漏斗本地直答（本轮未调用模型）：徽章必须可见 + 「转深度分析」逃生门。
+                        拦错了不是隐蔽缺陷：用户看得到"没走模型"，并能把原文重新下发执行层。 */}
+                    {msg.intent === 'intent_gate' && (msg.reply || msg.content) && (
+                      <>
+                        <MarkdownWithCharts
+                          text={(msg.reply || msg.content) as string}
+                          sections
+                          streaming={loading && idx === messages.length - 1}
+                          conversationId={currentConvId}
+                        />
+                        <IntentGateBadge
+                          gate={msg.gate}
+                          deepAnalysisDisabled={loading}
+                          onDeepAnalysis={() => {
+                            const q = msg.question
+                              || messages.slice(0, idx).filter(m => m.role === 'user').pop()?.content
+                              || '';
+                            if (q) void sendMessage(q, undefined, undefined, { forceAgent: true });
+                          }}
+                        />
                       </>
                     )}
 
                     {/* Agent mode: show analysis text above chart when both reply and sql exist */}
                     {msg.reply && msg.sql && !msg.error && (
-                      <div className="mb-3 leading-relaxed prose prose-sm max-w-none">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.reply}</ReactMarkdown>
+                      <div className="mb-3">
+                        <MarkdownWithCharts text={msg.reply} sections conversationId={currentConvId} onDesignContinue={text => { void sendMessage(text); }} />
                       </div>
                     )}
 
-                    {/* Agent ask_user interactive card */}
+                    {/* Agent ask_user 交互卡 */}
                     {msg.pendingAsk && (
-                      <div className="mt-3 p-3 border rounded-lg bg-muted/50 space-y-2">
+                      <div className="mt-3 p-3 rounded-xl border bg-card shadow-sm space-y-2 animate-stage-in">
                         <div className="flex items-start gap-2">
                           <span className="text-sm">🤔</span>
                           <p className="text-sm">{msg.pendingAsk.question}</p>
@@ -848,26 +918,33 @@ export default function Chat() {
                       </div>
                     )}
                     {msg.error && (
-                      <div>
-                        <Badge variant="destructive" className="mb-2">{msg.error}</Badge>
+                      <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 shadow-sm animate-stage-in">
+                        <div className="flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 bg-destructive/10">
+                            <X className="h-3.5 w-3.5 text-destructive" />
+                          </span>
+                          <span className="text-sm font-medium text-destructive">{msg.error}</span>
+                        </div>
                       </div>
                     )}
 
+                    {/* 数据结果卡:查询结果集(图表/明细/画像/SQL 多视图) */}
                     {msg.sql && msg.intent !== 'chat' && !msg.error && (
-                      <div>
-                        <div className="flex gap-1.5 mb-3 flex-wrap items-center">
-                          {msg.brief && <Badge variant="default">{msg.brief}</Badge>}
-                          {msg.intent === 'correction' && <Badge variant="secondary">已修正</Badge>}
-                          {msg.chart_type && msg.chart_type !== 'table' && (
-                            <Badge variant="outline">{chartTypeLabels[msg.chart_type] || msg.chart_type}</Badge>
-                          )}
-                          {msg.warnings?.map((w: string, i: number) => (
-                            <Badge key={i} variant="outline" className="text-yellow-500">{w}</Badge>
-                          ))}
-                        </div>
+                      <div className="rounded-xl border bg-card shadow-sm overflow-hidden animate-stage-in">
+                        {/* 卡头:结果摘要徽标 + 视图切换 */}
+                        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b bg-muted/30 flex-wrap">
+                          <div className="flex gap-1.5 flex-wrap items-center">
+                            {msg.brief && <Badge variant="default">{msg.brief}</Badge>}
+                            {msg.intent === 'correction' && <Badge variant="secondary">已修正</Badge>}
+                            {msg.chart_type && msg.chart_type !== 'table' && (
+                              <Badge variant="outline">{chartTypeLabels[msg.chart_type] || msg.chart_type}</Badge>
+                            )}
+                            {msg.warnings?.map((w: string, i: number) => (
+                              <Badge key={i} variant="outline" className="text-yellow-500">{w}</Badge>
+                            ))}
+                          </div>
 
-                        {msg.result && !msg.result.error && (
-                          <div className="flex items-center justify-between mb-3">
+                          {msg.result && !msg.result.error && (
                             <Tabs value={msg.viewMode || 'chart'} onValueChange={(v) => setViewMode(idx, v as any)}>
                               <TabsList>
                                 <TabsTrigger value="chart"><BarChart3 className="h-4 w-4 mr-1" />图表</TabsTrigger>
@@ -876,36 +953,65 @@ export default function Chat() {
                                 <TabsTrigger value="sql"><Code className="h-4 w-4 mr-1" />SQL</TabsTrigger>
                               </TabsList>
                             </Tabs>
-                          </div>
-                        )}
+                          )}
+                        </div>
 
-                        {msg.viewMode === 'chart' && msg.result && !msg.result.error && (
-                          <ChartPicker data={msg.result} defaultType={msg.chart_type} onDrill={handleDrill} />
-                        )}
-                        {msg.viewMode === 'table' && msg.result && !msg.result.error && (
-                          <DataGrid
-                            columns={msg.result.columns || []}
-                            rows={msg.result.rows || []}
-                            height={400}
-                            filename={`chatbi_${idx + 1}`}
-                          />
-                        )}
-                        {msg.viewMode === 'profile' && msg.result && !msg.result.error && (
-                          <DataProfileCard columns={msg.result.columns || []} rows={msg.result.rows || []} />
-                        )}
-                        {msg.viewMode === 'sql' && (
-                          <SqlCard code={msg.sql || ''} maxHeight={400} />
-                        )}
+                        {/* 卡体:视图内容(切换视图滑入) */}
+                        <div key={msg.viewMode || 'chart'} className="p-3 animate-stage-in">
+                          {msg.viewMode === 'chart' && msg.result && !msg.result.error && (
+                            <ChartPicker data={msg.result} defaultType={msg.chart_type} onDrill={handleDrill} />
+                          )}
+                          {msg.viewMode === 'table' && msg.result && !msg.result.error && (
+                            <DataGrid
+                              columns={msg.result.columns || []}
+                              rows={msg.result.rows || []}
+                              height={400}
+                              filename={`chatbi_${idx + 1}`}
+                            />
+                          )}
+                          {msg.viewMode === 'profile' && msg.result && !msg.result.error && (
+                            <DataProfileCard columns={msg.result.columns || []} rows={msg.result.rows || []} />
+                          )}
+                          {msg.viewMode === 'sql' && (
+                            <SqlCard code={msg.sql || ''} maxHeight={400} />
+                          )}
 
-                        {!msg.result && !msg.error && (
-                          <div className="flex items-center gap-2 py-3">
-                            <Spinner size={16} />
-                            <span className="text-sm text-muted-foreground">正在执行查询...</span>
-                          </div>
-                        )}
+                          {!msg.result && !msg.error && (
+                            <div className="flex items-center gap-2 py-3">
+                              <Spinner size={16} />
+                              <span className="text-sm text-muted-foreground">正在执行查询...</span>
+                            </div>
+                          )}
 
+                          {/* 预测结果子卡 */}
+                          {msg.prediction && (
+                            <StageCard
+                              icon={TrendingUp}
+                              title="数据预测"
+                              tone="green"
+                              className="mt-3"
+                              extra={
+                                <Button variant="ghost" size="sm" disabled={msg.predicting}
+                                  onClick={() => predictData(idx, msg.brief || '预测趋势')}>
+                                  <RefreshCw className="h-3 w-3 mr-1" />重新预测
+                                </Button>
+                              }
+                            >
+                              <div className="text-sm leading-relaxed whitespace-pre-wrap">{msg.prediction}</div>
+                            </StageCard>
+                          )}
+
+                          {/* 结果分析子卡 */}
+                          {msg.analysis && typeof msg.analysis === 'string' && msg.analysis.trim() && (
+                            <StageCard icon={Lightbulb} title="结果分析" className="mt-3">
+                              <div className="text-sm leading-relaxed whitespace-pre-wrap">{msg.analysis}</div>
+                            </StageCard>
+                          )}
+                        </div>
+
+                        {/* 卡脚:结果操作 */}
                         {msg.result && !msg.result.error && (
-                          <div className="flex gap-2 mt-2 flex-wrap">
+                          <div className="flex gap-2 px-3 py-2 border-t bg-muted/20 flex-wrap items-center">
                             <Button variant="outline" size="sm" onClick={() => {
                               const { columns, rows } = msg.result;
                               if (!columns || !rows) return;
@@ -939,33 +1045,8 @@ export default function Chat() {
                           </div>
                         )}
 
-                        {/* Prediction result */}
-                        {msg.prediction && (
-                          <div className="mt-3 p-3 bg-background rounded-lg border">
-                            <div className="flex items-center gap-2 mb-2">
-                              <TrendingUp className="h-4 w-4 text-green-500" />
-                              <span className="font-medium text-sm">数据预测</span>
-                              <div className="flex-1" />
-                              <Button variant="ghost" size="sm" disabled={msg.predicting}
-                                onClick={() => predictData(idx, msg.brief || '预测趋势')}>
-                                <RefreshCw className="h-3 w-3 mr-1" />重新预测
-                              </Button>
-                            </div>
-                            <div className="text-sm leading-relaxed whitespace-pre-wrap">{msg.prediction}</div>
-                          </div>
-                        )}
-
-                        {/* Analysis result - shown prominently before chart */}
-                        {msg.analysis && typeof msg.analysis === 'string' && msg.analysis.trim() && (
-                          <div className="mb-3 p-3 bg-primary/5 rounded-lg border border-primary/20">
-                            <div className="flex items-center gap-2 mb-1">
-                              <Lightbulb className="h-4 w-4 text-primary" />
-                              <span className="font-medium text-sm">结果分析</span>
-                            </div>
-                            <div className="text-sm leading-relaxed whitespace-pre-wrap">{msg.analysis}</div>
-                          </div>
-                        )}
-                        <div className="flex gap-4 mt-3 pt-2 border-t text-xs text-muted-foreground flex-wrap">
+                        {/* 卡底:耗时/行数/Token */}
+                        <div className="flex gap-4 px-3 py-2 border-t text-xs text-muted-foreground flex-wrap">
                           {msg.elapsed_ms && <span><Clock className="h-3 w-3 inline mr-1" />总耗时 {(msg.elapsed_ms / 1000).toFixed(1)}s</span>}
                           {msg.result?.elapsed_ms && <span><Zap className="h-3 w-3 inline mr-1" />查询 {msg.result.elapsed_ms}ms</span>}
                           {msg.result?.row_count !== undefined && <span><CheckCircle className="h-3 w-3 inline mr-1" />{msg.result.row_count} 行</span>}
@@ -982,15 +1063,10 @@ export default function Chat() {
           {/* Loading indicator (when no assistant message exists yet) */}
           {loading && !(messages.length > 0 && messages[messages.length - 1]?.role === 'assistant' && !messages[messages.length - 1]?.sql && !messages[messages.length - 1]?.intent) && (
             <div className="flex gap-3">
-              <div className="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center bg-primary/10 text-primary">
-                <Bot className="h-4 w-4" />
-              </div>
+              <BotAvatar size={36} active />
               <div className="flex-1 max-w-md">
                 <div className="bg-muted rounded-2xl rounded-tl-sm px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-                    <span className="text-xs text-muted-foreground">等待模型响应...</span>
-                  </div>
+                  <WaitingIndicator size="sm" />
                 </div>
               </div>
             </div>
@@ -1050,18 +1126,19 @@ export default function Chat() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onPaste={handlePaste}
-                placeholder="输入你的数据查询问题..."
+                placeholder={stopping ? '上一轮正在停止，请稍候…' : '输入你的数据查询问题...'}
                 className="flex-1"
+                disabled={stopping}
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
               />
-              <Button onClick={handleSend} disabled={loading || (!input.trim() && pendingAtts.length === 0)}>
-                {loading ? <Spinner className="h-4 w-4 mr-2" /> : <Send className="h-4 w-4 mr-2" />}
+              <Button onClick={handleSend} disabled={loading || stopping || (!input.trim() && pendingAtts.length === 0)}>
+                {loading || stopping ? <Spinner className="h-4 w-4 mr-2" /> : <Send className="h-4 w-4 mr-2" />}
                 发送
               </Button>
-              {loading && (
-                <Button variant="destructive" onClick={cancelMessage}>
-                  <X className="h-4 w-4 mr-2" />
-                  停止
+              {(loading || stopping) && (
+                <Button variant="destructive" onClick={cancelMessage} disabled={stopping}>
+                  {stopping ? <Spinner className="h-4 w-4 mr-2" /> : <X className="h-4 w-4 mr-2" />}
+                  {stopping ? '正在停止…' : '停止'}
                 </Button>
               )}
             </div>

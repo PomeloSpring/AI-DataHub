@@ -88,8 +88,9 @@ class ToolPolicy:
     def manifest(self):
         from backend.modules.mind.execution.tool_catalog import TOOL_CATALOG
         labels = {t["name"]: t["label"] for t in TOOL_CATALOG}
-        from backend.modules.mind.execution.sdk_tools import catalog_tools, semantic_tools, ontology_tools, screen_tools, system_tools, query_tools, asset_tools
-        for module in (catalog_tools, semantic_tools, ontology_tools, screen_tools, system_tools, query_tools, asset_tools):
+        from backend.modules.mind.execution.sdk_tools import catalog_tools, semantic_tools, ontology_tools, screen_tools, system_tools, query_tools, asset_tools, memory_tools
+        for module in (catalog_tools, semantic_tools, ontology_tools, screen_tools, system_tools,
+                       query_tools, asset_tools, memory_tools):
             for spec in getattr(module, "TOOL_SPECS", []):
                 labels[spec["name"]] = spec.get("description") or spec["name"]
         return {"as_bot_key": self.as_bot["as_bot_key"], "version": self.digest,

@@ -5,7 +5,7 @@
 -- 写入（_placeholder_embedding，已随本迁移从 template_service/metadata_sync/
 -- term_service 删除），无任何读方。
 --
--- 涉及表: adh_table_info / adh_column_metadata / adh_sql_templates /
+-- 涉及表: adh_table_info / adh_column_metadata /
 --         adh_business_terms / adh_table_relations / adh_sql_corrections
 --
 -- 部署顺序（重要）: 先上线不再写 embedding 的代码（重启 web），再执行本迁移。
@@ -37,7 +37,6 @@ DELIMITER ;
 
 CALL adh_drop_embedding_col('adh_table_info');
 CALL adh_drop_embedding_col('adh_column_metadata');
-CALL adh_drop_embedding_col('adh_sql_templates');
 CALL adh_drop_embedding_col('adh_business_terms');
 CALL adh_drop_embedding_col('adh_table_relations');
 CALL adh_drop_embedding_col('adh_sql_corrections');

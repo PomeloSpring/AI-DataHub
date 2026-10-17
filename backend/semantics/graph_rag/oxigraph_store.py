@@ -10,8 +10,8 @@ Node model (RDF triples):
     adh:table:{t1} adh:join adh:table:{t2} .
     adh:term:{name}        a adh:Term ;   adh:mapsTo adh:col:{t}.{c} .
     adh:metric:{name}      a adh:Metric ; adh:defines adh:col:{t}.{c} .
-    adh:sqltpl:{id}        a adh:SQLTemplate ; adh:sqlText "..." ;
-                           adh:intentKeywords "..." ; adh:touchTable adh:table:{t} .
+    adh:dataset:{name}     a adh:Dataset ; adh:comment "..." ;
+                           adh:touchTable adh:table:{t} ; adh:queriesObject adh:obj:{k} .
 """
 
 import logging
@@ -30,6 +30,30 @@ SYSTEM_DATASOURCE_ID = -1
 
 def is_system_scope(datasource_id: int) -> bool:
     return datasource_id == SYSTEM_DATASOURCE_ID
+
+
+def graph_target_for_model(kind: str, datasource_id: int) -> int:
+    """本体模型 → 目标命名图的 datasource 哨兵（**写入与状态对账共用同一口径**）。
+
+    图谱按 **kind** 分图，不按 datasource_id：
+      system → ``ds:-1``（AS-BOT 系统域图）; business → ``ds:0``（跨源业务聚合图）;
+      source → ``ds:<datasource_id>``（源本体图，与业务图分开保留）。
+
+    为什么必须共用：旧实现只在写入侧按 kind 分图，而徽章用的
+    ``ontology_kb_sync.model_sync_status`` 自己按 ``ds:{datasource_id}`` 查图，
+    于是两个活着的 kind 全部误报：系统本体(ds_id=0) 查到的是**业务聚合图**
+    （显示“滞后 17/12”，而真系统图 ds:-1 与实际同步），业务本体(ds_id>0)
+    查到的是空图（显示“未生成”，而它在 ds:0 里完整存在）。口径分叉就是缺陷本身。
+    """
+    ds = int(datasource_id or 0)
+    if kind == "system":
+        return SYSTEM_DATASOURCE_ID
+    if kind == "business":
+        return 0
+    if kind == "source":
+        return ds
+    # 未知/缺失 kind：按 datasource_id 哨兵推断（与旧写入侧兑底一致）
+    return SYSTEM_DATASOURCE_ID if is_system_scope(ds) else ds
 
 
 class OxigraphStore:
@@ -276,35 +300,37 @@ class OxigraphStore:
             }}
         """)
 
-    def create_sql_template_node(self, template_id: str, name: str, sql: str,
-                                 intent_keywords: str = "", category: str = "",
-                                 description: str = "", variables: str = "",
-                                 rules: str = "", dialect: str = "",
-                                 tables: list[str] = None,
-                                 datasource_id: int = 0):
-        """Create an adh:SQLTemplate node with its text/keywords and touched tables.
+    def create_dataset_node(self, name: str, description: str = "",
+                            source_type: str = "", object_key: str = "",
+                            variables: str = "", tables: list[str] = None,
+                            datasource_id: int = 0):
+        """Create an adh:Dataset node (governed query asset) with touched tables.
 
-        Templates become first-class graph nodes so the retriever can ground a
-        question against them via SPARQL (no vector search needed).
+        数据集是图谱里的一等节点，供检索层用 SPARQL 进行业务提问的 grounding。
+        **不写 SQL 正文**：图内容会被检索到并交给 LLM，而预制 SQL 由服务端按名执行，
+        把正文入图 = 把物理表/实现细节送到模型眼前（护栏 §7）。
         """
-        iri = f"{ADH_NS}sqltpl:{_safe(str(template_id))}"
+        name = str(name or "").strip()
+        if not name:
+            return
+        iri = f"{ADH_NS}dataset:{_safe(name)}"
         graph = self.graph_uri(datasource_id)
         touch_triples = ""
         for t in (tables or []):
             tbl_iri = f"{ADH_NS}table:{_safe(t)}"
             touch_triples += f"\n                    <{iri}> <{ADH_NS}touchTable> <{tbl_iri}> ."
+        obj_triple = ""
+        if str(object_key or "").strip():
+            obj_triple = (f"\n                    <{iri}> <{ADH_NS}queriesObject> "
+                          f"<{ADH_NS}obj:{_safe(object_key)}> .")
         self._client.update(f"""
             INSERT DATA {{
                 GRAPH <{graph}> {{
-                    <{iri}> a <{ADH_NS}SQLTemplate> ;
+                    <{iri}> a <{ADH_NS}Dataset> ;
                         <http://www.w3.org/2000/01/rdf-schema#label> "{_esc(name)}" ;
-                        <{ADH_NS}sqlText> "{_esc(sql)}" ;
-                        <{ADH_NS}intentKeywords> "{_esc(intent_keywords)}" ;
-                        <{ADH_NS}category> "{_esc(category)}" ;
                         <{ADH_NS}comment> "{_esc(description)}" ;
-                        <{ADH_NS}variables> "{_esc(variables)}" ;
-                        <{ADH_NS}rules> "{_esc(rules)}" ;
-                        <{ADH_NS}dialect> "{_esc(dialect)}" .{touch_triples}
+                        <{ADH_NS}sourceType> "{_esc(source_type)}" ;
+                        <{ADH_NS}variables> "{_esc(variables)}" .{touch_triples}{obj_triple}
                 }}
             }}
         """)

@@ -92,6 +92,8 @@ _CALLBACKS: dict[str, str | Callable[..., Any]] = {
     # 自进化域（catalog）：flow 的执行器要调它，走本表登记而不是 import，
     # 否则新增一条 L2 横向边（分层契约 §0 禁）
     "evolution.run_digest": "backend.modules.catalog.services.evolution_service:run_digest",
+    # 前置意图漏斗（mind）：判定流水滚动清理由 flow 的执行器触发，同样走本表白名单
+    "intent_gate.purge_intercepts": "backend.modules.mind.execution.intent_gate:purge_intercepts",
 }
 
 # Celery app 绑定：任务派发与任务对象解耦（同一白名单②通道）。

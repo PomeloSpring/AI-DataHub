@@ -42,6 +42,8 @@ export interface CommonFilters {
   entrypoint?: string;
   status?: string;
   model_ref?: string;
+  /** 处理方式：agent=走了执行层模型 / intent_gate=前置意图层本地直答 */
+  handled_by?: string;
   start?: string;
   end?: string;
 }
@@ -60,6 +62,14 @@ export interface UsageSummary {
   avg_duration_ms: number | null;
   thumbs_up: number | null;
   thumbs_down: number | null;
+  // 前置意图漏斗：拦截回合数与拦截率（trace.handled_by='intent_gate'）
+  intercepted?: number | null;
+  intercept_rate?: number | null;
+  by_handled_by?: Array<{ handled_by: string; turns: number; total_tokens: number; credits: number | null }>;
+  avg_agent_turn_credits?: number | null;
+  /** 估算值：拦截回合数 × 同窗口 agent 回合均值 credit（Qoder 不回报单回合成本，无实测口径） */
+  estimated_saved_credits?: number | null;
+  saved_credits_is_estimate?: boolean;
 }
 
 export interface DailyPoint {
@@ -116,6 +126,8 @@ export interface TraceRow {
   user_id: number;
   username: string;
   entrypoint: string;
+  /** 处理方：agent=模型回答 / intent_gate=前置意图层本地直答（未调用模型） */
+  handled_by?: string;
   model_ref: string;
   status: string;
   question: string;
@@ -218,4 +230,72 @@ export async function getTrace(traceId: string) {
 export async function getQuota(refresh = false) {
   const { data } = await client.get('/observability/quota', { params: { refresh } });
   return data as QuotaInfo;
+}
+
+// ── 前置意图漏斗（adh_intent_intercepts 判定流水）───────────────────────
+
+export interface FunnelFilters {
+  workspace_id?: number;
+  user_id?: number;
+  datasource_id?: number;
+  conversation_id?: number;
+  as_bot_key?: string;
+  mode?: string;
+  label?: string;
+  decision?: string;
+  start?: string;
+  end?: string;
+}
+
+export interface FunnelStats {
+  available: boolean;
+  reason?: string;
+  overall?: {
+    judged: number; local: number | null; shadow_local: number | null; to_agent: number | null;
+    gate_errors: number | null; forced_agent: number | null; avg_latency_ms: number | null;
+  };
+  intercept_rate?: number;
+  eligible_rate?: number;
+  by_label?: Array<{ label: string; decision: string; cnt: number; avg_latency_ms: number | null }>;
+  daily?: Array<{ dt: string; judged: number; local: number | null; shadow_local: number | null; gate_errors: number | null }>;
+}
+
+export interface InterceptRow {
+  id: number;
+  dt: string;
+  trace_id: string;
+  conversation_id: number;
+  user_id: number;
+  username: string;
+  workspace_id: number;
+  datasource_id: number;
+  as_bot_key: string;
+  as_bot_name: string;
+  mode: string;
+  layer: string;
+  label: string;
+  decision: string;
+  reason: string;
+  signals: string;
+  question_digest: string;
+  latency_ms: number;
+  gate_error: string;
+  force_agent: number;
+  reviewed: number;
+  review_note: string;
+}
+
+export async function getFunnelStats(f: FunnelFilters = {}) {
+  const { data } = await client.get('/observability/funnel/stats', { params: f });
+  return data as FunnelStats;
+}
+
+export async function listFunnelIntercepts(f: FunnelFilters & { page?: number; size?: number } = {}) {
+  const { data } = await client.get('/observability/funnel/intercepts', { params: f });
+  return data as { available: boolean; reason?: string; items: InterceptRow[]; total: number };
+}
+
+export async function reviewFunnelIntercept(id: number, reviewed: boolean, note = '') {
+  const { data } = await client.post(`/observability/funnel/intercepts/${id}/review`, { reviewed, note });
+  return data as { ok: boolean };
 }

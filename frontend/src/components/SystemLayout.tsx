@@ -66,7 +66,6 @@ const SYSTEM_MENU_ITEMS = [
   { key: '/system/monitoring', icon: Activity, label: '系统监控' },
   { key: '/system/task-monitor', icon: Clock, label: '任务监控' },
   { key: '/system/sandbox', icon: Server, label: '沙箱管理' },
-  { key: '/system/quality-review', icon: BarChart3, label: '质量审查' },
   { key: '/system/observability', icon: Waypoints, label: 'LLM 可观测' },
   { key: '/system/eval', icon: FlaskConical, label: '评测中心' },
   { key: '/system/evolution', icon: Dna, label: '进化中心' },

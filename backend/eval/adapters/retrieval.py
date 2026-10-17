@@ -43,12 +43,10 @@ def _flatten(result: dict) -> list[dict]:
         _add("column", c.get("column_name"), c.get("column_comment") or c.get("business_desc"))
     for term in result.get("business_terms") or []:
         _add("term", term.get("term_cn") or term.get("name"), term.get("description") or term.get("term_aliases"))
-    for tpl in result.get("sql_templates") or []:
-        # 只取模板名/说明，**不取 SQL 文本**（SQL 属 §7 黑盒，不应进评测命中集）
-        _add("template", tpl.get("template_name"), tpl.get("description"))
     for rel in result.get("table_relations") or []:
         _add("relation", rel.get("relation_type"), "")
     for ds in result.get("saved_datasets") or []:
+        # 只取数据集名/说明，**不取 SQL 正文**（属 §7 黑盒，不应进评测命中集）
         _add("dataset", ds.get("name"), ds.get("description"))
     return items
 
@@ -66,7 +64,7 @@ def _item_count(result: dict) -> int:
     """
     n = 0
     for key in ("table_info", "column_metadata", "business_terms",
-                "table_relations", "sql_templates", "saved_datasets"):
+                "table_relations", "saved_datasets"):
         v = result.get(key)
         if isinstance(v, list):
             n += len(v)

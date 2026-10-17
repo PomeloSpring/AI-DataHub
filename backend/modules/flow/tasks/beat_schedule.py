@@ -84,7 +84,15 @@ def build_beat_schedule() -> dict:
     schedule = {"reconcile_runs": {
         "task": "backend.modules.flow.tasks.executor.reconcile_runs", "schedule": 60.0,
         "options": {"queue": "scheduled"},
-    }}
+    },
+        # 系统内置周期任务（非 DB 配置）：意图漏斗判定流水清理。
+        # shadow 档每轮都落一行，不周期清理会把元库写成只增不减的日志海。
+        "intent_intercept_retention": {
+            "task": "backend.modules.flow.tasks.executor.intent_intercept_retention",
+            "schedule": WallClockCrontab("10 4 * * *", "Asia/Shanghai"),
+            "options": {"queue": "scheduled"},
+        },
+    }
     try:
         tasks = scheduled_task_service.list_active_tasks()
         for task in tasks:

@@ -470,6 +470,30 @@ def evolution_digest():
         raise
 
 
+@app.task(name="backend.modules.flow.tasks.executor.intent_intercept_retention", queue="scheduled")
+def intent_intercept_retention():
+    """内置任务：前置意图漏斗判定流水滚动清理。
+
+    shadow 档每一轮输入都落一行，不清理会把元库写成只增不减的日志海；
+    但清理失败不能静默 —— 行越积越多最后拖慢写入是看得见的代价，
+    所以失败照样 record_run('failed') 并抛出（no-silent-degradation）。
+    """
+    from backend.common import system_jobs
+    if not system_jobs.is_job_active("intent_intercept_retention"):
+        logger.info("[IntentGate] 内置任务已人工暂停，本轮清理跳过")
+        return {"skipped": "paused"}
+    try:
+        deleted = call("intent_gate.purge_intercepts")
+        system_jobs.record_run("intent_intercept_retention", "success",
+                               f"清理过期判定流水 {deleted} 行（已复盘行保留）")
+        return {"deleted": deleted}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[IntentGate] 判定流水清理失败")
+        system_jobs.record_run("intent_intercept_retention", "failed",
+                               f"清理失败（{type(exc).__name__}），详见服务端日志")
+        raise
+
+
 def execute_scheduled_task_sync(task_id: int, trigger_type: str = "manual", run_key: str = None):
     """显式同步适配器，与 Celery/后台使用相同执行核心。"""
     return _execute_core(task_id, trigger_type, run_key, "sync-process")

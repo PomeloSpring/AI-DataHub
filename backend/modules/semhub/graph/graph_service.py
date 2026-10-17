@@ -954,14 +954,14 @@ class GraphService:
                     terms=result.get("terms", 0),
                     metrics=result.get("metrics", 0),
                     dimensions=result.get("dimensions", 0),
-                    sql_templates=result.get("sql_templates", 0),
+                    datasets=result.get("datasets", 0),
                     relations=result.get("joins", 0),
                     message=(
                         f"图谱构建完成：{result.get('tables', 0)} 表、"
                         f"{result.get('columns', 0)} 字段、"
                         f"{result.get('terms', 0)} 术语、"
                         f"{result.get('metrics', 0)} 指标、"
-                        f"{result.get('sql_templates', 0)} SQL 模板、"
+                        f"{result.get('datasets', 0)} 数据集、"
                         f"{result.get('joins', 0)} 关系"
                     )
                 )

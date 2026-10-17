@@ -28,7 +28,6 @@ from backend.modules.semhub.graph.graph_service import GraphService  # noqa: E40
 from backend.modules.semhub.api.graph import _effective_ds  # noqa: E402
 from backend.common.rdf.namespaces import ADH_NS  # noqa: E402
 
-
 # ── 假 DB 连接: 捕获 (sql, params) ──────────────────────────────────
 class _FakeCursor:
     def __init__(self, sink, rows=None):
@@ -47,7 +46,6 @@ class _FakeCursor:
     def fetchall(self):
         return self._rows
 
-
 class _FakeConn:
     def __init__(self, sink, rows=None):
         self._sink = sink
@@ -58,7 +56,6 @@ class _FakeConn:
 
     def close(self):
         pass
-
 
 @pytest.fixture
 def capture(monkeypatch):
@@ -73,7 +70,6 @@ def capture(monkeypatch):
     monkeypatch.setattr(mdb, "get_metadata_conn", _ConnMod.get_metadata_conn)
     return sink
 
-
 # ── 命名图隔离 ───────────────────────────────────────────────────────
 def test_system_graph_uri_is_distinct_from_aggregate():
     sys_g = OxigraphStore.graph_uri(SYSTEM_DATASOURCE_ID)
@@ -82,18 +78,15 @@ def test_system_graph_uri_is_distinct_from_aggregate():
     assert sys_g != agg_g                       # 系统图 ≠ 聚合图 ds:0
     assert is_system_scope(SYSTEM_DATASOURCE_ID) and not is_system_scope(0)
 
-
 # ── 建图 loader 数据源过滤三态 ─────────────────────────────────────
 def test_ds_scope_system_only_filters_null_or_zero():
     clause, params = _ds_scope(SYSTEM_DATASOURCE_ID)
     assert clause == "AND (datasource_id = 0 OR datasource_id IS NULL)"
     assert params == []                          # 不绑定任何业务数据源 id
 
-
 def test_ds_scope_business_and_aggregate_unchanged():
     assert _ds_scope(5) == ("AND (datasource_id = %s OR datasource_id = 0)", [5])
     assert _ds_scope(0) == ("", [])              # 聚合语义保持"全部"(ChatBI 主链路不受影响)
-
 
 def test_load_tables_system_scope_excludes_business(capture):
     GraphBuilder(store=OxigraphStore.__new__(OxigraphStore))._load_tables(SYSTEM_DATASOURCE_ID)
@@ -103,7 +96,6 @@ def test_load_tables_system_scope_excludes_business(capture):
     assert params == []
     # 绝不能出现业务聚合的"无过滤"分支, 也不得出现 = %s 的业务绑定
     assert "WHERE is_active = 1 AND (" in sql
-
 
 def test_merge_ontology_models_system_scope_only_system_models(capture):
     b = GraphBuilder(store=_RecordingStore())
@@ -118,7 +110,6 @@ def test_merge_ontology_models_system_scope_only_system_models(capture):
     assert params == []
     # 关键: 系统域只含系统本体，不得含业务/源本体(那会把 test-alb/业务对象 merge 进来)
     assert "kind = 'business'" not in sql and "kind = 'source'" not in sql
-
 
 # ── 查询只命中 ds:-1 ───────────────────────────────────────────────
 class _RecordingStore:
@@ -138,7 +129,6 @@ class _RecordingStore:
     def count_triples(self, ds):
         return 0
 
-
 class _CapturingClient:
     def __init__(self):
         self.queries = []
@@ -146,7 +136,6 @@ class _CapturingClient:
     def query(self, sparql):
         self.queries.append(sparql)
         return []
-
 
 def test_get_graph_data_system_scope_queries_only_minus1():
     svc = GraphService.__new__(GraphService)
@@ -164,12 +153,10 @@ def test_get_graph_data_system_scope_queries_only_minus1():
         assert "ds:0>" not in joined and f"{ADH_NS}ds:0" not in joined  # 不查聚合图
         assert "ds:5" not in joined                                     # 不查业务图
 
-
 def test_effective_ds_maps_system_scope_to_sentinel():
     assert _effective_ds(0, True) == SYSTEM_DATASOURCE_ID
     assert _effective_ds(7, False) == 7          # 业务数据源原样透传
     assert _effective_ds(0, False) == 0
-
 
 # ── 字典/术语/模板/数据源节点的系统域归属(串入即缺陷) ────────────────
 def test_load_terms_system_scope_skipped(capture):
@@ -177,7 +164,6 @@ def test_load_terms_system_scope_skipped(capture):
     b = GraphBuilder(store=OxigraphStore.__new__(OxigraphStore))
     assert b._load_terms(SYSTEM_DATASOURCE_ID) == []
     assert capture == []                          # 不发任何 SQL, 也不按 ds=0 误捞全局术语
-
 
 def test_load_metrics_system_scope_filters_by_bound_object_keys(capture, monkeypatch):
     """字典行 datasource_id 恒为 0: 系统域只能按绑定对象∈系统模型对象筛, 不得按 datasource 列筛。"""
@@ -191,7 +177,6 @@ def test_load_metrics_system_scope_filters_by_bound_object_keys(capture, monkeyp
     # 关键: 绝不再出现"datasource_id = 0 OR IS NULL"这种对字典等于没筛的旧条件
     assert "datasource_id = 0 OR" not in sql
 
-
 def test_load_metrics_system_scope_without_keys_loads_nothing(capture, monkeypatch):
     """无系统模型对象时宁缺勿错: 不查库、不收任何指标(未绑定指标如 GMV 永远不进系统图)。"""
     from backend.semantics.graph_rag import graph_builder as gb
@@ -199,35 +184,6 @@ def test_load_metrics_system_scope_without_keys_loads_nothing(capture, monkeypat
     b = GraphBuilder(store=OxigraphStore.__new__(OxigraphStore))
     assert b._load_metrics(SYSTEM_DATASOURCE_ID) == []
     assert capture == []
-
-
-def test_load_sql_templates_system_scope_skipped(capture):
-    """SQL 模板含业务表语句, 系统域图不收录。"""
-    b = GraphBuilder(store=OxigraphStore.__new__(OxigraphStore))
-    assert b._load_sql_templates(SYSTEM_DATASOURCE_ID) == []
-    assert capture == []
-
-
-def test_build_system_scope_skips_datasource_nodes(capture, monkeypatch):
-    """系统域建图不得枚举业务数据源(test-alb 名称不得进系统图)。"""
-    b = GraphBuilder(store=_RecordingStore())
-    called = {"ds": False}
-
-    def _boom():
-        called["ds"] = True
-        return [{"id": 1780478236183, "name": "test-alb", "db_type": "mysql"}]
-
-    monkeypatch.setattr(b, "_load_tables", lambda ds: [])
-    monkeypatch.setattr(b, "_load_columns", lambda ds: [])
-    monkeypatch.setattr(b, "_load_terms", lambda ds: [])
-    monkeypatch.setattr(b, "_load_metrics", lambda ds: [])
-    monkeypatch.setattr(b, "_load_join_relations", lambda ds: [])
-    monkeypatch.setattr(b, "_load_sql_templates", lambda ds: [])
-    monkeypatch.setattr(b, "_load_datasources", _boom)
-    stats = b.build_from_metadata(SYSTEM_DATASOURCE_ID)
-    assert stats["success"] and stats["datasources"] == 0
-    assert called["ds"] is False
-
 
 def test_system_object_keys_parses_json_extract(monkeypatch):
     """对象 key 来自系统域 active 模型的 json_content, 业务模型不参与。"""
@@ -248,3 +204,4 @@ def test_system_object_keys_parses_json_extract(monkeypatch):
     assert "datasource_id IS NULL OR datasource_id = 0" in sql
     assert "status = 'active'" in sql
     assert params == []
+

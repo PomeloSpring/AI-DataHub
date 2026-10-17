@@ -125,6 +125,16 @@ export interface ChatMessage {
   expected_table?: string;   // Expected table from negative feedback
   trace_id?: string;         // 可观测回合 trace ID(done 事件回传,赞踩关联用)
   message_uuid?: string;     // 可观测消息统一主键(赞踩反馈写入 adh_message_feedback)
+  // 前置意图漏斗：这一条是谁答的。intent_gate = 本地直答（未调用模型），
+  // 必须在前端可见（no-silent-degradation：拦截不是把缺陷藏起来，而是让用户知道并能一键转深度分析）
+  handledBy?: 'agent' | 'intent_gate';
+  gate?: {
+    mode: string; layer: string; label: string; reason: string;
+    signals?: string[]; latency_ms?: number; gate_error?: string;
+  };
+  // 「存为报表」入口标记: 由服务端报表域判定(done 事件与会话回放同一口径), 前端不自行推断
+  reportable?: boolean;
+  reportable_reason?: string;
   progressStages?: ProgressStage[];  // Workflow execution stage history
   activeStage?: string;              // Current active stage key
   workflow_info?: any;               // Deep mode workflow info
@@ -191,6 +201,8 @@ interface ChatState {
   loading: boolean;
   loadingStep: string;
   abortController: AbortController | null;
+  /** 已点“停止”但后端尚未释放执行权（断连后收尾核验中）；期间不得再发送。 */
+  stopping: boolean;
   selectedDsId: number;
   datasources: { id: number; name: string; db_type: string }[];
   selectedModelId: number | null;
@@ -241,8 +253,10 @@ interface ChatState {
   switchConversation: (convId: number) => Promise<void>;
   deleteConversation: (convId: number) => Promise<void>;
   renameConversation: (convId: number, title: string) => Promise<void>;
-  sendMessage: (question: string, mcpTools?: string[], attachments?: PendingAttachment[]) => Promise<void>;
+  sendMessage: (question: string, mcpTools?: string[], attachments?: PendingAttachment[],
+                opts?: { forceAgent?: boolean }) => Promise<void>;
   cancelMessage: () => void;
+  waitForExecutionRelease: (conversationId: number) => Promise<void>;
   respondToAsk: (requestId: string, response: string) => Promise<void>;
   cancelAsk: (requestId: string) => void;
   updateMessageFeedback: (idx: number, feedback: 'up' | 'down', expectedTable?: string) => void;
@@ -262,6 +276,20 @@ function appendThinkingToProcess(process: ProcessSegment[] | undefined, text: st
     return [...prev.slice(0, -1), { kind: 'thinking', text: last.text + text }];
   }
   return [...prev, { kind: 'thinking', text }];
+}
+
+/**
+ * 执行层统计是否有可展示内容。
+ *
+ * 必须显式转布尔：`stats && (a || b || c) && <div/>` 在三项全 0 时整表达式求值为
+ * 数字 0，React 会把它当文本渲染到气泡上方（前置意图层直答回合就是全 0）。
+ */
+export function hasModelStats(stats?: {
+  num_turns?: number; tool_call_count?: number; duration_ms?: number;
+} | null): boolean {
+  if (!stats) return false;
+  return (Number(stats.num_turns) || 0) + (Number(stats.tool_call_count) || 0)
+    + (Number(stats.duration_ms) || 0) > 0;
 }
 
 /** 把流式构建的 process 与 done 的后端权威 tool_calls 对齐:
@@ -311,8 +339,7 @@ export async function saveMessages(convId: number, messages: ChatMessage[], titl
         table_info_count: slim.rag.table_info_count,
         column_metadata: slim.rag.column_metadata,
         column_metadata_count: slim.rag.column_metadata_count,
-        sql_templates: slim.rag.sql_templates,
-        sql_templates_count: slim.rag.sql_templates_count,
+        saved_datasets: slim.rag.saved_datasets,
         business_terms: slim.rag.business_terms,
         business_terms_count: slim.rag.business_terms_count,
         datasets_count: slim.rag.datasets_count,
@@ -322,6 +349,9 @@ export async function saveMessages(convId: number, messages: ChatMessage[], titl
     if (slim.attachments) {
       slim.attachments = slim.attachments.map(({ blobUrl: _blobUrl, ...rest }: any) => rest);
     }
+    // reportable 是服务端读取时重算的展示派生标记, 不回存会话 JSON
+    delete slim.reportable;
+    delete slim.reportable_reason;
     return slim;
   });
   const payload: any = { messages: slimMessages };
@@ -345,6 +375,12 @@ export function deriveTitle(messages: ChatMessage[]): string | undefined {
 
 let chatContextVersion = 0;
 let conversationListVersion = 0;
+
+// 「正在停止…」轮询参数：点停止只是断开 SSE，后端要先确认在跑的工具任务与
+// SDK 子进程已收尾才会释放执行权（典型几秒，最坏到整轮跑完）。
+// 超过上限就如实报错，不静默放开输入框让用户反复撞 409。
+const STOP_POLL_INTERVAL_MS = 1000;
+const STOP_CONFIRM_TIMEOUT_MS = 120000;
 export const useChatStore = create<ChatState>((set, get) => ({
   reset: () => { ++chatContextVersion; ++conversationListVersion; get().abortController?.abort(); set(useChatStore.getInitialState()); },
   conversationError: null,
@@ -354,6 +390,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loading: false,
   loadingStep: '',
   abortController: null,
+  stopping: false,
   selectedDsId: 0,
   datasources: [],
   selectedModelId: null,
@@ -633,9 +670,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {}
   },
 
-  sendMessage: async (question, mcpTools, attachments) => {
+  sendMessage: async (question, mcpTools, attachments, opts) => {
     const state = get();
     if (state.loading) return;
+    if (state.stopping) {
+      toast.error('上一轮正在停止，请稍候…');
+      return;
+    }
     const abortController = new AbortController();
     set({ loading: true, abortController });
     let convId = state.currentConvId;
@@ -702,6 +743,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       workspace_id: state.selectedWorkspaceId,
       // 报告交付主题: 选择"跟随"(空)时回落当前 App 主题
       report_theme: useThemeStore.getState().theme,  // 对话内切换已移除：默认继承用户主题
+      // 「转深度分析」：只绕过分流，不关任何数据/权限护栏（服务端同样只认这一个开关）
+      force_agent: !!opts?.forceAgent,
     };
 
     if (state.pipelineMode) {
@@ -1010,6 +1053,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // 可观测关联键:赞踩反馈据此写入 adh_message_feedback 并能在 Trace 详情回显
         trace_id: doneData.trace_id,
         message_uuid: doneData.message_uuid,
+        // 前置意图漏斗：处理方与判定快照（历史回放同样带徽章）
+        handledBy: doneData.handled_by,
+        gate: doneData.gate,
+        // 报表入口标记(服务端判定, 只有真产出过数据/分析的回合才给按钮)
+        reportable: doneData.reportable,
+        reportable_reason: doneData.reportable_reason,
         // 有序时间线:流式 process 与最终 tool_calls 对齐,对不上则丢弃回落旧展示
         process: reconcileProcess(existingMsg?.process, finalToolCalls),
         executionStats: doneData.stats,
@@ -1105,9 +1154,40 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   cancelMessage: () => {
-    const { abortController } = get();
-    if (abortController) {
-      abortController.abort();
+    const { abortController, currentConvId } = get();
+    if (!abortController) return;
+    // 先置 stopping 再 abort：abort 会同步触发 sendMessage 的 AbortError 收尾，
+    // 顺序颠倒会让输入框在“已断连但后端仍在收尾”的窗口里可用。
+    set({ stopping: true });
+    abortController.abort();
+    if (!currentConvId) { set({ stopping: false }); return; }
+    void get().waitForExecutionRelease(currentConvId);
+  },
+
+  waitForExecutionRelease: async (conversationId) => {
+    const deadline = Date.now() + STOP_CONFIRM_TIMEOUT_MS;
+    let released = false;
+    let queryFailed = false;
+    while (Date.now() < deadline) {
+      try {
+        const { data } = await client.get('/pipeline/send/status', {
+          params: { conversation_id: conversationId },
+        });
+        if (!data?.busy) { released = true; break; }
+      } catch {
+        // 查不到状态 ≠ 已停止：按“未确认”处理并提示，不假装成功
+        queryFailed = true;
+        break;
+      }
+      await new Promise(r => setTimeout(r, STOP_POLL_INTERVAL_MS));
+    }
+    // 用户已切走/新开会话：只清 stopping，不弹提示打断新的上下文
+    if (get().currentConvId !== conversationId) { set({ stopping: false }); return; }
+    set({ stopping: false });
+    if (!released) {
+      toast.error(queryFailed
+        ? '无法确认上一轮已停止（状态查询失败）。请稍候再发送，或联系管理员查看会话状态。'
+        : '上一轮仍未确认停止（后端需先收尾工具任务与 SDK 子进程）。请稍候再发送，或联系管理员查看会话状态。');
     }
   },
 

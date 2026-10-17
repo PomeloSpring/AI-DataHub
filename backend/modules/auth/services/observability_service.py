@@ -51,6 +51,7 @@ _ALLOWED_FILTERS = {
     "datasource_id": "datasource_id",
     "conversation_id": "conversation_id",
     "entrypoint": "entrypoint",
+    "handled_by": "handled_by",   # agent=走了执行层模型 / intent_gate=前置意图层本地直答
     "status": "status",
     "model_ref": "model_ref",
 }
@@ -96,6 +97,7 @@ def usage_summary(params: dict) -> dict:
                    COALESCE(SUM(cost_amount),0) AS cost_amount,
                    MAX(cost_currency) AS cost_currency,
                    SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors,
+                   SUM(CASE WHEN handled_by='intent_gate' THEN 1 ELSE 0 END) AS intercepted,
                    COALESCE(AVG(duration_ms),0) AS avg_duration_ms
             FROM adh_llm_traces t {where}""",
         tuple(args), fetchone=True,
@@ -118,6 +120,33 @@ def usage_summary(params: dict) -> dict:
         fetchone=True,
     ) or {}
     summary = _ser({**overall, "thumbs_up": (fb or {}).get("up"), "thumbs_down": (fb or {}).get("down")})
+    # 处理方式分桶（前置意图漏斗的拦截率就靠这一列说话）
+    by_handled = _ser_rows(execute_query(
+        f"""SELECT handled_by,
+                   COUNT(*) AS turns,
+                   COALESCE(SUM(total_tokens),0) AS total_tokens,
+                   COALESCE(SUM(credits),0) AS credits
+            FROM adh_llm_traces t {where}
+            GROUP BY handled_by ORDER BY turns DESC""",
+        tuple(args),
+    ) or [])
+    summary["by_handled_by"] = by_handled
+    _turns = int(summary.get("turns") or 0)
+    _hits = int(summary.get("intercepted") or 0)
+    summary["intercept_rate"] = round(_hits / _turns, 4) if _turns else 0.0
+    # 节省量是**估算**，不是实测：Qoder 不回报单回合美元成本，也无法对"没发生的回合"采样。
+    # 口径：拦截回合数 × 同时间窗内 agent 回合的平均 credit（只取 credits 非空的行）。
+    _avg_agent_credit = execute_query(
+        f"""SELECT COALESCE(AVG(credits),0) AS avg_credits
+            FROM adh_llm_traces t {where} AND handled_by = 'agent' AND credits IS NOT NULL"""
+        if where else
+        """SELECT COALESCE(AVG(credits),0) AS avg_credits
+           FROM adh_llm_traces t WHERE handled_by = 'agent' AND credits IS NOT NULL""",
+        tuple(args) if where else (), fetchone=True,
+    ) or {}
+    summary["avg_agent_turn_credits"] = round(float(_avg_agent_credit.get("avg_credits") or 0), 6)
+    summary["estimated_saved_credits"] = round(_hits * float(summary["avg_agent_turn_credits"]), 6)
+    summary["saved_credits_is_estimate"] = True   # 前端必须按"估算"展示，不假装实测
     return {"summary": summary, "daily": _ser_rows(daily)}
 
 
@@ -200,7 +229,7 @@ def list_traces(params: dict) -> dict:
     ) or {}
     rows = execute_query(
         f"""SELECT t.trace_id, t.message_uuid, t.conversation_id, t.user_id, t.username,
-                   t.entrypoint, t.model_ref, t.status, t.question, t.error_message,
+                   t.entrypoint, t.handled_by, t.model_ref, t.status, t.question, t.error_message,
                    t.started_at, t.duration_ms, t.total_tokens, t.credits,
                    t.session_credits, t.llm_call_count, t.span_count,
                    f.satisfied AS feedback_satisfied
@@ -233,3 +262,132 @@ def get_trace(trace_id: str) -> Optional[dict]:
         (trace_id,),
     ) or []
     return {"trace": _ser(t), "spans": _ser_rows(spans)}
+
+
+# ── 意图漏斗判定流水（adh_intent_intercepts）───────────────────────────
+# 为什么单独一套查询而不是只看 trace：OBSERVABILITY_ENABLED=false 时 trace 整条
+# 不落库，而"拦截率/误拦复盘"是切 enforce 的唯一依据（fde-evolution §1：没分桶数据
+# 不做策略取舍）。表不存在时**显式返回 available=false + 原因**，不返回空数据假能用。
+
+_FUNNEL_FILTERS = {
+    "workspace_id": "i.workspace_id",
+    "user_id": "i.user_id",
+    "datasource_id": "i.datasource_id",
+    "conversation_id": "i.conversation_id",
+    "as_bot_key": "i.as_bot_key",
+    "mode": "i.mode",
+    "label": "i.label",
+    "decision": "i.decision",
+}
+
+
+def _funnel_where(params: dict) -> tuple[str, list]:
+    clauses: list[str] = []
+    args: list[Any] = []
+    for key, col in _FUNNEL_FILTERS.items():
+        val = params.get(key)
+        if val is None or val == "" or val == 0:
+            continue
+        clauses.append(f"{col} = %s")
+        args.append(val)
+    start, end = params.get("start"), params.get("end")
+    if start:
+        clauses.append("i.dt >= %s")
+        args.append(f"{start} 00:00:00" if len(str(start)) == 10 else start)
+    if end:
+        clauses.append("i.dt <= %s")
+        args.append(f"{end} 23:59:59" if len(str(end)) == 10 else end)
+    return (("WHERE " + " AND ".join(clauses)) if clauses else ""), args
+
+
+def _funnel_missing(exc: Exception) -> dict:
+    """迁移未执行/表不可达：把原因面告知管理员，而不是给个空报表。"""
+    return {
+        "available": False,
+        "reason": ("adh_intent_intercepts 不可达（请执行 docker/mysql/intent_funnel_migration.sql）: "
+                   f"{type(exc).__name__}: {str(exc)[:200]}"),
+    }
+
+
+def funnel_stats(params: dict) -> dict:
+    where, args = _funnel_where(params)
+    try:
+        overall = execute_query(
+            f"""SELECT COUNT(*) AS judged,
+                       SUM(CASE WHEN decision='local' THEN 1 ELSE 0 END) AS local,
+                       SUM(CASE WHEN decision='shadow_local' THEN 1 ELSE 0 END) AS shadow_local,
+                       SUM(CASE WHEN decision='agent' THEN 1 ELSE 0 END) AS to_agent,
+                       SUM(CASE WHEN gate_error<>'' THEN 1 ELSE 0 END) AS gate_errors,
+                       SUM(CASE WHEN force_agent=1 THEN 1 ELSE 0 END) AS forced_agent,
+                       COALESCE(AVG(latency_ms),0) AS avg_latency_ms
+                FROM adh_intent_intercepts i {where}""",
+            tuple(args), fetchone=True,
+        ) or {}
+        by_label = execute_query(
+            f"""SELECT i.label, i.decision, COUNT(*) AS cnt,
+                       COALESCE(AVG(i.latency_ms),0) AS avg_latency_ms
+                FROM adh_intent_intercepts i {where}
+                GROUP BY i.label, i.decision ORDER BY cnt DESC""",
+            tuple(args),
+        ) or []
+        daily = execute_query(
+            f"""SELECT DATE(i.dt) AS dt, COUNT(*) AS judged,
+                       SUM(CASE WHEN i.decision='local' THEN 1 ELSE 0 END) AS local,
+                       SUM(CASE WHEN i.decision='shadow_local' THEN 1 ELSE 0 END) AS shadow_local,
+                       SUM(CASE WHEN i.gate_error<>'' THEN 1 ELSE 0 END) AS gate_errors
+                FROM adh_intent_intercepts i {where}
+                GROUP BY DATE(i.dt) ORDER BY dt ASC""",
+            tuple(args),
+        ) or []
+    except Exception as exc:  # noqa: BLE001
+        return _funnel_missing(exc)
+    judged = int(overall.get("judged") or 0)
+    local = int(overall.get("local") or 0)
+    shadow = int(overall.get("shadow_local") or 0)
+    return {
+        "available": True,
+        "overall": _ser(overall),
+        # 两个口径分开：enforce 下的真实拦截率 vs 判定可拦比例（shadow 期只能看后者）
+        "intercept_rate": round(local / judged, 4) if judged else 0.0,
+        "eligible_rate": round((local + shadow) / judged, 4) if judged else 0.0,
+        "by_label": _ser_rows(by_label),
+        "daily": _ser_rows(daily),
+    }
+
+
+def funnel_intercepts(params: dict) -> dict:
+    """判定流水列表（误拦复盘用）。显示用 name：JOIN 出用户名与 AS-BOT 显示名。"""
+    where, args = _funnel_where(params)
+    offset, limit = _paged(params.get("page", 1), params.get("size", 20))
+    try:
+        cnt = execute_query(
+            f"SELECT COUNT(*) AS c FROM adh_intent_intercepts i {where}",
+            tuple(args), fetchone=True,
+        ) or {}
+        rows = execute_query(
+            f"""SELECT i.id, i.dt, i.trace_id, i.conversation_id, i.user_id,
+                       COALESCE(u.username, '') AS username,
+                       i.workspace_id, i.datasource_id, i.as_bot_key,
+                       COALESCE(NULLIF(b.display_name, ''), NULLIF(b.name, ''), i.as_bot_key, '') AS as_bot_name,
+                       i.mode, i.layer, i.label, i.decision, i.reason, i.signals,
+                       i.question_digest, i.latency_ms, i.gate_error, i.force_agent,
+                       i.reviewed, i.review_note
+                FROM adh_intent_intercepts i
+                LEFT JOIN adh_users u ON u.id = i.user_id
+                LEFT JOIN adh_as_bots b ON b.as_bot_key = i.as_bot_key
+                {where}
+                ORDER BY i.dt DESC, i.id DESC
+                LIMIT %s OFFSET %s""",
+            tuple(args + [limit, offset]),
+        ) or []
+    except Exception as exc:  # noqa: BLE001
+        return {**_funnel_missing(exc), "items": [], "total": 0}
+    return {"available": True, "items": _ser_rows(rows), "total": int(cnt.get("c") or 0)}
+
+
+def review_intercept(intercept_id: int, reviewed: bool, note: str = "") -> None:
+    from backend.common.db import execute_write
+
+    execute_write(
+        "UPDATE adh_intent_intercepts SET reviewed=%s, review_note=%s WHERE id=%s",
+        (1 if reviewed else 0, (note or "")[:500], int(intercept_id)))

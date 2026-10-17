@@ -1031,6 +1031,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
   const chartRef = useRef<Chart | null>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const [mapData, setMapData] = useState<any>(null);
+  const [mapError, setMapError] = useState('');
   const [modalState, setModalState] = useState<{ pageId: number; params: Record<string, any> } | null>(null);
   const [page, setPage] = useState(1);
 
@@ -1103,20 +1104,27 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
   useEffect(() => {
     if (chartType !== 'china_map' && chartType !== 'world_map') {
       setMapData(null);
+      setMapError('');
       return;
     }
 
     const mapType = chartType === 'china_map' ? 'china' : 'world';
     const url = MAP_URLS[mapType];
 
+    setMapError('');
     fetch(url)
-      .then(res => res.json())
+      .then(res => {
+        if (!res.ok) throw new Error(`地图底图数据请求失败(HTTP ${res.status})`);
+        return res.json();
+      })
       .then(topoData => {
         const features = topojson.feature(topoData, topoData.objects.default || Object.values(topoData.objects)[0]);
         setMapData(features);
       })
       .catch(err => {
+        // fail-loud:底图数据拉不到必须显式报错,不得静默卡在“加载中”
         console.error('Failed to load map data:', err);
+        setMapError(String(err?.message || err));
       });
   }, [chartType]);
 
@@ -1747,14 +1755,20 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
     );
   }
 
-  // Show loading for map charts
+  // Show loading for map charts(加载失败显式报错,不静默卡“加载中”)
   if ((chartType === 'china_map' || chartType === 'world_map') && !mapData) {
     return (
       <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        position: 'absolute', inset: 0, color: '#999',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8,
+        position: 'absolute', inset: 0, padding: 16, textAlign: 'center',
+        color: mapError ? '#b45309' : '#999', fontSize: 12,
       }}>
-        加载地图数据中...
+        {mapError ? `地图底图数据加载失败：${mapError}` : '加载地图数据中...'}
+        {mapError && (
+          <span style={{ color: '#999' }}>
+            该图型依赖外部 topo 底图资源；对话页可改用「地图热力」（复用 UI 字模库地图瓦片）展示地理分布。
+          </span>
+        )}
       </div>
     );
   }

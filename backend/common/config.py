@@ -121,6 +121,24 @@ OBSERVABILITY_CREDIT_COST_CURRENCY = (os.getenv("OBSERVABILITY_CREDIT_COST_CURRE
 # QODER_MODEL > SDK 默认(Auto)。支持 `{provider}/{model}` 形式(见 llm_resources)。
 QODER_MODEL = os.getenv("QODER_MODEL", "").strip()
 
+# ════════════════════════════════════════════════════════════════════════
+# 前置意图漏斗（Intent Gate）—— chat 输入进执行层之前的确定性分流
+# ════════════════════════════════════════════════════════════════════════
+# off    = 不判定（完全沿用旧行为）
+# shadow = 只判定与度量，行为不变（所有输入仍下发 agent）—— 缺省值
+# enforce= 按判定本地直答（寒暄/无效输入/能力询问/使用说明/涉密索要）
+# 切 enforce 是由人根据 shadow 数据（拦截率/误拦复盘）做的决策，不由代码默认放行。
+INTENT_GATE_MODE = (os.getenv("INTENT_GATE_MODE", "shadow") or "shadow").strip().lower()
+# 业务实体词典（指标/维度/对象别名/术语/触发词）的缓存秒数。
+# 取长了不危险：分流只看"命中的是一个业务词"，命中不到就多花一个回合、不会答错；
+# 过期后先给旧值、后台刷新（stale-while-revalidate），用户不会为装载等待。
+INTENT_GATE_LEXICON_TTL_SECONDS = float(os.getenv("INTENT_GATE_LEXICON_TTL_SECONDS", "600") or 600)
+# 判定延迟预算（毫秒）：超预算即放行 agent 并把 gate_error 写进观测/落库（不静默）。
+# 热路径只读内存/Redis 快照（目标 <30ms）；词典首次装载走后台线程，不占这个预算。
+INTENT_GATE_MAX_LATENCY_MS = float(os.getenv("INTENT_GATE_MAX_LATENCY_MS", "200") or 200)
+# 判定流水保留天数（内置任务 intent_intercept_retention 滚动清理；已人工复盘的行不删）。
+INTENT_GATE_INTERCEPT_RETENTION_DAYS = int(os.getenv("INTENT_GATE_INTERCEPT_RETENTION_DAYS", "90") or 90)
+
 # ══════════════════════════════════════════════════════════════════════════
 # Oxigraph — RDF Triple Store (SPARQL 1.1)
 # ══════════════════════════════════════════════════════════════════════════

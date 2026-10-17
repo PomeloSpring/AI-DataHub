@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import type { ToolCall, ProgressStage } from '../stores/chatStore';
 import { KnowledgeSummary } from './InlineDetails';
+import { SlideCollapse } from './chat/StageCard';
 
 // ── Tool display labels ────────────────────────────────────────
 
@@ -181,8 +182,8 @@ export function SingleToolItem({ tc, conversationId }: { tc: ToolCall & { _index
       </div>
 
       {tc.knowledge && <KnowledgeSummary data={tc.knowledge} conversationId={conversationId} />}
-      {/* Expanded details */}
-      {expanded && (
+      {/* 滑动展开的明细(参数/返回) */}
+      <SlideCollapse open={expanded}>
         <div className="ml-9 mr-2 mb-1.5 space-y-1.5">
           {argsStr && (
             <div>
@@ -203,7 +204,7 @@ export function SingleToolItem({ tc, conversationId }: { tc: ToolCall & { _index
             </div>
           )}
         </div>
-      )}
+      </SlideCollapse>
     </div>
   );
 }
@@ -234,13 +235,13 @@ export function GroupedToolItems({ group, conversationId }: { group: ToolCallGro
         </span>
         {expanded ? <ChevronDown className="h-3 w-3 text-muted-foreground" /> : <ChevronRight className="h-3 w-3 text-muted-foreground" />}
       </div>
-      {expanded && (
+      <SlideCollapse open={expanded}>
         <div className="border-t px-1 py-0.5">
           {group.items.map((tc, i) => (
             <SingleToolItem key={i} tc={tc} conversationId={conversationId} />
           ))}
         </div>
-      )}
+      </SlideCollapse>
     </div>
   );
 }

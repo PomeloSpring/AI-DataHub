@@ -58,35 +58,36 @@ def _parse_cfg(value) -> dict:
         return {}
 
 
-def _make_template_vars_resolver():
-    """返回 template_ref -> {var_name: decl} 的解析器(仅取声明的变量名/类型, 不取 SQL 正文)。
+def _make_dataset_vars_resolver():
+    """返回 dataset_ref(数据集名) -> {var_name: decl} 的解析器
+    (仅取声明的参数名/类型, 不取 SQL 正文)。
 
     失败静默返回 None(to_cloud_md 会省略参数行), 不影响同步主链路。
     """
     cache: dict[str, dict | None] = {}
 
-    def resolve(template_ref: str):
-        if not template_ref:
+    def resolve(dataset_ref: str):
+        if not dataset_ref:
             return None
-        if template_ref in cache:
-            return cache[template_ref]
+        if dataset_ref in cache:
+            return cache[dataset_ref]
         decl: dict | None = None
         try:
             from backend.common.db import execute_query
-            from backend.semantics.planner import _parse_variables
+            from backend.semantics.sql_params import parse_variables
 
             rows = execute_query(
-                "SELECT variables FROM adh_sql_templates "
-                "WHERE template_id = %s AND is_active = 1 LIMIT 1",
-                (template_ref,),
+                "SELECT variables FROM adh_datasets "
+                "WHERE name = %s AND status = 'active' LIMIT 1",
+                (dataset_ref,),
             )
             if rows:
-                parsed = _parse_variables(rows[0].get("variables"))
+                parsed = parse_variables(rows[0].get("variables"))
                 decl = parsed or None
         except Exception as e:  # noqa: BLE001
-            logger.debug("[OntoSync] template vars load failed for %s: %s", template_ref, e)
+            logger.debug("[OntoSync] dataset vars load failed for %s: %s", dataset_ref, e)
             decl = None
-        cache[template_ref] = decl
+        cache[dataset_ref] = decl
         return decl
 
     return resolve
@@ -125,6 +126,8 @@ def model_sync_status(model_id: int) -> dict:
 
     graph: active 模型比对 Oxigraph 命名图 owl:Class 数与 object_count
            (synced/lagging/absent); 草案=draft; 图不可达=unreachable。
+           查哪张命名图由 ``graph_target_for_model(kind, datasource_id)`` 定（与写入侧同一口径），
+           返回体的 graph_datasource_id 可诊断“到底在对哪张图”——误报时先看这个字段。
     kb:    adh_ontology_kb_sync_state 水位线行(success/failed/removed);
            无行且存在开启同步的库=pending, 无库=no_kb; 表未迁移=unknown。
     """
@@ -145,13 +148,18 @@ def model_sync_status(model_id: int) -> dict:
         try:
             from backend.common.rdf.sparql_client import get_sparql_client
             from backend.common.rdf.namespaces import ADH_NS
+            from backend.semantics.graph_rag.oxigraph_store import graph_target_for_model
 
+            # 目标图按 kind 选（与写入侧 graph_builder 共用同一口径）——
+            # 旧写法直接查 ds:{datasource_id}，系统本体查到的是业务聚合图、
+            # 业务本体查到的是空图，两个活着的 kind 徽章全部误报。
+            target_ds = graph_target_for_model(str(model.get("kind") or ""), ds)
             rows = get_sparql_client().query(
-                f"SELECT ?s WHERE {{ GRAPH <{ADH_NS}ds:{ds}> "
+                f"SELECT ?s WHERE {{ GRAPH <{ADH_NS}ds:{target_ds}> "
                 "{{ ?s a <http://www.w3.org/2002/07/owl#Class> } } } LIMIT 1000")
             n = len(rows or [])
             graph = {"state": "absent" if n == 0 else ("synced" if n == obj_n else "lagging"),
-                     "classes": n, "objects": obj_n}
+                     "classes": n, "objects": obj_n, "graph_datasource_id": target_ds}
         except Exception as e:  # noqa: BLE001 — 图服务不可达不影响徽章展示
             logger.debug("[OntoSync] graph status check failed: %s", e)
             graph = {"state": "unreachable", "objects": obj_n}
@@ -422,7 +430,7 @@ def _render_cloud_doc(model: dict) -> str:
         logger.warning("[OntoSync] parse json_content failed for model=%s: %s",
                        model.get("id"), e)
         return ""
-    body = to_cloud_md(doc, template_vars_fn=_make_template_vars_resolver(),
+    body = to_cloud_md(doc, dataset_vars_fn=_make_dataset_vars_resolver(),
                        dict_metrics=dict_metrics)
     if not body.strip():
         return ""

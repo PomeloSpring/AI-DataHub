@@ -120,7 +120,7 @@ export function getCanvas(filters: any = {}, charts: Pick<DashboardChart, 'posit
 }
 export function applyScreenComponent(filters: any = {}, c: VisComponent) {
   const slot = COMPONENT_SLOT[c.category];
-  if (!slot || c.category === 'sql_template') return filters;
+  if (!slot) return filters;
   const snapshots = { ...filters.design?.componentSnapshots, [slot]: snapshotComponent(c) };
   const design = { ...filters.design, version: 1, canvas: { ...getCanvas(filters), ...filters.design?.canvas }, componentSnapshots: snapshots };
   if (c.category === 'theme_pack') design.themePack = c.code;
@@ -133,7 +133,7 @@ export function compatible(c: VisComponent, chartType: string) {
 }
 export function applyChartComponent(config: any = {}, c: VisComponent, items: VisComponent[] = []) {
   const slot = COMPONENT_SLOT[c.category];
-  if (!slot || c.category === 'sql_template') return config;
+  if (!slot) return config;
   const next = { ...config };
   const old = resolveComponent(config.vis?.refs?.[slot], config.vis?.snapshots?.[slot], items)?.config || {};
   // 清掉旧字模物化且未被用户改写的字段，查询、映射及显式覆盖原样保留。

@@ -92,10 +92,16 @@ class RedisCache(CacheBackend):
             return None
 
     def set(self, key: str, value: Any, ttl: int = None) -> None:
-        """Set a value in cache with optional TTL (seconds)."""
+        """Set a value in cache with optional TTL (seconds).
+
+        TTL 归一为 int：redis-py 的 setex 只接受整数秒，调用方传 float（如配置算出的
+        600.0）会抛 "value is not an integer" 并被下面的 except 当成 Redis 故障降级成
+        "无缓存" —— 缓存静默失效比没缓存更难查，所以在入口就收敛类型。
+        """
         full_key = self._make_key(key)
         ttl = ttl if ttl is not None else self.default_ttl
         try:
+            ttl = int(ttl)
             data = json.dumps(value, ensure_ascii=False, default=str)
             if ttl > 0:
                 self._get_redis().setex(full_key, ttl, data)

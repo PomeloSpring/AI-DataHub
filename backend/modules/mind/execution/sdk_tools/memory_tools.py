@@ -1,49 +1,34 @@
 """memory 工具组 — 用户记忆（项目专属：偏好/口径/习惯，不存会话上下文）。
 
-记忆模型：固定槽位（单值覆盖）+ 浮动条目（上限 5 条，超限 fail-loud）。
-严禁存跨 session 会话上下文（"正在做 X"、"上次问了 Y"）——避免换对话框串味。
+存储与校验的**单一事实源**是 ``backend/core/memory_service.py``（REST /api/memory
+与本工具组共用它，避免两侧规则漂移）。本模块只负责把 SDK 工具入参翻译成服务调用，
+并把 ValueError 转成带原因的可诊断错误回给 LLM（fail-loud，不静默丢弃）。
+
+记忆模型：固定槽位（单值覆盖）+ 浮动条目（两类共享 5 条上限，超限拒绝）。
+严禁存跨 session 会话上下文（"正在做 X"、"上次问了 Y"）—— 记忆按 user_id 归属、
+跨会话注入提示词，会话措辞一旦入库就会污染后续无关会话。
 
 交互契约（写进工具描述，要求 LLM 遵守）：
-- 只记与数据分析/取数/展示相关的稳定事实
-- 严禁记录会话状态/临时上下文
+- 只记与数据分析/取数/展示相关的**稳定事实**
+- 严禁记录会话状态/临时上下文/一次提问的具体内容/查询结果数值
 - 固定槽位同 slot_key 覆盖，浮动条目上限 5 条，超限先删再存
 - 单条 content 不超过 300 字
+- 写入成功后必须向用户复述"已记住什么"（用户可见，不做静默学习）
 """
 
 import logging
-import re
 from typing import Annotated, Optional
 
+from backend.core import memory_service
 from backend.modules.mind.execution.sdk_tools.catalog_tools import _text
 
 logger = logging.getLogger(__name__)
 
-# 固定槽位定义（slot_key → 显示名），总数固定 = prompt 注入长度恒定可计算
-FIXED_SLOTS = {
-    "business_domain": "业务域",
-    "preferred_chart": "默认图表",
-    "default_time_grain": "时间粒度",
-    "output_format": "输出格式",
-    "number_precision": "数字精度",
-    "role_context": "角色背景",
-}
-
-# 浮动条目类别（slot_key → 显示名），共享 5 条上限
-FLOATING_CATEGORIES = {
-    "correction": "口径纠错",
-    "workflow": "工作习惯",
-}
-
-# 浮动条目硬上限
-FLOATING_LIMIT = 5
-
-# 单条 content 字符上限
-CONTENT_MAX = 300
-
-# 会话状态词（禁止存入记忆）
-_SESSION_STATE_PATTERN = re.compile(
-    r"(正在|上次|刚才|刚刚|前面|之前那个|当前会话|这个对话|上一轮|前面那)", re.IGNORECASE
-)
+# 常量再导出（唯一事实源在 memory_service，这里只是给工具描述/旧引用取用）
+FIXED_SLOTS = memory_service.FIXED_SLOTS
+FLOATING_CATEGORIES = memory_service.FLOATING_CATEGORIES
+FLOATING_LIMIT = memory_service.FLOATING_LIMIT
+CONTENT_MAX = memory_service.CONTENT_MAX
 
 
 def _ctx_user_id() -> int:
@@ -53,83 +38,23 @@ def _ctx_user_id() -> int:
     return int(getattr(ctx, "user_id", 0) or 0)
 
 
-def _validate_content(content: str) -> Optional[str]:
-    """校验记忆内容：非空、长度、禁止会话状态词。返回错误信息或 None。"""
-    content = (content or "").strip()
-    if not content:
-        return "记忆内容不能为空"
-    if len(content) > CONTENT_MAX:
-        return f"记忆内容超过 {CONTENT_MAX} 字符上限，请精简"
-    if _SESSION_STATE_PATTERN.search(content):
-        return "禁止记录会话状态/临时上下文（如\"正在做 X\"、\"上次问了 Y\"），只能记稳定事实（偏好/口径/习惯）"
-    return None
-
-
 async def save_memory(args):
-    """保存用户记忆（固定槽位覆盖 或 浮动条目新增）。
-
-    固定槽位(slot_key in FIXED_SLOTS)：同 slot_key 直接覆盖旧值。
-    浮动条目(slot_key in FLOATING_CATEGORIES)：新增一行，总数上限 5 条。
-    """
+    """保存用户记忆（固定槽位覆盖 或 浮动条目新增/更新）。"""
     uid = _ctx_user_id()
     if not uid:
         return _text({"error": "缺少用户上下文"}, is_error=True)
-    slot_key = (args.get("slot_key") or "").strip()
-    content = (args.get("content") or "").strip()
-    source = (args.get("source") or "auto").strip() or "auto"
-
-    if not slot_key:
-        return _text({"error": "缺少 slot_key"}, is_error=True)
-    if slot_key not in FIXED_SLOTS and slot_key not in FLOATING_CATEGORIES:
-        return _text({
-            "error": f"未知 slot_key: {slot_key}",
-            "fixed_slots": list(FIXED_SLOTS.keys()),
-            "floating_categories": list(FLOATING_CATEGORIES.keys()),
-        }, is_error=True)
-
-    err = _validate_content(content)
-    if err:
-        return _text({"error": err}, is_error=True)
-
-    from backend.common.db.metadata_db import get_metadata_conn
-    conn = get_metadata_conn()
     try:
-        with conn.cursor() as cur:
-            if slot_key in FLOATING_CATEGORIES:
-                # 浮动条目限量检查（fail-loud，不静默淘汰）
-                cur.execute(
-                    "SELECT COUNT(*) AS c FROM adh_user_memory WHERE user_id=%s AND slot_key IN ({})".format(
-                        ",".join(["%s"] * len(FLOATING_CATEGORIES))
-                    ),
-                    (uid, *FLOATING_CATEGORIES.keys()))
-                row = cur.fetchone()
-                count = int((row or {}).get("c") or 0)
-                # 新增时若已达上限则拒绝（已有同 id 更新不算新增）
-                existing_id = args.get("id")
-                if count >= FLOATING_LIMIT and not existing_id:
-                    return _text({
-                        "error": f"浮动条目已达上限 {FLOATING_LIMIT} 条，请先用 delete_memory 清理后再保存",
-                        "current_count": count,
-                    }, is_error=True)
-                if existing_id:
-                    cur.execute(
-                        "UPDATE adh_user_memory SET content=%s, source=%s, updated_at=NOW() "
-                        "WHERE id=%s AND user_id=%s",
-                        (content, source, int(existing_id), uid))
-                else:
-                    cur.execute(
-                        "INSERT INTO adh_user_memory (user_id, slot_key, content, source) VALUES (%s,%s,%s,%s)",
-                        (uid, slot_key, content, source))
-            else:
-                # 固定槽位：upsert 覆盖
-                cur.execute(
-                    "INSERT INTO adh_user_memory (user_id, slot_key, content, source) VALUES (%s,%s,%s,%s) "
-                    "ON DUPLICATE KEY UPDATE content=VALUES(content), source=VALUES(source), updated_at=NOW()",
-                    (uid, slot_key, content, source))
-        conn.commit()
-    finally:
-        conn.close()
-    return _text({"saved": True, "slot_key": slot_key, "content": content})
+        result = memory_service.save_entry(
+            uid,
+            args.get("slot_key") or "",
+            args.get("content") or "",
+            source=(args.get("source") or "auto").strip() or "auto",
+            entry_id=args.get("id"),
+        )
+    except ValueError as exc:
+        # 校验/上限/未知槽位 → 把原因原样回抛，让 LLM 纠正后重试或告知用户
+        return _text({"error": str(exc)}, is_error=True)
+    return _text(result)
 
 
 async def list_memory(args):
@@ -137,24 +62,15 @@ async def list_memory(args):
     uid = _ctx_user_id()
     if not uid:
         return _text({"error": "缺少用户上下文"}, is_error=True)
-    from backend.common.db.metadata_db import get_metadata_conn
-    conn = get_metadata_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, slot_key, content, source, updated_at FROM adh_user_memory "
-                "WHERE user_id=%s ORDER BY slot_key", (uid,))
-            rows = cur.fetchall()
-    finally:
-        conn.close()
-    fixed = [r for r in rows if r["slot_key"] in FIXED_SLOTS]
-    floating = [r for r in rows if r["slot_key"] in FLOATING_CATEGORIES]
+    rows = memory_service.list_entries(uid)
+    fixed, floating = memory_service.split_entries(rows)
     return _text({
         "count": len(rows),
         "fixed_slots": [{"slot_key": r["slot_key"], "label": FIXED_SLOTS.get(r["slot_key"], r["slot_key"]),
                           "content": r["content"], "id": r["id"]} for r in fixed],
         "floating_entries": [{"slot_key": r["slot_key"], "label": FLOATING_CATEGORIES.get(r["slot_key"], r["slot_key"]),
-                               "content": r["content"], "id": r["id"]} for r in floating],
+                               "content": r["content"], "id": r["id"], "entry_no": r.get("entry_no")}
+                              for r in floating],
         "floating_limit": FLOATING_LIMIT,
     })
 
@@ -167,15 +83,7 @@ async def delete_memory(args):
     memory_id = args.get("id")
     if not memory_id:
         return _text({"error": "缺少 id（来自 list_memory）"}, is_error=True)
-    from backend.common.db.metadata_db import get_metadata_conn
-    conn = get_metadata_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM adh_user_memory WHERE id=%s AND user_id=%s", (int(memory_id), uid))
-            deleted = cur.rowcount
-        conn.commit()
-    finally:
-        conn.close()
+    deleted = memory_service.delete_entry(uid, int(memory_id))
     if not deleted:
         return _text({"error": "记忆不存在或无权删除"}, is_error=True)
     return _text({"deleted": True, "id": int(memory_id)})
@@ -185,16 +93,19 @@ TOOL_SPECS = [
     {
         "name": "save_memory",
         "description": (
-            "保存用户记忆（稳定偏好/口径/习惯）。固定槽位(business_domain/preferred_chart/"
-            "default_time_grain/output_format/number_precision/role_context)同名覆盖；"
-            "浮动条目(correction=口径纠错/workflow=工作习惯)上限 5 条，超限先用 delete_memory 清理。"
-            "严禁记录会话状态/临时上下文（\"正在做 X\"、\"上次问了 Y\"），只记跨会话稳定事实。"
-            "单条不超过 300 字。"
+            "保存用户记忆（跨会话稳定偏好/口径/习惯）。固定槽位("
+            + "/".join(FIXED_SLOTS.keys()) + ")同名覆盖；"
+            f"浮动条目(correction=口径纠错/workflow=工作习惯)两类合计上限 {FLOATING_LIMIT} 条，"
+            "超限先用 delete_memory 清理。传 id 则更新该条浮动条目(id 来自 list_memory)。"
+            "严禁记录会话状态/临时上下文(\"正在做 X\"/\"上次问了 Y\"/本次提问内容)与查询结果数值——"
+            "记忆会注入后续所有会话的提示词，写入这类内容会造成串味与错误推断。"
+            f"单条不超过 {CONTENT_MAX} 字；保存成功后向用户复述已记住的内容。"
         ),
         "schema": {
             "slot_key": Annotated[str, "固定槽位名或浮动条目类别（见工具描述）"],
-            "content": Annotated[str, "记忆内容（稳定事实，不超过 300 字）"],
-            "source": Annotated[Optional[str], "来源标记：auto=LLM学习(默认) / manual=用户显式"],
+            "content": Annotated[str, "记忆内容（跨会话稳定事实，不超过 300 字）"],
+            "source": Annotated[Optional[str], "来源标记：auto=LLM学习(默认) / manual=用户显式要求记录"],
+            "id": Annotated[Optional[int], "更新已有浮动条目时传其 id（来自 list_memory）；新增不传"],
         },
         "handler": save_memory,
     },

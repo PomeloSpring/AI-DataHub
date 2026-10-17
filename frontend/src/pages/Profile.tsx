@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
-import { User, Mail, Phone, Shield, Save, Lock, ArrowLeft } from 'lucide-react';
+import { User, Mail, Phone, Shield, Save, Lock, ArrowLeft, Brain } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -38,10 +38,13 @@ export default function Profile() {
   const homePath = (() => {
     const p = location.pathname;
     if (p.startsWith('/system')) return '/system';
-    const ws = p.match(/^(\/ws\/[^/]+)/);
-    if (ws) return `${ws[1]}/chat`;
+    const m = p.match(/^\/(ws|ask)\/([^/]+)/);
+    if (m) return m[1] === 'ws' ? `/${m[1]}/${m[2]}/chat` : `/${m[1]}/${m[2]}`;
     return '/data';
   })();
+  // 记忆页与本页同框架挂载(/ws/{id}、/ask/{id}、/data、/system 均有 /memory 子路由),
+  // 从当前路径直接换尾段, 保证“个人设置 → 我的记忆”不跳框架。
+  const memoryPath = location.pathname.replace(/\/profile\/?$/, '/memory');
 
   useEffect(() => {
     loadProfile();
@@ -122,10 +125,16 @@ export default function Profile() {
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">个人设置</h1>
-        <Button variant="outline" size="sm" onClick={() => navigate(homePath)}>
-          <ArrowLeft className="h-4 w-4 mr-1" />
-          返回主页
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => navigate(memoryPath)}>
+            <Brain className="h-4 w-4 mr-1" />
+            我的记忆
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => navigate(homePath)}>
+            <ArrowLeft className="h-4 w-4 mr-1" />
+            返回主页
+          </Button>
+        </div>
       </div>
 
       <div className="max-w-[640px] space-y-6">

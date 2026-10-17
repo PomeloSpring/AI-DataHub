@@ -7,7 +7,10 @@ keywords/知识库对象 key 仍参与候选挑选（命中线索者优先），
 
 Returns the uniform strategy dict consumed by downstream prompt assembly:
     table_info, column_metadata, business_terms, table_relations,
-    sql_templates, saved_datasets, rag_source.
+    saved_datasets, rag_source.
+
+`saved_datasets` 是**已治理的查询资产目录**（`adh_datasets`），只回名称/描述/字段语义，
+**不回 SQL 正文与数据源 id**（护栏 §7）：预制 SQL 由服务端按名执行，LLM 不需要也不应该看到它。
 """
 
 import logging
@@ -44,15 +47,15 @@ class GraphRagStrategy(RetrievalStrategy):
         result = empty_result("graphrag")
         result["table_info"] = self._hydrate_tables(tables, datasource_id)
         result["column_metadata"] = self._hydrate_columns(tables, datasource_id)
-        result["sql_templates"] = self._hydrate_templates([], tables, datasource_id)
+        result["saved_datasets"] = self._hydrate_datasets([], tables, datasource_id)
         result["business_terms"] = self._hydrate_terms([], tables, datasource_id)
         result["table_relations"] = self._hydrate_relations(tables, datasource_id)
         # agentic grounding 已退役：调试键保留但置空（下游 .get("grounding") 兼容）
         result["ontology_context"] = {"grounding": {}}
         logger.info(
-            "[graphrag] hydrated tables=%d cols=%d templates=%d terms=%d relations=%d",
+            "[graphrag] hydrated tables=%d cols=%d datasets=%d terms=%d relations=%d",
             len(result["table_info"]), len(result["column_metadata"]),
-            len(result["sql_templates"]), len(result["business_terms"]),
+            len(result["saved_datasets"]), len(result["business_terms"]),
             len(result["table_relations"]),
         )
         return result
@@ -81,13 +84,19 @@ class GraphRagStrategy(RetrievalStrategy):
         from backend.modules.mind.rag.rag_retriever import _get_columns_for_tables
         return _get_columns_for_tables(tables, datasource_id)
 
-    def _hydrate_templates(self, grounded: list[str], tables: list[str],
-                           datasource_id: int) -> list[dict]:
-        """Match templates by grounded id/name, or by touching a grounded table."""
+    def _hydrate_datasets(self, grounded: list[str], tables: list[str],
+                          datasource_id: int) -> list[dict]:
+        """Match governed datasets by name/object_key, or by touching a candidate table.
+
+        匹配时可以读正文（判断碰了哪些表），但**返回给下游的只有声明层信息**：
+        名称/描述/绑定对象/字段语义 —— SQL 正文与数据源 id 不外泄（护栏 §7）。
+        """
         if not grounded and not tables:
             return []
         from backend.common.db.metadata_db import get_metadata_conn
-        gset = {str(x).strip() for x in grounded}
+        from backend.semantics.sql_params import parse_json_obj
+
+        gset = {str(x).strip().casefold() for x in grounded}
         tset = {str(x).strip().lower() for x in tables if x}
         conn = get_metadata_conn()
         out: list[dict] = []
@@ -96,31 +105,49 @@ class GraphRagStrategy(RetrievalStrategy):
                 ds_filter = "AND (datasource_id = %s OR datasource_id = 0)" if datasource_id else ""
                 params = [datasource_id] if datasource_id else []
                 cur.execute(f"""
-                    SELECT template_id, template_name, category, intent_keywords,
-                           sql_template, variables, rules, description, usage_count
-                    FROM adh_sql_templates WHERE is_active = 1 {ds_filter}
+                    SELECT name, description, source_type, object_key,
+                           sql_query, sql_bodies, field_config, certified
+                    FROM adh_datasets WHERE status = 'active' {ds_filter}
                 """, params)
                 rows = cur.fetchall()
             for r in rows:
-                tid = str(r.get("template_id", ""))
-                name = str(r.get("template_name", ""))
-                hit = tid in gset or name in gset
+                name = str(r.get("name") or "")
+                body = "\n".join([
+                    str(r.get("sql_query") or ""),
+                    "\n".join(str(v or "") for v in
+                              (parse_json_obj(r.get("sql_bodies"), {}) or {}).values()),
+                ]).lower()
+                hit = (name.casefold() in gset
+                       or str(r.get("object_key") or "").casefold() in gset)
                 if not hit and tset:
-                    low = (r.get("sql_template") or "").lower()
-                    hit = any(tn in low for tn in tset)
-                if hit:
-                    out.append(r)
+                    hit = any(tn in body for tn in tset)
+                if not hit:
+                    continue
+                fields = [
+                    {"field": str(c.get("field") or ""),
+                     "label": str(c.get("label") or c.get("field") or ""),
+                     "role": str(c.get("role") or "dimension")}
+                    for c in (parse_json_obj(r.get("field_config"), []) or [])
+                    if isinstance(c, dict)
+                ][:30]
+                entry = {"name": name,
+                         "description": str(r.get("description") or ""),
+                         "source_type": str(r.get("source_type") or ""),
+                         "certified": bool(r.get("certified") or 0)}
+                if fields:
+                    entry["fields"] = fields
+                out.append(entry)
         except Exception as e:
-            logger.warning("[graphrag] template hydration failed: %s", e)
+            logger.warning("[graphrag] dataset hydration failed: %s", e)
             return []
         finally:
             conn.close()
         # Grounded matches first (preserve model's ordering intent), then table-derived.
-        def _rank(t):
-            key = str(t.get("template_id", "")), str(t.get("template_name", ""))
-            order = [g for g in grounded]
+        def _rank(d):
+            key = str(d.get("name", "")).casefold()
+            order = [str(g).casefold() for g in grounded]
             for i, g in enumerate(order):
-                if g in key:
+                if g == key:
                     return (0, i)
             return (1, 0)
         out.sort(key=_rank)

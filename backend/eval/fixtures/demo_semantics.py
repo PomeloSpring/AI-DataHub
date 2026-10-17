@@ -4,6 +4,8 @@
 对"自然语言 intent -> 编译解析质量"做确定性评测(种子解析是三因子中的瓶颈)。
 含两个数据源(hospital / retail)以覆盖"跨源同名指标各自绑定本源"的解析。
 """
+import json
+
 from backend.semantics.models import Guardrail, ResolvedBinding
 
 
@@ -94,13 +96,33 @@ METRICS: dict[str, dict[str, dict]] = {
     },
 }
 
-# SQL 模板(内存版), 供"模板缺参"用例
-TEMPLATES: dict[str, dict] = {
-    "tpl-funnel": {
-        "template_id": "tpl-funnel", "template_name": "转化漏斗",
-        "sql_template": "SELECT * FROM t_case_records WHERE create_time >= ${start_date} AND scene = ${scene}",
-        "variables": {"start_date": {"type": "date"}, "scene": {"type": "string"}},
-        "tpl_dialect": "generic",
+# 查询数据集(内存版), 供"缺参/未声明参数"与"行为路径/漏斗多方言"用例。
+# 数据集是平台内唯一的"可信任预制 SQL"载体：
+#   sql_bodies   generic = 可移植写法(MySQL/Doris/PG 同构), sls = Presto 风味专写
+#   field_config 声明后其结果可在语义层再聚合(按维度下钻)
+#   touched_tables 保存时静态提表, 使预制 SQL 查询同样进 RLS 改写
+_FUNNEL_SQL = (
+    "SELECT * FROM t_case_records WHERE create_time >= ${start_date} AND scene = ${scene}")
+_FUNNEL_SLS_SQL = (
+    'SELECT "pcId" AS entity, "scene" AS scene FROM observability_rum '
+    'WHERE "__time__" >= ${start_date}')
+
+DATASETS: dict[str, dict] = {
+    "转化漏斗": {
+        "id": 9001, "name": "转化漏斗", "description": "案例转化漏斗(预制 SQL)",
+        "source_type": "sql", "object_key": "", "datasource_id": 0,
+        "sql_query": _FUNNEL_SQL,
+        "variables": json.dumps({"start_date": {"type": "date"}, "scene": {"type": "string"}}),
+        "sql_bodies": json.dumps({"generic": _FUNNEL_SQL, "sls": _FUNNEL_SLS_SQL}),
+        "touched_tables": json.dumps(["t_case_records"]),
+        "field_config": json.dumps([
+            {"field": "create_time", "label": "统计日期", "role": "dimension", "is_time": True},
+            {"field": "scene", "label": "场景", "role": "dimension"},
+            {"field": "step_order", "label": "步骤序号", "role": "dimension"},
+            {"field": "company_name", "label": "到达实体数", "role": "measure",
+             "expr": "COUNT(DISTINCT company_name)", "unit": "个"},
+        ], ensure_ascii=False),
+        "certified": 1,
     },
 }
 
@@ -113,8 +135,13 @@ def _b(ds: int, obj: str, table: str, **kw) -> ResolvedBinding:
 BINDINGS: dict[tuple[int, str], ResolvedBinding] = {
     (1, "case"): _b(1, "case", "t_case_records"),
     (2, "case"): _b(2, "case", "t_ticket_records"),
-    (1, "funnel"): _b(1, "funnel", "", bind_kind="sql_template", template_ref="tpl-funnel",
+    (1, "funnel"): _b(1, "funnel", "", bind_kind="dataset", dataset_ref="转化漏斗",
                       guardrail=Guardrail(query_mode="raw_source")),
+    # 多方言数据集对象: Doris / SLS 引擎取各自正文, MySQL 族走 generic
+    (4, "funnel"): _b(4, "funnel", "", bind_kind="dataset", dataset_ref="转化漏斗",
+                      db_type="doris", guardrail=Guardrail(query_mode="raw_source")),
+    (5, "funnel"): _b(5, "funnel", "", bind_kind="dataset", dataset_ref="转化漏斗",
+                      db_type="sls", guardrail=Guardrail(query_mode="raw_source")),
     # PG 方言源, 验证时间函数按方言编译
     (3, "case"): _b(3, "case", "t_case_records", db_type="postgres"),
     # 跨对象 JOIN 素材(B2/B3)

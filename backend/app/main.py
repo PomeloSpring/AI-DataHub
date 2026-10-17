@@ -140,6 +140,11 @@ def create_app() -> FastAPI:
         from backend.modules.mind.execution.session_workspace import reconcile_stale_sessions
         repaired = await asyncio.to_thread(reconcile_stale_sessions)
         logger.info("Waker 会话恢复检查完成，中断执行数=%s", repaired)
+        # mind: 技能数据源对账 —— “adh_skills 表覆盖文件”已退役（config/skills/ 是唯一事实源）。
+        # 表不存在（标准部署）静默通过；若残留生效行则 WARNING 列出技能名，提醒它们已不再生效
+        # —— 不静默丢数据（no-silent-degradation），也不拿它去遮蔽 SKILL.md。
+        from backend.modules.mind.config.skill_loader import warn_legacy_db_skills
+        await asyncio.to_thread(warn_legacy_db_skills)
         # mind: 会话工具沙箱预热（docker image inspect）
         # secure_sdk._execute_stream 首轮命中 sandbox_ensure 时 p95~635ms、max~1.7s
         # (docker daemon 唤醒 + image inspect)；预热把该成本从“首个用户请求”前置到
@@ -224,7 +229,6 @@ def create_app() -> FastAPI:
     # ── catalog（原 processes/catalog/main.py，8005）──────────────────
     from backend.modules.catalog.api.catalog import router as catalog_router
     from backend.modules.catalog.api.metadata import router as metadata_router
-    from backend.modules.catalog.api.templates import router as templates_router
     from backend.modules.catalog.api.glossary import router as glossary_router
     from backend.modules.catalog.api.lineage import router as lineage_router
     from backend.modules.catalog.api.metrics import router as metrics_router
@@ -238,7 +242,6 @@ def create_app() -> FastAPI:
 
     mount("catalog", catalog_router, "/api/catalog", ["Catalog"])
     mount("catalog", metadata_router, "/api/admin", ["Metadata Admin"])
-    mount("catalog", templates_router, "/api/admin/templates", ["Templates Admin"])
     mount("catalog", glossary_router, "/api/admin/terms", ["Glossary Admin"])
     mount("catalog", lineage_router, "/api/admin/relations", ["Lineage Admin"])
     mount("catalog", metrics_router, "/api/metrics", ["Metrics"])

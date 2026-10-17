@@ -162,16 +162,16 @@ def _datasource_name_by_id(datasource_id: int) -> str:
         return ""
 
 
-def _tpl_ref_of_obj(o: dict) -> str:
-    """从 yaml 对象声明中提取 SQL 模板引用（execution_template 优先，兼容 sql_template）。
+def _dataset_ref_of_obj(o: dict) -> str:
+    """从 yaml 对象声明中提取查询数据集引用。
 
-    写法: execution_template: tpl-xxx 或 execution_template: {template_ref: tpl-xxx}。
+    写法: execution_dataset: 用户路径漏斗 或 execution_dataset: {dataset_ref: 用户路径漏斗}。
+    值为 `adh_datasets.name`（全局唯一），不用 id 以保证源/数据集重建后仍可关联。
     """
-    for field in ("execution_template", "sql_template"):
-        v = o.get(field)
-        ref = (v.get("template_ref") or v.get("ref")) if isinstance(v, dict) else v
-        if isinstance(ref, str) and ref.strip():
-            return ref.strip()
+    v = o.get("execution_dataset")
+    ref = (v.get("dataset_ref") or v.get("ref")) if isinstance(v, dict) else v
+    if isinstance(ref, str) and ref.strip():
+        return ref.strip()
     return ""
 
 
@@ -195,20 +195,20 @@ def _product_ref_for(datasource_name: str, primary_table: str) -> str:
 def _build_execution_binding(primary_table: str, datasource_id: int,
                              table_info: dict[str, dict],
                              datasource_name: str = "",
-                             template_ref: str = "") -> dict:
+                             dataset_ref: str = "") -> dict:
     """面向单个对象产出 execution_binding（canonical 内嵌形式，与
-    adh_ontology_bindings 行保持字段同名，为后续解析器提供三级 fallback 中的第一级）。
+    adh_ontology_bindings 行保持字段同名，为后续解析器提供三级 fallback 中的第一级。
     """
     if not primary_table:
-        if template_ref:
-            # 无物理表但声明了 SQL 模板: 编译期按 template_ref 渲染（planner._plan_template）
+        if dataset_ref:
+            # 无物理表但声明了查询数据集: 编译期按 dataset_ref 预制 SQL 渲染（planner._plan_dataset）
             return {
                 "datasource_id": datasource_id,
                 "datasource_name": datasource_name,
                 "physical_table": "",
                 "catalog_ref": "",
-                "bind_kind": "sql_template",
-                "template_ref": template_ref,
+                "bind_kind": "dataset",
+                "dataset_ref": dataset_ref,
                 "query_mode": "raw_source",
                 "size_class": None,
                 "allow_full_scan": 1,
@@ -249,7 +249,7 @@ def _build_execution_binding(primary_table: str, datasource_id: int,
         "physical_table": primary_table,
         "catalog_ref": catalog_ref,
         "bind_kind": "primary",
-        "template_ref": template_ref or "",
+        "dataset_ref": dataset_ref or "",
         "query_mode": row.get("query_mode") or "raw_source",
         "size_class": row.get("size_class"),
         "allow_full_scan": int(row.get("allow_full_scan") if row.get("allow_full_scan") is not None else 1),
@@ -331,7 +331,7 @@ def palantir_to_canonical(docs: list[dict], datasource_id: int,
                 target_key = key
                 by_identity[ik] = key
             primary_table = new_table
-            tpl_ref = _tpl_ref_of_obj(o)
+            ds_ref = _dataset_ref_of_obj(o)
 
             properties = []
             for p in o.get("properties") or []:
@@ -363,7 +363,7 @@ def palantir_to_canonical(docs: list[dict], datasource_id: int,
                 "source_ref": (o.get("source") or {}).get("table") if isinstance(o.get("source"), dict) else o.get("source") or "",
                 "execution_binding": _build_execution_binding(
                     primary_table, datasource_id, table_info, datasource_name=ds_name,
-                    template_ref=tpl_ref),
+                    dataset_ref=ds_ref),
                 "properties": properties,
                 "links": [],
                 "metrics": metrics,
@@ -562,7 +562,7 @@ def _persist_bindings(doc: dict, model_id: int) -> dict:
                 cur.execute(
                     "INSERT INTO adh_ontology_bindings "
                     "(id, model_id, object_key, datasource_id, datasource_name, product_ref, catalog_ref, bind_kind, "
-                    " template_ref, physical_table, join_expr, column_map, query_mode, size_class, "
+                    " dataset_ref, physical_table, join_expr, column_map, query_mode, size_class, "
                     " allow_full_scan, max_rows, timeout_sec, permission_tokens, "
                     " rls_policy_ref, masked_columns, sync_state, last_verified_at, "
                     " status, created_at, updated_at) "
@@ -580,7 +580,7 @@ def _persist_bindings(doc: dict, model_id: int) -> dict:
                             binding.get("physical_table", "")),
                         binding.get("catalog_ref", ""),
                         binding.get("bind_kind", "primary"),
-                        binding.get("template_ref") or None,
+                        binding.get("dataset_ref") or None,
                         binding.get("physical_table", ""),
                         json.dumps(_column_map_from_props(obj), ensure_ascii=False),
                         binding.get("query_mode", "raw_source"),

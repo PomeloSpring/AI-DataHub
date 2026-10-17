@@ -1,8 +1,11 @@
 """Skills Admin API — 以 Qoder 规范「文件夹 + SKILL.md」管理技能.
 
-数据来源(全部本地文件夹,合并 DB 覆盖项):
+数据来源(全部本地文件夹, 唯一事实源):
 - 系统内置:backend/modules/mind/config/skills/{name}/(随仓库发布,只读展示)
 - 自定义:  通过本 API 创建,落盘为 config/skills/{name}/SKILL.md(frontmatter source: custom)
+
+旧版“adh_skills 表覆盖文件”已退役(无建表迁移/无写入/会静默遮蔽文件修改),
+本 API 不再读写该表;残留数据由启动对账 `warn_legacy_db_skills()` 显式告警。
 
 供前端 Skills 独立菜单与 AS-BOT「按名勾选绑定技能」使用:
 - GET    /admin/skills           列表(含 is_builtin,不含正文)
@@ -13,7 +16,6 @@
 """
 
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -110,8 +112,6 @@ def delete_admin_skill(name: str):
         deleted = skill_loader.delete_skill_folder(name)
     except PermissionError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    # 同步清理可能存在的 DB 覆盖行
-    _delete_db_skill(name)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"技能 '{name}' 不存在")
     return {"name": name, "success": True}
@@ -130,12 +130,3 @@ def rollback_skill_api(name: str, req: dict):
     if not skill_loader.rollback_skill_version(name, version):
         raise HTTPException(status_code=404, detail="版本不存在或技能不可回滚")
     return {"name": name, "rolled_back_to": version, "success": True}
-
-
-def _delete_db_skill(name: str) -> None:
-    try:
-        from backend.common.db import execute_write
-
-        execute_write("UPDATE adh_skills SET is_active = 0 WHERE name = %s", (name,))
-    except Exception as e:  # noqa: BLE001  表缺失等情况不影响文件夹删除
-        logger.debug("soft-delete DB skill %s skipped: %s", name, e)

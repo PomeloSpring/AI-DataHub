@@ -628,6 +628,93 @@
   animation: slideUp 0.2s ease-out;
 }
 
+/* 阶段卡片:滑动展开/收起(grid-rows 过渡,无需 JS 测高,任意内容高度平滑滑动)。
+   缓动用先快后缓的滑行曲线,比线性/骤停更顺(约 0.36s,不影响交互效率) */
+.slide-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.36s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.3s ease;
+}
+
+.slide-collapse-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.slide-collapse-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* 阶段卡片入场:流式过程中阶段性内容逐个滑入。
+   先快后缓的滑行曲线 + 0.45s:比“一下子弹出”更顺,又不至于拖沓;
+   回放场景可配 animationDelay 错峰滑入(见 MarkdownWithCharts sections) */
+@keyframes stageSlideIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-stage-in {
+  /* backwards: 入场后不再保留 transform, 避免影响卡片内 fixed 定位元素 */
+  animation: stageSlideIn 0.45s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+/* ── 等待指示:三点弹跳打字动画(人性化等待) ── */
+.typing-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: typingBounce 1.2s ease-in-out infinite;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes typingBounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* ── 机器人头像:光晕呼吸 + 状态点 ping ── */
+.bot-avatar-glow {
+  background: radial-gradient(circle, hsl(var(--primary) / 0.30), transparent 70%);
+  filter: blur(6px);
+}
+
+.bot-avatar-glow-active {
+  animation: botGlowPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes botGlowPulse {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+.bot-avatar-status {
+  animation: botStatusPing 1.6s ease-out infinite;
+}
+
+@keyframes botStatusPing {
+  0% { box-shadow: 0 0 0 0 hsl(142 76% 45% / 0.5); }
+  70%, 100% { box-shadow: 0 0 0 6px hsl(142 76% 45% / 0); }
+}
+
+/* 尊重系统减少动效偏好:关闭装饰性动画 */
+@media (prefers-reduced-motion: reduce) {
+  .typing-dot,
+  .bot-avatar-glow-active,
+  .bot-avatar-status {
+    animation: none;
+  }
+}
+
 
 /* Animation for spin */
 @keyframes spin {

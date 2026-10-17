@@ -10,7 +10,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from backend.common.db import execute_query, execute_insert, execute_write
@@ -140,11 +140,12 @@ _TOOL_GROUP_META = {
     "catalog": ("元数据检索", "数据目录类工具(物理表/列/数据源, 对 LLM 相对敏感)"),
     "semantic": ("业务语义", "统一语义层主路(发现对象/指标/知识 + 声明式查询)"),
     "query": ("SQL 执行", "nl2sql 受治理旁路: check_sql 预检 + execute_sql 只读执行(均经权限/RLS/审计)"),
-    "ontology": ("本体模型", "本体建模与元数据管理工具"),
+    "ontology": ("本体模型", "本体建模与元数据管理工具 + 指标/维度字典写(口径唯一权威; 本体写限系统本体域)"),
     "screen": ("可视化大屏", "生成/管理数据大屏 + 字模库(取数走治理入口)"),
     "design": ("看板设计", "仪表盘设计专用工具(强制 design_id): 提出/读取/准备设计 + 设计作域内业务语义/知识检索"),
     "system": ("系统运营", "本系统只读运营/可观测能力(仅管理员)"),
     "assets": ("工作空间资产", "会话产物与磁盘治理(资产清单/归档收藏/配额用量/两步确认清理)"),
+    "memory": ("用户记忆", "个人跨会话稳定偏好/口径纠错的读写(仅作用于本人记忆行, 不返回业务数据行; 严禁存会话上下文)"),
 }
 _TOOL_LABELS = {
     "search_metadata": "元数据搜索", "get_table_schema": "表结构", "list_datasources": "数据源列表",
@@ -155,12 +156,14 @@ _TOOL_LABELS = {
     "search_ontology": "搜索本体", "get_ontology_model": "模型详情", "list_ontology_models": "模型列表",
     "get_metadata_summary": "元数据摘要", "generate_ontology_draft": "取归纳素材", "save_ontology_draft": "提交草案*",
     "save_ontology_model": "保存模型*", "activate_ontology_model": "激活模型*", "import_ontology_yaml": "导入YAML*",
+    "save_metric": "存指标字典*", "save_dimension": "存维度字典*",
     "create_data_screen": "创建大屏*", "get_data_screen": "查看大屏", "update_data_screen_chart": "更新图表*",
     "request_dashboard_design": "申请仪表盘设计", "get_dashboard_design": "读取仪表盘设计", "prepare_dashboard_design": "准备仪表盘设计",
     "list_vis_components": "字模列表", "get_vis_component": "字模详情", "save_vis_component": "存为字模*",
     "system_usage": "用量统计", "system_overview": "系统概览",
     "asset_list": "资产清单", "asset_get": "读取资产", "asset_archive": "归档收藏*",
     "disk_status": "磁盘用量", "cleanup_candidates": "清理候选", "cleanup_execute": "执行清理*",
+    "save_memory": "保存记忆*", "list_memory": "记忆列表", "delete_memory": "删除记忆*",
 }
 
 

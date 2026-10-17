@@ -3,9 +3,9 @@
 The search pipeline is single-route: ``retrieve_all``/``retrieve_with_strategy``
 delegate to the GraphRAG strategy (agentic SPARQL grounding over the Oxigraph
 knowledge graph, then deterministic by-name hydration). The granularity helpers
-below (``retrieve_sql_templates`` / ``retrieve_business_terms`` /
-``retrieve_table_relations``) are keyword/LIKE based and back the agent tools;
-they no longer read vector columns or generate embeddings.
+below (``retrieve_business_terms`` / ``retrieve_table_relations``) are keyword/LIKE based
+and back the agent tools; they no longer read vector columns or generate embeddings.
+预制 SQL 的检索已收敛到已治理的数据集（见 strategies/graphrag._hydrate_datasets）。
 
 Falls back to information_schema when RAG tables are empty.
 """
@@ -17,7 +17,7 @@ from contextlib import contextmanager
 import pymysql
 
 from backend.common.config import (
-    DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD, METADATA_DB_DATABASE,
+    DORIS_HOST, DORIS_PORT, DORIS_USER, DORIS_PASSWORD,
     DORIS_DATABASE,
 )
 from backend.common.db.metadata_db import get_metadata_conn
@@ -103,78 +103,6 @@ def _like_or(tokens: list[str], columns: list[str]) -> tuple[str, list]:
     return "(" + " OR ".join(conditions) + ")", params
 
 
-_rules_column_checked = False
-
-
-def _ensure_rules_column():
-    """Check if 'rules' column exists in adh_sql_templates, add it if not."""
-    global _rules_column_checked
-    if _rules_column_checked:
-        return
-    try:
-        with _get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
-                    "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'adh_sql_templates' AND COLUMN_NAME = 'rules'",
-                    (METADATA_DB_DATABASE,),
-                )
-                if not cur.fetchone():
-                    logger.info("Adding 'rules' column to adh_sql_templates...")
-                    cur.execute("ALTER TABLE adh_sql_templates ADD COLUMN rules STRING DEFAULT ''")
-                    conn.commit()
-                    logger.info("Successfully added 'rules' column")
-                _rules_column_checked = True
-    except Exception as e:
-        logger.warning("Failed to check/add 'rules' column: %s", e)
-
-
-def retrieve_sql_templates(question: str, limit: int = 5, vec_literal: str = None, datasource_id: int = 0) -> list[dict]:
-    """Retrieve matching SQL templates by keyword (intent_keywords / name / description).
-
-    ``vec_literal`` is accepted for backward compatibility with existing callers
-    but is ignored — retrieval is keyword/LIKE based, no embedding.
-    """
-    _ensure_rules_column()
-
-    tokens = _search_tokens(question, datasource_id=datasource_id)
-    if not tokens:
-        return []
-
-    try:
-        with _get_connection() as conn:
-            with conn.cursor() as cur:
-                conditions = ["is_active = 1"]
-                params: list = []
-                if datasource_id:
-                    conditions.append("(datasource_id = %s OR datasource_id = 0)")
-                    params.extend([datasource_id, datasource_id])
-                where, like_params = _like_or(
-                    tokens, ["intent_keywords", "template_name", "description"],
-                )
-                if where:
-                    conditions.append(where)
-                    params.extend(like_params)
-                where_sql = "WHERE " + " AND ".join(conditions)
-                cur.execute(
-                    f"""
-                    SELECT template_id, template_name, category, intent_keywords,
-                           sql_template, variables, description, rules, usage_count
-                    FROM adh_sql_templates
-                    {where_sql}
-                    ORDER BY usage_count DESC
-                    LIMIT {int(limit)}
-                    """,
-                    params,
-                )
-                rows = cur.fetchall()
-                logger.debug("Retrieved %d sql_templates by keyword", len(rows))
-                return rows
-    except Exception as e:
-        logger.warning("Keyword search (sql_templates) failed: %s", e)
-        return []
-
-
 def retrieve_business_terms(
     question: str,
     limit: int = 20,
@@ -218,31 +146,6 @@ def retrieve_business_terms(
                 return cur.fetchall()
     except Exception as e:
         logger.warning("Keyword search (business_terms) failed: %s", e)
-        return []
-
-
-def retrieve_saved_datasets(question: str, limit: int = 5) -> list[dict]:
-    """Retrieve matching saved datasets from Playground.
-
-    Searches adh_saved_queries where is_dataset=1 by keyword match.
-    """
-    try:
-        with _get_connection() as conn:
-            with conn.cursor() as cur:
-                # Search by keyword match in name, description, and dataset_keywords
-                keywords_sql = question.replace("'", "''")
-                cur.execute(f"""
-                    SELECT id, name, description, sql_query, dataset_keywords
-                    FROM adh_saved_queries
-                    WHERE is_dataset = 1
-                      AND (name LIKE '%{keywords_sql}%'
-                           OR description LIKE '%{keywords_sql}%'
-                           OR dataset_keywords LIKE '%{keywords_sql}%')
-                    LIMIT {limit}
-                """)
-                return cur.fetchall()
-    except Exception as e:
-        logger.warning("RAG dataset search failed: %s", e)
         return []
 
 
@@ -468,7 +371,8 @@ def _get_table_info_for_names(table_names: list[str], datasource_id: int = 0) ->
                 rows = cur.fetchall()
                 # Preserve the order from table_names
                 name_order = {name: i for i, name in enumerate(table_names)}
-                rows.sort(key=lambda r: name_order.get(r["table_name"], 999))
+                # sorted() 而非 .sort()：fetchall 在部分连接工厂下返回 tuple（不可就地排序）
+                rows = sorted(rows, key=lambda r: name_order.get(r["table_name"], 999))
                 return rows
     except Exception as e:
         logger.warning("Failed to get table_info for names %s: %s", table_names, e)
@@ -497,7 +401,7 @@ def retrieve_all(
 
     Returns:
         Dict with table_info, column_metadata, business_terms, table_relations,
-        sql_templates, saved_datasets, rag_source.
+        saved_datasets, rag_source.
     """
     return retrieve_with_strategy(
         question=question,
@@ -567,20 +471,6 @@ def retrieve_tables_metadata(
     }
 
 
-def increment_template_usage(template_id: str) -> None:
-    """Increment usage_count for a template."""
-    try:
-        with _get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE adh_sql_templates SET usage_count = usage_count + 1 WHERE template_id = %s",
-                    (template_id,),
-                )
-            conn.commit()
-    except Exception as e:
-        logger.warning("Failed to increment template usage: %s", e)
-
-
 def increment_term_usage(term_cn: str) -> None:
     """Increment usage_count for a business term."""
     try:
@@ -623,7 +513,7 @@ def retrieve_with_strategy(
 
     Returns:
         Dict with table_info, column_metadata, business_terms, table_relations,
-        sql_templates, saved_datasets, rag_source.
+        saved_datasets, rag_source.
     """
     from backend.modules.mind.rag.strategies import get_strategy, get_strategy_from_config
 

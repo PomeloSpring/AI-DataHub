@@ -28,7 +28,6 @@ class ComponentUpsert(BaseModel):
     chart_type: Optional[str] = None
     style_config: Optional[dict] = None
     thumbnail: Optional[str] = None
-    query_template: Optional[dict] = None
     description: Optional[str] = ""
     is_builtin: Optional[bool] = False
     workspace_id: Optional[int] = 0
@@ -41,7 +40,6 @@ class ComponentUpdate(BaseModel):
     chart_type: Optional[str] = None
     style_config: Optional[dict] = None
     thumbnail: Optional[str] = None
-    query_template: Optional[dict] = None
     description: Optional[str] = None
     sort_order: Optional[int] = None
     is_active: Optional[int] = None

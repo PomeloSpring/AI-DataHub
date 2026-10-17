@@ -311,7 +311,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
     <Dialog open={saveVis} onOpenChange={open => { if (!visSaving) setSaveVis(open); }}><DialogContent><DialogHeader><DialogTitle>存为字模</DialogTitle><DialogDescription>仅保存视觉白名单字段，不包含查询、数据源或缓存。</DialogDescription></DialogHeader>
       <Input aria-label="字模名称" placeholder="字模名称" value={visName} onChange={e => setVisName(e.target.value)} />
       <select aria-label="回存类别" className="rounded border bg-background p-2" value={visCategory} onChange={e => setVisCategory(e.target.value as VisCategory)}>
-        {VIS_CATEGORIES.filter(c => c.id !== 'sql_template' && (selectedChart || !['chart_style', 'kpi_card'].includes(c.id))).map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+        {VIS_CATEGORIES.filter(c => (selectedChart || !['chart_style', 'kpi_card'].includes(c.id))).map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
       </select><DialogFooter><Button disabled={visSaving || !visName.trim()} onClick={persistVis}>{visSaving ? '保存中…' : '保存字模'}</Button></DialogFooter>
     </DialogContent></Dialog>
   </div>;

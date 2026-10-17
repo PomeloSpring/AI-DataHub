@@ -75,13 +75,14 @@ def save_trace(summary: dict, spans: list[dict]) -> None:
             cur.execute(
                 """INSERT INTO adh_llm_traces
                    (trace_id, message_uuid, conversation_id, user_id, username, user_role,
-                    workspace_id, datasource_id, entrypoint, model_ref, question, final_answer,
+                    workspace_id, datasource_id, entrypoint, handled_by, model_ref, question, final_answer,
                     status, error_message, started_at, duration_ms, input_tokens, output_tokens,
                     total_tokens, credits, cost_amount, cost_currency, session_credits,
                     llm_call_count, span_count)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON DUPLICATE KEY UPDATE
                      final_answer=VALUES(final_answer), status=VALUES(status),
+                     handled_by=VALUES(handled_by),
                      error_message=VALUES(error_message), duration_ms=VALUES(duration_ms),
                      input_tokens=VALUES(input_tokens), output_tokens=VALUES(output_tokens),
                      total_tokens=VALUES(total_tokens), credits=VALUES(credits),
@@ -92,7 +93,8 @@ def save_trace(summary: dict, spans: list[dict]) -> None:
                     summary["trace_id"], summary.get("message_uuid"), summary.get("conversation_id", 0),
                     summary.get("user_id", 0), summary.get("username", ""), summary.get("user_role", ""),
                     summary.get("workspace_id", 0), summary.get("datasource_id", 0),
-                    summary.get("entrypoint", "chat"), summary.get("model_ref", ""),
+                    summary.get("entrypoint", "chat"), summary.get("handled_by") or "agent",
+                    summary.get("model_ref", ""),
                     _truncate(summary.get("question", ""), 8000), _truncate(summary.get("final_answer", ""), 8000),
                     summary.get("status", "success"), _truncate(summary.get("error_message", ""), 2000),
                     summary.get("started_at") or datetime.now(timezone.utc).replace(tzinfo=None),

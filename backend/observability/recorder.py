@@ -85,6 +85,15 @@ class TraceRecorder:
         if final_answer is not None:
             self.result_answer = final_answer
 
+    def set_handled_by(self, handled_by: str) -> None:
+        """回写本回合的**处理方**（agent=走了执行层模型 / intent_gate=前置意图层本地直答）。
+
+        这一列是意图漏斗拦截率的权威口径：拦截回合不起子进程、不烧 credit，
+        与"模型答的"必须在同一张表上分得开，否则省了多少根本无从回答。
+        """
+        if handled_by:
+            self.meta["handled_by"] = handled_by
+
     # ── span 采集 ──────────────────────────────────────────────
     def add_llm_call(self, **kw: Any) -> None:
         dur = kw.get("duration_ms")
@@ -285,6 +294,7 @@ def begin(
     conversation_id: int = 0,
     model_ref: str = "",
     question: str = "",
+    handled_by: str = "agent",
 ) -> Optional[TraceRecorder]:
     """创建当前回合 recorder 并注入 contextvar;未开启返回 None。"""
     if not _enabled():
@@ -301,6 +311,7 @@ def begin(
             "workspace_id": workspace_id or 0,
             "datasource_id": datasource_id or 0,
             "entrypoint": entrypoint,
+            "handled_by": handled_by or "agent",
             "model_ref": model_ref or "",
             "question": question or "",
             "started_at": datetime.now(timezone.utc).replace(tzinfo=None),
@@ -338,6 +349,17 @@ def set_result(status=None, error=None, final_answer=None) -> None:
         rec.set_result(status=status, error=error, final_answer=final_answer)
     except Exception as e:  # noqa: BLE001
         logger.debug("set_result ignored: %s", e)
+
+
+def set_handled_by(handled_by: str) -> None:
+    """回写本回合处理方(agent / intent_gate)；无 recorder 或未开启时 no-op。"""
+    rec = current()
+    if rec is None:
+        return
+    try:
+        rec.set_handled_by(handled_by)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("set_handled_by ignored: %s", e)
 
 
 def trace_id_for_response() -> Optional[str]:

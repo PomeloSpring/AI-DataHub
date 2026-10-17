@@ -165,12 +165,20 @@ class TestDualDefinition:
             "name": "双定义", "object_key": "案件", "sql_query": "SELECT region FROM t",
             "datasource_id": 2, "chart_type": "bar",
             "chart_preset": {"xCol": "region", "yCol": "cnt"},
+            "touched_tables": ["伪造表"],   # 请求体自报一律不采信
         }, {"user_id": 7, "role": "admin"})
         sql, params = captured["sql"], captured["params"]
         assert "visibility" not in sql  # 可见性功能已退役, 不再落库/过滤
-        assert params[3] == "both"  # 双定义并存
-        assert params[8] == "bar"
-        assert json.loads(params[9]) == {"xCol": "region", "yCol": "cnt"}
+        # 按列名定位（不钉死位置：预制 SQL 声明列入列后列序会变，位置断言会错位）
+        cols = sql.split("adh_datasets", 1)[1].split("(", 1)[1].split(")", 1)[0]
+        idx = {c.strip(): i for i, c in enumerate(cols.split(","))}
+        assert params[idx["source_type"]] == "both"  # 双定义并存
+        assert params[idx["chart_type"]] == "bar"
+        assert json.loads(params[idx["chart_preset"]]) == {"xCol": "region", "yCol": "cnt"}
+        # 预制 SQL 声明层也随创建落库；touched_tables 由服务端从正文静态提取
+        # （不信请求体自报：上面传了"伪造表"，落库的必须是正文提出来的 t）
+        assert "variables" in idx and "sql_bodies" in idx and "touched_tables" in idx
+        assert json.loads(params[idx["touched_tables"]]) == ["t"]
 
     def test_chart_preset_must_be_object(self, monkeypatch):
         monkeypatch.setattr(svc, "get_dataset", lambda did: {

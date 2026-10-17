@@ -1,7 +1,10 @@
 """Ontology Modeling API — 本体模型生成/编辑/激活/检索。
 
 挂载在 /api/catalog/ontology 前缀下:
-    POST   /generate              SSE 流式生成本体草案(自动建 AS-BOT 会话派发任务)
+    POST   /generate                        派发『生成本体模型』后台任务（立即返回 conversation_id）
+    GET    /generate/tasks                   本用户后台生成任务清单（页面挂回/侧边栏徽标）
+    GET    /generate/tasks/{id}              任务进度与终态（前端轮询）
+    POST   /generate/tasks/{id}/cancel       取消正在后台执行的任务
     GET    /models                模型列表
     GET    /models/{id}           模型详情（含三格式内容）
     PUT    /models/{id}           保存草案编辑（JSON 事实源）
@@ -12,12 +15,12 @@
     POST   /import-yaml           导入 Palantir Ontology YAML 为 active 模型并入图
 """
 
+import asyncio
 import json
 import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
 
 from ..services import ontology_service
 from backend.common.auth import get_current_user
@@ -35,10 +38,6 @@ def _allowed_source_ids(user: dict) -> set:
     """
     from backend.core.role_service import role_service
     return set(role_service.get_user_allowed_datasources(int(user.get("user_id") or 0), 0))
-
-
-def _sse_event(event: str, data: dict) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -160,39 +159,99 @@ def _create_task_conversation(user: dict, workspace_id: int, datasource_id: int,
             return int(cur.lastrowid)
 
 
-def _persist_task_reply(conversation_id: int, task_message: str, reply: str,
-                        tool_calls: list, error_message: str) -> None:
-    """执行回复回写会话历史(聊天侧可回看/追问)；旁路持久化失败不回滚主流程，但显式记日志。"""
-    from backend.common.db.metadata_db import get_metadata_conn
+def _task_message_payload(run: dict) -> dict:
+    """任务运行态 → 会话里的 assistant 消息（AS-BOT 侧边栏直接渲染 progressStages/tool_calls）。
 
+    会话转录是任务进度的**事实源**：面板不在、页面已关都不影响执行与回看。
+    """
     assistant = {
         "role": "assistant",
-        "content": reply or error_message or "",
-        "question": task_message,
+        "content": run.get("reply") or (run.get("error") if run["status"] != "running" else ""),
+        "question": run.get("task_message") or "",
         "intent": "agent",
-        "reply": reply or error_message or "",
-        "tool_calls": list(tool_calls or []),
+        "reply": run.get("reply") or "",
+        "tool_calls": list(run.get("tool_calls") or []),
+        "progressStages": [
+            {"stage": p["stage"], "message": p["detail"], "timestamp": p["at"]}
+            for p in (run.get("progress") or [])[-40:]
+        ],
+        "task_kind": _TASK_KIND,
+        "task_state": run["status"],
     }
-    if error_message:
-        assistant["error"] = error_message
+    if run.get("error"):
+        assistant["error"] = run["error"]
+    if run.get("model_id"):
+        assistant["model_id"] = run["model_id"]
+    return assistant
+
+
+def _write_task_message(run: dict) -> None:
+    """把任务进度/终态 upsert 进会话（只保留一条本任务 assistant 消息，不越写越多）。
+
+    旁路持久化：写失败只记日志不回滚主流程（护栏 §9），但失败事实必须可查。
+    """
+    from backend.common.db.metadata_db import get_metadata_conn
+
+    conv_id = int(run.get("conversation_id") or 0)
+    if not conv_id:
+        return
+    payload = _task_message_payload(run)
     try:
         with get_metadata_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT messages FROM adh_conversations WHERE id = %s", (conversation_id,))
+                cur.execute("SELECT messages FROM adh_conversations WHERE id = %s", (conv_id,))
                 row = cur.fetchone()
-                messages = []
+                messages: list = []
                 if row and row.get("messages"):
                     try:
                         messages = json.loads(row["messages"])
                     except ValueError:
-                        logger.error("会话 %s 历史消息损坏，已重置后回写", conversation_id)
+                        logger.error("会话 %s 历史消息损坏，已重置后回写", conv_id)
                         messages = []
-                messages.append(assistant)
-                cur.execute("UPDATE adh_conversations SET messages = %s, updated_at = NOW() WHERE id = %s",
-                            (json.dumps(messages, ensure_ascii=False), conversation_id))
+                for i in range(len(messages) - 1, -1, -1):
+                    m = messages[i]
+                    if (isinstance(m, dict) and m.get("role") == "assistant"
+                            and m.get("task_kind") == _TASK_KIND):
+                        messages[i] = payload
+                        break
+                else:
+                    messages.append(payload)
+                cur.execute(
+                    "UPDATE adh_conversations SET messages = %s, updated_at = NOW() WHERE id = %s",
+                    (json.dumps(messages, ensure_ascii=False), conv_id))
                 conn.commit()
-    except Exception as e:
-        logger.error("任务回复回写会话 %s 失败: %s", conversation_id, e, exc_info=True)
+    except Exception as e:  # noqa: BLE001 — 进度回写不得打断执行，但必须显式留痕
+        logger.error("任务进度回写会话 %s 失败: %s", conv_id, e, exc_info=True)
+
+
+def _load_task_message(conversation_id: int) -> dict:
+    """读会话里本任务的持久态：{found, owner_user_id, workspace_id, datasource_id, message}。"""
+    from backend.common.db.metadata_db import get_metadata_conn
+
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT c.user_id, c.workspace_id, c.datasource_id, c.messages, "
+                "       d.name AS datasource_name "
+                "FROM adh_conversations c "
+                "LEFT JOIN adh_datasources d ON d.id = c.datasource_id "
+                "WHERE c.id = %s", (int(conversation_id or 0),))
+            row = cur.fetchone()
+    if not row:
+        return {"found": False}
+    out = {"found": True, "owner_user_id": int(row.get("user_id") or 0),
+           "workspace_id": int(row.get("workspace_id") or 0),
+           "datasource_id": int(row.get("datasource_id") or 0),
+           "datasource_name": str(row.get("datasource_name") or ""), "message": None}
+    try:
+        messages = json.loads(row.get("messages") or "[]")
+    except ValueError:
+        return out
+    for m in reversed(messages or []):
+        if isinstance(m, dict) and m.get("task_kind") == _TASK_KIND:
+            out["message"] = m
+            break
+    return out
 
 
 def _parse_sse_frame(frame: str) -> tuple:
@@ -319,9 +378,7 @@ async def _generate_task_events(request: Request, *, task_message: str, conversa
     if not terminal and not error_message:
         error_message = "生成任务未返回结果，请在会话中查看执行过程"
 
-    # 回写会话消息(任务消息在建会话时已落，这里补执行回复)
-    _persist_task_reply(conversation_id, task_message, reply, tool_calls, error_message)
-
+    # 会话转录由后台执行器 `_drive_generate_task` 统一回写（单一写者，不重复落消息）
     if error_message:
         yield ("error", {"message": error_message, "conversation_id": conversation_id,
                         "workspace_id": workspace_id})
@@ -334,21 +391,278 @@ async def _generate_task_events(request: Request, *, task_message: str, conversa
         "conversation_id": conversation_id,
         "workspace_id": workspace_id,
         "completed": bool(captured.get("model_id")),
+        # 正文与工具轨迹随终态带回，由后台执行器统一回写会话转录
+        "reply": reply,
+        "tool_calls": tool_calls,
     })
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 后台静默执行：任务脱离 HTTP 请求生命周期，进度落 AS-BOT 会话
+# ═══════════════════════════════════════════════════════════════════
+# 旧行为：生成由 SSE 直连前端，客户端一断连 `request.is_disconnected()` 就让派发
+# 提前 return——用户体感就是“离开页面任务就停了”。现在端点只做鉴权与派发，
+# 执行由 web 进程内的后台 asyncio 任务持有，AS-BOT 侧边栏开关不影响它；
+# 进度/终态写进会话转录（事实源），状态端点只读不拿进程内状态当唯一依据。
+# 重启语义（拍板：不转 Celery）：注册表是进程内的，web 重启后 running 记录失去宿主
+# → status() 显式判为 interrupted 并回写会话，不假报成功（no-silent-degradation）。
+
+_TASK_KIND = "ontology_generate"
+_PROGRESS_CAP = 200            # 单任务保留的进度行数上限（会话转录同步只带最后 40 行）
+_PERSIST_EVERY_EVENTS = 4      # 进度落库节流：每 N 个事件写一次会话
+_KEEP_FINISHED = 20            # 已结束任务在进程内保留条数（转录才是事实源）
+
+_GENERATE_RUNS: dict = {}      # conversation_id -> run state
+
+
+class _DetachedRequest:
+    """后台执行的伪请求：ChatService 只用 `is_disconnected()` 做断连收尾，恒 False。
+
+    只实现被消费的一个方法——不伪造 URL/headers/body，避免把“还有客户端”的错觉
+    带进下游（护栏 §2：身份只由服务端已解析的 user dict 传递）。
+    """
+
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+def _now_ms() -> int:
+    import time
+    return int(time.time() * 1000)
+
+
+def _public_run(run: dict) -> dict:
+    """任务状态对外视图（不带 task_message 全文/内部对象，护栏 §7）。"""
+    return {
+        "conversation_id": run["conversation_id"],
+        "workspace_id": run["workspace_id"],
+        "datasource_id": run["datasource_id"],
+        "datasource_name": run.get("datasource_name") or "",
+        "status": run["status"],
+        "progress": [{"stage": p["stage"], "detail": p["detail"]} for p in run["progress"]],
+        "model_id": run.get("model_id"),
+        "object_count": int(run.get("object_count") or 0),
+        "warnings": list(run.get("warnings") or []),
+        "error": run.get("error") or "",
+        "started_at": run.get("started_at") or "",
+        "finished_at": run.get("finished_at") or "",
+    }
+
+
+def _prune_runs() -> None:
+    finished = [cid for cid, r in _GENERATE_RUNS.items() if r["status"] != "running"]
+    for cid in sorted(finished)[:max(0, len(finished) - _KEEP_FINISHED)]:
+        _GENERATE_RUNS.pop(cid, None)
+
+
+def _record_event(run: dict, event: str, data: dict) -> None:
+    """事件流 → 任务状态（进度行/工具结果里的草案落库结果/终态）。"""
+    if event == "progress":
+        detail = str(data.get("detail") or data.get("stage") or "").strip()
+        if detail:
+            run["progress"].append({"stage": str(data.get("stage") or ""), "detail": detail,
+                                   "at": _now_ms()})
+            if len(run["progress"]) > _PROGRESS_CAP:
+                del run["progress"][:len(run["progress"]) - _PROGRESS_CAP]
+    elif event == "done":
+        run["reply"] = str(data.get("reply") or run.get("reply") or "")
+        run["tool_calls"] = list(data.get("tool_calls") or run.get("tool_calls") or [])
+        run["model_id"] = data.get("model_id") or None
+        run["object_count"] = int(data.get("object_count") or 0)
+        run["warnings"] = list(data.get("warnings") or [])
+        if data.get("completed") and run["model_id"]:
+            run["status"] = "done"
+        else:
+            # 任务结束但未提交草案：显式 error，不假报成功
+            run["status"] = "error"
+            run["error"] = str(data.get("error") or "任务已结束，但未提交草案")
+    elif event == "error":
+        run["status"] = "error"
+        run["error"] = str(data.get("message") or "生成任务执行失败")
+
+
+def _finish_run(run: dict, status: str, error: str = "") -> None:
+    if run["status"] == "running":
+        run["status"] = status
+    if error and not run.get("error"):
+        run["error"] = error
+    run["finished_at"] = run["finished_at"] or _now_ms()
+
+
+async def _drive_generate_task(run: dict) -> None:
+    """后台执行主体：消费派发事件流 → 更新任务态 → 节流回写会话。"""
+    events = _generate_task_events(
+        _DetachedRequest(),  # type: ignore[arg-type]
+        task_message=run["task_message"], conversation_id=run["conversation_id"],
+        datasource_id=run["datasource_id"], workspace_id=run["workspace_id"],
+        user=run["user"], as_bot_key=run["as_bot_key"], task_binding=run["task_binding"])
+    since_persist = 0
+    try:
+        async for event, data in events:
+            _record_event(run, event, data)
+            since_persist += 1
+            if since_persist >= _PERSIST_EVERY_EVENTS:
+                since_persist = 0
+                await asyncio.to_thread(_write_task_message, run)
+    except asyncio.CancelledError:
+        _finish_run(run, "cancelled", "任务已取消")
+        _write_task_message(run)
+        raise
+    except Exception as e:  # noqa: BLE001 — 后台任务不得抛出无人接，必须落终态并显式记错
+        logger.error("生成本体任务 %s 异常终止: %s", run["conversation_id"], e, exc_info=True)
+        _finish_run(run, "error", f"生成任务异常终止: {e}")
+    finally:
+        if run["status"] == "running":
+            run["status"] = "error"
+            run["error"] = run.get("error") or "生成任务未返回结果即结束"
+        run["finished_at"] = run["finished_at"] or _now_ms()
+        _write_task_message(run)
+        _prune_runs()
+
+
+def _start_generate_task(run: dict) -> dict:
+    run["started_at"] = _now_ms()
+    run["task"] = asyncio.create_task(_drive_generate_task(run))
+    _GENERATE_RUNS[int(run["conversation_id"])] = run
+    return _public_run(run)
+
+
+async def wait_generate_task(conversation_id: int, timeout: float | None = None) -> str:
+    """等任务跑完并返回终态（供内部编排与回归测试；生产请求不阻塞在此）。
+
+    被取消的任务不得把 CancelledError 泄给等待方——取消是任务状态，不是调用失败。
+    """
+    run = _GENERATE_RUNS.get(int(conversation_id or 0))
+    if not run:
+        return "none"
+    task = run.get("task")
+    if task is not None and not task.done():
+        try:
+            if timeout:
+                await asyncio.wait_for(asyncio.shield(task), timeout)
+            else:
+                await asyncio.shield(task)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+    return run["status"]
+
+
+def find_running_task(*, datasource_id: int = 0, user_id: int = 0) -> dict:
+    """是否已有同一目标的生成任务在跑（并发会互盖草案，宁拒勿错）。"""
+    for run in _GENERATE_RUNS.values():
+        if run["status"] != "running":
+            continue
+        if datasource_id and int(run["datasource_id"]) != int(datasource_id):
+            continue
+        if user_id and int(run["user_id"]) != int(user_id):
+            continue
+        return run
+    return {}
+
+
+def generate_task_status(conversation_id: int, user_id: int) -> dict:
+    """任务状态（只读）：注册表优先，无则读会话持久态。
+
+    持久态仍写 running 但本进程已无该任务 → 进程重启导致中断，显式标为
+    interrupted 并回写会话（不把“没跑完”说成“成功”）。
+    """
+    run = _GENERATE_RUNS.get(int(conversation_id or 0))
+    if run:
+        if int(run["user_id"]) != int(user_id):
+            raise HTTPException(status_code=403, detail="无权查看该生成任务")
+        return _public_run(run)
+
+    persisted = _load_task_message(int(conversation_id or 0))
+    if not persisted.get("found"):
+        raise HTTPException(status_code=404, detail="生成任务不存在，请在 AS-BOT 会话历史中查看执行过程")
+    if int(persisted.get("owner_user_id") or 0) != int(user_id):
+        raise HTTPException(status_code=403, detail="无权查看该生成任务")
+    msg = persisted.get("message") or {}
+    state = str(msg.get("task_state") or "")
+    if state == "running":
+        orphan = {
+            "conversation_id": int(conversation_id), "user_id": int(user_id),
+            "workspace_id": int(persisted.get("workspace_id") or 0),
+            "datasource_id": int(persisted.get("datasource_id") or 0),
+            "datasource_name": persisted.get("datasource_name") or "",
+            "status": "interrupted",
+            "error": "服务已重启，本次生成任务中断（草案未保证完整），请重新发起生成",
+            "reply": "", "tool_calls": [], "progress": [], "warnings": [],
+            "model_id": msg.get("model_id"), "object_count": 0,
+            "started_at": "", "finished_at": _now_ms(), "task_message": msg.get("question") or "",
+        }
+        _write_task_message(orphan)
+        return _public_run(orphan)
+    if not msg:
+        raise HTTPException(status_code=404, detail="会话中未找到生成任务记录")
+    return _public_run({
+        "conversation_id": int(conversation_id), "user_id": int(user_id),
+        "workspace_id": int(persisted.get("workspace_id") or 0),
+        "datasource_id": int(persisted.get("datasource_id") or 0),
+        "datasource_name": persisted.get("datasource_name") or "",
+        "status": state or "error", "progress": msg.get("progressStages") or [],
+        "model_id": msg.get("model_id"), "object_count": 0,
+        "warnings": [], "error": msg.get("error") or "",
+        "started_at": "", "finished_at": "",
+    })
+
+
+def list_generate_tasks(user_id: int, active_only: bool = True) -> list:
+    """本用户进程内任务清单（页面重进时挂回进度 / AS-BOT 侧边栏“执行中”徽标）。"""
+    out = [_public_run(r) for r in _GENERATE_RUNS.values() if int(r["user_id"]) == int(user_id)]
+    if active_only:
+        out = [r for r in out if r["status"] == "running"]
+    return sorted(out, key=lambda r: r["started_at"] or 0, reverse=True)
+
+
+@router.get("/generate/tasks")
+def list_generate_tasks_endpoint(active_only: bool = Query(True), user: dict = Depends(get_current_user)):
+    """『生成本体模型』后台任务清单（仅本用户；已结束任务在进程内留有限条数）。"""
+    return {"items": list_generate_tasks(int(user.get("user_id") or 0), active_only)}
+
+
+@router.get("/generate/tasks/{conversation_id}")
+def get_generate_task(conversation_id: int, user: dict = Depends(get_current_user)):
+    """任务进度/终态（前端轮询；AS-BOT 侧边栏与建模页同源）。"""
+    return generate_task_status(conversation_id, int(user.get("user_id") or 0))
+
+
+@router.post("/generate/tasks/{conversation_id}/cancel")
+async def cancel_generate_task(conversation_id: int, user: dict = Depends(get_current_user)):
+    """取消正在后台跑的生成任务（写动作，同样经 ontology:generate 权限码把关）。"""
+    from backend.core.perm_link import require_write_perm
+
+    user_id = int(user.get("user_id") or 0)
+    run = _GENERATE_RUNS.get(int(conversation_id or 0))
+    if not run:
+        raise HTTPException(status_code=404,
+                            detail="任务已结束或不在本实例执行中，无需取消")
+    if int(run["user_id"]) != user_id:
+        raise HTTPException(status_code=403, detail="无权取消该生成任务")
+    try:
+        require_write_perm(user_id, int(run["workspace_id"]), "ontology:generate", "取消本体生成任务")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    task = run.get("task")
+    if task and not task.done():
+        task.cancel()
+    _finish_run(run, "cancelled", "任务已取消")
+    await asyncio.to_thread(_write_task_message, run)
+    return _public_run(run)
 
 
 @router.post("/generate")
 async def generate_ontology(request: Request, req: dict, user: dict = Depends(get_current_user)):
-    """【已退役 v0.4】"选择数据源生成本体模型"流程退役（GLOBAL_SEMANTIC_LAYER_DESIGN §3 源本体退役表）。
+    """派发『生成本体模型』后台任务（立即返回，不随前端断连中止）。
 
-    终态：本体=人工编辑的业务知识图谱（联耀业务本体，canonical doc）；物理映射由
-    部署绑定引导（backend/scripts/deploy_contract_bindings.py，工具辅助生成）负责。
-    本端点保留兼容壳，新调用将收到显式退役提示而非静默旧行为。
+    链路：服务端鉴权/建 AS-BOT 会话 → 进程序后台任务持有执行（归纳由会话内
+    qoder agent 完成，工具不调 LLM）→ 进度/终态写会话转录。前端拿 conversation_id
+    轮询 /generate/tasks/{id}，并直接打开 AS-BOT 侧边栏看实时步骤；
+    关面板/离开页面都不影响执行。
 
-    （历史行为）生成本体草案（SSE 流式进度，最终事件携带 model_id 与 conversation_id）。
-    自动创建 AS-BOT 会话并派发『生成本体模型』任务，归纳由会话内 qoder agent
-    完成(工具不调 LLM)；SSE 事件契约保持 progress/done/error。
-    身份一律服务端注入(不接受请求体 created_by)。
+    请求体：datasource_id 必填；kb_ids 可选（辅助生成的知识库，服务端校验后
+    经 task_binding 注入工具侧检索通道，不进 LLM 视野，护栏 §7）。
+    身份一律服务端注入（不接受请求体 created_by/user_id）。
     """
     from backend.core.role_service import role_service
     from backend.core.perm_link import require_write_perm
@@ -364,7 +678,7 @@ async def generate_ontology(request: Request, req: dict, user: dict = Depends(ge
         raise HTTPException(status_code=422, detail="未找到您的默认工作空间，请先创建工作空间后再试")
     authorize_workspace(user, workspace_id)
 
-    # 权限把关(fail-closed，拒绝可解释)
+    # 权限把关(fail-closed，拒绝原因可解释)
     try:
         require_write_perm(user_id, workspace_id, "ontology:generate", "生成本体草案")
     except PermissionError as e:
@@ -374,6 +688,14 @@ async def generate_ontology(request: Request, req: dict, user: dict = Depends(ge
     allowed = set(role_service.get_user_allowed_datasources(user_id, workspace_id))
     if datasource_id not in allowed:
         raise HTTPException(status_code=403, detail="当前用户无权使用该数据源，请选择已授权数据源")
+
+    # 同一数据源已有生成任务在跑 → 显式拒绝（两批 append 互盖会把草案弄脏，宁阻断勿重复）
+    clash = find_running_task(datasource_id=datasource_id)
+    if clash:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"数据源「{clash.get('datasource_name') or datasource_id}」已有生成任务正在执行中"
+                    f"（会话 {clash['conversation_id']}），请在 AS-BOT 侧边栏查看或先取消"))
 
     # 辅助生成知识库（可选）：服务端校验归属/启用（fail-closed，越界拒），
     # kb_ids 经任务绑定注入工具侧检索通道，不进 LLM 视野（护栏 §7）。
@@ -404,18 +726,16 @@ async def generate_ontology(request: Request, req: dict, user: dict = Depends(ge
     # 把关见 resource_guard：目标源 ∈ 角色授权集 + 权限码）
     task_binding = {"kind": "ontology_generate", "datasource_id": datasource_id, "kb_ids": kb_ids}
 
-    async def event_stream():
-        async for event, data in _generate_task_events(
-                request, task_message=task_message, conversation_id=conversation_id,
-                datasource_id=datasource_id, workspace_id=workspace_id, user=user,
-                as_bot_key=as_bot_key, task_binding=task_binding):
-            yield _sse_event(event, data)
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    run = {
+        "conversation_id": int(conversation_id), "user_id": user_id,
+        "workspace_id": int(workspace_id), "datasource_id": int(datasource_id),
+        "datasource_name": ds_name, "status": "running", "progress": [],
+        "task_message": task_message, "as_bot_key": as_bot_key,
+        "task_binding": task_binding, "user": dict(user),
+        "reply": "", "tool_calls": [], "model_id": None, "object_count": 0,
+        "warnings": [], "error": "", "started_at": "", "finished_at": "", "task": None,
+    }
+    return _start_generate_task(run)
 
 
 @router.post("/generate-business-assets")

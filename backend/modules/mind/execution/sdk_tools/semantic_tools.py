@@ -210,6 +210,26 @@ def _attach_routes(result: dict) -> dict:
     return result
 
 
+def _attach_paths(result: dict, keywords: list | None = None) -> dict:
+    """把命中结果解析为行为路径口径（关键路径/漏斗/用户指定路径）并附到结果。
+
+    路径不是 SQL 维度而是"有序步骤口径"：它告诉 LLM 该查哪个对象、能传哪些参数，
+    避免把漏斗拆成 N 个独立步骤指标（无顺序/无窗口⇒转化率系统性偏高）。
+    解析失败时 paths 置空并显式标注 path_resolution=failed（与 routes 同口径）。
+    """
+    try:
+        from backend.modules.mind.rag.behavior_path import resolve_behavior_paths
+        paths = resolve_behavior_paths(
+            object_keys=result.get("hit_object_keys") or [], keywords=keywords or [])
+        result["paths"] = paths
+        result["path_resolution"] = "ok"
+    except Exception as e:  # noqa: BLE001 — 路径是增强信息，不毁掉检索主结果，但必须可诊断
+        logger.warning("[knowledge_search] 行为路径解析失败: %s", e)
+        result["paths"] = []
+        result["path_resolution"] = f"failed: {e}"
+    return result
+
+
 def _attach_graph_relations(result: dict) -> dict:
     """C3: 检索命中对象的 Oxigraph 关系展开（1 跳邻接）；图不可用显式降级标注。"""
     keys = result.get("hit_object_keys") or []
@@ -260,7 +280,9 @@ async def knowledge_search(args):
             elapsed = int((time.perf_counter() - t0) * 1000)
             source = _classify_retrieval_source(result.get("rag_source"), result.get("count") or 0)
             result = {**result, "retrieval_source": source, "retrieval_ms": elapsed}
-            result = _attach_graph_relations(_attach_routes(result))
+            result = _attach_paths(
+                _attach_graph_relations(_attach_routes(result)),
+                keywords=_split_multi(questions[0]))
             # 归因不写敏感 SQL/PII, 仅来源标签 + 耗时(护栏 §9)
             record_span(kind="retrieval", name="knowledge_search", status="success",
                         duration_ms=elapsed, input_text=questions[0][:200],
@@ -278,8 +300,10 @@ async def knowledge_search(args):
                             "knowledge_base": r.get("knowledge_base"),
                             "doc_stale": r.get("doc_stale"),
                             "hit_object_keys": r.get("hit_object_keys") or [],
-                            **{k: v for k, v in _attach_graph_relations(_attach_routes(
-                                {"hit_object_keys": r.get("hit_object_keys") or []})).items()
+                            **{k: v for k, v in _attach_paths(
+                                _attach_graph_relations(_attach_routes(
+                                    {"hit_object_keys": r.get("hit_object_keys") or []})),
+                                keywords=_split_multi(qtext)).items()
                                if k != "hit_object_keys"},
                             "chunks": r.get("chunks") or [],
                             "count": cnt})

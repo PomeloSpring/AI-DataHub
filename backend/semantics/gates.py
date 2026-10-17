@@ -90,12 +90,13 @@ def _blocked_column_guard(
 ) -> Optional[str]:
     """合规屏蔽列(block=不能查询出来)显式请求即拒绝。对 admin 同样生效。
 
-    两道检测(仅限普通表绑定; sql_template 由建模人员注册, 屏蔽列交由执行层结果剔除):
+    两道检测(仅限普通表绑定; 数据集对象由建模人员注册预制 SQL, 屏蔽列交由执行层结果剔除
+    —— 数据集输出列名与上游敏感列同名时在此硬拒会误杀已聚合结果):
       1. intent 点名: 维度/指标/过滤/排序/时间列 解析到物理列命中 block 列;
       2. SQL 文本兜底: 编译后的 SQL 词边界命中 block 列(覆盖间接聚合泄露如 AVG(salary))。
     命中返回拒绝文案, 否则 None。屏蔽基线加载失败时不在此报错(执行层仍有同底座丢弃)。
     """
-    if binding.bind_kind == "sql_template" or not binding.physical_table:
+    if binding.bind_kind == "dataset" or not binding.physical_table:
         return None
     try:
         from backend.core.enforcer import permission_enforcer

@@ -29,6 +29,15 @@ except Exception:  # pragma: no cover
     _HAS_SQLGLOT = False
 
 
+def _bare_table(ref: str) -> str:
+    """限定表引用 -> 裸表名（策略匹配用，与 enforcer._resolve_table_ref 同口径）。
+
+    `db.t` / `catalog.db.t` 的限定段只用于"表属于哪个源"的判定，行策略/敏感基线
+    在元库里按裸表名登记；拿限定名去查策略会**静默查不到**（看起来已施加实则未过滤）。
+    """
+    return str(ref or "").strip().rsplit(".", 1)[-1]
+
+
 def resolve_table_filters(
     user_id: int,
     workspace_id: int,
@@ -39,6 +48,9 @@ def resolve_table_filters(
 
     Returns:
         ({table: row_filter}, {table: {"hidden":[...], "masked":{...}}}, policies_applied)
+
+    入参可以是限定名（模板正文里写 `db.t`）：策略按**裸表名**加载，但返回的谓词映射
+    同时以裸表名和原始限定名为键，使 `inject_filters` 两种引用形式都能命中（护栏 §10）。
     """
     tables = [t for t in tables if t]
     filters: dict[str, str] = {}
@@ -47,18 +59,27 @@ def resolve_table_filters(
     if not tables:
         return filters, column_restriction, applied
 
+    # 同一裸表可能以多种形式出现（t / db.t）：按裸表名去重加载策略，避免重复查与重计
+    variants: dict[str, list[str]] = {}
+    for ref in tables:
+        variants.setdefault(_bare_table(ref), []).append(ref)
+
     from backend.core.enforcer import permission_enforcer
 
-    for table in tables:
+    for bare, refs in variants.items():
+        if not bare:
+            continue
         res = permission_enforcer.check_access(
             user_id=user_id,
             workspace_id=workspace_id,
             datasource_id=datasource_id,
-            table_name=table,
+            table_name=bare,
         )
         if res.row_filter:
-            filters[table] = res.row_filter
-        column_restriction[table] = {
+            for key in {bare, *refs}:     # 限定名与裸名都映射到同一谓词
+                if key:
+                    filters[key] = res.row_filter
+        column_restriction[bare] = {
             "hidden": list(res.hidden_columns or []),
             "masked": dict(res.masked_columns or {}),
         }

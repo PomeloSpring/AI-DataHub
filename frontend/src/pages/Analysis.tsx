@@ -240,6 +240,10 @@ export default function Analysis() {
               <UserCircle className="h-4 w-4 mr-2" />
               个人设置
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => navigate('/system/memory')}>
+              <Brain className="h-4 w-4 mr-2" />
+              我的记忆
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={() => { logout(); navigate('/login'); }}>
               <LogOut className="h-4 w-4 mr-2" />
               退出登录

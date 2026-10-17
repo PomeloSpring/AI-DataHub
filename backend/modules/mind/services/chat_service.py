@@ -1,6 +1,10 @@
 """Chat Service — 聊天入口,全部派发 qoder 执行层(agent dispatch).
 
 quick 单发管道(NL2SQL LLM 编排)已退役,非 agent 模式显式报错。
+
+本模块同时是**前置意图漏斗**的接线点（见 execution/intent_gate.py）：
+`_try_dispatch_via_execution_layer` 是两个 chat SSE 入口（/api/chat/send/stream 与
+/api/pipeline/send/stream）的唯一汇合点，漏斗只插在这一处，两条入口不可能漂移。
 """
 
 import json
@@ -15,6 +19,10 @@ logger = logging.getLogger(__name__)
 
 def _sse_event(event: str, data: dict) -> bytes:
     """Format a Server-Sent Event."""
+    if event == "done":
+        # 「存为报表」入口由报表域单一口径标注(前端只消费, 不另写一套判断)
+        from backend.modules.viz.services.report_service import with_reportability
+        data = with_reportability(data)
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n".encode("utf-8")
 
 
@@ -41,6 +49,8 @@ class ChatService:
         as_bot_key: str = "",
         report_theme: str = "",
         task_binding: Optional[dict] = None,
+        force_agent: bool = False,
+        policy=None,
     ):
         """Stream a query through the qoder execution layer (agent dispatch).
 
@@ -48,6 +58,8 @@ class ChatService:
         task_binding: 服务端注入的任务绑定标记(如 {"kind": "ontology_generate", "datasource_id": N}),
         供工具侧域约束裁决(assert_ontology_draft_scope)；不进 LLM 视野。
         pipeline_mode: 仅接受 "agent"/空;quick 单发管道已退役,其他值显式报错。
+        force_agent: 前端「转深度分析」显式绕过意图漏斗（只关分流，不关任何护栏）。
+        policy: preflight 已解析的 AS-BOT 生效策略，透传给漏斗避开重复解析（None 则漏斗自解析）。
         Yields SSE bytes for streaming response.
         """
         from backend import observability
@@ -95,6 +107,8 @@ class ChatService:
                 as_bot_key=as_bot_key,
                 report_theme=report_theme,
                 task_binding=task_binding,
+                force_agent=force_agent,
+                policy=policy,
             )
             try:
                 async for event in stream:
@@ -134,17 +148,118 @@ class ChatService:
         as_bot_key: str = "",
         report_theme: str = "",
         task_binding: Optional[dict] = None,
+        force_agent: bool = False,
+        policy=None,
     ):
         """Agent 模式执行层派发.
 
         层解析优先级:工作空间绑定的默认层 > 系统默认外部层(qoder)。
         外部执行层缺失或不可用时直接报错。
+
+        开头先过**前置意图漏斗**：寒暄/无效输入/能力询问/使用说明/涉密索要本地直答，
+        不起子进程不烧 credit；判定不准一律 fail-open 交模型（宁可多花，不可错答）。
         """
         import uuid
 
+        from starlette.concurrency import run_in_threadpool
+
+        from backend import observability
+        from backend.modules.mind.execution import intent_gate
         from backend.modules.mind.execution import service as exec_service
         from backend.modules.mind.execution.manager import get_execution_layer_manager
         from backend.modules.mind.execution.models import ExecutionContext, ExecutionResult, ExecutionTask
+
+        # 数据源权威回填: 兼容旧客户端/直连 API 未带 datasource_id 时, 从会话持久化行回填,
+        # 避免语义工具以 datasource_id=0 命中空目录(取不到数)。回填值仍对 LLM 黑盒。
+        # 必须排在漏斗之前: 业务词典按会话生效源分桶, ds=0 会把真实业务信号当成"无命中"放行。
+        if not datasource_id and conversation_id:
+            try:
+                from backend.common.db import execute_query
+                _crow = execute_query(
+                    "SELECT datasource_id FROM adh_conversations WHERE id = %s",
+                    (conversation_id,), fetchone=True)
+                datasource_id = int((_crow or {}).get("datasource_id") or 0)
+            except Exception as e:  # noqa: BLE001 — 回填失败不阻断, 由下游 get_metrics/run_semantic_query fail-loud
+                logger.debug("[agent] conversation datasource backfill skipped: %s", e)
+
+        ctx = ExecutionContext(
+            workspace_id=workspace_id,
+            datasource_id=datasource_id or 0,
+            user_id=user_id,
+            username=username,
+            user_role=user_role,
+            model_id=model_id,
+            # chat 运行时选择的执行层模型(如 provider/model_name)、
+            # 上一轮执行层会话 ID(SDK 多轮对话 resume)及 chat 会话 ID
+            # (qoder 长对话池 key: 同会话复用持久 qodercli 进程)、
+            # 任务绑定标记(仅工具侧域约束可见, 不进 prompt)
+            extra={
+                k: v
+                for k, v in (
+                    ("model_ref", model_ref),
+                    ("session_id", session_id),
+                    ("conversation_id", conversation_id),
+                    ("as_bot_key", as_bot_key),
+                    ("report_theme", report_theme),
+                    ("task_binding", task_binding),
+                )
+                if v
+            },
+        )
+
+        # ── 前置意图漏斗 ────────────────────────────────────
+        # policy 由 preflight 解析后透传；内部调用方(本体生成等)不带时在这里补解析。
+        if policy is None and not force_agent:
+            try:
+                from backend.modules.mind.execution.tool_policy import resolve_policy
+                policy = await run_in_threadpool(resolve_policy, ctx)
+            except Exception as e:  # noqa: BLE001 — 解析失败只弱化本地文案/模式覆盖，不拿它做拦截依据
+                logger.warning("[intent_gate] 策略解析失败（本次仅按全局模式，不拦能力清单类）: %s", e)
+        decision = await run_in_threadpool(
+            intent_gate.route_intent, question, ctx=ctx, history=history,
+            attachments=attachments, task_binding=task_binding,
+            force_agent=force_agent, policy=policy)
+        gate_snapshot = {k: decision.get(k) for k in
+                         ("mode", "layer", "label", "reason", "signals", "latency_ms", "gate_error")}
+
+        if decision.get("intercept") and decision.get("mode") == intent_gate.MODE_ENFORCE:
+            reply = await run_in_threadpool(
+                intent_gate.build_local_reply, decision, policy=policy, ctx=ctx)
+            if reply:
+                decision["reply"] = reply
+                intent_gate.record_observability(decision, question)
+                await run_in_threadpool(
+                    intent_gate.record_intercept, decision, question=question, ctx=ctx,
+                    policy=policy, conversation_id=conversation_id, force_agent=force_agent)
+                yield _sse_event("progress", {
+                    "stage": "intent_gate", "step": "route",
+                    "message": "前置意图层直接应答（本轮未调用模型）",
+                    "gate": gate_snapshot,
+                })
+                yield _sse_event("token", {"text": reply})
+                _local_done = {
+                    "intent": "intent_gate", "reply": reply, "sql": None, "warnings": [],
+                    "handled_by": intent_gate.HANDLED_GATE, "gate": gate_snapshot,
+                    # 本地直答没有模型用量：显式给 0，前端不会把它当成"统计缺失"
+                    "tool_calls": [], "stats": {"num_turns": 0, "tool_call_count": 0, "duration_ms": 0},
+                }
+                _tid = observability.trace_id_for_response()
+                _muuid = observability.message_uuid()
+                if _tid:
+                    _local_done["trace_id"] = _tid
+                if _muuid:
+                    _local_done["message_uuid"] = _muuid
+                observability.set_result(status="success", final_answer=reply)
+                yield _sse_event("done", _local_done)
+                return
+            # 判为可拦但文案没生成出来 = 拦截没做完：不能"假装拦住了"，回退 agent 并留下可诊断事实
+            decision["gate_error"] = "local_reply_missing"
+            logger.warning("[intent_gate] 判定为可拦但本地文案缺失，本轮回退 agent: label=%s",
+                           decision.get("label"))
+        intent_gate.record_observability(decision, question)
+        await run_in_threadpool(
+            intent_gate.record_intercept, decision, question=question, ctx=ctx,
+            policy=policy, conversation_id=conversation_id, force_agent=force_agent)
 
         manager = get_execution_layer_manager()
         row = None
@@ -163,7 +278,8 @@ class ChatService:
         except Exception as e:
             logger.exception("工作空间执行层权限解析失败")
             yield _sse_event("error", {"message": "执行层权限配置暂不可用"})
-            yield _sse_event("done", {"error": "执行层权限配置暂不可用"})
+            yield _sse_event("done", {"error": "执行层权限配置暂不可用",
+                                      "handled_by": intent_gate.HANDLED_AGENT, "gate": gate_snapshot})
             return
         if row is None:
             row = fallback
@@ -180,6 +296,8 @@ class ChatService:
                 "sql": None,
                 "warnings": [],
                 "error": err,
+                "handled_by": intent_gate.HANDLED_AGENT,
+                "gate": gate_snapshot,
             })
             return
 
@@ -192,49 +310,14 @@ class ChatService:
         })
 
         # 多模态附件:上传文件描述随任务透传,由 place_attachments 落盘到会话工作区
-        task_attachments = list(attachments or [])
-
-        # 数据源权威回填: 兼容旧客户端/直连 API 未带 datasource_id 时, 从会话持久化行回填,
-        # 避免语义工具以 datasource_id=0 命中空目录(取不到数)。回填值仍对 LLM 黑盒。
-        if not datasource_id and conversation_id:
-            try:
-                from backend.common.db import execute_query
-                _crow = execute_query(
-                    "SELECT datasource_id FROM adh_conversations WHERE id = %s",
-                    (conversation_id,), fetchone=True)
-                datasource_id = int((_crow or {}).get("datasource_id") or 0)
-            except Exception as e:  # noqa: BLE001 — 回填失败不阻断, 由下游 get_metrics/run_semantic_query fail-loud
-                logger.debug("[agent] conversation datasource backfill skipped: %s", e)
-
+        # （datasource 回填与 ExecutionContext 已在漏斗前完成，这里复用同一个上下文：
+        # 判定用的作用域与执行用的作用域必须是同一个，不能长成两套口径。）
         task = ExecutionTask(
             task_id=uuid.uuid4().hex[:16],
             question=question,
             history=history,
-            context=ExecutionContext(
-                workspace_id=workspace_id,
-                datasource_id=datasource_id or 0,
-                user_id=user_id,
-                username=username,
-                user_role=user_role,
-                model_id=model_id,
-                # chat 运行时选择的执行层模型(如 provider/model_name)、
-                # 上一轮执行层会话 ID(SDK 多轮对话 resume)及 chat 会话 ID
-                # (qoder 长对话池 key: 同会话复用持久 qodercli 进程)
-                extra={
-                    k: v
-                    for k, v in (
-                        ("model_ref", model_ref),
-                        ("session_id", session_id),
-                        ("conversation_id", conversation_id),
-                        ("as_bot_key", as_bot_key),
-                        ("report_theme", report_theme),
-                        # 任务绑定标记(仅工具侧域约束可见, 不进 prompt)
-                        ("task_binding", task_binding),
-                    )
-                    if v
-                },
-            ),
-            attachments=task_attachments,
+            context=ctx,
+            attachments=list(attachments or []),
         )
 
         try:
@@ -280,14 +363,14 @@ class ChatService:
             logger.error("Execution layer dispatch error: %s", e, exc_info=True)
             message = str(e) if isinstance(e, (ValueError, PermissionError)) else "执行层未能安全完成，请联系管理员"
             yield _sse_event("error", {"message": message})
-            yield _sse_event("done", {"intent": "agent", "reply": message, "error": message})
+            yield _sse_event("done", {"intent": "agent", "reply": message, "error": message,
+                                      "handled_by": intent_gate.HANDLED_AGENT, "gate": gate_snapshot})
             return
 
         if await request.is_disconnected():
             return
 
         if result.success:
-            from backend import observability
             observability.set_result(status="success", final_answer=result.output or "")
             _done = {
                 "intent": "agent",
@@ -295,6 +378,9 @@ class ChatService:
                 "sql": None,
                 "warnings": [],
                 "execution_layer": layer_name,
+                # 处理方式：本轮真的走了模型（intent_gate = 前置层直答，未走模型）
+                "handled_by": intent_gate.HANDLED_AGENT,
+                "gate": gate_snapshot,
                 # 执行层会话 ID,前端回传以实现 SDK 多轮对话
                 "capabilities": result.meta.get("capabilities"),
                 # 完整工具调用清单(持久化回放)与执行统计(时间线摘要条)
@@ -318,7 +404,6 @@ class ChatService:
             yield _sse_event("done", _done)
         else:
             err = result.error or "执行层执行失败"
-            from backend import observability
             observability.set_result(status="error", error=err)
             yield _sse_event("error", {"message": err, "status_code": result.meta.get("status_code")})
             yield _sse_event("done", {
@@ -327,4 +412,6 @@ class ChatService:
                 "sql": None,
                 "warnings": [],
                 "error": err,
+                "handled_by": intent_gate.HANDLED_AGENT,
+                "gate": gate_snapshot,
             })

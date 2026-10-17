@@ -58,7 +58,6 @@ CREATE TABLE IF NOT EXISTS adh_workspace_datasources (
 -- 元数据表
 ALTER TABLE adh_table_info ADD COLUMN workspace_id BIGINT DEFAULT 0 AFTER datasource_id;
 ALTER TABLE adh_column_metadata ADD COLUMN workspace_id BIGINT DEFAULT 0 AFTER datasource_id;
-ALTER TABLE adh_sql_templates ADD COLUMN workspace_id BIGINT DEFAULT 0 AFTER datasource_id;
 ALTER TABLE adh_business_terms ADD COLUMN workspace_id BIGINT DEFAULT 0 AFTER datasource_id;
 ALTER TABLE adh_table_relations ADD COLUMN workspace_id BIGINT DEFAULT 0 AFTER datasource_id;
 
@@ -98,7 +97,6 @@ ALTER TABLE adh_menu_items ADD COLUMN workspace_id BIGINT DEFAULT 0 AFTER id;
 -- ============================================================================
 ALTER TABLE adh_table_info ADD INDEX idx_workspace (workspace_id);
 ALTER TABLE adh_column_metadata ADD INDEX idx_workspace (workspace_id);
-ALTER TABLE adh_sql_templates ADD INDEX idx_workspace (workspace_id);
 ALTER TABLE adh_business_terms ADD INDEX idx_workspace (workspace_id);
 ALTER TABLE adh_table_relations ADD INDEX idx_workspace (workspace_id);
 ALTER TABLE adh_dashboards ADD INDEX idx_workspace (workspace_id);
@@ -139,7 +137,6 @@ SELECT 1, id, is_default FROM adh_datasources;
 -- 更新所有表的 workspace_id 为 1（默认工作空间）
 UPDATE adh_table_info SET workspace_id = 1 WHERE workspace_id = 0;
 UPDATE adh_column_metadata SET workspace_id = 1 WHERE workspace_id = 0;
-UPDATE adh_sql_templates SET workspace_id = 1 WHERE workspace_id = 0;
 UPDATE adh_business_terms SET workspace_id = 1 WHERE workspace_id = 0;
 UPDATE adh_table_relations SET workspace_id = 1 WHERE workspace_id = 0;
 UPDATE adh_dashboards SET workspace_id = 1 WHERE workspace_id = 0;

@@ -10,6 +10,11 @@ ExecutionContextVar 注入(见 context.py)。
 - design:   request_dashboard_design / get_dashboard_design / prepare_dashboard_design /
             get_business_semantics / search_business_knowledge (仪表盘设计专用, 强制 design_id)
 - query:    check_sql(治理预检) / execute_sql(受治理只读执行;由 AS-BOT 显式授权)
+- ontology: 本体建模工具 + 指标/维度字典写(save_metric / save_dimension)
+            (本体写只可作用于系统本体 kind='system';字典写受 ontology:save 权限码把关,
+             只落库+审计, 图谱/上云级联由用户在建模页显式触发)
+- memory:   save_memory / list_memory / delete_memory
+            (用户记忆: 只读写本人行的稳定偏好/口径, 不返回业务数据行, 严禁存会话上下文)
 
 设计理念:代码不再硬删任何工具组,工具的去留完全下放到 AS-BOT 的"工具权限"粒度配置
 (as_bot.tools.mcp 逐工具勾选)。未选中的工具不会被注册进 MCP server,LLM 无从调用。
@@ -30,6 +35,7 @@ from backend.modules.mind.execution.sdk_tools.context import (
     set_execution_context,
 )
 from backend.modules.mind.execution.sdk_tools.ontology_tools import build_ontology_server
+from backend.modules.mind.execution.sdk_tools.memory_tools import build_memory_server
 from backend.modules.mind.execution.sdk_tools.query_tools import build_query_server
 from backend.modules.mind.execution.sdk_tools.screen_tools import build_screen_server
 from backend.modules.mind.execution.sdk_tools.semantic_tools import build_semantic_server
@@ -49,6 +55,7 @@ TOOL_SERVER_BUILDERS = {
     "design": build_design_server,
     "system": build_system_server,
     "assets": build_assets_server,
+    "memory": build_memory_server,
 }
 
 # 工具组名 → server 名与工具名(用于 allowed_tools 精确预授权)
@@ -64,6 +71,8 @@ TOOL_SERVER_TOOLS = {
         "search_ontology", "get_ontology_model", "list_ontology_models",
         "get_metadata_summary", "generate_ontology_draft", "save_ontology_draft",
         "save_ontology_model", "activate_ontology_model", "import_ontology_yaml",
+        # 指标/维度字典写（口径唯一权威；权限码 ontology:save 把关）
+        "save_metric", "save_dimension",
     ]),
     "screen": ("datahub_screen", [
         "create_data_screen", "get_data_screen", "update_data_screen_chart",
@@ -78,6 +87,7 @@ TOOL_SERVER_TOOLS = {
         "asset_list", "asset_get", "asset_archive", "disk_status",
         "cleanup_candidates", "cleanup_execute",
     ]),
+    "memory": ("datahub_memory", ["save_memory", "list_memory", "delete_memory"]),
 }
 
 
@@ -155,6 +165,7 @@ __all__ = [
     "build_design_server",
     "build_system_server",
     "build_assets_server",
+    "build_memory_server",
     "ExecutionContextVar",
     "get_execution_context",
     "set_execution_context",

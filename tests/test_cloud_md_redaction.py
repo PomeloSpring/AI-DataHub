@@ -28,7 +28,7 @@ DOC = {
                 "catalog_name": "internal",
                 "db_name": "stardb",
                 "bind_kind": "primary",
-                "template_ref": "",
+                "dataset_ref": "",
                 "query_mode": "raw_source",
                 "permission_tokens": ["secret-token-abc"],
             },
@@ -93,21 +93,21 @@ class TestToCloudMdRedaction:
         assert "已剔除物理表" in self.cloud
 
 
-class TestTemplateVarsRedaction:
-    def test_template_ref_kept_but_sql_stripped(self):
+class TestDatasetVarsRedaction:
+    def test_dataset_ref_kept_but_sql_stripped(self):
         doc = {
             "domain": "分析",
             "objects": [{
                 "key": "funnel", "display_name": "漏斗",
                 "execution_binding": {
-                    "bind_kind": "sql_template", "template_ref": "tpl-funnel-7d",
+                    "bind_kind": "dataset", "dataset_ref": "用户路径漏斗",
                     "query_mode": "raw_source", "physical_table": "",
                     "catalog_ref": "cat://x",
                 },
             }],
         }
         vars_fn = lambda ref: {"start_date": {"type": "date"}, "scene": {"type": "string"}}
-        cloud = to_cloud_md(doc, template_vars_fn=vars_fn)
-        assert "tpl-funnel-7d" in cloud          # 逻辑模板引用保留
+        cloud = to_cloud_md(doc, dataset_vars_fn=vars_fn)
+        assert "用户路径漏斗" in cloud          # 逻辑数据集名保留
         assert "start_date(date)" in cloud        # 参数名+类型保留
         assert "cat://x" not in cloud             # catalog_ref 剔除

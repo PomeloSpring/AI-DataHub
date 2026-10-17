@@ -3,17 +3,18 @@
  *
  * 行为:
  *  - 执行中: inline 展示一个限高(260px)、内部自动滚到最新的窗口, 方便实时观察;
- *  - 执行结束: inline 只保留一行摘要(结果才是重点), 不再占用高度;
- *  - 点击摘要行: 通过 Portal 弹层(modal)查看完整过程 —— 弹层脱离文档流,
- *    无论内容多长都不会撑高消息气泡/对话框, 也不受任何祖先 overflow 裁剪影响。
+ *  - 执行结束: inline 滑动收起, 只保留一行摘要(结果才是重点), 不再占用高度;
+ *  - 点击摘要行: 滑动展开/收起阶段性内容(限高内滚);「全屏」按钮经 Portal 弹层
+ *    查看完整过程 —— 弹层脱离文档流, 无论内容多长都不会撑高消息气泡/对话框。
  *
  * 无过程内容时不渲染。内部复用 ProcessTimeline(思考/工具按真实顺序穿插)。
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Activity, CheckCircle2, Loader2, ChevronRight, X } from 'lucide-react';
+import { Activity, CheckCircle2, Loader2, ChevronDown, Maximize2, X } from 'lucide-react';
 import ProcessTimeline from './ProcessTimeline';
+import { SlideCollapse } from './chat/StageCard';
 import type { ProcessSegment, ToolCall, ProgressStage } from '../stores/chatStore';
 
 interface Props {
@@ -44,8 +45,11 @@ export default function ExecutionProcess({
     return 0;
   }, [toolCalls, process, progressStages]);
 
-  // 弹层(modal)开关: 仅用于"结束后查看完整过程", 脱离文档流不撑高对话框。
+  // 弹层(modal)开关: 仅用于"全屏查看完整过程", 脱离文档流不撑高对话框。
   const [modalOpen, setModalOpen] = useState(false);
+  // inline 滑动展开态: null = 跟随流式状态(执行中展开、结束自动滑动收起)。
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const inlineOpen = userOpen ?? isStreaming;
   const bodyRef = useRef<HTMLDivElement>(null);
 
   // 执行中: inline 限高窗口内部自动滚到最新一步。
@@ -54,7 +58,7 @@ export default function ExecutionProcess({
     if (isStreaming && bodyRef.current) {
       bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
     }
-  }, [sig, isStreaming]);
+  }, [sig, isStreaming, inlineOpen]);
 
   // Esc 关闭弹层
   useEffect(() => {
@@ -78,16 +82,20 @@ export default function ExecutionProcess({
   );
 
   return (
-    <div className="mb-3 rounded-lg border bg-muted/20">
-      {/* 摘要行 — 结束后仅保留这一行; 点击打开弹层查看完整过程 */}
+    <div className="mb-3 rounded-xl border bg-card shadow-sm overflow-hidden animate-stage-in">
+      {/* 摘要行 — 点击滑动展开/收起阶段性过程;「全屏」打开弹层 */}
       <div
-        className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none rounded-lg hover:bg-muted/60 transition-colors"
-        onClick={() => setModalOpen(true)}
+        className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none hover:bg-muted/40 transition-colors"
+        onClick={() => setUserOpen(!inlineOpen)}
       >
         {isStreaming ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
+          <span className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 bg-primary/10">
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+          </span>
         ) : (
-          <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0" />
+          <span className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 bg-green-500/10">
+            <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+          </span>
         )}
         <span className="text-xs font-medium text-foreground shrink-0">执行过程</span>
         {stepCount > 0 && (
@@ -96,26 +104,33 @@ export default function ExecutionProcess({
           </span>
         )}
         <span className="text-[11px] text-muted-foreground truncate flex-1 min-w-0">
-          {isStreaming ? '正在思考与调用工具…' : '已完成，点击展开查看过程'}
+          {isStreaming ? '正在思考与调用工具…' : (inlineOpen ? '点击收起过程' : '已完成，点击滑动展开过程')}
         </span>
-        <span className="flex items-center gap-1 text-[11px] text-muted-foreground shrink-0">
-          {!isStreaming && <Activity className="h-3 w-3" />}
-          <ChevronRight className="h-3.5 w-3.5" />
-        </span>
+        <button
+          className="p-1 rounded hover:bg-muted text-muted-foreground shrink-0"
+          title="全屏查看完整过程"
+          aria-label="全屏查看完整过程"
+          onClick={(e) => { e.stopPropagation(); setModalOpen(true); }}
+        >
+          <Maximize2 className="h-3 w-3" />
+        </button>
+        <ChevronDown
+          className={`h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform duration-300 ${inlineOpen ? 'rotate-180' : ''}`}
+        />
       </div>
 
-      {/* 执行中: inline 限高窗口(内部滚动), 结束后不渲染 → 不占高度 */}
-      {isStreaming && (
+      {/* 阶段性内容: 滑动展开的限高窗口(内部滚动), 收起时不占高度 */}
+      <SlideCollapse open={inlineOpen}>
         <div
           ref={bodyRef}
-          className="px-2 pb-2"
+          className="px-2 pb-2 border-t"
           style={{ maxHeight: 260, overflowY: 'auto' }}
         >
           {timeline(true)}
         </div>
-      )}
+      </SlideCollapse>
 
-      {/* 结束后查看完整过程: Portal 弹层, 脱离文档流, 不撑高对话框 */}
+      {/* 全屏查看完整过程: Portal 弹层, 脱离文档流, 不撑高对话框 */}
       {modalOpen && createPortal(
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"

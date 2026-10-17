@@ -141,7 +141,6 @@ export default function VisComponentPreview({ c }: { c: VisComponent }) {
     background: cfg.titleBarBg, border: cfg.borderStyle, color: cfg.titleColor,
     borderBottom: cfg.showUnderline ? `2px solid ${cfg.underlineColor}` : undefined,
   }}>标题与边框</div>;
-  if (c.category === 'sql_template') return <div className="flex h-16 items-center justify-center rounded-md border text-xs text-muted-foreground">仅供人工数据配置</div>;
   if (c.category === 'report_template') {
     const fmt = (c.style_config as any)?.format || 'markdown';
     return <div className="flex h-16 flex-col items-center justify-center rounded-md border p-2 text-xs text-muted-foreground">

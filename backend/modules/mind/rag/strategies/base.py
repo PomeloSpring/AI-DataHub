@@ -38,8 +38,8 @@ class RetrievalStrategy(ABC):
                 column_metadata: list[dict] — column-level metadata
                 business_terms: list[dict]  — matched business terms
                 table_relations: list[dict] — table JOIN relations
-                sql_templates: list[dict]   — matched SQL templates
-                saved_datasets: list[dict]  — matched saved datasets
+                saved_datasets: list[dict]  — matched governed datasets
+                                                    (名称/描述/字段语义, 不含 SQL 正文)
                 rag_source: str             — strategy name for logging
         """
         ...
@@ -51,7 +51,6 @@ _EMPTY_RESULT = {
     "column_metadata": [],
     "business_terms": [],
     "table_relations": [],
-    "sql_templates": [],
     "saved_datasets": [],
     "rag_source": "empty",
 }

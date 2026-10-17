@@ -402,7 +402,7 @@ def _resolve_from_bindings(conn, object_key, datasource_id, datasource_name,
         physical_table=row.get("physical_table") or "",
         catalog_ref=row.get("catalog_ref") or "",
         bind_kind=row.get("bind_kind") or "primary",
-        template_ref=row.get("template_ref") or "",
+        dataset_ref=row.get("dataset_ref") or "",
         db_type=_ds_db_type(conn, ds_id_out),
         join_expr=row.get("join_expr") or "",
         column_map={str(k): str(v) for k, v in column_map.items()},
@@ -440,7 +440,7 @@ def _resolve_from_objects_inline(conn, object_key, datasource_id, datasource_nam
     eb = _as_dict(row["execution_binding"])
     bind_kind = eb.get("bind_kind") or "primary"
     table = eb.get("physical_table") or eb.get("table") or ""
-    if not table and bind_kind != "sql_template":
+    if not table and bind_kind != "dataset":
         warnings.append("execution_binding missing physical_table")
         return None
     # 内联快照也按 name 重关联: eb 新格式含 datasource_name, 旧行回落传入 name
@@ -457,7 +457,7 @@ def _resolve_from_objects_inline(conn, object_key, datasource_id, datasource_nam
         physical_table=table,
         catalog_ref=eb.get("catalog_ref", ""),
         bind_kind=bind_kind,
-        template_ref=eb.get("template_ref") or "",
+        dataset_ref=eb.get("dataset_ref") or "",
         db_type=_ds_db_type(conn, ds_id_out),
         join_expr=eb.get("join_expr", ""),
         column_map={str(k): str(v) for k, v in (eb.get("column_map") or {}).items()},

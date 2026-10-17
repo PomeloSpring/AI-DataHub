@@ -66,29 +66,6 @@ CREATE TABLE IF NOT EXISTS adh_column_metadata (
 ) ENGINE=InnoDB;
 
 -- ============================================================================
--- SQL 模板表
--- ============================================================================
-CREATE TABLE IF NOT EXISTS adh_sql_templates (
-    id              BIGINT NOT NULL AUTO_INCREMENT,
-    datasource_id   BIGINT NOT NULL DEFAULT 0,
-    template_id     VARCHAR(64)  NOT NULL,
-    template_name   VARCHAR(256) NOT NULL,
-    category        VARCHAR(64)  NOT NULL,
-    intent_keywords VARCHAR(512) NOT NULL,
-    sql_template    TEXT         NOT NULL,
-    variables       TEXT,
-    rules           TEXT,
-    description     VARCHAR(512) DEFAULT '',
-    usage_count     INT          DEFAULT 0,
-    is_active       TINYINT      DEFAULT 1,
-    created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_template_id (template_id),
-    INDEX idx_active (is_active)
-) ENGINE=InnoDB;
-
--- ============================================================================
 -- 业务术语表
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS adh_business_terms (

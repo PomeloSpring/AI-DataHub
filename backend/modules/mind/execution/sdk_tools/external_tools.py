@@ -30,7 +30,11 @@ async def connection(row, ctx, runtime):
         if "read" not in runtime.policy.standard:
             raise PermissionError("stdio MCP 可读取会话文件，必须显式授权读取")
         from mcp.client.stdio import stdio_client, StdioServerParameters
-        from backend.modules.platform.services.sandbox_executor import SessionToolSandbox
+        from backend.modules.platform.services.sandbox_executor import SessionToolSandbox, resolve_backend
+        if resolve_backend() == "bwrap":
+            # stdio MCP 需以镜像入口方式起容器；bwrap 后端仅承接会话工具(read/write/edit/glob/grep/bash)。
+            # 显式拒绝而非静默改用 bwrap（stdio MCP 走的是镜像 entrypoint 契约）。
+            raise PermissionError("stdio MCP 目前要求 Docker 会话沙箱后端；请将默认沙箱设为本地(Docker)")
         container, command = SessionToolSandbox.command(runtime, "read")
         runtime.sandbox_used = True
         entrypoint = row.get("command")

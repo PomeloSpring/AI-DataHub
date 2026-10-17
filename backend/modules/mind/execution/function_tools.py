@@ -86,17 +86,20 @@ def _limit(args, default: int = 50, cap: int = 200) -> int:
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _list_reports(args):
-    """报表清单：只回标题/格式/状态/浏览次数。不含正文、分享令牌、证据摘要。"""
+    """报表清单：只回自己创建的报表的标题/格式/状态/浏览次数。不含正文、分享令牌、证据摘要。
+
+    报表是属主私有资源（列表/查看都按 owner_id fail-closed），AI 通道不得跨用户
+    把别人的报表标题递出去。
+    """
     ident = _identity()
     if not ident:
         return _text({"error": "无法确认调用者身份"}, is_error=True)
     rows = _select(
-        "SELECT id, title, format, access_mode, generation_status, publication_status, "
-        "       view_count, created_at "
-        "FROM adh_reports WHERE workspace_id = %s ORDER BY created_at DESC LIMIT %s",
-        (int(ident.get("workspace_id") or 0), _limit(args)))
+        "SELECT id, title, format, generation_status, source_type, view_count, created_at "
+        "FROM adh_reports WHERE owner_id = %s ORDER BY created_at DESC LIMIT %s",
+        (int(ident["user_id"]), _limit(args)))
     return _text({"reports": [_iso(r, "created_at") for r in rows],
-                  "note": "仅含业务摘要；报表正文与分享令牌不在 AI 可见范围内"})
+                  "note": "仅含本人创建报表的业务摘要；报表正文与分享令牌不在 AI 可见范围内"})
 
 
 def _list_dashboards(args):
@@ -294,6 +297,49 @@ def _generate_report(args):
     })
 
 
+def _save_report(args):
+    """把已展示给用户的分析结论存为报表（内容型，同步入库，报表中心可管理）。
+
+    与 ``_generate_report`` 的分工：那条是“按分析来源异步取数产出”（数据派生，
+    带权限快照）；本工具不取数、不新建取数通道，只把会话里已经给用户看过的结论
+    落为属主私有报表（fde-evolution §2：同一持久化入口 report_service）。
+    正文过 outbound_guard：命中物理标识/凭据/生成 SQL 即拒写（fail-loud，不静默截删）。
+    """
+    from backend.modules.mind.execution import outbound_guard
+    from backend.modules.viz.services import report_service
+    ident = _identity()
+    if not ident:
+        return _text({"error": "无法确认调用者身份"}, is_error=True)
+    title = str(args.get("title") or "").strip()
+    content = str(args.get("content") or "")
+    fmt = str(args.get("format") or "markdown").strip().lower()
+    if not title:
+        return _text({"error": "缺少报表标题 title"}, is_error=True)
+    if not content.strip():
+        return _text({"error": "缺少报表正文 content（写用户已在本会话看到的结论）"}, is_error=True)
+    hits = outbound_guard.find_sensitive_hits(content)
+    if hits:
+        return _text({"error": "报表正文包含不应归档的基础设施信息（命中: "
+                     + ", ".join(hits) + "）。请改用业务名称重新表述结论，"
+                       "不要写 SQL、物理表/列名、账号或地址。"}, is_error=True)
+    try:
+        result = report_service.create_content_report(
+            title=title, content=content, format=fmt,
+            workspace_id=int(ident.get("workspace_id") or 0), owner_id=int(ident["user_id"]),
+            source_type="conversation", origin={"channel": "as_bot"})
+    except (PermissionError, ValueError) as exc:
+        return _text({"error": str(exc)}, is_error=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("[function_tools] 保存报表失败")
+        return _text({"error": "保存报表失败，详见服务端日志"}, is_error=True)
+    return _text({
+        "report_id": result.get("report_id"),
+        "title": result.get("title"),
+        "generation_status": result.get("generation_status"),
+        "note": "已存入报表中心（仅本人可见与编辑）；告知用户可在「报表中心」实时查看",
+    })
+
+
 def _create_scheduled_task(args):
     """创建调度任务（委托 ScheduledTaskService.create_task）。
 
@@ -476,6 +522,22 @@ FUNCTION_ACTION_SPECS: dict[str, dict] = {
             "saved_query_id": {"type": "integer", "description": "分析来源：已保存查询 ID"}},
             "required": []},
         "handler": _generate_report,
+    },
+    "report.save": {
+        "tool_name": "save_report",
+        "label": "保存分析报表",
+        "description": "把本轮已完成并展示给用户的分析结论直接保入报表中心（同步入库，"
+                       "不排队、不重新取数）。content 只写用户已经在本会话看到的业务结论（Markdown），"
+                       "不得写 SQL、物理表/列名、账号或地址；报表仅本人可见。"
+                       "需要按数据源重新取数的报告请改用 generate_report。",
+        "perm_code": "report:manage", "object_key": "report", "read_only": False,
+        "schema": {"type": "object", "properties": {
+            "title": {"type": "string", "description": "报表标题（业务可读名）"},
+            "content": {"type": "string", "description": "报表正文（Markdown，仅业务结论）"},
+            "format": {"type": "string", "enum": ["markdown", "html"],
+                       "description": "正文格式，默认 markdown"}},
+            "required": ["title", "content"]},
+        "handler": _save_report,
     },
 }
 
