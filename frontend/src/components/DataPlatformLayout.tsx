@@ -20,7 +20,8 @@ import { useBrandStore } from '../stores/brandStore';
 import SectionSwitcher from './SectionSwitcher';
 import AsBotButton from './AsBotButton';
 import AsBotPanel from './asbot/AsBotPanel';
-import { isMenuAllowed } from '../stores/permissionStore';
+import { useMenuAccess } from '../hooks/useMenuAccess';
+import { SidebarMenuSkeleton } from './SidebarMenuSkeleton';
 import { pruneEmptySections } from '@/lib/menuUtils';
 
 /** 将路由 key 转换为 menu_key: '/data/ontology' → 'data:ontology' */
@@ -64,8 +65,12 @@ const DATA_PLATFORM_MENU_ITEMS = [
   { key: '/data/udfs', icon: FunctionSquare, label: 'UDF 管理' },
 ];
 
+/** 骨架行数 = 菜单项总数（权限未就绪时的占位高度贴近真实菜单上限） */
+const MENU_SKELETON_ROWS = DATA_PLATFORM_MENU_ITEMS.filter(item => 'key' in item).length;
+
 export default function DataPlatformLayout() {
   const [collapsed, setCollapsed] = useState(false);
+  const menuAccess = useMenuAccess();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -79,9 +84,11 @@ export default function DataPlatformLayout() {
 
   const currentPath = location.pathname;
   // 按权限过滤菜单; 一级分组下无可访问项时不渲染该分组标题
-  const visibleMenu = pruneEmptySections(
-    DATA_PLATFORM_MENU_ITEMS.filter(item => !('key' in item) || isMenuAllowed(toMenuKey((item as any).key)))
-  );
+  // 权限清单未就绪时不渲染真实菜单（isMenuAllowed 未加载时 fail-open 会把
+  // 无权限项先画出来再抽走），改为同高骨架
+  const visibleMenu = menuAccess.ready ? pruneEmptySections(
+    DATA_PLATFORM_MENU_ITEMS.filter(item => !('key' in item) || menuAccess.allowed(toMenuKey((item as any).key)))
+  ) : [];
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -103,6 +110,7 @@ export default function DataPlatformLayout() {
         <div className="flex-1 min-h-0 overflow-hidden">
           <ScrollArea className="h-full py-2">
             <nav className="space-y-1 px-2" role="navigation" aria-label="数据中台导航">
+              {!menuAccess.ready && <SidebarMenuSkeleton rows={MENU_SKELETON_ROWS} collapsed={collapsed} />}
               {visibleMenu.map((item, idx) => {
                 if ('section' in item) {
                   if (collapsed) return <div key={idx} className="my-2 mx-2 border-t border-sidebar-border" />;
@@ -167,6 +175,7 @@ export default function DataPlatformLayout() {
             </div>
             <ScrollArea className="flex-1 py-3">
               <nav className="space-y-1 px-3">
+                {!menuAccess.ready && <SidebarMenuSkeleton rows={MENU_SKELETON_ROWS} />}
                 {visibleMenu.map((item, idx) => {
                   if ('section' in item) {
                     return (

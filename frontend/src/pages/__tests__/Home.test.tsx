@@ -22,6 +22,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   invalidateCatalogCache();  // 目录 30s 内存缓存: 用例之间不得串数据
   useAuthStore.setState({ user: { id: 1, username: 'alice', role: 'viewer' } } as any);
+  // 快捷入口仅在权限就绪后渲染(未就绪时不给入口)，默认按“不限制”角色预置
+  usePermissionStore.setState({ loaded: true, unrestricted: true, perms: null, allowedMenus: null });
 });
 afterEach(() => {
   cleanup();

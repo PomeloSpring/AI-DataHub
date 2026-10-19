@@ -9,6 +9,25 @@ const DialogTrigger = DialogPrimitive.Trigger
 const DialogPortal = DialogPrimitive.Portal
 const DialogClose = DialogPrimitive.Close
 
+// ── 弹窗内的嵌套浮层不算“点弹窗外” ─────────────────────────────────────
+// Select / DropdownMenu / Popover 的浮层经 Portal 挂在 body（或全屏容器）上，
+// DOM 上不在弹窗节点内：在弹窗里点下拉选个值，第二次点击会被弹窗当成“外点”
+// 而关闭弹窗（历史缺陷：数据源详情的 DB 类型下拉点两次就退出详情弹窗、退回列表，
+// 全站所有“弹窗里带下拉/菜单/气泡”同病）。命中嵌套浮层时一律不触发外点关闭。
+const NESTED_LAYER_SELECTOR =
+  '[data-radix-popper-content-wrapper], [data-radix-select-viewport], [role="listbox"], [role="option"], [role="menu"], [role="dialog"]';
+
+export function isNestedLayerTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && !!target.closest(NESTED_LAYER_SELECTOR);
+}
+
+type OutsideEvent = { target: EventTarget | null; preventDefault: () => void };
+
+function keepNestedLayers(e: OutsideEvent, handler?: (event: any) => void) {
+  if (isNestedLayerTarget(e.target)) e.preventDefault();
+  handler?.(e);
+}
+
 const DialogOverlay = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Overlay>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay>
@@ -27,11 +46,13 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
+>(({ className, children, onInteractOutside, onPointerDownOutside, ...props }, ref) => (
   <DialogPortal container={useFullscreenContainer()}>
     <DialogOverlay />
     <DialogPrimitive.Content
       ref={ref}
+      onInteractOutside={(e) => keepNestedLayers(e, onInteractOutside)}
+      onPointerDownOutside={(e) => keepNestedLayers(e, onPointerDownOutside)}
       className={cn(
         "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border border-border bg-background p-5 shadow-2xl duration-200 [&>*]:min-w-0 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] rounded-2xl",
         className

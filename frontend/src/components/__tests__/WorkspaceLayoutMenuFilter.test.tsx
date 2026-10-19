@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import WorkspaceLayout from '../WorkspaceLayout';
@@ -77,5 +77,30 @@ describe('WorkspaceLayout 菜单按权限码过滤', () => {
     expect(entry).toBeInTheDocument();
     fireEvent.click(entry!);
     expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards');
+  });
+});
+
+describe('权限未就绪时不得闪现无权限菜单', () => {
+  it('权限清单未加载时只渲染骨架（isMenuAllowed 未加载时 fail-open，不能直接画全量菜单）', () => {
+    usePermissionStore.setState({ loaded: false, unrestricted: true, allowedMenus: null, perms: null });
+    renderLayout();
+    expect(screen.getByLabelText('菜单加载中')).toBeInTheDocument();
+    expect(screen.queryByText('自动化')).not.toBeInTheDocument();
+    expect(screen.queryByText('任务调度')).not.toBeInTheDocument();
+    expect(screen.queryByText('数据看板')).not.toBeInTheDocument();
+  });
+
+  it('只授报表中心时：加载完成后「自动化」分组与任务调度不出现（先闪现后消失即此回归）', () => {
+    usePermissionStore.setState({ loaded: false, unrestricted: true, allowedMenus: null, perms: null });
+    renderLayout();
+    act(() => usePermissionStore.setState({
+      loaded: true, unrestricted: false,
+      allowedMenus: ['workspace:dashboards', 'workspace:chat', 'workspace:reports'],
+      perms: ['report:read'],
+    }));
+    expect(screen.getByText('报表中心')).toBeInTheDocument();
+    expect(screen.queryByText('任务调度')).not.toBeInTheDocument();
+    expect(screen.queryByText('自动化')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('菜单加载中')).not.toBeInTheDocument();
   });
 });

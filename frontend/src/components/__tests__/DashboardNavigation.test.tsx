@@ -55,6 +55,8 @@ beforeEach(() => {
   invalidateCatalogCache();  // 目录 30s 内存缓存: 用例之间不得串数据
   useWorkspaceStore.getState().reset(); useDashboardStore.getState().reset(); useChatStore.getState().reset();
   useWorkspaceStore.setState({ loaded: true, workspaces: [ws(7)], currentWorkspaceId: 7 });
+  // 菜单/模块入口仅在权限就绪后渲染(未就绪时是骨架)，默认按“不限制”角色预置
+  usePermissionStore.setState({ loaded: true, unrestricted: true, perms: null, allowedMenus: null });
   vi.mocked(client.get).mockImplementation(async url => {
     if (url === '/dashboard/groups/visible') return { data: groupsFixture() };
     if (url === '/dashboard/groups') return { data: [] };

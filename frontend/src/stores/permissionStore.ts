@@ -7,6 +7,9 @@ import client from '../api/client';
  * - permissions: 当前用户角色的权限码集合(如 ontology:generate), admin 为 ['*']
  * - menus: 后端由「权限点注册表」反查出的可访问菜单 key(菜单可见性直接用它)
  * - unrestricted: true = 不做限制(全部放行)
+ *
+ * 菜单/入口显隐请走 hooks/useMenuAccess（订阅式 + 暴露 ready）：本 store 的
+ * getState 快照在非响应式上下文里按 fail-open 放行，会把无权限菜单先渲染再抽走。
  */
 interface PermissionState {
   perms: string[] | null;
@@ -50,27 +53,6 @@ function matchPerm(perms: string[], permCode: string): boolean {
   if (perms.includes('*') || perms.includes(permCode)) return true;
   const module = permCode.split(':', 1)[0];
   return perms.includes(`${module}:*`);
-}
-
-/**
- * 判断菜单是否对当前用户可见。
- * - 未加载完成 / unrestricted → 全部可见
- * - menuKey 在 allowedMenus 中 → 可见
- */
-export function isMenuAllowed(menuKey: string): boolean {
-  const { allowedMenus, unrestricted, loaded } = usePermissionStore.getState();
-  if (!loaded || unrestricted) return true;
-  return allowedMenus?.includes(menuKey) ?? true;
-}
-
-/**
- * 是否拥有某模块(前缀)下任一可见菜单 — 模块级一级入口显隐用。
- * - 未加载完成 / unrestricted → 放行
- */
-export function isMenuPrefixAllowed(prefix: string): boolean {
-  const { allowedMenus, unrestricted, loaded } = usePermissionStore.getState();
-  if (!loaded || unrestricted) return true;
-  return (allowedMenus ?? []).some(k => k.startsWith(prefix));
 }
 
 /**

@@ -8,7 +8,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useAuthStore } from '../stores/authStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
-import { isMenuPrefixAllowed } from '../stores/permissionStore';
+import { useMenuAccess } from '../hooks/useMenuAccess';
 
 export type SectionId = 'home' | 'workspace' | 'data' | 'system' | 'ask';
 
@@ -42,8 +42,10 @@ export default function SectionSwitcher({ current }: SectionSwitcherProps) {
   // 模块级一级入口按权限显隐: 模块内没有任何可见菜单就不提供入口。
   // 「数据看板」不再是独立模块——已收进工作空间侧栏(日常消费入口, 对所有登录用户恒可见,
   //  不参与权限码显隐; 看板内容级可见性由 adh_role_dashboard_access 在数据层裁决)。
-  const showWorkspace = isMenuPrefixAllowed('workspace:');
-  const showData = isMenuPrefixAllowed('data:');
+  // 订阅 store 且未就绪时不给入口: 否则会把无权限模块先列出来再抽走(闪现)
+  const menuAccess = useMenuAccess();
+  const showWorkspace = menuAccess.ready && menuAccess.prefixAllowed('workspace:');
+  const showData = menuAccess.ready && menuAccess.prefixAllowed('data:');
 
   return (
     <DropdownMenu>

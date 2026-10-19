@@ -18,7 +18,8 @@ import { useAuthStore } from '../stores/authStore';
 import { useThemeStore, applyTheme, type ThemeId } from '../stores/themeStore';
 import { useBrandStore } from '../stores/brandStore';
 import { useWorkspaceStore, type Workspace } from '../stores/workspaceStore';
-import { isMenuAllowed } from '../stores/permissionStore';
+import { useMenuAccess } from '../hooks/useMenuAccess';
+import { SidebarMenuSkeleton } from './SidebarMenuSkeleton';
 import { pruneEmptySections } from '@/lib/menuUtils';
 import SectionSwitcher from './SectionSwitcher';
 import { toast } from 'sonner';
@@ -263,8 +264,11 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
   // 例外(产品决策 2026-10): 资产清单是工作站基础功能(随用户走), 不按权限码过滤;
   // 数据看板入口同样参与菜单配置(菜单登记 workspace:dashboards ↔ dashboard:read,
   // 默认已授给全部角色, 管理员可按角色收回), 内容级可见性仍由 adh_role_dashboard_access
-  // 在数据层 fail-closed 裁决。一级分组下无可访问项时不渲染分组标题
-  const menuItems = pruneEmptySections([
+  // 在数据层 fail-closed 裁决。一级分组下无可访问项时不渲染分组标题。
+  // 权限清单未就绪时不渲染真实菜单（isMenuAllowed 未加载时 fail-open，
+  // 会把无权限的分组先画出来再抽走 → 菜单闪一下消失），改为同高骨架
+  const menuAccess = useMenuAccess();
+  const menuItems = menuAccess.ready ? pruneEmptySections([
     { section: '数据分析' },
     { key: `/ws/${workspaceId}/dashboards`, icon: ChartNoAxesCombined, label: '数据看板' },
     { key: `/ws/${workspaceId}/chat`, icon: MessageSquare, label: '智能问数' },
@@ -273,7 +277,7 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
     { key: `/ws/${workspaceId}/assets`, icon: Archive, label: '资产清单', always: true },
     { section: '自动化' },
     { key: `/ws/${workspaceId}/scheduled`, icon: Clock, label: '任务调度' },
-  ].filter(item => !('key' in item) || (item as any).always || isMenuAllowed(toMenuKey((item as any).key))));
+  ].filter(item => !('key' in item) || (item as any).always || menuAccess.allowed(toMenuKey((item as any).key)))) : [];
 
   const currentPath = location.pathname;
 
@@ -306,6 +310,7 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
           <ScrollArea className="h-full py-2">
           <nav className="space-y-1 px-2" role="navigation" aria-label="工作空间导航">
             {/* Static menu items */}
+            {!menuAccess.ready && <SidebarMenuSkeleton rows={6} collapsed={collapsed} />}
             {menuItems.map((item, idx) => {
               if ('section' in item) {
                 if (!item.section) return <div key={idx} className="my-2 mx-2 border-t border-sidebar-border" />;
@@ -368,6 +373,7 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
             <div className="flex-1 min-h-0 overflow-hidden">
             <ScrollArea className="h-full py-3">
               <nav className="space-y-1 px-3">
+                {!menuAccess.ready && <SidebarMenuSkeleton rows={6} />}
                 {menuItems.map((item, idx) => {
                   if ('section' in item) {
                     if (!item.section) return <div key={idx} className="my-2 border-t border-sidebar-border" />;

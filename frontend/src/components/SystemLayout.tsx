@@ -21,7 +21,8 @@ import { useWorkspaceStore } from '../stores/workspaceStore';
 import SectionSwitcher from './SectionSwitcher';
 import AsBotButton from './AsBotButton';
 import AsBotPanel from './asbot/AsBotPanel';
-import { isMenuAllowed } from '../stores/permissionStore';
+import { useMenuAccess } from '../hooks/useMenuAccess';
+import { SidebarMenuSkeleton } from './SidebarMenuSkeleton';
 import { pruneEmptySections } from '@/lib/menuUtils';
 
 /** 将路由 key 转换为 menu_key: '/system/models' → 'system:models' */
@@ -73,8 +74,12 @@ const SYSTEM_MENU_ITEMS = [
   { key: '/system/settings', icon: Settings, label: '系统设置' },
 ];
 
+/** 骨架行数 = 菜单项总数（权限未就绪时的占位高度贴近真实菜单上限） */
+const MENU_SKELETON_ROWS = SYSTEM_MENU_ITEMS.filter(item => 'key' in item).length;
+
 export default function SystemLayout() {
   const [collapsed, setCollapsed] = useState(false);
+  const menuAccess = useMenuAccess();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -97,9 +102,9 @@ export default function SystemLayout() {
 
   const currentPath = location.pathname;
   // 按权限过滤菜单; 一级分组下无可访问项时不渲染该分组标题
-  const visibleMenu = pruneEmptySections(
-    SYSTEM_MENU_ITEMS.filter(item => !('key' in item) || isMenuAllowed(toMenuKey((item as any).key)))
-  );
+  const visibleMenu = menuAccess.ready ? pruneEmptySections(
+    SYSTEM_MENU_ITEMS.filter(item => !('key' in item) || menuAccess.allowed(toMenuKey((item as any).key)))
+  ) : [];
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -121,6 +126,8 @@ export default function SystemLayout() {
         <div className="flex-1 min-h-0 overflow-hidden">
           <ScrollArea className="h-full py-2">
           <nav className="space-y-1 px-2" role="navigation" aria-label="系统配置导航">
+            {/* 权限清单未就绪时先给骨架，避开无权限菜单先画出再抽走的闪现 */}
+            {!menuAccess.ready && <SidebarMenuSkeleton rows={MENU_SKELETON_ROWS} collapsed={collapsed} />}
             {visibleMenu.map((item, idx) => {
               if ('section' in item) {
                 if (collapsed) return <div key={idx} className="my-2 mx-2 border-t border-sidebar-border" />;
@@ -183,6 +190,7 @@ export default function SystemLayout() {
             </div>
             <ScrollArea className="flex-1 py-3">
               <nav className="space-y-1 px-3">
+                {!menuAccess.ready && <SidebarMenuSkeleton rows={MENU_SKELETON_ROWS} />}
                 {visibleMenu.map((item, idx) => {
                   if ('section' in item) {
                     return (

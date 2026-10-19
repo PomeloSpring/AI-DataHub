@@ -18,7 +18,7 @@ import { useThemeStore, type ThemeId } from '@/stores/themeStore';
 import { useVisConfig } from '@/lib/visStyle';
 import { useBrandStore } from '@/stores/brandStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
-import { isMenuAllowed, isMenuPrefixAllowed } from '@/stores/permissionStore';
+import { useMenuAccess } from '@/hooks/useMenuAccess';
 import { fetchVisibleGroups } from '@/lib/dashboardCatalog';
 import client from '@/api/client';
 
@@ -105,6 +105,8 @@ export default function Home() {
   const wsLoaded = useWorkspaceStore(s => s.loaded);
   const wsLoading = useWorkspaceStore(s => s.loading);
   const getDefaultWorkspaceId = useWorkspaceStore(s => s.getDefaultWorkspaceId);
+  // 菜单权限订阅式读取(与其他 hooks 同层声明，不得放到提前 return 之后)
+  const menuAccess = useMenuAccess();
   const [checking, setChecking] = useState(true);
   const [dashCount, setDashCount] = useState(0);
   const [questions, setQuestions] = useState<string[]>([]);
@@ -304,8 +306,9 @@ export default function Home() {
   // 快速开始按权限码裁决显隐(与 SectionSwitcher/各布局菜单同口径):无对应功能的入口不展示,
   // 避免点进去只剩空布局。工作空间 → workspace:chat 菜单; 数据中台 → data:* 任一可见菜单;
   // 系统配置 → 仅 admin(SystemLayout 对非 admin 硬跳转,故不单列权限判断)。
-  const showAsk = isMenuAllowed('workspace:chat');
-  const showData = isMenuPrefixAllowed('data:');
+  // 权限清单未就绪时不给入口: 否则无权限入口会先画出来再被抽走(闪现)
+  const showAsk = menuAccess.ready && menuAccess.allowed('workspace:chat');
+  const showData = menuAccess.ready && menuAccess.prefixAllowed('data:');
 
   const entries: Array<{ key: string; icon: LucideIcon; title: string; desc: string; go: () => void; tag?: string }> = [
     ...(showAsk ? [{
