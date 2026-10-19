@@ -28,14 +28,22 @@ export function useDashboardNavigation(workspaceId: number, dashboards: Dashboar
       <nav className="min-h-0 flex-1 space-y-5 overflow-auto" aria-label="看板目录">
         <div><p className="mb-2 px-2 text-xs font-medium text-muted-foreground">数据看板</p>
           {visible.filter(d => d.name.toLowerCase().includes(search.toLowerCase())).map(d =>
-            <button key={d.id} aria-current={d.id === currentId ? 'page' : undefined} className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm ${d.id === currentId ? 'bg-primary/10 text-primary' : 'hover:bg-muted'}`} onClick={() => select(d.id)}><ChartNoAxesCombined className="h-4 w-4 shrink-0" /><span className="truncate">{d.name}</span></button>)}
+            <button key={d.id} type="button" aria-current={d.id === currentId ? 'true' : undefined} className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm ${d.id === currentId ? 'bg-primary/10 text-primary' : 'hover:bg-muted'}`} onClick={() => select(d.id)}><ChartNoAxesCombined className="h-4 w-4 shrink-0" /><span className="truncate">{d.name}</span></button>)}
         </div>
         {!visible.some(d => d.name.toLowerCase().includes(search.toLowerCase())) && <p className="p-3 text-sm text-muted-foreground">没有匹配的可用看板</p>}
       </nav>
     </DialogContent>
   </Dialog>;
-  const tabs = visible.length > 1 ? <nav aria-label="同组看板" className="flex shrink-0 gap-4 overflow-x-auto border-b px-4 sm:px-6">
-    {visible.map(d => <button key={d.id} aria-current={d.id === currentId ? 'page' : undefined} onClick={() => select(d.id)} className={`shrink-0 border-b-2 py-2 text-sm ${d.id === currentId ? 'border-primary font-medium text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{d.name}</button>)}
+  // 同组看板切换 pill: 选中态用「浅主色底 + 主色字 + 细描边」的软高亮, 不用 aria-current="page"
+  // —— 后者会被主题全局 button[aria-current="page"] 规则(tech/glass/ainative…)涂成厚重色块/发光,
+  // 历史上正是这里的“大黑块”观感。容器由 Analysis 的切换栏包裹, 这里只出 pills。
+  const tabs = visible.length > 1 ? <nav aria-label="同组看板" className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    {visible.map(d => <button key={d.id} type="button" title={d.name} aria-current={d.id === currentId ? 'true' : undefined}
+      onClick={() => select(d.id)}
+      className={`shrink-0 whitespace-nowrap rounded-full px-3.5 py-1.5 text-xs transition-colors sm:text-sm ${
+        d.id === currentId
+          ? 'bg-primary/10 font-medium text-primary ring-1 ring-primary/25'
+          : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}>{d.name}</button>)}
   </nav> : null;
   return { directory, tabs, error: '' };
 }

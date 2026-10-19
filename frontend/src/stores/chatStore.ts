@@ -125,8 +125,9 @@ export interface ChatMessage {
   expected_table?: string;   // Expected table from negative feedback
   trace_id?: string;         // 可观测回合 trace ID(done 事件回传,赞踩关联用)
   message_uuid?: string;     // 可观测消息统一主键(赞踩反馈写入 adh_message_feedback)
-  // 前置意图漏斗：这一条是谁答的。intent_gate = 本地直答（未调用模型），
-  // 必须在前端可见（no-silent-degradation：拦截不是把缺陷藏起来，而是让用户知道并能一键转深度分析）
+  // 前置意图漏斗：这一条是谁答的（agent=模型 / intent_gate=本地直答）。
+  // 它只驱动「转深度分析」逃生门与归属记录；聊天界面不渲染"未调用模型"类内部术语，
+  // 可审计性在管理侧（adh_llm_traces.handled_by / 意图漏斗面板）。
   handledBy?: 'agent' | 'intent_gate';
   gate?: {
     mode: string; layer: string; label: string; reason: string;

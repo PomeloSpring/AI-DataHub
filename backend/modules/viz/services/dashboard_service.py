@@ -9,6 +9,7 @@ Uses shared DB connection from backend/common/db.
 Tables: adh_dashboards, adh_charts, adh_chart_snapshots, adh_saved_queries
 """
 
+import copy
 import json
 import logging
 import math
@@ -101,6 +102,75 @@ def _normalize_chart(row: dict) -> dict:
     return row
 
 
+def _geo_num(value, default: float) -> float:
+    """取几何值: 非有限数字一律回落默认(脏 position 不得污染预览尺寸)。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    v = float(value)
+    return v if math.isfinite(v) else default
+
+
+def _chart_preview_rect(position, widget: bool) -> tuple:
+    """单个图表区块的矩形(口径对齐前端 dashboardDesign.chartRect 的最小宽高兜底)。"""
+    p = _json_loads_safe(position)
+    p = p if isinstance(p, dict) else {}
+    return (
+        max(0.0, _geo_num(p.get("x"), 0.0)),
+        max(0.0, _geo_num(p.get("y"), 0.0)),
+        max(100.0 if widget else 200.0, _geo_num(p.get("w"), 300.0 if widget else 400.0)),
+        max(36.0 if widget else 150.0, _geo_num(p.get("h"), 60.0 if widget else 300.0)),
+    )
+
+
+def card_catalog_fields(rows: list) -> list:
+    """就地补齐看板目录行的「卡片瀑布清单」共享字段(可缓存, 与查看者无关)。
+
+    补: description / updated_at(ISO) / chart_count(数据图表数) / preview(画布尺寸+区块矩形)。
+    预览**只回几何信息**, 不含 SQL、语义查询、样式配置与数据行 —— 清单页不需要,
+    浏览域响应也不该把口径带出去(护栏 §7); 原始 filters 用完即剔除。
+    几何口径与前端 getCanvas 一致(默认 1920×1080, 并按区块外扩)。
+    可写性(editable)与 owner_id 的外剥是每请求的事, 由 catalog_cards 处理。
+    """
+    from backend.common.db import execute_query
+    for row in rows:
+        filters = _json_loads_safe(row.pop("filters", None))
+        canvas = {}
+        if isinstance(filters, dict):
+            design = filters.get("design")
+            if isinstance(design, dict) and isinstance(design.get("canvas"), dict):
+                canvas = design["canvas"]
+        row["description"] = row.get("description") or ""
+        if hasattr(row.get("updated_at"), "isoformat"):
+            row["updated_at"] = row["updated_at"].isoformat()
+        row["preview"] = {"width": _geo_num(canvas.get("width"), 1920.0),
+                          "height": _geo_num(canvas.get("height"), 1080.0), "blocks": []}
+        row["chart_count"] = 0
+    ids = [int(r["id"]) for r in rows]
+    if not ids:
+        return rows
+    marks = ",".join(["%s"] * len(ids))
+    charts = execute_query(
+        f"SELECT dashboard_id, chart_type, position FROM adh_charts "
+        f"WHERE dashboard_id IN ({marks}) ORDER BY id", ids) or []
+    by_dash: dict = {}
+    for c in charts:
+        widget = str(c.get("chart_type") or "").startswith("widget_")
+        rect = _chart_preview_rect(c.get("position"), widget)
+        item = by_dash.setdefault(int(c["dashboard_id"]), {"blocks": [], "charts": 0})
+        item["blocks"].append({"x": rect[0], "y": rect[1], "w": rect[2], "h": rect[3], "widget": widget})
+        if not widget:
+            item["charts"] += 1
+    for row in rows:
+        item = by_dash.get(int(row["id"])) or {"blocks": [], "charts": 0}
+        preview = row["preview"]
+        preview["blocks"] = item["blocks"]
+        # 区块超出画布时按实际外扩(与前端 getCanvas 同口径, 否则预览会被裁掉一块)
+        preview["width"] = max([320.0, preview["width"]] + [b["x"] + b["w"] for b in item["blocks"]])
+        preview["height"] = max([180.0, preview["height"]] + [b["y"] + b["h"] for b in item["blocks"]])
+        row["chart_count"] = item["charts"]
+    return rows
+
+
 def _sanitize_param_value(val: str) -> str:
     """Escape a string parameter value to prevent SQL injection.
 
@@ -189,8 +259,42 @@ def _clear_default(user_id: int, workspace_id: int = 0):
         logger.warning("Failed to clear default dashboard: %s", e)
 
 
+# ── 看板载荷缓存(只缓存共享载荷; 可见性/可写性每次实时裁决) ─────────────────────
+#
+# 远程元数据库单查询 ~60-130ms, 目录/详情每次全量回源要 4-6 个串行往返(几百毫秒)。
+# 缓存口径(护栏 §9 / V3 撤权即时生效): 可见性裁决(visible_dashboard_ids /
+# check_dashboard_visible)一律实时查询, **不进任何缓存**; 这里缓存的只是
+# 「看板长什么样 / 有哪些组」的共享载荷 + 用户角色归属(仅用于分组编排,
+# 不授予任何看板可见性)。写路径显式失效(_invalidate_dashboard_payload),
+# 短 TTL 兑底防漏失效。
+CARDS_KEY = "dash:cards:v2"            # 共享: 目录行 + 卡片几何预览
+GROUPS_KEY = "dash:groups:v2"          # 共享: 组 + 组内看板 + 组→角色绑定
+DETAIL_KEY = "dash:detail:{}"          # 共享: 单看板完整载荷(charts 含 data_cache)
+USER_ROLES_KEY = "dash:user_roles:{}"  # 按用户: 角色 id 集(仅分组编排用)
+PAYLOAD_TTL = 120                      # 共享载荷 TTL(写路径会提前失效)
+USER_ROLES_TTL = 30
+
+
+def _invalidate_dashboard_payload(dashboard_id: int = None, *, structural: bool = True):
+    """失效看板共享载荷缓存。
+
+    structural=True: 结构变更(看板/图表/布局/组) → 目录+组+单看板全失效;
+    structural=False: 仅 data_cache 变化(图表刷新) → 只失效该看板详情,
+    不把目录/组也带下水。
+    """
+    try:
+        if structural:
+            dashboard_cache.invalidate(CARDS_KEY)
+            dashboard_cache.invalidate(GROUPS_KEY)
+        if dashboard_id:
+            dashboard_cache.invalidate(DETAIL_KEY.format(int(dashboard_id)))
+    except Exception as e:  # noqa: BLE001 —— 缓存失效失败不得阻断主链路
+        logger.warning("Failed to invalidate dashboard payload cache: %s", e)
+
+
 def _invalidate_dashboard_cache(user_id: int = None):
     """Clear dashboard cache. user_id=None clears all."""
+    _invalidate_dashboard_payload()
     if user_id is None:
         dashboard_cache.invalidate()
     else:
@@ -263,10 +367,17 @@ def publish_design_in_transaction(cur, doc, queries, scope, user):
 
 
 def _is_admin_user(user_id: int, user_role: str = "") -> bool:
-    """admin 判定以服务端身份为准：优先信任服务端注入的 user_role，缺失时回查授权表。"""
+    """admin 判定以服务端身份为准：优先信任服务端注入的 user_role，缺失时回查授权表。
+
+    服务端注入的角色非空时直接采信(非 admin 一律按非 admin, 少一次远程查询);
+    仅当角色缺失才回查 adh_user_roles ⋈ adh_roles —— 这与 docstring 原有口径一致,
+    也与 list_current_permissions 的 JWT 口径一致(DB 里新增 admin 未换令牌前按最小权限)。
+    """
     if (user_role or "").lower() == "admin":
         return True
     if not user_id:
+        return False
+    if user_role:
         return False
     conn = get_metadata_conn()
     try:
@@ -311,6 +422,128 @@ def check_dashboard_visible(dashboard_id: int, user_id: int, user_role: str = ""
     from backend.core.role_service import role_service
     return int(dashboard_id) in set(
         role_service.get_user_allowed_dashboards(user_id, workspace_id))
+
+
+def check_dashboard_editable(dashboard_id: int, user_id: int, user_role: str = "") -> bool:
+    """单看板「可编辑」裁决(写链路唯一口径): admin 或看板属主。
+
+    角色授权(adh_role_dashboard_access)只授予「可看」, **不含写** —— 系统分配给
+    角色的看板不得被角色成员改写; fail-closed: 无身份/看板不存在/非属主一律拒。
+    同口径服务 AS-BOT 仪表盘设计通道(dashboard_design_service 同样按 owner 把关)。
+    """
+    if not user_id:
+        return False
+    if _is_admin_user(user_id, user_role):
+        return True
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT owner_id FROM adh_dashboards WHERE id = %s", (dashboard_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    return bool(row) and int(row.get("owner_id") or 0) == int(user_id)
+
+
+def _mark_editable(rows: list, viewer_id: int, viewer_role: str = "", *, drop_owner: bool = False,
+                  is_admin: bool = None) -> list:
+    """就地标注每行 editable(仅属主/admin 可写), 供前端隐藏写入口。
+
+    drop_owner=True 时剥除 owner_id(浏览域清单不外泄属主 id; 详情页仍带, 供属主自检)。
+    is_admin 已由同一请求裁决过时传入, 避免重复查库。
+    """
+    admin = _is_admin_user(viewer_id, viewer_role) if is_admin is None else is_admin
+    for row in rows:
+        row["editable"] = bool(admin or int(row.get("owner_id") or 0) == int(viewer_id or 0))
+        if drop_owner:
+            row.pop("owner_id", None)
+    return rows
+
+
+# ── 目录/详情载荷构建: 共享载荷走缓存, 可见性每请求实时裁决 ─────────────
+
+
+def _card_rows() -> list:
+    """共享卡片载荷(缓存): 目录行 + 卡片几何预览, 带 owner_id 供每请求判可写。"""
+    def build():
+        from backend.common.db import execute_query
+        rows = execute_query(
+            "SELECT id, name, description, status, is_default, sort_order, updated_at, owner_id, filters "
+            "FROM adh_dashboards ORDER BY is_default DESC, sort_order, id") or []
+        return card_catalog_fields(rows)
+    return dashboard_cache.get_or_set(CARDS_KEY, build, ttl=PAYLOAD_TTL) or []
+
+
+def _groups_structure() -> dict:
+    """共享分组结构(缓存): 组 + 组内看板顺序 + 组→角色绑定。"""
+    def build():
+        from backend.common.db import execute_query
+        groups = execute_query(
+            "SELECT id, name, description, sort FROM adh_dashboard_groups ORDER BY sort, id") or []
+        items: dict = {}
+        for r in (execute_query(
+                "SELECT group_id, dashboard_id FROM adh_dashboard_group_items ORDER BY sort, id") or []):
+            items.setdefault(str(r["group_id"]), []).append(int(r["dashboard_id"]))
+        role_groups: dict = {}
+        for r in (execute_query("SELECT role_id, group_id FROM adh_role_dashboard_groups") or []):
+            role_groups.setdefault(str(r["role_id"]), []).append(int(r["group_id"]))
+        return {"groups": groups, "items": items, "role_groups": role_groups}
+    return dashboard_cache.get_or_set(GROUPS_KEY, build, ttl=PAYLOAD_TTL) \
+        or {"groups": [], "items": {}, "role_groups": {}}
+
+
+def _user_role_ids(user_id: int) -> list:
+    """用户角色 id 集(短 TTL)。**只用于分组编排** —— 看板可见性不走这里,
+    每次由 get_user_allowed_dashboards 实时裁决(V3 撤权即时生效, 不留可见窗口)。"""
+    def build():
+        from backend.common.db import execute_query
+        return [int(r["role_id"]) for r in (
+            execute_query("SELECT role_id FROM adh_user_roles WHERE user_id = %s", (user_id,)) or [])]
+    return dashboard_cache.get_or_set(USER_ROLES_KEY.format(int(user_id)), build, ttl=USER_ROLES_TTL) or []
+
+
+def catalog_cards(visible_ids, viewer_id: int, viewer_role: str = "", is_admin: bool = None) -> list:
+    """看板卡片清单: 实时可见集过滤 + 每请求标注可写性(不外泄 owner_id)。
+
+    visible_ids=None 表示 admin 全可见; 空集由调用方提前短路(fail-closed)。
+    卡片几何走共享缓存, 但「谁能看到哪些」永远以传入的实时可见集为准。
+    """
+    rows = [dict(r) for r in _card_rows()]
+    if visible_ids is not None:
+        allow = {int(i) for i in visible_ids}
+        rows = [r for r in rows if int(r["id"]) in allow]
+    return _mark_editable(rows, viewer_id, viewer_role, drop_owner=True, is_admin=is_admin)
+
+
+def build_visible_groups(user_id: int, user_role: str = "") -> list:
+    """当前用户可见的仪表盘组目录(组按角色分配, 含「未分组」兜底组)。
+
+    分层: 可见集实时裁决(fail-closed) ∩ 共享载荷缓存(卡片几何/组编排)。
+    缓存不赋予任何额外可见性 —— 组内看板最终仍与实时可见集求交。
+    """
+    visible = visible_dashboard_ids(user_id, user_role)
+    if visible is not None and not visible:
+        return []  # fail-closed: 无任何可见看板
+    is_admin = visible is None  # visible_dashboard_ids 对 admin 返回 None
+    cards = catalog_cards(visible, user_id, user_role, is_admin=is_admin)
+    struct = _groups_structure()
+    if is_admin:
+        groups = struct["groups"]
+    else:
+        bound = {g for rid in _user_role_ids(user_id)
+                 for g in struct["role_groups"].get(str(rid), [])}
+        groups = [g for g in struct["groups"] if int(g["id"]) in bound]
+    out, grouped_ids = [], set()
+    for g in groups:
+        member_ids = set(struct["items"].get(str(g["id"]), []))
+        member_ids &= {c["id"] for c in cards}
+        grouped_ids |= member_ids
+        out.append({"id": g["id"], "name": g["name"], "description": g.get("description") or "",
+                    "sort": g.get("sort") or 0,
+                    "dashboards": [c for c in cards if c["id"] in member_ids]})
+    out.append({"id": 0, "name": "未分组", "description": "未加入任何仪表盘组的可见看板",
+                "sort": 9999, "dashboards": [c for c in cards if c["id"] not in grouped_ids]})
+    return out
 
 
 def refresh_designed_chart(chart, user_id):
@@ -400,20 +633,14 @@ class DashboardService:
                 for d in dashboards:
                     _normalize_dashboard(d)
                     d["charts"] = charts_map.get(d["id"], [])
+                # editable 仅供前端隐藏写入口: 角色授予的可见权不含编辑权(写在 API 层再裁决一次)
+                _mark_editable(dashboards, user_id, user_role)
                 return dashboards
         finally:
             conn.close()
 
-    def get_dashboard(self, dashboard_id: int, user_id: int, user_role: str = "",
-                      enforce_visibility: bool = True) -> Optional[dict]:
-        """Get a single dashboard with its charts (角色不可见返回 None → API 404)。
-
-        enforce_visibility=False 仅供 AS-BOT 大屏设计通道使用：该通道的访问控制
-        仍由 resource_guard 的 owner/is_public 策略承担(本次改造边界外)，
-        不适用角色可见性裁决。
-        """
-        if enforce_visibility and not check_dashboard_visible(dashboard_id, user_id, user_role):
-            return None
+    def _fetch_dashboard_payload(self, dashboard_id: int) -> Optional[dict]:
+        """单看板完整载荷(共享, 可缓存): 不含可写性标注, 不做可见性裁决。"""
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
@@ -421,7 +648,6 @@ class DashboardService:
                 dashboard = cur.fetchone()
                 if not dashboard:
                     return None
-
                 cur.execute(
                     "SELECT * FROM adh_charts WHERE dashboard_id = %s ORDER BY id",
                     (dashboard_id,),
@@ -429,12 +655,33 @@ class DashboardService:
                 charts = cur.fetchall()
                 for c in charts:
                     _normalize_chart(c)
-
                 _normalize_dashboard(dashboard)
                 dashboard["charts"] = charts
                 return dashboard
         finally:
             conn.close()
+
+    def get_dashboard(self, dashboard_id: int, user_id: int, user_role: str = "",
+                      enforce_visibility: bool = True) -> Optional[dict]:
+        """Get a single dashboard with its charts (角色不可见返回 None → API 404)。
+
+        可见性裁决实时(check_dashboard_visible, 不进缓存); 载荷走共享缓存
+        (写路径 _invalidate_dashboard_payload 失效), 每请求标注可写性。
+        enforce_visibility=False 仅供 AS-BOT 大屏设计通道使用：该通道的访问控制
+        仍由 resource_guard 的 owner/is_public 策略承担(本次改造边界外)，
+        不适用角色可见性裁决。
+        """
+        if enforce_visibility and not check_dashboard_visible(dashboard_id, user_id, user_role):
+            return None
+        payload = dashboard_cache.get_or_set(
+            DETAIL_KEY.format(int(dashboard_id)),
+            lambda: self._fetch_dashboard_payload(dashboard_id), ttl=PAYLOAD_TTL)
+        if not payload:
+            return None
+        result = copy.deepcopy(payload)  # 缓存对象不外泄: 调用方就地改写不得污染缓存
+        # editable: 仅属主/admin 可写(角色授予的可见权不含编辑权); 保留 owner_id 供属主自检
+        _mark_editable([result], user_id, user_role)
+        return result
 
     def create_dashboard(self, data: dict, user_id: int) -> int:
         """Create a new dashboard. Returns the new dashboard ID."""
@@ -535,7 +782,11 @@ class DashboardService:
             conn.close()
 
     def delete_dashboard(self, dashboard_id: int, user_id: int) -> bool:
-        """Delete a dashboard and all its charts."""
+        """Delete a dashboard and all its charts.
+
+        写权限(仅 admin/属主)由 API 层 check_dashboard_editable 把关,
+        这里只负责删除本身(否则 admin 删不了他人看板, 会静默报 404)。
+        """
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
@@ -543,8 +794,8 @@ class DashboardService:
                 # 级联清理角色可见性授权, 避免悬空授权行
                 cur.execute("DELETE FROM adh_role_dashboard_access WHERE dashboard_id = %s", (dashboard_id,))
                 cur.execute(
-                    "DELETE FROM adh_dashboards WHERE id = %s AND owner_id = %s",
-                    (dashboard_id, user_id),
+                    "DELETE FROM adh_dashboards WHERE id = %s",
+                    (dashboard_id,),
                 )
             conn.commit()
             _invalidate_dashboard_cache(user_id)
@@ -553,7 +804,11 @@ class DashboardService:
             conn.close()
 
     def reorder_dashboards(self, user_id: int, orders: list) -> bool:
-        """Update sort_order for dashboards."""
+        """Update sort_order for dashboards.
+
+        写权限由 API 层 check_dashboard_editable 逐个把关(admin 或属主),
+        这里不再按 owner_id 过滤(否则 admin 调不了他人看板的顺序, 静默无变化)。
+        """
         if not orders:
             return True
         now = _now()
@@ -563,8 +818,8 @@ class DashboardService:
                 for item in orders:
                     cur.execute(
                         "UPDATE adh_dashboards SET sort_order=%s, updated_at=%s "
-                        "WHERE id=%s AND owner_id=%s",
-                        (item.get("sort_order", 0), now, item["id"], user_id),
+                        "WHERE id=%s",
+                        (item.get("sort_order", 0), now, item["id"]),
                     )
             conn.commit()
             _invalidate_dashboard_cache(user_id)
@@ -680,6 +935,7 @@ class ChartService:
                     ),
                 )
             conn.commit()
+            _invalidate_dashboard_payload(dashboard_id)  # 图表结构变了: 目录预览/详情载荷都要重建
             return cid
         finally:
             conn.close()
@@ -725,6 +981,7 @@ class ChartService:
                 )
                 exists = cur.fetchone() is not None
             conn.commit()
+            _invalidate_dashboard_payload(dashboard_id)
             return exists
         finally:
             conn.close()
@@ -739,6 +996,7 @@ class ChartService:
                     (chart_id, dashboard_id),
                 )
             conn.commit()
+            _invalidate_dashboard_payload(dashboard_id)
             return cur.rowcount > 0
         finally:
             conn.close()
@@ -881,7 +1139,8 @@ class ChartService:
                     (cache, now, chart_id),
                 )
                 conn.commit()
-
+                # 仅 data_cache 变化: 只失效该看板详情, 不动目录/组缓存
+                _invalidate_dashboard_payload(dashboard_id, structural=False)
                 return result
         finally:
             conn.close()
@@ -964,6 +1223,7 @@ class ChartService:
                         results[cid] = {"error": str(e)}
 
                 conn.commit()
+                _invalidate_dashboard_payload(dashboard_id, structural=False)
                 return {"charts": results}
         finally:
             conn.close()
@@ -987,6 +1247,7 @@ class ChartService:
                             (json.dumps(position), now, chart_id, dashboard_id),
                         )
             conn.commit()
+            _invalidate_dashboard_payload(dashboard_id)
             return True
         finally:
             conn.close()

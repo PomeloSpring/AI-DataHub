@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { ScrollArea } from '@/components/ui/scroll-area';
 import client from '../api/client';
 import DashboardChart from './DashboardChart';
+import { useChartDesign } from '@/hooks/useChartDesign';
 
 interface ModalPageProps {
   pageId: number;
@@ -16,11 +17,14 @@ interface DashboardPageData {
   name: string;
   charts: any[];
   layout: any[];
+  filters?: any;
 }
 
 export default function ModalPage({ pageId, params, open, onClose }: ModalPageProps) {
   const [pageData, setPageData] = useState<DashboardPageData | null>(null);
   const [loading, setLoading] = useState(false);
+  // 图表样式走 UI 字模库主题包管线(useChartDesign): 弹窗页与看板同一套字模(含该页自身设计)
+  const { chartStyle } = useChartDesign({ filters: pageData?.filters });
 
   useEffect(() => {
     if (!open || !pageId) {
@@ -58,6 +62,7 @@ export default function ModalPage({ pageId, params, open, onClose }: ModalPagePr
               {pageData.charts?.map((chart: any) => {
                 const pos = chart.position || { x: 0, y: 0, w: 400, h: 300 };
                 const chartData = chart.data_cache ? JSON.parse(chart.data_cache) : { columns: [], rows: [] };
+                const styled = chartStyle({ ...(chart.config || {}), _pageParams: params }, chart.chart_type);
 
                 return (
                   <div
@@ -73,7 +78,8 @@ export default function ModalPage({ pageId, params, open, onClose }: ModalPagePr
                     <DashboardChart
                       chartType={chart.chart_type}
                       data={chartData}
-                      config={{ ...(chart.config || {}), _pageParams: params }}
+                      config={styled.config}
+                      visual={styled.visual}
                       chartId={chart.id}
                     />
                   </div>

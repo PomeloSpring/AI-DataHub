@@ -33,7 +33,8 @@ export interface AsBotMessage {
     timestamp: number;
   }>;
   error?: string;
-  // 前置意图漏斗：intent_gate = 本地直答（本轮未调用模型），页面必须可见且能转深度分析
+  // 前置意图漏斗：agent=模型回答 / intent_gate=本地直答。只驱动「转深度分析」逃生门，
+  // 不在聊天界面渲染内部术语（归属可审计：traces.handled_by + 拦截流水）
   handledBy?: 'agent' | 'intent_gate';
   gate?: {
     mode: string; layer: string; label: string; reason: string;

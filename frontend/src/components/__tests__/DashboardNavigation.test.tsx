@@ -6,6 +6,7 @@ import SectionSwitcher from '../SectionSwitcher';
 import Analysis from '@/pages/Analysis';
 import Screen from '@/pages/Screen';
 import DashboardPage from '@/pages/Dashboard';
+import WorkspaceDashboards from '@/pages/WorkspaceDashboards';
 import WorkspaceLayout from '../WorkspaceLayout';
 import { TooltipProvider } from '../ui/tooltip';
 import { useWorkspaceStore, type Workspace } from '@/stores/workspaceStore';
@@ -13,6 +14,7 @@ import { useDashboardStore, type Dashboard } from '@/stores/dashboardStore';
 import { useAuthStore } from '@/stores/authStore';
 import { usePermissionStore } from '@/stores/permissionStore';
 import { useChatStore } from '@/stores/chatStore';
+import { invalidateCatalogCache } from '@/lib/dashboardCatalog';
 import client from '@/api/client';
 
 vi.mock('@/api/client', () => ({ default: { get: vi.fn(), post: vi.fn() } }));
@@ -21,26 +23,38 @@ vi.mock('@/components/DashboardCanvas', () => ({ ResponsiveDashboardCanvas: () =
 vi.mock('@/components/DashboardParams', () => ({ DashboardRuntimeParams: () => null }));
 const ws = (id = 7) => ({ id, name: `空间 ${id}`, user_default: true } as Workspace);
 const board = (id: number, status: Dashboard['status'] = 'enabled', is_default = false): Dashboard => ({ id, name: `看板 ${id}`, status, is_default, charts: [], filters: {}, description: '', layout: [], params: [], page_params: [], owner_id: 1, is_public: false, carousel_interval: 10, sort_order: id, created_at: '', updated_at: '' });
-// 组目录行(轻量) + 未分组兜底组
-const groupBoard = (id: number, status: Dashboard['status'] = 'enabled', is_default = false) => ({ id, name: `看板 ${id}`, status, is_default, sort_order: id });
+// 组目录行(轻量) + 卡片清单展示字段(描述/图表数/几何预览/editable); 未分组兑底组
+// editable=false 模拟「角色授予可见」的看板: 能看, 不能编辑
+const groupBoard = (id: number, status: Dashboard['status'] = 'enabled', is_default = false) => ({
+  id, name: `看板 ${id}`, status, is_default, sort_order: id, description: `看板 ${id} 的口径说明`, chart_count: 2,
+  editable: id !== 4, owner_id: id === 4 ? 1 : 9,
+  updated_at: '2026-10-01T08:00:00', preview: { width: 1920, height: 1080, blocks: [{ x: 40, y: 40, w: 600, h: 400, widget: false }] },
+});
 const groupsFixture = (opts?: { defaultId?: number | null }) => ([
   { id: 7, name: '经营组', description: '', sort: 0, dashboards: [groupBoard(1, 'closed', opts?.defaultId === 1), groupBoard(2, 'enabled', opts?.defaultId === 2), groupBoard(3, 'enabled', opts?.defaultId === 3 || opts?.defaultId === undefined)] },
   { id: 0, name: '未分组', description: '', sort: 9999, dashboards: [groupBoard(4)] },
 ]);
 function Path() { const location = useLocation(); return <output data-testid="path">{location.pathname}{location.search}</output>; }
+// 数据看板已收进工作空间: 清单 = /ws/:ws/dashboards(卡片瀑布), 详情 = /ws/:ws/dashboards/:id;
+// 旧独立看板域(/dashboards*)只保留重定向。
 function routes(path: string) {
   return render(<TooltipProvider><MemoryRouter initialEntries={[path]}><Path /><Routes>
     <Route path="/" element={<WorkspaceEntry />} /><Route path="/page/:dashboardId" element={<WorkspaceEntry legacyId />} />
-    <Route path="/dashboards" element={<Analysis />} />
-    <Route path="/dashboards/:groupId" element={<Analysis />} />
-    <Route path="/dashboards/:groupId/:dashboardId" element={<Analysis />} />
+    <Route path="/dashboards" element={<WorkspaceEntry module="dashboards" />} />
+    <Route path="/dashboards/:groupId" element={<WorkspaceEntry module="dashboards" />} />
+    <Route path="/dashboards/:groupId/:dashboardId" element={<WorkspaceEntry module="dashboards" legacyId />} />
+    <Route path="/ws/:workspaceId/dashboards" element={<WorkspaceDashboards />} />
+    <Route path="/ws/:workspaceId/dashboards/:dashboardId" element={<Analysis />} />
     <Route path="/screen/:dashboardId" element={<Screen />} />
     <Route path="/system/dashboards" element={<DashboardPage />} />
+    <Route path="/system/dashboards/:dashboardId" element={<Analysis />} />
   </Routes></MemoryRouter></TooltipProvider>);
 }
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear();
+  invalidateCatalogCache();  // 目录 30s 内存缓存: 用例之间不得串数据
   useWorkspaceStore.getState().reset(); useDashboardStore.getState().reset(); useChatStore.getState().reset();
+  useWorkspaceStore.setState({ loaded: true, workspaces: [ws(7)], currentWorkspaceId: 7 });
   vi.mocked(client.get).mockImplementation(async url => {
     if (url === '/dashboard/groups/visible') return { data: groupsFixture() };
     if (url === '/dashboard/groups') return { data: [] };
@@ -50,48 +64,134 @@ beforeEach(() => {
     return { data: [] };
   });
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); usePermissionStore.setState({ loaded: false, unrestricted: true, perms: null, allowedMenus: null }); });
 
-describe('数据看板 — 仪表盘组维度导航', () => {
-  it('组目录跳默认已启用看板，而非禁用默认项', async () => {
+describe('工作空间数据看板 — 卡片瀑布清单', () => {
+  it('清单按可见集渲卡：只收已启用看板，未启用数量显式提示', async () => {
+    routes('/ws/7/dashboards');
+    await screen.findByRole('button', { name: '打开看板 看板 3' });
+    expect(screen.getByRole('button', { name: '打开看板 看板 2' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '打开看板 看板 4' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '打开看板 看板 1' })).not.toBeInTheDocument();
+    expect(screen.getByText('3 个看板')).toBeInTheDocument();
+    expect(screen.getByText(/另有 1 个可见看板未启用/)).toBeInTheDocument();
+    // 卡片显示可读名称/描述与所属组合名(不拿裸 id 当主要展示)
+    expect(screen.getByText('看板 3 的口径说明')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '经营组' })).toBeInTheDocument();
+    // 工作空间清单纯消费(查看/播放), 不提供编辑入口 —— 编辑只在系统配置「看板管理」
+    expect(screen.queryByRole('button', { name: /^编辑看板/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '大屏播放 看板 3' })).toBeInTheDocument();
+  });
+  it('点卡片进入对应看板详情', async () => {
+    routes('/ws/7/dashboards');
+    fireEvent.click(await screen.findByRole('button', { name: '打开看板 看板 3' }));
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/3'));
+  });
+  it('清单加载失败显式报错，重试后恢复', async () => {
+    vi.mocked(client.get).mockRejectedValueOnce(new Error('offline'));
+    routes('/ws/7/dashboards');
+    expect(await screen.findByText('加载看板清单失败，请重试')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    expect(await screen.findByRole('button', { name: '打开看板 看板 3' })).toBeInTheDocument();
+  });
+  it('角色无可见看板时清单给出空态引导(fail-closed 不伪造内容)', async () => {
+    vi.mocked(client.get).mockImplementation(async url => (url === '/dashboard/groups/visible' ? { data: [] } : { data: [] }));
+    routes('/ws/7/dashboards');
+    expect(await screen.findByText('还没有分配给你的看板')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^打开看板/ })).not.toBeInTheDocument();
+  });
+  it('看板组合可筛选，筛后仅显示该组卡片', async () => {
+    routes('/ws/7/dashboards');
+    fireEvent.click(await screen.findByRole('button', { name: '未分组' }));
+    expect(screen.getByRole('button', { name: '打开看板 看板 4' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '打开看板 看板 3' })).not.toBeInTheDocument();
+  });
+  it('目录 30s 缓存：列表→详情复用同一份目录，失效后回源', async () => {
+    const groupCalls = () => vi.mocked(client.get).mock.calls.filter(([u]) => u === '/dashboard/groups/visible').length;
+    const view = routes('/ws/7/dashboards');
+    await screen.findByRole('button', { name: '打开看板 看板 3' });
+    expect(groupCalls()).toBe(1);
+    fireEvent.click(screen.getByRole('button', { name: '打开看板 看板 3' }));
+    await screen.findByText('响应式网格');
+    expect(groupCalls()).toBe(1);  // 详情页复用缓存, 不重复拉整份目录
+    view.unmount();
+    invalidateCatalogCache();       // 看板/图表写操作后的失效路径
+    routes('/ws/7/dashboards');
+    await screen.findByRole('button', { name: '打开看板 看板 3' });
+    expect(groupCalls()).toBe(2);  // 失效后回源
+  });
+  it('旧独立看板链接重定向到工作空间看板清单/详情', async () => {
     routes('/dashboards');
-    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/dashboards/7/3'), { timeout: 3000 });
-    expect(client.get).toHaveBeenCalledWith('/dashboard/groups/visible');
-    expect(screen.queryByRole('button', { name: '编辑看板' })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards'));
   });
-  it('没有默认项时选组内第一个已启用看板', async () => {
-    vi.mocked(client.get).mockImplementation(async url => {
-      if (url === '/dashboard/groups/visible') return { data: groupsFixture({ defaultId: null }) };
-      const m = /^\/dashboard\/(\d+)$/.exec(url);
-      if (m) return { data: board(Number(m[1])) };
-      return { data: [] };
-    });
-    routes('/dashboards'); await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/dashboards/7/2'), { timeout: 3000 });
+  it('旧看板深链重定向保留看板 id', async () => {
+    routes('/dashboards/7/3');
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/3'));
   });
+  it('进入工作空间默认落数据看板清单（不是智能问数）', async () => {
+    render(<TooltipProvider><MemoryRouter initialEntries={['/']}><Path /><Routes>
+      <Route path="/" element={<SectionSwitcher current="home" />} />
+      <Route path="/ws/:workspaceId/dashboards" element={<WorkspaceDashboards />} />
+      <Route path="/ws/:workspaceId/chat" element={<div>智能问数主体</div>} />
+    </Routes></MemoryRouter></TooltipProvider>);
+    fireEvent.keyDown(screen.getByRole('button', { name: '切换模块' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: /工作空间/ }));
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards'));
+    expect(screen.queryByText('智能问数主体')).not.toBeInTheDocument();
+  });
+  it('工作空间入口(/workspace)重定向到看板清单', async () => {
+    render(<TooltipProvider><MemoryRouter initialEntries={['/workspace']}><Path /><Routes>
+      <Route path="/workspace" element={<WorkspaceEntry module="workspace" />} />
+      <Route path="/ws/:workspaceId/dashboards" element={<WorkspaceDashboards />} />
+    </Routes></MemoryRouter></TooltipProvider>);
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards'));
+  });
+});
+
+describe('工作空间数据看板 — 详情与仪表盘组维度', () => {
   it('深链看板归位所在组（跨组可解析）', async () => {
-    routes('/dashboards/0/2');
+    routes('/ws/7/dashboards/2');
     expect(await screen.findByText('响应式网格')).toBeInTheDocument();
   });
-  it('无任何可见看板显示居中空态（没有仪表盘）', async () => {
-    vi.mocked(client.get).mockResolvedValue({ data: [] });
-    routes('/dashboards');
-    expect(await screen.findByText('没有仪表盘', {}, { timeout: 3000 })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '返回首页' })).toBeInTheDocument();
+  it('详情返回落点为看板清单', async () => {
+    routes('/ws/7/dashboards/2');
+    await screen.findByText('响应式网格');
+    fireEvent.click(screen.getByRole('button', { name: '返回看板清单' }));
+    expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards');
   });
-  it('组加载失败显示重试，重试后恢复跳转', async () => {
+  it('目录默认关闭、平铺展示组内可见项并支持搜索切换', async () => {
+    routes('/ws/7/dashboards/2'); await screen.findByText('响应式网格');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '打开看板目录' }));
+    const dialog = await screen.findByRole('dialog');
+    // 平铺目录 = 当前组内 ∩ 角色可见的已启用项(组只做编排不授予可见)
+    expect(within(dialog).getByRole('button', { name: '看板 2' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '看板 3' })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: '看板 1' })).not.toBeInTheDocument();
+    expect(client.get).not.toHaveBeenCalledWith(expect.stringContaining('/admin/menu-tree'));
+    fireEvent.change(screen.getByLabelText('搜索看板'), { target: { value: '3' } });
+    expect(within(dialog).queryByRole('button', { name: '看板 2' })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('搜索看板'), { target: { value: '9' } });
+    expect(screen.getByText('没有匹配的可用看板')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('搜索看板'), { target: { value: '3' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '看板 3' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/3');
+  });
+  it('组加载失败显示重试，重试后恢复渲染', async () => {
     vi.mocked(client.get).mockRejectedValueOnce(new Error('offline'));
-    routes('/dashboards');
+    routes('/ws/7/dashboards/2');
     expect(await screen.findByText('加载仪表盘组失败')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '重试' }));
-    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/dashboards/7/3'), { timeout: 3000 });
+    expect(await screen.findByText('响应式网格')).toBeInTheDocument();
   });
-  it('可见集 fail-closed：角色无授权看板时不渲染组内容', async () => {
+  it('可见集 fail-closed：角色无授权看板时不渲染内容', async () => {
     vi.mocked(client.get).mockImplementation(async url => {
       if (url === '/dashboard/groups/visible') return { data: [{ id: 0, name: '未分组', description: '', sort: 9999, dashboards: [] }] };
       return { data: [] };
     });
-    routes('/dashboards/0/2');
-    expect(await screen.findByText(/当前仪表盘组暂无已启用的看板|看板不存在或无访问权限/)).toBeInTheDocument();
+    routes('/ws/7/dashboards/2');
+    expect(await screen.findByText('看板不存在或无访问权限')).toBeInTheDocument();
     expect(screen.queryByText('响应式网格')).not.toBeInTheDocument();
   });
   it('跨空间请求竞态只保留最后响应，退出账号清理并拒绝迟到响应', async () => {
@@ -111,9 +211,10 @@ describe('数据看板 — 仪表盘组维度导航', () => {
   });
   it('模块顺序为四项，普通用户不显示系统配置', async () => {
     useAuthStore.setState({ user: { id: 1, username: 'test', role: 'admin' } });
-    const view = render(<TooltipProvider><MemoryRouter><SectionSwitcher current="dashboards" /></MemoryRouter></TooltipProvider>);
+    const view = render(<TooltipProvider><MemoryRouter><SectionSwitcher current="workspace" /></MemoryRouter></TooltipProvider>);
     fireEvent.keyDown(screen.getByRole('button', { name: '切换模块' }), { key: 'Enter' });
-    expect((await screen.findAllByRole('menuitem')).map(item => item.textContent)).toEqual(['首页', '数据看板', '工作空间', '数据中台', '系统配置']);
+    // 数据看板不再是独立模块(已收进工作空间侧栏), 一级入口只剩首页/工作空间/数据中台/系统配置
+    expect((await screen.findAllByRole('menuitem')).map(item => item.textContent)).toEqual(['首页', '工作空间', '数据中台', '系统配置']);
     act(() => useAuthStore.setState({ user: { id: 2, username: 'test', role: 'user' } }));
     expect(screen.queryByRole('menuitem', { name: '系统配置' })).not.toBeInTheDocument(); view.unmount();
   });
@@ -123,9 +224,8 @@ describe('数据看板 — 仪表盘组维度导航', () => {
     const view = render(<TooltipProvider><MemoryRouter><SectionSwitcher current="home" /></MemoryRouter></TooltipProvider>);
     fireEvent.keyDown(screen.getByRole('button', { name: '切换模块' }), { key: 'Enter' });
     const labels = (await screen.findAllByRole('menuitem')).map(i => i.textContent);
-    // 数据看板对登录用户恒可见(产品决策, 不参与权限码显隐, 内容级可见性由数据层裁决);
     // 无 data:* 菜单 → 无数据中台入口; 其余仅保留有权限的
-    expect(labels).toEqual(['首页', '数据看板', '工作空间']);
+    expect(labels).toEqual(['首页', '工作空间']);
     view.unmount();
     usePermissionStore.setState({ loaded: false, unrestricted: true, perms: null, allowedMenus: null });
   });
@@ -140,25 +240,9 @@ describe('数据看板 — 仪表盘组维度导航', () => {
     expect(client.get).not.toHaveBeenCalledWith('/dashboard/groups/visible');
     expect(client.get).not.toHaveBeenCalledWith('/admin/menu-tree?workspace_id=8');
   });
-  it('目录默认关闭、平铺展示组内可见项并支持搜索', async () => {
-    routes('/dashboards/7/2'); await screen.findByText('响应式网格');
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '打开看板目录' }));
-    const dialog = await screen.findByRole('dialog');
-    // 平铺目录 = 当前组内 ∩ 角色可见的已启用项(组只做编排不授予可见)
-    expect(within(dialog).getByRole('button', { name: '看板 2' })).toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: '看板 3' })).toBeInTheDocument();
-    expect(within(dialog).queryByRole('button', { name: '看板 1' })).not.toBeInTheDocument();
-    expect(client.get).not.toHaveBeenCalledWith(expect.stringContaining('/admin/menu-tree'));
-    fireEvent.change(screen.getByLabelText('搜索看板'), { target: { value: '3' } });
-    expect(within(dialog).queryByRole('button', { name: '看板 2' })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('搜索看板'), { target: { value: '9' } });
-    expect(screen.getByText('没有匹配的可用看板')).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('搜索看板'), { target: { value: '3' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: '看板 3' }));
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.getByTestId('path')).toHaveTextContent('/dashboards/7/3');
-  });
+});
+
+describe('看板管理域与大屏播放', () => {
   it('管理入口轮播只在可见已启用看板间播放', async () => {
     // 默认但已停用/设计中的看板不进轮播集: current=设计中项时起点回落到首个可见启用项
     useDashboardStore.setState({ currentWorkspaceId: 7, currentId: 2, dashboards: [board(99)] });
@@ -181,21 +265,36 @@ describe('数据看板 — 仪表盘组维度导航', () => {
     await screen.findByRole('button', { name: '轮播' });
     expect(screen.getByTestId('path')).toHaveTextContent('/system/dashboards');
   });
-  it('裸播放链接无组范围时回数据看板', async () => {
+  it('看板管理页：角色授予的看板不提供编辑入口（仅属主/admin 可写）', async () => {
+    vi.mocked(client.get).mockImplementation(async url => {
+      if (url.startsWith('/dashboard/')) return { data: [{ ...board(21), editable: true }, { ...board(22), editable: false }] };
+      return { data: [] };
+    });
+    routes('/system/dashboards');
+    await screen.findByRole('button', { name: '预览 看板 22' });
+    expect(screen.getAllByRole('button', { name: '编辑' })).toHaveLength(1);  // 仅可写的看板有编辑
+    fireEvent.keyDown(screen.getByRole('button', { name: '看板 22 更多操作' }), { key: 'Enter' });
+    const items = (await screen.findAllByRole('menuitem')).map(i => i.textContent);
+    expect(items.some(t => t?.includes('重命名'))).toBe(false);
+    expect(items.some(t => t?.includes('删除'))).toBe(false);
+    expect(items.some(t => t?.includes('仅查看'))).toBe(true);
+    expect(items.some(t => t?.includes('复制'))).toBe(true);  // 复制为我的看板仍是读+建, 不改原看板
+  });
+  it('裸播放链接无组范围时回看板清单', async () => {
     routes('/screen/2');
-    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/dashboards'));
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards'));
   });
   it('非法播放范围不发起看板请求', () => {
     routes('/screen/2?group=-1'); expect(screen.getByRole('alert')).toHaveTextContent('范围无效');
     expect(client.get).not.toHaveBeenCalled();
   });
   it('播放携带组与来源，只读进入并正确返回', async () => {
-    routes('/dashboards/7/2'); await screen.findByText('响应式网格');
+    routes('/ws/7/dashboards/2'); await screen.findByText('响应式网格');
     fireEvent.click(screen.getByRole('button', { name: '大屏播放' })); await screen.findByText('大屏画布');
-    expect(screen.getByTestId('path')).toHaveTextContent('/screen/2?group=7&from=%2Fdashboards%2F7%2F2');
+    expect(screen.getByTestId('path')).toHaveTextContent('/screen/2?group=7&from=%2Fws%2F7%2Fdashboards%2F2');
     expect(screen.queryByRole('button', { name: '编辑外观与数据' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '退出大屏' })); await screen.findByText('响应式网格');
-    expect(screen.getByTestId('path')).toHaveTextContent('/dashboards/7/2');
+    expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/2');
   });
   it('大屏顶栏刷新会对每个数据图表 push 重查询（不只回读 DB 缓存）', async () => {
     // 锁定行为：刷新按钮必须逐个 POST charts/{id}/refresh 向数据源重查询；

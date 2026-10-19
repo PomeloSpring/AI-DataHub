@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import Home from '../Home';
+import { invalidateCatalogCache } from '@/lib/dashboardCatalog';
 import { useAuthStore } from '@/stores/authStore';
 import { usePermissionStore } from '@/stores/permissionStore';
 import client from '@/api/client';
@@ -19,6 +20,7 @@ function renderHome() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  invalidateCatalogCache();  // 目录 30s 内存缓存: 用例之间不得串数据
   useAuthStore.setState({ user: { id: 1, username: 'alice', role: 'viewer' } } as any);
 });
 afterEach(() => {

@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
 import { useAuthStore } from '../stores/authStore';
-import { fetchVisibleGroups } from '@/pages/Analysis';
+import { fetchVisibleGroups } from '@/lib/dashboardCatalog';
 
 const features = [
   { icon: MessageSquare, title: '自然语言查询', desc: '用中文提问，AI 自动生成 SQL' },

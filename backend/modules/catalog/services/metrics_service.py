@@ -110,7 +110,6 @@ def list_metrics(
     metric_type: Optional[str] = None,
     tags: Optional[str] = None,
     search: str = "",
-    workspace_id: int = 0,
     model_id: Optional[int] = None,
     scope: Optional[str] = None,
 ) -> dict:
@@ -122,24 +121,21 @@ def list_metrics(
         metric_type: Filter by metric type (e.g., "basic", "derived", "compound")
         tags: Filter by tags (comma-separated)
         search: Search keyword
-        workspace_id: Workspace isolation
         model_id: 本体模型作用域(配合 scope='model'): 只列 bound_object_key ∈ 该模型对象集的指标
         scope: 'model' | 'unbound' | 空(全局, 旧行为)
 
     Returns:
         dict with total and items
     """
+    # 指标字典**不按 workspace 分域**（ontology-modeling §3：口径唯一登记在 adh_metrics，
+    # 是跨工作空间/跨数据源的全局权威；与 list_all_dimensions、create_dimension 同口径）。
+    # 曾按 workspace_id 精确等值过滤，导致个人工作站(ws=301) 下 61 条全局/默认空间字典行
+    # 全部被排除，指标中心显示“暂无指标数据”而维度 Tab 正常 —— 两个 Tab 口径分叉的根因。
+    # 模型作用域(scope=model)看的是该模型对象挂接的资产: 本体模型是全局语义资产
+    # (adh_ontology_models 无 workspace_id 列), 其挂接指标多为全局字典(ws=0)。
     conditions = []
     params = []
 
-    # 模型作用域(scope=model / 带 model_id)看的是该模型对象挂接的资产: 本体模型是全局
-    # 语义资产(adh_ontology_models 无 workspace_id 列), 其挂接指标多为全局字典(ws=0),
-    # 不得再叠加当前 UI 工作空间过滤, 否则 bound_object_key 命中的全局指标会被全部排除
-    # (表现为模型「指标」tab“暂无指标数据”)。与 list_all_dimensions 不做 ws 过滤保持一致。
-    is_model_scope = (scope == "model") or bool(model_id)
-    if workspace_id and not is_model_scope:
-        conditions.append("workspace_id = %s")
-        params.append(workspace_id)
     if metric_type:
         conditions.append("(category = %s OR agg_type = %s)")
         params.extend([metric_type, metric_type])
@@ -312,10 +308,12 @@ def create_metric(data: dict) -> dict:
 
     with DBConnection() as conn:
         with conn.cursor() as cur:
-            # Check duplicate (同名中文名或英文标识)
+            # Check duplicate (同名中文名或英文标识) —— **全局唯一**，不按 workspace 分域：
+            # 语义层按 name 解析指标（planner/get_metrics），同名跨空间多条会造成口径歧义；
+            # 与 create_dimension 的全局查重口径保持一致。
             cur.execute(
-                "SELECT id FROM adh_metrics WHERE (name = %s OR name_en = %s) AND workspace_id = %s",
-                (biz_name, name_en or biz_name, data.get("workspace_id", 0)),
+                "SELECT id FROM adh_metrics WHERE name = %s OR name_en = %s LIMIT 1",
+                (biz_name, name_en or biz_name),
             )
             if cur.fetchone():
                 raise ValueError(f"Metric '{biz_name}' already exists")
@@ -339,7 +337,9 @@ def create_metric(data: dict) -> dict:
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     row_id,
-                    data.get("workspace_id", 0),
+                    # 字典行是跨工作空间口径：workspace_id 恒为 0（与 datasource_id 同口径），
+                    # 不再从调用方（UI 当前工作站 / AS-BOT 会话）继承，避免同一字典被按空间碎片化
+                    0,
                     biz_name,
                     name_en,
                     formula,
@@ -632,8 +632,9 @@ def create_dimension(data: dict) -> dict:
     data 字段：
       name / display_name → 业务名（必填）; name_en → 英文标识;
       target_table / target_column → 物理列; category → 分类（"时间"/"属性"/...）;
-      description / bound_object_key / aliases / value_labels / certified / datasource_id / workspace_id
+      description / bound_object_key / aliases / value_labels / certified / datasource_id
     bound_object_key 非空时引用校验（同 create_metric）。
+    字典行不按 workspace 分域：workspace_id 入参不参与写入（与 create_metric 同口径）。
     """
     now = _now()
     biz_name = (data.get("display_name") or data.get("name") or "").strip()

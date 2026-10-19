@@ -36,9 +36,17 @@ async def list_authorized_datasources(
 
     纯角色裁决：数据源可用集=用户角色授权；空授权 fail-closed 返回空列表。
     必须定义在 /{ds_id} 之前，否则 "authorized" 会被当作 ds_id 解析(422)。
+    缓存 60s（角色授权变更时由权限管理端失效）。
     """
-    return await datasource_service.list_authorized_datasources(
+    from backend.common.ttl_cache import datasource_cache
+    cache_key = f"auth_ds:{user.get('user_id')}:{workspace_id}"
+    cached = datasource_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    result = await datasource_service.list_authorized_datasources(
         user.get("user_id") or 0, workspace_id)
+    datasource_cache.set(cache_key, result)
+    return result
 
 
 @router.get("/{ds_id}")

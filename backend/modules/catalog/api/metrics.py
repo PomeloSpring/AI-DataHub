@@ -16,11 +16,14 @@ def list_metrics(
     metric_type: Optional[str] = Query(None, description="Filter by metric type"),
     tags: Optional[str] = Query(None, description="Filter by tags (comma-separated)"),
     search: str = Query("", description="Search keyword"),
-    workspace_id: int = Query(0, description="Workspace ID"),
     model_id: Optional[int] = Query(None, description="本体模型作用域(scope=model 时必填)"),
     scope: Optional[str] = Query(None, description="model=仅本模型对象资产 | unbound=仅待归属 | 空=全局"),
 ):
-    """List metrics (paginated, filter by type/tags/model-scope)."""
+    """List metrics (paginated, filter by type/tags/model-scope).
+
+    指标字典不按工作空间分域（全局唯一权威口径），故无 workspace_id 参数；
+    多传的 workspace_id query 会被 FastAPI 忽略（兼容旧前端）。
+    """
     if scope not in (None, "", "model", "unbound"):
         raise HTTPException(status_code=400, detail="scope 仅支持 model/unbound")
     result = metrics_service.list_metrics(
@@ -29,7 +32,6 @@ def list_metrics(
         metric_type=metric_type,
         tags=tags,
         search=search,
-        workspace_id=workspace_id,
         model_id=model_id,
         scope=scope or None,
     )

@@ -1,10 +1,13 @@
 /**
- * 前置意图漏斗徽章 — 本地直答回合必须可见（no-silent-degradation）。
+ * 前置意图漏斗的**唯一**界面痕迹：一个「转深度分析」动作按钮。
  *
- * 这一条回答没有调用模型，用户必须知道两件事：
- *   1. 为什么没有模型分析（判定层级与依据，hover 可查，排查误拦用）；
- *   2. 不认可这个判定时怎么救回来（「转深度分析」把原文重新下发执行层）。
- * 只在 `handledBy === 'intent_gate'` 时渲染；走模型的回合不出现任何多余标记。
+ * 聊天界面不显示"未调用模型/前置意图层直答"这类内部术语——对用户来说这就是一条正常回答，
+ * 标注它只是噪声。不显示不等于不可审计：每一回合的处理方都落在
+ * `adh_llm_traces.handled_by` 与 `adh_intent_intercepts`（管理端「LLM 交互可观测 →
+ * 意图漏斗」页可查拦截率与误拦复盘），服务端判定链路始终可复盘。
+ *
+ * 保留的是**逃生门**：判错了（该走模型的被拦了），用户点一下就把原文重新下发执行层。
+ * 只在 `handledBy === 'intent_gate'` 时渲染；走模型的回合不出现任何多余元素。
  */
 import { Button } from '@/components/ui/button';
 
@@ -19,44 +22,26 @@ export interface GateSnapshot {
   gate_error?: string;
 }
 
-/** 判定依据的中文可读化：把落库的层级/标签/信号拼成一句排查提示。 */
-function tipText(gate?: GateSnapshot): string {
-  if (!gate) return '本条由前置意图层直接回答，未调用模型。';
-  const layer = gate.layer === 'L0' ? 'L0 形态规则'
-    : gate.layer === 'L1' ? 'L1 词典/本体命中' : (gate.layer || '');
-  const parts = [
-    gate.label ? `判定=${gate.label}` : '',
-    layer,
-    gate.reason || '',
-    gate.signals?.length ? `信号=${gate.signals.join(',')}` : '',
-    gate.gate_error ? `网关异常已放行=${gate.gate_error}` : '',
-  ].filter(Boolean);
-  return parts.length ? parts.join(' · ') : '本条由前置意图层直接回答，未调用模型。';
-}
-
 export function IntentGateBadge({
-  gate, onDeepAnalysis, deepAnalysisDisabled,
+  onDeepAnalysis, deepAnalysisDisabled,
 }: {
   gate?: GateSnapshot;
   onDeepAnalysis?: () => void;
   deepAnalysisDisabled?: boolean;
 }) {
+  if (!onDeepAnalysis) return null;
   return (
-    <div className="mt-2 flex items-center gap-2 flex-wrap" title={tipText(gate)}>
-      <span className="text-[11px] px-2 py-0.5 rounded-full border border-border/70 bg-muted/60 text-muted-foreground">
-        未调用模型 · 前置意图层直答
-      </span>
-      {onDeepAnalysis && (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 text-xs px-2"
-          disabled={deepAnalysisDisabled}
-          onClick={onDeepAnalysis}
-        >
-          转深度分析
-        </Button>
-      )}
+    <div className="mt-2 flex items-center gap-2">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6 text-xs px-2"
+        disabled={deepAnalysisDisabled}
+        onClick={onDeepAnalysis}
+        title="让模型重新分析这条问题"
+      >
+        转深度分析
+      </Button>
     </div>
   );
 }

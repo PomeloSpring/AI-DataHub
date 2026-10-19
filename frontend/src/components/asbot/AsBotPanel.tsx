@@ -356,7 +356,7 @@ function MessageBubble({
           </div>
         )}
 
-        {/* 前置意图漏斗本地直答：未调用模型必须可见，判错了能一键转深度分析 */}
+        {/* 前置意图漏斗本地直答：只给「转深度分析」逃生门，不在聊天界面打内部术语标记 */}
         {!isUser && msg.handledBy === 'intent_gate' && (
           <IntentGateBadge gate={msg.gate} onDeepAnalysis={onDeepAnalysis} />
         )}

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { toast } from 'sonner';
 import client from '../api/client';
+import { invalidateCatalogCache } from '@/lib/dashboardCatalog';
 
 export interface DashboardChart {
   id: number;
@@ -54,6 +55,8 @@ export interface Dashboard {
   charts: DashboardChart[];
   created_at: string;
   updated_at: string;
+  /** 服务端裁决: 仅看板属主/管理员可写; 角色授予的可见权不含编辑权(缺省=不可写) */
+  editable?: boolean;
 }
 
 export const DASHBOARD_STATUS_MAP: Record<DashboardStatus, { label: string; color: string }> = {
@@ -181,6 +184,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   createDashboard: async (name, workspaceId) => {
     const wsId = workspaceId || get().currentWorkspaceId || 0;
     const { data } = await client.post('/dashboard/', { name, workspace_id: wsId });
+    invalidateCatalogCache();
     await get().loadDashboards(wsId);
     get().setCurrent(data.id);
     return data.id;
@@ -190,6 +194,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     const { page_params, ...payload } = updates;
     if (page_params !== undefined) payload.filters = { ...(updates.filters || get().dashboards.find(d => d.id === id)?.filters || {}), pageParams: page_params };
     await client.put(`/dashboard/${id}`, payload);
+    invalidateCatalogCache();
     set(state => ({ dashboards: state.dashboards.map(d => d.id === id ? { ...d, ...updates, ...payload } : d) }));
     if (get().currentId === id && page_params !== undefined) get().setPageParams(page_params);
     if (!deferReload) await get().loadDashboards(get().currentWorkspaceId);
@@ -197,6 +202,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   deleteDashboard: async (id) => {
     await client.delete(`/dashboard/${id}`);
+    invalidateCatalogCache();
     const state = get();
     const remaining = state.dashboards.filter(d => d.id !== id);
     set({ dashboards: remaining });
@@ -206,6 +212,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   copyDashboard: async (id) => {
     const { data } = await client.post(`/dashboard/${id}/copy`);
+    invalidateCatalogCache();
     await get().loadDashboards(get().currentWorkspaceId);
     get().setCurrent(data.id);
     toast.success('仪表盘已拷贝');
@@ -213,11 +220,13 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   setDefault: async (id) => {
     await client.put(`/dashboard/${id}`, { is_default: true });
+    invalidateCatalogCache();
     await get().loadDashboards(get().currentWorkspaceId);
   },
 
   addChart: async (dashboardId, chart, deferReload = false) => {
     const { data } = await client.post(`/dashboard/${dashboardId}/charts`, chart);
+    invalidateCatalogCache();
     const id = Number(data.id);
     if (!Number.isSafeInteger(id) || id <= 0) throw new Error('新增图表未返回有效 ID');
     set(state => ({ dashboards: state.dashboards.map(d => d.id === dashboardId
@@ -228,6 +237,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   updateChart: async (dashboardId, chartId, data, deferReload = false) => {
     await client.put(`/dashboard/${dashboardId}/charts/${chartId}`, data);
+    invalidateCatalogCache();
     set(state => ({ dashboards: state.dashboards.map(d => d.id === dashboardId
       ? { ...d, charts: d.charts.map(c => c.id === chartId ? { ...c, ...data } : c) } : d) }));
     if (!deferReload) await get().loadDashboards(get().currentWorkspaceId);
@@ -235,6 +245,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   deleteChart: async (dashboardId, chartId, deferReload = false) => {
     await client.delete(`/dashboard/${dashboardId}/charts/${chartId}`);
+    invalidateCatalogCache();
     set(state => ({ dashboards: state.dashboards.map(d => d.id === dashboardId
       ? { ...d, charts: d.charts.filter(c => c.id !== chartId) } : d) }));
     if (!deferReload) await get().loadDashboards(get().currentWorkspaceId);
@@ -242,6 +253,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   saveLayout: async (dashboardId, layouts) => {
     await client.put(`/dashboard/${dashboardId}/layout`, { layouts });
+    invalidateCatalogCache();
     set(state => ({
       dashboards: state.dashboards.map(d => {
         if (d.id !== dashboardId) return d;
@@ -258,6 +270,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   reorderDashboards: async (orders) => {
     await client.post('/dashboard/reorder', { orders });
+    invalidateCatalogCache();
     await get().loadDashboards(get().currentWorkspaceId);
   },
 

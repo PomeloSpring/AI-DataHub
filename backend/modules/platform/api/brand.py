@@ -82,12 +82,20 @@ def _save_brand_settings(settings: dict):
         conn.close()
 
 
+@router.get("")
 @router.get("/")
 def get_brand_settings():
-    """Get brand settings (public, no auth required)."""
-    return _load_brand_settings()
+    """Get brand settings (public, cached 5min, no auth required)."""
+    from backend.common.ttl_cache import brand_cache
+    cached = brand_cache.get("settings")
+    if cached is not None:
+        return cached
+    result = _load_brand_settings()
+    brand_cache.set("settings", result)
+    return result
 
 
+@router.put("")
 @router.put("/")
 def update_brand_settings(req: BrandSettingsUpdate):
     """Update brand settings (admin only)."""
@@ -102,6 +110,8 @@ def update_brand_settings(req: BrandSettingsUpdate):
         if req.show_text is not None:
             current["show_text"] = req.show_text
         _save_brand_settings(current)
+        from backend.common.ttl_cache import brand_cache
+        brand_cache.invalidate("settings")
         return current
     except Exception as e:
         logger.error("Update brand settings failed: %s", e)

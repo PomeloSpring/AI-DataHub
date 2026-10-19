@@ -119,7 +119,10 @@ def test_save_metric_injects_ownership_server_side(monkeypatch):
                               "owner": "hacker", "workspace_id": 999, "datasource_id": 0})
     out = _payload(r)
     assert out["success"] and out["id"] == 42 and not out.get("warning")
-    assert captured["owner"] == "alice" and captured["workspace_id"] == 3
+    assert captured["owner"] == "alice"
+    # 字典不按 workspace 分域：服务端恒注入 0（全局字典行），既不取 LLM 的 999，
+    # 也不取会话空间 3 —— 从会话空间继承会把同一字典按空间碎片化。
+    assert captured["workspace_id"] == 0
     assert captured["datasource_id"] == 0, "字典是跨源口径，不得被入参改写"
 
 

@@ -50,10 +50,10 @@ L_AMBIG = "ambiguous"             # 判不准 → 默认放行
 #: 可以本地直答的标签（其余标签一律下发 agent）
 LOCAL_LABELS = frozenset({L_EMPTY, L_ACK, L_PROBE, L_HELP, L_CAPABILITY})
 
-#: 本地直答的可见性由**前端徽章**承担（done 事件带 handled_by=intent_gate → 页面渲染
-#: 「未调用模型 · 前置意图层直答」+「转深度分析」按钮）。正文里不再重复同一段声明——
-#: 那会把一句正常问候变成三段式公告（no-silent-degradation 要求的是"用户看得到"，不是"正文里写一遍"）。
-#: 拦截回合的归属在落库与 trace 的 handled_by 上，不依赖文案。
+#: 本地直答在**聊天界面不打任何标记**（对用户就是一条正常回答，“未调用模型/前置意图层”是内部术语）；
+#: 界面只保留「转深度分析」逃生门。不显示 ≠ 不可审计：每回合的处理方都落在
+#: adh_llm_traces.handled_by 与 adh_intent_intercepts（管理端「LLM 可观测 → 意图漏斗」可复盘），
+#: 所以文案里也不再重复这句声明（拦错了有数据可查，不靠给用户念公告）。
 
 # ── 工具组 → 面向用户的能力名（只用于展示已授权的能力面，不编造能力）──
 GROUP_LABELS = {
@@ -764,7 +764,10 @@ def record_intercept(decision: dict, *, question: str, ctx: Any = None,
                (dt, trace_id, conversation_id, user_id, workspace_id, datasource_id,
                 as_bot_key, mode, layer, label, decision, reason, signals,
                 question_digest, latency_ms, gate_error, force_agent)
-               VALUES (NOW(), %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+               VALUES (UTC_TIMESTAMP(), %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            # dt 必须显式用 UTC_TIMESTAMP()：本表与 adh_llm_traces.started_at 同口径（UTC naive），
+            # 而 NOW() 是会话时区的本地时间。差 8 小时的直接后果是：监控页按 UTC 窗口过滤
+            # 本表时“近 1 小时”永远空白，列表时间也错显示——口径不一致比缺数据更难查。
             (
                 observability.get_trace_id() or "",
                 int(conversation_id or 0),

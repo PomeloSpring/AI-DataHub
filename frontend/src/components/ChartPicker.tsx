@@ -10,6 +10,8 @@ import DashboardChart, { ChartIcon, CHART_TYPES, CHART_TYPE_CATEGORIES } from '.
 import type { ChartTypeItem } from './DashboardChart';
 import MapHeatmap, { detectGeoColumns } from './MapHeatmap';
 import SqlCard from './SqlCard';
+import { useVisLibrary } from '@/hooks/useVisLibrary';
+import { useChartDesign } from '@/hooks/useChartDesign';
 import * as XLSX from 'xlsx';
 import html2canvas from 'html2canvas';
 
@@ -135,6 +137,24 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
 
   const hasSeries = seriesCol && seriesValues.length > 1;
 
+  // 图表样式跟随 UI 字模库主题包 —— 统一走 useChartDesign 管线(色板/卡片/线型/轴线，
+  // 见 ui-vis-library-style.md)；library 另用于字模加载失败的显式降级提示
+  const library = useVisLibrary();
+  const { chartStyle } = useChartDesign();
+  const styled = useMemo(
+    () => chartStyle({ xCol: x, yCol: y, groupCol: seriesCol || undefined }, chartType),
+    [chartStyle, chartType, x, y, seriesCol],
+  );
+
+  // 字模库未加载/加载失败时图表只能回退默认样式 —— 显式提示 + 可重试，不静默掩盖
+  // （与看板同口径：样式缺失是可见的降级，用户要能知道并修复）
+  const libraryNotice = library.error ? (
+    <p role="alert" className="mb-2 text-xs text-muted-foreground">
+      字模库未加载，图表暂用默认样式（未按主题字模渲染）
+      <Button variant="link" size="sm" className="h-auto px-1 text-xs" onClick={() => void library.refresh()}>重试</Button>
+    </p>
+  ) : null;
+
   const chartOptions = PICKABLE;
 
   // 地图类图型(chat)统一走字模库瓦片热力(MapHeatmap):china_map/world_map 的 G2 底图
@@ -142,8 +162,6 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
   const isMapChart = chartType === 'map_heat' || chartType === 'china_map' || chartType === 'world_map';
 
   if (columns.length < 2 || rows.length === 0) return null;
-
-  const config = useMemo(() => ({ xCol: x, yCol: y, groupCol: seriesCol || undefined }), [x, y, seriesCol]);
 
   const typeSelect = (
     <Select value={chartType} onValueChange={setChartType}>
@@ -271,7 +289,7 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
     if (!chartContainerRef.current) return;
     try {
       const canvas = await html2canvas(chartContainerRef.current, {
-        backgroundColor: '#ffffff',
+        backgroundColor: styled.visual.viewBg || '#ffffff',
         scale: 2,
       });
       const url = canvas.toDataURL('image/png');
@@ -309,6 +327,7 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
       </div>
 
       {view === 'chart' && <>
+        {libraryNotice}
         {isMapChart ? (
           <>
             <div className="flex gap-2 items-center flex-wrap">
@@ -326,7 +345,7 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
             {controlsBlock}
             <div className="relative mt-3" ref={chartContainerRef}>
               <div className="h-[360px]">
-                <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={config} onDrill={onDrill ? onChartDrill : undefined} />
+                <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={styled.config} visual={styled.visual} onDrill={onDrill ? onChartDrill : undefined} />
               </div>
               <Button
                 variant="ghost"
@@ -380,7 +399,7 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
               <>
                 {controlsBlock}
                 <div className="relative flex-1 mt-3 min-h-0">
-                  <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={config} onDrill={onDrill ? onChartDrill : undefined} />
+                  <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={styled.config} visual={styled.visual} onDrill={onDrill ? onChartDrill : undefined} />
                 </div>
               </>
             )}

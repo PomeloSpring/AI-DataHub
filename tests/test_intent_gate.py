@@ -523,3 +523,20 @@ def test_redis_snapshot_ttl_is_integer(monkeypatch):
         _t.sleep(0.05)
     assert store.ttls, "后台装载完成后应把快照写进 Redis"
     assert all(isinstance(x, int) for x in store.ttls), store.ttls
+
+
+def test_intercept_row_is_written_in_utc(monkeypatch):
+    """dt 必须用 UTC_TIMESTAMP()：本表与 traces.started_at 同口径（UTC naive）。
+
+    踩过的坑：用 NOW() 写本地时(+08:00)，而监控页按 UTC 窗口过滤 → "近1小时"永远空白，
+    看起来像"功能没跑"，实际是口径差了 8 小时。
+    """
+    from backend.common import db
+
+    captured = {}
+    monkeypatch.setattr(db, "execute_write",
+                        lambda sql, params=None: captured.update(sql=sql) or 1)
+    intent_gate.record_intercept(_route("你好"), question="你好", ctx=_ctx(), policy=_Policy())
+
+    assert "UTC_TIMESTAMP()" in captured["sql"]
+    assert "NOW()" not in captured["sql"]

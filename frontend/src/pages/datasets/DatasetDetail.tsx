@@ -17,6 +17,7 @@ import {
 import client from '../../api/client';
 import { hasPerm } from '../../stores/permissionStore';
 import DashboardChart, { CHART_TYPES } from '../../components/DashboardChart';
+import { useChartDesign } from '@/hooks/useChartDesign';
 
 interface DatasetField {
   field: string;
@@ -463,6 +464,9 @@ function SqlDatasourceSelect({ value, disabled, onChange }: {
 function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: DatasetField[]; ds: any }) {
   const [result, setResult] = useState<any>(null);
   const [running, setRunning] = useState(false);
+  // 图表样式走 UI 字模库主题包管线(useChartDesign): 预览与看板/Chat 同观感
+  const { chartStyle } = useChartDesign();
+  const presetChart = chartStyle(cleanPreset(ds.chart_preset), ds.chart_type);
   const dims = fields.filter(f => f.role === 'dimension');
   const measures = fields.filter(f => f.role === 'measure');
   const [dimensions, setDimensions] = useState<string[]>(dims.slice(0, 1).map(f => f.field));
@@ -531,7 +535,8 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
                   <DashboardChart
                     chartType={ds.chart_type}
                     data={{ columns: result.columns || [], rows: result.rows || [] }}
-                    config={cleanPreset(ds.chart_preset)}
+                    config={presetChart.config}
+                    visual={presetChart.visual}
                     draft
                   />
                 </div>

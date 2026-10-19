@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from backend.common.db import DBConnection, execute_query, execute_insert, execute_write
+from backend.common.ttl_cache import model_config_cache
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -48,7 +49,10 @@ def _now():
 
 @router.get("/llm")
 def list_models():
-    """List all LLM models."""
+    """List all LLM models (cached 5min)."""
+    cached = model_config_cache.get("llm_list")
+    if cached is not None:
+        return cached
     try:
         rows = execute_query(
             "SELECT id, name, provider, base_url, model_name, context_window, "
@@ -59,6 +63,7 @@ def list_models():
             for k in ("created_at", "updated_at"):
                 if hasattr(r.get(k), "isoformat"):
                     r[k] = r[k].isoformat()
+        model_config_cache.set("llm_list", rows)
         return rows
     except Exception as e:
         logger.error("List models failed: %s", e)
@@ -109,6 +114,8 @@ def create_model(req: LLMModelCreate):
     except Exception as e:
         logger.error("Create model failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        model_config_cache.invalidate("llm_list")
 
 
 @router.put("/llm/{model_id}")
@@ -166,6 +173,8 @@ def update_model(model_id: int, req: LLMModelUpdate):
     except Exception as e:
         logger.error("Update model failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        model_config_cache.invalidate("llm_list")
 
 
 @router.delete("/llm/{model_id}")
@@ -177,6 +186,8 @@ def delete_model(model_id: int):
     except Exception as e:
         logger.error("Delete model failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        model_config_cache.invalidate("llm_list")
 
 
 @router.put("/llm/{model_id}/default")
@@ -189,17 +200,22 @@ def set_default_model(model_id: int):
     except Exception as e:
         logger.error("Set default model failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        model_config_cache.invalidate("llm_list")
 
 
 @router.get("/system")
 def get_system_config():
-    """Get all system configs."""
+    """Get all system configs (cached 5min)."""
+    cached = model_config_cache.get("system_config")
+    if cached is not None:
+        return cached
     try:
         rows = execute_query("SELECT * FROM adh_system_config ORDER BY config_key")
-        # Convert to dict format
         config = {}
         for row in rows:
             config[row["config_key"]] = row.get("config_value", "")
+        model_config_cache.set("system_config", config)
         return config
     except Exception as e:
         logger.error("Get system config failed: %s", e)
@@ -221,3 +237,5 @@ def update_system_config(data: dict):
     except Exception as e:
         logger.error("Update system config failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        model_config_cache.invalidate("system_config")

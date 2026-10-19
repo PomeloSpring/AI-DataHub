@@ -233,7 +233,9 @@ class ChatService:
                     policy=policy, conversation_id=conversation_id, force_agent=force_agent)
                 yield _sse_event("progress", {
                     "stage": "intent_gate", "step": "route",
-                    "message": "前置意图层直接应答（本轮未调用模型）",
+                    # 对用户就是一条正常回答，不把内部术语（未调用模型/前置意图层）推到聊天界面；
+                    # 处理方归属在 handled_by 字段与管理侧报表里，不靠文案留痕。
+                    "message": "正在回答...",
                     "gate": gate_snapshot,
                 })
                 yield _sse_event("token", {"text": reply})

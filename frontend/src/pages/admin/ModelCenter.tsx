@@ -6,7 +6,7 @@ import ExecutionLayers from './ExecutionLayers';
 export default function ModelCenter() {
   return (
     <div className="h-full overflow-auto">
-      <Tabs defaultValue="model-config" className="h-full">
+      <Tabs defaultValue="execution-layers" className="h-full">
         <div className="mb-6">
           <h1 className="text-2xl font-bold mb-4">模型中心</h1>
           <TabsList>

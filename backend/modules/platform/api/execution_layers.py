@@ -190,8 +190,15 @@ async def get_workspace_execution_layer(workspace_id: int):
 
     chat 页面据此调整模型框:
     - cli(qoder 等): 候选来自执行层 list_models(model_source=execution_layer)
+
+    模型列表缓存 5min（spawn 子进程极慢），执行层 CRUD 时主动失效。
     """
+    from backend.common.ttl_cache import exec_layer_cache
     from backend.modules.mind.execution.manager import get_execution_layer_manager
+    cache_key = f"ws:{workspace_id}"
+    cached = exec_layer_cache.get(cache_key)
+    if cached is not None:
+        return cached
     try:
         manager = get_execution_layer_manager()
         row = await manager.resolve_workspace_layer(workspace_id)
@@ -211,6 +218,7 @@ async def get_workspace_execution_layer(workspace_id: int):
                 resp["models"] = await adapter.list_models()
             except Exception as e:
                 logger.warning("List models for layer %s failed: %s", row.get("name"), e)
+        exec_layer_cache.set(cache_key, resp)
         return resp
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -252,6 +260,8 @@ def update_execution_layer(layer_id: int, req: ExecutionLayerUpdate):
                 raise HTTPException(status_code=400, detail=f"执行层名称已存在: {req.name}")
         data = {k: v for k, v in req.model_dump().items() if v is not None}
         exec_service.update_layer(layer_id, data)
+        from backend.common.ttl_cache import exec_layer_cache
+        exec_layer_cache.invalidate(None)  # 执行层变更影响所有工作空间
         return {"success": True}
     except HTTPException:
         raise
@@ -269,6 +279,8 @@ def delete_execution_layer(layer_id: int):
         if not row:
             raise HTTPException(status_code=404, detail="执行层不存在")
         exec_service.delete_layer(layer_id)
+        from backend.common.ttl_cache import exec_layer_cache
+        exec_layer_cache.invalidate(None)
         return {"success": True}
     except HTTPException:
         raise

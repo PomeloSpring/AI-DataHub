@@ -47,10 +47,14 @@ PREPARE stmt2 FROM @ddl; EXECUTE stmt2; DEALLOCATE PREPARE stmt2;
 
 -- ----------------------------------------------------------------------------
 -- 2) adh_intent_intercepts: 意图漏斗判定流水
+--    时间口径：dt 与 adh_llm_traces.started_at 一致，都是 **UTC naive**。
+--    默认值写 CURRENT_TIMESTAMP 会落会话时区的本地时（+08:00），而监控页按 UTC 窗口
+--    过滤本表：差 8 小时直接表现为“近 1 小时永远没数据”且列表时间错显示（已踩过）。
+--    所以默认值用表达式 (UTC_TIMESTAMP())，写入侧（intent_gate.record_intercept）也显式传。
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS adh_intent_intercepts (
   id              BIGINT NOT NULL AUTO_INCREMENT,
-  dt              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '判定时间(清理与趋势聚合按此列)',
+  dt              DATETIME NOT NULL DEFAULT (UTC_TIMESTAMP()) COMMENT '判定时间(UTC naive, 与 traces.started_at 同口径)',
   trace_id        VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '关联 adh_llm_traces(观测未开启时为空)',
   conversation_id BIGINT       NOT NULL DEFAULT 0,
   user_id         BIGINT       NOT NULL DEFAULT 0,
@@ -93,6 +97,23 @@ SET @ddl := IF(@has_review_note = 0,
   'ALTER TABLE adh_intent_intercepts ADD COLUMN review_note VARCHAR(500) NOT NULL DEFAULT '''' COMMENT ''复盘备注'' AFTER reviewed',
   'SELECT 1');
 PREPARE stmt4 FROM @ddl; EXECUTE stmt4; DEALLOCATE PREPARE stmt4;
+
+-- 旧表默认值仍是 CURRENT_TIMESTAMP（本地时）时换装为 UTC 表达式默认（MySQL 8.0.13+）
+SET @need_utc_default := (SELECT COUNT(*) FROM information_schema.COLUMNS
+                          WHERE table_schema = DATABASE() AND table_name = 'adh_intent_intercepts'
+                            AND column_name = 'dt'
+                            AND COLUMN_DEFAULT IS NOT NULL
+                            AND COLUMN_DEFAULT <> '(utc_timestamp())');
+SET @ddl := IF(@need_utc_default > 0,
+  'ALTER TABLE adh_intent_intercepts ALTER COLUMN dt SET DEFAULT (UTC_TIMESTAMP())',
+  'SELECT 1');
+PREPARE stmt5 FROM @ddl; EXECUTE stmt5; DEALLOCATE PREPARE stmt5;
+
+-- 校正已按本地时写入的历史行：dt 比当前 UTC 时刻晚超过 1 小时的行只可能是本地(+N)写进去的，
+-- 按会话时区与实际 UTC 的偏移量回退。幂等：校正后 dt 不再晚于 UTC+1h，重复执行不会二次偏移。
+UPDATE adh_intent_intercepts
+   SET dt = dt - INTERVAL TIMESTAMPDIFF(HOUR, UTC_TIMESTAMP(), NOW()) HOUR
+ WHERE dt > UTC_TIMESTAMP() + INTERVAL 1 HOUR;
 
 -- ----------------------------------------------------------------------------
 -- 3) 评测门禁策略: intent 集（前置分流）绝对下限

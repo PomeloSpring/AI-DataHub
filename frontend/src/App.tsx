@@ -13,6 +13,7 @@ import Home from './pages/Home';
 import WorkspaceAssets from './pages/WorkspaceAssets';
 import Dashboard from './pages/Dashboard';
 import DashboardEditor from './pages/DashboardEditor';
+import WorkspaceDashboards from './pages/WorkspaceDashboards';
 import Admin from './pages/Admin';
 import Playground from './pages/Playground';
 import Screen from './pages/Screen';
@@ -110,10 +111,10 @@ export default function App() {
         <Route path="/screen" element={<PrivateRoute><Screen /></PrivateRoute>} />
         <Route path="/screen/:dashboardId" element={<PrivateRoute><Screen /></PrivateRoute>} />
 
-        {/* 数据看板: 仪表盘组维度(组按角色分配; 旧工作空间维度链接语义迁移为组) */}
-        <Route path="/dashboards" element={<PrivateRoute><Analysis /></PrivateRoute>} />
-        <Route path="/dashboards/:groupId" element={<PrivateRoute><Analysis /></PrivateRoute>} />
-        <Route path="/dashboards/:groupId/:dashboardId" element={<PrivateRoute><Analysis /></PrivateRoute>} />
+        {/* 数据看板已收进工作空间: 旧独立看板域(一级入口已移除)仅保留重定向以兼容书签/大屏回跳 */}
+        <Route path="/dashboards" element={<PrivateRoute><WorkspaceEntry module="dashboards" /></PrivateRoute>} />
+        <Route path="/dashboards/:groupId" element={<PrivateRoute><WorkspaceEntry module="dashboards" /></PrivateRoute>} />
+        <Route path="/dashboards/:groupId/:dashboardId" element={<PrivateRoute><WorkspaceEntry module="dashboards" legacyId /></PrivateRoute>} />
         <Route path="/ask" element={<PrivateRoute><WorkspaceEntry module="ask" /></PrivateRoute>} />
         <Route path="/workspace" element={<PrivateRoute><WorkspaceEntry module="workspace" /></PrivateRoute>} />
         <Route path="/ask/:workspaceId" element={<PrivateRoute><WorkspaceBoundary><WorkspaceLayout module="ask" /></WorkspaceBoundary></PrivateRoute>}>
@@ -125,11 +126,16 @@ export default function App() {
 
         {/* Workspace mode: /ws/:workspaceId/* */}
         <Route path="/ws/:workspaceId" element={<PrivateRoute><WorkspaceBoundary><WorkspaceLayout /></WorkspaceBoundary></PrivateRoute>}>
-          <Route index element={<Chat />} />
+          {/* 工作空间默认页 = 数据看板清单(卡片瀑布): 进 /ws/:id 一律落看板清单 */}
+          <Route index element={<Navigate to="dashboards" replace />} />
           <Route path="chat" element={<Chat />} />
           {/* 资产清单: 工作站共享项目(会话产物归档收藏, OSS 托管) */}
           <Route path="assets" element={<WorkspaceAssets />} />
+          {/* 任务调度: 定时报表与取数任务(工作站维度) */}
           <Route path="scheduled" element={<ScheduledTasks />} />
+          {/* 数据看板: 卡片瀑布清单(仅当前角色可见的已启用看板) → 点卡片进详情 */}
+          <Route path="dashboards" element={<WorkspaceDashboards />} />
+          <Route path="dashboards/:dashboardId" element={<Analysis />} />
           {/* 报表中心: 报表跟随属主(跨工作站), 任务产出按版本归集; 会话/手写报表可新建与编辑 */}
           <Route path="reports" element={<ReportsCenter />} />
           {/* 个人设置:在原本的框架(侧边栏/顶栏)下渲染, 非独立全屏页 */}

@@ -15,7 +15,7 @@ export function WorkspaceStatus() {
   const store = useWorkspaceStore();
   return <div className="flex h-full min-h-48 flex-col items-center justify-center gap-3 p-6" role="status">
     <p>{store.loading || !store.loaded ? '正在加载工作空间…' : store.error || '暂无可访问的工作空间，请联系管理员分配权限'}</p>
-    {!!store.workspaces.length && store.error && <select aria-label="选择可访问工作空间" className="rounded border bg-background p-2" value="" onChange={e => { store.setWorkspace(Number(e.target.value)); window.location.assign(`/dashboards/${e.target.value}`); }}><option value="" disabled>选择工作空间</option>{store.workspaces.map(ws => <option key={ws.id} value={ws.id}>{ws.name}</option>)}</select>}
+    {!!store.workspaces.length && store.error && <select aria-label="选择可访问工作空间" className="rounded border bg-background p-2" value="" onChange={e => { store.setWorkspace(Number(e.target.value)); window.location.assign(`/ws/${e.target.value}/dashboards`); }}><option value="" disabled>选择工作空间</option>{store.workspaces.map(ws => <option key={ws.id} value={ws.id}>{ws.name}</option>)}</select>}
     {store.loaded && <Button variant="outline" disabled={store.loading} onClick={() => void store.loadWorkspaces()}>重新加载</Button>}
   </div>;
 }
@@ -25,8 +25,9 @@ export function WorkspaceEntry({ module = 'dashboards', legacyId = false }: { mo
   const { dashboardId, id } = useParams();
   const wsId = store.getDefaultWorkspaceId();
   if (!store.loaded || store.loading || store.error || !wsId) return <WorkspaceStatus />;
-  if (module === 'screen') return <Navigate to={`/screen${dashboardId || id ? `/${dashboardId || id}` : ''}?workspace_id=${wsId}&from=${encodeURIComponent(`/dashboards/${wsId}`)}`} replace />;
-  const base = module === 'workspace' ? `/ws/${wsId}/chat` : `/${module}/${wsId}`;
+  if (module === 'screen') return <Navigate to={`/screen${dashboardId || id ? `/${dashboardId || id}` : ''}?workspace_id=${wsId}&from=${encodeURIComponent(`/ws/${wsId}/dashboards`)}`} replace />;
+  // 工作空间默认页 = 数据看板清单; 数据看板已收进工作空间('dashboards' 同落点, 详情为 …/dashboards/:id)
+  const base = module === 'workspace' || module === 'dashboards' ? `/ws/${wsId}/dashboards` : `/${module}/${wsId}`;
   const target = legacyId && (dashboardId || id) ? `${base}/${dashboardId || id}` : base;
   return <Navigate to={target} replace />;
 }

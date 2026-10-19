@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import DashboardChart, { CHART_TYPES } from '../DashboardChart';
+import { useChartDesign } from '@/hooks/useChartDesign';
 import client from '../../api/client';
 import { useDashboardStore } from '../../stores/dashboardStore';
 import { DESIGN_STATUS, designError, designPath, getDesign } from '../../api/dashboardDesign';
@@ -20,6 +21,8 @@ interface Props {
 const selectClass = 'h-9 w-full rounded-md border bg-background px-2 text-sm';
 
 export default function DashboardDesignPanel({ designId, onClose, onChanged, onContinue }: Props) {
+  // 图表样式走 UI 字模库主题包管线(useChartDesign): 设计预览与看板/Chat 同观感
+  const { chartStyle } = useChartDesign();
   const [design, setDesign] = useState<DashboardDesign | null>(null);
   const [options, setOptions] = useState<DesignOptions | null>(null);
   const [domain, setDomain] = useState('');
@@ -214,8 +217,9 @@ export default function DashboardDesignPanel({ designId, onClose, onChanged, onC
             {preview && <><p className="text-xs text-muted-foreground">预览时间（UTC）：{preview.generated_at} · 10 分钟内有效 · 最多 500 行</p>
               {preview.charts.map(p => {
                 const w = design.widgets.find(w => w.key === p.key)!;
+                const styled = chartStyle(w.config, w.chart_type);
                 return <div key={p.key} className="rounded border p-4"><h3 className="mb-2 font-medium">{w.title}</h3>
-                  {p.rows.length ? <div className="relative h-[360px]"><DashboardChart chartType={w.chart_type} data={p} config={w.config} draft /></div> : <p className="py-10 text-center text-muted-foreground">查询成功，当前范围没有数据。</p>}
+                  {p.rows.length ? <div className="relative h-[360px]"><DashboardChart chartType={w.chart_type} data={p} config={styled.config} visual={styled.visual} draft /></div> : <p className="py-10 text-center text-muted-foreground">查询成功，当前范围没有数据。</p>}
                   <p className="text-xs text-muted-foreground">{p.row_count} 行{p.possibly_truncated ? ' · 已达到预览上限，可能存在更多数据' : ''}</p>
                 </div>;
               })}</>}

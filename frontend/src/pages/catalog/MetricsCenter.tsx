@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
 import { metricsApi } from '@/api/metrics';
-import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -168,12 +167,13 @@ export default function MetricsCenter({
   /** 模型内对象清单(嵌入时传): 新建指标的"归属对象"引用选择器 */
   objects?: { key: string; display_name: string }[];
 } = {}) {
-  const { currentWorkspaceId } = useWorkspaceStore();
   const [tab, setTab] = useState<'metrics' | 'dimensions'>(view);
   const [metrics, setMetrics] = useState<Metric[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
+  // 加载失败与「确实没有数据」必须可区分：把接口错误吞成空列表等于把缺陷藏起来
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
 
@@ -194,8 +194,10 @@ export default function MetricsCenter({
 
   const loadMetrics = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
-      const params: any = { page, size: 20, workspace_id: currentWorkspaceId };
+      // 指标字典是全局唯一口径, 不随工作空间切换(与维度字典同口径), 故不传 workspace_id
+      const params: any = { page, size: 20 };
       if (search) params.search = search;
       if (filterType !== 'all') params.metric_type = filterType;
       // 模型工作区作用域: 只列 bound_object_key ∈ 本模型对象集的指标
@@ -204,14 +206,17 @@ export default function MetricsCenter({
       const items = res?.data?.items ?? res?.data;
       setMetrics(Array.isArray(items) ? items : []);
       setTotal(res?.data?.total || 0);
-    } catch {
-      // API not available or empty — show empty state, no error toast
+    } catch (e: any) {
+      // 失败即暴露: 保留可读错误供空态渲染, 不把错误伪装成“暂无指标数据”
       setMetrics([]);
       setTotal(0);
+      const msg = e?.response?.data?.detail || e?.message || '未知错误';
+      setLoadError(String(msg));
+      toast.error(`指标字典加载失败: ${msg}`);
     } finally {
       setLoading(false);
     }
-  }, [page, search, filterType, currentWorkspaceId, modelId]);
+  }, [page, search, filterType, modelId]);
 
   useEffect(() => {
     loadMetrics();
@@ -264,7 +269,7 @@ export default function MetricsCenter({
     }
     setSaving(true);
     try {
-      const payload: any = { ...formData, workspace_id: currentWorkspaceId,
+      const payload: any = { ...formData,
         aliases: formData.aliases.split(',').map((s) => s.trim()).filter(Boolean) };
       if (editMetric) {
         await metricsApi.update(editMetric.id, payload);
@@ -316,7 +321,7 @@ export default function MetricsCenter({
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">指标中心</h1>
-          <p className="text-muted-foreground text-sm mt-1">指标字典与维度字典的唯一管理入口</p>
+          <p className="text-muted-foreground text-sm mt-1">指标字典与维度字典的唯一管理入口（全局口径，不随工作空间切换）</p>
         </div>
       </div>
       )}
@@ -396,7 +401,11 @@ export default function MetricsCenter({
             ) : metrics.length === 0 ? (
               <tr>
                 <td colSpan={10} className="p-8 text-center text-muted-foreground">
-                  暂无指标数据
+                  {loadError ? (
+                    <span className="text-destructive">指标字典加载失败：{loadError}</span>
+                  ) : (
+                    '暂无指标数据'
+                  )}
                 </td>
               </tr>
             ) : (

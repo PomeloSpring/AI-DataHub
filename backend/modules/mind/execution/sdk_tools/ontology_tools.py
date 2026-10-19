@@ -470,9 +470,10 @@ def _dict_payload(args: dict, ctx) -> dict:
         "bound_object_key": str(args.get("bound_object_key") or "").strip(),
         "description": str(args.get("description") or "").strip(),
         "aliases": aliases if isinstance(aliases, list) else [],
-        # 字典行是跨数据源口径：datasource_id 恒为 0，物理归属由 bound_object_key 决定
+        # 字典行是跨数据源/跨工作空间口径：datasource_id 与 workspace_id 恒为 0，
+        # 物理/业务归属由 bound_object_key 决定（不得从会话空间继承，否则同一字典会被空间碎片化）
         "datasource_id": 0,
-        "workspace_id": int(getattr(ctx, "workspace_id", 0) or 0),
+        "workspace_id": 0,
         "owner": str(getattr(ctx, "username", "") or ""),   # 审计：谁写的，服务端注入
     }
 

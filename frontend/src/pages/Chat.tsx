@@ -832,8 +832,8 @@ export default function Chat() {
                       </>
                     )}
 
-                    {/* 前置意图漏斗本地直答（本轮未调用模型）：徽章必须可见 + 「转深度分析」逃生门。
-                        拦错了不是隐蔽缺陷：用户看得到"没走模型"，并能把原文重新下发执行层。 */}
+                    {/* 前置意图漏斗本地直答：界面上只留「转深度分析」这个逃生门，
+                        不打“未调用模型”类内部术语标记（归属看 handled_by，管理侧可审计）。 */}
                     {msg.intent === 'intent_gate' && (msg.reply || msg.content) && (
                       <>
                         <MarkdownWithCharts

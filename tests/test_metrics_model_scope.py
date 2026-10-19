@@ -4,6 +4,7 @@
 - scope=model → bound_object_key IN 模型对象集(来自 adh_ontology_objects);
 - scope=unbound → 只查空绑定; 缺省 → 旧全局行为不变;
 - 模型无对象 → 短路空集(不得回退成"不过滤");
+- 指标字典不按 workspace 分域(列表不过滤/查重全局/写入恒 ws=0);
 - asset_pool → unbound/orphan 分类 + suggestions 未迁移容错。
 """
 import sys
@@ -101,6 +102,63 @@ class TestModelScope:
         out = ms.list_metrics(model_id=99, scope="model")
         assert out == {"total": 0, "items": []}   # 不得回退为不过滤
         assert not any("FROM adh_metrics" in s for s, _ in conn.cur.calls)
+
+
+class TestMetricsNotWorkspaceScoped:
+    """指标字典不按 workspace 分域(全局唯一口径)。
+
+    历史缺陷: list_metrics 叠了 `workspace_id = %s` 精确等值, 而存量字典行全在
+    ws=0(全局)/ws=1(旧默认空间), 个人工作站(ws=301)进指标中心看到“暂无指标数据”,
+    同页维度 Tab 因不过滤而正常 —— 两个 Tab 口径分叉。下列用例把“不得再引入
+    workspace 过滤/写入”钉住, 以免同类回归。
+    """
+
+    def test_list_metrics_signature_has_no_workspace_param(self):
+        import inspect
+        assert "workspace_id" not in inspect.signature(ms.list_metrics).parameters, \
+            "指标列表不得重新引入 workspace 过滤入口"
+
+    def test_list_metrics_sql_carries_no_workspace_predicate(self, scoped_conn):
+        # 带 search 让 WHERE 子句真实存在, 否则“无过滤”会真空通过
+        ms.list_metrics(size=100, search="GMV")
+        sql, params = [c for c in scoped_conn.cur.calls
+                       if "FROM adh_metrics" in c[0] and "COUNT(*)" not in c[0]][0]
+        assert "WHERE" in sql and "name LIKE" in sql
+        # workspace_id 只允许作为 SELECT 列清单出现, 不得进 WHERE 谓词
+        assert "workspace_id =" not in sql.split("WHERE", 1)[1]
+        assert 301 not in params
+
+    def test_model_scope_still_unaffected_by_workspace(self, scoped_conn):
+        """模型作用域只看 bound_object_key 对象集, 与 workspace 无关。"""
+        ms.list_metrics(size=100, model_id=7, scope="model")
+        sql, _ = [c for c in scoped_conn.cur.calls
+                  if "FROM adh_metrics" in c[0] and "COUNT(*)" not in c[0]][0]
+        assert "bound_object_key IN" in sql
+        assert "workspace_id =" not in sql.split("WHERE", 1)[1]
+
+    def test_duplicate_check_is_global(self, monkeypatch):
+        """同名指标跨空间也算重复: 语义层按 name 解析, 两条同名=口径歧义。"""
+        conn = _Conn([("FROM adh_metrics", [{"id": 1}])])
+        monkeypatch.setattr(ms, "DBConnection", lambda: conn)
+        with pytest.raises(ValueError, match="already exists"):
+            ms.create_metric({"display_name": "GMV", "workspace_id": 301})
+        dup_sql = [c for c in conn.cur.calls if "FROM adh_metrics" in c[0]][0]
+        assert "workspace_id" not in dup_sql[0]
+        assert 301 not in dup_sql[1]
+
+    def test_created_row_is_written_as_global_dict_entry(self, monkeypatch):
+        """新建指标恒落 workspace_id=0, 不从调用方(UI/AS-BOT 会话)继承工作空间。"""
+        conn = _Conn([("MAX(id)", [{"nid": 99}]), ("FROM adh_metrics", [])])
+        monkeypatch.setattr(ms, "DBConnection", lambda: conn)
+        out = ms.create_metric({
+            "display_name": "案例数量", "name": "case_count",
+            "calculation_type": "count", "expression": "COUNT(pc_case.id)",
+            "target_table": "pc_case", "workspace_id": 301,   # 应被忽略
+        })
+        assert out == {"id": 99, "success": True}
+        ins = [c for c in conn.cur.calls if c[0].startswith("INSERT INTO adh_metrics")]
+        assert ins, "应执行插入"
+        assert ins[0][1][1] == 0, "workspace_id 列必须落 0(全局字典行)"
 
 
 class TestAssetPoolDelete:

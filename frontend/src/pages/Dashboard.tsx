@@ -10,6 +10,7 @@ import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import { useDashboardStore, DASHBOARD_STATUS_MAP, type Dashboard as DashboardModel, type DashboardParam, type PageParam, type DashboardStatus } from '@/stores/dashboardStore';
+import { useAuthStore } from '@/stores/authStore';
 import { DashboardThumbnail } from '@/components/DashboardCanvas';
 import DashboardExportImport from '@/components/DashboardExportImport';
 import DashboardGroupsAdmin from '@/components/DashboardGroupsAdmin';
@@ -46,9 +47,14 @@ export default function Dashboard() {
   const run = async (action: () => Promise<unknown>) => {
     if (lock.current) return;
     lock.current = true; setBusy(true);
-    try { await action(); } catch { toast.error('操作失败，请重试'); }
+    // 透出服务端错因(如「仅看板属主或管理员可修改」), 不把权限拒绝吞成笼统失败
+    try { await action(); } catch (e: any) { toast.error(e?.response?.data?.detail || e?.message || '操作失败，请重试'); }
     finally { lock.current = false; setBusy(false); }
   };
+  // 可写性由服务端裁决(editable): 角色授予的可见权不含编辑权, 无编辑权不渲染写入口
+  const canEdit = (d: DashboardModel) => d.editable === true;
+  // 可见角色配置是平台级授权面(接口仅 admin), 不随看板属主开放
+  const isAdmin = useAuthStore(s => s.user?.role === 'admin');
   const edit = (id: number) => navigate(`/dashboard/editor/${id}`, { state: { from: location.pathname } });
   const play = (id: number, interval = 0) => navigate(`/screen/${id}?group=0&from=${encodeURIComponent(location.pathname)}&interval=${interval}`, { state: { from: location.pathname } });
   const move = (id: number, delta: number) => run(async () => {
@@ -88,25 +94,26 @@ export default function Dashboard() {
               <div className="flex items-start gap-2"><div className="min-w-0 flex-1"><h2 className="truncate font-semibold" title={db.name}>{db.name}</h2><p className="mt-1 truncate text-xs text-muted-foreground">{db.description || '暂无描述'}</p></div>
                 <button aria-label={`${store.favorites.includes(db.id) ? '取消收藏' : '收藏'} ${db.name}`} className="p-1" onClick={() => store.toggleFavorite(db.id)}><Star className={`h-4 w-4 ${store.favorites.includes(db.id) ? 'fill-current' : 'text-muted-foreground'}`} /></button>
                 <DropdownMenu><DropdownMenuTrigger asChild><Button aria-label={`${db.name} 更多操作`} size="icon" variant="ghost" className="h-6 w-6"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end">
-                  <DropdownMenuItem disabled={busy} onClick={() => setNameDialog({ id: db.id, name: db.name })}><Edit className="mr-2 h-4 w-4" />重命名</DropdownMenuItem>
-                  <DropdownMenuItem disabled={busy} onClick={() => run(() => store.copyDashboard(db.id))}><Copy className="mr-2 h-4 w-4" />复制</DropdownMenuItem>
-                  <DropdownMenuItem disabled={busy} onClick={() => run(() => store.setDefault(db.id))}><Star className="mr-2 h-4 w-4" />设为默认</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setSettingsId(db.id)}><Settings className="mr-2 h-4 w-4" />状态与参数设置</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setVisibleRolesId(db.id)}><Users className="mr-2 h-4 w-4" />可见角色</DropdownMenuItem>
-                  <DropdownMenuItem disabled={busy || !themePackFor(theme, library.items)} onClick={() => run(async () => {
+                  {canEdit(db) && <DropdownMenuItem disabled={busy} onClick={() => setNameDialog({ id: db.id, name: db.name })}><Edit className="mr-2 h-4 w-4" />重命名</DropdownMenuItem>}
+                  <DropdownMenuItem disabled={busy} onClick={() => run(() => store.copyDashboard(db.id))}><Copy className="mr-2 h-4 w-4" />复制为我的看板</DropdownMenuItem>
+                  {canEdit(db) && <DropdownMenuItem disabled={busy} onClick={() => run(() => store.setDefault(db.id))}><Star className="mr-2 h-4 w-4" />设为默认</DropdownMenuItem>}
+                  {canEdit(db) && <DropdownMenuItem onClick={() => setSettingsId(db.id)}><Settings className="mr-2 h-4 w-4" />状态与参数设置</DropdownMenuItem>}
+                  {canEdit(db) && isAdmin && <DropdownMenuItem onClick={() => setVisibleRolesId(db.id)}><Users className="mr-2 h-4 w-4" />可见角色</DropdownMenuItem>}
+                  {canEdit(db) && <DropdownMenuItem disabled={busy || !themePackFor(theme, library.items)} onClick={() => run(async () => {
                     const packComp = themePackFor(theme, library.items);
                     if (packComp) await store.updateDashboard(db.id, { filters: applyScreenComponent(db.filters, packComp) } as any);
-                  })}><Star className="mr-2 h-4 w-4" />固化当前主题({theme})</DropdownMenuItem>
+                  })}><Star className="mr-2 h-4 w-4" />固化当前主题({theme})</DropdownMenuItem>}
                   <DropdownMenuItem onClick={() => store.setCurrent(db.id)}>选为导出对象</DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem disabled={busy || store.dashboards[0]?.id === db.id} onClick={() => move(db.id, -1)}><ArrowUp className="mr-2 h-4 w-4" />上移</DropdownMenuItem>
-                  <DropdownMenuItem disabled={busy || store.dashboards[store.dashboards.length - 1]?.id === db.id} onClick={() => move(db.id, 1)}><ArrowDown className="mr-2 h-4 w-4" />下移</DropdownMenuItem>
-                  <DropdownMenuSeparator /><DropdownMenuItem disabled={busy} className="text-destructive" onClick={() => setDeleteId(db.id)}><Trash2 className="mr-2 h-4 w-4" />删除</DropdownMenuItem>
+                  {canEdit(db) && <DropdownMenuSeparator />}
+                  {canEdit(db) && <DropdownMenuItem disabled={busy || store.dashboards[0]?.id === db.id} onClick={() => move(db.id, -1)}><ArrowUp className="mr-2 h-4 w-4" />上移</DropdownMenuItem>}
+                  {canEdit(db) && <DropdownMenuItem disabled={busy || store.dashboards[store.dashboards.length - 1]?.id === db.id} onClick={() => move(db.id, 1)}><ArrowDown className="mr-2 h-4 w-4" />下移</DropdownMenuItem>}
+                  {canEdit(db) && <DropdownMenuSeparator />}{canEdit(db) && <DropdownMenuItem disabled={busy} className="text-destructive" onClick={() => setDeleteId(db.id)}><Trash2 className="mr-2 h-4 w-4" />删除</DropdownMenuItem>}
+                  {!canEdit(db) && <DropdownMenuItem disabled><Users className="mr-2 h-4 w-4" />仅查看（角色授予，不可编辑）</DropdownMenuItem>}
                 </DropdownMenuContent></DropdownMenu>
               </div>
               <div className="flex flex-wrap gap-2 text-xs"><Badge variant="secondary">{DASHBOARD_STATUS_MAP[db.status || 'designing']?.label || '设计中'}</Badge>{db.is_default && <Badge variant="outline">默认</Badge>}<span className="self-center text-muted-foreground">{db.charts.filter(c => !c.chart_type.startsWith('widget_')).length} 个图表</span></div>
               <p className="text-xs text-muted-foreground">更新于 {db.updated_at ? new Date(db.updated_at).toLocaleString('zh-CN') : '—'}</p>
-              <div className="flex gap-2 border-t pt-3"><Button size="sm" className="flex-1" onClick={() => edit(db.id)}><Edit className="mr-1 h-3.5 w-3.5" />编辑</Button><Button size="sm" variant="outline" onClick={() => navigate(`/system/dashboards/${db.id}`)}><Eye className="mr-1 h-3.5 w-3.5" />预览</Button><Button size="sm" variant="ghost" disabled={db.status !== 'enabled'} title="仅已启用看板可播放" onClick={() => play(db.id)}><Play className="h-4 w-4" /><span className="sr-only">播放</span></Button></div>
+              <div className="flex gap-2 border-t pt-3">{canEdit(db) ? <Button size="sm" className="flex-1" onClick={() => edit(db.id)}><Edit className="mr-1 h-3.5 w-3.5" />编辑</Button> : <Button size="sm" variant="outline" className="flex-1" onClick={() => navigate(`/system/dashboards/${db.id}`)}><Eye className="mr-1 h-3.5 w-3.5" />查看</Button>}<Button size="sm" variant="outline" onClick={() => navigate(`/system/dashboards/${db.id}`)}><Eye className="mr-1 h-3.5 w-3.5" />预览</Button><Button size="sm" variant="ghost" disabled={db.status !== 'enabled'} title="仅已启用看板可播放" onClick={() => play(db.id)}><Play className="h-4 w-4" /><span className="sr-only">播放</span></Button></div>
             </div>
           </article>)}
         </div>}

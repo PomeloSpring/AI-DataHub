@@ -41,11 +41,11 @@ _SELF_ROUTES = {
     ("GET", "/api/roles/current/permissions"),
     ("GET", "/api/roles/menu-registry"),
 }
-# 登录自举路由(工作空间随用户走, 个人工作站): 空间列表/详情/默认空间/生效执行层
+# 登录自举路由(工作空间随用户走, 个人工作站): 空间列表/详情/默认空间/删除影响预览/生效执行层
 # 人人可用, 不能按权限码拦(否则无 workspace 码的角色登录后无法自举);
-# 属主校验由路由层负责(authorize_workspace/owner 检查)。
+# 属主校验由路由层负责(authorize_workspace/owner 检查, 删除同样只可删自己的空间)。
 _SELF_ROUTE_PATTERNS = re.compile(
-    r"^/api/workspaces(?:/\d+)?(?:/set-default)?$"
+    r"^/api/workspaces(?:/\d+(?:/set-default|/delete-impact)?)?$"
     r"|^/api/workspace-assets/\d+/.+$"
     # 个人资产域(资产跟随用户, 跨工作空间): 属主校验由路由层 user_id 过滤负责
     r"|^/api/assets(?:/.*)?$"
@@ -54,6 +54,8 @@ _SELF_ROUTE_PATTERNS = re.compile(
     r"|^/api/chat/session-file(?:/.*)?$"
     # 个人自助(个人中心): 读写自己的资料/密码, 属主即本人; 管理域 /api/users/{id} 仍按码
     r"|^/api/users/me(?:/.*)?$"
+    # 用户记忆: 纯个人自助(只看/改自己的), 属主由路由层 user_id 过滤保证
+    r"|^/api/memory(?:/.*)?$"
     # 看板浏览域: 查自己的可见组/看板详情, 可见性由 adh_role_dashboard_access fail-closed 裁决
     # (无授权=空集/404), 不用权限码拦; 看板管理端点仍按码
     r"|^/api/dashboard/groups/visible$"

@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { LayoutGrid, Folder, Database, Settings, Check, ChartNoAxesCombined, House } from 'lucide-react';
+import { LayoutGrid, Folder, Database, Settings, Check, House } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -10,7 +10,7 @@ import { useAuthStore } from '../stores/authStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { isMenuPrefixAllowed } from '../stores/permissionStore';
 
-export type SectionId = 'home' | 'workspace' | 'data' | 'system' | 'ask' | 'dashboards';
+export type SectionId = 'home' | 'workspace' | 'data' | 'system' | 'ask';
 
 interface SectionSwitcherProps {
   /** Currently active section — used to highlight the matching item. */
@@ -32,17 +32,16 @@ export default function SectionSwitcher({ current }: SectionSwitcherProps) {
 
   const goWorkspace = () => {
     const wsId = getDefaultWorkspaceId();
-    navigate(wsId ? `/ws/${wsId}/chat` : '/workspace');
+    // 工作空间默认页 = 数据看板清单(卡片瀑布)
+    navigate(wsId ? `/ws/${wsId}/dashboards` : '/workspace');
   };
   const goData = () => navigate('/data');
   const goSystem = () => navigate('/system');
 
   const isAdmin = user?.role === 'admin';
   // 模块级一级入口按权限显隐: 模块内没有任何可见菜单就不提供入口。
-  // 例外:「数据看板」是普通用户日常消费入口, 对所有登录用户恒可见(产品决策 2026-10),
-  //  不参与权限码显隐 —— 路由 /dashboards 仅由 PrivateRoute 守卫, 看板内容级
-  //  可见性由 adh_role_dashboard_access 在数据层裁决, 与入口显隐解耦。
-  // 其余模块(工作空间/数据中台/系统配置)继续按权限码/菜单显隐, 不放宽。
+  // 「数据看板」不再是独立模块——已收进工作空间侧栏(日常消费入口, 对所有登录用户恒可见,
+  //  不参与权限码显隐; 看板内容级可见性由 adh_role_dashboard_access 在数据层裁决)。
   const showWorkspace = isMenuPrefixAllowed('workspace:');
   const showData = isMenuPrefixAllowed('data:');
 
@@ -65,14 +64,6 @@ export default function SectionSwitcher({ current }: SectionSwitcherProps) {
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => navigate('/')} className={`flex items-center gap-2 ${current === 'home' ? 'bg-accent' : ''}`}>
           <House className="h-4 w-4" /><span className="flex-1">首页</span>{current === 'home' && <Check className="h-4 w-4 text-primary" />}
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={() => navigate('/dashboards')}
-          className={`flex items-center gap-2 ${current === 'dashboards' ? 'bg-accent' : ''}`}
-        >
-          <ChartNoAxesCombined className="h-4 w-4" />
-          <span className="flex-1">数据看板</span>
-          {current === 'dashboards' && <Check className="h-4 w-4 text-primary" />}
         </DropdownMenuItem>
         {showWorkspace && <DropdownMenuItem
           onClick={goWorkspace}

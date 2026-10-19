@@ -9,6 +9,7 @@ import {
 import { toast } from 'sonner';
 import { Users, HardDrive, Trash2, RefreshCw, Settings2 } from 'lucide-react';
 import client from '@/api/client';
+import { WorkspaceDeleteDialog } from '@/components/WorkspaceDeleteDialog';
 
 // 管理员统管: 工作空间为用户个人工作站(随用户走, 无成员协作),
 // 管理员在此按用户限制可建空间数与每空间磁盘配额, 并查看磁盘用量。
@@ -102,16 +103,10 @@ export default function WorkspaceManagerV2() {
     }
   };
 
-  const removeWs = async () => {
+  const removeWs = () => {
     if (!deleteWs) return;
-    try {
-      await client.delete(`/workspaces/${deleteWs.ws.id}`);
-      toast.success(`已删除工作空间 "${deleteWs.ws.name}"`);
-      setDeleteWs(null);
-      load();
-    } catch (e: any) {
-      toast.error(e.response?.data?.detail || '删除失败');
-    }
+    setDeleteWs(null);
+    load();
   };
 
   return (
@@ -165,15 +160,21 @@ export default function WorkspaceManagerV2() {
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2 min-w-0">
                             <span className="text-sm font-medium truncate">{ws.name}</span>
-                            {ws.is_default ? <Badge variant="outline" className="text-[10px]">默认</Badge> : null}
+                            {ws.is_default ? (
+                              <Badge variant="outline" className="text-[10px]"
+                                title="默认工作站不可删除，仅可删除用户自行创建的自定义空间">默认</Badge>
+                            ) : null}
                           </div>
-                          <Button
-                            variant="ghost" size="sm" className="text-destructive"
-                            onClick={() => setDeleteWs({ user: u, ws })}
-                            title="删除工作空间"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
+                          {/* 默认工作站不给删(与用户侧下拉、后端 409 同一口径) */}
+                          {!ws.is_default && (
+                            <Button
+                              variant="ghost" size="sm" className="text-destructive"
+                              onClick={() => setDeleteWs({ user: u, ws })}
+                              title="删除工作空间"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
                         </div>
                         <div className="space-y-1">
                           <div className="flex justify-between text-xs text-muted-foreground">
@@ -217,19 +218,12 @@ export default function WorkspaceManagerV2() {
         </DialogContent>
       </Dialog>
 
-      {/* 删除确认 */}
-      <Dialog open={!!deleteWs} onOpenChange={open => { if (!open) setDeleteWs(null); }}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>确认删除工作空间</DialogTitle></DialogHeader>
-          <p className="text-sm">
-            确定要删除 "{deleteWs?.ws.name}" 吗？该空间下的会话产物将一并清理（已归档资产不受影响）。
-          </p>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteWs(null)}>取消</Button>
-            <Button variant="destructive" onClick={removeWs}>删除</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* 删除确认（与用户侧下拉共用：先展示影响清单再确认） */}
+      <WorkspaceDeleteDialog
+        workspace={deleteWs ? deleteWs.ws : null} open={!!deleteWs}
+        onOpenChange={open => { if (!open) setDeleteWs(null); }}
+        onDeleted={removeWs}
+      />
     </div>
   );
 }

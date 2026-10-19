@@ -574,7 +574,17 @@ def _update_last_login(user_id: int):
 # ── User CRUD ───────────────────────────────────────────────────────────
 
 def get_user_by_id(user_id: int) -> dict | None:
-    """Get user by ID (without password hash). Sensitive fields are decrypted."""
+    """Get user by ID (without password hash). Sensitive fields are decrypted.
+
+    加 60s Redis 缓存：每个 API 请求都经 resolve_current_user 调本函数，
+    远程 DB 下这是最大瓶颈（15+ 并发请求 = 15+ 次相同查询）。
+    用户状态/角色变更时由 update_user / update_user_status 主动失效。
+    """
+    from backend.common.ttl_cache import user_cache
+    cache_key = str(user_id)
+    cached = user_cache.get(cache_key)
+    if cached is not None:
+        return cached
     try:
         with _get_connection() as conn:
             with conn.cursor() as cur:
@@ -585,10 +595,19 @@ def get_user_by_id(user_id: int) -> dict | None:
                     (user_id,),
                 )
                 row = cur.fetchone()
-                return _decrypt_user_row(row)
+                result = _decrypt_user_row(row)
+                if result is not None:
+                    user_cache.set(cache_key, result)
+                return result
     except Exception as e:
         logger.error("Failed to get user: %s", e)
         return None
+
+
+def invalidate_user_cache(user_id: int) -> None:
+    """用户数据变更时清除缓存，确保下次请求读到最新状态。"""
+    from backend.common.ttl_cache import user_cache
+    user_cache.invalidate(str(user_id))
 
 
 def list_users(page: int = 1, size: int = 50, search: str = "", role: str = "") -> tuple[list[dict], int]:
@@ -733,6 +752,7 @@ def update_user(user_id: int, username: str = None, email: str = None,
                     from backend.core.role_service import role_service as _role_svc
                     _role_svc.write_user_role_binding(cur, user_id, role)
             conn.commit()
+        invalidate_user_cache(user_id)
         return True, "更新成功"
     except Exception as e:
         logger.error("Failed to update user: %s", e)
@@ -754,6 +774,7 @@ def update_user_status(user_id: int, status: str) -> tuple[bool, str]:
                     (status, _now_str(), user_id),
                 )
             conn.commit()
+        invalidate_user_cache(user_id)
         return True, "状态已更新"
     except Exception as e:
         logger.error("Failed to update user status: %s", e)

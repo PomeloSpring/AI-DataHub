@@ -101,3 +101,18 @@ brand_cache = TTLCache(name="brand", maxsize=8, ttl=300)
 
 # 表元数据：变化很少，缓存 10 分钟
 metadata_cache = TTLCache(name="metadata", maxsize=256, ttl=600)
+
+# 对话历史：活跃会话中消息频繁变化，用短 TTL + 写时主动失效
+conversation_cache = TTLCache(name="conversation", maxsize=256, ttl=30)
+
+# 用户状态：每个请求都查，远程 DB 下这是最大瓶颈；60s TTL + 写时失效
+user_cache = TTLCache(name="user", maxsize=128, ttl=60)
+
+# 模型配置/系统配置：变化极少（仅管理员改配置），5min TTL
+model_config_cache = TTLCache(name="model_cfg", maxsize=16, ttl=300)
+
+# 执行层模型列表：spawn 子进程极慢，5min TTL + 执行层变更时失效
+exec_layer_cache = TTLCache(name="exec_layer", maxsize=8, ttl=300)
+
+# 工作空间配置/知识推荐：变化极少，60s TTL
+workspace_cache = TTLCache(name="workspace", maxsize=64, ttl=60)

@@ -746,7 +746,7 @@ describe('前置意图漏斗（handled_by / force_agent）', () => {
 
   it('done 带 handled_by=intent_gate 时消息落 handledBy/gate 并写进会话记录', async () => {
     const fetchMock = vi.fn(async () => makeSseResponse([
-      ['progress', { stage: 'intent_gate', message: '前置意图层直接应答', gate: { label: 'social_ack' } }],
+      ['progress', { stage: 'intent_gate', message: '正在回答...', gate: { label: 'social_ack' } }],
       ['token', { text: '你好！' }],
       ['done', {
         intent: 'intent_gate', reply: '你好！有什么数据问题需要我帮忙？',

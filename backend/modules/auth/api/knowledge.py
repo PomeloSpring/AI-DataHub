@@ -116,7 +116,13 @@ def random_knowledge(
     workspace_id: int = Query(0),
     datasource_id: int = Query(0),
 ):
-    """随机获取 N 条知识条目（用于 Chat 推荐问题展示）。"""
+    """随机获取 N 条知识条目（用于 Chat 推荐问题展示）。缓存 60s。"""
+    from backend.common.ttl_cache import workspace_cache
+    cache_key = f"rand:{knowledge_type}:{workspace_id}:{datasource_id}:{limit}"
+    cached = workspace_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     where = ["knowledge_type = %s", "is_active = 1"]
     params: list = [knowledge_type]
 
@@ -138,7 +144,9 @@ def random_knowledge(
             )
             rows = [_serialize_row(r) for r in cur.fetchall()]
 
-    return {"items": rows}
+    result = {"items": rows}
+    workspace_cache.set(cache_key, result)
+    return result
 
 
 @router.get("/knowledge/stats")

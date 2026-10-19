@@ -78,11 +78,15 @@ def set_workspace_quota(user_id: int, req: SetWorkspaceQuotaRequest,
 @router.get("/")
 def list_workspaces(user: dict = Depends(get_current_user)):
     """列出当前用户的工作空间(个人工作站, 随用户走); 首次访问自动创建默认空间。"""
+    from backend.common.ttl_cache import workspace_cache
     uid = int(user["user_id"])
+    cache_key = f"list:{uid}"
+    cached = workspace_cache.get(cache_key)
+    if cached is not None:
+        return cached
     try:
         with DBConnection() as conn:
             with conn.cursor() as cur:
-                # 懒创建默认工作站(幂等): 每个用户随用户走自动拥有一个默认空间
                 cur.execute("SELECT id FROM adh_workspaces WHERE owner_id = %s LIMIT 1", (uid,))
                 if not cur.fetchone():
                     cur.execute(
@@ -103,6 +107,7 @@ def list_workspaces(user: dict = Depends(get_current_user)):
                 for ws in workspaces:
                     if isinstance(ws.get("config"), str):
                         ws["config"] = json.loads(ws["config"])
+                workspace_cache.set(cache_key, workspaces)
                 return workspaces
     except Exception as e:
         logger.error("Failed to list workspaces: %s", e)
@@ -112,6 +117,14 @@ def list_workspaces(user: dict = Depends(get_current_user)):
 @router.get("/{workspace_id}")
 def get_workspace(workspace_id: int, user: dict = Depends(get_current_user)):
     """Get a single workspace by ID. 仅属主(或 admin)可访问。"""
+    from backend.common.ttl_cache import workspace_cache
+    cache_key = f"detail:{workspace_id}"
+    cached = workspace_cache.get(cache_key)
+    if cached is not None:
+        # 缓存命中仍需校验属主（缓存只缓存数据，不缓存权限）
+        if user.get("role") != "admin" and cached.get("owner_id") != user["user_id"]:
+            raise HTTPException(status_code=403, detail="无权访问该工作空间")
+        return cached
     try:
         with DBConnection() as conn:
             with conn.cursor() as cur:
@@ -128,6 +141,7 @@ def get_workspace(workspace_id: int, user: dict = Depends(get_current_user)):
                     raise HTTPException(status_code=403, detail="无权访问该工作空间")
                 if isinstance(workspace.get("config"), str):
                     workspace["config"] = json.loads(workspace["config"])
+                workspace_cache.set(cache_key, workspace)
                 return workspace
     except HTTPException:
         raise
@@ -229,25 +243,23 @@ def update_workspace(workspace_id: int, req: UpdateWorkspaceRequest,
         raise HTTPException(status_code=500, detail="更新工作空间失败")
 
 
-@router.delete("/{workspace_id}")
-def delete_workspace(workspace_id: int, user: dict = Depends(require_admin)):
-    """Delete a workspace (admin only)."""
-    try:
-        with DBConnection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT id FROM adh_workspaces WHERE id = %s", (workspace_id,))
-                if not cur.fetchone():
-                    raise HTTPException(status_code=404, detail="工作空间不存在")
+@router.get("/{workspace_id}/delete-impact")
+def get_workspace_delete_impact(workspace_id: int, user: dict = Depends(get_current_user)):
+    """删除影响清单（确认框数据源）：将被一并删除的会话/看板/任务数量与磁盘用量。"""
+    from backend.modules.auth.services.workspace_deletion import get_delete_impact
+    return get_delete_impact(workspace_id, user)
 
-                cur.execute("DELETE FROM adh_workspace_users WHERE workspace_id = %s", (workspace_id,))
-                cur.execute("DELETE FROM adh_workspace_datasources WHERE workspace_id = %s", (workspace_id,))
-                cur.execute("DELETE FROM adh_workspaces WHERE id = %s", (workspace_id,))
-        return {"success": True, "message": "删除成功"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to delete workspace: %s", e)
-        raise HTTPException(status_code=500, detail="删除工作空间失败")
+
+@router.delete("/{workspace_id}")
+def delete_workspace(workspace_id: int, user: dict = Depends(get_current_user)):
+    """删除工作空间（属主或 admin）。
+
+    口径：默认工作站不可删（只能删自建空间）；空间内产物（会话含磁盘工作区、
+    看板与图表、定时任务与 DAG、保存查询、通知渠道、空间绑定配置）彻底删除；
+    跨工作站资产（资产清单/用户记忆）与审计观测流水保留。级联见 workspace_deletion。
+    """
+    from backend.modules.auth.services.workspace_deletion import delete_workspace as cascade_delete
+    return cascade_delete(workspace_id, user)
 
 
 # ── Workspace user management ──────────────────────────────────────────

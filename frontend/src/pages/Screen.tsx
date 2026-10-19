@@ -11,7 +11,7 @@ import { isEditingTarget } from '@/lib/dashboardDesign';
 import DashboardAutoRefresh from '@/components/DashboardAutoRefresh';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import { useDashboardFullscreen } from '@/hooks/useDashboardFullscreen';
-import { fetchVisibleGroups, type GroupView } from '@/pages/Analysis';
+import { fetchVisibleGroups, type GroupView } from '@/lib/dashboardCatalog';
 import client from '@/api/client';
 
 // 大屏播放范围 = 仪表盘组(组内 ∩ 角色可见 enabled); group=0/缺省(管理域入口)=全部可见 enabled。

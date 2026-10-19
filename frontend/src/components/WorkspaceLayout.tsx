@@ -4,7 +4,7 @@ import {
   MessageSquare, LogOut, Menu, Sun, Moon,
   ChevronLeft, ChevronRight, X, ChevronDown, Palette, Zap, TrendingUp, Grid3x3,
   GlassWater, Folder, UserCircle, Brain, Heart, Check, ArrowRight,
-  Clock, Gem, Plus, Archive,
+  Clock, Gem, Plus, Archive, ChartNoAxesCombined, Trash2,
 } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -23,6 +23,7 @@ import { pruneEmptySections } from '@/lib/menuUtils';
 import SectionSwitcher from './SectionSwitcher';
 import { toast } from 'sonner';
 import client from '@/api/client';
+import { WorkspaceDeleteDialog } from './WorkspaceDeleteDialog';
 import { Input } from '@/components/ui/input';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
@@ -47,7 +48,44 @@ function toMenuKey(routeKey: string): string {
 
 // ── Workspace Selector (sidebar-embedded) ─────────────────────────
 
-function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collapsed: boolean; module?: 'workspace' | 'ask' | 'dashboards' }) {
+/** 下拉项: 显示用 name, 默认工作站不给删(仅可删自建空间) */
+export function WorkspaceMenuItem({ ws, isCurrent, onSwitch, onAskDelete }: {
+  ws: Workspace; isCurrent: boolean; onSwitch: () => void; onAskDelete: () => void;
+}) {
+  return (
+    <DropdownMenuItem onClick={onSwitch} className="flex items-center gap-2">
+      <span>{ws.icon}</span>
+      <div className="flex-1 min-w-0">
+        <div className="truncate">{ws.name}</div>
+        {ws.description && (
+          <div className="text-xs text-muted-foreground truncate">{ws.description}</div>
+        )}
+      </div>
+      {isCurrent && <Check className="h-4 w-4 shrink-0 text-primary" />}
+      {ws.is_default ? (
+        <span
+          title="默认工作站不可删除，仅可删除自行创建的自定义工作空间"
+          className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground"
+        >
+          默认
+        </span>
+      ) : (
+        <button
+          type="button"
+          aria-label={`删除工作空间 ${ws.name}`}
+          title="删除工作空间"
+          onPointerDown={e => e.preventDefault()}
+          onClick={e => { e.preventDefault(); e.stopPropagation(); onAskDelete(); }}
+          className="shrink-0 p-1 rounded text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10 transition-colors"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </DropdownMenuItem>
+  );
+}
+
+function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collapsed: boolean; module?: 'workspace' | 'ask' }) {
   const { workspaces, currentWorkspaceId, setWorkspace, loadWorkspaces } = useWorkspaceStore();
   const navigate = useNavigate();
   const { workspaceId } = useParams();
@@ -70,7 +108,8 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
 
   const handleSwitch = (ws: Workspace) => {
     setWorkspace(ws.id);
-    navigate(module === 'workspace' ? `/ws/${ws.id}/chat` : `/${module}/${ws.id}`);
+    // 工作空间默认页 = 数据看板清单(卡片瀑布)
+    navigate(module === 'workspace' ? `/ws/${ws.id}/dashboards` : `/${module}/${ws.id}`);
   };
 
   // 新建工作空间(个人工作站, 随用户走; 受管理员配额限制)
@@ -89,7 +128,7 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
       await loadWorkspaces();
       if (data?.id) {
         setWorkspace(data.id);
-        navigate(module === 'workspace' ? `/ws/${data.id}/chat` : `/${module}/${data.id}`);
+        navigate(module === 'workspace' ? `/ws/${data.id}/dashboards` : `/${module}/${data.id}`);
       }
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '创建失败');
@@ -117,6 +156,29 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
     </Dialog>
   );
 
+  // 删除工作空间(仅自建空间): 确认框内先拉影响清单再让人确认（见 WorkspaceDeleteDialog）
+  const [deleteTarget, setDeleteTarget] = useState<Workspace | null>(null);
+  const afterWorkspaceDeleted = async (deletedId: number) => {
+    const wasCurrent = deletedId === currentWorkspaceId;
+    await loadWorkspaces();
+    if (!wasCurrent) return;
+    // 删的是当前正在用的空间 → 落回默认工作站，不留空白路由
+    const next = useWorkspaceStore.getState().getDefaultWorkspaceId();
+    if (next) {
+      setWorkspace(next);
+      navigate(module === 'workspace' ? `/ws/${next}/dashboards` : `/${module}/${next}`);
+    } else {
+      navigate('/dashboards');
+    }
+  };
+  const deleteDialog = (
+    <WorkspaceDeleteDialog
+      workspace={deleteTarget} open={!!deleteTarget}
+      onOpenChange={open => { if (!open) setDeleteTarget(null); }}
+      onDeleted={afterWorkspaceDeleted}
+    />
+  );
+
   if (collapsed) {
     return (
       <>
@@ -128,11 +190,10 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
           </DropdownMenuTrigger>
           <DropdownMenuContent side="right" align="start" className="w-56">
             {workspaces.map(ws => (
-              <DropdownMenuItem key={ws.id} onClick={() => handleSwitch(ws)} className="flex items-center gap-2">
-                <span>{ws.icon}</span>
-                <span className="flex-1 truncate">{ws.name}</span>
-                {ws.id === currentWorkspaceId && <Check className="h-4 w-4 text-primary" />}
-              </DropdownMenuItem>
+              <WorkspaceMenuItem
+                key={ws.id} ws={ws} isCurrent={ws.id === currentWorkspaceId}
+                onSwitch={() => handleSwitch(ws)} onAskDelete={() => setDeleteTarget(ws)}
+              />
             ))}
             <DropdownMenuItem onClick={() => setCreateOpen(true)} className="flex items-center gap-2">
               <Plus className="h-4 w-4" />
@@ -141,6 +202,7 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
           </DropdownMenuContent>
         </DropdownMenu>
         {createDialog}
+        {deleteDialog}
       </>
     );
   }
@@ -161,16 +223,10 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
         </DropdownMenuTrigger>
         <DropdownMenuContent side="right" align="start" className="w-56">
           {workspaces.map(ws => (
-            <DropdownMenuItem key={ws.id} onClick={() => handleSwitch(ws)} className="flex items-center gap-2">
-              <span>{ws.icon}</span>
-              <div className="flex-1 min-w-0">
-                <div className="truncate">{ws.name}</div>
-                {ws.description && (
-                  <div className="text-xs text-muted-foreground truncate">{ws.description}</div>
-                )}
-              </div>
-              {ws.id === currentWorkspaceId && <Check className="h-4 w-4 text-primary shrink-0" />}
-            </DropdownMenuItem>
+            <WorkspaceMenuItem
+              key={ws.id} ws={ws} isCurrent={ws.id === currentWorkspaceId}
+              onSwitch={() => handleSwitch(ws)} onAskDelete={() => setDeleteTarget(ws)}
+            />
           ))}
           <DropdownMenuItem onClick={() => setCreateOpen(true)} className="flex items-center gap-2">
             <Plus className="h-4 w-4" />
@@ -179,13 +235,14 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
         </DropdownMenuContent>
       </DropdownMenu>
       {createDialog}
+      {deleteDialog}
     </>
   );
 }
 
 // ── Workspace Layout ──────────────────────────────────────────────
 
-export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'workspace' | 'ask' | 'dashboards' }) {
+export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'workspace' | 'ask' }) {
   const independent = module !== 'workspace';
   const [collapsed, setCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -203,10 +260,14 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
   useEffect(() => { setMobileMenuOpen(false); }, [location.pathname]);
 
   // 菜单可见性按权限码裁决（与 SystemLayout/DataPlatformLayout 同口径）
-  // 资产清单是工作站基础功能(随用户走), 不按权限码过滤; 一级分组下无可访问项时不渲染分组标题
+  // 例外(产品决策 2026-10): 资产清单是工作站基础功能(随用户走), 不按权限码过滤;
+  // 数据看板入口同样参与菜单配置(菜单登记 workspace:dashboards ↔ dashboard:read,
+  // 默认已授给全部角色, 管理员可按角色收回), 内容级可见性仍由 adh_role_dashboard_access
+  // 在数据层 fail-closed 裁决。一级分组下无可访问项时不渲染分组标题
   const menuItems = pruneEmptySections([
     { section: '数据分析' },
-    { key: `/ws/${workspaceId}/chat`, icon: MessageSquare, label: 'Chat 智能问答' },
+    { key: `/ws/${workspaceId}/dashboards`, icon: ChartNoAxesCombined, label: '数据看板' },
+    { key: `/ws/${workspaceId}/chat`, icon: MessageSquare, label: '智能问数' },
     { key: `/ws/${workspaceId}/reports`, icon: Folder, label: '报表中心' },
     { section: '工作站' },
     { key: `/ws/${workspaceId}/assets`, icon: Archive, label: '资产清单', always: true },
@@ -373,7 +434,7 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
             {independent && <>
               <span className="hidden shrink-0 font-semibold sm:inline">{brand.app_name || 'AI-DataHub'}</span>
               <span className="hidden text-muted-foreground sm:inline">/</span>
-              <span className="shrink-0 text-sm font-medium">{module === 'ask' ? '工作空间' : '数据看板'}</span>
+              <span className="shrink-0 text-sm font-medium">工作空间</span>
               <div className="min-w-0 max-w-56"><WorkspaceSelectorSidebar collapsed={false} module={module} /></div>
             </>}
           </div>

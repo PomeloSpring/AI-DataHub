@@ -19,7 +19,7 @@ import { useVisConfig } from '@/lib/visStyle';
 import { useBrandStore } from '@/stores/brandStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { isMenuAllowed, isMenuPrefixAllowed } from '@/stores/permissionStore';
-import { fetchVisibleGroups } from '@/pages/Analysis';
+import { fetchVisibleGroups } from '@/lib/dashboardCatalog';
 import client from '@/api/client';
 
 const ROLE_LABELS: Record<string, string> = {
@@ -157,8 +157,15 @@ export default function Home() {
     navigate(wsId ? `/ws/${wsId}/memory` : '/data/memory');
   };
 
-  // 与模块切换的「工作空间」同一落点(默认工作空间聊天 /ws/{id}/chat),两处入口保持一致;
-  // 无默认工作空间时回落 /workspace 由入口页解析,不走 /ask 独立精简布局
+  // 与模块切换的「工作空间」同一落点(默认页 = 数据看板清单 /ws/{id}/dashboards), 两处入口保持一致;
+  // 无默认工作空间时回落 /workspace 由入口页解析, 不走 /ask 独立精简布局
+  const goWorkspace = () => {
+    const wsId = getDefaultWorkspaceId();
+    navigate(wsId ? `/ws/${wsId}/dashboards` : '/workspace');
+  };
+
+  // 快速路径提问等「带着问题进对话」的入口: 必须落智能问数(/ws/{id}/chat),
+  // home_question 由 Chat 挂载时消费; 不跟随工作空间默认页变更
   const goAsk = () => {
     const wsId = getDefaultWorkspaceId();
     navigate(wsId ? `/ws/${wsId}/chat` : '/workspace');
@@ -303,7 +310,7 @@ export default function Home() {
   const entries: Array<{ key: string; icon: LucideIcon; title: string; desc: string; go: () => void; tag?: string }> = [
     ...(showAsk ? [{
       key: 'ask', icon: MessageSquare, title: '工作空间',
-      desc: '用自然语言探索数据，自动生成图表、分析结论与报告产出', go: goAsk, tag: '推荐',
+      desc: '数据看板清单起步，用自然语言探索数据并产出图表、分析结论与报告', go: goWorkspace, tag: '推荐',
     }] : []),
     ...(showData ? [{
       key: 'data', icon: Database, title: '数据中台',
@@ -353,7 +360,7 @@ export default function Home() {
               也可以从下方快捷入口进入数据建模与系统管理。
             </p>
             <div className="mt-6 flex flex-wrap items-center gap-3">
-              <Button size="lg" onClick={goAsk}>
+              <Button size="lg" onClick={goWorkspace}>
                 <MessageSquare className="mr-1.5 h-4 w-4" />
                 进入工作空间
                 <ArrowRight className="ml-1.5 h-4 w-4" />
@@ -383,7 +390,7 @@ export default function Home() {
               <div>
                 <h2 className="font-medium">已为你分配 {dashCount} 个数据看板</h2>
                 <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                  登录时会直达数据看板；也可以随时从模块切换回到首页，或从这里再次进入。
+                  登录时会直达看板清单；也可以随时从工作空间侧栏「数据看板」再次进入。
                 </p>
                 <Button size="sm" className="mt-3" onClick={() => navigate('/dashboards')}>
                   <BarChart3 className="mr-1 h-4 w-4" />

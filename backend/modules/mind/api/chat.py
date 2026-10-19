@@ -18,10 +18,28 @@ from pydantic import BaseModel
 from backend.common.auth import (
     get_current_user, authorize_workspace, get_file_user, resolve_user_default_workspace_id,
 )
+from backend.common.ttl_cache import conversation_cache
 from backend.models.schemas import UserInfo
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# ── 会话缓存辅助 ────────────────────────────────────────────────────────
+
+def _conv_list_key(user_id: int, workspace_id: int, as_bot_key: str) -> str:
+    return f"list:{user_id}:{workspace_id}:{as_bot_key}"
+
+
+def _conv_detail_key(conv_id: int) -> str:
+    return f"detail:{conv_id}"
+
+
+def _invalidate_conv_cache(user_id: int, conv_id: int = 0) -> None:
+    """失效该用户的列表缓存 + 指定会话详情缓存。"""
+    conversation_cache.invalidate_prefix(f"list:{user_id}:")
+    if conv_id:
+        conversation_cache.invalidate(_conv_detail_key(conv_id))
 
 
 # ── Request/Response Models ──────────────────────────────────────────
@@ -107,10 +125,15 @@ def list_chat_as_bots(
     """
     from backend.modules.mind.execution import as_bots as as_bot_service
 
+    cache_key = f"as_bots:{workspace_id}:{user.get('role', '')}"
+    cached = conversation_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     authorize_workspace(user, workspace_id)
     resolved = as_bot_service.resolve_as_bots(workspace_id, user.get("role") or "", user_id=user["user_id"],
                                               include_unavailable=True)
-    return [
+    result = [
         {
             "id": w.get("id"),
             "as_bot_key": w.get("as_bot_key"),
@@ -124,6 +147,8 @@ def list_chat_as_bots(
         }
         for w in resolved
     ]
+    conversation_cache.set(cache_key, result)
+    return result
 
 
 # ── Chat Feedback ────────────────────────────────────────
@@ -267,6 +292,11 @@ def list_conversations(
 
     会话历史合并共用（AS-BOT 面板与智能问数同一载体、不同入口），不再按入口区分。
     """
+    cache_key = _conv_list_key(user["user_id"], workspace_id, as_bot_key)
+    cached = conversation_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     from backend.common.db.metadata_db import get_metadata_conn
 
     conn = get_metadata_conn()
@@ -276,8 +306,6 @@ def list_conversations(
             where = ["user_id = %s"]
             params: list = [user["user_id"]]
             if workspace_id:
-                # 合并共用：工作空间列表含遗留 ws=0 会话（统一改造前的全局归属，仅兼容保留），
-                # 反向（不带空间过滤）同样互见，不按入口区分。
                 where.append("workspace_id IN (%s, 0)")
                 params.append(workspace_id)
             if as_bot_key:
@@ -293,6 +321,7 @@ def list_conversations(
                 for k in ("created_at", "updated_at"):
                     if hasattr(r.get(k), "isoformat"):
                         r[k] = r[k].isoformat()
+            conversation_cache.set(cache_key, rows)
             return rows
     finally:
         conn.close()
@@ -304,6 +333,11 @@ def get_conversation(
     user: UserInfo = Depends(get_current_user),
 ):
     """Get conversation with messages."""
+    cache_key = _conv_detail_key(conv_id)
+    cached = conversation_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     from backend.common.db.metadata_db import get_metadata_conn
 
     conn = get_metadata_conn()
@@ -322,12 +356,12 @@ def get_conversation(
                 if hasattr(row.get(k), "isoformat"):
                     row[k] = row[k].isoformat()
             messages = json.loads(row["messages"]) if row["messages"] else []
-            # 历史回放同样标「可否存为报表」（与 done 事件同一口径, 不靠前端猜）
             from backend.modules.viz.services.report_service import with_reportability
             row["messages"] = [
                 with_reportability(m) if isinstance(m, dict) and m.get("role") == "assistant" else m
                 for m in messages
             ]
+            conversation_cache.set(cache_key, row)
             return row
     finally:
         conn.close()
@@ -382,6 +416,7 @@ def create_conversation(
             )
             conn.commit()
             conv_id = cur.lastrowid
+            _invalidate_conv_cache(user["user_id"])
             return {
                 "id": conv_id,
                 "title": "新对话",
@@ -451,6 +486,7 @@ def update_conversation(
                 params,
             )
             conn.commit()
+            _invalidate_conv_cache(user["user_id"], conv_id)
             return {"success": True}
     finally:
         conn.close()
@@ -525,7 +561,9 @@ def delete_conversation(
     from backend.modules.mind.execution.session_workspace import delete_conversation_workspace
 
     try:
-        return delete_conversation_workspace(conv_id, user["user_id"])
+        result = delete_conversation_workspace(conv_id, user["user_id"])
+        _invalidate_conv_cache(user["user_id"], conv_id)
+        return result
     except HTTPException:
         raise
     except Exception as exc:

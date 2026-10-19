@@ -19,11 +19,26 @@ from backend.modules.viz.services.dashboard_service import (
     snapshot_service,
     preview_saved_query,
     list_datasource_aggregations,
-    visible_dashboard_ids,
+    build_visible_groups,
+    check_dashboard_editable,
+    _invalidate_dashboard_payload,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _require_editable(dashboard_id: int, user: dict) -> None:
+    """写操作看板前的属主/权限把关(fail-closed): 仅 admin 或看板属主可写。
+
+    角色授权(adh_role_dashboard_access)只授予「可看」; 系统分配给角色的看板
+    不得被角色成员改写 —— 这里是写链路唯一裁决点(前端隐藏入口只是体验层)。
+    """
+    if not check_dashboard_editable(dashboard_id, user["user_id"], user.get("role") or ""):
+        raise HTTPException(
+            status_code=403,
+            detail="仅看板属主或管理员可修改该看板（角色授予的可见权不含编辑权）",
+        )
 
 
 # ── Pydantic Models ─────────────────────────────────────────────────────────
@@ -179,8 +194,12 @@ def reorder_dashboards_endpoint(
 ):
     """Update sort_order for dashboards."""
     try:
+        for item in req.orders:
+            _require_editable(int(item.get("id") or 0), user)
         dashboard_service.reorder_dashboards(user["user_id"], req.orders)
         return {"success": True}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Failed to reorder dashboards")
         raise HTTPException(status_code=500, detail=str(e))
@@ -256,40 +275,12 @@ def list_groups_endpoint(user: dict = Depends(get_current_user)):
 def list_visible_groups_endpoint(user: dict = Depends(get_current_user)):
     """当前用户可见的仪表盘组(组按角色分配), 每组带 组内∩角色可见 的看板清单.
 
-    可见但未入组的看板归"未分组"兑底组(id=0); 组只做编排不授予可见(fail-closed)。
+    可见但未入组的看板归"未分组"兜底组(id=0); 组只做编排不授予可见(fail-closed)。
+    看板行携带卡片瀑布清单展示字段(description/updated_at/chart_count/preview/editable),
+    预览只回几何矩形不含口径/SQL(护栏 §7)。
+    性能: 可见性裁决实时(不进缓存), 卡片几何/分组结构走共享载荷缓存(写路径失效)。
     """
-    from backend.common.db import execute_query
-    uid = user["user_id"]
-    is_admin = (user.get("role") or "") == "admin"
-    visible = visible_dashboard_ids(uid, user.get("role") or "")
-    if visible is not None and not visible:
-        return []  # fail-closed: 无任何可见看板
-    rows = execute_query(
-        "SELECT id, name, status, is_default, sort_order FROM adh_dashboards "
-        "ORDER BY is_default DESC, sort_order, id") or []
-    if visible is not None:
-        rows = [r for r in rows if r["id"] in visible]
-    if is_admin:
-        # 管理员可见全部组(含未绑角色的编排, 便于自检)
-        groups = execute_query("SELECT * FROM adh_dashboard_groups ORDER BY sort, id") or []
-    else:
-        groups = execute_query(
-            """SELECT DISTINCT g.* FROM adh_dashboard_groups g
-               JOIN adh_role_dashboard_groups rg ON rg.group_id = g.id
-               JOIN adh_user_roles ur ON ur.role_id = rg.role_id
-               WHERE ur.user_id = %s ORDER BY g.sort, g.id""", (uid,)) or []
-    out = []
-    grouped_ids: set = set()
-    for g in groups:
-        member = {r["dashboard_id"] for r in (execute_query(
-            "SELECT dashboard_id FROM adh_dashboard_group_items WHERE group_id=%s ORDER BY sort, id",
-            (g["id"],)) or [])}
-        grouped_ids |= member
-        out.append({"id": g["id"], "name": g["name"], "description": g.get("description") or "",
-                    "sort": g.get("sort") or 0, "dashboards": [b for b in rows if b["id"] in member]})
-    out.append({"id": 0, "name": "未分组", "description": "未加入任何仪表盘组的可见看板",
-                "sort": 9999, "dashboards": [b for b in rows if b["id"] not in grouped_ids]})
-    return out
+    return build_visible_groups(user["user_id"], user.get("role") or "")
 
 
 @router.post("/groups")
@@ -301,6 +292,7 @@ def create_group_endpoint(req: GroupCreate, admin: dict = Depends(require_admin)
                 "INSERT INTO adh_dashboard_groups (name, description, sort) VALUES (%s, %s, %s)",
                 (req.name, req.description or "", req.sort or 0))
             group_id = cur.lastrowid
+    _invalidate_dashboard_payload()
     return {"success": True, "id": group_id}
 
 
@@ -313,6 +305,7 @@ def update_group_endpoint(group_id: int, req: GroupCreate, admin: dict = Depends
         (req.name, req.description or "", req.sort or 0, group_id))
     if not n:
         raise HTTPException(status_code=404, detail="仪表盘组不存在")
+    _invalidate_dashboard_payload()
     return {"success": True}
 
 
@@ -325,6 +318,7 @@ def delete_group_endpoint(group_id: int, admin: dict = Depends(require_admin)):
     n = execute_write("DELETE FROM adh_dashboard_groups WHERE id=%s", (group_id,))
     if not n:
         raise HTTPException(status_code=404, detail="仪表盘组不存在")
+    _invalidate_dashboard_payload()
     return {"success": True}
 
 
@@ -340,6 +334,7 @@ def set_group_items_endpoint(group_id: int, req: GroupItemsRequest,
         execute_write(
             "INSERT IGNORE INTO adh_dashboard_group_items (group_id, dashboard_id, sort) VALUES (%s,%s,%s)",
             (group_id, int(did), i))
+    _invalidate_dashboard_payload()
     return {"success": True, "count": len(set(req.dashboard_ids or []))}
 
 
@@ -355,6 +350,7 @@ def set_group_roles_endpoint(group_id: int, req: GroupRolesRequest,
         execute_write(
             "INSERT INTO adh_role_dashboard_groups (role_id, group_id) VALUES (%s,%s)",
             (int(rid), group_id))
+    _invalidate_dashboard_payload()
     return {"success": True, "count": len(set(req.role_ids or []))}
 
 
@@ -385,6 +381,7 @@ def update_dashboard_endpoint(
 ):
     """Update a dashboard."""
     try:
+        _require_editable(dashboard_id, user)
         updated = dashboard_service.update_dashboard(
             dashboard_id, req.model_dump(exclude_none=True), user["user_id"],
         )
@@ -405,6 +402,7 @@ def delete_dashboard_endpoint(
 ):
     """Delete a dashboard and its charts."""
     try:
+        _require_editable(dashboard_id, user)
         deleted = dashboard_service.delete_dashboard(dashboard_id, user["user_id"])
         if not deleted:
             raise HTTPException(status_code=404, detail="Dashboard not found")
@@ -473,8 +471,11 @@ def add_chart_endpoint(
 ):
     """Add a chart to a dashboard."""
     try:
+        _require_editable(dashboard_id, user)
         cid = chart_service.create_chart(dashboard_id, req.model_dump())
         return {"id": cid}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Failed to add chart")
         raise HTTPException(status_code=500, detail=str(e))
@@ -489,6 +490,7 @@ def update_chart_endpoint(
 ):
     """Update a chart within a dashboard."""
     try:
+        _require_editable(dashboard_id, user)
         updated = chart_service.update_chart(
             dashboard_id, chart_id, req.model_dump(exclude_unset=True),
         )
@@ -510,6 +512,7 @@ def delete_chart_endpoint(
 ):
     """Remove a chart from a dashboard."""
     try:
+        _require_editable(dashboard_id, user)
         deleted = chart_service.delete_chart(dashboard_id, chart_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Chart not found")
@@ -584,9 +587,12 @@ def update_layout_endpoint(
 ):
     """Batch update chart positions (layout save)."""
     try:
+        _require_editable(dashboard_id, user)
         layouts = req.get("layouts", [])
         chart_service.update_layout(dashboard_id, layouts)
         return {"success": True}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Failed to update layout")
         raise HTTPException(status_code=500, detail=str(e))

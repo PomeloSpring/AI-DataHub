@@ -86,6 +86,45 @@ def workspace_disk_usage(workspace_id: int, user_id: int) -> int:
     return total
 
 
+def remove_workspace_directory(workspace_id: int, user_id: int) -> int:
+    """清理工作空间持久卷目录 `{user_id}/workspace/{workspace_id}`，返回删除的文件数。
+
+    工作空间删除的第一阶段（库行未动，失败可重试）。口径与 _session_cleanup_root 一致：
+    目录不存在即无残留（返回 0，不阻断）；绝不跟随符号链接、绝不在别的存储节点上动文件。
+    """
+    import shutil
+    from backend.common.config import ADH_WORKSPACES_DIR
+    if int(workspace_id) <= 0 or int(user_id) <= 0:
+        raise HTTPException(400, "工作空间标识无效，未执行清理")
+    # 跨节点保护：该空间仍有会话登记在其他存储节点时，本实例无法确认清理完成
+    rows = execute_query(
+        "SELECT DISTINCT storage_node FROM adh_agent_sessions WHERE workspace_id=%s", (workspace_id,))
+    recorded_nodes = [r["storage_node"] for r in (rows or []) if r.get("storage_node")]
+    base = Path(ADH_WORKSPACES_DIR).resolve()
+    if not base.is_dir():
+        # 存储卷整体不可用（挂载点丢失/已清）：无文件可清理，放行删除库行
+        return 0
+    if recorded_nodes:
+        # 仅在确有会话登记时核验存储节点归属（与 _session_cleanup_root 同口径）
+        current_node = storage_node(base, create=False)
+        if any(node != current_node for node in recorded_nodes):
+            raise HTTPException(409, "该工作空间的会话目录不在当前存储节点，请在对应节点重试删除")
+    root = base / str(user_id) / "workspace" / str(workspace_id)
+    if root.is_symlink():
+        raise HTTPException(409, "工作空间目录被符号链接替换，未执行清理，请联系管理员")
+    if not root.exists():
+        return 0
+    if not root.is_dir():
+        raise HTTPException(409, "工作空间目录形态异常（不是目录），未执行清理，请联系管理员")
+    if not shutil.rmtree.avoids_symlink_attacks:
+        raise RuntimeError("当前运行环境不支持安全的工作空间目录清理")
+    removed = sum(1 for p in root.rglob("*") if p.is_file() and not p.is_symlink())
+    shutil.rmtree(root)
+    if root.exists():
+        raise HTTPException(409, "工作空间目录未完全清理，请重试删除")
+    return removed
+
+
 def assert_workspace_disk_quota(workspace_id: int, user_id: int) -> None:
     """空间磁盘配额拦截: 用量已达配额则拒绝新建会话(提示归档/清理后重试)。"""
     from backend.common.db.metadata_db import get_metadata_conn

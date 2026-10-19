@@ -704,18 +704,30 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
       const isArea = chartType === 'timeseries_area';
 
       const chartTypeG2 = isBar ? 'interval' : isArea ? 'area' : 'line';
+      // 字模样式对时序族同样生效(与 bar/line/area 分支同口径):
+      // 圆角/渐变/标签/线宽/平滑/面积透明度全部消费 config(resolveChartDesign 从主题包注入),
+      // 曾经写死 radius 4/lineWidth 2 不看 gradient —— 科技风柱状图没有渐变就是这里丢的
+      const tsRadius = Number.parseFloat(config?.borderRadius ?? 4) || 0;
 
       return {
         ...baseSpec,
         type: chartTypeG2,
         data: tsData,
-        encode: { x: timeCol, y: valCol, color: tsHasGroups ? tsGroupCol! : undefined, shape: !isBar ? 'smooth' : undefined },
+        encode: {
+          x: timeCol, y: valCol, color: tsHasGroups ? tsGroupCol! : undefined,
+          shape: isBar ? undefined : (config?.smooth === false ? undefined : 'smooth'),
+        },
         axis: {
           x: { labelAutoRotate: true, style: axisLabelStyle },
           y: { style: axisLabelStyle },
         },
         scale: { color: { range: colors } },
-        style: isBar ? { radiusTopLeft: 4, radiusTopRight: 4 } : { lineWidth: 2, fillOpacity: isArea ? 0.3 : 0 },
+        style: isBar
+          ? { radiusTopLeft: tsRadius, radiusTopRight: tsRadius,
+              ...(config?.gradient ? { fill: `l(270) 0:${colors[0]} 1:${colors[1] || colors[0]}` } : {}) }
+          : { lineWidth: config?.lineWidth ?? 2, fillOpacity: isArea ? (config?.areaOpacity ?? 0.3) : 0,
+              ...(config?.glow ? { shadowColor: colors[0], shadowBlur: 8 } : {}) },
+        labels: isBar && config?.showLabel ? [{ text: valCol, style: { fill: textColor } }] : [],
         interaction: { tooltip: { shared: true } },
       };
     }

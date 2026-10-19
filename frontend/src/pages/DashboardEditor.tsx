@@ -182,6 +182,18 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
     } catch { toast.error('字模保存失败，请重试'); } finally { setVisSaving(false); }
   };
   if (!current || !draftDashboard) return <div className="p-8">{store.loading ? '正在加载…' : '看板不存在'}<Button variant="link" onClick={() => navigate('/system/dashboards')}>返回列表</Button></div>;
+  // 可写性服务端裁决: 角色授予的可见权不含编辑权 —— 非属主/非 admin 直接拒入编辑器(fail-loud),
+  // 后端写接口同样按 check_dashboard_editable 拦截, 双层都不放行
+  if (current.editable === false) return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+      <p className="text-lg font-medium">仅看板属主或管理员可编辑该看板</p>
+      <p className="text-sm text-muted-foreground">该看板是按角色分配给你的，可见权不含编辑权；可以查看与大屏播放，但不能修改。</p>
+      <div className="flex items-center gap-2">
+        <Button onClick={() => navigate(returnTo)}>返回</Button>
+        <Button variant="outline" onClick={() => navigate(`/system/dashboards/${current.id}`)}>查看看板</Button>
+      </div>
+    </div>
+  );
   return <div className="flex h-screen flex-col overflow-hidden bg-background">
     <EditorToolbar dashboardName={draftDashboard.name} scale={canvas.scale} canvasSize={dimensions}
       layoutMode={layoutMode} onLayoutMode={setLayoutMode} breakpoint={breakpoint} onBreakpoint={setBreakpoint} onResetPage={resetPage} onCapturePage={capturePage}
