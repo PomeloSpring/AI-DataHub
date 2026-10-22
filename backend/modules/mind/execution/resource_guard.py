@@ -1,7 +1,10 @@
 """工具资源的服务端身份边界；工具授权不等于数据源或工作空间授权。"""
 import json
+import logging
 
 from backend.common.db import execute_query
+
+logger = logging.getLogger(__name__)
 
 IDENTITY_FIELDS = {"user_id", "username", "workspace_id", "decided_by", "proposed_by", "user_role"}
 
@@ -37,7 +40,26 @@ def bind_resources(ctx, policy):
         raise ResourceScopeError("当前用户无权使用该数据源，请选择已授权数据源")
     if not ctx.datasource_id and len(allowed) == 1:
         ctx.datasource_id = next(iter(allowed))
+    # 会话站点→生效源：站点内唯一源才能定下来（多义不猜，由工具侧 site/datasource 参数逐查询解析）。
+    # 它只是把已确定的授权集按站点收敛，不新增任何越权可能（候选仍局限 allowed 内）。
+    if not ctx.datasource_id and ctx.extra.get("site_code"):
+        try:
+            from backend.core.site_service import session_source_for_site
+            ctx.datasource_id = int(session_source_for_site(
+                ctx.extra["site_code"], sorted(allowed)) or 0)
+        except Exception as e:  # noqa: BLE001 — 拓扑不可用时不阻断主链路，由下游 fail-loud
+            logger.debug("[resource_guard] session site source derivation skipped: %s", e)
     ctx.extra["bound_knowledge_base_ids"] = list(policy.as_bot.get("knowledge_base_ids") or [])
+    # 可查站点 = 上述授权集的**派生视图**（不是第二套「谁能查什么」判断），
+    # 供提示词注入与工具侧 site 参数解析共用，避免两处各自查库产生口径分叉。
+    if "authorized_sites" not in ctx.extra:
+        try:
+            from backend.core.site_service import authorized_sites
+            ctx.extra["authorized_sites"] = authorized_sites(
+                ctx.user_id, ctx.workspace_id)
+        except Exception as e:  # noqa: BLE001 — 站点拓扑不可用时不阻断取数主链路（旁路 no-op）
+            logger.debug("[resource_guard] authorized sites unavailable: %s", e)
+            ctx.extra["authorized_sites"] = []
     return allowed
 
 
@@ -102,12 +124,17 @@ def validate_tool_resources(ctx, qualified_name, args):
         source_scope.add(0)
     if ctx.datasource_id:
         source_scope.add(int(ctx.datasource_id))
-    # 查询工具：LLM 用业务名在授权集内选源（不持有 id）。解析 name→id 作为生效源；
-    # 丢弃任何模型传入/历史残留的 datasource_id，一律以服务端解析/会话源为准注入。
+    # 查询工具：LLM 用业务名（站点名或源名）在授权集内选源（不持有 id）。解析后作为
+    # 生效源；丢弃任何模型传入/历史残留的 datasource_id，一律以服务端解析/会话源为准注入。
     if qualified_name.startswith("mcp__datahub_query__") and name in ("execute_sql", "check_sql"):
         chosen_name = args.get("datasource")
-        args = {k: v for k, v in args.items() if k not in ("datasource", "datasource_id")}
-        if isinstance(chosen_name, str) and chosen_name.strip():
+        chosen_site = args.get("site")
+        args = {k: v for k, v in args.items()
+                if k not in ("datasource", "datasource_id", "site")}
+        if isinstance(chosen_site, str) and chosen_site.strip():
+            ctx.datasource_id = _resolve_site_arg(chosen_site.strip(), available_sources, ctx.model_id)
+            source_scope.add(int(ctx.datasource_id))
+        elif isinstance(chosen_name, str) and chosen_name.strip():
             ctx.datasource_id = _resolve_authorized_source(chosen_name.strip(), available_sources)
             source_scope.add(int(ctx.datasource_id))
         if ctx.datasource_id:
@@ -262,3 +289,17 @@ def _resolve_authorized_source(name, available_sources):
     available_names = "、".join(sorted({(r.get("name") or "") for r in rows if r.get("name")}))
     raise ResourceScopeError(
         f"未找到已授权数据源「{name}」；可用数据源：{available_names or '无'}。若不确定用哪个，请询问用户。")
+
+
+def _resolve_site_arg(site_ref, available_sources, model_id=0) -> int:
+    """站点业务名/代码 → 生效 datasource_id（只在角色授权集内解析）。
+
+    SiteError 换装为 ResourceScopeError：保留可操作文案（只含站点/数据源业务名），
+    并与其他资源越权错误保持同一类型口径，让调用方能统一外显给用户。
+    """
+    from backend.core.site_service import SiteError, resolve_site_to_source
+
+    try:
+        return resolve_site_to_source(site_ref, available_sources, model_id=int(model_id or 0))
+    except SiteError as exc:
+        raise ResourceScopeError(str(exc)) from exc

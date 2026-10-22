@@ -1422,6 +1422,8 @@ def _plan_dataset(
         guardrail=g, access=binding.access,
         provenance=provenance,
         warnings=warnings,
+        # SLS/Presto 类引擎下 SQL 别名为 ASCII 槽位，需据此映回业务列名（其他引擎为空）。
+        output_header_map=dict(compiled.header_map),
     )
 
 

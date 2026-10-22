@@ -1,9 +1,12 @@
 /**
  * 地名→坐标解析(纯函数) — 地图类图型复用 UI 字模库地图瓦片时用。
  *
- * 查询结果常带"省份/城市名"而非经纬度(如 案件按省份分布),这里用内置
- * 中国省级行政区 + 主要城市坐标表把地名转成热力点;未命中的地名显式回抛
- * (fail-loud,不静默丢行)。名称匹配做后缀归一(北京/北京市/…都命中)。
+ * 查询结果常带"省份/城市名"或"国家名"而非经纬度(如 案件按省份分布、流量按国家分布),
+ * 这里用内置坐标表把地名转成热力点:
+ *  - CN_PLACES:中国省级行政区 + 主要城市;
+ *  - WORLD_PLACES:国家(含中英文与两位码别名,geo.country 常返回中文名)。
+ * 未命中的地名显式回抛(fail-loud,不静默丢行)。名称匹配做后缀/大小写归一
+ * (北京/北京市、China/CN/中国 都命中)。
  */
 
 export interface PlacePointDef {
@@ -96,28 +99,171 @@ export const CN_PLACES: PlacePointDef[] = [
   { name: '呼和浩特市', aliases: ['呼和浩特'], lat: 40.8424, lng: 111.7490 },
 ];
 
+/** 国家(中心点) — 覆盖 geo.country / 国家维度常见取值;别名含英文名与两位码 */
+export const WORLD_PLACES: PlacePointDef[] = [
+  { name: '中国', aliases: ['中华人民共和国', 'China', 'CN'], lat: 35.86, lng: 104.19 },
+  { name: '美国', aliases: ['美利坚', 'United States', 'USA', 'US'], lat: 37.09, lng: -95.71 },
+  { name: '日本', aliases: ['Japan', 'JP'], lat: 36.2, lng: 138.25 },
+  { name: '韩国', aliases: ['大韩民国', 'Korea', 'South Korea', 'KR'], lat: 35.9, lng: 127.77 },
+  { name: '朝鲜', aliases: ['North Korea', 'KP'], lat: 40.34, lng: 127.51 },
+  { name: '蒙古', aliases: ['蒙古国', 'Mongolia', 'MN'], lat: 46.86, lng: 103.85 },
+  { name: '越南', aliases: ['Vietnam', 'VN'], lat: 14.06, lng: 108.28 },
+  { name: '老挝', aliases: ['Laos', 'LA'], lat: 19.86, lng: 102.5 },
+  { name: '柬埔寨', aliases: ['Cambodia', 'KH'], lat: 12.57, lng: 104.99 },
+  { name: '泰国', aliases: ['Thailand', 'TH'], lat: 15.87, lng: 100.99 },
+  { name: '缅甸', aliases: ['Myanmar', 'MM'], lat: 21.91, lng: 95.96 },
+  { name: '马来西亚', aliases: ['Malaysia', 'MY'], lat: 4.21, lng: 101.98 },
+  { name: '新加坡', aliases: ['Singapore', 'SG'], lat: 1.35, lng: 103.82 },
+  { name: '印度尼西亚', aliases: ['印尼', 'Indonesia', 'ID'], lat: -0.79, lng: 113.92 },
+  { name: '菲律宾', aliases: ['Philippines', 'PH'], lat: 12.88, lng: 121.77 },
+  { name: '文莱', aliases: ['Brunei', 'BN'], lat: 4.54, lng: 114.73 },
+  { name: '东帝汶', aliases: ['Timor-Leste', 'TL'], lat: -8.87, lng: 125.73 },
+  { name: '尼泊尔', aliases: ['Nepal', 'NP'], lat: 28.39, lng: 84.12 },
+  { name: '不丹', aliases: ['Bhutan', 'BT'], lat: 27.51, lng: 90.43 },
+  { name: '印度', aliases: ['India', 'IN'], lat: 20.59, lng: 78.96 },
+  { name: '巴基斯坦', aliases: ['Pakistan', 'PK'], lat: 30.38, lng: 69.35 },
+  { name: '孟加拉国', aliases: ['Bangladesh', 'BD'], lat: 23.68, lng: 90.36 },
+  { name: '斯里兰卡', aliases: ['Sri Lanka', 'LK'], lat: 7.87, lng: 80.77 },
+  { name: '马尔代夫', aliases: ['Maldives', 'MV'], lat: 3.2, lng: 73.22 },
+  { name: '阿富汗', aliases: ['Afghanistan', 'AF'], lat: 33.94, lng: 67.71 },
+  { name: '哈萨克斯坦', aliases: ['Kazakhstan', 'KZ'], lat: 48.02, lng: 66.92 },
+  { name: '乌兹别克斯坦', aliases: ['Uzbekistan', 'UZ'], lat: 41.38, lng: 64.59 },
+  { name: '土库曼斯坦', aliases: ['Turkmenistan', 'TM'], lat: 38.97, lng: 59.56 },
+  { name: '吉尔吉斯斯坦', aliases: ['Kyrgyzstan', 'KG'], lat: 41.2, lng: 74.77 },
+  { name: '塔吉克斯坦', aliases: ['Tajikistan', 'TJ'], lat: 38.86, lng: 71.28 },
+  { name: '伊朗', aliases: ['Iran', 'IR'], lat: 32.43, lng: 53.69 },
+  { name: '伊拉克', aliases: ['Iraq', 'IQ'], lat: 33.22, lng: 43.68 },
+  { name: '沙特阿拉伯', aliases: ['沙特', 'Saudi Arabia', 'SA'], lat: 23.89, lng: 45.08 },
+  { name: '阿联酋', aliases: ['阿拉伯联合酋长国', 'United Arab Emirates', 'UAE', 'AE'], lat: 23.42, lng: 53.85 },
+  { name: '卡塔尔', aliases: ['Qatar', 'QA'], lat: 25.35, lng: 51.18 },
+  { name: '科威特', aliases: ['Kuwait', 'KW'], lat: 29.31, lng: 47.48 },
+  { name: '巴林', aliases: ['Bahrain', 'BH'], lat: 26.07, lng: 50.56 },
+  { name: '阿曼', aliases: ['Oman', 'OM'], lat: 21.47, lng: 55.98 },
+  { name: '也门', aliases: ['Yemen', 'YE'], lat: 15.55, lng: 48.52 },
+  { name: '以色列', aliases: ['Israel', 'IL'], lat: 31.05, lng: 34.85 },
+  { name: '巴勒斯坦', aliases: ['Palestine', 'PS'], lat: 31.95, lng: 35.21 },
+  { name: '约旦', aliases: ['Jordan', 'JO'], lat: 30.59, lng: 36.24 },
+  { name: '黎巴嫩', aliases: ['Lebanon', 'LB'], lat: 33.85, lng: 35.86 },
+  { name: '叙利亚', aliases: ['Syria', 'SY'], lat: 34.8, lng: 38.99 },
+  { name: '土耳其', aliases: ['Turkey', 'Türkiye', 'TR'], lat: 38.96, lng: 35.24 },
+  { name: '格鲁吉亚', aliases: ['Georgia', 'GE'], lat: 42.32, lng: 43.36 },
+  { name: '亚美尼亚', aliases: ['Armenia', 'AM'], lat: 40.07, lng: 45.04 },
+  { name: '阿塞拜疆', aliases: ['Azerbaijan', 'AZ'], lat: 40.14, lng: 47.58 },
+  { name: '俄罗斯', aliases: ['俄国', 'Russia', 'RU'], lat: 61.52, lng: 105.32 },
+  { name: '乌克兰', aliases: ['Ukraine', 'UA'], lat: 48.38, lng: 31.17 },
+  { name: '白俄罗斯', aliases: ['Belarus', 'BY'], lat: 53.71, lng: 27.95 },
+  { name: '波兰', aliases: ['Poland', 'PL'], lat: 51.92, lng: 19.15 },
+  { name: '德国', aliases: ['Germany', 'DE'], lat: 51.17, lng: 10.45 },
+  { name: '法国', aliases: ['France', 'FR'], lat: 46.6, lng: 1.89 },
+  { name: '英国', aliases: ['大不列颠', 'United Kingdom', 'UK', 'GB', 'England'], lat: 52.36, lng: -1.18 },
+  { name: '爱尔兰', aliases: ['Ireland', 'IE'], lat: 53.14, lng: -8.24 },
+  { name: '荷兰', aliases: ['Netherlands', 'NL'], lat: 52.13, lng: 5.29 },
+  { name: '比利时', aliases: ['Belgium', 'BE'], lat: 50.5, lng: 4.47 },
+  { name: '卢森堡', aliases: ['Luxembourg', 'LU'], lat: 49.82, lng: 6.13 },
+  { name: '瑞士', aliases: ['Switzerland', 'CH'], lat: 46.8, lng: 8.23 },
+  { name: '奥地利', aliases: ['Austria', 'AT'], lat: 47.52, lng: 14.55 },
+  { name: '捷克', aliases: ['捷克共和国', 'Czechia', 'Czech Republic', 'CZ'], lat: 49.82, lng: 15.47 },
+  { name: '斯洛伐克', aliases: ['Slovakia', 'SK'], lat: 48.67, lng: 19.7 },
+  { name: '匈牙利', aliases: ['Hungary', 'HU'], lat: 47.16, lng: 19.5 },
+  { name: '罗马尼亚', aliases: ['Romania', 'RO'], lat: 45.94, lng: 24.97 },
+  { name: '保加利亚', aliases: ['Bulgaria', 'BG'], lat: 42.73, lng: 25.49 },
+  { name: '塞尔维亚', aliases: ['Serbia', 'RS'], lat: 44.02, lng: 21.01 },
+  { name: '克罗地亚', aliases: ['Croatia', 'HR'], lat: 45.1, lng: 15.2 },
+  { name: '斯洛文尼亚', aliases: ['Slovenia', 'SI'], lat: 46.16, lng: 14.99 },
+  { name: '波黑', aliases: ['波斯尼亚', 'Bosnia and Herzegovina', 'BA'], lat: 43.92, lng: 17.68 },
+  { name: '北马其顿', aliases: ['马其顿', 'North Macedonia', 'MK'], lat: 41.61, lng: 21.75 },
+  { name: '阿尔巴尼亚', aliases: ['Albania', 'AL'], lat: 41.15, lng: 20.17 },
+  { name: '黑山', aliases: ['Montenegro', 'ME'], lat: 42.71, lng: 19.37 },
+  { name: '希腊', aliases: ['Greece', 'GR'], lat: 39.07, lng: 21.82 },
+  { name: '意大利', aliases: ['Italy', 'IT'], lat: 41.87, lng: 12.57 },
+  { name: '西班牙', aliases: ['Spain', 'ES'], lat: 40.46, lng: -3.75 },
+  { name: '葡萄牙', aliases: ['Portugal', 'PT'], lat: 39.4, lng: -8.22 },
+  { name: '冰岛', aliases: ['Iceland', 'IS'], lat: 64.96, lng: -19.02 },
+  { name: '挪威', aliases: ['Norway', 'NO'], lat: 60.47, lng: 8.47 },
+  { name: '瑞典', aliases: ['Sweden', 'SE'], lat: 60.13, lng: 18.64 },
+  { name: '芬兰', aliases: ['Finland', 'FI'], lat: 61.92, lng: 25.75 },
+  { name: '丹麦', aliases: ['Denmark', 'DK'], lat: 56.26, lng: 9.5 },
+  { name: '爱沙尼亚', aliases: ['Estonia', 'EE'], lat: 58.6, lng: 25.01 },
+  { name: '拉脱维亚', aliases: ['Latvia', 'LV'], lat: 56.88, lng: 24.6 },
+  { name: '立陶宛', aliases: ['Lithuania', 'LT'], lat: 55.17, lng: 23.88 },
+  { name: '摩尔多瓦', aliases: ['Moldova', 'MD'], lat: 47.41, lng: 28.37 },
+  { name: '加拿大', aliases: ['Canada', 'CA'], lat: 56.13, lng: -106.35 },
+  { name: '墨西哥', aliases: ['Mexico', 'MX'], lat: 23.63, lng: -102.55 },
+  { name: '古巴', aliases: ['Cuba', 'CU'], lat: 21.52, lng: -77.78 },
+  { name: '巴西', aliases: ['Brazil', 'BR'], lat: -14.24, lng: -51.93 },
+  { name: '阿根廷', aliases: ['Argentina', 'AR'], lat: -38.42, lng: -63.62 },
+  { name: '智利', aliases: ['Chile', 'CL'], lat: -35.68, lng: -71.54 },
+  { name: '秘鲁', aliases: ['Peru', 'PE'], lat: -9.19, lng: -75.02 },
+  { name: '哥伦比亚', aliases: ['Colombia', 'CO'], lat: 4.57, lng: -74.3 },
+  { name: '委内瑞拉', aliases: ['Venezuela', 'VE'], lat: 6.42, lng: -66.59 },
+  { name: '厄瓜多尔', aliases: ['Ecuador', 'EC'], lat: -1.83, lng: -78.18 },
+  { name: '玻利维亚', aliases: ['Bolivia', 'BO'], lat: -16.29, lng: -63.59 },
+  { name: '澳大利亚', aliases: ['澳洲', 'Australia', 'AU'], lat: -25.27, lng: 133.78 },
+  { name: '新西兰', aliases: ['New Zealand', 'NZ'], lat: -40.9, lng: 172.69 },
+  { name: '斐济', aliases: ['Fiji', 'FJ'], lat: -17.71, lng: 178.07 },
+  { name: '埃及', aliases: ['Egypt', 'EG'], lat: 26.82, lng: 30.8 },
+  { name: '南非', aliases: ['South Africa', 'ZA'], lat: -30.56, lng: 22.94 },
+  { name: '尼日利亚', aliases: ['Nigeria', 'NG'], lat: 9.08, lng: 8.68 },
+  { name: '肯尼亚', aliases: ['Kenya', 'KE'], lat: -0.02, lng: 37.91 },
+  { name: '埃塞俄比亚', aliases: ['Ethiopia', 'ET'], lat: 9.15, lng: 40.49 },
+  { name: '摩洛哥', aliases: ['Morocco', 'MA'], lat: 31.79, lng: -7.09 },
+  { name: '阿尔及利亚', aliases: ['Algeria', 'DZ'], lat: 28.03, lng: 1.66 },
+  { name: '突尼斯', aliases: ['Tunisia', 'TN'], lat: 33.89, lng: 9.54 },
+  { name: '加纳', aliases: ['Ghana', 'GH'], lat: 7.95, lng: -1.02 },
+  { name: '坦桑尼亚', aliases: ['Tanzania', 'TZ'], lat: -6.37, lng: 34.89 },
+  { name: '乌干达', aliases: ['Uganda', 'UG'], lat: 1.37, lng: 32.29 },
+  { name: '刚果民主共和国', aliases: ['刚果金', 'DR Congo', 'CD'], lat: -4.04, lng: 21.76 },
+  { name: '安哥拉', aliases: ['Angola', 'AO'], lat: -11.2, lng: 17.87 },
+  { name: '赞比亚', aliases: ['Zambia', 'ZM'], lat: -13.13, lng: 27.85 },
+  { name: '津巴布韦', aliases: ['Zimbabwe', 'ZW'], lat: -19.02, lng: 29.15 },
+  { name: '莫桑比克', aliases: ['Mozambique', 'MZ'], lat: -18.67, lng: 35.53 },
+  { name: '喀麦隆', aliases: ['Cameroon', 'CM'], lat: 7.37, lng: 12.35 },
+  { name: '塞内加尔', aliases: ['Senegal', 'SN'], lat: 14.5, lng: -14.45 },
+  { name: '苏丹', aliases: ['Sudan', 'SD'], lat: 12.86, lng: 30.22 },
+  { name: '利比亚', aliases: ['Libya', 'LY'], lat: 26.34, lng: 17.23 },
+  { name: '留尼汪', aliases: ['Reunion', 'RE'], lat: -21.12, lng: 55.54 },
+];
+
+/** 全量地名坐标(中国省市 + 国家) — 索引与命中率均以此为准 */
+export const ALL_PLACES: PlacePointDef[] = [...CN_PLACES, ...WORLD_PLACES];
+
 /** 地名归一:去空白与行政后缀(省/市/自治区/特别行政区/民族名),北京/北京市/…都归一到"北京" */
 export function normalizePlace(name: string): string {
   let s = String(name ?? '').trim().replace(/\s+/g, '');
   let prev = '';
   while (s !== prev) {
     prev = s;
-    s = s.replace(/(特别行政区|自治区|维吾尔|回族|壮族|省|市|地区)$/g, '');
+    s = s.replace(/(特别行政区|自治区|维吾尔|回族|壮族|省|市|地区|共和国)$/g, '');
   }
   return s;
 }
 
 let indexCache: Map<string, PlacePointDef> | null = null;
 
+/** 索引键:归一名 + 小写形(英文名 China/china/CHINA 同命) */
+function indexKeys(name: string): string[] {
+  const n = normalizePlace(name);
+  return n ? [n, n.toLowerCase()] : [];
+}
+
 function placeIndex(): Map<string, PlacePointDef> {
   if (indexCache) return indexCache;
   const m = new Map<string, PlacePointDef>();
-  for (const p of CN_PLACES) {
-    m.set(normalizePlace(p.name), p);
-    for (const a of p.aliases || []) m.set(normalizePlace(a), p);
+  // 中国省市在前、国家在后:同名时(如“吉林”省与不存在的市级)保留先登记的细粒度项
+  for (const p of ALL_PLACES) {
+    for (const k of indexKeys(p.name)) if (!m.has(k)) m.set(k, p);
+    for (const a of p.aliases || []) for (const k of indexKeys(a)) if (!m.has(k)) m.set(k, p);
   }
   indexCache = m;
   return m;
+}
+
+/** 按地名查坐标(后缀/大小写归一);未命中返回 undefined */
+export function lookupPlace(raw: string): PlacePointDef | undefined {
+  const s = normalizePlace(raw);
+  if (!s) return undefined;
+  const m = placeIndex();
+  return m.get(s) ?? m.get(s.toLowerCase());
 }
 
 export interface PlaceResolution {
@@ -128,13 +274,12 @@ export interface PlaceResolution {
 
 /** 把"地区名+权重"行解析为坐标点;nameCol 未命中坐标表的进 unresolved。 */
 export function resolvePlacePoints(rows: any[], nameCol: string, valueCol?: string): PlaceResolution {
-  const idx = placeIndex();
   const points: PlaceResolution['points'] = [];
   const unresolvedSet = new Set<string>();
   for (const r of rows) {
     const raw = String(r?.[nameCol] ?? '').trim();
     if (!raw) continue;
-    const hit = idx.get(normalizePlace(raw));
+    const hit = lookupPlace(raw);
     if (!hit) {
       unresolvedSet.add(raw);
       continue;
@@ -145,20 +290,19 @@ export function resolvePlacePoints(rows: any[], nameCol: string, valueCol?: stri
   return { points, unresolved: [...unresolvedSet] };
 }
 
-const PLACE_NAME_HINT = /省|市|地区|区域|城市|地名|place|province|city|region|district/i;
-
 /** 命中率:该列非空值中能定位到坐标表的比例 */
 export function placeHitRate(rows: any[], col: string): number {
-  const idx = placeIndex();
   let total = 0; let hit = 0;
   for (const r of rows) {
     const raw = String(r?.[col] ?? '').trim();
     if (!raw) continue;
     total += 1;
-    if (idx.has(normalizePlace(raw))) hit += 1;
+    if (lookupPlace(raw)) hit += 1;
   }
   return total === 0 ? 0 : hit / total;
 }
+
+const PLACE_NAME_HINT = /省|市|地区|区域|城市|地名|国家|国别|洲|place|province|city|region|district|country|nation|continent/i;
 
 /** 识别"地区名"列:列名线索优先,再按坐标表命中率;hitRate<0.3 不算识别到 */
 export function detectPlaceColumn(columns: string[], rows: any[]): { col: string; hitRate: number } {

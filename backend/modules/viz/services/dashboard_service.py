@@ -234,6 +234,23 @@ def _get_chart_datasource_id(chart: dict) -> int:
     return 0
 
 
+def _dataset_declared_args(dataset_id: int, params: dict) -> dict:
+    """从看板 params 中取数据集已声明的变量(如 date_start/date_end)，作为 ${} 渲染参数。
+
+    只保留数据集 variables 声明过的键：未声明的键交给 compile_dataset 会 fail-loud 报错，
+    看板侧先按声明集过滤，不把无关全局 param 灌进不相关的图表。
+    """
+    if not dataset_id or not params:
+        return {}
+    from backend.modules.viz.services import dataset_service
+    from backend.semantics.sql_params import parse_variables
+    ds = dataset_service.get_dataset(dataset_id)
+    if not ds:
+        return {}
+    declared = set(parse_variables(ds.get("variables")) or {})
+    return {k: v for k, v in params.items() if k in declared}
+
+
 def _clear_default(user_id: int, workspace_id: int = 0):
     """Clear is_default flag for all dashboards of a user within a workspace."""
     try:
@@ -1001,6 +1018,68 @@ class ChartService:
         finally:
             conn.close()
 
+    def batch_save(self, dashboard_id: int, added: list, changed: dict, deleted: list) -> dict:
+        """一次请求提交整板草稿，返回逐条结果供前端定位失败项。
+
+        元数据库连接是 autocommit，跨多表的事务回滚不可用；因此采用
+        「先全量预检、后逐条应用」：预检不过则一笔不写（不会留下半截草稿），
+        预检过后的单条失败只影响该条，并在 results 里带可读原因上报（不静默吞）。
+        """
+        results: list = []
+        errors: list = []
+
+        for payload in added or []:
+            if not (payload.get("name") or "").strip() or not (payload.get("chart_type") or "").strip():
+                errors.append("新增图表缺少名称或类型，已中止保存（未写入任何变更）")
+        targets = sorted({int(k) for k in (changed or {})} | {int(v) for v in (deleted or [])})
+        existing: set = set()
+        if targets:
+            conn = get_metadata_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id FROM adh_charts WHERE dashboard_id=%s AND id IN ({})".format(
+                            ",".join(["%s"] * len(targets))),
+                        [dashboard_id, *targets],
+                    )
+                    existing = {row["id"] for row in (cur.fetchall() or [])}
+            finally:
+                conn.close()
+        missing = [cid for cid in targets if cid not in existing]
+        if missing:
+            errors.append(f"图表 {missing} 已不在当前看板（可能被其他人删除），已中止保存（未写入任何变更）")
+        if errors:
+            return {"ok": False, "errors": errors, "results": results, "created": {}}
+
+        created: dict = {}
+        for index, payload in enumerate(added or []):
+            try:
+                new_id = self.create_chart(dashboard_id, payload)
+                created[str(index)] = new_id
+                results.append({"op": "create", "index": index, "chart_id": new_id, "ok": True})
+            except Exception as exc:  # noqa: BLE001 — 逐条上报，不吞原因
+                logger.exception("batch_save create failed (dashboard=%s)", dashboard_id)
+                results.append({"op": "create", "index": index, "ok": False, "error": str(exc)})
+        for chart_id, patch in (changed or {}).items():
+            cid = int(chart_id)
+            try:
+                ok = self.update_chart(dashboard_id, cid, patch)
+                results.append({"op": "update", "chart_id": cid, "ok": ok,
+                                **({"error": "图表不存在或无变更可写"} if not ok else {})})
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("batch_save update failed (dashboard=%s chart=%s)", dashboard_id, cid)
+                results.append({"op": "update", "chart_id": cid, "ok": False, "error": str(exc)})
+        for cid in [int(v) for v in (deleted or [])]:
+            try:
+                ok = self.delete_chart(dashboard_id, cid)
+                results.append({"op": "delete", "chart_id": cid, "ok": ok,
+                                **({"error": "图表不存在"} if not ok else {})})
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("batch_save delete failed (dashboard=%s chart=%s)", dashboard_id, cid)
+                results.append({"op": "delete", "chart_id": cid, "ok": False, "error": str(exc)})
+        _invalidate_dashboard_payload(dashboard_id)
+        return {"ok": all(r["ok"] for r in results), "errors": [], "results": results, "created": created}
+
     def _refresh_dataset_chart(self, chart: dict, params: dict,
                                user_id: int, workspace_id: int, username: str, cur) -> dict:
         """数据集图表(source_type='dataset'): 统一经数据集治理入口取数.
@@ -1024,6 +1103,11 @@ class ChartService:
             ds_params["dimensions"] = dims
         if meas:
             ds_params["measures"] = meas
+        # 看板参数(如日期区间 date_start/date_end)透传为数据集变量 ${...}，只取数据集已声明的
+        # 变量名(避免把无关 param 当未声明参数使编译 fail-loud 报错)。
+        args = _dataset_declared_args(int(chart["source_id"]), params)
+        if args:
+            ds_params["args"] = args
         # 行级 scope 按角色叠加, 角色由服务端解析(不信任请求体)
         from backend.common import auth as _auth
         live = _auth.get_user_by_id(user_id) or {}

@@ -39,6 +39,8 @@ const KB_SKIP_LABEL: Record<string, string> = {
   model_not_found: '模型不存在',
   no_kb_bound: '模型未绑定目标知识库',
   no_kb_with_sync_ontology: '没有开启同步的目标知识库',
+  // 手动选库但目标库已被删/不可用（不静默换库，显式回错）
+  specified_kb_unavailable: '指定知识库不可用（已删除/非 qmind/未绑定 notebook）',
   // 源本体不做 RAG 是后端归属裁决（sync_targets_for_model），不是配置遗漏
   source_model_semantic_only: '源本体只服务语义检索/取数，按设计不入知识库',
   status_draft: '草案未激活，不推送知识库',
@@ -79,6 +81,10 @@ export default function OntologyGraphView() {
   const [syncingKb, setSyncingKb] = useState(false);
   const [syncTick, setSyncTick] = useState(0);
 
+  // 「同步知识库」目标库选择：'0'=按模型 kind 默认路由；选中某库=一次性定向推送到该库（含源本体手动例外）
+  const [kbOptions, setKbOptions] = useState<{ id: number; name: string }[]>([]);
+  const [selectedKbId, setSelectedKbId] = useState<string>('0');
+
   const selected = useMemo(
     () => models.find((m) => m.id === selectedId) || null,
     [models, selectedId]);
@@ -102,6 +108,13 @@ export default function OntologyGraphView() {
 
   useEffect(() => { loadModels(); }, [loadModels]);
 
+  // 拉取「同步知识库」可选目标库清单（全部 active qmind 库，供选库下拉）
+  useEffect(() => {
+    ontologyApi.kbSyncOptions()
+      .then(({ data }) => setKbOptions(data.items || []))
+      .catch(() => setKbOptions([]));
+  }, []);
+
   // 结构化只读视图拉取（取 canonical doc 内容）
   useEffect(() => {
     if (!selected?.id) { setViewData({ json: '', yaml: '', md: '' }); return; }
@@ -121,9 +134,10 @@ export default function OntologyGraphView() {
     return () => { cancelled = true; };
   }, [selected?.id, viewTick]);
 
-  // 切模型：重置命名图默认查询
+  // 切模型：重置命名图默认查询与同步目标库选择（回到默认路由）
   useEffect(() => {
     if (!selected) return;
+    setSelectedKbId('0');
     const ds = selected.datasource_id || 0;
     setSparqlQuery(
       `PREFIX adh: <http://ai-datahub.org/ontology/>\n` +
@@ -200,11 +214,17 @@ export default function OntologyGraphView() {
 
   // ── 同步知识库：把生效模型的脱敏文档推送到目标知识库（仅 active，否则服务端会 skip）。
   //    targets 回的是**库名**，成败都要把它说给用户（不然只看到“同步了 1 个”不知道去哪了）。
+  //    selectedKbId 非 '0' 时一次性定向推送到所选库（含源本体手动例外），'0' 走默认路由。
+  const syncTargetKbName = useMemo(
+    () => (selectedKbId !== '0' ? kbOptions.find((k) => String(k.id) === selectedKbId)?.name || '' : ''),
+    [selectedKbId, kbOptions]);
+
   const handleSyncKb = async () => {
     if (!selected) return;
     setSyncingKb(true);
     try {
-      const { data } = await ontologyApi.syncKb(selected.id);
+      const { data } = await ontologyApi.syncKb(
+        selected.id, selectedKbId !== '0' ? Number(selectedKbId) : null);
       const names = (data.targets || []).join(' / ');
       if (data.removed) toast.success(`已从 ${data.removed} 个知识库下线旧文档${names ? `（${names}）` : ''}`);
       else if (data.synced && data.error) toast.warning(`已同步 ${data.synced} 个知识库${names ? `（${names}）` : ''}，但部分目标失败：${data.error}`);
@@ -301,11 +321,29 @@ export default function OntologyGraphView() {
                     图谱生成
                   </Button>
                 )}
+                {/* 同步目标库选择：默认按模型 kind 路由（业务/系统→全局库、源本体不同步）；
+                    选具体库=一次性定向推送到该库（含源本体，用户主动的手动例外） */}
+                <Select value={selectedKbId} onValueChange={(v) => setSelectedKbId(v)}
+                        disabled={syncingKb}>
+                  <SelectTrigger className="w-44 h-8 text-xs" title="选择同步目标知识库">
+                    <SelectValue placeholder="默认（按模型归属）" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="0">默认（按模型归属）</SelectItem>
+                    {kbOptions.map((kb) => (
+                      <SelectItem key={kb.id} value={String(kb.id)}>
+                        <span className="truncate max-w-[12rem]">{kb.name}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <Button size="sm" variant="outline" onClick={handleSyncKb}
                         disabled={syncingKb || selected.status !== 'active'}
-                        title={selected.status === 'active'
-                          ? '手动把当前生效模型的脱敏文档同步到目标知识库（目标库见左侧「知识库 → …」徽章）'
-                          : '仅生效模型可同步知识库'}>
+                        title={selected.status !== 'active'
+                          ? '仅生效模型可同步知识库'
+                          : (selectedKbId !== '0'
+                              ? `手动把当前生效模型的脱敏文档定向同步到所选知识库「${syncTargetKbName || selectedKbId}」（一次性推送，含源本体手动例外）`
+                              : '手动同步到目标知识库（按模型归属默认路由：业务/系统→全局库，源本体不同步；可在左侧下拉指定库）')}>
                   {syncingKb
                     ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
                     : <UploadCloud className="h-3.5 w-3.5 mr-1" />}

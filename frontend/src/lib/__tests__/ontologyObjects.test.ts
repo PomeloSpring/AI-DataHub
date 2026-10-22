@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeDocObjects, resolveDisplayName, resolveObjectKey, showsM234, showsDeployments, countM234Declarations } from '@/lib/ontologyObjects';
+import { normalizeDocObjects, resolveDisplayName, resolveObjectKey, showsM234, showsSiteScope, countM234Declarations } from '@/lib/ontologyObjects';
 
 /**
  * 回归：存量源本体（kind='source'，B6 退役中）的 canonical doc 用旧字段名
@@ -86,13 +86,13 @@ describe('showsM234 / countM234Declarations — 建模位可见域', () => {
   });
 });
 
-/** 拍板：源本体不展示「部署绑定」（它是单源物理投影，跨站绑定属于业务契约层） */
-describe('showsDeployments — 部署绑定页签可见域', () => {
+/** 拍板：源本体不展示「适用站点」（它是单源物理投影，跨站路由属于业务契约层） */
+describe('showsSiteScope — 适用站点页签可见域', () => {
   it('源本体隐藏，业务/系统本体与空 kind 存量模型保留', () => {
-    expect(showsDeployments('source')).toBe(false);
-    expect(showsDeployments('business')).toBe(true);
-    expect(showsDeployments('system')).toBe(true);
-    expect(showsDeployments('')).toBe(true);
-    expect(showsDeployments(undefined)).toBe(true);
+    expect(showsSiteScope('source')).toBe(false);
+    expect(showsSiteScope('business')).toBe(true);
+    expect(showsSiteScope('system')).toBe(true);
+    expect(showsSiteScope('')).toBe(true);
+    expect(showsSiteScope(undefined)).toBe(true);
   });
 });

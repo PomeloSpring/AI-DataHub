@@ -190,7 +190,13 @@ if [ $FAILURES -eq 0 ]; then
 else
     log_error "完成, 但有 $FAILURES 项失败(见上方)"
 fi
-echo -e "${BLUE}端口约定:${NC} frontend 3000 | web 8000（单进程承载全部模块，旧 8001-8007/8012 已退役）"
+# 端口口径不在本脚本写死: 前端读根目录 .env 的 FRONTEND_PORT，后端读 services.conf
+_SL_ROOT="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=backend/scripts/frontend_port.sh
+source "$_SL_ROOT/backend/scripts/frontend_port.sh"
+_SL_WEB_PORT=$(grep -vE '^\s*(#|$)' "$_SL_ROOT/backend/scripts/services.conf" 2>/dev/null | head -1 | cut -d: -f3)
+echo -e "${BLUE}端口约定:${NC} frontend ${FRONTEND_PORT}（配置源: 根目录 .env 的 FRONTEND_PORT） | web ${_SL_WEB_PORT}（配置源: backend/scripts/services.conf）"
+echo -e "${BLUE}           ${NC} web 单进程承载全部模块，旧 8001-8007/8012 已退役"
 echo -e "${BLUE}下一步:${NC}"
 echo "  1) 填写 services/.env 的数据源与密钥"
 echo "  2) ./start-all.sh -d      启动全部后端   |   cd frontend && npm run dev   启动前端"

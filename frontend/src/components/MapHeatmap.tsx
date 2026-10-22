@@ -3,12 +3,17 @@
  *
  * 复用 UI 字模库「地图瓦片」(map_tile) 的瓦片配置(style_config.tileUrl/apiKey),
  * 在 Leaflet 底图上以 canvas 热力层展示点的权重分布(重叠越密越亮)。
- * 两种定位模式:
- *  - 经纬度模式:结果含 纬度/经度 列;
- *  - 地区名模式:结果含省份/城市名(如 案件按省份分布),经内置坐标表转点。
+ * 两种定位模式(优先级从高到低):
+ *  - 经纬度模式:结果含 纬度/经度 列(列名明确才自动启用);
+ *  - 地区名模式:结果含国家/省份/城市名(如 案件按省份分布、流量按国家分布),
+ *    经内置坐标表(中国省市 + 世界国家)转点。
+ *
+ * 视图几何:经度按环上最大间隔展开(unwrapLongitudes),中美分布以太平洋为中心,
+ * 不会被 naive 矩形拉到非洲居中;minZoom=2 允许缩到看到整个地球。
  *
  * 显式失败(fail-loud):字模库未配置地图瓦片/瓦片加载失败时给明确提示与配置指引,
- * 不静默换用第三方底图源;经纬度无效行与未定位地名均显式标注,不悄悄丢数据。
+ * 不静默换用第三方底图源;经纬度无效行、未定位地名、以及“拿指标列当经纬度”
+ * 均显式标注并拒绘(历史缺陷:国家流量被渲染到几内亚湾),不悄悄给出错答案。
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -18,19 +23,41 @@ import { Loader2, MapPin, AlertTriangle } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { fetchVisComponents } from '../api/visLibrary';
 import type { VisComponent } from '../api/visLibrary';
-import { detectGeoColumns } from '../lib/geoColumns';
+import { detectGeoColumns, isNum, unwrapLongitudes } from '../lib/geoColumns';
 import { detectPlaceColumn, resolvePlacePoints } from '../lib/geoPoints';
-import { readTileCache, writeTileCache, isTileCacheFresh, tileUrlOf, isUsableTile, isDefaultTile, probeTile, pickReachableTile, type TileCacheEntry } from '../lib/mapTileCache';
+import { readTileCache, writeTileCache, isTileCacheFresh, tileUrlOf, tileZoomOf, isUsableTile, isDefaultTile, probeTile, pickReachableTile, type TileCacheEntry } from '../lib/mapTileCache';
+import { Button } from '@/components/ui/button';
 
 // 列识别为纯函数,抽在 lib/(单测不拉 leaflet);这里转出便于就近引用
 export { detectGeoColumns } from '../lib/geoColumns';
 export type { GeoColumns } from '../lib/geoColumns';
+
+/** 热力点(权重 v) */
+type GeoPoint = { lat: number; lng: number; v: number };
+
+/**
+ * 局部层级(仅在地图容器内比较)。
+ *
+ * 容器用 `isolate` 建独立层叠上下文后，这里的小 z 只跟自己人比；历史上写
+ * 450/500/1000 会**逸出**到页面层叠上下文，把 z-50 的下拉框、全屏弹窗盖住
+ * （现象：图表类型下拉被地图遮、全屏后卡片内地图残影盖在弹窗上无法消除）。
+ */
+const Z_CANVAS = 1;   // 热力层(在瓦片之上、角标之下)
+const Z_BADGE = 2;    // 图例 / 点数角标
+const Z_EMPTY = 3;    // 无有效点时的原因提示
+
+/** 中国陆域外包框(含海南海/台),用于「中国地图」图型的拟合与范围外提示 */
+const CHINA_BOX = { minLat: 3.5, maxLat: 53.6, minLng: 73, maxLng: 135.1 };
+const inChinaBox = (lat: number, lng: number) =>
+  lat >= CHINA_BOX.minLat && lat <= CHINA_BOX.maxLat && lng >= CHINA_BOX.minLng && lng <= CHINA_BOX.maxLng;
 
 interface Props {
   data: { columns: string[]; rows: any[] };
   height?: number;
   /** 外部可指定列(缺省自动识别地区/经纬度/权重列,并提供选择框手动改) */
   config?: { latCol?: string; lngCol?: string; valueCol?: string; placeCol?: string };
+  /** 地图范围:china_map 传 'china'(拟合中国,国境外的点显式提示换世界地图) */
+  scope?: 'china' | 'world' | 'auto';
 }
 
 // ── 字模库地图瓦片(内存 + localStorage 两级缓存,免每次渲染都查接口) ──
@@ -91,24 +118,33 @@ function heatRGB(t: number): [number, number, number] {
   return ramp[ramp.length - 1].c;
 }
 
-export default function MapHeatmap({ data, height = 360, config }: Props) {
+export default function MapHeatmap({ data, height = 360, config, scope = 'auto' }: Props) {
   const columns = data?.columns || [];
   const rows = data?.rows || [];
 
   const detected = useMemo(() => detectGeoColumns(columns, rows), [columns, rows]);
   const detectedPlace = useMemo(() => detectPlaceColumn(columns, rows), [columns, rows]);
+  const numericCols = useMemo(
+    () => (columns.length > 0 && rows.length > 0 ? columns.filter(c => rows.every(r => isNum(r[c]))) : []),
+    [columns, rows],
+  );
   const [latCol, setLatCol] = useState('');
   const [lngCol, setLngCol] = useState('');
   const [valueCol, setValueCol] = useState('');
   const [placeCol, setPlaceCol] = useState('');
+  /** 经纬度列来源:name=列名明确 / guess=取值范围兜底(待用户确认) / manual=用户选定或外部指定 */
+  const [coordSource, setCoordSource] = useState<'name' | 'guess' | 'manual'>('guess');
   useEffect(() => {
-    // 默认优先级:列名明确含经纬度 → 经纬度模式;否则地区名可定位 → 地区名模式
+    // 默认优先级:列名明确含经纬度 → 经纬度模式;否则地区名可定位(省市/国家) → 地区名模式
     const preferCoords = detected.nameMatched;
     setLatCol(config?.latCol || detected.latCol);
     setLngCol(config?.lngCol || detected.lngCol);
-    setValueCol(config?.valueCol || detected.valueCol);
+    // 地区名模式下被“范围兜底”吃掉的指标列应回到权重(否则权重永远选不到)
+    setValueCol(config?.valueCol || (preferCoords ? detected.valueCol : numericCols[0] || ''));
     setPlaceCol(config?.placeCol || (preferCoords ? '' : detectedPlace.col));
-  }, [detected, detectedPlace, config?.latCol, config?.lngCol, config?.valueCol, config?.placeCol]);
+    setCoordSource(config?.latCol || config?.lngCol ? 'manual'
+      : (detected.nameMatched ? 'name' : 'guess'));
+  }, [detected, detectedPlace, numericCols, config?.latCol, config?.lngCol, config?.valueCol, config?.placeCol]);
 
   // 字模库地图瓦片
   const [tiles, setTiles] = useState<VisComponent[]>([]);
@@ -173,7 +209,10 @@ export default function MapHeatmap({ data, height = 360, config }: Props) {
 
   // 有效点 + 无效行/未定位地名统计(不悄悄丢数据)
   const usePlace = !!placeCol;
+  /** 经纬度列仅由取值范围兜底猜出且无地名列可用 → 指标值会被当成地球坐标,不得静默渲染 */
+  const guessedCoords = !usePlace && coordSource === 'guess' && !!latCol && !!lngCol;
   const { points, invalidCount, unresolved } = useMemo(() => {
+    if (guessedCoords) return { points: [] as GeoPoint[], invalidCount: 0, unresolved: [] as string[] };
     if (usePlace) {
       const r = resolvePlacePoints(rows, placeCol, valueCol || undefined);
       return {
@@ -182,42 +221,69 @@ export default function MapHeatmap({ data, height = 360, config }: Props) {
         unresolved: r.unresolved,
       };
     }
-    const pts: { lat: number; lng: number; v: number }[] = [];
+    const pts: GeoPoint[] = [];
     let bad = 0;
     if (!latCol || !lngCol) return { points: pts, invalidCount: 0, unresolved: [] as string[] };
     for (const r of rows) {
       const lat = Number(r[latCol]); const lng = Number(r[lngCol]);
       const v = valueCol ? Number(r[valueCol]) : 1;
-      if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      if (!Number.isFinite(lat) || Math.abs(lat) > 90 || !Number.isFinite(lng) || Math.abs(lng) > 180) {
         bad += 1;
         continue;
       }
       pts.push({ lat, lng, v: Number.isFinite(v) && v > 0 ? v : 0 });
     }
     return { points: pts, invalidCount: bad, unresolved: [] as string[] };
-  }, [rows, usePlace, placeCol, latCol, lngCol, valueCol]);
+  }, [rows, usePlace, guessedCoords, placeCol, latCol, lngCol, valueCol]);
+
+  /** 视图坐标:经度按环上最大间隔展开(跨反经线的数据不再被拉到非洲居中) */
+  const viewPoints = useMemo(
+    () => points.map((p, i) => ({ ...p, viewLng: unwrapLongitudes(points.map(q => q.lng))[i] })),
+    [points],
+  );
+  /** 「中国地图」图型下落在国境外的点(不隐去,只提醒换世界地图) */
+  const outsideChina = scope === 'china'
+    ? viewPoints.filter(p => !inChinaBox(p.lat, p.viewLng)).length : 0;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const mapRef = useRef<L.Map | null>(null);
+  /** true = 已缩到瓦片源最小层级仍装不下全部点(显式提示,不静默裁视野) */
+  const [zoomLimited, setZoomLimited] = useState(false);
 
   // Leaflet 底图 + 热力画布
   useEffect(() => {
     const el = containerRef.current;
-    if (!el || !tile || !isUsableTile(tile) || points.length === 0) return;
+    if (!el || !tile || !isUsableTile(tile) || viewPoints.length === 0) return;
+    setZoomLimited(false);
+    // 缩放区间跟随瓦片源（见 tileZoomOf）
+    const zoomOf = tileZoomOf(tile);
 
     const map = L.map(el, {
-      center: [points[0].lat, points[0].lng],
-      zoom: 9,
+      center: [viewPoints[0].lat, viewPoints[0].viewLng],
+      zoom: 4,
+      minZoom: zoomOf.minZoom,
+      maxZoom: zoomOf.maxZoom,
       zoomControl: true,
       attributionControl: false,
+      worldCopyJump: true,
     });
     mapRef.current = map;
-    L.tileLayer(tileUrlOf(tile), { maxZoom: 18, minZoom: 3 }).addTo(map);
+    // 缩放下限与瓦片源对齐（不是全局常数）：源不提供的层级会整块空白
+    // （历史缺陷：下限写死 2，高德 z<3 无图，中美分布 fit 到 z=2 时画布全白）；
+    // 高德 z=3 时 160° 跨度约 910px，普通卡片宽度仍可同框中美。
+    L.tileLayer(tileUrlOf(tile), { minZoom: zoomOf.minZoom, maxZoom: zoomOf.maxZoom }).addTo(map);
 
-    const bounds = L.latLngBounds(points.map(p => [p.lat, p.lng] as [number, number]));
+    // 「中国地图」图型:优先拟合国境内的点(国境外的点不隐去,只提醒换世界地图)
+    const inCn = scope === 'china' ? viewPoints.filter(p => inChinaBox(p.lat, p.viewLng)) : viewPoints;
+    const fitPts = inCn.length > 0 ? inCn : viewPoints;
+    const bounds = L.latLngBounds(fitPts.map(p => [p.lat, p.viewLng] as [number, number]));
     const doFit = () => {
-      if (points.length > 1) map.fitBounds(bounds, { padding: [28, 28], maxZoom: 12 });
+      if (fitPts.length > 1) {
+        map.fitBounds(bounds, { padding: [28, 28], maxZoom: 12 });
+        // 瓦片源最小层级装不下全部点时不能默默裁视野：显式提示换可到更小层级的瓦片
+        if (!map.getBounds().contains(bounds)) setZoomLimited(true);
+      }
     };
     // 初始布局未就绪(全屏弹层/抽屉展开中容器可能为 0 尺寸)时延迟 fitBounds
     let fitted = el.clientHeight > 10;
@@ -233,9 +299,9 @@ export default function MapHeatmap({ data, height = 360, config }: Props) {
       if (!ctx) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.globalCompositeOperation = 'lighter';
-      const maxV = Math.max(1, ...points.map(p => p.v));
-      for (const p of points) {
-        const pt = mapRef.current.latLngToContainerPoint([p.lat, p.lng]);
+      const maxV = Math.max(1, ...viewPoints.map(p => p.v));
+      for (const p of viewPoints) {
+        const pt = mapRef.current.latLngToContainerPoint([p.lat, p.viewLng]);
         const w = p.v > 0 ? p.v / maxV : 0.15;
         const radius = 24;
         const [r, g, b] = heatRGB(w);
@@ -277,7 +343,7 @@ export default function MapHeatmap({ data, height = 360, config }: Props) {
       map.remove();
       mapRef.current = null;
     };
-  }, [tile, points]);
+  }, [tile, viewPoints, scope]);
 
   const controls = (
     <div className="flex items-center gap-2 flex-wrap text-xs">
@@ -303,7 +369,7 @@ export default function MapHeatmap({ data, height = 360, config }: Props) {
       {!usePlace && (
         <>
           <span className="text-muted-foreground">纬度</span>
-          <Select value={latCol || '__none__'} onValueChange={(v) => setLatCol(v === '__none__' ? '' : v)}>
+          <Select value={latCol || '__none__'} onValueChange={(v) => { setLatCol(v === '__none__' ? '' : v); setCoordSource('manual'); }}>
             <SelectTrigger className="w-[110px] h-7 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="__none__">请选择</SelectItem>
@@ -311,7 +377,7 @@ export default function MapHeatmap({ data, height = 360, config }: Props) {
             </SelectContent>
           </Select>
           <span className="text-muted-foreground">经度</span>
-          <Select value={lngCol || '__none__'} onValueChange={(v) => setLngCol(v === '__none__' ? '' : v)}>
+          <Select value={lngCol || '__none__'} onValueChange={(v) => { setLngCol(v === '__none__' ? '' : v); setCoordSource('manual'); }}>
             <SelectTrigger className="w-[110px] h-7 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="__none__">请选择</SelectItem>
@@ -325,7 +391,9 @@ export default function MapHeatmap({ data, height = 360, config }: Props) {
         <SelectTrigger className="w-[110px] h-7 text-xs"><SelectValue /></SelectTrigger>
         <SelectContent>
           <SelectItem value="__none__">无(均匀)</SelectItem>
-          {columns.filter(c => c !== latCol && c !== lngCol && c !== placeCol).map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+          {/* 地区名模式下纬度/经度只是待确认候选,不得把它们从权重选项里剔掉 */}
+          {columns.filter(c => c !== placeCol && (usePlace || (c !== latCol && c !== lngCol)))
+            .map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
         </SelectContent>
       </Select>
     </div>
@@ -384,7 +452,37 @@ export default function MapHeatmap({ data, height = 360, config }: Props) {
       {!usePlace && (!latCol || !lngCol) && (
         <div className="mt-2 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground flex items-start gap-2">
           <MapPin className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-          <span>未能从结果列中识别定位列，请在上方「地区」（省份/城市名）或「纬度/经度」选择框中指定。</span>
+          <span>未能从结果列中识别定位列，请在上方「地区」（国家/省份/城市名）或「纬度/经度」选择框中指定。</span>
+        </div>
+      )}
+
+      {/* 经纬度列仅由取值范围猜出:画出来必然是错的(指标值当坐标)—— 显式阻断 + 给出出路 */}
+      {guessedCoords && (
+        <div className="mt-2 rounded-lg border border-amber-300/60 bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-400 flex items-start gap-2 flex-wrap">
+          <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <span>
+            结果里没有真正的经纬度列（只是按取值范围把「{latCol}」猜作纬度、「{lngCol}」猜作经度）。
+            指标值不是地球坐标，按它画点会落在错误位置，因此暂不渲染热力点。
+            请在上方「地区」选地名列（国家/省份/城市），或改选真实的纬度/经度列。
+          </span>
+          <Button variant="outline" size="sm" className="h-6 px-2 text-[11px]"
+            onClick={() => setCoordSource('manual')}>确认这两列就是经纬度</Button>
+        </div>
+      )}
+
+      {/* 「中国地图」图型但有点在国境外:不隐去,提醒换图型 */}
+      {outsideChina > 0 && (
+        <div className="mt-2 rounded-lg border border-blue-300/60 bg-blue-50 dark:bg-blue-950/20 px-3 py-2 text-xs text-blue-700 dark:text-blue-400">
+          当前为「中国地图」，有 {outsideChina} 个点位于中国范围外（已画在图上但可能在视野外），
+          切换图型为「世界地图」可看全貌。
+        </div>
+      )}
+
+      {/* 已缩到瓦片源最小层级仍装不下:显式提示(换瓦片/缩小到更小层级的源) */}
+      {zoomLimited && (
+        <div className="mt-2 rounded-lg border border-amber-300/60 bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          当前瓦片已缩到它支持的最小层级，仍无法同框全部热力点（部分点在视野外）。
+          可切换到支持更小层级的瓦片（如 Carto/OSM 可到全球），或点选放大查看。
         </div>
       )}
 
@@ -402,7 +500,9 @@ export default function MapHeatmap({ data, height = 360, config }: Props) {
         </div>
       )}
 
-      <div className="relative mt-2 rounded-lg border overflow-hidden" style={{ height }}>
+      {/* isolate:给地图建独立层叠上下文 —— Leaflet 内部 pane/control 的 z-index 与
+          热力层只在本容器内比较，不得逸出到页面去压 z-50 的下拉框/全屏弹窗 */}
+      <div className="relative mt-2 rounded-lg border overflow-hidden isolate" style={{ height }}>
         {tilesLoading ? (
           <div className="absolute inset-0 flex items-center justify-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />正在加载地图瓦片…
@@ -410,10 +510,18 @@ export default function MapHeatmap({ data, height = 360, config }: Props) {
         ) : (
           <>
             <div ref={containerRef} className="absolute inset-0" />
-            <canvas ref={canvasRef} className="absolute inset-0 pointer-events-none" style={{ zIndex: 450 }} />
+            {/* 无有效点(待确认定位列/地名全未定位):图面不空转,给出可见原因 */}
+            {points.length === 0 && (
+              <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-xs text-muted-foreground" style={{ zIndex: Z_EMPTY }}>
+                {guessedCoords
+                  ? '定位列待确认：上方选定地区列或真实经纬度列后展示热力分布'
+                  : '无可定位的数据行：请检查「地区」列选得对不对（地名需能映射到坐标）'}
+              </div>
+            )}
+            <canvas ref={canvasRef} className="absolute inset-0 pointer-events-none" style={{ zIndex: Z_CANVAS }} />
             {/* 热力图例 */}
             {points.length > 0 && tile && (
-              <div className="absolute bottom-2 left-2 z-[500] rounded bg-card/90 border px-2 py-1 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <div className="absolute bottom-2 left-2 rounded bg-card/90 border px-2 py-1 flex items-center gap-1.5 text-[10px] text-muted-foreground" style={{ zIndex: Z_BADGE }}>
                 <span>低</span>
                 <span className="h-2 w-24 rounded-sm" style={{ background: 'linear-gradient(90deg,#286eff,#00d2dc,#5adc3c,#ffd228,#ff4628)' }} />
                 <span>高</span>
@@ -421,7 +529,7 @@ export default function MapHeatmap({ data, height = 360, config }: Props) {
             )}
             {/* 点数提示 */}
             {points.length > 0 && (
-              <div className="absolute top-2 right-2 z-[500] rounded bg-card/90 border px-2 py-1 text-[10px] text-muted-foreground tabular-nums">
+              <div className="absolute top-2 right-2 rounded bg-card/90 border px-2 py-1 text-[10px] text-muted-foreground tabular-nums" style={{ zIndex: Z_BADGE }}>
                 {points.length} 个热力点
               </div>
             )}

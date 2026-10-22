@@ -11,16 +11,20 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PID_DIR="$SCRIPT_DIR/pids"
+# 前端端口唯一口径（读根 .env 的 FRONTEND_PORT）
+# shellcheck source=backend/scripts/frontend_port.sh
+source "$SCRIPT_DIR/backend/scripts/frontend_port.sh"
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
 log_info()  { echo -e "${GREEN}[INFO]${NC}  $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# 端口 → 服务名: Python 服务读 services.conf（唯一权威清单），其余特殊进程在此补充
+# 端口 → 服务名: Python 服务读 services.conf（唯一权威清单），前端端口读根 .env
+# （见 backend/scripts/frontend_port.sh），两边都不在本脚本里写死具体数字
 # （旧 8001-8007/8012 多端口与 dataengine/8082 已退役，监听口收敛为单一 web:8000）
 declare -A PORT_SERVICE=(
-    [3000]="frontend-dev"
+    ["$FRONTEND_PORT"]="frontend-dev"
 )
 if [ -f "$SCRIPT_DIR/backend/scripts/services.conf" ]; then
     while IFS=: read -r _name _module _port; do

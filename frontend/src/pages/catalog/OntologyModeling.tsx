@@ -43,10 +43,10 @@ import {
   Upload, Undo2, BookMarked,
 } from 'lucide-react';
 import ObjectHubTab, { type HubObject } from './ObjectHubTab';
-import { normalizeDocObjects, showsM234, showsDeployments, countM234Declarations, type NormalizeDocObjectsResult } from '@/lib/ontologyObjects';
+import { normalizeDocObjects, showsM234, showsSiteScope, countM234Declarations, type NormalizeDocObjectsResult } from '@/lib/ontologyObjects';
 import AssetPoolPanel from './AssetPoolPanel';
 import Glossary from './Glossary';
-import { ModelActionsTab, ModelRulesTab, ModelScenariosTab, ModelDeploymentsTab, ObjectCreateButton, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
+import { ModelActionsTab, ModelRulesTab, ModelScenariosTab, ModelSitesTab, ObjectCreateButton, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
 import { metricsApi } from '@/api/metrics';
 import { useAsBotStore } from '@/stores/asBotStore';
 
@@ -698,7 +698,7 @@ export default function OntologyModeling() {
             {model && !poolMode && (
               <div className="text-xs text-muted-foreground">
                 {model.status === 'active'
-                  ? '激活模型可直接编辑；保存同步对象/图谱/维度字典；物理绑定由部署绑定层管理（见「部署绑定」页）。'
+                  ? '激活模型可直接编辑；保存同步对象/图谱/维度字典；跨站部署由模型级「适用站点」声明统一路由（见「适用站点」页）。'
                   : model.status === 'archived'
                     ? '已归档模型只读；可「还原为草案」继续编辑，或「确认激活」直接恢复为生效（归档数据始终可查看）。'
                     : '草案编辑后保存，确认无误后激活。'}
@@ -721,7 +721,7 @@ export default function OntologyModeling() {
                   {showsM234(model.kind) && <TabsTrigger value="m234">行为</TabsTrigger>}
                   {showsM234(model.kind) && <TabsTrigger value="rules">规则</TabsTrigger>}
                   {showsM234(model.kind) && <TabsTrigger value="scenarios">场景</TabsTrigger>}
-                  {showsDeployments(model.kind) && <TabsTrigger value="deployments">部署绑定</TabsTrigger>}
+                  {showsSiteScope(model.kind) && <TabsTrigger value="sites">适用站点</TabsTrigger>}
                 </TabsList>
                 {hiddenM234 && (
                   <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-600">
@@ -761,9 +761,9 @@ export default function OntologyModeling() {
                     <ModelScenariosTab jsonContent={jsonDraft} onSave={saveDocFromTab} />
                   </TabsContent>
                 )}
-                {showsDeployments(model.kind) && (
-                  <TabsContent value="deployments" className="mt-2 h-[62vh] overflow-hidden">
-                    <ModelDeploymentsTab modelId={model.id} />
+                {showsSiteScope(model.kind) && (
+                  <TabsContent value="sites" className="mt-2 h-[62vh] overflow-hidden">
+                    <ModelSitesTab modelId={model.id} />
                   </TabsContent>
                 )}
               </Tabs>

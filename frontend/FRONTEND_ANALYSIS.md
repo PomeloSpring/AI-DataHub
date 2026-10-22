@@ -1,256 +1,112 @@
-# ChatBI 前端架构分析报告
+# ChatBI 前端架构分析（看板编辑器）
 
-> 分析日期：2026-06-12
-> 分析范围：chatbi-app/frontend 全部源码
+> 最近更新：2026-10-22（随「看板编辑器交互与画布优化」批次 1–8 落地同步）
+> 范围：`pages/DashboardEditor.tsx` + `components/editor/*` + `hooks/useCanvasInteraction.ts`
+> + `lib/dashboardDesign.ts` + `lib/dashboardPageLayout.ts` + `lib/canvasTheme.ts`
+>
+> ⚠️ 本文件此前描述的是重构前的形态（1477 行巨型文件、无 undo/redo、无 rAF 节流、
+> 双编辑模式并存），这些均已不成立。保留历史结论只会误导后续改动，故整体重写。
 
 ---
 
-## 一、设计不合理之处
+## 一、当前结构（单一职责拆分已完成）
 
-### 1. DashboardEditor 组件过于臃肿
-
-`src/pages/DashboardEditor.tsx` 单文件 **1477 行**，承载了画布渲染、拖拽逻辑、缩放平移、属性面板、保存逻辑等所有功能。对比成熟产品（如 Grafana、Metabase），编辑器应该拆分为：
-
-- `CanvasEditor` — 画布容器 + 缩放平移
-- `DragLayer` — 拖拽/缩放交互层
-- `PropertyPanel` — 右侧属性面板
-- `ComponentLibrary` — 左侧组件库
-- `EditorToolbar` — 顶部工具栏
-
-**风险**：任何改动都需要重新理解整个 1500 行文件，维护成本极高。
-
-### 2. 两套编辑模式并存
-
-`src/pages/Dashboard.tsx` 中存在 `editMode` / `editingCharts` / `editHistory` 等状态，同时 `DashboardEditor.tsx` 又有自己的 `pendingChanges` / `pendingNewCharts` / `pendingDeletedIds` 本地暂存系统。`src/stores/dashboardStore.ts` 中的 `enterEditMode` / `exitEditMode` / `undoEdit` / `redoEdit` 方法实际未被 Editor 使用，形成了**死代码**。
-
-### 3. 拖拽实现方案原始
-
-当前使用原生 `mousedown/mousemove/mouseup` + `dragStart/dragOver/drop` 混合实现，没有使用专业拖拽库。问题包括：
-- 拖拽和缩放的坐标计算耦合在事件回调中，难以测试
-- 缩放因子 `scale` 的坐标转换散布在多处，容易出 bug
-- 没有碰撞检测/对齐辅助线
-- 没有多选/框选功能
-
-### 4. 保存机制设计缺陷
-
-`DashboardEditor.tsx:158-198` 中 `saveAllChanges` 使用**串行循环**逐个调用 API：
-```typescript
-for (const newChart of pendingNewCharts) {
-  await addChart(current.id, payload); // 一个一个保存
-}
 ```
-如果保存 10 个图表就需要 10 次网络请求，且没有批量接口。对比成熟产品（如 Notion、Figma）都有批量保存/增量同步机制。
-
-### 5. Canvas 坐标系实现有隐患
-
-`DashboardEditor.tsx:791-803` 使用 CSS `transform` 实现画布，但 `transformOrigin: 'center center'` 配合绝对定位的图表会导致：
-- 缩放时图表位置偏移计算复杂
-- 不同缩放级别下拖拽手感不一致
-- 没有 viewport culling（大画布上所有图表都在渲染）
-
-### 6. 状态管理过度集中
-
-`src/stores/dashboardStore.ts` 同时管理：
-- 仪表盘列表 CRUD
-- 当前仪表盘选中
-- 编辑模式状态
-- 全局筛选器
-- 参数值
-- 刷新状态
-- 收藏状态
-
-应该拆分为独立 store 或使用 Zustand 的 slice 模式。
-
----
-
-## 二、样式兼容问题
-
-### 1. 主题切换机制
-
-`src/styles/globals.css` 定义了 **8 套主题**（dark/light/tech/finance/bento/glass/ainative/medical），每套主题 ~60 个 CSS 变量。问题：
-
-- 主题类名直接加在 `<html>` 上，但部分主题样式（如 `.ainative`、`.medical`）使用了**硬编码的 HSL 值**而非 CSS 变量，导致切换主题时样式不一致
-- `.ainative` 主题中有大量 `hsl(180 100% 50%)` 硬编码，而变量是 `--primary: 180 100% 50%`，一旦修改变量值，这些硬编码不会跟随变化
-- CSS 文件 **1812 行**，其中主题相关 ~1600 行，应该拆分为独立文件
-
-### 2. 自定义 Cursor SVG 兼容性
-
-`globals.css:546-557` 使用 data URI SVG 作为 cursor：
-```css
-cursor: url("data:image/svg+xml,...") 10 2, grab;
-```
-- Safari 对 SVG cursor 的支持有差异
-- 高 DPI 屏幕下 SVG cursor 可能模糊
-- cursor hotspot 偏移量 `(10, 2)` 在不同浏览器下表现不同
-
-### 3. `backdrop-filter` 兼容性
-
-`.glass` 和 `.ainative` 主题大量使用 `backdrop-filter: blur()`：
-- Firefox 对 `backdrop-filter` 的支持仍不完善（需要 `about:config` 开启）
-- 移动端 Safari 性能问题
-- 没有提供 fallback 样式
-
-### 4. `-webkit-line-clamp` 非标准属性
-
-`globals.css:745-757` 使用了 `-webkit-line-clamp`，这是非标准属性，虽然主流浏览器都支持，但缺少标准的 `line-clamp` 属性作为 fallback。
-
-### 5. 日期输入控件主题适配
-
-`globals.css:730-742` 只对 `.dark` 类下的日期输入设置了 `color-scheme: dark`，但其他暗色主题（tech/finance/ainative 等）没有处理，导致日期选择器在这些主题下显示为白色背景。
-
-### 6. `input[type="color"]` 样式不统一
-
-`DashboardEditor.tsx:1114-1119` 使用原生 `<input type="color">`，在不同浏览器/操作系统下外观差异很大，且与整体 UI 风格不一致。
-
----
-
-## 三、影响设计时流畅性的问题
-
-### 1. 全量重渲染
-
-`DashboardEditor.tsx:822` 中 `allCharts.map()` 每次状态变化都会重新渲染所有图表。当图表数量 >20 时，拖拽/缩放会出现明显卡顿。
-
-**应该**：使用 `React.memo` + 虚拟化渲染（只渲染可见区域的图表）。
-
-### 2. 事件监听器频繁注册/注销
-
-`DashboardEditor.tsx:417-435` 中 `useEffect` 依赖数组包含 `handleDragMove`、`handleResizeMove`、`handlePanMove` 等回调函数，这些函数因 `useCallback` 依赖变化而频繁重新创建，导致全局事件监听器不断注册/注销。
-
-### 3. 缺少 requestAnimationFrame
-
-拖拽/缩放的 mousemove 事件直接调用 `setState`，没有使用 `requestAnimationFrame` 节流。在高频率鼠标移动时会触发过多重渲染。
-
-### 4. 图表数据解析重复
-
-`Dashboard.tsx:458-473` 使用 `useMemo` 缓存解析后的图表数据，这是好的。但 `DashboardEditor.tsx:141-150` 的 `getChartData` 每次渲染都在重新解析 JSON，没有缓存。
-
-### 5. SSE 流式消息的状态更新碎片化
-
-`src/stores/chatStore.ts:354-397` 中每个 SSE 事件都触发一次 `set()`，导致：
-- `progress` 事件 → 2 次 `set()`
-- `thinking` 事件 → 1 次 `set()`
-- `token` 事件 → 1 次 `set()`
-
-高频 token 事件（每秒可能 10-20 次）会导致频繁重渲染。应该使用 `requestAnimationFrame` 或 `debounce` 合并更新。
-
-### 6. 无 undo/redo 支持
-
-`DashboardEditor.tsx` 没有实现 undo/redo，用户误操作后只能手动恢复。虽然 store 中有 `undoEdit`/`redoEdit` 方法，但 Editor 并未调用它们。
-
----
-
-## 四、对比成熟产品的差异
-
-### 与 Grafana 对比
-
-| 功能 | ChatBI | Grafana |
-|------|--------|---------|
-| 拖拽对齐 | ❌ 无辅助线 | ✅ 智能对齐线 |
-| 多选操作 | ❌ 不支持 | ✅ 框选 + 批量操作 |
-| 响应式布局 | ❌ 固定画布 | ✅ 自动响应式 |
-| Undo/Redo | ❌ 不支持 | ✅ 完整历史栈 |
-| 面板联动 | ❌ 不支持 | ✅ 变量联动 |
-| 版本管理 | ❌ 不支持 | ✅ Dashboard versioning |
-
-### 与 Metabase 对比
-
-| 功能 | ChatBI | Metabase |
-|------|--------|----------|
-| 自然语言查询 | ✅ 支持 | ✅ 支持 |
-| 图表类型 | ✅ 20+ 种 | ✅ 15+ 种 |
-| 自动刷新 | ✅ 支持 | ✅ 支持 |
-| 权限控制 | ❌ 简单 | ✅ 行级权限 |
-| 嵌入支持 | ❌ 不支持 | ✅ iFrame/SDK |
-| 离线缓存 | ❌ 不支持 | ✅ 缓存策略 |
-
-### 与 DataV/FineBI 对比
-
-| 功能 | ChatBI | DataV/FineBI |
-|------|--------|-------------|
-| 大屏适配 | ❌ 固定 1920×1080 | ✅ 自适应缩放 |
-| 组件丰富度 | ⚠️ 基础图表+控件 | ✅ 100+ 组件 |
-| 数据源类型 | ⚠️ Doris/MySQL | ✅ 50+ 数据源 |
-| 实时数据 | ❌ 手动刷新 | ✅ WebSocket |
-| 主题定制 | ✅ 8 套主题 | ✅ 可视化主题编辑器 |
-| 动画效果 | ❌ 基础 | ✅ 丰富入场动画 |
-
----
-
-## 五、技术栈可优化项
-
-### 1. 图表库选择
-
-当前使用 `@antv/g2`，但：
-- G2 包体积较大（~300KB gzipped），对于 BI 场景偏重
-- 没有使用 G2 的 React 封装 `@antv/g2plot`，手动管理 chart 实例生命周期
-- **建议**：考虑迁移到 `@antv/g2plot` 或 `ECharts`（更轻量、生态更好、React 封装成熟）
-
-### 2. 状态管理
-
-当前 Zustand 用法有改进空间：
-- Store 过于庞大，应拆分为 slice
-- 没有使用 Zustand 的 `persist` 中间件（手动管理 localStorage）
-- 没有使用 `devtools` 中间件（开发调试不便）
-- **建议**：引入 `zustand/middleware` 的 `persist` + `devtools`，按功能拆分 store
-
-### 3. 缺少代码分割
-
-`src/App.tsx` 所有页面组件都是静态 import，没有使用 `React.lazy` + `Suspense`。首屏加载会包含所有页面代码。
-
-**建议**：
-```typescript
-const DashboardEditor = React.lazy(() => import('./pages/DashboardEditor'));
-const Admin = React.lazy(() => import('./pages/Admin'));
+pages/DashboardEditor.tsx        工作台装配：状态编排、DndContext、对话框、快捷键
+├─ components/editor/
+│   ├─ EditorToolbar.tsx         工具栏（模式/断点/撤销重做/选择·平移·网格·标尺·试运行/缩放/保存）
+│   ├─ ComponentLibrary.tsx      左侧字模库：字模 / 图表 / 数据集 / 控件 / 图层
+│   ├─ PageLayoutEditor.tsx      页面（网格）模式的编辑画布
+│   ├─ SelectionOverlay.tsx      选中态覆盖层（工具条 + 缩放手柄），渲染在缩放层之外
+│   ├─ CanvasHint.tsx            左下角操作提示，8s 后自动折叠
+│   ├─ ParamSelect.tsx           参数名选择框 + 控件选项编辑器
+│   └─ PropertyPanel.tsx         右侧属性面板（控件的唯一配置入口）
+├─ hooks/
+│   ├─ useCanvasInteraction.ts   画布内移动/缩放/平移/缩放视口（Pointer Events + rAF）
+│   ├─ useEditorCharts.ts        草稿 + 历史(undo/redo) + 多选 + 保存
+│   └─ useOverlayPosition.ts     视口尺寸测量（供覆盖层换算）
+└─ lib/
+    ├─ dashboardDesign.ts        字模解析、吸附、尺寸/最小值事实源（minSizeOf）
+    ├─ dashboardPageLayout.ts    网格布局数学（v2 行单位 + v1 等值换算）
+    ├─ canvasTheme.ts            画布与覆盖层唯一配色源 + 坐标换算
+    ├─ editorDrag.ts             库→画布拖拽载荷契约
+    └─ mergeRefs.ts              React 18 无 useMergeRefs 的替代
 ```
 
-### 4. 没有使用 React Query/SWR
-
-当前使用原生 `axios` + `useEffect` + 手动 loading 状态管理。`src/stores/chatStore.ts` 中的 `loadConversations`、`loadDatasources`、`loadLLMModels` 等都是手动管理缓存。
-
-**建议**：引入 `@tanstack/react-query` 或 `swr`，自动处理：
-- 请求缓存
-- 后台刷新
-- 错误重试
-- 乐观更新
-
-### 5. 缺少性能监控
-
-没有性能指标采集（FCP、LCP、CLS 等），无法量化优化效果。
-
-**建议**：引入 `web-vitals` 库。
-
-### 6. 构建优化
-
-`vite.config.ts` 配置较简单，缺少：
-- `manualChunks` 分包策略（vendor/chart/ui 分离）
-- `build.rollupOptions.output` 配置
-- 图片/字体资源优化
-- gzip/brotli 压缩预生成
-
-### 7. TypeScript 严格度不足
-
-多处使用 `any` 类型（如 `selectedChart: any`、`config: Record<string, any>`），失去了 TypeScript 的类型安全优势。
-
-### 8. 缺少前端测试
-
-没有任何测试文件，对于复杂的拖拽/画布逻辑，应该有：
-- 单元测试（坐标计算、碰撞检测）
-- 组件测试（拖拽交互）
-- E2E 测试（完整编辑流程）
+两套布局模型（页面网格 / 大屏像素）是**产品能力**，不是重复实现：它们共用
+`DashboardChartCard`、`canvasTheme`、`SelectionOverlay`、`useCanvasInteraction`。
 
 ---
 
-## 六、优先级建议
+## 二、已固化的契约（改动前先读）
 
-| 优先级 | 改进项 | 预期收益 |
-|--------|--------|----------|
-| P0 | 拆分 DashboardEditor 组件 | 可维护性 ↑↑↑ |
-| P0 | 添加代码分割 (React.lazy) | 首屏加载 ↓↓ |
-| P1 | 引入 React Query | 数据管理简化 ↑↑ |
-| P1 | 添加 requestAnimationFrame 节流 | 拖拽流畅性 ↑↑ |
-| P1 | 图表虚拟化渲染 | 大画布性能 ↑↑ |
-| P2 | 主题硬编码值改为变量 | 主题一致性 ↑ |
-| P2 | 引入拖拽库 (dnd-kit) | 交互质量 ↑↑ |
-| P2 | 批量保存 API | 保存效率 ↑ |
-| P3 | Undo/Redo 支持 | 用户体验 ↑ |
-| P3 | 测试覆盖 | 代码质量 ↑ |
+### 1. 尺寸下限只在交互层
+- `chartRect()` / `storedRect()` **不再**在读取时把已存值抬到下限（否则小尺寸任何途径都改不小）。
+  只有非法值（≤0 / NaN）回落默认尺寸。
+- 交互下限的唯一事实源是 `minSizeOf(chartType)`（`lib/dashboardDesign.ts`），按控件类型分级。
+- 网格模式另有 `pageMinHeight()`（复用 `minSizeOf`）+ `movePageItem()` 写入时把关。
+- 属性面板必须把下限**显示出来**（"本类型最小 …，小于此值会自动抬回"），不得静默夹值。
+
+### 2. 网格行单位有版本
+- `PAGE_ROW = 4`（v2），`pageLayout.version` 决定某图表的行单位按 v1(8) 还是 v2(4) 解释。
+- v1 数据在读取时按像素等值换算（`upgradeRows`），保存后统一落 `PAGE_LAYOUT_VERSION`。
+- 改 `PAGE_ROW` 或换算公式必须同步 `lib/__tests__/dashboardPageLayout.test.ts` 的偏差断言。
+
+### 3. 编辑态控件默认 inert
+- `DashboardChartCard` 在 `draft && widget && interactive === false` 时给内容层加 `inert`，
+  使 `pointerdown` 落到卡片容器（否则表单元素吃掉事件，卡片既选不中也拖不动）。
+- 「试运行」开关（工具栏 / 快捷键 `I`，持久化 `adh-editor-interact-mode`）才放开交互。
+- 控件分支内**禁止**再写 `if (draft) return` 这类静默吞输入的守卫。
+
+### 4. 覆盖层不得进入缩放上下文
+- 选中工具条与缩放手柄由 `SelectionOverlay` 渲染在视口层，位置由
+  `canvasRectToScreen(rect, surface, viewport, scale, pan)` 算出，与 `CanvasRulers` 同式。
+- 禁止再用 `transform: scale(1/scale)` 反向补偿（小缩放下会放大数倍压住卡片标题）。
+- `handlePanStart` 的排除选择器必须包含 `[data-selection-overlay]` / `[role="slider"]`，
+  否则平移手势会在 capture 阶段 `stopPropagation` 抢走手柄的 pointerdown（已踩过）。
+
+### 5. 画布配色只有一个源
+- 一律取 `lib/canvasTheme.ts` 的 `CANVAS_COLORS`，全部走 `hsl(var(--*))`。
+- `lib/__tests__/canvasTheme.test.ts` 有静态护栏：编辑器文件出现裸 hex / fuchsia / blue-500
+  或 `scale(1/scale)` 即失败。
+
+### 6. 控件配置单入口
+- `PropertyPanel` 是控件 `config` 的唯一编辑面；`ChartConfigPanel` 对 `widget_` 直接返回 null。
+- 渲染层（`DashboardChart` 控件分支）读取的每个字段都必须有面板入口，否则即"想配配不了"。
+- 新增 `widgetStyle` 旋钮必须三方同步：`WIDGET_KEYS` 白名单 + `DashboardChart` 消费 + 用例。
+
+### 7. 资源引用显示用 name、选择用选择框
+- `paramKey` / `bind_param` 从看板 `page_params` 中选（可就地新建），引用未定义参数必须红标提醒。
+- 导出按钮的 `targetChartId` 用图表 name 选择；未配置时按钮 disabled 并给出可见原因，
+  **禁止**回退到"第一个非控件图表"。
+
+### 8. 保存走整板一次提交
+- `PUT /dashboard/{id}/batch`：先全量预检（缺名称/引用了已不存在的图表即整体中止，一笔不写），
+  再逐条应用并返回 `results[{op,index,chart_id,ok,error}]`。
+- 前端按条目定位失败项并指名图表 name；部分成功也要把已落库的条目从草稿剔掉并建立新基线
+  （否则重试会重复创建）。元数据库连接是 autocommit，不要假设有跨语句事务回滚。
+
+---
+
+## 三、仍存在的已知限制（不是新缺陷）
+
+| 项 | 现状 | 影响 |
+|---|---|---|
+| 草稿状态实现 | `useEditorCharts` 用 ref + 强制渲染；卡片级 `memo` 因 chart 对象身份稳定而生效 | 属性面板输入不会重建其他图表的 G2 实例（已有用例锁定），但编辑器整体仍会重渲染 |
+| 多选拖拽 | 支持 Shift/Ctrl 点选、批量删除、方向键批量微调、批量对齐缩放 | 框选与"拖动一个同时移动整组"未实现 |
+| 图层叠放 | 仅大屏模式有意义；网格模式由行列决定层叠 | 图层面板在小屏模式下禁用上下移并给出说明 |
+| 离开页面拦截 | 仍用原生 `window.confirm` | popstate 必须同步判定，改异步会丢失阻止导航能力；应用内破坏性操作已全部改 Dialog |
+| 控件类型覆盖 | 图表卡与控件卡各自只能在同类内换型 | 跨类改型会被拒并提示，需删除后重新拖入 |
+
+---
+
+## 四、回归门禁
+
+| 触碰范围 | 必跑 |
+|---|---|
+| `dashboardDesign.ts` / `DashboardChart.tsx` / `DashboardCanvas.tsx` / `useChartDesign.ts` | `ChartPickerTheme.test.tsx`、`DashboardChartSpec.test.ts`、`lib/__tests__/dashboardDesign.test.ts` |
+| `canvasTheme.ts` / `SelectionOverlay.tsx` / `PageLayoutEditor.tsx` / `EditorToolbar.tsx` | `lib/__tests__/canvasTheme.test.ts`、`components/__tests__/DashboardCanvas.interaction.test.tsx` |
+| `dashboardPageLayout.ts` / 行单位与版本换算 | `lib/__tests__/dashboardPageLayout.test.ts` |
+| 控件配置面 / 参数选择化 | `components/__tests__/PropertyPanelWidget.test.tsx`、`components/__tests__/ParamSelect.test.tsx` |
+| 保存链路（前端 `useEditorCharts` 或后端 batch） | `tests/test_dashboard_batch_save.py`、`tests/test_dashboard_design.py`、`tests/test_dashboard_chart_update.py` |
+| 任何前端批次 | `npx tsc --noEmit`（根 tsconfig 口径，含 `@/*` 别名）零错误 + `npx vitest run` 全绿 |

@@ -316,6 +316,113 @@ def _resolve_key_by_alias(conn, object_key: str, datasource_id: int,
 
 # ── Level 1: adh_ontology_bindings ─────────────────────────────
 
+def _ds_site_code(conn, datasource_id: int, datasource_name: str) -> str:
+    """请求源的归属站点 code（未站点化/查不到返回 ''）。"""
+    if datasource_name:
+        sql, params = "SELECT site_code FROM adh_datasources WHERE name = %s LIMIT 1", (datasource_name,)
+    elif datasource_id:
+        sql, params = "SELECT site_code FROM adh_datasources WHERE id = %s LIMIT 1", (int(datasource_id),)
+    else:
+        return ""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+        return str((row or {}).get("site_code") or "")
+    except Exception as e:  # noqa: BLE001 — 站点拓扑查不到不影响精确命中路径
+        logger.debug("[binding] site_code lookup failed: %s", e)
+        return ""
+
+
+def _deploy_site_map(conn, model_id) -> dict[str, str]:
+    """模型级适用站点 → {site_code: 路由目标数据源名}；未配置返回空 dict。
+
+    事实源 = `adh_ontology_models.deploy_sites`（一份契约 × N 站部署的**模型级**声明），
+    取代旧的逐对象逐站登记（27 对象 × 5 站 = 135 行机械复制）。
+    """
+    mid = int(model_id or 0)
+    if not mid:
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT deploy_sites FROM adh_ontology_models WHERE id = %s", (mid,))
+            row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 — 列未迁移时按未配置处理（行为回退旧口径）
+        logger.debug("[binding] deploy_sites unavailable: %s", e)
+        return {}
+    raw = (row or {}).get("deploy_sites") if row else None
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "[]")
+        except (ValueError, TypeError):
+            logger.warning("[binding] 模型 %s 的 deploy_sites 非法 JSON，按未配置处理", mid)
+            return {}
+    if not isinstance(raw, list):
+        return {}
+    out: dict[str, str] = {}
+    for item in raw:
+        if isinstance(item, dict) and str(item.get("site_code") or ""):
+            out[str(item["site_code"])] = str(item.get("datasource") or "")
+    return out
+
+
+def _site_names(conn, codes: list[str]) -> dict[str, str]:
+    """site_code → 站点业务名（错误/告警文案只说业务名，不外泄内部标识）。"""
+    codes = [c for c in codes if c]
+    if not codes:
+        return {}
+    marks = ",".join(["%s"] * len(codes))
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT site_code, display_name FROM adh_sites WHERE site_code IN ({marks})",
+                tuple(codes))
+            return {str(r["site_code"]): str(r["display_name"]) for r in (cur.fetchall() or [])}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[binding] site display names unavailable: %s", e)
+        return {}
+
+
+def _route_by_site(conn, rows, datasource_id, datasource_name, warnings):
+    """站点路由：请求源在本站没有绑定行时，用模型的 deploy_sites 声明回到契约行。
+
+    命中返回契约行。两类情况告警并返回 None（宁缺勿错：拿别的站/别的库数据
+    当本站答案是错数，比无答案危害大）：
+      • 模型声明了站点但**不含请求站点**；
+      • 请求站点已声明路由目标，但请求源不是它（如拿 SLS 源查业务本体对象）。
+    """
+    site_code = _ds_site_code(conn, int(datasource_id or 0), datasource_name or "")
+    if not site_code:
+        return None
+    want_name = datasource_name or _ds_name_by_id(conn, int(datasource_id or 0))
+    site_label = _site_names(conn, [site_code]).get(site_code, site_code)
+    refused_scope: list[int] = []
+    for r in rows:
+        declared = _deploy_site_map(conn, r.get("model_id"))
+        if not declared:
+            continue  # 模型未声明适用站点 → 不参与站点路由（源本体/系统本体/存量）
+        target = declared.get(site_code)
+        if target is None:
+            refused_scope.append(int(r.get("model_id") or 0))
+            continue
+        if not target or target == want_name:
+            return r
+        warnings.append(
+            f"该业务本体在站点「{site_label}」的业务库是「{target}」，"
+            f"本次请求的「{want_name}」不是它；若需查该源自己的表，请用该源的源本体")
+        return None
+    if refused_scope:
+        names = _site_names(conn, list({c for mid in refused_scope
+                                        for c in _deploy_site_map(conn, mid)}))
+        known = "、".join(sorted(names.values())) or "无"
+        warnings.append(
+            f"该业务本体不适用站点「{site_label}」；已适用站点：{known}。"
+            f"若该站 schema 不同，请为该站单独配一个本体或使用源本体")
+    return None
+
+
 def _resolve_from_bindings(conn, object_key, datasource_id, datasource_name,
                            model_id, warnings) -> ResolvedBinding | None:
     sql = (
@@ -343,6 +450,10 @@ def _resolve_from_bindings(conn, object_key, datasource_id, datasource_name,
         scope_parts.append("b.datasource_name = %s")
         params.append(datasource_name)
     scope_parts.append("b.datasource_id = 0")
+    # 站点路由（一份契约 × N 站）：模型声明了 deploy_sites 时，契约行只登记在主源上，
+    #   本站没有行也必须能命中——由 _route_by_site 在 Python 端裁决并改写生效源。
+    scope_parts.append("EXISTS (SELECT 1 FROM adh_ontology_models ms "
+                       "WHERE ms.id = b.model_id AND ms.deploy_sites IS NOT NULL)")
     sql += " AND (" + " OR ".join(scope_parts) + ")"
     if model_id is not None:
         sql += " AND b.model_id = %s"
@@ -362,7 +473,11 @@ def _resolve_from_bindings(conn, object_key, datasource_id, datasource_name,
     # fake 一测就露馅）。
     # 指定站点 → 精确选 name 命中；未指定且多站点 → 歧义回抛候选（宁缺勿错）：
     # 静默取任意一条会让“查上海站数据却返回北京站”这种错数发生。
-    def _pick(cands):
+    def _pick_exact(cands):
+        """精确命中：name 命中 > id 命中 > 通配行（datasource_id=0，系统/全局域）。
+
+        返回 None 只可能是 EXISTS 分支带进来的“本站无行”候选 → 交给站点路由。
+        """
         if datasource_name:
             for r in cands:
                 if str(r.get("datasource_name") or "") == datasource_name:
@@ -371,10 +486,20 @@ def _resolve_from_bindings(conn, object_key, datasource_id, datasource_name,
             for r in cands:
                 if int(r.get("datasource_id") or 0) == int(datasource_id):
                     return r
-        return cands[0]
+        for r in cands:
+            if not int(r.get("datasource_id") or 0) and not str(r.get("datasource_name") or ""):
+                return r
+        return None
 
+    routed_to = ""
     if datasource_name or datasource_id:
-        row = _pick(rows)
+        row = _pick_exact(rows)
+        if row is None:
+            row = _route_by_site(conn, rows, datasource_id, datasource_name, warnings)
+            if row is None:
+                return None
+            # 站点路由：契约行只描述形状（物理表/列映射），生效源改写为请求源
+            routed_to = datasource_name or _ds_name_by_id(conn, int(datasource_id or 0))
     else:
         sites: list[str] = []
         for r in rows:
@@ -392,6 +517,16 @@ def _resolve_from_bindings(conn, object_key, datasource_id, datasource_name,
     # name 为关联键: 映射到当前有效 id(删除重建后 id 已变), 查不到再回落存内 id
     live_id = _ds_id_by_name(conn, stored_name) if stored_name else None
     ds_id_out = int(live_id or row["datasource_id"])
+    catalog_ref = row.get("catalog_ref") or ""
+    product_ref = str(row.get("product_ref") or "")
+    if routed_to:
+        # 生效源改写后，catalog_ref / 产品身份必须跟着换站：三段式里的源段与
+        # product_ref 都带契约站前缀，原样带过去会把「查日本站」标成中国站的表/产品。
+        if stored_name and stored_name != routed_to:
+            catalog_ref = catalog_ref.replace(stored_name, routed_to)
+        stored_name = routed_to
+        ds_id_out = int(_ds_id_by_name(conn, routed_to) or datasource_id or 0)
+        product_ref = ""  # 由 _enrich_from_data_product 按本站重解析
     return ResolvedBinding(
         object_key=row["object_key"],
         model_id=row.get("model_id"),
@@ -400,7 +535,7 @@ def _resolve_from_bindings(conn, object_key, datasource_id, datasource_name,
         catalog_name="",  # 由 _enrich 补
         db_name="",
         physical_table=row.get("physical_table") or "",
-        catalog_ref=row.get("catalog_ref") or "",
+        catalog_ref=catalog_ref,
         bind_kind=row.get("bind_kind") or "primary",
         dataset_ref=row.get("dataset_ref") or "",
         db_type=_ds_db_type(conn, ds_id_out),
@@ -410,9 +545,10 @@ def _resolve_from_bindings(conn, object_key, datasource_id, datasource_name,
         access=_access_from_row(row),
         # 产品身份优先取绑定行（已持久化，见 data_product_binding_migration）；
         # 空时由 _enrich_from_data_product 回落到 adh_data_products 查询
-        product_ref=str(row.get("product_ref") or ""),
+        product_ref=product_ref,
         sync_state=row.get("sync_state") or "bound",
         source="adh_ontology_bindings",
+        site_routed=bool(routed_to),
     )
 
 

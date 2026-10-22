@@ -2430,6 +2430,48 @@ def find_business_route_issues(doc: dict) -> list:
 # actions[]/rules[] 仅保留为 canonical 里的建模描述，无运行时消费方。
 
 
+def find_deploy_site_issues(model_id: int) -> list[str]:
+    """模型级适用站点（deploy_sites）的引用一致性检查（§4 宁阻断勿悬空）。
+
+    配置时已校过一次，但站点/数据源可能在之后被停用、改名或删除：取数时
+    `_route_by_site` 会拿不到路由目标而拒查，因此在激活环节提前显式暴露，
+    而不是等用户提问才发现。只报业务名，不回内部 id。
+    """
+    from backend.core.site_service import get_site, model_deploy_sites
+
+    declared = model_deploy_sites(int(model_id or 0))
+    if not declared:
+        return []  # 未配置 = 沿用逐对象部署绑定行（源本体/存量），不是缺陷
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name, site_code FROM adh_datasources")
+            ds_site = {str(r["name"]): str(r["site_code"] or "") for r in (cur.fetchall() or [])}
+    known = set(ds_site)
+    issues: list[str] = []
+    seen: set[str] = set()
+    for entry in declared:
+        code = entry["site_code"]
+        ds = entry["datasource"]
+        site = get_site(code) or {}
+        if not site:
+            issues.append(f"站点 {code} 不在站点清单（先在系统管理-站点维护）")
+        elif not int(site.get("is_active") or 0):
+            issues.append(f"站点「{site.get('display_name') or code}」已停用")
+        elif int(site.get("is_aggregate") or 0):
+            issues.append(f"站点「{site.get('display_name') or code}」是聚合态，不能挂数据源")
+        if code in seen:
+            issues.append(f"站点 {code} 重复登记")
+        seen.add(code)
+        if not ds:
+            issues.append(f"站点 {code} 未选择路由数据源")
+        elif ds not in known:
+            issues.append(f"站点 {code} 路由的数据源「{ds}」已不存在（删除或改名）")
+        elif ds_site[ds] != code:
+            issues.append(
+                f"数据源「{ds}」的归属站点与声明站点 {code} 不一致（先在数据源管理校正）")
+    return issues
+
+
 def activate(model_id: int) -> dict:
     """激活模型：旧 active 归档，逐对象 MD 段写入 adh_ontology_objects（供对象检索/预览）。
 
@@ -2442,6 +2484,14 @@ def activate(model_id: int) -> dict:
         raise ValueError("模型不存在")
     if model["status"] == "active":
         return model
+
+    # 模型级适用站点的引用一致性（§4）：站点/数据源被停用、删除或改归属时拒绝激活。
+    # 它是模型级配置、与 doc 内容无关，故先于 doc 级校验（不拿一堆取不到数的站点上线）。
+    site_issues = find_deploy_site_issues(model_id)
+    if site_issues:
+        raise ValueError(
+            "本体适用站点配置存在悬空引用, 拒绝激活（在「适用站点」页修正后重试）: "
+            + "; ".join(site_issues[:10]) + (" 等" if len(site_issues) > 10 else ""))
 
     doc = json.loads(model["json_content"])
     objects = doc.get("objects") or []
@@ -2503,11 +2553,23 @@ def activate(model_id: int) -> dict:
     # 1. 旧 active 归档 + 其对象下线
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE adh_ontology_models SET status = 'archived', updated_at = %s "
-                "WHERE kind = %s AND status = 'active' AND id != %s",
-                (now, model_kind, model_id),
-            )
+            if model_kind == "source":
+                # 源本体按数据源归属（UI「源本体（按数据源）」）：激活某数据源的源本体只应取代
+                # **同源**的旧 active 源本体，不得归档其它数据源的源本体——否则多源各自建模会互相
+                # 顶掉（历史缺陷：为日志源建源本体把医疗 Doris 源本体挤成 archived）。
+                # 与 _expand_objects 的 source 分支（按 datasource_id 互斥）保持同口径。
+                cur.execute(
+                    "UPDATE adh_ontology_models SET status = 'archived', updated_at = %s "
+                    "WHERE kind = 'source' AND datasource_id = %s AND status = 'active' AND id != %s",
+                    (now, datasource_id, model_id),
+                )
+            else:
+                # business/system 维持 kind 级单例（跨源共享的业务/系统语义层唯一 active）。
+                cur.execute(
+                    "UPDATE adh_ontology_models SET status = 'archived', updated_at = %s "
+                    "WHERE kind = %s AND status = 'active' AND id != %s",
+                    (now, model_kind, model_id),
+                )
             cur.execute(
                 "UPDATE adh_ontology_models SET status = 'active', updated_at = %s WHERE id = %s",
                 (now, model_id),

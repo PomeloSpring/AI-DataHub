@@ -268,7 +268,11 @@ describe('dashboardStore', () => {
       mockPost({ columns: ['a', 'b'], rows: [{ a: 1, b: 2 }] })
 
       await useDashboardStore.getState().refreshSingleChart(1)
-      expect(vi.mocked(client.post)).toHaveBeenCalledWith('/dashboard/10/charts/1/refresh', expect.objectContaining({ params: {} }))
+      // 第三个参数是 AbortSignal：图表查询可被页面退出中止（新契约，锁定防回归）
+      const postArgs = vi.mocked(client.post).mock.calls[0];
+      expect(postArgs[0]).toBe('/dashboard/10/charts/1/refresh');
+      expect(postArgs[1]).toEqual(expect.objectContaining({ params: {} }));
+      expect(postArgs[2]?.signal).toBeInstanceOf(AbortSignal);
 
       const state = useDashboardStore.getState()
       const updatedChart = state.dashboards[0].charts[0]

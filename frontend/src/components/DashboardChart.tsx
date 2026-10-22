@@ -1,5 +1,6 @@
 import { memo, useRef, useEffect, useState } from 'react';
 import { Chart } from '@antv/g2';
+import { toast } from 'sonner';
 import * as topojson from 'topojson-client';
 import {
   BarChart3, TrendingUp, PieChart, Activity, Circle, Webhook, Filter, ArrowDownUp,
@@ -15,6 +16,10 @@ import ModalPage from './ModalPage';
 import AnimatedTimeChart from './AnimatedTimeChart';
 import { chartDataKey, type LocalVisual } from '@/lib/dashboardDesign';
 import { readChartPalette, readToken } from '@/lib/chartTheme';
+import {
+  CUSTOM_PRESET, DAY_MS, enabledPresets, effectiveGranularity, formatTime,
+  fromInputValue, maxEndFor, resolvePreset, toInputValue, type TimeGranularity,
+} from '@/lib/timePresets';
 
 // Lucide icon map for chart types
 const CHART_ICON_MAP: Record<string, React.ComponentType<any>> = {
@@ -1056,20 +1061,25 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
     const store = useDashboardStore.getState();
     const current = store.paramValues[cfg.paramKey];
 
-    if (chartType === 'widget_daterange' && cfg.rangeMaxDays) {
+    if (chartType === 'widget_daterange' && (cfg.defaultPreset || cfg.rangeMaxDays)) {
       if (!current || (!current.start && !current.end)) {
-        const today = new Date();
-        const start = new Date(today);
-        start.setDate(start.getDate() - (cfg.rangeMaxDays || 365));
-        const fmt = (d: Date) => d.toISOString().slice(0, 10);
-        store.setParamValue(cfg.paramKey, { start: fmt(start), end: fmt(today) });
+        const now = new Date();
+        // 预设优先；没配预设时沿用 rangeMaxDays 的默认窗口
+        const window = resolvePreset(cfg.defaultPreset, now)
+          || { start: new Date(now.getTime() - (cfg.rangeMaxDays || 365) * DAY_MS), end: now };
+        // 本地时区格式化：原先用 toISOString() 取的是 UTC，在 UTC+8 晚间会算成前一天
+        const granularity = effectiveGranularity(cfg.granularity, cfg.defaultPreset);
+        store.setParamValue(cfg.paramKey, {
+          start: formatTime(window.start, granularity), end: formatTime(window.end, granularity),
+          preset: cfg.defaultPreset || CUSTOM_PRESET,
+        });
       }
     } else if (chartType === 'widget_date' && cfg.defaultValue) {
       if (!current) {
         store.setParamValue(cfg.paramKey, cfg.defaultValue);
       }
     }
-  }, [draft, chartType, cfg.paramKey, cfg.rangeMaxDays, cfg.defaultValue]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [draft, chartType, cfg.paramKey, cfg.rangeMaxDays, cfg.defaultPreset, cfg.granularity, cfg.defaultValue]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-refresh for server-side pagination on mount (data_cache has full data, need paginated)
   useEffect(() => {
@@ -1278,7 +1288,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
     const currentValue = paramValues[paramKey] ?? defaultValue;
 
     const handleChange = (val: any) => {
-      if (draft) return;
+      // 编辑态的拦截由卡片层 inert 承担（见 DashboardChartCard），此处不再把用户输入静默丢弃
       if (paramKey) setParamValue(paramKey, val);
       // Bind filter value to page param(s) if bind_param is configured
       const bindParam = cfg?.bind_param;
@@ -1298,6 +1308,9 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
 
     const isHorizontal = labelPosition === 'left' && showLabel;
     const hasLabel = showLabel && label && chartType !== 'widget_label';
+    // 光标按控件语义分派：下拉开 pointer、标签无操作，不再一律 text
+    const cursor: React.CSSProperties['cursor'] = chartType === 'widget_label' ? 'default'
+      : chartType === 'widget_select' || chartType === 'widget_multi_select' ? 'pointer' : 'text';
 
     // Merged style: container + input, applied directly to the element (no wrapper div)
     const directStyle: React.CSSProperties = {
@@ -1305,10 +1318,14 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       flexDirection: isHorizontal ? 'row' : 'column',
       alignItems: isHorizontal ? 'center' : 'stretch',
       justifyContent: 'center',
-      gap: hasLabel ? 6 : 4,
+      // 允许换行 + 可收缩：居中布局下内容超宽会向两侧溢出（卡片两端文字被同时切掉），
+      // 所以必须先让它收缩、再换行，而不是靠外层裁切。
+      flexWrap: 'wrap', minWidth: 0,
+      gap: ws.gap ?? (hasLabel ? 6 : 4),
       position: 'absolute', inset: 0,
       padding: ws.padding ?? (hasLabel ? '4px 8px' : '4px'),
       fontSize: ws.fontSize ?? 14,
+      lineHeight: ws.lineHeight,
       fontWeight: ws.fontWeight,
       color: ws.textColor || 'inherit',
       boxSizing: 'border-box',
@@ -1317,13 +1334,24 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       background: ws.backgroundColor || visual?.viewBg || (isDark ? '#0f172a' : '#ffffff'),
       colorScheme: isDark ? 'dark' : 'light',
       outline: 'none',
-      cursor: 'text',
+      cursor,
+    };
+    // 内层表单元素与外层共用一份样式源：圆角/内边距/行高必须跟随 ws.*，否则字模与覆盖「存了不生效」
+    const innerFieldStyle: React.CSSProperties = {
+      flex: '1 1 auto', minHeight: 0, minWidth: 0, width: '100%',
+      fontSize: 'inherit', lineHeight: 'inherit', fontWeight: 'inherit',
+      fontFamily: 'inherit',
+      borderRadius: ws.borderRadius ?? 6,
+      padding: ws.padding ?? '4px 8px',
+      border: 'none', background: 'transparent', outline: 'none', color: 'inherit',
+      cursor: 'inherit', boxSizing: 'border-box',
     };
 
     const labelEl = hasLabel ? (
       <Label style={{
         fontSize: 'inherit', fontWeight: 500, color: ws.textColor || visual?.subTextColor || (isDark ? '#cbd5e1' : '#475569'),
-        whiteSpace: 'nowrap', flexShrink: 0,
+        whiteSpace: 'nowrap', flexShrink: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis',
+        ...(ws.labelWidth ? { width: ws.labelWidth, flexBasis: ws.labelWidth, textAlign: ws.horizontalAlign === 'flex-start' ? 'left' : ws.horizontalAlign === 'flex-end' ? 'right' : 'left' } : {}),
       }}>
         {label}
       </Label>
@@ -1341,7 +1369,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
           fontSize: ws.fontSize ?? 14,
           fontWeight: ws.fontWeight || 500,
           color: ws.textColor || visual?.textColor || (isDark ? '#e2e8f0' : '#111827'),
-          lineHeight: 1.4, wordBreak: 'break-word',
+          lineHeight: ws.lineHeight ?? 1.4, wordBreak: 'break-word',
           boxSizing: 'border-box',
         }}>
           {cfg?.content || cfg?.label || label || '文本标签'}
@@ -1352,40 +1380,67 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
     // widget_daterange — two inputs + separator, needs minimal wrapper
     if (chartType === 'widget_daterange') {
       const rangeMaxDays = cfg?.rangeMaxDays || 365; // default 1 year
-      const startDate = currentValue?.start || '';
-      const endDate = currentValue?.end || '';
-
-      // Calculate min/max constraints for end date
-      const addDays = (dateStr: string, days: number): string => {
-        const d = new Date(dateStr);
-        d.setDate(d.getDate() + days);
-        return d.toISOString().slice(0, 10);
-      };
-      const endMin = startDate || '';
-      const endMax = startDate ? addDays(startDate, rangeMaxDays) : '';
+      const startDate = typeof currentValue?.start === 'string' ? currentValue.start : '';
+      const endDate = typeof currentValue?.end === 'string' ? currentValue.end : '';
+      const presets = enabledPresets(cfg?.presets);
+      // 当前预设从值里读（刷新后仍在）；没带 preset 字段的历史值归为自由选择
+      const selectedPreset: string = currentValue?.preset || CUSTOM_PRESET;
+      const granularity: TimeGranularity = effectiveGranularity(cfg?.granularity, selectedPreset);
+      // 自算的 min/max 用本地时区字符串，不再走 toISOString()（UTC 会偏一天）
+      const endMax = startDate ? maxEndFor(startDate, rangeMaxDays) : '';
+      const inputValue = (v: string) => toInputValue(v, granularity);
+      // 边界值必须转成输入框自己的格式（datetime-local 用 T 分隔），否则浏览器比较会失真
+      const startBoundary = inputValue(startDate);
+      const endBoundary = inputValue(endDate);
+      const endMaxBoundary = endMax ? inputValue(endMax) : '';
+      const commit = (patch: Record<string, unknown>) => handleChange({ ...currentValue, ...patch });
 
       const dateInputStyle: React.CSSProperties = {
-        flex: 1, height: '100%', fontSize: 'inherit', borderRadius: 6,
+        // 不写 height:100%：一旦换行，每行都会占满容器高度而垂直溢出；交给原生控件自身高度
+        flex: '1 1 8.5rem', minWidth: 0, maxWidth: '100%',
+        fontSize: 'inherit', lineHeight: 'inherit',
+        borderRadius: ws.borderRadius ?? 6,
         border: `1px solid ${isDark ? 'rgba(255,255,255,0.15)' : 'hsl(var(--input))'}`,
         background: ws.backgroundColor || (isDark ? '#1e293b' : '#ffffff'),
-        padding: '4px 8px', outline: 'none',
+        padding: ws.padding ?? '4px 8px', outline: 'none',
         color: ws.textColor || visual?.textColor || (isDark ? '#e2e8f0' : '#111827'),
         colorScheme: isDark ? 'dark' : 'light',
         boxSizing: 'border-box',
       };
+      // 预设下拉不参与伸展（否则会把两个日期框挤到读不出），但允许收缩到内容以下
+      const presetStyle: React.CSSProperties = { ...dateInputStyle, flex: '0 1 auto', cursor: 'pointer' };
 
       return (
         <div onClick={e => e.stopPropagation()} style={directStyle}>
           {labelEl}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minHeight: 0 }}>
-            <input type="date" value={startDate}
-              max={endDate || undefined}
-              onChange={e => handleChange({ ...(currentValue || {}), start: e.target.value })}
+          <div style={{ display: 'flex', alignItems: 'center', alignContent: 'center', flexWrap: 'wrap',
+            gap: ws.gap ?? 6, flex: '1 1 12rem', minWidth: 0, maxHeight: '100%' }}>
+            {presets.length > 0 && <select
+              aria-label={`${label || '时间区间'}快捷选项`}
+              value={presets.some(p => p.key === selectedPreset) ? selectedPreset : CUSTOM_PRESET}
+              onChange={e => {
+                const key = e.target.value;
+                if (key === CUSTOM_PRESET) { commit({ preset: CUSTOM_PRESET }); return; }
+                const window = resolvePreset(key);
+                if (!window) { commit({ preset: CUSTOM_PRESET }); return; }
+                const next: TimeGranularity = effectiveGranularity(cfg?.granularity, key);
+                commit({ preset: key, start: formatTime(window.start, next), end: formatTime(window.end, next) });
+              }}
+              style={presetStyle}>
+              {presets.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
+              <option value={CUSTOM_PRESET}>自由选择</option>
+            </select>}
+            <input type={granularity === 'datetime' ? 'datetime-local' : 'date'}
+              aria-label={`${label || '时间区间'}开始`}
+              value={startBoundary} max={endBoundary || undefined}
+              onChange={e => commit({ preset: CUSTOM_PRESET, start: fromInputValue(e.target.value, granularity) })}
               style={dateInputStyle} />
             <span style={{ fontSize: '0.85em', color: isDark ? '#ccc' : 'hsl(var(--muted-foreground))', flexShrink: 0 }}>~</span>
-            <input type="date" value={endDate}
-              min={endMin} max={endMax || undefined}
-              onChange={e => handleChange({ ...(currentValue || {}), end: e.target.value })}
+            <input type={granularity === 'datetime' ? 'datetime-local' : 'date'}
+              aria-label={`${label || '时间区间'}结束`}
+              value={endBoundary} min={startBoundary || undefined} max={endMaxBoundary || undefined}
+              title={endMaxBoundary ? `可选区间最长 ${rangeMaxDays} 天` : undefined}
+              onChange={e => commit({ preset: CUSTOM_PRESET, end: fromInputValue(e.target.value, granularity) })}
               style={dateInputStyle} />
           </div>
         </div>
@@ -1400,24 +1455,24 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
 
     if (chartType === 'widget_text') {
       if (!hasLabel) return <input type="text" {...commonProps} value={currentValue || ''} onChange={e => handleChange(e.target.value)} placeholder={placeholder} style={directStyle} />;
-      return <div {...commonProps} style={directStyle}>{labelEl}<input type="text" value={currentValue || ''} onChange={e => handleChange(e.target.value)} placeholder={placeholder} style={{ flex: 1, minHeight: 0, fontSize: 'inherit', border: 'none', background: 'transparent', outline: 'none', color: 'inherit', width: '100%' }} /></div>;
+      return <div {...commonProps} style={directStyle}>{labelEl}<input type="text" value={currentValue || ''} onChange={e => handleChange(e.target.value)} placeholder={placeholder} style={innerFieldStyle} /></div>;
     }
 
     if (chartType === 'widget_number') {
       if (!hasLabel) return <input type="number" {...commonProps} value={currentValue ?? ''} onChange={e => handleChange(e.target.value)} placeholder={placeholder} min={cfg?.min} max={cfg?.max} step={cfg?.step || 1} style={directStyle} />;
-      return <div {...commonProps} style={directStyle}>{labelEl}<input type="number" value={currentValue ?? ''} onChange={e => handleChange(e.target.value)} placeholder={placeholder} min={cfg?.min} max={cfg?.max} step={cfg?.step || 1} style={{ flex: 1, minHeight: 0, fontSize: 'inherit', border: 'none', background: 'transparent', outline: 'none', color: 'inherit', width: '100%' }} /></div>;
+      return <div {...commonProps} style={directStyle}>{labelEl}<input type="number" value={currentValue ?? ''} onChange={e => handleChange(e.target.value)} placeholder={placeholder} min={cfg?.min} max={cfg?.max} step={cfg?.step || 1} style={innerFieldStyle} /></div>;
     }
 
     if (chartType === 'widget_date') {
       const dateProps = { onClick: (e: React.MouseEvent) => e.stopPropagation() };
       const dateInnerStyle: React.CSSProperties = {
-        flex: 1, minHeight: 0, fontSize: 'inherit', borderRadius: 6,
+        ...innerFieldStyle,
+        borderRadius: ws.borderRadius ?? 6,
         border: `1px solid ${isDark ? 'rgba(255,255,255,0.15)' : 'hsl(var(--input))'}`,
         background: ws.backgroundColor || (isDark ? '#1e293b' : '#ffffff'),
-        padding: '4px 8px', outline: 'none',
+        padding: ws.padding ?? '4px 8px',
         color: ws.textColor || visual?.textColor || (isDark ? '#e2e8f0' : '#111827'),
         colorScheme: isDark ? 'dark' : 'light',
-        boxSizing: 'border-box', width: '100%',
       };
       if (!hasLabel) return <input type="date" {...dateProps} value={currentValue || ''} onChange={e => handleChange(e.target.value)} style={directStyle} />;
       return <div {...dateProps} style={directStyle}>{labelEl}<input type="date" value={currentValue || ''} onChange={e => handleChange(e.target.value)} style={dateInnerStyle} /></div>;
@@ -1428,17 +1483,18 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
         <option value="">{placeholder || '请选择'}</option>
         {options.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
       </select>;
-      return <div {...commonProps} style={directStyle}>{labelEl}<select value={currentValue || ''} onChange={e => handleChange(e.target.value || undefined)} style={{ flex: 1, minHeight: 0, fontSize: 'inherit', border: 'none', background: 'transparent', outline: 'none', color: 'inherit', cursor: 'pointer', width: '100%' }}>
+      return <div {...commonProps} style={directStyle}>{labelEl}<select value={currentValue || ''} onChange={e => handleChange(e.target.value || undefined)} style={{ ...innerFieldStyle, cursor: 'pointer' }}>
         <option value="">{placeholder || '请选择'}</option>
         {options.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
       </select></div>;
     }
 
+    // 多选框高度不再写死 60：由「控件高」旋钮接管，使小尺寸控件可以真正缩小
     if (chartType === 'widget_multi_select') {
-      if (!hasLabel) return <select multiple {...commonProps} value={Array.isArray(currentValue) ? currentValue : []} onChange={e => handleChange(Array.from(e.target.selectedOptions, o => o.value))} style={{ ...directStyle, cursor: 'pointer', minHeight: 60 }}>
+      if (!hasLabel) return <select multiple {...commonProps} value={Array.isArray(currentValue) ? currentValue : []} onChange={e => handleChange(Array.from(e.target.selectedOptions, o => o.value))} style={{ ...directStyle, cursor: 'pointer', minHeight: ws.height ?? 60 }}>
         {options.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
       </select>;
-      return <div {...commonProps} style={directStyle}>{labelEl}<select multiple value={Array.isArray(currentValue) ? currentValue : []} onChange={e => handleChange(Array.from(e.target.selectedOptions, o => o.value))} style={{ flex: 1, minHeight: 0, fontSize: 'inherit', border: 'none', background: 'transparent', outline: 'none', color: 'inherit', cursor: 'pointer', width: '100%' }}>
+      return <div {...commonProps} style={directStyle}>{labelEl}<select multiple value={Array.isArray(currentValue) ? currentValue : []} onChange={e => handleChange(Array.from(e.target.selectedOptions, o => o.value))} style={{ ...innerFieldStyle, cursor: 'pointer', minHeight: ws.height ?? 60 }}>
         {options.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
       </select></div>;
     }
@@ -1448,11 +1504,14 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
   const BUTTON_WIDGET_TYPES = ['widget_search', 'widget_reset', 'widget_export'];
   if (BUTTON_WIDGET_TYPES.includes(chartType)) {
     const label = cfg?.label || (chartType === 'widget_search' ? '搜索' : chartType === 'widget_reset' ? '重置' : '导出');
+    // 导出必须配显式目标图表：不再静默回退“第一个非控件图表”（导出错数据比不导出危害更大）
+    const targetChartId = typeof cfg?.targetChartId === 'number' && cfg.targetChartId > 0 ? cfg.targetChartId : 0;
+    const exportNoTarget = chartType === 'widget_export' && !targetChartId;
 
     const handleClick = (e: React.MouseEvent) => {
       e.stopPropagation();
       e.preventDefault();
-      if (draft) return;
+      // 编辑态的拦截由卡片层 inert 承担（见 DashboardChartCard），试运行时必须真实响应
       if (chartType === 'widget_search') {
         useDashboardStore.getState().refreshCharts();
       } else if (chartType === 'widget_reset') {
@@ -1460,22 +1519,22 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
         const keys = Object.keys(paramValues);
         keys.forEach(k => useDashboardStore.getState().setParamValue(k, ''));
       } else if (chartType === 'widget_export') {
-        const dashboards = useDashboardStore.getState().dashboards;
-        const currentId = useDashboardStore.getState().currentId;
-        const dashboard = dashboards.find(d => d.id === currentId);
-        const targetChartId = cfg?.targetChartId;
-        const targetChart = dashboard?.charts.find(c => c.id === targetChartId)
-          || dashboard?.charts.find(c => !c.chart_type.startsWith('widget_'));
-        if (targetChart?.data_cache) {
-          try {
-            const { columns, rows } = JSON.parse(targetChart.data_cache);
-            const csv = [columns.join(','), ...rows.map((r: any) => columns.map((c: string) => String(r[c] ?? '')).join(','))].join('\n');
-            const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = `${targetChart.name || 'export'}.csv`; a.click();
-            URL.revokeObjectURL(url);
-          } catch { /* ignore */ }
+        if (exportNoTarget) { toast.error('请先在属性面板选择要导出的图表'); return; }
+        const store = useDashboardStore.getState();
+        const dashboard = store.dashboards.find(d => d.id === store.currentId);
+        const targetChart = dashboard?.charts.find(c => c.id === targetChartId);
+        if (!targetChart) { toast.error(`要导出的图表（id ${targetChartId}）已不在当前看板，请重新选择`); return; }
+        if (!targetChart.data_cache) { toast.error(`「${targetChart.name}」暂无数据，请先刷新后重试`); return; }
+        try {
+          const { columns, rows } = JSON.parse(targetChart.data_cache);
+          const csv = [columns.join(','), ...rows.map((r: any) => columns.map((c: string) => String(r[c] ?? '')).join(','))].join('\n');
+          const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = `${targetChart.name || 'export'}.csv`; a.click();
+          URL.revokeObjectURL(url);
+        } catch (error) {
+          toast.error(`导出失败：${error instanceof Error ? error.message : '数据格式无法解析'}`);
         }
       }
     };
@@ -1490,23 +1549,27 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       <button
         type="button"
         onClick={handleClick}
-        onMouseDown={e => { e.stopPropagation(); (e.currentTarget as HTMLElement).style.transform = 'scale(0.95)'; }}
+        disabled={exportNoTarget}
+        title={exportNoTarget ? '请先在属性面板选择要导出的图表' : undefined}
+        onMouseDown={e => { e.stopPropagation(); if (!exportNoTarget) (e.currentTarget as HTMLElement).style.transform = 'scale(0.95)'; }}
         onMouseUp={e => { (e.currentTarget as HTMLElement).style.transform = 'scale(1)'; }}
         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.transform = 'scale(1)'; }}
         style={{
           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
           position: 'absolute', inset: 0,
           fontSize: 'inherit',
+          lineHeight: ws.lineHeight,
           borderRadius: ws.borderRadius ?? 6,
           fontWeight: ws.fontWeight,
           border: `${ws.borderWidth ?? 1}px ${ws.borderStyle || 'solid'} ${btnBorderColor}`,
           background: btnBgColor,
           color: btnTextColor,
-          padding: '4px 8px',
-          gap: 6,
+          padding: ws.padding ?? '4px 8px',
+          gap: ws.gap ?? 6,
           cursor: 'pointer',
           transition: 'transform 0.15s ease',
           boxSizing: 'border-box',
+          ...(exportNoTarget ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
         }}
       >
         {chartType === 'widget_search' && <Search style={{ width: '1.2em', height: '1.2em' }} />}

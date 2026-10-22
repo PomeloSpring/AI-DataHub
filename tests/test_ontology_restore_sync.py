@@ -113,15 +113,25 @@ def test_list_models_include_archived_controls_filter(monkeypatch):
 def test_kb_sync_invokes_sync_service(monkeypatch):
     called = {}
     monkeypatch.setattr(ontology_kb_sync, "sync_model_to_qmind",
-                        lambda mid: called.update(id=mid) or {"synced": 1, "targets": ["分析知识库"]})
+                        lambda mid, kb_id=None: called.update(id=mid, kb_id=kb_id) or {"synced": 1, "targets": ["分析知识库"]})
     result = ontology_api.sync_model_kb(7)
     assert called["id"] == 7
+    assert called["kb_id"] is None   # 未传 kb_id → 默认路由
     assert result == {"synced": 1, "targets": ["分析知识库"]}
+
+
+def test_kb_sync_passes_selected_kb(monkeypatch):
+    """关系图谱页选库后 kb_id 透传到同步服务（一次性定向推送）。"""
+    called = {}
+    monkeypatch.setattr(ontology_kb_sync, "sync_model_to_qmind",
+                        lambda mid, kb_id=None: called.update(id=mid, kb_id=kb_id) or {"synced": 1, "targets": ["X"]})
+    ontology_api.sync_model_kb(7, kb_id=42)
+    assert called["kb_id"] == 42
 
 
 def test_kb_sync_value_error_maps_to_400(monkeypatch):
     monkeypatch.setattr(ontology_kb_sync, "sync_model_to_qmind",
-                        lambda mid: (_ for _ in ()).throw(ValueError("模型不存在")))
+                        lambda mid, kb_id=None: (_ for _ in ()).throw(ValueError("模型不存在")))
     with pytest.raises(HTTPException) as exc:
         ontology_api.sync_model_kb(7)
     assert exc.value.status_code == 400
@@ -130,8 +140,54 @@ def test_kb_sync_value_error_maps_to_400(monkeypatch):
 def test_kb_sync_failure_is_loud_not_silent(monkeypatch):
     """同步失败必须显式报 502 并带可读提示，不得吞成成功/空结果。"""
     monkeypatch.setattr(ontology_kb_sync, "sync_model_to_qmind",
-                        lambda mid: (_ for _ in ()).throw(RuntimeError("qmind unreachable")))
+                        lambda mid, kb_id=None: (_ for _ in ()).throw(RuntimeError("qmind unreachable")))
     with pytest.raises(HTTPException) as exc:
         ontology_api.sync_model_kb(7)
     assert exc.value.status_code == 502
     assert "同步未完成" in exc.value.detail
+
+
+# ── 关系图谱页手动选库（kb_id 一次性覆盖默认路由，含源本体例外）─────────────
+
+
+def _stub_sync_internals(monkeypatch, uploaded):
+    """把 sync_model_to_qmind 的 CLI/渲染/水位线副作用换成可观察的桩。"""
+    monkeypatch.setattr(ontology_kb_sync, "_render_cloud_doc", lambda model: "语义文档正文")
+    monkeypatch.setattr(ontology_kb_sync, "ensure_notebook",
+                        lambda kb: (kb["notebook_id"], ""))
+    monkeypatch.setattr(ontology_kb_sync, "_delete_old_sources", lambda nb, title: 0)
+    monkeypatch.setattr(ontology_kb_sync, "_upload_markdown",
+                        lambda nb, title, md: uploaded.append(nb) or (True, ""))
+    monkeypatch.setattr(ontology_kb_sync, "_write_state", lambda *a, **k: None)
+
+
+def test_sync_selected_kb_overrides_default_routing_for_source(monkeypatch):
+    """源本体默认不做 RAG（sync_targets_for_model 返回空），但手动选库应显式推送到该库。"""
+    uploaded = []
+    _stub_sync_internals(monkeypatch, uploaded)
+    monkeypatch.setattr(ontology_service, "get_model", lambda mid: {
+        "id": mid, "name": "ARMS RUM 观测本体", "kind": "source",
+        "datasource_id": 5, "status": "active"})
+    # 默认路由下源本体无目标（验证确实走的是手动覆盖）
+    assert ontology_kb_sync.sync_targets_for_model({"kind": "source", "datasource_id": 5}) == []
+    monkeypatch.setattr(ontology_kb_sync, "resolve_kb_target",
+                        lambda kb_id: {"id": kb_id, "name": "运维知识库", "notebook_id": "nb-ops"})
+
+    result = ontology_kb_sync.sync_model_to_qmind(1, kb_id=88)
+    assert result["synced"] == 1 and result["targets"] == ["运维知识库"]
+    assert uploaded == ["nb-ops"]  # 推到了所选库的 notebook
+    assert "skipped" not in result
+
+
+def test_sync_selected_kb_unavailable_is_loud(monkeypatch):
+    """指定库不可用（已删/非 qmind/无 notebook）时显式 skipped，不静默换到默认库。"""
+    uploaded = []
+    _stub_sync_internals(monkeypatch, uploaded)
+    monkeypatch.setattr(ontology_service, "get_model", lambda mid: {
+        "id": mid, "name": "业务本体", "kind": "business", "datasource_id": 0, "status": "active"})
+    monkeypatch.setattr(ontology_kb_sync, "resolve_kb_target", lambda kb_id: None)
+
+    result = ontology_kb_sync.sync_model_to_qmind(2, kb_id=999)
+    assert result["synced"] == 0
+    assert result["skipped"] == "specified_kb_unavailable"
+    assert uploaded == []  # 未向任何库推送

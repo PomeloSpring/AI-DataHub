@@ -20,6 +20,7 @@ from typing import Annotated, Optional
 from backend.modules.mind.execution.sdk_tools.catalog_tools import _text, record_execute_error
 from backend.semantics.contract import (
     safe_warnings as _safe_warnings,
+    safe_governance_notes as _safe_governance_notes,
     sanitize_execute_reason as _sanitize_execute_reason,
 )
 
@@ -50,29 +51,47 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
 
     payload = dict(raw_payload or {})
 
-    # 数据源寻址(v0.5): `datasource`(业务名) → 角色授权集内解析(waker-datasource-domain §2,
-    # 复用 query_tools._resolve_datasource_arg / resource_guard._resolve_authorized_source);
-    # 未传 → 会话生效源(权威)。禁止消费 LLM 传的数值 datasource_id(黑盒): 瞎猜的 id
-    # 会让 resolve_binding 扫错范围, 误报 "object 'case' 未绑定到任何物理表"。
-    # 服务端内部调用(eval/playground)直传 id 不受限。多站点=LLM 逐站编排(各带 datasource 名)。
-    if (payload.get("datasource") or "").strip():
+    # 数据源寻址(v0.6): `site`(站点业务名/代码) > `datasource`(源业务名) > 会话生效源。
+    # 两者都由服务端在**角色授权集**内解析(waker-datasource-domain §2, 复用
+    # query_tools._resolve_datasource_arg / site_service.resolve_site_to_source)。
+    # 禁止消费 LLM 传的数值 datasource_id(黑盒): 瞎猜的 id 会让 resolve_binding 扫错
+    # 范围, 误报 "object 'case' 未绑定到任何物理表"。服务端内部调用(eval/playground)
+    # 直传 id 不受限。多站点 = LLM 逐站编排(各带 site)。
+    site_arg = str(payload.get("site") or "").strip()
+    ds_arg = str(payload.get("datasource") or "").strip()
+    if ctx is not None and (site_arg or ds_arg):
         from backend.modules.mind.execution.sdk_tools.query_tools import _resolve_datasource_arg
         try:
             payload["datasource_id"] = int(_resolve_datasource_arg(payload, ctx) or 0)
         except (ValueError, PermissionError) as exc:
             return ({"error": str(exc),
-                     "hint": "datasource 传 list_datasources 显示的业务名; 不确定就问用户, 不要猜。"}, True)
+                     "hint": "site 传「站点范围」段里的站点业务名(如 '中国'/'日本'), "
+                             "datasource 传 list_datasources 显示的业务名; 不确定就问用户, 不要猜。"}, True)
     elif ctx:
         payload["datasource_id"] = int(ctx.datasource_id or 0)
     if ctx:
         payload["workspace_id"] = int(ctx.workspace_id or 0)
         payload["user_id"] = int(ctx.user_id or 0)
 
+    # 会话站点兼容：未点名站点/源且会话未锁定单一源（如中国站点挂了 mysql+SLS 多源）
+    # 时，按会话站点再试一次（站点内唯一源才能定下来，多义不猜）。
+    if not int(payload.get("datasource_id") or 0) and ctx is not None:
+        extra = getattr(ctx, "extra", None) or {}
+        session_site = str(extra.get("site_code") or "").strip()
+        available = extra.get("available_datasource_ids") or []
+        if session_site and available:
+            from backend.core.site_service import session_source_for_site
+            payload["datasource_id"] = int(session_source_for_site(session_site, available) or 0)
+
     # fail-loud: 业务会话未确定数据源时明确报错, 不下探 resolve_binding(datasource_id=0)
     # 把"未选源"误报成"对象未绑定"(系统域 ds=0 是合法系统域, 不拦)。
     from backend.modules.mind.execution.sdk_tools.scoped_metadata import system_scope
     if not int(payload.get("datasource_id") or 0) and ctx is not None and not system_scope(ctx):
-        return ({"error": "当前会话未确定数据源，无法执行语义查询；请先在会话中选择一个已授权数据源。"}, True)
+        session_site = str((getattr(ctx, "extra", None) or {}).get("site_code") or "").strip()
+        return ({"error": "当前会话未确定数据源，无法执行语义查询；"
+                          + (f"会话站点「{session_site}」下有多个已授权数据源或为聚合态，"
+                             f"请对本次查询带上 site 参数（可查站点见「站点范围」段）。"
+                             if session_site else "请先在会话中选择一个已授权数据源。")}, True)
 
     q, err, notes = parse_intent(payload)
     if err:
@@ -84,7 +103,7 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
         }, True)
 
     # v0.5: 服务端跨站展开已退役——全球/多站点由 LLM 按站点编排多次单站查询
-    # (各带 datasource 名, 见 GLOBAL_SEMANTIC_LAYER_DESIGN.md §7/§8);
+    # (各带 site 或 datasource 名, 见 GLOBAL_SEMANTIC_LAYER_DESIGN.md §7/§8);
     # 站点维度已在 parse_intent 拒收, 勿再引入服务端展开/合并(防旧机制回潮)。
 
     binding, bind_warnings = await asyncio.to_thread(
@@ -148,6 +167,12 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
     # intent 回显中剔除系统注入的基础设施标识(datasource/workspace/user id)。
     intent_echo = {k: v for k, v in q.model_dump().items()
                    if k not in ("datasource_id", "workspace_id", "user_id")}
+    # 治理串脱敏口径：物理列 -> 业务名（binding.column_map 反向）+ 物理表名 redact。
+    # 不回修服务端值（审计/评测仍消原始策略串），只修对 LLM 下发的这一份。
+    gov_kwargs = {
+        "label_map": {v: k for k, v in (binding.column_map or {}).items()},
+        "redact": [binding.physical_table, binding.dataset_ref],
+    }
 
     try:
         result = await asyncio.to_thread(execute_plan, q, binding, p, policy_ctx, "")
@@ -159,8 +184,11 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
             "object": binding.object_key,
             "intent": intent_echo,
             "query_mode": binding.guardrail.query_mode,
-            "applied_rls": list((e.detail or {}).get("applied_rls") or []),
-            "masked_columns": list((e.detail or {}).get("masked_columns") or []),
+            **_safe_governance_notes(
+                list((e.detail or {}).get("applied_rls") or []),
+                list((e.detail or {}).get("masked_columns") or []),
+                **gov_kwargs,
+            ),
             "warnings": _safe_warnings(p.warnings, bind_warnings),
             "columns": [], "rows": [], "row_count": 0, "execution_ms": None,
             "error": _sanitize_execute_error(e),
@@ -183,13 +211,13 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
         rows_result = {**rows_result, "truncated": True, "rows": rows_records[:_MAX_ROWS]}
 
     # 数据源对 LLM 是黑盒：只回声明式结果 + 安全告警,
-    # 剥离 base_sql / secured_sql / datasource_id / catalog_ref / provenance / 原始报错。
+    # 剥离 base_sql / secured_sql / datasource_id / catalog_ref / provenance / 原始报错，
+    # 并把治理串里的物理列名换成业务名（护栏 §7）。
     payload_out = {
         "object": binding.object_key,
         "intent": intent_echo,
         "query_mode": binding.guardrail.query_mode,
-        "applied_rls": result.applied_rls,
-        "masked_columns": result.masked_columns,
+        **_safe_governance_notes(result.applied_rls, result.masked_columns, **gov_kwargs),
         "warnings": _safe_warnings(p.warnings, bind_warnings),
         **{k: rows_result[k] for k in
            ("columns", "rows", "row_count", "execution_ms", "truncated") if k in rows_result},
@@ -270,11 +298,13 @@ TOOL_SPECS = [
             '"outer": {"metrics": [{"name": "...", "agg": "SUM|COUNT|AVG|MIN|MAX|COUNT_DISTINCT", "of": "<inner_col|*>"}], '
             '"dimensions": [...], "filters": [...], "having": [...]}}, '
             '"order": [{"by": "...", "desc": false}], '
-            '"limit": 100, "time_grain": "day|week|month|null", "datasource": "<source business name>", "dry_run": false, '
+            '"limit": 100, "time_grain": "day|week|month|null", "site": "<site business name or code, e.g. 中国/cn>", '
+            '"datasource": "<source business name>", "dry_run": false, '
             '"time_window": "7d", "time_range": "last_week", "time_column": "<dim_name>", "params": {"<tpl_var>": ...}}. '
-            "For multi-site/global questions: query each site separately by calling this tool once per site with "
-            "\"datasource\" (business name as shown by list_datasources; site↔source mapping lives in the "
-            "data-analysis skill) — sites are NOT a dimension and \"站点\" in dimensions is rejected. "
+            "For multi-site/global questions: call this tool once per site with \"site\" "
+            "(business name from the session '站点范围' context; the server resolves it to that site's "
+            "datasource within your authorized sources) and merge results yourself — sites are NOT a "
+            "dimension and \"站点\" in dimensions is rejected. Never guess a site or source name. "
             "Extract all three elements (metrics / dimensions / time) from the question; NEVER drop a "
             "time expression. Relative rolling windows (e.g. last 7 days) MUST use time_window "
             "(Ns/Nm/Nh/Nd/Nw/NM like '7d','24h','2w','1M'); calendar ranges (e.g. last week / this month / "
@@ -294,8 +324,8 @@ TOOL_SPECS = [
             "nest is a fixed TWO-STAGE aggregate: inner groups by dimensions+metrics, outer re-aggregates "
             "over the inner output columns (of references an inner column name or '*'). nest takes over the "
             "projection: leave top-level metrics/dimensions/having/computed_metrics/window empty when using it. "
-            "For multi-site/global questions: call this tool once per site with \"datasource\" "
-            "(business name shown by list_datasources) and merge results yourself; sites are NOT a "
+            "For multi-site/global questions: call this tool once per site with \"site\" "
+            "(business name shown in the session '站点范围' context) and merge results yourself; sites are NOT a "
             "dimension — '站点' in dimensions is rejected with guidance. "
             "If the object is bound to a governed dataset (bind_kind=dataset), pass its declared "
             "variables via params — run knowledge_search first to see the dataset's parameter list. "

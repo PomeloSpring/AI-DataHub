@@ -6,7 +6,7 @@ import {
   Plus, MessageSquare, Trash, TrendingUp, X, RefreshCw,
   MoreHorizontal, Pencil, Check, ThumbsUp, ThumbsDown, Cpu,
   Loader2, Maximize2, Minimize2, Paperclip, FileText, Box, FolderOpen, Save, ClipboardList,
-  FileBarChart,
+  FileBarChart, Globe, AlertTriangle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -88,6 +88,7 @@ export default function Chat() {
     executionLayer, selectedModelRef, loadExecutionLayer, setSelectedModelRef,
     asBots, loadAsBots,
     loadConversations, loadDatasources, loadLLMModels, loadSystemConfig,
+    loadAuthorizedSites, authorizedSites, selectedSiteCode, setSelectedSiteCode, siteError,
     setSelectedDsId, setSelectedModelId,
     startNewConversation, switchConversation, deleteConversation, renameConversation,
     sendMessage, cancelMessage, respondToAsk, cancelAsk, updateMessageFeedback, setViewMode, analyzeData, predictData, clear,
@@ -239,6 +240,7 @@ export default function Chat() {
         useChatStore.setState({ currentConvId: null, messages: [] });
         // Reload all data
         loadDatasources();
+        loadAuthorizedSites(wsId);
         loadLLMModels();
         loadSystemConfig();
         loadWorkspaceConfig(wsId);
@@ -254,8 +256,9 @@ export default function Chat() {
     if (selectedWorkspaceId) {
       loadExecutionLayer(selectedWorkspaceId);
       loadAsBots(selectedWorkspaceId);
+      loadAuthorizedSites(selectedWorkspaceId);
     }
-  }, [selectedWorkspaceId, loadExecutionLayer, loadAsBots]);
+  }, [selectedWorkspaceId, loadExecutionLayer, loadAsBots, loadAuthorizedSites]);
 
   // 跟踪用户是否贴底(基于 Radix ScrollArea 的 viewport), 用于决定流式期间是否自动跟随。
   useEffect(() => {
@@ -658,6 +661,38 @@ export default function Chat() {
                 </Select>
               );
             })()}
+
+            {/* 站点选择器：可查站点 = 角色数据源授权的派生视图（不是第二套授权）。
+                会话没任何站点化数据源时不渲染（不放选不出东西的死开关）；
+                对话里点名某站（如“查中国站点”）可自然语言覆盖本轮范围。 */}
+            {authorizedSites.length > 0 && (
+              <Select value={selectedSiteCode} onValueChange={(v) => setSelectedSiteCode(v)}>
+                <SelectTrigger
+                  className="w-[150px] h-8"
+                  title="查询站点范围（对话中直接说「查中国站点」可覆盖本轮）"
+                >
+                  <Globe className="h-3.5 w-3.5 mr-1.5" />
+                  <SelectValue placeholder="选择站点" />
+                </SelectTrigger>
+                <SelectContent>
+                  {authorizedSites.map((s) => (
+                    <SelectItem key={s.site_code} value={s.site_code}>{s.display_name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            {siteError && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 px-2 text-xs text-destructive"
+                title={siteError}
+                onClick={() => loadAuthorizedSites(selectedWorkspaceId)}
+              >
+                <AlertTriangle className="h-3.5 w-3.5 mr-1" />
+                站点加载失败，点击重试
+              </Button>
+            )}
 
             <Button variant="outline" size="sm" onClick={clear} disabled={messages.length === 0}>
               <Trash2 className="h-4 w-4 mr-2" />

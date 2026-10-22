@@ -1,5 +1,6 @@
 import type { VisComponent } from '@/api/visLibrary';
 import { sanitizeStyle, sanitizePack } from '@/lib/dashboardDesign';
+import { CHART_TYPES } from './DashboardChart';
 import { FileText, Map } from 'lucide-react';
 
 const FALLBACK = ['#334155', '#64748b', '#94a3b8'];
@@ -7,15 +8,17 @@ const colorsOf = (value: unknown): string[] => {
   const colors = Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string' && !!v) : [];
   return colors.length ? colors : FALLBACK;
 };
+// 预览文案与条目名同一事实源：曾因两套词表(预览“文本标签” vs 名称“文本展示框”)让用户分不清哪个预览对应哪个控件
+const WIDGET_PREVIEW_TEXT: Record<string, string> = Object.fromEntries(
+  CHART_TYPES.filter(t => t.category === 'widget').map(t => [t.value, t.label]),
+);
 
 // 轻量、不挂 G2 的形状预览: 让 line/pie/radar/gauge/funnel 等不再都显示成柱状图。
 export function ShapePreview({ type, palette, cfg }: { type: string; palette: string[]; cfg: any }) {
   palette = colorsOf(palette);
   const c = (i: number) => palette[i % palette.length];
   if (type.startsWith('widget_')) {
-    const text = ({ widget_label: '文本标签', widget_text: '请输入…', widget_number: '123', widget_date: '年 / 月 / 日',
-      widget_daterange: '开始日期 — 结束日期', widget_select: '请选择 ▾', widget_multi_select: '☑ 选项一  ☑ 选项二',
-      widget_search: '搜索', widget_reset: '重置', widget_export: '导出' } as Record<string, string>)[type];
+    const text = WIDGET_PREVIEW_TEXT[type];
     return <div data-preview-type={type} className="flex h-16 items-center justify-center p-2"><span className="flex h-8 w-full items-center justify-center border px-2 text-[10px]" style={{ background: cfg.backgroundColor, color: cfg.textColor || c(0), borderColor: cfg.borderColor || c(1), borderRadius: cfg.borderRadius ?? 6 }}>{text || '控件'}</span></div>;
   }
   const line = '0,30 18,12 36,22 54,6 72,16 100,9';

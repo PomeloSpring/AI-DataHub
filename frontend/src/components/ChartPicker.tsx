@@ -160,6 +160,8 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
   // 地图类图型(chat)统一走字模库瓦片热力(MapHeatmap):china_map/world_map 的 G2 底图
   // 依赖外网 topo 资源常不可达,且不复用字模库瓦片 —— 这里统一复用瓦片 + 地名/经纬度定位
   const isMapChart = chartType === 'map_heat' || chartType === 'china_map' || chartType === 'world_map';
+  // 图型携带的范围语义:「中国地图」拟合中国,不能因为数据里有美国就把视图中心拉到非洲
+  const mapScope = chartType === 'china_map' ? 'china' : chartType === 'world_map' ? 'world' : 'auto';
 
   if (columns.length < 2 || rows.length === 0) return null;
 
@@ -337,7 +339,7 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
               </Button>
             </div>
             <div ref={chartContainerRef}>
-              <MapHeatmap data={{ columns, rows: filteredRows }} />
+              <MapHeatmap data={{ columns, rows: filteredRows }} scope={mapScope} />
             </div>
           </>
         ) : (
@@ -393,7 +395,7 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
             {isMapChart ? (
               <>
                 <div className="flex gap-2 items-center flex-wrap">{typeSelect}</div>
-                <MapHeatmap data={{ columns, rows: filteredRows }} height={520} />
+                <MapHeatmap data={{ columns, rows: filteredRows }} height={520} scope={mapScope} />
               </>
             ) : (
               <>

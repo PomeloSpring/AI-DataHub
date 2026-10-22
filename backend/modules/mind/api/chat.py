@@ -58,6 +58,7 @@ class SendMessageRequest(BaseModel):
     conversation_id: Optional[int] = 0  # chat 会话 ID(qoder 长对话池 key)
     as_bot_key: Optional[str] = ""  # 聊天端选定的 AS-BOT
     report_theme: Optional[str] = ""  # 报告交付主题 id(前端已将"跟随"解析为当前 App 主题; 空=回落默认)
+    site_code: Optional[str] = ""  # 会话查询站点(adh_sites.site_code); 只影响默认取数范围, 不改变权限裁决
     # 前置意图漏斗：True = 用户点「转深度分析」显式绕过分流。
     # 它只能关"要不要叫模型"，不能关任何数据/权限护栏（护栏仍由执行层统一入口施加）。
     force_agent: Optional[bool] = False
@@ -103,6 +104,7 @@ async def chat_send_stream(
             user_role=user.get("role") or "",
             as_bot_key=req.as_bot_key or "",
             report_theme=req.report_theme or "",
+            site_code=req.site_code or "",
             force_agent=bool(req.force_agent),
             policy=policy,
         ),
@@ -302,7 +304,7 @@ def list_conversations(
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
-            cols = "id, title, datasource_id, workspace_id, as_bot_key, created_at, updated_at"
+            cols = "id, title, datasource_id, workspace_id, as_bot_key, site_code, created_at, updated_at"
             where = ["user_id = %s"]
             params: list = [user["user_id"]]
             if workspace_id:
@@ -344,7 +346,7 @@ def get_conversation(
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, title, datasource_id, workspace_id, as_bot_key, messages, "
+                "SELECT id, title, datasource_id, workspace_id, as_bot_key, site_code, messages, "
                 "created_at, updated_at "
                 "FROM adh_conversations WHERE id = %s AND user_id = %s",
                 (conv_id, user["user_id"]),
@@ -371,6 +373,7 @@ class CreateConversationRequest(BaseModel):
     datasource_id: Optional[int] = 0
     workspace_id: Optional[int] = 0
     as_bot_key: Optional[str] = ""
+    site_code: Optional[str] = ""
 
 
 @router.post("/conversations")
@@ -405,14 +408,22 @@ def create_conversation(
         raise HTTPException(422, str(exc)) from exc
     from backend.common.db.metadata_db import get_metadata_conn
 
+    # 会话站点校验：只接受启用且存在的站点（包含聚合态「全球」）；非法值显式报错不静默丢弃
+    site_code = str(req.site_code or "").strip()
+    if site_code:
+        from backend.core.site_service import get_site
+        site = get_site(site_code)
+        if not site or not int(site.get("is_active") or 0):
+            raise HTTPException(status_code=422, detail=f"站点「{site_code}」不可用，请重新选择查询站点")
+
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO adh_conversations (user_id, title, datasource_id, workspace_id, as_bot_key, messages, created_at, updated_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())",
+                "INSERT INTO adh_conversations (user_id, title, datasource_id, workspace_id, as_bot_key, site_code, messages, created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW())",
                 (user["user_id"], "新对话", req.datasource_id or 0, workspace_id,
-                 as_bot_key, "[]"),
+                 as_bot_key, site_code, "[]"),
             )
             conn.commit()
             conv_id = cur.lastrowid
@@ -423,6 +434,7 @@ def create_conversation(
                 "datasource_id": req.datasource_id or 0,
                 "workspace_id": workspace_id,
                 "as_bot_key": as_bot_key,
+                "site_code": site_code,
                 "created_at": datetime.now().isoformat(),
             }
     finally:
@@ -433,6 +445,7 @@ class UpdateConversationRequest(BaseModel):
     title: Optional[str] = None
     messages: Optional[list] = None
     executor_session_id: Optional[str] = None
+    site_code: Optional[str] = None
 
 
 @router.put("/conversations/{conv_id}")
@@ -479,6 +492,16 @@ def update_conversation(
             if req.messages is not None:
                 updates.append("messages = %s")
                 params.append(json.dumps(req.messages, ensure_ascii=False))
+            if req.site_code is not None:
+                site_code = str(req.site_code or "").strip()
+                if site_code:
+                    from backend.core.site_service import get_site
+                    site = get_site(site_code)
+                    if not site or not int(site.get("is_active") or 0):
+                        raise HTTPException(status_code=422,
+                                            detail=f"站点「{site_code}」不可用，请重新选择查询站点")
+                updates.append("site_code = %s")
+                params.append(site_code)
 
             params.append(conv_id)
             cur.execute(

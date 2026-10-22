@@ -323,6 +323,63 @@ def _permission_summary(
     return "\n".join(parts)
 
 
+def _site_scope_lines(site_code: str, sites: list, datasource_id: int = 0) -> list[str]:
+    """站点范围段（服务端派生，不再硬编码在技能提示词里）。
+
+    可查站点 = 角色已授权数据源的**派生视图**（core.site_service.authorized_sites），
+    不是第二套「谁能查什么」判断。只在会话显式选定站点时注入：定时分析/评测/Playground
+    等绑定单一数据源的无人值守链路不应被鼓励去逐站展开（会改变取数范围）。
+    只列站点业务名与数据源业务名（护栏 §7：不外泄 id/host）。
+    """
+    sites = [s for s in (sites or []) if isinstance(s, dict) and s.get("site_code")]
+    current = str(site_code or "").strip()
+    if not current or not sites:
+        return []
+    concrete = [s for s in sites if not int(s.get("is_aggregate") or 0)]
+    if not concrete:
+        return []
+    aggregate = next((s for s in sites if int(s.get("is_aggregate") or 0)), None)
+    current_label = ""
+    for s in sites:
+        if str(s.get("site_code")) == current:
+            current_label = str(s.get("display_name") or current)
+            break
+    if not current_label:
+        # 会话带的站点已不在可查清单里（授权被收回/站点已停用）：不注入假范围
+        return []
+    lines = ["## 站点范围（服务端派生，本轮生效）"]
+    suffix = "（聚合态：跨站汇总，不对应单一数据源）" if aggregate and current == str(aggregate["site_code"]) else ""
+    lines.append(f"- 会话查询站点: {current_label}{suffix}；未点名站点时默认按该范围取数")
+    listing = " / ".join(
+        f"{s['display_name']}({'、'.join(d['name'] for d in (s.get('datasources') or [])[:4]) or '未挂数据源'})"
+        for s in concrete)
+    lines.append(f"- 可查站点（共 {len(concrete)} 站，括号内为该站数据源业务名）: {listing}")
+    rules = [
+        "① 用户未点名站点时按会话查询站点取数：查询工具带 site=<站点业务名>（如 site=\"中国\"）",
+        "② 用户在对话里点名某站点 → 本轮只用该站点（自然语言覆盖会话默认），不要反过来要求用户改选择",
+    ]
+    is_global = bool(aggregate) and current == str(aggregate["site_code"])
+    if is_global:
+        rules.append(
+            f"③ 会话站点={aggregate.get('display_name') or '全球'} → 对每个可查站点各调一次 "
+            "run_semantic_query(site=...) 后汇总；给合计必须标注“各站合计≠去重全球数”"
+            "（同一客户多站可能重复登记）")
+    else:
+        rules.append(
+            "③ 默认只查会话站点那一站；用户问“全球/各站点/跨站对比”时才逐站各调一次 "
+            "run_semantic_query(site=...) 后汇总，合计标注“各站合计≠去重全球数”")
+    rules += [
+        "④ 不在可查站点清单里的站点 = 无权访问，如实说明并停止，不得换站点重试、不得猜站点名",
+        "⑤ 站点不是 SQL 维度：不得把「站点」写进 dimensions/filters；跨站对比按 ③ 逐站编排",
+        "⑥ 对用户不提“还有其他站点/你没有某站权限”——可查范围就是他的数据世界，直接回答数字；"
+        "某站失败标“部分站点暂无数据”，不展开错误细节",
+    ]
+    lines.append("- 规则：")
+    lines.extend(f"  {r}" for r in rules)
+    del datasource_id  # 生效源仅服务端使用，不进提示词（黑盒）
+    return lines
+
+
 def _knowledge_base_lines(knowledge_bases: list) -> list[str]:
     """已绑定知识库说明行(名称 + 类型标注)."""
     type_labels = {
@@ -393,6 +450,8 @@ def compose_system_prompt(
     datasource_id: int = 0,
     capabilities: dict | None = None,
     report_theme_id: str = "",
+    site_code: str = "",
+    authorized_sites: list | None = None,
 ) -> str:
     """组合执行层系统提示词.
 
@@ -406,6 +465,10 @@ def compose_system_prompt(
             由 backend.modules.mind.execution.quick_paths.match_quick_paths 产出;可为 None
         user_id / workspace_id / datasource_id: 当前会话身份与数据源,用于强制加载
             生效的合规屏蔽列与 RLS 行范围(L1 护城河; datasource_id=0 仍加载全局屏蔽列)
+        site_code / authorized_sites: 会话查询站点与可查站点清单（角色授权派生，
+            见 core.site_service.authorized_sites）。authorized_sites=None 时按 user_id/
+            workspace_id 现推；**仅当会话显式选定站点时注入**（定时分析/评测等绑定
+            单一数据源的链路不受影响）
     """
     as_bots = as_bots or []
     skills = skills or []
@@ -452,6 +515,21 @@ def compose_system_prompt(
             "  取数一律先走 `get_metrics` 实时目录 + `run_semantic_query`, **仅当语义层取不到口径含义时**才用 `knowledge_search` 查一次背景;"
             "  知识库内容与本体名称冲突时一律以 `get_metrics` 为准, **不得**据知识库发明未出现在目录中的对象/指标名(如跨数据源/跨方言的幽灵对象)。"
         )
+
+    # 站点范围（服务端派生）: 会话默认站点 + 可查站点清单 + 全球逐站编排规则
+    # authorized_sites=None 时按会话身份现推（与 _blocked_columns/_rls_scope_lines 同思路：
+    # 提示词组装本来就是读侧）；显式传入时以传入为准（测试/己持有授权集的调用方）。
+    sites_for_prompt = authorized_sites
+    if sites_for_prompt is None and user_id:
+        try:
+            from backend.core.site_service import authorized_sites as _authorized_sites
+            sites_for_prompt = _authorized_sites(int(user_id), int(workspace_id or 0))
+        except Exception as e:  # noqa: BLE001 — 站点拓扑不可用就不注入，不假装有
+            logger.debug("[PromptComposer] authorized sites unavailable: %s", e)
+            sites_for_prompt = []
+    site_lines = _site_scope_lines(site_code, sites_for_prompt or [], datasource_id)
+    if site_lines:
+        sections.append("\n".join(site_lines))
 
     # 取数规范(强约束):默认语义层唯一主路;仅当本会话已授权 execute_sql(nl2sql AS-BOT) 时
     # 切换为"语义层主路 + 受治理 SQL 补充"双路径口径, 避免提示词与实际可用工具矛盾。

@@ -79,6 +79,49 @@ def test_safe_warnings_filters_leak_keywords():
     assert out == ["查询被安全护栏拦截", "已自动补 LIMIT 1000"]
 
 
+def test_safe_governance_notes_no_physical_column_for_llm():
+    """护栏 §7：对 LLM 下发的治理串不得含物理列名/物理表名。"""
+    notes = contract.safe_governance_notes(
+        ["sensitive_block:activator_ip,mobile,user_name", "rls:t_case_records:dept=1"],
+        ["mobile"],
+        label_map={"mobile": "手机号", "user_name": "用户名称"},
+        redact=["t_case_records"],
+    )
+    joined = " ".join(notes["applied_rls"] + notes["masked_columns"])
+    for leak in ("activator_ip", "mobile", "user_name", "t_case_records"):
+        assert leak not in joined, f"物理标识泄露给 LLM: {leak}"
+    assert any("手机号、用户名称" in s for s in notes["applied_rls"]), notes["applied_rls"]
+    assert any("另有 1 个受管控列是其他字段" in s for s in notes["applied_rls"]), notes["applied_rls"]
+    assert notes["masked_columns"] == ["手机号"], notes["masked_columns"]
+
+
+def test_safe_governance_notes_does_not_imply_capability_absent():
+    """全局敏感基线在册列名与本次字段不同(ARMS RUM 实案),不得跨字段推断"IP 被屏蔽"。"""
+    out = contract.safe_governance_notes(
+        ["sensitive_block:activator_ip,bank_card,card_no,email,id_card,idcard,mobile,nick_name,"
+         "passwd,password,phone,real_name,tel,user_name,username"],
+        [],
+        label_map={},
+    )
+    assert len(out["applied_rls"]) == 1
+    text = out["applied_rls"][0]
+    # 物理列名不外泄,但“全局基线在册”这个事实要保留(全局生效是正确设计)
+    assert "activator_ip" not in text and "bank_card" not in text
+    assert "全局敏感字段基线在册 15 列" in text and "对所有数据源生效" in text
+    # 关键:禁止跨字段推断(RUM 的 IP 是 net.ip,与 activator_ip 是不同字段)
+    assert "不得据此推断别的字段被屏蔽/不存在" in text
+
+
+def test_safe_governance_notes_keeps_declarative_policy_names():
+    """不含物理标识的声明式策略名原样保留（不静默丢治理信息）。"""
+    out = contract.safe_governance_notes(
+        ["row_filter:本部门可见", "sensitive_fields:身份证"], ["身份证"], label_map={},
+    )
+    assert "row_filter:本部门可见" in out["applied_rls"]
+    # 列清单类条目映不到业务名时不列名,只报数量(且不得跨字段推断)
+    assert any(s.startswith("sensitive_fields: 全局敏感字段基线在册 1 列") for s in out["applied_rls"]), out
+
+
 # ── execute 门面 ─────────────────────────────────────────────────
 
 

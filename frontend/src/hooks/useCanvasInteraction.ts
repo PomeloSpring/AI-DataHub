@@ -1,16 +1,13 @@
 import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
 import type { DashboardChart } from '../stores/dashboardStore';
-import { chartRect, snapCanvasRect, isEditingTarget, type Rect, type SnapGuide } from '@/lib/dashboardDesign';
+import { chartRect, isChartLocked, minSizeOf, snapCanvasRect, isEditingTarget, type Rect, type SnapGuide } from '@/lib/dashboardDesign';
 
 export const CANVAS_WIDTH = 1920;
 export const CANVAS_HEIGHT = 1080;
 export const GRID_SIZE = 20;
-export const MIN_CHART_WIDTH = 200;
-export const MIN_CHART_HEIGHT = 150;
-export const MIN_WIDGET_WIDTH = 100;
-export const MIN_WIDGET_HEIGHT = 36;
 export const DEFAULT_CHART_SIZE = { w: 400, h: 300 };
-export const DEFAULT_WIDGET_SIZE = { w: 300, h: 60 };
+// 控件默认紧凑：刚拖进去不臃肿，拖大拖小由人控制
+export const DEFAULT_WIDGET_SIZE = { w: 180, h: 32 };
 
 type Point = { x: number; y: number };
 type Gesture = {
@@ -23,7 +20,7 @@ export function useCanvasInteraction(opts: {
   allCharts: DashboardChart[];
   onDragEnd: (chartId: number, position: Point) => void;
   onResizeEnd: (chartId: number, position: Rect) => void;
-  onSelectElement: (chart: DashboardChart | null) => void;
+  onSelectElement: (chart: DashboardChart | null, e?: React.PointerEvent) => void;
   autoFit?: boolean;
   viewportKey?: string;
   viewportSize?: { width: number; height: number };
@@ -62,6 +59,9 @@ export function useCanvasInteraction(opts: {
   }, [size.width, size.height, opts.viewportKey, scale]);
   const latest = useRef({ ...opts, canvasSize: size, gridSize, snapEnabled });
   latest.current = { ...opts, canvasSize: size, gridSize, snapEnabled };
+  // 供不依赖 scale 的回调读取当前缩放（避免在 setScale 更新函数里做副作用）
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
   const isInteracting = useCallback(() => !!gesture.current || elementInteraction.current, []);
   const beginElementInteraction = useCallback(() => {
     if (isInteracting() || latest.current.interactionLocked) return false;
@@ -74,18 +74,18 @@ export function useCanvasInteraction(opts: {
   const start = useCallback((e: React.PointerEvent, kind: Gesture['kind'], chartId?: number) => {
     if (e.defaultPrevented || isInteracting() || latest.current.interactionLocked || e.isPrimary === false || (e.button !== 0 && !(kind === 'pan' && e.button === 1)) || isEditingTarget(e.target)) return;
     const chart = latest.current.allCharts.find(c => c.id === chartId);
-    if (kind !== 'pan' && !chart) return;
+    // 锁定的图层不参与拖动/缩放（只能从图层面板解锁）
+    if (kind !== 'pan' && (!chart || isChartLocked(chart))) return;
     e.preventDefault(); e.stopPropagation();
     const target = (kind !== 'pan' && (e.currentTarget as HTMLElement).closest<HTMLElement>('.adh-cell')) || canvasRef.current || e.currentTarget as HTMLElement;
     const original = chart ? chartRect(chart) : { ...panOffset, w: 0, h: 0 };
-    const widget = chart?.chart_type.startsWith('widget_');
     gesture.current = { kind, chartId, pointerId: e.pointerId, target, start: { x: e.clientX, y: e.clientY },
       original, current: original, scale, moved: false,
       others: latest.current.allCharts.filter(c => c.id !== chartId).map(chartRect),
-      minimum: { w: widget ? MIN_WIDGET_WIDTH : MIN_CHART_WIDTH, h: widget ? MIN_WIDGET_HEIGHT : MIN_CHART_HEIGHT } };
+      minimum: minSizeOf(chart?.chart_type) };
     // 捕获在稳定的视口节点上，选中图表产生的新工具条不会中断捕获。
     target.setPointerCapture?.(e.pointerId);
-    if (kind !== 'pan' || (!spacePressed.current && !latest.current.panMode && e.button === 0)) latest.current.onSelectElement(chart || null);
+    if (kind !== 'pan' || (!spacePressed.current && !latest.current.panMode && e.button === 0)) latest.current.onSelectElement(chart || null, e);
   }, [scale, panOffset, isInteracting]);
   const handleDragStart = useCallback((e: React.PointerEvent, id: number) => {
     if (spacePressed.current || latest.current.panMode || e.button === 1) start(e, 'pan');
@@ -94,7 +94,9 @@ export function useCanvasInteraction(opts: {
   const handleResizeStart = useCallback((e: React.PointerEvent, id: number) => start(e, 'resize', id), [start]);
   const handlePanStart = useCallback((e: React.PointerEvent) => {
     const target = e.target as HTMLElement;
-    if (e.button === 1 || spacePressed.current || latest.current.panMode || !target.closest?.('[data-chart-id],.adh-cell,button,input,select,textarea,[role="separator"]')) start(e, 'pan');
+    // 选中覆盖层（工具条/缩放手柄）不能被平移抢走：它们自带 pointerdown 处理
+    if (e.button === 1 || spacePressed.current || latest.current.panMode
+      || !target.closest?.('[data-chart-id],.adh-cell,.adh-editable-card,button,input,select,textarea,[role="separator"],[role="slider"],[data-selection-overlay]')) start(e, 'pan');
   }, [start]);
 
   useEffect(() => {
@@ -184,7 +186,18 @@ export function useCanvasInteraction(opts: {
   useEffect(() => { cancelRef.current(); spacePressed.current = false; }, [opts.viewportKey, opts.interactionLocked]);
 
   // 非被动监听确保滚轮缩放不同时滚动页面，缩放锚点固定在鼠标位置。
+  // 高频滚轮事件合并到一帧只算一次，避免触控板惯性滚动触发几十次重渲染。
   useEffect(() => {
+    let frame: number | null = null;
+    let pending: { x: number; y: number; factor: number } | null = null;
+    const apply = () => {
+      frame = null;
+      const next = pending;
+      pending = null;
+      if (!next) return;
+      setPanOffset({ x: next.x, y: next.y });
+      setScale(next.factor);
+    };
     const wheel = (e: WheelEvent) => {
       const el = canvasRef.current;
       if (!el || !(e.target instanceof Node) || !el.contains(e.target)) return;
@@ -194,18 +207,29 @@ export function useCanvasInteraction(opts: {
       const bounds = el.getBoundingClientRect();
       const next = Math.min(2, Math.max(0.01, scale * Math.exp(-e.deltaY * 0.002)));
       const factor = next / scale;
-      setPanOffset(p => ({ x: p.x * factor + (e.clientX - bounds.left - bounds.width / 2) * (1 - factor),
-        y: p.y * factor + (e.clientY - bounds.top - bounds.height / 2) * (1 - factor) }));
-      setScale(next);
+      pending = {
+        x: panOffset.x * factor + (e.clientX - bounds.left - bounds.width / 2) * (1 - factor),
+        y: panOffset.y * factor + (e.clientY - bounds.top - bounds.height / 2) * (1 - factor),
+        factor: next,
+      };
+      if (frame === null) frame = requestAnimationFrame(apply);
     };
     window.addEventListener('wheel', wheel, { passive: false });
-    return () => window.removeEventListener('wheel', wheel);
-  }, [scale, isInteracting]);
+    return () => {
+      window.removeEventListener('wheel', wheel);
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [scale, panOffset, isInteracting]);
   const zoomIn = useCallback(() => { if (!isInteracting() && !latest.current.interactionLocked) { fitting.current = false; setScale(v => Math.min(2, v * 1.2)); } }, [isInteracting]);
   const zoomOut = useCallback(() => { if (!isInteracting() && !latest.current.interactionLocked) { fitting.current = false; setScale(v => Math.max(0.01, v / 1.2)); } }, [isInteracting]);
   const zoomTo = useCallback((value: number) => {
     if (isInteracting() || latest.current.interactionLocked || !Number.isFinite(value)) return;
-    fitting.current = false; setScale(Math.max(0.01, Math.min(2, value))); setPanOffset({ x: 0, y: 0 });
+    const next = Math.max(0.01, Math.min(2, value));
+    const factor = scaleRef.current > 0 ? next / scaleRef.current : 1;
+    fitting.current = false;
+    // 以当前视口中心为锚点缩放：pan' = pan * (s'/s)，避免拖缩放滑杆时画布跳回中心
+    setPanOffset(p => ({ x: p.x * factor, y: p.y * factor }));
+    setScale(next);
   }, [isInteracting]);
   const resetZoom = useCallback(() => {
     const el = canvasRef.current;

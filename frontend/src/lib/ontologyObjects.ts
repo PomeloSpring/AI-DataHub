@@ -66,12 +66,12 @@ export function showsM234(kind?: string): boolean {
 }
 
 /**
- * 「部署绑定」页签的可见域：源本体不展示。
- * 部署绑定是对象 × 站点的跨站机械映射（契约模型形状），而源本体本身就是**单个数据源**
+ * 「适用站点」页签的可见域：源本体不展示。
+ * 站点声明是**模型级**的跨站路由配置（一份契约 × N 站部署），而源本体本身就是**单个数据源**
  * 物理表的语义投影——对它谈“部署到哪几站”没有意义（v0.5 拍板：绑定层不属于本体）。
  * 空 kind 的存量模型维持可见，不因分域判别而误伤。
  */
-export function showsDeployments(kind?: string): boolean {
+export function showsSiteScope(kind?: string): boolean {
   return kind !== 'source';
 }
 

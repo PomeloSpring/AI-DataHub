@@ -115,6 +115,90 @@ def block_code(blocked_at: str) -> ErrorCode:
     return BLOCK_CODE_MAP.get(blocked_at or "", ErrorCode.INTERNAL)
 
 
+# 治理串里“冒号后是逗分隔的物理列清单”的那一类前缀（enforcer.policies_applied 口径）
+_GOVERNANCE_COL_PREFIXES = ("sensitive_block", "sensitive_fields", "hidden_columns", "column_policy")
+
+
+def safe_governance_notes(
+    applied_rls: list[str] | None,
+    masked_columns: list[str] | None,
+    label_map: dict[str, str] | None = None,
+    *,
+    redact: list[str] | None = None,
+) -> dict[str, list[str]]:
+    """把治理生效信息里的**物理列名**换成业务名（护栏 §7：数据源对 LLM 是黑盒）。
+
+    入参形如 `"sensitive_block:activator_ip,mobile"`（全局敏感基线按列名登记，跨源
+    同名即在册，**对所有数据源生效是正确设计**）。直接下发会出两类事：
+      1) 物理列名进 LLM 视野后被转述给用户（历史缺陷：回答里出现 `activator_ip`）；
+      2) 模型拿“某个字段的治理策略”去推断**另一个字段**被屏蔽/不存在
+         （历史缺陷：基线里的 `activator_ip` 被推断成“RUM 的 IP 字段被合规屏蔽”，
+         而 RUM 的 IP 是 `net.ip`，是另一个字段）。
+
+    口径：
+      - 能映到本对象列（label_map: 物理列 -> 业务名）→ 只报业务名；
+      - 映不到 → **不列名**，只报数量并明确“只约束它自己那几列，不得跨字段推断”；
+        被 block 的列定义上不会返回，该陈述可验证，不是降级掩盖；
+      - 非列清单类条目过 `LEAK_KEYWORDS` 与 `redact`（物理表名）后才保留；
+      - 原始策略串仍完整留在服务端 provenance/审计与评测契约里，本函数只影响对 LLM 下发。
+    """
+    lm: dict[str, str] = {}
+    for col, name in (label_map or {}).items():
+        for key in (str(col), str(col).rsplit(".", 1)[-1]):
+            if key:
+                lm.setdefault(key.lower(), str(name))
+    redacts = [str(r) for r in (redact or []) if r]
+
+    def _label_of(token: str) -> str:
+        t = token.strip().lower()
+        return lm.get(t) or lm.get(t.rsplit(".", 1)[-1]) or ""
+
+    def _redactable(text: str) -> bool:
+        low = text.lower()
+        return any(k in low for k in LEAK_KEYWORDS) or any(r.lower() in low for r in redacts)
+
+    notes: list[str] = []
+    for raw in list(applied_rls or []):
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        kind, _, payload = s.partition(":")
+        tokens = [t.strip() for t in payload.split(",") if t.strip()] if payload else []
+        if kind in _GOVERNANCE_COL_PREFIXES and tokens:
+            named = [lbl for lbl in (_label_of(t) for t in tokens) if lbl]
+            if named:
+                uniq = sorted(set(named))
+                extra = len(tokens) - len(named)
+                text = f"{kind}: 已对 {len(uniq)} 列生效（{'、'.join(uniq)}）"
+                if extra > 0:
+                    text += f"；另有 {extra} 个受管控列是其他字段（不同列名），未作用于本次结果"
+                notes.append(text)
+            else:
+                notes.append(
+                    f"{kind}: 全局敏感字段基线在册 {len(tokens)} 列（按列名匹配、对所有数据源生效），"
+                    "本次查询的字段与它们是不同列名：基线只约束它自己那几列，"
+                    "不得据此推断别的字段被屏蔽/不存在；某字段是否可用只看 get_metrics 目录与实际取数"
+                )
+            continue
+        if _redactable(s):
+            continue
+        if s not in notes:
+            notes.append(s)
+
+    masked_out: list[str] = []
+    unmapped = 0
+    for col in list(masked_columns or []):
+        lbl = _label_of(str(col))
+        if lbl:
+            if lbl not in masked_out:
+                masked_out.append(lbl)
+        else:
+            unmapped += 1
+    if unmapped:
+        masked_out.append(f"另有 {unmapped} 个脱敏列是其他字段（不同列名），未作用于本次结果")
+    return {"applied_rls": notes, "masked_columns": masked_out}
+
+
 def export_schemas() -> dict[str, Any]:
     """导出跨语言唯一契约的 JSON Schema（OpenAPI 可直接 $ref）。
 

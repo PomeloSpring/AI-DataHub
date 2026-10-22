@@ -101,6 +101,14 @@ class ChartUpdate(BaseModel):
         return value
 
 
+class ChartBatchSave(BaseModel):
+    """整板草稿提交：新增/修改/删除一次带上来，避开 N 次往返。"""
+    added: Optional[list] = []
+    changed: Optional[dict] = {}
+    deleted: Optional[list] = []
+    metadata: Optional[dict] = None
+
+
 class ChartRefreshRequest(BaseModel):
     params: Optional[dict] = {}
     page_limit: Optional[int] = None
@@ -522,6 +530,43 @@ def delete_chart_endpoint(
     except Exception as e:
         logger.exception("Failed to delete chart")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{dashboard_id}/batch")
+def batch_save_charts_endpoint(
+    dashboard_id: int,
+    req: ChartBatchSave,
+    user: dict = Depends(get_current_user),
+):
+    """一次提交整板草稿（看板元数据 + 图表新增/修改/删除）。
+
+    先全量预检再应用：预检不过则一笔不写，避开旧串行保存“存了一半失败”的半截状态；
+    失败项逐条带可读原因返回，前端能指名是哪个图表没存上（不笼统报“保存未完成”）。
+    """
+    try:
+        _require_editable(dashboard_id, user)
+        errors: list = []
+        saved_metadata = False
+        if req.metadata:
+            saved_metadata = dashboard_service.update_dashboard(
+                dashboard_id, req.metadata, user["user_id"],
+            )
+            if not saved_metadata and req.metadata:
+                errors.append("看板元数据未写入（无变更或看板不存在）")
+        outcome = chart_service.batch_save(dashboard_id, req.added or [], req.changed or {}, req.deleted or [])
+        errors.extend(outcome["errors"])
+        return {
+            "success": bool(outcome["ok"]) and not errors,
+            "results": outcome["results"],
+            "created": outcome["created"],
+            "metadata_saved": saved_metadata,
+            "errors": errors,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to batch save dashboard draft")
+        raise HTTPException(status_code=500, detail="看板保存失败，草稿已保留，可重试") from e
 
 
 @router.post("/{dashboard_id}/charts/{chart_id}/refresh")

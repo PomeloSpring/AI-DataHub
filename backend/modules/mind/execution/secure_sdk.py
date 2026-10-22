@@ -103,6 +103,10 @@ def build_options(adapter, task, backend):
         user_id=ctx.user_id, workspace_id=ctx.workspace_id, datasource_id=ctx.datasource_id,
         capabilities=policy.manifest(),
         report_theme_id=ctx.extra.get("report_theme") or "",
+        site_code=ctx.extra.get("site_code") or "",
+        # None → 由 prompt_composer 按会话身份现推（bind_resources 在首次工具调用才跑，
+        # 此处不能当成“已算出空集”传空列表，否则站点范围永远注不进去）
+        authorized_sites=ctx.extra.get("authorized_sites"),
     )
     common = dict(tools=[], allowed_tools=sorted(policy.allowed), permission_mode="default",
                   setting_sources=[], cwd=str(runtime.workspace), add_dirs=[], env=env,

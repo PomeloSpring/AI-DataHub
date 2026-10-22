@@ -48,24 +48,39 @@ export default function Datasets() {
   const [items, setItems] = useState<Dataset[]>([]);
   const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState('');
+  const [datasourceId, setDatasourceId] = useState(0);
+  const [datasources, setDatasources] = useState<any[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<any>(null);
   const canManage = hasPerm('dataset:manage');
 
+  // id → 数据源名（卡片次要信息显示用，绝不裸显 id）
+  const dsNameById: Record<number, string> = {};
+  datasources.forEach((d: any) => { dsNameById[Number(d.id)] = d.name; });
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await client.get('/datasets/', { params: { keyword } });
+      const { data } = await client.get('/datasets/', {
+        params: { keyword, datasource_id: datasourceId || 0 },
+      });
       setItems(data.items || []);
     } catch {
       setItems([]);
     } finally {
       setLoading(false);
     }
-  }, [keyword]);
+  }, [keyword, datasourceId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // 数据源筛选器选项（显示 name、value=id，符合“显示用 name、选择用选择框”规范）
+  useEffect(() => {
+    client.get('/datasources/')
+      .then(({ data }) => setDatasources(Array.isArray(data) ? data : (data?.items || [])))
+      .catch(() => setDatasources([]));
+  }, []);
 
   const handleDelete = async (ds: Dataset) => {
     if (!confirm(`确定删除数据集 "${ds.name}"？`)) return;
@@ -121,13 +136,27 @@ export default function Datasets() {
         </div>
       </div>
 
-      <div className="flex gap-2 mb-4">
+      <div className="flex gap-2 mb-4 flex-wrap">
         <Input
           placeholder="搜索数据集名称 / 描述"
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
           className="max-w-xs"
         />
+        <Select
+          value={String(datasourceId)}
+          onValueChange={(v) => setDatasourceId(Number(v))}
+        >
+          <SelectTrigger className="w-52 h-9">
+            <SelectValue placeholder="全部数据源" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="0">全部数据源</SelectItem>
+            {datasources.map((d: any) => (
+              <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       {loading ? (
@@ -157,6 +186,11 @@ export default function Datasets() {
               <div className="flex items-center gap-2 mt-3 text-xs text-muted-foreground flex-wrap">
                 <span>{ds.field_count} 字段</span>
                 <span>被 {ds.references} 图表引用</span>
+                {ds.datasource_id > 0 && (
+                  <Badge variant="outline" className="text-[10px]">
+                    {dsNameById[ds.datasource_id] || '数据源'}
+                  </Badge>
+                )}
                 {ds.chart_type && (
                   <Badge variant="secondary" className="text-[10px] flex items-center gap-1">
                     <BarChart3 className="h-3 w-3" />

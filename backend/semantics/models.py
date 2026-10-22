@@ -120,8 +120,13 @@ class SemanticQuery(BaseModel):
     datasource: str = Field(
         default="",
         description="目标数据源业务名(如 'prd-en', 与 list_datasources 显示一致); 缺省=会话数据源。"
-                    "全球/多站点问题: 对每个站点数据源分别调用本工具逐站查询(站点不是维度), "
-                    "站点↔数据源映射见数据分析技能; 未命中授权集会回抛候选名, 不要猜",
+                    "多站点问题优先用 site(站点业务名)而不是猜源名; 未命中授权集会回抛候选名, 不要猜",
+    )
+    site: str = Field(
+        default="",
+        description="目标站点业务名或代码(如 '中国'/'中国站'/'cn'), 服务端在角色授权集内解析为数据源; "
+                    "缺省=会话站点。会话站点为「全球」时必须逐站各调一次并带 site; "
+                    "站点不是 SQL 维度, 不要放进 dimensions/filters; 未命中可查站点会回抛候选, 不要猜",
     )
     datasource_id: int = 0
     workspace_id: int = 0
@@ -182,6 +187,11 @@ class ResolvedBinding(BaseModel):
     product_status: str = Field("", description="数据产品状态 draft|certified|deprecated|retired")
     product_class: str = Field("", description="产品类：同构多站点共享的 schema 契约名（一份契约 × N 个物理部署）")
     site: str = Field("", description="站点业务名；空 = 非站点化部署。多站点下同一对象有 N 条绑定，按会话站点路由")
+    site_routed: bool = Field(
+        False,
+        description="是否经模型级 deploy_sites 站点路由得到（契约行在主源、生效源改写到请求站）；"
+                    "评测/审计可据此区分「逐站登记命中」与「一份契约展开命中」",
+    )
     resolution_source: str = Field(
         "", description="解析档位: product|bindings|execution_binding|canonical|table_fallback，供 eval 分桶归因")
 
@@ -202,6 +212,10 @@ class PlannedExecution(BaseModel):
     access: AccessControl = Field(default_factory=AccessControl)
     provenance: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+    # 结果列名映射(SQL 输出别名 -> 请求的业务名)。仅对**拒绝非 ASCII 标识符的引擎**(SLS/Presto)
+    # 生效: 编译器把中文业务名别名换成稳定 ASCII 槽位(o0/o1..), 执行后由 `_to_result` 按本表
+    # 映回业务名, 使角色标注/展示与其他方言一致。非 SLS 恒为空 -> 行为不变。
+    output_header_map: dict[str, str] = Field(default_factory=dict)
 
 
 # ── 结果 ────────────────────────────────────────────────────────

@@ -80,7 +80,7 @@ async def get_metrics(args):
                 ]
             except Exception as rel_err:  # noqa: BLE001
                 relations_note = f"关系上下文不可用(知识图谱): {rel_err}"
-        # 部署清单(v0.5): 对象 × 站点部署事实(事实源=部署绑定)——LLM 逐站编排知识;
+        # 部署清单(v0.6): 对象 × 站点部署事实(事实源=模型级 deploy_sites)——LLM 逐站编排知识;
         # 非独立调用(get_metrics 顺风车字段, 职责三分见 GLOBAL_SEMANTIC_LAYER_DESIGN.md §9)。
         deployments: list[dict] = []
         try:
@@ -93,8 +93,8 @@ async def get_metrics(args):
                "usage": "dimensions/metrics 直接复制此处 name 或其 aliases; 按天/月趋势选 is_time=true 的维度并配 time_grain; "
                         "enum 字段列出码值→业务名, filter 可传业务名也可传码值, 结果自动显示业务名; "
                         "relations 列出对象间关联(跨对象字段用 '对象名.业务名' 限定引用); "
-                        "**全球/多站点问题：按 deployments 对每个站点数据源分别调用 run_semantic_query（datasource 参数）逐站查询，"
-                        "站点不是维度；编排方法与站点↔数据源映射见数据分析技能**; "
+                        "**全球/多站点问题：按 deployments 对每个可查站点分别调用 run_semantic_query（site 参数）逐站查询，"
+                        "站点不是维度；会话默认站点与可查站点清单见上下文「站点范围」段**; "
                         "若报错'无法解析', 从返回的可用清单改名重试。"}
         if relations_note:
             out["relations_degraded"] = relations_note

@@ -22,6 +22,8 @@ import client from '../api/client';
 import IntegrationApps from './admin/IntegrationApps';
 import ERDiagram from '../components/ERDiagram';
 import IntegrationLogs from './admin/IntegrationLogs';
+import SiteManagement from './admin/SiteManagement';
+import { listSites, siteNameOf, concreteSites, type Site } from '../api/sites';
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -1337,6 +1339,7 @@ function dbCategoryOf(dbType: string): string {
 
 function DatasourceTab() {
   const [datasources, setDatasources] = useState<any[]>([]);
+  const [sites, setSites] = useState<Site[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<any>(null);
@@ -1350,6 +1353,7 @@ function DatasourceTab() {
     database_name: '',
     is_default: false,
     ssl: false,
+    site_code: '',
   });
   const [testing, setTesting] = useState<number | null>(null);
   const [testResult, setTestResult] = useState<{ id: number; success: boolean; message: string } | null>(null);
@@ -1368,6 +1372,11 @@ function DatasourceTab() {
 
   useEffect(() => { loadDatasources(); }, []);
 
+  // 站点候选来自 adh_sites（选择框不手输代码）；加载失败只让站点框空，不拖垮列表
+  useEffect(() => {
+    listSites({ includeAggregate: false }).then(setSites).catch(() => setSites([]));
+  }, []);
+
   const openCreate = () => {
     setEditing(null);
     setFormValues({
@@ -1380,6 +1389,7 @@ function DatasourceTab() {
       database_name: '',
       is_default: false,
       ssl: false,
+      site_code: '',
     });
     setModalOpen(true);
   };
@@ -1396,6 +1406,7 @@ function DatasourceTab() {
       database_name: record.database_name || '',
       is_default: !!record.is_default,
       ssl: !!record.ssl,
+      site_code: record.site_code || '',
     });
     setModalOpen(true);
   };
@@ -1455,6 +1466,12 @@ function DatasourceTab() {
   };
 
   return (
+    <Tabs defaultValue="sources" className="space-y-4">
+      <TabsList>
+        <TabsTrigger value="sources"><Database className="h-4 w-4 mr-2" />数据源</TabsTrigger>
+        <TabsTrigger value="sites"><Globe className="h-4 w-4 mr-2" />站点管理</TabsTrigger>
+      </TabsList>
+      <TabsContent value="sources">
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
@@ -1537,6 +1554,11 @@ function DatasourceTab() {
                     <div className="flex items-center gap-2">
                       <Database className="h-3 w-3" />
                       <span>{ds.database_name || '-'}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Globe className="h-3 w-3" />
+                      {/* 显示站点业务名（不显示裸 code）；未站点化显式标注 */}
+                      <span>{siteNameOf(sites, ds.site_code) || '未站点化'}</span>
                     </div>
                   </div>
 
@@ -1690,6 +1712,28 @@ function DatasourceTab() {
               />
             </div>
 
+            {/* 站点归属：决定该源在哪个查询站点下可被选中（聊天站点选择器/本体适用站点路由） */}
+            <div className="space-y-2">
+              <Label>归属站点</Label>
+              <Select
+                value={formValues.site_code || '__none__'}
+                onValueChange={(v) => setFormValues({ ...formValues, site_code: v === '__none__' ? '' : v })}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="选择站点" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">未站点化（平台库/单站部署）</SelectItem>
+                  {concreteSites(sites).map((s) => (
+                    <SelectItem key={s.site_code} value={s.site_code}>{s.display_name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {sites.length === 0 && (
+                <p className="text-xs text-muted-foreground">站点清单未加载，请先在「站点管理」维护后重试。</p>
+              )}
+            </div>
+
             <div className="flex items-center gap-2">
               <Switch
                 checked={formValues.is_default}
@@ -1707,6 +1751,12 @@ function DatasourceTab() {
         </DialogContent>
       </Dialog>
     </div>
+      </TabsContent>
+      {/* 站点清单与数据源同属部署拓扑，共用一个菜单入口（不新增菜单页） */}
+      <TabsContent value="sites">
+        <SiteManagement />
+      </TabsContent>
+    </Tabs>
   );
 }
 

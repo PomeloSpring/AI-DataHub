@@ -15,26 +15,44 @@ def list_metrics(
     size: int = Query(20, ge=1, le=500, description="Page size"),
     metric_type: Optional[str] = Query(None, description="Filter by metric type"),
     tags: Optional[str] = Query(None, description="Filter by tags (comma-separated)"),
-    search: str = Query("", description="Search keyword"),
+    search: str = Query("", description="Search keyword(名称/英文名/描述/别名)"),
     model_id: Optional[int] = Query(None, description="本体模型作用域(scope=model 时必填)"),
     scope: Optional[str] = Query(None, description="model=仅本模型对象资产 | unbound=仅待归属 | 空=全局"),
+    category: Optional[str] = Query(None, description="指标分类(值域来自 /filters; __unset__=未分类)"),
+    agg_type: Optional[str] = Query(None, description="计算/聚合方式(大小写不敏感; __unset__=未设置)"),
+    certified: Optional[str] = Query(None, description="1=仅已认证口径 | 0=仅草稿口径"),
+    bound_object_key: Optional[str] = Query(None, description="归属本体对象(__unset__=未归属)"),
+    has_target_table: Optional[str] = Query(None, description="1=已派生物理表 | 0=未派生"),
+    is_active: Optional[str] = Query(None, description="1=仅启用 | 0=仅已停用 | 空=全部(旧行为)"),
 ):
     """List metrics (paginated, filter by type/tags/model-scope).
 
     指标字典不按工作空间分域（全局唯一权威口径），故无 workspace_id 参数；
     多传的 workspace_id query 会被 FastAPI 忽略（兼容旧前端）。
+
+    筛选入参的词表(可取哪些值)由 GET /filters 提供，前端不得写死枚举。
     """
     if scope not in (None, "", "model", "unbound"):
         raise HTTPException(status_code=400, detail="scope 仅支持 model/unbound")
-    result = metrics_service.list_metrics(
-        page=page,
-        size=size,
-        metric_type=metric_type,
-        tags=tags,
-        search=search,
-        model_id=model_id,
-        scope=scope or None,
-    )
+    try:
+        result = metrics_service.list_metrics(
+            page=page,
+            size=size,
+            metric_type=metric_type,
+            tags=tags,
+            search=search,
+            model_id=model_id,
+            scope=scope or None,
+            category=category,
+            agg_type=agg_type,
+            certified=certified,
+            bound_object_key=bound_object_key,
+            has_target_table=has_target_table,
+            is_active=is_active,
+        )
+    except ValueError as e:
+        # 非法筛选值不得当成“未传”默默返回全量 —— 那会把错误参数伪装成正常结果
+        raise HTTPException(status_code=400, detail=str(e))
     return result
 
 
@@ -57,6 +75,22 @@ def list_all_dimensions(
     if scope not in (None, "", "model", "unbound"):
         raise HTTPException(status_code=400, detail="scope 仅支持 model/unbound")
     return metrics_service.list_all_dimensions(model_id=model_id, scope=scope or None)
+
+
+@router.get("/filters")
+def dict_filters(
+    model_id: Optional[int] = Query(None, description="本体模型作用域(scope=model 时必填)"),
+    scope: Optional[str] = Query(None, description="model | unbound | 空=全局"),
+):
+    """字典筛选词表(指标分类/计算方式/归属对象 + 认证与物理绑定覆盖计数)。
+
+    指标/维度两个 Tab 共一次拉取：选项必须来自全量集聚合(指标列表是服务端分页的)，
+    不得用当前页出现过的值凑下拉，也不得前端写死一套与库内值域无交集的枚举。
+    必须注册在 /{metric_id} 之前(否则会被参数路由吞掉)。
+    """
+    if scope not in (None, "", "model", "unbound"):
+        raise HTTPException(status_code=400, detail="scope 仅支持 model/unbound")
+    return metrics_service.dict_facets(model_id=model_id, scope=scope or None)
 
 
 @router.get("/asset-pool")

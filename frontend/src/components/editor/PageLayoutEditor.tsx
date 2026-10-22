@@ -1,25 +1,44 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { GripHorizontal, Settings, Trash2 } from 'lucide-react';
+import type { Ref } from 'react';
+import { Button } from '@/components/ui/button';
 import { ResponsiveDashboardCanvas, CanvasRulers } from '@/components/DashboardCanvas';
 import type { useCanvasInteraction } from '@/hooks/useCanvasInteraction';
+import { useViewportSize } from '@/hooks/useOverlayPosition';
 import type { Dashboard, DashboardChart } from '@/stores/dashboardStore';
 import type { VisComponent } from '@/api/visLibrary';
-import { isEditingTarget, screenToCanvas, type Rect } from '@/lib/dashboardDesign';
-import { PAGE_COLUMNS, PAGE_ROW, PAGE_WIDTHS, pageGap, pageMinHeight, pageRows, pagePixelRect, pageCanvasSize, resolvePageLayout, movePageItem, type PageBreakpoint, type PageItem } from '@/lib/dashboardPageLayout';
+import { isChartLocked, isEditingTarget, type Rect } from '@/lib/dashboardDesign';
+import { CANVAS_COLORS, backdropStyle, canvasRectToScreen, cornerDotStyle } from '@/lib/canvasTheme';
+import CanvasHint from './CanvasHint';
+import SelectionOverlay from './SelectionOverlay';
+import { PAGE_COLUMNS, PAGE_ROW, PAGE_WIDTHS, pageGap, pageMinHeight, pageRows, pagePixelRect, pageCanvasSize, previewInsert, resolvePageLayout, movePageItem, type PageBreakpoint, type PageItem } from '@/lib/dashboardPageLayout';
+import type { DropGhost } from '@/lib/editorDrag';
+import { useMergedRefs } from '@/lib/mergeRefs';
 
 interface Props {
-  dashboard: Dashboard; items: VisComponent[]; breakpoint: PageBreakpoint; selectedId?: number;
-  onSelect: (chart: DashboardChart) => void; onConfig: (chart: DashboardChart) => void; onDelete: (chart: DashboardChart) => void;
-  onChange: (items: PageItem[]) => void; onAdd: (rect: { x: number; y: number }) => void;
-  canvas: ReturnType<typeof useCanvasInteraction>; showGrid: boolean; panMode: boolean;
+  dashboard: Dashboard; items: VisComponent[]; breakpoint: PageBreakpoint; selectedIds?: number[];
+  onSelect: (chart: DashboardChart, e?: ReactPointerEvent) => void; onConfig: (chart: DashboardChart) => void; onDelete: (chart: DashboardChart) => void;
+  onChange: (items: PageItem[]) => void;
+  canvas: ReturnType<typeof useCanvasInteraction>; showGrid: boolean; panMode: boolean; interactive: boolean;
+  showRulers: boolean;
+  /** dnd-kit 落点区：与视口 ref 合挂到同一个节点上 */
+  dropRef?: Ref<HTMLDivElement>;
+  /** 从库拖入时的落点预览（网格行列） */
+  dropGhost?: DropGhost | null;
+  /** 空画布引导动作（缺省对不渲染按钮） */
+  onInsertFromLibrary?: () => void; onOpenTemplates?: () => void;
 }
 type Gesture = {
   id: number; pointer: number; x: number; y: number; scale: number; rect: Rect; resize: boolean;
   layout: PageItem[]; target: HTMLElement; scroll: number; scrollX: number;
 };
 type Preview = { layout: PageItem[]; pixels: Rect };
-export default function PageLayoutEditor({ dashboard, items, breakpoint, selectedId, onSelect, onConfig, onDelete, onChange, onAdd, canvas, showGrid, panMode }: Props) {
+/** 拖入预览用的哨兵 id：不与真实图表冲突，也不会被渲染成卡片 */
+const PREVIEW_ID = -0x9c40;
+export default function PageLayoutEditor({ dashboard, items, breakpoint, selectedIds = [], onSelect, onConfig, onDelete, onChange, canvas, showGrid, panMode, interactive, showRulers, dropRef, dropGhost, onInsertFromLibrary, onOpenTemplates }: Props) {
   const { canvasRef: viewport, surfaceRef: surface, scale, panOffset, beginElementInteraction, endElementInteraction } = canvas;
+  // 稳定身份的合并 ref：内联 mergeRefs 会每帧新建，React 先用 null 调旧回调会注销 dnd-kit 落点节点
+  const viewRef = useMergedRefs<HTMLDivElement>(viewport, dropRef);
+  const viewportSize = useViewportSize(viewport);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [active, setActive] = useState<Gesture | null>(null);
   const activeRef = useRef<Gesture | null>(null);
@@ -88,56 +107,89 @@ export default function PageLayoutEditor({ dashboard, items, breakpoint, selecte
     };
   }, [active, breakpoint, column, row, size.width, viewport, endElementInteraction]);
   const start = (e: ReactPointerEvent, item: PageItem, resize = false) => {
+    if (isChartLocked(item.chart)) return;
     if (e.defaultPrevented || activeRef.current || e.isPrimary === false || e.button !== 0 || isEditingTarget(e.target) || !beginElementInteraction()) return;
     e.preventDefault(); e.stopPropagation();
-    const target = (e.currentTarget as HTMLElement).closest<HTMLElement>('[data-chart-id]')!;
+    // 选中工具条/手柄已移到缩放层之外，按 id 反查卡片节点作为指针捕获目标
+    const target = viewport.current?.querySelector<HTMLElement>(`[data-chart-id="${item.chart.id}"]`) ?? (e.currentTarget as HTMLElement);
     const gesture = { id: item.chart.id, pointer: e.pointerId, x: e.clientX, y: e.clientY, scale,
       scroll: viewport.current?.scrollTop || 0, scrollX: viewport.current?.scrollLeft || 0, rect: item.rect, resize, layout: result.layout, target };
-    activeRef.current = gesture; target.setPointerCapture?.(e.pointerId); setActive(gesture); onSelect(item.chart);
+    activeRef.current = gesture; target.setPointerCapture?.(e.pointerId); setActive(gesture); onSelect(item.chart, e);
   };
   const snapped = active && preview?.layout.find(item => item.chart.id === active.id);
-  return <div ref={viewport} className="adh-canvas-viewport relative min-h-0 min-w-0 flex-1 overflow-hidden bg-muted cursor-grab active:cursor-grabbing"
-    style={{ touchAction: 'none', userSelect: 'none' }} aria-label="页面布局编辑区" onPointerDownCapture={canvas.handlePanStart}
-    onDragOver={e => e.preventDefault()} onDrop={e => {
-      e.preventDefault();
-      if (!surface.current || result.error) return;
-      const point = screenToCanvas({ x: e.clientX, y: e.clientY }, surface.current.getBoundingClientRect(), scale);
-      onAdd({ x: Math.min(PAGE_COLUMNS[breakpoint] - 1, Math.max(0, Math.floor(point.x / column))), y: Math.min(50000, Math.max(0, Math.floor(point.y / row))) });
-    }}>
-    <div ref={surface} className="absolute bg-background shadow-lg" data-testid="page-editor-surface" style={{ ...size, left: '50%', top: '50%', marginLeft: -size.width / 2, marginTop: -size.height / 2,
-      transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${scale})`, transformOrigin: 'center' }}>
-      {result.error ? <p role="alert" className="p-6 text-destructive">{result.error}。可通过“恢复自动适配”重建当前断点。</p> : <ResponsiveDashboardCanvas dashboard={dashboard} items={items} breakpoint={breakpoint} draft layout={result.layout}
+  // 从库拖入：插入预览。虚线框 = 将占的空间，其余卡片挪到预测位置 = 将被挤到的地方。
+  // 松手才提交；拖回图标库即自然取消（不写草稿）。
+  const insert = dropGhost && dropGhost.mode === 'page'
+    ? previewInsert(result.layout, {
+        // 用真实图表类型：movePageItem 会按它的最小尺寸夹取，预览与真实插入必须同构
+        chart: { id: PREVIEW_ID, name: '__preview__', chart_type: dropGhost.chartType, config: {}, position: {} } as DashboardChart,
+        rect: { x: dropGhost.x, y: dropGhost.y, w: dropGhost.w, h: dropGhost.h }, automatic: false,
+      }, breakpoint)
+    : null;
+  const predicted = (chartId: number) => insert?.find(item => item.chart.id === chartId)?.rect;
+  const ghostPixels = insert ? pagePixelRect(insert.find(item => item.chart.id === PREVIEW_ID)!.rect, breakpoint) : null;
+  // 选中卡片的屏幕矩形：覆盖层不在缩放层里，尺寸恒定为屏幕像素（多选时取主选）
+  const selected = result.layout.find(item => item.chart.id === selectedIds[0]);
+  const selectedPixels = selected ? (active?.id === selected.chart.id && preview ? preview.pixels : pagePixelRect(selected.rect, breakpoint)) : null;
+  const selectedScreen = selected && selectedPixels ? canvasRectToScreen(selectedPixels, size, viewportSize, scale, panOffset) : null;
+  const empty = !result.error && !result.layout.length;
+  return <div ref={viewRef} className="adh-canvas-viewport relative min-h-0 min-w-0 flex-1 overflow-hidden"
+    data-panning={panMode || undefined} data-drag-over={ghostPixels ? true : undefined}
+    style={{ touchAction: 'none', userSelect: 'none', ...backdropStyle() }}
+    aria-label="页面布局编辑区" onPointerDownCapture={canvas.handlePanStart}>
+    <div ref={surface} className="absolute bg-background" data-testid="page-editor-surface" style={{ ...size, left: '50%', top: '50%', marginLeft: -size.width / 2, marginTop: -size.height / 2,
+      transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${scale})`, transformOrigin: 'center',
+      boxShadow: `0 0 0 1px ${CANVAS_COLORS.surfaceBorder}, ${CANVAS_COLORS.surfaceShadow}` }}>
+      {result.error ? <p role="alert" className="p-6 text-destructive">{result.error}。可通过“恢复自动适配”重建当前断点。</p> : <ResponsiveDashboardCanvas dashboard={dashboard} items={items} breakpoint={breakpoint} draft interactive={interactive} layout={result.layout}
         renderItem={(item, card, style) => {
           const original = pagePixelRect(item.rect, breakpoint), dragging = active?.id === item.chart.id;
           const target = preview?.layout.find(value => value.chart.id === item.chart.id);
-          const pixels = dragging && preview ? preview.pixels : target ? pagePixelRect(target.rect, breakpoint) : original;
-          return <div key={item.chart.id} data-chart-id={item.chart.id} className={`relative min-h-0 min-w-0 rounded-lg ${panMode ? 'cursor-grab' : 'cursor-move'}`}
+          // 拖入时展示“会被挤到哪”的预测位置（带过渡），松手后才落真实布局
+          const forecast = predicted(item.chart.id);
+          const pixels = dragging && preview ? preview.pixels
+            : target ? pagePixelRect(target.rect, breakpoint)
+            : forecast ? pagePixelRect(forecast, breakpoint) : original;
+          return <div key={item.chart.id} data-chart-id={item.chart.id} data-selected={selectedIds.includes(item.chart.id) || undefined}
+            className={`adh-editable-card relative min-h-0 min-w-0 rounded-lg ${panMode ? '' : 'cursor-move'}`}
             style={{ ...style, width: pixels.w, height: pixels.h, touchAction: 'none', zIndex: dragging ? 20 : 1,
               transform: `translate3d(${pixels.x - original.x}px, ${pixels.y - original.y}px, 0)`,
-              transition: active && !dragging ? 'transform 120ms ease-out' : undefined, willChange: dragging ? 'transform' : undefined,
-              outline: selectedId === item.chart.id ? `${2 / scale}px solid #3b82f6` : undefined }}
-          onPointerDown={e => start(e, item)} onDoubleClick={() => { if (!panMode) onConfig(item.chart); }}>
-          <div className="pointer-events-none" style={{ width: original.w, height: original.h, transformOrigin: 'top left',
-            transform: dragging && active.resize ? `scale(${pixels.w / original.w}, ${pixels.h / original.h})` : undefined }}>{card}</div>
-          {selectedId === item.chart.id && <>
-            <div className="absolute right-0 top-0 z-10 flex items-center rounded-bl border bg-background shadow-sm" style={{ transform: `scale(${1 / scale})`, transformOrigin: 'top right' }}>
-              <GripHorizontal className="mx-2 h-4 w-4" />
-              <button className="p-2" aria-label="配置图表" onClick={() => onConfig(item.chart)}><Settings className="h-3 w-3" /></button>
-              <button className="p-2" aria-label="删除图表" onClick={() => onDelete(item.chart)}><Trash2 className="h-3 w-3" /></button>
-            </div>
-            <div role="separator" aria-label="调整页面图表大小" className="absolute bottom-0 right-0 h-5 w-5 cursor-se-resize rounded-tl bg-primary" style={{ transform: `scale(${1 / scale})`, transformOrigin: 'bottom right' }} onPointerDown={e => start(e, item, true)} />
-          </>}
-        </div>;
+              transition: active && !dragging ? 'transform 120ms ease-out' : insert ? 'transform 160ms ease-out' : undefined, willChange: dragging ? 'transform' : undefined }}
+            onPointerDown={e => start(e, item)} onDoubleClick={() => { if (!panMode) onConfig(item.chart); }}>
+            <div className="pointer-events-none" style={{ width: original.w, height: original.h, transformOrigin: 'top left',
+              transform: dragging && active.resize ? `scale(${pixels.w / original.w}, ${pixels.h / original.h})` : undefined }}>{card}</div>
+          </div>;
         }} />}
-      {showGrid && <div aria-label="页面网格线" className="pointer-events-none absolute inset-0" style={{
-        backgroundImage: `linear-gradient(to right, #64748b66 ${1 / scale}px, transparent ${1 / scale}px), linear-gradient(to bottom, #64748b44 ${1 / scale}px, transparent ${1 / scale}px)`,
-        backgroundSize: `${column}px ${row}px`,
-      }} />}
-      {snapped && <div aria-label="图表放置预览" className="pointer-events-none absolute border-2 border-dashed border-primary bg-primary/10" style={{ left: pagePixelRect(snapped.rect, breakpoint).x, top: pagePixelRect(snapped.rect, breakpoint).y,
-        width: pagePixelRect(snapped.rect, breakpoint).w, height: pagePixelRect(snapped.rect, breakpoint).h }} />}
-      <div className="pointer-events-none absolute bottom-0 w-full p-6 text-center text-sm text-muted-foreground">从组件库拖入图表或控件 · 拖动调整位置 · 右下角调整尺寸</div>
+      {/* 方块转角点星，不画线；zIndex 0 保证参考标记永远在卡片下方 */}
+      {showGrid && <div aria-label="页面参考点" className="pointer-events-none absolute inset-0" style={{ ...cornerDotStyle(column), zIndex: 0 }} />}
+      {snapped && <div aria-label="图表放置预览" className="pointer-events-none absolute border-2 border-dashed bg-primary/10"
+        style={{ left: pagePixelRect(snapped.rect, breakpoint).x, top: pagePixelRect(snapped.rect, breakpoint).y,
+          width: pagePixelRect(snapped.rect, breakpoint).w, height: pagePixelRect(snapped.rect, breakpoint).h, borderColor: CANVAS_COLORS.dropGhostBorder }} />}
+      {ghostPixels && <div aria-label="新增落点预览" className="pointer-events-none absolute border-2 border-dashed bg-primary/10"
+        style={{ left: ghostPixels.x, top: ghostPixels.y, width: ghostPixels.w, height: ghostPixels.h, borderColor: CANVAS_COLORS.dropGhostBorder }}>
+        {/* 把将占用的空间直接标在框内，用户不必自己算尺寸 */}
+        <span className="absolute inset-0 flex items-center justify-center rounded-sm bg-background/70 px-1 text-[10px] font-medium text-primary"
+          style={{ whiteSpace: 'nowrap', overflow: 'hidden' }}>
+          {dropGhost!.w} 列 × {dropGhost!.h} 行
+        </span>
+      </div>}
     </div>
-    <CanvasRulers canvas={size} scale={scale} pan={panOffset} active={preview?.pixels} />
-    <div className="pointer-events-none absolute bottom-3 left-8 z-30 rounded border bg-background/95 px-3 py-1.5 text-xs shadow-sm">滚轮缩放 · 空格拖动 / 中键平移 · F 适应窗口 · 网格吸附落点</div>
+    {empty && <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
+      <div className="pointer-events-auto max-w-sm rounded-lg border bg-background/95 p-4 text-center shadow-sm">
+        <p className="text-sm font-medium">这个断点还是空的</p>
+        <p className="mt-1 text-xs text-muted-foreground">从左侧组件库把图表或控件拖到画布；网格会自动避让，不需要手动对齐。</p>
+        {(onInsertFromLibrary || onOpenTemplates) && <div className="mt-3 flex justify-center gap-2">
+          {onInsertFromLibrary && <Button size="sm" variant="outline" onClick={onInsertFromLibrary}>从数据集引入</Button>}
+          {onOpenTemplates && <Button size="sm" variant="outline" onClick={onOpenTemplates}>套用模板</Button>}
+        </div>}
+      </div>
+    </div>}
+    {selectedScreen && selected && <SelectionOverlay screen={selectedScreen} size={selectedPixels ?? undefined} minimum={{ w: 1, h: 1 }}
+      onConfig={() => onConfig(selected.chart)} onDelete={() => onDelete(selected.chart)}
+      onResizeStart={e => start(e, selected, true)}
+      onNudge={(dx, dy) => onChange(movePageItem(result.layout, selected.chart.id, {
+        ...selected.rect, w: selected.rect.w + Math.round(dx / column), h: selected.rect.h + Math.round(dy / row),
+      }, breakpoint))} />}
+    <CanvasRulers canvas={size} scale={scale} pan={panOffset} active={preview?.pixels} visible={showRulers} />
+    <CanvasHint text="滚轮缩放 · 空格拖动 / 中键平移 · F 适应窗口 · 网格吸附落点" />
   </div>;
 }

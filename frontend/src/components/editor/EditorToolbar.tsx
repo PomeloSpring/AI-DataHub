@@ -1,4 +1,4 @@
-import { Check, Minimize2, PanelLeftOpen, PanelRightOpen, MoreHorizontal, Eye, Undo2, Redo2, ZoomIn, ZoomOut, Scan, Hand, MousePointer2, Grid3x3 } from 'lucide-react';
+import { Check, Minimize2, PanelLeftOpen, PanelRightOpen, MoreHorizontal, Eye, Undo2, Redo2, ZoomIn, ZoomOut, Scan, Hand, MousePointer2, Grid3x3, Play, MousePointerClick, Ruler } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -19,6 +19,8 @@ interface Props {
   pendingNewCount: number;
   pendingChangeCount: number;
   pendingDeleteCount: number;
+  /** 点开变更清单（badge 不再只是一个不可交互的数字） */
+  onOpenChanges: () => void;
   leftPanelOpen: boolean;
   rightPanelOpen: boolean;
   onZoomIn: () => void;
@@ -31,6 +33,9 @@ interface Props {
   onRedo: () => void;
   panMode: boolean;
   onPanMode: (pan: boolean) => void;
+  /** select=控件 inert（默认，可正常选中/拖动）；interact=试运行，控件真实联动 */
+  interactionMode: 'select' | 'interact';
+  onInteractionMode: (mode: 'select' | 'interact') => void;
   onOpenTemplates: () => void;
   onSave: () => void;
   onExit: () => void;
@@ -39,6 +44,8 @@ interface Props {
   saving: boolean;
   showGrid: boolean;
   onToggleGrid: () => void;
+  showRulers: boolean;
+  onToggleRulers: () => void;
   onPreview: () => void;
   onSaveVis: () => void;
   snapEnabled: boolean;
@@ -47,11 +54,11 @@ interface Props {
 }
 
 export default function EditorToolbar({
-  dashboardName, scale, canvasSize, hasUnsavedChanges, pendingCount,
+  dashboardName, scale, canvasSize, hasUnsavedChanges, pendingCount, onOpenChanges,
   layoutMode, onLayoutMode, breakpoint, onBreakpoint, onResetPage, onCapturePage,
   leftPanelOpen, rightPanelOpen,
-  onZoomIn, onZoomOut, onResetZoom, onActualSize, canUndo, canRedo, onUndo, onRedo, panMode, onPanMode, onOpenTemplates, onSave, onExit,
-  onOpenLeftPanel, onOpenRightPanel, saving, showGrid, onToggleGrid, onPreview, onSaveVis, snapEnabled, onToggleSnap, onUseLibrary,
+  onZoomIn, onZoomOut, onResetZoom, onActualSize, canUndo, canRedo, onUndo, onRedo, panMode, onPanMode, interactionMode, onInteractionMode, onOpenTemplates, onSave, onExit,
+  onOpenLeftPanel, onOpenRightPanel, saving, showGrid, onToggleGrid, showRulers, onToggleRulers, onPreview, onSaveVis, snapEnabled, onToggleSnap, onUseLibrary,
 }: Props) {
   return (
     <div className="flex flex-wrap items-center gap-2 px-2 py-2 border-b bg-background flex-shrink-0 min-w-0">
@@ -68,7 +75,9 @@ export default function EditorToolbar({
         {layoutMode === 'page' ? <select aria-label="设备断点" disabled={saving} className="min-w-0 rounded border bg-background p-1 text-sm" value={breakpoint} onChange={e => onBreakpoint(e.target.value as PageBreakpoint)}>
           {Object.entries(PAGE_LABELS).map(([bp, label]) => <option key={bp} value={bp}>{label} · {PAGE_WIDTHS[bp as PageBreakpoint]}px</option>)}
         </select> : <span className="hidden md:inline text-xs text-muted-foreground">{Math.round(scale * 100)}% | {canvasSize.width}×{canvasSize.height}</span>}
-        {hasUnsavedChanges && <Badge variant="secondary" className="hidden lg:inline-flex shrink-0 text-xs">未保存 ({pendingCount})</Badge>}
+        {hasUnsavedChanges && <button type="button" className="shrink-0" onClick={onOpenChanges} title="查看未保存的变更清单">
+          <Badge variant="secondary" className="hidden cursor-pointer text-xs lg:inline-flex hover:underline">未保存 ({pendingCount})</Badge>
+        </button>}
       </div>
 
       <div role="toolbar" aria-label="画布编辑工具" className="order-last flex w-full items-center gap-1 overflow-x-auto xl:order-none xl:w-auto xl:shrink-0">
@@ -78,6 +87,10 @@ export default function EditorToolbar({
         <Button variant={!panMode ? 'secondary' : 'ghost'} size="sm" className="h-7 w-7 shrink-0 p-0" aria-label="选择图表" title="选择图表（V）" aria-pressed={!panMode} disabled={saving} onClick={() => onPanMode(false)}><MousePointer2 className="h-4 w-4" /></Button>
         <Button variant={panMode ? 'secondary' : 'ghost'} size="sm" className="h-7 w-7 shrink-0 p-0" aria-label="拖动画布" title="拖动画布（H）；按住空格或中键可临时平移" aria-pressed={panMode} disabled={saving} onClick={() => onPanMode(true)}><Hand className="h-4 w-4" /></Button>
         <Button variant={showGrid ? 'secondary' : 'ghost'} size="sm" className="h-7 w-7 shrink-0 p-0" aria-label="网格线" title="显示 / 隐藏网格线（G）" aria-pressed={showGrid} onClick={onToggleGrid}><Grid3x3 className="h-4 w-4" /></Button>
+        <Button variant={showRulers ? 'secondary' : 'ghost'} size="sm" className="h-7 w-7 shrink-0 p-0" aria-label="坐标标尺" title="显示 / 隐藏坐标标尺（R）；标尺占两行边缘，小缩放时可关" aria-pressed={showRulers} onClick={onToggleRulers}><Ruler className="h-4 w-4" /></Button>
+        <Button variant={interactionMode === 'interact' ? 'secondary' : 'ghost'} size="sm" className="h-7 shrink-0 px-2" aria-label="试运行控件" title="试运行（I）：开启后控件可真实联动；关闭时控件仅作为素材，可直接点选与拖动" aria-pressed={interactionMode === 'interact'} disabled={saving} onClick={() => onInteractionMode(interactionMode === 'interact' ? 'select' : 'interact')}>
+          {interactionMode === 'interact' ? <Play className="h-4 w-4" /> : <MousePointerClick className="h-4 w-4" />}<span className="ml-1 text-xs">试运行</span>
+        </Button>
         <span className="mx-1 h-4 border-l" />
         <Button variant="ghost" size="sm" className="h-7 w-7 shrink-0 p-0" aria-label="缩小画布" title="缩小画布（-）" disabled={saving} onClick={onZoomOut}><ZoomOut className="h-4 w-4" /></Button>
         <Button variant="ghost" size="sm" className="h-7 min-w-12 shrink-0 px-1 font-mono text-xs" aria-label="恢复原始比例" title="恢复 100% 比例" disabled={saving} onClick={onActualSize}>{Math.round(scale * 100)}%</Button>

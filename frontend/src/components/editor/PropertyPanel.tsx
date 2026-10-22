@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { PAGE_COLUMNS, PAGE_LABELS, PAGE_ROW, pageGap, type PageBreakpoint } from '@/lib/dashboardPageLayout';
-import type { Rect } from '@/lib/dashboardDesign';
+import { PAGE_COLUMNS, PAGE_LABELS, PAGE_ROW, pageGap, pageMinHeight, pageRows, type PageBreakpoint } from '@/lib/dashboardPageLayout';
+import { naturalSizeOf, type Rect } from '@/lib/dashboardDesign';
 import {
   Settings, BarChart3, Move, Paintbrush, Monitor, Grid3x3, Palette, PanelRightClose,
 } from 'lucide-react';
@@ -13,10 +13,15 @@ import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
+import { Switch } from '@/components/ui/switch';
 import { CHART_TYPES, ChartIcon } from '../DashboardChart';
+import { ParamNameSelect, WidgetOptionsEditor } from './ParamSelect';
+import { CUSTOM_PRESET, DEFAULT_TIME_PRESET_KEYS, TIME_PRESETS, needsTime } from '@/lib/timePresets';
+import type { PageParam } from '@/stores/dashboardStore';
 import { DEFAULT_CHART_SIZE, CANVAS_WIDTH, CANVAS_HEIGHT } from '../../hooks/useCanvasInteraction';
 
 type ElementType = 'chart' | 'control' | 'canvas';
+const PROPERTY_TABS: [string, string][] = [['appearance', '外观'], ['data', '数据'], ['position', '位置']];
 
 interface Props {
   isOpen: boolean;
@@ -41,6 +46,11 @@ interface Props {
   onWidgetConfigChange: (chartId: number, key: string, value: any) => void;
   onDelete: (chart: any) => void;
   onChartConfig: (chart: any) => void;
+  tab: string;
+  onTab: (tab: string) => void;
+  /** 看板页面参数清单：控件参数名从这儿选，不手填 */
+  pageParams?: PageParam[];
+  onCreatePageParam?: (param: PageParam) => void;
 }
 
 export default function PropertyPanel({
@@ -48,9 +58,8 @@ export default function PropertyPanel({
   canvasSize, setCanvasSize, canvasBgColor, setCanvasBgColor,
   gridSize, setGridSize, scale, setScale, allCharts,
   isNewChart, onPropertyChange, onPositionChange, onWidgetConfigChange,
-  onDelete, onChartConfig, pageBreakpoint, pageRect, onResetPage,
+  onDelete, onChartConfig, pageBreakpoint, pageRect, onResetPage, tab, onTab, pageParams, onCreatePageParam,
 }: Props) {
-  const [tab, setTab] = useState('appearance');
   const [narrow, setNarrow] = useState(() => window.innerWidth < 1024);
   useEffect(() => {
     const media = window.matchMedia('(max-width: 1023px)');
@@ -58,6 +67,17 @@ export default function PropertyPanel({
     change(); media.addEventListener('change', change);
     return () => media.removeEventListener('change', change);
   }, []);
+  // 无鼠标用户可用←/→ 在 tab 间移动（WAI-ARIA tablist 惯例）
+  const moveTab = (e: React.KeyboardEvent) => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft' && e.key !== 'Home' && e.key !== 'End') return;
+    e.preventDefault();
+    const current = PROPERTY_TABS.findIndex(([key]) => key === tab);
+    const next = e.key === 'ArrowRight' ? (current + 1) % PROPERTY_TABS.length
+      : e.key === 'ArrowLeft' ? (current - 1 + PROPERTY_TABS.length) % PROPERTY_TABS.length
+      : e.key === 'Home' ? 0 : PROPERTY_TABS.length - 1;
+    onTab(PROPERTY_TABS[next][0]);
+    document.getElementById(`property-tab-${PROPERTY_TABS[next][0]}`)?.focus();
+  };
   const content = (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       <div className="flex items-center justify-between p-3 border-b">
@@ -75,11 +95,14 @@ export default function PropertyPanel({
         </Button>
       </div>
 
-      <div className="flex border-b p-1" role="tablist">
-        {[['appearance', '外观'], ['data', '数据'], ['position', '位置']].map(([key, label]) =>
-          <Button key={key} role="tab" aria-selected={tab === key} size="sm" variant={tab === key ? 'secondary' : 'ghost'} onClick={() => setTab(key)} className="flex-1">{label}</Button>)}
+      <div className="flex border-b p-1" role="tablist" aria-label="属性分类" onKeyDown={moveTab}>
+        {PROPERTY_TABS.map(([key, label]) =>
+          <Button key={key} id={`property-tab-${key}`} role="tab" aria-selected={tab === key}
+            aria-controls="property-tabpanel" tabIndex={tab === key ? 0 : -1}
+            size="sm" variant={tab === key ? 'secondary' : 'ghost'} onClick={() => onTab(key)} className="flex-1">{label}</Button>)}
       </div>
       <ScrollArea className="flex-1 min-h-0 p-3">
+        <div id="property-tabpanel" role="tabpanel" aria-labelledby={`property-tab-${tab}`} tabIndex={-1}>
         {selectedChart && selectedElementType !== 'canvas' ? (
           <div className="space-y-4">
             {/* Type badge */}
@@ -103,11 +126,12 @@ export default function PropertyPanel({
               </div>
               <div className="space-y-2">
                 <Label className="text-xs">类型</Label>
+                {/* 图表卡与控件卡各自只能在同类内换型：跨类改型会留下不匹配的 source_type 与数据配置 */}
                 <Select value={selectedChart.chart_type}
                   onValueChange={v => onPropertyChange(selectedChart.id, 'chart_type', v)}>
                   <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {CHART_TYPES.map(ct => (
+                    {CHART_TYPES.filter(ct => ct.value.startsWith('widget_') === selectedChart.chart_type?.startsWith('widget_')).map(ct => (
                       <SelectItem key={ct.value} value={ct.value} className="text-xs">
                         <span className="flex items-center gap-2">
                           <ChartIcon name={ct.icon} className="h-3 w-3" />
@@ -117,13 +141,16 @@ export default function PropertyPanel({
                     ))}
                   </SelectContent>
                 </Select>
+                {selectedChart.chart_type?.startsWith('widget_') && (
+                  <p className="text-[10px] text-muted-foreground">换型会保留已填的参数与样式，但不同控件的专有字段会重置。</p>
+                )}
               </div>
             </div>
 
             <Separator />
 
-            {/* Position & Size */}
-            <div className={`space-y-3 ${tab === 'position' ? '' : 'hidden'}`}>
+            {/* Position & Size：与其他 tab 一致按条件渲染，不再用 hidden 常驻 DOM */}
+            {tab === 'position' && <><div className="space-y-3">
               <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1">
                 <Move className="h-3 w-3" /> {pageBreakpoint ? `${PAGE_LABELS[pageBreakpoint]}网格位置与大小` : '位置与大小'}
               </div>
@@ -132,19 +159,27 @@ export default function PropertyPanel({
                   <div key={axis} className="space-y-1">
                     <Label className="text-[10px] text-muted-foreground">{pageBreakpoint ? { x: '起始列（从 0 开始）', y: '起始行（从 0 开始）', w: '跨列数', h: '跨行数' }[axis] : axis === 'x' ? 'X' : axis === 'y' ? 'Y' : axis === 'w' ? '宽度' : '高度'}</Label>
                     <Input type="number" aria-label={`${pageBreakpoint ? '页面' : '大屏'}布局 ${axis}`} className="h-7 text-xs"
+                      min={axis === 'w' || axis === 'h' ? 1 : 0}
                       value={(pageBreakpoint ? pageRect?.[axis] : selectedChart.position?.[axis]) ?? (axis === 'w' ? DEFAULT_CHART_SIZE.w : axis === 'h' ? DEFAULT_CHART_SIZE.h : 0)}
                       onChange={e => onPositionChange(selectedChart.id, axis, Number(e.target.value) || 0)} />
                   </div>
                 ))}
               </div>
-            </div>
-
-            <Separator />
+              {/* 不设下限：大小由人主动控制；提示只交代网格量子，不静默夹值 */}
+              <p className="text-[10px] text-muted-foreground">
+                {pageBreakpoint
+                  ? `不限制最小值（网格以 1 行 ≈ ${PAGE_ROW + pageGap(pageBreakpoint)}px 为量子）；本类型建议 ${pageRows(pageMinHeight(selectedChart.chart_type), pageBreakpoint)} 行起步，可自由缩小。`
+                  : `不限制最小值，大小由你控制；本类型建议 ${naturalSizeOf(selectedChart.chart_type).w}×${naturalSizeOf(selectedChart.chart_type).h}px 起步。`}
+              </p>
+            </div><Separator /></>}
 
             {/* Widget config */}
             {tab === 'data' && selectedChart.chart_type?.startsWith('widget_') && (
               <WidgetConfig
                 chart={selectedChart}
+                allCharts={allCharts}
+                pageParams={pageParams || []}
+                onCreatePageParam={onCreatePageParam}
                 onWidgetConfigChange={onWidgetConfigChange}
               />
             )}
@@ -187,6 +222,7 @@ export default function PropertyPanel({
             allCharts={allCharts}
           />
         )}
+        </div>
       </ScrollArea>
 
       {/* Fixed footer */}
@@ -213,7 +249,17 @@ export default function PropertyPanel({
 
 // ========== Sub-components ==========
 
-function WidgetConfig({ chart, onWidgetConfigChange }: { chart: any; onWidgetConfigChange: (id: number, key: string, value: any) => void }) {
+function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidgetConfigChange }: {
+  chart: any; allCharts: any[]; pageParams: PageParam[]; onCreatePageParam?: (param: PageParam) => void;
+  onWidgetConfigChange: (id: number, key: string, value: any) => void;
+}) {
+  const type: string = chart.chart_type;
+  const isButton = ['widget_search', 'widget_reset', 'widget_export'].includes(type);
+  const isLabel = type === 'widget_label';
+  const takesParam = !isButton && !isLabel;
+  const targetChartId = typeof chart.config?.targetChartId === 'number' ? chart.config.targetChartId : 0;
+  // 选项显示图表 name（ui-resource-display）；value 用 id 是实现细节
+  const exportTargets = (allCharts || []).filter(c => !String(c.chart_type || '').startsWith('widget_'));
   return (
     <div className="space-y-3">
       <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">控件配置</div>
@@ -230,27 +276,40 @@ function WidgetConfig({ chart, onWidgetConfigChange }: { chart: any; onWidgetCon
         </div>
       )}
 
-      {!['widget_label', 'widget_search', 'widget_reset', 'widget_export'].includes(chart.chart_type) && (
-        <div className="space-y-2">
-          <Label className="text-xs">参数 Key</Label>
-          <Input className="h-7 text-xs font-mono"
-            value={chart.config?.paramKey || ''}
-            onChange={e => onWidgetConfigChange(chart.id, 'paramKey', e.target.value)}
-            placeholder="如 site, date_start" />
-        </div>
+      {takesParam && (
+        <ParamNameSelect label="参数 Key" value={chart.config?.paramKey || ''} params={pageParams}
+          placeholder="如 site / date_start" onChange={v => onWidgetConfigChange(chart.id, 'paramKey', v)}
+          onCreate={p => onCreatePageParam?.(p)} />
       )}
 
       <div className="space-y-2">
         <Label className="text-xs">
-          {['widget_search', 'widget_reset', 'widget_export'].includes(chart.chart_type) ? '按钮文字' : chart.chart_type === 'widget_label' ? '名称' : '显示标签'}
+          {isButton ? '按钮文字' : isLabel ? '名称' : '标签文字'}
         </Label>
         <Input className="h-7 text-xs"
           value={chart.config?.label || ''}
           onChange={e => onWidgetConfigChange(chart.id, 'label', e.target.value)} />
       </div>
 
-      {!['widget_label', 'widget_search', 'widget_reset', 'widget_export'].includes(chart.chart_type) && (
+      {takesParam && (
         <>
+          <div className="grid grid-cols-2 items-center gap-2">
+            <div className="space-y-1">
+              <Label className="text-xs">显示标签</Label>
+              <Switch checked={chart.config?.showLabel !== false}
+                onCheckedChange={v => onWidgetConfigChange(chart.id, 'showLabel', v)} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">标签位置</Label>
+              <Select value={chart.config?.labelPosition || 'left'} onValueChange={v => onWidgetConfigChange(chart.id, 'labelPosition', v)}>
+                <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="left" className="text-xs">左侧</SelectItem>
+                  <SelectItem value="top" className="text-xs">上方</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
           <div className="space-y-2">
             <Label className="text-xs">占位提示</Label>
             <Input className="h-7 text-xs"
@@ -263,21 +322,106 @@ function WidgetConfig({ chart, onWidgetConfigChange }: { chart: any; onWidgetCon
               value={chart.config?.defaultValue || ''}
               onChange={e => onWidgetConfigChange(chart.id, 'defaultValue', e.target.value)} />
           </div>
+          {type === 'widget_daterange' ? (
+            <div className="grid grid-cols-2 gap-2">
+              {(['start', 'end'] as const).map((slot, i) => {
+                const parts = String(chart.config?.bind_param || '').split(',').map(s => s.trim());
+                return <ParamNameSelect key={slot} label={slot === 'start' ? '绑定开始参数' : '绑定结束参数'}
+                  value={parts[i] || ''} params={pageParams} onChange={v => {
+                    const next = [...parts]; next[i] = v;
+                    onWidgetConfigChange(chart.id, 'bind_param', next.filter(Boolean).join(','));
+                  }} onCreate={p => onCreatePageParam?.(p)} />
+              })}
+            </div>
+          ) : (
+            <ParamNameSelect label="绑定页面参数" value={chart.config?.bind_param || ''} params={pageParams}
+              placeholder="不绑定" onChange={v => onWidgetConfigChange(chart.id, 'bind_param', v)}
+              onCreate={p => onCreatePageParam?.(p)} />
+          )}
         </>
       )}
 
-      {(chart.chart_type === 'widget_select' || chart.chart_type === 'widget_multi_select') && (
-        <div className="space-y-2">
-          <Label className="text-xs">选项（逗号分隔）</Label>
-          <Input className="h-7 text-xs"
-            value={(chart.config?.options || []).map((o: any) => o.label || o.value).join(',')}
-            onChange={e => {
-              const opts = e.target.value.split(',').map(s => s.trim()).filter(Boolean)
-                .map(s => ({ label: s, value: s }));
-              onWidgetConfigChange(chart.id, 'options', opts);
-            }}
-            placeholder="北京,上海,广州" />
+      {type === 'widget_daterange' && <>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="space-y-1">
+            <Label className="text-xs">时间粒度</Label>
+            <Select value={chart.config?.granularity || 'date'} onValueChange={v => onWidgetConfigChange(chart.id, 'granularity', v)}>
+              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="date" className="text-xs">按天（日期列）</SelectItem>
+                <SelectItem value="datetime" className="text-xs">到时分秒（时间戳列）</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">默认选项</Label>
+            <Select value={chart.config?.defaultPreset || CUSTOM_PRESET} onValueChange={v => onWidgetConfigChange(chart.id, 'defaultPreset', v === CUSTOM_PRESET ? undefined : v)}>
+              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {TIME_PRESETS.map(p => <SelectItem key={p.key} value={p.key} className="text-xs">{p.label}</SelectItem>)}
+                <SelectItem value={CUSTOM_PRESET} className="text-xs">不预设（用最大间隔）</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
+        <div className="space-y-1">
+          <Label className="text-xs">快捷选项</Label>
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
+            {TIME_PRESETS.map(p => {
+              const checked = !Array.isArray(chart.config?.presets) || chart.config.presets.includes(p.key);
+              return <label key={p.key} className="flex items-center gap-1 text-[11px]">
+                <input type="checkbox" checked={checked} onChange={e => {
+                  const base: string[] = Array.isArray(chart.config?.presets) ? chart.config.presets : DEFAULT_TIME_PRESET_KEYS;
+                  const next = e.target.checked ? [...base, p.key] : base.filter((k: string) => k !== p.key);
+                  onWidgetConfigChange(chart.id, 'presets', DEFAULT_TIME_PRESET_KEYS.filter(k => next.includes(k)));
+                }} />
+                {p.label}
+              </label>;
+            })}
+          </div>
+          {Array.isArray(chart.config?.presets) && chart.config.presets.length === 0 && (
+            <p className="text-[10px] text-muted-foreground">已全部取消：控件只保留两个日期输入框，不再显示快捷下拉。</p>
+          )}
+        </div>
+        <div className="space-y-2">
+          <Label className="text-xs">最大跨度（天）</Label>
+          <Input type="number" className="h-7 text-xs" min={1}
+            value={chart.config?.rangeMaxDays ?? 365}
+            onChange={e => onWidgetConfigChange(chart.id, 'rangeMaxDays', e.target.value ? Number(e.target.value) : undefined)} />
+          <p className="text-[10px] text-muted-foreground">限制自由选择时结束与开始的间隔；快捷选项不受此限制。</p>
+        </div>
+        {(chart.config?.granularity === 'datetime' || needsTime(chart.config?.defaultPreset)) && (
+          <p className="text-[10px] text-muted-foreground">
+            当前会下发带时分秒的区间，请确认图表 SQL 比较的列是时间戳；若列是 DATE，小时级窗口会退化成整天。
+          </p>
+        )}
+      </>}
+
+      {type === 'widget_export' && (
+        <div className="space-y-2">
+          <Label className="text-xs">导出目标图表</Label>
+          <Select value={targetChartId ? String(targetChartId) : ''} onValueChange={v => onWidgetConfigChange(chart.id, 'targetChartId', Number(v))}>
+            <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="请选择要导出的图表" /></SelectTrigger>
+            <SelectContent>
+              {exportTargets.map(c => <SelectItem key={c.id} value={String(c.id)} className="text-xs">{c.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          {!targetChartId && (
+            <p role="alert" className="text-[10px] text-destructive">未选择目标图表，运行时导出按钮会置灰（不会默默导出别的图表）。</p>
+          )}
+          {!!targetChartId && !exportTargets.some(c => c.id === targetChartId) && (
+            <p role="alert" className="text-[10px] text-destructive">原目标图表已不在当前看板，请重新选择。</p>
+          )}
+          {!!targetChartId && exportTargets.some(c => c.id === targetChartId) && (
+            <p className="text-[10px] text-muted-foreground">导出该图表当前缓存的数据行，取数口径与图表一致。</p>
+          )}
+        </div>
+      )}
+
+      {(type === 'widget_select' || type === 'widget_multi_select') && (
+        <WidgetOptionsEditor
+          value={(chart.config?.options || []) as { label: string; value: string }[]}
+          onChange={opts => onWidgetConfigChange(chart.id, 'options', opts)} />
       )}
 
       {chart.chart_type === 'widget_number' && (
@@ -402,9 +546,55 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
           <Label className="text-xs">字号</Label>
           <span className="text-[10px] text-muted-foreground">{ws.fontSize ?? 14}px</span>
         </div>
-        <Slider min={10} max={32} step={1}
+        <Slider min={11} max={32} step={1}
           value={[ws.fontSize ?? 14]}
           onValueChange={([v]) => updateStyle('fontSize', v)} />
+      </div>
+
+      {/* Line height */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <Label className="text-xs">行高</Label>
+          <span className="text-[10px] text-muted-foreground">{ws.lineHeight ? `${ws.lineHeight}px` : '自动'}</span>
+        </div>
+        <Slider min={0} max={40} step={1}
+          value={[ws.lineHeight ?? 0]}
+          onValueChange={([v]) => updateStyle('lineHeight', v || undefined)} />
+        <p className="text-[10px] text-muted-foreground">0 = 自动（跟随字号）</p>
+      </div>
+
+      {/* Control height — 接管多选框等内层写死高度，小尺寸控件才能真正缩小 */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <Label className="text-xs">控件高</Label>
+          <span className="text-[10px] text-muted-foreground">{ws.height ? `${ws.height}px` : '默认'}</span>
+        </div>
+        <Slider min={0} max={160} step={2}
+          value={[ws.height ?? 0]}
+          onValueChange={([v]) => updateStyle('height', v || undefined)} />
+        <p className="text-[10px] text-muted-foreground">0 = 默认；不得低于当前控件类型的最小尺寸</p>
+      </div>
+
+      {/* Label width */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <Label className="text-xs">标签宽度</Label>
+          <span className="text-[10px] text-muted-foreground">{ws.labelWidth ? `${ws.labelWidth}px` : '自适应'}</span>
+        </div>
+        <Slider min={0} max={160} step={4}
+          value={[ws.labelWidth ?? 0]}
+          onValueChange={([v]) => updateStyle('labelWidth', v || undefined)} />
+      </div>
+
+      {/* Gap between label and control */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <Label className="text-xs">间距</Label>
+          <span className="text-[10px] text-muted-foreground">{ws.gap ? `${ws.gap}px` : '默认'}</span>
+        </div>
+        <Slider min={0} max={24} step={1}
+          value={[ws.gap ?? 0]}
+          onValueChange={([v]) => updateStyle('gap', v || undefined)} />
       </div>
 
       {/* Font weight */}
@@ -588,7 +778,7 @@ function CanvasProperties({
       </div>
 
       <p className="text-[10px] text-muted-foreground leading-relaxed">
-        从左侧组件库拖拽图表或控件到画布。点击画布上的元素可编辑其属性。按 Delete 键删除选中元素。所有操作暂存本地，点击「保存」提交。
+        从左侧组件库拖入图表或控件到画布（也可点击添加）。点击画布上的元素可编辑其属性，按 Delete 键删除选中元素。所有操作暂存本地，点击「保存」提交。
       </p>
     </div>
   );

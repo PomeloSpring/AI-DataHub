@@ -49,6 +49,79 @@ async def list_authorized_datasources(
     return result
 
 
+@router.get("/authorized-sites")
+async def list_authorized_sites(
+    workspace_id: int = Query(0, description="工作空间 ID（可选，0=个人域）"),
+    user: dict = Depends(get_current_user),
+):
+    """当前用户可查站点（聊天站点选择器用）——**角色数据源授权的派生视图**。
+
+    不构成第二套「谁能查什么」裁决：可查站点 = 角色已授权数据源携带的 site_code
+    （见 waker-datasource-domain.md §1）；空授权 fail-closed 返回空列表。
+    聚合态（全球）仅在可查站点数 ≥2 时提供。只回业务名，不含 id 之外的物理信息。
+
+    必须定义在 /{ds_id} 之前，否则 "sites"/"authorized-sites" 会被当作 ds_id 解析(422)。
+    """
+    from backend.common.ttl_cache import datasource_cache
+    from backend.core.site_service import authorized_sites
+
+    # 缓存**整个响应体**而不是内层清单：只缓存 list 会让命中/未命中两条路径的
+    # 响应结构不一致（{items:[..]} vs [..]），前端 data.items 变 undefined → 选择器静默消失。
+    cache_key = f"sites:auth:{user.get('user_id')}:{workspace_id}"
+    cached = datasource_cache.get(cache_key)
+    if isinstance(cached, dict) and "items" in cached:
+        return cached
+    result = authorized_sites(user.get("user_id") or 0, workspace_id)
+    payload = {"items": result}
+    datasource_cache.set(cache_key, payload)
+    return payload
+
+
+@router.get("/sites")
+async def list_sites(
+    include_aggregate: bool = Query(True, description="是否包含聚合态站点（全球）"),
+    include_inactive: bool = Query(False, description="管理页需要看到停用行"),
+    user: dict = Depends(get_current_user),
+):
+    """站点清单（adh_sites 事实源）：数据源归属选择器与聊天站点选择器的候选。"""
+    from backend.core.site_service import list_sites as _list_sites
+
+    return {"items": _list_sites(only_active=not include_inactive,
+                                 include_aggregate=include_aggregate)}
+
+
+@router.post("/sites")
+async def create_site(
+    req: dict,
+    user: dict = Depends(require_admin),
+):
+    """新增/更新站点（管理员）。"""
+    from backend.core.site_service import upsert_site
+
+    try:
+        return upsert_site(
+            req.get("site_code") or "", req.get("display_name") or "",
+            is_aggregate=int(req.get("is_aggregate") or 0),
+            sort_order=int(req.get("sort_order") or 0),
+            is_active=1 if req.get("is_active", 1) else 0)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.delete("/sites/{site_code}")
+async def delete_site(
+    site_code: str,
+    user: dict = Depends(require_admin),
+):
+    """删除站点：仍被数据源/本体引用时拒绝（不级联删部署拓扑）。"""
+    from backend.core.site_service import delete_site as _delete_site
+
+    try:
+        return _delete_site(site_code)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
 @router.get("/{ds_id}")
 async def get_datasource(
     ds_id: int,

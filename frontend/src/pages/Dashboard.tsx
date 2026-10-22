@@ -10,6 +10,7 @@ import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import { useDashboardStore, DASHBOARD_STATUS_MAP, type Dashboard as DashboardModel, type DashboardParam, type PageParam, type DashboardStatus } from '@/stores/dashboardStore';
+import { useCancelChartRefreshOnLeave } from '@/hooks/useCancelChartRefreshOnLeave';
 import { useAuthStore } from '@/stores/authStore';
 import { DashboardThumbnail } from '@/components/DashboardCanvas';
 import DashboardExportImport from '@/components/DashboardExportImport';
@@ -36,6 +37,8 @@ export default function Dashboard() {
   const [templates, setTemplates] = useState(false);
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
+  // 离开看板页即终止未完成的图表查询，避免连接被占导致其他功能一直 pending
+  useCancelChartRefreshOnLeave();
   useEffect(() => { void store.loadDashboards(workspaceId ? Number(workspaceId) : 0); }, [workspaceId]);
   const filtered = useMemo(() => store.dashboards.filter(d =>
     `${d.name} ${d.description || ''}`.toLowerCase().includes(search.toLowerCase()) &&

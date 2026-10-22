@@ -292,6 +292,30 @@ class TestCompilerComposition:
                               db_type="mysql")
         assert "WHERE `step_order` >= 2" in out.sql
 
+    def test_like_filter_compiles(self):
+        """回归: like 曾放在符号表判定之后 → 永远返回 None（报成"无法解析过滤字段"）。"""
+        out = compile_dataset(_ds(), args={"start_date": "2024-01-01"},
+                              dimensions=["渠道"], measures=["到达实体数"],
+                              filters=[{"field": "渠道", "op": "like", "value": "Web"}],
+                              db_type="mysql")
+        assert "WHERE `channel` LIKE '%Web%'" in out.sql, (out.sql, out.warnings)
+        assert not out.unresolved
+
+    def test_like_keeps_caller_pattern_and_refuses_bad_op_with_true_reason(self):
+        # 调用方已带通配符（如 URL 子串匹配）时不二次包裹
+        out = compile_dataset(_ds(), args={"start_date": "2024-01-01"},
+                              dimensions=["渠道"], measures=["到达实体数"],
+                              filters=[{"field": "渠道", "op": "like", "value": "%di%ct%"}],
+                              db_type="mysql")
+        assert "LIKE '%di%ct%'" in out.sql, out.sql
+        # 字段能解析而算子不合法时,错因说算子/取值,不得报成"字段未解析"
+        out2 = compile_dataset(_ds(), args={"start_date": "2024-01-01"},
+                               dimensions=["渠道"], measures=["到达实体数"],
+                               filters=[{"field": "渠道", "op": "regex", "value": "x"}],
+                               db_type="mysql")
+        assert any("已识别，但过滤条件无法渲染" in w for w in out2.warnings), out2.warnings
+        assert not any("无法解析过滤字段" in w for w in out2.warnings), out2.warnings
+
     def test_order_by_alias(self):
         out = compile_dataset(_ds(), args={"start_date": "2024-01-01"},
                               dimensions=["渠道"], measures=["到达实体数"],
@@ -394,3 +418,63 @@ class TestPlannerDatasetBinding:
         assert "INTERVAL 3600 SECOND" in planned.sql     # 作为参数渲染进正文
         outer = planned.sql.split(") AS _ds_base")[-1]
         assert "WHERE" not in outer                       # 外层不重复下推
+
+
+# ── 5. SLS/Presto 非 ASCII 标识符兼容（外层投影 ASCII 别名 + header 映回）─────────
+
+class TestSlsAsciiAliasMapping:
+    """SLS 端点拒绝非 ASCII 标识符：语义层外层投影必须用 ASCII 槽位并记录 ASCII->业务名映射，
+    执行后映回；其他方言（MySQL/PG/Doris）必须保持中文别名不变（否则回归破坏既有取数）。"""
+
+    def test_sls_outer_projection_uses_ascii_alias_and_header_map(self):
+        out = compile_dataset(_ds(), args={"start_date": "2024-01-01"},
+                              dimensions=["渠道"], measures=["到达实体数"],
+                              order=[{"by": "到达实体数", "desc": True}], db_type="sls")
+        # 全 SQL（含正文）不得出现中文标识符，改用稳定 ASCII 槽位
+        assert "渠道" not in out.sql and "到达实体数" not in out.sql
+        assert 'AS "o0"' in out.sql and 'AS "o1"' in out.sql
+        assert 'ORDER BY "o1" DESC' in out.sql
+        assert out.header_map == {"o0": "渠道", "o1": "到达实体数"}
+
+    def test_mysql_and_pg_keep_business_alias_unchanged(self):
+        """非 SLS 通道不得被改动：中文别名照旧，header_map 为空。"""
+        for db in ("mysql", "postgres"):
+            out = compile_dataset(_ds(), args={"start_date": "2024-01-01"},
+                                  dimensions=["渠道"], measures=["到达实体数"], db_type=db)
+            assert not out.header_map
+            assert "到达实体数" in out.sql and "渠道" in out.sql
+
+    def test_planner_propagates_header_map_for_sls_binding(self, stub_dataset):
+        planned = planner.plan(
+            self._query(metrics=["到达实体数"], dimensions=["渠道"],
+                        params={"start_date": "2024-01-01"}), _bind(db_type="sls"))
+        assert planned.output_header_map == {"o0": "渠道", "o1": "到达实体数"}
+
+    def _query(self, **over):
+        base = dict(object="path_funnel", params={"start_date": "2024-01-01"})
+        base.update(over)
+        return SemanticQuery(**base)
+
+
+# ── 6. 数据集字段别名可解析（字典广告的别名与数据集对象一致）──
+
+class TestDatasetFieldAliases:
+    def test_alias_resolves_to_declared_measure(self):
+        fields = [
+            {"field": "channel", "label": "渠道", "role": "dimension", "aliases": ["地区"]},
+            {"field": "entity", "label": "到达实体数", "role": "measure",
+             "expr": "COUNT(DISTINCT entity)", "aliases": ["PV", "到达用户数"]},
+        ]
+        out = compile_dataset(_ds(field_config=json.dumps(fields, ensure_ascii=False)),
+                              args={"start_date": "2024-01-01"},
+                              dimensions=["地区"], measures=["PV"], db_type="mysql")
+        assert "COUNT(DISTINCT entity)" in out.sql and "`channel`" in out.sql
+        assert not out.unresolved
+
+    def test_unknown_alias_still_returns_candidates(self):
+        fields = [{"field": "entity", "label": "到达实体数", "role": "measure",
+                   "expr": "COUNT(DISTINCT entity)", "aliases": ["PV"]}]
+        out = compile_dataset(_ds(field_config=json.dumps(fields, ensure_ascii=False)),
+                              args={"start_date": "2024-01-01"},
+                              measures=["不存在的别名"], db_type="mysql")
+        assert out.unresolved and out.unresolved[0]["reason"] == "dataset_field_unresolved"

@@ -143,17 +143,21 @@ def _to_result(
     elapsed_ms: int,
 ) -> SemanticResult:
     rr = se.result or {}
-    names = [str(c) for c in (rr.get("columns") or [])]
+    raw_names = [str(c) for c in (rr.get("columns") or [])]
+    # SLS/Presto 下 SQL 别名为 ASCII 槽位(o0..)，映回请求的业务名后作为对外列名与角色标注依据；
+    # 非 SLS output_header_map 为空 -> disp==raw，行为不变。取数仍按 raw_names 从 dict 行取值。
+    hmap = p.output_header_map or {}
+    disp_names = [hmap.get(n, n) for n in raw_names]
     records = rr.get("rows") or []
     rows: list[list[Any]] = []
     for rec in records:
         if isinstance(rec, dict):
-            rows.append([rec.get(n) for n in names])
+            rows.append([rec.get(n) for n in raw_names])
         elif isinstance(rec, (list, tuple)):
             rows.append(list(rec))
 
     return SemanticResult(
-        columns=[_result_column(n, q) for n in names],
+        columns=[_result_column(n, q) for n in disp_names],
         rows=rows,
         row_count=int(rr.get("row_count") or len(rows)),
         applied_rls=list(se.applied_rls),

@@ -235,6 +235,55 @@ def sync_targets_for_model(model: dict | None) -> list[dict]:
     return []
 
 
+def resolve_kb_target(kb_id: int) -> dict | None:
+    """按 id 解析**用户手动指定**的同步目标库: {id, name, notebook_id}。
+
+    用于关系图谱页「同步知识库」选库下拉的一次性定向推送：显式同步到选定的
+    active qmind 库（含源本体，属用户主动的手动例外，不受按 kind 的默认路由约束）。
+    非 active / 非 qmind / 无真实 notebook 时返回 None（调用方显式报 skipped，不静默换库）。
+    """
+    from backend.common.db import execute_query
+
+    try:
+        rows = execute_query(
+            "SELECT id, name, source_config FROM adh_knowledge_bases "
+            "WHERE kb_type='qmind' AND status='active' AND id=%s", (int(kb_id),))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[OntoSync] resolve kb target id=%s failed: %s", kb_id, e)
+        return None
+    for r in rows or []:
+        cfg = _parse_cfg(r.get("source_config"))
+        nb = cfg.get("notebook_id")
+        if nb and nb != "system":
+            return {"id": r["id"], "name": r.get("name"), "notebook_id": nb}
+    return None
+
+
+def list_syncable_kbs() -> list[dict]:
+    """「同步知识库」可选目标库清单: 全部 active qmind 且 notebook 真实（含全局库与业务库）。
+
+    与 list_bindable_kbs 区别：这里不排除全局 sync_ontology 库——选库下拉要能显式
+    指定任意可接收上云文档的库。只回 {id, name}（显示用 name、选择 value 用 id，
+    不外泄 notebook 内部标识）。
+    """
+    from backend.common.db import execute_query
+
+    try:
+        rows = execute_query(
+            "SELECT id, name, source_config FROM adh_knowledge_bases "
+            "WHERE kb_type='qmind' AND status='active' ORDER BY name")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[OntoSync] list syncable kbs failed: %s", e)
+        return []
+    out = []
+    for r in rows or []:
+        cfg = _parse_cfg(r.get("source_config"))
+        nb = cfg.get("notebook_id")
+        if nb and nb != "system":
+            out.append({"id": r["id"], "name": r.get("name")})
+    return out
+
+
 def list_bindable_kbs() -> list[dict]:
     """业务本体可选目标知识库清单: active qmind 且 notebook 真实。
 
@@ -437,12 +486,14 @@ def _render_cloud_doc(model: dict) -> str:
     return _version_header(model) + body
 
 
-def sync_model_to_qmind(model_id: int) -> dict:
-    """把指定本体模型的**脱敏语义文档**同步到该模型选定的目标知识库.
+def sync_model_to_qmind(model_id: int, kb_id: int | None = None) -> dict:
+    """把指定本体模型的**脱敏语义文档**同步到目标知识库.
 
     上云文档经白名单渲染(剔除物理表/列名/JOIN/formula), 不再直接上传含物理信息的 md_content。
     仅同步 active 模型(草案/归档不污染知识库); 非 active 时若存在旧文档则清理。
-    目标库按模型解析: 系统本体→全局 sync_ontology 库; 业务本体→model.kb_id 选定库(未绑定不同步)。
+    kb_id 为空时目标库按模型 kind 默认路由: 系统/业务本体→全局 sync_ontology 库; 源本体→不做 RAG。
+    kb_id 非空时（关系图谱页手动选库）为一次性覆盖：显式推送到该指定库（含源本体，
+    属用户主动的手动例外），不改变自动同步/定时对账的默认路由。
     Returns: {"synced": n, "targets": [...], "skipped": reason|None}
     """
     from backend.modules.catalog.services.ontology_service import get_model
@@ -450,7 +501,16 @@ def sync_model_to_qmind(model_id: int) -> dict:
     model = get_model(model_id)
     if not model:
         return {"synced": 0, "targets": [], "skipped": "model_not_found"}
-    targets = sync_targets_for_model(model)
+    if kb_id:
+        # 手动指定目标库（一次性覆盖默认路由）：显式同步到选定的 active qmind 库，
+        # 含源本体——这是用户主动的手动例外（默认按 kind 路由：源本体不做 RAG），
+        # 非静默降级；目标库不可用时报 skipped 不静默换库，toast 回库名。
+        kb = resolve_kb_target(int(kb_id))
+        if not kb:
+            return {"synced": 0, "targets": [], "skipped": "specified_kb_unavailable"}
+        targets = [kb]
+    else:
+        targets = sync_targets_for_model(model)
     if not targets:
         if str(model.get("kind") or "") == "source":
             # 源本体不做 RAG 是归属裁决（只服务语义检索/取数），不是配置遗漏，

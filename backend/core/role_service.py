@@ -23,6 +23,19 @@ def _gen_id():
     return int(time.time() * 1000000)
 
 
+def _invalidate_datasource_derived_caches() -> None:
+    """失效“我的可用数据源/可查站点”派生缓存（角色授权变更时）。
+
+    缓存层不可用不影响权限裁决正确性（只多一次重算），故不抛出。
+    """
+    try:
+        from backend.common.ttl_cache import datasource_cache
+        datasource_cache.invalidate_prefix("auth_ds:")
+        datasource_cache.invalidate_prefix("sites:")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[role] datasource-derived cache invalidate skipped: %s", e)
+
+
 class RoleService:
     """Role and permission management service."""
 
@@ -411,6 +424,9 @@ class RoleService:
                         (_gen_id(), role_id, ds_id)
                     )
                 conn.commit()
+                # 数据源授权是「可用数据源 / 可查站点」的唯一裁决源，变更后必须立刻
+                # 失效两个派生缓存，否则聊天端会在 TTL 窗口内看到旧范围。
+                _invalidate_datasource_derived_caches()
                 return True
         finally:
             conn.close()

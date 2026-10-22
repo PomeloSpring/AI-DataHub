@@ -3,7 +3,7 @@ import {
   applyChartComponent, applyScreenComponent, applyLayout, chartDataKey, clampPosition,
   compatible, getCanvas, resolveChartDesign, resolveComponent, resolveDashboardDesign,
   sanitizeStyle, sanitizePack, screenToCanvas, snapshotComponent, themePackFor, visualConfig,
-  legacyCanvasFilters, chartRect, snapCanvasRect, clearChartVisualOverrides, libraryThemeFilters,
+  legacyCanvasFilters, chartRect, minSizeOf, naturalSizeOf, snapCanvasRect, clearChartVisualOverrides, libraryThemeFilters,
 } from '../dashboardDesign';
 import { validateVisResponse } from '../../api/visLibrary';
 import { exportChart } from '../../components/DashboardExportImport';
@@ -265,11 +265,28 @@ describe('主题包完整应用回归', () => {
 
 describe('画布吸附与防塌陷', () => {
   const canvas = { width: 1920, height: 1080 };
-  it('异常尺寸有下限且不回写旧位置', () => {
+  it('非法尺寸回落默认值且不回写旧位置，合法小尺寸原样保留', () => {
     const chart = { chart_type: 'bar', position: { x: NaN, y: 20, w: 0, h: -1 } };
-    expect(chartRect(chart)).toEqual({ x: 0, y: 20, w: 200, h: 150 });
+    expect(chartRect(chart)).toEqual({ x: 0, y: 20, w: 400, h: 300 });
     expect(chart.position.h).toBe(-1);
-    expect(getCanvas({ design: { canvas: { width: 1, height: NaN, gridSize: 0 } } }, [chart])).toEqual({ width: 320, height: 1080, gridSize: 1 });
+    expect(getCanvas({ design: { canvas: { width: 1, height: NaN, gridSize: 0 } } }, [chart])).toEqual({ width: 400, height: 1080, gridSize: 1 });
+  });
+  it('不设尺寸下限：由人主动控制；自然尺寸只作为默认起点', () => {
+    const tiny = { chart_type: 'widget_search', position: { x: 10, y: 20, w: 24, h: 8 } };
+    expect(chartRect(tiny)).toEqual({ x: 10, y: 20, w: 24, h: 8 });
+    // 下限退到 1×1：只防塌陷成 0/负，多小都由人决定
+    for (const type of ['widget_search', 'widget_daterange', 'widget_label', 'bar', undefined]) {
+      expect(minSizeOf(type)).toEqual({ w: 1, h: 1 });
+    }
+    // 自然尺寸只是“没碰过时”的紧凑起点
+    expect(naturalSizeOf('widget_search')).toEqual({ w: 96, h: 24 });
+    expect(naturalSizeOf('widget_daterange')).toEqual({ w: 320, h: 32 });
+    expect(naturalSizeOf('widget_select')).toEqual({ w: 180, h: 28 });
+    expect(naturalSizeOf('bar')).toEqual({ w: 400, h: 300 });
+  });
+  it('控件紧凑旋钮通过 WIDGET_KEYS 白名单，入库不被剥', () => {
+    const pack = sanitizePack({ widgets: { widget_text: { lineHeight: 18, height: 24, gap: 2, labelWidth: 64, fontSize: 11, bogus: 1 } } });
+    expect(pack.widgets.widget_text).toEqual({ lineHeight: 18, height: 24, gap: 2, labelWidth: 64, fontSize: 11 });
   });
   it('邻居边缘优先于网格，反馈实际对齐线', () => {
     const result = snapCanvasRect({ x: 198, y: 213, w: 400, h: 300 }, canvas, [{ x: 203, y: 711, w: 410, h: 200 }], 20, 1);

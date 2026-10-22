@@ -1,9 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, type ReactNode } from 'react';
+import { useDraggable } from '@dnd-kit/core';
 import { VIS_CATEGORIES, type VisComponent } from '@/api/visLibrary';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
 import VisComponentPreview, { ShapePreview } from '@/components/VisComponentPreview';
-import { resolveDashboardDesign } from '@/lib/dashboardDesign';
-import { Layers, BarChart3, Settings, PanelLeftClose, Database, Download } from 'lucide-react';
+import { resolveDashboardDesign, chartZIndex, isChartHidden, isChartLocked } from '@/lib/dashboardDesign';
+import { libraryDragId, type LibraryDragData } from '@/lib/editorDrag';
+import { Layers, BarChart3, Settings, PanelLeftClose, Database, Download, ChevronUp, ChevronDown, Eye, EyeOff, Lock, LockOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -15,25 +17,50 @@ const CHART_TYPE_LABELS: Record<string, string> = Object.fromEntries(
   CHART_TYPES.map(t => [t.value, t.label]),
 );
 
+/**
+ * 库项统一走 dnd-kit 拖拽（Pointer + Keyboard sensor），不再用 HTML5 DnD：
+ * 后者在触摸设备上完全不工作，库项也没有点击/键盘添加的兜底。
+ */
+function Draggable({ id, data, onAdd, title, className, children }: {
+  id: string; data: LibraryDragData; onAdd: () => void; title: string; className: string; children: ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id, data });
+  return <div ref={setNodeRef} {...listeners} {...attributes} onClick={onAdd} role="button" tabIndex={0}
+    aria-label={`${title}（拖入画布或按回车添加）`}
+    className={`${className} cursor-grab active:cursor-grabbing select-none ${isDragging ? 'opacity-40' : ''}`}>
+    {children}
+  </div>;
+}
+
 interface Props {
   allCharts: any[];
   selectedChart: any;
   isOpen: boolean;
   onClose: () => void;
-  onDragStart: (e: React.DragEvent, item: ChartTypeItem) => void;
-  onDragEnd: () => void;
+  /** 点选/回车添加（与拖入同一结果） */
+  onAddItem: (item: ChartTypeItem, component?: VisComponent) => void;
   onSelectChart: (chart: any) => void;
   onApplyVis: (component: VisComponent) => void;
-  onVisDragStart: (e: React.DragEvent, component: VisComponent) => void;
   onAddFromDataset: (dataset: any) => void;
   design: ReturnType<typeof resolveDashboardDesign>;
+  /** 当前布局模式：仅大屏模式支持叠放顺序 */
+  layoutMode: 'page' | 'screen';
+  /** 受控页签：空画布引导「从数据集引入」要能把面板切到数据集页 */
+  tab: string;
+  onTab: (tab: string) => void;
+  /** 已有未保存修改的图表 id（图层列表标「改」） */
+  dirtyIds: number[];
+  onLayerAction: (chart: any, action: 'up' | 'down' | 'hide' | 'show' | 'lock' | 'unlock' | 'rename', name?: string) => void;
 }
 
 export default function ComponentLibrary({
-  allCharts, selectedChart, isOpen, onClose, onDragStart, onDragEnd, onSelectChart, onApplyVis, onVisDragStart, onAddFromDataset, design,
+  allCharts, selectedChart, isOpen, onClose, onAddItem, onSelectChart, onApplyVis, onAddFromDataset, design, layoutMode, dirtyIds, onLayerAction, tab, onTab,
 }: Props) {
   const library = useVisLibrary();
   const [category, setCategory] = useState('theme_pack');
+  const [renaming, setRenaming] = useState<number | null>(null);
+  // 图层列表按叠放顺序倒序展示（上层在上），与 Photoshop/Figma 习惯一致
+  const layerOrder = useMemo(() => allCharts.slice().sort((a, b) => chartZIndex(b) - chartZIndex(a) || b.id - a.id), [allCharts]);
   // 从数据集引入: 按 name 显示(ui-resource-display), 点「引入」生成预设图表卡片
   const [datasets, setDatasets] = useState<any[]>([]);
   const [datasetsLoading, setDatasetsLoading] = useState(false);
@@ -75,7 +102,7 @@ export default function ComponentLibrary({
         </Button>
       </div>
 
-      <Tabs defaultValue="vis" className="flex-1 flex flex-col min-h-0">
+      <Tabs value={tab} onValueChange={onTab} className="flex-1 flex flex-col min-h-0">
         <TabsList className="w-full rounded-none border-b">
           <TabsTrigger value="vis" className="flex-1 text-xs">字模</TabsTrigger>
           <TabsTrigger value="charts" className="flex-1 text-xs">图表</TabsTrigger>
@@ -91,11 +118,22 @@ export default function ComponentLibrary({
           <p className="text-xs text-muted-foreground">{category === 'theme_pack' ? '主题包=一整套风格(背景+卡片+全部图表/控件)，点击一键套用。' : '点击应用到选中元素；图表字模可拖入新建。布局应用前可预览。'}</p>
           {library.error && <div role="alert" className="text-xs text-destructive">{library.error}<Button variant="link" onClick={library.refresh}>重试</Button></div>}
           {library.loading && <p className="text-xs">正在加载字模…</p>}
-          {library.items.filter(c => c.category === category).map(c => <button key={c.id} type="button" className="block w-full rounded-lg border p-2 text-left hover:border-foreground/50"
-            draggable={['chart_style', 'kpi_card'].includes(c.category)} onDragStart={e => onVisDragStart(e, c)} onDragEnd={onDragEnd} onClick={() => onApplyVis(c)}>
-            <VisComponentPreview c={c} /><span className="mt-1 block text-xs font-medium">{c.name}</span>
-            <span className="text-[10px] text-muted-foreground">{c.is_builtin ? '内置' : '自定义'}{c.chart_type ? ` · ${c.chart_type}` : ''}</span>
-          </button>)}
+          {library.items.filter(c => c.category === category).map(c => {
+            // chart_style / kpi_card 可拖入新建图表；其余分类只能应用到选中元素
+            const creatable = ['chart_style', 'kpi_card'].includes(c.category);
+            const item = creatable ? CHART_TYPES.find(t => t.value === (c.category === 'kpi_card' ? 'big_number_trend' : c.chart_type)) : undefined;
+            const body = <>
+              <VisComponentPreview c={c} />
+              <span className="mt-1 block text-xs font-medium">{c.name}</span>
+              <span className="text-[10px] text-muted-foreground">{c.is_builtin ? '内置' : '自定义'}{c.chart_type ? ` · ${c.chart_type}` : ''}{item ? ' · 可拖入新建' : ''}</span>
+            </>;
+            return item
+              ? <Draggable key={c.id} id={libraryDragId('vis', c.id)} data={{ item, component: c }}
+                  onAdd={() => onApplyVis(c)} title={c.name}
+                  className="block w-full rounded-lg border p-2 text-left hover:border-primary/50">{body}</Draggable>
+              : <button key={c.id} type="button" className="block w-full rounded-lg border p-2 text-left hover:border-foreground/50"
+                  onClick={() => onApplyVis(c)}>{body}</button>;
+          })}
           {!library.loading && !library.error && !library.items.some(c => c.category === category) && <p className="text-xs">该分类暂无字模</p>}
         </TabsContent>
         <TabsContent value="charts" className="flex-1 min-h-0 mt-0">
@@ -107,19 +145,13 @@ export default function ComponentLibrary({
                 </div>
                 <div className="grid grid-cols-2 gap-1">
                   {items.map(item => (
-                    <div
-                      key={item.value}
-                      draggable
-                      onDragStart={(e) => onDragStart(e, item)}
-                      onDragEnd={onDragEnd}
-                      className="flex flex-col items-center gap-1.5 px-2 py-1.5 rounded-md cursor-grab active:cursor-grabbing
-                        border border-transparent hover:border-primary/30 hover:bg-accent/60 transition-colors select-none group"
-                      title={`拖拽 ${item.label} 到画布`}
-                    >
+                    <Draggable key={item.value} id={libraryDragId('chart', item.value)} data={{ item }}
+                      onAdd={() => onAddItem(item)} title={item.label}
+                      className="flex flex-col items-center gap-1.5 px-2 py-1.5 rounded-md border border-transparent hover:border-primary/30 hover:bg-accent/60 transition-colors">
                       {preview(item)}
-                      <ChartIcon name={item.icon} className="sr-only" />
+                      <ChartIcon name={item.icon} className="h-3.5 w-3.5 text-muted-foreground" />
                       <span className="text-[11px] leading-tight truncate">{item.label}</span>
-                    </div>
+                    </Draggable>
                   ))}
                 </div>
               </div>
@@ -162,68 +194,69 @@ export default function ComponentLibrary({
         <TabsContent value="widgets" className="flex-1 min-h-0 mt-0">
           <ScrollArea className="h-full p-2">
             <div className="mb-2 px-2">
-              <p className="text-[10px] text-muted-foreground">拖拽控件到画布，用于参数筛选和交互</p>
+              <p className="text-[10px] text-muted-foreground">拖入或点击添加到画布，用于参数筛选和交互</p>
             </div>
             <div className="grid grid-cols-2 gap-1">
               {widgetItems.map(item => (
-                <div
-                  key={item.value}
-                  draggable
-                  onDragStart={(e) => onDragStart(e, item)}
-                  onDragEnd={onDragEnd}
-                  className="flex flex-col items-center gap-1.5 px-2 py-1.5 rounded-md cursor-grab active:cursor-grabbing
-                    border border-transparent hover:border-primary/30 hover:bg-accent/60 transition-colors select-none group"
-                  title={`拖拽 ${item.label} 到画布`}
-                >
+                <Draggable key={item.value} id={libraryDragId('chart', item.value)} data={{ item }}
+                  onAdd={() => onAddItem(item)} title={item.label}
+                  className="flex flex-col items-center gap-1.5 px-2 py-1.5 rounded-md border border-transparent hover:border-primary/30 hover:bg-accent/60 transition-colors">
                   {preview(item)}
-                  <ChartIcon name={item.icon} className="sr-only" />
+                  <ChartIcon name={item.icon} className="h-3.5 w-3.5 text-muted-foreground" />
                   <span className="text-[11px] leading-tight truncate">{item.label}</span>
-                </div>
+                </Draggable>
               ))}
             </div>
           </ScrollArea>
         </TabsContent>
-      {/* Existing charts list */}
+      {/* 图层面板：叠放顺序 / 显隐 / 锁定 / 就地重命名，并标注未保存状态 */}
       <TabsContent value="layers" className="flex-1 min-h-0 overflow-auto">
-      <div className="flex flex-col overflow-hidden">
-        <div className="p-2 flex flex-col min-h-0">
-          <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-2 mb-1.5 flex-shrink-0">
-            已添加 ({allCharts.length})
-          </div>
-          <ScrollArea className="flex-1 min-h-0">
-            {allCharts.length === 0 ? (
-              <div className="text-center py-4 text-muted-foreground text-xs">暂无组件</div>
-            ) : (
-              <div className="space-y-0.5">
-                {allCharts.map(chart => {
-                  const isWidget = chart.chart_type?.startsWith('widget_');
-                  const isSelected = selectedChart?.id === chart.id;
-                  const isNew = chart.id < 0;
-                  return (
-                    <div
-                      key={chart.id}
-                      className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors ${
-                        isSelected ? 'bg-primary/10 border border-primary/30' : 'hover:bg-muted border border-transparent'
-                      }`}
-                      onClick={() => onSelectChart(chart)}
-                    >
-                      {isWidget ? (
-                        <Settings className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-                      ) : (
-                        <BarChart3 className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-                      )}
-                      <span className="text-xs truncate flex-1">{chart.name}</span>
-                      {isNew && <Badge variant="secondary" className="text-[8px] px-1 py-0">新</Badge>}
-                      <Badge variant="outline" className="text-[9px] px-1 py-0">
-                        {isWidget ? '控件' : chart.chart_type}
-                      </Badge>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </ScrollArea>
+      <div className="p-2 flex flex-col min-h-0">
+        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-2 mb-1.5 flex-shrink-0">
+          图层 ({allCharts.length})
         </div>
+        <ScrollArea className="flex-1 min-h-0">
+          {allCharts.length === 0 ? (
+            <div className="text-center py-4 text-muted-foreground text-xs">暂无组件</div>
+          ) : (
+            <div className="space-y-0.5">
+              {layerOrder.map(chart => {
+                const isWidget = chart.chart_type?.startsWith('widget_');
+                const isSelected = selectedChart?.id === chart.id;
+                const hidden = isChartHidden(chart), locked = isChartLocked(chart);
+                return (
+                  <div key={chart.id}
+                    className={`flex items-center gap-1 px-2 py-1.5 rounded-md transition-colors ${
+                      isSelected ? 'bg-primary/10 border border-primary/30' : 'hover:bg-muted border border-transparent'
+                    } ${hidden ? 'opacity-50' : ''}`}
+                    onClick={() => onSelectChart(chart)}>
+                    {isWidget ? <Settings className="h-3 w-3 flex-shrink-0 text-muted-foreground" /> : <BarChart3 className="h-3 w-3 flex-shrink-0 text-muted-foreground" />}
+                    {renaming === chart.id
+                      ? <input autoFocus className="h-5 flex-1 min-w-0 rounded border bg-background px-1 text-xs"
+                          defaultValue={chart.name}
+                          onClick={e => e.stopPropagation()}
+                          onBlur={e => { setRenaming(null); const name = e.target.value.trim(); if (name && name !== chart.name) onLayerAction(chart, 'rename', name); }}
+                          onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(null); }} />
+                      : <span className="text-xs truncate flex-1" title={`${chart.name}（双击重命名）`} onDoubleClick={() => setRenaming(chart.id)}>{chart.name}</span>}
+                    {chart.id < 0 && <Badge variant="secondary" className="px-1 py-0 text-[8px]">新</Badge>}
+                    {chart.id >= 0 && dirtyIds.includes(chart.id) && <Badge variant="secondary" className="px-1 py-0 text-[8px]">改</Badge>}
+                    <span className="flex flex-shrink-0 items-center" onClick={e => e.stopPropagation()}>
+                      <Button variant="ghost" size="sm" className="h-5 w-5 p-0" aria-label="上移一层" title="上移一层" disabled={layoutMode !== 'screen'}
+                        onClick={() => onLayerAction(chart, 'up')}><ChevronUp className="h-3 w-3" /></Button>
+                      <Button variant="ghost" size="sm" className="h-5 w-5 p-0" aria-label="下移一层" title="下移一层" disabled={layoutMode !== 'screen'}
+                        onClick={() => onLayerAction(chart, 'down')}><ChevronDown className="h-3 w-3" /></Button>
+                      <Button variant="ghost" size="sm" className="h-5 w-5 p-0" aria-label={hidden ? '显示' : '隐藏'} title={hidden ? '显示' : '隐藏（仅阅读态生效）'}
+                        onClick={() => onLayerAction(chart, hidden ? 'show' : 'hide')}>{hidden ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}</Button>
+                      <Button variant="ghost" size="sm" className="h-5 w-5 p-0" aria-label={locked ? '解锁' : '锁定'} title={locked ? '解锁后可拖动' : '锁定位置'}
+                        onClick={() => onLayerAction(chart, locked ? 'unlock' : 'lock')}>{locked ? <Lock className="h-3 w-3" /> : <LockOpen className="h-3 w-3" />}</Button>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {layoutMode !== 'screen' && <p className="px-2 pt-2 text-[10px] text-muted-foreground">叠放顺序仅大屏模式适用；网格模式由行列决层。</p>}
+        </ScrollArea>
       </div>
       </TabsContent>
       </Tabs>

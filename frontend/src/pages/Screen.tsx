@@ -7,6 +7,7 @@ import { DashboardRuntimeParams } from '@/components/DashboardParams';
 import { useAuthStore } from '@/stores/authStore';
 import { useDashboardStore } from '@/stores/dashboardStore';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
+import { useCancelChartRefreshOnLeave } from '@/hooks/useCancelChartRefreshOnLeave';
 import { isEditingTarget } from '@/lib/dashboardDesign';
 import DashboardAutoRefresh from '@/components/DashboardAutoRefresh';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, DropdownMenuItem } from '@/components/ui/dropdown-menu';
@@ -68,6 +69,8 @@ function ScreenPlayer() {
   const [detail, setDetail] = useState<any>(null);
   const detailRef = useRef<any>(null); detailRef.current = detail;
   const [detailLoading, setDetailLoading] = useState(false);
+  // 退出大屏播放即终止未完成的图表查询，避免连接被占导致其他功能一直 pending
+  useCancelChartRefreshOnLeave();
   useEffect(() => {
     if (!currentMeta?.id) { setDetail(null); return; }
     let cancelled = false;

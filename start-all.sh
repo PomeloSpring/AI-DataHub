@@ -50,9 +50,11 @@ mapfile -t SERVICES < <(grep -vE '^\s*(#|$)' "$SERVICES_CONF")
 CELERY_APP="backend.modules.flow.tasks.celery_app"
 CELERY_PROCS=("celery-worker" "celery-beat")
 
-# 前端服务（特殊处理）
+# 前端服务（特殊处理）—— 端口不在本脚本写死，唯一口径见 backend/scripts/frontend_port.sh
+# （读根目录 .env 的 FRONTEND_PORT，缺省 3000；与 docker-compose.full.yml 同源）
 FRONTEND_DIR="$PROJECT_ROOT/frontend"
-FRONTEND_PORT=3000
+# shellcheck source=backend/scripts/frontend_port.sh
+source "$PROJECT_ROOT/backend/scripts/frontend_port.sh"
 
 # ═══════════════════════════════════════════════════════════════
 # 函数: 启动单个服务
@@ -307,7 +309,9 @@ start_frontend() {
     log_info "启动 frontend (端口: $FRONTEND_PORT)..."
 
     cd "$FRONTEND_DIR"
-    nohup npm run dev >> "$log_file" 2>&1 < /dev/null &
+    # --port 以解析出的端口为准，--strictPort 保证被占时直接失败而不是静默换口
+    # （否则下方会在错的端口上找进程，表现为“启动超时”而服务其实已在另一口跑着）
+    nohup npm run dev -- --port "$FRONTEND_PORT" --strictPort >> "$log_file" 2>&1 < /dev/null &
     local npm_pid=$!
 
     # 等待 vite 子进程启动并监听端口
@@ -465,7 +469,7 @@ start_frontend_fg() {
 
     (
         cd "$FRONTEND_DIR"
-        exec npm run dev 2>&1
+        exec npm run dev -- --port "$FRONTEND_PORT" --strictPort 2>&1
     ) | tee -a "$LOG_DIR/frontend.log" | awk -v svc="frontend" -v c="$color" -v n="\033[0m" \
         '{printf "%s[%-12s]%s %s\n", c, svc, n, $0; fflush()}' &
 
@@ -644,7 +648,7 @@ show_status() {
     echo -e "  日志目录: ${LOG_DIR}"
     echo -e "  PID目录:  ${PID_DIR}"
     echo ""
-    echo -e "  前端:     http://localhost:3000"
+    echo -e "  前端:     http://localhost:${FRONTEND_PORT}"
     echo -e "  Web API:  http://localhost:$(all_service_ports | head -1)"
     echo ""
 }

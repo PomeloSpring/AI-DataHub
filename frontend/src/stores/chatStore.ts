@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import client from '../api/client';
 import { toast } from 'sonner';
 import { useThemeStore } from './themeStore';
+import { listAuthorizedSites, type AuthorizedSite } from '../api/sites';
 import type { KnowledgeResult } from '../components/InlineDetails';
 
 export interface ProgressStage {
@@ -158,6 +159,8 @@ interface Conversation {
   title: string;
   datasource_id: number;
   workspace_id?: number;
+  /** 会话查询站点(adh_sites.site_code)；空=未选定 */
+  site_code?: string;
   created_at: string;
   updated_at: string;
 }
@@ -206,6 +209,11 @@ interface ChatState {
   stopping: boolean;
   selectedDsId: number;
   datasources: { id: number; name: string; db_type: string }[];
+  /** 可查站点 = 角色数据源授权的派生视图（不是第二套授权） */
+  authorizedSites: AuthorizedSite[];
+  siteError: string;
+  /** 会话查询站点（全球=逐站汇总）；只影响默认取数范围 */
+  selectedSiteCode: string;
   selectedModelId: number | null;
   llmModels: LLMModel[];
   pipelineMode: 'agent' | null;  // null = use legacy endpoints
@@ -235,6 +243,8 @@ interface ChatState {
 
   loadConversations: () => Promise<void>;
   loadDatasources: () => Promise<void>;
+  loadAuthorizedSites: (workspaceId: number) => Promise<void>;
+  setSelectedSiteCode: (code: string) => void;
   loadLLMModels: () => Promise<void>;
   loadSystemConfig: () => Promise<void>;
   loadWorkspaces: () => Promise<void>;
@@ -394,6 +404,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   stopping: false,
   selectedDsId: 0,
   datasources: [],
+  authorizedSites: [],
+  siteError: '',
+  selectedSiteCode: '',
   selectedModelId: null,
   llmModels: [],
   pipelineMode: 'agent',
@@ -546,6 +559,43 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setSelectedDsId: (id) => set({ selectedDsId: id }),
 
+  /**
+   * 可查站点候选（聊天站点选择器）。空清单 = 该角色没有站点化数据源（如只接
+   * 平台库），此时不渲染站点选择器，而不是摆一个选不出东西的死开关。
+   * 加载失败显式记错并保留重试（不静默当成“无站点”）。
+   */
+  loadAuthorizedSites: async (workspaceId) => {
+    const context = chatContextVersion;
+    set({ siteError: '' });
+    try {
+      const sites = await listAuthorizedSites(workspaceId);
+      if (context !== chatContextVersion) return;
+      set({ authorizedSites: sites });
+      const cur = get().selectedSiteCode;
+      if (cur && sites.some((s) => s.site_code === cur)) return;
+      // 默认站点：唯一具体站点直接选中；多站取「全球」（可用时）；否则清单首个
+      const concrete = sites.filter((s) => !s.is_aggregate);
+      const aggregate = sites.find((s) => s.is_aggregate);
+      const fallback = concrete.length === 1 ? concrete[0].site_code
+        : (aggregate ? aggregate.site_code : (concrete[0]?.site_code || ''));
+      set({ selectedSiteCode: fallback });
+    } catch (e: any) {
+      if (context !== chatContextVersion) return;
+      set({ authorizedSites: [], siteError: e?.response?.data?.detail || '站点清单加载失败' });
+    }
+  },
+
+  setSelectedSiteCode: (code) => {
+    set({ selectedSiteCode: code });
+    // 站点是会话属性：已落库的会话同步持久化，重进/切回不丢选择
+    const convId = get().currentConvId;
+    if (convId) {
+      client.put(`/chat/conversations/${convId}`, { site_code: code }).catch(() => {
+        toast.error('站点选择保存失败，本轮仍按所选站点查询');
+      });
+    }
+  },
+
   loadLLMModels: async () => {
     const context = chatContextVersion;
     try {
@@ -579,9 +629,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const origin = get();
     const dsId = get().selectedDsId;
     const workspaceId = get().selectedWorkspaceId;
+    const siteCode = get().selectedSiteCode;
     const { data } = await client.post('/chat/conversations', {
       datasource_id: dsId,
       workspace_id: workspaceId,
+      site_code: siteCode,
     });
     if (get().selectedWorkspaceId !== origin.selectedWorkspaceId ||
         get().selectedAsBotKey !== origin.selectedAsBotKey || get().messages !== origin.messages ||
@@ -593,6 +645,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       title: data.title,
       datasource_id: data.datasource_id || dsId,
       workspace_id: data.workspace_id || workspaceId,
+      site_code: data.site_code || siteCode,
       created_at: data.created_at,
       updated_at: data.created_at,
     };
@@ -632,6 +685,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         selectedAsBotKey: data.as_bot_key || defaultAsBot,
         capabilities: null,
         selectedDsId: data.datasource_id || 0,
+        // 会话站点回填：持久化行没有站点时保留当前选择（新会话未落库的常见情形）
+        selectedSiteCode: data.site_code || get().selectedSiteCode,
       });
     } catch (e) {
       if (get().abortController !== switching) return;
@@ -739,6 +794,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       question,
       history,
       datasource_id: state.selectedDsId,
+      site_code: state.selectedSiteCode || '',
       model_id: state.selectedModelId,
       mcp_tools: mcpTools || [],
       workspace_id: state.selectedWorkspaceId,

@@ -167,7 +167,7 @@ def parse_intent(text_or_dict: Any) -> tuple[SemanticQuery | None, str | None, l
     sql_hit_note = next((n for n in notes if n.startswith("forbidden_keys:")), None)
     if sql_hit_note:
         return None, sql_hit_note, notes
-    # 站点不是 SQL 维度(v0.5): 站点对比由 LLM 按站点编排多次查询(每次带 datasource 名),
+    # 站点不是 SQL 维度(v0.5): 站点对比由 LLM 按站点编排多次查询(每次带 site 或 datasource 名),
     # 语义层只做单站 SQL 编译——把站点塞进 dimensions 会编译出无绑定的“站点”列(口径事故)。
     _SITE_DIMS = {"站点", "站点名", "所属站点", "site", "Site", "SITE"}
     site_dims = [str(d or "").strip() for d in (payload.get("dimensions") or [])
@@ -175,8 +175,8 @@ def parse_intent(text_or_dict: Any) -> tuple[SemanticQuery | None, str | None, l
     if site_dims:
         return None, (
             "站点不是 SQL 维度: 站点对比请按站点编排多次查询——"
-            "对每个站点数据源分别调用 run_semantic_query(带 datasource 名), "
-            "站点↔数据源映射见数据分析技能; 不要在 dimensions 里传站点"), notes
+            "对每个可查站点分别调用 run_semantic_query(带 site 参数, 如 '中国'/'日本'), "
+            "可查站点与会话默认站点见上下文「站点范围」段; 不要在 dimensions 里传站点"), notes
     try:
         q = SemanticQuery.model_validate(payload)
     except Exception as e:

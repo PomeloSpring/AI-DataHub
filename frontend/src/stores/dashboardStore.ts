@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { toast } from 'sonner';
 import client from '../api/client';
 import { invalidateCatalogCache } from '@/lib/dashboardCatalog';
+import { chartQueryPool } from '@/lib/chartQueryPool';
 
 export interface DashboardChart {
   id: number;
@@ -103,6 +104,8 @@ interface DashboardState {
   initPageParamValues: () => void;
   refreshCharts: () => Promise<boolean>;
   refreshSingleChart: (chartId: number, extra?: { page_limit?: number; page_offset?: number; count_sql?: string }) => Promise<boolean>;
+  /** 退出页面 / 切换看板时调用：未执行的图表查询直接丢弃，执行中的直接中止 */
+  cancelChartRefresh: () => void;
 }
 
 let loadVersion = 0;
@@ -132,6 +135,8 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   refreshingChartIds: new Set(),
 
   reset: () => {
+    // 登出 / 切换工作空间：先终止未完成的图表查询，再推进会话版本
+    chartQueryPool.cancelAll();
     ++loadVersion; ++sessionVersion; refreshVersions.clear();
     set({ dashboards: [], currentId: null, currentWorkspaceId: 0, loading: false, error: null,
       globalFilters: {}, crossFilters: [], paramValues: {}, pageParams: [], pageParamValues: {}, refreshing: false, refreshingChartIds: new Set() });
@@ -324,6 +329,8 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     const dashboard = dashboards.find(d => d.id === currentId);
     if (!dashboard) return false;
     const charts = dashboard.charts.filter(c => (c.semantic_query || c.sql_query) && !c.chart_type.startsWith('widget_'));
+    // Promise.all 仍是“全部完成才算成功”，但实际并发由 chartQueryPool 收敛到 4，
+    // 不会再把浏览器每源连接打满而卡住其他功能的请求
     const results = await Promise.all(charts.map(c => {
       const cfg = c.config || {};
       if (cfg.enableServerPagination) {
@@ -332,6 +339,15 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       return get().refreshSingleChart(c.id);
     }));
     return results.every(Boolean);
+  },
+
+  cancelChartRefresh: () => {
+    // 未执行的排队查询直接丢弃、执行中的直接中止；同时推进会话版本，
+    // 避免取消后仍有迟到响应写回已离开的看板
+    chartQueryPool.cancelAll();
+    ++sessionVersion;
+    refreshVersions.clear();
+    set({ refreshing: false, refreshingChartIds: new Set() });
   },
 
   refreshSingleChart: async (chartId, extra?) => {
@@ -351,7 +367,21 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       if (extra?.page_offset != null) body.page_offset = extra.page_offset;
       if (extra?.count_sql) body.count_sql = extra.count_sql;
 
-      const { data } = await client.post(`/dashboard/${currentId}/charts/${chartId}/refresh`, body);
+      // 走图表查询专用池：渐进式（30 个图表也只同时跑 4 个，其余排队）、有超时、可随页面退出中止
+      const result = await chartQueryPool.run(signal =>
+        client.post(`/dashboard/${currentId}/charts/${chartId}/refresh`, body, { signal }).then(r => r.data));
+      if (!result.ok) {
+        if (result.reason === 'cancelled') return false; // 退出页面是预期行为，不弹错
+        if (session === sessionVersion) {
+          const chartName = get().dashboards.find(d => d.id === currentId)?.charts.find(c => c.id === chartId)?.name;
+          const label = chartName ? `「${chartName}」` : `图表 ${chartId}`;
+          toast.error(result.reason === 'timeout'
+            ? `${label}查询超过 ${result.seconds} 秒未返回，已取消`
+            : `${label}刷新失败`);
+        }
+        return false;
+      }
+      const data = result.value;
       if (session !== sessionVersion || refreshVersions.get(chartId) !== version) return false;
       if (data && !data.error) {
         set(state => ({

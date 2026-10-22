@@ -7,6 +7,7 @@
  *   标签定义管理仍在标签中心, 此处解决"建模时看不到对象业务色彩"的问题。
  */
 import { useState, useEffect, useCallback } from 'react';
+import { toast } from 'sonner';
 import client from '@/api/client';
 import { ontologyApi } from '@/api/ontology';
 import { useGraphStore } from '@/stores/graphStore';
@@ -26,56 +27,170 @@ import { normalizeDocObjects } from '@/lib/ontologyObjects';
 // 视图已收敛为后端 GraphType.UNIFIED 单图(分域组装 总览+业务知识+物理层/血缘),
 // 不再拆四视图切换; singleView 传入时仍锁定旧单视图(系统助手/图谱页兼容)。
 
-/** 部署绑定子页：对象 × 站点部署绑定表（事实源=部署绑定；显示 name 不裸 id，ui-resource-display）。 */
-export function ModelDeploymentsTab({ modelId }: { modelId: number }) {
-  const [rows, setRows] = useState<any[]>([]);
+/**
+ * 适用站点子页：模型级声明「这份契约适用哪些站点 + 每站点路由到哪个数据源」。
+ *
+ * 旧口径要为每个对象×每个站点各登记一行绑定（27 对象 × 5 站 = 135 行机械复制），
+ * 现收敛为一次配置全对象共享；站点 schema 真不同时，按拍板「为该站单独配一个
+ * 本体或使用源本体」表达。显示/选择一律用业务名（ui-resource-display）。
+ */
+export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly?: boolean }) {
+  const [sites, setSites] = useState<import('@/api/ontology').ModelSiteRow[]>([]);
+  const [objects, setObjects] = useState<import('@/api/ontology').ContractObjectRow[]>([]);
+  const [enabled, setEnabled] = useState<Record<string, boolean>>({});
+  const [route, setRoute] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
   const load = useCallback(() => {
     if (!modelId) return;
-    ontologyApi.deployments(modelId).then((r: any) => {
-      setRows(r?.data?.items || []);
+    ontologyApi.sites(modelId).then((r: any) => {
+      const list: import('@/api/ontology').ModelSiteRow[] = r?.data?.sites || [];
+      setSites(list);
+      setObjects(r?.data?.contract_objects || []);
+      setEnabled(Object.fromEntries(list.map((s) => [s.site_code, s.selected])));
+      // 站点内唯一源自动填（不要求人手输）；多源保留已配置值或留空待人选择
+      setRoute(Object.fromEntries(list.map((s) => [
+        s.site_code, s.datasource || (s.datasource_options.length === 1 ? s.datasource_options[0] : ''),
+      ])));
       setError('');
-    }).catch((e: any) => setError(String(e?.response?.data?.detail || e?.message || e)));
+      setLoaded(true);
+    }).catch((e: any) => {
+      setError(String(e?.response?.data?.detail || e?.message || e));
+      setLoaded(true);
+    });
   }, [modelId]);
   useEffect(() => { load(); }, [load]);
+
+  const dirty = loaded && sites.some((s) => {
+    const want = !!enabled[s.site_code];
+    const wantDs = want ? (route[s.site_code] || '') : '';
+    return want !== s.selected
+      || wantDs !== (s.selected ? (s.datasource || (s.datasource_options.length === 1 ? s.datasource_options[0] : '')) : '');
+  });
+
+  const save = async () => {
+    const payload: { site_code: string; datasource: string }[] = [];
+    for (const s of sites) {
+      if (!enabled[s.site_code]) continue;
+      const ds = route[s.site_code] || '';
+      if (!ds) {
+        setError(`站点「${s.display_name}」还未选择路由数据源`);
+        return;
+      }
+      payload.push({ site_code: s.site_code, datasource: ds });
+    }
+    setSaving(true);
+    setError('');
+    try {
+      await ontologyApi.saveSites(modelId, payload);
+      toast.success('适用站点已保存（全模型对象共享）');
+      load();
+    } catch (e: any) {
+      // 校验失败原样外显（不静默回滚成旧配置）
+      setError(String(e?.response?.data?.detail || e?.message || '保存失败'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <ScrollArea className="h-full">
-      <div className="p-3">
-        <div className="text-xs font-medium text-muted-foreground mb-2">
-          对象 × 站点部署绑定（一份契约 × N 站部署；映射由工具辅助生成/校验，人工审业务层）
+      <div className="p-3 space-y-4">
+        <div className="text-xs font-medium text-muted-foreground">
+          适用站点（一份契约 × N 站部署）：在此声明的业务本体整体适用于哪些站点，取数时按站点自动路由到对应数据源。
+          某站点数据结构不同时，请为该站单独配一个本体或直接使用源本体。
         </div>
-        {error && <div className="text-xs text-destructive mb-2">部署清单加载失败: {error}</div>}
-        {!error && !rows.length && <div className="text-sm text-muted-foreground">暂无部署绑定</div>}
-        {!!rows.length && (
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-left text-muted-foreground border-b">
-                <th className="py-1.5 pr-2 font-medium">对象</th>
-                <th className="py-1.5 pr-2 font-medium">站点</th>
-                <th className="py-1.5 pr-2 font-medium">数据源</th>
-                <th className="py-1.5 pr-2 font-medium">物理表</th>
-                <th className="py-1.5 pr-2 font-medium">数据产品</th>
-                <th className="py-1.5 pr-2 font-medium">状态</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r: any, i: number) => (
-                <tr key={`${r.object_key}-${r.datasource}-${i}`} className="border-b last:border-0">
-                  <td className="py-1.5 pr-2">{r.object_name}</td>
-                  <td className="py-1.5 pr-2">{r.site}</td>
-                  <td className="py-1.5 pr-2">{r.datasource}</td>
-                  <td className="py-1.5 pr-2 font-mono">{r.physical_table || '—'}</td>
-                  <td className="py-1.5 pr-2">{r.product_ref || '—'}</td>
-                  <td className="py-1.5 pr-2">
-                    <Badge variant="outline" className={r.status === 'active' ? 'text-green-600 border-green-300' : 'text-muted-foreground'}>
-                      {r.status === 'active' ? '✓ 已绑定' : (r.status || '—')}
-                    </Badge>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        {error && <div className="text-xs text-destructive">{error}</div>}
+        {loaded && !sites.length && (
+          <div className="text-sm text-muted-foreground">
+            暂无可用站点。请先在「系统管理 → 数据源 → 站点管理」维护站点清单，并在数据源上配置归属站点。
+          </div>
         )}
+        {!!sites.length && (
+          <div className="space-y-2">
+            {sites.map((s) => (
+              <div key={s.site_code} className="flex items-center justify-between gap-3 border rounded px-3 py-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Switch
+                    checked={!!enabled[s.site_code]}
+                    disabled={readonly}
+                    onCheckedChange={(v) => setEnabled({ ...enabled, [s.site_code]: v })}
+                  />
+                  <span className="text-sm font-medium">{s.display_name}</span>
+                  {!enabled[s.site_code] && (
+                    <Badge variant="outline" className="text-xs text-muted-foreground">不适用</Badge>
+                  )}
+                </div>
+                {enabled[s.site_code] && (
+                  <Select
+                    value={route[s.site_code] || undefined}
+                    disabled={readonly || !s.datasource_options.length}
+                    onValueChange={(v) => setRoute({ ...route, [s.site_code]: v })}
+                  >
+                    <SelectTrigger className="w-[220px] h-8">
+                      <SelectValue placeholder={s.datasource_options.length ? '选择该站数据源' : '该站无数据源'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {s.datasource_options.map((name) => (
+                        <SelectItem key={name} value={name}>{name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            ))}
+            {!readonly && (
+              <div className="flex items-center gap-2 pt-1">
+                <Button size="sm" onClick={save} disabled={!dirty || saving}>
+                  {saving ? '保存中…' : '保存适用站点'}
+                </Button>
+                {!dirty && <span className="text-xs text-muted-foreground">无变更</span>}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div>
+          <div className="text-xs font-medium text-muted-foreground mb-2">
+            对象契约清单（共 {objects.length} 个对象，每对象只登记一份形状描述，站点由上方声明展开）
+          </div>
+          {!objects.length && <div className="text-sm text-muted-foreground">暂无已绑定的对象</div>}
+          {!!objects.length && (
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-muted-foreground border-b">
+                  <th className="py-1.5 pr-2 font-medium">对象</th>
+                  <th className="py-1.5 pr-2 font-medium">契约源</th>
+                  <th className="py-1.5 pr-2 font-medium">物理表</th>
+                  <th className="py-1.5 pr-2 font-medium">列映射</th>
+                  <th className="py-1.5 pr-2 font-medium">绑定类型</th>
+                  <th className="py-1.5 pr-2 font-medium">同步状态</th>
+                </tr>
+              </thead>
+              <tbody>
+                {objects.map((r, i) => (
+                  <tr key={`${r.object_key}-${i}`} className="border-b last:border-0">
+                    <td className="py-1.5 pr-2">{r.object_name}</td>
+                    <td className="py-1.5 pr-2">{r.datasource || '—'}</td>
+                    <td className="py-1.5 pr-2 font-mono">{r.physical_table || '—'}</td>
+                    <td className="py-1.5 pr-2">{r.column_count}</td>
+                    <td className="py-1.5 pr-2">{r.bind_kind}</td>
+                    <td className="py-1.5 pr-2">
+                      <Badge
+                        variant="outline"
+                        className={r.sync_state === 'bound' ? 'text-green-600 border-green-300' : 'text-muted-foreground'}
+                      >
+                        {r.sync_state === 'bound' ? '✓ 已绑定' : (r.sync_state || '—')}
+                      </Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
     </ScrollArea>
   );

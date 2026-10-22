@@ -68,8 +68,8 @@ def _derive_source_type(object_key: str, sql_query: str) -> str:
     return "both" if has_obj and has_sql else ("semantic" if has_obj else "sql")
 
 
-def list_datasets(identity: dict, keyword: str = "") -> list[dict]:
-    """列出数据集(按角色授权过滤可见性, admin bypass)."""
+def list_datasets(identity: dict, keyword: str = "", datasource_id: int = 0) -> list[dict]:
+    """列出数据集(按角色授权过滤可见性, admin bypass); datasource_id>0 时按数据源筛选。"""
     from backend.core.role_service import role_service
 
     user_id = int(identity.get("user_id") or 0)
@@ -88,6 +88,11 @@ def list_datasets(identity: dict, keyword: str = "") -> list[dict]:
         ph = ",".join(["%s"] * len(allowed_ids))
         sql += f" AND id IN ({ph})"
         params.extend(allowed_ids)
+
+    # 按数据源筛选（数据集页顶栏选择器）：0/未传 = 全部
+    if datasource_id:
+        sql += " AND datasource_id = %s"
+        params.append(int(datasource_id))
 
     if keyword:
         sql += " AND (name LIKE %s OR description LIKE %s OR object_key LIKE %s)"
@@ -690,6 +695,16 @@ def _query_sql(ds: dict, params: dict, scopes: list[dict], identity: dict) -> di
     result["execution_mode"] = "sql"
     if compiled.resolved_tables:
         result["resolved_tables"] = compiled.resolved_tables
+    # SLS/Presto 拒非 ASCII 标识符：编译器外层投影用 ASCII 槽位 o{i} + header_map 映回业务名。
+    # 与 semantics.execute._to_result 同口径，使数据集页/看板/报表看到中文列名。
+    if compiled.header_map:
+        cols = result.get("columns") or []
+        result["columns"] = [compiled.header_map.get(c, c) for c in cols]
+        rows = result.get("rows") or []
+        if rows and isinstance(rows[0], dict):
+            result["rows"] = [
+                {compiled.header_map.get(k, k): v for k, v in r.items()} for r in rows
+            ]
     return result
 
 

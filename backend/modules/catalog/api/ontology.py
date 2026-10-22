@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import re
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -778,72 +779,182 @@ def list_models(
 
 
 def _deployment_summary() -> dict:
-    """model_id → {deployment_count, deployments:[{site,datasource}]}（事实源=部署绑定）。"""
+    """model_id → {deployment_count, deployments:[{site,datasource}]}。
+
+    事实源优先级：模型级 `deploy_sites`（新口径，一份契约 × N 站）> active 绑定行
+    的 distinct 源（源本体/未迁移存量的兼容口径）。两者都不能缺失时回退裸 id
+    （ui-resource-display §1：资源不可见时显示可读写法，不拿 id 充数）。
+    """
     from backend.common.db.metadata_db import get_metadata_conn
+
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT datasource_name, site FROM adh_data_products "
-                "WHERE site IS NOT NULL AND site <> '' GROUP BY datasource_name, site")
-            site_map = {str(r["datasource_name"]): str(r["site"]) for r in (cur.fetchall() or [])}
+            cur.execute("SELECT site_code, display_name FROM adh_sites")
+            code_names = {str(r["site_code"]): str(r["display_name"]) for r in (cur.fetchall() or [])}
+            cur.execute("SELECT id, kind, deploy_sites FROM adh_ontology_models")
+            model_rows = cur.fetchall() or []
             cur.execute(
                 "SELECT model_id, datasource_name FROM adh_ontology_bindings "
                 "WHERE status = 'active' AND datasource_name <> '' "
                 "GROUP BY model_id, datasource_name")
-            out: dict = {}
-            for r in cur.fetchall() or []:
-                ds = str(r["datasource_name"])
-                entry = out.setdefault(int(r["model_id"]), {"deployment_count": 0, "deployments": []})
-                entry["deployments"].append({"site": site_map.get(ds, ds), "datasource": ds})
-            for entry in out.values():
-                entry["deployments"].sort(key=lambda d: (d["site"], d["datasource"]))
-                entry["deployment_count"] = len(entry["deployments"])
+            legacy_rows = cur.fetchall() or []
+
+    out: dict = {}
+    for m in model_rows:
+        raw = m.get("deploy_sites")
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="replace")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw or "[]")
+            except (ValueError, TypeError):
+                raw = []
+        deps = [
+            {"site": code_names.get(str(s.get("site_code")), str(s.get("site_code"))),
+             "datasource": str(s.get("datasource") or "—")}
+            for s in (raw or []) if isinstance(s, dict) and s.get("site_code")
+        ]
+        if deps:
+            out[int(m["id"])] = {"deployment_count": len(deps), "deployments": deps}
+    # 未配置 deploy_sites 的模型（源本体/存量）：仍按绑定行 distinct 源呈现
+    for r in legacy_rows:
+        mid = int(r["model_id"])
+        if mid in out:
+            continue
+        ds = str(r["datasource_name"])
+        entry = out.setdefault(mid, {"deployment_count": 0, "deployments": []})
+        entry["deployments"].append({"site": ds, "datasource": ds})
+    for entry in out.values():
+        entry["deployments"].sort(key=lambda d: (d["site"], d["datasource"]))
+        entry["deployment_count"] = len(entry["deployments"])
     return out
 
 
-@router.get("/models/{model_id}/deployments")
-def get_model_deployments(model_id: int, user: dict = Depends(get_current_user)):
-    """对象 × 站点部署绑定表（前端部署绑定子页）。显示 name 不裸 id（ui-resource-display）。"""
+@router.get("/models/{model_id}/sites")
+def get_model_sites(model_id: int, user: dict = Depends(get_current_user)):
+    """业务本体适用站点 + 对象契约清单（前端「适用站点」页）。
+
+    站点差异不再逐对象逐站登记（旧口径 27 对象 × 5 站 = 135 行机械复制），而是
+    模型级声明一次、全对象共享；显示一律用站点/数据源业务名（ui-resource-display）。
+    """
     model = ontology_service.get_model(model_id)
     if not model or not ontology_service.can_view_model(model, _allowed_source_ids(user)):
         raise HTTPException(status_code=404, detail="模型不存在")
     from backend.common.db.metadata_db import get_metadata_conn
+    from backend.core.site_service import model_deploy_sites
+
+    selected = {s["site_code"]: s["datasource"] for s in model_deploy_sites(model_id)}
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT datasource_name, site FROM adh_data_products "
-                "WHERE site IS NOT NULL AND site <> '' GROUP BY datasource_name, site")
-            site_map = {str(r["datasource_name"]): str(r["site"]) for r in (cur.fetchall() or [])}
+                "SELECT site_code, display_name, is_aggregate FROM adh_sites "
+                "WHERE is_active = 1 ORDER BY sort_order, site_code")
+            site_rows = cur.fetchall() or []
             cur.execute(
-                "SELECT object_key, datasource_name, physical_table, product_ref, sync_state, status "
-                "FROM adh_ontology_bindings WHERE model_id = %s AND status = 'active' "
-                "ORDER BY object_key, datasource_name, product_ref DESC", (model_id,))
-            rows = cur.fetchall() or []
+                "SELECT name, site_code FROM adh_datasources "
+                "WHERE site_code IS NOT NULL AND site_code <> '' ORDER BY name")
+            by_site: dict = {}
+            for r in cur.fetchall() or []:
+                by_site.setdefault(str(r["site_code"]), []).append(str(r["name"]))
+            cur.execute(
+                "SELECT object_key, datasource_name, physical_table, bind_kind, column_map, "
+                "sync_state, product_ref FROM adh_ontology_bindings "
+                "WHERE model_id = %s AND status = 'active' ORDER BY object_key, id", (model_id,))
+            bind_rows = cur.fetchall() or []
             cur.execute(
                 "SELECT object_key, display_name FROM adh_ontology_objects "
                 "WHERE model_id = %s AND is_active = 1", (model_id,))
             names = {str(r["object_key"]): str(r["display_name"] or r["object_key"])
                      for r in (cur.fetchall() or [])}
-    items = []
-    seen: set = set()
-    for r in rows:
-        ds = str(r["datasource_name"] or "")
+
+    sites = []
+    for r in site_rows:
+        code = str(r["site_code"])
+        if int(r.get("is_aggregate") or 0):
+            continue  # 聚合态不挂数据源，不作为部署站点候选
+        options = by_site.get(code, [])
+        sites.append({
+            "site_code": code,
+            "display_name": str(r["display_name"]),
+            "datasource": selected.get(code, ""),
+            "selected": code in selected,
+            "datasource_options": options,
+        })
+    objects = []
+    for r in bind_rows:
         key = str(r["object_key"])
-        # 同一对象×站点去重（历史多版本行会重复，保留首条=product_ref 优先）
-        if (key, ds) in seen:
-            continue
-        seen.add((key, ds))
-        items.append({
+        raw_cm = r.get("column_map")
+        if isinstance(raw_cm, (bytes, bytearray)):
+            raw_cm = raw_cm.decode("utf-8", errors="replace")
+        if isinstance(raw_cm, str):
+            try:
+                raw_cm = json.loads(raw_cm or "{}")
+            except (ValueError, TypeError):
+                raw_cm = {}
+        objects.append({
             "object_key": key,
             "object_name": names.get(key, key),
-            "site": site_map.get(ds, ds or "—"),
-            "datasource": ds or "—",
-            "physical_table": str(r["physical_table"] or ""),
-            "product_ref": str(r["product_ref"] or ""),
-            "sync_state": str(r["sync_state"] or ""),
-            "status": str(r["status"] or ""),
+            "datasource": str(r.get("datasource_name") or ""),
+            "physical_table": str(r.get("physical_table") or ""),
+            "bind_kind": str(r.get("bind_kind") or "primary"),
+            "column_count": len(raw_cm or {}),
+            "sync_state": str(r.get("sync_state") or ""),
+            "product_ref": str(r.get("product_ref") or ""),
         })
-    return {"items": items}
+    return {"kind": str(model.get("kind") or ""), "sites": sites,
+            "selected": [{"site_code": k, "datasource": v} for k, v in selected.items()],
+            "contract_objects": objects}
+
+
+@router.put("/models/{model_id}/sites")
+def update_model_sites(model_id: int, req: dict, user: dict = Depends(get_current_user)):
+    """保存业务本体适用站点（接口权限由 API 中间件按 ontology:save 码把关）。
+
+    校验全部 fail-loud：站点必须存在于启用清单且非聚合态；数据源必须存在且其
+    归属站点与声明站点一致（不一致直接 422，不静默纠正）。
+    源本体不承载站点声明（它是单源物理投影，见 showsSiteScope 同口径）。
+    """
+    model = ontology_service.get_model(model_id)
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if str(model.get("kind") or "") == "source":
+        raise HTTPException(status_code=400, detail="源本体不适用站点声明（它是单个数据源的物理投影）")
+    from backend.core.site_service import get_site, list_sites, set_model_deploy_sites
+
+    raw_sites = req.get("sites")
+    if not isinstance(raw_sites, list):
+        raise HTTPException(status_code=400, detail="sites 必须是数组")
+    known_codes = {s["site_code"] for s in list_sites() if not s["is_aggregate"]}
+    cleaned: list[dict] = []
+    seen: set[str] = set()
+    for item in raw_sites:
+        code = str((item or {}).get("site_code") or "").strip()
+        ds = str((item or {}).get("datasource") or "").strip()
+        if not code:
+            continue
+        if code not in known_codes:
+            name = (get_site(code) or {}).get("display_name") or code
+            raise HTTPException(
+                status_code=422,
+                detail=f"站点「{name}」不可用（不存在/已停用/是聚合态）；可选："
+                       + "、".join(sorted(known_codes)))
+        if code in seen:
+            raise HTTPException(status_code=422, detail=f"站点 {code} 重复登记")
+        seen.add(code)
+        if not ds:
+            raise HTTPException(status_code=422, detail=f"站点「{code}」未选择路由数据源")
+        from backend.common.db import execute_query
+        row = execute_query("SELECT site_code FROM adh_datasources WHERE name = %s", (ds,),
+                            fetchone=True)
+        if not row:
+            raise HTTPException(status_code=422, detail=f"数据源「{ds}」不存在")
+        if str(row.get("site_code") or "") != code:
+            raise HTTPException(
+                status_code=422,
+                detail=f"数据源「{ds}」归属站点与声明站点不一致，请先在数据源管理里校正归属")
+        cleaned.append({"site_code": code, "datasource": ds})
+    set_model_deploy_sites(model_id, cleaned)
+    return {"success": True, "sites": cleaned}
 
 
 @router.get("/models/{model_id}")
@@ -962,15 +1073,19 @@ def restore_model(model_id: int):
 
 
 @router.post("/models/{model_id}/kb-sync")
-def sync_model_kb(model_id: int):
+def sync_model_kb(model_id: int, kb_id: Optional[int] = Query(None)):
     """手动把生效模型的脱敏语义文档同步到目标知识库（结果落水位线）。
 
+    kb_id 为空时按模型 kind 默认路由；kb_id 非空时为一次性定向同步到指定库（含源本体，
+    属用户主动的手动例外）。
     同步失败显式报错并写服务端日志，不静默吞成成功；成功/失败均落
     adh_ontology_kb_sync_state 供任务监控/徽章展示。
     """
     from ..services import ontology_kb_sync
+    # 直连调用（非 FastAPI 注入）时 kb_id 可能是 Query 占位对象，归一为 None/正整数
+    kb_id_val = int(kb_id) if str(kb_id or "").isdigit() and int(kb_id) > 0 else None
     try:
-        result = ontology_kb_sync.sync_model_to_qmind(model_id)
+        result = ontology_kb_sync.sync_model_to_qmind(model_id, kb_id=kb_id_val)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -1029,6 +1144,14 @@ def kb_options():
     from ..services import ontology_kb_sync
 
     return {"items": ontology_kb_sync.list_bindable_kbs()}
+
+
+@router.get("/kb-sync-options")
+def kb_sync_options():
+    """「同步知识库」可选目标库清单（全部 active qmind 库，供关系图谱页选库下拉）。"""
+    from ..services import ontology_kb_sync
+
+    return {"items": ontology_kb_sync.list_syncable_kbs()}
 
 
 @router.put("/models/{model_id}/kb")

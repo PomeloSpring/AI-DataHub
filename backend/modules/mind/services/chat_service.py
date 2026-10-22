@@ -51,12 +51,15 @@ class ChatService:
         task_binding: Optional[dict] = None,
         force_agent: bool = False,
         policy=None,
+        site_code: str = "",
     ):
         """Stream a query through the qoder execution layer (agent dispatch).
 
         attachments: 随消息上传的附件文件描述 [{filename, category, size, content}](见 send_payload)。
         task_binding: 服务端注入的任务绑定标记(如 {"kind": "ontology_generate", "datasource_id": N}),
         供工具侧域约束裁决(assert_ontology_draft_scope)；不进 LLM 视野。
+        site_code: 会话查询站点(adh_sites.site_code)——只影响默认取数范围，
+        不改变任何权限裁决（可查站点仍由角色数据源授权唯一裁决）。
         pipeline_mode: 仅接受 "agent"/空;quick 单发管道已退役,其他值显式报错。
         force_agent: 前端「转深度分析」显式绕过意图漏斗（只关分流，不关任何护栏）。
         policy: preflight 已解析的 AS-BOT 生效策略，透传给漏斗避开重复解析（None 则漏斗自解析）。
@@ -109,6 +112,7 @@ class ChatService:
                 task_binding=task_binding,
                 force_agent=force_agent,
                 policy=policy,
+                site_code=site_code,
             )
             try:
                 async for event in stream:
@@ -150,6 +154,7 @@ class ChatService:
         task_binding: Optional[dict] = None,
         force_agent: bool = False,
         policy=None,
+        site_code: str = "",
     ):
         """Agent 模式执行层派发.
 
@@ -172,15 +177,20 @@ class ChatService:
         # 数据源权威回填: 兼容旧客户端/直连 API 未带 datasource_id 时, 从会话持久化行回填,
         # 避免语义工具以 datasource_id=0 命中空目录(取不到数)。回填值仍对 LLM 黑盒。
         # 必须排在漏斗之前: 业务词典按会话生效源分桶, ds=0 会把真实业务信号当成"无命中"放行。
-        if not datasource_id and conversation_id:
+        conv_row = None
+        if conversation_id:
             try:
                 from backend.common.db import execute_query
-                _crow = execute_query(
-                    "SELECT datasource_id FROM adh_conversations WHERE id = %s",
+                conv_row = execute_query(
+                    "SELECT datasource_id, site_code FROM adh_conversations WHERE id = %s",
                     (conversation_id,), fetchone=True)
-                datasource_id = int((_crow or {}).get("datasource_id") or 0)
             except Exception as e:  # noqa: BLE001 — 回填失败不阻断, 由下游 get_metrics/run_semantic_query fail-loud
-                logger.debug("[agent] conversation datasource backfill skipped: %s", e)
+                logger.debug("[agent] conversation context backfill skipped: %s", e)
+        if not datasource_id and conv_row:
+            datasource_id = int((conv_row or {}).get("datasource_id") or 0)
+        # 会话站点：未显式带时从会话持久化行回填（站点是会话属性，切页/重进不应丢）
+        if not site_code and conv_row:
+            site_code = str((conv_row or {}).get("site_code") or "").strip()
 
         ctx = ExecutionContext(
             workspace_id=workspace_id,
@@ -192,7 +202,8 @@ class ChatService:
             # chat 运行时选择的执行层模型(如 provider/model_name)、
             # 上一轮执行层会话 ID(SDK 多轮对话 resume)及 chat 会话 ID
             # (qoder 长对话池 key: 同会话复用持久 qodercli 进程)、
-            # 任务绑定标记(仅工具侧域约束可见, 不进 prompt)
+            # 任务绑定标记(仅工具侧域约束可见, 不进 prompt)、
+            # 会话查询站点(进 prompt 的「站点范围」段, 站点内源解析在服务端)
             extra={
                 k: v
                 for k, v in (
@@ -202,6 +213,7 @@ class ChatService:
                     ("as_bot_key", as_bot_key),
                     ("report_theme", report_theme),
                     ("task_binding", task_binding),
+                    ("site_code", site_code),
                 )
                 if v
             },

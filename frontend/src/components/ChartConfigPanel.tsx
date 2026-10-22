@@ -103,9 +103,11 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
     setConfig((prev: any) => ({ ...prev, [key]: value }));
   }, []);
 
+  // 控件配置唯一入口在右侧属性面板（PropertyPanel），本面板只服务图表；
+  // 两处各配一半曾经造成同一 config 的双口径混乱。
   const isWidget = chart?.chart_type?.startsWith('widget_');
 
-  if (!chart) return null;
+  if (!chart || isWidget) return null;
 
   return (
     <Dialog open={open} onOpenChange={value => { if (!value && !saving && !executing) onClose(); }}>
@@ -113,125 +115,18 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Settings className="h-5 w-5" />
-            {isWidget ? '控件配置' : '图表配置'} - {chart.name}
+            图表配置 - {chart.name}
           </DialogTitle>
         </DialogHeader>
 
         <ScrollArea className="h-[500px] pr-4">
-          <Tabs defaultValue={isWidget ? 'widget' : 'basic'}>
+          <Tabs defaultValue="basic">
             <TabsList className="w-full">
-              {isWidget ? (
-                <TabsTrigger value="widget" className="flex-1">参数设置</TabsTrigger>
-              ) : (
-                <>
-                  <TabsTrigger value="basic" className="flex-1">基础设置</TabsTrigger>
-                  <TabsTrigger value="style" className="flex-1">样式设置</TabsTrigger>
-                  <TabsTrigger value="axis" className="flex-1">坐标轴</TabsTrigger>
-                  {!semantic && <TabsTrigger value="datasource" className="flex-1">数据源</TabsTrigger>}
-                </>
-              )}
+              <TabsTrigger value="basic" className="flex-1">基础设置</TabsTrigger>
+              <TabsTrigger value="style" className="flex-1">样式设置</TabsTrigger>
+              <TabsTrigger value="axis" className="flex-1">坐标轴</TabsTrigger>
+              {!semantic && <TabsTrigger value="datasource" className="flex-1">数据源</TabsTrigger>}
             </TabsList>
-
-            {isWidget && (
-              <TabsContent value="widget" className="space-y-4 mt-4">
-                <div className="space-y-2">
-                  <Label>参数Key</Label>
-                  <Input
-                    value={config.paramKey || ''}
-                    onChange={e => updateConfig('paramKey', e.target.value)}
-                    placeholder="如 site, date_start"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    图表 SQL 中使用 {'{{paramKey}}'} 引用此参数值
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>显示标签</Label>
-                    <Input
-                      value={config.label || ''}
-                      onChange={e => updateConfig('label', e.target.value)}
-                      placeholder="参数名称"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>标签位置</Label>
-                    <Select value={config.labelPosition || 'top'} onValueChange={v => updateConfig('labelPosition', v)}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="top">上方</SelectItem>
-                        <SelectItem value="left">左侧</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>占位提示</Label>
-                  <Input
-                    value={config.placeholder || ''}
-                    onChange={e => updateConfig('placeholder', e.target.value)}
-                    placeholder="请输入/请选择"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label>默认值</Label>
-                  <Input
-                    value={config.defaultValue ?? ''}
-                    onChange={e => updateConfig('defaultValue', e.target.value)}
-                    placeholder="留空则无默认值"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label>绑定页面参数 (bind_param)</Label>
-                  <Input
-                    value={config.bind_param || ''}
-                    onChange={e => updateConfig('bind_param', e.target.value)}
-                    placeholder={chart.chart_type === 'widget_daterange' ? '如 date_start,date_end（逗号分隔）' : '如 site, date_start'}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    {chart.chart_type === 'widget_daterange'
-                      ? '日期范围绑定两个页面参数，用逗号分隔（如 date_start,date_end）'
-                      : '控件值变化时自动更新对应的页面参数'}
-                  </p>
-                </div>
-
-                {(chart.chart_type === 'widget_select' || chart.chart_type === 'widget_multi_select') && (
-                  <div className="space-y-2">
-                    <Label>选项（逗号分隔）</Label>
-                    <Input
-                      value={(config.options || []).map((o: any) => o.label || o.value).join(',')}
-                      onChange={e => {
-                        const opts = e.target.value.split(',').map(s => s.trim()).filter(Boolean)
-                          .map(s => ({ label: s, value: s }));
-                        updateConfig('options', opts);
-                      }}
-                      placeholder="北京,上海,广州"
-                    />
-                  </div>
-                )}
-
-                {chart.chart_type === 'widget_number' && (
-                  <div className="grid grid-cols-3 gap-2">
-                    <div className="space-y-2">
-                      <Label>最小值</Label>
-                      <Input type="number" value={config.min ?? ''} onChange={e => updateConfig('min', e.target.value ? Number(e.target.value) : undefined)} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>最大值</Label>
-                      <Input type="number" value={config.max ?? ''} onChange={e => updateConfig('max', e.target.value ? Number(e.target.value) : undefined)} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>步长</Label>
-                      <Input type="number" value={config.step || 1} onChange={e => updateConfig('step', Number(e.target.value) || 1)} />
-                    </div>
-                  </div>
-                )}
-              </TabsContent>
-            )}
 
             <TabsContent value="basic" className="space-y-4 mt-4">
               <div className="space-y-2">

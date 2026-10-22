@@ -58,6 +58,29 @@ export function isTileCacheFresh(entry: TileCacheEntry | null, now: number = Dat
 
 // ── 瓦片可用性:配置合法 + 网络可达探测(选一个能用的作默认) ──
 
+/**
+ * 瓦片源的可用缩放区间 — 地图 minZoom/maxZoom 必须与源对齐。
+ *
+ * 缩到源不提供瓦片的层级会得到**整块空白**(历史缺陷:地图下限写死 2,
+ * 高德 z<3 不出图,中美分布图 fitBounds 落到 z=2 时画布全白、还看不出原因)。
+ * 优先级:style_config.minZoom/maxZoom 显式配置 > provider 经验区间。
+ */
+const _PROVIDER_ZOOM: Record<string, { min: number; max: number }> = {
+  amap: { min: 3, max: 18 },       // 高德栅格瓦片 z=3~18
+  tianditu: { min: 1, max: 18 },
+  carto: { min: 0, max: 20 },
+  osm: { min: 0, max: 19 },
+  custom: { min: 0, max: 18 },
+};
+
+export function tileZoomOf(c: VisComponent): { minZoom: number; maxZoom: number } {
+  const sc = (c.style_config || {}) as any;
+  const base = _PROVIDER_ZOOM[String(sc.provider || 'custom')] || _PROVIDER_ZOOM.custom;
+  const minZoom = Number.isFinite(Number(sc.minZoom)) ? Number(sc.minZoom) : base.min;
+  const maxZoom = Number.isFinite(Number(sc.maxZoom)) ? Number(sc.maxZoom) : base.max;
+  return { minZoom, maxZoom: Math.max(minZoom, maxZoom) };
+}
+
 /** 展开 {apiKey} 后的瓦片地址(其余占位符 {s}/{r}/{x}/{y}/{z} 由 Leaflet 处理) */
 export function tileUrlOf(c: VisComponent): string {
   const sc = (c.style_config || {}) as any;

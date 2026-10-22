@@ -147,12 +147,14 @@ def extract_from_sql(
 @router.get("/")
 def list_datasets(
     keyword: str = QueryParam("", description="名称/描述/对象 关键字"),
+    datasource_id: int = QueryParam(0, description="按数据源筛选(0=全部)"),
     user: dict = Depends(get_current_user),
     workspace_id: int = Depends(get_workspace_id),
 ):
     """列出数据集(可见性功能已退役, 取数侧治理不变)。"""
     try:
-        items = dataset_service.list_datasets(_identity(user, workspace_id), keyword=keyword)
+        items = dataset_service.list_datasets(
+            _identity(user, workspace_id), keyword=keyword, datasource_id=int(datasource_id or 0))
         return {"items": items}
     except Exception as e:  # noqa: BLE001
         _raise(e)

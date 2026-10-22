@@ -10,7 +10,6 @@ import ast
 import json
 import re
 from pathlib import Path
-from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -24,8 +23,11 @@ QUERY_TOOLS = Path(__file__).resolve().parents[1] / "backend/modules/mind/execut
 
 
 def _set_ctx():
+    # 用真实 ExecutionContext（含 extra）：查询工具的站点/授权集解析读 ctx.extra，
+    # 用 SimpleNamespace 拼假上下文会把它打成 AttributeError（历史回归源）。
+    from backend.modules.mind.execution.models import ExecutionContext
     return ctxmod.set_execution_context(
-        SimpleNamespace(user_id=42, username="alice", workspace_id=7, datasource_id=8))
+        ExecutionContext(user_id=42, username="alice", workspace_id=7, datasource_id=8))
 
 
 def _payload(result):
@@ -117,3 +119,43 @@ def test_handler_has_no_bypass_reference():
     # 禁止绕过治理的直连符号
     assert "get_connection" not in body, "execute_sql 不得直连数据源"
     assert not re.search(r"\bexecute_query\b(?!_with_permission)", body), "execute_sql 不得调用未治理的 execute_query"
+
+
+def test_check_sql_governance_preview_does_not_dump_registry(monkeypatch):
+    """check_sql 权限预览不得把全局敏感基线/脱敏注册表整包外发给 LLM。
+
+    历史缺陷：基线里的 activator_ip（业务库的列）被模型当成“RUM 的 IP 被合规屏蔽”。
+    口径：只列与本次查询表/列相关的受管控列，其余只报数量并禁止跨字段推断；
+    SQL 显式点名的被屏蔽列仍列名（那是调用方自己的输入，保留可操作性）。"""
+    from backend.core.enforcer import PermissionResult, permission_enforcer
+
+    def fake_check_access(_uid, _ws, _ds, _table, sensitive_only=False):
+        r = PermissionResult()
+        r.hidden_columns = ["activator_ip", "mobile", "id_card"]
+        r.masked_columns = {"phone": "partial"}
+        r.policies_applied = ["sensitive_block:activator_ip,id_card,mobile", "sensitive_fields:phone"]
+        return r
+
+    monkeypatch.setattr(permission_enforcer, "_extract_tables", lambda sql: ["t_rum"])
+    monkeypatch.setattr(permission_enforcer, "_policy_table", lambda t, ds: t)
+    monkeypatch.setattr(permission_enforcer, "check_access", fake_check_access)
+    # 本次表真实列：只有 phone/mobile 属于 t_rum；activator_ip/id_card 是别的字段
+    monkeypatch.setattr(qt, "_governed_columns_in_scope", lambda sql, ds, tables: {"phone", "mobile"})
+    monkeypatch.setattr(qt, "_huge_scan_guard", lambda sql, ds: None)
+    monkeypatch.setattr(qt, "_resolve_datasource_arg", lambda args, ctx: 8)
+
+    token = _set_ctx()
+    try:
+        result = __import__("asyncio").run(
+            qt.check_sql({"sql": "SELECT mobile, phone FROM t_rum LIMIT 10"}))
+    finally:
+        ctxmod.ExecutionContextVar.reset(token)
+
+    perm = _payload(result)["permission"]
+    dumped = json.dumps(perm, ensure_ascii=False)
+    assert "activator_ip" not in dumped, "全局基线列名泄露给 LLM"
+    assert "id_card" not in dumped, "全局基线列名泄露给 LLM"
+    assert perm["hidden_columns"] == ["mobile"]          # 在表内且被 SQL 点名
+    assert perm["masked_columns"] == {"phone": "partial"}
+    assert "其他字段" in perm["governance_note"] and "不得据此推断" in perm["governance_note"]
+    assert all("activator_ip" not in str(p) for p in perm["policies_applied"]), perm["policies_applied"]

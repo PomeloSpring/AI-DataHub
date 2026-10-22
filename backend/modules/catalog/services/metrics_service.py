@@ -38,8 +38,55 @@ _ALIAS_SELECT = (
     "agg_type AS calculation_type, agg_type, formula AS expression, formula, "
     "unit, target_table, target_column, description, category, "
     "COALESCE(aliases, '[]') AS aliases, "
-    "bound_object_key, is_active, workspace_id, created_at, updated_at"
+    "bound_object_key, COALESCE(certified, 0) AS certified, "
+    "is_active, workspace_id, owner, created_at, updated_at"
 )
+
+# ── 字典筛选（列表过滤 + facet 词表）───────────────────────────────
+# 哨兵值: 表示“空值桶”（未分类 / 未归属 / 未设置）。前端下拉里的“未分类”
+# 这一项的 value 就是它，由 dict_facets 的聚合结果带出来，前端不硬编码值域。
+# 为什么必须有 dict_facets: 指标列表是服务端分页的，用“当前页出现过的值”凑下拉
+# 选项必然漏值、计数也不准；而写死一套固定枚举更糟 —— 历史缺陷就是把 category
+# 写成 basic/derived/composite，库里真实值域却是 可观测/客户/案例…，
+# 两项永远查不出结果，等于放了个“能点但永远空”的死筛选。
+UNSET_FACET = "__unset__"
+
+
+def _norm_bool_filter(name: str, val) -> Optional[int]:
+    """'1'/'0'/True/False → 0/1；空 → None(不过滤)；其他值抛 ValueError(路由层转 400)。
+
+    非法取值不得当成“未传”静默忽略 —— 那会把调用方的拼写错误伪装成正常结果。
+    """
+    if val is None or (isinstance(val, str) and val.strip() in ("", "all", "ALL")):
+        return None
+    s = str(val).strip().lower()
+    if s in ("1", "true", "yes"):
+        return 1
+    if s in ("0", "false", "no"):
+        return 0
+    raise ValueError(f"{name} 仅支持 1/0（1=是, 0=否）")
+
+
+def _apply_equality_filter(conditions: list, params: list, column: str, value) -> None:
+    """字典文本列的等值过滤；UNSET_FACET 命中“空值桶”(NULL 或空串)。"""
+    if not value:
+        return
+    if value == UNSET_FACET:
+        conditions.append(f"COALESCE({column}, '') = ''")
+        return
+    conditions.append(f"`{column}` = %s")
+    params.append(value)
+
+
+def _apply_upper_filter(conditions: list, params: list, column: str, value) -> None:
+    """大小写不敏感的值域过滤（agg_type 历史上混过大小写，库里存大写、表单传小写）。"""
+    if not value:
+        return
+    if value == UNSET_FACET:
+        conditions.append(f"COALESCE({column}, '') = ''")
+        return
+    conditions.append(f"UPPER(COALESCE({column}, '')) = %s")
+    params.append(str(value).strip().upper())
 
 
 def _norm_aliases(val):
@@ -112,17 +159,29 @@ def list_metrics(
     search: str = "",
     model_id: Optional[int] = None,
     scope: Optional[str] = None,
+    category: Optional[str] = None,
+    agg_type: Optional[str] = None,
+    certified: Optional[str] = None,
+    bound_object_key: Optional[str] = None,
+    has_target_table: Optional[str] = None,
+    is_active: Optional[str] = None,
 ) -> dict:
     """List metrics with pagination and filters.
 
     Args:
         page: Page number (1-based)
         size: Page size
-        metric_type: Filter by metric type (e.g., "basic", "derived", "compound")
+        metric_type: 旧口径(同时匹配 category 或 agg_type)，保留兼容
         tags: Filter by tags (comma-separated)
-        search: Search keyword
+        search: Search keyword(名称/英文名/描述/别名)
         model_id: 本体模型作用域(配合 scope='model'): 只列 bound_object_key ∈ 该模型对象集的指标
         scope: 'model' | 'unbound' | 空(全局, 旧行为)
+        category: 指标分类等值过滤(值域来自 dict_facets, UNSET_FACET=未分类)
+        agg_type: 计算/聚合方式过滤(大小写不敏感)
+        certified: '1'=仅已认证口径 / '0'=仅草稿口径
+        bound_object_key: 归属本体对象过滤(UNSET_FACET=未归属)
+        has_target_table: '1'=已派生物理表 / '0'=未派生(该指标无法被 planner 编译)
+        is_active: '1'=仅启用口径 / '0'=仅已停用口径 / 空=全部(旧行为)
 
     Returns:
         dict with total and items
@@ -145,8 +204,28 @@ def list_metrics(
             conditions.append("FIND_IN_SET(%s, category)")
             params.append(tag)
     if search:
-        conditions.append("(name LIKE %s OR name_en LIKE %s OR description LIKE %s)")
-        params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+        # 别名也是用户会搜的词(字典解析按 aliases 命中), 搜索口不覆盖别名
+        # 会让“明明改了别名却搜不到”成为预期外差异。JSON 列 LIKE 在字典量级(千行)可接受。
+        conditions.append(
+            "(name LIKE %s OR name_en LIKE %s OR description LIKE %s OR COALESCE(aliases, '') LIKE %s)")
+        params.extend([f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"])
+    _apply_equality_filter(conditions, params, "category", category)
+    _apply_upper_filter(conditions, params, "agg_type", agg_type)
+    _apply_equality_filter(conditions, params, "bound_object_key", bound_object_key)
+    cert = _norm_bool_filter("certified", certified)
+    if cert is not None:
+        conditions.append("COALESCE(certified, 0) = %s")
+        params.append(cert)
+    bound_tb = _norm_bool_filter("has_target_table", has_target_table)
+    if bound_tb is not None:
+        conditions.append("COALESCE(target_table, '') <> ''" if bound_tb
+                          else "COALESCE(target_table, '') = ''")
+    # 状态: 旧行为是不分状态全列(本体停用会级联置 is_active=0，那些行一直还在页面上)，
+    # 不拿默认值改掉它 —— 否则存量口径会从字典页“凭空消失”；需要时由筛选显式限定。
+    act = _norm_bool_filter("is_active", is_active)
+    if act is not None:
+        conditions.append("COALESCE(is_active, 0) = %s")
+        params.append(act)
     if not _apply_model_scope(conditions, params, model_id, scope):
         return {"total": 0, "items": []}
 
@@ -611,6 +690,11 @@ def list_all_dimensions(model_id: Optional[int] = None,
 
     model_id/scope 语义同 list_metrics: scope='model' 只看本模型对象挂接维度,
     'unbound' 看待归属, 缺省保持旧行为(全量)。
+
+    为何本面不提供 category/certified 等过滤入参(而指标列表提供):
+    维度列表**不分页**(字典量级，一次全量返回)，筛选在前端于全量集上做是精确的且即时;
+    指标列表服务端分页(size=20)，过滤必须下推到 SQL，否则“先分页再过滤”会漏行。
+    两个 Tab 的筛选口径差异源于分页形状，不是两套规则；选项词表统一走 dict_facets。
     """
     conditions = ["is_active = 1"]
     params: list = []
@@ -624,6 +708,129 @@ def list_all_dimensions(model_id: Optional[int] = None,
                 f"ORDER BY category, name", params)
             rows = cur.fetchall()
     return {"total": len(rows), "items": rows}
+
+
+# ── 字典筛选词表(facets) ──────────────────────────────────────
+
+def _facet_buckets(rows: list) -> list:
+    """GROUP BY 结果 → [{value, count}]，空值归入 UNSET_FACET 桶(前端渲染为“未分类/未设置”)。"""
+    merged: dict = {}
+    for r in rows or []:
+        raw = r.get("value")
+        val = str(raw).strip() if raw not in (None, "") else ""
+        key = val or UNSET_FACET
+        merged[key] = merged.get(key, 0) + int(r.get("count") or 0)
+    out = [{"value": k, "count": v} for k, v in merged.items()]
+    out.sort(key=lambda x: (-x["count"], x["value"]))
+    return out
+
+
+def dict_facets(model_id: Optional[int] = None,
+                scope: Optional[str] = None) -> dict:
+    """指标/维度字典的筛选词表 + 覆盖计数(只读聚合，供筛选下拉直接消费)。
+
+    返回:
+      {"metrics": {total, active, inactive, certified, draft, unbound_objects,
+                   with_target_table, without_target_table, with_target_column,
+                   categories[], agg_types[]},
+       "dimensions": {total, active, inactive, certified, draft, unbound_objects,
+                      with_target_table, with_target_column, with_value_labels,
+                      without_value_labels, categories[]},
+       "objects": [{key, display_name, metric_count, dimension_count}]}
+
+    设计约束(见 UNSET_FACET 注释): 选项必须来自全量集聚合，不得拿分页行凑，
+    也不得前端写死枚举；字典是全局口径(不按 workspace 分域)，但支持模型作用域。
+
+    计数口径与对应列表接口一致(否则下拉里的数字与结果总数对不上，又成一个骗人的筛选):
+    指标列表不分状态(list_metrics 旧行为)，facet 也不分、但额外报 active/inactive；
+    维度列表只走 is_active=1，facet 同口径。
+    """
+    out: dict = {"metrics": {}, "dimensions": {}, "objects": []}
+    counts: dict = {}   # object_key → {"metrics": n, "dimensions": n}
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            for table, key in (("adh_metrics", "metrics"), ("adh_dimensions", "dimensions")):
+                conds: list = ["is_active = 1"] if table == "adh_dimensions" else []
+                params: list = []
+                if not _apply_model_scope(conds, params, model_id, scope):
+                    out[key] = {"total": 0, "certified": 0, "draft": 0, "unbound_objects": 0,
+                                "categories": [], "agg_types": []}
+                    continue
+                where = ("WHERE " + " AND ".join(conds)) if conds else ""
+                # 列清单按表拼：value_labels 只在 adh_dimensions 有，拿到指标表上会 1054
+                cols = [
+                    "COUNT(*) AS total",
+                    "SUM(CASE WHEN COALESCE(is_active, 0) = 1 THEN 1 ELSE 0 END) AS active_n",
+                    "SUM(CASE WHEN COALESCE(certified, 0) = 1 THEN 1 ELSE 0 END) AS certified",
+                    "SUM(CASE WHEN COALESCE(bound_object_key, '') = '' THEN 1 ELSE 0 END) AS unbound",
+                    "SUM(CASE WHEN COALESCE(target_table, '') <> '' THEN 1 ELSE 0 END) AS with_table",
+                    "SUM(CASE WHEN COALESCE(target_column, '') <> '' THEN 1 ELSE 0 END) AS with_column",
+                ]
+                if table == "adh_dimensions":
+                    cols.append(
+                        "SUM(CASE WHEN JSON_LENGTH(value_labels) > 0 THEN 1 ELSE 0 END) AS with_labels")
+                cur.execute(f"SELECT {', '.join(cols)} FROM {table} {where}", params)
+                s = cur.fetchone() or {}
+                total = int(s.get("total") or 0)
+                cert = int(s.get("certified") or 0)
+                summary: dict = {
+                    "total": total, "certified": cert, "draft": total - cert,
+                    "active": int(s.get("active_n") or 0),
+                    "inactive": total - int(s.get("active_n") or 0),
+                    "unbound_objects": int(s.get("unbound") or 0),
+                    "with_target_table": int(s.get("with_table") or 0),
+                    "without_target_table": total - int(s.get("with_table") or 0),
+                    "with_target_column": int(s.get("with_column") or 0),
+                }
+                if table == "adh_dimensions":
+                    n_labels = int(s.get("with_labels") or 0)
+                    summary["with_value_labels"] = n_labels
+                    summary["without_value_labels"] = total - n_labels
+                cur.execute(
+                    f"SELECT COALESCE(category, '') AS value, COUNT(*) AS count "
+                    f"FROM {table} {where} GROUP BY value", params)
+                summary["categories"] = _facet_buckets(cur.fetchall())
+                if table == "adh_metrics":
+                    cur.execute(
+                        f"SELECT UPPER(COALESCE(agg_type, '')) AS value, COUNT(*) AS count "
+                        f"FROM {table} {where} GROUP BY value", params)
+                    summary["agg_types"] = _facet_buckets(cur.fetchall())
+                cur.execute(
+                    f"SELECT COALESCE(bound_object_key, '') AS value, COUNT(*) AS count "
+                    f"FROM {table} {where} GROUP BY value", params)
+                for row in cur.fetchall() or []:
+                    raw = row.get("value")
+                    k = str(raw).strip() if raw not in (None, "") else ""
+                    if not k:
+                        continue   # 未归属桶不是一种对象选项，由 unbound_objects 计数承载
+                    counts.setdefault(k, {"metrics": 0, "dimensions": 0})
+                    counts[k]["metrics" if table == "adh_metrics" else "dimensions"] += int(
+                        row.get("count") or 0)
+                out[key] = summary
+
+            # 对象业务名(ui-resource-display: 显示用 name，key 只作次要信息)。
+            # 不按 is_active 过滤取名字: 本体重建会短窗口内清空/重写对象行，拿它做
+            # “已失效”判定会隔次刷新飘标；名字取不到就回退 key(本身是可读语义名)。
+            cur.execute(
+                "SELECT object_key, "
+                "       COALESCE(MAX(CASE WHEN is_active = 1 THEN NULLIF(display_name, '') END), "
+                "                        NULLIF(MAX(NULLIF(display_name, '')), '')) AS display_name "
+                "FROM adh_ontology_objects WHERE object_key <> '' GROUP BY object_key")
+            names = {str(r["object_key"]): (r.get("display_name") or "")
+                     for r in cur.fetchall() or [] if r.get("object_key")}
+
+            # 排序: 挂接资产多的在前(下拉最常选项靠顶部)，同量按 key 字典序保证可预期
+            def _weight(k: str) -> int:
+                c = counts.get(k) or {}
+                return -(int(c.get("metrics") or 0) + int(c.get("dimensions") or 0))
+            out["objects"] = [
+                {"key": k,
+                 "display_name": names.get(k) or "",
+                 "metric_count": (counts.get(k) or {}).get("metrics", 0),
+                 "dimension_count": (counts.get(k) or {}).get("dimensions", 0)}
+                for k in sorted(set(names) | set(counts), key=lambda k: (_weight(k), k))
+            ]
+    return out
 
 
 def create_dimension(data: dict) -> dict:

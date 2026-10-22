@@ -64,6 +64,29 @@ def _sanitize_rows(rows: list) -> list:
     return [_sanitize_row(r) for r in rows]
 
 
+def _validated_site_code(value) -> str:
+    """数据源归属站点校验（空 = 未站点化）。
+
+    聚合态（全球）不是具体部署站点，不得写进数据源；非法值直接抛 ValueError
+    带可选站点名（fail-loud，不静默丢弃用户的选择）。
+    """
+    code = str(value or "").strip()
+    if not code:
+        return ""
+    from backend.core.site_service import validate_site_code
+
+    return validate_site_code(code, allow_aggregate=False)
+
+
+def _invalidate_topology_caches() -> None:
+    """数据源拓扑（站点归属）变更后失效可查站点/授权源派生缓存。"""
+    try:
+        datasource_cache.invalidate_prefix("sites:")
+        datasource_cache.invalidate_prefix("auth_ds:")
+    except Exception as e:  # noqa: BLE001 — 缓存层故障不阻断写路径
+        logger.debug("[datasource] topology cache invalidate skipped: %s", e)
+
+
 # ── 数据源服务 ────────────────────────────────────────────────────────
 
 class DatasourceService:
@@ -95,7 +118,8 @@ class DatasourceService:
                         marks = ','.join(['%s'] * len(allowed))
                         cur.execute(
                             "SELECT d.id, d.name, d.db_type, d.host, d.port, d.username, "
-                            "d.database_name, d.is_default, d.`ssl`, d.owner_id, d.created_at, d.updated_at "
+                            "d.database_name, d.is_default, d.`ssl`, d.owner_id, d.site_code, "
+                            "d.created_at, d.updated_at "
                             f"FROM adh_datasources d WHERE d.id IN ({marks}) "
                             "ORDER BY d.is_default DESC, d.name ASC",
                             tuple(allowed),
@@ -103,7 +127,7 @@ class DatasourceService:
                     else:
                         cur.execute(
                             "SELECT id, name, db_type, host, port, username, database_name, "
-                            "is_default, `ssl`, owner_id, created_at, updated_at "
+                            "is_default, `ssl`, owner_id, site_code, created_at, updated_at "
                             "FROM adh_datasources ORDER BY is_default DESC, name ASC"
                         )
                     rows = cur.fetchall()
@@ -123,6 +147,7 @@ class DatasourceService:
                 "is_default": 1,
                 "ssl": 0,
                 "owner_id": 0,
+                "site_code": "",
                 "created_at": "",
                 "updated_at": "",
             }]
@@ -132,7 +157,7 @@ class DatasourceService:
 
         数据源可用集 = 用户角色授权(adh_user_roles ⋈ adh_role_datasource_access)；
         空授权 fail-closed 返回空列表（不解释为全量）。仅回传选择器所需最小字段
-        (id/name/db_type/is_default)，不含主机/账号等连接信息（守 security §7）。
+        (id/name/db_type/is_default/site_code)，不含主机/账号等连接信息（守 security §7）。
         """
         from backend.core.role_service import role_service
         allowed = sorted(set(role_service.get_user_allowed_datasources(user_id, workspace_id)))
@@ -143,7 +168,7 @@ class DatasourceService:
             with conn.cursor() as cur:
                 marks = ','.join(['%s'] * len(allowed))
                 cur.execute(
-                    "SELECT id, name, db_type, is_default "
+                    "SELECT id, name, db_type, is_default, site_code "
                     f"FROM adh_datasources WHERE id IN ({marks}) "
                     "ORDER BY is_default DESC, name ASC",
                     tuple(allowed),
@@ -219,6 +244,7 @@ class DatasourceService:
         ds_name = (data.get("name") or "").strip()
         if not ds_name:
             raise ValueError("数据源名称不能为空")
+        site_code = _validated_site_code(data.get("site_code"))
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
@@ -233,8 +259,8 @@ class DatasourceService:
                     cur.execute(
                         "INSERT INTO adh_datasources "
                         "(id, name, db_type, host, port, username, password, database_name, "
-                        "is_default, `ssl`, ssl_mode, owner_id, created_at, updated_at) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        "is_default, `ssl`, ssl_mode, site_code, owner_id, created_at, updated_at) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                         (
                             ds_id, ds_name, data.get("db_type", "mysql"),
                             data["host"], data.get("port", 3306),
@@ -244,11 +270,12 @@ class DatasourceService:
                             1 if data.get("is_default") else 0,
                             1 if data.get("ssl") else 0,
                             ssl_mode,
+                            site_code,
                             owner_id, now, now,
                         ),
                     )
                 except Exception:
-                    # ssl_mode 列为迁移新增(未迁移时回落旧列清单)
+                    # ssl_mode/site_code 列为迁移新增(未迁移时回落旧列清单)
                     conn.rollback()
                     cur.execute(
                         "INSERT INTO adh_datasources "
@@ -272,6 +299,7 @@ class DatasourceService:
 
         # 清除缓存
         datasource_cache.invalidate(f"ds_{ds_id}")
+        _invalidate_topology_caches()
         return {"id": ds_id}
 
     async def update_datasource(self, ds_id: int, data: dict) -> dict:
@@ -332,6 +360,9 @@ class DatasourceService:
                 if data.get("ssl_mode") is not None:
                     updates.append("ssl_mode = %s")
                     params.append(data["ssl_mode"])
+                if data.get("site_code") is not None:
+                    updates.append("site_code = %s")
+                    params.append(_validated_site_code(data["site_code"]))
 
                 params.append(ds_id)
                 try:
@@ -340,13 +371,17 @@ class DatasourceService:
                         params,
                     )
                 except Exception:
-                    # ssl_mode 列未迁移时剔除该字段重试
-                    if "ssl_mode = %s" not in updates:
-                        raise
+                    # ssl_mode/site_code 列未迁移时剔除该字段重试
                     conn.rollback()
-                    idx = updates.index("ssl_mode = %s")
-                    updates.pop(idx)
-                    params.pop(idx + 1)  # 首位是 updated_at, 字段参数同下标+1
+                    dropped = False
+                    for col in ("ssl_mode = %s", "site_code = %s"):
+                        if col in updates:
+                            idx = updates.index(col)
+                            updates.pop(idx)
+                            params.pop(idx + 1)  # 首位是 updated_at, 字段参数同下标+1
+                            dropped = True
+                    if not dropped:
+                        raise
                     cur.execute(
                         f"UPDATE adh_datasources SET {', '.join(updates)} WHERE id = %s",
                         params,
@@ -357,10 +392,11 @@ class DatasourceService:
 
         # 清除缓存
         datasource_cache.invalidate(f"ds_{ds_id}")
+        _invalidate_topology_caches()
         return {"success": True}
 
     async def delete_datasource(self, ds_id: int) -> dict:
-        """删除数据源。
+        """删除数据源（同时从归属站点拓扑中消失）。
 
         Args:
             ds_id: 数据源 ID。
@@ -378,6 +414,7 @@ class DatasourceService:
 
         # 清除缓存
         datasource_cache.invalidate(f"ds_{ds_id}")
+        _invalidate_topology_caches()
         return {"success": True}
 
     async def test_connection(self, ds_id: int) -> dict:

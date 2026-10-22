@@ -20,7 +20,9 @@ const VISUAL_KEYS = ['colorScheme', 'gradient', 'borderRadius', 'showLabel', 'sm
 const TOP_KEYS = ['backgroundColor', 'backgroundImage', 'backgroundSize', 'overlay',
   'mode', 'palette', 'viewBg', 'popoverBg', 'textColor', 'subTextColor', 'gridColor'];
 const WIDGET_KEYS = ['backgroundColor', 'textColor', 'borderColor', 'borderWidth', 'borderStyle',
-  'borderRadius', 'padding', 'fontSize', 'fontWeight', 'opacity', 'boxShadow', 'verticalAlign', 'horizontalAlign'];
+  'borderRadius', 'padding', 'fontSize', 'fontWeight', 'opacity', 'boxShadow', 'verticalAlign', 'horizontalAlign',
+  // 紧凑排版旋钮: 控件内层 input 与 label 真实消费(见 DashboardChart 控件分支), 漏登记会被入库即剥
+  'lineHeight', 'height', 'gap', 'labelWidth'];
 const safeString = (v: string) => !/url\s*\(|javascript:|expression\s*\(|<|>|[;{}]/i.test(v);
 function safeValue(v: unknown): any {
   if (typeof v === 'string') return safeString(v) && v.length < 2048 ? v : undefined;
@@ -102,12 +104,42 @@ export function resolveComponent(ref: unknown, snapshot: VisSnapshot | undefined
   return component ? sanitizeStyle(component.style_config) : undefined;
 }
 const finite = (v: unknown, fallback: number) => typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+// 非法尺寸（≤0 / NaN）回落到默认尺寸；合法的小尺寸原样保留。
+const positive = (v: unknown, fallback: number) => typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : fallback;
+const DEFAULT_CHART_SIZE = { w: 400, h: 300 };
+
+/**
+ * 尺寸下限：**只留防塌陷的 1×1**，其余交给人主动控制。
+ *
+ * 曾经按类型分级设下限（按钮 48×24、日期范围 220×32、图表 200×150…），但用户把它拖到“最小”
+ * 之后最终渲染仍然偏大 —— 一个搜索按钮占 227×64。现在下限退到网格量子级，想多小就多小；
+ * 唯一保留的是不能压成 0/负（否则卡片彻底不渲染，且读取时会跳回自然尺寸造成前后不一致）。
+ */
+export function minSizeOf(_chartType?: string): { w: number; h: number } {
+  return { w: 1, h: 1 };
+}
+
+/**
+ * 自然尺寸：生成默认布局时用的**紧凑起点**，不是下限。
+ *
+ * 自动布局（从未被手动放置过的控件）会用它；用户一旦手动放置，以显式位置为准。
+ * 只用于让“没碰过”的控件一开始就不臃肿，不影响任何人把它拖大或拖小。
+ */
+export function naturalSizeOf(chartType?: string): { w: number; h: number } {
+  if (!chartType || !chartType.startsWith('widget_')) return DEFAULT_CHART_SIZE;
+  if (/_(search|reset|export|label)$/.test(chartType)) return { w: 96, h: 24 };
+  if (chartType === 'widget_daterange') return { w: 320, h: 32 };
+  if (chartType === 'widget_multi_select') return { w: 220, h: 64 };
+  return { w: 180, h: 28 };
+}
 export function chartRect(chart: { position?: Partial<Rect>; chart_type?: string }): Rect {
   const widget = chart.chart_type?.startsWith('widget_');
   const p = chart.position || {};
+  const natural = widget ? naturalSizeOf(chart.chart_type) : DEFAULT_CHART_SIZE;
+  // 只做「非法值回落」，不再把已存的合法小尺寸抬到下限：历史/导入/API 写入的小尺寸控件必须保持原样，
+  // 尺寸下限统一由交互层（minSizeOf）把关，否则任何途径都改不小。
   return { x: Math.max(0, finite(p.x, 0)), y: Math.max(0, finite(p.y, 0)),
-    w: Math.max(widget ? 100 : 200, finite(p.w, widget ? 300 : 400)),
-    h: Math.max(widget ? 36 : 150, finite(p.h, widget ? 60 : 300)) };
+    w: positive(p.w, natural.w), h: positive(p.h, natural.h) };
 }
 export function getCanvas(filters: any = {}, charts: Pick<DashboardChart, 'position'>[] = []) {
   const c = filters?.design?.canvas || {};
@@ -293,6 +325,12 @@ export function libraryThemeFilters(filters: any = {}, component?: VisComponent)
 export function isEditingTarget(target: EventTarget | null) {
   return target instanceof Element && !!target.closest('input,textarea,select,button,[contenteditable="true"],.cm-editor,[role="dialog"],[role="alertdialog"]');
 }
+/** 图层属性（存 config，免建表免迁移）：叠放顺序 / 隐藏 / 锁定 */
+export const chartZIndex = (chart?: { config?: Record<string, any> }) =>
+  Number.isFinite(chart?.config?.zIndex) ? Number(chart?.config?.zIndex) : 0;
+export const isChartHidden = (chart?: { config?: Record<string, any> }) => chart?.config?.hidden === true;
+export const isChartLocked = (chart?: { config?: Record<string, any> }) => chart?.config?.locked === true;
+
 export function chartData(chart: any) {
   try {
     const data = typeof chart.data_cache === 'string' ? JSON.parse(chart.data_cache) : chart.data_cache;

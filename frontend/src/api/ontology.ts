@@ -27,15 +27,28 @@ export interface OntologyModel extends OntologyModelSummary {
   md_content: string;
 }
 
-export interface DeploymentRow {
+/** 模型级适用站点的一项：站点 + 该站路由到的数据源业务名 */
+export interface ModelSiteRow {
+  site_code: string;
+  display_name: string;
+  /** 已配置的路由目标（未选时为空串） */
+  datasource: string;
+  /** 该站点已被选中 */
+  selected: boolean;
+  /** 该站点内可选的数据源业务名 */
+  datasource_options: string[];
+}
+
+/** 对象契约行（一份契约的形状描述，不再逐站重复登记） */
+export interface ContractObjectRow {
   object_key: string;
   object_name: string;
-  site: string;
   datasource: string;
   physical_table: string;
-  product_ref: string;
+  bind_kind: string;
+  column_count: number;
   sync_state: string;
-  status: string;
+  product_ref: string;
 }
 
 export interface OntologyObjectHit {
@@ -100,8 +113,17 @@ export const ontologyApi = {
       params: { ...(datasourceId ? { datasource_id: datasourceId } : {}), include_archived: includeArchived },
     }),
   get: (id: number) => client.get<OntologyModel>(`/catalog/ontology/models/${id}`),
-  deployments: (id: number) =>
-    client.get<{ items: DeploymentRow[] }>(`/catalog/ontology/models/${id}/deployments`),
+  /** 业务本体适用站点 + 对象契约清单 */
+  sites: (id: number) =>
+    client.get<{
+      kind: string;
+      sites: ModelSiteRow[];
+      selected: { site_code: string; datasource: string }[];
+      contract_objects: ContractObjectRow[];
+    }>(`/catalog/ontology/models/${id}/sites`),
+  saveSites: (id: number, sites: { site_code: string; datasource: string }[]) =>
+    client.put<{ success: boolean; sites: { site_code: string; datasource: string }[] }>(
+      `/catalog/ontology/models/${id}/sites`, { sites }),
   syncDoc: (id: number) =>
     client.get<{ markdown: string }>(`/catalog/ontology/models/${id}/sync-doc`),
   versions: (id: number) =>
@@ -114,8 +136,12 @@ export const ontologyApi = {
   activate: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/activate`),
   archive: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/archive`),
   restore: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/restore`),
-  syncKb: (id: number) => client.post<{ synced?: number; removed?: number; skipped?: string; targets?: string[]; error?: string }>(
-    `/catalog/ontology/models/${id}/kb-sync`),
+  syncKb: (id: number, kbId?: number | null) => client.post<
+    { synced?: number; removed?: number; skipped?: string; targets?: string[]; error?: string }>(
+    `/catalog/ontology/models/${id}/kb-sync`, null,
+    { params: kbId ? { kb_id: kbId } : {} }),
+  kbSyncOptions: () =>
+    client.get<{ items: { id: number; name: string }[] }>('/catalog/ontology/kb-sync-options'),
   remove: (id: number) => client.delete(`/catalog/ontology/models/${id}`),
   search: (q: string, datasourceId: number, limit = 5) =>
     client.get<{ items: OntologyObjectHit[] }>('/catalog/ontology/search', {

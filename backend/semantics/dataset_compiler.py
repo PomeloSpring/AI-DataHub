@@ -61,6 +61,8 @@ class CompiledDataset:
     resolved_tables: list[str] = _dc_field(default_factory=list)
     warnings: list[str] = _dc_field(default_factory=list)
     fields: list[dict] = _dc_field(default_factory=list)
+    # SQL 输出别名 -> 请求业务名（仅 SLS/Presto 这类拒非 ASCII 标识符的引擎需要）。
+    header_map: dict[str, str] = _dc_field(default_factory=dict)
     # 归因：请求名 → 解析来源（供评测按档位分桶，不对外暴露物理细节）
     resolution_sources: dict[str, str] = _dc_field(default_factory=dict)
     unresolved: list[dict] = _dc_field(default_factory=list)
@@ -107,6 +109,12 @@ class _FieldMDL:
             for key in (label, col, str(c.get("field") or "")):
                 if key:
                     self.by_key.setdefault(str(key).strip().casefold(), decl)
+            # 别名同样可解析：字典（get_metrics）向用户广告的是业务名+别名，数据集对象必须
+            # 与之一致，否则出现“广告的名字一查就 unresolved”的空承诺（no-silent-degradation）。
+            for al in (c.get("aliases") or []):
+                akey = str(al).strip().casefold()
+                if akey:
+                    self.by_key.setdefault(akey, decl)
             self.labels.append(label)
 
     @property
@@ -171,11 +179,15 @@ def _render_condition(lhs: str, op: str, value: Any, values: Any) -> Optional[st
         if len(arr) < 2:
             return None
         return f"{lhs} BETWEEN {literal(arr[0])} AND {literal(arr[1])}"
+    if op == "like":
+        # 子串匹配：调用方已给通配符(如 '%direct-ip%')按原样用,否则自动包一层 %…%
+        # （历史缺陷：like 放在符号表判定之后，‘like’ 不在 _FILTER_SYMBOLS →
+        #  永远返回 None，表现为"无法解析过滤字段"，而字段明明可解析）
+        pat = "" if value is None else str(value)
+        return f"{lhs} LIKE {literal(pat if '%' in pat else '%' + pat + '%')}"
     sym = _FILTER_SYMBOLS.get(op)
     if not sym:
         return None
-    if op == "like":
-        return f"{lhs} LIKE {literal('%' + str(value) + '%')}"
     return f"{lhs} {sym} {literal(value)}"
 
 
@@ -231,6 +243,25 @@ def compile_dataset(
 
     mdl = _FieldMDL(ds.get("field_config"), family)
     inner = f"(\n{rendered}\n) AS _ds_base"
+    # SLS/Presto 端点拒绝任何非 ASCII 标识符（中文别名直接语法错），且这一层无法在正文
+    # 规避（外层投影别名由请求的业务名决定）。因此本引擎下外层投影用稳定 ASCII 槽位
+    # (o0/o1..)，并把 ASCII 别名 -> 业务名记进 header_map，由执行层 `_to_result` 映回；
+    # 其他方言（MySQL/PG/Doris 支持非 ASCII 标识符）行为完全不变（no-silent-degradation：
+    # 不改能跑通的通道，只为确实不兼容的引擎加一条显式映射）。
+    ascii_out = engine == "sls"
+    alias_of: dict[str, str] = {}
+    _slot = [0]
+
+    def _proj_alias(name: str) -> str:
+        disp = _alias(name)
+        if not ascii_out:
+            alias_of[disp] = disp
+            return disp
+        alias = f"o{_slot[0]}"; _slot[0] += 1
+        alias_of[disp] = alias
+        out.header_map[alias] = disp
+        return alias
+
     if not mdl.empty and (dimensions or measures):
         select_items: list[tuple[str, str]] = []
         group_by: list[str] = []
@@ -242,7 +273,7 @@ def compile_dataset(
                 out.unresolved.append({"term": d, "type": "dimension",
                                        "reason": "dataset_field_unresolved"})
                 continue
-            alias = _alias(d)
+            alias = _proj_alias(d)
             select_items.append((expr, alias))
             group_by.append(expr)
             out.resolution_sources[str(d)] = "dataset_field"
@@ -254,12 +285,12 @@ def compile_dataset(
                 out.unresolved.append({"term": m, "type": "metric",
                                        "reason": "dataset_field_unresolved"})
                 continue
-            alias = _alias(m)
+            alias = _proj_alias(m)
             select_items.append((expr, alias))
             out.resolution_sources[str(m)] = "dataset_field"
         if select_items:
             where = _where_from(mdl, filters, out)
-            order_by = _order_from(order, select_items, family)
+            order_by = _order_from(order, select_items, family, alias_of)
             # 别名必须始终包引号：业务名可能含 ()/% 等字符（如「层间转化率(%)」）
             parts = [f"SELECT {', '.join(f'{e} AS {sem_dialect.quote_alias(a, family)}' for e, a in select_items)}",
                      f"FROM {inner}"]
@@ -299,20 +330,32 @@ def _where_from(mdl: _FieldMDL, filters: Optional[list], out: CompiledDataset) -
             parts.append(cond)
         else:
             name = str(f.get("field") or f.get("dim") or "")
-            out.warnings.append(f"无法解析过滤字段「{name}」。数据集可用字段: {mdl.labels}")
+            decl = mdl.lookup(name)
+            # 字段能解析而条件渲染不出来时，错因是算子/取值，不是"字段未解析"——
+            # 报错要说清真因（no-silent-degradation：可诊断，不误导）
+            if decl and decl.get("role") != "measure":
+                out.warnings.append(
+                    f"过滤字段「{name}」已识别，但过滤条件无法渲染："
+                    f"op={f.get('op')!r} 不受支持或取值为空/不合法")
+            else:
+                out.warnings.append(f"无法解析过滤字段「{name}」。数据集可用字段: {mdl.labels}")
             out.unresolved.append({"term": name, "type": "dimension",
                                    "reason": "dataset_field_unresolved"})
     return " AND ".join(parts)
 
 
-def _order_from(order: Optional[list], select_items: list[tuple[str, str]], family: str) -> str:
+def _order_from(order: Optional[list], select_items: list[tuple[str, str]], family: str,
+                alias_of: Optional[dict[str, str]] = None) -> str:
     aliases = {a for _e, a in select_items}
+    alias_of = alias_of or {}
     parts: list[str] = []
     for o in order or []:
         if not isinstance(o, dict):
             continue
         by = str(o.get("by") or o.get("field") or "").strip()
-        alias = by if by in aliases else _alias(by)
+        # 优先用投影时记录的 业务名->别名 映射（SLS 下别名为 ASCII 槽位 o{i}）；
+        # 未命中时回落旧逻辑（非 SLS 下 alias_of 为恒等映射，行为不变）。
+        alias = alias_of.get(_alias(by)) or (by if by in aliases else _alias(by))
         if alias in aliases:
             parts.append(f"{sem_dialect.quote_alias(alias, family)} "
                          f"{'DESC' if o.get('desc') else 'ASC'}")

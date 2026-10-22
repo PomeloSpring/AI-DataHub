@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 
@@ -6,6 +6,7 @@ import path from 'path'
 // docker-compose、.env BACKEND_PORT 对齐）。所有 API 前缀统一代理到同一后端，
 // 不再按微服务名区分端口。
 const BACKEND = 'http://127.0.0.1:8000'
+const DEFAULT_FRONTEND_PORT = 3000
 
 /**
  * dev 代理：`/api` **单条通配**，与生产 nginx 的 `location /api/` 同构。
@@ -34,16 +35,32 @@ function createProxyConfig() {
   }
 }
 
-export default defineConfig({
-  plugins: [react()],
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
+export default defineConfig(({ mode }) => {
+  /**
+   * 前端启动端口的唯一配置源 = 根目录 .env 的 FRONTEND_PORT（缺省 3000）。
+   *
+   * 同一个键也被 start-all.sh / stop-all.sh / kill-ports.sh（经
+   * backend/scripts/frontend_port.sh 解析）与 docker-compose.full.yml 消费，
+   * 改一处即可全链路生效；历史上这四个脚本 + 本文件各写了一份 3000，
+   * 改一处漏三处会让脚本在错的端口上找进程（表现为“启动超时”）。
+   * 脚本启动时另显式传 `vite --port <同一值>`，优先级高于此处，两条路径不得分叉。
+   */
+  const env = loadEnv(mode, path.resolve(__dirname, '..'), '')
+  const port = Number(env.FRONTEND_PORT || DEFAULT_FRONTEND_PORT)
+
+  return {
+    plugins: [react()],
+    resolve: {
+      alias: {
+        '@': path.resolve(__dirname, './src'),
+      },
     },
-  },
-  server: {
-    host: '0.0.0.0',
-    port: 3000,
-    proxy: createProxyConfig(),
-  },
+    server: {
+      host: '0.0.0.0',
+      port,
+      // 端口被占时直接失败，不静默 +1：否则监听口与脚本/代理口径分叉，缺陷同样静默
+      strictPort: true,
+      proxy: createProxyConfig(),
+    },
+  }
 })

@@ -8,6 +8,9 @@
 
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 PID_DIR="$PROJECT_ROOT/pids"
+# 前端端口唯一口径（读根 .env 的 FRONTEND_PORT）：不得在本脚本再写死 3000
+# shellcheck source=backend/scripts/frontend_port.sh
+source "$PROJECT_ROOT/backend/scripts/frontend_port.sh"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -51,8 +54,8 @@ stop_service() {
                     '$2 != "awk" && index($0, "-m celery -A " app) > 0 && index($0, kw) > 0 {print $1}' \
                     | sort -n | head -1)
                 ;;
-            frontend)   port=3000 ;;
-            backend)    port=8000 ;;
+            frontend)   port="$FRONTEND_PORT" ;;
+            backend)    port=$(grep -vE '^\s*(#|$)' "$PROJECT_ROOT/backend/scripts/services.conf" 2>/dev/null | head -1 | cut -d: -f3) ;;
             web)        port=$(grep -vE '^\s*(#|$)' "$PROJECT_ROOT/backend/scripts/services.conf" 2>/dev/null | head -1 | cut -d: -f3) ;;
             *)
                 port=$(grep -E "^${name}:" "$PROJECT_ROOT/backend/scripts/services.conf" 2>/dev/null | head -1 | cut -d: -f3)

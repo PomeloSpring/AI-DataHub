@@ -2178,3 +2178,35 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
 
 /* 表格深浅差异已由 --muted/--border 令牌吸收,
    原 .dark .prose 规则删除(applyTheme 从不挂 .dark 类,属死代码) */
+
+/* ── 看板编辑器画布（唯一口径，page / screen 两种模式共用）────────────────
+   选中/悬停分级与强调色全部走主题变量，不在组件里写裸 hex；
+   见 lib/canvasTheme.ts 与 .qoder/rules/ui-vis-library-style.md */
+.adh-editable-card {
+  outline: 1px solid transparent;
+  outline-offset: -1px;
+  transition: outline-color 120ms ease-out;
+}
+
+.adh-editable-card:hover {
+  outline-color: hsl(var(--primary) / 0.4);
+}
+
+.adh-editable-card[data-selected='true'] {
+  outline: 2px solid hsl(var(--primary));
+}
+
+/* 编辑视口：平移模式才显示抓手，选择模式保持默认光标，避免与工具栏 V/H 语义矛盾 */
+.adh-canvas-viewport {
+  cursor: default;
+}
+
+.adh-canvas-viewport[data-panning='true'],
+.adh-canvas-viewport[data-panning='true'] .adh-editable-card {
+  cursor: grab;
+}
+
+.adh-canvas-viewport[data-panning='true']:active,
+.adh-canvas-viewport[data-panning='true'] .adh-editable-card:active {
+  cursor: grabbing;
+}
