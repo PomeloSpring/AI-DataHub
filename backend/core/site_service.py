@@ -36,7 +36,24 @@ class SiteError(ValueError):
 # ── 站点清单 ──────────────────────────────────────────────────────────
 
 def list_sites(only_active: bool = True, include_aggregate: bool = True) -> list[dict]:
-    """站点清单（按 sort_order）。include_aggregate=False 时剔除聚合态。"""
+    """站点清单（按 sort_order）。include_aggregate=False 时剔除聚合态。
+
+    走 TTL 缓存：站点清单是近静态配置（写操作已带 `invalidate_site_cache()`），
+    而元库在公网（单次往返 ~190ms）。不缓存时一个聊天页加载就要重复拉 3~4 次，
+    工具侧每次 site 解析再拉 2 次，全部累在用户可感知的请求延连上。
+    """
+    from backend.common.ttl_cache import datasource_cache
+
+    cache_key = f"sites:list:{int(bool(only_active))}:{int(bool(include_aggregate))}"
+    cached = datasource_cache.get(cache_key)
+    if isinstance(cached, list):
+        return [dict(s) for s in cached]
+    rows = _query_sites(only_active=only_active, include_aggregate=include_aggregate)
+    datasource_cache.set(cache_key, rows)
+    return [dict(s) for s in rows]
+
+
+def _query_sites(only_active: bool, include_aggregate: bool) -> list[dict]:
     sql = ("SELECT site_code, display_name, is_aggregate, sort_order, is_active "
            "FROM adh_sites")
     conds = []
@@ -214,17 +231,21 @@ def datasource_sites(datasource_ids: Iterable[int] | None = None) -> dict[int, s
 
 
 def datasources_of_site(site_code: str, allowed_ids: Iterable[int] | None = None) -> list[dict]:
-    """站点内的数据源候选（业务名 + id）；限定在授权集内时只回交集。"""
+    """站点内的数据源候选（业务名 + id）；限定在授权集内时只回交集。
+
+    默认源（is_default）排首，作为“该站点的业务库”启发式候选（仅当站点内多源且
+    本体未声明路由时才会被注意到）；排序稳同，不依赖入库时间。
+    """
     code = str(site_code or "").strip()
     if not code:
         return []
     ids = [int(i) for i in (allowed_ids or []) if str(i).strip() != ""]
-    sql = "SELECT id, name, db_type FROM adh_datasources WHERE site_code = %s"
+    sql = "SELECT id, name, db_type, is_default FROM adh_datasources WHERE site_code = %s"
     params: list[Any] = [code]
     if ids:
         sql += f" AND id IN ({','.join(['%s'] * len(ids))})"
         params += ids
-    sql += " ORDER BY name"
+    sql += " ORDER BY is_default DESC, name"
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
@@ -232,7 +253,8 @@ def datasources_of_site(site_code: str, allowed_ids: Iterable[int] | None = None
             rows = cur.fetchall() or []
     finally:
         conn.close()
-    return [{"id": int(r["id"]), "name": str(r["name"]), "db_type": str(r.get("db_type") or "")}
+    return [{"id": int(r["id"]), "name": str(r["name"]), "db_type": str(r.get("db_type") or ""),
+             "is_default": int(r.get("is_default") or 0)}
             for r in rows]
 
 
@@ -325,16 +347,19 @@ def authorized_sites(user_id: int, workspace_id: int = 0) -> list[dict]:
     for r in rows:
         grouped.setdefault(str(r["site_code"]), []).append(
             {"id": int(r["id"]), "name": str(r["name"]), "db_type": str(r.get("db_type") or "")})
+    # 站点清单只取一次：旧写法在 concrete / out 两个推导式里各调一次 list_sites()，
+    # 等于白送一次公网往返。
+    known = list_sites()
     concrete = [
         {"site_code": s["site_code"], "display_name": s["display_name"],
          "is_aggregate": 0, "sort_order": s["sort_order"],
          "datasources": grouped.get(s["site_code"], [])}
-        for s in list_sites() if s["site_code"] in grouped and not s["is_aggregate"]
+        for s in known if s["site_code"] in grouped and not s["is_aggregate"]
     ]
     out = [
         {"site_code": s["site_code"], "display_name": s["display_name"],
          "is_aggregate": 1, "sort_order": s["sort_order"], "datasources": []}
-        for s in list_sites()
+        for s in known
         if s["is_aggregate"] and len(concrete) >= 2
     ]
     return sorted(out + concrete, key=lambda x: (x["sort_order"], x["site_code"]))
@@ -342,12 +367,55 @@ def authorized_sites(user_id: int, workspace_id: int = 0) -> list[dict]:
 
 # ── 站点 → 生效数据源（服务端解析，LLM 只见业务名）────────────────────
 
+def business_route_target(site_code: str, allowed_ids: Iterable[int] | None = None) -> str:
+    """该站点上「业务库」是哪个源：从已激活业务本体的 deploy_sites 声明派生。
+
+    一个站点常挂多个源（业务库 + SLS/ARMS 等观测源），光看 `site_code` 分不出
+    默认该查哪个。本体已经声明了“本站路由到哪个源”，拿它作为消歧依据是读已配事实，
+    不是猜。多个活跃业务本体声明不同目标 → 返回空（交回调用方 fail-loud 要求显式选源）。
+    """
+    code = str(site_code or "").strip()
+    if not code:
+        return ""
+    ids = {int(i) for i in (allowed_ids or []) if str(i).strip() != ""}
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT deploy_sites FROM adh_ontology_models "
+                "WHERE kind = 'business' AND status = 'active' AND deploy_sites IS NOT NULL")
+            rows = cur.fetchall() or []
+            # name→id 必须在连接关闭前取完：事后再查会拿到已关闭连接，
+            # 异常被当成“不在授权集”而静默丢掉路由目标（多源站点永远定不下）。
+            cur.execute("SELECT id, name FROM adh_datasources")
+            id_by_name = {str(r["name"]): int(r["id"]) for r in (cur.fetchall() or [])}
+    finally:
+        conn.close()
+    targets: set[str] = set()
+    for r in rows:
+        raw = r.get("deploy_sites")
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="replace")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw or "[]")
+            except (ValueError, TypeError):
+                continue
+        for item in raw or []:
+            if isinstance(item, dict) and str(item.get("site_code") or "") == code:
+                ds = str(item.get("datasource") or "")
+                if ds and (not ids or id_by_name.get(ds) in ids):
+                    targets.add(ds)
+    return targets.pop() if len(targets) == 1 else ""
+
+
 def resolve_site_to_source(site_ref: Any, allowed_ids: Iterable[int],
                            model_id: int = 0) -> int:
     """站点业务名/代码 → 生效 datasource_id（只在角色授权集内解析）。
 
-    唯一命中直接返回；站点内多源时用模型 deploy_sites 的路由目标消歧（业务本体
-    取数的权威口径）；仍多义/零命中/聚合态 → 抛 SiteError（含业务名候选，不猜）。
+    唯一命中直接返回；站点内多源时先用模型 deploy_sites 的路由目标消歧，再用
+    “任一活跃业务本体在本站声明的业务库”兼容（会话层不知道具体模型）；仍多义/零命中
+    /聚合态 → 抛 SiteError（含业务名候选，不猜）。
     """
     ids = sorted({int(i) for i in (allowed_ids or []) if str(i).strip() != ""})
     code = normalize_site_ref(site_ref)
@@ -371,6 +439,8 @@ def resolve_site_to_source(site_ref: Any, allowed_ids: Iterable[int],
     if len(candidates) == 1:
         return int(candidates[0]["id"])
     target = site_of_model_target(model_id, code) if model_id else ""
+    if not target:
+        target = business_route_target(code, ids)
     if target:
         for c in candidates:
             if c["name"] == target:
@@ -413,10 +483,10 @@ def authorized_sites_from_ids(allowed_ids: Iterable[int]) -> list[dict]:
 
 def session_source_for_site(site_ref: Any, allowed_ids: Iterable[int],
                             model_id: int = 0) -> int:
-    """会话站点 → 生效 datasource_id；聚合态/多义/未站点化返回 0（不猜源）。
+    """会话站点 → 生效 datasource_id；聚合态/未站点化/拿不定返回 0（不猜源）。
 
-    返回 0 表示「会话不锁定单一源」，由工具侧 site/datasource 参数逐查询解析
-    （resource_guard 的空 datasource 语义：多候选要求显式选择）。
+    站点内多源时的消歧顺序：模型 deploy_sites → 活跃业务本体在本站声明的业务库；
+    仍定不下则返回 0，由工具侧 site/datasource 参数逐查询解析（多候选要求显式选择）。
     """
     code = normalize_site_ref(site_ref)
     if not code:
@@ -425,11 +495,13 @@ def session_source_for_site(site_ref: Any, allowed_ids: Iterable[int],
     if int(site.get("is_aggregate") or 0):
         return 0
     candidates = datasources_of_site(code, allowed_ids)
-    if len(candidates) == 1:
-        return int(candidates[0]["id"])
     if not candidates:
         return 0
+    if len(candidates) == 1:
+        return int(candidates[0]["id"])
     target = site_of_model_target(model_id, code) if model_id else ""
+    if not target:
+        target = business_route_target(code, allowed_ids)
     if target:
         for c in candidates:
             if c["name"] == target:

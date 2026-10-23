@@ -8,7 +8,7 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { RefreshCw, FunctionSquare, Search, Copy, Eye, Link2 } from 'lucide-react';
 import { udfApi, type Udf } from '@/api/udf';
 

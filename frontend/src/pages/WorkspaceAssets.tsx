@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from '@/components/ui/dialog';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Archive, Download, Trash2, HardDrive, Sparkles, RefreshCw, Search } from 'lucide-react';
 import client from '@/api/client';
 

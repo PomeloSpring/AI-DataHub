@@ -19,7 +19,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { SearchSelect, type SearchSelectOption } from '@/components/ui/search-select';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import {
   Plus,
   Search,

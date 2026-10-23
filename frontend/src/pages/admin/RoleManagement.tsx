@@ -18,7 +18,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import {
   Plus, Edit, Trash2, Shield, Users, UserPlus, UserMinus,
   Database, Lock, Key, Bot, LayoutDashboard, ListChecks, ChevronDown, ChevronUp, Layers,

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, beforeAll, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
+// spy 句柄取自被 mock 的 'sonner'：业务代码走 @/lib/toast 包装器，它会调到这里的 spy
 import { toast } from 'sonner'
 import Chat from '../Chat'
 import { useChatStore } from '../../stores/chatStore'
@@ -67,7 +68,7 @@ describe('聊天输入框 Ctrl+V 粘贴图片', () => {
     // 阻断默认粘贴,截图入暂存区并可见
     expect(notCanceled).toBe(false)
     expect(await screen.findByText('paste-test.png')).toBeInTheDocument()
-    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('已放入 1 个附件'))
+    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('已放入 1 个附件'), expect.anything())
 
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
     expect(sendSpy).toHaveBeenCalledWith(
@@ -105,7 +106,7 @@ describe('聊天输入框 Ctrl+V 粘贴图片', () => {
     const bad = new File(['x'], 'evil.exe', { type: 'application/x-msdownload' })
     paste(fakeClipboard({ items: [fileItem(bad)], files: [bad] }))
 
-    expect(toast.error).toHaveBeenCalledWith('不支持的文件类型: .exe')
+    expect(toast.error).toHaveBeenCalledWith('不支持的文件类型: .exe', expect.anything())
     expect(screen.queryByText('evil.exe')).toBeNull()
   })
 

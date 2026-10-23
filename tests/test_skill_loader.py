@@ -70,6 +70,29 @@ def test_missing_skill_returns_none(skills_dir):
     assert skill_loader.load_skill("nope") is None
 
 
+def test_save_skill_folder_preserves_unmanaged_frontmatter_keys(skills_dir):
+    """管理页保存只改展示字段，不得剥掉 `triggers` / `requires_any`。
+
+    被剥掉的后果是技能正文静默停止展开（改了不生效且无线索），与
+    no-silent-degradation 相违；这里把“未纳管键回带”锁住。
+    """
+    (skills_dir / "demo-skill" / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndisplay_name: 演示技能\n"
+        "description: 用于回归的示例技能\ncategory: analysis\n"
+        "requires_any: [run_semantic_query]\ntriggers: [\u73af\u6bd4, \u8d8b\u52bf]\n---\n\n旧正文\n",
+        encoding="utf-8")
+    skill_loader.clear_skill_cache()
+    skill_loader.save_skill_folder(
+        "demo-skill", display_name="演示技能V2", description="改过了", category="analysis",
+        body="新正文", custom=False)
+    skill_loader.clear_skill_cache()
+    skill = skill_loader.load_skill("demo-skill")
+    assert skill["display_name"] == "演示技能V2"
+    assert skill["system_prompt"] == "新正文"
+    assert skill["skill_config"]["requires_any"] == ["run_semantic_query"]
+    assert skill["skill_config"]["triggers"] == ["环比", "趋势"]
+
+
 # ── 防回潮：加载路径不得再出现访问 adh_skills 的 SQL ────────────────
 
 _DB_TOUCH = ("adh_skills", "get_metadata_conn")

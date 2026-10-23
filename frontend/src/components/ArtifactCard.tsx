@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Download, FileText, FileSpreadsheet, FileImage, Code, FileType, Archive } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import client from '@/api/client';
 import DataGrid from '@/components/DataGrid';
 import ExcelPreview from '@/components/ExcelPreview';

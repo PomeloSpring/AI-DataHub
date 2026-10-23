@@ -15,7 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { RefreshCw, Search } from 'lucide-react';
 import { syncApi, type SyncLog, type SyncTask } from '@/api/sync';
 

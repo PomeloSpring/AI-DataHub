@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Pencil, Bot, Lock, Eye, ChevronDown, ChevronRight } from 'lucide-react';
 import client from '@/api/client';
 import { useAuthStore } from '../../stores/authStore';

@@ -14,7 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ArrowLeft, RefreshCw, Trash2, XCircle, Clock } from 'lucide-react';
 import {
   listScheduledLogs,

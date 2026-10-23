@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useRef } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import client from '../api/client';
 import { useDashboardStore, type Dashboard, type DashboardChart } from '../stores/dashboardStore';
 import type { ChartTypeItem } from '../components/DashboardChart';

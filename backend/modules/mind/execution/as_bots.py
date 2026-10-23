@@ -248,9 +248,33 @@ def collect_skill_names(as_bots: list[dict]) -> list[str]:
     return seen
 
 
-def load_skills(skill_names: list[str]) -> list[dict]:
-    """按名加载已绑定技能(name/display_name/system_prompt),供提示词注入.
+def _name_list(raw, skill_name: str, key: str) -> list[str]:
+    """SKILL.md frontmatter 里的名字清单(triggers / requires_any)。
 
+    YAML 直接给 list;也容忍逗号分隔字符串。解析不出时告警不静默当空
+    —— 那会让技能正文“改了不展开”且无任何线索。
+    """
+    if raw in (None, ""):
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = [x.strip() for x in raw.split(",")]
+    if isinstance(raw, str) or not isinstance(raw, (list, tuple)):
+        logger.warning("[AS-BOT] 技能 %s 的 frontmatter %s 不是名单（%r），本轮忽略",
+                       skill_name, key, raw)
+        return []
+    return list(dict.fromkeys(str(x).strip() for x in raw if str(x).strip()))
+
+
+def load_skills(skill_names: list[str]) -> list[dict]:
+    """按名加载已绑定技能(name/display_name/description/system_prompt + 装载控制元数据),供提示词注入.
+
+    除正文外还透出 SKILL.md frontmatter 里的两个装载控制键(由 prompt_composer 消费):
+      - `requires_any`: 本正文依赖的工具名(任一授权即可展开), 全未注册时不展开;
+      - `triggers`:     用户问题命中词, 多技能绑定时决定展开哪几个。
+    description 同时作为未展开正文时的常驻浓缩契约。
     加载失败或技能不存在时跳过该项(行为容错)。
     """
     out: list[dict] = []
@@ -267,10 +291,15 @@ def load_skills(skill_names: list[str]) -> list[dict]:
         except Exception:  # noqa: BLE001
             skill = None
         if skill and skill.get("system_prompt"):
+            cfg = skill.get("skill_config") or {}
             out.append({
                 "name": skill.get("name") or name,
                 "display_name": skill.get("display_name") or name,
+                "description": skill.get("description") or "",
+                "category": skill.get("category") or "",
                 "system_prompt": skill.get("system_prompt") or "",
+                "requires_any": _name_list(cfg.get("requires_any"), name, "requires_any") if isinstance(cfg, dict) else [],
+                "triggers": _name_list(cfg.get("triggers"), name, "triggers") if isinstance(cfg, dict) else [],
             })
     return out
 

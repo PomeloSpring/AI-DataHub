@@ -1,6 +1,6 @@
 import { memo, useRef, useEffect, useState } from 'react';
 import { Chart } from '@antv/g2';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import * as topojson from 'topojson-client';
 import {
   BarChart3, TrendingUp, PieChart, Activity, Circle, Webhook, Filter, ArrowDownUp,

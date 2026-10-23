@@ -37,7 +37,7 @@ import {
 } from '@/components/ui/popover';
 import { Switch } from '@/components/ui/switch';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import {
   Boxes, Sparkles, Save, CheckCircle2, Archive, RefreshCw, Loader2, Trash2, History, AlertTriangle,
   Upload, Undo2, BookMarked,

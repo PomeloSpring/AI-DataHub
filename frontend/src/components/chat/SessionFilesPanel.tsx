@@ -3,7 +3,7 @@ import {
   Archive, FileImage, FileSpreadsheet, FileText, FileType, Code, FolderOpen,
   Loader2, RefreshCw, Trash2, type LucideIcon,
 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';

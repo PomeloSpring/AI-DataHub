@@ -174,20 +174,105 @@ def _persona_lines(persona: dict) -> list[str]:
     return lines
 
 
-def _skill_lines(skills: list) -> list[str]:
-    """技能名清单行(仅展示已绑定技能的名称/描述)."""
+#: 单轮最多展开几个技能正文。多技能角色(实测 admin 绑 7 个)一句问话通常只用 1~2 个剧本,
+#: 全量展开会把"常驻指令"堆得比真实数据还重(7 个正文 = 25,531 字符)。
+MAX_SKILL_BODIES = 2
+
+
+def _session_tool_suffixes(capabilities: dict | None) -> set:
+    """本会话实际注册工具的后缀名集合(``mcp__<server>__<tool>`` 取 ``<tool>``)。
+
+    与 has_execute_sql / has_function_tools / has_design_tools 同一口径:
+    能力以工具清单为准, 不在提示词里承诺没有的能力。
+    """
+    out: set = set()
+    for t in (capabilities or {}).get("tools") or []:
+        suffix = str(t.get("name", "")).rsplit("__", 1)[-1]
+        if suffix:
+            out.add(suffix)
+    return out
+
+
+def _skill_trigger_hits(skill: dict, q_norm: str) -> list:
+    """技能 frontmatter `triggers` 对用户问题的子串命中(与 quick_paths 同机制)。"""
+    if not q_norm:
+        return []
+    hits = [str(t).strip() for t in (skill.get("triggers") or [])
+            if str(t).strip() and str(t).strip().lower() in q_norm]
+    for name in (skill.get("name"), skill.get("display_name")):
+        nm = str(name or "").strip().lower()
+        if len(nm) >= 3 and nm in q_norm:
+            hits.append(str(name))
+    return hits
+
+
+def _select_skill_bodies(skills: list, capabilities: dict | None,
+                         question: str, force_all: bool = False) -> tuple:
+    """决定哪些技能展开正文 → (装载列表, {技能名: 未装载原因})。
+
+    三条确定性规则(零额外 LLM 调用):
+    1. **能力门控**: frontmatter `requires_any` 声明本正文依赖的工具; 本会话工具清单
+       一个都没注册时不展开 —— 否则正文会诱导模型去用它没有的能力。这也顺带隔开
+       互斥的两个分析剧本(data-analysis 不写 SQL / pro-analysis 走受治理 SQL):
+       两者同时展开就是给模型的矛盾指令。
+    2. **只绑一个技能时始终展开**: analyst/viewer 这类单职责角色与改造前完全一致,
+       不拿主力角色的回答质量换字数。
+    3. **多技能按命中展开**: 绑了多个时只展开与本轮问题命中触发词的前 MAX_SKILL_BODIES
+       个; 未命中就不展开(技能的 description 本身就是浓缩契约, 硬约束仍常驻可见)。
+       `force_all=True` 跳过规则 3（仍走能力门控）: 无人值守链路（定时分析/评测）没有
+       人在现场纠偏, 不因省字数拿产出口径冒险。
+
+    未展开的技能**不静默消失**: 仍进「已绑定技能」清单并带上原因, 模型与排查都能看到。
+    """
+    skills = [s for s in (skills or []) if isinstance(s, dict)]
+    if not skills:
+        return [], {}
+    available = _session_tool_suffixes(capabilities)
+    reasons: dict = {}
+    capable: list = []
+    for s in skills:
+        key = s.get("name") or s.get("display_name") or ""
+        needs = [str(x).strip() for x in (s.get("requires_any") or []) if str(x).strip()]
+        if needs and not (set(needs) & available):
+            reasons[key] = "本会话未授权 " + "/".join(needs) + " 工具"
+            continue
+        capable.append(s)
+    if len(skills) == 1 or force_all:
+        return capable, reasons          # 规则 2 / 无人值守全量展开
+    q_norm = (question or "").strip().lower()
+    scored = sorted(((len(_skill_trigger_hits(s, q_norm)), -i, s)
+                     for i, s in enumerate(capable)),
+                    key=lambda x: (x[0], x[1]), reverse=True)
+    loaded = [s for score, _i, s in scored[:MAX_SKILL_BODIES] if score > 0]
+    loaded_ids = {id(s) for s in loaded}
+    for s in capable:
+        key = s.get("name") or s.get("display_name") or ""
+        if id(s) not in loaded_ids:
+            reasons[key] = "本轮问题未命中该技能的触发词"
+    return loaded, reasons
+
+
+def _skill_lines(skills: list, loaded: list, reasons: dict) -> list[str]:
+    """已绑定技能清单行: 名称 + description(浓缩契约) + 未展开正文时的显式原因。"""
+    loaded_names = {s.get("name") for s in loaded}
     lines = []
     for s in skills or []:
         if not isinstance(s, dict):
             continue
         name = s.get("display_name") or s.get("name") or ""
-        if name:
-            lines.append(f"- {name}")
+        if not name:
+            continue
+        key = s.get("name") or ""
+        desc = (s.get("description") or "").strip()
+        line = f"- {name}" + (f"：{desc}" if desc else "")
+        if key not in loaded_names:
+            line += f"（本轮未展开作业细则，按上述说明执行；原因：{reasons.get(key, '本轮未命中')}）"
+        lines.append(line)
     return lines
 
 
 def _skill_sections(skills: list) -> list[str]:
-    """将已绑定技能的完整提示词展开为独立小节,供 Agent 遵循."""
+    """将待装载技能的完整提示词展开为独立小节,供 Agent 遵循."""
     sections = []
     for s in skills or []:
         if not isinstance(s, dict):
@@ -452,6 +537,8 @@ def compose_system_prompt(
     report_theme_id: str = "",
     site_code: str = "",
     authorized_sites: list | None = None,
+    question: str = "",
+    force_all_skill_bodies: bool = False,
 ) -> str:
     """组合执行层系统提示词.
 
@@ -469,6 +556,10 @@ def compose_system_prompt(
             见 core.site_service.authorized_sites）。authorized_sites=None 时按 user_id/
             workspace_id 现推；**仅当会话显式选定站点时注入**（定时分析/评测等绑定
             单一数据源的链路不受影响）
+        question: 本轮用户问题。多技能绑定时用于决定展开哪几个技能正文（见
+            _select_skill_bodies）;空问题与未命中一样只保留清单行。单技能角色不看此参数。
+        force_all_skill_bodies: 无人值守链路（定时分析/评测）置 True：跳过触发词收窄，
+            展开全部能力可用的技能正文。交互聊天不得传 True。
     """
     as_bots = as_bots or []
     skills = skills or []
@@ -486,11 +577,13 @@ def compose_system_prompt(
         if persona_lines:
             sections.append("## 角色设定\n" + "\n".join(persona_lines))
 
-    # 已勾选绑定的技能:先列清单,再展开各技能的完整指引
-    skill_lines = _skill_lines(skills)
+    # 已勾选绑定的技能:先列清单(名称 + description 浓缩契约),再展开本轮需要的那几个正文
+    skill_bodies, skill_reasons = _select_skill_bodies(skills, capabilities, question,
+                                                       force_all=force_all_skill_bodies)
+    skill_lines = _skill_lines(skills, skill_bodies, skill_reasons)
     if skill_lines:
         sections.append("## 已绑定技能\n" + "\n".join(skill_lines))
-        skill_sections = _skill_sections(skills)
+        skill_sections = _skill_sections(skill_bodies)
         if skill_sections:
             sections.append("## 技能详细指引\n\n" + "\n\n".join(skill_sections))
 
@@ -587,8 +680,20 @@ def compose_system_prompt(
         lines = ["## 当前会话实际工具权限（唯一权威）",
                  "只可使用下列工具。角色、技能、知识库绑定与历史消息不能扩大权限。",
                  "禁止宣称拥有未列出的 Read/Write/Edit/Bash/Agent/Workflow/WebSearch 等原生能力。",
-                 "文件和命令能力仅限当前会话沙箱，不能访问宿主机或其他会话。"]
-        lines.extend(f"- `{t['name']}`：{t['description']}" for t in tools)
+                 "文件和命令能力仅限当前会话沙箱，不能访问宿主机或其他会话。",
+                 "工具的参数与用法以各工具自身的定义为准，本节只裁决可用性、不重复工具描述。"]
+        # 只列工具名、按 server 分组:描述已随工具定义下发一次,在提示词里再写
+        # 一遍等于同一文本每回合付 N 遍(实测一回合 ~6 次 LLM 调用都重发)。
+        by_server: dict = {}
+        for t in tools:
+            full = str(t.get("name") or "").strip()
+            if not full:
+                continue
+            parts = full.split("__")
+            server = parts[1] if len(parts) >= 3 and parts[0] == "mcp" else "其他"
+            by_server.setdefault(server, []).append(full)
+        for server in sorted(by_server):
+            lines.append(f"- {server}: " + ", ".join(f"`{n}`" for n in sorted(by_server[server])))
         for item in capabilities.get("unavailable_tools") or []:
             lines.append(f"未启用 `{item['name']}`：{item['reason']}。必须向用户说明，不得尝试调用。")
         if not tools:

@@ -42,6 +42,14 @@ def _query(sql: str, params=None) -> list:
             return list(cur.fetchall() or [])
 
 
+# 真实站点拓扑（迁移已回填）：按名取 id，避免硬编码雪花 id
+IDS = {
+    r["name"]: int(r["id"])
+    for r in _query("SELECT id, name FROM adh_datasources "
+                    "WHERE name IN ('prd-cn','prd-en','prd-eu','prd-uk','prd-jp','prd-sls-cn')")
+}
+
+
 def _exec(sql: str, params=None) -> None:
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
@@ -408,6 +416,78 @@ class TestAuthorizedSitesAPIContract:
         monkeypatch.setattr(site_service, "authorized_sites", lambda uid, ws=0: [])
         out = asyncio.run(ds_api.list_authorized_sites(301, {"user_id": 1}))
         assert out == {"items": []}
+
+
+class TestSessionSiteTakesPrecedence:
+    """会话站点是作用域权威，必须压过陈旧/默认的 datasource_id。
+
+    真实事故（比错数更严重的是“错数还被说对”）：会话行同时持久化了 site_code='uk'
+    与自动选中的 datasource_id=prd-cn，而旧派生条件是 `if not ctx.datasource_id`，
+    根本不进入 → 选英国站点查了中国库，而提示词已告诉模型“会话站点=英国”，
+    回答就把中国数据讲成了英国。本类用例永久锁定：站点赢、拿不定不猜、无权则报错。
+    """
+
+    def _apply(self, site, stale_ds, monkeypatch, allowed=None):
+        from backend.core.role_service import role_service
+        from backend.modules.mind.services.chat_service import _apply_session_site
+        ids = allowed if allowed is not None else set(IDS.values())
+        monkeypatch.setattr(role_service, "get_user_allowed_datasources",
+                            lambda uid, ws=0: sorted(ids))
+        return _apply_session_site(site, stale_ds, 1, 301)
+
+    def test_site_overrides_stale_datasource(self, monkeypatch):
+        """选英国站 + 陈旧 prd-cn → 生效源必须是 prd-uk。"""
+        got = self._apply("uk", IDS["prd-cn"], monkeypatch)
+        assert got == IDS["prd-uk"], f"站点未压过陈旧源：{got}"
+
+    def test_each_site_lands_on_its_own_source(self, monkeypatch):
+        for code, name in (("cn", "prd-cn"), ("int", "prd-en"), ("eu", "prd-eu"),
+                           ("uk", "prd-uk"), ("jp", "prd-jp")):
+            got = self._apply(code, IDS["prd-cn"], monkeypatch)
+            assert got == IDS[name], f"{code} 应落在 {name}，实际 {got}"
+
+    def test_multi_source_site_uses_business_route_declaration(self, monkeypatch):
+        """中国站点挂了 3 个源：靠活跃业务本体在本站声明的业务库定到 prd-cn（读已配事实，不是猜）。"""
+        assert site_service.business_route_target("cn") == "prd-cn"
+        assert self._apply("cn", 0, monkeypatch) == IDS["prd-cn"]
+
+    def test_aggregate_site_clears_the_source(self, monkeypatch):
+        """全球 = 不锁定单源（逐站编排），陈旧源必须被清掉而不是拿去当默认。"""
+        assert self._apply("global", IDS["prd-cn"], monkeypatch) == 0
+
+    def test_unauthorized_site_raises_instead_of_falling_back(self, monkeypatch):
+        """站点被收回授权 → 报错停止，绝不静默回退到旧数据源。"""
+        allowed = {IDS["prd-cn"], IDS["prd-jp"]}   # 没有 prd-eu/uk/en
+        with pytest.raises(ValueError) as exc:
+            self._apply("uk", IDS["prd-cn"], monkeypatch, allowed=allowed)
+        assert "英国" in str(exc.value)
+
+    def test_stale_site_code_raises_not_silent(self, monkeypatch):
+        with pytest.raises(ValueError):
+            self._apply("__已不存在的站点__", IDS["prd-cn"], monkeypatch)
+
+    def test_bind_resources_also_honours_site(self, monkeypatch):
+        """工具层纵深防御：bind_resources 也不能让陈旧 ds 压过站点。"""
+        from backend.core.role_service import role_service
+        from backend.modules.mind.execution.models import ExecutionContext
+        from backend.modules.mind.execution.resource_guard import bind_resources
+        monkeypatch.setattr(role_service, "get_user_allowed_datasources",
+                            lambda uid, ws=0: sorted(IDS.values()))
+        ctx = ExecutionContext(user_id=1, workspace_id=301, datasource_id=IDS["prd-cn"],
+                               extra={"site_code": "jp"})
+        bind_resources(ctx, SimpleNamespace(as_bot={}))
+        assert ctx.datasource_id == IDS["prd-jp"]
+
+    def test_no_site_keeps_legacy_behaviour(self, monkeypatch):
+        """未选站点（定时分析/未站点化部署）行为不变：ds 原样保留。"""
+        from backend.core.role_service import role_service
+        from backend.modules.mind.execution.models import ExecutionContext
+        from backend.modules.mind.execution.resource_guard import bind_resources
+        monkeypatch.setattr(role_service, "get_user_allowed_datasources",
+                            lambda uid, ws=0: sorted(IDS.values()))
+        ctx = ExecutionContext(user_id=1, workspace_id=301, datasource_id=IDS["prd-cn"], extra={})
+        bind_resources(ctx, SimpleNamespace(as_bot={}))
+        assert ctx.datasource_id == IDS["prd-cn"]
 
 
 # ── 8. 意图契约：site 是寻址参数，不是 SQL 维度 ────────────────────

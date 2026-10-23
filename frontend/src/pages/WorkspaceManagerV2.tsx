@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from '@/components/ui/dialog';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Users, HardDrive, Trash2, RefreshCw, Settings2 } from 'lucide-react';
 import client from '@/api/client';
 import { WorkspaceDeleteDialog } from '@/components/WorkspaceDeleteDialog';

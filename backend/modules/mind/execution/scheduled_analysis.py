@@ -461,6 +461,9 @@ def _build_oneshot_options(run: "_ScheduledRun"):
         quick_paths=match_quick_paths(run.question, run.ctx.workspace_id, run.ctx.datasource_id),
         user_id=run.ctx.user_id, workspace_id=run.ctx.workspace_id, datasource_id=run.ctx.datasource_id,
         capabilities=run.policy.manifest(), report_theme_id="",
+        # 无人值守：没有人在现场纠偏，不因省字数拿技能正文（分析剧本/交付口径）冒险；
+        # 仍走能力门控，未授权的工具不会诱导模型去用。交互聊天才按问题命中收窄。
+        question=run.question or "", force_all_skill_bodies=True,
     )
     token = resolve_access_token()
     if not token:

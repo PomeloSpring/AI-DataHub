@@ -7,7 +7,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ArrowLeft, RefreshCw, Square, RotateCcw } from 'lucide-react';
 import {
   dagApi, type DagRun, type DagNodeRun,

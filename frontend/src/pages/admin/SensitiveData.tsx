@@ -17,7 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Plus, Trash2, RefreshCw, ScanSearch, Edit, Shield } from 'lucide-react';
 import { governanceApi, type SensitiveField } from '@/api/governance';
 import { useWorkspaceStore } from '@/stores/workspaceStore';

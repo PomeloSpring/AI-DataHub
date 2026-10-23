@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 export function useDashboardFullscreen(ref: RefObject<HTMLElement>) {
   const [fullscreen, setFullscreen] = useState(false);

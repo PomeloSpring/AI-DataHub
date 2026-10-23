@@ -6,25 +6,39 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { hasPerm } from '@/stores/permissionStore';
 import { fetchVisibleGroups, flattenGroupBoards, type DashboardPreview, type GroupView } from '@/lib/dashboardCatalog';
+import { ChartGlyph } from '@/components/DashboardCanvas';
+import { resolveDashboardDesign } from '@/lib/dashboardDesign';
+import { useThemeStore } from '@/stores/themeStore';
+import { useVisLibrary } from '@/hooks/useVisLibrary';
+import type { VisComponent } from '@/api/visLibrary';
 
 // 工作空间「数据看板」清单: 卡片瀑布呈现当前用户可见的看板, 点卡片进详情。
 // 数据口径 = GET /dashboard/groups/visible(组按角色分配 ∩ 角色可见, fail-closed);
 // 浏览域只消费已启用看板 —— 设计中/已关闭看板不混进消费清单, 只在顶部显式提示数量。
 // 本页纯消费(查看/播放), 不提供编辑: 看板编辑只在系统配置「看板管理」(仅属主/admin 可写)。
 
-/** 卡片预览画布: 按画布宽高比撑高(瀑布因此高低错落), 区块只画几何不含口径 */
-function DashboardPreviewCanvas({ preview }: { preview?: DashboardPreview }) {
+/**
+ * 卡片预览画布: 按画布宽高比撑高(瀑布因此高低错落), 区块只画几何不含口径。
+ * 缩影形状与配色**与看板列表页同源**（ChartGlyph + 字模库主题包）：
+ * 此前这里自画一套 `bg-primary/25` 四根假柱，与编辑器效果图对不上。
+ */
+function DashboardPreviewCanvas({ preview, items }: { preview?: DashboardPreview; items: VisComponent[] }) {
+  const theme = useThemeStore(s => s.theme);
+  // items 必须传入字模库组件：主题包色板靠 items 里 category='theme_pack' 的组件解析，
+  // 传空数组会找不到主题包而退成灰度默认色（曾导致这里黑白、看板管理页彩色）
+  const palette = useMemo(
+    () => resolveDashboardDesign({}, items, { theme }).visual.palette || ['#475569'],
+    [items, theme],
+  );
   const width = preview?.width || 1920;
   const height = preview?.height || 1080;
   const blocks = preview?.blocks || [];
   return <div className="relative w-full overflow-hidden rounded-md border bg-muted/30"
     style={{ aspectRatio: `${width} / ${height}` }} aria-hidden>
     {blocks.map((b, i) => <span key={i}
-      className="absolute rounded-sm border border-border/60 bg-card/80 p-[3%]"
+      className="absolute overflow-hidden rounded-sm border border-border/60 bg-card/80 p-[3%]"
       style={{ left: `${b.x / width * 100}%`, top: `${b.y / height * 100}%`, width: `${b.w / width * 100}%`, height: `${b.h / height * 100}%` }}>
-      {b.widget ? <i className="block h-[2px] w-1/2 rounded bg-primary/40" />
-        : <i className="flex h-full items-end gap-[2px]">{[45, 80, 60, 92].map((h, j) =>
-          <b key={j} className="flex-1 rounded-sm bg-primary/25" style={{ height: `${h}%` }} />)}</i>}
+      <ChartGlyph chartType={b.chart_type || (b.widget ? 'widget_label' : 'bar')} palette={palette} />
     </span>)}
     {!blocks.length && <span className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">空白画布</span>}
   </div>;
@@ -64,6 +78,8 @@ export default function WorkspaceDashboards() {
     `${b.name} ${b.description || ''}`.toLowerCase().includes(search.toLowerCase())
   ), [enabled, groupId, search]);
   const unreadyCount = boards.length - enabled.length;
+  // 字模库：缩影配色的事实源；加载失败时仍渲染缩影（退灰）但**必须显式告知**，不得假装已按主题
+  const library = useVisLibrary();
 
   const open = (id: number) => navigate(`/ws/${workspaceId}/dashboards/${id}`, { state: { from: location.pathname } });
   const play = (id: number, group: number) => navigate(
@@ -113,12 +129,18 @@ export default function WorkspaceDashboards() {
           </p>
           {canManage && <Button size="sm" className="mt-4" onClick={() => navigate('/system/dashboards')}>去配置仪表盘</Button>}
         </div>
-          : <div className="columns-1 gap-5 sm:columns-2 xl:columns-3 2xl:columns-4">
+          : <>
+            {/* 字模库加载失败时缩影会退灰度：必须显式告知，不能假装已按主题配色 */}
+            {library.error && <div role="alert" className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/40 bg-amber-50 p-3 text-sm text-amber-800">
+              字模库加载失败，卡片预览暂时使用灰度配色（与看板管理页不一致）。
+              <Button size="sm" variant="outline" onClick={library.refresh}>重试</Button>
+            </div>}
+            <div className="columns-1 gap-5 sm:columns-2 xl:columns-3 2xl:columns-4">
             {visible.map(b => <article key={`${b.group_id}-${b.id}`}
               className="group mb-5 break-inside-avoid overflow-hidden rounded-xl border bg-card transition-shadow hover:shadow-md">
               <button type="button" aria-label={`打开看板 ${b.name}`} className="block w-full border-b bg-muted/20 p-3 text-left"
                 onClick={() => open(b.id)}>
-                <DashboardPreviewCanvas preview={b.preview} />
+                <DashboardPreviewCanvas preview={b.preview} items={library.items} />
               </button>
               <div className="space-y-3 p-4">
                 <div className="min-w-0">
@@ -139,6 +161,7 @@ export default function WorkspaceDashboards() {
                 </div>
               </div>
             </article>)}
-          </div>}
+            </div>
+          </>}
   </div>;
 }

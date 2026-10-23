@@ -18,7 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Plus, Edit, Trash2, RefreshCw } from 'lucide-react';
 import { governanceApi, type DataStandard } from '@/api/governance';
 import { useWorkspaceStore } from '@/stores/workspaceStore';

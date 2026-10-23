@@ -4,7 +4,7 @@ import type { Dashboard, DashboardChart as ChartModel } from '@/stores/dashboard
 import type { VisComponent } from '@/api/visLibrary';
 import { useThemeStore } from '@/stores/themeStore';
 import { chartData, chartRect, chartZIndex, getCanvas, isChartHidden, resolveChartDesign, resolveDashboardDesign, visualConfig, legacyCanvasFilters, type Rect } from '@/lib/dashboardDesign';
-import { PAGE_COLUMNS, PAGE_ROW, pageBreakpoint, pageGap, resolvePageLayout, type PageBreakpoint, type PageItem } from '@/lib/dashboardPageLayout';
+import { PAGE_COLUMNS, PAGE_ROW, pageBreakpoint, pageCanvasSize, pageGap, pagePixelRect, resolvePageLayout, type PageBreakpoint, type PageItem } from '@/lib/dashboardPageLayout';
 import { gridBackgroundStyle } from '@/lib/canvasTheme';
 
 export const DashboardChartCard = memo(function DashboardChartCard({ chart, design, items, actions, draft = false, interactive }: {
@@ -175,21 +175,56 @@ export function CanvasRulers({ canvas, scale, pan, active, visible = true }: {
   </div>;
 }
 // 列表缩略图只绘制配置，绝不挂载图表或执行查询。
+/**
+ * 缩影图形：列表里的效果图要能一眼认出图表类型，而不是清一色四根假柱子。
+ * 颜色取自字模库主题包（visual.palette），与真实渲染同源。
+ * **导出供工作空间看板页复用**，两个列表不得各画一套（样式唯一源）。
+ */
+export function ChartGlyph({ chartType, palette }: { chartType: string; palette: string[] }) {
+  const color = (i: number) => palette[i % (palette.length || 1)] || '#475569';
+  const type = chartType.toLowerCase();
+  if (type.startsWith('widget_')) {
+    return <div className="flex h-full items-center"><div className="h-1/3 w-2/3 rounded-full" style={{ background: color(0), opacity: 0.55 }} /></div>;
+  }
+  if (/big_number|statistic|kpi|indicator/.test(type)) {
+    return <div className="flex h-full flex-col justify-center gap-0.5"><div className="h-2 w-2/3 rounded-sm" style={{ background: color(0), opacity: 0.75 }} /><div className="h-1 w-1/3 rounded-sm" style={{ background: color(1), opacity: 0.4 }} /></div>;
+  }
+  if (/table|list/.test(type)) {
+    return <div className="flex h-full flex-col justify-center gap-0.5">{[0, 1, 2].map(r => <div key={r} className="h-1 rounded-sm" style={{ background: color(r), opacity: 0.4, width: `${90 - r * 18}%` }} />)}</div>;
+  }
+  if (/pie|donut|ring|rose/.test(type)) {
+    return <div className="flex h-full items-center justify-center"><div className="aspect-square h-3/4 rounded-full" style={{ background: `conic-gradient(${color(0)} 0 40%, ${color(1)} 40% 70%, ${color(2)} 70% 100%)`, opacity: 0.75 }} /></div>;
+  }
+  if (/line|area|trend|time|stock|scatter/.test(type)) {
+    return <div className="flex h-full items-end"><svg viewBox="0 0 40 20" preserveAspectRatio="none" className="h-full w-full"><polyline points="2,15 12,8 22,11 38,3" fill="none" stroke={color(0)} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.8" /></svg></div>;
+  }
+  // 柱状/条形/其余默认：竖向柱阵
+  return <div className="flex h-full items-end gap-1">{[40, 75, 55, 90].map((h, j) => <span key={j} className="flex-1 rounded-sm" style={{ height: `${h}%`, background: color(j), opacity: 0.6 }} />)}</div>;
+}
+
 export function DashboardThumbnail({ dashboard, items = [] }: { dashboard: Pick<Dashboard, 'filters' | 'charts'>; items?: VisComponent[] }) {
   const theme = useThemeStore(s => s.theme);
-  const canvas = getCanvas(dashboard.filters, dashboard.charts);
   const design = resolveDashboardDesign(legacyCanvasFilters(dashboard.filters), items, { theme });
+  // page 模式必须走 resolvePageLayout：这是真实画布的唯一布局源，
+  // 用 chartRect 像素另算一套会与画布对不上（曾出现缩略图 4 列溢出、大片空白）
+  const isPage = dashboard.filters?.design?.page !== undefined;
+  const pageItems = useMemo(() => {
+    if (!isPage) return [];
+    try { return resolvePageLayout(dashboard, 'desktop'); } catch { return []; }
+  }, [dashboard, isPage]);
+  const canvas = isPage ? pageCanvasSize(pageItems, 'desktop') : getCanvas(dashboard.filters, dashboard.charts);
+  const tiles = (isPage ? pageItems.map(i => ({ chart: i.chart, rect: pagePixelRect(i.rect, 'desktop') }))
+    : dashboard.charts.map(c => ({ chart: c, rect: chartRect(c) })));
   return <div className="relative w-full overflow-hidden rounded-md border" style={{ aspectRatio: `${canvas.width} / ${canvas.height}`, backgroundColor: design.background.backgroundColor || design.visual.viewBg || '#f1f5f9', backgroundImage: design.background.backgroundImage, backgroundSize: design.background.backgroundSize }}>
-    {dashboard.charts.map((c, i) => {
-      const p = chartRect(c);
+    {tiles.map(({ chart: c, rect: p }) => {
       const resolved = resolveChartDesign(c.config, design, items, c.chart_type);
-      return <div key={c.id} className="absolute rounded-sm border border-black/10 p-1" style={{ left: `${p.x / canvas.width * 100}%`, top: `${p.y / canvas.height * 100}%`,
+      const palette = resolved.visual.palette?.length ? resolved.visual.palette : design.visual.palette;
+      return <div key={c.id} className="absolute overflow-hidden rounded-sm border border-black/10 p-1" style={{ left: `${p.x / canvas.width * 100}%`, top: `${p.y / canvas.height * 100}%`,
         width: `${p.w / canvas.width * 100}%`, height: `${p.h / canvas.height * 100}%`, background: visualConfig(resolved.config).cardBg || resolved.visual.viewBg || (resolved.visual.mode === 'dark' ? '#111827' : '#ffffff') }}>
-        <div className="h-1 w-1/2 rounded opacity-40" style={{ background: resolved.visual.palette?.[i % (resolved.visual.palette.length || 1)] || '#475569' }} />
-        {!c.chart_type.startsWith('widget_') && <div className="flex h-3/4 items-end gap-1 pt-1">{[40, 75, 55, 90].map((h, j) =>
-          <span key={j} className="flex-1 rounded-sm opacity-60" style={{ height: `${h}%`, background: resolved.visual.palette?.[j % (resolved.visual.palette.length || 1)] || '#475569' }} />)}</div>}
+        <div className="mb-0.5 h-1 w-1/2 rounded opacity-40" style={{ background: palette?.[0] || '#475569' }} />
+        <div className="flex h-[calc(100%-4px)] items-stretch"><ChartGlyph chartType={c.chart_type} palette={palette || []} /></div>
       </div>;
     })}
-    {!dashboard.charts.length && <span className="absolute inset-0 flex items-center justify-center text-xs text-slate-400">空白画布</span>}
+    {!tiles.length && <span className="absolute inset-0 flex items-center justify-center text-xs text-slate-400">空白画布</span>}
   </div>;
 }

@@ -24,7 +24,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { SearchSelect, type SearchSelectOption } from '@/components/ui/search-select';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import {
   DICT_UNSET, dimensionCategoryLabel, objectLabel, withCount,
 } from '@/lib/dictLabels';

@@ -3,6 +3,7 @@ name: report-delivery
 display_name: 报告交付
 description: 报告与产物的标准化交付技能。统一 Excel/HTML/Markdown/脑图/图表 的呈现风格与结构，约束为专业、严谨、克制的书面语风格（禁止 emoji 与装饰性图标）；内容锁定到平台内置渲染通道（chart/mermaid/artifact/prose），HTML 产物按所选主题在生成时内联令牌快照（默认继承用户当前主题），确保同类产物风格一致、可预览、可下载、不依赖外部 CDN。
 category: report
+triggers: [报告, 报表, 周报, 月报, 日报, 导出, 下载, 生成文件, excel, html, markdown, 交付, 文档, 脑图, mermaid, 归档, 分享, 主题, 风格]
 ---
 
 # 报告交付 Skill

@@ -26,6 +26,39 @@ def _sse_event(event: str, data: dict) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n".encode("utf-8")
 
 
+def _apply_session_site(site_code: str, datasource_id: int, user_id: int,
+                        workspace_id: int) -> int:
+    """按会话站点重算生效数据源（站点优先于陈旧/默认的 datasource_id）。
+
+    返回 0 的两种合法含义：聚合态（全球 = 逐站编排）、或该站点有多个已授权源且本体未声明
+    业务库 → 不猜源，由工具侧 site/datasource 参数逐查询解析。
+    只有一种情况报错：该站点在当前身份下**没有任何已授权源**（选了查不到的站），
+    绝不静默回退到旧数据源（那会把 A 站数据当 B 站答案）。
+    """
+    from backend.core.role_service import role_service
+    from backend.core.site_service import (
+        SiteError, get_site, normalize_site_ref, session_source_for_site)
+
+    code = normalize_site_ref(site_code)
+    if not code:
+        # 会话带了无法识别的站点写法（清单改过名/脏数据）：不猜，也不能沿用旧源静默跑
+        raise ValueError(
+            f"会话查询站点「{site_code}」已失效，请在顶部重新选择查询站点后重试。")
+    allowed = set(role_service.get_user_allowed_datasources(int(user_id or 0),
+                                                            int(workspace_id or 0)))
+    site = get_site(code) or {}
+    if not int(site.get("is_aggregate") or 0):
+        from backend.core.site_service import datasources_of_site
+        if not datasources_of_site(code, sorted(allowed)):
+            raise ValueError(
+                f"当前身份无权访问站点「{site.get('display_name') or code}」，"
+                f"请重新选择查询站点（已保留原选择未被误查）。")
+    try:
+        return int(session_source_for_site(code, sorted(allowed)) or 0)
+    except SiteError as exc:
+        raise ValueError(str(exc)) from exc
+
+
 class ChatService:
     """Chat business logic — delegates to the qoder execution layer."""
 
@@ -191,6 +224,24 @@ class ChatService:
         # 会话站点：未显式带时从会话持久化行回填（站点是会话属性，切页/重进不应丢）
         if not site_code and conv_row:
             site_code = str((conv_row or {}).get("site_code") or "").strip()
+
+        # 站点是会话作用域的**权威**：选定站点后，陈旧/默认的 datasource_id 必须被站点重算覆盖。
+        # 历史缺陷：前端一直带着自动选中的默认源(prd-cn)，而 `bind_resources` 只在 ds=0 时才按
+        # 站点派生 → 选英国站点实际查了中国库，而提示词已告诉模型“会话站点=英国”，
+        # 结果把中国数据答成英国（错数比无答案危害大）。空站点保持原行为（未站点化部署）。
+        if site_code:
+            try:
+                datasource_id = _apply_session_site(
+                    site_code, int(datasource_id or 0), user_id, workspace_id)
+            except ValueError as exc:
+                # 站点与授权不匹配：显式告知并停止，不拿旧源跑出错误答案
+                logger.warning("[agent] 会话站点不可用: %s", exc)
+                yield _sse_event("error", {"message": str(exc)})
+                yield _sse_event("done", {
+                    "intent": "agent", "reply": str(exc), "sql": None,
+                    "warnings": [], "error": str(exc),
+                })
+                return
 
         ctx = ExecutionContext(
             workspace_id=workspace_id,

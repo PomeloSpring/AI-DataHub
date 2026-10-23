@@ -19,7 +19,7 @@ import client from '@/api/client';
 
 vi.mock('@/api/client', () => ({ default: { get: vi.fn(), post: vi.fn() } }));
 vi.mock('@/hooks/useVisLibrary', () => ({ useVisLibrary: () => ({ items: [], error: '', refresh: vi.fn() }) }));
-vi.mock('@/components/DashboardCanvas', () => ({ ResponsiveDashboardCanvas: () => <div>响应式网格</div>, FittedDashboardCanvas: () => <div>大屏画布</div>, DashboardThumbnail: () => null }));
+vi.mock('@/components/DashboardCanvas', () => ({ ResponsiveDashboardCanvas: () => <div>响应式网格</div>, FittedDashboardCanvas: () => <div>大屏画布</div>, DashboardThumbnail: () => null, ChartGlyph: () => <div>缩影</div> }));
 vi.mock('@/components/DashboardParams', () => ({ DashboardRuntimeParams: () => null }));
 const ws = (id = 7) => ({ id, name: `空间 ${id}`, user_default: true } as Workspace);
 const board = (id: number, status: Dashboard['status'] = 'enabled', is_default = false): Dashboard => ({ id, name: `看板 ${id}`, status, is_default, charts: [], filters: {}, description: '', layout: [], params: [], page_params: [], owner_id: 1, is_public: false, carousel_interval: 10, sort_order: id, created_at: '', updated_at: '' });

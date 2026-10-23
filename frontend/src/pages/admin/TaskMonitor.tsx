@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import {
   Activity, RefreshCw, Play, Square, Trash2, Pause, ListChecks, Timer,
   AlertTriangle, XCircle, Clock, Database, Search,

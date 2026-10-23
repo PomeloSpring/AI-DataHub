@@ -3,6 +3,8 @@ name: arms-observability
 display_name: ARMS 可观测数据分析
 description: 阿里云 ARMS/SLS 可观测域（用户体验监控 RUM）的专用分析技能：只用统一语义层(run_semantic_query 声明式意图)取数、不写也看不到任何 SQL；以「RUM观测事件」为核心对象，覆盖流量/会话、页面性能(Core Web Vitals)、资源加载 RED(请求量/错误/耗时)、异常与长任务，按 应用/页面/设备/系统/地域/运营商 维度下钻。默认口径为生产环境(env=prod)，强调量化归因、统计严谨与可执行结论。
 category: analysis
+requires_any: [run_semantic_query]
+triggers: [arms, rum, 可观测, 观测, 监控, 用户体验, 前端性能, 首屏, 加载耗时, 页面性能, 卡顿, 崩溃, 错误率, 可用性, 长任务, 慢请求, 资源加载, web vitals, 埋点, 会话数, 活跃设备, 设备, 运营商]
 ---
 
 # ARMS 可观测数据分析 Skill（RUM 前端体验 · 语义层）

@@ -15,7 +15,7 @@ import KnowledgeGraphView from '@/components/graph/KnowledgeGraph';
 import { ModelGraphTab } from './catalog/ModelAssetTabs';
 import { useGraphStore } from '@/stores/graphStore';
 import axios from 'axios';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 // ── Types ──────────────────────────────────────────────────────────────
 

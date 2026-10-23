@@ -20,7 +20,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Dna, FlaskConical, GitCompare, LayoutDashboard, Plus, RefreshCw, Settings2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import client from '@/api/client';

@@ -34,7 +34,7 @@ import {
   ArrowUpRight, ArrowDownRight, Activity, Loader2,
 } from 'lucide-react';
 import { lineageApi } from '@/api/lineage';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 // ── Types ──────────────────────────────────────────────────────────────
 

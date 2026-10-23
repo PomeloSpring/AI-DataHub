@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useChatStore, deriveTitle, saveMessages, hasModelStats, type ChatMessage } from '../chatStore'
 import { ensureUploadName, filesFromClipboard, validateLocalAttachment } from '../chatStore'
 import { useAsBotStore } from '../asBotStore'
+// spy 句柄取自被 mock 的 'sonner'：业务代码走 @/lib/toast 包装器，它会调到这里的 spy
 import { toast } from 'sonner'
 
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
@@ -249,7 +250,7 @@ describe('chatStore', () => {
       expect(useChatStore.getState().currentConvId).toBe(1)
       expect(useChatStore.getState().conversations).toHaveLength(1)
       expect(useChatStore.getState().messages[0].content).toBe('保留')
-      expect(toast.error).toHaveBeenCalledWith(detail)
+      expect(toast.error).toHaveBeenCalledWith(detail, expect.anything())
     })
 
     it('运行中会话删除被拒绝时提示先停止', async () => {
@@ -259,7 +260,7 @@ describe('chatStore', () => {
       await useChatStore.getState().deleteConversation(1)
       expect(useChatStore.getState().currentConvId).toBe(1)
       expect(useChatStore.getState().loading).toBe(true)
-      expect(toast.error).toHaveBeenCalledWith(detail)
+      expect(toast.error).toHaveBeenCalledWith(detail, expect.anything())
     })
 
     it('系统助手也显示清理失败原因，不提前移除历史', async () => {
@@ -272,7 +273,7 @@ describe('chatStore', () => {
       await useAsBotStore.getState().deleteConversation(1)
       expect(useAsBotStore.getState().conversationId).toBe(1)
       expect(useAsBotStore.getState().conversations).toHaveLength(1)
-      expect(toast.error).toHaveBeenCalledWith(detail)
+      expect(toast.error).toHaveBeenCalledWith(detail, expect.anything())
     })
 
     it('removes conversation from list', async () => {
@@ -602,7 +603,7 @@ describe('chatStore', () => {
         useChatStore.setState({ loading: false, stopping: true })
         await useChatStore.getState().sendMessage('再 check 一下权限')
         expect(fetchSpy).not.toHaveBeenCalled()
-        expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('正在停止'))
+        expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('正在停止'), expect.anything())
       } finally {
         vi.unstubAllGlobals()
         useChatStore.setState({ stopping: false })
@@ -618,7 +619,7 @@ describe('chatStore', () => {
         await vi.advanceTimersByTimeAsync(125_000)
         await pending
         expect(useChatStore.getState().stopping).toBe(false)
-        expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('仍未确认停止'))
+        expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('仍未确认停止'), expect.anything())
       } finally {
         vi.useRealTimers()
         vi.clearAllMocks()
@@ -630,7 +631,7 @@ describe('chatStore', () => {
       mockClient.get.mockRejectedValue(new Error('network down'))
       await useChatStore.getState().waitForExecutionRelease(77)
       expect(useChatStore.getState().stopping).toBe(false)
-      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('无法确认'))
+      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('无法确认'), expect.anything())
     })
 
     it('用户已切走会话时静默收尾，不弹提示打断新上下文', async () => {
@@ -840,5 +841,53 @@ describe('前置意图漏斗（handled_by / force_agent）', () => {
       expect(asst.handledBy).toBe('intent_gate')
       expect(asst.gate?.label).toBe('capability_probe')
     } finally { vi.unstubAllGlobals() }
+  })
+})
+
+/**
+ * 头部控件不得“先弹出又消失”（闪烁）。
+ *
+ * 真实缺陷：asBots 初始为空被当成“确实没配 AS-BOT”，模型选择器先走执行层兜底
+ * 分支渲染，清单回来又因只 1 个模型而隐藏。Chat.tsx 用 asBotsLoaded 门控，
+ * 因此本用例只钉住这个区分位的状态迁移（含失败路径也必须定形，不转圈）。
+ */
+describe('asBotsLoaded — 区分“未加载”与“没配 AS-BOT”', () => {
+  // 每条用例自己把区分位归零：同一文件内前序 loadAsBots 会把它置 true，
+  // 不归零会让断言依赖用例执行顺序（假阳性/假阴性都可能出现）。
+  beforeEach(() => { useChatStore.setState({ asBotsLoaded: false, asBots: [] }) })
+
+  it('初始未加载：为 false，选择器不应占位', () => {
+    expect(useChatStore.getState().asBotsLoaded).toBe(false)
+  })
+
+  it('清单拉到后置 true（即使只有一个模型，也已完成定形）', async () => {
+    useChatStore.setState({ selectedWorkspaceId: 3 })
+    mockClient.get.mockResolvedValue({
+      data: [{ as_bot_key: 'chatbi', name: 'chatbi', models: ['only-one'], available: true }],
+    })
+    await useChatStore.getState().loadAsBots(3)
+    const s = useChatStore.getState()
+    expect(s.asBotsLoaded).toBe(true)
+    expect(s.asBots).toHaveLength(1)
+  })
+
+  it('加载失败也算定形：不会永远不渲染也不留空位', async () => {
+    useChatStore.setState({ selectedWorkspaceId: 3 })
+    mockClient.get.mockRejectedValue(new Error('boom'))
+    await useChatStore.getState().loadAsBots(3)
+    const s = useChatStore.getState()
+    expect(s.asBotsLoaded).toBe(true)
+    expect(s.asBots).toEqual([])
+  })
+
+  it('迟到的旧工作空间响应不得提前置位', async () => {
+    useChatStore.setState({ selectedWorkspaceId: 3 })
+    mockClient.get.mockImplementation(async () => {
+      // 请求返回前用户已切空间 → 本次结果作废，不得把新空间当作“已加载”
+      useChatStore.setState({ selectedWorkspaceId: 9 })
+      return { data: [{ as_bot_key: 'stale', name: 'stale', models: [], available: true }] }
+    })
+    await useChatStore.getState().loadAsBots(3)
+    expect(useChatStore.getState().asBotsLoaded).toBe(false)
   })
 })

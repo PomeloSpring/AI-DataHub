@@ -12,7 +12,7 @@ import { Label } from '@/components/ui/label';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { GitCompare } from 'lucide-react';
 import client from '@/api/client';
 import { SUITE_LABEL, pct, type CompareResult, type EvalRun } from './shared';

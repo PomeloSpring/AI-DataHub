@@ -11,7 +11,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import {
   Plus, Play, History, Edit, Trash2, RefreshCw, Workflow, Zap,
   Table2, ArrowRight,

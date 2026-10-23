@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import client from '../api/client';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { useThemeStore } from './themeStore';
 import { listAuthorizedSites, type AuthorizedSite } from '../api/sites';
 import type { KnowledgeResult } from '../components/InlineDetails';
@@ -211,6 +211,8 @@ interface ChatState {
   datasources: { id: number; name: string; db_type: string }[];
   /** 可查站点 = 角色数据源授权的派生视图（不是第二套授权） */
   authorizedSites: AuthorizedSite[];
+  /** 站点清单是否已拉到过（与 asBotsLoaded 同目的：控件一次定形，不逐个弹入） */
+  sitesLoaded: boolean;
   siteError: string;
   /** 会话查询站点（全球=逐站汇总）；只影响默认取数范围 */
   selectedSiteCode: string;
@@ -233,6 +235,9 @@ interface ChatState {
   // Chat 端可选的 AS-BOT 清单与当前选中(空=未配置 AS-BOT,模型候选回退执行层)
   asBots: ChatAsBot[];
   selectedAsBotKey: string | null;
+  /** AS-BOT 清单是否已拉到过：区分「还没加载」与「确实没配 AS-BOT」。
+   *  不区分会让头部模型选择器先按兜底渲染、清单回来又消失（闪烁）。 */
+  asBotsLoaded: boolean;
   capabilities: { tools: { name: string; description: string }[]; version: string; empty: boolean;
     unavailable_tools?: { name: string; reason: string }[] } | null;
   // 执行层 SDK 会话 ID(多轮对话 resume,done 事件回传)
@@ -405,6 +410,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   selectedDsId: 0,
   datasources: [],
   authorizedSites: [],
+  sitesLoaded: false,
   siteError: '',
   selectedSiteCode: '',
   selectedModelId: null,
@@ -421,6 +427,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   selectedModelRef: null,
   asBots: [],
   selectedAsBotKey: null,
+  asBotsLoaded: false,
   capabilities: null,
   executorSessionId: null,
 
@@ -501,10 +508,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const def = usable.find((w) => w.is_default) || usable[0] || null;
       // 默认选中 is_default(或首个);selectedModelRef 置空→发送时派生为该 AS-BOT 首个模型
       if (context !== chatContextVersion || get().selectedWorkspaceId !== workspaceId) return;
-      set({ asBots: list, selectedAsBotKey: get().currentConvId ? get().selectedAsBotKey : def?.as_bot_key ?? null, selectedModelRef: null });
+      set({ asBots: list, selectedAsBotKey: get().currentConvId ? get().selectedAsBotKey : def?.as_bot_key ?? null, selectedModelRef: null, asBotsLoaded: true });
     } catch {
       if (context !== chatContextVersion || get().selectedWorkspaceId !== workspaceId) return;
-      set({ asBots: [] });
+      // 失败也算“已定形”：按无 AS-BOT 的兜底分支渲染，不保留一个永远转圈的空位
+      set({ asBots: [], asBotsLoaded: true });
       toast.error('AS-BOT 权限清单加载失败，请重试；当前会话绑定未改变');
     }
   },
@@ -570,7 +578,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const sites = await listAuthorizedSites(workspaceId);
       if (context !== chatContextVersion) return;
-      set({ authorizedSites: sites });
+      set({ authorizedSites: sites, sitesLoaded: true });
       const cur = get().selectedSiteCode;
       if (cur && sites.some((s) => s.site_code === cur)) return;
       // 默认站点：唯一具体站点直接选中；多站取「全球」（可用时）；否则清单首个
@@ -581,7 +589,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ selectedSiteCode: fallback });
     } catch (e: any) {
       if (context !== chatContextVersion) return;
-      set({ authorizedSites: [], siteError: e?.response?.data?.detail || '站点清单加载失败' });
+      set({ authorizedSites: [], sitesLoaded: true, siteError: e?.response?.data?.detail || '站点清单加载失败' });
     }
   },
 
@@ -627,9 +635,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   createConversation: async () => {
     const origin = get();
-    const dsId = get().selectedDsId;
     const workspaceId = get().selectedWorkspaceId;
     const siteCode = get().selectedSiteCode;
+    // 选定站点后不再带 datasource_id：否则会话行会同时持久化一个自动选中的默认源，
+    // 与站点冲突时会把 A 站数据当 B 站答案（服务端也会重算，不依赖前端正确）。
+    const dsId = siteCode ? 0 : get().selectedDsId;
     const { data } = await client.post('/chat/conversations', {
       datasource_id: dsId,
       workspace_id: workspaceId,
@@ -793,7 +803,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const requestBody: any = {
       question,
       history,
-      datasource_id: state.selectedDsId,
+      // 站点已选时不传 datasource_id（会话作用域由站点决定，避免默认源静默压过站点）
+      datasource_id: state.selectedSiteCode ? 0 : state.selectedDsId,
       site_code: state.selectedSiteCode || '',
       model_id: state.selectedModelId,
       mcp_tools: mcpTools || [],
@@ -817,7 +828,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // Agent 模式仍透传会话已选数据源作为 ExecutionContext 权威作用域(不进 LLM 视野、数据源对工具黑盒不变)。
         // 旧写法 `delete requestBody.datasource_id` 会让语义层以 datasource_id=0 命中空目录 → 取不到数。
         // execute_sql 若需临时换源, 仍可用业务名 datasource 参数按查询覆盖。
-        requestBody.datasource_id = state.selectedDsId || 0;
+        // 会话选了站点时传 0：生效源由服务端按站点重算（站点是作用域权威，
+        // 不能拿自动选中的默认源去压过它——那会把英国站的提问查出中国数据）。
+        requestBody.datasource_id = state.selectedSiteCode ? 0 : (state.selectedDsId || 0);
       }
       // AS-BOT 选择: 发送 as_bot_key;模型候选优先取自选中 AS-BOT 的可用模型,
       // 未显式选择时派生为其首个模型(仅 1 个时无需选择框);无 AS-BOT 配置时

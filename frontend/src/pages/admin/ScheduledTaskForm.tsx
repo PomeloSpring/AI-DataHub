@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Plus, Trash2, Check, ChevronsUpDown, X, Copy, RefreshCw, Webhook } from 'lucide-react';
 import CronInput from '@/components/CronInput';
 import {

@@ -108,6 +108,7 @@ describe('工作空间删除确认框', () => {
     const { toast } = await import('sonner');
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
       '该工作空间仍有 1 个会话在执行或正在停止，请先停止后再删除',
+      expect.anything(),
     ));
   });
 });

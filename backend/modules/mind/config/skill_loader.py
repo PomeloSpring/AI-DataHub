@@ -12,6 +12,13 @@ Skills are prompt templates that agents can dynamically load.
 
 A TTL cache (default 60s) enables dynamic hot-reload: SKILL.md 修改
 在 60 秒内生效，无需重启服务。
+
+两个**可选** frontmatter 键供执行层控制正文装载量（消费方 = `prompt_composer._select_skill_bodies`，
+由 `as_bots.load_skills` 透出）：
+  * `requires_any: [tool_name, ...]` —— 本技能的作业细则依赖哪些工具（取 `mcp__<server>__<tool>`
+    的 `tool` 段）；本会话工具清单一个都没注册时不展开正文（不向模型承诺它没有的能力）。
+  * `triggers: [词, ...]` —— 用户问题命中词；一个 AS-BOT 绑定多个技能时只展开命中的那几个正文。
+未命中/未展开不静默消失：技能仍以 `description`（浓缩契约）出现在提示词的「已绑定技能」清单里并标原因。
 """
 
 import logging
@@ -328,6 +335,18 @@ def save_skill_folder(
     skill_dir.mkdir(parents=True, exist_ok=True)
     _snapshot_skill_version(skill_dir)
     meta = {"name": name}
+    # 保留旧 frontmatter 里本函数不纳管的键(如 `triggers` / `requires_any` 这类装载控制
+    # 元数据): 管理页只编辑展示字段, 擅自剥掉会让技能正文静默停止展开(改了不生效且
+    # 无线索), 与本模块“单一事实源不得有隐形第二份”的口径一致。
+    existing_md = skill_dir / "SKILL.md"
+    if existing_md.exists():
+        try:
+            prev_meta, _ = _parse_skill_md(existing_md.read_text(encoding="utf-8"))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("save_skill_folder: %s 旧 frontmatter 解析失败，本次不回带未纳管键: %s", name, e)
+            prev_meta = {}
+        managed = {"name", "display_name", "description", "category", "source"}
+        meta.update({k: v for k, v in (prev_meta or {}).items() if k not in managed})
     if display_name:
         meta["display_name"] = display_name
     if description:

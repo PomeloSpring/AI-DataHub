@@ -7,7 +7,7 @@
  *   标签定义管理仍在标签中心, 此处解决"建模时看不到对象业务色彩"的问题。
  */
 import { useState, useEffect, useCallback } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import client from '@/api/client';
 import { ontologyApi } from '@/api/ontology';
 import { useGraphStore } from '@/stores/graphStore';

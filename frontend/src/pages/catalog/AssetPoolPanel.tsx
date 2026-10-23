@@ -20,7 +20,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { AlertTriangle, Archive, Bot, BookOpen, RefreshCw, Trash2 } from 'lucide-react';
 
 interface PoolItem {

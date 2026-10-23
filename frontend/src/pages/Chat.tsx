@@ -8,7 +8,7 @@ import {
   Loader2, Maximize2, Minimize2, Paperclip, FileText, Box, FolderOpen, Save, ClipboardList,
   FileBarChart, Globe, AlertTriangle,
 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -86,7 +86,7 @@ export default function Chat() {
     selectedDsId,
     selectedWorkspaceId, setSelectedWorkspaceId, loadWorkspaceConfig,
     executionLayer, selectedModelRef, loadExecutionLayer, setSelectedModelRef,
-    asBots, loadAsBots,
+    asBots, loadAsBots, asBotsLoaded,
     loadConversations, loadDatasources, loadLLMModels, loadSystemConfig,
     loadAuthorizedSites, authorizedSites, selectedSiteCode, setSelectedSiteCode, siteError,
     setSelectedDsId, setSelectedModelId,
@@ -621,9 +621,12 @@ export default function Chat() {
           </div>
           <div className="flex items-center gap-2">
             {/* 模型选择器:
+                - AS-BOT 清单未拉取完成前**什么都不渲染**：旧写法把「还没加载」当成「确实没配
+                  AS-BOT」，先走执行层兜底分支弹出选择框，清单回来又因只 1 个模型而返回 null
+                  → 先弹后失（闪烁）。「只有一个模型」本来就不需要选择框，应一上来就不出现。
                 - 有 AS-BOT 时: 候选 = AS-BOT 的可用模型; >1 才展示 (=1 自动选中 / 留空用执行层默认)
                 - 无 AS-BOT 时: 回退执行层模型候选(原行为) */}
-            {(() => {
+            {asBotsLoaded && (() => {
               const asBot = asBots.length > 0 ? asBots[0] : null;
               if (asBots.length > 0 && asBot) {
                 const wm = asBot.models || [];

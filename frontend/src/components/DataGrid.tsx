@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { ArrowDown, ArrowUp, Copy, Download, Search } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { useVisConfig } from '@/lib/visStyle';

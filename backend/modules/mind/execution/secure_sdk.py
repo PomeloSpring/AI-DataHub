@@ -107,12 +107,20 @@ def build_options(adapter, task, backend):
         # None → 由 prompt_composer 按会话身份现推（bind_resources 在首次工具调用才跑，
         # 此处不能当成“已算出空集”传空列表，否则站点范围永远注不进去）
         authorized_sites=ctx.extra.get("authorized_sites"),
+        # 本轮问题:多技能绑定时用于决定展开哪几个技能正文(见 prompt_composer._select_skill_bodies)
+        question=task.question or "",
     )
     common = dict(tools=[], allowed_tools=sorted(policy.allowed), permission_mode="default",
                   setting_sources=[], cwd=str(runtime.workspace), add_dirs=[], env=env,
                   mcp_servers=servers, agents={}, system_prompt=prompt, resume=runtime.sdk_session_id or None,
                   max_turns=int(adapter.config.get("max_turns") or 20), include_partial_messages=True,
                   can_use_tool=permit, hooks={"PreToolUse": [sdk.HookMatcher(hooks=[before_tool])]})
+    # 不要把 SDK options 的 `stderr` 回调接进来：一旦传了它，SDK 会多起一个读取任务，
+    # 使 execute_stream.pump 里嵌套的 anyio CancelScope / move_on_after 归属跳任务，
+    # 流跑完在退出作用域时报“Attempted to exit a cancel scope that isn't the current
+    # task's current cancel scope”——表现为“答案已完整输出但仍报执行未完成”。
+    # 可诊断性改由 _execute_stream 错误文案里的 model/cli_path 承担
+    # （实测就是靠它定位到“模型下架”）。
     from qodercn_agent_sdk.auth import AccessTokenAuthOptions
     token = resolve_access_token(adapter.config.get("env") or {})
     if not token:
@@ -302,11 +310,17 @@ async def _execute_stream(adapter, task, backend):
             # SDK 报告结构化错误结果（error_max_turns / error_during_execution 等）。
             # 把 subtype/errors/terminal_reason 带进异常文本供服务端日志诊断；
             # 对外（result.error）仍走通用文案，不外泄细节（护栏 §7）。
+            # model/cli_path 必须一起发：实测 CLI 独立跑正常、只有经 SDK 传了显式
+            # model 时全量失败（num_turns=0），不带这两项时日志里看不出方向，
+            # 只能看到“执行未完成”——可诊断性为零。
             detail = "; ".join(getattr(final, "errors", None) or []) or (getattr(final, "result", "") or "")
             raise RuntimeError(
-                "模型执行返回错误结果: subtype=%s terminal_reason=%s stop_reason=%s num_turns=%s detail=%s"
+                "模型执行返回错误结果: subtype=%s terminal_reason=%s stop_reason=%s num_turns=%s "
+                "model=%s cli=%s detail=%s"
                 % (getattr(final, "subtype", "?"), getattr(final, "terminal_reason", "") or "-",
-                   getattr(final, "stop_reason", "") or "-", getattr(final, "num_turns", None), detail[:300]))
+                   getattr(final, "stop_reason", "") or "-", getattr(final, "num_turns", None),
+                   getattr(options, "model", None) or "auto",
+                   getattr(options, "cli_path", "") or "-", detail[:300]))
         meta = {"capabilities": runtime.policy.manifest(), "num_turns": getattr(final, "num_turns", None),
                 "duration_ms": getattr(final, "duration_ms", None),
                 # 回带落盘后的附件清单(工作区相对路径),供前端持久化消息历史引用;

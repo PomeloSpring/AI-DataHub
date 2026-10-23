@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import client from '../api/client';
 import { invalidateCatalogCache } from '@/lib/dashboardCatalog';
 import { chartQueryPool } from '@/lib/chartQueryPool';

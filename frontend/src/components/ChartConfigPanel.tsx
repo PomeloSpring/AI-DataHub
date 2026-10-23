@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Settings, Copy, Play, Loader2, Database, Link, Plus, Trash2 } from 'lucide-react';
 import { CHART_TYPES, ChartIcon } from './DashboardChart';
 import { Button } from '@/components/ui/button';

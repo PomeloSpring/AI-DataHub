@@ -13,3 +13,27 @@ export const libraryDragId = (kind: 'chart' | 'vis', key: string | number) => `$
 export type DropGhost =
   | { mode: 'page'; x: number; y: number; w: number; h: number; /** 真实图表类型：预览要按它的最小尺寸夹取，才能与真实插入同构 */ chartType: string }
   | { mode: 'screen'; x: number; y: number; w: number; h: number };
+
+/**
+ * 拖拽过程中的**实时指针**客户端坐标。
+ *
+ * dnd-kit 的 `activatorEvent` 是 pointerdown（拖拽起点）那一刻的事件，
+ * 直接拿它的 clientX/Y 当落点会永远停在字模库里 —— 历史缺陷正是如此：
+ * `pointerInViewport(起点)` 恒 false，图表怎么拖都放不进画布、松手就缩回去。
+ * 必须叠加 `delta`（相对起点的位移）才是当前指针。
+ */
+export function dragPointer(
+  activatorEvent: unknown,
+  delta: { x?: number; y?: number } | undefined | null,
+): { x: number; y: number } | null {
+  const ev = activatorEvent as { clientX?: unknown; clientY?: unknown } | undefined;
+  // 用 isFinite 而非 typeof：NaN/Infinity 也能过 typeof 判断，会把落点算成 NaN
+  const startX = ev?.clientX, startY = ev?.clientY;
+  if (!Number.isFinite(startX)) return null;
+  const dx = Number.isFinite(delta?.x) ? (delta!.x as number) : 0;
+  const dy = Number.isFinite(delta?.y) ? (delta!.y as number) : 0;
+  return {
+    x: (startX as number) + dx,
+    y: (Number.isFinite(startY) ? startY as number : 0) + dy,
+  };
+}

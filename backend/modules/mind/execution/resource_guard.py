@@ -40,9 +40,11 @@ def bind_resources(ctx, policy):
         raise ResourceScopeError("当前用户无权使用该数据源，请选择已授权数据源")
     if not ctx.datasource_id and len(allowed) == 1:
         ctx.datasource_id = next(iter(allowed))
-    # 会话站点→生效源：站点内唯一源才能定下来（多义不猜，由工具侧 site/datasource 参数逐查询解析）。
-    # 它只是把已确定的授权集按站点收敛，不新增任何越权可能（候选仍局限 allowed 内）。
-    if not ctx.datasource_id and ctx.extra.get("site_code"):
+    # 会话站点是作用域的**权威**（与 chat_service._apply_session_site 同口径）：选定站点后
+    # 重算生效源，陈旧/默认的 datasource_id 不得静默胜出（历史缺陷：选英国站点却因前端
+    # 带着自动选中的 prd-cn 而查了中国库，提示词又说“会话站点=英国”，中数据被答成英国）。
+    # 候选仍局限 allowed 内，不新增越权可能；站点内多源/聚合态时归 0，由工具侧参数逐查询解析。
+    if ctx.extra.get("site_code"):
         try:
             from backend.core.site_service import session_source_for_site
             ctx.datasource_id = int(session_source_for_site(

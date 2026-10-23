@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { json } from '@codemirror/lang-json';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import {
   History,
   Loader2,

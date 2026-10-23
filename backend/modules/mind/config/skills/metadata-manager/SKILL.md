@@ -3,6 +3,8 @@ name: metadata-manager
 display_name: 元数据管理
 description: 协助用户查看和管理数据元数据，包括数据源浏览、表结构查看、元数据摘要、术语和指标查询等。
 category: metadata
+requires_any: [search_metadata, get_table_schema]
+triggers: [元数据, 表结构, 字段, 列, 数据源, 有哪些表, 建表, schema, 表清单, 同步状态, 术语, 数据字典]
 ---
 
 # 元数据管理 Skill

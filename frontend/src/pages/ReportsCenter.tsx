@@ -7,7 +7,7 @@ import { useParams } from 'react-router-dom';
 import {
   FileBarChart, Loader2, Eye, Inbox, Plus, Pencil, Trash2, Search, MessageSquareText,
 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';

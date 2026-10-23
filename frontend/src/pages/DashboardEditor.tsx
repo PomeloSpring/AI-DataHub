@@ -1,7 +1,7 @@
 import { useState, useEffect, useContext, useRef, useMemo } from 'react';
 import { useParams, useNavigate, useLocation, UNSAFE_NavigationContext } from 'react-router-dom';
 import { DndContext, DragOverlay, KeyboardSensor, PointerSensor, pointerWithin, useDroppable, useSensor, useSensors, type DragEndEvent, type DragMoveEvent, type DragStartEvent } from '@dnd-kit/core';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
@@ -16,7 +16,7 @@ import SelectionOverlay from '@/components/editor/SelectionOverlay';
 import CanvasHint from '@/components/editor/CanvasHint';
 import { useViewportSize } from '@/hooks/useOverlayPosition';
 import { CANVAS_COLORS, backdropStyle, canvasRectToScreen, dotBackgroundStyle } from '@/lib/canvasTheme';
-import { LIBRARY_DROP_ZONE, type DropGhost, type LibraryDragData } from '@/lib/editorDrag';
+import { LIBRARY_DROP_ZONE, dragPointer, type DropGhost, type LibraryDragData } from '@/lib/editorDrag';
 import { useMergedRefs } from '@/lib/mergeRefs';
 import { PAGE_WIDTHS, PAGE_LABELS, PAGE_COLUMNS, PAGE_ROW, defaultPageSpan, nextPageRow, pageCanvasSize, pageGap, pageMinHeight, pagePixelRect, pageRows, resolvePageLayout, movePageItem, withPageRect, type PageBreakpoint } from '@/lib/dashboardPageLayout';
 import { DashboardCanvas, CanvasRulers, FittedDashboardCanvas, ResponsiveDashboardCanvas, DashboardThumbnail } from '@/components/DashboardCanvas';
@@ -272,10 +272,8 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
     const rect = canvas.canvasRef.current?.getBoundingClientRect();
     return !!rect && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
   };
-  const pointerOf = (e: DragMoveEvent | DragEndEvent): { x: number; y: number } | null => {
-    const ev = e.activatorEvent as PointerEvent | undefined;
-    return ev && typeof ev.clientX === 'number' && (ev.clientX || ev.clientY) ? { x: ev.clientX, y: ev.clientY } : null;
-  };
+  /** 当前指针的客户端坐标（实时，而非拖拽起点）—— 换算逻辑见 dragPointer */
+  const pointerOf = (e: DragMoveEvent | DragEndEvent) => dragPointer(e.activatorEvent, e.delta);
   const onLibraryDragStart = (e: DragStartEvent) => {
     const data = e.active.data.current as LibraryDragData | undefined;
     if (!data) return;

@@ -8,7 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import {
   Plus, Pencil, Trash2, Server, Wifi, WifiOff, Star, Loader2, Search,
   Monitor, Globe, Cloud, ChevronDown, ChevronUp, Terminal, CheckCircle, XCircle, Clock,

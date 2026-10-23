@@ -5,13 +5,15 @@ import type { Dashboard } from '@/stores/dashboardStore';
 // 可见性由服务端按角色 fail-closed 裁决(adh_role_dashboard_access), 前端不再另判;
 // editable(可写性)同样由服务端裁决: 角色授予的可见权不含编辑权, 前端只据此隐藏写入口。
 
-/** 看板卡片预览区块(仅几何: 位置/尺寸/是否装饰组件, 不含 SQL 与样式配置) */
+/** 看板卡片预览区块(仅几何 + 类型: 位置/尺寸/是否装饰组件/图表类型, 不含 SQL 与样式配置) */
 export interface PreviewBlock {
   x: number;
   y: number;
   w: number;
   h: number;
   widget: boolean;
+  /** 图表类型: 供缩影画出柱/线/饼/表格/控件等可辨识形状，缺失时退化为柱阵 */
+  chart_type?: string;
 }
 
 /** 看板画布预览: 卡片瀑布按 width/height 决定高宽比, 按 blocks 画区块 */

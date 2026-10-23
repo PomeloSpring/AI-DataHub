@@ -2,7 +2,7 @@
  * 系统监控页面 — 服务器性能指标 + 按架构分层的服务健康监控
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import {
   Activity, RefreshCw, CheckCircle2, XCircle, Gauge, Server, Timer,
   Cpu, MemoryStick, HardDrive, Layers, Database, MinusCircle,

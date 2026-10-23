@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import client from '@/api/client';
 import { Plus, Search, Star, MoreHorizontal, Edit, Eye, Play, Copy, Settings, ArrowUp, ArrowDown, Trash2, LayoutDashboard, X, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';

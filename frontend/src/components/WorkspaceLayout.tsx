@@ -22,7 +22,7 @@ import { useMenuAccess } from '../hooks/useMenuAccess';
 import { SidebarMenuSkeleton } from './SidebarMenuSkeleton';
 import { pruneEmptySections } from '@/lib/menuUtils';
 import SectionSwitcher from './SectionSwitcher';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import client from '@/api/client';
 import { WorkspaceDeleteDialog } from './WorkspaceDeleteDialog';
 import { Input } from '@/components/ui/input';

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import client from '../api/client';
 import { listOntologyGenerateTasks, type GenerateTask } from '../api/ontology';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 // AS-BOT 面板与智能问数同一载体、不同入口：会话历史合并共用，
 // 设计会话绑定只校验归属（user_id），不再需要入口哨兵。

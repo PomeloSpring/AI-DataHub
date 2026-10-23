@@ -3,6 +3,8 @@ name: ontology-builder
 display_name: 本体构建
 description: 协助用户构建和管理本体模型，包括对象定义、关系建模、属性设计、YAML导入等全流程本体建模能力。
 category: ontology
+requires_any: [generate_ontology_draft, save_ontology_draft, save_ontology_model, import_ontology_yaml, activate_ontology_model]
+triggers: [本体, 建模, 语义模型, 对象定义, 关系建模, 属性设计, yaml 导入, 激活模型, 图谱构建, 指标字典, 维度字典, save_metric, save_dimension]
 ---
 
 # 本体构建 Skill

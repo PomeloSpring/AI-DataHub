@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import DashboardChart from '../DashboardChart';
 import PropertyPanel from '../editor/PropertyPanel';
 import ChartConfigPanel from '../ChartConfigPanel';

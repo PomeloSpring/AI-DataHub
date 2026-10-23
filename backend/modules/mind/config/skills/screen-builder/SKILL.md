@@ -3,6 +3,8 @@ name: screen-builder
 display_name: 可视化大屏生成
 description: 生成多图表可视化数据大屏(仪表盘/BI看板/经营驾驶舱/数据大屏)。以声明式语义意图驱动取数、以"字模库"复用图表样式与背景布局,逐步沟通确认后经 create_data_screen 创建。用户请求"生成/修改数据大屏、看板、仪表盘"时使用。
 category: analysis
+requires_any: [create_data_screen]
+triggers: [大屏, 看板, 仪表盘, 驾驶舱, dashboard, 可视化, 多图表, 报表页, 布局, 字模, 图表样式, 数据大屏]
 ---
 
 # BI 可视化大屏生成专家

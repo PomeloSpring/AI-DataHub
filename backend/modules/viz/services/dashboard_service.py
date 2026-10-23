@@ -157,7 +157,10 @@ def card_catalog_fields(rows: list) -> list:
         widget = str(c.get("chart_type") or "").startswith("widget_")
         rect = _chart_preview_rect(c.get("position"), widget)
         item = by_dash.setdefault(int(c["dashboard_id"]), {"blocks": [], "charts": 0})
-        item["blocks"].append({"x": rect[0], "y": rect[1], "w": rect[2], "h": rect[3], "widget": widget})
+        # chart_type 一并下发：卡片预览要按类型画可辨识缩影（柱/线/饼/表格/控件），
+        # 只给几何 + widget 标记会让所有区块长一个样，且与编辑器里的效果图对不上
+        item["blocks"].append({"x": rect[0], "y": rect[1], "w": rect[2], "h": rect[3],
+                               "widget": widget, "chart_type": c.get("chart_type") or ""})
         if not widget:
             item["charts"] += 1
     for row in rows:
