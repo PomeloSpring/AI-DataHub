@@ -234,6 +234,116 @@ export function groupDataByColumn(rows: any[], xCol: string, yCol: string, group
   return { xData, seriesData };
 }
 
+/**
+ * 稀疏序列判定：线/面至少需要两个端点才画得出形状。
+ * 只有一个数据点（或所有点 x 相同）时，整张图在 hover 之前什么都不显示 —— 用户看不到值。
+ */
+function isSparseSeries(data: any[], xCol: string): boolean {
+  if (!Array.isArray(data) || data.length === 0) return false;
+  return new Set(data.map(d => String(d?.[xCol] ?? ''))).size < 2;
+}
+
+/** 单点可见化用的实心圆点 mark：颜色随色盘，自身不出 tooltip（值仍由线/面 mark 的 shared tooltip 给） */
+function visiblePointMark(encode: Record<string, any>) {
+  return {
+    type: 'point',
+    encode: { x: encode.x, y: encode.y, color: encode.color, shape: 'circle' },
+    style: { r: 4, fillOpacity: 1 },
+    tooltip: false,
+  };
+}
+
+/**
+ * 线/面单 mark 在稀疏序列下包成 view 并叠加圆点，保证「不悬停也看得见这个点」。
+ * 注：G2 v5 的 line mark 不认 v4 遗留写法 `point: { shapeSize }`（静默不渲染），必须走 mark 组合。
+ */
+function ensureVisiblePoints(spec: any, data: any[], xCol: string): any {
+  if (!isSparseSeries(data, xCol)) return spec;
+  const { type, encode, style, labels, ...view } = spec;
+  return {
+    ...view,
+    type: 'view',
+    children: [{ type, encode, style, labels }, visiblePointMark(encode)],
+  };
+}
+
+/**
+ * 给颜色附加 alpha（hex / rgb(a) / hsl(a) 皆可，其余原样返回）。
+ * 输出不带空格：渐变串 `l(270) 0:<c1> 1:<c2>` 的色标正则虽能容忍空格，压成紧凑形式更稳。
+ */
+function withAlpha(color: string, alpha: number): string {
+  const a = Math.round(Math.min(1, Math.max(0, alpha)) * 1000) / 1000;
+  const c = (color || '').trim();
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(c);
+  if (hex) {
+    let h = hex[1];
+    if (h.length === 3) h = h.split('').map(x => x + x).join('');
+    const n = parseInt(h, 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  }
+  const fn = /^(rgba?|hsla?)\(([^)]*)\)$/i.exec(c);
+  if (fn) {
+    const parts = fn[2].split(/[,/\s]+/).filter(Boolean).slice(0, 3);
+    if (parts.length === 3) return `${fn[1].toLowerCase()[0] === 'r' ? 'rgba' : 'hsla'}(${parts.join(',')},${a})`;
+  }
+  return c;
+}
+
+/**
+ * 柱体竖向「同色系渐隐」（AS 风格 design-service 预设：顶部 rgba(brand,.6) → 底部 rgba(brand,.1)）。
+ * `barFade=true` 取该口径；传数值则作为顶部 alpha（底部按其 1/6 收敛，保持同一形状）。
+ * 与 `gradient`（跨色渐变）同时出现时 barFade 优先 —— 它描述的是同一系列的明暗纵深，不是第二系列。
+ *
+ * 角度取 `l(90)` 而非旧口径的 `l(270)`：@antv/g-lite 把 legacy 角 +90 换算为 CSS 角，
+ * `l(270)` → 360deg = to top（色标 0 在底部），实测会把渐隐画成下深上浅、与素材相反；
+ * `l(90)` → 180deg = to bottom，色标 0（深）才落在柱顶。gradient 保持 `l(270)` 不动：
+ * 那是存量主题（科技风等）已验收的方向，改它等于顺带换别人的衣。
+ */
+function barFadeFill(config: any, colors: string[]): string | undefined {
+  const raw = config?.barFade;
+  if (raw === undefined || raw === false || raw === '' || raw === 0) return undefined;
+  const top = typeof raw === 'number' && Number.isFinite(raw) ? Math.min(1, Math.max(0.05, raw)) : 0.6;
+  return `l(90) 0:${withAlpha(colors[0], top)} 1:${withAlpha(colors[0], Math.max(0.05, top / 6))}`;
+}
+
+/** 柱体样式单一口径：圆角 + 填充（渐隐 > 跨色渐变 > 色板主色）。bar/时序柱/瀑布/默认柱图共用。 */
+function barBodyStyle(config: any, colors: string[]): Record<string, any> {
+  const radius = Number.parseFloat(config?.borderRadius ?? 4) || 0;
+  const fill = barFadeFill(config, colors)
+    || (config?.gradient ? `l(270) 0:${colors[0]} 1:${colors[1] || colors[0]}` : undefined);
+  return { radiusTopLeft: radius, radiusTopRight: radius, ...(fill ? { fill } : {}) };
+}
+
+/**
+ * AS 风格「柱顶帽」(素材 bar.cap：有值柱顶 4px 压边、零值柱 1px 细线)。
+ * G2 没有「只描顶边」的 interval 形状，改用同 x 带的浮动区间柱复刻：
+ * 主柱与帽子共用 band 刻度 ⇒ 宽度与 x 位置天然对齐，无需换算柱宽。
+ * 帽厚按绘图高反推为数据单位（轴域按数据极值估，G2 nice-tick 只会让帽子略细，不会消失）。
+ * 分组柱图不画帽：主柱走 dodge 位移，第二个 mark 拿不到同一位移会错位（此时宁缺勿错）。
+ */
+function withBarCap(spec: any, config: any, data: any[], xCol: string, yCol: string, plotHeight: number): any {
+  const capColor = typeof config?.barCap === 'string' && config.barCap.trim() ? config.barCap.trim() : undefined;
+  if (!capColor || spec.encode?.color || data.length === 0) return spec;
+  const values = data.map(d => Number(d[yCol]) || 0);
+  const span = Math.max(...values) - Math.min(0, ...values) || 1;
+  const half = (px: number) => (px / Math.max(40, plotHeight)) * span / 2;
+  const capData = data.map(d => {
+    const v = Number(d[yCol]) || 0;
+    // 有值：帽跨柱顶居中；零值：底线以上 1px 细线（与素材 renderItem 的口径一致）
+    return { ...d, __capLo: v === 0 ? 0 : v - half(4), __capHi: v === 0 ? half(1) * 2 : v + half(4) };
+  });
+  const { type, encode, style, labels, scale, interaction, ...view } = spec;
+  return {
+    ...view,
+    type: 'view',
+    children: [
+      { type, encode, style, labels, scale, interaction },
+      { type: 'interval', data: capData, encode: { x: xCol, y: ['__capLo', '__capHi'] }, style: { fill: capColor }, tooltip: false },
+    ],
+  };
+}
+
+
 // Build G2 spec based on chart type
 export function buildG2Spec(chartType: string, columns: string[], rows: any[], config: Record<string, any>, isDark: boolean, width: number, height: number, visual?: LocalVisual) {
   isDark = visual?.mode ? visual.mode === 'dark' : isDark;
@@ -248,12 +358,20 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
   const tooltipBg = visual?.popoverBg || (local ? bgColor : readToken('--popover', bgColor));
   const tooltipText = local ? textColor : readToken('--popover-foreground', textColor);
   // Axis label styling — brighter, larger, bolder on dark backgrounds
+  // 字模轴字号: 素材 chartTypography.axisLabelSize / legendSize 均 12px, 主题包给了就按它走(未给维持原明暗自适应 11/12)
+  const axisFontSize = Number.parseFloat(config?.axisLabelSize ?? '') || undefined;
   const axisLabelStyle = isDark
-    ? { labelFill: textColor, labelFontSize: 12, labelFontWeight: '600' as const }
-    : { labelFill: subTextColor, labelFontSize: 11, labelFontWeight: '400' as const };
+    ? { labelFill: textColor, labelFontSize: axisFontSize ?? 12, labelFontWeight: '600' as const }
+    : { labelFill: subTextColor, labelFontSize: axisFontSize ?? 11, labelFontWeight: '400' as const };
   const legendLabelStyle = isDark
-    ? { fill: textColor, fontSize: 12, fontWeight: '600' as const }
-    : { fill: subTextColor, fontSize: 11 };
+    ? { fill: textColor, fontSize: axisFontSize ?? 12, fontWeight: '600' as const }
+    : { fill: subTextColor, fontSize: axisFontSize ?? 11 };
+
+  // y 轴不渲染标题：G2 的 y 轴标题默认竖排（theme.axisLeft.titleDirection='vertical' + rotate(-90)），
+  // 小字号旋转后在紧凑卡片里糊成一排贴在左边缘，用户读不出（反馈“左侧字看不清”）；
+  // 改横排又被 computeAxisSize 按整串文字宽度计入左内边距（titleSpacing + titleBBox.width）白占绘图区。
+  // 指标含义由卡片标题 + 图例 + tooltip 承载，且标题原文是物理列名（如 succ_rate），本就不该当用户可见标题。
+  const yAxis = { title: false, style: axisLabelStyle };
 
   const xCol = config?.xCol || columns.find(c => typeof rows[0]?.[c] === 'string') || columns[0];
   const yCol = config?.yCol || columns.find(c => typeof rows[0]?.[c] === 'number') || columns[1];
@@ -373,62 +491,66 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
   };
 
   switch (chartType) {
-    case 'bar':
-      return {
+    case 'bar': {
+      const barSpec: any = {
         ...baseSpec,
         type: 'interval',
         data: processedData,
         encode: { x: xCol, y: yCol, color: seriesField || undefined },
         axis: {
           x: { labelAutoRotate: true, style: axisLabelStyle },
-          y: { style: axisLabelStyle },
+          y: yAxis,
         },
         scale: { color: { range: colors } },
-        style: { radiusTopLeft: Number.parseFloat(config?.borderRadius ?? 4) || 0, radiusTopRight: Number.parseFloat(config?.borderRadius ?? 4) || 0,
-          ...(config?.gradient ? { fill: `l(270) 0:${colors[0]} 1:${colors[1] || colors[0]}` } : {}) },
+        style: barBodyStyle(config, colors),
         labels: config?.showLabel ? [{ text: yCol, style: { fill: textColor } }] : [],
         interaction: { tooltip: { shared: true } },
       };
+      return withBarCap(barSpec, config, processedData, xCol, yCol, height - 80);
+    }
 
-    case 'line':
+    case 'line': {
+      const lineEncode = { x: xCol, y: yCol, color: seriesField || undefined, shape: config?.smooth === false ? undefined : 'smooth' };
       if (config?.areaFill) return {
         ...baseSpec, type: 'view', data: processedData,
         scale: { color: { range: colors } },
-        axis: { x: { style: axisLabelStyle }, y: { style: axisLabelStyle } },
+        axis: { x: { style: axisLabelStyle }, y: yAxis },
         children: [
           { type: 'area', encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config.smooth === false ? 'area' : 'smooth' }, style: { fillOpacity: config.areaOpacity ?? 0.15 } },
           { type: 'line', encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config.smooth === false ? 'line' : 'smooth' }, style: { lineWidth: config.lineWidth ?? 2, ...(config.glow ? { shadowColor: colors[0], shadowBlur: 8 } : {}) } },
+          // 单点时 area/line 都画不出形状，叠加圆点兜住可见性
+          ...(isSparseSeries(processedData, xCol) ? [visiblePointMark(lineEncode)] : []),
         ],
       };
-      return {
+      return ensureVisiblePoints({
         ...baseSpec,
         type: 'line',
         data: processedData,
-        encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config?.smooth === false ? undefined : 'smooth' },
+        encode: lineEncode,
         axis: {
           x: { labelAutoRotate: true, style: axisLabelStyle },
-          y: { style: axisLabelStyle },
+          y: yAxis,
         },
         scale: { color: { range: colors } },
         style: { lineWidth: config?.lineWidth ?? 2 },
-        point: { shapeSize: 3 },
         interaction: { tooltip: { shared: true } },
-      };
+      }, processedData, xCol);
+    }
 
     case 'area':
-      return {
+      return ensureVisiblePoints({
         ...baseSpec,
         type: 'area',
         data: processedData,
         encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config?.smooth === false ? undefined : 'smooth' },
         axis: {
           x: { labelAutoRotate: true, style: axisLabelStyle },
-          y: { style: axisLabelStyle },
+          y: yAxis,
         },
         scale: { color: { range: colors } },
         style: { fillOpacity: config?.areaOpacity ?? 0.3 },
         interaction: { tooltip: { shared: true } },
-      };
+      }, processedData, xCol);
 
     case 'pie': {
       const pieData = rows.map(r => ({
@@ -460,7 +582,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         style: { r: 4, opacity: 0.7 },
         axis: {
           x: { style: axisLabelStyle },
-          y: { style: axisLabelStyle },
+          y: yAxis,
         },
         interaction: { tooltip: {} },
       };
@@ -481,7 +603,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         coordinate: { type: 'polar' },
         scale: { color: { range: colors } },
         style: { lineWidth: config?.lineWidth ?? 2, fillOpacity: config?.areaOpacity ?? 0 },
-        axis: { x: { style: axisLabelStyle }, y: { style: axisLabelStyle } },
+        axis: { x: { style: axisLabelStyle }, y: yAxis },
         interaction: { tooltip: {} },
       };
     }
@@ -558,7 +680,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         labels: [{ text: 'value', style: { fill: textColor, fontSize: 10 } }],
         axis: {
           x: { labelAutoRotate: true, style: axisLabelStyle },
-          y: { style: axisLabelStyle },
+          y: yAxis,
         },
         legend: { color: { position: 'right', itemLabelStyle: legendLabelStyle } },
         interaction: { tooltip: {} },
@@ -709,12 +831,11 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
       const isArea = chartType === 'timeseries_area';
 
       const chartTypeG2 = isBar ? 'interval' : isArea ? 'area' : 'line';
-      // 字模样式对时序族同样生效(与 bar/line/area 分支同口径):
-      // 圆角/渐变/标签/线宽/平滑/面积透明度全部消费 config(resolveChartDesign 从主题包注入),
+      // 字模样式对时序族同样生效(与 bar/line/area 分支同口径, 统一走 barBodyStyle):
+      // 圆角/渐隐/渐变/标签/线宽/平滑/面积透明度全部消费 config(resolveChartDesign 从主题包注入),
       // 曾经写死 radius 4/lineWidth 2 不看 gradient —— 科技风柱状图没有渐变就是这里丢的
-      const tsRadius = Number.parseFloat(config?.borderRadius ?? 4) || 0;
 
-      return {
+      const tsSpec: any = {
         ...baseSpec,
         type: chartTypeG2,
         data: tsData,
@@ -724,17 +845,20 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         },
         axis: {
           x: { labelAutoRotate: true, style: axisLabelStyle },
-          y: { style: axisLabelStyle },
+          y: yAxis,
         },
         scale: { color: { range: colors } },
         style: isBar
-          ? { radiusTopLeft: tsRadius, radiusTopRight: tsRadius,
-              ...(config?.gradient ? { fill: `l(270) 0:${colors[0]} 1:${colors[1] || colors[0]}` } : {}) }
+          ? barBodyStyle(config, colors)
           : { lineWidth: config?.lineWidth ?? 2, fillOpacity: isArea ? (config?.areaOpacity ?? 0.3) : 0,
               ...(config?.glow ? { shadowColor: colors[0], shadowBlur: 8 } : {}) },
         labels: isBar && config?.showLabel ? [{ text: valCol, style: { fill: textColor } }] : [],
         interaction: { tooltip: { shared: true } },
       };
+      // 柱状单点本身可见；线/面单点画不出形状，叠加圆点
+      return isBar
+        ? withBarCap(tsSpec, config, tsData, timeCol, valCol, height - 80)
+        : ensureVisiblePoints(tsSpec, tsData, timeCol);
     }
 
     case 'tree':
@@ -796,12 +920,13 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         data: waterfallData,
         encode: { x: categoryCol, y: ['start', 'end'], color: (d: any) => d.value >= 0 ? 'increase' : 'decrease' },
         scale: { color: { domain: ['increase', 'decrease'], range: ['#52c41a', '#ff4d4f'] } },
+        // 瀑布柱的填充色由涨跌语义色决定, 不吃 barFade/barCap(主题包主色会抹掉增减区分), 只共用圆角+跨色渐变口径
         style: { radiusTopLeft: Number.parseFloat(config?.borderRadius ?? 4) || 0, radiusTopRight: Number.parseFloat(config?.borderRadius ?? 4) || 0,
           ...(config?.gradient ? { fill: `l(270) 0:${colors[0]} 1:${colors[1] || colors[0]}` } : {}) },
         labels: config?.showLabel ? [{ text: yCol, style: { fill: textColor } }] : [],
         axis: {
           x: { style: axisLabelStyle },
-          y: { style: axisLabelStyle },
+          y: yAxis,
         },
         legend: { color: { itemLabelStyle: legendLabelStyle } },
         interaction: { tooltip: {} },
@@ -878,7 +1003,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         style: { stroke: colors[0], fill: colors[0], fillOpacity: 0.3 },
         axis: {
           x: { style: axisLabelStyle },
-          y: { style: axisLabelStyle },
+          y: yAxis,
         },
         interaction: { tooltip: {} },
       };
@@ -905,7 +1030,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         style: { opacity: 0.7 },
         axis: {
           x: { style: axisLabelStyle },
-          y: { style: axisLabelStyle },
+          y: yAxis,
         },
         legend: { color: { itemLabelStyle: legendLabelStyle } },
         interaction: { tooltip: {} },
@@ -926,7 +1051,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         labels: [{ text: 'value', style: { fill: textColor, fontSize: 10 } }],
         axis: {
           x: { labelAutoRotate: true, style: axisLabelStyle },
-          y: { style: axisLabelStyle },
+          y: yAxis,
         },
         legend: { color: { position: 'right', itemLabelStyle: legendLabelStyle } },
         interaction: { tooltip: {} },
@@ -963,7 +1088,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         style: { stroke: bgColor, lineWidth: 1 },
         axis: {
           x: { style: axisLabelStyle },
-          y: { style: axisLabelStyle },
+          y: yAxis,
         },
         legend: { color: { itemLabelStyle: legendLabelStyle } },
         interaction: { tooltip: {} },
@@ -1018,23 +1143,24 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
       // Rendered as HTML table in DashboardChartInner, not a G2 chart
       return { ...baseSpec, type: 'view', children: [] };
 
-    default:
+    default: {
       // Default to bar chart
-      return {
+      const spec: any = {
         ...baseSpec,
         type: 'interval',
         data: processedData,
         encode: { x: xCol, y: yCol, color: seriesField || undefined },
         axis: {
           x: { labelAutoRotate: true, style: axisLabelStyle },
-          y: { style: axisLabelStyle },
+          y: yAxis,
         },
         scale: { color: { range: colors } },
-        style: { radiusTopLeft: Number.parseFloat(config?.borderRadius ?? 4) || 0, radiusTopRight: Number.parseFloat(config?.borderRadius ?? 4) || 0,
-          ...(config?.gradient ? { fill: `l(270) 0:${colors[0]} 1:${colors[1] || colors[0]}` } : {}) },
+        style: barBodyStyle(config, colors),
         labels: config?.showLabel ? [{ text: yCol, style: { fill: textColor } }] : [],
         interaction: { tooltip: { shared: true } },
       };
+      return withBarCap(spec, config, processedData, xCol, yCol, height - 80);
+    }
   }
 }
 

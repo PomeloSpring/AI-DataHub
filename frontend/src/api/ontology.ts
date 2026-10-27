@@ -133,6 +133,17 @@ export const ontologyApi = {
       json_content: jsonContent,
       name,
     }),
+  /** 两段式：只存草案，不碰生效内容、不级联（等 publish 才生效） */
+  saveDraft: (id: number, jsonContent: string, name?: string) =>
+    client.put<OntologyModel & { draft_pending?: boolean; note?: string }>(
+      `/catalog/ontology/models/${id}/draft`, { json_content: jsonContent, name }),
+  /** 发布草案：生效 + 级联（重展开对象/重建图谱/同步知识库），需 ontology:publish */
+  publishDraft: (id: number) =>
+    client.post<{ success: boolean; object_count?: number }>(`/catalog/ontology/models/${id}/publish`, {}),
+  /** 草案状态：有无待发布改动、谁改的、何时改的（不含草案正文，避免外泄） */
+  getDraft: (id: number) =>
+    client.get<{ has_draft: boolean; draft_updated_at?: string; draft_updated_by?: string }>(
+      `/catalog/ontology/models/${id}/draft`),
   activate: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/activate`),
   archive: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/archive`),
   restore: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/restore`),

@@ -90,6 +90,8 @@ export default function DimensionsDictTab({
   const [fEnum, setFEnum] = useState('all');
   const [fBind, setFBind] = useState('all');
   const [editTarget, setEditTarget] = useState<DictDimension | null>(null);
+  // 新建入口：此前本页只有「编辑」，维度根本建不了（列表列有归属对象/物理列，表单却无从填写）
+  const [createOpen, setCreateOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -219,6 +221,7 @@ export default function DimensionsDictTab({
             className="pl-8 h-8 w-60"
           />
         </div>
+        <Button size="sm" className="h-8" onClick={() => setCreateOpen(true)}>新建维度</Button>
         <Select value={fCategory} onValueChange={setFCategory}>
           <SelectTrigger className="h-8 w-36" aria-label="维度分类"><SelectValue placeholder="维度分类" /></SelectTrigger>
           <SelectContent>
@@ -357,6 +360,14 @@ export default function DimensionsDictTab({
         </table>
       </div>
 
+      {createOpen && (
+        <CreateDimensionDialog
+          categories={categoryChoices}
+          objectNames={objectNames}
+          onClose={() => setCreateOpen(false)}
+          onSaved={() => { setCreateOpen(false); load(); }}
+        />
+      )}
       {editTarget && (
         <EditDimensionDialog
           dimension={editTarget}
@@ -366,6 +377,138 @@ export default function DimensionsDictTab({
         />
       )}
     </div>
+  );
+}
+
+// ── 新建弹窗 ─────────────────────────────────────────────────────────
+// 字典行是跨数据源口径：**不提供“目标源/数据源”字段**（服务层恒为 0），
+// 物理归属由「归属对象」+「目标列」决定（见 ui-resource-display §2：选不手填）。
+function CreateDimensionDialog({
+  categories = [], objectNames = {}, onClose, onSaved,
+}: {
+  categories?: string[];
+  objectNames?: Record<string, string>;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [form, setForm] = useState({
+    display_name: '', name_en: '', category: '属性', bound_object_key: '',
+    target_table: '', target_column: '', aliases: '', value_labels: '', description: '',
+  });
+  const [saving, setSaving] = useState(false);
+  const categoryChoices = useMemo(() => {
+    const list = [...categories];
+    if (form.category && !list.includes(form.category)) list.unshift(form.category);
+    return list;
+  }, [categories, form.category]);
+  const objectEntries = useMemo(
+    () => Object.entries(objectNames).sort((a, b) => (a[1] || a[0]).localeCompare(b[1] || b[0])),
+    [objectNames]);
+
+  const handleSave = async () => {
+    if (!form.display_name.trim()) { toast.error('请填写维度名称（业务名）'); return; }
+    if (!form.bound_object_key) { toast.error('请选择归属对象（维度必须挂在业务对象上）'); return; }
+    const labels: Record<string, string> = {};
+    for (const line of form.value_labels.split('\n')) {
+      const s = line.trim();
+      if (!s) continue;
+      const i = s.indexOf('=');
+      if (i <= 0) { toast.error(`枚举标签格式应为 码值=业务名: ${s}`); return; }
+      labels[s.slice(0, i).trim()] = s.slice(i + 1).trim();
+    }
+    setSaving(true);
+    try {
+      await metricsApi.createDimension({
+        display_name: form.display_name.trim(),
+        name_en: form.name_en.trim(),
+        category: form.category,
+        bound_object_key: form.bound_object_key,
+        target_table: form.target_table.trim(),
+        target_column: form.target_column.trim(),
+        aliases: form.aliases.split(/[,，]/).map(x => x.trim()).filter(Boolean),
+        value_labels: Object.keys(labels).length ? labels : null,
+        description: form.description.trim(),
+      });
+      toast.success('维度已创建');
+      onSaved();
+    } catch (e: any) {
+      // 透传服务端具体错因（如归属对象引用校验失败），不换成通用文案
+      toast.error(e.response?.data?.detail || '创建失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-xl">
+        <DialogHeader><DialogTitle>新建维度</DialogTitle></DialogHeader>
+        <div className="space-y-4 py-2">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>维度名称（业务名）*</Label>
+              <Input value={form.display_name} placeholder="如: 注册日期"
+                onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>英文名</Label>
+              <Input value={form.name_en} placeholder="如: register_date"
+                onChange={(e) => setForm({ ...form, name_en: e.target.value })} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>分类</Label>
+              <Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {categoryChoices.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>归属对象 *</Label>
+              <Select value={form.bound_object_key || undefined}
+                onValueChange={(v) => setForm({ ...form, bound_object_key: v })}>
+                <SelectTrigger><SelectValue placeholder={objectEntries.length ? '选择业务对象' : '对象清单为空'} /></SelectTrigger>
+                <SelectContent>
+                  {objectEntries.map(([key, label]) => (
+                    <SelectItem key={key} value={key}>{label || key} ({key})</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>目标表</Label>
+              <Input value={form.target_table} placeholder="数据来源表名"
+                onChange={(e) => setForm({ ...form, target_table: e.target.value })} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>目标列（物理列）</Label>
+              <Input value={form.target_column} placeholder="数据来源列名"
+                onChange={(e) => setForm({ ...form, target_column: e.target.value })} />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>别名（逗号分隔，取数时自动解析）</Label>
+            <Input value={form.aliases} placeholder="如: 下单渠道, 渠道来源"
+              onChange={(e) => setForm({ ...form, aliases: e.target.value })} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>枚举标签（每行一条，码值=业务名；查询结果自动翻译）</Label>
+            <Textarea rows={4} className="font-mono text-xs" value={form.value_labels}
+              placeholder={'0=否\n1=是\n2=已上传'}
+              onChange={(e) => setForm({ ...form, value_labels: e.target.value })} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>描述</Label>
+            <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>取消</Button>
+          <Button onClick={handleSave} disabled={saving}>{saving ? '创建中…' : '创建'}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

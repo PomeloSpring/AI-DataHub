@@ -1046,6 +1046,51 @@ def save_model(model_id: int, req: dict):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.put("/models/{model_id}/draft")
+def save_model_draft(model_id: int, req: dict, user: dict = Depends(get_current_user)):
+    """只存草案（两段式第一段）：不碰生效内容、不级联，等 publish 才生效。
+
+    与 PUT /models/{model_id} 的区别：后者对 active 模型会就地改内容并立即级联；
+    本端点供 AS-BOT 通道与“先草稿后发布”流程使用。
+    """
+    json_content = req.get("json_content")
+    if not json_content:
+        raise HTTPException(status_code=400, detail="json_content 必填")
+    try:
+        return ontology_service.save_draft_only(
+            model_id, json_content, name=req.get("name"),
+            # 身份只信服务端解析（安全护栏 §2），不从请求体取
+            created_by=str(user.get("username") or user.get("name") or ""))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/models/{model_id}/draft")
+def get_model_draft(model_id: int):
+    """草案状态（有无待发布、谁改的）；不回草案正文，避免随列表接口外泄。"""
+    try:
+        d = ontology_service.get_draft(model_id)
+        d.pop("draft", None)
+        return d
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/models/{model_id}/publish")
+def publish_model_draft(model_id: int):
+    """发布草案（两段式第二段）：生效 + 级联（重展开对象/重建图谱/同步知识库）。
+
+    需 ontology:publish 权限（fail-closed）。AS-BOT 通道发布前必须先用 ask_user 向用户确认。
+    """
+    from backend.core.perm_link import require_write_perm
+    require_write_perm("ontology:publish", "发布本体草案")
+    try:
+        result = ontology_service.publish_draft(model_id)
+        return {"success": True, "object_count": result.get("object_count")}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/models/{model_id}/activate")
 def activate_model(model_id: int):
     """激活模型：旧 active 归档，对象 MD 段向量化入向量库。"""

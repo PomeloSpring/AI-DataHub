@@ -415,7 +415,11 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
                   if (msgs[lastIdx]?.role === 'assistant') {
                     msgs[lastIdx] = {
                       ...msgs[lastIdx],
-                      content: data.error ? '' : (data.reply || streamingText),
+                      // done 带 error（超时/中断）时保留已流式输出的正文：
+                      // 错误卡说明原因，但不能把已经读到的答案抹掉（与 chatStore 同口径）
+                      content: data.error
+                        ? (streamingText || msgs[lastIdx].content || '')
+                        : (data.reply || streamingText),
                       thinking: data.thinking || streamingThinking,
                       error: data.error,
                       tool_calls: data.tool_calls || msgs[lastIdx].tool_calls,
@@ -468,10 +472,12 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
         set(state => {
           const msgs = [...state.messages];
           const lastIdx = msgs.length - 1;
-          if (msgs[lastIdx]?.role === 'assistant' && !msgs[lastIdx].content) {
+          // 未收到 done 事件就是异常：即使已有部分正文也必须把错误说出来（不得静默当正常结束），
+          // 同时保留中断前已输出的内容。
+          if (msgs[lastIdx]?.role === 'assistant') {
             msgs[lastIdx] = {
               ...msgs[lastIdx],
-              content: streamingText || '',
+              content: msgs[lastIdx].content || streamingText || '',
               error: '响应异常: 未收到完成事件',
             };
           }

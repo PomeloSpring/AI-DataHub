@@ -11,6 +11,7 @@
 5. facet 计数口径必须与对应列表接口一致（否则下拉数字与结果总数对不上）。
 """
 
+import json
 import os
 import sys
 
@@ -133,6 +134,14 @@ class TestMetricListFilters:
         assert "COALESCE(aliases, '') LIKE %s" in sql
         assert params[:-2] == ["%口扫%"] * 4
 
+    def test_tags_filter_uses_json_column(self, conn):
+        """口径标签走 tags JSON 列（旧写法 FIND_IN_SET(..., category) 查的是不存在的列，
+        本参数一旦传入必 1054）。"""
+        ms.list_metrics(size=20, tags="基础,复合")
+        sql, params = _metric_sql(conn)
+        assert sql.count("JSON_CONTAINS(COALESCE(tags, '[]'), %s)") == 2
+        assert params[:-2] == ['"基础"', '"复合"']
+
     def test_row_payload_carries_certified_and_owner(self, conn):
         """认证/负责人两列要随列表返回: 缺列会让 UI 的认证标记与负责人永远空(假装有数据)。"""
         ms.list_metrics(size=20)
@@ -140,6 +149,15 @@ class TestMetricListFilters:
         select_part = sql.split("FROM adh_metrics")[0]
         assert "AS certified" in select_part
         assert "owner" in select_part
+
+    def test_list_select_returns_category_not_metric_type(self, conn):
+        """返回体只给 category（业务域）+ tags（口径标签）：`category AS metric_type` 会把
+        两个维度在客户端重新捏成一个字段，混杂卷来。"""
+        ms.list_metrics(size=20)
+        sql, _ = _metric_sql(conn)
+        select_part = sql.split("FROM adh_metrics")[0]
+        assert "metric_type" not in select_part
+        assert "category" in select_part and "AS tags" in select_part
 
     def test_default_call_keeps_legacy_sql(self, conn):
         """不传新参数时不得凭空加谓词(旧行为: 全列, 含 is_active=0 的行)。"""
@@ -158,12 +176,74 @@ class TestMetricListFilters:
             ms.list_metrics(size=20, has_target_table="yes-please")
 
 
+class TestMetricKindWriteContract:
+    """category = 业务域，tags = 口径标签（基础/衍生/复合）：两个正交维度不得再写进同一列。
+
+    历史缺陷：表单把 metric_type(basic/derived/composite) 直接落 category，分类下拉里
+    业务域与口径标签混杂，选一次「基础指标」就把域值域写脏。
+    """
+
+    def test_create_keeps_domain_in_category_and_kind_in_tags(self, monkeypatch):
+        c = _Conn([
+            (("SELECT id FROM adh_metrics WHERE name",), []),
+            (("object_key FROM adh_ontology_objects",), [{"object_key": "case"}]),
+            (("MAX(id)",), [{"nid": 900}]),
+        ])
+        monkeypatch.setattr(ms, "DBConnection", lambda: c)
+        ms.create_metric({"name": "case_count", "display_name": "案例数",
+                          "formula": "COUNT(id)", "agg_type": "count",
+                          "bound_object_key": "case",
+                          "category": "可观测", "metric_type": "basic", "tags": ["复合"]})
+        insert = [call for call in c.cur.calls if call[0].startswith("INSERT INTO adh_metrics")][-1]
+        sql, params = insert
+        assert " tags)" in sql.replace("\n", " ")
+        cols = sql.split("(", 1)[1].split(")")[0]
+        got = dict(zip([x.strip() for x in cols.split(",")], params))
+        assert got["category"] == "可观测"            # 业务域不得被 metric_type 冲掉
+        assert json.loads(got["tags"]) == ["复合", "基础"]   # 显式标签 + 旧口径归一
+
+    def test_create_defaults_domain_and_never_writes_kind_to_category(self, monkeypatch):
+        c = _Conn([
+            (("SELECT id FROM adh_metrics WHERE name",), []),
+            (("object_key FROM adh_ontology_objects",), [{"object_key": "case"}]),
+            (("MAX(id)",), [{"nid": 901}]),
+        ])
+        monkeypatch.setattr(ms, "DBConnection", lambda: c)
+        ms.create_metric({"name": "case_avg", "display_name": "案例均时长",
+                          "formula": "COUNT(id)", "agg_type": "count",
+                          "bound_object_key": "case", "metric_type": "basic"})
+        insert = [call for call in c.cur.calls if call[0].startswith("INSERT INTO adh_metrics")][-1]
+        sql, params = insert
+        cols = sql.split("(", 1)[1].split(")")[0]
+        got = dict(zip([x.strip() for x in cols.split(",")], params))
+        assert got["category"] == "业务"                 # 域默认值（不是 basic）
+        assert json.loads(got["tags"]) == ["基础"]
+
+    def test_update_routes_legacy_metric_type_to_tags(self, monkeypatch):
+        c = _Conn([(("SELECT id FROM adh_metrics WHERE id",), [{"id": 5}])])
+        monkeypatch.setattr(ms, "DBConnection", lambda: c)
+        ms.update_metric(5, {"metric_type": "derived"})
+        upd = [call for call in c.cur.calls if call[0].startswith("UPDATE adh_metrics")][-1]
+        assert "tags = %s" in upd[0] and "category = %s" not in upd[0]
+        assert json.loads(upd[1][0]) == ["衍生"]
+
+    def test_update_category_and_tags_land_in_own_columns(self, monkeypatch):
+        c = _Conn([(("SELECT id FROM adh_metrics WHERE id",), [{"id": 5}])])
+        monkeypatch.setattr(ms, "DBConnection", lambda: c)
+        ms.update_metric(5, {"category": "客户", "tags": ["基础"]})
+        upd = [call for call in c.cur.calls if call[0].startswith("UPDATE adh_metrics")][-1]
+        assert "category = %s" in upd[0] and "tags = %s" in upd[0]
+        assert upd[1][:2] == ["客户", '["基础"]']
+
+
 def _facet_conn(monkeypatch):
     responses = [
         # 指标 summary
         (("FROM adh_metrics", "COUNT(*) AS total"),
          [{"total": 75, "active_n": 52, "certified": 3, "unbound": 4,
            "with_table": 38, "with_column": 9}]),
+        (("FROM adh_metrics", "AS tags"),
+         [{"tags": '["基础", "复合"]'}, {"tags": '["基础"]'}, {"tags": "[]"}]),
         (("FROM adh_metrics", "agg_type"),
          [{"value": "COUNT", "count": 34}, {"value": "", "count": 2}]),
         (("FROM adh_metrics", "category"),
@@ -202,6 +282,9 @@ class TestDictFacets:
         # 聚合方式大小写归一 + 空桶
         assert {"value": "COUNT", "count": 34} in out["metrics"]["agg_types"]
         assert {"value": ms.UNSET_FACET, "count": 2} in out["metrics"]["agg_types"]
+        # 口径标签分桶：JSON 数组拆元素计数，降序（与 categories 的**业务域**是两个维度）
+        assert out["metrics"]["tags"] == [{"value": "基础", "count": 2},
+                                        {"value": "复合", "count": 1}]
         # 计数口径与列表接口一致(指标含停用行, 维度只算 is_active=1)
         assert out["metrics"]["total"] == 75 and out["metrics"]["active"] == 52
         assert out["metrics"]["inactive"] == 23 and out["metrics"]["draft"] == 72
@@ -230,6 +313,7 @@ class TestDictFacets:
         out = ms.dict_facets(model_id=99, scope="model")
         assert out["metrics"]["total"] == 0 and out["dimensions"]["total"] == 0
         assert out["metrics"]["categories"] == [] and out["objects"] == []
+        assert out["metrics"]["tags"] == []
         assert not any("adh_metrics" in c[0] or "FROM adh_dimensions" in c[0]
                        for c in conn.cur.calls)
 

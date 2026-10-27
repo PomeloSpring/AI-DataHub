@@ -16,6 +16,8 @@ export interface DictFacetBucket {
   without_value_labels?: number;
   categories: FacetValue[];
   agg_types?: FacetValue[];
+  /** 口径标签分桶（基础/衍生/复合…，来自 tags 列；与 categories 的业务域正交） */
+  tags?: FacetValue[];
 }
 
 /** 归属对象候选(key + 业务名 + 挂接资产数) */
@@ -37,8 +39,10 @@ export interface MetricListQuery {
   page?: number;
   size?: number;
   search?: string;
-  metric_type?: string;
+  /** 业务域分类（值域来自 filters 的 categories） */
   category?: string;
+  /** 口径标签（值域来自 filters 的 tags） */
+  tags?: string;
   agg_type?: string;
   certified?: string;
   bound_object_key?: string;
@@ -62,6 +66,8 @@ export const metricsApi = {
   listAllDimensions: (params?: { model_id?: number; scope?: 'model' | 'unbound' }) =>
     client.get('/metrics/dimensions', { params }),
   updateDimension: (id: number, data: any) => client.put(`/metrics/dimensions/${id}`, data),
+  // 新建全局维度字典行(与 updateDimension 对称) —— 必填 display_name + bound_object_key
+  createDimension: (data: any) => client.post('/metrics/dimensions', data),
   // 字典筛选词表: 指标/维度两个 Tab 共用一次拉取(选项必须来自全量集聚合, 见 lib/dictLabels)
   filters: (params?: { model_id?: number; scope?: 'model' | 'unbound' }) =>
     client.get('/metrics/filters', { params }),

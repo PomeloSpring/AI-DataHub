@@ -3,112 +3,144 @@
 @tailwind utilities;
 
 @layer base {
-  /* Kibana-inspired dark theme (default) */
+  /* ============================================================================
+   * AS 风格（暗态）—— 公司「设计服务图表主题包」design-service / dark 预设
+   * ----------------------------------------------------------------------------
+   * 取值 1:1 来自 design-chart-theme-kit（不臆造）：
+   * - 壳层：demo.css `--page-bg #171b21 / --card-bg #1d2229 / --border-color #2c3e57 /
+   *   --text-color #e7e8e8 / --text-secondary #acadb0 / --chip-bg #222e3f / --accent #809be5`
+   * - 图表：tokens.js dark 段 bar.emphasis/line.color #809BE5 + pie 8 色板
+   * - 换算：hex → HSL 三元组（shadcn 变量口径）；--chip-active-text 上游未随暗态改，
+   *   保持 #ffffff（与原预览页一致）
+   * 注：素材 README 声明暗色「无独立设计稿、为近似值」，此处与上游同源，不另作发挥。
+   * ========================================================================== */
   :root {
-    --background: 222 47% 7%;
-    --foreground: 210 40% 98%;
+    --background: 216 18% 11%;
+    --foreground: 180 2% 91%;
 
-    --card: 222 47% 11%;
-    --card-foreground: 210 40% 98%;
+    --card: 215 17% 14%;
+    --card-foreground: 180 2% 91%;
 
-    --popover: 222 47% 11%;
-    --popover-foreground: 210 40% 98%;
+    --popover: 215 17% 14%;
+    --popover-foreground: 180 2% 91%;
 
-    --primary: 217 91% 60%;
-    --primary-foreground: 222 47% 7%;
+    --primary: 224 66% 70%;
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 217 33% 17%;
-    --secondary-foreground: 210 40% 98%;
+    --secondary: 215 30% 19%;
+    --secondary-foreground: 180 2% 91%;
 
-    --muted: 217 33% 17%;
-    --muted-foreground: 215 20% 65%;
+    --muted: 215 30% 19%;
+    --muted-foreground: 225 2% 68%;
 
-    --accent: 217 33% 17%;
-    --accent-foreground: 210 40% 98%;
+    --accent: 215 30% 19%;
+    --accent-foreground: 180 2% 91%;
 
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 210 40% 98%;
+    /* AS 色板无纯红，破坏性操作用色板内最红的 #EC5B90 */
+    --destructive: 338 79% 64%;
+    --destructive-foreground: 180 2% 91%;
 
-    --border: 217 33% 17%;
-    --input: 217 33% 17%;
-    --ring: 217 91% 60%;
+    --border: 215 33% 26%;
+    --input: 215 33% 26%;
+    --ring: 224 66% 70%;
 
     --radius: 0.5rem;
 
     /* Sidebar */
-    --sidebar: 222 47% 5%;
-    --sidebar-foreground: 210 40% 98%;
-    --sidebar-border: 217 33% 12%;
-    --sidebar-accent: 217 33% 14%;
-    --sidebar-accent-foreground: 210 40% 98%;
+    --sidebar: 216 18% 11%;
+    --sidebar-foreground: 180 2% 91%;
+    --sidebar-border: 215 33% 26%;
+    --sidebar-accent: 215 30% 19%;
+    --sidebar-accent-foreground: 180 2% 91%;
 
-    /* Chart colors (Kibana-inspired) */
-    --chart-1: 217 91% 60%;
-    --chart-2: 160 84% 39%;
-    --chart-3: 45 93% 47%;
-    --chart-4: 0 84% 60%;
-    --chart-5: 280 84% 60%;
-    --chart-6: 190 90% 50%;
-    --chart-7: 340 82% 52%;
-    --chart-8: 120 60% 40%;
-    --chart-9: 260 70% 55%;
-    --chart-10: 30 90% 55%;
+    /* Chart colors —— tokens.js dark `pie` 8 色板，主色取 bar/line 强调色 */
+    --chart-1: 224 66% 70%;   /* #809BE5 主色 */
+    --chart-2: 109 48% 52%;   /* #5FBF4A */
+    --chart-3: 24 77% 56%;    /* #E57D39 */
+    --chart-4: 169 43% 58%;   /* #65C2B1 */
+    --chart-5: 253 100% 77%;  /* #A48BFF */
+    --chart-6: 338 79% 64%;   /* #EC5B90 */
+    --chart-7: 191 68% 59%;   /* #4FC3DE */
+    --chart-8: 216 3% 64%;    /* #A0A2A5 次要/其它 */
+    --chart-9: 214 65% 54%;   /* #3C7FD6 pie[0] */
+    --chart-10: 169 47% 46%;  /* #3EAD99 负载条渐变端 */
 
-    /* Kibana-specific */
-    --kibana-bg: 220 14% 6%;
-    --kibana-surface: 220 14% 9%;
-    --kibana-surface-hover: 220 14% 12%;
-    --kibana-border: 220 14% 16%;
-    --kibana-text: 210 20% 90%;
-    --kibana-text-secondary: 210 15% 55%;
-    --kibana-accent: 217 91% 60%;
-    --kibana-success: 160 84% 39%;
-    --kibana-warning: 45 93% 47%;
-    --kibana-danger: 0 84% 60%;
+    /* Kibana-specific（变量名沿用既有消费方，值改挂 AS 灰阶/色板） */
+    --kibana-bg: 216 18% 11%;
+    --kibana-surface: 215 17% 14%;
+    --kibana-surface-hover: 215 30% 19%;
+    --kibana-border: 215 33% 26%;
+    --kibana-text: 180 2% 91%;
+    --kibana-text-secondary: 225 2% 68%;
+    --kibana-accent: 224 66% 70%;
+    --kibana-success: 109 48% 52%;
+    --kibana-warning: 24 77% 56%;
+    --kibana-danger: 338 79% 64%;
   }
 
-  /* Light theme */
+  /* ============================================================================
+   * AS 风格（亮态）—— design-service / light 预设（素材唯一有独立设计稿的一态）
+   * 壳层取 demo.css `--page-bg #f7f8fa / --card-bg #ffffff / --border-color #e9ecf8 /
+   * --text-color #262626 / --text-secondary #3a4149 / --chip-bg #f2f6fd / --accent #0037cb`；
+   * 图表取 tokens.js light 段 bar.emphasis/cap/line.color #0037CB + pie 8 色板。
+   * ========================================================================== */
   .light {
-    --background: 0 0% 100%;
-    --foreground: 222 47% 7%;
+    --background: 220 23% 97%;
+    --foreground: 0 0% 15%;
 
     --card: 0 0% 100%;
-    --card-foreground: 222 47% 7%;
+    --card-foreground: 0 0% 15%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 222 47% 7%;
+    --popover-foreground: 0 0% 15%;
 
-    --primary: 217 91% 60%;
+    --primary: 224 100% 40%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 210 40% 96%;
-    --secondary-foreground: 222 47% 7%;
+    --secondary: 218 73% 97%;
+    --secondary-foreground: 0 0% 15%;
 
-    --muted: 210 40% 96%;
-    --muted-foreground: 215 20% 35%;
+    --muted: 218 73% 97%;
+    --muted-foreground: 212 11% 26%;
 
-    --accent: 210 40% 96%;
-    --accent-foreground: 222 47% 7%;
+    --accent: 218 73% 97%;
+    --accent-foreground: 0 0% 15%;
 
-    --destructive: 0 84% 60%;
+    /* AS 色板无纯红，破坏性操作用色板内最红的 #D81B60 */
+    --destructive: 338 78% 48%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 217 91% 60%;
+    --border: 228 52% 94%;
+    --input: 228 52% 94%;
+    --ring: 224 100% 40%;
 
-    --sidebar: 210 40% 98%;
-    --sidebar-foreground: 222 47% 7%;
-    --sidebar-border: 214 32% 91%;
-    --sidebar-accent: 210 40% 96%;
-    --sidebar-accent-foreground: 222 47% 7%;
+    --sidebar: 220 23% 97%;
+    --sidebar-foreground: 0 0% 15%;
+    --sidebar-border: 228 52% 94%;
+    --sidebar-accent: 218 73% 97%;
+    --sidebar-accent-foreground: 0 0% 15%;
 
-    --kibana-bg: 210 20% 98%;
+    --chart-1: 224 100% 40%;  /* #0037CB 主色 */
+    --chart-2: 114 61% 42%;   /* #38AD2A */
+    --chart-3: 24 79% 52%;    /* #E56F22 */
+    --chart-4: 169 90% 32%;   /* #08997E */
+    --chart-5: 256 100% 65%;  /* #7C4DFF */
+    --chart-6: 338 78% 48%;   /* #D81B60 */
+    --chart-7: 190 100% 38%;  /* #00A3C4 */
+    --chart-8: 214 10% 58%;   /* #8A939F 次要/其它 */
+    --chart-9: 214 91% 47%;   /* #0B6AE5 pie[0] */
+    --chart-10: 169 61% 42%;  /* #2AAD95 负载条渐变端 */
+
+    --kibana-bg: 220 23% 97%;
     --kibana-surface: 0 0% 100%;
-    --kibana-surface-hover: 210 20% 96%;
-    --kibana-border: 214 32% 91%;
-    --kibana-text: 222 47% 7%;
-    --kibana-text-secondary: 215 20% 35%;
+    --kibana-surface-hover: 218 73% 97%;
+    --kibana-border: 228 52% 94%;
+    --kibana-text: 0 0% 15%;
+    --kibana-text-secondary: 212 11% 26%;
+    --kibana-accent: 224 100% 40%;
+    --kibana-success: 114 61% 42%;
+    --kibana-warning: 24 79% 52%;
+    --kibana-danger: 338 78% 48%;
   }
 
   /* Tech theme — 科技风: deep blue-black, cyan/electric blue primary, neon accents */

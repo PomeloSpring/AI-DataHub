@@ -45,21 +45,16 @@ export function aggLabel(v?: string | null): string {
   return AGG_LABELS[raw.toUpperCase()] || raw;
 }
 
-/** 指标分类表单候选（新建/编辑指标时可写的固定口径，落 category 列） */
-export const METRIC_TYPE_OPTIONS = [
-  { value: 'basic', label: '基础指标' },
-  { value: 'derived', label: '衍生指标' },
-  { value: 'composite', label: '复合指标' },
-];
+/** 指标口径标签候选（落 `tags` 列，与 category 的**业务域**是两个正交维度）。
+ *  历史上这三档被当作 category 写库（basic/derived/composite），导致分类下拉里
+ *  业务域（可观测/客户/案例…）与口径标签混杂，现拆列各管一头。 */
+export const METRIC_KIND_TAG_OPTIONS = ['基础', '衍生', '复合'];
 
-/** 指标分类展示名：表单写过的值给中文名，历史存量（可观测/客户/案例…）原样显示 */
-const METRIC_TYPE_LABELS: Record<string, string> = Object.fromEntries(
-  METRIC_TYPE_OPTIONS.map((o) => [o.value, o.label]));
-
+/** 指标分类展示名：category 值域一律来自后端 facet（业务域），原样显示 */
 export function metricCategoryLabel(v?: string | null): string {
   const raw = String(v ?? '').trim();
   if (!raw || raw === DICT_UNSET) return '未分类';
-  return METRIC_TYPE_LABELS[raw] || raw;
+  return raw;
 }
 
 export function dimensionCategoryLabel(v?: string | null): string {

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import WorkspaceLayout from '../WorkspaceLayout';
@@ -14,15 +14,16 @@ const ws = { id: 7, name: '空间 7', user_default: true } as Workspace;
 
 function Path() { const location = useLocation(); return <output data-testid="path">{location.pathname}</output>; }
 
-function renderLayout() {
+function renderLayout(path = '/ws/7/chat') {
   return render(
     <TooltipProvider>
-      <MemoryRouter initialEntries={['/ws/7/chat']}>
+      <MemoryRouter initialEntries={[path]}>
         <Path />
         <Routes>
           <Route path="/ws/:workspaceId" element={<WorkspaceLayout />}>
             <Route path="chat" element={<div>对话主体</div>} />
             <Route path="dashboards" element={<div>看板清单</div>} />
+            <Route path="dashboards/:dashboardId" element={<div>看板详情</div>} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -41,6 +42,17 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('WorkspaceLayout 菜单按权限码过滤', () => {
+  // 子页顶栏面包屑：看板详情这类自带页头的页面，顶栏不再空成一条白带
+  it('菜单子页在顶栏显示当前菜单面包屑，菜单根页不重复显示', () => {
+    usePermissionStore.setState({ loaded: true, unrestricted: true, perms: null, allowedMenus: null });
+    const sub = renderLayout('/ws/7/dashboards/3');
+    const bar = sub.container.querySelector('header')!;
+    expect(within(bar).getByText('数据看板')).toBeInTheDocument();
+    sub.unmount();
+    const root = renderLayout('/ws/7/dashboards');
+    expect(within(root.container.querySelector('header')!).queryByText('数据看板')).toBeNull();
+  });
+
   it('未授权菜单不渲染（workspace:chat/reports/scheduled 口径）', () => {
     usePermissionStore.setState({ loaded: true, unrestricted: false, allowedMenus: ['workspace:chat'], perms: [] });
     renderLayout();

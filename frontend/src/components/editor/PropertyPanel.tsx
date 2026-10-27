@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { PAGE_COLUMNS, PAGE_LABELS, PAGE_ROW, pageGap, pageMinHeight, pageRows, type PageBreakpoint } from '@/lib/dashboardPageLayout';
+import { DEFAULT_PAGE_GAP, PAGE_COLUMNS, PAGE_GAP_MAX, PAGE_GAP_MIN, PAGE_LABELS, PAGE_ROW, pageColumnPx, pageGap, pageMinHeight, pagePixelRect, pageRows, type PageBreakpoint, type PageGaps } from '@/lib/dashboardPageLayout';
 import { naturalSizeOf, type Rect } from '@/lib/dashboardDesign';
 import {
   Settings, BarChart3, Move, Paintbrush, Monitor, Grid3x3, Palette, PanelRightClose,
@@ -30,6 +30,9 @@ interface Props {
   pageBreakpoint?: PageBreakpoint;
   pageRect?: Rect;
   onResetPage?: () => void;
+  /** 页面网格间距（看板级，按断点）：1 行 = PAGE_ROW px，间距只作用于列之间与自动避让留白 */
+  pageGaps?: PageGaps;
+  onPageGapChange?: (gap: number) => void;
   selectedElementType: ElementType;
   canvasSize: { width: number; height: number };
   setCanvasSize: (s: { width: number; height: number }) => void;
@@ -58,7 +61,7 @@ export default function PropertyPanel({
   canvasSize, setCanvasSize, canvasBgColor, setCanvasBgColor,
   gridSize, setGridSize, scale, setScale, allCharts,
   isNewChart, onPropertyChange, onPositionChange, onWidgetConfigChange,
-  onDelete, onChartConfig, pageBreakpoint, pageRect, onResetPage, tab, onTab, pageParams, onCreatePageParam,
+  onDelete, onChartConfig, pageBreakpoint, pageRect, pageGaps, onPageGapChange, onResetPage, tab, onTab, pageParams, onCreatePageParam,
 }: Props) {
   const [narrow, setNarrow] = useState(() => window.innerWidth < 1024);
   useEffect(() => {
@@ -166,9 +169,13 @@ export default function PropertyPanel({
                 ))}
               </div>
               {/* 不设下限：大小由人主动控制；提示只交代网格量子，不静默夹值 */}
+              {pageBreakpoint && pageRect && <p className="text-[10px] text-muted-foreground font-mono">
+                ≈ {Math.round(pagePixelRect(pageRect, pageBreakpoint, pageGaps).w)} × {Math.round(pagePixelRect(pageRect, pageBreakpoint, pageGaps).h)} px
+                （1 列 ≈ {Math.round(pageColumnPx(pageBreakpoint, pageGaps))}px · 1 行 = {PAGE_ROW}px）
+              </p>}
               <p className="text-[10px] text-muted-foreground">
                 {pageBreakpoint
-                  ? `不限制最小值（网格以 1 行 ≈ ${PAGE_ROW + pageGap(pageBreakpoint)}px 为量子）；本类型建议 ${pageRows(pageMinHeight(selectedChart.chart_type), pageBreakpoint)} 行起步，可自由缩小。`
+                  ? `不限制最小值（宽度步进 1 列 ≈ ${Math.round(pageColumnPx(pageBreakpoint, pageGaps))}px，高度步进 1 行 = ${PAGE_ROW}px）；本类型建议 ${pageRows(pageMinHeight(selectedChart.chart_type))} 行起步，可自由缩小。`
                   : `不限制最小值，大小由你控制；本类型建议 ${naturalSizeOf(selectedChart.chart_type).w}×${naturalSizeOf(selectedChart.chart_type).h}px 起步。`}
               </p>
             </div><Separator /></>}
@@ -205,8 +212,23 @@ export default function PropertyPanel({
             <div className="h-2" />
           </div>
         ) : pageBreakpoint ? <div className="space-y-3 text-sm">
-          <p>{PAGE_LABELS[pageBreakpoint]} · {PAGE_COLUMNS[pageBreakpoint]} 列 · 间距 {pageGap(pageBreakpoint)}px</p>
-          <p className="text-xs text-muted-foreground">基础行高 {PAGE_ROW}px；图表高度包含行间距。仅修改当前断点，未调整的平板和手机布局从桌面派生。</p>
+          <p>{PAGE_LABELS[pageBreakpoint]} · {PAGE_COLUMNS[pageBreakpoint]} 列 · 列宽 ≈ {Math.round(pageColumnPx(pageBreakpoint, pageGaps))}px</p>
+          {/* 间距从“只读文本”变成真控件：滑杆粗调 + 数字框精调（0–64px，1px 一档） */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs">图表间距</Label>
+              <span className="font-mono text-[10px] text-muted-foreground">{pageGap(pageBreakpoint, pageGaps)}px</span>
+            </div>
+            <Slider aria-label={`${PAGE_LABELS[pageBreakpoint]}图表间距滑杆`} min={PAGE_GAP_MIN} max={32} step={2}
+              value={[pageGap(pageBreakpoint, pageGaps)]} onValueChange={([v]) => onPageGapChange?.(v)} />
+            <div className="flex items-center gap-2">
+              <Input type="number" className="h-7 w-20 text-xs" min={PAGE_GAP_MIN} max={PAGE_GAP_MAX} step={1}
+                aria-label={`${PAGE_LABELS[pageBreakpoint]}图表间距（像素）`} value={pageGap(pageBreakpoint, pageGaps)}
+                onChange={e => { const value = Number(e.target.value); if (Number.isFinite(value)) onPageGapChange?.(value); }} />
+              <span className="text-[10px] text-muted-foreground">0–{PAGE_GAP_MAX}px 精调（默认 {DEFAULT_PAGE_GAP[pageBreakpoint]}）</span>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">1 行 = {PAGE_ROW}px（高度步进）、1 列 ≈ {Math.round(pageColumnPx(pageBreakpoint, pageGaps))}px（宽度步进）；间距只作用于列之间与自动避让留白，不再把卡片高度拉扇。仅修改当前断点，未调整的平板和手机布局从桌面派生。</p>
           <Button variant="outline" size="sm" onClick={onResetPage}>恢复当前断点自动适配</Button>
         </div> : (
           /* Canvas Properties */
@@ -743,10 +765,11 @@ function CanvasProperties({
         </div>
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <Label className="text-xs">网格大小</Label>
+            <Label className="text-xs">网格大小（吸附步进）</Label>
             <span className="text-xs text-muted-foreground">{gridSize}px</span>
           </div>
-          <Slider min={10} max={50} step={5} value={[gridSize]} onValueChange={([v]) => setGridSize(v)} />
+          {/* 步进从 5px 一档改为 1px，下限从 10px 降到 2px：吸附格栅要能小幅调细 */}
+          <Slider min={2} max={50} step={1} value={[gridSize]} onValueChange={([v]) => setGridSize(v)} />
         </div>
       </div>
 

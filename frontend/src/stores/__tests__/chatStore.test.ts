@@ -891,3 +891,123 @@ describe('asBotsLoaded — 区分“未加载”与“没配 AS-BOT”', () => {
     expect(useChatStore.getState().asBotsLoaded).toBe(false)
   })
 })
+
+/**
+ * 中断/失败回合的「已输出内容」保护。
+ *
+ * 真实缺陷：执行超时后后端发 error + done(带 error)，前端先把 error 事件当异常 throw、
+ * 又把 done 的错误分支写成 content: ''，于是用户读到一半的答案整段消失，
+ * 气泡里只剩一张「执行超时或中断」错误卡。
+ * 契约：错误必须显式暴露（错误卡照旧），但中断前已流式输出的正文必须保留并落库。
+ */
+describe('中断回合保留已输出内容（不只展示最后的错误）', () => {
+  const ERR = '执行超时或中断，请检查会话状态；不会自动重放请求'
+
+  beforeEach(() => {
+    useChatStore.setState({
+      currentConvId: 11, messages: [], loading: false, stopping: false,
+      abortController: null, pipelineMode: null, selectedDsId: 0, selectedModelId: null,
+      selectedWorkspaceId: 0, executorSessionId: null,
+    })
+    mockClient.put.mockReset()
+    mockClient.put.mockResolvedValue({})
+  })
+
+  /** failAfter: 读完前 n 个事件后抛错，模拟连接中断 */
+  function makeSse(events: Array<[string, unknown]>, failAfter = Infinity) {
+    const enc = new TextEncoder()
+    const chunks = events.map(([ev, data]) => `event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`)
+    let i = 0
+    return {
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: async () => {
+            if (i >= failAfter) throw new Error('network boom')
+            return i < chunks.length
+              ? { done: false, value: enc.encode(chunks[i++]) }
+              : { done: true, value: undefined }
+          },
+          cancel: async () => {},
+        }),
+      },
+    }
+  }
+
+  function storedAssistant() {
+    const put = mockClient.put.mock.calls.find(c => String(c[0]).startsWith('/chat/conversations/'))
+    expect(put).toBeTruthy()
+    return (put![1] as any).messages.find((m: any) => m.role === 'assistant')
+  }
+
+  it('error 事件 + done(带 error)：正文保留，错误卡只补充原因', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => makeSse([
+      ['token', { text: '根据案例数据，' }],
+      ['token', { text: '近 7 天共 128 单…' }],
+      ['error', { message: ERR }],
+      ['done', { intent: 'agent', reply: ERR, error: ERR, handled_by: 'agent',
+        tool_calls: [{ step: 1, tool: 'execute_sql' }] }],
+    ])))
+    try {
+      await useChatStore.getState().sendMessage('近7天案例数量')
+      const asst = useChatStore.getState().messages.slice(-1)[0]
+      expect(asst.content).toBe('根据案例数据，近 7 天共 128 单…')
+      expect(asst.error).toContain(ERR)
+      // 错误文案不再以「正常回答」的身份重复承载
+      expect(asst.reply).toBeUndefined()
+      // done 的元信息不能因为提前 throw 而丢
+      expect(asst.handledBy).toBe('agent')
+      expect(asst.tool_calls).toHaveLength(1)
+
+      const stored = storedAssistant()
+      expect(stored.content).toBe('根据案例数据，近 7 天共 128 单…')
+      expect(stored.error).toContain(ERR)
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('流未正常结束（无 done）：已输出正文保留且错误照说', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => makeSse([
+      ['token', { text: '前半段答案' }],
+    ])))
+    try {
+      await useChatStore.getState().sendMessage('讲个长故事')
+      const asst = useChatStore.getState().messages.slice(-1)[0]
+      expect(asst.content).toBe('前半段答案')
+      expect(asst.error).toContain('未收到完成事件')
+      expect(storedAssistant().content).toBe('前半段答案')
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('读流报异常：合并进已有流式气泡，不重写成空壳', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => makeSse([
+      ['token', { text: '已经写出来的结论' }],
+      ['progress', { stage: 'tool', message: '正在执行查询' }],
+    ], 1)))
+    try {
+      await useChatStore.getState().sendMessage('继续')
+      const msgs = useChatStore.getState().messages
+      const asst = msgs[msgs.length - 1]
+      expect(asst.role).toBe('assistant')
+      expect(asst.content).toBe('已经写出来的结论')
+      expect(asst.error).toContain('network boom')
+      // 不新增第二个空 assistant 气泡
+      expect(msgs.filter(m => m.role === 'assistant')).toHaveLength(1)
+      expect(storedAssistant().content).toBe('已经写出来的结论')
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('AS-BOT 面板同口径：done 带 error 不清空正文', async () => {
+    useAsBotStore.setState({ conversationId: 12, messages: [], loading: false,
+      stopping: false, abortController: null })
+    vi.stubGlobal('fetch', vi.fn(async () => makeSse([
+      ['token', { text: '系统当前有 3 个数据源' }],
+      ['done', { intent: 'agent', reply: ERR, error: ERR, handled_by: 'agent' }],
+    ])))
+    try {
+      await useAsBotStore.getState().sendMessage('现在有几个数据源')
+      const asst = useAsBotStore.getState().messages.slice(-1)[0]
+      expect(asst.content).toBe('系统当前有 3 个数据源')
+      expect(asst.error).toContain(ERR)
+    } finally { vi.unstubAllGlobals() }
+  })
+})

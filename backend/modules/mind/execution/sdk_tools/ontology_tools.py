@@ -337,6 +337,9 @@ async def save_ontology_draft(args):
 
 async def save_ontology_model(args):
     """保存本体模型编辑 — 菜单与功能权限码把关后直执行。"""
+    from backend.modules.mind.execution.sdk_tools.context import get_execution_context
+
+    ctx = get_execution_context()
     model_id = int(args.get("model_id") or 0)
     json_content = args.get("json_content")
 
@@ -345,24 +348,214 @@ async def save_ontology_model(args):
     if not json_content:
         return _text({"error": "json_content 必填"}, is_error=True)
     try:
-        _assert_system_model(model_id)   # 域约束：仅系统本体（执行前拒）
-    except ValueError as e:
-        return _text({"error": str(e)}, is_error=True)
-    try:
+        # 2026-10-26 拍板：不再按 kind 硬拒，改按权限码裁决（ontology:save）。
+        # 原 _assert_system_model 会把业务本体一拒了之，已废弃。
         _require_write_perm("ontology:save", "保存本体模型")
     except PermissionError as e:
         return _text({"error": str(e)}, is_error=True)
 
     def _run():
         from backend.modules.catalog.services import ontology_service
-        return ontology_service.save_draft(
+        # 走**只存草案**：不碰生效内容、不级联，等 publish 才生效（两段式第一段）
+        return ontology_service.save_draft_only(
             model_id,
             json_content if isinstance(json_content, str) else json.dumps(json_content, ensure_ascii=False),
             name=args.get("name"),
+            created_by=str(getattr(ctx, "username", "") or ""),
         )
 
     model = await asyncio.to_thread(_run)
     return _text({"success": True, "model_id": model["id"]})
+
+
+def _dict_publish_decision(args, ctx, row_kind: str):
+    """字典写的发布判定：默认**不生效**，要生效必须显式发布且持 ontology:publish。
+
+    为什么：新建的指标/维度会立即进入 get_metrics / planner / binding_resolver
+    （它们都按 is_active=1 过滤），口径错了（如挂在错对象上、恒返回 0）会直接污染线上取数。
+    未发布的行以 is_active=0 落库：列表页可见可编，但语义检索/查询拿不到，不影响现有功能。
+    """
+    if not args.get("publish"):
+        return 0, (f"{row_kind}行已落库为**未发布**状态（is_active=0）："
+                   f"不参与语义检索与语义查询，不影响现有取数；"
+                   f"确认口径无误后传 publish=true 才会生效")
+    try:
+        _require_write_perm("ontology:publish", f"发布{row_kind}字典行")
+    except PermissionError as e:
+        raise ValueError(str(e)) from None
+    return 1, f"{row_kind}行已发布生效（is_active=1），对语义检索与查询可见"
+
+
+async def add_ontology_objects(args):
+    """在本体模型中**新增对象**（只增不删，落草案）— 权限码把关后直执行。
+
+    与 save_ontology_model 的区别：本工具只追加对象，不接受删除/裁剪已有定义；
+    改动只存草案，需 publish_ontology_model 发布才生效。
+    """
+    from backend.modules.mind.execution.sdk_tools.context import get_execution_context
+
+    ctx = get_execution_context()
+    model_id = int(args.get("model_id") or 0)
+    objects = args.get("objects")
+    if not model_id:
+        return _text({"error": "model_id 必填"}, is_error=True)
+    if isinstance(objects, str):
+        try:
+            objects = json.loads(objects)
+        except ValueError as e:
+            return _text({"error": f"objects 不是合法 JSON: {e}"}, is_error=True)
+    if not isinstance(objects, list) or not objects:
+        return _text({"error": "objects 必填（要新增的对象数组）"}, is_error=True)
+    bad = [o for o in objects if not isinstance(o, dict) or not str(o.get("key") or "").strip()]
+    if bad:
+        return _text({"error": "每个对象必须含非空 key"}, is_error=True)
+    try:
+        _reject_datasource_arg(args)
+        _require_write_perm("ontology:create", "新增本体对象")
+    except (ValueError, PermissionError) as e:
+        return _text({"error": str(e)}, is_error=True)
+
+    def _run():
+        from backend.modules.catalog.services import ontology_service
+        import copy
+        model = ontology_service.get_model(model_id)
+        if not model:
+            raise ValueError("模型不存在")
+        doc = json.loads(model.get("json_content") or "{}")
+        if not isinstance(doc, dict):
+            doc = {}
+        merged = copy.deepcopy(doc)
+        existing = {str(o.get("key") or "").strip().lower(): o for o in (merged.get("objects") or [])}
+        added, skipped = [], []
+        for obj in objects:
+            key = str(obj.get("key") or "").strip()
+            if key.lower() in existing:
+                # 已存在的对象**不覆盖**（只增不删；修改请走 save_ontology_model）
+                skipped.append(key)
+                continue
+            merged.setdefault("objects", []).append(obj)
+            existing[key.lower()] = obj
+            added.append(key)
+        if not added:
+            return {"added": [], "skipped": skipped,
+                    "note": "所有对象均已存在；如需修改已有对象请用 save_ontology_model"}
+        saved = ontology_service.save_draft_only(
+            model_id, json.dumps(merged, ensure_ascii=False),
+            created_by=str(getattr(ctx, "username", "") or ""))
+        return {"added": added, "skipped": skipped, "model_id": saved["id"],
+                "draft_pending": True,
+                "note": "对象已加入草案，未生效；需发布后才级联到对象表/图谱/知识库"}
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except ValueError as e:
+        return _text({"error": str(e)}, is_error=True)
+    return _text(result)
+
+
+async def update_ontology_object(args):
+    """按 key **新增或覆盖单个对象**（服务端合并，落草案）。
+
+    为什么需要它：读接口出于脉敏只回对象摘要（properties 为空），而 save_ontology_model
+    要求提交**全量 JSON** —— 这个读写不对称使 AS-BOT 根本无法安全地改一个对象
+    （拿不到全量就没法重建，拿摘要重建会抹掉其他对象的属性/关系）。
+    本工具只替换指定 key 的那一个对象，其余对象由服务端原样保留，
+    **结构上不可能写坏其他对象**，因此不需要调用方持有全量定义。
+    """
+    from backend.modules.mind.execution.sdk_tools.context import get_execution_context
+
+    ctx = get_execution_context()
+    model_id = int(args.get("model_id") or 0)
+    obj = args.get("object")
+    if isinstance(obj, str):
+        try:
+            obj = json.loads(obj)
+        except ValueError as e:
+            return _text({"error": f"object 不是合法 JSON: {e}"}, is_error=True)
+    if not model_id:
+        return _text({"error": "model_id 必填"}, is_error=True)
+    if not isinstance(obj, dict) or not str(obj.get("key") or "").strip():
+        return _text({"error": "object 必填且需含非空 key"}, is_error=True)
+    try:
+        _reject_datasource_arg(args)
+        _require_write_perm("ontology:save", "修改本体对象")
+    except (ValueError, PermissionError) as e:
+        return _text({"error": str(e)}, is_error=True)
+
+    def _run():
+        from backend.modules.catalog.services import ontology_service
+        import copy
+        model = ontology_service.get_model(model_id)
+        if not model:
+            raise ValueError("模型不存在")
+        # 已有草案则基于草案合并（连续改多个对象不互相覆盖）
+        base_json = ontology_service.get_draft(model_id).get("draft") or model.get("json_content") or "{}"
+        doc = json.loads(base_json)
+        if not isinstance(doc, dict):
+            doc = {}
+        objects = copy.deepcopy(doc.get("objects") or [])
+        key = str(obj.get("key") or "").strip()
+        idx = next((i for i, o in enumerate(objects)
+                    if str(o.get("key") or "").strip().lower() == key.lower()), None)
+        if idx is None:
+            objects.append(obj)
+            mode = "created"
+        else:
+            objects[idx] = obj
+            mode = "updated"
+        doc["objects"] = objects
+        saved = ontology_service.save_draft_only(
+            model_id, json.dumps(doc, ensure_ascii=False),
+            created_by=str(getattr(ctx, "username", "") or ""))
+        return {"mode": mode, "key": key, "model_id": saved["id"],
+                "object_count": len(objects), "draft_pending": True,
+                "note": f"对象「{key}」已{('新建' if mode == 'created' else '更新')}到草案，"
+                        f"其余 {len(objects) - 1} 个对象未动；需 publish_ontology_model 发布才生效"}
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except ValueError as e:
+        return _text({"error": str(e)}, is_error=True)
+    return _text(result)
+
+
+async def publish_ontology_model(args):
+    """发布本体草案（生效 + 级联）— 权限码把关后直执行。
+
+    **发布前必须先用 ask_user 向用户确认**（用户拍板：发布在 chat 中确认）。
+    未带 confirmed=true 时本工具不会发布，只回提示，供你先去问用户。
+    """
+    from backend.modules.mind.execution.sdk_tools.context import get_execution_context
+
+    ctx = get_execution_context()
+    model_id = int(args.get("model_id") or 0)
+    if not model_id:
+        return _text({"error": "model_id 必填"}, is_error=True)
+    if not args.get("confirmed"):
+        return _text({
+            "needs_user_confirmation": True,
+            "model_id": model_id,
+            "note": "发布会把草案提升为生效版并级联（重展开对象/重建图谱/同步知识库）。"
+                    "请先用 ask_user 向用户确认，拿到同意后再带 confirmed=true 调用本工具",
+        })
+    try:
+        _reject_datasource_arg(args)
+        _require_write_perm("ontology:publish", "发布本体草案")
+    except (ValueError, PermissionError) as e:
+        return _text({"error": str(e)}, is_error=True)
+
+    def _run():
+        from backend.modules.catalog.services import ontology_service
+        return ontology_service.publish_draft(
+            model_id, published_by=str(getattr(ctx, "username", "") or ""))
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except ValueError as e:
+        return _text({"error": str(e)}, is_error=True)
+    return _text({"success": True, "model_id": result.get("id"),
+                  "object_count": result.get("object_count"),
+                  "note": "已发布生效，并完成级联（对象表/图谱/知识库）"})
 
 
 async def activate_ontology_model(args):
@@ -392,7 +585,8 @@ async def activate_ontology_model(args):
 async def import_ontology_yaml(args):
     """导入 Palantir YAML — 菜单与功能权限码把关后直执行。
 
-    同 generate_ontology_draft：限系统本体域，不接受 LLM 传数据源标识。
+    与 generate/save_ontology_draft 同源：目标由服务端按会话绑定注入，**不接受 LLM 传数据源标识**；
+    业务源需「生成本体模型」任务会话绑定（权限码 ontology:import 把关，无码即拒）。
     """
     from backend.modules.mind.execution.sdk_tools.context import get_execution_context
 
@@ -511,6 +705,15 @@ async def save_metric(args):
     payload["agg_type"] = str(args.get("agg_type") or "").strip().lower()
     payload["unit"] = str(args.get("unit") or "").strip()
     payload["category"] = str(args.get("category") or "").strip() or "业务"
+    # 口径标签（基础/衍生/复合等）与业务域分类是两个维度：category 只存业务域，
+    # 标签落 tags 列，不得再往 category 里写 basic/derived/composite。
+    tags = args.get("tags")
+    if isinstance(tags, str):
+        try:
+            tags = json.loads(tags)
+        except ValueError:
+            tags = [s.strip() for s in tags.split(",") if s.strip()]
+    payload["tags"] = [str(t).strip() for t in tags if str(t).strip()] if isinstance(tags, list) else []
     missing = [k for k in ("display_name", "bound_object_key", "formula", "agg_type")
                if not payload.get(k)]
     if missing:
@@ -518,6 +721,10 @@ async def save_metric(args):
                       + "（口径唯一登记在字典，formula 与 agg_type 不可省）"}, is_error=True)
 
     metric_id = int(args.get("id") or 0)
+    try:
+        payload["is_active"], publish_note = _dict_publish_decision(args, ctx, "指标")
+    except ValueError as e:
+        return _text({"error": str(e)}, is_error=True)
 
     def _run():
         from backend.modules.catalog.services import metrics_service
@@ -533,11 +740,12 @@ async def save_metric(args):
         return _text({"error": str(e)}, is_error=True)
 
     out = {"success": True, "id": row_id, "metric": row.get("name"),
+           "is_active": bool(payload["is_active"]),
            "target_table_bound": bool(row.get("target_table"))}
     if not out["target_table_bound"]:
         out["warning"] = ("该指标未能自动绑定到归属对象的单一主表（formula 不是合法单表聚合或"
                           "对象主表不唯一），语义层可能无法直接编译；请在建模页核对口径。")
-    out["note"] = "字典行已落库；图谱与云端知识库需用户在建模页显式点「同步图谱/同步知识库」才会更新"
+    out["note"] = publish_note + "；图谱与云端知识库需用户在建模页显式点「同步图谱/同步知识库」才会更新"
     return _text(out)
 
 
@@ -567,6 +775,15 @@ async def save_dimension(args):
     missing = [k for k in ("display_name", "bound_object_key") if not payload.get(k)]
     if missing:
         return _text({"error": "维度必填项缺失: " + ", ".join(missing)}, is_error=True)
+    if not prop_name:
+        # 不传 property_name 会落成无物理列的空维度，取数时永远解析不出列（静默失效）。
+        # 维度必须含 target_column（ontology-modeling §3），故直接拒。
+        return _text({"error": "必须传 property_name（对象属性的业务中文名，如 创建时间）："
+                                "维度靠它解析物理列，不传会落成取数不可用的空维度"}, is_error=True)
+    try:
+        payload["is_active"], publish_note = _dict_publish_decision(args, ctx, "维度")
+    except ValueError as e:
+        return _text({"error": str(e)}, is_error=True)
 
     def _resolve_and_run():
         from backend.modules.catalog.services import metrics_service
@@ -593,8 +810,9 @@ async def save_dimension(args):
         return _text({"error": str(e)}, is_error=True)
 
     return _text({"success": True, "id": row_id, "dimension": row.get("name"),
+                  "is_active": bool(payload["is_active"]),
                   "bound_column": bool(row.get("target_column")),
-                  "note": "字典行已落库；图谱与云端知识库需用户在建模页显式点「同步图谱/同步知识库」才会更新"})
+                  "note": publish_note + "；图谱与云端知识库需用户在建模页显式点「同步图谱/同步知识库」才会更新"})
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -726,13 +944,62 @@ TOOL_SPECS = [
         "readonly": False,
     },
     {
+        "name": "add_ontology_objects",
+        "description": (
+            "在本体模型中**新增对象**（只增不删，落草案）。传 model_id 与 objects 数组"
+            "（每项含 key/display_name/aliases/description/properties）。"
+            "已存在的同 key 对象不会被覆盖（只增不删，修改请用 save_ontology_model）。"
+            "改动只存**草案**，需 publish_ontology_model 发布后才生效并级联。"
+            "不接受数据源参数；物理列映射不由你手敲，由服务端对着元数据生成/校验。"
+        ),
+        "schema": {
+            "model_id": Annotated[int, "目标本体模型 ID"],
+            "objects": Annotated[list, "要新增的对象数组（每项含 key/display_name/properties 等）"],
+        },
+        "handler": add_ontology_objects,
+        "readonly": False,
+    },
+    {
+        "name": "update_ontology_object",
+        "description": (
+            "按 key **新增或覆盖单个本体对象**（服务端合并，只动这一个对象）。"
+            "传 model_id 与 object（含 key/display_name/aliases/description/properties/links）。"
+            "**这是修改已有对象的首选工具**：不需要你持有模型的完整 JSON，"
+            "其余对象由服务端原样保留，不会抹掉它们的属性与关系。"
+            "改动只存**草案**，需 publish_ontology_model 发布后才生效。不接受数据源参数。"
+        ),
+        "schema": {
+            "model_id": Annotated[int, "目标本体模型 ID"],
+            "object": Annotated[dict, "要新建/覆盖的对象定义（必含 key）"],
+        },
+        "handler": update_ontology_object,
+        "readonly": False,
+    },
+    {
+        "name": "publish_ontology_model",
+        "description": (
+            "发布本体草案（生效 + 级联：重展开对象/重建图谱/同步知识库）。"
+            "**发布前必须先用 ask_user 向用户确认**：不带 confirmed=true 调用只会返回"
+            "确认提示，拿到用户同意后再带 confirmed=true 重新调用。"
+            "需要 ontology:publish 权限。生效版在草案写入后被他人改动时会拒发布（不覆盖他人工作）。"
+        ),
+        "schema": {
+            "model_id": Annotated[int, "目标本体模型 ID"],
+            "confirmed": Annotated[Optional[bool], "是否已通过 ask_user 得到用户确认；未确认时传 false/省略，不会发布"],
+        },
+        "handler": publish_ontology_model,
+        "readonly": False,
+    },
+    {
         "name": "save_metric",
         "description": (
             "创建/更新**指标字典行**（adh_metrics，指标口径的唯一权威）。传 id 则更新，不传则创建。"
             "必填：display_name(业务名)、bound_object_key(归属对象，必须是已激活对象)、"
             "formula(聚合口径，列名只能来自已查到的表结构/对象属性，不得臆造)、"
             "agg_type(sum/count/avg/min/max/custom)。可选：name(英文标识)、unit、description、"
-            "aliases、category。不接受数据源参数（字典是跨源口径，归属由对象决定）。"
+            "aliases、category(业务域分类，如 可观测/客户/案例，默认 业务)、tags(口径标签，如 基础/衍生/复合)。"
+            "不接受数据源参数（字典是跨源口径，归属由对象决定）。"
+            "category 与 tags 是两个维度：业务域写进 category，基础/衍生/复合这类标签写进 tags，互不混用。"
             "只落库+审计；图谱与云端知识库的级联由用户在建模页显式触发。"
         ),
         "schema": {
@@ -745,7 +1012,9 @@ TOOL_SPECS = [
             "unit": Annotated[Optional[str], "单位（例/人/元）"],
             "description": Annotated[Optional[str], "口径文字说明"],
             "aliases": Annotated[Optional[list], "别名清单（同义词）"],
-            "category": Annotated[Optional[str], "分类（默认 业务）"],
+            "category": Annotated[Optional[str], "业务域分类（如 可观测/客户/案例；默认 业务）"],
+            "tags": Annotated[Optional[list], "口径标签（如 基础/衍生/复合；与业务域分类正交）"],
+            "publish": Annotated[Optional[bool], "true=立即发布生效（需 ontology:publish）；省略/false=只落库为未发布，不参与语义检索与查询"],
         },
         "handler": save_metric,
         "readonly": False,
@@ -770,6 +1039,7 @@ TOOL_SPECS = [
             "aliases": Annotated[Optional[list], "别名清单（同义词）"],
             "value_labels": Annotated[Optional[dict], "枚举码→业务标签（与本体 enum / 字典 value_labels 同构）"],
             "description": Annotated[Optional[str], "维度说明"],
+            "publish": Annotated[Optional[bool], "true=立即发布生效（需 ontology:publish）；省略/false=只落库为未发布，不参与语义检索与查询"],
         },
         "handler": save_dimension,
         "readonly": False,

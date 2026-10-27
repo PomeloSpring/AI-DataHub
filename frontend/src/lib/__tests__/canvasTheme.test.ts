@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { CANVAS_COLORS, backdropStyle, canvasRectToScreen, cornerDotStyle, dotBackgroundStyle, gridBackgroundStyle } from '../canvasTheme';
+import { CANVAS_COLORS, backdropStyle, canvasRectToScreen, cornerDotStyle, dotBackgroundStyle, fitBackgroundSize, gridBackgroundStyle } from '../canvasTheme';
 
 const srcRoot = path.resolve(__dirname, '../..');
 const read = (rel: string) => fs.readFileSync(path.join(srcRoot, rel), 'utf8');
@@ -80,5 +80,25 @@ describe('静态护栏：画布覆盖层不得另写配色', () => {
   });
   it.each(files)('%s 不再用 scale(1/scale) 反向补偿覆盖层', file => {
     expect(read(file)).not.toMatch(/scale\(\s*1\s*\/\s*scale\s*\)/);
+  });
+});
+
+// 缩略图上的 px 平铺图案是按设计宽画的，原样落到 400px 宽的卡片上会密成一片（“背景重复”）
+describe('fitBackgroundSize：px 平铺尺寸换算为画布占比', () => {
+  const canvas = { width: 1440, height: 900 };
+  it('px 两值换算成 W/H 百分比，随缩略图等比缩小', () => {
+    const [w, h] = fitBackgroundSize('40px 40px', canvas)!.split(' ');
+    expect(parseFloat(w)).toBeCloseTo(40 / 1440 * 100);
+    expect(parseFloat(h)).toBeCloseTo(40 / 900 * 100);
+  });
+  it.each(['22px 22px', '40px 40px'])('%s 不再以 px 单位输出', size => {
+    expect(fitBackgroundSize(size, canvas)).not.toMatch(/px/);
+  });
+  it('百分比/cover/contain/auto/空值原样透传（不猜）', () => {
+    expect(fitBackgroundSize('50% 50%', canvas)).toBe('50% 50%');
+    expect(fitBackgroundSize('cover', canvas)).toBe('cover');
+    expect(fitBackgroundSize('auto', canvas)).toBe('auto');
+    expect(fitBackgroundSize(undefined, canvas)).toBeUndefined();
+    expect(fitBackgroundSize('none', canvas)).toBe('none');
   });
 });

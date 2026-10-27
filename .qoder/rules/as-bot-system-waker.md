@@ -16,9 +16,20 @@ description: AS-BOT=角色智能体（与智能问数同载体、不同入口）
 - 无 `system` 组授权（如 analyst/viewer 形态）：仅业务域（跨源业务本体 + 本绑定源的源本体），会话源必须在用户角色授权集内。
 - 无执行运行时（如设计服务显式传 `resource_scope` 的调用）一律按业务域处理。系统运营问题**必须**走 `system` 工具组回答，严禁拿业务知识充数（`no-silent-degradation.md`）——由 prompt 引导 + 检索来源分桶承担，不是检索硬限定。
 
-## 2. 本体写域约束（红线）
-- AS-BOT 本体写动作（generate/save/activate/import_yaml）只可作用于**系统本体**（目标模型 `kind='system'`，执行前拒，fail-closed），且**不接受** LLM 传业务数据源标识（`_reject_datasource_arg`）。
-- 业务侧建模属用户在业务工作空间的操作，不经 AS-BOT 通道；域约束对 `model_id`/`datasource_id` 两种寻址方式显式覆盖，不依赖副作用碰巧挡住。
+## 2. 本体写域约束（按权限码裁决 + 草案/发布两段式）
+> **2026-10-26 用户拍板：废除「AS-BOT 不得写业务本体」的硬禁令，改为权限控制。**
+
+- **按权限码裁决**，不再按 kind 硬拒：只要调用方具备对应权限码，AS-BOT 即可写**业务本体与系统本体**。
+  新增/修改/发布各有独立权限码，由 `adh_role_perms` 把关（fail-closed：无码即拒），
+  不再用 `_assert_system_model` 一刀切拒业务模型。
+- **两段式生效**：AS-BOT 的任何本体改动只落**草案**（draft），不直接生效；
+  **发布（publish）是独立动作 + 独立权限码**，发布后才级联（重展开 objects → 重建图谱 → 同步知识库）。
+  这样权限齐备的用户可以让 AS-BOT 改本体/指标/维度/关系，但不会直接污染线上口径。
+- **UI 分工**（用户拍板）：本体建模页只暴露「新增对象」入口；**修改仅作为 AI 权限**（即 AS-BOT 通道），
+  用户侧不提供修改操作入口。发布入口对有发布权限的用户开放。
+- 仍然**不接受** LLM 传业务数据源标识（`_reject_datasource_arg`，守 §2 黑盒）。
+- 任何整份覆盖仍受 `_reject_destructive_overwrite` 保护：不得抹掉已有对象的属性/关系（宁阻断勿损毁）。
+  读接口脱敏只回对象摘要（properties 空），调用方**不得**凭摘要重建整份 JSON 提交。
 
 ## 3. 写动作唯一回路：菜单与功能权限码 + 工具授权直执行
 - 权限口径**唯一**：`adh_user_roles ⋈ adh_role_perms ⋈ adh_perm_registry.ai_access` + 涉密硬上界（`perm_link.SECRET_BOUND_*`，代码层 cap 不可被配置覆盖）；**不得另造第二套「谁能做什么」判断**。

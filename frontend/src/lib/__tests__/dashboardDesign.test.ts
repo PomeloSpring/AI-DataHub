@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   applyChartComponent, applyScreenComponent, applyLayout, chartDataKey, clampPosition,
   compatible, getCanvas, resolveChartDesign, resolveComponent, resolveDashboardDesign,
@@ -332,5 +334,45 @@ describe('导出不泄露语义 SQL', () => {
     expect(v.colorScheme).toEqual(['#1']);
     expect(v.xCol).toBeUndefined();
     expect(v.axisStyle).toEqual({ gridColor: '#000' });
+  });
+});
+
+describe('AS 风格主题包与前端白名单对齐', () => {
+  // ui-vis-library-style.md §2：字模存了的样式键必须不被剥。本用例直接读迁移 SQL，
+  // 把入库的 style_config 逐键过一遍 sanitizePack/visualConfig，防“入库即剥”这类隐形缺陷。
+  const SQL = path.resolve(__dirname, '..', '..', '..', '..', 'docker', 'mysql', 'as_style_theme_migration.sql');
+  const packs = () => {
+    const lines = fs.readFileSync(SQL, 'utf8').split('\n').filter(l => l.includes("'{\"mode\""));
+    return lines.map(l => JSON.parse(/'(\{.*\})'/.exec(l)![1]));
+  };
+
+  it('迁移里的 AS 包非空且带柱顶帽/渐隐/字模旋钮', () => {
+    const items = packs();
+    expect(items.length).toBeGreaterThanOrEqual(3);
+    expect(items.every(p => p.charts?.default?.barCap && p.charts?.default?.barFade && p.charts?.default?.axisLabelSize)).toBe(true);
+  });
+
+  it('charts/card/widgets 的每个键都能过白名单（不被剥）', () => {
+    for (const p of packs()) {
+      for (const [type, cfg] of Object.entries<any>(p.charts || {})) {
+        expect(visualConfig(cfg), `charts.${type} 被白名单剥键`).toEqual(cfg);
+      }
+      const kept = sanitizePack(p);
+      for (const key of Object.keys(p.card || {})) expect(kept.card, `card.${key} 被剥`).toHaveProperty(key);
+      for (const key of Object.keys(p.background || {})) expect(kept.background, `background.${key} 被剥`).toHaveProperty(key);
+      expect(kept.widgets?.default ?? {}, 'widgets.default 被剥').toEqual(p.widgets?.default ?? {});
+      expect(kept.palette).toEqual(p.palette);
+    }
+  });
+
+  it('亮/暗包与主题 id 反查口径一致（tp_light/tp_dark 才能被 themePackFor 命中）', () => {
+    const items = packs();
+    const light = items.find(p => p.mode === 'light')!;
+    const dark = items.find(p => p.mode === 'dark')!;
+    expect(light && dark).toBeTruthy();
+    expect(dark.card.cardBg).toBe('#1D2229');   // 素材 dark surface
+    expect(light.card.cardBg).toBe('#ffffff');  // 素材 light surface
+    expect(light.palette[0]).toBe('#0037CB');   // design-service 主色
+    expect(dark.palette[0]).toBe('#809BE5');
   });
 });

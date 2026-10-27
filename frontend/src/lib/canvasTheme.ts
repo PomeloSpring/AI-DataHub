@@ -84,6 +84,23 @@ export function dotBackgroundStyle(step: number): CSSProperties {
 }
 
 /**
+ * 缩略图背景平铺尺寸换算：px 单位的 backgroundSize（如科技风 40px 网格）是按**设计宽**画的，
+ * 直接落在 ~400px 宽的缩略图上会密成一片（反馈“背景重复”）。
+ * 换算成占画布宽高的百分比后，图案随缩略图等比缩小，与真实画布同一视觉密度。
+ * 已是百分比/cover/contain/auto 或解不出的值原样返回（不猜）。
+ */
+export function fitBackgroundSize(
+  size: string | undefined,
+  canvas: { width: number; height: number },
+): string | undefined {
+  if (!size || size === 'auto' || size.includes('%') || /cover|contain/.test(size)) return size;
+  // 带单位的长度（40px / 22pt）用 parseFloat 取值，不能 Number()（会得到 NaN）
+  const [w, h] = size.trim().split(/[\s,]+/).map(parseFloat);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return size;
+  return `${(w / canvas.width) * 100}% ${(h / canvas.height) * 100}%`;
+}
+
+/**
  * 画布坐标 → 视口屏幕坐标。
  *
  * surface 以 `left/top: 50%` + 负 margin 居中，再做 `translate(pan) scale(s)` 且

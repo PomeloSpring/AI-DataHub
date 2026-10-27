@@ -594,6 +594,11 @@ def build_generation_batches(datasource_id: int, kb_ids: list | None = None) -> 
     meta = _collect_metadata(datasource_id)
     tables = meta["tables"]
     if not tables:
+        if datasource_id <= 0:
+            # 系统域不是业务源，同步元数据也变不出表 —— 给准确指引，别把人往死胡同里带
+            raise ValueError(
+                "本会话未绑定业务数据源，无法从业务表归纳本体草案。"
+                "请在「本体建模页」发起『生成本体模型』任务后重试")
         raise ValueError(f"数据源 {datasource_id} 无有效表元数据，请先执行元数据同步")
 
     # 按 domain_tag 分批，单批不超过 BATCH_MAX_TABLES
@@ -1499,6 +1504,145 @@ def get_model(model_id: int) -> Optional[dict]:
     return _row_to_model(row) if row else None
 
 
+def _doc_fingerprint(json_content: str) -> str:
+    """生效内容指纹：发布时校验草案基线是否仍匹配（防覆盖他人改动）。"""
+    import hashlib
+    return hashlib.md5(str(json_content or "").encode("utf-8")).hexdigest()
+
+
+def save_draft_only(model_id: int, json_content: str, name: str = None,
+                    created_by: str = "") -> dict:
+    """只存草案，**不碰生效内容、不级联**（两段式第一段）。
+
+    与 save_draft 的区别：save_draft 对 active 模型会就地改内容并立即级联（重展开 objects /
+    重建图谱 / 同步知识库）；本函数只写 draft_json_content，生效口径保持不变，
+    等 publish_draft 才落地。AS-BOT 通道一律走这里。
+    """
+    model = get_model(model_id)
+    if not model:
+        raise ValueError("模型不存在")
+    if model["status"] == "archived":
+        raise ValueError("已归档模型不可编辑；如需修改请先在「版本管理」中回滚激活")
+    base = model.get("json_content") or ""
+    # 草案阶段**不做破坏性拦截**：草案不碰生效内容、不级联，且有版本管理可回滚，
+    # 写坏了也只是沙箱里的废稿。护栏移到 publish_draft/save_draft（真会生效的那一步），
+    # 否则连“先存个草案看看”都做不到，反而逼调用方去开新模型规避。
+    try:
+        doc = json.loads(json_content)
+    except ValueError as e:
+        raise ValueError(f"json_content 不是合法 JSON: {e}")
+    if not isinstance(doc, dict):
+        raise ValueError("json_content 必须是对象")
+    now = _now()
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE adh_ontology_models SET draft_json_content=%s, draft_base_stamp=%s, "
+                "draft_updated_at=%s, draft_updated_by=%s" + (", name=%s" if name else "") +
+                " WHERE id=%s",
+                ((json.dumps(doc, ensure_ascii=False), _doc_fingerprint(base), now,
+                  str(created_by or "")) + ((name,) if name else ()) + (model_id,)))
+        conn.commit()
+    out = get_model(model_id)
+    out["draft_pending"] = True
+    out["note"] = "改动已存为草案，未生效；需发布（publish）后才级联到对象表/图谱/知识库"
+    return out
+
+
+def get_draft(model_id: int) -> dict:
+    """读草案状态（供 AS-BOT 与前端展示“有无待发布改动”）。"""
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name, status, json_content, draft_json_content, "
+                        "draft_base_stamp, draft_updated_at, draft_updated_by "
+                        "FROM adh_ontology_models WHERE id=%s", (model_id,))
+            row = cur.fetchone()
+    if not row:
+        raise ValueError("模型不存在")
+    return {
+        "id": row["id"], "name": row["name"], "status": row["status"],
+        "has_draft": bool(row.get("draft_json_content")),
+        "draft_updated_at": str(row.get("draft_updated_at") or ""),
+        "draft_updated_by": row.get("draft_updated_by") or "",
+        "draft": row.get("draft_json_content"),
+    }
+
+
+def publish_draft(model_id: int, published_by: str = "") -> dict:
+    """把草案提升为生效版并级联（两段式第二段）。
+
+    并发保护：草案写入时记录了生效内容指纹；若发布前生效版已被他人改动，
+    本次发布会被拒（宁阻断勿覆盖他人工作），需重新基于最新生效版做草案。
+    """
+    model = get_model(model_id)
+    if not model:
+        raise ValueError("模型不存在")
+    # 草案列不进 _row_to_model 白名单（避免随 API 响应外泄），这里单独取
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT draft_json_content, draft_base_stamp FROM adh_ontology_models "
+                        "WHERE id=%s", (model_id,))
+            drow = cur.fetchone() or {}
+    draft = str(drow.get("draft_json_content") or "").strip()
+    if not draft:
+        raise ValueError("没有待发布的草案，无需发布")
+    base_now = _doc_fingerprint(model.get("json_content") or "")
+    if (drow.get("draft_base_stamp") or "") and drow["draft_base_stamp"] != base_now:
+        raise ValueError(
+            "生效版在草案写入后已被改动，本次发布已阻断（不覆盖他人工作）。"
+            "请基于最新生效版重新做草案后再发布")
+    # 落地 + 级联（重展开 objects / 重建图谱 / 同步知识库）
+    result = save_draft(model_id, draft)
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE adh_ontology_models SET draft_json_content=NULL, "
+                        "draft_base_stamp=NULL, draft_updated_at=NULL, draft_updated_by=NULL "
+                        "WHERE id=%s", (model_id,))
+        conn.commit()
+    result["published"] = True
+    result["published_by"] = published_by or ""
+    return result
+
+
+def _reject_destructive_overwrite(model: dict, json_content: str) -> None:
+    """整份覆盖前校验：不得无损丢失已有对象的属性/关系定义（fail-loud）。
+
+    历史风险：读接口（get_ontology_model）出于脱敏只回对象**摘要**（properties 为空数组），
+    而写接口（save_draft/save_ontology_model）要求提交完整 JSON 并整份覆盖。
+    调用方（含 AS-BOT）若凭摘要重建一份提交，会把已有对象的属性、枚举、关系定义**整份抹掉**——
+    这不是“挂错对象”，而是破坏性写入。宁阻断勿损毁。
+    """
+    try:
+        current = json.loads(model.get("json_content") or "{}")
+        incoming = json.loads(json_content or "{}")
+    except ValueError:
+        return  # JSON 非法由后续解析报错，这里不重复报
+    if not isinstance(current, dict) or not isinstance(incoming, dict):
+        return
+    cur_objs = {object_identity_key(o.get("key") or ""): o for o in (current.get("objects") or [])}
+    if not cur_objs:
+        return
+    new_objs = {object_identity_key(o.get("key") or ""): o for o in (incoming.get("objects") or [])}
+    lost_detail: list[str] = []
+    for key, old in cur_objs.items():
+        new = new_objs.get(key)
+        if new is None:
+            old_props = len(old.get("properties") or [])
+            if old_props or (old.get("links") or []):
+                lost_detail.append(f"{key}(整对象丢失，含 {old_props} 个属性)")
+            continue
+        old_p, new_p = len(old.get("properties") or []), len(new.get("properties") or [])
+        old_l, new_l = len(old.get("links") or []), len(new.get("links") or [])
+        if new_p < old_p or new_l < old_l:
+            lost_detail.append(f"{key}(属性 {old_p}→{new_p}，关系 {old_l}→{new_l})")
+    if lost_detail:
+        raise ValueError(
+            "本次提交会造成已有定义丢失，已阻断（宁阻断勿损毁）："
+            + "；".join(lost_detail[:10])
+            + "。若确需删减，请在「本体建模页」操作，或提交与现有定义等量/更完整的 JSON。"
+              "注意读接口出于脱敏只回对象摘要（properties 为空），不能拿摘要重建整份 JSON")
+
+
 def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
     """保存本体编辑（JSON 事实源），服务端重新派生 YAML/MD。
 
@@ -1511,6 +1655,7 @@ def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
         raise ValueError("模型不存在")
     if model["status"] == "archived":
         raise ValueError("已归档模型不可编辑；如需修改请在「版本管理」中回滚激活该版本")
+    _reject_destructive_overwrite(model, json_content)
 
     try:
         doc = json.loads(json_content)

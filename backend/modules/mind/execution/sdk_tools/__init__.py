@@ -73,6 +73,11 @@ TOOL_SERVER_TOOLS = {
         "save_ontology_model", "activate_ontology_model", "import_ontology_yaml",
         # 指标/维度字典写（口径唯一权威；权限码 ontology:save 把关）
         "save_metric", "save_dimension",
+        # 本体写权限化（2026-10-26 拍板）：只增不删 + 发布草案
+        # 必须在此登记，否则 make_tool 报“工具未登记授权名称”、工具不会到 AS-BOT 手上
+        "add_ontology_objects",   # 权限码 ontology:create
+        "update_ontology_object",  # 权限码 ontology:save（服务端按 key 合并，不需全量 JSON）
+        "publish_ontology_model",  # 权限码 ontology:publish（发布前需 ask_user 确认）
     ]),
     "screen": ("datahub_screen", [
         "create_data_screen", "get_data_screen", "update_data_screen_chart",

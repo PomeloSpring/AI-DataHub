@@ -18,7 +18,7 @@ import { useViewportSize } from '@/hooks/useOverlayPosition';
 import { CANVAS_COLORS, backdropStyle, canvasRectToScreen, dotBackgroundStyle } from '@/lib/canvasTheme';
 import { LIBRARY_DROP_ZONE, dragPointer, type DropGhost, type LibraryDragData } from '@/lib/editorDrag';
 import { useMergedRefs } from '@/lib/mergeRefs';
-import { PAGE_WIDTHS, PAGE_LABELS, PAGE_COLUMNS, PAGE_ROW, defaultPageSpan, nextPageRow, pageCanvasSize, pageGap, pageMinHeight, pagePixelRect, pageRows, resolvePageLayout, movePageItem, withPageRect, type PageBreakpoint } from '@/lib/dashboardPageLayout';
+import { PAGE_WIDTHS, PAGE_LABELS, PAGE_COLUMNS, PAGE_ROW, computeAlignHints, defaultPageSpan, nextPageRow, pageCanvasSize, pageColumnPx, pageGapsOf, pageMinHeight, pagePixelRect, pageRows, resolvePageLayout, movePageItem, withPageRect, type PageBreakpoint, type PageGaps } from '@/lib/dashboardPageLayout';
 import { DashboardCanvas, CanvasRulers, FittedDashboardCanvas, ResponsiveDashboardCanvas, DashboardThumbnail } from '@/components/DashboardCanvas';
 import { useCanvasInteraction, DEFAULT_CHART_SIZE, DEFAULT_WIDGET_SIZE } from '@/hooks/useCanvasInteraction';
 import { useEditorCharts } from '@/hooks/useEditorCharts';
@@ -90,9 +90,10 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
   const [preview, setPreview] = useState(false);
   const [layoutMode, setLayoutMode] = useState<'page' | 'screen'>('page');
   const [breakpoint, setBreakpoint] = useState<PageBreakpoint>('desktop');
+  // gaps 随 items 一起抬出来：间距是看板级设置，所有网格↔像素换算必须用同一份（不得逐处再取默认值）
   const pageLayout = useMemo(() => {
-    try { return { items: draftDashboard ? resolvePageLayout(draftDashboard, breakpoint) : [], error: '' }; }
-    catch (e) { return { items: [], error: e instanceof Error ? e.message : '页面布局无效' }; }
+    try { return { items: draftDashboard ? resolvePageLayout(draftDashboard, breakpoint) : [], error: '', gaps: pageGapsOf(draftDashboard?.filters) as PageGaps | undefined }; }
+    catch (e) { return { items: [], error: e instanceof Error ? e.message : '页面布局无效', gaps: undefined as PageGaps | undefined }; }
   }, [draftDashboard?.filters, allCharts, breakpoint]);
   const viewportSize = layoutMode === 'page' ? pageCanvasSize(pageLayout.items, breakpoint) : dimensions;
   const canvas = useCanvasInteraction({ allCharts, onDragEnd: charts.handleDragEnd, onResizeEnd: charts.handleResizeEnd,
@@ -179,7 +180,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
         let items = pageLayout.items;
         for (const chart of charts.selectedCharts) {
           const item = items.find(i => i.chart.id === chart.id);
-          if (item) items = movePageItem(items, chart.id, { ...item.rect, x: item.rect.x + dx, y: item.rect.y + dy }, breakpoint);
+          if (item) items = movePageItem(items, chart.id, { ...item.rect, x: item.rect.x + dx, y: item.rect.y + dy }, breakpoint, pageLayout.gaps);
         }
         charts.updatePageLayout(breakpoint, items);
       });
@@ -243,23 +244,25 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
       const pos = clampPosition({ x: point.x - size.w / 2, y: point.y - size.h / 2 }, size, dimensions, dimensions.gridSize);
       return { mode: 'screen', ...pos, w: size.w, h: size.h };
     }
-    const gap = pageGap(breakpoint), column = (PAGE_WIDTHS[breakpoint] + gap) / PAGE_COLUMNS[breakpoint], rowUnit = PAGE_ROW + gap;
-    const w = defaultPageSpan(data.item.value, breakpoint), h = pageRows(pageMinHeight(data.item.value), breakpoint);
+    const gaps = pageLayout.gaps;
+    const column = pageColumnPx(breakpoint, gaps), rowUnit = PAGE_ROW;
+    const w = defaultPageSpan(data.item.value, breakpoint, gaps), h = pageRows(pageMinHeight(data.item.value));
     return { mode: 'page', w, h, chartType: data.item.value,
       x: Math.min(PAGE_COLUMNS[breakpoint] - w, Math.max(0, Math.floor(point.x / column))),
       y: Math.max(0, Math.floor(point.y / rowUnit)) };
   };
   const addItem = (data: LibraryDragData, ghost: DropGhost | null) => {
     const { item, component } = data;
+    const gaps = pageLayout.gaps;
     if (layoutMode === 'page') {
       // rect.y/h 是**行**单位（nextPageRow 明确了这一点）；chartRect 返回的是像素，
       // 混用会把新控件放到几万行外，画布高度狂飙到 2 万像素、看起来像“拖不进画布”
       const rect = ghost && ghost.mode === 'page'
         ? { x: ghost.x, y: ghost.y, w: ghost.w, h: ghost.h }
-        : { x: 0, y: nextPageRow(pageLayout.items) + 1, w: defaultPageSpan(item.value, breakpoint), h: pageRows(pageMinHeight(item.value), breakpoint) };
+        : { x: 0, y: nextPageRow(pageLayout.items) + 1, w: defaultPageSpan(item.value, breakpoint, gaps), h: pageRows(pageMinHeight(item.value)) };
       const config = component ? applyChartComponent({}, component) : {};
       // chart.position 是大屏视图共用的像素坐标，用换算后的值回填，两个视图才对得上
-      const px = pagePixelRect(rect, breakpoint);
+      const px = pagePixelRect(rect, breakpoint, gaps);
       charts.handleAddFromPanel(item, { x: px.x, y: px.y }, withPageRect(config, breakpoint, rect));
       return;
     }
@@ -421,6 +424,14 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
           {canvas.guides.map(g => <div key={`${g.axis}-${g.value}`} className="pointer-events-none absolute z-20"
             style={{ background: CANVAS_COLORS.guide,
               ...(g.axis === 'x' ? { left: g.value, top: 0, width: 1 / canvas.scale, height: dimensions.height } : { top: g.value, left: 0, height: 1 / canvas.scale, width: dimensions.width }) }} />)}
+          {/* 大屏模式的间距读数（对齐线由上面的 canvas.guides 给）：与 page 模式同一套 computeAlignHints，
+              不另写一套“差多少 px”判断；只在拖动/缩放时出现 */}
+          {activeRect && (canvas.draggingChart != null || canvas.resizingChart != null) && computeAlignHints(
+            activeRect, allCharts.filter(c => c.id !== selectedChart?.id).map(c => chartRect(c)), dimensions,
+          ).gaps.map((g, i) => <span key={`gap-${i}`} aria-hidden
+            className={`pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded px-1 py-px font-mono text-[10px] leading-tight ${
+              g.equal ? 'bg-primary text-primary-foreground' : 'bg-background/95 text-muted-foreground ring-1 ring-border'}`}
+            style={g.axis === 'x' ? { left: (g.from + g.to) / 2, top: g.at } : { top: (g.from + g.to) / 2, left: g.at }}>{Math.round(g.value)}</span>)}
         </DashboardCanvas>
         {allCharts.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
           <div className="pointer-events-auto max-w-sm rounded-lg border bg-background/95 p-4 text-center shadow-sm">
@@ -442,14 +453,16 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
           text={activeRect ? `X ${Math.round(activeRect.x)} · Y ${Math.round(activeRect.y)} · W ${Math.round(activeRect.w)} · H ${Math.round(activeRect.h)}` : '滚轮缩放 · 空格拖动 / 中键平移 · 双击配置 · F 适应窗口'}
           extra={canvas.snapEnabled ? `自动吸附 · 网格 ${dimensions.gridSize}px · Alt 临时关闭` : '自由移动 · 吸附已关闭'} />
       </div>}
-      <PropertyPanel pageBreakpoint={layoutMode === 'page' ? breakpoint : undefined} pageRect={pageLayout.items.find(item => item.chart.id === selectedChart?.id)?.rect} onResetPage={resetPage} isOpen={rightOpen} onClose={() => setRightOpen(false)} selectedChart={selectedChart} selectedElementType={selectedElementType}
+      <PropertyPanel pageBreakpoint={layoutMode === 'page' ? breakpoint : undefined} pageRect={pageLayout.items.find(item => item.chart.id === selectedChart?.id)?.rect} pageGaps={pageLayout.gaps}
+        onPageGapChange={gapValue => charts.updatePage({ gap: { ...pageLayout.gaps, [breakpoint]: gapValue } })}
+        onResetPage={resetPage} isOpen={rightOpen} onClose={() => setRightOpen(false)} selectedChart={selectedChart} selectedElementType={selectedElementType}
         canvasSize={dimensions} setCanvasSize={size => charts.updateCanvas(size)} canvasBgColor={design.background.backgroundColor || ''}
         setCanvasBgColor={color => charts.updateCanvas({ backgroundColor: color })} gridSize={dimensions.gridSize} setGridSize={gridSize => charts.updateCanvas({ gridSize })}
         scale={canvas.scale} setScale={canvas.zoomTo} allCharts={allCharts} isNewChart={charts.isNewChart}
         onPropertyChange={charts.handlePropertyChange} onPositionChange={(id, axis, value) => {
           if (layoutMode === 'screen') { charts.handlePositionChange(id, axis, value); return; }
           const item = pageLayout.items.find(item => item.chart.id === id);
-          if (item && Number.isFinite(value)) charts.updatePageLayout(breakpoint, movePageItem(pageLayout.items, id, { ...item.rect, [axis]: value }, breakpoint));
+          if (item && Number.isFinite(value)) charts.updatePageLayout(breakpoint, movePageItem(pageLayout.items, id, { ...item.rect, [axis]: value }, breakpoint, pageLayout.gaps));
         }} onWidgetConfigChange={charts.handleWidgetConfigChange}
         onDelete={charts.handleDeleteSelected} onChartConfig={openConfig} tab={propertyTab} onTab={setPropertyTab}
         pageParams={draftDashboard.page_params || []}

@@ -280,6 +280,11 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
   ].filter(item => !('key' in item) || (item as any).always || menuAccess.allowed(toMenuKey((item as any).key)))) : [];
 
   const currentPath = location.pathname;
+  // 顶栏左侧过去只在独立模块下才填内容：看板详情这类自带页头的子页，顶栏空成一条白带，
+  // 与页头叠起来就是“两条光秃秃的横杠”。补当前菜单面包屑（图标 + 名称）。
+  // 只在菜单**子路径**上出现（key + '/'）：菜单根页侧栏已高亮，再写一遍只是噪声。
+  const currentMenu = menuItems.find(m => 'key' in m && currentPath.startsWith(`${(m as any).key}/`)) as
+    { label: string; icon: typeof Clock } | undefined;
 
   const handleNavigate = (path: string) => {
     navigate(path);
@@ -442,6 +447,10 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
               <span className="hidden text-muted-foreground sm:inline">/</span>
               <span className="shrink-0 text-sm font-medium">工作空间</span>
               <div className="min-w-0 max-w-56"><WorkspaceSelectorSidebar collapsed={false} module={module} /></div>
+            </>}
+            {!independent && currentMenu && <>
+              <currentMenu.icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="shrink-0 text-sm font-medium">{currentMenu.label}</span>
             </>}
           </div>
           <div className="flex shrink-0 items-center gap-2">

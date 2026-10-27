@@ -10,7 +10,10 @@ export interface VisSnapshot {
   style_config: Record<string, any>;
 }
 export type Rect = { x: number; y: number; w: number; h: number };
-const VISUAL_KEYS = ['colorScheme', 'gradient', 'borderRadius', 'showLabel', 'smooth', 'lineWidth',
+// barFade/barCap/axisLabelSize = AS 风格柱图与字模旋钮(素材 design-service 预设的「上深下浅同色系渐隐 +
+// 4px 柱顶帽」与 chartTypography.axisLabelSize/legendSize=12px),
+// 由 DashboardChart 的 bar/timeseries_bar/waterfall/默认柱图分支经 barBodyStyle/withBarCap/axisLabelStyle 真实消费。
+const VISUAL_KEYS = ['colorScheme', 'gradient', 'barFade', 'barCap', 'axisLabelSize', 'borderRadius', 'showLabel', 'smooth', 'lineWidth',
   'areaFill', 'areaOpacity', 'innerRadius', 'legend', 'thresholds', 'gridColor', 'valueColor', 'labelColor',
   'cardBg', 'cardBorder', 'glow', 'cornerAccent', 'showCornerBrackets', 'borderStyle',
   'titleBarBg', 'titleColor', 'showUnderline', 'underlineColor', 'titleFontSize', 'titleFontWeight', 'cardRadius',

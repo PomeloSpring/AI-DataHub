@@ -16,11 +16,15 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-# 前端表单字段 ↔ adh_metrics 真实列的映射(页面用 name/display_name/metric_type/…,
+# 前端表单字段 ↔ adh_metrics 真实列的映射(页面用 name/display_name/category/…,
 # 语义层 mdl_compiler/run_semantic_query 读的是 name(中文名)/name_en/formula/agg_type)
+#
+# metric_type 不再映射到 category：category 的语义是**业务域**(可观测/客户/案例…)，
+# 而「基础/衍生/复合」是指标口径标签，两者是正交维度，历史混写一列导致
+# 分类下拉里业务域和口径标签混杂。metric_type 仅作旧客户端入参兼容(见 _legacy_kind_tags)，
+# 口径标签的真实落位是 tags 列。
 _FRONTEND_TO_DB = {
     "display_name": "name",
-    "metric_type": "category",
     "calculation_type": "agg_type",
     "expression": "formula",
     "unit": "unit",
@@ -34,10 +38,10 @@ _FRONTEND_TO_DB = {
 }
 
 _ALIAS_SELECT = (
-    "id, name, name AS display_name, name_en, category AS metric_type, "
+    "id, name, name AS display_name, name_en, category, "
     "agg_type AS calculation_type, agg_type, formula AS expression, formula, "
-    "unit, target_table, target_column, description, category, "
-    "COALESCE(aliases, '[]') AS aliases, "
+    "unit, target_table, target_column, description, "
+    "COALESCE(aliases, '[]') AS aliases, COALESCE(tags, '[]') AS tags, "
     "bound_object_key, COALESCE(certified, 0) AS certified, "
     "is_active, workspace_id, owner, created_at, updated_at"
 )
@@ -50,6 +54,19 @@ _ALIAS_SELECT = (
 # 写成 basic/derived/composite，库里真实值域却是 可观测/客户/案例…，
 # 两项永远查不出结果，等于放了个“能点但永远空”的死筛选。
 UNSET_FACET = "__unset__"
+
+# 口径标签（tags 列）的旧表单口径 → 中文标签：历史上「基础/衍生/复合」被当作 category
+# 写进库（值 basic/derived/composite），现统一以中文标签落 tags 列。
+_METRIC_KIND_TAGS = {"basic": "基础", "derived": "衍生", "composite": "复合"}
+
+
+def _legacy_kind_tags(val) -> list:
+    """旧入参 metric_type（或库里存量的 category 脏值）→ 口径标签；非口径值原样回传。
+
+    业务域值（可观测/客户…）不是标签，不得被塞进 tags —— 由调用方留在 category/丢弃。
+    """
+    raw = str(val or "").strip()
+    return [_METRIC_KIND_TAGS[raw]] if raw in _METRIC_KIND_TAGS else ([] if not raw else [raw])
 
 
 def _norm_bool_filter(name: str, val) -> Optional[int]:
@@ -105,6 +122,27 @@ def _norm_aliases(val):
         if x not in seen:
             seen.append(x)
     return json.dumps(seen, ensure_ascii=False)
+
+
+def _norm_tags(val) -> str:
+    """口径标签入参归一: list/逗号串 → JSON 数组字符串; 空 → '[]'。列型为 JSON。
+
+    与 aliases 同一形状（标签是短字符串集，不存在别名那种顺位语义）。
+    """
+    return _norm_aliases(val)
+
+
+def _json_list(val) -> list:
+    """DB JSON 列/字符串 → 字符串清单（解不开给空清单，不抛）。"""
+    if val is None:
+        return []
+    if isinstance(val, (list, tuple)):
+        return [str(x).strip() for x in val if str(x).strip()]
+    try:
+        arr = json.loads(val) if isinstance(val, str) else val
+    except (TypeError, ValueError):
+        return []
+    return [str(x).strip() for x in arr if str(x).strip()] if isinstance(arr, list) else []
 
 
 def _isoformat(rows: list) -> list:
@@ -172,11 +210,11 @@ def list_metrics(
         page: Page number (1-based)
         size: Page size
         metric_type: 旧口径(同时匹配 category 或 agg_type)，保留兼容
-        tags: Filter by tags (comma-separated)
+        tags: 口径标签过滤(逗号分隔; 值域来自 dict_facets 的 tags 分桶)
         search: Search keyword(名称/英文名/描述/别名)
         model_id: 本体模型作用域(配合 scope='model'): 只列 bound_object_key ∈ 该模型对象集的指标
         scope: 'model' | 'unbound' | 空(全局, 旧行为)
-        category: 指标分类等值过滤(值域来自 dict_facets, UNSET_FACET=未分类)
+        category: 业务域分类等值过滤(值域来自 dict_facets, UNSET_FACET=未分类)
         agg_type: 计算/聚合方式过滤(大小写不敏感)
         certified: '1'=仅已认证口径 / '0'=仅草稿口径
         bound_object_key: 归属本体对象过滤(UNSET_FACET=未归属)
@@ -199,10 +237,12 @@ def list_metrics(
         conditions.append("(category = %s OR agg_type = %s)")
         params.extend([metric_type, metric_type])
     if tags:
-        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        # tags 是 JSON 数组列，用 JSON_CONTAINS 做元素命中；旧写法 FIND_IN_SET(..., category)
+        # 查的是根本不存在的列（本参数以前一旦传入必 1054）。
+        tag_list = [t.strip() for t in str(tags).split(",") if t.strip()]
         for tag in tag_list:
-            conditions.append("FIND_IN_SET(%s, category)")
-            params.append(tag)
+            conditions.append("JSON_CONTAINS(COALESCE(tags, '[]'), %s)")
+            params.append(json.dumps(tag, ensure_ascii=False))
     if search:
         # 别名也是用户会搜的词(字典解析按 aliases 命中), 搜索口不覆盖别名
         # 会让“明明改了别名却搜不到”成为预期外差异。JSON 列 LIKE 在字典量级(千行)可接受。
@@ -384,6 +424,9 @@ def create_metric(data: dict) -> dict:
         raise ValueError("metric name is required")
     agg_type = (data.get("calculation_type") or data.get("agg_type") or "count").upper()
     formula = data.get("expression") or data.get("formula") or ""
+    # 口径必须能在归属对象的物理表上成立，否则取数恒为 0（宁缺勿错，不静默落库）
+    if data.get("bound_object_key"):
+        _require_formula_matches_object(str(data["bound_object_key"]), formula)
 
     with DBConnection() as conn:
         with conn.cursor() as cur:
@@ -408,12 +451,22 @@ def create_metric(data: dict) -> dict:
             # adh_metrics.id 是 INT, 不能用时间戳主键
             cur.execute("SELECT COALESCE(MAX(id), 0) + 1 AS nid FROM adh_metrics")
             row_id = cur.fetchone()["nid"]
+            # category 只存业务域；旧表单口径(basic/derived/composite)若从 metric_type
+            # 流入则改归 tags 标签，不再污染域值域（也不能当域默认值）
+            legacy_kind = _legacy_kind_tags(data.get("metric_type"))
+            is_kind_label = data.get("metric_type") in _METRIC_KIND_TAGS or (
+                len(legacy_kind) == 1 and legacy_kind[0] in ("基础", "衍生", "复合"))
+            category = (data.get("category")
+                        or (None if is_kind_label else data.get("metric_type"))
+                        or "业务")
+            kind_tags = _json_list(data.get("tags")) if data.get("tags") is not None else []
+            kind_tags += [t for t in legacy_kind if t and t not in kind_tags]
             cur.execute(
                 "INSERT INTO adh_metrics "
                 "(id, workspace_id, name, name_en, formula, unit, agg_type, "
                 "target_table, target_column, description, owner, category, datasource_id, "
-                "is_active, created_at, updated_at, default_agg, bound_object_key, aliases) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "is_active, created_at, updated_at, default_agg, bound_object_key, aliases, tags) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     row_id,
                     # 字典行是跨工作空间口径：workspace_id 恒为 0（与 datasource_id 同口径），
@@ -428,7 +481,7 @@ def create_metric(data: dict) -> dict:
                     data.get("target_column", ""),
                     data.get("description", ""),
                     data.get("owner", ""),
-                    data.get("metric_type") or data.get("category") or "业务",
+                    category,
                     data.get("datasource_id", 0),
                     data.get("is_active", 1),
                     now,
@@ -436,6 +489,7 @@ def create_metric(data: dict) -> dict:
                     agg_type,
                     data.get("bound_object_key") or None,
                     _norm_aliases(data.get("aliases")),
+                    _norm_tags(kind_tags),
                 ),
             )
 
@@ -476,6 +530,68 @@ def _fetch_metric_dimensions(cur, metric_id: int) -> list:
     return cur.fetchall()
 
 
+# SQL 关键字/常用函数：不算列名（抽出公式里的列引用时排除）
+_SQL_NON_COLUMN = {
+    "select", "from", "where", "group", "by", "order", "having", "and", "or", "not", "in", "on", "as",
+    "count", "sum", "avg", "min", "max", "distinct", "case", "when", "then", "else", "end", "null",
+    "is", "like", "between", "limit", "offset", "over", "partition", "interval", "day", "month", "year",
+    "hour", "minute", "second", "date", "timestamp", "cast", "coalesce", "ifnull", "abs", "round", "now",
+}
+
+
+def _formula_columns(formula: str) -> set:
+    """保守抽出 formula 里引用的列名（已限定在归属对象表上，故取裸列名即可）。"""
+    import re
+    text = re.sub(r"'[^']*'|\"[^\"]*\"", " ", str(formula or ""))   # 去字符串字面量
+    cols = set()
+    for m in re.finditer(r"([A-Za-z_][\w$]*)\s*\.\s*([A-Za-z_][\w$]*)", text):
+        cols.add(m.group(2).lower())          # t.col → col
+    for tok in re.findall(r"[A-Za-z_][\w$]*", text):
+        if tok.lower() not in _SQL_NON_COLUMN:
+            cols.add(tok.lower())
+    return cols
+
+
+def _object_property_columns(object_key: str) -> tuple[str, list[str]]:
+    """归属对象的物理列名清单（来自 canonical doc 的 properties[].column）。"""
+    from backend.modules.catalog.services.ontology_service import object_identity_key
+    ik = object_identity_key(str(object_key or "").strip())
+    cols: list[str] = []
+    for doc in _iter_active_docs():
+        for o in doc.get("objects") or []:
+            if object_identity_key(o.get("key") or o.get("object_key") or "") != ik:
+                continue
+            for p in o.get("properties") or []:
+                col = str(p.get("column") or "").split(".")[-1].strip()
+                if col and col.lower() not in [c.lower() for c in cols]:
+                    cols.append(col)
+    return ik, cols
+
+
+def _require_formula_matches_object(bound_object_key: str, formula: str) -> None:
+    """指标口径必须能在归属对象的物理表上成立 —— 否则取数恒为 0（宁缺勿错）。
+
+    历史缺陷：`案例侧集成记录数` 挂在 case 上，物理按案例表 COUNT，而它要数的是集成记录表的行，
+    结果静默返回 0；`source_type` 根本不在案例表里也能落库。错数比无答案危害大。
+    """
+    want = _formula_columns(formula)
+    if not want:
+        return
+    _ik, cols = _object_property_columns(bound_object_key)
+    if not cols:
+        raise ValueError(
+            f"归属对象「{bound_object_key}」没有已登记的属性/物理列，无法校验指标口径。"
+            f"请先在本体模型中给该对象补 properties[].column，或改挂到实体相符的对象上")
+    have = {c.lower() for c in cols}
+    bad = sorted(w for w in want if w not in have)
+    if bad:
+        raise ValueError(
+            f"指标口径与归属对象不符：{', '.join(bad)} 不在对象「{bound_object_key}」的物理列里。"
+            f"该对象可用列: {', '.join(cols[:30]) or '（无）'}。"
+            f"若要统计的实体不在该对象上（例：集成记录数挂在案例对象上），请改挂实体相符的对象；"
+            f"口径错了会静默返回 0，不能落库")
+
+
 def _require_object_keys(cur, keys) -> None:
     """字典写入的 bound_object_key 引用校验: 非空 key 必须在当前生效对象集内。"""
     want = [str(k).strip() for k in keys if k and str(k).strip()]
@@ -487,8 +603,22 @@ def _require_object_keys(cur, keys) -> None:
         f"WHERE is_active = 1 AND object_key IN ({ph})", tuple(want))
     ok = {str(r["object_key"]).lower() for r in cur.fetchall()}
     bad = [k for k in want if k.lower() not in ok]
-    if bad:
-        raise ValueError(f"归属对象不存在或已失效: {', '.join(bad)}（请先在本体模型中创建并激活对象）")
+    if not bad:
+        return
+    # 区分两种失败，别把「未展开」误报成「未创建」（历史缺陷：业务本体 doc 里明明有对象，
+    # 但 adh_ontology_objects 无展开行，提示却叫用户“去创建对象”，照做只会卡住）
+    cur.execute(
+        "SELECT m.id, m.name FROM adh_ontology_models m "
+        "WHERE m.status = 'active' AND m.object_count > 0 "
+        "AND NOT EXISTS (SELECT 1 FROM adh_ontology_objects o WHERE o.model_id = m.id)")
+    unexpanded = [f"{r['name']}" for r in cur.fetchall()]
+    if unexpanded:
+        raise ValueError(
+            f"归属对象不可挂靠: {', '.join(bad)}。"
+            f"这些对象存在于模型定义里但尚未展开到生效对象集 —— 模型「{'、'.join(unexpanded)}」"
+            f"有对象定义却无展开行（级联未跑）。请在本体建模页重新激活该模型以触发展开，"
+            f"而非新建对象")
+    raise ValueError(f"归属对象不存在或已失效: {', '.join(bad)}（请先在本体模型中创建并激活对象）")
 
 
 def update_metric(metric_id: int, data: dict) -> bool:
@@ -529,9 +659,22 @@ def update_metric(metric_id: int, data: dict) -> bool:
                 if key in mapped:
                     fields.append(f"{key} = %s")
                     params.append(mapped[key])
+            if "metric_type" in data and "category" not in mapped:
+                # 旧客户端只发 metric_type：不得再把口径标签写进 category（业务域）列；
+                # basic/derived/composite → tags，其余值按旧语义落 category（存量调用方兼容）。
+                legacy = _legacy_kind_tags(data.get("metric_type"))
+                if legacy and legacy[0] in ("基础", "衍生", "复合"):
+                    fields.append("tags = %s")
+                    params.append(_norm_tags(legacy))
+                else:
+                    fields.append("category = %s")
+                    params.append(data.get("metric_type"))
             if "aliases" in data:
                 fields.append("aliases = %s")
                 params.append(_norm_aliases(data["aliases"]))
+            if "tags" in data:
+                fields.append("tags = %s")
+                params.append(_norm_tags(data["tags"]))
 
             # bound_object_key 在更新且未显式改 target_table 时，按对象主表派生补齐（同 create 口径）
             if data.get("bound_object_key") and "target_table" not in mapped:
@@ -732,7 +875,7 @@ def dict_facets(model_id: Optional[int] = None,
     返回:
       {"metrics": {total, active, inactive, certified, draft, unbound_objects,
                    with_target_table, without_target_table, with_target_column,
-                   categories[], agg_types[]},
+                   categories[], agg_types[], tags[]},
        "dimensions": {total, active, inactive, certified, draft, unbound_objects,
                       with_target_table, with_target_column, with_value_labels,
                       without_value_labels, categories[]},
@@ -754,7 +897,7 @@ def dict_facets(model_id: Optional[int] = None,
                 params: list = []
                 if not _apply_model_scope(conds, params, model_id, scope):
                     out[key] = {"total": 0, "certified": 0, "draft": 0, "unbound_objects": 0,
-                                "categories": [], "agg_types": []}
+                                "categories": [], "agg_types": [], "tags": []}
                     continue
                 where = ("WHERE " + " AND ".join(conds)) if conds else ""
                 # 列清单按表拼：value_labels 只在 adh_dimensions 有，拿到指标表上会 1054
@@ -795,6 +938,22 @@ def dict_facets(model_id: Optional[int] = None,
                         f"SELECT UPPER(COALESCE(agg_type, '')) AS value, COUNT(*) AS count "
                         f"FROM {table} {where} GROUP BY value", params)
                     summary["agg_types"] = _facet_buckets(cur.fetchall())
+                    # 口径标签是 JSON 数组列（一行多标签），GROUP BY 拆不了数组元素；
+                    # 字典量级（千行）直接拉标签列在 Python 侧计数，不依赖 JSON_TABLE 方言。
+                    try:
+                        cur.execute(
+                            f"SELECT COALESCE(tags, '[]') AS tags FROM {table} {where}", params)
+                        tag_rows = cur.fetchall() or []
+                    except Exception as e:  # noqa: BLE001 — tags 列迁移未执行时词表为空(可诊断), 不阻断整个 facet
+                        logger.warning("[dict_facets] tags 分桶跳过(迁移未执行?): %s", e)
+                        tag_rows = []
+                    tag_counts: dict = {}
+                    for row in tag_rows:
+                        for t in _json_list(row.get("tags")):
+                            tag_counts[t] = tag_counts.get(t, 0) + 1
+                    summary["tags"] = sorted(
+                        ({"value": k, "count": v} for k, v in tag_counts.items()),
+                        key=lambda x: (-x["count"], x["value"]))
                 cur.execute(
                     f"SELECT COALESCE(bound_object_key, '') AS value, COUNT(*) AS count "
                     f"FROM {table} {where} GROUP BY value", params)
@@ -867,7 +1026,7 @@ def create_dimension(data: dict) -> dict:
                 "(id, name, name_en, level, target_table, target_column, description, "
                 "category, datasource_id, is_active, created_at, updated_at, "
                 "bound_object_key, aliases, value_labels, certified) "
-                "VALUES (%s, %s, %s, 0, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s, %s)",
+                "VALUES (%s, %s, %s, 0, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     row_id,
                     biz_name,
@@ -877,6 +1036,9 @@ def create_dimension(data: dict) -> dict:
                     data.get("description", ""),
                     data.get("category") or "属性",
                     data.get("datasource_id", 0),
+                    # 原本硬编码 1：新建维度会立即进入语义检索/查询。现按入参取值，
+                    # AS-BOT 默认传 0（未发布不生效），发布才置 1。
+                    1 if int(data.get("is_active", 1) or 0) else 0,
                     now,
                     now,
                     data.get("bound_object_key") or None,

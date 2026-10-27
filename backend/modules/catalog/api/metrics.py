@@ -13,12 +13,12 @@ router = APIRouter()
 def list_metrics(
     page: int = Query(1, ge=1, description="Page number"),
     size: int = Query(20, ge=1, le=500, description="Page size"),
-    metric_type: Optional[str] = Query(None, description="Filter by metric type"),
-    tags: Optional[str] = Query(None, description="Filter by tags (comma-separated)"),
+    metric_type: Optional[str] = Query(None, description="[已废弃]旧口径, 请用 category/agg_type/tags"),
+    tags: Optional[str] = Query(None, description="口径标签(逗号分隔; 值域来自 /filters 的 tags 分桶)"),
     search: str = Query("", description="Search keyword(名称/英文名/描述/别名)"),
     model_id: Optional[int] = Query(None, description="本体模型作用域(scope=model 时必填)"),
     scope: Optional[str] = Query(None, description="model=仅本模型对象资产 | unbound=仅待归属 | 空=全局"),
-    category: Optional[str] = Query(None, description="指标分类(值域来自 /filters; __unset__=未分类)"),
+    category: Optional[str] = Query(None, description="业务域分类(值域来自 /filters; __unset__=未分类)"),
     agg_type: Optional[str] = Query(None, description="计算/聚合方式(大小写不敏感; __unset__=未设置)"),
     certified: Optional[str] = Query(None, description="1=仅已认证口径 | 0=仅草稿口径"),
     bound_object_key: Optional[str] = Query(None, description="归属本体对象(__unset__=未归属)"),
@@ -97,6 +97,20 @@ def dict_filters(
 def get_asset_pool():
     """未归属资产池聚合(指标/维度/术语/回流候选 + 计数)。必须注册在 /{metric_id} 之前。"""
     return metrics_service.asset_pool()
+
+
+@router.post("/dimensions")
+def create_dimension(req: dict):
+    """新建全局维度字典行(与 PUT /dimensions/{dim_id} 对称)。
+
+    必填: display_name(业务名)、bound_object_key(归属对象，引用校验同 create_metric)。
+    字典行是跨数据源口径，datasource_id/workspace_id 不接受入参(服务层恒为 0)。
+    注册在 /{metric_id} 相关路由之前，避免被参数路由吞掉。
+    """
+    try:
+        return metrics_service.create_dimension(req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.put("/dimensions/{dim_id}")

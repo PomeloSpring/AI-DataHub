@@ -36,7 +36,7 @@ import DimensionsDictTab from './DimensionsDictTab';
 import {
   AGG_TYPE_OPTIONS,
   DICT_UNSET,
-  METRIC_TYPE_OPTIONS,
+  METRIC_KIND_TAG_OPTIONS,
   aggLabel,
   metricCategoryLabel,
   objectLabel,
@@ -48,7 +48,10 @@ interface Metric {
   name: string;
   display_name: string;
   description?: string;
-  metric_type: string;
+  /** 业务域分类(adh_metrics.category) */
+  category?: string;
+  /** 口径标签(adh_metrics.tags, JSON 数组): 基础/衍生/复合… 与业务域正交 */
+  tags?: string[];
   calculation_type: string;
   expression?: string;
   unit?: string;
@@ -56,7 +59,6 @@ interface Metric {
   target_column?: string;
   granularity?: string;
   owner?: string;
-  tags?: string[];
   bound_object_key?: string;
   aliases?: string | string[];
   certified?: number;
@@ -79,7 +81,10 @@ interface MetricFormData {
   name: string;
   display_name: string;
   description: string;
-  metric_type: string;
+  /** 业务域分类(落 category 列) */
+  category: string;
+  /** 口径标签(落 tags 列) */
+  tags: string[];
   calculation_type: string;
   expression: string;
   unit: string;
@@ -100,6 +105,18 @@ function aliasesToText(v: unknown): string {
     } catch { return v; }
   }
   return '';
+}
+
+/** 解析后端 tags(JSON 字符串或数组) → 字符串清单 */
+function tagList(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean);
+  if (typeof v === 'string' && v.trim()) {
+    try {
+      const arr = JSON.parse(v);
+      return Array.isArray(arr) ? arr.map((x) => String(x).trim()).filter(Boolean) : [];
+    } catch { return []; }
+  }
+  return [];
 }
 
 /** 三元组预览(只读): 所见 = 所写 = 图谱投影, 与 to_rdf/字典行为同一主语结构 */
@@ -124,17 +141,19 @@ interface DimensionFormData {
   description: string;
 }
 
-const METRIC_TYPE_COLORS: Record<string, string> = {
-  basic: 'bg-blue-500/10 text-blue-500 border-blue-500/20',
-  derived: 'bg-purple-500/10 text-purple-500 border-purple-500/20',
-  composite: 'bg-orange-500/10 text-orange-500 border-orange-500/20',
+/** 口径标签着色（tags 列）：与业务域分类无关，只认基础/衍生/复合三个已知标签 */
+const METRIC_TAG_COLORS: Record<string, string> = {
+  基础: 'bg-blue-500/10 text-blue-500 border-blue-500/20',
+  衍生: 'bg-purple-500/10 text-purple-500 border-purple-500/20',
+  复合: 'bg-orange-500/10 text-orange-500 border-orange-500/20',
 };
 
 const emptyMetricForm: MetricFormData = {
   name: '',
   display_name: '',
   description: '',
-  metric_type: 'basic',
+  category: '',
+  tags: [],
   calculation_type: 'sum',
   expression: '',
   unit: '',
@@ -177,6 +196,7 @@ export default function MetricsCenter({
   // 筛选条件: 列表服务端分页, 过滤一律下推 SQL(不能先分页再在前端筛)
   const [search, setSearch] = useState('');
   const [fCategory, setFCategory] = useState<string>('all');
+  const [fTag, setFTag] = useState<string>('all');
   const [fAgg, setFAgg] = useState<string>('all');
   const [fObject, setFObject] = useState<string>('');
   const [fCertified, setFCertified] = useState<string>('all');
@@ -210,6 +230,7 @@ export default function MetricsCenter({
       const params: MetricListQuery = { page, size: 20 };
       if (search) params.search = search;
       if (fCategory !== 'all') params.category = fCategory;
+      if (fTag !== 'all') params.tags = fTag;
       if (fAgg !== 'all') params.agg_type = fAgg;
       if (fObject) params.bound_object_key = fObject;
       if (fCertified !== 'all') params.certified = fCertified;
@@ -231,7 +252,7 @@ export default function MetricsCenter({
     } finally {
       setLoading(false);
     }
-  }, [page, search, fCategory, fAgg, fObject, fCertified, fStatus, fTarget, modelId]);
+  }, [page, search, fCategory, fTag, fAgg, fObject, fCertified, fStatus, fTarget, modelId]);
 
   useEffect(() => {
     loadMetrics();
@@ -282,7 +303,8 @@ export default function MetricsCenter({
       name: metric.name,
       display_name: metric.display_name,
       description: metric.description || '',
-      metric_type: metric.metric_type,
+      category: metric.category || '',
+      tags: tagList(metric.tags),
       calculation_type: (metric.calculation_type || 'sum').toLowerCase(),
       expression: metric.expression || '',
       unit: metric.unit || '',
@@ -350,6 +372,7 @@ export default function MetricsCenter({
 
   // ── 筛选词表 → 下拉选项(值与计数均来自后端全量聚合) ───────────────────
   const categoryOptions = facets?.metrics?.categories || [];
+  const tagOptions = facets?.metrics?.tags || [];
   const aggOptions = facets?.metrics?.agg_types || [];
   const objectNames = useMemo(
     () => Object.fromEntries((facets?.objects || []).map((o) => [o.key, o.display_name] as const)),
@@ -370,22 +393,38 @@ export default function MetricsCenter({
   }, [facets]);
   // 词表未就绪(加载中或加载失败)时下拉不可用 —— 选项只能来自 facet, 不得凑数
   const facetsReady = !!facets && !facetsError;
-  // 新建/编辑表单的分类候选: 表单固定口径 + 字典已有真实分类(+当前值兑底)
+  // 新建/编辑表单的「归属对象」候选 = **全量**对象（含尚无指标的）。
+  // 不可复用 objectOptions —— 它按 metric_count>0 过滤（那是筛选用的），新建时目标对象往往是尚未挂指标的那个。
+  // 嵌入态优先用传入的本模型对象（限定不跨模型挂接）；独立页退到 facet 全量对象。
+  const formObjectList = useMemo(() => (objects?.length ? objects : (facets?.objects || []).map(o => ({ key: o.key, display_name: o.display_name }))), [objects, facets]);
+  // 新建/编辑表单的「业务域分类」候选 = 字典已有真实域(+当前值兜底)。
+  // 不得再拼基础/衍生/复合 —— 那是口径标签(tags 列)，与业务域是两个正交维度，
+  // 混进同一候选会把两个维度写进一列（本次改造的根因）。
   const categoryFormOptions = useMemo(() => {
     const seen = new Map<string, string>();
-    for (const o of METRIC_TYPE_OPTIONS) seen.set(o.value, o.label);
     for (const f of facets?.metrics?.categories || []) {
       if (f.value !== DICT_UNSET) seen.set(f.value, metricCategoryLabel(f.value));
     }
-    const current = (formData.metric_type || '').trim();
+    const current = (formData.category || '').trim();
     if (current && !seen.has(current)) seen.set(current, metricCategoryLabel(current));
     return [...seen.entries()];
-  }, [facets, formData.metric_type]);
-  const hasFilters = !!(search || fCategory !== 'all' || fAgg !== 'all' || fObject
+  }, [facets, formData.category]);
+  // 表单的「口径标签」候选 = 固定三档 + 字典已有标签(+当前已选)，只能选不能手输
+  const tagFormOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const t of METRIC_KIND_TAG_OPTIONS) seen.set(t, t);
+    for (const f of facets?.metrics?.tags || []) {
+      if (f.value !== DICT_UNSET) seen.set(f.value, f.value);
+    }
+    for (const t of formData.tags) if (t) seen.set(t, t);
+    return [...seen.keys()];
+  }, [facets, formData.tags]);
+  const hasFilters = !!(search || fCategory !== 'all' || fTag !== 'all' || fAgg !== 'all' || fObject
     || fCertified !== 'all' || fStatus !== 'all' || fTarget !== 'all');
   const resetFilters = () => {
     setSearch('');
     setFCategory('all');
+    setFTag('all');
     setFAgg('all');
     setFObject('');
     setFCertified('all');
@@ -432,7 +471,8 @@ export default function MetricsCenter({
       {/* Filters: 选项一律来自 GET /metrics/filters（在全量字典上聚合的真实值域）。
           列表是服务端分页的，拿“当前页出现过的值”凑下拉会漏值；写死枚举更糟——
           历史缺陷就是写死 basic/derived/composite 当 category 值域，与库内 可观测/客户/案例…
-          无交集，选任何一项都查空，成了“能点但永远无结果”的死筛选。 */}
+          无交集，选任何一项都查空，成了“能点但永远无结果”的死筛选。
+          业务域分类与口径标签分两个下拉（两个正交维度不再挤在同一列/同一个下拉）。 */}
       <div className="flex flex-wrap items-center gap-3 p-3 border rounded-lg bg-muted/30">
         <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
           <Filter className="w-4 h-4" /> 筛选
@@ -448,14 +488,30 @@ export default function MetricsCenter({
         </div>
         <Select value={fCategory} disabled={!facetsReady}
                 onValueChange={(v) => { setFCategory(v); setPage(1); }}>
-          <SelectTrigger className="h-8 w-36" aria-label="指标分类"><SelectValue placeholder="指标分类" /></SelectTrigger>
+          <SelectTrigger className="h-8 w-36" aria-label="业务域分类"><SelectValue placeholder="业务域分类" /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">全部分类</SelectItem>
+            <SelectItem value="all">全部业务域</SelectItem>
             {categoryOptions.map((f) => (
               <SelectItem key={f.value} value={f.value}>
                 {withCount(metricCategoryLabel(f.value), f.count)}
               </SelectItem>
             ))}
+          </SelectContent>
+        </Select>
+        <Select value={fTag} disabled={!facetsReady}
+                onValueChange={(v) => { setFTag(v); setPage(1); }}>
+          <SelectTrigger className="h-8 w-32" aria-label="口径标签"><SelectValue placeholder="口径标签" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部标签</SelectItem>
+            {tagOptions.map((f) => (
+              <SelectItem key={f.value} value={f.value}>
+                {withCount(f.value === DICT_UNSET ? '未打标签' : f.value, f.count)}
+              </SelectItem>
+            ))}
+            {/* 词表只有固定三档：未采纳过标签时也要可筛（计数 = 总数 - 已打标数） */}
+            {tagOptions.length === 0 && (
+              <SelectItem value={DICT_UNSET}>{`未打标签（${facets?.metrics?.total ?? 0}）`}</SelectItem>
+            )}
           </SelectContent>
         </Select>
         <Select value={fAgg} disabled={!facetsReady}
@@ -534,7 +590,8 @@ export default function MetricsCenter({
             <tr>
               <th className="text-left p-3 font-medium">指标名称</th>
               <th className="text-left p-3 font-medium">显示名称</th>
-              <th className="text-left p-3 font-medium">分类</th>
+              <th className="text-left p-3 font-medium">业务域</th>
+              <th className="text-left p-3 font-medium">口径标签</th>
               <th className="text-left p-3 font-medium">计算方式</th>
               <th className="text-left p-3 font-medium">单位</th>
               <th className="text-left p-3 font-medium">别名</th>
@@ -547,13 +604,13 @@ export default function MetricsCenter({
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={10} className="p-8 text-center text-muted-foreground">
+                <td colSpan={11} className="p-8 text-center text-muted-foreground">
                   加载中...
                 </td>
               </tr>
             ) : metrics.length === 0 ? (
               <tr>
-                <td colSpan={10} className="p-8 text-center text-muted-foreground">
+                <td colSpan={11} className="p-8 text-center text-muted-foreground">
                   {loadError ? (
                     <span className="text-destructive">指标字典加载失败：{loadError}</span>
                   ) : hasFilters ? (
@@ -581,9 +638,18 @@ export default function MetricsCenter({
                   </td>
                   <td className="p-3 text-muted-foreground">{m.display_name}</td>
                   <td className="p-3">
-                    <Badge variant="outline" className={METRIC_TYPE_COLORS[m.metric_type] || ''}>
-                      {metricCategoryLabel(m.metric_type)}
-                    </Badge>
+                    <Badge variant="outline">{metricCategoryLabel(m.category)}</Badge>
+                  </td>
+                  <td className="p-3">
+                    <div className="flex flex-wrap gap-1">
+                      {tagList(m.tags).length === 0
+                        ? <span className="text-xs text-muted-foreground">-</span>
+                        : tagList(m.tags).map((t) => (
+                          <Badge key={t} variant="outline" className={`text-[11px] font-normal ${METRIC_TAG_COLORS[t] || ''}`}>
+                            {t}
+                          </Badge>
+                        ))}
+                    </div>
                   </td>
                   <td className="p-3">
                     <Badge variant="outline">{aggLabel(m.calculation_type)}</Badge>
@@ -686,12 +752,12 @@ export default function MetricsCenter({
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">指标类型</label>
-              {/* 候选 = 表单固定口径 + 字典已有分类(facet)，否则存量分类(可观测/客户…)
-                  在编辑弹窗里渲染成空白，看起来像“类型被清空了” */}
-              <Select value={formData.metric_type} onValueChange={(v) => setFormData({ ...formData, metric_type: v })}>
-                <SelectTrigger>
-                  <SelectValue />
+              <label className="text-sm font-medium">业务域分类（列表同名列）</label>
+              {/* 候选 = 字典已有真实域(facet)，否则存量域(可观测/客户…) 在编辑弹窗里
+                  渲染成空白，看起来像“类型被清空了”。口径标签(基础/衍生/复合)不在本列，见下方标签选择。 */}
+              <Select value={formData.category} onValueChange={(v) => setFormData({ ...formData, category: v })}>
+                <SelectTrigger aria-label="业务域分类">
+                  <SelectValue placeholder={categoryFormOptions.length ? '选择业务域' : '字典中暂无可选分类'} />
                 </SelectTrigger>
                 <SelectContent>
                   {categoryFormOptions.map(([value, label]) => (
@@ -700,6 +766,27 @@ export default function MetricsCenter({
                 </SelectContent>
               </Select>
             </div>
+            {/* 口径标签与业务域是两个正交维度（落 tags 列）；候选只能选不能手输。
+                fieldset/legend 原生就是一个具名选项组（比 div[role=group] 更可访） */}
+            <fieldset className="space-y-2">
+              <legend className="text-sm font-medium">口径标签</legend>
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {tagFormOptions.map((t) => {
+                  const on = formData.tags.includes(t);
+                  return (
+                    <Button key={t} type="button" size="sm" variant={on ? 'default' : 'outline'}
+                            aria-pressed={on}
+                            className="h-7 px-2 text-xs"
+                            onClick={() => setFormData({
+                              ...formData,
+                              tags: on ? formData.tags.filter((x) => x !== t) : [...formData.tags, t],
+                            })}>
+                      {on && <CheckCircle2 className="w-3 h-3 mr-1" />}{t}
+                    </Button>
+                  );
+                })}
+              </div>
+            </fieldset>
             <div className="space-y-2">
               <label className="text-sm font-medium">计算方式</label>
               <Select value={formData.calculation_type} onValueChange={(v) => setFormData({ ...formData, calculation_type: v })}>
@@ -745,9 +832,10 @@ export default function MetricsCenter({
                 onChange={(e) => setFormData({ ...formData, granularity: e.target.value })}
               />
             </div>
-            {/* 归属对象(模型工作区内): 引用选择器, 只能选本模型对象 —— 不产生悬空/跨模型挂接 */
-            }
-            {embedded && objects && objects.length > 0 && (
+            {/* 归属对象: 引用选择器（不手填 key，见 ui-resource-display §2）。
+                嵌入态限本模型对象（不产生悬空/跨模型挂接）；独立页用全量对象 ——
+                此前它被 `{embedded && …}` 锁死，独立页根本看不到，而 bound_object_key 是必填项，
+                导致指标中心页**完全建不了指标**。 */}
             <div className="space-y-2">
               <label className="text-sm font-medium">归属对象 *</label>
               <Select
@@ -755,16 +843,15 @@ export default function MetricsCenter({
                 onValueChange={(v) => setFormData({ ...formData, bound_object_key: v })}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="选择本模型内的业务对象" />
+                  <SelectValue placeholder={formObjectList.length ? '选择归属的业务对象' : '对象清单加载中/为空'} />
                 </SelectTrigger>
                 <SelectContent>
-                  {objects.map((o) => (
+                  {formObjectList.map((o) => (
                     <SelectItem key={o.key} value={o.key}>{o.display_name || o.key} ({o.key})</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-            )}
             <div className="space-y-2">
               <label className="text-sm font-medium">目标表</label>
               <Input
@@ -805,9 +892,10 @@ export default function MetricsCenter({
             <DialogTitle className="flex items-center gap-2">
               <BarChart3 className="w-5 h-5" />
               {detailMetric?.display_name}
-              <Badge variant="outline" className={METRIC_TYPE_COLORS[detailMetric?.metric_type || ''] || ''}>
-                {metricCategoryLabel(detailMetric?.metric_type)}
-              </Badge>
+              <Badge variant="outline">{metricCategoryLabel(detailMetric?.category)}</Badge>
+              {tagList(detailMetric?.tags).map((t) => (
+                <Badge key={t} variant="outline" className={METRIC_TAG_COLORS[t] || ''}>{t}</Badge>
+              ))}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4">

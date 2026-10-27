@@ -6,11 +6,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { hasPerm } from '@/stores/permissionStore';
 import { fetchVisibleGroups, flattenGroupBoards, type DashboardPreview, type GroupView } from '@/lib/dashboardCatalog';
-import { ChartGlyph } from '@/components/DashboardCanvas';
-import { resolveDashboardDesign } from '@/lib/dashboardDesign';
-import { useThemeStore } from '@/stores/themeStore';
+import { DashboardThumbnail } from '@/components/DashboardCanvas';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
-import type { VisComponent } from '@/api/visLibrary';
+import type { Dashboard } from '@/stores/dashboardStore';
 
 // 工作空间「数据看板」清单: 卡片瀑布呈现当前用户可见的看板, 点卡片进详情。
 // 数据口径 = GET /dashboard/groups/visible(组按角色分配 ∩ 角色可见, fail-closed);
@@ -18,30 +16,21 @@ import type { VisComponent } from '@/api/visLibrary';
 // 本页纯消费(查看/播放), 不提供编辑: 看板编辑只在系统配置「看板管理」(仅属主/admin 可写)。
 
 /**
- * 卡片预览画布: 按画布宽高比撑高(瀑布因此高低错落), 区块只画几何不含口径。
- * 缩影形状与配色**与看板列表页同源**（ChartGlyph + 字模库主题包）：
- * 此前这里自画一套 `bg-primary/25` 四根假柱，与编辑器效果图对不上。
+ * 目录预览摘要 → 唯一渲染器 DashboardThumbnail 的输入。
+ *
+ * 两个看板列表必须用同一个组件、同一个布局源（resolvePageLayout / getCanvas）：
+ * 此前这里自画一套 blocks 画布，而后端按 `position` 像素算 blocks 不读 `config.pageLayout`，
+ * 于是 page 布局的看板在本页退化成大屏像素图（内容只占顶部一小块），
+ * 与系统配置「看板管理」的效果图对不上 —— 同一数据不应有两套几何。
  */
-function DashboardPreviewCanvas({ preview, items }: { preview?: DashboardPreview; items: VisComponent[] }) {
-  const theme = useThemeStore(s => s.theme);
-  // items 必须传入字模库组件：主题包色板靠 items 里 category='theme_pack' 的组件解析，
-  // 传空数组会找不到主题包而退成灰度默认色（曾导致这里黑白、看板管理页彩色）
-  const palette = useMemo(
-    () => resolveDashboardDesign({}, items, { theme }).visual.palette || ['#475569'],
-    [items, theme],
-  );
-  const width = preview?.width || 1920;
-  const height = preview?.height || 1080;
-  const blocks = preview?.blocks || [];
-  return <div className="relative w-full overflow-hidden rounded-md border bg-muted/30"
-    style={{ aspectRatio: `${width} / ${height}` }} aria-hidden>
-    {blocks.map((b, i) => <span key={i}
-      className="absolute overflow-hidden rounded-sm border border-border/60 bg-card/80 p-[3%]"
-      style={{ left: `${b.x / width * 100}%`, top: `${b.y / height * 100}%`, width: `${b.w / width * 100}%`, height: `${b.h / height * 100}%` }}>
-      <ChartGlyph chartType={b.chart_type || (b.widget ? 'widget_label' : 'bar')} palette={palette} />
-    </span>)}
-    {!blocks.length && <span className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">空白画布</span>}
-  </div>;
+function previewSource(preview?: DashboardPreview): Pick<Dashboard, 'filters' | 'charts'> {
+  return {
+    filters: { design: { canvas: { width: preview?.width, height: preview?.height }, page: preview?.page || undefined } },
+    charts: (preview?.charts || []).map(c => ({
+      id: c.id, chart_type: c.chart_type, position: c.position,
+      config: { ...(c.pageLayout ? { pageLayout: c.pageLayout } : {}), ...(c.hidden ? { hidden: true } : {}) },
+    })) as unknown as Dashboard['charts'],
+  };
 }
 
 export default function WorkspaceDashboards() {
@@ -140,7 +129,7 @@ export default function WorkspaceDashboards() {
               className="group mb-5 break-inside-avoid overflow-hidden rounded-xl border bg-card transition-shadow hover:shadow-md">
               <button type="button" aria-label={`打开看板 ${b.name}`} className="block w-full border-b bg-muted/20 p-3 text-left"
                 onClick={() => open(b.id)}>
-                <DashboardPreviewCanvas preview={b.preview} items={library.items} />
+                <DashboardThumbnail dashboard={previewSource(b.preview)} items={library.items} />
               </button>
               <div className="space-y-3 p-4">
                 <div className="min-w-0">

@@ -140,7 +140,7 @@ _TOOL_GROUP_META = {
     "catalog": ("元数据检索", "数据目录类工具(物理表/列/数据源, 对 LLM 相对敏感)"),
     "semantic": ("业务语义", "统一语义层主路(发现对象/指标/知识 + 声明式查询)"),
     "query": ("SQL 执行", "nl2sql 受治理旁路: check_sql 预检 + execute_sql 只读执行(均经权限/RLS/审计)"),
-    "ontology": ("本体模型", "本体建模与元数据管理工具 + 指标/维度字典写(口径唯一权威; 本体写限系统本体域)"),
+    "ontology": ("本体模型", "本体建模与元数据管理工具 + 指标/维度字典写(口径唯一权威; 本体写按权限码裁决、改动落草案需发布)"),
     "screen": ("可视化大屏", "生成/管理数据大屏 + 字模库(取数走治理入口)"),
     "design": ("看板设计", "仪表盘设计专用工具(强制 design_id): 提出/读取/准备设计 + 设计作域内业务语义/知识检索"),
     "system": ("系统运营", "本系统只读运营/可观测能力(仅管理员)"),
@@ -157,6 +157,9 @@ _TOOL_LABELS = {
     "get_metadata_summary": "元数据摘要", "generate_ontology_draft": "取归纳素材", "save_ontology_draft": "提交草案*",
     "save_ontology_model": "保存模型*", "activate_ontology_model": "激活模型*", "import_ontology_yaml": "导入YAML*",
     "save_metric": "存指标字典*", "save_dimension": "存维度字典*",
+    # 本体写权限化（2026-10-26）：不补中文标签会在 AS-BOT 编辑器里显示成裸英文、像不可选项
+    "add_ontology_objects": "新增本体对象*", "update_ontology_object": "修改本体对象*",
+    "publish_ontology_model": "发布本体草案*",
     "create_data_screen": "创建大屏*", "get_data_screen": "查看大屏", "update_data_screen_chart": "更新图表*",
     "request_dashboard_design": "申请仪表盘设计", "get_dashboard_design": "读取仪表盘设计", "prepare_dashboard_design": "准备仪表盘设计",
     "list_vis_components": "字模列表", "get_vis_component": "字模详情", "save_vis_component": "存为字模*",

@@ -2,8 +2,13 @@
  * 图表主题工具 — 主题令牌读取与系列色板(DashboardChart / AnimatedTimeChart 共用单一真值源)。
  */
 
-export const LIGHT_COLORS = ['#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de', '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc'];
-export const DARK_COLORS = ['#4992ff', '#7cffb2', '#fddd60', '#ff6e76', '#58d9f9', '#05c091', '#ff8a45', '#8d48e3', '#dd79ff'];
+/**
+ * 兜色板（仅在 CSS 变量读不到时使用，如 SSR/离屏 canvas）：
+ * 与 AS 风格 tokens.js 的 pie 8 色板同源（主色取 bar/line 强调色），
+ * 不得回到 ECharts 默认盘——那会让「无 CSS 变量」与「有 CSS 变量」两种场合穿不同的衣。
+ */
+export const LIGHT_COLORS = ['#0037cb', '#38ad2a', '#e56f22', '#08997e', '#7c4dff', '#d81b60', '#00a3c4', '#8a939f', '#0b6ae5', '#2aad95'];
+export const DARK_COLORS = ['#809be5', '#5fbf4a', '#e57d39', '#65c2b1', '#a48bff', '#ec5b90', '#4fc3de', '#a0a2a5', '#3c7fd6', '#3ead99'];
 
 /** 运行时读取主题 CSS 变量为可用颜色(canvas 无法解析 var(),需取实际值)。 */
 export function readToken(name: string, fallback: string): string {

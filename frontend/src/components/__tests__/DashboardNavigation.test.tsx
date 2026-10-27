@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
@@ -28,7 +30,7 @@ const board = (id: number, status: Dashboard['status'] = 'enabled', is_default =
 const groupBoard = (id: number, status: Dashboard['status'] = 'enabled', is_default = false) => ({
   id, name: `看板 ${id}`, status, is_default, sort_order: id, description: `看板 ${id} 的口径说明`, chart_count: 2,
   editable: id !== 4, owner_id: id === 4 ? 1 : 9,
-  updated_at: '2026-10-01T08:00:00', preview: { width: 1920, height: 1080, blocks: [{ x: 40, y: 40, w: 600, h: 400, widget: false }] },
+  updated_at: '2026-10-01T08:00:00', preview: { width: 1920, height: 1080, charts: [{ id: 11, chart_type: 'bar', position: { x: 40, y: 40, w: 600, h: 400 } }] },
 });
 const groupsFixture = (opts?: { defaultId?: number | null }) => ([
   { id: 7, name: '经营组', description: '', sort: 0, dashboards: [groupBoard(1, 'closed', opts?.defaultId === 1), groupBoard(2, 'enabled', opts?.defaultId === 2), groupBoard(3, 'enabled', opts?.defaultId === 3 || opts?.defaultId === undefined)] },
@@ -161,23 +163,53 @@ describe('工作空间数据看板 — 详情与仪表盘组维度', () => {
     fireEvent.click(screen.getByRole('button', { name: '返回看板清单' }));
     expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards');
   });
-  it('目录默认关闭、平铺展示组内可见项并支持搜索切换', async () => {
+  it('页头只有一行：切换条即标题，组下拉与工具条同排', async () => {
+    const { container } = routes('/ws/7/dashboards/2');
+    await screen.findByText('响应式网格');
+    expect(container.querySelectorAll('header')).toHaveLength(1);
+    const header = container.querySelector('header')!;
+    // 标题不再与选中的 pill 重复一份：h1 收进 sr-only，可见文字由切换条承载
+    expect(header.querySelector('h1')?.className).toContain('sr-only');
+    expect(within(header).getByRole('navigation', { name: '同组看板' })).toBeInTheDocument();
+    expect(within(header).getByRole('button', { name: '切换仪表盘组' })).toBeInTheDocument();
+    expect(within(header).getByRole('toolbar', { name: '看板操作' })).toBeInTheDocument();
+    expect(document.querySelectorAll('nav[aria-label="同组看板"]')).toHaveLength(1);
+  });
+  it('切换同组看板不整页重载：保留页头与内容，只显进度条', async () => {
+    let release: () => void = () => {};
+    vi.mocked(client.get).mockImplementation(async (url: string) => {
+      if (url === '/dashboard/groups/visible') return { data: groupsFixture() } as any;
+      const m = /^\/dashboard\/(\d+)$/.exec(url);
+      if (m) {
+        // 看板 2 的详情故意挂住，用来观察切换瞬间的页面形态
+        if (Number(m[1]) === 2) await new Promise<void>(r => { release = r; });
+        return { data: board(Number(m[1])) } as any;
+      }
+      return { data: [] } as any;
+    });
+    routes('/ws/7/dashboards/3');
+    await screen.findByText('响应式网格');
+    fireEvent.click(screen.getByRole('button', { name: '看板 2' }));
+    await screen.findByRole('progressbar', { name: '正在加载看板' });
+    // 关键：不能把整页换成一句“正在加载看板…”，页头与上一份内容必须还在
+    expect(screen.queryByText('正在加载看板…')).toBeNull();
+    expect(screen.getByRole('navigation', { name: '同组看板' })).toBeInTheDocument();
+    expect(screen.getByText('响应式网格')).toBeInTheDocument();
+    act(() => release());
+    await waitFor(() => expect(screen.queryByRole('progressbar')).toBeNull());
+  });
+  it('工作空间看板页不再提供「看板目录」抽屉', async () => {
+    // 产品决策 2026-10-27：侧栏清单 + 页头切换条 + 组合下拉已覆盖跳转，抽屉重复且多占一个页头图标位。
     routes('/ws/7/dashboards/2'); await screen.findByText('响应式网格');
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '打开看板目录' }));
-    const dialog = await screen.findByRole('dialog');
-    // 平铺目录 = 当前组内 ∩ 角色可见的已启用项(组只做编排不授予可见)
-    expect(within(dialog).getByRole('button', { name: '看板 2' })).toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: '看板 3' })).toBeInTheDocument();
-    expect(within(dialog).queryByRole('button', { name: '看板 1' })).not.toBeInTheDocument();
-    expect(client.get).not.toHaveBeenCalledWith(expect.stringContaining('/admin/menu-tree'));
-    fireEvent.change(screen.getByLabelText('搜索看板'), { target: { value: '3' } });
-    expect(within(dialog).queryByRole('button', { name: '看板 2' })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('搜索看板'), { target: { value: '9' } });
-    expect(screen.getByText('没有匹配的可用看板')).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('搜索看板'), { target: { value: '3' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: '看板 3' }));
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '打开看板目录' })).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    // 组内可见项的切换职责由分段控件承担（当前组 ∩ 角色可见的已启用项，未启用项不混进）
+    const tabs = screen.getByRole('navigation', { name: '同组看板' });
+    expect(within(tabs).getByRole('button', { name: '看板 2' })).toBeInTheDocument();
+    expect(within(tabs).getByRole('button', { name: '看板 3' })).toBeInTheDocument();
+    expect(within(tabs).queryByRole('button', { name: '看板 1' })).not.toBeInTheDocument();
+    // 点切换条仍能跳转对应看板
+    fireEvent.click(within(tabs).getByRole('button', { name: '看板 3' }));
     expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/3');
   });
   it('组加载失败显示重试，重试后恢复渲染', async () => {
@@ -321,5 +353,22 @@ describe('看板管理域与大屏播放', () => {
     const posts = vi.mocked(client.post).mock.calls.map(([url]) => url).sort();
     expect(posts).toEqual(['/dashboard/2/charts/21/refresh', '/dashboard/2/charts/22/refresh']);
     expect(vi.mocked(client.post).mock.calls[0][1]).toEqual(expect.objectContaining({ params: expect.any(Object) }));
+  });
+});
+
+// 两个看板列表的缩略图必须同一渲染器：工作空间清单曾自画一套 blocks 画布，
+// 而后端按 position 像素算几何、不读 config.pageLayout，导致同一看板在两侧长得不一样。
+describe('静态护栏：看板缩略图唯一渲染器', () => {
+  const read = (rel: string) => fs.readFileSync(path.resolve(__dirname, '../..', rel), 'utf8');
+  it('工作空间清单复用 DashboardThumbnail，不自画预览画布', () => {
+    const page = read('pages/WorkspaceDashboards.tsx');
+    expect(page).toMatch(/<DashboardThumbnail/);
+    expect(page).not.toMatch(/aspectRatio/);   // 高宽比由唯一渲染器自己算
+    expect(page).not.toMatch(/blocks\.map/);   // 不再消费后端算好的区块
+  });
+  it('目录契约只下发每图几何 + 网格布局摘要，不再下发 blocks', () => {
+    const catalog = read('lib/dashboardCatalog.ts');
+    expect(catalog).not.toMatch(/PreviewBlock/);
+    expect(catalog).toMatch(/pageLayout/);
   });
 });

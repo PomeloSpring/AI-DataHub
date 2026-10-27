@@ -4,8 +4,8 @@ import type { Dashboard, DashboardChart as ChartModel } from '@/stores/dashboard
 import type { VisComponent } from '@/api/visLibrary';
 import { useThemeStore } from '@/stores/themeStore';
 import { chartData, chartRect, chartZIndex, getCanvas, isChartHidden, resolveChartDesign, resolveDashboardDesign, visualConfig, legacyCanvasFilters, type Rect } from '@/lib/dashboardDesign';
-import { PAGE_COLUMNS, PAGE_ROW, pageBreakpoint, pageCanvasSize, pageGap, pagePixelRect, resolvePageLayout, type PageBreakpoint, type PageItem } from '@/lib/dashboardPageLayout';
-import { gridBackgroundStyle } from '@/lib/canvasTheme';
+import { PAGE_COLUMNS, PAGE_ROW, pageBreakpoint, pageCanvasSize, pageGap, pageGapsOf, pagePixelRect, resolvePageLayout, type PageBreakpoint, type PageItem } from '@/lib/dashboardPageLayout';
+import { fitBackgroundSize, gridBackgroundStyle } from '@/lib/canvasTheme';
 
 export const DashboardChartCard = memo(function DashboardChartCard({ chart, design, items, actions, draft = false, interactive }: {
   chart: ChartModel; design: ReturnType<typeof resolveDashboardDesign>; items: VisComponent[];
@@ -116,12 +116,18 @@ export function ResponsiveDashboardCanvas({ dashboard, items = [], draft, intera
     catch (error) { return { items: [], error: error instanceof Error ? error.message : '页面布局读取失败' }; }
   }, [dashboard, bp, layout]);
   const shown = draft ? result.items : result.items.filter(item => !isChartHidden(item.chart));
+  // v3 行单位是纯 4px 像素，所以这里 rowGap 必须为 0（间距只当列间距用），
+  // 否则 CSS 行间距会叠加到 gridAutoRows 上，一改间距就把所有卡片高度拉扇。
+  const gap = pageGap(bp, pageGapsOf(dashboard.filters));
   return <div ref={ref} className="adh-page-canvas min-w-0 w-full" data-breakpoint={bp} style={{
     backgroundColor: design.background.backgroundColor || design.visual.viewBg,
     backgroundImage: design.background.backgroundImage, backgroundSize: design.background.backgroundSize,
   }}>
     {result.error ? <p role="alert" className="p-6 text-destructive">{result.error}</p> : !shown.length ? <p className="p-12 text-center text-muted-foreground">此看板暂无图表</p> :
-      <div className="grid min-w-0" style={{ gridTemplateColumns: `repeat(${PAGE_COLUMNS[bp]}, minmax(0, 1fr))`, gridAutoRows: PAGE_ROW, gap: pageGap(bp) }}>
+      <div className="grid min-w-0" style={{
+        gridTemplateColumns: `repeat(${PAGE_COLUMNS[bp]}, minmax(0, 1fr))`, gridAutoRows: PAGE_ROW,
+        columnGap: gap, rowGap: 0,
+      }}>
         {shown.map(item => {
           const { chart, rect } = item;
           const style = { gridColumn: `${rect.x + 1} / span ${rect.w}`, gridRow: `${rect.y + 1} / span ${rect.h}` };
@@ -206,21 +212,29 @@ export function DashboardThumbnail({ dashboard, items = [] }: { dashboard: Pick<
   const theme = useThemeStore(s => s.theme);
   const design = resolveDashboardDesign(legacyCanvasFilters(dashboard.filters), items, { theme });
   // page 模式必须走 resolvePageLayout：这是真实画布的唯一布局源，
-  // 用 chartRect 像素另算一套会与画布对不上（曾出现缩略图 4 列溢出、大片空白）
-  const isPage = dashboard.filters?.design?.page !== undefined;
+  // 用 chartRect 像素另算一套会与画布对不上（曾出现缩略图 4 列溢出、大片空白）。
+  // 网格布局的判据是“有没有网格数据”：看板级 design.page 只是其中一种来源，
+  // 脚本/接口生成的看板可以只写每图表 config.pageLayout（只看 design.page 会误判成大屏，
+  // 缩略图按默认 1920×1080 画，内容只占顶部一小块）。
+  const isPage = dashboard.filters?.design?.page !== undefined
+    || dashboard.charts.some(c => (c.config as any)?.pageLayout !== undefined);
   const pageItems = useMemo(() => {
     if (!isPage) return [];
     try { return resolvePageLayout(dashboard, 'desktop'); } catch { return []; }
   }, [dashboard, isPage]);
   const canvas = isPage ? pageCanvasSize(pageItems, 'desktop') : getCanvas(dashboard.filters, dashboard.charts);
-  const tiles = (isPage ? pageItems.map(i => ({ chart: i.chart, rect: pagePixelRect(i.rect, 'desktop') }))
-    : dashboard.charts.map(c => ({ chart: c, rect: chartRect(c) })));
-  return <div className="relative w-full overflow-hidden rounded-md border" style={{ aspectRatio: `${canvas.width} / ${canvas.height}`, backgroundColor: design.background.backgroundColor || design.visual.viewBg || '#f1f5f9', backgroundImage: design.background.backgroundImage, backgroundSize: design.background.backgroundSize }}>
+  // 预览也是只读视图：被隐藏的图表不得混进缩略图（与阅读页同口径）
+  const shownCharts = dashboard.charts.filter(c => !isChartHidden(c));
+  // 预览框高度最多取 2 倍宽：超长看板按真实比例裁顶部（不留大片空白，也不竖向压扁）
+  const box = { width: canvas.width, height: Math.min(canvas.height, canvas.width * 2) };
+  const tiles = (isPage ? pageItems.filter(i => !isChartHidden(i.chart)).map(i => ({ chart: i.chart, rect: pagePixelRect(i.rect, 'desktop', pageGapsOf(dashboard.filters)) }))
+    : shownCharts.map(c => ({ chart: c, rect: chartRect(c) })));
+  return <div className="relative w-full overflow-hidden rounded-md border" style={{ aspectRatio: `${box.width} / ${box.height}`, backgroundColor: design.background.backgroundColor || design.visual.viewBg || '#f1f5f9', backgroundImage: design.background.backgroundImage, backgroundSize: fitBackgroundSize(design.background.backgroundSize, canvas) }}>
     {tiles.map(({ chart: c, rect: p }) => {
       const resolved = resolveChartDesign(c.config, design, items, c.chart_type);
       const palette = resolved.visual.palette?.length ? resolved.visual.palette : design.visual.palette;
-      return <div key={c.id} className="absolute overflow-hidden rounded-sm border border-black/10 p-1" style={{ left: `${p.x / canvas.width * 100}%`, top: `${p.y / canvas.height * 100}%`,
-        width: `${p.w / canvas.width * 100}%`, height: `${p.h / canvas.height * 100}%`, background: visualConfig(resolved.config).cardBg || resolved.visual.viewBg || (resolved.visual.mode === 'dark' ? '#111827' : '#ffffff') }}>
+      return <div key={c.id} className="absolute overflow-hidden rounded-sm border border-black/10 p-1" style={{ left: `${p.x / box.width * 100}%`, top: `${p.y / box.height * 100}%`,
+        width: `${p.w / box.width * 100}%`, height: `${p.h / box.height * 100}%`, background: visualConfig(resolved.config).cardBg || resolved.visual.viewBg || (resolved.visual.mode === 'dark' ? '#111827' : '#ffffff') }}>
         <div className="mb-0.5 h-1 w-1/2 rounded opacity-40" style={{ background: palette?.[0] || '#475569' }} />
         <div className="flex h-[calc(100%-4px)] items-stretch"><ChartGlyph chartType={c.chart_type} palette={palette || []} /></div>
       </div>;

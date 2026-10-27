@@ -73,15 +73,24 @@ export default function Analysis() {
   // editable = 服务端裁决的可写性(仅属主/admin), 角色授予的可见权不含编辑权
   const [detail, setDetail] = useState<any>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // 刷新失败与首次加载失败分开：前者保留已渲染内容 + 横幅告知，不能把整页换成错误页
+  const [refreshError, setRefreshError] = useState('');
+  const detailCache = useRef(new Map<number, any>());
   const loadDetail = useCallback(async (id: number) => {
     if (!id) return;
+    const cached = detailCache.current.get(Number(id));
+    // 不再 setDetail(null)：那会把页头与内容整体换成“正在加载看板…”，看起来像重新加载了整个页面。
+    // 命中缓存先渲染、未命中则继续展示上一份，后台取最新数据后原地替换。
+    if (cached) setDetail(cached);
     setDetailLoading(true);
-    setDetail(null);
+    setRefreshError('');
     try {
       const { data } = await client.get(`/dashboard/${id}`);
+      detailCache.current.set(Number(id), data);
       setDetail(data);
     } catch {
-      setError('加载看板失败');
+      if (!cached) setError('加载看板失败');
+      else setRefreshError('看板最新内容加载失败，当前显示上次加载的结果');
     } finally {
       setDetailLoading(false);
     }
@@ -92,7 +101,6 @@ export default function Analysis() {
   }, [managementPreview, groupMode, dashboardId, current?.id, loadDetail]);
 
   const navigation = useDashboardNavigation(
-    currentGroup?.id ?? 0,
     enabled,
     current?.id,
     target => navigate(boardPath(target)),
@@ -107,7 +115,9 @@ export default function Analysis() {
   };
 
   if (groupMode && !ready) return <div className="p-8" role="status">正在加载看板…</div>;
-  if ((detailLoading || (!detail && !error)) && (managementPreview || (current && current.status === 'enabled'))) return <div className="p-8" role="status">正在加载看板…</div>;
+  // 首帧没有任何内容才整页 loading；切换同组看板时保留页头与上一份内容，只在页头下显示进度条
+  if (!detail && !error && (managementPreview || (current && current.status === 'enabled')))
+    return <div className="p-8" role="status">正在加载看板…</div>;
   if (!allowed || error) {
     // 完全没有仪表盘(非报错): 居中空态引导; 其余情况(未启用/无权限/加载失败)居中提示+操作
     const emptyCase = !error && !dashboardId && !current;
@@ -144,14 +154,46 @@ export default function Analysis() {
     );
   }
   const board = detail as any;
+  const wantedId = managementPreview ? dashboardId : current?.id ?? 0;
   const play = () => navigate(`/screen/${board.id}?group=${currentGroup?.id ?? 0}&from=${encodeURIComponent(location.pathname)}`, { state: { from: location.pathname } });
   const edit = () => navigate(`/dashboard/editor/${board.id}`, { state: { from: location.pathname } });
+  // 看板切换不再单独占一行：组下拉 + 同组看板 pill 全部内联进页头，避免“两层页头 + 中间一条分隔线”的松散观感
+  const switchTabs = groupMode ? navigation.tabs : null;
+  const groupSwitch = groupMode && groups.length > 1 && <DropdownMenu>
+    <DropdownMenuTrigger asChild>
+      <Button variant="outline" size="sm" className="h-8 shrink-0 gap-1.5 rounded-full px-3 text-xs" aria-label="切换仪表盘组">
+        <Layers className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="max-w-[120px] truncate">{currentGroup?.name || '全部组合'}</span>
+        <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+      </Button>
+    </DropdownMenuTrigger>
+    <DropdownMenuContent align="start" className="max-h-72 overflow-auto">
+      {groups.map(g => <DropdownMenuItem key={g.id} onClick={() => switchGroup(g.id)} className="gap-2">
+        <span className="flex-1 truncate">{g.name}</span>
+        {g.id === (currentGroup?.id ?? 0) && <Check className="h-4 w-4 text-primary" />}
+      </DropdownMenuItem>)}
+    </DropdownMenuContent>
+  </DropdownMenu>;
   return <div ref={root} className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-background">
-    <header className="flex h-14 shrink-0 items-center gap-2 border-b px-3 sm:px-6">
-      {!!listPath && <Button size="icon" variant="ghost" aria-label={managementPreview ? '返回看板列表' : '返回看板清单'} onClick={() => navigate(listPath)}><ArrowLeft className="h-4 w-4" /></Button>}
-      {groupMode && navigation.directory}
-      <h1 className="min-w-0 flex-1 truncate text-lg font-semibold" title={board.name}>{board.name}</h1>
-      <div className="flex shrink-0 items-center gap-1" role="toolbar" aria-label="看板操作">
+    {/* 页头不再是一片白底加一条线：card→background 的浅渐变 + 对象徽标把“工具栏”与“内容”拉开层次；
+        色值一律走主题变量，9 套主题下都成立（不在组件里写裸 hex） */}
+    <header className="flex h-14 shrink-0 items-center gap-2 border-b px-3 sm:px-5"
+      style={{ backgroundImage: 'linear-gradient(180deg, hsl(var(--card)) 0%, hsl(var(--background)) 100%)' }}>
+      {!!listPath && <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0" aria-label={managementPreview ? '返回看板列表' : '返回看板清单'} onClick={() => navigate(listPath)}><ArrowLeft className="h-4 w-4" /></Button>}
+      <span aria-hidden className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
+        <LayoutDashboard className="h-4 w-4" />
+      </span>
+      {groupSwitch}
+      {groupSwitch && !!switchTabs && <span aria-hidden className="h-4 w-px shrink-0 bg-border" />}
+      {switchTabs
+        ? <>
+            {/* 同组看板切换条本身就是页头标题（选中 pill = 当前看板），不再另起一行重复同名大标题；
+                h1 仍给屏幕阅读器与文档语义。 */}
+            <h1 className="sr-only">{board.name}</h1>
+            {switchTabs}
+          </>
+        : <h1 className="min-w-0 flex-1 truncate text-lg font-semibold" title={board.name}>{board.name}</h1>}
+      <div className="ml-auto flex shrink-0 items-center gap-1" role="toolbar" aria-label="看板操作">
         <DashboardAutoRefresh key={board.id} onRefresh={() => void loadDetail(board.id)} loading={detailLoading} menuItems={<>
           <DropdownMenuItem disabled={board.status !== 'enabled'} onClick={play}><Play className="mr-2 h-4 w-4" />大屏播放</DropdownMenuItem>
           {managementPreview && board.editable && <DropdownMenuItem onClick={edit}><Edit className="mr-2 h-4 w-4" />编辑看板</DropdownMenuItem>}
@@ -165,33 +207,14 @@ export default function Analysis() {
         <AsBotButton />
       </div>}
     </header>
-    {/* 看板切换栏: 组切换(下拉) + 同组看板 pill 软高亮; 见 DashboardNavigation 注释 */}
-    {groupMode && (navigation.tabs || groups.length > 1) && (
-      <div className="flex shrink-0 items-center gap-2 border-b bg-background px-3 py-2 sm:px-5">
-        {groups.length > 1 && <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="sm" className="h-8 shrink-0 gap-1.5 rounded-full px-3 text-xs" aria-label="切换仪表盘组">
-              <Layers className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className="max-w-[120px] truncate">{currentGroup?.name || '全部组合'}</span>
-              <ChevronDown className="h-3.5 w-3.5 opacity-60" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="max-h-72 overflow-auto">
-            {groups.map(g => <DropdownMenuItem key={g.id} onClick={() => switchGroup(g.id)} className="gap-2">
-              <span className="flex-1 truncate">{g.name}</span>
-              {g.id === (currentGroup?.id ?? 0) && <Check className="h-4 w-4 text-primary" />}
-            </DropdownMenuItem>)}
-          </DropdownMenuContent>
-        </DropdownMenu>}
-        {groups.length > 1 && navigation.tabs && <span aria-hidden className="h-4 w-px shrink-0 bg-border" />}
-        {navigation.tabs}
-      </div>
-    )}
-    {navigation.error && groupMode && <p role="alert" className="px-6 py-1 text-xs text-destructive">{navigation.error}，可打开目录重试。</p>}
+    {/* 加载/切换中的细进度条：保留页头与上一份内容，不再整页换成“正在加载看板…” */}
+    {detailLoading && <div role="progressbar" aria-label="正在加载看板" className="skeleton h-0.5 w-full shrink-0 rounded-none" />}
+    {!!refreshError && <p role="alert" className="flex shrink-0 items-center gap-2 px-3 py-1 text-xs text-destructive sm:px-6">{refreshError}
+      <Button size="sm" variant="link" className="h-auto p-0 text-xs" onClick={() => void loadDetail(wantedId || board.id)}>重试</Button></p>}
     {library.error && <p role="alert" className="px-4 text-sm">{library.error}<Button variant="link" onClick={library.refresh}>重试</Button></p>}
-    <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-muted/20">
+    <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden" style={{ backgroundImage: 'linear-gradient(180deg, hsl(var(--muted) / 0.45) 0%, hsl(var(--muted) / 0.15) 220px, transparent 100%)' }}>
       <DashboardRuntimeParams dashboard={board} />
-      <div className="p-3 sm:p-5"><ResponsiveDashboardCanvas key={board.id} dashboard={board} items={library.items} /></div>
+      <div className="p-4 sm:p-6"><ResponsiveDashboardCanvas key={board.id} dashboard={board} items={library.items} /></div>
     </div>
     {!managementPreview && <AsBotPanel />}
   </div>;

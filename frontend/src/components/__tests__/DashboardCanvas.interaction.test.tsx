@@ -7,7 +7,7 @@ import * as G2 from '@antv/g2';
 import DashboardChart, { CHART_TYPES } from '../DashboardChart';
 import { CanvasRulers, DashboardCanvas, DashboardChartCard, ResponsiveDashboardCanvas } from '../DashboardCanvas';
 import PageLayoutEditor from '../editor/PageLayoutEditor';
-import { resolvePageLayout, movePageItem, pageCanvasSize, type PageBreakpoint } from '@/lib/dashboardPageLayout';
+import { PAGE_COLUMNS, PAGE_ROW, pageColumnPx, resolvePageLayout, movePageItem, pageCanvasSize, type PageBreakpoint } from '@/lib/dashboardPageLayout';
 import type { DropGhost } from '@/lib/editorDrag';
 import Preview, { ShapePreview } from '../VisComponentPreview';
 import { useCanvasInteraction } from '@/hooks/useCanvasInteraction';
@@ -365,7 +365,7 @@ describe('双布局草稿与页面交互', () => {
     expect(h.result.current.allCharts[0].position).toEqual(chart.position);
     expect(h.result.current.allCharts[0].config.pageLayout.desktop).toBeUndefined();
     expect(h.result.current.allCharts[0].config.pageLayout.tablet.w).toBe(6);
-    expect(h.result.current.draftDashboard?.filters.design.page.version).toBe(2);
+    expect(h.result.current.draftDashboard?.filters.design.page.version).toBe(3);
     act(() => h.result.current.setSelectedChart(chart));
     act(() => h.result.current.handleSaveChartConfig({ xCol: 'name', yCol: 'value' }));
     expect(h.result.current.allCharts[0].config.pageLayout.tablet.w).toBe(6);
@@ -426,7 +426,7 @@ describe('双布局草稿与页面交互', () => {
     const h = renderHook(() => useEditorCharts(88));
     const pageLayout = { version: 1, desktop: { x: 0, y: 0, w: 6, h: 20 }, mobile: { x: 0, y: 0, w: 1, h: 20 } };
     act(() => { h.result.current.handleAddFromPanel(CHART_TYPES[0], { x: 120, y: 640 }, { pageLayout }); });
-    expect(h.result.current.draftDashboard?.filters.design.page.version).toBe(2);
+    expect(h.result.current.draftDashboard?.filters.design.page.version).toBe(3);
     await act(async () => { expect(await h.result.current.saveAllChanges()).toBe(true); });
     expect(h.result.current.hasUnsavedChanges).toBe(false);
     h.unmount();
@@ -434,7 +434,7 @@ describe('双布局草稿与页面交互', () => {
     expect(reloaded.result.current.allCharts[0].id).toBe(91);
     expect(reloaded.result.current.allCharts[0].config.pageLayout).toEqual(pageLayout);
     expect(reloaded.result.current.allCharts[0].position).toMatchObject({ x: 120, y: 640 });
-    expect(reloaded.result.current.draftDashboard?.filters.design.page.version).toBe(2);
+    expect(reloaded.result.current.draftDashboard?.filters.design.page.version).toBe(3);
     reloaded.unmount(); useDashboardStore.setState(old);
   });
   it('水平滚动计入拖动距离，其他指针取消事件不终止当前手势', () => {
@@ -445,7 +445,7 @@ describe('双布局草稿与页面交互', () => {
     const viewport = view.getByLabelText('页面布局编辑区');
     const original = resolvePageLayout(dashboard, 'desktop')[0].rect;
     pointer(cell, 'pointerdown', 20, 20);
-    viewport.scrollLeft = (1440 + 16) / 12 * view.state().scale;
+    viewport.scrollLeft = (1440 + 16) / PAGE_COLUMNS.desktop * view.state().scale;
     pointer(window, 'pointercancel', 20, 20, { pointerId: 2 });
     pointer(window, 'pointerup', 20, 20);
     expect(onChange).toHaveBeenCalledTimes(1);
@@ -549,7 +549,7 @@ describe('编辑视口、历史与流畅度回归', () => {
     const created = vi.mocked(G2.Chart).mock.calls.length;
     pointer(first, 'pointerdown', 20, 20);
     expect(capture).toHaveBeenCalledWith(1);
-    pointer(window, 'pointermove', 20, 20 + rect.y * 24 * h.state().scale); flush();
+    pointer(window, 'pointermove', 20, 20 + rect.y * PAGE_ROW * h.state().scale); flush();
     expect(second.style.gridRow).toBe(rowBefore);
     expect(second.style.transform).not.toBe('translate3d(0px, 0px, 0)');
     expect(vi.mocked(G2.Chart).mock.calls).toHaveLength(created);
@@ -593,9 +593,10 @@ describe('编辑视口、历史与流畅度回归', () => {
     fireEvent.wheel(h.getByLabelText('页面布局编辑区'), { deltaY: -500 });
     expect(h.state().scale).toBe(0.5);
     expect(vi.mocked(G2.Chart).mock.calls).toHaveLength(created);
-    pointer(window, 'pointerup', 20 + (1440 + 16) / 12 / 2, 44);
+    pointer(window, 'pointerup', 20 + (1440 + 16) / PAGE_COLUMNS.desktop * 2, 44);
     expect(h.onChange).toHaveBeenCalledTimes(1);
-    expect(h.onChange.mock.calls[0][0][0].rect).toMatchObject({ x: original.x + 1, y: original.y + 2 });
+    // 0.5 缩放下：拖 60.7 屏幕 px = 121 画布 px = 4 列（v3 列宽 30px）；纵向 24 屏幕 px = 48 画布 px = 12 行（1 行 4px）
+    expect(h.onChange.mock.calls[0][0][0].rect).toMatchObject({ x: original.x + 4, y: original.y + 12 });
     expect(frames.size).toBe(0); expect(h.state().isInteracting()).toBe(false);
     expect(h.getByLabelText('页面参考点')).toBeTruthy();
     act(() => h.toggleGrid()); expect(h.queryByLabelText('页面参考点')).toBeNull();
@@ -614,6 +615,53 @@ describe('编辑视口、历史与流畅度回归', () => {
     expect(h.state().isInteracting()).toBe(false);
     flush(); expect(frames.size).toBe(0);
   });
+  it('拖拽步进已细化：1 列 ≈ 30px、1 行 = 4px（v2 是整列 121px / 整行 20px，只能整块跳档）', () => {
+    const h = pageInteraction(); flush();
+    act(() => h.state().zoomTo(1)); flush();          // 拖拽量以画布坐标计，先把缩放固定在 1:1
+    const cell = h.container.querySelector('[data-chart-id="7"]') as HTMLElement;
+    // 以真实渲染的网格位置为基准（CSS grid 的 gridColumn/gridRow 从 1 起算）
+    const [x0, w0] = cell.style.gridColumn.split('/ span ').map(Number);
+    const [y0, h0] = cell.style.gridRow.split('/ span ').map(Number);
+    pointer(cell, 'pointerdown', 20, 20);
+    // 只拖 2 列宽 + 3 行高：在 v2 下 12px 纵向位移会被 round 抹平为 0（根本拖不动），现在逐格跟随
+    pointer(window, 'pointerup', 20 + Math.round(pageColumnPx('desktop') * 2), 20 + PAGE_ROW * 3);
+    expect(h.onChange).toHaveBeenCalledTimes(1);
+    expect(h.onChange.mock.calls[0][0][0].rect).toEqual({ x: x0 - 1 + 2, y: y0 - 1 + 3, w: w0, h: h0 });
+  });
+  it('缩小不被类型下限顶住：预览与提交同口径，且内容不再被非等比拉伸', () => {
+    const h = pageInteraction(); flush();
+    act(() => h.state().zoomTo(1)); flush();
+    const cell = h.container.querySelector('[data-chart-id="7"]') as HTMLElement;
+    const [, h0] = cell.style.gridRow.split('/ span ').map(Number);
+    const startHeight = h0 * PAGE_ROW;           // 行单位 4px，rowGap=0
+    expect(startHeight).toBeGreaterThan(280);
+    pointer(h.getByLabelText('调整图表大小'), 'pointerdown', 400, 400);
+    pointer(window, 'pointermove', 400, 400 - 90); flush();
+    const preview = parseFloat(cell.style.height);
+    // 旧下限会把它钉在 280（而网格提交值继续变小，松手就“突然缩一号”）
+    expect(preview).toBeLessThan(280);
+    expect(preview).toBeCloseTo(startHeight - 90, 0);
+    // 内容保持上一次渲染尺寸，不再靠 scale() 拉伸（标题放大/数据点拉成椭圆的根源）
+    expect(cell.querySelector('[style*="scale("]')).toBeNull();
+    expect(cell.className).toContain('overflow-hidden');   // 内容溢出被裁到框内（Tailwind 类，不是内联样式）
+    pointer(window, 'pointerup', 400, 310);
+    const committed = h.onChange.mock.calls[0][0][0].rect;
+    // 提交值与预览同一量级（差不超过一个行量子）
+    expect(Math.abs(committed.h * PAGE_ROW - preview)).toBeLessThanOrEqual(PAGE_ROW);
+  });
+  it('拖动时渲染对齐与间距参考线，松手后撤掉', () => {
+    const dashboard = { id: 88, filters: {}, charts: [chart, { ...chart, id: 8, position: { ...chart.position, y: 500 } }] } as Dashboard;
+    const h = pageInteraction(dashboard); flush();
+    act(() => h.state().zoomTo(1)); flush();
+    const cell = h.container.querySelector('[data-chart-id="7"]')!;
+    expect(h.queryByTestId('align-guides')).toBeNull();          // 非拖拽态不出提示
+    pointer(cell, 'pointerdown', 20, 20);
+    pointer(window, 'pointermove', 20, 20 + 300); flush();       // 往下拖，两卡左边缘齐平
+    const guides = h.getByTestId('align-guides');
+    expect(guides.querySelectorAll('span').length).toBeGreaterThan(0);
+    pointer(window, 'pointerup', 20, 320);
+    expect(h.queryByTestId('align-guides')).toBeNull();
+  });
   it('页面调整尺寸不逐帧重建图表，缩放和平移后新增落点正确', () => {
     const h = pageInteraction();
     act(() => { h.state().zoomTo(0.5); h.state().setPanOffset({ x: 70, y: 90 }); }); flush();
@@ -624,15 +672,16 @@ describe('编辑视口、历史与流畅度回归', () => {
     pointer(window, 'pointerup', 230, 224);
     expect(h.onChange).toHaveBeenCalledTimes(1);
     const original = resolvePageLayout({ filters: {}, charts: [chart] }, 'desktop')[0].rect;
-    expect(h.onChange.mock.calls[0][0][0].rect.h).toBe(original.h + 2);
+    // 24 屏幕 px / 0.5 缩放 = 48 画布 px = 12 行（v3 行单位 4px，不再是 20px）
+    expect(h.onChange.mock.calls[0][0][0].rect.h).toBe(original.h + 12);
     // 从库拖入时 page 模式也有落点预览（旧 HTML5 DnD 路径上这里是一片空白）
     h.setGhost({ mode: 'page', x: 2, y: 4, w: 3, h: 2, chartType: 'widget_search' });
     const ghost = h.getByLabelText('新增落点预览');
-    // 网格行列已换算成画布像素：y=4 行 → 4×(4+16)=80px，h=2 行 → 2×20−16=24px
-    expect(ghost.getAttribute('style')).toContain('top: 80px');
-    expect(ghost.getAttribute('style')).toContain('height: 24px');
-    // 虚线框内直接标出将占的空间，用户不必自己算行高
-    expect(ghost.textContent).toContain('3 列 × 2 行');
+    // 网格行列已换算成画布像素：y=4 行 → 16px，h=2 行 → 8px；3 列 → 3×30.33−16 = 75px
+    expect(ghost.getAttribute('style')).toContain('top: 16px');
+    expect(ghost.getAttribute('style')).toContain('height: 8px');
+    // 虚线框内直接标出将占的像素尺寸（网格单位只是实现细节，对用户无意义）
+    expect(ghost.textContent).toContain('75 × 8 px');
     h.setGhost(null);
     expect(h.queryByLabelText('新增落点预览')).toBeNull();
   });

@@ -125,52 +125,71 @@ def _chart_preview_rect(position, widget: bool) -> tuple:
 def card_catalog_fields(rows: list) -> list:
     """就地补齐看板目录行的「卡片瀑布清单」共享字段(可缓存, 与查看者无关)。
 
-    补: description / updated_at(ISO) / chart_count(数据图表数) / preview(画布尺寸+区块矩形)。
-    预览**只回几何信息**, 不含 SQL、语义查询、样式配置与数据行 —— 清单页不需要,
+    补: description / updated_at(ISO) / chart_count(数据图表数) / preview(画布尺寸 + 每图摘要)。
+    预览**只回几何与布局数据**，不含 SQL、语义查询、样式配置与数据行 —— 清单页不需要,
     浏览域响应也不该把口径带出去(护栏 §7); 原始 filters 用完即剔除。
-    几何口径与前端 getCanvas 一致(默认 1920×1080, 并按区块外扩)。
+
+    这里不再自己算「区块矩形」：几何事实源是前端的唯一渲染器 DashboardThumbnail
+    （page 模式走 resolvePageLayout(config.pageLayout)，大屏模式走 position 像素）。
+    曾在这里按 position 另算一套 blocks，导致两个看板列表缩略图长得不一样：
+    page 布局的看板在浏览侧退化成大屏像素图（内容只占顶部一小块）。
     可写性(editable)与 owner_id 的外剥是每请求的事, 由 catalog_cards 处理。
     """
     from backend.common.db import execute_query
     for row in rows:
         filters = _json_loads_safe(row.pop("filters", None))
         canvas = {}
+        page = None
         if isinstance(filters, dict):
             design = filters.get("design")
-            if isinstance(design, dict) and isinstance(design.get("canvas"), dict):
-                canvas = design["canvas"]
+            if isinstance(design, dict):
+                if isinstance(design.get("canvas"), dict):
+                    canvas = design["canvas"]
+                # 网格间距等页面级设置随预览下发，保证缩略图与真实画布同一尺寸口径
+                if isinstance(design.get("page"), dict):
+                    page = {k: v for k, v in design["page"].items() if k in ("version", "gap")}
         row["description"] = row.get("description") or ""
         if hasattr(row.get("updated_at"), "isoformat"):
             row["updated_at"] = row["updated_at"].isoformat()
         row["preview"] = {"width": _geo_num(canvas.get("width"), 1920.0),
-                          "height": _geo_num(canvas.get("height"), 1080.0), "blocks": []}
+                          "height": _geo_num(canvas.get("height"), 1080.0),
+                          "page": page, "charts": []}
         row["chart_count"] = 0
     ids = [int(r["id"]) for r in rows]
     if not ids:
         return rows
     marks = ",".join(["%s"] * len(ids))
     charts = execute_query(
-        f"SELECT dashboard_id, chart_type, position FROM adh_charts "
+        f"SELECT id, dashboard_id, chart_type, position, config FROM adh_charts "
         f"WHERE dashboard_id IN ({marks}) ORDER BY id", ids) or []
     by_dash: dict = {}
     for c in charts:
         widget = str(c.get("chart_type") or "").startswith("widget_")
         rect = _chart_preview_rect(c.get("position"), widget)
-        item = by_dash.setdefault(int(c["dashboard_id"]), {"blocks": [], "charts": 0})
-        # chart_type 一并下发：卡片预览要按类型画可辨识缩影（柱/线/饼/表格/控件），
-        # 只给几何 + widget 标记会让所有区块长一个样，且与编辑器里的效果图对不上
-        item["blocks"].append({"x": rect[0], "y": rect[1], "w": rect[2], "h": rect[3],
-                               "widget": widget, "chart_type": c.get("chart_type") or ""})
+        cfg = _json_loads_safe(c.get("config"))
+        cfg = cfg if isinstance(cfg, dict) else {}
+        item = by_dash.setdefault(int(c["dashboard_id"]), {"charts": [], "count": 0})
+        # chart_type 一并下发：卡片预览要按类型画可辨识缩影（柱/线/饼/表格/控件）；
+        # pageLayout/hidden 只取布局与可见性两个键，不回其余 config（口径不外泄）。
+        item["charts"].append({
+            "id": int(c["id"]),
+            "chart_type": c.get("chart_type") or "",
+            "position": {"x": rect[0], "y": rect[1], "w": rect[2], "h": rect[3]},
+            "pageLayout": cfg.get("pageLayout"),
+            "hidden": bool(cfg.get("hidden")),
+        })
         if not widget:
-            item["charts"] += 1
+            item["count"] += 1
     for row in rows:
-        item = by_dash.get(int(row["id"])) or {"blocks": [], "charts": 0}
+        item = by_dash.get(int(row["id"])) or {"charts": [], "count": 0}
         preview = row["preview"]
-        preview["blocks"] = item["blocks"]
+        preview["charts"] = item["charts"]
         # 区块超出画布时按实际外扩(与前端 getCanvas 同口径, 否则预览会被裁掉一块)
-        preview["width"] = max([320.0, preview["width"]] + [b["x"] + b["w"] for b in item["blocks"]])
-        preview["height"] = max([180.0, preview["height"]] + [b["y"] + b["h"] for b in item["blocks"]])
-        row["chart_count"] = item["charts"]
+        extents = [(c["position"]["x"] + c["position"]["w"], c["position"]["y"] + c["position"]["h"])
+                   for c in item["charts"] if not (c.get("pageLayout") or {})]
+        preview["width"] = max([320.0, preview["width"]] + [e[0] for e in extents])
+        preview["height"] = max([180.0, preview["height"]] + [e[1] for e in extents])
+        row["chart_count"] = item["count"]
     return rows
 
 
@@ -287,7 +306,7 @@ def _clear_default(user_id: int, workspace_id: int = 0):
 # 「看板长什么样 / 有哪些组」的共享载荷 + 用户角色归属(仅用于分组编排,
 # 不授予任何看板可见性)。写路径显式失效(_invalidate_dashboard_payload),
 # 短 TTL 兑底防漏失效。
-CARDS_KEY = "dash:cards:v2"            # 共享: 目录行 + 卡片几何预览
+CARDS_KEY = "dash:cards:v3"            # 共享: 目录行 + 卡片预览摘要（v3: blocks → charts 摘要）
 GROUPS_KEY = "dash:groups:v2"          # 共享: 组 + 组内看板 + 组→角色绑定
 DETAIL_KEY = "dash:detail:{}"          # 共享: 单看板完整载荷(charts 含 data_cache)
 USER_ROLES_KEY = "dash:user_roles:{}"  # 按用户: 角色 id 集(仅分组编排用)

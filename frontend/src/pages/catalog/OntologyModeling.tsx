@@ -49,6 +49,7 @@ import Glossary from './Glossary';
 import { ModelActionsTab, ModelRulesTab, ModelScenariosTab, ModelSitesTab, ObjectCreateButton, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
 import { metricsApi } from '@/api/metrics';
 import { useAsBotStore } from '@/stores/asBotStore';
+import { hasPerm } from '@/stores/permissionStore';
 
 interface Datasource {
   id: number;
@@ -321,19 +322,20 @@ export default function OntologyModeling() {
     return () => clearInterval(timer);
   }, [genTask?.status, genTask?.conversation_id, applyTaskResult]);
 
-  // ── 保存（仅 draft） ──
-  // 供建模页签（行为/规则/场景/新建对象）落库：改 doc 后走 ontologyApi.save（save_draft 级联重建派生物）
+  // ── 保存（只存草案，两段式第一段） ──
+  // 供建模页签（行为/规则/场景/新建对象）落库。
+  // 2026-10-26 拍板：改为存草案，**不碰生效内容、不级联**；发布（ontology:publish）才生效。
   const saveDocFromTab = useCallback(async (nextJson: string) => {
     if (!model) return;
     setJsonDraft(nextJson);
     try {
-      const { data } = await ontologyApi.save(model.id, nextJson);
-      const wasActive = model.status === 'active';
+      const { data } = await ontologyApi.saveDraft(model.id, nextJson);
       setModel(data);
       setJsonDraft(data.json_content || '');
       setDirty(false);
       loadModels();
-      toast.success(wasActive ? '已保存，并同步刷新对象/绑定/图谱' : '草案已保存，YAML/MD 已同步派生');
+      setDraftPending(true);
+      toast.success('已存为草案，尚未生效；点「发布」后才会同步对象/图谱/知识库');
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '保存失败');
     }
@@ -343,17 +345,36 @@ export default function OntologyModeling() {
     if (!model) return;
     setSaving(true);
     try {
-      const { data } = await ontologyApi.save(model.id, jsonDraft);
-      const wasActive = model.status === 'active';
+      const { data } = await ontologyApi.saveDraft(model.id, jsonDraft);
       setModel(data);
       setJsonDraft(data.json_content || '');
       setDirty(false);
       loadModels();
-      toast.success(wasActive ? '已保存，并同步刷新对象/绑定/图谱' : '草案已保存，YAML/MD 已同步派生');
+      setDraftPending(true);
+      toast.success('已存为草案，尚未生效；点「发布」后才会同步对象/图谱/知识库');
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '保存失败');
     } finally {
       setSaving(false);
+    }
+  };
+
+  // ── 发布（两段式第二段）：生效 + 级联，需 ontology:publish 权限 ──
+  const [draftPending, setDraftPending] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const handlePublish = async () => {
+    if (!model) return;
+    setPublishing(true);
+    try {
+      await ontologyApi.publishDraft(model.id);
+      setDraftPending(false);
+      loadModels();
+      toast.success('已发布生效，并同步刷新对象/绑定/图谱');
+    } catch (e: any) {
+      // 透传服务端具体错因（如“生效版已被他人改动”），不换成通用文案
+      toast.error(e.response?.data?.detail || '发布失败');
+    } finally {
+      setPublishing(false);
     }
   };
 
@@ -666,8 +687,22 @@ export default function OntologyModeling() {
                   {editable && (
                     <Button size="sm" onClick={handleSave} disabled={saving || jsonInvalid || !dirty}>
                       {saving ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1" />}
-                      {model.status === 'draft' ? '保存草案' : '保存'}
+                      存草案
                     </Button>
+                  )}
+                  {/* 发布 = 两段式第二段：生效 + 级联。按 ontology:publish 显隐（无码不渲染，不给死开关） */}
+                  {editable && hasPerm('ontology:publish') && (
+                    <Button size="sm" variant="default" onClick={handlePublish}
+                      disabled={publishing || !draftPending}
+                      title={draftPending ? '把草案提升为生效版，并同步对象/图谱/知识库' : '当前没有待发布的草案'}>
+                      {publishing ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1" />}
+                      发布{draftPending ? '' : '（无待发布）'}
+                    </Button>
+                  )}
+                  {draftPending && (
+                    <Badge variant="outline" className="border-amber-500/40 text-amber-600">
+                      有草案待发布
+                    </Badge>
                   )}
                   {(model.status === 'draft' || model.status === 'archived') && (
                     <Button size="sm" variant="default" onClick={() => setActivateOpen(true)}>

@@ -32,7 +32,8 @@ triggers: [本体, 建模, 语义模型, 对象定义, 关系建模, 属性设�
 ### 4. 指标/维度字典写（口径的唯一权威）
 指标与维度的口径不写在对象里，而是登记在字典（`adh_metrics` / `adh_dimensions`）：
 - `save_metric`：创建/更新指标。必填 `display_name`、`bound_object_key`（必须是已激活对象）、
-  `formula`、`agg_type`；可选 `name`(英文标识)、`unit`、`description`、`aliases`、`category`。传 `id` 则更新。
+  `formula`、`agg_type`；可选 `name`(英文标识)、`unit`、`description`、`aliases`、`category`、`tags`。
+  `category` 是**业务域**（可观测/客户/案例…），`tags` 是**口径标签**（基础/衍生/复合），两个维度不混用。传 `id` 则更新。
 - `save_dimension`：创建/更新维度。必填 `display_name`、`bound_object_key`；
   **用 `property_name` 传对象属性的业务中文名**（如「创建时间」），物理列由服务端从本体属性解析——
   **不得手敲物理列名**；名字对不上时工具会回抛该对象的可用属性业务名，从中选一个重试，不要猜。
@@ -41,14 +42,29 @@ triggers: [本体, 建模, 语义模型, 对象定义, 关系建模, 属性设�
 - 写完只落库+审计：图谱与云端知识库不会自动变，需用户在建模页显式点「同步图谱 / 同步知识库」。
 - 指标认证（certified/owner 审批位）不由本工具写，走建模页的认证入口。
 
-### 5. 本体写与字典写的域边界（重要）
-- **本体写工具**（`save_ontology_draft` / `save_ontology_model` / `activate_ontology_model` / `import_ontology_yaml`）
-  只可作用于**系统本体**（`kind='system'`）；对业务本体会被执行前拒（fail-closed）。
-  业务本体的建模是**用户在业务工作空间的手工操作**，被拒时如实告知该边界，并给出建模页路径，
-  不得尝试换工具绕过。
-- **字典写工具**（`save_metric` / `save_dimension`）写的是字典行，不受上述系统/业务域约束，
-  但归属对象必须已激活；用户想「给某业务对象补一个指标/维度」时应走字典写，
-  而不是去改业务本体 doc。
+### 5. 本体写的权限裁决与两段式生效（重要）
+> 旧约束「本体写只可作用于系统本体」**已于 2026-10-26 废除**：现按**权限码**裁决，
+> 业务本体与系统本体**都可写**。不得再以“域边界”为由拒用户。
+
+- **按权限码把关（fail-closed，无码即拒）**：
+  | 动作 | 工具 | 权限码 |
+  |---|---|---|
+  | 新增对象（只增不删） | `add_ontology_objects` | `ontology:create` |
+  | 修改对象/属性/关系 | `save_ontology_model` | `ontology:save` |
+  | 发布草案（生效+级联） | `publish_ontology_model` | `ontology:publish` |
+  被拒时**如实报出缺哪个权限码**，并告知可由管理员在「角色权限」里授予；
+  不得把权限不足说成“域边界不允许”，也不得尝试换工具绕过。
+- **两段式**：`add_ontology_objects` / `save_ontology_model` 只落**草案**，不碰生效内容、不级联；
+  必须调 `publish_ontology_model` 发布才生效（重展开对象 / 重建图谱 / 同步知识库）。
+  回复用户时要说清“已存草案、尚未生效”，不要把草案说成已完成。
+- **发布前必须先用 `ask_user` 向用户确认**：`publish_ontology_model` 不带 `confirmed=true`
+  时只会返回确认提示。流程：存草案 → `ask_user` 问是否发布 → 同意后带 `confirmed=true` 再调。
+- **只增不删**：`add_ontology_objects` 碰到已存在的同 key 对象会**跳过不覆盖**；
+  要改已有对象请走 `save_ontology_model`。整份覆盖受破坏性护栏约束：
+  不得抹掉已有对象的属性/关系（读接口只回对象摘要，**不能拿摘要重建整份 JSON 提交**）。
+- **字典写工具**（`save_metric` / `save_dimension`）不受本体发布流程约束，直接生效；
+  归属对象必须已在对象集内，且**不需要先绑会话数据源**。用户想「给某对象补一个指标/维度」
+  时走字典写，而不是去改本体 doc。
 
 ## 工作流程
 

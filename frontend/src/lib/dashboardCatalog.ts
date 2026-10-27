@@ -5,22 +5,28 @@ import type { Dashboard } from '@/stores/dashboardStore';
 // 可见性由服务端按角色 fail-closed 裁决(adh_role_dashboard_access), 前端不再另判;
 // editable(可写性)同样由服务端裁决: 角色授予的可见权不含编辑权, 前端只据此隐藏写入口。
 
-/** 看板卡片预览区块(仅几何 + 类型: 位置/尺寸/是否装饰组件/图表类型, 不含 SQL 与样式配置) */
-export interface PreviewBlock {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  widget: boolean;
-  /** 图表类型: 供缩影画出柱/线/饼/表格/控件等可辨识形状，缺失时退化为柱阵 */
-  chart_type?: string;
+/** 看板卡片预览的图表摘要：几何 + 类型 + 网格布局 + 可见性，不含 SQL 与样式配置（护栏 §7） */
+export interface PreviewChart {
+  id: number;
+  chart_type: string;
+  /** 大屏模式的像素坐标（无 pageLayout 时由它算预览几何） */
+  position: { x: number; y: number; w: number; h: number };
+  /** page 模式的网格布局原样，布局换算唯一在 dashboardPageLayout 里做 */
+  pageLayout?: Record<string, any> | null;
+  hidden?: boolean;
 }
 
-/** 看板画布预览: 卡片瀑布按 width/height 决定高宽比, 按 blocks 画区块 */
+/**
+ * 看板画布预览：width/height 决卡片高宽比，charts 是渲染输入。
+ * 区块几何不再由后端算（旧 blocks 字段已废）：否则两个看板列表会有两套布局口径，
+ * page 布局的看板会在浏览侧退化成大屏像素图。
+ */
 export interface DashboardPreview {
   width: number;
   height: number;
-  blocks: PreviewBlock[];
+  /** 看板级页面设置（网格间距等），与真实画布同一尺寸口径 */
+  page?: { version?: number; gap?: Record<string, number> } | null;
+  charts: PreviewChart[];
 }
 
 /** 组目录内的看板行: 阅读/播放所需轻量字段 + 卡片清单展示字段 */

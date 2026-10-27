@@ -135,6 +135,15 @@ export function useEditorCharts(dashboardId: number | undefined) {
         metadata: { ...d.metadata, filters: { ...filters, design: { ...filters.design, version: 1, page: { ...filters.design?.page, version: PAGE_LAYOUT_VERSION } } } } };
     });
   };
+  /** 看板级页面设置（当前只有间距）：写 filters.design.page.gap，与 updateCanvas 同一套草稿通道 */
+  const updatePage = useCallback((updates: Record<string, any>) => {
+    if (!current || savingLock.current) return;
+    mutate(d => {
+      const filters = d.metadata.filters || current.filters || {};
+      return { ...d, metadata: { ...d.metadata, filters: { ...filters,
+        design: { ...filters.design, version: 1, page: { ...filters.design?.page, version: PAGE_LAYOUT_VERSION, ...updates } } } } };
+    });
+  }, [current, mutate]);
   const handlePropertyChange = (chartId: number, field: string, value: any) => {
     // 图表卡与控件卡不得跨类改型：改型后 source_type / 数据配置与渲染口径会分叉
     if (field === 'chart_type') {
@@ -310,7 +319,7 @@ export function useEditorCharts(dashboardId: number | undefined) {
     undo, redo, transaction, canUndo: !saving && !!histories.current[id]?.past.length, canRedo: !saving && !!histories.current[id]?.future.length,
     hasUnsavedChanges: pendingCount > 0, pendingCount, pendingChangeCount, pendingDeleteCount: draft.deleted.length,
     pendingNewCount: draft.added.length, draftMetadataKeys: Object.keys(draft.metadata),
-    updateMetadata, updateCanvas, updatePageLayout, getChartData: chartData, isNewChart: (chartId: number) => chartId < 0,
+    updateMetadata, updateCanvas, updatePage, updatePageLayout, getChartData: chartData, isNewChart: (chartId: number) => chartId < 0,
     dirtyIds: Object.keys(draft.changes).map(Number).filter(id => !draft.deleted.includes(id)),
     updateLocalChart, handlePropertyChange, handlePositionChange, handleWidgetConfigChange, handleAddFromPanel,
     handleAddFromDataset,

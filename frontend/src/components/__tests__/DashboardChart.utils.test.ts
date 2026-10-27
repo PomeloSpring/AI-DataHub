@@ -565,10 +565,12 @@ describe('图表主题适配', () => {
   })
 
   it('其他主题仍使用各自色盘', () => {
+    // light/dark 已就地换皮为 AS 风格（design-service 预设）：
+    // 亮态主色 #0037CB、暗态主色 #809BE5（旧 Kibana 蓝 217 91% 60% 不再作为明暗态主色）。
     const expectedColors = {
       datafoundry: 'hsl(0, 0%, 5%)',
-      light: 'hsl(217, 91%, 60%)',
-      dark: 'hsl(217, 91%, 60%)',
+      light: 'hsl(224, 100%, 40%)',
+      dark: 'hsl(224, 66%, 70%)',
       tech: 'hsl(190, 100%, 50%)',
     }
     for (const theme of Object.keys(expectedColors) as (keyof typeof expectedColors)[]) {

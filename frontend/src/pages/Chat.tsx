@@ -844,15 +844,22 @@ export default function Chat() {
                     )}
 
                     {/* 流式 token 输出(intent 未确定前,如执行层 CLI 的流式回复,含内嵌图表/设计卡片块)。
-                        回答内容按章节切成阶段卡片(卡头滑动展开/收起,逐段滑入) */}
-                    {!msg.intent && msg.content && (
-                      <MarkdownWithCharts
-                        text={msg.content}
-                        sections
-                        streaming={loading && idx === messages.length - 1}
-                        conversationId={currentConvId}
-                        onDesignContinue={text => { void sendMessage(text); }}
-                      />
+                        回答内容按章节切成阶段卡片(卡头滑动展开/收起,逐段滑入)。
+                        出错/超时中断的回合同样走这里：已输出的正文是用户读到的内容，
+                        不能因为结尾报错就整段丢弃只剩错误卡（下方错误卡说明中断原因）。 */}
+                    {(!msg.intent || msg.error) && msg.content && (
+                      <>
+                        <MarkdownWithCharts
+                          text={msg.content}
+                          sections
+                          streaming={loading && idx === messages.length - 1}
+                          conversationId={currentConvId}
+                          onDesignContinue={text => { void sendMessage(text); }}
+                        />
+                        {msg.error && (
+                          <p className="mt-1 text-xs text-muted-foreground">以上为中断前已输出的内容，可能不完整</p>
+                        )}
+                      </>
                     )}
 
                     {msg.intent && ['chat', 'explain'].includes(msg.intent) && msg.reply && (
@@ -871,8 +878,9 @@ export default function Chat() {
                     )}
 
                     {/* 前置意图漏斗本地直答：界面上只留「转深度分析」这个逃生门，
-                        不打“未调用模型”类内部术语标记（归属看 handled_by，管理侧可审计）。 */}
-                    {msg.intent === 'intent_gate' && (msg.reply || msg.content) && (
+                        不打“未调用模型”类内部术语标记（归属看 handled_by，管理侧可审计）。
+                        出错回合的正文由上面的中断分支渲染，此处排除避免双份。 */}
+                    {msg.intent === 'intent_gate' && !msg.error && (msg.reply || msg.content) && (
                       <>
                         <MarkdownWithCharts
                           text={(msg.reply || msg.content) as string}

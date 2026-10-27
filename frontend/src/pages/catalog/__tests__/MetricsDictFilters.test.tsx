@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import MetricsCenter from '../MetricsCenter';
@@ -15,7 +15,9 @@ import { metricsApi } from '@/api/metrics';
  * 2. 指标列表服务端分页 → 筛选必须带进请求参数（不得前端筛当前页）；
  * 3. 维度列表不分页 → 筛选在全量集上精确生效；
  * 4. facet/列表加载失败必须显式可见（不静默降级成"没有这类值"/"暂无数据"），
- *    归属对象显示业务名而非裸 key（ui-resource-display）。
+ *    归属对象显示业务名而非裸 key（ui-resource-display）；
+ * 5. category（业务域）与 tags（口径标签基础/衍生/复合）是两个正交维度：
+ *    分类下拉/分类列里不得再出现口径标签，表单也不得把标签写进 category。
  */
 
 vi.mock('@/api/metrics', () => ({
@@ -37,6 +39,7 @@ const FACETS = {
     with_target_table: 30, without_target_table: 6, with_target_column: 9,
     categories: [{ value: '可观测', count: 14 }, { value: '__unset__', count: 22 }],
     agg_types: [{ value: 'COUNT', count: 34 }, { value: 'COUNT_DISTINCT', count: 2 }],
+    tags: [{ value: '基础', count: 12 }, { value: '复合', count: 3 }],
   },
   dimensions: {
     total: 3, active: 3, inactive: 0, certified: 1, draft: 2, unbound_objects: 1,
@@ -52,12 +55,11 @@ const FACETS = {
 
 const metric = (over: Record<string, unknown> = {}) => ({
   id: 1, name: '事件总数', display_name: '事件总数', name_en: 'event_count',
-  description: '', metric_type: '可观测', calculation_type: 'COUNT',
+  description: '', category: '可观测', tags: ['基础'], calculation_type: 'COUNT',
   expression: 'COUNT(pc_case.id)', unit: '个', target_table: 'rum_event',
-  target_column: '', granularity: '', owner: '', tags: [],
+  target_column: '', granularity: '', owner: '',
   bound_object_key: 'rum_event', aliases: '["异常数"]', certified: 0, is_active: 1,
-  created_at: '', updated_at: '', ...over,
-});
+  created_at: '', updated_at: '', ...over });
 
 const dimension = (over: Record<string, unknown> = {}) => ({
   id: 1, name: '事件类型', name_en: 'event_type', category: '属性', level: 0, hierarchy: '',
@@ -98,17 +100,65 @@ describe('指标字典筛选 — 选项来自 facet', () => {
   it('分类下拉渲染库内真实值域与条数（不是写死的三档）', async () => {
     await renderMetrics();
     const user = userEvent.setup();
-    await user.click(screen.getByRole('combobox', { name: '指标分类' }));
+    await user.click(screen.getByRole('combobox', { name: '业务域分类' }));
     expect(await screen.findByRole('option', { name: '可观测（14）' })).toBeTruthy();
     // 空值桶显式可选（库里 22 条没有分类，不能说"没有这个值"）
     expect(screen.getByRole('option', { name: '未分类（22）' })).toBeTruthy();
     expect(screen.queryByRole('option', { name: '基础指标' })).toBeNull();
+    // 口径标签不属于业务域下拉（两个正交维度不再混杂）
+    expect(screen.queryByRole('option', { name: /^基础/ })).toBeNull();
+    expect(screen.queryByRole('option', { name: /^复合/ })).toBeNull();
+  });
+
+  it('口径标签单独一个下拉，选项与计数来自 tags facet', async () => {
+    await renderMetrics();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: '口径标签' }));
+    expect(await screen.findByRole('option', { name: '基础（12）' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: '复合（3）' })).toBeTruthy();
+    await user.click(screen.getByRole('option', { name: '基础（12）' }));
+    await vi.waitFor(() => {
+      const last = mockList.mock.calls[mockList.mock.calls.length - 1][0];
+      expect(last).toMatchObject({ tags: '基础', page: 1 });
+    });
+  });
+
+  it('列表里业务域与口径标签分列展示', async () => {
+    await renderMetrics();
+    expect(await screen.findByText('业务域')).toBeTruthy();
+    expect(screen.getByText('口径标签')).toBeTruthy();
+    // 行上的标签徽章渲染中文标签名（不是 basic）
+    expect((await screen.findAllByText('基础')).length).toBeGreaterThan(0);
+  });
+
+  it('编辑表单：业务域候选不混口径标签，标签从固定候选中选且回填已存值', async () => {
+    await renderMetrics();
+    const user = userEvent.setup();
+    // 行内操作按钮是图标钮（编辑在删之前）；名称与显示名同文，取首个匹配所在行
+    const row = (await screen.findAllByText('事件总数'))[0].closest('tr') as HTMLElement;
+    await user.click(within(row).getAllByRole('button')[0]);
+    expect(await screen.findByText('编辑指标')).toBeTruthy();
+    // 筛选栏与表单下拉同名 → 表单的限定在弹窗内取
+    const dialog = screen.getByRole('dialog', { name: '编辑指标' });
+    await user.click(within(dialog).getByRole('combobox', { name: '业务域分类' }));
+    expect(await screen.findByRole('option', { name: '可观测' })).toBeTruthy();
+    const kindOptions = screen.getAllByRole('option').filter(
+      (o) => /^(基础|衍生|复合)(指标|标签)?$/.test((o.textContent || '').trim()));
+    expect(kindOptions.map((o) => o.textContent)).toEqual([]);
+    await user.keyboard('{Escape}');   // 收起下拉，否则遮罩挡住后续交互
+    // 口径标签候选：当前行的「基础」为选中态，三个固定候选都可选（按钮形式，非手输）
+    const base = await screen.findByRole('button', { name: '基础' });
+    expect(base.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: '衍生' }).getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByRole('button', { name: '复合' })).toBeTruthy();
+    // 不手输自由文本（ui-resource-display §2：从集合中选）
+    expect(screen.queryByPlaceholderText(/输入标签/)).toBeNull();
   });
 
   it('选择分类/计算方式后把筛选下推请求参数并回到第 1 页', async () => {
     await renderMetrics();
     const user = userEvent.setup();
-    await user.click(screen.getByRole('combobox', { name: '指标分类' }));
+    await user.click(screen.getByRole('combobox', { name: '业务域分类' }));
     await user.click(await screen.findByRole('option', { name: '可观测（14）' }));
     await vi.waitFor(() => {
       const last = mockList.mock.calls[mockList.mock.calls.length - 1][0];
@@ -173,7 +223,7 @@ describe('指标字典筛选 — 选项来自 facet', () => {
     await renderMetrics();
     expect(await screen.findByText(/筛选项加载失败：数据库不可用/)).toBeTruthy();
     expect(screen.getByRole('button', { name: '重试' })).toBeTruthy();
-    expect(screen.getByRole('combobox', { name: '指标分类' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: '业务域分类' })).toBeDisabled();
     // 关键词搜索仍可用（不是整页瘫掉）
     expect(screen.getByPlaceholderText('搜索名称/英文名/别名/口径...')).toBeEnabled();
   });

@@ -894,6 +894,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let streamingText = '';
       let streamingThinking = '';
       let doneData: any = null;
+      // error 事件不再中断读流：后端每条 error 之后必发同文案的 done（带 tool_calls / gate /
+      // trace_id 等元信息）。提前 throw 会让已流式输出的正文连同这些元信息一起被丢弃，
+      // 用户只看到一张错误卡 —— 中断要显式暴露，但不该把跑出来的结果一并抹掉。
+      let streamError = '';
 
       // Insert empty assistant message for streaming (only if still same conversation)
       if (isSameConv()) {
@@ -1046,7 +1050,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
               } else if (currentEvent === 'done') {
                 doneData = data;
               } else if (currentEvent === 'error') {
-                throw new Error(data.message);
+                streamError = data.message || '服务端返回错误';
+                console.error('[SSE] error event:', streamError);
               }
             } catch (e: any) {
               if (currentEvent === 'error' || currentEvent === 'done' || !currentEvent) {
@@ -1077,13 +1082,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (msgs[lastIdx]?.role === 'assistant') {
               msgs[lastIdx] = {
                 ...msgs[lastIdx],
-                content: streamingText || '',
-                error: '服务端响应异常：未收到完成事件，请检查后端日志',
-                warnings: ['SSE 流未正常结束，缺少 done 事件'],
+                // 断流前已输出的内容保留展示，错误只说明「为什么没跑完」
+                content: streamingText || msgs[lastIdx].content || '',
+                error: streamError || '服务端响应异常：未收到完成事件，请检查后端日志',
+                warnings: [...(msgs[lastIdx].warnings || []), 'SSE 流未正常结束，缺少 done 事件'],
               };
             }
             return { messages: msgs, loading: false, loadingStep: '', abortController: null };
           });
+          // 同异常收场：有正文就落库，不让刷新后连「跑到哪断的」都看不到
+          if (streamingText) {
+            const msgs = get().messages;
+            await saveMessages(convId, msgs, deriveTitle(msgs));
+            persisted = true;
+          }
         }
         return;
       }
@@ -1096,12 +1108,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const finalToolCalls = (doneData.tool_calls && doneData.tool_calls.length > 0)
         ? doneData.tool_calls
         : existingMsg?.tool_calls;
+      // done 带 error（超时/中断/执行失败）时，已流式输出的正文不得清空：
+      // 错误必须显式暴露，但不是把已经跑出来的答案一并抹掉只剩错误卡。
+      // streamError 只在 done 本身没给出成功回复时才生效（避免先到的 error 事件覆盖正常结果）。
+      const doneError = doneData.error || doneData.result?.error
+        || (streamError && !doneData.reply ? streamError : '');
+      const partialText = streamingText || existingMsg?.content || '';
       const finalMsg: ChatMessage = {
         role: 'assistant',
-        content: doneData.error ? '' : (doneData.reply || streamingText),
+        content: doneError ? partialText : (doneData.reply || streamingText),
         question: question,  // Save original user question for re-execute
         intent: doneData.intent,
-        reply: doneData.reply,
+        // 错误回合服务端会把错误文案同时塞进 reply；已有正文时不再重复承载，
+        // 避免错误文案以「正常回答」的身份进渲染与持久化
+        reply: doneError ? undefined : doneData.reply,
         sql: doneData.error ? undefined : doneData.sql,
         warnings: doneData.warnings,
         thinking: doneData.thinking || streamingThinking,
@@ -1114,7 +1134,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         viewMode: doneData.chart_type && doneData.chart_type !== 'table' ? 'chart' : 'table',
         ai_raw_response: doneData.ai_raw_response || streamingText,
         timings: doneData.timings,
-        error: doneData.error || doneData.result?.error,
+        error: doneError,
         progressStages: existingMsg?.progressStages,
         activeStage: 'completed',
         analysis: doneData.analysis,
@@ -1203,8 +1223,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return;
       }
 
+      // 异常收场（断连 / 解析失败 / error 事件后没等到 done）同样不得丢掉已输出的正文：
+      // 流式 token 已逐个写进最后一条 assistant 消息，这里只补错误、不重置正文。
+      const prev = isSameConv() ? get().messages[get().messages.length - 1] : undefined;
+      const mergeable = !!prev && prev.role === 'assistant' && !prev.sql;
       const errorMsg: ChatMessage = {
-        role: 'assistant', content: '', error: e.message, elapsed_ms: elapsed,
+        ...(mergeable ? prev! : {}),
+        role: 'assistant',
+        content: prev?.content || '',
+        error: e.message,
+        elapsed_ms: elapsed,
       };
       if (isSameConv()) {
         set(state => {
@@ -1216,6 +1244,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
           return { messages: msgs, loading: false, loadingStep: '', abortController: null };
         });
+        // 已输出的正文是用户资产：本轮失败也要落库，刷新后仍能看到中断前的内容
+        if (errorMsg.content.trim()) {
+          const msgs = get().messages;
+          await saveMessages(convId, msgs, deriveTitle(msgs));
+          persisted = true;
+        }
       }
     } finally {
       // 本次新建但未成功落库的会话统一回滚(成功保存过则 persisted=true 不删)。
