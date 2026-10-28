@@ -78,6 +78,8 @@ TOOL_SERVER_TOOLS = {
         "add_ontology_objects",   # 权限码 ontology:create
         "update_ontology_object",  # 权限码 ontology:save（服务端按 key 合并，不需全量 JSON）
         "publish_ontology_model",  # 权限码 ontology:publish（发布前需 ask_user 确认）
+        # 跨源拓扑（取数路径/承载）：部署层独立表，不走草案/发布，但同样按码把关
+        "list_ontology_carriers", "save_ontology_carrier",   # 读 / ontology:save 写
     ]),
     "screen": ("datahub_screen", [
         "create_data_screen", "get_data_screen", "update_data_screen_chart",

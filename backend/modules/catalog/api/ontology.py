@@ -957,6 +957,96 @@ def update_model_sites(model_id: int, req: dict, user: dict = Depends(get_curren
     return {"success": True, "sites": cleaned}
 
 
+@router.get("/models/{model_id}/carriers")
+def get_model_carriers(model_id: int, user: dict = Depends(get_current_user)):
+    """业务本体承载清单（跨源拓扑：这个概念的数据能从哪几条路径取到）。
+
+    与「适用站点」的分工：deploy_sites 管同构多站点复制，carriers 管跨源/跨层承载
+    （数仓汇总 / SLS 日志 / 镜像）。事实源 `adh_ontology_carriers`，读取只经
+    `backend/semantics/topology.py`（唯一投影口）。
+
+    响应同时带回**选择框选项**（对象/数据源/站点/源本体及其对象）：前端不得自己
+    拼 id、也不得要人手输 id（ui-resource-display），且避免一个页签扇出四次请求。
+    显示一律业务名（承载名/数据源名/站点名/源本体名）。
+    """
+    model = ontology_service.get_model(model_id)
+    if not model or not ontology_service.can_view_model(model, _allowed_source_ids(user)):
+        raise HTTPException(status_code=404, detail="模型不存在")
+    from backend.semantics import topology
+
+    rows = topology.list_carriers(model_id=model_id, include_deprecated=True)
+    # 源本体候选（承载指向的物理形状来源）：名称为稳定键，删除重建 id 会变、name 不变；
+    # 对象清单与校验同源（都读 canonical doc），不取展开行以免存量旧字段名导致下拉为空
+    src_index = ontology_service._active_source_ontology_index() or {}
+    objects: list = []
+    datasources: list = []
+    sites: list = []
+    from backend.common.db.metadata_db import get_metadata_conn
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT object_key, display_name FROM adh_ontology_objects "
+                "WHERE model_id = %s AND is_active = 1 ORDER BY display_name, object_key",
+                (model_id,))
+            objects = [{"key": str(r["object_key"]),
+                        "name": str(r["display_name"] or r["object_key"])}
+                       for r in (cur.fetchall() or [])]
+            cur.execute(
+                "SELECT name, db_type, site_code FROM adh_datasources ORDER BY name")
+            datasources = [{"name": str(r["name"]), "db_type": str(r.get("db_type") or ""),
+                            "site_code": str(r.get("site_code") or "")}
+                           for r in (cur.fetchall() or [])]
+            cur.execute(
+                "SELECT site_code, display_name FROM adh_sites "
+                "WHERE is_active = 1 AND is_aggregate = 0 ORDER BY sort_order, site_code")
+            sites = [{"site_code": str(r["site_code"]),
+                      "display_name": str(r["display_name"])}
+                     for r in (cur.fetchall() or [])]
+
+    source_ontologies = [
+        {"name": name, "datasource": str(info.get("datasource_name") or ""),
+         "objects": list(info.get("objects") or [])}
+        for name, info in sorted(src_index.items())
+    ]
+    names = {o["key"]: o["name"] for o in objects}
+    items = [{**c, "object_name": names.get(c["object_key"], c["object_key"])} for c in rows]
+    return {"model_id": model_id, "items": items,
+            "types": list(topology.CARRIER_TYPES),
+            "freshness_levels": list(topology.FRESHNESS_LEVELS),
+            "objects": objects, "datasources": datasources, "sites": sites,
+            "source_ontologies": source_ontologies}
+
+
+@router.put("/models/{model_id}/carriers")
+def update_model_carriers(model_id: int, req: dict, user: dict = Depends(get_current_user)):
+    """保存承载清单（整模型替换；写权限由 API 中间件按 ontology:save 码把关）。
+
+    校验全部 fail-loud（topology.validate_carriers）：对象归属悬空、源本体对象不存在、
+    类型/新鲜度非法、一个对象多条权威口径、数据源/站点不存在均直接 422，
+    不静默丢弃或改写（宁阻断勿悬空，与字典孤儿/站点声明同口径）。
+    身份服务端注入（created_by 不信任请求体）。
+    """
+    model = ontology_service.get_model(model_id)
+    if not model or not ontology_service.can_view_model(model, _allowed_source_ids(user)):
+        raise HTTPException(status_code=404, detail="模型不存在")
+    kind = str(model.get("kind") or "")
+    if kind != "business":
+        # 承载是跨源拓扑：源本体是单源物理投影（它自身就是被指向的一方），
+        # 系统本体只描述系统能力面，两者都不适用承载声明
+        raise HTTPException(status_code=400,
+                            detail="仅业务本体适用承载清单（跨源取数路径）")
+    from backend.semantics import topology
+
+    rows = req.get("carriers")
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=422, detail="carriers 必须是数组")
+    try:
+        return topology.save_carriers(
+            model_id, rows, created_by=str((user or {}).get("username") or ""))
+    except topology.CarrierError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+
 @router.get("/models/{model_id}")
 def get_model(model_id: int, user: dict = Depends(get_current_user)):
     model = ontology_service.get_model(model_id)

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from '@/lib/toast';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import {
   RefreshCw, Search, Plus, Edit, Trash2, Database, Users, UserPlus,
   Wifi, Globe, Cylinder, Palette, Upload, X as XIcon, Link, AlertTriangle, Plug,
@@ -31,19 +32,19 @@ function usePagedData(apiBase: string) {
   const [data, setData] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [size] = useState(50);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [filters, setFilters] = useState<Record<string, string>>({});
 
-  const load = useCallback(async (p?: number, extra?: Record<string, string>) => {
+  const load = useCallback(async (p?: number, extra?: Record<string, string>, sizeOverride?: number) => {
     // Merge stored filters with any new extra params
     const mergedFilters = extra ? { ...filters, ...extra } : filters;
     // If extra is provided, update stored filters
     if (extra) setFilters(prev => ({ ...prev, ...extra }));
     setLoading(true);
     try {
-      const params: any = { page: p ?? page, size, ...mergedFilters };
+      const params: any = { page: p ?? page, size: sizeOverride ?? size, ...mergedFilters };
       if (search) params.search = search;
       const { data: res } = await client.get(apiBase, { params });
       setData(res.items || []);
@@ -62,7 +63,7 @@ function usePagedData(apiBase: string) {
 
   useEffect(() => { load(); }, []);
 
-  return { data, total, page, size, search, loading, setPage, setSearch, load, setData, filters, resetFilters };
+  return { data, total, page, size, search, loading, setPage, setSize, setSearch, load, setData, filters, resetFilters };
 }
 
 // ── Keywords Help Popover ──────────────────────────────────────────────
@@ -109,7 +110,7 @@ function KeywordsHelp({ items }: { items: { title: string; desc: string }[] }) {
 // ── Table Info Tab ─────────────────────────────────────────────────────
 
 function TableInfoTab() {
-  const { data, total, page, size, loading, setPage, load } = usePagedData('/admin/table-info');
+  const { data, total, page, size, loading, setPage, setSize, load } = usePagedData('/admin/table-info');
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editValues, setEditValues] = useState<any>({});
   const [syncing, setSyncing] = useState(false);
@@ -238,8 +239,6 @@ function TableInfoTab() {
       toast.error(e.response?.data?.detail || '操作失败');
     }
   };
-
-  const totalPages = Math.ceil(total / size);
 
   return (
     <div className="space-y-4">
@@ -439,20 +438,15 @@ function TableInfoTab() {
           </ScrollArea>
         )}
 
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t">
-            <span className="text-sm text-muted-foreground">共 {total} 条</span>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => { setPage(page - 1); load(page - 1); }}>
-                上一页
-              </Button>
-              <span className="text-sm">{page} / {totalPages}</span>
-              <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => { setPage(page + 1); load(page + 1); }}>
-                下一页
-              </Button>
-            </div>
-          </div>
-        )}
+        <PaginationBar
+          page={page}
+          pageSize={size}
+          total={total}
+          onChange={(p: number) => { setPage(p); load(p); }}
+          onPageSizeChange={(n: number) => { setSize(n); setPage(1); load(1, undefined, n); }}
+          hideWhenSingle
+          className="rounded-b-lg"
+        />
       </div>
 
       {/* Add Table Info Modal */}
@@ -555,7 +549,7 @@ function TableInfoTab() {
 // ── Column Metadata Tab ───────────────────────────────────────────────
 
 function ColumnMetadataTab() {
-  const { data, total, page, size, loading, setPage, load } = usePagedData('/admin/metadata');
+  const { data, total, page, size, loading, setPage, setSize, load } = usePagedData('/admin/metadata');
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editValues, setEditValues] = useState<any>({});
   const [searchTable, setSearchTable] = useState('');
@@ -704,8 +698,6 @@ function ColumnMetadataTab() {
       toast.error(e.response?.data?.detail || '操作失败');
     }
   };
-
-  const totalPages = Math.ceil(total / size);
 
   return (
     <div className="space-y-4">
@@ -904,20 +896,15 @@ function ColumnMetadataTab() {
           </ScrollArea>
         )}
 
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t">
-            <span className="text-sm text-muted-foreground">共 {total} 条</span>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => { setPage(page - 1); load(page - 1); }}>
-                上一页
-              </Button>
-              <span className="text-sm">{page} / {totalPages}</span>
-              <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => { setPage(page + 1); load(page + 1); }}>
-                下一页
-              </Button>
-            </div>
-          </div>
-        )}
+        <PaginationBar
+          page={page}
+          pageSize={size}
+          total={total}
+          onChange={(p: number) => { setPage(p); load(p); }}
+          onPageSizeChange={(n: number) => { setSize(n); setPage(1); load(1, undefined, n); }}
+          hideWhenSingle
+          className="rounded-b-lg"
+        />
       </div>
 
       {/* Add Column Metadata Modal */}
@@ -1072,7 +1059,7 @@ function MetadataTab() {
 // ── Terms Tab ──────────────────────────────────────────────────────────
 
 function TermsTab() {
-  const { data, total, page, size, loading, setPage, setSearch, load } = usePagedData('/admin/terms');
+  const { data, total, page, size, loading, setPage, setSize, setSearch, load } = usePagedData('/admin/terms');
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<any>(null);
   const [formValues, setFormValues] = useState<any>({});
@@ -1124,8 +1111,6 @@ function TermsTab() {
       toast.error('切换状态失败');
     }
   };
-
-  const totalPages = Math.ceil(total / size);
 
   return (
     <div className="space-y-4">
@@ -1209,20 +1194,15 @@ function TermsTab() {
           </ScrollArea>
         )}
 
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t">
-            <span className="text-sm text-muted-foreground">共 {total} 条</span>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => { setPage(page - 1); load(page - 1); }}>
-                上一页
-              </Button>
-              <span className="text-sm">{page} / {totalPages}</span>
-              <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => { setPage(page + 1); load(page + 1); }}>
-                下一页
-              </Button>
-            </div>
-          </div>
-        )}
+        <PaginationBar
+          page={page}
+          pageSize={size}
+          total={total}
+          onChange={(p: number) => { setPage(p); load(p); }}
+          onPageSizeChange={(n: number) => { setSize(n); setPage(1); load(1, undefined, n); }}
+          hideWhenSingle
+          className="rounded-b-lg"
+        />
       </div>
 
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
@@ -1778,7 +1758,7 @@ function UsersTab() {
   const [users, setUsers] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [size] = useState(20);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
   const [search, setSearch] = useState('');
   const [filterRole, setFilterRole] = useState('');
   const [loading, setLoading] = useState(false);
@@ -1796,10 +1776,10 @@ function UsersTab() {
   const [editForm, setEditForm] = useState<any>({});
   const [resetPwdForm, setResetPwdForm] = useState<any>({});
 
-  const loadUsers = async (p?: number) => {
+  const loadUsers = async (p?: number, sizeOverride?: number) => {
     setLoading(true);
     try {
-      const params: any = { page: p ?? page, size };
+      const params: any = { page: p ?? page, size: sizeOverride ?? size };
       if (search) params.search = search;
       if (filterRole) params.role = filterRole;
       const { data } = await client.get('/users/', { params });
@@ -1916,8 +1896,6 @@ function UsersTab() {
       toast.error(e.response?.data?.detail || '删除失败');
     }
   };
-
-  const totalPages = Math.ceil(total / size);
 
   return (
     <div className="space-y-4">
@@ -2044,20 +2022,15 @@ function UsersTab() {
           </ScrollArea>
         )}
 
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t">
-            <span className="text-sm text-muted-foreground">共 {total} 个用户</span>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => { setPage(page - 1); loadUsers(page - 1); }}>
-                上一页
-              </Button>
-              <span className="text-sm">{page} / {totalPages}</span>
-              <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => { setPage(page + 1); loadUsers(page + 1); }}>
-                下一页
-              </Button>
-            </div>
-          </div>
-        )}
+        <PaginationBar
+          page={page}
+          pageSize={size}
+          total={total}
+          onChange={(p: number) => { setPage(p); loadUsers(p); }}
+          onPageSizeChange={(n: number) => { setSize(n); setPage(1); loadUsers(1, n); }}
+          hideWhenSingle
+          className="rounded-b-lg"
+        />
       </div>
 
       {/* ── Create User Modal ── */}
@@ -2398,7 +2371,7 @@ function BrandSettingsTab() {
 // ── Relations Tab ──────────────────────────────────────────────────────
 
 function RelationsTab() {
-  const { data, total, page, size, loading, setPage, load } = usePagedData('/admin/relations');
+  const { data, total, page, size, loading, setPage, setSize, load } = usePagedData('/admin/relations');
   const [syncing, setSyncing] = useState(false);
   const [datasources, setDatasources] = useState<any[]>([]);
   const [syncDsId, setSyncDsId] = useState<number>(0);
@@ -2495,8 +2468,6 @@ function RelationsTab() {
       toast.error('操作失败');
     }
   };
-
-  const totalPages = Math.ceil(total / size);
 
   const getDsName = (dsId: number) => {
     const ds = datasources.find((d: any) => d.id === dsId);
@@ -2656,20 +2627,15 @@ function RelationsTab() {
           </ScrollArea>
         )}
 
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t">
-            <span className="text-sm text-muted-foreground">共 {total} 条</span>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => { setPage(page - 1); load(page - 1); }}>
-                上一页
-              </Button>
-              <span className="text-sm">{page} / {totalPages}</span>
-              <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => { setPage(page + 1); load(page + 1); }}>
-                下一页
-              </Button>
-            </div>
-          </div>
-        )}
+        <PaginationBar
+          page={page}
+          pageSize={size}
+          total={total}
+          onChange={(p: number) => { setPage(p); load(p); }}
+          onPageSizeChange={(n: number) => { setSize(n); setPage(1); load(1, undefined, n); }}
+          hideWhenSingle
+          className="rounded-b-lg"
+        />
       </div>
     </div>
   );

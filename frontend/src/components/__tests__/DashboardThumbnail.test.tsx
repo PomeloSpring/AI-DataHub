@@ -1,10 +1,36 @@
 import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/react';
 import { DashboardThumbnail } from '../DashboardCanvas';
+import { DashboardThumbnailFrame } from '../DashboardThumbnailFrame';
+import { thumbnailGeometry } from '@/lib/dashboardThumbnail';
 import { pageCanvasSize, pageColumnPx, pagePixelRect, resolvePageLayout } from '@/lib/dashboardPageLayout';
 
 const chart = (id: number, chart_type: string, position: any, config: any = {}) =>
   ({ id, dashboard_id: 1, name: `c${id}`, chart_type, sql_query: '', config, position } as any);
+
+describe('缩略图固定框 — 卡片等高且缩放与内容同源', () => {
+  it('几何：大屏按画布、超长看板按 2 倍宽截断', () => {
+    expect(thumbnailGeometry({ filters: {}, charts: [] } as any).box).toEqual({ width: 1920, height: 1080 });
+    expect(thumbnailGeometry({ filters: { design: { canvas: { width: 1000, height: 5000 } } }, charts: [] } as any).box)
+      .toEqual({ width: 1000, height: 2000 });
+  });
+  it('几何：page 模式用网格布局源（与渲染器同一个算点）', () => {
+    const charts = [chart(1, 'bar', { x: 0, y: 0, w: 300, h: 200 }, { pageLayout: { version: 3, desktop: { x: 0, y: 0, w: 24, h: 70 } } })];
+    const dashboard = { filters: { design: { page: { version: 2 } } }, charts } as any;
+    const geometry = thumbnailGeometry(dashboard);
+    expect(geometry.isPage).toBe(true);
+    expect(geometry.box.width).toBe(pageCanvasSize(resolvePageLayout(dashboard, 'desktop'), 'desktop').width);
+  });
+  it('固定框把预览收在 h-40 内，不随看板画布比例撑高', () => {
+    const { container } = render(<DashboardThumbnailFrame
+      dashboard={{ filters: { design: { canvas: { width: 1000, height: 5000 } } }, charts: [] } as any}><span>看板</span></DashboardThumbnailFrame>);
+    const frame = container.firstElementChild as HTMLElement;
+    expect(frame.className).toContain('h-40');
+    expect(frame.className).toContain('overflow-hidden');
+    // 内层等比缩放居中（不是靠裁切）
+    expect(frame.querySelector('.absolute')?.getAttribute('style')).toContain('scale(');
+  });
+});
 
 describe('DashboardThumbnail：列表效果图', () => {
   it('page 模式走 resolvePageLayout，与真实画布同一套布局源', () => {

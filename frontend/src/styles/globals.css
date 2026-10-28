@@ -2242,3 +2242,28 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
 .adh-canvas-viewport[data-panning='true'] .adh-editable-card:active {
   cursor: grabbing;
 }
+
+/* ===== 登录页装饰（仅视觉层，颜色全部走主题变量） ===== */
+/* 极光光斑：极慢漂移呼吸，营造深空氛围，不干扰表单可读性 */
+@keyframes login-orb-drift {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.75; }
+  50% { transform: translate3d(24px, -18px, 0) scale(1.08); opacity: 1; }
+}
+
+.login-orb {
+  animation: login-orb-drift 14s ease-in-out infinite;
+}
+
+.login-orb-delay { animation-delay: -5s; }
+.login-orb-delay2 { animation-delay: -9s; }
+
+/* 卡片入场：轻微上浮 + 淡入 */
+@keyframes login-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.login-rise {
+  animation: login-rise 0.5s ease-out both;
+}
+

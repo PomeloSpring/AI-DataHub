@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { toast } from '@/lib/toast';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { RefreshCw, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -24,6 +25,7 @@ export default function IntegrationLogs() {
   const [logs, setLogs] = useState<EmbedLog[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [filterAppId, setFilterAppId] = useState('');
   const [filterUserId, setFilterUserId] = useState('');
@@ -39,7 +41,7 @@ export default function IntegrationLogs() {
   const load = useCallback(async (p?: number) => {
     setLoading(true);
     try {
-      const params: any = { page: p ?? page, size: 50 };
+      const params: any = { page: p ?? page, size: pageSize };
       if (filterAppId) params.app_id = filterAppId;
       if (filterUserId) params.user_id = filterUserId;
       if (filterStatus) params.status = filterStatus;
@@ -51,7 +53,7 @@ export default function IntegrationLogs() {
     } finally {
       setLoading(false);
     }
-  }, [page, filterAppId, filterUserId, filterStatus]);
+  }, [page, pageSize, filterAppId, filterUserId, filterStatus]);
 
   useEffect(() => { load(); }, []);
 
@@ -142,13 +144,15 @@ export default function IntegrationLogs() {
         </div>
       )}
 
-      {total > 50 && (
-        <div className="flex justify-center gap-2">
-          <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => { setPage(p => p - 1); load(page - 1); }}>上一页</Button>
-          <span className="py-1 px-3 text-sm">第 {page} 页 / 共 {Math.ceil(total / 50)} 页</span>
-          <Button variant="outline" size="sm" disabled={page * 50 >= total} onClick={() => { setPage(p => p + 1); load(page + 1); }}>下一页</Button>
-        </div>
-      )}
+      <PaginationBar
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        busy={loading}
+        onChange={(p: number) => { setPage(p); load(p); }}
+        onPageSizeChange={(n: number) => { setPageSize(n); setPage(1); load(1); }}
+        hideWhenSingle
+      />
     </div>
   );
 }

@@ -214,13 +214,20 @@ const axisAnchors = (r: Rect, axis: 'x' | 'y') => {
   return [start, start + size / 2, start + size];
 };
 
+/** 参考线两端余量（像素）：线头不卡在矩形边上，读起来更像“对齐”而不是“切割” */
+export const GUIDE_PAD = 8;
+
 /**
  * 拖拽/缩放时的对齐与间距辅助提示（纯函数，输入一律是已换算完的像素矩形）。
  *
  * 网格只能保证“落子到格子上”，但保证不了“两张卡左边缘齐平”与“左右留空相等”——
  * 那需要实时告知“现在差多少 px”：
- *  - lines：与邻居边缘/中心或画布边缘/中线对齐的参考线（同一位置只画一条，跨度取并集）；
+ *  - lines：与邻居边缘/中心或画布边缘/中线对齐的参考线；
  *  - gaps：与左右（或上下）最近邻居之间的间距读数，两侧相等时 equal=true（等距提示）。
+ *
+ * 线长口径（商业编辑器惯例）：**只画两个矩形在该轴上的重叠区**（两端各外扩 GUIDE_PAD），
+ * 完全错开时才画“连接两者”的段。不贯穿整屏——贯穿线会把编辑区变成坐标纸，侵入性盖过内容。
+ * 同一位置上互相重叠的区间会合并，避免多段共线叠加变粗。
  */
 export function computeAlignHints(
   target: Rect, others: Rect[], canvas: { width: number; height: number }, tolerance = 4,
@@ -229,22 +236,30 @@ export function computeAlignHints(
   for (const axis of ['x', 'y'] as const) {
     const cross = axis === 'x' ? 'y' : 'x';
     const extent = axis === 'x' ? canvas.width : canvas.height;
-    const spans: { at: number; from: number; to: number }[] = [];
+    const crossExtent = axis === 'x' ? canvas.height : canvas.width;
+    const t0 = axisStart(target, cross), t1 = t0 + axisSize(target, cross);
+    const groups: { at: number; spans: [number, number][] }[] = [];
     const push = (at: number, other: Rect) => {
-      const from = Math.min(axisStart(target, cross), axisStart(other, cross));
-      const to = Math.max(axisStart(target, cross) + axisSize(target, cross), axisStart(other, cross) + axisSize(other, cross));
-      const hit = spans.find(s => Math.abs(s.at - at) <= 0.5);
-      if (hit) { hit.from = Math.min(hit.from, from); hit.to = Math.max(hit.to, to); }
-      else spans.push({ at, from, to });
+      const o0 = axisStart(other, cross), o1 = o0 + axisSize(other, cross);
+      const lo = Math.max(t0, o0), hi = Math.min(t1, o1);
+      const next: [number, number] = hi > lo
+        ? [lo - GUIDE_PAD, hi + GUIDE_PAD]
+        : [Math.min(t0, o0) - GUIDE_PAD, Math.max(t1, o1) + GUIDE_PAD];
+      let group = groups.find(g => Math.abs(g.at - at) <= 0.5);
+      if (!group) { group = { at, spans: [] }; groups.push(group); }
+      const touch = group.spans.find(s => next[0] <= s[1] + 1 && next[1] >= s[0] - 1);
+      if (touch) { touch[0] = Math.min(touch[0], next[0]); touch[1] = Math.max(touch[1], next[1]); }
+      else group.spans.push(next);
     };
     for (const other of others)
       for (const t of axisAnchors(target, axis)) for (const o of axisAnchors(other, axis))
         if (Math.abs(t - o) <= tolerance) push(o, other);
-    // 画布边缘与中线：跨度就是目标自己（没有可并的邻居）
+    // 画布边缘与中线：线就是目标自己那一段
     for (const o of [0, extent / 2, extent])
       for (const t of axisAnchors(target, axis))
         if (Math.abs(t - o) <= tolerance) push(o, target);
-    for (const s of spans) lines.push({ axis, at: s.at, from: s.from, to: s.to });
+    for (const g of groups) for (const [rawFrom, rawTo] of g.spans)
+      lines.push({ axis, at: g.at, from: Math.max(0, rawFrom), to: Math.min(crossExtent, rawTo) });
   }
   const gaps: GapHint[] = [];
   for (const axis of ['x', 'y'] as const) {

@@ -19,6 +19,8 @@ const VISUAL_KEYS = ['colorScheme', 'gradient', 'barFade', 'barCap', 'axisLabelS
   'titleBarBg', 'titleColor', 'showUnderline', 'underlineColor', 'titleFontSize', 'titleFontWeight', 'cardRadius',
   // 分析画布字模旋钮(DataProfileCard/GraphCard/AnimatedTimeChart/DataGrid 消费,纯展示参数)
   'topN', 'bins', 'speedMs', 'rowHeight', 'headerBg', 'zebraBg',
+  // 表值图（HTML 表格）字模旋钮：以前表头色/行高/表格字号在渲染里写死，挂字模不生效（§2“存了不生效”）
+  'headerColor', 'tableFontSize',
   'nodeBg', 'nodeBorder', 'edgeColor', 'direction', 'nodeWidth', 'nodeHeight', 'ranksep', 'nodesep'];
 const TOP_KEYS = ['backgroundColor', 'backgroundImage', 'backgroundSize', 'overlay',
   'mode', 'palette', 'viewBg', 'popoverBg', 'textColor', 'subTextColor', 'gridColor'];
@@ -50,6 +52,9 @@ export function visualConfig(config: any) {
 export function sanitizeStyle(style: any): Record<string, any> {
   const result = pick(style, TOP_KEYS);
   if (style?.config) result.config = visualConfig(style.config);
+  // 控件样式字模的旋钮走 WIDGET_KEYS 白名单（backgroundColor/height/gap/labelWidth…）；
+  // 不登记就会被入库即剥，表现为“选了控件字模没反应”。
+  if (style?.widgetStyle) result.widgetStyle = pick(style.widgetStyle, WIDGET_KEYS);
   if (style?.grid) {
     const g = style.grid;
     result.grid = pick(g, ['canvasW', 'canvasH', 'cols']);
@@ -68,6 +73,8 @@ export const snapshotComponent = (c: VisComponent): VisSnapshot => ({
 export const COMPONENT_SLOT: Partial<Record<VisCategory, string>> = {
   screen_background: 'background', color_theme: 'colorTheme', kpi_card: 'cardStyle',
   decoration_frame: 'decoration', layout_template: 'layout', chart_style: 'chartStyle',
+  // 控件样式字模：写 style_config.widgetStyle 段，汇入 cfg.widgetStyle（与图表 config 分命名空间）
+  widget_style: 'widgetStyle',
   theme_pack: 'themePack',
 };
 // 主题包结构: { mode, palette, background, card, decoration, charts{default,<type>}, widgets{default,<type>} }
@@ -102,9 +109,13 @@ export function themePackFor(theme: string | undefined, items: VisComponent[]): 
     || items.find(c => c.category === 'theme_pack' && c.code === 'tp_datafoundry');
 }
 export function resolveComponent(ref: unknown, snapshot: VisSnapshot | undefined, items: VisComponent[]) {
+  // 字模库是事实源（“活字”）：命中在用字模就按最新定义渲染 —— 改字模应当即时反映到所有已挂载的看板，
+  // 不需要重挂/重存（ui-vis-library-style.md §3）。快照**只**在字模下架/缺失时兜底，保证历史大屏不花屏。
+  const component = items.find(c => String(c.id) === String(ref) || (!!ref && c.code === ref))
+    || (snapshot?.code ? items.find(c => c.code === snapshot.code) : undefined);
+  if (component) return sanitizeStyle(component.style_config);
   if (snapshot?.version === 1 && snapshot.style_config) return sanitizeStyle(snapshot.style_config);
-  const component = items.find(c => String(c.id) === String(ref) || c.code === ref);
-  return component ? sanitizeStyle(component.style_config) : undefined;
+  return undefined;
 }
 const finite = (v: unknown, fallback: number) => typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 // 非法尺寸（≤0 / NaN）回落到默认尺寸；合法的小尺寸原样保留。
@@ -161,9 +172,20 @@ export function applyScreenComponent(filters: any = {}, c: VisComponent) {
   if (c.category === 'theme_pack') design.themePack = c.code;
   return { ...filters, components: c.category === 'theme_pack' ? filters.components : { ...filters.components, [slot]: c.code }, design };
 }
+/**
+ * 字模适用类型：`chart_type` 为空 = 不限；支持逗号分隔多类型（如按钮族 widget_search,widget_reset,widget_export）。
+ * 历史缺陷：seed 登记了 `widget_input` / `widget_button` 两个**不存在的类型名**，
+ * compatible 永远为 false，字模在管理页看得到、在编辑器永远挂不上（空承诺）。
+ */
+export function appliesToType(c: Pick<VisComponent, 'chart_type'>, chartType: string) {
+  const types = (c.chart_type || '').split(',').map(s => s.trim()).filter(Boolean);
+  return !types.length || types.includes(chartType);
+}
 export function compatible(c: VisComponent, chartType: string) {
   if (c.category === 'kpi_card') return ['big_number', 'big_number_trend', 'statistic', 'text_display'].includes(chartType);
-  if (c.category === 'chart_style') return !chartType.startsWith('widget_') && (!c.chart_type || c.chart_type === chartType);
+  // 控件类只能挂 widget_style 字模，不能挂 chart_style（两套旋钮命名空间不同，混挂会互相覆盖）
+  if (c.category === 'chart_style') return !chartType.startsWith('widget_') && appliesToType(c, chartType);
+  if (c.category === 'widget_style') return chartType.startsWith('widget_') && appliesToType(c, chartType);
   return ['decoration_frame', 'color_theme'].includes(c.category);
 }
 export function applyChartComponent(config: any = {}, c: VisComponent, items: VisComponent[] = []) {
@@ -194,11 +216,10 @@ export function resolveDashboardDesign(filters: any = {}, items: VisComponent[] 
   const snap = snapshots.themePack;
   const validSnapshot = snap?.version === 1 && snap.category === 'theme_pack' && snap.style_config;
   const component = items.find(c => c.category === 'theme_pack' && (c.code === packRef || String(c.id) === String(packRef)));
-  // 兼容早期仅保存色板的残缺快照，完整快照仍优先且不依赖在线字模。
-  const completeSnapshot = validSnapshot && ['background', 'card', 'charts', 'widgets'].some(k => snap.style_config[k]);
   let pack: Record<string, any> | undefined;
   if (packRef || validSnapshot) {
-    const raw = completeSnapshot ? snap.style_config : component?.style_config || (validSnapshot ? snap.style_config : undefined);
+    // 与 resolveComponent 同口径：库优先，只有字模下架/缺失才回退快照（早期残缺色板快照不再遮蔽完整定义）
+    const raw = component?.style_config || (validSnapshot ? snap.style_config : undefined);
     pack = raw ? sanitizePack(raw) : undefined;
     if (!pack && packRef) missing.push(String(packRef));
   } else {
@@ -223,6 +244,8 @@ export function resolveChartDesign(config: any = {}, screen: ReturnType<typeof r
   const packChart = { ...screen.pack?.charts?.default, ...screen.pack?.charts?.[chartType] };
   const packWidget = { ...screen.pack?.widgets?.default, ...screen.pack?.widgets?.[chartType] };
   let inherited: Record<string, any> = { ...packChart, ...screen.card };
+  // 控件字模（widget_style）单独累积：优先级 主题包 widgets < 控件字模 < 图表显式 widgetStyle
+  let componentWidget: Record<string, any> = {};
   let visual = { ...screen.visual };
   const refs = config.vis?.refs || {};
   const snapshots = config.vis?.snapshots || {};
@@ -230,16 +253,17 @@ export function resolveChartDesign(config: any = {}, screen: ReturnType<typeof r
   for (const slot of new Set([...Object.keys(refs), ...Object.keys(snapshots)])) {
     const style = resolveComponent(refs[slot], snapshots[slot], items);
     if (!style && refs[slot]) missing.push(String(refs[slot]));
+    if (slot === 'widgetStyle') { componentWidget = { ...componentWidget, ...(style?.widgetStyle || {}) }; continue; }
     inherited = { ...inherited, ...(['cardStyle', 'decoration'].includes(slot) ? toCardStyle(style?.config) : style?.config) };
     if (slot === 'colorTheme' && style) visual = { ...visual, ...style };
   }
   const overrides = { ...config };
   for (const key of VISUAL_KEYS) if (overrides[key] === '' || (Array.isArray(overrides[key]) && !overrides[key].length)) delete overrides[key];
   const merged = { ...inherited, ...overrides, axisStyle: { ...inherited.axisStyle, ...overrides.axisStyle },
-    ...(chartType.startsWith('widget_') ? { widgetStyle: { ...packWidget, ...overrides.widgetStyle } } : {}) };
+    ...(chartType.startsWith('widget_') ? { widgetStyle: { ...packWidget, ...componentWidget, ...overrides.widgetStyle } } : {}) };
   if (merged.colorScheme?.length) visual.palette = merged.colorScheme;
   if (merged.axisStyle?.gridColor || merged.gridColor) visual.gridColor = merged.axisStyle?.gridColor || merged.gridColor;
-  return { config: merged, visual, missing, widget: packWidget };
+  return { config: merged, visual, missing, widget: { ...packWidget, ...componentWidget } };
 }
 // 仅在完全没有持久外观时读取旧本机偏好；返回值只用于渲染，不参与保存。
 export function legacyCanvasFilters(filters: any = {}) {

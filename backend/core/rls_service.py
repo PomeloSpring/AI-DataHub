@@ -35,8 +35,12 @@ class RLSService:
     # ── Policy CRUD ────────────────────────────────────────────────
 
     def list_policies(self, workspace_id: int, datasource_id: int = None,
-                      table_name: str = None, page: int = 1, size: int = 20) -> dict:
-        """List RLS policies with optional filters."""
+                      table_name: str = None, page: int = 1, size: int = 20,
+                      policy_types: Optional[list] = None) -> dict:
+        """List RLS policies with optional filters.
+
+        policy_types: 只回这些类型的策略（行/列/表页签服务端分页下推）；None=不限。
+        """
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
@@ -52,6 +56,9 @@ class RLSService:
                 if table_name:
                     where.append("table_name = %s")
                     params.append(table_name)
+                if policy_types:
+                    where.append(f"policy_type IN ({', '.join(['%s'] * len(policy_types))})")
+                    params.extend(policy_types)
 
                 where_clause = ("WHERE " + " AND ".join(where)) if where else ""
 

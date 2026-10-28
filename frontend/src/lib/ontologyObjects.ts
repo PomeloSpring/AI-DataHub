@@ -76,6 +76,17 @@ export function showsSiteScope(kind?: string): boolean {
 }
 
 /**
+ * 「取数路径（承载）」页签的可见域：仅业务本体。
+ *
+ * 承载是**跨源拓扑**（一个概念有哪几条可取数路径：各站明细 / 数仓全局汇总 / 日志源）。
+ * 源本体本身就是单源物理投影——它就是被别人指向的那一方，对它谈“还有哪几条路径”无意义；
+ * 系统本体只描述系统能力面，同样不适用。空 kind 的存量模型不展示（无承载可配）。
+ */
+export function showsCarriers(kind?: string): boolean {
+  return kind === 'business';
+}
+
+/**
  * doc 里已声明的行为/规则/场景条数。
  * 页签隐藏后用于判断是否存在“存量声明被隐藏”的情况——那必须显式提示，
  * 不得静默把仍在 doc 里的建模声明藏起来（no-silent-degradation）。

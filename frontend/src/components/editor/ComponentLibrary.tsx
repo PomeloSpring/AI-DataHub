@@ -2,8 +2,8 @@ import { useState, useEffect, useMemo, type ReactNode } from 'react';
 import { useDraggable } from '@dnd-kit/core';
 import { VIS_CATEGORIES, type VisComponent } from '@/api/visLibrary';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
-import VisComponentPreview, { ShapePreview } from '@/components/VisComponentPreview';
-import { resolveDashboardDesign, chartZIndex, isChartHidden, isChartLocked } from '@/lib/dashboardDesign';
+import VisComponentPreview, { ShapePreview, typeLabelsOf } from '@/components/VisComponentPreview';
+import { compatible, resolveDashboardDesign, chartZIndex, isChartHidden, isChartLocked } from '@/lib/dashboardDesign';
 import { libraryDragId, type LibraryDragData } from '@/lib/editorDrag';
 import { Layers, BarChart3, Settings, PanelLeftClose, Database, Download, ChevronUp, ChevronDown, Eye, EyeOff, Lock, LockOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -122,16 +122,20 @@ export default function ComponentLibrary({
             // chart_style / kpi_card 可拖入新建图表；其余分类只能应用到选中元素
             const creatable = ['chart_style', 'kpi_card'].includes(c.category);
             const item = creatable ? CHART_TYPES.find(t => t.value === (c.category === 'kpi_card' ? 'big_number_trend' : c.chart_type)) : undefined;
+            // 与当前选中元素不兼容的字模置灰并说明原因，不得让用户点了才知道挂不上
+            const incompatible = !!selectedChart && !compatible(c, selectedChart.chart_type) && !creatable;
             const body = <>
               <VisComponentPreview c={c} />
               <span className="mt-1 block text-xs font-medium">{c.name}</span>
-              <span className="text-[10px] text-muted-foreground">{c.is_builtin ? '内置' : '自定义'}{c.chart_type ? ` · ${c.chart_type}` : ''}{item ? ' · 可拖入新建' : ''}</span>
+              <span className="text-[10px] text-muted-foreground">{c.is_builtin ? '内置' : '自定义'} · {typeLabelsOf(c.chart_type)}{item ? ' · 可拖入新建' : ''}</span>
+              {incompatible && <span className="mt-0.5 block text-[10px] text-amber-600">与选中的「{CHART_TYPES.find(t => t.value === selectedChart.chart_type)?.label || selectedChart.chart_type}」不匹配</span>}
             </>;
             return item
               ? <Draggable key={c.id} id={libraryDragId('vis', c.id)} data={{ item, component: c }}
                   onAdd={() => onApplyVis(c)} title={c.name}
                   className="block w-full rounded-lg border p-2 text-left hover:border-primary/50">{body}</Draggable>
-              : <button key={c.id} type="button" className="block w-full rounded-lg border p-2 text-left hover:border-foreground/50"
+              : <button key={c.id} type="button" disabled={incompatible}
+                  className={`block w-full rounded-lg border p-2 text-left hover:border-foreground/50 ${incompatible ? 'opacity-50 hover:border' : ''}`}
                   onClick={() => onApplyVis(c)}>{body}</button>;
           })}
           {!library.loading && !library.error && !library.items.some(c => c.category === category) && <p className="text-xs">该分类暂无字模</p>}

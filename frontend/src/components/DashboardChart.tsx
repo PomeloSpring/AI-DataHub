@@ -367,11 +367,25 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
     ? { fill: textColor, fontSize: axisFontSize ?? 12, fontWeight: '600' as const }
     : { fill: subTextColor, fontSize: axisFontSize ?? 11 };
 
+  // 坐标轴显式配置（图表级覆盖，在「坐标轴」页可配）：这一组曾经只写 config、无人消费，
+  // 面板拉满也没反应（ui-vis-library-style.md §2：“存了不生效”就是缺陷，不是待办）。
+  const rotate = Math.max(0, Math.min(90, Number(config?.xAxisLabelRotate) || 0));
+  const axisGrid = config?.showGrid === false ? { grid: false } : {};
+  const xAxis: any = config?.showXAxis === false ? false : {
+    // 显式设了旋转角就不再让 G2 自决：labelAutoRotate 会在溢出时改写成 rotate(90)，与用户设定冲突
+    labelAutoRotate: rotate === 0,
+    ...(rotate ? { labelTransform: `rotate(${rotate})` } : {}),
+    ...axisGrid,
+    style: axisLabelStyle,
+  };
   // y 轴不渲染标题：G2 的 y 轴标题默认竖排（theme.axisLeft.titleDirection='vertical' + rotate(-90)），
-  // 小字号旋转后在紧凑卡片里糊成一排贴在左边缘，用户读不出（反馈“左侧字看不清”）；
-  // 改横排又被 computeAxisSize 按整串文字宽度计入左内边距（titleSpacing + titleBBox.width）白占绘图区。
-  // 指标含义由卡片标题 + 图例 + tooltip 承载，且标题原文是物理列名（如 succ_rate），本就不该当用户可见标题。
-  const yAxis = { title: false, style: axisLabelStyle };
+  // 小字号旋转后贴左边缘糊成一排，用户读不出（反馈“左侧字看不清”），而原文又是物理列名；
+  // 但用户显式写了「Y轴名称」时照他说的渲染（显式覆盖优先于默认）。
+  const yAxis: any = config?.showYAxis === false ? false : {
+    title: typeof config?.yAxisName === 'string' && config.yAxisName.trim() ? config.yAxisName.trim() : false,
+    ...axisGrid,
+    style: axisLabelStyle,
+  };
 
   const xCol = config?.xCol || columns.find(c => typeof rows[0]?.[c] === 'string') || columns[0];
   const yCol = config?.yCol || columns.find(c => typeof rows[0]?.[c] === 'number') || columns[1];
@@ -498,7 +512,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         data: processedData,
         encode: { x: xCol, y: yCol, color: seriesField || undefined },
         axis: {
-          x: { labelAutoRotate: true, style: axisLabelStyle },
+          x: xAxis,
           y: yAxis,
         },
         scale: { color: { range: colors } },
@@ -514,7 +528,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
       if (config?.areaFill) return {
         ...baseSpec, type: 'view', data: processedData,
         scale: { color: { range: colors } },
-        axis: { x: { style: axisLabelStyle }, y: yAxis },
+        axis: { x: xAxis, y: yAxis },
         children: [
           { type: 'area', encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config.smooth === false ? 'area' : 'smooth' }, style: { fillOpacity: config.areaOpacity ?? 0.15 } },
           { type: 'line', encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config.smooth === false ? 'line' : 'smooth' }, style: { lineWidth: config.lineWidth ?? 2, ...(config.glow ? { shadowColor: colors[0], shadowBlur: 8 } : {}) } },
@@ -528,7 +542,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         data: processedData,
         encode: lineEncode,
         axis: {
-          x: { labelAutoRotate: true, style: axisLabelStyle },
+          x: xAxis,
           y: yAxis,
         },
         scale: { color: { range: colors } },
@@ -544,7 +558,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         data: processedData,
         encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config?.smooth === false ? undefined : 'smooth' },
         axis: {
-          x: { labelAutoRotate: true, style: axisLabelStyle },
+          x: xAxis,
           y: yAxis,
         },
         scale: { color: { range: colors } },
@@ -581,7 +595,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         scale: { color: { range: colors } },
         style: { r: 4, opacity: 0.7 },
         axis: {
-          x: { style: axisLabelStyle },
+          x: xAxis,
           y: yAxis,
         },
         interaction: { tooltip: {} },
@@ -603,7 +617,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         coordinate: { type: 'polar' },
         scale: { color: { range: colors } },
         style: { lineWidth: config?.lineWidth ?? 2, fillOpacity: config?.areaOpacity ?? 0 },
-        axis: { x: { style: axisLabelStyle }, y: yAxis },
+        axis: { x: xAxis, y: yAxis },
         interaction: { tooltip: {} },
       };
     }
@@ -679,7 +693,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         style: { inset: 1 },
         labels: [{ text: 'value', style: { fill: textColor, fontSize: 10 } }],
         axis: {
-          x: { labelAutoRotate: true, style: axisLabelStyle },
+          x: xAxis,
           y: yAxis,
         },
         legend: { color: { position: 'right', itemLabelStyle: legendLabelStyle } },
@@ -844,7 +858,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
           shape: isBar ? undefined : (config?.smooth === false ? undefined : 'smooth'),
         },
         axis: {
-          x: { labelAutoRotate: true, style: axisLabelStyle },
+          x: xAxis,
           y: yAxis,
         },
         scale: { color: { range: colors } },
@@ -925,7 +939,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
           ...(config?.gradient ? { fill: `l(270) 0:${colors[0]} 1:${colors[1] || colors[0]}` } : {}) },
         labels: config?.showLabel ? [{ text: yCol, style: { fill: textColor } }] : [],
         axis: {
-          x: { style: axisLabelStyle },
+          x: xAxis,
           y: yAxis,
         },
         legend: { color: { itemLabelStyle: legendLabelStyle } },
@@ -1002,7 +1016,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         encode: { x: 'category', y: ['min', 'q1', 'median', 'q3', 'max'] },
         style: { stroke: colors[0], fill: colors[0], fillOpacity: 0.3 },
         axis: {
-          x: { style: axisLabelStyle },
+          x: xAxis,
           y: yAxis,
         },
         interaction: { tooltip: {} },
@@ -1029,7 +1043,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         scale: { color: { range: colors }, size: { range: [4, 20] } },
         style: { opacity: 0.7 },
         axis: {
-          x: { style: axisLabelStyle },
+          x: xAxis,
           y: yAxis,
         },
         legend: { color: { itemLabelStyle: legendLabelStyle } },
@@ -1050,7 +1064,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         style: { inset: 1 },
         labels: [{ text: 'value', style: { fill: textColor, fontSize: 10 } }],
         axis: {
-          x: { labelAutoRotate: true, style: axisLabelStyle },
+          x: xAxis,
           y: yAxis,
         },
         legend: { color: { position: 'right', itemLabelStyle: legendLabelStyle } },
@@ -1087,7 +1101,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         scale: { color: { range: colors } },
         style: { stroke: bgColor, lineWidth: 1 },
         axis: {
-          x: { style: axisLabelStyle },
+          x: xAxis,
           y: yAxis,
         },
         legend: { color: { itemLabelStyle: legendLabelStyle } },
@@ -1151,7 +1165,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         data: processedData,
         encode: { x: xCol, y: yCol, color: seriesField || undefined },
         axis: {
-          x: { labelAutoRotate: true, style: axisLabelStyle },
+          x: xAxis,
           y: yAxis,
         },
         scale: { color: { range: colors } },
@@ -1438,6 +1452,10 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
     const cursor: React.CSSProperties['cursor'] = chartType === 'widget_label' ? 'default'
       : chartType === 'widget_select' || chartType === 'widget_multi_select' ? 'pointer' : 'text';
 
+    // 「控件高」旋钮必须真实消费（否则字模/面板存了不生效）：
+    // 无标签时控件就是卡片本身，inset:0 + 固定高 + margin:auto 0 居中；有标签时高落在内层表单元素上。
+    const controlHeight = typeof ws.height === 'number' && ws.height > 0 ? ws.height : undefined;
+
     // Merged style: container + input, applied directly to the element (no wrapper div)
     const directStyle: React.CSSProperties = {
       display: 'flex',
@@ -1461,8 +1479,9 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       colorScheme: isDark ? 'dark' : 'light',
       outline: 'none',
       cursor,
+      ...(controlHeight && !hasLabel ? { height: controlHeight, margin: 'auto 0' } : {}),
     };
-    // 内层表单元素与外层共用一份样式源：圆角/内边距/行高必须跟随 ws.*，否则字模与覆盖「存了不生效」
+    // 内层表单元素与外层共用一份样式源：圆角/内边距/行高/控件高必须跟随 ws.*，否则字模与覆盖「存了不生效」
     const innerFieldStyle: React.CSSProperties = {
       flex: '1 1 auto', minHeight: 0, minWidth: 0, width: '100%',
       fontSize: 'inherit', lineHeight: 'inherit', fontWeight: 'inherit',
@@ -1471,6 +1490,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       padding: ws.padding ?? '4px 8px',
       border: 'none', background: 'transparent', outline: 'none', color: 'inherit',
       cursor: 'inherit', boxSizing: 'border-box',
+      ...(controlHeight ? { height: controlHeight, maxHeight: '100%' } : {}),
     };
 
     const labelEl = hasLabel ? (
@@ -1523,7 +1543,9 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
 
       const dateInputStyle: React.CSSProperties = {
         // 不写 height:100%：一旦换行，每行都会占满容器高度而垂直溢出；交给原生控件自身高度
+        // （「控件高」旋钮给定时才写死高度，与字模/本图覆盖同源）
         flex: '1 1 8.5rem', minWidth: 0, maxWidth: '100%',
+        ...(controlHeight ? { height: controlHeight, maxHeight: '100%' } : {}),
         fontSize: 'inherit', lineHeight: 'inherit',
         borderRadius: ws.borderRadius ?? 6,
         border: `1px solid ${isDark ? 'rgba(255,255,255,0.15)' : 'hsl(var(--input))'}`,
@@ -1695,6 +1717,8 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
           cursor: 'pointer',
           transition: 'transform 0.15s ease',
           boxSizing: 'border-box',
+          // 按钮同样吃「控件高」旋钮：高给定时在卡片内居中，不拉满整张卡
+          ...(ws.height > 0 ? { height: ws.height, margin: 'auto 0' } : {}),
           ...(exportNoTarget ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
         }}
       >
@@ -1798,6 +1822,13 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
     const tableText = visual?.textColor || (isDark ? '#e2e8f0' : '#111827');
     const tableMuted = visual?.subTextColor || (isDark ? '#94a3b8' : '#475569');
     const tableBorder = visual?.gridColor || (isDark ? '#334155' : '#e2e8f0');
+    // 表值图字模旋钮必须在这里真实消费：以前表头色/行高/字号全写死，
+    // 挂了 chart_style 字模也没反应（ui-vis-library-style.md §2“存了不生效”即缺陷）。
+    const tableHeaderBg = cfg?.headerBg || cfg?.titleBarBg;
+    const tableHeaderColor = cfg?.headerColor || tableMuted;
+    const tableZebraBg = cfg?.zebraBg || (isDark ? '#ffffff0a' : '#00000005');
+    const tableFontSize = Number(cfg?.tableFontSize) || 12;
+    const tableRowHeight = Number(cfg?.rowHeight) || 0;
 
     return (
       <div className="chart-cell" style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', position: 'relative', color: tableText, ...style }}>
@@ -1835,13 +1866,13 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
         <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
           <table style={{
             width: '100%', borderCollapse: 'collapse',
-            fontSize: 12, lineHeight: 1.5,
+            fontSize: tableFontSize, lineHeight: 1.5,
           }}>
             <thead>
-              <tr style={{ borderBottom: `2px solid ${tableBorder}`, position: 'sticky', top: 0, background: cfg.titleBarBg || visual?.viewBg || (isDark ? '#0f172a' : '#ffffff'), zIndex: 1 }}>
-                {showIndex && <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 500, color: tableMuted, width: 40 }}>#</th>}
+              <tr style={{ borderBottom: `2px solid ${tableBorder}`, position: 'sticky', top: 0, background: tableHeaderBg || visual?.viewBg || (isDark ? '#0f172a' : '#ffffff'), zIndex: 1, height: tableRowHeight || undefined }}>
+                {showIndex && <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 500, color: tableHeaderColor, width: 40 }}>#</th>}
                 {data.columns.map(col => (
-                  <th key={col} style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 500, color: tableMuted, whiteSpace: 'nowrap' }}>{col}</th>
+                  <th key={col} style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 500, color: tableHeaderColor, whiteSpace: 'nowrap' }}>{col}</th>
                 ))}
               </tr>
             </thead>
@@ -1849,7 +1880,8 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
               {rows.map((row, i) => (
                 <tr key={i} style={{
                   borderBottom: `1px solid ${tableBorder}`,
-                  background: striped && i % 2 === 1 ? (isDark ? '#ffffff0a' : '#00000005') : 'transparent',
+                  height: tableRowHeight || undefined,
+                  background: striped && i % 2 === 1 ? tableZebraBg : 'transparent',
                 }}>
                   {showIndex && <td style={{ padding: '4px 8px', color: 'hsl(var(--muted-foreground))', fontSize: 11 }}>{startIndex + i + 1}</td>}
                   {data.columns.map(col => {

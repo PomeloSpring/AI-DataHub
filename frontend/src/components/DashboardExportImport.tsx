@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { TEMPLATE_DEMO_KEY } from '@/lib/dashboardDemo';
 
 interface DashboardExportImportProps {
   dashboard: any;
@@ -15,11 +16,26 @@ interface DashboardExportImportProps {
 
 export function exportChart(chart: any) {
   const semantic = chart.query_source === 'semantic' || !!chart.semantic_query;
-  const stripSql = (value: any): any => Array.isArray(value) ? value.map(stripSql) : value && typeof value === 'object'
-    ? Object.fromEntries(Object.entries(value).filter(([key]) => !/sql|data_cache|previewData/i.test(key)).map(([key, val]) => [key, stripSql(val)])) : value;
+  const keep = (value: any, drop: (key: string) => boolean): any => Array.isArray(value)
+    ? value.map(v => keep(v, drop)) : value && typeof value === 'object'
+      ? Object.fromEntries(Object.entries(value).filter(([key]) => !drop(key)).map(([key, val]) => [key, keep(val, drop)])) : value;
+  // 语义图：config 里任何 SQL 痕迹一律带走（护栏 §7）
+  const stripSql = (value: any) => keep(value, key => /sql|data_cache|previewData|demoSql/i.test(key));
+  // raw 图：sql_query 本身已是导出字段，config 只剥重复/内部键；
+  // countSql 等用户显式口径必须保留，剥掉会让导入后的服务端分页静默改走自动包装 COUNT(*)（行为漂移）
+  const stripInternal = (value: any) => keep(value, key => /^(sql|demoSql|data_cache|previewData)$/i.test(key));
+  // 示例数据（模板导入且未绑源）随导出带走，分享/备份后导入仍能看到效果；
+  // 真实查询结果属数据行，护栏 §7 禁止离开本实例，因此不写入导出体。
+  const isDemo = chart.config?.[TEMPLATE_DEMO_KEY] === true;
+  let sample: any;
+  if (isDemo) {
+    const raw = typeof chart.data_cache === 'string' ? (() => { try { return JSON.parse(chart.data_cache); } catch { return null; } })() : chart.data_cache;
+    if (Array.isArray(raw?.columns) && Array.isArray(raw?.rows)) sample = raw;
+  }
   return { name: chart.name, chart_type: chart.chart_type,
     ...(semantic ? { semantic_query: chart.semantic_query, query_source: 'semantic' } : { sql_query: chart.sql_query, query_source: chart.query_source || 'raw_sql' }),
-    config: semantic ? stripSql(chart.config) : chart.config, position: chart.position,
+    ...(sample ? { sample } : {}),
+    config: semantic ? stripSql(chart.config) : stripInternal(chart.config), position: chart.position,
     source_type: chart.source_type, source_id: chart.source_id };
 }
 

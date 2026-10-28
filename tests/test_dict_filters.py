@@ -196,11 +196,13 @@ class TestMetricKindWriteContract:
                           "category": "可观测", "metric_type": "basic", "tags": ["复合"]})
         insert = [call for call in c.cur.calls if call[0].startswith("INSERT INTO adh_metrics")][-1]
         sql, params = insert
-        assert " tags)" in sql.replace("\n", " ")
+        assert " allowed_carrier)" in sql.replace("\n", " ")
         cols = sql.split("(", 1)[1].split(")")[0]
         got = dict(zip([x.strip() for x in cols.split(",")], params))
         assert got["category"] == "可观测"            # 业务域不得被 metric_type 冲掉
         assert json.loads(got["tags"]) == ["复合", "基础"]   # 显式标签 + 旧口径归一
+        # 取数路径约束必须随 INSERT 落下（未声明=any）：漏列会让写入默认值无从审计
+        assert got["allowed_carrier"] == "any"
 
     def test_create_defaults_domain_and_never_writes_kind_to_category(self, monkeypatch):
         c = _Conn([

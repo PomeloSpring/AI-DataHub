@@ -150,53 +150,58 @@ export default function DatasetDetail() {
           <TabsTrigger value="refs">引用</TabsTrigger>
         </TabsList>
 
-        {/* ── 配置: 基本信息 + 执行 SQL + 图表预设 + 数据预览(同页, 不分 Tab) ── */}
-        <TabsContent value="config" className="pt-3 space-y-4">
-          {/* 统一保存: 一次提交基本信息/查询定义/图表预设 */}
-          {canManage && (
-            <div className="flex items-center gap-2">
-              <Button size="sm" onClick={saveConfig} disabled={saving}>
-                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Save className="h-3.5 w-3.5 mr-1" />}
-                保存配置
-              </Button>
-              <span className="text-xs text-muted-foreground">基本信息 / 查询定义 / 图表预设一次保存，不分块提交</span>
+        {/* ── 配置: 左=基本信息/执行 SQL/图表预设, 右=数据预览(取数 + 图表预览) 双栏 ── */}
+        <TabsContent value="config" className="pt-3">
+          <div className="grid gap-4 items-start xl:grid-cols-[minmax(0,44%)_minmax(0,1fr)]">
+            {/* 左栏: 配置表单 */}
+            <div className="space-y-4 min-w-0">
+              {/* 统一保存: 一次提交基本信息/查询定义/图表预设 */}
+              {canManage && (
+                <div className="flex items-center gap-2">
+                  <Button size="sm" onClick={saveConfig} disabled={saving}>
+                    {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Save className="h-3.5 w-3.5 mr-1" />}
+                    保存配置
+                  </Button>
+                  <span className="text-xs text-muted-foreground">基本信息 / 查询定义 / 图表预设一次保存，不分块提交</span>
+                </div>
+              )}
+
+              {/* 基本信息 */}
+              <div className="border rounded-lg p-3 space-y-2">
+                <div className="text-sm font-medium">基本信息</div>
+                <div className="space-y-1.5">
+                  <Label>描述</Label>
+                  <Textarea rows={2} value={ds.description || ''} disabled={!canManage}
+                    onChange={e => setDs({ ...ds, description: e.target.value })} />
+                </div>
+              </div>
+
+              {/* 执行 SQL */}
+              <ExecPanel
+                ds={ds}
+                fields={fields}
+                canManage={canManage}
+                onSaved={(_data: any) => { load(); }}
+                onDsChange={(patch) => setDs((prev: any) => ({ ...prev, ...patch }))}
+              />
+
+              {/* 图表预设 */}
+              <div className="border rounded-lg p-3">
+                <div className="text-sm font-medium mb-2">图表预设</div>
+                <ChartPresetPanel
+                  ds={ds}
+                  fields={fields}
+                  canManage={canManage}
+                  onDsChange={(patch) => setDs((prev: any) => ({ ...prev, ...patch }))}
+                />
+              </div>
             </div>
-          )}
 
-          {/* 基本信息 */}
-          <div className="border rounded-lg p-3 space-y-2 max-w-3xl">
-            <div className="text-sm font-medium">基本信息</div>
-            <div className="space-y-1.5">
-              <Label>描述</Label>
-              <Textarea rows={2} value={ds.description || ''} disabled={!canManage}
-                onChange={e => setDs({ ...ds, description: e.target.value })} />
+            {/* 右栏: 数据预览(预览取数 + 按图表预设渲染的图表预览); 宽屏吸附并自带滚动, 避免高内容被裁 */}
+            <div className="border rounded-lg p-3 min-w-0 space-y-2 xl:sticky xl:top-2 xl:max-h-[calc(100vh-2rem)] xl:overflow-auto">
+              <div className="text-sm font-medium">数据预览</div>
+              <PreviewPanel datasetId={datasetId} fields={fields} ds={ds} />
             </div>
-          </div>
-
-          {/* 执行 SQL */}
-          <ExecPanel
-            ds={ds}
-            fields={fields}
-            canManage={canManage}
-            onSaved={(_data: any) => { load(); }}
-            onDsChange={(patch) => setDs((prev: any) => ({ ...prev, ...patch }))}
-          />
-
-          {/* 图表预设 */}
-          <div className="border rounded-lg p-3 max-w-3xl">
-            <div className="text-sm font-medium mb-2">图表预设</div>
-            <ChartPresetPanel
-              ds={ds}
-              fields={fields}
-              canManage={canManage}
-              onDsChange={(patch) => setDs((prev: any) => ({ ...prev, ...patch }))}
-            />
-          </div>
-
-          {/* 数据预览 */}
-          <div className="border rounded-lg p-3">
-            <div className="text-sm font-medium mb-2">数据预览</div>
-            <PreviewPanel datasetId={datasetId} fields={fields} ds={ds} />
           </div>
         </TabsContent>
 
@@ -323,7 +328,7 @@ function ExecPanel({ ds, canManage, onDsChange }: {
   onSaved: (data: any) => void; onDsChange: (patch: any) => void;
 }) {
   return (
-    <div className="space-y-4 max-w-3xl">
+    <div className="space-y-4">
       {/* 执行 SQL */}
       <div className="border rounded-lg p-3 space-y-2">
         <div className="flex items-center gap-1.5 text-sm font-medium">
@@ -364,7 +369,7 @@ function ChartPresetPanel({ ds, fields, canManage, onDsChange }: {
   const resultColumns = fields.map(f => f.sql_column || f.field);
 
   return (
-    <div className="space-y-3 max-w-xl">
+    <div className="space-y-3">
       <p className="text-sm text-muted-foreground">
         预设图表类型与字段映射，看板编辑器「从数据集引入」时直接搬入图表配置。
       </p>
@@ -433,7 +438,7 @@ function ChartPresetPanel({ ds, fields, canManage, onDsChange }: {
         </div>
       </div>
       <p className="text-xs text-muted-foreground">
-        修改后点击上方「保存配置」统一提交；保存/改动会即时反映到下方「数据预览」的图表预览
+        修改后点击上方「保存配置」统一提交；保存/改动会即时反映到右侧「数据预览」的图表预览
       </p>
     </div>
   );
@@ -554,7 +559,7 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
             {result.applied_rls ? <span className="text-amber-600">已应用行级权限</span> : <span>无 RLS 规则</span>}
             {!!result.masked_columns?.length && <span className="text-destructive">脱敏列: {result.masked_columns.join(', ')}</span>}
           </div>
-          <div className="border rounded-lg overflow-auto max-h-96">
+          <div className="border rounded-lg overflow-auto max-h-[60vh]">
             <table className="w-full text-xs">
               <thead className="bg-muted/50 sticky top-0">
                 <tr>{(result.columns || []).map((c: string) => <th key={c} className="text-left px-2.5 py-1.5 font-medium whitespace-nowrap">{c}</th>)}</tr>

@@ -14,6 +14,7 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from '@/lib/toast';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import {
   Plus, Edit, Trash2, Shield, FileText, Columns3, Rows3, Table2, X,
 } from 'lucide-react';
@@ -49,13 +50,22 @@ const DEFAULT_FORM: PolicyFormData = {
   columns: [],
 };
 
+/** 页签 → 服务端 policy_type 筛选口径（both 为遗留混合类型，归入行策略清单） */
+const TAB_TYPES: Record<string, string[]> = { row: ['row', 'both'], column: ['column'], table: ['table'] };
+
 export default function RLSManagement() {
   const [datasources, setDatasources] = useState<Datasource[]>([]);
+  // 行/列/表三个页签 = 三份独立的服务端分页清单（类型筛选下推到 SQL，
+  // 不得“整张清单分页 + 前端再筛”，否则每页条数与「共 N 条」永远对不上）
+  const [tab, setTab] = useState('row');
   const [rowPolicies, setRowPolicies] = useState<RLSPolicy[]>([]);
   const [colPolicies, setColPolicies] = useState<RLSPolicy[]>([]);
   const [tablePolicies, setTablePolicies] = useState<RLSPolicy[]>([]);
-  const [total, setTotal] = useState(0);
+  const [rowTotal, setRowTotal] = useState(0);
+  const [colTotal, setColTotal] = useState(0);
+  const [tableTotal, setTableTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [editContext, setEditContext] = useState<EditContext>('row');
@@ -82,6 +92,7 @@ export default function RLSManagement() {
   const [auditLogs, setAuditLogs] = useState<RLSAuditLog[]>([]);
   const [auditTotal, setAuditTotal] = useState(0);
   const [auditPage, setAuditPage] = useState(1);
+  const [auditPageSize, setAuditPageSize] = useState(DEFAULT_PAGE_SIZE);
   // 审计行用户显示 name（ui-resource-display：不裸显 user_id）
   const [userNames, setUserNames] = useState<Record<number, string>>({});
   const [usersLoaded, setUsersLoaded] = useState(false);
@@ -107,29 +118,34 @@ export default function RLSManagement() {
       .catch(() => setUsersLoaded(true));
   }, []);
 
-  // Load policies split by type (行/列/表三个页面签各自独立清单; both 为遗留混合类型只读)
+  // Load policies split by type (行/列/表三个页面签各自独立清单; both 为遗留混合类型归入行策略)
+  // 页签类型→服务端筛选口径见 TAB_TYPES：只拉当前页签的那一类，分页与计数同口径
   const loadPolicies = useCallback(async () => {
+    if (tab === 'audit') return;
     setLoading(true);
     try {
-      const data = await listRLSPolicies(0, undefined, undefined, page);
+      const data = await listRLSPolicies(0, undefined, undefined, page, pageSize, TAB_TYPES[tab]);
       const items = data.items || [];
-      setRowPolicies(items.filter(p => p.policy_type === 'row' || p.policy_type === 'both'));
-      setColPolicies(items.filter(p => p.policy_type === 'column'));
-      setTablePolicies(items.filter(p => p.policy_type === 'table'));
-      setTotal(data.total || 0);
+      const total = data.total || 0;
+      if (tab === 'column') { setColPolicies(items); setColTotal(total); }
+      else if (tab === 'table') { setTablePolicies(items); setTableTotal(total); }
+      else { setRowPolicies(items); setRowTotal(total); }
     } catch { toast.error('加载策略失败'); }
     finally { setLoading(false); }
-  }, [page]);
+  }, [tab, page, pageSize]);
 
   useEffect(() => { loadPolicies(); }, [loadPolicies]);
 
   const loadAuditLogs = useCallback(async () => {
     try {
-      const data = await listRLSAuditLogs(0, undefined, auditPage);
+      const data = await listRLSAuditLogs(0, undefined, auditPage, auditPageSize);
       setAuditLogs(data.items || []);
       setAuditTotal(data.total || 0);
     } catch { toast.error('加载审计日志失败'); }
-  }, [auditPage]);
+  }, [auditPage, auditPageSize]);
+
+  // 审计日志页签激活时才拉数（页签切换即刷新，避免停在旧页）
+  useEffect(() => { if (tab === 'audit') loadAuditLogs(); }, [tab, loadAuditLogs]);
 
   // ── 选择搜索框候选清单加载 (ui-resource-display §2: 表/列/属性名不手填) ──
   // 缓存三态: undefined=未加载 / null=加载失败(显式暴露+可重试) / 数组=成功
@@ -323,14 +339,18 @@ export default function RLSManagement() {
     </div>
   );
 
-  const renderPagination = (current: number, totalItems: number, setCurrent: (p: number) => void) => {
-    if (totalItems <= 20) return null;
+  const renderPagination = (current: number, totalItems: number, setCurrent: (p: number) => void, size = pageSize, setSize?: (n: number) => void) => {
     return (
-      <div className="flex justify-center gap-2 mt-4">
-        <Button variant="outline" size="sm" disabled={current <= 1} onClick={() => setCurrent(current - 1)}>上一页</Button>
-        <span className="py-1 px-3 text-sm">{current} / {Math.ceil(totalItems / 20)}</span>
-        <Button variant="outline" size="sm" disabled={current * 20 >= totalItems} onClick={() => setCurrent(current + 1)}>下一页</Button>
-      </div>
+      <PaginationBar
+        page={current}
+        pageSize={size}
+        total={totalItems}
+        onChange={setCurrent}
+        onPageSizeChange={setSize}
+        busy={loading}
+        hideWhenSingle
+        className="shrink-0 mt-2"
+      />
     );
   };
 
@@ -343,71 +363,79 @@ export default function RLSManagement() {
     : undefined;
 
   return (
-    <div className="h-full overflow-auto">
-      <h1 className="text-2xl font-bold mb-6 flex items-center gap-2">
+    <div className="flex flex-col h-full">
+      <h1 className="text-2xl font-bold mb-6 flex items-center gap-2 shrink-0">
         <Shield className="h-6 w-6" />
         数据安全策略
       </h1>
 
-      <Tabs defaultValue="row">
-        <TabsList>
+      <Tabs value={tab} onValueChange={(v) => { setTab(v); setPage(1); setAuditPage(1); }} className="flex-1 min-h-0 flex flex-col">
+        {/* self-start: flex-col 的 Tabs 会把 inline-flex 的 TabsList 拉伸成通栏色带, 页签会跑到正中 */}
+        <TabsList className="shrink-0 self-start">
           <TabsTrigger value="row"><Rows3 className="h-4 w-4 mr-2" />行策略</TabsTrigger>
           <TabsTrigger value="column"><Columns3 className="h-4 w-4 mr-2" />列策略</TabsTrigger>
           <TabsTrigger value="table"><Table2 className="h-4 w-4 mr-2" />表策略</TabsTrigger>
-          <TabsTrigger value="audit" onClick={() => loadAuditLogs()}><FileText className="h-4 w-4 mr-2" />审计日志</TabsTrigger>
+          <TabsTrigger value="audit"><FileText className="h-4 w-4 mr-2" />审计日志</TabsTrigger>
         </TabsList>
 
         {/* ── 行策略 Tab ──────────────────────────────────────── */}
-        <TabsContent value="row">
-          <div className="flex justify-between items-center mb-4 gap-2">
-            <p className="text-sm text-muted-foreground shrink-0">共 {filteredRows.length} 条行策略</p>
+        <TabsContent value="row" className="flex-1 min-h-0 flex flex-col">
+          <div className="flex justify-between items-center mb-4 gap-2 shrink-0">
+            <p className="text-sm text-muted-foreground shrink-0">共 {rowTotal} 条行策略</p>
             <div className="flex-1 max-w-xs"><Input value={rowSearch} onChange={e => setRowSearch(e.target.value)} placeholder="搜索策略名/表名…" className="h-8 text-xs" /></div>
             <Button onClick={() => openCreate('row')} size="sm"><Plus className="h-4 w-4 mr-2" />新建行策略</Button>
           </div>
+          <div className="flex-1 min-h-0 overflow-auto">
           {loading ? <div className="text-center py-8 text-muted-foreground">加载中...</div>
             : filteredRows.length === 0 ? renderEmpty('暂无行策略，点击"新建行策略"开始配置', 'row')
             : <div className="space-y-3">{filteredRows.map(p => renderPolicyCard(p))}</div>
           }
-          {renderPagination(page, total, setPage)}
+          </div>
+          {renderPagination(page, rowTotal, setPage, pageSize, (n) => { setPageSize(n); setPage(1); })}
         </TabsContent>
 
         {/* ── 列策略 Tab (纯黑名单) ───────────────────────────── */}
-        <TabsContent value="column">
-          <div className="flex justify-between items-center mb-4 gap-2">
-            <p className="text-sm text-muted-foreground shrink-0">共 {filteredCols.length} 条列策略</p>
+        <TabsContent value="column" className="flex-1 min-h-0 flex flex-col">
+          <div className="flex justify-between items-center mb-4 gap-2 shrink-0">
+            <p className="text-sm text-muted-foreground shrink-0">共 {colTotal} 条列策略</p>
             <div className="flex-1 max-w-xs"><Input value={colSearch} onChange={e => setColSearch(e.target.value)} placeholder="搜索策略名/表名…" className="h-8 text-xs" /></div>
             <Button onClick={() => openCreate('column')} size="sm"><Plus className="h-4 w-4 mr-2" />新建列策略</Button>
           </div>
-          <p className="text-xs text-muted-foreground mb-3">
+          <p className="text-xs text-muted-foreground mb-3 shrink-0">
             列策略是黑名单：列出的列将被隐藏/脱敏，未列出的列默认可访问（敏感数据管理的屏蔽列对所有用户额外生效）。
           </p>
+          <div className="flex-1 min-h-0 overflow-auto">
           {loading ? <div className="text-center py-8 text-muted-foreground">加载中...</div>
             : filteredCols.length === 0 ? renderEmpty('暂无列策略，点击"新建列策略"开始配置', 'column')
             : <div className="space-y-3">{filteredCols.map(p => renderPolicyCard(p))}</div>
           }
-          {renderPagination(page, total, setPage)}
+          </div>
+          {renderPagination(page, colTotal, setPage, pageSize, (n) => { setPageSize(n); setPage(1); })}
         </TabsContent>
 
         {/* ── 表策略 Tab (白名单) ─────────────────────────────── */}
-        <TabsContent value="table">
-          <div className="flex justify-between items-center mb-4 gap-2">
-            <p className="text-sm text-muted-foreground shrink-0">共 {filteredTables.length} 条表策略</p>
+        <TabsContent value="table" className="flex-1 min-h-0 flex flex-col">
+          <div className="flex justify-between items-center mb-4 gap-2 shrink-0">
+            <p className="text-sm text-muted-foreground shrink-0">共 {tableTotal} 条表策略</p>
             <div className="flex-1 max-w-xs"><Input value={tableSearch} onChange={e => setTableSearch(e.target.value)} placeholder="搜索策略名/表名…" className="h-8 text-xs" /></div>
             <Button onClick={() => openCreate('table')} size="sm"><Plus className="h-4 w-4 mr-2" />新建表策略</Button>
           </div>
-          <p className="text-xs text-muted-foreground mb-3">
+          <p className="text-xs text-muted-foreground mb-3 shrink-0">
             表策略是白名单：角色一旦绑定任一表策略，该角色在此数据源下仅可访问清单内的表；未绑定表策略的角色不受表级限制（仍受角色数据源/表授权约束）。
           </p>
+          <div className="flex-1 min-h-0 overflow-auto">
           {loading ? <div className="text-center py-8 text-muted-foreground">加载中...</div>
             : filteredTables.length === 0 ? renderEmpty('暂无表策略，点击"新建表策略"开始配置', 'table')
             : <div className="space-y-3">{filteredTables.map(p => renderPolicyCard(p))}</div>
           }
-          {renderPagination(page, total, setPage)}
+          </div>
+          {renderPagination(page, tableTotal, setPage, pageSize, (n) => { setPageSize(n); setPage(1); })}
         </TabsContent>
 
         {/* ─ 审计日志 Tab ─────────────────────────────────────── */}
-        <TabsContent value="audit">
-          <div className="mb-4 text-sm text-muted-foreground">共 {auditTotal} 条审计记录</div>
+        <TabsContent value="audit" className="flex-1 min-h-0 flex flex-col">
+          <div className="mb-4 text-sm text-muted-foreground shrink-0">共 {auditTotal} 条审计记录</div>
+          <div className="flex-1 min-h-0 overflow-auto">
           {auditLogs.length === 0 ? <div className="text-center py-8 text-muted-foreground">暂无审计记录<br /><span className="text-xs">提示：创建/修改/删除策略时将自动记录审计日志</span></div>
             : <div className="space-y-2">{auditLogs.map(log => {
               const actionLabels: Record<string, string> = {
@@ -462,7 +490,8 @@ export default function RLSManagement() {
               );
             })}</div>
           }
-          {renderPagination(auditPage, auditTotal, setAuditPage)}
+          </div>
+          {renderPagination(auditPage, auditTotal, setAuditPage, auditPageSize, (n) => { setAuditPageSize(n); setAuditPage(1); })}
         </TabsContent>
       </Tabs>
 

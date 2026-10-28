@@ -836,3 +836,28 @@ describe('全部类型的字模预览', () => {
     expect(view.container.innerHTML).toContain('conic-gradient');
   });
 });
+
+describe('模板示例数据角标（降级必须显式）', () => {
+  const design = () => resolveDashboardDesign({}, []);
+  const demoChart = { ...chart, config: { demoData: true } } as ChartModel;
+
+  it('示例图表在真实渲染面标出「示例数据」，关掉开关（缩略图）不贴标签', () => {
+    const withBadge = render(createElement(DashboardChartCard, { chart: demoChart, design: design(), items: [], demoBadge: true }));
+    expect(withBadge.getByText('示例数据')).toBeTruthy();
+    withBadge.unmount();
+    const withoutBadge = render(createElement(DashboardChartCard, { chart: demoChart, design: design(), items: [], demoBadge: false }));
+    expect(withoutBadge.queryByText('示例数据')).toBeNull();
+  });
+
+  it('普通图表不冒充示例（无标记即不贴标签），大屏/页面画布默认开启角标', () => {
+    const plain = render(createElement(DashboardChartCard, { chart, design: design(), items: [], demoBadge: true }));
+    expect(plain.queryByText('示例数据')).toBeNull();
+    plain.unmount();
+    const dashboard = { filters: {}, charts: [demoChart] };
+    const canvas = render(createElement(DashboardCanvas, { dashboard, items: [] }));
+    expect(canvas.getByText('示例数据')).toBeTruthy();
+    canvas.unmount();
+    const page = render(createElement(ResponsiveDashboardCanvas, { dashboard, items: [] }));
+    expect(page.getByText('示例数据')).toBeTruthy();
+  });
+});

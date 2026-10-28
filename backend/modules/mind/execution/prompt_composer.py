@@ -408,8 +408,13 @@ def _permission_summary(
     return "\n".join(parts)
 
 
-def _site_scope_lines(site_code: str, sites: list, datasource_id: int = 0) -> list[str]:
-    """站点范围段（服务端派生，不再硬编码在技能提示词里）。
+def _datasource_topology_lines(site_code: str, sites: list, datasource_id: int = 0) -> list[str]:
+    """数据源拓扑段（服务端派生，不再硬编码在技能提示词里）。
+
+    原「站点范围」段升级（跨源拓扑 M2 呈现层）：除可查站点清单外，必须把**默认呈现口径**
+    讲清楚——拍板是“默认分站呈现、不主动合计”，全局去重类口径只能走 `authority=true`
+    的取数路径（数仓汇总/镜像）一次查完。旧文案“给合计必须标注各站合计≠去重全球数”
+    是在鼓励模型去做那个合计（标了口径也还是在发一个无从校验的数），已按拍板删除。
 
     可查站点 = 角色已授权数据源的**派生视图**（core.site_service.authorized_sites），
     不是第二套「谁能查什么」判断。只在会话显式选定站点时注入：定时分析/评测/Playground
@@ -432,7 +437,7 @@ def _site_scope_lines(site_code: str, sites: list, datasource_id: int = 0) -> li
     if not current_label:
         # 会话带的站点已不在可查清单里（授权被收回/站点已停用）：不注入假范围
         return []
-    lines = ["## 站点范围（服务端派生，本轮生效）"]
+    lines = ["## 数据源拓扑（服务端派生，本轮生效）"]
     suffix = "（聚合态：跨站汇总，不对应单一数据源）" if aggregate and current == str(aggregate["site_code"]) else ""
     lines.append(f"- 会话查询站点: {current_label}{suffix}；未点名站点时默认按该范围取数")
     listing = " / ".join(
@@ -446,17 +451,22 @@ def _site_scope_lines(site_code: str, sites: list, datasource_id: int = 0) -> li
     is_global = bool(aggregate) and current == str(aggregate["site_code"])
     if is_global:
         rules.append(
-            f"③ 会话站点={aggregate.get('display_name') or '全球'} → 对每个可查站点各调一次 "
-            "run_semantic_query(site=...) 后汇总；给合计必须标注“各站合计≠去重全球数”"
-            "（同一客户多站可能重复登记）")
+            f"③ 会话站点={aggregate.get('display_name') or '全球'}（聚合态，不对应单一数据源）→ 对每个可查站点各调一次 "
+            "run_semantic_query(site=...) 后**分站呈现**（每站一行），不得把各站数字相加当作全局值"
+            "（同一客户多站会重复登记，相加出来的数无从校验）；"
+            "只有当 get_metrics 目录里该对象带 authority=true 的取数路径(carriers) 时，才改用 "
+            "intent 加 carrier=<该路径 key> 一次查完并给单一数字，并按其 freshness/as_of_note 说明口径与时效")
     else:
         rules.append(
             "③ 默认只查会话站点那一站；用户问“全球/各站点/跨站对比”时才逐站各调一次 "
-            "run_semantic_query(site=...) 后汇总，合计标注“各站合计≠去重全球数”")
+            "run_semantic_query(site=...)，结果按站分行呈现、**不做跨站合计**；确需全局去重/汇总口径时，"
+            "看该对象 carriers 里有无 authority=true 的路径：有则带 carrier=<路径 key> 单查，"
+            "无则如实说明“各站分别统计、未合计”，严禁自行相加")
     rules += [
         "④ 不在可查站点清单里的站点 = 无权访问，如实说明并停止，不得换站点重试、不得猜站点名",
         "⑤ 站点不是 SQL 维度：不得把「站点」写进 dimensions/filters；跨站对比按 ③ 逐站编排",
-        "⑥ 对用户不提“还有其他站点/你没有某站权限”——可查范围就是他的数据世界，直接回答数字；"
+        "⑥ 对用户不提“还有其他站点/你没有某站权限”，也不提“因为走不到某条取数路径才没给全局数”"
+        "——可查范围就是他的数据世界，直接回答数字；"
         "某站失败标“部分站点暂无数据”，不展开错误细节",
     ]
     lines.append("- 规则：")
@@ -609,9 +619,9 @@ def compose_system_prompt(
             "  知识库内容与本体名称冲突时一律以 `get_metrics` 为准, **不得**据知识库发明未出现在目录中的对象/指标名(如跨数据源/跨方言的幽灵对象)。"
         )
 
-    # 站点范围（服务端派生）: 会话默认站点 + 可查站点清单 + 全球逐站编排规则
+    # 数据源拓扑（服务端派生）: 会话默认站点 + 可查站点清单 + 分站呈现/取数路径规则
     # authorized_sites=None 时按会话身份现推（与 _blocked_columns/_rls_scope_lines 同思路：
-    # 提示词组装本来就是读侧）；显式传入时以传入为准（测试/己持有授权集的调用方）。
+    # 提示词组装本来就是读侧）；显式传入时以传入为准（测试/已持有授权集的调用方）。
     sites_for_prompt = authorized_sites
     if sites_for_prompt is None and user_id:
         try:
@@ -620,7 +630,7 @@ def compose_system_prompt(
         except Exception as e:  # noqa: BLE001 — 站点拓扑不可用就不注入，不假装有
             logger.debug("[PromptComposer] authorized sites unavailable: %s", e)
             sites_for_prompt = []
-    site_lines = _site_scope_lines(site_code, sites_for_prompt or [], datasource_id)
+    site_lines = _datasource_topology_lines(site_code, sites_for_prompt or [], datasource_id)
     if site_lines:
         sections.append("\n".join(site_lines))
 

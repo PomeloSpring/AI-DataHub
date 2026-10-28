@@ -2,11 +2,12 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  applyChartComponent, applyScreenComponent, applyLayout, chartDataKey, clampPosition,
+  applyChartComponent, applyScreenComponent, applyLayout, chartDataKey, clampPosition, COMPONENT_SLOT,
   compatible, getCanvas, resolveChartDesign, resolveComponent, resolveDashboardDesign,
   sanitizeStyle, sanitizePack, screenToCanvas, snapshotComponent, themePackFor, visualConfig,
-  legacyCanvasFilters, chartRect, minSizeOf, naturalSizeOf, snapCanvasRect, clearChartVisualOverrides, libraryThemeFilters,
+  legacyCanvasFilters, chartRect, minSizeOf, naturalSizeOf, snapCanvasRect, clearChartVisualOverrides, libraryThemeFilters, appliesToType,
 } from '../dashboardDesign';
+import { CHART_TYPES } from '../../components/DashboardChart';
 import { validateVisResponse } from '../../api/visLibrary';
 import { exportChart } from '../../components/DashboardExportImport';
 import type { VisComponent } from '../../api/visLibrary';
@@ -32,6 +33,23 @@ describe('字模快照与缺失回退', () => {
   });
   it('库中缺失字模返回 undefined，不使看板消失', () => {
     expect(resolveComponent('gone', undefined, [])).toBeUndefined();
+  });
+  // 字模是“活字”：管理页改了定义要即时反映到已挂载的看板（ui-vis-library-style.md §3），
+  // 不能因为当初存过快照就永久停在旧值上 —— 历史缺陷就是“改了字模只有新看板生效”。
+  it('库里有同 code 字模时按最新定义解析（改字模即时生效，不需重挂）', () => {
+    const attached = comp({ code: 'cs_live', style_config: { config: { colorScheme: ['#old'] } } });
+    const snap = snapshotComponent(attached);
+    const edited = comp({ id: 7, code: 'cs_live', style_config: { config: { colorScheme: ['#new'] } } });
+    expect(resolveComponent('cs_live', snap, [attached])).toEqual({ config: { colorScheme: ['#old'] } });
+    expect(resolveComponent('cs_live', snap, [edited])).toEqual({ config: { colorScheme: ['#new'] } });
+  });
+  it('主题包改动后存量看板跟随换装', () => {
+    const before = pack('tp_tech', { widgets: { default: { textColor: '#111' } } });
+    const filters = applyScreenComponent({}, before);
+    expect(resolveDashboardDesign(filters, [before]).pack?.widgets?.default?.textColor).toBe('#111');
+    const after = pack('tp_tech', { widgets: { default: { textColor: '#999' } } });
+    // 看板本身不动（不重存、不重挂），只改字模定义
+    expect(resolveDashboardDesign(filters, [after]).pack?.widgets?.default?.textColor).toBe('#999');
   });
   it('sanitizeStyle 丢弃 url()/script 等不安全值', () => {
     const out = sanitizeStyle({ backgroundColor: 'red', backgroundImage: 'url(evil)', palette: ['#fff'] });
@@ -140,6 +158,75 @@ describe('数据刷新与兼容', () => {
     expect(compatible(comp({ category: 'chart_style', chart_type: 'bar' }), 'bar')).toBe(true);
     expect(compatible(comp({ category: 'chart_style', chart_type: 'bar' }), 'widget_text')).toBe(false);
     expect(compatible(comp({ category: 'kpi_card' }), 'big_number')).toBe(true);
+    // 控件样式只挂控件，不能反过来挂到图表上
+    expect(compatible(comp({ category: 'widget_style', chart_type: 'widget_select' }), 'widget_select')).toBe(true);
+    expect(compatible(comp({ category: 'widget_style', chart_type: 'widget_select' }), 'bar')).toBe(false);
+    expect(compatible(comp({ category: 'widget_style', chart_type: null }), 'widget_text')).toBe(true);
+  });
+  it('chart_type 逗号分隔 = 一套字模盖住多类控件（输入框族 / 按钮族）', () => {
+    const inputFamily = comp({ category: 'widget_style', chart_type: 'widget_text,widget_number' });
+    expect(compatible(inputFamily, 'widget_text')).toBe(true);
+    expect(compatible(inputFamily, 'widget_number')).toBe(true);
+    expect(compatible(inputFamily, 'widget_select')).toBe(false);
+    expect(appliesToType({ chart_type: ' widget_search , widget_reset ' }, 'widget_reset')).toBe(true);
+    // 不存在的类型名永远挂不上（seed 悬空行的根因，现在由下方迁移护栏兜住）
+    expect(compatible(comp({ category: 'widget_style', chart_type: 'widget_input' }), 'widget_text')).toBe(false);
+  });
+});
+
+// 控件样式字模（widget_style）：参数控件（输入框/下拉/搜索按钮…）的统一样式入口。
+// 以前只能靠主题包 widgets 段，没有可单独套用的控件字模。
+describe('控件样式字模(widget_style)', () => {
+  const widgetPack = pack('tp_tech', { widgets: { default: { backgroundColor: '#0f172a', textColor: '#e2e8f0', fontSize: 12 } } });
+  const wsComp = comp({ id: 60, code: 'ws_select_as', name: '下拉框·AS', category: 'widget_style', chart_type: 'widget_select',
+    style_config: { widgetStyle: { backgroundColor: '#ffffff', height: 32 } } });
+  const items = [widgetPack, wsComp];
+  const screen = resolveDashboardDesign({}, [widgetPack], { theme: 'tech' });
+  const attached = { vis: { refs: { widgetStyle: 'ws_select_as' }, snapshots: { widgetStyle: snapshotComponent(wsComp) } } };
+
+  it('COMPONENT_SLOT 登记 widget_style → widgetStyle（slot 是唯一路由点）', () => {
+    expect(COMPONENT_SLOT.widget_style).toBe('widgetStyle');
+  });
+  it('sanitizeStyle 保留 widgetStyle 段并按 WIDGET_KEYS 白名单裁剪', () => {
+    const s = sanitizeStyle({ widgetStyle: { backgroundColor: '#fff', height: 32, sql: 'SELECT 1', paramKey: 'p', xCol: 'x' } });
+    expect(s.widgetStyle).toEqual({ backgroundColor: '#fff', height: 32 });
+  });
+  it('合并优先级：主题包 widgets < 控件字模 < 图表卡显式覆盖', () => {
+    const r = resolveChartDesign(attached, screen, items, 'widget_select');
+    // 字模赢主题包，但主题包里字模没写的键仍继承
+    expect(r.config.widgetStyle).toMatchObject({ backgroundColor: '#ffffff', height: 32, textColor: '#e2e8f0', fontSize: 12 });
+    const own = resolveChartDesign({ ...attached, widgetStyle: { height: 40 } }, screen, items, 'widget_select');
+    expect(own.config.widgetStyle.height).toBe(40);
+    expect(own.config.widgetStyle.backgroundColor).toBe('#ffffff');
+  });
+  it('控件旋钮不污染图表 config（两个命名空间不相交）', () => {
+    const r = resolveChartDesign(attached, screen, items, 'widget_select');
+    expect(r.config.backgroundColor).toBeUndefined();
+    expect(r.config.height).toBeUndefined();
+    expect(r.widget).toMatchObject({ backgroundColor: '#ffffff', height: 32 });
+  });
+  it('applyChartComponent 挂控件字模只写 widgetStyle 快照，不动查询与参数', () => {
+    const next = applyChartComponent({ paramKey: 'region', xCol: 'd' }, wsComp, items);
+    expect(next.vis.refs.widgetStyle).toBe('ws_select_as');
+    expect(next.paramKey).toBe('region');
+    expect(next.xCol).toBe('d');
+  });
+  it('字模下架后靠快照仍渲染（与其他分类同口径）', () => {
+    expect(resolveChartDesign(attached, screen, [], 'widget_select').config.widgetStyle)
+      .toMatchObject({ backgroundColor: '#ffffff', height: 32 });
+  });
+  it('管理页改控件字模 → 已挂载控件即时拿到新值', () => {
+    const edited = comp({ id: 60, code: 'ws_select_as', name: '下拉框·AS', category: 'widget_style', chart_type: 'widget_select',
+      style_config: { widgetStyle: { backgroundColor: '#123456', height: 44 } } });
+    const r = resolveChartDesign(attached, screen, [widgetPack, edited], 'widget_select');
+    expect(r.config.widgetStyle).toMatchObject({ backgroundColor: '#123456', height: 44 });
+  });
+});
+
+describe('表值图字模旋钮', () => {
+  it('headerColor / tableFontSize 已登记白名单（不登记会被入库即剥）', () => {
+    const picked = visualConfig({ headerBg: '#F7F8FA', headerColor: '#262626', zebraBg: '#FAFBFC', rowHeight: 32, tableFontSize: 13, sql: 'SELECT 1' });
+    expect(picked).toEqual({ headerBg: '#F7F8FA', headerColor: '#262626', zebraBg: '#FAFBFC', rowHeight: 32, tableFontSize: 13 });
   });
 });
 
@@ -329,6 +416,27 @@ describe('导出不泄露语义 SQL', () => {
     const out: any = exportChart({ name: 't', chart_type: 'bar', query_source: 'raw_sql', sql_query: 'SELECT 1', config: {}, position: {}, source_type: 'query' });
     expect(out.sql_query).toBe('SELECT 1');
   });
+  it('raw 图表保留 countSql 等显式口径，只剥重复/内部键', () => {
+    const out: any = exportChart({ name: 't', chart_type: 'table_value', query_source: 'raw_sql', sql_query: 'SELECT 1',
+      config: { countSql: 'SELECT COUNT(*) FROM t', sql: 'SELECT stale', previewData: { rows: [] }, demoSql: 'SELECT demo', enableServerPagination: true },
+      position: {}, source_type: 'query' });
+    expect(out.config.countSql).toBe('SELECT COUNT(*) FROM t');
+    expect(out.config.enableServerPagination).toBe(true);
+    expect(out.config.sql).toBeUndefined();
+    expect(out.config.previewData).toBeUndefined();
+    expect(out.config.demoSql).toBeUndefined();
+  });
+  it('示例图表带走 sample（导入即见效果），真实图表不带数据行', () => {
+    const demo: any = exportChart({ name: 't', chart_type: 'bar', query_source: 'raw_sql', sql_query: 'SELECT demo',
+      config: { demoData: true, demoSql: 'SELECT demo' }, data_cache: JSON.stringify({ columns: ['a'], rows: [{ a: 1 }] }), position: {}, source_type: 'template' });
+    expect(demo.sample).toEqual({ columns: ['a'], rows: [{ a: 1 }] });
+    expect(demo.config.demoData).toBe(true);
+    expect(demo.config.demoSql).toBeUndefined();
+    const real: any = exportChart({ name: 't', chart_type: 'bar', query_source: 'raw_sql', sql_query: 'SELECT 1',
+      config: {}, data_cache: JSON.stringify({ columns: ['a'], rows: [{ a: '机密' }] }), position: {}, source_type: 'query' });
+    expect(real.sample).toBeUndefined();
+    expect(JSON.stringify(real)).not.toMatch(/机密|data_cache/);
+  });
   it('visualConfig 只提取白名单视觉键', () => {
     const v = visualConfig({ colorScheme: ['#1'], sqlQuerySafe: 'nope', xCol: 'd', axisStyle: { gridColor: '#000', other: 1 } });
     expect(v.colorScheme).toEqual(['#1']);
@@ -374,5 +482,48 @@ describe('AS 风格主题包与前端白名单对齐', () => {
     expect(light.card.cardBg).toBe('#ffffff');  // 素材 light surface
     expect(light.palette[0]).toBe('#0037CB');   // design-service 主色
     expect(dark.palette[0]).toBe('#809BE5');
+  });
+});
+
+// 迁移入库的字模键必须能过白名单（ui-vis-library-style.md §2「入库即剥」隐形缺陷的直接防线）：
+// 本批新增表值图样式与控件样式分类，两者都走 sanitize 裁剪，漏登记就是“选了没反应”。
+describe('字模迁移与白名单对齐（表值图 + 控件样式）', () => {
+  const SQL = path.resolve(__dirname, '..', '..', '..', '..', 'docker', 'mysql', 'vis_library_widget_style_migration.sql');
+  const rows = () => fs.readFileSync(SQL, 'utf8').split('\n')
+    .filter(l => l.includes("'{\"config\"") || l.includes("'{\"widgetStyle\""))
+    .map(l => JSON.parse(/'(\{.*\})'/.exec(l)![1]));
+  // 迁移行里的 (code, name, category, chart_type, ...) 元组：chart_type 必须真实存在
+  const declared = () => fs.readFileSync(SQL, 'utf8').split('\n')
+    .map(l => /^\s*\('(\w+)',\s*'[^']*',\s*'(\w+)',\s*(?:NULL|'([^']*)'),$/.exec(l))
+    .filter(Boolean)
+    .map(m => ({ code: m![1]!, category: m![2]!, chartType: m![3] || '' }));
+
+  it('迁移含 2 套表值图样式 + 9 套控件样式', () => {
+    const items = rows();
+    expect(items.filter(r => r.config)).toHaveLength(2);
+    expect(items.filter(r => r.widgetStyle)).toHaveLength(9);
+  });
+  it('表值图样式的每个键都过 visualConfig 白名单', () => {
+    for (const r of rows().filter(x => x.config)) expect(visualConfig(r.config), '表值图字模键被剥').toEqual(r.config);
+  });
+  it('控件样式的每个键都过 WIDGET_KEYS 白名单', () => {
+    for (const r of rows().filter(x => x.widgetStyle))
+      expect(sanitizeStyle(r).widgetStyle, '控件字模键被剥').toEqual(r.widgetStyle);
+  });
+  // 历史缺陷：seed 写了 widget_input / widget_button 两个不存在的类型名，
+  // 字模在管理页看得见、在编辑器永远挂不上（compatible 永为 false）—— 空承诺。
+  it('迁移里的类型名必须都真实存在（不得悬空 chart_type）', () => {
+    const known = new Set(CHART_TYPES.map(t => t.value));
+    const rowsOf = declared();
+    expect(rowsOf.length, '没解析到迁移行，护栏失效').toBeGreaterThanOrEqual(11);
+    const dead = rowsOf.flatMap(r => (r.chartType || '').split(',').map(s => s.trim()).filter(Boolean)
+      .filter(t => !known.has(t)).map(t => `${r.code} → ${t}`));
+    expect(dead, `悬空 chart_type: ${dead.join(', ')}`).toEqual([]);
+    // 控件字模只得指向控件，图表字模只得指向非控件
+    for (const r of rowsOf) {
+      const types = (r.chartType || '').split(',').map(s => s.trim()).filter(Boolean);
+      if (r.category === 'widget_style') for (const t of types) expect(t.startsWith('widget_'), `${r.code} 指向非控件 ${t}`).toBe(true);
+      if (r.category === 'chart_style') for (const t of types) expect(t.startsWith('widget_'), `${r.code} 指向控件 ${t}`).toBe(false);
+    }
   });
 });

@@ -18,13 +18,20 @@ from backend.modules.catalog.services import ontology_service  # noqa: E402
 
 TEST_MODEL_ID = 9999999990001
 TEST_MODEL_NAME = "__test_binding_layer__"
+# 必须用 kind='source' + 专用假 datasource_id：`_expand_objects` 的互斥域对
+# business/system 是“同 kind 全域下线其它模型的对象行”（产品语义：业务本体同域只有一套
+# active 对象）。本测试跑在真实元库上，若建成 business 会当场把真实业务本体（联耀）
+# 的 17 条展开行删掉且 teardown 无法回滚——已踩过两次。source 域按 datasource_id 互斥，
+# 用一个不存在的源 id 就能把副作用限制在本测试自己造的行里。
+TEST_DS_ID = 990000000001
 
 
 def _cleanup():
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM adh_ontology_bindings WHERE model_id = %s", (TEST_MODEL_ID,))
-            cur.execute("DELETE FROM adh_ontology_objects WHERE model_id = %s", (TEST_MODEL_ID,))
+            cur.execute("DELETE FROM adh_ontology_objects WHERE model_id = %s OR datasource_id = %s",
+                        (TEST_MODEL_ID, TEST_DS_ID))
             cur.execute("DELETE FROM adh_ontology_models WHERE id = %s", (TEST_MODEL_ID,))
         conn.commit()
 
@@ -41,8 +48,8 @@ def _ensure_model():
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO adh_ontology_models (id, name, datasource_id, kind, status, json_content, created_at, updated_at) "
-                "VALUES (%s, %s, 0, 'business', 'active', %s, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))",
-                (TEST_MODEL_ID, TEST_MODEL_NAME, json.dumps(doc, ensure_ascii=False)))
+                "VALUES (%s, %s, %s, 'source', 'active', %s, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))",
+                (TEST_MODEL_ID, TEST_MODEL_NAME, TEST_DS_ID, json.dumps(doc, ensure_ascii=False)))
         conn.commit()
     return doc
 

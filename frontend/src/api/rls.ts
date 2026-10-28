@@ -1,4 +1,5 @@
 import client from './client';
+import { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -55,11 +56,14 @@ export async function listRLSPolicies(
   datasourceId?: number,
   tableName?: string,
   page = 1,
-  size = 20
+  size = 20,
+  policyTypes?: string[]
 ): Promise<{ total: number; items: RLSPolicy[] }> {
   const params: Record<string, any> = { workspace_id: workspaceId, page, size };
   if (datasourceId) params.datasource_id = datasourceId;
   if (tableName) params.table_name = tableName;
+  // 行/列/表页签各自下推类型筛选：分页总数必须与当前页签的清单同口径
+  if (policyTypes?.length) params.policy_types = policyTypes.join(',');
   const { data } = await client.get('/admin/rls-policies', { params });
   return data;
 }
@@ -137,7 +141,7 @@ export async function listRLSAuditLogs(
   workspaceId: number,
   userId?: number,
   page = 1,
-  size = 20
+  size = DEFAULT_PAGE_SIZE
 ): Promise<{ total: number; items: RLSAuditLog[] }> {
   const params: Record<string, any> = { workspace_id: workspaceId, page, size };
   if (userId) params.user_id = userId;

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { DEFAULT_PAGE_GAP, PAGE_COLUMNS, PAGE_GAP_MAX, PAGE_GAP_MIN, PAGE_LABELS, PAGE_ROW, pageColumnPx, pageGap, pageMinHeight, pagePixelRect, pageRows, type PageBreakpoint, type PageGaps } from '@/lib/dashboardPageLayout';
 import { naturalSizeOf, type Rect } from '@/lib/dashboardDesign';
+import { TEMPLATE_DEMO_KEY } from '@/lib/dashboardDemo';
 import {
   Settings, BarChart3, Move, Paintbrush, Monitor, Grid3x3, Palette, PanelRightClose,
 } from 'lucide-react';
@@ -54,6 +55,10 @@ interface Props {
   /** 看板页面参数清单：控件参数名从这儿选，不手填 */
   pageParams?: PageParam[];
   onCreatePageParam?: (param: PageParam) => void;
+  /** 控件样式的字模/主题包基线（不含本图覆盖），供面板显示“生效值 + 来源” */
+  widgetStyleBase?: Record<string, any>;
+  /** 当前挂载的控件字模名（无则按主题包基线说明） */
+  widgetVisName?: string;
 }
 
 export default function PropertyPanel({
@@ -62,6 +67,7 @@ export default function PropertyPanel({
   gridSize, setGridSize, scale, setScale, allCharts,
   isNewChart, onPropertyChange, onPositionChange, onWidgetConfigChange,
   onDelete, onChartConfig, pageBreakpoint, pageRect, pageGaps, onPageGapChange, onResetPage, tab, onTab, pageParams, onCreatePageParam,
+  widgetStyleBase, widgetVisName,
 }: Props) {
   const [narrow, setNarrow] = useState(() => window.innerWidth < 1024);
   useEffect(() => {
@@ -195,7 +201,7 @@ export default function PropertyPanel({
 
             {/* Style settings */}
             {tab === 'appearance' && (selectedChart.chart_type?.startsWith('widget_') ? <StyleSettings
-              chart={selectedChart} onWidgetConfigChange={onWidgetConfigChange}
+              chart={selectedChart} onWidgetConfigChange={onWidgetConfigChange} base={widgetStyleBase} visName={widgetVisName}
             /> : <div className="space-y-3">
               <p className="text-xs text-muted-foreground">字模提供基础外观，下列设置为当前图表的显式覆盖。</p>
               {[['cardBg', '卡片背景'], ['titleColor', '标题颜色'], ['valueColor', '指标颜色'], ['labelColor', '标签颜色']].map(([key, label]) =>
@@ -205,6 +211,9 @@ export default function PropertyPanel({
 
             {/* Chart-specific: SQL info */}
             {tab === 'data' && !selectedChart.chart_type?.startsWith('widget_') && <div className="space-y-3 text-xs">
+              {selectedChart.config?.[TEMPLATE_DEMO_KEY] === true && <p role="note" className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-amber-700">
+                图表样式示例数据（模板内置）：当前展示的是预设演示数值，不跑取数查询。写 SQL 或语义查询后保存，示例数据与标记自动清除。
+              </p>}
               <p>{selectedChart.query_source === 'semantic' || selectedChart.semantic_query ? '语义图表：声明式查询保持不变，不展示生成 SQL。' : '通过人工数据配置入口绑定数据。'}</p>
               <Button size="sm" variant="outline" onClick={() => onChartConfig(selectedChart)}>数据与字段配置</Button>
             </div>}
@@ -462,12 +471,26 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
   );
 }
 
-function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetConfigChange: (id: number, key: string, value: any) => void }) {
+/**
+ * 控件样式面板。以前只读 `chart.config.widgetStyle`，两个后果：
+ *  1. 面板显示的是“写死的回退值”（圆角 8 / 字号 14），与画布上字模的真实生效值不一致；
+ *  2. 本图显式覆盖永远优先于字模（设拍口径），用户拖过滑块后再选字模就“没反应”，且无处可查。
+ * 现在按「生效值 + 来源」展示，被本图钉住的键可逐项/一键释放回跟随字模。
+ */
+function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
+  chart: any; onWidgetConfigChange: (id: number, key: string, value: any) => void;
+  /** 字模/主题包基线（不含本图覆盖）= resolveChartDesign().widget */
+  base?: Record<string, any>; visName?: string;
+}) {
   const ws = chart.config?.widgetStyle || {};
+  const eff = (key: string, fallback?: any) => ws[key] ?? base?.[key] ?? fallback;
+  const num = (key: string, fallback: number) => { const v = eff(key, fallback); return typeof v === 'number' && Number.isFinite(v) ? v : fallback; };
+  // 本图显式写了哪些键（这些键会盖住字模，必须让用户看得见、能一键释放）
+  const pinned = Object.keys(ws).filter(k => ws[k] !== undefined);
+  const write = (next: Record<string, any>) => onWidgetConfigChange(chart.id, 'widgetStyle', next);
+  const followOne = (key: string) => { const next = { ...ws }; delete next[key]; write(next); };
 
-  const updateStyle = (key: string, value: any) => {
-    onWidgetConfigChange(chart.id, 'widgetStyle', { ...ws, [key]: value });
-  };
+  const updateStyle = (key: string, value: any) => write({ ...ws, [key]: value });
 
   return (
     <div className="space-y-3">
@@ -475,17 +498,29 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
         <Paintbrush className="h-3 w-3" /> 样式设置
       </div>
 
+      <div className="space-y-1.5 rounded-md border bg-muted/20 p-2">
+        <p className="text-[10px] text-muted-foreground">
+          基线来源：{visName ? `控件字模「${visName}」` : '主题包控件基线'}
+          {pinned.length ? ' + 本图覆盖（优先于字模）' : '，本图未覆盖任何项'}。
+        </p>
+        {pinned.length > 0 && <div className="flex flex-wrap items-center gap-1">
+          {pinned.map(k => <button key={k} type="button" title="点击让该项跟随字模" onClick={() => followOne(k)}
+            className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700 ring-1 ring-amber-500/30 hover:bg-amber-500/25">{k} ×</button>)}
+          <Button variant="link" size="sm" className="h-auto p-0 text-[10px]" onClick={() => write({})}>全部跟随字模</Button>
+        </div>}
+      </div>
+
       {/* Background color */}
       <div className="space-y-1">
         <Label className="text-xs">背景色</Label>
         <div className="flex items-center gap-2">
-          <input type="color" value={ws.backgroundColor || '#ffffff'}
+          <input type="color" value={eff('backgroundColor', '#ffffff')}
             onChange={e => updateStyle('backgroundColor', e.target.value)}
             className="w-7 h-7 rounded cursor-pointer border flex-shrink-0" />
           <Input className="h-7 text-xs font-mono flex-1"
             value={ws.backgroundColor || ''}
             onChange={e => updateStyle('backgroundColor', e.target.value || undefined)}
-            placeholder="transparent" />
+            placeholder={String(eff('backgroundColor', 'transparent'))} />
         </div>
       </div>
 
@@ -493,13 +528,13 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
       <div className="space-y-1">
         <Label className="text-xs">文字颜色</Label>
         <div className="flex items-center gap-2">
-          <input type="color" value={ws.textColor || '#000000'}
+          <input type="color" value={eff('textColor', '#000000')}
             onChange={e => updateStyle('textColor', e.target.value)}
             className="w-7 h-7 rounded cursor-pointer border flex-shrink-0" />
           <Input className="h-7 text-xs font-mono flex-1"
             value={ws.textColor || ''}
             onChange={e => updateStyle('textColor', e.target.value || undefined)}
-            placeholder="inherit" />
+            placeholder={String(eff('textColor', 'inherit'))} />
         </div>
       </div>
 
@@ -507,13 +542,13 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
       <div className="space-y-1">
         <Label className="text-xs">边框颜色</Label>
         <div className="flex items-center gap-2">
-          <input type="color" value={ws.borderColor || '#e5e7eb'}
+          <input type="color" value={eff('borderColor', '#e5e7eb')}
             onChange={e => updateStyle('borderColor', e.target.value)}
             className="w-7 h-7 rounded cursor-pointer border flex-shrink-0" />
           <Input className="h-7 text-xs font-mono flex-1"
             value={ws.borderColor || ''}
             onChange={e => updateStyle('borderColor', e.target.value || undefined)}
-            placeholder="默认" />
+            placeholder={String(eff('borderColor', '默认'))} />
         </div>
       </div>
 
@@ -524,11 +559,11 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
           <Input type="number" className="h-7 text-xs"
             value={ws.borderWidth ?? ''}
             onChange={e => updateStyle('borderWidth', e.target.value ? Number(e.target.value) : undefined)}
-            placeholder="1" />
+            placeholder={String(num('borderWidth', 1))} />
         </div>
         <div className="space-y-1">
           <Label className="text-xs">边框样式</Label>
-          <Select value={ws.borderStyle || 'solid'} onValueChange={v => updateStyle('borderStyle', v)}>
+          <Select value={eff('borderStyle', 'solid')} onValueChange={v => updateStyle('borderStyle', v)}>
             <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="solid" className="text-xs">实线</SelectItem>
@@ -544,10 +579,10 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <Label className="text-xs">圆角</Label>
-          <span className="text-[10px] text-muted-foreground">{ws.borderRadius ?? 8}px</span>
+          <span className="text-[10px] text-muted-foreground">{num('borderRadius', 8)}px{ws.borderRadius === undefined && base?.borderRadius !== undefined ? '（跟随字模）' : ''}</span>
         </div>
         <Slider min={0} max={32} step={1}
-          value={[ws.borderRadius ?? 8]}
+          value={[num('borderRadius', 8)]}
           onValueChange={([v]) => updateStyle('borderRadius', v)} />
       </div>
 
@@ -555,10 +590,10 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <Label className="text-xs">内边距</Label>
-          <span className="text-[10px] text-muted-foreground">{ws.padding ?? 8}px</span>
+          <span className="text-[10px] text-muted-foreground">{typeof eff('padding', 8) === 'number' ? `${eff('padding', 8)}px` : String(eff('padding', 8))}</span>
         </div>
         <Slider min={0} max={40} step={2}
-          value={[ws.padding ?? 8]}
+          value={[num('padding', 8)]}
           onValueChange={([v]) => updateStyle('padding', v)} />
       </div>
 
@@ -566,10 +601,10 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <Label className="text-xs">字号</Label>
-          <span className="text-[10px] text-muted-foreground">{ws.fontSize ?? 14}px</span>
+          <span className="text-[10px] text-muted-foreground">{num('fontSize', 14)}px</span>
         </div>
         <Slider min={11} max={32} step={1}
-          value={[ws.fontSize ?? 14]}
+          value={[num('fontSize', 14)]}
           onValueChange={([v]) => updateStyle('fontSize', v)} />
       </div>
 
@@ -577,10 +612,10 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <Label className="text-xs">行高</Label>
-          <span className="text-[10px] text-muted-foreground">{ws.lineHeight ? `${ws.lineHeight}px` : '自动'}</span>
+          <span className="text-[10px] text-muted-foreground">{num('lineHeight', 0) ? `${num('lineHeight', 0)}px` : '自动'}</span>
         </div>
         <Slider min={0} max={40} step={1}
-          value={[ws.lineHeight ?? 0]}
+          value={[num('lineHeight', 0)]}
           onValueChange={([v]) => updateStyle('lineHeight', v || undefined)} />
         <p className="text-[10px] text-muted-foreground">0 = 自动（跟随字号）</p>
       </div>
@@ -589,10 +624,10 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <Label className="text-xs">控件高</Label>
-          <span className="text-[10px] text-muted-foreground">{ws.height ? `${ws.height}px` : '默认'}</span>
+          <span className="text-[10px] text-muted-foreground">{num('height', 0) ? `${num('height', 0)}px` : '默认'}</span>
         </div>
         <Slider min={0} max={160} step={2}
-          value={[ws.height ?? 0]}
+          value={[num('height', 0)]}
           onValueChange={([v]) => updateStyle('height', v || undefined)} />
         <p className="text-[10px] text-muted-foreground">0 = 默认；不得低于当前控件类型的最小尺寸</p>
       </div>
@@ -601,10 +636,10 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <Label className="text-xs">标签宽度</Label>
-          <span className="text-[10px] text-muted-foreground">{ws.labelWidth ? `${ws.labelWidth}px` : '自适应'}</span>
+          <span className="text-[10px] text-muted-foreground">{num('labelWidth', 0) ? `${num('labelWidth', 0)}px` : '自适应'}</span>
         </div>
         <Slider min={0} max={160} step={4}
-          value={[ws.labelWidth ?? 0]}
+          value={[num('labelWidth', 0)]}
           onValueChange={([v]) => updateStyle('labelWidth', v || undefined)} />
       </div>
 
@@ -612,17 +647,17 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <Label className="text-xs">间距</Label>
-          <span className="text-[10px] text-muted-foreground">{ws.gap ? `${ws.gap}px` : '默认'}</span>
+          <span className="text-[10px] text-muted-foreground">{num('gap', 0) ? `${num('gap', 0)}px` : '默认'}</span>
         </div>
         <Slider min={0} max={24} step={1}
-          value={[ws.gap ?? 0]}
+          value={[num('gap', 0)]}
           onValueChange={([v]) => updateStyle('gap', v || undefined)} />
       </div>
 
       {/* Font weight */}
       <div className="space-y-1">
         <Label className="text-xs">字重</Label>
-        <Select value={ws.fontWeight || 'normal'} onValueChange={v => updateStyle('fontWeight', v)}>
+        <Select value={String(eff('fontWeight', 'normal'))} onValueChange={v => updateStyle('fontWeight', v)}>
           <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="normal" className="text-xs">常规 (400)</SelectItem>
@@ -637,19 +672,20 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <Label className="text-xs">透明度</Label>
-          <span className="text-[10px] text-muted-foreground">{Math.round((ws.opacity ?? 1) * 100)}%</span>
+          <span className="text-[10px] text-muted-foreground">{Math.round(num('opacity', 1) * 100)}%</span>
         </div>
         <Slider min={0} max={100} step={5}
-          value={[Math.round((ws.opacity ?? 1) * 100)]}
+          value={[Math.round(num('opacity', 1) * 100)]}
           onValueChange={([v]) => updateStyle('opacity', v / 100)} />
       </div>
 
       {/* Box shadow */}
       <div className="space-y-1">
         <Label className="text-xs">阴影</Label>
-        <Select value={ws.boxShadow || 'none'} onValueChange={v => updateStyle('boxShadow', v === 'none' ? undefined : v)}>
+        <Select value={base?.boxShadow && ws.boxShadow === undefined ? '__from_vis__' : (ws.boxShadow || 'none')} onValueChange={v => updateStyle('boxShadow', v === 'none' || v === '__from_vis__' ? undefined : v)}>
           <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
           <SelectContent>
+            {!!base?.boxShadow && <SelectItem value="__from_vis__" className="text-xs">跟随字模</SelectItem>}
             <SelectItem value="none" className="text-xs">无</SelectItem>
             <SelectItem value="0 1px 3px rgba(0,0,0,0.12)" className="text-xs">轻微</SelectItem>
             <SelectItem value="0 2px 8px rgba(0,0,0,0.15)" className="text-xs">中等</SelectItem>
@@ -664,7 +700,7 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1">
             <Label className="text-xs">垂直对齐</Label>
-            <Select value={ws.verticalAlign || 'center'} onValueChange={v => updateStyle('verticalAlign', v)}>
+            <Select value={eff('verticalAlign', 'center')} onValueChange={v => updateStyle('verticalAlign', v)}>
               <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="flex-start" className="text-xs">顶部</SelectItem>
@@ -675,7 +711,7 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
           </div>
           <div className="space-y-1">
             <Label className="text-xs">水平对齐</Label>
-            <Select value={ws.horizontalAlign || 'center'} onValueChange={v => updateStyle('horizontalAlign', v)}>
+            <Select value={eff('horizontalAlign', 'center')} onValueChange={v => updateStyle('horizontalAlign', v)}>
               <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="flex-start" className="text-xs">左对齐</SelectItem>
@@ -689,8 +725,8 @@ function StyleSettings({ chart, onWidgetConfigChange }: { chart: any; onWidgetCo
 
       {/* Reset style button */}
       <Button variant="outline" size="sm" className="w-full h-7 text-xs"
-        onClick={() => onWidgetConfigChange(chart.id, 'widgetStyle', {})}>
-        重置样式
+        onClick={() => write({})}>
+        清除本图覆盖（全部跟随字模）
       </Button>
     </div>
   );

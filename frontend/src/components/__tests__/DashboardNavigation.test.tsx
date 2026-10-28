@@ -9,6 +9,7 @@ import Analysis from '@/pages/Analysis';
 import Screen from '@/pages/Screen';
 import DashboardPage from '@/pages/Dashboard';
 import WorkspaceDashboards from '@/pages/WorkspaceDashboards';
+import WorkspaceDashboardGroup from '@/pages/WorkspaceDashboardGroup';
 import WorkspaceLayout from '../WorkspaceLayout';
 import { TooltipProvider } from '../ui/tooltip';
 import { useWorkspaceStore, type Workspace } from '@/stores/workspaceStore';
@@ -37,8 +38,8 @@ const groupsFixture = (opts?: { defaultId?: number | null }) => ([
   { id: 0, name: '未分组', description: '', sort: 9999, dashboards: [groupBoard(4)] },
 ]);
 function Path() { const location = useLocation(); return <output data-testid="path">{location.pathname}{location.search}</output>; }
-// 数据看板已收进工作空间: 清单 = /ws/:ws/dashboards(卡片瀑布), 详情 = /ws/:ws/dashboards/:id;
-// 旧独立看板域(/dashboards*)只保留重定向。
+// 数据看板已收进工作空间: 一级 = /ws/:ws/dashboards(组合卡片清单), 组合入口 = …/dashboards/group/:groupId(直接跳看板详情),
+// 详情 = /ws/:ws/dashboards/:id; 旧独立看板域(/dashboards*)只保留重定向。
 function routes(path: string) {
   return render(<TooltipProvider><MemoryRouter initialEntries={[path]}><Path /><Routes>
     <Route path="/" element={<WorkspaceEntry />} /><Route path="/page/:dashboardId" element={<WorkspaceEntry legacyId />} />
@@ -46,6 +47,7 @@ function routes(path: string) {
     <Route path="/dashboards/:groupId" element={<WorkspaceEntry module="dashboards" />} />
     <Route path="/dashboards/:groupId/:dashboardId" element={<WorkspaceEntry module="dashboards" legacyId />} />
     <Route path="/ws/:workspaceId/dashboards" element={<WorkspaceDashboards />} />
+    <Route path="/ws/:workspaceId/dashboards/group/:groupId" element={<WorkspaceDashboardGroup />} />
     <Route path="/ws/:workspaceId/dashboards/:dashboardId" element={<Analysis />} />
     <Route path="/screen/:dashboardId" element={<Screen />} />
     <Route path="/system/dashboards" element={<DashboardPage />} />
@@ -70,58 +72,77 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); usePermissionStore.setState({ loaded: false, unrestricted: true, perms: null, allowedMenus: null }); });
 
-describe('工作空间数据看板 — 卡片瀑布清单', () => {
-  it('清单按可见集渲卡：只收已启用看板，未启用数量显式提示', async () => {
+describe('工作空间数据看板 — 组合卡片清单', () => {
+  it('一级列组合卡：卡高固定不随看板内容撑大，可看数/未启用数显式提示', async () => {
     routes('/ws/7/dashboards');
-    await screen.findByRole('button', { name: '打开看板 看板 3' });
-    expect(screen.getByRole('button', { name: '打开看板 看板 2' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '打开看板 看板 4' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '打开看板 看板 1' })).not.toBeInTheDocument();
-    expect(screen.getByText('3 个看板')).toBeInTheDocument();
-    expect(screen.getByText(/另有 1 个可见看板未启用/)).toBeInTheDocument();
-    // 卡片显示可读名称/描述与所属组合名(不拿裸 id 当主要展示)
-    expect(screen.getByText('看板 3 的口径说明')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '经营组' })).toBeInTheDocument();
-    // 工作空间清单纯消费(查看/播放), 不提供编辑入口 —— 编辑只在系统配置「看板管理」
-    expect(screen.queryByRole('button', { name: /^编辑看板/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '大屏播放 看板 3' })).toBeInTheDocument();
+    const card = (await screen.findByRole('button', { name: '进入组合 经营组' })).closest('article')!;
+    // 缩略图槽固定高度 + 裁切：以前按看板画布比例撑高，长画布能顶到一屏多
+    const frame = card.querySelector('.h-40')!;
+    expect(frame.className).toContain('overflow-hidden');
+    expect(within(card).getByText('2 个可看看板')).toBeInTheDocument();
+    expect(within(card).getByText('1 个未启用')).toBeInTheDocument();
+    // 「未分组」不再算一个组合：只剩 1 个真组合（经营组），看板总数含未分组
+    expect(screen.getByText('1 个组合 · 3 个看板')).toBeInTheDocument();
+    // 真组合内的看板不铺平（经营组里的看板 3 仍收在组合卡内），也不留一排过滤按钮
+    expect(screen.queryByRole('button', { name: '打开看板 看板 3' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: '按看板组合筛选' })).not.toBeInTheDocument();
+    // 未分组看板平铺为单看板卡，不再包在一张「未分组」组合卡里
+    expect(screen.queryByRole('button', { name: '进入组合 未分组' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '打开看板 看板 4' })).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: '看板 2' })).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: '大屏轮播 经营组' })).toBeInTheDocument();
   });
-  it('点卡片进入对应看板详情', async () => {
+  it('点组合卡直接进入组内看板详情（默认看板优先），不再中间插一层看板卡', async () => {
     routes('/ws/7/dashboards');
-    fireEvent.click(await screen.findByRole('button', { name: '打开看板 看板 3' }));
+    fireEvent.click(await screen.findByRole('button', { name: '进入组合 经营组' }));
     await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/3'));
+    await screen.findByText('响应式网格');
+  });
+  it('组合卡轮播起点与“进入看板”是同一块屏，并携带 group', async () => {
+    routes('/ws/7/dashboards');
+    fireEvent.click(await screen.findByRole('button', { name: '大屏轮播 经营组' }));
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/screen/3?group=7&from='));
+  });
+  it('组合卡内的看板快捷项直达对应看板详情', async () => {
+    routes('/ws/7/dashboards');
+    const card = (await screen.findByRole('button', { name: '进入组合 经营组' })).closest('article')!;
+    fireEvent.click(within(card).getByRole('button', { name: '看板 2' }));
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/2'));
+  });
+  it('搜索跨组合直接找看板，命中项标出所属组合', async () => {
+    routes('/ws/7/dashboards');
+    await screen.findByRole('button', { name: '进入组合 经营组' });
+    fireEvent.change(screen.getByLabelText('搜索看板'), { target: { value: '看板 4' } });
+    const card = (await screen.findByRole('button', { name: '打开看板 看板 4' })).closest('article')!;
+    expect(within(card).getByText('未分组')).toBeInTheDocument();
+    expect(screen.getByText('1 个匹配看板')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^进入组合/ })).not.toBeInTheDocument();
   });
   it('清单加载失败显式报错，重试后恢复', async () => {
     vi.mocked(client.get).mockRejectedValueOnce(new Error('offline'));
     routes('/ws/7/dashboards');
     expect(await screen.findByText('加载看板清单失败，请重试')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '重试' }));
-    expect(await screen.findByRole('button', { name: '打开看板 看板 3' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '进入组合 经营组' })).toBeInTheDocument();
   });
   it('角色无可见看板时清单给出空态引导(fail-closed 不伪造内容)', async () => {
     vi.mocked(client.get).mockImplementation(async url => (url === '/dashboard/groups/visible' ? { data: [] } : { data: [] }));
     routes('/ws/7/dashboards');
     expect(await screen.findByText('还没有分配给你的看板')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^打开看板/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^进入组合/ })).not.toBeInTheDocument();
   });
-  it('看板组合可筛选，筛后仅显示该组卡片', async () => {
-    routes('/ws/7/dashboards');
-    fireEvent.click(await screen.findByRole('button', { name: '未分组' }));
-    expect(screen.getByRole('button', { name: '打开看板 看板 4' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '打开看板 看板 3' })).not.toBeInTheDocument();
-  });
-  it('目录 30s 缓存：列表→详情复用同一份目录，失效后回源', async () => {
+  it('目录 30s 缓存：清单→详情复用同一份目录，失效后回源', async () => {
     const groupCalls = () => vi.mocked(client.get).mock.calls.filter(([u]) => u === '/dashboard/groups/visible').length;
     const view = routes('/ws/7/dashboards');
-    await screen.findByRole('button', { name: '打开看板 看板 3' });
+    await screen.findByRole('button', { name: '进入组合 经营组' });
     expect(groupCalls()).toBe(1);
-    fireEvent.click(screen.getByRole('button', { name: '打开看板 看板 3' }));
+    fireEvent.click(screen.getByRole('button', { name: '进入组合 经营组' }));
     await screen.findByText('响应式网格');
     expect(groupCalls()).toBe(1);  // 详情页复用缓存, 不重复拉整份目录
     view.unmount();
-    invalidateCatalogCache();       // 看板/图表写操作后的失效路径
+    invalidateCatalogCache();       // 看板/图表/分组写操作后的失效路径
     routes('/ws/7/dashboards');
-    await screen.findByRole('button', { name: '打开看板 看板 3' });
+    await screen.findByRole('button', { name: '进入组合 经营组' });
     expect(groupCalls()).toBe(2);  // 失效后回源
   });
   it('旧独立看板链接重定向到工作空间看板清单/详情', async () => {
@@ -149,6 +170,38 @@ describe('工作空间数据看板 — 卡片瀑布清单', () => {
       <Route path="/ws/:workspaceId/dashboards" element={<WorkspaceDashboards />} />
     </Routes></MemoryRouter></TooltipProvider>);
     await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards'));
+  });
+});
+
+describe('组合入口路由 — 直接跳看板详情', () => {
+  it('/ws/7/dashboards/group/7 重定向到组内默认看板', async () => {
+    routes('/ws/7/dashboards/group/7');
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/3'));
+    await screen.findByText('响应式网格');
+  });
+  it('未分组（id=0）能正常进入，不被当成缺失', async () => {
+    routes('/ws/7/dashboards/group/0');
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/4'));
+  });
+  it('未知/已被收回的组合显式报错并给返回出口，不拿别的组内容充数', async () => {
+    routes('/ws/7/dashboards/group/99');
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('这个组合不存在，或你已无权查看');
+    expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/group/99');
+    fireEvent.click(within(alert).getByRole('button', { name: '返回组合清单' }));
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards'));
+  });
+  it('组内只有未启用看板时说明原因，不静默跳到别的看板', async () => {
+    vi.mocked(client.get).mockImplementation(async url => (url === '/dashboard/groups/visible'
+      ? { data: [{ id: 5, name: '试运行组', description: '', sort: 0, dashboards: [groupBoard(1, 'closed')] }] } as any
+      : { data: [] }));
+    routes('/ws/7/dashboards/group/5');
+    expect(await screen.findByRole('alert')).toHaveTextContent('组合「试运行组」里还没有可看的看板');
+    expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/group/5');
+  });
+  it('旧组合链接 /dashboards/<groupId> 最终落到该组合的看板详情', async () => {
+    routes('/dashboards/7');
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/3'));
   });
 });
 
@@ -301,6 +354,7 @@ describe('看板管理域与大屏播放', () => {
   });
   it('看板管理页：角色授予的看板不提供编辑入口（仅属主/admin 可写）', async () => {
     vi.mocked(client.get).mockImplementation(async url => {
+      if (url === '/dashboard/groups') return { data: [] };
       if (url.startsWith('/dashboard/')) return { data: [{ ...board(21), editable: true }, { ...board(22), editable: false }] };
       return { data: [] };
     });
@@ -314,9 +368,46 @@ describe('看板管理域与大屏播放', () => {
     expect(items.some(t => t?.includes('仅查看'))).toBe(true);
     expect(items.some(t => t?.includes('复制'))).toBe(true);  // 复制为我的看板仍是读+建, 不改原看板
   });
+  it('看板管理列表卡预览槽固定高度（与工作区数据看板同一尺寸口径）', async () => {
+    routes('/system/dashboards');
+    const card = (await screen.findByRole('button', { name: '预览 看板 1' })).closest('article')!;
+    expect(card.querySelector('.h-40.overflow-hidden')).toBeTruthy();
+  });
   it('裸播放链接无组范围时回看板清单', async () => {
     routes('/screen/2');
     await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards'));
+  });
+  it('看板组合以卡片呈现：与同页看板卡片同构, 只显名称不显裸 id', async () => {
+    vi.mocked(client.get).mockImplementation(async url => {
+      if (url === '/dashboard/groups') return { data: [{ id: 3, name: '经营日报', description: '每日经营盘面', sort: 0, dashboard_ids: [21], role_ids: [5] }] };
+      if (url === '/roles/') return { data: [{ id: 5, name: 'analyst', display_name: '数据分析师' }] };
+      if (url === '/dashboard/') return { data: [board(21)] };
+      return { data: [] };
+    });
+    const { container } = routes('/system/dashboards');
+    await screen.findByRole('button', { name: '预览 看板 21' });
+    const card = screen.getByRole('button', { name: '编辑组合 经营日报' }).closest('article');
+    expect(card).toBeInTheDocument();
+    expect(within(card!).getByText('经营日报')).toBeInTheDocument();
+    expect(within(card!).getByText('每日经营盘面')).toBeInTheDocument();
+    expect(within(card!).getByText('1 个看板')).toBeInTheDocument();
+    expect(within(card!).getByText('1 个角色')).toBeInTheDocument();
+    // 组内成员与角色显示业务名（不是裸 id），卡片网格与看板卡同一几何口径
+    expect(within(card!).getByText('看板：看板 21')).toBeInTheDocument();
+    expect(within(card!).getByText('角色：数据分析师')).toBeInTheDocument();
+    expect(within(card!).queryByText(/\d{3,}/)).not.toBeInTheDocument();
+    expect(container.querySelector('section > div.grid')).toBeTruthy();
+  });
+  it('组合未绑角色时卡片显式告警（不静默显示为可用）', async () => {
+    vi.mocked(client.get).mockImplementation(async url => {
+      if (url === '/dashboard/groups') return { data: [{ id: 4, name: '试运行组', description: '', sort: 0, dashboard_ids: [], role_ids: [] }] };
+      return { data: [] };
+    });
+    routes('/system/dashboards');
+    const card = (await screen.findByRole('button', { name: '编辑组合 试运行组' })).closest('article')!;
+    expect(within(card).getByText('未绑角色，用户看不到')).toBeInTheDocument();
+    expect(within(card).getByText('看板：尚未编排看板')).toBeInTheDocument();
+    expect(within(card).getByText('角色：未分配')).toBeInTheDocument();
   });
   it('非法播放范围不发起看板请求', () => {
     routes('/screen/2?group=-1'); expect(screen.getByRole('alert')).toHaveTextContent('范围无效');
@@ -360,11 +451,16 @@ describe('看板管理域与大屏播放', () => {
 // 而后端按 position 像素算几何、不读 config.pageLayout，导致同一看板在两侧长得不一样。
 describe('静态护栏：看板缩略图唯一渲染器', () => {
   const read = (rel: string) => fs.readFileSync(path.resolve(__dirname, '../..', rel), 'utf8');
-  it('工作空间清单复用 DashboardThumbnail，不自画预览画布', () => {
-    const page = read('pages/WorkspaceDashboards.tsx');
-    expect(page).toMatch(/<DashboardThumbnail/);
-    expect(page).not.toMatch(/aspectRatio/);   // 高宽比由唯一渲染器自己算
-    expect(page).not.toMatch(/blocks\.map/);   // 不再消费后端算好的区块
+  it('工作空间两级清单复用 DashboardThumbnail，不自画预览画布', () => {
+    // 看板卡/组合卡已抽到共享组件，三个页面（组合清单 / 组合展示 / 看板管理）不得各画一套几何
+    for (const file of ['components/DashboardCatalogCards.tsx', 'pages/WorkspaceDashboards.tsx', 'pages/WorkspaceDashboardGroup.tsx']) {
+      const source = read(file);
+      expect(source, `${file} 必须走共享看板卡`).toMatch(/DashboardCatalogCards|<DashboardThumbnail/);
+    }
+    const cards = read('components/DashboardCatalogCards.tsx');
+    expect(cards).toMatch(/<DashboardThumbnail/);
+    expect(cards).not.toMatch(/aspectRatio/);   // 高宽比由唯一渲染器自己算
+    expect(cards).not.toMatch(/blocks\.map/);   // 不再消费后端算好的区块
   });
   it('目录契约只下发每图几何 + 网格布局摘要，不再下发 blocks', () => {
     const catalog = read('lib/dashboardCatalog.ts');

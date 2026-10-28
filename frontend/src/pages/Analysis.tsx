@@ -35,7 +35,7 @@ export default function Analysis() {
   const managementPreview = location.pathname.startsWith('/system/dashboards/');
   // 组模式 = 非管理预览(工作空间详情与旧内嵌预览同用组目录)
   const groupMode = !managementPreview;
-  // 返回落点: 管理预览回看板管理, 工作空间详情回看板卡片清单
+  // 返回落点: 管理预览回看板管理, 工作空间详情回看板组合清单
   const listPath = managementPreview ? '/system/dashboards' : workspaceId ? `/ws/${workspaceId}/dashboards` : '';
   const boardPath = (id: number) => managementPreview
     ? `/system/dashboards/${id}`

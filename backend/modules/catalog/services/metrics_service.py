@@ -3,7 +3,6 @@
 import json
 import logging
 import re
-import time
 from datetime import datetime
 from typing import Optional
 
@@ -35,6 +34,8 @@ _FRONTEND_TO_DB = {
     "category": "category",
     "bound_object_key": "bound_object_key",
     "formula_dsl": "formula_dsl",
+    # 取数路径约束（any|detail|global|log|mirror）：口径属性，由 topology.decide_carrier 消费
+    "allowed_carrier": "allowed_carrier",
 }
 
 _ALIAS_SELECT = (
@@ -43,6 +44,7 @@ _ALIAS_SELECT = (
     "unit, target_table, target_column, description, "
     "COALESCE(aliases, '[]') AS aliases, COALESCE(tags, '[]') AS tags, "
     "bound_object_key, COALESCE(certified, 0) AS certified, "
+    "COALESCE(allowed_carrier, 'any') AS allowed_carrier, "
     "is_active, workspace_id, owner, created_at, updated_at"
 )
 
@@ -130,6 +132,23 @@ def _norm_tags(val) -> str:
     与 aliases 同一形状（标签是短字符串集，不存在别名那种顺位语义）。
     """
     return _norm_aliases(val)
+
+
+# 取数路径约束值域（与 docker/mysql/ontology_carrier_routing_migration.sql 的 ENUM 一致）
+_ALLOWED_CARRIERS = ("any", "detail", "global", "log", "mirror")
+
+
+def _norm_allowed_carrier(val) -> str:
+    """allowed_carrier 入参归一：空 → 'any'；非法值拒（宁阻断勿静默改成别的口径）。
+
+    这个字段直接决定“全球去重类指标能不能被逐站结果冒充”，不能默认兼容。
+    """
+    s = str(val or "").strip().lower()
+    if not s:
+        return "any"
+    if s not in _ALLOWED_CARRIERS:
+        raise ValueError(f"allowed_carrier 不合法：{val!r}（可选：{'/'.join(_ALLOWED_CARRIERS)}）")
+    return s
 
 
 def _json_list(val) -> list:
@@ -465,8 +484,9 @@ def create_metric(data: dict) -> dict:
                 "INSERT INTO adh_metrics "
                 "(id, workspace_id, name, name_en, formula, unit, agg_type, "
                 "target_table, target_column, description, owner, category, datasource_id, "
-                "is_active, created_at, updated_at, default_agg, bound_object_key, aliases, tags) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "is_active, created_at, updated_at, default_agg, bound_object_key, aliases, tags, "
+                "allowed_carrier) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     row_id,
                     # 字典行是跨工作空间口径：workspace_id 恒为 0（与 datasource_id 同口径），
@@ -490,6 +510,7 @@ def create_metric(data: dict) -> dict:
                     data.get("bound_object_key") or None,
                     _norm_aliases(data.get("aliases")),
                     _norm_tags(kind_tags),
+                    _norm_allowed_carrier(data.get("allowed_carrier")),
                 ),
             )
 
@@ -655,10 +676,12 @@ def update_metric(metric_id: int, data: dict) -> bool:
                 mapped["formula"] = data["expression"]
             for key in ("name", "name_en", "formula", "agg_type", "unit", "description",
                         "category", "target_table", "target_column", "bound_object_key",
-                        "formula_dsl", "is_active", "default_agg", "certified", "owner"):
+                        "formula_dsl", "is_active", "default_agg", "certified", "owner",
+                        "allowed_carrier"):
                 if key in mapped:
                     fields.append(f"{key} = %s")
-                    params.append(mapped[key])
+                    params.append(_norm_allowed_carrier(mapped[key]) if key == "allowed_carrier"
+                                  else mapped[key])
             if "metric_type" in data and "category" not in mapped:
                 # 旧客户端只发 metric_type：不得再把口径标签写进 category（业务域）列；
                 # basic/derived/composite → tags，其余值按旧语义落 category（存量调用方兼容）。

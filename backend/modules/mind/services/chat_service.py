@@ -254,7 +254,7 @@ class ChatService:
             # 上一轮执行层会话 ID(SDK 多轮对话 resume)及 chat 会话 ID
             # (qoder 长对话池 key: 同会话复用持久 qodercli 进程)、
             # 任务绑定标记(仅工具侧域约束可见, 不进 prompt)、
-            # 会话查询站点(进 prompt 的「站点范围」段, 站点内源解析在服务端)
+            # 会话查询站点(进 prompt 的「数据源拓扑」段, 站点内源解析在服务端)
             extra={
                 k: v
                 for k, v in (

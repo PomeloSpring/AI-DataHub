@@ -22,14 +22,15 @@ export const CANVAS_COLORS = {
   /** 选中 / 悬停分级：selected 实描边，hover 半透明细描边 */
   selection: 'hsl(var(--primary))',
   hoverOutline: 'hsl(var(--primary) / 0.4)',
-  /** 吸附辅助线：主色系而非扎眼的品红 */
-  guide: 'hsl(var(--primary) / 0.75)',
+  /** 吸附/对齐参考线：低透主色发丝线（商业编辑器口径）——
+   *  0.75 以上饱和主色在密卡片画布上会成“切割线”，侵入性盖过内容 */
+  guide: 'hsl(var(--primary) / 0.4)',
   /** 缩放手柄 */
   handle: 'hsl(var(--primary))',
   handleBorder: 'hsl(var(--background))',
-  /** 拖入落点预览 */
-  dropGhostBorder: 'hsl(var(--primary))',
-  dropGhostFill: 'hsl(var(--primary) / 0.1)',
+  /** 拖入/落点预览：细描边 + 极淡填充，只标“将占多大”，不遮住卡片内容 */
+  dropGhostBorder: 'hsl(var(--primary) / 0.55)',
+  dropGhostFill: 'hsl(var(--primary) / 0.06)',
   /** 大屏模式点阵背景 */
   dot: 'hsl(var(--foreground) / 0.09)',
 } as const;

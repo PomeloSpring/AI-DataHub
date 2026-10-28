@@ -1,16 +1,17 @@
-"""AS-BOT 本体域边界（as-bot-system-as_bot §1/§4）回归：判别口径用 kind。
+"""AS-BOT 本体域边界回归：判别口径用 kind；**系统本体不可编辑**。
 
-背景：本体归属改造后，业务本体的 datasource_id 也是 0（归属按业务域而非数据源）。
-旧判别口径 `datasource_id IS NULL OR = 0` 会把 8 个业务本体误判为系统本体，导致：
-  ① system_overview 把业务本体计成系统本体；
-  ② scoped_metadata 把业务本体当系统知识暴露给 AS-BOT（域边界泄漏）；
-  ③ AS-BOT 的 ontology.save/activate 可写任意业务本体（违反 §4 红线）。
+2026-10-27 拍板（反转旧「仅系统本体可写」硬禁令）：
+  * 系统本体（kind='system'）随项目版本发布、不由数据驱动 → AS-BOT **不得编辑**；
+  * 业务本体（kind='business'）与源本体（kind='source'）→ AS-BOT **可编辑**，
+    写权限由菜单与功能权限码把关（ontology:save/create/activate/publish，fail-closed），
+    生效由草案/发布两段式控制（未发布只落草案、不进检索/查询）。
 
 锁住的行为：
-1. 域判别一律用 kind='system'，不用 datasource_id=0（旧口径会误放行业务本体）；
-2. AS-BOT 本体写操作对 kind != 'system' 的目标模型必须**拒绝**（执行前拒，fail-closed）；
-3. 业务 AS-BOT 的本体可见域 = 跨源业务本体 + 自己绑定源的源本体（双轨）；
-4. 字典表(adh_metrics/adh_dimensions)的 datasource_id=0 是「全局口径」语义，**不受本改造影响**。
+1. 域判别一律用 kind，不用 datasource_id（业务/源本体的 datasource_id 也可能为 0）；
+2. 本体写工具对 kind='system' 的目标模型必须**执行前拒**（域约束），对 business/source 放行；
+3. business/source 写入仍受权限码 fail-closed（无 ontology:save 即拒）；
+4. 业务 AS-BOT 的本体可见域 = 跨源业务本体 + 自己绑定源的源本体（双轨）；
+5. 字典表(adh_metrics/adh_dimensions)的 datasource_id=0 是「全局口径」语义，不受本改造影响。
 
 纯函数 + fake DB，不触碰数据库。
 """
@@ -68,90 +69,115 @@ def _patch_model(monkeypatch, rows):
     monkeypatch.setattr(mdb, "get_metadata_conn", lambda: _FakeConn(rows))
 
 
-# ── 域约束：仅 kind='system' 可写 ────────────────────────────────
+# ── 域约束：系统本体不可编辑（kind='system' 拒，业务/源放行）──────
 
-class TestAssertSystemModel:
-    def test_system_model_allowed(self, monkeypatch):
-        _patch_model(monkeypatch, [{"name": "AS-BOT 系统能力本体", "kind": "system"}])
-        ot._assert_system_model(2789709247647610)   # 不抛即通过
-
-    def test_business_model_rejected(self, monkeypatch):
-        """业务本体必须被拒——即使它的 datasource_id=0（旧口径的陷阱）。"""
+class TestAssertModelEditable:
+    def test_business_model_editable(self, monkeypatch):
+        """业务本体可编辑——即使它 datasource_id=0（旧口径的陷阱）。"""
         _patch_model(monkeypatch, [{"name": "客户域本体", "kind": "business"}])
-        with pytest.raises(ValueError, match="仅可操作系统本体"):
-            ot._assert_system_model(1791127653486902)
+        ot._assert_model_editable(1791127653486902)   # 不抛即通过
 
-    def test_source_model_rejected(self, monkeypatch):
+    def test_source_model_editable(self, monkeypatch):
         _patch_model(monkeypatch, [{"name": "test-alb-全量本体", "kind": "source"}])
-        with pytest.raises(ValueError, match="仅可操作系统本体"):
-            ot._assert_system_model(1789467214865307)
+        ot._assert_model_editable(1789467214865307)   # 源本体可编辑
+
+    def test_system_model_rejected(self, monkeypatch):
+        """系统本体不可编辑（随项目版本发布，非数据驱动）。"""
+        _patch_model(monkeypatch, [{"name": "AS-BOT 系统能力本体", "kind": "system"}])
+        with pytest.raises(ValueError, match="系统本体"):
+            ot._assert_model_editable(2789709247647610)
 
     def test_missing_model_rejected(self, monkeypatch):
         _patch_model(monkeypatch, [])
         with pytest.raises(ValueError, match="本体模型不存在"):
-            ot._assert_system_model(999)
+            ot._assert_model_editable(999)
 
     def test_zero_model_id_rejected(self):
         with pytest.raises(ValueError, match="model_id 必填"):
-            ot._assert_system_model(0)
+            ot._assert_model_editable(0)
 
     def test_error_message_carries_model_name(self, monkeypatch):
-        """错误信息必须可诊断（带模型名与实际 kind），不得只说“无权限”。"""
-        _patch_model(monkeypatch, [{"name": "案例域本体", "kind": "business"}])
+        """错误信息必须可诊断（带模型名），不得只说“无权限”。"""
+        _patch_model(monkeypatch, [{"name": "系统能力本体", "kind": "system"}])
         with pytest.raises(ValueError) as e:
-            ot._assert_system_model(1)
-        assert "案例域本体" in str(e.value)
-        assert "business" in str(e.value)
+            ot._assert_model_editable(1)
+        assert "系统能力本体" in str(e.value)
 
 
-# ── 写操作入口接入域约束（save/activate 不得旁路）──────────────
+# ── 写操作入口接入域约束（save/activate/update/add 不得旁路）──────
 
 class TestWriteOpsEnforceDomain:
-    def test_save_business_model_rejected(self, monkeypatch):
+    def test_save_business_model_lands_draft(self, monkeypatch):
+        """业务本体可编辑：持 ontology:save → 走 save_draft_only 落草案（不碰生效）。"""
         _patch_model(monkeypatch, [{"name": "客户域本体", "kind": "business"}])
-        import asyncio
-        result = asyncio.run(ot.save_ontology_model(
-            {"model_id": 1791127653486902, "json_content": "{}"}))
-        p = _payload(result)
-        assert "error" in p and "仅可操作系统本体" in p["error"]
-
-    def test_activate_business_model_rejected(self, monkeypatch):
-        _patch_model(monkeypatch, [{"name": "客户域本体", "kind": "business"}])
-        import asyncio
-        result = asyncio.run(ot.activate_ontology_model({"model_id": 1791127653486902}))
-        p = _payload(result)
-        assert "error" in p and "仅可操作系统本体" in p["error"]
-
-    def test_save_system_model_without_perm_fail_closed(self, monkeypatch):
-        """直执行口径：无 ontology:save 权限码即拒（审批回路已退役，不再生成审批单）。"""
-        _patch_model(monkeypatch, [{"name": "AS-BOT 系统能力本体", "kind": "system"}])
-        import backend.core.role_service as rs
-        monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms", lambda *a: {})
-        import asyncio
-        result = asyncio.run(ot.save_ontology_model(
-            {"model_id": 2789709247647610, "json_content": "{}"}))
-        p = _payload(result)
-        assert "error" in p and "ontology:save" in p["error"]
-        assert "approval_required" not in p and "action_key" not in p
-
-    def test_save_system_model_direct_executes(self, monkeypatch):
-        """有 ontology:save 写权限 → 直执行保存，无审批中间态。"""
-        _patch_model(monkeypatch, [{"name": "AS-BOT 系统能力本体", "kind": "system"}])
-        saved = {}
         monkeypatch.setattr(ot, "_require_write_perm", lambda *a, **k: None)
         import backend.modules.catalog.services.ontology_service as osvc
+        saved = {}
 
-        def fake_save(mid, content, name=None):
+        def fake_save_draft_only(mid, content, name=None, created_by=""):
             saved.update({"id": mid, "content": content})
             return {"id": mid}
 
-        monkeypatch.setattr(osvc, "save_draft", fake_save)
+        monkeypatch.setattr(osvc, "save_draft_only", fake_save_draft_only)
         import asyncio
-        result = asyncio.run(ot.save_ontology_model(
-            {"model_id": 2789709247647610, "json_content": "{}"}))
-        p = _payload(result)
-        assert p.get("success") is True and p["model_id"] == 2789709247647610
-        assert saved["id"] == 2789709247647610  # 直调 save_draft，不经审批
+        p = _payload(asyncio.run(ot.save_ontology_model(
+            {"model_id": 1791127653486902, "json_content": "{}"})))
+        assert p.get("success") is True and saved["id"] == 1791127653486902
+
+    def test_save_system_model_rejected_by_domain(self, monkeypatch):
+        """系统本体：域约束执行前拒（即使有权限码也不放行）。"""
+        _patch_model(monkeypatch, [{"name": "AS-BOT 系统能力本体", "kind": "system"}])
+        monkeypatch.setattr(ot, "_require_write_perm", lambda *a, **k: None)
+        import asyncio
+        p = _payload(asyncio.run(ot.save_ontology_model(
+            {"model_id": 2789709247647610, "json_content": "{}"})))
+        assert "error" in p and "系统本体" in p["error"]
+
+    def test_save_business_without_perm_fail_closed(self, monkeypatch):
+        """业务本体但无 ontology:save 权限码 → 拒（fail-closed，域放行不等于免权限）。"""
+        _patch_model(monkeypatch, [{"name": "客户域本体", "kind": "business"}])
+
+        def deny(*a, **k):
+            raise PermissionError("缺少 ontology:save 权限")
+
+        monkeypatch.setattr(ot, "_require_write_perm", deny)
+        import asyncio
+        p = _payload(asyncio.run(ot.save_ontology_model(
+            {"model_id": 1791127653486902, "json_content": "{}"})))
+        assert "error" in p and "ontology:save" in p["error"]
+
+    def test_activate_business_ok_system_rejected(self, monkeypatch):
+        import asyncio
+        import backend.modules.catalog.services.ontology_service as osvc
+        monkeypatch.setattr(ot, "_require_write_perm", lambda *a, **k: None)
+        monkeypatch.setattr(osvc, "activate", lambda mid: {"id": mid, "status": "active"})
+        # 业务可激活
+        _patch_model(monkeypatch, [{"name": "客户域本体", "kind": "business"}])
+        assert _payload(asyncio.run(ot.activate_ontology_model(
+            {"model_id": 1791127653486902}))).get("success") is True
+        # 系统不可
+        _patch_model(monkeypatch, [{"name": "系统能力本体", "kind": "system"}])
+        assert "系统本体" in _payload(asyncio.run(ot.activate_ontology_model(
+            {"model_id": 2789709247647610}))) ["error"]
+
+    def test_update_object_business_ok_system_rejected(self, monkeypatch):
+        import asyncio
+        import backend.modules.catalog.services.ontology_service as osvc
+        monkeypatch.setattr(ot, "_require_write_perm", lambda *a, **k: None)
+        monkeypatch.setattr(osvc, "get_model",
+                            lambda mid: {"id": mid, "json_content": '{"objects":[]}'})
+        monkeypatch.setattr(osvc, "get_draft", lambda mid: {"draft": None})
+        monkeypatch.setattr(osvc, "save_draft_only",
+                            lambda mid, content, created_by="": {"id": mid})
+        # 业务可改
+        _patch_model(monkeypatch, [{"name": "客户域本体", "kind": "business"}])
+        p = _payload(asyncio.run(ot.update_ontology_object(
+            {"model_id": 1791127653486902, "object": {"key": "case"}})))
+        assert p.get("mode") in ("created", "updated")
+        # 系统不可
+        _patch_model(monkeypatch, [{"name": "系统能力本体", "kind": "system"}])
+        assert "系统本体" in _payload(asyncio.run(ot.update_ontology_object(
+            {"model_id": 2789709247647610, "object": {"key": "x"}})))["error"]
 
 
 # ── 可见域：AS-BOT 只见系统本体，业务 AS-BOT 见业务+本源源 ──────

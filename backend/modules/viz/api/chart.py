@@ -233,7 +233,7 @@ def refresh_chart(
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT id, dashboard_id, workspace_id, source_id, sql_query, config, "
-                "query_source, semantic_query FROM adh_charts WHERE id = %s",
+                "query_source, semantic_query, data_cache FROM adh_charts WHERE id = %s",
                 (chart_id,),
             )
             chart = cur.fetchone()
@@ -242,6 +242,10 @@ def refresh_chart(
 
             if (_json_loads_safe(chart.get("config")) or {}).get("as_bot_design"):
                 return _refresh_design(chart, user)
+            from backend.modules.viz.services.dashboard_service import demo_sample_without_source, _demo_cached_result
+            if demo_sample_without_source(chart):
+                # 模板示例图未绑源: 演示 SQL 不下发数据源, 原样回读示例数据(不抹空)
+                return _demo_cached_result(chart)
             datasource_id = _get_chart_datasource_id(chart)
             query_source = chart.get("query_source") or "raw_sql"
             semantic_query = _json_loads_safe(chart.get("semantic_query"))

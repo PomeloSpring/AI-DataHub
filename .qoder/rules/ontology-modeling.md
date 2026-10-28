@@ -12,7 +12,7 @@ description: 本体建模规范（Ontology Modeling Spec）。本体是唯一语
 - **canonical JSON doc 是唯一可编辑事实源**（`adh_ontology_models.json_content`）；YAML、内部 md（`to_md`）、RDF 图谱、qmind 上云文档（`to_cloud_md`）、`adh_ontology_objects` 展开行**全部是派生视图**，严禁独立编辑派生物。
 - 修改本体只有一条路径：编辑 doc → `save_draft`/`activate` → 服务层自动级联（重算 execution_binding → 重展开 objects → 重写 bindings → 重建图谱 → 同步知识库）。**禁止**绕过级联直接 UPDATE 派生表。
 - 枚举的唯一可编辑源是**维度字典 `value_labels`**；本体 `properties[].enum` 经 `sync_enums_to_dimensions` 单向联动到字典，图谱 `owl:oneOf` 只是只读投影。不得在图/文档侧独立改枚举。
-- **多站点适用性以 `adh_ontology_models.deploy_sites` 为唯一事实源**（模型级声明：`[{site_code, datasource(业务名)}]`，一次配置全对象共享），站点清单事实源 = `adh_sites`、数据源归属 = `adh_datasources.site_code`。**不得**回到逐对象逐站登记 `adh_ontology_bindings` 的旧口径（历史 27 对象 × 5 站 = 135 行机械复制），也不得在 doc/图谱/提示词里另写一份站点映射（`data-analysis/SKILL.md` 已去硬编码，由服务端「站点范围」段注入）。某站 schema 真不同 → 为该站单独配一个本体或使用源本体，不在契约层开例外。
+- **多站点适用性以 `adh_ontology_models.deploy_sites` 为唯一事实源**（模型级声明：`[{site_code, datasource(业务名)}]`，一次配置全对象共享），站点清单事实源 = `adh_sites`、数据源归属 = `adh_datasources.site_code`。**不得**回到逐对象逐站登记 `adh_ontology_bindings` 的旧口径（历史 27 对象 × 5 站 = 135 行机械复制），也不得在 doc/图谱/提示词里另写一份站点映射（`data-analysis/SKILL.md` 已去硬编码，由服务端「数据源拓扑」段注入，该段同时说明“默认分站呈现不合计”的口径）。某站 schema 真不同 → 为该站单独配一个本体或使用源本体，不在契约层开例外。
 
 ## 2. 对象/属性建模要求
 - 对象面向业务命名（订单/客户/案例），**不得直接照搬表名堆砌**；一个对象绑定一张 `primary_table`（宽对象或 SQL 模板承载复杂形状）。

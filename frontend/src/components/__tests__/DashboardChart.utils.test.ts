@@ -631,3 +631,33 @@ describe('图表主题适配', () => {
     expect(frames.size).toBe(0)
   })
 })
+
+// 表值图走 HTML 渲染，不走 G2 spec —— 字模键必须在 DOM 上真实生效（§2「存了不生效」防线）。
+describe('表值图渲染消费字模', () => {
+  const data = { columns: ['name', 'value'], rows: [{ name: 'a', value: 1 }, { name: 'b', value: 2 }] }
+
+  it('headerBg/headerColor/zebraBg/rowHeight/tableFontSize 落到表格内联样式', () => {
+    const { container } = render(createElement(DashboardChart, {
+      chartType: 'table_value', data,
+      config: { headerBg: '#F7F8FA', headerColor: '#262626', zebraBg: '#FAFBFC', rowHeight: 32, tableFontSize: 13 },
+    }))
+    const table = container.querySelector('table')
+    expect(table?.style.fontSize).toBe('13px')
+    const head = container.querySelector('thead tr') as HTMLElement
+    expect(head.style.background).toContain('rgb(247, 248, 250)')
+    expect(head.style.height).toBe('32px')
+    expect((container.querySelector('th') as HTMLElement).style.color).toContain('rgb(38, 38, 38)')
+    const body = container.querySelectorAll<HTMLElement>('tbody tr')
+    expect(body[0].style.background).toBe('transparent')
+    expect(body[1].style.background).toContain('rgb(250, 251, 252)')   // 偶数行斑马纹取字模色
+    expect(body[1].style.height).toBe('32px')
+  })
+
+  it('未挂字模时保持原默认观感（存量表格不被改动）', () => {
+    const { container } = render(createElement(DashboardChart, { chartType: 'table_value', data, config: {} }))
+    expect((container.querySelector('table') as HTMLElement).style.fontSize).toBe('12px')
+    expect((container.querySelector('thead tr') as HTMLElement).style.height).toBe('')
+    const body = container.querySelectorAll<HTMLElement>('tbody tr')
+    expect(body[1].style.background).not.toContain('rgb(250, 251, 252)')
+  })
+})

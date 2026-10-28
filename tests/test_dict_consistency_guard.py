@@ -138,6 +138,9 @@ def test_add_objects_is_append_only(monkeypatch):
     _tool_ctx(monkeypatch)
     monkeypatch.setattr(ot, "_require_write_perm", lambda *a, **k: None)
     monkeypatch.setattr(ot, "_reject_datasource_arg", lambda *a, **k: None)
+    # kind 域约束单独由 test_ontology_domain_boundary 覆盖；本用例只验“只增不删”，
+    # 不桩它会让工具层去查元库（模型 id=1 不存在 → 报“本体模型不存在”而假失败）
+    monkeypatch.setattr(ot, "_assert_model_editable", lambda mid: None)
 
     calls = {}
     monkeypatch.setattr(osvc, "get_model", lambda mid: {
@@ -188,6 +191,7 @@ def test_save_ontology_model_lands_draft_not_active(monkeypatch):
     _tool_ctx(monkeypatch)
     monkeypatch.setattr(ot, "_require_write_perm", lambda *a, **k: None)
     monkeypatch.setattr(ot, "_reject_datasource_arg", lambda *a, **k: None)
+    monkeypatch.setattr(ot, "_assert_model_editable", lambda mid: None)   # 同上：kind 判定另有用例
     used = {}
     def _fake_draft_only(*a, **k):
         used["fn"] = "draft_only"; return {"id": 1}

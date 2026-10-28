@@ -1,5 +1,6 @@
 import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import ObjectHubTab from '../ObjectHubTab';
 
 /**
@@ -51,5 +52,54 @@ describe('ObjectHubTab — 对象清单渲染不因字段形状崩溃', () => {
       />,
     );
     expect(screen.getByText(/1 条 Link 目标不在本模型/)).toBeTruthy();
+  });
+});
+
+describe('ObjectHubTab — 页面内编辑对象（2026-10-27 开放，不再仅 AS-BOT）', () => {
+  const doc = {
+    kind: 'source',
+    objects: [{
+      key: 'case', display_name: '案例', description: '旧描述', aliases: ['病例'],
+      primary_table: 'pc_case',
+      properties: [{ column: 'pc_case.id', name: '主键ID' }],
+      links: [{ type: 'belongs_to', target: 'region' }],
+    }],
+  };
+  const hub = doc.objects as any[];
+
+  it('未传 canEdit/onSave 时不渲染编辑入口（只读展示场景不变）', () => {
+    render(<ObjectHubTab modelId={1} objects={hub} />);
+    expect(screen.queryByRole('button', { name: '编辑对象' })).toBeNull();
+  });
+
+  it('canEdit 时渲染编辑入口，保存后只改标量字段、不整份覆盖属性/关系', async () => {
+    const onSave = vi.fn();
+    render(
+      <ObjectHubTab modelId={1} objects={hub} canEdit
+        jsonContent={JSON.stringify(doc, null, 2)} onSave={onSave} />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: '编辑对象' }));
+    // 表单回填当前对象值
+    const nameInput = screen.getByDisplayValue('案例');
+    await userEvent.clear(nameInput);
+    await userEvent.type(nameInput, '案例档案');
+    await userEvent.click(screen.getByRole('button', { name: '保存为草案' }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = JSON.parse(onSave.mock.calls[0][0]);
+    const obj = saved.objects.find((o: any) => o.key === 'case');
+    expect(obj.display_name).toBe('案例档案');
+    // 关键护栏：properties/links 必须原样保留（不整份覆盖）
+    expect(obj.properties).toEqual([{ column: 'pc_case.id', name: '主键ID' }]);
+    expect(obj.links).toEqual([{ type: 'belongs_to', target: 'region' }]);
+    expect(obj.primary_table).toBe('pc_case');
+    expect(obj.aliases).toEqual(['病例']);
+  });
+
+  it('无 ontology:save 权限（canEdit=false）时即使传了 onSave 也不给编辑入口', () => {
+    render(
+      <ObjectHubTab modelId={1} objects={hub} canEdit={false}
+        jsonContent={JSON.stringify(doc)} onSave={vi.fn()} />,
+    );
+    expect(screen.queryByRole('button', { name: '编辑对象' })).toBeNull();
   });
 });

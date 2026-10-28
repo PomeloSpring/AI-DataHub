@@ -20,7 +20,7 @@ MAX_ROWS = 200
 ANNOTATED_SITE = Annotated[
     Optional[str],
     "Target site by its business name or code (e.g. '中国' / 'cn'), as listed in the session "
-    "'站点范围' context. Resolved server-side to that site's datasource within your authorized "
+    "'数据源拓扑' context. Resolved server-side to that site's datasource within your authorized "
     "sources; preferred over 'datasource' for site-scoped questions. Omit to use the session site. "
     "Do NOT guess — if unsure which site, ask the user.",
 ]
@@ -329,7 +329,7 @@ TOOL_SPECS = [
         "description": (
             "Execute a read-only SQL query against a datasource with permission checks and audit logging. "
             "Only SELECT statements are allowed; the query is validated and auto-limited. "
-            "For site-scoped questions pass the site business name via 'site' (see the session '站点范围' context); "
+            "For site-scoped questions pass the site business name via 'site' (see the session '数据源拓扑' context); "
             "to target a specific source directly, pass its business name via 'datasource' (see list_datasources). "
             "Omit both to use the session-selected source. Do NOT pass a numeric id."
         ),

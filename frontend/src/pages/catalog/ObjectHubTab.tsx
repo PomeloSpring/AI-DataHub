@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Layers, Link2, AlertTriangle, Boxes } from 'lucide-react';
 import { normalizeDocObjects, type DocObjectIssue } from '@/lib/ontologyObjects';
+import { ObjectEditButton } from './ModelAssetTabs';
 
 export interface HubObject {
   key: string;
@@ -27,11 +28,17 @@ export interface HubObject {
   execution_binding?: { query_mode?: string; size_class?: string; physical_table?: string; bind_kind?: string; dataset_ref?: string };
 }
 
-export default function ObjectHubTab({ objects, issues = [] }: {
+export default function ObjectHubTab({ objects, issues = [], jsonContent, onSave, canEdit = false }: {
   modelId: number;
   objects: HubObject[];
   /** doc 里无法定位身份的元素（已由上层归一剔除），必须在页面上显式提示，不得静默当作“无对象” */
   issues?: DocObjectIssue[];
+  /** 编辑对象需的当前 canonical doc + 存草案回调（2026-10-27 开放页面内编辑）。
+   *  未传（如只读展示场景）则不渲染编辑入口。 */
+  jsonContent?: string;
+  onSave?: (next: string) => void;
+  /** 是否可编辑（上层按 editable + ontology:save 权限裁决） */
+  canEdit?: boolean;
 }) {
   const [selKey, setSelKey] = useState<string>('');
   // 上界保护：即便调用方未做归一，也不会因元素缺 key / 非数组而在渲染期崩溃
@@ -100,6 +107,11 @@ export default function ObjectHubTab({ objects, issues = [] }: {
               <h3 className="text-base font-semibold">{obj.display_name || obj.key}</h3>
               <span className="font-mono text-xs text-muted-foreground">adh:obj:{obj.key}</span>
               {(obj.aliases || []).map((a) => <Badge key={a} variant="secondary" className="text-[11px]">{a}</Badge>)}
+              {canEdit && onSave && jsonContent != null && (
+                <span className="ml-auto">
+                  <ObjectEditButton jsonContent={jsonContent} onSave={onSave} target={obj} />
+                </span>
+              )}
             </div>
             {obj.description && <p className="text-sm text-muted-foreground mt-1">{obj.description}</p>}
             {obj.route?.source_ontology && (

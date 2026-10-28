@@ -102,6 +102,69 @@ describe('导出按钮去静默', () => {
   });
 });
 
+describe('控件样式面板 — 生效值与来源', () => {
+  // 历史缺陷：面板只读本图 config.widgetStyle，显示的是写死的回退值（圆角 8/字号 14），
+  // 与画布上字模的真实生效值不一致；且本图覆盖优先于字模，用户选完字模看不出为何“没反应”。
+  const styleProps = (selectedChart: any, extra: Record<string, any> = {}) =>
+    ({ ...panelProps(selectedChart), tab: 'appearance', ...extra });
+
+  it('未覆盖时按字模基线显示生效值，并标明基线来源', () => {
+    render(<PropertyPanel {...styleProps(widget('widget_select', { paramKey: 'site' }),
+      { widgetStyleBase: { fontSize: 13, borderRadius: 8 }, widgetVisName: '下拉框·AS' })} />);
+    expect(screen.getByText(/基线来源：控件字模「下拉框·AS」/)).toBeTruthy();
+    expect(screen.getByText('13px')).toBeTruthy();          // 字号取字模的 13，不是面板写死的 14
+    expect(screen.getByText(/本图未覆盖任何项/)).toBeTruthy();
+  });
+
+  it('本图覆盖的键被显式列出，可逐项释放回跟随字模', () => {
+    const onWidgetConfigChange = vi.fn();
+    render(<PropertyPanel {...styleProps(widget('widget_select', { paramKey: 'site', widgetStyle: { fontSize: 20 } }),
+      { widgetStyleBase: { fontSize: 13 }, widgetVisName: '下拉框·AS', onWidgetConfigChange })} />);
+    expect(screen.getByText(/本图覆盖（优先于字模）/)).toBeTruthy();
+    expect(screen.getByText('20px')).toBeTruthy();
+    fireEvent.click(screen.getByTitle('点击让该项跟随字模'));
+    expect(onWidgetConfigChange).toHaveBeenCalledWith(21, 'widgetStyle', {});
+  });
+
+  it('无字模时按主题包基线说明，并保留一键清除本图覆盖', () => {
+    const onWidgetConfigChange = vi.fn();
+    render(<PropertyPanel {...styleProps(widget('widget_text', { paramKey: 'kw', widgetStyle: { padding: 12 } }),
+      { widgetStyleBase: { fontSize: 13 }, onWidgetConfigChange })} />);
+    expect(screen.getByText(/基线来源：主题包控件基线/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '清除本图覆盖（全部跟随字模）' }));
+    expect(onWidgetConfigChange).toHaveBeenCalledWith(21, 'widgetStyle', {});
+  });
+});
+
+describe('控件样式旋钮被真实消费（挂了字模要看得见）', () => {
+  const styleOf = (el: HTMLElement) => el.getAttribute('style') || '';
+  it('描边/圆角/字号落在控件内联样式上', () => {
+    const view = render(widgetChart('widget_text', { paramKey: 'kw', showLabel: false,
+      widgetStyle: { backgroundColor: '#ffffff', borderColor: '#E9ECF8', borderRadius: 8, fontSize: 13 } }));
+    const style = styleOf(view.getByRole('textbox'));
+    expect(style).toContain('border-radius: 8px');
+    expect(style).toContain('font-size: 13px');
+    expect(style).toContain('border: 1px solid rgb(233, 236, 248)');   // #E9ECF8
+    expect(style).toContain('background: rgb(255, 255, 255)');
+  });
+  it('「控件高」不再只给多选框用：无标签控件按高度居中，不拉满卡片', () => {
+    const view = render(widgetChart('widget_select', { paramKey: 'site', showLabel: false, widgetStyle: { height: 32 } }));
+    const style = styleOf(view.getByRole('combobox'));
+    expect(style).toContain('height: 32px');
+    expect(style).toContain('margin: auto 0');
+  });
+  it('有标签时高度落在内层输入上', () => {
+    const view = render(widgetChart('widget_text', { paramKey: 'kw', label: '关键词', widgetStyle: { height: 28 } }));
+    expect(styleOf(view.getByRole('textbox'))).toContain('height: 28px');
+  });
+  it('搜索按钮吃主色与控件高', () => {
+    const view = render(widgetChart('widget_search', { label: '查询', widgetStyle: { backgroundColor: '#0037CB', height: 32 } }));
+    const style = styleOf(view.getByRole('button'));
+    expect(style).toContain('height: 32px');
+    expect(style).toContain('background: rgb(0, 55, 203)');            // 主色 #0037CB
+  });
+});
+
 describe('图表卡与控件卡禁止跨类改型', () => {
   it('把图表改成 widget_ 类型被拒并提示，类型不变', () => {
     const state = restore();

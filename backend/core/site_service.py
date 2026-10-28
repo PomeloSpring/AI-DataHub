@@ -25,7 +25,7 @@ from backend.common.db.metadata_db import get_metadata_conn
 
 logger = logging.getLogger(__name__)
 
-# 聚合态站点：不对应单一数据源（全球 = 逐站各查一次后汇总）
+# 聚合态站点：不对应单一数据源（全球 = 逐站各查一次后分站呈现；合计只能走 authority 取数路径）
 AGGREGATE_SITE = "global"
 
 
@@ -428,8 +428,9 @@ def resolve_site_to_source(site_ref: Any, allowed_ids: Iterable[int],
     if int(site.get("is_aggregate") or 0):
         raise SiteError(
             f"「{site['display_name']}」是聚合态站点，不对应单一数据源："
-            f"请对每个具体站点各调一次查询（site=中国/国际/…）后汇总，"
-            f"合计需标注「各站合计≠去重全球数」。")
+            f"请对每个具体站点各调一次查询（site=中国/国际/…）后**分站呈现**，"
+            f"不得把各站数字相加当作全局值；只有该对象声明了权威全局取数路径时，"
+            f"才按那条路径（intent 加 carrier=…）一次查完。")
     candidates = datasources_of_site(code, ids)
     if not candidates:
         available = "、".join(s["display_name"] for s in authorized_sites_from_ids(ids))

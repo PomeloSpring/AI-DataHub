@@ -1,7 +1,9 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
+import { useClientPagination } from '@/hooks/useClientPagination';
 import { VIS_CATEGORIES, type VisComponent } from '@/api/visLibrary';
-import Preview, { ShapePreview } from '@/components/VisComponentPreview';
+import Preview, { ShapePreview, typeLabelsOf } from '@/components/VisComponentPreview';
 import { CHART_TYPES, CHART_TYPE_CATEGORIES } from '@/components/DashboardChart';
 import { sanitizePack } from '@/lib/dashboardDesign';
 import { Button } from '@/components/ui/button';
@@ -16,20 +18,26 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { toast } from '@/lib/toast';
-import { Plus, Edit, Trash2, RefreshCw, Lock, LayoutTemplate, Palette, Image, Gauge, Grid3x3, Frame, BarChart3, Layers, FileText, Map } from 'lucide-react';
+import { Plus, Edit, Trash2, RefreshCw, Lock, LayoutTemplate, Palette, Image, Gauge, Grid3x3, Frame, BarChart3, Layers, FileText, Map, Search, TextCursorInput, type LucideIcon } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import client from '@/api/client';
 import { useAuthStore } from '@/stores/authStore';
 
-const ICONS = { theme_pack: Layers, chart_style: BarChart3, screen_background: Image, kpi_card: Gauge,
+const ICONS: Record<string, LucideIcon> = { theme_pack: Layers, chart_style: BarChart3, widget_style: TextCursorInput, screen_background: Image, kpi_card: Gauge,
   layout_template: Grid3x3, decoration_frame: Frame, color_theme: Palette, report_template: FileText, map_tile: Map };
 const CATEGORIES = VIS_CATEGORIES.map(c => ({ ...c, icon: ICONS[c.id] }));
+// 分类切换条选项（含「全部」，无图标）
+const CATEGORY_TABS: Array<{ id: string; label: string; icon?: LucideIcon }> = [{ id: 'all', label: '全部' }, ...CATEGORIES];
+// 适用类型显示业务名：typeLabelsOf 与预览组件同源（ui-resource-display.md）
+// 预览框统一几何：每张卡片的预览区等高，长短不一就是列表页“乱”的直接原因
+const PREVIEW_SLOT = 'flex h-24 shrink-0 items-center justify-center overflow-hidden border-b bg-muted/20 p-2';
 
 export default function VisLibrary() {
   const isAdmin = useAuthStore(s => s.user?.role) === 'admin';
   const { items, loading, error, refresh: load } = useVisLibrary(true);
   const [catFilter, setCatFilter] = useState<string>('theme_pack');
+  const [search, setSearch] = useState('');
   const [viewPack, setViewPack] = useState<VisComponent | null>(null);
   const [previewTile, setPreviewTile] = useState<VisComponent | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -44,7 +52,7 @@ export default function VisLibrary() {
   // form
   const [name, setName] = useState('');
   const [category, setCategory] = useState('chart_style');
-  const [chartType, setChartType] = useState('');
+  const [chartTypes, setChartTypes] = useState<string[]>([]);
   const [styleConfig, setStyleConfig] = useState('{}');
   const [reportContent, setReportContent] = useState('');
   const [reportFormat, setReportFormat] = useState<'markdown' | 'html'>('markdown');
@@ -56,14 +64,15 @@ export default function VisLibrary() {
   const [asBuiltin, setAsBuiltin] = useState(false);
 
   const openCreate = () => {
-    setEdit(null); setName(''); setCategory('chart_style'); setChartType('');
+    setEdit(null); setName(''); setCategory('chart_style'); setChartTypes([]);
     setStyleConfig(JSON.stringify({ config: { colorScheme: ['#22d3ee', '#3b82f6'] } }, null, 2));
     setReportContent(''); setReportFormat('markdown');
     setMapTileUrl(''); setMapTileProvider(''); setMapTileApiKey(''); setMapTileDefault(false);
     setDescription(''); setAsBuiltin(false); setFormOpen(true);
   };
   const openEdit = (c: VisComponent) => {
-    setEdit(c); setName(c.name); setCategory(c.category); setChartType(c.chart_type || '');
+    setEdit(c); setName(c.name); setCategory(c.category);
+    setChartTypes((c.chart_type || '').split(',').map(s => s.trim()).filter(Boolean));
     setStyleConfig(JSON.stringify(c.style_config || {}, null, 2));
     setReportContent((c.style_config as any)?.content || '');
     setReportFormat((c.style_config as any)?.format || 'markdown');
@@ -88,7 +97,7 @@ export default function VisLibrary() {
     setSaving(true);
     try {
       const payload = {
-        name, category, chart_type: chartType || null, style_config: sc,
+        name, category, chart_type: chartTypes.join(',') || null, style_config: sc,
         description, is_builtin: asBuiltin && isAdmin,
       };
       if (edit) await client.put(`/vis-library/components/${edit.id}`, payload);
@@ -134,63 +143,102 @@ export default function VisLibrary() {
     return () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
   }, [previewTile]);
 
-  const shown = catFilter === 'all' ? items : items.filter(i => i.category === catFilter);
+  const shown = useMemo(() => {
+    const byCat = catFilter === 'all' ? items : items.filter(i => i.category === catFilter);
+    const q = search.trim().toLowerCase();
+    return q ? byCat.filter(i => `${i.name} ${i.code} ${i.description || ''}`.toLowerCase().includes(q)) : byCat;
+  }, [items, catFilter, search]);
+  // 字模清单客户端分页（全站统一默认每页 20 条，候选 20/50/100）
+  const paged = useClientPagination(shown, DEFAULT_PAGE_SIZE);
   const canEdit = (c: VisComponent) => isAdmin || !c.is_builtin;
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold flex items-center gap-2"><LayoutTemplate className="h-5 w-5" /> UI 字模库</h1>
-          <p className="text-sm text-muted-foreground mt-1">大屏可复用的"活字":主题包 / 图表样式 / 背景 / KPI 卡 / 布局 / 装饰 / 配色 / SQL 模板。系统内置仅管理员可改,自定义可回存沉淀。</p>
+    <div className="mx-auto max-w-[1800px] space-y-5 p-5 md:p-8">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div className="min-w-0">
+          <div className="mb-2 text-xs tracking-[0.2em] text-muted-foreground">DATAFOUNDRY / VISUAL LIBRARY</div>
+          <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+            <LayoutTemplate className="h-6 w-6 text-primary" />UI 字模库
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">大屏可复用的“活字”：主题包 / 图表样式 / 控件样式 / 背景 / KPI 卡 / 布局 / 装饰 / 配色 / 地图瓦片。系统内置仅管理员可改，自定义可回存沉淀。</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={load}><RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />刷新</Button>
-          <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1" />新建字模</Button>
+          <Button variant="outline" onClick={load}><RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />刷新</Button>
+          <Button onClick={openCreate}><Plus className="h-4 w-4 mr-2" />新建字模</Button>
         </div>
+      </header>
+
+      {/* 分类切换 = 分段控件（与看板切换条同口径）；搜索与计数同一排，不再靠一排 outline 按钮堆 */}
+      <div className="flex flex-wrap items-center gap-3 border-y py-3">
+        <nav aria-label="字模分类" className="flex max-w-full items-center gap-1.5 overflow-x-auto rounded-full bg-muted/60 p-1.5 ring-1 ring-border/60 [scrollbar-width:none]">
+          {CATEGORY_TABS.map(tab => {
+            const on = catFilter === tab.id;
+            const Icon = tab.icon;
+            return <button key={tab.id} type="button" aria-pressed={on} onClick={() => setCatFilter(tab.id)}
+              className={`shrink-0 whitespace-nowrap rounded-full px-4 py-1.5 text-[13px] transition-colors ${on ? 'bg-background font-medium text-primary shadow-sm ring-1 ring-primary/25' : 'text-muted-foreground hover:bg-background/70 hover:text-foreground'}`}>
+              {!!Icon && <Icon className="mr-1.5 inline h-3.5 w-3.5 align-[-2px]" />}{tab.label}
+            </button>;
+          })}
+        </nav>
+        <div className="relative min-w-[200px] max-w-xs flex-1">
+          <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+          <Input aria-label="搜索字模" placeholder="搜索名称或说明…" className="h-9 pl-9 text-sm" value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+        <span className="ml-auto text-xs text-muted-foreground">{shown.length} 个字模</span>
       </div>
 
-      <div className="flex flex-wrap gap-1">
-        <Button variant={catFilter === 'all' ? 'default' : 'outline'} size="sm" onClick={() => setCatFilter('all')}>全部</Button>
-        {CATEGORIES.map(cat => (
-          <Button key={cat.id} variant={catFilter === cat.id ? 'default' : 'outline'} size="sm" onClick={() => setCatFilter(cat.id)}>
-            <cat.icon className="h-3.5 w-3.5 mr-1" />{cat.label}
-          </Button>
-        ))}
-      </div>
-
-      {error && <div role="alert" className="rounded-md border border-destructive p-3 text-sm">{error}<Button variant="link" onClick={load}>重试</Button></div>}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-        {shown.map(c => (
-          <div key={c.id} className={`rounded-lg border p-3 space-y-2 ${c.is_active ? '' : 'opacity-50'}`}>
-            <Preview c={c} />
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <div className="font-medium truncate flex items-center gap-1.5">
-                  {c.name}
-                  {!!c.is_builtin && <Lock className="h-3 w-3 text-muted-foreground" />}
+      {error && <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm">{error}<Button size="sm" variant="outline" onClick={load}>重试</Button></div>}
+      {loading && !items.length && <p role="status" className="text-sm text-muted-foreground">正在加载字模…</p>}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {paged.slice.map(c => (
+          <article key={c.id} className={`flex h-full flex-col overflow-hidden rounded-xl border bg-card transition-shadow hover:shadow-md ${c.is_active ? '' : 'opacity-60'}`}>
+            <div className={PREVIEW_SLOT}><Preview c={c} /></div>
+            <div className="flex-1 space-y-2 p-3">
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <h2 className="flex items-center gap-1.5 truncate font-semibold" title={c.name}>
+                    {c.name}{!!c.is_builtin && <Lock className="h-3 w-3 shrink-0 text-muted-foreground" />}
+                  </h2>
+                  <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{c.description || '暂无说明'}</p>
                 </div>
-                <div className="text-xs text-muted-foreground truncate">{c.code}{c.chart_type ? ` · ${c.chart_type}` : ''}</div>
+                <Badge variant={c.source === 'system' ? 'default' : 'secondary'} className="shrink-0">{c.source === 'system' ? '内置' : '自定义'}</Badge>
               </div>
-              <Badge variant={c.source === 'system' ? 'default' : 'secondary'}>{c.source === 'system' ? '内置' : '自定义'}</Badge>
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                {/* 适用类型显示业务名；code 是内部标识，只作次要信息供排查 */}
+                <span className="rounded-md bg-muted/60 px-1.5 py-0.5">{typeLabelsOf(c.chart_type)}</span>
+                {!c.is_active && <span className="rounded-md bg-destructive/10 px-1.5 py-0.5 text-destructive">已下架</span>}
+                <span className="ml-auto font-mono text-[10px]" title="字模代码（内部标识）">{c.code}</span>
+              </div>
             </div>
-            {c.description && <p className="text-xs text-muted-foreground line-clamp-2">{c.description}</p>}
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              {c.category === 'theme_pack' && <Button variant="outline" size="sm" onClick={() => setViewPack(c)}>浏览整套组件</Button>}
+            <div className="flex items-center gap-2 border-t p-3">
+              {c.category === 'theme_pack' && <Button variant="outline" size="sm" onClick={() => setViewPack(c)}>浏览整套</Button>}
               {c.category === 'map_tile' && <Button variant="outline" size="sm" onClick={() => setPreviewTile(c)}>预览瓦片</Button>}
               <Button variant="outline" size="sm" disabled={!canEdit(c)} onClick={() => openEdit(c)}>
                 <Edit className="h-3.5 w-3.5 mr-1" />{canEdit(c) ? '编辑' : '只读'}
               </Button>
-              <Button variant="ghost" size="sm" disabled={!canEdit(c)} onClick={() => setDeleteTarget(c)} className="text-destructive">
+              <Button variant="ghost" size="sm" disabled={!canEdit(c)} aria-label={`下架字模 ${c.name}`} onClick={() => setDeleteTarget(c)} className="ml-auto text-destructive">
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
             </div>
-          </div>
+          </article>
         ))}
         {shown.length === 0 && !loading && !error && (
-          <div className="col-span-full text-center text-muted-foreground py-12">该分类暂无字模</div>
+          <div className="col-span-full rounded-xl border border-dashed py-16 text-center text-sm text-muted-foreground">
+            {search ? `没有匹配「${search}」的字模` : '该分类暂无字模，可点右上「新建字模」沉淀一套'}
+          </div>
         )}
       </div>
+
+      <PaginationBar
+        page={paged.page}
+        pageSize={paged.pageSize}
+        total={paged.total}
+        busy={loading}
+        onChange={(p: number) => paged.setPage(p)}
+        onPageSizeChange={paged.setPageSize}
+        hideWhenSingle
+        className="-mx-5 -mb-5 px-5 md:-mx-8 md:-mb-8 md:px-8"
+      />
 
       <Dialog open={!!viewPack} onOpenChange={() => setViewPack(null)}>
         <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
@@ -215,7 +263,7 @@ export default function VisLibrary() {
         <DialogContent className="max-w-[560px] max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{edit ? '编辑字模' : '新建字模'}</DialogTitle>
-            <DialogDescription>样式配置以 JSON 描述,前端按类别解释(背景/卡片/图表样式/配色/布局/装饰)。</DialogDescription>
+            <DialogDescription>样式配置以 JSON 描述,前端按类别解释(背景/卡片/图表样式/控件样式/配色/布局/装饰)。</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
@@ -233,18 +281,34 @@ export default function VisLibrary() {
                 </Select>
               </div>
             </div>
-            {category === 'chart_style' && (
-              <div className="space-y-1.5">
-                <Label>适用图表类型</Label>
-                <Select value={chartType || '_none'} onValueChange={v => setChartType(v === '_none' ? '' : v)}>
-                  <SelectTrigger><SelectValue placeholder="不限" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="_none">不限</SelectItem>
-                    {CHART_TYPES.filter(t => t.category !== 'widget').map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
+            {(category === 'chart_style' || category === 'widget_style') && (() => {
+              // 两个分类共用 chart_type 字段但取值域不相交：图表样式只列非控件，控件样式只列控件
+              const options = CHART_TYPES.filter(t => category === 'widget_style' ? t.category === 'widget' : t.category !== 'widget');
+              const unknown = chartTypes.filter(v => !options.some(t => t.value === v));
+              return (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label>{category === 'widget_style' ? '适用控件类型（可多选）' : '适用图表类型（可多选）'}</Label>
+                    {!!chartTypes.length && <Button variant="link" size="sm" className="h-auto p-0 text-[11px]" onClick={() => setChartTypes([])}>设为不限</Button>}
+                  </div>
+                  <div className="flex max-h-32 flex-wrap gap-1 overflow-y-auto rounded-md border bg-muted/10 p-2">
+                    {options.map(t => {
+                      const on = chartTypes.includes(t.value);
+                      return <button key={t.value} type="button" aria-pressed={on} title={t.value}
+                        onClick={() => setChartTypes(v => on ? v.filter(x => x !== t.value) : [...v, t.value])}
+                        className={`rounded-full px-2.5 py-1 text-[11px] ring-1 transition-colors ${on ? 'bg-primary text-primary-foreground ring-primary' : 'bg-background text-muted-foreground ring-border hover:text-foreground'}`}>
+                        {t.label}
+                      </button>;
+                    })}
+                  </div>
+                  {/* 悬空类型必须显式暴露：以前 seed 写了不存在的 widget_input，字模永远挂不上也没人知道 */}
+                  {!!unknown.length && <p className="text-[11px] text-destructive">已存类型「{unknown.join(' / ')}」不是系统里的图表/控件类型，挂着也不会被任何组件命中，请改选或清空。</p>}
+                  <p className="text-[11px] text-muted-foreground">{category === 'widget_style'
+                    ? '控件样式写 style_config.widgetStyle 段（backgroundColor / textColor / borderColor / borderRadius / padding / fontSize / height / gap / labelWidth）。'
+                    : '不选任何类型 = 通用字模（适用该类全部组件）。'}</p>
+                </div>
+              );
+            })()}
             <div className="space-y-1.5">
               <Label>样式配置 (JSON)</Label>
               <Textarea value={styleConfig} onChange={e => setStyleConfig(e.target.value)} rows={8} className="font-mono text-xs" />

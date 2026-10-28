@@ -18,10 +18,10 @@ export function useDashboardNavigation(dashboards: DashboardNavItem[], currentId
   // 同组看板切换：整条做成**分段控件**（凹槽容器 + 选中项浮起），不再让几颗 pill 漂在空白带上。
   // 选中态仍走软高亮（容器底 + 主色字 + 细描边），不用 aria-current="page"：
   // 后者会被主题全局 button[aria-current="page"] 规则(tech/glass/ainative…)涂成厚重色块/发光。
-  const tabs = visible.length > 1 ? <nav aria-label="同组看板" className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto rounded-full bg-muted/60 p-1 ring-1 ring-border/60 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+  const tabs = visible.length > 1 ? <nav aria-label="同组看板" className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto rounded-full bg-muted/60 p-1.5 ring-1 ring-border/60 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
     {visible.map(d => <button key={d.id} type="button" title={d.name} aria-current={d.id === currentId ? 'true' : undefined}
       onClick={() => onSelect?.(d.id)}
-      className={`shrink-0 whitespace-nowrap rounded-full px-3.5 py-1 text-xs transition-colors sm:text-[13px] ${
+      className={`shrink-0 whitespace-nowrap rounded-full px-4 py-1.5 text-[13px] transition-colors sm:text-sm ${
         d.id === currentId
           ? 'bg-background font-medium text-primary shadow-sm ring-1 ring-primary/25'
           : 'text-muted-foreground hover:bg-background/70 hover:text-foreground'}`}>{d.name}</button>)}

@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { toast } from '@/lib/toast';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { ArrowLeft, RefreshCw, Trash2, XCircle, Clock } from 'lucide-react';
 import {
   listScheduledLogs,
@@ -50,6 +51,7 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
   const [logs, setLogs] = useState<ScheduledLog[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [stats, setStats] = useState<any>(null);
@@ -60,7 +62,7 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
     try {
       const res = await listScheduledLogs(taskId, {
         page,
-        size: 20,
+        size: pageSize,
         status: statusFilter || undefined,
       });
       setLogs(res.items);
@@ -70,7 +72,7 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [taskId, page, statusFilter]);
+  }, [taskId, page, pageSize, statusFilter]);
 
   const loadStats = useCallback(async () => {
     try {
@@ -92,8 +94,8 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
   };
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="flex flex-col h-full gap-4 p-6">
+      <div className="flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="sm" onClick={onBack}>
             <ArrowLeft className="w-4 h-4 mr-1" />
@@ -172,8 +174,8 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
         </Select>
       </div>
 
-      {/* Logs Table */}
-      <div className="border rounded-lg overflow-hidden">
+      {/* Logs Table：仅此区滚动（页头/分页固定，参考表&字段） */}
+      <div className="flex-1 min-h-0 overflow-auto border rounded-lg">
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
@@ -229,16 +231,16 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
         </table>
       </div>
 
-      {/* Pagination */}
-      {total > 20 && (
-        <div className="flex justify-center gap-2">
-          <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>上一页</Button>
-          <span className="text-sm text-muted-foreground leading-9">
-            第 {page} 页 / 共 {Math.ceil(total / 20)} 页
-          </span>
-          <Button variant="outline" size="sm" disabled={page * 20 >= total} onClick={() => setPage(p => p + 1)}>下一页</Button>
-        </div>
-      )}
+      {/* Pagination —— 统一分页条：固定底栏 */}
+      <PaginationBar
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        onChange={(p: number) => setPage(p)}
+        onPageSizeChange={(n: number) => { setPageSize(n); setPage(1); }}
+        hideWhenSingle
+        className="shrink-0 mt-2"
+      />
 
       {/* Detail Dialog */}
       <Dialog open={!!detailLog} onOpenChange={() => setDetailLog(null)}>

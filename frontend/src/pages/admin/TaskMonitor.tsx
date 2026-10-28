@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from '@/lib/toast';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import {
   Activity, RefreshCw, Play, Square, Trash2, Pause, ListChecks, Timer,
   AlertTriangle, XCircle, Clock, Database, Search,
@@ -164,7 +165,7 @@ export default function TaskMonitor() {
   const [taskRunsLoading, setTaskRunsLoading] = useState(false);
   const [dagRuns, setDagRuns] = useState<DagRun[]>([]);
   const navigate = useNavigate();
-  const PAGE_SIZE = 20;
+  const [PAGE_SIZE, setPageSize] = useState(DEFAULT_PAGE_SIZE);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -194,7 +195,7 @@ export default function TaskMonitor() {
     } finally {
       setLoading(false);
     }
-  }, [taskSource, runKind, runStatus, runPage]);
+  }, [taskSource, runKind, runStatus, runPage, PAGE_SIZE]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -538,13 +539,14 @@ export default function TaskMonitor() {
             </table>
           </div>
 
-          <div className="flex items-center justify-between">
-            <Button variant="outline" size="sm" disabled={runPage <= 1}
-                    onClick={() => setRunPage(p => Math.max(1, p - 1))}>上一页</Button>
-            <span className="text-sm text-muted-foreground">第 {runPage} 页</span>
-            <Button variant="outline" size="sm" disabled={runPage * PAGE_SIZE >= runsTotal}
-                    onClick={() => setRunPage(p => p + 1)}>下一页</Button>
-          </div>
+          <PaginationBar
+            page={runPage}
+            pageSize={PAGE_SIZE}
+            total={runsTotal}
+            onChange={(p: number) => setRunPage(p)}
+            onPageSizeChange={(n: number) => { setPageSize(n); setRunPage(1); }}
+            hideWhenSingle
+          />
         </TabsContent>
 
         {/* ── Tab 3: 同步任务 ─────────────────────────────────── */}

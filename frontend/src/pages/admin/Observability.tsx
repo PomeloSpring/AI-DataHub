@@ -11,6 +11,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Input } from '@/components/ui/input';
 import { toast } from '@/lib/toast';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import {
   Activity, MessagesSquare, GitBranch, Users as UsersIcon, RefreshCw,
   ThumbsUp, ThumbsDown, AlertCircle, Sparkles, ChevronDown, ChevronRight, Calendar,
@@ -157,6 +158,8 @@ export default function Observability() {
   const [sessPage, setSessPage] = useState(1);
   const [traces, setTraces] = useState<{ items: TraceRow[]; total: number }>({ items: [], total: 0 });
   const [tracePage, setTracePage] = useState(1);
+  // sessions/traces 共用每页条数（分属不同页签）
+  const [obsPageSize, setObsPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [convFilter, setConvFilter] = useState(0);
   const [detail, setDetail] = useState<TraceDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -195,15 +198,15 @@ export default function Observability() {
       if (tab === 'overview') setSummary(await getUsageSummary(f));
       else if (tab === 'models') setModels(await getUsageByModel(f));
       else if (tab === 'users') setUsers(await getUsageByUser(f));
-      else if (tab === 'sessions') setSessions(await listSessions({ ...f, page: sessPage, size: 20 }));
-      else if (tab === 'traces') setTraces(await listTraces({ ...f, conversation_id: convFilter, page: tracePage, size: 20 }));
+      else if (tab === 'sessions') setSessions(await listSessions({ ...f, page: sessPage, size: obsPageSize }));
+      else if (tab === 'traces') setTraces(await listTraces({ ...f, conversation_id: convFilter, page: tracePage, size: obsPageSize }));
       // 'funnel' 页签自己拉数据（面板内 useEffect），不在这条主链重复请求
     } catch (e: any) {
       toast.error('加载失败：' + (e?.response?.data?.detail || e?.message || e));
     } finally {
       setLoading(false);
     }
-  }, [tab, filters, sessPage, tracePage, convFilter]);
+  }, [tab, filters, sessPage, tracePage, obsPageSize, convFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -385,7 +388,8 @@ export default function Observability() {
               fmt(r.turns), fmt(r.total_tokens), fmt(r.credits, 2), fmt(r.errors), fmtTime(r.last_active),
               <Button size="sm" variant="ghost" onClick={() => { setConvFilter(r.conversation_id); setTab('traces'); }}>查看 Trace</Button>,
             ])}
-            total={sessions.total} page={sessPage} pageSize={20} onPage={setSessPage}
+            total={sessions.total} page={sessPage} pageSize={obsPageSize} onPage={setSessPage}
+            onPageSizeChange={(n) => { setObsPageSize(n); setSessPage(1); }}
           />
         </TabsContent>
 
@@ -410,7 +414,8 @@ export default function Observability() {
               r.feedback_satisfied === 1 ? <ThumbsUp className="h-4 w-4 text-green-600" /> : r.feedback_satisfied === 0 ? <ThumbsDown className="h-4 w-4 text-red-500" /> : '—',
               <Button size="sm" variant="ghost" onClick={() => openTrace(r.trace_id)}>详情</Button>,
             ])}
-            total={traces.total} page={tracePage} pageSize={20} onPage={setTracePage}
+            total={traces.total} page={tracePage} pageSize={obsPageSize} onPage={setTracePage}
+            onPageSizeChange={(n) => { setObsPageSize(n); setTracePage(1); }}
           />
         </TabsContent>
 
@@ -584,11 +589,10 @@ function KV({ k, v }: { k: string; v: string }) {
   return <div className="rounded bg-muted px-2 py-1"><div className="text-muted-foreground">{k}</div><div className="font-medium truncate">{v}</div></div>;
 }
 
-function DataTable({ head, rows, total, page, pageSize, onPage }: {
+function DataTable({ head, rows, total, page, pageSize, onPage, onPageSizeChange }: {
   head: React.ReactNode[]; rows: React.ReactNode[][];
-  total?: number; page?: number; pageSize?: number; onPage?: (p: number) => void;
+  total?: number; page?: number; pageSize?: number; onPage?: (p: number) => void; onPageSizeChange?: (n: number) => void;
 }) {
-  const pages = total && pageSize ? Math.max(1, Math.ceil(total / pageSize)) : 1;
   return (
     <div className="rounded-lg border bg-card">
       <table className="w-full text-sm">
@@ -604,14 +608,15 @@ function DataTable({ head, rows, total, page, pageSize, onPage }: {
         </tbody>
       </table>
       {onPage && total !== undefined && (
-        <div className="flex items-center justify-between px-3 py-2 text-xs text-muted-foreground border-t">
-          <span>共 {total} 条</span>
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" disabled={(page || 1) <= 1} onClick={() => onPage((page || 1) - 1)}>上一页</Button>
-            <span>{page} / {pages}</span>
-            <Button size="sm" variant="outline" disabled={(page || 1) >= pages} onClick={() => onPage((page || 1) + 1)}>下一页</Button>
-          </div>
-        </div>
+        <PaginationBar
+          page={page || 1}
+          pageSize={pageSize || 20}
+          total={total}
+          onChange={onPage}
+          onPageSizeChange={onPageSizeChange}
+          hideWhenSingle
+          className="rounded-b-lg"
+        />
       )}
     </div>
   );
@@ -631,6 +636,7 @@ function FunnelPanel({ filters }: { filters: CommonFilters }) {
   const [decision, setDecision] = useState('all');
   const [label, setLabel] = useState('all');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
@@ -644,7 +650,7 @@ function FunnelPanel({ filters }: { filters: CommonFilters }) {
       };
       const [st, list] = await Promise.all([
         getFunnelStats(f),
-        listFunnelIntercepts({ ...f, page, size: 20 }),
+        listFunnelIntercepts({ ...f, page, size: pageSize }),
       ]);
       setStats(st);
       setRows({ items: list.items, total: list.total });
@@ -654,7 +660,7 @@ function FunnelPanel({ filters }: { filters: CommonFilters }) {
     } finally {
       setLoading(false);
     }
-  }, [filters, decision, label, page]);
+  }, [filters, decision, label, page, pageSize]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -778,7 +784,8 @@ function FunnelPanel({ filters }: { filters: CommonFilters }) {
             </Button>
           </div>,
         ])}
-        total={rows.total} page={page} pageSize={20} onPage={setPage}
+        total={rows.total} page={page} pageSize={pageSize} onPage={setPage}
+        onPageSizeChange={(n) => { setPageSize(n); setPage(1); }}
       />
     </div>
   );

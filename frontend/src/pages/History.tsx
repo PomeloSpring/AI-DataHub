@@ -6,6 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import client from '../api/client';
 
 function TableSkeleton({ rows = 8 }: { rows?: number }) {
@@ -34,11 +35,11 @@ export default function History({ compact = false }: { compact?: boolean }) {
   const [status, setStatus] = useState<string>('all');
   const [pagination, setPagination] = useState({
     current: 1,
-    pageSize: 50,
+    pageSize: DEFAULT_PAGE_SIZE,
     total: 0,
   });
 
-  const load = useCallback(async (page = 1, pageSize = 50) => {
+  const load = useCallback(async (page = 1, pageSize = DEFAULT_PAGE_SIZE) => {
     setLoading(true);
     try {
       const { data: res } = await client.get('/history/', {
@@ -71,10 +72,8 @@ export default function History({ compact = false }: { compact?: boolean }) {
     load(newPage, pagination.pageSize);
   };
 
-  const totalPages = Math.ceil(pagination.total / pagination.pageSize);
-
   return (
-    <div className={compact ? '' : 'flex flex-col p-6'}>
+    <div className={compact ? '' : 'flex flex-col p-6 h-full'}>
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-3">
         <h1 className="text-lg font-semibold text-foreground">查询历史</h1>
         <div className="flex items-center gap-3 flex-wrap">
@@ -172,49 +171,19 @@ export default function History({ compact = false }: { compact?: boolean }) {
           </ScrollArea>
         )}
 
-        <div className="flex flex-col sm:flex-row items-center justify-between px-4 py-3 border-t gap-3">
-          <span className="text-sm text-muted-foreground">
-            共 {pagination.total} 条记录
-          </span>
-          <div className="flex items-center gap-2">
-            <Select
-              value={String(pagination.pageSize)}
-              onValueChange={(v) => {
-                const newSize = Number(v);
-                setPagination(p => ({ ...p, pageSize: newSize, current: 1 }));
-                load(1, newSize);
-              }}
-            >
-              <SelectTrigger className="w-[100px] h-8">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {[20, 50, 100, 200].map((n) => (
-                  <SelectItem key={n} value={String(n)}>{n} 条/页</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={pagination.current <= 1}
-              onClick={() => handlePageChange(pagination.current - 1)}
-            >
-              上一页
-            </Button>
-            <span className="text-sm min-w-[60px] text-center tabular-nums">
-              {pagination.current} / {totalPages || 1}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={pagination.current >= totalPages}
-              onClick={() => handlePageChange(pagination.current + 1)}
-            >
-              下一页
-            </Button>
-          </div>
-        </div>
+        {/* 分页栏：固定在卡片底部（卡片 flex-col + ScrollArea flex-1 已保证不随内容滚动） */}
+        <PaginationBar
+          page={pagination.current}
+          pageSize={pagination.pageSize}
+          total={pagination.total}
+          busy={loading}
+          onChange={handlePageChange}
+          onPageSizeChange={(n) => {
+            setPagination(p => ({ ...p, pageSize: n, current: 1 }));
+            load(1, n);
+          }}
+          className="flex-shrink-0"
+        />
       </div>
     </div>
   );

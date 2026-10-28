@@ -13,6 +13,21 @@ const policy = (over: Record<string, any> = {}) => ({
   created_at: '', updated_at: '', ...over,
 });
 
+/**
+ * 按 policy_types 查询参数过滤返回（行/列/表页签服务端分页下推的真实契约）。
+ * 让 mock 尊重类型筛选，才能验证「每个页签只看到自己那一类」而非全量摊到三页签。
+ */
+function mockPolicyList(items: ReturnType<typeof policy>[]) {
+  return (url: string, opts?: any) => {
+    if (url === '/admin/rls-policies') {
+      const types: string[] | undefined = opts?.params?.policy_types?.split(',');
+      const filtered = types ? items.filter(p => types.includes(p.policy_type)) : items;
+      return { data: { total: filtered.length, items: filtered } };
+    }
+    return undefined;
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(client.get).mockImplementation(async (url: string) => {
@@ -26,18 +41,13 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('数据安全策略 — 资源显示用 name', () => {
   it('策略卡片显示数据源 name 而非裸 ID，悬空数据源标注已删除', async () => {
-    vi.mocked(client.get).mockImplementation(async (url: string) => {
+    const policies = [
+      policy(),
+      policy({ id: 2, name: '策略B', datasource_id: 325991609814964 }),
+    ];
+    vi.mocked(client.get).mockImplementation(async (url: string, opts?: any) => {
       if (url === '/datasources/') return { data: [{ id: 1, name: 'test-alb', db_type: 'mysql' }] };
-      if (url === '/admin/rls-policies') return {
-        data: {
-          total: 2,
-          items: [
-            policy(),
-            policy({ id: 2, name: '策略B', datasource_id: 325991609814964 }),
-          ],
-        },
-      };
-      return { data: [] };
+      return mockPolicyList(policies)(url, opts) ?? { data: [] };
     });
     render(<RLSManagement />);
     await screen.findByText('test-alb');
@@ -59,18 +69,12 @@ describe('数据安全策略 — 用户属性页签已退役', () => {
 
 describe('数据安全策略 — 行/列/表完全分开管理', () => {
   it('三个独立页面签; 列策略不再混入"行+列"混合入口, 新建表单无白名单模式选择器', async () => {
-    vi.mocked(client.get).mockImplementation(async (url: string) => {
-      if (url === '/admin/rls-policies') return {
-        data: {
-          total: 3,
-          items: [
-            policy({ id: 1, policy_type: 'row' }),
-            policy({ id: 2, name: '列黑名单', policy_type: 'column' }),
-            policy({ id: 3, name: '表白名单', policy_type: 'table' }),
-          ],
-        },
-      };
-      return { data: [] };
+    vi.mocked(client.get).mockImplementation(async (url: string, opts?: any) => {
+      return mockPolicyList([
+        policy({ id: 1, policy_type: 'row' }),
+        policy({ id: 2, name: '列黑名单', policy_type: 'column' }),
+        policy({ id: 3, name: '表白名单', policy_type: 'table' }),
+      ])(url, opts) ?? { data: [] };
     });
     render(<RLSManagement />);
     await screen.findByRole('tab', { name: /行策略/ });
@@ -78,10 +82,17 @@ describe('数据安全策略 — 行/列/表完全分开管理', () => {
     expect(screen.getByRole('tab', { name: /表策略/ })).toBeInTheDocument();
     // 遗留 both 类型只读标注, 不再提供新建入口
     expect(screen.queryByText('行+列')).not.toBeInTheDocument();
+    // 行策略页签：只看到 row 类，列/表类不得混入（分页类型下推的真实契约）
+    expect(screen.getByText('策略A')).toBeInTheDocument();
+    expect(screen.queryByText('列黑名单')).not.toBeInTheDocument();
+    expect(screen.queryByText('表白名单')).not.toBeInTheDocument();
     // 列策略页签: 说明是黑名单语义, 且旧白名单/黑名单模式切换器已退役
     const user = userEvent.setup();
     await user.click(screen.getByRole('tab', { name: /列策略/ }));
     expect(await screen.findByText('列黑名单')).toBeInTheDocument();
+    // 切到列页签后行/表类不残留
+    expect(screen.queryByText('策略A')).not.toBeInTheDocument();
+    expect(screen.queryByText('表白名单')).not.toBeInTheDocument();
     expect(screen.queryByText(/白名单（仅允许指定列）/)).not.toBeInTheDocument();
   });
 });

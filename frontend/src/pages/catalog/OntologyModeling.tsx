@@ -43,10 +43,10 @@ import {
   Upload, Undo2, BookMarked,
 } from 'lucide-react';
 import ObjectHubTab, { type HubObject } from './ObjectHubTab';
-import { normalizeDocObjects, showsM234, showsSiteScope, countM234Declarations, type NormalizeDocObjectsResult } from '@/lib/ontologyObjects';
+import { normalizeDocObjects, showsM234, showsSiteScope, showsCarriers, countM234Declarations, type NormalizeDocObjectsResult } from '@/lib/ontologyObjects';
 import AssetPoolPanel from './AssetPoolPanel';
 import Glossary from './Glossary';
-import { ModelActionsTab, ModelRulesTab, ModelScenariosTab, ModelSitesTab, ObjectCreateButton, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
+import { ModelActionsTab, ModelCarriersTab, ModelRulesTab, ModelScenariosTab, ModelSitesTab, ObjectCreateButton, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
 import { metricsApi } from '@/api/metrics';
 import { useAsBotStore } from '@/stores/asBotStore';
 import { hasPerm } from '@/stores/permissionStore';
@@ -733,7 +733,7 @@ export default function OntologyModeling() {
             {model && !poolMode && (
               <div className="text-xs text-muted-foreground">
                 {model.status === 'active'
-                  ? '激活模型可直接编辑；保存同步对象/图谱/维度字典；跨站部署由模型级「适用站点」声明统一路由（见「适用站点」页）。'
+                  ? '激活模型可新增/编辑对象（存为草案）；点「发布」才级联同步对象/图谱/维度字典；同构多站部署由模型级「同构站点部署」声明统一路由，跨源/跨层取数路径在「取数路径」页声明。'
                   : model.status === 'archived'
                     ? '已归档模型只读；可「还原为草案」继续编辑，或「确认激活」直接恢复为生效（归档数据始终可查看）。'
                     : '草案编辑后保存，确认无误后激活。'}
@@ -756,12 +756,13 @@ export default function OntologyModeling() {
                   {showsM234(model.kind) && <TabsTrigger value="m234">行为</TabsTrigger>}
                   {showsM234(model.kind) && <TabsTrigger value="rules">规则</TabsTrigger>}
                   {showsM234(model.kind) && <TabsTrigger value="scenarios">场景</TabsTrigger>}
-                  {showsSiteScope(model.kind) && <TabsTrigger value="sites">适用站点</TabsTrigger>}
+                  {showsSiteScope(model.kind) && <TabsTrigger value="sites">同构站点部署</TabsTrigger>}
+                  {showsCarriers(model.kind) && <TabsTrigger value="carriers">取数路径</TabsTrigger>}
                 </TabsList>
                 {hiddenM234 && (
                   <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-600">
                     <AlertTriangle className="h-3 w-3 mr-1 inline" />
-                    该模型不承载行为/规则/场景建模位（{model.kind === 'source' ? '源本体是物理表语义投影' : '业务本体只做路由索引'}），
+                    该模型不承载行为/规则/场景建模位（{model.kind === 'source' ? '源本体是单源物理表语义投影' : '系统能力面才用行为/规则建模'}），
                     但 doc 内仍有 {m234Declared} 条声明未展示：写动作权限请配在菜单与功能权限码，口径规则请登记指标字典，
                     并从 JSON 内容中删除这些声明。
                   </div>
@@ -771,7 +772,9 @@ export default function OntologyModeling() {
                     <ObjectCreateButton jsonContent={jsonDraft} onSave={saveDocFromTab} />
                   </div>
                   <div className="h-[calc(62vh-2.5rem)] overflow-auto">
-                    <ObjectHubTab modelId={model.id} objects={hubObjects} issues={objectIssues} />
+                    <ObjectHubTab modelId={model.id} objects={hubObjects} issues={objectIssues}
+                      jsonContent={jsonDraft} onSave={saveDocFromTab}
+                      canEdit={editable && hasPerm('ontology:save')} />
                   </div>
                 </TabsContent>
                 <TabsContent value="terms" className="mt-2 h-[62vh] overflow-auto">
@@ -799,6 +802,11 @@ export default function OntologyModeling() {
                 {showsSiteScope(model.kind) && (
                   <TabsContent value="sites" className="mt-2 h-[62vh] overflow-hidden">
                     <ModelSitesTab modelId={model.id} />
+                  </TabsContent>
+                )}
+                {showsCarriers(model.kind) && (
+                  <TabsContent value="carriers" className="mt-2 h-[62vh] overflow-hidden">
+                    <ModelCarriersTab modelId={model.id} readonly={!editable} />
                   </TabsContent>
                 )}
               </Tabs>

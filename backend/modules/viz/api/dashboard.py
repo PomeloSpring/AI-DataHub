@@ -80,6 +80,8 @@ class ChartCreate(BaseModel):
     # Phase 5: 大屏语义化 — 存声明式 SemanticQuery 而非裸 SQL
     semantic_query: Optional[dict] = None
     query_source: Optional[str] = "raw_sql"  # raw_sql | semantic
+    # 模板导入的示例数据（{columns, rows}）：服务层校验仅允许 config.demoData=true 的图表写入
+    data_cache: Optional[dict | str] = None
 
 
 class ChartUpdate(BaseModel):
@@ -484,6 +486,9 @@ def add_chart_endpoint(
         return {"id": cid}
     except HTTPException:
         raise
+    except ValueError as e:
+        # 示例数据形状/权限不合规是调用方问题, 回 400 + 原因(不笼统 500)
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Failed to add chart")
         raise HTTPException(status_code=500, detail=str(e))

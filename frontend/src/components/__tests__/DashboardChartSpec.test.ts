@@ -199,6 +199,49 @@ describe('buildG2Spec 轴标题口径', () => {
   });
 });
 
+// 「坐标轴」页的五个旋钮（旋转角/轴显隐/Y轴名称/网格线）曾经只写 config、无人消费，
+// 面板拉满也没反应（ui-vis-library-style.md §2：“存了不生效”即缺陷）——这里把消费关系钉住。
+describe('buildG2Spec 消费坐标轴配置', () => {
+  const axisCfg = { xCol: '日期', yCol: '数量' };
+  const build = (extra: Record<string, any> = {}, type = 'bar') =>
+    buildG2Spec(type, cols, rows, { ...axisCfg, ...extra }, true, 800, 400, tech) as any;
+
+  it('xAxisLabelRotate → labelTransform，并关掉自动旋转（不让 G2 改写成 rotate(90)）', () => {
+    const spec = build({ xAxisLabelRotate: 35 });
+    expect(spec.axis.x.labelTransform).toBe('rotate(35)');
+    expect(spec.axis.x.labelAutoRotate).toBe(false);
+  });
+  it('未设旋转角时不写 labelTransform，保持自动旋转', () => {
+    const spec = build();
+    expect(spec.axis.x.labelTransform).toBeUndefined();
+    expect(spec.axis.x.labelAutoRotate).toBe(true);
+  });
+  it('旋转角超出范围被夹到 0–90', () => {
+    expect(build({ xAxisLabelRotate: 180 }).axis.x.labelTransform).toBe('rotate(90)');
+    expect(build({ xAxisLabelRotate: -20 }).axis.x.labelTransform).toBeUndefined();
+  });
+  it('showXAxis / showYAxis 关掉时整轴不渲染', () => {
+    expect(build({ showXAxis: false }).axis.x).toBe(false);
+    expect(build({ showYAxis: false }).axis.y).toBe(false);
+  });
+  it('showGrid=false 同时关掉两轴网格线（默认不动）', () => {
+    const off = build({ showGrid: false });
+    expect(off.axis.x.grid).toBe(false);
+    expect(off.axis.y.grid).toBe(false);
+    expect(build().axis.x.grid).toBeUndefined();
+  });
+  it('y 轴默认不出标题，但用户显式写了 Y轴名称就照他说的渲染', () => {
+    expect(build().axis.y.title).toBe(false);
+    expect(build({ yAxisName: '  页面浏览量  ' }).axis.y.title).toBe('页面浏览量');
+  });
+  it.each(['bar', 'line', 'area', 'scatter', 'timeseries_line', 'timeseries_bar', 'boxplot', 'bubble'])(
+    '%s 分支同样消费旋转与网格配置', (type) => {
+      const spec = build({ xAxisLabelRotate: 45, showGrid: false }, type);
+      expect(spec.axis.x.labelTransform).toBe('rotate(45)');
+      expect(spec.axis.x.grid).toBe(false);
+    });
+});
+
 describe('静态护栏：禁裸渲染 DashboardChart', () => {
   // ui-vis-library-style.md §1: 任何渲染面必须接 useChartDesign/resolveChartDesign 管线,
   // 否则字模库改了该页不跟(本次缺陷的同类缺口曾出现在 ModalPage/数据集预览/设计面板)。

@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { toast } from '@/lib/toast';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import {
   Plus,
   Play,
@@ -62,6 +63,7 @@ export default function ScheduledTasks() {
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ScheduledTask | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -72,7 +74,7 @@ export default function ScheduledTasks() {
     setLoading(true);
     try {
       // 系统管理页面：不按 workspace 过滤，显示所有任务
-      const res = await listScheduledTasks({ page, size: 20 });
+      const res = await listScheduledTasks({ page, size: pageSize });
       setTasks(res.items);
       setTotal(res.total);
     } catch {
@@ -80,7 +82,7 @@ export default function ScheduledTasks() {
     } finally {
       setLoading(false);
     }
-  }, [page]);
+  }, [page, pageSize]);
 
   useEffect(() => { loadTasks(); }, [loadTasks]);
 
@@ -133,8 +135,8 @@ export default function ScheduledTasks() {
   }
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="flex flex-col h-full gap-4 p-6">
+      <div className="flex items-center justify-between shrink-0">
         <div>
           <h1 className="text-2xl font-bold">任务调度</h1>
           <p className="text-muted-foreground text-sm mt-1">配置定时执行的 SQL 或 Agent 任务</p>
@@ -151,8 +153,8 @@ export default function ScheduledTasks() {
         </div>
       </div>
 
-      {/* Task List */}
-      <div className="border rounded-lg overflow-hidden">
+      {/* Task List：仅此区滚动（页头/分页固定，参考表&字段） */}
+      <div className="flex-1 min-h-0 overflow-auto border rounded-lg">
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
@@ -293,30 +295,16 @@ export default function ScheduledTasks() {
         </table>
       </div>
 
-      {/* Pagination */}
-      {total > 20 && (
-        <div className="flex justify-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={page <= 1}
-            onClick={() => setPage(p => p - 1)}
-          >
-            上一页
-          </Button>
-          <span className="text-sm text-muted-foreground leading-9">
-            第 {page} 页 / 共 {Math.ceil(total / 20)} 页
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={page * 20 >= total}
-            onClick={() => setPage(p => p + 1)}
-          >
-            下一页
-          </Button>
-        </div>
-      )}
+      {/* Pagination —— 统一分页条：固定底栏 */}
+      <PaginationBar
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        onChange={(p: number) => setPage(p)}
+        onPageSizeChange={(n: number) => { setPageSize(n); setPage(1); }}
+        hideWhenSingle
+        className="shrink-0 mt-2"
+      />
 
       {/* Create/Edit Form Dialog — only close via X/cancel/ESC, not by clicking outside */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>

@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>业务本体定位 · 取数编排 · 图谱效果（v2 修订）</title>
+<style>
+  :root{
+    --bg:#f8fafc; --card:#ffffff; --ink:#0f172a; --muted:#64748b; --line:#cbd5e1;
+    --primary:#4f46e5; --ok:#059669; --warn:#d97706; --bad:#dc2626; --idle:#94a3b8;
+    --chip-ok:#ecfdf5; --chip-warn:#fffbeb; --chip-bad:#fef2f2; --chip-idle:#f1f5f9;
+    --chip-primary:#eef2ff;
+    --c-object:#4f46e5; --c-mysql:#2563eb; --c-doris:#ea580c; --c-sls:#0891b2; --c-carrier:#9333ea;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0b1120; --card:#111827; --ink:#e2e8f0; --muted:#94a3b8; --line:#334155;
+      --primary:#818cf8; --ok:#34d399; --warn:#fbbf24; --bad:#f87171; --idle:#64748b;
+      --chip-ok:#052e26; --chip-warn:#332400; --chip-bad:#3a0d0d; --chip-idle:#1e293b;
+      --chip-primary:#1a1b3a;
+      --c-object:#818cf8; --c-mysql:#60a5fa; --c-doris:#fb923c; --c-sls:#22d3ee; --c-carrier:#c084fc; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;}
+  header{padding:26px 24px 16px;border-bottom:1px solid var(--line);background:var(--card)}
+  h1{margin:0 0 6px;font-size:21px;letter-spacing:.3px}
+  .sub{color:var(--muted);max-width:1120px}
+  nav{position:sticky;top:0;z-index:9;display:flex;gap:6px;flex-wrap:wrap;
+    padding:10px 24px;background:var(--card);border-bottom:1px solid var(--line)}
+  nav a{color:var(--ink);text-decoration:none;font-size:13px;padding:5px 11px;border:1px solid var(--line);
+    border-radius:999px;background:var(--bg)}
+  nav a:hover{border-color:var(--primary);color:var(--primary)}
+  main{padding:22px 24px 80px;max-width:1440px;margin:0 auto}
+  section{margin:0 0 34px}
+  h2{font-size:17px;margin:0 0 4px;display:flex;align-items:center;gap:9px}
+  h2 .no{display:inline-flex;align-items:center;justify-content:center;min-width:23px;height:23px;padding:0 5px;
+    border-radius:7px;background:var(--primary);color:#fff;font-size:12px;font-weight:700}
+  .lead{color:var(--muted);margin:0 0 14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:repeat(auto-fit,minmax(430px,1fr))}
+  .g3{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+  .chip{display:inline-block;font-size:11px;line-height:1.5;padding:1px 8px;border-radius:999px;
+    border:1px solid var(--line);font-weight:600;white-space:nowrap}
+  .c-ok{background:var(--chip-ok);color:var(--ok);border-color:var(--ok)}
+  .c-warn{background:var(--chip-warn);color:var(--warn);border-color:var(--warn)}
+  .c-bad{background:var(--chip-bad);color:var(--bad);border-color:var(--bad)}
+  .c-idle{background:var(--chip-idle);color:var(--muted)}
+  .c-new{background:var(--chip-primary);color:var(--primary);border-color:var(--primary)}
+  .tree ul{list-style:none;margin:0;padding-left:20px;border-left:1px dashed var(--line)}
+  .tree>ul{padding-left:0;border-left:0}
+  .tree li{position:relative;padding:3px 0 3px 16px}
+  .tree li::before{content:'';position:absolute;left:0;top:16px;width:13px;height:1px;background:var(--line)}
+  .node{display:inline-block;padding:5px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg);max-width:1000px}
+  .node>b{font-size:13px}
+  .node .d{color:var(--muted);font-size:12px;display:block;margin-top:2px}
+  .root{background:var(--primary);border-color:var(--primary);color:#fff}
+  .root .d{color:#e0e7ff}
+  .n-ok{border-left:3px solid var(--ok)}
+  .n-bad{border-left:3px solid var(--bad)}
+  .n-warn{border-left:3px solid var(--warn)}
+  .n-idle{border-left:3px solid var(--idle);opacity:.92}
+  .n-rev{border-left:3px solid var(--primary)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{border-bottom:1px solid var(--line);padding:8px 9px;text-align:left;vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;background:var(--bg)}
+  td .muted{color:var(--muted)}
+  .num{font-variant-numeric:tabular-nums;font-weight:700}
+  .bar{height:7px;border-radius:999px;background:var(--chip-idle);overflow:hidden;margin-top:5px}
+  .bar>i{display:block;height:100%;background:var(--ok)}
+  .bar.partial>i{background:var(--warn)}
+  .bar.zero>i{background:var(--idle)}
+  svg{width:100%;height:auto;display:block}
+  .edge{fill:none;stroke:#94a3b8;stroke-width:1.2;opacity:.65;stroke-linecap:round}
+  .edge.hot{stroke:var(--primary);stroke-width:1.8;opacity:1}
+  .edge.bad{stroke:var(--bad);stroke-dasharray:4 3;opacity:.95}
+  .edge.ok{stroke:var(--ok);opacity:.9}
+  .edge.xs{stroke:var(--c-carrier);stroke-width:1.6;opacity:.9;stroke-dasharray:6 3}
+  .lbl{font-size:10.5px;fill:var(--muted)}
+  .lbl.strong{fill:var(--ink);font-weight:600;font-size:11px}
+  .box{fill:var(--card);stroke:var(--line);stroke-width:1}
+  .box.a{stroke:var(--primary)} .box.b{stroke:var(--ok)} .box.c{stroke:var(--warn)}
+  .dash{stroke-dasharray:5 4;fill:none;stroke:var(--bad)}
+  .t{font-size:12px;fill:var(--ink);font-weight:600}
+  .t2{font-size:10.5px;fill:var(--muted)}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin-top:10px;align-items:center}
+  .legend i{display:inline-block;width:22px;height:0;border-top:2px solid #94a3b8;vertical-align:middle;margin-right:5px}
+  .legend i.hot{border-color:var(--primary)} .legend i.bad{border-color:var(--bad)}
+  .legend i.ok{border-color:var(--ok)} .legend i.xs{border-color:var(--c-carrier);border-top-style:dashed}
+  .legend s{display:inline-block;width:13px;height:13px;border-radius:50%;vertical-align:-2px;margin-right:5px;text-decoration:none}
+  .flow{display:grid;gap:10px}
+  .stage{display:grid;grid-template-columns:30px 1fr;gap:12px;align-items:start;
+    border:1px solid var(--line);border-radius:11px;padding:11px 13px;background:var(--card)}
+  .stage .ix{width:26px;height:26px;border-radius:8px;background:var(--chip-primary);color:var(--primary);
+    display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px}
+  .stage.gate .ix{background:var(--chip-warn);color:var(--warn)}
+  .stage.new .ix{background:var(--chip-ok);color:var(--ok)}
+  .stage.rev .ix{background:var(--primary);color:#fff}
+  .stage h4{margin:0 0 3px;font-size:13.5px}
+  .stage p{margin:0;font-size:12.5px;color:var(--muted)}
+  .stage code{background:var(--chip-idle);padding:1px 5px;border-radius:4px;font-size:11.5px;color:var(--ink)}
+  pre{margin:0;padding:11px 12px;background:var(--chip-idle);border-radius:9px;border:1px solid var(--line);
+    font-size:12px;overflow:auto;line-height:1.6}
+  .callout{border-left:3px solid var(--warn);background:var(--chip-warn);padding:10px 12px;border-radius:0 9px 9px 0}
+  .callout.bad{border-color:var(--bad);background:var(--chip-bad)}
+  .callout.ok{border-color:var(--ok);background:var(--chip-ok)}
+  .callout.rev{border-color:var(--primary);background:var(--chip-primary)}
+  .small{font-size:12px;color:var(--muted)}
+  ul.flat{margin:6px 0 0;padding-left:18px}
+  ul.flat li{margin:3px 0}
+  .gn{font-size:10px;fill:#fff;font-weight:700;text-anchor:middle}
+  .gcap{font-size:9.5px;fill:var(--muted);text-anchor:middle}
+  .dotbg{fill:url(#dots)}
+</style>
+</head>
+<body>
+<header>
+  <h1>业务本体定位 · 取数编排 · 图谱效果 <span class="chip c-new">v2 按你的三条纠正重写</span></h1>
+  <div class="sub">
+    本轮修订三处认知错误：<b>(1)</b> 取数优先级不靠 <code>authority=true</code>，由<b>指标/维度怎么编排</b>决定（数仓优先、查不到回落可操作源库）；
+    <b>(2)</b>「全球用户数」<b>默认按站点分组、不去重</b>，只有用户明确要总数才走去重路径；
+    <b>(3)</b> 业务本体的真实判据 —— 管 <b>1 个</b>源本体时图谱就等于源本体图谱（无增量），管 <b>N 个</b>时它的职责是<b>描述源本体之间的关系</b>。
+    <br>另附：取数路径与「规则+场景」「快速路径」三处重叠的收敛方案，以及第 8 节的<b>模拟图谱效果</b>。
+  </div>
+</header>
+
+<nav>
+  <a href="#rev">0 本轮改了什么</a>
+  <a href="#rank">1 优先级与回落</a>
+  <a href="#overlap">2 三处重叠收敛</a>
+  <a href="#position">3 业务本体定位</a>
+  <a href="#flow">4 问数链路（修订）</a>
+  <a href="#graph">5 模拟图谱效果</a>
+  <a href="#gaps">6 缺口与待拍板</a>
+  <a href="#gloss">7 术语对照</a>
+</nav>
+
+<main>
+
+<!-- ══════════ 0. 修订对照 ══════════ -->
+<section id="rev">
+  <h2><span class="no">0</span>本轮改了什么（先对齐认知）</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th style="width:20%">议题</th><th style="width:38%">我上一版的错误表述</th><th>按你的纠正改成</th></tr></thead>
+      <tbody>
+        <tr><td><b>择路依据</b></td>
+          <td>「有 <code>authority=true</code> 的承载才给单一数字」—— 把一个布尔位当成了口径开关</td>
+          <td><b>优先级来自指标/维度的编排</b>：字典行本来就能声明取数位置（<code>datasource_id</code> + <code>target_table</code> + <code>formula_dialects</code>），按编排好的源顺序取数，<b>数仓优先，查不到再回落到用户可操作的源库</b>。承载只描述"有哪些源可选"，<b>不携带权威位</b></td></tr>
+        <tr><td><b>全球用户数</b></td>
+          <td>默认去找"全局去重路径"，没有就报"各站分别统计"</td>
+          <td><b>默认就是按站点分组、不去重</b>（这是该指标的固有呈现口径，不需要用户交代）；<b>仅当用户明确说"要总数、不区分站点"</b>时，才走跨站去重的那条源（通常是数仓汇总），并附时效说明</td></tr>
+        <tr><td><b>取数路径定位</b></td>
+          <td>当成独立一等功能，还给它做了页签</td>
+          <td>与「规则 + 场景」<b>和</b>知识管理里已上线的「快速路径」<b>三处重叠</b>，必须收敛成一处（第 2 节给方案）</td></tr>
+        <tr><td><b>业务本体判据</b></td>
+          <td>默认"业务本体 = 跨站统一描述"，没问它管几个源本体</td>
+          <td>补上判据：<b>管 1 个源本体 → 图谱≈源本体图谱，业务层无增量</b>（该场景直接用源本体）；<b>管 N 个源本体 → 业务本体必须能描述源本体之间的关系</b>，这才是它存在的理由（第 3 节）</td></tr>
+        <tr><td><b>现网诊断</b></td>
+          <td>把 40/51 断链归因于"元数据缺失 + 桥对象未登记"</td>
+          <td>那仍是事实（保留），但<b>更根本的是模型层次错位</b>：现网业务本体 <code>datasource_id=prd-cn</code> 只管一个源、关系全在同库内部，按新判据它更接近源本体（第 3 节）</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════ 1. 优先级与回落 ══════════ -->
+<section id="rank">
+  <h2><span class="no">1</span>取数优先级与回落链（不靠 authority）</h2>
+  <p class="lead">口径权威在<b>字典</b>（指标/维度），编排决定顺序，可用性决定回落，回落必须显式。</p>
+
+  <div class="grid g2">
+    <div class="card">
+      <b>字典行现在已有的编排字段（现网实测）</b>
+      <table>
+        <thead><tr><th style="width:30%">字段</th><th>能表达什么</th></tr></thead>
+        <tbody>
+          <tr><td><code>datasource_id</code></td><td>这个口径<b>从哪个源取</b>（0=全局/不限定）。已存在，正是"数仓优先"的天然落点</td></tr>
+          <tr><td><code>target_table</code> / <code>target_column</code></td><td>取数位置（汇总表 or 明细表）。数仓有汇总表时指向汇总表</td></tr>
+          <tr><td><code>formula</code> / <code>formula_dsl</code> / <code>formula_dialects</code></td><td>口径算法 + 按方言可下推表达式（异构源各方言各一份）</td></tr>
+          <tr><td><code>agg_type</code></td><td>聚合类型（<code>COUNT_DISTINCT</code> 已能从 <code>COUNT</code> 分出来，决定"能否相加"）</td></tr>
+          <tr><td><code>certified</code> / <code>category</code> / <code>tags</code></td><td>认证口径单一事实源 / 业务域 / 口径标签</td></tr>
+          <tr><td><code>allowed_carrier</code></td><td><span class="chip c-bad">我 M2 加的，语义重叠</span> 与 <code>datasource_id</code>+<code>target_table</code> 表达同一件事 → 建议退役或改名为纯"源类型偏好"</td></tr>
+        </tbody>
+      </table>
+      <div class="small" style="margin-top:8px">维度侧同样有 <code>datasource_id</code> / <code>target_table</code> / <code>hierarchy</code> / <code>level</code> —— 分组能力（含"按站点分组"）本来就在维度编排里。</div>
+    </div>
+
+    <div class="card">
+      <b>建议的优先级与回落规则（单点实现，替代 authority 判定）</b>
+      <pre>指标解析命中字典行
+  ↓
+取该口径的「候选源顺序」= 字典编排优先，其次本体承载
+  1) 字典显式声明的源（如 Doris 数仓汇总表）      ← 数仓优先
+  2) 承载表里同对象、类型匹配的源（detail/mirror）
+  3) 用户可操作的站点业务库（deploy_sites 展开）   ← 兜底
+  ↓
+逐级尝试，命中即取；每级记录实际用的源与原因
+  ↓
+① 该级源不可用（无权限/无表/执行失败）→ 落到下一级
+   必须标 degraded=true + 服务端日志原因（不得静默）
+② 全部落空 → fail-loud 回抛业务名候选，不猜、不相加充数</pre>
+      <div class="callout rev" style="margin-top:10px">
+        <b>authority 的新定位（如果保留）</b>：只表示"这个口径的<b>权威定义</b>写在哪"（口径归属，给人看的标注），
+        <b>不参与</b>选路判定；选路完全由上面的顺序规则 + 字典编排决定。
+        或者直接砍掉该字段 —— 因为字典 <code>certified</code> 已经在表达"单一事实源"，再加一个 authority 位是第二套口径判断。
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <b>「全球用户数」的两种问法，走两条不同的路（这是编排出来的，不是布尔位）</b>
+    <table>
+      <thead><tr><th style="width:24%">用户怎么说</th><th style="width:19%">默认口径</th><th style="width:29%">取数怎么走</th><th>呈现</th></tr></thead>
+      <tbody>
+        <tr><td>"全球用户数是多少" / "我们有多少用户"</td>
+          <td><b>按站点分组，不去重</b></td>
+          <td>逐站各查一次（或数仓按站点分区的汇总表一次查完），维度默认带站点</td>
+          <td>每站一行 + 一句"未做跨站去重"。<b>不报合计</b>（用户没要）</td></tr>
+        <tr><td>"全球用户<b>总数</b>" / "不要分站点，就一个数" / "去重后多少用户"</td>
+          <td>跨站<b>去重</b>总数</td>
+          <td>走字典为该指标编排的<b>去重源</b>（数仓 <code>COUNT(DISTINCT user_code)</code> 汇总表）；该源不可用 → 落到下一级并<b>标降级</b></td>
+          <td>单一数字 + 口径时效（"数仓汇总，T+1，不含今天"）</td></tr>
+        <tr><td>"今天全球用户数"</td>
+          <td>按站点分组，实时口径</td>
+          <td>去重源是 T+1 → 不参与本次（新鲜度排除），落站点明细</td>
+          <td>分站一行 + "今日数据未进汇总层"</td></tr>
+        <tr><td>字典里同一词有两种编排</td>
+          <td>不猜</td>
+          <td>回抛两个业务名候选 → <code>ask_user</code> 选口径</td>
+          <td>选定后带口径重试</td></tr>
+      </tbody>
+    </table>
+    <div class="small" style="margin-top:8px">
+      关键差别：上一版把"分组 vs 去重"交给一个 <code>authority</code> 开关；现在它是<b>指标/维度编排 + 用户是否明说</b>共同决定的，
+      默认路径（分组）不需要任何额外配置，所以现网 carriers 0 行时行为也已经是正确的分站呈现。
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 2. 三处重叠与收敛 ══════════ -->
+<section id="overlap">
+  <h2><span class="no">2</span>取数路径 / 规则+场景 / 快速路径 —— 三处重叠与收敛</h2>
+  <p class="lead">三者现在都在回答同一个问题：「这类问题该从哪取、按什么顺序取」。三处各一套 = 必然漂移。</p>
+
+  <div class="card">
+    <table>
+      <thead><tr><th style="width:14%">能力</th><th style="width:16%">状态</th><th style="width:24%">事实源与机制</th><th style="width:22%">回答什么</th><th>问题</th></tr></thead>
+      <tbody>
+        <tr><td><b>取数路径</b><br>carrier</td>
+          <td><span class="chip c-ok">代码已落地</span><br><span class="chip c-bad">0 行数据</span></td>
+          <td><code>adh_ontology_carriers</code> + <code>topology.decide_carrier</code>，<b>服务端确定性选路</b>；前端「取数路径」页签；AS-BOT 读写工具</td>
+          <td>这个概念有哪几条可取数路径（哪个源、哪个源本体对象、粒度、新鲜度）</td>
+          <td>与下面两者重叠；且 <code>authority</code>/<code>allowed_carrier</code> 抢了字典的口径权威</td></tr>
+        <tr><td><b>规则 + 场景</b><br>rules / scenarios</td>
+          <td><span class="chip c-idle">M4 未开始</span></td>
+          <td>canonical doc 内 <code>rules[kind]</code>（path_preference / availability / caveat）与 <code>scenarios[]</code>，注入目录与提示词</td>
+          <td>取数走法偏好、对象可用性约束、口径告诫、多步分析剧本</td>
+          <td>path_preference 与 carrier 是同一件事的两种写法</td></tr>
+        <tr><td><b>快速路径</b><br>quick_path</td>
+          <td><span class="chip c-ok">已上线</span></td>
+          <td><code>adh_knowledge_items</code>（<code>knowledge_type='quick_path'</code>）：触发词 <code>metadata.triggers</code> + <b><code>priority</code></b> + <b><code>datasource_id</code></b> + 自由文本 <code>content</code>，命中后<b>注入系统提示词</b></td>
+          <td>"这类问题应该怎么取数"（话术级指引）</td>
+          <td>它是<b>提示词级</b>（LLM 自由裁量、不可审计），却已经在配 <code>priority</code> 和 <code>datasource_id</code> —— 正是选路该管的事</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card">
+      <b>收敛原则（建议）：按"确定性层次"分工，一处一事</b>
+      <ul class="flat">
+        <li><b>口径与源顺序 → 字典</b>（指标/维度行）：唯一权威，已有 <code>datasource_id</code>/<code>target_table</code>，只缺一个"候选源顺序"表达。</li>
+        <li><b>物理可选路径 → 承载表</b>：只回答"这个概念在哪些源、对应哪个源本体对象、什么粒度新鲜度"，<b>不带优先级、不带权威位</b>。</li>
+        <li><b>跨源关系与业务约束 → 本体</b>：<code>links</code>（含跨源衔接键）+ <code>rules[availability/caveat]</code>。</li>
+        <li><b>多步剧本 → 场景 scenarios</b>：引用上面的对象/口径，逐步调 <code>run_semantic_query</code>，<b>不新建执行通道</b>。</li>
+        <li><b>快速路径退为"入口与话术"</b>：触发词命中后<b>引用</b>某个 scenario（结构化 id），而不是自己写一份"该从哪取"的散文；<code>priority</code>/<code>datasource_id</code> 两个字段停止承担选路语义。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <b>三种可选落地方案（待你拍板，第 6 节问题一）</b>
+      <table>
+        <thead><tr><th style="width:8%">方案</th><th style="width:34%">做法</th><th>代价</th></tr></thead>
+        <tbody>
+          <tr><td><b>A</b></td>
+            <td>carrier 表<b>保留为服务端内部</b>（承载=物理可选路径清单），删掉 <code>authority</code> 与 <code>allowed_carrier</code>；优先级改由字典编排；前端「取数路径」页签<b>换成「规则 + 场景」</b>；快速路径改为引用 scenario</td>
+            <td>M1/M2 代码基本不动（择路改读字典顺序），删 2 个字段 + 换 1 个页签；<b>推荐</b></td></tr>
+          <tr><td><b>B</b></td>
+            <td>carrier 表<b>退役</b>，取数路径全部用 <code>rules[kind=path_preference]</code> 表达，承载信息并入 <code>adh_ontology_bindings</code></td>
+            <td>M1/M2 读写与择路重构，改动面大；好处是只剩一套配置面</td></tr>
+          <tr><td><b>C</b></td>
+            <td>先只做 M4 规则+场景页与消费点，三处并存但<b>明确优先级</b>（字典 &gt; 规则 &gt; 快速路径），冲突时高优先层胜出并告警</td>
+            <td>最快但把债留着，三处仍可各配各的</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 3. 业务本体定位 ══════════ -->
+<section id="position">
+  <h2><span class="no">3</span>业务本体的真实判据：管几个源本体，决定它有没有存在价值</h2>
+  <p class="lead">这是本轮最关键的一条认知修正 —— 判据不是"跨不跨站"，而是"<b>跨不跨源本体</b>"。</p>
+
+  <div class="card">
+    <svg viewBox="0 0 1300 350" role="img" aria-label="业务本体判据">
+      <defs>
+        <marker id="a2" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="11" markerHeight="11" orient="auto"><path d="M0,0 L12,6 L0,12 z" fill="#94a3b8"/></marker>
+        <marker id="a2r" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="11" markerHeight="11" orient="auto"><path d="M0,0 L12,6 L0,12 z" fill="#dc2626"/></marker>
+        <marker id="a2g" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="11" markerHeight="11" orient="auto"><path d="M0,0 L12,6 L0,12 z" fill="#059669"/></marker>
+      </defs>
+      <!-- 左：1 个源本体 -->
+      <text class="t" x="20" y="24">情形一 · 业务本体只管 1 个源本体</text>
+      <rect class="box" x="20" y="38" width="150" height="46" rx="9"/><text class="t" x="40" y="60">源本体 X</text><text class="t2" x="40" y="76">物理表 + 列</text>
+      <path class="edge bad" d="M170,61 L250,61" marker-end="url(#a2r)"/>
+      <text class="lbl" x="176" y="54">1:1 投影</text>
+      <rect class="box" x="252" y="38" width="170" height="46" rx="9" style="stroke:var(--bad)"/>
+      <text class="t" x="268" y="60">业务本体（管 1 个源）</text><text class="t2" x="268" y="76">图谱 ≈ 源本体图谱</text>
+      <text class="t2" x="20" y="112">结论：业务层<b>没有增量</b> —— 对象、属性、关系全是源本体的复述。</text>
+      <text class="t2" x="20" y="130">该情形下应当<b>直接用源本体</b>问数，或把"业务本体"降级为别名/口径层，</text>
+      <text class="t2" x="20" y="148">不要维护两份同构模型（历史 27 对象 × 5 站 = 135 行机械复制就是这类错）。</text>
+
+      <!-- 右：N 个源本体 -->
+      <text class="t" x="660" y="24">情形二 · 业务本体管 N 个源本体（N≥2）</text>
+      <rect class="box b" x="660" y="38" width="150" height="40" rx="9"/><text class="t" x="676" y="62">源本体 MySQL 业务库</text>
+      <rect class="box b" x="660" y="86" width="150" height="40" rx="9"/><text class="t" x="700" y="110">源本体 Doris</text>
+      <rect class="box b" x="660" y="134" width="150" height="40" rx="9"/><text class="t" x="692" y="158">源本体 SLS 日志</text>
+      <path class="edge ok" d="M810,58 C850,58 850,96 880,96" marker-end="url(#a2g)"/>
+      <path class="edge ok" d="M810,106 L880,106" marker-end="url(#a2g)"/>
+      <path class="edge ok" d="M810,154 C850,154 850,116 880,116" marker-end="url(#a2g)"/>
+      <rect class="box a" x="882" y="70" width="200" height="66" rx="9"/>
+      <text class="t" x="898" y="92">业务本体</text>
+      <text class="t2" x="898" y="109">职责 = 描述<b>源本体之间</b>的关系</text>
+      <text class="t2" x="898" y="125">+ 跨源衔接键 + 统一业务名</text>
+      <text class="t2" x="660" y="196">结论：这时业务本体<b>才有存在价值</b> —— 它的图谱是"跨源关系网"，</text>
+      <text class="t2" x="660" y="214">源本体各自只看得见自己库内的表列，<b>跨源关系在源本体层无法表达</b>。</text>
+
+      <!-- 现网诊断 -->
+      <rect class="box" x="20" y="238" width="1262" height="96" rx="10" style="stroke:var(--warn)"/>
+      <text class="t" x="36" y="262" style="fill:var(--warn)">现网诊断 · 联耀业务本体落在"情形一"</text>
+      <text class="t2" x="36" y="282">① 它只挂 <tspan style="fill:var(--ink);font-weight:600">datasource_id = prd-cn</tspan> 一个源（5 站是同一套 schema 的同构展开，不算多源本体）；</text>
+      <text class="t2" x="36" y="300">② 51 条 links 全是<b>同库对象之间</b>的关系（company→case、user→case…），没有一条跨源关系 —— 所以它的图谱确实就是"源本体 → 源本体"的图；</text>
+      <text class="t2" x="36" y="318">③ 数仓（Doris 源本体，4 对象）与日志（ARMS RUM 源本体，1 对象）已经在库里，但<b>没有任何一条边把它们和业务本体连起来</b> → 这才是"跨源"真正缺的那一半。</text>
+    </svg>
+  </div>
+
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card">
+      <b>由判据推出的三件事</b>
+      <ul class="flat">
+        <li><b>不要给 5 个同构站点各建源本体</b>（实测 16/17 对象五站列集合完全一致）—— 那是"情形一 ×5"，纯复制。</li>
+        <li><b>业务本体要往"多源"长</b>：把 Doris 数仓源本体、SLS 日志源本体纳进同一个业务本体的管辖范围，并登记<b>跨源关系边</b>（第 5 节模拟图就是这个样子）。</li>
+        <li><b>跨源关系需要"衔接键"</b>：业务库 <code>case_code</code> ↔ 数仓汇总 <code>case_code</code> ↔ 日志 <code>caseCode</code>，这类映射在源本体层各自存在，<b>只有业务本体层能把它们连起来</b>（M3 计划的 <code>links[].cross_source</code>）。</li>
+        <li><b>承载（取数路径）本质是"跨源关系"的特例</b>：同一概念在不同源的副本 —— 所以它该并入业务本体的关系/规则表达，而不是单开一套配置面（呼应第 2 节）。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <b>现网关系体检（不变的事实，仍要修）</b>
+      <table>
+        <thead><tr><th>项</th><th style="width:22%">实测</th><th>影响</th></tr></thead>
+        <tbody>
+          <tr><td>业务本体 links 总数</td><td class="num">51</td><td>—</td></tr>
+          <tr><td>planner 判定可走通</td><td class="num" style="color:var(--ok)">11</td><td>跨对象问题大多回抛</td></tr>
+          <tr><td>目标对象无列元数据（无法验证）</td><td class="num">32</td><td>9/17 主表未同步元数据</td></tr>
+          <tr><td>join 引用未登记对象（Membership/UserRole）</td><td class="num">9</td><td>M:N 关系事实上全废</td></tr>
+          <tr><td>join 含「→」手写两跳占位</td><td class="num">5</td><td>语义层不解析占位符</td></tr>
+          <tr><td>列名与物理元数据不符</td><td class="num">3</td><td>SQL 报 Unknown column</td></tr>
+          <tr><td><b>跨源关系边</b></td><td class="num" style="color:var(--bad)">0</td><td><b>业务本体增量价值 = 0</b></td></tr>
+          <tr><td>承载（carriers）行数</td><td class="num">0</td><td>线上行为等同改造前</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════ 4. 问数链路（修订） ══════════ -->
+<section id="flow">
+  <h2><span class="no">4</span>一次问数走的逻辑过程（按新判据修订）</h2>
+  <p class="lead">以「全球用户数」为例。<span class="chip c-new">紫色序号</span> = 本轮按你的纠正改写的环节。
+    黑盒纪律不变：<b>datasource_id / 物理表列 / 生成的 SQL / 账号 IP 全程不进 LLM 视野</b>。</p>
+
+  <div class="flow">
+    <div class="stage"><span class="ix">1</span><div>
+      <h4>输入分流 + 资源绑定（唯一裁决点）</h4>
+      <p>寒暄/无效输入本地直答；业务问题下发 Agent。<code>resource_guard.bind_resources</code> 返回
+        <code>available_sources</code> —— <b>只由用户角色授权决定</b>，可查站点是它的派生视图，空授权 fail-closed。</p>
+    </div></div>
+
+    <div class="stage rev"><span class="ix">2</span><div>
+      <h4>提示词注入「数据源拓扑」段 <span class="chip c-rev chip" style="display:none"></span><span class="chip c-new">本轮改写</span></h4>
+      <p>规则③：<b>默认分站呈现、不做跨站合计</b>（这是缺省口径，不需要用户交代）。旧文案"合计请标注各站合计≠去重全球数"已删 ——
+        那是在鼓励模型去做那个合计。<b>不再提 authority</b>，改为"该指标编排了哪个源就去哪个源"。</p>
+    </div></div>
+
+    <div class="stage"><span class="ix">3</span><div>
+      <h4>目录检索 <code>get_metrics</code></h4>
+      <p>对象 + 指标 + 维度 + <code>relations</code> + <code>deployments</code>（+ 可选路径清单，按授权裁剪；被裁条数只写服务端日志）。
+        <b>名字与口径的唯一权威是这里</b>，知识库只补口径解释。</p>
+    </div></div>
+
+    <div class="stage gate"><span class="ix">4</span><div>
+      <h4>名字解析（确定性，宁缺勿错）</h4>
+      <p>字典精确名 → 字典别名 → <code>column_map</code> → 物理列业务名 → 物理列名兜底，每档记 <code>resolution_source</code> 入 provenance。
+        <b>包含式模糊只回抛候选</b>，被拒词落 <code>adh_alias_suggestions</code>。</p>
+    </div></div>
+
+    <div class="stage rev"><span class="ix">5</span><div>
+      <h4>判定"要不要去重" —— 看用户怎么说 + 指标怎么编排 <span class="chip c-new">本轮改写</span></h4>
+      <table style="margin-top:6px">
+        <thead><tr><th style="width:26%">说法</th><th style="width:24%">结论</th><th>依据</th></tr></thead>
+        <tbody>
+          <tr><td>"全球用户数" / "有多少用户"</td><td><b>按站点分组，不去重</b></td>
+            <td>缺省口径。维度编排里站点是默认分组维度；<code>agg_type=COUNT_DISTINCT</code> 且用户没要总数 → 不跨站合并</td></tr>
+          <tr><td>"总数" / "不区分站点" / "去重后"</td><td>跨站去重单值</td>
+            <td>取该指标编排的<b>去重源</b>（字典 <code>datasource_id</code>+<code>target_table</code> 指向数仓汇总表）</td></tr>
+          <tr><td>"今天" / "实时"</td><td>去重源不参与</td><td>新鲜度排除（<code>t_plus_1/lagged</code> 不答"今天"）</td></tr>
+        </tbody>
+      </table>
+    </div></div>
+
+    <div class="stage rev"><span class="ix">6</span><div>
+      <h4>选源与回落：按编排顺序逐级尝试 <span class="chip c-new">本轮改写（替代 authority 判定）</span></h4>
+      <pre>候选源顺序 = 字典编排（数仓汇总） → 承载可选路径 → 站点业务库
+  命中即取；该级不可用（无权限 / 无表 / 执行失败）→ 下一级 + 标 degraded=true
+  全部落空 → fail-loud 回抛业务名候选（不猜、不相加充数）</pre>
+      <p class="small">权限不可见的源 = <b>作用域裁剪</b>（对用户不提）；有权限但失败 = <b>降级</b>（必须显式标）。两者必须可区分。</p>
+    </div></div>
+
+    <div class="stage gate"><span class="ix">7</span><div>
+      <h4>绑定解析 → SQL 编译</h4>
+      <p>同构站点走 <code>deploy_sites</code> 展开；异构源走承载指向的源本体对象（复用同一解析口）。
+        跨对象引用用「对象名.业务名」限定名，JOIN 路径由本体 <code>links</code> ≤2 跳 BFS 解出，<b>无路径回抛不猜 join</b>。</p>
+      <p class="small"><span class="chip c-bad">当前卡点</span> 51 条 links 只有 11 条能走通，且<b>跨源关系 0 条</b> → 跨源问题在这步直接无路可走。</p>
+    </div></div>
+
+    <div class="stage gate"><span class="ix">8</span><div>
+      <h4>七闸门 + 权限施加（不可旁路）</h4>
+      <p>identity / permission / preflight / proposal / approval / execute / audit；
+        <code>permission_enforcer</code>：敏感字段基线（对 admin 也生效）→ 表 RBAC → 列级 hidden/mask → RLS 行过滤（包裹子查询注入，保留别名，FROM/JOIN 两侧都覆盖）。</p>
+    </div></div>
+
+    <div class="stage"><span class="ix">9</span><div>
+      <h4>执行与序列化</h4>
+      <p>统一取数口 <code>semantics.execute</code>；重名列经 <code>df_serialize</code> 无损消歧；单次批量 ≤8 个 intent，展示 >200 行截断且禁止对截断行求和。</p>
+    </div></div>
+
+    <div class="stage"><span class="ix">10</span><div>
+      <h4>呈现与归因</h4>
+      <ul class="flat" style="margin-top:4px">
+        <li>分组路径：每站一行 + "未做跨站去重"；去重路径：单值 + 口径时效（"数仓汇总，T+1，不含今天"）。</li>
+        <li>降级：<code>degraded=true</code> + 业务名文案 + 服务端 WARNING；<b>不得拿各站相加冒充全局值</b>。</li>
+        <li>provenance 记 <code>carrier_bucket</code> + <code>path_used_reason</code>（declared / dict-ordered / fallback / site-detail / degraded-fallback / no-path），审计能分辨走了哪条。</li>
+        <li>适合可视化时输出 <code>```chart</code> 块，样式走字模库统一管线。</li>
+      </ul>
+    </div></div>
+  </div>
+</section>
+
+<!-- ══════════ 5. 模拟图谱效果 ══════════ ══════════ -->
+<section id="graph">
+  <h2><span class="no">5</span>模拟图谱效果：一个业务本体管 3 个源本体</h2>
+  <p class="lead">下面是<b>目标态</b>的图面模拟（数据为示例，非现网）。要点：
+    <b>细灰实线 = 概念→路径→源对象</b>（各源本体自己也能看见的复述关系），
+    <b>紫虚线 = 跨源关系边</b> —— 只有业务本体层能表达，也就是业务本体在"管 N 个源本体"时的<b>全部增量价值</b>。</p>
+
+  <div class="card">
+    <!-- 图例（按平台图可视化规范：图例与节点同源着色） -->
+    <div class="legend" style="margin:0 0 10px">
+      <span><s style="background:var(--c-object)"></s>业务对象</span>
+      <span><s style="background:var(--c-carrier)"></s>取数路径（承载）</span>
+      <span><s style="background:var(--c-mysql)"></s>源对象 · MySQL 业务库</span>
+      <span><s style="background:var(--c-doris)"></s>源对象 · Doris 数仓</span>
+      <span><s style="background:var(--c-sls)"></s>源对象 · SLS 日志</span>
+      <span><i></i>概念→路径→源</span>
+      <span><i class="xs"></i>跨源关系（带衔接键）</span>
+      <span><i class="ok"></i>同库关系</span>
+    </div>
+
+    <svg viewBox="0 0 1300 800" role="img" aria-label="业务本体跨源图谱模拟">
+      <defs>
+        <pattern id="dots" width="18" height="18" patternUnits="userSpaceOnUse">
+          <circle cx="1.5" cy="1.5" r="1.1" fill="var(--line)" opacity=".55"/>
+        </pattern>
+        <marker id="e1" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="12" markerHeight="12" orient="auto"><path d="M0,0 L12,6 L0,12 z" fill="#94a3b8"/></marker>
+        <marker id="e2" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="12" markerHeight="12" orient="auto"><path d="M0,0 L12,6 L0,12 z" fill="#9333ea"/></marker>
+        <marker id="e3" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="12" markerHeight="12" orient="auto"><path d="M0,0 L12,6 L0,12 z" fill="#059669"/></marker>
+      </defs>
+      <rect class="dotbg" x="0" y="0" width="1300" height="800" rx="12"/>
+
+      <!-- 分带标题 -->
+      <text class="t" x="40" y="40">业务本体（模拟：客户经营本体）</text>
+      <text class="t" x="560" y="40">取数路径 / 承载</text>
+      <text class="t" x="880" y="40">源本体 · 物理层</text>
+
+      <!-- ── 概念 → 路径 边（贝塞尔，规范 curvature≈0.18） ── -->
+      <path class="edge" d="M296,300 C360,290 420,240 470,228" marker-end="url(#e1)"/>
+      <path class="edge" d="M296,318 C370,330 420,330 470,330" marker-end="url(#e1)"/>
+      <path class="edge" d="M470,150 C520,140 540,132 566,128" marker-end="url(#e1)"/>
+      <path class="edge" d="M470,168 C530,190 545,205 566,215" marker-end="url(#e1)"/>
+      <path class="edge" d="M496,470 C540,450 550,420 570,404" marker-end="url(#e1)"/>
+      <path class="edge" d="M496,486 C550,500 555,505 570,510" marker-end="url(#e1)"/>
+      <path class="edge" d="M500,500 C560,560 570,600 578,626" marker-end="url(#e1)"/>
+      <path class="edge" d="M296,610 C380,620 430,660 470,690" marker-end="url(#e1)"/>
+      <path class="edge" d="M296,592 C400,570 440,540 470,520" marker-end="url(#e1)"/>
+
+      <!-- ── 路径 → 源对象 边 ── -->
+      <path class="edge" d="M624,128 C700,124 740,120 792,116" marker-end="url(#e1)"/>
+      <path class="edge" d="M624,215 C700,214 740,212 792,210" marker-end="url(#e1)"/>
+      <path class="edge" d="M528,228 C600,240 640,250 690,258" marker-end="url(#e1)"/>
+      <path class="edge" d="M528,330 C620,330 700,326 792,318" marker-end="url(#e1)"/>
+      <path class="edge" d="M628,404 C720,380 760,360 800,336" marker-end="url(#e1)"/>
+      <path class="edge" d="M628,510 C740,470 800,420 880,392" marker-end="url(#e1)"/>
+      <path class="edge" d="M636,626 C740,626 800,620 880,612" marker-end="url(#e1)"/>
+      <path class="edge" d="M528,520 C600,560 640,600 690,660" marker-end="url(#e1)"/>
+      <path class="edge" d="M528,690 C640,706 720,712 800,714" marker-end="url(#e1)"/>
+
+      <!-- ── 同库关系（绿实线，MySQL 簇内） ── -->
+      <path class="edge ok" d="M840,150 C850,175 850,182 840,206" marker-end="url(#e3)"/>
+      <path class="edge ok" d="M840,254 C852,278 852,286 840,310" marker-end="url(#e3)"/>
+      <text class="lbl" x="856" y="182">company_code</text>
+      <text class="lbl" x="856" y="288">doctor_user_code</text>
+
+      <!-- ── 跨源关系（紫虚线）= 业务本体的增量 ── -->
+      <path class="edge xs" d="M900,240 C980,230 1000,206 1046,192" marker-end="url(#e2)"/>
+      <text class="lbl strong" x="960" y="238">跨源 · case_code</text>
+      <path class="edge xs" d="M900,344 C1000,380 1030,392 1074,398" marker-end="url(#e2)"/>
+      <text class="lbl strong" x="960" y="366">跨源 · equipment_code</text>
+      <path class="edge xs" d="M900,344 C1010,420 1060,520 1082,576" marker-end="url(#e2)"/>
+      <text class="lbl strong" x="946" y="452">跨源 · equipment_code</text>
+      <path class="edge xs" d="M886,352 C940,520 1000,640 1056,690" marker-end="url(#e2)"/>
+      <text class="lbl strong" x="900" y="560">跨源 · user_code</text>
+      <path class="edge xs" d="M1120,432 C1150,480 1150,530 1128,574" marker-end="url(#e2)"/>
+      <text class="lbl strong" x="1156" y="506">跨源 · 画像↔明细</text>
+
+      <!-- ── 业务对象（大圆，标签压在圆内，白色粗体） ── -->
+      <g>
+        <circle cx="250" cy="308" r="46" fill="var(--c-object)"/>
+        <text class="gn" x="250" y="306" style="font-size:13px">案例</text>
+        <text class="gn" x="250" y="322" style="font-size:9.5px;opacity:.85">Case</text>
+        <circle cx="450" cy="158" r="42" fill="var(--c-object)"/>
+        <text class="gn" x="450" y="156" style="font-size:13px">公司</text>
+        <text class="gn" x="450" y="171" style="font-size:9.5px;opacity:.85">Company</text>
+        <circle cx="452" cy="486" r="42" fill="var(--c-object)"/>
+        <text class="gn" x="452" y="484" style="font-size:13px">用户</text>
+        <text class="gn" x="452" y="499" style="font-size:9.5px;opacity:.85">User</text>
+        <circle cx="250" cy="600" r="42" fill="var(--c-object)"/>
+        <text class="gn" x="250" y="598" style="font-size:13px">设备</text>
+        <text class="gn" x="250" y="613" style="font-size:9.5px;opacity:.85">Equipment</text>
+      </g>
+
+      <!-- ── 承载节点（小紫圆，标签在下） ── -->
+      <g>
+        <circle cx="500" cy="222" r="17" fill="var(--c-carrier)"/><text class="gcap" x="500" y="252">案例·明细</text>
+        <circle cx="500" cy="330" r="17" fill="var(--c-carrier)"/><text class="gcap" x="500" y="360">案例·数仓汇总</text>
+        <circle cx="596" cy="120" r="17" fill="var(--c-carrier)"/><text class="gcap" x="596" y="150">公司·明细</text>
+        <circle cx="596" cy="215" r="17" fill="var(--c-carrier)" opacity=".45"/><text class="gcap" x="596" y="245" style="fill:var(--bad)">公司·汇总（缺）</text>
+        <circle cx="600" cy="396" r="17" fill="var(--c-carrier)"/><text class="gcap" x="600" y="426">用户·明细</text>
+        <circle cx="600" cy="510" r="17" fill="var(--c-carrier)"/><text class="gcap" x="600" y="540">用户·注册汇总</text>
+        <circle cx="608" cy="632" r="17" fill="var(--c-carrier)"/><text class="gcap" x="608" y="662">用户·前端行为</text>
+        <circle cx="500" cy="512" r="17" fill="var(--c-carrier)"/><text class="gcap" x="500" y="542">设备·台账</text>
+        <circle cx="500" cy="696" r="17" fill="var(--c-carrier)"/><text class="gcap" x="500" y="726">设备·操作日志</text>
+      </g>
+
+      <!-- ── 源对象（按源着色） ── -->
+      <g>
+        <circle cx="840" cy="120" r="34" fill="var(--c-mysql)"/><text class="gn" x="840" y="118">公司表</text><text class="gn" x="840" y="132" style="font-size:8.5px;opacity:.85">t_user_company</text>
+        <circle cx="840" cy="228" r="34" fill="var(--c-mysql)"/><text class="gn" x="840" y="226">案例表</text><text class="gn" x="840" y="240" style="font-size:8.5px;opacity:.85">t_case_records</text>
+        <circle cx="840" cy="330" r="34" fill="var(--c-mysql)"/><text class="gn" x="840" y="328">用户表</text><text class="gn" x="840" y="342" style="font-size:8.5px;opacity:.85">t_user_customer</text>
+
+        <circle cx="1090" cy="180" r="34" fill="var(--c-doris)"/><text class="gn" x="1090" y="178">案例日汇总</text><text class="gn" x="1090" y="192" style="font-size:8.5px;opacity:.85">case_stat</text>
+        <circle cx="1110" cy="398" r="34" fill="var(--c-doris)"/><text class="gn" x="1110" y="396">设备运行画像</text><text class="gn" x="1110" y="410" style="font-size:8.5px;opacity:.85">operation_stat</text>
+        <circle cx="1110" cy="712" r="34" fill="var(--c-doris)"/><text class="gn" x="1110" y="710">注册汇总</text><text class="gn" x="1110" y="724" style="font-size:8.5px;opacity:.85">user_reg_stat</text>
+
+        <circle cx="1092" cy="606" r="34" fill="var(--c-sls)"/><text class="gn" x="1092" y="604">设备操作日志</text><text class="gn" x="1092" y="618" style="font-size:8.5px;opacity:.85">operation_log</text>
+        <circle cx="880" cy="680" r="34" fill="var(--c-sls)"/><text class="gn" x="880" y="678">前端行为</text><text class="gn" x="880" y="692" style="font-size:8.5px;opacity:.85">rum_event</text>
+      </g>
+
+      <!-- 状态小圆点（右下角：绿=实时 橙=T+1 灰=缺路径） -->
+      <circle cx="284" cy="340" r="5" fill="#10b981"/><circle cx="484" cy="344" r="5" fill="#f59e0b"/>
+      <circle cx="620" cy="232" r="5" fill="#94a3b8"/><circle cx="1120" cy="200" r="5" fill="#f59e0b"/>
+      <circle cx="866" cy="352" r="5" fill="#10b981"/><circle cx="1118" cy="626" r="5" fill="#10b981"/>
+
+      <!-- MiniMap -->
+      <g>
+        <rect x="1180" y="24" width="96" height="66" rx="7" fill="var(--card)" stroke="var(--line)"/>
+        <text class="gcap" x="1228" y="38" style="font-size:8.5px">MiniMap</text>
+        <circle cx="1200" cy="56" r="3.4" fill="var(--c-object)"/><circle cx="1214" cy="48" r="3" fill="var(--c-object)"/>
+        <circle cx="1216" cy="70" r="3" fill="var(--c-object)"/><circle cx="1236" cy="58" r="2.4" fill="var(--c-carrier)"/>
+        <circle cx="1252" cy="52" r="2.6" fill="var(--c-mysql)"/><circle cx="1262" cy="66" r="2.6" fill="var(--c-doris)"/>
+        <circle cx="1246" cy="78" r="2.6" fill="var(--c-sls)"/>
+        <rect x="1194" y="44" width="70" height="42" rx="4" fill="none" stroke="var(--primary)" opacity=".7"/>
+      </g>
+
+      <text class="t2" x="40" y="770">图面只放关系主干（对象级 + 路径级）；物理表列、粒度/新鲜度明细、字段映射一律下钻到右侧详情面板 —— 一张图只回答"数据从哪来、到哪去"。</text>
+      <text class="t2" x="40" y="788">半透明紫圆 + 红字「公司·汇总（缺）」= 该概念<b>没有</b>去重源，所以"全球公司总数"只能分站呈现，模型不得相加。</text>
+    </svg>
+
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card" style="background:var(--bg)">
+        <b>详情面板（模拟点中「案例」节点）</b>
+        <table>
+          <tbody>
+            <tr><th>业务对象</th><td>案例 Case · 别名「口扫案例」「诊疗记录」</td></tr>
+            <tr><th>编排的候选源顺序</th><td>
+              1) Doris 数仓 · 案例日汇总（<b>T+1</b>，可算跨站去重/全局比率）<br>
+              2) prd-cn / prd-en / prd-eu / prd-uk / prd-jp · 案例表（<b>实时</b>，各站明细）</td></tr>
+            <tr><th>跨源关系（本体的增量）</th><td>案例 ↔ 案例日汇总 <code>case_code</code>；案例 ↔ 设备操作日志 <code>equipment_code</code>（经设备）</td></tr>
+            <tr><th>同库关系</th><td>→ 公司 <code>company_code</code>；→ 用户 <code>doctor_user_code</code></td></tr>
+            <tr><th>口径提示</th><td>"全球案例数"默认<b>分站呈现</b>；要总数走数仓去重并标注 T+1</td></tr>
+            <tr><th>上游 / 下游</th><td>上游：无 · 下游：案例文件、案例治疗记录、设备运行画像</td></tr>
+          </tbody>
+        </table>
+        <div class="small" style="margin-top:6px">物理表名只出现在这里（建模/管理视角）。对 LLM 与普通客户端一律只出业务名 —— 护栏 §7 黑盒。</div>
+      </div>
+      <div class="card" style="background:var(--bg)">
+        <b>这张图对应到实现（M3 待做的投影）</b>
+        <ul class="flat">
+          <li>业务对象：<code>adh:obj:{key}</code>（保持现状）。</li>
+          <li>源对象在聚合图用<b>带源限定 IRI</b> <code>adh:sobj:{数据源}:{对象}</code> —— 否则两个源都叫"案例"会塌成一个节点（同名塌陷是历史缺陷）。</li>
+          <li>路径节点 <code>adh:carrier:{对象}:{路径}</code>，谓词 <code>hasCarrier / carrierType / onDataSource / freshness / sourceObject</code>，并用 <code>owl:sameAs</code> 关联 源对象 → 业务对象（仅身份关联，不靠推理闭包）。</li>
+          <li>紫虚线跨源关系 = <code>links[].cross_source</code> 投影为 <code>adh:linkableVia</code> + <code>adh:joinKey</code>；
+            <b>只用于图面展示与多步编排提示，不进 planner</b>（语义层 JOIN 仍锁同源 ≤2 跳，这条边界要写死）。</li>
+          <li>裁剪在<b>返回层</b>：LLM 检索面过 <code>available_sources</code>；建模页图面显示全量（管理员要看未授权源才能判断授权）。图与表存全量。</li>
+          <li>既有缺陷同批修：单模型投影失败不再只 <code>warning</code> 跳过，要计入重建结果回传 <code>validation_warnings</code>（禁止静默缺图）。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <b>对照：情形一的图谱长什么样（现网业务本体，管 1 个源本体）</b>
+    <svg viewBox="0 0 1300 210" role="img" aria-label="单源业务本体的图谱塌缩">
+      <rect class="dotbg" x="0" y="0" width="1300" height="210" rx="12"/>
+      <text class="t" x="30" y="34">业务对象（左）</text>
+      <text class="t" x="470" y="34">源对象（右，同库同表）</text>
+      <text class="t" x="900" y="34">→ 业务层没有增量节点/增量边</text>
+      <g>
+        <circle cx="90" cy="90" r="26" fill="var(--c-object)"/><text class="gn" x="90" y="94">案例</text>
+        <circle cx="90" cy="160" r="26" fill="var(--c-object)"/><text class="gn" x="90" y="164">公司</text>
+        <circle cx="540" cy="90" r="26" fill="var(--c-mysql)"/><text class="gn" x="540" y="94">案例</text>
+        <circle cx="540" cy="160" r="26" fill="var(--c-mysql)"/><text class="gn" x="540" y="164">公司</text>
+        <path class="edge" d="M116,90 L514,90" marker-end="url(#e1)"/>
+        <path class="edge" d="M116,160 L514,160" marker-end="url(#e1)"/>
+        <text class="lbl" x="300" y="82">1:1 复述</text>
+        <path class="edge ok" d="M566,90 C600,110 600,140 566,158" marker-end="url(#e3)"/>
+        <text class="lbl" x="606" y="128">同库关系 company_code</text>
+      </g>
+      <rect class="box" x="880" y="52" width="390" height="128" rx="10" style="stroke:var(--warn)"/>
+      <text class="t2" x="898" y="76">· 对象数、属性、关系与源本体<b>逐项同构</b>，业务本体只是换了套中文显示名；</text>
+      <text class="t2" x="898" y="96">· 图谱看起来"漂亮"，但删掉业务本体这一层，源本体图<b>信息量不减</b>；</text>
+      <text class="t2" x="898" y="116">· 于是维护两份模型、两次发布、两套展开行 —— 成本翻倍，收益为 0；</text>
+      <text class="t2" x="898" y="136">· 现网 51 条 links 全在这张图内部（同库），<b>跨源边 0 条</b>。</text>
+      <text class="t2" x="898" y="156" style="fill:var(--warn)">→ 结论：要么直接用源本体问数，要么把 Doris/SLS 源本体纳进来让它"管 N 个"。</text>
+    </svg>
+  </div>
+</section>
+
+<!-- ══════════ 6. 缺口与待拍板 ══════════ -->
+<section id="gaps">
+  <h2><span class="no">6</span>缺口与待你拍板</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th style="width:6%">序</th><th style="width:28%">缺口</th><th style="width:34%">实测证据</th><th>后果 / 前置</th></tr></thead>
+      <tbody>
+        <tr><td>0</td><td><b>模型层次错位：业务本体只管 1 个源本体</b> <span class="chip c-new">新诊断</span></td>
+          <td>业务本体 <code>datasource_id=prd-cn</code>；51 条 links 全为同库关系，<b>跨源边 0 条</b>；Doris/SLS 源本体已 active 但无边相连</td>
+          <td>业务本体退化成源本体的中文复述，双份维护。<b>定方向后才能定"补什么"</b>：要么用源本体问数，要么纳多源并建跨源关系</td></tr>
+        <tr><td>1</td><td>9/17 对象主表无列元数据</td>
+          <td><code>adh_column_metadata</code> 里 prd-cn 只有 8 张对象主表有行</td>
+          <td>32 条 links 无法验证；补业务名/推关系/建跨源边全部缺料。<b>前置项</b></td></tr>
+        <tr><td>2</td><td>桥接对象未登记（Membership / UserRole）</td>
+          <td>join 引用了本体里不存在的名字；物理表 <code>t_user_company_relation</code> 真实存在且已同步 12 列</td>
+          <td>9 条引用未建模 + 5 条含「→」→ M:N 关系事实上全废</td></tr>
+        <tr><td>3</td><td>列名与物理元数据不符 ×3</td>
+          <td>如 <code>AIConversation.user_code</code>，物理列是 <code>user_id</code></td>
+          <td>SQL 报 Unknown column，被误报成"数据源不可用"</td></tr>
+        <tr><td>4</td><td>「国家/地区」对象缺失</td>
+          <td>评测 <code>join_three_hop_chain</code> 问「国家.国名」无对象；底表现成 <code>sys_area</code> / <code>sys_world_area*</code></td>
+          <td>eval 绝对下限卡 90.2%（相对基线未回退）</td></tr>
+        <tr><td>5</td><td><b>取数路径与规则/场景/快速路径三处重叠</b> <span class="chip c-new">新诊断</span></td>
+          <td>carrier（<code>authority</code>/<code>allowed_carrier</code>）+ <code>rules[path_preference]</code> + <code>quick_path</code>（已带 <code>priority</code>/<code>datasource_id</code>）</td>
+          <td>三处各配一套 → 必然漂移，且字典权威被架空。<b>见第 2 节收敛方案</b></td></tr>
+        <tr><td>6</td><td><code>authority</code> / <code>allowed_carrier</code> 是第二套口径判断</td>
+          <td>字典已有 <code>datasource_id</code>+<code>target_table</code>+<code>certified</code> 表达同一件事</td>
+          <td>按你的纠正：<b>退役或改名</b>；选路改读字典编排顺序</td></tr>
+        <tr><td>7</td><td>跨源关系边 0 条（M3 的 <code>cross_source</code> 未做）</td>
+          <td>业务本体无法表达"业务库案例 ↔ 数仓汇总 ↔ SLS 日志"</td>
+          <td>业务本体拿不到增量价值；跨源分析只能靠模型多步手拼</td></tr>
+        <tr><td>8</td><td>Doris 源本体无部署绑定</td>
+          <td><code>resolve_binding('case_stat', Doris)</code> → <code>no binding found</code>；该模型在 <code>adh_ontology_bindings</code> 0 行</td>
+          <td>数仓优先暂时落不了地（编排指向数仓会当场 fail-loud）</td></tr>
+        <tr><td>9</td><td>M4 规则/场景消费点 0%、M5 清理 0%、工作树混批未提交</td>
+          <td>三种 rule kind 代码里不存在；旧 route 死代码原样在；残留 6 failed + 13 errors 属别批/环境</td>
+          <td>新旧口径并存，后来人配错表；无法灰度回退</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card">
+      <b>待拍板一：三处重叠怎么收敛？</b>
+      <ul class="flat">
+        <li><b>A（推荐）</b>：承载表保留为服务端内部"可选物理路径清单"；<code>authority</code> 与 <code>allowed_carrier</code> 退役，优先级改由字典编排；前端「取数路径」页签换成「规则 + 场景」；快速路径改为引用 scenario。</li>
+        <li><b>B</b>：承载表整体退役，取数路径并入 <code>rules[kind=path_preference]</code> + <code>adh_ontology_bindings</code>（M1/M2 择路重构，改动大）。</li>
+        <li><b>C</b>：三处并存但定优先级（字典 &gt; 规则 &gt; 快速路径），冲突时高优先层胜出并告警。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <b>待拍板二：业务本体往哪个方向长？</b>
+      <ul class="flat">
+        <li><b>A（推荐）</b>：把它变成"管 N 个源本体"的跨源层 —— 纳入 Doris + SLS 源本体，登记<b>跨源关系边</b>（第 5 节模拟图），同构 5 站仍由 <code>deploy_sites</code> 展开不逐站建源本体。</li>
+        <li><b>B</b>：承认它现在就是源本体，改名/改 kind 归位，跨源统一层另建（干净但涉及现网模型迁移）。</li>
+        <li><b>C</b>：先只修同库断链（缺口 1–4），跨源层留到下一期。</li>
+      </ul>
+      <div class="callout rev" style="margin-top:10px">
+        两个问题定了我就开工；在此之前我不动共享元库的建模数据（新对象、改 links、跑元数据同步都属写操作）。
+        本轮已完成的代码（呈现层/灰度/落戳/降级）与 <code>authority</code> 相关部分<b>可能要按拍板一回退</b>，我会在改前先标注影响面。
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 7. 术语对照 ══════════ -->
+<section id="gloss">
+  <h2><span class="no">7</span>术语对照（这几个词最容易乱）</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th style="width:19%">词</th><th style="width:36%">准确含义</th><th>不是什么 / 注意</th></tr></thead>
+      <tbody>
+        <tr><td><b>源本体</b> <code>kind='source'</code></td><td>某个数据源物理表列的语义投影，<b>物理形状的唯一事实源</b></td>
+          <td>不是"低级模型"。业务本体只管 1 个源本体时，它基本就是源本体的复述（第 3 节判据）</td></tr>
+        <tr><td><b>业务本体</b> <code>kind='business'</code></td><td>跨<b>多个</b>源本体的统一业务描述 + <b>源本体之间的关系网</b></td>
+          <td>它的增量价值<b>只在跨源</b>；跨站同构展开不算跨源（那由 <code>deploy_sites</code> 管）</td></tr>
+        <tr><td><b>承载 / 取数路径</b></td><td>同一概念的一条可取数路径：哪个源、对应哪个源本体对象、什么粒度与新鲜度</td>
+          <td><b>不携带优先级、不携带权威位</b>（按本轮纠正）；也不是物理表映射（那在 <code>adh_ontology_bindings</code>）</td></tr>
+        <tr><td><b>字典编排</b></td><td>指标/维度行声明的口径与取数位置：<code>datasource_id</code> + <code>target_table</code> + <code>formula_dialects</code> + <code>agg_type</code></td>
+          <td><b>这才是"数仓优先"的落点</b>；<code>certified</code> 已表达"单一事实源"，不需要再造 authority 位</td></tr>
+        <tr><td><b>分站呈现</b></td><td>每站一行/一表，各站独立口径，<b>不相加</b>。是"全球 X 数"的<b>缺省</b>呈现</td>
+          <td>用户明确要"总数/不区分站点/去重"才切去重路径；没去重源时如实说"没有去重后的全局值"</td></tr>
+        <tr><td><b>作用域裁剪 vs 降级</b></td><td>裁剪=没权限，路径对模型不可见，对用户不提；降级=有权限但失败，必须 <code>degraded=true</code> 显式标</td>
+          <td>把"缺权限"讲给用户是越界；把"执行失败"藏起来是掩盖缺陷。两者必须在审计中可分辨</td></tr>
+        <tr><td><b>快速路径</b> <code>quick_path</code></td><td>知识管理里已上线的"查询方案指引"：触发词命中 → 说明文本注入提示词</td>
+          <td>它是<b>提示词级、LLM 自由裁量</b>，不是确定性选路；现在却带 <code>priority</code>/<code>datasource_id</code> → 与承载/规则重叠，待收敛</td></tr>
+        <tr><td><b>规则 rules / 场景 scenarios</b></td><td>本体层的走法偏好(path_preference)、可用性(availability)、口径告诫(caveat)；多步分析剧本</td>
+          <td>M4 未落地。落地时每种 kind <b>必须有已登记消费方</b>，否则激活阻断（防"配了没用"）</td></tr>
+        <tr><td><b>跨源衔接键</b></td><td>同一实体在不同源里的对齐列（<code>case_code</code> / <code>equipment_code</code> / <code>user_code</code>），投影为 <code>linkableVia</code> + <code>joinKey</code></td>
+          <td>只用于图面与多步编排提示，<b>不进 planner</b>：语义层 JOIN 仍锁同源 ≤2 跳</td></tr>
+        <tr><td><b>同构站点部署</b> <code>deploy_sites</code></td><td>一份契约 × N 站，取数按站点把生效源改写到请求站</td>
+          <td>只管同构复制；跨源/跨层一律走承载。两套不混用，可并存</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<footer style="padding:0 24px 50px;max-width:1440px;margin:0 auto">
+  <div class="card">
+    <b>数据来源与口径</b>
+    <ul class="flat">
+      <li>现网数字来自元库 <code>adh2</code> 直读实测（<code>adh_ontology_models</code> / <code>adh_column_metadata</code> / <code>adh_table_info</code> / <code>adh_ontology_bindings</code> / <code>adh_ontology_carriers</code> / <code>adh_metrics</code> / <code>adh_dimensions</code>），非估算。</li>
+      <li>「links 可走通/断裂」判定与 <code>semantics/planner.py::_rewrite_join</code> 及其调用点<b>同口径</b>，固化在 <code>backend/scripts/propose_business_links.py</code>（默认只报告，不自动改）。</li>
+      <li>跨站同构性 = 逐表比对 <code>adh_table_info</code> 与 <code>adh_column_metadata</code> 列集合（prd-cn 为基准）：16/17 对象五站一致，仅 <code>t_ai_conversation</code> 只有中国站。</li>
+      <li><b>第 5 节是模拟图</b>：对象与源（业务库/数仓/日志）取自现网真实存在的表，但"客户经营本体"及其跨源边是<b>目标态示例</b>，现网尚未登记。</li>
+      <li>本轮修订依据：用户 2026-10-28 三条纠正（优先级不靠 authority 而靠指标/维度编排且数仓优先、全球数默认分站不去重、取数路径与规则+场景及快速路径重叠需收敛、业务本体按"管几个源本体"定价值）。改代码后需同步此图。</li>
+    </ul>
+  </div>
+</footer>
+</body>
+</html>

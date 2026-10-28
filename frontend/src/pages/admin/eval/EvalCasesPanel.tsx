@@ -21,6 +21,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { toast } from '@/lib/toast';
+import PaginationBar from '@/components/PaginationBar';
 import { ChevronDown, ChevronRight, Plus } from 'lucide-react';
 import client from '@/api/client';
 import {
@@ -47,7 +48,7 @@ const EMPTY = {
   payload: '{}', expected: '{}', note: '', sort: 0,
 };
 
-const PAGE_SIZE = 25;
+const PAGE_SIZE_DEFAULT = 25;
 
 export default function EvalCasesPanel({
   suites, capabilities, cases, loading, error, suiteFilter,
@@ -55,6 +56,7 @@ export default function EvalCasesPanel({
 }: Props) {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(0);
+  const [PAGE_SIZE, setPageSize] = useState(PAGE_SIZE_DEFAULT);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<EvalCase | null>(null);
@@ -301,22 +303,15 @@ export default function EvalCasesPanel({
                   </thead>
                   <tbody>{pageRows(list).map(Row)}</tbody>
                 </table>
-                {list.length > PAGE_SIZE && (
-                  <div className="flex items-center gap-2 p-2 border-t">
-                    <Button size="sm" variant="outline" className="h-6 text-[11px]"
-                      disabled={page === 0} onClick={() => setPage(p => Math.max(0, p - 1))}>
-                      上一页
-                    </Button>
-                    <span className="text-[11px] text-muted-foreground">
-                      第 {page + 1} / {Math.ceil(list.length / PAGE_SIZE)} 页
-                    </span>
-                    <Button size="sm" variant="outline" className="h-6 text-[11px]"
-                      disabled={(page + 1) * PAGE_SIZE >= list.length}
-                      onClick={() => setPage(p => p + 1)}>
-                      下一页
-                    </Button>
-                  </div>
-                )}
+                <PaginationBar
+                  page={page + 1}
+                  pageSize={PAGE_SIZE}
+                  total={list.length}
+                  onChange={(p: number) => setPage(Math.max(0, p - 1))}
+                  onPageSizeChange={(n: number) => { setPageSize(n); setPage(0); }}
+                  hideWhenSingle
+                  className="rounded-b-lg"
+                />
               </div>
             )}
           </div>

@@ -22,13 +22,15 @@ export function WorkspaceStatus() {
 
 export function WorkspaceEntry({ module = 'dashboards', legacyId = false }: { module?: 'dashboards' | 'ask' | 'workspace' | 'screen'; legacyId?: boolean }) {
   const store = useWorkspaces();
-  const { dashboardId, id } = useParams();
+  const { dashboardId, id, groupId } = useParams();
   const wsId = store.getDefaultWorkspaceId();
   if (!store.loaded || store.loading || store.error || !wsId) return <WorkspaceStatus />;
   if (module === 'screen') return <Navigate to={`/screen${dashboardId || id ? `/${dashboardId || id}` : ''}?workspace_id=${wsId}&from=${encodeURIComponent(`/ws/${wsId}/dashboards`)}`} replace />;
-  // 工作空间默认页 = 数据看板清单; 数据看板已收进工作空间('dashboards' 同落点, 详情为 …/dashboards/:id)
+  // 工作空间默认页 = 数据看板组合清单; 数据看板已收进工作空间('dashboards' 同落点)
+  // 旧独立看板域的单段链接 /dashboards/<groupId> 仍指向该组合入口（由入口页直接跳组内看板详情，不降级成“看全部”）
   const base = module === 'workspace' || module === 'dashboards' ? `/ws/${wsId}/dashboards` : `/${module}/${wsId}`;
-  const target = legacyId && (dashboardId || id) ? `${base}/${dashboardId || id}` : base;
+  const target = legacyId && (dashboardId || id) ? `${base}/${dashboardId || id}`
+    : module === 'dashboards' && groupId ? `${base}/group/${groupId}` : base;
   return <Navigate to={target} replace />;
 }
 

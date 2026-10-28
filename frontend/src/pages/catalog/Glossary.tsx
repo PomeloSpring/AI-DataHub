@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { toast } from '@/lib/toast';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import {
   Plus,
   Search,
@@ -91,6 +92,7 @@ export default function Glossary({
   const [terms, setTerms] = useState<Term[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
 
@@ -107,7 +109,7 @@ export default function Glossary({
     setLoading(true);
     try {
       // 嵌入模式一次拉大页: 作用域在前端按表集过滤, 避免先分页再过滤的计数错乱
-      const params: any = { page, size: embedded ? 200 : 20 };
+      const params: any = { page, size: embedded ? 200 : pageSize };
       if (search) params.search = search;
       // 工作区作用域: 只看本数据源(+全局)的术语
       if (datasourceId) params.datasource_id = datasourceId;
@@ -121,7 +123,7 @@ export default function Glossary({
     } finally {
       setLoading(false);
     }
-  }, [page, search, datasourceId, embedded]);
+  }, [page, pageSize, search, datasourceId, embedded]);
 
   useEffect(() => {
     loadTerms();
@@ -199,8 +201,8 @@ export default function Glossary({
   }, [terms, embedded, tables]);
 
   return (
-    <div className={embedded ? 'space-y-4' : 'p-6 space-y-4'}>
-      <div className="flex items-center justify-between">
+    <div className={embedded ? 'space-y-4' : 'flex flex-col h-full gap-4'}>
+      <div className="flex items-center justify-between shrink-0">
         {!embedded && (
         <div>
           <h1 className="text-2xl font-bold">业务术语</h1>
@@ -220,7 +222,7 @@ export default function Glossary({
       </div>
 
       {/* Search */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 shrink-0">
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
@@ -233,7 +235,7 @@ export default function Glossary({
       </div>
 
       {/* Terms Table */}
-      <div className="border rounded-lg overflow-hidden">
+      <div className={embedded ? 'border rounded-lg overflow-hidden' : 'flex-1 min-h-0 overflow-auto border rounded-lg'}>
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
@@ -311,19 +313,18 @@ export default function Glossary({
         </table>
       </div>
 
-      {/* Pagination */}
-      {!embedded && total > 20 && (
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>共 {total} 条</span>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-              上一页
-            </Button>
-            <Button variant="outline" size="sm" disabled={page * 20 >= total} onClick={() => setPage(page + 1)}>
-              下一页
-            </Button>
-          </div>
-        </div>
+      {/* Pagination —— 统一分页条（sticky 底部） */}
+      {!embedded && (
+        <PaginationBar
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          busy={loading}
+          onChange={(p: number) => setPage(p)}
+          onPageSizeChange={(n: number) => { setPageSize(n); setPage(1); }}
+          hideWhenSingle
+          className="shrink-0 mt-2"
+        />
       )}
 
       {/* Create/Edit Term Dialog */}

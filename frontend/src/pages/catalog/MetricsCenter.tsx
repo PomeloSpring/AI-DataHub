@@ -32,6 +32,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import DimensionsDictTab from './DimensionsDictTab';
 import {
   AGG_TYPE_OPTIONS,
@@ -190,6 +191,7 @@ export default function MetricsCenter({
   const [metrics, setMetrics] = useState<Metric[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   // 加载失败与「确实没有数据」必须可区分：把接口错误吞成空列表等于把缺陷藏起来
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -227,7 +229,7 @@ export default function MetricsCenter({
     setLoadError(null);
     try {
       // 指标字典是全局唯一口径, 不随工作空间切换(与维度字典同口径), 故不传 workspace_id
-      const params: MetricListQuery = { page, size: 20 };
+      const params: MetricListQuery = { page, size: pageSize };
       if (search) params.search = search;
       if (fCategory !== 'all') params.category = fCategory;
       if (fTag !== 'all') params.tags = fTag;
@@ -252,7 +254,7 @@ export default function MetricsCenter({
     } finally {
       setLoading(false);
     }
-  }, [page, search, fCategory, fTag, fAgg, fObject, fCertified, fStatus, fTarget, modelId]);
+  }, [page, pageSize, search, fCategory, fTag, fAgg, fObject, fCertified, fStatus, fTarget, modelId]);
 
   useEffect(() => {
     loadMetrics();
@@ -434,9 +436,9 @@ export default function MetricsCenter({
   };
 
   return (
-    <div className={embedded ? 'space-y-4' : 'p-6 space-y-4'}>
+    <div className={embedded ? 'space-y-4' : 'flex flex-col h-full gap-4'}>
       {!embedded && (
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between shrink-0">
         <div>
           <h1 className="text-2xl font-bold">指标中心</h1>
           <p className="text-muted-foreground text-sm mt-1">指标字典与维度字典的唯一管理入口（全局口径，不随工作空间切换）</p>
@@ -444,9 +446,11 @@ export default function MetricsCenter({
       </div>
       )}
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as 'metrics' | 'dimensions')}>
+      {/* self-start: Tabs 被改成 flex-col 后, inline-flex 的 TabsList 会被交叉轴拉伸成通栏色带
+          (历史表现: 页签跑到页面正中)。与 DagEditor/DagRunDetail 同口径左对齐。 */}
+      <Tabs value={tab} onValueChange={(v) => setTab(v as 'metrics' | 'dimensions')} className={embedded ? undefined : 'flex-1 min-h-0 flex flex-col'}>
         {!embedded && (
-        <TabsList>
+        <TabsList className="shrink-0 self-start">
           <TabsTrigger value="metrics" className="flex items-center gap-2">
             <BarChart3 className="w-4 h-4" /> 指标字典
           </TabsTrigger>
@@ -456,8 +460,8 @@ export default function MetricsCenter({
         </TabsList>
         )}
 
-        <TabsContent value="metrics" className="space-y-4">
-      <div className="flex justify-end gap-2">
+        <TabsContent value="metrics" className={embedded ? 'space-y-4' : 'flex-1 min-h-0 flex flex-col gap-4'}>
+      <div className="flex justify-end gap-2 shrink-0">
         <Button variant="outline" size="sm" onClick={loadMetrics}>
           <RefreshCw className="w-4 h-4 mr-1" />
           刷新
@@ -473,7 +477,7 @@ export default function MetricsCenter({
           历史缺陷就是写死 basic/derived/composite 当 category 值域，与库内 可观测/客户/案例…
           无交集，选任何一项都查空，成了“能点但永远无结果”的死筛选。
           业务域分类与口径标签分两个下拉（两个正交维度不再挤在同一列/同一个下拉）。 */}
-      <div className="flex flex-wrap items-center gap-3 p-3 border rounded-lg bg-muted/30">
+      <div className="flex flex-wrap items-center gap-3 p-3 border rounded-lg bg-muted/30 shrink-0">
         <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
           <Filter className="w-4 h-4" /> 筛选
         </div>
@@ -575,7 +579,7 @@ export default function MetricsCenter({
         <span className="ml-auto text-xs text-muted-foreground">共 {total} 条</span>
       </div>
       {facetsError && (
-        <div className="flex flex-wrap items-center gap-2 text-xs text-destructive">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-destructive shrink-0">
           <span>筛选项加载失败：{facetsError}（分类/计算方式/归属对象等下拉暂不可用，关键词搜索仍可用）</span>
           <Button variant="outline" size="sm" className="h-7 text-xs" onClick={loadFacets}>
             <RefreshCw className="w-3 h-3 mr-1" />重试
@@ -584,7 +588,7 @@ export default function MetricsCenter({
       )}
 
       {/* Metrics Table */}
-      <div className="border rounded-lg overflow-hidden">
+      <div className={embedded ? 'border rounded-lg overflow-hidden' : 'flex-1 min-h-0 overflow-auto border rounded-lg'}>
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
@@ -692,24 +696,22 @@ export default function MetricsCenter({
         </table>
       </div>
 
-      {/* Pagination */}
-      {total > 20 && (
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          {/* 条数已在筛选栏呈现，这里只报分页位置(两处同一个数字是噪声) */}
-          <span>第 {page} / {Math.max(1, Math.ceil(total / 20))} 页</span>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-              上一页
-            </Button>
-            <Button variant="outline" size="sm" disabled={page * 20 >= total} onClick={() => setPage(page + 1)}>
-              下一页
-            </Button>
-          </div>
-        </div>
-      )}
+      {/* Pagination —— 统一分页条（sticky 底部 + 半透明背景），全站唯一入口 */}
+      <PaginationBar
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        busy={loading}
+        onChange={(p: number) => setPage(p)}
+        onPageSizeChange={(n: number) => { setPageSize(n); setPage(1); }}
+        hideWhenSingle
+        showTotal={false}
+        className={embedded ? 'mt-4 -mx-4 -mb-4 px-4' : 'shrink-0 mt-2'}
+        leftText={`第 ${page} / ${Math.max(1, Math.ceil(total / pageSize))} 页`}
+      />
         </TabsContent>
 
-        <TabsContent value="dimensions" className="space-y-4">
+        <TabsContent value="dimensions" className={embedded ? 'space-y-4' : 'flex-1 min-h-0 overflow-auto'}>
           <DimensionsDictTab
             modelId={modelId}
             scope={modelId ? 'model' : undefined}

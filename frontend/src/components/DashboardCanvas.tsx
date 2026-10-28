@@ -4,12 +4,18 @@ import type { Dashboard, DashboardChart as ChartModel } from '@/stores/dashboard
 import type { VisComponent } from '@/api/visLibrary';
 import { useThemeStore } from '@/stores/themeStore';
 import { chartData, chartRect, chartZIndex, getCanvas, isChartHidden, resolveChartDesign, resolveDashboardDesign, visualConfig, legacyCanvasFilters, type Rect } from '@/lib/dashboardDesign';
-import { PAGE_COLUMNS, PAGE_ROW, pageBreakpoint, pageCanvasSize, pageGap, pageGapsOf, pagePixelRect, resolvePageLayout, type PageBreakpoint, type PageItem } from '@/lib/dashboardPageLayout';
+import { PAGE_COLUMNS, PAGE_ROW, pageBreakpoint, pageGap, pageGapsOf, pagePixelRect, resolvePageLayout, type PageBreakpoint, type PageItem } from '@/lib/dashboardPageLayout';
+import { thumbnailGeometry } from '@/lib/dashboardThumbnail';
 import { fitBackgroundSize, gridBackgroundStyle } from '@/lib/canvasTheme';
+import { ChartGlyph } from './ChartGlyph';
+import { TEMPLATE_DEMO_KEY } from '@/lib/dashboardDemo';
 
-export const DashboardChartCard = memo(function DashboardChartCard({ chart, design, items, actions, draft = false, interactive }: {
+/** 样式模板图（内置演示数值）的角标提示：降级必须显式，用户得知道自己看的是样式示例而非取数结果 */
+export const DEMO_DATA_HINT = '图表样式示例数据（模板内置，不取数）。要让这张卡出真数，在「数据与字段配置」里写 SQL 或语义查询；保存后示例数据与标记会自动清除。';
+
+export const DashboardChartCard = memo(function DashboardChartCard({ chart, design, items, actions, draft = false, interactive, demoBadge }: {
   chart: ChartModel; design: ReturnType<typeof resolveDashboardDesign>; items: VisComponent[];
-  actions?: ReactNode; draft?: boolean; interactive?: boolean;
+  actions?: ReactNode; draft?: boolean; interactive?: boolean; demoBadge?: boolean;
 }) {
   const resolved = resolveChartDesign(chart.config, design, items, chart.chart_type);
   const cfg = visualConfig(resolved.config);
@@ -33,7 +39,15 @@ export const DashboardChartCard = memo(function DashboardChartCard({ chart, desi
       background: cfg.titleBarBg, color: cfg.titleColor || cfg.labelColor,
             fontSize: cfg.titleFontSize, fontWeight: cfg.titleFontWeight,
       borderBottom: cfg.showUnderline ? `1px solid ${cfg.underlineColor || 'hsl(var(--border))'}` : undefined,
-    }}><span className="truncate font-medium">{chart.name}</span>{actions}</div>}
+    }}>
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className="truncate font-medium">{chart.name}</span>
+        {demoBadge && chart.config?.[TEMPLATE_DEMO_KEY] === true && <span
+          title={DEMO_DATA_HINT}
+          className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-normal leading-4 text-amber-600">示例数据</span>}
+      </span>
+      {actions}
+    </div>}
     {widget && actions && <div className="absolute right-0 top-0 z-20">{actions}</div>}
     {resolved.missing.length > 0 && <span className="px-2 text-xs text-amber-600" title={resolved.missing.join(', ')}>字模缺失，保留原配置</span>}
     <div {...(inertWidget ? { inert: '' } as any : {})} className="relative min-h-0 flex-1 overflow-hidden" style={{ padding: widget ? ws.padding : 4, color: ws.textColor, fontSize: ws.fontSize }}>
@@ -49,10 +63,12 @@ interface CanvasProps {
   dashboard: Pick<Dashboard, 'filters' | 'charts'>; items?: VisComponent[];
   style?: CSSProperties; children?: ReactNode; showGrid?: boolean; draft?: boolean;
   interactive?: boolean;
+  /** 示例数据角标：真实渲染面（编辑/大屏/页面）默认开启，缩略图/预览卡不走本组件所以不会贴标签 */
+  demoBadge?: boolean;
   renderChart?: (chart: ChartModel, card: ReactNode) => ReactNode;
 }
 export const DashboardCanvas = forwardRef<HTMLDivElement, CanvasProps>(function DashboardCanvas({
-  dashboard, items = [], style, children, showGrid, draft, interactive, renderChart,
+  dashboard, items = [], style, children, showGrid, draft, interactive, demoBadge = true, renderChart,
 }, ref) {
   const theme = useThemeStore(s => s.theme);
   const canvas = getCanvas(dashboard.filters, dashboard.charts);
@@ -71,7 +87,7 @@ export const DashboardCanvas = forwardRef<HTMLDivElement, CanvasProps>(function 
     {showGrid && <div className="pointer-events-none absolute inset-0" style={gridBackgroundStyle(canvas.gridSize, canvas.gridSize)} />}
     {design.missing.length > 0 && <div className="absolute right-2 top-1 z-10 text-xs text-amber-600">部分字模缺失，已保留原配置</div>}
     {chartRefs.map(chart => {
-      const card = <DashboardChartCard chart={chart} items={items} design={design} draft={draft} interactive={interactive} />;
+      const card = <DashboardChartCard chart={chart} items={items} design={design} draft={draft} interactive={interactive} demoBadge={demoBadge} />;
       if (renderChart) return renderChart(chart, card);
       const p = chartRect(chart);
       return <div key={chart.id} className="absolute min-h-0" style={{ left: p.x, top: p.y, width: p.w, height: p.h, zIndex: chartZIndex(chart) || undefined }}>{card}</div>;
@@ -95,7 +111,7 @@ export function FittedDashboardCanvas(props: CanvasProps) {
       transform: `translate(-50%, -50%) scale(${scale})`, transformOrigin: 'center', ...props.style }} />
   </div>;
 }
-export function ResponsiveDashboardCanvas({ dashboard, items = [], draft, interactive, breakpoint, renderItem, layout, onWidth }: CanvasProps & {
+export function ResponsiveDashboardCanvas({ dashboard, items = [], draft, interactive, demoBadge = true, breakpoint, renderItem, layout, onWidth }: CanvasProps & {
   breakpoint?: PageBreakpoint; layout?: PageItem[]; onWidth?: (width: number) => void;
   renderItem?: (item: PageItem, card: ReactNode, style: CSSProperties) => ReactNode;
 }) {
@@ -131,7 +147,7 @@ export function ResponsiveDashboardCanvas({ dashboard, items = [], draft, intera
         {shown.map(item => {
           const { chart, rect } = item;
           const style = { gridColumn: `${rect.x + 1} / span ${rect.w}`, gridRow: `${rect.y + 1} / span ${rect.h}` };
-          const card = <DashboardChartCard chart={chart} design={design} items={items} draft={draft} interactive={interactive} />;
+          const card = <DashboardChartCard chart={chart} design={design} items={items} draft={draft} interactive={interactive} demoBadge={demoBadge} />;
           return renderItem ? renderItem(item, card, style) : <div key={chart.id} data-chart-id={chart.id} className="min-h-0 min-w-0" style={style}>{card}</div>;
         })}
       </div>}
@@ -182,51 +198,20 @@ export function CanvasRulers({ canvas, scale, pan, active, visible = true }: {
 }
 // 列表缩略图只绘制配置，绝不挂载图表或执行查询。
 /**
- * 缩影图形：列表里的效果图要能一眼认出图表类型，而不是清一色四根假柱子。
- * 颜色取自字模库主题包（visual.palette），与真实渲染同源。
- * **导出供工作空间看板页复用**，两个列表不得各画一套（样式唯一源）。
+ * 缩影图形已下沉到 `components/ChartGlyph.tsx`（看板列表与模板预览共用，
+ * 避免模板弹窗 import 本模块形成环）。
  */
-export function ChartGlyph({ chartType, palette }: { chartType: string; palette: string[] }) {
-  const color = (i: number) => palette[i % (palette.length || 1)] || '#475569';
-  const type = chartType.toLowerCase();
-  if (type.startsWith('widget_')) {
-    return <div className="flex h-full items-center"><div className="h-1/3 w-2/3 rounded-full" style={{ background: color(0), opacity: 0.55 }} /></div>;
-  }
-  if (/big_number|statistic|kpi|indicator/.test(type)) {
-    return <div className="flex h-full flex-col justify-center gap-0.5"><div className="h-2 w-2/3 rounded-sm" style={{ background: color(0), opacity: 0.75 }} /><div className="h-1 w-1/3 rounded-sm" style={{ background: color(1), opacity: 0.4 }} /></div>;
-  }
-  if (/table|list/.test(type)) {
-    return <div className="flex h-full flex-col justify-center gap-0.5">{[0, 1, 2].map(r => <div key={r} className="h-1 rounded-sm" style={{ background: color(r), opacity: 0.4, width: `${90 - r * 18}%` }} />)}</div>;
-  }
-  if (/pie|donut|ring|rose/.test(type)) {
-    return <div className="flex h-full items-center justify-center"><div className="aspect-square h-3/4 rounded-full" style={{ background: `conic-gradient(${color(0)} 0 40%, ${color(1)} 40% 70%, ${color(2)} 70% 100%)`, opacity: 0.75 }} /></div>;
-  }
-  if (/line|area|trend|time|stock|scatter/.test(type)) {
-    return <div className="flex h-full items-end"><svg viewBox="0 0 40 20" preserveAspectRatio="none" className="h-full w-full"><polyline points="2,15 12,8 22,11 38,3" fill="none" stroke={color(0)} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.8" /></svg></div>;
-  }
-  // 柱状/条形/其余默认：竖向柱阵
-  return <div className="flex h-full items-end gap-1">{[40, 75, 55, 90].map((h, j) => <span key={j} className="flex-1 rounded-sm" style={{ height: `${h}%`, background: color(j), opacity: 0.6 }} />)}</div>;
-}
 
+/**
+ * 缩略图内容渲染器（列表效果图）。固定外框见 `DashboardThumbnailFrame`，
+ * 两者共用 `lib/dashboardThumbnail.ts: thumbnailGeometry` 的几何算点。
+ */
 export function DashboardThumbnail({ dashboard, items = [] }: { dashboard: Pick<Dashboard, 'filters' | 'charts'>; items?: VisComponent[] }) {
   const theme = useThemeStore(s => s.theme);
   const design = resolveDashboardDesign(legacyCanvasFilters(dashboard.filters), items, { theme });
-  // page 模式必须走 resolvePageLayout：这是真实画布的唯一布局源，
-  // 用 chartRect 像素另算一套会与画布对不上（曾出现缩略图 4 列溢出、大片空白）。
-  // 网格布局的判据是“有没有网格数据”：看板级 design.page 只是其中一种来源，
-  // 脚本/接口生成的看板可以只写每图表 config.pageLayout（只看 design.page 会误判成大屏，
-  // 缩略图按默认 1920×1080 画，内容只占顶部一小块）。
-  const isPage = dashboard.filters?.design?.page !== undefined
-    || dashboard.charts.some(c => (c.config as any)?.pageLayout !== undefined);
-  const pageItems = useMemo(() => {
-    if (!isPage) return [];
-    try { return resolvePageLayout(dashboard, 'desktop'); } catch { return []; }
-  }, [dashboard, isPage]);
-  const canvas = isPage ? pageCanvasSize(pageItems, 'desktop') : getCanvas(dashboard.filters, dashboard.charts);
+  const { isPage, pageItems, canvas, box } = useMemo(() => thumbnailGeometry(dashboard), [dashboard]);
   // 预览也是只读视图：被隐藏的图表不得混进缩略图（与阅读页同口径）
   const shownCharts = dashboard.charts.filter(c => !isChartHidden(c));
-  // 预览框高度最多取 2 倍宽：超长看板按真实比例裁顶部（不留大片空白，也不竖向压扁）
-  const box = { width: canvas.width, height: Math.min(canvas.height, canvas.width * 2) };
   const tiles = (isPage ? pageItems.filter(i => !isChartHidden(i.chart)).map(i => ({ chart: i.chart, rect: pagePixelRect(i.rect, 'desktop', pageGapsOf(dashboard.filters)) }))
     : shownCharts.map(c => ({ chart: c, rect: chartRect(c) })));
   return <div className="relative w-full overflow-hidden rounded-md border" style={{ aspectRatio: `${box.width} / ${box.height}`, backgroundColor: design.background.backgroundColor || design.visual.viewBg || '#f1f5f9', backgroundImage: design.background.backgroundImage, backgroundSize: fitBackgroundSize(design.background.backgroundSize, canvas) }}>

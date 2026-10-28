@@ -180,6 +180,13 @@ def make_tool(backend: str, name: str, description: str, input_schema: dict,
             # 异常文案也会进 LLM，同样过出站守卫。
             return assert_no_sensitive({"isError": True, "content": [{"type": "text", "text": json.dumps(
                 {"error": str(exc), "code": exc.code}, ensure_ascii=False)}]}, qualified_name)
+        except PermissionError as exc:
+            # 授权/域拒绝的 PermissionError 必须透传真因（当前 AS-BOT 未授权该工具 /
+            # 执行层已停用 等），不得坠入下方兜底换成“联系管理员”——那会把可诊断信息丢光
+            # （no-silent-degradation §1）。敏感收口仍由 assert_no_sensitive 负责。
+            logger.warning("AS-BOT 工具权限/域拒绝: %s: %s", qualified_name, exc)
+            return assert_no_sensitive(
+                {"isError": True, "content": [{"type": "text", "text": str(exc)}]}, qualified_name)
         except Exception:
             logger.exception("AS-BOT 工具被拒绝或执行失败: %s", qualified_name)
             return {"isError": True, "content": [{"type": "text", "text": "工具执行未完成：权限、资源或执行环境不满足要求，请查看会话能力或联系管理员。"}]}

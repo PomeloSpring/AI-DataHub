@@ -224,10 +224,18 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
       setLayout(component); return;
     }
     if (component.category === 'theme_pack') { setFollowTheme(false); setReplaceStyles(true); setPack(component); return; }
-    if (component.category === 'chart_style' || component.category === 'kpi_card' ||
+    if (component.category === 'chart_style' || component.category === 'kpi_card' || component.category === 'widget_style' ||
       (selectedChart && ['decoration_frame', 'color_theme'].includes(component.category))) {
-      if (!selectedChart) { toast.info('请先选择兼容图表，或将字模拖入画布'); return; }
-      if (!compatible(component, selectedChart.chart_type)) { toast.error('字模与当前图表类型不兼容，未改变图表或查询'); return; }
+      if (!selectedChart) {
+        // 控件样式只能挂到已选中的参数控件上（拖入新建对样式类字模无意义）
+        toast.info(component.category === 'widget_style' ? '请先选中一个参数控件（输入框/下拉/搜索按钮等），再应用控件样式。'
+          : '请先选择兼容图表，或将字模拖入画布');
+        return;
+      }
+      if (!compatible(component, selectedChart.chart_type)) {
+        toast.error(`「${component.name}」与「${selectedChart.name}」不兼容：图表样式只挂图表、控件样式只挂控件，未改变样式。`);
+        return;
+      }
       charts.updateLocalChart(selectedChart.id, { config: applyChartComponent(selectedChart.config, component, library.items) });
     } else charts.updateMetadata({ filters: applyScreenComponent(draftDashboard.filters, component) });
   };
@@ -327,6 +335,13 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
   const layoutPreview = draftDashboard && layoutResult ? { ...draftDashboard, filters: { ...draftDashboard.filters,
     design: { ...draftDashboard.filters.design, canvas: { ...dimensions, ...draftDashboard.filters.design?.canvas, height: layoutResult.height } } },
     charts: allCharts.map(c => ({ ...c, position: layoutResult.positions[c.id] || c.position })) } : null;
+  // 控件样式面板的基线 = 主题包 widgets + 已挂控件字模（不含本图覆盖）：
+  // 面板必须按“生效值 + 来源”展示，否则用户选了字模看不出来为何没变（本图覆盖优先是既定口径）。
+  const selectedIsWidget = !!selectedChart?.chart_type?.startsWith('widget_');
+  const selectedWidgetBase = selectedIsWidget && selectedChart
+    ? resolveChartDesign(selectedChart.config, design, library.items, selectedChart.chart_type).widget : undefined;
+  const selectedWidgetVisName = selectedIsWidget
+    ? library.items.find(i => i.code === selectedChart?.config?.vis?.refs?.widgetStyle)?.name : undefined;
   const persistVis = async () => {
     if (!visName.trim() || !draftDashboard || visSaving) return;
     if (visCategory === 'chart_style' && (!selectedChart || selectedChart.chart_type.startsWith('widget_'))) { toast.error('请选择图表'); return; }
@@ -429,8 +444,8 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
           {activeRect && (canvas.draggingChart != null || canvas.resizingChart != null) && computeAlignHints(
             activeRect, allCharts.filter(c => c.id !== selectedChart?.id).map(c => chartRect(c)), dimensions,
           ).gaps.map((g, i) => <span key={`gap-${i}`} aria-hidden
-            className={`pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded px-1 py-px font-mono text-[10px] leading-tight ${
-              g.equal ? 'bg-primary text-primary-foreground' : 'bg-background/95 text-muted-foreground ring-1 ring-border'}`}
+            className={`pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded px-1 py-px font-mono text-[10px] leading-tight shadow-sm ${
+              g.equal ? 'bg-primary/10 text-primary ring-1 ring-primary/30' : 'bg-background/85 text-muted-foreground ring-1 ring-border/70'}`}
             style={g.axis === 'x' ? { left: (g.from + g.to) / 2, top: g.at } : { top: (g.from + g.to) / 2, left: g.at }}>{Math.round(g.value)}</span>)}
         </DashboardCanvas>
         {allCharts.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
@@ -466,6 +481,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
         }} onWidgetConfigChange={charts.handleWidgetConfigChange}
         onDelete={charts.handleDeleteSelected} onChartConfig={openConfig} tab={propertyTab} onTab={setPropertyTab}
         pageParams={draftDashboard.page_params || []}
+        widgetStyleBase={selectedWidgetBase} widgetVisName={selectedWidgetVisName}
         onCreatePageParam={param => charts.updateMetadata({
           page_params: [...(draftDashboard.page_params || []).filter(p => p.name !== param.name), param],
         })} />
@@ -474,7 +490,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
     <DragOverlay dropAnimation={null}>{libraryDrag && <div className="rounded-md border bg-background px-2 py-1 text-xs shadow-lg">{libraryDrag.item.label}</div>}</DragOverlay>
     </DndContext>
     <ChartConfigPanel open={charts.configPanelOpen} chart={selectedChart} onClose={() => charts.setConfigPanelOpen(false)} onSave={charts.handleSaveChartConfig} />
-    <DashboardTemplates open={charts.templatesOpen} onClose={() => charts.setTemplatesOpen(false)} onApply={async template => {
+    <DashboardTemplates open={charts.templatesOpen} onClose={() => charts.setTemplatesOpen(false)} items={library.items} onApply={async template => {
       const applyTemplate = async () => {
         const newId = await charts.createFromTemplate(template); approveNavigation(); navigate(`/dashboard/editor/${newId}`);
       };

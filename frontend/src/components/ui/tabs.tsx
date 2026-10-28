@@ -41,7 +41,13 @@ const TabsContent = React.forwardRef<
   <TabsPrimitive.Content
     ref={ref}
     className={cn(
-      "mt-2 ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+      // Radix 隐藏非激活面板靠的是 `hidden` 属性, 而 preflight 的
+      // `[hidden]:where(:not([hidden="until-found"])){display:none}` 特异性只有 (0,1,0),
+      // 与 Tailwind utilities 同权重且排在 base 层之前 —— 页面一旦给 TabsContent 传
+      // `flex`/`grid` 等显示类(如指标中心 'flex-1 min-h-0 flex flex-col'), 就会覆盖 hidden,
+      // 空面板继续以 flex-1 参与布局, 把真正的 Tab 内容挤到下半屏(中间一大片空白)。
+      // 用 data-state 变体显式收口(特异性 (0,2,0)), 与 shadcn 上游修法一致。
+      "mt-2 ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 data-[state=inactive]:hidden",
       className
     )}
     {...props}

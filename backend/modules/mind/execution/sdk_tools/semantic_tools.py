@@ -88,13 +88,42 @@ async def get_metrics(args):
             deployments = await asyncio.to_thread(list_deployments)
         except Exception as dep_err:  # noqa: BLE001
             relations_note = relations_note or f"部署清单不可用: {dep_err}"
+        # 跨源拓扑（取数路径/承载，M1 只读投影）：同一概念有哪几条可取数路径
+        # （各站明细 / 数仓全局汇总 / 日志源）+ 粒度与新鲜度。事实源 adh_ontology_carriers，
+        # 经 topology 唯一投影口；未授权该数据源的承载对 LLM 不可见（作用域裁剪，与未授权
+        # 站点同口径）——被裁剪计数**只写服务端日志**，不得进返回体，否则 LLM 会向用户
+        # 转述“你还缺某源权限”（拍板：用户不需要知道因权限而不可用）。
+        # 执行侧选路在 `semantic_query`（同一 topology 单点实现）；灰度关闭时目录也不暴露
+        # carriers，两面必须同开关（否则模型看得见路径、传了 carrier 却被忽略）。
+        try:
+            from backend.semantics import topology
+            if obj_keys and topology.routing_enabled():
+                view = await asyncio.to_thread(
+                    topology.carriers_for_llm, obj_keys,
+                    int(getattr(ctx, "user_id", 0) or 0),
+                    int(getattr(ctx, "workspace_id", 0) or 0))
+                carriers_map = view.get("carriers") or {}
+                if view.get("carriers_filtered"):
+                    logger.info("[get_metrics] %d 条取数路径因数据源未授权对当前用户不可见"
+                                "（user=%s，不对外提及）",
+                                view["carriers_filtered"], getattr(ctx, "user_id", 0))
+                for it in items:
+                    cs = carriers_map.get(it.get("object"))
+                    if cs:
+                        it["carriers"] = cs
+        except Exception as car_err:  # noqa: BLE001 — 拓扑不可用时目录照常返回，但显式标注
+            relations_note = relations_note or f"取数路径清单不可用: {car_err}"
         out = {"objects": items, "total": len(items), "relations": relations,
                "deployments": deployments,
                "usage": "dimensions/metrics 直接复制此处 name 或其 aliases; 按天/月趋势选 is_time=true 的维度并配 time_grain; "
                         "enum 字段列出码值→业务名, filter 可传业务名也可传码值, 结果自动显示业务名; "
                         "relations 列出对象间关联(跨对象字段用 '对象名.业务名' 限定引用); "
                         "**全球/多站点问题：按 deployments 对每个可查站点分别调用 run_semantic_query（site 参数）逐站查询，"
-                        "站点不是维度；会话默认站点与可查站点清单见上下文「站点范围」段**; "
+                        "站点不是维度；会话默认站点与可查站点清单见上下文「数据源拓扑」段**; "
+                        "对象带 carriers 时=该概念有多条取数路径: 逐站明细走 site 参数多次单站查询，"
+                        "**默认分站呈现、不得把各站数字相加当合计值**; "
+                        "authority=true 的全局汇总路径才能一次查完并给单一数字(按 freshness/as_of_note 说明口径与时效); "
+                        "两条路径答案可能不同, 口径不明时用 ask_user 向用户确认, 不自行猜测; "
                         "若报错'无法解析', 从返回的可用清单改名重试。"}
         if relations_note:
             out["relations_degraded"] = relations_note

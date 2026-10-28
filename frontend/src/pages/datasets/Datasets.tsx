@@ -19,6 +19,8 @@ import {
 import client from '../../api/client';
 import { hasPerm } from '../../stores/permissionStore';
 import { CHART_TYPES } from '../../components/DashboardChart';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
+import { useClientPagination } from '@/hooks/useClientPagination';
 
 interface Dataset {
   id: number;
@@ -55,6 +57,9 @@ export default function Datasets() {
   const [syncResult, setSyncResult] = useState<any>(null);
   const canManage = hasPerm('dataset:manage');
 
+  // 数据集清单一次性拉全量 → 客户端分页（全站统一默认每页 20 条，候选 20/50/100）
+  const paged = useClientPagination(items, DEFAULT_PAGE_SIZE);
+
   // id → 数据源名（卡片次要信息显示用，绝不裸显 id）
   const dsNameById: Record<number, string> = {};
   datasources.forEach((d: any) => { dsNameById[Number(d.id)] = d.name; });
@@ -66,14 +71,19 @@ export default function Datasets() {
         params: { keyword, datasource_id: datasourceId || 0 },
       });
       setItems(data.items || []);
-    } catch {
+    } catch (e: any) {
+      // 清单拉失败不得静默渲成「暂无数据集」（会被误读为数据丢了），显式提醒
       setItems([]);
+      toast.error(e?.response?.data?.detail || '数据集清单加载失败');
     } finally {
       setLoading(false);
     }
   }, [keyword, datasourceId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // 筛选条件变化重置到第 1 页（避免停在越界空页）
+  useEffect(() => { paged.reset(); }, [keyword, datasourceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 数据源筛选器选项（显示 name、value=id，符合“显示用 name、选择用选择框”规范）
   useEffect(() => {
@@ -109,8 +119,8 @@ export default function Datasets() {
   };
 
   return (
-    <div className="h-full overflow-auto p-1">
-      <div className="flex items-center justify-between mb-4">
+    <div className="flex flex-col h-full">
+      <div className="flex items-center justify-between mb-4 shrink-0">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <Layers className="h-6 w-6" /> 数据集
@@ -136,7 +146,7 @@ export default function Datasets() {
         </div>
       </div>
 
-      <div className="flex gap-2 mb-4 flex-wrap">
+      <div className="flex gap-2 mb-4 flex-wrap shrink-0">
         <Input
           placeholder="搜索数据集名称 / 描述"
           value={keyword}
@@ -159,6 +169,8 @@ export default function Datasets() {
         </Select>
       </div>
 
+      {/* 清单区：仅此区域滚动（页头与分页固定，参考表&字段） */}
+      <div className="flex-1 min-h-0 overflow-auto">
       {loading ? (
         <div className="flex justify-center py-12 text-muted-foreground">
           <Loader2 className="h-5 w-5 animate-spin" />
@@ -169,7 +181,7 @@ export default function Datasets() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          {items.map(ds => (
+          {paged.slice.map(ds => (
             <div key={ds.id} className="border rounded-lg p-4 hover:bg-muted/30 transition-colors">
               <div className="flex items-start justify-between gap-2">
                 <button className="text-left min-w-0" onClick={() => navigate(`/data/datasets/${ds.id}`)}>
@@ -212,6 +224,18 @@ export default function Datasets() {
           ))}
         </div>
       )}
+      </div>
+
+      {/* 统一分页条：固定底栏，始终可见（不随页面滚走，也不悬浮在卡片上） */}
+      <PaginationBar
+        page={paged.page}
+        pageSize={paged.pageSize}
+        total={paged.total}
+        onChange={(p: number) => paged.setPage(p)}
+        onPageSizeChange={paged.setPageSize}
+        hideWhenSingle
+        className="shrink-0 mt-2"
+      />
 
       <CreateDatasetDialog
         open={createOpen}

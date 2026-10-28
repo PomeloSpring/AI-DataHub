@@ -9,7 +9,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { toast } from '@/lib/toast';
 import client from '@/api/client';
-import { ontologyApi } from '@/api/ontology';
+import { ontologyApi, type CarrierInput, type CarrierOptions } from '@/api/ontology';
 import { useGraphStore } from '@/stores/graphStore';
 import KnowledgeGraphView from '@/components/graph/KnowledgeGraph';
 import { Button } from '@/components/ui/button';
@@ -28,7 +28,7 @@ import { normalizeDocObjects } from '@/lib/ontologyObjects';
 // 不再拆四视图切换; singleView 传入时仍锁定旧单视图(系统助手/图谱页兼容)。
 
 /**
- * 适用站点子页：模型级声明「这份契约适用哪些站点 + 每站点路由到哪个数据源」。
+ * 同构站点部署子页（原「适用站点」）：模型级声明「这份契约适用哪些站点 + 每站点路由到哪个数据源」。
  *
  * 旧口径要为每个对象×每个站点各登记一行绑定（27 对象 × 5 站 = 135 行机械复制），
  * 现收敛为一次配置全对象共享；站点 schema 真不同时，按拍板「为该站单独配一个
@@ -85,7 +85,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
     setError('');
     try {
       await ontologyApi.saveSites(modelId, payload);
-      toast.success('适用站点已保存（全模型对象共享）');
+      toast.success('同构站点部署已保存（全模型对象共享）');
       load();
     } catch (e: any) {
       // 校验失败原样外显（不静默回滚成旧配置）
@@ -99,8 +99,9 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
     <ScrollArea className="h-full">
       <div className="p-3 space-y-4">
         <div className="text-xs font-medium text-muted-foreground">
-          适用站点（一份契约 × N 站部署）：在此声明的业务本体整体适用于哪些站点，取数时按站点自动路由到对应数据源。
+          同构站点部署（一份契约 × N 站）：在此声明的业务本体整体适用于哪些站点，取数时按站点自动路由到对应数据源。
           某站点数据结构不同时，请为该站单独配一个本体或直接使用源本体。
+          跨源/跨层的取数路径（数仓全局汇总、日志源、镜像）不在这里声明，请到「取数路径」页维护。
         </div>
         {error && <div className="text-xs text-destructive">{error}</div>}
         {loaded && !sites.length && (
@@ -144,7 +145,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
             {!readonly && (
               <div className="flex items-center gap-2 pt-1">
                 <Button size="sm" onClick={save} disabled={!dirty || saving}>
-                  {saving ? '保存中…' : '保存适用站点'}
+                  {saving ? '保存中…' : '保存同构站点部署'}
                 </Button>
                 {!dirty && <span className="text-xs text-muted-foreground">无变更</span>}
               </div>
@@ -193,6 +194,375 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
         </div>
       </div>
     </ScrollArea>
+  );
+}
+
+/** 承载类型 / 新鲜度的中文标签（显示用 name，不露英文码） */
+const CARRIER_TYPE_LABEL: Record<string, string> = {
+  detail: '各站点明细', global: '全局汇总（数仓）', log: '日志·埋点', mirror: '镜像副本',
+};
+const FRESHNESS_LABEL: Record<string, string> = {
+  realtime: '实时', t_plus_1: 'T+1（不含今天）', lagged: '滞后',
+};
+// Radix Select 不允许空串 value，用哨兵表示“不指定”（提交前换回 ''）
+const NONE = '__none__';
+
+const emptyCarrier = (objectKey = ''): CarrierInput => ({
+  object_key: objectKey, carrier_key: '', display_name: '', carrier_type: 'detail',
+  datasource: '', sites: [], source_model: '', source_object: '',
+  grain: '', freshness: 'realtime', as_of_note: '', is_authority: 0, priority: 100,
+  status: 'active',
+});
+
+/**
+ * 取数路径（承载）子页：声明同一个业务概念有哪几条可取数路径。
+ *
+ * 与「同构站点部署」的分工：站点部署管**同构多站点复制**（一份契约 × N 站，取数时按站点
+ * 展开到该站业务库）；本页管**跨源/跨层承载**——例如“用户”既能在各站业务库查明细，
+ * 也能在数仓查全局去重汇总（T+1）。“全球问题该逐站查还是走汇总层”这个知识就存在这里。
+ *
+ * 纪律：
+ * - 选项全部来自资源清单接口（后端随 GET 一次带回），不得手输 id（ui-resource-display）；
+ * - 承载不存物理表/列，只指向“哪个源本体的哪个对象”（物理形状唯一在部署绑定层）；
+ * - 保存是整模型替换：未提交的既有路径会被置为废弃（可回退，不物理删）；
+ * - 校验失败原样外显，不静默回滚成旧配置。
+ */
+export function ModelCarriersTab({ modelId, readonly }: { modelId: number; readonly?: boolean }) {
+  const [opts, setOpts] = useState<CarrierOptions | null>(null);
+  const [rows, setRows] = useState<CarrierInput[]>([]);
+  const [baseline, setBaseline] = useState('[]');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  // null = 关闭；-1 = 新增；其余为 rows 下标
+  const [editing, setEditing] = useState<number | null>(null);
+
+  const load = useCallback(() => {
+    if (!modelId) return;
+    ontologyApi.carriers(modelId).then((r: any) => {
+      const payload: any = r?.data || {};
+      setOpts(payload);
+      const next: CarrierInput[] = (payload.items || []).map((c: any) => ({
+        object_key: c.object_key, carrier_key: c.carrier_key, display_name: c.display_name,
+        carrier_type: c.carrier_type, datasource: c.datasource, sites: c.sites || [],
+        source_model: c.source_model, source_object: c.source_object, grain: c.grain,
+        freshness: c.freshness, as_of_note: c.as_of_note, is_authority: c.is_authority,
+        priority: c.priority, size_class: c.size_class, status: c.status,
+      }));
+      setRows(next);
+      setBaseline(JSON.stringify(next));
+      setError('');
+      setLoaded(true);
+    }).catch((e: any) => {
+      setError(String(e?.response?.data?.detail || e?.message || e));
+      setLoaded(true);
+    });
+  }, [modelId]);
+  useEffect(() => { load(); }, [load]);
+
+  const dirty = loaded && JSON.stringify(rows) !== baseline;
+  const objectName = (key: string) =>
+    opts?.objects.find((o) => o.key === key)?.name || key || '（未选对象）';
+  const siteLabel = (code: string) =>
+    opts?.sites.find((s) => s.site_code === code)?.display_name || code;
+
+  const save = async () => {
+    // 前端先拦一道可读提示（后端 topology.validate_carriers 仍是硬门禁，不靠前端兼容）
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const okey = String(row.object_key || '');
+      const ckey = String(row.carrier_key || '').trim();
+      if (!okey || !ckey) { setError('每条取数路径都要选归属对象并填写承载标识'); return; }
+      const pair = `${okey}/${ckey}`;
+      if (seen.has(pair)) { setError(`对象「${objectName(okey)}」下承载标识「${ckey}」重复`); return; }
+      seen.add(pair);
+      const t = String(row.carrier_type || 'detail');
+      if (t !== 'detail' && !(row.source_model && row.source_object)) {
+        setError(`「${CARRIER_TYPE_LABEL[t] || t}」必须指向源本体对象（物理形状另有其人）`); return;
+      }
+    }
+    const authorities = new Set<string>();
+    for (const row of rows) {
+      if (!Number(row.is_authority)) continue;
+      const okey = String(row.object_key || '');
+      if (authorities.has(okey)) { setError(`对象「${objectName(okey)}」只能有一个权威口径`); return; }
+      authorities.add(okey);
+    }
+    setSaving(true);
+    setError('');
+    try {
+      await ontologyApi.saveCarriers(modelId, rows);
+      toast.success('取数路径已保存（Chat 侧下次提问即按新拓扑选路）');
+      load();
+    } catch (e: any) {
+      setError(String(e?.response?.data?.detail || e?.message || '保存失败'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const grouped = rows.reduce<Record<string, { row: CarrierInput; index: number }[]>>((acc, row, index) => {
+    const key = String(row.object_key || '');
+    (acc[key] = acc[key] || []).push({ row, index });
+    return acc;
+  }, {});
+
+  return (
+    <ScrollArea className="h-full">
+      <div className="p-3 space-y-4">
+        <div className="text-xs font-medium text-muted-foreground">
+          取数路径（承载）：声明这个业务概念的数据能从哪几条路径取到——各站点明细、数仓全局汇总、
+          日志源等。Chat 选「全球」时，LLM 就按这里的声明决定“逐站各查一次”还是“直接查汇总层”。
+          承载只存路由（数据源 + 源本体对象 + 粒度/新鲜度），物理表与列映射仍唯一在源本体的部署绑定。
+          未授权该数据源的角色在 Chat 里看不到这条路径（自然退化到能查的那条）。
+        </div>
+        {error && <div className="text-xs text-destructive whitespace-pre-wrap">{error}</div>}
+        {loaded && !rows.length && (
+          <div className="text-sm text-muted-foreground">
+            尚未声明任何取数路径。不声明也能用（按「同构站点部署」逐站展开），但全球去重类口径
+            （如全球用户数）必须先在数仓建对象并在此声明全局汇总，否则系统不会去查汇总层。
+          </div>
+        )}
+
+        {Object.entries(grouped).map(([okey, items]) => (
+          <div key={okey} className="space-y-2">
+            <div className="text-xs font-semibold">{objectName(okey)}
+              <span className="ml-1 text-muted-foreground font-normal">（{items.length} 条路径）</span>
+            </div>
+            {items.map(({ row, index }) => (
+              <div key={`${okey}-${row.carrier_key}-${index}`}
+                className="border rounded px-3 py-2 flex items-start justify-between gap-3">
+                <div className="min-w-0 space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-medium">{row.display_name || row.carrier_key}</span>
+                    <Badge variant="outline" className="text-xs">
+                      {CARRIER_TYPE_LABEL[String(row.carrier_type)] || String(row.carrier_type)}
+                    </Badge>
+                    {!!Number(row.is_authority) && (
+                      <Badge variant="outline" className="text-xs text-green-600 border-green-300">权威口径</Badge>
+                    )}
+                    {row.status === 'deprecated' && (
+                      <Badge variant="outline" className="text-xs text-muted-foreground">已废弃</Badge>
+                    )}
+                    <span className="text-[11px] text-muted-foreground font-mono">{row.carrier_key}</span>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {row.datasource
+                      ? <>数据源 <span className="text-foreground">{row.datasource}</span></>
+                      : <>数据源 <span className="text-foreground">按同构站点部署展开</span></>}
+                    {(row.sites || []).length > 0 && <>・站点 {(row.sites || []).map(siteLabel).join('、')}</>}
+                    {(row.source_model || row.source_object) && (
+                      <>・源本体 <span className="text-foreground">{row.source_model || '—'}</span>
+                        {' / '}{row.source_object || '—'}</>
+                    )}
+                    {row.grain && <>・粒度 {row.grain}</>}
+                    <>・新鲜度 {FRESHNESS_LABEL[String(row.freshness || 'realtime')] || String(row.freshness)}</>
+                    {row.as_of_note && <span className="ml-1">（{row.as_of_note}）</span>}
+                  </div>
+                </div>
+                {!readonly && (
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
+                      title="编辑" onClick={() => setEditing(index)}><Pencil className="h-3.5 w-3.5" /></Button>
+                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive"
+                      title="从清单移除（保存后该路径置为废弃）"
+                      onClick={() => setRows(rows.filter((_, i) => i !== index))}>
+                      <Trash2 className="h-3.5 w-3.5" /></Button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ))}
+
+        {!readonly && (
+          <div className="flex items-center gap-2 pt-1">
+            <Button size="sm" variant="outline" onClick={() => setEditing(-1)}>
+              <Plus className="h-3.5 w-3.5 mr-1" />新增取数路径
+            </Button>
+            <Button size="sm" onClick={save} disabled={!dirty || saving}>
+              {saving ? '保存中…' : '保存取数路径'}
+            </Button>
+            {!dirty && <span className="text-xs text-muted-foreground">无变更</span>}
+          </div>
+        )}
+
+        <CarrierEditor
+          open={editing !== null}
+          index={editing ?? 0}
+          draft={editing === null || editing === -1 ? emptyCarrier() : rows[editing]}
+          opts={opts}
+          onClose={() => setEditing(null)}
+          onApply={(next) => {
+            if (editing === -1) setRows([...rows, next]);
+            else setRows(rows.map((r, i) => (i === editing ? next : r)));
+            setEditing(null);
+          }}
+        />
+      </div>
+    </ScrollArea>
+  );
+}
+
+/** 承载编辑弹窗：关联资源一律选择框（对象/数据源/站点/源本体/源对象），不手输 id */
+function CarrierEditor({ open, index, draft, opts, onClose, onApply }: {
+  open: boolean;
+  index: number;
+  draft: CarrierInput;
+  opts: CarrierOptions | null;
+  onClose: () => void;
+  onApply: (next: CarrierInput) => void;
+}) {
+  const [form, setForm] = useState<CarrierInput>(draft);
+  useEffect(() => { setForm(draft); }, [draft, index, open]);
+
+  const patch = (p: Partial<CarrierInput>) => setForm({ ...form, ...p });
+  const type = String(form.carrier_type || 'detail');
+  const needsSource = type !== 'detail';
+  const srcOnt = (opts?.source_ontologies || []).find((s) => s.name === form.source_model);
+  const err = !String(form.object_key || '').trim() ? '请选择归属对象'
+    : !String(form.carrier_key || '').trim() ? '请填写承载标识'
+    : needsSource && !(form.source_model && form.source_object) ? '该类型必须选源本体与源对象'
+    : '';
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader><DialogTitle>取数路径（承载）</DialogTitle></DialogHeader>
+        <div className="space-y-3 max-h-[62vh] overflow-y-auto pr-1">
+          <Field label="归属对象（业务本体对象）">
+            <Select value={form.object_key || undefined} onValueChange={(v) => patch({ object_key: v })}>
+              <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="选择对象" /></SelectTrigger>
+              <SelectContent>
+                {(opts?.objects || []).map((o) => (
+                  <SelectItem key={o.key} value={o.key}>{o.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="承载标识（英文，选路用）">
+              <Input className="h-8 text-xs" value={form.carrier_key || ''} placeholder="global"
+                onChange={(e) => patch({ carrier_key: e.target.value })} />
+            </Field>
+            <Field label="显示名（给人看）">
+              <Input className="h-8 text-xs" value={form.display_name || ''} placeholder="数仓全局汇总"
+                onChange={(e) => patch({ display_name: e.target.value })} />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="路径类型">
+              <Select value={type} onValueChange={(v) => patch({ carrier_type: v })}>
+                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {(opts?.types || Object.keys(CARRIER_TYPE_LABEL)).map((t) => (
+                    <SelectItem key={t} value={t}>{CARRIER_TYPE_LABEL[t] || t}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="新鲜度">
+              <Select value={String(form.freshness || 'realtime')} onValueChange={(v) => patch({ freshness: v })}>
+                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {(opts?.freshness_levels || Object.keys(FRESHNESS_LABEL)).map((f) => (
+                    <SelectItem key={f} value={f}>{FRESHNESS_LABEL[f] || f}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          </div>
+          <Field label="数据源（留空=按同构站点部署逐站展开）">
+            <Select value={form.datasource || NONE} onValueChange={(v) => patch({ datasource: v === NONE ? '' : v })}>
+              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NONE}>（不指定，按站点展开）</SelectItem>
+                {(opts?.datasources || []).map((d) => (
+                  <SelectItem key={d.name} value={d.name}>{d.name}
+                    <span className="ml-1 text-muted-foreground">{d.db_type}</span></SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          {!!(opts?.sites || []).length && (
+            <Field label="适用站点（可多选；全局汇总通常不限定站点）">
+              <div className="flex flex-wrap gap-1">
+                {(opts?.sites || []).map((s) => {
+                  const on = (form.sites || []).includes(s.site_code);
+                  return (
+                    <button key={s.site_code} type="button"
+                      onClick={() => patch({
+                        sites: on ? (form.sites || []).filter((x) => x !== s.site_code)
+                          : [...(form.sites || []), s.site_code],
+                      })}
+                      className={`px-2 py-0.5 rounded border text-xs ${
+                        on ? 'border-primary text-primary' : 'border-border text-muted-foreground'}`}>
+                      {s.display_name}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="源本体（物理形状来源）">
+              <Select value={form.source_model || NONE} disabled={!needsSource}
+                onValueChange={(v) => patch({ source_model: v === NONE ? '' : v, source_object: '' })}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder={needsSource ? '选择源本体' : '明细可选'} /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>（未选定）</SelectItem>
+                  {(opts?.source_ontologies || []).map((s) => (
+                    <SelectItem key={s.name} value={s.name}>{s.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="源对象（该源本体的对象）">
+              <Select value={form.source_object || NONE} disabled={!needsSource || !srcOnt}
+                onValueChange={(v) => patch({ source_object: v === NONE ? '' : v })}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder={srcOnt ? '选择源对象' : '请先选源本体'} /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>（未选定）</SelectItem>
+                  {(srcOnt?.objects || []).map((o) => (
+                    <SelectItem key={o.key} value={o.key}>{o.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          </div>
+          {!needsSource && (
+            <div className="text-[11px] text-muted-foreground">
+              明细路径不选源本体时，物理形状仍由业务本体的契约行按站点展开取得（同构假设）。
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="数据粒度">
+              <Input className="h-8 text-xs" value={form.grain || ''} placeholder="用户级 / 日汇总"
+                onChange={(e) => patch({ grain: e.target.value })} />
+            </Field>
+            <Field label="择路优先级（小者优先）">
+              <Input className="h-8 text-xs" type="number" value={String(form.priority ?? 100)}
+                onChange={(e) => patch({ priority: Number(e.target.value) || 0 })} />
+            </Field>
+          </div>
+          <Field label="口径时效说明（会随结果告知用户）">
+            <Input className="h-8 text-xs" value={form.as_of_note || ''} placeholder="T+1，不含今天"
+              onChange={(e) => patch({ as_of_note: e.target.value })} />
+          </Field>
+          <label className="flex items-center gap-2">
+            <Switch checked={!!Number(form.is_authority)}
+              onCheckedChange={(v) => patch({ is_authority: v ? 1 : 0 })} />
+            <span className="text-xs">本对象该口径的权威承载（一个对象只能有一条）</span>
+          </label>
+        </div>
+        <DialogFooter>
+          <Button size="sm" variant="ghost" onClick={onClose}><X className="h-3.5 w-3.5 mr-1" />取消</Button>
+          <Button size="sm" disabled={!!err} onClick={() => onApply(form)}>确定{err ? `（${err}）` : ''}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1304,6 +1674,132 @@ export function ObjectCreateButton({ jsonContent, onSave }: { jsonContent: strin
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>取消</Button>
             <Button onClick={submit} disabled={!form.key.trim()}>创建</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+/** 编辑已有对象（标量字段 + 别名 + 路由/主表）。
+ *  2026-10-27 拍板：废除「修改仅 AS-BOT」硬禁令，用户侧开放页面内编辑。
+ *  与新建同一落库路径：改 canonical doc → saveDraft（存草案，两段式第一段），
+ *  发布才级联生效；属性/关系不在本表单（保留原值，量大且由 AS-BOT/JSON 维护）。
+ *  业务本体=路由索引层（编 route）；源本体=物理事实（编 primary_table）。 */
+export function ObjectEditButton({ jsonContent, onSave, target }: {
+  jsonContent: string;
+  onSave: (next: string) => void;
+  target: {
+    key: string; display_name?: string; description?: string; aliases?: string[];
+    primary_table?: string;
+    route?: { mode?: string; source_ontology?: string; datasource_name?: string;
+      object_key?: string; filter_hints?: { dimension?: string; examples?: string[] }[] };
+  };
+}) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState(() => ({
+    display_name: target.display_name || '',
+    description: target.description || '',
+    aliases: (target.aliases || []).join(', '),
+    primary_table: target.primary_table || '',
+  }));
+  const initRoute = (): RouteValue => ({
+    mode: target.route?.mode === 'source' ? 'source' : 'object_filter',
+    source_ontology: target.route?.source_ontology || '',
+    datasource_name: target.route?.datasource_name || '',
+    object_key: target.route?.object_key || '',
+    filter_hints: (target.route?.filter_hints || [])
+      .map((h) => ({ dimension: h.dimension || '', examples: h.examples || [] })),
+  });
+  const [route, setRoute] = useState<RouteValue>(initRoute);
+
+  let kind = '';
+  try { kind = String(JSON.parse(jsonContent || '{}').kind || ''); } catch { /* 非法 JSON：按源本体表单 */ }
+  const isBusiness = kind === 'business';
+
+  // 切换对象（详情面板选中变了）时重置表单为当前对象值
+  useEffect(() => {
+    setForm({
+      display_name: target.display_name || '',
+      description: target.description || '',
+      aliases: (target.aliases || []).join(', '),
+      primary_table: target.primary_table || '',
+    });
+    setRoute(initRoute());
+  }, [target.key]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const submit = () => {
+    const key = target.key.trim();
+    if (!key) return;
+    if (isBusiness && !route.source_ontology.trim()) {
+      window.alert('业务对象必须声明路由：请选择目标源本体');
+      return;
+    }
+    let doc: any;
+    try { doc = JSON.parse(jsonContent || '{}'); } catch { return; }
+    const idx = (doc.objects || []).findIndex((o: any) => o.key === key);
+    if (idx < 0) { window.alert(`对象不存在: ${key}`); return; }
+    const hints = (route.filter_hints || []).filter((h) => h.dimension.trim());
+    const next = { ...doc.objects[idx] };
+    next.display_name = form.display_name.trim() || key;
+    next.description = form.description.trim();
+    next.aliases = form.aliases.split(',').map((s) => s.trim()).filter(Boolean);
+    if (isBusiness) {
+      next.route = {
+        mode: route.mode,
+        source_ontology: route.source_ontology.trim(),
+        datasource_name: route.datasource_name || '',
+        ...(route.mode === 'object_filter' && route.object_key ? { object_key: route.object_key } : {}),
+        ...(hints.length ? { filter_hints: hints } : {}),
+      };
+    } else if (form.primary_table.trim()) {
+      next.primary_table = form.primary_table.trim();
+    } else {
+      delete next.primary_table;
+    }
+    doc.objects[idx] = next;
+    onSave(JSON.stringify(doc, null, 2));
+    setOpen(false);
+  };
+
+  return (
+    <>
+      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
+        <Pencil className="h-3.5 w-3.5 mr-1" />编辑对象
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className={isBusiness ? 'max-w-lg max-h-[88vh] overflow-y-auto overflow-x-hidden' : 'max-w-md max-h-[88vh] overflow-y-auto overflow-x-hidden'}>
+          <DialogHeader>
+            <DialogTitle>编辑对象 · {target.display_name || target.key}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Field label="对象 key（唯一标识，不可改）">
+              <Input value={target.key} readOnly disabled />
+            </Field>
+            <Field label="业务显示名">
+              <Input value={form.display_name} placeholder="如：订单明细"
+                onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
+            </Field>
+            <Field label="业务别名（逗号分隔；语义查询按别名解析）">
+              <Input value={form.aliases} placeholder="如：用户, 客户, 账号"
+                onChange={(e) => setForm({ ...form, aliases: e.target.value })} />
+            </Field>
+            <Field label="业务描述">
+              <Textarea rows={2} value={form.description}
+                onChange={(e) => setForm({ ...form, description: e.target.value })} />
+            </Field>
+            {isBusiness ? (
+              <RouteEditor value={route} onChange={setRoute} />
+            ) : (
+              <Field label="绑定物理表">
+                <Input value={form.primary_table} placeholder="如：t_order_item"
+                  onChange={(e) => setForm({ ...form, primary_table: e.target.value })} />
+              </Field>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>取消</Button>
+            <Button onClick={submit}>保存为草案</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

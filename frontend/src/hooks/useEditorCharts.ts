@@ -5,6 +5,7 @@ import { useDashboardStore, type Dashboard, type DashboardChart } from '../store
 import type { ChartTypeItem } from '../components/DashboardChart';
 import { DEFAULT_CHART_SIZE, DEFAULT_WIDGET_SIZE } from './useCanvasInteraction';
 import { chartData, chartRect, getCanvas } from '@/lib/dashboardDesign';
+import { TEMPLATE_DEMO_KEY } from '@/lib/dashboardDemo';
 import { withPageRect, PAGE_LAYOUT_VERSION, type PageBreakpoint, type PageItem } from '@/lib/dashboardPageLayout';
 
 let tempIdCounter = -1;
@@ -236,6 +237,11 @@ export function useEditorCharts(dashboardId: number | undefined) {
     if (!selectedChart) return;
     const { _sql_query, _previewData, _datasource_id, _chart_type, ...config } = value;
     const preservedConfig = { ...config, ...(selectedChart.config?.pageLayout !== undefined ? { pageLayout: selectedChart.config.pageLayout } : {}) };
+    // 模板示例图一旦绑定数据源/改写 SQL 就声明"转真实取数"：示例标记显式置 false，
+    // 服务端据此清掉演示缓存（不能让用户绑完源还看着一屏假数）。
+    if (preservedConfig[TEMPLATE_DEMO_KEY] === true && (_datasource_id || (_sql_query !== undefined && _sql_query !== selectedChart.sql_query))) {
+      preservedConfig[TEMPLATE_DEMO_KEY] = false;
+    }
     const updates: Partial<DashboardChart> = { config: preservedConfig };
     if (_chart_type) updates.chart_type = _chart_type;
     if (selectedChart.query_source !== 'semantic' && !selectedChart.semantic_query) {

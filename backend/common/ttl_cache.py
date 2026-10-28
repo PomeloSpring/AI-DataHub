@@ -116,3 +116,7 @@ exec_layer_cache = TTLCache(name="exec_layer", maxsize=8, ttl=300)
 
 # 工作空间配置/知识推荐：变化极少，60s TTL
 workspace_cache = TTLCache(name="workspace", maxsize=64, ttl=60)
+
+# 跨源拓扑（承载清单）：远程元库逐请求回源会把延迟累到取数链路上；
+# 60s TTL + 写承载/改数据源时主动失效（backend/semantics/topology.py）
+topology_cache = TTLCache(name="topology", maxsize=64, ttl=60)

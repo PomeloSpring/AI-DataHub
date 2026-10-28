@@ -509,13 +509,13 @@ class TestIntentSiteContract:
         from backend.modules.mind.execution.sdk_tools.semantic_query import TOOL_SPECS as SEM
         from backend.modules.mind.execution.sdk_tools.query_tools import TOOL_SPECS as QRY
         desc = SEM[0]["description"]
-        assert '"site"' in desc and "站点范围" in desc
+        assert '"site"' in desc and "数据源拓扑" in desc
         for spec in QRY:
             assert "site" in spec["schema"], spec["name"]
             assert "datasource_id" not in spec["schema"], spec["name"]
 
 
-# ── 9. 提示词注入：站点范围段来自服务端派生 ────────────────────────
+# ── 9. 提示词注入：数据源拓扑段来自服务端派生 ────────────────────────
 
 class TestPromptSiteScope:
     SITES = [
@@ -528,34 +528,54 @@ class TestPromptSiteScope:
     ]
 
     def test_global_session_gets_orchestration_rule(self):
-        from backend.modules.mind.execution.prompt_composer import _site_scope_lines
-        text = "\n".join(_site_scope_lines("global", self.SITES))
+        from backend.modules.mind.execution.prompt_composer import _datasource_topology_lines
+        text = "\n".join(_datasource_topology_lines("global", self.SITES))
         assert "会话查询站点: 全球站点" in text
-        assert "各调一次" in text and "各站合计≠去重全球数" in text
+        assert "各调一次" in text
+        # 拍板：默认分站呈现、不主动合计——旧文案“给合计必须标注各站合计≠去重全球数”
+        # 是在鼓励模型去做那个合计，不得回潮
+        assert "分站呈现" in text and "不得把各站数字相加" in text
+        assert "各站合计≠去重全球数" not in text
+        assert "authority=true" in text and "carrier=" in text   # 全局值只能走权威承载
         assert "中国站点(prd-cn)" in text
 
     def test_single_site_session_does_not_tell_model_to_iterate(self):
         """会话选了中国站 → 规则③不得再说"会话站点=全球"（历史缺陷：文案与实际范围矛盾）。"""
-        from backend.modules.mind.execution.prompt_composer import _site_scope_lines
-        text = "\n".join(_site_scope_lines("cn", self.SITES))
+        from backend.modules.mind.execution.prompt_composer import _datasource_topology_lines
+        text = "\n".join(_datasource_topology_lines("cn", self.SITES))
         assert "会话查询站点: 中国站点" in text
         assert "会话站点=全球站点" not in text
+        assert "不做跨站合计" in text
 
     def test_no_site_choice_injects_nothing(self):
-        """定时分析/评测等绑定单一源的链路不带 site_code → 不注入站点范围（不鼓励逐站展开）。"""
-        from backend.modules.mind.execution.prompt_composer import _site_scope_lines
-        assert _site_scope_lines("", self.SITES) == []
+        """定时分析/评测等绑定单一源的链路不带 site_code → 不注入拓扑段（不鼓励逐站展开）。"""
+        from backend.modules.mind.execution.prompt_composer import _datasource_topology_lines
+        assert _datasource_topology_lines("", self.SITES) == []
 
     def test_revoked_site_choice_injects_nothing(self):
         """会话带的站点已不在可查清单（授权被收回）→ 不注入假范围。"""
-        from backend.modules.mind.execution.prompt_composer import _site_scope_lines
-        assert _site_scope_lines("eu", self.SITES) == []
+        from backend.modules.mind.execution.prompt_composer import _datasource_topology_lines
+        assert _datasource_topology_lines("eu", self.SITES) == []
 
     def test_prompt_never_leaks_datasource_id(self):
-        from backend.modules.mind.execution.prompt_composer import _site_scope_lines
-        text = "\n".join(_site_scope_lines("global", self.SITES))
+        from backend.modules.mind.execution.prompt_composer import _datasource_topology_lines
+        text = "\n".join(_datasource_topology_lines("global", self.SITES))
         assert " 1" not in text.replace("①", "").replace("②", "")  # 不出现裸 id 清单
         assert "datasource_id" not in text
+
+    def test_tool_descriptions_point_to_the_renamed_section(self):
+        """段名改名必须全链路同步：工具描述若还指向旧「站点范围」，模型会被指到一个不存在的段。"""
+        import pathlib
+        import re as _re
+        from backend.modules.mind.execution.sdk_tools.query_tools import TOOL_SPECS as QRY
+        from backend.modules.mind.execution.sdk_tools.semantic_query import TOOL_SPECS as SEM
+        blob = " ".join(str(s.get("description", "")) for s in list(SEM) + list(QRY))
+        assert "数据源拓扑" in blob and "站点范围" not in blob
+        root = pathlib.Path(__file__).resolve().parents[1]
+        for rel in ("backend/modules/mind/config/skills/data-analysis/SKILL.md",
+                    "backend/semantics/intent.py", "backend/core/site_service.py"):
+            src = (root / rel).read_text(encoding="utf-8")
+            assert _re.search("站点范围", src) is None, rel
 
 
 # ── 10. 分层契约：core.site_service 不反向依赖 modules ───────────────

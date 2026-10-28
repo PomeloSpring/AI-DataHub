@@ -9,6 +9,7 @@ import {
 } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/lib/toast';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { Plus, Edit, Trash2, Route, Search, BookX } from 'lucide-react';
 import client from '@/api/client';
 
@@ -67,7 +68,7 @@ export default function KnowledgeManagement() {
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<KnowledgeItem | null>(null);
 
-  const PAGE_SIZE = 20;
+  const [PAGE_SIZE, setPageSize] = useState(DEFAULT_PAGE_SIZE);
 
   // ── Load items ───────────────────────────────────────────────────
 
@@ -92,7 +93,7 @@ export default function KnowledgeManagement() {
     } finally {
       setLoading(false);
     }
-  }, [page, searchText]);
+  }, [page, PAGE_SIZE, searchText]);
 
   useEffect(() => { loadItems(); }, [loadItems]);
 
@@ -182,13 +183,11 @@ export default function KnowledgeManagement() {
     }
   };
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
   // ── Render ───────────────────────────────────────────────────────
 
   return (
-    <div className="h-full overflow-auto">
-      <div className="flex items-center justify-between mb-6">
+    <div className="flex flex-col h-full">
+      <div className="flex items-center justify-between mb-6 shrink-0">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <Route className="h-6 w-6" />
@@ -204,7 +203,7 @@ export default function KnowledgeManagement() {
       </div>
 
       {/* Search */}
-      <div className="mb-4">
+      <div className="mb-4 shrink-0">
         <div className="relative">
           <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
@@ -217,6 +216,7 @@ export default function KnowledgeManagement() {
       </div>
 
       {/* List */}
+      <div className="flex-1 min-h-0 overflow-auto">
       {loading ? (
         <div className="text-center py-8 text-muted-foreground">加载中...</div>
       ) : items.length === 0 ? (
@@ -284,18 +284,19 @@ export default function KnowledgeManagement() {
           })}
         </div>
       )}
+      </div>
 
-      {/* Pagination */}
-      {total > PAGE_SIZE && (
-        <div className="flex items-center justify-between mt-4 pt-3 border-t">
-          <span className="text-sm text-muted-foreground">共 {total} 条</span>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>上一页</Button>
-            <span className="text-sm tabular-nums">{page} / {totalPages}</span>
-            <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>下一页</Button>
-          </div>
-        </div>
-      )}
+      {/* Pagination —— 统一分页条：固定底栏（仅清单区滚动，页头/分页不随页面滚走） */}
+      <PaginationBar
+        page={page}
+        pageSize={PAGE_SIZE}
+        total={total}
+        busy={loading}
+        onChange={(p: number) => setPage(p)}
+        onPageSizeChange={(n: number) => { setPageSize(n); setPage(1); }}
+        hideWhenSingle
+        className="shrink-0 mt-2"
+      />
 
       {/* ── Create/Edit Dialog ──────────────────────────────────── */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>

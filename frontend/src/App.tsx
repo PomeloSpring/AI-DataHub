@@ -14,6 +14,7 @@ import WorkspaceAssets from './pages/WorkspaceAssets';
 import Dashboard from './pages/Dashboard';
 import DashboardEditor from './pages/DashboardEditor';
 import WorkspaceDashboards from './pages/WorkspaceDashboards';
+import WorkspaceDashboardGroup from './pages/WorkspaceDashboardGroup';
 import Admin from './pages/Admin';
 import Playground from './pages/Playground';
 import Screen from './pages/Screen';
@@ -133,8 +134,9 @@ export default function App() {
           <Route path="assets" element={<WorkspaceAssets />} />
           {/* 任务调度: 定时报表与取数任务(工作站维度) */}
           <Route path="scheduled" element={<ScheduledTasks />} />
-          {/* 数据看板: 卡片瀑布清单(仅当前角色可见的已启用看板) → 点卡片进详情 */}
+          {/* 数据看板: 组合卡片清单 → 点组合卡直接进该组合的看板详情（…/dashboards/group/:id 为可分享的组合入口，同样跳详情） */}
           <Route path="dashboards" element={<WorkspaceDashboards />} />
+          <Route path="dashboards/group/:groupId" element={<WorkspaceDashboardGroup />} />
           <Route path="dashboards/:dashboardId" element={<Analysis />} />
           {/* 报表中心: 报表跟随属主(跨工作站), 任务产出按版本归集; 会话/手写报表可新建与编辑 */}
           <Route path="reports" element={<ReportsCenter />} />

@@ -11,7 +11,7 @@
 职责三分（§9）：
 - 本模块：对象在哪几站可查（get_metrics.deployments 顺风车字段）；
 - skill（data_analysis/system.md）：编排方法、口径红线、示例（站点↔数据源映射
-  不再硬编码，由服务端「站点范围」段按会话用户注入）；
+  不再硬编码，由服务端「数据源拓扑」段按会话用户注入）；
 - list_datasources：用户可查数据源（授权集，运行时逐用户）。
 
 跨站执行 = LLM 逐站编排多次 run_semantic_query（各带 datasource 名）。

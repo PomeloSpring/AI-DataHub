@@ -1,216 +1,172 @@
-import { useState, useCallback } from 'react';
-import {
-  Layout, BarChart3, LineChart, LayoutDashboard, Rocket, Star,
-} from 'lucide-react';
+import { useState, useCallback, useMemo } from 'react';
+import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  DASHBOARD_TEMPLATES, TEMPLATE_CANVAS, validateTemplates,
+  type DashboardTemplate, type TemplateChartDef,
+} from '@/lib/dashboardTemplates';
+import { ChartGlyph } from '@/components/ChartGlyph';
+import { readChartPalette } from '@/lib/chartTheme';
+import { resolveDashboardDesign } from '@/lib/dashboardDesign';
+import { useThemeStore } from '@/stores/themeStore';
+import type { VisComponent } from '@/api/visLibrary';
 
-interface DashboardTemplate {
-  id: string;
-  name: string;
-  description: string;
-  icon: React.ReactNode;
-  tags: string[];
-  charts: {
-    name: string;
-    chart_type: string;
-    position: { x: number; y: number; w: number; h: number };
-    config?: Record<string, any>;
-  }[];
-  preview?: string;
-}
-
-// Canvas is 1920px wide, 12 columns = 160px each
-// KPI cards: 160*3=480px wide, 200px tall
-// Charts: 160*8=1280px or 160*4=640px wide, 400px tall
-const COL = 160;
-const KPI_H = 200;
-const CHART_H = 400;
-
-const DEFAULT_TEMPLATES: DashboardTemplate[] = [
-  {
-    id: 'sales_overview',
-    name: '销售概览',
-    description: '展示销售数据的关键指标，包括销售额、订单量、客户数等',
-    icon: <BarChart3 className="h-6 w-6 text-blue-500" />,
-    tags: ['销售', 'KPI', '概览'],
-    charts: [
-      { name: '总销售额', chart_type: 'big_number_trend', position: { x: 0, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT CONCAT(ROUND(SUM(amount)/10000, 2), '万') as value, '总销售额' as label FROM orders WHERE date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)", xCol: 'label', yCol: 'value' } },
-      { name: '订单量', chart_type: 'big_number_trend', position: { x: COL*3, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT COUNT(*) as value, '订单量' as label FROM orders WHERE date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)", xCol: 'label', yCol: 'value' } },
-      { name: '客户数', chart_type: 'big_number_trend', position: { x: COL*6, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT COUNT(DISTINCT customer_id) as value, '客户数' as label FROM orders WHERE date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)", xCol: 'label', yCol: 'value' } },
-      { name: '转化率', chart_type: 'gauge', position: { x: COL*9, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT ROUND(COUNT(CASE WHEN status='completed' THEN 1 END) * 100.0 / COUNT(*), 1) as value FROM orders", yCol: 'value', max: 100 } },
-      { name: '销售趋势', chart_type: 'line', position: { x: 0, y: KPI_H+20, w: COL*8, h: CHART_H }, config: { sql: "SELECT DATE_FORMAT(date, '%m-%d') as dt, SUM(amount) as total FROM orders WHERE date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY date ORDER BY date", xCol: 'dt', yCol: 'total' } },
-      { name: '产品分布', chart_type: 'pie', position: { x: COL*8, y: KPI_H+20, w: COL*4, h: CHART_H }, config: { sql: "SELECT product_name as name, COUNT(*) as value FROM orders GROUP BY product_name ORDER BY value DESC LIMIT 10", nameCol: 'name', yCol: 'value' } },
-    ],
-  },
-  {
-    id: 'traffic_analysis',
-    name: '流量分析',
-    description: '分析网站流量数据，包括PV/UV、来源分布、页面访问等',
-    icon: <LineChart className="h-6 w-6 text-green-500" />,
-    tags: ['流量', '网站', '分析'],
-    charts: [
-      { name: '今日PV', chart_type: 'big_number_trend', position: { x: 0, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT COUNT(*) as value, '今日PV' as label FROM access_log WHERE date = CURDATE()", xCol: 'label', yCol: 'value' } },
-      { name: '今日UV', chart_type: 'big_number_trend', position: { x: COL*3, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT COUNT(DISTINCT user_id) as value, '今日UV' as label FROM access_log WHERE date = CURDATE()", xCol: 'label', yCol: 'value' } },
-      { name: '平均停留时间', chart_type: 'big_number_trend', position: { x: COL*6, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT ROUND(AVG(duration), 0) as value, '秒' as label FROM access_log WHERE date = CURDATE()", xCol: 'label', yCol: 'value' } },
-      { name: '跳出率', chart_type: 'gauge', position: { x: COL*9, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT ROUND(COUNT(CASE WHEN page_count=1 THEN 1 END) * 100.0 / COUNT(*), 1) as value FROM access_log WHERE date = CURDATE()", yCol: 'value', max: 100 } },
-      { name: '流量趋势', chart_type: 'area', position: { x: 0, y: KPI_H+20, w: COL*8, h: CHART_H }, config: { sql: "SELECT DATE_FORMAT(date, '%m-%d') as dt, COUNT(*) as pv, COUNT(DISTINCT user_id) as uv FROM access_log WHERE date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) GROUP BY date ORDER BY date", xCol: 'dt', yCol: 'pv' } },
-      { name: '来源分布', chart_type: 'pie', position: { x: COL*8, y: KPI_H+20, w: COL*4, h: CHART_H }, config: { sql: "SELECT source as name, COUNT(*) as value FROM access_log WHERE date = CURDATE() GROUP BY source ORDER BY value DESC LIMIT 10", nameCol: 'name', yCol: 'value' } },
-      { name: '热门页面', chart_type: 'bar', position: { x: 0, y: KPI_H+CHART_H+40, w: COL*6, h: CHART_H }, config: { sql: "SELECT page_url as name, COUNT(*) as value FROM access_log WHERE date = CURDATE() GROUP BY page_url ORDER BY value DESC LIMIT 10", xCol: 'name', yCol: 'value' } },
-    ],
-  },
-  {
-    id: 'financial_report',
-    name: '财务报表',
-    description: '财务数据展示，包括收入、支出、利润、现金流等关键指标',
-    icon: <LayoutDashboard className="h-6 w-6 text-yellow-500" />,
-    tags: ['财务', '报表', '月度'],
-    charts: [
-      { name: '总收入', chart_type: 'big_number_trend', position: { x: 0, y: 0, w: COL*4, h: KPI_H }, config: { sql: "SELECT CONCAT(ROUND(SUM(income)/10000, 2), '万') as value, '总收入' as label FROM finance WHERE month = DATE_FORMAT(CURDATE(), '%Y-%m')", xCol: 'label', yCol: 'value' } },
-      { name: '总支出', chart_type: 'big_number_trend', position: { x: COL*4, y: 0, w: COL*4, h: KPI_H }, config: { sql: "SELECT CONCAT(ROUND(SUM(expense)/10000, 2), '万') as value, '总支出' as label FROM finance WHERE month = DATE_FORMAT(CURDATE(), '%Y-%m')", xCol: 'label', yCol: 'value' } },
-      { name: '净利润', chart_type: 'big_number_trend', position: { x: COL*8, y: 0, w: COL*4, h: KPI_H }, config: { sql: "SELECT CONCAT(ROUND((SUM(income)-SUM(expense))/10000, 2), '万') as value, '净利润' as label FROM finance WHERE month = DATE_FORMAT(CURDATE(), '%Y-%m')", xCol: 'label', yCol: 'value' } },
-      { name: '收支趋势', chart_type: 'line', position: { x: 0, y: KPI_H+20, w: COL*8, h: CHART_H }, config: { sql: "SELECT month as dt, SUM(income) as income, SUM(expense) as expense FROM finance GROUP BY month ORDER BY month DESC LIMIT 12", xCol: 'dt', yCol: 'income' } },
-      { name: '支出分布', chart_type: 'pie', position: { x: COL*8, y: KPI_H+20, w: COL*4, h: CHART_H }, config: { sql: "SELECT category as name, SUM(expense) as value FROM finance WHERE month = DATE_FORMAT(CURDATE(), '%Y-%m') GROUP BY category", nameCol: 'name', yCol: 'value' } },
-      { name: '月度对比', chart_type: 'bar', position: { x: 0, y: KPI_H+CHART_H+40, w: COL*12, h: CHART_H }, config: { sql: "SELECT month as name, SUM(income) - SUM(expense) as value FROM finance GROUP BY month ORDER BY month DESC LIMIT 6", xCol: 'name', yCol: 'value' } },
-    ],
-  },
-  {
-    id: 'user_analytics',
-    name: '用户分析',
-    description: '用户行为分析，包括新增用户、活跃用户、留存率等',
-    icon: <Star className="h-6 w-6 text-pink-500" />,
-    tags: ['用户', '行为', '留存'],
-    charts: [
-      { name: '总用户数', chart_type: 'big_number_trend', position: { x: 0, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT COUNT(*) as value, '总用户' as label FROM users", xCol: 'label', yCol: 'value' } },
-      { name: '今日新增', chart_type: 'big_number_trend', position: { x: COL*3, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT COUNT(*) as value, '今日新增' as label FROM users WHERE DATE(created_at) = CURDATE()", xCol: 'label', yCol: 'value' } },
-      { name: '活跃用户', chart_type: 'big_number_trend', position: { x: COL*6, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT COUNT(DISTINCT user_id) as value, '活跃用户' as label FROM user_actions WHERE date = CURDATE()", xCol: 'label', yCol: 'value' } },
-      { name: '留存率', chart_type: 'gauge', position: { x: COL*9, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT ROUND(COUNT(DISTINCT CASE WHEN last_active >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) THEN user_id END) * 100.0 / COUNT(DISTINCT user_id), 1) as value FROM users", yCol: 'value', max: 100 } },
-      { name: '用户增长趋势', chart_type: 'area', position: { x: 0, y: KPI_H+20, w: COL*8, h: CHART_H }, config: { sql: "SELECT DATE_FORMAT(created_at, '%m-%d') as dt, COUNT(*) as new_users FROM users WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY DATE(created_at) ORDER BY DATE(created_at)", xCol: 'dt', yCol: 'new_users' } },
-      { name: '用户画像', chart_type: 'radar', position: { x: COL*8, y: KPI_H+20, w: COL*4, h: CHART_H }, config: { sql: "SELECT '18-25' as name, COUNT(*) as value FROM users WHERE age BETWEEN 18 AND 25 UNION ALL SELECT '26-35', COUNT(*) FROM users WHERE age BETWEEN 26 AND 35 UNION ALL SELECT '36-45', COUNT(*) FROM users WHERE age BETWEEN 36 AND 45 UNION ALL SELECT '46+', COUNT(*) FROM users WHERE age > 45", nameCol: 'name', yCol: 'value' } },
-    ],
-  },
-  {
-    id: 'performance_monitor',
-    name: '性能监控',
-    description: '系统性能监控，包括响应时间、错误率、吞吐量等',
-    icon: <Rocket className="h-6 w-6 text-purple-500" />,
-    tags: ['监控', '性能', '运维'],
-    charts: [
-      { name: '平均响应时间', chart_type: 'big_number_trend', position: { x: 0, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT CONCAT(ROUND(AVG(response_time), 0), 'ms') as value, '响应时间' as label FROM api_logs WHERE time >= DATE_SUB(NOW(), INTERVAL 1 HOUR)", xCol: 'label', yCol: 'value' } },
-      { name: '错误率', chart_type: 'gauge', position: { x: COL*3, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT ROUND(COUNT(CASE WHEN status_code >= 500 THEN 1 END) * 100.0 / COUNT(*), 2) as value FROM api_logs WHERE time >= DATE_SUB(NOW(), INTERVAL 1 HOUR)", yCol: 'value', max: 100 } },
-      { name: 'QPS', chart_type: 'big_number_trend', position: { x: COL*6, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT ROUND(COUNT(*) / 3600.0, 1) as value, 'QPS' as label FROM api_logs WHERE time >= DATE_SUB(NOW(), INTERVAL 1 HOUR)", xCol: 'label', yCol: 'value' } },
-      { name: '可用性', chart_type: 'gauge', position: { x: COL*9, y: 0, w: COL*3, h: KPI_H }, config: { sql: "SELECT ROUND((1 - COUNT(CASE WHEN status_code >= 500 THEN 1 END) * 1.0 / COUNT(*)) * 100, 2) as value FROM api_logs WHERE time >= DATE_SUB(NOW(), INTERVAL 24 HOUR)", yCol: 'value', max: 100 } },
-      { name: '响应时间趋势', chart_type: 'line', position: { x: 0, y: KPI_H+20, w: COL*8, h: CHART_H }, config: { sql: "SELECT DATE_FORMAT(time, '%H:%i') as dt, ROUND(AVG(response_time), 0) as avg_time FROM api_logs WHERE time >= DATE_SUB(NOW(), INTERVAL 1 HOUR) GROUP BY FLOOR(UNIX_TIMESTAMP(time)/300) ORDER BY MIN(time)", xCol: 'dt', yCol: 'avg_time' } },
-      { name: '错误分布', chart_type: 'pie', position: { x: COL*8, y: KPI_H+20, w: COL*4, h: CHART_H }, config: { sql: "SELECT CONCAT(status_code, '') as name, COUNT(*) as value FROM api_logs WHERE status_code >= 400 AND time >= DATE_SUB(NOW(), INTERVAL 1 HOUR) GROUP BY status_code", nameCol: 'name', yCol: 'value' } },
-      { name: '请求量趋势', chart_type: 'area', position: { x: 0, y: KPI_H+CHART_H+40, w: COL*12, h: CHART_H }, config: { sql: "SELECT DATE_FORMAT(time, '%H:%i') as dt, COUNT(*) as requests FROM api_logs WHERE time >= DATE_SUB(NOW(), INTERVAL 1 HOUR) GROUP BY FLOOR(UNIX_TIMESTAMP(time)/300) ORDER BY MIN(time)", xCol: 'dt', yCol: 'requests' } },
-    ],
-  },
-  {
-    id: 'empty',
-    name: '空白仪表盘',
-    description: '从零开始创建自定义仪表盘',
-    icon: <Layout className="h-6 w-6 text-muted-foreground" />,
-    tags: ['自定义', '空白'],
-    charts: [],
-  },
-];
+/**
+ * 模板选择弹窗。模板定义与示例数据唯一来源 `lib/dashboardTemplates.ts`；
+ * 模板定位是**图表样式展示**（不携带 SQL，数据是内置演示数值），这里只负责挑选与预览。
+ * 预览配色/底色走 `resolveDashboardDesign`（与看板/大屏渲染同源，模板本体不带样式，
+ * ui-vis-library-style.md §1：预览与真实渲染不一致就是缺陷）。
+ */
 
 interface DashboardTemplatesProps {
   open: boolean;
   onClose: () => void;
   onApply: (template: DashboardTemplate) => void;
+  /** 字模库清单（由页面传入，与看板同源取主题包色板；未传那么退主题令牌） */
+  items?: VisComponent[];
 }
 
-export default function DashboardTemplates({ open, onClose, onApply }: DashboardTemplatesProps) {
-  const [selectedTemplate, setSelectedTemplate] = useState<DashboardTemplate | null>(null);
+/** 模板缩略示意：按真实栅格画卡片 + 图表类型符号，让“导入后长什么样”一眼可见 */
+function TemplatePreview({ template, items }: { template: DashboardTemplate; items: VisComponent[] }) {
+  const theme = useThemeStore(s => s.theme);
+  const design = useMemo(() => resolveDashboardDesign({}, items, { theme }), [items, theme]);
+  const dark = design.visual.mode === 'dark';
+  const palette = design.visual.palette?.length ? design.visual.palette : readChartPalette(dark);
+  const scale = 460 / template.canvas.width;
+  const tileBg = design.card.cardBg || design.visual.viewBg || (dark ? '#111827' : 'hsl(var(--card))');
+  return (
+    <div className="relative w-full overflow-hidden rounded-md border" data-testid="template-preview"
+      style={{ aspectRatio: `${template.canvas.width} / ${template.canvas.height}`,
+        backgroundColor: design.background.backgroundColor || design.visual.viewBg || 'hsl(var(--muted))',
+        backgroundImage: design.background.backgroundImage, backgroundSize: design.background.backgroundSize }}>
+      {template.charts.map((chart: TemplateChartDef) => (
+        <div key={chart.name} className="absolute overflow-hidden rounded-sm border p-1"
+          style={{
+            left: chart.position.x * scale, top: chart.position.y * scale,
+            width: chart.position.w * scale, height: chart.position.h * scale,
+            background: tileBg, borderColor: dark ? 'rgba(255,255,255,0.12)' : 'hsl(var(--border))',
+          }}>
+          <div className="truncate text-[7px] leading-3" style={{ color: design.visual.subTextColor || (dark ? '#cbd5e1' : 'hsl(var(--muted-foreground))') }}>{chart.name}</div>
+          <div className="h-[calc(100%-14px)]"><ChartGlyph chartType={chart.chart_type} palette={palette} /></div>
+        </div>
+      ))}
+      {!template.charts.length && <span className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">空白画布</span>}
+    </div>
+  );
+}
+
+export default function DashboardTemplates({ open, onClose, onApply, items = [] }: DashboardTemplatesProps) {
+  const [selected, setSelected] = useState<DashboardTemplate | null>(null);
   const [searchText, setSearchText] = useState('');
 
-  const filteredTemplates = DEFAULT_TEMPLATES.filter(template =>
-    template.name.toLowerCase().includes(searchText.toLowerCase()) ||
-    template.description.toLowerCase().includes(searchText.toLowerCase()) ||
-    template.tags.some(tag => tag.toLowerCase().includes(searchText.toLowerCase()))
-  );
+  // 模板写坏（假类型/越界/示例数据缺列）时不静默渲出一张残缺卡片：弹窗顶部显式提示
+  const templateErrors = useMemo(() => (open ? validateTemplates() : []), [open]);
+  const filtered = useMemo(() => {
+    const keyword = searchText.trim().toLowerCase();
+    return DASHBOARD_TEMPLATES.filter(t => !keyword
+      || `${t.name} ${t.description} ${t.scenario} ${t.tags.join(' ')}`.toLowerCase().includes(keyword));
+  }, [searchText]);
 
   const handleApply = useCallback(() => {
-    if (selectedTemplate) {
-      onApply(selectedTemplate);
-      onClose();
-      setSelectedTemplate(null);
+    if (!selected) return;
+    if (templateErrors.length) {
+      toast.error(`模板定义有问题：${templateErrors[0]}`, { duration: 8000 });
+      return;
     }
-  }, [selectedTemplate, onApply, onClose]);
+    onApply(selected);
+    onClose();
+    setSelected(null);
+    const sampleCount = selected.charts.filter(c => c.sample).length;
+    if (sampleCount) {
+      toast.info(`已按模板创建 ${sampleCount} 个图卡：内置示例数据仅用于展示样式，不跑取数查询；要接真实数据请在「数据与字段配置」里写 SQL 或语义查询`, { duration: 8000 });
+    }
+  }, [selected, templateErrors, onApply, onClose]);
+
+  const chartCount = (t: DashboardTemplate) => t.charts.filter(c => !c.chart_type.startsWith('widget_')).length;
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-[800px]">
+      <DialogContent className="max-w-[900px]">
         <DialogHeader>
           <DialogTitle>选择仪表盘模板</DialogTitle>
         </DialogHeader>
 
-        <div className="mb-4">
+        {templateErrors.length > 0 && (
+          <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            模板定义校验未通过（{templateErrors.length} 项），暂不可导入：{templateErrors[0]}
+          </div>
+        )}
+
+        <div className="mb-3 flex flex-wrap items-center gap-3">
           <Input
-            placeholder="搜索模板..."
+            placeholder="搜索模板名称、场景或标签…"
             value={searchText}
             onChange={e => setSearchText(e.target.value)}
-            className="max-w-[300px]"
+            className="max-w-[320px]"
           />
+          <span className="text-xs text-muted-foreground">
+            共 {DASHBOARD_TEMPLATES.length} 套 · 画布 {TEMPLATE_CANVAS.width} × {TEMPLATE_CANVAS.height} · 图表内置示例数据（只看样式，不取数）
+          </span>
         </div>
 
-        {filteredTemplates.length === 0 ? (
-          <div className="text-center py-12 text-muted-foreground">未找到匹配的模板</div>
+        {filtered.length === 0 ? (
+          <div className="py-12 text-center text-muted-foreground">未找到匹配的模板</div>
         ) : (
-          <ScrollArea className="h-[400px]">
-            <div className="grid grid-cols-3 gap-4">
-              {filteredTemplates.map(template => (
-                <div
-                  key={template.id}
-                  className={`p-4 rounded-lg border cursor-pointer transition-all ${
-                    selectedTemplate?.id === template.id
-                      ? 'border-primary bg-primary/5'
-                      : 'border-border hover:border-primary/50'
-                  }`}
-                  onClick={() => setSelectedTemplate(template)}
-                >
-                  <div className="flex items-start gap-3 mb-3">
-                    <div className="w-12 h-12 rounded-lg bg-muted flex items-center justify-center">
-                      {template.icon}
+          <ScrollArea className="h-[440px] pr-3">
+            <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+              {filtered.map(template => {
+                const Icon = template.icon;
+                const active = selected?.id === template.id;
+                return (
+                  <button
+                    type="button"
+                    key={template.id}
+                    data-testid={`template-card-${template.id}`}
+                    aria-pressed={active}
+                    onClick={() => setSelected(template)}
+                    className={`rounded-lg border p-3 text-left transition-all ${
+                      active ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/50'
+                    }`}
+                  >
+                    <div className="mb-2 flex items-start gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
+                        <Icon className="h-5 w-5 text-primary" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <h3 className="truncate font-semibold text-sm">{template.name}</h3>
+                        <p className="mt-0.5 text-xs text-muted-foreground">{template.scenario}</p>
+                      </div>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <h3 className="font-semibold text-sm">{template.name}</h3>
-                      <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{template.description}</p>
+                    <TemplatePreview template={template} items={items} />
+                    <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{template.description}</p>
+                    <div className="mt-2 flex flex-wrap items-center gap-1">
+                      {template.tags.map(tag => <Badge key={tag} variant="outline" className="text-[10px]">{tag}</Badge>)}
                     </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-1 mb-2">
-                    {template.tags.map(tag => (
-                      <Badge key={tag} variant="outline" className="text-xs">{tag}</Badge>
-                    ))}
-                  </div>
-
-                  {template.charts.length > 0 && (
-                    <span className="text-xs text-muted-foreground">
-                      包含 {template.charts.length} 个图表
-                    </span>
-                  )}
-                </div>
-              ))}
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {chartCount(template) > 0 ? `${chartCount(template)} 个图卡 · 内置示例数据` : '空白画布'}
+                    </p>
+                  </button>
+                );
+              })}
             </div>
           </ScrollArea>
         )}
 
-        {selectedTemplate && (
-          <div className="flex items-center justify-between p-4 bg-muted rounded-lg mt-4">
-            <div>
-              <span className="font-medium">已选择: {selectedTemplate.name}</span>
-              <span className="text-sm text-muted-foreground ml-2">
-                {selectedTemplate.charts.length > 0
-                  ? `将创建 ${selectedTemplate.charts.length} 个图表`
-                  : '空白仪表盘'}
+        {selected && (
+          <div className="mt-4 flex items-center justify-between gap-3 rounded-lg bg-muted p-4">
+            <div className="min-w-0">
+              <span className="font-medium">已选择：{selected.name}</span>
+              <span className="ml-2 text-sm text-muted-foreground">
+                {selected.charts.length > 0
+                  ? `将创建 ${chartCount(selected)} 个图卡，以内置示例数据展示样式`
+                  : '空白看板'}
               </span>
             </div>
-            <Button onClick={handleApply}>使用此模板</Button>
+            <Button onClick={handleApply} disabled={!!templateErrors.length}>使用此模板</Button>
           </div>
         )}
       </DialogContent>

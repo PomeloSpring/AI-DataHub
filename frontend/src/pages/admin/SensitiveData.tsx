@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { toast } from '@/lib/toast';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { Plus, Trash2, RefreshCw, ScanSearch, Edit, Shield } from 'lucide-react';
 import { governanceApi, type SensitiveField } from '@/api/governance';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
@@ -63,6 +64,7 @@ export default function SensitiveData() {
   const [fields, setFields] = useState<SensitiveField[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [editField, setEditField] = useState<SensitiveField | null>(null);
@@ -84,15 +86,17 @@ export default function SensitiveData() {
     setLoading(true);
     try {
       const workspaceId = getDefaultWorkspaceId();
-      const res = await governanceApi.getSensitiveFields({ workspace_id: workspaceId, page, size: 20 });
-      setFields(res.data.items || res.data || []);
-      setTotal(res.data.total || 0);
+      const res = await governanceApi.getSensitiveFields({ workspace_id: workspaceId, page, size: pageSize });
+      // 服务端分页：{items, total}（历史缺陷：接口只回数组无 total，分页条算不出页数等于没做）
+      const payload: any = res.data;
+      setFields(Array.isArray(payload) ? payload : (payload?.items || []));
+      setTotal(Array.isArray(payload) ? payload.length : (payload?.total ?? 0));
     } catch {
       toast.error('加载敏感字段失败');
     } finally {
       setLoading(false);
     }
-  }, [page, getDefaultWorkspaceId]);
+  }, [page, pageSize, getDefaultWorkspaceId]);
 
   useEffect(() => { loadFields(); }, [loadFields]);
 
@@ -176,8 +180,8 @@ export default function SensitiveData() {
   };
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="flex flex-col h-full gap-4">
+      <div className="flex items-center justify-between shrink-0">
         <div>
           <h1 className="text-lg font-semibold">敏感数据管理</h1>
           <p className="text-muted-foreground text-xs mt-1">管理敏感字段识别和脱敏策略</p>
@@ -195,7 +199,7 @@ export default function SensitiveData() {
       </div>
 
       {/* Scan Bar */}
-      <div className="flex items-center gap-3 p-4 border rounded-lg bg-muted/20">
+      <div className="flex items-center gap-3 p-4 border rounded-lg bg-muted/20 shrink-0">
         <Shield className="w-5 h-5 text-muted-foreground" />
         <span className="text-sm font-medium">自动扫描</span>
         <Select value={scanDatasourceId} onValueChange={setScanDatasourceId}>
@@ -220,18 +224,19 @@ export default function SensitiveData() {
         </span>
       </div>
 
-      {/* Fields Table */}
-      <div className="border rounded-lg overflow-hidden">
+      {/* Fields Table：固定表头 + 有界滚动（顶部不随页面滚动），底栏作为卡片尾栏 */}
+      <div className="flex-1 min-h-0 flex flex-col border rounded-lg overflow-hidden">
+        <div className="flex-1 overflow-auto">
         <table className="w-full text-sm">
-          <thead className="bg-muted/50">
+          <thead>
             <tr>
-              <th className="text-left p-3 font-medium">表名</th>
-              <th className="text-left p-3 font-medium">字段名</th>
-              <th className="text-left p-3 font-medium">敏感级别</th>
-              <th className="text-left p-3 font-medium">脱敏方式</th>
-              <th className="text-left p-3 font-medium">数据源 ID</th>
-              <th className="text-left p-3 font-medium">创建时间</th>
-              <th className="text-right p-3 font-medium">操作</th>
+              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">表名</th>
+              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">字段名</th>
+              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">敏感级别</th>
+              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">脱敏方式</th>
+              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">数据源</th>
+              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">创建时间</th>
+              <th className="sticky top-0 z-10 bg-muted text-right p-3 font-medium">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -307,32 +312,19 @@ export default function SensitiveData() {
             )}
           </tbody>
         </table>
-      </div>
-
-      {/* Pagination */}
-      {total > 20 && (
-        <div className="flex justify-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={page <= 1}
-            onClick={() => setPage(p => p - 1)}
-          >
-            上一页
-          </Button>
-          <span className="text-sm text-muted-foreground leading-9">
-            第 {page} 页 / 共 {Math.ceil(total / 20)} 页
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={page * 20 >= total}
-            onClick={() => setPage(p => p + 1)}
-          >
-            下一页
-          </Button>
         </div>
-      )}
+
+        {/* Pagination —— 统一分页条：卡片尾栏（不悬浮，不随表体滚动） */}
+        <PaginationBar
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onChange={(p: number) => setPage(p)}
+          onPageSizeChange={(n: number) => { setPageSize(n); setPage(1); }}
+          hideWhenSingle
+          className="shrink-0"
+        />
+      </div>
 
       {/* Create/Edit Dialog */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>

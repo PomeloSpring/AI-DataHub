@@ -205,11 +205,9 @@ def validate_tool_resources(ctx, qualified_name, args):
         validate_knowledge_binding(ctx.extra["bound_knowledge_base_ids"])
     if name in ("generate_ontology_draft", "save_ontology_draft", "save_ontology_model",
                 "activate_ontology_model", "import_ontology_yaml"):
-        # 本体写操作的域把关（as-bot-system-waker §4）；动作权限由菜单与功能
-        # 权限码在工具 handler 内把关（ontology:generate/save/activate/import）。
-        # 域判定显式覆盖两种寻址方式（model_id / datasource_id）——
-        # 不依赖 _check_source 或 handler 的副作用碰巧挡住，那是意外正确，
-        # schema 一变就会漏（历史就漏了 datasource_id 寻址的两个工具）。
+        # 本体写操作的执行前护栏；域约束（系统本体不可编辑）与动作权限均由 handler 内
+        # 把关（_assert_model_editable + 菜单与功能权限码 ontology:*，fail-closed）。
+        # 本层只守住数据源黑盒：LLM 拿不到真实 datasource_id，传了必猜错，一律拒。
         if name in ("generate_ontology_draft", "save_ontology_draft"):
             # 草案生成/提交：目标源=会话绑定源（系统域=0）；业务源仅限『生成本体模型』
             # 任务绑定会话（服务端注入 task_binding），fail-closed（见 assert_ontology_draft_scope）。
@@ -217,13 +215,9 @@ def validate_tool_resources(ctx, qualified_name, args):
                 raise PermissionError("该工具不接受模型/数据源标识参数；目标源由服务端按会话绑定源注入")
             assert_ontology_draft_scope(ctx)
         else:
-            # 其余本体写操作限**系统本体域**（模型寻址要求 kind='system'）。
-            if args.get("model_id"):
-                model = execute_query("SELECT kind FROM adh_ontology_models WHERE id=%s", (args["model_id"],), fetchone=True)
-                if model is None or str(model.get("kind") or "") != "system":
-                    raise PermissionError("AS-BOT 不能操作业务本体")
+            # save_ontology_model / activate / import：不接受 LLM 传 datasource_id（目标由 model_id 寻址）。
             if args.get("datasource_id") not in (None, "", 0, "0"):
-                raise PermissionError("AS-BOT 只能写系统本体，不接受业务数据源标识")
+                raise PermissionError("本体写操作不接受业务数据源标识；目标由 model_id 寻址、服务端注入")
     return dict(args)
 
 

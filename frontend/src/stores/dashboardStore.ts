@@ -3,6 +3,7 @@ import { toast } from '@/lib/toast';
 import client from '../api/client';
 import { invalidateCatalogCache } from '@/lib/dashboardCatalog';
 import { chartQueryPool } from '@/lib/chartQueryPool';
+import { templateChartPayload } from '@/lib/dashboardDemo';
 
 export interface DashboardChart {
   id: number;
@@ -425,16 +426,22 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         params: template.params || [], page_params: template.page_params || template.filters?.pageParams || [], carousel_interval: template.carousel_interval || 0,
       }, true);
       for (const chart of template.charts || []) {
-        const { sql, ...config } = chart.config || {};
-        const semantic = chart.query_source === 'semantic' || !!chart.semantic_query;
-        await addChart(dashboardId, {
-          name: chart.name, chart_type: chart.chart_type,
-          sql_query: semantic ? '' : (chart.sql_query ?? sql ?? ''),
+        // 样式模板只认显式的 `sample` 字段：内置演示数值经 config.demoData 许可写入 data_cache，
+        // 导入后立刻看到样式效果。存量图表的缓存由服务端取数写入，不由客户端注入
+        // （否则一张真实图会被误标成"演示数值"，护栏 §7 + no-silent-degradation）。
+        const sample = typeof chart.sample === 'string'
+          ? (() => { try { return JSON.parse(chart.sample); } catch { return undefined; } })()
+          : chart.sample;
+        const { sql: legacySql, ...cleanConfig } = chart.config || {};
+        const payload = sample ? templateChartPayload({ ...chart, sample, config: cleanConfig }) : {
+          name: chart.name, chart_type: chart.chart_type, position: chart.position,
+          sql_query: chart.sql_query ?? legacySql ?? '',
           semantic_query: chart.semantic_query,
-          query_source: semantic ? 'semantic' : 'raw_sql',
-          position: chart.position, config,
+          query_source: (chart.query_source === 'semantic' || chart.semantic_query ? 'semantic' : 'raw_sql') as 'semantic' | 'raw_sql',
+          config: cleanConfig,
           source_type: chart.source_type || 'template', source_id: chart.source_id,
-        }, true);
+        };
+        await addChart(dashboardId, payload as Partial<DashboardChart>, true);
       }
     } finally {
       await get().loadDashboards(get().currentWorkspaceId);

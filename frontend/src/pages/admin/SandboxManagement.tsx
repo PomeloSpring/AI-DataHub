@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from '@/lib/toast';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import {
   Plus, Pencil, Trash2, Server, Wifi, WifiOff, Star, Loader2, Search,
   Monitor, Globe, Cloud, ChevronDown, ChevronUp, Terminal, CheckCircle, XCircle, Clock,
@@ -194,6 +195,7 @@ export default function SandboxManagement() {
   const [sandboxes, setSandboxes] = useState<SandboxEnvironment[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState('');
   const [loading, setLoading] = useState(true);
@@ -215,10 +217,10 @@ export default function SandboxManagement() {
   }, []);
 
   // Load sandboxes
-  const load = async (p?: number) => {
+  const load = async (p?: number, size?: number) => {
     setLoading(true);
     try {
-      const params: any = { page: p ?? page, size: 50 };
+      const params: any = { page: p ?? page, size: size ?? pageSize };
       if (search) params.search = search;
       if (filterType) params.sandbox_type = filterType;
       const { data } = await client.get('/sandbox/', { params });
@@ -364,13 +366,14 @@ export default function SandboxManagement() {
   const [logs, setLogs] = useState<ExecutionLog[]>([]);
   const [logsTotal, setLogsTotal] = useState(0);
   const [logsPage, setLogsPage] = useState(1);
+  const [logsPageSize, setLogsPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [logsLoading, setLogsLoading] = useState(false);
   const [logDetail, setLogDetail] = useState<ExecutionLog | null>(null);
 
-  const loadLogs = async (p?: number, sandboxId?: number) => {
+  const loadLogs = async (p?: number, sandboxId?: number, size?: number) => {
     setLogsLoading(true);
     try {
-      const params: any = { page: p ?? logsPage, size: 50 };
+      const params: any = { page: p ?? logsPage, size: size ?? logsPageSize };
       const sid = sandboxId ?? logSandboxFilter;
       if (sid) params.sandbox_id = sid;
       const { data } = await client.get('/sandbox/logs', { params });
@@ -568,21 +571,16 @@ export default function SandboxManagement() {
           </div>
         )}
 
-        {/* Pagination */}
-        {total > 50 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t">
-            <span className="text-sm text-muted-foreground">共 {total} 项</span>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => { setPage(page - 1); load(page - 1); }}>
-                上一页
-              </Button>
-              <span className="text-sm">{page}</span>
-              <Button variant="outline" size="sm" disabled={page * 50 >= total} onClick={() => { setPage(page + 1); load(page + 1); }}>
-                下一页
-              </Button>
-            </div>
-          </div>
-        )}
+        {/* Pagination —— 统一分页条（sticky 底部） */}
+        <PaginationBar
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onChange={(p: number) => { setPage(p); load(p); }}
+          onPageSizeChange={(n: number) => { setPageSize(n); setPage(1); load(1, n); }}
+          hideWhenSingle
+          className="rounded-b-lg"
+        />
       </div>
 
       {/* Create / Edit Dialog */}
@@ -815,20 +813,15 @@ export default function SandboxManagement() {
                 </table>
               </div>
             )}
-            {logsTotal > 50 && (
-              <div className="flex items-center justify-between px-4 py-3 border-t">
-                <span className="text-sm text-muted-foreground">共 {logsTotal} 条</span>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" disabled={logsPage <= 1} onClick={() => { setLogsPage(logsPage - 1); loadLogs(logsPage - 1); }}>
-                    上一页
-                  </Button>
-                  <span className="text-sm">{logsPage}</span>
-                  <Button variant="outline" size="sm" disabled={logsPage * 50 >= logsTotal} onClick={() => { setLogsPage(logsPage + 1); loadLogs(logsPage + 1); }}>
-                    下一页
-                  </Button>
-                </div>
-              </div>
-            )}
+            <PaginationBar
+              page={logsPage}
+              pageSize={logsPageSize}
+              total={logsTotal}
+              onChange={(p: number) => { setLogsPage(p); loadLogs(p); }}
+              onPageSizeChange={(n: number) => { setLogsPageSize(n); setLogsPage(1); loadLogs(1, undefined, n); }}
+              hideWhenSingle
+              className="rounded-b-lg"
+            />
           </div>
 
           {/* Log Detail Dialog */}

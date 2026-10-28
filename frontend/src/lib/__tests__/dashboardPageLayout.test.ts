@@ -246,10 +246,22 @@ describe('v3 网格：分辨率、间距与存量换算', () => {
 // 对齐/间距提示就是把后者实时告知给用户（输入一律是像素矩形）。
 describe('computeAlignHints：对齐线与间距读数', () => {
   const canvas = { width: 1440, height: 900 };
-  it('左边缘与邻居齐平 → 竖参考线，跨度取两卡并集', () => {
+  it('左边缘齐平且两卡纵向有重叠 → 竖参考线只走重叠区（两端各外扩 8px），不贯穿整屏', () => {
+    const { lines } = computeAlignHints({ x: 100, y: 150, w: 200, h: 100 }, [{ x: 100, y: 100, w: 300, h: 120 }], canvas);
+    const v = lines.find(l => l.axis === 'x');
+    // 重叠区 150..220 ± GUIDE_PAD(8)
+    expect(v).toMatchObject({ at: 100, from: 142, to: 228 });
+  });
+  it('两卡完全错开时参考线改为连接两者（仍带余量，不铺满画布）', () => {
     const { lines } = computeAlignHints({ x: 100, y: 300, w: 200, h: 100 }, [{ x: 100, y: 100, w: 300, h: 120 }], canvas);
     const v = lines.find(l => l.axis === 'x');
-    expect(v).toMatchObject({ at: 100, from: 100, to: 400 });
+    expect(v).toMatchObject({ at: 100, from: 92, to: 408 });
+  });
+  it('参考线不超出画布边界', () => {
+    const { lines } = computeAlignHints({ x: 0, y: 0, w: 100, h: 100 }, [{ x: 0, y: 20, w: 50, h: 50 }], canvas);
+    const v = lines.find(l => l.axis === 'x' && l.at === 0)!;
+    expect(v.from).toBe(0);
+    expect(v.to).toBeLessThanOrEqual(canvas.height);
   });
   it('只有中心线对齐也算（边缘不相等时仍给参考线）', () => {
     const { lines } = computeAlignHints({ x: 200, y: 0, w: 200, h: 100 }, [{ x: 220, y: 200, w: 160, h: 100 }], canvas);

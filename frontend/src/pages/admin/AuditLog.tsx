@@ -3,13 +3,14 @@
  */
 import { useState, useEffect, useCallback } from 'react';
 
-import { RefreshCw, Search, Shield, ChevronLeft, ChevronRight } from 'lucide-react';
+import { RefreshCw, Search, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Spinner } from '@/components/ui/spinner';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { listAuditLogs, AuditLogItem } from '../../api/audit';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 
 const MODULE_OPTIONS = [
   { value: '', label: '全部模块' },
@@ -115,7 +116,7 @@ export default function AuditLog() {
   const [loading, setLoading] = useState(false);
   const [filterModule, setFilterModule] = useState('');
   const [filterKeyword, setFilterKeyword] = useState('');
-  const pageSize = 50;
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
 
   const load = useCallback(async (p?: number) => {
     setLoading(true);
@@ -133,11 +134,9 @@ export default function AuditLog() {
     } finally {
       setLoading(false);
     }
-  }, [page, filterModule, filterKeyword]);
+  }, [page, pageSize, filterModule, filterKeyword]);
 
   useEffect(() => { load(); }, []);
-
-  const totalPages = Math.ceil(total / pageSize);
 
   const handleSearch = () => {
     setPage(1);
@@ -155,9 +154,9 @@ export default function AuditLog() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col h-full gap-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
           <Shield className="h-5 w-5 text-primary" />
           <h2 className="text-lg font-semibold">审计日志</h2>
@@ -169,7 +168,7 @@ export default function AuditLog() {
       </div>
 
       {/* Filters */}
-      <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex items-center gap-2 flex-wrap shrink-0">
         <Select value={filterModule} onValueChange={(v) => { setFilterModule(v === '__all__' ? '' : v); }}>
           <SelectTrigger className="w-36">
             <SelectValue placeholder="全部模块" />
@@ -195,6 +194,7 @@ export default function AuditLog() {
       </div>
 
       {/* Table */}
+      <div className="flex-1 min-h-0 overflow-auto">
       {loading ? (
         <div className="flex items-center justify-center py-12">
           <Spinner className="h-6 w-6 mr-2" /> 加载中...
@@ -248,31 +248,19 @@ export default function AuditLog() {
           </table>
         </div>
       )}
+      </div>
 
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">
-            第 {page} / {totalPages} 页，共 {total} 条
-          </span>
-          <div className="flex items-center gap-1">
-            <Button
-              variant="outline" size="sm"
-              disabled={page <= 1}
-              onClick={() => { const p = page - 1; setPage(p); load(p); }}
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="outline" size="sm"
-              disabled={page >= totalPages}
-              onClick={() => { const p = page + 1; setPage(p); load(p); }}
-            >
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      )}
+      {/* Pagination —— 统一分页条：固定底栏（仅清单区滚动，页头/分页不随页面滚走） */}
+      <PaginationBar
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        busy={loading}
+        onChange={(p: number) => { setPage(p); load(p); }}
+        onPageSizeChange={(n: number) => { setPageSize(n); setPage(1); load(1); }}
+        hideWhenSingle
+        className="shrink-0 mt-2"
+      />
     </div>
   );
 }

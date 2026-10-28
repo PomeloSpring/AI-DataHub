@@ -160,6 +160,8 @@ _TOOL_LABELS = {
     # 本体写权限化（2026-10-26）：不补中文标签会在 AS-BOT 编辑器里显示成裸英文、像不可选项
     "add_ontology_objects": "新增本体对象*", "update_ontology_object": "修改本体对象*",
     "publish_ontology_model": "发布本体草案*",
+    # 跨源拓扑（取数路径/承载）：不补标签会在 AS-BOT 编辑器里显示成裸英文、像不可选项
+    "list_ontology_carriers": "取数路径清单", "save_ontology_carrier": "存取数路径*",
     "create_data_screen": "创建大屏*", "get_data_screen": "查看大屏", "update_data_screen_chart": "更新图表*",
     "request_dashboard_design": "申请仪表盘设计", "get_dashboard_design": "读取仪表盘设计", "prepare_dashboard_design": "准备仪表盘设计",
     "list_vis_components": "字模列表", "get_vis_component": "字模详情", "save_vis_component": "存为字模*",

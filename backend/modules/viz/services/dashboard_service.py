@@ -256,6 +256,58 @@ def _get_chart_datasource_id(chart: dict) -> int:
     return 0
 
 
+# ── 模板示例数据（demo chart）──────────────────────────────────────────────────
+DEMO_DATA_KEY = "demoData"
+DEMO_SAMPLE_MAX_ROWS = 1000
+
+
+def is_demo_chart(chart_or_config) -> bool:
+    """模板导入且尚未绑定真实取数的图表（卡片展示预设演示数值）。"""
+    cfg = chart_or_config.get("config") if isinstance(chart_or_config, dict) else None
+    if isinstance(chart_or_config, dict) and cfg is None:
+        cfg = chart_or_config
+    cfg = _json_loads_safe(cfg)
+    return isinstance(cfg, dict) and cfg.get(DEMO_DATA_KEY) is True
+
+
+def demo_sample_without_source(chart: dict) -> bool:
+    """样式展示图（示例标记）且未绑数据源 —— 不下发任何 SQL，原样回读示例缓存。
+
+    仪表盘模板是**图表样式展示**载体：图卡不携带取数口径，只有内置演示数值。
+    此时去执行 SQL 只会拿到空结果并把用户的样式效果抹成空白（用户得不到解释，
+    no-silent-degradation.md）；而一旦用户写了 SQL/绑了源，服务端已同批清掉
+    示例标记（_apply_demo_to_live_transition），不再走本分支。
+    """
+    return is_demo_chart(chart) and not _get_chart_datasource_id(chart)
+
+
+def _demo_cached_result(chart: dict) -> dict:
+    """示例图表未绑源时的刷新口径：原样回读已存示例数据（不执行演示 SQL、不清缓存）。"""
+    cache = _json_loads_safe(chart.get("data_cache")) or {}
+    columns = cache.get("columns") or []
+    rows = cache.get("rows") or []
+    return {"columns": columns, "rows": rows, "row_count": len(rows), "demo": True}
+
+
+def _serialize_sample_data(value, config) -> "str | None":
+    """客户端提交的图表数据缓存只接受**模板示例数据**（护栏 §7：数据行不得由客户端注入）。
+
+    要求 config.demoData is True、形状为 {columns: [...], rows: [...]}、行数受限；
+    不合规一律拒并回可诊断原因（不静默丢弃 —— 否则用户以为看板有数据）。
+    """
+    if value is None:
+        return None
+    if isinstance(config, dict) and config.get(DEMO_DATA_KEY) is not True:
+        raise ValueError("客户端写入图表数据缓存仅允许模板示例数据（config.demoData=true）")
+    data = _json_loads_safe(value)
+    if not isinstance(data, dict) or not isinstance(data.get("columns"), list) \
+            or not isinstance(data.get("rows"), list):
+        raise ValueError("示例数据格式无效：期望 {columns: [...], rows: [...]} 结构")
+    if len(data["rows"]) > DEMO_SAMPLE_MAX_ROWS:
+        raise ValueError(f"示例数据行数超限（最多 {DEMO_SAMPLE_MAX_ROWS} 行）")
+    return json.dumps({"columns": data["columns"], "rows": data["rows"]}, ensure_ascii=False)
+
+
 def _dataset_declared_args(dataset_id: int, params: dict) -> dict:
     """从看板 params 中取数据集已声明的变量(如 date_start/date_end)，作为 ${} 渲染参数。
 
@@ -951,6 +1003,7 @@ class ChartService:
         """Add a chart to a dashboard. Returns the new chart ID."""
         cid = _ts_id()
         now = _now()
+        cache = _serialize_sample_data(data.get("data_cache"), data.get("config") or {})
 
         conn = get_metadata_conn()
         try:
@@ -967,7 +1020,7 @@ class ChartService:
                         json.dumps(data.get("config") or {}),
                         json.dumps(data.get("position") or {}),
                         data.get("source_type", "query"),
-                        data.get("source_id"), data.get("data_cache"),
+                        data.get("source_id"), cache,
                         json.dumps(data.get("semantic_query"), ensure_ascii=False) if data.get("semantic_query") else None,
                         data.get("query_source") or "raw_sql",
                         now, now,
@@ -979,9 +1032,52 @@ class ChartService:
         finally:
             conn.close()
 
+    def _apply_demo_to_live_transition(self, dashboard_id: int, chart_id: int, data: dict) -> dict:
+        """样式展示图一旦转入真实取数（写了 SQL / 切语义查询）就清掉示例标记与演示缓存。
+
+        模板图本身不带 SQL；用户写了口径就意味着这块卡要从“样式示例”变成“真数”，
+        旧演示数值不得跟着长期滞留（卡片看着有数、其实全是假的）。
+        """
+        if not any(k in data for k in ("sql_query", "query_source", "semantic_query", "config")):
+            return data
+        incoming_cfg = _json_loads_safe(data.get("config"))
+        incoming_cfg = incoming_cfg if isinstance(incoming_cfg, dict) else {}
+        sql_touched = "sql_query" in data or "query_source" in data or bool(data.get("semantic_query"))
+        # 前端显式声明"不再是示例图"：直接清标记与缓存，无需回读当前行
+        declared_live = incoming_cfg.get(DEMO_DATA_KEY) is False
+        if not declared_live and not (sql_touched or incoming_cfg.get(DEMO_DATA_KEY) is True):
+            return data  # 纯外观/布局修改不动数据口径，不额外跳一次库读也不误清真实缓存
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT config, sql_query FROM adh_charts WHERE id=%s AND dashboard_id=%s",
+                    (chart_id, dashboard_id),
+                )
+                row = cur.fetchone() or {}
+        finally:
+            conn.close()
+        cfg = _json_loads_safe(row.get("config")) or {}
+        if not isinstance(cfg, dict) or cfg.get(DEMO_DATA_KEY) is not True:
+            return data
+        merged = {**cfg, **incoming_cfg}
+        new_sql = data.get("sql_query") if "sql_query" in data else row.get("sql_query")
+        became_live = declared_live or bool((new_sql or "").strip())
+        became_live = became_live or data.get("query_source") == "semantic" or bool(data.get("semantic_query"))
+        if not became_live:
+            return data
+        patched = dict(data)
+        patched.pop("data_cache", None)  # 不接受"边转真实边重新注入缓存"
+        merged.pop(DEMO_DATA_KEY, None)
+        merged.pop("demoSql", None)  # 旧版样式模板可能登记过占位口径，一并清除
+        patched["config"] = merged
+        patched["data_cache"] = None
+        return patched
+
     def update_chart(self, dashboard_id: int, chart_id: int, data: dict) -> bool:
         """Update a chart within a dashboard."""
         now = _now()
+        data = self._apply_demo_to_live_transition(dashboard_id, chart_id, data)
 
         conn = get_metadata_conn()
         try:
@@ -1012,6 +1108,10 @@ class ChartService:
                     )
                     if cur.rowcount > 0:
                         conn.commit()
+                        # 真实写入必须同批失效详情载荷：早期此处直接 return，名称/类型/位置/config/缓存
+                        # 已落库但共享详情仍旧，读者最长要等一个 TTL 才看得到改动
+                        # （模板示例图改写完 SQL 后“示例数据”角标不消失就是这条路径）。
+                        _invalidate_dashboard_payload(dashboard_id)
                         return True
                 # 空更新和相同值更新也是成功，只有对象确实不存在才返回 False。
                 cur.execute(
@@ -1166,7 +1266,7 @@ class ChartService:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id,dashboard_id,workspace_id,source_type,source_id,semantic_query,query_source,sql_query,config FROM adh_charts "
+                    "SELECT id,dashboard_id,workspace_id,source_type,source_id,semantic_query,query_source,sql_query,config,data_cache FROM adh_charts "
                     "WHERE id = %s AND dashboard_id = %s",
                     (chart_id, dashboard_id),
                 )
@@ -1176,6 +1276,9 @@ class ChartService:
 
                 if (_json_loads_safe(chart.get("config")) or {}).get("as_bot_design"):
                     return refresh_designed_chart(chart, user_id)
+                if demo_sample_without_source(chart):
+                    # 模板示例图未绑源：不下发演示 SQL（假想表必然报错），原样回读示例数据
+                    return _demo_cached_result(chart)
                 if chart.get("source_type") == "dataset" and chart.get("source_id"):
                     return self._refresh_dataset_chart(chart, params, user_id, workspace_id, username, cur)
                 sql = chart.get("sql_query", "")
@@ -1270,7 +1373,7 @@ class ChartService:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id,dashboard_id,workspace_id,source_type,source_id,semantic_query,query_source,sql_query,config FROM adh_charts "
+                    "SELECT id,dashboard_id,workspace_id,source_type,source_id,semantic_query,query_source,sql_query,config,data_cache FROM adh_charts "
                     "WHERE dashboard_id = %s ORDER BY id",
                     (dashboard_id,),
                 )
@@ -1283,6 +1386,9 @@ class ChartService:
                     cid = chart["id"]
                     if (_json_loads_safe(chart.get("config")) or {}).get("as_bot_design"):
                         results[cid] = refresh_designed_chart(chart, user_id)
+                        continue
+                    if demo_sample_without_source(chart):
+                        results[cid] = _demo_cached_result(chart)
                         continue
                     if chart.get("source_type") == "dataset" and chart.get("source_id"):
                         # 数据集图表走数据集治理入口(不复制 SQL, 单口径)

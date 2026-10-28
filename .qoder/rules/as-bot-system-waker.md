@@ -25,8 +25,11 @@ description: AS-BOT=角色智能体（与智能问数同载体、不同入口）
 - **两段式生效**：AS-BOT 的任何本体改动只落**草案**（draft），不直接生效；
   **发布（publish）是独立动作 + 独立权限码**，发布后才级联（重展开 objects → 重建图谱 → 同步知识库）。
   这样权限齐备的用户可以让 AS-BOT 改本体/指标/维度/关系，但不会直接污染线上口径。
-- **UI 分工**（用户拍板）：本体建模页只暴露「新增对象」入口；**修改仅作为 AI 权限**（即 AS-BOT 通道），
-  用户侧不提供修改操作入口。发布入口对有发布权限的用户开放。
+- **UI 分工**（2026-10-27 更新拍板，废除旧「修改仅 AI 权限」硬禁令）：本体建模页对具备
+  `ontology:save` 权限码的用户**开放新增与编辑对象**（`ObjectCreateButton` + `ObjectEditButton`），
+  两者同一落库路径：改 canonical doc → `saveDraft`（存草案，两段式第一段）→ 发布（`ontology:publish`）才级联生效。
+  编辑表单只改标量字段（显示名/描述/别名）+ 路由/主表，**不整份覆盖**（properties/links 保留原值）；
+  AS-BOT 的 `update_ontology_object` 通道照旧（服务端按 key 合并）。发布入口对有发布权限的用户开放。
 - 仍然**不接受** LLM 传业务数据源标识（`_reject_datasource_arg`，守 §2 黑盒）。
 - 任何整份覆盖仍受 `_reject_destructive_overwrite` 保护：不得抹掉已有对象的属性/关系（宁阻断勿损毁）。
   读接口脱敏只回对象摘要（properties 空），调用方**不得**凭摘要重建整份 JSON 提交。

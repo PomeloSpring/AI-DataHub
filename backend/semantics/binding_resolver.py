@@ -196,6 +196,72 @@ def resolve_binding(
         conn.close()
 
 
+def resolve_binding_via_carrier(carrier: dict, *, datasource_id: int = 0,
+                                datasource_name: str = "",
+                                model_id: Optional[int] = None,
+                                reason: str = "") -> tuple[ResolvedBinding | None, list[str]]:
+    """按承载（carrier）解析绑定：global/log/mirror 走它指向的**源本体对象**。
+
+    为什么要这一步：业务本体的契约行描述的是业务库的同构形状（如 `t_case_records` + 31 列），
+    拿它去查数仓/SLS 必然错（表名与列形状完全不同）。承载只存 name 级路由，物理形状
+    仍唯一在源本体的部署绑定行，所以这里把 (source_model, source_object) 换成
+    (model_id, datasource_id) 后**复用 resolve_binding**，不另造第二条解析路径。
+
+    允许 `datasource` 无 site_code（数仓/平台库不归属任何站点）——这正是旧口径
+    （一站一源的 deploy_sites）把 Doris/SLS 挡在外面的地方。
+    解析不到（源已删/源本体已归档/无绑定行）时返回 None + warnings，由调用方 fail-loud，
+    **不得**回退到业务契约行静默出数。
+    """
+    ds_name = str((carrier or {}).get("datasource") or "").strip()
+    src_model = str((carrier or {}).get("source_model") or "").strip()
+    src_object = str((carrier or {}).get("source_object") or "").strip()
+    warnings: list[str] = []
+    if not (ds_name and src_model and src_object):
+        return None, ["承载缺少数据源/源本体/源对象指向，无法按该路径取数"]
+
+    conn = get_metadata_conn()
+    try:
+        target_ds_id = _ds_id_by_name(conn, ds_name)
+        target_model_id = _active_model_id_by_name(conn, src_model)
+    finally:
+        conn.close()
+    if not target_ds_id:
+        return None, [f"承载指向的数据源「{ds_name}」已不存在或已改名"]
+    if not target_model_id:
+        return None, [f"承载指向的源本体「{src_model}」没有生效版本（请先在该数据源生成本体模型）"]
+    if target_ds_id == int(datasource_id or 0) and target_model_id == model_id:
+        return None, []      # 与调用方已解析的目标一致 → 不重复解析
+
+    binding, bind_warnings = resolve_binding(
+        src_object, datasource_id=target_ds_id, model_id=target_model_id)
+    warnings.extend(bind_warnings)
+    if binding is None:
+        return None, warnings or [
+            f"源本体「{src_model}」的对象「{src_object}」在数据源「{ds_name}」上未绑定物理表"]
+    # 承载溯源（内部/审计）：只带业务文案与分桶，不带 id 之外的物理信息
+    binding.carrier_key = str((carrier or {}).get("key") or "")
+    binding.carrier_type = str((carrier or {}).get("type") or "")
+    binding.carrier_bucket = "use"
+    binding.freshness = str((carrier or {}).get("freshness") or "")
+    binding.as_of_note = str((carrier or {}).get("as_of_note") or "")
+    binding.path_used_reason = reason or "declared"
+    return binding, warnings
+
+
+def _active_model_id_by_name(conn, name: str) -> Optional[int]:
+    """按名取生效模型 id（承载的 source_model 解析；名字是稳定键，id 不是）。
+
+    只认非 system 模型：系统本体不是业务取数的物理形状来源。
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM adh_ontology_models "
+            "WHERE name = %s AND status = 'active' AND COALESCE(kind, '') <> 'system' "
+            "ORDER BY id LIMIT 1", (name,))
+        row = cur.fetchone()
+    return int(row["id"]) if row else None
+
+
 # ── 别名归一（历史写法 → canonical key）─────────────────────
 
 def _norm_ref(s) -> str:

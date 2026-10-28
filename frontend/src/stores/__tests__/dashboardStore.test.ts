@@ -421,4 +421,65 @@ describe('dashboardStore', () => {
       expect(JSON.parse(useDashboardStore.getState().dashboards[0].charts[0].data_cache!).rows).toEqual([[2]])
     })
   })
+
+  describe('createFromTemplate（导入即见效果）', () => {
+    /** 看板创建/更新/图表新增/回盘加载一条通道走 mock，按 URL 分发 */
+    const install = (charts: any[]) => {
+      const posts: Array<[string, any]> = []
+      let nextId = 100
+      vi.mocked(client.post).mockImplementation(async (url: string, body: any) => {
+        posts.push([url, body])
+        if (url === '/dashboard/') return { data: { id: 7 } } as any
+        if (url.endsWith('/charts')) return { data: { id: nextId++ } } as any
+        return { data: {} } as any
+      })
+      vi.mocked(client.put).mockResolvedValue({ data: {} } as any)
+      vi.mocked(client.get).mockResolvedValue({ data: [makeDashboard({ id: 7, charts })] } as any)
+      return posts
+    }
+
+    it('样式模板图卡只落内置示例数据，不携带任何 SQL', async () => {
+      const posts = install([])
+      await useDashboardStore.getState().createFromTemplate({
+        name: '销售概览',
+        charts: [{
+          name: '销售趋势', chart_type: 'line', position: { x: 20, y: 20, w: 600, h: 320 },
+          config: { xCol: 'dt', yCol: 'sales' },
+          sample: { columns: ['dt', 'sales'], rows: [{ dt: '10-19', sales: 182 }] },
+        }],
+      })
+      const chartPost = posts.find(([url]) => url.endsWith('/charts'))!
+      const payload = chartPost[1]
+      expect(payload.data_cache).toEqual({ columns: ['dt', 'sales'], rows: [{ dt: '10-19', sales: 182 }] })
+      expect(payload.config.demoData).toBe(true)
+      // 样式模板不假设环境里的表结构：无 SQL、无 demoSql、不进取数队列
+      expect(payload.sql_query).toBe('')
+      expect(payload.config.demoSql).toBeUndefined()
+      expect(payload.source_type).toBe('template')
+      expect(JSON.stringify(payload)).not.toMatch(/SELECT/)
+    })
+
+    it('导入体的字符串形态示例数据同样按样式图处理；存量图保留口径但不注入缓存', async () => {
+      const posts = install([])
+      await useDashboardStore.getState().createFromTemplate({
+        name: '导入的看板',
+        charts: [
+          { name: '样式图', chart_type: 'bar', position: {}, config: { xCol: 'a', yCol: 'b' },
+            sample: JSON.stringify({ columns: ['a', 'b'], rows: [{ a: 'x', b: 1 }] }) },
+          { name: '真实图', chart_type: 'bar', position: {}, config: { sql: 'SELECT stale', datasource_id: 5 },
+            sql_query: 'SELECT 1', data_cache: JSON.stringify({ columns: ['x'], rows: [[1]] }) },
+        ],
+      })
+      const payloads = posts.filter(([url]) => url.endsWith('/charts')).map(([, b]) => b)
+      expect(payloads[0].data_cache).toEqual({ columns: ['a', 'b'], rows: [{ a: 'x', b: 1 }] })
+      expect(payloads[0].config.demoData).toBe(true)
+      expect(payloads[0].sql_query).toBe('')
+      // 存量图的 data_cache 是真实取数结果，客户端不得重放注入（服务端也会 400 拒）
+      expect(payloads[1].config.demoData).toBeUndefined()
+      expect(payloads[1].data_cache).toBeUndefined()
+      expect(payloads[1].config.sql).toBeUndefined()
+      expect(payloads[1].config.datasource_id).toBe(5)
+      expect(payloads[1].sql_query).toBe('SELECT 1')
+    })
+  })
 })

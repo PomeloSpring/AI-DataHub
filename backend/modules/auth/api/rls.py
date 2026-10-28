@@ -67,13 +67,19 @@ def list_rls_policies(
     workspace_id: int = Query(0),
     datasource_id: int = Query(None),
     table_name: str = Query(None),
+    policy_types: str = Query(None),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     _admin: dict = Depends(get_current_user),
 ):
-    """List RLS policies."""
+    """List RLS policies（服务端分页）.
+
+    policy_types: 逗号分隔的策略类型（如 ``row,both``），由「行/列/表」页签各自下推，
+    避免“整张清单分页 + 前端按类型筛”造成每页条数与 total 对不上。
+    """
     from backend.core.rls_service import rls_service
-    return rls_service.list_policies(workspace_id, datasource_id, table_name, page, size)
+    types = [t.strip() for t in (policy_types or "").split(",") if t.strip()] or None
+    return rls_service.list_policies(workspace_id, datasource_id, table_name, page, size, types)
 
 
 @router.get("/rls-policies/{policy_id}")

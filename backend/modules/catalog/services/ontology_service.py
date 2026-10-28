@@ -394,7 +394,15 @@ def normalize_object_field_aliases(doc: dict) -> list:
 
 
 def _infer_agg(formula: str) -> str:
-    m = re.match(r"(?is)^\s*(SUM|AVG|COUNT|MIN|MAX)\s*\(", formula or "")
+    """从公式头部聚合函数推 agg_type（字典写入的单一推导点）。
+
+    COUNT(DISTINCT x) 必须归 count_distinct：旧写法只匹配 COUNT 会把去重口径
+    记成普通计数，目录/择路会误判为“各站可相加”而给出错数（全球去重用户数典型）。
+    """
+    s = (formula or "").strip()
+    if re.match(r"(?is)^\s*COUNT\s*\(\s*DISTINCT\b", s):
+        return "COUNT_DISTINCT"
+    m = re.match(r"(?is)^\s*(SUM|AVG|COUNT|MIN|MAX)\s*\(", s)
     return m.group(1).upper() if m else "CUSTOM"
 
 
@@ -1832,6 +1840,10 @@ def _expand_objects(doc: dict, model_id: int, datasource_id: int, kind: str = ""
     kind 决定互斥域（见下）；不传时退回 doc.kind / 旧口径。
     返回写入对象数。activate 与激活态编辑保存共用。
     """
+    # 读取边界字段名归一（幂等）：存量 doc 用旧名 object_key/name，不归一会把
+    # 展开行的 object_key/display_name 写成**空串**（对象检索/图谱/预览全部拿不到对象）。
+    # save_draft 路径已归一过一次，这里兼顾“只激活不重存”的存量模型。
+    normalize_object_field_aliases(doc)
     objects = doc.get("objects") or []
     records = []
     kind = str(kind or doc.get("kind") or "")
@@ -2417,46 +2429,20 @@ def find_m234_issues(doc: dict) -> list:
 
 
 def _active_source_ontology_index() -> dict:
-    """active 源本体索引（业务本体路由引用的唯一解析口径）。
+    """active 源本体索引（薄委托）。
 
-    Returns: {model_name: {"id", "datasource_name", "object_keys": set}}。
-    名字是稳定键（删除重建 id 会变、name 不变，waker-datasource-domain §2）；
-    兼容空 kind 存量行按旧口径（datasource_id > 0 视为源本体）。
+    实现已下沉到 `backend/core/ontology_index.py`：语义层（topology 承载校验/选路）与
+    目录层都要用，留在本模块会构成 `semantics → modules` 反向依赖（分层契约 R3 硬禁）。
+    保留同名函数是为不破坏既有调用点（本体生成器/路由校验/测试桩）。
     """
-    index: dict = {}
-    with get_metadata_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT m.id, m.name, m.json_content, COALESCE(ds.name, '') AS ds_name "
-                "FROM adh_ontology_models m "
-                "LEFT JOIN adh_datasources ds ON ds.id = m.datasource_id "
-                "WHERE m.status = 'active' "
-                "  AND (m.kind = 'source' "
-                "       OR (COALESCE(m.kind, '') = '' AND m.datasource_id > 0))")
-            for r in cur.fetchall():
-                try:
-                    src_doc = json.loads(r.get("json_content") or "{}")
-                except (ValueError, TypeError):
-                    src_doc = {}
-                name = str(r.get("name") or "").strip()
-                if not name or name in index:
-                    continue
-                index[name] = {
-                    "id": r["id"],
-                    "datasource_name": str(r.get("ds_name") or ""),
-                    "object_keys": {
-                        str(o.get("key") or "") for o in (src_doc.get("objects") or [])
-                    },
-                }
-    return index
+    from backend.core.ontology_index import active_source_ontology_index
+    return active_source_ontology_index()
 
 
 def _datasource_name_set() -> set:
-    """系统注册数据源名集合（route.datasource_name 的解析口径）。"""
-    with get_metadata_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT name FROM adh_datasources")
-            return {str(r["name"] or "").strip() for r in cur.fetchall()} - {""}
+    """系统注册数据源名集合（薄委托，同上）。"""
+    from backend.core.ontology_index import datasource_name_set
+    return datasource_name_set()
 
 
 def _retired_find_business_route_issues_v04(doc: dict) -> list:

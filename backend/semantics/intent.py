@@ -176,7 +176,7 @@ def parse_intent(text_or_dict: Any) -> tuple[SemanticQuery | None, str | None, l
         return None, (
             "站点不是 SQL 维度: 站点对比请按站点编排多次查询——"
             "对每个可查站点分别调用 run_semantic_query(带 site 参数, 如 '中国'/'日本'), "
-            "可查站点与会话默认站点见上下文「站点范围」段; 不要在 dimensions 里传站点"), notes
+            "可查站点与会话默认站点见上下文「数据源拓扑」段; 不要在 dimensions 里传站点"), notes
     try:
         q = SemanticQuery.model_validate(payload)
     except Exception as e:

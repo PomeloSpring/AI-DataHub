@@ -105,7 +105,7 @@ def build_options(adapter, task, backend):
         report_theme_id=ctx.extra.get("report_theme") or "",
         site_code=ctx.extra.get("site_code") or "",
         # None → 由 prompt_composer 按会话身份现推（bind_resources 在首次工具调用才跑，
-        # 此处不能当成“已算出空集”传空列表，否则站点范围永远注不进去）
+        # 此处不能当成“已算出空集”传空列表，否则数据源拓扑段永远注不进去）
         authorized_sites=ctx.extra.get("authorized_sites"),
         # 本轮问题:多技能绑定时用于决定展开哪几个技能正文(见 prompt_composer._select_skill_bodies)
         question=task.question or "",

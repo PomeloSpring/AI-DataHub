@@ -123,6 +123,22 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         """合并启动流程：任务注册表落库 + KB 对账循环 + waker 会话恢复。"""
         logger.info("AI-DataHub web starting up...")
+        # 跨源拓扑 M2 灰度态必须可观测：关闭择路（目录不暴露 carriers + 取数不选路）若只默默生效，
+        # “没启用”与“没问题”在现象上无法区分（no-silent-degradation 同源纪律）。
+        from backend.semantics import topology as _topology
+        _carrier_on = _topology.routing_enabled()
+        _carrier_n = "-"
+        if _carrier_on:
+            try:
+                _carrier_n = len(_topology.list_carriers())
+            except Exception as e:  # noqa: BLE001 — 启动期元库不可达不影响服务，只标注未取到
+                logger.warning("[topology] 承载清单计数失败（择路仍按开关状态运行）: %s", e)
+        logger.info(
+            "[topology] 取数路径（承载）择路=%s（CARRIER_ROUTING_ENABLED），已声明 active 承载 %s 条",
+            "开启" if _carrier_on else "关闭——行为等同改造前（沿站点展开）", _carrier_n)
+        if not _carrier_on:
+            logger.warning("[topology] CARRIER_ROUTING_ENABLED=false：get_metrics 不再返回 carriers，"
+                           "run_semantic_query 对显式 carrier 参数直接报错（不静默降级）")
         # flow: 内置任务注册表落库(名称/职责/周期以代码为准，不覆盖暂停开关与运行态)
         from backend.common.system_jobs import ensure_seeded
         ensure_seeded()

@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { toast } from '@/lib/toast';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { RefreshCw, Search } from 'lucide-react';
 import { syncApi, type SyncLog, type SyncTask } from '@/api/sync';
 
@@ -36,6 +37,7 @@ export default function SyncLogs() {
   const [logs, setLogs] = useState<SyncLog[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [taskIdFilter, setTaskIdFilter] = useState('');
   // 资源筛选用选择框(不手填 ID): 任务清单供下拉选择
@@ -53,7 +55,7 @@ export default function SyncLogs() {
   const loadLogs = useCallback(async () => {
     setLoading(true);
     try {
-      const params: any = { page, size: 20 };
+      const params: any = { page, size: pageSize };
       if (taskIdFilter) params.task_id = Number(taskIdFilter);
       if (statusFilter) params.status = statusFilter;
       if (startDate) params.start_date = startDate;
@@ -66,7 +68,7 @@ export default function SyncLogs() {
     } finally {
       setLoading(false);
     }
-  }, [page, taskIdFilter, statusFilter, startDate, endDate]);
+  }, [page, pageSize, taskIdFilter, statusFilter, startDate, endDate]);
 
   useEffect(() => { loadLogs(); }, [loadLogs]);
 
@@ -76,8 +78,8 @@ export default function SyncLogs() {
   };
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="flex flex-col h-full gap-4">
+      <div className="flex items-center justify-between shrink-0">
         <div>
           <h1 className="text-2xl font-bold">同步日志</h1>
           <p className="text-muted-foreground text-sm mt-1">查看数据同步执行记录</p>
@@ -89,7 +91,7 @@ export default function SyncLogs() {
       </div>
 
       {/* Filters */}
-      <div className="flex items-center gap-3 flex-wrap">
+      <div className="flex items-center gap-3 flex-wrap shrink-0">
         <Select value={taskIdFilter || 'all'} onValueChange={v => setTaskIdFilter(v === 'all' ? '' : v)}>
           <SelectTrigger className="w-[180px]">
             <SelectValue placeholder="全部任务" />
@@ -131,8 +133,8 @@ export default function SyncLogs() {
         </Button>
       </div>
 
-      {/* Logs Table */}
-      <div className="border rounded-lg overflow-hidden">
+      {/* Logs Table：仅此区滚动（页头/分页固定，参考表&字段） */}
+      <div className="flex-1 min-h-0 overflow-auto border rounded-lg">
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
@@ -201,30 +203,16 @@ export default function SyncLogs() {
         </table>
       </div>
 
-      {/* Pagination */}
-      {total > 20 && (
-        <div className="flex justify-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={page <= 1}
-            onClick={() => setPage(p => p - 1)}
-          >
-            上一页
-          </Button>
-          <span className="text-sm text-muted-foreground leading-9">
-            第 {page} 页 / 共 {Math.ceil(total / 20)} 页
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={page * 20 >= total}
-            onClick={() => setPage(p => p + 1)}
-          >
-            下一页
-          </Button>
-        </div>
-      )}
+      {/* Pagination —— 统一分页条：固定底栏 */}
+      <PaginationBar
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        onChange={(p: number) => setPage(p)}
+        onPageSizeChange={(n: number) => { setPageSize(n); setPage(1); }}
+        hideWhenSingle
+        className="shrink-0 mt-2"
+      />
 
       {/* Detail Dialog */}
       <Dialog open={!!expandedLog} onOpenChange={() => setExpandedLog(null)}>

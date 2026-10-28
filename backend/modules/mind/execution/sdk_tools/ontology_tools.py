@@ -348,10 +348,13 @@ async def save_ontology_model(args):
     if not json_content:
         return _text({"error": "json_content 必填"}, is_error=True)
     try:
-        # 2026-10-26 拍板：不再按 kind 硬拒，改按权限码裁决（ontology:save）。
-        # 原 _assert_system_model 会把业务本体一拒了之，已废弃。
+        # 2026-10-27 拍板：系统本体不可编辑（kind='system' 拒），业务/源本体放行；
+        # 写权限由权限码裁决（ontology:save，fail-closed），不碰生效内容、不级联（只存草案）。
+        _assert_model_editable(model_id)
         _require_write_perm("ontology:save", "保存本体模型")
     except PermissionError as e:
+        return _text({"error": str(e)}, is_error=True)
+    except ValueError as e:
         return _text({"error": str(e)}, is_error=True)
 
     def _run():
@@ -411,6 +414,7 @@ async def add_ontology_objects(args):
         return _text({"error": "每个对象必须含非空 key"}, is_error=True)
     try:
         _reject_datasource_arg(args)
+        _assert_model_editable(model_id)   # 系统本体不可编辑（业务/源本体放行）
         _require_write_perm("ontology:create", "新增本体对象")
     except (ValueError, PermissionError) as e:
         return _text({"error": str(e)}, is_error=True)
@@ -478,6 +482,7 @@ async def update_ontology_object(args):
         return _text({"error": "object 必填且需含非空 key"}, is_error=True)
     try:
         _reject_datasource_arg(args)
+        _assert_model_editable(model_id)   # 系统本体不可编辑（业务/源本体放行）
         _require_write_perm("ontology:save", "修改本体对象")
     except (ValueError, PermissionError) as e:
         return _text({"error": str(e)}, is_error=True)
@@ -540,6 +545,7 @@ async def publish_ontology_model(args):
         })
     try:
         _reject_datasource_arg(args)
+        _assert_model_editable(model_id)   # 系统本体不可编辑（业务/源本体放行）
         _require_write_perm("ontology:publish", "发布本体草案")
     except (ValueError, PermissionError) as e:
         return _text({"error": str(e)}, is_error=True)
@@ -564,7 +570,7 @@ async def activate_ontology_model(args):
     if not model_id:
         return _text({"error": "model_id 必填"}, is_error=True)
     try:
-        _assert_system_model(model_id)   # 域约束：仅系统本体（执行前拒）
+        _assert_model_editable(model_id)   # 域约束：系统本体不可编辑（执行前拒）
     except ValueError as e:
         return _text({"error": str(e)}, is_error=True)
     try:
@@ -608,6 +614,115 @@ async def import_ontology_yaml(args):
     return _text({"success": True, "model_id": result.get("model_id")})
 
 
+async def list_ontology_carriers(args):
+    """查看业务本体的取数路径（承载）清单 —— 只读，只回业务名级信息。
+
+    承载是跨源拓扑：“这个业务概念的数据能从哪几条路径取到”（各站明细 / 数仓全局汇总 /
+    日志源）。事实源 `adh_ontology_carriers`，读取统一经 `backend/semantics/topology.py`。
+    """
+    from backend.semantics import topology
+
+    model_id = int(args.get("model_id") or 0)
+    if not model_id:
+        return _text({"error": "model_id 必填"}, is_error=True)
+
+    def _run():
+        return [
+            {"object_key": c["object_key"], "carrier_key": c["carrier_key"],
+             "name": c["display_name"] or c["carrier_key"], "type": c["carrier_type"],
+             "datasource": c["datasource"], "sites": c["sites"],
+             "source_model": c["source_model"], "source_object": c["source_object"],
+             "grain": c["grain"], "freshness": c["freshness"],
+             "authority": bool(c["is_authority"]), "priority": c["priority"]}
+            for c in topology.list_carriers(model_id=model_id)
+        ]
+
+    items = await asyncio.to_thread(_run)
+    return _text({"model_id": model_id, "count": len(items), "carriers": items,
+                  "note": "空清单=未声明承载（取数按「适用站点」逐站展开）。"
+                          "数据源只写业务名（如 Doris/prd-jp），不要传 id。"})
+
+
+async def save_ontology_carrier(args):
+    """新增/更新**一条**取数路径（承载），或将其下线。
+
+    只动传入的这一条，其余承载由服务端原样保留（不让 LLM 持有整份清单，防误删）。
+    改动不碰 canonical doc（承载是部署层独立表），因此不触发草案/发布两段式；
+    但仍由 `ontology:save` 权限码把关（fail-closed，拒绝原因可解释）。
+    """
+    from backend.modules.mind.execution.sdk_tools.context import get_execution_context
+    from backend.semantics import topology
+
+    ctx = get_execution_context()
+    model_id = int(args.get("model_id") or 0)
+    carrier = args.get("carrier")
+    if not model_id:
+        return _text({"error": "model_id 必填"}, is_error=True)
+    if not isinstance(carrier, dict):
+        return _text({"error": "carrier 必须是对象（至少含 object_key 与 carrier_key）"},
+                     is_error=True)
+    try:
+        _reject_carrier_datasource_id(carrier)
+        _assert_business_model_for_carriers(model_id)
+        _require_write_perm("ontology:save", "保存取数路径（承载）")
+    except (ValueError, PermissionError) as e:
+        return _text({"error": str(e)}, is_error=True)
+
+    def _run():
+        existing = [{k: v for k, v in c.items()
+                     if k not in ("id", "model_id", "created_by", "updated_at")}
+                    for c in topology.list_carriers(model_id=model_id, include_deprecated=True)]
+        okey = str(carrier.get("object_key") or "").strip()
+        ckey = str(carrier.get("carrier_key") or "").strip()
+        hit = next((i for i, c in enumerate(existing)
+                    if str(c.get("object_key")) == okey and str(c.get("carrier_key")) == ckey),
+                   None)
+        if args.get("remove"):
+            if hit is None:
+                raise ValueError(f"对象「{okey or '（未填）'}」下没有承载标识「{ckey or '（未填）'}」，无需下线")
+            existing.pop(hit)
+        else:
+            patch = {k: v for k, v in carrier.items()
+                     if k not in ("id", "model_id", "created_by", "updated_at")}
+            if hit is None:
+                existing.append(patch)
+            else:
+                existing[hit] = {**existing[hit], **patch, "status": "active"}
+        return topology.save_carriers(
+            model_id, existing, created_by=str(getattr(ctx, "username", "") or ""))
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except topology.CarrierError as e:
+        # 校验未通过 = 一条也没写进去（不半截落库）；原因原样回给 LLM 供它改名重试
+        return _text({"error": str(e)}, is_error=True)
+    return _text({"success": True, "model_id": model_id,
+                  "carrier_count": result.get("saved"),
+                  "carriers": result.get("carriers"),
+                  "note": "已写入。取数路径影响“该去哪条路径取数”，不改物理表/列映射（那仍在源本体）。"})
+
+
+def _reject_carrier_datasource_id(carrier):
+    """承载条目里不得出现 datasource_id（守 §2 黑盒：LLM 拿不到真实 id 只会猜）。
+
+    与 `_reject_datasource_arg` 同口径：出现即报错而非静默丢弃。
+    """
+    if carrier.get("datasource_id") not in (None, "", 0, "0"):
+        raise ValueError("承载不接受 datasource_id；请传数据源业务名（datasource，如 'Doris'）")
+
+
+def _assert_business_model_for_carriers(model_id: int) -> None:
+    """承载只适用于业务本体（跨源拓扑）。"""
+    from backend.modules.catalog.services import ontology_service
+
+    model = ontology_service.get_model(model_id)
+    if not model:
+        raise ValueError("模型不存在")
+    if str(model.get("kind") or "") != "business":
+        raise ValueError("取数路径（承载）只适用于业务本体：源本体是单个数据源的物理投影，"
+                         "系统本体只描述系统能力面")
+
+
 def _reject_datasource_arg(args):
     """拒收 LLM 传入的 datasource_id（守 §2 黑盒：LLM 拿不到真实 id，只会猜）。
 
@@ -618,12 +733,13 @@ def _reject_datasource_arg(args):
         raise ValueError("该工具不接受数据源标识参数；数据源由服务端按系统本体域注入")
 
 
-def _assert_system_model(model_id: int) -> None:
-    """AS-BOT 本体写操作域约束：目标模型必须是系统本体（kind='system'）。
+def _assert_model_editable(model_id: int) -> None:
+    """AS-BOT 本体写操作域约束：目标模型**不得是系统本体**（kind='system'）。
 
-    判别口径用 **kind**，不用 datasource_id=0（x3 归属键改造）：
-    业务本体的 datasource_id 也是 0（本体归属已按业务域而非数据源），
-    旧口径会把业务本体误判为系统本体从而放行写入。
+    2026-10-27 拍板（反转旧「仅系统本体可写」硬禁令）：系统本体随项目版本发布、
+    不由数据驱动，AS-BOT 不得编辑；**业务本体与源本体可编辑**（写权限由菜单与
+    功能权限码在 handler 内把关，生效由草案/发布两段式控制）。
+    判别口径用 **kind**，不用 datasource_id（业务/源本体的 datasource_id 也可能为 0）。
     """
     from backend.common.db.metadata_db import get_metadata_conn
 
@@ -637,16 +753,17 @@ def _assert_system_model(model_id: int) -> None:
     if not row:
         raise ValueError(f"本体模型不存在: {model_id}")
     kind = str(row.get("kind") or "")
-    if kind != "system":
+    if kind == "system":
         raise ValueError(
-            f"AS-BOT 仅可操作系统本体（kind='system'），目标模型「{row.get('name')}」"
-            f"是{kind or '未分类'}本体；业务侧建模属用户在业务工作空间的操作，不经本通道")
+            f"系统本体「{row.get('name')}」随项目版本发布、不由数据驱动，不支持通过 AS-BOT 编辑；"
+            f"AS-BOT 可编辑业务本体与源本体")
 
 
 # 指标/维度字典写工具（权限码 ontology:save 把关，直执行）
 #
 # 字典是指标口径的唯一权威（建模规范 §3），与本体 doc 是两个写入对象：
-#   * 本体写工具受“仅系统本体”域约束（_assert_system_model）；
+#   * 本体写工具受“系统本体不可编辑”域约束（_assert_model_editable：kind='system' 拒，
+#     业务/源本体放行，2026-10-27 拍板）；
 #   * 字典写工具不受该约束，但 bound_object_key 必须指向当前生效对象（服层
 #     _require_object_keys fail-closed），悬空即拒；
 #   * 只落库 + 审计，图谱/上云级联由用户在建模页显式触发（受 graph:manage/kb:manage）。
@@ -676,7 +793,8 @@ def _dict_row(table: str, row_id: int) -> dict:
     """回读落库结果（只取业务字段），用于把“是否已绑到单一主表”显式告知调用方。"""
     from backend.common.db.metadata_db import get_metadata_conn
 
-    cols = ("name, name_en, target_table, target_column, agg_type, bound_object_key"
+    cols = ("name, name_en, target_table, target_column, agg_type, bound_object_key, "
+            "COALESCE(allowed_carrier, 'any') AS allowed_carrier"
             if table == "adh_metrics" else
             "name, name_en, target_table, target_column, category, bound_object_key")
     conn = get_metadata_conn()
@@ -714,6 +832,9 @@ async def save_metric(args):
         except ValueError:
             tags = [s.strip() for s in tags.split(",") if s.strip()]
     payload["tags"] = [str(t).strip() for t in tags if str(t).strip()] if isinstance(tags, list) else []
+    # 取数路径约束：全球去重类口径只能走能算全集的那条路径（如数仓汇总）。
+    # 不传 = any（不限），与改造前行为一致；非法值由 metrics_service 直接拒（不静默改成 any）。
+    payload["allowed_carrier"] = str(args.get("allowed_carrier") or "any").strip().lower()
     missing = [k for k in ("display_name", "bound_object_key", "formula", "agg_type")
                if not payload.get(k)]
     if missing:
@@ -1007,6 +1128,9 @@ TOOL_SPECS = [
             "bound_object_key": Annotated[str, "归属对象 key（必须已激活，如 case）"],
             "formula": Annotated[str, "聚合口径（如 COUNT(pc_case.id)），列名需来自工具已返回的结构"],
             "agg_type": Annotated[str, "sum/count/count_distinct/avg/min/max/custom"],
+            "allowed_carrier": Annotated[Optional[str],
+                                         "取数路径约束 any|detail|global|log|mirror（默认 any）："
+                                         "全球去重/全局比率类口径填 global，仅本站口径填 detail"],
             "id": Annotated[Optional[int], "更新已有指标时传其 id；新增不传"],
             "name": Annotated[Optional[str], "英文标识（如 case_count）"],
             "unit": Annotated[Optional[str], "单位（例/人/元）"],
@@ -1042,6 +1166,40 @@ TOOL_SPECS = [
             "publish": Annotated[Optional[bool], "true=立即发布生效（需 ontology:publish）；省略/false=只落库为未发布，不参与语义检索与查询"],
         },
         "handler": save_dimension,
+        "readonly": False,
+    },
+    {
+        "name": "list_ontology_carriers",
+        "description": (
+            "查看业务本体的**取数路径（承载）**清单：同一业务概念有哪几条可取数路径"
+            "（各站点明细 / 数仓全局汇总 / 日志源）。回答“全球问题该逐站查还是直接查汇总层”"
+            "先看这里。空清单表示未声明承载（按适用站点逐站展开）。只回业务名，不含 id/物理表。"
+        ),
+        "schema": {
+            "model_id": Annotated[int, "业务本体模型 ID"],
+        },
+        "handler": list_ontology_carriers,
+        "readonly": True,
+    },
+    {
+        "name": "save_ontology_carrier",
+        "description": (
+            "新增/更新**一条**取数路径（承载），或传 remove=true 将其下线。只动这一条，"
+            "其余承载由服务端原样保留。字段：object_key(归属对象)、carrier_key(路径标识，"
+            "如 global/sls_log)、display_name(给人看的名)、carrier_type(detail|global|log|mirror)、"
+            "datasource(数据源**业务名**，detail 可留空=按站点展开；global/log/mirror 必填)、"
+            "sites(适用站点数组，可空)、source_model+source_object(指向哪个源本体的哪个对象，"
+            "非 detail 类型必填——物理形状的唯一事实源仍在源本体)、grain(粒度)、"
+            "freshness(realtime|t_plus_1|lagged)、as_of_note(口径时效说明)、is_authority(0/1)、priority。"
+            "一个对象只能有一条权威承载（is_authority=1）。不接受 datasource_id。"
+            "校验不通过时一条也不会写入，错误原因会原样返回供你改名重试。"
+        ),
+        "schema": {
+            "model_id": Annotated[int, "业务本体模型 ID（仅 business 可写）"],
+            "carrier": Annotated[dict, "一条承载定义（必含 object_key 与 carrier_key）"],
+            "remove": Annotated[Optional[bool], "true=下线该 object_key+carrier_key 的承载"],
+        },
+        "handler": save_ontology_carrier,
         "readonly": False,
     },
 ]

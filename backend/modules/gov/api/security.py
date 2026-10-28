@@ -37,20 +37,33 @@ def list_sensitive_fields(
     workspace_id: int = Query(0),
     datasource_id: Optional[int] = None,
     sensitivity_level: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
 ):
-    """获取敏感字段列表."""
+    """获取敏感字段列表（服务端分页，返回 {items, total} 供统一分页条使用）.
+
+    分页口径与全站列表一致：默认每页 20，上限 100；total 必须是筛选后的总数，
+    否则前端分页条算不出页数（历史缺陷：只回数组无 total，分页功能等于没做）。
+    """
     try:
-        sql = "SELECT * FROM adh_sensitive_fields WHERE workspace_id IN (%s, 0)"
-        params = [workspace_id]
+        where = "WHERE workspace_id IN (%s, 0)"
+        params: list = [workspace_id]
         if datasource_id is not None:
             # 取"全局(datasource_id=0) ∪ 指定数据源"并集, 与执行侧加载口径一致
-            sql += " AND datasource_id IN (%s, 0)"
+            where += " AND datasource_id IN (%s, 0)"
             params.append(datasource_id)
         if sensitivity_level:
-            sql += " AND sensitivity_level = %s"
+            where += " AND sensitivity_level = %s"
             params.append(sensitivity_level)
-        sql += " ORDER BY sensitivity_level DESC, table_name, column_name"
-        return execute_query(sql, params)
+
+        count_rows = execute_query(f"SELECT COUNT(*) AS total FROM adh_sensitive_fields {where}", params)
+        total = int((count_rows or [{}])[0].get("total") or 0)
+        rows = execute_query(
+            f"SELECT * FROM adh_sensitive_fields {where}"
+            " ORDER BY sensitivity_level DESC, table_name, column_name LIMIT %s OFFSET %s",
+            params + [size, (page - 1) * size],
+        )
+        return {"items": rows or [], "total": total, "page": page, "size": size}
     except Exception as e:
         logger.error("List sensitive fields failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))

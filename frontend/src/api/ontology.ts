@@ -51,6 +51,52 @@ export interface ContractObjectRow {
   product_ref: string;
 }
 
+/** 承载类型：detail=各站点明细 global=全局汇总 log=日志/埋点 mirror=镜像 */
+export type CarrierType = 'detail' | 'global' | 'log' | 'mirror';
+
+/** 一条承载（跨源拓扑：这个业务对象的数据可以从哪条路径取到） */
+export interface CarrierRow {
+  id: number;
+  model_id: number;
+  object_key: string;
+  /** 归属对象业务名（显示用，不裸显 key） */
+  object_name: string;
+  carrier_key: string;
+  display_name: string;
+  carrier_type: CarrierType | string;
+  /** 数据源业务名；空 = 按 deploy_sites 逐站展开 */
+  datasource: string;
+  /** 适用站点代码 */
+  sites: string[];
+  /** 物理形状来源：源本体模型名 */
+  source_model: string;
+  /** 物理形状来源：该源本体的对象 key */
+  source_object: string;
+  grain: string;
+  freshness: string;
+  as_of_note: string;
+  is_authority: number;
+  priority: number;
+  size_class: string;
+  status: string;
+  updated_at: string;
+}
+
+/** 承载编辑表单（不传 id：后端按 (对象, 承载标识) 整模型替换） */
+export type CarrierInput = Partial<Omit<CarrierRow, 'id' | 'model_id' | 'object_name' | 'updated_at'>>
+  & { object_key: string; carrier_key: string };
+
+/** 承载页选项（后端一次带回，选择框不手输 id） */
+export interface CarrierOptions {
+  items: CarrierRow[];
+  types: string[];
+  freshness_levels: string[];
+  objects: { key: string; name: string }[];
+  datasources: { name: string; db_type: string; site_code: string }[];
+  sites: { site_code: string; display_name: string }[];
+  source_ontologies: { name: string; datasource: string; objects: { key: string; name: string }[] }[];
+}
+
 export interface OntologyObjectHit {
   object_key: string;
   display_name: string;
@@ -124,6 +170,11 @@ export const ontologyApi = {
   saveSites: (id: number, sites: { site_code: string; datasource: string }[]) =>
     client.put<{ success: boolean; sites: { site_code: string; datasource: string }[] }>(
       `/catalog/ontology/models/${id}/sites`, { sites }),
+  /** 承载清单（取数路径）+ 选择框候选 */
+  carriers: (id: number) => client.get<CarrierOptions>(`/catalog/ontology/models/${id}/carriers`),
+  saveCarriers: (id: number, carriers: CarrierInput[]) =>
+    client.put<{ model_id: number; saved: number; carriers: CarrierRow[] }>(
+      `/catalog/ontology/models/${id}/carriers`, { carriers }),
   syncDoc: (id: number) =>
     client.get<{ markdown: string }>(`/catalog/ontology/models/${id}/sync-doc`),
   versions: (id: number) =>

@@ -12,6 +12,16 @@ const colorsOf = (value: unknown): string[] => {
 const WIDGET_PREVIEW_TEXT: Record<string, string> = Object.fromEntries(
   CHART_TYPES.filter(t => t.category === 'widget').map(t => [t.value, t.label]),
 );
+const TYPE_LABELS: Record<string, string> = Object.fromEntries(CHART_TYPES.map(t => [t.value, t.label]));
+/**
+ * 字模适用类型 → 业务名（ui-resource-display.md：不得把 widget_select 这类内部类型名当主要展示）。
+ * chart_type 支持逗号分隔多类（一个控件字模盖住输入框+数字框，或整个按钮族）。
+ */
+export function typeLabelsOf(chartType?: string | null): string {
+  const types = (chartType || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (!types.length) return '通用（不限类型）';
+  return types.map(t => TYPE_LABELS[t] || `${t}（未知类型）`).join(' / ');
+}
 
 // 轻量、不挂 G2 的形状预览: 让 line/pie/radar/gauge/funnel 等不再都显示成柱状图。
 export function ShapePreview({ type, palette, cfg }: { type: string; palette: string[]; cfg: any }) {
@@ -137,6 +147,37 @@ export default function VisComponentPreview({ c }: { c: VisComponent }) {
   if (c.category === 'kpi_card') return <div className="flex h-16 flex-col justify-center rounded-md border px-3" style={{
     background: cfg.cardBg, border: cfg.cardBorder, boxShadow: cfg.glow, borderRadius: cfg.cardRadius ?? cfg.borderRadius,
   }}><span className="text-[10px]" style={{ color: cfg.labelColor }}>核心指标</span><strong style={{ color: cfg.valueColor }}>1,234</strong></div>;
+  if (c.category === 'widget_style') {
+    // 控件样式预览与 DashboardChart 控件分支同源：同一批 widgetStyle 键（背景/描边/圆角/内距/字号/高度/行高），
+    // 预览与真实渲染不一致就属样式缺陷（ui-vis-library-style.md §2）。
+    const ws = sc.widgetStyle || {};
+    // 预览框固定高 80px：以前拿 ws.height（32/64）直接画三行，内容一定撑破 h-16 盒子
+    // —— 管理页卡片预览压住标题、卡片长短不一。缩到 26px 以内保证预览与真实渲染同配色、同形状。
+    const fieldHeight = Math.min(ws.height ?? 24, 26);
+    const box: React.CSSProperties = {
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      background: ws.backgroundColor, color: ws.textColor,
+      border: ws.borderColor ? `${ws.borderWidth ?? 1}px ${ws.borderStyle || 'solid'} ${ws.borderColor}` : undefined,
+      borderRadius: ws.borderRadius, padding: ws.padding ?? '4px 8px',
+      fontSize: ws.fontSize ?? 12, height: fieldHeight, lineHeight: ws.lineHeight,
+      boxShadow: ws.boxShadow, boxSizing: 'border-box', overflow: 'hidden', whiteSpace: 'nowrap',
+    };
+    // 真实控件就是「标签 + 输入区」同行（labelPosition=left），预览按同一形状画，labelWidth 旋钮也真实消费
+    const row = (text: string, grow: boolean) => <div key={text} className="flex w-full min-w-0 items-center"
+      style={{ gap: ws.gap ?? 6 }}>
+      <span className="shrink-0 truncate leading-none" style={{
+        width: ws.labelWidth ? Math.min(ws.labelWidth, 48) : undefined,
+        color: ws.textColor, fontSize: Math.max((ws.fontSize ?? 12) - 1, 9),
+      }}>标签</span>
+      <span style={{ ...box, flex: grow ? '1 1 auto' : '0 0 58%', minWidth: 0 }}>{text}</span>
+    </div>;
+    return <div data-preview-type="widget_style"
+      className="flex h-20 flex-col justify-center overflow-hidden rounded-md border bg-muted/20 px-2"
+      style={{ gap: Math.min(ws.gap ?? 6, 8) }}>
+      {row('请输入内容', true)}
+      {row('请选择 ▾', false)}
+    </div>;
+  }
   if (c.category === 'layout_template') return <div className="grid h-16 grid-cols-3 gap-1 rounded-md border bg-muted/20 p-2">
     {Array.from({ length: sc.grid?.columns ? 2 : 6 }, (_, i) => <span key={i} className={`rounded-sm bg-muted-foreground/25 ${sc.grid?.columns && i === 0 ? 'col-span-2' : ''}`} />)}
   </div>;

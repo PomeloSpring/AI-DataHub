@@ -174,23 +174,26 @@ export default function PageLayoutEditor({ dashboard, items, breakpoint, selecte
         }} />}
       {/* 方块转角点星，不画线；zIndex 0 保证参考标记永远在卡片下方 */}
       {showGrid && <div aria-label="页面参考点" className="pointer-events-none absolute inset-0" style={{ ...cornerDotStyle(column), zIndex: 0 }} />}
-      {snapped && <div aria-label="图表放置预览" className="pointer-events-none absolute border-2 border-dashed bg-primary/10"
+      {snapped && <div aria-label="图表放置预览" className="pointer-events-none absolute border border-dashed"
         style={{ left: pagePixelRect(snapped.rect, breakpoint, gaps).x, top: pagePixelRect(snapped.rect, breakpoint, gaps).y,
-          width: pagePixelRect(snapped.rect, breakpoint, gaps).w, height: pagePixelRect(snapped.rect, breakpoint, gaps).h, borderColor: CANVAS_COLORS.dropGhostBorder }} />}
+          width: pagePixelRect(snapped.rect, breakpoint, gaps).w, height: pagePixelRect(snapped.rect, breakpoint, gaps).h,
+          borderColor: CANVAS_COLORS.dropGhostBorder, background: CANVAS_COLORS.dropGhostFill }} />}
       {/* 对齐与间距辅助提示：拖动/缩放时实时显示“与谁齐平、两侧留空多少、是否等距”。
           几何来自**将落定的网格矩形**，与虚线落点框同源，所以参考线亮了松手就不会又偏。
-          颜色全走 CANVAS_COLORS（主题变量），不在组件里写裸 hex。 */}
+          视觉口径（参 Figma/Canva）：线只走重叠区、宽度除缩放保证发丝宽、颜色低透；
+          徽标不用高饱和色块，等距仅用主色软高亮。颜色全走 CANVAS_COLORS（主题变量）。 */}
       {active && preview && <div data-testid="align-guides" aria-hidden className="pointer-events-none absolute inset-0" style={{ zIndex: 30 }}>
         {preview.hints.lines.map((l, i) => <span key={`line-${i}`} className="absolute" style={l.axis === 'x'
-          ? { left: l.at, top: l.from, width: 1, height: Math.max(0, l.to - l.from), background: CANVAS_COLORS.guide }
-          : { top: l.at, left: l.from, height: 1, width: Math.max(0, l.to - l.from), background: CANVAS_COLORS.guide }} />)}
+          ? { left: l.at, top: l.from, width: 1 / scale, height: Math.max(0, l.to - l.from), background: CANVAS_COLORS.guide }
+          : { top: l.at, left: l.from, height: 1 / scale, width: Math.max(0, l.to - l.from), background: CANVAS_COLORS.guide }} />)}
         {preview.hints.gaps.map((g, i) => <span key={`gap-${i}`}
-          className={`absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded px-1 py-px font-mono text-[10px] leading-tight ${
-            g.equal ? 'bg-primary text-primary-foreground' : 'bg-background/95 text-muted-foreground ring-1 ring-border'}`}
+          className={`absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded px-1 py-px font-mono text-[10px] leading-tight shadow-sm ${
+            g.equal ? 'bg-primary/10 text-primary ring-1 ring-primary/30' : 'bg-background/85 text-muted-foreground ring-1 ring-border/70'}`}
           style={g.axis === 'x' ? { left: (g.from + g.to) / 2, top: g.at } : { top: (g.from + g.to) / 2, left: g.at }}>{Math.round(g.value)}</span>)}
       </div>}
-      {ghostPixels && <div aria-label="新增落点预览" className="pointer-events-none absolute border-2 border-dashed bg-primary/10"
-        style={{ left: ghostPixels.x, top: ghostPixels.y, width: ghostPixels.w, height: ghostPixels.h, borderColor: CANVAS_COLORS.dropGhostBorder }}>
+      {ghostPixels && <div aria-label="新增落点预览" className="pointer-events-none absolute border border-dashed"
+        style={{ left: ghostPixels.x, top: ghostPixels.y, width: ghostPixels.w, height: ghostPixels.h,
+          borderColor: CANVAS_COLORS.dropGhostBorder, background: CANVAS_COLORS.dropGhostFill }}>
         {/* 把将占用的尺寸直接标在框内（像素为准，网格单位只是实现细节），用户不必自己算 */}
         <span className="absolute inset-0 flex items-center justify-center rounded-sm bg-background/70 px-1 text-[10px] font-medium text-primary"
           style={{ whiteSpace: 'nowrap', overflow: 'hidden' }}>
