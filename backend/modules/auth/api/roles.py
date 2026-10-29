@@ -7,11 +7,24 @@ from typing import Optional
 
 from backend.common.auth import get_current_user, require_admin
 from backend.common.db import execute_query, execute_write
+from backend.common import as_bot_config_cache
 from backend.modules.auth.services import rbac_service
 from backend.core.role_service import role_service
 from backend.core.rls_service import rls_service
 
 router = APIRouter()
+
+
+def _invalidate_as_bot_config(reason: str) -> None:
+    """角色/权限配置写入口同批失效配置事实缓存（轮次档 + live 档一起清）。
+
+    与 `api_permission.invalidate_perm_cache` 同属“改完配置就清缓存”。工具级裁决
+    （`tool_policy.check_tool`）读的是 live 短 TTL 档，**本失效就是它“立即看到新权限”的
+    唯一保证**：不接这个钩子，撤权最多要等一个 live TTL（默认 5s）才被发现。即使如此也
+    不会多授权——digest 与 SDK 领取时不一致会显式报错要求重发（口径见
+    `backend/common/as_bot_config_cache.py` §1/§2/§6）。
+    """
+    as_bot_config_cache.invalidate(reason)
 
 
 class CreateRoleRequest(BaseModel):
@@ -189,6 +202,8 @@ def set_perm_ai_access(perm_code: str, body: SetAiAccessRequest,
         execute_write("UPDATE adh_perm_registry SET ai_access=%s, ai_note=%s WHERE perm_code=%s",
                       (level, note, perm_code))
         current_note = note
+    # ai_access 决定角色权限码→ AS-BOT 工具继承，变更后必须失效已缓存的权限码集
+    _invalidate_as_bot_config(f"set_perm_ai_access {perm_code}={level}")
     return {"perm_code": perm_code, "label": label, "ai_access": level,
             "ai_effective": effective, "ai_note": current_note}
 
@@ -318,6 +333,8 @@ def set_role_permissions(role_id: int, req: SetPermissionsRequest,
         invalidate_perm_cache()
     except Exception:
         pass
+    # 角色权限码集被 AS-BOT 工具继承消费（resolve_policy），轮次起点缓存随之失效
+    _invalidate_as_bot_config(f"set_role_permissions role={role_id} count={len(req.permissions or [])}")
     return {"success": True, "count": len(req.permissions or [])}
 
 

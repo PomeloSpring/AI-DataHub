@@ -116,6 +116,40 @@ def test_destructive_overwrite_is_blocked():
     _reject_destructive_overwrite(model, appended)
 
 
+def test_destructive_overwrite_allows_moving_measures_into_metrics_refs():
+    """指标条目从 properties 归并进 metrics[] 名字引用不算丢失（建模字段错配修复的前提）。
+
+    口径唯一登记在指标字典（ontology-modeling §3），对象 properties 只该放属性；
+    把指标当属性登记会写出指向不存在列的幽灵 column（实测 RUM 本体 47 条属性
+    全带 rum.* 前缀）。守卫不得因为这一归位而把修正锁死（否则只能绕过级联直接改库）。
+    """
+    import json
+    from backend.modules.catalog.services.ontology_service import _reject_destructive_overwrite
+
+    model = {"json_content": json.dumps({"objects": [{
+        "key": "rum_event", "properties": [
+            {"name": "页面URL", "column": "rum.view_url"},
+            {"name": "页面浏览量", "column": "rum.m_pv"},
+            {"name": "会话数", "column": "rum.m_sessions"},
+        ]}]}, ensure_ascii=False)}
+    fixed = json.dumps({"objects": [{
+        "key": "rum_event",
+        "properties": [{"name": "页面URL", "column": "view.url"}],
+        "metrics": ["页面浏览量", "会话数"],
+    }]}, ensure_ascii=False)
+    _reject_destructive_overwrite(model, fixed)   # 属性 3→1，被移项均在 metrics[] → 放行
+
+    # 真丢失（被删属性未出现在 metrics[] 里）仍须阻断
+    lost = json.dumps({"objects": [{
+        "key": "rum_event",
+        "properties": [{"name": "页面URL", "column": "view.url"}],
+        "metrics": ["页面浏览量"],
+    }]}, ensure_ascii=False)
+    with pytest.raises(ValueError) as e:
+        _reject_destructive_overwrite(model, lost)
+    assert "会话数" in str(e.value)
+
+
 # ── 本体写权限化 + 草案/发布两段式（2026-10-26 拍板）──────────────
 
 def _tool_ctx(monkeypatch, username="tester"):
@@ -148,6 +182,9 @@ def test_add_objects_is_append_only(monkeypatch):
         "json_content": json.dumps({"objects": [
             {"key": "case", "display_name": "案例", "properties": [{"name": "a"}, {"name": "b"}]}]},
             ensure_ascii=False)})
+    # add_ontology_objects 与 update 同口径：基于「已有草案」合并，会先读草案。
+    # 本用例无待发布草案，桩 get_draft 返回空 draft → 回退到生效版（否则查元库 id=1 不存在而假失败）。
+    monkeypatch.setattr(osvc, "get_draft", lambda mid: {"draft": None})
     def _fake_draft(mid, jc, name=None, created_by=""):
         calls["doc"] = json.loads(jc)
         return {"id": mid}

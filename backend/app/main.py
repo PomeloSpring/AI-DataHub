@@ -123,22 +123,6 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         """合并启动流程：任务注册表落库 + KB 对账循环 + waker 会话恢复。"""
         logger.info("AI-DataHub web starting up...")
-        # 跨源拓扑 M2 灰度态必须可观测：关闭择路（目录不暴露 carriers + 取数不选路）若只默默生效，
-        # “没启用”与“没问题”在现象上无法区分（no-silent-degradation 同源纪律）。
-        from backend.semantics import topology as _topology
-        _carrier_on = _topology.routing_enabled()
-        _carrier_n = "-"
-        if _carrier_on:
-            try:
-                _carrier_n = len(_topology.list_carriers())
-            except Exception as e:  # noqa: BLE001 — 启动期元库不可达不影响服务，只标注未取到
-                logger.warning("[topology] 承载清单计数失败（择路仍按开关状态运行）: %s", e)
-        logger.info(
-            "[topology] 取数路径（承载）择路=%s（CARRIER_ROUTING_ENABLED），已声明 active 承载 %s 条",
-            "开启" if _carrier_on else "关闭——行为等同改造前（沿站点展开）", _carrier_n)
-        if not _carrier_on:
-            logger.warning("[topology] CARRIER_ROUTING_ENABLED=false：get_metrics 不再返回 carriers，"
-                           "run_semantic_query 对显式 carrier 参数直接报错（不静默降级）")
         # flow: 内置任务注册表落库(名称/职责/周期以代码为准，不覆盖暂停开关与运行态)
         from backend.common.system_jobs import ensure_seeded
         ensure_seeded()
@@ -173,6 +157,20 @@ def create_app() -> FastAPI:
             except Exception as e:  # noqa: BLE001 预热失败不阻服务，首轮请求会自己报错
                 logger.warning("会话工具沙箱预热失败（不阻启动，首轮请求会承担冷启动）: %s", e)
         asyncio.create_task(_prewarm_sandbox())
+        # mind: 执行层 CLI 核验 + 预热 —— 成功后 SDK 不再每轮重复 spawn `qodercli -v`
+        # （实测每轮 1.3~1.8s 的 node 冷启动，且其结果仅用于 warning 并被 SDK 吞掉）。
+        # 核验失败时不置跳过位（保持与改动前完全一致的每轮探测），仅把原因 ERROR 暴露；
+        # 不阻塞服务就绪（与沙箱预热同口径），首轮可能仍承担该成本。
+        async def _verify_execution_cli():
+            from backend.modules.mind.execution.secure_sdk import verify_runtime_cli
+            result = await asyncio.to_thread(verify_runtime_cli)
+            if result["ok"]:
+                logger.info("执行层 CLI 核验通过: %s (version=%s)，已关闭每轮重复版本探测",
+                            result["cli_path"], result["version"])
+            else:
+                logger.error("执行层 CLI 核验未通过: %s；保持每轮版本探测（每轮多付 ~1.5s 冷启动），"
+                             "请按提示修复 runtime 后重启", result["reason"])
+        asyncio.create_task(_verify_execution_cli())
         yield
         logger.info("AI-DataHub web shut down")
 
@@ -339,6 +337,8 @@ def create_app() -> FastAPI:
     from backend.modules.platform.api.mcp_market import router as mcp_market_router
     from backend.modules.platform.api.model_config import router as platform_model_config_router
     from backend.modules.platform.api.brand import router as brand_router
+    from backend.modules.platform.api.release_notes import admin_router as release_notes_admin_router
+    from backend.modules.platform.api.release_notes import router as release_notes_router
     from backend.modules.platform.api.cache import router as cache_router
     from backend.modules.platform.api.execution_layers import router as execution_layers_router
     from backend.modules.platform.api.prompts import router as prompts_router
@@ -351,6 +351,9 @@ def create_app() -> FastAPI:
     mount("platform", mcp_market_router, "/api/mcp-market", ["MCP Market"])
     mount("platform", platform_model_config_router, "/api/admin/model-config", ["Model Config"])
     mount("platform", brand_router, "/api/admin/brand", ["Brand"])
+    # 版本更新公告: 读+个人引导状态走个人自助域, 内容发布走管理域
+    mount("platform", release_notes_router, "/api/release-notes", ["Release Notes"])
+    mount("platform", release_notes_admin_router, "/api/admin/release-notes", ["Release Notes Admin"])
     mount("platform", cache_router, "/api/admin/cache", ["Cache"])
     mount("platform", execution_layers_router, "/api/admin/execution-layers", ["Execution Layers"])
     mount("platform", prompts_router, "/api/admin/prompts", ["Prompts"])

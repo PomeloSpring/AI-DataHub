@@ -92,6 +92,42 @@ class TestDeploymentFactSource:
         assert bind_rows == [{"object_key": "rum_event", "datasource_name": "arms-prd-cn"}]
         assert site_map == {}  # 不编造站点名，下游回落到数据源名占位
 
+    def test_object_site_rules_restrict_object_to_declared_sites(self):
+        """对象级白名单：模型声明 3 站，但对象只在部分站点有表 → 清单不得广告别站。
+
+        与 binding_resolver 的取数硬门同源：LLM 看到可用却查不到 = 误导编排。
+        """
+        facts = _load_facts_with(
+            models=[{"id": 1,
+                     "deploy_sites": json.dumps([
+                         {"site_code": "cn", "datasource": "prd-cn"},
+                         {"site_code": "int", "datasource": "prd-en"},
+                         {"site_code": "jp", "datasource": "prd-jp"}]),
+                     "object_site_rules": json.dumps({"rum_event": ["cn"]})}],
+            site_names={"cn": "中国站点", "int": "国际站点", "jp": "日本站点"},
+            bindings=[{"model_id": 1, "object_key": "rum_event", "datasource_name": "prd-cn"},
+                      {"model_id": 1, "object_key": "case", "datasource_name": "prd-cn"}],
+            objects=[])
+        bind_rows, _site_map, _meta = facts
+        assert {"object_key": "rum_event", "datasource_name": "prd-cn"} in bind_rows
+        # rum_event 被收紧到 cn，不得出现在 int/jp（未登记的对象照旧全站点展开）
+        assert [r["datasource_name"] for r in bind_rows if r["object_key"] == "rum_event"] == ["prd-cn"]
+        assert sorted(r["datasource_name"] for r in bind_rows if r["object_key"] == "case") \
+            == ["prd-cn", "prd-en", "prd-jp"]
+
+    def test_unparsable_object_site_rules_does_not_shrink(self):
+        """规则非法/空 → 不收紧（模型级声明照旧展开，不影响存量）。"""
+        for raw in (None, "", "[]", "not-json", json.dumps({"case": []})):
+            bind_rows, _m, _meta = _load_facts_with(
+                models=[{"id": 1,
+                         "deploy_sites": json.dumps([{"site_code": "cn", "datasource": "prd-cn"},
+                                                     {"site_code": "jp", "datasource": "prd-jp"}]),
+                         "object_site_rules": raw}],
+                site_names={"cn": "中国站点", "jp": "日本站点"},
+                bindings=[{"model_id": 1, "object_key": "case", "datasource_name": "prd-cn"}],
+                objects=[])
+            assert sorted(r["datasource_name"] for r in bind_rows) == ["prd-cn", "prd-jp"], raw
+
 
 class _FakeCursor:
     def __init__(self, results):

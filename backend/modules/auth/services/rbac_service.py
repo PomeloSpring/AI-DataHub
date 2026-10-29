@@ -22,6 +22,17 @@ def _ts_id() -> int:
     return int(_time.time() * 1000)
 
 
+def _invalidate_as_bot_config(reason: str) -> None:
+    """角色表写入口同批失效：名称→角色 id 映射与角色 id 集合都是被缓存的配置事实。
+
+    `adh_roles` 行变了，`as_bots._role_ids_of_name`（按 user_role 名反查 id）与
+    `_role_ids_of_user` 都可能返回旧值——失效钩子必须跟着写入口，否则缓存会把
+    改名/删角色当成长期事实。口径见 `backend/common/as_bot_config_cache.py`。
+    """
+    from backend.common.as_bot_config_cache import invalidate
+    invalidate(reason)
+
+
 # ── Role CRUD ───────────────────────────────────────────────────────────
 
 def list_roles() -> list[dict]:
@@ -70,6 +81,7 @@ def create_role(name: str, description: str = "") -> tuple[bool, str, int]:
                     "VALUES (%s, %s, %s, %s, %s, %s)",
                     (role_id, name, description, 0, now, now),
                 )
+        _invalidate_as_bot_config(f"rbac.create_role {role_id}")
         return True, "创建成功", role_id
     except Exception as e:
         logger.error("Failed to create role: %s", e)
@@ -111,6 +123,7 @@ def update_role(role_id: int, name: str = None, description: str = None) -> tupl
                     f"UPDATE adh_roles SET {', '.join(updates)} WHERE id = %s",
                     params,
                 )
+        _invalidate_as_bot_config(f"rbac.update_role {role_id}")
         return True, "更新成功"
     except Exception as e:
         logger.error("Failed to update role: %s", e)
@@ -131,6 +144,7 @@ def delete_role(role_id: int) -> tuple[bool, str]:
 
                 cur.execute("DELETE FROM adh_role_permissions WHERE role_id = %s", (role_id,))
                 cur.execute("DELETE FROM adh_roles WHERE id = %s", (role_id,))
+        _invalidate_as_bot_config(f"rbac.delete_role {role_id}")
         return True, "删除成功"
     except Exception as e:
         logger.error("Failed to delete role: %s", e)

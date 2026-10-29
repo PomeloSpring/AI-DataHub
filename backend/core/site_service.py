@@ -25,8 +25,13 @@ from backend.common.db.metadata_db import get_metadata_conn
 
 logger = logging.getLogger(__name__)
 
-# 聚合态站点：不对应单一数据源（全球 = 逐站各查一次后分站呈现；合计只能走 authority 取数路径）
+# 聚合态站点：不对应单一数据源（全球 = 逐站各查一次后分站呈现；取数路径 carrier 已下线，不再做跨站合计）
 AGGREGATE_SITE = "global"
+
+# 观测/日志类数据源：承载 SLS/ARMS 等前端监控数据，不是「业务库」。
+# 源本体（kind='source'）退役并入 business 后，观测本体（如 ARMS RUM）也带
+# deploy_sites，但本站「默认业务库」绝不能落到观测源上——按 db_type 排除。
+OBSERVATION_DB_TYPES = {"sls"}
 
 
 class SiteError(ValueError):
@@ -89,6 +94,20 @@ def get_site(site_code: str) -> Optional[dict]:
         if s["site_code"] == code:
             return s
     return None
+
+
+def is_aggregate_site(site_ref: Any) -> bool:
+    """站点写法（code/业务名/别名）→ 是否聚合态（如「全球」）。
+
+    聚合态会话 `ctx.datasource_id` 合法地为 0（=逐站编排 / 读全局共享字典），
+    与「具体站点但未选会话源」是两回事；工具侧闸门/文案必须能区分二者，
+    不得把聚合态一律当"未选源"退回"请先在会话中选择"死胡同。
+    空/未识别写法 → False（按非聚合态处理，交调用方 fail-loud）。
+    """
+    code = normalize_site_ref(site_ref)
+    if not code:
+        return False
+    return bool(int((get_site(code) or {}).get("is_aggregate") or 0))
 
 
 def _alias_index() -> dict[str, str]:
@@ -310,12 +329,116 @@ def set_model_deploy_sites(model_id: int, sites: list[dict]) -> None:
         conn.close()
 
 
+def _parse_json_field(raw) -> object:
+    """MySQL JSON 列 → Python 对象（bytes/str 统一解码；非法返回 None）。"""
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "null")
+        except (ValueError, TypeError):
+            return None
+    return raw
+
+
+def model_object_site_rules(model_id: int) -> dict[str, list[str]]:
+    """对象级站点白名单 {object_key: [site_code,...]}；未配置/列未迁移返回 {}。
+
+    语义：仅显式列出的对象受限（只在所列站点可查）；未列出的对象沿用模型级
+    deploy_sites 全部声明站点（默认全可用）。空列表按未配置处理（不收紧）。
+    """
+    mid = int(model_id or 0)
+    if not mid:
+        return {}
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT object_site_rules FROM adh_ontology_models WHERE id = %s", (mid,))
+            row = cur.fetchone()
+    except Exception:  # noqa: BLE001 — 列未迁移时按无限制处理（回退旧口径）
+        return {}
+    finally:
+        conn.close()
+    raw = _parse_json_field((row or {}).get("object_site_rules") if row else None)
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for k, v in raw.items():
+        codes = [str(c).strip() for c in (v or []) if str(c).strip()] if isinstance(v, list) else []
+        if str(k).strip() and codes:
+            out[str(k).strip()] = codes
+    return out
+
+
+def object_allowed_site_codes(model_id: int, object_key: str) -> list[str] | None:
+    """该对象显式限定的站点 code 列表；None = 未配置（模型级全部声明站点可用）。"""
+    if not object_key:
+        return None
+    codes = model_object_site_rules(model_id).get(str(object_key))
+    return codes or None
+
+
+def set_model_object_site_rules(model_id: int, rules: dict) -> None:
+    """写对象级站点白名单（调用方负责校验）；清洗后为空 → NULL（回落模型级全站点）。"""
+    cleaned: dict[str, list[str]] = {}
+    for k, v in (rules or {}).items():
+        key = str(k or "").strip()
+        codes = sorted({str(c).strip() for c in (v or []) if str(c).strip()}) if isinstance(v, list) else []
+        if key and codes:
+            cleaned[key] = codes
+    payload = json.dumps(cleaned, ensure_ascii=False) if cleaned else None
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE adh_ontology_models SET object_site_rules = %s WHERE id = %s",
+                        (payload, int(model_id or 0)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def site_of_model_target(model_id: int, site_code: str) -> str:
     """模型在该站点声明的路由目标数据源业务名（未声明返回空）。"""
     for entry in model_deploy_sites(model_id):
         if entry["site_code"] == site_code:
             return entry["datasource"]
     return ""
+
+
+def datasource_name_id_map() -> dict[str, int]:
+    """数据源业务名 → id（供 deploy_sites 的路由源名解析为授权判定用的 id）。"""
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name FROM adh_datasources")
+            rows = cur.fetchall() or []
+    finally:
+        conn.close()
+    return {str(r["name"]): int(r["id"]) for r in rows}
+
+
+def model_source_scope_ids(model_id: int, datasource_id: int = 0,
+                           name_id_map: dict[str, int] | None = None) -> set[int]:
+    """模型触达的数据源 id 集 = 主源 ∪ deploy_sites 路由源（按名解析为 id）。
+
+    用于本体可见性收口（waker-datasource-domain §1）：本体合并后 business 不再是
+    「全员可见」，须按用户授权数据源裁决。按 datasource **id** 粒度收口而非站点粒度，
+    以杜绝同站内跨源泄漏（原源本体即按 id 门控）。
+    - 全局跨站业务本体（联耀，deploy_sites 覆盖 5 站）：任一部署源的授权用户均可见；
+    - 单源派生本体（原 source→business，deploy_sites 仅本站）：仅该源授权用户可见。
+    解析不到 id 的源名（已删/改名）不计入交集，fail-closed（宁少可见，不可泄漏）。
+    """
+    ids: set[int] = set()
+    d = int(datasource_id or 0)
+    if d > 0:
+        ids.add(d)
+    if model_id:
+        mmap = name_id_map if name_id_map is not None else datasource_name_id_map()
+        for entry in model_deploy_sites(model_id):
+            ds = str(entry.get("datasource") or "").strip()
+            if ds and ds in mmap:
+                ids.add(int(mmap[ds]))
+    return ids
 
 
 # ── 可查站点（角色授权派生）───────────────────────────────────────────
@@ -373,6 +496,11 @@ def business_route_target(site_code: str, allowed_ids: Iterable[int] | None = No
     一个站点常挂多个源（业务库 + SLS/ARMS 等观测源），光看 `site_code` 分不出
     默认该查哪个。本体已经声明了“本站路由到哪个源”，拿它作为消歧依据是读已配事实，
     不是猜。多个活跃业务本体声明不同目标 → 返回空（交回调用方 fail-loud 要求显式选源）。
+
+    源本体（kind='source'）已退役合并为 business：观测本体（如 ARMS/SLS）现在同样
+    kind='business' 且带 deploy_sites，其路由目标是观测源（db_type∈OBSERVATION_DB_TYPES），
+    不是「业务库」。本站默认业务库只认关系型业务源，观测源声明一律排除——否则会把它
+    与真正的业务库（如 prd-cn）混成多目标而 fail-loud，导致选中国站却定不下业务库。
     """
     code = str(site_code or "").strip()
     if not code:
@@ -385,10 +513,13 @@ def business_route_target(site_code: str, allowed_ids: Iterable[int] | None = No
                 "SELECT deploy_sites FROM adh_ontology_models "
                 "WHERE kind = 'business' AND status = 'active' AND deploy_sites IS NOT NULL")
             rows = cur.fetchall() or []
-            # name→id 必须在连接关闭前取完：事后再查会拿到已关闭连接，
+            # name→id / name→db_type 必须在连接关闭前取完：事后再查会拿到已关闭连接，
             # 异常被当成“不在授权集”而静默丢掉路由目标（多源站点永远定不下）。
-            cur.execute("SELECT id, name FROM adh_datasources")
-            id_by_name = {str(r["name"]): int(r["id"]) for r in (cur.fetchall() or [])}
+            cur.execute("SELECT id, name, db_type FROM adh_datasources")
+            ds_rows = cur.fetchall() or []
+            id_by_name = {str(r["name"]): int(r["id"]) for r in ds_rows}
+            observation = {str(r["name"]) for r in ds_rows
+                           if str(r.get("db_type") or "").lower() in OBSERVATION_DB_TYPES}
     finally:
         conn.close()
     targets: set[str] = set()
@@ -404,17 +535,68 @@ def business_route_target(site_code: str, allowed_ids: Iterable[int] | None = No
         for item in raw or []:
             if isinstance(item, dict) and str(item.get("site_code") or "") == code:
                 ds = str(item.get("datasource") or "")
-                if ds and (not ids or id_by_name.get(ds) in ids):
+                if ds and ds not in observation and (not ids or id_by_name.get(ds) in ids):
                     targets.add(ds)
     return targets.pop() if len(targets) == 1 else ""
 
 
+def _norm_obj_ref(s: Any) -> str:
+    """对象 key 归一（忽略大小写与分隔符）：绑定行与 intent 里的写法存在变体。"""
+    return re.sub(r"[^a-z0-9]", "", str(s or "").lower())
+
+
+def object_site_target_ids(object_ref: str, site_code: str,
+                           candidate_ids: Iterable[int]) -> set[int]:
+    """候选源里「该对象在本站可取数」的源 id（读部署事实，不是猜）。
+
+    背景：一个站点常挂多个已授权源（业务库 + ARMS/SLS 观测源）。`site` 参数只能
+    定到「本站默认业务库」（`business_route_target` 故意排除观测源），于是问 RUM 对象
+    却路由到 mysql 业务库 → “object 未绑定到任何物理表”。而对象本身在绑定层/模型
+    `deploy_sites` 已声明它在各站走哪个源，那是已配事实，应该优先用它消歧
+    （waker-datasource-domain.md §2「站点内多源时用模型 deploy_sites 路由目标消歧」）。
+
+    口径（宁缺勿错）：同时取「对象 active 绑定行自带的源」∩候选与「对象所属模型在
+    本站声明的路由目标」∩候选；命中不唯一（≥2）或零命中 → 返回空集，由调用方回到
+    原有链路与 fail-loud 提示，绝不在这里猜一个源。
+    """
+    cands = {int(i) for i in (candidate_ids or []) if str(i).strip() != ""}
+    code = str(site_code or "").strip()
+    ref = _norm_obj_ref(object_ref)
+    if not ref or not code or not cands:
+        return set()
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT model_id, object_key, datasource_id FROM adh_ontology_bindings "
+                "WHERE status = 'active'")
+            rows = cur.fetchall() or []
+    except Exception as e:  # noqa: BLE001 — 拓扑不可用不阻断主链路，交回调用方 fail-loud
+        logger.debug("[site] object binding lookup skipped: %s", e)
+        return set()
+    finally:
+        conn.close()
+    hit_rows = [r for r in rows if _norm_obj_ref(r.get("object_key")) == ref]
+    if not hit_rows:
+        return set()
+    targets = {int(r["datasource_id"]) for r in hit_rows if r.get("datasource_id")} & cands
+    model_ids = {int(r["model_id"]) for r in hit_rows if r.get("model_id")}
+    if model_ids:
+        name_id = datasource_name_id_map()
+        for mid in model_ids:
+            got = name_id.get(site_of_model_target(mid, code))
+            if got in cands:
+                targets.add(int(got))
+    return targets
+
+
 def resolve_site_to_source(site_ref: Any, allowed_ids: Iterable[int],
-                           model_id: int = 0) -> int:
+                           model_id: int = 0, object_key: str = "") -> int:
     """站点业务名/代码 → 生效 datasource_id（只在角色授权集内解析）。
 
     唯一命中直接返回；站点内多源时先用模型 deploy_sites 的路由目标消歧，再用
-    “任一活跃业务本体在本站声明的业务库”兼容（会话层不知道具体模型）；仍多义/零命中
+    “对象在本站的部署绑定/模型声明源”按对象消歧，再用“任一活跃业务本体在本站
+    声明的业务库”兼容（会话层不知道具体模型）；仍多义/零命中
     /聚合态 → 抛 SiteError（含业务名候选，不猜）。
     """
     ids = sorted({int(i) for i in (allowed_ids or []) if str(i).strip() != ""})
@@ -429,8 +611,8 @@ def resolve_site_to_source(site_ref: Any, allowed_ids: Iterable[int],
         raise SiteError(
             f"「{site['display_name']}」是聚合态站点，不对应单一数据源："
             f"请对每个具体站点各调一次查询（site=中国/国际/…）后**分站呈现**，"
-            f"不得把各站数字相加当作全局值；只有该对象声明了权威全局取数路径时，"
-            f"才按那条路径（intent 加 carrier=…）一次查完。")
+            f"不得把各站数字相加当作全局值（取数路径 carrier 已下线，无跨站汇总路径可走）；"
+            f"如需一个可校验的全局去重/合计口径，请在知识库文档中定义。")
     candidates = datasources_of_site(code, ids)
     if not candidates:
         available = "、".join(s["display_name"] for s in authorized_sites_from_ids(ids))
@@ -440,6 +622,12 @@ def resolve_site_to_source(site_ref: Any, allowed_ids: Iterable[int],
     if len(candidates) == 1:
         return int(candidates[0]["id"])
     target = site_of_model_target(model_id, code) if model_id else ""
+    if not target and object_key:
+        # 问的是具体对象 → 用该对象在本站的部署事实定源（观测对象不会被“默认业务库”
+        # 启发式抢走），命中唯一才生效，多义仍回到下面的 fail-loud。
+        hits = object_site_target_ids(object_key, code, [int(c["id"]) for c in candidates])
+        if len(hits) == 1:
+            return int(next(iter(hits)))
     if not target:
         target = business_route_target(code, ids)
     if target:

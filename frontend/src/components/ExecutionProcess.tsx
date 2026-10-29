@@ -7,6 +7,12 @@
  *  - 点击摘要行: 滑动展开/收起阶段性内容(限高内滚);「全屏」按钮经 Portal 弹层
  *    查看完整过程 —— 弹层脱离文档流, 无论内容多长都不会撑高消息气泡/对话框。
  *
+ * 两个状态信号必须分开(历史缺陷:
+ * 「任务运行中但卡头显示已完成」—— agent loop 中模型会先输出中间文本再续调工具,
+ * 出现文本 ≠ 回合结束):
+ *  - isStreaming   = 回合是否仍在执行(done 未达), 驱动卡头 spinner/「执行中」/展开窗口;
+ *  - thinkingActive = 思考阶段是否进行中(已开始出正文即停止), 只驱动思考块转圈。
+ *
  * 无过程内容时不渲染。内部复用 ProcessTimeline(思考/工具按真实顺序穿插)。
  */
 
@@ -22,13 +28,17 @@ interface Props {
   toolCalls?: ToolCall[];
   progressStages?: ProgressStage[];
   thinking?: string;
+  /** 回合是否仍在执行(跟随 done), 驱动卡头运行中状态与展开窗口 */
   isStreaming?: boolean;
+  /** 思考阶段是否进行中(出正文后 false), 仅驱动思考块转圈; 缺省跟随 isStreaming */
+  thinkingActive?: boolean;
   conversationId?: number | null;
 }
 
 export default function ExecutionProcess({
-  process, toolCalls, progressStages, thinking, isStreaming = false, conversationId,
+  process, toolCalls, progressStages, thinking, isStreaming = false, thinkingActive, conversationId,
 }: Props) {
+  const thinkingOn = thinkingActive ?? isStreaming;
   const hasProcess =
     !!thinking ||
     (process?.length ?? 0) > 0 ||
@@ -119,14 +129,18 @@ export default function ExecutionProcess({
         />
       </div>
 
-      {/* 阶段性内容: 滑动展开的限高窗口(内部滚动), 收起时不占高度 */}
+      {/* 阶段性内容: 滑动展开的限高窗口(内部滚动), 收起时不占高度。
+          思考块转圈只跟随 thinkingActive(出正文即停); 卡头/窗口展开跟随 isStreaming
+          (done 才收) —— 中间文本后还会续调工具, 不得提前渲成“已完成”。
+          旧缺陷两处: 写死 timeline(true) 使历史展开永远转圈; 用同一信号驱动两者,
+          使“文本已出现但回合还在跑”误渲成已完成(或反过来思考块永转)。 */}
       <SlideCollapse open={inlineOpen}>
         <div
           ref={bodyRef}
           className="px-2 pb-2 border-t"
           style={{ maxHeight: 260, overflowY: 'auto' }}
         >
-          {timeline(true)}
+          {timeline(thinkingOn)}
         </div>
       </SlideCollapse>
 

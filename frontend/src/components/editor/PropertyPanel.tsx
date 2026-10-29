@@ -272,7 +272,7 @@ export default function PropertyPanel({
       )}
     </div>
   );
-  if (narrow) return <Dialog open={isOpen} onOpenChange={open => { if (!open) onClose(); }}><DialogContent className="left-auto right-0 top-0 h-[100dvh] w-[min(320px,95vw)] translate-x-0 translate-y-0 rounded-none p-0 flex flex-col gap-0">
+  if (narrow) return <Dialog open={isOpen} onOpenChange={open => { if (!open) onClose(); }}><DialogContent className="left-auto right-0 top-0 h-[100dvh] max-h-[100dvh] w-[min(320px,95vw)] translate-x-0 translate-y-0 rounded-none p-0 flex flex-col gap-0">
     <DialogTitle className="sr-only">属性面板</DialogTitle><DialogDescription className="sr-only">修改当前选中元素的外观、数据与布局。</DialogDescription>{content}
   </DialogContent></Dialog>;
   return <aside className={`shrink-0 overflow-hidden border-l ${isOpen ? 'w-[300px]' : 'hidden'}`}>{content}</aside>;

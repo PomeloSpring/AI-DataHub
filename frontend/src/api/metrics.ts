@@ -63,8 +63,12 @@ export const metricsApi = {
   addDimension: (id: number, data: any) => client.post(`/metrics/${id}/dimensions`, data),
   // 全局维度字典(adh_dimensions) — 指标中心「维度字典」Tab 唯一编辑入口
   // 模型工作区复用同一入口: 传 { model_id, scope: 'model' } 或 { scope: 'unbound' } 筛选
-  listAllDimensions: (params?: { model_id?: number; scope?: 'model' | 'unbound' }) =>
-    client.get('/metrics/dimensions', { params }),
+  // is_active: 缺省=只列生效行(Chat/看板参数等取数向消费方); 'all'=含停用行(字典维护页)
+  listAllDimensions: (params?: {
+    model_id?: number;
+    scope?: 'model' | 'unbound';
+    is_active?: 'all' | '1' | '0';
+  }) => client.get('/metrics/dimensions', { params }),
   updateDimension: (id: number, data: any) => client.put(`/metrics/dimensions/${id}`, data),
   // 新建全局维度字典行(与 updateDimension 对称) —— 必填 display_name + bound_object_key
   createDimension: (data: any) => client.post('/metrics/dimensions', data),

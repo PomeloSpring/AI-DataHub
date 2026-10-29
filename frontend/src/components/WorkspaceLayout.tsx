@@ -4,7 +4,7 @@ import {
   MessageSquare, LogOut, Menu, Sun, Moon,
   ChevronLeft, ChevronRight, X, ChevronDown, Palette, Zap, TrendingUp, Grid3x3,
   GlassWater, Folder, UserCircle, Brain, Heart, Check, ArrowRight,
-  Clock, Gem, Plus, Archive, ChartNoAxesCombined, Trash2,
+  Clock, Gem, Plus, Archive, ChartNoAxesCombined, Trash2, Compass,
 } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -22,6 +22,9 @@ import { useMenuAccess } from '../hooks/useMenuAccess';
 import { SidebarMenuSkeleton } from './SidebarMenuSkeleton';
 import { pruneEmptySections } from '@/lib/menuUtils';
 import SectionSwitcher from './SectionSwitcher';
+import ReleaseNotesButton from './ReleaseNotesButton';
+import { TOUR, navTour } from '@/lib/onboarding/guides';
+import { useGuideStore } from '@/stores/guideStore';
 import { toast } from '@/lib/toast';
 import client from '@/api/client';
 import { WorkspaceDeleteDialog } from './WorkspaceDeleteDialog';
@@ -185,7 +188,7 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
       <>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button aria-label="切换工作空间" className="w-full flex items-center justify-center py-3 hover:bg-sidebar-accent/50 transition-colors">
+            <button aria-label="切换工作空间" data-tour={TOUR.wsSelector} className="w-full flex items-center justify-center py-3 hover:bg-sidebar-accent/50 transition-colors">
               <span className="text-lg">{currentWs?.icon || '📊'}</span>
             </button>
           </DropdownMenuTrigger>
@@ -212,7 +215,7 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button aria-label="切换工作空间" className={`w-full min-w-0 flex items-center gap-2 px-3 py-2 hover:bg-muted/50 transition-colors ${module === 'workspace' ? 'border-b border-sidebar-border' : 'rounded-md'}`}>
+          <button aria-label="切换工作空间" data-tour={TOUR.wsSelector} className={`w-full min-w-0 flex items-center gap-2 px-3 py-2 hover:bg-muted/50 transition-colors ${module === 'workspace' ? 'border-b border-sidebar-border' : 'rounded-md'}`}>
             <span className="text-lg flex-shrink-0">{currentWs?.icon || '📊'}</span>
             <div className="flex-1 min-w-0 text-left">
               <div className="text-sm font-medium truncate text-sidebar-foreground">
@@ -253,6 +256,7 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
   const { user, logout } = useAuthStore();
   const { theme, setTheme } = useThemeStore();
   const { brand, fetchBrand } = useBrandStore();
+  const startGuide = useGuideStore(s => s.startGuide);
 
   useEffect(() => { applyTheme(theme); }, [theme]);
   useEffect(() => {
@@ -333,6 +337,7 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
                   <TooltipTrigger asChild>
                     <button
                       onClick={() => handleNavigate(item.key!)}
+                      data-tour={navTour('ws', item.key!)}
                       className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-200
                         ${isActive
                           ? 'bg-primary text-primary-foreground font-medium'
@@ -454,6 +459,9 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
             </>}
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {/* 版本公告: 与模块切换器左侧常驻(三套布局同口径) */}
+            <ReleaseNotesButton />
+
             {/* Module switcher — 工作空间 / 数据中台 / 系统配置 */}
             <SectionSwitcher current={module} />
 
@@ -462,7 +470,7 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
               <Tooltip>
                 <TooltipTrigger asChild>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label="主题风格">
+                    <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label="主题风格" data-tour={TOUR.headerTheme}>
                       <Palette className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -489,7 +497,7 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
             {/* User menu */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button aria-label="用户菜单" className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
+                <button aria-label="用户菜单" data-tour={TOUR.headerUser} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
                   <Avatar className="h-6 w-6">
                     <AvatarFallback className="text-xs">{user?.username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
                   </Avatar>
@@ -497,6 +505,11 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                {/* 手动重看入口: 不受 guide:all 静音影响, 永远可用 */}
+                <DropdownMenuItem onClick={() => startGuide('welcome')}>
+                  <Compass className="h-4 w-4 mr-2" />
+                  新手引导
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => navigate(module === 'workspace' ? `/ws/${workspaceId}/profile` : `/${module}/${workspaceId}/profile`)}>
                   <UserCircle className="h-4 w-4 mr-2" />
                   个人设置

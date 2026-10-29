@@ -53,6 +53,12 @@ EDGE_EXCEPTIONS = [
      "本体/关系/术语同步知识图谱（graph_service/graph_sync_service）"),
     ("auth", "modules.mind.execution", "workspace-admin",
      "工作区磁盘用量/as-bot 可见资源统计"),
+    ("flow", "modules.mind.execution", "worker-runtime-probe",
+     "celery worker 启动钩子核验/预热执行层 CLI（与 web lifespan 同口径，开关必须在本进程置上）；"
+     "执行运行时探测下沉 core 列入演进"),
+    ("semhub", "modules.catalog.services", "graph-model-scope",
+     "图谱按模型收窄需读本体模型（get_model → ontology_class_keys 算本模型对象集）；"
+     "模型读取接口下沉 core/ontology_index 列入演进"),
 ]
 
 

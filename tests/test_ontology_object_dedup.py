@@ -349,13 +349,13 @@ class TestSaveGeneratedDraftDedup:
         assert [o["key"] for o in doc["objects"]] == ["order"]
 
     def test_kind_and_created_by_server_injected(self, monkeypatch):
-        """kind 按目标源派生、created_by 服务端注入（不来自 LLM/请求体）。"""
+        """kind 按目标源派生（源本体已退役：>0→business、0→system）、created_by 服务端注入。"""
         ops = self._patch_db(monkeypatch)
         ontology_service.save_generated_draft(
             1, [{"key": "order", "primary_table": "t_order", "properties": []}],
             created_by="u7")
         params = self._inserted(ops)
-        assert params[2] == "source" and params[9] == "u7"
+        assert params[2] == "business" and params[9] == "u7"
         ops2 = self._patch_db(monkeypatch)
         ontology_service.save_generated_draft(
             0, [{"key": "order", "primary_table": "t_order", "properties": []}],

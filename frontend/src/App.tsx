@@ -36,12 +36,14 @@ import KnowledgeBase from './pages/admin/KnowledgeBase';
 import VersionedConfigEditor, { createPromptAdapter } from './pages/admin/VersionedConfigEditor';
 import ReportsCenter from './pages/ReportsCenter';
 import AsBotPanel from './components/asbot/AsBotPanel';
+import OnboardingHost from './components/onboarding/OnboardingHost';
 
 // 新增页面 - 数据中台
 import QualityOverview from './pages/quality/QualityOverview';
 import QualityRules from './pages/quality/QualityRules';
 import LineageGraph from './pages/lineage/LineageGraph';
 import OntologyModeling from './pages/catalog/OntologyModeling';
+import AssetPoolWorkbench from './pages/catalog/AssetPoolWorkbench';
 import OntologyGraphView from './pages/catalog/OntologyGraphView';
 import MetricsCenter from './pages/catalog/MetricsCenter';
 import TagsManager from './pages/catalog/TagsManager';
@@ -68,6 +70,7 @@ import KnowledgeManagement from './pages/admin/KnowledgeManagement';
 import Monitoring from './pages/admin/Monitoring';
 import TaskMonitor from './pages/admin/TaskMonitor';
 import UdfManagement from './pages/admin/UdfManagement';
+import ReleaseNotesManager from './pages/admin/ReleaseNotesManager';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -104,6 +107,8 @@ export default function App() {
 
   return (
     <BrowserRouter>
+      {/* 新手引导/版本公告宿主: 需在 router 上下文里导航与读路由, 故与 Routes 平级挂载 */}
+      <OnboardingHost />
       <Routes>
         <Route path="/login" element={<Login />} />
 
@@ -153,6 +158,8 @@ export default function App() {
           <Route path="datasources" element={<Admin embeddedTab="datasources" />} />
           <Route path="tables" element={<Admin embeddedTab="metadata" />} />
           <Route path="ontology" element={<OntologyModeling />} />
+          {/* 建模待办：未归属资产 + 解析回流候选的分诊台（跨模型缺口，不属于任何单个模型，故独立成页） */}
+          <Route path="asset-pool" element={<AssetPoolWorkbench />} />
           {/* 指标与维度: 语义模型层全局权威主页(唯一编辑源); 本体页仅保留结构编辑 */}
           <Route path="metrics" element={<MetricsCenter />} />
           <Route path="datasets" element={<Datasets />} />
@@ -205,6 +212,8 @@ export default function App() {
           {/* 旧本体图路由重定向到数据中台本体建模 */}
           <Route path="knowledge-graph" element={<Navigate to="/data/ontology" replace />} />
           <Route path="settings" element={<Admin embeddedTab="brand" />} />
+          {/* 版本公告(顶栏公告面板的数据源, 仅 admin) */}
+          <Route path="release-notes" element={<ReleaseNotesManager />} />
           {/* 权限管理 */}
           <Route path="workspaces" element={<WorkspaceManagerV2 />} />
           <Route path="roles" element={<RoleManagement />} />

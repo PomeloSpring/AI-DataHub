@@ -175,21 +175,31 @@ export default function ComponentLibrary({
               <p className="text-xs px-2 text-muted-foreground">暂无数据集，请先在「数据集」页创建</p>
             ) : (
               <div className="space-y-0.5">
-                {datasets.map(ds => (
-                  <div key={ds.id} className="flex items-center gap-2 px-2 py-1.5 rounded-md border border-transparent hover:bg-muted">
-                    <Database className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs truncate">{ds.name}</div>
-                      <div className="text-[10px] text-muted-foreground truncate">
-                        {ds.chart_type ? (CHART_TYPE_LABELS[ds.chart_type] || ds.chart_type) : '未预设图表类型(默认柱状图)'}
+                {datasets.map(ds => {
+                  // 后端已按「可用范围 ∩ 当前角色授权源 ≠ ∅」过滤清单；仍留一道显式禁用，
+                  // 避免旧响应/缓存把挂了必报错的空承诺拖到画布上
+                  const usable = (ds.usable_now || []).length > 0;
+                  return (
+                    <div key={ds.id} className="flex items-center gap-2 px-2 py-1.5 rounded-md border border-transparent hover:bg-muted">
+                      <Database className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs truncate">{ds.name}</div>
+                        <div className="text-[10px] text-muted-foreground truncate">
+                          {ds.chart_type ? (CHART_TYPE_LABELS[ds.chart_type] || ds.chart_type) : '未预设图表类型(默认柱状图)'}
+                          {(ds.available_source_names || []).length > 1 && (
+                            <span className="ml-1">· 可用 {(ds.available_source_names || []).length} 源</span>
+                          )}
+                        </div>
                       </div>
+                      <Button size="sm" variant="outline" className="h-6 px-2 text-[11px] flex-shrink-0"
+                        disabled={!usable}
+                        title={usable ? undefined : '当前角色无该数据集任何可用数据源的权限，请在数据集页扩大范围或申请源授权'}
+                        onClick={() => onAddFromDataset(ds)}>
+                        <Download className="h-3 w-3 mr-1" /> 引入
+                      </Button>
                     </div>
-                    <Button size="sm" variant="outline" className="h-6 px-2 text-[11px] flex-shrink-0"
-                      onClick={() => onAddFromDataset(ds)}>
-                      <Download className="h-3 w-3 mr-1" /> 引入
-                    </Button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

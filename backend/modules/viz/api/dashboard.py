@@ -21,6 +21,7 @@ from backend.modules.viz.services.dashboard_service import (
     list_datasource_aggregations,
     build_visible_groups,
     check_dashboard_editable,
+    assert_dataset_chart_usable,
     _invalidate_dashboard_payload,
 )
 
@@ -39,6 +40,20 @@ def _require_editable(dashboard_id: int, user: dict) -> None:
             status_code=403,
             detail="仅看板属主或管理员可修改该看板（角色授予的可见权不含编辑权）",
         )
+
+
+def _chart_identity(user: dict) -> dict:
+    """图表写操作的服务端可信身份（只取 JWT，不取请求体；护栏 §2）。
+
+    数据源授权按 `adh_user_roles` 裁决（与 workspace 无关），workspace_id 仅作为
+    数据集服务内部取用上下文，此处从 JWT 载荷取、取不到则为 0（不影响源级 RBAC 口径）。
+    """
+    return {
+        "user_id": int(user.get("user_id") or 0),
+        "username": user.get("username") or "",
+        "role": user.get("role") or "",
+        "workspace_id": int(user.get("workspace_id") or 0),
+    }
 
 
 # ── Pydantic Models ─────────────────────────────────────────────────────────
@@ -482,7 +497,10 @@ def add_chart_endpoint(
     """Add a chart to a dashboard."""
     try:
         _require_editable(dashboard_id, user)
-        cid = chart_service.create_chart(dashboard_id, req.model_dump())
+        payload = req.model_dump()
+        # 挂数据集图表：编辑者需在“数据集可用数据源范围 ∩ 角色授权源”里至少有一个源
+        assert_dataset_chart_usable(payload, _chart_identity(user))
+        cid = chart_service.create_chart(dashboard_id, payload)
         return {"id": cid}
     except HTTPException:
         raise
@@ -504,14 +522,20 @@ def update_chart_endpoint(
     """Update a chart within a dashboard."""
     try:
         _require_editable(dashboard_id, user)
+        patch = req.model_dump(exclude_unset=True)
+        # 改图同样把关（patch 只带局部字段时由服务层回读现有行拼出口径）
+        assert_dataset_chart_usable(patch, _chart_identity(user), chart_id=chart_id)
         updated = chart_service.update_chart(
-            dashboard_id, chart_id, req.model_dump(exclude_unset=True),
+            dashboard_id, chart_id, patch,
         )
         if not updated:
             raise HTTPException(status_code=404, detail="Chart not found")
         return {"success": True}
     except HTTPException:
         raise
+    except ValueError as e:
+        # 数据集不在可执行源上/示例数据不合规 = 调用方问题, 回 400 + 可读原因
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Failed to update chart")
         raise HTTPException(status_code=500, detail="图表配置保存失败，请重试") from e
@@ -551,6 +575,12 @@ def batch_save_charts_endpoint(
     try:
         _require_editable(dashboard_id, user)
         errors: list = []
+        ident = _chart_identity(user)
+        # 先全量预检数据集图的可用源（与 create/update 入口同口径）：避免存上一堆“挂得上、刷新必报错”的图
+        for payload in (req.added or []):
+            assert_dataset_chart_usable(payload, ident)
+        for cid, patch in (req.changed or {}).items():
+            assert_dataset_chart_usable(patch, ident, chart_id=int(cid))
         saved_metadata = False
         if req.metadata:
             saved_metadata = dashboard_service.update_dashboard(
@@ -569,6 +599,8 @@ def batch_save_charts_endpoint(
         }
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Failed to batch save dashboard draft")
         raise HTTPException(status_code=500, detail="看板保存失败，草稿已保留，可重试") from e

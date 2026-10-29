@@ -166,14 +166,20 @@ def make_tool(backend: str, name: str, description: str, input_schema: dict,
                 # （如「数据源 X 无有效表元数据，请先执行元数据同步」），换成“联系管理员”
                 # 就把可诊断信息丢了（no-silent-degradation §1）。敏感收口由下方 assert_no_sensitive 负责。
                 detail = _tool_error_text(result) or "工具执行失败，未返回具体原因。"
-                return {"isError": True, "content": [{"type": "text", "text": detail}]}
+                # 错误文案同样要出站收口：handler 把 DB 异常原文装进 error 时，
+                # 物理表/列名会直接下发 LLM（护栏 §7）。历史缺陷：此处直接 return 绕开守卫。
+                return assert_no_sensitive(
+                    {"isError": True, "content": [{"type": "text", "text": detail}]},
+                    qualified_name)
             # 出站收口：任何工具结果下发 LLM 前过敏感信息守卫。
             # 放在 isError 归一化之后，否则守卫给出的具体命中类别会被通用文案盖掉。
             # 命中即拒发（fail-loud），不静默清空字段（no-silent-degradation §1）。
             return assert_no_sensitive(result, qualified_name)
         except ResourceScopeError as exc:
             logger.warning("工具资源范围校验拒绝: %s: %s", qualified_name, exc)
-            return {"isError": True, "content": [{"type": "text", "text": str(exc)}]}
+            # 范围拒绝的真因要透传（可诊断），但同样过出站守卫：文案里可能带数据源内部标识。
+            return assert_no_sensitive(
+                {"isError": True, "content": [{"type": "text", "text": str(exc)}]}, qualified_name)
         except DesignError as exc:
             import json
             logger.warning("设计工具拒绝: %s code=%s", qualified_name, exc.code)

@@ -847,6 +847,9 @@ def delete_user(user_id: int) -> tuple[bool, str]:
                 cur.execute("DELETE FROM adh_user_roles WHERE user_id = %s", (user_id,))
                 cur.execute("DELETE FROM adh_users WHERE id = %s", (user_id,))
             conn.commit()
+        # 角色绑定属配置事实：该用户的角色 id/权限码集已作废，轮次起点缓存随之失效
+        from backend.common.as_bot_config_cache import invalidate as _invalidate_as_bot_config
+        _invalidate_as_bot_config(f"delete_user id={user_id}")
         return True, "删除成功"
     except Exception as e:
         logger.error("Failed to delete user: %s", e)

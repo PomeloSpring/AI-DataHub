@@ -6,10 +6,10 @@
  * ObjectTagsTab: 本模型对象(按 primary_table)已打的标签聚合视图;
  *   标签定义管理仍在标签中心, 此处解决"建模时看不到对象业务色彩"的问题。
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { toast } from '@/lib/toast';
 import client from '@/api/client';
-import { ontologyApi, type CarrierInput, type CarrierOptions } from '@/api/ontology';
+import { ontologyApi } from '@/api/ontology';
 import { useGraphStore } from '@/stores/graphStore';
 import KnowledgeGraphView from '@/components/graph/KnowledgeGraph';
 import { Button } from '@/components/ui/button';
@@ -33,12 +33,18 @@ import { normalizeDocObjects } from '@/lib/ontologyObjects';
  * 旧口径要为每个对象×每个站点各登记一行绑定（27 对象 × 5 站 = 135 行机械复制），
  * 现收敛为一次配置全对象共享；站点 schema 真不同时，按拍板「为该站单独配一个
  * 本体或使用源本体」表达。显示/选择一律用业务名（ui-resource-display）。
+ *
+ * 对象级例外（白名单机制）：「同构多站 + 个别站点才有某对象」时，在对象契约清单
+ * 里点掉该对象不适用的站点即可——**未配置的对象默认全部勾选站点可用**（免逐个配置），
+ * 配置过的只在所选站点可用（取数时未部署的站点直接拒查，不拿别站数据充数）。
  */
 export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly?: boolean }) {
   const [sites, setSites] = useState<import('@/api/ontology').ModelSiteRow[]>([]);
   const [objects, setObjects] = useState<import('@/api/ontology').ContractObjectRow[]>([]);
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
   const [route, setRoute] = useState<Record<string, string>>({});
+  /** 对象级站点白名单：key 存在 = 该对象显式限定到列出的站点；缺失 = 不限（沿用全部勾选站点） */
+  const [objRules, setObjRules] = useState<Record<string, string[]>>({});
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -47,13 +53,17 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
     if (!modelId) return;
     ontologyApi.sites(modelId).then((r: any) => {
       const list: import('@/api/ontology').ModelSiteRow[] = r?.data?.sites || [];
+      const objs: import('@/api/ontology').ContractObjectRow[] = r?.data?.contract_objects || [];
       setSites(list);
-      setObjects(r?.data?.contract_objects || []);
+      setObjects(objs);
       setEnabled(Object.fromEntries(list.map((s) => [s.site_code, s.selected])));
       // 站点内唯一源自动填（不要求人手输）；多源保留已配置值或留空待人选择
       setRoute(Object.fromEntries(list.map((s) => [
         s.site_code, s.datasource || (s.datasource_options.length === 1 ? s.datasource_options[0] : ''),
       ])));
+      setObjRules(Object.fromEntries(objs
+        .filter((o) => (o.allowed_sites || []).length)
+        .map((o) => [o.object_key, [...o.allowed_sites].sort()])));
       setError('');
       setLoaded(true);
     }).catch((e: any) => {
@@ -63,12 +73,57 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
   }, [modelId]);
   useEffect(() => { load(); }, [load]);
 
-  const dirty = loaded && sites.some((s) => {
+  /** 上方已勾选的站点（对象级白名单只能在这个集合里收紧，不能扩到未部署的站） */
+  const enabledCodes = useMemo(
+    () => sites.filter((s) => enabled[s.site_code]).map((s) => s.site_code),
+    [sites, enabled]);
+  const siteLabel = useCallback(
+    (code: string) => sites.find((s) => s.site_code === code)?.display_name || code,
+    [sites]);
+  /** 基线（后端已存配置）与当前编辑态同形状，用于 dirty 判定 */
+  const baselineRules = useMemo(() => Object.fromEntries(
+    objects.filter((o) => (o.allowed_sites || []).length)
+      .map((o) => [o.object_key, [...o.allowed_sites].sort()]),
+  ), [objects]);
+
+  const rulesChanged = useMemo(() => {
+    const keys = new Set([...Object.keys(objRules), ...Object.keys(baselineRules)]);
+    for (const k of keys) {
+      const a = (objRules[k] || []).join(',');
+      const b = (baselineRules[k] || []).join(',');
+      if (a !== b) return true;
+    }
+    return false;
+  }, [objRules, baselineRules]);
+
+  const dirty = loaded && (sites.some((s) => {
     const want = !!enabled[s.site_code];
     const wantDs = want ? (route[s.site_code] || '') : '';
     return want !== s.selected
       || wantDs !== (s.selected ? (s.datasource || (s.datasource_options.length === 1 ? s.datasource_options[0] : '')) : '');
-  });
+  }) || rulesChanged);
+
+  /** 点一下站点芯片：未收紧时先物化为「全部勾选站点」再增/减，保证语义是白名单而非黑名单 */
+  const toggleObjectSite = (objectKey: string, code: string) => {
+    if (readonly) return;
+    const cur = objRules[objectKey] ?? enabledCodes;
+    const next = cur.includes(code) ? cur.filter((c) => c !== code) : [...cur, code].sort();
+    if (!next.length) {
+      const name = objects.find((o) => o.object_key === objectKey)?.object_name || objectKey;
+      setError(`对象「${name}」至少保留一个适用站点；要全站停用请在上方取消勾选该站点`);
+      return;
+    }
+    setError('');
+    setObjRules({ ...objRules, [objectKey]: next });
+  };
+
+  const releaseObject = (objectKey: string) => {
+    if (readonly) return;
+    const next = { ...objRules };
+    delete next[objectKey];
+    setObjRules(next);
+    setError('');
+  };
 
   const save = async () => {
     const payload: { site_code: string; datasource: string }[] = [];
@@ -81,11 +136,24 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
       }
       payload.push({ site_code: s.site_code, datasource: ds });
     }
+    // 对象级白名单跟随模型级勾选剪除（站点取消勾选后，其引用不再有意义）
+    const keepCodes = new Set(payload.map((p) => p.site_code));
+    const rulesOut: Record<string, string[]> = {};
+    for (const [ok, codes] of Object.entries(objRules)) {
+      const kept = codes.filter((c) => keepCodes.has(c));
+      if (!kept.length) {
+        const name = objects.find((o) => o.object_key === ok)?.object_name || ok;
+        setError(`对象「${name}」的适用站点已全部取消勾选：请至少保留一个，或点「不限」`);
+        return;
+      }
+      rulesOut[ok] = kept;
+    }
     setSaving(true);
     setError('');
     try {
-      await ontologyApi.saveSites(modelId, payload);
-      toast.success('同构站点部署已保存（全模型对象共享）');
+      const r: any = await ontologyApi.saveSites(modelId, payload, rulesOut);
+      toast.success('同构站点部署已保存（未收紧的对象仍适用全部勾选站点）');
+      (r?.data?.pruned || []).forEach((msg: string) => toast.warning(msg));
       load();
     } catch (e: any) {
       // 校验失败原样外显（不静默回滚成旧配置）
@@ -98,10 +166,16 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
   return (
     <ScrollArea className="h-full">
       <div className="p-3 space-y-4">
-        <div className="text-xs font-medium text-muted-foreground">
-          同构站点部署（一份契约 × N 站）：在此声明的业务本体整体适用于哪些站点，取数时按站点自动路由到对应数据源。
-          某站点数据结构不同时，请为该站单独配一个本体或直接使用源本体。
-          跨源/跨层的取数路径（数仓全局汇总、日志源、镜像）不在这里声明，请到「取数路径」页维护。
+        <div className="text-xs font-medium text-muted-foreground space-y-1">
+          <p>
+            同构站点部署（一份契约 × N 站）：在此声明的业务本体整体适用于哪些站点，取数时按站点自动路由到对应数据源。
+            某站点数据结构不同时，请为该站单独配一个本体或直接使用源本体。
+            跨源去重/汇总口径（如全球去重用户数）不在这里声明，请在知识库文档中描述。
+          </p>
+          <p>
+            「同构多站但某些对象只在部分站点有」：在下方对象契约清单里点掉该对象不适用的站点即可——
+            没配过的对象默认适用全部勾选站点（无需逐个配置），配过的只在所选站点可查。
+          </p>
         </div>
         {error && <div className="text-xs text-destructive">{error}</div>}
         {loaded && !sites.length && (
@@ -145,7 +219,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
             {!readonly && (
               <div className="flex items-center gap-2 pt-1">
                 <Button size="sm" onClick={save} disabled={!dirty || saving}>
-                  {saving ? '保存中…' : '保存同构站点部署'}
+                  {saving ? '保存中…' : '保存站点部署'}
                 </Button>
                 {!dirty && <span className="text-xs text-muted-foreground">无变更</span>}
               </div>
@@ -155,24 +229,32 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
 
         <div>
           <div className="text-xs font-medium text-muted-foreground mb-2">
-            对象契约清单（共 {objects.length} 个对象，每对象只登记一份形状描述，站点由上方声明展开）
+            对象契约清单（共 {objects.length} 个对象，其中 {Object.keys(objRules).length} 个已限定站点；
+            每对象只登记一份形状描述，站点由上方声明展开）
           </div>
           {!objects.length && <div className="text-sm text-muted-foreground">暂无已绑定的对象</div>}
+          {!!objects.length && !!enabledCodes.length && !readonly && (
+            <div className="text-[11px] text-muted-foreground mb-2">
+              「适用站点」列默认全部点亮 = 未收紧（上方勾选的站点都可用）；点灰某个站点 = 该对象在此站没有这张表。
+              契约源/物理表是对象绑定（建模页的主表配置）的结果，本页只读。
+            </div>
+          )}
           {!!objects.length && (
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-left text-muted-foreground border-b">
                   <th className="py-1.5 pr-2 font-medium">对象</th>
-                  <th className="py-1.5 pr-2 font-medium">契约源</th>
+                  <th className="py-1.5 pr-2 font-medium" title="契约主源：对象绑定（建模页）登记的那一份，不随站点变">契约源</th>
                   <th className="py-1.5 pr-2 font-medium">物理表</th>
                   <th className="py-1.5 pr-2 font-medium">列映射</th>
                   <th className="py-1.5 pr-2 font-medium">绑定类型</th>
                   <th className="py-1.5 pr-2 font-medium">同步状态</th>
+                  <th className="py-1.5 font-medium whitespace-nowrap">适用站点</th>
                 </tr>
               </thead>
               <tbody>
                 {objects.map((r, i) => (
-                  <tr key={`${r.object_key}-${i}`} className="border-b last:border-0">
+                  <tr key={`${r.object_key}-${i}`} className="border-b last:border-0 align-top">
                     <td className="py-1.5 pr-2">{r.object_name}</td>
                     <td className="py-1.5 pr-2">{r.datasource || '—'}</td>
                     <td className="py-1.5 pr-2 font-mono">{r.physical_table || '—'}</td>
@@ -186,6 +268,44 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
                         {r.sync_state === 'bound' ? '✓ 已绑定' : (r.sync_state || '—')}
                       </Badge>
                     </td>
+                    <td className="py-1.5">
+                      {!enabledCodes.length ? (
+                        <span className="text-muted-foreground">上方未勾选站点</span>
+                      ) : (
+                        <div className="flex flex-wrap items-center gap-1">
+                          {enabledCodes.map((code) => {
+                            const on = (objRules[r.object_key] ?? enabledCodes).includes(code);
+                            const label = siteLabel(code);
+                            return (
+                              <button
+                                key={code}
+                                type="button"
+                                disabled={readonly}
+                                title={on ? `${label}：可查（点击设为不适用）` : `${label}：不适用（点击恢复可查）`}
+                                onClick={() => toggleObjectSite(r.object_key, code)}
+                                className={`px-1.5 py-0.5 rounded border text-[11px] whitespace-nowrap ${
+                                  on
+                                    ? 'border-primary/40 bg-primary/10 text-foreground'
+                                    : 'border-border text-muted-foreground line-through'
+                                } ${readonly ? 'cursor-default' : 'hover:border-primary/60'}`}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                          {!!objRules[r.object_key] && !readonly && (
+                            <button
+                              type="button"
+                              onClick={() => releaseObject(r.object_key)}
+                              className="text-[11px] text-primary whitespace-nowrap"
+                              title="取消该对象的站点限制（回到全部勾选站点可用）"
+                            >
+                              不限
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -197,376 +317,11 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
   );
 }
 
-/** 承载类型 / 新鲜度的中文标签（显示用 name，不露英文码） */
-const CARRIER_TYPE_LABEL: Record<string, string> = {
-  detail: '各站点明细', global: '全局汇总（数仓）', log: '日志·埋点', mirror: '镜像副本',
-};
-const FRESHNESS_LABEL: Record<string, string> = {
-  realtime: '实时', t_plus_1: 'T+1（不含今天）', lagged: '滞后',
-};
-// Radix Select 不允许空串 value，用哨兵表示“不指定”（提交前换回 ''）
-const NONE = '__none__';
 
-const emptyCarrier = (objectKey = ''): CarrierInput => ({
-  object_key: objectKey, carrier_key: '', display_name: '', carrier_type: 'detail',
-  datasource: '', sites: [], source_model: '', source_object: '',
-  grain: '', freshness: 'realtime', as_of_note: '', is_authority: 0, priority: 100,
-  status: 'active',
-});
 
-/**
- * 取数路径（承载）子页：声明同一个业务概念有哪几条可取数路径。
- *
- * 与「同构站点部署」的分工：站点部署管**同构多站点复制**（一份契约 × N 站，取数时按站点
- * 展开到该站业务库）；本页管**跨源/跨层承载**——例如“用户”既能在各站业务库查明细，
- * 也能在数仓查全局去重汇总（T+1）。“全球问题该逐站查还是走汇总层”这个知识就存在这里。
- *
- * 纪律：
- * - 选项全部来自资源清单接口（后端随 GET 一次带回），不得手输 id（ui-resource-display）；
- * - 承载不存物理表/列，只指向“哪个源本体的哪个对象”（物理形状唯一在部署绑定层）；
- * - 保存是整模型替换：未提交的既有路径会被置为废弃（可回退，不物理删）；
- * - 校验失败原样外显，不静默回滚成旧配置。
- */
-export function ModelCarriersTab({ modelId, readonly }: { modelId: number; readonly?: boolean }) {
-  const [opts, setOpts] = useState<CarrierOptions | null>(null);
-  const [rows, setRows] = useState<CarrierInput[]>([]);
-  const [baseline, setBaseline] = useState('[]');
-  const [error, setError] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-  // null = 关闭；-1 = 新增；其余为 rows 下标
-  const [editing, setEditing] = useState<number | null>(null);
 
-  const load = useCallback(() => {
-    if (!modelId) return;
-    ontologyApi.carriers(modelId).then((r: any) => {
-      const payload: any = r?.data || {};
-      setOpts(payload);
-      const next: CarrierInput[] = (payload.items || []).map((c: any) => ({
-        object_key: c.object_key, carrier_key: c.carrier_key, display_name: c.display_name,
-        carrier_type: c.carrier_type, datasource: c.datasource, sites: c.sites || [],
-        source_model: c.source_model, source_object: c.source_object, grain: c.grain,
-        freshness: c.freshness, as_of_note: c.as_of_note, is_authority: c.is_authority,
-        priority: c.priority, size_class: c.size_class, status: c.status,
-      }));
-      setRows(next);
-      setBaseline(JSON.stringify(next));
-      setError('');
-      setLoaded(true);
-    }).catch((e: any) => {
-      setError(String(e?.response?.data?.detail || e?.message || e));
-      setLoaded(true);
-    });
-  }, [modelId]);
-  useEffect(() => { load(); }, [load]);
 
-  const dirty = loaded && JSON.stringify(rows) !== baseline;
-  const objectName = (key: string) =>
-    opts?.objects.find((o) => o.key === key)?.name || key || '（未选对象）';
-  const siteLabel = (code: string) =>
-    opts?.sites.find((s) => s.site_code === code)?.display_name || code;
-
-  const save = async () => {
-    // 前端先拦一道可读提示（后端 topology.validate_carriers 仍是硬门禁，不靠前端兼容）
-    const seen = new Set<string>();
-    for (const row of rows) {
-      const okey = String(row.object_key || '');
-      const ckey = String(row.carrier_key || '').trim();
-      if (!okey || !ckey) { setError('每条取数路径都要选归属对象并填写承载标识'); return; }
-      const pair = `${okey}/${ckey}`;
-      if (seen.has(pair)) { setError(`对象「${objectName(okey)}」下承载标识「${ckey}」重复`); return; }
-      seen.add(pair);
-      const t = String(row.carrier_type || 'detail');
-      if (t !== 'detail' && !(row.source_model && row.source_object)) {
-        setError(`「${CARRIER_TYPE_LABEL[t] || t}」必须指向源本体对象（物理形状另有其人）`); return;
-      }
-    }
-    const authorities = new Set<string>();
-    for (const row of rows) {
-      if (!Number(row.is_authority)) continue;
-      const okey = String(row.object_key || '');
-      if (authorities.has(okey)) { setError(`对象「${objectName(okey)}」只能有一个权威口径`); return; }
-      authorities.add(okey);
-    }
-    setSaving(true);
-    setError('');
-    try {
-      await ontologyApi.saveCarriers(modelId, rows);
-      toast.success('取数路径已保存（Chat 侧下次提问即按新拓扑选路）');
-      load();
-    } catch (e: any) {
-      setError(String(e?.response?.data?.detail || e?.message || '保存失败'));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const grouped = rows.reduce<Record<string, { row: CarrierInput; index: number }[]>>((acc, row, index) => {
-    const key = String(row.object_key || '');
-    (acc[key] = acc[key] || []).push({ row, index });
-    return acc;
-  }, {});
-
-  return (
-    <ScrollArea className="h-full">
-      <div className="p-3 space-y-4">
-        <div className="text-xs font-medium text-muted-foreground">
-          取数路径（承载）：声明这个业务概念的数据能从哪几条路径取到——各站点明细、数仓全局汇总、
-          日志源等。Chat 选「全球」时，LLM 就按这里的声明决定“逐站各查一次”还是“直接查汇总层”。
-          承载只存路由（数据源 + 源本体对象 + 粒度/新鲜度），物理表与列映射仍唯一在源本体的部署绑定。
-          未授权该数据源的角色在 Chat 里看不到这条路径（自然退化到能查的那条）。
-        </div>
-        {error && <div className="text-xs text-destructive whitespace-pre-wrap">{error}</div>}
-        {loaded && !rows.length && (
-          <div className="text-sm text-muted-foreground">
-            尚未声明任何取数路径。不声明也能用（按「同构站点部署」逐站展开），但全球去重类口径
-            （如全球用户数）必须先在数仓建对象并在此声明全局汇总，否则系统不会去查汇总层。
-          </div>
-        )}
-
-        {Object.entries(grouped).map(([okey, items]) => (
-          <div key={okey} className="space-y-2">
-            <div className="text-xs font-semibold">{objectName(okey)}
-              <span className="ml-1 text-muted-foreground font-normal">（{items.length} 条路径）</span>
-            </div>
-            {items.map(({ row, index }) => (
-              <div key={`${okey}-${row.carrier_key}-${index}`}
-                className="border rounded px-3 py-2 flex items-start justify-between gap-3">
-                <div className="min-w-0 space-y-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-medium">{row.display_name || row.carrier_key}</span>
-                    <Badge variant="outline" className="text-xs">
-                      {CARRIER_TYPE_LABEL[String(row.carrier_type)] || String(row.carrier_type)}
-                    </Badge>
-                    {!!Number(row.is_authority) && (
-                      <Badge variant="outline" className="text-xs text-green-600 border-green-300">权威口径</Badge>
-                    )}
-                    {row.status === 'deprecated' && (
-                      <Badge variant="outline" className="text-xs text-muted-foreground">已废弃</Badge>
-                    )}
-                    <span className="text-[11px] text-muted-foreground font-mono">{row.carrier_key}</span>
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {row.datasource
-                      ? <>数据源 <span className="text-foreground">{row.datasource}</span></>
-                      : <>数据源 <span className="text-foreground">按同构站点部署展开</span></>}
-                    {(row.sites || []).length > 0 && <>・站点 {(row.sites || []).map(siteLabel).join('、')}</>}
-                    {(row.source_model || row.source_object) && (
-                      <>・源本体 <span className="text-foreground">{row.source_model || '—'}</span>
-                        {' / '}{row.source_object || '—'}</>
-                    )}
-                    {row.grain && <>・粒度 {row.grain}</>}
-                    <>・新鲜度 {FRESHNESS_LABEL[String(row.freshness || 'realtime')] || String(row.freshness)}</>
-                    {row.as_of_note && <span className="ml-1">（{row.as_of_note}）</span>}
-                  </div>
-                </div>
-                {!readonly && (
-                  <div className="flex items-center gap-1 shrink-0">
-                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
-                      title="编辑" onClick={() => setEditing(index)}><Pencil className="h-3.5 w-3.5" /></Button>
-                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive"
-                      title="从清单移除（保存后该路径置为废弃）"
-                      onClick={() => setRows(rows.filter((_, i) => i !== index))}>
-                      <Trash2 className="h-3.5 w-3.5" /></Button>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        ))}
-
-        {!readonly && (
-          <div className="flex items-center gap-2 pt-1">
-            <Button size="sm" variant="outline" onClick={() => setEditing(-1)}>
-              <Plus className="h-3.5 w-3.5 mr-1" />新增取数路径
-            </Button>
-            <Button size="sm" onClick={save} disabled={!dirty || saving}>
-              {saving ? '保存中…' : '保存取数路径'}
-            </Button>
-            {!dirty && <span className="text-xs text-muted-foreground">无变更</span>}
-          </div>
-        )}
-
-        <CarrierEditor
-          open={editing !== null}
-          index={editing ?? 0}
-          draft={editing === null || editing === -1 ? emptyCarrier() : rows[editing]}
-          opts={opts}
-          onClose={() => setEditing(null)}
-          onApply={(next) => {
-            if (editing === -1) setRows([...rows, next]);
-            else setRows(rows.map((r, i) => (i === editing ? next : r)));
-            setEditing(null);
-          }}
-        />
-      </div>
-    </ScrollArea>
-  );
-}
-
-/** 承载编辑弹窗：关联资源一律选择框（对象/数据源/站点/源本体/源对象），不手输 id */
-function CarrierEditor({ open, index, draft, opts, onClose, onApply }: {
-  open: boolean;
-  index: number;
-  draft: CarrierInput;
-  opts: CarrierOptions | null;
-  onClose: () => void;
-  onApply: (next: CarrierInput) => void;
-}) {
-  const [form, setForm] = useState<CarrierInput>(draft);
-  useEffect(() => { setForm(draft); }, [draft, index, open]);
-
-  const patch = (p: Partial<CarrierInput>) => setForm({ ...form, ...p });
-  const type = String(form.carrier_type || 'detail');
-  const needsSource = type !== 'detail';
-  const srcOnt = (opts?.source_ontologies || []).find((s) => s.name === form.source_model);
-  const err = !String(form.object_key || '').trim() ? '请选择归属对象'
-    : !String(form.carrier_key || '').trim() ? '请填写承载标识'
-    : needsSource && !(form.source_model && form.source_object) ? '该类型必须选源本体与源对象'
-    : '';
-
-  return (
-    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader><DialogTitle>取数路径（承载）</DialogTitle></DialogHeader>
-        <div className="space-y-3 max-h-[62vh] overflow-y-auto pr-1">
-          <Field label="归属对象（业务本体对象）">
-            <Select value={form.object_key || undefined} onValueChange={(v) => patch({ object_key: v })}>
-              <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="选择对象" /></SelectTrigger>
-              <SelectContent>
-                {(opts?.objects || []).map((o) => (
-                  <SelectItem key={o.key} value={o.key}>{o.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="承载标识（英文，选路用）">
-              <Input className="h-8 text-xs" value={form.carrier_key || ''} placeholder="global"
-                onChange={(e) => patch({ carrier_key: e.target.value })} />
-            </Field>
-            <Field label="显示名（给人看）">
-              <Input className="h-8 text-xs" value={form.display_name || ''} placeholder="数仓全局汇总"
-                onChange={(e) => patch({ display_name: e.target.value })} />
-            </Field>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="路径类型">
-              <Select value={type} onValueChange={(v) => patch({ carrier_type: v })}>
-                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {(opts?.types || Object.keys(CARRIER_TYPE_LABEL)).map((t) => (
-                    <SelectItem key={t} value={t}>{CARRIER_TYPE_LABEL[t] || t}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field label="新鲜度">
-              <Select value={String(form.freshness || 'realtime')} onValueChange={(v) => patch({ freshness: v })}>
-                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {(opts?.freshness_levels || Object.keys(FRESHNESS_LABEL)).map((f) => (
-                    <SelectItem key={f} value={f}>{FRESHNESS_LABEL[f] || f}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          </div>
-          <Field label="数据源（留空=按同构站点部署逐站展开）">
-            <Select value={form.datasource || NONE} onValueChange={(v) => patch({ datasource: v === NONE ? '' : v })}>
-              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NONE}>（不指定，按站点展开）</SelectItem>
-                {(opts?.datasources || []).map((d) => (
-                  <SelectItem key={d.name} value={d.name}>{d.name}
-                    <span className="ml-1 text-muted-foreground">{d.db_type}</span></SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
-          {!!(opts?.sites || []).length && (
-            <Field label="适用站点（可多选；全局汇总通常不限定站点）">
-              <div className="flex flex-wrap gap-1">
-                {(opts?.sites || []).map((s) => {
-                  const on = (form.sites || []).includes(s.site_code);
-                  return (
-                    <button key={s.site_code} type="button"
-                      onClick={() => patch({
-                        sites: on ? (form.sites || []).filter((x) => x !== s.site_code)
-                          : [...(form.sites || []), s.site_code],
-                      })}
-                      className={`px-2 py-0.5 rounded border text-xs ${
-                        on ? 'border-primary text-primary' : 'border-border text-muted-foreground'}`}>
-                      {s.display_name}
-                    </button>
-                  );
-                })}
-              </div>
-            </Field>
-          )}
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="源本体（物理形状来源）">
-              <Select value={form.source_model || NONE} disabled={!needsSource}
-                onValueChange={(v) => patch({ source_model: v === NONE ? '' : v, source_object: '' })}>
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue placeholder={needsSource ? '选择源本体' : '明细可选'} /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NONE}>（未选定）</SelectItem>
-                  {(opts?.source_ontologies || []).map((s) => (
-                    <SelectItem key={s.name} value={s.name}>{s.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field label="源对象（该源本体的对象）">
-              <Select value={form.source_object || NONE} disabled={!needsSource || !srcOnt}
-                onValueChange={(v) => patch({ source_object: v === NONE ? '' : v })}>
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue placeholder={srcOnt ? '选择源对象' : '请先选源本体'} /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NONE}>（未选定）</SelectItem>
-                  {(srcOnt?.objects || []).map((o) => (
-                    <SelectItem key={o.key} value={o.key}>{o.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          </div>
-          {!needsSource && (
-            <div className="text-[11px] text-muted-foreground">
-              明细路径不选源本体时，物理形状仍由业务本体的契约行按站点展开取得（同构假设）。
-            </div>
-          )}
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="数据粒度">
-              <Input className="h-8 text-xs" value={form.grain || ''} placeholder="用户级 / 日汇总"
-                onChange={(e) => patch({ grain: e.target.value })} />
-            </Field>
-            <Field label="择路优先级（小者优先）">
-              <Input className="h-8 text-xs" type="number" value={String(form.priority ?? 100)}
-                onChange={(e) => patch({ priority: Number(e.target.value) || 0 })} />
-            </Field>
-          </div>
-          <Field label="口径时效说明（会随结果告知用户）">
-            <Input className="h-8 text-xs" value={form.as_of_note || ''} placeholder="T+1，不含今天"
-              onChange={(e) => patch({ as_of_note: e.target.value })} />
-          </Field>
-          <label className="flex items-center gap-2">
-            <Switch checked={!!Number(form.is_authority)}
-              onCheckedChange={(v) => patch({ is_authority: v ? 1 : 0 })} />
-            <span className="text-xs">本对象该口径的权威承载（一个对象只能有一条）</span>
-          </label>
-        </div>
-        <DialogFooter>
-          <Button size="sm" variant="ghost" onClick={onClose}><X className="h-3.5 w-3.5 mr-1" />取消</Button>
-          <Button size="sm" disabled={!!err} onClick={() => onApply(form)}>确定{err ? `（${err}）` : ''}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-export function ModelGraphTab({ datasourceId, kind, domain, singleView }: {
+export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId }: {
   datasourceId: number;
   /** 本体类型：source/business/system。图谱归属与标题按 kind，**不按 datasource_id**——
    *  业务本体跨源 datasource_id=0，旧的 `!datasource_id` 判系统域会把业务本体误标为 AS-BOT。 */
@@ -575,6 +330,8 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView }: {
   domain?: string;
   /** 锁定单视图(如仅总览), 不渲染切换器 */
   singleView?: string;
+  /** 当前选中的本体模型 id：business 域默认按此聚焦（只看本模型对象），留空则看全业务图。 */
+  modelId?: number;
 }) {
   // 系统域仅当 kind=system（不是 datasource_id=0）
   const systemScope = kind === 'system';
@@ -583,6 +340,9 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView }: {
   const unified = view === 'unified';
   // 业务本体跨源: 后端按 kind 路由将业务本体建在聚合图 ds:0, 前端取数须对齐(不按 model.datasource_id)。
   const graphDatasourceId = kind === 'business' ? 0 : datasourceId;
+  const isBusiness = kind === 'business';
+  // 业务聚合图多模型共存：默认只加载当前选中模型（选谁看谁）；开关打开=看全业务合并图。
+  const [showAllBusiness, setShowAllBusiness] = useState(false);
   const [showProps, setShowProps] = useState(false);
   const [loading, setLoading] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
@@ -594,17 +354,20 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView }: {
     setSelected(null);
     try {
       // 系统域走 ds:-1(system_scope), 否则按当前模型数据源取图; 统一大图取跨源聚合图
+      // 业务域默认按选中模型聚焦（model_id）；「看全业务图」或非业务域不传 model_id=全图。
+      const scopedModelId = isBusiness && !showAllBusiness && modelId ? modelId : undefined;
       await fetchGraphData({
         graphType: view,
         datasourceId: graphDatasourceId,
         systemScope,
         limit: unified ? 400 : 200,
         includeProperties: unified ? showProps : undefined,
+        modelId: scopedModelId,
       });
     } finally {
       setLoading(false);
     }
-  }, [view, unified, graphDatasourceId, systemScope, showProps, fetchGraphData]);
+  }, [view, unified, graphDatasourceId, systemScope, showProps, showAllBusiness, isBusiness, modelId, fetchGraphData]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -626,9 +389,16 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView }: {
             显示属性
           </label>
         )}
+        {isBusiness && !!modelId && (
+          <label className="flex items-center gap-1.5 pl-2 text-[11px] text-muted-foreground cursor-pointer select-none"
+            title="业务本体共享一张聚合图；默认只加载当前选中模型，打开后看全部业务模型的合并大图">
+            <Switch checked={showAllBusiness} onCheckedChange={setShowAllBusiness} />
+            看全业务图
+          </label>
+        )}
         <span className="ml-auto text-[11px] text-muted-foreground">
           {systemScope ? 'AS-BOT 系统能力本体（系统域·已隔离业务本体）'
-            : kind === 'business' ? `业务本体${domain ? `·${domain}` : ''}（跨域连通图）`
+            : kind === 'business' ? `业务本体${domain ? `·${domain}` : ''}（${showAllBusiness ? '全业务合并图' : '当前模型'}）`
             : kind === 'source' ? `源本体·数据源 #${datasourceId}`
             : singleView ? 'AS-BOT 系统能力本体' : `数据源 #${datasourceId}`} · {loading ? '加载中…' : `${graphData?.nodes.length ?? 0} 节点 / ${graphData?.edges.length ?? 0} 边 · 可拖拽布局, ↻ 一键还原`}
         </span>
@@ -642,8 +412,8 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView }: {
         {stale && (
           <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
             <div className="text-center text-sm text-muted-foreground bg-card/80 border rounded-lg px-6 py-4">
-              该数据源图谱暂无节点
-              <div className="text-xs mt-1">激活模型或保存 active 模型会自动重建图谱；也可点上方「图谱生成」手动重建</div>
+              {isBusiness && !showAllBusiness && modelId ? '该模型图谱暂无节点' : '该数据源图谱暂无节点'}
+              <div className="text-xs mt-1">激活模型或保存 active 模型会自动重建图谱；也可点上方「图谱生成」手动重建{isBusiness && modelId ? '，或打开「看全业务图」' : ''}</div>
             </div>
           </div>
         )}

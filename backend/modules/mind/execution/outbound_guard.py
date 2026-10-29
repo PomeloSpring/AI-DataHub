@@ -77,11 +77,22 @@ _VALUE_RES: tuple[tuple[str, re.Pattern], ...] = (
     # 生成 SQL 回显（守 §7：base_sql/secured_sql 不得下发）。
     # 要求表标识含 `_` 或 `.`（adh_reports / db.table），
     # 否则英文散文 "select X from the list" 会被误杀。
+    # 前导边界用“非标识符字符”而不是 ASCII 空白/标点：历史缺陷是字典口径里的 SQL
+    # 接在中文标点后面（“口径：select count(1) from db.tbl”）绕过检测下发给了 LLM。
     ("generated_sql", re.compile(
-        r"(?is)(?:^|[\s(,;])(?:select|with)\b[\s\S]{0,400}?\bfrom\s+[`\"']?"
+        r"(?is)(?<![0-9A-Za-z_])(?:select|with)\b[\s\S]{0,400}?\bfrom\s+[`\"']?"
         r"\w+[_.]\w+[`\"']?")),
     ("error_stack", re.compile(
         r"Traceback \(most recent call last\)|\bFile \"[^\"]+\.py\", line \d+")),
+    # 数据库/驱动原始报错：天然携带物理表名/列名/SQL 片段（历史缺陷：catalog 旧列名
+    # 报错 `(1054, "Unknown column 'metric_name' in 'field list'")` 被直接下发给 LLM）。
+    # 只匹配驱动错误的固定签名，不匹配裸表名，避免误杀“请先对表 X 执行元数据同步”这类可操作提示。
+    ("raw_db_error", re.compile(
+        r"(?i)Unknown column\b|Unknown table\b|\bin 'field list'\b|"
+        r"\b(?:table|column|database|view) [^\n]{0,60}?doesn't exist|"
+        r"You have an error in your SQL syntax|ERROR \d{3,5} \[|\bORA-\d{4,5}\b|"
+        r"\b(?:pymysql|MySQLdb|psycopg2|sqlite3)\.err|SQLException|SQL compilation error")
+    ),
 )
 
 # 与 semantics.contract.LEAK_KEYWORDS 同源的历史口径，保留兼容（旧告警文本里出现即算命中）。

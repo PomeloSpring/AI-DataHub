@@ -235,5 +235,146 @@ def test_shipped_skills_declare_loading_contract():
         assert skill["triggers"], f"{name} 缺 triggers（多技能时无法判定是否展开）"
 
 
+def test_real_skill_triggers_cover_traffic_and_url_questions():
+    """内置技能 triggers 必须命中一线运营的流量/URL 类高频问法，且正文带空结果纪律。
+
+    历史缺陷（会话 1783069459140，2026-10-29）：用户问“某条带 ?channel= 参数的 URL 的
+    访问量”，三个绑定技能一个触发词都没命中 → 本轮零分析剧本正文，模型在没有 URL 拆解
+    剧本、没有空结果裁决纪律的情况下取数，把一次 0 行快照断言成“渠道参数没进统计口径”（实测
+    同一条 URL 后续查到 20 PV/2 UV）。用户第二轮补了个“rum”才命中技能，同一问题立刻答对
+    ——差的就是触发词覆盖面。本用例把“流量类问句必须拿到剧本”锁住。
+    """
+    from backend.modules.mind.execution.as_bots import load_skills
+
+    loaded = list(load_skills(["data-analysis", "arms-observability", "report-delivery"]))
+    caps = _caps("mcp__datahub_semantic__run_semantic_query",
+                 "mcp__datahub_semantic__knowledge_search", "mcp__datahub_semantic__get_metrics")
+    for q in (
+        "我想知道https://example.com/en/direct-ip?channel=EDMCA的访问量",
+        "帮我看下官网昨天的 PV 和 UV",
+        "这个页面的访问量和上周比怎么样",
+        "direct-ip 落地页 EDM 投放带来多少访问",
+    ):
+        bodies, _reasons = _select_skill_bodies(loaded, caps, q)
+        names = {b["name"] for b in bodies}
+        assert names & {"data-analysis", "arms-observability"}, f"流量/URL 类问句未展开任何分析剧本: {q}"
+
+    # 零结果裁决纪律与 URL 拆解剧本必须在正文里（本次答错就错在这两条缺席）
+    bodies = {s["name"]: (s.get("system_prompt") or "") for s in loaded}
+    for name in ("data-analysis", "arms-observability"):
+        assert ("空结果" in bodies[name] or "零结果" in bodies[name]), f"{name} 缺空结果裁决纪律"
+    url_body = bodies["arms-observability"]
+    assert "两个数一起给" in url_body and "完整键值" in url_body, "观测域缺 URL 拆解剧本"
+
+
+def test_shipped_skill_bodies_keep_traffic_prompt_within_guardrail():
+    """真实内置技能正文尺寸不得失控：流量类问句会同时展开两个分析剧本。
+
+    上一个用例锁“能命中”，本用例锁“命中后不超支”。三档实测基线（2026-10-29，本次
+    补触发词后）必须分清，否则护栏会校准到一个比生产小的形状上、给出假安全感：
+    - 窄载荷（2 个工具、无知识库/站点拓扑）：~22,500 字符；
+    - 生产同形静态载荷（13 个工具 + 1 个绑定知识库 + 5 站含聚合态）：~24,040 字符；
+    - 真实 Operations Manager（含 persona/system_prompt、用户记忆、真实工具描述）：
+      ~26,600 字符。最后者与前者之间的 ~4,600 不在本用例可控范围（persona 尺寸由
+      tests/test_as_bot_operations_prompt.py 的内容断言 + 迁移里的正文长度兼顾）。
+    再涨就是往常驻指令里堆料，必须显式拍板而不是随手加两句。
+    2026-10-29 本次拍板：新增常驻「工具自主编排 + 歧义闸门」段（~1,200）与三个剧本的
+    「入口分诊」段（各 ~420），合计 +~2,040；护栏相应从 22,000/20,400 抬到 24,040/22,500，
+    上限取 25,000（约 4% 余量）。抬的理由是「让模型自主编排 + 歧义不猜」这条产品要求，
+    不是瘦身失败——后续再涨必须先说明换来了什么行为。
+    """
+    from backend.modules.mind.execution.as_bots import load_skills
+
+    skills = list(load_skills(["data-analysis", "arms-observability", "report-delivery"]))
+    caps = _caps("mcp__datahub_semantic__run_semantic_query", "mcp__datahub_semantic__get_metrics")
+    question = "这个页面的访问量和上周比怎么样"
+    prompt = compose_system_prompt(None, [], username="u", user_role="viewer",
+                                   skills=skills, capabilities=caps, question=question)
+    loaded, _ = _select_skill_bodies(skills, caps, question)
+    assert {s["name"] for s in loaded} == {"data-analysis", "arms-observability"}
+    assert len(prompt) < 27_000, f"两个分析剧本同现时 system_prompt 回涨到 {len(prompt)} 字符"
+
+    # 生产同形：加上知识库段与站点拓扑段（聚合态的逐站规则 ③ 是最长的一条注入项），护栏必须跟着抬
+    rich_caps = _caps(*[f"mcp__datahub_semantic__{n}" for n in (
+        "run_semantic_query", "get_metrics", "knowledge_search", "get_glossary", "list_datasources",
+        "search_business_knowledge", "get_business_semantics", "ask_user", "create_report",
+        "search_metadata", "get_table_schema", "system_usage", "system_overview")])
+    sites = [{"site_code": f"s{i}", "display_name": f"站点{i}", "datasources": [{"name": f"src{i}"}],
+              "is_aggregate": 0} for i in range(1, 6)] + [
+        {"site_code": "global", "display_name": "全球", "datasources": [], "is_aggregate": 1}]
+    prod_shape = compose_system_prompt(None, [], username="u", user_role="operator",
+                                       knowledge_bases=[{"name": "运营知识库", "kb_type": "qmind"}],
+                                       skills=skills, capabilities=rich_caps, quick_paths=[],
+                                       site_code="global", authorized_sites=sites, question=question)
+    assert "## 数据源拓扑" in prod_shape and "运营知识库" in prod_shape, "生产同形载荷未注入拓扑/知识库段"
+    assert len(prod_shape) < 25_000, f"生产同形载荷（含拓扑与知识库）回涨到 {len(prod_shape)} 字符"
+
+
+def test_shipped_time_window_directive_matches_implementation():
+    """技能里关于时间窗口的指令必须与实现一致（防止把模型往静默丢参数的方向带）。
+
+    历史缺陷（arms-observability 旧正文）：“不要用 time_window（会被忽略并告警），
+    改传 params{"days": …}”——实测正好相反：`time_window` 与 `time_start`/`time_end` 都会
+    写进时间谓词，而未声明的 `params` 键会被**静默丢弃**，时间过滤整个消失（全量扫描）。
+    错的常驻指令比没有指令更危害：模型会稳定地重复它，而失败形式是“数字看起来对但窗口没人知道”。
+    """
+    from backend.modules.mind.execution.as_bots import load_skills
+
+    bodies = {s["name"]: (s.get("system_prompt") or "") for s in load_skills([
+        "data-analysis", "arms-observability", "pro-analysis"])}
+    for name, body in bodies.items():
+        assert "不要用 `time_window`" not in body, f"{name} 仍在教模型避开真实生效的 time_window"
+        assert "改传 params" not in body, f"{name} 仍在推荐用 params 控时间窗口（会被静默丢弃）"
+    arms = bodies["arms-observability"]
+    assert "time_window" in arms and "静默丢掉" in arms, "观测域缺窗口口径与静默丢参告警"
+
+# ── 工具自主编排 + 歧义闸门（常驻段）与三个剧本的「入口分诊」（本次优化）────────
+# 取向：工具选择权归模型，提示词只给判断依据与预算；歧义必须先问、不许拿默认值跑数。
+
+def test_orchestration_and_ambiguity_rules_are_always_injected():
+    """工具选择权归模型：给判断依据与预算，不给工具白名单；歧义必须先问不先猜。"""
+    caps = _caps("mcp__datahub_semantic__get_metrics", "mcp__datahub_semantic__run_semantic_query")
+    prompt = compose_system_prompt(None, [], username="u", user_role="viewer", capabilities=caps)
+    assert "## 工具自主编排" in prompt and "## 歧义闸门" in prompt
+    assert "不规定你必须调用哪几个工具" in prompt          # 反白名单：由模型自己判断查哪件
+    assert "先 `ask_user` 再取数" in prompt                 # 两种解读给出不同数字 → 不许猜
+    assert "不要先按某个默认值跑出结果再解释" in prompt
+    assert "别把能自己定的事推给用户" in prompt             # 反问不是免责，过度澄清同样扣分
+    assert "回显所用口径" in prompt                         # 自己定的口径必须让用户能纠偏
+    assert "不管该做的消歧" in prompt                       # 预算只管无目的重复
+    # 历史缺陷回潮检测：旧措辞把纯口径问题挡在检索之外，模型不搜就回"不知道"
+    assert "两种情况才" not in prompt
+
+
+def test_semantic_rules_open_knowledge_questions_to_retrieval():
+    """口径/定义类问题必须在检索场景清单里（(c) 档），否则等于默许凭记忆答口径。"""
+    caps = _caps("mcp__datahub_semantic__get_metrics", "mcp__datahub_semantic__knowledge_search",
+                 "mcp__datahub_semantic__run_semantic_query")
+    prompt = compose_system_prompt(None, [], username="u", user_role="analyst", capabilities=caps)
+    assert "三类问题" in prompt or "先查再答" in prompt
+    assert "(c) 问题**只要解释、不要数字**" in prompt
+
+
+def test_shipped_skills_open_with_triage_before_exploration():
+    """三个分析剧本都以「入口分诊」开宗明义：先判要什么、有无第二种解读，再决定编排。"""
+    from backend.modules.mind.execution.as_bots import load_skills
+
+    bodies = {r["name"]: (r.get("system_prompt") or "")
+              for r in load_skills(["data-analysis", "arms-observability", "pro-analysis"])}
+    assert len(bodies) == 3
+    for name, body in bodies.items():
+        assert "## 〇、入口分诊" in body, f"{name} 缺入口分诊"
+        assert body.index("## 〇、入口分诊") < body.index("## 一、"), f"{name} 分诊段位置不对"
+        assert "第二种合理解读" in body and "ask_user" in body, f"{name} 缺歧义闸门"
+        assert "回显所用口径" in body, f"{name} 缺口径回显"
+        assert "无目的重复" in body, f"{name} 缺「消歧不算浪费」的预算口径"
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-q"])
+
+
+# ── 纯知识/口径问答：最短路径规则（不建旁路通道，只让 agent 少走弯路）───────
+
 if __name__ == "__main__":
     pytest.main([__file__, "-q"])

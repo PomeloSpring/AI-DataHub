@@ -21,6 +21,8 @@ import json
 import logging
 from typing import Optional
 
+from backend.common import as_bot_config_cache as config_cache
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,24 +87,58 @@ def _query(sql: str, params: tuple = ()) -> list[dict]:
 
 
 def resolve_as_bots(workspace_id: int, user_role: str = "", as_bot_key: str = "", user_id: int = 0,
-                    include_unavailable: bool = False) -> list[dict]:
+                    include_unavailable: bool = False, use_cache: bool = False,
+                    live: bool = False) -> list[dict]:
     """解析用户角色对应的 AS-BOT 配置(角色-AS-BOT 一对一绑定).
 
     按用户角色直接查 adh_as_bots.role_id,返回该角色的 AS-BOT.
     as_bot_key 传入时用于严格校验/收窄(与角色绑定不符即拒绝,fail-closed,定时任务等按存储 key 走此路);
     聊天端不传(空)则不收窄,由 default_as_bot 取当前角色的默认 AS-BOT(前端不再传 asBotId).
+
+    use_cache: 复用角色 id 与 AS-BOT 配置（只存配置事实，见 config_cache 模块边界）。
+    live: 只与 use_cache=True 同时生效——走工具级裁决档（5s TTL + `live:` key 前缀），
+    供 `check_tool` 使用；不传则为轮次起点档（60s）。两档分 key，撤权检测窗口由调用点决定。
+    两个都不传时行为与改造前完全一致（每次读 DB）。
     """
     # 解析用户角色 ID
     if user_id:
-        from backend.core.role_service import role_service
-        role_rows = role_service.get_user_roles(user_id, workspace_id)
+        role_ids = _role_ids_of_user(user_id, workspace_id, use_cache, live)
+    elif user_role:
+        role_ids = _role_ids_of_name(user_role, use_cache, live)
     else:
-        role_rows = _query("SELECT id FROM adh_roles WHERE name = %s", (user_role,)) if user_role else []
-    role_ids = [r["id"] for r in role_rows]
+        role_ids = []
     if not role_ids:
         return []
 
-    # 按 role_id 直接查 AS-BOT(角色-AS-BOT 一对一)
+    if not use_cache:
+        return _resolve_uncached(role_ids, as_bot_key, include_unavailable)
+    key = (f"{config_cache.KEY_AS_BOTS}{','.join(str(x) for x in sorted(role_ids))}"
+           f":{as_bot_key or '-'}:{'u' if include_unavailable else 'n'}")
+    # 工厂内抛错（未授权使用所选 AS-BOT / 配置不可用）不落缓存，fail-loud 每轮真实生效
+    return config_cache.get_or_set(
+        key, lambda: _resolve_uncached(role_ids, as_bot_key, include_unavailable), live=live)
+
+
+def _role_ids_of_user(user_id: int, workspace_id: int, use_cache: bool,
+                      live: bool = False) -> list[int]:
+    def _load():
+        from backend.core.role_service import role_service
+        return [r["id"] for r in (role_service.get_user_roles(user_id, workspace_id) or [])]
+    if not use_cache:
+        return _load()
+    return config_cache.get_or_set(f"{config_cache.KEY_ROLE_IDS}{user_id}", _load, live=live)
+
+
+def _role_ids_of_name(user_role: str, use_cache: bool, live: bool = False) -> list[int]:
+    def _load():
+        return [r["id"] for r in _query("SELECT id FROM adh_roles WHERE name = %s", (user_role,))]
+    if not use_cache:
+        return _load()
+    return config_cache.get_or_set(f"{config_cache.KEY_ROLE_IDS}name:{user_role}", _load, live=live)
+
+
+def _resolve_uncached(role_ids: list[int], as_bot_key: str, include_unavailable: bool) -> list[dict]:
+    """按角色 id 查 AS-BOT 并归一（无缓存原路径，语义与改造前逐行一致）。"""
     placeholders = ", ".join(["%s"] * len(role_ids))
     candidates = _query(
         f"SELECT * FROM adh_as_bots WHERE role_id IN ({placeholders}) AND is_active = 1 ORDER BY id",
@@ -304,10 +340,14 @@ def load_skills(skill_names: list[str]) -> list[dict]:
     return out
 
 
-def load_knowledge_bases(kb_ids: list[int]) -> list[dict]:
+def load_knowledge_bases(kb_ids: list[int], use_cache: bool = False) -> list[dict]:
     """按 ID 加载知识库(id/name/kb_type/status),供系统提示词展示与运行时检索.
 
     仅返回启用(active)且命中的知识库,保持与 kb_ids 传入顺序一致的排序。
+
+    use_cache: 同 resolve_as_bots——仅轮次起点（提示词组装）可传；知识库写入口
+    （`mind/api/knowledge_bases` 增删改/状态变更）必须同批调 `config_cache.invalidate`，
+    否则最长一个 TTL 窗口内按旧清单拼提示词（状态校验仍在工厂内跳时完成，不缓存异常）。
     """
     ids: list[int] = []
     for kid in kb_ids or []:
@@ -319,6 +359,16 @@ def load_knowledge_bases(kb_ids: list[int]) -> list[dict]:
             ids.append(kid)
     if not ids:
         return []
+    if use_cache:
+        # key 用去重后的传入顺序（不按排序）：本函数对外契约是“与传入顺序一致”，
+        # 排序 key 会让同一集合的不同书写顺序复用首次结果从而静默改变顺序。
+        # 实际调用方的清单来自 AS-BOT 存储的固定数组，同一绑定永远同序，不影响命中。
+        key = f"{config_cache.KEY_KB}{','.join(str(x) for x in ids)}"
+        return config_cache.get_or_set(key, lambda: _load_knowledge_bases(ids))
+    return _load_knowledge_bases(ids)
+
+
+def _load_knowledge_bases(ids: list[int]) -> list[dict]:
     placeholders = ", ".join(["%s"] * len(ids))
     rows = _query(
         f"SELECT id, name, kb_type, status FROM adh_knowledge_bases "

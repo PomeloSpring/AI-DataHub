@@ -6,6 +6,7 @@ import {
   Grid3x3, GlassWater, Heart, UserCircle, X, ChevronLeft, ChevronRight,
   Clock, Bell, BarChart3, Shield, GitBranch, Eye,
   Activity, Server, Gem, Sparkles, Waypoints, LayoutTemplate, FlaskConical, Dna,
+  Megaphone, Compass,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -19,6 +20,9 @@ import { useThemeStore, applyTheme, type ThemeId } from '../stores/themeStore';
 import { useBrandStore } from '../stores/brandStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import SectionSwitcher from './SectionSwitcher';
+import ReleaseNotesButton from './ReleaseNotesButton';
+import { TOUR, navTour } from '@/lib/onboarding/guides';
+import { useGuideStore } from '@/stores/guideStore';
 import AsBotButton from './AsBotButton';
 import AsBotPanel from './asbot/AsBotPanel';
 import { useMenuAccess } from '../hooks/useMenuAccess';
@@ -71,6 +75,8 @@ const SYSTEM_MENU_ITEMS = [
   { key: '/system/eval', icon: FlaskConical, label: '评测中心' },
   { key: '/system/evolution', icon: Dna, label: '进化中心' },
   { section: '系统' },
+  // 与迁移里的菜单登记同一位置(menu_key='system:release-notes', section='系统', sort=75)
+  { key: '/system/release-notes', icon: Megaphone, label: '版本公告' },
   { key: '/system/settings', icon: Settings, label: '系统设置' },
 ];
 
@@ -87,6 +93,7 @@ export default function SystemLayout() {
   const { theme, setTheme } = useThemeStore();
   const { brand, fetchBrand } = useBrandStore();
   const { getDefaultWorkspaceId } = useWorkspaceStore();
+  const startGuide = useGuideStore(s => s.startGuide);
 
   useEffect(() => { applyTheme(theme); }, [theme]);
   useEffect(() => { fetchBrand(); }, [fetchBrand]);
@@ -146,6 +153,7 @@ export default function SystemLayout() {
                   <TooltipTrigger asChild>
                     <button
                       onClick={() => navigate(item.key!)}
+                      data-tour={navTour('sys', item.key!)}
                       className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-200
                         ${isActive
                           ? 'bg-primary text-primary-foreground font-medium'
@@ -207,6 +215,7 @@ export default function SystemLayout() {
                     <button
                       key={item.key}
                       onClick={() => { navigate(item.key!); setMobileMenuOpen(false); }}
+                      data-tour={navTour('sys', item.key!)}
                       className={`w-full flex items-center gap-3 px-4 py-3 rounded-md text-sm min-h-[44px]
                         ${isActive
                           ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
@@ -234,6 +243,8 @@ export default function SystemLayout() {
           </div>
           <div className="flex items-center gap-2">
             <AsBotButton />
+            {/* 版本公告: 模块切换器左侧常驻(三套布局同口径) */}
+            <ReleaseNotesButton />
             {/* Module switcher — 工作空间 / 数据中台 / 系统配置 */}
             <SectionSwitcher current="system" />
 
@@ -241,7 +252,7 @@ export default function SystemLayout() {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="sm" className="h-9 w-9 p-0">
+                    <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label="主题风格" data-tour={TOUR.headerTheme}>
                       <Palette className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -266,7 +277,7 @@ export default function SystemLayout() {
             </DropdownMenu>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
+                <button aria-label="用户菜单" data-tour={TOUR.headerUser} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
                   <Avatar className="h-6 w-6">
                     <AvatarFallback className="text-xs">{user?.username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
                   </Avatar>
@@ -274,6 +285,11 @@ export default function SystemLayout() {
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                {/* 手动重看入口: 不受 guide:all 静音影响, 永远可用 */}
+                <DropdownMenuItem onClick={() => startGuide('welcome')}>
+                  <Compass className="h-4 w-4 mr-2" />
+                  新手引导
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => navigate('/system/profile')}>
                   <UserCircle className="h-4 w-4 mr-2" />
                   个人设置

@@ -19,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Spinner } from '@/components/ui/spinner';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { TOUR } from '@/lib/onboarding/guides';
 import { useChatStore } from '../stores/chatStore';
 import type { AttachmentInfo, PendingAttachment } from '../stores/chatStore';
 import { ATTACH_MAX_FILES, validateLocalAttachment, filesFromClipboard, hasModelStats } from '../stores/chatStore';
@@ -512,7 +513,7 @@ export default function Chat() {
     <div className={focusMode ? 'fixed inset-0 z-50 bg-background flex overflow-hidden' : 'relative flex h-full min-w-0 overflow-hidden'}>
       {conversationsOpen && !focusMode && <button className="absolute inset-0 z-20 bg-black/30 md:hidden" aria-label="关闭会话列表" onClick={() => setConversationsOpen(false)} />}
       {/* Left sidebar: conversation list */}
-      <div aria-label="会话列表" className={focusMode ? 'hidden' : `${conversationsOpen ? 'absolute inset-y-0 left-0 z-30 flex bg-background' : 'hidden'} md:relative md:flex md:z-10 w-[240px] flex-shrink-0 flex-col border-r bg-muted/30`}>
+      <div aria-label="会话列表" data-tour={TOUR.chatSessions} className={focusMode ? 'hidden' : `${conversationsOpen ? 'absolute inset-y-0 left-0 z-30 flex bg-background' : 'hidden'} md:relative md:flex md:z-10 w-[240px] flex-shrink-0 flex-col border-r bg-muted/30`}>
         <div className="p-3 border-b">
           <Button className="w-full" size="sm" onClick={() => { startNewConversation(); setConversationsOpen(false); }}>
             <Plus className="h-4 w-4 mr-2" />
@@ -619,7 +620,7 @@ export default function Chat() {
             <Bot className="h-6 w-6 text-primary" />
             <h1 className="text-lg font-bold">{independent ? '工作空间' : '智能问数'}</h1>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2" data-tour={TOUR.chatModel}>
             {/* 模型选择器:
                 - AS-BOT 清单未拉取完成前**什么都不渲染**：旧写法把「还没加载」当成「确实没配
                   AS-BOT」，先走执行层兜底分支弹出选择框，清单回来又因只 1 个模型而返回 null
@@ -800,7 +801,11 @@ export default function Chat() {
                       <WaitingIndicator />
                     )}
 
-                    {/* 执行过程:思考与工具调用收敛进限高窗口, 执行中自动跟随、结束自动折叠 */}
+                    {/* 执行过程:思考与工具调用收敛进限高窗口, 执行中自动跟随、结束自动折叠。
+                        运行中状态只跟随 done(loading) —— agent loop 中模型会先输出中间文本
+                        再续调工具, “出现文本”不等于回合结束(旧口径用 !msg.content 兜底,
+                        把运行中误渲成“已完成”、看不出在跑)。思考块转圈另用 thinkingActive:
+                        开始出正文即停(done 要等后端收尾核验才发, 否则“结果已输出还在转圈”)。 */}
                     <ExecutionProcess
                       conversationId={currentConvId}
                       process={msg.process}
@@ -808,6 +813,7 @@ export default function Chat() {
                       progressStages={msg.progressStages}
                       thinking={msg.thinking}
                       isStreaming={loading && idx === messages.length - 1 && !msg.sql}
+                      thinkingActive={loading && idx === messages.length - 1 && !msg.sql && !msg.content}
                     />
 
                     {/* 工具已全部结束但模型还在组织最终回答 → 同样给等待提示 */}
@@ -1169,6 +1175,7 @@ export default function Chat() {
               </Button>
               <Input
                 ref={inputRef}
+                data-tour={TOUR.chatInput}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onPaste={handlePaste}

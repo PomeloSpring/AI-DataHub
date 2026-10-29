@@ -59,6 +59,12 @@ def _dataset_hint(dataset_ref: str) -> dict:
         out["metrics"] = [str(c.get("label") or c.get("field")) for c in cols
                           if isinstance(c, dict) and c.get("role") == "measure"]
     out["certified"] = bool(row.get("certified") or 0)
+    # 可用数据源范围 > 1 时才附站点提示（单源不加噪声，站点映射只在服务端）：
+    # 否则 LLM 看见多源数据集却不知道怎么定源，只能靠报错回抛候选。
+    if parse_json_obj(row.get("available_datasources"), []) or []:
+        src_names = dataset_service.available_source_names(row)
+        if len(src_names) > 1:
+            out["available_datasources"] = src_names
     return out
 
 
@@ -107,10 +113,11 @@ def _path_entry(scn: dict, path: dict, model_name: str) -> dict:
     return entry
 
 
-def collect_behavior_paths(kind_in: tuple = ("business", "source")) -> list:
+def collect_behavior_paths() -> list:
     """全量行为路径清单（active 本体，排除系统本体域）。
 
     系统运营问题不得拿业务路径充数（as-bot 域规则）：kind='system' 一律不读。
+    源本体已退役（WS2 合并为 business）→ 统一读非 system（kind <> 'system'）。
     """
     from backend.common.db.metadata_db import get_metadata_conn
 
@@ -118,11 +125,9 @@ def collect_behavior_paths(kind_in: tuple = ("business", "source")) -> list:
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
-            placeholders = ", ".join(["%s"] * len(kind_in))
             cur.execute(
-                f"SELECT name, json_content FROM adh_ontology_models "
-                f"WHERE status = 'active' AND kind IN ({placeholders})",
-                tuple(kind_in))
+                "SELECT name, json_content FROM adh_ontology_models "
+                "WHERE status = 'active' AND kind <> 'system'")
             rows = cur.fetchall()
     finally:
         conn.close()

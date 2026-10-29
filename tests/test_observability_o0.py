@@ -5,6 +5,8 @@
   - credit/token 跨多次 llm_call 正确累加;缺失 credit 记 None(≠0)。
   - 会话累计 credit(set_session_credits)与请求级 credit 分列存,不相加。
   - set_result + finalize 的结果合并(agent 路径回写答案/状态)。
+  - llm_call 的 duration_ms = 单次模型请求窗口(非“自回合起点的累计偏移”),
+    且工具执行时间不得计入下一条模型请求(时耗归因口径)。
   - Qoder 适配器埋点辅助 _obs_record_assistant / _obs_record_result 解析 SDK 字段。
 
 全部用 monkeypatch 注入假 store,不落真库。
@@ -422,3 +424,104 @@ def test_qoder_tool_and_assistant_output_spans(captured):
     assert _json.loads(tool["input_text"]) == {"sql": "SELECT 1"}
     assert tool["output_text"] == "1 row" and tool["status"] == "success"
     assert tool["duration_ms"] == 420
+
+
+# ── llm_call 时长口径：单次请求窗口，不是累计偏移 ──────────────────
+
+class _Clock:
+    """假时钟：只按显式 advance 推进，使 duration 断言与真机速度/负载无关。"""
+
+    def __init__(self):
+        self.t = 1_000.0
+
+    def monotonic(self):
+        return self.t
+
+    def advance(self, ms):
+        self.t += ms / 1000.0
+
+
+@pytest.fixture
+def clocked(captured, monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(rec_mod, "time", clock)
+    return captured, clock
+
+
+def test_llm_call_duration_is_request_window_not_cumulative(clocked):
+    """回归锁定：前置阶段（建连/资源绑定）不得算进第一次模型请求。
+
+    历史缺陷：add_llm_call 未传时长时回落为 `now - 回合起点`，于是一轮 52s 的
+    回合里 8 条 llm_call 写出 13619/24304/51563… 递增的累计值（相加 394s），
+    管理端拿它做时耗归因会全盘错。
+    """
+    captured, clock = clocked
+    observability.begin(entrypoint="chat", user_id=1)
+    clock.advance(8_000)                       # 前置阶段：会话领取 + SDK 建连
+    observability.mark_model_window_start()    # 执行层在真正下发请求前标注
+    clock.advance(5_500)                       # 第一次模型请求真耗 5.5s
+    observability.record_llm_call(name="r1", model_ref="m")
+    clock.advance(300)                         # 同一次请求内的后续消息
+    observability.record_llm_call(name="r2", model_ref="m")
+    observability.finalize()
+
+    spans = captured[0][1]
+    assert [s["duration_ms"] for s in spans if s["kind"] == "llm_call"] == [5_500, 300]
+
+
+def test_tool_time_not_counted_into_next_llm_call(clocked):
+    """工具执行时间不得计入下一条模型请求；各 llm_call 之和不得超过回合总时长。"""
+    captured, clock = clocked
+    observability.begin(entrypoint="chat", user_id=1)
+    clock.advance(1_000)
+    observability.mark_model_window_start()
+    clock.advance(4_000)
+    observability.record_llm_call(name="r1", model_ref="m")
+    clock.advance(300)
+    observability.record_span(kind="tool_call", name="mcp__datahub_semantic__knowledge_search",
+                              duration_ms=5_200)   # 工具已完成（结果回到模型那一刻）
+    clock.advance(4_600)
+    observability.record_llm_call(name="r2", model_ref="m")
+    clock.advance(8_400)
+    observability.record_llm_call(name="r3", model_ref="m")
+    observability.finalize()
+
+    summary, spans = captured[0]
+    durs = [s["duration_ms"] for s in spans if s["kind"] == "llm_call"]
+    assert durs == [4_000, 4_600, 8_400]      # 旧口径会写成 5_000/10_500/18_900 的累计值
+    assert sum(durs) <= summary["duration_ms"]  # 不可能出现“子项相加 394s / 回合 52s”
+
+
+def test_explicit_duration_and_phase_span_are_respected(clocked):
+    """显式传的时长不被窗口计算覆写；kind="phase" 不切模型窗口（它不是请求边界）。"""
+    captured, clock = clocked
+    observability.begin(entrypoint="chat", user_id=1)
+    clock.advance(600)
+    observability.record_span(kind="phase", name="sdk_connect", duration_ms=600)
+    clock.advance(200)
+    observability.record_llm_call(name="windowed", model_ref="m")
+    observability.record_llm_call(name="measured", model_ref="m", duration_ms=42)
+    clock.advance(150)
+    observability.record_llm_call(name="after", model_ref="m")
+    observability.finalize()
+
+    spans = captured[0][1]
+    assert spans[0]["kind"] == "phase" and spans[0]["duration_ms"] == 600
+    by_name = {s["name"]: s["duration_ms"] for s in spans if s["kind"] == "llm_call"}
+    assert by_name["windowed"] == 800         # 未标注时从回合起点算（含 phase），phase 不重置锚点
+    assert by_name["measured"] == 42          # 显式值不被覆写
+    assert by_name["after"] == 150            # 上一条记录后锚点已前推
+
+
+def test_unmarked_first_call_is_visibly_warned(clocked, caplog):
+    """未接入窗口标注的调用方：值仍可用（从回合起点），但必须把口径提醒出来。"""
+    captured, clock = clocked
+    with caplog.at_level("WARNING", logger="observability.recorder"):
+        observability.begin(entrypoint="chat", user_id=1)
+        clock.advance(13_600)
+        observability.record_llm_call(name="r", model_ref="m")
+        observability.finalize()
+
+    assert captured[0][1][0]["duration_ms"] == 13_600
+    assert "未经 mark_model_window_start 标注" in caplog.text
+

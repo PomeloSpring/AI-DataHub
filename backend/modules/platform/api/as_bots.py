@@ -20,6 +20,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _invalidate_config_cache(reason: str) -> None:
+    """AS-BOT 配置写入口同批调用：失效配置事实缓存（轮次档 + live 档）。
+
+    口径见 `backend/common/as_bot_config_cache.py`：只缓存配置事实（persona/工具授权
+    /知识库清单）。工具级裁决（tool_policy.check_tool）走 live 短 TTL 档，漏挂本钩子
+    最多造成一个 TTL 窗口（默认 5s）的旧配置，且表现为一次可见重发（digest 不一致），
+    不会多授权。
+    """
+    from backend.common.as_bot_config_cache import invalidate
+    invalidate(reason)
+
+
 # ── Request models ─────────────────────────────────────────────────
 
 class AsBotPayload(BaseModel):
@@ -160,8 +172,6 @@ _TOOL_LABELS = {
     # 本体写权限化（2026-10-26）：不补中文标签会在 AS-BOT 编辑器里显示成裸英文、像不可选项
     "add_ontology_objects": "新增本体对象*", "update_ontology_object": "修改本体对象*",
     "publish_ontology_model": "发布本体草案*",
-    # 跨源拓扑（取数路径/承载）：不补标签会在 AS-BOT 编辑器里显示成裸英文、像不可选项
-    "list_ontology_carriers": "取数路径清单", "save_ontology_carrier": "存取数路径*",
     "create_data_screen": "创建大屏*", "get_data_screen": "查看大屏", "update_data_screen_chart": "更新图表*",
     "request_dashboard_design": "申请仪表盘设计", "get_dashboard_design": "读取仪表盘设计", "prepare_dashboard_design": "准备仪表盘设计",
     "list_vis_components": "字模列表", "get_vis_component": "字模详情", "save_vis_component": "存为字模*",
@@ -272,6 +282,7 @@ def create_as_bot(req: AsBotPayload):
                 req.workspace_id or 0, now, now,
             ),
         )
+        _invalidate_config_cache(f"create_as_bot key={key} id={as_bot_id}")
         return {"id": as_bot_id, "as_bot_key": key, "success": True}
     except Exception as e:  # noqa: BLE001
         logger.error("Create as-bot failed: %s", e)
@@ -316,6 +327,7 @@ def update_as_bot(as_bot_id: int, req: AsBotUpdate, user: dict = Depends(get_cur
     params.append(as_bot_id)
     try:
         execute_write(f"UPDATE adh_as_bots SET {', '.join(updates)} WHERE id = %s", params)
+        _invalidate_config_cache(f"update_as_bot id={as_bot_id}")
         return {"success": True}
     except Exception as e:  # noqa: BLE001
         logger.error("Update as-bot failed: %s", e)

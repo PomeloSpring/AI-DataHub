@@ -150,6 +150,9 @@ class TestDualDefinition:
         captured = {}
 
         def fake_query(sql, params=None, fetchone=False):
+            if "FROM adh_datasources" in sql:      # 可用范围按业务名解析的源清单
+                return [{"id": 2, "name": "源B", "db_type": "mysql", "site_code": "cn"},
+                        {"id": 3, "name": "源C", "db_type": "mysql", "site_code": "us"}]
             if "WHERE name=%s" in sql:
                 return None
             if "COALESCE(MAX(id)" in sql:
@@ -165,6 +168,8 @@ class TestDualDefinition:
             "name": "双定义", "object_key": "案件", "sql_query": "SELECT region FROM t",
             "datasource_id": 2, "chart_type": "bar",
             "chart_preset": {"xCol": "region", "yCol": "cnt"},
+            # 可用数据源范围：也允许在源C 上跑（存业务名，不存 id）
+            "available_datasources": ["源C"],
             "touched_tables": ["伪造表"],   # 请求体自报一律不采信
         }, {"user_id": 7, "role": "admin"})
         sql, params = captured["sql"], captured["params"]
@@ -179,6 +184,8 @@ class TestDualDefinition:
         # （不信请求体自报：上面传了"伪造表"，落库的必须是正文提出来的 t）
         assert "variables" in idx and "sql_bodies" in idx and "touched_tables" in idx
         assert json.loads(params[idx["touched_tables"]]) == ["t"]
+        # 可用数据源范围随创建落库（业务名数组）
+        assert json.loads(params[idx["available_datasources"]]) == ["源C"]
 
     def test_chart_preset_must_be_object(self, monkeypatch):
         monkeypatch.setattr(svc, "get_dataset", lambda did: {

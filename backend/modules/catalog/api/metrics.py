@@ -70,11 +70,18 @@ def create_metric(req: dict):
 def list_all_dimensions(
     model_id: Optional[int] = Query(None, description="本体模型作用域(scope=model 时必填)"),
     scope: Optional[str] = Query(None, description="model | unbound | 空=全局(旧行为)"),
+    is_active: Optional[str] = Query(
+        None, description="all=含已停用(字典维护页用) | 1/0=只看该状态 | 空=只列生效行(旧行为)"),
 ):
     """维度字典列表(全局/模型工作区共用)。必须注册在 /{metric_id} 之前。"""
     if scope not in (None, "", "model", "unbound"):
         raise HTTPException(status_code=400, detail="scope 仅支持 model/unbound")
-    return metrics_service.list_all_dimensions(model_id=model_id, scope=scope or None)
+    try:
+        return metrics_service.list_all_dimensions(
+            model_id=model_id, scope=scope or None, is_active=is_active)
+    except ValueError as e:
+        # 非法筛选值不得当成“未传”默默返回全量 —— 那会把错误参数伪装成正常结果
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/filters")
@@ -115,8 +122,15 @@ def create_dimension(req: dict):
 
 @router.put("/dimensions/{dim_id}")
 def update_dimension(dim_id: int, req: dict):
-    """编辑全局维度字典(白名单列: 英文名/分类/层级/别名/枚举标签/描述/认证)。"""
-    success = metrics_service.update_dimension(dim_id, req)
+    """编辑全局维度字典(白名单列: 英文名/分类/层级/别名/枚举标签/描述/认证/启用状态/物理表列)。
+
+    物理表列(target_table/target_column)是建模字段错配的修复入口，服务层写入前按列元数据
+    实存裁决：该表没这列就 400 回绝(不静默落错映射)，目标源元数据未同步则放行并保留完整列名。
+    """
+    try:
+        success = metrics_service.update_dimension(dim_id, req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not success:
         raise HTTPException(status_code=404, detail="Dimension not found")
     return {"success": True}
@@ -189,7 +203,10 @@ def get_metric(metric_id: int):
 @router.put("/{metric_id}")
 def update_metric(metric_id: int, req: dict):
     """Update metric."""
-    success = metrics_service.update_metric(metric_id, req)
+    try:
+        success = metrics_service.update_metric(metric_id, req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not success:
         raise HTTPException(status_code=404, detail="Metric not found")
     return {"success": True}

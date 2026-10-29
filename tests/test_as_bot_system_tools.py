@@ -184,6 +184,135 @@ def test_knowledge_search_business_scope_not_system(monkeypatch):
     assert seen["system_scope"] is False
 
 
+def test_knowledge_search_multi_questions_run_concurrently(monkeypatch):
+    """多问法一次调用内**并发**检索，且结果顺序与入参一致。
+
+    历史缺陷：for 循环串行，2 问 = 2 段检索时间直接叠加（实测一轮 11.0s 里真检索 4.2s）。
+    """
+    import threading
+    import time as _t
+    from types import SimpleNamespace
+
+    from backend.modules.mind.execution.sdk_tools import semantic_tools as stl
+
+    policy = SimpleNamespace(selection={"semantic": ["knowledge_search"]}, as_bot={})
+    token = set_execution_context(ExecutionContext(
+        user_id=7, workspace_id=3, datasource_id=5,
+        extra={"secure_runtime": SimpleNamespace(policy=policy),
+               "bound_knowledge_base_ids": [22]}))
+    lock = threading.Lock()
+    state = {"active": 0, "max_active": 0}
+
+    def fake_retrieve(q, ds, kb_ids, system_scope=False):
+        with lock:
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+        _t.sleep(0.05)                      # 模拟单次 qmind 子进程检索
+        with lock:
+            state["active"] -= 1
+        return {"chunks": [{"content": q}], "count": 1, "rag_source": "qmind",
+                "hit_object_keys": []}
+
+    monkeypatch.setattr("backend.modules.mind.rag.qmind_retriever.qmind_retrieve", fake_retrieve)
+    monkeypatch.setattr("backend.modules.mind.execution.resource_guard.execute_query",
+                        lambda *a: [{"id": 22}])
+    monkeypatch.setattr(stl, "_attach_routes", lambda r: r)
+    monkeypatch.setattr(stl, "_attach_paths", lambda r, keywords=None: r)
+    questions = ["官网域名", "中国站网址", "访问入口"]
+    try:
+        out = _payload(asyncio.run(stl.knowledge_search({"questions": questions})))
+    finally:
+        ExecutionContextVar.reset(token)
+
+    assert state["max_active"] > 1, "多问法仍在串行检索，耗时会逐问叠加"
+    assert [x["question"] for x in out["results"]] == questions   # 并发不得打乱结果顺序
+    assert out["total"] == len(questions) and out["attribution"]["qmind_hit"] == len(questions)
+    assert all(x["retrieval_source"] == "qmind_hit" for x in out["results"])
+
+
+def test_get_glossary_queries_all_keywords_in_one_call(monkeypatch):
+    """多关键词 = **一次**合并查询 + 未命中词显式可见。
+
+    历史缺陷：逐词 list_terms（5 词 = 5 次建连 + 10 条 SQL），实测并发版也不占优（线程/
+    连接开销盖过收益），因此收敛为单条 SQL；本用例锁定“只进服务一次”这个口径。
+    """
+    from backend.modules.catalog.services import term_service as ts
+    from backend.modules.mind.execution.sdk_tools import semantic_tools as stl
+
+    calls = []
+
+    def fake_search_terms(keywords, size=60, datasource_id=None):
+        calls.append(list(keywords))
+        hit = {"华东": {"id": 1, "term_cn": "华东", "matched_keywords": ["华东"]},
+               "活跃用户": {"id": 2, "term_cn": "活跃用户", "matched_keywords": ["活跃用户"]}}
+        items = [hit[w] for w in keywords if w in hit]
+        return {"total": len(items), "items": items, "queried_keywords": list(keywords)}
+
+    monkeypatch.setattr(ts.TermService, "search_terms", staticmethod(fake_search_terms))
+    out = _payload(asyncio.run(stl.get_glossary({"keywords": "华东, 活跃用户, 入口地址,华东"})))
+
+    assert len(calls) == 1, "多关键词仍在逐词往返元库"
+    assert calls[0] == ["华东", "活跃用户", "入口地址"]      # 重复词不重查
+    assert [i["id"] for i in out["items"]] == [1, 2]        # 合并去重
+    assert out["matched_keywords"] == ["华东", "活跃用户"]
+    assert out["unmatched_keywords"] == ["入口地址"]        # 0 命中词显式可见，不假装有结果
+
+
+def test_get_glossary_single_keyword_still_supported(monkeypatch):
+    """旧入参 keyword（单数）照常可用，输出结构统一为 items/total。"""
+    from backend.modules.catalog.services import term_service as ts
+    from backend.modules.mind.execution.sdk_tools import semantic_tools as stl
+
+    monkeypatch.setattr(ts.TermService, "search_terms",
+                        staticmethod(lambda keywords, size=60, datasource_id=None: {
+                            "total": len(keywords),
+                            "items": [{"id": 9, "term_cn": keywords[0],
+                                       "matched_keywords": list(keywords)}],
+                            "queried_keywords": list(keywords)}))
+    out = _payload(asyncio.run(stl.get_glossary({"keyword": "渠道"})))
+    assert out["items"][0]["term_cn"] == "渠道" and out["total"] == 1
+
+
+def test_search_terms_builds_one_or_query(monkeypatch):
+    """TermService.search_terms：一词一组 LIKE、词间 OR、与 datasource AND、全参数化。"""
+    from backend.modules.catalog.services import term_service as ts
+
+    captured = {}
+
+    class _Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=None):
+            captured["sql"] = sql
+            captured["params"] = list(params or [])
+
+        def fetchall(self):
+            return [{"id": 1, "term_cn": "华东", "term_en": "East", "term_aliases": "华东区",
+                     "created_at": None, "updated_at": None}]
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ts, "get_metadata_conn", lambda: _Conn())
+    out = ts.TermService.search_terms(["华东", "活跃用户", "华东", ""])
+
+    assert out["queried_keywords"] == ["华东", "活跃用户"]      # 去重 + 剔空
+    sql = captured["sql"]
+    assert sql.count("term_cn LIKE") == 2 and " OR " in sql       # 一次查询覆盖全部词
+    assert "LIMIT" in sql
+    # 字面量不得拼进 SQL（参数化=防注入），% 通配只出现在 params 里
+    assert "华东" not in sql and "%华东%" in captured["params"]
+    assert out["items"][0]["matched_keywords"] == ["华东"]
+
+
 # ── 工具组注册 ────────────────────────────────────────────────────
 
 def test_system_group_registered():
@@ -206,8 +335,10 @@ def test_system_scope_requires_system_tool_group():
 # ── scoped_metadata 两视图按工具授权分域断言 ────────────────────
 
 class TestScopedMetadataViewsByToolAuth:
-    """元数据/本体可见域随工具授权切两视图：
-    system 组 → 仅 kind='system'；业务域 → 业务本体 + 本源源本体（双轨）。"""
+    """元数据/本体可见域随工具授权切两视图（源本体已退役合并为 business）：
+    system 能力 → 系统本体 ∪ 触达本源的 business；业务域 → 仅触达本源的 business。
+    合并后 SQL 不再按 kind 硬过滤（退役 kind='source' 分支），可见域收口移到 Python
+    `_model_visible`（按模型触达源 主源∩deploy_sites 与授权源集判定），故断言喂入行→投影结果。"""
 
     def _ctx(self, system: bool):
         from types import SimpleNamespace
@@ -217,28 +348,44 @@ class TestScopedMetadataViewsByToolAuth:
                                 extra={"as_bot_key": "t",
                                        "secure_runtime": SimpleNamespace(policy=policy, tool_tasks=set())})
 
+    def _fake_query(self, sink):
+        """只对本体模型查询喂三行：系统 / 触达本源(ds=1) / 触达他源(ds=2)；其余查询返回空。"""
+        rows = [
+            {"id": 100, "name": "系统本体", "status": "active", "kind": "system",
+             "datasource_id": 0, "deploy_sites": None, "json_content": '{"objects":[]}'},
+            {"id": 200, "name": "本源业务体", "status": "active", "kind": "business",
+             "datasource_id": 1, "deploy_sites": None, "json_content": '{"objects":[]}'},
+            {"id": 300, "name": "他源业务体", "status": "active", "kind": "business",
+             "datasource_id": 2, "deploy_sites": None, "json_content": '{"objects":[]}'},
+        ]
+
+        def fake(sql, params=None, fetchone=False):
+            sink.append((sql, params))
+            return rows if "adh_ontology_models" in sql else []
+        return fake
+
     def test_system_scope_sees_system_plus_business(self, monkeypatch):
-        """能力叠加：system 能力可见系统本体 ∪ 业务域（不互斥）。"""
+        """能力叠加：system 能力可见系统本体 ∪ 触达本源的 business（不互斥）。"""
         from backend.modules.mind.execution.sdk_tools import scoped_metadata as sm
         calls = []
-        monkeypatch.setattr(sm, "execute_query",
-                            lambda sql, params=None, fetchone=False: calls.append((sql, params)) or [])
-        sm.execute("search_ontology", {}, self._ctx(system=True))
-        sql, params = calls[0]
-        assert "kind = 'system'" in sql
-        assert "kind = 'business'" in sql and "kind = 'source'" in sql
-        assert params == (1,)
+        monkeypatch.setattr(sm, "execute_query", self._fake_query(calls))
+        out = sm.execute("list_ontology_models", {}, self._ctx(system=True))
+        sql = calls[0][0]
+        # 合并后源本体退役：SQL 不再出现 kind='source'，可见性由 Python 侧收口
+        assert "kind = 'source'" not in sql
+        ids = {m["id"] for m in out["models"]}
+        assert ids == {100, 200}, ids   # 系统本体 + 本源业务；他源(300) 不泄漏
 
     def test_business_scope_sees_business_and_own_source(self, monkeypatch):
+        """业务域无系统能力：仅触达本源(ds=1)的 business 可见，系统/他源均排除。"""
         from backend.modules.mind.execution.sdk_tools import scoped_metadata as sm
         calls = []
-        monkeypatch.setattr(sm, "execute_query",
-                            lambda sql, params=None, fetchone=False: calls.append((sql, params)) or [])
-        sm.execute("search_ontology", {}, self._ctx(system=False))
-        sql, params = calls[0]
-        assert "kind = 'business'" in sql and "kind = 'source'" in sql
-        assert "kind = 'system'" not in sql
-        assert params == (1,)
+        monkeypatch.setattr(sm, "execute_query", self._fake_query(calls))
+        out = sm.execute("list_ontology_models", {}, self._ctx(system=False))
+        sql = calls[0][0]
+        assert "kind = 'source'" not in sql and "kind = 'system'" not in sql
+        ids = {m["id"] for m in out["models"]}
+        assert ids == {200}, ids   # 系统本体(100) 无能力不可见；他源(300) 不泄漏
 
     def test_business_scope_requires_datasource_fail_closed(self):
         from backend.modules.mind.execution.sdk_tools import scoped_metadata as sm

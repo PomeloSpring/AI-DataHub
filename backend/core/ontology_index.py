@@ -1,17 +1,19 @@
 """本体模型索引（L1，common ← core ← semantics/modules）— 跨层共用的只读解析口。
 
 为什么在 core 而不是 catalog service：这两份事实解析同时被
-- 语义层（`backend/semantics/topology.py` 承载校验、绑定选路）与
-- 目录层（`backend/modules/catalog` 的本体服务、生成器、前端接口）
-消费。放在 modules 会构成 `semantics → modules` 的反向依赖（分层契约 R3 硬禁，
-无豁免），所以把**解析**下沉到 core，modules 侧保留同名薄委托函数不破坏既有调用点。
+- 目录层（`backend/modules/catalog` 的本体服务、业务资产本体生成器、前端接口）与
+- 需要"按数据源解析物理形状来源"的其它上层消费方
+读取。放在 modules 会构成跨模块的反向依赖（分层契约 R3 硬禁，无豁免），所以把**解析**
+下沉到 core，modules 侧保留同名薄委托函数不破坏既有调用点。
+（取数路径/承载 carrier 与 `backend/semantics/topology.py` 已下线，本索引不再被语义层选路消费。）
 
 口径纪律：
 - 名字是稳定键（数据源/模型删除重建后 id 会变、name 不变，见 waker-datasource-domain §2），
   因此对外一律用 name 关联，id 只在服务端内部使用；
-- 源本体的对象清单与 `object_keys` **同源**（都读 canonical doc）：不得一边读 doc、
-  一边读展开行 `adh_ontology_objects`——存量展开行可能因旧字段名（object_key/name）而为空；
-- 兼容存量空 `kind` 行：`datasource_id > 0` 视为源本体（旧口径），不静默丢弃。
+- 源本体已退役（kind='source' 合并为 'business'）：本索引改为按「业务本体 + 主源 datasource_id>0」
+  解析某数据源的物理形状来源，对象清单与 `object_keys` **同源**（都读 canonical doc）：
+  不得一边读 doc、一边读展开行 `adh_ontology_objects`——存量展开行可能因旧字段名（object_key/name）而为空；
+- 兼容存量空 `kind` 行：`COALESCE(kind,'') <> 'system' AND datasource_id > 0` 一律纳入，不静默丢弃。
 """
 from __future__ import annotations
 
@@ -32,7 +34,10 @@ def datasource_name_set() -> set:
 
 
 def active_source_ontology_index() -> dict:
-    """active 源本体索引：业务本体承载/路由引用的唯一解析口径。
+    """active 业务本体（带主源）索引：按数据源解析其物理形状来源模型的唯一口径。
+
+    源本体退役后，"某数据源的物理形状" 落在 kind='business' + datasource_id>0 的模型上，
+    故谓词由 `kind='source'` 收口为 `COALESCE(kind,'') <> 'system' AND datasource_id>0`。
 
     Returns: {model_name: {"id", "datasource_name", "object_keys": set,
                            "objects": [{"key", "name"}]}}
@@ -45,8 +50,8 @@ def active_source_ontology_index() -> dict:
                 "FROM adh_ontology_models m "
                 "LEFT JOIN adh_datasources ds ON ds.id = m.datasource_id "
                 "WHERE m.status = 'active' "
-                "  AND (m.kind = 'source' "
-                "       OR (COALESCE(m.kind, '') = '' AND m.datasource_id > 0))")
+                "  AND COALESCE(m.kind, '') <> 'system' "
+                "  AND m.datasource_id > 0")
             rows = cur.fetchall() or []
     for r in rows:
         try:

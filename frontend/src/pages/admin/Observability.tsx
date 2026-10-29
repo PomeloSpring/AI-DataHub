@@ -68,6 +68,8 @@ const SPAN_KIND_LABELS: Record<string, string> = {
   llm_call: '模型请求',
   assistant: '模型输出',
   tool_call: '工具调用',
+  retrieval: '知识库检索',
+  phase: '前置阶段',
   result: '执行结果',
   intent_route: '前置分流判定',
 };
@@ -471,7 +473,12 @@ export default function Observability() {
               {detail.trace.error_message ? <TextBlock label="错误" text={detail.trace.error_message} /> : null}
               {detail.trace.feedback_reason ? <TextBlock label="反馈原因" text={detail.trace.feedback_reason} /> : null}
               <div>
-                <div className="font-medium mb-2">执行步骤 / 产物（{detail.spans.length}）</div>
+                <div className="font-medium mb-1">执行步骤 / 产物（{detail.spans.length}）</div>
+                <p className="text-xs text-muted-foreground mb-2">
+                  耗时口径：「前置阶段」= 会话领取/资源绑定/建连/拼提示词等固定成本；「模型请求」= 单次请求窗口
+                  （工具执行时间不计入）；「工具调用」= 工具整体执行；「知识库检索」= 只计检索段，
+                  不含工具包装层开销。两者相减即可分辨“知识库真慢”与“工具包装层慢”。
+                </p>
                 <div className="space-y-2">
                   {detail.spans.map(sp => (
                     <div key={sp.span_id} className="rounded-md border p-2">

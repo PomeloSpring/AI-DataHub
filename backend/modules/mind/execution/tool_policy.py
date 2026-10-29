@@ -84,6 +84,9 @@ class ToolPolicy:
     function_names: tuple = ()
     descriptions: dict = field(default_factory=dict, compare=False)
     unavailable: dict = field(default_factory=dict)
+    # 本次全量解析读到的 DB 事实（owner/as_bot/role_perms）：同一 HTTP 请求内下游
+    # （claim_session）可作为 inputs 复用，只重编译不重读；不参与 digest/比较。
+    resolved_inputs: dict = field(default_factory=dict, compare=False)
 
     def manifest(self):
         from backend.modules.mind.execution.tool_catalog import TOOL_CATALOG
@@ -190,15 +193,45 @@ def is_system_scope(policy: ToolPolicy) -> bool:
     return "system" in (policy.selection or {})
 
 
-def resolve_policy(ctx, ceiling=None):
-    from backend.common.auth import resolve_execution_owner
+def resolve_policy(ctx, ceiling=None, inputs: dict | None = None, *,
+                   use_cache: bool = False, live: bool = False) -> ToolPolicy:
+    """解析 AS-BOT 生效策略（生产入口，恒传 role_perms）。
+
+    inputs: 同一请求内已取过的 DB 事实（owner/as_bot/role_perms，见 preflight 的
+    `policy_inputs` 透传）——命中时跳过重复查询，只用当前 ceiling 重新编译。
+    适用窗口限于单次 HTTP 请求内（preflight → claim）。
+
+    use_cache: 让角色 id / AS-BOT 配置 / 角色权限码走 `config_cache`（只缓存配置事实，
+    写时失效，见该模块）。轮次起点（preflight_request / claim_session）传 `live=False`
+    走轮次档；工具级裁决（check_tool）传 `live=True` 走短 TTL 的 `live:` 档。
+    live: 仅在 use_cache=True 时有意义，选择哪一档 TTL / key 前缀。
+
+    不变量（为什么缓存不会放大权限）：
+    * `runtime.verify()` 与 `live_ceiling()` **恒不缓存**（执行层状态/工具上限、会话领取
+      版本变更即时生效）；
+    * 缓存读到的配置与 SDK 领取时的 digest 不一致 → 显式 `PermissionError` 要求重发，
+      所以陈旧缓存只可能造成一次可见的重发，不可能多授权（见文件末尾）；
+    * 写入口必须同批 invalidate（AST 漂移守卫锁住，见 tests/test_as_bot_config_cache.py）。
+    """
     from backend.modules.mind.execution import as_bots
-    user = resolve_execution_owner(ctx.user_id, ctx.workspace_id)
+    if inputs:
+        user = inputs["owner"]
+        as_bot = inputs["as_bot"]
+        role_perms = inputs["role_perms"]
+    else:
+        from backend.common.auth import resolve_execution_owner
+        user = resolve_execution_owner(ctx.user_id, ctx.workspace_id)
+        key = (ctx.extra or {}).get("as_bot_key", "")
+        candidates = as_bots.resolve_as_bots(ctx.workspace_id, ctx.user_role, key, ctx.user_id,
+                                             use_cache=use_cache, live=live)
+        as_bot = as_bots.default_as_bot(candidates)
+        # 功能能力从角色权限码继承。读取失败不静默当成"无权限"：
+        # 直接抛错，让调用方看到工具不可用，而不是把功能悄悄少注册一批。
+        from backend.core.role_service import role_service
+        role_perms = role_service.get_user_role_ai_perms(ctx.user_id, ctx.workspace_id,
+                                                         use_cache=use_cache, live=live)
     ctx.user_role = user["role"]
     ctx.username = user["username"]
-    key = (ctx.extra or {}).get("as_bot_key", "")
-    candidates = as_bots.resolve_as_bots(ctx.workspace_id, ctx.user_role, key, ctx.user_id)
-    as_bot = as_bots.default_as_bot(candidates)
     if not as_bot:
         raise PermissionError("当前工作空间未授权可用 AS-BOT")
     requested_model = ctx.extra.get("model_ref")
@@ -207,11 +240,12 @@ def resolve_policy(ctx, ceiling=None):
         raise PermissionError("所选模型未授权给当前 AS-BOT")
     if not requested_model and models:
         ctx.extra["model_ref"] = models[0]
-    # 功能能力从角色权限码继承。读取失败不静默当成"无权限"：
-    # 直接抛错，让调用方看到工具不可用，而不是把功能悄悄少注册一批。
-    from backend.core.role_service import role_service
-    role_perms = role_service.get_user_role_ai_perms(ctx.user_id, ctx.workspace_id)
-    return compile_policy(as_bot, ceiling, role_perms=role_perms)
+    policy = compile_policy(as_bot, ceiling, role_perms=role_perms)
+    if not inputs:
+        # 记录本次读到的 DB 事实，供同一请求下游（claim_session）以 inputs 复用，
+        # 只重编译不重读（见 session_workspace._preflight_inputs）。
+        policy.resolved_inputs.update({"owner": user, "as_bot": as_bot, "role_perms": role_perms})
+    return policy
 
 
 def live_ceiling(ctx, runtime):
@@ -236,12 +270,21 @@ def live_ceiling(ctx, runtime):
 
 
 def check_tool(ctx, name):
-    """执行前重新读取权限与 DB 领取版本；旧 SDK 上下文不能保存已撤销授权。"""
+    """执行前重新裁决权限与执行层状态；旧 SDK 上下文不能携带已撤销授权。
+
+    三块事实的实时口径不同（有意分层，不是统一“缓存”或统一“实时”）：
+    * `runtime.verify()`（会话领取版本/状态）与 `live_ceiling()`（执行层有效性与工具上限）
+      **每次实读 DB**——停用执行层、回收会话等变更必须立即拦住；
+    * 角色 id / AS-BOT 配置 / 角色权限码走 `config_cache` 的 **live 档**（短 TTL，默认 5s，
+      `AS_BOT_CFG_LIVE_TTL` 可调，置 0 即回到每调用点实读），且任何写入口同批 invalidate；
+    * digest 与 SDK 领取时不一致 → 显式报错要求重发（fail-loud）。因此缓存陈旧只会造成
+      一次可见的重发，**不可能多授权**；面板上“该工具未授权”的判定仍基于当次生效策略。
+    """
     runtime = (ctx.extra or {}).get("secure_runtime")
     if runtime is None:
         raise PermissionError("缺少可信执行会话")
     runtime.verify()
-    policy = resolve_policy(ctx, live_ceiling(ctx, runtime))
+    policy = resolve_policy(ctx, live_ceiling(ctx, runtime), use_cache=True, live=True)
     if policy.digest != runtime.policy.digest:
         raise PermissionError("AS-BOT 权限已变化，请重新发送消息")
     if name not in policy.allowed:

@@ -127,6 +127,68 @@ _PG_RANGE = {
 _ABS_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$")
 _WINDOW_RE = re.compile(r"^(\d{1,4})([smhdwMy])$")
 
+# ── SLS(Presto) 引擎级时间变体 ─────────────────────────────────
+# 探针实证(logs/probe_sls_core*.py, 全部 LIMIT 0/纯聚合)，PG 族通用写法在 SLS 上不是报错就是错数：
+#   ① `to_char` 未注册(O ERR)            -> 时间桶用 date_format(from_unixtime(<epoch 秒列>), fmt)(N/S4/S5/S6/U2/U3 OK)
+#   ② `INTERVAL '30' DAY` Unknown type(G ERR) -> 单位必须写进字符串 `INTERVAL '30 days'`(H/S1/S2/S3 OK)
+#   ③ bigint 列与 timestamp 边界混型(Q1/T7 ERR) -> 边界包 to_unixtime(...), 与 epoch 秒同型比较(S1/Q4 OK)
+#   ④ `CURRENT_DATE - 1` 不适用(T3 ERR)   -> date_add('day', -1, CURRENT_DATE)(U4/U5/U6/U7 OK)
+#   ⑤ `%q`(季度) 无定义(T9 输出字面量 "2026-Qq"), `||` 解析不通(U1 ERR) -> CONCAT + quarter()(V1)
+_SLS_GRAIN_FMT = {
+    "second": "%Y-%m-%d %H:%i:%s",
+    "minute": "%Y-%m-%d %H:%i",
+    "hour": "%Y-%m-%d %H",
+    "day": "%Y-%m-%d",
+    "week": "%x-%v",     # ISO 年-周(实测 T8 -> 2026-44, 与 PG IYYY-IW 同口径)
+    "month": "%Y-%m",
+    "year": "%Y",
+}
+_SLS_GRAIN_QUARTER = "CONCAT(date_format({t}, '%Y'), '-Q', CAST(quarter({t}) AS VARCHAR))"
+# 日历区间边界(日期表达式); epoch 秒时间列渲染时再包 to_unixtime()
+_SLS_RANGE = {
+    "today": ("CURRENT_DATE", "date_add('day', 1, CURRENT_DATE)"),
+    "yesterday": ("date_add('day', -1, CURRENT_DATE)", "CURRENT_DATE"),
+    "this_week": ("date_trunc('week', CURRENT_DATE)",
+                  "date_add('day', 7, date_trunc('week', CURRENT_DATE))"),
+    "last_week": ("date_add('day', -7, date_trunc('week', CURRENT_DATE))",
+                  "date_trunc('week', CURRENT_DATE)"),
+    "this_month": ("date_trunc('month', CURRENT_DATE)",
+                   "date_add('month', 1, date_trunc('month', CURRENT_DATE))"),
+    "last_month": ("date_add('month', -1, date_trunc('month', CURRENT_DATE))",
+                   "date_trunc('month', CURRENT_DATE)"),
+    "this_quarter": ("date_trunc('quarter', CURRENT_DATE)",
+                     "date_add('month', 3, date_trunc('quarter', CURRENT_DATE))"),
+    "last_quarter": ("date_add('month', -3, date_trunc('quarter', CURRENT_DATE))",
+                     "date_trunc('quarter', CURRENT_DATE)"),
+    "this_year": ("date_trunc('year', CURRENT_DATE)",
+                  "date_add('year', 1, date_trunc('year', CURRENT_DATE))"),
+    "last_year": ("date_add('year', -1, date_trunc('year', CURRENT_DATE))",
+                  "date_trunc('year', CURRENT_DATE)"),
+}
+# SLS 内置事件时间列: epoch 秒(实测 max=1793245034); 业务同名 timestamp 列是 epoch 毫秒
+# (max=1793245028088) —— 二者与 to_unixtime() 秒边界只有前者同型可比, 后者单位不在
+# 元数据里声明, 静默按秒比较会把窗口放大到全表(错数比无答案更坏), 故一律拒。
+_SLS_EPOCH_SEC_COLUMN = "__time__"
+_INTEGER_TYPES = {"bigint", "int", "integer", "smallint", "tinyint"}
+
+# SLS epoch 秒时间维未显式请求粒度时的默认粒度：按已登记的业务名判（「统计小时」→hour、
+# 「统计日期」→day）。裸 epoch 既不可读，按它 GROUP BY 等于把「时间」当整数维度(逐秒出行)；
+# 业务名里的粒度词是建模时对用户的承诺，以它为准不是猜单位。名字里没有粒度词时
+# 兜到秒级完整时间串（等价于其余引擎「不限粒度就输出时间点本身」）。
+_GRAIN_BY_NAME: tuple[tuple[str, str], ...] = (
+    ("小时", "hour"), ("整点", "hour"), ("分钟", "minute"), ("秒", "second"),
+    ("日期", "day"), ("天", "day"), ("周", "week"), ("月", "month"),
+    ("季", "quarter"), ("年", "year"),
+)
+
+
+def _grain_from_dim_name(name: str) -> str:
+    s = str(name or "")
+    for kw, grain in _GRAIN_BY_NAME:
+        if kw in s:
+            return grain
+    return ""
+
 
 def _dialect_of(db_type: str) -> str:
     """数据源 db_type -> SQL 编译方言族。未知类型保守回落 mysql(与旧行为一致)并出 warning。"""
@@ -178,6 +240,49 @@ def _qualify_bare(expr: str, alias: str, cols: set[str]) -> str:
     for c in sorted({x for x in cols if x}, key=len, reverse=True):
         out = re.sub(rf"(?<![\w.`\"])({re.escape(c)})(?![\w`\"])", f"{alias}.\\1", out)
     return out
+
+
+# 物理列名本身含点的引擎：SLS/ARMS LogStore 的字段名就是 `view.url`、`session.id`
+# 这种带点形式(实测 logstore-rum 202 列里绝大多数带点)。
+# 探针实证(logs/probe_sls_core.py A/B、probe_sls_core2.py Q8/Q9/Q10)：
+#   SELECT view.url     -> InternalError_: Column 'view.url' cannot be resolved
+#   SELECT "view.url"   -> OK
+#   GROUP BY view.url   -> 同上报错；GROUP BY "view.url" -> OK
+# 裸写会被 Presto 解析成「行变量.字段」访问，因此这类列必须整体加引号。
+# 其余引擎不列入：列名不含点，改写路径行为完全不变(不制造第二条口径)。
+_DOTTED_COLUMN_ENGINES = frozenset({"sls"})
+
+# 字符串字面量 / 已加引号片段：公式规范化时必须跳过(否则会改坏 'view' 这类码值)
+_QUOTED_SEG_RE = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
+
+
+# 字面量/已引号片段之外的带点标识符链(贪婪匹配 = 长名优先, 不会只抢到 `view`)
+_DOTTED_TOKEN_RE = re.compile(r"(?<![\w.\"`])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+)(?![\w\"`])")
+
+
+def _quote_dotted_columns(expr: str, family: str) -> str:
+    """把表达式文本里裸写的「带点物理列」整体加引号(仅带点列引擎调用)。
+
+    改写文本里所有带点标识符链, 不按列元数据清单过滤。两个原因：
+    - 这类引擎的单表公式里带点 token 只可能是列名 —— 真正的跳表限定已在字典写入
+      时被 `metric_formula.is_cross_table` 拒掉, 不会活到编译期；
+    - 跳站部署时目标源可能尚未同步列元数据(实测 arms-prd-en 零登记行)，
+      若因为清单为空就不加引号, `COUNT(DISTINCT session.id)` 会直接报 Column cannot
+      be resolved —— 引号化不能依赖一个可能缺失的元数据开关。
+    字面量与已加引号片段一律跳过(否则会改坏 `'view'` 这类码值)。
+    """
+    if not expr:
+        return expr
+    out: list[str] = []
+    pos = 0
+    for seg in _QUOTED_SEG_RE.finditer(expr):
+        out.append(_DOTTED_TOKEN_RE.sub(
+            lambda m: sem_dialect.quote_alias(m.group(1), family), expr[pos:seg.start()]))
+        out.append(seg.group(0))
+        pos = seg.end()
+    out.append(_DOTTED_TOKEN_RE.sub(
+        lambda m: sem_dialect.quote_alias(m.group(1), family), expr[pos:]))
+    return "".join(out)
 
 
 def _load_object_links(datasource_id: int = 0) -> dict:
@@ -272,6 +377,26 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
 
     # ② 解析: measure/dim 名 -> 物理列/表达式
     resolver = _ColumnResolver(binding, dialect=dialect)
+
+    # 投影别名槽位：SLS/Presto 拒绝任何非 ASCII 标识符（连双引号包裹的中文别名也
+    # 直接语法错，探针 M/S15 ERR），而投影别名由请求的业务名决定，建模侧无法规避。
+    # 与数据集编译分支（dataset_compiler）同源：本引擎下走稳定 ASCII 槽位(o0/o1..)，
+    # 业务名记进 output_header_map 由执行层 `_to_result` 映回；其他方言行为完全不变
+    # （no-silent-degradation：只为确实不兼容的引擎加一条显式映射，不改能跑通的通道）。
+    ascii_out = resolver.engine == "sls"
+    slot_of: dict[str, str] = {}
+    header_map: dict[str, str] = {}
+
+    def _proj_alias(name: str) -> str:
+        disp = _alias_of(name)
+        if not ascii_out:
+            return disp
+        slot = slot_of.get(disp)
+        if slot is None:
+            slot = f"o{len(slot_of)}"
+            slot_of[disp] = slot
+            header_map[slot] = disp
+        return slot
 
     # ①.5 跨对象引用: 限定业务名(对象名.业务名) -> links 解链 JOIN(≤2 跳)
     join_ctx: dict[str, tuple[_ColumnResolver, str]] = {}   # obj_ref -> (resolver, alias)
@@ -438,7 +563,7 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
                 "candidates": r.fuzzy_candidates(d_rest),
             })
             continue
-        alias = _alias_of(d)
+        alias = _proj_alias(d)
         select_items.append((expr, alias))
         col_roles[alias] = role
         group_by.append(expr)
@@ -463,7 +588,7 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
                 "term": m, "type": "metric", "reason": "unresolved", "candidates": [],
             })
             continue
-        alias = _alias_of(m)
+        alias = _proj_alias(m)
         select_items.append((expr, alias))
         col_roles[alias] = "measure"
         # 附带单位与聚合信息供溯源
@@ -517,8 +642,12 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
     # ④ ORDER BY
     order_parts: list[str] = []
     for o in query.order:
-        key = o.by if o.by in col_roles else _alias_of(o.by)
-        if key in col_roles:
+        cands = [o.by, _alias_of(o.by)]
+        if ascii_out:
+            # 业务名在 SQL 里只以投影槽位存在, 先映到槽位, 原名作兼容位
+            cands = [slot_of.get(c, c) for c in cands] + cands
+        key = next((c for c in cands if c in col_roles), None)
+        if key is not None:
             order_parts.append(f"{_quote_alias(key, dialect)} {'DESC' if o.desc else 'ASC'}")
         else:
             warnings.append(f"order-by references unknown field: {o.by}")
@@ -542,7 +671,7 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
     if query.window:
         win_sql = _render_window_sql(
             query.window, table_ref, select_items, where_parts, group_by,
-            order_parts, limit_val, dialect, col_roles, warnings)
+            order_parts, limit_val, dialect, col_roles, warnings, slot_of)
         if not win_sql:
             return PlannedExecution(
                 sql="", secured_sql="", route=g.query_mode, dialect=dialect,
@@ -589,6 +718,7 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
         access=binding.access,
         provenance=prov,
         warnings=warnings,
+        output_header_map=header_map,
     )
 
 
@@ -631,18 +761,22 @@ def _render_window_sql(
     dialect: str,
     col_roles: dict[str, str],
     warnings: list[str],
+    slot_of: Optional[dict[str, str]] = None,
 ) -> Optional[str]:
     """结构化窗口 -> "内层聚合 + 外层窗口" 两层结构(窗口与 GROUP BY 不同层)。
 
     partition←dimensions(rolling/period_compare 剔除时间维)、order←order[];
     窗口表达式仅进 SELECT 投影层。配置非法返回 None 并记 warnings(宁缺勿错)。
+    slot_of: SLS 类引擎的业务名 → 投影槽位(别名不在 SQL 里, 必须映后才能引用)。
     """
+    slot_of = slot_of or {}
     metric_aliases = [a for a, r in col_roles.items() if r == "measure"]
     dim_aliases = [a for a, r in col_roles.items() if r != "measure"]
     time_aliases = [a for a, r in col_roles.items() if r == "time"]
 
     if w.metric:
         target = _alias_of(w.metric)
+        target = slot_of.get(target, target)
     else:
         target = metric_aliases[0] if metric_aliases else ""
     if w.type != "rank" and target not in metric_aliases:
@@ -726,19 +860,11 @@ def _is_agg(expr: str) -> bool:
 
 
 def _quote_ident(name: str, dialect: str = "mysql") -> str:
-    s = str(name or "").strip()
-    if not s:
-        return s
-    # 含空白/括号/引号/逗号等运算结构的表达式原样透传; 其余(含中文词)一律视为标识符加引号,
-    # 否则中文维度别名在 ORDER BY/AS 处裸奔(PG 直接语法错)。
-    if not _IDENT_RE.match(s) and _EXPR_CHAR_RE.search(s):
-        return s
-    if dialect == "postgres":
-        return '"' + s.replace('"', '""') + '"'
-    return f"`{s}`"
+    """标识符引用(单一口径在 semantics/dialect.py, 此处仅保留历史导入口径)。"""
+    return sem_dialect.quote_ident(name, dialect)
 
 
-_EXPR_CHAR_RE = re.compile(r"[\s(),;'\".\[}=+*/-]")
+_EXPR_CHAR_RE = sem_dialect._EXPR_CHAR_RE
 
 
 def _norm_name(s: Any) -> str:
@@ -804,17 +930,38 @@ class _ColumnResolver:
         self._fuzzy_candidates: dict[str, list[str]] = {}
 
     def _col(self, col: str) -> str:
-        """列引用: 主表原样; JOIN 侧统一带表别名前缀(源头限定, 不做事后正则)。"""
-        q = _quote_ident(col, self.dialect)
+        """列引用: 主表原样; JOIN 侧统一带表别名前缀(源头限定, 不做事后正则)。
+
+        带点物理列(SLS LogStore 嵌套字段)必须整体加引号: 裸写 `view.url` 被引擎
+        当「行变量.字段」访问, 直接 Column cannot be resolved(探针 A/B、Q8/Q9)。
+        已带引号的登记值原样透传, 不二次转义。
+        """
+        s = str(col or "").strip()
+        if ("." in s and self.engine in _DOTTED_COLUMN_ENGINES
+                and not (s.startswith('"') and s.endswith('"'))):
+            q = sem_dialect.quote_alias(s, self.dialect)
+        else:
+            q = _quote_ident(s, self.dialect)
         return f"{self._prefix}.{q}" if self._prefix else q
 
     def _fix_formula(self, expr: Optional[str]) -> Optional[str]:
-        """JOIN 侧指标公式文本中的裸列名补表别名(公式不经 _col 路径)。"""
-        if not self._prefix or not expr:
+        """公式文本规范化: 带点物理列整体加引号(引擎级) -> JOIN 侧裸列补表别名。
+
+        指标公式不经 `_col` 路径(它是文本), 故带点列必须在此显式引号化,
+        否则 `COUNT(DISTINCT session.id)` 这类合法建模写法在 SLS 上直接报错(探针 K)。
+        顺序不能换: 先引号化, `_qualify_bare` 的前后瞻才不会把已引号片段再补一次
+        前缀(生成 `t1.session.id` 这种非法引用)。
+        """
+        if not expr:
             return expr
-        cols = (set(self._load_phys().keys())
-                | {str(v) for v in (self.binding.column_map or {}).values()})
-        return _qualify_bare(expr, self._prefix, cols)
+        out = str(expr)
+        if self.engine in _DOTTED_COLUMN_ENGINES:
+            out = _quote_dotted_columns(out, self.dialect)
+        if self._prefix:
+            cols = (set(self._load_phys().keys())
+                    | {str(v) for v in (self.binding.column_map or {}).values()})
+            out = _qualify_bare(out, self._prefix, cols)
+        return out
 
     def fuzzy_hint(self, name: str) -> str:
         """若该名称是被拒的模糊命中, 给出候选提示文案(仅业务名, 不暴露物理列)。"""
@@ -1075,7 +1222,11 @@ class _ColumnResolver:
             return self._label_case_expr(entry["col"], entry["labels"]), "dimension"
         if entry.get("time"):
             # time_grain 只对时间类维度生效(枚举/类别维度不受全局粒度影响)
-            return self._maybe_wrap_time(entry["col"], time_grain), "time"
+            wrapped = self._maybe_wrap_time(
+                entry["col"], time_grain, str(entry.get("name") or name))
+            if not wrapped:
+                return None, ""
+            return wrapped, "time"
         return self._col(entry["col"]), "dimension"
     
     def _label_case_expr(self, col: str, labels: dict[str, str]) -> str:
@@ -1096,8 +1247,27 @@ class _ColumnResolver:
         rev = {_norm_name(v): str(k) for k, v in labels.items()}
         return rev.get(_norm_name(value), value)
     
-    def _maybe_wrap_time(self, col: str, grain: Optional[str]) -> str:
+    def _maybe_wrap_time(self, col: str, grain: Optional[str],
+                         dim_name: str = "") -> str:
         q = self._col(col)
+        if self.engine == "sls":
+            kind = self._sls_time_kind(col)
+            if not kind:
+                # 时间单位无法安全判定 -> 返回空表达式, 调用方按"未解析"显式回绝
+                # (不静默当秒/当原生时间处理, 那会给出错的时间轴)
+                return ""
+            if kind == "epoch_sec":
+                # 未指定粒度时也不能返回裸 epoch 数字(展示成 1793245034 这种值对用户
+                # 无意义, 且按它 GROUP BY 等于把「时间」当成一个整数维度)：
+                # 先看业务名自带的粒度承诺, 否则取秒级完整时间串。
+                grain = grain or _grain_from_dim_name(dim_name)
+                t = f"from_unixtime({q})"
+                if grain == "quarter":
+                    return _SLS_GRAIN_QUARTER.format(t=t)
+                fmt = _SLS_GRAIN_FMT.get(grain or "second")
+                return f"date_format({t}, '{fmt}')" if fmt else q
+            fmt = _SLS_GRAIN_FMT.get(grain)
+            return f"date_format({q}, '{fmt}')" if fmt else q
         if not grain:
             return q
         if self.dialect == "postgres":
@@ -1109,6 +1279,27 @@ class _ColumnResolver:
         if not fmt:
             return q
         return f"DATE_FORMAT({q}, '{fmt}')"
+
+    def _sls_epoch_filter_expr(self, col: str, f: SemanticFilter, raw: str) -> str:
+        """SLS epoch 秒时间列上「未指定粒度」的时间过滤：按过滤值的形状决定比较粒度。
+
+        `"__time__" >= '2026-10-01'` 在引擎侧是 bigint vs varchar 类型错误，而把日期
+        换算成 epoch 数字又要猜单位(秒/毫秒) —— 改为把列按值粒度分桶后作字符串比较，
+        与展示口径同源、不涉及单位猜测。值不全是 ISO 日期/日期时间时原样比较
+        (按登记口径当 epoch 秒数值)。其余引擎不受影响。
+        """
+        if self.engine != "sls" or self._sls_time_kind(col) != "epoch_sec":
+            return raw
+        samples = [str(v).strip() for v in
+                   ([f.value] if f.value is not None else []) + list(f.values or [])
+                   if isinstance(v, str)]
+        if not samples:
+            return raw
+        iso = [_ABS_DATE_RE.match(s) for s in samples]
+        if not all(iso):
+            return raw
+        grain = "second" if all(m.group(1) for m in iso) else "day"
+        return f"date_format(from_unixtime({raw}), '{_SLS_GRAIN_FMT[grain]}')"
     
     # ── measure ───────────────────────────────────────────────
     
@@ -1183,8 +1374,13 @@ class _ColumnResolver:
             return None
         # WHERE 永远打在原始列上(标签只在结果集展示), 值支持业务名→码值反查
         expr = self._col(entry["col"])
-        if entry.get("time") and f.grain:
-            expr = self._maybe_wrap_time(entry["col"], f.grain)
+        if entry.get("time"):
+            if f.grain:
+                expr = self._maybe_wrap_time(entry["col"], f.grain)
+                if not expr:
+                    return None   # 时间粒度无法安全生成 -> 回绝(由调用方出"未解析"告警)
+            else:
+                expr = self._sls_epoch_filter_expr(entry["col"], f, expr)
         if entry.get("labels"):
             value = self._label_to_code(entry, f.value)
             values = ([self._label_to_code(entry, v) for v in f.values]
@@ -1193,32 +1389,83 @@ class _ColumnResolver:
             value, values = f.value, f.values
         return _render_condition(expr, f.op, value, values)
     
-    # time window (相对滚动窗口)
-    
-    def _resolve_time_col_expr(
+    # ── 时间列定位 + 时间谓词(相对窗口 / 日历区间 / 绝对区间) ──────
+
+    def _sls_time_kind(self, col: str) -> str:
+        """SLS 时间列取值形态: 'epoch_sec' / 'native' / ''(判定不了 → 不猜)。"""
+        bare = str(col or "").strip().strip('"').strip("`")
+        if bare == _SLS_EPOCH_SEC_COLUMN:
+            return "epoch_sec"
+        meta = self._load_phys().get(bare) or {}
+        dt = str(meta.get("data_type") or "").split("(")[0].lower()
+        if dt in self._TIME_TYPES:
+            return "native"
+        # bigint/int 类(如业务侧毫秒时间戳) 或元数据未登记: 单位未知, 不猜
+        return ""
+
+    def _resolve_time_column_name(
         self, time_column: Optional[str], warnings: list[str],
-    ) -> Optional[str]:
-        """定位事件时间列: 显式 time_column(走别名解析) -> 字典时间维度 -> 唯一 datetime 物理列。"""
+    ) -> str:
+        """定位事件时间列名: 显式 time_column(走别名解析) -> 字典时间维度 -> 唯一时间类物理列。"""
         if time_column:
             entry = self.lookup_dimension(time_column)
             if entry is None:
                 warnings.append(
                     f"时间维度「{time_column}」无法解析, 可用时间维度: "
                     f"{self.suggest_time_dimensions() or '无'}")
-                return None
-            return self._col(entry["col"])
+                return ""
+            return str(entry["col"] or "")
         for d in self._load_dims().values():
             if (d.get("category") or "") == "时间" and d.get("target_column"):
-                return self._col(d["target_column"])
+                return str(d["target_column"])
         tcols = [c for c, meta in self._load_phys().items()
                  if str(meta.get("data_type") or "").split("(")[0].lower()
                  in self._TIME_TYPES]
         if len(tcols) == 1:
-            return self._col(tcols[0])
+            return str(tcols[0])
         warnings.append(
             "时间条件需要显式 time_column: 本对象未登记时间类维度"
             f"(可用维度: {self.suggest_dimensions()})")
-        return None
+        return ""
+
+    def _resolve_time_col_expr(
+        self, time_column: Optional[str], warnings: list[str],
+    ) -> Optional[str]:
+        """(兼容入口)时间列引用表达式; 只需列名的调用方请用 `_resolve_time_column_name`。"""
+        col = self._resolve_time_column_name(time_column, warnings)
+        return self._col(col) if col else None
+
+    def _time_target(
+        self, time_column: Optional[str], warnings: list[str],
+    ) -> tuple[Optional[str], str]:
+        """时间谓词的左端 -> (引用表达式, 取值形态); 不能安全定域时 (None, '')。
+
+        仅 SLS 需要第 2 项：LogStore 内置事件时间列是 epoch 秒(可与 to_unixtime 同型
+        比较), 而业务侧同名时间字段实测存的是 epoch 毫秒且元数据不声明单位 —— 拿它
+        当秒比较等于把时间窗静默放大到全表(错数), 因此宁可在编译期显式回绝。
+        文案只说业务名/登记口径, 不输物理列名(护栏 §7)。
+        """
+        col = self._resolve_time_column_name(time_column, warnings)
+        if not col:
+            return None, ""
+        q = self._col(col)
+        if self.engine != "sls":
+            return q, ""
+        kind = self._sls_time_kind(col)
+        if not kind:
+            warnings.append(
+                f"时间维度「{time_column or self._time_dim_label(col)}」的时间单位无法确定, "
+                "已拒绝生成时间条件(不静默猜单位): 日志服务类数据源请将时间维登记到"
+                "内置事件时间列(按秒存), 业务自定义的毫秒时间戳列需先在字典里换为可读粒度")
+            return None, ""
+        return q, kind
+
+    def _time_dim_label(self, col: str) -> str:
+        """时间列对应的业务名(提示文案用, 不输出物理列名)。"""
+        for _k, d in self._load_dims().items():
+            if str(d.get("target_column") or "").strip() == str(col or "").strip():
+                return str(d.get("name") or col)
+        return str(col or "")
 
     def render_time_window(
         self, window: str, time_column: Optional[str], warnings: list[str],
@@ -1230,9 +1477,12 @@ class _ColumnResolver:
             return None
         n, unit_key = int(mm.group(1)), mm.group(2)
         my_unit, pg_unit = _WINDOW_UNIT[unit_key]
-        col_expr = self._resolve_time_col_expr(time_column, warnings)
+        col_expr, kind = self._time_target(time_column, warnings)
         if col_expr is None:
             return None
+        if self.engine == "sls" and kind == "epoch_sec":
+            # 边界包 to_unixtime 与 epoch 秒同型(探针 Q1 ERR/S1 OK), INTERVAL 单位写在字符串里(G ERR/H OK)
+            return f"{col_expr} >= to_unixtime(now() - INTERVAL '{n} {pg_unit}')"
         if self.dialect == "postgres":
             return f"{col_expr} >= now() - INTERVAL '{n} {pg_unit}'"
         return f"{col_expr} >= DATE_SUB(NOW(), INTERVAL {n} {my_unit})"
@@ -1241,15 +1491,21 @@ class _ColumnResolver:
         self, rng: str, time_column: Optional[str], warnings: list[str],
     ) -> Optional[str]:
         """把日历 time_range('last_week' 等) 编译为左闭右开区间谓词(col >= 起 AND col < 止)。"""
-        table = _PG_RANGE if self.dialect == "postgres" else _MY_RANGE
-        bounds = table.get(str(rng or "").strip())
+        key = str(rng or "").strip()
+        if self.engine == "sls":
+            bounds = _SLS_RANGE.get(key)
+        else:
+            bounds = (_PG_RANGE if self.dialect == "postgres" else _MY_RANGE).get(key)
         if not bounds:
             warnings.append(f"unknown time_range: {rng!r} (expect 'last_week'/'this_month'/...)")
             return None
-        col_expr = self._resolve_time_col_expr(time_column, warnings)
+        col_expr, kind = self._time_target(time_column, warnings)
         if col_expr is None:
             return None
         start, end = bounds
+        if self.engine == "sls" and kind == "epoch_sec":
+            # epoch 秒列与日期表达式不同型, 边界取 unix 秒(T1/U4/U6/U7 均为 to_unixtime(...) OK)
+            start, end = f"to_unixtime({start})", f"to_unixtime({end})"
         return f"{col_expr} >= {start} AND {col_expr} < {end}"
 
     def render_time_bounds(
@@ -1264,14 +1520,22 @@ class _ColumnResolver:
                 return None
         if not s and not e:
             return None
-        col_expr = self._resolve_time_col_expr(time_column, warnings)
+        col_expr, kind = self._time_target(time_column, warnings)
         if col_expr is None:
             return None
+
+        def _bound(v: str) -> str:
+            if self.engine == "sls":
+                # 裸字符串与 bigint 列比较直接报错(T7 ERR); epoch 秒列还要过 to_unixtime(T6 OK)
+                ts = f"timestamp '{v}'"
+                return f"to_unixtime({ts})" if kind == "epoch_sec" else ts
+            return _lit(v)
+
         parts: list[str] = []
         if s:
-            parts.append(f"{col_expr} >= {_lit(s)}")
+            parts.append(f"{col_expr} >= {_bound(s)}")
         if e:
-            parts.append(f"{col_expr} <= {_lit(e)}")
+            parts.append(f"{col_expr} <= {_bound(e)}")
         return " AND ".join(parts)
     
     def suggest_time_dimensions(self) -> list[str]:
@@ -1338,6 +1602,65 @@ def _dataset_has_scopes(dataset_id: int) -> bool:
         conn.close()
 
 
+def _load_datasource_rows(names: Optional[list[str]] = None,
+                          exec_id: int = 0) -> list[dict]:
+    """数据源清单行 [{id, name}]（按业务名/id 查重载，供可用范围解析）。
+
+    单独成一个函数是为了离线可打桩（评测侧 demo 用内存清单，不碰元库）。
+    """
+    want = [str(x or "").strip() for x in (names or []) if str(x or "").strip()]
+    rows: list[dict] = []
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            if want:
+                cur.execute(
+                    f"SELECT id, name FROM adh_datasources WHERE name IN ({','.join(['%s'] * len(want))})",
+                    tuple(want))
+                rows.extend(cur.fetchall() or [])
+            if int(exec_id or 0):
+                cur.execute("SELECT id, name FROM adh_datasources WHERE id = %s", (exec_id,))
+                rows.extend([cur.fetchone()] if cur.fetchone() else [])
+    finally:
+        conn.close()
+    return [{"id": int(r["id"]), "name": str(r.get("name") or "")} for r in rows if r]
+
+
+def _dataset_source_scope(ds: dict) -> tuple[set[int], list[str]]:
+    """数据集可用数据源：(id 集, 业务名清单) = 执行源 ∪ available_datasources(按名解析)。
+
+    直读元库（不在 L1 反向依赖 modules/viz），与 `dataset_service.usable_sources` 同口径：
+    解析不到 id 的源名（已删/改名）不计入 id 集，fail-closed（宁可拒绘计划，不可静默换源）；
+    但必须出现在业务名清单里并标注失效（no-silent-degradation，否则永远看不出为何被拒）。
+    默认引擎(0) 计入（不参与源级 RBAC）；未配范围 = 仅执行源（存量行为零变化）。
+    文案只给业务名，绝不外抛内部 id（护栏 §7）。
+    """
+    raw = parse_json_obj(ds.get("available_datasources"), []) or []
+    names = list(dict.fromkeys(str(x or "").strip() for x in raw if str(x or "").strip()))
+    exec_id = int(ds.get("datasource_id") or 0)
+    rows = _load_datasource_rows(names, exec_id=exec_id)
+    by_name = {r["name"]: r["id"] for r in rows if r["name"]}
+    exec_row = next((r for r in rows if r["id"] == exec_id), {}) if exec_id else {}
+
+    ids: set[int] = set()
+    labels: list[str] = []
+    if not exec_id:
+        ids.add(0)
+        labels.append("默认引擎")
+    else:
+        ids.add(exec_id)
+        labels.append(str(exec_row.get("name") or "执行数据源(已不存在)"))
+    for nm in names:
+        sid = by_name.get(nm)
+        if sid is None:
+            labels.append(f"{nm}(已失效)")
+            continue
+        ids.add(int(sid))
+        if nm not in labels:
+            labels.append(nm)
+    return ids, labels
+
+
 def _plan_dataset(
     query: SemanticQuery, binding: ResolvedBinding, dialect: str, warnings: list[str],
 ) -> PlannedExecution:
@@ -1365,6 +1688,18 @@ def _plan_dataset(
         warnings.append(
             f"数据集 '{ds.get('name') or ref}' 配了行级范围(scope)，不能作为语义层对象绑定使用；"
             "请改用 query_dataset 取数（会按身份叠加 scope），或先移除该数据集的 scope")
+        return _empty_plan(binding, query, dialect, warnings)
+
+    # 站点路由后的目标源必须落在数据集可用范围内（与本体 deploy_sites 同构约束）：
+    # 一份预制 SQL 只在它声明过的源上可信，静默拿另一个源跑 = 口径漂移（表不存在也可能是
+    # 错数），一律 fail-loud 空计划，不得自行换源或回退到执行源。
+    target_ds = int(binding.datasource_id or 0)
+    scope_ids, scope_labels = _dataset_source_scope(ds)
+    if target_ds not in scope_ids:
+        warnings.append(
+            f"数据集 '{ds.get('name') or ref}' 不适用当前目标数据源；已适用："
+            + "、".join(scope_labels or ["无"])
+            + "（请在数据集页把该源登记进「可用数据源范围」，或改绑适用的数据集）")
         return _empty_plan(binding, query, dialect, warnings)
 
     declared = parse_variables(ds.get("variables"))

@@ -107,10 +107,20 @@ _FUNNEL_SLS_SQL = (
     'SELECT "pcId" AS entity, "scene" AS scene FROM observability_rum '
     'WHERE "__time__" >= ${start_date}')
 
+# 数据源 id → 业务名（供 planner._load_datasource_rows 打桩：数据集「可用数据源范围」
+# 按业务名登记，解析不到 id 的源名一律 fail-closed，所以评测侧必须提供同一份清单）
+DATASOURCES: dict[int, str] = {
+    1: "hospital", 2: "retail", 3: "hospital-pg",
+    4: "doris-analytics", 5: "sls-observability",
+}
+
 DATASETS: dict[str, dict] = {
     "转化漏斗": {
         "id": 9001, "name": "转化漏斗", "description": "案例转化漏斗(预制 SQL)",
+        # 可用数据源范围：MySQL(hospital) / Doris / SLS 三源同构可跑（多方言正文用例的前提）
         "source_type": "sql", "object_key": "", "datasource_id": 0,
+        "available_datasources": json.dumps(
+            ["hospital", "doris-analytics", "sls-observability"], ensure_ascii=False),
         "sql_query": _FUNNEL_SQL,
         "variables": json.dumps({"start_date": {"type": "date"}, "scene": {"type": "string"}}),
         "sql_bodies": json.dumps({"generic": _FUNNEL_SQL, "sls": _FUNNEL_SLS_SQL}),
@@ -170,6 +180,17 @@ def binding_for(datasource_id: int, object_key: str):
 def links_for(datasource_id: int = 0) -> dict:
     """planner._load_object_links 打桩入口(B2/B3)。"""
     return LINKS
+
+
+def datasource_rows_for(names=None, exec_id: int = 0) -> list[dict]:
+    """planner._load_datasource_rows 打桩入口（按名/按 id 返回内存清单行）。"""
+    rows = [{"id": i, "name": n} for i, n in DATASOURCES.items()]
+    if names:
+        want = {str(x).strip() for x in names}
+        rows = [r for r in rows if r["name"] in want]
+    if int(exec_id or 0):
+        rows = rows + [r for r in rows if r["id"] == int(exec_id)]
+    return rows
 
 
 def foreign_binding_for(obj_key: str, datasource_id: int = 0):

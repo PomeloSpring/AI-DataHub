@@ -184,8 +184,12 @@ def resolve_binding(
         binding.resolution_source = _resolution_source_of(binding)
         if _norm_ref(object_key) == _norm_ref(binding.physical_table or ""):
             binding.resolution_source = "table_fallback"
+            # 告警会随工具返回进 LLM/客户端：物理表名不得出现在对外文案（护栏 §7），
+            # 物理细节只进服务端日志。
+            logger.warning("[binding] 对象 '%s' 经同名兜底解析到表 '%s'",
+                           object_key, binding.physical_table)
             warnings.append(
-                f"对象 '{object_key}' 经同名兜底解析到表 '{binding.physical_table}'"
+                f"对象「{object_key}」经同名兜底解析"
                 f"（未登记为数据产品前属高风险绑定）")
         # 补数据产品身份（L1）：不改变解析结果，只带上治理身份
         _enrich_from_data_product(conn, binding, warnings)
@@ -194,72 +198,6 @@ def resolve_binding(
         return binding, warnings
     finally:
         conn.close()
-
-
-def resolve_binding_via_carrier(carrier: dict, *, datasource_id: int = 0,
-                                datasource_name: str = "",
-                                model_id: Optional[int] = None,
-                                reason: str = "") -> tuple[ResolvedBinding | None, list[str]]:
-    """按承载（carrier）解析绑定：global/log/mirror 走它指向的**源本体对象**。
-
-    为什么要这一步：业务本体的契约行描述的是业务库的同构形状（如 `t_case_records` + 31 列），
-    拿它去查数仓/SLS 必然错（表名与列形状完全不同）。承载只存 name 级路由，物理形状
-    仍唯一在源本体的部署绑定行，所以这里把 (source_model, source_object) 换成
-    (model_id, datasource_id) 后**复用 resolve_binding**，不另造第二条解析路径。
-
-    允许 `datasource` 无 site_code（数仓/平台库不归属任何站点）——这正是旧口径
-    （一站一源的 deploy_sites）把 Doris/SLS 挡在外面的地方。
-    解析不到（源已删/源本体已归档/无绑定行）时返回 None + warnings，由调用方 fail-loud，
-    **不得**回退到业务契约行静默出数。
-    """
-    ds_name = str((carrier or {}).get("datasource") or "").strip()
-    src_model = str((carrier or {}).get("source_model") or "").strip()
-    src_object = str((carrier or {}).get("source_object") or "").strip()
-    warnings: list[str] = []
-    if not (ds_name and src_model and src_object):
-        return None, ["承载缺少数据源/源本体/源对象指向，无法按该路径取数"]
-
-    conn = get_metadata_conn()
-    try:
-        target_ds_id = _ds_id_by_name(conn, ds_name)
-        target_model_id = _active_model_id_by_name(conn, src_model)
-    finally:
-        conn.close()
-    if not target_ds_id:
-        return None, [f"承载指向的数据源「{ds_name}」已不存在或已改名"]
-    if not target_model_id:
-        return None, [f"承载指向的源本体「{src_model}」没有生效版本（请先在该数据源生成本体模型）"]
-    if target_ds_id == int(datasource_id or 0) and target_model_id == model_id:
-        return None, []      # 与调用方已解析的目标一致 → 不重复解析
-
-    binding, bind_warnings = resolve_binding(
-        src_object, datasource_id=target_ds_id, model_id=target_model_id)
-    warnings.extend(bind_warnings)
-    if binding is None:
-        return None, warnings or [
-            f"源本体「{src_model}」的对象「{src_object}」在数据源「{ds_name}」上未绑定物理表"]
-    # 承载溯源（内部/审计）：只带业务文案与分桶，不带 id 之外的物理信息
-    binding.carrier_key = str((carrier or {}).get("key") or "")
-    binding.carrier_type = str((carrier or {}).get("type") or "")
-    binding.carrier_bucket = "use"
-    binding.freshness = str((carrier or {}).get("freshness") or "")
-    binding.as_of_note = str((carrier or {}).get("as_of_note") or "")
-    binding.path_used_reason = reason or "declared"
-    return binding, warnings
-
-
-def _active_model_id_by_name(conn, name: str) -> Optional[int]:
-    """按名取生效模型 id（承载的 source_model 解析；名字是稳定键，id 不是）。
-
-    只认非 system 模型：系统本体不是业务取数的物理形状来源。
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT id FROM adh_ontology_models "
-            "WHERE name = %s AND status = 'active' AND COALESCE(kind, '') <> 'system' "
-            "ORDER BY id LIMIT 1", (name,))
-        row = cur.fetchone()
-    return int(row["id"]) if row else None
 
 
 # ── 别名归一（历史写法 → canonical key）─────────────────────
@@ -327,9 +265,12 @@ def _enrich_from_data_product(conn, binding: ResolvedBinding, warnings: list) ->
         # 只有本来就没产品身份时才报“未登记”；已持久化 product_ref 的（登记过、
         # 可能产品行暂不可达）不误报，否则会让已认领的绑定平白多一条告警。
         if not getattr(binding, "product_ref", ""):
+            # 对外文案只给业务名（数据源业务名 + 对象 key），物理表名进日志（护栏 §7）
+            logger.warning("[binding] 表 '%s.%s' 未登记为数据产品",
+                           binding.datasource_name, binding.physical_table)
             warnings.append(
-                f"表 '{binding.datasource_name}.{binding.physical_table}' 未登记为数据产品"
-                f"（本体只绑数据产品，激活时会被门禁阻断）")
+                f"对象「{binding.object_key}」在数据源「{binding.datasource_name}」绑定的表"
+                f"未登记为数据产品（本体只绑数据产品，激活时会被门禁阻断）")
 
 
 def _resolve_key_by_alias(conn, object_key: str, datasource_id: int,
@@ -434,6 +375,33 @@ def _deploy_site_map(conn, model_id) -> dict[str, str]:
     return out
 
 
+def _object_allowed_site_codes(conn, model_id, object_key: str) -> list[str] | None:
+    """对象级站点白名单：该对象显式限定的站点 code 列表；None = 未配置（不限，沿用模型级）。
+
+    事实源 = `adh_ontology_models.object_site_rules`（`{object_key: [site_code,...]}`）。
+    语义是白名单收紧而非扩权：只有显式登记过的对象才受站点限制，未登记的对象维持
+    模型级 deploy_sites 的全部声明站点（同构多站默认免配）。
+    """
+    mid = int(model_id or 0)
+    key = str(object_key or "")
+    if not mid or not key:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT object_site_rules FROM adh_ontology_models WHERE id = %s", (mid,))
+            row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 — 列未迁移时按无限制处理（行为回退旧口径）
+        logger.debug("[binding] object_site_rules unavailable: %s", e)
+        return None
+    raw = (row or {}).get("object_site_rules") if row else None
+    raw = _as_dict(raw) if not isinstance(raw, dict) else raw
+    codes = raw.get(key)
+    if not isinstance(codes, list):
+        return None
+    out = sorted({str(c).strip() for c in codes if str(c).strip()})
+    return out or None
+
+
 def _site_names(conn, codes: list[str]) -> dict[str, str]:
     """site_code → 站点业务名（错误/告警文案只说业务名，不外泄内部标识）。"""
     codes = [c for c in codes if c]
@@ -449,6 +417,25 @@ def _site_names(conn, codes: list[str]) -> dict[str, str]:
     except Exception as e:  # noqa: BLE001
         logger.debug("[binding] site display names unavailable: %s", e)
         return {}
+
+
+def _object_site_gate(conn, model_id, object_key: str, site_code: str, site_label: str,
+                      warnings) -> bool:
+    """对象级站点白名单闸门：返回 True=可查（未配置或本站在清单内），False=拒绝（已告警）。
+
+    两条取数路径共用：路由改写（本站无行）与本站精确命中（含契约主源本身）——
+    只挡前者会漏掉“对象显式限定在外站、却从契约主源直接查到”的反方向泄漏。
+    """
+    if not site_code:
+        return True  # 请求源未站点化，无站点可判（保持旧行为）
+    allowed = _object_allowed_site_codes(conn, model_id, object_key)
+    if allowed is None or site_code in allowed:
+        return True
+    deployed = _site_names(conn, allowed)
+    warnings.append(
+        f"对象「{object_key}」未部署到站点「{site_label}」；该对象仅适用站点："
+        + "、".join(sorted(deployed.get(c, c) for c in allowed)))
+    return False
 
 
 def _route_by_site(conn, rows, datasource_id, datasource_name, warnings):
@@ -474,6 +461,11 @@ def _route_by_site(conn, rows, datasource_id, datasource_name, warnings):
             refused_scope.append(int(r.get("model_id") or 0))
             continue
         if not target or target == want_name:
+            # 对象级站点白名单：模型级路由命中本站后，再看该对象是否显式限定了站点。
+            # 未部署到本站的对象若被路由过去 = 拿别站/缺表当本站答案（宁缺勿错）。
+            if not _object_site_gate(conn, r.get("model_id"), str(r.get("object_key") or ""),
+                                     site_code, site_label, warnings):
+                return None
             return r
         warnings.append(
             f"该业务本体在站点「{site_label}」的业务库是「{target}」，"
@@ -560,6 +552,14 @@ def _resolve_from_bindings(conn, object_key, datasource_id, datasource_name,
     routed_to = ""
     if datasource_name or datasource_id:
         row = _pick_exact(rows)
+        if row is not None:
+            # 本站有行也要过对象级白名单：契约主源/已逐站登记的站同样受限于该清单
+            req_site = _ds_site_code(conn, int(datasource_id or 0), datasource_name or "")
+            if req_site:
+                label = _site_names(conn, [req_site]).get(req_site, req_site)
+                if not _object_site_gate(conn, row.get("model_id"), object_key,
+                                         req_site, label, warnings):
+                    return None
         if row is None:
             row = _route_by_site(conn, rows, datasource_id, datasource_name, warnings)
             if row is None:
@@ -728,7 +728,14 @@ def _enrich_from_table_info(conn, b: ResolvedBinding, warnings: list[str]) -> No
         return
     row = _lookup_table_row(conn, b.datasource_id, b.physical_table)
     if not row:
-        warnings.append(f"physical_table '{b.physical_table}' not in adh_table_info")
+        # 旧文案 `physical_table 'xxx' not in adh_table_info` 含物理标识，会被
+        # `contract.safe_warnings` 按关键字整条丢掉 —— 诊断到不了 LLM/用户（静默丢）。
+        # 改为业务名文案（能对外下发）+ 物理细节进服务端日志（护栏 §7）。
+        logger.warning("[binding] physical_table '%s' not in adh_table_info (ds=%s)",
+                       b.physical_table, b.datasource_id)
+        warnings.append(
+            f"对象「{b.object_key}」在数据源「{b.datasource_name or '未指定'}」绑定的表"
+            f"未在元数据目录登记（表规模/全扫护栏取不到表级默认，按默认值生效）")
         return
     b.db_name = b.db_name or (row.get("db_name") or "")
     b.catalog_name = b.catalog_name or (row.get("catalog_name") or "adh")

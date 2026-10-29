@@ -147,7 +147,7 @@ def test_kb_sync_failure_is_loud_not_silent(monkeypatch):
     assert "同步未完成" in exc.value.detail
 
 
-# ── 关系图谱页手动选库（kb_id 一次性覆盖默认路由，含源本体例外）─────────────
+# ── 关系图谱页手动选库（kb_id 一次性覆盖默认路由）─────────────
 
 
 def _stub_sync_internals(monkeypatch, uploaded):
@@ -161,21 +161,24 @@ def _stub_sync_internals(monkeypatch, uploaded):
     monkeypatch.setattr(ontology_kb_sync, "_write_state", lambda *a, **k: None)
 
 
-def test_sync_selected_kb_overrides_default_routing_for_source(monkeypatch):
-    """源本体默认不做 RAG（sync_targets_for_model 返回空），但手动选库应显式推送到该库。"""
+def test_sync_selected_kb_overrides_default_routing(monkeypatch):
+    """手动选库应显式推送到该库，而非默认路由的目标库（源本体退役后语义不变）。"""
     uploaded = []
     _stub_sync_internals(monkeypatch, uploaded)
     monkeypatch.setattr(ontology_service, "get_model", lambda mid: {
-        "id": mid, "name": "ARMS RUM 观测本体", "kind": "source",
+        "id": mid, "name": "ARMS RUM 观测本体", "kind": "business",
         "datasource_id": 5, "status": "active"})
-    # 默认路由下源本体无目标（验证确实走的是手动覆盖）
-    assert ontology_kb_sync.sync_targets_for_model({"kind": "source", "datasource_id": 5}) == []
+    # 默认路由指向另一库（验证手动选库确实走的是覆盖，而非默认）
+    monkeypatch.setattr(ontology_kb_sync, "sync_targets",
+                        lambda: [{"id": 5, "name": "全局库", "notebook_id": "nb-global"}])
+    assert ontology_kb_sync.sync_targets_for_model(
+        {"kind": "business", "datasource_id": 5})[0]["notebook_id"] == "nb-global"
     monkeypatch.setattr(ontology_kb_sync, "resolve_kb_target",
                         lambda kb_id: {"id": kb_id, "name": "运维知识库", "notebook_id": "nb-ops"})
 
     result = ontology_kb_sync.sync_model_to_qmind(1, kb_id=88)
     assert result["synced"] == 1 and result["targets"] == ["运维知识库"]
-    assert uploaded == ["nb-ops"]  # 推到了所选库的 notebook
+    assert uploaded == ["nb-ops"]  # 推到了所选库的 notebook，而非默认 nb-global
     assert "skipped" not in result
 
 

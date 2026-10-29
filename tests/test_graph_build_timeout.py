@@ -167,7 +167,7 @@ class TestFailureIsNotSilent:
                                         stats={"tables": 1}, elapsed_s=9.0, budget_s=1.0)
 
         b = gb.GraphBuilder(store=_Boom())
-        monkeypatch.setattr(b, "_merge_ontology_models", lambda ds, kind: 0)
+        monkeypatch.setattr(b, "_merge_ontology_models", lambda ds, kind: (0, []))
         monkeypatch.setattr(b, "_load_tables", lambda ds: [{"table_name": "t"}])
         monkeypatch.setattr(b, "_load_columns", lambda ds: [])
         monkeypatch.setenv("GRAPH_BUILD_DEADLINE_S", "1")
@@ -176,3 +176,33 @@ class TestFailureIsNotSilent:
         assert out["success"] is False, out
         assert "超出预算" in out["error"]
         assert calls["n"] == 1
+
+    def test_merge_failures_surface_not_silently_swallowed(self, monkeypatch):
+        """某模型 Turtle 转换/入图失败 → _merge_ontology_models 必须收集 failures（不再静默 continue）。
+
+        历史缺陷：逐模型 try/except 只 warning 后 continue，清完图只建一半仍报成功。
+        """
+        from backend.semantics.graph_rag import graph_builder as gb
+
+        class _Store:
+            def load_turtle(self, turtle, datasource_id=0):
+                return None
+
+        class _Cur:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def execute(self, sql, params=None): self.sql = sql
+            def fetchall(self):
+                # 一个坏 json（非法 JSON → ontology_json_to_turtle 抛错）+ 一个好模型
+                return [{"id": 42, "json_content": "{ not valid json"},
+                        {"id": 7, "json_content": "{\"name\":\"ok\",\"objects\":[]}"}]
+
+        class _Conn:
+            def cursor(self): return _Cur()
+            def close(self): pass
+
+        monkeypatch.setattr("backend.common.db.metadata_db.get_metadata_conn", lambda: _Conn())
+        b = gb.GraphBuilder(store=_Store())
+        count, failures = b._merge_ontology_models(0, "business")
+        assert failures and failures[0]["model_id"] == 42, f"坏模型失败应被收集: {failures}"
+        assert count == 1, f"好模型仍应入图: count={count}"

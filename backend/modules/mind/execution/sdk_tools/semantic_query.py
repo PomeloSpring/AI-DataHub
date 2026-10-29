@@ -29,49 +29,6 @@ logger = logging.getLogger(__name__)
 _MAX_ROWS = 200
 
 
-def _needs_realtime(q) -> bool:
-    """本次提问是否要“今天/实时”口径（T+1 与滞后路径不参与）。
-
-    保守判定：只有明确落在当天/小时级窗口时才算。判不出来时返回 False（宁多不拒），
-    因为“排除汇总层”只是少一条可选路径，而错判不会造成错数。
-    """
-    tw = str(getattr(q, "time_window", "") or "").strip().lower()
-    if tw.endswith("h"):
-        return True
-    if tw.endswith("d"):
-        try:
-            return int(tw[:-1]) <= 2
-        except ValueError:
-            return False
-    blob = " ".join([
-        str(getattr(q, "time_range", "") or ""),
-        str(getattr(q, "time_start", "") or ""),
-    ])
-    return any(w in blob for w in ("今天", "今日", "实时", "当前"))
-
-
-def _attach_degraded_hint(payload_out: dict, decision: dict) -> None:
-    """全局/日志类取数路径执行失败时，必须显式标降级边界（拍板决策 6）。
-
-    “有权限但执行失败”与“无权限被裁剪”不同：前者是**降级**，退成逐站后必须让用户
-    看见“全局口径不可用”这个事实，不得拿各站数字相加冒充全局值静默交差；
-    后者是作用域裁剪，对用户不提（⑥ 叙事规则）。本函数只动非 detail 的路径。
-    """
-    ctype = str(((decision or {}).get("carrier") or {}).get("type") or "")
-    if not ctype or ctype == "detail":
-        return
-    cname = str(((decision or {}).get("carrier") or {}).get("name")
-                or ((decision or {}).get("carrier") or {}).get("key") or "")
-    payload_out["degraded"] = True
-    payload_out["degraded_reason"] = (
-        f"全局口径取数路径「{cname}」本次执行失败，该口径暂不可用")
-    payload_out["degraded_hint"] = (
-        "如改按站点分别取数，必须向用户明说“这是降级结果：各站分别统计，相加不等于去重后的全局值”；"
-        "不得拿各站数字相加冒充全局口径静默交差，也不得归为“无权限”（本例是有权限但执行失败）。")
-    logger.warning("[run_semantic_query] 取数路径 %s(%s) 执行失败，如需改逐站取数必须向用户标注降级",
-                   str(((decision or {}).get("carrier") or {}).get("key") or ""), ctype)
-
-
 def _sanitize_execute_error(se) -> str:
     """执行阶段原始报错(可含 MySQL Access denied/IP)仅进服务端日志,对 LLM 回通用文案。
 
@@ -149,72 +106,20 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
     # (各带 site 或 datasource 名, 见 GLOBAL_SEMANTIC_LAYER_DESIGN.md §7/§8);
     # 站点维度已在 parse_intent 拒收, 勿再引入服务端展开/合并(防旧机制回潮)。
 
-    # 取数路径（承载）择路：单一实现在 `semantics.topology.decide_carrier`。
-    # 未声明承载时 status=none，行为与改造前逐字节一致（渐进增强不阻塞）。
-    # 只对“非 detail 的全局/日志/镜像路径”接管解析；detail 仍走现有站点展开。
-    from backend.semantics import topology
-    from backend.semantics.binding_resolver import resolve_binding_via_carrier
-
-    if q.carrier and not topology.routing_enabled():
-        # 灰度关闭时目录已不暴露 carriers，模型本不该再传 carrier；真传了不能静默忽略，
-        # 否则“选了路径但实际走的另一条”会以正确答案的面目返回给用户（禁止降级掩盖）。
-        return ({"error": "取数路径（全局汇总/日志源）选路当前未启用，本次不能按指定路径取数",
-                 "hint": "请去掉 intent 里的 carrier 参数后重试（退为逐站分开呈现），"
-                         "不要自行猜测哪条路径能给出全局口径；需要开启该能力请联系管理员。"}, True)
-
-    decision = await asyncio.to_thread(
-        topology.decide_carrier, q.object,
-        carrier=q.carrier, metrics=q.metrics or [],
-        user_id=int(getattr(q, "user_id", 0) or 0),
-        workspace_id=int(getattr(q, "workspace_id", 0) or 0),
-        need_realtime=_needs_realtime(q))
-    dstatus = str(decision.get("status") or "none")
-    if decision.get("carriers_filtered"):
-        # 被权限裁剪的条数只进服务端日志，不向用户解释“为什么没有全局口径”（拍板）
-        logger.info("[run_semantic_query] 对象 %s 有 %d 条取数路径因授权不可见（user=%s）",
-                    q.object, decision["carriers_filtered"], getattr(q, "user_id", 0))
-    if dstatus == "unavailable":
-        return ({"error": decision.get("reason") or "该取数路径当前不可用",
-                 "available_paths": decision.get("candidates") or [],
-                 "hint": "不要猜路径标识，也不得拿另一条路径的结果冒充本口径；"
-                         "可用路径已在 available_paths 里，或如实告知用户该口径暂不可得。"}, True)
-    if dstatus == "ambiguous":
-        return ({"needs_clarification": True,
-                 "paths": decision.get("candidates") or [],
-                 "reason": decision.get("note") or "",
-                 "hint": "请用 ask_user 让用户选口径（把 paths 里的 name 逐个列出），"
-                         "选定后在 intent 里带 carrier=<路径标识> 重新查询；不得自行挑一条。"}, True)
-
-    binding = None
-    bind_warnings: list = []
-    if dstatus == "use":
-        binding, bind_warnings = await asyncio.to_thread(
-            resolve_binding_via_carrier, decision["carrier"],
-            datasource_id=int(q.datasource_id or 0),
-            reason=str(decision.get("path_reason") or ("declared" if q.carrier else "authority")))
-        if binding is None and bind_warnings:
-            # 承载声明了但解不到物理形状 = 建模缺失，fail-loud；
-            # 不得静默退回业务契约行去查错库（那会拿业务库形状查数仓 → 错数）
-            return ({"error": "声明的取数路径无法完成取数（目标准备未就绪）",
-                     "reason": bind_warnings,
-                     "hint": "请确认该数据源已有生效的源本体且对应对象已绑定物理表；"
-                             "未完成前不要改用其他路径充数，可先如实告知用户。"}, True)
-        if binding is None:
-            bind_warnings = []   # 与已解析目标一致（无需重解）→ 回到常规路径
-    if binding is None:
-        binding, bind_warnings = await asyncio.to_thread(
-            resolve_binding, q.object, datasource_id=q.datasource_id,
-        )
+    # 取数路径（carrier）已下线：全球/多站点统一由 LLM 按站点逐站编排单站查询（各带 site
+    # 或 datasource 名，见 GLOBAL_SEMANTIC_LAYER_DESIGN §7/§8），不再在服务端做跨源承载择路。
+    binding, bind_warnings = await asyncio.to_thread(
+        resolve_binding, q.object, datasource_id=q.datasource_id,
+    )
     if binding is None:
         return ({
-            "error": f"object '{q.object}' 未绑定到任何物理表",
+            "error": f"object '{q.object}' 在本次生效数据源上未绑定到任何物理表",
             "warnings": bind_warnings,
-            "hint": "先用 knowledge_search 或 select_tables 找一个已在本体里 bound 的对象。",
+            "hint": "未绑定 ≠ 无数据：这表示该数据源/站点尚未为此对象生成业务本体或绑定物理表，"
+                    "并非库里没有数据，严禁据此向用户回答'该站点暂无数据'。"
+                    "先用 get_metrics 看本目录实际有哪些对象（聚合态已按授权站点纳入业务本体），"
+                    "或如实告知用户该站点尚未建模、需先生成/部署业务本体。",
         }, True)
-
-    # 择路溯源补齐：detail/none 两条常规解析路径也要落戳（单点实现在 topology，
-    # 本模块不直接写 carrier 字段——下方静态护栏禁止这些字段出现在返体构造里）。
-    topology.stamp_provenance(binding, decision, explicit=bool(q.carrier))
 
     from backend.modules.mind.execution.resource_guard import validate_binding
     try:
@@ -297,9 +202,6 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
         }
         if (e.detail or {}).get("proposed_edit"):
             payload_out["proposed_edit"] = e.detail["proposed_edit"]
-        if getattr(binding, "as_of_note", ""):
-            payload_out["caliber_note"] = binding.as_of_note
-        _attach_degraded_hint(payload_out, decision)
         return payload_out, True
 
     names = [c.name for c in result.columns]
@@ -325,10 +227,6 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
         **{k: rows_result[k] for k in
            ("columns", "rows", "row_count", "execution_ms", "truncated") if k in rows_result},
     }
-    # 口径时效提示（业务文案，如“T+1，不含今天”）：走了哪条取数路径必须让用户看得见，
-    # 否则“汇总层数字”与“明细数字”混在一起无从判断。只给业务文案，不给 id/物理表。
-    if getattr(binding, "as_of_note", ""):
-        payload_out["caliber_note"] = binding.as_of_note
     if int(result.row_count) > _MAX_ROWS:
         payload_out["aggregation_warning"] = (
             "结果已被截断展示：不要对截断后的行做求和/计数并当作全量值，"
@@ -410,7 +308,7 @@ TOOL_SPECS = [
             '"dimensions": [...], "filters": [...], "having": [...]}}, '
             '"order": [{"by": "...", "desc": false}], '
             '"limit": 100, "time_grain": "day|week|month|null", "site": "<site business name or code, e.g. 中国/cn>", '
-            '"datasource": "<source business name>", "carrier": "<data-path key from get_metrics carriers>", '
+            '"datasource": "<source business name>", '
             '"dry_run": false, '
             '"time_window": "7d", "time_range": "last_week", "time_column": "<dim_name>", "params": {"<tpl_var>": ...}}. '
             "For multi-site/global questions: call this tool once per site with \"site\" "
@@ -438,12 +336,9 @@ TOOL_SPECS = [
             "projection: leave top-level metrics/dimensions/having/computed_metrics/window empty when using it. "
             "For multi-site/global questions: call this tool once per site with \"site\" "
             "(business name shown in the session '数据源拓扑' context) and present one row per site; sites are NOT a "
-            "dimension — '站点' in dimensions is rejected with guidance. Do NOT sum per-site numbers into a "
-            "'global' figure unless the object declares an authoritative global path — then call ONCE with \"carrier\". "
-            "When an object lists several carriers (get_metrics → objects[].carriers) and the intended caliber is "
-            "ambiguous, the tool returns needs_clarification with the candidate paths: ask the user via ask_user "
-            "which caliber they want, then retry with carrier=<that key>. Never invent a carrier key and never "
-            "silently substitute another path's result. "
+            "dimension — '站点' in dimensions is rejected with guidance. Do NOT sum per-site numbers into a single "
+            "'global' figure — always present each site separately; if a cross-site deduplicated total is needed, "
+            "explain that its caliber must be defined in the knowledge-base documentation rather than produced by summing sites. "
             "If the object is bound to a governed dataset (bind_kind=dataset), pass its declared "
             "variables via params — run knowledge_search first to see the dataset's parameter list. "
             "Use knowledge_search first to discover legal object/metric/dimension names. "

@@ -99,9 +99,9 @@ def test_load_tables_system_scope_excludes_business(capture):
 
 def test_merge_ontology_models_system_scope_only_system_models(capture):
     b = GraphBuilder(store=_RecordingStore())
-    n = b._merge_ontology_models(SYSTEM_DATASOURCE_ID)
+    n, failures = b._merge_ontology_models(SYSTEM_DATASOURCE_ID)
     sql, params = capture[-1]
-    assert n == 0                                 # 无模型返回(空)
+    assert n == 0 and failures == []              # 无模型返回(空)
     assert "adh_ontology_models" in sql
     # 判别口径用 kind（x3/x4 归属改造）：业务本体跨源 ds_id=0，旧的
     # `datasource_id=0` 判系统会把业务本体也拉进系统图。系统域只收 kind='system'。

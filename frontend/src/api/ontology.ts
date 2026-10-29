@@ -16,6 +16,8 @@ export interface OntologyModelSummary {
   deployment_count?: number;
   deployments?: { site: string; datasource: string }[];
   kb_id?: number | null;
+  /** 有未发布的草案（服务端派生布尔，不含正文）：左侧列表据此提醒“AS-BOT 改了但还没生效” */
+  has_draft?: boolean;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -25,6 +27,56 @@ export interface OntologyModel extends OntologyModelSummary {
   json_content: string;
   yaml_content: string;
   md_content: string;
+}
+
+/** 草案差异项（对象级）：key 为身份键，display_name 为业务显示名 */
+export interface DraftObjectDiff {
+  key: string;
+  display_name: string;
+  /** 该对象在草案里的状态（审阅面板按此着色/分组） */
+  state?: DraftObjectState;
+  /** 变更明细（仅 changed 有值；added/removed 为 null） */
+  delta?: DraftObjectDelta | null;
+  primary_table?: string;
+  property_count?: number;
+  link_count?: number;
+}
+
+export type DraftObjectState = 'added' | 'changed' | 'removed' | 'unchanged';
+
+/** 对象级变更明细：服务端算好的“人可读 diff”，前端不再拿 JSON 自己比 */
+export interface DraftObjectDelta {
+  properties_added: { key: string; name: string }[];
+  properties_removed: { key: string; name: string }[];
+  properties_modified: { key: string; name: string; from: string; to: string }[];
+  links_added: { key: string; label: string }[];
+  links_removed: { key: string; label: string }[];
+  aliases_added: string[];
+  aliases_removed: string[];
+  renamed_from?: string;
+  table_changed?: boolean;
+  primary_table_from?: string;
+  primary_table_to?: string;
+  description_changed?: boolean;
+}
+
+/** GET /models/{id}/draft 响应：草案状态 + 与生效版的可视化审阅差异 */
+export interface DraftStatus {
+  has_draft: boolean;
+  draft_updated_at?: string;
+  draft_updated_by?: string;
+  effective_object_count: number;
+  draft_object_count: number;
+  /** 全量审阅清单（含未改动对象），按 added→changed→removed→unchanged 排序 */
+  objects?: DraftObjectDiff[];
+  added: DraftObjectDiff[];
+  removed: DraftObjectDiff[];
+  changed: DraftObjectDiff[];
+  unchanged_count?: number;
+  /** 草案正文解析不出对象：审阅面板必须显式报错，不得渲成“无改动” */
+  draft_parse_error?: boolean;
+  /** 生效版在草案写入后又被人改动：此时发布会被并发保护阻断 */
+  base_stale: boolean;
 }
 
 /** 模型级适用站点的一项：站点 + 该站路由到的数据源业务名 */
@@ -49,52 +101,8 @@ export interface ContractObjectRow {
   column_count: number;
   sync_state: string;
   product_ref: string;
-}
-
-/** 承载类型：detail=各站点明细 global=全局汇总 log=日志/埋点 mirror=镜像 */
-export type CarrierType = 'detail' | 'global' | 'log' | 'mirror';
-
-/** 一条承载（跨源拓扑：这个业务对象的数据可以从哪条路径取到） */
-export interface CarrierRow {
-  id: number;
-  model_id: number;
-  object_key: string;
-  /** 归属对象业务名（显示用，不裸显 key） */
-  object_name: string;
-  carrier_key: string;
-  display_name: string;
-  carrier_type: CarrierType | string;
-  /** 数据源业务名；空 = 按 deploy_sites 逐站展开 */
-  datasource: string;
-  /** 适用站点代码 */
-  sites: string[];
-  /** 物理形状来源：源本体模型名 */
-  source_model: string;
-  /** 物理形状来源：该源本体的对象 key */
-  source_object: string;
-  grain: string;
-  freshness: string;
-  as_of_note: string;
-  is_authority: number;
-  priority: number;
-  size_class: string;
-  status: string;
-  updated_at: string;
-}
-
-/** 承载编辑表单（不传 id：后端按 (对象, 承载标识) 整模型替换） */
-export type CarrierInput = Partial<Omit<CarrierRow, 'id' | 'model_id' | 'object_name' | 'updated_at'>>
-  & { object_key: string; carrier_key: string };
-
-/** 承载页选项（后端一次带回，选择框不手输 id） */
-export interface CarrierOptions {
-  items: CarrierRow[];
-  types: string[];
-  freshness_levels: string[];
-  objects: { key: string; name: string }[];
-  datasources: { name: string; db_type: string; site_code: string }[];
-  sites: { site_code: string; display_name: string }[];
-  source_ontologies: { name: string; datasource: string; objects: { key: string; name: string }[] }[];
+  /** 对象级站点白名单：显式限定的站点 code；空 = 不收紧（上方勾选的站点全可用） */
+  allowed_sites: string[];
 }
 
 export interface OntologyObjectHit {
@@ -167,14 +175,20 @@ export const ontologyApi = {
       selected: { site_code: string; datasource: string }[];
       contract_objects: ContractObjectRow[];
     }>(`/catalog/ontology/models/${id}/sites`),
-  saveSites: (id: number, sites: { site_code: string; datasource: string }[]) =>
-    client.put<{ success: boolean; sites: { site_code: string; datasource: string }[] }>(
-      `/catalog/ontology/models/${id}/sites`, { sites }),
-  /** 承载清单（取数路径）+ 选择框候选 */
-  carriers: (id: number) => client.get<CarrierOptions>(`/catalog/ontology/models/${id}/carriers`),
-  saveCarriers: (id: number, carriers: CarrierInput[]) =>
-    client.put<{ model_id: number; saved: number; carriers: CarrierRow[] }>(
-      `/catalog/ontology/models/${id}/carriers`, { carriers }),
+  saveSites: (
+    id: number,
+    sites: { site_code: string; datasource: string }[],
+    objectSiteRules?: Record<string, string[]>,
+  ) =>
+    client.put<{
+      success: boolean;
+      sites: { site_code: string; datasource: string }[];
+      object_site_rules?: Record<string, string[]>;
+      pruned?: string[];
+    }>(`/catalog/ontology/models/${id}/sites`, {
+      sites,
+      ...(objectSiteRules === undefined ? {} : { object_site_rules: objectSiteRules }),
+    }),
   syncDoc: (id: number) =>
     client.get<{ markdown: string }>(`/catalog/ontology/models/${id}/sync-doc`),
   versions: (id: number) =>
@@ -191,10 +205,18 @@ export const ontologyApi = {
   /** 发布草案：生效 + 级联（重展开对象/重建图谱/同步知识库），需 ontology:publish */
   publishDraft: (id: number) =>
     client.post<{ success: boolean; object_count?: number }>(`/catalog/ontology/models/${id}/publish`, {}),
-  /** 草案状态：有无待发布改动、谁改的、何时改的（不含草案正文，避免外泄） */
+  /** 草案状态 + 对象级差异（服务端真值，不信本地布尔）；不含草案正文 */
   getDraft: (id: number) =>
-    client.get<{ has_draft: boolean; draft_updated_at?: string; draft_updated_by?: string }>(
-      `/catalog/ontology/models/${id}/draft`),
+    client.get<DraftStatus>(`/catalog/ontology/models/${id}/draft`),
+  /** 草案正文预览（只读）：发布前要能核对 AS-BOT 到底改了什么 */
+  getDraftContent: (id: number) =>
+    client.get<{
+      id: number; name: string; status: string; has_draft: boolean;
+      draft_json_content: string; effective_json_content: string;
+    }>(`/catalog/ontology/models/${id}/draft/content`),
+  /** 丢弃草案（只清草案，生效版不动），需 ontology:save */
+  discardDraft: (id: number) =>
+    client.delete<DraftStatus & { discarded?: boolean }>(`/catalog/ontology/models/${id}/draft`),
   activate: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/activate`),
   archive: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/archive`),
   restore: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/restore`),

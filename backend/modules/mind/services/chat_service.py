@@ -265,6 +265,9 @@ class ChatService:
                     ("report_theme", report_theme),
                     ("task_binding", task_binding),
                     ("site_code", site_code),
+                    # preflight 已解析的生效策略：服务端内部键，claim_session 据此复用
+                    # 同请求内已读到的 DB 事实（只重编译不重读）；不进 LLM 视野。
+                    ("_chat_policy", policy),
                 )
                 if v
             },

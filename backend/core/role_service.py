@@ -19,6 +19,16 @@ from backend.common.db.metadata_db import get_metadata_conn
 logger = logging.getLogger(__name__)
 
 
+def _invalidate_as_bot_config(reason: str) -> None:
+    """角色/权限配置写入口同批调用：轮次起点的配置缓存必须随之失效。
+
+    口径见 `backend/common/as_bot_config_cache.py`（只缓存配置事实；工具级裁决恒实时）。
+    统一清整命名空间：配置写操作是低频管理动作，逐 key 失效漏挂风险大。
+    """
+    from backend.common.as_bot_config_cache import invalidate
+    invalidate(reason)
+
+
 def _gen_id():
     return int(time.time() * 1000000)
 
@@ -115,6 +125,7 @@ class RoleService:
                 )
                 conn.commit()
                 logger.info(f"Created role '{name}' (id={role_id}) with associated AS-BOT")
+                _invalidate_as_bot_config(f"create_role id={role_id}")
                 return role_id
         finally:
             conn.close()
@@ -135,7 +146,11 @@ class RoleService:
                 params.append(role_id)
                 cur.execute(f"UPDATE adh_roles SET {', '.join(fields)} WHERE id = %s", params)
                 conn.commit()
-                return cur.rowcount > 0
+                changed = cur.rowcount > 0
+                if changed:
+                    # is_active/display_name 变更会改变角色有效性与 AS-BOT 候选集
+                    _invalidate_as_bot_config(f"update_role id={role_id}")
+                return changed
         finally:
             conn.close()
 
@@ -158,6 +173,7 @@ class RoleService:
                 cur.execute("DELETE FROM adh_role_datasource_access WHERE role_id = %s", (role_id,))
                 cur.execute("DELETE FROM adh_roles WHERE id = %s", (role_id,))
                 conn.commit()
+                _invalidate_as_bot_config(f"delete_role id={role_id}")
                 return True
         finally:
             conn.close()
@@ -198,6 +214,7 @@ class RoleService:
                         (_gen_id(), role_id, workspace_id, key, str(value))
                     )
                 conn.commit()
+                _invalidate_as_bot_config(f"set_role_attributes role={role_id} ws={workspace_id}")
                 return True
         finally:
             conn.close()
@@ -225,6 +242,10 @@ class RoleService:
         cur.execute(
             "INSERT INTO adh_user_roles (id, user_id, role_id) VALUES (%s, %s, %s)",
             (_gen_id(), user_id, role_id))
+        # 角色绑定变更 → 角色 id/权限码缓存（轮次档 + live 档）必须失效。本函数是唯一写入
+        # 口并在调用方事务内，此处只能先于 commit 失效：若并发回源先读到旧值，
+        # 由 live 短 TTL 与工具级裁决的 digest 比对兜底，不致越权。
+        _invalidate_as_bot_config(f"user_role_binding user={user_id} role={role_id}")
         return role_id
 
     def _apply_user_role(self, cur, user_id: int, role_name: str) -> int:
@@ -454,7 +475,8 @@ class RoleService:
 
     # ── 功能 AI 能力（权限码 → AS-BOT 功能能力继承）────────────────────────────
 
-    def get_user_role_ai_perms(self, user_id: int, workspace_id: int = 0) -> dict:
+    def get_user_role_ai_perms(self, user_id: int, workspace_id: int = 0,
+                               use_cache: bool = False, live: bool = False) -> dict:
         """用户经角色持有的权限码及其 AI 可调用级别。
 
         Returns ``{perm_code: {"ai_access", "label", "ai_note"}}`` —— 供
@@ -467,7 +489,26 @@ class RoleService:
         ``ai_access`` 取 ``adh_perm_registry`` 的配置值（管理员可调），
         但它不是最终裁决：涉密硬上界由 ``perm_link`` 再收窄一次，
         配置写成 write 也抬不上去。
+
+        use_cache: **仅缓存读路径**（``tool_policy.resolve_policy`` 预检/领取/工具裁决一路）可传，
+        同一角色多用户逐轮重复读同一行配置属纯浪费。缓存写入口必须同批失效：
+        用户角色绑定、角色权限码、权限点 ai_access、角色本身（改名/删除，见 rbac_service），
+        均走 `_invalidate_as_bot_config`。
+
+        live: 与 use_cache=True 同时生效——走**工具级裁决档**（短 TTL + `live:` key 前缀），
+        撤销授权的检测窗口 = 该档 TTL（而不是轮次档 60s）。不传则为轮次起点档。
+        两档语义与不变量见 `backend/common/as_bot_config_cache.py` 模块注释。
         """
+        from backend.common import as_bot_config_cache
+        if not use_cache:
+            return self._query_user_role_ai_perms(user_id)
+        # workspace_id 不属查询条件（无工作空间维度），不进 key，避免同一事实多份缓存
+        return as_bot_config_cache.get_or_set(
+            f"{as_bot_config_cache.KEY_ROLE_PERMS}{user_id}",
+            lambda: self._query_user_role_ai_perms(user_id), live=live)
+
+    @staticmethod
+    def _query_user_role_ai_perms(user_id: int) -> dict:
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
@@ -492,7 +533,7 @@ class RoleService:
             conn.close()
 
     def get_user_role_perm_codes(self, user_id: int, workspace_id: int = 0) -> list:
-        """用户经角色持有的权限码清单（与 get_user_role_ai_perms 同口径）。"""
+        """用户经角色持有的权限码清单（与 get_user_role_ai_perms 同口径，恒实时）。"""
         return sorted(self.get_user_role_ai_perms(user_id, workspace_id))
 
     # ── Dashboard Visibility (看板可见性按角色授权) ───────────────────

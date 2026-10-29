@@ -5,7 +5,7 @@ import {
   Sun, Moon, Palette, Zap, TrendingUp, Grid3x3, GlassWater, Heart,
   UserCircle, X, ChevronLeft, ChevronRight, GitBranch,
   RefreshCw, Activity, Shield, ShieldCheck, Ruler, Brain, Gem, Boxes, Terminal, Layers,
-  FunctionSquare, Network, BarChart3,
+  FunctionSquare, Network, BarChart3, Inbox, Compass,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -18,6 +18,9 @@ import { useAuthStore } from '../stores/authStore';
 import { useThemeStore, applyTheme, type ThemeId } from '../stores/themeStore';
 import { useBrandStore } from '../stores/brandStore';
 import SectionSwitcher from './SectionSwitcher';
+import ReleaseNotesButton from './ReleaseNotesButton';
+import { TOUR, navTour } from '@/lib/onboarding/guides';
+import { useGuideStore } from '@/stores/guideStore';
 import AsBotButton from './AsBotButton';
 import AsBotPanel from './asbot/AsBotPanel';
 import { useMenuAccess } from '../hooks/useMenuAccess';
@@ -48,7 +51,9 @@ const DATA_PLATFORM_MENU_ITEMS = [
   { key: '/data/playground', icon: Terminal, label: 'SQL Playground' },
   { section: '数据目录' },
   { key: '/data/datasets', icon: Layers, label: '数据集' },
-  { key: '/data/ontology', icon: Boxes, label: '数据建模' },
+  /* 菜单文案与 adh_menu_registry.label 同步（三者一个名字）：旧值「数据建模」与库内「本体工作区」飘移 */
+  { key: '/data/ontology', icon: Boxes, label: '本体建模' },
+  { key: '/data/asset-pool', icon: Inbox, label: '建模待办' },
   { key: '/data/metrics', icon: BarChart3, label: '指标与维度' },
   { key: '/data/knowledge-graph', icon: Network, label: '关系图谱' },
   { section: '数据安全配置' },
@@ -77,6 +82,7 @@ export default function DataPlatformLayout() {
   const { user, logout } = useAuthStore();
   const { theme, setTheme } = useThemeStore();
   const { brand, fetchBrand } = useBrandStore();
+  const startGuide = useGuideStore(s => s.startGuide);
 
   useEffect(() => { applyTheme(theme); }, [theme]);
   useEffect(() => { fetchBrand(); }, [fetchBrand]);
@@ -131,6 +137,7 @@ export default function DataPlatformLayout() {
                     <TooltipTrigger asChild>
                       <button
                         onClick={() => navigate(item.key!)}
+                        data-tour={navTour('dp', item.key!)}
                         className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors duration-200
                           ${isActive
                             ? 'bg-primary text-primary-foreground font-medium'
@@ -190,6 +197,7 @@ export default function DataPlatformLayout() {
                     <button
                       key={item.key}
                       onClick={() => { navigate(item.key!); setMobileMenuOpen(false); }}
+                      data-tour={navTour('dp', item.key!)}
                       className={`w-full flex items-center gap-3 px-4 py-3 rounded-md text-sm min-h-[44px]
                         ${isActive
                           ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
@@ -217,6 +225,8 @@ export default function DataPlatformLayout() {
           </div>
           <div className="flex items-center gap-2">
             <AsBotButton />
+            {/* 版本公告: 模块切换器左侧常驻(三套布局同口径) */}
+            <ReleaseNotesButton />
             {/* Module switcher — 工作空间 / 数据中台 / 系统配置 */}
             <SectionSwitcher current="data" />
 
@@ -224,7 +234,7 @@ export default function DataPlatformLayout() {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="sm" className="h-9 w-9 p-0">
+                    <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label="主题风格" data-tour={TOUR.headerTheme}>
                       <Palette className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -249,7 +259,7 @@ export default function DataPlatformLayout() {
             </DropdownMenu>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button aria-label="用户菜单" className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
+                <button aria-label="用户菜单" data-tour={TOUR.headerUser} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
                   <Avatar className="h-6 w-6">
                     <AvatarFallback className="text-xs">{user?.username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
                   </Avatar>
@@ -257,6 +267,11 @@ export default function DataPlatformLayout() {
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                {/* 手动重看入口: 不受 guide:all 静音影响, 永远可用 */}
+                <DropdownMenuItem onClick={() => startGuide('welcome')}>
+                  <Compass className="h-4 w-4 mr-2" />
+                  新手引导
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => navigate('/data/profile')}>
                   <UserCircle className="h-4 w-4 mr-2" />
                   个人设置

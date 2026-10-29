@@ -78,7 +78,12 @@ def test_released_session_does_not_block_next_message(monkeypatch):
                           conversation_id=123, model_ref="", session_id="",
                           datasource_id=0, model_id=None, retrieval_strategy=None)
     # 放行到权限校验段：resolve_policy 需要真实 AS-BOT 配置，这里只断言"没抛 409"
-    def _fake_resolve_policy(ctx, ceiling=None):
+    resolved = {}
+
+    def _fake_resolve_policy(ctx, ceiling=None, inputs=None, *, use_cache=False):
+        resolved["use_cache"] = use_cache
         return object()
     monkeypatch.setattr("backend.modules.mind.execution.tool_policy.resolve_policy", _fake_resolve_policy)
     sw.preflight_request(req, {"user_id": 7, "role": "admin"})
+    # 轮次起点显式走配置事实缓存（工具级裁决 check_tool 恒不传，拦截语义不变）
+    assert resolved["use_cache"] is True

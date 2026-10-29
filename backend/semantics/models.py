@@ -128,12 +128,6 @@ class SemanticQuery(BaseModel):
                     "缺省=会话站点。会话站点为「全球」时必须逐站各调一次并带 site; "
                     "站点不是 SQL 维度, 不要放进 dimensions/filters; 未命中可查站点会回抛候选, 不要猜",
     )
-    carrier: str = Field(
-        default="",
-        description="取数路径（承载）标识，来自 get_metrics 目录里对象的 carriers[].key; "
-                    "不传=服务端按声明的权威口径与新鲜度自动择路。只能写业务名级标识（如 'global'/'sls_log'），"
-                    "不得传数据源 id; 不存在的值会回抛可用清单, 不要猜",
-    )
     datasource_id: int = 0
     workspace_id: int = 0
     user_id: int = 0
@@ -200,18 +194,6 @@ class ResolvedBinding(BaseModel):
     )
     resolution_source: str = Field(
         "", description="解析档位: product|bindings|execution_binding|canonical|table_fallback，供 eval 分桶归因")
-    # ── 取数路径（承载）溯源：供审计/评测/服务端日志区分“走了哪条路”；
-    # 除 as_of_note（业务文案）外均**不得**随结果外泄给 LLM/普通客户端（护栏 §7）。
-    carrier_key: str = Field("", description="本次命中的承载标识（空=未声明承载，沿用站点展开）")
-    carrier_type: str = Field("", description="承载类型 detail|global|log|mirror")
-    carrier_bucket: str = Field("", description="择路结果分桶 use|detail|none，供 eval 归因")
-    freshness: str = Field("", description="承载新鲜度 realtime|t_plus_1|lagged")
-    as_of_note: str = Field("", description="口径时效说明（业务文案，可对外展示）")
-    path_used_reason: str = Field(
-        "", description="择路原因（与 topology.decide_carrier 的 path_reason 同源）: "
-                        "declared(显式指定)|authority(权威口径)|priority|metric-constraint(字典约束窄化)|"
-                        "site-detail(只按各站明细取数)|detail-fallback(无全局路径退成逐站)|"
-                        "legacy-binding(未声明承载，沿用现有绑定)")
 
 
 # ── 计划 ────────────────────────────────────────────────────────

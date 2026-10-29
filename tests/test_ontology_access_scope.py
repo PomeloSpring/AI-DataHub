@@ -1,15 +1,15 @@
-"""本体访问与用途归属裁决回归（用户裁决落地）。
+"""本体访问与用途归属裁决回归（合并后用户裁决落地）。
 
-裁决：业务本体=全员共享、与 AS-BOT 系统本体**共用知识库**（RAG 检索）；
-      源本体=按用户数据源权限分配、只服务**语义检索/取数**（不做 RAG）。
+裁决：源本体已退役（kind='source' 合并为 'business'），只保留 system/business。
+      业务本体（含原 source 迁移而来）按模型触达数据源（主源∪deploy_sites 路由源）
+      与授权集求交收口（按 id 粒度，杜绝同站跨源泄漏）；系统本体全员可见、与业务本体共用知识库。
 
 锁住的行为：
-1. 语义取数真源显式化：resolve JOIN models 按域裁决（v0.4 kind 收缩，source 已退役），
+1. 语义取数真源显式化：resolve JOIN models 按域裁决（source 已退役），
    业务域取数认非 system 模型、系统域认 system 模型（不靠 id ASC 意外命中）；
-2. 可见性：源本体按数据源授权过滤（空集=无可见源本体，fail-closed），
-   业务/系统本体全员可见；
-3. 知识库路由：business/system → 全局 sync_ontology 库；source → 不做 RAG
-   （显式标注 source_model_semantic_only，不伪装成配置遗漏）；
+2. 可见性：business 按触达数据源授权过滤（空集=不可见，fail-closed），抽象业务本体（无主源
+   无 deploy_sites）与 system 本体全员可见；
+3. 知识库路由：business/system → 全局 sync_ontology 库（源本体退役，不再有“不做 RAG”分支）；
 4. enforcer 数据源步 fail-closed：空授权=拒绝（历史缺陷：`if allowed_ds and` 放行）。
 """
 
@@ -50,6 +50,11 @@ class TestModelVisibility:
     def _model(self, kind, ds_id):
         return {"id": 1, "kind": kind, "datasource_id": ds_id, "name": "m"}
 
+    def _scope(self, monkeypatch, ids):
+        """mock 模型触达数据源解析（避免真 DB），使 can_view_model 纯逻辑可测。"""
+        monkeypatch.setattr("backend.core.site_service.model_source_scope_ids",
+                            lambda mid, ds_id=0, name_id_map=None: set(ids))
+
     def test_allowed_source_ids_accepts_get_current_user_dict(self, monkeypatch):
         """API 层回归：get_current_user 返回 dict（非对象），不得按属性取值。
 
@@ -72,23 +77,28 @@ class TestModelVisibility:
         assert allowed == {7, 8}
         assert calls == [(42, 0)]
 
-    def test_source_model_requires_datasource_grant(self):
-        assert ontology_service.can_view_model(self._model("source", 7), {7}) is True
-        assert ontology_service.can_view_model(self._model("source", 7), {8}) is False
+    def test_business_model_requires_datasource_grant(self, monkeypatch):
+        """合并后 business 本体（含原 source）按触达源与授权集求交：命中可见，不命中拒绝。"""
+        self._scope(monkeypatch, [7])
+        assert ontology_service.can_view_model(self._model("business", 7), {7}) is True
+        assert ontology_service.can_view_model(self._model("business", 7), {8}) is False
 
-    def test_empty_grant_is_fail_closed(self):
-        """空授权集=源本体全不可见（不得当全量）。"""
-        assert ontology_service.can_view_model(self._model("source", 7), set()) is False
+    def test_empty_grant_is_fail_closed(self, monkeypatch):
+        """空授权集=具体业务本体全不可见（不得当全量）。"""
+        self._scope(monkeypatch, [7])
+        assert ontology_service.can_view_model(self._model("business", 7), set()) is False
 
-    def test_business_and_system_visible_to_all(self):
+    def test_abstract_business_and_system_visible_to_all(self, monkeypatch):
+        """无具体数据源归属的抽象业务本体（scope 空）与 system 本体全员可见。"""
+        self._scope(monkeypatch, [])
         assert ontology_service.can_view_model(self._model("business", 0), set()) is True
         assert ontology_service.can_view_model(self._model("system", 0), set()) is True
 
     def test_none_means_internal_unrestricted(self):
-        assert ontology_service.can_view_model(self._model("source", 7), None) is True
+        assert ontology_service.can_view_model(self._model("business", 7), None) is True
 
 
-# ── 知识库路由：business/system 共用，source 不做 RAG ────────
+# ── 知识库路由：business/system 共用全局库（源本体退役）───────
 
 class TestKbRouting:
     def test_business_and_system_share_global_kb(self, monkeypatch):
@@ -98,19 +108,19 @@ class TestKbRouting:
             t = ontology_kb_sync.sync_targets_for_model({"kind": kind, "datasource_id": 0})
             assert t and t[0]["id"] == 5, f"{kind} 应路由到全局共用库"
 
-    def test_source_model_does_no_rag(self):
-        """源本体不做 RAG 是裁决（只服务语义检索），返回空目标。"""
-        t = ontology_kb_sync.sync_targets_for_model({"kind": "source", "datasource_id": 9})
-        assert t == []
+    def test_business_model_with_ds_syncs_to_global_kb(self, monkeypatch):
+        """源本体退役：带 ds 的模型（原 source，迁移后 kind=business）路由到全局库进 RAG。"""
+        monkeypatch.setattr(ontology_kb_sync, "sync_targets",
+                            lambda: [{"id": 5, "name": "共享知识库", "notebook_id": "nb"}])
+        t = ontology_kb_sync.sync_targets_for_model({"kind": "business", "datasource_id": 9})
+        assert t and t[0]["id"] == 5
 
-    def test_source_skip_reason_is_decision_not_misconfig(self, monkeypatch):
-        """源本体不同步要标注裁决原因，不伪装成 no_kb_bound 配置遗漏。"""
-        from backend.modules.catalog.services.ontology_service import get_model
-        monkeypatch.setattr(ontology_service, "get_model",
-                            lambda mid: {"id": mid, "kind": "source", "datasource_id": 9,
-                                         "name": "s", "status": "active"})
-        r = ontology_kb_sync.sync_model_to_qmind(1)
-        assert r["skipped"] == "source_model_semantic_only"
+    def test_legacy_empty_kind_with_ds_treated_as_business(self, monkeypatch):
+        """兼容存量空 kind 行：ds>0 视为业务本体（源本体退役），路由到全局库。"""
+        monkeypatch.setattr(ontology_kb_sync, "sync_targets",
+                            lambda: [{"id": 5, "name": "共享知识库", "notebook_id": "nb"}])
+        t = ontology_kb_sync.sync_targets_for_model({"kind": "", "datasource_id": 9})
+        assert t and t[0]["id"] == 5
 
     def test_model_kb_selection_retired(self):
         """per-model 选库入口退役：显式拒绝，不静默忽略。"""

@@ -4,7 +4,7 @@ import {
   MessageSquare, Database, Settings, LayoutDashboard, Sparkles,
   ArrowRight, BarChart3, Layers, ShieldCheck, Wand2,
   Palette, UserCircle, LogOut, Moon, Sun, Gem, Zap, TrendingUp,
-  Grid3x3, GlassWater, Brain, Heart, type LucideIcon,
+  Grid3x3, GlassWater, Brain, Heart, type LucideIcon, Compass,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -19,6 +19,10 @@ import { useVisConfig } from '@/lib/visStyle';
 import { useBrandStore } from '@/stores/brandStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useMenuAccess } from '@/hooks/useMenuAccess';
+import SectionSwitcher from '@/components/SectionSwitcher';
+import ReleaseNotesButton from '@/components/ReleaseNotesButton';
+import { TOUR } from '@/lib/onboarding/guides';
+import { useGuideStore } from '@/stores/guideStore';
 import { fetchVisibleGroups } from '@/lib/dashboardCatalog';
 import client from '@/api/client';
 
@@ -107,6 +111,7 @@ export default function Home() {
   const getDefaultWorkspaceId = useWorkspaceStore(s => s.getDefaultWorkspaceId);
   // 菜单权限订阅式读取(与其他 hooks 同层声明，不得放到提前 return 之后)
   const menuAccess = useMenuAccess();
+  const startGuide = useGuideStore(s => s.startGuide);
   const [checking, setChecking] = useState(true);
   const [dashCount, setDashCount] = useState(0);
   const [questions, setQuestions] = useState<string[]>([]);
@@ -230,9 +235,12 @@ export default function Home() {
           {brand.show_text && <span className="text-lg font-semibold tracking-tight">{appName}</span>}
         </div>
         <div className="flex items-center gap-1.5">
+          {/* 顶栏同口径: 版本公告在模块切换左侧(与三套布局一致), 首页也保留同一组锚点供引导命中 */}
+          <ReleaseNotesButton />
+          <SectionSwitcher current="home" />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label="切换主题" title="切换主题">
+              <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label="切换主题" title="切换主题" data-tour={TOUR.headerTheme}>
                 <Palette className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
@@ -254,7 +262,7 @@ export default function Home() {
           </DropdownMenu>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button aria-label="用户菜单" className="flex min-h-[36px] items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-muted">
+              <button aria-label="用户菜单" data-tour={TOUR.headerUser} className="flex min-h-[36px] items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-muted">
                 <Avatar className="h-6 w-6">
                   <AvatarFallback className="text-xs">{user?.username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
                 </Avatar>
@@ -262,6 +270,11 @@ export default function Home() {
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {/* 手动重看入口: 不受 guide:all 静音影响, 永远可用 */}
+              <DropdownMenuItem onClick={() => startGuide('welcome')}>
+                <Compass className="mr-2 h-4 w-4" />
+                新手引导
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={goProfile}>
                 <UserCircle className="mr-2 h-4 w-4" />
                 个人设置
@@ -377,7 +390,7 @@ export default function Home() {
         </section>
 
         {/* 数据概览 */}
-        <section className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <section data-tour={TOUR.homeOverview} className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
           <StatCard icon={Layers} label="我的工作空间" value={`${workspaces.length} 个`} />
           <StatCard icon={BarChart3} label="可见数据看板" value={`${dashCount} 个`} />
           <StatCard icon={ShieldCheck} label="当前角色" value={roleLabel} />
@@ -425,7 +438,7 @@ export default function Home() {
 
         {/* 快速开始(全部入口被权限裁掉时不渲染整段,避免空标题空栅格) */}
         {entries.length > 0 && (
-          <section className="mt-10">
+          <section data-tour={TOUR.homeQuick} className="mt-10">
             <h2 className="mb-4 text-sm font-medium text-muted-foreground">快速开始</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {entries.map(e => {

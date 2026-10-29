@@ -9,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useAuthStore } from '../stores/authStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useMenuAccess } from '../hooks/useMenuAccess';
+import { TOUR } from '@/lib/onboarding/guides';
 
 export type SectionId = 'home' | 'workspace' | 'data' | 'system' | 'ask';
 
@@ -52,7 +53,7 @@ export default function SectionSwitcher({ current }: SectionSwitcherProps) {
       <Tooltip>
         <TooltipTrigger asChild>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label="切换模块">
+            <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label="切换模块" data-tour={TOUR.headerModuleSwitcher}>
               <LayoutGrid className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>

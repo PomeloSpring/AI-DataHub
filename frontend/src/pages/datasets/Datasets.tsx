@@ -29,6 +29,11 @@ interface Dataset {
   source_type: 'semantic' | 'sql' | 'both';
   object_key: string;
   datasource_id: number;
+  datasource_name?: string;
+  /** 可用数据源范围(业务名)：执行源 ∪ available_datasources，经后端按授权交集过滤后返回 */
+  available_source_names?: string[];
+  /** 当前用户在范围内真正有权限执行的源(业务名) */
+  usable_now?: string[];
   chart_type: string;
   owner_id: number;
   field_count: number;
@@ -59,10 +64,6 @@ export default function Datasets() {
 
   // 数据集清单一次性拉全量 → 客户端分页（全站统一默认每页 20 条，候选 20/50/100）
   const paged = useClientPagination(items, DEFAULT_PAGE_SIZE);
-
-  // id → 数据源名（卡片次要信息显示用，绝不裸显 id）
-  const dsNameById: Record<number, string> = {};
-  datasources.forEach((d: any) => { dsNameById[Number(d.id)] = d.name; });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -198,9 +199,15 @@ export default function Datasets() {
               <div className="flex items-center gap-2 mt-3 text-xs text-muted-foreground flex-wrap">
                 <span>{ds.field_count} 字段</span>
                 <span>被 {ds.references} 图表引用</span>
-                {ds.datasource_id > 0 && (
-                  <Badge variant="outline" className="text-[10px]">
-                    {dsNameById[ds.datasource_id] || '数据源'}
+                {/* 数据源显示业务名（后端返回，不靠前端拼 ID 兜底）；多源时标注可用范围 */}
+                <Badge variant="outline" className="text-[10px]"
+                  title={`执行数据源: ${ds.datasource_name || '数据源'}`}>
+                  {ds.datasource_name || '数据源'}
+                </Badge>
+                {(ds.available_source_names || []).length > 1 && (
+                  <Badge variant="secondary" className="text-[10px]"
+                    title={`可用数据源: ${(ds.available_source_names || []).join('、')}`}>
+                    可用 {(ds.usable_now || []).length}/{(ds.available_source_names || []).length} 源
                   </Badge>
                 )}
                 {ds.chart_type && (

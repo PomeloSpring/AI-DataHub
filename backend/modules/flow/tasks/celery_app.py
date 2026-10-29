@@ -17,6 +17,7 @@ from backend.common import config as _config  # 加载统一环境配置
 
 import redis
 from celery import Celery
+from celery.signals import worker_process_init
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,28 @@ app.autodiscover_tasks(["backend.modules.flow.tasks"])
 
 
 # ── Beat Multi-Instance Lock ───────────────────────────────────────
+
+@worker_process_init.connect
+def _verify_execution_cli(**_kwargs) -> None:
+    """worker 子进程启动时核验并预热执行层 CLI（与 web lifespan 同口径）。
+
+    定时无人值守分析（`mind/execution/scheduled_analysis`）在 worker 里同样经 SDK
+    spawn qodercli，而跳过每轮重复版本探测的开关 `QODER_SKIP_VERSION_CHECK` 是
+    **进环境变量**，必须在 worker 进程自己置上（web 启动钩子不能跨进程生效）。
+    核验不通过时不置跳过位（行为与改动前一致），只把原因显式记日志提醒管理员。
+    """
+    try:
+        from backend.modules.mind.execution.secure_sdk import verify_runtime_cli
+        result = verify_runtime_cli()
+    except Exception as exc:  # noqa: BLE001 — 预热不可用不属于致命错误，但必须可见
+        logger.error("执行层 CLI 核验异常（保持每轮版本探测，定时分析将承担冷启动）: %s", exc)
+        return
+    if result["ok"]:
+        logger.info("执行层 CLI 核验通过: %s (version=%s)", result["cli_path"], result["version"])
+    else:
+        logger.error("执行层 CLI 核验未通过: %s；保持每轮版本探测，请按提示修复 runtime 后重启 worker",
+                     result["reason"])
+
 
 BEAT_LOCK_KEY = "adh_celery_beat:lease:v2"
 BEAT_LOCK_TTL = 15

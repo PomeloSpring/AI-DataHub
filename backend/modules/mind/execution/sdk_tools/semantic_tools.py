@@ -6,11 +6,16 @@ handler 为 SDK 无关的纯函数,由 build_semantic_server(backend) 包装。
 import asyncio
 import json
 import logging
+import time
 from typing import Annotated, Optional
 
 from backend.modules.mind.execution.sdk_tools.catalog_tools import _text
 
 logger = logging.getLogger(__name__)
+
+#: 多问法并发上限：每路检索会 spawn 一个 qmind CLI(node) 子进程，不封顶会在
+#: 共享宿主上把内存打满；4 路已足以把“N 问串行”压成“~N/4 轮”。
+_MAX_CONCURRENT_RETRIEVE = 4
 
 
 # ── 工具 handler(SDK 无关) ─────────────────────────────────────
@@ -24,17 +29,32 @@ async def get_metrics(args):
 
     ctx = get_execution_context()
     try:
-        from backend.semantics.mdl_compiler import _get_metrics, _get_dimensions
+        from backend.semantics.mdl_compiler import (
+            _get_dimensions, _get_metrics, active_binding_tables, binding_scope_for, dict_unavailable_reason,
+        )
 
         ds_id = (ctx.datasource_id if ctx else 0) or 0
         # fail-loud: 业务会话未确定数据源时不得回空目录假成功(系统域 ds=0 是合法系统域, 不拦)。
+        # 但聚合态（全球）会话 ds=0 是合法口径：指标/维度字典全局共享（adh_metrics/dimensions
+        # 均 datasource_id=0），按 ds=0 加载正是全球语义层的正确目录，不得回"请先选会话源"
+        # 死胡同（历史缺陷：全球站点下连合法指标名都查不出，逐站编排无从开始）。
         from backend.modules.mind.execution.sdk_tools.scoped_metadata import system_scope
         if not ds_id and ctx is not None and not system_scope(ctx):
-            return _text({"error": "当前会话未确定数据源，无法加载语义目录；请先在会话中选择一个已授权数据源后重试。"},
-                         is_error=True)
+            from backend.core.site_service import is_aggregate_site
+            if not is_aggregate_site((getattr(ctx, "extra", None) or {}).get("site_code") or ""):
+                return _text({"error": "当前会话未确定数据源，无法加载语义目录；请先在会话中选择一个已授权数据源后重试。"},
+                             is_error=True)
         keyword = (args.get("keyword") or "").strip().lower()
         metrics = await asyncio.to_thread(_get_metrics, ds_id)
         dims = await asyncio.to_thread(_get_dimensions, ds_id)
+        # 目录层（bound_object_key）与编译层（target_table=物理表）必须同一口径：
+        # 拿不到绑定表集合时只做空值裁决，不拿“查不到”当“不可用”
+        try:
+            all_tables, tables_by_object = await asyncio.to_thread(active_binding_tables)
+        except Exception as bind_err:  # noqa: BLE001
+            logger.warning("[get_metrics] 部署绑定表集合加载失败（仅做空值裁决）: %s", bind_err)
+            all_tables, tables_by_object = set(), {}
+        blocked: list[dict] = []
 
         def _match(row):
             if not keyword:
@@ -52,11 +72,21 @@ async def get_metrics(args):
         for m in metrics:
             if not _match(m):
                 continue
+            reason = dict_unavailable_reason(
+                m, binding_scope_for(m, all_tables, tables_by_object), kind="metric")
+            if reason:
+                blocked.append({"name": m["name"], "kind": "metric", "reason": reason})
+                continue
             row = {"name": m["name"], "aliases": m.get("aliases") or [],
                    "unit": m.get("unit") or "", "description": m.get("description") or ""}
             bucket(m.get("bound_object_key")).setdefault("metrics", []).append(row)
         for d in dims:
             if not _match(d):
+                continue
+            reason = dict_unavailable_reason(
+                d, binding_scope_for(d, all_tables, tables_by_object), kind="dimension")
+            if reason:
+                blocked.append({"name": d["name"], "kind": "dimension", "reason": reason})
                 continue
             bucket(d.get("bound_object_key")).setdefault("dimensions", []).append({
                 "name": d["name"], "aliases": d.get("aliases") or [],
@@ -88,31 +118,8 @@ async def get_metrics(args):
             deployments = await asyncio.to_thread(list_deployments)
         except Exception as dep_err:  # noqa: BLE001
             relations_note = relations_note or f"部署清单不可用: {dep_err}"
-        # 跨源拓扑（取数路径/承载，M1 只读投影）：同一概念有哪几条可取数路径
-        # （各站明细 / 数仓全局汇总 / 日志源）+ 粒度与新鲜度。事实源 adh_ontology_carriers，
-        # 经 topology 唯一投影口；未授权该数据源的承载对 LLM 不可见（作用域裁剪，与未授权
-        # 站点同口径）——被裁剪计数**只写服务端日志**，不得进返回体，否则 LLM 会向用户
-        # 转述“你还缺某源权限”（拍板：用户不需要知道因权限而不可用）。
-        # 执行侧选路在 `semantic_query`（同一 topology 单点实现）；灰度关闭时目录也不暴露
-        # carriers，两面必须同开关（否则模型看得见路径、传了 carrier 却被忽略）。
-        try:
-            from backend.semantics import topology
-            if obj_keys and topology.routing_enabled():
-                view = await asyncio.to_thread(
-                    topology.carriers_for_llm, obj_keys,
-                    int(getattr(ctx, "user_id", 0) or 0),
-                    int(getattr(ctx, "workspace_id", 0) or 0))
-                carriers_map = view.get("carriers") or {}
-                if view.get("carriers_filtered"):
-                    logger.info("[get_metrics] %d 条取数路径因数据源未授权对当前用户不可见"
-                                "（user=%s，不对外提及）",
-                                view["carriers_filtered"], getattr(ctx, "user_id", 0))
-                for it in items:
-                    cs = carriers_map.get(it.get("object"))
-                    if cs:
-                        it["carriers"] = cs
-        except Exception as car_err:  # noqa: BLE001 — 拓扑不可用时目录照常返回，但显式标注
-            relations_note = relations_note or f"取数路径清单不可用: {car_err}"
+        # 取数路径（carrier）已下线：同一概念的跨源取数统一由 LLM 按站点逐站编排
+        # （见下方 deployments + usage）；跨源去重合计口径不在目录层提供，需由知识库文档定义。
         out = {"objects": items, "total": len(items), "relations": relations,
                "deployments": deployments,
                "usage": "dimensions/metrics 直接复制此处 name 或其 aliases; 按天/月趋势选 is_time=true 的维度并配 time_grain; "
@@ -120,13 +127,19 @@ async def get_metrics(args):
                         "relations 列出对象间关联(跨对象字段用 '对象名.业务名' 限定引用); "
                         "**全球/多站点问题：按 deployments 对每个可查站点分别调用 run_semantic_query（site 参数）逐站查询，"
                         "站点不是维度；会话默认站点与可查站点清单见上下文「数据源拓扑」段**; "
-                        "对象带 carriers 时=该概念有多条取数路径: 逐站明细走 site 参数多次单站查询，"
-                        "**默认分站呈现、不得把各站数字相加当合计值**; "
-                        "authority=true 的全局汇总路径才能一次查完并给单一数字(按 freshness/as_of_note 说明口径与时效); "
-                        "两条路径答案可能不同, 口径不明时用 ask_user 向用户确认, 不自行猜测; "
+                        "跨站去重合计口径不在取数目录提供：默认分站呈现、不得把各站数字相加当合计值；"
+                        "如需一个合计数字，其口径需由知识库文档定义后向用户说明；"
                         "若报错'无法解析', 从返回的可用清单改名重试。"}
         if relations_note:
             out["relations_degraded"] = relations_note
+        if blocked:
+            # 显式告知：这些口径已登记但今天编不出数，不得向用户承诺可查（也不得转成
+            # “换个指标试试”的瞎猜）；需要时告知用户该口径待建模修复
+            out["unavailable"] = blocked
+            out["unavailable_note"] = (
+                "unavailable 内的指标/维度在字典中已登记但当前无法取数（原因见 reason）："
+                "不得当作可查口径向用户承诺，也不得自行替换成别的指标作答；"
+                "用户问到时应说明该口径尚未完成物理绑定/待修复。")
         return _text(out)
     except Exception as e:
         logger.error("get_metrics error: %s", e)
@@ -152,28 +165,51 @@ def _split_multi(value) -> list[str]:
     return [p.strip() for p in s.replace("\n", ",").split(",") if p.strip()]
 
 
+def _dedupe(items: list[str]) -> list[str]:
+    """保留先后次序的去重（LLM 常把同一个词/问法写两遍，不拦就是白烧一次远程查询）。"""
+    seen: set = set()
+    out: list[str] = []
+    for it in items:
+        if it in seen:
+            continue
+        seen.add(it)
+        out.append(it)
+    return out
+
+
 async def get_glossary(args):
-    """业务术语查询; 支持 keywords 一次传多个(逗号分隔/JSON数组), 合并去重返回。"""
+    """业务术语查询; 支持 keywords 一次传多个(逗号分隔/JSON数组), 合并去重返回。
+
+    多关键词走 **单条合并查询**（TermService.search_terms：一次建连 + 一条 SQL，
+    词间 OR）。之前的逐词 list_terms 已实测不占优（N 词 = N 次建连 + 2N 条 SQL，
+    并发只把等待换成线程/连接开销），而单次往返直接把这部分从耗时里拿掉。
+    未命中词显式列在 unmatched_keywords，不让模型拿“空结果”当“再试一次”的理由。
+    """
     try:
         from backend.modules.catalog.services.term_service import TermService
 
-        words = _split_multi(args.get("keywords")) or _split_multi(args.get("keyword"))
+        words = _dedupe(_split_multi(args.get("keywords")) or _split_multi(args.get("keyword")))
         if not words:
             result = await asyncio.to_thread(TermService.list_terms, 1, 50, "")
             return _text(result)
+        words = words[:10]
+        result = await asyncio.to_thread(TermService.search_terms, words)
+        items = result.get("items") or []
         seen: set = set()
         merged: list = []
-        for kw in words[:10]:
-            result = await asyncio.to_thread(TermService.list_terms, 1, 20, kw)
-            for item in (result or {}).get("items") or []:
-                key = item.get("id") or item.get("term_cn")
-                if key in seen:
-                    continue
-                seen.add(key)
-                merged.append(item)
+        for item in items:
+            key = item.get("id") or item.get("term_cn")
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+        matched = sorted({w for it in merged for w in (it.get("matched_keywords") or [])})
         return _text({"items": merged, "total": len(merged),
                       "queried_keywords": words,
-                      "usage": "多术语已一次返回, 无需逐个关键词重复调用。"})
+                      "matched_keywords": matched,
+                      "unmatched_keywords": [w for w in words if w not in matched],
+                      "usage": "多术语已在一次调用内全部查完, 无需逐个关键词重复调用；"
+                               "unmatched_keywords 里的词术语表确实没登记, 换 knowledge_search 或直接告知用户。"})
     except Exception as e:
         logger.error("get_glossary error: %s", e)
         return _text({"error": str(e)}, is_error=True)
@@ -273,18 +309,37 @@ def _attach_graph_relations(result: dict) -> dict:
                 "graph_degraded": f"关系展开不可用(知识图谱): {e}"}
 
 
+def _retrieve_and_enrich(question: str, ds_id: int, bound_kb_ids, system_scope_flag: bool) -> dict:
+    """单问题：qmind 检索 + 增强链（业务本体路由 / 图关系 / 行为路径）整体**同步**执行。
+
+    必须是同步函数并由调用方丢进线程：增强链里有 DB/图查询，留在事件循环上会
+    ① 把并发检索退化成串行（attach 期间占住循环），② 阻塞流式消息解析。
+
+    `retrieval_ms` 只计检索段（不含 attach / CLI→MCP 分派 / 工具治理开销），
+    使 trace 能区分“知识库真慢”与“工具包装层慢”。
+    """
+    from backend.modules.mind.rag.qmind_retriever import qmind_retrieve
+
+    t0 = time.perf_counter()
+    result = qmind_retrieve(question, ds_id, bound_kb_ids, system_scope=system_scope_flag)
+    retrieval_ms = int((time.perf_counter() - t0) * 1000)
+    source = _classify_retrieval_source(result.get("rag_source"), result.get("count") or 0)
+    return _attach_paths(
+        _attach_graph_relations(_attach_routes(
+            {**result, "retrieval_source": source, "retrieval_ms": retrieval_ms})),
+        keywords=_split_multi(question))
+
+
 async def knowledge_search(args):
-    """知识库检索; 支持 questions 一次传多个问题, 批量检索减少调用轮次。
+    """知识库检索; 支持 questions 一次传多个问题, 批量**并发**检索减少调用轮次。
 
     附带检索来源归因(记录到 observability, 未开启即 no-op), 供 eval 按来源分桶统计。
     """
-    import time
     from backend.modules.mind.execution.sdk_tools.context import get_execution_context
     from backend.observability import record_span
 
     ctx = get_execution_context()
     try:
-        from backend.modules.mind.rag.qmind_retriever import qmind_retrieve
         # 仅消费服务端 AS-BOT 显式绑定；缺少上下文不能查询全库。
         bound_kb_ids = (ctx.extra or {}).get("bound_knowledge_base_ids")
         # 系统能力形态（能力叠加）：系统 KB 照常检索，无命中同样回退业务元数据并标注来源；
@@ -299,52 +354,39 @@ async def knowledge_search(args):
         # 护栏 _check_source 本就拒绝非会话源，暴露可选参数只会诱导模型猜 id 而被反复拒。
         ds_id = (ctx.datasource_id if ctx else 0) or 0
         questions = _split_multi(args.get("questions")) or _split_multi(args.get("question"))
-        questions = questions[:8]
+        questions = _dedupe(questions)[:8]
         if not questions:
             return _text({"error": "请传 question 或 questions(多个用逗号/JSON数组)"}, is_error=True)
         if len(questions) == 1:
-            t0 = time.perf_counter()
-            result = await asyncio.to_thread(qmind_retrieve, questions[0], ds_id, bound_kb_ids,
-                                             system_scope=system_scope_flag)
-            elapsed = int((time.perf_counter() - t0) * 1000)
-            source = _classify_retrieval_source(result.get("rag_source"), result.get("count") or 0)
-            result = {**result, "retrieval_source": source, "retrieval_ms": elapsed}
-            result = _attach_paths(
-                _attach_graph_relations(_attach_routes(result)),
-                keywords=_split_multi(questions[0]))
+            result = await asyncio.to_thread(
+                _retrieve_and_enrich, questions[0], ds_id, bound_kb_ids, system_scope_flag)
             # 归因不写敏感 SQL/PII, 仅来源标签 + 耗时(护栏 §9)
             record_span(kind="retrieval", name="knowledge_search", status="success",
-                        duration_ms=elapsed, input_text=questions[0][:200],
-                        output_text=f"source={source} count={result.get('count') or 0}")
+                        duration_ms=int(result.get("retrieval_ms") or 0),
+                        input_text=questions[0][:200],
+                        output_text=f"source={result.get('retrieval_source')} "
+                                    f"count={result.get('count') or 0}")
             return _text(result)
-        results = []
+        # 多问法**并发**检索（历史缺陷：for 循环串行，2 问=2 段检索时间直接叠加）。
         t0 = time.perf_counter()
-        for qtext in questions:
-            r = await asyncio.to_thread(qmind_retrieve, qtext, ds_id, bound_kb_ids,
-                                        system_scope=system_scope_flag)
-            cnt = r.get("count") or 0
-            results.append({"question": qtext,
-                            "rag_source": r.get("rag_source"),
-                            "retrieval_source": _classify_retrieval_source(r.get("rag_source"), cnt),
-                            "knowledge_base": r.get("knowledge_base"),
-                            "doc_stale": r.get("doc_stale"),
-                            "hit_object_keys": r.get("hit_object_keys") or [],
-                            **{k: v for k, v in _attach_paths(
-                                _attach_graph_relations(_attach_routes(
-                                    {"hit_object_keys": r.get("hit_object_keys") or []})),
-                                keywords=_split_multi(qtext)).items()
-                               if k != "hit_object_keys"},
-                            "chunks": r.get("chunks") or [],
-                            "count": cnt})
-        elapsed = int((time.perf_counter() - t0) * 1000)
+        sem = asyncio.Semaphore(_MAX_CONCURRENT_RETRIEVE)
+
+        async def _one(qtext: str) -> dict:
+            async with sem:
+                return await asyncio.to_thread(
+                    _retrieve_and_enrich, qtext, ds_id, bound_kb_ids, system_scope_flag)
+
+        fetched = await asyncio.gather(*(_one(q) for q in questions))
+        wall_ms = int((time.perf_counter() - t0) * 1000)
+        results = [{"question": qtext, **r} for qtext, r in zip(questions, fetched)]
         hit = sum(1 for x in results if x["retrieval_source"] == "qmind_hit")
         fallback = sum(1 for x in results if x["retrieval_source"] == "local_hybrid_fallback")
         record_span(kind="retrieval", name="knowledge_search", status="success",
-                    duration_ms=elapsed, input_text=f"{len(questions)} questions",
+                    duration_ms=wall_ms, input_text=f"{len(questions)} questions",
                     output_text=f"qmind_hit={hit} fallback={fallback}")
         return _text({"results": results, "total": len(results),
                       "attribution": {"qmind_hit": hit, "local_hybrid_fallback": fallback},
-                      "usage": "多问题已一次返回, 无需逐个重复调用。"})
+                      "usage": "多问题已在一次调用内并发检索, 无需逐个重复调用。"})
     except Exception:
         logger.exception("知识检索失败")
         return _text({"error": "知识检索未完成，请检查 AS-BOT 知识库绑定或联系管理员"}, is_error=True)
@@ -369,11 +411,17 @@ async def list_datasets(args):
             "datasets": [
                 {"id": d["id"], "name": d["name"], "source_type": d["source_type"],
                  "object_key": d.get("object_key") or "", "description": d.get("description") or "",
-                 "field_count": d.get("field_count")}
+                 "field_count": d.get("field_count"),
+                 # 可用数据源范围只回业务名（护栏 §7）：多源数据集靠 site/datasource 逐查询定源
+                 "datasource": d.get("datasource_name") or "",
+                 "available_datasources": d.get("available_source_names") or [],
+                 "usable_datasources": d.get("usable_now") or []}
                 for d in items
             ],
             "total": len(items),
-            "usage": "用 query_dataset(name=...) 取数; 已内置行级范围/RLS/敏感脱敏, 与看板同口径。",
+            "usage": ("用 query_dataset(name=...) 取数; 已内置行级范围/RLS/敏感脱敏, 与看板同口径。"
+                      "available_datasources 多于 1 个源的数据集可跨源执行：用 site（站点业务名）或 "
+                      "datasource（数据源业务名）指定本站；不传则由服务端按会话源/执行源定源。"),
         })
     except Exception as e:
         logger.error("list_datasets error: %s", e)
@@ -409,6 +457,11 @@ async def query_dataset(args):
             "filters": args.get("filters") or [],
             "order": args.get("order") or [],
             "limit": args.get("limit") or 200,
+            "args": args.get("args") or args.get("variables") or {},
+            # 选源只接业务名（站点名/源名），服务端在“可用范围 ∩ 角色授权集”内定源
+            "site": args.get("site") or "",
+            "datasource": args.get("datasource") or "",
+            "preferred_datasource_id": int((ctx.datasource_id if ctx else 0) or 0),
         }
         result = await asyncio.to_thread(
             dataset_service.query_dataset, int(ds["id"]), params, identity)
@@ -442,8 +495,10 @@ TOOL_SPECS = [
             "Search the business glossary for term definitions and field mappings "
             "(e.g. what '华东' or '活跃用户' means in this business). "
             "Pass ALL terms you need in ONE call via `keywords` (comma-separated or JSON array) "
-            "instead of calling repeatedly. "
-            "Use this to translate business terms before writing SQL filters."
+            "instead of calling repeatedly — 多关键词已在服务端合成一次查询。 "
+            "Use this to translate business terms before writing SQL filters. "
+            "仅限业务黑话/枚举口径的翻译；入口地址、联系方式、组织分工这类事实问题不在术语表里，"
+            "不要用本工具去补 knowledge_search 的未命中。"
         ),
         "schema": {
             "keyword": Annotated[Optional[str], "Single term keyword in Chinese or English; empty means list all"],
@@ -467,7 +522,9 @@ TOOL_SPECS = [
             "The bound QMind knowledge base contains the LATEST ontology model docs "
             "(objects/metrics/dimensions/SQL-template variables) — query it FIRST: if it "
             "answers the question, proceed directly without extra discovery tools. "
-            "Pass ALL questions in ONE call via `questions` (comma-separated or JSON array). "
+            "Pass ALL questions in ONE call via `questions` (comma-separated or JSON array); "
+            "多个问法在一次调用内**并发**检索，因此不要把候选问法拆成多次调用逐个试探——"
+            "一次就把所有同义措辞（如“官网域名/中国站网址/访问入口”）全传进去。 "
             "When hit_object_keys is returned, prefer copying those keys verbatim as the "
             "`object` of run_semantic_query (they are the KB-recognized ontology objects; verify "
             "names still exist in get_metrics if doc_stale=true). "
@@ -498,16 +555,22 @@ TOOL_SPECS = [
             "Fetch rows from a published BI dataset by name (or dataset_id). Server applies "
             "permissions/RLS/sensitive masking/row-scope/audit — identical governance as "
             "dashboards. dimensions/measures must be copied from the dataset field list "
-            "(see list_datasets or dataset detail). filters: [{field, op(eq|ne|gt|gte|lt|lte|in|like), value}]."
+            "(see list_datasets or dataset detail). filters: [{field, op(eq|ne|gt|gte|lt|lte|in|like), value}]. "
+            "A dataset may declare multiple usable datasources (available_datasources): pick one per "
+            "query with site (site business name) or datasource (datasource business name) — never an id; "
+            "if it stays ambiguous the server returns the candidate business names instead of guessing."
         ),
         "schema": {
             "name": Annotated[Optional[str], "Exact dataset name from list_datasets"],
             "dataset_id": Annotated[Optional[int], "Alternative: numeric dataset id"],
+            "site": Annotated[Optional[str], "Business site name to run against, e.g. '中国' / '国际' (multi-site datasets)"],
+            "datasource": Annotated[Optional[str], "Business datasource name to run against, e.g. 'prd-cn' (takes precedence over site when both)"],
             "dimensions": Annotated[Optional[list], "Dimension field names to group by"],
             "measures": Annotated[Optional[list], "Measure field names to aggregate"],
             "filters": Annotated[Optional[list], "[{field, op, value}] conditions"],
             "order": Annotated[Optional[list], "[{by, desc}] ordering"],
             "limit": Annotated[Optional[int], "Max rows (default 200)"],
+            "args": Annotated[Optional[dict], "Declared dataset variables {name: value} (from dataset variables)"],
         },
         "handler": query_dataset,
     },

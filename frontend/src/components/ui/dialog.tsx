@@ -43,6 +43,14 @@ const DialogOverlay = React.forwardRef<
 ))
 DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 
+// 高度护栏（基准类，页面 className 可覆盖）：DialogContent 是 fixed 居中网格，
+// 不限高时长表单（指标/维度编辑这类十几行 + 三元组预览）会顶出视口 ——
+// 标题/关闭按钮在视口上方、保存/取消在视口下方，用户既滚不动也点不到（历史缺陷）。
+// 故基准即带 max-h + 纵向滚动；各页自己的 max-h-[85vh] 之类经 twMerge 仍优先生效。
+// 例外：需要占满整高的抽屉（PropertyPanel narrow）自行写 max-h-[100dvh] 覆盖。
+const BASE_CONTENT_CLASSES =
+  "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg max-h-[90vh] overflow-y-auto overflow-x-hidden translate-x-[-50%] translate-y-[-50%] gap-4 border border-border bg-background p-5 shadow-2xl duration-200 [&>*]:min-w-0 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] rounded-2xl";
+
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
@@ -54,7 +62,7 @@ const DialogContent = React.forwardRef<
       onInteractOutside={(e) => keepNestedLayers(e, onInteractOutside)}
       onPointerDownOutside={(e) => keepNestedLayers(e, onPointerDownOutside)}
       className={cn(
-        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border border-border bg-background p-5 shadow-2xl duration-200 [&>*]:min-w-0 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] rounded-2xl",
+        BASE_CONTENT_CLASSES,
         className
       )}
       {...props}

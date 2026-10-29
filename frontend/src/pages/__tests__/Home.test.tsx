@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import Home from '../Home';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import { invalidateCatalogCache } from '@/lib/dashboardCatalog';
 import { useAuthStore } from '@/stores/authStore';
 import { usePermissionStore } from '@/stores/permissionStore';
@@ -12,10 +13,11 @@ vi.mock('@/api/client', () => ({ default: { get: vi.fn(), post: vi.fn() } }));
 const groupBoard = (id: number, status = 'enabled') => ({ id, name: `看板 ${id}`, status, is_default: 0, sort_order: id });
 function Path() { const location = useLocation(); return <output data-testid="path">{location.pathname}</output>; }
 function renderHome() {
-  return render(<MemoryRouter initialEntries={['/']}><Path /><Routes>
+  // 顶栏的公告按钮/模块切换器用 Tooltip, 与 main.tsx 同口径由外层 Provider 提供
+  return render(<TooltipProvider><MemoryRouter initialEntries={['/']}><Path /><Routes>
     <Route path="/" element={<Home />} />
     <Route path="/dashboards" element={<div>数据看板</div>} />
-  </Routes></MemoryRouter>);
+  </Routes></MemoryRouter></TooltipProvider>);
 }
 
 beforeEach(() => {

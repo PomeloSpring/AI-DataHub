@@ -127,3 +127,59 @@ class TestSyncMerge:
                    return_value=_conn_for(cur)):
             res = sync_enums_to_dimensions(DOC, datasource_id=1)
         assert res["updated"] == 0  # labels/aliases 均已一致 → 不再发 UPDATE
+
+
+# ── 带点列名（SLS/ARMS 嵌套 schema）定位 ──────────────────────
+
+DOC_SLS = {
+    "objects": [{
+        "key": "rum_event", "properties": [
+            {"column": "view.url", "name": "页面URL",
+             "description": "页面URL（ARMS RUM 观测字段）", "enum": []},
+            {"column": "resource.success", "name": "资源请求结果",
+             "description": "资源请求结果", "enum": {"0": "失败", "1": "成功"}},
+        ],
+    }],
+}
+
+
+class TestSyncNestedDottedColumn:
+    """`view.url` 是列名本体含点，不得被 `split(".", 1)` 当成「表=view / 列=url」。
+
+    历史缺陷：错拆后永远匹配不到字典行（真实登记是 target_table='logstore-rum' /
+    target_column='view.url'），枚举标签与别名联动静默空转 —— 建模页看得到枚举，
+    字典里却没值（no-silent-degradation：静默空转的旁路没人发现）。
+    """
+
+    def test_nested_column_hits_dict_row_via_object_physical_table(self):
+        cur = FakeCursor([(70, "logstore-rum", "resource.success", "资源请求结果",
+                           None, None)])
+        with patch("backend.modules.catalog.services.ontology_service.get_metadata_conn",
+                   return_value=_conn_for(cur)):
+            res = sync_enums_to_dimensions(
+                DOC_SLS, datasource_id=1,
+                table_of_object={"rum_event": "logstore-rum"})
+        assert res["updated"] == 1
+        sql, params = cur.updates[0]
+        assert json.loads(params[0]) == {"0": "失败", "1": "成功"}
+
+    def test_gap_reports_full_nested_ref_not_split_head(self):
+        """字典缺行时 gaps 必须给出可诊断的「绑定表 + 完整列名」，不是 view/url。"""
+        cur = FakeCursor([])
+        with patch("backend.modules.catalog.services.ontology_service.get_metadata_conn",
+                   return_value=_conn_for(cur)):
+            res = sync_enums_to_dimensions(
+                DOC_SLS, datasource_id=1,
+                table_of_object={"rum_event": "logstore-rum"})
+        assert {"table": "logstore-rum", "column": "resource.success",
+                "enum_size": 2} in res["gaps"]
+
+    def test_legacy_table_qualified_still_works_without_binding(self):
+        """绑定层拿不到物理表时，存量「表.列」写法行为不变（不拆新口径）。"""
+        cur = FakeCursor([(70, "view", "url", "页面URL", None, None)])
+        with patch("backend.modules.catalog.services.ontology_service.get_metadata_conn",
+                   return_value=_conn_for(cur)):
+            res = sync_enums_to_dimensions(DOC_SLS, datasource_id=1)
+        assert res["updated"] == 0 or cur.updates, "候选定位应能命中旧写法行"
+        if cur.updates:
+            assert cur.updates[0][1][-1] == 70

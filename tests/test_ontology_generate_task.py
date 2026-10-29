@@ -786,7 +786,7 @@ class TestSaveDraftTool:
         doc, params = _inserted_doc(ops)
         assert len(doc["objects"]) == 1                       # 判重合并成一份
         assert doc["objects"][0]["metrics"] and doc["objects"][0]["properties"]
-        assert params[2] == "source" and params[9] == "u7"    # kind/created_by 服务端注入
+        assert params[2] == "business" and params[9] == "u7"    # kind(源已退役>0→business)/created_by 服务端注入
 
     def test_same_key_different_table_aborts(self, monkeypatch):
         """同名不同主表是真冲突：中止落库（宁缺勿错），不得静默二选一。"""

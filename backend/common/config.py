@@ -140,19 +140,6 @@ INTENT_GATE_MAX_LATENCY_MS = float(os.getenv("INTENT_GATE_MAX_LATENCY_MS", "200"
 INTENT_GATE_INTERCEPT_RETENTION_DAYS = int(os.getenv("INTENT_GATE_INTERCEPT_RETENTION_DAYS", "90") or 90)
 
 # ══════════════════════════════════════════════════════════════════════════
-# 承载择路灰度（跨源拓扑 M2）—— 取数是否按「取数路径（carrier）」选路
-# ══════════════════════════════════════════════════════════════════════════
-# true  = `run_semantic_query` 按 carriers 择路（global/log/mirror 路由到承载指向的源），
-#         并在 `get_metrics` 目录里把 carriers 暴露给模型（缺省）
-# false = 目录不暴露 carriers + 执行不择路，行为与改造前一致（沿用 deploy_sites 站点展开）
-# 两个面必须一起开关：只关执行不关目录，模型会看见 carriers 并传 `carrier=` 参数，
-# 而服务端静默忽略它 —— 那才是真正的“看起来能用”。
-# 关闭态由 web 启动日志显式声明（backend/app/main.py），不让“没生效”看起来像“没问题”。
-CARRIER_ROUTING_ENABLED = str(
-    os.getenv("CARRIER_ROUTING_ENABLED", "true") or "true").strip().lower() not in (
-    "0", "false", "no", "off")
-
-# ══════════════════════════════════════════════════════════════════════════
 # Oxigraph — RDF Triple Store (SPARQL 1.1)
 # ══════════════════════════════════════════════════════════════════════════
 

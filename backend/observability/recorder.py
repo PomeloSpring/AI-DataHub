@@ -57,6 +57,11 @@ def _credit_cost_currency() -> str:
 class TraceRecorder:
     def __init__(self, meta: dict):
         self._t0 = time.monotonic()
+        # 模型请求窗口锚点：`add_llm_call` 未显式传时长时按“上个锚点 → 现在”计算单次耗时。
+        # 锚点由执行层在真正发起请求前调 `mark_model_window_start()` 标注，并在每次
+        # llm_call / tool_call 完成后自动前推（工具执行时间不得计入下一个模型请求）。
+        self._llm_anchor = self._t0
+        self._llm_window_marked = False
         self.meta = meta
         self.spans: list[dict] = []
         self._flushed = False
@@ -95,10 +100,36 @@ class TraceRecorder:
             self.meta["handled_by"] = handled_by
 
     # ── span 采集 ──────────────────────────────────────────────
+    def mark_model_window_start(self) -> None:
+        """标注“模型请求窗口起点”（执行层在前置阶段做完、真正下发请求前调用）。
+
+        不调这一步也不是错：窗口仍从回合起点算，但那个值含 claim_session /
+        资源绑定 / SDK 建连等前置耗时，归因会偏高——所以未标注时打一条 warning
+        让运维看得到口径（不把估算当实测，no-silent-degradation）。
+        """
+        self._llm_anchor = time.monotonic()
+        self._llm_window_marked = True
+
     def add_llm_call(self, **kw: Any) -> None:
+        """记录一次模型请求 span。
+
+        `duration_ms` 口径（历史缺陷：未传时长时回落为“自回合起点的累计偏移”，
+        于是一轮 52s 的回合里 8 条 llm_call 写出 13619/24304/51563… 的递增值，
+        相加 394s，管理端把累计值当单次耗时做归因）：现在只可能是两种真值 ——
+        1. 调用方显式传入的单次耗时；
+        2. 模型窗口：自上一个锚点（执行层标注 / 上一条 llm_call / 刚结束的
+           tool_call）到现在的墙钟时间。记录后锚点前推，同一次请求内的多条
+           AssistantMessage 不会重复计入同一段时间（后面几条接近 0 属正常）。
+        """
+        now = time.monotonic()
         dur = kw.get("duration_ms")
         if dur is None:
-            dur = int((time.monotonic() - self._t0) * 1000)
+            if not self._llm_window_marked and not self.spans:
+                logger.warning(
+                    "[observability] 首次 llm_call 未经 mark_model_window_start 标注，"
+                    "duration_ms 含回合前置耗时（建连/资源绑定），trace=%s",
+                    self.meta.get("trace_id"))
+            dur = int(round((now - self._llm_anchor) * 1000))
         it = int(kw.get("input_tokens") or 0)
         ot = int(kw.get("output_tokens") or 0)
         self.spans.append({
@@ -121,6 +152,7 @@ class TraceRecorder:
             "error_text": kw.get("error") or "",
             "started_at": datetime.now(timezone.utc).replace(tzinfo=None),
         })
+        self._llm_anchor = now
         self.input_tokens += it
         self.output_tokens += ot
         self.llm_call_count += 1
@@ -152,7 +184,12 @@ class TraceRecorder:
     def add_span(self, *, kind: str, name: str = "", status: str = "success",
                  duration_ms: int = 0, input_text: str = "", output_text: str = "",
                  error_text: str = "", model_ref: str = "") -> None:
-        """记录一个非 LLM 请求的产物 span(工具调用/SQL 执行/图表等),不累计 token。"""
+        """记录一个非 LLM 请求的产物 span(工具调用/SQL 执行/图表等),不累计 token。
+
+        `kind="tool_call"` 同时是模型窗口的分隔线：工具结果回到模型那一刻才开下一个
+        请求，不重置锚点会把工具耗时算进下一条 llm_call（归因再一次失真）。
+        """
+        now = time.monotonic()
         self.spans.append({
             "span_id": new_uuid(),
             "trace_id": self.meta["trace_id"],
@@ -173,6 +210,8 @@ class TraceRecorder:
             "error_text": error_text or "",
             "started_at": datetime.now(timezone.utc).replace(tzinfo=None),
         })
+        if kind == "tool_call":
+            self._llm_anchor = now
 
     # ── 汇总落库 ────────────────────────────────────────────────
     def finalize(self, status: str = "", error: str = "", final_answer: str = "") -> None:

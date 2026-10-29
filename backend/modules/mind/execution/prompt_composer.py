@@ -6,6 +6,7 @@
 
 import logging
 
+from backend.common import as_bot_config_cache as config_cache
 from backend.modules.mind.execution.chart_contract import chart_contract_text
 
 logger = logging.getLogger(__name__)
@@ -28,8 +29,16 @@ SEMANTIC_QUERY_RULES = """## 数据查询规范（统一语义层）
   字段都会被直接拒绝。
 - **取数决策顺序（语义层优先、快且准、最多一轮）**：
   ① 直接以 `get_metrics` 实时目录为唯一权威确认 object/metric/dimension，能确定就立刻组装 intent 走 `run_semantic_query` 取数；
-  ② 仅当语义层取不到（目录里无匹配名 / `run_semantic_query` 返回未绑定或无法解析）时，才 `knowledge_search` 查**一次**口径/业务背景以找到正确名称后重试一次；
-  ③ 知识库仍无结果，**直接告知用户**“该对象/指标尚未建模或无法解析，建议补充建模或转数据分析师”，不得反复换名试探或循环检索。
+  ② 三类问题必须 `knowledge_search`，每轮**最多一次调用**（要试多个同义问法，就一次全传进 `questions`——
+     工具内已并发检索，多问法不叠加耗时；拆成多轮 = 多烧一个模型往返）：
+     (a) 名称拿不到——目录里无匹配名 / `run_semantic_query` 返回未绑定或无法解析，查口径/业务背景找到正确名称后重试一次；
+     (b) 问题里**业务实体的身份或归属不明**——一条 URL/域名/落地页是谁家的、归哪个站点，
+         `channel=`/`utm_*` 这类参数是什么渠道，某个活动名/业务黑话指什么。这类事实目录里没有、只在知识库登记，
+         猜错站点或匹配条件就会取回错数；查到的采集特性（如参数会不会进统计）**按原样转述**，不自行引申；
+     (c) 问题**只要解释、不要数字**（口径/定义/机制流程/SOP/资料登记的事实）——知识库是这类问题的主路，先查再答（判据见「工具自主编排」）。
+  ③ 知识库确实无结果时（**前提是本轮真的查过**），**直接告知用户**“该对象/指标尚未建模或无法解析（或该业务事实资料里没登记）”，
+     建议补充建模或转数据分析师，不得反复换名试探或循环检索。`get_glossary` 只译业务黑话/枚举口径，
+     入口地址/联系方式/组织分工这类事实问题不在术语表里，**不得**用它去补 knowledge_search 的未命中。
 - **双路权威划分**（knowledge_search 与 get_metrics 同时可用时）：
   ① 对象/指标/维度的**合法名称**以 `get_metrics` 实时目录为唯一权威（它直接读当前生效本体）；
   ② `knowledge_search`（知识库）只对**口径解释、业务背景、数据集参数清单** 权威；
@@ -37,7 +46,7 @@ SEMANTIC_QUERY_RULES = """## 数据查询规范（统一语义层）
      向用户说明可能存在新旧版本口径差异；若 knowledge_search 结果标注 doc_stale=true，
      说明知识库文档落后于当前本体，其内容仅供参考，**不得**据此发明未出现在 get_metrics 中的名称；
   ④ knowledge_search 返回 hit_object_keys 时，优先直接以其中的 key 作为 run_semantic_query 的 object。
-- **业务本体路由（两级检索）**：业务本体是「概念 → 源本体」的路由索引层，本身不提供数据。
+- **业务本体路由（两级检索）**：业务本体是「概念 → 目标数据源业务本体」的路由索引层，本身不提供数据。
   `knowledge_search` 返回 `routes` 时按路由执行，不要臆测数据在哪个源：
   ① `routes[].target_object_key` 作为 `run_semantic_query` 的 `object`（无该字段时用 hit_object_keys；
      两者都无则是数据源级路由——先用 `datasource` 参数选定该源，再以 `get_metrics`/元数据在源内定位对象）；
@@ -60,6 +69,10 @@ SEMANTIC_QUERY_RULES = """## 数据查询规范（统一语义层）
 - 对象若绑定查询数据集（`bind_kind=dataset`，承载漏斗/留存等语义层编译不出的形状），必须用
   intent 的 `params` 按数据集声明传参；参数名/类型以 `knowledge_search` 回的数据集参数清单为准，
   缺失或多余都会被拒绝执行。
+- 数据集若返回 `available_datasources` 且多于 1 个源时（一份预制 SQL 可在多个数据源上执行），本次取数必须定源：
+  用户已说站点就传 `site`（站点业务名），已知具体源就传 `datasource`（数据源业务名）；两者都不得传 id。
+  未定源而服务端回“无法确定取哪个”时，按它列出的候选名用 `ask_user` 确认后再查，**不得猜源、不得换源重试**；
+  候选之外的源 = 无权或该数据集不适用，如实告知用户。
 - **行为路径/漏斗（关键路径转化）不得拆成多个步骤指标**：把各步 UV 并列查询没有顺序与窗口
   约束，转化率会系统性偏高（错数比无答案危害大）。正确做法：`knowledge_search` 命中 `paths[]` 后，
   优先用 `paths[].dataset_hint.dataset` 作为 `query_dataset` 的 `name`、按 `dataset_hint.params` 传 `args`；
@@ -70,6 +83,7 @@ SEMANTIC_QUERY_RULES = """## 数据查询规范（统一语义层）
 - **探索预算（硬约束）**：整个取数最多 1 次 `get_metrics` + 必要时 1 次 `knowledge_search` + 1–2 次 `run_semantic_query`；
   命中即作答，取不到即按上面③告知用户。严禁循环试探物理结构（list_datasources / get_table_schema / search_metadata），
   严禁同一名目反复改词重试——ChatBI 以准确与快速为先。
+  需要多个问法/多个术语时用 `questions`/`keywords` 一次传齐（工具内已合并/并发检索，拆开传只会多烧模型往返）。
 - 若 `run_semantic_query` 返回“object 未绑定/未在本体中 bound”，如实告知用户该对象尚未在本体建模或绑定，
   不要回退到裸 SQL 取数。"""
 
@@ -83,7 +97,37 @@ NL2SQL_QUERY_RULES = """## 数据查询规范（语义层主路 + 受治理 SQL 
 - 指标/维度名、枚举业务名以 `get_metrics` / 字典为准；相对时间优先用 `run_semantic_query` 的 `time_window`，SQL 路径不得臆造列名。
 - **数据源选择**：`check_sql`/`execute_sql` 默认作用于会话已选数据源；若当前工作空间授权了多个数据源，先用 `list_datasources` 看候选（只返回业务名与方言，不含 id），按问题选最匹配的一个并用 `datasource`（业务名）参数指定；若 `knowledge_search` 返回 `routes`，数据源优先按 `routes[].datasource_name`（业务本体路由）指定；不确定用哪个源时调 `ask_user` 让用户选，严禁臆测源名或传数字 id。单源时可省略。
 - 不确定口径先检索（knowledge_search / get_metrics / get_glossary / 元数据），宁缺勿错；两档权威冲突时名称以 `get_metrics` 实时目录为准。
+  检索**一次传齐**：多个候选问法用 `knowledge_search` 的 `questions`、多个术语用 `get_glossary` 的 `keywords`（工具内已合并成一次检索）；
+  `get_glossary` 只译业务黑话/枚举口径，资料类事实问题（入口地址/联系方式/组织分工）不收录，不得拿它补 `knowledge_search` 的未命中。
 - 无论走哪条路径，返回数据都必须遵守下方数据源黑盒与敏感合规约束；不得向用户暴露物理 SQL/库表/账号/IP 等细节。"""
+
+
+# 工具自主编排 + 歧义闸门（常驻原则，所有角色共用）。
+# 为什么写常驻而不只写技能：三个分析剧本与各 AS-BOT persona 都需要同一套「该查什么、什么时候问人」的
+# 判断，只写进某个技能会在没命中触发词的回合里丢掉。
+# 措辞取向：给判断依据与预算，不给「只许这几种情况」的工具白名单——工具选择权归模型。
+# 历史缺陷：旧措辞「两种情况才 knowledge_search」把纯口径问题堵在门外，模型不搜就直接回「不知道」。
+TOOL_ORCHESTRATION_RULES = """## 工具自主编排（按问题选武器，不套固定流程）
+- 要什么就查什么：要**解释 / 背景 / 资料里登记的事实** → `knowledge_search`（绑了知识库时它是主路）；
+  要**可查的名称与口径骨架** → `get_metrics` / `get_glossary`（合法名称以实时目录为唯一权威）；
+  要**数字** → `run_semantic_query`（语义层覆盖不到且本会话已授权时走受治理只读 SQL）。
+  先查哪件、查几件、要不要并行由你判断：材料够了就别再补查，缺依据就先去查——**不规定你必须调用哪几个工具**。
+- 三条歪路都不许走：① 凭记忆答口径（该查不查）；② 换近义词反复试探、把一个简单问题拆成多轮；
+  ③ 把「只要解释」的定义题拖成取数工程。
+- 探索预算管「无目的重复」，**不管该做的消歧**：为消除歧义查一次目录/知识库、或问用户一句，不算超预算。
+- 顺序是**先查、再谈有没有**：本轮没查过就没资格说「不知道/没登记/平台没这个口径」；查过确实无依据 → 如实说明并给
+  下一步（补建模/补资料/缩小范围），不凭常识编造。未绑知识库或检索不可用要说清这层原因，**不得**讲成「该口径不存在」。
+
+## 歧义闸门（有歧义不猜，一次问清）
+- 组装 intent 或写 SQL 之前自检：**这句话还有第二种合理解读吗**——同名指标多口径、时间范围/粒度未定、
+  人群或渠道范围未定、站点未定、「活跃/新增/完成率/留存」这类定义敏感词。
+- 两种解读**会给出不同数字** → 先 `ask_user` 再取数：候选 2~4 个且**只能来自实时目录/字典/知识库原文**，
+  每个配一句差别说明让用户挑；拿不出候选就开放式问一句「你说的 X 指哪个口径、哪张报表里的哪个数」。
+  **不要先按某个默认值跑出结果再解释**——错数比没答案危害大。
+- 只有一种解读、或上下文/个人记忆/字典已把口径定死 → 直接做，别把能自己定的事推给用户；
+  做完在结论里**回显所用口径**（「按你选的 X」「按字典默认口径、时间取近 7 天」），让用户一眼能纠偏。
+- 反问一次问清：要确认的点（口径+时间+范围）合进一个问句，不连环反问、不挤牙膏，也不问「要不要我继续」。
+  用户答过一次就不再复述该口径（本轮与后续结论按它执行，除非用户改口）。"""
 
 
 # 数据源黑盒（强约束）——对 Agent 与最终用户都不暴露物理基础设施细节。
@@ -332,35 +376,75 @@ def _blocked_columns(workspace_id: int, datasource_id: int) -> list:
 
 
 def _rls_scope_lines(workspace_id: int, datasource_id: int) -> list:
-    """行级安全(RLS)范围摘要(尽力而为, 失败不阻断): 列出该数据源上生效的行过滤策略。"""
+    """行级安全(RLS)范围摘要(尽力而为, 失败不阻断): 列出该数据源上生效的行过滤策略。
+
+    提示词装饰属轮次起点，按 (数据源, 工作空间) 缓存配置事实（写时失效 + 短 TTL）；
+    **真正的行过滤仍由 `enforcer._inject_row_filter` 在每次取数时实时读策略施加**，
+    缓存陈旧只影响摘要文字，不影响实际权限边界（RLS 策略写入口已接 invalidate）。
+    """
     if not datasource_id:
         return []
-    try:
-        from backend.common.db import execute_query
 
-        rows = execute_query(
-            """SELECT table_name, filter_expr FROM adh_rls_policies
-               WHERE datasource_id = %s AND is_active = 1
-                 AND workspace_id IN (%s, 0)
-                 AND policy_type IN ('row', 'both')
-                 AND filter_expr IS NOT NULL AND filter_expr <> ''
-               ORDER BY table_name""",
-            (datasource_id, workspace_id or 0),
-        )
-        lines: list[str] = []
-        seen: set = set()
-        for r in rows or []:
-            table = r.get("table_name") or ""
-            expr = (r.get("filter_expr") or "").strip()
-            key = (table, expr)
-            if not table or not expr or key in seen:
-                continue
-            seen.add(key)
-            lines.append(f"- RLS 行范围({table}): {expr}")
-        return lines
-    except Exception as e:  # noqa: BLE001
-        logger.debug("[PromptComposer] RLS scope unavailable: %s", e)
-        return []
+    def _load() -> list:
+        try:
+            from backend.common.db import execute_query
+
+            rows = execute_query(
+                """SELECT table_name, filter_expr FROM adh_rls_policies
+                   WHERE datasource_id = %s AND is_active = 1
+                     AND workspace_id IN (%s, 0)
+                     AND policy_type IN ('row', 'both')
+                     AND filter_expr IS NOT NULL AND filter_expr <> ''
+                   ORDER BY table_name""",
+                (datasource_id, workspace_id or 0),
+            )
+            lines: list[str] = []
+            seen: set = set()
+            for r in rows or []:
+                table = r.get("table_name") or ""
+                expr = (r.get("filter_expr") or "").strip()
+                key = (table, expr)
+                if not table or not expr or key in seen:
+                    continue
+                seen.add(key)
+                lines.append(f"- RLS 行范围({table}): {expr}")
+            return lines
+        except Exception as e:  # noqa: BLE001
+            # 不缓存异常（回 None 哨兵），下一轮重试；当轮仍按既有语义返回空不阻断
+            logger.debug("[PromptComposer] RLS scope unavailable: %s", e)
+            return None
+
+    lines = config_cache.get_or_set(
+        f"{config_cache.KEY_RLS_LINES}{datasource_id}:{workspace_id or 0}", _load)
+    return lines or []
+
+
+def _role_scope_lines(user_role: str) -> list:
+    """角色数据范围属性行(尽力而为, 失败不影响主流程)。
+
+    按角色名缓存配置事实（角色属性写入口 `role_service.set_role_attributes` 已接
+    invalidate）；该行只作为提示词里的边界描述，实际列/行/表权限仍由
+    `permission_enforcer` 每次取数实时施加。
+    """
+
+    def _load():
+        try:
+            from backend.common.db import execute_query
+
+            rows = execute_query(
+                """SELECT ra.attr_key, ra.attr_value
+                   FROM adh_role_attributes ra
+                   JOIN adh_roles r ON r.id = ra.role_id
+                   WHERE r.name = %s""",
+                (user_role or "",),
+            )
+            return [f"- 数据范围({r['attr_key']}): {r['attr_value']}" for r in rows or []]
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[PromptComposer] role attributes unavailable: %s", e)
+            return None
+
+    return config_cache.get_or_set(
+        f"{config_cache.KEY_ROLE_ATTRS}{user_role or ''}", _load) or []
 
 
 def _permission_summary(
@@ -382,20 +466,7 @@ def _permission_summary(
         parts.append("- 权限: 管理员,可访问全部数据源与数据范围(但合规屏蔽列仍不可查询)")
     else:
         # 从角色数据范围属性补充边界(尽力而为,失败不影响主流程)
-        try:
-            from backend.common.db import execute_query
-
-            rows = execute_query(
-                """SELECT ra.attr_key, ra.attr_value
-                   FROM adh_role_attributes ra
-                   JOIN adh_roles r ON r.id = ra.role_id
-                   WHERE r.name = %s""",
-                (user_role or "",),
-            )
-            for r in rows or []:
-                parts.append(f"- 数据范围({r['attr_key']}): {r['attr_value']}")
-        except Exception as e:  # noqa: BLE001
-            logger.debug("[PromptComposer] role attributes unavailable: %s", e)
+        parts.extend(_role_scope_lines(user_role))
         parts.append("- 只能访问被授权的数据源与表,涉及越权请求应说明并拒绝")
     # RLS 行范围摘要(非 admin 且可取到身份时)
     if user_role != "admin":
@@ -411,10 +482,11 @@ def _permission_summary(
 def _datasource_topology_lines(site_code: str, sites: list, datasource_id: int = 0) -> list[str]:
     """数据源拓扑段（服务端派生，不再硬编码在技能提示词里）。
 
-    原「站点范围」段升级（跨源拓扑 M2 呈现层）：除可查站点清单外，必须把**默认呈现口径**
-    讲清楚——拍板是“默认分站呈现、不主动合计”，全局去重类口径只能走 `authority=true`
-    的取数路径（数仓汇总/镜像）一次查完。旧文案“给合计必须标注各站合计≠去重全球数”
-    是在鼓励模型去做那个合计（标了口径也还是在发一个无从校验的数），已按拍板删除。
+    原「站点范围」段升级（呈现层）：除可查站点清单外，必须把**默认呈现口径**
+    讲清楚——拍板是“默认分站呈现、不主动合计”。取数路径（carrier）已下线，
+    不再有跨源权威汇总路径可走：全局去重/合计口径统一由用户在各站分报后自行理解，
+    如需一个可校验的全局数字，应在知识库文档里定义口径，而不是在提示词里鼓动模型相加
+    （旧文案“给合计必须标注各站合计≠去重全球数”是在鼓励模型去做那个无从校验的合计，已删）。
 
     可查站点 = 角色已授权数据源的**派生视图**（core.site_service.authorized_sites），
     不是第二套「谁能查什么」判断。只在会话显式选定站点时注入：定时分析/评测/Playground
@@ -446,26 +518,26 @@ def _datasource_topology_lines(site_code: str, sites: list, datasource_id: int =
     lines.append(f"- 可查站点（共 {len(concrete)} 站，括号内为该站数据源业务名）: {listing}")
     rules = [
         "① 用户未点名站点时按会话查询站点取数：查询工具带 site=<站点业务名>（如 site=\"中国\"）",
-        "② 用户在对话里点名某站点 → 本轮只用该站点（自然语言覆盖会话默认），不要反过来要求用户改选择",
+        "② 用户在对话里点名某站点 → 本轮只用该站点（自然语言覆盖会话默认），不要反过来要求用户改选择；"
+        "给出的 URL/域名/路径语言段能唯一判定站点时也视同点名（域名↔站点归属查知识库，不自行硬记），"
+        "只查该站并在答复里说明范围，不必逐站展开（逐站重跑既慢又答非所问）",
     ]
     is_global = bool(aggregate) and current == str(aggregate["site_code"])
     if is_global:
         rules.append(
             f"③ 会话站点={aggregate.get('display_name') or '全球'}（聚合态，不对应单一数据源）→ 对每个可查站点各调一次 "
             "run_semantic_query(site=...) 后**分站呈现**（每站一行），不得把各站数字相加当作全局值"
-            "（同一客户多站会重复登记，相加出来的数无从校验）；"
-            "只有当 get_metrics 目录里该对象带 authority=true 的取数路径(carriers) 时，才改用 "
-            "intent 加 carrier=<该路径 key> 一次查完并给单一数字，并按其 freshness/as_of_note 说明口径与时效")
+            "（同一客户多站会重复登记，相加出来的数无从校验）；如需一个可校验的全局去重/汇总口径，"
+            "该口径必须在知识库文档里定义，严禁自行把各站相加得出单一数字")
     else:
         rules.append(
             "③ 默认只查会话站点那一站；用户问“全球/各站点/跨站对比”时才逐站各调一次 "
             "run_semantic_query(site=...)，结果按站分行呈现、**不做跨站合计**；确需全局去重/汇总口径时，"
-            "看该对象 carriers 里有无 authority=true 的路径：有则带 carrier=<路径 key> 单查，"
-            "无则如实说明“各站分别统计、未合计”，严禁自行相加")
+            "如实说明“各站分别统计、未合计”，并提示该口径需在知识库文档定义，严禁自行相加")
     rules += [
         "④ 不在可查站点清单里的站点 = 无权访问，如实说明并停止，不得换站点重试、不得猜站点名",
         "⑤ 站点不是 SQL 维度：不得把「站点」写进 dimensions/filters；跨站对比按 ③ 逐站编排",
-        "⑥ 对用户不提“还有其他站点/你没有某站权限”，也不提“因为走不到某条取数路径才没给全局数”"
+        "⑥ 对用户不提“还有其他站点/你没有某站权限”，也不提“因为各站分别统计、无可校验的合计口径才没给全局数”"
         "——可查范围就是他的数据世界，直接回答数字；"
         "某站失败标“部分站点暂无数据”，不展开错误细节",
     ]
@@ -607,19 +679,22 @@ def compose_system_prompt(
     if memory_text:
         sections.append(memory_text)
 
-    # 已绑定知识库: 仅作口径/背景补充(回退用), 不作对象/指标/维度名称来源; 取数以语义层为先。
-    # (与 SEMANTIC_QUERY_RULES 的"语义层优先"一致, 不再引导"回答前先 knowledge_search")。
+    # 已绑定知识库: 作口径/背景与业务事实（实体身份与归属）的权威补充, 不作对象/指标/维度名称来源; 取数以语义层为先。
+    # (与 SEMANTIC_QUERY_RULES 的“语义层优先”一致, 不引导“回答前先 knowledge_search”；
+    # 但域名/URL/渠道参数/活动黑话这类业务事实只登记在知识库，目录里查不到，必须允许检索——
+    # 旧措辞“仅当语义层取不到口径含义时”把这类检索堵死了，实测导致拿 0 行臆断采集口径。)
     kb_lines = _knowledge_base_lines(knowledge_bases)
     if kb_lines:
         sections.append(
             "## 已绑定知识库\n"
             + "\n".join(kb_lines)
-            + "\n- 上述知识库只用于**口径解释 / 业务背景 / 数据集参数清单** 的补充, 不作为 object/metric/dimension 名称来源;"
-            "  取数一律先走 `get_metrics` 实时目录 + `run_semantic_query`, **仅当语义层取不到口径含义时**才用 `knowledge_search` 查一次背景;"
+            + "\n- 上述知识库只用于**口径解释 / 业务背景 / 数据集参数清单 / 业务事实（实体身份与归属）** 的补充, 不作为 object/metric/dimension 名称来源;"
+            "  取数一律先走 `get_metrics` 实时目录 + `run_semantic_query`; 目录拿不到的名称、"
+            "或问题里业务实体的身份/归属不确定（哪家的域名/落地页、什么渠道参数、活动黑话）时, 用 `knowledge_search` 查一次再取数;"
             "  知识库内容与本体名称冲突时一律以 `get_metrics` 为准, **不得**据知识库发明未出现在目录中的对象/指标名(如跨数据源/跨方言的幽灵对象)。"
         )
 
-    # 数据源拓扑（服务端派生）: 会话默认站点 + 可查站点清单 + 分站呈现/取数路径规则
+    # 数据源拓扑（服务端派生）: 会话默认站点 + 可查站点清单 + 分站呈现/不合计口径规则
     # authorized_sites=None 时按会话身份现推（与 _blocked_columns/_rls_scope_lines 同思路：
     # 提示词组装本来就是读侧）；显式传入时以传入为准（测试/已持有授权集的调用方）。
     sites_for_prompt = authorized_sites
@@ -639,6 +714,8 @@ def compose_system_prompt(
     has_execute_sql = bool(capabilities) and any(
         str(t.get("name", "")).endswith("execute_sql") for t in (capabilities.get("tools") or [])
     )
+    # 编排原则与歧义闸门：常驻注入（与角色/工具授权无关，只读身份同样要不猜、会问）
+    sections.append(TOOL_ORCHESTRATION_RULES)
     sections.append(NL2SQL_QUERY_RULES if has_execute_sql else SEMANTIC_QUERY_RULES)
 
     # 平台功能操作维度：仅当本会话真的注册了功能能力工具时才注入，

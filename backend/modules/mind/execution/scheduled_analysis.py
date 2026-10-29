@@ -456,7 +456,8 @@ def _build_oneshot_options(run: "_ScheduledRun"):
                 "QODERCN_CONFIG_DIR": str(home) + "/qoder-cn"})
     system_prompt = SCHEDULED_GUIDANCE + "\n\n" + compose_system_prompt(
         run.policy.as_bot, [run.policy.as_bot], run.ctx.username, run.ctx.user_role,
-        knowledge_bases=as_bots.load_knowledge_bases(run.policy.as_bot.get("knowledge_base_ids") or []),
+        knowledge_bases=as_bots.load_knowledge_bases(
+            run.policy.as_bot.get("knowledge_base_ids") or [], use_cache=True),
         skills=as_bots.load_skills(as_bots.collect_skill_names([run.policy.as_bot])),
         quick_paths=match_quick_paths(run.question, run.ctx.workspace_id, run.ctx.datasource_id),
         user_id=run.ctx.user_id, workspace_id=run.ctx.workspace_id, datasource_id=run.ctx.datasource_id,

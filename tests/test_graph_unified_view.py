@@ -136,3 +136,53 @@ def test_unified_strips_properties_by_default_toggle_restores():
     w_nodes, w_edges = svc._get_unified_graph("adh:ds:0", 0, 200, include_properties=True)
     assert {n.id for n in w_nodes} >= {"adh:prop:A.x", "adh:prop:A.y"}, "开关开应恢复属性节点"
     assert any(e.type == "属性" for e in w_edges), "开关开应保留属性边"
+
+
+# ── 按选中模型聚焦(_filter_graph_to_model): 选谁看谁，不被其他业务模型串味 ──
+
+def _stub_get_model(monkeypatch, model):
+    import backend.modules.catalog.services.ontology_service as osvc
+    monkeypatch.setattr(osvc, "get_model", lambda mid: model)
+
+
+def test_filter_graph_to_model_keeps_own_objects_and_one_hop_neighbors(monkeypatch):
+    """本模型对象 + 其直连邻居(指标/绑定表)保留；其他模型对象及其专属邻居剔除。"""
+    _stub_get_model(monkeypatch, {"id": 1, "kind": "business", "objects": [{"key": "A"}]})
+    nodes = [_node("adh:obj:A", "Object"), _node("adh:obj:OTHER", "Object"),
+             _node("adh:metric:M", "Metric"), _node("adh:table:T", "Table")]
+    edges = [_edge("adh:obj:A", "adh:metric:M", "hasMetric"),
+             _edge("adh:obj:A", "adh:table:T", "boundTo"),
+             _edge("adh:obj:OTHER", "adh:metric:M", "hasMetric")]  # 别的模型也连到 M
+    svc = GraphService.__new__(GraphService)
+
+    kept_nodes, kept_edges = svc._filter_graph_to_model(nodes, edges, 1)
+    ids = {n.id for n in kept_nodes}
+    assert "adh:obj:A" in ids, "本模型对象应保留"
+    assert "adh:metric:M" in ids and "adh:table:T" in ids, "本模型一跳邻居应保留"
+    assert "adh:obj:OTHER" not in ids, "其他模型对象不得串味"
+    assert all(e.source != "adh:obj:OTHER" and e.target != "adh:obj:OTHER" for e in kept_edges)
+
+
+def test_filter_graph_to_model_empty_when_model_not_in_graph(monkeypatch):
+    """本模型对象一个都不在图里(未重建) → 返回空，让前端如实显示“需重建”，不掺别模型。"""
+    _stub_get_model(monkeypatch, {"id": 9, "kind": "business", "objects": [{"key": "rum_event"}]})
+    nodes = [_node("adh:obj:user", "Object")]  # 只有别的模型
+    edges = []
+    svc = GraphService.__new__(GraphService)
+    kept_nodes, kept_edges = svc._filter_graph_to_model(nodes, edges, 9)
+    assert kept_nodes == [] and kept_edges == []
+
+
+def test_get_graph_data_no_model_id_returns_full_graph(monkeypatch):
+    """不传 model_id=全图（独立知识图谱页/检索口径不变）。"""
+    from backend.models.graph import GraphStats
+    called = {"filter": False}
+    svc = _svc_with_views(
+        ([_node("adh:obj:A", "Object"), _node("adh:obj:B", "Object")], []),
+        ([], []), ([], []), ([], []))
+    svc._get_stats = lambda ds: GraphStats()
+    orig = svc._filter_graph_to_model
+    svc._filter_graph_to_model = lambda *a, **k: called.__setitem__("filter", True) or orig(*a, **k)
+    data = svc.get_graph_data(graph_type=GraphType.UNIFIED, datasource_id=0, limit=200)
+    assert called["filter"] is False, "未传 model_id 不应走按模型过滤"
+    assert {n.id for n in data.nodes} == {"adh:obj:A", "adh:obj:B"}

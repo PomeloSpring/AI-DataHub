@@ -325,6 +325,42 @@ def _dataset_declared_args(dataset_id: int, params: dict) -> dict:
     return {k: v for k, v in params.items() if k in declared}
 
 
+def assert_dataset_chart_usable(data: dict, identity: dict, *, chart_id: int = 0) -> None:
+    """挂数据集图表(source_type='dataset')的入口把关：编辑者至少得有一个可执行源。
+
+    数据集可声明多个可用数据源（跨源执行范围）：只要「可用范围 ∩ 角色授权源 ≠ ∅」就允许挂，
+    生效源由取数时的 dataset_service.resolve_effective_source 同口径定（看板无会话源时
+    优先执行源，次选唯一交集源）。完全无交集 → 拒绝（不开“挂得上、刷新必报错”的空承诺入口）。
+    错误文案只含数据源**业务名**（护栏 §7）。
+    """
+    source_type = str((data or {}).get("source_type") or "").strip()
+    dataset_id = int((data or {}).get("source_id") or 0)
+    if chart_id and (not source_type or not dataset_id):
+        # 改图 patch 常只带局部字段（只改 source_id 或只改标题）→ 回读现有行拼出有效口径
+        from backend.common.db import execute_query
+        row = execute_query(
+            "SELECT source_type, source_id FROM adh_charts WHERE id = %s", (chart_id,),
+            fetchone=True) or {}
+        source_type = source_type or str(row.get("source_type") or "").strip()
+        dataset_id = dataset_id or int(row.get("source_id") or 0)
+    if source_type != "dataset" or not dataset_id:
+        return
+    from backend.modules.viz.services import dataset_service
+
+    ds = dataset_service.get_dataset(dataset_id)
+    if not ds:
+        raise ValueError("图表引用的数据集不存在，请重新从数据集列表引入")
+    if not int((identity or {}).get("user_id") or 0):
+        raise NoIdentityError("缺少可信用户身份，不能挂数据集图表（数据合规护城河）")
+    scope, missing = dataset_service.usable_scope(ds, identity)
+    if not scope:
+        detail = (f"（可用数据源范围里的源已不存在：{'、'.join(missing)}，请在数据集页重新选择）"
+                  if missing else "")
+        raise ValueError(
+            f"当前角色无权执行数据集「{ds.get('name')}」的任何可用数据源{detail}；"
+            f"请找管理员补角色数据源授权，或改用已有权限的数据集。")
+
+
 def _clear_default(user_id: int, workspace_id: int = 0):
     """Clear is_default flag for all dashboards of a user within a workspace."""
     try:
@@ -1230,6 +1266,12 @@ class ChartService:
         args = _dataset_declared_args(int(chart["source_id"]), params)
         if args:
             ds_params["args"] = args
+        # 选源上下文：数据集可声明多个可用数据源（跨源执行范围），看板只透传**业务名**
+        # （site 站点名 / datasource 源名）。本期不加看板站点切换器 UI，缺省时由服务端在
+        # 「可用范围 ∩ 角色授权源」内自动定源（只有 B 权限的用户打开绑定 A 的看板 → 在 B 上跑）；
+        # 多义时回抛含候选业务名的错误。内部 datasource_id 属黑盒(§7)，不得从看板参数供给。
+        ds_params["site"] = str(params.get("site") or "")
+        ds_params["datasource"] = str(params.get("datasource") or "")
         # 行级 scope 按角色叠加, 角色由服务端解析(不信任请求体)
         from backend.common import auth as _auth
         live = _auth.get_user_by_id(user_id) or {}

@@ -122,6 +122,12 @@ def variant_key_hint() -> str:
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXPR_CHAR_RE = re.compile(r"[\s(),;'\".\[}=+*/-]")
+# 名字（而非表达式）字符集：词字符 + $ + 中文 + 连字符。含点的串不在这里
+# （`t.col` 在多数引擎里是「表别名.列」的限定写法，不能当单个名字包引号；
+#   SLS 那种列名本体带点的场景由 planner `_col` 按引擎显式处理）。
+# 探针：SLS LogStore 名就是 `logstore-rum` 这种带连字符的名字，不加引号被解析成
+#   `logstore - rum` 表达式（FROM logstore-rum 直接语法错），必须整体包引号。
+_NAME_WITH_DASH_RE = re.compile(r"^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_$\u4e00-\u9fff-]*$")
 
 
 def quote_ident(name: Any, family: str = "mysql") -> str:
@@ -129,12 +135,16 @@ def quote_ident(name: Any, family: str = "mysql") -> str:
 
     含空白/括号/引号/逗号等运算结构的表达式不能当标识符包引号（否则 `SUM(a)` 被引号化）；
     其余（含中文词）一律视为标识符加引号，否则中文列别名在 ORDER BY/AS 处裸奔，PG 直接语法错。
+    带连字符的名字（如 SLS LogStore `logstore-rum`）不是运算式：早先被 `_EXPR_CHAR_RE`
+    误判为表达式而裸奔，生成 `FROM logstore-rum` 被引擎当减法。本函数修正这一类。
     **别名（AS 右侧）请用 `quote_alias`**：别名是名字不是表达式，含 ()/% 等字符的业务名
     若走本函数会被当表达式透传，生成 `AS 层间转化率(%)` 这种非法 SQL。
     """
     s = str(name or "").strip()
     if not s:
         return s
+    if not _IDENT_RE.match(s) and _NAME_WITH_DASH_RE.match(s) and "-" in s:
+        return quote_alias(s, family)
     if not _IDENT_RE.match(s) and _EXPR_CHAR_RE.search(s):
         return s
     return quote_alias(s, family)

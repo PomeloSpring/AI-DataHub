@@ -26,29 +26,59 @@ def execute(name, args, ctx, resource_scope=None):
     # resource_scope 只由设计服务校验后传入，不从工具 args 接受。
     datasource_id = resource_scope["datasource_id"] if resource_scope else ctx.datasource_id
     system = resource_scope is None and system_scope(ctx)  # 能力叠加：附加系统本体可见
-    if not system and not datasource_id:
+    # 聚合态（全球）会话：datasource_id 合法为 0（=逐站编排），不得硬拒（同 resource_guard 闸门
+    # 修复）。此时源本体按「角色授权集内的具体站点」纳入，让发现层(get_metrics 等)能看到各站
+    # 源本体对象（如各站 RUM 事件对象），支撑逐站编排；仍只回业务投影、不回物理结构。
+    from backend.core.site_service import is_aggregate_site
+    aggregate = resource_scope is None and is_aggregate_site(
+        (getattr(ctx, "extra", None) or {}).get("site_code") or "")
+    if not system and not datasource_id and not aggregate:
         raise PermissionError("请明确选择当前 AS-BOT 已绑定的数据源")
-    # 判别口径用 kind（x3 归属键改造），不用 datasource_id=0：
-    # 本体归属已按业务域而非数据源，业务本体的 datasource_id 也是 0，
-    # 旧口径会把业务本体当成系统本体暴露给系统域 AS-BOT（as-bot-system-waker §1 域边界泄漏）。
-    # 可见域 = 系统本体(system 能力时叠加) ∪ 业务域（跨源业务本体 + 本绑定源的源本体）。
-    business = "kind = 'business' OR (kind = 'source' AND datasource_id = %s)"
-    if system:
-        condition = f"(kind = 'system' OR {business})"
-        params = (int(datasource_id or 0),)
+    # 判别口径用 kind：源本体已退役（合并为 business），只剩 system / business。
+    # 可见域（严格按源分域，waker-datasource-domain §1）：
+    #   - 生效源集 src_ids = 会话绑定源（单源）或聚合态下授权集内全部具体站点；
+    #   - system 本体：仅系统能力(system)时叠加；
+    #   - business 本体：模型触达数据源(主源∪deploy_sites)∩src_ids 非空才纳入 ——
+    #     不因合并成 business 而把别源业务本体泄漏进本会话投影（源本体退役后仍按源收口）。
+    if aggregate and not datasource_id:
+        src_ids = sorted({int(i) for i in (ctx.extra.get("available_datasource_ids") or [])
+                          if int(i or 0) > 0})
     else:
-        condition = f"({business})"
-        params = (datasource_id,)
+        src_ids = [int(datasource_id or 0)]
+    src_set = set(src_ids)
+    from backend.core.site_service import datasource_name_id_map
+    from backend.modules.catalog.services.ontology_service import _model_scope_ids_from_row
+    name_id_map = datasource_name_id_map()
+
+    def _model_visible(row) -> bool:
+        kind = str(row.get("kind") or "")
+        if kind == "system":
+            return system
+        return bool(_model_scope_ids_from_row(row, name_id_map) & src_set)
 
     def _scope_note(out):
-        """未选源时源本体(kind='source')目录不可见——显式标注不完整，
-        防止把'上下文不完整'误报成'对象不存在'（no-silent-degradation）。"""
-        if system and not datasource_id:
+        """未选具体源时业务本体目录可能不完整——显式标注，防把'上下文不完整'误报成'对象不存在'。"""
+        if (system and not datasource_id):
             out = dict(out or {})
-            note = "会话未选定数据源，kind='source' 的源本体目录未包含在内，请先选定数据源再查源本体对象；目录为空≠对象不存在"
+            note = ("会话未选定数据源：仅系统本体可见，业务本体需选定数据源或切聚合态（全球）才纳入；"
+                    "目录为空≠对象不存在")
             out["incomplete_scope"] = True
             out["note"] = f"{out['note']}；{note}" if out.get("note") else note
+        elif aggregate:
+            out = dict(out or {})
+            note = ("会话站点为聚合态（全球）：已按授权集内各具体站点纳入业务本体，"
+                    "取数请对各站分别带 site/datasource 调用 run_semantic_query 后分站呈现；"
+                    "某站在本目录无对象=该站未建模（≠无数据），需先生成/部署业务本体")
+            out["note"] = f"{out['note']}；{note}" if out.get("note") else note
         return out
+
+    def _fetch_visible_models(require_active: bool = True):
+        status_sql = " WHERE status='active'" if require_active else ""
+        all_rows = execute_query(
+            "SELECT id,name,status,kind,datasource_id,deploy_sites,json_content "
+            f"FROM adh_ontology_models{status_sql} ORDER BY id")
+        return [r for r in (all_rows or []) if _model_visible(r)]
+
     if name == "get_glossary":
         from backend.modules.mind.rag import terminology_manager
         rows = terminology_manager.get_all_terms(datasource_id)
@@ -69,11 +99,8 @@ def execute(name, args, ctx, resource_scope=None):
             out.extend({"name": r.get("name"), "db_type": r.get("db_type")} for r in rows)
         return {"datasources": out}
     if name == "get_metadata_summary":
-        return _scope_note(execute_query(f"SELECT COUNT(*) AS ontology_models FROM adh_ontology_models WHERE {condition}",
-                                         params, fetchone=True))
-    status_filter = "" if name == "get_ontology_model" else " AND status='active'"
-    rows = execute_query(f"SELECT id,name,status,json_content FROM adh_ontology_models WHERE {condition}"
-                         f"{status_filter} ORDER BY id", params)
+        return _scope_note({"ontology_models": len(_fetch_visible_models(require_active=False))})
+    rows = _fetch_visible_models(require_active=(name != "get_ontology_model"))
     requested = int(args.get("model_id") or 0)
     if requested:
         rows = [r for r in rows if r["id"] == requested]

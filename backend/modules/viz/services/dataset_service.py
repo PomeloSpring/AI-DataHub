@@ -68,16 +68,227 @@ def _derive_source_type(object_key: str, sql_query: str) -> str:
     return "both" if has_obj and has_sql else ("semantic" if has_obj else "sql")
 
 
+# ═══════════════════════════════════════════════════════════════════
+# 可用数据源范围(一份定义 × N 个源, 同构本体 deploy_sites)
+# ═══════════════════════════════════════════════════════════════════
+# datasource_id=0 = 默认引擎(平台元数据库), 不参与角色数据源授权裁决
+# (既有 governed_execute 对 0/None 不做源级 RBAC, 存量行为零变化)。
+_DEFAULT_ENGINE_ID = 0
+_DEFAULT_ENGINE_LABEL = "默认引擎"
+
+
+def _load_datasource_catalog() -> dict[str, dict]:
+    """数据源业务名 → {id, name, db_type, site_code}（供按名解析）。
+
+    不落共享缓存：这张表是权限/范围判定的事实源，跨进程缓存会让“新建/改名源”在
+    TTL 内被解成「已不存在」（误报失效），且测试把 execute_query 换为假表时会将假数据
+    写进共享 Redis、污染在线进程。调用方自己按“一次操作内复用”传 catalog（见 list_datasets）。
+    """
+    rows = execute_query("SELECT id, name, db_type, site_code FROM adh_datasources") or []
+    return {str(r["name"]): {"id": int(r["id"]), "name": str(r["name"]),
+                             "db_type": str(r.get("db_type") or ""),
+                             "site_code": str(r.get("site_code") or "")} for r in rows}
+
+
+def _datasource_name_by_id(datasource_id: int, catalog: dict[str, dict] | None = None) -> str:
+    """数据源 id → 业务名（找不到返回空串，由调用方决定是否标注失效）。"""
+    did = int(datasource_id or 0)
+    if not did:
+        return ""
+    for row in (catalog if catalog is not None else _load_datasource_catalog()).values():
+        if int(row["id"]) == did:
+            return str(row.get("name") or "")
+    return ""
+
+
+def available_source_names(ds: dict, catalog: dict[str, dict] | None = None) -> list[str]:
+    """数据集可用范围的业务名清单 = [执行源名] + available_datasources（去重保序）。
+
+    执行源隐式属于可用范围（无需在 available_datasources 里重复登记），与
+    本体 `deploy_sites` 「主源 ∪ 路由源」口径一致。
+    """
+    cat = catalog if catalog is not None else _load_datasource_catalog()
+    names: list[str] = []
+    exec_name = _datasource_name_by_id(int(ds.get("datasource_id") or 0), cat)
+    if exec_name:
+        names.append(exec_name)
+    raw = _parse_json(ds.get("available_datasources"), [])
+    if not isinstance(raw, list):
+        raw = []
+    for item in raw:
+        nm = str(item or "").strip()
+        if nm and nm not in names:
+            names.append(nm)
+    return names
+
+
+def usable_sources(ds: dict,
+                   catalog: dict[str, dict] | None = None) -> tuple[list[dict], list[str]]:
+    """可用范围 → (已解析源清单 [{id,name,db_type,site_code}], 悬空/失效名清单)。
+
+    悬空名（源已删/改名）不得静默丢弃：随错误文案对外暴露（no-silent-degradation）。
+    """
+    cat = catalog if catalog is not None else _load_datasource_catalog()
+    ds_id = int(ds.get("datasource_id") or 0)
+    usable: list[dict] = []
+    missing: list[str] = []
+    if ds_id == _DEFAULT_ENGINE_ID:
+        # 默认引擎（元数据库）始终可用，不依赖角色源授权
+        usable.append({"id": _DEFAULT_ENGINE_ID, "name": "", "db_type": "mysql",
+                       "site_code": ""})
+    for nm in available_source_names(ds, cat):
+        row = cat.get(nm)
+        if not row:
+            if nm not in missing:
+                missing.append(nm)
+            continue
+        if int(row["id"]) not in {u["id"] for u in usable}:
+            usable.append({"id": int(row["id"]), "name": nm,
+                           "db_type": row["db_type"], "site_code": row["site_code"]})
+    if ds_id and ds_id not in {u["id"] for u in usable}:
+        # 执行源行已不存在（id 查不到名）：登记为失效项，不得当"没有可用源"静默处理
+        missing.append(f"执行数据源(id:{ds_id} 已不存在)")
+    return usable, missing
+
+
+def _allowed_source_ids(identity: dict) -> set[int]:
+    """角色已授权数据源 id 集（唯一裁决点，空=无权，不得解释为全量）。"""
+    from backend.core.role_service import role_service
+
+    return {int(i) for i in (role_service.get_user_allowed_datasources(
+        int(identity.get("user_id") or 0), int(identity.get("workspace_id") or 0)) or [])}
+
+
+def usable_scope(ds: dict, identity: dict, *, catalog: dict[str, dict] | None = None,
+                 allowed_ds: set[int] | None = None) -> tuple[list[dict], list[str]]:
+    """当前身份可执行的源 = 可用范围 ∩ 角色授权源（默认引擎直通）。
+
+    admin 不开后门：enforcer Step 1 的源级 RBAC 对 admin 同样生效（旁路在 Step 3），
+    此处口径必须与取数侧一致，否则出现"列表看得见、一取数就报错"的空承诺。
+    `allowed_ds` 供清单类循环一次取授权集后复用（避免 N 次角色查询）。
+    """
+    usable, missing = usable_sources(ds, catalog)
+    allowed = allowed_ds if allowed_ds is not None else _allowed_source_ids(identity)
+    return ([s for s in usable if s["id"] == _DEFAULT_ENGINE_ID or s["id"] in allowed],
+            missing)
+
+
+def _scope_label(items: list[dict]) -> str:
+    return "、".join((s.get("name") or _DEFAULT_ENGINE_LABEL) for s in items) or "无"
+
+
+def resolve_effective_source(ds: dict, identity: dict, *, site: str = "",
+                            datasource: str = "", preferred_id: int = 0,
+                            model_id: int = 0,
+                            catalog: dict[str, dict] | None = None) -> int:
+    """生效数据源解析（服务端定源，LLM/前端只给业务名，不猜源）。
+
+    顺序固定（不得调序）：
+      1. 显式 `site`（站点业务名/代码）或 `datasource`（源业务名）→ 必落在可用范围∩授权集内；
+      2. `preferred_id`（会话生效源/看板上下文）∈ 交集 → 用它；
+      3. 数据集执行源 ∈ 交集 → 用执行源（存量行为零变化）；
+      4. 交集唯一 → 自动选定；
+      5. 交集多义 → 抛含候选业务名的错误；
+      6. 交集为空 → 报错（该数据集对当前身份不可用）。
+    """
+    scope, missing = usable_scope(ds, identity, catalog=catalog)
+    exec_id = int(ds.get("datasource_id") or 0)
+    ds_name = str(ds.get("name") or "")
+    range_hint = ("；可用数据源范围：" + _scope_label(scope)) if scope else ""
+
+    # ── 1. 显式指定 ──────────────────────────────────────────────
+    want_ds = str(datasource or "").strip()
+    if want_ds:
+        hit = next((s for s in scope if s["name"] == want_ds), None)
+        if hit:
+            return int(hit["id"])
+        if want_ds in available_source_names(ds, catalog):
+            # 在可用范围内但角色无授权 → 越权（不换成别的源重试）
+            raise PermissionError(
+                f"当前角色无权访问数据源「{want_ds}」，无法在数据集「{ds_name}」上执行；"
+                f"当前可执行的数据源：{_scope_label(scope)}。请如实告知用户，不要换源重试。")
+        raise ValueError(
+            f"数据集「{ds_name}」不适用数据源「{want_ds}」{range_hint}"
+            + (f"；配置中的失效源：{'、'.join(missing)}" if missing else "")
+            + "。请用 list_datasources 查看候选，或询问用户，不要猜源名。")
+    want_site = str(site or "").strip()
+    if want_site:
+        from backend.core.site_service import SiteError, resolve_site_to_source
+
+        # 只在"具体可用且已授权"的源集内解析：传空清单会让 site_service 不按授权过滤
+        # （datasources_of_site 的 IN 筛选会被跳过），等于越权拿同站任意源。
+        real_ids = [s["id"] for s in scope if s["id"] != _DEFAULT_ENGINE_ID]
+        if not real_ids:
+            raise ValueError(
+                f"数据集「{ds_name}」无可按站点「{want_site}」执行的数据源"
+                + ("（仅在默认引擎上执行；要跨站执行请把站点数据源登记到可用数据源范围）"
+                   if any(s["id"] == _DEFAULT_ENGINE_ID for s in scope)
+                   else f"；当前可执行的数据源：{_scope_label(scope)}")
+                + "。请如实告知用户，不要换站重试。")
+        try:
+            hit_id = resolve_site_to_source(want_site, real_ids, model_id=int(model_id or 0))
+        except SiteError as e:
+            # SiteError 文案只含站点名与源业务名（护栏 §7），原样外抛可诊断
+            raise ValueError(f"数据集「{ds_name}」按站点定源失败：{e}") from e
+        return int(hit_id)
+
+    # ── 2. 会话/看板偏好源 ────────────────────────────────────────
+    pref = int(preferred_id or 0)
+    if pref:
+        hit = next((s for s in scope if s["id"] == pref), None)
+        if hit:
+            return int(hit["id"])
+
+    # ── 3. 执行源 ─────────────────────────────────────────────────
+    if any(s["id"] == exec_id for s in scope):
+        return exec_id
+
+    # ── 4/5. 交集唯一 / 多义 ──────────────────────────────────────
+    if len(scope) == 1:
+        return int(scope[0]["id"])
+    if scope:
+        raise ValueError(
+            f"数据集「{ds_name}」可在 {len(scope)} 个数据源上执行（{_scope_label(scope)}），"
+            f"无法确定取哪个；请用 site（站点业务名）或 datasource（数据源业务名）指定其一，"
+            f"或询问用户。")
+
+    # ── 6. 交集为空 ───────────────────────────────────────────────
+    all_usable, _miss = usable_sources(ds, catalog)
+    detail = (f"（配置中的失效源：{'、'.join(missing)}）" if missing
+              else (f"（可用范围：{_scope_label(all_usable)}）" if all_usable else "（未配置可用范围）"))
+    raise PermissionError(
+        f"当前角色无权访问数据集「{ds_name}」的任何可用数据源{detail}。"
+        f"请检查角色数据源授权或改选其他数据集，勿向用户展示连接细节。")
+
+
+def effective_source_name(effective_id: int) -> str:
+    """生效源 id → 对外业务名（默认引擎给可读标注，绝不回裸 id）。"""
+    if not int(effective_id or 0):
+        return _DEFAULT_ENGINE_LABEL
+    return _datasource_name_by_id(int(effective_id)) or _DEFAULT_ENGINE_LABEL
+
+
 def list_datasets(identity: dict, keyword: str = "", datasource_id: int = 0) -> list[dict]:
-    """列出数据集(按角色授权过滤可见性, admin bypass); datasource_id>0 时按数据源筛选。"""
+    """列出数据集(按角色授权过滤可见性, admin bypass); datasource_id>0 时按可用范围筛选。
+
+    可见性 = 角色数据集授权 ∧ (可用数据源范围 ∩ 角色授权源 ≠ ∅)：
+    只有 B 权限的用户也能看到“执行源为 A、但 B 在可用范围内”的数据集（并能在 B 上跑）；
+    完全无交集的直接隐藏，避免“点得开、一取数就报错”的空承诺。
+    """
     from backend.core.role_service import role_service
 
     user_id = int(identity.get("user_id") or 0)
     user_role = identity.get("role") or ""
 
-    sql = ("SELECT id, name, description, source_type, object_key, datasource_id, "
-           "chart_type, chart_preset, owner_id, status, field_config, created_at, updated_at "
-           "FROM adh_datasets WHERE status='active'")
+    # 被引计数随主查询一次 LEFT JOIN 取回：元数据库在远端（单往返百 ms 级），
+    # 逐行 COUNT 会把 24 行清单拖成 24 次往返（实测 11s+）。
+    sql = ("SELECT d.id, d.name, d.description, d.source_type, d.object_key, d.datasource_id, "
+           "d.available_datasources, d.chart_type, d.chart_preset, d.owner_id, d.status, "
+           "d.field_config, d.created_at, d.updated_at, COALESCE(ref.n, 0) AS `references` "
+           "FROM adh_datasets d "
+           "LEFT JOIN (SELECT source_id, COUNT(*) AS n FROM adh_charts "
+           "WHERE source_type='dataset' GROUP BY source_id) ref ON ref.source_id = d.id "
+           "WHERE d.status='active'")
     params: list = []
 
     # admin 全可见, 其余角色 fail-closed: 只展示已授权的数据集
@@ -86,25 +297,43 @@ def list_datasets(identity: dict, keyword: str = "", datasource_id: int = 0) -> 
         if not allowed_ids:
             return []
         ph = ",".join(["%s"] * len(allowed_ids))
-        sql += f" AND id IN ({ph})"
+        sql += f" AND d.id IN ({ph})"
         params.extend(allowed_ids)
 
-    # 按数据源筛选（数据集页顶栏选择器）：0/未传 = 全部
-    if datasource_id:
-        sql += " AND datasource_id = %s"
-        params.append(int(datasource_id))
-
     if keyword:
-        sql += " AND (name LIKE %s OR description LIKE %s OR object_key LIKE %s)"
+        sql += " AND (d.name LIKE %s OR d.description LIKE %s OR d.object_key LIKE %s)"
         like = f"%{keyword}%"
         params += [like, like, like]
-    sql += " ORDER BY updated_at DESC LIMIT 200"
+    sql += " ORDER BY d.updated_at DESC LIMIT 200"
     rows = execute_query(sql, tuple(params)) or []
+
+    # 数据源筛选（数据集页顶栏选择器）：语义 = 该源在可用范围内（含执行源）。
+    # 按可用范围/交集的判定要拿全量源清单与授权集，故在 Python 侧一次算好（源表行数个位数）。
+    catalog = _load_datasource_catalog()
+    filter_name = _datasource_name_by_id(int(datasource_id or 0), catalog) if datasource_id else ""
+    if datasource_id and not filter_name and int(datasource_id) != _DEFAULT_ENGINE_ID:
+        return []                      # 筛选的源已不存在 → 无命中（不静默当"全部"）
+    allowed_ds = _allowed_source_ids(identity)
+    # 语义字典按数据源复用（一次请求内同一源只取一遍）：同上，不得逐行回源。
+    dict_memo: dict[int, tuple[list, list]] = {}
+
+    out: list[dict] = []
     for r in rows:
+        usable, _missing = usable_scope(r, identity, catalog=catalog, allowed_ds=allowed_ds)
+        if not usable:
+            continue                   # 无任何可执行源 → 不可见（与取数侧 fail-closed 同口径）
+        if datasource_id and datasource_id not in {u["id"] for u in usable}:
+            continue
         r["chart_preset"] = _parse_json(r.get("chart_preset"), {})
-        r["field_count"] = len(resolve_fields(r))
-        r["references"] = _reference_count(int(r["id"]))
-    return rows
+        r["field_count"] = len(resolve_fields(r, memo=dict_memo))
+        # 资源引用一律显示业务名（ui-resource-display）：前端不得回退成 `ID:${id}`
+        r["datasource_name"] = _datasource_name_by_id(
+            int(r.get("datasource_id") or 0), catalog) or _DEFAULT_ENGINE_LABEL
+        r["available_source_names"] = [u["name"] or _DEFAULT_ENGINE_LABEL
+                                       for u in usable_sources(r, catalog)[0]]
+        r["usable_now"] = [u["name"] or _DEFAULT_ENGINE_LABEL for u in usable]
+        out.append(r)
+    return out
 
 
 def get_dataset(dataset_id: int) -> dict | None:
@@ -143,6 +372,66 @@ def _validate_and_normalize(req: dict, existing: dict | None = None) -> dict:
     return stored or {}
 
 
+def _normalize_available_datasources(value, catalog: dict[str, dict]) -> str:
+    """可用数据源范围归一化（存业务名数组）。
+
+    未知名直接拒（fail-loud）：存下来等于把“配了但永远解不到源”的坑推到运行期。
+    不校验调用者对该源有无权限：数据集是全局资产，管理源权限 ≠ 使用源权限。
+    """
+    if value in (None, ""):
+        return "[]"
+    if isinstance(value, str):
+        value = _parse_json(value, None)
+    if not isinstance(value, list):
+        raise ValueError("available_datasources 必须是数据源业务名数组")
+    names: list[str] = []
+    unknown: list[str] = []
+    for item in value:
+        nm = str(item or "").strip()
+        if not nm or nm in names:
+            continue
+        if nm in catalog:
+            names.append(nm)
+        else:
+            unknown.append(nm)
+    if unknown:
+        known = "、".join(sorted(catalog)) or "（尚未注册数据源）"
+        raise ValueError(f"可用数据源不存在: {'、'.join(unknown)}；已注册数据源: {known}。"
+                         f"请从清单选择，不要手输 id 或不存在的源名。")
+    return json.dumps(names, ensure_ascii=False)
+
+
+def _dialect_coverage_warnings(ds_row: dict, catalog: dict[str, dict]) -> list[str]:
+    """可用范围内各源的方言覆盖检查（保存时显式告警，不阻断）。
+
+    告警而非静默：跨引擎正文缺失会在运行期由编译器 `DatasetCompileError` 拒绝（不回退其
+    他方言正文），但建模者应该在保存时就看到缺口，而不是上线后用户报错才知道。
+    """
+    from backend.semantics import dialect as sem_dialect
+    from backend.semantics.sql_params import pick_body
+
+    sql_query = str(ds_row.get("sql_query") or "").strip()
+    bodies = _parse_json(ds_row.get("sql_bodies"), {})
+    if not sql_query and not bodies:
+        return []                      # 纯语义对象数据集: 无预制正文, 不涉及方言
+    usable, _missing = usable_sources(ds_row, catalog)
+    base_family = sem_dialect.family_of(_dataset_db_type(ds_row))
+    warnings: list[str] = []
+    for s in usable:
+        db_type = s["db_type"] or "mysql"
+        engine = sem_dialect.engine_of(db_type)
+        family = sem_dialect.family_of(db_type)
+        label = s["name"] or _DEFAULT_ENGINE_LABEL
+        _body, err = pick_body(ds_row.get("sql_bodies"), sql_query, engine, family)
+        if err:
+            warnings.append(f"数据源「{label}」({db_type}) 无可执行正文: {err}")
+        elif not bodies and family != base_family:
+            warnings.append(
+                f"数据源「{label}」方言族为 {family}，与执行源({base_family}) 不同且未登记"
+                f"多方言正文(sql_bodies 为空)，跨引擎可能语法不兼容；请为该引擎补登正文或从可用范围移除")
+    return warnings
+
+
 def create_dataset(req: dict, identity: dict) -> dict:
     name = (req.get("name") or "").strip()
     if not name:
@@ -158,6 +447,10 @@ def create_dataset(req: dict, identity: dict) -> dict:
         _validate_select(sql_query)
     stored = _validate_and_normalize(req)
 
+    # 可用数据源范围：按业务名校验（未知名拒绝）+ 跨引擎正文覆盖告警
+    catalog = _load_datasource_catalog()
+    available_json = _normalize_available_datasources(req.get("available_datasources"), catalog)
+
     if execute_query("SELECT id FROM adh_datasets WHERE name=%s", (name,), fetchone=True):
         raise ValueError(f"数据集名称已存在: {name}")
 
@@ -166,12 +459,12 @@ def create_dataset(req: dict, identity: dict) -> dict:
                                fetchone=True)["n"])
     execute_write(
         "INSERT INTO adh_datasets (id, name, description, source_type, object_key, "
-        "datasource_id, sql_query, sql_bodies, variables, touched_tables, field_config, "
+        "datasource_id, available_datasources, sql_query, sql_bodies, variables, touched_tables, field_config, "
         "chart_type, chart_preset, owner_id, status) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active')",
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active')",
         (new_id, name, req.get("description") or "",
          _derive_source_type(object_key, sql_query), object_key,
-         datasource_id, sql_query,
+         datasource_id, available_json, sql_query,
          stored.get("sql_bodies") or json.dumps(req.get("sql_bodies") or {}, ensure_ascii=False),
          _as_json_text(req.get("variables"), "{}"),
          stored.get("touched_tables"),
@@ -179,7 +472,13 @@ def create_dataset(req: dict, identity: dict) -> dict:
          (req.get("chart_type") or "").strip(),
          json.dumps(req.get("chart_preset") or {}, ensure_ascii=False),
          int(identity.get("user_id") or 0)))
-    return get_dataset(new_id)
+    ds = get_dataset(new_id) or {}
+    warnings = _dialect_coverage_warnings({**ds, "available_datasources": available_json}, catalog)
+    for w in warnings:
+        logger.warning("[dataset] %s: %s", name, w)
+    if warnings:
+        ds["warnings"] = warnings
+    return ds
 
 
 def _as_json_text(value, fallback: str) -> str:
@@ -222,6 +521,11 @@ def update_dataset(dataset_id: int, req: dict, identity: dict) -> dict:
     if req.get("datasource_id") is not None:
         updates.append("datasource_id = %s")
         params.append(int(req["datasource_id"]))
+    if req.get("available_datasources") is not None:
+        # 可用数据源范围（业务名数组）：未知名直接报错，不存下来等运行期发现问题
+        updates.append("available_datasources = %s")
+        params.append(_normalize_available_datasources(
+            req["available_datasources"], _load_datasource_catalog()))
     if req.get("field_config") is not None:
         updates.append("field_config = %s")
         params.append(json.dumps(req["field_config"], ensure_ascii=False))
@@ -259,7 +563,14 @@ def update_dataset(dataset_id: int, req: dict, identity: dict) -> dict:
     if updates:
         execute_write(f"UPDATE adh_datasets SET {', '.join(updates)} WHERE id = %s",
                       tuple(params) + (dataset_id,))
-    return get_dataset(dataset_id)
+    saved = get_dataset(dataset_id) or {}
+    # 保存后重算方言覆盖告警（显式返回，不静默；运行期仍由编译器拒绝无正文的源）
+    warnings = _dialect_coverage_warnings(saved, _load_datasource_catalog())
+    for w in warnings:
+        logger.warning("[dataset] %s: %s", saved.get("name"), w)
+    if warnings:
+        saved["warnings"] = warnings
+    return saved
 
 
 def delete_dataset(dataset_id: int, identity: dict) -> dict:
@@ -412,12 +723,16 @@ def extract_from_sql(req: dict, identity: dict) -> dict:
 # 字段定义
 # ═══════════════════════════════════════════════════════════════════
 
-def resolve_fields(ds: dict) -> list[dict]:
+def resolve_fields(ds: dict, datasource_id: int | None = None, *, memo: dict | None = None) -> list[dict]:
     """数据集字段: 绑定语义对象时以语义字典为主(随本体自动演进),
     field_config 保存「SQL 输出列 → 语义字段」映射(maps_to)与 SQL 独有列;纯 SQL 源读 field_config.
 
     每项带 from 标记('semantic' 语义字典演进 | 'config' field_config 手工),
     供前端区分可编辑范围(仅 config 项可改名/改角色)。
+    `datasource_id` 可指定按哪个源取字典（跨源数据集切到生效源后，字典行按生效源或
+    ds=0 全局行取，否则出现"能取数但字段/口径目录空"的半截功能）。
+    `memo` 为调用方提供的请求级字典缓存（{datasource_id: (metrics, dims)}），
+    清单类循环传入以免 N×2 次字典回源。
     """
     config = _parse_json(ds.get("field_config"), [])
     object_key = (ds.get("object_key") or "").strip()
@@ -425,7 +740,9 @@ def resolve_fields(ds: dict) -> list[dict]:
         for e in config:
             e["from"] = "config"
         return config
-    semantic = _semantic_fields(int(ds.get("datasource_id") or 0), object_key)
+    semantic = _semantic_fields(int(ds.get("datasource_id") or 0)
+                                if datasource_id is None else int(datasource_id),
+                                object_key, memo=memo)
     for f in semantic:
         f["from"] = "semantic"
     if not config:
@@ -444,13 +761,20 @@ def resolve_fields(ds: dict) -> list[dict]:
     return fields
 
 
-def _semantic_fields(datasource_id: int, object_key: str) -> list[dict]:
+def _semantic_fields(datasource_id: int, object_key: str,
+                     *, memo: dict | None = None) -> list[dict]:
     try:
         from backend.semantics.mdl_compiler import _get_dimensions, _get_metrics
-        metrics = [m for m in _get_metrics(datasource_id)
-                   if (m.get("bound_object_key") or "") == object_key]
-        dims = [d for d in _get_dimensions(datasource_id)
-                if (d.get("bound_object_key") or "") == object_key]
+
+        # 字典行本身不缓存（改字典必须即时可见），只在一次请求内按源复用
+        rows = memo.get(datasource_id) if memo is not None else None
+        if rows is None:
+            rows = (_get_metrics(datasource_id), _get_dimensions(datasource_id))
+            if memo is not None:
+                memo[datasource_id] = rows
+        metrics, dims = rows
+        metrics = [m for m in metrics if (m.get("bound_object_key") or "") == object_key]
+        dims = [d for d in dims if (d.get("bound_object_key") or "") == object_key]
     except Exception as e:  # noqa: BLE001
         logger.warning("[dataset] semantic fields failed ds=%s obj=%s: %s",
                        datasource_id, object_key, e)
@@ -550,19 +874,39 @@ def _scope_filters(dataset_id: int, identity: dict) -> list[dict]:
 def query_dataset(dataset_id: int, params: dict, identity: dict) -> dict:
     """按当前身份取数: 权限/RLS/敏感屏蔽/审计/scopes 全部服务端施加.
 
-    params: {dimensions[], measures[], filters[], order[{by,desc}], limit}
+    params: {dimensions[], measures[], filters[], order[{by,desc}], limit,
+             args{}, site?, datasource?, preferred_datasource_id?}
+    `site`/`datasource` 是业务名（唯一可接受的选源入参，服务端在可用范围∩授权集内
+    解析为 id）；本函数**不接受** datasource_id（§7 黑盒，内部 id 不得由外部供给）。
     semantic 源走七闸门链; sql 源走 governed_execute(scope 以子查询包裹)。
     """
     ds = get_dataset(dataset_id)
     if not ds or ds.get("status") != "active":
         raise ValueError("数据集不存在或已停用")
+    if params.get("datasource_id"):
+        raise ValueError("不接受数据源内部 id：请用 site（站点业务名）或 datasource（数据源业务名）指定")
     scopes = _scope_filters(dataset_id, identity)
+    # 生效源解析（服务端定源，不猜）：可用数据源范围 ∩ 角色授权集
+    effective = resolve_effective_source(
+        ds, identity,
+        site=str(params.get("site") or ""),
+        datasource=str(params.get("datasource") or ""),
+        preferred_id=int(params.get("preferred_datasource_id") or 0),
+        model_id=int(params.get("model_id") or 0))
+    # 生效源注回副本：下游（方言正文/编译方言/执行源/字段目录）一律按生效源，
+    # 跨引擎时不得拿执行源的 db_type 去编译（历史单源假设）。
+    ds = {**ds, "datasource_id": effective}
     # 执行路径显式选择(非降级): 执行 SQL 是实际执行通道; 仅绑定语义对象时走七闸门语义链。
     if (ds.get("sql_query") or "").strip():
-        return _query_sql(ds, params, scopes, identity)
-    if (ds.get("object_key") or "").strip():
-        return _query_semantic(ds, params, scopes, identity)
-    raise ValueError("数据集缺少执行定义: 请配置执行 SQL 或绑定本体对象")
+        result = _query_sql(ds, params, scopes, identity)
+    elif (ds.get("object_key") or "").strip():
+        result = _query_semantic(ds, params, scopes, identity)
+    else:
+        raise ValueError("数据集缺少执行定义: 请配置执行 SQL 或绑定本体对象")
+    # 对外只回生效源**业务名**（看板/报表/Chat 可诊断"这次跑的哪个源"），不回 id
+    result.pop("datasource_id", None)
+    result["datasource"] = effective_source_name(effective)
+    return result
 
 
 def _query_semantic(ds: dict, params: dict, scopes: list[dict], identity: dict) -> dict:
@@ -741,9 +1085,3 @@ def _references(dataset_id: int) -> list[dict]:
         (dataset_id,)) or []
 
 
-def _reference_count(dataset_id: int) -> int:
-    row = execute_query(
-        "SELECT COUNT(*) AS n FROM adh_charts "
-        "WHERE source_type='dataset' AND source_id=%s",
-        (dataset_id,), fetchone=True)
-    return int(row["n"]) if row else 0

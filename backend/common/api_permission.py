@@ -56,6 +56,10 @@ _SELF_ROUTE_PATTERNS = re.compile(
     r"|^/api/users/me(?:/.*)?$"
     # 用户记忆: 纯个人自助(只看/改自己的), 属主由路由层 user_id 过滤保证
     r"|^/api/memory(?:/.*)?$"
+    # 版本公告读取 + 自己的引导/已读状态: 同为纯个人自助(属主由路由层 user_id
+    # 过滤保证), 不能按权限码拦(否则无权限码角色看不到公告也存不下跳过状态);
+    # 公告内容**发布**域 /api/admin/release-notes* 仍按 require_admin + 权限码
+    r"|^/api/release-notes(?:/.*)?$"
     # 看板浏览域: 查自己的可见组/看板详情, 可见性由 adh_role_dashboard_access fail-closed 裁决
     # (无授权=空集/404), 不用权限码拦; 看板管理端点仍按码
     r"|^/api/dashboard/groups/visible$"

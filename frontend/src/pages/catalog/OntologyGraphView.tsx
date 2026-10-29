@@ -41,8 +41,6 @@ const KB_SKIP_LABEL: Record<string, string> = {
   no_kb_with_sync_ontology: '没有开启同步的目标知识库',
   // 手动选库但目标库已被删/不可用（不静默换库，显式回错）
   specified_kb_unavailable: '指定知识库不可用（已删除/非 qmind/未绑定 notebook）',
-  // 源本体不做 RAG 是后端归属裁决（sync_targets_for_model），不是配置遗漏
-  source_model_semantic_only: '源本体只服务语义检索/取数，按设计不入知识库',
   status_draft: '草案未激活，不推送知识库',
   status_archived: '模型已归档，不推送知识库',
   superseded_by_active_version: '同名已有生效版本，本版本不上云',
@@ -372,6 +370,7 @@ export default function OntologyGraphView() {
                   datasourceId={selected.datasource_id}
                   kind={selected.kind}
                   domain={selected.domain}
+                  modelId={selected.id}
                   singleView="ontology-overview" />
               </TabsContent>
               <TabsContent value="editor" className="mt-2">

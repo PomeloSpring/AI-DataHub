@@ -45,6 +45,23 @@ def set_recorder(recorder: Optional[Any]) -> None:
 
 # ── 便捷记录 API(深层调用用;无 recorder 或关闭时静默) ──────────────
 
+def mark_model_window_start() -> None:
+    """标注“模型请求窗口起点”：执行层做完前置阶段（建连/资源绑定/拼提示词）、
+    真正下发请求之前调用。
+
+    有了这个标注，`record_llm_call` 未传时长时算的是**一次请求的真实耗时**，
+    而不是自回合起点的累计偏移（历史缺陷：52s 回合里 llm_call 写成 13619→51563
+    递增的累计值，管理端拿它做时耗归因会全盘错）。
+    """
+    rec = _recorder.get()
+    if rec is None:
+        return
+    try:
+        rec.mark_model_window_start()
+    except Exception as e:  # noqa: BLE001 — 观测不得影响主链路
+        logger.debug("mark_model_window_start ignored: %s", e)
+
+
 def record_llm_call(
     *,
     name: str = "llm_call",

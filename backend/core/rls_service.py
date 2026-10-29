@@ -22,6 +22,17 @@ def _gen_id():
     return int(time.time() * 1000000)
 
 
+def _invalidate_as_bot_config(reason: str) -> None:
+    """RLS 策略写入口失效提示词里的行范围摘要缓存。
+
+    缓存仅服务于 `prompt_composer._rls_scope_lines`（给模型看的文字摘要）；
+    **真实行过滤由 `enforcer._inject_row_filter` 每次取数时实时读策略施加**，
+    不读本缓存，因此失效只影响描述新旧，不会造成行级越权。
+    """
+    from backend.common import as_bot_config_cache
+    as_bot_config_cache.invalidate(reason)
+
+
 # 列策略是纯黑名单: 每一行必须声明要剔除/脱敏的列, 合法 access_type 仅此两种。
 # 'visible'(白名单语义)会被执行层 get_effective_policies 静默忽略——保存它等于把
 # "配了不生效"的缺陷落库, 必须在写入口 fail-loud 拒绝(白名单能力由表策略
@@ -106,6 +117,7 @@ class RLSService:
                      data.get("created_by"))
                 )
                 conn.commit()
+                _invalidate_as_bot_config(f"rls.create_policy id={policy_id}")
                 return policy_id
         finally:
             conn.close()
@@ -140,6 +152,8 @@ class RLSService:
                     cur.execute("SELECT id FROM adh_rls_policies WHERE id = %s", (policy_id,))
                     return cur.fetchone() is not None
                 conn.commit()
+                # 值未变化的幂等保存走上分支提前 return，不进这里（无需无谓失效）
+                _invalidate_as_bot_config(f"rls.update_policy id={policy_id}")
                 return True
         finally:
             conn.close()
@@ -152,7 +166,10 @@ class RLSService:
                 cur.execute("DELETE FROM adh_rls_column_policies WHERE policy_id = %s", (policy_id,))
                 cur.execute("DELETE FROM adh_rls_policies WHERE id = %s", (policy_id,))
                 conn.commit()
-                return cur.rowcount > 0
+                deleted = cur.rowcount > 0
+                if deleted:
+                    _invalidate_as_bot_config(f"rls.delete_policy id={policy_id}")
+                return deleted
         finally:
             conn.close()
 

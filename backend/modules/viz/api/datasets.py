@@ -175,13 +175,40 @@ def create_dataset(
 
 
 @router.get("/{dataset_id}")
-def get_dataset(dataset_id: int):
-    """数据集详情: 附字段定义(语义字典×field_config 合并)与看板引用。"""
+def get_dataset(dataset_id: int,
+                user: dict = Depends(get_current_user),
+                workspace_id: int = Depends(get_workspace_id)):
+    """数据集详情: 附字段定义(语义字典×field_config 合并)与看板引用。
+
+    可用范围相关字段一律显业务名（ui-resource-display）：可用数据源范围、当前身份
+    可执行清单与失效源告警（配置了但解不到源时提醒，不静默当“没有可用源”）。
+    """
     ds = dataset_service.get_dataset(dataset_id)
     if not ds:
         raise HTTPException(status_code=404, detail="数据集不存在")
+    ident = _identity(user, workspace_id)
     ds["chart_preset"] = dataset_service._parse_json(ds.get("chart_preset"), {})
-    ds["fields"] = dataset_service.resolve_fields(ds)
+    catalog = dataset_service._load_datasource_catalog()
+    usable, missing = dataset_service.usable_sources(ds, catalog)
+    scope, _ = (dataset_service.usable_scope(ds, ident, catalog=catalog)
+                if ident["user_id"] else (usable, missing))
+    ds["datasource_name"] = dataset_service._datasource_name_by_id(
+        int(ds.get("datasource_id") or 0), catalog) or "默认引擎"
+    ds["available_datasources"] = dataset_service._parse_json(ds.get("available_datasources"), [])
+    ds["available_source_names"] = [s["name"] or "默认引擎" for s in usable]
+    ds["usable_now"] = [s["name"] or "默认引擎" for s in scope]
+    if missing:
+        # 失效源显式告知（no-silent-degradation），否则管理员永远看不出为何取数被拒
+        ds["warnings"] = [f"可用数据源已不存在：{'、'.join(missing)}"
+                          f"（请在数据集页重新选择可用数据源）"]
+    # 字段目录按生效源取（跨源数据集字典行可能只登记在目标源或 ds=0 全局），
+    # 定不了源（歧义）时按执行源取，不影响详情展示（取数时再显式要求选源）。
+    try:
+        eff = (dataset_service.resolve_effective_source(ds, ident, catalog=catalog)
+               if ident["user_id"] else int(ds.get("datasource_id") or 0))
+    except Exception:  # noqa: BLE001 — 歧义/无权在取数时才必须暴露，详情页不阻断
+        eff = int(ds.get("datasource_id") or 0)
+    ds["fields"] = dataset_service.resolve_fields(ds, datasource_id=eff)
     ds["references"] = dataset_service._references(dataset_id)
     return ds
 
@@ -248,14 +275,26 @@ def preview_dataset(
     user: dict = Depends(get_current_user),
     workspace_id: int = Depends(get_workspace_id),
 ):
-    """按当前身份预览取数: 权限/RLS/敏感屏蔽/审计/行级范围全部服务端施加。"""
+    """按当前身份预览取数: 权限/RLS/敏感屏蔽/审计/行级范围全部服务端施加。
+
+    选源只接受业务名：`site`（站点业务名/代码）或 `datasource`（数据源业务名）；
+    不传则由服务端在“可用范围 ∩ 角色授权集”内自动定源（多义则回抛候选）。
+    内部 `datasource_id` 属黑盒（护栏 §7），不得由请求体供给。
+    """
     try:
+        if req.get("datasource_id"):
+            raise HTTPException(status_code=400,
+                                detail="不接受数据源内部 id：请用 site（站点业务名）或 "
+                                       "datasource（数据源业务名）指定，或不传由服务端在可用范围内定源")
         params = {
             "dimensions": req.get("dimensions") or [],
             "measures": req.get("measures") or req.get("metrics") or [],
             "filters": req.get("filters") or [],
             "order": req.get("order") or [],
             "limit": req.get("limit") or 100,
+            "args": req.get("args") or req.get("variables") or {},
+            "site": req.get("site") or "",
+            "datasource": req.get("datasource") or "",
         }
         return dataset_service.query_dataset(dataset_id, params, _identity(user, workspace_id))
     except HTTPException:

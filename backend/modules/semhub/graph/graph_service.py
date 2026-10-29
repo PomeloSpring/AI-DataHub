@@ -70,7 +70,8 @@ class GraphService:
         center_node: Optional[str] = None,
         search: Optional[str] = None,
         limit: int = 200,
-        include_properties: bool = False
+        include_properties: bool = False,
+        model_id: Optional[int] = None,
     ) -> GraphData:
         """获取图谱数据."""
         try:
@@ -103,6 +104,11 @@ class GraphService:
                 node_ids = {n.id for n in nodes}
                 edges = [e for e in edges if e.source in node_ids and e.target in node_ids]
 
+            # 按选中本体模型聚焦（建模工作区「关系图谱」页）：只留本模型对象 + 一跳邻居，
+            # 其余模型的节点不串味。model_id 为空=全图（独立知识图谱页/检索不受影响）。
+            if model_id:
+                nodes, edges = self._filter_graph_to_model(nodes, edges, model_id)
+
             stats = self._get_stats(ds_id)
 
             # 节点/边独立截断后, 剪掉端点已被丢弃的悬空边(各视图通用不变式)。
@@ -122,6 +128,46 @@ class GraphService:
         except Exception as e:
             logger.error("Failed to get graph data: %s", e, exc_info=True)
             return GraphData(stats=GraphStats(connected=False))
+
+    def _filter_graph_to_model(
+        self, nodes: List[GraphNode], edges: List[GraphEdge], model_id: int
+    ) -> tuple[List[GraphNode], List[GraphEdge]]:
+        """把已组装的图收窄到指定本体模型：保留该模型对象类 + 其一跳邻居。
+
+        背景：业务本体共享一张聚合图 ds:0（多模型共存），建模工作区选中某模型时应只看
+        该模型的对象及其直连的指标/维度/属性/绑定表，不被其他业务模型串味（用户反馈：
+        选 ARMS 却画出联耀对象）。一跳邻居 = 与本模型对象直接相连的节点（hasMetric/
+        hasDimension/hasProperty/血缘）；本模型对象间、对象↔邻居的边保留，邻居之间的边不扩。
+        本模型对象一个都不在图里（未重建）→ 返回空，让前端如实显示“需重建”，不掺别模型。
+        """
+        try:
+            from backend.modules.catalog.services.ontology_service import get_model
+            from backend.common.rdf.ontology_to_rdf import ontology_class_keys
+            model = get_model(model_id)
+            if not model:
+                return nodes, edges
+            # node.id / edge 端点都是 _iri_to_node_id 形态（ADH_NS 替为 "adh:"）→ 种子用 "adh:obj:{key}"
+            seeds = {f"adh:obj:{k}" for k in ontology_class_keys(model)}
+            node_ids = {n.id for n in nodes}
+            present = seeds & node_ids
+            if not present:
+                return [], []
+            kept = set(present)
+            for e in edges:
+                if e.source in present:
+                    kept.add(e.target)
+                elif e.target in present:
+                    kept.add(e.source)
+            kept_nodes = [n for n in nodes if n.id in kept]
+            kept_edges = [
+                e for e in edges
+                if e.source in kept and e.target in kept
+                and (e.source in present or e.target in present)
+            ]
+            return kept_nodes, kept_edges
+        except Exception as e:  # noqa: BLE001 — 过滤失败退回全图，不因聚焦需求把整页弄挂
+            logger.warning("filter graph to model %s failed: %s", model_id, e)
+            return nodes, edges
 
     def _get_unified_graph(
         self, graph: str, ds_id: int, limit: int,

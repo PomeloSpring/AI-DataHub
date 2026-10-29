@@ -190,14 +190,58 @@ DOCS = [{"objects": [{"key": "user", "display_name": "用户", "properties": [
 def test_resolve_object_property_hit_miss_and_no_column(monkeypatch):
     from backend.modules.catalog.services import metrics_service as ms
     monkeypatch.setattr(ms, "_iter_active_docs", lambda: DOCS)
+    # 对象物理表来自部署绑定层（不是 doc），列元数据是带点引用的唯一裁决
+    monkeypatch.setattr(ms, "_object_binding_by_key", lambda k, ik: ("t_user", 5))
+    monkeypatch.setattr(ms._physical_ref, "columns_of_table",
+                        lambda ds, table, cache=None: {"create_time", "user_code"})
     hit = ms.resolve_object_property("user", "创建时间")
     assert hit["matched"] and (hit["table"], hit["column"]) == ("t_user", "create_time")
+    assert hit["verified"] is True
     miss = ms.resolve_object_property("user", "注册时间")
     assert not miss["matched"] and set(miss["available"]) == {"创建时间", "工号", "无列属性"}
     nocol = ms.resolve_object_property("user", "无列属性")
     assert not nocol["matched"], "属性没有物理列时不得猜一个列"
     assert not ms.resolve_object_property("case", "创建时间")["matched"]
     assert not ms.resolve_object_property("user", "")["matched"]
+
+
+def test_resolve_object_property_keeps_nested_dotted_column(monkeypatch):
+    """SLS/ARMS 嵌套列回归（用户报「view.url 怎么变成 view_url / 物理键绑错了」）。
+
+    `view.url` 是**列名本体含点**，不得拆成 table=view / column=url：那样写出来的
+    维度行 target_table 是不存在的表，planner 按 target_table=物理表永远加载不到。
+    """
+    from backend.modules.catalog.services import metrics_service as ms
+    docs = [{"objects": [{"key": "rum_event", "properties": [
+        {"name": "页面URL", "column": "view.url"},
+        {"name": "幽灵列", "column": "rum.view_url"},
+    ]}]}]
+    monkeypatch.setattr(ms, "_iter_active_docs", lambda: docs)
+    monkeypatch.setattr(ms, "_object_binding_by_key", lambda k, ik: ("logstore-rum", 9))
+    monkeypatch.setattr(ms._physical_ref, "columns_of_table",
+                        lambda ds, table, cache=None: {"view.url", "session.id"})
+    hit = ms.resolve_object_property("rum_event", "页面URL")
+    assert hit["matched"] and hit["verified"]
+    assert (hit["table"], hit["column"]) == ("logstore-rum", "view.url"), \
+        "嵌套列名必须保留完整名且归到对象绑定表"
+    bad = ms.resolve_object_property("rum_event", "幽灵列")
+    assert not bad["matched"] and bad["reason"] == "property_column_not_found", \
+        "登记的列在实存列中不存在时必须显式回绝（建模字段错配要提醒用户）"
+
+
+def test_resolve_object_property_unverified_without_column_metadata(monkeypatch):
+    """目标源未同步列元数据（实测 arms-prd-en 零登记行）：保留完整列名并标注未验证。"""
+    from backend.modules.catalog.services import metrics_service as ms
+    docs = [{"objects": [{"key": "rum_event", "properties": [
+        {"name": "页面URL", "column": "view.url"}]}]}]
+    monkeypatch.setattr(ms, "_iter_active_docs", lambda: docs)
+    monkeypatch.setattr(ms, "_object_binding_by_key", lambda k, ik: ("logstore-rum", 9))
+    monkeypatch.setattr(ms._physical_ref, "columns_of_table",
+                        lambda ds, table, cache=None: set())
+    hit = ms.resolve_object_property("rum_event", "页面URL")
+    assert hit["matched"] and hit["verified"] is False
+    assert (hit["table"], hit["column"]) == ("logstore-rum", "view.url"), \
+        "元数据缺失也不能丢路径段（宁留限定名，不可错拆）"
 
 
 def test_normalize_object_field_aliases_is_idempotent_and_non_overriding():
@@ -226,22 +270,44 @@ def test_graph_target_for_model(kind, ds, want):
 
 
 def test_sync_status_queries_graph_by_kind(monkeypatch):
-    """徽章必须按 kind 选图；旧实现查 ds:{datasource_id} 会让系统/业务两个 kind 全误报。"""
+    """徽章按 kind 选图，且按本模型对象集与图内类求交（多模型共享聚合图时不拿全图数比单模型数）。"""
     from backend.modules.catalog.services import ontology_kb_sync as sync
+    from backend.common.rdf.namespaces import ADH_NS
     seen = {}
 
     monkeypatch.setattr("backend.modules.catalog.services.ontology_service.get_model",
                         lambda mid: {"status": "active", "kind": "system",
-                                     "datasource_id": 0, "object_count": 12})
+                                     "datasource_id": 0, "object_count": 12,
+                                     "objects": [{"key": f"o{i}"} for i in range(12)]})
 
     class _Client:
         def query(self, q, *a, **k):
             seen["sparql"] = " ".join(q.split())
-            return [{}] * 12
+            return [{"s": f"{ADH_NS}obj:o{i}"} for i in range(12)]
     monkeypatch.setattr("backend.common.rdf.sparql_client.get_sparql_client", lambda: _Client())
     out = sync.model_sync_status(1)["graph"]
     assert "ds:-1" in seen["sparql"], f"系统本体应查 ds:-1 系统图，实际: {seen['sparql']}"
     assert out["state"] == "synced" and out["classes"] == 12
+
+
+def test_sync_status_counts_per_model_not_whole_shared_graph(monkeypatch):
+    """多模型共享 ds:0：本模型 3 个对象全入图即 synced，即使图里还有其他模型的类。"""
+    from backend.modules.catalog.services import ontology_kb_sync as sync
+    from backend.common.rdf.namespaces import ADH_NS
+    monkeypatch.setattr("backend.modules.catalog.services.ontology_service.get_model",
+                        lambda mid: {"status": "active", "kind": "business",
+                                     "datasource_id": 0, "object_count": 3,
+                                     "objects": [{"key": f"mine{i}"} for i in range(3)]})
+
+    class _Client:
+        def query(self, q, *a, **k):
+            # 图里混了本模型 3 个 + 别的模型 20 个类
+            return ([{"s": f"{ADH_NS}obj:mine{i}"} for i in range(3)]
+                    + [{"s": f"{ADH_NS}obj:other{i}"} for i in range(20)])
+    monkeypatch.setattr("backend.common.rdf.sparql_client.get_sparql_client", lambda: _Client())
+    out = sync.model_sync_status(1)["graph"]
+    assert out["classes"] == 3 and out["objects"] == 3, out
+    assert out["state"] == "synced", f"本模型对象全入图应 synced，不受其他模型类影响: {out}"
 
 
 def test_source_ontology_objects_still_emit_distinct_classes():

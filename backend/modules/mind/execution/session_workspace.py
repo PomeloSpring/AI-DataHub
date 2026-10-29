@@ -473,11 +473,35 @@ def preflight_request(req, user):
         # interrupted（上轮执行中断）不拦：执行权已释放（execution_token=NULL），
         # 新消息是新一轮请求、不重放中断轮副作用，交由 claim 认领后从干净上下文继续。
     try:
-        return resolve_policy(ctx)
+        # 轮次起点：角色 id/AS-BOT 配置/角色权限码走配置缓存的**轮次档**（写时失效）；
+        # 后续工具调用前的裁决（check_tool）不吃这一档，只读 live 短 TTL 档，
+        # 且 digest 不一致即显式要求重发（撤权不会静默放行）。
+        return resolve_policy(ctx, use_cache=True)
     except PermissionError as exc:
         raise HTTPException(403, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+def _preflight_inputs(policy, ctx):
+    """取 preflight 已解析策略携带的 DB 事实（仅同一请求/同一用户+空间时有效）。
+
+    命中后 claim_session 用当前 ceiling 重新编译即可，不再重读 owner/AS-BOT/角色权限码
+    三组查询（远端 MySQL 下是首字延迟的固定开销之一）。窗口只限同一 HTTP 请求内；
+    工具调用前的裁决（check_tool）不走此路径（不传 inputs），仍按当次生效配置比 digest。
+    """
+    inputs = dict(getattr(policy, "resolved_inputs", None) or {}) if policy is not None else {}
+    owner = inputs.get("owner") or {}
+    as_bot = inputs.get("as_bot") or {}
+    if not as_bot or int(owner.get("user_id") or 0) != int(ctx.user_id or 0):
+        return None
+    # 跨入口空间不复用：preflight 按入口空间解析，claim 按会话归属空间；
+    # 两者不一致时 AS-BOT 候选集可能不同，退回全量解析（宁多查一次，不拿错空间策略）。
+    if int(owner.get("workspace_id") or 0) not in (int(ctx.workspace_id or 0), 0):
+        return None
+    if (ctx.extra or {}).get("as_bot_key") and as_bot.get("as_bot_key") != ctx.extra["as_bot_key"]:
+        return None
+    return inputs
 
 
 def validate_conversation(ctx, conversation_id):
@@ -615,7 +639,12 @@ def claim_session(task, backend, config):
         from backend.modules.mind.execution.tool_policy import live_ceiling
         from types import SimpleNamespace
         ceiling = live_ceiling(ctx, SimpleNamespace(layer_id=layer_id, layer_bound=True, backend=backend))
-    policy = resolve_policy(ctx, ceiling)
+    # 性能：同一请求内 preflight 已读过 owner/AS-BOT/角色权限码（经 ExecutionContext
+    # 的 _chat_policy 透传），这里用当前 ceiling 重新编译即可，省去重复往返
+    # （claim_session 实测 1~3s 的主要构成）。无预取事实（内部调用/旧入口）仍全量
+    # 解析；工具级裁决（check_tool）不传 inputs，只用 live 档配置 + 实读的 verify/ceiling。
+    inputs = _preflight_inputs(task.context.extra.get("_chat_policy"), ctx)
+    policy = resolve_policy(ctx, ceiling, inputs=inputs, use_cache=True)
     ctx.extra["as_bot_key"] = policy.as_bot["as_bot_key"]
     base = workspace_base()
     node = storage_node(base)

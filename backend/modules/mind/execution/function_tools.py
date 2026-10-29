@@ -149,18 +149,38 @@ def _list_quality_rules(args):
 
 
 def _list_datasets(args):
-    """数据集清单：只回名称/来源类型/预设图表。不含 SQL 原文与字段配置。"""
+    """数据集清单：只回名称/来源类型/预设图表/可用数据源业务名。不含 SQL 原文与字段配置。
+
+    数据源一律以**业务名**下发（护栏 §7：内部 datasource_id 是黑盒）——多源数据集
+    要让 LLM 知道可以用 site/datasource 指定这次跑哪个源，否则它只能看见一个名字。
+    """
     ident = _identity()
     if not ident:
         return _text({"error": "无法确认调用者身份"}, is_error=True)
     rows = _select(
-        "SELECT id, name, description, source_type, object_key, chart_type, status, "
-        "       created_at, updated_at "
-        "FROM adh_datasets WHERE status = 'active' "
-        "ORDER BY updated_at DESC LIMIT %s",
+        "SELECT d.id, d.name, d.description, d.source_type, d.object_key, d.chart_type, "
+        "       d.status, d.available_datasources, ds.name AS datasource_name, "
+        "       d.created_at, d.updated_at "
+        "FROM adh_datasets d "
+        "LEFT JOIN adh_datasources ds ON ds.id = d.datasource_id "
+        "WHERE d.status = 'active' "
+        "ORDER BY d.updated_at DESC LIMIT %s",
         (_limit(args),))
+    for r in rows:
+        r["datasource"] = str(r.pop("datasource_name", "") or "") or "默认引擎"
+        raw = r.pop("available_datasources", None)
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError):
+                raw = []
+        scope = [str(x).strip() for x in (raw or []) if str(x or "").strip()]
+        names = list(dict.fromkeys([r["datasource"]] + scope if r["datasource"] else scope))
+        if len(names) > 1:                     # 单源数据集不加噪声
+            r["available_datasources"] = names
     return _text({"datasets": [_iso(r, "created_at", "updated_at") for r in rows],
-                  "note": "SQL 原文与字段配置不在 AI 可见范围内"})
+                  "note": "SQL 原文与字段配置不在 AI 可见范围内；数据源只给业务名，"
+                          "跨源数据集按 site/datasource 指定其一（不得传 id）"})
 
 
 def _list_registered_datasources(args):

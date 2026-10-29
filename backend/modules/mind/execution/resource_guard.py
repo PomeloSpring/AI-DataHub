@@ -141,6 +141,12 @@ def validate_tool_resources(ctx, qualified_name, args):
             source_scope.add(int(ctx.datasource_id))
         if ctx.datasource_id:
             args = {**args, "datasource_id": ctx.datasource_id}
+    elif name == "query_dataset":
+        # 数据集自带可用数据源范围（adh_datasets.available_datasources）：生效源由
+        # dataset_service 在「可用范围 ∩ 角色授权集」内按 site/datasource 业务名解析，
+        # 因此**不回写会话源**（选一个数据集不应顺带改会话的取数范围），并丢弃任何
+        # 模型传入/历史残留的 datasource_id（§7 黑盒：LLM 拿不到真实值，传了只会越权）。
+        args = {k: v for k, v in args.items() if k != "datasource_id"}
     for value in args.values():
         if isinstance(value, str) and value.lstrip().startswith(("{", "[")):
             try:
@@ -158,8 +164,26 @@ def validate_tool_resources(ctx, qualified_name, args):
         if not ctx.datasource_id:
             if not available_sources:
                 raise ResourceScopeError("当前用户角色没有已授权数据源，请检查角色数据源授权")
-            hint = "，或在工具中用 datasource 指定其一" if qualified_name.startswith("mcp__datahub_query__") else ""
-            raise ResourceScopeError(f"当前范围内有多个已授权数据源，请先在会话中选择{hint}")
+            # 会话站点是聚合态（全球）时 ctx.datasource_id 合法地为 0（=逐站编排 /
+            # 读全局共享字典），不是"未选会话源"。历史缺陷：此闸门先于 handler 把带
+            # site 的 run_semantic_query 退回"请先在会话中选择"，使全球站点的逐站编排能力
+            # 形同虚设（只有 execute_sql/check_sql 在上方 131-143 提前解析了 site）。
+            from backend.core.site_service import is_aggregate_site
+            aggregate = is_aggregate_site((ctx.extra or {}).get("site_code") or "")
+            # 逐查询自解析源的工具在聚合态放行，交各自 handler 逐查询裁决：
+            #   run_semantic_query 自带 intent.site/datasource 解析（授权集内）+ validate_binding
+            #   兜底鉴权；get_metrics/knowledge_search 读全局共享字典（datasource_id=0）；
+            #   list_datasets/query_dataset 按数据集可用范围∩授权集自解析（不依赖会话源）。
+            # 授权仍 fail-closed：_resolve_datasource_arg 只在 available 内解析，不放宽越权。
+            if aggregate and name in ("run_semantic_query", "get_metrics", "knowledge_search",
+                                      "list_datasets", "query_dataset"):
+                pass
+            else:
+                hint = ""
+                if qualified_name.startswith("mcp__datahub_query__"):
+                    hint = ("，或在工具中用 site/datasource 指定站点" if aggregate
+                            else "，或在工具中用 datasource 指定其一")
+                raise ResourceScopeError(f"当前范围内有多个已授权数据源，请先在会话中选择{hint}")
     design_tools = {"request_dashboard_design", "get_dashboard_design", "prepare_dashboard_design",
                     "get_business_semantics", "search_business_knowledge"}
     if name in design_tools:

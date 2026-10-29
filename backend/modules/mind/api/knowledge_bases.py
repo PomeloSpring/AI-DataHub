@@ -25,6 +25,18 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
+
+def _invalidate_kb_config_cache(reason: str) -> None:
+    """知识库写入口同批失效轮次起点的配置缓存。
+
+    缓存的只是 AS-BOT 提示词里的知识库清单（id/name/kb_type，见
+    `as_bots.load_knowledge_bases`）；检索命中的文档内容永远实时从源读取。知识库
+    改名/停用/删除后若不清理，用户会在提示词里看到旧名称（下一轮自然回源）。
+    """
+    from backend.common import as_bot_config_cache
+    as_bot_config_cache.invalidate(reason)
+
+
 # 阻塞型 CLI/DB 调用统一放到线程池,避免阻塞事件循环
 _to_thread = asyncio.to_thread
 
@@ -259,6 +271,9 @@ async def import_qmind_notebooks(request: QMindImportRequest):
     finally:
         conn.close()
 
+    if created or updated:
+        _invalidate_kb_config_cache(f"qmind_import created={created} updated={updated}")
+
     return {
         "message": f"已导入 {created} 个、刷新 {updated} 个 Qoder 知识库",
         "created": created,
@@ -313,6 +328,7 @@ async def create_knowledge_base(request: KnowledgeBaseCreate):
             )
             conn.commit()
             kb_id = cursor.lastrowid
+            _invalidate_kb_config_cache(f"create_knowledge_base id={kb_id}")
 
             # Fetch the created record
             cursor.execute("SELECT * FROM adh_knowledge_bases WHERE id = %s", (kb_id,))
@@ -371,6 +387,8 @@ async def update_knowledge_base(kb_id: int, request: KnowledgeBaseUpdate):
                 params.append(kb_id)
                 cursor.execute(sql, params)
                 conn.commit()
+                # name/status 均在缓存的清单字段里（停用行会从不命中集剔除）
+                _invalidate_kb_config_cache(f"update_knowledge_base id={kb_id}")
 
             # Return updated record
             cursor.execute("SELECT * FROM adh_knowledge_bases WHERE id = %s", (kb_id,))
@@ -407,6 +425,7 @@ async def delete_knowledge_base(kb_id: int):
 
             cursor.execute("DELETE FROM adh_knowledge_bases WHERE id = %s", (kb_id,))
             conn.commit()
+            _invalidate_kb_config_cache(f"delete_knowledge_base id={kb_id}")
 
             return {"message": f'已删除知识库 "{row["name"]}"'}
     finally:

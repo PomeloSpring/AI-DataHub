@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   ArrowLeft, Code2, Play, Save, Plus, Trash2, Loader2, Users, Shield,
-  BarChart3,
+  BarChart3, Check, ChevronsUpDown,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
@@ -14,6 +14,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import {
+  Popover, PopoverContent, PopoverTrigger,
+} from '@/components/ui/popover';
 import client from '../../api/client';
 import { hasPerm } from '../../stores/permissionStore';
 import DashboardChart, { CHART_TYPES } from '../../components/DashboardChart';
@@ -52,13 +55,21 @@ const CHART_TYPE_LABELS: Record<string, string> = Object.fromEntries(
   CHART_TYPES.map(t => [t.value, t.label]),
 );
 
-/** update/create 接口返回原始行, chart_preset 是 JSON 字符串 → 归一为对象 */
+/** update/create 接口返回原始行, chart_preset/available_datasources 是 JSON 字符串 → 归一为对象/数组 */
 function normalizeDataset(data: any): any {
   let preset = data?.chart_preset;
   if (typeof preset === 'string') {
     try { preset = JSON.parse(preset || '{}'); } catch { preset = {}; }
   }
-  return { ...(data || {}), chart_preset: preset || {} };
+  let scope = data?.available_datasources;
+  if (typeof scope === 'string') {
+    try { scope = JSON.parse(scope || '[]'); } catch { scope = []; }
+  }
+  return {
+    ...(data || {}),
+    chart_preset: preset || {},
+    available_datasources: Array.isArray(scope) ? scope : [],
+  };
 }
 
 /** chart_preset 只落 xCol/yCol/groupCol/limit 四键(与看板图表 config 对齐) */
@@ -106,12 +117,16 @@ export default function DatasetDetail() {
         description: ds.description || '',
         sql_query: ds.sql_query || '',
         datasource_id: Number(ds.datasource_id) || 0,
+        // 可用数据源范围：存数据源**业务名**数组（不存 id，删建仍存活）
+        available_datasources: ds.available_datasources || [],
         chart_type: ds.chart_type || '',
         chart_preset: cleanPreset(ds.chart_preset),
       });
       setDs(normalizeDataset(data));
       load(true);
       toast.success('配置已保存（基本信息 / 查询定义 / 图表预设）');
+      // 服务端告警（如跨引擎无方言正文）必须显式递到人眼前，不得静默存下
+      (data?.warnings || []).forEach((w: string) => toast.warning(w));
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '保存失败');
     } finally {
@@ -343,6 +358,26 @@ function ExecPanel({ ds, canManage, onDsChange }: {
             onChange={v => onDsChange({ datasource_id: v })}
           />
         </div>
+        <div className="space-y-1.5">
+          <Label>可用数据源范围</Label>
+          <DatasourceScopeSelect
+            value={ds.available_datasources || []}
+            disabled={!canManage}
+            execName={ds.datasource_name || ''}
+            onChange={v => onDsChange({ available_datasources: v })}
+          />
+          <p className="text-xs text-muted-foreground">
+            不填 = 仅能在执行数据源上跑。填入多个源后，同一份 SQL 可在这些源上执行
+            （看板与 Chat 取数时服务端按当前用户的已授权源定源，多义时会要求指定站点）。
+          </p>
+          {(ds.warnings || []).length > 0 && (
+            <div className="border rounded-md p-2 bg-amber-50 dark:bg-amber-950/30 space-y-1">
+              {(ds.warnings || []).map((w: string, i: number) => (
+                <div key={i} className="text-xs text-amber-700 dark:text-amber-400">· {w}</div>
+              ))}
+            </div>
+          )}
+        </div>
         <Textarea
           rows={8} className="font-mono text-xs"
           value={ds.sql_query || ''}
@@ -464,6 +499,87 @@ function SqlDatasourceSelect({ value, disabled, onChange }: {
   );
 }
 
+/**
+ * 可用数据源范围多选（Popover + checkbox，按站点分组）。
+ *
+ * 选中值存数据源**业务名**（与本体「适用站点」同口径）：内部 id 是黑盒且会因删建漂移。
+ * 执行数据源隐式属于可用范围，因此列表中置灰不可选（避免重复登记）。
+ */
+function DatasourceScopeSelect({ value, disabled, execName, onChange }: {
+  value: string[]; disabled: boolean; execName?: string;
+  onChange: (v: string[]) => void;
+}) {
+  const [list, setList] = useState<any[]>([]);
+  const [sites, setSites] = useState<any[]>([]);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    client.get('/datasources/')
+      .then(({ data }) => setList(Array.isArray(data) ? data : (data?.items || [])))
+      .catch(() => setList([]));
+    client.get('/datasources/sites')
+      .then(({ data }) => setSites(Array.isArray(data) ? data : (data?.items || [])))
+      .catch(() => setSites([]));
+  }, []);
+  const selected = value || [];
+  const siteLabel = (code: string) =>
+    sites.find((s: any) => s.site_code === code)?.display_name || code || '未归属站点';
+  const groups: Array<{ code: string; label: string; items: any[] }> = [];
+  list.forEach((d: any) => {
+    const code = String(d.site_code || '');
+    let g = groups.find(x => x.code === code);
+    if (!g) { g = { code, label: siteLabel(code), items: [] }; groups.push(g); }
+    g.items.push(d);
+  });
+  const toggle = (name: string) => onChange(
+    selected.includes(name) ? selected.filter(x => x !== name) : [...selected, name]);
+  const display = selected.length === 0
+    ? (execName ? `仅执行数据源（${execName}）` : '仅执行数据源')
+    : selected.length <= 2
+      ? selected.join('、')
+      : `已选 ${selected.length} 个源`;
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button variant="outline" role="combobox" disabled={disabled}
+          className="w-full justify-between font-normal text-sm h-9 overflow-hidden">
+          <span className="truncate">{display}</span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 max-h-72 overflow-auto" align="start">
+        {list.length === 0 && (
+          <div className="px-3 py-2 text-sm text-muted-foreground">无可选数据源</div>
+        )}
+        {groups.map(g => (
+          <div key={g.code || '_none'}>
+            <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-muted-foreground">{g.label}</div>
+            {g.items.map((d: any) => {
+              const isExec = !!execName && d.name === execName;
+              const on = selected.includes(d.name) || isExec;
+              return (
+                <div key={d.id}
+                  className={`flex items-center gap-2 px-3 py-1.5 text-sm ${
+                    isExec ? 'opacity-60' : 'cursor-pointer hover:bg-accent'}`}
+                  onClick={() => { if (!isExec) toggle(d.name); }}
+                  title={isExec ? '已是执行数据源，默认属于可用范围' : undefined}
+                >
+                  <div className={`w-4 h-4 border rounded flex items-center justify-center ${
+                    on ? 'bg-primary border-primary' : 'border-muted-foreground'}`}>
+                    {on && <Check className="h-3 w-3 text-primary-foreground" />}
+                  </div>
+                  <span className="flex-1 truncate">{d.name}</span>
+                  <span className="text-[10px] text-muted-foreground">{d.db_type}</span>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 // ── 数据预览(治理取数, 服务端施加权限/RLS/scopes) ─────────────────────
 
 function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: DatasetField[]; ds: any }) {
@@ -476,12 +592,18 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
   const measures = fields.filter(f => f.role === 'measure');
   const [dimensions, setDimensions] = useState<string[]>(dims.slice(0, 1).map(f => f.field));
   const [measuresSel, setMeasuresSel] = useState<string[]>(measures.slice(0, 2).map(f => f.field));
+  // 多源数据集：预览可指定跑哪个源（只给业务名，服务端在可用范围∩已授权集内解析）。
+  // 不选 = 交服务端定源（唯一交集或执行源），多义时报错文案会列出候选。
+  const scopeNames: string[] = (ds.usable_now && ds.usable_now.length
+    ? ds.usable_now : ds.available_source_names) || [];
+  const [sourceSel, setSourceSel] = useState<string>('');
 
   const run = async () => {
     setRunning(true);
     try {
       const { data } = await client.post(`/datasets/${datasetId}/preview`, {
         dimensions, measures: measuresSel, limit: 100,
+        datasource: sourceSel || '',
       });
       setResult(data);
     } catch (e: any) {
@@ -520,6 +642,19 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
             ))}
           </div>
         </div>
+        {scopeNames.length > 1 && (
+          <div className="min-w-44">
+            <Label className="text-xs">执行数据源</Label>
+            <Select value={sourceSel || '__auto__'}
+              onValueChange={v => setSourceSel(v === '__auto__' ? '' : v)}>
+              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__auto__">自动（服务端定源）</SelectItem>
+                {scopeNames.map(n => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         <Button size="sm" onClick={run} disabled={running}>
           {running ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Play className="h-3.5 w-3.5 mr-1" />}
           预览取数

@@ -30,7 +30,9 @@ def _resolve_datasource_arg(args, ctx) -> int | None:
     """查询工具的生效数据源解析(waker-datasource-domain §2):
 
     - LLM 传 `site`(站点业务名/代码) → 服务端在角色授权集内解析为源(优先于源名,
-      站点内多源时用模型 deploy_sites 路由目标消歧), 未命中抛含候选名的可操作错误;
+      站点内多源时用模型 deploy_sites 路由目标消歧;带 `object` 时再按该对象的部署
+      绑定消歧 —— 否则问 ARMS/SLS 观测对象会被“本站默认业务库”启发式定到 mysql 库),
+      未命中抛含候选名的可操作错误;
     - LLM 传 `datasource`(业务名)→ 在角色授权集内按 name 解析为 id(唯一裁决
       = resource_guard._resolve_authorized_source), 未命中抛含候选名的可操作错误;
     - 未传 → 用会话生效源 ctx.datasource_id(已由 resource_guard 校验∈授权集);
@@ -42,7 +44,8 @@ def _resolve_datasource_arg(args, ctx) -> int | None:
         from backend.core.site_service import resolve_site_to_source
 
         model_id = int(getattr(ctx, "model_id", 0) or 0) if ctx else 0
-        return resolve_site_to_source(site, available, model_id=model_id)
+        return resolve_site_to_source(site, available, model_id=model_id,
+                                      object_key=str(args.get("object") or ""))
     name = (args.get("datasource") or "").strip()
     if not name:
         return ctx.datasource_id if ctx else None

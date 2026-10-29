@@ -5,6 +5,12 @@
 未配置 deploy_sites 的模型（源本体/存量）回落按绑定行的 distinct datasource_name。
 派生不落第二登记处（防漂移，见 GLOBAL_SEMANTIC_LAYER_DESIGN.md §6/§9）。
 
+对象级例外 = `adh_ontology_models.object_site_rules`（`{object_key: [site_code,...]}`）：
+模型级声明是“全部对象共享全部站点”，而「同构多站 + 个别站点才有某对象」时
+必须能收紧到部分站点。未列出的对象 = 沿用模型级全部站点（默认免配）；
+本模块与 binding_resolver._route_by_site 同源消费该清单（LLM 编排知识与取数硬门一致，
+不得一边报可用、一边拒）。
+
 旧口径（逐对象逐站登记 `adh_ontology_bindings` 的 datasource_name）已收敛：
 27 对象 × 5 站 = 135 行机械复制，改一次要改 135 处。
 
@@ -26,6 +32,34 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _json_load(raw, default):
+    """MySQL JSON/文本列 → Python 对象（空/解析失败回 default，不影响派生主链路）。
+
+    类型校验由调用方自己做（避免把合法结构当非法值丢弃）。
+    """
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "null")
+        except (ValueError, TypeError):
+            return default
+    return default if raw is None else raw
+
+
+def _object_site_rules(raw) -> dict[str, set[str]]:
+    """对象级站点白名单 → {object_key: {site_code}}；非法/空返回 {}（不收紧）。"""
+    rules = _json_load(raw, {})
+    if not isinstance(rules, dict):
+        return {}
+    out: dict[str, set[str]] = {}
+    for k, v in (rules or {}).items():
+        codes = {str(c).strip() for c in v if str(c).strip()} if isinstance(v, list) else set()
+        if str(k).strip() and codes:
+            out[str(k).strip()] = codes
+    return out
+
+
 def _load_facts() -> tuple[list[dict], dict[str, str], dict[str, dict]]:
     """加载派生事实：(对象→站点部署行, datasource_name→站点名, object_key→{name,aliases})。"""
     from backend.common.db.metadata_db import get_metadata_conn
@@ -34,7 +68,7 @@ def _load_facts() -> tuple[list[dict], dict[str, str], dict[str, dict]]:
         with conn.cursor() as cur:
             cur.execute("SELECT site_code, display_name FROM adh_sites")
             code_names = {str(r["site_code"]): str(r["display_name"]) for r in (cur.fetchall() or [])}
-            cur.execute("SELECT id, deploy_sites FROM adh_ontology_models")
+            cur.execute("SELECT id, deploy_sites, object_site_rules FROM adh_ontology_models")
             model_rows = cur.fetchall() or []
             cur.execute(
                 "SELECT model_id, object_key, datasource_name FROM adh_ontology_bindings "
@@ -51,14 +85,7 @@ def _load_facts() -> tuple[list[dict], dict[str, str], dict[str, dict]]:
         bind_rows: list[dict] = []
         for m in model_rows:
             mid = int(m["id"])
-            raw = m.get("deploy_sites")
-            if isinstance(raw, (bytes, bytearray)):
-                raw = raw.decode("utf-8", errors="replace")
-            if isinstance(raw, str):
-                try:
-                    raw = json.loads(raw or "[]")
-                except (ValueError, TypeError):
-                    raw = None
+            raw = _json_load(m.get("deploy_sites"), None)
             if not isinstance(raw, list) or not raw:
                 continue
             routes = [
@@ -69,12 +96,18 @@ def _load_facts() -> tuple[list[dict], dict[str, str], dict[str, dict]]:
             if not routes:
                 continue
             declared_models.add(mid)
+            rules = _object_site_rules(m.get("object_site_rules"))
             for r in routes:
                 site_map[r["datasource"]] = code_names.get(r["site_code"], r["datasource"])
-            # 一份契约 × N 站：该模型的每个对象都适用于声明的全部站点
+            # 一份契约 × N 站：该模型的每个对象都适用于声明的全部站点，
+            # 但对象级白名单（object_site_rules）可将个别对象收紧到部分站点
             for row in by_model.get(mid, []):
+                ok = str(row["object_key"])
+                allow = rules.get(ok)
                 for r in routes:
-                    bind_rows.append({"object_key": str(row["object_key"]),
+                    if allow and r["site_code"] not in allow:
+                        continue  # 该对象未部署到此站，不得向 LLM 报为可用
+                    bind_rows.append({"object_key": ok,
                                       "datasource_name": r["datasource"]})
         # 未声明站点的模型（源本体/存量）：回落按绑定行自身的数据源
         for mid, rows in by_model.items():

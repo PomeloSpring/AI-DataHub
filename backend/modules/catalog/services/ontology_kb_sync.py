@@ -148,16 +148,29 @@ def model_sync_status(model_id: int) -> dict:
         try:
             from backend.common.rdf.sparql_client import get_sparql_client
             from backend.common.rdf.namespaces import ADH_NS
+            from backend.common.rdf.ontology_to_rdf import ontology_class_keys
             from backend.semantics.graph_rag.oxigraph_store import graph_target_for_model
 
             # 目标图按 kind 选（与写入侧 graph_builder 共用同一口径）——
             # 旧写法直接查 ds:{datasource_id}，系统本体查到的是业务聚合图、
             # 业务本体查到的是空图，两个活着的 kind 徽章全部误报。
             target_ds = graph_target_for_model(str(model.get("kind") or ""), ds)
+
+            # 多模型共享一张聚合图（business→ds:0）时，不能拿「全图 owl:Class 总数」
+            # 去比「单模型对象数」（永远不等 → 人人误报滞后）。改为按本模型口径：
+            # 本模型的对象 key（与写入侧 _emit_class 同源派生）中有多少已作为类入图。
+            own_keys = ontology_class_keys(model)
+
             rows = get_sparql_client().query(
                 f"SELECT ?s WHERE {{ GRAPH <{ADH_NS}ds:{target_ds}> "
-                "{{ ?s a <http://www.w3.org/2002/07/owl#Class> } } } LIMIT 1000")
-            n = len(rows or [])
+                "{{ ?s a <http://www.w3.org/2002/07/owl#Class> } } } LIMIT 5000")
+            obj_prefix = f"{ADH_NS}obj:"
+            graph_keys = {str(r.get("s", "")).replace(obj_prefix, "") for r in (rows or [])}
+            if own_keys:
+                n = len(own_keys & graph_keys)   # 本模型已入图对象数
+                obj_n = len(own_keys) or obj_n    # 本模型对象总数（与分子同源）
+            else:
+                n = len(graph_keys)              # 退回旧口径（全图类数）
             graph = {"state": "absent" if n == 0 else ("synced" if n == obj_n else "lagging"),
                      "classes": n, "objects": obj_n, "graph_datasource_id": target_ds}
         except Exception as e:  # noqa: BLE001 — 图服务不可达不影响徽章展示
@@ -223,15 +236,14 @@ def sync_targets_for_model(model: dict | None) -> list[dict]:
         return []
     # 归属裁决（按 kind，不用 datasource_id=0 旧口径——业务本体跨源 ds_id 也是 0）：
     #   business / system → 全局 sync_ontology 库（共用知识库，RAG 检索是两者共同用途）
-    #   source            → **不做 RAG**（源本体只服务语义检索/取数，按数据源权限分配）
+    #   源本体已退役（kind='source' 合并为 'business'）：原源本体（如 ARMS 观测/数仓模型）
+    #   迁移后即业务本体，与业务本体一同进 RAG 知识库（合并语义下跨源业务知识统一检索）。
     kind = str(model.get("kind") or "").strip()
     if not kind:
-        # 兼容无 kind 的存量模型行：旧口径 ds<=0 视为系统域
-        kind = "system" if int(model.get("datasource_id") or 0) <= 0 else "source"
+        # 兼容无 kind 的存量模型行：旧口径 ds<=0 视为系统域，ds>0 视为业务本体（源本体退役）
+        kind = "system" if int(model.get("datasource_id") or 0) <= 0 else "business"
     if kind in ("business", "system"):
         return sync_targets()
-    if kind == "source":
-        return []
     return []
 
 
@@ -491,9 +503,9 @@ def sync_model_to_qmind(model_id: int, kb_id: int | None = None) -> dict:
 
     上云文档经白名单渲染(剔除物理表/列名/JOIN/formula), 不再直接上传含物理信息的 md_content。
     仅同步 active 模型(草案/归档不污染知识库); 非 active 时若存在旧文档则清理。
-    kb_id 为空时目标库按模型 kind 默认路由: 系统/业务本体→全局 sync_ontology 库; 源本体→不做 RAG。
-    kb_id 非空时（关系图谱页手动选库）为一次性覆盖：显式推送到该指定库（含源本体，
-    属用户主动的手动例外），不改变自动同步/定时对账的默认路由。
+    kb_id 为空时目标库按模型 kind 默认路由: 系统/业务本体→全局 sync_ontology 库（源本体已退役，
+    不再单独裁决）。kb_id 非空时（关系图谱页手动选库）为一次性覆盖：显式推送到该指定库
+    （属用户主动的手动例外），不改变自动同步/定时对账的默认路由。
     Returns: {"synced": n, "targets": [...], "skipped": reason|None}
     """
     from backend.modules.catalog.services.ontology_service import get_model
@@ -503,8 +515,8 @@ def sync_model_to_qmind(model_id: int, kb_id: int | None = None) -> dict:
         return {"synced": 0, "targets": [], "skipped": "model_not_found"}
     if kb_id:
         # 手动指定目标库（一次性覆盖默认路由）：显式同步到选定的 active qmind 库，
-        # 含源本体——这是用户主动的手动例外（默认按 kind 路由：源本体不做 RAG），
-        # 非静默降级；目标库不可用时报 skipped 不静默换库，toast 回库名。
+        # 这是用户主动的手动例外（默认按 kind 路由），非静默降级；
+        # 目标库不可用时报 skipped 不静默换库，toast 回库名。
         kb = resolve_kb_target(int(kb_id))
         if not kb:
             return {"synced": 0, "targets": [], "skipped": "specified_kb_unavailable"}
@@ -512,10 +524,6 @@ def sync_model_to_qmind(model_id: int, kb_id: int | None = None) -> dict:
     else:
         targets = sync_targets_for_model(model)
     if not targets:
-        if str(model.get("kind") or "") == "source":
-            # 源本体不做 RAG 是归属裁决（只服务语义检索/取数），不是配置遗漏，
-            # 显式标注原因避免被当成待办告警（no-silent-degradation 反向：不制造假告警）
-            return {"synced": 0, "targets": [], "skipped": "source_model_semantic_only"}
         if int(model.get("datasource_id") or 0) > 0 and not model.get("kb_id"):
             return {"synced": 0, "targets": [], "skipped": "no_kb_bound"}
         return {"synced": 0, "targets": [], "skipped": "no_kb_with_sync_ontology"}

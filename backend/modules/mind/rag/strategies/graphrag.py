@@ -102,12 +102,28 @@ class GraphRagStrategy(RetrievalStrategy):
         out: list[dict] = []
         try:
             with conn.cursor() as cur:
-                ds_filter = "AND (datasource_id = %s OR datasource_id = 0)" if datasource_id else ""
-                params = [datasource_id] if datasource_id else []
+                # 会话源命中 = 执行源本身，**或** 该源在数据集的可用数据源范围内
+                # （available_datasources 存业务名）——只比 datasource_id 会让跳源数据集
+                # 在 Chat RAG 里看不见（建模者配了范围但 AI 永远提不到）。
+                ds_name = ""
+                if datasource_id:
+                    cur.execute("SELECT name FROM adh_datasources WHERE id = %s", (int(datasource_id),))
+                    _row = cur.fetchone() or {}
+                    ds_name = str(_row.get("name") or "")
+                if datasource_id:
+                    ds_filter = ("AND (d.datasource_id = %s OR d.datasource_id = 0"
+                                 " OR JSON_CONTAINS(COALESCE(d.available_datasources, '[]'), JSON_QUOTE(%s)))")
+                    params = [int(datasource_id), ds_name]
+                else:
+                    ds_filter = ""
+                    params = []
                 cur.execute(f"""
-                    SELECT name, description, source_type, object_key,
-                           sql_query, sql_bodies, field_config, certified
-                    FROM adh_datasets WHERE status = 'active' {ds_filter}
+                    SELECT d.name, d.description, d.source_type, d.object_key,
+                           d.sql_query, d.sql_bodies, d.field_config, d.certified,
+                           d.available_datasources, ds.name AS datasource_name
+                    FROM adh_datasets d
+                    LEFT JOIN adh_datasources ds ON ds.id = d.datasource_id
+                    WHERE d.status = 'active' {ds_filter}
                 """, params)
                 rows = cur.fetchall()
             for r in rows:
@@ -134,6 +150,13 @@ class GraphRagStrategy(RetrievalStrategy):
                          "description": str(r.get("description") or ""),
                          "source_type": str(r.get("source_type") or ""),
                          "certified": bool(r.get("certified") or 0)}
+                # 可用数据源只回业务名（护栏 §7）：多源数据集告知 LLM 可用 site/datasource 逐查询定源
+                src_names = ([str(r.get("datasource_name") or "")]
+                             + [str(x) for x in (parse_json_obj(r.get("available_datasources"), []) or [])
+                                if str(x or "").strip()])
+                src_names = list(dict.fromkeys(n for n in src_names if n))
+                if len(src_names) > 1:
+                    entry["available_datasources"] = src_names
                 if fields:
                     entry["fields"] = fields
                 out.append(entry)

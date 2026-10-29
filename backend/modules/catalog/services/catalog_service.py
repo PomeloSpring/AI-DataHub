@@ -49,12 +49,15 @@ def global_search(keyword: str, search_type: Optional[str] = None, workspace_id:
                 results["columns"] = cur.fetchall()
 
             if search_type is None or search_type == "metric":
+                # 列名以 `adh_metrics` 现行 schema 为准（字典改造后是 name/name_en/aliases/agg_type，
+                # 旧 metric_name/metric_display_name/metric_type 已不存在；写旧列名会让整个
+                # search_metadata 抛 1054 从而 tables/columns 结果一起丢）。
                 cur.execute(
-                    f"SELECT id, metric_name, metric_display_name, metric_type, description "
+                    f"SELECT id, name, name_en, aliases, agg_type, category, unit, description "
                     f"FROM adh_metrics "
-                    f"WHERE (metric_name LIKE %s OR metric_display_name LIKE %s OR description LIKE %s) {ws_cond} "
-                    f"ORDER BY metric_name LIMIT %s",
-                    [pattern, pattern, pattern] + ws_params + [limit],
+                    f"WHERE (name LIKE %s OR name_en LIKE %s OR aliases LIKE %s OR description LIKE %s) {ws_cond} "
+                    f"ORDER BY name LIMIT %s",
+                    [pattern, pattern, pattern, pattern] + ws_params + [limit],
                 )
                 results["metrics"] = cur.fetchall()
 

@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import client from '@/api/client';
 import {
   ontologyApi,
@@ -10,6 +11,8 @@ import {
   type OntologyModel,
   type OntologyModelSummary,
   type OntologyStatus,
+  type DraftStatus,
+  type DraftObjectDiff,
 } from '@/api/ontology';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -39,14 +42,14 @@ import { Switch } from '@/components/ui/switch';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from '@/lib/toast';
 import {
-  Boxes, Sparkles, Save, CheckCircle2, Archive, RefreshCw, Loader2, Trash2, History, AlertTriangle,
-  Upload, Undo2, BookMarked,
+  Boxes, Sparkles, CheckCircle2, Archive, RefreshCw, Loader2, Trash2, History, AlertTriangle,
+  Upload, Undo2, BookMarked, GitCompare, Inbox, Eye, Search, Pencil,
 } from 'lucide-react';
 import ObjectHubTab, { type HubObject } from './ObjectHubTab';
-import { normalizeDocObjects, showsM234, showsSiteScope, showsCarriers, countM234Declarations, type NormalizeDocObjectsResult } from '@/lib/ontologyObjects';
-import AssetPoolPanel from './AssetPoolPanel';
+import { normalizeDocObjects, showsM234, showsSiteScope, countM234Declarations, type NormalizeDocObjectsResult } from '@/lib/ontologyObjects';
+import ModelDraftReview from './ModelDraftReview';
 import Glossary from './Glossary';
-import { ModelActionsTab, ModelCarriersTab, ModelRulesTab, ModelScenariosTab, ModelSitesTab, ObjectCreateButton, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
+import { ModelActionsTab, ModelRulesTab, ModelScenariosTab, ModelSitesTab, ObjectCreateButton, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
 import { metricsApi } from '@/api/metrics';
 import { useAsBotStore } from '@/stores/asBotStore';
 import { hasPerm } from '@/stores/permissionStore';
@@ -109,6 +112,12 @@ function ModelGroup({ title, list, selectedId, onPick }: {
                   <Badge variant="outline" className={`flex-shrink-0 ${meta.cls}`}>
                     {meta.label}
                   </Badge>
+                  {/* 有未发布草案：在列表层就提醒“改了还没生效”，不让人到详情页才发现对象不见了 */}
+                  {m.has_draft && (
+                    <Badge variant="outline" className="flex-shrink-0 border-amber-500/40 text-amber-600">
+                      待发布
+                    </Badge>
+                  )}
                 </span>
               </div>
               <div className="text-xs text-muted-foreground mt-0.5">
@@ -126,15 +135,18 @@ export default function OntologyModeling() {
   // ── 数据源 ──
   const [datasources, setDatasources] = useState<Datasource[]>([]);
   const [datasourceId, setDatasourceId] = useState<number>(0);
+  const navigate = useNavigate();
 
   // ── 模型列表 ──
   const [models, setModels] = useState<OntologyModelSummary[]>([]);
+  const [modelKw, setModelKw] = useState('');
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  // 选中模型的同步 ref：异步回包时用它判断“当前还看着这个模型吗”（state 在回调里会闭包过期）
+  const selectedIdRef = useRef<number | null>(null);
   const [model, setModel] = useState<OntologyModel | null>(null);
 
-  // ── 编辑器 ──
+  // ── 编辑器（生效版正文；草案正文另存 draftJson）──
   const [jsonDraft, setJsonDraft] = useState('');
-  const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
 
   // ── 生成任务：服务端后台静默执行，进度在 AS-BOT 侧边栏呈现（页面不再是执行载体）──
@@ -184,15 +196,14 @@ export default function OntologyModeling() {
   const [versions, setVersions] = useState<OntologyModelSummary[]>([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
 
-  // ── 未归属资产池(左栏独立入口, 不混入模型列表) ──
-  const [poolMode, setPoolMode] = useState(false);
+  // ── 未归属资产池：已抽为独立页（/data/asset-pool），本页只留计数与入口 ──
   const [poolTotal, setPoolTotal] = useState(0);
   const refreshPool = useCallback(async () => {
     try {
       const { data } = await metricsApi.assetPool();
       setPoolTotal(data?.counts?.total ?? 0);
     } catch {
-      // 资产池不可用不影响建模主流程
+      // 资产池不可用不影响建模主流程（入口仍在，只是不显示计数）
     }
   }, []);
 
@@ -246,17 +257,96 @@ export default function OntologyModeling() {
   // 任务进度的唯一事实源在服务端会话转录里；页面只关心“有没有在跑”与终态提醒
   const running = genTask?.status === 'running';
 
+  // ── 草案（两段式）：状态与正文都以服务端为事实源 ──
+  // 历史缺陷：draftPending 是个只由“本页点了存草案”置位的本地 state，从不调 GET /draft。
+  // AS-BOT 在服务端写入草案时，本页既看不到新对象（列表读生效版）、又把发布按成
+  // 「无待发布」的死开关。现改为：选中模型/存草案/发布后一律回读服务端。
+  const [draftStatus, setDraftStatus] = useState<DraftStatus | null>(null);
+  /** 草案正文（只在切到草案视图时拉；编辑基线必须是草案，否则会顶掉 AS-BOT/他人已写的草案） */
+  const [draftJson, setDraftJson] = useState('');
+  /** 工作区当前展示哪一份正文：生效版（线上只读）/ 草案（可编辑） */
+  const [viewMode, setViewMode] = useState<'live' | 'draft'>('live');
+  const [tab, setTab] = useState('hub');
+  const [publishing, setPublishing] = useState(false);
+  const draftPending = !!draftStatus?.has_draft;
+
+  const loadDraftStatus = useCallback(async (id: number) => {
+    try {
+      const { data } = await ontologyApi.getDraft(id);
+      // 快速切换模型时丢弃旧响应（不得把上一个模型的草案状态泼到当前模型上）
+      if (selectedIdRef.current === id) setDraftStatus(data);
+    } catch {
+      // 草案状态拉不到不影响主流程，但不得回退成“无草案”假象（按钮保持禁用并给出原因）
+      if (selectedIdRef.current === id) setDraftStatus(null);
+    }
+  }, []);
+
+  /** 拉草案正文（返回正文串供调用方判断是否可切视图） */
+  const loadDraftContent = useCallback(async (id: number): Promise<string> => {
+    try {
+      const { data } = await ontologyApi.getDraftContent(id);
+      const content = data.has_draft ? (data.draft_json_content || '') : '';
+      if (selectedIdRef.current === id) setDraftJson(content);
+      return content;
+    } catch {
+      if (selectedIdRef.current === id) setDraftJson('');
+      return '';
+    }
+  }, []);
+
+  // 草案差异摘要（顶部条文案）：把“草案里到底有什么”用人话说出来
+  const draftSummary = useMemo(() => {
+    if (!draftStatus?.has_draft) return '';
+    const parts: string[] = [];
+    if (draftStatus.added.length) {
+      parts.push(`新增「${draftStatus.added.map((a) => a.display_name || a.key).join('、')}」`);
+    }
+    if (draftStatus.changed.length) parts.push(`修改 ${draftStatus.changed.length} 个对象`);
+    if (draftStatus.removed.length) parts.push(`删除 ${draftStatus.removed.length} 个对象`);
+    return parts.join('；');
+  }, [draftStatus]);
+
+  // 对象清单用的草案状态（key 小写 → diff 项），仅草案视图消费
+  const draftStates = useMemo(() => {
+    const m: Record<string, DraftObjectDiff> = {};
+    (draftStatus?.objects || []).forEach((o) => { m[String(o.key).toLowerCase()] = o; });
+    return m;
+  }, [draftStatus]);
+
   const loadModel = useCallback(async (id: number) => {
+    selectedIdRef.current = id;
+    setDraftStatus(null);   // 切模型先清空，不得拿上一个模型的“有草案”误标当前模型
+    setDraftJson('');
+    setViewMode('live');
+    setTab('hub');
     try {
       const { data } = await ontologyApi.get(id);
+      if (selectedIdRef.current !== id) return;
       setModel(data);
       setSelectedId(id);
       setJsonDraft(data.json_content || '');
-      setDirty(false);
+      // 草案状态是服务端事实：选中即拉，否则 AS-BOT 写的草案对页面不可见
+      void loadDraftStatus(id);
     } catch {
-      toast.error('加载模型失败');
+      if (selectedIdRef.current === id) toast.error('加载模型失败');
     }
-  }, []);
+  }, [loadDraftStatus]);
+
+  /** 切视图：草案视图需先拉到正文才能切（拉不到就留在生效版，不得空白屏） */
+  const switchView = useCallback(async (mode: 'live' | 'draft') => {
+    if (!model || mode === viewMode) return;
+    if (mode === 'draft') {
+      const content = await loadDraftContent(model.id);
+      if (!content) {
+        toast.error(draftStatus ? '没有可展示的草案正文（可能刚被发布或丢弃）' : '草案状态未加载成功，请刷新重试');
+        void loadDraftStatus(model.id);
+        return;
+      }
+      setViewMode('draft');
+      return;
+    }
+    setViewMode('live');
+  }, [model, viewMode, loadDraftContent, loadDraftStatus, draftStatus]);
 
   // ── 生成草案：只负责“派发”，执行在服务端后台，进度在 AS-BOT 侧边栏呈现 ──
   const openTaskConversation = useCallback((convId: number) => {
@@ -322,60 +412,64 @@ export default function OntologyModeling() {
     return () => clearInterval(timer);
   }, [genTask?.status, genTask?.conversation_id, applyTaskResult]);
 
-  // ── 保存（只存草案，两段式第一段） ──
-  // 供建模页签（行为/规则/场景/新建对象）落库。
-  // 2026-10-26 拍板：改为存草案，**不碰生效内容、不级联**；发布（ontology:publish）才生效。
+  // ── 保存（只存草案，两段式第一段）──
+  // 供建模页签（行为/规则/场景/新建对象/编辑对象）落库。
+  // 2026-10-26 拍板：存草案，**不碰生效内容、不级联**；发布（ontology:publish）才生效。
+  // 基线纪律：有未发布草案时，编辑基线**只能是草案**（拿生效版整份提交会顶掉 AS-BOT/他人已写的草案）。
   const saveDocFromTab = useCallback(async (nextJson: string) => {
     if (!model) return;
-    setJsonDraft(nextJson);
-    try {
-      const { data } = await ontologyApi.saveDraft(model.id, nextJson);
-      setModel(data);
-      setJsonDraft(data.json_content || '');
-      setDirty(false);
-      loadModels();
-      setDraftPending(true);
-      toast.success('已存为草案，尚未生效；点「发布」后才会同步对象/图谱/知识库');
-    } catch (e: any) {
-      toast.error(e.response?.data?.detail || '保存失败');
+    if (viewMode !== 'draft' && draftPending) {
+      // 顶栏已禁用编辑入口，走到这里只可能是旧组件缓存的回调：不静默覆盖，显式引导
+      toast.warning('该模型已有未发布草案，已切到草案视图；请在草案上重新编辑，以免顶掉草案内容');
+      void switchView('draft');
+      return;
     }
-  }, [model, datasourceId, loadModels]);
-
-  const handleSave = async () => {
-    if (!model) return;
     setSaving(true);
     try {
-      const { data } = await ontologyApi.saveDraft(model.id, jsonDraft);
-      setModel(data);
-      setJsonDraft(data.json_content || '');
-      setDirty(false);
+      await ontologyApi.saveDraft(model.id, nextJson);
+      setDraftJson(nextJson);
+      setJsonDraft((prev) => prev);   // 生效版不变（saveDraft 不碰线上内容）
+      await loadDraftStatus(model.id);
       loadModels();
-      setDraftPending(true);
-      toast.success('已存为草案，尚未生效；点「发布」后才会同步对象/图谱/知识库');
+      // 首次写入（之前无草案）：自动切到草案视图，让人立刻看到“我的改动落在哪”
+      if (viewMode !== 'draft') setViewMode('draft');
+      setTab('changes');
+      toast.success('已写入草案（尚未生效）：已打开「变更对比」，核对无误后点发布');
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '保存失败');
+      toast.error(e.response?.data?.detail || '存草案失败');
     } finally {
       setSaving(false);
     }
-  };
+  }, [model, viewMode, draftPending, loadModels, loadDraftStatus, switchView]);
 
   // ── 发布（两段式第二段）：生效 + 级联，需 ontology:publish 权限 ──
-  const [draftPending, setDraftPending] = useState(false);
-  const [publishing, setPublishing] = useState(false);
   const handlePublish = async () => {
     if (!model) return;
     setPublishing(true);
     try {
       await ontologyApi.publishDraft(model.id);
-      setDraftPending(false);
+      setDraftJson('');
+      setTab('hub');
       loadModels();
-      toast.success('已发布生效，并同步刷新对象/绑定/图谱');
+      // 发布改变了生效版：重拉模型正文（否则对象列表停在发布前的旧数量）与草案状态，并回生效版视图
+      await loadModel(model.id);
+      toast.success('已发布生效：对象表/图谱/知识库已级联刷新');
     } catch (e: any) {
       // 透传服务端具体错因（如“生效版已被他人改动”），不换成通用文案
       toast.error(e.response?.data?.detail || '发布失败');
     } finally {
       setPublishing(false);
     }
+  };
+
+  /** 丢弃草案（已由审阅面板调完 API，这里只负责把视图拉回一致状态） */
+  const handleDiscarded = async () => {
+    if (!model) return;
+    setDraftJson('');
+    setTab('hub');
+    loadModels();
+    await loadModel(model.id);
+    toast.success('草案已丢弃，生效版与图谱/知识库未受影响');
   };
 
   // ── 激活 ──
@@ -421,7 +515,6 @@ export default function OntologyModeling() {
       const { data } = await ontologyApi.restore(model.id);
       setModel(data);
       setJsonDraft(data.json_content || '');
-      setDirty(false);
       loadModels();
       toast.success('已还原为草案，可继续编辑后激活');
     } catch (e: any) {
@@ -484,13 +577,12 @@ export default function OntologyModeling() {
     }
   };
 
+  // 工作区当前展示的正文：草案视图用草案内容（所以对象清单/属性/关系就是草案的真实形状）
+  const activeJson = viewMode === 'draft' ? draftJson : jsonDraft;
   const { objects, issues: objectIssues } = useMemo(
-    () => model ? parseObjects(jsonDraft) : { objects: [], issues: [] },
-    [model, jsonDraft]);
+    () => model ? parseObjects(activeJson) : { objects: [], issues: [] },
+    [model, activeJson]);
   const hubObjects = objects as HubObject[];
-  const objectOptions = useMemo(
-    () => hubObjects.map((o: any) => ({ key: o.key, display_name: o.display_name || o.key })),
-    [hubObjects]);
   // 模型分组按 kind（x4 归属改造）：本体归属是 domain+kind，不是数据源。
   // 业务本体的 datasource_id 也是 0，旧的“有合法数据源 → 业务”口径会把它们误归到系统组。
   const byKind = (k: string) => models.filter((m) => (m.kind || '') === k);
@@ -500,26 +592,35 @@ export default function OntologyModeling() {
   // 兼容无 kind 的存量模型：回落旧口径（有合法数据源 → 业务），不丢进任一组
   const legacyModels = useMemo(() =>
     models.filter((m) => !m.kind && !['source', 'business', 'system'].includes(m.kind || '')), [models]);
-  const jsonInvalid = useMemo(() => {
-    if (!dirty || !jsonDraft.trim()) return false;
-    try {
-      JSON.parse(jsonDraft);
-      return false;
-    } catch {
-      return true;
-    }
-  }, [jsonDraft, dirty]);
 
   const editable = !!model && model.status !== 'archived';
+  /** 草案视图下对象清单的引导文案：说清“此处编辑落在哪”，避免用户以为在改线上口径 */
+  const draftHint = '此处显示的是草案内容：新建/编辑只写草案，不会改动线上生效版；核对后到「变更对比」点发布才级联。';
+  /** 生效版视图且已有草案：编辑入口关闭（要改必须切草案，否则整份提交会顶掉草案） */
+  const liveLocked = viewMode === 'live' && draftPending;
+  /** 编辑入口是否可用：生效版不可直接改（线上口径），有未发布草案时必须先到草案视图 */
+  const canEditDoc = editable && hasPerm('ontology:save') && !liveLocked;
+  /** 草案里待发布的变更数（顶部标记与页签标记） */
+  const pendingChangeCount = draftPending
+    ? (draftStatus?.added.length || 0) + (draftStatus?.changed.length || 0) + (draftStatus?.removed.length || 0)
+    : 0;
+  const matchModel = (m: OntologyModelSummary) => {
+    const k = modelKw.trim().toLowerCase();
+    return !k || (m.name || '').toLowerCase().includes(k) || (m.domain || '').toLowerCase().includes(k);
+  };
+  const filteredBizModels = useMemo(() => bizModels.filter(matchModel), [bizModels, modelKw]);
+  const filteredSourceModels = useMemo(() => sourceModels.filter(matchModel), [sourceModels, modelKw]);
+  const filteredSysModels = useMemo(() => sysModels.filter(matchModel), [sysModels, modelKw]);
+  const filteredLegacyModels = useMemo(() => legacyModels.filter(matchModel), [legacyModels, modelKw]);
   // 源本体不承载 M2/M3/M4：页签隐藏后，若存量 doc 仍声明了行为/规则/场景，
   // 必须可看到“声明仍在”（不静默藏起来），并引导去清理
   const m234Declared = useMemo(() => {
     try {
-      return countM234Declarations(JSON.parse(jsonDraft || '{}'));
+      return countM234Declarations(JSON.parse(activeJson || '{}'));
     } catch {
       return 0;
     }
-  }, [jsonDraft]);
+  }, [activeJson]);
   const hiddenM234 = !!model && !showsM234(model.kind) && m234Declared > 0;
 
   return (
@@ -602,11 +703,11 @@ export default function OntologyModeling() {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
-        {/* 左栏：模型列表(只放本体模型, 分组隔离) + 未归属资产池入口 */}
+        {/* 左栏：模型列表（可搜索 + 按 kind 分组）+ 建模待办入口 */}
         <Card className="xl:col-span-1">
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between gap-2">
-              <CardTitle className="text-sm">模型列表</CardTitle>
+              <CardTitle className="text-sm">模型列表（{models.length}）</CardTitle>
               <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
                 <Switch checked={showArchived} onCheckedChange={(v) => {
                   setShowArchived(v);
@@ -615,62 +716,106 @@ export default function OntologyModeling() {
                 显示归档
               </label>
             </div>
+            <div className="relative mt-2">
+              <Search className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input value={modelKw} onChange={(e) => setModelKw(e.target.value)}
+                placeholder="搜索模型名 / 业务域" className="h-8 pl-7 text-xs" />
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <button
-              onClick={() => setPoolMode((v) => !v)}
-              className={`w-full text-left rounded-lg border px-3 py-2 text-sm transition-colors
-                ${poolMode ? 'border-primary bg-primary/5' : 'border-dashed hover:bg-muted/50'}`}
-            >
-              <div className="flex items-center gap-2">
-                <AlertTriangle className="h-4 w-4 text-amber-500" />
-                未归属资产池
-                {poolTotal > 0 && (
-                  <Badge variant="outline" className="ml-auto text-amber-500 border-amber-500/40">{poolTotal} 项</Badge>
-                )}
-              </div>
-              <div className="text-xs text-muted-foreground mt-0.5">待归属/悬空的建模资产 · 清空即覆盖度提升</div>
-            </button>
-
             {models.length === 0 && (
               <div className="text-xs text-muted-foreground py-4 text-center">
                 暂无模型，选择数据源后点击"生成本体模型"
               </div>
             )}
+            {models.length > 0 && !filteredBizModels.length && !filteredSourceModels.length
+              && !filteredSysModels.length && !filteredLegacyModels.length && (
+              <div className="text-xs text-muted-foreground py-3 text-center">没有匹配“{modelKw}”的模型</div>
+            )}
             <ModelGroup
-              title="业务本体（按业务域）" list={bizModels}
-              selectedId={poolMode ? null : selectedId}
-              onPick={(id) => { setPoolMode(false); loadModel(id); }}
+              title="业务本体（按业务域）" list={filteredBizModels}
+              selectedId={selectedId} onPick={loadModel}
             />
             <ModelGroup
-              title="源本体（按数据源）" list={sourceModels}
-              selectedId={poolMode ? null : selectedId}
-              onPick={(id) => { setPoolMode(false); loadModel(id); }}
+              title="源本体（按数据源）" list={filteredSourceModels}
+              selectedId={selectedId} onPick={loadModel}
             />
             <ModelGroup
-              title="系统能力本体" list={sysModels}
-              selectedId={poolMode ? null : selectedId}
-              onPick={(id) => { setPoolMode(false); loadModel(id); }}
+              title="系统能力本体" list={filteredSysModels}
+              selectedId={selectedId} onPick={loadModel}
             />
             <ModelGroup
-              title="未分类" list={legacyModels}
-              selectedId={poolMode ? null : selectedId}
-              onPick={(id) => { setPoolMode(false); loadModel(id); }}
+              title="未分类" list={filteredLegacyModels}
+              selectedId={selectedId} onPick={loadModel}
             />
+
+            {/* 建模待办：已抽为独立页（不属于某个模型的全局缺口），本页只留入口与计数 */}
+            <button
+              onClick={() => navigate('/data/asset-pool')}
+              className="w-full text-left rounded-lg border border-dashed px-3 py-2 text-sm transition-colors hover:bg-muted/50"
+            >
+              <div className="flex items-center gap-2">
+                <Inbox className="h-4 w-4 text-amber-500" />
+                建模待办（未归属资产）
+                {poolTotal > 0 && (
+                  <Badge variant="outline" className="ml-auto text-amber-500 border-amber-500/40">{poolTotal} 项</Badge>
+                )}
+              </div>
+              <div className="text-xs text-muted-foreground mt-0.5">跨模型的覆盖缺口 · 打开独立工作台处理</div>
+            </button>
           </CardContent>
         </Card>
 
-        {/* 右主区：模型工作区(对象中枢/指标/维度/编辑器/RDF) */}
+        {/* 右主区：模型工作区（生效版/草案 双视图 + 变更对比） */}
         <Card className="xl:col-span-3">
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between flex-wrap gap-2">
-              <CardTitle className="text-sm">
-                {poolMode ? '未归属资产池' : (model ? model.name : '工作区')}
-                {!poolMode && dirty && editable && <span className="ml-2 text-xs text-amber-500">未保存</span>}
-                {!poolMode && jsonInvalid && <span className="ml-2 text-xs text-red-500">JSON 格式错误</span>}
+              <CardTitle className="text-sm flex items-center gap-2 flex-wrap">
+                {model ? model.name : '工作区'}
+                {model && (
+                  <Badge variant="outline" className={`text-[10px] font-normal ${STATUS_META[model.status]?.cls}`}>
+                    {STATUS_META[model.status]?.label}
+                  </Badge>
+                )}
+                {model && viewMode === 'draft' && (
+                  <Badge variant="outline" className="text-[10px] font-normal border-amber-500/40 text-amber-600">
+                    草案视图·未生效
+                  </Badge>
+                )}
+                {saving && <span className="text-xs text-muted-foreground">写入草案中…</span>}
               </CardTitle>
               {model && (
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* 视图切换：生效版（线上只读）↔ 草案（可编辑）。
+                      这就是“有存草案按钮却没有编辑草案的地方”的答案：草案本身就是工作区的一个视图。 */}
+                  <div className="inline-flex items-center rounded-md border border-border bg-muted/40 p-0.5">
+                    <button
+                      onClick={() => switchView('live')}
+                      title="线上正在生效的口径（只读；要改请切到草案）"
+                      className={`h-7 rounded px-2.5 text-xs transition-colors ${
+                        viewMode === 'live' ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground'}`}
+                    >
+                      生效版 · {draftStatus?.effective_object_count ?? objects.length}
+                    </button>
+                    <button
+                      onClick={() => switchView('draft')}
+                      disabled={!draftPending}
+                      title={draftPending
+                        ? `草案 ${draftStatus?.draft_object_count} 个对象（${draftStatus?.draft_updated_by || '未知'} 于 ${draftStatus?.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—'} 保存）；此处编辑直接写入草案`
+                        : '当前没有待发布的草案'}
+                      className={`h-7 rounded px-2.5 text-xs inline-flex items-center gap-1 transition-colors ${
+                        !draftPending ? 'text-muted-foreground/50 cursor-not-allowed'
+                          : viewMode === 'draft' ? 'bg-amber-500/15 text-amber-700 shadow-sm font-medium'
+                            : 'text-amber-600 hover:bg-amber-500/10'}`}
+                    >
+                      草案 · {draftStatus?.draft_object_count ?? 0}
+                      {pendingChangeCount > 0 && (
+                        <Badge variant="outline" className="text-[10px] px-1 h-4 border-amber-500/40 text-amber-600">
+                          {pendingChangeCount}
+                        </Badge>
+                      )}
+                    </button>
+                  </div>
                   {(model.datasource_id || 0) > 0 && (
                     /* v0.5: 业务本体默认同步系统知识库，不再手动选库 */
                     <Badge variant="outline" className="h-8 px-3 text-muted-foreground">
@@ -684,25 +829,20 @@ export default function OntologyModeling() {
                     <History className="h-3.5 w-3.5 mr-1" />
                     版本管理
                   </Button>
-                  {editable && (
-                    <Button size="sm" onClick={handleSave} disabled={saving || jsonInvalid || !dirty}>
-                      {saving ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1" />}
-                      存草案
-                    </Button>
-                  )}
-                  {/* 发布 = 两段式第二段：生效 + 级联。按 ontology:publish 显隐（无码不渲染，不给死开关） */}
-                  {editable && hasPerm('ontology:publish') && (
+                  {/* 发布 = 两段式第二段：按 ontology:publish 显隐（无码不渲染，不给死开关）；
+                      可用性由服务端草案状态裁决，AS-BOT 写的草案同样可发 */}
+                  {draftPending && editable && hasPerm('ontology:publish') && (
                     <Button size="sm" variant="default" onClick={handlePublish}
-                      disabled={publishing || !draftPending}
-                      title={draftPending ? '把草案提升为生效版，并同步对象/图谱/知识库' : '当前没有待发布的草案'}>
+                      disabled={publishing || !!draftStatus?.base_stale || !!draftStatus?.draft_parse_error}
+                      title={draftStatus?.base_stale
+                        ? '生效版在草案写入后又被改动，发布会被并发保护阻断；请基于最新生效版重做草案'
+                        : draftStatus?.draft_parse_error
+                          ? '草案正文结构异常，请先修正后再发布'
+                          : `发布后级联刷新对象表/图谱/知识库：${draftSummary || '有改动'}`}
+                    >
                       {publishing ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1" />}
-                      发布{draftPending ? '' : '（无待发布）'}
+                      发布草案（{pendingChangeCount}）
                     </Button>
-                  )}
-                  {draftPending && (
-                    <Badge variant="outline" className="border-amber-500/40 text-amber-600">
-                      有草案待发布
-                    </Badge>
                   )}
                   {(model.status === 'draft' || model.status === 'archived') && (
                     <Button size="sm" variant="default" onClick={() => setActivateOpen(true)}>
@@ -730,34 +870,82 @@ export default function OntologyModeling() {
                 </div>
               )}
             </div>
-            {model && !poolMode && (
-              <div className="text-xs text-muted-foreground">
-                {model.status === 'active'
-                  ? '激活模型可新增/编辑对象（存为草案）；点「发布」才级联同步对象/图谱/维度字典；同构多站部署由模型级「同构站点部署」声明统一路由，跨源/跨层取数路径在「取数路径」页声明。'
+            {/* 草案条：当前看的是哪一份 + 待发布内容概要 + 下一步动作（一屏内闭环） */}
+            {model && draftPending && (
+              <div className={`mt-2 flex items-start gap-2 rounded-md border px-3 py-2 text-xs ${
+                viewMode === 'draft' ? 'border-amber-500/40 bg-amber-500/10' : 'border-amber-500/30 bg-amber-500/5'}`}>
+                <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0 text-amber-600" />
+                <div className="min-w-0 space-y-0.5">
+                  <div className="font-medium text-amber-700">
+                    {viewMode === 'draft'
+                      ? `正在查看草案（${draftStatus?.draft_object_count} 个对象）：此处新建/编辑直接写入草案，不影响线上口径。`
+                      : `有 ${pendingChangeCount} 项待发布改动尚未生效（对象 ${draftStatus?.effective_object_count} → ${draftStatus?.draft_object_count}）。`}
+                  </div>
+                  <div className="text-muted-foreground">
+                    {draftSummary || '草案与生效版对象清单一致（可能只改了属性/关系以外的内容）'}
+                    {' · '}{draftStatus?.draft_updated_by || '未知'} 于 {draftStatus?.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—'} 保存
+                    {draftStatus?.base_stale && (
+                      <span className="ml-1 text-red-600">· 生效版已再被改动，发布会被阻断，需重做草案</span>
+                    )}
+                  </div>
+                  {viewMode === 'live' && (
+                    <div className="text-muted-foreground">
+                      草案内容在发布前不会进入取数链路（不展开到对象表、不进图谱/知识库），所以生效版视图里看不到它。
+                    </div>
+                  )}
+                </div>
+                <div className="ml-auto flex items-center gap-2 shrink-0">
+                  <Button size="sm" variant="outline" className="h-7 text-xs"
+                    onClick={() => { setTab('changes'); if (viewMode !== 'draft') void switchView('draft'); }}>
+                    <GitCompare className="h-3 w-3 mr-1" />变更对比
+                  </Button>
+                  {viewMode === 'live' ? (
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void switchView('draft')}>
+                      <Eye className="h-3 w-3 mr-1" />切到草案
+                    </Button>
+                  ) : (
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void switchView('live')}>
+                      返回生效版
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
+            {model && (
+              <div className="text-xs text-muted-foreground mt-2">
+                {viewMode === 'draft'
+                  ? '草案视图：改动只写草案、不级联；在「变更对比」核对后点发布才同步对象表/图谱/知识库。同构站点部署为模型级配置，不受草案/发布影响。'
                   : model.status === 'archived'
                     ? '已归档模型只读；可「还原为草案」继续编辑，或「确认激活」直接恢复为生效（归档数据始终可查看）。'
-                    : '草案编辑后保存，确认无误后激活。'}
+                    : draftPending
+                      ? '生效版只读（线上正在用的口径）；要改建模请切到草案视图。'
+                      : '新增/编辑对象会先存为草案，点「发布」才级联同步对象/图谱/维度字典；同构多站部署由模型级「同构站点部署」声明统一路由，跨源去重/汇总口径请在知识库文档描述。'}
               </div>
             )}
           </CardHeader>
           <CardContent>
-            {poolMode ? (
-              <AssetPoolPanel modelId={selectedId || undefined} objects={objectOptions} />
-            ) : !model ? (
+            {!model ? (
               <div className="text-sm text-muted-foreground py-12 text-center">
                 从左侧选择模型（业务/系统能力本体），或先生成本体草案
               </div>
             ) : (
-              <Tabs key={model.id} defaultValue="hub">
+              <Tabs key={model.id} value={tab} onValueChange={setTab}>
                 <TabsList>
                   <TabsTrigger value="hub">对象 · Link</TabsTrigger>
+                  {draftPending && (
+                    <TabsTrigger value="changes">
+                      变更对比
+                      <Badge variant="outline" className="ml-1 text-[10px] px-1 h-4 border-amber-500/40 text-amber-600">
+                        {pendingChangeCount}
+                      </Badge>
+                    </TabsTrigger>
+                  )}
                   <TabsTrigger value="terms">业务术语</TabsTrigger>
                   <TabsTrigger value="tags">标签</TabsTrigger>
                   {showsM234(model.kind) && <TabsTrigger value="m234">行为</TabsTrigger>}
                   {showsM234(model.kind) && <TabsTrigger value="rules">规则</TabsTrigger>}
                   {showsM234(model.kind) && <TabsTrigger value="scenarios">场景</TabsTrigger>}
                   {showsSiteScope(model.kind) && <TabsTrigger value="sites">同构站点部署</TabsTrigger>}
-                  {showsCarriers(model.kind) && <TabsTrigger value="carriers">取数路径</TabsTrigger>}
                 </TabsList>
                 {hiddenM234 && (
                   <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-600">
@@ -769,14 +957,38 @@ export default function OntologyModeling() {
                 )}
                 <TabsContent value="hub" className="mt-2 h-[62vh] overflow-hidden">
                   <div className="flex items-center gap-2 mb-2">
-                    <ObjectCreateButton jsonContent={jsonDraft} onSave={saveDocFromTab} />
+                    {canEditDoc && (
+                      <ObjectCreateButton jsonContent={activeJson} onSave={saveDocFromTab} />
+                    )}
+                    {liveLocked && editable && (
+                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void switchView('draft')}>
+                        <Pencil className="h-3 w-3 mr-1" />切到草案后编辑
+                      </Button>
+                    )}
+                    {viewMode === 'draft' && (
+                      <span className="text-[11px] text-muted-foreground">
+                        新建/编辑的对象只进草案，发布后才进对象表与图谱
+                      </span>
+                    )}
                   </div>
                   <div className="h-[calc(62vh-2.5rem)] overflow-auto">
                     <ObjectHubTab modelId={model.id} objects={hubObjects} issues={objectIssues}
-                      jsonContent={jsonDraft} onSave={saveDocFromTab}
-                      canEdit={editable && hasPerm('ontology:save')} />
+                      jsonContent={activeJson} onSave={saveDocFromTab}
+                      canEdit={canEditDoc} viewMode={viewMode} draftStates={draftStates}
+                      draftHint={draftHint} modelKind={model.kind} />
                   </div>
                 </TabsContent>
+                {draftPending && (
+                  <TabsContent value="changes" className="mt-2">
+                    <ModelDraftReview modelId={model.id} draft={draftStatus}
+                      canPublish={editable && hasPerm('ontology:publish')}
+                      canEdit={editable && hasPerm('ontology:save')}
+                      publishing={publishing}
+                      onPublish={handlePublish}
+                      onDiscard={handleDiscarded}
+                      onEditInDraft={() => void switchView('draft')} />
+                  </TabsContent>
+                )}
                 <TabsContent value="terms" className="mt-2 h-[62vh] overflow-auto">
                   <Glossary embedded datasourceId={model.datasource_id}
                     tables={hubObjects.map((o: any) => String(o.primary_table || '').toLowerCase()).filter(Boolean)} />
@@ -786,27 +998,22 @@ export default function OntologyModeling() {
                 </TabsContent>
                 {showsM234(model.kind) && (
                   <TabsContent value="m234" className="mt-2 h-[62vh] overflow-hidden">
-                    <ModelActionsTab jsonContent={jsonDraft} onSave={saveDocFromTab} />
+                    <ModelActionsTab jsonContent={activeJson} onSave={saveDocFromTab} />
                   </TabsContent>
                 )}
                 {showsM234(model.kind) && (
                   <TabsContent value="rules" className="mt-2 h-[62vh] overflow-hidden">
-                    <ModelRulesTab jsonContent={jsonDraft} onSave={saveDocFromTab} />
+                    <ModelRulesTab jsonContent={activeJson} onSave={saveDocFromTab} />
                   </TabsContent>
                 )}
                 {showsM234(model.kind) && (
                   <TabsContent value="scenarios" className="mt-2 h-[62vh] overflow-hidden">
-                    <ModelScenariosTab jsonContent={jsonDraft} onSave={saveDocFromTab} />
+                    <ModelScenariosTab jsonContent={activeJson} onSave={saveDocFromTab} />
                   </TabsContent>
                 )}
                 {showsSiteScope(model.kind) && (
                   <TabsContent value="sites" className="mt-2 h-[62vh] overflow-hidden">
-                    <ModelSitesTab modelId={model.id} />
-                  </TabsContent>
-                )}
-                {showsCarriers(model.kind) && (
-                  <TabsContent value="carriers" className="mt-2 h-[62vh] overflow-hidden">
-                    <ModelCarriersTab modelId={model.id} readonly={!editable} />
+                    <ModelSitesTab modelId={model.id} readonly={!editable} />
                   </TabsContent>
                 )}
               </Tabs>
@@ -870,6 +1077,8 @@ export default function OntologyModeling() {
         </DialogContent>
       </Dialog>
 
+      {/* 草案审阅弹窗已下线（旧「查看草案」把 JSON 摊出来让人自己比）：
+          改由工作区内的「变更对比」页签承担，见 ModelDraftReview。 */}
       {/* 版本管理弹窗（同一模型的归档/历史版本在此呈现） */}
       <Dialog open={versionsOpen} onOpenChange={setVersionsOpen}>
         <DialogContent className="max-w-2xl">

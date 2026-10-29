@@ -1,5 +1,6 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OntologyModeling from '../OntologyModeling';
 import client from '@/api/client';
@@ -55,9 +56,16 @@ afterEach(() => cleanup());
 const listCalls = () => vi.mocked(client.get).mock.calls
   .filter(([url]) => url === '/catalog/ontology/models');
 
+/** 页面顶栏有「建模待办」跳转入口（useNavigate），必须包在 Router 上下文里 */
+const renderPage = () => render(
+  <MemoryRouter initialEntries={['/data/ontology']}>
+    <OntologyModeling />
+  </MemoryRouter>,
+);
+
 describe('本体建模 · 生成入口', () => {
   it('选择数据源不过滤模型列表（数据源不是筛选器）', async () => {
-    render(<OntologyModeling />);
+    renderPage();
     await screen.findByText('联耀业务本体');
     const before = listCalls().length;
 
@@ -76,7 +84,7 @@ describe('本体建模 · 生成入口', () => {
   });
 
   it('生成 = 派发后台任务（带 kb_ids）并打开 AS-BOT 会话，不在页面内持有流', async () => {
-    render(<OntologyModeling />);
+    renderPage();
     await screen.findByText('联耀业务本体');
 
     await userEvent.click(screen.getByRole('combobox'));

@@ -132,6 +132,66 @@ def _get_dimensions(datasource_id: int) -> list[dict]:
         conn.close()
 
 
+def active_binding_tables() -> tuple[set, dict]:
+    """部署绑定层当前生效的物理表：`(全量表集合, {object_key: 该对象的表集合})`。
+
+    字典行能否被 planner 加载的唯一裁决依据（planner 按 `target_table = 对象绑定物理表` 取字典）。
+    不按 datasource 过滤：跳站部署（模型 `deploy_sites`）下契约行只登记在主源，
+    取数时由 `binding_resolver._route_by_site` 把生效源改写到请求站 —— 表集合仍是同一张。
+    """
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT object_key, physical_table FROM adh_ontology_bindings "
+                "WHERE status = 'active' AND physical_table IS NOT NULL AND physical_table <> ''")
+            rows = cur.fetchall() or []
+        all_tables: set = set()
+        by_object: dict[str, set] = {}
+        for r in rows:
+            t = str(r["physical_table"])
+            all_tables.add(t)
+            # key 小写归一（字典 bound_object_key 与绑定行存在大小写/分隔符变体）
+            by_object.setdefault(str(r.get("object_key") or "").strip().lower(), set()).add(t)
+        return all_tables, by_object
+    finally:
+        conn.close()
+
+
+def binding_scope_for(row: dict, all_tables: set, by_object: dict) -> set:
+    """该字典行应比对哪张表：优先归属对象的生效绑定表，无归属/无元数据时回全量集合。
+
+    回全量是“不拦”的保守方向（宁可让 planner 自己报错），不得拿“查不到绑定”当“不可用”。
+    """
+    obj = str(row.get("bound_object_key") or "").strip().lower()
+    return by_object.get(obj) or all_tables
+
+
+def dict_unavailable_reason(row: dict, active_tables: set, *, kind: str = "metric") -> str:
+    """该字典行今天能不能被语义层编译取数；空串 = 可编译。
+
+    历史缺陷（本函数要消除的那一类）：目录层按 `bound_object_key` 广告、编译层按
+    `target_table = 物理表` 加载，两套口径不一致时 → `get_metrics` 列得出 19 个指标，
+    planner 一个也加载不到，会话表现为「无法解析指标…可用指标: []」——
+    挂着名字却永远答不出数，对使用者是假可用（no-silent-degradation）。
+
+    `active_tables` 由 `binding_scope_for` 给出（对象层面判不了时才退全量表集合）。
+    返回体只给业务层原因，不回物理表名（护栏 §7）。
+    """
+    tbl = str(row.get("target_table") or "").strip()
+    col = str(row.get("target_column") or "").strip()
+    if not tbl:
+        return ("尚未绑定物理列，口径已登记但当前不可取数" if kind == "dimension"
+                else "尚未绑定物理表，口径已登记但当前不可取数")
+    if kind == "dimension" and not col:
+        return "尚未绑定物理列，口径已登记但当前不可取数"
+    if kind == "metric" and not str(row.get("formula_dsl") or row.get("formula") or "").strip():
+        return "口径公式为空，无法编译取数"
+    if active_tables and tbl not in active_tables:
+        return "绑定的物理表没有生效的部署绑定，当前站点不可取数"
+    return ""
+
+
 def _parse_json_field(v):
     """JSON 列可能以字符串返回(pymysql), 统一解析; 解析失败给 None。"""
     import json as _json

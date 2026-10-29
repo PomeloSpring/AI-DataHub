@@ -69,6 +69,59 @@ class TermService:
             conn.close()
 
     @staticmethod
+    def search_terms(keywords: list, size: int = 60,
+                     datasource_id: Optional[int] = None) -> dict:
+        """多关键词**一次查询**：每词一组 LIKE(term_cn/term_en/term_aliases)，词间 OR。
+
+        存量的 list_terms 只接一个 search 串，调用方要查 N 个词就得跑 N 次
+        （= N 次元库建连 + 2N 条 SQL）；本方法把它压成 1 次建连 + 1 条 SQL。
+        判定口径与 list_terms 逐项一致（同一张表、同样三段 LIKE、同排序），只是多给
+        每行标 matched_keywords，让调用方知道哪个词命中了什么（0 命中词不假装有结果）。
+        """
+        words: list[str] = []
+        for w in (keywords or []):
+            w = str(w or "").strip()
+            if w and w not in words:
+                words.append(w)
+        if not words:
+            return {"total": 0, "items": [], "queried_keywords": []}
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                conditions: list[str] = []
+                params: list = []
+                if datasource_id:
+                    conditions.append("(datasource_id = %s OR datasource_id = 0)")
+                    params.append(datasource_id)
+                groups = []
+                for w in words:
+                    groups.append("(term_cn LIKE %s OR term_en LIKE %s OR term_aliases LIKE %s)")
+                    params.extend([f"%{w}%"] * 3)
+                conditions.append("(" + " OR ".join(groups) + ")")
+                where = f"WHERE {' AND '.join(conditions)}"
+                cur.execute(
+                    f"SELECT id, term_cn, term_en, term_aliases, term_type, "
+                    f"target_table, target_column, calculation, description, usage_count, "
+                    f"is_active, created_at, updated_at "
+                    f"FROM adh_business_terms {where} "
+                    f"ORDER BY usage_count DESC, term_cn LIMIT %s",
+                    params + [size],
+                )
+                rows = cur.fetchall()
+                for r in rows:
+                    for k in ("created_at", "updated_at"):
+                        if hasattr(r.get(k), "isoformat"):
+                            r[k] = r[k].isoformat()
+                    # 命中词标注在 Python 侧比对（与 LIKE '%w%' 同语义），不额外查库
+                    r["matched_keywords"] = [
+                        w for w in words
+                        if w in str(r.get("term_cn") or "") or w in str(r.get("term_en") or "")
+                        or w in str(r.get("term_aliases") or "")]
+                return {"total": len(rows), "items": rows, "queried_keywords": words}
+        finally:
+            conn.close()
+
+    @staticmethod
     def get_term(row_id: int) -> Optional[dict]:
         """获取单条业务术语。"""
         conn = get_metadata_conn()

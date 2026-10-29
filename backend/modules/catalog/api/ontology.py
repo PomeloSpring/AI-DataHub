@@ -836,14 +836,18 @@ def get_model_sites(model_id: int, user: dict = Depends(get_current_user)):
 
     站点差异不再逐对象逐站登记（旧口径 27 对象 × 5 站 = 135 行机械复制），而是
     模型级声明一次、全对象共享；显示一律用站点/数据源业务名（ui-resource-display）。
+
+    例外：「同构多站 + 个别站点才有某对象」用对象级站点白名单收紧
+    （contract_objects[].allowed_sites，空 = 未收紧，沿用模型级全部声明站点）。
     """
     model = ontology_service.get_model(model_id)
     if not model or not ontology_service.can_view_model(model, _allowed_source_ids(user)):
         raise HTTPException(status_code=404, detail="模型不存在")
     from backend.common.db.metadata_db import get_metadata_conn
-    from backend.core.site_service import model_deploy_sites
+    from backend.core.site_service import model_deploy_sites, model_object_site_rules
 
     selected = {s["site_code"]: s["datasource"] for s in model_deploy_sites(model_id)}
+    obj_rules = model_object_site_rules(model_id)
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -900,6 +904,8 @@ def get_model_sites(model_id: int, user: dict = Depends(get_current_user)):
             "column_count": len(raw_cm or {}),
             "sync_state": str(r.get("sync_state") or ""),
             "product_ref": str(r.get("product_ref") or ""),
+            # 对象级站点白名单：只列本模型已声明的站点（防止脏规则把选项渲染成不存在站点）
+            "allowed_sites": [c for c in obj_rules.get(key, []) if c in selected],
         })
     return {"kind": str(model.get("kind") or ""), "sites": sites,
             "selected": [{"site_code": k, "datasource": v} for k, v in selected.items()],
@@ -908,18 +914,26 @@ def get_model_sites(model_id: int, user: dict = Depends(get_current_user)):
 
 @router.put("/models/{model_id}/sites")
 def update_model_sites(model_id: int, req: dict, user: dict = Depends(get_current_user)):
-    """保存业务本体适用站点（接口权限由 API 中间件按 ontology:save 码把关）。
+    """保存业务本体适用站点 + 对象级站点白名单（权限由 API 中间件按 ontology:save 码把关）。
 
     校验全部 fail-loud：站点必须存在于启用清单且非聚合态；数据源必须存在且其
-    归属站点与声明站点一致（不一致直接 422，不静默纠正）。
-    源本体不承载站点声明（它是单源物理投影，见 showsSiteScope 同口径）。
+    归属站点与声明站点一致（不一致直接 422，不静默纠正）；对象级白名单只能
+    在本模型已勾选的站点里收紧，且对象 key 不得悬空。
+    源本体已退役：非 system 模型（business，含原 source 迁移而来）统一可配适用站点。
+
+    object_site_rules 语义（与前端「对象契约清单」勾选一致）：
+      • 不传 = 只改模型级站点，已配的对象规则自动剪除不再声明的站点（并在响应里告知）；
+      • 传了 = 全量替换；`{object_key: [site_code]}` 或 `[{object_key, allowed_sites}]`；
+        空清单（[]）= 该对象不收紧（默认全部声明站点可用）。
     """
     model = ontology_service.get_model(model_id)
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
-    if str(model.get("kind") or "") == "source":
-        raise HTTPException(status_code=400, detail="源本体不适用站点声明（它是单个数据源的物理投影）")
-    from backend.core.site_service import get_site, list_sites, set_model_deploy_sites
+    from backend.core.site_service import (
+        get_site, list_sites, model_object_site_rules,
+        set_model_deploy_sites, set_model_object_site_rules,
+    )
+    from backend.common.db.metadata_db import get_metadata_conn
 
     raw_sites = req.get("sites")
     if not isinstance(raw_sites, list):
@@ -954,97 +968,67 @@ def update_model_sites(model_id: int, req: dict, user: dict = Depends(get_curren
                 detail=f"数据源「{ds}」归属站点与声明站点不一致，请先在数据源管理里校正归属")
         cleaned.append({"site_code": code, "datasource": ds})
     set_model_deploy_sites(model_id, cleaned)
-    return {"success": True, "sites": cleaned}
 
-
-@router.get("/models/{model_id}/carriers")
-def get_model_carriers(model_id: int, user: dict = Depends(get_current_user)):
-    """业务本体承载清单（跨源拓扑：这个概念的数据能从哪几条路径取到）。
-
-    与「适用站点」的分工：deploy_sites 管同构多站点复制，carriers 管跨源/跨层承载
-    （数仓汇总 / SLS 日志 / 镜像）。事实源 `adh_ontology_carriers`，读取只经
-    `backend/semantics/topology.py`（唯一投影口）。
-
-    响应同时带回**选择框选项**（对象/数据源/站点/源本体及其对象）：前端不得自己
-    拼 id、也不得要人手输 id（ui-resource-display），且避免一个页签扇出四次请求。
-    显示一律业务名（承载名/数据源名/站点名/源本体名）。
-    """
-    model = ontology_service.get_model(model_id)
-    if not model or not ontology_service.can_view_model(model, _allowed_source_ids(user)):
-        raise HTTPException(status_code=404, detail="模型不存在")
-    from backend.semantics import topology
-
-    rows = topology.list_carriers(model_id=model_id, include_deprecated=True)
-    # 源本体候选（承载指向的物理形状来源）：名称为稳定键，删除重建 id 会变、name 不变；
-    # 对象清单与校验同源（都读 canonical doc），不取展开行以免存量旧字段名导致下拉为空
-    src_index = ontology_service._active_source_ontology_index() or {}
-    objects: list = []
-    datasources: list = []
-    sites: list = []
-    from backend.common.db.metadata_db import get_metadata_conn
+    # ── 对象级站点白名单 ──
+    declared_codes = {c["site_code"] for c in cleaned}
+    site_labels = {s["site_code"]: s["display_name"] for s in list_sites()}
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT object_key, display_name FROM adh_ontology_objects "
-                "WHERE model_id = %s AND is_active = 1 ORDER BY display_name, object_key",
-                (model_id,))
-            objects = [{"key": str(r["object_key"]),
-                        "name": str(r["display_name"] or r["object_key"])}
-                       for r in (cur.fetchall() or [])]
-            cur.execute(
-                "SELECT name, db_type, site_code FROM adh_datasources ORDER BY name")
-            datasources = [{"name": str(r["name"]), "db_type": str(r.get("db_type") or ""),
-                            "site_code": str(r.get("site_code") or "")}
-                           for r in (cur.fetchall() or [])]
-            cur.execute(
-                "SELECT site_code, display_name FROM adh_sites "
-                "WHERE is_active = 1 AND is_aggregate = 0 ORDER BY sort_order, site_code")
-            sites = [{"site_code": str(r["site_code"]),
-                      "display_name": str(r["display_name"])}
-                     for r in (cur.fetchall() or [])]
+                "SELECT DISTINCT object_key FROM adh_ontology_bindings "
+                "WHERE model_id = %s AND status = 'active' AND object_key <> ''", (model_id,))
+            bound_keys = {str(r["object_key"]) for r in (cur.fetchall() or [])}
 
-    source_ontologies = [
-        {"name": name, "datasource": str(info.get("datasource_name") or ""),
-         "objects": list(info.get("objects") or [])}
-        for name, info in sorted(src_index.items())
-    ]
-    names = {o["key"]: o["name"] for o in objects}
-    items = [{**c, "object_name": names.get(c["object_key"], c["object_key"])} for c in rows]
-    return {"model_id": model_id, "items": items,
-            "types": list(topology.CARRIER_TYPES),
-            "freshness_levels": list(topology.FRESHNESS_LEVELS),
-            "objects": objects, "datasources": datasources, "sites": sites,
-            "source_ontologies": source_ontologies}
-
-
-@router.put("/models/{model_id}/carriers")
-def update_model_carriers(model_id: int, req: dict, user: dict = Depends(get_current_user)):
-    """保存承载清单（整模型替换；写权限由 API 中间件按 ontology:save 码把关）。
-
-    校验全部 fail-loud（topology.validate_carriers）：对象归属悬空、源本体对象不存在、
-    类型/新鲜度非法、一个对象多条权威口径、数据源/站点不存在均直接 422，
-    不静默丢弃或改写（宁阻断勿悬空，与字典孤儿/站点声明同口径）。
-    身份服务端注入（created_by 不信任请求体）。
-    """
-    model = ontology_service.get_model(model_id)
-    if not model or not ontology_service.can_view_model(model, _allowed_source_ids(user)):
-        raise HTTPException(status_code=404, detail="模型不存在")
-    kind = str(model.get("kind") or "")
-    if kind != "business":
-        # 承载是跨源拓扑：源本体是单源物理投影（它自身就是被指向的一方），
-        # 系统本体只描述系统能力面，两者都不适用承载声明
-        raise HTTPException(status_code=400,
-                            detail="仅业务本体适用承载清单（跨源取数路径）")
-    from backend.semantics import topology
-
-    rows = req.get("carriers")
-    if not isinstance(rows, list):
-        raise HTTPException(status_code=422, detail="carriers 必须是数组")
-    try:
-        return topology.save_carriers(
-            model_id, rows, created_by=str((user or {}).get("username") or ""))
-    except topology.CarrierError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
+    raw_rules = req.get("object_site_rules")
+    pruned: list[str] = []
+    rules: dict[str, list[str]] = {}
+    if raw_rules is None:
+        # 只改模型级站点：存量规则跟随剪除已不再声明的站点（不静默丢弃，响应里列出来）
+        for ok, codes in model_object_site_rules(model_id).items():
+            keep = [c for c in codes if c in declared_codes and ok in bound_keys]
+            if len(keep) != len(codes):
+                pruned.append(f"对象 {ok} 的站点限制已随模型级站点调整剪除为 {keep or '不限'}")
+            if keep:
+                rules[ok] = keep
+    else:
+        if isinstance(raw_rules, dict):
+            pairs: list[tuple[str, object]] = [(str(k), v) for k, v in raw_rules.items()]
+        elif isinstance(raw_rules, list):
+            pairs = [(str((it or {}).get("object_key") or ""),
+                      (it or {}).get("allowed_sites") or []) for it in raw_rules]
+        else:
+            raise HTTPException(status_code=400, detail="object_site_rules 必须是对象或数组")
+        for ok, codes in pairs:
+            ok = ok.strip()
+            if not ok:
+                raise HTTPException(status_code=422, detail="对象级站点限制缺少 object_key")
+            if ok not in bound_keys:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"对象「{ok}」在本模型没有活跃的对象契约（不可配置站点限制）")
+            if not isinstance(codes, list):
+                raise HTTPException(status_code=422, detail=f"对象「{ok}」的站点限制必须是数组")
+            keep: list[str] = []
+            for c in codes:
+                code = str(c or "").strip()
+                if not code:
+                    continue
+                if code not in declared_codes:
+                    label = site_labels.get(code, code)
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"对象「{ok}」的适用站点「{label}」不在本模型已勾选的站点内"
+                               "（白名单只能收紧，不能扩权）")
+                if code not in keep:
+                    keep.append(code)
+            if keep:
+                rules[ok] = sorted(keep)
+            else:
+                # 显式清空 = 该对象不收紧（回落模型级全部声明站点），不是异常
+                pruned.append(f"对象 {ok} 已取消站点限制（全部勾选站点可用）")
+    set_model_object_site_rules(model_id, rules)
+    return {"success": True, "sites": cleaned,
+            "object_site_rules": rules, "pruned": pruned}
 
 
 @router.get("/models/{model_id}")
@@ -1157,26 +1141,73 @@ def save_model_draft(model_id: int, req: dict, user: dict = Depends(get_current_
 
 @router.get("/models/{model_id}/draft")
 def get_model_draft(model_id: int):
-    """草案状态（有无待发布、谁改的）；不回草案正文，避免随列表接口外泄。"""
+    """草案状态与**可视化审阅差异**（对象状态 + 属性/关系/别名增减明细）。
+
+    不回草案正文（预览走 /draft/content）；diff 只含业务名称与计数，供建模页
+    直接渲成“人读的审阅面板”，不再要求用户比对 JSON。
+    """
     try:
-        d = ontology_service.get_draft(model_id)
-        d.pop("draft", None)
-        return d
+        return ontology_service.draft_diff(model_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/models/{model_id}/draft/content")
+def get_model_draft_content(model_id: int, user: dict = Depends(get_current_user)):
+    """草案正文（只读预览）：可见性口径与 GET /models/{id} 一致（不可见即 404）。"""
+    model = ontology_service.get_model(model_id)
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if not ontology_service.can_view_model(model, _allowed_source_ids(user)):
+        raise HTTPException(status_code=404, detail="模型不存在")
+    try:
+        return ontology_service.get_draft_content(model_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.post("/models/{model_id}/publish")
-def publish_model_draft(model_id: int):
+def publish_model_draft(model_id: int, user: dict = Depends(get_current_user)):
     """发布草案（两段式第二段）：生效 + 级联（重展开对象/重建图谱/同步知识库）。
 
     需 ontology:publish 权限（fail-closed）。AS-BOT 通道发布前必须先用 ask_user 向用户确认。
+
+    历史缺陷：本处曾以 `require_write_perm("ontology:publish", "发布本体草案")` 两参调用
+    （签名是 user_id/workspace_id/perm_code/label），实际是缺参 TypeError → 接口恒 500，
+    即“发布”从未能走通。身份只从服务端解析（护栏 §2），published_by 不接受请求体。
     """
     from backend.core.perm_link import require_write_perm
-    require_write_perm("ontology:publish", "发布本体草案")
+
+    user_id = int(user.get("user_id") or 0)
     try:
-        result = ontology_service.publish_draft(model_id)
+        require_write_perm(user_id, 0, "ontology:publish", "发布本体草案")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    try:
+        result = ontology_service.publish_draft(
+            model_id, published_by=str(user.get("username") or user.get("name") or user_id))
         return {"success": True, "object_count": result.get("object_count")}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/models/{model_id}/draft")
+def discard_model_draft(model_id: int, user: dict = Depends(get_current_user)):
+    """丢弃草案（只清草案列，生效版与派生视图不碰）。
+
+    没有 abandon 入口的提案流是残缺的：写坏的草案会一直挂在“待发布”上。
+    把关口径与存草案同（ontology:save，fail-closed）。
+    """
+    from backend.core.perm_link import require_write_perm
+
+    user_id = int(user.get("user_id") or 0)
+    try:
+        require_write_perm(user_id, 0, "ontology:save", "丢弃本体草案")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    try:
+        return ontology_service.discard_draft(
+            model_id, discarded_by=str(user.get("username") or user.get("name") or user_id))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

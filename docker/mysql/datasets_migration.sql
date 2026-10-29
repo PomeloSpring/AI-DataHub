@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS adh_datasets (
   source_type VARCHAR(16) NOT NULL DEFAULT 'semantic' COMMENT 'semantic|sql',
   object_key VARCHAR(128) DEFAULT '' COMMENT 'semantic 源: 本体对象 key',
   datasource_id BIGINT DEFAULT 0 COMMENT 'semantic:对象所属数据源; sql:执行数据源(0=默认引擎)',
+  available_datasources JSON NULL COMMENT '可用数据源业务名数组(跨源执行范围); 空=仅执行数据源',
   sql_query TEXT COMMENT 'sql 源: 仅允许 SELECT/WITH, 经 validate_sql 校验',
   variables JSON NULL COMMENT '参数声明 {name:{type,values,default}}; 正文 ${name} 按类型渲染',
   sql_bodies JSON NULL COMMENT '按引擎/方言族注册的正文 {doris|mysql|postgres|sls|generic: SQL}',

@@ -42,6 +42,8 @@ interface DictDimension {
   aliases: string | string[] | null;
   value_labels: string | Record<string, string> | null;
   certified: number;
+  /** 口径状态（1=启用参与取数, 0=已停用/未发布） */
+  is_active: number;
   datasource_id: number;
   description: string;
 }
@@ -87,6 +89,7 @@ export default function DimensionsDictTab({
   const [fCategory, setFCategory] = useState('all');
   const [fObject, setFObject] = useState('');
   const [fCertified, setFCertified] = useState('all');
+  const [fStatus, setFStatus] = useState('all');
   const [fEnum, setFEnum] = useState('all');
   const [fBind, setFBind] = useState('all');
   const [editTarget, setEditTarget] = useState<DictDimension | null>(null);
@@ -97,8 +100,12 @@ export default function DimensionsDictTab({
     setLoading(true);
     setLoadError(null);
     try {
-      const { data } = await metricsApi.listAllDimensions(
-        modelId && scope === 'model' ? { model_id: modelId, scope } : (scope ? { scope } : undefined));
+      // is_active='all': 字典维护页必须看得见停用/未发布行（接口缺省只给生效行，
+      // 那是给 Chat/看板参数枚举等取数向消费方的口径）——否则 AS-BOT 未发布的维度
+      // 在页面上既看不到也恢复不了，只能改库。
+      const base = modelId && scope === 'model' ? { model_id: modelId, scope }
+        : (scope ? { scope } : {});
+      const { data } = await metricsApi.listAllDimensions({ ...base, is_active: 'all' });
       setItems(data.items || []);
     } catch (e: any) {
       // 失败即暴露: 不把接口错误吞成“暂无维度数据”
@@ -149,6 +156,7 @@ export default function DimensionsDictTab({
   }, [items, objectNames]);
   const counts = useMemo(() => ({
     certified: items.filter((d) => !!d.certified).length,
+    active: items.filter((d) => d.is_active !== 0).length,
     withEnum: items.filter((d) => enumCount(d) > 0).length,
     bound: items.filter((d) => hasColumn(d)).length,
   }), [items]);
@@ -173,13 +181,14 @@ export default function DimensionsDictTab({
       if (fObject === DICT_UNSET ? obj : obj !== fObject) return false;
     }
     if (fCertified !== 'all' && (!!d.certified !== (fCertified === '1'))) return false;
+    if (fStatus !== 'all' && (d.is_active !== 0 ? 1 : 0) !== Number(fStatus)) return false;
     if (fEnum !== 'all' && (enumCount(d) > 0) !== (fEnum === 'has')) return false;
     if (fBind !== 'all' && hasColumn(d) !== (fBind === 'bound')) return false;
     return true;
-  }), [items, search, fCategory, fObject, fCertified, fEnum, fBind, objectNames]);
+  }), [items, search, fCategory, fObject, fCertified, fStatus, fEnum, fBind, objectNames]);
 
   const hasFilters = !!(search || fCategory !== 'all' || fObject
-    || fCertified !== 'all' || fEnum !== 'all' || fBind !== 'all');
+    || fCertified !== 'all' || fStatus !== 'all' || fEnum !== 'all' || fBind !== 'all');
   // 编辑弹窗的分类候选: 字典里已在用的分类在前(按条数) + 历史预设兼顾，
   // 否则存量分类(属性/状态/渠道…)在下拉里渲染成空白，像“分类被清空了”
   const categoryChoices = useMemo(() => {
@@ -193,6 +202,7 @@ export default function DimensionsDictTab({
     setFCategory('all');
     setFObject('');
     setFCertified('all');
+    setFStatus('all');
     setFEnum('all');
     setFBind('all');
   };
@@ -249,6 +259,15 @@ export default function DimensionsDictTab({
             <SelectItem value="all">全部认证状态</SelectItem>
             <SelectItem value="1">{withCount('已认证', counts.certified)}</SelectItem>
             <SelectItem value="0">{withCount('草稿', items.length - counts.certified)}</SelectItem>
+          </SelectContent>
+        </Select>
+        {/* 口径状态与指标字典同义：停用/未发布的行也要可见可恢复 */}
+        <Select value={fStatus} onValueChange={setFStatus}>
+          <SelectTrigger className="h-8 w-32" aria-label="口径状态"><SelectValue placeholder="口径状态" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部口径状态</SelectItem>
+            <SelectItem value="1">{withCount('启用', counts.active)}</SelectItem>
+            <SelectItem value="0">{withCount('已停用', items.length - counts.active)}</SelectItem>
           </SelectContent>
         </Select>
         <Select value={fEnum} onValueChange={setFEnum}>
@@ -325,6 +344,9 @@ export default function DimensionsDictTab({
                       <div className="flex items-center gap-1.5">
                         <span className="font-medium">{d.name}</span>
                         {!!d.certified && <span title="已认证"><CheckCircle2 className="w-3.5 h-3.5 text-green-500" /></span>}
+                        {d.is_active === 0 && (
+                          <Badge variant="outline" className="text-[11px] font-normal text-muted-foreground">已停用</Badge>
+                        )}
                       </div>
                     </td>
                     <td className="p-3 text-muted-foreground">{d.name_en || '-'}</td>
@@ -531,6 +553,7 @@ function EditDimensionDialog({
     value_labels: Object.entries(parseJson<Record<string, string>>(dimension.value_labels, {}))
       .map(([k, v]) => `${k}=${v}`).join('\n'),
     certified: dimension.certified ? 1 : 0,
+    is_active: dimension.is_active === 0 ? 0 : 1,
   });
   const [saving, setSaving] = useState(false);
   // 当前值必须可渲染(不在候选里时补上)，避免编辑时把已有分类隐形成“选择空白”
@@ -554,6 +577,7 @@ function EditDimensionDialog({
         category: form.category,
         description: form.description,
         certified: form.certified,
+        is_active: form.is_active,
         aliases: form.aliases.split(/[,，]/).map((x) => x.trim()).filter(Boolean),
         value_labels: labels,
       });
@@ -622,6 +646,23 @@ function EditDimensionDialog({
               认证维度（口径已确认，UI 展示绿色对勾）
             </Label>
           </div>
+          {/* 口径状态（is_active）：停用与 AS-BOT 未发布同义 —— 行保留但不参与检索/取数。
+              没这个开关时，停用行在页面上看得见却恢复不了（只能改库）。 */}
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="is_active"
+              checked={!!form.is_active}
+              onChange={(e) => setForm({ ...form, is_active: e.target.checked ? 1 : 0 })}
+              className="h-4 w-4 rounded border-input"
+            />
+            <Label htmlFor="is_active" className="text-sm font-normal cursor-pointer">
+              启用（参与语义检索与取数）
+            </Label>
+          </div>
+          {!form.is_active && (
+            <p className="text-xs text-amber-600">当前为停用态：该维度不会被语义检索命中，也不会出现在看板参数/查询候选里。</p>
+          )}
           <p className="text-xs text-muted-foreground">
             物理绑定 {dimension.target_table || '-'}.{dimension.target_column || '-'}
             {dimension.bound_object_key ? ` · 本体对象 ${dimension.bound_object_key}` : ''}

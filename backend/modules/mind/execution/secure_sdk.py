@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import anyio
 from contextlib import aclosing
 from pathlib import Path
@@ -47,6 +48,65 @@ def resolve_access_token(env_map: dict | None = None) -> str:
     return (m.get("QODERCN_PERSONAL_ACCESS_TOKEN") or m.get("QODER_PERSONAL_ACCESS_TOKEN")
             or os.environ.get("QODERCN_PERSONAL_ACCESS_TOKEN")
             or os.environ.get("QODER_PERSONAL_ACCESS_TOKEN", ""))
+
+
+# ── 启动期 CLI 核验/预热（一次性，替代每轮重复探测）─────────────────────
+_CLI_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+
+
+def _sdk_minimum_runtime_version() -> tuple[int, int, int] | None:
+    """读 SDK 自身要求的最低运行时版本; 读不到返回 None(不编造版本号)."""
+    try:
+        from qodercn_agent_sdk._internal.transport.subprocess_cli import MINIMUM_RUNTIME_VERSION
+        match = _CLI_VERSION_RE.search(str(MINIMUM_RUNTIME_VERSION))
+        return tuple(int(x) for x in match.groups()) if match else None
+    except Exception:  # noqa: BLE001 — SDK 内部常量改名不属于致命错误, 由日志暴露
+        logger.warning("无法读取 SDK MINIMUM_RUNTIME_VERSION, 本次启动跳过版本下限比对")
+        return None
+
+
+def verify_runtime_cli(timeout: int = 30) -> dict:
+    """启动期核验并预热执行层 CLI; 成功后让 SDK 跳过**每轮**重复的版本探测.
+
+    为什么要前置: qodercn SDK 每次 connect 都会先 spawn 一次 `<cli> -v` 子进程
+    (实测 1.3~1.8s、~320MB RSS)，而它的结果只用于 `logger.warning` 且整段被
+    `except Exception: pass` 吞掉 —— 每轮付一次 node 冷启动的钱却买一个不会生效的
+    检查。CLI 路径本身已由 `_sdk_cli_path` 钉死在项目内置 wrapper，不会漂移。
+
+    口径（不做静默降级）:
+    - 核验通过 → 置 `QODER_SKIP_VERSION_CHECK`，运行期不再探测；这一次 spawn 顺带
+      把 node runtime 与 CLI bundle 读进 page cache（首轮不再承担全冷启动）。
+    - 核验不通过（CLI 缺失 / 非零退出 / 版本解析不出 / 低于 SDK 下限）→ **不置跳过
+      位**，保持与今天完全一致的每轮探测行为，并把原因回给调用方显式暴露（web 启动
+      ERROR 日志、worker 启动 WARNING）；不静默"当成没问题"。
+    """
+    import subprocess
+
+    cli = str(_RUNTIME_CLI)
+    if not _RUNTIME_CLI.is_file():
+        return {"ok": False, "cli_path": cli,
+                "reason": f"执行层 CLI 缺失: {cli}，请先执行 bash runtime/qodercli/setup.sh"}
+    minimum = _sdk_minimum_runtime_version()
+    try:
+        proc = subprocess.run([cli, "-v"], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "cli_path": cli, "reason": f"版本命令超时({timeout}s): {cli} -v"}
+    except OSError as exc:
+        return {"ok": False, "cli_path": cli, "reason": f"版本命令无法执行: {exc}"}
+    if proc.returncode != 0:
+        return {"ok": False, "cli_path": cli,
+                "reason": f"版本命令退出码 {proc.returncode}: {(proc.stderr or proc.stdout or '').strip()[:200]}"}
+    match = _CLI_VERSION_RE.search((proc.stdout or "") + (proc.stderr or ""))
+    if not match:
+        return {"ok": False, "cli_path": cli,
+                "reason": f"版本输出无法解析: {(proc.stdout or '').strip()[:120]!r}"}
+    version = ".".join(match.groups())
+    if minimum is not None and tuple(int(x) for x in match.groups()) < minimum:
+        return {"ok": False, "cli_path": cli, "version": version,
+                "reason": f"运行时版本 {version} 低于 SDK 要求 {'.'.join(map(str, minimum))}，"
+                          f"请重跑 bash runtime/qodercli/setup.sh"}
+    os.environ["QODER_SKIP_VERSION_CHECK"] = "1"
+    return {"ok": True, "cli_path": cli, "version": version, "reason": ""}
 
 
 def build_options(adapter, task, backend):
@@ -97,7 +157,10 @@ def build_options(adapter, task, backend):
                 "QODERCN_CONFIG_DIR": home + "/qoder-cn"})
     prompt = compose_system_prompt(
         policy.as_bot, [policy.as_bot], ctx.username, ctx.user_role,
-        knowledge_bases=as_bots.load_knowledge_bases(policy.as_bot.get("knowledge_base_ids") or []),
+        # 提示词组装属轮次起点：知识库元信息走配置事实缓存（写时失效 + 短 TTL）。
+        # 知识库里“内容”仍由检索工具实时读取，缓存的只是 id/name/kb_type 清单。
+        knowledge_bases=as_bots.load_knowledge_bases(
+            policy.as_bot.get("knowledge_base_ids") or [], use_cache=True),
         skills=as_bots.load_skills(as_bots.collect_skill_names([policy.as_bot])),
         quick_paths=match_quick_paths(task.question, ctx.workspace_id, ctx.datasource_id),
         user_id=ctx.user_id, workspace_id=ctx.workspace_id, datasource_id=ctx.datasource_id,
@@ -214,6 +277,85 @@ async def execute_stream(adapter, task, backend):
             await asyncio.shield(owner)
 
 
+# 收尾核验后台任务登记表：done 事件不再等 disconnect/confirm_stopped/finish（历史缺陷：
+# 答案已流式输出完、前端因 done 未达而一直转圈）。任务强引用防 GC；失败不静默：
+# 会话状态留在 running→下轮 preflight 显式 409 提醒「上一轮仍在停止」，异常进日志。
+_teardown_tasks: set = set()
+
+
+def _spawn_teardown(coro_factory, runtime, label: str) -> None:
+    import asyncio
+
+    async def _runner():
+        try:
+            await coro_factory()
+        except Exception:  # noqa: BLE001 — 后台收尾失败只暴露到日志与会话状态，不重投执行
+            logger.exception("SDK 后台收尾失败(%s)：会话执行权释放异常，下轮发送将被 409 显式拦截", label)
+
+    task = asyncio.create_task(_runner(), name=f"sdk-teardown:{label}")
+    _teardown_tasks.add(task)
+    task.add_done_callback(_teardown_tasks.discard)
+    if runtime is not None:
+        runtime.closing = True
+
+
+async def _teardown_client(client, runtime, final, result, query_started) -> None:
+    """done 发出后的后台收尾：断连、等在跑工具、核验子进程已停、释放执行权。
+
+    领取线程不可被取消；本函数运行在独立后台任务里，不受请求生命周期（断连/取消）影响。
+    """
+    with anyio.CancelScope(shield=True):
+        stopped = client is None
+        if runtime is not None:
+            runtime.closing = True
+        if client is not None:
+            try:
+                process = getattr(getattr(client, "_transport", None), "_process", None)
+                if process is not None and runtime is not None and not runtime.sdk_pid:
+                    await run_owned_sync(runtime.record_client, client)
+                # disconnect 必须限时: CLI 子进程卡死(如协议不匹配不退)时无限挂起,
+                # 收尾永无宁日;超时后强制 kill 并走 confirm_stopped 核验。
+                with anyio.move_on_after(15) as dc:
+                    await client.disconnect()
+                if dc.cancelled_caught:
+                    logger.warning("SDK disconnect 超时(15s)，强制终止 CLI 子进程")
+                    if process is not None and process.returncode is None:
+                        try:
+                            process.kill()
+                        except Exception:
+                            logger.exception("强制终止 CLI 子进程失败")
+                stopped = True
+            except BaseException:
+                logger.exception("无法确认 SDK 已停止，会话保持阻断")
+        if runtime is not None and stopped:
+            try:
+                pending = list(runtime.tool_tasks)
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                await run_owned_sync(runtime.confirm_stopped)
+                await run_owned_sync(runtime.finish, getattr(final, "session_id", "") if final else "",
+                                     bool(result and result.success), not query_started)
+            except Exception:
+                # 释放失败：会话留在 running，下轮 preflight 会显式 409 提醒用户，
+                # 不伪装成已停止（no-silent-degradation）。
+                logger.exception("会话停止核验或状态提交失败；执行权未释放，下轮发送将被拦截")
+
+
+def _obs_phase(name: str, elapsed_s: float) -> None:
+    """把回合前置阶段耗时落成 span（kind="phase"）。
+
+    日志里的 [timing] 行只能 grep，管理端 trace 看不到。llm_call 时长口径修正后，
+    SDK 建连这类**固定成本**必须在 trace 里单独可见，否则只剩“总时长减去各 span”的
+    差值，下一次归因又得回到翻日志。观测旁路，异常一律吞（护栏 §9）。
+    """
+    try:
+        from backend import observability
+        observability.record_span(kind="phase", name=name, status="success",
+                                  duration_ms=int(elapsed_s * 1000))
+    except Exception as exc:  # noqa: BLE001 — 观测不得影响主链路
+        logger.debug("phase span 记录失败: %s", exc)
+
+
 async def _execute_stream(adapter, task, backend):
     import time as _time
     from backend.modules.mind.execution.session_workspace import claim_session
@@ -226,6 +368,7 @@ async def _execute_stream(adapter, task, backend):
     result = None
     final = None
     streamed = False
+    done_delivered = False
     query_started = False
     starting_sdk = False
     texts = []
@@ -233,23 +376,33 @@ async def _execute_stream(adapter, task, backend):
     _t0 = _time.time()
     try:
         runtime = await run_owned_sync(claim_session, task, backend, adapter.config)
-        logger.info("[timing] claim_session: %.1fms", (_time.time() - _t0) * 1000)
+        _el = _time.time() - _t0
+        logger.info("[timing] claim_session: %.1fms", _el * 1000)
+        _obs_phase("claim_session", _el)
         _t1 = _time.time()
         await run_owned_sync(bind_resources, task.context, runtime.policy)
-        logger.info("[timing] bind_resources: %.1fms", (_time.time() - _t1) * 1000)
+        _el = _time.time() - _t1
+        logger.info("[timing] bind_resources: %.1fms", _el * 1000)
+        _obs_phase("bind_resources", _el)
         _t1 = _time.time()
         if set(runtime.policy.standard) & {"read", "write", "edit", "glob", "grep", "bash"}:
             from backend.modules.platform.services.sandbox_executor import SessionToolSandbox
             await run_owned_sync(SessionToolSandbox.ensure_available)
-        logger.info("[timing] sandbox_ensure: %.1fms", (_time.time() - _t1) * 1000)
+        _el = _time.time() - _t1
+        logger.info("[timing] sandbox_ensure: %.1fms", _el * 1000)
+        _obs_phase("sandbox_ensure", _el)
         _t1 = _time.time()
         await run_owned_sync(place_attachments, task, runtime)
-        logger.info("[timing] place_attachments: %.1fms", (_time.time() - _t1) * 1000)
+        _el = _time.time() - _t1
+        logger.info("[timing] place_attachments: %.1fms", _el * 1000)
+        _obs_phase("place_attachments", _el)
         _t1 = _time.time()
         if runtime.policy.external:
             from backend.modules.mind.execution.sdk_tools.external_tools import build_external_servers
             task.context.extra["external_servers"] = await build_external_servers(backend, task.context, runtime)
-        logger.info("[timing] external_servers: %.1fms", (_time.time() - _t1) * 1000)
+        _el = _time.time() - _t1
+        logger.info("[timing] external_servers: %.1fms", _el * 1000)
+        _obs_phase("external_servers", _el)
         _t1 = _time.time()
         options = build_options(adapter, task, backend)
         context_token = set_execution_context(task.context)
@@ -258,16 +411,26 @@ async def _execute_stream(adapter, task, backend):
         starting_sdk = True
         client = client_type(options=options)
         await client.connect()
-        logger.info("[timing] sdk_connect: %.1fms", (_time.time() - _t1) * 1000)
+        _el = _time.time() - _t1
+        logger.info("[timing] sdk_connect: %.1fms", _el * 1000)
+        _obs_phase("sdk_connect", _el)
         _t1 = _time.time()
         await run_owned_sync(runtime.record_client, client)
         yield {"type": "capabilities", "data": runtime.policy.manifest()}
         prompt = adapter._prompt_with_attachments(task, include_history=not runtime.sdk_session_id)
-        logger.info("[timing] prompt_build: %.1fms", (_time.time() - _t1) * 1000)
+        _el = _time.time() - _t1
+        logger.info("[timing] prompt_build: %.1fms", _el * 1000)
+        _obs_phase("prompt_build", _el)
         query_started = True
+        # 模型窗口锚点：前置阶段（会话领取/资源绑定/建连/拼提示词）到此全部做完。
+        # 不标注的话，第一条 llm_call 会把这 5~8s 固定成本当成“模型耗时”（历史归因失真根因）。
+        from backend import observability
+        observability.mark_model_window_start()
         _t1 = _time.time()
         await client.query(prompt)
-        logger.info("[timing] client_query_sent: %.1fms", (_time.time() - _t1) * 1000)
+        _el = _time.time() - _t1
+        logger.info("[timing] client_query_sent: %.1fms", _el * 1000)
+        _obs_phase("client_query_sent", _el)
         iterator = client.receive_response().__aiter__()
         while True:
             try:
@@ -342,44 +505,22 @@ async def _execute_stream(adapter, task, backend):
         result = ExecutionResult(success=False, error="执行未完成，请检查会话状态、工具配置或联系管理员查看日志")
     finally:
         # 领取线程不可被取消；即使 await 未交回，也必须接管它已写入的 runtime。
+        # 断连取消（GeneratorExit/CancelledError 属 BaseException，不走 except 分支）
+        # 同样要后台收尾释放执行权，不能只挂在正常路径上。
         runtime = runtime or task.context.extra.get("secure_runtime")
-        with anyio.CancelScope(shield=True):
-            stopped = client is None
-            if runtime is not None:
-                runtime.closing = True
-            if client is not None:
-                try:
-                    process = getattr(getattr(client, "_transport", None), "_process", None)
-                    if process is not None and runtime is not None and not runtime.sdk_pid:
-                        await run_owned_sync(runtime.record_client, client)
-                    # disconnect 必须限时: CLI 子进程卡死(如协议不匹配不退)时无限挂起,
-                    # 尾部 done 事件发不出去, 前端一直转圈(no-silent-degradation)。
-                    with anyio.move_on_after(15) as dc:
-                        await client.disconnect()
-                    if dc.cancelled_caught:
-                        logger.warning("SDK disconnect 超时(15s)，强制终止 CLI 子进程")
-                        if process is not None and process.returncode is None:
-                            try:
-                                process.kill()
-                            except Exception:
-                                logger.exception("强制终止 CLI 子进程失败")
-                    stopped = True
-                except BaseException:
-                    logger.exception("无法确认 SDK 已停止，会话保持阻断")
-            if runtime is not None and stopped:
-                try:
-                    pending = list(runtime.tool_tasks)
-                    if pending:
-                        await asyncio.gather(*pending, return_exceptions=True)
-                    await run_owned_sync(runtime.confirm_stopped)
-                    await run_owned_sync(runtime.finish, getattr(final, "session_id", "") if final else "",
-                                         bool(result and result.success), not query_started)
-                except Exception:
-                    logger.exception("会话停止核验或状态提交失败")
-                    stopped = False
-            if runtime is not None and not stopped:
-                result = ExecutionResult(success=False, error="无法确认执行已停止，会话已阻断，请联系管理员")
-            if context_token is not None:
-                ExecutionContextVar.reset(context_token)
-    if result is not None:
-        yield {"type": "done", "result": result}
+        # done 先行、收尾后置：此时无未交付异常在传播（异常已被 except 接住或正在
+        # 断连拆流），yield 合法；若消费者已断开，GeneratorExit 会在本 yield 处
+        # 接管，下方移交已在 yield 前完成，执行权释放不会丢。
+        # 历史缺陷：done 排在 disconnect/confirm_stopped/finish 之后，CLI 退出前
+        # done 发不出去，答案已完整展示前端仍长时间转圈。收尾失败不静默：
+        # 执行权留在 running → 下轮 preflight 显式 409 提醒「上一轮仍在停止」。
+        if result is not None and not done_delivered:
+            _spawn_teardown(lambda: _teardown_client(client, runtime, final, result, query_started),
+                            runtime, task.context.extra.get("conversation_id") or "new")
+            done_delivered = True
+            yield {"type": "done", "result": result}
+        elif not done_delivered:
+            _spawn_teardown(lambda: _teardown_client(client, runtime, final, result, query_started),
+                            runtime, task.context.extra.get("conversation_id") or "new")
+        if context_token is not None:
+            ExecutionContextVar.reset(context_token)

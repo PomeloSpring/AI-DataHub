@@ -21,6 +21,7 @@ import yaml
 
 from backend.common.db.metadata_db import get_metadata_conn
 from backend.modules.catalog.services import ontology_service
+from backend.modules.catalog.services import physical_ref as _physical_ref
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,43 @@ def _load_table_info_map(datasource_id: int) -> dict[str, dict]:
     for r in rows:
         out[r["table_name"]] = r
     return out
+
+
+def object_physical_tables(datasource_id: int = 0, model_id: int = 0) -> dict[str, str]:
+    """对象 key → 物理表（部署绑定层 `adh_ontology_bindings` 为唯一事实源）。
+
+    本体 doc 已不再携带物理绑定（v0.5 B6b），但「属性登记的带点列名怎么裁决」
+    必须先知道该对象的物理表（`logstore-rum.view.url` 的表前缀是 `logstore-rum`，
+    而 `view.url` 本身是列名本体）。多站部署同一对象只对应一张同构表，
+    出现多张不同表时该对象不返回（歧义不猜，由调用方按未验证口径处理）。
+    查不到返回空 dict（不阻断保存，仅影响带点列的裁决精度）。
+    """
+    if not (datasource_id or model_id):
+        return {}
+    sql = ("SELECT object_key, physical_table FROM adh_ontology_bindings "
+           "WHERE status = 'active' AND physical_table <> ''")
+    params: list = []
+    if model_id:
+        sql += " AND model_id = %s"
+        params.append(model_id)
+    if datasource_id:
+        sql += " AND (datasource_id = %s OR datasource_id = 0)"
+        params.append(datasource_id)
+    try:
+        with get_metadata_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, tuple(params))
+                rows = cur.fetchall() or []
+    except Exception as e:  # noqa: BLE001 — 绑定表不可用时不阻断，回到未验证口径
+        logger.warning("[ontology-import] load object physical tables failed (%s)", e)
+        return {}
+    agg: dict[str, set] = {}
+    for r in rows:
+        key = str(r.get("object_key") or "").strip()
+        tab = str(r.get("physical_table") or "").strip()
+        if key and tab:
+            agg.setdefault(key, set()).add(tab)
+    return {k: next(iter(v)) for k, v in agg.items() if len(v) == 1}
 
 
 def _datasource_name_by_id(datasource_id: int) -> str:
@@ -512,7 +550,7 @@ def import_palantir_yaml(dir_path: str | Path = None, datasource_id: int = 0,
 
     graph_summary = {"skipped": True}
     if rebuild_graph:
-        graph_summary = _rebuild_graph(datasource_id, "source" if datasource_id else "system")
+        graph_summary = _rebuild_graph(datasource_id, "business")
 
     logger.info(
         "[ontology-import] Palantir YAML → model %s (ds=%s): %d objects, %d links, %d bindings (%d drifted)",
@@ -538,6 +576,7 @@ def _persist_bindings(doc: dict, model_id: int) -> dict:
     datasource_id = doc.get("datasource_id") or 0
     now = ontology_service._now()
     written = drifted = unbound = 0
+    col_cache: dict = {}   # 表实存列名缓存(带点列身份裁决), 逐对象复用避免重复查元数据
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             # 1. 本模型旧行失效（保留历史，避免下游误读）。范围仅限**模型自有数据源**：
@@ -582,7 +621,10 @@ def _persist_bindings(doc: dict, model_id: int) -> dict:
                         binding.get("bind_kind", "primary"),
                         binding.get("dataset_ref") or None,
                         binding.get("physical_table", ""),
-                        json.dumps(_column_map_from_props(obj), ensure_ascii=False),
+                        json.dumps(_column_map_from_props(
+                            obj, datasource_id, binding.get("physical_table") or "",
+                            col_cache),
+                            ensure_ascii=False),
                         binding.get("query_mode", "raw_source"),
                         binding.get("size_class"),
                         int(binding.get("allow_full_scan") or 0),
@@ -609,29 +651,47 @@ def _persist_bindings(doc: dict, model_id: int) -> dict:
     return {"written": written, "drifted": drifted, "unbound": unbound}
 
 
-def _column_map_from_props(obj: dict) -> dict:
-    """从 properties[].column 提取 {属性名: 物理列名}（已剔除表前缀）。"""
-    table = obj.get("primary_table") or ""
+def _column_map_from_props(obj: dict, datasource_id: int = 0,
+                          table_hint: str = "",
+                          col_cache: Optional[dict] = None) -> dict:
+    """从 properties[].column 提取 {属性名: 物理列名}。
+
+    带点 column 有两种写法，不能一律剥前缀（历史缺陷：SLS/ARMS 嵌套字段 `view.url`
+    被剥成 `url`，部署绑定 column_map 指向不存在的列，直查物理源时无法解析）：
+    - `t_order.amount` = 表限定写法 → 只留列名 `amount`；
+    - `view.url`         = 列名本体含点（嵌套 schema）→ 原样保留。
+    以列元数据实存为唯一裁决（裁决口径收口在 `physical_ref.resolve_column_ref`）；
+    元数据拿不到时按「前缀等于主表名才剥」的保守口径，否则保留完整名
+    （宁留可诊断的限定名，不可丢路径段）。
+    """
+    table = str(table_hint or obj.get("primary_table") or "").strip()
+    known = (_physical_ref.columns_of_table(datasource_id, table, col_cache)
+             if table else set())
     cmap: dict[str, str] = {}
     for p in obj.get("properties") or []:
         col = str(p.get("column") or "")
         pname = str(p.get("name") or "")
-        if not pname:
+        if not col or not pname:
             continue
-        phys = col.split(".", 1)[-1] if "." in col else col
-        if phys:
-            cmap[pname] = phys
-    _ = table  # 保留参数位，为后续同名列消歧预留
+        _t, resolved, verdict = _physical_ref.resolve_column_ref(col, table, known)
+        if "." in col and resolved != col and verdict == "ok":
+            col = resolved          # 表限定写法（前缀即主表且列名实存）
+        elif verdict in ("bad", "unverified") and ("." in col or not known):
+            logger.warning(
+                "[ontology-import] 对象 %s 属性 %r 的列名 %r 未能对着该表(%s)实存列核验"
+                "(%s),保留原写法(建模回炉项)",
+                obj.get("key", ""), pname, col, table or "?", verdict)
+        cmap[pname] = col
     return cmap
 
 
 def _rebuild_graph(datasource_id: int, kind: str = "") -> dict:
     """best-effort 触发图谱重建（本体经 graph_builder._merge_ontology_models 入图）。
 
-    按 **kind** 路由目标图（不用 `datasource_id=0` 判系统域——业务本体跨源 ds_id 也是 0）：
+    按 **kind** 路由目标图（不用 `datasource_id=0` 判系统域——业务本体跨源 ds_id 也可能非 0）：
     - kind=system  → 系统图 ds:-1（AS-BOT 专用，隔离业务本体）；
-    - kind=business → 业务图 ds:0（跨源连通图）；
-    - kind=source  → 源图 ds:{datasource_id}。
+    - kind=business → 业务图 ds:0（跨源连通聚合图，多本体 append）。
+    源本体已退役（WS2）：具体数据源的命名图只留物理血缘，不再单独归并本体。
     """
     try:
         from backend.semantics.graph_rag.oxigraph_store import SYSTEM_DATASOURCE_ID
@@ -640,8 +700,6 @@ def _rebuild_graph(datasource_id: int, kind: str = "") -> dict:
             ds = SYSTEM_DATASOURCE_ID
         elif kind == "business":
             ds = 0          # 业务本体独立图（跨源）
-        elif kind == "source":
-            ds = datasource_id
         else:
             ds = SYSTEM_DATASOURCE_ID if not datasource_id else datasource_id
         resp = GraphService().sync_from_metadata(ds, kind)

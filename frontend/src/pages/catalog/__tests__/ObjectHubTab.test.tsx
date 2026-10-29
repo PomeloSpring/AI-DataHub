@@ -1,7 +1,19 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ontologyApi } from '@/api/ontology';
 import ObjectHubTab from '../ObjectHubTab';
+
+vi.mock('@/api/ontology', () => ({
+  ontologyApi: { sites: vi.fn(), saveDraft: vi.fn(), getDraft: vi.fn(), getDraftContent: vi.fn() },
+}));
+
+/** 默认回放：对象无任何部署绑定行（具体用例自行 mockImplementation） */
+beforeEach(() => {
+  vi.mocked(ontologyApi.sites).mockReset();
+  vi.mocked(ontologyApi.sites).mockResolvedValue(
+    { data: { kind: 'business', sites: [], selected: [], contract_objects: [] } } as any);
+});
 
 /**
  * 「对象 · Link」页签渲染回归。
@@ -101,5 +113,39 @@ describe('ObjectHubTab — 页面内编辑对象（2026-10-27 开放，不再仅
         jsonContent={JSON.stringify(doc)} onSave={vi.fn()} />,
     );
     expect(screen.queryByRole('button', { name: '编辑对象' })).toBeNull();
+  });
+});
+
+describe('ObjectHubTab — 绑定徽标读部署绑定层（不拿 doc 字段误报）', () => {
+  const objects = [{ key: 'rum_event', display_name: '前端事件', primary_table: '' } as any];
+
+  it('有生效契约行时给 bound，不出现「未绑定物理表」假告警', async () => {
+    vi.mocked(ontologyApi.sites).mockResolvedValue({
+      data: { kind: 'business', sites: [], selected: [], contract_objects: [{
+        object_key: 'rum_event', object_name: '前端事件', datasource: 'arms-prd-cn',
+        physical_table: 'logstore-rum', bind_kind: 'primary', column_count: 25,
+        sync_state: '', product_ref: '', allowed_sites: [],
+      }] },
+    } as any);
+    render(<ObjectHubTab modelId={7} objects={objects} />);
+    await waitFor(() => expect(screen.getByText('bound')).toBeTruthy());
+    expect(screen.queryByText('未绑定物理表')).toBeNull();
+    // 明细行用业务名（数据源名）展示，不要求手输/裸显 id
+    expect(screen.getByText(/logstore-rum/).textContent).toContain('arms-prd-cn');
+  });
+
+  it('契约行缺失时显式给可诊断告警（含修复入口提示）', async () => {
+    render(<ObjectHubTab modelId={7} objects={objects} />);
+    await waitFor(() => expect(screen.getByText('未绑定物理表')).toBeTruthy());
+    expect(screen.getByText(/尚无生效的部署绑定行/).textContent).toContain('同构站点部署');
+  });
+
+  it('绑定接口失败时给「绑定状态未知」，不得拿 doc 字段猜成已绑定', async () => {
+    vi.mocked(ontologyApi.sites).mockRejectedValue({ response: { statusText: 'Forbidden' } });
+    render(<ObjectHubTab modelId={7}
+      objects={[{ key: 'rum_event', display_name: '前端事件', primary_table: 'legacy_table' } as any]} />);
+    await waitFor(() => expect(screen.getByText('绑定状态未知')).toBeTruthy());
+    expect(screen.queryByText('bound')).toBeNull();
+    expect(screen.getByText(/读取部署绑定失败/)).toBeTruthy();
   });
 });

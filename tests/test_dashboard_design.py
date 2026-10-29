@@ -165,7 +165,9 @@ def test_position_normalized_to_pixels_for_canvas():
 
 
 def test_system_scope_metadata_superposes_business(monkeypatch):
-    """能力叠加（域规则更新）：system 能力元数据可见系统本体 ∪ 业务域，字典按本源+全局口径。"""
+    """能力叠加（域规则更新）：system 能力元数据可见系统本体 ∪ 业务域，字典按本源+全局口径。
+    源本体（kind='source'）已退役合并为 business：本体模型 SQL 不再按 kind 硬过滤
+    （可见性移到 Python 侧 _model_visible 按触达源∩授权集收口），但绝不得残留 kind='source'。"""
     from backend.modules.mind.execution.sdk_tools import scoped_metadata
     from types import SimpleNamespace
     policy = SimpleNamespace(selection={"system": ["system_usage"]}, as_bot={})
@@ -177,8 +179,8 @@ def test_system_scope_metadata_superposes_business(monkeypatch):
     assert calls, "目录查询必须发出"
     for sql in calls:
         if "adh_ontology_models" in sql:
-            # 叠加可见：系统本体 + 业务域（跨源业务 + 本源 source）
-            assert "kind = 'system'" in sql and "kind = 'business'" in sql, sql
+            # 合并后源本体退役：不得残留 kind='source' 分支
+            assert "kind = 'source'" not in sql, sql
         if "adh_metrics" in sql or "adh_dimensions" in sql:
             # 字典统一本源+全局口径（系统对象字典行在 ds=0 内）
             assert "datasource_id = %s OR datasource_id = 0" in sql, sql

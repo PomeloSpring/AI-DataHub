@@ -21,6 +21,8 @@ from typing import Optional
 import yaml
 
 from backend.common.db.metadata_db import get_metadata_conn
+from backend.modules.catalog.services import metric_formula as _metric_formula
+from backend.modules.catalog.services import physical_ref as _physical_ref
 
 logger = logging.getLogger(__name__)
 
@@ -406,31 +408,31 @@ def _infer_agg(formula: str) -> str:
     return m.group(1).upper() if m else "CUSTOM"
 
 
-# 指标公式"合法单表聚合"判定（与 scripts/backfill_dict_target_table.py 同口径）：
-# 仅当公式以聚合函数开头、不含内联 WHERE/子查询/跨表限定时，才可安全绑定 target_table。
-_METRIC_AGG_HEAD = re.compile(r"^\s*(SUM|AVG|COUNT|MIN|MAX)\s*\(", re.I)
-_METRIC_SELECT = re.compile(r"\bSELECT\b", re.I)
-_METRIC_WHERE = re.compile(r"\bWHERE\b", re.I)
-_METRIC_QUALIFIED = re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)")
+# 指标公式"合法单表聚合"判定：口径唯一实现见 services/metric_formula.py（三处写入口同源，
+# 不再各抄一份正则）。仅当公式以聚合函数开头、不含内联 WHERE/子查询/跨表限定时，
+# 才可安全绑定 target_table。
+_METRIC_AGG_HEAD = _metric_formula.AGG_HEAD
+_METRIC_SELECT = _metric_formula.SELECT_TOKEN
+_METRIC_WHERE = _metric_formula.WHERE_TOKEN
+_METRIC_QUALIFIED = _metric_formula.QUALIFIED
+_METRIC_LITERAL = _metric_formula.LITERAL
 
 
-def _metric_safe_target(formula: str, primary_table: str) -> str:
+def _columns_of_table(datasource_id: int, table: str,
+                     cache: Optional[dict] = None) -> set:
+    """读表实存列名（带点列元数据裁决用）；拿不到返回空集（调用方按保守口径处理）。"""
+    return _metric_formula.columns_of_table(datasource_id, table, cache)
+
+
+def _metric_safe_target(formula: str, primary_table: str,
+                        known_columns: Optional[set] = None) -> str:
     """公式为"合法单表聚合"时返回其 target_table(=对象主表), 否则空串。
 
-    排除内联 WHERE / 子查询 / 跨表限定 / 非聚合(布尔标记·标量) —— 这些属建模回炉项,
-    激活会让 planner 生成非法/错误 SQL, 故留空 target_table 使其维持 fail-loud
-    (宁缺勿错, 不把"目录挂着、编译用不了"变成"生成坏 SQL")。
+    实现收口在 metric_formula.metric_safe_target：带点 token 既可能是跨表限定
+    (`orders.amount`)，也可能是嵌套 schema 的列名本体(`session.id`，SLS/ARMS 的形状)，
+    以列元数据实存(known_columns)为唯一裁决，不靠正则猜。
     """
-    f = (formula or "").strip()
-    t = (primary_table or "").strip()
-    if not f or not t:
-        return ""
-    if _METRIC_SELECT.search(f) or _METRIC_WHERE.search(f):
-        return ""
-    for pref, _c in _METRIC_QUALIFIED.findall(f):
-        if pref.lower() != t.lower():
-            return ""
-    return t if _METRIC_AGG_HEAD.match(f) else ""
+    return _metric_formula.metric_safe_target(formula, primary_table, known_columns)
 
 
 def absorb_object_metric_specs(doc: dict, datasource_id: int = 0,
@@ -468,10 +470,12 @@ def absorb_object_metric_specs(doc: dict, datasource_id: int = 0,
     if not (0 <= ds_val <= 2**31 - 1):
         logger.warning("[ontology] 数据源 id %s 超出字典 INT 列范围，新增指标行按全局(0)登记", ds_val)
         ds_val = 0
+    col_cache: dict = {}
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             for obj_key, name, formula, desc, primary_table in specs:
-                safe_tt = _metric_safe_target(formula, primary_table)
+                known = _columns_of_table(ds_val, primary_table, col_cache)
+                safe_tt = _metric_safe_target(formula, primary_table, known)
                 cur.execute(
                     "SELECT id, formula, description, bound_object_key, target_table FROM adh_metrics "
                     "WHERE name = %s AND is_active = 1 "
@@ -666,7 +670,7 @@ def _load_draft_objects(datasource_id: int) -> tuple[list, str, str]:
     按 (datasource_id, kind) 定位，避免误读同 datasource_id 下其他域的草案。
     现有草案内容损坏时 fail-loud（不得静默丢弃旧对象再覆盖，会丢用户数据）。
     """
-    kind = "source" if datasource_id > 0 else "system"
+    kind = "business" if datasource_id > 0 else "system"
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -692,7 +696,8 @@ def save_generated_draft(datasource_id: int, objects: list, domain: str = "",
     """把归纳出的业务对象落成草案（确定性校验/合并 + 三格式派生，无 LLM 调用）。
 
     Args:
-        datasource_id: 目标源（0=系统本体域）；模型 kind 由其派生（>0 → source，0 → system）
+        datasource_id: 目标源（0=系统本体域）；模型 kind 由其派生（>0 → business，0 → system）
+            —— 源本体已退役，为某源生成的物理投影本体统一是业务本体（带主源 + 单站 deploy_sites）
         objects: 归纳出的对象列表（canonical JSON 的 objects[]）
         domain/description: 业务领域与概述（留空时并入模式下沿用现有草案的值）
         append: False=替换该源已有草案（全新归纳）；True=并入现有草案（分批归纳的后续批次）
@@ -761,7 +766,7 @@ def save_generated_draft(datasource_id: int, objects: list, domain: str = "",
     json_content = json.dumps(doc, ensure_ascii=False, indent=2)
     yaml_content = to_yaml(doc)
     md_content = to_md(doc)
-    kind = "source" if datasource_id > 0 else "system"
+    kind = "business" if datasource_id > 0 else "system"
     now = _now()
 
     with get_metadata_conn() as conn:
@@ -781,6 +786,23 @@ def save_generated_draft(datasource_id: int, objects: list, domain: str = "",
                  len(doc["objects"]), created_by, now, now),
             )
         conn.commit()
+
+    # 为某源生成的业务本体默认单站部署（其主源所在站点 → 该源业务名），
+    # 与手工建的跨站业务本体同口径（deploy_sites 为多站点唯一事实源）。
+    if datasource_id > 0:
+        try:
+            with get_metadata_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT name, site_code FROM adh_datasources WHERE id = %s", (datasource_id,))
+                    ds_row = cur.fetchone()
+            if ds_row and (ds_row.get("site_code") or "").strip():
+                from backend.core.site_service import set_model_deploy_sites
+                set_model_deploy_sites(model_id, [{
+                    "site_code": str(ds_row["site_code"]).strip(),
+                    "datasource": str(ds_row.get("name") or "").strip()}])
+        except Exception as exc:  # noqa: BLE001  部署回填失败不得影响草案落库，但要显式告警
+            logger.warning("[Ontology] save_generated_draft 回填 deploy_sites 失败 model=%s: %s",
+                           model_id, exc)
 
     result = get_model(model_id)
     if merge_warnings:
@@ -1410,6 +1432,11 @@ def _row_to_model(row: dict, include_content: bool = True) -> dict:
         "domain": row.get("domain") or "",
         "status": row["status"],
         "object_count": row.get("object_count", 0),
+        # 草案待发布标记（只回布尔，不回正文）：左侧模型列表据此提醒“此模型有未发布改动”，
+        # 避免 AS-BOT 写了草案而建模页毫无感知。
+        # 列表 SQL 显式派生 has_draft；get_model 走 SELECT *，从 draft_json_content 推导。
+        "has_draft": bool(row["has_draft"]) if "has_draft" in row
+                     else bool(str(row.get("draft_json_content") or "").strip()),
         "kb_id": row.get("kb_id"),
         "created_by": row.get("created_by", ""),
         "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else row["created_at"],
@@ -1429,34 +1456,23 @@ def list_models(datasource_id: int = None, include_archived: bool = False,
     默认排除 archived —— 归档的历史版本属于对应模型的「版本管理」，
     由 list_versions 按 (datasource_id, name) 分组呈现，不再混在主列表。
 
-    可见性（waker-datasource-domain §1 派生，不建第二套权限）：
-    - 源本体：datasource_id ∈ allowed_datasource_ids 才可见（按用户数据源权限分配）；
-    - 业务本体 / 系统本体：全员可见（业务=跨源共享语义，系统=RAG 知识层）。
-    allowed_datasource_ids 三态：None=内部调用不限制；set=按授权过滤（**空集=源本体
-    全不可见，fail-closed**，不得当全量）。
+    可见性（waker-datasource-domain §1 派生，不建第二套权限，与 can_view_model 同口径）：
+    源本体已退役，合并后 business 不再「全员可见」，一律按模型触达数据源
+    （主源 datasource_id ∪ deploy_sites 路由源）与授权集求交收口（按 id 粒度，
+    杜绝同站跨源泄漏）；system（平台元数据层）全员可见。
+    allowed_datasource_ids 三态：None=内部调用不限制；set=按授权过滤（**空集=无任何
+    非 system 本体可见，fail-closed**，不得当全量）。
+
+    datasource_id 筛选：本源触达的本体（业务/源）+ 系统本体（跨源语义层常驻）。
     """
     sql = (
         "SELECT id, datasource_id, name, kind, domain, status, object_count, kb_id, created_by, "
-        "created_at, updated_at FROM adh_ontology_models"
+        "created_at, updated_at, deploy_sites, "
+        "(draft_json_content IS NOT NULL AND draft_json_content <> '') AS has_draft "
+        "FROM adh_ontology_models"
     )
     conditions: list[str] = []
     params: list = []
-    if datasource_id:
-        # 数据源筛选只对**源本体**生效（物理来源）；业务本体跨源、系统本体独立，
-        # 不因选了某数据源而被滤掉（x4 归属改造：本体归属是 domain+kind，不是数据源）。
-        # 所以：本源的源本体 + 全部非源本体（业务/系统）。
-        conditions.append("((kind = 'source' AND datasource_id = %s) OR kind <> 'source')")
-        params.append(datasource_id)
-    if allowed_datasource_ids is not None:
-        # 源本体按数据源授权过滤（fail-closed：空集=无可见源本体）
-        allowed = {int(x) for x in (allowed_datasource_ids or set())}
-        if allowed:
-            marks = ",".join(["%s"] * len(allowed))
-            conditions.append(
-                f"(kind <> 'source' OR datasource_id IN ({marks}))")
-            params.extend(sorted(allowed))
-        else:
-            conditions.append("kind <> 'source'")
     if not include_archived:
         conditions.append("status <> 'archived'")
     if conditions:
@@ -1466,16 +1482,73 @@ def list_models(datasource_id: int = None, include_archived: bool = False,
         with conn.cursor() as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()
-    return [_row_to_model(r, include_content=False) for r in rows]
+
+    from backend.core.site_service import datasource_name_id_map
+    name_id_map = datasource_name_id_map()
+    allowed = (None if allowed_datasource_ids is None
+               else {int(x) for x in (allowed_datasource_ids or set())})
+    out: list = []
+    for r in rows:
+        model = _row_to_model(r, include_content=False)
+        kind = str(model.get("kind") or "")
+        ds_id = int(model.get("datasource_id") or 0)
+        scope = _model_scope_ids_from_row(r, name_id_map)   # 主源 ∪ deploy_sites 路由源
+        # 授权收口（与 can_view_model 同口径）：system 全员；具体触达源的业务本体按 scope∩授权；
+        # 无具体源归属的抽象业务本体（scope 空）跨源共享→不滤。
+        if allowed is not None and kind != "system":
+            if scope and not (scope & allowed):
+                continue
+        # 数据源筛选：选了某源时，本源触达的本体 + 系统/抽象跨源本体常驻（不因选源被滤掉）
+        if datasource_id:
+            sel = int(datasource_id)
+            if kind != "system" and scope and sel not in scope and sel != ds_id:
+                continue
+        out.append(model)
+    return out
+
+
+def _model_scope_ids_from_row(row: dict, name_id_map: dict) -> set:
+    """从已取出的行算模型触达数据源 id 集（主源 ∪ deploy_sites 路由源），避免 N+1 查询。"""
+    ids: set = set()
+    d = int(row.get("datasource_id") or 0)
+    if d > 0:
+        ids.add(d)
+    raw = row.get("deploy_sites")
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "[]")
+        except (ValueError, TypeError):
+            raw = []
+    for item in raw or []:
+        if isinstance(item, dict):
+            nm = str(item.get("datasource") or "").strip()
+            if nm and nm in name_id_map:
+                ids.add(int(name_id_map[nm]))
+    return ids
 
 
 def can_view_model(model: dict, allowed_datasource_ids: Optional[set]) -> bool:
-    """单模型可见性裁决（与 list_models 同口径，供详情/版本等读端点复用）。"""
+    """单模型可见性裁决（与 list_models 同口径，供详情/版本等读端点复用）。
+
+    源本体已退役：business/system 合并语义下不再区分对待 —— system 全员可见（平台
+    元数据层）；business（含原 source 迁移而来）按模型触达数据源（主源∪deploy_sites
+    路由源）与授权集求交，按 id 粒度收口（杜绝同站跨源泄漏）。None=内部调用不限制。
+    """
     if allowed_datasource_ids is None:
         return True   # 内部调用
-    if str(model.get("kind") or "") != "source":
-        return True   # 业务/系统本体全员可见
-    return int(model.get("datasource_id") or 0) in {int(x) for x in (allowed_datasource_ids or set())}
+    kind = str(model.get("kind") or "")
+    if kind == "system":
+        return True
+    allowed = {int(x) for x in (allowed_datasource_ids or set())}
+    from backend.core.site_service import model_source_scope_ids
+    ds_id = int(model.get("datasource_id") or 0)
+    scope = model_source_scope_ids(int(model.get("id") or 0), ds_id)
+    if scope:
+        return bool(scope & allowed)
+    # 无具体数据源归属的抽象业务本体（既无主源又无 deploy_sites）：跨源共享语义，全员可见。
+    return True
 
 
 def list_versions(model_id: int) -> list:
@@ -1557,6 +1630,18 @@ def save_draft_only(model_id: int, json_content: str, name: str = None,
     return out
 
 
+def _draft_row(model_id: int) -> dict:
+    """草案列不进 _row_to_model 白名单（避免随正文接口外泄），需要时单独取。"""
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT draft_json_content, draft_base_stamp, draft_updated_at, "
+                        "draft_updated_by FROM adh_ontology_models WHERE id=%s", (model_id,))
+            row = cur.fetchone()
+    if not row:
+        raise ValueError("模型不存在")
+    return row
+
+
 def get_draft(model_id: int) -> dict:
     """读草案状态（供 AS-BOT 与前端展示“有无待发布改动”）。"""
     with get_metadata_conn() as conn:
@@ -1574,6 +1659,232 @@ def get_draft(model_id: int) -> dict:
         "draft_updated_by": row.get("draft_updated_by") or "",
         "draft": row.get("draft_json_content"),
     }
+
+
+def get_draft_content(model_id: int) -> dict:
+    """草案正文（只读预览用）：建模页要让用户看到 AS-BOT 到底改了什么再决定发布。"""
+    model = get_model(model_id)
+    if not model:
+        raise ValueError("模型不存在")
+    row = _draft_row(model_id)
+    return {
+        "id": model_id,
+        "name": model.get("name") or "",
+        "status": model.get("status") or "",
+        "has_draft": bool(str(row.get("draft_json_content") or "").strip()),
+        "draft_json_content": row.get("draft_json_content") or "",
+        "effective_json_content": model.get("json_content") or "",
+    }
+
+
+def _doc_objects_by_key(raw: str) -> dict:
+    """JSON 正文 → {对象身份键: 对象}；解析失败回空 dict（调用方按“无差异”处理并出告警）。"""
+    try:
+        doc = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    out: dict = {}
+    for o in (doc.get("objects") or []) if isinstance(doc, dict) else []:
+        if not isinstance(o, dict):
+            continue
+        key = str(o.get("key") or o.get("name") or o.get("display_name") or "").strip()
+        if key:
+            out[key.lower()] = o
+    return out
+
+
+def _obj_label(o: dict) -> str:
+    return str(o.get("display_name") or o.get("name") or o.get("key") or "")
+
+
+def _obj_shape(o: dict) -> str:
+    """对象结构指纹（判“改了没有”）：只取影响语义的字段，忽略键序。"""
+    return json.dumps({
+        "display_name": _obj_label(o),
+        "aliases": sorted(str(a) for a in (o.get("aliases") or [])),
+        "primary_table": str(o.get("primary_table") or ""),
+        "properties": o.get("properties") or [],
+        "links": o.get("links") or [],
+    }, ensure_ascii=False, sort_keys=True)
+
+
+def _prop_identity(p: dict) -> str:
+    """属性身份：物理列优先（column 是绑定键），无列时退业务名。"""
+    if not isinstance(p, dict):
+        return str(p)
+    return str(p.get("column") or p.get("name") or p.get("key") or "").strip().lower()
+
+
+def _link_identity(l: dict) -> str:
+    """关系身份：type -> target（cardinality 变化算同一关系的修改，不重复计数）。"""
+    if not isinstance(l, dict):
+        return str(l)
+    return f"{str(l.get('type') or 'references').strip().lower()}->{str(l.get('target') or '').strip().lower()}"
+
+
+def _named_set(items, key_of) -> dict:
+    """列表 → {身份: 元素}；空身份元素丢弃（无法定位身份的项不参与 diff）。"""
+    out: dict = {}
+    for it in (items or []):
+        k = key_of(it)
+        if k:
+            out[k] = it
+    return out
+
+
+def _obj_delta(old: dict, new: dict) -> dict:
+    """对象级变更明细（供「变更对比」可视化，不要求人读 JSON）。
+
+    只报“发生了什么”，不报整份正文：属性/关系按身份键取增减集合，别名同理，
+    标量字段（显示名/主表/描述）单独判是否改动，避免把无关键序变动说成改动。
+    """
+    op, np_ = _named_set(old.get("properties"), _prop_identity), _named_set(new.get("properties"), _prop_identity)
+    ol, nl = _named_set(old.get("links"), _link_identity), _named_set(new.get("links"), _link_identity)
+    oa = {str(a).strip() for a in (old.get("aliases") or []) if str(a).strip()}
+    na = {str(a).strip() for a in (new.get("aliases") or []) if str(a).strip()}
+
+    def _label(p: dict) -> str:
+        return str(p.get("name") or p.get("column") or "")
+
+    props_modified = [
+        {"key": k, "name": _label(np_[k]),
+         "from": _prop_summary(op[k]), "to": _prop_summary(np_[k])}
+        for k in sorted(set(op) & set(np_))
+        if json.dumps(op[k], ensure_ascii=False, sort_keys=True)
+        != json.dumps(np_[k], ensure_ascii=False, sort_keys=True)]
+    return {
+        "properties_added": [{"key": k, "name": _label(np_[k])} for k in sorted(set(np_) - set(op))],
+        "properties_removed": [{"key": k, "name": _label(op[k])} for k in sorted(set(op) - set(np_))],
+        "properties_modified": props_modified,
+        "links_added": [{"key": k, "label": _link_label(nl[k])} for k in sorted(set(nl) - set(ol))],
+        "links_removed": [{"key": k, "label": _link_label(ol[k])} for k in sorted(set(ol) - set(nl))],
+        "aliases_added": sorted(na - oa),
+        "aliases_removed": sorted(oa - na),
+        "renamed_from": (str(old.get("display_name") or old.get("name") or "")
+                         if _obj_label(old) != _obj_label(new)
+                         and str(old.get("display_name") or old.get("name") or "") else ""),
+        "table_changed": bool(str(old.get("primary_table") or "") != str(new.get("primary_table") or "")),
+        "primary_table_from": str(old.get("primary_table") or ""),
+        "primary_table_to": str(new.get("primary_table") or ""),
+        "description_changed": bool(str(old.get("description") or "") != str(new.get("description") or "")),
+    }
+
+
+def _prop_summary(p: dict) -> str:
+    """属性一行摘要（业务名 + 类型 + 是否主键），供 diff 文案，不含物理表。"""
+    parts = [str(p.get("type") or "")]
+    if p.get("is_key"):
+        parts.append("PK")
+    if p.get("enum"):
+        parts.append(f"枚举 {len(p['enum'])}")
+    return " · ".join(x for x in parts if x)
+
+
+def _link_label(l: dict) -> str:
+    return f"{str(l.get('type') or 'references')} → {str(l.get('target') or '')}"
+
+
+# 审阅列表的状态优先级：新增加的排前面（用户最关心“加了什么”）
+_STATE_RANK = {"added": 0, "changed": 1, "removed": 2, "unchanged": 3}
+
+
+def draft_diff(model_id: int) -> dict:
+    """草案 vs 生效版的结构化差异（对象级 + 属性/关系级明细）。
+
+    为什么要它：AS-BOT 通道的本体改动**只落 draft_json_content**，而建模页对象列表读的是
+    生效版；此前前端只用一个本地布尔判断“有无待发布”，于是出现“服务端有草案、UI 说
+    无待发布”的死开关（对象既看不见也发不了）。
+
+    为什么是**明细**而不只是清单：审阅草案的人要判断的是“加了哪些属性、动了哪条关系”，
+    给他看 JSON 正文等于让他自己做 diff。本函数把每条变更算成人能读的结构（added/removed/
+    modified 的名称集合），前端据此渲可视化审阅面板，JSON 正文只作附录。
+    """
+    model = get_model(model_id)
+    if not model:
+        raise ValueError("模型不存在")
+    row = _draft_row(model_id)
+    draft_raw = str(row.get("draft_json_content") or "")
+    eff_raw = str(model.get("json_content") or "")
+    eff = _doc_objects_by_key(eff_raw)
+    dr = _doc_objects_by_key(draft_raw)
+    # 草案正文解不出对象 ≠ 没有改动：必须区分，否则坏草案会被渲成“空审阅列表”
+    draft_parse_error = False
+    if draft_raw.strip():
+        try:
+            _doc = json.loads(draft_raw)
+            _objs = _doc.get("objects") if isinstance(_doc, dict) else None
+            draft_parse_error = _objs is not None and not isinstance(_objs, list)
+        except ValueError:
+            draft_parse_error = True
+
+    objects: list[dict] = []
+    for k in sorted(set(eff) | set(dr)):
+        o = dr.get(k) or eff.get(k) or {}
+        e, d = eff.get(k), dr.get(k)
+        if e is None:
+            state, delta = "added", None
+        elif d is None:
+            state, delta = "removed", None
+        elif _obj_shape(e) != _obj_shape(d):
+            state, delta = "changed", _obj_delta(e, d)
+        else:
+            state, delta = "unchanged", None
+        objects.append({
+            "key": str(o.get("key") or k),
+            "display_name": _obj_label(o),
+            "state": state,
+            "primary_table": str(o.get("primary_table") or ""),
+            "property_count": len(o.get("properties") or []),
+            "link_count": len(o.get("links") or []),
+            "delta": delta,
+        })
+    objects.sort(key=lambda x: (_STATE_RANK.get(x["state"], 9), x["display_name"].lower()))
+
+    def _pick(state: str) -> list[dict]:
+        return [{"key": x["key"], "display_name": x["display_name"], "delta": x["delta"]}
+                for x in objects if x["state"] == state]
+
+    base_now = _doc_fingerprint(eff_raw)
+    stamp = str(row.get("draft_base_stamp") or "")
+    return {
+        "has_draft": bool(draft_raw.strip()),
+        "draft_updated_at": str(row.get("draft_updated_at") or ""),
+        "draft_updated_by": row.get("draft_updated_by") or "",
+        "effective_object_count": len(eff),
+        "draft_object_count": len(dr),
+        "objects": objects,
+        "added": _pick("added"),
+        "removed": _pick("removed"),
+        "changed": _pick("changed"),
+        "unchanged_count": sum(1 for x in objects if x["state"] == "unchanged"),
+        "draft_parse_error": draft_parse_error,
+        # 发布前会被 publish_draft 的并发保护拒绝（生效版在草案之后又被改动）
+        "base_stale": bool(draft_raw.strip()) and bool(stamp) and stamp != base_now,
+    }
+
+
+def discard_draft(model_id: int, discarded_by: str = "") -> dict:
+    """丢弃草案（两段式的“撤销”）：只清草案列，生效版与派生视图一律不碰。
+
+    为什么要有：没有丢弃入口时，一份写坏的草案会一直挂在“待发布”上，用户只能
+    重新覆盖它或去改 JSON 正文；商业产品的提案流（Foundry proposal / PR）都提供
+    abandon。清列后 draft_diff 自然回到“无待发布”。
+    """
+    model = get_model(model_id)
+    if not model:
+        raise ValueError("模型不存在")
+    row = _draft_row(model_id)
+    if not str(row.get("draft_json_content") or "").strip():
+        raise ValueError("当前没有待发布的草案，无需丢弃")
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE adh_ontology_models SET draft_json_content=NULL, "
+                        "draft_base_stamp=NULL, draft_updated_at=NULL, draft_updated_by=NULL "
+                        "WHERE id=%s", (model_id,))
+        conn.commit()
+    logger.info("[ontology] draft discarded model=%s by=%s", model_id, discarded_by or "")
+    return {"id": model_id, "discarded": True, "discarded_by": discarded_by or "",
+            **draft_diff(model_id)}
 
 
 def publish_draft(model_id: int, published_by: str = "") -> dict:
@@ -1612,6 +1923,22 @@ def publish_draft(model_id: int, published_by: str = "") -> dict:
     return result
 
 
+def _prop_identity_names(obj: dict) -> set:
+    """对象属性的身份名集（用于“属性是否仍在”的按名判定）。
+
+    身份取第一个非空值（name > display_name > column）：三个都收会把列名当成第二个
+    身份，使「指标条目归并进 metrics[]」时旧属性的 rum.* 幽灵列被判为丢失。
+    """
+    out: set = set()
+    for p in obj.get("properties") or obj.get("attributes") or []:
+        for k in ("name", "display_name", "column"):
+            v = str((p or {}).get(k) or "").strip()
+            if v:
+                out.add(v)
+                break
+    return out
+
+
 def _reject_destructive_overwrite(model: dict, json_content: str) -> None:
     """整份覆盖前校验：不得无损丢失已有对象的属性/关系定义（fail-loud）。
 
@@ -1641,14 +1968,30 @@ def _reject_destructive_overwrite(model: dict, json_content: str) -> None:
             continue
         old_p, new_p = len(old.get("properties") or []), len(new.get("properties") or [])
         old_l, new_l = len(old.get("links") or []), len(new.get("links") or [])
-        if new_p < old_p or new_l < old_l:
-            lost_detail.append(f"{key}(属性 {old_p}→{new_p}，关系 {old_l}→{new_l})")
+        if new_p < old_p:
+            # 属性个数收缩要区分「真丢失」与「指标条目从 properties 归并进 metrics[] 名字引用」：
+            # 口径唯一登记在指标字典（建模规范 §3），对象 properties 只该放属性；
+            # 把指标当属性登记会写出指向不存在列的幽灵 column（实测 RUM 本体
+            # 47 条属性全带 rum.* 前缀，其中 19 条是指标），那是要修的错配，不是丢失。
+            # 判定按**名字**而非计数：被移走的属性名必须已作为指标名留在 metrics[] 里。
+            old_names = _prop_identity_names(old)
+            kept = _prop_identity_names(new) | {
+                n for n in (_metric_name(m) for m in (new.get("metrics") or [])) if n}
+            vanished = old_names - kept
+            if vanished:
+                lost_detail.append(
+                    f"{key}(属性 {old_p}→{new_p}，丢失属性名: "
+                    + ", ".join(sorted(vanished)[:8])
+                    + (" …" if len(vanished) > 8 else "") + ")")
+        if new_l < old_l:
+            lost_detail.append(f"{key}(关系 {old_l}→{new_l})")
     if lost_detail:
         raise ValueError(
             "本次提交会造成已有定义丢失，已阻断（宁阻断勿损毁）："
             + "；".join(lost_detail[:10])
             + "。若确需删减，请在「本体建模页」操作，或提交与现有定义等量/更完整的 JSON。"
-              "注意读接口出于脱敏只回对象摘要（properties 为空），不能拿摘要重建整份 JSON")
+              "注意读接口出于脱敏只回对象摘要（properties 为空），不能拿摘要重建整份 JSON；"
+              "指标口径归并进对象 metrics[] 名字引用（指向指标字典）不计为属性丢失")
 
 
 def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
@@ -1685,17 +2028,14 @@ def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
         raise ValueError("本体条目格式不符合规范，拒绝保存: " + "; ".join(fmt_errors[:10]))
 
     # 补齐上下文，供绑定重算 / 派生使用。**按 kind 归一**（x4 归属改造）：
-    # 源本体的 datasource_id 是物理来源（保留）；业务/系统本体的归属是 domain+kind，
-    # 不得把 datasource_id 写回 doc —— 否则会把新结构（domain+kind+sources）的业务本体
-    # 改回旧结构，造成 canonical 新旧结构混杂。
+    # 源本体已退役（kind='source' 合并为 'business'），business/system 本体归属一律是
+    # domain+kind，不得把 datasource_id 写回 doc —— 否则会把新结构（domain+kind+sources）
+    # 的业务本体改回旧结构，造成 canonical 新旧结构混杂。主源 datasource_id 只在模型行
+    # 与 deploy_sites 表达，某源的物理形状通过 active_source_ontology_index 按源解析。
     kind = str(model.get("kind") or "")
-    if kind == "source":
-        doc["datasource_id"] = model["datasource_id"]
-        doc.setdefault("datasource_name", model.get("datasource_name") or "")
-    else:
-        doc.pop("datasource_id", None)   # 业务/系统本体：归属是 domain+kind，不是数据源
-        doc["kind"] = kind or doc.get("kind") or ""
-        doc.setdefault("sources", [])
+    doc.pop("datasource_id", None)   # 业务/系统本体：归属是 domain+kind，不是数据源
+    doc["kind"] = kind or doc.get("kind") or ""
+    doc.setdefault("sources", [])
     doc.setdefault("domain", model.get("domain") or "")
     doc.setdefault("description", "")
 
@@ -1863,14 +2203,26 @@ def _expand_objects(doc: dict, model_id: int, datasource_id: int, kind: str = ""
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             # 下线互斥域内其它模型对象 + 清理本模型旧对象（重激活/重保存幂等）。
-            # 互斥域按 kind（x4 归属改造）：source=同数据源内互斥；business/system
-            # 跨源且 datasource_id 同为 0，同桶互删会把系统本体对象清掉（历史缺陷），
-            # 故改为同 kind 域内互斥。
-            if kind in ("business", "system"):
+            # 互斥域（WS0 解除 business kind 级单例后）：
+            # - system：平台元数据层，仍 kind 级单例 → 同 kind 其它模型对象下线；
+            # - business：多业务本体并存，只清**同一身份 (name+datasource_id)** 的旧版本对象，
+            #   绝不跨业务本体互删（否则合并 source→business 会击穿既有本体的对象）；
+            # - 其余（过渡期残留 source）：按 datasource_id 同源互斥。
+            if kind == "system":
                 cur.execute(
                     "DELETE FROM adh_ontology_objects WHERE model_id IN "
-                    "(SELECT id FROM adh_ontology_models WHERE kind = %s AND id != %s)",
-                    (kind, model_id),
+                    "(SELECT id FROM adh_ontology_models WHERE kind = 'system' AND id != %s)",
+                    (model_id,),
+                )
+            elif kind == "business":
+                cur.execute(
+                    "SELECT name FROM adh_ontology_models WHERE id = %s", (model_id,))
+                self_name = (cur.fetchone() or {}).get("name")
+                cur.execute(
+                    "DELETE FROM adh_ontology_objects WHERE model_id IN "
+                    "(SELECT id FROM adh_ontology_models WHERE kind = 'business' "
+                    "AND name = %s AND datasource_id = %s AND id != %s)",
+                    (self_name, datasource_id, model_id),
                 )
             else:
                 cur.execute(
@@ -1913,30 +2265,53 @@ def _enum_item_to_label(item: str) -> tuple[str, str] | None:
     return code, label
 
 
-def sync_enums_to_dimensions(doc: dict, datasource_id: int) -> dict:
-    """把本体对象属性的 enum/中文名沉淀进语义维度字典。
+def sync_enums_to_dimensions(doc: dict, datasource_id: int,
+                            table_of_object: Optional[dict] = None) -> dict:
+    """把本体对象属性的 enum/中文名沉定进语义维度字典。
 
     回写目标(adh_dimensions, 按 target_table+target_column 命中):
     - properties[].enum → value_labels {code: label}
     - properties[].name(英文属性名)/description(业务名) → aliases
     已有人工 value_labels 与本体冲突时不覆盖, 只记日志。
     字典中无维度行的枚举属性 → 不自动建维度, 列入 gaps 供人工决策。
+
+    `table`(带点 column 归属的物理表) 不得用 `split(".", 1)` 猜（历史缺陷：SLS 嵌套列
+    `view.url` 被当成 `表=view / 列=url`，永远匹配不到字典行，enum/别名联动静默空转）：
+    以对象物理表(`table_of_object`，来自部署绑定层)为前缀限定，按候选 (表,列) 存
+    在性命中（口径收口在 physical_ref.dim_lookup_candidates）。
     """
     updated, conflicts, gaps = 0, [], []
+    tables = {str(k): str(v) for k, v in (table_of_object or {}).items()}
     # 同一列可能被多对象引用: 合并后再写
     by_col: dict[tuple[str, str], dict] = {}
     for obj in doc.get("objects") or []:
+        obj_table = (str(obj.get("primary_table") or "").strip()
+                     or tables.get(str(obj.get("key") or ""), ""))
         for p in obj.get("properties") or obj.get("attributes") or []:
             col_ref = str(p.get("column") or "")
             if "." not in col_ref:
                 continue
-            tbl, col = col_ref.split(".", 1)
-            entry = by_col.setdefault((tbl, col), {"labels": {}, "aliases": set()})
+            cands = _physical_ref.dim_lookup_candidates(col_ref, obj_table)
+            if not cands:
+                continue
+            entry_owner = by_col.get(cands[0])
+            if entry_owner is None:
+                # 首次定位：以首选候选建条目（同一列多写法共享同一 entry，后续对象命中
+                # 同一候选时合并）
+                entry = by_col.setdefault(
+                    cands[0], {"labels": {}, "aliases": set(), "candidates": cands})
+            else:
+                entry = entry_owner
+                for c in cands:
+                    if c not in entry["candidates"]:
+                        entry["candidates"].append(c)
             for code, label in enum_pairs(p.get("enum")):
                 entry["labels"][code] = label
+            _bare = _physical_ref.bare_column(col_ref)
+            _skip = {col_ref, _bare, _bare.rpartition(".")[2]}
             for a in (p.get("name"), p.get("description")):
                 a = str(a or "").strip()
-                if not a or a == col:
+                if not a or a in _skip:
                     continue
                 entry["aliases"].add(a)
         # 对象级别名不进列, 只收属性
@@ -1945,18 +2320,28 @@ def sync_enums_to_dimensions(doc: dict, datasource_id: int) -> dict:
 
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
-            for (tbl, col), entry in by_col.items():
-                cur.execute(
-                    "SELECT id, name, aliases, value_labels, description FROM adh_dimensions "
-                    "WHERE is_active = 1 AND target_table = %s AND target_column = %s",
-                    (tbl, col),
-                )
-                rows = cur.fetchall()
+            for (_t0, _c0), entry in by_col.items():
+                rows: list = []
+                hit: tuple[str, str] | None = None
+                for cand in entry["candidates"]:
+                    cur.execute(
+                        "SELECT id, name, aliases, value_labels, description "
+                        "FROM adh_dimensions "
+                        "WHERE is_active = 1 AND target_table = %s AND target_column = %s",
+                        (cand[0], cand[1]),
+                    )
+                    rows = cur.fetchall() or []
+                    if rows:
+                        hit = cand
+                        break
                 if not rows:
                     if entry["labels"]:
-                        gaps.append({"table": tbl, "column": col,
+                        gaps.append({"table": _t0, "column": _c0,
                                      "enum_size": len(entry["labels"])})
                     continue
+                if hit != (_t0, _c0):
+                    logger.info("[ontology] enum→dims 列引用 %r 按字典行实际登记定位到 "
+                                "%s.%s", _c0, hit[0], hit[1])
                 for d in rows:
                     # -- value_labels 合并(人工非空优先)
                     old_labels = d.get("value_labels")
@@ -2018,6 +2403,22 @@ def sync_enums_to_dimensions(doc: dict, datasource_id: int) -> dict:
     return {"updated": updated, "conflicts": conflicts, "gaps": gaps}
 
 
+def _table_of_object(model_id: int, datasource_id: int) -> dict:
+    """对象 key → 物理表（部署绑定层）。
+
+    本体 doc 不再携带物理绑定（v0.5 B6b），但带点列名的身份裁决需要它
+    （`view.url` 在表 `logstore-rum` 上是列名本体，不是「表=view」）。
+    查不到返回空 dict，由调用方走「未验证」口径（不拿猜值写字典）。
+    """
+    try:
+        from backend.modules.catalog.services import ontology_yaml_import as _yimp
+        return _yimp.object_physical_tables(datasource_id=datasource_id,
+                                           model_id=model_id)
+    except Exception as e:  # noqa: BLE001 — 绑定层不可用不影响保存主链路
+        logger.warning("[ontology] 对象物理表映射加载失败 model=%s: %s", model_id, e)
+        return {}
+
+
 def _sync_active_model(doc: dict, model_id: int, datasource_id: int) -> None:
     """激活态编辑保存时的联动刷新（v0.5 B6b）：重展开对象 + 内嵌绑定回填 + enum→字典联动。
 
@@ -2036,7 +2437,7 @@ def _sync_active_model(doc: dict, model_id: int, datasource_id: int) -> None:
     _expand_objects(doc, model_id, datasource_id, kind=str(doc.get("kind") or ""))
     _backfill_execution_binding(model_id)
     # 本体 enum/属性中文名 → 语义维度字典(别名与枚举标签的唯一联动点，各 kind 统一)
-    sync_enums_to_dimensions(doc, datasource_id)
+    sync_enums_to_dimensions(doc, datasource_id, _table_of_object(model_id, datasource_id))
 
 
 def _strip_execution_bindings(doc: dict) -> int:
@@ -2429,10 +2830,10 @@ def find_m234_issues(doc: dict) -> list:
 
 
 def _active_source_ontology_index() -> dict:
-    """active 源本体索引（薄委托）。
+    """active 业务本体（带主源）索引（薄委托）。
 
-    实现已下沉到 `backend/core/ontology_index.py`：语义层（topology 承载校验/选路）与
-    目录层都要用，留在本模块会构成 `semantics → modules` 反向依赖（分层契约 R3 硬禁）。
+    实现已下沉到 `backend/core/ontology_index.py`：多个上层消费方都要用，
+    留在本模块会构成跨模块的反向依赖（分层契约 R3 硬禁）。
     保留同名函数是为不破坏既有调用点（本体生成器/路由校验/测试桩）。
     """
     from backend.core.ontology_index import active_source_ontology_index
@@ -2562,13 +2963,18 @@ def find_business_route_issues(doc: dict) -> list:
 
 
 def find_deploy_site_issues(model_id: int) -> list[str]:
-    """模型级适用站点（deploy_sites）的引用一致性检查（§4 宁阻断勿悬空）。
+    """模型级适用站点（deploy_sites）与对象级站点白名单的引用一致性检查（§4 宁阻断勿悬空）。
 
     配置时已校过一次，但站点/数据源可能在之后被停用、改名或删除：取数时
     `_route_by_site` 会拿不到路由目标而拒查，因此在激活环节提前显式暴露，
     而不是等用户提问才发现。只报业务名，不回内部 id。
+
+    对象级白名单（object_site_rules）两条约束：所列站点必须是本模型已声明的站点
+    （白名单只能收紧、不能扩权）；对象 key 不得悬空（对象改名/删除后规则会永久无效）。
     """
-    from backend.core.site_service import get_site, model_deploy_sites
+    from backend.core.site_service import (
+        get_site, model_deploy_sites, model_object_site_rules,
+    )
 
     declared = model_deploy_sites(int(model_id or 0))
     if not declared:
@@ -2600,6 +3006,82 @@ def find_deploy_site_issues(model_id: int) -> list[str]:
         elif ds_site[ds] != code:
             issues.append(
                 f"数据源「{ds}」的归属站点与声明站点 {code} 不一致（先在数据源管理校正）")
+
+    # ── 对象级站点白名单（同构多站 + 部分站点才有某对象）──
+    rules = model_object_site_rules(int(model_id or 0))
+    if rules:
+        declared_codes = {e["site_code"] for e in declared}
+        with get_metadata_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT object_key FROM adh_ontology_bindings "
+                    "WHERE model_id = %s AND status = 'active' AND object_key <> ''",
+                    (int(model_id or 0),))
+                model_objects = {str(r["object_key"]) for r in (cur.fetchall() or [])}
+                # 显示用业务名（ui-resource-display）：查不到才回落 key
+                cur.execute(
+                    "SELECT object_key, display_name FROM adh_ontology_objects "
+                    "WHERE model_id = %s AND is_active = 1",
+                    (int(model_id or 0),))
+                obj_names = {str(r["object_key"]): str(r["display_name"] or r["object_key"])
+                             for r in (cur.fetchall() or [])}
+        for ok in sorted(rules):
+            obj = obj_names.get(ok) or ok
+            for code in sorted(rules[ok]):
+                if code not in declared_codes:
+                    issues.append(
+                        f"对象「{obj}」的适用站点 {code} 不在本模型声明的站点内"
+                        "（白名单只能在本模型已勾选的站点里收紧）")
+            if ok not in model_objects:
+                issues.append(f"对象「{obj}」已配置站点限制，但本模型没有它的活跃绑定（规则悬空）")
+    return issues
+
+
+def find_dataset_scope_issues(model_id: int) -> list[str]:
+    """数据集绑定对象 × 模型适用站点的一致性门禁（§4 宁阻断勿悬空）。
+
+    数据集自带「可用数据源范围」（执行源 ∪ available_datasources）：本体把对象路由到
+    范围内没有的源时，语义层会直接拒绘计划（一份预制 SQL 只在声明过的源上可信，静默换源
+    = 口径漂移）。与其等用户提问拿到“该对象不适用本站点”，不如激活前就指到哪个对象、缺哪个源。
+    直读元库（不反向依赖 viz 模块）；文案只出业务名，不回内部 id（护栏 §7）。
+    """
+    from backend.core.site_service import model_deploy_sites
+
+    declared = model_deploy_sites(int(model_id or 0))
+    routes = {str(e.get("datasource") or "").strip() for e in (declared or [])
+              if str(e.get("datasource") or "").strip()}
+    if not routes:
+        return []                      # 未配部署站点 = 沿用逐对象绑定行，不存在跨源路由
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT b.object_key, b.dataset_ref, d.name AS dataset_name, "
+                "       d.datasource_id AS exec_id, d.available_datasources AS avail, "
+                "       e.name AS exec_name "
+                "FROM adh_ontology_bindings b "
+                "JOIN adh_datasets d ON d.name = b.dataset_ref AND d.status = 'active' "
+                "LEFT JOIN adh_datasources e ON e.id = d.datasource_id "
+                "WHERE b.model_id = %s AND b.status = 'active' "
+                "  AND b.dataset_ref IS NOT NULL AND b.dataset_ref <> ''",
+                (model_id,))
+            rows = cur.fetchall() or []
+    issues: list[str] = []
+    for r in rows:
+        raw = r.get("avail")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError):
+                raw = []
+        names = {str(x or "").strip() for x in (raw or []) if str(x or "").strip()}
+        if r.get("exec_name"):
+            names.add(str(r["exec_name"]))
+        missing = sorted(routes - names)
+        if missing:
+            issues.append(
+                f"对象「{r.get('object_key') or ''}」绑定的数据集「{r.get('dataset_name') or ''}」"
+                f"未声明可在 {'、'.join(missing)} 上执行"
+                "（在数据集页把这些源登记进「可用数据源范围」，或从本体适用站点移除）")
     return issues
 
 
@@ -2623,6 +3105,14 @@ def activate(model_id: int) -> dict:
         raise ValueError(
             "本体适用站点配置存在悬空引用, 拒绝激活（在「适用站点」页修正后重试）: "
             + "; ".join(site_issues[:10]) + (" 等" if len(site_issues) > 10 else ""))
+
+    # 数据集绑定对象的可用数据源范围必须覆盖模型全部部署源（与 planner 的拒绘同口径），
+    # 否则上线后那些站点一律取不到数（激活是“对外可查”的唯一开关）。
+    ds_scope_issues = find_dataset_scope_issues(model_id)
+    if ds_scope_issues:
+        raise ValueError(
+            "本体部署站点存在数据集未声明可用的数据源, 拒绝激活: "
+            + "; ".join(ds_scope_issues[:10]) + (" 等" if len(ds_scope_issues) > 10 else ""))
 
     doc = json.loads(model["json_content"])
     objects = doc.get("objects") or []
@@ -2684,22 +3174,23 @@ def activate(model_id: int) -> dict:
     # 1. 旧 active 归档 + 其对象下线
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
-            if model_kind == "source":
-                # 源本体按数据源归属（UI「源本体（按数据源）」）：激活某数据源的源本体只应取代
-                # **同源**的旧 active 源本体，不得归档其它数据源的源本体——否则多源各自建模会互相
-                # 顶掉（历史缺陷：为日志源建源本体把医疗 Doris 源本体挤成 archived）。
-                # 与 _expand_objects 的 source 分支（按 datasource_id 互斥）保持同口径。
+            if model_kind == "system":
+                # 系统本体：平台元数据层，保持 kind 级单例（全局唯一 active）。
                 cur.execute(
                     "UPDATE adh_ontology_models SET status = 'archived', updated_at = %s "
-                    "WHERE kind = 'source' AND datasource_id = %s AND status = 'active' AND id != %s",
-                    (now, datasource_id, model_id),
+                    "WHERE kind = 'system' AND status = 'active' AND id != %s",
+                    (now, model_id),
                 )
             else:
-                # business/system 维持 kind 级单例（跨源共享的业务/系统语义层唯一 active）。
+                # 业务本体（含原 source 迁移而来，源本体已退役）：**解除 kind 级单例**，
+                # 多业务本体并存。激活只取代**同一身份 (name + datasource_id)** 的旧 active
+                # 版本（与 list_versions 的归组口径一致），不得跨业务本体归档 ——
+                # 否则把 source 迁成 business 后激活其一会顶掉其它业务本体（击穿存量）。
                 cur.execute(
                     "UPDATE adh_ontology_models SET status = 'archived', updated_at = %s "
-                    "WHERE kind = %s AND status = 'active' AND id != %s",
-                    (now, model_kind, model_id),
+                    "WHERE kind = %s AND name = %s AND datasource_id = %s "
+                    "AND status = 'active' AND id != %s",
+                    (now, model_kind, model.get("name") or "", datasource_id, model_id),
                 )
             cur.execute(
                 "UPDATE adh_ontology_models SET status = 'active', updated_at = %s WHERE id = %s",
@@ -2710,7 +3201,7 @@ def activate(model_id: int) -> dict:
     # 2. 展开对象写入元数据库（不再向量化；embedding 列写零向量占位）
     count = _expand_objects(doc, model_id, datasource_id, kind=model_kind)
     # 3. 枚举/别名同步进维度字典
-    sync_enums_to_dimensions(doc, datasource_id)
+    sync_enums_to_dimensions(doc, datasource_id, _table_of_object(model_id, datasource_id))
 
     logger.info("[ontology] activated model %s: %d objects written", model_id, count)
     return get_model(model_id)

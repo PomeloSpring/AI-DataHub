@@ -4,6 +4,7 @@
     observability.begin(...) -> TraceRecorder|None      # 入口创建回合
     observability.finalize(status, error, final_answer) # 入口收尾落库
     observability.record_llm_call(...)                  # 深层记录模型请求(credit/token)
+    observability.mark_model_window_start()              # 执行层标注模型窗口起点(单次耗时口径)
     observability.record_span(...)                      # 深层记录关键产物(工具调用/SQL/结果)
     observability.set_session_credits(total, model_usage)
     observability.set_trace_id() / get_trace_id()       # 中间件
@@ -13,6 +14,7 @@
 """
 from .context import (
     get_trace_id,
+    mark_model_window_start,
     new_uuid,
     record_llm_call,
     record_span,
@@ -31,7 +33,7 @@ from .recorder import (
 
 __all__ = [
     "begin", "current", "finalize",
-    "record_llm_call", "record_span", "set_session_credits",
+    "record_llm_call", "record_span", "set_session_credits", "mark_model_window_start",
     "set_trace_id", "get_trace_id", "new_uuid",
     "trace_id_for_response", "message_uuid", "set_result", "set_handled_by",
 ]

@@ -36,9 +36,9 @@ def graph_target_for_model(kind: str, datasource_id: int) -> int:
     """本体模型 → 目标命名图的 datasource 哨兵（**写入与状态对账共用同一口径**）。
 
     图谱按 **kind** 分图，不按 datasource_id：
-      system → ``ds:-1``（AS-BOT 系统域图）; business → ``ds:0``（跨源业务聚合图）;
-      source → ``ds:<datasource_id>``（源本体图，与业务图分开保留）。
-
+      system → ``ds:-1``（AS-BOT 系统域图）; business → ``ds:0``（跨源业务聚合图）。
+      源本体已退役（WS2 合并为 business）；具体数据源的命名图 ``ds:N`` 只留物理血缘（无本体）。
+    
     为什么必须共用：旧实现只在写入侧按 kind 分图，而徽章用的
     ``ontology_kb_sync.model_sync_status`` 自己按 ``ds:{datasource_id}`` 查图，
     于是两个活着的 kind 全部误报：系统本体(ds_id=0) 查到的是**业务聚合图**
@@ -50,9 +50,7 @@ def graph_target_for_model(kind: str, datasource_id: int) -> int:
         return SYSTEM_DATASOURCE_ID
     if kind == "business":
         return 0
-    if kind == "source":
-        return ds
-    # 未知/缺失 kind：按 datasource_id 哨兵推断（与旧写入侧兑底一致）
+    # 未知/缺失 kind（含退役前的残留 source）：按 datasource_id 哨兵推断
     return SYSTEM_DATASOURCE_ID if is_system_scope(ds) else ds
 
 

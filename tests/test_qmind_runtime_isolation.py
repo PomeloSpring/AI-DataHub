@@ -149,7 +149,7 @@ class TestSyncFailureSurfaces:
         from fastapi import HTTPException
         from backend.modules.catalog.api import ontology as api_ontology
         monkeypatch.setattr(ks, "sync_model_to_qmind",
-                            lambda mid: {"synced": 0, "targets": [], "error": "exchange 400"})
+                            lambda mid, kb_id=None: {"synced": 0, "targets": [], "error": "exchange 400"})
         with pytest.raises(HTTPException) as e:
             api_ontology.sync_model_kb(1)
         assert e.value.status_code == 502
@@ -158,7 +158,7 @@ class TestSyncFailureSurfaces:
     def test_api_partial_success_keeps_200_with_error(self, monkeypatch):
         from backend.modules.catalog.api import ontology as api_ontology
         monkeypatch.setattr(ks, "sync_model_to_qmind",
-                            lambda mid: {"synced": 1, "targets": ["全局库"], "error": "kb=6 upload failed"})
+                            lambda mid, kb_id=None: {"synced": 1, "targets": ["全局库"], "error": "kb=6 upload failed"})
         r = api_ontology.sync_model_kb(1)
         assert r["synced"] == 1 and r["error"], "部分成功 200 但 error 仍随结果返回"
 
@@ -191,7 +191,7 @@ class TestCredHint:
         from fastapi import HTTPException
         from backend.modules.catalog.api import ontology as api_ontology
         monkeypatch.setattr(ks, "sync_model_to_qmind",
-                            lambda mid: {"synced": 0, "targets": [], "error": "exchange 400",
+                            lambda mid, kb_id=None: {"synced": 0, "targets": [], "error": "exchange 400",
                                          "error_hint": ks._CRED_HINT})
         with pytest.raises(HTTPException) as e:
             api_ontology.sync_model_kb(1)

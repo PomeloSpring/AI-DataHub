@@ -86,6 +86,7 @@ async def get_graph_visualization(
     search: Optional[str] = Query(None),
     limit: int = Query(200, ge=1, le=500),
     include_properties: bool = Query(False, description="统一大图是否平铺属性(Property)明细; 默认否"),
+    model_id: Optional[int] = Query(None, ge=1, description="按选中本体模型聚焦: 只回该模型对象+一跳邻居; 留空=全图"),
 ):
     """获取图谱可视化数据（节点 + 边 + 统计），供前端 React Flow 渲染。"""
     try:
@@ -117,6 +118,7 @@ async def get_graph_visualization(
             search=search,
             limit=limit,
             include_properties=include_properties,
+            model_id=model_id,
         )
     except Exception as e:
         logger.error("Graph visualization query failed: %s", e, exc_info=True)
@@ -455,7 +457,7 @@ async def shortest_path(source_iri: str, target_iri: str,
 async def sync_graph(
     datasource_id: int = Query(0, ge=0),
     system_scope: bool = Query(False, description="系统域(AS-BOT): 重建系统图 ds:-1(仅系统元数据与系统本体模型)"),
-    kind: str = Query("", description="本体域 source/business/system；决定合并哪一类 active 模型入图"),
+    kind: str = Query("", description="本体域 business/system；决定合并哪一类 active 模型入图（源本体已退役）"),
 ):
     """从元数据重建知识图谱（clear + rebuild）。
 
@@ -463,7 +465,7 @@ async def sync_graph(
     供 GraphRAG 检索路线通过 SPARQL 接地。返回构建统计。
 
     kind 必须显式传：`_merge_ontology_models` 在 kind 为空时按 datasource_id 推断，
-    而 ds=0 推不出任何 kind → 会把**全部 active 模型**（业务+源+系统）塑进 ds:0，
+    而 ds=0 推不出任何 kind → 会把**全部 active 模型**（业务+系统）塑进 ds:0，
     污染业务聚合图（徽章会变成“滞后 33/17”）。调用方（关系图谱页）按当前模型的
     kind 传值，与写入侧 graph_target_for_model 同一口径。
 
@@ -472,8 +474,8 @@ async def sync_graph(
     """
     ds = _effective_ds(datasource_id, system_scope)
     kind = (kind or "").strip()
-    if kind not in ("", "source", "business", "system"):
-        raise HTTPException(status_code=422, detail="kind 只能是 source / business / system 或留空")
+    if kind not in ("", "business", "system"):
+        raise HTTPException(status_code=422, detail="kind 只能是 business / system 或留空")
     if system_scope and not kind:
         kind = "system"          # 旧调用只传 system_scope：补上域，不再走“全部模型”分支
     try:

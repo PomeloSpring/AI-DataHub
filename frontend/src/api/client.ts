@@ -115,4 +115,28 @@ client.interceptors.response.use(
   }
 );
 
+// ── 并发同参 GET 合并（in-flight coalescing）───────────────────────────────
+// StrictMode 开发期双挂载（以及多组件同时拉同一清单）会让同一个只读请求在网络上跑
+// 两次；本项目元数据库在远端（单请求数百 ms～秒级），重复请求不只是浪费，还会互相
+// 争抢连接池，把页面拖慢。这里只合并“同时在飞”的完全相同 GET（结果不落缓存、请求
+// 结束即释放），因此“改完再拉一次”、轮询刷新等顺序语义不受影响。
+const rawGet: (url: string, config?: any) => Promise<any> = client.get.bind(client);
+const inflightGets = new Map<string, Promise<any>>();
+
+client.get = ((url: string, config?: any) => {
+  // 带 AbortSignal / 二进制流的请求不得共享（取消与进度属于单个调用方）
+  if (!url || config?.signal || config?.responseType) return rawGet(url, config);
+  let key: string;
+  try {
+    key = `${url}?${JSON.stringify(config?.params ?? {})}`;
+  } catch {
+    return rawGet(url, config);
+  }
+  const pending = inflightGets.get(key);
+  if (pending) return pending;
+  const p = rawGet(url, config).finally(() => inflightGets.delete(key));
+  inflightGets.set(key, p);
+  return p;
+}) as typeof client.get;
+
 export default client;

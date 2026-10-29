@@ -8,7 +8,8 @@
    **不回退其他方言**；静态提表进 `resolved_tables` 使预制 SQL 同样受 RLS 改写；
    声明字段后 `dimensions/measures/filters/time_grain` 在结果上再编译一层聚合；
 3. **语义层绑定**（`planner._plan_dataset`）：数据集配了行级 scope 时拒绝作为对象绑定
-   （scope 只在 query_dataset 通道按身份施加，静默绕过 = 少一层过滤）。
+   （scope 只在 query_dataset 通道按身份施加，静默绕过 = 少一层过滤）；
+   目标源必须落在数据集「可用数据源范围」内（一份预制 SQL 只在它声明过的源上可信）。
 """
 
 import json
@@ -79,6 +80,7 @@ def _ds(**over):
     row = {
         "id": 9001, "name": "路径漏斗", "source_type": "sql", "object_key": "",
         "datasource_id": 0, "sql_query": _funnel_body(),
+        "available_datasources": json.dumps([SRC_NAME], ensure_ascii=False),
         "variables": json.dumps(VARIABLES),
         "sql_bodies": json.dumps(BODIES),
         "touched_tables": json.dumps(["t_rum"]),
@@ -98,13 +100,60 @@ def _bind(db_type="mysql", **over):
     return ResolvedBinding(**row)
 
 
+# 绑定目标源(id=7)的业务名：planner 的可用范围解析直读元库，测试里用内存清单替掉
+SRC_NAME = "业务源A"
+
+
+class _FakeCursor:
+    def __init__(self, rows):
+        self._rows = rows
+        self._hit = []
+
+    def execute(self, sql, params=None):
+        norm = " ".join(str(sql).split()).lower()
+        args = tuple(params or ())
+        if "from adh_datasources" in norm and "name in" in norm:
+            self._hit = [r for r in self._rows if r["name"] in set(args)]
+        elif "from adh_datasources" in norm and "id = %s" in norm:
+            self._hit = [r for r in self._rows if r["id"] == int(args[0])]
+        else:
+            self._hit = []
+
+    def fetchall(self):
+        return list(self._hit)
+
+    def fetchone(self):
+        return self._hit[0] if self._hit else None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeConn:
+    """内存数据源清单（只喂 adh_datasources 的 name/id 解析）。"""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def cursor(self):
+        return _FakeCursor(self._rows)
+
+    def close(self):
+        pass
+
+
 @pytest.fixture
 def stub_dataset(monkeypatch):
-    """把数据集装载换成内存行（不碰元库），返回可改写的 holder。"""
+    """把数据集装载/源清单换成内存行（不碰元库），返回可改写的 holder。"""
     holder = {"row": _ds()}
     monkeypatch.setattr(planner, "_load_dataset_row",
                         lambda ref: dict(holder["row"]) if ref else None)
     monkeypatch.setattr(planner, "_dataset_has_scopes", lambda _id: False)
+    monkeypatch.setattr(planner, "get_metadata_conn",
+                        lambda: _FakeConn([{"id": 7, "name": SRC_NAME}]))
     return holder
 
 

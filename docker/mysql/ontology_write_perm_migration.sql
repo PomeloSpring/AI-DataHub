@@ -11,19 +11,22 @@
 
 -- ── 1. 权限点登记 ───────────────────────────────────────────────
 -- menu_key 归 data:ontology（读权限归消费菜单，写权限同归属：本体建模页的写动作）
+-- ai_action_key 故意留空：这两个写动作由 ontology 工具组的 add_ontology_objects /
+-- publish_ontology_model 承担，执行期经 perm_link.require_write_perm 按权限码把关；
+-- ai_action_key 只对 FUNCTION_ACTION_SPECS 里的“功能工具”有意义，填悬空值会让角色页
+-- 广告一个代码里不存在的 AI 动作（契约由 tests/test_function_ai_access.py::
+-- test_registry_matches_db_ai_action_keys 把门）。
 INSERT INTO adh_perm_registry
     (perm_code, label, module, module_label, description, api_pattern, api_method, menu_key, sort, is_active, ai_access, ai_action_key, ai_note)
 VALUES
     ('ontology:create', '新增本体对象', 'data', '数据',
      '在本体模型中新增对象（只增不删；用户 UI 仅此一个编辑入口，修改走 AS-BOT）',
-     '/api/ontology/models/*/objects', 'POST', 'data:ontology', 61, 1, 'write',
-     'ontology.add_objects',
-     'AI 权限：AS-BOT 新增对象。改动落草案，需 ontology:publish 发布才生效'),
+     '/api/ontology/models/*/objects', 'POST', 'data:ontology', 61, 1, 'write', '',
+     'AI 权限：AS-BOT 经 add_ontology_objects 新增对象，改动落草案，需 ontology:publish 发布才生效'),
     ('ontology:publish', '发布本体草案', 'data', '数据',
      '把本体草案提升为生效版本，并级联重展开对象/重建图谱/同步知识库',
-     '/api/ontology/models/*/publish', 'POST', 'data:ontology', 63, 1, 'write',
-     'ontology.publish_model',
-     'AI 权限：发布前必须在 chat 中用 ask_user 向用户确认；发布才级联生效')
+     '/api/ontology/models/*/publish', 'POST', 'data:ontology', 63, 1, 'write', '',
+     'AI 权限：AS-BOT 经 publish_ontology_model 发布，发布前必须在 chat 中用 ask_user 向用户确认')
 ON DUPLICATE KEY UPDATE
     label = VALUES(label),
     module = VALUES(module),
@@ -36,6 +39,13 @@ ON DUPLICATE KEY UPDATE
     ai_action_key = VALUES(ai_action_key),
     ai_note = VALUES(ai_note),
     is_active = 1;
+
+-- 修正存量：早期版本把工具名当成了 ai_action_key（悬空值，代码里没有对应功能动作）。
+-- 与上面的登记同口径，可重复执行。
+UPDATE adh_perm_registry
+   SET ai_action_key = ''
+ WHERE perm_code IN ('ontology:create', 'ontology:publish')
+   AND ai_action_key IN ('ontology.add_objects', 'ontology.publish_model');
 
 -- 从权限点回填 menu_registry.perm_code（菜单显隐按权限码反查用）
 UPDATE adh_menu_registry m

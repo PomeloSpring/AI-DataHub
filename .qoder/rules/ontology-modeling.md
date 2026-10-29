@@ -13,6 +13,7 @@ description: 本体建模规范（Ontology Modeling Spec）。本体是唯一语
 - 修改本体只有一条路径：编辑 doc → `save_draft`/`activate` → 服务层自动级联（重算 execution_binding → 重展开 objects → 重写 bindings → 重建图谱 → 同步知识库）。**禁止**绕过级联直接 UPDATE 派生表。
 - 枚举的唯一可编辑源是**维度字典 `value_labels`**；本体 `properties[].enum` 经 `sync_enums_to_dimensions` 单向联动到字典，图谱 `owl:oneOf` 只是只读投影。不得在图/文档侧独立改枚举。
 - **多站点适用性以 `adh_ontology_models.deploy_sites` 为唯一事实源**（模型级声明：`[{site_code, datasource(业务名)}]`，一次配置全对象共享），站点清单事实源 = `adh_sites`、数据源归属 = `adh_datasources.site_code`。**不得**回到逐对象逐站登记 `adh_ontology_bindings` 的旧口径（历史 27 对象 × 5 站 = 135 行机械复制），也不得在 doc/图谱/提示词里另写一份站点映射（`data-analysis/SKILL.md` 已去硬编码，由服务端「数据源拓扑」段注入，该段同时说明“默认分站呈现不合计”的口径）。某站 schema 真不同 → 为该站单独配一个本体或使用源本体，不在契约层开例外。
+- **对象级站点例外以 `adh_ontology_models.object_site_rules` 为唯一事实源**（`{object_key: [site_code,...]}`）：「同构多站 + 个别站点才有某对象」时用它收紧——**未登记的对象 = 沿用模型级全部声明站点（默认免配，业务一多不必逐个配）**，登记过的对象只在所列站点可查。白名单**只能收紧不能扩权**（所列站点必须 ⊆ `deploy_sites`，保存与激活均校验；对象 key 不得悬空）；生效三处同源，不得只写其中一处：`binding_resolver` 取数硬门（路由改写与本站精确命中**两条路径都拦**）、`cross_site.list_deployments`（LLM 部署清单不再广告未部署站点）、`find_deploy_site_issues`（激活门禁）。**不得**为此场景回到逐对象逐站登记绑定行或在 doc/图谱/提示词里另写第二份对象×站点表。
 
 ## 2. 对象/属性建模要求
 - 对象面向业务命名（订单/客户/案例），**不得直接照搬表名堆砌**；一个对象绑定一张 `primary_table`（宽对象或 SQL 模板承载复杂形状）。
@@ -54,5 +55,5 @@ description: 本体建模规范（Ontology Modeling Spec）。本体是唯一语
 - `venv/bin/python -m backend.eval.runner`（golden-question，**正确率不得回退**；`--suite retrieval` 另跑本体层检索评测）；
 - `tests/test_cloud_md_redaction.py`、`tests/test_doc_freshness.py`、`tests/test_alias_suggestions.py`、`tests/test_terminology_scoping.py`、`tests/test_planner_resolution.py`；
 - 涉及取数执行链（planner/semantic_query/gates）另按护栏 §11 跑护城河三件套。
-- 触碰站点拓扑或 `binding_resolver` 的站点路由/`deploy_sites` 读写后，另跑 `tests/test_site_scope.py` + `tests/test_cross_site.py`（锁定：契约行只一行、跳站路由后产品身份随站刷新、未声明站点/路由目标不匹配均拒、未配置 deploy_sites 行为零变化）。
+- 触碰站点拓扑或 `binding_resolver` 的站点路由/`deploy_sites` 读写后，另跑 `tests/test_site_scope.py` + `tests/test_cross_site.py`（锁定：契约行只一行、跳站路由后产品身份随站刷新、未声明站点/路由目标不匹配均拒、未配置 deploy_sites 行为零变化、对象级白名单（未列对象=全部声明站点可用；列了=只这些站点可查，路由与本站精确命中两条路径都拒；越出声明站点/对象悬空均报错；`list_deployments` 与取数门同口径））。
 新增建模/解析行为分支必须同步新增 eval 用例（尤其：别名命中档位、孤儿引用阻断、上云脱敏、模糊回抛）。

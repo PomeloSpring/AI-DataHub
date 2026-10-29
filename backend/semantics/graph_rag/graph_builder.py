@@ -10,6 +10,7 @@ import os
 import time
 from typing import Any
 
+from backend.common.rdf.namespaces import TURTLE_PREFIXES
 from backend.common.rdf.sparql_client import bulk_timeout
 from backend.semantics.graph_rag.oxigraph_store import (
     OxigraphStore,
@@ -19,6 +20,17 @@ from backend.semantics.graph_rag.oxigraph_store import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_prefix_block(turtle: str) -> str:
+    """剥掉 ontology_json_to_turtle 输出开头的 @prefix 头（合并多模型时只保留一份）。
+
+    各模型 Turtle 都以同一 ``TURTLE_PREFIXES`` 起头；拼成一份整体加载时，重复 @prefix
+    虽合法但冗余，这里去掉后续模型的头部只留正文，最后统一加一次前缀。
+    """
+    if turtle.startswith(TURTLE_PREFIXES):
+        return turtle[len(TURTLE_PREFIXES):].lstrip()
+    return turtle
 
 
 def _ds_scope(datasource_id: int, col: str = "datasource_id") -> tuple[str, list]:
@@ -156,8 +168,11 @@ class GraphBuilder:
             # Merge ontology FIRST: the RDF bulk load (PUT /store) replaces the
             # named graph, so it must run before the physical nodes are appended
             # via INSERT DATA — otherwise it would wipe them.
-            ontology_count = self._merge_ontology_models(datasource_id, kind)
+            ontology_count, ontology_failures = self._merge_ontology_models(datasource_id, kind)
             logger.info("Merged %d ontology model(s)", ontology_count)
+            if ontology_failures:
+                logger.error("%d ontology model(s) failed to merge into graph: %s",
+                             len(ontology_failures), ontology_failures)
 
             # Build table nodes —— 分块批量写，不再一表一次 HTTP 往返
             tables = self._load_tables(datasource_id)
@@ -315,13 +330,22 @@ class GraphBuilder:
             total_triples = self._store.count_triples(datasource_id)
             logger.info("Graph build complete. Total triples: %d", total_triples)
 
-            return {
-                "success": True,
+            result = {
+                # 有本体模型没入图 = 图不完整，不得谎报成功（no-silent-degradation）。
+                "success": not ontology_failures,
                 **stats,
                 "ontology_models_merged": ontology_count,
+                "ontology_merge_failures": ontology_failures,
                 "total_triples": total_triples,
                 "datasource_id": datasource_id,
             }
+            if ontology_failures:
+                result["error"] = (
+                    f"{len(ontology_failures)} 个本体模型未能入图（图不完整，请查服务端日志）: "
+                    + "; ".join(f"model={f.get('model_id')} err={f.get('error')}"
+                                for f in ontology_failures)
+                )
+            return result
 
         except Exception as e:
             logger.error("Graph build failed: %s", e, exc_info=True)
@@ -564,27 +588,32 @@ class GraphBuilder:
         """
         return self.build_from_metadata(SYSTEM_DATASOURCE_ID)
 
-    def _merge_ontology_models(self, datasource_id: int, kind: str = "") -> int:
+    def _merge_ontology_models(self, datasource_id: int, kind: str = "") -> tuple[int, list[dict]]:
         """Merge active ontology models into the graph as RDF.
 
         按 **kind** 归属，不用 `datasource_id=0` 判系统域（业务本体在多站点下 ds_id 也是 0，
         旧口径会把业务本体拉进系统图 ds:-1、污染 AS-BOT 图谱）。
-        目标图：business→ds:0(业务图) / system→ds:-1(系统图) / source→ds:N(源图)。
+        目标图：business→ds:0(跨源业务聚合图，多本体共存) / system→ds:-1(系统图)；
+        具体数据源命名图（ds:N）只保留物理血缘，不再归并本体（源本体已退役）。
         选图口径收敛到 `graph_target_for_model`，与状态对账
         （ontology_kb_sync.model_sync_status）共用一份，不再两处各写一套。
+
+        返回 ``(成功入图的模型数, 失败清单)``。失败清单非空时调用方须判失败（不再静默）。
         """
         from backend.common.db.metadata_db import get_metadata_conn
         from backend.common.rdf.ontology_to_rdf import ontology_json_to_turtle
 
-        # kind 为空时按 datasource_id 推断（兼容旧调用）：-1=系统域，>0=源，0=聚合
+        # kind 为空时按 datasource_id 推断（兼容旧调用）：-1=系统域，0=跨源业务聚合（ds:0），>0=具体源（只建物理血缘）。
+        # 源本体已退役：不再把 datasource_id>0 推为 "source"（那会去 merge 已不存在的 kind='source' 本体）。
         if not kind:
-            kind = "system" if is_system_scope(datasource_id) else ("source" if datasource_id else "")
+            kind = "system" if is_system_scope(datasource_id) else ("" if datasource_id else "business")
 
         # 目标图按 kind（不按 datasource_id）
         target_ds = graph_target_for_model(kind, datasource_id)
 
         conn = get_metadata_conn()
-        count = 0
+        failures: list[dict] = []
+        models: list[dict] = []
         try:
             with conn.cursor() as cur:
                 if kind == "system":
@@ -593,36 +622,51 @@ class GraphBuilder:
                         "WHERE status = 'active' AND kind = 'system'"
                     )
                 elif kind == "business":
+                    # 多业务本体并存（WS0 解除 kind 级单例）：全部 active business 合并进 ds:0 跨源聚合图。
                     cur.execute(
                         "SELECT id, json_content FROM adh_ontology_models "
                         "WHERE status = 'active' AND kind = 'business'"
                     )
-                elif kind == "source" or datasource_id:
-                    cur.execute(
-                        "SELECT id, json_content FROM adh_ontology_models "
-                        "WHERE status = 'active' AND kind = 'source' AND datasource_id = %s",
-                        [datasource_id],
-                    )
                 else:
-                    cur.execute(
-                        "SELECT id, json_content FROM adh_ontology_models WHERE status = 'active'"
-                    )
+                    # 源本体已退役（WS2 合并为 business）：具体数据源的命名图只保留物理血缘层
+                    # （表/列/血缘由 build_from_metadata 另行写入），不再 merge 本体对象。
+                    return 0, []
                 models = cur.fetchall()
 
+            # 关键：Oxigraph `PUT /store?graph=<uri>` 对指定命名图是「替换」而非追加
+            # （noreplace=true 只防清空整个 store，不防该命名图被覆盖）。多业务本体若逐个
+            # load_turtle 到同一 ds:0，后一个会盖掉前一个 → 只剩最后加载的模型（历史缺陷：
+            # 联耀/ARMS 被数据仓库模型覆盖，ds:0 只剩 4 个类）。因此把所有模型的 Turtle 去重
+            # 前缀后拼成一份、单次 load：一份 PUT 即包含全部模型对象，彼此共存。
+            bodies: list[str] = []
             for model in models:
                 try:
                     turtle = ontology_json_to_turtle(
                         model["json_content"],
                         datasource_id=target_ds,
                     )
-                    self._store.load_turtle(turtle, target_ds)
-                    count += 1
+                    bodies.append(_strip_prefix_block(turtle))
                 except Exception as e:
-                    logger.warning("Failed to merge ontology model %s: %s",
-                                   model.get("id"), e)
+                    logger.error("Failed to convert ontology model %s to Turtle: %s",
+                                 model.get("id"), e, exc_info=True)
+                    failures.append({"model_id": model.get("id"), "error": str(e)})
+
+            count = 0
+            if bodies:
+                try:
+                    self._store.load_turtle(
+                        TURTLE_PREFIXES + "\n\n" + "\n\n".join(bodies), target_ds)
+                    count = len(bodies)
+                except Exception as e:
+                    # 单次整体加载失败 = 本轮所有模型都没入图，如实上报（不谎报成功）。
+                    logger.error("Failed to bulk-load merged ontology turtle into ds:%s: %s",
+                                 target_ds, e, exc_info=True)
+                    failures.append({"model_id": None, "error": f"bulk load failed: {e}"})
         except Exception as e:
-            logger.warning("Failed to load ontology models: %s", e)
+            logger.error("Failed to load ontology models: %s", e, exc_info=True)
+            failures.append({"model_id": None, "error": str(e)})
+            count = 0
         finally:
             conn.close()
 
-        return count
+        return count, failures

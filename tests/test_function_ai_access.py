@@ -184,6 +184,11 @@ def _tool_result(text):
     ("SELECT * FROM adh_reports", "generated_sql"),
     ("physical_table = adh_reports", "legacy_leak"),
     ("Traceback (most recent call last):", "error_stack"),
+    # 驱动原始报错天然带物理列/表名（历史缺陷：catalog 旧列名报错直接下发 LLM）
+    ('(1054, "Unknown column \'metric_name\' in \'field list\'")', "raw_db_error"),
+    ('''pymysql.err.ProgrammingError: (1146, "Table 'adh2.adh_orders' doesn't exist")''',
+     "raw_db_error"),
+    ("ORA-00904: \"FOO\": invalid identifier", "raw_db_error"),
 ])
 def test_outbound_guard_detects_leaks(text, expected):
     assert expected in outbound_guard.find_sensitive_hits(text)
@@ -195,6 +200,9 @@ def test_outbound_guard_detects_leaks(text, expected):
     "created_at: 2026-10-03T14:30:00, run_count: 5",
     "pass_rate 98.5% total_rows 1000",
     "select the best option from the list of candidates",
+    # 可操作业务提示不得被判敏感（否则模型拿不到“先做元数据同步”这类下一步）
+    "数据源 prd-cn 无有效表元数据，请先执行元数据同步",
+    "The selected dataset doesn't exist; pick another one",
 ])
 def test_outbound_guard_no_false_positive_on_normal_output(text):
     """时间戳/散文不能被误杀，否则正常取数结果全被判失败。"""

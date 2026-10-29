@@ -32,6 +32,7 @@ def _patched_resolver_catalog():
     orig_metrics = _ColumnResolver._load_metrics
     orig_tpl = planner._load_dataset_row
     orig_scopes = planner._dataset_has_scopes
+    orig_dsrows = planner._load_datasource_rows
 
     def _load_phys(self):
         return {c: dict(m) for c, m in demo.PHYS.get(self.binding.physical_table, {}).items()}
@@ -57,6 +58,9 @@ def _patched_resolver_catalog():
     _ColumnResolver._load_metrics = _load_metrics
     planner._load_dataset_row = _load_dataset_row
     planner._dataset_has_scopes = _dataset_has_scopes
+    # 数据集「可用数据源范围」按业务名解析 → 内存清单（不碰元库）
+    planner._load_datasource_rows = lambda names=None, exec_id=0: demo.datasource_rows_for(
+        names, exec_id)
     # B2/B3: 跨对象 JOIN 素材打桩(links 邻接 + 跨对象 binding)
     orig_links = planner._load_object_links
     orig_fbind = planner._resolve_foreign_binding
@@ -70,6 +74,7 @@ def _patched_resolver_catalog():
         _ColumnResolver._load_metrics = orig_metrics
         planner._load_dataset_row = orig_tpl
         planner._dataset_has_scopes = orig_scopes
+        planner._load_datasource_rows = orig_dsrows
         planner._load_object_links = orig_links
         planner._resolve_foreign_binding = orig_fbind
 

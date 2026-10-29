@@ -235,7 +235,9 @@ def test_permission_revocation_blocks_old_runtime(monkeypatch):
     revoked = policies.compile_policy({"as_bot_key": "test", "tools": {}})
     runtime = SimpleNamespace(policy=first, ceiling=None, layer_id=0, verify=Mock())
     ctx = ExecutionContext(extra={"secure_runtime": runtime})
-    monkeypatch.setattr(policies, "resolve_policy", lambda *a: revoked)
+    # 新契约：check_tool 会传 use_cache/live 关键词（配置事实走 live 短 TTL 档），
+    # 但“撤权后 digest 不一致必须拦住旧 runtime”的语义不变。
+    monkeypatch.setattr(policies, "resolve_policy", lambda *a, **kw: revoked)
     with pytest.raises(PermissionError, match="权限已变化"):
         policies.check_tool(ctx, "mcp__datahub_workspace__read")
     runtime.verify.assert_called_once()
@@ -478,7 +480,8 @@ def test_scoped_get_metrics_business_includes_global_dicts_gated_by_model(monkey
     def fake_exec(sql, params=None, fetchone=False):
         sqls.append(sql)
         if "adh_ontology_models" in sql:
-            return [{"id": 1, "name": "m", "status": "active",
+            return [{"id": 1, "name": "m", "status": "active", "kind": "business",
+                     "datasource_id": 5, "deploy_sites": None,
                      "json_content": json.dumps({"objects": [{"key": "case"}]})}]
         if "adh_metrics" in sql:
             return [{"bound_object_key": "case", "name": "案例数量", "name_en": "", "aliases": [], "description": "", "unit": ""}]
@@ -493,10 +496,11 @@ def test_scoped_get_metrics_business_includes_global_dicts_gated_by_model(monkey
     dict_sqls = [s for s in sqls if ("adh_metrics" in s or "adh_dimensions" in s)]
     assert dict_sqls and all("datasource_id = 0" in s for s in dict_sqls)   # 含全局字典
     model_sql = next(s for s in sqls if "adh_ontology_models" in s)
-    # 口径（x3）：模型可见域 = 跨源业务本体 + 本源源本体（源本体仍限本源，不泄其他源）
-    assert "kind = 'business'" in model_sql
-    assert "kind = 'source' AND datasource_id = %s" in model_sql   # 源本体限本源
-    assert "kind = 'system'" not in model_sql                      # 业务 AS-BOT 不见系统本体
+    # 口径（WS2 合并）：源本体已退役，模型可见域不再靠 SQL 里的 kind='source'/IN 收口，
+    # 而改由 Python 按模型触达源(主源∪deploy_sites)判定；SQL 只取 active 模型并带回收口列。
+    assert "kind = 'source'" not in model_sql
+    assert "deploy_sites" in model_sql and "datasource_id" in model_sql
+    assert "case" in json.dumps(res, ensure_ascii=False)   # 本触达源的业务本体已纳入
 
 
 def test_broken_as_bot_is_visible_without_hiding_valid_candidates(monkeypatch):
@@ -741,6 +745,36 @@ def test_ambiguous_scope_requires_session_selection(datasource_scope, tool):
     ctx, _ = context(0)
     with pytest.raises(PermissionError, match="选择"):
         guard.validate_tool_resources(ctx, f"mcp__datahub_semantic__{tool}", {})
+
+
+@pytest.mark.parametrize("tool", ["run_semantic_query", "get_metrics", "knowledge_search"])
+def test_aggregate_global_site_allows_self_resolving_tools(datasource_scope, tool, monkeypatch):
+    """全球（聚合态）会话：ctx.datasource_id 合法为 0，逐站编排工具不得被“请先在会话
+    中选择”死胡同闸门先于 handler 拦掉（历史缺陷：明明赋了数据源权限却取不了数，
+    带 site 的 run_semantic_query / get_metrics 在网关就被退回）。
+
+    放行不等于放宽越权：生效源仍由 handler 内 _resolve_datasource_arg 仅在授权集
+    内解析 + validate_binding fail-closed 兜底。
+    """
+    from backend.core import site_service
+    guard, state, context = datasource_scope
+    state["kbs"] = [{"id": 4}]   # knowledge_search 需绑定校验通过
+    ctx, _ = context(0)
+    ctx.extra["site_code"] = "global"
+    monkeypatch.setattr(site_service, "is_aggregate_site", lambda ref: str(ref or "") == "global")
+    guard.validate_tool_resources(ctx, f"mcp__datahub_semantic__{tool}", {})  # 不抛异常 = 放行
+
+
+def test_aggregate_global_site_still_requires_source_for_raw_sql(datasource_scope, monkeypatch):
+    """聚合态下 execute_sql/check_sql 仍需单一具体源：未带 site/datasource 时闸门保留，
+    但文案引导用 site/datasource 逐站，而不是“去会话选”死胡同（裸 SQL 无法“全球”执行）。"""
+    from backend.core import site_service
+    guard, state, context = datasource_scope
+    ctx, _ = context(0)
+    ctx.extra["site_code"] = "global"
+    monkeypatch.setattr(site_service, "is_aggregate_site", lambda ref: str(ref or "") == "global")
+    with pytest.raises(PermissionError, match="site/datasource"):
+        guard.validate_tool_resources(ctx, "mcp__datahub_query__execute_sql", {})
 
 
 def test_role_grant_revocation_applies_to_existing_and_new_instances(datasource_scope):
@@ -1001,16 +1035,21 @@ def test_metadata_projection_excludes_physical_structure(monkeypatch):
     import json
     from backend.modules.mind.execution.sdk_tools import scoped_metadata
     calls = []
-    def query(sql, params):
+    def query(sql, params=(), **kw):
         calls.append((sql, params))
-        return [{"id": 3, "name": "订单模型", "status": "active", "json_content": {"objects": [
-            {"key": "订单", "display_name": "订单", "primary_table": "secret_table", "properties": [
-                {"display_name": "金额", "column": "secret_col"}, {"column": "hidden_col"}]}]}}]
+        if "adh_ontology_models" in sql:
+            return [{"id": 3, "name": "订单模型", "status": "active", "kind": "business",
+                     "datasource_id": 7, "deploy_sites": None, "json_content": {"objects": [
+                {"key": "订单", "display_name": "订单", "primary_table": "secret_table", "properties": [
+                    {"display_name": "金额", "column": "secret_col"}, {"column": "hidden_col"}]}]}}]
+        return []
     monkeypatch.setattr(scoped_metadata, "execute_query", query)
     result = scoped_metadata.execute("search_metadata", {}, ExecutionContext(datasource_id=7))
-    # 口径（x3）：业务 AS-BOT 见跨源业务本体 + 自己绑定源的源本体；params 仍按源收口
-    assert calls[0][1] == (7,)
-    assert "kind = 'business'" in calls[0][0] and "kind = 'source' AND datasource_id = %s" in calls[0][0]
+    # 口径（WS2 合并）：源本体已退役，可见域不再靠 SQL 里的 kind='source' IN 收口，
+    # 改由 Python 按会话生效源(7)∩模型触达源判定；本例模型主源=7 故纳入。
+    model_sql = next(c[0] for c in calls if "adh_ontology_models" in c[0])
+    assert "kind = 'source'" not in model_sql
+    assert "deploy_sites" in model_sql and "datasource_id" in model_sql
     assert "金额" in json.dumps(result, ensure_ascii=False)
     assert "secret" not in json.dumps(result) and "hidden_col" not in json.dumps(result)
 
@@ -1029,6 +1068,49 @@ def test_list_datasources_projection_returns_authorized_names_no_id(monkeypatch)
     assert all("id" not in d for d in result["datasources"])  # 守 §7：不回传 id
 
 
+def test_scoped_metadata_aggregate_global_not_blocked_and_includes_authorized_sites(monkeypatch):
+    """聚合态（全球）会话下投影不得硬拒（与 resource_guard 闸门修复同一口径），
+    业务本体纳入范围 = 授权集内具体站点（available_datasource_ids），不越权。"""
+    from backend.core import site_service
+    from backend.modules.mind.execution.sdk_tools import scoped_metadata
+    monkeypatch.setattr(site_service, "is_aggregate_site", lambda ref: str(ref or "") == "global")
+    calls = []
+    def query(sql, params=(), **kw):
+        calls.append((sql, tuple(params)))
+        if "adh_ontology_models" in sql:
+            # 业务本体主源=7（属于授权站 7/8 之一）→ 聚合态下应被纳入
+            return [{"id": 9, "name": "ARMS RUM 观测本体", "status": "active", "kind": "business",
+                     "datasource_id": 7, "deploy_sites": None, "json_content": {"objects": [
+                {"key": "rum_event", "display_name": "事件"}]}}]
+        if "adh_metrics" in sql:
+            return [{"bound_object_key": "rum_event", "name": "事件数", "name_en": "",
+                     "aliases": [], "description": "", "unit": ""}]
+        if "adh_dimensions" in sql:
+            return []
+        return []
+    monkeypatch.setattr(scoped_metadata, "execute_query", query)
+    # 聚合态：datasource_id=0、site=global，授权集含两个具体站 7/8
+    ctx = ExecutionContext(datasource_id=0, extra={"site_code": "global", "available_datasource_ids": [7, 8]})
+    result = scoped_metadata.execute("get_metrics", {}, ctx)
+    # 不再抛 PermissionError；模型可见域改为 Python 按触达源∩授权集(7/8)判定，SQL 不再带 datasource IN 参
+    model_sql, model_params = next(c for c in calls if "adh_ontology_models" in c[0])
+    assert model_params == () and "kind = 'source'" not in model_sql
+    # 授权站 7 的业务本体已纳入（rum_event 目录非空）
+    assert any(o["object"] == "rum_event" for o in result["objects"])
+    # 返体含聚合注记（未建模≠无数据、逐站取数）
+    assert "聚合态" in (result.get("note") or "")
+
+
+def test_scoped_metadata_multi_source_unselected_still_fail_closed(monkeypatch):
+    """非聚合、未选源、多授权：仍必须硬拒（不能把'没选源'当'全站点'误放行）。"""
+    from backend.core import site_service
+    from backend.modules.mind.execution.sdk_tools import scoped_metadata
+    monkeypatch.setattr(site_service, "is_aggregate_site", lambda ref: False)
+    ctx = ExecutionContext(datasource_id=0, extra={"site_code": "", "available_datasource_ids": [7, 8]})
+    with pytest.raises(PermissionError, match="数据源"):
+        scoped_metadata.execute("get_metrics", {}, ctx)
+
+
 def test_catalog_strip_physical_ids_keeps_modeling_columns():
     from backend.modules.mind.execution.sdk_tools.catalog_tools import _strip_physical_ids
     data = {"tables": [{"id": 1, "datasource_id": 7, "table_name": "t_case", "table_comment": "案件"}],
@@ -1037,6 +1119,52 @@ def test_catalog_strip_physical_ids_keeps_modeling_columns():
     assert "datasource_id" not in out["tables"][0] and "id" not in out["tables"][0]
     assert out["tables"][0]["table_name"] == "t_case"
     assert out["columns"][0]["column_name"] == "amount" and out["columns"][0]["data_type"] == "decimal"
+
+
+def test_tool_error_branches_all_pass_outbound_guard():
+    """工具错误下发 LLM 前必须出站收口（护栏 §7）。
+
+    历史缺陷：compat.guarded 的 `isError` 归一化分支直接 `return {"isError": True, ...}`
+    绕开 `assert_no_sensitive`，于是 handler 塞进 error 的数据库原始报错
+    （`Unknown column 'metric_name' in 'field list'`）把物理列名直接暴露给了 LLM。
+    本用例用 AST 锁住“任何 isError 返回都必须经守卫”，新增错误分支漏接即失败。
+    """
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent
+           / "backend/modules/mind/execution/sdk_tools/compat.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    guarded = next(n for n in ast.walk(tree)
+                   if isinstance(n, ast.AsyncFunctionDef) and n.name == "guarded")
+
+    def _text_node(node: ast.Dict):
+        vals = dict(zip([k.value for k in node.keys if isinstance(k, ast.Constant)], node.values))
+        content = vals.get("content")
+        if isinstance(content, ast.List) and content.elts and isinstance(content.elts[0], ast.Dict):
+            block = content.elts[0]
+            bvals = dict(zip([k.value for k in block.keys if isinstance(k, ast.Constant)],
+                             block.values))
+            return bvals.get("text")
+        return None
+
+    guarded_calls = [c for c in ast.walk(guarded)
+                     if isinstance(c, ast.Call) and getattr(c.func, "id", "") == "assert_no_sensitive"]
+    offenders = []
+    for node in ast.walk(guarded):
+        if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Dict):
+            continue
+        keys = [k.value for k in node.value.keys if isinstance(k, ast.Constant)]
+        if "isError" not in keys:
+            continue
+        text = _text_node(node.value)
+        if isinstance(text, ast.Constant):
+            continue  # 写死的文案无动态信息，不需守卫
+        if not any(getattr(c, "lineno", 0) <= node.lineno <= getattr(c, "end_lineno", 0)
+                   for c in guarded_calls):
+            offenders.append(node.lineno)
+    assert not offenders, (
+        f"compat.guarded 第 {offenders} 行把动态错误文本未经 assert_no_sensitive 下发，会泄露物理结构")
 
 
 def test_as_bot_can_write_sql_detection():

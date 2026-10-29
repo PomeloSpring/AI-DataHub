@@ -94,6 +94,8 @@ interface MetricFormData {
   granularity: string;
   bound_object_key: string;
   aliases: string;   // 逗号分隔, 提交时拆为数组(后端存 JSON 列)
+  /** 口径状态(is_active): 1=启用参与取数, 0=停用/未发布 */
+  is_active: number;
 }
 
 /** 解析后端 aliases(JSON 字符串或数组) → 逗号串(输入框展示用) */
@@ -163,6 +165,7 @@ const emptyMetricForm: MetricFormData = {
   granularity: '',
   bound_object_key: '',
   aliases: '',
+  is_active: 1,
 };
 
 const emptyDimensionForm: DimensionFormData = {
@@ -223,6 +226,10 @@ export default function MetricsCenter({
 
   // Delete confirm
   const [deleteTarget, setDeleteTarget] = useState<Metric | null>(null);
+  // 口径状态变更确认（两个方向都要确认）：启用会把口径重新广告给 ChatBI，
+  // 停用会把它从取数里拿掉 —— 两者都影响线上答案，不能一点即生效。
+  const [statusTarget, setStatusTarget] = useState<{ metric: Metric; next: 0 | 1 } | null>(null);
+  const [statusBusy, setStatusBusy] = useState(false);
 
   const loadMetrics = useCallback(async () => {
     setLoading(true);
@@ -315,6 +322,7 @@ export default function MetricsCenter({
       granularity: metric.granularity || '',
       bound_object_key: metric.bound_object_key || '',
       aliases: aliasesToText(metric.aliases),
+      is_active: metric.is_active === 0 ? 0 : 1,
     });
     setFormOpen(true);
   };
@@ -341,6 +349,34 @@ export default function MetricsCenter({
       toast.error(e?.response?.data?.detail || '保存失败');
     } finally {
       setSaving(false);
+    }
+  };
+
+  /**
+   * 口径状态开关（is_active）：停用 = 不参与语义检索与取数（与 AS-BOT 未发布同义）。
+   * 历史上字典行只能被脚本/AS-BOT 写成停用，页面上没有恢复口（只能改库）。
+   * 注意：现存量停用行多为 backend/scripts/retire_*_pseudo_metrics.py 主动退役的
+   * 行级派生视图/跨对象伪指标（底列已作属性/维度存在），启用前必须人工确认口径，
+   * 否则会把“目录挂着、编译用不了”的错答案重新广告给 ChatBI（故启用也走确认）。
+   * 只发 {is_active} 部分更新（update_metric 仅写传入字段，不整份覆盖）。
+   */
+  const applyStatus = async (metric: Metric, next: 0 | 1) => {
+    setStatusBusy(true);
+    try {
+      await metricsApi.update(metric.id, { is_active: next });
+      const label = metric.display_name || metric.name;
+      toast.success(next
+        // 字典行按 is_active 实时读，启用后取数/语义解析即生效；但图谱与云端知识库
+        // 只收录生效行，不提醒会造成“已启用但图谱里查不到”的隐形不一致。
+        ? `已启用「${label}」，语义解析与取数即生效；图谱/知识库请在建模页点「同步」刷新`
+        : `已停用「${label}」，不再参与语义检索与取数`);
+      setStatusTarget(null);
+      loadMetrics();
+    } catch (e: any) {
+      // 透传服务端错因（如权限/参数校验），不把失败伪装成“已提交”
+      toast.error(e?.response?.data?.detail || '口径状态更新失败');
+    } finally {
+      setStatusBusy(false);
     }
   };
 
@@ -681,10 +717,26 @@ export default function MetricsCenter({
                   <td className="p-3 text-muted-foreground">{m.owner || '-'}</td>
                   <td className="p-3 text-right">
                     <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
-                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleOpenEdit(m)}>
+                      <Button variant="ghost" size="icon" className="h-8 w-8" title="编辑指标"
+                              onClick={() => handleOpenEdit(m)}>
                         <Edit className="w-4 h-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => setDeleteTarget(m)}>
+                      {/* 口径状态入口（选择/确认式，不靠手改库）：停用行要能恢复启用 */}
+                      {m.is_active === 0 ? (
+                        <Button variant="outline" size="sm" className="h-8 px-2 text-xs"
+                                title="启用：该口径重新参与语义检索与取数"
+                                onClick={() => setStatusTarget({ metric: m, next: 1 })}>
+                          启用
+                        </Button>
+                      ) : (
+                        <Button variant="ghost" size="sm" className="h-8 px-2 text-xs"
+                                title="停用：不再参与语义检索与取数（可重新启用）"
+                                onClick={() => setStatusTarget({ metric: m, next: 0 })}>
+                          停用
+                        </Button>
+                      )}
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" title="删除指标"
+                              onClick={() => setDeleteTarget(m)}>
                         <Trash2 className="w-4 h-4" />
                       </Button>
                     </div>
@@ -870,18 +922,70 @@ export default function MetricsCenter({
                 onChange={(e) => setFormData({ ...formData, target_column: e.target.value })}
               />
             </div>
+            {/* 口径状态（is_active）：停用与 AS-BOT 「未发布」同一语义 —— 行保留、不参与检索与取数。
+                此前表单没这个字段，停用行在页面上看得见却改不了（只能改库）。 */}
+            <div className="col-span-2 grid grid-cols-2 gap-4 items-end">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">口径状态</label>
+                <Select value={String(formData.is_active)}
+                        onValueChange={(v) => setFormData({ ...formData, is_active: Number(v) })}>
+                  <SelectTrigger aria-label="口径状态"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">启用（参与语义检索与取数）</SelectItem>
+                    <SelectItem value="0">停用（保留口径但不下发取数）</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {formData.is_active === 0 && (
+                <p className="text-xs text-amber-600 pb-2">
+                  当前为停用态：该指标不会被语义检索命中，也不会出现在取数候选里；置为启用即恢复。
+                </p>
+              )}
+            </div>
           </div>
-          {/* 三元组预览: 所见=所写=图谱投影 */}
+          {/* 三元组预览: 所见=所写=图谱投影（限高内部滚动，不得把表单撑出视口） */}
           <div className="mt-2">
             <label className="text-sm font-medium text-muted-foreground">三元组预览（保存后将形成以下字典/图节点事实）</label>
-            <pre className="mt-1 p-3 rounded-md bg-muted/50 border text-[11px] font-mono whitespace-pre-wrap leading-relaxed">
+            <pre className="mt-1 p-3 max-h-40 overflow-auto rounded-md bg-muted/50 border text-[11px] font-mono whitespace-pre-wrap leading-relaxed">
               {metricRdfPreview(formData)}
             </pre>
           </div>
-          <DialogFooter>
+          {/* 长表单弹窗：操作条吸底，滚动到底部之前也能取消/保存 */}
+          <DialogFooter className="sticky bottom-0 -mx-5 -mb-5 px-5 pb-5 pt-3 bg-background border-t border-border/60">
             <Button variant="outline" onClick={() => setFormOpen(false)}>取消</Button>
             <Button onClick={handleSaveMetric} disabled={saving}>
               {saving ? '保存中...' : '保存'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 口径状态变更确认（双向）：启用会把口径重新广告给 ChatBI，
+          停用会把它从取数里拿掉 —— 都影响线上答案，故不一点即生效。 */}
+      <Dialog open={!!statusTarget} onOpenChange={(open) => { if (!open) setStatusTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {statusTarget?.next === 1 ? '启用' : '停用'}口径「{statusTarget?.metric.display_name || statusTarget?.metric.name}」？
+            </DialogTitle>
+          </DialogHeader>
+          {statusTarget?.next === 1 ? (
+            <p className="text-sm text-muted-foreground">
+              启用后该口径重新参与语义检索与取数，ChatBI 会开始向用户广告它。
+              若它是行级派生视图（如布尔标记/列换算）或跨对象伪指标，启用等于把一个
+              编译不出来的口径放回目录——请先核对计算表达式与归属对象。
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              停用后该口径不再参与语义检索与取数（与 AS-BOT 未发布同义），字典行与历史报表保留，
+              随时可在本页置回启用。仅影响语义层命中，不会删数据。
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setStatusTarget(null)}>取消</Button>
+            <Button variant={statusTarget?.next === 1 ? 'default' : 'destructive'} disabled={statusBusy}
+                    onClick={() => statusTarget && void applyStatus(statusTarget.metric, statusTarget.next)}>
+              {statusBusy ? '提交中...' : (statusTarget?.next === 1 ? '确认启用' : '确认停用')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -908,6 +1012,11 @@ export default function MetricsCenter({
               <div><span className="text-muted-foreground">粒度：</span>{detailMetric?.granularity || '-'}</div>
               <div><span className="text-muted-foreground">目标表：</span><span className="font-mono text-xs">{detailMetric?.target_table || '-'}</span></div>
               <div><span className="text-muted-foreground">目标列：</span><span className="font-mono text-xs">{detailMetric?.target_column || '-'}</span></div>
+              {/* 口径状态可见：停用不能只在列表徽章里出现，详情里也要说清怎么恢复 */}
+              <div>
+                <span className="text-muted-foreground">口径状态：</span>
+                {detailMetric?.is_active === 0 ? '已停用（不参与语义检索与取数）' : '启用'}
+              </div>
               {detailMetric?.expression && (
                 <div className="col-span-2">
                   <span className="text-muted-foreground">表达式：</span>

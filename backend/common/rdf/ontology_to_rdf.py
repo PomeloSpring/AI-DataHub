@@ -220,6 +220,46 @@ def _class_iri(key: str) -> str:
     return f"adh:obj:{_safe_uri(key)}"
 
 
+def _object_class_key(obj: dict) -> str:
+    """单个 canonical 对象的类名 local key（与 _emit_class 的 key 派生链严格同源）。
+
+    历史 doc（尤其旧模型）可能没有 key，退到 object_key/class/id/primary_table；
+    与 _emit_class 不一致会让同步状态徽章按错误的 key 集去比对、误报滞后。
+    """
+    return str(obj.get("key") or obj.get("object_key") or obj.get("class") or obj.get("id")
+               or str(obj.get("primary_table") or "").strip() or "Unknown")
+
+
+def ontology_class_keys(model: dict | str) -> set[str]:
+    """返回一个本体模型所有对象类的 local key 集（已 _safe_uri 归一）。
+
+    供同步状态徽章按本模型口径比对图内类（多模型共享 ds:0 时不能拿全图类数比单模型数）。
+    接受 model dict（含 objects 或 json_content）或 json_content 字符串。
+    """
+    if isinstance(model, str):
+        try:
+            model = json.loads(model)
+        except (ValueError, TypeError):
+            return set()
+    if not isinstance(model, dict):
+        return set()
+    objects = model.get("objects")
+    if objects is None:
+        jc = model.get("json_content")
+        if isinstance(jc, str):
+            try:
+                objects = (json.loads(jc) or {}).get("objects")
+            except (ValueError, TypeError):
+                objects = None
+        elif isinstance(jc, dict):
+            objects = jc.get("objects")
+    keys: set[str] = set()
+    for obj in (objects or []):
+        if isinstance(obj, dict):
+            keys.add(_safe_uri(_object_class_key(obj)))
+    return keys
+
+
 def _emit_class(lines: list[str], obj: dict, model_name: str):
     """Emit an ontology object as an owl:Class plus its traversable links.
 
@@ -235,8 +275,7 @@ def _emit_class(lines: list[str], obj: dict, model_name: str):
     # canonical 字段名是 key / display_name；但历史 doc（尤其 kind='source'）用旧名
     # object_key / name。不认它们会让同一模型的所有对象都落到同一个 `Unknown` 类上
     # （实测源图 4 个对象只剩 1 个节点），于是图谱、遍历、同步状态徽章全部失真。
-    key = (obj.get("key") or obj.get("object_key") or obj.get("class") or obj.get("id")
-           or str(obj.get("primary_table") or "").strip() or "Unknown")
+    key = _object_class_key(obj)
     class_iri = _class_iri(key)
     label = obj.get("display_name") or obj.get("name") or obj.get("label") or key
 

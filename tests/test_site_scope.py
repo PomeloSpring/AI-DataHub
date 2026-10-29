@@ -7,7 +7,9 @@
    （不得出现 datasource_id/host，护栏 §7）；
 4. 业务本体模型级 `deploy_sites` 取代逐对象逐站绑定行：契约行在主源、生效源改写到请求站，
    产品身份随站点刷新；未声明站点/路由目标不符一律拒绝（宁缺勿错）；
-5. 模型未配置 deploy_sites 时解析行为与改造前一致（源本体/系统本体/存量零影响）。
+5. 模型未配置 deploy_sites 时解析行为与改造前一致（源本体/系统本体/存量零影响）；
+6. 对象级站点白名单 `object_site_rules`（同构多站 + 个别站点才有某对象）：未登记的对象
+   沿用模型级全部声明站点，登记过的只在所列站点可查（两条取数路径都拦）。
 """
 from __future__ import annotations
 
@@ -202,6 +204,20 @@ class TestResolveSiteToSource:
         assert site_service.session_source_for_site("中国", [101, 102]) == 0
         assert site_service.session_source_for_site("全球", [101]) == 0
         assert site_service.session_source_for_site("", [101]) == 0
+
+    def test_is_aggregate_site_predicate(self, fake_sites):
+        """聚合态谓词：区分「全球」聚合态（ds=0 合法）与具体站点/未识别写法。
+
+        闸门/文案靠它判定是否放行逐站编排工具，不得把具体站点误判为聚合态。
+        """
+        assert site_service.is_aggregate_site("global") is True
+        assert site_service.is_aggregate_site("全球站点") is True
+        assert site_service.is_aggregate_site("全球") is True
+        assert site_service.is_aggregate_site("cn") is False
+        assert site_service.is_aggregate_site("中国") is False
+        assert site_service.is_aggregate_site("") is False
+        assert site_service.is_aggregate_site(None) is False
+        assert site_service.is_aggregate_site("不存在的站") is False
 
 
 # ── 4. 可查站点 = 角色授权派生（不是第二套裁决）─────────────────────
@@ -451,6 +467,13 @@ class TestSessionSiteTakesPrecedence:
         assert site_service.business_route_target("cn") == "prd-cn"
         assert self._apply("cn", 0, monkeypatch) == IDS["prd-cn"]
 
+    def test_merged_observation_ontology_does_not_pollute_business_route(self):
+        """源本体退役合并后：ARMS 观测本体也 kind='business' 且本站声明 cn→arms-prd-cn，
+        但「默认业务库」只认关系型业务源，观测源（db_type=sls）声明必须被排除，
+        否则 cn 会因双目标 fail-loud（回归锁定）。"""
+        assert _ds_by_name("arms-prd-cn").get("site_code") == "cn"   # 观测本体确实在本站有声明
+        assert site_service.business_route_target("cn") == "prd-cn"  # 不被 arms-prd-cn 污染
+
     def test_aggregate_site_clears_the_source(self, monkeypatch):
         """全球 = 不锁定单源（逐站编排），陈旧源必须被清掉而不是拿去当默认。"""
         assert self._apply("global", IDS["prd-cn"], monkeypatch) == 0
@@ -536,7 +559,9 @@ class TestPromptSiteScope:
         # 是在鼓励模型去做那个合计，不得回潮
         assert "分站呈现" in text and "不得把各站数字相加" in text
         assert "各站合计≠去重全球数" not in text
-        assert "authority=true" in text and "carrier=" in text   # 全局值只能走权威承载
+        # 取数路径 carrier 已下线：不再有 authority 权威承载路径，全局去重口径必须落知识库文档
+        assert "carrier" not in text and "authority=true" not in text
+        assert "知识库文档" in text
         assert "中国站点(prd-cn)" in text
 
     def test_single_site_session_does_not_tell_model_to_iterate(self):
@@ -594,3 +619,157 @@ class TestLayering:
                 targets = [node.module or ""]
             for t in targets:
                 assert not t.startswith("backend.modules"), f"core → modules 违规: {t}"
+
+
+# ── 11. 对象级站点白名单（同构多站 + 部分站点才有某对象）──────────────
+
+def _sites_of(pairs) -> list:
+    return [{"site_code": c, "datasource": d} for c, d in pairs]
+
+
+class TestObjectSiteWhitelist:
+    """`object_site_rules` 的取数硬门：白名单只能收紧、不能扩权。
+
+    默认免配（业务一多不必逐个配）：未登记规则的对象沿用模型级全部声明站点；
+    登记过的对象只在所列站点可查，其余站点拒绝——不拿别站/缺表当本站答案。
+    两条路径都拦：本站无行的站点路由改写、本站有行的精确命中（含契约主源本身）。
+    """
+
+    def setup_method(self):
+        _cleanup_tmp_model()
+
+    def teardown_method(self):
+        _cleanup_tmp_model()
+
+    def _model(self, sites, rules) -> None:
+        _make_tmp_model(sites)
+        site_service.set_model_object_site_rules(TMP_MODEL_ID, rules)
+
+    def test_unconfigured_object_still_uses_all_declared_sites(self):
+        """规则为空（NULL）：行为与加列前零变化（日本站照旧路由命中）。"""
+        jp = int(_ds_by_name("prd-jp")["id"])
+        self._model(_sites_of([("cn", "prd-cn"), ("jp", "prd-jp")]), {})
+        binding, warnings = resolve_binding(TMP_OBJECT_KEY, datasource_id=jp)
+        assert binding is not None, warnings
+        assert binding.site_routed is True and binding.datasource_name == "prd-jp"
+
+    def test_object_restricted_to_cn_refuses_jp_site(self):
+        jp = int(_ds_by_name("prd-jp")["id"])
+        self._model(_sites_of([("cn", "prd-cn"), ("jp", "prd-jp")]), {TMP_OBJECT_KEY: ["cn"]})
+        binding, warnings = resolve_binding(TMP_OBJECT_KEY, datasource_id=jp)
+        assert binding is None
+        assert any("未部署到站点" in w and "日本站点" in w for w in warnings), warnings
+        assert any("中国站点" in w for w in warnings), warnings
+
+    def test_object_restricted_to_jp_routes_normally_on_jp(self):
+        jp = int(_ds_by_name("prd-jp")["id"])
+        self._model(_sites_of([("cn", "prd-cn"), ("jp", "prd-jp")]), {TMP_OBJECT_KEY: ["jp"]})
+        binding, warnings = resolve_binding(TMP_OBJECT_KEY, datasource_id=jp)
+        assert binding is not None, warnings
+        assert binding.site_routed is True
+        assert binding.product_ref == "prd-jp.t_case_records"
+
+    def test_contract_home_site_is_also_refused(self):
+        """反方向也不得漏：对象只部署到日本站，从中国站（契约主源）直接取数同样拒。"""
+        cn = int(_ds_by_name("prd-cn")["id"])
+        self._model(_sites_of([("cn", "prd-cn"), ("jp", "prd-jp")]), {TMP_OBJECT_KEY: ["jp"]})
+        binding, warnings = resolve_binding(TMP_OBJECT_KEY, datasource_id=cn)
+        assert binding is None
+        assert any("未部署到站点" in w and "中国站点" in w for w in warnings), warnings
+
+    def test_other_objects_are_unaffected(self):
+        """白名单只作用于显式登记的对象，同模型其他对象仍适用全部声明站点。"""
+        jp = int(_ds_by_name("prd-jp")["id"])
+        self._model(_sites_of([("cn", "prd-cn"), ("jp", "prd-jp")]), {"other_object": ["cn"]})
+        binding, warnings = resolve_binding(TMP_OBJECT_KEY, datasource_id=jp)
+        assert binding is not None, warnings
+
+
+class TestObjectSiteWhitelistGate:
+    """激活/配置校验：对象白名单必须是声明站点的子集，对象 key 不得悬空。"""
+
+    def setup_method(self):
+        _cleanup_tmp_model()
+
+    def teardown_method(self):
+        _cleanup_tmp_model()
+
+    def test_rule_outside_declared_sites_is_reported(self):
+        from backend.modules.catalog.services.ontology_service import find_deploy_site_issues
+        _make_tmp_model(_sites_of([("cn", "prd-cn")]))
+        site_service.set_model_object_site_rules(TMP_MODEL_ID, {TMP_OBJECT_KEY: ["cn", "jp"]})
+        issues = "；".join(find_deploy_site_issues(TMP_MODEL_ID))
+        assert "不在本模型声明的站点内" in issues, issues
+
+    def test_dangling_object_rule_is_reported(self):
+        from backend.modules.catalog.services.ontology_service import find_deploy_site_issues
+        _make_tmp_model(_sites_of([("cn", "prd-cn"), ("jp", "prd-jp")]))
+        site_service.set_model_object_site_rules(TMP_MODEL_ID, {"__gone_object__": ["cn"]})
+        issues = "；".join(find_deploy_site_issues(TMP_MODEL_ID))
+        assert "__gone_object__" in issues and "活跃绑定" in issues, issues
+
+    def test_valid_rule_passes_gate(self):
+        from backend.modules.catalog.services.ontology_service import find_deploy_site_issues
+        _make_tmp_model(_sites_of([("cn", "prd-cn"), ("jp", "prd-jp")]))
+        site_service.set_model_object_site_rules(TMP_MODEL_ID, {TMP_OBJECT_KEY: ["cn"]})
+        assert find_deploy_site_issues(TMP_MODEL_ID) == []
+
+
+class TestObjectSiteWhitelistAPI:
+    """`PUT/GET /models/{id}/sites` 的对象级站点契约（前端「适用站点」页唯一后端口）。"""
+
+    def setup_method(self):
+        _cleanup_tmp_model()
+
+    def teardown_method(self):
+        _cleanup_tmp_model()
+
+    def test_put_stores_rules_and_get_returns_allowed_sites(self, monkeypatch):
+        from backend.modules.catalog.api import ontology as ont_api
+        monkeypatch.setattr(ont_api, "_allowed_source_ids", lambda user: None)
+        _make_tmp_model(_sites_of([("cn", "prd-cn"), ("jp", "prd-jp")]))
+        out = ont_api.update_model_sites(TMP_MODEL_ID, {
+            "sites": _sites_of([("cn", "prd-cn"), ("jp", "prd-jp")]),
+            "object_site_rules": {TMP_OBJECT_KEY: ["cn"]},
+        }, {"user_id": 1})
+        assert out["success"] is True and out["object_site_rules"] == {TMP_OBJECT_KEY: ["cn"]}
+        got = ont_api.get_model_sites(TMP_MODEL_ID, {"user_id": 1})
+        row = next(o for o in got["contract_objects"] if o["object_key"] == TMP_OBJECT_KEY)
+        assert row["allowed_sites"] == ["cn"]
+
+    def test_put_rejects_site_not_declared_by_model(self, monkeypatch):
+        from fastapi import HTTPException
+        from backend.modules.catalog.api import ontology as ont_api
+        monkeypatch.setattr(ont_api, "_allowed_source_ids", lambda user: None)
+        _make_tmp_model(_sites_of([("cn", "prd-cn")]))
+        with pytest.raises(HTTPException) as exc:
+            ont_api.update_model_sites(TMP_MODEL_ID, {
+                "sites": _sites_of([("cn", "prd-cn")]),
+                "object_site_rules": {TMP_OBJECT_KEY: ["jp"]},
+            }, {"user_id": 1})
+        assert exc.value.status_code == 422
+        assert "只能收紧" in str(exc.value.detail)
+
+    def test_put_rejects_unbound_object_key(self, monkeypatch):
+        from fastapi import HTTPException
+        from backend.modules.catalog.api import ontology as ont_api
+        monkeypatch.setattr(ont_api, "_allowed_source_ids", lambda user: None)
+        _make_tmp_model(_sites_of([("cn", "prd-cn")]))
+        with pytest.raises(HTTPException) as exc:
+            ont_api.update_model_sites(TMP_MODEL_ID, {
+                "sites": _sites_of([("cn", "prd-cn")]),
+                "object_site_rules": {"__not_bound__": ["cn"]},
+            }, {"user_id": 1})
+        assert exc.value.status_code == 422 and "活跃的对象契约" in str(exc.value.detail)
+
+    def test_sites_only_update_prunes_stale_rules(self, monkeypatch):
+        """不传规则只改模型级站点：存量规则跟随剪除不再声明的站点，并在响应里告知。"""
+        from backend.modules.catalog.api import ontology as ont_api
+        monkeypatch.setattr(ont_api, "_allowed_source_ids", lambda user: None)
+        _make_tmp_model(_sites_of([("cn", "prd-cn"), ("jp", "prd-jp")]))
+        site_service.set_model_object_site_rules(TMP_MODEL_ID, {TMP_OBJECT_KEY: ["cn", "jp"]})
+        out = ont_api.update_model_sites(TMP_MODEL_ID,
+                                         {"sites": _sites_of([("cn", "prd-cn")])},
+                                         {"user_id": 1})
+        assert out["object_site_rules"] == {TMP_OBJECT_KEY: ["cn"]}
+        assert any("剪除" in m for m in out["pruned"]), out["pruned"]

@@ -196,13 +196,12 @@ class TestMetricKindWriteContract:
                           "category": "可观测", "metric_type": "basic", "tags": ["复合"]})
         insert = [call for call in c.cur.calls if call[0].startswith("INSERT INTO adh_metrics")][-1]
         sql, params = insert
-        assert " allowed_carrier)" in sql.replace("\n", " ")
+        # 取数路径 carrier 已下线：allowed_carrier 列不再参与写入
+        assert "allowed_carrier" not in sql
         cols = sql.split("(", 1)[1].split(")")[0]
         got = dict(zip([x.strip() for x in cols.split(",")], params))
         assert got["category"] == "可观测"            # 业务域不得被 metric_type 冲掉
         assert json.loads(got["tags"]) == ["复合", "基础"]   # 显式标签 + 旧口径归一
-        # 取数路径约束必须随 INSERT 落下（未声明=any）：漏列会让写入默认值无从审计
-        assert got["allowed_carrier"] == "any"
 
     def test_create_defaults_domain_and_never_writes_kind_to_category(self, monkeypatch):
         c = _Conn([
@@ -236,6 +235,155 @@ class TestMetricKindWriteContract:
         upd = [call for call in c.cur.calls if call[0].startswith("UPDATE adh_metrics")][-1]
         assert "category = %s" in upd[0] and "tags = %s" in upd[0]
         assert upd[1][:2] == ["客户", '["基础"]']
+
+    def test_update_accepts_both_expression_and_formula_keys(self, monkeypatch):
+        """公式写入必须同时接受 expression(前端键) 与 formula(真实列名)。
+
+        历史缺陷：映射表只登记 expression，传 formula 的调用（迁移脚本 /
+        AS-BOT save_metric / 前端把 GET 回来的整行原样 PUT）被静默丢弃 ——
+        改了没生效也不报错，幂等自检也会失真（no-silent-degradation）。
+        """
+        c = _Conn([(("SELECT id FROM adh_metrics WHERE id",), [{"id": 5}])])
+        monkeypatch.setattr(ms, "DBConnection", lambda: c)
+        ms.update_metric(5, {"formula": "COUNT(DISTINCT session.id)"})
+        upd = [call for call in c.cur.calls if call[0].startswith("UPDATE adh_metrics")][-1]
+        assert "formula = %s" in upd[0]
+        assert upd[1][0] == "COUNT(DISTINCT session.id)"
+
+        c2 = _Conn([(("SELECT id FROM adh_metrics WHERE id",), [{"id": 5}])])
+        monkeypatch.setattr(ms, "DBConnection", lambda: c2)
+        ms.update_metric(5, {"formula": "MAX(x)", "expression": "COUNT(y)"})
+        upd2 = [call for call in c2.cur.calls if call[0].startswith("UPDATE adh_metrics")][-1]
+        assert upd2[1][0] == "COUNT(y)"          # 与 create_metric 同口径：expression 优先
+
+        c3 = _Conn([(("SELECT id FROM adh_metrics WHERE id",), [{"id": 5}])])
+        monkeypatch.setattr(ms, "DBConnection", lambda: c3)
+        ms.update_metric(5, {"formula": "COUNT(y)", "expression": ""})
+        upd3 = [call for call in c3.cur.calls if call[0].startswith("UPDATE adh_metrics")][-1]
+        assert upd3[1][0] == "COUNT(y)"          # 空 expression 回退 formula（同 create）
+
+
+def _dim_conn(monkeypatch, rows=None):
+    c = _Conn([(("FROM adh_dimensions",), rows or [])])
+    monkeypatch.setattr(ms, "DBConnection", lambda: c)
+    return c
+
+
+def _dim_sql(conn):
+    return [c for c in conn.cur.calls if "FROM adh_dimensions" in c[0]][-1]
+
+
+class TestDimensionStatusVisibility:
+    """停用/未发布维度在字典页必须看得见也恢复得了。
+
+    历史缺陷：list_all_dimensions 硬过滤 is_active=1 —— AS-BOT 未发布的维度（_dict_publish_decision
+    把 is_active 写成 0）在页面上根本不存在，于是也没有任何恢复入口，只能改库。
+    但取数向消费方（Chat 上下文、看板参数枚举）不得看到停用行，所以缺省必须仍是旧行为。
+    """
+
+    def test_default_keeps_active_only(self, monkeypatch):
+        conn = _dim_conn(monkeypatch)
+        ms.list_all_dimensions()
+        sql, params = _dim_sql(conn)
+        assert "is_active = 1" in sql
+        assert params == []
+
+    def test_all_drops_status_predicate_and_keeps_sql_legal(self, monkeypatch):
+        conn = _dim_conn(monkeypatch)
+        ms.list_all_dimensions(is_active="all")
+        sql, params = _dim_sql(conn)
+        assert "is_active" not in sql.split("FROM adh_dimensions", 1)[1]
+        assert params == []
+        # 无筛选条件时不得拼出裸 WHERE（那在真库上是 1064）
+        assert "WHERE" not in sql
+
+    def test_explicit_status_value_filters_exactly(self, monkeypatch):
+        conn = _dim_conn(monkeypatch)
+        ms.list_all_dimensions(is_active="0")
+        sql, params = _dim_sql(conn)
+        assert "COALESCE(is_active, 1) = %s" in sql and params == [0]
+
+    def test_invalid_status_raises_not_treated_as_unset(self, monkeypatch):
+        _dim_conn(monkeypatch)
+        with pytest.raises(ValueError, match="is_active"):
+            ms.list_all_dimensions(is_active="maybe")
+
+    def test_row_payload_carries_status(self, monkeypatch):
+        """列表行必须带回 is_active：缺列则前端永远认为“启用”，停用徽章与恢复按钮都出不来。"""
+        conn = _dim_conn(monkeypatch)
+        ms.list_all_dimensions(is_active="all")
+        sql, _ = _dim_sql(conn)
+        assert "AS is_active" in sql.split("FROM adh_dimensions")[0]
+
+    def test_route_passes_status_and_maps_invalid_to_400(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(ms, "list_all_dimensions",
+                            lambda **kw: seen.update(kw) or {"total": 0, "items": []})
+        metrics_api.list_all_dimensions(model_id=None, scope=None, is_active="all")
+        assert seen["is_active"] == "all"
+
+        def _boom(**kw):
+            raise ValueError("is_active 仅支持 1/0（1=启用, 0=停用）")
+
+        monkeypatch.setattr(ms, "list_all_dimensions", _boom)
+        with pytest.raises(Exception) as exc:
+            metrics_api.list_all_dimensions(model_id=None, scope=None, is_active="maybe")
+        assert getattr(exc.value, "status_code", None) == 400
+
+
+class TestDictStatusWriteContract:
+    """口径状态是可维护字段，但空值不得被当成“停用”。
+
+    停/启都改变线上取数答案（停用=不参与语义检索与取数，与 AS-BOT 未发布同义），
+    所以漏传/空值必须显式拒，不能默默把口径下线。
+    """
+
+    def test_dimension_status_is_editable_and_normalized(self, monkeypatch):
+        c = _Conn([(("FROM adh_dimensions WHERE id",), [{"id": 8, "target_table": "",
+                                                       "target_column": "", "bound_object_key": "",
+                                                       "datasource_id": 0}])])
+        monkeypatch.setattr(ms, "DBConnection", lambda: c)
+        ms.update_dimension(8, {"is_active": True})
+        upd = [call for call in c.cur.calls if call[0].startswith("UPDATE adh_dimensions")][-1]
+        assert "is_active = %s" in upd[0]
+        assert upd[1][:1] == [1]          # bool → 0/1，不得把 True 直写 TINYINT
+        ms.update_dimension(8, {"is_active": "0"})
+        upd2 = [call for call in c.cur.calls if call[0].startswith("UPDATE adh_dimensions")][-1]
+        assert upd2[1][:1] == [0]
+
+    def test_dimension_empty_status_rejected(self, monkeypatch):
+        c = _Conn([(("FROM adh_dimensions WHERE id",), [{"id": 8, "target_table": "",
+                                                       "target_column": "", "bound_object_key": "",
+                                                       "datasource_id": 0}])])
+        monkeypatch.setattr(ms, "DBConnection", lambda: c)
+        with pytest.raises(ValueError, match="is_active"):
+            ms.update_dimension(8, {"is_active": ""})
+
+    def test_metric_empty_status_rejected(self, monkeypatch):
+        c = _Conn([(("SELECT id FROM adh_metrics WHERE id",), [{"id": 5}])])
+        monkeypatch.setattr(ms, "DBConnection", lambda: c)
+        with pytest.raises(ValueError, match="is_active"):
+            ms.update_metric(5, {"is_active": None})
+
+    def test_metric_status_lands_as_int(self, monkeypatch):
+        c = _Conn([(("SELECT id FROM adh_metrics WHERE id",), [{"id": 5}])])
+        monkeypatch.setattr(ms, "DBConnection", lambda: c)
+        ms.update_metric(5, {"is_active": "1"})
+        upd = [call for call in c.cur.calls if call[0].startswith("UPDATE adh_metrics")][-1]
+        assert "is_active = %s" in upd[0] and upd[1][0] == 1
+
+    def test_routes_map_value_error_to_400(self, monkeypatch):
+        def _boom(*a, **kw):
+            raise ValueError("is_active 仅支持 1/0（1=启用, 0=停用）")
+
+        monkeypatch.setattr(ms, "update_dimension", _boom)
+        with pytest.raises(Exception) as exc:
+            metrics_api.update_dimension(8, {"is_active": ""})
+        assert getattr(exc.value, "status_code", None) == 400
+        monkeypatch.setattr(ms, "update_metric", _boom)
+        with pytest.raises(Exception) as exc2:
+            metrics_api.update_metric(5, {"is_active": ""})
+        assert getattr(exc2.value, "status_code", None) == 400
 
 
 def _facet_conn(monkeypatch):
@@ -366,3 +514,80 @@ class TestFiltersRoute:
         with pytest.raises(Exception) as exc:
             metrics_api.dict_filters(model_id=None, scope="bogus")
         assert getattr(exc.value, "status_code", None) == 400
+
+
+class TestDimensionPhysicalBindingWrite:
+    """维度物理锚点（target_table/target_column）的写通道 + 实存裁决。
+
+    历史缺陷两层：① 白名单没有这两列 → AS-BOT save_dimension 解析出的物理列与
+    前端表单填写值被静默丢弃（改了没生效、也没报错）；② 放开白名单若不带治理，
+    错列落库后 planner 按 target_table 能加载却生成引用不存在列的 SQL（错数）。
+    因此：错列显式拒绝，元数据未同步保留完整写法（不静默错拆嵌套列名）。
+    """
+
+    ROW = {"id": 43, "target_table": "", "target_column": "",
+           "bound_object_key": "rum_event", "datasource_id": 0}
+
+    def _conn(self, monkeypatch, row=None):
+        c = _Conn([(("FROM adh_dimensions WHERE id",), [row or dict(self.ROW)])])
+        monkeypatch.setattr(ms, "DBConnection", lambda: c)
+        return c
+
+    @staticmethod
+    def _set_fields(sql):
+        body = sql.split("SET", 1)[1].split("WHERE", 1)[0]
+        return [x.split("=")[0].strip() for x in body.split(",")]
+
+    def test_dotted_column_lands_verbatim_when_column_exists(self, monkeypatch):
+        c = self._conn(monkeypatch)
+        monkeypatch.setattr(ms, "_object_binding_by_key", lambda k, i="": ("logstore-rum", 7))
+        monkeypatch.setattr(ms._physical_ref, "columns_of_table",
+                            lambda ds, t, cache=None: {"view.url", "session.id"})
+        assert ms.update_dimension(43, {"target_table": "logstore-rum",
+                                        "target_column": "view.url"}) is True
+        upd = [x for x in c.cur.calls if x[0].startswith("UPDATE adh_dimensions")][-1]
+        assert self._set_fields(upd[0]) == ["target_table", "target_column"]
+        assert upd[1] == ["logstore-rum", "view.url", 43]   # 嵌套列名不被错拆成 url
+
+    def test_wrong_column_is_rejected_before_write(self, monkeypatch):
+        c = self._conn(monkeypatch)
+        monkeypatch.setattr(ms, "_object_binding_by_key", lambda k, i="": ("logstore-rum", 7))
+        monkeypatch.setattr(ms._physical_ref, "columns_of_table",
+                            lambda ds, t, cache=None: {"view.url"})
+        with pytest.raises(ValueError, match="建模字段错配"):
+            ms.update_dimension(43, {"target_table": "logstore-rum", "target_column": "view_url"})
+        assert not [x for x in c.cur.calls if x[0].startswith("UPDATE adh_dimensions")]
+
+    def test_unverified_source_keeps_full_ref(self, monkeypatch):
+        """跳站部署源列元数据未同步：放行但保留完整写法（剥段会丢路径 → 错映射）。"""
+        c = self._conn(monkeypatch)
+        monkeypatch.setattr(ms, "_object_binding_by_key", lambda k, i="": ("logstore-rum", 9))
+        monkeypatch.setattr(ms._physical_ref, "columns_of_table",
+                            lambda ds, t, cache=None: set())
+        ms.update_dimension(43, {"target_table": "logstore-rum", "target_column": "geo.country"})
+        upd = [x for x in c.cur.calls if x[0].startswith("UPDATE adh_dimensions")][-1]
+        assert upd[1] == ["logstore-rum", "geo.country", 43]
+
+    def test_table_derived_from_object_binding(self, monkeypatch):
+        """只填列不填表：表由部署绑定层补齐（planner 按 target_table 加载，空表=编译不了）。"""
+        c = self._conn(monkeypatch)
+        monkeypatch.setattr(ms, "_object_binding_by_key", lambda k, i="": ("logstore-rum", 7))
+        monkeypatch.setattr(ms._physical_ref, "columns_of_table",
+                            lambda ds, t, cache=None: {"event_type"})
+        ms.update_dimension(43, {"target_column": "event_type"})
+        upd = [x for x in c.cur.calls if x[0].startswith("UPDATE adh_dimensions")][-1]
+        assert upd[1] == ["logstore-rum", "event_type", 43]
+
+    def test_no_table_no_object_raises(self, monkeypatch):
+        c = self._conn(monkeypatch, {**self.ROW, "bound_object_key": ""})
+        with pytest.raises(ValueError, match="物理表"):
+            ms.update_dimension(43, {"target_column": "event_type"})
+
+    def test_clearing_column_clears_table_too(self, monkeypatch):
+        """清空物理列 = 退出可编译集：两处一起清，避免半截态（有表没列）。"""
+        c = self._conn(monkeypatch, {**self.ROW, "target_table": "logstore-rum",
+                                     "target_column": "view.url"})
+        ms.update_dimension(43, {"target_column": ""})
+        upd = [x for x in c.cur.calls if x[0].startswith("UPDATE adh_dimensions")][-1]
+        assert self._set_fields(upd[0]) == ["target_table", "target_column"]
+        assert upd[1] == ["", "", 43]
