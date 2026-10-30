@@ -350,9 +350,48 @@ def _parse_cfg(value) -> dict:
         return {}
 
 
-def _bound_qmind_kbs(kb_ids: list | None) -> list[dict]:
-    """加载启用的 QMind 知识库(带 notebook_id);kb_ids 指定时按绑定范围过滤."""
+def _load_qmind_kbs(ids: list[int]) -> list[dict]:
+    """回源查库解析 notebook 定位（不吞异常，也不做缓存；缓存由 _bound_qmind_kbs 负责）。"""
     from backend.common.db import execute_query
+
+    if ids:
+        placeholders = ", ".join(["%s"] * len(ids))
+        rows = execute_query(
+            f"SELECT id, name, source_config FROM adh_knowledge_bases "
+            f"WHERE kb_type = 'qmind' AND status = 'active' AND id IN ({placeholders})",
+            tuple(ids),
+        )
+    else:
+        rows = execute_query(
+            "SELECT id, name, source_config FROM adh_knowledge_bases "
+            "WHERE kb_type = 'qmind' AND status = 'active' ORDER BY id"
+        )
+    kbs = []
+    for r in rows or []:
+        cfg = _parse_cfg(r.get("source_config"))
+        nb_id = cfg.get("notebook_id")
+        if nb_id:
+            kbs.append({"id": r["id"], "name": r.get("name"), "notebook_id": nb_id, "cfg": cfg})
+    return kbs
+
+
+def _bound_qmind_kbs(kb_ids: list | None) -> list[dict]:
+    """加载启用的 QMind 知识库(带 notebook_id);kb_ids 指定时按绑定范围过滤.
+
+    id → notebook 定位走 `as_bot_config_cache` 的 **live 档**（默认 5s）：历史上一次
+    `knowledge_search` 带 N 个问法就各自回元库查一遍 `source_config`（实测 0.17–0.71s/问，
+    纯重复，且并发也各自付一次往返）——同一份清单在一次工具调用内被查 N 次没有任何价值。
+
+    边界（必须分清，否则就是拿缓存弱化裁决）：本缓存只覆盖“往哪个 notebook 问”这一层映射，
+    **不是授权/可用性裁决**：知识库是否仍启用、绑定是否越界由未缓存的
+    `resource_guard.validate_knowledge_binding` 每次实读 fail-loud 判定（chat 路径同 handler
+    内已在跑）；KB 写入口同批 invalidate，所以陈旧窗口上限就是一个 live TTL。
+
+    查库异常不被缓存成空集：工厂函数里异常直接上抛（get_or_set 遇异常不写缓存），外层
+    才转成告警 + 空清单（保持旧行为“不毁掉检索”，但不会把一次瞬时故障固化 5s）。
+    返回值为缓存内对象引用，调用方**不得原地修改**（现调用方均为只读）。
+    """
+    from backend.common import as_bot_config_cache as config_cache
 
     if kb_ids is not None and not kb_ids:
         return []
@@ -362,27 +401,12 @@ def _bound_qmind_kbs(kb_ids: list | None) -> list[dict]:
             raise ValueError("知识库标识无效")
     except (TypeError, ValueError) as exc:
         raise ValueError("知识库授权列表无效") from exc
+    # key 不去排序：与 KEY_KB 同一纪律（集合同序则复用，书写顺序不同那么归序会静默改变消费顺序）；
+    # 实际调用方的清单来自 AS-BOT 存储的固定数组，同一绑定永远同序。
+    key = f"{config_cache.KEY_KB_NOTEBOOK}" + (",".join(str(x) for x in ids) if ids else "all")
     try:
-        if ids:
-            placeholders = ", ".join(["%s"] * len(ids))
-            rows = execute_query(
-                f"SELECT id, name, source_config FROM adh_knowledge_bases "
-                f"WHERE kb_type = 'qmind' AND status = 'active' AND id IN ({placeholders})",
-                tuple(ids),
-            )
-        else:
-            rows = execute_query(
-                "SELECT id, name, source_config FROM adh_knowledge_bases "
-                "WHERE kb_type = 'qmind' AND status = 'active' ORDER BY id"
-            )
-        kbs = []
-        for r in rows or []:
-            cfg = _parse_cfg(r.get("source_config"))
-            nb_id = cfg.get("notebook_id")
-            if nb_id:
-                kbs.append({"id": r["id"], "name": r.get("name"), "notebook_id": nb_id, "cfg": cfg})
-        return kbs
-    except Exception as e:  # noqa: BLE001
+        return config_cache.get_or_set(key, lambda: _load_qmind_kbs(ids), live=True)
+    except Exception as e:  # noqa: BLE001 — 不静默：回源失败只告警不毁检索，但不写缓存
         logger.warning("[qmind] load knowledge bases failed: %s", e)
         return []
 

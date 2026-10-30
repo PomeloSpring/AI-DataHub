@@ -272,15 +272,17 @@ def test_shipped_skill_bodies_keep_traffic_prompt_within_guardrail():
 
     上一个用例锁“能命中”，本用例锁“命中后不超支”。三档实测基线（2026-10-29，本次
     补触发词后）必须分清，否则护栏会校准到一个比生产小的形状上、给出假安全感：
-    - 窄载荷（2 个工具、无知识库/站点拓扑）：~22,500 字符；
-    - 生产同形静态载荷（13 个工具 + 1 个绑定知识库 + 5 站含聚合态）：~24,040 字符；
+    - 窄载荷（2 个工具、无知识库/站点拓扑）：~23,300 字符；
+    - 生产同形静态载荷（13 个工具 + 1 个绑定知识库 + 5 站含聚合态）：~24,845 字符；
     - 真实 Operations Manager（含 persona/system_prompt、用户记忆、真实工具描述）：
       ~26,600 字符。最后者与前者之间的 ~4,600 不在本用例可控范围（persona 尺寸由
       tests/test_as_bot_operations_prompt.py 的内容断言 + 迁移里的正文长度兼顾）。
     再涨就是往常驻指令里堆料，必须显式拍板而不是随手加两句。
-    2026-10-29 本次拍板：新增常驻「工具自主编排 + 歧义闸门」段（~1,200）与三个剧本的
-    「入口分诊」段（各 ~420），合计 +~2,040；护栏相应从 22,000/20,400 抬到 24,040/22,500，
-    上限取 25,000（约 4% 余量）。抬的理由是「让模型自主编排 + 歧义不猜」这条产品要求，
+    2026-10-29 第一次拍板：新增常驻「工具自主编排 + 歧义闸门」段与三个剧本的「入口分诊」段，
+    22,000/20,400 -> 24,040/22,500，上限 25,000（理由是「让模型自主编排 + 歧义不猜」）。
+    同日第二次拍板（实测缺陷：问「官网地址是什么」被答成站点对照表 + 三条推销 + 37.3s）：
+    常驻段补「回答体量必须匹配问题」，三个剧本的「六、输出规范」补适用前提，
+    24,040/22,500 -> 24,845/23,300，上限取 26,000。两次抬的都是行为收益换字数，
     不是瘦身失败——后续再涨必须先说明换来了什么行为。
     """
     from backend.modules.mind.execution.as_bots import load_skills
@@ -307,7 +309,7 @@ def test_shipped_skill_bodies_keep_traffic_prompt_within_guardrail():
                                        skills=skills, capabilities=rich_caps, quick_paths=[],
                                        site_code="global", authorized_sites=sites, question=question)
     assert "## 数据源拓扑" in prod_shape and "运营知识库" in prod_shape, "生产同形载荷未注入拓扑/知识库段"
-    assert len(prod_shape) < 25_000, f"生产同形载荷（含拓扑与知识库）回涨到 {len(prod_shape)} 字符"
+    assert len(prod_shape) < 26_000, f"生产同形载荷（含拓扑与知识库）回涨到 {len(prod_shape)} 字符"
 
 
 def test_shipped_time_window_directive_matches_implementation():
@@ -340,6 +342,10 @@ def test_orchestration_and_ambiguity_rules_are_always_injected():
     assert "先 `ask_user` 再取数" in prompt                 # 两种解读给出不同数字 → 不许猜
     assert "不要先按某个默认值跑出结果再解释" in prompt
     assert "别把能自己定的事推给用户" in prompt             # 反问不是免责，过度澄清同样扣分
+    # 回答体量必须匹配问题（实测缺陷：问「官网地址是什么」被答成对照表 + 三条推销 + 37s）
+    assert "## 回答体量必须匹配问题" in prompt
+    assert "**事实型**" in prompt and "1~2 句把答案给完" in prompt
+    assert "你可能还想看" in prompt and "判不准时按**更轻**的那档答" in prompt
     assert "回显所用口径" in prompt                         # 自己定的口径必须让用户能纠偏
     assert "不管该做的消歧" in prompt                       # 预算只管无目的重复
     # 历史缺陷回潮检测：旧措辞把纯口径问题挡在检索之外，模型不搜就回"不知道"
@@ -368,6 +374,11 @@ def test_shipped_skills_open_with_triage_before_exploration():
         assert "第二种合理解读" in body and "ask_user" in body, f"{name} 缺歧义闸门"
         assert "回显所用口径" in body, f"{name} 缺口径回显"
         assert "无目的重复" in body, f"{name} 缺「消歧不算浪费」的预算口径"
+        # 输出规范只服务分析型交付：事实型/解释型不得被套上「结论+图+下一步」模板
+        assert "## 六、输出规范" in body and "适用前提" in body, f"{name} 缺输出规范的适用前提"
+        assert body.index("适用前提") > body.index("## 六、输出规范"), f"{name} 适用前提位置不对"
+        assert "至多 2 个值得继续深挖" in body or "主动提出下一步" not in body, \
+            f"{name} 的下一步推销未限定在分析型交付"
 
 
 if __name__ == "__main__":

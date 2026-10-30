@@ -237,6 +237,107 @@ def test_load_knowledge_bases_success_cached(cache, monkeypatch):
     assert stats["bots"] == 2
 
 
+# ── 4b. qmind notebook 定位（`kbnb:` live 档）：只缓存映射，不缓存裁决 ────────
+
+def _spy_qmind_kbs(*, fail=False):
+    """`_load_qmind_kbs` 的 DB 替身（按 `backend.common.db.execute_query` 接线）。"""
+    stats = {"kb": 0}
+
+    def _q(sql, params=()):
+        s = " ".join(sql.split())
+        if "FROM adh_knowledge_bases" not in s:
+            return []
+        stats["kb"] += 1
+        if fail:
+            raise RuntimeError("元库瞬时抖动")
+        ids = list(params or ()) or [10, 11]
+        return [{"id": i, "name": f"kb{i}",
+                 "source_config": json.dumps({"notebook_id": f"nb-{i}", "top_k": 3})}
+                for i in ids]
+    return _q, stats
+
+
+def test_qmind_notebook_lookup_cached_per_call_not_per_question(cache, monkeypatch):
+    """一次工具调用带 N 个问法 = 只回库 1 次（旧行为：每问各查一遍 source_config）。"""
+    from backend.common import db as db_module
+    from backend.modules.mind.rag import qmind_retriever as qr
+
+    q, stats = _spy_qmind_kbs()
+    monkeypatch.setattr(db_module, "execute_query", q)
+    for _ in range(3):                      # 模拟批内 3 个问法
+        kbs = qr._bound_qmind_kbs([10])
+        assert [k["notebook_id"] for k in kbs] == ["nb-10"]
+        assert kbs[0]["cfg"]["top_k"] == 3  # source_config 解析结果必须随清单一起复用
+    assert stats["kb"] == 1, "notebook 定位仍逐问回库，live 档没接上"
+    keys = list(cache.data)
+    assert keys == [f"{config_cache.KEY_LIVE}{config_cache.KEY_KB_NOTEBOOK}10"]
+    assert cache.ttls[keys[0]] == config_cache._LIVE_TTL, \
+        "工具执行时读的配置必须走 live 档，不得挪用到 60s 轮次起点档"
+
+
+def test_qmind_notebook_lookup_covers_unbound_and_order_variants(cache, monkeypatch):
+    """kb_ids=None（全量）与不同书写顺序各自占一个 key；空绑定不查库也不缓存。"""
+    from backend.common import db as db_module
+    from backend.modules.mind.rag import qmind_retriever as qr
+
+    q, stats = _spy_qmind_kbs()
+    monkeypatch.setattr(db_module, "execute_query", q)
+    assert [k["id"] for k in qr._bound_qmind_kbs(None)] == [10, 11]
+    assert list(cache.data) == [f"{config_cache.KEY_LIVE}{config_cache.KEY_KB_NOTEBOOK}all"]
+    assert [k["id"] for k in qr._bound_qmind_kbs([10, 11])] == [10, 11]
+    assert qr._bound_qmind_kbs([]) == [] and stats["kb"] == 2  # 空绑定直接返回，不占库也不占缓存
+    assert len(cache.data) == 2
+
+
+def test_qmind_notebook_lookup_error_is_not_cached(cache, monkeypatch):
+    """瞬时查库失败只告警不毁检索（保持旧行为），但不得把空集固化一整个 live TTL。"""
+    from backend.common import db as db_module
+    from backend.modules.mind.rag import qmind_retriever as qr
+
+    q, stats = _spy_qmind_kbs(fail=True)
+    monkeypatch.setattr(db_module, "execute_query", q)
+    assert qr._bound_qmind_kbs([10]) == []
+    assert qr._bound_qmind_kbs([10]) == []
+    assert stats["kb"] == 2, "失败结果被缓存了，瞬时抖动会被固化成整段 TTL 的空清单"
+    assert cache.data == {}
+
+
+def test_qmind_notebook_lookup_invalidates_with_kb_writes(cache, monkeypatch):
+    """KB 写入口的整命名空间 blast 必须覆盖 `kbnb:`（漏接线则下架的知识库最长一个 TTL 仍被检索）。"""
+    from backend.common import db as db_module
+    from backend.modules.mind.rag import qmind_retriever as qr
+
+    q, stats = _spy_qmind_kbs()
+    monkeypatch.setattr(db_module, "execute_query", q)
+    qr._bound_qmind_kbs([10])
+    config_cache.invalidate("知识库已停用")
+    assert cache.data == {}
+    qr._bound_qmind_kbs([10])
+    assert stats["kb"] == 2
+
+
+def test_qmind_notebook_cache_key_is_registered_not_literal():
+    """key 必须集中登记并引用常量（散写字符串会让失效对不上号）。"""
+    import inspect
+
+    from backend.modules.mind.rag import qmind_retriever as qr
+
+    src = inspect.getsource(qr._bound_qmind_kbs)
+    assert "config_cache.KEY_KB_NOTEBOOK" in src, "key 不得在调用点硬写字符串"
+    assert getattr(config_cache, "KEY_KB_NOTEBOOK", "").endswith(":")
+
+
+def test_knowledge_binding_validation_stays_realtime():
+    """授权/启用裁决不得沾这层缓存：`validate_knowledge_binding` 必须继续实读 DB。"""
+    import inspect
+
+    from backend.modules.mind.execution import resource_guard
+
+    src = inspect.getsource(resource_guard.validate_knowledge_binding)
+    assert "get_or_set" not in src and "config_cache" not in src, \
+        "知识库启用/越界裁决改成吃缓存就是拿缓存弱化裁决（越权读）"
+
+
 def test_user_role_ai_perms_cache_semantics(cache, monkeypatch):
     calls = []
 

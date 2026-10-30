@@ -60,6 +60,11 @@ KEY_ROLE_IDS = "roles:"          # 用户 → 角色 id 清单
 KEY_AS_BOTS = "bots:"            # (角色 id 集 + as_bot_key) → 归一化 AS-BOT 配置
 KEY_ROLE_PERMS = "perms:"        # 用户 → 角色权限码（AI 级别）
 KEY_KB = "kb:"                   # 知识库 id 清单 → 启用的知识库元信息
+KEY_KB_NOTEBOOK = "kbnb:"        # 知识库 id 清单 → (notebook_id/top_k) 解析结果
+# 说明：KEY_KB_NOTEBOOK 只缓存「id → 云端 notebook 定位」这一层映射（避免每次检索、
+# 批量多问法都回库重查 source_config），**不承担授权/可用性裁决**：知识库是否仍启用由
+# 未缓存的 resource_guard.validate_knowledge_binding 实时判定，绑定越界/缺失也在那里 fail-loud。
+# 因此本 key 走 live 档（与工具级裁决同 TTL），失效沿用整命名空间 blast（KB 写入口已接线）。
 KEY_RLS_LINES = "rls_lines:"     # (工作空间 + 数据源) → 提示词里的 RLS 摘要行
 KEY_ROLE_ATTRS = "role_attrs:"   # 角色名 → 数据范围属性行
 
