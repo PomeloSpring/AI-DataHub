@@ -1,6 +1,7 @@
 """Phase 6.3 治理强制层 —— RLS/mask 视图化强制行为锁定。
 
-- mask 表达式按方言生成（null/partial/hash × mysql/pg），未知类型 fail-loud；
+- mask 表达式按方言/引擎生成（null/partial/hash × mysql/pg/sls），未知类型 fail-loud；
+  partial 与结果侧 `permission_enforcer._partial_mask` 同口径（首尾各 2 字符）；
 - 过滤视图体：hidden 剔除、masked 换表达式、row_filter 进 WHERE；列限制缺列清单拒绝生成；
 - 表引用视图化改写：别名保留、无非法双重别名、JOIN 两侧天然覆盖（护栏 §4 行为迁至本层）；
 - 视图按会话指纹注册，强制面在会话内真实生效（查询即过滤/脱敏）。
@@ -18,21 +19,57 @@ from backend.semantics.security import (
     view_name,
 )
 
-# ── mask 表达式按方言生成 ────────────────────────────────────────
+# ── mask 表达式按方言/引擎生成 ─────────────────────────────────
+
+
+def _partial_case(col_text: str, len_fn: str) -> str:
+    """预期形状：首尾各保 2 字符、中间打星（长度<=4 全打星）—— 与结果侧 _partial_mask 一致。"""
+    return (f"CASE WHEN {len_fn}({col_text}) <= 4 THEN REPEAT('*', {len_fn}({col_text})) "
+            f"ELSE CONCAT(LEFT({col_text}, 2), "
+            f"REPEAT('*', GREATEST({len_fn}({col_text}) - 4, 0)), RIGHT({col_text}, 2)) END")
 
 
 def test_mask_expr_by_dialect():
     assert mask_expr("phone", "null", "mysql") == "NULL"
     assert mask_expr("phone", "full", "mysql") == "NULL"          # 敏感基线 full → 置空
-    assert mask_expr("phone", "hash", "mysql") == "MD5(phone)"
+    assert mask_expr("phone", "hash", "mysql") == "LEFT(SHA2(phone, 256), 16)"
     assert mask_expr("phone", "hash", "postgres") == "MD5(CAST(phone AS TEXT))"
-    assert mask_expr("phone", "partial", "mysql") == "CONCAT(LEFT(phone, 2), '***')"
-    assert mask_expr("phone", "partial", "pg") == "CONCAT(LEFT(CAST(phone AS TEXT), 2), '***')"
+    # mysql 用 CHAR_LENGTH（LENGTH 在 MySQL 是字节数，中文会多打星）
+    assert mask_expr("phone", "partial", "mysql") == _partial_case("phone", "CHAR_LENGTH")
+    assert mask_expr("phone", "partial", "pg") == _partial_case("CAST(phone AS TEXT)", "LENGTH")
+
+
+def test_mask_expr_sls_uses_probed_functions_only():
+    """SLS(PG 协议/Presto 子集) 分支：函数写法以实机探针为凭（scripts/probe_sls_mask_functions.py）。
+
+    两条都是“看起来更自然但 SLS 上不成立/会泄露”的写法，必须钉住：
+      × `SUBSTR(x, -2)` 不报错但返回整串 → 拿它取尾 = 不脱敏；
+      × 原生 Presto 哈希 `to_hex(md5(to_utf8(x)))` / `sha2(x,256)` 在本端点不存在。
+    """
+    partial = mask_expr('"net.ip"', "partial", "postgres", "sls")
+    assert partial == _partial_case('CAST("net.ip" AS VARCHAR)', "LENGTH")
+    assert "SUBSTR(CAST" not in partial and "RIGHT(" in partial
+    assert mask_expr('"net.ip"', "hash", "postgres", "sls") \
+        == "SUBSTR(MD5(CAST(\"net.ip\" AS VARCHAR)), 1, 16)"
+    assert mask_expr('"net.ip"', "null", "postgres", "sls") == "NULL"
+    # 族键 postgres 不等于引擎 sls：不传 engine 时仍出 PG 写法（不得串味）
+    assert mask_expr('"net.ip"', "hash", "postgres") == 'MD5(CAST("net.ip" AS TEXT))'
 
 
 def test_mask_expr_unknown_type_fails_loud():
     with pytest.raises(ValueError):
         mask_expr("phone", "plaintext", "mysql")  # 未知类型绝不放行原列
+
+
+def test_renderer_faithful_gates_ast_rewrite():
+    """AST 改写会整句重渲染：不保真就不能进（实测 SLS 上 `now()` → `CURRENT_TIMESTAMP` 会报错）。"""
+    from backend.semantics.rls import renderer_faithful
+
+    assert renderer_faithful("select phone from t_emp where region = 'x'", "mysql")
+    assert not renderer_faithful(
+        'SELECT "net.ip" FROM "logstore-rum" '
+        "WHERE \"__time__\" >= to_unixtime(now() - INTERVAL '7 days')", "postgres")
+    assert not renderer_faithful("这不是 SQL", "mysql")
 
 
 # ── 过滤视图体生成 ──────────────────────────────────────────────
@@ -56,7 +93,8 @@ def test_filtered_view_sql_hidden_dropped_masked_rewritten():
         columns=["id", "name", "phone", "secret"],
     )
     assert sql == (
-        "SELECT id, name, CONCAT(LEFT(phone, 2), '***') AS phone FROM t_user WHERE dept = 'sales'"
+        "SELECT id, name, " + _partial_case("phone", "CHAR_LENGTH") + " AS phone "
+        "FROM t_user WHERE dept = 'sales'"
     )
     assert "secret" not in sql.split(" FROM ")[0]  # hidden 列不得出现在投影
 

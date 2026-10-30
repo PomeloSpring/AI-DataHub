@@ -338,10 +338,43 @@ def _resolve_foreign_binding(obj_key: str, datasource_id: int):
 
 # ── public API ───────────────────────────────────────────────────
 
-def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
+def _apply_column_policy(expr: str, policies: dict[str, str], *, dialect: str,
+                         engine: str = "") -> str:
+    """把列级脱敏策略编译进**单个投影表达式**（护栏 §7：能不能下发由数据权限裁决）。
+
+    SELECT 与 GROUP BY 共用同一份脱敏后表达式，天然做到“按脱敏值分组”——而不是
+    “按原值分组后只把展示值打星”（后者会把 distinct 个数泄露出去，且分组数会爆）。
+    只做列名词边界匹配（与 `gates._blocked_column_guard` 的 SQL 文本兜底同口径）：
+    命中即整表达式包一层 mask，多列命中按列名排序逐层包（确定性）。
+    聚合指标不走这条路（`resolve_measure` 分支）：`COUNT(DISTINCT ip)` 输出的是计数
+    不是原值，包 mask 会静默改数；真不能查的列由 block 闸门硬拒。
+    同名列跨表宁多脱敏不漏脱敏。无策略时原样返回（不引入任何开销）。
+    """
+    if not expr or not policies:
+        return expr
+    from backend.semantics.security.masking import mask_expr
+
+    out = str(expr)
+    for col in sorted(policies):
+        if not col:
+            continue
+        if not re.search(rf"(?<!\w){re.escape(col)}(?!\w)", out, re.IGNORECASE):
+            continue
+        out = mask_expr(out, policies[col], dialect, engine)
+    return out
+
+
+def plan(query: SemanticQuery, binding: ResolvedBinding,
+         column_policies: Optional[dict[str, str]] = None) -> PlannedExecution:
     """编译 SemanticQuery -> PlannedExecution。
 
     失败(违反护栏)时, warnings 非空且 sql 为空;调用方据此拒绝执行。
+
+    `column_policies`: {物理列名(小写): mask 类型} —— 列级安全策略
+    （`adh_sensitive_fields` 敏感基线 ∪ RLS 列策略）。**缺省(None)时按会话身份自行解析**，
+    使所有 plan() 入口（Chat/看板/报表/大屏/Playground）生成的 SQL 都带上策略；
+    显式传 `{}` = 确认无策略（离线编译/用例）。策略加载失败按护栏 fail-loud：
+    返回空计划 + 原因，绝不默默编译未脱敏 SQL。
     """
     warnings: list[str] = []
     g = binding.guardrail
@@ -545,6 +578,21 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
     col_roles: dict[str, str] = {}
     unresolved: list[dict] = []   # 结构化未解析项(供别名回流队列, 只含业务词)
 
+    # 列级安全策略：编译期写进投影（执行后按列名脱敏在业务别名/SLS 槽位链路上对不上名）
+    if column_policies is None:
+        from backend.semantics import rls as _rls
+        try:
+            column_policies = _rls.column_policies(
+                user_id=int(query.user_id or 0), workspace_id=int(query.workspace_id or 0),
+                datasource_id=int(binding.datasource_id or 0),
+                table_names=[binding.physical_table,
+                             *[fb.physical_table for fb in fb_by_obj.values()]],
+            )
+        except PermissionError as e:
+            # 敏感基线读不到 = 不知道该怎么脱敏，宁不执行也不下发未脱敏明细
+            warnings.append(f"列级安全策略不可用，已拒绝编译: {e}")
+            return _empty_plan(binding, query, dialect, warnings)
+
     for d in query.dimensions:
         r, d_rest, ok = _pick(d)
         if not ok or r is None:
@@ -564,6 +612,9 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
             })
             continue
         alias = _proj_alias(d)
+        # 脱敏后的表达式同时用于 SELECT 与 GROUP BY（两者必须同文，否则分组口径错位）
+        expr = _apply_column_policy(expr, column_policies,
+                                    dialect=dialect, engine=resolver.engine)
         select_items.append((expr, alias))
         col_roles[alias] = role
         group_by.append(expr)
@@ -703,6 +754,9 @@ def plan(query: SemanticQuery, binding: ResolvedBinding) -> PlannedExecution:
             if got:
                 combined_sources[_n] = got
     prov["resolution_sources"] = combined_sources
+    if column_policies:
+        # 诊断用：本次编译写进 SQL 的列级脱敏策略（provenance 不下发 LLM/前端，审计可查）
+        prov["column_policies_applied"] = dict(sorted(column_policies.items()))
     # 结构化未解析项(业务词+候选), 供别名回流队列自动落入(不含物理细节)
     prov["unresolved_terms"] = unresolved
 

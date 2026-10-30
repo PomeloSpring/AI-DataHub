@@ -54,6 +54,33 @@ class PermissionResult:
     policies_applied: list = field(default_factory=list)
 
 
+def _table_columns_snapshot(datasource_id: int, table: str) -> Optional[list]:
+    """列清单（元数据库同步快照）—— 只用于 `SELECT *` 的列级策略展开。
+
+    拿不到（源未同步元数据/表不存在/跨源表不属主源）返回 None，由调用方回退结果侧脱敏；
+    不猜列、也不把未展开的 `*` 当“已屏蔽”放行。
+    """
+    if not datasource_id or not table:
+        return None
+    from backend.common.db.metadata_db import get_metadata_conn
+    try:
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT column_name FROM adh_column_metadata "
+                    "WHERE datasource_id=%s AND table_name=%s AND is_active=1 ORDER BY id",
+                    (int(datasource_id), str(table)),
+                )
+                cols = [list(r.values())[0] for r in (cur.fetchall() or [])]
+        finally:
+            conn.close()
+        return cols or None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[enforcer] 列清单读取失败(%s/%s): %s", datasource_id, table, e)
+        return None
+
+
 def _ds_deny_reason(datasource_id) -> str:
     """数据源拒绝文案：显示 name 不裸显 id（ui-resource-display）。
 
@@ -249,11 +276,15 @@ class PermissionEnforcer:
         """
         from backend.semantics.sql_guard import extract_tables, inject_filters, dialect_of_db_type
         # 目标源方言（一次解析，供表提取/投影保护/RLS 注入统一使用）：sls→postgres 等，未知回 mysql。
-        ds_dialect = "mysql"
+        # engine 另记一份：同族不同实现的函数系不同（SLS 走 PG 协议但函数是 Presto 子集），
+        # 列级 mask 表达式必须按引擎生成（取证见 backend/scripts/probe_sls_mask_functions.py）。
+        ds_dialect, ds_engine = "mysql", ""
         if datasource_id:
             from backend.common.db import get_datasource_by_id
             _src = get_datasource_by_id(int(datasource_id)) or {}
             ds_dialect = dialect_of_db_type(_src.get("db_type") or "mysql")
+            from backend.semantics.dialect import engine_of
+            ds_engine = engine_of(_src.get("db_type") or "")
         # 总是解析真实查询，调用方传入的表清单不能省略 JOIN 或 CTE 内的表。
         tables = extract_tables(sql, ds_dialect)
 
@@ -273,6 +304,7 @@ class PermissionEnforcer:
         combined_result = PermissionResult()
         modified_sql = sql
         table_filters = {}
+        col_restr_by_table: dict = {}   # 裸表名 -> {"hidden":[], "masked":{col:type}}
 
         if not only_sensitive:
             from backend.core.role_service import role_service
@@ -329,6 +361,11 @@ class PermissionEnforcer:
             for col, mask in result.masked_columns.items():
                 previous = combined_result.masked_columns.get(col)
                 combined_result.masked_columns[col] = mask if previous in (None, mask) else "null"
+            if result.hidden_columns or result.masked_columns:
+                col_restr_by_table[policy_table] = {
+                    "hidden": list(result.hidden_columns or []),
+                    "masked": dict(result.masked_columns or {}),
+                }
             combined_result.policies_applied.extend(result.policies_applied)
 
         self._protect_projection(sql, combined_result, ds_dialect)
@@ -341,7 +378,60 @@ class PermissionEnforcer:
         if missing:
             raise PermissionError("行级策略未能应用到查询，已拒绝执行")
         combined_result.row_filter = modified_sql != sql
+        # 列级安全策略同样改写进 SQL（护栏 §7：源头脱敏，明文不出数据源）；
+        # 结果侧 apply_post_processing 退为纵深兜底（如 `SELECT *` 拿不到列清单时）。
+        modified_sql = self._restrict_columns_in_sql(
+            modified_sql, col_restr_by_table, datasource_id, ds_dialect, ds_engine,
+            combined_result)
         return modified_sql, combined_result
+
+    def _restrict_columns_in_sql(
+        self, sql: str, col_restr: dict, datasource_id: int,
+        dialect: str, engine: str, result: "PermissionResult",
+    ) -> str:
+        """把 hidden/masked 列级策略改写进待执行 SQL（无策略时零开销直接返回）。
+
+        改写不成（解析不了 / `*` 拿不到列清单 / sqlglot 缺失）或**渲染不保真**时
+        **不拒绝也不静默**：保留结果侧 `apply_post_processing` 兜底（它对 `*` 和别名同样能
+        按名命中，因为 `_protect_projection` 已把策略传播到输出列名并拒了派生/位置重命名），
+        并把事实写进 `policies_applied` 供审计区分两条路径。
+        改写成功时把已落 SQL 的输出列从 `masked_columns` 里拿掉，避免二次脱敏改数。
+
+        渲染保真门（必留）：AST 改写会整句重渲染，sqlglot 会把同义写法改成目标引擎
+        不认的形式（实测 SLS 上 `now()` → `CURRENT_TIMESTAMP` 后
+        `to_unixtime(...)` 报 UndefinedFunction）。故先比对“原样重渲染 ≡ 原 SQL”
+       （归一化空白与大小写），不等价则不进 AST 改写，而不是赌解析器。
+        """
+        if not col_restr:
+            return sql
+        from backend.semantics.rls import apply_column_restriction, renderer_faithful
+
+        if not renderer_faithful(sql, dialect):
+            result.policies_applied.append("column_restriction:result_side_fallback(renderer_unfaithful)")
+            logger.info("[enforcer] AST 重渲染不保真，列级策略改走结果侧脱敏（方言/函数形态敏感）")
+            return sql
+
+        cache: dict = {}
+
+        def get_columns(table: str):
+            key = str(table or "").lower()
+            if key not in cache:
+                cache[key] = _table_columns_snapshot(datasource_id, table)
+            return cache[key]
+
+        secured, applied, err, handled = apply_column_restriction(
+            sql, col_restr, get_columns, dialect=dialect, engine=engine)
+        if err:
+            result.policies_applied.append(f"column_restriction:result_side_fallback({err[:120]})")
+            logger.warning("[enforcer] 列级策略未能改写进 SQL，已回退结果侧脱敏: %s", err)
+            return sql
+        if not applied:
+            return sql          # 本条 SQL 没引用受控列：无需标注，也没做任何改写
+        for name in handled:
+            result.masked_columns.pop(name, None)
+        result.policies_applied.append(
+            "column_restriction:in_sql(" + ",".join(sorted(handled)) + ")")
+        return secured
 
     def _check_table_permissions(
         self,

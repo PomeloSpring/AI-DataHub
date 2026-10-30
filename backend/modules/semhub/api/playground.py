@@ -254,6 +254,25 @@ def _make_column_fetcher(ds_id: Optional[int]):
     return get_columns
 
 
+def _engine_of_datasource(ds_id: Optional[int]) -> str:
+    """数据源引擎名（mysql/doris/postgres/sls）—— mask 表达式按引擎取函数系。
+
+    方言族不够用：SLS 走 PG 协议但函数是 Presto 子集，拿 PG 写法下发会报错/静默不脱敏
+    （取证见 backend/scripts/probe_sls_mask_functions.py）。推不到引擎时回空串
+    （按族出写法，与改动前行为一致）并留日志，不静默当"已适配"。
+    """
+    if not ds_id:
+        return ""
+    try:
+        from backend.common.db import get_datasource_by_id
+        from backend.semantics.dialect import engine_of
+        src = get_datasource_by_id(int(ds_id)) or {}
+        return engine_of(src.get("db_type") or "")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[playground] 引擎推导失败(ds=%s): %s —— mask 按方言族生成", ds_id, e)
+        return ""
+
+
 def _resolve_rls(sql: str, datasource_id: Optional[int], user_id: int, workspace_id: int,
                  dialect: str = "mysql") -> tuple[str, list[str], list[str], dict[str, Any]]:
     """baseSql -> securedSql (语义层唯一可见改写)。无 user 上下文则不改写。
@@ -286,8 +305,14 @@ def _resolve_rls(sql: str, datasource_id: Optional[int], user_id: int, workspace
     if err:
         # 改写失败绝不静默回退未过滤 SQL: 标注 error, execute 会拒绝真实执行
         return "", [], [f"rls_rewrite_error: {err}"], col_summary
-    secured, col_applied, cerr = rls.apply_column_restriction(
+    if col_summary and not rls.renderer_faithful(secured, dialect):
+        # 渲染不保真→与执行口同口径不做列级 AST 改写（实际由结果侧脱敏），
+        # 展示面板不得声称“securedSql 已含 mask”而与实际执行不一致
+        return secured, applied, list(policies) + [
+            "column_restriction:skipped(renderer_unfaithful)"], col_summary
+    secured, col_applied, cerr, _handled = rls.apply_column_restriction(
         secured, col_restr, _make_column_fetcher(datasource_id), dialect=dialect,
+        engine=_engine_of_datasource(datasource_id),
     )
     if cerr:
         return "", [], [f"column_restriction_error: {cerr}"], col_summary

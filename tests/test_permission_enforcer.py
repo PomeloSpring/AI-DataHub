@@ -390,5 +390,61 @@ class TestProtectProjection:
             enforcer._protect_projection(sql, self._res(hidden_columns=["usercode"]))
 
 
+class TestColumnRestrictionInSql:
+    """裸 SQL 路（execute_sql / Playground）的列级策略必须改写进待执行 SQL（护栏 §7）。
+
+    旧行为：只注行过滤，hidden/masked 全靠执行后 apply_post_processing 按列名打补丁
+    —— 明文会从数据源回传并进服务端内存。现在策略进 SQL（源头脱敏），结果侧仅在
+    AST 不可用（不保真/拿不到列清单）时兜底，且必须可审计区分。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _sensitive_baseline(self, monkeypatch):
+        # user_id=0 → only_sensitive（只套治理基线，不查 RBAC/RLS）
+        monkeypatch.setattr(PermissionEnforcer, "_get_sensitive_policies",
+                            lambda self, ws, ds, tbl: ({"phone": "partial"}, []))
+
+    def _enforce(self, enforcer, sql):
+        return enforcer.enforce_sql(sql=sql, user_id=0, workspace_id=0, datasource_id=0)
+
+    def test_masked_column_masked_in_sql(self, enforcer):
+        secured, res = self._enforce(enforcer, "SELECT phone, region FROM t_emp")
+        assert "CASE WHEN CHAR_LENGTH(phone) <= 4" in secured
+        assert "column_restriction:in_sql" in " ".join(res.policies_applied)
+        # 已落 SQL 的列不得再走结果侧（二次脱敏会静默改数）
+        assert "phone" not in res.masked_columns
+
+    def test_alias_kept_and_not_double_masked(self, enforcer):
+        secured, res = self._enforce(enforcer, "SELECT phone AS p, region FROM t_emp")
+        assert "AS \"p\"" in secured or "AS `p`" in secured or 'AS "p"' in secured
+        assert "CASE WHEN" in secured
+        assert "p" not in res.masked_columns
+
+    def test_query_without_restricted_column_untouched(self, enforcer):
+        sql = "SELECT region FROM t_emp"
+        secured, res = self._enforce(enforcer, sql)
+        assert secured == sql
+        assert not [p for p in res.policies_applied if p.startswith("column_restriction")]
+
+    def test_unfaithful_renderer_falls_back_visibly(self, enforcer, monkeypatch):
+        """渲染不保真时不得赌解析器，退回结果侧脱敏且要在 policies_applied 里标出来。"""
+        import backend.semantics.rls as sem_rls
+        monkeypatch.setattr(sem_rls, "renderer_faithful", lambda sql, dialect="mysql": False)
+        sql = "SELECT phone FROM t_emp"
+        secured, res = self._enforce(enforcer, sql)
+        assert secured == sql
+        assert any("result_side_fallback" in p for p in res.policies_applied)
+        assert res.masked_columns.get("phone") == "partial"   # 结果侧兜底仍在
+
+    def test_star_without_column_list_falls_back(self, enforcer, monkeypatch):
+        import backend.core.enforcer as enf
+        monkeypatch.setattr(enf, "_table_columns_snapshot", lambda ds, tbl: None)
+        sql = "SELECT * FROM t_emp"
+        secured, res = self._enforce(enforcer, sql)
+        assert secured == sql
+        assert any("result_side_fallback" in p for p in res.policies_applied)
+        assert res.masked_columns.get("phone") == "partial"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

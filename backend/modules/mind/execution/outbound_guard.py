@@ -3,8 +3,8 @@
 为什么需要它
 ------------
 security-guardrails §7 要求：取数结果严禁向 LLM / 普通客户端泄露生成的 SQL、
-``datasource_id``、``catalog_ref``、``physical_table``、provenance、账号/IP/主机、
-原始报错栈。
+``datasource_id``、``catalog_ref``、``physical_table``、provenance、账号/主机地址
+（基础设施 IP）、原始报错栈。
 
 此前这些脱敏散落在各 handler（``catalog_tools._strip_physical_ids``、
 ``semantic_query._safe_warnings``），每个工具各管一段，新增工具很容易漏掉。
@@ -13,19 +13,28 @@ security-guardrails §7 要求：取数结果严禁向 LLM / 普通客户端泄�
 
 与敏感字段基线的分工（不要混）
 ------------------------------
-* **本模块**：管**基础设施 / 凭据 / 内部标识**泄露（连接串、密码、Token、主机 IP、
-  物理表列名、报错栈）。这些是"配置面"的泄漏，任何工具都不该输出。
-* **敏感字段基线**（``permission_enforcer`` + ``adh_sensitive_fields``）：管**业务数据
-  内容**（手机号、身份证、邮箱等），按列做 block/mask，对所有人生效含 admin。
+* **本模块**：只管**基础设施 / 凭据 / 内部标识**泄露（连接串、密码、Token、主机
+  地址、物理表列名、报错栈）。这些是"配置面"的泄漏，任何工具都不该输出。
+* **业务数据内容**（IP / 手机号 / 邮箱 / 身份证等，含业务实体的客户端 IP）：
+  唯一裁决点是**数据权限** —— `adh_sensitive_fields`（全局 datasource_id=0/表名空
+  ∪ 指定数据源/表，按物理列名）：`block` → `gates._blocked_column_guard` 执行前硬拒
+  + 结果剔除；`mask`(full/partial/hash) → `query_executor` 结果侧 `apply_post_processing`
+  按列名施加（对所有人生效含 admin）。生效点与已知缺口（SLS ASCII 槽位列名对不上
+  → mask 不落地）见护栏 §7。
 
-业务数据行里出现手机号是正常的（已由基线脱敏），不该被本模块判失败；反过来，
-配置里出现密码也不该指望列级基线拦住。所以本模块**不匹配** PII 正则。
+**禁止在本模块 hardcode 业务数据的内容形态规则**（2026-10-30 决策）。
+历史缺陷：值形态正则 `ipv4_literal`（裸 IPv4 匹配）把已治理的业务「客户端IP」维度
+**整体拒发** —— 管理员在「敏感数据」页查不到任何配置依据（它是代码常量，不是规则），
+改 mask 也救不回来；同时中文维度名「客户端IP」被裸 `ip` 键名规则误判为内部键，
+两条叠加 = 该维度无论怎么配权限都出不来。裁决权在数据权限，出站层不得越权替它判。
 
 已知边界
 --------
 若业务表真有名为 ``token`` / ``password`` / ``host`` 的列，其数据行也会命中本守卫
 并被拒绝下发。这是**有意的**（fail-loud）：这类列名本身就是泄露信号，正确做法是
 把该列登记进 ``adh_sensitive_fields`` 走列级脱敏，而不是让守卫放行。
+键名判定按**完整键名**取边界（``\w`` 为 Unicode 口径，中文算词字符）：
+``"客户端IP":`` 是业务标签不是内部键 ``ip``，不得命中（见 ``_KEY_RE`` 注释）。
 
 处置策略：fail-loud，不静默清空
 ------------------------------
@@ -42,7 +51,8 @@ import re
 logger = logging.getLogger(__name__)
 
 # ── 禁止外泄的字段名（JSON 键 / 赋值左值 / 形参名）──────────────────────────────
-# 判定是"键名出现即命中"，不看值 —— 值为空也不该暴露这个字段的存在与结构。
+# 判定是"**完整**键名出现即命中"，不看值 —— 值为空也不该暴露这个字段的存在与结构。
+# 本清单只放基础设施/凭据/内部标识键，不得拿它当业务敏感列的裁决手段（见上面分工）。
 SENSITIVE_OUTPUT_KEYS = (
     # 连接凭据 / 密钥 / 令牌
     "password", "passwd", "pwd", "passphrase",
@@ -59,13 +69,19 @@ SENSITIVE_OUTPUT_KEYS = (
 )
 
 # 键名后跟 : 或 = ，容忍引号与空白（匹配 "password": "x" / password=x / 'password' => 'x'）
+# 前导边界用 Unicode 的 ``\w``（含中文等有字词形），不能只排 ASCII：历史缺陷是
+# ``(?<![A-Za-z0-9_])`` 把中文当边界，于是业务维度标签 ``"客户端IP":`` 被误判成
+# 内部键 ``ip``（ASCII 前缀的 ``client_ip`` 反倒不命中）—— 业务列名一律被拒发。
 _KEY_RE = re.compile(
-    r"(?i)(?<![A-Za-z0-9_])(?:"
+    r"(?i)(?<!\w)(?:"
     + "|".join(re.escape(k) for k in SENSITIVE_OUTPUT_KEYS)
     + r")\s*[\"']?\s*[:=]"
 )
 
 # ── 禁止外泄的值形态（与键名无关，凭形态即可判定）──────────────────────────────
+# 值形态规则**只收基础设施/凭据/SQL/报错这类与业务列无关的泄露形态**。
+# 不得加 IP 字面量、手机号、邮箱之类的"业务数据内容"正则：那些由
+# ``adh_sensitive_fields`` 在执行前注入 SQL 裁决（见模块 docstring 的分工）。
 # 不要在值形态里加「主机名:端口」裸匹配：`14:30`、ISO 时间戳 `2026-10-03T14:30:00`
 # 都会命中，正常数据行会被误杀。裸 host/port 已由上面的键名检测覆盖。
 _VALUE_RES: tuple[tuple[str, re.Pattern], ...] = (
@@ -73,7 +89,6 @@ _VALUE_RES: tuple[tuple[str, re.Pattern], ...] = (
         r"(?i)\b(?:jdbc|mysql|postgres|postgresql|redis|mongodb|clickhouse|doris|"
         r"oracle|sqlserver|mssql|ftp|sftp|smtp)://[^\s\"']+")),
     ("credential_in_url", re.compile(r"(?i)://[^\s\"'/]+:[^\s\"'/]+@")),
-    ("ipv4_literal", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{2,5})?\b")),
     # 生成 SQL 回显（守 §7：base_sql/secured_sql 不得下发）。
     # 要求表标识含 `_` 或 `.`（adh_reports / db.table），
     # 否则英文散文 "select X from the list" 会被误杀。

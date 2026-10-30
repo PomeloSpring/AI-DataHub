@@ -177,6 +177,8 @@ def _tool_result(text):
 
 @pytest.mark.parametrize("text,expected", [
     ('{"host":"47.103.50.8","port":611}', "sensitive_field"),
+    # 基础设施键（完整键名）仍拦：数据源 host/内网地址不得随工具结果下发
+    ('{"ip":"47.103.50.8","endpoint":"http://10.0.0.7:8123"}', "sensitive_field"),
     ('{"password":"abc"}', "sensitive_field"),
     ('{"datasource_id": 5}', "sensitive_field"),
     ("jdbc:mysql://47.103.50.8:611/adh2", "connection_string"),
@@ -203,10 +205,36 @@ def test_outbound_guard_detects_leaks(text, expected):
     # 可操作业务提示不得被判敏感（否则模型拿不到“先做元数据同步”这类下一步）
     "数据源 prd-cn 无有效表元数据，请先执行元数据同步",
     "The selected dataset doesn't exist; pick another one",
+    # 业务敏感列（客户端 IP）不被出站层误杀：能不能下发由 adh_sensitive_fields 裁决
+    '{"rows":[{"客户端IP":"47.103.50.8","页面浏览量":20}]}',
+    '{"rows":[{"客户端IP":"20***"}]}',
 ])
 def test_outbound_guard_no_false_positive_on_normal_output(text):
     """时间戳/散文不能被误杀，否则正常取数结果全被判失败。"""
     assert outbound_guard.find_sensitive_hits(text) == []
+
+
+def test_business_ip_is_governed_by_data_permission_not_egress_regex():
+    """业务敏感列的裁决权在数据权限，出站层不得 hardcode 内容形态规则（护栏 §7）。
+
+    历史缺陷：`ipv4_literal` 裸 IPv4 正则 + 裸 `ip` 键名判定叠加，使已建模的
+    「客户端IP」维度无论怎么配 mask 都整体拒发，而管理员在「敏感数据」页
+    查不到任何配置依据（代码常量不是规则）。两侧同时锁定，防回归：
+    """
+    # 1) 值形态规则清单里不得重现业务数据内容正则（IPv4 字面量/手机号/邮箱）
+    assert "ipv4_literal" not in {label for label, _ in outbound_guard._VALUE_RES}
+    assert outbound_guard.find_sensitive_hits("47.103.50.8") == []
+    assert outbound_guard.find_sensitive_hits("13800138000") == []
+    # 2) 中文业务维度标签不得被当成内部键 `ip`（词边界是 Unicode 口径）
+    assert outbound_guard.find_sensitive_hits('{"客户端IP":"47.103.50.8"}') == []
+    # 3) 但基础设施键仍必须拦（放宽不得越界到配置面泄露）
+    assert "sensitive_field" in outbound_guard.find_sensitive_hits('{"ip":"47.103.50.8"}')
+    # 4) 业务列的 block/mask 真值源仍是 enforcer 的敏感基线（注入查询 SQL）
+    import inspect
+
+    from backend.core import enforcer
+    baseline_src = inspect.getsource(enforcer.PermissionEnforcer._get_sensitive_policies)
+    assert "adh_sensitive_fields" in baseline_src
 
 
 def test_outbound_guard_fails_loud_with_category_not_silent_strip():

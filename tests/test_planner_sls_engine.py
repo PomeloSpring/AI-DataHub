@@ -36,6 +36,9 @@ PHYS_SLS = {
 DIMS_SLS = {
     "页面URL": {"name": "页面URL", "name_en": "page_url", "target_column": "view.url",
                "category": "属性", "aliases": [], "value_labels": {}},
+    # 业务 IP 维度：能不能下发由数据权限（adh_sensitive_fields）裁决，编译期写进 SQL
+    "客户端IP": {"name": "客户端IP", "name_en": "client_ip", "target_column": "net.ip",
+               "category": "属性", "aliases": [], "value_labels": {}},
     "事件类型": {"name": "事件类型", "name_en": "event_type", "target_column": "event_type",
                "category": "状态", "aliases": [], "value_labels": {}},
     # SLS 内置事件时间列是 epoch 秒，不在 information_schema 里（探针 C/R1 OK）
@@ -306,3 +309,82 @@ class TestPlanContract:
         p = plan(q, _binding())
         assert p.sql, p.warnings
         assert "_rolling" in p.sql
+
+
+# ── 列级安全策略编译进下推 SQL（护栏 §7：能不能查由数据权限裁决）────────────
+#
+# 历史缺陷：脱敏靠执行后 `apply_post_processing` 按 DataFrame 列名匹配，而 SLS 投影列名
+# 是 ASCII 槽位 o0/o1…（业务名在 _to_result 才映回）→ 列名对不上，mask 静默不生效。
+# 现在策略在 planner 编译期写进投影；不在出站层 hardcode 内容形态规则。
+
+class TestColumnPolicyCompiledIntoSlsSql:
+    def _q(self, **kw) -> SemanticQuery:
+        base = dict(object="rum_event", metrics=["会话数"], dimensions=["客户端IP"],
+                    time_window="7d", time_column="统计日期", limit=20)
+        base.update(kw)
+        return SemanticQuery(**base)
+
+    def test_masked_dimension_wraps_projection_and_group_by(self, patched):
+        p = plan(self._q(), _binding(), {"net.ip": "partial"})
+        select_part, group_part = p.sql.split("GROUP BY")
+        # 原值投影不再存在
+        assert '"net.ip" AS "o0"' not in select_part
+        # SELECT 与 GROUP BY 用同一份脱敏表达式（按脱敏值分组，不泄露 distinct 个数）
+        masked = 'CASE WHEN LENGTH(CAST("net.ip" AS VARCHAR)) <= 4'
+        assert masked in select_part and masked in group_part
+        # 取尾必须 RIGHT：SUBSTR(x,-2) 在 SLS 不报错但返回整串（探针取证）= 不脱敏
+        assert "RIGHT(CAST(\"net.ip\" AS VARCHAR), 2)" in select_part
+        assert "SUBSTR(CAST(\"net.ip\" AS VARCHAR), -" not in p.sql
+
+    def test_probe_tuned_time_predicate_is_not_rewritten(self, patched):
+        """包 mask 不得把整句 SQL 过一遍 AST 重渲染（会把 now() 改成 CURRENT_TIMESTAMP，SLS 报错）。"""
+        plain = plan(self._q(), _binding(), {})
+        masked = plan(self._q(), _binding(), {"net.ip": "hash"})
+        assert 'to_unixtime(now() - INTERVAL \'7 days\')' in masked.sql
+        assert 'COUNT(DISTINCT "session.id")' in masked.sql
+        # WHERE 子句逐字相同（GROUP BY 则必须跟着脱敏表达式走，见上一条用例）
+        assert masked.sql.split("WHERE")[1].split("GROUP BY")[0] \
+            == plain.sql.split("WHERE")[1].split("GROUP BY")[0]
+
+    def test_aggregate_metric_is_not_masked(self, patched):
+        """指标输出的是计数不是原值，包 mask 会静默改数（真不能查的列由 block 闸门硬拒）。"""
+        p = plan(self._q(metrics=["会话数"], dimensions=["事件类型"]),
+                 _binding(), {"session.id": "hash"})
+        assert 'COUNT(DISTINCT "session.id")' in p.sql
+        assert "MD5" not in p.sql
+
+    def test_no_policy_compiles_unchanged_sql(self, patched):
+        """无策略（显式 {}）时行为零变化：不引入任何包装开销。"""
+        p = plan(self._q(), _binding(), {})
+        assert '"net.ip" AS "o0"' in p.sql and "MD5" not in p.sql
+        assert "CASE WHEN" not in p.sql
+        assert p.provenance.get("column_policies_applied") is None
+
+    def test_policy_source_is_data_permission(self, patched, monkeypatch):
+        """缺省不传策略时，由数据权限（enforcer 敏感基线）解析后编译进 SQL。"""
+        from backend.semantics import rls as sem_rls
+        calls: list[dict] = []
+
+        def fake_policies(**kw):
+            calls.append(kw)
+            return {"net.ip": "hash"}
+
+        monkeypatch.setattr(sem_rls, "column_policies", fake_policies)
+        p = plan(self._q(user_id=42, workspace_id=7), _binding())
+        assert calls and calls[0]["user_id"] == 42 and calls[0]["workspace_id"] == 7
+        assert calls[0]["table_names"] == ["logstore-rum"]
+        assert 'SUBSTR(MD5(CAST("net.ip" AS VARCHAR)), 1, 16)' in p.sql
+        # provenance 留诊断痕迹（不下发 LLM/前端）
+        assert p.provenance["column_policies_applied"] == {"net.ip": "hash"}
+
+    def test_policy_lookup_failure_refuses_to_compile_unmasked(self, patched, monkeypatch):
+        """敏感基线读不到 = 不知道该怎么脱敏，宁不编译也不下发未脱敏明细（fail-loud）。"""
+        from backend.semantics import rls as sem_rls
+
+        def boom(**_kw):
+            raise PermissionError("敏感数据策略暂不可用")
+
+        monkeypatch.setattr(sem_rls, "column_policies", boom)
+        p = plan(self._q(), _binding())
+        assert p.sql == "" and p.secured_sql == ""
+        assert any("列级安全策略不可用" in w for w in p.warnings)
