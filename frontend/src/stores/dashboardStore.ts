@@ -3,7 +3,7 @@ import { toast } from '@/lib/toast';
 import client from '../api/client';
 import { invalidateCatalogCache } from '@/lib/dashboardCatalog';
 import { chartQueryPool } from '@/lib/chartQueryPool';
-import { templateChartPayload } from '@/lib/dashboardDemo';
+import { templateChartPayload, isDemoChart } from '@/lib/dashboardDemo';
 
 export interface DashboardChart {
   id: number;
@@ -67,6 +67,35 @@ export const DASHBOARD_STATUS_MAP: Record<DashboardStatus, { label: string; colo
   closed: { label: '已关闭', color: 'text-gray-500 bg-gray-500/10 border-gray-500/20' },
 };
 
+/**
+ * 可重查询的数据图表（刷新/查询按钮的作用范围）。
+ * - 控件类 widget_* 无取数语义，不参与；
+ * - 挂数据集（source_type='dataset'）与 AS-BOT 设计图（config.as_bot_design）同样要参与：
+ *   它们在库里不存 sql_query（SQL 由服务端按数据集/设计生成），历史缺陷是过滤只认
+ *   sql_query/semantic_query，于是这两类图点刷新永远没反应；
+ * - 模板样式示例图（未绑源）由服务端原样回读演示缓存，前端不发起无效查询。
+ */
+export function isRefreshableDataChart(chart: {
+  chart_type?: string; sql_query?: string | null; semantic_query?: Record<string, any> | null;
+  source_type?: string; source_id?: number | null; config?: Record<string, any>;
+}): boolean {
+  if (!chart || String(chart.chart_type || '').startsWith('widget_')) return false;
+  if (chart.source_type === 'dataset' && chart.source_id) return true;
+  if (chart.config?.as_bot_design) return true;
+  if (isDemoChart(chart) && !chart.source_id) return false;
+  return !!(chart.sql_query || chart.semantic_query);
+}
+
+/** 单图重查询参数：dashboardId 必须显式（宿主可同时挂着多个看板，见 refreshSingleChart） */
+export interface ChartRefreshExtra {
+  dashboardId?: number;
+  /** 诊断文案用的业务名：宿主未登记看板时也能报出图名而非裸 id */
+  chartName?: string;
+  page_limit?: number;
+  page_offset?: number;
+  count_sql?: string;
+}
+
 interface DashboardState {
   dashboards: Dashboard[];
   currentId: number | null;
@@ -81,6 +110,13 @@ interface DashboardState {
   pageParamValues: Record<string, any>;
   refreshing: boolean;
   refreshingChartIds: Set<number>;
+  /**
+   * 实时取数覆盖层（chartId -> data_cache JSON）。
+   * 图表数据有四个渲染面（编辑器 / 看板浏览页 / 大屏播放 / 弹窗页），后三者把 GET
+   * 到的看板详情存在各自组件里；刷新结果只写 dashboards 时它们读不到，按钮点了
+   * 像没反应（只回缓存）。覆盖层按全局唯一 chartId 存放，卡片订阅它即可全场景一致。
+   */
+  chartCache: Record<number, string>;
 
   reset: () => void;
   loadDashboards: (workspaceId?: number) => Promise<void>;
@@ -95,6 +131,8 @@ interface DashboardState {
   deleteChart: (dashboardId: number, chartId: number, deferReload?: boolean) => Promise<void>;
   saveLayout: (dashboardId: number, layouts: { chart_id: number; position: any }[]) => Promise<void>;
   reorderDashboards: (orders: { id: number; sort_order: number }[]) => Promise<void>;
+  /** 宿主页面（看板浏览页 / 大屏）登记当前看板：图表重查询、参数栏、查询与导出控件都以 store 为唯一通道 */
+  adoptDashboard: (dashboard: Dashboard) => void;
   setGlobalFilters: (filters: Record<string, any>) => void;
   setCrossFilters: (filters: any[]) => void;
   toggleFavorite: (dashboardId: number) => void;
@@ -103,8 +141,8 @@ interface DashboardState {
   setPageParams: (params: PageParam[]) => void;
   setPageParamValue: (name: string, value: any) => void;
   initPageParamValues: () => void;
-  refreshCharts: () => Promise<boolean>;
-  refreshSingleChart: (chartId: number, extra?: { page_limit?: number; page_offset?: number; count_sql?: string }) => Promise<boolean>;
+  refreshCharts: (dashboardId?: number, charts?: DashboardChart[]) => Promise<boolean>;
+  refreshSingleChart: (chartId: number, extra?: ChartRefreshExtra) => Promise<boolean>;
   /** 退出页面 / 切换看板时调用：未执行的图表查询直接丢弃，执行中的直接中止 */
   cancelChartRefresh: () => void;
 }
@@ -112,6 +150,15 @@ interface DashboardState {
 let loadVersion = 0;
 let sessionVersion = 0;
 const refreshVersions = new Map<number, number>();
+
+/** 接口返回的看板归一为 store 形状（历史字段 pageParams 藏在 filters 里，两处同一口径） */
+const normalizeDashboard = (d: Dashboard): Dashboard => ({
+  ...d, filters: d.filters || {}, charts: d.charts || [],
+  page_params: d.page_params || d.filters?.pageParams || [],
+});
+
+/** 诊断文案前缀：优先业务名，不退化成裸 id（ui-resource-display.md） */
+const chartLabel = (chartId: number, name?: string) => (name ? `「${name}」` : `图表 ${chartId}`);
 
 export const useDashboardStore = create<DashboardState>((set, get) => ({
   dashboards: [],
@@ -134,13 +181,15 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   pageParamValues: {},
   refreshing: false,
   refreshingChartIds: new Set(),
+  chartCache: {},
 
   reset: () => {
     // 登出 / 切换工作空间：先终止未完成的图表查询，再推进会话版本
     chartQueryPool.cancelAll();
     ++loadVersion; ++sessionVersion; refreshVersions.clear();
     set({ dashboards: [], currentId: null, currentWorkspaceId: 0, loading: false, error: null,
-      globalFilters: {}, crossFilters: [], paramValues: {}, pageParams: [], pageParamValues: {}, refreshing: false, refreshingChartIds: new Set() });
+      globalFilters: {}, crossFilters: [], paramValues: {}, pageParams: [], pageParamValues: {}, refreshing: false,
+      refreshingChartIds: new Set(), chartCache: {} });
   },
 
   loadDashboards: async (workspaceId?: number) => {
@@ -154,7 +203,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       const { data } = await client.get(`/dashboard/${params}`);
       if (version !== loadVersion) return;
       if (!Array.isArray(data)) throw new Error('仪表盘接口格式错误');
-      const dashboards = data.map((d: Dashboard) => ({ ...d, filters: d.filters || {}, charts: d.charts || [], page_params: d.page_params || d.filters?.pageParams || [] }));
+      const dashboards = data.map((d: Dashboard) => normalizeDashboard(d));
       set({ dashboards });
       const state = get();
       if (!dashboards.some(d => d.id === state.currentId)) {
@@ -170,6 +219,9 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   setCurrent: (id) => {
     if (get().currentId === id) return;
+    // 切换看板：上一块板的排队/在跑查询直接丢弃与中止（接口注释既定语义），
+    // 否则轮播或切板后旧查询会继续占用图表查询池的槽位。
+    get().cancelChartRefresh();
     const dashboard = get().dashboards.find(d => d.id === id);
     const pageParams = dashboard?.page_params || [];
     const pageParamValues: Record<string, any> = {};
@@ -280,6 +332,19 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     await get().loadDashboards(get().currentWorkspaceId);
   },
 
+  adoptDashboard: (dashboard) => {
+    if (!dashboard?.id) return;
+    const normalized = normalizeDashboard(dashboard);
+    set(state => ({
+      dashboards: state.dashboards.some(d => d.id === normalized.id)
+        ? state.dashboards.map(d => (d.id === normalized.id ? normalized : d))
+        : [...state.dashboards, normalized],
+    }));
+    // 登记为当前看板：参数栏(DashboardRuntimeParams)、查询按钮、导出控件都以 currentId 为上下文。
+    // 浏览页/大屏此前不登记，导致参数栏整块不渲染、控件按钮点了没反应。
+    get().setCurrent(normalized.id);
+  },
+
   setGlobalFilters: (filters) => set({ globalFilters: filters }),
 
   setCrossFilters: (filters) => set({ crossFilters: filters }),
@@ -324,20 +389,30 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     set({ pageParamValues: newValues });
   },
 
-  refreshCharts: async () => {
-    const { currentId, dashboards } = get();
-    if (!currentId) return false;
-    const dashboard = dashboards.find(d => d.id === currentId);
-    if (!dashboard) return false;
-    const charts = dashboard.charts.filter(c => (c.semantic_query || c.sql_query) && !c.chart_type.startsWith('widget_'));
+  refreshCharts: async (dashboardId, charts) => {
+    // 看板 id 显式解析：浏览页/大屏/弹窗页可能同时呈现多个看板的图表，只读全局 currentId
+    // 会让"非当前看板"的刷新静默 no-op（用户看到的就是"点了没反应、只回缓存"）。
+    const dashId = Number(dashboardId) || get().currentId || 0;
+    if (!dashId) {
+      // 上下文缺失时不得静默返回，必须提醒用户这次没有发起查询（no-silent-degradation）
+      toast.error('刷新未发起：看板数据尚未加载完成，请稍后重试');
+      return false;
+    }
+    const list = charts ?? get().dashboards.find(d => d.id === dashId)?.charts ?? [];
+    const targets = list.filter(isRefreshableDataChart);
+    // 纯控件看板没有可重查询的图表：不算失败，但也不谎称重新取了数
+    if (!targets.length) return true;
     // Promise.all 仍是“全部完成才算成功”，但实际并发由 chartQueryPool 收敛到 4，
     // 不会再把浏览器每源连接打满而卡住其他功能的请求
-    const results = await Promise.all(charts.map(c => {
+    const results = await Promise.all(targets.map(c => {
       const cfg = c.config || {};
       if (cfg.enableServerPagination) {
-        return get().refreshSingleChart(c.id, { page_limit: cfg.pageLimit || 20, page_offset: 0, count_sql: cfg.countSql });
+        return get().refreshSingleChart(c.id, {
+          dashboardId: dashId, chartName: c.name,
+          page_limit: cfg.pageLimit || 20, page_offset: 0, count_sql: cfg.countSql,
+        });
       }
-      return get().refreshSingleChart(c.id);
+      return get().refreshSingleChart(c.id, { dashboardId: dashId, chartName: c.name });
     }));
     return results.every(Boolean);
   },
@@ -352,8 +427,11 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   refreshSingleChart: async (chartId, extra?) => {
-    const { currentId, paramValues, pageParamValues } = get();
-    if (!currentId || !get().dashboards.find(d => d.id === currentId)?.charts.some(c => c.id === chartId)) return false;
+    const dashId = Number(extra?.dashboardId) || get().currentId || 0;
+    if (!dashId) {
+      toast.error(`${chartLabel(chartId, extra?.chartName)}未发起查询：看板数据尚未加载完成，请稍后重试`);
+      return false;
+    }
     const session = sessionVersion;
     const version = (refreshVersions.get(chartId) || 0) + 1;
     refreshVersions.set(chartId, version);
@@ -363,6 +441,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       return { refreshingChartIds: ids, refreshing: true };
     });
     try {
+      const { paramValues, pageParamValues } = get();
       const body: any = { params: { ...paramValues, ...pageParamValues } };
       if (extra?.page_limit != null) body.page_limit = extra.page_limit;
       if (extra?.page_offset != null) body.page_offset = extra.page_offset;
@@ -370,12 +449,11 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
       // 走图表查询专用池：渐进式（30 个图表也只同时跑 4 个，其余排队）、有超时、可随页面退出中止
       const result = await chartQueryPool.run(signal =>
-        client.post(`/dashboard/${currentId}/charts/${chartId}/refresh`, body, { signal }).then(r => r.data));
+        client.post(`/dashboard/${dashId}/charts/${chartId}/refresh`, body, { signal }).then(r => r.data));
       if (!result.ok) {
         if (result.reason === 'cancelled') return false; // 退出页面是预期行为，不弹错
         if (session === sessionVersion) {
-          const chartName = get().dashboards.find(d => d.id === currentId)?.charts.find(c => c.id === chartId)?.name;
-          const label = chartName ? `「${chartName}」` : `图表 ${chartId}`;
+          const label = chartLabel(chartId, extra?.chartName);
           toast.error(result.reason === 'timeout'
             ? `${label}查询超过 ${result.seconds} 秒未返回，已取消`
             : `${label}刷新失败`);
@@ -385,34 +463,32 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       const data = result.value;
       if (session !== sessionVersion || refreshVersions.get(chartId) !== version) return false;
       if (data && !data.error) {
+        const cache: any = { columns: data.columns, rows: data.rows };
+        if (data.total != null) cache.total = data.total;
+        const json = JSON.stringify(cache);
+        // 写两处：覆盖层让任何渲染面（浏览页/大屏/弹窗页）即时看到新数据，
+        // dashboards 条目维持编辑器口径（保存/重载仍以 store 为源）。
         set(state => ({
-          dashboards: state.dashboards.map(d => {
-            if (d.id !== currentId) return d;
-            return {
-              ...d,
-              charts: d.charts.map(c => {
-                if (c.id !== chartId) return c;
-                const cache: any = { columns: data.columns, rows: data.rows };
-                if (data.total != null) cache.total = data.total;
-                return { ...c, data_cache: JSON.stringify(cache) };
-              }),
-            };
-          }),
+          chartCache: { ...state.chartCache, [chartId]: json },
+          dashboards: state.dashboards.map(d => d.id !== dashId ? d : ({
+            ...d,
+            charts: d.charts.map(c => c.id === chartId ? { ...c, data_cache: json } : c),
+          })),
         }));
         return true;
       } else if (data?.error) {
-        toast.error(`图表刷新失败: ${data.error}`);
-      } else toast.error('图表刷新未返回有效结果');
+        toast.error(`${chartLabel(chartId, extra?.chartName)}刷新失败: ${data.error}`);
+      } else toast.error(`${chartLabel(chartId, extra?.chartName)}未返回有效结果`);
       return false;
     } catch (e: any) {
-      if (session === sessionVersion) toast.error(e.response?.data?.detail || '图表刷新失败');
+      if (session === sessionVersion) toast.error(e.response?.data?.detail || `${chartLabel(chartId, extra?.chartName)}刷新失败`);
       return false;
     } finally {
       if (session === sessionVersion && refreshVersions.get(chartId) === version) set(state => {
         const ids = new Set(state.refreshingChartIds);
         ids.delete(chartId);
-        const currentCharts = state.dashboards.find(d => d.id === state.currentId)?.charts || [];
-        return { refreshingChartIds: ids, refreshing: currentCharts.some(c => ids.has(c.id)) };
+        // refreshing = 是否还有图表在取数：宿主可能是浏览页/弹窗页，不能只数 currentId 名下的图
+        return { refreshingChartIds: ids, refreshing: ids.size > 0 };
       });
     }
   },

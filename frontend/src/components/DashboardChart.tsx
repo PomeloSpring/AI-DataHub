@@ -43,6 +43,10 @@ interface Props {
   style?: React.CSSProperties;
   loading?: boolean;
   chartId?: number;
+  /** 该图所属看板：刷新/分页/查询按钮都要按它发起 POST（宿主可同时呈现多个看板的图表） */
+  dashboardId?: number;
+  /** 业务名：仅用于失败提示文案，store 未登记该看板时也能报出图名而非裸 id */
+  chartName?: string;
   visual?: LocalVisual;
   draft?: boolean;
   /** 图上下钻: 点击图形元素时回传该行原始数据(不传则不挂载点击事件) */
@@ -1178,7 +1182,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
   }
 }
 
-function DashboardChartInner({ chartType, data, config, style, loading, chartId, visual, draft = false, onDrill }: Props) {
+function DashboardChartInner({ chartType, data, config, style, loading, chartId, dashboardId, chartName, visual, draft = false, onDrill }: Props) {
   // 依赖 theme(主题 id)而非 isDark: 同明暗主题切换(dark→tech)也需重建图表以读取新令牌色
   const theme = useThemeStore(s => s.theme);
   const isDark = visual?.mode ? visual.mode === 'dark' : IS_DARK[theme];
@@ -1225,9 +1229,9 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
   useEffect(() => {
     if (chartId && chartType === 'table_value' && cfg.enableServerPagination && !loading) {
       const pageLimit = cfg.pageLimit || 20;
-      useDashboardStore.getState().refreshSingleChart(chartId, { page_limit: pageLimit, page_offset: 0, count_sql: cfg.countSql });
+      useDashboardStore.getState().refreshSingleChart(chartId, { dashboardId, chartName, page_limit: pageLimit, page_offset: 0, count_sql: cfg.countSql });
     }
-  }, [chartId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [chartId, dashboardId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Serialize data/config to detect actual content changes (not just reference changes)
   const dataKey = chartDataKey(data);
@@ -1661,7 +1665,8 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       e.preventDefault();
       // 编辑态的拦截由卡片层 inert 承担（见 DashboardChartCard），试运行时必须真实响应
       if (chartType === 'widget_search') {
-        useDashboardStore.getState().refreshCharts();
+        // 查询按钮必须真实重查询：按所属看板 id 逐图 POST（缺上下文时 store 会显式报错）
+        useDashboardStore.getState().refreshCharts(dashboardId);
       } else if (chartType === 'widget_reset') {
         const paramValues = widgetParams;
         const keys = Object.keys(paramValues);
@@ -1850,7 +1855,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
             className="chart-refresh-btn"
             onClick={(e) => {
               e.stopPropagation();
-              useDashboardStore.getState().refreshSingleChart(chartId!);
+              useDashboardStore.getState().refreshSingleChart(chartId!, { dashboardId, chartName });
             }}
             title="刷新此图表"
           >
@@ -1940,7 +1945,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
                   const newPage = currentPage - 1;
                   setPage(newPage);
                   if (enableServerPagination && chartId) {
-                    useDashboardStore.getState().refreshSingleChart(chartId, { page_limit: pageLimit, page_offset: (newPage - 1) * pageLimit, count_sql: cfg.countSql });
+                    useDashboardStore.getState().refreshSingleChart(chartId, { dashboardId, chartName, page_limit: pageLimit, page_offset: (newPage - 1) * pageLimit, count_sql: cfg.countSql });
                   }
                 }}
                 disabled={currentPage <= 1}
@@ -1954,7 +1959,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
                       onClick={() => {
                         setPage(p as number);
                         if (enableServerPagination && chartId) {
-                          useDashboardStore.getState().refreshSingleChart(chartId, { page_limit: pageLimit, page_offset: ((p as number) - 1) * pageLimit, count_sql: cfg.countSql });
+                          useDashboardStore.getState().refreshSingleChart(chartId, { dashboardId, chartName, page_limit: pageLimit, page_offset: ((p as number) - 1) * pageLimit, count_sql: cfg.countSql });
                         }
                       }}
                     >{p}</button>
@@ -1966,7 +1971,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
                   const newPage = currentPage + 1;
                   setPage(newPage);
                   if (enableServerPagination && chartId) {
-                    useDashboardStore.getState().refreshSingleChart(chartId, { page_limit: pageLimit, page_offset: (newPage - 1) * pageLimit, count_sql: cfg.countSql });
+                    useDashboardStore.getState().refreshSingleChart(chartId, { dashboardId, chartName, page_limit: pageLimit, page_offset: (newPage - 1) * pageLimit, count_sql: cfg.countSql });
                   }
                 }}
                 disabled={currentPage >= totalPages}
@@ -2022,7 +2027,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
           className="chart-refresh-btn"
           onClick={(e) => {
             e.stopPropagation();
-            useDashboardStore.getState().refreshSingleChart(chartId);
+            useDashboardStore.getState().refreshSingleChart(chartId, { dashboardId, chartName });
           }}
           title="刷新此图表"
         >

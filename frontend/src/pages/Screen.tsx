@@ -77,7 +77,12 @@ function ScreenPlayer() {
     setDetailLoading(true);
     setDetail(null);
     client.get(`/dashboard/${currentMeta.id}`)
-      .then(({ data }) => { if (!cancelled) setDetail(data); })
+      .then(({ data }) => {
+        if (cancelled) return;
+        setDetail(data);
+        // 登记当前看板：参数栏、查询/导出控件与图表重查询都以 store 上下文为唯一通道
+        useDashboardStore.getState().adoptDashboard(data);
+      })
       .catch(() => { if (!cancelled) setError('加载看板失败'); })
       .finally(() => { if (!cancelled) setDetailLoading(false); });
     return () => { cancelled = true; };
@@ -89,43 +94,13 @@ function ScreenPlayer() {
       .catch(() => { if (!cancelled) { setError('加载仪表盘组失败'); setReady(true); } });
     return () => { cancelled = true; };
   }, [retry]);
-  // 顶栏“刷新数据”：GET /dashboard/{id} 只回 data_cache（DB 缓存），必须逐个 POST
-  // charts/{id}/refresh 向数据源重查询并回写缓存（口径同 dashboardStore.refreshSingleChart），
-  // 否则刷新按钮只是把旧缓存再读一遍，图表永远不更新。
+  // 顶栏“刷新数据”：GET /dashboard/{id} 只回 data_cache（DB 缓存），必须逐图 POST
+  // charts/{id}/refresh 向数据源重查询。统一走 store（含查询资源池/超时/退出中止，
+  // 以及数据集图与 AS-BOT 设计图的可刷新口径），此处只负责拿当前看板。
   const refreshCharts = useCallback(async (): Promise<boolean> => {
     const d = detailRef.current;
     if (!d?.id) return false;
-    const charts: any[] = (d.charts || []).filter((c: any) =>
-      (c.semantic_query || c.sql_query) && !String(c.chart_type || '').startsWith('widget_'));
-    if (!charts.length) return true;
-    const { paramValues, pageParamValues } = useDashboardStore.getState();
-    const params = { ...paramValues, ...pageParamValues };
-    const dashboardId = d.id;
-    const updates: Record<number, string> = {};
-    const results = await Promise.all(charts.map(async (c: any) => {
-      const cfg = c.config || {};
-      const body: any = { params };
-      if (cfg.enableServerPagination) {
-        body.page_limit = cfg.pageLimit || 20;
-        body.page_offset = 0;
-        if (cfg.countSql) body.count_sql = cfg.countSql;
-      }
-      try {
-        const { data } = await client.post(`/dashboard/${dashboardId}/charts/${c.id}/refresh`, body);
-        if (data && !data.error) {
-          const cache: any = { columns: data.columns, rows: data.rows };
-          if (data.total != null) cache.total = data.total;
-          updates[c.id] = JSON.stringify(cache);
-          return true;
-        }
-        return false;
-      } catch { return false; }
-    }));
-    // 轮播切板后旧刷新结果不得写入新看板
-    setDetail((prev: any) => (prev && prev.id === dashboardId)
-      ? { ...prev, charts: prev.charts.map((x: any) => (updates[x.id] ? { ...x, data_cache: updates[x.id] } : x)) }
-      : prev);
-    return results.every(Boolean);
+    return useDashboardStore.getState().refreshCharts(d.id, d.charts || []);
   }, []);
   const index = enabled.findIndex(d => d.id === currentMeta?.id);
   const go = useCallback((delta: number) => {

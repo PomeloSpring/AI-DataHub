@@ -81,6 +81,8 @@ export default function ModalPage({ pageId, params, open, onClose }: ModalPagePr
                       config={styled.config}
                       visual={styled.visual}
                       chartId={chart.id}
+                      dashboardId={pageData.id}
+                      chartName={chart.name}
                     />
                   </div>
                 );

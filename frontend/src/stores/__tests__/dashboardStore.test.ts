@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { useDashboardStore, type Dashboard, type DashboardChart } from '../dashboardStore'
+import { useDashboardStore, isRefreshableDataChart, type Dashboard, type DashboardChart } from '../dashboardStore'
+import { toast } from '@/lib/toast'
 
 // Mock the axios client
 vi.mock('../../api/client', () => {
@@ -308,6 +309,98 @@ describe('dashboardStore', () => {
 
       await useDashboardStore.getState().refreshSingleChart(1)
       expect(useDashboardStore.getState().dashboards[0].charts[0].data_cache).toBeNull()
+    })
+  })
+
+  describe('刷新即真实重查询（缺陷回归锁）', () => {
+    it('refreshSingleChart 按显式 dashboardId 发请求，并写入实时取数覆盖层', async () => {
+      // 宿主（看板浏览页 / 大屏 / 弹窗页）可以把看板详情放在本地状态：
+      // 刷新仍必须打到那张看板，并把结果写进按 chartId 的覆盖层，否则点了没反应
+      useDashboardStore.setState({ dashboards: [], currentId: 999, chartCache: {} })
+      mockPost({ columns: ['a'], rows: [{ a: 2 }], total: 8 })
+
+      await expect(useDashboardStore.getState().refreshSingleChart(41, { dashboardId: 10, chartName: '月度销量' })).resolves.toBe(true)
+      expect(vi.mocked(client.post).mock.calls[0][0]).toBe('/dashboard/10/charts/41/refresh')
+      expect(JSON.parse(useDashboardStore.getState().chartCache[41])).toEqual({ columns: ['a'], rows: [{ a: 2 }], total: 8 })
+    })
+
+    it('看板上下文缺失时显式报错，不静默 no-op（用户必须知道这次没发起查询）', async () => {
+      const errors = vi.spyOn(toast, 'error').mockImplementation(() => '')
+      useDashboardStore.setState({ dashboards: [], currentId: null, chartCache: {} })
+
+      await expect(useDashboardStore.getState().refreshSingleChart(41)).resolves.toBe(false)
+      expect(client.post).not.toHaveBeenCalled()
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining('未发起查询'))
+    })
+
+    it('adoptDashboard 把宿主看板登记为当前上下文，并复位其参数默认值', () => {
+      useDashboardStore.setState({ dashboards: [], currentId: null, paramValues: { stale: 'x' }, pageParamValues: { stale: 'y' } })
+      const dashboard = makeDashboard({
+        id: 12,
+        params: [{ name: 'd', label: '日期', type: 'date', default: '2026-10-01' }],
+        page_params: [{ name: 'p', type: 'string', default: 'x', label: 'P' }],
+        charts: [makeChart({ id: 3, dashboard_id: 12 })],
+      })
+
+      useDashboardStore.getState().adoptDashboard(dashboard)
+      const state = useDashboardStore.getState()
+      expect(state.currentId).toBe(12)
+      expect(state.dashboards.map(d => d.id)).toEqual([12])
+      expect(state.paramValues).toEqual({ d: '2026-10-01' })
+      expect(state.pageParamValues).toEqual({ p: 'x' })
+    })
+
+    it('refreshCharts 覆盖数据集图与 AS-BOT 设计图，排除控件与未绑源样式示例图', async () => {
+      mockPost({ columns: ['a'], rows: [] })
+      const charts = [
+        makeChart({ id: 1, sql_query: 'SELECT 1' }),
+        makeChart({ id: 2, sql_query: '', source_type: 'dataset', source_id: 9 }),
+        makeChart({ id: 3, sql_query: '', config: { as_bot_design: true } }),
+        makeChart({ id: 4, chart_type: 'widget_search', sql_query: '' }),
+        makeChart({ id: 5, sql_query: 'SELECT demo', config: { demoData: true } }),
+      ]
+
+      await expect(useDashboardStore.getState().refreshCharts(10, charts as any)).resolves.toBe(true)
+      expect(vi.mocked(client.post).mock.calls.map(([url]) => url).sort()).toEqual([
+        '/dashboard/10/charts/1/refresh',
+        '/dashboard/10/charts/2/refresh',
+        '/dashboard/10/charts/3/refresh',
+      ])
+    })
+
+    it('刷新请求带上当前看板参数（日期区间等不得丢）', async () => {
+      mockPost({ columns: ['a'], rows: [] })
+      useDashboardStore.setState({ paramValues: { start: '2026-10-01' }, pageParamValues: { region: '华东' } })
+
+      await useDashboardStore.getState().refreshSingleChart(7, { dashboardId: 10 })
+      expect(vi.mocked(client.post).mock.calls[0][1]).toEqual(expect.objectContaining({
+        params: { start: '2026-10-01', region: '华东' },
+      }))
+    })
+
+    it('切换看板中止上一块板在跑的查询，不谎报失败也不占查询池', async () => {
+      useDashboardStore.setState({
+        dashboards: [makeDashboard({ id: 10, charts: [makeChart({ id: 7, dashboard_id: 10 })] }), makeDashboard({ id: 11 })],
+        currentId: 10, chartCache: {},
+      })
+      vi.mocked(client.post).mockReturnValue(new Promise(() => {}) as any)
+      const inflight = useDashboardStore.getState().refreshSingleChart(7)
+      expect(useDashboardStore.getState().refreshingChartIds.has(7)).toBe(true)
+
+      useDashboardStore.getState().setCurrent(11)
+      await expect(inflight).resolves.toBe(false)
+      const state = useDashboardStore.getState()
+      expect(state.refreshingChartIds.size).toBe(0)
+      expect(state.refreshing).toBe(false)
+    })
+
+    it('isRefreshableDataChart 与刷新口径一致', () => {
+      expect(isRefreshableDataChart(makeChart({ id: 1 }))).toBe(true)
+      expect(isRefreshableDataChart(makeChart({ id: 2, sql_query: '', semantic_query: { object: 'orders' } }))).toBe(true)
+      expect(isRefreshableDataChart(makeChart({ id: 3, sql_query: '', source_type: 'dataset', source_id: 4 }))).toBe(true)
+      expect(isRefreshableDataChart(makeChart({ id: 4, chart_type: 'widget_button', sql_query: 'SELECT 1' }))).toBe(false)
+      expect(isRefreshableDataChart(makeChart({ id: 5, sql_query: 'SELECT 1', config: { demoData: true } }))).toBe(false)
+      expect(isRefreshableDataChart(makeChart({ id: 6, sql_query: '', source_type: 'query' }))).toBe(false)
     })
   })
 

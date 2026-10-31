@@ -6,9 +6,11 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { ResponsiveDashboardCanvas } from '@/components/DashboardCanvas';
 import { useDashboardNavigation } from '@/components/DashboardNavigation';
 import { useDashboardFullscreen } from '@/hooks/useDashboardFullscreen';
+import { useCancelChartRefreshOnLeave } from '@/hooks/useCancelChartRefreshOnLeave';
 import { DashboardRuntimeParams } from '@/components/DashboardParams';
 import DashboardAutoRefresh from '@/components/DashboardAutoRefresh';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
+import { useDashboardStore } from '@/stores/dashboardStore';
 import AsBotButton from '@/components/AsBotButton';
 import { useAuthStore } from '@/stores/authStore';
 import AsBotPanel from '@/components/asbot/AsBotPanel';
@@ -73,6 +75,10 @@ export default function Analysis() {
   // editable = 服务端裁决的可写性(仅属主/admin), 角色授予的可见权不含编辑权
   const [detail, setDetail] = useState<any>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // 登记进 store 后，看板以 store 条目为准（图表重查询结果写回这里，卡片才能立刻换数据）
+  const liveBoard = useDashboardStore(s => s.dashboards.find(d => d.id === detail?.id));
+  // 离开看板页即终止未完成的图表查询，避免连接被占导致其他功能一直 pending
+  useCancelChartRefreshOnLeave();
   // 刷新失败与首次加载失败分开：前者保留已渲染内容 + 横幅告知，不能把整页换成错误页
   const [refreshError, setRefreshError] = useState('');
   const detailCache = useRef(new Map<number, any>());
@@ -88,6 +94,9 @@ export default function Analysis() {
       const { data } = await client.get(`/dashboard/${id}`);
       detailCache.current.set(Number(id), data);
       setDetail(data);
+      // 登记当前看板：参数栏/查询按钮/导出控件与图表重查询都以 store 上下文为唯一通道，
+      // 此前浏览页从不登记，点刷新会静默 no-op（只回读旧缓存）。
+      useDashboardStore.getState().adoptDashboard(data);
     } catch {
       if (!cached) setError('加载看板失败');
       else setRefreshError('看板最新内容加载失败，当前显示上次加载的结果');
@@ -153,7 +162,13 @@ export default function Analysis() {
       </div>
     );
   }
-  const board = detail as any;
+  const board = (liveBoard ?? detail) as any;
+  // 顶栏“刷新数据” = 逐图 POST charts/{id}/refresh 向数据源重查询。
+  // 只 GET /dashboard/{id} 是回读 DB 缓存，数据永远不变（缺陷，不是特性）。
+  const refreshData = async () => {
+    if (!board?.id) return false;
+    return useDashboardStore.getState().refreshCharts(board.id, board.charts || []);
+  };
   const wantedId = managementPreview ? dashboardId : current?.id ?? 0;
   const play = () => navigate(`/screen/${board.id}?group=${currentGroup?.id ?? 0}&from=${encodeURIComponent(location.pathname)}`, { state: { from: location.pathname } });
   const edit = () => navigate(`/dashboard/editor/${board.id}`, { state: { from: location.pathname } });
@@ -194,7 +209,7 @@ export default function Analysis() {
           </>
         : <h1 className="min-w-0 flex-1 truncate text-lg font-semibold" title={board.name}>{board.name}</h1>}
       <div className="ml-auto flex shrink-0 items-center gap-1" role="toolbar" aria-label="看板操作">
-        <DashboardAutoRefresh key={board.id} onRefresh={() => void loadDetail(board.id)} loading={detailLoading} menuItems={<>
+        <DashboardAutoRefresh key={board.id} onRefresh={refreshData} loading={detailLoading} menuItems={<>
           <DropdownMenuItem disabled={board.status !== 'enabled'} onClick={play}><Play className="mr-2 h-4 w-4" />大屏播放</DropdownMenuItem>
           {managementPreview && board.editable && <DropdownMenuItem onClick={edit}><Edit className="mr-2 h-4 w-4" />编辑看板</DropdownMenuItem>}
         </>} />

@@ -409,6 +409,33 @@ describe('看板管理域与大屏播放', () => {
     expect(within(card).getByText('看板：尚未编排看板')).toBeInTheDocument();
     expect(within(card).getByText('角色：未分配')).toBeInTheDocument();
   });
+  it('看板浏览页顶栏刷新逐图 POST 重查询，不再只 GET 回读缓存', async () => {
+    // 缺陷回归锁：浏览页曾把 GET /dashboard/{id}（只回 data_cache）当刷新，
+    // 且图表刷新/查询按钮依赖 store 当前看板 → 点了没反应
+    const withCharts = { ...board(2), charts: [
+      { id: 21, chart_type: 'bar', sql_query: 'SELECT 1', config: {}, dashboard_id: 2 },
+      { id: 22, chart_type: 'table_value', source_type: 'dataset', source_id: 9, config: {}, dashboard_id: 2 },
+      { id: 23, chart_type: 'widget_search', config: {}, dashboard_id: 2 },
+    ] };
+    vi.mocked(client.get).mockImplementation(async url => {
+      if (url === '/dashboard/groups/visible') return { data: groupsFixture() };
+      if (/^\/dashboard\/2$/.test(url)) return { data: withCharts };
+      const m = /^\/dashboard\/(\d+)$/.exec(url);
+      if (m) return { data: board(Number(m[1])) };
+      return { data: [] };
+    });
+    vi.mocked(client.post).mockResolvedValue({ data: { columns: ['c'], rows: [] } } as any);
+    routes('/ws/7/dashboards/2');
+    await screen.findByText('响应式网格');
+    await waitFor(() => expect(useDashboardStore.getState().currentId).toBe(2));
+    const getsBefore = vi.mocked(client.get).mock.calls.length;
+    fireEvent.click(await screen.findByRole('button', { name: '刷新数据' }));
+    await waitFor(() => expect(client.post).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(client.post).mock.calls.map(([url]) => url).sort())
+      .toEqual(['/dashboard/2/charts/21/refresh', '/dashboard/2/charts/22/refresh']);
+    // 刷新不掺 GET：数据必须来自数据源重查询，而不是回读 DB 缓存
+    expect(vi.mocked(client.get).mock.calls.length).toBe(getsBefore);
+  });
   it('非法播放范围不发起看板请求', () => {
     routes('/screen/2?group=-1'); expect(screen.getByRole('alert')).toHaveTextContent('范围无效');
     expect(client.get).not.toHaveBeenCalled();

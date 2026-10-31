@@ -1,7 +1,7 @@
 import { createElement, useState } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import DashboardEditor from '@/pages/DashboardEditor';
-import { act, cleanup, fireEvent, render, renderHook } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as G2 from '@antv/g2';
 import DashboardChart, { CHART_TYPES } from '../DashboardChart';
@@ -247,6 +247,45 @@ describe('编辑态控件可操作性', () => {
     const multi = render(createElement(DashboardChart, { chartType: 'widget_multi_select', data: { columns: [], rows: [] },
       config: { paramKey: 'm', label: '多选', options: [{ label: 'A', value: 'A' }], widgetStyle: { height: 24 } }, draft: true }));
     expect(multi.container.querySelector('select')!).toHaveStyle({ minHeight: '24px' });
+  });
+});
+
+describe('刷新与查询按钮必须真实重查询', () => {
+  const design = () => resolveDashboardDesign({}, []);
+
+  it('卡片刷新按钮按所属看板 POST 重查询，即使 store 当前看板是别的', async () => {
+    // 缺陷回归锁：看板 id 曾只取全局 currentId，浏览页/大屏/弹窗页点刷新静默 no-op
+    const old = useDashboardStore.getState();
+    useDashboardStore.setState({ dashboards: [], currentId: 999, chartCache: {} });
+    const post = vi.spyOn(client, 'post').mockResolvedValue({ data: { columns: ['name'], rows: [{ name: '新查询结果' }] } } as any);
+    const view = render(<DashboardCanvas dashboard={{ id: 88, filters: {}, charts: [chart] } as any} items={[]} />);
+    fireEvent.click(view.getByTitle('刷新此图表'));
+    await waitFor(() => expect(post).toHaveBeenCalledWith(
+      '/dashboard/88/charts/7/refresh', expect.objectContaining({ params: expect.any(Object) }), expect.anything()));
+    expect(JSON.parse(useDashboardStore.getState().chartCache[7]).rows[0]).toEqual({ name: '新查询结果' });
+    useDashboardStore.setState(old);
+  });
+
+  it('刷新结果写覆盖层：宿主不重新 GET 也立刻换数据（只回缓存即缺陷）', () => {
+    const old = useDashboardStore.getState();
+    useDashboardStore.setState({ chartCache: {} });
+    const table = { ...chart, chart_type: 'table_value',
+      data_cache: JSON.stringify({ columns: ['名称'], rows: [{ 名称: '旧值' }] }) } as ChartModel;
+    const view = render(<DashboardChartCard chart={table} design={design()} items={[]} dashboardId={88} />);
+    expect(view.getByText('旧值')).toBeTruthy();
+    act(() => { useDashboardStore.setState(s => ({ chartCache: { ...s.chartCache, [chart.id]: JSON.stringify({ columns: ['名称'], rows: [{ 名称: '新值' }] }) } })); });
+    expect(view.getByText('新值')).toBeTruthy();
+    useDashboardStore.setState(old);
+  });
+
+  it('查询按钮带所属看板 id 刷新，不只看 store 的当前看板', () => {
+    const old = useDashboardStore.getState();
+    const refresh = vi.spyOn(useDashboardStore.getState(), 'refreshCharts').mockResolvedValue(true);
+    const search = { ...chart, id: 22, chart_type: 'widget_search', config: { label: '查询' } } as ChartModel;
+    const view = render(<DashboardCanvas dashboard={{ id: 88, filters: {}, charts: [search] } as any} items={[]} />);
+    fireEvent.click(view.getByRole('button', { name: '查询' }));
+    expect(refresh).toHaveBeenCalledWith(88);
+    useDashboardStore.setState(old);
   });
 });
 

@@ -1,6 +1,6 @@
 import { forwardRef, memo, useMemo, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import DashboardChart from './DashboardChart';
-import type { Dashboard, DashboardChart as ChartModel } from '@/stores/dashboardStore';
+import { useDashboardStore, type Dashboard, type DashboardChart as ChartModel } from '@/stores/dashboardStore';
 import type { VisComponent } from '@/api/visLibrary';
 import { useThemeStore } from '@/stores/themeStore';
 import { chartData, chartRect, chartZIndex, getCanvas, isChartHidden, resolveChartDesign, resolveDashboardDesign, visualConfig, legacyCanvasFilters, type Rect } from '@/lib/dashboardDesign';
@@ -13,11 +13,17 @@ import { TEMPLATE_DEMO_KEY } from '@/lib/dashboardDemo';
 /** 样式模板图（内置演示数值）的角标提示：降级必须显式，用户得知道自己看的是样式示例而非取数结果 */
 export const DEMO_DATA_HINT = '图表样式示例数据（模板内置，不取数）。要让这张卡出真数，在「数据与字段配置」里写 SQL 或语义查询；保存后示例数据与标记会自动清除。';
 
-export const DashboardChartCard = memo(function DashboardChartCard({ chart, design, items, actions, draft = false, interactive, demoBadge }: {
+export const DashboardChartCard = memo(function DashboardChartCard({ chart, design, items, actions, draft = false, interactive, demoBadge, dashboardId }: {
   chart: ChartModel; design: ReturnType<typeof resolveDashboardDesign>; items: VisComponent[];
   actions?: ReactNode; draft?: boolean; interactive?: boolean; demoBadge?: boolean;
+  /** 所属看板：刷新/查询按钮按它发起重查询；缺省时回退图表自带的 dashboard_id */
+  dashboardId?: number;
 }) {
   const resolved = resolveChartDesign(chart.config, design, items, chart.chart_type);
+  // 实时取数覆盖层：编辑器/看板浏览页/大屏/弹窗页四个渲染面共用一份刷新结果，
+  // 否则非 store 宿主的页面点刷新只会看到旧缓存（历史缺陷）。
+  // 覆盖层只在真实发起过查询时有条目，编辑态试运行同样能看到刷新后的数据。
+  const liveCache = useDashboardStore(s => s.chartCache[chart.id]);
   const cfg = visualConfig(resolved.config);
   const widget = chart.chart_type.startsWith('widget_');
   const ws = resolved.config.widgetStyle || {};
@@ -51,8 +57,9 @@ export const DashboardChartCard = memo(function DashboardChartCard({ chart, desi
     {widget && actions && <div className="absolute right-0 top-0 z-20">{actions}</div>}
     {resolved.missing.length > 0 && <span className="px-2 text-xs text-amber-600" title={resolved.missing.join(', ')}>字模缺失，保留原配置</span>}
     <div {...(inertWidget ? { inert: '' } as any : {})} className="relative min-h-0 flex-1 overflow-hidden" style={{ padding: widget ? ws.padding : 4, color: ws.textColor, fontSize: ws.fontSize }}>
-      <DashboardChart chartType={chart.chart_type} data={chartData(chart)} config={resolved.config}
-        visual={{ ...resolved.visual, viewBg: cfg.cardBg || resolved.visual.viewBg }} chartId={draft ? undefined : chart.id} draft={draft} />
+      <DashboardChart chartType={chart.chart_type} data={chartData(liveCache ? { ...chart, data_cache: liveCache } : chart)} config={resolved.config}
+        visual={{ ...resolved.visual, viewBg: cfg.cardBg || resolved.visual.viewBg }} chartId={draft ? undefined : chart.id}
+        dashboardId={dashboardId ?? chart.dashboard_id} chartName={chart.name} draft={draft} />
     </div>
     {cfg.showCornerBrackets && ['left-0 top-0 border-l-2 border-t-2', 'right-0 top-0 border-r-2 border-t-2',
       'left-0 bottom-0 border-l-2 border-b-2', 'right-0 bottom-0 border-r-2 border-b-2'].map(c =>
@@ -60,7 +67,8 @@ export const DashboardChartCard = memo(function DashboardChartCard({ chart, desi
   </div>;
 });
 interface CanvasProps {
-  dashboard: Pick<Dashboard, 'filters' | 'charts'>; items?: VisComponent[];
+  /** id = 所属看板：刷新/查询按钮按它发起重查询（缩略图/纯预览面可缺省，卡片会回退图表自带的 dashboard_id） */
+  dashboard: Pick<Dashboard, 'filters' | 'charts'> & { id?: number }; items?: VisComponent[];
   style?: CSSProperties; children?: ReactNode; showGrid?: boolean; draft?: boolean;
   interactive?: boolean;
   /** 示例数据角标：真实渲染面（编辑/大屏/页面）默认开启，缩略图/预览卡不走本组件所以不会贴标签 */
@@ -87,7 +95,7 @@ export const DashboardCanvas = forwardRef<HTMLDivElement, CanvasProps>(function 
     {showGrid && <div className="pointer-events-none absolute inset-0" style={gridBackgroundStyle(canvas.gridSize, canvas.gridSize)} />}
     {design.missing.length > 0 && <div className="absolute right-2 top-1 z-10 text-xs text-amber-600">部分字模缺失，已保留原配置</div>}
     {chartRefs.map(chart => {
-      const card = <DashboardChartCard chart={chart} items={items} design={design} draft={draft} interactive={interactive} demoBadge={demoBadge} />;
+      const card = <DashboardChartCard chart={chart} items={items} design={design} draft={draft} interactive={interactive} demoBadge={demoBadge} dashboardId={dashboard.id} />;
       if (renderChart) return renderChart(chart, card);
       const p = chartRect(chart);
       return <div key={chart.id} className="absolute min-h-0" style={{ left: p.x, top: p.y, width: p.w, height: p.h, zIndex: chartZIndex(chart) || undefined }}>{card}</div>;
@@ -147,7 +155,7 @@ export function ResponsiveDashboardCanvas({ dashboard, items = [], draft, intera
         {shown.map(item => {
           const { chart, rect } = item;
           const style = { gridColumn: `${rect.x + 1} / span ${rect.w}`, gridRow: `${rect.y + 1} / span ${rect.h}` };
-          const card = <DashboardChartCard chart={chart} design={design} items={items} draft={draft} interactive={interactive} demoBadge={demoBadge} />;
+          const card = <DashboardChartCard chart={chart} design={design} items={items} draft={draft} interactive={interactive} demoBadge={demoBadge} dashboardId={dashboard.id} />;
           return renderItem ? renderItem(item, card, style) : <div key={chart.id} data-chart-id={chart.id} className="min-h-0 min-w-0" style={style}>{card}</div>;
         })}
       </div>}
