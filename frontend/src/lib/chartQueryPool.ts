@@ -19,8 +19,15 @@
 
 /** 并发上限：留出连接余量给主流程（HTTP/1.1 每源约 6 条） */
 export const CHART_QUERY_CONCURRENCY = 4;
-/** 单条图表查询的前端超时；后端 socket read_timeout 是 60s，前端先给用户一个可读结论 */
-export const CHART_QUERY_TIMEOUT_MS = 20_000;
+/**
+ * 单条图表查询的前端超时。必须**大于**后端取数上界（数据源连接现已对 PG/SLS 也下推
+ * statement_timeout，跨境源抖动时服务端在 ~60s 主动取消并回可诊断错误）：
+ * 前端若先 abort，用户只看到一句笼统"查询超时"、后端那条跨境连接却仍在白烧；
+ * 把预算抬到后端上界之上，让**服务端的显式错误**先返回（有原因、能定位），而不是静默客户端取消。
+ * 历史缺陷：旧值 20s 且注释误称"后端 SLS read_timeout 60s"（SLS 走 PG 协议当时根本没有读超时，
+ * 查询无上界），于是跨境看板(如新加坡 arms-prd-en，一次刷新十几张图)握手抖动即被 20s 提前掐断。
+ */
+export const CHART_QUERY_TIMEOUT_MS = 75_000;
 
 export type ChartQueryResult<T> =
   | { ok: true; value: T }

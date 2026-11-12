@@ -98,6 +98,11 @@ def _patch_startup(monkeypatch, runtime, client_events, disconnect_spy, client_f
     async def _fake_owned(function, *args):
         return function(*args)
     monkeypatch.setattr(secure_sdk, "run_owned_sync", _fake_owned)
+    # 兜底落库是真实写库动作（Phase E），单测不得碰元数据库：换成 spy 记录移交内容
+    def _spy_persist(fallback):
+        if fallback is not None:
+            disconnect_spy.setdefault("fallbacks", []).append(fallback)
+    monkeypatch.setattr(secure_sdk, "_persist_turn_fallback", _spy_persist)
     import backend.modules.mind.execution.session_workspace as sw
     monkeypatch.setattr(sw, "claim_session", lambda *a, **k: runtime)
     import backend.modules.mind.execution.resource_guard as rg
@@ -268,3 +273,114 @@ def test_preflight_inputs_rejects_identity_mismatch():
     # 无预取事实（内部调用路径）→ 拒绝
     assert _preflight_inputs(compile_policy(dict(_AS_BOT)), _fresh_ctx()) is None
     assert _preflight_inputs(None, _fresh_ctx()) is None
+
+
+# ── ⑤ 服务端兜底落库移交（Phase E）───────────────────────────────
+# 断连/异常收场时前端那次 PUT 可能永不到达（会话 1783069459150：跑满 126s、
+# messages=[]）。收尾任务是不受请求生命周期影响的后台任务，唯一还能把已产出正文
+# 写回会话的地方就是它 —— 移交的内容必须是"用户已经看到的那份"。
+
+def streamed_assistant(text: str):
+    """走"逐块流式"那条路的 AssistantMessage。
+
+    `_execute_stream` 完全按**类型名**分派（AssistantMessage / TextBlock），
+    类名不对就既不会 yield token、也不会累计 texts —— 而断连时服务端手里剩下的
+    正是这份 texts 累计，兜底落库靠它。
+    """
+    block = type("TextBlock", (), {"text": text})()
+    return type("AssistantMessage", (), {"content": [block]})()
+
+
+def test_disconnect_hands_partial_body_to_teardown(monkeypatch):
+    runtime = _FakeRuntime()
+    spy = {"disconnected": False}
+    _patch_startup(monkeypatch, runtime,
+                   [streamed_assistant("已产出的半段分析"), ResultMessage()], spy)
+
+    async def scenario():
+        stream = secure_sdk._execute_stream(_make_adapter(), _make_task(), "qoder")
+        it = stream.__aiter__()
+        await it.__anext__()          # capabilities
+        await it.__anext__()          # token（正文已流到前端）
+        await stream.aclose()         # 客户端断开：done 还没发出去
+        await asyncio.gather(*secure_sdk._teardown_tasks)
+
+    asyncio.run(scenario())
+    fallbacks = spy.get("fallbacks") or []
+    assert len(fallbacks) == 1, "回合收尾必须移交一次兜底落库"
+    fb = fallbacks[0]
+    assert fb["conversation_id"] == 100 and fb["user_id"] == 42
+    assert fb["message"]["content"] == "已产出的半段分析"
+    assert fb["message"]["role"] == "assistant"
+    assert fb["question"], "断连时用户问题也可能没落库，兜底要成对补齐"
+    # 兜底不得伪装成功：本回合没跑完，error 只在 result 失败时带
+    assert "error" not in fb["message"] or fb["message"]["error"]
+
+
+def test_success_turn_fallback_carries_final_output(monkeypatch):
+    runtime = _FakeRuntime()
+    spy = {"disconnected": False}
+    _patch_startup(monkeypatch, runtime,
+                   [AssistantMessage("答案正文"), ResultMessage()], spy)
+    events = []
+
+    async def scenario():
+        stream = secure_sdk._execute_stream(_make_adapter(), _make_task(), "qoder")
+        await _drain(stream, events)
+        await asyncio.gather(*secure_sdk._teardown_tasks)
+
+    asyncio.run(scenario())
+    fb = (spy.get("fallbacks") or [{}])[0]
+    assert fb["message"]["content"] == "答案正文"
+    assert fb["message"]["elapsed_ms"] >= 0
+    # 正常回合靠 message_uuid 判重：客户端已 PUT 时 persist_turn_fallback 会跳过
+    assert "message_uuid" in fb
+
+
+def test_fallback_record_skipped_without_conversation(monkeypatch):
+    """无会话归属（如内部调用）不兜底落库，也不得凭空造一条会话记录。"""
+    runtime = _FakeRuntime()
+    spy = {"disconnected": False}
+    _patch_startup(monkeypatch, runtime, [AssistantMessage("答案正文"), ResultMessage()], spy)
+    task = _make_task()
+    task.context.extra.pop("conversation_id", None)
+
+    async def scenario():
+        stream = secure_sdk._execute_stream(_make_adapter(), task, "qoder")
+        await _drain(stream, [])
+        await asyncio.gather(*secure_sdk._teardown_tasks)
+
+    asyncio.run(scenario())
+    assert not spy.get("fallbacks"), "无 conversation_id 时不得移交落库"
+
+
+def test_persist_failure_is_logged_and_annotated(monkeypatch, caplog):
+    """兜底失败必须显式暴露（日志 + trace 标注），不得静默当已落库。"""
+    import logging
+    from backend.modules.mind.execution import secure_sdk as ss
+
+    def _boom(**kwargs):
+        raise RuntimeError("元数据库不可达")
+
+    import backend.modules.mind.api.chat as chat_api
+    monkeypatch.setattr(chat_api, "persist_turn_fallback", _boom)
+    annotated = []
+    monkeypatch.setattr(ss, "_annotate_fallback_failure", annotated.append)
+    with caplog.at_level(logging.ERROR):
+        ss._persist_turn_fallback({"conversation_id": 150, "user_id": 7,
+                                   "message_uuid": "mu", "message": {"content": "x"}})
+    assert "兜底落库异常" in caplog.text
+    assert annotated and "异常" in annotated[0]
+
+
+def test_normal_skip_reasons_are_not_errors(monkeypatch, caplog):
+    """客户端已落库/空回合属正常路径：不该在日志里制造噪音错误。"""
+    import logging
+    from backend.modules.mind.execution import secure_sdk as ss
+    import backend.modules.mind.api.chat as chat_api
+
+    monkeypatch.setattr(chat_api, "persist_turn_fallback",
+                        lambda **kw: {"persisted": False, "reason": "already_persisted_by_client"})
+    with caplog.at_level(logging.ERROR):
+        ss._persist_turn_fallback({"conversation_id": 1, "user_id": 7, "message": {}})
+    assert "兜底落库未完成" not in caplog.text

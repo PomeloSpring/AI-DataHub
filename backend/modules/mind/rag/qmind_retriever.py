@@ -14,14 +14,19 @@ QMind 是 Qoder 的知识库能力,以「笔记本(notebook)」为单位。它�
 
 对外暴露:
 - list_notebooks()            供后台「从 Qoder 检索知识库」列出多个知识库
-- qmind_retrieve(...)         knowledge_search 的默认后端:命中绑定则用 CLI 检索,
-                              否则透明回退既有 graphrag 元数据检索,保证行为不劣化。
+- retrieve_notebooks(...)     多 notebook **一次联合召回**（云端 rerank），检索通道首选入口
+- qmind_retrieve(...)         qmind 通道检索:无命中透明回退既有 graphrag 元数据检索,
+                              回退事实与原因必须标注（不静默）
+
+多知识库并存时的「该查哪个」不在这里判：本模块只负责 qmind 这一条通道。跨 provider
+分派与跨源归并见 `knowledge_retriever` + `providers/`（通道差异不得泄漏给 LLM）。
 """
 
 import json
 import logging
 import os
 import subprocess
+from datetime import datetime
 import time
 from pathlib import Path
 
@@ -34,6 +39,11 @@ _QMIND_CLI_PKG = "@qoder-ai/qmind-cli"
 # ── 简易熔断: 连续失败达阈值后短路一段时间, 避免每次问答都 spawn CLI 子进程 ──
 _CB_FAIL_THRESHOLD = 3
 _CB_COOLDOWN_SEC = 120
+#: 熔断键按 provider 分命名空间。历史缺陷：全局单键 `chatbi:qmind:breaker:*`，
+#: 任何一次外部通道抖动都会把 qmind 一起熔掉 120s —— 旁路故障传进了主链路。
+_BREAKER_PREFIX = "chatbi:kb:qmind:breaker"
+
+
 def _breaker_client():
     from backend.common.cache.factory import get_cache
     # 熔断是协调状态，必须使用会抛错的 Redis 原语，不能走 best-effort 缓存接口。
@@ -41,7 +51,7 @@ def _breaker_client():
 
 
 def _breaker_allowed(now: float = None) -> bool:
-    return not bool(_breaker_client().exists("chatbi:qmind:breaker:open"))
+    return not bool(_breaker_client().exists(f"{_BREAKER_PREFIX}:open"))
 
 
 def _breaker_record(success: bool, now: float = None):
@@ -56,7 +66,7 @@ def _breaker_record(success: bool, now: float = None):
             redis.call('DEL', KEYS[1]); return 1
         end
         return 0
-    """, 2, "chatbi:qmind:breaker:fails", "chatbi:qmind:breaker:open",
+    """, 2, f"{_BREAKER_PREFIX}:fails", f"{_BREAKER_PREFIX}:open",
         "1" if success else "0", _CB_FAIL_THRESHOLD, _CB_COOLDOWN_SEC)
 
 
@@ -222,6 +232,169 @@ def _run_cli(args: list[str]) -> dict | None:
     return data
 
 
+# ── source（知识库里的目录与文档）级调用 ──────────────────────────────
+#
+# 与检索路径的两点差别，都必须在这里说清：
+# 1. **失败外抛，不回空清单**。检索路径可以降级（聊天链路有显式 degraded 标注），
+#    但目录树回 `[]` 会被用户读成"云端知识库一篇文档都没有"，那是假事实。
+# 2. **不动熔断计数**。熔断保护的是聊天热路径（CLI 慢/挂时快速跳过）；后台一次
+#    手工编辑失败不该把 AS-BOT 的检索熔掉 120s —— 那是把旁路故障传进主链路。
+
+class QMindCliError(RuntimeError):
+    """CLI 调用失败。``retryable=False`` 表示属"当前凭据/参数不行"，重试无意义。"""
+
+    def __init__(self, message: str, *, retryable: bool = True):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def _run_cli_checked(args: list[str]) -> dict:
+    data, err = _run_cli_ex(args)
+    if data is None:
+        raise QMindCliError(err or "qmind CLI 调用失败",
+                            retryable=not is_unavailable_error(err or "")
+                            and "AUTH_REQUIRED" not in (err or ""))
+    return data
+
+
+def _run_cli_raw(args: list[str]) -> str:
+    """执行 CLI 返回 stdout 原文（``source content`` 只出纯文本，不吃 --format json）。"""
+    bin_path = ensure_qmind_cli()
+    if not bin_path:
+        raise QMindCliError("qmind CLI 不可用")
+    try:
+        proc = subprocess.run(
+            qmind_cli_argv(args),
+            capture_output=True, text=True, timeout=_CLI_TIMEOUT, env=_cli_env(),
+        )
+    except subprocess.TimeoutExpired as e:
+        raise QMindCliError("qmind CLI 超时，请稍后重试") from e
+    except FileNotFoundError as e:
+        raise QMindCliError("qmind CLI 未安装（运行 bash runtime/qmind/setup.sh）") from e
+    if proc.returncode != 0:
+        err = _extract_err(proc.stdout, proc.stderr)
+        logger.warning("[qmind] `%s` failed (rc=%s): %s", " ".join(args), proc.returncode, err)
+        raise QMindCliError(err or "qmind CLI 调用失败",
+                           retryable=not is_unavailable_error(err or "")
+                           and "AUTH_REQUIRED" not in (err or ""))
+    return proc.stdout or ""
+
+
+def list_sources(notebook_id: str) -> list[dict]:
+    """知识库（notebook）里的全部条目：目录与文档，按 --all 拉全分页。
+
+    返回项关键字段：``id / title / isDir / parentSourceId / path / sourceType /
+    status / updatedAt / errorMessage``。**失败外抛**，不返回空列表。
+    """
+    data = _run_cli_checked(["source", "list", "--nb", notebook_id, "--format", "json", "--all"])
+    items = data.get("sources")
+    if not isinstance(items, list):
+        raise QMindCliError("qmind source list 返回形状不对（缺 sources 数组）")
+    return items
+
+
+def read_source_content(notebook_id: str, source_id: str) -> str:
+    """读解析后的正文（markdown 文本）。空内容返回空串 —— 由调用方判"文档是空的"。"""
+    return _run_cli_raw(["source", "content", str(source_id), "--nb", notebook_id])
+
+
+def upload_source(notebook_id: str, local_path: str, title: str,
+                  *, parent_id: str = "", path: str = "", source_type: str = "markdown") -> str:
+    """上传本地文件为新 source，返回新 source_id。
+
+    云端没有"原地改正文"的接口（CLI 的目录同步也是"传新件 → 删旧件"两步），
+    所以保存 = 新增 + 删除旧件；调用方必须处理"新件已建、旧件删失败"的重复态。
+    """
+    args = ["source", "upload", "--nb", notebook_id, "--file", str(local_path),
+            "--title", title, "--format", "json"]
+    if source_type:
+        args += ["--type", source_type]
+    if parent_id:
+        args += ["--parent", parent_id]
+    if path:
+        args += ["--path", path]
+    data = _run_cli_checked(args)
+    new_id = data.get("id") or (data.get("source") or {}).get("id")
+    if not new_id:
+        raise QMindCliError("qmind source upload 未返回新 source id")
+    return str(new_id)
+
+
+def create_source_dir(notebook_id: str, title: str, *, parent_id: str = "") -> str:
+    args = ["source", "mkdir", "--nb", notebook_id, "--title", title, "--format", "json"]
+    if parent_id:
+        args += ["--parent", parent_id]
+    data = _run_cli_checked(args)
+    new_id = data.get("id") or (data.get("source") or {}).get("id")
+    if not new_id:
+        raise QMindCliError("qmind source mkdir 未返回新 source id")
+    return str(new_id)
+
+
+def source_node(s: dict) -> dict:
+    """云端 source → 业务可读节点(其余字段是内部标识, 不外发)。
+
+    刻意**不**带 ``uri`` / ``originUrl``(对象存储路径与带签名的下载链接)、``orgId`` /
+    ``userId`` / ``notebookId`` —— 护栏 §7: 内部标识不进响应体, 带签名的 URL 更不行。
+    """
+    return {
+        "source_id": str(s.get("id") or ""),
+        "title": str(s.get("title") or ""),
+        "is_dir": bool(s.get("isDir")),
+        "parent_id": str(s.get("parentSourceId") or ""),
+        "path": str(s.get("path") or ""),
+        "source_type": str(s.get("sourceType") or ""),
+        "status": str(s.get("status") or ""),
+        "error_message": str(s.get("errorMessage") or ""),
+        "updated_at": _fmt_ts(s.get("updatedAt")),
+    }
+
+
+def _fmt_ts(value) -> str:
+    """CLI 的时间戳是 {seconds, nanos}; 兼容已解析成字符串的情形。"""
+    if isinstance(value, dict):
+        secs = int(value.get("seconds") or 0)
+        return datetime.fromtimestamp(secs).strftime("%Y-%m-%d %H:%M:%S") if secs else ""
+    return str(value or "")
+
+
+def build_source_tree(items: list[dict]) -> tuple[list[dict], int, int, bool]:
+    """扁平 source 清单 → 目录树。返回 (roots, 文档数, 目录数, 是否扁平库)。
+
+    父不存在(或父没出现在清单里)的条目挂到根并打 ``orphan`` 标记 —— 宁可层级看起来
+    保守, 也不能让文档从树上凭空消失(消失 = 用户以为库里没有, 那是假事实)。
+    """
+    nodes = [source_node(s) for s in items if s.get("id")]
+    by_id = {n["source_id"]: {**n, "children": []} for n in nodes}
+    roots: list[dict] = []
+    for n in nodes:
+        node = by_id[n["source_id"]]
+        pid = n["parent_id"]
+        if pid and pid in by_id:
+            by_id[pid]["children"].append(node)
+        else:
+            if pid:
+                node["orphan"] = True
+            roots.append(node)
+    _sort_tree(roots)
+    docs = [n for n in nodes if not n["is_dir"]]
+    folders = [n for n in nodes if n["is_dir"]]
+    return roots, len(docs), len(folders), all(not n["parent_id"] for n in nodes)
+
+
+def _sort_tree(nodes: list[dict]) -> None:
+    """目录在前、同类按名称; 递归排序(展示层稳定, 不靠云端返回顺序)。"""
+    nodes.sort(key=lambda n: (not n["is_dir"], n["title"].lower()))
+    for n in nodes:
+        if n.get("children"):
+            _sort_tree(n["children"])
+
+
+def delete_source(notebook_id: str, source_id: str) -> None:
+    """删除 source（目录级联需 --force：无交互终端，确认只能由调用方的门禁来给）。"""
+    _run_cli_raw(["source", "delete", str(source_id), "--nb", notebook_id, "--force"])
+
+
 # ── 知识库(notebook)列举 ────────────────────────────────────────────
 
 
@@ -303,40 +476,134 @@ def list_notebooks() -> list[dict]:
 
 # ── 知识检索 ─────────────────────────────────────────────────────────
 
-def retrieve_notebook(notebook_id: str, question: str, top_k: int = 5) -> list[dict]:
-    """对单个笔记本检索,返回标准化 chunk 列表(失败返回 [])."""
-    data = _run_cli(["retrieve", "--nb", notebook_id, "-q", question, "--format", "json"])
-    if not data:
-        return []
-    raw = data.get("results") or data.get("chunks") or data.get("data") or []
+#: qmind CLI 单次调用最多带 5 个 notebook（`retrieve --help` 原文：maximum 5）；
+#: 超出按批拆分，**批间不做跨批排序**（排序口径只留上层归并一处，避免两套口径飘）。
+_NB_BATCH = 5
+
+
+def _norm_chunk(item: dict) -> dict:
+    """CLI chunk → 平台归一形状（标题字段与黑盒都在这一处收口）。
+
+    历史缺陷：原先取 `item.get("title") or item.get("source")`，而 CLI 实际字段是
+    `sourceTitle` / `notebookTitle` —— 两个键都不存在，title 恒为空串，于是
+    `knowledge-qa` 剧本要求的「每条结论标来源」在数据层就拿不到出处。
+
+    黑盒（护栏 §7）：`originUrl` / `sourceUri` 是对象存储路径与带签名链接，一律不取；
+    内部定位 id 以 `_` 前缀留在服务端，对外前由 `_drop_internal` 剥除。
+    """
+    text = str(item.get("content") or item.get("text") or item.get("answer") or "")
+    if not text:
+        return {}
+    out = {
+        "content": text,
+        "title": str(item.get("sourceTitle") or item.get("title")
+                     or item.get("notebookTitle") or "").strip(),
+    }
+    score = item.get("score")
+    if isinstance(score, (int, float)) and not isinstance(score, bool):
+        out["score"] = round(float(score), 4)
+    nb = item.get("notebookId") or item.get("notebook_id")
+    if nb:
+        out["_notebook_id"] = str(nb)
+    src = item.get("sourceId") or item.get("source_id")
+    if src:
+        out["_source_id"] = str(src)
+    return out
+
+
+def _drop_internal(chunk: dict) -> dict:
+    """剥除 `_` 前缀的内部定位键：notebook/source id 不进 LLM 视野也不进响应体。"""
+    return {k: v for k, v in chunk.items() if not str(k).startswith("_")}
+
+
+def _norm_citation(item: dict) -> dict:
+    """云端 citations → 只取可读标题（按字段白名单取，URL/内部 id 一律不透出）。"""
+    title = str(item.get("sourceTitle") or item.get("title") or item.get("name") or "").strip()
+    if not title:
+        return {}
+    out = {"title": title}
+    nb = str(item.get("notebookTitle") or "").strip()
+    if nb:
+        out["knowledge_base"] = nb
+    return out
+
+
+def retrieve_notebooks(notebook_ids: list, question: str, top_k: int = 5) -> dict:
+    """一次调用问多个笔记本。返回 `{chunks, citations, errors}`。
+
+    CLI 原生支持 `--nb a,b,c` 的**跨库联合召回 + 服务端 rerank**（实测返回体
+    `reranked: true`，每条 chunk 带 `notebookId`/`notebookTitle` 可归属）。历史实现把它
+    拆成 Python 侧逐库单问 + first-hit-wins，等于丢弃后续库的结果，并多付 N-1 次
+    node 子进程启动（实测每次 ~1.1-1.5s）—— 本函数是收敛点。
+
+    **失败与「库里确实没有」必须可区分**：调用失败原因进 `errors`，不静默当成空结果
+    （no-silent-degradation §1）。
+    """
+    ids = [str(x).strip() for x in (notebook_ids or []) if str(x).strip()]
+    if not ids:
+        return {"chunks": [], "citations": [], "errors": []}
+    limit = max(1, int(top_k))
     chunks: list[dict] = []
-    for item in raw[: max(1, int(top_k))]:
-        if not isinstance(item, dict):
+    citations: list[dict] = []
+    errors: list[str] = []
+    for i in range(0, len(ids), _NB_BATCH):
+        batch = ids[i:i + _NB_BATCH]
+        data, err = _run_cli_ex(["retrieve", "--nb", ",".join(batch), "-q", question,
+                                 "--max-results", str(limit), "--format", "json"])
+        if data is None:
+            errors.append(err or "qmind retrieve 失败")
             continue
-        text = item.get("content") or item.get("text") or item.get("answer") or ""
-        if not text:
-            continue
-        chunks.append({
-            "title": item.get("title") or item.get("source") or "",
-            "content": text,
-            "score": item.get("score"),
-        })
-    return chunks
+        raw = data.get("chunks") or data.get("results") or data.get("data") or []
+        for item in raw:
+            if isinstance(item, dict):
+                c = _norm_chunk(item)
+                if c:
+                    chunks.append(c)
+        for cit in data.get("citations") or []:
+            if isinstance(cit, dict):
+                n = _norm_citation(cit)
+                if n:
+                    citations.append(n)
+    # 同一次调用的分是同一份 rerank 输出，可直接比；多批时分不可跨批比，此时
+    # 保持 CLI 返回序（不拿不可比的分强行排序）。
+    if len(ids) <= _NB_BATCH and all("score" in c for c in chunks):
+        chunks.sort(key=lambda c: -float(c["score"]))
+    return {"chunks": chunks, "citations": citations[:limit], "errors": errors}
+
+
+def retrieve_notebook(notebook_id: str, question: str, top_k: int = 5) -> list[dict]:
+    """对单个笔记本检索，返回标准化 chunk 列表（失败返回 []）。
+
+    保留单库入口是给「已知只问一个库」的调用方（如设计任务 strict 路径）；
+    多库场景请直接用 `retrieve_notebooks`，不要在这里循环单库调用。
+    """
+    return retrieve_notebooks([notebook_id], question, top_k)["chunks"]
 
 
 def retrieve_notebook_strict(notebook_id: str, question: str, top_k: int = 5) -> list[dict]:
-    """设计任务检索：失败与无命中严格区分，不执行任何回退。"""
+    """设计任务检索：失败与无命中严格区分，不执行任何回退。
+
+    归一形状与主链路同源（`_norm_chunk`）：历史这里也取 `title`/`source` 两个不存在的键，
+    标题恒为空 → 设计侧「无版本戳时按文档名核验来源」的分支永远进不去，
+    只能把可核验的平台同步文档报成 `unverified_source`。
+    """
     if not _breaker_allowed():
         raise RuntimeError("知识库熔断中，请稍后重试")
-    data = _run_cli(["retrieve", "--nb", notebook_id, "-q", question, "--format", "json"])
+    data = _run_cli(["retrieve", "--nb", notebook_id, "-q", question,
+                     "--max-results", str(max(1, int(top_k))), "--format", "json"])
     if data is None:
         raise RuntimeError("业务知识库检索失败")
-    raw = data.get("results") or data.get("chunks") or data.get("data") or []
+    raw = data.get("chunks") or data.get("results") or data.get("data") or []
     if not isinstance(raw, list):
         raise RuntimeError("知识库结果格式不受支持")
-    return [{"title": item.get("title") or item.get("source") or "",
-             "content": item.get("content") or item.get("text") or item.get("answer") or ""}
-            for item in raw[:top_k] if isinstance(item, dict)]
+    out = []
+    for item in raw[: max(1, int(top_k))]:
+        if not isinstance(item, dict):
+            continue
+        c = _norm_chunk(item)
+        if c:
+            out.append({k: v for k, v in _drop_internal(c).items() if k in ("title", "content")})
+    return out
 
 
 def _parse_cfg(value) -> dict:
@@ -486,20 +753,35 @@ def qmind_retrieve(
     top_k: int = 5,
     system_scope: bool = False,
 ) -> dict:
-    """默认 QMind 检索入口:优先命中的绑定知识库经 qmind CLI 检索,否则回退 graphrag.
+    """qmind 通道检索：一次联合召回全部绑定库，无命中时透明回退本地元数据。
+
+    与历史实现的两处行为差别都是**修缺陷**，不是改设计：
+
+    1. **不再 first-hit-wins**。旧循环逐库单问，第一个有命中的库直接返回、后面的库永远
+       不被问；而那个“第一”来自一条**没有 ORDER BY** 的 SQL 的返回序（实践=kb id 升序），
+       等于绑定顺序决定答案来源，用户既看不到也调不了。现在把绑定库一次性交给
+       云端联合召回（实测返回体 `reranked: true`）。
+    2. **回退必须可诊断**。旧实现只在“确有 qmind 库被问过”时才标注回退
+       （tagged=bool(kbs)），于是“绑了库但没有已接入通道”会静默回退本地元数据且不置
+       degraded —— 用户视角是正常知识答案，实际是元数据投影（no-silent-degradation §1）。
+
+    本函数同时是写侧链路（本体建模取业务上下文）的检索入口，签名保持稳定；
+    跨 provider 的聊天主路请走 `knowledge_retriever.knowledge_retrieve`。
 
     Args:
         question: 用户问题。
-        datasource_id: 回退 graphrag 时按数据源过滤元数据。
-        kb_ids: AS-BOT 绑定的知识库 ID;指定时仅在这些库中检索。
-        top_k: 检索条数(可被知识库 source_config.top_k 覆盖)。
-        system_scope: 系统能力形态标记(能力叠加，域规则更新)。命中/回退行为与业务一致，
+        datasource_id: 回退 graphrag 时按数据源过滤元数据，并用于新鲜度比对。
+        kb_ids: AS-BOT 绑定的知识库 ID；指定时仅在这些库中检索。
+        top_k: 检索条数（可被知识库 source_config.top_k 覆盖）。
+        system_scope: 系统能力形态标记（能力叠加）。命中/回退行为与业务一致，
             仅在结果中标注 ``system_scope=True`` 供分桶归因；系统运营问题应走 system_* 工具，
             不拿业务知识充数由 prompt 引导承担（不再是检索硬限定）。
 
     Returns:
-        QMind 命中: {chunks, count, rag_source='qmind', knowledge_base, notebook_id};
-        否则 graphrag 统一结果 dict(系统能力时额外携带 ``system_scope=True`` 标注)。
+        命中: {chunks, count, rag_source='qmind', knowledge_bases, citations,
+              hit_object_keys, doc_stale, doc_version}；部分批次失败时额外带 degraded。
+        未命中: graphrag 统一结果 dict，按事实标注 rag_source/degraded/degraded_reason。
+        黑盒：notebook_id / source_id / 签名 URL 一律不进返回体（护栏 §7）。
     """
     def _mark_system(result) -> dict:
         out = dict(result or {})
@@ -507,30 +789,56 @@ def qmind_retrieve(
             out["system_scope"] = True
         return out
 
-    kbs = _bound_qmind_kbs(kb_ids)
-    # 熔断开启且确有绑定的 QMind 库: 短路回退本地 hybrid, 不逐次 spawn CLI(标注降级)。
-    if kbs and not _breaker_allowed():
-        result = _fallback_graphrag(question, datasource_id, tagged=True)
+    def _fallback(reason: str, tagged: bool) -> dict:
+        result = _fallback_graphrag(question, datasource_id, tagged=tagged)
         result = _mark_system(result)
-        result["rag_source"] = f"{result.get('rag_source', 'graphrag')}|qmind_circuit_open"
-        result["degraded"] = True
+        if reason:
+            result["degraded"] = True
+            result["degraded_reason"] = reason
         return result
-    for kb in kbs:
-        k = int(kb["cfg"].get("top_k") or top_k)
-        chunks = retrieve_notebook(kb["notebook_id"], question, k)
-        if chunks:
-            logger.info("[qmind] kb=%s notebook=%s retrieved %d chunks",
-                        kb.get("name"), kb["notebook_id"], len(chunks))
-            fresh = _evaluate_doc_freshness(datasource_id, chunks)
-            return {
-                "chunks": chunks,
-                "count": len(chunks),
-                "rag_source": "qmind",
-                "knowledge_base": kb.get("name"),
-                "notebook_id": kb["notebook_id"],
-                "hit_object_keys": extract_object_keys(chunks),
-                **fresh,
-            }
-    # 无命中(未绑定 / CLI 不可用 / 无结果)→ 回退；系统能力形态同样回退业务元数据，
-    # 以 rag_source/system_scope 标注来源（能力叠加，检索结果可区分可诊断）。
-    return _mark_system(_fallback_graphrag(question, datasource_id, tagged=bool(kbs)))
+
+    kbs = _bound_qmind_kbs(kb_ids)
+    nb_ids = [str(k.get("notebook_id") or "").strip() for k in kbs if k.get("notebook_id")]
+    if not nb_ids:
+        # 绑了库但没有可问的 qmind 通道：回退可以，但必须把“没问成”这件事说出去
+        # （tagged 看的是“本轮有没有绑定”，不是“有没有可问的库”——否则回退标签与
+        # degraded 事实不一致，评测分桶会把降级当成正常命中）
+        reason = ("" if not kb_ids else
+                  "绑定的知识库没有可检索的 qmind 通道（类型不是 qmind 或未导入 notebook）")
+        return _fallback(reason, tagged=bool(kbs or kb_ids))
+    # 熔断开启且确有可问的库: 短路回退本地 hybrid, 不逐次 spawn CLI（标注降级）。
+    if not _breaker_allowed():
+        result = _fallback("qmind 知识库熔断中（连续失败已短路），本次未发起云端检索",
+                           tagged=True)
+        result["rag_source"] = f"{result.get('rag_source', 'graphrag')}|qmind_circuit_open"
+        return result
+
+    # 各库 top_k 取最大值作为联合召回上限：合并后无法再按库分配额度，
+    # 取最大值是保守做法（宁可多召回后截，不能让某个库拿不到名额）。
+    limit = max([int(k["cfg"].get("top_k") or top_k) for k in kbs] or [int(top_k)])
+    got = retrieve_notebooks(nb_ids, question, limit)
+    chunks = got["chunks"]
+    if chunks:
+        logger.info("[qmind] kb=%s notebooks=%d retrieved %d chunks (batch_errors=%d)",
+                    ",".join(str(k.get("name") or "") for k in kbs), len(nb_ids),
+                    len(chunks), len(got["errors"]))
+        fresh = _evaluate_doc_freshness(datasource_id, chunks)
+        out = {
+            "chunks": [_drop_internal(c) for c in chunks],
+            "count": len(chunks),
+            "rag_source": "qmind",
+            # 联合召回后答案可能来自多个库，单数 knowledge_base 会误导“哪个库说的”
+            "knowledge_bases": [str(k.get("name") or "") for k in kbs if k.get("name")],
+            "citations": got["citations"],
+            "hit_object_keys": extract_object_keys(chunks),
+            **fresh,
+        }
+        if got["errors"]:
+            out["degraded"] = True
+            out["degraded_reason"] = f"部分知识库批次检索失败: {'; '.join(got['errors'])[:200]}"
+        return out
+    if got["errors"]:
+        # 全批失败 ≠ 库里没有：回退可以，但必须说是因为失败才回退
+        return _fallback(f"qmind 检索失败: {'; '.join(got['errors'])[:200]}", tagged=True)
+    # 云端问过且确实无结果 → 回退本地元数据，以 rag_source 标注来源（可区分可诊断）。
+    return _fallback("", tagged=True)

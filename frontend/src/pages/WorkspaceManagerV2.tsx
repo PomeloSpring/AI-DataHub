@@ -11,7 +11,7 @@ import { Users, HardDrive, Trash2, RefreshCw, Settings2 } from 'lucide-react';
 import client from '@/api/client';
 import { WorkspaceDeleteDialog } from '@/components/WorkspaceDeleteDialog';
 
-// 管理员统管: 工作空间为用户个人工作站(随用户走, 无成员协作),
+// 管理员统管: 工作空间为用户个人空间(随用户走, 无成员协作),
 // 管理员在此按用户限制可建空间数与每空间磁盘配额, 并查看磁盘用量。
 
 interface QuotaWorkspace {
@@ -26,6 +26,9 @@ interface QuotaUser {
   username: string;
   max_workspaces: number;
   disk_quota_bytes: number;
+  /** 后端下发的"生效配额"是否为系统缺省（管理员未显式配置过）。
+   *  显示值必须与实际拦截门同源，缺省时也要看得见，避免"页面显示有配额、实际不拦"的双口径。 */
+  quota_is_default?: boolean;
   workspaces: QuotaWorkspace[];
 }
 
@@ -115,7 +118,7 @@ export default function WorkspaceManagerV2() {
         <div>
           <h1 className="text-2xl font-bold">用户工作空间统管</h1>
           <p className="text-muted-foreground mt-1">
-            工作空间是用户个人工作站（随用户走，用户自助创建）；在此限制每个用户的空间数量与磁盘配额。
+            工作空间是用户的个人空间（随用户走，用户自助创建）；在此限制每个用户的空间数量与磁盘配额。
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={load} disabled={loading}>
@@ -137,9 +140,10 @@ export default function WorkspaceManagerV2() {
                   <Users className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                   <span className="font-medium truncate">{u.username}</span>
                   <Badge variant="secondary">{u.workspaces.length}/{u.max_workspaces} 个空间</Badge>
-                  <Badge variant="outline" className="text-xs">
+                  <Badge variant="outline" className="text-xs"
+                    title={u.quota_is_default ? '系统缺省（未显式配置），达到上限会拒绝新建会话' : '管理员显式配置'}>
                     <HardDrive className="h-3 w-3 mr-1" />
-                    每空间 {fmtBytes(u.disk_quota_bytes)}
+                    每空间 {fmtBytes(u.disk_quota_bytes)}{u.quota_is_default ? '（系统缺省）' : ''}
                   </Badge>
                 </div>
                 <Button variant="outline" size="sm" onClick={() => openQuota(u)}>
@@ -149,7 +153,7 @@ export default function WorkspaceManagerV2() {
               </div>
 
               {u.workspaces.length === 0 ? (
-                <p className="text-sm text-muted-foreground">该用户还没有工作空间（首次访问时自动创建默认工作站）</p>
+                <p className="text-sm text-muted-foreground">该用户还没有工作空间（首次访问时自动创建默认工作空间）</p>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
                   {u.workspaces.map(ws => {
@@ -162,10 +166,10 @@ export default function WorkspaceManagerV2() {
                             <span className="text-sm font-medium truncate">{ws.name}</span>
                             {ws.is_default ? (
                               <Badge variant="outline" className="text-[10px]"
-                                title="默认工作站不可删除，仅可删除用户自行创建的自定义空间">默认</Badge>
+                                title="默认工作空间不可删除，仅可删除用户自行创建的自定义空间">默认</Badge>
                             ) : null}
                           </div>
-                          {/* 默认工作站不给删(与用户侧下拉、后端 409 同一口径) */}
+                          {/* 默认工作空间不给删(与用户侧下拉、后端 409 同一口径) */}
                           {!ws.is_default && (
                             <Button
                               variant="ghost" size="sm" className="text-destructive"
@@ -202,13 +206,18 @@ export default function WorkspaceManagerV2() {
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>可建工作空间数（含默认工作站）</Label>
+              <Label>可建工作空间数（含默认工作空间）</Label>
               <Input type="number" min={1} value={editMax} onChange={e => setEditMax(e.target.value)} />
             </div>
             <div className="space-y-2">
               <Label>每工作空间磁盘配额（GB）</Label>
-              <Input type="number" min={1} step="0.5" value={editDiskGb} onChange={e => setEditDiskGb(e.target.value)} />
-              <p className="text-xs text-muted-foreground">达到上限后将拒绝新建会话，用户需归档收藏产物或清理会话文件。</p>
+              <Input type="number" min={0.1} step={0.1} value={editDiskGb} onChange={e => setEditDiskGb(e.target.value)} />
+              <p className="text-xs text-muted-foreground">
+                达到上限后将拒绝新建会话，用户需归档收藏产物或清理会话文件。
+                {quotaTarget?.quota_is_default
+                  ? '当前为系统缺省值，保存后即成为该用户的显式配置。'
+                  : '当前为该用户的显式配置。'}
+              </p>
             </div>
           </div>
           <DialogFooter>

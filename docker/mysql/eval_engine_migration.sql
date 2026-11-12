@@ -20,7 +20,9 @@
 -- * passed 是**确定性断言**的结果，score 是 LLM 辅助评分（仅评价解释质量）——
 --   二者分开，绝不让 LLM 评分决定安全/取数正确性（既定决策）。
 -- * sources 记归因分桶：compile 层是解析档位(dict_exact/dict_alias/phys_col…)，
---   retrieval 层是检索来源(qmind_hit/graphrag/bm25/local_hybrid_fallback…)。
+--   retrieval 层是检索来源(qmind_hit/bailian_hit/multi_source_hit/graphrag/bm25/
+--   local_hybrid_fallback…)。多源接入后新增后三个标签；qmind_hit 不重命名，
+--   否则历史基线会变成“伪回退”。
 --   两类桶语义不同，报告里必须分开呈现，不得混为一谈（有 pitfall 记录）。
 -- ============================================================================
 

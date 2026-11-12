@@ -4,13 +4,16 @@ import client from '../api/client';
 import { invalidateCatalogCache } from '@/lib/dashboardCatalog';
 import { chartQueryPool } from '@/lib/chartQueryPool';
 import { templateChartPayload, isDemoChart } from '@/lib/dashboardDemo';
+import { pageSizeOf } from '@/lib/dashboardDesign';
+import { boundParamKeys } from '@/lib/dashboardParamAssembly';
 
 export interface DashboardChart {
   id: number;
   dashboard_id: number;
   name: string;
   chart_type: string;
-  sql_query: string;
+  /** 旧版残留（服务端可能仍读出）：图表不再携带口径，写入口已拒收 SQL，渲染不再依赖它 */
+  sql_query?: string | null;
   semantic_query?: Record<string, any> | null;
   query_source?: 'raw_sql' | 'semantic';
   config: Record<string, any>;
@@ -25,7 +28,8 @@ export interface DashboardChart {
 export interface DashboardParam {
   name: string;
   label: string;
-  type: 'select' | 'text' | 'number' | 'date';
+  /** `text` 是历史别名（等价 `string`）；两套命名空间的类型词汇 2026-11-10 收敛为一份 */
+  type: 'select' | 'string' | 'text' | 'number' | 'date' | 'date_range';
   options?: string[];
   default?: string;
   placeholder?: string;
@@ -33,9 +37,10 @@ export interface DashboardParam {
 
 export interface PageParam {
   name: string;
-  type: 'string' | 'number' | 'date' | 'date_range';
+  type: 'string' | 'number' | 'date' | 'date_range' | 'select';
   default: string;
   label: string;
+  options?: string[];
 }
 
 export type DashboardStatus = 'designing' | 'enabled' | 'closed';
@@ -48,6 +53,8 @@ export interface Dashboard {
   filters: Record<string, any>;
   params: DashboardParam[];
   page_params: PageParam[];
+  /** 看板自由标签（后端归一为字符串数组；仅管理页过滤用，不参与取数/权限） */
+  tags?: string[];
   status: DashboardStatus;
   owner_id: number;
   is_public: boolean;
@@ -91,9 +98,26 @@ export interface ChartRefreshExtra {
   dashboardId?: number;
   /** 诊断文案用的业务名：宿主未登记看板时也能报出图名而非裸 id */
   chartName?: string;
-  page_limit?: number;
-  page_offset?: number;
-  count_sql?: string;
+  /** 每页行数（服务端硬上限 100）与页号（从 1 起）：表值图真分页的两个参数 */
+  page_size?: number;
+  page_num?: number;
+  // 没有 offset / count_sql：偏移量与行总数均由服务端算，
+  // 前端递交 SQL或扫行起点等于开第二取数通道（2026-11-06 随图表自带 SQL 一同下线）
+}
+
+export interface ChartParamUnbound {
+  key: string;
+  label: string;
+  kind?: string;
+  /** 本数据集里这个逻辑参数落到的变量名（控件常用 bind_param 直绑它们，匹配业务名要靠这一列） */
+  vars?: string[];
+  /** 区间只给到一端：另一端按数据集默认值凑，口径不完整 */
+  partial?: boolean;
+}
+
+export interface ChartParamDiagnostic {
+  unbound: ChartParamUnbound[];
+  notes: string[];
 }
 
 interface DashboardState {
@@ -117,6 +141,12 @@ interface DashboardState {
    * 像没反应（只回缓存）。覆盖层按全局唯一 chartId 存放，卡片订阅它即可全场景一致。
    */
   chartCache: Record<number, string>;
+  /**
+   * 参数落地诊断（chartId -> 服务端 bound_args 的回传）：本图数据集声明了入参、
+   * 而看板没给值时，取数会按数据集自身默认口径出数 —— 这是"看着被筛过其实没筛"，
+   * 必须在图卡上看得见（2026-11-06 收口，替代过去静默丢弃的行为）。
+   */
+  paramDiagnostics: Record<number, ChartParamDiagnostic>;
 
   reset: () => void;
   loadDashboards: (workspaceId?: number) => Promise<void>;
@@ -141,6 +171,15 @@ interface DashboardState {
   setPageParams: (params: PageParam[]) => void;
   setPageParamValue: (name: string, value: any) => void;
   initPageParamValues: () => void;
+  /**
+   * 重置看板参数的**唯一口径**（顶栏「重置」与画布 `widget_reset` 共用）：
+   * 把本看板全部参数键恢复声明默认值，`paramValues` 与 `pageParamValues`
+   * **两个命名空间一起清**，然后重查。
+   *
+   * 历史缺陷：`widget_reset` 只写 `paramValues`，而下发时 `{ ...paramValues, ...pageParamValues }`
+   * 让同名键被 `pageParamValues` 覆盖 → 按了“重置”取数仍按旧区间（空承诺）。
+   */
+  resetParams: (dashboardId?: number) => Promise<boolean>;
   refreshCharts: (dashboardId?: number, charts?: DashboardChart[]) => Promise<boolean>;
   refreshSingleChart: (chartId: number, extra?: ChartRefreshExtra) => Promise<boolean>;
   /** 退出页面 / 切换看板时调用：未执行的图表查询直接丢弃，执行中的直接中止 */
@@ -151,10 +190,24 @@ let loadVersion = 0;
 let sessionVersion = 0;
 const refreshVersions = new Map<number, number>();
 
+/** 看板标签归一：后端新接口回数组，但旧进程/缓存/JSON 文本列可能回字符串（甚至 '[]'），
+ *  在入 store 的唯一收口处统一成干净字符串数组——否则管理页 `.forEach/.includes/.slice` 直接崩。 */
+const toTags = (value: unknown): string[] => {
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    try { parsed = JSON.parse(value); } catch { parsed = value.trim() ? [value] : []; }
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: string[] = [];
+  for (const item of parsed) { const s = String(item ?? '').trim(); if (s && !out.includes(s)) out.push(s); }
+  return out;
+};
+
 /** 接口返回的看板归一为 store 形状（历史字段 pageParams 藏在 filters 里，两处同一口径） */
 const normalizeDashboard = (d: Dashboard): Dashboard => ({
   ...d, filters: d.filters || {}, charts: d.charts || [],
   page_params: d.page_params || d.filters?.pageParams || [],
+  tags: toTags(d.tags),
 });
 
 /** 诊断文案前缀：优先业务名，不退化成裸 id（ui-resource-display.md） */
@@ -182,6 +235,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   refreshing: false,
   refreshingChartIds: new Set(),
   chartCache: {},
+  paramDiagnostics: {},
 
   reset: () => {
     // 登出 / 切换工作空间：先终止未完成的图表查询，再推进会话版本
@@ -189,7 +243,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     ++loadVersion; ++sessionVersion; refreshVersions.clear();
     set({ dashboards: [], currentId: null, currentWorkspaceId: 0, loading: false, error: null,
       globalFilters: {}, crossFilters: [], paramValues: {}, pageParams: [], pageParamValues: {}, refreshing: false,
-      refreshingChartIds: new Set(), chartCache: {} });
+      refreshingChartIds: new Set(), chartCache: {}, paramDiagnostics: {} });
   },
 
   loadDashboards: async (workspaceId?: number) => {
@@ -389,6 +443,29 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     set({ pageParamValues: newValues });
   },
 
+  resetParams: async (dashboardId) => {
+    // 看板 id 显式解析（与 refreshCharts 同口径）：浏览页/大屏可能同时呈现多个看板，
+    // 只读全局 currentId 会把“重置”打到错的看板上（看上去按了没反应）
+    const dashId = Number(dashboardId) || get().currentId || 0;
+    const dash = get().dashboards.find(d => d.id === dashId);
+    if (!dash) {
+      toast.error('重置未发起：看板数据尚未加载完成，请稍后重试');
+      return false;
+    }
+    const declared: Record<string, any> = {};
+    for (const p of [...(dash.params || []), ...(dash.page_params || [])]) declared[p.name] = p.default ?? '';
+    // 键集合 = 参数定义 ∪ 当前已存值 ∪ 画布控件绑定的键（含 bind_param 拆出的变量名）：
+    // 少一类就会“重置不干净”（控件写了值但参数定义里没这个键是常态）
+    const keys = new Set<string>([
+      ...Object.keys(declared), ...Object.keys(get().paramValues),
+      ...Object.keys(get().pageParamValues), ...boundParamKeys(dash.charts || []),
+    ]);
+    const values: Record<string, any> = {}, pageValues: Record<string, any> = {};
+    for (const k of keys) { values[k] = declared[k] ?? ''; pageValues[k] = declared[k] ?? ''; }
+    set({ paramValues: values, pageParamValues: pageValues });
+    return get().refreshCharts(dashId);
+  },
+
   refreshCharts: async (dashboardId, charts) => {
     // 看板 id 显式解析：浏览页/大屏/弹窗页可能同时呈现多个看板的图表，只读全局 currentId
     // 会让"非当前看板"的刷新静默 no-op（用户看到的就是"点了没反应、只回缓存"）。
@@ -406,10 +483,12 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     // 不会再把浏览器每源连接打满而卡住其他功能的请求
     const results = await Promise.all(targets.map(c => {
       const cfg = c.config || {};
-      if (cfg.enableServerPagination) {
+      // 表值图恒定按页取数：整板重查回到首页，不逐图带页参也得把默认页大小递上去
+      // （服务端也会按图表配置兜底，两边同一口径，不靠其中一边猜）
+      if (c.chart_type === 'table_value') {
         return get().refreshSingleChart(c.id, {
           dashboardId: dashId, chartName: c.name,
-          page_limit: cfg.pageLimit || 20, page_offset: 0, count_sql: cfg.countSql,
+          page_size: pageSizeOf(cfg), page_num: 1,
         });
       }
       return get().refreshSingleChart(c.id, { dashboardId: dashId, chartName: c.name });
@@ -443,9 +522,8 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     try {
       const { paramValues, pageParamValues } = get();
       const body: any = { params: { ...paramValues, ...pageParamValues } };
-      if (extra?.page_limit != null) body.page_limit = extra.page_limit;
-      if (extra?.page_offset != null) body.page_offset = extra.page_offset;
-      if (extra?.count_sql) body.count_sql = extra.count_sql;
+      if (extra?.page_size != null) body.page_size = extra.page_size;
+      if (extra?.page_num != null) body.page_num = extra.page_num;
 
       // 走图表查询专用池：渐进式（30 个图表也只同时跑 4 个，其余排队）、有超时、可随页面退出中止
       const result = await chartQueryPool.run(signal =>
@@ -463,13 +541,27 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       const data = result.value;
       if (session !== sessionVersion || refreshVersions.get(chartId) !== version) return false;
       if (data && !data.error) {
+        // 分页事实（total/paging/truncated）必须随覆盖层一起存：渲染面（浏览页/大屏/弹窗页）
+        // 靠它判断“这是整页结果还是其中一页”，少了它就会把首页当成全量
         const cache: any = { columns: data.columns, rows: data.rows };
         if (data.total != null) cache.total = data.total;
+        if (data.paging) cache.paging = data.paging;
+        if (data.truncated) cache.truncated = true;
+        // 「本次即全量」这条事实也要留在覆盖层：丢了它，切走再回来又会补一次无谓重查
+        if (data.unpaged) cache.unpaged = true;
+        // 字段显示格式随结果一次性下发；不写进覆盖层，首屏（不重查）就会比刷新后难看
+        if (data.field_formats && Object.keys(data.field_formats).length) cache.field_formats = data.field_formats;
         const json = JSON.stringify(cache);
+        const diag: ChartParamDiagnostic = {
+          unbound: Array.isArray(data.unbound_params) ? data.unbound_params : [],
+          notes: Array.isArray(data.param_notes) ? data.param_notes : [],
+        };
         // 写两处：覆盖层让任何渲染面（浏览页/大屏/弹窗页）即时看到新数据，
         // dashboards 条目维持编辑器口径（保存/重载仍以 store 为源）。
         set(state => ({
           chartCache: { ...state.chartCache, [chartId]: json },
+          // 无诊断也要清掉上一次的结果，否则改完参数后旧警告会一直挂着像"还没生效"
+          paramDiagnostics: { ...state.paramDiagnostics, [chartId]: diag },
           dashboards: state.dashboards.map(d => d.id !== dashId ? d : ({
             ...d,
             charts: d.charts.map(c => c.id === chartId ? { ...c, data_cache: json } : c),
@@ -502,21 +594,10 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         params: template.params || [], page_params: template.page_params || template.filters?.pageParams || [], carousel_interval: template.carousel_interval || 0,
       }, true);
       for (const chart of template.charts || []) {
-        // 样式模板只认显式的 `sample` 字段：内置演示数值经 config.demoData 许可写入 data_cache，
-        // 导入后立刻看到样式效果。存量图表的缓存由服务端取数写入，不由客户端注入
-        // （否则一张真实图会被误标成"演示数值"，护栏 §7 + no-silent-degradation）。
-        const sample = typeof chart.sample === 'string'
-          ? (() => { try { return JSON.parse(chart.sample); } catch { return undefined; } })()
-          : chart.sample;
-        const { sql: legacySql, ...cleanConfig } = chart.config || {};
-        const payload = sample ? templateChartPayload({ ...chart, sample, config: cleanConfig }) : {
-          name: chart.name, chart_type: chart.chart_type, position: chart.position,
-          sql_query: chart.sql_query ?? legacySql ?? '',
-          semantic_query: chart.semantic_query,
-          query_source: (chart.query_source === 'semantic' || chart.semantic_query ? 'semantic' : 'raw_sql') as 'semantic' | 'raw_sql',
-          config: cleanConfig,
-          source_type: chart.source_type || 'template', source_id: chart.source_id,
-        };
+        // 样式模板与导入体走同一个入参组装口径（lib/dashboardDemo）：不携带 sql_query（服务端写入口已拒）、
+        // 存量图的 data_cache 不由客户端重放注入（否则真实图会被误标成“演示数值”，护栏 §7）、
+        // 遗留 config.sql / config.datasource_id 不回填。
+        const payload = templateChartPayload(chart);
         await addChart(dashboardId, payload as Partial<DashboardChart>, true);
       }
     } finally {

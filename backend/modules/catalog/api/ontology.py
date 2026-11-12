@@ -97,7 +97,7 @@ def _assert_dispatchable(workspace_id: int) -> None:
         layers = exec_service.get_workspace_layers(workspace_id)
     except Exception as e:
         logger.error("execution layer resolve failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=503, detail="执行层权限配置暂不可用，生成任务未派发") from e
+        raise HTTPException(status_code=503, detail="Harness 权限配置暂不可用，生成任务未派发") from e
     row, fallback = None, None
     for layer in layers or []:
         if layer.get("status") != "active" or not exec_service.is_healthy_layer(layer):
@@ -112,7 +112,7 @@ def _assert_dispatchable(workspace_id: int) -> None:
     if row is None or row.get("status") != "active":
         raise HTTPException(
             status_code=503,
-            detail="生成任务无法派发：未找到可用的外部执行层(qoder 层缺失或未启用)")
+            detail="生成任务无法派发：未找到可用的外部 Harness(qoder 层缺失或未启用)")
 
 
 def _build_task_message(ds_name: str, table_count: int, kb_count: int = 0) -> str:
@@ -142,22 +142,30 @@ def _build_task_message(ds_name: str, table_count: int, kb_count: int = 0) -> st
 
 def _create_task_conversation(user: dict, workspace_id: int, datasource_id: int,
                               as_bot_key: str, ds_name: str, task_message: str) -> int:
-    """自动创建任务会话(写 adh_conversations，口径与 chat 创建会话一致)。"""
-    from backend.common.db.metadata_db import get_metadata_conn
+    """自动创建任务会话(写 adh_conversations + 拆行消息，口径与 chat 创建会话一致)。
 
-    messages = [{"role": "user", "content": task_message, "question": task_message}]
+    正文不再拼进 messages 列：会话行建完后走 conversation_store 写拆行（单一写入口）。
+    身份字段(user_id/workspace_id) 由服务端上下文传入（护栏 §2）。
+    """
+    from backend.common.db.metadata_db import get_metadata_conn
+    from backend.core import conversation_store
+
+    uid = int(user.get("user_id") or 0)
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO adh_conversations "
-                "(user_id, title, datasource_id, workspace_id, as_bot_key, messages, created_at, updated_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())",
-                (int(user.get("user_id") or 0), f"生成本体模型：{ds_name}",
-                 datasource_id, workspace_id, as_bot_key,
-                 json.dumps(messages, ensure_ascii=False)),
+                "(user_id, title, datasource_id, workspace_id, as_bot_key, created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, NOW(), NOW())",
+                (uid, f"生成本体模型：{ds_name}",
+                 datasource_id, workspace_id, as_bot_key),
             )
+            conv_id = int(cur.lastrowid)
+            conversation_store.save_messages(
+                cur, conv_id, [{"role": "user", "content": task_message, "question": task_message}],
+                user_id=uid, workspace_id=int(workspace_id or 0), lock=False)
             conn.commit()
-            return int(cur.lastrowid)
+            return conv_id
 
 
 def _task_message_payload(run: dict) -> dict:
@@ -190,8 +198,10 @@ def _write_task_message(run: dict) -> None:
     """把任务进度/终态 upsert 进会话（只保留一条本任务 assistant 消息，不越写越多）。
 
     旁路持久化：写失败只记日志不回滚主流程（护栏 §9），但失败事实必须可查。
+    实现上走拆行表单行改写（旧形态是读改写整份 LONGTEXT，长任务每轮都重写全部历史）。
     """
     from backend.common.db.metadata_db import get_metadata_conn
+    from backend.core import conversation_store
 
     conv_id = int(run.get("conversation_id") or 0)
     if not conv_id:
@@ -200,26 +210,17 @@ def _write_task_message(run: dict) -> None:
     try:
         with get_metadata_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT messages FROM adh_conversations WHERE id = %s", (conv_id,))
-                row = cur.fetchone()
-                messages: list = []
-                if row and row.get("messages"):
-                    try:
-                        messages = json.loads(row["messages"])
-                    except ValueError:
-                        logger.error("会话 %s 历史消息损坏，已重置后回写", conv_id)
-                        messages = []
-                for i in range(len(messages) - 1, -1, -1):
-                    m = messages[i]
-                    if (isinstance(m, dict) and m.get("role") == "assistant"
-                            and m.get("task_kind") == _TASK_KIND):
-                        messages[i] = payload
-                        break
-                else:
-                    messages.append(payload)
-                cur.execute(
-                    "UPDATE adh_conversations SET messages = %s, updated_at = NOW() WHERE id = %s",
-                    (json.dumps(messages, ensure_ascii=False), conv_id))
+                cur.execute("SELECT user_id, workspace_id FROM adh_conversations WHERE id = %s",
+                            (conv_id,))
+                row = cur.fetchone() or {}
+                if not row:
+                    logger.error("任务进度回写失败：会话 %s 不存在", conv_id)
+                    return
+                cur.execute("UPDATE adh_conversations SET updated_at = NOW() WHERE id = %s", (conv_id,))
+                conversation_store.replace_message_by_key(
+                    cur, conv_id, match={"role": "assistant", "task_kind": _TASK_KIND},
+                    message=payload, user_id=int(row.get("user_id") or 0),
+                    workspace_id=int(row.get("workspace_id") or 0))
                 conn.commit()
     except Exception as e:  # noqa: BLE001 — 进度回写不得打断执行，但必须显式留痕
         logger.error("任务进度回写会话 %s 失败: %s", conv_id, e, exc_info=True)
@@ -228,11 +229,12 @@ def _write_task_message(run: dict) -> None:
 def _load_task_message(conversation_id: int) -> dict:
     """读会话里本任务的持久态：{found, owner_user_id, workspace_id, datasource_id, message}。"""
     from backend.common.db.metadata_db import get_metadata_conn
+    from backend.core import conversation_store
 
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT c.user_id, c.workspace_id, c.datasource_id, c.messages, "
+                "SELECT c.user_id, c.workspace_id, c.datasource_id, "
                 "       d.name AS datasource_name "
                 "FROM adh_conversations c "
                 "LEFT JOIN adh_datasources d ON d.id = c.datasource_id "
@@ -244,10 +246,7 @@ def _load_task_message(conversation_id: int) -> dict:
            "workspace_id": int(row.get("workspace_id") or 0),
            "datasource_id": int(row.get("datasource_id") or 0),
            "datasource_name": str(row.get("datasource_name") or ""), "message": None}
-    try:
-        messages = json.loads(row.get("messages") or "[]")
-    except ValueError:
-        return out
+    messages = conversation_store.load_messages(int(conversation_id))
     for m in reversed(messages or []):
         if isinstance(m, dict) and m.get("task_kind") == _TASK_KIND:
             out["message"] = m
@@ -907,9 +906,130 @@ def get_model_sites(model_id: int, user: dict = Depends(get_current_user)):
             # 对象级站点白名单：只列本模型已声明的站点（防止脏规则把选项渲染成不存在站点）
             "allowed_sites": [c for c in obj_rules.get(key, []) if c in selected],
         })
+    # 属性列漂移：实时对着列元数据判（不落库快照——同步会改实存列，快照会把已修好的
+    # 对象继续标成漂移）。建模页必须看得见"表还在但列改名"这类换库缺陷：以前漂移只进
+    # 服务端日志，页面上属性行照旧显示一个不存在的列名，直到取数失败才暴露。
+    drift_map: dict = {}
+    try:
+        doc = json.loads(model.get("json_content") or "{}")
+    except ValueError:
+        doc = {}
+    if isinstance(doc, dict):
+        from backend.modules.catalog.services import ontology_yaml_import as _yimp
+        bound_table = {str(o["object_key"]).lower(): str(o.get("physical_table") or "")
+                       for o in objects}
+        col_cache: dict = {}
+        for o in doc.get("objects") or []:
+            if not isinstance(o, dict):
+                continue
+            key = str(o.get("key") or o.get("object_key") or "").strip()
+            if not key:
+                continue
+            table = bound_table.get(key.lower()) or str(o.get("primary_table") or "")
+            drift = _yimp.property_column_drift(
+                o, int(model.get("datasource_id") or 0), table, col_cache)
+            if drift:
+                drift_map[key] = drift
     return {"kind": str(model.get("kind") or ""), "sites": sites,
             "selected": [{"site_code": k, "datasource": v} for k, v in selected.items()],
-            "contract_objects": objects}
+            "contract_objects": objects, "property_drift": drift_map}
+
+
+def _doc_object_of(doc: dict, object_key: str) -> dict:
+    """按归一身份取 doc 里的对象（存量 doc 用 object_key 旧字段名，读取边界统一适配）。"""
+    want = str(object_key or "").strip().lower()
+    if not want or not isinstance(doc, dict):
+        return {}
+    for o in doc.get("objects") or []:
+        if not isinstance(o, dict):
+            continue
+        key = str(o.get("key") or o.get("object_key") or "").strip().lower()
+        if key == want:
+            return o
+    return {}
+
+
+@router.get("/models/{model_id}/objects/{object_key}/columns")
+def get_object_column_options(model_id: int, object_key: str, table: str = "",
+                              user: dict = Depends(get_current_user)):
+    """对象属性列候选 —— 建模页「编辑对象 → 属性列映射」选择框的唯一数据源。
+
+    为什么必须有这个口（页面能力断链）：换库/改表后服务端会判出「列不存在」并让页面亮
+    「列待修」徽标，但页面上**没有任何一处能改属性的物理列** —— 草案 JSON 视图是只读的
+    （「仅供排查结构问题」），告警等于把人引向一个不存在的操作（no-silent-degradation）。
+    本口给出该表**实存列 + 列注释**，让修漂移回到页面闭环，且候选与漂移裁决同源
+    （同 `physical_ref.columns_of_table` 的谓词：`table_name` + `datasource_id ∈ {本源, 0}`
+    + `is_active = 1`），不会出现“候选里有、裁决说不存在”的双口径。
+
+    table 参数是建模页「绑定物理表」输入框的**覆盖值**（用户在同一弹窗里改表名时，候选要
+    跟着新表走）；留空则按生效部署绑定行 → doc `primary_table` 顺序解析。
+    拿不到列时返回空清单 + 可读 note（不假装有候选，也不让前端猜列名）。
+    """
+    model = ontology_service.get_model(model_id)
+    if not model or not ontology_service.can_view_model(model, _allowed_source_ids(user)):
+        raise HTTPException(status_code=404, detail="模型不存在")
+    from backend.common.db.metadata_db import get_metadata_conn
+
+    try:
+        doc = json.loads(model.get("json_content") or "{}")
+    except ValueError:
+        doc = {}
+    obj = _doc_object_of(doc if isinstance(doc, dict) else {}, object_key)
+    if not obj:
+        raise HTTPException(status_code=404, detail=f"模型内没有对象「{object_key}」")
+
+    ds_id = int(model.get("datasource_id") or 0)
+    override = str(table or "").strip()
+    doc_table = str(obj.get("primary_table") or "").strip()
+    resolved = ""
+    dataset_ref = ""
+    bind_kind = "primary"
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT datasource_id, physical_table, bind_kind, dataset_ref "
+                "FROM adh_ontology_bindings WHERE model_id = %s AND status = 'active' "
+                "AND (object_key = %s OR LOWER(object_key) = %s) "
+                "ORDER BY (datasource_id = %s) DESC, id LIMIT 1",
+                (model_id, object_key, str(object_key or "").strip().lower(), ds_id))
+            row = cur.fetchone() or {}
+            # 解析优先级与漂移判定（get_model_sites）同源：弹窗内表名覆盖 > 生效部署绑定行 > doc 声明；
+            # 否则“候选来自一张表、告警判于另一张表”，用户会看到“选了仍报列不存在”的死循环。
+            resolved = override or str(row.get("physical_table") or "").strip() or doc_table
+            if int(row.get("datasource_id") or 0):
+                ds_id = int(row["datasource_id"])
+            bind_kind = str(row.get("bind_kind") or bind_kind)
+            dataset_ref = str(row.get("dataset_ref") or "")
+            columns: list = []
+            if resolved:
+                cur.execute(
+                    "SELECT column_name, data_type, column_comment, business_desc "
+                    "FROM adh_column_metadata "
+                    "WHERE table_name = %s AND is_active = 1 "
+                    "AND (datasource_id = %s OR datasource_id = 0) ORDER BY id",
+                    (resolved, ds_id))
+                for r in cur.fetchall() or []:
+                    name = str(r.get("column_name") or "")
+                    if not name:
+                        continue
+                    columns.append({
+                        "name": name,
+                        "type": str(r.get("data_type") or ""),
+                        # 选项主标签优先业务名（列注释/业务描述），物理列名作次要信息
+                        "comment": str(r.get("business_desc") or r.get("column_comment") or ""),
+                    })
+
+    note = ""
+    if not resolved:
+        if bind_kind == "dataset" and dataset_ref:
+            note = f"该对象走查询数据集「{dataset_ref}」，列由数据集 SQL 决定，无需在此映射物理列"
+        else:
+            note = "该对象尚未声明物理表：先在上方「绑定物理表」填写表名并保存发布，发布级联会在部署绑定层登记物理表"
+    elif not columns:
+        note = (f"表 {resolved} 没有已同步的列元数据，无法给出列候选："
+                "请到「表 & 字段」同步该表字段后重新打开本弹窗")
+    return {"object_key": object_key, "table": resolved, "bind_kind": bind_kind,
+            "dataset_ref": dataset_ref, "columns": columns, "note": note}
 
 
 @router.put("/models/{model_id}/sites")
@@ -1186,7 +1306,12 @@ def publish_model_draft(model_id: int, user: dict = Depends(get_current_user)):
     try:
         result = ontology_service.publish_draft(
             model_id, published_by=str(user.get("username") or user.get("name") or user_id))
-        return {"success": True, "object_count": result.get("object_count")}
+        # 把级联里“不致命但用户必须知道”的两件事原样透出：
+        # validation_warnings（属性列漂移等）与语义资产收编结果（口径有没有真进字典）。
+        # 只回 success:true 等于给用户一个“发好了”的假完成信号。
+        return {"success": True, "object_count": result.get("object_count"),
+                "semantic_assets": result.get("semantic_assets") or {},
+                "warnings": result.get("validation_warnings") or []}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

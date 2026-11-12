@@ -11,7 +11,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Layers, Link2, AlertTriangle, Boxes } from 'lucide-react';
 import { normalizeDocObjects, type DocObjectIssue } from '@/lib/ontologyObjects';
 import { ObjectEditButton } from './ModelAssetTabs';
-import { ontologyApi, type ContractObjectRow, type DraftObjectDiff } from '@/api/ontology';
+import { ontologyApi, type ContractObjectRow, type DraftObjectDiff, type PropertyDriftEntry } from '@/api/ontology';
 
 /** 草案视图下每个对象的状态标记（由服务端 draft_diff 算好，前端不再自己比） */
 const DRAFT_STATE_META: Record<string, { label: string; cls: string }> = {
@@ -37,13 +37,15 @@ export interface HubObject {
   execution_binding?: { query_mode?: string; size_class?: string; physical_table?: string; bind_kind?: string; dataset_ref?: string };
 }
 
-/** 部署绑定层读取状态（对象是否可取数的唯一事实源） */
+/** 部署绑定层读取状态（对象是否可取数的唯一事实源）+ 属性列漂移（同一次读取带回） */
 interface BindState {
   loading: boolean;
   error: string;
   rows: Record<string, ContractObjectRow>;
+  /** object key(小写) → 漂移属性；"表还在但列改名"在页面上唯一的可见出口 */
+  drift: Record<string, PropertyDriftEntry[]>;
 }
-const BIND_INIT: BindState = { loading: true, error: '', rows: {} };
+const BIND_INIT: BindState = { loading: true, error: '', rows: {}, drift: {} };
 
 export default function ObjectHubTab({ modelId, objects, issues = [], jsonContent, onSave, canEdit = false,
   viewMode = 'live', draftStates, draftHint, modelKind }: {
@@ -87,12 +89,16 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
         if (cancelled) return;
         const rows: Record<string, ContractObjectRow> = {};
         for (const r of (data?.contract_objects || [])) rows[String(r.object_key)] = r;
-        setBind({ loading: false, error: '', rows });
+        const drift: Record<string, PropertyDriftEntry[]> = {};
+        for (const [k, v] of Object.entries(data?.property_drift || {})) {
+          drift[String(k).toLowerCase()] = v || [];
+        }
+        setBind({ loading: false, error: '', rows, drift });
       })
       .catch((e: any) => {
         if (cancelled) return;
         // 读不到绑定层时不得回退到 doc 字段“猜一个绑定了”，必须显式未知 + 原因
-        setBind({ loading: false, error: String(e?.response?.statusText || e?.message || '接口失败'), rows: {} });
+        setBind({ loading: false, error: String(e?.response?.statusText || e?.message || '接口失败'), rows: {}, drift: {} });
       });
     return () => { cancelled = true; };
   }, [modelId]);
@@ -106,7 +112,12 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
     ? '草案对象尚未部署（发布后在部署绑定层登记物理表）'
     : modelKind === 'source'
       ? '源本体对象的物理绑定由元数据同步自动登记，该对象尚无生效绑定行'
-      : '请在「同构站点部署」页为该对象登记物理表';
+      : '「编辑对象」填好绑定物理表后保存草案并发布，发布级联会在部署绑定层登记物理表';
+
+  /** 该对象的属性列漂移清单（服务端实时判，不靠前端猜列名） */
+  const driftOf = (key: string): PropertyDriftEntry[] =>
+    bind.drift[String(key ?? '').toLowerCase()] || [];
+
 
   const obj = useMemo(
     () => list.find((o) => o.key === selKey) || list[0] || null,
@@ -187,6 +198,28 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                               title={`部署绑定: ${contractOf(o.key)!.datasource || '未指定数据源'} · ${contractOf(o.key)!.bind_kind || 'primary'}`}>bound</Badge>
                           : <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-amber-500 border-amber-500/30"
                               title={bindHint}>未绑定物理表</Badge>}
+                {(() => {
+                  // 徽标按 verdict 分流：列不存在（定义要改）与列元数据未同步（要先同步）
+                  // 不是同一件事，统一叫「列待修」会把人引向一个改了也没用的操作。
+                  const dr = driftOf(o.key);
+                  const unver = dr.filter((d) => d.verdict === 'unverified').length;
+                  const missing = dr.length - unver;
+                  if (!dr.length) return null;
+                  return (<>
+                    {missing > 0 && (
+                      <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-red-500 border-red-500/30 shrink-0"
+                        title={`属性列不在该表实存列里：${dr.filter((d) => d.verdict !== 'unverified').map((d) => `${d.property}(${d.column})`).join('、')}`}>
+                        列待修{missing}
+                      </Badge>
+                    )}
+                    {unver > 0 && (
+                      <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-amber-500 border-amber-500/30 shrink-0"
+                        title={`该表列元数据尚未同步，${unver} 个属性列无法核验（不是列名写错）：请到「表 & 字段」同步这张表的字段`}>
+                        列待同步{unver}
+                      </Badge>
+                    )}
+                  </>);
+                })()}
                 </div>
               </button>
             );})}
@@ -209,7 +242,10 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
               {(obj.aliases || []).map((a) => <Badge key={a} variant="secondary" className="text-[11px]">{a}</Badge>)}
               {canEdit && onSave && jsonContent != null && (
                 <span className="ml-auto">
-                  <ObjectEditButton jsonContent={jsonContent} onSave={onSave} target={obj} />
+                  <ObjectEditButton jsonContent={jsonContent} onSave={onSave} target={obj}
+                    modelKind={modelKind} modelId={modelId}
+                    boundTable={contractOf(obj.key)?.physical_table || ''}
+                    drift={driftOf(obj.key)} />
                 </span>
               )}
             </div>
@@ -226,12 +262,33 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
             {(() => {
               const c = contractOf(obj.key);
               if (c?.physical_table) {
+                const dr = driftOf(obj.key);
                 return (
                   <div className="text-xs text-muted-foreground mt-1">
                     物理绑定: {c.physical_table}
                     {c.datasource ? <> · 数据源「{c.datasource}」</> : null}
                     {c.bind_kind === 'dataset' ? ' · 走数据集（快速路径）' : ''}
                     {c.column_count ? ` · ${c.column_count} 列映射` : ''}
+                    {c.sync_state === 'drifted' ? ' · 状态：形状漂移' : ''}
+                    {dr.length > 0 && (
+                      <div className="text-amber-600 mt-0.5 flex items-start gap-1">
+                        <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                        <span>
+                          {(() => {
+                            const unv = dr.filter((d) => d.verdict === 'unverified');
+                            const bad = dr.filter((d) => d.verdict !== 'unverified');
+                            const seg: string[] = [];
+                            if (bad.length) {
+                              seg.push(`${bad.length} 个属性列不在该表实存列里（${bad.slice(0, 3).map((d) => `${d.property}→${d.column}`).join('、')}${bad.length > 3 ? ' 等' : ''}）；请在右上「编辑对象 → 属性列映射」改选实存列，该表确实没有这个概念的请取消物理列绑定，保存草案并发布`);
+                            }
+                            if (unv.length) {
+                              seg.push(`${unv.length} 个属性列无法核验（${unv.slice(0, 3).map((d) => `${d.property}→${d.column}`).join('、')}${unv.length > 3 ? ' 等' : ''}）：表 ${unv[0]?.table || '该表'} 在本源下还没同步列元数据，请到「表 & 字段」同步这张表的字段后重新查看（此时改列名没有依据）`);
+                            }
+                            return seg.join(' ');
+                          })()}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 );
               }
@@ -264,16 +321,30 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
               </div>
               <ScrollArea className="h-56">
                 <div className="p-1">
-                  {(obj.properties || []).map((p, i) => (
-                    <div key={p.column || i} className="flex items-center gap-2 px-2 py-1.5 text-[13px] border-b last:border-0">
-                      <span className="truncate">{p.name || p.column}</span>
-                      <span className="text-xs text-muted-foreground font-mono truncate">{p.column}</span>
-                      <span className="ml-auto flex items-center gap-1">
-                        {p.is_key && <Badge variant="outline" className="text-[10px] px-1 h-4">PK</Badge>}
-                        {p.enum?.length ? <Badge variant="outline" className="text-[10px] px-1 h-4">枚举{p.enum.length}</Badge> : null}
-                      </span>
-                    </div>
-                  ))}
+                  {(() => {
+                    const dr = driftOf(obj.key);
+                    return (obj.properties || []).map((p, i) => {
+                      const d = dr.find((x) => x.property && x.property === (p.name || p.column));
+                      return (
+                        <div key={p.column || i} className="flex items-center gap-2 px-2 py-1.5 text-[13px] border-b last:border-0">
+                          <span className="truncate">{p.name || p.column}</span>
+                          <span className={`text-xs font-mono truncate ${d ? 'text-red-500' : 'text-muted-foreground'}`}>{p.column}</span>
+                          <span className="ml-auto flex items-center gap-1">
+                            {d && (
+                              <Badge variant="outline" className="text-[10px] px-1 h-4 text-red-500 border-red-500/40"
+                                title={d.verdict === 'unverified'
+                                  ? `该表列元数据尚未同步，无法核验列 ${d.column}（请到「表 & 字段」同步字段）`
+                                  : `列 ${d.column} 不在 ${d.table} 的实存列里（换库/改表后的漂移），请在「编辑对象 → 属性列映射」改成实际列名`}>
+                                {d.verdict === 'unverified' ? '未核验' : '列不存在'}
+                              </Badge>
+                            )}
+                            {p.is_key && <Badge variant="outline" className="text-[10px] px-1 h-4">PK</Badge>}
+                            {p.enum?.length ? <Badge variant="outline" className="text-[10px] px-1 h-4">枚举{p.enum.length}</Badge> : null}
+                          </span>
+                        </div>
+                      );
+                    });
+                  })()}
                   {!(obj.properties || []).length && (
                     <div className="text-xs text-muted-foreground p-3">暂无属性</div>)}
                 </div>

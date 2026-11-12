@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { useDashboardStore } from '@/stores/dashboardStore';
+import type { DashboardParam, PageParam } from '@/stores/dashboardStore';
+import type { ParamShape } from '@/lib/dashboardParamAssembly';
 import ChartConfigPanel from '@/components/ChartConfigPanel';
 import DashboardTemplates from '@/components/DashboardTemplates';
 import ComponentLibrary from '@/components/editor/ComponentLibrary';
@@ -14,18 +16,22 @@ import EditorToolbar from '@/components/editor/EditorToolbar';
 import PageLayoutEditor from '@/components/editor/PageLayoutEditor';
 import SelectionOverlay from '@/components/editor/SelectionOverlay';
 import CanvasHint from '@/components/editor/CanvasHint';
+import DatasetParamAssemblyDialog from '@/components/editor/DatasetParamAssemblyDialog';
+import DashboardSourceSwitchDialog from '@/components/editor/DashboardSourceSwitchDialog';
+import DashboardParamsManager, { controlOfShape } from '@/components/editor/DashboardParamsManager';
+import { boundParamKeys, buildAssemblyPlan, EMPTY_ASSEMBLY_PLAN, suggestControlPositions, type AssemblyPlan } from '@/lib/dashboardParamAssembly';
 import { useViewportSize } from '@/hooks/useOverlayPosition';
 import { CANVAS_COLORS, backdropStyle, canvasRectToScreen, dotBackgroundStyle } from '@/lib/canvasTheme';
 import { LIBRARY_DROP_ZONE, dragPointer, type DropGhost, type LibraryDragData } from '@/lib/editorDrag';
 import { useMergedRefs } from '@/lib/mergeRefs';
 import { PAGE_WIDTHS, PAGE_LABELS, PAGE_COLUMNS, PAGE_ROW, computeAlignHints, defaultPageSpan, nextPageRow, pageCanvasSize, pageColumnPx, pageGapsOf, pageMinHeight, pagePixelRect, pageRows, resolvePageLayout, movePageItem, withPageRect, type PageBreakpoint, type PageGaps } from '@/lib/dashboardPageLayout';
 import { DashboardCanvas, CanvasRulers, FittedDashboardCanvas, ResponsiveDashboardCanvas, DashboardThumbnail } from '@/components/DashboardCanvas';
-import { useCanvasInteraction, DEFAULT_CHART_SIZE, DEFAULT_WIDGET_SIZE } from '@/hooks/useCanvasInteraction';
+import { useCanvasInteraction } from '@/hooks/useCanvasInteraction';
 import { useEditorCharts } from '@/hooks/useEditorCharts';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
 import { useThemeStore } from '@/stores/themeStore';
 import { createVisComponent, VIS_CATEGORIES, type VisCategory, type VisComponent } from '@/api/visLibrary';
-import { applyChartComponent, applyScreenComponent, applyLayout, chartRect, chartZIndex, clampPosition, compatible, getCanvas, minSizeOf,
+import { applyChartComponent, applyScreenComponent, applyLayout, chartRect, chartZIndex, clampPosition, compatible, getCanvas, minSizeOf, naturalSizeOf,
   resolveChartDesign, resolveDashboardDesign, sanitizeStyle, sanitizePack, screenToCanvas, visualConfig, legacyCanvasFilters,
   clearChartVisualOverrides, libraryThemeFilters, themePackFor } from '@/lib/dashboardDesign';
 
@@ -88,6 +94,13 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
   const [propertyTab, setPropertyTab] = useState('appearance');
   const [libraryTab, setLibraryTab] = useState('vis');
   const [preview, setPreview] = useState(false);
+  // 属性面板「重新播放」的信号：递增一下让主画布临时播一次入场（draft 态平时不开）
+  const [motionReplay, setMotionReplay] = useState(0);
+  // 引入数据集时的参数装配确认：计划先算好、弹窗列清楚，确认后才写草稿（不静默改画布）
+  const EMPTY_PLAN = EMPTY_ASSEMBLY_PLAN;
+  const [paramAssembly, setParamAssembly] = useState<null | {
+    plan: AssemblyPlan; datasetNames: string[]; anchor: { x: number; y: number };
+  }>(null);
   const [layoutMode, setLayoutMode] = useState<'page' | 'screen'>('page');
   const [breakpoint, setBreakpoint] = useState<PageBreakpoint>('desktop');
   // gaps 随 items 一起抬出来：间距是看板级设置，所有网格↔像素换算必须用同一份（不得逐处再取默认值）
@@ -103,6 +116,10 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
   // 因为 popstate 必须同步判定，改成异步会丢失「阻止导航」能力。
   const [confirmAction, setConfirmAction] = useState<{ title: string; description: string; actionLabel: string; run: () => void } | null>(null);
   const [changesOpen, setChangesOpen] = useState(false);
+  // 看板参数管理区：遗留 params 过去只能在列表页设置弹窗改，编辑器里看不见（无法操作）
+  const [paramsOpen, setParamsOpen] = useState(false);
+  // 看板级批量切换执行数据源（只在数据集支持该源的图表上钉选，不支持的跳过）
+  const [sourceSwitchOpen, setSourceSwitchOpen] = useState(false);
   const askConfirm = (title: string, description: string, actionLabel: string, run: () => void) =>
     setConfirmAction({ title, description, actionLabel, run });
   const resetPage = () => {
@@ -112,6 +129,24 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
   const capturePage = () => {
     if (pageLayout.error) { toast.error(pageLayout.error); return; }
     charts.updatePageLayout(breakpoint, pageLayout.items);
+  };
+  // 批量切换执行数据源：只在传入的“支持该源”的图表上写 config.datasource（业务名），
+  // 一个事务内完成（一步可撤销）；target 为空 = 清除钉选改回自动定源。保存时后端逐图校验范围。
+  const applySourceSwitch = (target: string, ids: number[]) => {
+    if (!ids.length) { setSourceSwitchOpen(false); return; }
+    charts.transaction(() => {
+      for (const cid of ids) {
+        const chart = charts.allCharts.find(c => c.id === cid);
+        if (!chart) continue;
+        const config = { ...(chart.config || {}) };
+        if (target) config.datasource = target; else delete config.datasource;
+        charts.updateLocalChart(cid, { config });
+      }
+    });
+    setSourceSwitchOpen(false);
+    toast.success(target
+      ? `已将 ${ids.length} 个图表的执行数据源钉选为「${target}」（保存后生效）`
+      : `已清除 ${ids.length} 个图表的数据源钉选，改回自动定源（保存后生效）`);
   };
   const [layout, setLayout] = useState<VisComponent | null>(null);
   const [pack, setPack] = useState<VisComponent | null>(null);
@@ -248,7 +283,8 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
     if (!rect) return null;
     const point = screenToCanvas({ x: clientX, y: clientY }, rect, canvas.scale);
     if (layoutMode === 'screen') {
-      const size = data.item.category === 'widget' ? DEFAULT_WIDGET_SIZE : DEFAULT_CHART_SIZE;
+      // 落点预览尺寸与真正落库同源（按类型自然尺寸），否则预览 260 宽、落库 440 宽会跳一下
+      const size = naturalSizeOf(data.item.value);
       const pos = clampPosition({ x: point.x - size.w / 2, y: point.y - size.h / 2 }, size, dimensions, dimensions.gridSize);
       return { mode: 'screen', ...pos, w: size.w, h: size.h };
     }
@@ -332,6 +368,80 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
   const selectedScreen = activeRect ? canvasRectToScreen(activeRect, dimensions, editorViewportSize, canvas.scale, canvas.panOffset) : null;
   // 空画布引导：「从数据集引入」打开左侧库并切到数据集页签（套用模板是另一个按钮，走模板弹窗）
   const openInsertGuide = () => { setLeftOpen(true); setLibraryTab('datasets'); };
+  /**
+   * 引入数据集后，把它声明的入参折算成"要补的看板参数 + 要放的控件"。
+   *
+   * 形状判定不在前端重做：`ds.param_summary` 由服务端 `semantics.param_plan` 随清单下发，
+   * 与取数翻译同一份口径（否则面板建议一套、执行一套）。没入参就什么都不弹，
+   * 不拿一个空弹窗打扰人；只有"待确认形态"时也弹，因为那是会让人误以为筛选生效的事。
+   */
+  const proposeParamAssembly = (dataset: any, addedChart: any) => {
+    const summaries = dataset?.param_summary || [];
+    if (!summaries.length) return;
+    const chartsNow = addedChart ? [...allCharts, addedChart] : allCharts;
+    const plan = buildAssemblyPlan([dataset], draftDashboard?.page_params || [],
+      boundParamKeys(chartsNow), chartsNow.map(c => c.chart_type));
+    const actionable = plan.addParams.length + plan.addControls.length + plan.mismatchParams.length + plan.addButtons.length;
+    if (!actionable && !plan.pending.length) return;
+    const rect = addedChart ? chartRect(addedChart) : null;
+    setParamAssembly({
+      plan, datasetNames: [dataset.name],
+      anchor: { x: 0, y: (rect ? rect.y + rect.h + 12 : 0) },
+    });
+  };
+  /** 确认后才写草稿：参数进 page_params（与 ParamNameSelect 同一份清单），控件带 paramKey 落画布 */
+  const applyParamAssembly = (keys: string[], labels: Record<string, string>, withButtons = true) => {
+    if (!paramAssembly) return;
+    const { plan, anchor } = paramAssembly;
+    const wants = plan.addParams.filter(p => keys.includes(p.name));
+    if (wants.length) {
+      const kept = (draftDashboard?.page_params || []).filter(p => !wants.some(w => w.name === p.name));
+      charts.updateMetadata({ page_params: [...kept, ...wants.map(p => ({ ...p, label: labels[p.name] || p.label }))] });
+    }
+    const controls = plan.addControls.filter(c => keys.includes(c.key));
+    // 「搜索/重置」是参数的生效入口，跟着控件排同一行（画布已有则计划里已去重）
+    const buttons = withButtons ? plan.addButtons : [];
+    // 每个控件按自己的自然尺寸摆位：区间控件要 440，与文本框共用一个宽度会把它挤到只显一半
+    const placedSizes = [...controls.map(c => naturalSizeOf(c.control)), ...buttons.map(b => naturalSizeOf(b.control))];
+    const positions = suggestControlPositions(controls.length + buttons.length, anchor, placedSizes);
+    controls.forEach((c, i) => {
+      const label = (labels[c.key] || c.label).trim() || c.label;
+      const config: Record<string, any> = { paramKey: c.key, label };
+      if (c.options.length) config.options = c.options.map(o => ({ label: o, value: o }));
+      charts.handleAddFromPanel({ value: c.control, label, icon: 'Calendar', category: 'widget' }, positions[i], config);
+    });
+    buttons.forEach((b, i) => charts.handleAddFromPanel(
+      { value: b.control, label: b.label, icon: b.control === 'widget_search' ? 'Search' : 'RotateCcw', category: 'widget' },
+      positions[controls.length + i], { label: b.label }));
+    setParamAssembly(null);
+    toast(plan.addControls.length
+      ? `已按数据集入参补齐参数与控件${buttons.length ? `，并放置「${buttons.map(b => b.label).join('」「')}」` : ''}，拖动即可调整位置；保存前可撤销`
+      : `已补齐看板参数（这些入参由数据集正文使用，无需控件）`);
+  };
+  /**
+   * 遗留查询参数 → 看板参数 + 画布控件（当场做完，不再只能去列表页改）。
+   * 一个键只留一个输入口：搬走后顶部参数带不再渲染它，录入改由控件承担。
+   */
+  const convertLegacyParamToControl = (param: DashboardParam, shape: ParamShape) => {
+    if (!draftDashboard) return;
+    const bottom = allCharts.reduce((max, c) => {
+      const r = chartRect(c);
+      return Math.max(max, r.y + r.h);
+    }, 0);
+    const kept = (draftDashboard.params || []).filter(p => p.name !== param.name);
+    const nextPage: PageParam[] = [
+      ...(draftDashboard.page_params || []).filter(p => p.name !== param.name),
+      { name: param.name, label: param.label || param.name, type: shape, default: param.default ?? '',
+        ...(param.options?.length ? { options: param.options } : {}) },
+    ];
+    charts.updateMetadata({ params: kept, page_params: nextPage });
+    const [pos] = suggestControlPositions(1, { x: 0, y: bottom + 16 }, naturalSizeOf(controlOfShape(shape)));
+    const config: Record<string, any> = { paramKey: param.name, label: param.label || param.name };
+    if (param.options?.length) config.options = param.options.map(o => ({ label: o, value: o }));
+    charts.handleAddFromPanel({ value: controlOfShape(shape), label: param.label || param.name,
+      icon: 'Calendar', category: 'widget' }, pos, config);
+    toast(`已把「${param.label || param.name}」转为看板参数并放置控件，顶部不再重复出现输入口`);
+  };
   const layoutPreview = draftDashboard && layoutResult ? { ...draftDashboard, filters: { ...draftDashboard.filters,
     design: { ...draftDashboard.filters.design, canvas: { ...dimensions, ...draftDashboard.filters.design?.canvas, height: layoutResult.height } } },
     charts: allCharts.map(c => ({ ...c, position: layoutResult.positions[c.id] || c.position })) } : null;
@@ -376,6 +486,10 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
       </div>
     </div>
   );
+  // 没被画布控件驱动的参数 = 页面上会长出顶部输入口的那些（工具栏徒章直接反应该数，让人知道为什么多一行）
+  const drivenKeys = boundParamKeys(allCharts);
+  const paramsUncontrolled = [...(draftDashboard.params || []), ...(draftDashboard.page_params || [])]
+    .filter(p => !drivenKeys.includes(p.name)).length;
   return <div className="flex h-screen flex-col overflow-hidden bg-background">
     <EditorToolbar dashboardName={draftDashboard.name} scale={canvas.scale} canvasSize={dimensions}
       layoutMode={layoutMode} onLayoutMode={setLayoutMode} breakpoint={breakpoint} onBreakpoint={setBreakpoint} onResetPage={resetPage} onCapturePage={capturePage}
@@ -385,6 +499,8 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
       leftPanelOpen={leftOpen} rightPanelOpen={rightOpen} onZoomIn={canvas.zoomIn} onZoomOut={canvas.zoomOut} onResetZoom={canvas.resetZoom}
       onActualSize={() => canvas.zoomTo(1)} canUndo={charts.canUndo} canRedo={charts.canRedo} onUndo={charts.undo} onRedo={charts.redo} panMode={panMode} onPanMode={setPanMode}
       onOpenTemplates={() => charts.setTemplatesOpen(true)} onSave={() => void charts.saveAllChanges()} onExit={() => navigate(returnTo)}
+      onOpenParams={() => setParamsOpen(true)} paramsUncontrolled={paramsUncontrolled}
+      onOpenSourceSwitch={() => setSourceSwitchOpen(true)}
       onOpenLeftPanel={() => { setLeftOpen(true); if (window.innerWidth < 1100) setRightOpen(false); }} onOpenRightPanel={() => { setRightOpen(true); if (window.innerWidth < 1100) setLeftOpen(false); }} saving={saving}
       showGrid={showGrid} onToggleGrid={() => setShowGrid(v => !v)} onPreview={() => setPreview(true)}
       showRulers={showRulers} onToggleRulers={() => setShowRulers(v => !v)}
@@ -401,7 +517,8 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
         onSelectChart={charts.handleSelectElement} onApplyVis={applyVis} layoutMode={layoutMode} dirtyIds={charts.dirtyIds} onLayerAction={layerAction}
         onAddFromDataset={(ds) => {
           // 从数据集引入: 放在现有图表下方, 预设随数据集 chart_preset 搬入
-          charts.handleAddFromDataset(ds, { x: 0, y: allCharts.reduce((bottom, c) => Math.max(bottom, chartRect(c).y + chartRect(c).h), 0) + 16 });
+          const added = charts.handleAddFromDataset(ds, { x: 0, y: allCharts.reduce((bottom, c) => Math.max(bottom, chartRect(c).y + chartRect(c).h), 0) + 16 });
+          proposeParamAssembly(ds, added);
         }} />
       {layoutMode === 'page' ? <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="px-4 py-2 text-xs text-muted-foreground border-b" role="status">
@@ -409,6 +526,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
           {' '}设计宽度 {PAGE_WIDTHS[breakpoint]}px · 编辑画布可等比例缩放与平移，草稿预览和阅读页仍按真实宽度展示。
         </div>
         <PageLayoutEditor key={`${dashboardId}:${breakpoint}`} dashboard={draftDashboard} items={library.items} breakpoint={breakpoint} selectedIds={charts.selectedIds} canvas={canvas} showGrid={showGrid} panMode={panMode} interactive={interactive}
+          entranceReplay={motionReplay}
           showRulers={showRulers} onInsertFromLibrary={openInsertGuide} onOpenTemplates={() => charts.setTemplatesOpen(true)}
           dropRef={canvasDropRef} dropGhost={dropGhost?.mode === 'page' ? dropGhost : null}
           onSelect={charts.handleSelectElement} onConfig={openConfig} onDelete={charts.handleDeleteSelected}
@@ -418,10 +536,11 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
         style={{ touchAction: 'none', userSelect: 'none', ...backdropStyle(), ...dotBackgroundStyle(dimensions.gridSize) }}
         onPointerDownCapture={canvas.handlePanStart}>
         <DashboardCanvas ref={canvas.surfaceRef} dashboard={draftDashboard} items={library.items} showGrid={showGrid} draft interactive={interactive}
+          entranceReplay={motionReplay}
           style={{ position: 'absolute', left: '50%', top: '50%', marginLeft: -dimensions.width / 2, marginTop: -dimensions.height / 2,
             transform: `translate(${canvas.panOffset.x}px, ${canvas.panOffset.y}px) scale(${canvas.scale})`, transformOrigin: 'center',
             boxShadow: `0 0 0 1px ${CANVAS_COLORS.surfaceBorder}, ${CANVAS_COLORS.surfaceShadow}` }}
-          renderChart={(chart, card) => {
+          renderChart={(chart, card, enter) => {
             const dragging = canvas.draggingChart === chart.id, resizing = canvas.resizingChart === chart.id, selected = selectedChart?.id === chart.id;
             const original = chartRect(chart);
             const p = { ...original, ...(dragging ? canvas.dragPosition : {}), ...(resizing ? canvas.resizePosition : {}) };
@@ -430,7 +549,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
               style={{ transform: `translate3d(${p.x}px, ${p.y}px, 0)`, width: p.w, height: p.h, zIndex: selected ? 10 : 1,
                 willChange: dragging ? 'transform' : undefined, touchAction: 'none' }}
               onPointerDown={e => canvas.handleDragStart(e, chart.id)} onDoubleClick={() => { if (!panMode) openConfig(chart); }}>
-              <div className="pointer-events-none relative min-h-0" style={{ width: original.w, height: original.h,
+              <div className={`pointer-events-none relative min-h-0 ${enter}`} style={{ width: original.w, height: original.h,
                 transformOrigin: 'top left', transform: resizing ? `scale(${p.w / original.w}, ${p.h / original.h})` : undefined }}>{card}</div>
             </div>;
           }}>
@@ -484,12 +603,31 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
         widgetStyleBase={selectedWidgetBase} widgetVisName={selectedWidgetVisName}
         onCreatePageParam={param => charts.updateMetadata({
           page_params: [...(draftDashboard.page_params || []).filter(p => p.name !== param.name), param],
-        })} />
+        })}
+        /* 板级动效挂载：与左侧字模库拖放同一个 updateMetadata(filters) 通道，不另起一套写入口 */
+        filters={draftDashboard.filters}
+        onReplayMotion={() => setMotionReplay(n => n + 1)}
+        onFiltersChange={nextFilters => charts.updateMetadata({ filters: nextFilters })} />
     </div>
     {/* dropAnimation={null}：这是「松手即新建」而不是「换位」，留着默认落点动画会看起来像弹回库里 */}
     <DragOverlay dropAnimation={null}>{libraryDrag && <div className="rounded-md border bg-background px-2 py-1 text-xs shadow-lg">{libraryDrag.item.label}</div>}</DragOverlay>
     </DndContext>
     <ChartConfigPanel open={charts.configPanelOpen} chart={selectedChart} onClose={() => charts.setConfigPanelOpen(false)} onSave={charts.handleSaveChartConfig} />
+    <DashboardSourceSwitchDialog open={sourceSwitchOpen} charts={allCharts}
+      onCancel={() => setSourceSwitchOpen(false)} onApply={applySourceSwitch} />
+    <DatasetParamAssemblyDialog open={!!paramAssembly} plan={paramAssembly?.plan || EMPTY_PLAN}
+      datasetNames={paramAssembly?.datasetNames || []}
+      onCancel={() => setParamAssembly(null)} onConfirm={applyParamAssembly} />
+    <Dialog open={paramsOpen} onOpenChange={open => !open && setParamsOpen(false)}>
+      <DialogContent className="max-h-[88vh] w-[min(880px,95vw)] overflow-auto">
+        <DialogHeader><DialogTitle>看板参数</DialogTitle>
+          <DialogDescription>只改草稿，保存后生效。画布控件已驱动的键不会在页面顶部重复出现输入口。</DialogDescription></DialogHeader>
+        <DashboardParamsManager params={draftDashboard.params || []} pageParams={draftDashboard.page_params || []}
+          charts={allCharts} onChange={next => charts.updateMetadata(next)} onConvertToControl={convertLegacyParamToControl} />
+        <DialogFooter><Button size="sm" variant="outline" onClick={() => setParamsOpen(false)}>关闭</Button>
+          <Button size="sm" onClick={() => { setParamsOpen(false); void charts.saveAllChanges(); }}>保存参数</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
     <DashboardTemplates open={charts.templatesOpen} onClose={() => charts.setTemplatesOpen(false)} items={library.items} onApply={async template => {
       const applyTemplate = async () => {
         const newId = await charts.createFromTemplate(template); approveNavigation(); navigate(`/dashboard/editor/${newId}`);

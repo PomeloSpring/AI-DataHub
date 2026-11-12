@@ -95,7 +95,7 @@ INSERT IGNORE INTO adh_menu_registry (menu_key, label, section, module, sort) VA
 -- 种子: 工作空间菜单
 INSERT IGNORE INTO adh_menu_registry (menu_key, label, section, module, sort) VALUES
 ('workspace:chat', 'Chat 智能问答', 'AI 分析', 'workspace', 1),
-('workspace:reports', '报表中心', 'AI 分析', 'workspace', 2),
+('workspace:reports', '报告中心', 'AI 分析', 'workspace', 2),
 ('workspace:scheduled', '任务调度', '自动化', 'workspace', 10);
 
 -- ============================================================================

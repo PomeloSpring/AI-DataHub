@@ -356,7 +356,13 @@ def business_knowledge(design_id, user, questions, conversation_id=None):
     for kb in scope["knowledge_bases"]:
         cfg = decoded(kb["source_config"], {})
         if kb["kb_type"] != "qmind" or not cfg.get("notebook_id"):
-            raise DesignError("所选知识库没有可用的 QMind 检索配置", "knowledge_unavailable", 503)
+            # 设计授权域只消费**平台同步语料**：百炼这类外部只读语料没有版本戳，无法
+            # 核验它属于哪个业务模型（下方 unverified_source/scope_mismatch 两道门拿不到依据）。
+            # 这里不静默跳过该库，也不拿它充当口径权威 —— 必须说清原因与去向。
+            raise DesignError(
+                "所选知识库不是平台同步语料（外部只读语料不作为口径权威）；"
+                "请改选平台同步的云端知识库，或仅依据实时语义目录继续",
+                "knowledge_unavailable", 503)
         for question in questions:
             try:
                 chunks = qr.retrieve_notebook_strict(cfg["notebook_id"], question)

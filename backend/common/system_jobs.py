@@ -45,6 +45,15 @@ BUILTIN_JOBS: dict = {
         "schedule_desc": "每日 04:10",
         "owner_service": "datamind",
     },
+    "conversation_history_retention": {
+        "name": "会话与观测流水保留策略",
+        "description": "删除超过保留期的 LLM 观测流水（adh_llm_spans/adh_llm_traces）；"
+                       "并将长期未活跃会话的消息**只剥明细不删正文**（工具原始返回体/"
+                       "思考链/过程步骤），裁剪行标 storage_trimmed 可诊断；"
+                       "保留期见 RETENTION_LLM_SPAN_DAYS / RETENTION_CONVERSATION_TRIM_DAYS",
+        "schedule_desc": "每日 04:40",
+        "owner_service": "datamind",
+    },
 }
 
 

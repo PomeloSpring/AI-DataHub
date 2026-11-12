@@ -25,8 +25,24 @@ from backend.common.db.metadata_db import get_metadata_conn
 
 logger = logging.getLogger(__name__)
 
-# 聚合态站点：不对应单一数据源（全球 = 逐站各查一次后分站呈现；取数路径 carrier 已下线，不再做跨站合计）
+# 聚合态站点：不对应单一数据源（全部站点 = 逐站各查一次后分站呈现；取数路径 carrier
+# 已下线，不再做跨站合计）。业务名旧为「全球站点」，已改名（site_display_name_migration.sql）
 AGGREGATE_SITE = "global"
+
+# 旧业务名 → site_code：站点可解析别名默认由 display_name 反推（见 _alias_index），
+# 改名后反推就拿不到旧名了。不补这张表会出现“界面上已没有旧名，但用户/历史会话
+# 说旧名时直接解析失败”的空承诺，所以旧写法继续映射到同一 site_code。
+#   全球站点 → 全部站点；国际站点(新加坡) → 新加坡站点
+_LEGACY_SITE_ALIASES = {
+    "全球": AGGREGATE_SITE,
+    "全球站": AGGREGATE_SITE,
+    "全球站点": AGGREGATE_SITE,
+    "国际": "int",
+    "国际站": "int",
+    "国际站点": "int",
+    "国际站点(新加坡)": "int",
+    "国际站点（新加坡）": "int",
+}
 
 # 观测/日志类数据源：承载 SLS/ARMS 等前端监控数据，不是「业务库」。
 # 源本体（kind='source'）退役并入 business 后，观测本体（如 ARMS RUM）也带
@@ -58,8 +74,25 @@ def list_sites(only_active: bool = True, include_aggregate: bool = True) -> list
     return [dict(s) for s in rows]
 
 
+def _field_values_of(raw: Any) -> dict:
+    """`field_values` 列归一成 dict（JSON 列可能回字符串 / None / 已解析对象）。
+
+    脏数据不抛错也不编映射：返回空 dict 后调用方按"没配映射"原值下发，
+    并在翻译结果里留下可诊断的 note，不静默换成别的站点。
+    """
+    if isinstance(raw, str):
+        import json
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if str(v or "").strip()}
+
+
 def _query_sites(only_active: bool, include_aggregate: bool) -> list[dict]:
-    sql = ("SELECT site_code, display_name, is_aggregate, sort_order, is_active "
+    sql = ("SELECT site_code, display_name, is_aggregate, sort_order, is_active, field_values "
            "FROM adh_sites")
     conds = []
     if only_active:
@@ -80,7 +113,8 @@ def _query_sites(only_active: bool, include_aggregate: bool) -> list[dict]:
         {"site_code": str(r["site_code"]), "display_name": str(r["display_name"]),
          "is_aggregate": int(r.get("is_aggregate") or 0),
          "sort_order": int(r.get("sort_order") or 0),
-         "is_active": int(r.get("is_active") or 0)}
+         "is_active": int(r.get("is_active") or 0),
+         "field_values": _field_values_of(r.get("field_values"))}
         for r in rows
     ]
 
@@ -97,7 +131,7 @@ def get_site(site_code: str) -> Optional[dict]:
 
 
 def is_aggregate_site(site_ref: Any) -> bool:
-    """站点写法（code/业务名/别名）→ 是否聚合态（如「全球」）。
+    """站点写法（code/业务名/别名）→ 是否聚合态（如「全部站点」，旧名「全球站点」）。
 
     聚合态会话 `ctx.datasource_id` 合法地为 0（=逐站编排 / 读全局共享字典），
     与「具体站点但未选会话源」是两回事；工具侧闸门/文案必须能区分二者，
@@ -111,10 +145,13 @@ def is_aggregate_site(site_ref: Any) -> bool:
 
 
 def _alias_index() -> dict[str, str]:
-    """站点别名 → site_code：code、业务名、去/补「站点|站」后缀、括号内别名（新加坡）。"""
+    """站点别名 → site_code：code、业务名、去/补「站点|站」后缀、括号内别名（新加坡），
+    再补上改名前的旧写法（_LEGACY_SITE_ALIASES）。"""
     idx: dict[str, str] = {}
+    codes: set[str] = set()
     for s in list_sites(only_active=False):
         code, dn = s["site_code"], s["display_name"]
+        codes.add(str(code or ""))
         names = {code, dn}
         names.update(re.findall(r"[(（]([^()（）]+)[)）]", dn))
         base = re.sub(r"[(（][^()（）]*[)）]", "", dn).strip()
@@ -129,6 +166,10 @@ def _alias_index() -> dict[str, str]:
             key = str(n or "").strip().lower()
             if key:
                 idx.setdefault(key, code)
+    # 旧写法只在目标 code 真存在于清单时才登记：给别的部署凭空造一个站点比不认旧名更坏
+    for legacy, code in _LEGACY_SITE_ALIASES.items():
+        if code in codes:
+            idx.setdefault(legacy.strip().lower(), code)
     return idx
 
 
@@ -158,30 +199,70 @@ def validate_site_code(ref: Any, allow_aggregate: bool = False) -> str:
 # ── 站点 CRUD（管理页）────────────────────────────────────────────────
 
 def upsert_site(site_code: str, display_name: str, *, is_aggregate: int = 0,
-                sort_order: int = 0, is_active: int = 1) -> dict:
-    """新增/更新站点（幂等 upsert；code 一经使用不得改名，避免拓扑漂移）。"""
+                sort_order: int = 0, is_active: int = 1,
+                field_values: Optional[dict] = None) -> dict:
+    """新增/更新站点（幂等 upsert；code 一经使用不得改名，避免拓扑漂移）。
+
+    `field_values` 传 None 表示不动现有映射（部分更新不抹配置）；传 dict（含空 dict）为全量覆盖。
+    """
     code = str(site_code or "").strip().lower()
     if not re.fullmatch(r"[a-z0-9_-]{1,32}", code):
         raise ValueError("站点代码只允许小写字母/数字/-/_，长度 1~32")
     name = str(display_name or "").strip()
     if not name:
         raise ValueError("站点名称不能为空")
+    mapped: Optional[dict] = None
+    if field_values is not None:
+        mapped = {}
+        for k, v in (field_values or {}).items():
+            key = str(k or "").strip().lower()
+            val = str(v or "").strip()
+            if not key:
+                continue
+            if not val:
+                raise ValueError(f"字段「{k}」的站点取值不能为空（不配就删掉那一行，不要留空值）")
+            mapped[key] = val
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO adh_sites (site_code, display_name, is_aggregate, sort_order, is_active) "
-                "VALUES (%s, %s, %s, %s, %s) "
-                "ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), "
-                "is_aggregate = VALUES(is_aggregate), sort_order = VALUES(sort_order), "
-                "is_active = VALUES(is_active)",
-                (code, name, int(bool(is_aggregate)), int(sort_order or 0),
-                 int(bool(is_active))))
+            if mapped is None:
+                cur.execute(
+                    "INSERT INTO adh_sites (site_code, display_name, is_aggregate, sort_order, is_active) "
+                    "VALUES (%s, %s, %s, %s, %s) "
+                    "ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), "
+                    "is_aggregate = VALUES(is_aggregate), sort_order = VALUES(sort_order), "
+                    "is_active = VALUES(is_active)",
+                    (code, name, int(bool(is_aggregate)), int(sort_order or 0),
+                     int(bool(is_active))))
+            else:
+                cur.execute(
+                    "INSERT INTO adh_sites (site_code, display_name, is_aggregate, sort_order, is_active, field_values) "
+                    "VALUES (%s, %s, %s, %s, %s, CAST(%s AS JSON)) "
+                    "ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), "
+                    "is_aggregate = VALUES(is_aggregate), sort_order = VALUES(sort_order), "
+                    "is_active = VALUES(is_active), field_values = VALUES(field_values)",
+                    (code, name, int(bool(is_aggregate)), int(sort_order or 0),
+                     int(bool(is_active)), json.dumps(mapped, ensure_ascii=False)))
         conn.commit()
     finally:
         conn.close()
     invalidate_site_cache()
     return get_site(code) or {}
+
+
+def site_field_value(site_ref: Any, field_key: str) -> Optional[str]:
+    """站点在某个业务字段上的实际取值（映射唯一出口，按字段名区分）。
+
+    现网实测：新加坡站点（site_code=int）在业务表 `site` 列写成 `global`，
+    在日志侧 `region` 列写成 `en`；其余站点两列都等于站点代码。
+    返回 None 表示"不会解析成站点"或"该字段没配映射"，由调用方决定如何处理
+    （原值下发 + 可见 note），不得自己猜一个值。
+    """
+    code = normalize_site_ref(site_ref)
+    if not code or not str(field_key or "").strip():
+        return None
+    values = (get_site(code) or {}).get("field_values") or {}
+    return str(values.get(str(field_key).strip().lower()) or "").strip() or None
 
 
 def delete_site(site_code: str) -> dict:
@@ -590,13 +671,66 @@ def object_site_target_ids(object_ref: str, site_code: str,
     return targets
 
 
+def source_for_physical_table(table_ref: Any, candidate_ids: Iterable[int]) -> set[int]:
+    """候选源里「有对象的 active 绑定把该物理表当 physical_table」的源 id（读部署事实，不是猜）。
+
+    为什么需要：SQL 旁路（execute_sql/check_sql）只有 site、没有对象上下文，拿不到
+    `object_site_target_ids` 的消歧输入，于是问 ARMS/SLS 观测数据却被本站默认业务库
+    （MySQL）抢走 → SLS 方言的 SQL 打到 MySQL 报 1064（历史缺陷：会话 1783069459277）。
+    SQL 里已经有表名这个事实，服务端按它反查绑定行即可确定性消歧，不需要 LLM 传任何
+    内部 id（守 waker-datasource-domain §2 黑盒）。
+
+    口径（宁缺勿错）：命中不唯一（≥2）或零命中返回空集，由调用方回到原有链路与
+    fail-loud 提示，绝不在这里猜一个源。跨库同名表属于多义，不选。
+    """
+    cands = {int(i) for i in (candidate_ids or []) if str(i).strip() != ""}
+    name = _norm_table_ref(table_ref)
+    if not name or not cands:
+        return set()
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT datasource_id, execution_binding FROM adh_ontology_objects "
+                "WHERE is_active = 1")
+            rows = cur.fetchall() or []
+    except Exception as e:  # noqa: BLE001 — 拓扑不可用不阻断主链路，交由调用方回到原链路
+        logger.debug("[site] physical-table lookup skipped: %s", e)
+        return set()
+    finally:
+        conn.close()
+    hits: set[int] = set()
+    for r in rows:
+        ds = int((r or {}).get("datasource_id") or 0)
+        if ds not in cands:
+            continue
+        binding = _parse_json_field((r or {}).get("execution_binding"))
+        if not isinstance(binding, dict):
+            continue
+        for key in ("physical_table", "table"):
+            if _norm_table_ref(binding.get(key)) == name:
+                hits.add(ds)
+                break
+    return hits
+
+
+def _norm_table_ref(ref: Any) -> str:
+    """表名归一：剥引号/反引号与 `db.`/`catalog.db.` 限定，只留裸表名（小写）。"""
+    s = str(ref or "").strip().strip('`"\'')
+    if not s:
+        return ""
+    return s.split(".")[-1].strip().lower()
+
+
 def resolve_site_to_source(site_ref: Any, allowed_ids: Iterable[int],
-                           model_id: int = 0, object_key: str = "") -> int:
+                           model_id: int = 0, object_key: str = "",
+                           table_hint: str = "") -> int:
     """站点业务名/代码 → 生效 datasource_id（只在角色授权集内解析）。
 
     唯一命中直接返回；站点内多源时先用模型 deploy_sites 的路由目标消歧，再用
-    “对象在本站的部署绑定/模型声明源”按对象消歧，再用“任一活跃业务本体在本站
-    声明的业务库”兼容（会话层不知道具体模型）；仍多义/零命中
+    “对象在本站的部署绑定/模型声明源”按对象消歧，再用“SQL 里出现的物理表名”反查
+    绑定行消歧（`table_hint`，给只有 site 没有对象上下文的 nl2sql 旁路用），再用
+    “任一活跃业务本体在本站声明的业务库”兼容（会话层不知道具体模型）；仍多义/零命中
     /聚合态 → 抛 SiteError（含业务名候选，不猜）。
     """
     ids = sorted({int(i) for i in (allowed_ids or []) if str(i).strip() != ""})
@@ -626,6 +760,16 @@ def resolve_site_to_source(site_ref: Any, allowed_ids: Iterable[int],
         # 问的是具体对象 → 用该对象在本站的部署事实定源（观测对象不会被“默认业务库”
         # 启发式抢走），命中唯一才生效，多义仍回到下面的 fail-loud。
         hits = object_site_target_ids(object_key, code, [int(c["id"]) for c in candidates])
+        if len(hits) == 1:
+            return int(next(iter(hits)))
+    if not target and table_hint:
+        # nl2sql 旁路只有 site、没有对象上下文：用 SQL 里已有的名字反查部署事实定源。
+        # 这个名字可能是物理表（走绑定行），也可能是被当成表写的**本体对象 key**
+        # （历史缺陷会话 1783069459277：模型写 FROM "rum_event"，而物理表叫 logstore-rum）。
+        # 两条都试，各自只认唯一命中；都不唯一时回到下面的 fail-loud，不猜。
+        cands = [int(c["id"]) for c in candidates]
+        hits = source_for_physical_table(table_hint, cands) or object_site_target_ids(
+            table_hint, code, cands)
         if len(hits) == 1:
             return int(next(iter(hits)))
     if not target:

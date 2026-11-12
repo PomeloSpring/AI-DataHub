@@ -1,8 +1,8 @@
-"""工作空间删除回归：默认工作站不可删、属主可删、级联范围不得越界到跨工作站资产。
+"""工作空间删除回归：默认工作空间不可删、属主可删、级联范围不得越界到跨工作空间资产。
 
 口径（需求确认）：只删用户自建的自定义空间；空间内产物（会话含磁盘工作区、看板与
 图表、定时任务与 DAG、保存查询、通知渠道、空间绑定）彻底删除；审计/观测流水与
-跨工作站资产（资产清单、用户记忆、数据集/数据产品）必须保留。
+跨工作空间资产（资产清单、用户记忆、数据集/数据产品）必须保留。
 """
 from __future__ import annotations
 
@@ -136,9 +136,9 @@ OWNER = 1778154925
 OWNER_USER = {"user_id": OWNER, "username": "admin", "role": "viewer"}
 ADMIN_USER = {"user_id": 1, "username": "root", "role": "admin"}
 CUSTOM = {"id": 302, "name": "test", "owner_id": OWNER, "is_default": 0}
-DEFAULT_WS = {"id": 301, "name": "admin的工作站", "owner_id": OWNER, "is_default": 1}
+DEFAULT_WS = {"id": 301, "name": "admin的工作空间", "owner_id": OWNER, "is_default": 1}
 
-# 必须保留的表：跨工作站资产 + 审计/观测 + 中台治理资产
+# 必须保留的表：跨工作空间资产 + 审计/观测 + 中台治理资产
 MUST_KEEP = (
     "adh_user_assets", "adh_user_memory", "adh_datasets", "adh_data_products",
     "adh_query_audit", "adh_llm_traces", "adh_audit_logs", "adh_intent_intercepts",
@@ -151,7 +151,7 @@ def _deleted_tables(log):
 
 
 def test_default_workspace_cannot_be_deleted(harness):
-    """默认工作站拒删：409 可解释原因，且一条 DELETE 都不发。"""
+    """默认工作空间拒删：409 可解释原因，且一条 DELETE 都不发。"""
     log = harness(DEFAULT_WS)
     with pytest.raises(HTTPException) as exc:
         wd.delete_workspace(301, OWNER_USER)

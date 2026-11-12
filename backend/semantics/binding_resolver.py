@@ -123,21 +123,56 @@ def _ds_id_by_name(conn, name: str) -> Optional[int]:
         return None
 
 
+def _select_db_type(conn, datasource_id: int):
+    """查 `adh_datasources.db_type` 的**唯一 SQL**（查不到返回 None，不在此下结论）。
+
+    单一实现的原因：`_ds_db_type`（方言编译，必须有个保守值才能继续）与
+    `lookup_db_type`（对外提示，宁缺勿错）对“查不到”的处理不同，但 SQL 必须同一条，
+    否则一处改了另一处过时（历史缺陷就是同类“第二份口径”造成）。
+    """
+    if not datasource_id:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT db_type FROM adh_datasources WHERE id = %s LIMIT 1",
+            (int(datasource_id),),
+        )
+        row = cur.fetchone()
+    return (row or {}).get("db_type") if row else None
+
+
 def _ds_db_type(conn, datasource_id: int) -> str:
     """数据源的 db_type(方言/协议族); 查不到时保守回落 'mysql'(旧行为)。"""
     if not datasource_id:
         return "mysql"
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT db_type FROM adh_datasources WHERE id = %s LIMIT 1",
-                (datasource_id,),
-            )
-            row = cur.fetchone()
-        return ((row or {}).get("db_type") or "mysql").lower()
+        return str(_select_db_type(conn, datasource_id) or "mysql").lower()
     except Exception as e:  # noqa: BLE001 — 不阻断解析, 方言回落由 planner 再校验
         logger.debug("[binding] datasource db_type lookup failed for id=%s: %s", datasource_id, e)
         return "mysql"
+
+
+def lookup_db_type(datasource_id: int) -> str:
+    """按 id 查数据源引擎类型（自带连接）；查不到/异常返回 ""（不编造方言）。
+
+    给对外文案用：“SQL 与目标源方言不匹配（目标源类型：mysql）”只有在真查到类型时
+    才能这样写；拿 `_ds_db_type` 的保守回落“mysql”去写提示，会在元库查不到时
+    把模型往“改 MySQL 方言”的方向带（历史缺陷：会话 1783069459277）。
+    """
+    if not datasource_id:
+        return ""
+    try:
+        from backend.common.db.metadata_db import get_metadata_conn
+
+        conn = get_metadata_conn()
+        try:
+            value = _select_db_type(conn, int(datasource_id))
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001 — 提示性字段取不到不得影响取数主链路
+        logger.debug("[binding] lookup_db_type failed for id=%s: %s", datasource_id, e)
+        return ""
+    return str(value or "").strip().lower()
 
 
 # ── 主入口 ──────────────────────────────────────────────────────

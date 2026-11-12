@@ -1,7 +1,11 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { toast } from '@/lib/toast';
-import { Settings, Copy, Play, Loader2, Database, Link, Plus, Trash2 } from 'lucide-react';
+import { Settings, Database, Link, Plus, Trash2, ExternalLink, AlertTriangle, Play } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { CHART_TYPES, ChartIcon } from './DashboardChart';
+import { TABLE_VALUE_PAGE_SIZES, pageSizeOf } from '@/lib/dashboardDesign';
+import { isDemoChart } from '@/lib/dashboardDemo';
+import { applyFieldFormats } from '@/lib/fieldFormat';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -10,6 +14,8 @@ import { Slider } from '@/components/ui/slider';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { SearchSelect } from '@/components/ui/search-select';
+import { DATASET_KIND_LABELS, datasetPreviewPayload, datasetSearchText } from '@/lib/datasetPickerFilter';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Textarea } from '@/components/ui/textarea';
@@ -23,6 +29,9 @@ interface ChartConfigPanelProps {
   onSave: (config: any) => void | Promise<void>;
 }
 
+/** 预览样本上限：看数用，不是导出；真取数仍走图表刷新（带看板参数与分页） */
+const PREVIEW_ROWS = 20;
+
 const CHART_COLORS = [
   '#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de',
   '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc', '#48b8d0',
@@ -34,70 +43,129 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
   const semantic = chart?.query_source === 'semantic' || !!chart?.semantic_query;
   const [saving, setSaving] = useState(false);
   const saveLock = useRef(false);
-  const [sqlQuery, setSqlQuery] = useState('');
-  const [executing, setExecuting] = useState(false);
-  const [previewData, setPreviewData] = useState<{ columns: string[]; rows: any[] } | null>(null);
-  const [datasources, setDatasources] = useState<any[]>([]);
-  const [selectedDsId, setSelectedDsId] = useState<number>(0);
+  // 取数口径属于数据集（2026-11-06 拍板）：本面板不再录入/执行 SQL，只能从
+  // 「角色权限 → 数据集」清单里选一个数据集（清单与组件库「数据集」页同一接口）。
+  const [datasets, setDatasets] = useState<any[]>([]);
+  const [datasetsLoading, setDatasetsLoading] = useState(false);
+  const [datasetsError, setDatasetsError] = useState('');
+  const [datasetId, setDatasetId] = useState<number>(0);
+  // 查看数据：走数据集预览入口（`POST /datasets/{id}/preview` → query_dataset），
+  // 服务端编译口径 + 角色权限/RLS/敏感屏蔽全部施加，本面板仍不录入也不执行 SQL。
+  const [preview, setPreview] = useState<{ columns: string[]; rows: any[] } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
   const [dashboardsList, setDashboardsList] = useState<any[]>([]);
+  const navigate = useNavigate();
 
-  // Load datasources and sync from chart prop on open
+  const loadDatasets = useCallback(() => {
+    setDatasetsLoading(true);
+    setDatasetsError('');
+    // 清单唯一数据源 = /datasets/（后端按角色授权裁决, 与组件库「数据集」页同一口径）：
+    // 不得在本面板另拼一份"能挂哪些数据集"的判断（那会出现清单里看不到但能挂上）。
+    client.get('/datasets/').then(({ data }) => {
+      setDatasets(Array.isArray(data?.items) ? data.items : []);
+    }).catch(() => {
+      // 清单拉不到不能退成"没有数据集"（那会被读成业务结论），也不能在看不见清单时
+      // 让用户保存（静默丢绑挂）：显式报错 + 可重试
+      setDatasets([]);
+      setDatasetsError('数据集清单加载失败，请重试；未加载清单时无法改挂数据集。');
+    }).finally(() => setDatasetsLoading(false));
+  }, []);
+
+  // Load datasets and sync from chart prop on open
   useEffect(() => {
     if (open) {
       const chartConfig = chart?.config || {};
-      const dsId = chart?.source_id || chartConfig.datasource_id || 0;
 
       setConfig(chartConfig);
-      setSqlQuery(semantic ? '' : chart?.sql_query || '');
-      setSelectedDsId(dsId);
-      setPreviewData(null);
+      setDatasetId(String(chart?.source_type) === 'dataset' ? Number(chart?.source_id || 0) : 0);
+      // 上一张图的样本不能跟着面板“留着”，否则看起来像这张图的数据
+      setPreview(null);
+      setPreviewError('');
 
-      if (!semantic) client.get('/datasources/').then(({ data }) => {
-        setDatasources(Array.isArray(data) ? data : []);
-      }).catch(() => {});
+      if (!semantic) loadDatasets();
 
       // Load dashboards list for drill-through link config
       client.get('/dashboard/').then(({ data }) => {
         setDashboardsList(data);
       }).catch(() => {});
     }
-  }, [open, chart]);
+  }, [open, chart, semantic, loadDatasets]);
+
+  // 换数据集就丢掉上一份样本，避免“看着是新数据集的数据，其实是旧响应”
+  useEffect(() => { setPreview(null); setPreviewError(''); }, [datasetId]);
+
+  /** 预览当前所选数据集的样本行：口径由服务端编译，权限/RLS/敏感屏蔽照旧施加 */
+  const runPreview = useCallback(async () => {
+    if (!datasetId) { setPreviewError('请先选择数据集'); return; }
+    setPreviewLoading(true);
+    setPreviewError('');
+    setPreview(null);
+    try {
+      // 只给行数上限，不塞字段映射（实测：SQL 型传字段会编译出非法 SQL，见 datasetPreviewPayload）
+      // 选源只给业务名（护栏 §7）：钉了就按钉的那个预览，未钉不注入（交服务端定源）
+      const payload: Record<string, any> = datasetPreviewPayload(PREVIEW_ROWS);
+      if (config.datasource) payload.datasource = String(config.datasource);
+      const { data } = await client.post(`/datasets/${datasetId}/preview`, payload);
+      // 显示格式随结果下发（数据集声明），预览表与看板渲染走同一实现，
+      // 避免"配置面板里还是 T00:00:00.000、存进看板就变了"的双口径
+      setPreview(applyFieldFormats({
+        columns: data.columns || [],
+        rows: (data.rows || []).slice(0, PREVIEW_ROWS),
+        field_formats: data.field_formats,
+      }));
+    } catch (e: any) {
+      // 服务端回的是业务原因文案（包候选源/口径问题），不得退成“没有数据”冒充结果
+      setPreviewError(e?.response?.data?.detail || '预览未完成，请稍后重试或到数据集页核实该数据集是否可取数');
+    } finally {
+      setPreviewLoading(false);
+    }
+  }, [datasetId, config.datasource]);
+
+  const selectedDataset = datasets.find(d => Number(d.id) === Number(datasetId)) || null;
+  const boundDataset = String(chart?.source_type) === 'dataset' && !!chart?.source_id;
+  // 看板级选源（2026-11-12）：当前身份在该数据集上真正可执行的数据源业务名清单
+  // （后端 `usable_now` = 可用范围 ∩ 角色授权源，与取数/挂图同一裁决口径，不在前端另判）。
+  // 长度 > 1 才给切换器（只有一个源时没得切，渲出来就是空承诺）。
+  const sourceScope: string[] = (selectedDataset?.usable_now?.length
+    ? selectedDataset.usable_now : selectedDataset?.available_source_names) || [];
+  const pinnedSource = String(config.datasource || '');
+  const legacySqlChart = !semantic && !!(chart?.sql_query || '').trim()
+    && !(chart?.config as any)?.as_bot_design && !isDemoChart({ config });
+  // 字段候选：已取数的列 + 数据集声明的字段业务名（选择框不让人手拼列名）
+  const columnOptions = useMemo(() => {
+    const cols: string[] = [];
+    try {
+      const cached = chart?.data_cache ? JSON.parse(chart.data_cache) : null;
+      (cached?.columns || []).forEach((c: any) => c && cols.push(String(c)));
+    } catch { /* 脏缓存不污染候选清单 */ }
+    const decl = selectedDataset?.field_config;
+    const fields = typeof decl === 'string' ? (() => { try { return JSON.parse(decl); } catch { return []; } })() : decl;
+    (Array.isArray(fields) ? fields : []).forEach((f: any) => {
+      const name = f?.label || f?.field;
+      if (name) cols.push(String(name));
+    });
+    return Array.from(new Set(cols));
+  }, [chart?.data_cache, selectedDataset]);
 
   const handleSave = useCallback(async () => {
     if (saveLock.current) return;
+    if (!semantic && datasetsLoading) { toast.warning('数据集清单尚未加载完成，请稍候再保存'); return; }
+    if (!semantic && datasetsError) { toast.error(datasetsError); return; }
+    // 数据集图表必须真的挂上一个清单内的数据集（挂不上就报错，不开“保存了但无数据”的空承诺）
+    if (!semantic && !datasetId && String(chart?.source_type) === 'dataset') {
+      toast.error('请从清单里选择一个数据集（或先把图表改为尚未配数的占位图）');
+      return;
+    }
     saveLock.current = true; setSaving(true);
     try {
       const updates: any = { ...config, _chart_type: config.chartType || chart?.chart_type };
-      if (!semantic) {
-        if (sqlQuery !== (chart?.sql_query || '')) updates._sql_query = sqlQuery;
-        if (selectedDsId !== (chart?.source_id || chart?.config?.datasource_id || 0)) updates._datasource_id = selectedDsId;
-      }
+      if (!semantic) updates._dataset_id = datasetId;
       await onSave(updates);
       onClose();
     } catch { toast.error('保存失败，配置已保留，请重试'); }
     finally { saveLock.current = false; setSaving(false); }
-  }, [config, chart, semantic, sqlQuery, selectedDsId, onSave, onClose]);
-
-  const handleExecuteSql = async () => {
-    if (semantic || !sqlQuery.trim() || executing || saving) return;
-    setExecuting(true);
-    try {
-      const { data } = await client.post('/playground/execute', {
-        sql: sqlQuery.trim(),
-        datasource_id: selectedDsId || undefined,
-      });
-      if (data.columns && data.rows) {
-        setPreviewData({ columns: data.columns, rows: data.rows });
-        toast.success(`查询成功，返回 ${data.rows.length} 行`);
-      } else if (data.detail) {
-        toast.error(data.detail);
-      }
-    } catch (e: any) {
-      toast.error(e.response?.data?.detail || '执行失败');
-    } finally {
-      setExecuting(false);
-    }
-  };
+  }, [config, chart, semantic, datasetId, datasetsLoading, datasetsError, onSave, onClose]);
 
   const updateConfig = useCallback((key: string, value: any) => {
     setConfig((prev: any) => ({ ...prev, [key]: value }));
@@ -110,7 +178,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
   if (!chart || isWidget) return null;
 
   return (
-    <Dialog open={open} onOpenChange={value => { if (!value && !saving && !executing) onClose(); }}>
+    <Dialog open={open} onOpenChange={value => { if (!value && !saving) onClose(); }}>
       <DialogContent className="max-w-[600px] max-h-[80vh]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -125,7 +193,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
               <TabsTrigger value="basic" className="flex-1">基础设置</TabsTrigger>
               <TabsTrigger value="style" className="flex-1">样式设置</TabsTrigger>
               <TabsTrigger value="axis" className="flex-1">坐标轴</TabsTrigger>
-              {!semantic && <TabsTrigger value="datasource" className="flex-1">数据源</TabsTrigger>}
+              {!semantic && <TabsTrigger value="datasource" className="flex-1">数据</TabsTrigger>}
             </TabsList>
 
             <TabsContent value="basic" className="space-y-4 mt-4">
@@ -188,6 +256,22 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                 </p>
               </div>
 
+              {/* 多系列柱图的排布：分组（各系列并排、颜色区分）还是堆叠（累计口径）。
+                  默认分组：堆叠会把几个系列挤进同一根柱，读不出谁是谁。 */}
+              {['bar', 'timeseries_bar'].includes(config.chartType || chart.chart_type || 'bar') && (
+                <div className="space-y-2">
+                  <Label>多系列排布</Label>
+                  <Select value={config.seriesLayout === 'stack' ? 'stack' : 'group'}
+                    onValueChange={v => updateConfig('seriesLayout', v)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="group">分组（每个系列一根柱，颜色区分）</SelectItem>
+                      <SelectItem value="stack">堆叠（看部分与整体累计）</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
               {/* Table value specific settings */}
               {(config.chartType || chart.chart_type) === 'table_value' && (
                 <>
@@ -195,12 +279,31 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                   <div className="space-y-4">
                     <h4 className="font-medium">表值图设置</h4>
                     <div className="space-y-2">
-                      <Label>最大显示行数</Label>
-                      <Input
-                        type="number"
-                        value={config.maxRows || 100}
-                        onChange={e => updateConfig('maxRows', parseInt(e.target.value) || 100)}
-                      />
+                      <Label>每页行数</Label>
+                      <Select
+                        value={String(pageSizeOf(config))}
+                        onValueChange={v => updateConfig('pageSize', parseInt(v))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {TABLE_VALUE_PAGE_SIZES.map(n => (
+                            <SelectItem key={n} value={String(n)}>{n} 行</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        分页由服务端按 pageSize / pageNum 取数（每页上限 100 行）：
+                        绑定了「支持分页」数据集的明细表恒定按页取，SQL 通道可直接跳页，
+                        ES 通道按游标逐页往后翻；统计展示型数据集整页返回。
+                      </p>
+                      {semantic && (
+                        <p className="text-xs text-amber-600">
+                          声明式语义图表不支持按页取数（语义层只产 LIMIT n，没有 OFFSET/行总数形状），
+                          请改挂数据集。
+                        </p>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
                       <Switch
@@ -222,70 +325,12 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                         checked={config.enablePagination !== false}
                         onCheckedChange={v => updateConfig('enablePagination', v)}
                       />
-                      <Label>启用分页</Label>
+                      <Label>行数超出时显示分页条</Label>
                     </div>
-                    {config.enablePagination !== false && (
-                      <div className="space-y-2">
-                        <Label>每页行数</Label>
-                        <Select
-                          value={String(config.pageSize || 20)}
-                          onValueChange={v => updateConfig('pageSize', parseInt(v))}
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="10">10 行</SelectItem>
-                            <SelectItem value="20">20 行</SelectItem>
-                            <SelectItem value="50">50 行</SelectItem>
-                            <SelectItem value="100">100 行</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2">
-                      <Switch
-                        checked={config.enableServerPagination === true}
-                        onCheckedChange={v => updateConfig('enableServerPagination', v)}
-                      />
-                      <Label>服务端分页</Label>
-                    </div>
-                    {config.enableServerPagination && (
-                      <>
-                        <div className="space-y-1">
-                          <Label>每页条数 (page_limit)</Label>
-                          <Select
-                            value={String(config.pageLimit || 20)}
-                            onValueChange={v => updateConfig('pageLimit', parseInt(v))}
-                          >
-                            <SelectTrigger><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="10">10</SelectItem>
-                              <SelectItem value="20">20</SelectItem>
-                              <SelectItem value="50">50</SelectItem>
-                              <SelectItem value="100">100</SelectItem>
-                              <SelectItem value="200">200</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        {!semantic && <div className="space-y-1">
-                          <Label>总数查询 SQL (可选)</Label>
-                          <textarea
-                            className="w-full h-16 text-xs p-2 rounded border bg-background resize-none"
-                            placeholder="如: SELECT COUNT(*) AS cnt FROM dwd_table WHERE 1=1 AND ('{{site}}' = '' OR site = '{{site}}')"
-                            value={config.countSql || ''}
-                            onChange={e => updateConfig('countSql', e.target.value)}
-                          />
-                          <p className="text-xs text-muted-foreground">留空则自动用主 SQL 包装 COUNT(*)，填写后更精确</p>
-                        </div>}
-                        <p className="text-xs text-muted-foreground">
-                          主 SQL 中使用 <code>{'{{page_limit}}'}</code> 和 <code>{'{{page_offset}}'}</code>，后端自动拼接 LIMIT/OFFSET
-                        </p>
-                      </>
-                    )}
-                    {config.enablePagination === false && !config.enableServerPagination && (
-                      <p className="text-xs text-muted-foreground">分页已关闭，将显示全部数据</p>
-                    )}
+                    <p className="text-xs text-muted-foreground">
+                      只影响不支持分页的数据集（整页返回的统计结果）。明细表走服务端真分页时
+                      分页条恒显示 —— 关掉它只会让用户看不到后面还有多少页。
+                    </p>
                   </div>
                 </>
               )}
@@ -333,14 +378,9 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                             >
                               <SelectTrigger><SelectValue placeholder="选择列" /></SelectTrigger>
                               <SelectContent>
-                                {(() => {
-                                  try {
-                                    const cached = chart?.data_cache ? JSON.parse(chart.data_cache) : null;
-                                    return (cached?.columns || previewData?.columns || []).map((col: string) => (
-                                      <SelectItem key={col} value={col}>{col}</SelectItem>
-                                    ));
-                                  } catch { return null; }
-                                })()}
+                                {columnOptions.map((col: string) => (
+                                  <SelectItem key={col} value={col}>{col}</SelectItem>
+                                ))}
                               </SelectContent>
                             </Select>
                           </div>
@@ -618,13 +658,17 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
               </div>
 
               <div className="space-y-2">
-                <Label>X轴标签旋转角度: {config.xAxisLabelRotate || 0}°</Label>
+                <Label>
+                  X轴标签旋转角度: {config.xAxisLabelRotate ? `${config.xAxisLabelRotate}°` : '自动'}
+                </Label>
                 <Slider
                   min={0}
                   max={90}
                   value={[config.xAxisLabelRotate || 0]}
                   onValueChange={([v]) => updateConfig('xAxisLabelRotate', v)}
                 />
+                {/* 0 = 自动：类目多/标签长时由图表引擎选角度并撑高轴带，避免 x 轴文字挤成一坨 */}
+                <p className="text-[10px] text-muted-foreground">0° 为自动（数据多、名称长时自动倾斜并留足轴下空间）</p>
               </div>
 
               <div className="flex items-center gap-2">
@@ -654,112 +698,167 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
             </TabsContent>
 
             {!semantic && <TabsContent value="datasource" className="space-y-4 mt-4">
-              {/* Datasource selector */}
+              {/* 取数口径唯一入口：从角色授权内的数据集清单选一个（本面板不录入也不执行 SQL） */}
               <div className="space-y-2">
                 <Label className="flex items-center gap-2">
                   <Database className="h-4 w-4" />
-                  数据源
+                  数据集
                 </Label>
-                <Select
-                  value={String(selectedDsId || '')}
-                  onValueChange={(v) => setSelectedDsId(Number(v))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="选择数据源" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {datasources.map((ds) => (
-                      <SelectItem key={ds.id} value={String(ds.id)}>
-                        <div className="flex items-center gap-2">
-                          <Database className="h-4 w-4 text-muted-foreground" />
-                          {ds.name}
-                          <Badge variant="outline" className="text-xs">{ds.db_type}</Badge>
-                          {ds.is_default ? <Badge variant="secondary" className="text-xs">默认</Badge> : null}
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {/* 可搜索选择（ui-resource-display §2）：清单 20+ 条时下拉盲选不可用，
+                    关键词同时命名称/描述/字段业务名/数据源名（keywords 不展示只参与匹配） */}
+                <SearchSelect
+                  ariaLabel="数据集"
+                  value={String(datasetId || '')}
+                  onValueChange={(v: string) => { setDatasetId(Number(v)); updateConfig('datasource', undefined); }}
+                  options={datasets.map((ds: any) => ({
+                    value: String(ds.id),
+                    label: ds.name,
+                    description: [
+                      ds.datasource_name || '默认引擎',
+                      DATASET_KIND_LABELS[String(ds.source_type || 'sql').toLowerCase()] || ds.source_type,
+                      ds.field_count ? `${ds.field_count} 字段` : '',
+                    ].filter(Boolean).join(' · '),
+                    keywords: datasetSearchText(ds),
+                  }))}
+                  placeholder={datasetsLoading ? '正在加载数据集清单…' : '搜索并选择数据集'}
+                  searchPlaceholder="按名称/描述/字段/数据源过滤…"
+                  emptyText="当前角色清单内没有可选数据集"
+                  loading={datasetsLoading}
+                  error={datasetsError}
+                  onRetry={loadDatasets}
+                  disabled={datasetsLoading}
+                />
+                {datasetsError && (
+                  <div className="flex items-center gap-2 text-xs text-destructive">
+                    <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+                    <span className="flex-1">{datasetsError}</span>
+                    <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={loadDatasets}>重试</Button>
+                  </div>
+                )}
+                {!datasetsLoading && !datasetsError && datasets.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    当前角色没有可挂的数据集。可挂清单 =「角色权限 → 数据集」已授权
+                    <span className="whitespace-nowrap"> ∧ </span>「角色权限 → 数据源」至少能执行该数据集的一个源：
+                    两层任一为空都会回到这里（请先到「数据集」页定义口径，再找管理员补授权）。
+                  </p>
+                )}
                 <p className="text-xs text-muted-foreground">
-                  💡 选择数据源后，SQL 将在该数据源上执行。即使是快照图表也可以切换数据源重新查询。
+                  💡 口径在「数据集」页定义（字段声明 / 认证 / 血缘 / 角色清单都在那一层），
+                  看板只做可视化装配；数据集改了口径图表即生效（不复制 SQL，单口径）。
                 </p>
+
+                {/* 执行数据源切换（看板级选源）：仅当该数据集对当前身份可在 >1 个源上执行时提供。
+                    选项一律业务名（内部 id 属黑盒 §7）；存进 config.datasource，保存后随刷新下递服务端。 */}
+                {sourceScope.length > 1 && (
+                  <div className="space-y-1.5 rounded-md border bg-muted/20 p-2">
+                    <Label className="flex items-center gap-1.5 text-xs">
+                      <Database className="h-3.5 w-3.5" />执行数据源
+                    </Label>
+                    <Select value={pinnedSource || '__auto__'}
+                      onValueChange={v => updateConfig('datasource', v === '__auto__' ? undefined : v)}>
+                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__auto__">自动（服务端定源）</SelectItem>
+                        {sourceScope.map(n => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[11px] text-muted-foreground">
+                      该数据集可在 {sourceScope.length} 个已授权数据源上执行；此处为当前图表钉选执行源（存业务名，
+                      跨查看者按其角色权限裁决）。不选则按数据集默认口径自动定源。
+                    </p>
+                  </div>
+                )}
+
+                {/* 查看数据：只预览已授权数据集的样本行（服务端编译与治理），不录入也不执行任何 SQL */}
+                <div className="space-y-2 pt-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Button size="sm" variant="outline" className="h-7 text-xs"
+                      onClick={runPreview}
+                      disabled={!datasetId || previewLoading || datasetsLoading || !!datasetsError}>
+                      <Play className="h-3 w-3 mr-1" />
+                      {previewLoading ? '取数中…' : '预览数据'}
+                    </Button>
+                    <span className="text-[11px] text-muted-foreground">
+                      按数据集口径取前 {PREVIEW_ROWS} 行（未套用看板当前参数与筛选）
+                    </span>
+                  </div>
+                  {previewError && (
+                    <div role="alert" className="flex items-center gap-2 text-xs text-destructive">
+                      <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+                      <span className="flex-1">{previewError}</span>
+                      <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={runPreview}
+                        disabled={previewLoading}>重试</Button>
+                    </div>
+                  )}
+                  {preview && (preview.columns.length === 0
+                    ? <p className="text-xs text-muted-foreground">本次预览没有返回行列（口径可能命中空集）。</p>
+                    : (
+                      <div className="max-h-52 overflow-auto rounded-md border">
+                        <table className="w-full text-[11px]">
+                          <thead className="sticky top-0 bg-muted">
+                            <tr>{preview.columns.map(c => (
+                              <th key={c} className="px-2 py-1 text-left font-medium whitespace-nowrap">{c}</th>
+                            ))}</tr>
+                          </thead>
+                          <tbody>
+                            {preview.rows.map((r, i) => (
+                              <tr key={i} className="border-t">
+                                {preview.columns.map(c => (
+                                  <td key={c} className="px-2 py-1 whitespace-nowrap">{r?.[c] ?? ''}</td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ))}
+                  {preview && (
+                    <p className="text-[11px] text-muted-foreground">
+                      样本 {preview.rows.length} 行 · {preview.columns.length} 列；列名与行数均为当前身份可见口径（敏感列已按治理剔除/脱敏）。
+                    </p>
+                  )}
+                </div>
               </div>
 
               <Separator />
 
-              {/* Chart info */}
-              <div className="p-4 bg-muted rounded-lg">
+              {/* Chart info（资源引用一律显示业务名，不裸显内部 id） */}
+              <div className="p-4 bg-muted rounded-lg space-y-2">
                 <h4 className="font-medium mb-2">图表信息</h4>
                 <div className="grid grid-cols-2 gap-2 text-sm">
-                  <div><span className="text-muted-foreground">图表ID：</span>{chart.id}</div>
-                  <div><span className="text-muted-foreground">图表类型：</span>{chart.chart_type}</div>
-                  <div><span className="text-muted-foreground">数据来源：</span>{chart.source_type === 'empty' ? '空图表' : chart.source_type || 'query'}</div>
-                  <div><span className="text-muted-foreground">更新时间：</span>{chart.updated_at ? new Date(chart.updated_at).toLocaleString('zh-CN') : '-'}</div>
-                </div>
-              </div>
-
-              {/* SQL query */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <Label>SQL查询</Label>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={!sqlQuery.trim()}
-                      onClick={() => {
-                        navigator.clipboard.writeText(sqlQuery);
-                        toast.success('SQL已复制到剪贴板');
-                      }}
-                    >
-                      <Copy className="h-4 w-4 mr-1" />
-                      复制
-                    </Button>
-                    <Button
-                      size="sm"
-                      disabled={!sqlQuery.trim() || executing}
-                      onClick={handleExecuteSql}
-                    >
-                      {executing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Play className="h-4 w-4 mr-1" />}
-                      执行
-                    </Button>
+                  <div>
+                    <span className="text-muted-foreground">当前数据集：</span>
+                    {selectedDataset?.name
+                      || (boundDataset ? '不在当前角色清单内（可能已撤权/停用，请重新选择）' : '尚未绑定')}
+                  </div>
+                  <div><span className="text-muted-foreground">图表类型：</span>
+                    {CHART_TYPES.find(t => t.value === (config.chartType || chart.chart_type))?.label || chart.chart_type}
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">执行数据源：</span>
+                    {pinnedSource
+                      || selectedDataset?.datasource_name
+                      || (boundDataset ? '按查看者角色定源' : '未绑定')}
+                    {pinnedSource && <span className="ml-1 text-[11px] text-muted-foreground">（本图钉选）</span>}
+                  </div>
+                  <div><span className="text-muted-foreground">更新时间：</span>
+                    {chart.updated_at ? new Date(chart.updated_at).toLocaleString('zh-CN') : '-'}
                   </div>
                 </div>
-                <Textarea
-                  value={sqlQuery}
-                  onChange={e => setSqlQuery(e.target.value)}
-                  placeholder="SELECT * FROM table_name WHERE ...&#10;&#10;输入SQL查询语句，点击执行按钮预览数据"
-                  rows={6}
-                  className="font-mono text-sm"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  💡 修改SQL后点击"执行"预览数据，保存后生效。数据源快照图表的SQL也会在此展示。
-                </p>
+                {(selectedDataset || (boundDataset && chart?.source_id)) && (
+                  <Button variant="link" size="sm" className="h-6 p-0 text-xs flex items-center gap-1"
+                    onClick={() => navigate(`/data/datasets/${datasetId || chart.source_id}`)}>
+                    <ExternalLink className="h-3.5 w-3.5" />在数据集页查看口径
+                  </Button>
+                )}
               </div>
 
-              {/* Preview data */}
-              {previewData && previewData.rows.length > 0 && (
-                <div>
-                  <h4 className="font-medium mb-2">数据预览 <Badge variant="secondary">{previewData.rows.length} 行</Badge></h4>
-                  <div className="border rounded-lg overflow-auto max-h-[200px]">
-                    <table className="w-full text-xs">
-                      <thead className="sticky top-0 bg-muted">
-                        <tr>
-                          {previewData.columns.map((col: string) => (
-                            <th key={col} className="px-2 py-1.5 text-left font-medium text-muted-foreground">{col}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {previewData.rows.slice(0, 20).map((row: any, i: number) => (
-                          <tr key={i} className="border-t hover:bg-muted/50">
-                            {previewData.columns.map((col: string) => (
-                              <td key={col} className="px-2 py-1">{row[col]?.toString() || '-'}</td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+              {legacySqlChart && (
+                <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 text-xs flex items-start gap-2">
+                  <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-medium">该图表仍携带旧版直写 SQL（该取数通道已下线）</p>
+                    <p>选一个数据集后保存即可改挂；口径本体请到「数据集」页重新定义，图表不再展示与编辑 SQL。</p>
                   </div>
                 </div>
               )}
@@ -769,8 +868,8 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
         </ScrollArea>
 
         <DialogFooter>
-          <Button variant="outline" disabled={saving || executing} onClick={onClose}>取消</Button>
-          <Button disabled={saving || executing} onClick={handleSave}>{saving ? '保存中…' : '保存'}</Button>
+          <Button variant="outline" disabled={saving} onClick={onClose}>取消</Button>
+          <Button disabled={saving} onClick={handleSave}>{saving ? '保存中…' : '保存'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

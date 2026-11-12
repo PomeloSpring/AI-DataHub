@@ -81,6 +81,15 @@ class TraceRecorder:
         self.result_error: Optional[str] = None
         self.result_answer: Optional[str] = None
 
+    def elapsed_ms(self) -> int:
+        """本回合已跑的毫秒数（与 trace.duration_ms 同一时钟口径）。
+
+        trace 落库时的 duration_ms 就是 `monotonic() - _t0`；回合进行中要拿到
+        同一个口径给前端（消息卡片显示的 elapsed 历史上是浏览器 Date.now()，
+        与 trace 差出十几秒，导致「跑满 300s」在两边各说各话）。
+        """
+        return int((time.monotonic() - self._t0) * 1000)
+
     def set_result(self, status=None, error=None, final_answer=None) -> None:
         """回写本回合结果(供 agent 路径在子生成器中记录最终答案/状态)。"""
         if status is not None:
@@ -98,6 +107,27 @@ class TraceRecorder:
         """
         if handled_by:
             self.meta["handled_by"] = handled_by
+
+    def set_execution_channel(self, channel: str, layer_id: int = 0, layer_name: str = "") -> None:
+        """回写本回合**实际走的执行层与模型通道**（计量单位因通道而异，不分开会算错）。
+
+        为何必须单独一列：两条通道的计量面是互补的——
+          qoder-gateway   : Qoder 按 credit 计量且**不回报 token**（实测 total_tokens 恒 0）；
+          anthropic-direct: 供应商按 token 结算，根本没有 credit 概念。
+        混在一起统计就会出现“Credit 0 但确实跑了 12 次模型”，以及 CNY(折算) 与
+        USD(上报) 跨币种相加。排查“这条会话到底跑在哪条层上”也不该靠猜。
+
+        只在真正进入执行层时调用；前置拦截回合不调（保持 NULL），否则会把“没跑模型”
+        误标成“跑了某个通道”。
+        """
+        if channel:
+            self.meta["channel"] = channel
+            # 来源标记：运行时实记与事后回填必须分得开（回填有判据边界）
+            self.meta["channel_source"] = "runtime"
+        if layer_id:
+            self.meta["layer_id"] = int(layer_id)
+        if layer_name:
+            self.meta["layer_name"] = layer_name
 
     # ── span 采集 ──────────────────────────────────────────────
     def mark_model_window_start(self) -> None:
@@ -401,11 +431,53 @@ def set_handled_by(handled_by: str) -> None:
         logger.debug("set_handled_by ignored: %s", e)
 
 
+def set_execution_channel(channel: str, layer_id: int = 0, layer_name: str = "") -> None:
+    """回写本回合实际生效的执行层与模型通道（无 recorder 或未开启时 no-op）。
+
+    观测是旁路：失败只记 debug，不得影响取数主链路（护栏 §9）。
+    """
+    rec = current()
+    if rec is None:
+        return
+    try:
+        rec.set_execution_channel(channel, layer_id=layer_id, layer_name=layer_name)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("set_execution_channel ignored: %s", e)
+
+
+def set_capacity(queue_wait_ms=None, retry_count=None) -> None:
+    """回写本回合的排队等待与自动重试次数（无 recorder 或未开启时 no-op）。
+
+    这两个数字是“为何这轮慢”的分诊依据：没落库时只存在于当时那条 SSE 流里，
+    人一多就回答不了“到底是我们并发不够，还是提供商在拒”。
+    """
+    rec = current()
+    if rec is None:
+        return
+    try:
+        if queue_wait_ms is not None:
+            rec.meta["queue_wait_ms"] = int(queue_wait_ms)
+        if retry_count is not None:
+            rec.meta["retry_count"] = int(retry_count)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("set_capacity ignored: %s", e)
+
+
 def trace_id_for_response() -> Optional[str]:
     rec = current()
     if rec is not None:
         return rec.meta.get("trace_id")
     return get_trace_id()
+
+
+def turn_elapsed_ms() -> Optional[int]:
+    """当前回合的服务端已跑时长（毫秒）；观测未开启/无 recorder 时返回 None。
+
+    返回 None 不是错误：调用方据此退回自己的服务端单调钟（同一个进程内的
+    执行层计时），绝不能拿浏览器时钟当补充 —— 那正是口径分裂的来源。
+    """
+    rec = current()
+    return rec.elapsed_ms() if rec is not None else None
 
 
 def message_uuid() -> Optional[str]:

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none">
+  <!-- 首屏静态兜底图标：几何与 lib/brand.ts 的 brandMarkSvg 同源（32 画布 / rx 8 / 字号 14），
+       颜色取 light 主题主色令牌 --primary: 224 100% 40%。JS 起来后会按当前主题重算并替换（见 applyDocumentBrand）。 -->
+  <rect width="32" height="32" rx="8" fill="hsl(224, 100%, 40%)"/>
+  <text x="16" y="22" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="700" fill="hsl(0, 0%, 100%)">AD</text>
+</svg>

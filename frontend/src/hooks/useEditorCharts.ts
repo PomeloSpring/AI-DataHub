@@ -3,8 +3,8 @@ import { toast } from '@/lib/toast';
 import client from '../api/client';
 import { useDashboardStore, type Dashboard, type DashboardChart } from '../stores/dashboardStore';
 import type { ChartTypeItem } from '../components/DashboardChart';
-import { DEFAULT_CHART_SIZE, DEFAULT_WIDGET_SIZE } from './useCanvasInteraction';
-import { chartData, chartRect, getCanvas } from '@/lib/dashboardDesign';
+import { DEFAULT_CHART_SIZE } from './useCanvasInteraction';
+import { chartData, chartRect, getCanvas, naturalSizeOf } from '@/lib/dashboardDesign';
 import { TEMPLATE_DEMO_KEY } from '@/lib/dashboardDemo';
 import { withPageRect, PAGE_LAYOUT_VERSION, type PageBreakpoint, type PageItem } from '@/lib/dashboardPageLayout';
 
@@ -168,9 +168,11 @@ export function useEditorCharts(dashboardId: number | undefined) {
   const handleAddFromPanel = useCallback((item: ChartTypeItem, position: { x: number; y: number }, config: Record<string, any> = {}) => {
     if (savingLock.current) return;
     const widget = item.category === 'widget';
-    const size = widget ? DEFAULT_WIDGET_SIZE : DEFAULT_CHART_SIZE;
+    // 默认尺寸按类型自然尺寸给（日期区间要 440 才能一行放下起止）；
+    // 以前统一一个紧凑宽，区间控件拖进去就是“只有开始日期”
+    const size = widget ? naturalSizeOf(item.value) : DEFAULT_CHART_SIZE;
     const chart: DashboardChart = { id: tempIdCounter--, dashboard_id: id, name: item.label, chart_type: item.value,
-      sql_query: '', source_type: widget ? 'widget' : 'empty', source_id: null, data_cache: null,
+      source_type: widget ? 'widget' : 'empty', source_id: null, data_cache: null,
       config: widget ? { paramKey: '', label: item.label, labelPosition: 'left', ...config } : config,
       position: { ...position, ...size }, created_at: '', updated_at: '' };
     mutate(d => {
@@ -181,7 +183,7 @@ export function useEditorCharts(dashboardId: number | undefined) {
     return chart;
   }, [id, mutate, current]);
   // 从数据集引入: 生成 source_type='dataset' 图表卡片(预设图表类型/字段映射搬入 config),
-  // 不复制 SQL 到 adh_charts.sql_query, 取数统一走数据集治理入口(单口径)。
+  // 不复制 SQL 到图表行(图表已不携带口径), 取数统一走数据集治理入口(单口径)。
   const handleAddFromDataset = useCallback((dataset: {
     id: number; name: string; chart_type?: string; chart_preset?: Record<string, any>;
   }, position: { x: number; y: number }) => {
@@ -195,7 +197,7 @@ export function useEditorCharts(dashboardId: number | undefined) {
     const chart: DashboardChart = {
       id: tempIdCounter--, dashboard_id: id, name: dataset.name,
       chart_type: dataset.chart_type || 'bar',
-      sql_query: '', source_type: 'dataset', source_id: dataset.id, data_cache: null,
+      source_type: 'dataset', source_id: dataset.id, data_cache: null,
       config, position: { ...position, ...DEFAULT_CHART_SIZE }, created_at: '', updated_at: '' };
     mutate(d => ({ ...d, added: [...d.added, chart], selectedIds: [chart.id] }));
     return chart;
@@ -235,19 +237,22 @@ export function useEditorCharts(dashboardId: number | undefined) {
   }, [mutate, notifyDeleted]);
   const handleSaveChartConfig = (value: any) => {
     if (!selectedChart) return;
-    const { _sql_query, _previewData, _datasource_id, _chart_type, ...config } = value;
+    const { _dataset_id, _previewData, _chart_type, ...config } = value;
     const preservedConfig = { ...config, ...(selectedChart.config?.pageLayout !== undefined ? { pageLayout: selectedChart.config.pageLayout } : {}) };
-    // 模板示例图一旦绑定数据源/改写 SQL 就声明"转真实取数"：示例标记显式置 false，
+    // 数据源归属不再写进 config（旧版 config.datasource_id 是直连源的残留键）：
+    // 取数通道只由 source_type/source_id 表达，服务端按角色清单裁决
+    delete preservedConfig.datasource_id;
+    // 样式图一旦改挂数据集就声明"转真实取数"：示例标记显式置 false，
     // 服务端据此清掉演示缓存（不能让用户绑完源还看着一屏假数）。
-    if (preservedConfig[TEMPLATE_DEMO_KEY] === true && (_datasource_id || (_sql_query !== undefined && _sql_query !== selectedChart.sql_query))) {
-      preservedConfig[TEMPLATE_DEMO_KEY] = false;
-    }
+    if (preservedConfig[TEMPLATE_DEMO_KEY] === true && _dataset_id) preservedConfig[TEMPLATE_DEMO_KEY] = false;
     const updates: Partial<DashboardChart> = { config: preservedConfig };
     if (_chart_type) updates.chart_type = _chart_type;
-    if (selectedChart.query_source !== 'semantic' && !selectedChart.semantic_query) {
-      if (_sql_query !== undefined && _sql_query !== selectedChart.sql_query) updates.sql_query = _sql_query;
-      if (_datasource_id && _datasource_id !== selectedChart.source_id) {
-        updates.source_id = _datasource_id; updates.config = { ...preservedConfig, datasource_id: _datasource_id };
+    if (selectedChart.query_source !== 'semantic' && !selectedChart.semantic_query && _dataset_id !== undefined) {
+      // 图表不再携带 SQL：改数据只能改挂数据集（清单来自 /datasets/、服务端按角色裁决）
+      const next = Number(_dataset_id) || 0;
+      if (next !== Number(selectedChart.source_id || 0) || selectedChart.source_type !== 'dataset') {
+        updates.source_type = next ? 'dataset' : 'empty';
+        updates.source_id = next || null;
       }
     }
     updateLocalChart(selectedChart.id, updates);

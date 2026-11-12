@@ -21,7 +21,7 @@ description: FDE 迭代方法论（Forward Deployed Engineer）。本项目按 P
 
 ## 2. 变更执行不造第二通道（AS-BOT 唯一回路）
 - 一切对本体/字典/配置的**写操作**（含自进化产出的候选变更：补别名、建对象、改绑定）走**唯一回路**：菜单与功能权限码（`adh_role_perms` + `adh_perm_registry.ai_access`，经 `perm_link.require_write_perm` fail-closed）+ AS-BOT 工具授权 → **直执行** → 审计落库（`decided_by`/`approved_by` 由服务端注入，不从请求体信任身份）。旧「AS-BOT Action 提议→审批→执行」回路（`adh_as_bot_approvals`/动作矩阵）已退役，不得回潮。
-- 新增自动化/自进化能力时**复用**该口径映射权限码（`metadata.sync`→`sync:manage`、`alias.approve/reject`→`ontology:save`、`dashboard.publish`→`dashboard:manage`、`product.contract_change`→`dataset:manage`），不得另建"直接 UPDATE 元数据表"的旁路。
+- 新增自动化/自进化能力时**复用**该口径映射权限码（`alias.approve/reject`→`ontology:save`、`dashboard.publish`→`dashboard:manage`、`product.contract_change`→`dataset:manage`）；**数据工程域权限码（`sync:*`/`dag:*`/`udf:*`）不得作为自进化/自动化动作的裁决码**（该域对 AI 零接入，旧示例 `metadata.sync`→`sync:manage` 已废弃，见 `data-sync-engineering.md` §2/§3），不得另建"直接 UPDATE 元数据表"的旁路。
 - 执行成功 ≠ 全系统一致：涉及派生系统（图谱/qmind 文档/绑定表）的动作必须走服务层级联（见 ontology-modeling §1/§6），并有水位线或对账兜底（`reconcile()`）。
 
 ## 3. 失败数据驱动建模 backlog（自进化闭环）

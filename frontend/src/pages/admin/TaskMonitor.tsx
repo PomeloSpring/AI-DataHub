@@ -3,7 +3,7 @@
  *
  * 三个页签：
  * 1. 定时任务：系统内置任务（可暂停不可移除）+ 用户创建的定时任务（可停止/移除）；
- * 2. 队列任务：定时执行 / 报表生成 / 同步执行 三类队列执行实例（进度、结果、卡死标记、停止）；
+ * 2. 队列任务：定时执行 / 报告生成 / 同步执行 三类队列执行实例（进度、结果、卡死标记、停止）；
  * 3. 同步任务：数据同步任务定义 + 本体知识库同步水位线。
  */
 import { useCallback, useEffect, useState } from 'react';
@@ -47,7 +47,7 @@ const STATUS_MAP: Record<string, { label: string; className: string }> = {
 };
 
 const RUN_KIND_LABEL: Record<string, string> = {
-  scheduled: '定时执行', report: '报表生成', sync: '同步执行',
+  scheduled: '定时执行', report: '报告生成', sync: '同步执行',
 };
 
 function StatusBadge({ status }: { status: string | null }) {
@@ -458,7 +458,7 @@ export default function TaskMonitor() {
               <SelectContent>
                 <SelectItem value="all">全部队列</SelectItem>
                 <SelectItem value="scheduled">定时执行</SelectItem>
-                <SelectItem value="report">报表生成</SelectItem>
+                <SelectItem value="report">报告生成</SelectItem>
                 <SelectItem value="sync">同步执行</SelectItem>
               </SelectContent>
             </Select>

@@ -26,6 +26,8 @@ interface Props {
   dropGhost?: DropGhost | null;
   /** 空画布引导动作（缺省对不渲染按钮） */
   onInsertFromLibrary?: () => void; onOpenTemplates?: () => void;
+  /** 属性面板「重新播放」的信号：递递给画布，临时开一次入场 */
+  entranceReplay?: number;
 }
 type Gesture = {
   id: number; pointer: number; x: number; y: number; scale: number; rect: Rect; resize: boolean;
@@ -34,7 +36,7 @@ type Gesture = {
 type Preview = { layout: PageItem[]; pixels: Rect; hints: AlignHints };
 /** 拖入预览用的哨兵 id：不与真实图表冲突，也不会被渲染成卡片 */
 const PREVIEW_ID = -0x9c40;
-export default function PageLayoutEditor({ dashboard, items, breakpoint, selectedIds = [], onSelect, onConfig, onDelete, onChange, canvas, showGrid, panMode, interactive, showRulers, dropRef, dropGhost, onInsertFromLibrary, onOpenTemplates }: Props) {
+export default function PageLayoutEditor({ dashboard, items, breakpoint, selectedIds = [], onSelect, onConfig, onDelete, onChange, canvas, showGrid, panMode, interactive, showRulers, dropRef, dropGhost, onInsertFromLibrary, onOpenTemplates, entranceReplay }: Props) {
   const { canvasRef: viewport, surfaceRef: surface, scale, panOffset, beginElementInteraction, endElementInteraction } = canvas;
   // 稳定身份的合并 ref：内联 mergeRefs 会每帧新建，React 先用 null 调旧回调会注销 dnd-kit 落点节点
   const viewRef = useMergedRefs<HTMLDivElement>(viewport, dropRef);
@@ -152,8 +154,8 @@ export default function PageLayoutEditor({ dashboard, items, breakpoint, selecte
     <div ref={surface} className="absolute bg-background" data-testid="page-editor-surface" style={{ ...size, left: '50%', top: '50%', marginLeft: -size.width / 2, marginTop: -size.height / 2,
       transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${scale})`, transformOrigin: 'center',
       boxShadow: `0 0 0 1px ${CANVAS_COLORS.surfaceBorder}, ${CANVAS_COLORS.surfaceShadow}` }}>
-      {result.error ? <p role="alert" className="p-6 text-destructive">{result.error}。可通过“恢复自动适配”重建当前断点。</p> : <ResponsiveDashboardCanvas dashboard={dashboard} items={items} breakpoint={breakpoint} draft interactive={interactive} layout={result.layout}
-        renderItem={(item, card, style) => {
+      {result.error ? <p role="alert" className="p-6 text-destructive">{result.error}。可通过“恢复自动适配”重建当前断点。</p> : <ResponsiveDashboardCanvas dashboard={dashboard} items={items} breakpoint={breakpoint} draft interactive={interactive} layout={result.layout} entranceReplay={entranceReplay}
+        renderItem={(item, card, style, enter) => {
           const original = pagePixelRect(item.rect, breakpoint, gaps), dragging = active?.id === item.chart.id;
           const target = preview?.layout.find(value => value.chart.id === item.chart.id);
           // 拖入时展示“会被挤到哪”的预测位置（带过渡），松手后才落真实布局
@@ -169,7 +171,8 @@ export default function PageLayoutEditor({ dashboard, items, breakpoint, selecte
             onPointerDown={e => start(e, item)} onDoubleClick={() => { if (!panMode) onConfig(item.chart); }}>
             {/* 缩放预览不再拉伸内容：非等比 scale 会把坐标轴标题放大、把数据点拉成椭圆（反馈“一调整就成这样”）。
                 现在只让外框变尺寸、内容保持上一次渲染结果并被裁切，松手后按新尺寸重排一次。 */}
-            <div className="pointer-events-none" style={{ width: original.w, height: original.h }}>{card}</div>
+            {/* 入场 class 挂在内层内容 div：外层靠 transform 定位，挂外层会把卡片抽到左上角 */}
+            <div className={`pointer-events-none ${enter}`} style={{ width: original.w, height: original.h }}>{card}</div>
           </div>;
         }} />}
       {/* 方块转角点星，不画线；zIndex 0 保证参考标记永远在卡片下方 */}

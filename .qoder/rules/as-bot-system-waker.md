@@ -36,7 +36,8 @@ description: AS-BOT=角色智能体（与智能问数同载体、不同入口）
 
 ## 3. 写动作唯一回路：菜单与功能权限码 + 工具授权直执行
 - 权限口径**唯一**：`adh_user_roles ⋈ adh_role_perms ⋈ adh_perm_registry.ai_access` + 涉密硬上界（`perm_link.SECRET_BOUND_*`，代码层 cap 不可被配置覆盖）；**不得另造第二套「谁能做什么」判断**。
-- 执行前 `perm_link.require_write_perm`（perm_code + `ai_access='write'`）把关，拒绝原因可解释；动作→权限码映射：`ontology.generate/save/activate/import`、`metadata.sync`→`sync:manage`、`task.claim_owner`→`scheduled:manage`、`alias.approve/reject`→`ontology:save`、`dashboard.publish`→`dashboard:manage`、`product.contract_change`→`dataset:manage`。
+- 执行前 `perm_link.require_write_perm`（perm_code + `ai_access='write'`）把关，拒绝原因可解释；动作→权限码映射：`ontology.generate/save/activate/import`、`task.claim_owner`→`scheduled:manage`、`alias.approve/reject`→`ontology:save`、`dashboard.publish`→`dashboard:manage`、`product.contract_change`→`dataset:manage`。
+- **数据工程域（数据同步 / DAG / UDF / 定时物化）不列入任何 AI 动作映射**：`sync:read`/`sync:manage`/`sync:execute`/`sync-logs:read`/`dag:*`/`udf:*` 属人专属运维动作，`ai_access` 必为 `none` 且**须**纳入代码层硬上界（`perm_link.SECRET_BOUND_NONE_PERMS`，与迁移/用例同批落地；未完成前本条仅是声明，没有代码把关）（口径见 `data-sync-engineering.md` §2）。旧条目 `metadata.sync`→`sync:manage` 已废弃（代码里从未有消费方，属空承诺）：元数据同步不得蹭数据同步的权限码，确需开放时另立 `metadata:sync`。
 - 直执行 + **审计落库**：`decided_by`/`approved_by` 由服务端注入（不从请求体信任身份）；并发/重复执行由状态条件更新仲裁幂等（宁阻断勿重复落库）。
 - canonical 本体 `objects[].actions[]` 与 `rules[] permission` 仅是**建模描述**（无运行时消费方），不作为执行把关依据。
 
@@ -47,6 +48,7 @@ description: AS-BOT=角色智能体（与智能问数同载体、不同入口）
 
 ## 5. 改动纪律
 - 为 AS-BOT 新增能力时，先问：**这个动作的对象是系统本体/系统元数据，还是业务本体？** 业务侧不塞进 AS-BOT。
+- 再问一句：**这个动作是不是数据搬运/作业触发（同步、DAG、物化、调度重跑）？** 是则不对 AI 开放（运维动作的影响面是一批下游，且 LLM 无从核验对错），回到人专属界面操作（`data-sync-engineering.md` §2）。
 - 新增写动作必须同批落地：权限码映射 + `require_write_perm` 把关 + 审计字段服务端注入 + fail-closed 用例（`tests/test_as_bot_execution.py`）；禁止任何"直接 UPDATE 元数据表"的旁路。
 - 新增"系统问题→数据源路由"逻辑（prompt、planner、工具描述）时，同步在评测中加用例断言：系统运营问题不得命中业务本体，否则视为定位漂移。
 - 与 `security-guardrails.md` §7、`waker-datasource-domain.md` 域边界保持一致；冲突时以**更严**的脱敏/域约束为准。

@@ -447,13 +447,30 @@ export default function OntologyModeling() {
     if (!model) return;
     setPublishing(true);
     try {
-      await ontologyApi.publishDraft(model.id);
+      const { data } = await ontologyApi.publishDraft(model.id);
       setDraftJson('');
       setTab('hub');
       loadModels();
       // 发布改变了生效版：重拉模型正文（否则对象列表停在发布前的旧数量）与草案状态，并回生效版视图
       await loadModel(model.id);
-      toast.success('已发布生效：对象表/图谱/知识库已级联刷新');
+      // 文案必须与级联真做的事一致：发布刷新对象表/部署绑定/口径字典/图谱；知识库不在这条链上
+      // （由后台 kb_sync_reconcile 周期重推，或在本页「关系图谱」手动同步）。以前写成
+      // "知识库已级联刷新"，徽章却还是"待同步"——假承诺会让人以为同步坏了。
+      const assets = data?.semantic_assets;
+      const created = (assets?.metrics_created?.length || 0) + (assets?.dimensions_created?.length || 0);
+      const merged = (assets?.metrics_merged?.length || 0) + (assets?.dimensions_merged?.length || 0);
+      const blocked = assets?.blocked?.length || 0;
+      const warns = data?.warnings || [];
+      toast.success('已发布生效：对象表/部署绑定/图谱已级联刷新'
+        + (created || merged ? `；口径字典收编 ${created + merged} 条（其中新建 ${created}）` : '')
+        + '；知识库按后台对账周期重推（可在「关系图谱」页手动同步）');
+      // 级联里“没成功”的部分必须看得见：只报“发布成功”就是把缺口径留给线上错数
+      if (blocked || warns.length) {
+        const first = assets?.blocked?.[0]
+          ? `${assets.blocked[0].kind}「${assets.blocked[0].name}」：${assets.blocked[0].reason}`
+          : String(warns[0] || '');
+        toast.warning(`发布有 ${blocked + warns.length} 条建模告警需处理：${first.slice(0, 180)}`);
+      }
     } catch (e: any) {
       // 透传服务端具体错因（如“生效版已被他人改动”），不换成通用文案
       toast.error(e.response?.data?.detail || '发布失败');
@@ -838,7 +855,7 @@ export default function OntologyModeling() {
                         ? '生效版在草案写入后又被改动，发布会被并发保护阻断；请基于最新生效版重做草案'
                         : draftStatus?.draft_parse_error
                           ? '草案正文结构异常，请先修正后再发布'
-                          : `发布后级联刷新对象表/图谱/知识库：${draftSummary || '有改动'}`}
+                          : `发布后级联刷新对象表/部署绑定/图谱（知识库另行对账同步）：${draftSummary || '有改动'}`}
                     >
                       {publishing ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1" />}
                       发布草案（{pendingChangeCount}）
@@ -958,7 +975,8 @@ export default function OntologyModeling() {
                 <TabsContent value="hub" className="mt-2 h-[62vh] overflow-hidden">
                   <div className="flex items-center gap-2 mb-2">
                     {canEditDoc && (
-                      <ObjectCreateButton jsonContent={activeJson} onSave={saveDocFromTab} />
+                      <ObjectCreateButton jsonContent={activeJson} onSave={saveDocFromTab}
+                        modelKind={model.kind} />
                     )}
                     {liveLocked && editable && (
                       <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void switchView('draft')}>

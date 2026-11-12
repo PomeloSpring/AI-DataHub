@@ -535,8 +535,8 @@ class PromptListResponse(BaseModel):
 class ScheduledTaskCreate(BaseModel):
     name: str
     description: Optional[str] = ""
-    task_type: str  # query / agent
-    task_config: dict  # SQL列表/Agent问题列表/数据源ID等
+    task_type: str  # 固定 agent：工作空间定时任务只有 Agent 分析形态（SQL 定时在数据中台的数据同步）
+    task_config: dict  # 只存 questions / context / site_code：能力与可查范围按属主角色实时继承
     report_template_key: Optional[str] = None
     cron_expression: str = ""
     trigger_type: str = "cron"  # cron / webhook / both

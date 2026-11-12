@@ -96,6 +96,10 @@ class ToolPolicy:
                        query_tools, asset_tools, memory_tools):
             for spec in getattr(module, "TOOL_SPECS", []):
                 labels[spec["name"]] = spec.get("description") or spec["name"]
+        # 功能壳工具的业务描述（会话能力面板与提示词的「实际工具权限」段共用）
+        from backend.modules.mind.execution import function_tools
+        for spec in function_tools.SHELL_TOOL_SPECS:
+            labels[spec["name"]] = spec["description"]
         return {"as_bot_key": self.as_bot["as_bot_key"], "version": self.digest,
                 "tools": [{"name": name, "description": self.descriptions.get(name) or labels.get(name.rsplit("__", 1)[-1], name.rsplit("__", 1)[-1])}
                           for name in sorted(self.allowed)],
@@ -168,6 +172,13 @@ def compile_policy(as_bot, ceiling=None, role_perms=None):
             unavailable[function_tools.qualified_tool_name(action_key)] = reason
         function_names = tuple(sorted(
             function_tools.tool_name_for(a) for a in fn_allowed))
+        if fn_allowed:
+            # 惰性接入：向模型只注册 list/run 两个壳（功能清单按角色实时下发），
+            # 不再把 N 份动作 schema 常驻上下文。**动作精确名仍留在 allowed 里**：
+            # run_platform_function 内部逐动作 check_tool 用的就是它，所以授权口径
+            # 与“每个动作各自注册”时完全一致（壳不是新裁决点，只是新入口）。
+            for shell in function_tools.shell_tool_names():
+                allowed.add(function_tools.qualified_shell_name(shell))
 
     standard = tuple(n for n in standard if f"mcp__datahub_workspace__{n}" in allowed)
     if "bash" in standard and "read" not in standard:
@@ -260,12 +271,12 @@ def live_ceiling(ctx, runtime):
     from backend.modules.mind.execution.manager import _merge_allowed_tools
     row = service.get_layer(runtime.layer_id)
     if not row or row.get("status") != "active":
-        raise PermissionError("执行层已停用或删除")
+        raise PermissionError("Harness 已停用或删除")
     config = row.get("config") or {}
     if config.get("mode") != "sdk" or config.get("cli_name") != runtime.backend:
-        raise PermissionError("执行层后端配置已变化")
+        raise PermissionError("Harness 后端配置已变化")
     if config.get("cwd") or config.get("allowed_dirs"):
-        raise PermissionError("执行层配置不再满足会话目录隔离要求")
+        raise PermissionError("Harness 配置不再满足会话目录隔离要求")
     return _merge_allowed_tools(config.get("allowed_tools"), None)
 
 

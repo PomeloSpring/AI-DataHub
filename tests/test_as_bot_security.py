@@ -320,7 +320,7 @@ def test_mysql_claim_concurrency_ownership_and_resume(tmp_path, monkeypatch):
                          "VALUES (%s,%s,0,%s,'[]')", (uid, "__agent_security_test__", "security-test"))
     p = policies.compile_policy({"as_bot_key": "security-test", "tools": {}})
     monkeypatch.setattr(sessions, "workspace_base", lambda: tmp_path)
-    monkeypatch.setattr(policies, "resolve_policy", lambda *a: p)
+    monkeypatch.setattr(policies, "resolve_policy", lambda *a, **k: p)
     monkeypatch.setattr(auth, "authorize_workspace", lambda *a: 0)
 
     def task(user=uid, supplied=""):
@@ -524,7 +524,7 @@ def test_screen_guard_rejects_other_workspace_and_nonowner_write(monkeypatch):
     monkeypatch.setattr(resource_guard, "bind_resources", lambda *a: None)
     dashboard = {"owner_id": 2, "workspace_id": 4, "is_public": True}
     monkeypatch.setattr(resource_guard, "execute_query", lambda *a, **kw: dashboard)
-    with pytest.raises(PermissionError, match="工作空间"):
+    with pytest.raises(PermissionError, match="不属于当前"):
         resource_guard.validate_tool_resources(ctx, "mcp__datahub_screen__get_data_screen", {"dashboard_id": 8})
     dashboard["workspace_id"] = 3
     with pytest.raises(PermissionError, match="修改"):
@@ -651,7 +651,9 @@ def datasource_scope(monkeypatch):
         if "adh_knowledge_bases" in sql:
             assert "workspace_ids" not in sql and "workspace_id IN" not in sql
             assert params == (4,) and "status='active'" in sql
-            return state["kbs"]
+            # 行默认补齐 kb_type：绑定校验现在要按检索通道裁决（未登记类型 = 拒），
+            # 这里模拟的是真实表（kb_type 是实列且有默认值），不得让每个用例各自重抄
+            return [{"kb_type": "qmind", "name": f"kb-{r.get('id')}", **r} for r in state["kbs"]]
         if "FROM adh_datasources" in sql:
             # 供 _resolve_authorized_source / list_datasources 投影：按传入 id 返回业务名+方言。
             return [{"id": i, "name": f"ds-{i}", "db_type": "mysql"} for i in params]
@@ -851,6 +853,50 @@ def test_tool_rejects_unknown_datasource_name(datasource_scope):
     assert ctx.datasource_id == 7
 
 
+def test_tool_fanout_names_stay_within_role_grant(datasource_scope):
+    """扇出（多站一次调用）：清单内每个源名都在角色授权集内解析，但不回写会话生效源。
+
+    一次批量查询不应改变会话范围；越权源名必须显式拒（不静剔除），
+    且聚合态/未选定会话源时不得再被"请先选择数据源"闸门拦死（那会让扇出形同虚设）。"""
+    guard, state, context = datasource_scope
+    ctx, _ = context(7)
+    result = guard.validate_tool_resources(
+        ctx, "mcp__datahub_query__execute_sql", {"sql": "SELECT 1", "datasources": ["ds-8", "ds-7"]})
+    assert ctx.datasource_id == 7, "扇出不改会话生效源"
+    assert result["datasources"] == ["ds-8", "ds-7"], "清单原样交给 handler 解析"
+    assert "datasource" not in result
+
+
+def test_tool_fanout_allowed_without_session_source_in_aggregate_site(datasource_scope):
+    """全球聚合态会话（生效源 0 + 多授权源）带扇出清单 → 放行，由 handler 逐站在授权集内解析。"""
+    guard, state, context = datasource_scope
+    ctx, _ = context(0)
+    ctx.extra["site_code"] = "global"
+    result = guard.validate_tool_resources(
+        ctx, "mcp__datahub_query__execute_sql", {"sql": "SELECT 1", "datasources": ["ds-7", "ds-8"]})
+    assert result["datasources"] == ["ds-7", "ds-8"]
+
+
+def test_tool_fanout_rejects_unauthorized_name(datasource_scope):
+    """清单里混入未授权/不存在的源名 → 可操作错误（含候选名），不静默丢掉那一站。"""
+    guard, state, context = datasource_scope
+    ctx, _ = context(7)
+    with pytest.raises(PermissionError, match="可用数据源"):
+        guard.validate_tool_resources(
+            ctx, "mcp__datahub_query__execute_sql", {"datasources": ["ds-8", "nope"]})
+    assert ctx.datasource_id == 7
+
+
+def test_tool_fanout_over_limit_is_rejected_not_truncated(datasource_scope):
+    """扇出上限 8：超限直接拒（宁拒不截断），避免一调 20 站把回合墙钟与远端并发打满。"""
+    guard, state, context = datasource_scope
+    ctx, _ = context(7)
+    with pytest.raises(PermissionError, match="8 个"):
+        guard.validate_tool_resources(
+            ctx, "mcp__datahub_query__execute_sql",
+            {"datasources": [f"ds-{i}" for i in range(7, 16)]})
+
+
 def test_tool_ignores_numeric_datasource_id_uses_session(datasource_scope):
     # LLM 不再持有 id：数字 datasource_id（含越权 9）被忽略，以会话源为准
     guard, state, context = datasource_scope
@@ -919,7 +965,7 @@ def mysql_cleanup_session(tmp_path, monkeypatch):
     root = sessions.session_paths(tmp_path, key, 0, uid, create=True)
     (root / "workspace" / "example.txt").write_text("仅清理本测试目录")
     policy = policies.compile_policy({"as_bot_key": "cleanup-test", "tools": {}})
-    monkeypatch.setattr(policies, "resolve_policy", lambda *a: policy)
+    monkeypatch.setattr(policies, "resolve_policy", lambda *a, **k: policy)
     monkeypatch.setattr(auth, "authorize_workspace", lambda *a: 0)
     cid = execute_insert("INSERT INTO adh_conversations (user_id,title,workspace_id,as_bot_key,messages) "
                          "VALUES (%s,'__cleanup_test__',0,'cleanup-test','[]')", (uid,))

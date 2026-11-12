@@ -39,6 +39,28 @@ def test_metric_formula_must_match_bound_object_columns(monkeypatch):
     assert "口径" in str(e.value) or "不符" in str(e.value)
 
 
+def test_ratio_metric_with_nullif_is_accepted(monkeypatch):
+    """合法比率口径（NULLIF 防除零）不得被当成不存在的列拒登。
+
+    历史缺陷：_SQL_NON_COLUMN 漏了 nullif，`x * 1.0 / NULLIF(y, 0)` 的人均/占比类
+    口径全部被「列不在对象物理列里」拦下 → 建模时只能不登记比率指标（目录缺口径）。
+    修白名单的同时把“真错列仍拒”的门禁卡住（不得拿修白名单当放宽口径的幌子）。
+    """
+    monkeypatch.setattr(
+        "backend.modules.catalog.services.metrics_service._object_property_columns",
+        lambda key: (key, ["usercode", "target"]),
+    )
+    _require_formula_matches_object(
+        "app_usage_event", "COUNT(*) * 1.0 / NULLIF(COUNT(DISTINCT userCode), 0)")
+    _require_formula_matches_object(
+        "app_usage_event", "COUNT(DISTINCT CASE WHEN target = 'apps' THEN userCode END)")
+    # NULLIF 里的列不存在仍必须拒（白名单只排函数名，不放宽列校验）
+    with pytest.raises(ValueError) as e:
+        _require_formula_matches_object(
+            "app_usage_event", "COUNT(DISTINCT CASE WHEN target = 'apps' THEN session_id END)")
+    assert "session_id" in str(e.value)
+
+
 def test_metric_bound_object_without_columns_is_rejected(monkeypatch):
     """归属对象无已登记物理列时不能静默放行（否则校验形同虚设）。"""
     monkeypatch.setattr(
@@ -54,6 +76,30 @@ def test_empty_formula_skips_check():
     """formula 为空由必填校验另管，这里不重复报错。"""
     _require_formula_matches_object("case", "")
     _require_formula_matches_object("case", None)
+
+
+def test_create_dimension_goes_through_physical_binding_guard(monkeypatch):
+    """新建维度必须与 update_dimension 同走物理锚点实存裁决（不得只修写入一半）。
+
+    历史缺陷：裁决只挂在更新分支，create_dimension 原样写入 payload → 不传 target_table
+    就落成空值，planner 按物理表加载字典永远命中 0 行（列名对了却取不到数，
+    repair_rum_field_mapping 修的正是这批空表行）。
+    裁决必须发生在开库/查重之前：不合法的映射不该消耗一次写窗口。
+    """
+    from backend.modules.catalog.services import metrics_service as ms
+
+    seen = []
+
+    def _spy(row, payload):
+        seen.append({"row": dict(row), "payload": dict(payload)})
+        raise ValueError("物理列「ghost_col」在表「t_case」的实存列中不存在")
+
+    monkeypatch.setattr(ms, "_normalize_dim_physical_binding", _spy)
+    with pytest.raises(ValueError, match="实存列"):
+        ms.create_dimension({"display_name": "一个探针维度", "target_column": "ghost_col",
+                             "bound_object_key": "case"})
+    assert len(seen) == 1, "未调用裁决→列错配会直接落库"
+    assert seen[0]["payload"]["target_column"] == "ghost_col"
 
 
 def test_save_dimension_requires_property_name(monkeypatch):

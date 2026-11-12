@@ -5,10 +5,11 @@
  *  - StageCard: 图标 + 标题 + 状态 + 摘要 + 右侧动作的卡片外壳, 可折叠;
  *  - SlideCollapse: 平滑滑动展开/收起容器(CSS grid-rows 过渡, 不用 JS 测高),
  *    用于思考/工具调用/检索详情等阶段性内容的"滑动输出"展示;
- *  - animate-stage-in: 阶段卡片滑入入场(流式过程中逐个阶段滑入)。
+ *  - 入场动画：由 lib/motion 解析（个人动效偏好 / 板上挂载），默认档与历史 animate-stage-in 同源。
  */
 
 import { useState, type ReactNode } from 'react';
+import { useEnterClass } from '@/hooks/useMotion';
 import { ChevronDown, Loader2, CheckCircle2, AlertCircle, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -95,6 +96,7 @@ export default function StageCard({
   bodyClassName,
   children,
 }: StageCardProps) {
+  const enter = useEnterClass();
   const [selfOpen, setSelfOpen] = useState(defaultOpen);
   const open = openProp !== undefined ? openProp : selfOpen;
   const toneStyle = TONE_STYLES[tone] || TONE_STYLES.default;
@@ -110,7 +112,8 @@ export default function StageCard({
       className={cn(
         'rounded-xl border shadow-sm overflow-hidden',
         toneStyle.card,
-        animate && 'animate-stage-in',
+        // `none` 档时 enterClass 返回空串：不加动画就是「直接落位」，不回退旧 class
+        animate && enter,
         className,
       )}
     >

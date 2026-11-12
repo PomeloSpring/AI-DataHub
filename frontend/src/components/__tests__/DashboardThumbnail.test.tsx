@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/react';
 import { DashboardThumbnail } from '../DashboardCanvas';
-import { DashboardThumbnailFrame } from '../DashboardThumbnailFrame';
+import { DashboardThumbnailFrame, THUMB_FRAME_H } from '../DashboardThumbnailFrame';
 import { thumbnailGeometry } from '@/lib/dashboardThumbnail';
 import { pageCanvasSize, pageColumnPx, pagePixelRect, resolvePageLayout } from '@/lib/dashboardPageLayout';
 
@@ -21,14 +21,21 @@ describe('缩略图固定框 — 卡片等高且缩放与内容同源', () => {
     expect(geometry.isPage).toBe(true);
     expect(geometry.box.width).toBe(pageCanvasSize(resolvePageLayout(dashboard, 'desktop'), 'desktop').width);
   });
-  it('固定框把预览收在 h-40 内，不随看板画布比例撑高', () => {
+  it('固定框按 cover 铺满：矮框只露顶部一瞥，不缩成中间一小条', () => {
     const { container } = render(<DashboardThumbnailFrame
       dashboard={{ filters: { design: { canvas: { width: 1000, height: 5000 } } }, charts: [] } as any}><span>看板</span></DashboardThumbnailFrame>);
     const frame = container.firstElementChild as HTMLElement;
-    expect(frame.className).toContain('h-40');
+    // 高度只此一个口径（列表卡与看板管理页共用），卡片才不会上下偏厚
+    expect(THUMB_FRAME_H).toMatch(/^h-\d+$/);
+    expect(frame.className).toContain(THUMB_FRAME_H);
     expect(frame.className).toContain('overflow-hidden');
-    // 内层等比缩放居中（不是靠裁切）
-    expect(frame.querySelector('.absolute')?.getAttribute('style')).toContain('scale(');
+    // 缩放口径 = cover：顶对齐 + 从顶部缩放（contain 居中会把预览缩到框宽 40%，左右全空白）
+    const inner = frame.querySelector('.top-0') as HTMLElement;
+    expect(inner.getAttribute('style')).toContain('scale(');
+    expect(inner.getAttribute('style')).toContain('top center');
+    expect(inner.getAttribute('style')).not.toContain('translate(');
+    // 底部渐隐遮罩：裁切处读作“下面还有内容”
+    expect(frame.querySelector('[aria-hidden]')).toBeTruthy();
   });
 });
 

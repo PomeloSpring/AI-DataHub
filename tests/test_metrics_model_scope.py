@@ -108,7 +108,7 @@ class TestMetricsNotWorkspaceScoped:
     """指标字典不按 workspace 分域(全局唯一口径)。
 
     历史缺陷: list_metrics 叠了 `workspace_id = %s` 精确等值, 而存量字典行全在
-    ws=0(全局)/ws=1(旧默认空间), 个人工作站(ws=301)进指标中心看到“暂无指标数据”,
+    ws=0(全局)/ws=1(旧默认空间), 个人工作空间(ws=301)进指标中心看到“暂无指标数据”,
     同页维度 Tab 因不过滤而正常 —— 两个 Tab 口径分叉。下列用例把“不得再引入
     workspace 过滤/写入”钉住, 以免同类回归。
     """

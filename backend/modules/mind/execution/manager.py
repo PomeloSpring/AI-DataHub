@@ -84,20 +84,30 @@ class ExecutionLayerManager:
             config.pop("allowed_dirs", None)
 
         if layer_type == "cli":
-            # config.mode=sdk 时走 Qoder SDK 适配器(claude-agent-sdk 执行层已退役)
+            # mode=sdk 才进入 AS-BOT 安全执行链；后端二选一（工具注册/鉴权/护栏/脱敏同源，
+            # 只有模型通道不同）：
+            #   qoder  → Qoder 网关 + 账号 Credits（BYOK 受组织策略开关约束）
+            #   claude → Anthropic 协议直连供应商（凭据来自模型中心，不依赖 Qoder 账号）
             if config.get("mode") == "sdk" and config.get("cli_name") == "qoder":
                 from backend.modules.mind.execution.adapters.qoder_sdk_adapter import QoderSDKAdapter
                 return QoderSDKAdapter(name, config)
-            raise ValueError("该 CLI 执行层不支持 AS-BOT 安全执行，仅允许 Qoder SDK")
+            if config.get("mode") == "sdk" and config.get("cli_name") == "claude":
+                from backend.modules.mind.execution.adapters.claude_sdk_adapter import ClaudeSDKAdapter
+                return ClaudeSDKAdapter(name, config)
+            raise ValueError(
+                "该 CLI Harness 不支持 AS-BOT 安全执行：仅允许 mode=sdk 的 Qoder / Claude Harness。"
+                "请在「Harness 管理 → 编辑 → 执行方式」选“SDK 安全执行链”后保存（历史上表单不携带"
+                "该字段会把它抹掉，已改为合并保存）。当前配置: "
+                f"cli_name={config.get('cli_name')!r}, mode={config.get('mode')!r}")
 
-        raise ValueError(f"不支持的执行层类型: {layer_type}")
+        raise ValueError(f"不支持的 Harness 类型: {layer_type}")
 
     def get_adapter_by_id(self, layer_id: int) -> ExecutionLayerAdapter:
         from backend.modules.mind.execution import service
 
         row = service.get_layer(layer_id)
         if not row:
-            raise KeyError(f"执行层不存在: id={layer_id}")
+            raise KeyError(f"Harness 不存在: id={layer_id}")
         return self.build_adapter(row)
 
     def get_adapter_by_name(self, name: str) -> ExecutionLayerAdapter:
@@ -105,21 +115,23 @@ class ExecutionLayerManager:
 
         row = service.get_layer_by_name(name)
         if not row:
-            raise KeyError(f"执行层不存在: name={name}")
+            raise KeyError(f"Harness 不存在: name={name}")
         return self.build_adapter(row)
 
     async def resolve_workspace_layer(self, workspace_id: int) -> dict:
-        """解析当前生效的执行层。
+        """解析当前生效的执行层（默认层口径走 `service.pick_active_layer` 唯一实现）。
 
         执行层全局生效, 不按工作空间绑定(AS-BOT 可用点按用户角色裁决);
         workspace_id 参数保留兼容签名, 不参与解析。
+        以前此处自己写了一份“active → is_default → 首个”，与 service 那份双口径并存；
+        现在两边同一实现，默认层只认 `adh_execution_layers.is_default` 一个真值源。
         """
         from backend.modules.mind.execution import service
 
-        candidates = [r for r in service.list_layers() if r.get("status") == "active"]
-        if not candidates:
-            raise KeyError("系统无可用的执行层")
-        return next((r for r in candidates if r.get("is_default")), candidates[0])
+        row = service.pick_active_layer(workspace_id)
+        if row is None:
+            raise KeyError("系统无可用的 Harness")
+        return row
 
     async def get_workspace_adapter(self, workspace_id: int):
         """获取工作空间的默认执行层适配器."""

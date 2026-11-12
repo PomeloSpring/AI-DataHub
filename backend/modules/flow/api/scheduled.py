@@ -42,8 +42,6 @@ async def _scheduled_access(request: Request):
         resource = call("report.load", int(params["report_id"]))
     elif params.get("channel_id"):
         resource = scheduled_task_service.get_channel(int(params["channel_id"]))
-    elif params.get("template_id"):
-        resource = scheduled_task_service.get_template(int(params["template_id"]))
     if params and resource is None:
         raise HTTPException(status_code=404, detail="资源不存在或无权访问")
     if resource:
@@ -94,7 +92,7 @@ router = APIRouter(dependencies=[Depends(_scheduled_access)])
 class ScheduledTaskCreate(BaseModel):
     name: str
     description: Optional[str] = ""
-    task_type: str = "query"  # query / agent
+    task_type: str = "agent"  # 工作空间定时任务只有 Agent 分析形态（SQL 定时在数据中台的数据同步）
     task_config: dict
     report_template_key: Optional[str] = None
     cron_expression: str
@@ -126,7 +124,7 @@ class ScheduledTaskUpdate(BaseModel):
 
 class NotificationChannelCreate(BaseModel):
     name: str
-    channel_type: str  # dingtalk / feishu / wecom / email / webhook
+    channel_type: str  # dingtalk / feishu / wecom / email / webhook / sms(占位)
     config: dict
     is_active: bool = True
     workspace_id: int = 0
@@ -137,21 +135,6 @@ class NotificationChannelUpdate(BaseModel):
     channel_type: Optional[str] = None
     config: Optional[dict] = None
     is_active: Optional[bool] = None
-
-
-class ReportTemplateCreate(BaseModel):
-    name: str
-    description: Optional[str] = ""
-    content: str
-    format: str = "markdown"  # markdown / html
-    workspace_id: int = 0
-
-
-class ReportTemplateUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    content: Optional[str] = None
-    format: Optional[str] = None
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -184,22 +167,8 @@ def _as_bot_checked(operation, *args, **kwargs):
     try:
         return operation(*args, **kwargs)
     except (PermissionError, ValueError) as exc:
-        logger.warning("定时任务 AS-BOT 配置校验拒绝: %s", exc)
+        logger.warning("定时任务配置/角色授权校验拒绝: %s", exc)
         raise HTTPException(422, str(exc)) from exc
-
-
-@router.get("/as-bot-options")
-def scheduled_as_bot_options(workspace_id: int = Query(0), user: dict = Depends(get_current_user)):
-    authorize_workspace(user, workspace_id)
-    return _as_bot_checked(get_callback("mind.as_bot_options"), user["user_id"], workspace_id)
-
-
-@router.get("/tasks/{task_id}/as-bot-options")
-def existing_task_as_bot_options(task_id: int):
-    task = scheduled_task_service.get_task(task_id)
-    if not task:
-        raise HTTPException(404, "定时任务不存在")
-    return _as_bot_checked(get_callback("mind.as_bot_options"), task["owner_id"], task.get("workspace_id") or 0)
 
 
 @router.post("/tasks")
@@ -216,8 +185,11 @@ def create_scheduled_task(req: ScheduledTaskCreate, user: dict = Depends(get_cur
     if not req.task_config:
         raise HTTPException(status_code=400, detail="task_config 不能为空")
 
-    if req.task_type not in ("query", "agent"):
-        raise HTTPException(status_code=400, detail="task_type 必须为 query 或 agent")
+    if req.task_type != "agent":
+        # SQL 定时任务不在工作空间：绕过 UI 直接 POST 也不给长出"没人管的 SQL 任务"，
+        # 取数定时请在数据中台的数据同步（adh_sync_tasks.schedule_cron / DAG cron）里配置。
+        raise HTTPException(status_code=422, detail="工作空间定时任务只有 Agent 分析形态；"
+                                                   "SQL 定时任务请在数据中台的数据同步里配置")
 
     task_id = _as_bot_checked(scheduled_task_service.create_task,
         data=req.model_dump(),
@@ -243,8 +215,9 @@ def update_scheduled_task(task_id: int, req: ScheduledTaskUpdate):
             raise HTTPException(status_code=400, detail=f"无效的 Cron 表达式: {e}")
 
     # Validate task_type if provided
-    if req.task_type and req.task_type not in ("query", "agent"):
-        raise HTTPException(status_code=400, detail="task_type 必须为 query 或 agent")
+    if req.task_type and req.task_type != "agent":
+        raise HTTPException(status_code=422, detail="工作空间定时任务只有 Agent 分析形态；"
+                                                    "SQL 定时任务请在数据中台的数据同步里配置")
 
     data = req.model_dump(exclude_unset=True)
     success = _as_bot_checked(scheduled_task_service.update_task, task_id, data)
@@ -426,7 +399,7 @@ def get_notification_channel(channel_id: int):
 @router.post("/channels")
 def create_notification_channel(req: NotificationChannelCreate, user: dict = Depends(get_current_user)):
     """Create a new notification channel."""
-    if req.channel_type not in ("dingtalk", "feishu", "wecom", "email", "webhook"):
+    if req.channel_type not in ("dingtalk", "feishu", "wecom", "email", "webhook", "sms"):
         raise HTTPException(status_code=400, detail="不支持的渠道类型")
 
     channel_id = scheduled_task_service.create_channel(
@@ -479,71 +452,6 @@ def test_notification_channel(channel_id: int):
 
 
 # ════════════════════════════════════════════════════════════════════
-# Report Templates
-# ════════════════════════════════════════════════════════════════════
-
-
-@router.get("/templates")
-def list_report_templates(
-    workspace_id: int = Query(0, description="Workspace ID"),
-    user: dict = Depends(get_current_user),
-):
-    """List report templates (system built-in + workspace custom)."""
-    # 非 admin 全局视图只给系统内置 + 自建模板
-    owner_id = None if user.get("role") == "admin" else user["user_id"]
-    return scheduled_task_service.list_templates(workspace_id=workspace_id, owner_id=owner_id)
-
-
-@router.get("/templates/{template_id}")
-def get_report_template(template_id: int):
-    """Get a single report template by ID."""
-    tpl = scheduled_task_service.get_template(template_id)
-    if not tpl:
-        raise HTTPException(status_code=404, detail="报告模板不存在")
-    return tpl
-
-
-@router.post("/templates")
-def create_report_template(req: ReportTemplateCreate, user: dict = Depends(get_current_user)):
-    """Create a new report template."""
-    if req.format not in ("markdown", "html"):
-        raise HTTPException(status_code=400, detail="格式必须为 markdown 或 html")
-    template_id = scheduled_task_service.create_template(
-        data=req.model_dump(),
-        owner_id=user["user_id"],
-        workspace_id=req.workspace_id,
-    )
-    return {"id": template_id}
-
-
-@router.put("/templates/{template_id}")
-def update_report_template(template_id: int, req: ReportTemplateUpdate):
-    """Update a report template. System templates cannot be modified."""
-    existing = scheduled_task_service.get_template(template_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="报告模板不存在")
-    try:
-        data = req.model_dump(exclude_unset=True)
-        success = scheduled_task_service.update_template(template_id, data)
-        return {"success": success}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.delete("/templates/{template_id}")
-def delete_report_template(template_id: int):
-    """Delete a report template. System templates cannot be deleted."""
-    existing = scheduled_task_service.get_template(template_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="报告模板不存在")
-    try:
-        scheduled_task_service.delete_template(template_id)
-        return {"success": True}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-# ════════════════════════════════════════════════════════════════════
 # Generated Reports (viewable via link)
 # ════════════════════════════════════════════════════════════════════
 
@@ -583,67 +491,3 @@ def get_report(report_id: int, request: Request, token: Optional[str] = Query(No
     if report.get("error"):
         raise HTTPException(status_code=403, detail=report["error"])
     return report
-
-
-# ════════════════════════════════════════════════════════════════════
-# Report Templates Router (alias for /api/report-templates)
-# ════════════════════════════════════════════════════════════════════
-
-templates_router = APIRouter(dependencies=[Depends(_scheduled_access)])
-
-
-@templates_router.get("/")
-def list_report_templates_alias(
-    workspace_id: int = Query(0, description="Workspace ID"),
-):
-    """List report templates (system built-in + workspace custom)."""
-    return scheduled_task_service.list_templates(workspace_id=workspace_id)
-
-
-@templates_router.get("/{template_id}")
-def get_report_template_alias(template_id: int):
-    """Get a single report template by ID."""
-    tpl = scheduled_task_service.get_template(template_id)
-    if not tpl:
-        raise HTTPException(status_code=404, detail="报告模板不存在")
-    return tpl
-
-
-@templates_router.post("/")
-def create_report_template_alias(req: ReportTemplateCreate, user: dict = Depends(get_current_user)):
-    """Create a new report template."""
-    if req.format not in ("markdown", "html"):
-        raise HTTPException(status_code=400, detail="格式必须为 markdown 或 html")
-    template_id = scheduled_task_service.create_template(
-        data=req.model_dump(),
-        owner_id=user["user_id"],
-        workspace_id=req.workspace_id,
-    )
-    return {"id": template_id}
-
-
-@templates_router.put("/{template_id}")
-def update_report_template_alias(template_id: int, req: ReportTemplateUpdate):
-    """Update a report template. System templates cannot be modified."""
-    existing = scheduled_task_service.get_template(template_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="报告模板不存在")
-    try:
-        data = req.model_dump(exclude_unset=True)
-        success = scheduled_task_service.update_template(template_id, data)
-        return {"success": success}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@templates_router.delete("/{template_id}")
-def delete_report_template_alias(template_id: int):
-    """Delete a report template. System templates cannot be deleted."""
-    existing = scheduled_task_service.get_template(template_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="报告模板不存在")
-    try:
-        scheduled_task_service.delete_template(template_id)
-        return {"success": True}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))

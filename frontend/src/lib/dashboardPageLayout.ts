@@ -1,16 +1,24 @@
 import type { Dashboard, DashboardChart } from '@/stores/dashboardStore';
 import { chartRect, getCanvas, naturalSizeOf, type Rect } from './dashboardDesign';
 
-export type PageBreakpoint = 'desktop' | 'tablet' | 'mobile';
-export const PAGE_WIDTHS = { desktop: 1440, tablet: 768, mobile: 390 };
+export type PageBreakpoint = 'screen' | 'desktop' | 'tablet' | 'mobile';
+/**
+ * 断点梯度（宽→窄）：大屏 1920 / 桌面 1440 / 平板 768 / 手机 390。
+ * 大屏档不是“把桌面拉大”：拼接屏/2K+ 播放页按自己的设计宽重新分列，
+ * 列宽步进与桌面保持同一粒度（≈30px），否则 48 列在 1920 上会变成 40px 一步、卡片调不细。
+ */
+export const PAGE_WIDTHS = { screen: 1920, desktop: 1440, tablet: 768, mobile: 390 };
+/** 与 PAGE_WIDTHS 同序（宽→窄）：编辑器断点下拉、预览设备选择直接按这个顺序渲染 */
+export const PAGE_BREAKPOINTS: PageBreakpoint[] = ['screen', 'desktop', 'tablet', 'mobile'];
 /**
  * 网格分辨率 v3：列 12/6/1 → 48/24/1（宽度步进 121px → 30px）。
  * 拖拽调整大小时“突然缩到一个大小、突然放大到一个大小”的根因就是宽度只能按整列跳。
+ * 大屏 64 列 = 1920/30，与桌面同一列宽步进（新断点，无存量数据）。
  */
-export const PAGE_COLUMNS = { desktop: 48, tablet: 24, mobile: 1 };
+export const PAGE_COLUMNS = { screen: 64, desktop: 48, tablet: 24, mobile: 1 };
 /** v2 及更早的列数：只用于存量布局的等像素换算，读路一律以 v3 为准 */
-export const LEGACY_PAGE_COLUMNS = { desktop: 12, tablet: 6, mobile: 1 };
-export const PAGE_LABELS = { desktop: '桌面', tablet: '平板', mobile: '手机' };
+export const LEGACY_PAGE_COLUMNS = { screen: 16, desktop: 12, tablet: 6, mobile: 1 };
+export const PAGE_LABELS = { screen: '大屏', desktop: '桌面', tablet: '平板', mobile: '手机' };
 /**
  * 行单位 v3：**纯 4px 像素单行，CSS grid 的 rowGap 恒为 0**。
  *
@@ -25,14 +33,15 @@ export const LEGACY_PAGE_ROW = 8;
 const PAGE_ROW_V2 = 4;
 export const PAGE_LAYOUT_VERSION = 3;
 /** v2 时代写死的间距：换算存量布局必须用它，不能被用户的新设置影响 */
-export const LEGACY_PAGE_GAP = { desktop: 16, tablet: 16, mobile: 12 };
+export const LEGACY_PAGE_GAP = { screen: 16, desktop: 16, tablet: 16, mobile: 12 };
 export const DEFAULT_PAGE_GAP = LEGACY_PAGE_GAP;
 export const PAGE_GAP_MIN = 0;
 export const PAGE_GAP_MAX = 64;
 /** 间距设置（看板级，按断点分别可调；缺档取默认值） */
 export type PageGaps = Partial<Record<PageBreakpoint, number>>;
 
-export const pageBreakpoint = (width: number): PageBreakpoint => width >= 1024 ? 'desktop' : width >= 640 ? 'tablet' : 'mobile';
+/** 大屏档阈值用设计宽 1920（不引用 PAGE_WIDTHS.screen，避免“改设计宽”与“改分级”两个决策耦合） */
+export const pageBreakpoint = (width: number): PageBreakpoint => width >= 1920 ? 'screen' : width >= 1024 ? 'desktop' : width >= 640 ? 'tablet' : 'mobile';
 export const pageGap = (bp: PageBreakpoint, gaps?: PageGaps) => {
   const value = gaps?.[bp];
   return typeof value === 'number' && Number.isFinite(value)
@@ -47,10 +56,13 @@ export const pageMinHeight = (type: string) => type.startsWith('widget_') ? natu
   : type.includes('table') ? 360 : ['big_number', 'big_number_trend', 'statistic'].includes(type) ? 128 : 280;
 // 拖入画布时的默认跳列数：与自然尺寸一致，避免刚拖进去就臃肿
 // （控件用 ceil：列宽含 gap，round 会把自然宽 96px 的按钮算成 75px，内容装不下）
+// 渲染宽 = span × 列宽 − gap，所以 gap 要先加回去：只按 ceil(natural/列宽) 算，
+// “自然宽 440 的日期区间”只会落到 419px（少一个 gap），起止两端装不下就只显一半
 export const defaultPageSpan = (type: string, bp: PageBreakpoint, gaps?: PageGaps) => {
   const natural = naturalSizeOf(type);
   const column = pageColumnPx(bp, gaps);
-  const span = type.startsWith('widget_') ? Math.max(1, Math.ceil(natural.w / column)) : Math.round(PAGE_COLUMNS[bp] / 2);
+  const span = type.startsWith('widget_')
+    ? Math.max(1, Math.ceil((natural.w + pageGap(bp, gaps)) / column)) : Math.round(PAGE_COLUMNS[bp] / 2);
   return Math.min(PAGE_COLUMNS[bp], span);
 };
 /** 像素 → 行（v3：行单位与间距无关，恒为 PAGE_ROW） */
@@ -294,7 +306,7 @@ export function withPageRect<T extends Record<string, any>>(config: T, bp: PageB
   // 未编辑的桌面/手机矩形会被当 v3 读（宽 4 倍、高 5 倍），整板布局直接崩掉。
   const migrated: Record<string, any> = { ...stored, version: PAGE_LAYOUT_VERSION };
   if (stored && storedVersion !== PAGE_LAYOUT_VERSION && storedVersion !== undefined) {
-    for (const key of ['desktop', 'tablet', 'mobile'] as PageBreakpoint[]) {
+    for (const key of PAGE_BREAKPOINTS) {
       if (stored[key]) migrated[key] = normalizeRect(stored[key], key, storedVersion);
     }
   }

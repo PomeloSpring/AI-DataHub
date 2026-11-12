@@ -21,6 +21,7 @@ import { createPortal } from 'react-dom';
 import { Activity, CheckCircle2, Loader2, ChevronDown, Maximize2, X } from 'lucide-react';
 import ProcessTimeline from './ProcessTimeline';
 import { SlideCollapse } from './chat/StageCard';
+import { useEnterClass } from '@/hooks/useMotion';
 import type { ProcessSegment, ToolCall, ProgressStage } from '../stores/chatStore';
 
 interface Props {
@@ -38,6 +39,8 @@ interface Props {
 export default function ExecutionProcess({
   process, toolCalls, progressStages, thinking, isStreaming = false, thinkingActive, conversationId,
 }: Props) {
+  // 卡头入场跟随个人动效偏好（默认档 = 改造前的 animate-stage-in，观感零变化）
+  const enter = useEnterClass();
   const thinkingOn = thinkingActive ?? isStreaming;
   const hasProcess =
     !!thinking ||
@@ -92,7 +95,7 @@ export default function ExecutionProcess({
   );
 
   return (
-    <div className="mb-3 rounded-xl border bg-card shadow-sm overflow-hidden animate-stage-in">
+    <div className={`mb-3 rounded-xl border bg-card shadow-sm overflow-hidden ${enter}`}>
       {/* 摘要行 — 点击滑动展开/收起阶段性过程;「全屏」打开弹层 */}
       <div
         className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none hover:bg-muted/40 transition-colors"

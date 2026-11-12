@@ -1,11 +1,15 @@
-"""Object Storage — S3 兼容的文件存储抽象层(归档资产专用)。
+"""Object Storage — S3 兼容的文件存储抽象层(归档资产 + 工作空间会话产物)。
 
 支持后端:
 - MinIO / AWS S3 / 阿里云 OSS / 腾讯云 COS 等 S3 兼容接口
 - 未配置时自动回退到本地磁盘(开发环境兼容,ADH_OBJECT_FALLBACK_DIR)
 
-仅承载用户归档资产(user_assets, 资产跟随用户跨工作空间);聊天附件是会话工作区文件,
-不经本模块(见 backend.modules.mind.multimodal.loader)。
+承载三类对象(首段一律是用户 ID,不受空间改名/迁移影响):
+- 用户归档资产 user_assets: `{prefix}/{user_id}/assets/...`(见 build_asset_key)
+- 工作空间会话产物: `{prefix}/{user_id}/sessions/{session_key}/workspace/...`
+  (见 backend.modules.mind.execution.session_cloud.build_session_prefix)
+- 报表正文: `{prefix}/{user_id}/reports/{report_id}`(见 build_report_content_key)
+  —— 正文不落元数据库,库里只存 key,域名+签名读取时现拼
 
 Usage:
     from backend.common.object_storage import build_asset_key, get_object_storage
@@ -17,6 +21,8 @@ Usage:
     data = storage.download_bytes(key)
     storage.delete(key)
     url = storage.get_presigned_url(key, expires=3600)
+    storage.upload_file(key, "/path/a.xlsx")          # 大文件直传
+    keys = storage.list_keys("ai-datahub/9/sessions/")  # 前缀清单(分页拉全)
 """
 
 import io
@@ -39,6 +45,37 @@ def build_asset_key(user_id: int, asset_id: str, filename: str) -> str:
     safe = "".join(ch for ch in (filename or "asset") if ch.isprintable())
     safe = safe.replace("/", "_").replace("\\", "_").strip(" .") or "asset"
     return f"{OBJECT_STORAGE_PREFIX}/{int(user_id)}/assets/{asset_id}_{safe}"
+
+
+def build_content_file_key(article_id: int, token: str, filename: str) -> str:
+    """内容附件对象 key — 唯一构建点: {prefix}/content/{article_id}/{token}_{filename}。
+
+    与用户资产(build_asset_key)的区别是归属主体: 附件属**内容**而非上传人, 发布后
+    由全员下载, 所以首段是条目 id 而不是 user_id —— 作者离职或改名都不能让已发布
+    内容的附件失效。token 由调用方给(uuid 片段), 保证同名文件不互相覆盖。
+    任何读写内容附件的代码不得自行拼 key。
+    """
+    from backend.common.config import OBJECT_STORAGE_PREFIX
+    safe = "".join(ch for ch in (filename or "attachment") if ch.isprintable())
+    safe = safe.replace("/", "_").replace("\\", "_").strip(" .") or "attachment"
+    return f"{OBJECT_STORAGE_PREFIX}/content/{int(article_id)}/{token}_{safe}"
+
+
+def build_report_content_key(user_id: int, report_id: int) -> str:
+    """报表正文对象 key — 唯一构建点: {prefix}/{user_id}/reports/{report_id}。
+
+    报表正文不再落元数据库（adh_reports.content 退役为恒空串），库里只存这个 key，
+    域名与签名在读取时现拼（见 report_service._content_access）。首段用 user_id 与
+    归档资产同构：报表跟随属主，不受工作空间归属/改名影响。
+
+    key 不带扩展名也不带版本：
+    * 不带扩展名 —— markdown↔html 互转时不需要搬对象（渲染口径看库里的 format 列，
+      前端取正文一律按文本读，对象 Content-Type 只是上传时的便利标注）；
+    * 不带版本 —— 同一份报表的正文就地覆盖，历史版本是独立的 adh_reports 行与各自的 key。
+    任何读写报表正文对象的代码不得自行拼 key（存量搬运脚本同用本函数）。
+    """
+    from backend.common.config import OBJECT_STORAGE_PREFIX
+    return f"{OBJECT_STORAGE_PREFIX}/{int(user_id)}/reports/{int(report_id)}"
 
 
 def _describe_boto_error(e: Exception) -> str:
@@ -263,6 +300,92 @@ class ObjectStorage:
         except Exception as e:
             logger.warning("Presigned URL failed (%s): %s", key, e)
             return None
+
+    def list_keys(self, prefix: str) -> list[dict]:
+        """列出前缀下全部对象 → [{"key", "size", "etag"}](分页拉全, 含自身前缀键)。
+
+        失败一律外抛(调用方据此判定“同步状态不可得”), 绝不回空清单把“查不到”
+        伪装成“云端没有文件”——那会让按需回落与同步标记双双判错。
+        """
+        if self._enabled:
+            out: list[dict] = []
+            token = None
+            while True:
+                params = {"Bucket": self._bucket, "Prefix": prefix, "MaxKeys": 1000}
+                if token:
+                    params["ContinuationToken"] = token
+                resp = self._client.list_objects_v2(**params)
+                for obj in resp.get("Contents") or []:
+                    out.append({"key": obj["Key"], "size": int(obj.get("Size") or 0),
+                                "etag": str(obj.get("ETag") or "").strip('"')})
+                if not resp.get("IsTruncated"):
+                    break
+                token = resp.get("NextContinuationToken")
+                if not token:
+                    break
+            return out
+        root = Path(self._local_path(prefix))
+        base = Path(self._fallback_dir)
+        out = []
+        if root.is_dir():
+            for p in sorted(root.rglob("*")):
+                if p.is_file() and not p.is_symlink():
+                    rel = str(p.relative_to(base))
+                    out.append({"key": rel, "size": p.stat().st_size, "etag": ""})
+        return out
+
+    def upload_file(self, key: str, path, content_type: str = "application/octet-stream") -> None:
+        """上传本地文件(不整份读进内存)。失败外抛, 由调用方决定如何暴露。"""
+        if self._enabled:
+            self._client.upload_file(str(path), self._bucket, key,
+                                     ExtraArgs={"ContentType": content_type})
+            return
+        dest = Path(self._local_path(key))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        import shutil
+        shutil.copyfile(str(path), str(dest))
+
+    def download_to_file(self, key: str, path) -> bool:
+        """下载对象到本地文件;对象不存在返回 False(可诊断的“云端没有”), 其余失败外抛。
+
+        与 download_bytes 的区别: 后者把异常也吞成 None, 会让“桶不可达”被当成
+        “产物已丢失”——恢复路径必须能区分这两种事实, 因此单独提供本方法。
+        """
+        dest = Path(path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if self._enabled:
+            try:
+                self._client.download_file(self._bucket, key, str(dest))
+            except Exception as e:  # noqa: BLE001 — 先把“不存在”摘出来, 其余按失败外抛
+                if not self.exists(key):
+                    return False
+                raise RuntimeError(f"对象存储下载失败 ({key}): {_describe_boto_error(e)}") from e
+            return True
+        src = Path(self._local_path(key))
+        if not src.is_file():
+            return False
+        import shutil
+        shutil.copyfile(str(src), str(dest))
+        return True
+
+    def delete_prefix(self, prefix: str) -> int:
+        """删除前缀下全部对象, 返回删除个数。失败外抛(调用方需据此提醒/重试)。
+
+        走单对象逐个删而不用 DeleteObjects 批量接口: 实机核验发现在阿里云 OSS 的
+        S3 兼容入口上 DeleteObjects 报 `MissingArgument`(本客户端为规避 aws-chunked
+        上传而关掉了默认 checksum, 批量删除必需的 Content-MD5 因此不发), 而单对象
+        delete 可用。一个会话的产物数量本就是十几到几十个量级, 逐个删的代价可接受。
+        """
+        keys = [o["key"] for o in self.list_keys(prefix)]
+        if self._enabled:
+            for key in keys:
+                self._client.delete_object(Bucket=self._bucket, Key=key)
+            return len(keys)
+        for key in keys:
+            p = Path(self._local_path(key))
+            if p.is_file():
+                p.unlink()
+        return len(keys)
 
     def _local_path(self, key: str) -> str:
         """本地回退模式下的文件路径."""

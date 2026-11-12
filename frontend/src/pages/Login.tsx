@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from '@/lib/toast';
 import {
-  ArrowRight, BarChart3, Database, Eye, EyeOff,
+  ArrowRight, BarChart3, Eye, EyeOff,
   Lock, MessageSquare, Shield, Sparkles, User, Zap,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
@@ -10,8 +10,10 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
+import BrandLockup from '@/components/BrandLockup';
+import { useBrandStore } from '../stores/brandStore';
+import { brandNameOf } from '@/lib/brand';
 import { useAuthStore } from '../stores/authStore';
-import { fetchVisibleGroups } from '@/lib/dashboardCatalog';
 
 const features = [
   { icon: MessageSquare, title: '自然语言查询', desc: '用中文提问，AI 自动生成 SQL' },
@@ -65,6 +67,12 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const navigate = useNavigate();
   const login = useAuthStore((s) => s.login);
+  // 品牌设置（名称/图标/标语/显示开关）：登录页也是品牌门面，必须与
+  // 「系统配置 → 品牌设置」同源同变（/admin/brand 读已登记为公开路由，无需身份）。
+  const brand = useBrandStore((s) => s.brand);
+  const fetchBrand = useBrandStore((s) => s.fetchBrand);
+
+  useEffect(() => { void fetchBrand(); }, [fetchBrand]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -76,14 +84,9 @@ export default function Login() {
     setLoading(true);
     try {
       await login(username, password);
-      // 登录落地: 有已启用看板直达数据看板,否则落首页。
-      // 此跳转只作用于登录时刻;显式从模块切换选「首页」时恒进首页(见 Home)。
-      let target = '/';
-      try {
-        const gs = await fetchVisibleGroups();
-        if (gs.some(g => g.dashboards.some(d => d.status === 'enabled'))) target = '/dashboards';
-      } catch { /* 看板清单取不到时落首页(显式可见),不掩盖 */ }
-      navigate(target);
+      // 登录落地恒进首页: 首页是统一入口(问数框/看板清单/资讯区都在这一页),
+      // 不再按"有没有已启用看板"把人直接送去数据看板——落点由用户在首页自己选。
+      navigate('/');
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '登录失败');
     } finally {
@@ -120,15 +123,13 @@ export default function Login() {
           {/* 左：品牌叙事区 */}
           <div className="relative hidden md:flex flex-col justify-between overflow-hidden bg-gradient-to-br from-primary via-primary to-primary/85 text-primary-foreground p-10">
             <div className="relative z-10">
-              <div className="flex items-center gap-2.5">
-                <div className="w-11 h-11 rounded-xl bg-primary-foreground/15 backdrop-blur border border-primary-foreground/20 flex items-center justify-center">
-                  <Database className="h-6 w-6" />
-                </div>
-                <div>
-                  <div className="text-lg font-bold tracking-tight leading-tight">AI-DataHub</div>
-                  <div className="text-[11px] opacity-70 leading-tight">企业级智能数据分析平台</div>
-                </div>
-              </div>
+              <BrandLockup
+                brand={brand}
+                size={44}
+                tone="onPrimary"
+                nameClassName="text-lg leading-tight"
+                taglineClassName="text-[11px] leading-tight"
+              />
 
               <h1 className="mt-10 text-[26px] font-bold leading-snug tracking-tight">
                 让数据问答
@@ -167,12 +168,9 @@ export default function Login() {
           {/* 右：登录表单区 */}
           <Card className="border-0 bg-card shadow-none rounded-none">
             <CardContent className="p-8 sm:p-10 flex flex-col justify-center min-h-[520px]">
-              {/* 移动端品牌头（左栏隐藏时补位） */}
-              <div className="flex md:hidden items-center justify-center gap-2.5 mb-8">
-                <div className="w-10 h-10 rounded-lg bg-primary flex items-center justify-center">
-                  <BarChart3 className="h-5 w-5 text-primary-foreground" />
-                </div>
-                <span className="text-xl font-bold text-foreground tracking-tight">AI-DataHub</span>
+              {/* 移动端品牌头（左栏隐藏时补位：窄屏空紧，只显图标+名称不显标语） */}
+              <div className="flex md:hidden items-center justify-center mb-8">
+                <BrandLockup brand={brand} size={40} showTagline={false} nameClassName="text-xl leading-tight text-foreground" />
               </div>
 
               <div className="mb-8">
@@ -240,7 +238,7 @@ export default function Login() {
         </div>
 
         <p className="mt-6 text-center text-[11px] text-muted-foreground/70">
-          © {new Date().getFullYear()} AI-DataHub
+          © {new Date().getFullYear()} {brandNameOf(brand.app_name)}
         </p>
       </div>
     </div>

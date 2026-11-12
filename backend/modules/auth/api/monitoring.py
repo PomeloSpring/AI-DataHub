@@ -44,13 +44,32 @@ LAYERS = [
 
 # Service registry: 只登记真实监听进程（与 backend/scripts/services.conf 同源）。
 # 中间件/引擎依赖（MySQL/Redis/Oxigraph/对象存储/Celery）在 /api/monitoring/middleware 单独探测。
+# 这里登记的是 **端口来源（port_source）**而不是端口数值：探测时才从配置解析（见
+# _resolve_port）。前端监听口的唯一配置源 = 根目录 .env 的 FRONTEND_PORT（与
+# frontend_port.sh / vite / compose 同源）；曾在本处写死 3000，后果是改端口后监控
+# 把在跑的前端报成 Connection refused —— 假故障比无监控更坏。
 SERVICE_REGISTRY = [
-    {"key": "frontend", "name": "前端应用", "desc": "React SPA (Vite)", "port": 3000, "path": "/", "layer": "access"},
+    {"key": "frontend", "name": "前端应用", "desc": "React SPA (Vite)",
+     "port_source": "frontend", "path": "/", "layer": "access"},
     {"key": "web", "name": "Web 单进程", "desc": "目录/治理/可视化/编排/认证/平台/语义层/图谱",
-     "port": _cfg.WEB_PORT, "path": "/api/health", "layer": "app"},
+     "port_source": "web", "path": "/api/health", "layer": "app"},
 ]
 
 _PROBE_TIMEOUT = 3.0  # seconds
+
+
+def _resolve_port(svc: dict) -> int:
+    """探测时现取监听口（不在模块导入时冻结）。
+
+    改完根 .env 的 FRONTEND_PORT 只需重启前端，刷新监控页即反映新端口；
+    把值冻结在导入时，就会要求重启 web 才能不报假故障。
+    """
+    src = svc.get("port_source")
+    if src == "web":
+        return _cfg.WEB_PORT
+    if src == "frontend":
+        return _cfg.frontend_port()
+    raise ValueError(f"服务 {svc.get('key')} 的端口来源无效: {src!r}")
 
 
 def _service_host(key: str) -> str:
@@ -70,7 +89,8 @@ def _http_get_json(url: str, timeout: float = _PROBE_TIMEOUT) -> dict | None:
 def _probe_service(svc: dict) -> dict:
     """Probe a single service health endpoint, returning status + latency."""
     host = _service_host(svc["key"])
-    url = f"http://{host}:{svc['port']}{svc['path']}"
+    port = _resolve_port(svc)
+    url = f"http://{host}:{port}{svc['path']}"
     started = time.monotonic()
     try:
         req = urllib.request.Request(url, method="GET")
@@ -87,6 +107,7 @@ def _probe_service(svc: dict) -> dict:
             return {
                 **svc,
                 "host": host,
+                "port": port,
                 "status": "healthy",
                 "latency_ms": latency_ms,
                 "version": detail.get("version"),
@@ -97,6 +118,7 @@ def _probe_service(svc: dict) -> dict:
         return {
             **svc,
             "host": host,
+            "port": port,
             "status": "down",
             "latency_ms": None,
             "version": None,
@@ -145,7 +167,7 @@ def get_services_health(admin: dict = Depends(require_admin)):
 def _fetch_node_metrics(svc: dict) -> dict | None:
     """Fetch local metrics from a service's node; None if unavailable."""
     host = _service_host(svc["key"])
-    metrics = _http_get_json(f"http://{host}:{svc['port']}/system-metrics")
+    metrics = _http_get_json(f"http://{host}:{_resolve_port(svc)}/system-metrics")
     if not isinstance(metrics, dict) or "hostname" not in metrics:
         return None
     metrics["source_service"] = svc["key"]

@@ -154,7 +154,7 @@ def test_registered_actions_stay_within_secret_bounds():
 def test_write_action_rejected_when_level_is_read():
     """写动作在 read 级别下必须被拒，且原因可读。"""
     perms = {"report:manage": {"ai_access": perm_link.AI_LEVEL_READ,
-                               "label": "管理报表", "ai_note": ""}}
+                               "label": "管理报告", "ai_note": ""}}
     allowed, denied = perm_link.resolve_function_actions(
         function_tools.FUNCTION_ACTION_SPECS, perms)
     assert "report.generate" not in allowed
@@ -437,3 +437,290 @@ def test_db_levels_respect_secret_bounds():
     over = [(code, level) for code, level in rows
             if perm_link.cap_level(code, level) != perm_link.normalize_level(level)]
     assert not over, f"以下权限点的 DB 级别高于涉密硬上界: {over}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 8. 接入通道（级别配置到底有没有消费方）
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# 背景：角色页的「AI 可调用级别」只有两类消费方 —— FUNCTION_ACTION_SPECS 登记的功能
+# 工具（`resolve_function_actions` 据此注册），以及执行期 `require_write_perm` 按码把关。
+# 历史缺陷是把后者误标成「未接 AI」（管理员以为配了没用，去改本来生效的配置），
+# 以及让零消费方的码挂着可选下拉框（选了以为开通，实际什么也没发生 —— 空承诺）。
+
+
+def _perm_codes_gated_in_code() -> set:
+    """扫出代码里所有 `require_write_perm` / `check_write_perm` 调用点的 perm_code 字面量。
+
+    两种形参形态都要覆盖（早期只扫三参形式，漏掉 `_require_write_perm(code, label)`
+    封装，导致 ontology:create/activate/import 被当成未接入）：
+      * `require_write_perm(user_id, workspace_id, "code", label)` → 第 3 个位置参；
+      * `check_write_perm(role_perms, "code", label)` → 第 2 个；
+      * 本模块外封装 `_require_write_perm("code", label)` → 第 1 个。
+    """
+    import ast
+    import os as _os
+    root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    found: set = set()
+    for base, dirs, files in _os.walk(_os.path.join(root, "backend")):
+        if "__pycache__" in base:
+            continue
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            path = _os.path.join(base, name)
+            tree = ast.parse(open(path, encoding="utf-8").read(), path)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                fn = node.func
+                fname = fn.id if isinstance(fn, ast.Name) else (
+                    fn.attr if isinstance(fn, ast.Attribute) else "")
+                if fname.lstrip("_") not in ("require_write_perm", "check_write_perm"):
+                    continue
+                idx = 0 if (isinstance(fn, ast.Name) and fn.id.startswith("_")) else (
+                    2 if fname.lstrip("_") == "require_write_perm" else 1)
+                args = node.args
+                if len(args) > idx and isinstance(args[idx], ast.Constant) \
+                        and isinstance(args[idx].value, str):
+                    found.add(args[idx].value)
+    return found
+
+
+def test_perm_gated_action_perms_match_call_sites():
+    """PERM_GATED_ACTION_PERMS 必须与代码调用点一致（漂移守卫）。
+
+    少登记 = 真实生效的码被标成「未接入」（误导管理员）；
+    多登记 = 把没有把关点的码广告成已接入（空承诺）。两个方向都算缺陷。
+    """
+    sites = _perm_codes_gated_in_code()
+    declared = set(perm_link.PERM_GATED_ACTION_PERMS)
+    assert sites == declared, (
+        f"代码有把关点但清单未登记: {sorted(sites - declared)}; "
+        f"清单登记了但代码无把关点: {sorted(declared - sites)}")
+
+
+def test_ai_channel_precedence_and_none():
+    """通道判定：已登记功能工具优先，其次执行期按码把关，两者都无 = none。"""
+    assert perm_link.ai_channel("report:read", "report.list") == perm_link.AI_CHANNEL_FUNCTION_ACTION
+    # 双通道码（article:manage 既挂 content_* 动作又有把关点）以工具登记为准
+    assert perm_link.ai_channel("article:manage", "content_draft.create") == perm_link.AI_CHANNEL_FUNCTION_ACTION
+    # 故意不登记 ai_action_key 但执行期真把关的码不得被当成未接入
+    for code in ("ontology:save", "ontology:create", "ontology:activate",
+                 "ontology:import", "dashboard:manage", "scheduled:manage"):
+        assert perm_link.ai_channel(code, "") == perm_link.AI_CHANNEL_PERM_GATE, code
+    assert perm_link.ai_channel("quality-review:read", "") == perm_link.AI_CHANNEL_NONE
+    assert perm_link.ai_channel("vis:manage", "  ") == perm_link.AI_CHANNEL_NONE
+
+
+def test_action_spec_perm_codes_are_declared():
+    """每个已登记功能动作必须绑一个非空 perm_code。
+
+    perm_code 为空的动作在 ``resolve_function_actions`` 里永远命中
+    “角色未授予”→ 工具注册了却永远不可用，且角色页无从归类（既不是
+    function_action 也不是 perm_gate）—— 静默死工具，比不登记更坑。
+    """
+    empty = sorted(k for k, s in function_tools.FUNCTION_ACTION_SPECS.items()
+                   if not (s.get("perm_code") or "").strip())
+    assert not empty, f"以下功能动作未声明 perm_code（注册了也永远不可用）: {empty}"
+
+
+# 当前“配了级别但无消费方”的已声明缺口：新增码必须走登记（补投影或补把关点），
+# 不得默默多一个选了不生效的开关（no-silent-degradation §1）。
+# 收敛方向：要么在 FUNCTION_ACTION_SPECS 补安全投影，要么把 ai_access 改回 none。
+KNOWN_NO_CHANNEL_PERMS = frozenset({
+    "asbot:use", "asset:read", "audit:read", "catalog:manage", "catalog:read", "chat:use",
+    "dataset:query", "glossary:read", "graph:manage", "graph:read", "kb:manage", "kbdoc:read",
+    "knowledge:manage", "knowledge:read", "lineage:read", "metrics:manage", "metrics:read",
+    "model:read", "monitor:read", "observability:read", "ontology:read", "playground:execute",
+    "playground:read", "quality-review:manage", "quality-review:read", "quality-rules:manage",
+    "quality-rules:read", "report-template:manage", "report-template:read", "scheduled:execute",
+    "sensitive:read", "standard:manage", "standard:read", "sync-logs:read", "sync:execute",
+    "sync:manage", "sync:read", "tags:manage", "task-monitor:manage", "vis:manage", "vis:read",
+    "workspace:manage", "workspace:read",
+})
+
+
+def test_no_channel_ai_levels_are_declared_gap():
+    """无消费方却配了级别的码必须是已声明缺口（防新增空承诺）。"""
+    conn = _db_conn()
+    if conn is None:
+        pytest.skip("元数据库不可用，跳过缺口清单断言")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT perm_code, ai_access, ai_action_key FROM adh_perm_registry "
+                        "WHERE is_active=1")
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    gap = {str(r[0]) for r in rows
+           if perm_link.ai_channel(str(r[0]), str(r[2] or "")) == perm_link.AI_CHANNEL_NONE
+           and perm_link.normalize_level(r[1]) != perm_link.AI_LEVEL_NONE}
+    fresh = gap - KNOWN_NO_CHANNEL_PERMS
+    assert not fresh, (
+        f"新出现的「配了 AI 级别但无消费方」权限码: {sorted(fresh)} —— "
+        f"要么在 function_tools.FUNCTION_ACTION_SPECS 登记安全投影并回填 ai_action_key，"
+        f"要么把 ai_access 改回 none；不得留一个选了不生效的开关。")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 9. 惰性接入（功能清单按需下发，不常驻模型上下文）
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# 三条契约：
+#   ① 只注册 list/run 两个壳，动作 schema 不再逐个进上下文（17 份 = 每轮白付 token）；
+#   ② 清单与派发复用既有裁决（policy.function_names / 逐动作 check_tool），壳不是新裁决点；
+#   ③ 本会话没有任何功能能力时连壳也不注册（不留“调了只会报错”的空入口）。
+
+
+def _payload(result):
+    import json
+    return json.loads(result["content"][0]["text"])
+
+
+def test_shell_tools_registered_only_when_actions_exist():
+    """有功能能力才注册壳；动作精确名仍留在 allowed 里。"""
+    shells = {function_tools.qualified_shell_name(n)
+              for n in function_tools.shell_tool_names()}
+    assert len(shells) == 2
+    p = policies.compile_policy(_as_bot(), role_perms=_all_write_perms())
+    assert shells <= set(p.allowed)
+    # 逐动作授权不因改壳而削弱：run 内部 check_tool 裁的就是这个精确名
+    assert function_tools.qualified_tool_name("report.list") in p.allowed
+    empty = policies.compile_policy(_as_bot(), role_perms={})
+    assert not (shells & set(empty.allowed)), "无功能能力时不得注册壳（空入口）"
+
+
+def test_build_function_server_registers_shells_not_actions(monkeypatch):
+    """server 里只有两个壳工具（且注册名是壳的精确名）；tool_names 空 → 不建 server。"""
+    from backend.modules.mind.execution.sdk_tools import compat
+    registered = []
+    monkeypatch.setattr(compat, "make_server",
+                        lambda backend, name, tools: {"name": name, "tools": tools})
+
+    def fake_make_tool(backend, n, d, s, h, annotations=None, qualified_name=""):
+        registered.append({"name": n, "qualified_name": qualified_name})
+        return {"name": n}
+
+    monkeypatch.setattr(compat, "make_tool", fake_make_tool)
+    cfg = function_tools.build_function_server("qoder", tool_names=["list_reports"])
+    assert cfg
+    assert sorted(r["name"] for r in registered) == sorted(function_tools.shell_tool_names())
+    # 注册名必须是壳的精确名（check_tool 按名裁决，写错就是全部拒）
+    for r in registered:
+        assert r["qualified_name"] == function_tools.qualified_shell_name(r["name"])
+    assert function_tools.build_function_server("qoder", tool_names=[]) is None
+    with pytest.raises(ValueError):
+        function_tools.build_function_server("qoder", tool_names=["不存在的工具"])
+
+
+def test_list_platform_functions_filters_by_role(monkeypatch):
+    """清单只列本角色可用的功能，并带上不可用原因（与能力面板同一份数据）。"""
+    policy = SimpleNamespace(
+        function_names=("list_reports",),
+        unavailable={function_tools.qualified_tool_name("dataset.list"):
+                     "角色未授予「dataset:read」权限，功能「查看数据集」不可用"})
+    monkeypatch.setattr(function_tools, "_live_function_policy", lambda: (None, policy))
+    data = _payload(function_tools._list_platform_functions({}))
+    assert [f["function"] for f in data["functions"]] == ["list_reports"]
+    item = data["functions"][0]
+    assert item["read_only"] is True and item["label"] and item["description"]
+    assert "limit" in item["params"]
+    assert data["unavailable"][0]["function"] == "list_datasets"
+    assert "未授予" in data["unavailable"][0]["reason"]
+    # 不凭记忆猜：返回体必须自带调用方式说明
+    assert function_tools.INVOKE_TOOL in data["how_to_call"]
+
+
+def test_list_platform_functions_without_trusted_session_fails_loud(monkeypatch):
+    """拿不到可信会话时报错，不静默返回空清单（会被当成“没功能”）。"""
+    monkeypatch.setattr(function_tools, "_live_function_policy", lambda: (None, None))
+    res = function_tools._list_platform_functions({})
+    assert res.get("isError") and "身份" in _payload(res)["error"]
+
+
+def test_run_platform_function_dispatches_with_per_action_authorization(monkeypatch):
+    """派发按**动作精确名**裁决并透传参数 —— 壳不得成为放宽口径的新裁决点。"""
+    from backend.modules.mind.execution import resource_guard, tool_policy
+    from backend.modules.mind.execution.sdk_tools import context as ctx_mod
+    seen = {}
+    monkeypatch.setattr(tool_policy, "check_tool",
+                        lambda ctx, name: seen.setdefault("names", []).append(name))
+    monkeypatch.setattr(resource_guard, "validate_tool_resources",
+                        lambda ctx, name, args: dict(args, _injected=1))
+    monkeypatch.setattr(ctx_mod, "get_execution_context",
+                        lambda: SimpleNamespace(user_id=7, workspace_id=3))
+    called = {}
+
+    def fake_handler(args):
+        called.update(args)
+        return function_tools._text({"ok": True})
+
+    monkeypatch.setitem(function_tools.FUNCTION_ACTION_SPECS["report.list"],
+                        "handler", fake_handler)
+    res = function_tools._run_platform_function(
+        {"function": "list_reports", "arguments": {"limit": 5}})
+    assert seen["names"] == [function_tools.qualified_tool_name("report.list")]
+    assert called == {"limit": 5, "_injected": 1}
+    assert _payload(res) == {"ok": True}
+
+
+def test_run_platform_function_denies_unauthorized_with_reason(monkeypatch):
+    """权限/资源拒绝：透传真因并补上业务功能名，不得换成“联系管理员”兼底文案。"""
+    from backend.modules.mind.execution import tool_policy
+    from backend.modules.mind.execution.sdk_tools import context as ctx_mod
+
+    def deny(ctx, name):
+        raise PermissionError("当前 AS-BOT 未授权该工具")
+
+    monkeypatch.setattr(tool_policy, "check_tool", deny)
+    monkeypatch.setattr(ctx_mod, "get_execution_context",
+                        lambda: SimpleNamespace(user_id=7, workspace_id=3))
+    res = function_tools._run_platform_function({"function": "list_datasets", "arguments": {}})
+    assert res.get("isError")
+    text = _payload(res)["error"]
+    assert "查看数据集" in text and "未授权" in text
+
+
+def test_run_platform_function_rejects_unknown_name_without_dispatch(monkeypatch):
+    """未知功能名当场拒并指回清单，不进入任何裁决与 handler（防猜功能名）。"""
+    from backend.modules.mind.execution import tool_policy
+
+    def boom(ctx, name):
+        raise AssertionError("未知功能不得走到裁决环节")
+
+    monkeypatch.setattr(tool_policy, "check_tool", boom)
+    for bad in ({"function": "list_secrets"}, {"arguments": {"limit": 1}},
+                {"function": "list_reports", "arguments": "not-a-dict"}):
+        res = function_tools._run_platform_function(bad)
+        assert res.get("isError"), bad
+        assert function_tools.DISCOVER_TOOL in _payload(res)["error"], bad
+
+
+def test_prompt_rules_tell_lazy_flow():
+    """提示词只教“先取清单再调用”，不再写死具体功能名清单。"""
+    from backend.modules.mind.execution import prompt_composer as pc
+    rules = pc.FUNCTION_ACTION_RULES
+    assert function_tools.DISCOVER_TOOL in rules
+    assert function_tools.INVOKE_TOOL in rules
+    for spec in function_tools.FUNCTION_ACTION_SPECS.values():
+        assert spec["tool_name"] not in rules, spec["tool_name"]
+
+
+def test_prompt_lists_shells_not_action_names():
+    """「实际工具权限」只列可调的壳，不列动作名（列了就是给模型一批调不了的入口）。
+
+    不可用动作同样不逐条枚举（低权角色会刷出十几行），原因随清单返回。
+    """
+    from backend.modules.mind.execution.prompt_composer import compose_system_prompt
+    p = policies.compile_policy(_as_bot(), role_perms={
+        "report:read": {"ai_access": "read", "label": "查看报告", "ai_note": ""}})
+    caps = p.manifest()
+    prompt = compose_system_prompt(p.as_bot, [], username="u", user_role="viewer", capabilities=caps)
+    assert function_tools.qualified_shell_name(function_tools.DISCOVER_TOOL) in prompt
+    assert function_tools.qualified_tool_name("report.list") not in prompt
+    # 被拒的动作也不得在提示词里逐条报“未启用”（它本来就不是可直接调的工具）
+    assert function_tools.qualified_tool_name("dataset.list") not in prompt
+    denied = {t["name"] for t in caps["unavailable_tools"]}
+    assert function_tools.qualified_tool_name("dataset.list") in denied, "面板仍要逐条看到不可用原因"

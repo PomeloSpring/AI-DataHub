@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import TourEngine from './TourEngine';
 import WelcomeDialog from './WelcomeDialog';
-import { GUIDES } from '@/lib/onboarding/guides';
+import { GUIDES, guideAccessOf, pageGuideIdForPath } from '@/lib/onboarding/guides';
 import { selectAutoPrompt, useGuideStore } from '@/stores/guideStore';
 import { useAuthStore } from '@/stores/authStore';
 import { usePermissionStore } from '@/stores/permissionStore';
+import { useMenuAccess } from '@/hooks/useMenuAccess';
 import type { ReleaseNote } from '@/api/releaseNotes';
 
 /**
@@ -25,7 +26,9 @@ const NO_AUTO_PATHS = ['/login', '/report', '/screen', '/dashboard/editor'];
 export default function OnboardingHost() {
   const location = useLocation();
   const token = useAuthStore(s => s.token);
+  const user = useAuthStore(s => s.user);
   const permLoaded = usePermissionStore(s => s.loaded);
+  const menuAccess = useMenuAccess();
   const notes = useGuideStore(s => s.notes);
   const states = useGuideStore(s => s.states);
   const loaded = useGuideStore(s => s.loaded);
@@ -45,15 +48,21 @@ export default function OnboardingHost() {
 
   const auto = useMemo(() => selectAutoPrompt({ notes, states }), [notes, states]);
 
+  /** 当前页面可播的引导 id（'' = 本页没有引导内容，不弹只能看公告的壳） */
+  const hereGuide = pageGuideIdForPath(location.pathname, guideAccessOf(menuAccess, user));
+
   // 判定只在状态真变化时发生(load 每会话一次); autoFired 保证本次登录只骚扰一遍
   useEffect(() => {
     if (!token || !loaded || autoFired.current || !auto) return;
     if (welcomeOpen || activeGuide) return;   // 用户已手动打开: 不覆盖它的内容快照
     if (NO_AUTO_PATHS.some(p => location.pathname.startsWith(p))) return;
+    // 只讲当前页面: 本页无引导内容时只剩公告可看, 两者都没有就不弹
+    // (不置 autoFired, 让用户走到有引导的页面时还能按同一口径弹一次)
+    if (!hereGuide && !auto.notes.length) return;
     autoFired.current = true;
     setUpgradeNotes(auto.notes);
     requestWelcome();
-  }, [auto, token, loaded, location.pathname, welcomeOpen, activeGuide, requestWelcome]);
+  }, [auto, token, loaded, location.pathname, hereGuide, welcomeOpen, activeGuide, requestWelcome]);
 
   if (!token) return null;
 

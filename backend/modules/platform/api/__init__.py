@@ -10,3 +10,4 @@ from backend.modules.platform.api.cache import router as cache_router
 from backend.modules.platform.api.execution_layers import router as execution_layers_router
 from backend.modules.platform.api.prompts import router as prompts_router
 from backend.modules.platform.api.as_bots import router as as_bots_router
+from backend.modules.platform.api.content import router as content_router

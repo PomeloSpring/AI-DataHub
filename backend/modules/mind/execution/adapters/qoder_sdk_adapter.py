@@ -13,6 +13,9 @@ _OBS_ASSISTANT_TEXT_MAX = 4000
 def _obs_record_assistant(msg) -> None:
     """观测是旁路，失败不影响执行。
 
+    span 名用通道中性的 `llm_request`：两个后端都走本函数，叫 `qoder_*` 会让
+    供应商直连的日志看起来像 Qoder 网关（历史缺陷：按名字排查时被误导）。
+
     注：`build_options` 开了 `include_partial_messages=True`（流式输出必需），实测该模式下
     CLI **不再**在 AssistantMessage.usage 上附 `credits/billable/request_id`（关掉后立即可见），
     所以请求级 credit 常态为 None —— 本回合 credit 由 ResultMessage 会话累计值做差得到
@@ -25,7 +28,7 @@ def _obs_record_assistant(msg) -> None:
         if not isinstance(usage, dict) or not usage:
             return
         observability.record_llm_call(
-            name="qoder_llm_request", model_ref=getattr(msg, "model", "") or "",
+            name="llm_request", model_ref=getattr(msg, "model", "") or "",
             input_tokens=int(usage.get("input_tokens") or 0),
             output_tokens=int(usage.get("output_tokens") or 0),
             credits=usage.get("credits"), original_credits=usage.get("original_credits"),
@@ -102,6 +105,9 @@ def _obs_record_result(msg) -> None:
 class QoderSDKAdapter(CLIProcessAdapter):
     """执行状态只来自服务端会话，不使用进程内长会话池。"""
 
+    #: 模型通道后端标识（context_usage / scheduled_analysis 靠它选对应的 options 构造分支）
+    backend = "qoder"
+
     def _build_options(self, task: ExecutionTask):
         from backend.modules.mind.execution.secure_sdk import build_options
         return build_options(self, task, "qoder")
@@ -114,7 +120,7 @@ class QoderSDKAdapter(CLIProcessAdapter):
                 yield event
 
     async def execute(self, task: ExecutionTask) -> ExecutionResult:
-        result = ExecutionResult(success=False, error="执行层未返回结果")
+        result = ExecutionResult(success=False, error="Harness 未返回结果")
         async for event in self.execute_stream(task):
             if event.get("type") == "done":
                 result = event["result"]

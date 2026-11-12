@@ -9,6 +9,7 @@
 
 import asyncio
 import importlib
+import json
 import os
 import sys
 
@@ -52,6 +53,136 @@ def test_create_screen_rejects_unknown_chart_type():
 def test_create_screen_empty_widgets():
     assert _is_err(asyncio.run(screen_tools.create_data_screen({"name": "S", "widgets": []})))
     assert _is_err(asyncio.run(screen_tools.create_data_screen({"widgets": [{"chart_type": "bar"}]})))
+
+
+# ── create_data_screen: 参数类型与前端 shapeOfParam 同词汇（日期区间控件可生成）──
+
+def _stub_services(monkeypatch):
+    """把建大屏/建图、意图解析都桩掉, 只验工具层的参数与取数记账。
+
+    用 import_module 取模块: `services/__init__` 里重导出了同名单例
+    `dashboard_service`, `import a.b.c as m` 会 getattr 到实例而不是模块。
+    """
+    dash_mod = importlib.import_module("backend.modules.viz.services.dashboard_service")
+
+    box: dict = {}
+
+    class _DS:
+        def create_dashboard(self, payload, user_id):
+            box["dashboard"] = payload
+            return 9001
+
+        def get_dashboard(self, dashboard_id, user_id, enforce_visibility=False):
+            box["get_dashboard_id"] = dashboard_id
+            return {"id": dashboard_id, "charts": [{"id": 5, "config": {}}]}
+
+    class _CS:
+        def create_chart(self, dashboard_id, payload):
+            box.setdefault("charts", []).append(payload)
+            return 1
+
+        def update_chart(self, dashboard_id, chart_id, data):
+            box["update"] = data
+            return True
+
+    async def _fake_resolve(intent, ctx):
+        obj = str((intent or {}).get("object") or "")
+        rows = [] if obj == "EMPTY" else [{"c": 1}, {"c": 2}]
+        return "SELECT 1", 7, {"columns": ["c"], "rows": rows, "row_count": len(rows)}
+
+    monkeypatch.setattr(dash_mod, "DashboardService", _DS)
+    monkeypatch.setattr(dash_mod, "ChartService", _CS)
+    monkeypatch.setattr(screen_tools, "_resolve_intent", _fake_resolve)
+    return box
+
+
+def test_create_screen_param_types_normalized(monkeypatch):
+    box = _stub_services(monkeypatch)
+    args = {"name": "S", "widgets": [{"title": "t", "chart_type": "bar",
+                                       "query": {"object": "订单"}}],
+            "filters": [
+                {"name": "range", "label": "统计区间", "type": "date_range",
+                 "default": "2026-10-13,2026-11-12"},
+                {"name": "range2", "type": "date_range",
+                 "default": {"start": "2026-10-13", "end": "2026-11-12"}},   # 对象入参也归一为契约内的字符串
+                {"name": "day", "type": "date", "default": "2026-11-12"},
+                {"name": "region", "type": "select", "options": ["华东", "华南"]},
+                {"name": "topn", "type": "number", "default": 10},
+                {"name": "kw", "default": "abc"},      # 未声明 type → 无候选值推 text
+            ]}
+    res = asyncio.run(screen_tools.create_data_screen(args))
+    assert not _is_err(res), _text_of(res)
+    params = {p["name"]: p for p in box["dashboard"]["params"]}
+    assert params["range"]["type"] == "date_range"
+    # default 必须是 `"start,end"` 字符串(前端 DashboardParam.default 声明的契约形状),
+    # 不得存成 {start,end} 对象 —— 那会越出契约, 编辑器一次保存就被抹成字符串
+    assert params["range"]["default"] == "2026-10-13,2026-11-12"
+    assert params["range2"]["default"] == "2026-10-13,2026-11-12"
+    assert params["day"]["type"] == "date" and params["day"]["default"] == "2026-11-12"
+    assert params["region"]["type"] == "select" and params["region"]["options"] == ["华东", "华南"]
+    assert params["topn"]["type"] == "number" and params["topn"]["default"] == "10"
+    assert params["kw"]["type"] == "text" and "options" not in params["kw"]
+
+
+def test_create_screen_rejects_dead_switch_params(monkeypatch):
+    # select 没候选值 = "点开是空的"死控件；非 select 带 options = 配了不消费；
+    # 未知类型 = 存了不生效 —— 三类全部显式拒, 不静默退化成文本框
+    for filters in (
+        [{"name": "region", "type": "select"}],
+        [{"name": "range", "type": "date_range", "options": ["a"]}],
+        [{"name": "range", "type": "daterange"}],
+        [{"name": ""}],
+    ):
+        _stub_services(monkeypatch)
+        args = {"name": "S", "widgets": [{"title": "t", "chart_type": "bar",
+                                          "query": {"object": "订单"}}], "filters": filters}
+        res = asyncio.run(screen_tools.create_data_screen(args))
+        assert _is_err(res), filters
+
+
+def test_create_screen_rejects_bad_date_range_default(monkeypatch):
+    _stub_services(monkeypatch)
+    args = {"name": "S", "widgets": [{"title": "t", "chart_type": "bar",
+                                       "query": {"object": "订单"}}],
+            "filters": [{"name": "range", "type": "date_range", "default": "近30天"}]}
+    res = asyncio.run(screen_tools.create_data_screen(args))
+    assert _is_err(res) and "YYYY-MM-DD" in _text_of(res)
+
+
+# ── create/update: 取数行数必须回报（零行不得被当成"创建成功"）──
+
+def test_create_screen_reports_row_counts_and_empty_charts(monkeypatch):
+    box = _stub_services(monkeypatch)
+    args = {"name": "S", "widgets": [
+        {"title": "有数图", "chart_type": "bar", "query": {"object": "订单"}},
+        {"title": "空图", "chart_type": "pie", "query": {"object": "EMPTY"}},
+    ]}
+    res = asyncio.run(screen_tools.create_data_screen(args))
+    assert not _is_err(res), _text_of(res)
+    payload = json.loads(_text_of(res))
+    assert [a["row_count"] for a in payload["data_audit"]] == [2, 0]
+    assert payload["empty_charts"] == ["空图"]
+    assert "空图不是成功" in payload["message"]
+    assert len(box["charts"]) == 2
+
+
+def test_create_screen_iframe_has_no_row_count(monkeypatch):
+    _stub_services(monkeypatch)
+    args = {"name": "S", "widgets": [{"title": "外链", "chart_type": "iframe",
+                                       "config": {"url": "https://example.com"}}]}
+    payload = json.loads(_text_of(asyncio.run(screen_tools.create_data_screen(args))))
+    assert payload["data_audit"][0]["row_count"] is None
+    assert payload["empty_charts"] == []      # iframe 不取数, 不得被当成空图误报
+
+
+def test_update_screen_chart_reports_row_count(monkeypatch):
+    box = _stub_services(monkeypatch)
+    res = asyncio.run(screen_tools.update_data_screen_chart(
+        {"dashboard_id": 9001, "chart_id": 5, "query": {"object": "EMPTY"}}))
+    assert not _is_err(res), _text_of(res)
+    payload = json.loads(_text_of(res))
+    assert payload["row_count"] == 0 and "取数为空" in payload["message"]
+    assert box["update"]["query_source"] == "semantic"
 
 
 # ── create_data_screen: 意图解析失败(未绑定) 走声明式错误, 不回退裸执行 ──

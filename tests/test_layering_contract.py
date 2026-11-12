@@ -39,12 +39,24 @@ EDGE_EXCEPTIONS = [
      "接口注入列入 fde-evolution 演进"),
     ("platform", "modules.mind.config", "control-plane",
      "提示词管理清 prompt 缓存"),
+    # 报告中心 → 内容管理的提升通道（content_promote_service）：报表行/属主与快照判据/
+    # 正文读取都只有 viz 那一份入口，拿不到它们就会写出第二套归集口径（同主题被拆成几条内容）。
+    ("platform", "modules.viz.services", "report-promotion",
+     "内容提升通道读报表原始行与正文（report_service.load_report / "
+     "read_report_content_bytes）并复用 viz 唯一的版本归集键与快照判据（report_access.series_key / "
+     "can_access_report / _owner_matches）；函数级惰性导入，正文读取口下沉 core 列入 fde-evolution 演进"),
+    ("platform", "modules.mind.rag", "kb-docs",
+     "内容中心「知识库文档」读写云端 notebook 的文档树，必须借道 qmind CLI 的唯一封装"
+     "qmind_retriever（source list/content/upload/delete）；可写类型清单读 rag.providers 注册表"
+     "（不手抄 kb_type 白名单）；CLI 通道下沉 core 列入演进"),
     ("viz", "modules.mind.execution", "design-toolchain",
      "仪表盘设计域借用 AS-BOT 身份/语义查询/屏幕工具"),
     ("viz", "modules.mind.rag", "design-toolchain",
-     "仪表盘设计引用业务知识检索 qmind_retriever"),
+     "仪表盘设计引用业务知识检索 qmind_retriever（设计授权域只消费平台同步语料，"
+     "外部只读语料不作口径权威）"),
     ("catalog", "modules.mind.rag", "kb-sync",
-     "本体知识库同步借道 notebook 检索 qmind_retriever"),
+     "本体知识库同步借道 notebook 检索 qmind_retriever；同步目标类型由 rag.providers "
+     "的 capabilities.write 派生（只写侧 qmind，不得把只读外部语料当同步目标）"),
     ("catalog", "modules.mind.execution", "ontology-tools",
      "本体工具引用执行上下文/工具策略/执行服务"),
     ("catalog", "modules.mind.services", "ontology-tools",
@@ -59,6 +71,12 @@ EDGE_EXCEPTIONS = [
     ("semhub", "modules.catalog.services", "graph-model-scope",
      "图谱按模型收窄需读本体模型（get_model → ontology_class_keys 算本模型对象集）；"
      "模型读取接口下沉 core/ontology_index 列入演进"),
+    # 决策建议（decision）：出站收口必须复用 outbound_guard 那份敏感类别清单（护栏 §7），
+    # 在本模块另写一套关键词表就是双口径；接口注入/下沉 core 列入演进。
+    ("decision", "modules.mind.execution", "outbound-guard-reuse",
+     "决策建议对外投影（建议卡/报表区块/评估返回）的出站收口，复用 mind 执行层"
+     "outbound_guard.find_sensitive_hits 的既有清单；不另写第二套关键词表，"
+     "下沉 core/semantics 或接口注入列入 fde-evolution 演进"),
 ]
 
 

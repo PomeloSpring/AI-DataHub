@@ -34,6 +34,11 @@ class ComponentUpsert(BaseModel):
     sort_order: Optional[int] = 0
 
 
+class ComponentEnabled(BaseModel):
+    """启用/禁用（停用但保留）。禁用=不可被选用：主题包套不上、系统主题菜单里不再出现该主题。"""
+    enabled: bool
+
+
 class ComponentUpdate(BaseModel):
     name: Optional[str] = None
     category: Optional[str] = None
@@ -43,6 +48,7 @@ class ComponentUpdate(BaseModel):
     description: Optional[str] = None
     sort_order: Optional[int] = None
     is_active: Optional[int] = None
+    is_enabled: Optional[int] = None
 
 
 @router.get("/categories")
@@ -54,10 +60,13 @@ def list_categories(user: dict = Depends(get_current_user)):
 def list_components(
     category: str = QueryParam(""),
     include_inactive: bool = QueryParam(False),
+    include_disabled: bool = QueryParam(False),
     user: dict = Depends(get_current_user),
 ):
+    """字模清单。禁用态（is_enabled=0）默认不外发（fail-closed），
+    只有管理页（include_disabled=true）需要把它们列出来给管理员再启用。"""
     try:
-        return _service.list_components(category, include_inactive)
+        return _service.list_components(category, include_inactive, include_disabled)
     except Exception as e:
         logger.exception("Failed to list vis components")
         raise HTTPException(status_code=500, detail=str(e))
@@ -104,6 +113,29 @@ def update_component(
         raise
     except Exception as e:
         logger.exception("Failed to update vis component")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/components/{component_id}/enabled")
+def set_component_enabled(
+    component_id: int,
+    req: ComponentEnabled,
+    user: dict = Depends(get_current_user),
+):
+    """启用/禁用字模。与"下架"（软删除）分档：禁用后条目仍在库里可查、可再启用，但一律不可被选用。"""
+    try:
+        result = _service.set_enabled(
+            component_id, req.enabled, user["user_id"], user.get("role") == "admin",
+        )
+        return {"success": True, **result}
+    except BuiltinProtectedError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to toggle vis component enabled state")
         raise HTTPException(status_code=500, detail=str(e))
 
 

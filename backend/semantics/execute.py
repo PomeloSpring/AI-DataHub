@@ -14,7 +14,10 @@ Phase 6.2/6.3 将执行内核换为 `semantics/execution/`（datafusion-python �
   出口，必经 `execute_query_with_permission`，不得直连数据源）。
 - `policy_ctx` = 可信身份 + enforcer 裁决产物（`policy` 槽留给 Phase 6.3 的 RLS/mask
   视图化强制消费）；身份/数据源只信 policy_ctx（护栏 §2，不信 query 内声明字段）。
-- 引擎原始错误仅进服务端日志，对外一律 `contract.EXEC_FAIL_HINT`（护栏 §7）；
+- 引擎原始错误仅进服务端日志，对外回 `contract.classify_exec_failure` 分过类的
+  可操作文案（护栏 §7）：**不得把确定性的方言/缺表失败笼统说成“连接抖动、稍后
+  重试”**（历史缺陷：会话 1783069459277，1064 在此处被换成 EXEC_FAIL_HINT 后下发，
+  上层拿到的已是遮掩后的文案，再怎么分类也分不出来）；
   结果序列化必经 `df_to_columns_rows` 无损消歧（护栏 §8）。
 """
 
@@ -27,12 +30,12 @@ from typing import Any, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.common.df_serialize import df_to_columns_rows
-from backend.semantics.binding_resolver import resolve_binding
+from backend.semantics.binding_resolver import lookup_db_type, resolve_binding
 from backend.semantics.contract import (
-    EXEC_FAIL_HINT,
     ErrorCode,
     SemanticError,
     block_code,
+    classify_exec_failure,
     safe_warnings,
     sanitize_execute_reason,
 )
@@ -78,6 +81,9 @@ class PolicyContext(BaseModel):
     role: str = ""
     workspace_id: int = 0
     datasource_id: int = 0
+    # 本轮用户问题：仅服务端注入，只用于落 adh_query_audit 的 question 列（护栏 §9），
+    # 不参与身份/权限裁决，也绝不下发给 LLM/前端。
+    question: str = ""
     policy: dict[str, Any] = Field(
         default_factory=dict,
         description="enforcer 裁决产物（RLS 行策略/列掩码等，Phase 6.3 视图化强制消费）",
@@ -101,6 +107,42 @@ def _user_context(ctx: PolicyContext) -> dict[str, Any]:
         "username": ctx.username,
         "workspace_id": ctx.workspace_id,
     }
+
+
+def _sql_audit(ctx: PolicyContext, sql: str, *, status: str, row_count: int = 0,
+               time_ms: int = 0, error: str = "") -> None:
+    """SQL 形状取数的查询审计落库（护栏 §9：成功与拒绝均须留痕）。
+
+    历史缺陷：`adh_query_audit` 只有语义路经 `gates._audit` 写入，`execute_sql`
+    （nl2sql / Playground / 看板 raw_sql）一条不落 —— 管理员在「查询历史」页只看到
+    语义路的语句，无法核对实际执行的是哪张表，直接制造了“AI 说查 A 表、审计里只有
+    B 表”的无从对证（会话 1783069459151 的争议根源）。
+
+    口径：
+    - 仅真实用户调用落审计行（`user_id=0` 的系统/内部调用与
+      `query_executor._log_permission_audit` 同口径不落）；
+    - 审计是**服务端留痕**，不构成对 LLM/前端的 SQL 下发（护栏 §7 不变）；
+    - 审计写失败不阻断取数主链路，但必须可诊断（warning 日志带错因）。
+    """
+    if int(ctx.user_id or 0) <= 0:
+        return
+    try:
+        from backend.core.query_executor import log_audit
+        log_audit(
+            user_id=int(ctx.user_id),
+            username=ctx.username or "",
+            role=ctx.role or "user",
+            question=ctx.question or "[raw_sql] 无问题上下文",
+            sql=sql or "",
+            status=status,
+            row_count=int(row_count or 0),
+            time_ms=int(time_ms or 0),
+            error=error,
+            datasource_id=int(ctx.datasource_id or 0),
+            query_type="sql",
+        )
+    except Exception as e:  # noqa: BLE001 — 审计旁路不得影响取数主链路（FDE no-op 纪律）
+        logger.warning("[semantics.execute] sql audit write failed (status=%s): %s", status, e)
 
 
 def _as_query(query: Union[SemanticQuery, dict[str, Any]], ctx: PolicyContext) -> SemanticQuery:
@@ -132,6 +174,28 @@ def _result_column(name: str, q: SemanticQuery) -> ResultColumn:
     if name in (q.dimensions or []):
         return ResultColumn(name=name, role="dimension")
     return ResultColumn(name=name)
+
+
+def apply_output_header(result: dict[str, Any], header_map: dict[str, str]) -> dict[str, Any]:
+    """把 SLS/Presto 的 ASCII 槽位列名（o0/o1…）映回业务名（不就地改原 dict）。
+
+    必须是单一口径：`_to_result` 以 list 行重新投影，而报告/定时分析等非 Agent 入口直接
+    消费 `SemanticExecution.result`（dict 行）。旧写法让同一份编译产物在 Chat 里显示
+    「省份」、在报告正文里印成「o0」——给用户看的是错的东西。
+    非 SLS 时 header_map 为空 → 行为零变化。
+    """
+    if not header_map:
+        return result
+    out = dict(result or {})
+    out["columns"] = [str(header_map.get(str(c), str(c))) for c in (out.get("columns") or [])]
+    rows: list[Any] = []
+    for rec in out.get("rows") or []:
+        if isinstance(rec, dict):
+            rows.append({header_map.get(str(k), str(k)): v for k, v in rec.items()})
+        else:
+            rows.append(rec)
+    out["rows"] = rows
+    return out
 
 
 def _to_result(
@@ -217,12 +281,20 @@ def execute_plan(
     se = execute_semantic(q, binding, p, _user_context(ctx), question)
     if not se.allowed:
         code = block_code(se.blocked_at)
-        message = sanitize_execute_reason(se.reason, se.blocked_at)
+        # db_type 取自已解析的绑定（方言已知，不必再回元库）：让“目标源类型”提示只对
+        # 真查到的情形出现（宁缺勿错）。
+        db_type = str(getattr(binding, "db_type", "") or "")
+        message = sanitize_execute_reason(se.reason, se.blocked_at, db_type)
         detail: dict[str, Any] = {
             "applied_rls": list(se.applied_rls),
             "masked_columns": list(se.masked_columns),
             "needs_approval": bool(se.needs_approval),
         }
+        if (se.blocked_at or "") == "execute":
+            # 类别一并放进 detail（与下面 execute_sql 分支同口径）：`message` 已是中文文案，
+            # 下游（看板/报表/数据集）拿它再分类必失配。这里多跑一次纯函数分类，
+            # 就为把错因类别交出去，不再把确定性缺表失败掩成“稍后重试”。
+            detail["failure_category"] = classify_exec_failure(str(se.reason or ""), db_type)[0]
         if se.needs_approval and se.proposed_edit:
             detail["proposed_edit"] = se.proposed_edit
         raise SemanticError(
@@ -251,7 +323,8 @@ def execute_sql(
     """受治理 SQL 执行口（nl2sql/Playground/raw_sql 等 SQL 形状的唯一出口）。
 
     必经 `execute_query_with_permission`（护栏 §1）：权限拒绝在执行前中止，
-    序列化经 `df_to_columns_rows` 无损消歧（护栏 §8）。
+    序列化经 `df_to_columns_rows` 无损消歧（护栏 §8），成功/拒绝/失败均落查询
+    审计（护栏 §9，`_sql_audit`）。
     """
     ctx = _policy_ctx(policy_ctx)
     t0 = time.monotonic()
@@ -266,18 +339,32 @@ def execute_sql(
             workspace_id=ctx.workspace_id,
         )
     except PermissionError as e:
+        _sql_audit(ctx, sql, status="denied", error=str(e),
+                   time_ms=int((time.monotonic() - t0) * 1000))
         raise SemanticError(ErrorCode.FORBIDDEN, str(e), blocked_at="permission") from e
-    except Exception as e:  # noqa: BLE001 — 引擎错误对外通用文案（护栏 §7）
+    except Exception as e:  # noqa: BLE001 — 引擎错误按错因分类（护栏 §7）
         logger.error("[semantics.execute] execute_sql failed (server-side only): %s", e)
-        raise SemanticError(ErrorCode.EXEC_FAILED, EXEC_FAIL_HINT, blocked_at="execute") from e
+        # 对内审计留真实错因（否则失败行无因可查）
+        _sql_audit(ctx, sql, status="error", error=str(e)[:1000],
+                   time_ms=int((time.monotonic() - t0) * 1000))
+        # 分类必须在**原始异常还在手上**的时候做：旧写法直接抛 EXEC_FAIL_HINT，把
+        # 1064（方言不符）与 2002（连不上）归为同一句“系统侧问题，建议稍后重试”，
+        # 模型据此向用户报“数据源执行阶段连接失败”——重试永远复现的缺陷被当成抖动。
+        # 原始细节仍只进日志/审计（message 永远不含它，护栏 §7）。
+        category, hint = classify_exec_failure(str(e), lookup_db_type(int(ctx.datasource_id or 0)))
+        raise SemanticError(ErrorCode.EXEC_FAILED, hint, blocked_at="execute",
+                            detail={"failure_category": category}) from e
 
     names, records = df_to_columns_rows(df)
     rows = [[rec.get(n) for n in names] for rec in records]
     _shadow_check(sql, tag="execute_sql", columns=names, records_fn=lambda: records,
                   datasource_id=ctx.datasource_id)
+    total = int(row_count or len(rows))
+    _sql_audit(ctx, sql, status="success", row_count=total,
+               time_ms=int(exec_ms or ((time.monotonic() - t0) * 1000)))
     return SemanticResult(
         columns=[ResultColumn(name=n) for n in names],
         rows=rows,
-        row_count=int(row_count or len(rows)),
+        row_count=total,
         elapsed_ms=int(exec_ms or ((time.monotonic() - t0) * 1000)),
     )

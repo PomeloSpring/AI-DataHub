@@ -65,6 +65,12 @@ Element.prototype.setPointerCapture = () => {};
 Element.prototype.releasePointerCapture = () => {};
 Element.prototype.scrollIntoView = () => {};
 
+// jsdom 同样未实现 Element.prototype.scrollBy/scrollTo（真实浏览器有）：横向切换条/滚动容器
+// 靠它做最小位移滚动，缺失时挂载即抛 TypeError，会把“环境缺口”误报成组件缺陷。
+// 要断言滚动量的用例自行覆盖成 spy 或注入几何值（见 DashboardNavOverflow.test.tsx）。
+Element.prototype.scrollBy = () => {};
+Element.prototype.scrollTo = () => {};
+
 // Suppress console.error in tests (optional, comment out for debugging)
 // const originalError = console.error;
 // console.error = (...args: any[]) => {

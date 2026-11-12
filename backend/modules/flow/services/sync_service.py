@@ -271,33 +271,6 @@ class SyncService:
         finally:
             conn.close()
 
-    def create_scheduled_task(self, data: dict, workspace_id: int = 0) -> int:
-        """Create a new scheduled task."""
-        conn = _get_conn()
-        try:
-            with conn.cursor() as cur:
-                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                cur.execute(
-                    """INSERT INTO adh_scheduled_tasks
-                    (name, description, task_type, task_config, cron_expression,
-                     notification_channel_ids, workspace_id, is_active, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s, %s)""",
-                    (
-                        data["name"],
-                        data.get("description", ""),
-                        data.get("task_type", "query"),
-                        json.dumps(data["task_config"]),
-                        data["cron_expression"],
-                        json.dumps(data.get("notification_channel_ids", [])),
-                        workspace_id,
-                        now, now,
-                    ),
-                )
-                conn.commit()
-                return cur.lastrowid
-        finally:
-            conn.close()
-
     def update_scheduled_task(self, task_id: int, data: dict) -> bool:
         """Update a scheduled task."""
         if not data:

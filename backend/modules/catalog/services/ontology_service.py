@@ -517,6 +517,212 @@ def absorb_object_metric_specs(doc: dict, datasource_id: int = 0,
     return doc
 
 
+def _dict_asset_row(table: str, biz_name: str, name_en: str) -> dict:
+    """按业务名/英文标识取字典行（与 create_metric/create_dimension 的全局查重**同口径**）。
+
+    字典名全局唯一是既有设计（语义层按 name 解析指标/维度，同名跨对象=口径歧义），
+    所以收编前必须用它自己的查重口径判存在，不能另写一套“按对象名看”的判断。
+    """
+    from backend.common.db.metadata_db import get_metadata_conn
+    if table == "adh_metrics":
+        cols = ("id, name, name_en, bound_object_key, formula, description, unit, "
+                "target_table, agg_type")
+        cond = "name = %s OR name_en = %s"
+    else:
+        cols = ("id, name, name_en, bound_object_key, target_table, target_column, "
+                "description, category")
+        cond = "name = %s OR (name_en <> '' AND name_en = %s)"
+    try:
+        with get_metadata_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT {cols} FROM {table} WHERE {cond} LIMIT 1",
+                            (biz_name, name_en or biz_name))
+                return cur.fetchone() or {}
+    except Exception as e:  # noqa: BLE001 — 查不到存在性就交给写入口去卡（写入口自己会查重）
+        logger.warning("[ontology] 字典存在性查询失败(%s %s): %s", table, biz_name, e)
+        return {}
+
+
+def absorb_doc_semantic_assets(doc: dict) -> dict:
+    """把 doc 顶层遗留的 metrics[]/dimensions[] 清单收编进指标/维度字典（幂等，字典优先）。
+
+    为什么必须有这一步（“建模页看得见口径、问数却一条都查不到”的根因）：字典
+    （adh_metrics/adh_dimensions）才是口径的唯一权威 —— planner 按 target_table /
+    bound_object_key 加载指标，图谱 hasMetric/hasDimension 也由字典驱动；而 doc 顶层
+    那两个清单**后端没有任何消费方**。一次性生成的模型把指标与维度写在顶层，
+    页面看着已建模，语义层却回「本对象可用指标: []」——比不建模更坏（no-silent-degradation）。
+
+    字典行一律落 `datasource_id=0`（全局口径，与存量一致；雪花源 id 也超 INT 列），
+    物理表/列不从这里推，由字典写入口按部署绑定层与列元数据裁决。
+
+    口径（不另造第二套治理，写入全部复用字典写入口的校验）：
+    - 指标走 `metrics_service.create_metric`：公式列必须落在归属对象已登记的物理列上
+      （`_require_formula_matches_object` 不过就是 failed），绝不落“取数恒为 0”的口径；
+    - 维度走 `create_dimension`：target_table/target_column 由部署绑定层派生并按列元数据
+      实存裁决（`_normalize_dim_physical_binding` 错列拒绝）；未声明物理列的维度不收编
+      （收了也是 planner 加载不到空表行）；
+    - 字典优先：同名行已挂本对象 → 只**补空字段**，不覆盖已登记口径；同名行挂在别的
+      对象/历史未挂靠 → 记 conflict 上报，不替人改名也不抢别人口径（命名是业务决策）；
+    - 收编成功的条目从 doc 顶层退役，并给对象补 `metrics[]` 名字引用（canonical 形态）；
+      未收编的保留在 doc 里（丢了连口径线索都没有），同时进 issues 出声。
+    幂等：第二次执行 created 归零，已登记行走 merged（无空字段可补则不写）。
+    """
+    from backend.modules.catalog.services import metrics_service as _ms
+
+    objects = doc.get("objects") or []
+    by_key: dict = {}
+    for o in objects:
+        if not isinstance(o, dict):
+            continue
+        k = str(o.get("key") or o.get("object_key") or "").strip()
+        if k:
+            by_key[object_identity_key(k)] = o
+
+    out: dict = {"metrics_created": [], "metrics_merged": [],
+                 "dimensions_created": [], "dimensions_merged": [],
+                 "conflicts": [], "failed": [], "issues": [], "retired": 0}
+
+    def _report(bucket: str, kind_label: str, name: str, reason: str, obj_key: str) -> None:
+        out[bucket].append({"kind": kind_label, "name": name,
+                            "object_key": obj_key, "reason": reason})
+        out["issues"].append(
+            f"[{kind_label}字典] 「{name}」未收编（归属对象「{obj_key}」）：{reason}")
+
+    for list_key, table, kind_label in (("metrics", "adh_metrics", "指标"),
+                                        ("dimensions", "adh_dimensions", "维度")):
+        remain: list = []
+        for item in doc.get(list_key) or []:
+            if not isinstance(item, dict):
+                remain.append(item)
+                continue
+            raw_name = str(item.get("name") or "").strip()
+            biz = str(item.get("display_name") or raw_name).strip()
+            en = raw_name if raw_name and raw_name != biz else str(item.get("name_en") or "").strip()
+            obj_key = str(item.get("bound_object_key") or "").strip()
+            owner = by_key.get(object_identity_key(obj_key))
+            if not biz:
+                _report("failed", kind_label, raw_name or "(无名)", "条目没有业务名，无法登记", obj_key)
+                remain.append(item)
+                continue
+            if owner is None:
+                _report("conflicts", kind_label, biz,
+                        f"归属对象「{obj_key or '(未声明)'}」不在本模型对象清单里", obj_key)
+                remain.append(item)
+                continue
+            real_key = str(owner.get("key") or owner.get("object_key") or obj_key).strip()
+            if list_key == "metrics":
+                formula = str(item.get("formula") or item.get("expression") or "").strip()
+                payload = {"name": en or biz, "display_name": biz, "formula": formula,
+                           "agg_type": str(item.get("agg_type") or "").strip(),
+                           "unit": str(item.get("unit") or ""),
+                           "description": str(item.get("description") or ""),
+                           "category": str(item.get("category") or ""),
+                           "aliases": item.get("aliases") or [],
+                           "bound_object_key": real_key, "datasource_id": 0}
+            else:
+                tcol = str(item.get("target_column") or "").strip()
+                if not tcol:
+                    _report("failed", kind_label, biz,
+                            "未声明物理列（target_column 为空），登记后 planner 也编译不了；"
+                            "请先在对象属性里把列登记好", real_key)
+                    remain.append(item)
+                    continue
+                payload = {"display_name": biz, "name_en": en, "target_column": tcol,
+                           "description": str(item.get("description") or ""),
+                           "category": str(item.get("category") or ""),
+                           "aliases": item.get("aliases") or [],
+                           "value_labels": item.get("value_labels") or None,
+                           "bound_object_key": real_key, "datasource_id": 0}
+
+            row = _dict_asset_row(table, biz, en)
+            try:
+                if row:
+                    if object_identity_key(row.get("bound_object_key") or "") != \
+                            object_identity_key(real_key):
+                        held = str(row.get("bound_object_key") or "").strip()
+                        _report("conflicts", kind_label, biz,
+                                f"字典里同名口径已挂在对象「{held or '(未挂靠)'}」（字典名全局唯一）；"
+                                "请改业务名（如加对象限定）或复用既有口径", real_key)
+                        remain.append(item)
+                        continue
+                    # 字典优先：只补空字段，已登记的非空值不覆盖。
+                    # 字段名必须按 update_metric/update_dimension 的入参约定传：
+                    # update_metric 只认 `calculation_type`（→agg_type）与用
+                    # `name` 写 name_en（它自己的前端键映射表没这两列，直接传会被静默丢弃）。
+                    patch: dict = {}
+                    if list_key == "metrics":
+                        for col in ("formula", "unit", "description", "target_table"):
+                            if not str(row.get(col) or "").strip() and payload.get(col):
+                                patch[col] = payload[col]
+                        if not str(row.get("agg_type") or "").strip() and payload.get("agg_type"):
+                            patch["calculation_type"] = payload["agg_type"]
+                        if not str(row.get("name_en") or "").strip() and en:
+                            patch["name"] = en
+                    else:
+                        for col in ("target_column", "description", "category", "name_en"):
+                            if not str(row.get(col) or "").strip() and payload.get(col):
+                                patch[col] = payload[col]
+                    if patch:
+                        if list_key == "metrics":
+                            _ms.update_metric(int(row["id"]), patch)
+                        else:
+                            _ms.update_dimension(int(row["id"]), patch)
+                    out[("metrics" if list_key == "metrics" else "dimensions") + "_merged"].append(biz)
+                else:
+                    (_ms.create_metric(payload) if list_key == "metrics"
+                     else _ms.create_dimension(payload))
+                    out[f"{list_key}_created"].append(biz)
+            except ValueError as e:
+                _report("failed", kind_label, biz, str(e)[:260], real_key)
+                remain.append(item)
+                continue
+            except Exception as e:  # noqa: BLE001 — 字典写入口以外的异常同样出声，不当没发生
+                _report("failed", kind_label, biz, f"登记失败：{str(e)[:200]}", real_key)
+                remain.append(item)
+                continue
+            # 收编成功：指标降级为对象级名字引用（canonical 形态），顶层条目退役
+            if list_key == "metrics":
+                refs = [x if isinstance(x, str) else _metric_name(x)
+                        for x in (owner.get("metrics") or [])]
+                refs = [r for r in refs if r]
+                if biz not in refs:
+                    refs.append(biz)
+                owner["metrics"] = refs
+            out["retired"] += 1
+        doc[list_key] = remain
+        if not remain:
+            doc.pop(list_key, None)
+    if out["issues"] or out["retired"]:
+        logger.info(
+            "[ontology] 语义资产收编：指标 新建%d/补齐%d，维度 新建%d/补齐%d，冲突%d 失败%d，退役%d 条",
+            len(out["metrics_created"]), len(out["metrics_merged"]),
+            len(out["dimensions_created"]), len(out["dimensions_merged"]),
+            len(out["conflicts"]), len(out["failed"]), out["retired"])
+    return out
+
+
+def _persist_retired_doc(model_id: int, doc: dict) -> bool:
+    """收编退役后把正文再写一次（顶层清单已降级为对象级名字引用，不留双口径）。
+
+    只改内容三列：不动 status / 草案列 / draft_base_stamp（并发保护属于存草案窗口），
+    否则一次发布会摸掉别人的在编草案。写回失败返回 False，由调用方出声（字典已登记的
+    口径不会因此失效，顶层清单仍在 → 下次发布重跑即幂等补齐）。
+    """
+    try:
+        with get_metadata_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE adh_ontology_models SET json_content = %s, yaml_content = %s, "
+                    "md_content = %s, updated_at = %s WHERE id = %s",
+                    (json.dumps(doc, ensure_ascii=False, indent=2), to_yaml(doc), to_md(doc),
+                     _now(), model_id))
+            conn.commit()
+        return True
+    except Exception as e:  # noqa: BLE001 — 收尾写回不毁掉已登记口径，但不得静默
+        logger.error("[ontology] 模型 %s 收编退役正文写回失败: %s", model_id, e, exc_info=True)
+        return False
+
+
 def find_duplicate_object_keys(doc: dict) -> list:
     """按身份键找出重复对象组（空 = 干净）。供 save_draft 告警 / activate 阻断。"""
     groups: dict = {}
@@ -2057,8 +2263,9 @@ def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
                 + (" 等" if len(route_errors) > 10 else ""))
 
     # 激活态编辑：依据真实表元数据重算绑定并联动刷新对象/绑定/图谱
+    binding_stats: dict = {}
     if model["status"] == "active":
-        _sync_active_model(doc, model_id, model["datasource_id"])
+        binding_stats = _sync_active_model(doc, model_id, model["datasource_id"])
 
     # 重新规范化并重派生
     json_norm = json.dumps(doc, ensure_ascii=False, indent=2)
@@ -2149,6 +2356,62 @@ def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
                 warnings.append(f"[{it['category']}] {it['message']}")
     except Exception as e:  # noqa: BLE001 — 校验不影响保存主链路
         logger.warning("[Ontology] save_draft m234 check failed: %s", e)
+    # 语义资产收编（doc 顶层指标/维度 → 字典）：**必须在正文落库之后跑**。
+    # 字典写入口的口径校验（公式列必须在归属对象已登记的物理列里）读的是生效正文，
+    # 放在级联里就会拿保存前的旧正文判定，同一次提交里刚补的度量属性看不见，
+    # 合法口径被误拒（历史缺陷）。收编后的 doc 若退役了顶层条目，再过一次正文写回。
+    assets: dict = {}
+    if model["status"] == "active" and str(model.get("kind") or "") != "system":
+        try:
+            assets = absorb_doc_semantic_assets(doc)
+        except Exception as e:  # noqa: BLE001 — 收编异常不毁掉已保存的正文，但必须出声
+            logger.error("[Ontology] model %s 语义资产收编异常: %s", model_id, e, exc_info=True)
+            warnings.append(f"[口径字典] 本次收编中断，指标/维度尚未全部登记：{str(e)[:200]}")
+        if assets.get("retired"):
+            if _persist_retired_doc(model_id, doc):
+                updated = get_model(model_id)   # 正文已归一收尾，响应体同步拿最新内容
+            else:
+                warnings.append(
+                    "[口径字典] 口径已登记字典，但本体正文的“退役写回”未完成（不影响取数）："
+                    "顶层清单仍保留，下次发布会幂等重跑收编")
+    # 部署绑定对账结果必须出声（这条通道只服务建模页 REST，不进 LLM/普通客户端）：
+    # 登记了几条、哪些对象的属性列与实际表结构对不上，都要看得见，不能"发布成功"了事。
+    if binding_stats:
+        for d in (binding_stats.get("drift") or [])[:12]:
+            _col = str(d.get("column") or "")
+            _tbl = str(d.get("table") or "")
+            _verdict = d.get("verdict")
+            if _verdict == "unverified":
+                # 引导必须指向真能解决问题的动作：这张表一条列元数据都没同步时，
+                # “改选实存列”是假引导（选择框没有候选，改了也没依据）。
+                warnings.append(
+                    f"[部署绑定] 对象「{d.get('object_key') or ''}」属性「{d.get('property') or ''}」"
+                    f"登记的列 {_col} 无法核验：表 {_tbl} 在本源下尚未同步列元数据；"
+                    "请到「表 & 字段」对该数据源同步这张表的字段，再重新发布（不是列名写错）")
+            else:
+                warnings.append(
+                    f"[部署绑定] 对象「{d.get('object_key') or ''}」属性「{d.get('property') or ''}」"
+                    f"登记的列 {_col} 不在表 {_tbl} 的实存列里；"
+                    "请在「编辑对象 → 属性列映射」改选实存列；"
+                    "若这张表确实没有该概念，则取消该属性的物理列绑定（留空），"
+                    "不要留着不存在的列名（会被编译进 SQL 导致取数报错）")
+        for key in (binding_stats.get("kept_drifted") or [])[:8]:
+            warnings.append(
+                f"[部署绑定] 对象「{key}」的列映射存在漂移，且新映射本身含未实存列，"
+                "已保留现有列映射不覆盖（宁缺勿错，请改 doc 列名后重新发布）")
+        if binding_stats.get("registered") or binding_stats.get("refreshed"):
+            logger.info(
+                "[Ontology] model %s 部署绑定对账：登记 %s / 刷新 %s / 废弃 %s",
+                model_id, binding_stats.get("registered"),
+                binding_stats.get("refreshed"), binding_stats.get("deprecated"))
+    if assets:
+        # 口径没进字典 = 建模页看着有指标、问数永远解不出，必须与漂移同级出声
+        warnings.extend((assets.get("issues") or [])[:12])
+        if assets.get("metrics_created") or assets.get("dimensions_created"):
+            logger.info(
+                "[Ontology] model %s 语义资产收编：指标+%s 维度+%s（补齐 %s/%s）",
+                model_id, assets.get("metrics_created"), assets.get("dimensions_created"),
+                assets.get("metrics_merged"), assets.get("dimensions_merged"))
     if graph_rebuild and not graph_rebuild.get("success"):
         warnings.append(
             "[图谱] 本次保存后的图重建未完成（文档已存库，图是滞后状态）："
@@ -2158,6 +2421,15 @@ def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
 
     if warnings:
         updated["validation_warnings"] = warnings
+    if assets:
+        # 发布/保存结果里带收编小结，供接口与页面如实告知（收了几条 / 几条因何未收）
+        updated["semantic_assets"] = {
+            "metrics_created": assets.get("metrics_created") or [],
+            "metrics_merged": assets.get("metrics_merged") or [],
+            "dimensions_created": assets.get("dimensions_created") or [],
+            "dimensions_merged": assets.get("dimensions_merged") or [],
+            "blocked": (assets.get("conflicts") or []) + (assets.get("failed") or []),
+        }
     return updated
 
 
@@ -2419,13 +2691,20 @@ def _table_of_object(model_id: int, datasource_id: int) -> dict:
         return {}
 
 
-def _sync_active_model(doc: dict, model_id: int, datasource_id: int) -> None:
-    """激活态编辑保存时的联动刷新（v0.5 B6b）：重展开对象 + 内嵌绑定回填 + enum→字典联动。
+def _sync_active_model(doc: dict, model_id: int, datasource_id: int) -> dict:
+    """激活态编辑保存时的联动刷新：重展开对象 → 部署绑定对账 → 内嵌绑定回填 → enum→字典联动。
 
-    execution_binding 不再是 doc 可编辑事实源：物理绑定唯一在部署绑定层
-    （adh_ontology_bindings，deploy_contract_bindings 管理），保存不重算/不重写
-    绑定行；对象展开行的 execution_binding 内嵌列由 _backfill_execution_binding
-    从绑定行回填（派生投影，供检索/展示与 Level 2 兑底）。
+    分工口径（doc 与部署绑定层各管一段，互不覆盖）：
+    - doc = 业务契约 + **形状声明**（对象挂哪张表 / 走哪个查询数据集，即建模页
+      「编辑对象 → 绑定物理表」写进去的东西）；
+    - `adh_ontology_bindings` = **部署事实**（列映射/护栏/数据产品身份），由
+      `ontology_yaml_import.reconcile_deploy_bindings` 按 doc 声明幂等对账，
+      作用域只到模型自有源（跨站部署行与别的源的行不碰）；
+    - 对象展开行的 execution_binding 内嵌列是绑定行的派生投影（_backfill 回填，不写回）。
+    历史断链（用户报「页面发布完还是未绑定物理表」的根因）：B6b 把物理绑定移出 doc 后，
+    登记口只留在 import-yaml 与离线脚本上，建模页的保存/发布级联什么都不写 ——
+    页面文案承诺"发布后在部署绑定层登记物理表"，实际没有任何路径去登记。
+    系统本体不在此登记：它随项目版本发布、绑定行由迁移脚本维护，页面级联不得改写。
     图谱重建不在此处触发：需等 save_draft 将最新 json_content 落库后再调，
     否则 _merge_ontology_models 会读到旧内容，使图谱滞后一次保存。
     """
@@ -2434,10 +2713,19 @@ def _sync_active_model(doc: dict, model_id: int, datasource_id: int) -> None:
     ds_name = _yimp._datasource_name_by_id(datasource_id)
     if ds_name:
         doc["datasource_name"] = ds_name
-    _expand_objects(doc, model_id, datasource_id, kind=str(doc.get("kind") or ""))
+    kind = str(doc.get("kind") or "")
+    _expand_objects(doc, model_id, datasource_id, kind=kind)
+    binding_stats: dict = {}
+    if kind != "system":
+        binding_stats = _yimp.reconcile_deploy_bindings(doc, model_id, datasource_id)
+    # 回填必须在对账之后：新登记的绑定行要立刻反映到对象展开行的内嵌投影
     _backfill_execution_binding(model_id)
+    # 语义资产收编不在本函数里做：字典写入口要按“归属对象已登记的物理列”校验口径，
+    # 而正文要到 save_draft 后面的写窗口才落库——在这里跑会拿保存前的旧正文判定，
+    # 用户刚补的度量属性看不见 → 好口径被误拒（实测踩过）。口径收编见 save_draft。
     # 本体 enum/属性中文名 → 语义维度字典(别名与枚举标签的唯一联动点，各 kind 统一)
     sync_enums_to_dimensions(doc, datasource_id, _table_of_object(model_id, datasource_id))
+    return binding_stats
 
 
 def _strip_execution_bindings(doc: dict) -> int:
@@ -3200,7 +3488,25 @@ def activate(model_id: int) -> dict:
 
     # 2. 展开对象写入元数据库（不再向量化；embedding 列写零向量占位）
     count = _expand_objects(doc, model_id, datasource_id, kind=model_kind)
-    # 3. 枚举/别名同步进维度字典
+    # 3. 部署绑定对账：激活即"把这份契约部署到模型自有源"，绑定行在这里落地，
+    #    页面「发布/激活」之后对象才不再是「未绑定物理表 · 无法取数」。
+    #    系统本体例外（随项目版本发布，绑定行由迁移脚本维护）。
+    if model_kind != "system":
+        from backend.modules.catalog.services import ontology_yaml_import as _yimp
+        _yimp.reconcile_deploy_bindings(doc, model_id, datasource_id)
+        _backfill_execution_binding(model_id)
+        # 语义资产收编（与 _sync_active_model 同口径）：本函数不改写生效正文，
+        # 所以顶层清单的“退役”不在此落库——字典已经生效，下一次 save_draft/发布
+        # 才把 doc 里的条目收归名字引用（重复执行不会重复建行）。
+        _asset_stats = absorb_doc_semantic_assets(doc)
+        if _asset_stats.get("retired"):
+            logger.info("[ontology] activate model %s: 收编指标%d/维度%d（未收编 %d 条已进日志）",
+                        model_id, len(_asset_stats.get("metrics_created") or []),
+                        len(_asset_stats.get("dimensions_created") or []),
+                        len(_asset_stats.get("conflicts") or []) + len(_asset_stats.get("failed") or []))
+            for _msg in (_asset_stats.get("issues") or [])[:10]:
+                logger.warning("[ontology] %s", _msg)
+    # 4. 枚举/别名同步进维度字典
     sync_enums_to_dimensions(doc, datasource_id, _table_of_object(model_id, datasource_id))
 
     logger.info("[ontology] activated model %s: %d objects written", model_id, count)

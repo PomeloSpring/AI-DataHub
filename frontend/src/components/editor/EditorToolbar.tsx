@@ -1,4 +1,4 @@
-import { Check, Minimize2, PanelLeftOpen, PanelRightOpen, MoreHorizontal, Eye, Undo2, Redo2, ZoomIn, ZoomOut, Scan, Hand, MousePointer2, Grid3x3, Play, MousePointerClick, Ruler } from 'lucide-react';
+import { Check, Minimize2, PanelLeftOpen, PanelRightOpen, MoreHorizontal, Eye, Undo2, Redo2, ZoomIn, ZoomOut, Scan, Hand, MousePointer2, Grid3x3, Play, MousePointerClick, Ruler, SlidersHorizontal, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -37,6 +37,12 @@ interface Props {
   interactionMode: 'select' | 'interact';
   onInteractionMode: (mode: 'select' | 'interact') => void;
   onOpenTemplates: () => void;
+  /** 打开「看板参数」管理区：遗留 params 过去只能在列表页设置弹窗改，编辑器里看不见（无法操作） */
+  onOpenParams: () => void;
+  /** 打开「批量切换执行数据源」：把目标源一次性钉到数据集支持它的图表上 */
+  onOpenSourceSwitch: () => void;
+  /** 没有被画布控件驱动的参数个数（>0 就意味着页面上会长出一个顶部输入口） */
+  paramsUncontrolled: number;
   onSave: () => void;
   onExit: () => void;
   onOpenLeftPanel: () => void;
@@ -59,6 +65,7 @@ export default function EditorToolbar({
   leftPanelOpen, rightPanelOpen,
   onZoomIn, onZoomOut, onResetZoom, onActualSize, canUndo, canRedo, onUndo, onRedo, panMode, onPanMode, interactionMode, onInteractionMode, onOpenTemplates, onSave, onExit,
   onOpenLeftPanel, onOpenRightPanel, saving, showGrid, onToggleGrid, showRulers, onToggleRulers, onPreview, onSaveVis, snapEnabled, onToggleSnap, onUseLibrary,
+  onOpenParams, onOpenSourceSwitch, paramsUncontrolled,
 }: Props) {
   return (
     <div className="flex flex-wrap items-center gap-2 px-2 py-2 border-b bg-background flex-shrink-0 min-w-0">
@@ -102,9 +109,17 @@ export default function EditorToolbar({
           <DropdownMenuContent align="end">
             {layoutMode === 'page' ? <><DropdownMenuItem disabled={saving} onSelect={onCapturePage}>固定当前页面布局到草稿</DropdownMenuItem><DropdownMenuItem disabled={saving} onSelect={onResetPage}>恢复当前断点自动适配</DropdownMenuItem></> : <DropdownMenuItem onSelect={onToggleSnap}>{snapEnabled ? '关闭' : '开启'}自动吸附</DropdownMenuItem>}
             <DropdownMenuSeparator /><DropdownMenuItem onSelect={onOpenTemplates}>模板</DropdownMenuItem>
+            <DropdownMenuItem disabled={saving} onSelect={onOpenSourceSwitch}><RefreshCw className="h-4 w-4 mr-2" />批量切换执行数据源</DropdownMenuItem>
             <DropdownMenuItem disabled={saving} onSelect={onUseLibrary}>全部使用字模</DropdownMenuItem><DropdownMenuItem disabled={saving} onSelect={onSaveVis}>存为字模</DropdownMenuItem>
             <DropdownMenuSeparator /><DropdownMenuItem disabled={saving} onSelect={onExit}>退出编辑</DropdownMenuItem>
           </DropdownMenuContent></DropdownMenu>
+        <Button size="sm" variant="outline" aria-label="看板参数" title={paramsUncontrolled
+          ? `${paramsUncontrolled} 个参数没有画布控件驱动，会在页面顶部出现输入口`
+          : '所有参数都由画布控件驱动，顶部不会重复出现输入口'}
+          onClick={onOpenParams}>
+          <SlidersHorizontal className="h-4 w-4" /><span className="hidden md:inline ml-1">看板参数
+            {paramsUncontrolled > 0 && <span className="ml-1 rounded bg-amber-100 px-1 text-[10px] text-amber-900 dark:bg-amber-900/40 dark:text-amber-200">{paramsUncontrolled}</span>}</span>
+        </Button>
         <Button size="sm" variant="outline" aria-label="草稿预览" onClick={onPreview}><Eye className="h-4 w-4" /><span className="hidden md:inline ml-1">草稿预览</span></Button>
         <Button size="sm" aria-label="保存更改" onClick={onSave} disabled={saving || !hasUnsavedChanges}>
           <Check className="h-4 w-4" /><span className="hidden sm:inline ml-1">{saving ? '保存中…' : `保存 (${pendingCount})`}</span>

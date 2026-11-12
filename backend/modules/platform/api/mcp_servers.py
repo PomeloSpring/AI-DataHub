@@ -66,6 +66,46 @@ def _now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _project_builtin(row: dict) -> dict:
+    """内置服务行的响应投影：只给业务可读信息与就绪状态，**剥光配置字段**。
+
+    库里内置行本就不存 url/command/args/env（地址与凭据只在 backend/.env），
+    这里再弹一次是防止历史脏数据或误填把凭据带进页面（护栏 §7）。
+    """
+    from backend.modules.mind.execution import builtin_mcp
+
+    name = row.get("name")
+    spec = builtin_mcp.resolve(name)
+    state = builtin_mcp.state_of(name)
+    for key in ("url", "command", "args", "env", "tools_config"):
+        row.pop(key, None)
+    row["builtin"] = True
+    row["label"] = (spec or {}).get("label") or name
+    row["state"] = state["state"]
+    row["status_message"] = state["status_message"]
+    # 只给数量（已开放几个索引范围）：模式名属部署配置，不回显。
+    # 有数量无名单是故意的：管理员要能判断“配了没配”，但不能在页面上读到配置本身。
+    row["open_view_count"] = state["open_view_count"]
+    # 未就绪时对外呈现为不可用：AS-BOT 的候选列表按 is_active 过滤，
+    # 不会出现“能绑上但每次调用必报错”的假承诺；原因在 MCP 服务页可见。
+    row["is_active"] = 1 if state["ready"] else 0
+    return row
+
+
+def update_builtin_test_result(server_id: int, probe: dict) -> None:
+    """内置服务只回写测试状态，**不回写 discovered_tools**。
+
+    外部服务的 update_test_result 在失败时会把工具清单清成空串；内置行的清单来自
+    代码登记（迁移写入），被清后 AS-BOT 的逐工具授权就渲不出工具 —— 那等于把
+    “探测一下”做成了破坏性写，所以内置行走本函数。
+    """
+    execute_write(
+        "UPDATE adh_mcp_servers SET last_test_at=%s, last_test_status=%s, last_test_message=%s "
+        "WHERE id=%s AND is_builtin=1",
+        (_now(), "success" if probe.get("success") else "failed",
+         str(probe.get("message") or "")[:500], server_id))
+
+
 @router.get("/")
 def list_mcp_servers(workspace_id: Optional[int] = Query(None), user: dict = Depends(get_current_user)):
     """系统管理目录或已授权 AS-BOT 的资源投影，不构成执行授权。"""
@@ -92,9 +132,20 @@ def list_mcp_servers(workspace_id: Optional[int] = Query(None), user: dict = Dep
             for k in ("created_at", "updated_at", "last_test_at"):
                 if hasattr(r.get(k), "isoformat"):
                     r[k] = r[k].isoformat()
+        from backend.modules.mind.execution import builtin_mcp
         if user.get("role") != "admin":
-            return [{k: r[k] for k in ("id", "name", "description", "transport", "is_active") if k in r} for r in rows]
-        return [{k: v for k, v in r.items() if k != "workspace_id"} for r in rows]
+            keep = ("id", "name", "description", "transport", "is_active")
+            out = []
+            for r in rows:
+                if builtin_mcp.is_builtin_row(r):
+                    item = _project_builtin(dict(r))
+                    out.append({k: item[k] for k in keep + ("builtin", "label") if k in item})
+                else:
+                    out.append({k: r[k] for k in keep if k in r})
+            return out
+        return [_project_builtin(r) if builtin_mcp.is_builtin_row(r) else
+                {k: v for k, v in r.items() if k != "workspace_id"}
+                for r in rows]
     except HTTPException:
         raise
     except Exception:
@@ -103,6 +154,34 @@ def list_mcp_servers(workspace_id: Optional[int] = Query(None), user: dict = Dep
 
 
 
+
+
+def _reject_builtin_mutation(server_id: int, verb: str) -> None:
+    """内置服务的名称/描述/工具清单来自代码与迁移，页面不给改也不给删。
+
+    不是"静默忽略"：显式 409 并告知配置托管位置，否则管理员会以为已经改成功了。
+    """
+    from backend.modules.mind.execution import builtin_mcp
+
+    row = execute_query(
+        "SELECT name, transport, is_builtin FROM adh_mcp_servers WHERE id = %s",
+        (server_id,), fetchone=True)
+    if row and builtin_mcp.is_builtin_row(row):
+        raise HTTPException(
+            409,
+            f"平台内置 MCP 服务不支持{verb}：能力定义与工具清单由系统维护，"
+            "连接配置由部署侧托管（不显示在本页面）；"
+            "启用范围请在 AS-BOT 绑定与逐工具授权中控制。")
+
+
+@router.get("/builtin")
+def list_builtin_mcp_services(user: dict = Depends(get_current_user)):
+    """内置服务的运行态清单（状态/原因/工具）：与主列表同源，供需要只看内置的调用方使用。
+
+    路由声明顺序有意放在 /{server_id} 之前：否则 "builtin" 会被当 server_id 转 int 报 422。
+    """
+    from backend.modules.mind.execution import builtin_mcp
+    return builtin_mcp.catalog()
 
 
 @router.get("/{server_id}", dependencies=[Depends(require_admin)])
@@ -116,6 +195,10 @@ def get_mcp_server(server_id: int):
         )
         if not row:
             raise HTTPException(status_code=404, detail="MCP server not found")
+
+        from backend.modules.mind.execution import builtin_mcp
+        if builtin_mcp.is_builtin_row(row):
+            return _project_builtin(dict(row))
 
         for field in ("args", "env", "tools_config", "discovered_tools"):
             if isinstance(row.get(field), str):
@@ -137,6 +220,10 @@ def get_mcp_server(server_id: int):
 @router.post("/", dependencies=[Depends(require_admin)])
 def create_mcp_server(req: MCPServerCreate):
     """Create a new MCP server (records an initial v1 snapshot)."""
+    # 内置服务只能由迁移登记：允许页面"新建 builtin"等于允许伪造一个
+    # 无实现、无收口的服务入口（执行侧会拒，但配了没用的假承诺不应由页面造成）。
+    if str(req.transport or "").strip().lower() == "builtin":
+        raise HTTPException(409, "平台内置 MCP 服务由系统登记，不支持在页面新建")
     try:
         store = get_mcp_version_store()
         server_id = store.create(
@@ -162,6 +249,7 @@ def create_mcp_server(req: MCPServerCreate):
 @router.put("/{server_id}", dependencies=[Depends(require_admin)])
 def update_mcp_server(server_id: int, req: MCPServerUpdate):
     """Update MCP server. Automatically creates a version snapshot."""
+    _reject_builtin_mutation(server_id, "修改")
     try:
         store = get_mcp_version_store()
         data = {}
@@ -191,6 +279,7 @@ def update_mcp_server(server_id: int, req: MCPServerUpdate):
 @router.delete("/{server_id}", dependencies=[Depends(require_admin)])
 def delete_mcp_server(server_id: int):
     """Delete MCP server."""
+    _reject_builtin_mutation(server_id, "删除")
     try:
         execute_write("DELETE FROM adh_mcp_servers WHERE id = %s", (server_id,))
         return {"success": True}
@@ -210,6 +299,15 @@ def test_mcp_server(server_id: int):
         )
         if not row:
             raise HTTPException(status_code=404, detail="MCP server not found")
+
+        from backend.modules.mind.execution import builtin_mcp
+        if builtin_mcp.is_builtin_row(row):
+            # 内置服务不建远程连接：探测由注册表自己负责（结果不回集群标识）
+            spec = builtin_mcp.resolve(row.get("name"))
+            probe = spec["probe"]() if spec and spec.get("probe") else {
+                "success": False, "message": "内置服务未登记实现，请联系管理员"}
+            update_builtin_test_result(server_id, probe)
+            return probe
 
         args = row.get("args") or []
         if isinstance(args, str):

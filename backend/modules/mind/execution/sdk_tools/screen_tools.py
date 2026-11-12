@@ -15,6 +15,7 @@ save/list/get 不返回数据行。预制 SQL 属于数据集职责（已治理�
 import asyncio
 import json
 import logging
+import re
 
 from backend.modules.mind.execution.sdk_tools.catalog_tools import _text
 
@@ -45,6 +46,84 @@ _NO_SQL_TYPES = {"iframe"}
 # LLM 严禁提供的裸 SQL 字段(数据护城河 §6)
 _SQL_FIELDS = ("sql", "raw_sql", "statement", "query_sql", "base_sql")
 
+# 参数类型词汇: 与前端 `shapeOfParam`(dashboardParamAssembly.ts) 同一门说法。
+# 历史缺陷: 后端只写死 select/text, 前端已支持 date_range/date/number 的控件分支,
+# 于是 AI 生成的大屏拿不到日期区间控件 —— 类型"存了但渲染不生效"的另一面是
+# "渲染支持但上游生不成"。两侧必须同词汇, 新增形状时改这一处即可被发现。
+_PARAM_TYPES = {"text", "number", "date", "date_range", "select"}
+_PARAM_TYPE_ALIASES = {"string": "text", "enum": "select", "list": "select"}
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _range_default(value, where: str) -> str:
+    """date_range 默认值归一为 `"start,end"` 字符串。
+
+    不存 {start,end} 对象: 前端 `DashboardParam.default` 声明的是 string, 而
+    `rangeOf()` 同时读得懂"a,b"文本与控件写回的对象 —— 用对象存会越出已声明契约,
+    用户后续在编辑器里一次保存就可能被抹成字符串。两端都空时给空串。
+    """
+    if isinstance(value, dict):
+        start, end = str(value.get("start") or ""), str(value.get("end") or "")
+    elif value in (None, ""):
+        return ""
+    elif isinstance(value, str):
+        parts = [p.strip() for p in value.split(",")]
+        if len(parts) != 2:
+            raise ValueError(f"{where} date_range 默认值需为 'YYYY-MM-DD,YYYY-MM-DD'")
+        start, end = parts
+    else:
+        raise ValueError(f"{where} date_range 默认值需为 'YYYY-MM-DD,YYYY-MM-DD'")
+    for label, v in (("start", start), ("end", end)):
+        if v and not _DATE_RE.match(v):
+            raise ValueError(f"{where} date_range 默认值 {label}={v!r} 不是 YYYY-MM-DD")
+    if not start and not end:
+        return ""
+    return f"{start},{end}"
+
+
+def _build_params(raw_filters) -> tuple[list[dict], str]:
+    """filters 参数定义 → 看板 params(与前端控件渲染同源)。返回 (params, 错误文案)。
+
+    宁可报错也不静默退化成文本框: 退化的结果是一个"能填但不出数"的死输入口。
+    """
+    params: list[dict] = []
+    for i, f in enumerate(raw_filters or []):
+        if not isinstance(f, dict):
+            return [], f"filters[{i}] 必须是对象({{name, label?, type?, options?, default?}})"
+        name = str(f.get("name") or "").strip()
+        if not name:
+            return [], f"filters[{i}] 缺少 name(参数名是控件与 {{{{参数}}}} 占位符对得上的唯一键)"
+        where = f"filters[{name}]"
+        options = [str(o) for o in (f.get("options") or []) if str(o).strip()]
+        declared = str(f.get("type") or "").strip().lower()
+        ptype = _PARAM_TYPE_ALIASES.get(declared, declared)
+        if declared and ptype not in _PARAM_TYPES:
+            return [], (f"{where} 不支持的参数类型 '{declared}', 可选: "
+                        f"{', '.join(sorted(_PARAM_TYPES))}(date_range 会渲染成起止两个日期选择器)")
+        if not ptype:
+            ptype = "select" if options else "text"
+        if ptype == "select" and not options:
+            return [], f"{where} 声明为 select 但没有候选值 —— 前端会渲染成'点开是空的'死控件。请补 options, 或改用 type='text'。"
+        if options and ptype != "select":
+            return [], f"{where} 参数类型 '{ptype}' 不使用候选值, options 请去掉(或改 type='select')"
+        try:
+            if ptype == "date_range":
+                entry_default = _range_default(f.get("default"), where)
+            elif ptype == "date":
+                entry_default = "" if f.get("default") in (None, "") else str(f.get("default"))
+                if entry_default and not _DATE_RE.match(entry_default):
+                    raise ValueError(f"{where} date 默认值 {entry_default!r} 不是 YYYY-MM-DD")
+            else:
+                entry_default = "" if f.get("default") is None else str(f.get("default"))
+        except ValueError as e:
+            return [], str(e)
+        entry: dict = {"name": name, "label": str(f.get("label") or name), "type": ptype,
+                       "default": entry_default}
+        if ptype == "select":
+            entry["options"] = options
+        params.append(entry)
+    return params, ""
+
 
 def _error(message: str, **extra) -> dict:
     return _text({"error": message, **extra}, is_error=True)
@@ -64,16 +143,20 @@ def _default_datasource_id() -> int:
 
 
 def _safe_exec_error(exc: Exception, where: str) -> dict:
-    """执行阶段失败: 原始细节仅进服务端日志, 对 LLM 回通用文案(数据源黑盒 §7)。"""
+    """执行阶段失败: 原始细节仅进服务端日志, 对 LLM 回**按错因分类**的文案(数据源黑盒 §7)。
+
+    不再手写一份“连接/凭据暂不可用, 建议稍后重试”：那是把方言不符、表不存在这类
+    确定性失败也说成抖动（同一口径已在 `semantics.contract.classify_exec_failure` 收敛，
+    历史缺陷：会话 1783069459277）。NoIdentityError 等声明式拒绝原因仍原样返回。
+    """
     from backend.core.governed_query import NoIdentityError
+    from backend.semantics.contract import classify_exec_failure
 
     if isinstance(exc, NoIdentityError):
         return _error("缺少可信用户身份, 拒绝取数(数据合规护城河)。")
-    logger.warning("[screen] %s failed (detail server-side only): %s", where, exc)
-    return _error(
-        "取数在执行阶段失败(通常是数据源连接/凭据或物理表暂不可用)。请勿猜测或向用户展示"
-        "数据源主机/账号/IP/SQL 等细节, 建议稍后重试或联系管理员核实数据源可用性。"
-    )
+    category, hint = classify_exec_failure(str(exc))
+    logger.warning("[screen] %s failed (%s, detail server-side only): %s", where, category, exc)
+    return _error(hint)
 
 
 async def _resolve_intent(intent_payload: dict, ctx):
@@ -98,14 +181,30 @@ async def _resolve_intent(intent_payload: dict, ctx):
     if err:
         raise ScreenIntentError(_error(f"图表查询意图不合法: {err}", notes=notes))
 
+    # 未定出生效源时不得下探 resolve_binding(ds=0)——那会把“本次没定源”报成
+    # “对象未绑定/未建模”，模型据此向用户说“该站没这个数据”（历史缺陷：会话
+    # 1783069459277 同类；与 run_semantic_query 同一口径：先拿事实判“该对象在 ds=0
+    # 上到底有没有绑定”，系统域对象绑定就在 ds=0，照常放行）。
+    if not int(q.datasource_id or 0) and ctx is not None:
+        probe, _pw = await asyncio.to_thread(resolve_binding, q.object, datasource_id=0)
+        if probe is None:
+            from backend.modules.mind.execution.sdk_tools.semantic_query import (
+                unresolved_source_payload,
+            )
+
+            bad = unresolved_source_payload(ctx, q.object)
+            raise ScreenIntentError(_error(bad["error"], hint=bad.get("hint")))
+
     binding, bind_warnings = await asyncio.to_thread(
         resolve_binding, q.object, datasource_id=q.datasource_id,
     )
     if binding is None:
         raise ScreenIntentError(_error(
-            f"对象 '{q.object}' 未绑定到任何物理表。",
+            f"对象 '{q.object}' 在本次生效数据源上未绑定到任何物理表。",
             warnings=[w for w in (bind_warnings or []) if "catalog" not in str(w).lower() and "datasource" not in str(w).lower()],
-            hint="先用 knowledge_search 找一个已在本体里 bound 的对象。",
+            hint="未绑定 ≠ 无数据：这表示该源尚未为此对象建模/绑定物理表，不代表库里没数据；"
+                 "严禁据此向用户回答“该站点暂无数据”。换个已建模对象（search_metadata / "
+                 "knowledge_search）或先为该源生成业务本体。",
         ))
 
     from backend.modules.mind.execution.resource_guard import validate_binding
@@ -133,7 +232,8 @@ class ScreenIntentError(Exception):
 
 def _resolve_style_refs(refs, merged_config: dict) -> None:
     """把字模引用(id 或 code)对应的 style_config.config 合并进图表 config。"""
-    from backend.modules.viz.services.vis_library_service import vis_library_service
+    from backend.modules.viz.services.vis_library_service import (
+        is_usable, vis_library_service)
 
     for ref in (refs or []):
         comp = None
@@ -142,6 +242,11 @@ def _resolve_style_refs(refs, merged_config: dict) -> None:
         except (TypeError, ValueError):
             comp = vis_library_service.get_component_by_code(str(ref))
         if not comp:
+            continue
+        if not is_usable(comp):
+            # 已下架/已禁用的字模不参与组装：禁用是管理员显式停用，服务端照用等于绕过它
+            logger.warning("[screen] 字模不可用已跳过 ref=%s code=%s is_active=%s is_enabled=%s",
+                           ref, comp.get("code"), comp.get("is_active"), comp.get("is_enabled"))
             continue
         sc = comp.get("style_config") or {}
         cfg = sc.get("config") if isinstance(sc, dict) else None
@@ -210,17 +315,9 @@ async def create_data_screen(args: dict) -> dict:
     workspace_id = (ctx.workspace_id if ctx else 0) or 0
 
     # 参数定义(时间范围/自定义筛选): 供前端交互控件, 数据以意图预填充为准
-    params: list[dict] = []
-    for f in args.get("filters") or []:
-        if not isinstance(f, dict) or not f.get("name"):
-            continue
-        params.append({
-            "name": str(f["name"]),
-            "label": str(f.get("label") or f["name"]),
-            "type": "select" if f.get("options") else "text",
-            "options": [str(o) for o in (f.get("options") or [])],
-            "default": str(f.get("default") or ""),
-        })
+    params, param_err = _build_params(args.get("filters"))
+    if param_err:
+        return _error(param_err)
 
     # 大屏主题 + 字模引用(背景/配色/卡片/布局/装饰), 寄存 filters
     raw_theme = args.get("theme") if isinstance(args.get("theme"), dict) else {}
@@ -321,15 +418,33 @@ async def create_data_screen(args: dict) -> dict:
         })
 
     url = f"/screen/{dashboard_id}"
+    # 逐图取数结果记账: 本工具过去只回"建了几张图", 零行与满行在返回里一模一样,
+    # 于是模型拿"创建成功"当"数据正常"报给用户(空图被静默吞掉)。行数不属于黑盒项。
+    data_audit = [{
+        "title": item["title"],
+        "chart_type": item["chart_type"],
+        "row_count": (None if item["chart_type"] in _NO_SQL_TYPES else
+                      int(item["result"].get("row_count") if item["result"].get("row_count") is not None
+                          else len(item["result"].get("rows") or []))),
+    } for item in prepared]
+    empty_charts = [a["title"] for a in data_audit if a["row_count"] == 0]
+    message = f"数据大屏「{name}」已创建({len(prepared)} 个图表), 访问路径: {url}"
+    if empty_charts:
+        message += (f"；其中 {len(empty_charts)} 个图表取数为空: {'、'.join(empty_charts)} —— "
+                    "空图不是成功, 请核对时间窗/过滤条件/口径覆盖, 并向用户逐图说明(不得换近似指标凑数)")
+    if params:
+        message += "；参数控件已生成, 但只有被某张图 query 里的 {{参数名}} 引用才会真正参与取数"
     return _text({
         "dashboard_id": dashboard_id,
         "name": name,
         "url": url,
         "charts": len(prepared),
+        "data_audit": data_audit,
+        "empty_charts": empty_charts,
         "params": [p["name"] for p in params],
         "style": style or None,
         "layout": layout_log,
-        "message": f"数据大屏「{name}」已创建({len(prepared)} 个图表), 访问路径: {url}",
+        "message": message,
     })
 
 
@@ -432,6 +547,7 @@ async def update_data_screen_chart(args: dict) -> dict:
         update_data["position"] = args["position"]
 
     intent = args.get("query") or args.get("semantic_query")
+    row_count: int | None = None
     if intent:
         update_data["semantic_query"] = intent
         update_data["query_source"] = "semantic"
@@ -441,6 +557,8 @@ async def update_data_screen_chart(args: dict) -> dict:
             return e.response
         except Exception as e:
             return _safe_exec_error(e, "update chart")
+        row_count = int(result.get("row_count") if result.get("row_count") is not None
+                        else len(result.get("rows") or []))
         update_data["sql_query"] = base_sql
         update_data["source_id"] = ds_id
         update_data["data_cache"] = json.dumps({
@@ -462,12 +580,17 @@ async def update_data_screen_chart(args: dict) -> dict:
         return _error("更新失败, 图表不存在或无变化")
 
     _invalidate_dashboard_cache(user_id)
+    message = f"图表已更新, 访问路径: /screen/{dashboard_id}"
+    if row_count == 0:
+        message += ("；本次取数为空 —— 空图不是成功, 请核对时间窗/过滤条件/口径覆盖"
+                    "并向用户说明(不得换近似指标凑数)")
     return _text({
         "dashboard_id": dashboard_id,
         "chart_id": chart_id,
         "url": f"/screen/{dashboard_id}",
         "updated_fields": list(update_data.keys()),
-        "message": f"图表已更新, 访问路径: /screen/{dashboard_id}",
+        "row_count": row_count,
+        "message": message,
     })
 
 
@@ -494,7 +617,8 @@ async def get_vis_component(args: dict) -> dict:
     ref = args.get("component_id") or args.get("code")
     if not ref:
         return _error("component_id 或 code 必填")
-    from backend.modules.viz.services.vis_library_service import vis_library_service
+    from backend.modules.viz.services.vis_library_service import (
+        is_usable, vis_library_service)
 
     comp = None
     try:
@@ -503,6 +627,10 @@ async def get_vis_component(args: dict) -> dict:
         comp = vis_library_service.get_component_by_code(str(ref))
     if not comp:
         return _error("字模不存在")
+    if not is_usable(comp):
+        # 显式告知不可用（而不是回一份看起来能用的配置）：禁用=停用但保留，不可被选用
+        return _error(f"字模「{comp.get('name') or comp.get('code')}」已"
+                      f"{'禁用' if int(comp.get('is_active') or 0) != 0 else '下架'}，不可使用")
     return _text(comp)
 
 
@@ -534,7 +662,9 @@ TOOL_SPECS = [
             "NEVER pass raw SQL fields (sql/raw_sql/statement are rejected). "
             "The semantic layer resolves intent to SQL and executes it through the governed data moat. "
             "Optional per-widget `component_ids`/`style_ref` and top-level `style` reference vis-library "
-            "blocks (background / card / chart style / layout / color theme) — list them via list_vis_components."
+            "blocks (background / card / chart style / layout / color theme) — list them via list_vis_components. "
+            "Returns `data_audit` (per-chart row_count) and `empty_charts`: a created chart with 0 rows is NOT a "
+            "success — tell the user which charts are empty and why instead of reporting 'created'."
         ),
         "schema": {
             "name": "Screen title (required)",
@@ -542,7 +672,12 @@ TOOL_SPECS = [
             "description": "Optional screen description",
             "theme": "Optional {mode, background, backgroundImage, header, card}",
             "style": "Optional {background?, colorTheme?, cardStyle?, layout?, decoration?} component refs",
-            "filters": "Optional interactive filter param defs [{name,label,options?,default?}]",
+            "filters": (
+                "Optional interactive param defs [{name, label?, type?(text|number|date|date_range|select), "
+                "options?(required for select), default?}]. date_range renders two date pickers, its default is "
+                "'YYYY-MM-DD,YYYY-MM-DD', and it is consumed as {{name.start}} / {{name.end}}; a param only affects "
+                "data when some widget query references {{name}} — do not declare params nothing uses"
+            ),
         },
         "handler": create_data_screen,
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
@@ -558,7 +693,8 @@ TOOL_SPECS = [
         "name": "update_data_screen_chart",
         "description": (
             "Update one chart in a data screen (title/chart_type/query intent/config/position). "
-            "To change data, pass a new declarative `query` intent — raw SQL is rejected."
+            "To change data, pass a new declarative `query` intent — raw SQL is rejected. "
+            "Returns `row_count` of the re-executed intent (0 = empty chart, must be surfaced to the user)."
         ),
         "schema": {
             "dashboard_id": "Screen id (required)", "chart_id": "Chart id (required)",

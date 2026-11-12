@@ -58,7 +58,7 @@ async def list_authorized_sites(
 
     不构成第二套「谁能查什么」裁决：可查站点 = 角色已授权数据源携带的 site_code
     （见 waker-datasource-domain.md §1）；空授权 fail-closed 返回空列表。
-    聚合态（全球）仅在可查站点数 ≥2 时提供。只回业务名，不含 id 之外的物理信息。
+    聚合态（全部站点）仅在可查站点数 ≥2 时提供。只回业务名，不含 id 之外的物理信息。
 
     必须定义在 /{ds_id} 之前，否则 "sites"/"authorized-sites" 会被当作 ds_id 解析(422)。
     """
@@ -79,7 +79,7 @@ async def list_authorized_sites(
 
 @router.get("/sites")
 async def list_sites(
-    include_aggregate: bool = Query(True, description="是否包含聚合态站点（全球）"),
+    include_aggregate: bool = Query(True, description="是否包含聚合态站点（全部站点）"),
     include_inactive: bool = Query(False, description="管理页需要看到停用行"),
     user: dict = Depends(get_current_user),
 ):
@@ -95,7 +95,11 @@ async def create_site(
     req: dict,
     user: dict = Depends(require_admin),
 ):
-    """新增/更新站点（管理员）。"""
+    """新增/更新站点（管理员）。
+
+    `field_values` 只在请求里带这个键时才写（没带 = 保持原映射），避免编辑名称/排序
+    时把「站点→字段取值」抹掉（部分更新不抹配置）。
+    """
     from backend.core.site_service import upsert_site
 
     try:
@@ -103,7 +107,8 @@ async def create_site(
             req.get("site_code") or "", req.get("display_name") or "",
             is_aggregate=int(req.get("is_aggregate") or 0),
             sort_order=int(req.get("sort_order") or 0),
-            is_active=1 if req.get("is_active", 1) else 0)
+            is_active=1 if req.get("is_active", 1) else 0,
+            field_values=(req.get("field_values") if "field_values" in req else None))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 

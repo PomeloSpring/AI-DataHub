@@ -30,6 +30,25 @@ def test_trigger_hit_returns_path(monkeypatch):
     assert hits[0]["title"] == "按月统计销售额"
     assert "GMV" in hits[0]["matched_triggers"]
     assert hits[0]["content"] == "按月聚合 orders.amount"
+    # 触发词命中不是用户点名：不得带上 pinned 标记（否则提示词会把它写成强制剧本）
+    assert hits[0]["pinned"] is False
+
+
+def test_paths_by_ids_marks_user_pinned(monkeypatch):
+    """`/` 显式选中的场景必须携带 pinned 事实。
+
+    历史缺陷：合并进同一列表后“用户点名”与“触发词猜测”无从区分，提示词统一写成
+    “由服务端按触发词命中”，模型把它当启发式建议 —— 用户选了场景，答案却按通用
+    指标清单反问（选了等于没选）。
+    """
+    rows = [_row(7, "按页面 URL 或 IP 关联用户操作路径", "先认锚点再下钻", ["操作路径"])]
+    _patch_rows(monkeypatch, rows)
+    accepted, rejected = quick_paths.paths_by_ids(["7"])
+    assert rejected == []
+    assert len(accepted) == 1
+    assert accepted[0]["pinned"] is True
+    # 显式指定不看触发词：matched_triggers 为空不影响注入
+    assert accepted[0]["matched_triggers"] == []
 
 
 def test_no_trigger_no_hit(monkeypatch):
@@ -110,3 +129,108 @@ def test_prompt_renders_quick_path_section():
 def test_prompt_no_section_without_paths():
     prompt = compose_system_prompt(None, [], username="u", user_role="admin")
     assert "命中的快速路径查询方案" not in prompt
+    assert "用户本轮指定的分析场景" not in prompt
+
+
+def test_prompt_renders_pinned_scene_as_mandate():
+    """用户 `/` 指定的场景 = 命令式独立成节，不得再披“触发词命中”的口径。"""
+    paths = [{"title": "按页面 URL 或 IP 关联用户操作路径",
+              "content": "第 1 步 认锚点", "scenario": "还原访问链路",
+              "matched_triggers": [], "pinned": True}]
+    prompt = compose_system_prompt(None, [], username="u", user_role="admin", quick_paths=paths)
+    assert "用户本轮指定的分析场景" in prompt
+    assert "显式指定" in prompt
+    assert "按页面 URL 或 IP 关联用户操作路径" in prompt
+    assert "第 1 步 认锚点" in prompt
+    # 关键行为约束：缺输入时的反问必须落在场景语境内，不许回落到通用指标清单
+    assert "禁止回落到与该场景无关的通用指标清单反问" in prompt
+    # 唯一一项是用户指定时，不得出现“按触发词命中”的错标
+    assert "由服务端按用户问题触发词命中" not in prompt
+
+
+def test_pinned_scene_is_echoed_at_prompt_tail():
+    """指定场景必须在提示词**末尾**再复述一次（中部注入会被后面的常驻闸门压过）。
+
+    实测（会话 1783069459276）：只在中部写“必须按此方案执行”时，qwen3.7-plus 仍按
+    「歧义闸门」的通用模板反问“查哪类数据”，而不是问该场景缺的锚点。
+    """
+    from backend.modules.mind.execution.prompt_composer import TOOL_ORCHESTRATION_RULES
+    paths = [{"title": "按页面 URL 或 IP 关联用户操作路径", "content": "第 1 步 认锚点",
+              "pinned": True}]
+    prompt = compose_system_prompt(None, [], username="u", user_role="admin", quick_paths=paths)
+    assert "收尾复述" in prompt
+    # 尾部复述必须排在常驻闸门之后（recency 位置才有意义）
+    assert prompt.index("## 歧义闸门") < prompt.index("收尾复述")
+    # 尾部复述里要带场景业务名（不带名字就等于只提了句空口号）
+    tail = prompt[prompt.index("收尾复述"):]
+    assert "按页面 URL 或 IP 关联用户操作路径" in tail
+    assert "不得换个口径把用户的指定掩掉" in tail      # 无法执行时必须显式说明
+    # 指定场景的让路条款只能写在条件注入段里（常驻闸门段受字数护栏封顶，不得加条件条款）
+    assert "优先级高于上面的通用反问模板" in tail
+    assert "用户显式指定的分析场景" not in TOOL_ORCHESTRATION_RULES
+
+
+def test_no_tail_echo_without_pinned_scene():
+    """没指定场景时不得凭空多出这段（否则模型会去找一个不存在的场景）。"""
+    prompt = compose_system_prompt(None, [], username="u", user_role="admin",
+                                   quick_paths=[{"title": "自动命中", "content": "方案",
+                                                 "matched_triggers": ["销售额"]}])
+    assert "收尾复述" not in prompt
+
+
+# ── 回合提示词里的作业行（系统提示词不够，实测会被通用模板压过）────────────────
+
+def test_scene_turn_directive_empty_without_scene():
+    from backend.modules.mind.execution.prompt_composer import scene_turn_directive
+    assert scene_turn_directive("") == ""
+    assert scene_turn_directive("   ") == ""
+
+
+def test_scene_turn_directive_names_scene_and_blocks_cross_scene_ask():
+    from backend.modules.mind.execution.prompt_composer import scene_turn_directive
+    text = scene_turn_directive("按页面 URL 或 IP 关联用户操作路径")
+    assert "按页面 URL 或 IP 关联用户操作路径" in text
+    assert "在该场景内理解" in text
+    assert "不得改问「想查哪类数据」" in text
+    assert "先说明原因" in text          # 无法执行时必须显式告知（no-silent-degradation）
+
+
+def test_build_turn_prompt_appends_directive_at_tail():
+    """作业行必须拼在**回合提示词末尾**（问题之后），不是只留在系统提示词里。
+
+    实测（会话 1783069459277，site=global）：系统提示词中部命令式 + 尾部复述全到位，
+    qwen3.7-plus 仍答“你想查近三个月的什么内容呢？比如某个业务指标的趋势…”；
+    同一载荷只加这行作业行后，三次探针均改为要场景锚点（页面URL/客户端IP/会话ID/用户ID）。
+    """
+    from backend.modules.mind.execution.models import ExecutionContext, ExecutionTask
+    from backend.modules.mind.execution.secure_sdk import build_turn_prompt
+
+    class _Adapter:
+        def _prompt_with_attachments(self, task, include_history=True):
+            return task.question
+
+    def _task(directive):
+        extra = {"_scene_turn_directive": directive} if directive else {}
+        return ExecutionTask(task_id="t", question="查近三个月的", context=ExecutionContext(extra=extra))
+
+    plain = build_turn_prompt(_Adapter(), _task(""), include_history=False)
+    assert plain == "查近三个月的"                      # 没指定场景：不往提示词里塞空指令
+
+    with_scene = build_turn_prompt(_Adapter(), _task("〔本轮指定分析场景：X〕\n要求……"),
+                                   include_history=False)
+    assert with_scene.startswith("查近三个月的")          # 问题在前，作业行在尾
+    assert with_scene.endswith("要求……")
+    assert "〔本轮指定分析场景：X〕" in with_scene
+
+
+def test_prompt_splits_pinned_and_trigger_hit_sections():
+    """两类同时存在时分两档渲染，各自口径不串（指定项不会被建议项措辞掩掉）。"""
+    paths = [
+        {"title": "用户选的", "content": "方案甲", "pinned": True},
+        {"title": "触发词中的", "content": "方案乙", "matched_triggers": ["销售额"], "pinned": False},
+    ]
+    prompt = compose_system_prompt(None, [], username="u", user_role="admin", quick_paths=paths)
+    assert "用户本轮指定的分析场景" in prompt and "方案甲" in prompt
+    assert "命中的快速路径查询方案" in prompt and "方案乙" in prompt
+    # 分档后“触发词命中”的头部不得盖在用户指定那节上
+    assert prompt.index("用户本轮指定的分析场景") < prompt.index("命中的快速路径查询方案")

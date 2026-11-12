@@ -21,6 +21,9 @@ _DEFAULT_BRAND = {
     "logo_url": "",
     "show_icon": True,
     "show_text": True,
+    # 品牌标语：登录页名称下方那行字。与 app_name 不同，空串是合法取值（= 不显示），
+    # 只在「库里还没有这一行/还没有这一列」时回落默认文案。
+    "tagline": "企业级智能数据分析平台",
 }
 
 
@@ -29,6 +32,7 @@ class BrandSettingsUpdate(BaseModel):
     logo_url: Optional[str] = None
     show_icon: Optional[bool] = None
     show_text: Optional[bool] = None
+    tagline: Optional[str] = None
 
 
 def _load_brand_settings() -> dict:
@@ -39,7 +43,7 @@ def _load_brand_settings() -> dict:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT app_name, logo_url, show_icon, show_text "
+                "SELECT app_name, logo_url, show_icon, show_text, tagline "
                 "FROM adh_brand_settings WHERE id = 1"
             )
             row = cur.fetchone()
@@ -54,6 +58,8 @@ def _load_brand_settings() -> dict:
         "logo_url": row.get("logo_url") or "",
         "show_icon": bool(row.get("show_icon", 1)),
         "show_text": bool(row.get("show_text", 1)),
+        # 空串按「管理员显式清空」处理，不回落默认文案（回落会把已清空的标语又顶回去）
+        "tagline": row.get("tagline") if row.get("tagline") is not None else _DEFAULT_BRAND["tagline"],
     }
 
 
@@ -65,16 +71,18 @@ def _save_brand_settings(settings: dict):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO adh_brand_settings (id, app_name, logo_url, show_icon, show_text) "
-                "VALUES (1, %s, %s, %s, %s) "
+                "INSERT INTO adh_brand_settings (id, app_name, logo_url, show_icon, show_text, tagline) "
+                "VALUES (1, %s, %s, %s, %s, %s) "
                 "ON DUPLICATE KEY UPDATE "
                 "app_name = VALUES(app_name), logo_url = VALUES(logo_url), "
-                "show_icon = VALUES(show_icon), show_text = VALUES(show_text)",
+                "show_icon = VALUES(show_icon), show_text = VALUES(show_text), "
+                "tagline = VALUES(tagline)",
                 (
                     settings.get("app_name", _DEFAULT_BRAND["app_name"]),
                     settings.get("logo_url", ""),
                     int(settings.get("show_icon", True)),
                     int(settings.get("show_text", True)),
+                    settings.get("tagline", _DEFAULT_BRAND["tagline"]),
                 ),
             )
         conn.commit()
@@ -85,7 +93,8 @@ def _save_brand_settings(settings: dict):
 @router.get("")
 @router.get("/")
 def get_brand_settings():
-    """Get brand settings (public, cached 5min, no auth required)."""
+    """Get brand settings (public: 登录页在拿到身份之前就要按品牌设置显示名称/图标/标语，
+    故本读接口匿名可访问，路径已登记 api_permission._PUBLIC_ROUTES；写接口仍按权限码门控)。"""
     from backend.common.ttl_cache import brand_cache
     cached = brand_cache.get("settings")
     if cached is not None:
@@ -109,6 +118,8 @@ def update_brand_settings(req: BrandSettingsUpdate):
             current["show_icon"] = req.show_icon
         if req.show_text is not None:
             current["show_text"] = req.show_text
+        if req.tagline is not None:
+            current["tagline"] = req.tagline.strip()
         _save_brand_settings(current)
         from backend.common.ttl_cache import brand_cache
         brand_cache.invalidate("settings")

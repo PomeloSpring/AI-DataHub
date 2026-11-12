@@ -21,7 +21,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Loader2, MapPin, AlertTriangle } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { fetchVisComponents } from '../api/visLibrary';
+import { fetchVisComponents, isVisUsable } from '../api/visLibrary';
 import type { VisComponent } from '../api/visLibrary';
 import { detectGeoColumns, isNum, unwrapLongitudes } from '../lib/geoColumns';
 import { detectPlaceColumn, resolvePlacePoints } from '../lib/geoPoints';
@@ -38,13 +38,21 @@ type GeoPoint = { lat: number; lng: number; v: number };
 /**
  * 局部层级(仅在地图容器内比较)。
  *
- * 容器用 `isolate` 建独立层叠上下文后，这里的小 z 只跟自己人比；历史上写
- * 450/500/1000 会**逸出**到页面层叠上下文，把 z-50 的下拉框、全屏弹窗盖住
- * （现象：图表类型下拉被地图遮、全屏后卡片内地图残影盖在弹窗上无法消除）。
+ * 容器用 `isolate` 建独立层叠上下文，这里的高 z **只在本容器内**参与比较，不会逸出
+ * 去压页面的下拉框/全屏弹窗（历史上逸出过一次，真正的防逸出手段是 isolate，
+ * 而不是把数值压小）。
+ *
+ * 数值必须落在 Leaflet pane 体系之上：`.leaflet-tile-pane` 是 200、
+ * `.leaflet-overlay-pane`/`.leaflet-pane` 是 400，而承载地图的 div 是
+ * `position:absolute; z-index:auto` 且不带 transform —— **它自己不建层叠上下文**，
+ * 于是这些 pane 值直接和同级的热力 canvas 比较。曾经写 1/2/3 的后果：
+ * 刷新时 canvas 先画好（亮点可见），瓦片异步加载完成后按 200 盖上去，
+ * 热力层整层被底图埋掉（实时页面与导出图片同时中招，导出只是如实拍到了它）。
+ * 控制层(800/1000)仍在我们之上，缩放钮不受影响。
  */
-const Z_CANVAS = 1;   // 热力层(在瓦片之上、角标之下)
-const Z_BADGE = 2;    // 图例 / 点数角标
-const Z_EMPTY = 3;    // 无有效点时的原因提示
+const Z_CANVAS = 450;   // 热力层(在瓦片/覆盖物之上、角标之下)
+const Z_BADGE = 750;    // 图例 / 点数角标
+const Z_EMPTY = 760;    // 无有效点时的原因提示
 
 /** 中国陆域外包框(含海南海/台),用于「中国地图」图型的拟合与范围外提示 */
 const CHINA_BOX = { minLat: 3.5, maxLat: 53.6, minLng: 73, maxLng: 135.1 };
@@ -80,7 +88,8 @@ async function loadMapTiles(): Promise<TileLoadResult> {
   }
   try {
     const all = await fetchVisComponents();
-    const items = all.filter(c => c.category === 'map_tile' && c.is_active !== 0);
+    // 接口默认已剔除下架/禁用行（include_disabled=false），这里再按同一口径兜一层
+    const items = all.filter(c => c.category === 'map_tile' && isVisUsable(c));
     memTiles = writeTileCache(items);
     return { items, fetchedAt: memTiles.fetchedAt };
   } catch (e) {
@@ -346,7 +355,10 @@ export default function MapHeatmap({ data, height = 360, config, scope = 'auto' 
   }, [tile, viewPoints, scope]);
 
   const controls = (
-    <div className="flex items-center gap-2 flex-wrap text-xs">
+    // data-export-strip: 报告导出时整棵剪掉 —— 这些是"改图面"的交互控件，
+    // 落到静态文件里只剩几行没有上下文的下拉标签（历史缺陷：导出文件里出现
+    // 「瓦片 高德地图标准（默认） 地区 省份 权重 企业数」这样的残句）。
+    <div className="flex items-center gap-2 flex-wrap text-xs" data-export-strip>
       <span className="text-muted-foreground">瓦片</span>
       <Select value={tileId != null ? String(tileId) : '__none__'} onValueChange={(v) => setTileId(v === '__none__' ? null : Number(v))}>
         <SelectTrigger className="w-[160px] h-7 text-xs"><SelectValue placeholder="选择地图瓦片" /></SelectTrigger>
@@ -502,7 +514,11 @@ export default function MapHeatmap({ data, height = 360, config, scope = 'auto' 
 
       {/* isolate:给地图建独立层叠上下文 —— Leaflet 内部 pane/control 的 z-index 与
           热力层只在本容器内比较，不得逸出到页面去压 z-50 的下拉框/全屏弹窗 */}
-      <div className="relative mt-2 rounded-lg border overflow-hidden isolate" style={{ height }}>
+      {/* data-export-snapshot: 地图不能按 DOM 序列化 —— Leaflet 用 .leaflet-pane 的
+          绝对定位把几十张瓦片叠成一张图，序列化出来就是一屏散落的瓦片。
+          导出时整块拍成一张位图（见 lib/reportExport.renderedHtml）。 */}
+      <div className="relative mt-2 rounded-lg border overflow-hidden isolate"
+        data-export-snapshot="地图" style={{ height }}>
         {tilesLoading ? (
           <div className="absolute inset-0 flex items-center justify-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />正在加载地图瓦片…

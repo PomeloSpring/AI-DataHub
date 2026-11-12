@@ -35,13 +35,18 @@ _PUBLIC_ROUTES = {
     ("POST", "/api/auth/login"),
     ("POST", "/api/auth/refresh"),  # refresh 用 body 中的 refresh_token 鉴权，不依赖 access token
     ("GET", "/api/health"), ("GET", "/health"),
+    # 品牌设置读：登录页在还没有身份时就要按品牌设置渲染名称/图标/标语。
+    # 不登记这里的后果不只是 401：前端 axios 拦到 401 会去刷 token，刷新失败即
+    # `location.href = '/login'`，而此刻已在 /login —— 变成整页重载循环。
+    # 返回体只有展示层文案与 logo data URL，不含任何内部标识；写接口(PUT)仍按码门控。
+    ("GET", "/api/admin/brand"),
 }
 _SELF_ROUTES = {
     ("GET", "/api/auth/me"),
     ("GET", "/api/roles/current/permissions"),
     ("GET", "/api/roles/menu-registry"),
 }
-# 登录自举路由(工作空间随用户走, 个人工作站): 空间列表/详情/默认空间/删除影响预览/生效执行层
+# 登录自举路由(工作空间随用户走, 个人空间): 空间列表/详情/默认空间/删除影响预览/生效执行层
 # 人人可用, 不能按权限码拦(否则无 workspace 码的角色登录后无法自举);
 # 属主校验由路由层负责(authorize_workspace/owner 检查, 删除同样只可删自己的空间)。
 _SELF_ROUTE_PATTERNS = re.compile(
@@ -75,7 +80,12 @@ _OPEN_READ_ROUTES = re.compile(
     r"|^/api/admin/brand(?:/.*)?$"
     r"|^/api/(?:admin/)?menu-tree(?:/.*)?$"
     # 字模库读（看板/大屏渲染必需的样式资产，与品牌同类；管理写仍按码门控）
-    r"|^/api/vis-library/(?:categories|components)(?:/.*)?$")
+    r"|^/api/vis-library/(?:categories|components)(?:/.*)?$"
+    # 分析场景示例（Chat 空白页/首页的消费面，只回标题+适用场景，不含正文与物理名）：
+    # 与 /api/release-notes 同构——内容公开读、配置面 /api/admin/knowledge* 仍按码。
+    # 历史缺陷：这两处曾打 /api/admin/knowledge/random，而 knowledge:read 的
+    # api_pattern 为空串→非 admin 一律 403，前端 .catch(()=>{}) 把失败吞成"没有示例"。
+    r"|^/api/knowledge/scenarios$")
 # SQL Playground 的纯分析端点（AST / 血缘 / RLS 改写预览 / 溯源）：
 # 只做语法解析与绑定解析，**不返回任何数据行**，因此不按权限码门控，但仍要求登录。
 # 注意同时覆盖 datamind 侧(/api/playground/*) 与语义层侧(/api/semantic/playground/*)，

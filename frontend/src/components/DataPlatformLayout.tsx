@@ -1,22 +1,21 @@
 import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
-  Database, FileText, Settings, LogOut, Menu,
-  Sun, Moon, Palette, Zap, TrendingUp, Grid3x3, GlassWater, Heart,
-  UserCircle, X, ChevronLeft, ChevronRight, GitBranch,
-  RefreshCw, Activity, Shield, ShieldCheck, Ruler, Brain, Gem, Boxes, Terminal, Layers,
-  FunctionSquare, Network, BarChart3, Inbox, Compass,
+  Database, FileText, Settings, LogOut, Menu, Palette, UserCircle, X, ChevronLeft, ChevronRight,
+  GitBranch, RefreshCw, Activity, Shield, ShieldCheck, Ruler, Brain, Boxes, Terminal, Layers,
+  FunctionSquare, Network, BarChart3, Inbox, Compass, Workflow, Signpost
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useAuthStore } from '../stores/authStore';
-import { useThemeStore, applyTheme, type ThemeId } from '../stores/themeStore';
+import { useThemeStore, applyTheme } from '../stores/themeStore';
 import { useBrandStore } from '../stores/brandStore';
+import BrandLogo from './BrandLogo';
 import SectionSwitcher from './SectionSwitcher';
 import ReleaseNotesButton from './ReleaseNotesButton';
 import { TOUR, navTour } from '@/lib/onboarding/guides';
@@ -26,23 +25,12 @@ import AsBotPanel from './asbot/AsBotPanel';
 import { useMenuAccess } from '../hooks/useMenuAccess';
 import { SidebarMenuSkeleton } from './SidebarMenuSkeleton';
 import { pruneEmptySections } from '@/lib/menuUtils';
+import ThemeMenuItems from './ThemeMenuItems';
 
 /** 将路由 key 转换为 menu_key: '/data/ontology' → 'data:ontology' */
 function toMenuKey(routeKey: string): string {
   return routeKey.replace('/data/', 'data:').replace(/^\//, '');
 }
-
-const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] = [
-  { id: 'dark', label: '暗色', icon: Moon, desc: '深色背景，适合长时间使用' },
-  { id: 'light', label: '亮色', icon: Sun, desc: '浅色背景，清晰明亮' },
-  { id: 'datafoundry', label: 'DataFoundry', icon: Gem, desc: '克制优雅，近黑主色 + 宝石色调' },
-  { id: 'tech', label: '科技风', icon: Zap, desc: '深蓝底色，霓虹高亮' },
-  { id: 'finance', label: '金融风', icon: TrendingUp, desc: '深色海军蓝，金色主调' },
-  { id: 'bento', label: 'Bento Grid', icon: Grid3x3, desc: '柔和圆角卡片，彩色区块布局' },
-  { id: 'glass', label: '玻璃拟态', icon: GlassWater, desc: '深色半透明毛玻璃质感' },
-  { id: 'ainative', label: 'AI-Native', icon: Brain, desc: '深空神经网络，动态光效边框' },
-  { id: 'medical', label: '医疗平台', icon: Heart, desc: '清爽蓝绿，专业可信' },
-];
 
 const DATA_PLATFORM_MENU_ITEMS = [
   { section: '数据源' },
@@ -54,8 +42,16 @@ const DATA_PLATFORM_MENU_ITEMS = [
   /* 菜单文案与 adh_menu_registry.label 同步（三者一个名字）：旧值「数据建模」与库内「本体工作区」飘移 */
   { key: '/data/ontology', icon: Boxes, label: '本体建模' },
   { key: '/data/asset-pool', icon: Inbox, label: '建模待办' },
+  /* SQL 示例对已下线（与数据集重合），菜单登记与权限点同批退出：
+     见 docker/mysql/sql_pairs_retire_migration.sql 与 App.tsx 的路由注释 */
+  /* 分析场景(原「快速路径」, 系统配置迁入): 会改变 AI 取数行为的语义层语料, 归数据中台 */
+  { key: '/data/scenario', icon: Workflow, label: '分析场景' },
   { key: '/data/metrics', icon: BarChart3, label: '指标与维度' },
   { key: '/data/knowledge-graph', icon: Network, label: '关系图谱' },
+  /* 决策建议（配置面）：条件引用指标/维度字典，本质是口径资产，与本段的
+     「指标与维度」「本体建模」同族（不放系统配置——那是一级 AI 模板/凭据域）。
+     菜单登记 data:decisions ↔ decision:manage，sort=10 排在本段最后。 */
+  { key: '/data/decisions', icon: Signpost, label: '决策建议' },
   { section: '数据安全配置' },
   { key: '/data/sensitive', icon: Shield, label: '敏感数据' },
   { key: '/data/rls', icon: ShieldCheck, label: '安全策略' },
@@ -80,7 +76,7 @@ export default function DataPlatformLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuthStore();
-  const { theme, setTheme } = useThemeStore();
+  const { theme } = useThemeStore();
   const { brand, fetchBrand } = useBrandStore();
   const startGuide = useGuideStore(s => s.startGuide);
 
@@ -102,11 +98,7 @@ export default function DataPlatformLayout() {
       <div className={`hidden lg:flex flex-col h-full bg-sidebar border-r border-sidebar-border transition-all duration-200 ${collapsed ? 'w-[64px]' : 'w-[220px]'} overflow-hidden`}>
         {/* Logo */}
         <div className="h-12 flex items-center justify-center border-b border-sidebar-border gap-1.5">
-          {brand.show_icon && brand.logo_url ? (
-            <img src={brand.logo_url} alt="Logo" className="h-6 w-6 rounded object-contain flex-shrink-0" />
-          ) : brand.show_icon ? (
-            <span className="inline-flex items-center justify-center rounded bg-primary text-primary-foreground font-bold text-xs size-6 flex-shrink-0">AD</span>
-          ) : null}
+          <BrandLogo brand={brand} size={24} />
           {!collapsed && (
             <span className="font-bold text-sm text-sidebar-foreground truncate">数据中台</span>
           )}
@@ -242,19 +234,7 @@ export default function DataPlatformLayout() {
                 <TooltipContent>主题风格</TooltipContent>
               </Tooltip>
               <DropdownMenuContent align="end" className="w-48">
-                {THEMES.map(t => {
-                  const Icon = t.icon;
-                  return (
-                    <DropdownMenuItem key={t.id} onClick={() => setTheme(t.id)} className={`flex items-center gap-3 ${theme === t.id ? 'bg-accent' : ''}`}>
-                      <Icon className="h-4 w-4" />
-                      <div className="flex-1 min-w-0">
-                        <div className={`text-sm ${theme === t.id ? 'font-medium' : ''}`}>{t.label}</div>
-                        <div className="text-xs text-muted-foreground truncate">{t.desc}</div>
-                      </div>
-                      {theme === t.id && <span className="text-xs text-primary">✓</span>}
-                    </DropdownMenuItem>
-                  );
-                })}
+                <ThemeMenuItems />
               </DropdownMenuContent>
             </DropdownMenu>
             <DropdownMenu>
@@ -288,7 +268,10 @@ export default function DataPlatformLayout() {
             </DropdownMenu>
           </div>
         </header>
-        <main className="flex-1 overflow-auto bg-background p-6">
+        {/* min-h-0 与 SystemLayout 同口径（flex 子项默认 min-height:auto 会被内容顶高，页内滚动口就失效）；
+            relative 是兜底护栏：页面内 position:absolute 且祖先链无定位元素的后代（如 sr-only 标签）
+            以 ICB 为包含块，会越过本口的裁剪把文档撑高 —— 表现为整个系统页面被滚动。 */}
+        <main className="relative min-h-0 flex-1 overflow-auto bg-background p-6">
           <Outlet />
         </main>
       </div>

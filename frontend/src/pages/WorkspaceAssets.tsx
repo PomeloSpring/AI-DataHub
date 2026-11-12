@@ -42,7 +42,7 @@ export default function WorkspaceAssets() {
   const ws = Number(workspaceId) || 0;
   const [assets, setAssets] = useState<Asset[]>([]);
   const [search, setSearch] = useState('');
-  const [disk, setDisk] = useState<{ usage_bytes: number; quota_bytes: number } | null>(null);
+  const [disk, setDisk] = useState<{ usage_bytes: number; quota_bytes: number; quota_is_default?: boolean } | null>(null);
   const [loading, setLoading] = useState(false);
   // 归档对话框
   const [archiveOpen, setArchiveOpen] = useState(false);
@@ -209,7 +209,7 @@ export default function WorkspaceAssets() {
           <div>
             <h1 className="text-2xl font-bold flex items-center gap-2"><Archive className="h-6 w-6" />资产清单</h1>
             <p className="text-muted-foreground mt-1 text-sm">
-              会话产物"归档收藏"后进入清单，跟随账号跨工作空间复用；资产托管在对象存储，本地会话产物可按磁盘配额清理。
+              会话产物"归档收藏"后进入清单，跟随账号跨工作空间复用；归档后可在聊天框用 <code className="rounded bg-muted px-1">@</code> 引用为当前会话上下文。资产托管在对象存储，本地会话产物可按磁盘配额清理。
             </p>
           </div>
           <div className="flex gap-2">
@@ -223,7 +223,12 @@ export default function WorkspaceAssets() {
           <div className="border rounded-lg p-3 space-y-2">
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>工作空间磁盘用量</span>
-              <span>{fmtBytes(disk.usage_bytes)} / {disk.quota_bytes ? fmtBytes(disk.quota_bytes) : '未设配额'}{usagePct >= 90 ? '（接近上限，建议归档/清理）' : ''}</span>
+              <span>
+                {fmtBytes(disk.usage_bytes)} / {disk.quota_bytes > 0
+                  ? `${fmtBytes(disk.quota_bytes)}${disk.quota_is_default ? '（系统缺省）' : ''}`
+                  : '不设限'}
+                {usagePct >= 90 ? '（接近上限，建议归档/清理）' : ''}
+              </span>
             </div>
             <div className="h-1.5 w-full rounded bg-muted overflow-hidden">
               <div className={`h-1.5 rounded ${usagePct >= 90 ? 'bg-destructive' : usagePct >= 70 ? 'bg-amber-500' : 'bg-primary'}`} style={{ width: `${usagePct}%` }} />
@@ -240,7 +245,7 @@ export default function WorkspaceAssets() {
           <div className="text-center py-8 text-muted-foreground">加载中...</div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground">
-            {search ? '没有匹配的资产' : '暂无资产，点击「归档会话产物」把重要产物收藏进清单'}
+            {search ? '没有匹配的资产' : '暂无资产，点击「归档会话产物」把重要产物收藏进清单（归档 = 可跨会话 @ 复用）'}
           </div>
         ) : (
           <div className="space-y-2">

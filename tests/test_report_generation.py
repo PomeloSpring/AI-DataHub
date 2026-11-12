@@ -28,12 +28,34 @@ def test_fact_table_serializes_dict_values_and_escapes_html():
     assert "physical_column" not in content
     assert "<script>" not in content
     assert "&lt;script&gt;" in content
-    assert "仅展示" in content
+    # 抬头只说事实（数据来自已鉴权查询、行数可能被截断），不再印"尚未完成证据校验、不可对外发布"那句套话
+    assert "已鉴权查询" in content and "不可对外发布" not in content
 
 
 def test_empty_results_not_invented_as_success():
     with pytest.raises(ValueError):
         reports.render_fact_report("失败", [{"status": "failed", "error": "private host"}])
+
+
+def test_semantic_business_headers_are_printed_but_sql_names_are_not():
+    """表头按取数路径分域：语义层列名就是 Chat 同一份业务表头，该直接印；
+    SQL/数据集路径的列名是物理名，继续不对外（护栏 §7）。"""
+    semantic = reports.render_fact_report("报告", [{
+        "status": "success", "source": "run_semantic_query",
+        "columns": ["省份", "访问次数"], "rows": [{"省份": "江苏", "访问次数": 251}]}])
+    assert "| 省份 | 访问次数 |" in semantic and "字段1" not in semantic
+    assert "江苏" in semantic and "251" in semantic
+
+    intent = reports.render_fact_report("报告", [{
+        "status": "success", "source": "semantic_intent",
+        "columns": [{"name": "案例数"}], "rows": [{"案例数": 7}]}])
+    assert "| 案例数 |" in intent
+
+    # 逐站扇出的 source 带站点后缀（execute_sql:cn），同样不得印物理名
+    sql = reports.render_fact_report("报告", [{
+        "status": "success", "source": "execute_sql:cn",
+        "columns": ["visit_cnt"], "rows": [{"visit_cnt": 1}]}])
+    assert "| 字段1 |" in sql and "visit_cnt" not in sql
 
 
 @pytest.fixture
@@ -61,13 +83,39 @@ def test_query_failure_has_no_success_body(generation, monkeypatch):
     assert "host password" not in str(updates)
 
 
-def test_fact_only_report_is_explicitly_degraded(generation, monkeypatch):
+def test_fact_table_from_governed_rows_is_ready_not_degraded(generation, monkeypatch):
+    """事实表格的行的确来自已鉴权查询 → 证据成立就是 ready，不再一律挂"降级"。
+
+    旧断言写的是 degraded，因为三处生成出口都硬编码降级（证据校验从未实现）；
+    现在按事实判：有受治理结果 + 正文非空 = ready，"没沿用版式/没模型叙述"另记在 layout_result。
+    """
     row, updates = generation
     monkeypatch.setattr(reports, "execute_report_source", lambda *a: {
-        "columns": ["count"], "rows": [{"count": 3}], "status": "success", "_security_context": {}})
+        "columns": ["count"], "rows": [{"count": 3}], "status": "success",
+        "source": "run_semantic_query", "_security_context": {}})
     reports.run_report(1)
-    assert row["generation_status"] == "degraded"
+    assert row["generation_status"] == "ready"
+    assert row["evidence_summary"]["validation_status"] == "governed"
+    assert row["evidence_summary"]["query_count"] == 1
     assert "3" in row["content"]
+    # 抬头不再印那句没人当真的套话
+    assert "不可对外发布" not in row["content"]
+
+
+def test_evidence_verdict_is_the_single_ruling():
+    """判定口径直接上用例：没受治理结果 / 正文为空才 degraded，原因逐条可见。"""
+    status, summary = reports.evidence_verdict([], content="# x")
+    assert status == "degraded" and "取数结果" in summary["reasons"][0]
+
+    status, summary = reports.evidence_verdict(
+        [{"status": "success", "columns": ["c"], "rows": [{"c": 1}], "truncated": True,
+          "source": "execute_sql"}], content="")
+    assert status == "degraded" and summary["completeness"] == "sample_only"
+
+    status, summary = reports.evidence_verdict(
+        [{"status": "success", "columns": ["c"], "rows": [{"c": 1}],
+          "source": "execute_sql:明细"}], content="# x")
+    assert status == "ready" and summary["sources"] == ["execute_sql"]
 
 
 def test_report_dispatch_failure_persisted(monkeypatch):

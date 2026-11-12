@@ -30,6 +30,16 @@ export interface NormalizeDocObjectsResult {
   issues: DocObjectIssue[];
 }
 
+/**
+ * canonical 字段 → 旧字段别名（读取与写入口共用这一张表）。
+ * 后端 `ontology_service._OBJECT_FIELD_ALIASES` 还容忍 `id`/`class` 作 key 别名，
+ * 前端不跟进：那两个字段在源本体对象上常是数字主键，当身份用会造出假 key。
+ */
+export const OBJECT_FIELD_ALIASES: Record<'key' | 'display_name', string[]> = {
+  key: ['object_key', 'code'],
+  display_name: ['name', 'label'],
+};
+
 const firstStr = (...vals: unknown[]): string => {
   for (const v of vals) {
     const s = String(v ?? '').trim();
@@ -45,14 +55,49 @@ const firstStr = (...vals: unknown[]): string => {
 export function resolveObjectKey(obj: unknown): string {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return '';
   const o = obj as Record<string, any>;
-  return firstStr(o.key, o.object_key, o.code, o.primary_table);
+  return firstStr(o.key, ...OBJECT_FIELD_ALIASES.key.map((f) => o[f]), o.primary_table);
 }
 
 /** 对象可读名：canonical `display_name` → 旧字段 `name`/`label` → key */
 export function resolveDisplayName(obj: unknown, key: string): string {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return key;
   const o = obj as Record<string, any>;
-  return firstStr(o.display_name, o.name, o.label, key);
+  return firstStr(o.display_name, ...OBJECT_FIELD_ALIASES.display_name.map((f) => o[f]), key);
+}
+
+/** 身份判等口径（与服务端 object_identity_key 一致：忽略大小写与分隔符） */
+const identityKey = (k: unknown): string => String(k ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+/**
+ * 在**原始** doc.objects 里按对象身份定位下标。
+ *
+ * 历史缺陷：展示层用 resolveObjectKey 归一旧字段名（清单里看得见 `case_stat`），
+ * 而「编辑对象」的写入口直接按 `o.key === key` 找，存量 doc 只有 `object_key` →
+ * 永远找不到 → 弹「对象不存在: case_stat」，该模型下一个对象都改不了。
+ * 读边界与写入口必须同一口径，否则页面呈现的就是无法回写的假象。
+ */
+export function findObjectIndex(objects: unknown, key: string): number {
+  const items = Array.isArray(objects) ? objects : [];
+  const want = String(key ?? '').trim();
+  if (!want) return -1;
+  const exact = items.findIndex((o) => resolveObjectKey(o) === want);
+  if (exact >= 0) return exact;
+  // 兜底按身份判等（大小写/分隔符差异）：服务端本就按同口径判重，不会因此改错对象
+  const idn = identityKey(want);
+  return items.findIndex((o) => identityKey(resolveObjectKey(o)) === idn);
+}
+
+/**
+ * 写对象标量字段：canonical 与已存在的旧别名字段同步赋值。
+ * 服务端 `normalize_object_field_aliases` 只在 canonical 缺失时回填别名、不清理旧值，
+ * 前端若只写 canonical，doc 里会留下 `name`（旧名）与 `display_name`（新名）互相矛盾。
+ */
+export function writeObjectField(
+  obj: Record<string, any>, field: 'key' | 'display_name', value: string): void {
+  obj[field] = value;
+  for (const alias of OBJECT_FIELD_ALIASES[field] || []) {
+    if (Object.prototype.hasOwnProperty.call(obj, alias)) obj[alias] = value;
+  }
 }
 
 /**

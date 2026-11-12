@@ -127,3 +127,62 @@ def test_model_env_empty_allows_sdk_auto(tmp_path, monkeypatch):
     monkeypatch.setattr(_cfg, "QODER_MODEL", "", raising=False)
     options, _ = build(tmp_path, monkeypatch)
     assert options.model is None
+
+
+def build_with_skills(tmp_path, monkeypatch, skills, extra=None):
+    """带技能正文的 options 组装：用于验聊天 `/` 选择一路流到 system_prompt。
+
+    `build()` 把 load_skills 钉成空清单（其它用例只关心工具契约），这里换成可控清单。
+    """
+    pytest.importorskip("qodercn_agent_sdk")
+    monkeypatch.setenv("QODERCN_PERSONAL_ACCESS_TOKEN", "test-only-token")
+    task = make_task(tmp_path)
+    task.context.extra.update(extra or {})
+    adapter = QoderSDKAdapter("test", {"cli_name": "qoder", "mode": "sdk"})
+    with patch("backend.modules.mind.execution.prompt_composer._permission_summary", return_value="权限"), \
+         patch("backend.modules.mind.execution.as_bots.load_skills", return_value=skills):
+        return adapter._build_options(task)
+
+
+_TWO_SKILLS = [
+    {"name": "data-analysis", "display_name": "数据分析", "description": "语义层取数剧本",
+     "system_prompt": "先确认口径再取数（数据分析作业细则）"},
+    {"name": "report-delivery", "display_name": "报表交付", "description": "报表产出规范",
+     "system_prompt": "报表标题按内容归纳（报表交付作业细则）"},
+]
+
+
+def test_slash_pinned_skill_body_and_directive_reach_prompt(tmp_path, monkeypatch):
+    """`/` 选中的技能正文 + 指令必须进本轮提示词。
+
+    多技能绑定时正文按触发词收窄（MAX_SKILL_BODIES），本轮问题「你好」谁都不命中；
+    用户显式点名的技能要**越过收窄**被展开，否则前端能选、后端不认=空承诺。
+    """
+    options = build_with_skills(
+        tmp_path, monkeypatch, _TWO_SKILLS,
+        {"selected_skills": ["data-analysis"],
+         "slash_directive": "用户通过 `/` 显式指定：本轮结束后把该分析需求创建为定时任务。"})
+    assert "### 技能:数据分析" in options.system_prompt
+    assert "数据分析作业细则" in options.system_prompt
+    assert "### 技能:报表交付" not in options.system_prompt
+    assert "## 本轮用户指定操作" in options.system_prompt
+    assert "把该分析需求创建为定时任务" in options.system_prompt
+
+
+def test_slash_unpinned_question_keeps_narrowing(tmp_path, monkeypatch):
+    """未用 `/` 点名时行为不变：正文按触发词收窄，清单行仍带未展开原因。"""
+    options = build_with_skills(tmp_path, monkeypatch, _TWO_SKILLS)
+    assert "### 技能:" not in options.system_prompt
+    assert "## 已绑定技能" in options.system_prompt
+    assert "## 本轮用户指定操作" not in options.system_prompt
+
+
+def test_slash_unbound_skill_is_announced_not_dropped(tmp_path, monkeypatch):
+    """点名的技能没绑到当前 AS-BOT：提示词必须显式告知“本轮没按它执行”。
+
+    静默换个剧本把答案交出去 = 让用户以为指定生效了（no-silent-degradation）。
+    """
+    options = build_with_skills(tmp_path, monkeypatch, _TWO_SKILLS,
+                                {"selected_skills": ["ontology-builder"]})
+    assert "## 用户指定技能未生效" in options.system_prompt
+    assert "ontology-builder" in options.system_prompt

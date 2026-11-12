@@ -586,7 +586,7 @@ flowchart LR
 
 | 上界 | 语义 | 典型 perm_code |
 |---|---|---|
-| `SECRET_BOUND_NONE_PERMS` | 恒为 none，根本不进 LLM 工具面 | 凭据类 `datasource:manage`/`mcp:*`/`model:manage`/`notification:*`；身份与权限 `user:*`/`role:*`/`system:users`/`system:roles`；安全边界 `rls:*`/`sandbox:*`/`asbot:*`/`sensitive:manage`；全局配置 `settings:*`；注入面 `prompt:*`/`skill:*`；物理 SQL `sql-pairs:*` |
+| `SECRET_BOUND_NONE_PERMS` | 恒为 none，根本不进 LLM 工具面 | 凭据类 `datasource:manage`/`mcp:*`/`model:manage`/`notification:*`；身份与权限 `user:*`/`role:*`/`system:users`/`system:roles`；安全边界 `rls:*`/`sandbox:*`/`asbot:*`/`sensitive:manage`；全局配置 `settings:*`；注入面 `prompt:*`/`skill:*` |
 | `SECRET_BOUND_READ_ONLY_PERMS` | 上限 read，禁止一切写 | `datasource:read`、`model:read`、`sensitive:read`、`audit:read`、`observability:read` |
 
 判定口径：涉密项含①连接凭据/密钥/个人身份 ②本身是安全边界（可被 prompt injection 诱导放宽）③系统提示词（注入面）或物理 SQL/表列名（§7 黑盒）。

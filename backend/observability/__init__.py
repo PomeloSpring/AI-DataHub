@@ -10,6 +10,8 @@
     observability.set_trace_id() / get_trace_id()       # 中间件
     observability.trace_id_for_response() / message_uuid()
     observability.set_result(...) / set_handled_by(...)  # 入口回写回合结果/处理方
+    observability.set_capacity(...)                     # 回写排队时长/自动重试次数
+    observability.turn_elapsed_ms()                     # 回合已跑时长(与 trace 同口径)
 所有函数在未开启或无 recorder 时安全 no-op。
 """
 from .context import (
@@ -26,14 +28,19 @@ from .recorder import (
     current,
     finalize,
     message_uuid,
+    set_capacity,
+    set_execution_channel,
     set_handled_by,
     set_result,
     trace_id_for_response,
+    turn_elapsed_ms,
 )
 
 __all__ = [
     "begin", "current", "finalize",
     "record_llm_call", "record_span", "set_session_credits", "mark_model_window_start",
     "set_trace_id", "get_trace_id", "new_uuid",
-    "trace_id_for_response", "message_uuid", "set_result", "set_handled_by",
+    "trace_id_for_response", "message_uuid", "set_result", "set_handled_by", "set_capacity",
+    "set_execution_channel",
+    "turn_elapsed_ms",
 ]

@@ -11,7 +11,7 @@ import { formatBytes } from '@/api/monitoring';
  * 工作空间删除确认框（下拉切换器与管理员统管页共用）。
  *
  * 打开时先拉影响清单（GET /workspaces/{id}/delete-impact）再让人确认——
- * 不做"点了就删"的静默级联；后端对默认工作站一律 409，这里同样不把删除
+ * 不做"点了就删"的静默级联；后端对默认工作空间一律 409，这里同样不把删除
  * 入口摆给默认空间（见 WorkspaceMenuItem / WorkspaceManagerV2）。
  */
 
@@ -96,7 +96,7 @@ export function WorkspaceDeleteDialog({ workspace, open, onOpenChange, onDeleted
         <DialogHeader>
           <DialogTitle>删除工作空间</DialogTitle>
           <DialogDescription>
-            将永久删除「{workspace?.name}」及其中的工作站内容，此操作不可恢复。
+            将永久删除「{workspace?.name}」及其中的会话与产物，此操作不可恢复。
             已归档到资产清单的文件跟随账号保留，不受影响。
           </DialogDescription>
         </DialogHeader>

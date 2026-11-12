@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   Plus, Edit2, Trash2, Database, Cloud, Folder,
-  RefreshCw, Sparkles,
+  RefreshCw, Sparkles, Plug,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
@@ -34,6 +34,9 @@ interface KnowledgeBase {
   last_sync_at: string | null;
   created_at: string;
   updated_at: string;
+  // 检索通道可用性：由服务端 provider 注册表派生（前端不重写一份 kb_type 白名单，
+  // 否则就是“配置页能选、检索时问不到”的漂移成因）。原因文案也原文来自服务端。
+  retrieval?: { readable?: boolean; provider?: string; corpus_origin?: string; reason?: string };
 }
 
 interface QMindNotebook {
@@ -122,6 +125,22 @@ export default function KnowledgeBase() {
       loadKnowledgeBases();
     } catch (error: any) {
       toast.error(error.response?.data?.detail || '删除失败');
+    }
+  };
+
+  // 「测试连接」：按 provider 实调一次连通性自检（百炼=带凭据真打一次检索，qmind=探测 notebook 可达）。
+  // 成功/失败原样显示，失败原因不含凭据（服务端已保证）；不做“看起来通过了”的静默兜底。
+  const [probingId, setProbingId] = useState<number | null>(null);
+  const handleProbe = async (kb: KnowledgeBase) => {
+    setProbingId(kb.id);
+    try {
+      const { data } = await client.post(`/knowledge-bases/${kb.id}/probe`);
+      if (data?.ok) toast.success(`「${kb.name}」连通正常`);
+      else toast.error(`「${kb.name}」连不通：${data?.reason || '未返回原因'}`);
+    } catch (error: any) {
+      toast.error(error.response?.data?.detail || '测试连接未完成');
+    } finally {
+      setProbingId(null);
     }
   };
 
@@ -261,6 +280,13 @@ export default function KnowledgeBase() {
                       <Badge className={typeConfig.color}>
                         {typeConfig.label}
                       </Badge>
+                      {kb.retrieval && kb.retrieval.readable === false && (
+                        // 未接入检索通道的库照常列出并给出服务端原因原文：藏起来会被读成“库没了”，
+                        // 只标灰不放原因又会被读成“能查”（no-silent-degradation）。
+                        <div className="mt-1 text-xs text-destructive" title={kb.retrieval.reason || ''}>
+                          检索通道未接入
+                        </div>
+                      )}
                     </td>
                     <td className="p-3">
                       <Badge variant={kb.status === 'active' ? 'default' : kb.status === 'error' ? 'destructive' : 'secondary'}>
@@ -277,6 +303,17 @@ export default function KnowledgeBase() {
                     </td>
                     <td className="p-3 text-right">
                       <div className="flex justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleProbe(kb)}
+                          disabled={probingId === kb.id}
+                          title={kb.retrieval && kb.retrieval.readable === false
+                            ? (kb.retrieval.reason || '该库的检索通道本批未接入')
+                            : '测试连接'}
+                        >
+                          <Plug className={`h-4 w-4 ${probingId === kb.id ? 'animate-pulse' : ''}`} />
+                        </Button>
                         <Button
                           variant="ghost"
                           size="sm"
@@ -621,7 +658,9 @@ function SourceConfigForm({
       <div className="space-y-4">
         <div className="p-4 bg-blue-50 rounded-lg">
           <p className="text-sm text-blue-800">
-            从服务器本地目录读取文档文件，支持 .md, .txt, .pdf, .docx 等格式
+            <span className="font-medium">本地目录：</span>支持 .md/.txt/.pdf/.docx 等格式。
+            检索通道本批未接入：登记在这里不会被 AS-BOT 检索到，也不要绑进 AS-BOT
+            （绑定校验会直接拒绝并说明原因）。
           </p>
         </div>
         <div className="space-y-2">
@@ -665,7 +704,8 @@ function SourceConfigForm({
       <div className="space-y-4">
         <div className="p-4 bg-green-50 rounded-lg">
           <p className="text-sm text-green-800">
-            连接向量数据库，支持 Doris、Milvus、Pinecone、Qdrant 等
+            <span className="font-medium">向量数据库：</span>可登记 Doris、Milvus、Pinecone、Qdrant 等连接信息。
+            检索通道本批未接入：登记在这里不会被 AS-BOT 检索到，也不要绑进 AS-BOT。
           </p>
         </div>
         <div className="space-y-2">
@@ -715,13 +755,17 @@ function SourceConfigForm({
             />
           </div>
           <div className="space-y-2">
-            <Label>密码</Label>
+            <Label>凭据引用名（credential_ref）</Label>
             <Input
-              type="password"
-              value={config.password || ''}
-              onChange={(e) => onChange({ ...config, password: e.target.value })}
-              placeholder="••••••"
+              value={config.credential_ref || ''}
+              onChange={(e) => onChange({ ...config, credential_ref: e.target.value })}
+              placeholder="环境变量名，如 VECTOR_DB_KB_PASSWORD"
             />
+            {/* 凭据纪律对所有类型一致：密钥不入库、不回显（服务端写入即拒）。
+                这里原来摆的是密码框 —— 用户填了只会收到 400，是“配了没用”的陷阱。 */}
+            <p className="text-xs text-muted-foreground">
+              只填环境变量名；密码真值写 backend/.env，本页不保存也不回显密钥。
+            </p>
           </div>
         </div>
         <div className="space-y-2">
@@ -745,11 +789,17 @@ function SourceConfigForm({
   }
 
   if (kbType === 'cloud_rag') {
+    // 百炼按「只读外部语料」接入（2026-11-05 拍板）：平台只检索、不向其推送语料。
+    // 凭据一律不入库也不回显（真值只从 backend/.env 读），所以这里**不放密钥输入框** ——
+    // 摆了框就等于承诺“填了能存”，而服务端写入即拒（400）。
+    const vendorSupported = !config.provider || config.provider === 'aliyun';
+    const heldSecrets = (config._secrets_configured || []) as string[];
     return (
       <div className="space-y-4">
         <div className="p-4 bg-purple-50 rounded-lg">
           <p className="text-sm text-purple-800">
-            接入云厂商 RAG 服务，支持阿里云、腾讯云、百度云等
+            阿里云百炼（Model Studio）知识库：资料由企业在百炼侧维护，本平台只检索、不写入。
+            其他云厂商本批未接入检索通道，绑给 AS-BOT 会被直接拒绝（不会“配了没反应”）。
           </p>
         </div>
         <div className="space-y-2">
@@ -762,41 +812,62 @@ function SourceConfigForm({
               <SelectValue placeholder="选择云厂商" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="aliyun">阿里云百炼</SelectItem>
-              <SelectItem value="tencent">腾讯云混元</SelectItem>
-              <SelectItem value="baidu">百度千帆</SelectItem>
-              <SelectItem value="zhipu">智谱 AI</SelectItem>
-              <SelectItem value="custom">自定义 API</SelectItem>
+              <SelectItem value="aliyun">阿里云百炼（已接入，只读检索）</SelectItem>
+              <SelectItem value="tencent">腾讯云混元（本批未接入）</SelectItem>
+              <SelectItem value="baidu">百度千帆（本批未接入）</SelectItem>
+              <SelectItem value="zhipu">智谱 AI（本批未接入）</SelectItem>
+              <SelectItem value="custom">自定义 API（本批未接入）</SelectItem>
             </SelectContent>
           </Select>
         </div>
-        <div className="space-y-2">
-          <Label>API Key</Label>
-          <Input
-            type="password"
-            value={config.api_key || ''}
-            onChange={(e) => onChange({ ...config, api_key: e.target.value })}
-            placeholder="sk-..."
-          />
-        </div>
-        <div className="space-y-2">
-          <Label>App ID / 知识库 ID</Label>
-          <Input
-            value={config.app_id || ''}
-            onChange={(e) => onChange({ ...config, app_id: e.target.value })}
-            placeholder="输入应用 ID 或知识库 ID"
-          />
-        </div>
-        {config.provider === 'custom' && (
-          <div className="space-y-2">
-            <Label>API 端点</Label>
-            <Input
-              value={config.api_endpoint || ''}
-              onChange={(e) => onChange({ ...config, api_endpoint: e.target.value })}
-              placeholder="https://api.example.com/v1"
-            />
+        {!vendorSupported && (
+          <div className="p-3 rounded-lg bg-destructive/10 text-xs text-destructive">
+            该厂商的检索通道本批未接入：保存后仍不能被 AS-BOT 检索使用。要么改选阿里云百炼，
+            要么先不要把它绑进 AS-BOT。
           </div>
         )}
+        {heldSecrets.length > 0 && (
+          // 存量旧行可能仍有明文密钥（历史缺陷）：读取已被掩码，这里只告知“曾经存过”，不回显值。
+          <div className="p-3 rounded-lg bg-destructive/10 text-xs text-destructive">
+            检测到历史配置里存有凭据字段（{heldSecrets.join('、')}）。平台不再保存也不回显密钥：
+            请把真值写入 backend/.env 的 DASHSCOPE_API_KEY，并清理该字段。
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label>知识库 ID（index_id）</Label>
+            <Input
+              value={config.index_id || ''}
+              onChange={(e) => onChange({ ...config, index_id: e.target.value })}
+              placeholder="百炼控制台的知识库 ID"
+            />
+            {/* 外部系统标识：本系统没有可枚举的清单，按例外允许手输（原因必须写在这里，
+                否则用户不知道该填库名还是 ID）；接入 ListIndices 后升级为可搜索选择框。 */}
+            <p className="text-xs text-muted-foreground">
+              百炼侧标识，本平台无法枚举候选，需从百炼控制台复制。
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label>业务空间 ID（workspace_id）</Label>
+            <Input
+              value={config.workspace_id || ''}
+              onChange={(e) => onChange({ ...config, workspace_id: e.target.value })}
+              placeholder="可选，百炼业务空间 ID"
+            />
+            <p className="text-xs text-muted-foreground">同样是外部标识，按需在百炼控制台查看。</p>
+          </div>
+        </div>
+        <div className="space-y-2">
+          <Label>凭据引用名（credential_ref）</Label>
+          <Input
+            value={config.credential_ref || ''}
+            onChange={(e) => onChange({ ...config, credential_ref: e.target.value })}
+            placeholder="留空则使用 DASHSCOPE_API_KEY"
+          />
+          <p className="text-xs text-muted-foreground">
+            只填环境变量名（如 BAILIAN_KB_A_KEY），不要在这里填密钥；密钥只从 backend/.env 读取。
+          </p>
+        </div>
         <div className="space-y-2">
           <Label>检索数量 (Top K)</Label>
           <Input

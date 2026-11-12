@@ -302,6 +302,8 @@ class TaskMonitorService:
                 raise ValueError("任务已结束，不能停止")
             return {"kind": kind, "run_id": run_id, "status": "cancelled"}
         if kind == "report":
+            # 只动 queued/running —— 正文只在终态写入，这两态没有对象可收，
+            # 所以这里不需要跟着清 content_object_key（终态清理走 report_service）。
             changed = execute_write(
                 "UPDATE adh_reports SET generation_status='cancelled', stage_error_code='CANCELLED', "
                 "content='' WHERE id=%s AND generation_status IN ('queued','running')", (run_id,))

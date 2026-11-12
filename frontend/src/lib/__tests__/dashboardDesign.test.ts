@@ -4,11 +4,13 @@ import path from 'node:path';
 import {
   applyChartComponent, applyScreenComponent, applyLayout, chartDataKey, clampPosition, COMPONENT_SLOT,
   compatible, getCanvas, resolveChartDesign, resolveComponent, resolveDashboardDesign,
-  sanitizeStyle, sanitizePack, screenToCanvas, snapshotComponent, themePackFor, visualConfig,
-  legacyCanvasFilters, chartRect, minSizeOf, naturalSizeOf, snapCanvasRect, clearChartVisualOverrides, libraryThemeFilters, appliesToType,
+  sanitizeStyle, sanitizePack, screenToCanvas, snapshotComponent, themePackExact, themePackAvailability,
+  themePackFor, visualConfig,
+  legacyCanvasFilters, chartRect, minSizeOf, minReadableWidth, naturalSizeOf, snapCanvasRect, clearChartVisualOverrides, libraryThemeFilters, appliesToType,
+  TABLE_VALUE_PAGE_SIZES, TABLE_VALUE_PAGE_SIZE_DEFAULT, TABLE_VALUE_PAGE_SIZE_MAX, pageSizeOf,
 } from '../dashboardDesign';
 import { CHART_TYPES } from '../../components/DashboardChart';
-import { validateVisResponse } from '../../api/visLibrary';
+import { isVisUsable, validateVisResponse } from '../../api/visLibrary';
 import { exportChart } from '../../components/DashboardExportImport';
 import type { VisComponent } from '../../api/visLibrary';
 
@@ -223,6 +225,14 @@ describe('控件样式字模(widget_style)', () => {
   });
 });
 
+describe('面积渐隐旋钮白名单', () => {
+  it('areaFade 不被入库即剥（false 也得保留，否则"关掉渐隐"配了等于没配）', () => {
+    const out = sanitizeStyle({ config: { areaFade: false, areaOpacity: 0.4, bogus: 1 } });
+    expect(out.config).toEqual({ areaFade: false, areaOpacity: 0.4 });
+    expect(sanitizeStyle({ config: { areaFade: 0.7 } }).config.areaFade).toBe(0.7);
+  });
+});
+
 describe('表值图字模旋钮', () => {
   it('headerColor / tableFontSize 已登记白名单（不登记会被入库即剥）', () => {
     const picked = visualConfig({ headerBg: '#F7F8FA', headerColor: '#262626', zebraBg: '#FAFBFC', rowHeight: 32, tableFontSize: 13, sql: 'SELECT 1' });
@@ -260,6 +270,39 @@ describe('主题包(theme_pack)', () => {
     expect(themePackFor('tech', items)?.code).toBe('tp_tech');
     expect(themePackFor('nosuch', items)?.code).toBe('tp_datafoundry');
     expect(themePackFor(undefined, items)).toBeUndefined();
+  });
+
+  // 禁用=停用但保留（ui-vis-library-style §1）：主题包不可使用必须一路传到系统主题，
+  // 且不得静默换成兜底的 tp_datafoundry（那会出现"外壳还是亮色、图表是另一套配色"的半截状态）
+  it('themePackExact 只认精确主题包，不兜底 datafoundry', () => {
+    const items = [pack('tp_tech'), pack('tp_datafoundry')];
+    expect(themePackExact('tech', items)?.code).toBe('tp_tech');
+    expect(themePackExact('light', items)).toBeUndefined();
+    expect(themePackExact(undefined, items)).toBeUndefined();
+    // 固化当前主题这类写入路径用它：拿不到精确包就置灰，而不是物化别一套包
+    expect(themePackFor('light', items)?.code).toBe('tp_datafoundry');
+  });
+
+  it('themePackAvailability 分档：在用 / 禁用 / 下架 / 库里没有', () => {
+    const usable = pack('tp_light');
+    expect(themePackAvailability('light', [usable])).toEqual({ state: 'usable', pack: usable });
+    const disabled = { ...usable, is_enabled: 0 };
+    const blockedDisabled = themePackAvailability('light', [disabled]);
+    expect(blockedDisabled.state).toBe('blocked');
+    expect(blockedDisabled.reason).toContain('禁用');
+    expect(blockedDisabled.reason).toContain(usable.name);
+    const blockedOffline = themePackAvailability('light', [{ ...usable, is_active: 0 }]);
+    expect(blockedOffline.state).toBe('blocked');
+    expect(blockedOffline.reason).toContain('下架');
+    // 库里没有这个包（只存在于 CSS 的主题）= 不改变现状，仍可选
+    expect(themePackAvailability('medical', [usable])).toEqual({ state: 'absent' });
+  });
+
+  it('isVisUsable：缺列（未跑迁移的存量库）按启用处理', () => {
+    expect(isVisUsable({ is_active: 1 })).toBe(true);
+    expect(isVisUsable({ is_active: 1, is_enabled: 1 })).toBe(true);
+    expect(isVisUsable({ is_active: 1, is_enabled: 0 })).toBe(false);
+    expect(isVisUsable({ is_active: 0, is_enabled: 1 })).toBe(false);
   });
 
   it('无显式设计时跟随用户全局主题(内存回退, 不改 filters)', () => {
@@ -367,11 +410,22 @@ describe('画布吸附与防塌陷', () => {
     for (const type of ['widget_search', 'widget_daterange', 'widget_label', 'bar', undefined]) {
       expect(minSizeOf(type)).toEqual({ w: 1, h: 1 });
     }
-    // 自然尺寸只是“没碰过时”的紧凑起点
-    expect(naturalSizeOf('widget_search')).toEqual({ w: 96, h: 24 });
-    expect(naturalSizeOf('widget_daterange')).toEqual({ w: 320, h: 32 });
-    expect(naturalSizeOf('widget_select')).toEqual({ w: 180, h: 28 });
+    // 自然尺寸以「设备数据流」看板为基准：高度统一（同一排控件上下对齐），宽度按控件类型给
+    expect(naturalSizeOf('widget_search')).toEqual({ w: 75, h: 40 });
+    expect(naturalSizeOf('widget_daterange')).toEqual({ w: 530, h: 40 });
+    expect(naturalSizeOf('widget_date')).toEqual({ w: 257, h: 40 });
+    expect(naturalSizeOf('widget_select')).toEqual({ w: 135, h: 40 });
+    expect(naturalSizeOf('widget_text')).toEqual({ w: 135, h: 40 });
+    // 全部参数控件高度一致（旧口径按类型给 24/28/32/64，落网格就是 6/7/8/16 行混排）
+    for (const type of ['widget_text', 'widget_select', 'widget_daterange', 'widget_search', 'widget_label']) {
+      expect(naturalSizeOf(type).h, type).toBe(40);
+    }
     expect(naturalSizeOf('bar')).toEqual({ w: 400, h: 300 });
+    // 内容不可压缩控件另有可读下限（只用于编辑态提醒与一键补宽，不做硬下限）
+    expect(minReadableWidth('widget_daterange')).toBe(420);
+    expect(minReadableWidth('widget_date')).toBe(200);
+    expect(minReadableWidth('widget_text')).toBe(0);
+    expect(minReadableWidth('bar')).toBe(0);
   });
   it('控件紧凑旋钮通过 WIDGET_KEYS 白名单，入库不被剥', () => {
     const pack = sanitizePack({ widgets: { widget_text: { lineHeight: 18, height: 24, gap: 2, labelWidth: 64, fontSize: 11, bogus: 1 } } });
@@ -412,16 +466,25 @@ describe('导出不泄露语义 SQL', () => {
     expect(out.semantic_query).toEqual({ object: 'x' });
     expect(JSON.stringify(out.config)).not.toMatch(/secret|countSql|"sql"/i);
   });
-  it('人工 raw_sql 图表保留 SQL', () => {
+  it('人工 raw_sql 图表导出带走口径并标 needs_migration（通道已下线，导入侧显式提醒）', () => {
     const out: any = exportChart({ name: 't', chart_type: 'bar', query_source: 'raw_sql', sql_query: 'SELECT 1', config: {}, position: {}, source_type: 'query' });
     expect(out.sql_query).toBe('SELECT 1');
+    expect(out.needs_migration).toBe(true);
   });
-  it('raw 图表保留 countSql 等显式口径，只剥重复/内部键', () => {
+  it('raw 图表只剥内部/临时键：退役分页旋钮不再随导出流转，pageSize 保留', () => {
     const out: any = exportChart({ name: 't', chart_type: 'table_value', query_source: 'raw_sql', sql_query: 'SELECT 1',
-      config: { countSql: 'SELECT COUNT(*) FROM t', sql: 'SELECT stale', previewData: { rows: [] }, demoSql: 'SELECT demo', enableServerPagination: true },
+      config: { countSql: 'SELECT COUNT(*) FROM t', sql: 'SELECT stale', previewData: { rows: [] }, demoSql: 'SELECT demo',
+        enableServerPagination: true, pageLimit: 50, maxRows: 5000, pageSize: 50 },
       position: {}, source_type: 'query' });
-    expect(out.config.countSql).toBe('SELECT COUNT(*) FROM t');
-    expect(out.config.enableServerPagination).toBe(true);
+    // 行总数现在由服务端从数据集编译产物算，前端不再递交也不导出统计语句
+    expect(out.config.countSql).toBeUndefined();
+    // 表值图恒定真分页：旧三旋钮（是否分页/页大小/前端行上限）已下线，
+    // 带走它们等于向导入方复述一个不再存在的开关（no-silent-degradation）
+    expect(out.config.enableServerPagination).toBeUndefined();
+    expect(out.config.pageLimit).toBeUndefined();
+    expect(out.config.maxRows).toBeUndefined();
+    // 唯一保留的分页旋钮：每页行数（20/50/100）
+    expect(out.config.pageSize).toBe(50);
     expect(out.config.sql).toBeUndefined();
     expect(out.config.previewData).toBeUndefined();
     expect(out.config.demoSql).toBeUndefined();
@@ -525,5 +588,38 @@ describe('字模迁移与白名单对齐（表值图 + 控件样式）', () => {
       if (r.category === 'widget_style') for (const t of types) expect(t.startsWith('widget_'), `${r.code} 指向非控件 ${t}`).toBe(true);
       if (r.category === 'chart_style') for (const t of types) expect(t.startsWith('widget_'), `${r.code} 指向控件 ${t}`).toBe(false);
     }
+  });
+});
+
+// 表值图分页口径收口（2026-11-11）：档位只有 20/50/100，上限 100 在 lib 层把一次
+// （store 发起重查与组件渲染共用同一个函数，两边算出不一样页大小就会行错位）。
+describe('表值图分页档位', () => {
+  it('三档原样通过，越界与脏值分别收到上限/回落缺省', () => {
+    expect(TABLE_VALUE_PAGE_SIZES).toEqual([20, 50, 100]);
+    expect(TABLE_VALUE_PAGE_SIZE_DEFAULT).toBe(20);
+    expect(TABLE_VALUE_PAGE_SIZE_MAX).toBe(100);
+    for (const n of TABLE_VALUE_PAGE_SIZES) expect(pageSizeOf({ pageSize: n })).toBe(n);
+    // 存量配置里可能残留旧的大页（旧 maxRows/pageLimit 时代有人手填过 500）
+    expect(pageSizeOf({ pageSize: 5000 })).toBe(100);
+    expect(pageSizeOf({ pageSize: 0 })).toBe(20);
+    expect(pageSizeOf({ pageSize: -1 })).toBe(20);
+    expect(pageSizeOf({ pageSize: 'abc' })).toBe(20);
+    expect(pageSizeOf({ pageSize: 33.7 })).toBe(33);
+    expect(pageSizeOf({})).toBe(20);
+    expect(pageSizeOf(undefined)).toBe(20);
+  });
+
+  // 旧三旋钮（是否分页 / 页大小 / 前端行上限）已下线：前端源码里再出现它们，
+  // 就是在给用户返一个改了不会改变任何行为的空承诺（ui-vis-library-style §2 同源防线）。
+  it('已退役的分页旋钮不得再出现在渲染/配置/取数链路里', () => {
+    const retired = ['enableServerPagination', 'pageLimit', 'maxRows'];
+    for (const f of ['components/ChartConfigPanel.tsx', 'components/DashboardChart.tsx', 'stores/dashboardStore.ts']) {
+      const src = fs.readFileSync(path.resolve(__dirname, '..', '..', f), 'utf8');
+      for (const key of retired) expect(src, `${f} 仍引用已退役旋钮 ${key}`).not.toContain(key);
+    }
+    // 模板 config 白名单也不能再登记它（否则新模板又能写出一个不生效的键）
+    const tpl = fs.readFileSync(path.resolve(__dirname, '..', 'dashboardTemplates.ts'), 'utf8');
+    const whitelist = tpl.slice(tpl.indexOf('TEMPLATE_CONFIG_KEYS'), tpl.indexOf('REMOTE_ASSET_TYPES'));
+    for (const key of retired) expect(whitelist, `模板白名单仍登记 ${key}`).not.toContain(key);
   });
 });

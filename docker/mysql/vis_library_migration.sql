@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS adh_vis_components (
   source         VARCHAR(16)  DEFAULT 'custom' COMMENT 'system=内置 | custom=新增',
   workspace_id   BIGINT       DEFAULT 0 COMMENT '0=全局共享',
   is_active      TINYINT      DEFAULT 1,
+  is_enabled     TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '1=启用 0=禁用(停用但保留: 不可被选用, 见 vis_library_enabled_state_migration.sql)',
   is_builtin     TINYINT      DEFAULT 0 COMMENT '1=内置, admin-only 编辑/删除',
   sort_order     INT          DEFAULT 0,
   created_by     BIGINT       DEFAULT 0,

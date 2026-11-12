@@ -19,8 +19,9 @@ vi.mock('@/lib/toast', () => ({
 /**
  * 自动弹出的判定口径（宿主只做"该不该弹"这一件事）。
  *
- * 三条红线: 权限没就绪就先去服务端取状态会拿到空清单 → 误判成"没公告可弹"；
- * 静音标记只能压制自动弹，压不住手动入口；登录/大屏等消费态页面不盖向导。
+ * 四条红线: 权限没就绪就先去服务端取状态会拿到空清单 → 误判成"没公告可弹"；
+ * 静音标记只能压制自动弹，压不住手动入口；登录/大屏等消费态页面不盖向导；
+ * **只讲当前页面** —— 本页没有引导内容又没有公告可看时不弹空壳。
  */
 
 const NOTE = (over: Partial<ReleaseNote> = {}): ReleaseNote => ({
@@ -146,6 +147,24 @@ describe('不该盖向导的页面', () => {
     await new Promise(r => setTimeout(r, 20));
     expect(screen.queryByText('欢迎使用 AI-DataHub')).not.toBeInTheDocument();
   });
+
+  it('当前页面没有引导内容且无公告可看 → 不弹空壳', async () => {
+    backend([], {});
+    renderHost('/dashboards');
+    await read();
+    await new Promise(r => setTimeout(r, 20));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(useGuideStore.getState().welcomeOpen).toBe(false);
+  });
+
+  it('本页无引导但有未读重大公告 → 只弹公告，不给引导入口', async () => {
+    backend([NOTE()], { [GUIDE_WELCOME_KEY]: { status: 'completed' } });
+    renderHost('/dashboards');
+    expect(await screen.findByText('系统已更新，这些变化值得关注')).toBeInTheDocument();
+    expect(screen.queryByText('首页总览')).not.toBeInTheDocument();
+    expect(screen.queryByText('工作空间（日常用数）')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /开始引导/ })).toBeDisabled();
+  });
 });
 
 describe('模块卡片按权限过滤', () => {
@@ -158,6 +177,18 @@ describe('模块卡片按权限过滤', () => {
     expect(await screen.findByText('数据中台（建模与治理）')).toBeInTheDocument();
     expect(screen.queryByText('工作空间（日常用数）')).not.toBeInTheDocument();
     expect(screen.queryByText('系统配置（管理员）')).not.toBeInTheDocument();
-    expect(screen.getByText('首页总览')).toBeInTheDocument();
+    // 首页总览的锚点不在本页，不能跨页列出来
+    expect(screen.queryByText('首页总览')).not.toBeInTheDocument();
+  });
+
+  it('有工作空间权限但本页不在工作空间时不给卡片', async () => {
+    usePermissionStore.setState({
+      loaded: true, unrestricted: false, allowedMenus: ['workspace:chat'], perms: null,
+    });
+    backend([], {});
+    renderHost('/data/datasources');
+    await read();
+    await new Promise(r => setTimeout(r, 20));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 });

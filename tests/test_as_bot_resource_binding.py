@@ -1,7 +1,8 @@
-"""AS-BOT 资源统一：旧入口退役、权限投影及任务迁移，全部隔离真实资源。"""
+"""AS-BOT 唯一资源绑定入口：旧入口退役、权限投影与任务落库形态，全部隔离真实资源。"""
 import asyncio
 import copy
 import importlib
+import json
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -137,44 +138,71 @@ def test_design_candidates_require_as_bot_kb_binding(monkeypatch):
         ds._accessible_kbs(user, 3)
 
 
-def test_task_partial_update_and_enable_validate_persisted_owner(monkeypatch, scheduled_as_bot):
+def test_task_partial_update_validates_persisted_owner_and_strips_internals(monkeypatch,
+                                                                          scheduled_as_bot):
+    """部分更新以**库里的属主**重解角色；落库配置不持有 AS-BOT/数据源等内部键。"""
     from backend.modules.flow.services import scheduled_task_service as module
     task = {'id': 12, 'owner_id': 7, 'workspace_id': 3, 'task_type': 'agent', 'is_active': False,
-            'task_config': {'datasource_id': 8, 'agent_name': 'old'}}
+            'task_config': {'questions': [{'title': '统计', 'question': '统计订单'}]}}
     conn = MagicMock()
     cursor = conn.cursor.return_value.__enter__.return_value
     cursor.fetchone.side_effect = lambda: copy.deepcopy(task)
     cursor.rowcount = 1
     monkeypatch.setattr(module, 'get_metadata_conn', lambda: conn)
     service = module.ScheduledTaskService()
+
+    service.update_task(12, {'name': '仅改名'})            # 属主角色可用 → 放行
+    assert conn.commit.called
+    conn.commit.reset_mock()
+    conn.begin.reset_mock()
+
+    scheduled_as_bot['enabled'] = False                     # 角色被解绑 AS-BOT
     with pytest.raises(sa.ScheduledScopeError, match='AS-BOT'):
-        service.update_task(12, {'name': '仅改名'})
-    with pytest.raises(sa.ScheduledScopeError):
-        service.toggle_task(12, 1)
+        service.update_task(12, {'name': '不该保存'})
     conn.commit.assert_not_called()
-    service.toggle_task(12, 0)
+    service.toggle_task(12, 0)                              # 停用始终允许，不拦旧任务下线
     assert conn.begin.called and conn.commit.called
+
+    scheduled_as_bot['enabled'] = True
     calls = []
     monkeypatch.setattr(auth, 'resolve_execution_owner', lambda uid, ws: calls.append((uid, ws)) or {
         'user_id': uid, 'workspace_id': ws, 'role': 'admin', 'username': '创建者'})
     service.update_task(12, {'owner_id': 999, 'workspace_id': 99,
-                            'task_config': {'datasource_id': 8, 'as_bot_key': 'sales'}})
-    assert calls == [(7, 3)]
+                             'task_config': {'datasource_id': 8, 'as_bot_key': 'sales',
+                                             'mcp_server_ids': [9],
+                                             'questions': [{'title': 't', 'question': '统计'}]}})
+    assert calls == [(7, 3)]                                # 请求体改属主不接受：永远用库里那个人
     assert 'FOR UPDATE' in cursor.execute.call_args_list[-2].args[0]
+    persisted = json.loads([p for p in cursor.execute.call_args_list[-1].args[1]
+                            if isinstance(p, str) and p.startswith('{')][0])
+    assert persisted == {'questions': [{'title': 't', 'question': '统计'}]}
 
 
-def test_admin_edit_options_use_task_owner_not_requester(monkeypatch):
+def test_task_config_without_question_is_refused():
+    """洗内部键不是橡皮章：剥完后没有分析问题就拒落库（不长每次执行都失败的任务）。"""
+    from backend.modules.flow.services.scheduled_task_service import sanitize_task_config
+    with pytest.raises(ValueError, match='分析问题'):
+        sanitize_task_config({'datasource_id': 8, 'as_bot_key': 'sales'})
+    assert sanitize_task_config({'site_code': 'cn', 'as_bot_key': 'x',
+                                 'questions': [{'question': '统计'}]}) == {
+        'site_code': 'cn', 'questions': [{'question': '统计'}]}
+
+
+def test_as_bot_candidate_endpoints_are_retired():
+    """不选 AS-BOT 就没有“给前端列候选”的接口：两个读端点与回调登记同步退役。"""
     from backend.modules.flow.api import scheduled as api
-    monkeypatch.setattr(api.scheduled_task_service, 'get_task', lambda tid: {'owner_id': 7, 'workspace_id': 3})
-    load = Mock(return_value=[])
-    monkeypatch.setattr(sa, 'as_bot_options', load)
-    assert api.existing_task_as_bot_options(12) == []
-    load.assert_called_once_with(7, 3)
+    from backend.core import task_runtime
+    assert not hasattr(api, 'existing_task_as_bot_options')
+    assert not any(str(getattr(r, 'path', '')).endswith('as-bot-options') for r in api.router.routes)
+    assert not hasattr(sa, 'as_bot_options')
+    assert 'mind.as_bot_options' not in task_runtime._CALLBACKS
+    assert 'mind.needs_as_bot_migration' not in task_runtime._CALLBACKS
 
 
-def test_unknown_as_bot_never_uses_default(scheduled_as_bot):
-    with pytest.raises(PermissionError):
-        sa.load_profile({'as_bot_key': 'unknown', 'datasource_id': 8}, {'user_id': 7, 'workspace_id': 3})
+def test_explicit_unknown_as_bot_key_fails_closed(scheduled_as_bot):
+    """仍允许显式指定 AS-BOT 的入口（Chat 卡片）：key 与角色绑定不符即拒，不回退默认。"""
+    with pytest.raises(PermissionError, match='未授权使用所选 AS-BOT'):
+        as_bots.resolve_as_bots(3, 'admin', 'unknown', 7)
 
 
 def test_knowledge_binding_revocation_between_workers(scheduled_as_bot):

@@ -8,6 +8,8 @@
   - llm_call 的 duration_ms = 单次模型请求窗口(非“自回合起点的累计偏移”),
     且工具执行时间不得计入下一条模型请求(时耗归因口径)。
   - Qoder 适配器埋点辅助 _obs_record_assistant / _obs_record_result 解析 SDK 字段。
+  - 执行层与模型通道(set_execution_channel)随 trace 落库：两条通道计量单位不同
+    （Qoder=credit 不报 token / 直连=token 没有 credit），不分开就会汇总错。
 
 全部用 monkeypatch 注入假 store,不落真库。
 """
@@ -156,7 +158,8 @@ def test_qoder_helpers_parse_sdk_fields(captured):
     # llm_call 产物 + ResultMessage 收尾产物(新增 kind=result)
     assert [s["kind"] for s in spans] == ["llm_call", "result"]
     sp = spans[0]
-    assert sp["name"] == "qoder_llm_request"
+    # span 名通道中性：两个后端都走同一采集函数，叫 qoder_* 会把直连日志说成网关
+    assert sp["name"] == "llm_request"
     assert sp["model_ref"] == "claude-x"
     assert sp["input_tokens"] == 200 and sp["output_tokens"] == 50
     assert abs(sp["credits"] - 0.7) < 1e-9
@@ -524,4 +527,63 @@ def test_unmarked_first_call_is_visibly_warned(clocked, caplog):
 
     assert captured[0][1][0]["duration_ms"] == 13_600
     assert "未经 mark_model_window_start 标注" in caplog.text
+
+
+# ── 执行层与模型通道（两条通道计量单位不同，必须分桶）──────────────
+def test_execution_channel_lands_on_trace(captured):
+    """进入执行层时回写通道与层信息，随 trace 落库；来源标 runtime。"""
+    observability.begin(entrypoint="agent", user_id=1)
+    observability.set_execution_channel("anthropic-direct", layer_id=8, layer_name="cli-claude-direct")
+    observability.record_llm_call(name="llm_request", model_ref="qwen3.7-plus",
+                                  input_tokens=1000, output_tokens=200)
+    observability.finalize()
+    summary = captured[0][0]
+    assert summary["channel"] == "anthropic-direct"
+    assert summary["channel_source"] == "runtime"   # 回填值与实记值必须分得开
+    assert summary["layer_id"] == 8 and summary["layer_name"] == "cli-claude-direct"
+
+
+def test_channel_stays_null_when_not_entered(captured):
+    """没进执行层（前置拦截）不写通道：把“没跑模型”标成某个通道就是编数据。"""
+    observability.begin(entrypoint="chat", user_id=1)
+    observability.set_handled_by("intent_gate")
+    observability.finalize()
+    summary = captured[0][0]
+    assert summary.get("channel") is None
+    assert summary.get("layer_id") is None
+
+
+def test_channel_is_not_overwritable_by_later_call(captured):
+    """同一回合重复登记以最后一次为准（选层可能在工具边界重跑），但不允许写空值覆盖。"""
+    observability.begin(entrypoint="agent", user_id=1)
+    observability.set_execution_channel("qoder-gateway", layer_id=7, layer_name="cli-qoder")
+    observability.set_execution_channel("", layer_id=0, layer_name="")
+    observability.finalize()
+    summary = captured[0][0]
+    assert summary["channel"] == "qoder-gateway" and summary["layer_id"] == 7
+
+
+def test_channel_noop_when_observability_disabled(disabled):
+    """未开启可观测时全链路 no-op，不得抛异常影响取数主链路（护栏 §9）。"""
+    observability.set_execution_channel("anthropic-direct", layer_id=8, layer_name="x")
+    observability.finalize(status="success")
+
+
+# ── 通道筛选的伪桶（库里存 NULL，等值比对会查不出东西）──────────────
+def test_pseudo_bucket_filter_uses_bucket_expression():
+    from backend.modules.auth.services.observability_service import _build_where
+
+    where, args = _build_where({"channel": "unrecorded"})
+    assert "CASE WHEN t.channel IS NOT NULL" in where
+    assert "'intent_gate'" in where and where.count("%s") == 1
+    assert args == ["unrecorded"]
+    # 真通道值仍走等值比对（不要把它也包成 CASE，否则索引失效）
+    where2, args2 = _build_where({"channel": "anthropic-direct"})
+    assert where2 == "WHERE t.channel = %s" and args2 == ["anthropic-direct"]
+
+
+def test_empty_channel_filter_adds_no_condition():
+    from backend.modules.auth.services.observability_service import _build_where
+
+    assert _build_where({"channel": ""}) == ("", [])
 

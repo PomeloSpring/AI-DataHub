@@ -77,8 +77,8 @@ INSERT IGNORE INTO adh_permissions (perm_code,label,module,module_label,api_patt
 ('sync:manage','同步任务管理','data','数据中台','/api/sync*','POST','data:sync',172),
 -- 工作空间
 ('chat:use','智能问答','workspace','工作空间','/api/pipeline*','POST','workspace:chat',201),
-('report:read','查看报表','workspace','工作空间','/api/reports*','GET','workspace:reports',211),
-('report:manage','管理报表','workspace','工作空间','/api/reports*','POST','workspace:reports',212),
+('report:read','查看报告','workspace','工作空间','/api/reports*','GET','workspace:reports',211),
+('report:manage','管理报告','workspace','工作空间','/api/reports*','POST','workspace:reports',212),
 ('scheduled:manage','任务调度','workspace','工作空间','/api/scheduled*','*','workspace:scheduled',221),
 -- 系统配置
 ('model:read','查看模型','system','系统配置','/api/model-config*','GET','system:models',301),

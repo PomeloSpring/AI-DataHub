@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { LayoutGrid, Folder, Database, Settings, Check, House } from 'lucide-react';
+import { LayoutGrid, Folder, Database, Settings, Check, House, Newspaper } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -11,7 +11,7 @@ import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useMenuAccess } from '../hooks/useMenuAccess';
 import { TOUR } from '@/lib/onboarding/guides';
 
-export type SectionId = 'home' | 'workspace' | 'data' | 'system' | 'ask';
+export type SectionId = 'home' | 'content' | 'workspace' | 'data' | 'system' | 'ask';
 
 interface SectionSwitcherProps {
   /** Currently active section — used to highlight the matching item. */
@@ -36,6 +36,7 @@ export default function SectionSwitcher({ current }: SectionSwitcherProps) {
     // 工作空间默认页 = 数据看板清单(卡片瀑布)
     navigate(wsId ? `/ws/${wsId}/dashboards` : '/workspace');
   };
+  const goContent = () => navigate('/content');
   const goData = () => navigate('/data');
   const goSystem = () => navigate('/system');
 
@@ -47,6 +48,9 @@ export default function SectionSwitcher({ current }: SectionSwitcherProps) {
   const menuAccess = useMenuAccess();
   const showWorkspace = menuAccess.ready && menuAccess.prefixAllowed('workspace:');
   const showData = menuAccess.ready && menuAccess.prefixAllowed('data:');
+  // 内容中心: 只做内容创作/审核/发布, 入口按权限码反查(无任何 content: 菜单可看就不给
+  // 入口), 与其它模块同口径——不在这里硬编码"恒可见"。资讯门户是另一个模块。
+  const showContent = menuAccess.ready && menuAccess.prefixAllowed('content:');
 
   return (
     <DropdownMenu>
@@ -83,6 +87,14 @@ export default function SectionSwitcher({ current }: SectionSwitcherProps) {
           <Database className="h-4 w-4" />
           <span className="flex-1">数据中台</span>
           {current === 'data' && <Check className="h-4 w-4 text-primary" />}
+        </DropdownMenuItem>}
+        {showContent && <DropdownMenuItem
+          onClick={goContent}
+          className={`flex items-center gap-2 ${current === 'content' ? 'bg-accent' : ''}`}
+        >
+          <Newspaper className="h-4 w-4" />
+          <span className="flex-1">内容中心</span>
+          {current === 'content' && <Check className="h-4 w-4 text-primary" />}
         </DropdownMenuItem>}
         {isAdmin && (
           <DropdownMenuItem

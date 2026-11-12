@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WorkspaceManager from '@/pages/WorkspaceManagerV2';
@@ -10,22 +10,20 @@ import * as api from '@/api/scheduledTask';
 
 vi.mock('@/api/client', () => ({ default: { get: vi.fn(), post: vi.fn(), put: vi.fn() } }));
 vi.mock('@/api/scheduledTask', () => ({
-  listScheduledAsBots: vi.fn(), listNotificationChannels: vi.fn(), listReportTemplates: vi.fn(),
+  listNotificationChannels: vi.fn(),
   createScheduledTask: vi.fn(), updateScheduledTask: vi.fn(), regenerateWebhookToken: vi.fn(),
 }));
 vi.mock('@/stores/workspaceStore', () => ({ useWorkspaceStore: () => ({ currentWorkspaceId: 99 }) }));
 vi.mock('@/components/CronInput', () => ({ default: () => null }));
 
-const option: api.ScheduledAsBotOption = {
-  as_bot_key: 'sales', name: '销售分析', available: true, datasource_ids: [8],
-  tools: ['get_metrics', 'run_semantic_query'], unavailable_tools: [],
-};
+// 存量任务配置里仍带着旧版写入的 as_bot_key/datasource_id：表单必须不再读它们、
+// 也不再渲染对应选择器（新架构按属主角色继承，任务不持有内部标识）。
 const task = {
   id: 12, name: '日报', task_type: 'agent', workspace_id: 3, owner_id: 7,
   task_config: { datasource_id: 8, as_bot_key: 'sales', questions: [{ title: '数量', question: '统计订单' }] },
   cron_expression: '0 9 * * *', trigger_type: 'cron', is_active: true,
   timeout_seconds: 300, max_retries: 0, notify_on_success: true, notify_on_failure: true,
-} as api.ScheduledTask;
+} as unknown as api.ScheduledTask;
 
 beforeEach(() => {
   vi.mocked(client.get).mockImplementation(async (url) => {
@@ -34,9 +32,8 @@ beforeEach(() => {
     if (url === '/knowledge-bases') return { data: [{ id: 4, name: '业务知识', kb_type: 'qmind', status: 'active', document_count: 0 }] };
     return { data: [] };
   });
-  vi.mocked(api.listScheduledAsBots).mockResolvedValue([option]);
   vi.mocked(api.listNotificationChannels).mockResolvedValue([]);
-  vi.mocked(api.listReportTemplates).mockResolvedValue([]);
+  // 报告模板候选现取字模库（useVisLibrary），scheduledTask 侧不再有该入口
   Element.prototype.hasPointerCapture = () => false;
   Element.prototype.setPointerCapture = () => {};
   Element.prototype.releasePointerCapture = () => {};
@@ -44,7 +41,7 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
-function form(value = task) {
+function form(value: api.ScheduledTask | null = task) {
   return render(<Dialog open><DialogContent><ScheduledTaskForm task={value} onClose={() => {}} /></DialogContent></Dialog>);
 }
 
@@ -78,39 +75,34 @@ describe('AS-BOT 唯一资源绑定入口', () => {
     expect(screen.getByText(/使用范围统一在 AS-BOT/)).toBeInTheDocument();
   });
 
-  it('编辑任务按持久化工作空间和创建者加载候选，保存仅含 AS-BOT', async () => {
+  it('编辑任务不再渲染 AS-BOT 与数据源选择器，保存体只带问题清单', async () => {
     form();
-    await waitFor(() => expect(api.listScheduledAsBots).toHaveBeenCalledWith(3, 12));
-    await screen.findByText(/定时可用工具/);
-    expect(screen.queryByText('子 Agent')).not.toBeInTheDocument();
-    expect(screen.queryByText('MCP 服务', { exact: true })).not.toBeInTheDocument();
+    await screen.findByDisplayValue('日报');
+    expect(screen.queryByLabelText(/AS-BOT/)).not.toBeInTheDocument();
+    expect(screen.queryByText('数据源')).not.toBeInTheDocument();
+    // 来源说明必须在（否则用户不知道任务到底按谁的身份跑）
+    expect(screen.getByText(/按你的角色与权限执行/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '更新' }));
     await waitFor(() => expect(api.updateScheduledTask).toHaveBeenCalled());
     const [, payload] = vi.mocked(api.updateScheduledTask).mock.calls[0];
     expect(payload.workspace_id).toBe(3);
-    expect(payload.task_config).toMatchObject({ as_bot_key: 'sales', datasource_id: 8 });
-    expect(payload.task_config).not.toHaveProperty('mcp_server_id');
-    expect(payload.task_config).not.toHaveProperty('agent_name');
+    expect(payload.task_config).toEqual({ questions: [{ title: '数量', question: '统计订单' }] });
+    expect(payload.task_config).not.toHaveProperty('as_bot_key');
+    expect(payload.task_config).not.toHaveProperty('datasource_id');
+    expect(payload).not.toHaveProperty('task_type');
   });
 
-  it('旧任务必须明确选择 AS-BOT，不自动使用候选默认项', async () => {
-    form({ ...task, requires_as_bot_migration: true, task_config: { ...task.task_config, agent_name: 'old' } });
-    await screen.findByText(/需重新配置 AS-BOT/);
-    await waitFor(() => expect(api.listScheduledAsBots).toHaveBeenCalled());
-    await userEvent.click(screen.getByRole('button', { name: '更新' }));
-    expect(api.updateScheduledTask).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByLabelText('AS-BOT *'));
-    await userEvent.click(screen.getByRole('option', { name: '销售分析' }));
-    await userEvent.click(screen.getByRole('button', { name: '更新' }));
-    await waitFor(() => expect(api.updateScheduledTask).toHaveBeenCalled());
-    expect(vi.mocked(api.updateScheduledTask).mock.calls[0][1].task_config).not.toHaveProperty('agent_name');
+  it('新建任务没有任务类型选择器：工作空间定时任务只有 Agent 分析形态', async () => {
+    form(null);   // 新建态
+    await screen.findByText(/任务名称/);
+    expect(screen.queryByText('任务类型')).not.toBeInTheDocument();
+    expect(screen.queryByText('SQL')).not.toBeInTheDocument();
   });
 
-  it('候选加载失败可见且不能保存', async () => {
-    vi.mocked(api.listScheduledAsBots).mockRejectedValue(new Error('failed'));
-    form();
-    expect(await screen.findByRole('alert')).toHaveTextContent('加载 AS-BOT 失败');
-    fireEvent.click(screen.getByRole('button', { name: '更新' }));
+  it('分析问题为空不给保存（不长出每次执行都失败的任务）', async () => {
+    form({ ...task, task_config: { questions: [{ title: '空', question: '' }] } });
+    await screen.findByDisplayValue('日报');
+    await userEvent.click(screen.getByRole('button', { name: '更新' }));
     expect(api.updateScheduledTask).not.toHaveBeenCalled();
   });
 });

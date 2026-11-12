@@ -38,7 +38,7 @@ def clear_cache() -> None:
 
 
 def _normalize(row: dict) -> dict:
-    """DB 行 → 命中用结构：解析 metadata.triggers / scenario。"""
+    """DB 行 → 命中用结构：解析 metadata.triggers / scenario / subjects。"""
     meta = row.get("metadata")
     if isinstance(meta, str):
         try:
@@ -51,12 +51,17 @@ def _normalize(row: dict) -> dict:
         triggers = [t.strip() for t in triggers.split(",")]
     # 触发词补充：路径名称本身也作为弱触发（整词命中）
     clean = [str(t).strip() for t in triggers if str(t).strip()]
+    # 主体绑定（场景可见性的唯一判据）：与 scenario_access 同一份解析，不在此另写一套
+    from backend.core.scenario_access import scenario_subjects
+    subjects, subject_all = scenario_subjects(meta)
     return {
         "id": row.get("id"),
         "title": row.get("title") or "",
         "content": row.get("content") or "",
         "scenario": (meta.get("scenario") or "").strip(),
         "triggers": clean,
+        "subjects": subjects,
+        "subject_all": subject_all,
         "related_tables": row.get("related_tables") or "",
         "priority": int(row.get("priority") or 0),
         "workspace_id": int(row.get("workspace_id") or 0),
@@ -120,16 +125,37 @@ def _score(path: dict, q_norm: str) -> tuple[int, list[str]]:
     return score, hits
 
 
+def _subject_ok(path: dict, allowed_subjects: set[str] | None) -> bool:
+    """主体门控：`allowed_subjects=None` = 调用方显式声明不做主体裁决。
+
+    传集合时按「不限主体」或「与可见主体有交集」放行；**空集 = 只有不限主体的场景可用**
+    （fail-closed，不把空授权当全量）。没登记主体又没勾不限主体的场景一律不命中。
+    """
+    if allowed_subjects is None:
+        return True
+    if path.get("subject_all"):
+        return True
+    keys = path.get("subjects") or []
+    return bool(keys) and bool(set(keys) & set(allowed_subjects))
+
+
 def match_quick_paths(
     question: str,
     workspace_id: int = 0,
     datasource_id: int = 0,
     limit: int = 3,
+    allowed_subjects: set[str] | None = None,
 ) -> list[dict]:
-    """按用户问题命中快速路径。
+    """按用户问题命中快速路径（分析场景）。
+
+    Args:
+        allowed_subjects: 当前身份可见的主体（object_key）集合；None = 不做主体裁决。
+            **生产调用点必须显式传**（secure_sdk / scheduled_analysis / chat 候选三处同源），
+            否则就是“靠触发词把别人主体的场景正文带进提示词”的越权信息面。
+            这条由 tests/test_scenario_subject_access.py 源码级护栏锁定。
 
     Returns: 命中路径列表（按得分/优先级降序），每项
-      ``{title, content, scenario, related_tables, matched_triggers}``；无命中返回 ``[]``。
+      ``{id, title, content, scenario, related_tables, subjects, matched_triggers}``；无命中返回 ``[]``。
     """
     q_norm = (question or "").strip().lower()
     if not q_norm:
@@ -140,6 +166,8 @@ def match_quick_paths(
             continue
         if not _in_scope(path, workspace_id, datasource_id):
             continue
+        if not _subject_ok(path, allowed_subjects):
+            continue
         score, hits = _score(path, q_norm)
         if score <= 0:
             continue
@@ -148,11 +176,97 @@ def match_quick_paths(
     scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
     out: list[dict] = []
     for score, _prio, path, hits in scored[:limit]:
-        out.append({
-            "title": path["title"],
-            "content": path["content"],
-            "scenario": path["scenario"],
-            "related_tables": path["related_tables"],
-            "matched_triggers": hits,
-        })
+        out.append(_hit_payload(path, hits))
     return out
+
+
+def _hit_payload(path: dict, hits: list[str], pinned: bool = False) -> dict:
+    """命中项载荷。
+
+    `pinned=True` 表示**用户在输入框用 `/` 显式点名**了这个场景（不是触发词猜中的）。
+    这个区分必须一路带到提示词：合成一份列表后，显式指定会被模型当成“服务端顺带提个
+    建议”，问题一含糊就回落到通用反问 —— 用户点了场景却没人按它做（历史缺陷）。
+    """
+    return {
+        "id": path.get("id"),
+        "title": path["title"],
+        "content": path["content"],
+        "scenario": path["scenario"],
+        "related_tables": path["related_tables"],
+        "subjects": path.get("subjects") or [],
+        "matched_triggers": hits,
+        "pinned": bool(pinned),
+    }
+
+
+def paths_by_ids(
+    ids: list,
+    allowed_subjects: set[str] | None = None,
+    limit: int = 3,
+    max_requested: int = 5,
+) -> tuple[list[dict], list[dict]]:
+    """按用户显式选中的场景 id 取方案（`/` 面板选场景 → 不看触发词也强制注入）。
+
+    不静默丢弃：被拒的 id 连同原因一并回传（护栏 no-silent-degradation）。
+    `limit` 只封顶**注入份数**，不封顶待评定的 id 数 —— 旧写法先截断再判定，
+    第 4 个选中项会连原因一起消失（用户以为选了，实际没人处理它）。超出
+    `max_requested` 的部分归并为一条“一次最多用 N 个场景”的拒因，仍然可见。
+    """
+    wanted = [str(i).strip() for i in (ids or []) if str(i).strip()]
+    if not wanted:
+        return [], []
+    overflow = [{"id": wid, "title": "", "reason": f"一轮最多使用 {limit} 个分析场景，本项未生效"
+                 } for wid in wanted[max_requested:]]
+    wanted = wanted[:max_requested]
+    by_id = {str(p["id"]): p for p in _load_rows()}
+    accepted: list[dict] = []
+    rejected: list[dict] = []
+    for wid in wanted:
+        path = by_id.get(wid)
+        if not path:
+            rejected.append({"id": wid, "title": "", "reason": "场景不存在或已停用"})
+            continue
+        if not path["content"]:
+            rejected.append({"id": wid, "title": path["title"], "reason": "场景正文为空，无可注入的方案"})
+            continue
+        if not _subject_ok(path, allowed_subjects):
+            from backend.core.scenario_access import is_scenario_visible
+            _ok, reason = is_scenario_visible({"subjects": path.get("subjects") or [],
+                                               "subject_all": bool(path.get("subject_all"))},
+                                              allowed_subjects or set())
+            rejected.append({"id": wid, "title": path["title"],
+                             "reason": reason or "当前身份无权使用该场景"})
+            continue
+        if len(accepted) >= limit:
+            rejected.append({"id": wid, "title": path["title"],
+                             "reason": f"一轮最多注入 {limit} 个场景方案，本项未生效"})
+            continue
+        # pinned 标记随载荷走：提示词要按“用户指定”与“触发词命中”分档措辞
+        accepted.append(_hit_payload(path, [], pinned=True))
+    return accepted, rejected + overflow
+
+
+def list_visible_paths(allowed_subjects: set[str] | None = None,
+                       workspace_id: int = 0, datasource_id: int = 0,
+                       limit: int = 50) -> tuple[list[dict], int]:
+    """当前身份可见的启用场景清单（`/` 面板候选）。
+
+    Returns ``(items, hidden_count)``：hidden_count = 因主体无权/未绑主体而被隐去的条数，
+    调用方得把它告诉用户（“不是没配场景，是那些场景的主体你没权限”），不能静默少返。
+    """
+    rows = [p for p in _load_rows() if p["content"] and _in_scope(p, workspace_id, datasource_id)]
+    visible = [p for p in rows if _subject_ok(p, allowed_subjects)]
+    visible.sort(key=lambda p: (-int(p.get("priority") or 0), (p.get("title") or "")))
+    # 字段名跟前端契约一致：候选标识叫 `key`（叫 id 的话前端读 s.key=undefined，
+    # 同一组内所有项的 React key 撞成一个，来回切类别就渲染出重复行与 Esc 关不掉的残影）。
+    # subjects 是内部 object_key，对候选列表没意义且属实现细节，不下发。
+    return ([{"key": str(p["id"]), "name": p["title"],
+              "description": p["scenario"] or _short(p["content"])} for p in visible[:limit]],
+            max(0, len(rows) - len(visible)))
+
+
+def _short(text: str) -> str:
+    """没填「适用场景」时用正文首行做候选描述（不拿整段正文当副标题刷屏）。"""
+    first = next((ln.strip().lstrip("#").strip() for ln in (text or "").splitlines()
+                  if ln.strip()), "")
+    return first[:60]

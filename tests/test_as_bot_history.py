@@ -1,4 +1,5 @@
 """AS-BOT 会话历史回归：会话合并共用、无 __system_bot__ 哨兵（离线，假 DB 连接）。"""
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -133,11 +134,19 @@ def deletion_store(tmp_path, monkeypatch):
     state = {'conversation': {'id': 10, 'user_id': 7, 'workspace_id': 3},
              'session': {'session_key': key, 'conversation_id': 10, 'user_id': 7, 'workspace_id': 3,
                          'status': 'idle', 'execution_token': None, 'storage_node': node,
-                         'relative_dir': str(root.relative_to(tmp_path))}, 'log': [], 'commits': 0}
+                         'relative_dir': str(root.relative_to(tmp_path)),
+                         # 执行权残留自愈只认证据：默认让宿主进程"存活"，
+                         # 于是 running/token 残留一律保持阻断（409），不是回收失败。
+                         'owner_pid': os.getpid(),
+                         'owner_start': sessions.process_identity(os.getpid())},
+             # 拆行消息表：会话存在时就有行，删除必须把它带走（哨兵值便于断言"真删了"）
+             'conversation_messages': {'conversation_id': 10},
+             'log': [], 'commits': 0}
 
     class Connection:
         def __enter__(self):
-            self.tx = copy.deepcopy({k: state[k] for k in ('conversation', 'session')})
+            self.tx = copy.deepcopy(
+                {k: state[k] for k in ('conversation', 'session', 'conversation_messages')})
             return self
 
         def __exit__(self, exc_type, *_):
@@ -170,12 +179,20 @@ def deletion_store(tmp_path, monkeypatch):
                 assert 'FOR UPDATE' in sql
                 self.row = tx['conversation' if 'adh_conversations' in sql else 'session']
             elif sql.startswith('UPDATE adh_agent_sessions'):
-                assert "status='deleting'" in sql
-                tx['session']['status'] = 'deleting'
+                if "SET status='interrupted'" in sql:
+                    # 僵尸 running 的自愈回收（执行证据已死）：状态回到 interrupted
+                    tx['session'] = {**tx['session'], 'status': 'interrupted',
+                                     'execution_token': None}
+                else:
+                    assert "status='deleting'" in sql
+                    tx['session']['status'] = 'deleting'
             elif sql.startswith('DELETE FROM adh_agent_sessions'):
                 tx['session'] = None
             elif sql.startswith('DELETE FROM adh_conversations'):
                 tx['conversation'] = None
+            elif sql.startswith('DELETE FROM adh_conversation_messages'):
+                # 拆行消息表必须随会话一起清（只删会话行会留孤儿正文）
+                tx['conversation_messages'] = None
             else:
                 raise AssertionError(sql)
 
@@ -196,6 +213,7 @@ def test_delete_conversation_cleans_only_its_session(deletion_store, status):
     assert root.parent.is_dir()
     assert (root.parents[4] / '.storage-node').exists()
     assert state['session'] is None and state['conversation'] is None
+    assert state['conversation_messages'] is None, "拆行消息没随会话删除（会留孤儿正文）"
     assert chat.delete_conversation(10, {'user_id': 7}) == {'success': True}
 
 
@@ -209,6 +227,37 @@ def test_running_or_unconfirmed_session_cannot_be_deleted(deletion_store, field,
     assert error.value.status_code == 409
     assert root.exists() and state['conversation'] and state['session']
     assert state['commits'] == 0
+
+
+def test_zombie_running_empty_conversation_can_be_cleaned(deletion_store, monkeypatch):
+    """执行权残留的僵尸 running + 证据已退出 → 自愈后允许清理，不再把空会话永久留在列表里。
+
+    会话 1783069459150 的形态：断连回合跑完后前端回滚 DELETE，撞上"该回收的没人回收
+    （外层闸门只认 execution_token 非空）、该删的删不掉（running 一律 409）"。
+    自愈仍只认证据：下面把宿主/SDK 都判为已退出，才允许回收。
+    """
+    sessions, state, root, _ = deletion_store
+    state['session'].update({'status': 'running', 'execution_token': 'b' * 32})
+    monkeypatch.setattr(sessions, 'process_identity', lambda pid: '')      # 宿主/SDK 均已退出
+    monkeypatch.setattr(sessions, '_remove_token_sandbox', lambda token: None)
+
+    assert chat.delete_conversation(10, {'user_id': 7}) == {'success': True}
+    assert any("SET status='interrupted'" in sql for sql, _ in state['log']), "自愈未触发"
+    assert not root.exists() and state['conversation'] is None
+
+
+def test_zombie_running_with_live_owner_still_blocked(deletion_store, monkeypatch):
+    """同形态但仍有存活证据：保持 409（宁可不删，绝不误杀活执行/丢文件）。"""
+    sessions, state, root, _ = deletion_store
+    from fastapi import HTTPException
+    state['session'].update({'status': 'running', 'execution_token': 'b' * 32})
+    monkeypatch.setattr(sessions, '_remove_token_sandbox', lambda token: None)
+
+    with pytest.raises(HTTPException) as error:
+        chat.delete_conversation(10, {'user_id': 7})
+    assert error.value.status_code == 409
+    assert root.exists() and state['session']['status'] == 'running'
+    assert not any("SET status='interrupted'" in sql for sql, _ in state['log'])
 
 
 def test_delete_conversation_checks_owner_before_filesystem(deletion_store):
@@ -312,6 +361,7 @@ def test_cleanup_does_not_create_missing_mount(deletion_store, tmp_path, monkeyp
     assert chat.delete_conversation(10, {'user_id': 7}) == {'success': True}
     assert not missing.exists() and root.exists()  # 不重建挂载；原卷内文件不动
     assert state['session'] is None and state['conversation'] is None
+    assert state['conversation_messages'] is None
 
 
 def test_cleanup_does_not_create_missing_storage_marker(deletion_store):
@@ -331,6 +381,7 @@ def test_empty_workspace_does_not_block_delete(deletion_store):
     assert chat.delete_conversation(10, {'user_id': 7}) == {'success': True}
     assert not root.exists()
     assert state['session'] is None and state['conversation'] is None
+    assert state['conversation_messages'] is None
     assert (root.parents[4] / '.storage-node').exists()  # 不因清理而重建
 
 

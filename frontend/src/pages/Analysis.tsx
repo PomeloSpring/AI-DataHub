@@ -6,14 +6,15 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { ResponsiveDashboardCanvas } from '@/components/DashboardCanvas';
 import { useDashboardNavigation } from '@/components/DashboardNavigation';
 import { useDashboardFullscreen } from '@/hooks/useDashboardFullscreen';
+import { cn } from '@/lib/utils';
+import { transitionClass } from '@/lib/motion';
+import { boardMotionRef, useMotion } from '@/hooks/useMotion';
 import { useCancelChartRefreshOnLeave } from '@/hooks/useCancelChartRefreshOnLeave';
 import { DashboardRuntimeParams } from '@/components/DashboardParams';
 import DashboardAutoRefresh from '@/components/DashboardAutoRefresh';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
 import { useDashboardStore } from '@/stores/dashboardStore';
-import AsBotButton from '@/components/AsBotButton';
 import { useAuthStore } from '@/stores/authStore';
-import AsBotPanel from '@/components/asbot/AsBotPanel';
 import { fetchVisibleGroups, type GroupView } from '@/lib/dashboardCatalog';
 import client from '@/api/client';
 
@@ -79,6 +80,10 @@ export default function Analysis() {
   const liveBoard = useDashboardStore(s => s.dashboards.find(d => d.id === detail?.id));
   // 离开看板页即终止未完成的图表查询，避免连接被占导致其他功能一直 pending
   useCancelChartRefreshOnLeave();
+  // 组内切板转场与 /screen 同一份解析：板上挂载 > 个人偏好 > 默认档（默认 transition=none = 硬切如旧）。
+  // hook 必须在早退之前，故这里直接取两份数据源（store 条目优先，回退按需加载的详情）。
+  const { motion, cssVars: motionCss, reason: motionReason } = useMotion({ board: boardMotionRef(liveBoard?.filters ?? detail?.filters) });
+  const transition = transitionClass(motion.transition);
   // 刷新失败与首次加载失败分开：前者保留已渲染内容 + 横幅告知，不能把整页换成错误页
   const [refreshError, setRefreshError] = useState('');
   const detailCache = useRef(new Map<number, any>());
@@ -176,7 +181,8 @@ export default function Analysis() {
   const switchTabs = groupMode ? navigation.tabs : null;
   const groupSwitch = groupMode && groups.length > 1 && <DropdownMenu>
     <DropdownMenuTrigger asChild>
-      <Button variant="outline" size="sm" className="h-8 shrink-0 gap-1.5 rounded-full px-3 text-xs" aria-label="切换仪表盘组">
+      {/* 组 chip 与同组分段控件同族（凹槽底 + 细描边），不再用 outline 按钮 → 与右侧凹槽不像两套组件 */}
+      <Button variant="ghost" size="sm" className="h-8 shrink-0 gap-1.5 rounded-full bg-muted/60 px-3 text-xs ring-1 ring-border/60 hover:bg-muted" aria-label="切换仪表盘组">
         <Layers className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="max-w-[120px] truncate">{currentGroup?.name || '全部组合'}</span>
         <ChevronDown className="h-3.5 w-3.5 opacity-60" />
@@ -189,15 +195,17 @@ export default function Analysis() {
       </DropdownMenuItem>)}
     </DropdownMenuContent>
   </DropdownMenu>;
+  // 页头右侧的更新时间：贴操作凹槽（用户拍板：不显示图表数，时间靠右挨着刷新按钮）
+  const updatedText = (board as any).updated_at ? new Date((board as any).updated_at).toLocaleString('zh-CN') : '';
   return <div ref={root} className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-background">
-    {/* 页头不再是一片白底加一条线：card→background 的浅渐变 + 对象徽标把“工具栏”与“内容”拉开层次；
-        色值一律走主题变量，9 套主题下都成立（不在组件里写裸 hex） */}
+    {/* 页头不再是一片白底加一条线：card→background 的浅渐变把“工具栏”与“内容”拉开层次；
+        色值一律走主题变量，9 套主题下都成立（不在组件里写裸 hex）。
+        三段式：左=导航锚（返回 + 组 chip），中=同组切换分段控件，右=更新时间 + 操作凹槽
+        （过去凹槽靠 flex-1 拉到整行宽、中间一大块空白，右侧图标又各飘各的 → 看着“光秃秃”）。
+        这里不再放对象徽标：顶栏已按同一 lockup 给出徽标 + 菜单名，上下两行叠同款徽标就是重复。 */}
     <header className="flex h-14 shrink-0 items-center gap-2 border-b px-3 sm:px-5"
       style={{ backgroundImage: 'linear-gradient(180deg, hsl(var(--card)) 0%, hsl(var(--background)) 100%)' }}>
       {!!listPath && <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0" aria-label={managementPreview ? '返回看板列表' : '返回看板清单'} onClick={() => navigate(listPath)}><ArrowLeft className="h-4 w-4" /></Button>}
-      <span aria-hidden className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
-        <LayoutDashboard className="h-4 w-4" />
-      </span>
       {groupSwitch}
       {groupSwitch && !!switchTabs && <span aria-hidden className="h-4 w-px shrink-0 bg-border" />}
       {switchTabs
@@ -208,29 +216,38 @@ export default function Analysis() {
             {switchTabs}
           </>
         : <h1 className="min-w-0 flex-1 truncate text-lg font-semibold" title={board.name}>{board.name}</h1>}
-      <div className="ml-auto flex shrink-0 items-center gap-1" role="toolbar" aria-label="看板操作">
-        <DashboardAutoRefresh key={board.id} onRefresh={refreshData} loading={detailLoading} menuItems={<>
-          <DropdownMenuItem disabled={board.status !== 'enabled'} onClick={play}><Play className="mr-2 h-4 w-4" />大屏播放</DropdownMenuItem>
-          {managementPreview && board.editable && <DropdownMenuItem onClick={edit}><Edit className="mr-2 h-4 w-4" />编辑看板</DropdownMenuItem>}
-        </>} />
-        {managementPreview && board.editable && <Button className="hidden h-8 w-8 sm:inline-flex" size="icon" variant="ghost" title="编辑看板" aria-label="编辑看板" onClick={edit}><Edit className="h-4 w-4" /></Button>}
-        <Button className="hidden h-8 w-8 sm:inline-flex" size="icon" variant="ghost" title="大屏播放" aria-label="大屏播放" disabled={board.status !== 'enabled'} onClick={play}><Play className="h-4 w-4" /></Button>
-        <Button className="h-8 w-8" size="icon" variant="ghost" title={fullscreen ? '退出全屏' : '全屏阅读'} aria-label={fullscreen ? '退出全屏' : '全屏阅读'} onClick={() => void toggleFullscreen()}>{fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}</Button>
+      {/* 右侧簇：更新时间跟操作凹槽走（整簇 ml-auto 靠右，两者不会在行中间分家） */}
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        {!!updatedText && <span className="hidden whitespace-nowrap text-xs text-muted-foreground sm:block"
+          title={`最近更新于 ${updatedText}`}>更新于 {updatedText}</span>}
+        <div role="toolbar" aria-label="看板操作" className="flex shrink-0 items-center gap-1 rounded-full bg-muted/60 p-1 ring-1 ring-border/60">
+          <DashboardAutoRefresh key={board.id} onRefresh={refreshData} loading={detailLoading} menuItems={<>
+            <DropdownMenuItem disabled={board.status !== 'enabled'} onClick={play}><Play className="mr-2 h-4 w-4" />大屏播放</DropdownMenuItem>
+            {managementPreview && board.editable && <DropdownMenuItem onClick={edit}><Edit className="mr-2 h-4 w-4" />编辑看板</DropdownMenuItem>}
+          </>} />
+          {managementPreview && board.editable && <Button className="hidden h-8 w-8 sm:inline-flex" size="icon" variant="ghost" title="编辑看板" aria-label="编辑看板" onClick={edit}><Edit className="h-4 w-4" /></Button>}
+          <Button className="hidden h-8 w-8 sm:inline-flex" size="icon" variant="ghost" title="大屏播放" aria-label="大屏播放" disabled={board.status !== 'enabled'} onClick={play}><Play className="h-4 w-4" /></Button>
+          <Button className="h-8 w-8" size="icon" variant="ghost" title={fullscreen ? '退出全屏' : '全屏阅读'} aria-label={fullscreen ? '退出全屏' : '全屏阅读'} onClick={() => void toggleFullscreen()}>{fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}</Button>
+        </div>
       </div>
-      {/* 工作空间顶栏已有模块切换/主题/个人中心, 本页只补 AS-BOT 入口 */}
-      {!managementPreview && <div className="flex shrink-0 items-center gap-2 border-l pl-2 ml-1">
-        <AsBotButton />
-      </div>}
+      {/* 看板详情页不放 AS-BOT 入口（2026-11-11 拍板）：阅读时右侧托盘会挤占画布，
+          工具栏右端也不该再有第二个对话入口。
+          AS-BOT 仍在数据中台/系统模块顶栏（DataPlatformLayout / SystemLayout）提供，功能不因此丢失 */}
     </header>
     {/* 加载/切换中的细进度条：保留页头与上一份内容，不再整页换成“正在加载看板…” */}
     {detailLoading && <div role="progressbar" aria-label="正在加载看板" className="skeleton h-0.5 w-full shrink-0 rounded-none" />}
     {!!refreshError && <p role="alert" className="flex shrink-0 items-center gap-2 px-3 py-1 text-xs text-destructive sm:px-6">{refreshError}
       <Button size="sm" variant="link" className="h-auto p-0 text-xs" onClick={() => void loadDetail(wantedId || board.id)}>重试</Button></p>}
     {library.error && <p role="alert" className="px-4 text-sm">{library.error}<Button variant="link" onClick={library.refresh}>重试</Button></p>}
+    {/* 动效预设失效（下架/禁用/系统减少动效）要说在明处，不能让用户以为“挂了没反应” */}
+    {motionReason && <p role="status" className="shrink-0 px-4 py-1 text-xs text-muted-foreground">{motionReason}</p>}
     <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden" style={{ backgroundImage: 'linear-gradient(180deg, hsl(var(--muted) / 0.45) 0%, hsl(var(--muted) / 0.15) 220px, transparent 100%)' }}>
       <DashboardRuntimeParams dashboard={board} />
-      <div className="p-4 sm:p-6"><ResponsiveDashboardCanvas key={board.id} dashboard={board} items={library.items} /></div>
+      {/* 切板转场与 /screen 同一份 class（默认档 transition=none → 不加 class，硬切如旧）；
+          key 挂在动画容器上，换看板才重播一次，刷新与参数变更不重播 */}
+      <div key={board.id} className={cn('p-4 sm:p-6', transition)} style={motionCss}>
+        <ResponsiveDashboardCanvas dashboard={board} items={library.items} />
+      </div>
     </div>
-    {!managementPreview && <AsBotPanel />}
   </div>;
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -57,6 +57,13 @@ interface PermItem {
   ai_locked: boolean;
   /** 登记了才会生成 LLM 功能工具 */
   ai_action_key: string;
+  /**
+   * AI 接入通道（后端 perm_link.ai_channel 派生，前端不另造判断）：
+   * function_action=已登记功能工具 / perm_gate=执行期按权限码直执行把关 / none=无消费方。
+   * 「AI 可调用级别」只有前两类真实生效；none 时必须显式告知“配置暂不生效”，
+   * 不得让下拉框看起来能开通能力（空承诺）。
+   */
+  ai_channel?: 'function_action' | 'perm_gate' | 'none';
   /** 不开放/只读的原因，必须展示给用户 */
   ai_note: string;
 }
@@ -74,10 +81,31 @@ interface MenuPermGroup {
   permissions: PermItem[];
 }
 
+/**
+ * 模块分组展示顺序与兼容名册（与一级模块切换器 SectionSwitcher 同口径）。
+ *
+ * 历史缺陷：角色页「菜单与功能」曾写死 `['system','data','workspace']`，
+ * 内容中心（module='content'）整块菜单在角色配置页渲染不出来 —— 新菜单登记了也配不了、
+ * 管不了（menu-permission-sync 规则里的“配了没用/该配的看不到”空承诺）。
+ * 现在分组以接口返回的 module 全集为准（本表只管顺序与显示名兼容），
+ * 未登记的模块排最后但不丢。
+ */
+const MODULE_ORDER = ['system', 'data', 'workspace', 'content'];
+const MODULE_LABEL_FALLBACK: Record<string, string> = {
+  system: '系统配置', data: '数据中台', workspace: '工作空间', content: '内容中心',
+};
+
 const AI_LEVEL_LABEL: Record<string, string> = {
   none: '不开放给 AI',
   read: '只读可见',
   write: '可读可写',
+};
+
+/** 接入通道徽标文案 —— 与后端 perm_link.ai_channel 三值一一对应 */
+const AI_CHANNEL_LABEL: Record<string, string> = {
+  function_action: 'AI 工具',
+  perm_gate: '权限码把关',
+  none: '未接入',
 };
 
 export default function RoleManagement() {
@@ -119,6 +147,22 @@ export default function RoleManagement() {
   const [expandedPerms, setExpandedPerms] = useState<Set<string>>(new Set());
   // 菜单分组展开/收起(长列表浏览用): key=menu_key, '__standalone__'=通用功能
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  // 模块分桶从接口数据里推，不写死枚举（见 MODULE_ORDER 处注释）；
+  // 显示名优先用服务端 module_label（业务名），缺失才回退本地表/原值。
+  const permModules = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const g of permGroups) {
+      const key = g.module || 'other';
+      if (!seen.has(key)) seen.set(key, g.module_label || MODULE_LABEL_FALLBACK[key] || key);
+    }
+    const rank = (m: string) => {
+      const i = MODULE_ORDER.indexOf(m);
+      return i < 0 ? MODULE_ORDER.length : i;
+    };
+    return [...seen.entries()]
+      .sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0]))
+      .map(([value, label]) => ({ value, label }));
+  }, [permGroups]);
   const toggleGroupCollapse = (key: string) => {
     setCollapsedGroups(prev => {
       const next = new Set(prev);
@@ -327,6 +371,7 @@ export default function RoleManagement() {
       ai_access: (res.ai_access ?? level) as PermItem['ai_access'],
       ai_effective: (res.ai_effective ?? level) as PermItem['ai_effective'],
       ai_note: res.ai_note ?? perm.ai_note,
+      ai_channel: (res.ai_channel ?? perm.ai_channel) as PermItem['ai_channel'],
     });
     try {
       const { data } = await client.put(
@@ -555,6 +600,15 @@ export default function RoleManagement() {
             {/* 菜单与功能（权限码，菜单→功能分组，接口只读） */}
             <TabsContent value="functions" className="space-y-3">
               <p className="text-sm text-muted-foreground">按「菜单 → 功能」分组配置该角色可用的功能权限；展开功能可查看其绑定的接口（只读，由权限注册表维护）。未配置任何功能 = 该角色不可用（fail-closed），admin 不受限。</p>
+              {/* 两个控件的归属必须说清（历史陷阱：级别下拉长在角色页里，写的却是全局注册表，
+                  改 A 角色会连带改变 B 角色的 AI 能力）。徽标只回答“这个级别有没有消费方”：
+                  AI 工具=已登记功能工具，权限码把关=执行期按码直执行，两者级别均真实生效；
+                  未接入=无消费方，配了不生效（已在行内显式提示）。 */}
+              <p className="text-xs text-muted-foreground">
+                角标【勾选框】是本角色的开关：收回权限码后，该码下的 AI 功能工具与写动作均带原因不可用。
+                右侧【AI 可调用级别】写的是全局权限注册表（对所有角色生效，非本角色专属）；
+                徽标「AI 工具 / 权限码把关 / 未接入」表示该级别到底有没有消费方。
+              </p>
               <div className="flex justify-end gap-2">
                 <Button variant="outline" size="sm" onClick={() => setAllCollapsed(false)}>全部展开</Button>
                 <Button variant="outline" size="sm" onClick={() => setAllCollapsed(true)}>全部收起</Button>
@@ -563,13 +617,13 @@ export default function RoleManagement() {
                 <p className="text-sm text-muted-foreground text-center py-4">权限注册表为空</p>
               ) : (
                 <div className="space-y-4">
-                  {['system', 'data', 'workspace'].map(mod => {
-                    const groups = permGroups.filter(g => g.module === mod);
+                  {permModules.map(({ value: mod, label: modLabel }) => {
+                    const groups = permGroups.filter(g => (g.module || 'other') === mod);
                     if (groups.length === 0) return null;
                     return (
                       <div key={mod}>
                         <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-                          {mod === 'system' ? '系统配置' : mod === 'data' ? '数据中台' : '工作空间'}
+                          {modLabel}
                         </h4>
                         <div className="space-y-2">
                           {groups.map(group => (
@@ -713,6 +767,14 @@ function PermRow({ perm, checked, expanded, onToggle, onToggleApi, onAiAccess }:
   const configured = perm.ai_access || 'none';
   // 生效值被硬上界压下来时要让用户看见，否则会以为改了就生效
   const capped = effective !== configured;
+  // 接入通道：后端派生（ai_action_key 登记 / require_write_perm 消费点），前端不另判。
+  // 旧后端未回该字段时按同一口径回推，不静默当“已接入”。
+  const channel = perm.ai_channel || (perm.ai_action_key ? 'function_action' : 'none');
+  const channelTitle = channel === 'function_action'
+    ? `已登记 LLM 功能工具：${perm.ai_action_key}；级别配置直接决定工具是否注册`
+    : channel === 'perm_gate'
+      ? '能力挂在系统工具组的工具上，执行期按本权限码直执行把关（不登记功能工具属正常）；级别配置真实生效'
+      : '该功能尚无 AI 通道：未登记功能工具，也无执行期权限码把关。级别配置暂无消费方';
   return (
     <div className="border rounded px-2 py-1.5">
       <div className="flex items-center justify-between gap-2">
@@ -742,11 +804,11 @@ function PermRow({ perm, checked, expanded, onToggle, onToggleApi, onAiAccess }:
             </SelectContent>
           </Select>
           <Badge
-            variant={effective === 'none' ? 'outline' : effective === 'read' ? 'secondary' : 'default'}
+            variant={channel === 'function_action' ? 'default' : channel === 'perm_gate' ? 'secondary' : 'outline'}
             className="text-[9px] flex-shrink-0"
-            title={perm.ai_action_key ? `LLM 功能工具：${perm.ai_action_key}` : '未登记 LLM 功能工具，仅在 UI 上标记级别'}
+            title={channelTitle}
           >
-            {perm.ai_action_key ? 'AI 工具' : '未接 AI'}
+            {AI_CHANNEL_LABEL[channel]}
           </Badge>
           {patterns.length > 0 && (
             <Button variant="ghost" size="sm" className="h-6 px-2 text-[10px] flex-shrink-0" onClick={onToggleApi}>
@@ -760,6 +822,14 @@ function PermRow({ perm, checked, expanded, onToggle, onToggleApi, onAiAccess }:
         <p className={`text-[10px] pl-6 ${capped ? 'text-amber-600' : 'text-muted-foreground'}`}>
           {capped && <>已按涉密边界收窄：「{AI_LEVEL_LABEL[configured]}」→「{AI_LEVEL_LABEL[effective]}」。{perm.ai_note}</>}
           {!capped && perm.ai_note}
+        </p>
+      )}
+      {/* 无消费方时显式提醒（no-silent-degradation §1）：不得让人以为选了级别 AI 就能用。
+          角色级开关是左侧勾选框（收回权限码 = 该码下所有 AI 动作带原因不可用）。 */}
+      {channel === 'none' && (
+        <p className="text-[10px] pl-6 text-amber-600">
+          {`尚未接入 AI：「${AI_LEVEL_LABEL[effective]}」当前仅在 UI 上标记，不会开通任何接口能力。`}
+          要开放给 AI 需先在功能动作登记处补安全投影（function_tools.FUNCTION_ACTION_SPECS）。
         </p>
       )}
       {expanded && patterns.length > 0 && (

@@ -2,6 +2,18 @@ import { useMemo } from 'react';
 import { usePermissionStore } from '@/stores/permissionStore';
 
 /**
+ * 模块级一级入口判定（单一口径）：该模块下有任一可见菜单才提供入口。
+ * 非响应式上下文（store 动作等）也走这里，不另造第二套前缀匹配。
+ */
+export const prefixAllowedOf = (
+  s: { unrestricted: boolean; allowedMenus: string[] | null },
+  prefix: string,
+) => {
+  if (s.unrestricted) return true;
+  return (s.allowedMenus ?? []).some(k => k.startsWith(prefix));
+};
+
+/**
  * 侧栏菜单权限的**订阅式**读取（三套 Layout 共用）。
  *
  * 不要用 `isMenuAllowed()` 裸判后再渲染菜单：它读的是 store 快照，且按
@@ -22,9 +34,6 @@ export function useMenuAccess() {
       return allowedMenus?.includes(menuKey) ?? true;
     },
     /** 模块级一级入口：该模块下有任一可见菜单才提供入口 */
-    prefixAllowed: (prefix: string) => {
-      if (unrestricted) return true;
-      return (allowedMenus ?? []).some(k => k.startsWith(prefix));
-    },
+    prefixAllowed: (prefix: string) => prefixAllowedOf({ unrestricted, allowedMenus }, prefix),
   }), [loaded, unrestricted, allowedMenus]);
 }

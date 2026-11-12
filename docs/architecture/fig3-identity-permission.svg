@@ -135,7 +135,7 @@
     <text x="92" y="770">凭据/密钥：datasource:manage · mcp:* · model:manage · notification:*</text>
     <text x="92" y="788">身份与权限：user:* · role:* · system:users · system:roles</text>
     <text x="92" y="806">安全边界（可被注入诱导放宽）：rls:* · sandbox:* · asbot:* · sensitive:manage · settings:*</text>
-    <text x="92" y="824">注入面：prompt:* · skill:*　　物理 SQL 与表列名：sql-pairs:*</text>
+    <text x="92" y="824">注入面：prompt:* · skill:*</text>
     <text x="78" y="852" font-weight="700" fill="#b45309">SECRET_BOUND_READ_ONLY_PERMS —— 上限 read，禁止一切写</text>
     <text x="92" y="872">datasource:read · model:read · sensitive:read · audit:read · observability:read</text>
   </g>

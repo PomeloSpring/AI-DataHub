@@ -71,6 +71,8 @@ class FakeConn:
 def _install(monkeypatch, log, **kwargs):
     conn = FakeConn(FakeCursor(log, **kwargs))
     monkeypatch.setattr(dash, "get_metadata_conn", lambda: conn)
+    # 取数口径闸门会回读存量图表行：离线用例不得碰真库（None = 库里无此图）
+    monkeypatch.setattr(dash, "execute_query", lambda *a, **k: None)
     return conn
 
 
@@ -132,11 +134,11 @@ def test_batch_save_surfaces_single_item_error_without_losing_others(monkeypatch
     calls = {"n": 0}
     real_create = dash.chart_service.create_chart
 
-    def flaky(dashboard_id, data):
+    def flaky(dashboard_id, data, identity=None):
         calls["n"] += 1
         if data["name"] == "坏图":
             raise RuntimeError("字段过长")
-        return real_create(dashboard_id, data)
+        return real_create(dashboard_id, data, identity=identity)
 
     monkeypatch.setattr(dash.chart_service, "create_chart", flaky)
     outcome = dash.chart_service.batch_save(10, [{"name": "好图", "chart_type": "bar"}, {"name": "坏图", "chart_type": "bar"}], {}, [])
@@ -178,8 +180,9 @@ def test_batch_endpoint_passes_editable_user_through(monkeypatch):
     monkeypatch.setattr(api, "check_dashboard_editable", lambda *_: True)
     seen = {}
 
-    def fake_batch_save(dashboard_id, added, changed, deleted):
-        seen.update(dashboard_id=dashboard_id, added=added, changed=changed, deleted=deleted)
+    def fake_batch_save(dashboard_id, added, changed, deleted, identity=None):
+        seen.update(dashboard_id=dashboard_id, added=added, changed=changed, deleted=deleted,
+                    identity=identity)
         return {"ok": True, "errors": [], "results": [], "created": {}}
 
     monkeypatch.setattr(api.chart_service, "batch_save", fake_batch_save)
@@ -191,6 +194,8 @@ def test_batch_endpoint_passes_editable_user_through(monkeypatch):
     assert out["success"] is True
     assert seen["dashboard_id"] == 10 and seen["deleted"] == [7]
     assert seen["added"][0]["name"] == "x" and seen["changed"]["5"]["name"] == "y"
+    # 口径把关需要可信身份（角色数据集清单由服务端解析, 不取请求体字段）
+    assert seen["identity"]["user_id"] == 1 and seen["identity"]["role"] == "admin"
 
 
 def test_batch_save_reports_metadata_write_gap(monkeypatch):

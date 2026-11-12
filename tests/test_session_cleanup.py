@@ -167,3 +167,54 @@ def test_delete_conversation_proceeds_without_volume(workspaces, monkeypatch):
     deleted = [sql for sql, _ in log if sql.startswith("DELETE")]
     assert any("adh_agent_sessions" in sql for sql in deleted)
     assert any("adh_conversations" in sql for sql in deleted)
+
+
+# ── 僵尸 running 的自愈闸门（Phase E：空会话删不掉）────────────────
+# 会话 1783069459150：断连回合跑完后前端回滚 DELETE 报 409，库里留下 messages=[] 的
+# 空会话。历史闸门只认 `execution_token` 非空才尝试自愈 —— 出现 status='running'
+# 而 token 已 NULL 的半截状态时直接跳过，而 `_session_cleanup_root` 又对 running
+# 一律 409，于是"该回收的没人回收、该删的删不掉"。
+
+def _zombie_session(**over):
+    row = _session(status="running", execution_token=None, owner_pid=1, owner_start=1,
+                   sdk_pid=None, sdk_start=None)
+    row.update(over)
+    return row
+
+
+def _patch_dead_evidence(monkeypatch, *, owner_start=1, proc_hits=()):
+    """process_identity 恒回 999：只有记录值==999 才算存活。"""
+    monkeypatch.setattr(sw, "process_identity", lambda pid: 999)
+    monkeypatch.setattr(sw, "_proc_holds_session", lambda key: list(proc_hits))
+    monkeypatch.setattr(sw, "_remove_token_sandbox", lambda token: None)
+    return owner_start
+
+
+def test_delete_reclaims_zombie_running_without_token(workspaces, monkeypatch):
+    """running + token 已 NULL + 执行证据全无 → 必须照样走自愈并删掉空会话。"""
+    workspaces(exists=False)
+    sess = _zombie_session(owner_start=_patch_dead_evidence(monkeypatch, owner_start=1))
+    conv = {"id": 11, "user_id": 7, "workspace_id": 3}
+    log: list = []
+    rows = {"FROM adh_conversations": conv, "FROM adh_agent_sessions": sess}
+    monkeypatch.setattr(sw, "DBConnection", lambda: _Conn(log, rows))
+
+    assert sw.delete_conversation_workspace(11, 7) == {"success": True}
+    assert any("SET status='interrupted'" in sql for sql, _ in log), "自愈未触发"
+    assert any(sql.startswith("DELETE FROM adh_conversations") for sql, _ in log)
+
+
+def test_delete_still_blocks_live_execution_without_token(workspaces, monkeypatch):
+    """同形态但宿主仍存活：绝不误杀活执行，照旧 409（自愈只认证据）。"""
+    workspaces(exists=False)
+    sess = _zombie_session(owner_start=999)      # 999 == process_identity → 存活
+    _patch_dead_evidence(monkeypatch)
+    conv = {"id": 11, "user_id": 7, "workspace_id": 3}
+    log: list = []
+    rows = {"FROM adh_conversations": conv, "FROM adh_agent_sessions": sess}
+    monkeypatch.setattr(sw, "DBConnection", lambda: _Conn(log, rows))
+
+    with pytest.raises(HTTPException) as exc:
+        sw.delete_conversation_workspace(11, 7)
+    assert exc.value.status_code == 409
+    assert not any("SET status='interrupted'" in sql for sql, _ in log)

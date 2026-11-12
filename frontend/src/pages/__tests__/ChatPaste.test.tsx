@@ -56,7 +56,8 @@ describe('聊天输入框 Ctrl+V 粘贴图片', () => {
 
   const renderChat = () => render(<MemoryRouter><Chat /></MemoryRouter>)
   const paste = (clipboardData: DataTransfer) =>
-    fireEvent.paste(screen.getByPlaceholderText('输入你的数据查询问题...'), { clipboardData })
+    // 正则匹配：placeholder 里的「/ 选择技能」提示属可迭代文案，不应锁死整串
+    fireEvent.paste(screen.getByPlaceholderText(/输入你的数据查询问题/), { clipboardData })
 
   it('粘贴截图 → 图片进入待发附件,发送时随消息一起发给模型', async () => {
     const sendSpy = vi.spyOn(useChatStore.getState(), 'sendMessage').mockResolvedValue(undefined)

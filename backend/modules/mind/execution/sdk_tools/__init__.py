@@ -16,6 +16,11 @@ ExecutionContextVar 注入(见 context.py)。
 - memory:   save_memory / list_memory / delete_memory
             (用户记忆: 只读写本人行的稳定偏好/口径, 不返回业务数据行, 严禁存会话上下文)
 
+平台内置的 MCP 服务（如 Elasticsearch）**不归入本文件的工具组**，而是作为
+adh_mcp_servers 的内置行在 AS-BOT「引用 MCP 服务」里绑定与逐工具授权，
+由 sdk_tools/external_tools.py 分派到进程内 handler（注册表见 execution/builtin_mcp.py）。
+同一能力只保留一个配置入口，避免“数据工具组 + MCP 服务”双口径。
+
 设计理念:代码不再硬删任何工具组,工具的去留完全下放到 AS-BOT 的"工具权限"粒度配置
 (as_bot.tools.mcp 逐工具勾选)。未选中的工具不会被注册进 MCP server,LLM 无从调用。
 统一语义层仍是主路:prompt_composer 的 SEMANTIC_QUERY_RULES 引导 LLM 优先用
@@ -121,12 +126,16 @@ def build_tool_servers(backend: str, enabled, selection=None, function_names=Non
     # 互不干扰 —— 故意不把它塞进 TOOL_SERVER_TOOLS，避免被 as_bot.tools.mcp 勾选
     # （那就变成“每个 AS-BOT 自己开功能”而不是“跟角色权限走”了）。
     if function_names:
-        from backend.modules.mind.execution.function_tools import SERVER_NAME, build_function_server
+        from backend.modules.mind.execution.function_tools import (
+            build_function_server, qualified_shell_name, shell_tool_names)
         try:
             cfg = build_function_server(backend, tool_names=list(function_names))
             if cfg:
                 servers[cfg["name"]] = cfg
-                allowed_tools.extend(f"mcp__{SERVER_NAME}__{t}" for t in function_names)
+                # 只注册两个壳（list/run）：具体功能清单由 list_platform_functions
+                # 按当前角色实时下发，避免 N 份动作 schema 常驻模型上下文。
+                # 逐动作的授权仍在 policy.allowed 里，由 run 内部 check_tool 把关。
+                allowed_tools.extend(qualified_shell_name(t) for t in shell_tool_names())
         except Exception as e:
             logger.exception("[sdk_tools] 功能能力工具初始化失败")
             raise RuntimeError("已授权功能工具初始化失败") from e

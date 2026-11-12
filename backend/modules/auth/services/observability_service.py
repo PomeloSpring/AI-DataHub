@@ -54,7 +54,31 @@ _ALLOWED_FILTERS = {
     "handled_by": "handled_by",   # agent=走了执行层模型 / intent_gate=前置意图层本地直答
     "status": "status",
     "model_ref": "model_ref",
+    # 模型通道与执行层：两条通道计量单位不同（credit vs token），必须可分开看
+    "channel": "channel",
+    "layer_id": "layer_id",
 }
+
+# 通道口径常量（与 observability.recorder.set_execution_channel / anthropic_direct 同源）
+CHANNEL_QODER = "qoder-gateway"
+CHANNEL_DIRECT = "anthropic-direct"
+# channel 列为 NULL 的历史回合：**不猜通道**。上线时已有直连会话发生，把它们当成
+# Qoder 网关会把事实说错；单独归入 unrecorded 桶，前端明确标注“未记录”。
+# credit 汇总仍把 NULL 计入（只有 Qoder 网关会产生 credit，直连根本没有这个量），
+# 这不需要知道通道就成立，所以不会漏数也不会编数。
+CHANNEL_UNRECORDED = "unrecorded"
+_CREDIT_EXPR = ("COALESCE(SUM(CASE WHEN t.channel IS NULL OR t.channel = 'qoder-gateway' "
+                "THEN t.credits ELSE 0 END),0)")
+# channel 为 NULL 时的展示分桶（**不猜通道**）：
+#   not-executed = 前置意图层直答，根本没进执行层（这是正确语义，不是缺数据）
+#   unrecorded   = 进了执行层但当时未记录通道（且回填判据不足）
+_CHANNEL_BUCKET = (
+    "CASE WHEN {alias}channel IS NOT NULL THEN {alias}channel "
+    "WHEN {alias}handled_by = 'intent_gate' THEN 'not-executed' "
+    "ELSE 'unrecorded' END"
+)
+# 展示用的伪桶（库里并不存在这两个值）：筛选时必须走同一个表达式求值
+CHANNEL_PSEUDO_BUCKETS = frozenset({"unrecorded", "not-executed"})
 
 
 def _build_where(params: dict, *, alias: str = "t") -> tuple[str, list]:
@@ -64,6 +88,12 @@ def _build_where(params: dict, *, alias: str = "t") -> tuple[str, list]:
         val = params.get(key)
         # None / 空串 / 0 一律视为"未选择",不加入过滤
         if val is None or val == "" or val == 0:
+            continue
+        if key == "channel" and val in CHANNEL_PSEUDO_BUCKETS:
+            # 伪桶值：库里存的是 NULL（当时没记录通道），拿 channel='unrecorded' 等值比对
+            # 永远查不出东西——筛选器就成了死开关。改用与展示分桶同一个表达式求值。
+            clauses.append(_CHANNEL_BUCKET.format(alias=alias + '.') + " = %s")
+            args.append(val)
             continue
         clauses.append(f"{alias}.{col} = %s")
         args.append(val)
@@ -93,20 +123,62 @@ def usage_summary(params: dict) -> dict:
                    COUNT(DISTINCT user_id) AS users,
                    COALESCE(SUM(llm_call_count),0) AS llm_calls,
                    COALESCE(SUM(total_tokens),0) AS total_tokens,
-                   COALESCE(SUM(credits),0) AS credits,
-                   COALESCE(SUM(cost_amount),0) AS cost_amount,
-                   MAX(cost_currency) AS cost_currency,
+                   {_CREDIT_EXPR} AS credits,
                    SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors,
                    SUM(CASE WHEN handled_by='intent_gate' THEN 1 ELSE 0 END) AS intercepted,
                    COALESCE(AVG(duration_ms),0) AS avg_duration_ms
             FROM adh_llm_traces t {where}""",
         tuple(args), fetchone=True,
     ) or {}
+    # 成本**按币种分别汇总**：历史实现用 SUM(cost_amount) + MAX(cost_currency)，而
+    # Qoder 通道的成本是按资源包单价折算的 CNY、供应商直连是 CLI 上报的 USD，
+    # 两者直接相加后再挂一个“MAX 出来的币种”是假数字（1 美元与 1 人民币被当成一回事）。
+    cost_by_currency = _ser_rows(execute_query(
+        f"""SELECT t.cost_currency AS currency, COUNT(*) AS turns,
+                  COALESCE(SUM(t.cost_amount),0) AS amount
+            FROM adh_llm_traces t {where} AND t.cost_amount IS NOT NULL
+            GROUP BY t.cost_currency ORDER BY amount DESC"""
+        if where else
+        """SELECT cost_currency AS currency, COUNT(*) AS turns,
+                  COALESCE(SUM(cost_amount),0) AS amount
+           FROM adh_llm_traces WHERE cost_amount IS NOT NULL
+           GROUP BY cost_currency ORDER BY amount DESC"""
+        , tuple(args) if where else ()) or [])
+    # 按通道分桶：credit 只对 Qoder 网关有意义，token 只有直连通道会回报，
+    # 不分开的概览卡片就会“Credit 0 + Token 0”同时出现，看起来像什么都没记。
+    by_channel = _ser_rows(execute_query(
+        f"""SELECT {_CHANNEL_BUCKET.format(alias='t.')} AS channel,
+                   COUNT(*) AS turns,
+                   COALESCE(SUM(t.llm_call_count),0) AS llm_calls,
+                   COALESCE(SUM(t.total_tokens),0) AS total_tokens,
+                   COALESCE(SUM(t.credits),0) AS credits,
+                   COALESCE(SUM(t.cost_amount),0) AS cost_amount,
+                   MAX(t.cost_currency) AS cost_currency,
+                   SUM(CASE WHEN t.channel_source='backfilled' THEN 1 ELSE 0 END) AS backfilled_turns
+            FROM adh_llm_traces t {where}
+            GROUP BY {_CHANNEL_BUCKET.format(alias='t.')} ORDER BY turns DESC"""
+        if where else
+        """SELECT CASE WHEN channel IS NOT NULL THEN channel
+                       WHEN handled_by = 'intent_gate' THEN 'not-executed'
+                       ELSE 'unrecorded' END AS channel,
+                   COUNT(*) AS turns,
+                   COALESCE(SUM(llm_call_count),0) AS llm_calls,
+                   COALESCE(SUM(total_tokens),0) AS total_tokens,
+                   COALESCE(SUM(credits),0) AS credits,
+                   COALESCE(SUM(cost_amount),0) AS cost_amount,
+                   MAX(cost_currency) AS cost_currency,
+                   SUM(CASE WHEN channel_source='backfilled' THEN 1 ELSE 0 END) AS backfilled_turns
+           FROM adh_llm_traces
+           GROUP BY CASE WHEN channel IS NOT NULL THEN channel
+                         WHEN handled_by = 'intent_gate' THEN 'not-executed'
+                         ELSE 'unrecorded' END
+           ORDER BY turns DESC""",
+        tuple(args) if where else ()) or [])
     daily = execute_query(
         f"""SELECT DATE(started_at) AS dt,
                    COUNT(*) AS turns,
                    COALESCE(SUM(total_tokens),0) AS total_tokens,
-                   COALESCE(SUM(credits),0) AS credits,
+                   {_CREDIT_EXPR} AS credits,
                    SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors
             FROM adh_llm_traces t {where}
             GROUP BY DATE(started_at) ORDER BY dt ASC""",
@@ -120,12 +192,16 @@ def usage_summary(params: dict) -> dict:
         fetchone=True,
     ) or {}
     summary = _ser({**overall, "thumbs_up": (fb or {}).get("up"), "thumbs_down": (fb or {}).get("down")})
+    # 不再返回跨币种混加的 cost_amount/cost_currency（前端改读 cost_by_currency）
+    summary["cost_by_currency"] = cost_by_currency
+    summary["by_channel"] = by_channel
+    summary["direct_turns"] = sum(int(r["turns"]) for r in by_channel if r.get("channel") == CHANNEL_DIRECT)
     # 处理方式分桶（前置意图漏斗的拦截率就靠这一列说话）
     by_handled = _ser_rows(execute_query(
         f"""SELECT handled_by,
                    COUNT(*) AS turns,
                    COALESCE(SUM(total_tokens),0) AS total_tokens,
-                   COALESCE(SUM(credits),0) AS credits
+                   {_CREDIT_EXPR} AS credits
             FROM adh_llm_traces t {where}
             GROUP BY handled_by ORDER BY turns DESC""",
         tuple(args),
@@ -153,7 +229,7 @@ def usage_summary(params: dict) -> dict:
 def usage_by_model(params: dict) -> list:
     where, args = _build_where(params)
     rows = execute_query(
-        f"""SELECT model_ref,
+        f"""SELECT model_ref, {_CHANNEL_BUCKET.format(alias='')} AS channel,
                    COUNT(*) AS turns,
                    COALESCE(SUM(llm_call_count),0) AS llm_calls,
                    COALESCE(SUM(input_tokens),0) AS input_tokens,
@@ -162,9 +238,12 @@ def usage_by_model(params: dict) -> list:
                    COALESCE(SUM(cost_amount),0) AS cost_amount,
                    MAX(cost_currency) AS cost_currency
             FROM adh_llm_traces t {where}
-            GROUP BY model_ref ORDER BY credits DESC, turns DESC""",
+            GROUP BY model_ref, {_CHANNEL_BUCKET.format(alias='')}
+            ORDER BY credits DESC, turns DESC""",
         tuple(args),
     )
+    # 同一模型理论上不跨通道，但分组后必须把通道带出去：否则“Qwen 到底花了多少 credit”
+    # 与“它花了多少 token”会被当成同一口径相加。
     return _ser_rows(rows)
 
 
@@ -175,7 +254,7 @@ def usage_by_user(params: dict) -> list:
                    COUNT(*) AS turns,
                    COUNT(DISTINCT conversation_id) AS sessions,
                    COALESCE(SUM(total_tokens),0) AS total_tokens,
-                   COALESCE(SUM(credits),0) AS credits,
+                   {_CREDIT_EXPR} AS credits,
                    SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors,
                    MAX(started_at) AS last_active
             FROM adh_llm_traces t {where}
@@ -204,7 +283,7 @@ def list_sessions(params: dict) -> dict:
                    MAX(t.datasource_id) AS datasource_id,
                    COUNT(*) AS turns,
                    COALESCE(SUM(t.total_tokens),0) AS total_tokens,
-                   COALESCE(SUM(t.credits),0) AS credits,
+                   {_CREDIT_EXPR} AS credits,
                    MAX(t.session_credits) AS session_credits,
                    SUM(CASE WHEN t.status='error' THEN 1 ELSE 0 END) AS errors,
                    MIN(t.started_at) AS first_active,
@@ -222,6 +301,12 @@ def list_sessions(params: dict) -> dict:
 
 # ── Trace 列表（回合级，联反馈） ───────────────────────────────────
 def list_traces(params: dict) -> dict:
+    """回合级 Trace 列表。
+
+    通道列必须走 `_CHANNEL_BUCKET` 同一个表达式：以前这里用 COALESCE(channel,'unrecorded')
+    而概览分桶用 CASE，前置拦截行在列表里叫“未记录”、在表里叫“未走执行层”——
+    同一行两个名字就是口径漂移，用户按列表筛选后看到的数字与概览对不上。
+    """
     where, args = _build_where(params)
     offset, limit = _paged(params.get("page", 1), params.get("size", 20))
     cnt = execute_query(
@@ -232,6 +317,9 @@ def list_traces(params: dict) -> dict:
                    t.entrypoint, t.handled_by, t.model_ref, t.status, t.question, t.error_message,
                    t.started_at, t.duration_ms, t.total_tokens, t.credits,
                    t.session_credits, t.llm_call_count, t.span_count,
+                   {_CHANNEL_BUCKET.format(alias='t.')} AS channel, t.channel_source,
+                   t.layer_id, t.layer_name,
+                   t.cost_amount, t.cost_currency,
                    f.satisfied AS feedback_satisfied
             FROM adh_llm_traces t
             LEFT JOIN adh_message_feedback f ON f.message_uuid = t.message_uuid

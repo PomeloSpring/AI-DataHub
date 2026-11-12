@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { WorkspaceBoundary, WorkspaceEntry } from '../WorkspaceRoute';
@@ -18,6 +19,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { usePermissionStore } from '@/stores/permissionStore';
 import { useChatStore } from '@/stores/chatStore';
 import { invalidateCatalogCache } from '@/lib/dashboardCatalog';
+import { THUMB_FRAME_H } from '@/components/DashboardThumbnailFrame';
 import client from '@/api/client';
 
 vi.mock('@/api/client', () => ({ default: { get: vi.fn(), post: vi.fn() } }));
@@ -77,7 +79,9 @@ describe('工作空间数据看板 — 组合卡片清单', () => {
     routes('/ws/7/dashboards');
     const card = (await screen.findByRole('button', { name: '进入组合 经营组' })).closest('article')!;
     // 缩略图槽固定高度 + 裁切：以前按看板画布比例撑高，长画布能顶到一屏多
-    const frame = card.querySelector('.h-40')!;
+    // 高度只断言共享常量 THUMB_FRAME_H（工作区与看板管理同一口径），不写字面量：
+    // 写死高度会让“改一处两边同步”的护栏变成误报（框高从 h-40 收到 h-24 时本用例曾误红）
+    const frame = card.querySelector(`.${THUMB_FRAME_H}`)!;
     expect(frame.className).toContain('overflow-hidden');
     expect(within(card).getByText('2 个可看看板')).toBeInTheDocument();
     expect(within(card).getByText('1 个未启用')).toBeInTheDocument();
@@ -228,6 +232,18 @@ describe('工作空间数据看板 — 详情与仪表盘组维度', () => {
     expect(within(header).getByRole('toolbar', { name: '看板操作' })).toBeInTheDocument();
     expect(document.querySelectorAll('nav[aria-label="同组看板"]')).toHaveLength(1);
   });
+  it('看板详情页不放 AS-BOT 入口（阅读页不给第二个对话入口）', async () => {
+    routes('/ws/7/dashboards/2');
+    await screen.findByText('响应式网格');
+    // 入口与面板都不挂：只去掉按钮、留着面板，其他页打开的会话态还会突兄出现
+    expect(screen.queryByLabelText('智能助手')).toBeNull();
+    expect(screen.queryByText('智能助手')).toBeNull();
+    // 工具栏只剩刷新/播放/全屏，右端不再有圆形助手徽标
+    const header = document.querySelector('header')!;
+    expect(within(header).getByRole('toolbar', { name: '看板操作' })).toBeInTheDocument();
+    expect(header.querySelectorAll('[aria-label="智能助手"]')).toHaveLength(0);
+  });
+
   it('切换同组看板不整页重载：保留页头与内容，只显进度条', async () => {
     let release: () => void = () => {};
     vi.mocked(client.get).mockImplementation(async (url: string) => {
@@ -300,8 +316,10 @@ describe('工作空间数据看板 — 详情与仪表盘组维度', () => {
     useAuthStore.setState({ user: { id: 1, username: 'test', role: 'admin' } });
     const view = render(<TooltipProvider><MemoryRouter><SectionSwitcher current="workspace" /></MemoryRouter></TooltipProvider>);
     fireEvent.keyDown(screen.getByRole('button', { name: '切换模块' }), { key: 'Enter' });
-    // 数据看板不再是独立模块(已收进工作空间侧栏), 一级入口只剩首页/工作空间/数据中台/系统配置
-    expect((await screen.findAllByRole('menuitem')).map(item => item.textContent)).toEqual(['首页', '工作空间', '数据中台', '系统配置']);
+    // 数据看板不再是独立模块(已收进工作空间侧栏), 一级入口为首页/工作空间/数据中台/内容中心/系统配置
+    // （内容中心按 content: 菜单码反查，与其他模块同口径，不是硬编码“恒可见”）
+    expect((await screen.findAllByRole('menuitem')).map(item => item.textContent))
+      .toEqual(['首页', '工作空间', '数据中台', '内容中心', '系统配置']);
     act(() => useAuthStore.setState({ user: { id: 2, username: 'test', role: 'user' } }));
     expect(screen.queryByRole('menuitem', { name: '系统配置' })).not.toBeInTheDocument(); view.unmount();
   });
@@ -330,27 +348,34 @@ describe('工作空间数据看板 — 详情与仪表盘组维度', () => {
 });
 
 describe('看板管理域与大屏播放', () => {
-  it('管理入口轮播只在可见已启用看板间播放', async () => {
-    // 默认但已停用/设计中的看板不进轮播集: current=设计中项时起点回落到首个可见启用项
-    useDashboardStore.setState({ currentWorkspaceId: 7, currentId: 2, dashboards: [board(99)] });
+  it('看板管理页不再有轮播入口：只留单看板大屏播放，设置弹窗不留死输入口', async () => {
     vi.mocked(client.get).mockImplementation(async url => {
-      if (url === '/dashboard/groups/visible') return { data: [{ id: 7, name: '经营组', description: '', sort: 0, dashboards: [groupBoard(1, 'closed', true), groupBoard(2, 'designing'), groupBoard(3), groupBoard(4)] }] };
+      if (url === '/dashboard/groups/visible') return { data: groupsFixture() };
       if (url === '/dashboard/groups') return { data: [] };
       const m = /^\/dashboard\/(\d+)$/.exec(url);
       if (m) return { data: board(Number(m[1])) };
-      if (url.startsWith('/dashboard/')) return { data: [board(1, 'closed', true), board(2, 'designing'), board(3), board(4)] };
+      if (url.startsWith('/dashboard/')) return { data: [board(1, 'closed', true), board(2, 'designing'), board(3), board(4)].map(d => ({ ...d, editable: true })) };
       return { data: [] };
     });
     routes('/system/dashboards');
     await screen.findByRole('button', { name: '预览 看板 3' });
     expect(client.get).toHaveBeenCalledWith('/dashboard/');
-    fireEvent.click(screen.getByRole('button', { name: '轮播' }));
-    await screen.findByText('大屏画布');
-    expect(screen.getByTestId('path')).toHaveTextContent('/screen/3?group=0&from=%2Fsystem%2Fdashboards&interval=10');
-    expect(screen.getByTestId('dashboard-refresh-actions').closest('header')).toBeTruthy();
+    // 轮播入口已按需求移除（组轮播仍在工作空间「数据看板」的组合卡上，不在管理页）
+    expect(screen.queryByRole('button', { name: '轮播' })).not.toBeInTheDocument();
+    // 卡片「播放」仍进大屏，且大屏走响应式页面网格（按视口宽铺满 + 纵向滚动）
+    const card3 = screen.getByRole('button', { name: '预览 看板 3' }).closest('article')!;
+    fireEvent.click(within(card3).getByRole('button', { name: '播放' }));
+    await screen.findByRole('button', { name: '退出大屏' });
+    expect(screen.getByTestId('path')).toHaveTextContent('/screen/3?group=0&from=%2Fsystem%2Fdashboards');
     fireEvent.click(screen.getByRole('button', { name: '退出大屏' }));
-    await screen.findByRole('button', { name: '轮播' });
+    await screen.findByRole('button', { name: '预览 看板 3' });
     expect(screen.getByTestId('path')).toHaveTextContent('/system/dashboards');
+    // 看板级 carousel_interval 已无消费方：设置弹窗不得再放一个“能填但不起作用”的轮播间隔
+    fireEvent.keyDown(screen.getByRole('button', { name: '看板 3 更多操作' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: /状态与参数设置/ }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByText(/轮播间隔/)).not.toBeInTheDocument();
+    expect(within(dialog).getByText(/仅已启用看板允许播放/)).toBeInTheDocument();
   });
   it('看板管理页：角色授予的看板不提供编辑入口（仅属主/admin 可写）', async () => {
     vi.mocked(client.get).mockImplementation(async url => {
@@ -371,7 +396,20 @@ describe('看板管理域与大屏播放', () => {
   it('看板管理列表卡预览槽固定高度（与工作区数据看板同一尺寸口径）', async () => {
     routes('/system/dashboards');
     const card = (await screen.findByRole('button', { name: '预览 看板 1' })).closest('article')!;
-    expect(card.querySelector('.h-40.overflow-hidden')).toBeTruthy();
+    // 同一常量：两边只要有一处自己写高度字面量，这条护栏就该红
+    expect(card.querySelector(`.${THUMB_FRAME_H}.overflow-hidden`)).toBeTruthy();
+  });
+  it('看板管理：卡片区滚动口自身是包含块（绝对定位后代不得把文档撑高）', async () => {
+    // 缺陷类：position:absolute 后代（如 sr-only 标签）在祖先链全为 static 时以 ICB 为包含块，
+    // 会越过 overflow-auto 的裁剪把 document 撑高 —— 滚轮于是把侧栏/顶栏整个系统页面一起卷走。
+    // 滚动口自己 relative 才能把这些盒裁在本口内（浏览器实测：document.scrollHeight 由 4450 回到视口高）。
+    routes('/system/dashboards');
+    const card = await screen.findByRole('button', { name: '预览 看板 1' });
+    const scroller = card.closest('.overflow-auto')!;
+    expect(scroller.className).toContain('relative');
+    // 可访问名改由 aria-label 承载：卡片内不再留游离的绝对定位盒
+    expect(scroller.querySelector('.sr-only')).toBeNull();
+    expect(screen.getAllByRole('button', { name: '播放' }).length).toBeGreaterThan(0);
   });
   it('裸播放链接无组范围时回看板清单', async () => {
     routes('/screen/2');
@@ -386,7 +424,9 @@ describe('看板管理域与大屏播放', () => {
     });
     const { container } = routes('/system/dashboards');
     await screen.findByRole('button', { name: '预览 看板 21' });
-    const card = screen.getByRole('button', { name: '编辑组合 经营日报' }).closest('article');
+    // 看板组合已拆到独立 Tab：切过去才渲染
+    await userEvent.click(screen.getByRole('tab', { name: '看板组合' }));
+    const card = (await screen.findByRole('button', { name: '编辑组合 经营日报' })).closest('article');
     expect(card).toBeInTheDocument();
     expect(within(card!).getByText('经营日报')).toBeInTheDocument();
     expect(within(card!).getByText('每日经营盘面')).toBeInTheDocument();
@@ -404,6 +444,7 @@ describe('看板管理域与大屏播放', () => {
       return { data: [] };
     });
     routes('/system/dashboards');
+    await userEvent.click(await screen.findByRole('tab', { name: '看板组合' }));
     const card = (await screen.findByRole('button', { name: '编辑组合 试运行组' })).closest('article')!;
     expect(within(card).getByText('未绑角色，用户看不到')).toBeInTheDocument();
     expect(within(card).getByText('看板：尚未编排看板')).toBeInTheDocument();
@@ -442,7 +483,7 @@ describe('看板管理域与大屏播放', () => {
   });
   it('播放携带组与来源，只读进入并正确返回', async () => {
     routes('/ws/7/dashboards/2'); await screen.findByText('响应式网格');
-    fireEvent.click(screen.getByRole('button', { name: '大屏播放' })); await screen.findByText('大屏画布');
+    fireEvent.click(screen.getByRole('button', { name: '大屏播放' })); await screen.findByRole('button', { name: '退出大屏' });
     expect(screen.getByTestId('path')).toHaveTextContent('/screen/2?group=7&from=%2Fws%2F7%2Fdashboards%2F2');
     expect(screen.queryByRole('button', { name: '编辑外观与数据' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '退出大屏' })); await screen.findByText('响应式网格');
@@ -465,7 +506,9 @@ describe('看板管理域与大屏播放', () => {
     });
     vi.mocked(client.post).mockResolvedValue({ data: { columns: ['c'], rows: [[1]] } } as any);
     routes('/screen/2?group=7');
-    await screen.findByText('大屏画布');
+    // 大屏播放已改走响应式页面网格（按宽铺满 + 纵向滚动），不再是整块缩放的像素画布
+    await screen.findByText('响应式网格');
+    expect(screen.queryByText('大屏画布')).not.toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: '刷新数据' }));
     await waitFor(() => expect(client.post).toHaveBeenCalledTimes(2));
     const posts = vi.mocked(client.post).mock.calls.map(([url]) => url).sort();

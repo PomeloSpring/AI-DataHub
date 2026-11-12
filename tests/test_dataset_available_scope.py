@@ -12,6 +12,7 @@
 
 全部内存 monkeypatch，不依赖元库数据。
 """
+import importlib
 import inspect
 import json
 import os
@@ -24,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from backend.core.governed_query import NoIdentityError          # noqa: E402
 from backend.core.role_service import role_service               # noqa: E402
 from backend.modules.viz.services.dashboard_service import (      # noqa: E402
-    assert_dataset_chart_usable,)
+    assert_chart_data_source,)
 from backend.modules.viz.services import dataset_service as svc  # noqa: E402
 from backend.modules.viz.services import report_access           # noqa: E402
 
@@ -54,6 +55,11 @@ def _ds(**over):
 
 def _identity(role="analyst", user_id=1001):
     return {"user_id": user_id, "username": "u", "role": role, "workspace_id": 301}
+
+
+def _dash_mod():
+    """取 dashboard_service 真模块对象（包 `__init__` 里的同名单例会遮蔽子模块名）。"""
+    return importlib.import_module("backend.modules.viz.services.dashboard_service")
 
 
 @pytest.fixture
@@ -459,43 +465,112 @@ class TestResolveFieldsByEffectiveSource:
 # ── 6. 看板挂图入口把关 ─────────────────────────────────────────────────
 
 class TestDashboardChartGate:
+    """图表取数闸门的「可用范围 ∩ 角色授权源」交叉面。
+
+    通道收口本身的全量用例在 tests/test_dashboard_chart_dataset_only.py；
+    本处只锁：过了角色数据集授权后，仍要满“至少有一个可执行源”，不得开空承诺入口。
+    """
+
+    def _grant(self, monkeypatch, *dataset_ids):
+        """角色数据集授权（与编辑器下拉同一裁决点）。"""
+        monkeypatch.setattr(role_service, "get_user_allowed_datasets",
+                            lambda uid: list(dataset_ids))
+
     def test_usable_scope_allows_binding(self, catalog, granted, monkeypatch):
+        self._grant(monkeypatch, 501)
         monkeypatch.setattr(svc, "get_dataset",
                             lambda _id: _ds(datasource_id=11, available_datasources=["prd-jp"]))
-        assert_dataset_chart_usable(
-            {"source_type": "dataset", "source_id": 501}, _identity())
+        assert_chart_data_source(
+            {"chart_type": "line", "source_type": "dataset", "source_id": 501}, _identity())
+
+    def test_pinned_source_in_scope_allows_binding(self, catalog, granted, monkeypatch):
+        """看板级选源：钉选的源在「可用范围 ∩ 授权源」内 → 放行（存业务名）。"""
+        self._grant(monkeypatch, 501)
+        monkeypatch.setattr(svc, "get_dataset",
+                            lambda _id: _ds(datasource_id=11, available_datasources=["prd-jp"]))
+        assert_chart_data_source(
+            {"chart_type": "line", "source_type": "dataset", "source_id": 501,
+             "config": {"datasource": "prd-jp"}}, _identity())
+
+    def test_pinned_source_outside_scope_refused(self, catalog, granted, monkeypatch):
+        """钉选的源越权/超范围 → 保存即拒（不开"存了但刷新必报错"的空承诺），
+        错误文案只出业务名候选（护栏 §7）。"""
+        self._grant(monkeypatch, 501)
+        granted["ids"] = [11]                 # 只授权 prd-cn，prd-jp 在范围但越权
+        monkeypatch.setattr(svc, "get_dataset",
+                            lambda _id: _ds(datasource_id=11, available_datasources=["prd-jp"]))
+        with pytest.raises(ValueError) as e:
+            assert_chart_data_source(
+                {"chart_type": "line", "source_type": "dataset", "source_id": 501,
+                 "config": {"datasource": "prd-jp"}}, _identity())
+        msg = str(e.value)
+        assert "prd-jp" in msg and "prd-cn" in msg   # 钉选项 + 可执行候选都只出业务名
+        assert "11" not in msg and "12" not in msg
+
+    def test_empty_pin_is_auto_resolve_noop(self, catalog, granted, monkeypatch):
+        """未钉（空串）= 交服务端定源，不得因空值被当成越界拒。"""
+        self._grant(monkeypatch, 501)
+        monkeypatch.setattr(svc, "get_dataset",
+                            lambda _id: _ds(datasource_id=11, available_datasources=["prd-jp"]))
+        assert_chart_data_source(
+            {"chart_type": "line", "source_type": "dataset", "source_id": 501,
+             "config": {"datasource": ""}}, _identity())
 
     def test_no_intersection_refuses_with_business_name(self, catalog, granted, monkeypatch):
+        self._grant(monkeypatch, 501)
         granted["ids"] = [13]
         monkeypatch.setattr(svc, "get_dataset",
                             lambda _id: _ds(datasource_id=11, available_datasources=["prd-jp"]))
         with pytest.raises(ValueError) as e:
-            assert_dataset_chart_usable(
-                {"source_type": "dataset", "source_id": 501}, _identity())
+            assert_chart_data_source(
+                {"chart_type": "line", "source_type": "dataset", "source_id": 501}, _identity())
         assert "订单概览" in str(e.value) and "13" not in str(e.value)
+
+    def test_dataset_outside_role_grant_refused_even_if_source_authorized(
+            self, catalog, granted, monkeypatch):
+        """角色没拿数据集授权 → 不开放挂接（清单里看不到也挂不上，双口径为零）。"""
+        self._grant(monkeypatch)                     # 空授权不解释为全量（fail-closed）
+        monkeypatch.setattr(svc, "get_dataset", lambda _id: _ds(datasource_id=11))
+        with pytest.raises(ValueError) as e:
+            assert_chart_data_source(
+                {"chart_type": "line", "source_type": "dataset", "source_id": 501}, _identity())
+        assert "未被授权" in str(e.value) and "角色权限" in str(e.value)
 
     def test_patch_only_payload_reads_back_chart_row(self, catalog, granted, monkeypatch):
         """改图常只带局部字段 → 回读 adh_charts 拼有效口径，不得因缺字段而跳过校验。"""
+        self._grant(monkeypatch, 501)
         granted["ids"] = [13]
-        monkeypatch.setattr(svc, "get_dataset",
-                            lambda _id: _ds(datasource_id=11))
-        monkeypatch.setattr("backend.common.db.execute_query",
-                            lambda sql, params=None, **kw: {"source_type": "dataset",
-                                                             "source_id": 501})
-        with pytest.raises(ValueError):
-            assert_dataset_chart_usable({"title": "改名"}, _identity(),
-                                                           chart_id=88)
+        monkeypatch.setattr(svc, "get_dataset", lambda _id: _ds(datasource_id=11))
+        monkeypatch.setattr(_dash_mod(), "execute_query",
+                            lambda sql, params=None, **kw: {"name": "区域分布", "chart_type": "bar",
+                                                            "source_type": "dataset", "source_id": 501})
+        with pytest.raises(ValueError) as e:
+            assert_chart_data_source({"title": "改名"}, _identity(), chart_id=88)
+        assert "订单概览" in str(e.value)
 
-    def test_non_dataset_source_is_noop(self, catalog, granted, monkeypatch):
+    def test_placeholder_channels_are_noop(self, catalog, granted, monkeypatch):
+        """占位/模板图尚未绑数据：不报错也不预加载数据集（新建图第一跳）。"""
         monkeypatch.setattr(svc, "get_dataset", lambda _id: pytest.fail("不应加载数据集"))
-        assert_dataset_chart_usable(
-            {"source_type": "raw_sql", "source_id": 501}, _identity())
+        for st in ("", "empty", "template"):
+            assert_chart_data_source({"chart_type": "bar", "source_type": st}, _identity())
+
+    def test_non_dataset_data_channel_refused(self, catalog, granted, monkeypatch):
+        """图表只能从数据集取数：旧直连通道（raw_sql/query）不再放行。"""
+        monkeypatch.setattr(svc, "get_dataset", lambda _id: pytest.fail("不应加载数据集"))
+        with pytest.raises(ValueError) as e:
+            assert_chart_data_source(
+                {"chart_type": "bar", "source_type": "raw_sql", "source_id": 501}, _identity())
+        assert "只能从数据集取数" in str(e.value)
+        with pytest.raises(ValueError) as e2:
+            assert_chart_data_source(
+                {"chart_type": "bar", "name": "旧图", "source_type": "query"}, _identity())
+        assert "旧图" in str(e2.value)
 
     def test_missing_identity_fails_closed(self, catalog, granted, monkeypatch):
         monkeypatch.setattr(svc, "get_dataset", lambda _id: _ds())
         with pytest.raises(NoIdentityError):
-            assert_dataset_chart_usable(
-                {"source_type": "dataset", "source_id": 501}, {"user_id": 0})
+            assert_chart_data_source(
+                {"chart_type": "bar", "source_type": "dataset", "source_id": 501}, {"user_id": 0})
 
 
 # ── 7. 报表快照：改范围必须失效 ─────────────────────────────────────────

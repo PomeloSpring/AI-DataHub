@@ -7,15 +7,18 @@ import MetricsCenter from '../../pages/catalog/MetricsCenter';
 import { metricsApi } from '../../api/metrics';
 
 /**
- * 弹窗高度护栏 —— 历史缺陷：指标/维度编辑弹窗（十几行表单 + 三元组预览）
- * 把 DialogContent 撑得比视口还高，而基准类只有 fixed 居中、没有 max-h/overflow：
- * 结果标题与关闭按钮跑到视口上方、保存/取消跑到视口下方，页面既滚不动也点不到
- * （用户视角＝"弹窗占满页面无法操作"）。
+ * 弹窗视口护栏（高 & 宽）—— 历史缺陷两条：
+ * ① 指标/维度编辑弹窗（十几行表单 + 三元组预览）把 DialogContent 撑得比视口还高，
+ *    而基准类只有 fixed 居中、没有 max-h/overflow：标题与关闭按钮跑到视口上方、
+ *    保存/取消跑到视口下方，页面既滚不动也点不到（用户视角＝"弹窗占满页面无法操作"）。
+ * ② 基准类原先是 `w-full`（= 视口宽）：窗口比弹窗 max-w 还窄时（新建定时任务表单被截图
+ *    反馈"框体都超出去了"），弹窗左右贴到窗口边、圆角与边框被切，输入框看着像顶出弹窗。
  *
- * 钉住三件事：
+ * 钉住四件事：
  * 1. 基准 DialogContent 自带 max-h + 纵向滚动（全站弹窗默认不再溢出视口）；
- * 2. 页面自定义的 max-h-[85vh] 之类仍能覆盖基准（twMerge 后写优先）；
- * 3. 指标编辑弹窗实际渲染出的节点带护栏（不是只改了组件、页面又用别的容器绕开）。
+ * 2. 基准自带两侧留白的宽度护栏，窄窗口下弹窗缩而不是内容溢出；
+ * 3. 页面自定义的 max-h-[85vh] / w-[…] 仍能覆盖基准（twMerge 后写优先）；
+ * 4. 指标编辑弹窗实际渲染出的节点带护栏（不是只改了组件、页面又用别的容器绕开）。
  */
 
 const dialogSrc = fs.readFileSync(
@@ -44,6 +47,26 @@ describe('DialogContent 基准高度护栏', () => {
     expect(cls).toContain('overflow-y-auto');
   });
 
+  it('基准类含宽度护栏：w-[calc(100%-2rem)]，不再用 w-full 贴窗口边', () => {
+    expect(dialogSrc).toMatch(/w-\[calc\(100%-2rem\)\]/);
+    // w-full 只允许出现在护栏注释里，不得回到基准类（否则窄窗口又贴边）
+    const base = dialogSrc.match(/const BASE_CONTENT_CLASSES =\n\s*"([^"]+)"/)![1];
+    expect(base).toContain('w-[calc(100%-2rem)]');
+    expect(base).not.toContain('w-full');
+  });
+
+  it('渲染出的弹窗节点带宽度护栏（内容有左右余量，不被切）', () => {
+    render(
+      <Dialog open>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader><DialogTitle>新建定时任务</DialogTitle></DialogHeader>
+          <input placeholder="如：每日销售日报" />
+        </DialogContent>
+      </Dialog>,
+    );
+    expect(screen.getByRole('dialog').className).toContain('w-[calc(100%-2rem)]');
+  });
+
   it('页面自定义 max-h 仍优先生效（基准不抢各页既有约定）', () => {
     render(
       <Dialog open>
@@ -62,6 +85,30 @@ describe('DialogContent 基准高度护栏', () => {
       path.resolve(__dirname, '..', 'editor', 'PropertyPanel.tsx'), 'utf8');
     const drawer = src.match(/h-\[100dvh\][^"]*"/)?.[0] ?? '';
     expect(drawer).toContain('max-h-[100dvh]');
+  });
+
+  it('弹窗内的表单根容器不得自带 overflow-hidden（否则输入框焦点环左右被剪）', () => {
+    // Input 是 w-full，focus 环 ring-2 + ring-offset-2 要画到盒子外 4px；表单根容器再套
+    // overflow-hidden 就把左右两段圆弧剪掉（用户视角＝“蓝色提示线左右都看不到”）。
+    // 横向撑爆自有 DialogContent 的 overflow-x-hidden + [&>*]:min-w-0 兜。
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '..', '..', 'pages', 'admin', 'ScheduledTaskForm.tsx'), 'utf8');
+    const root = src.match(/return \(\n\s*<(div className="[^"]*")>/)?.[1] ?? '';
+    expect(root).toContain('min-w-0');
+    expect(root).not.toContain('overflow-hidden');
+  });
+
+  it('自带宽度约定的弹窗/抽屉不被基准抢走（贴边抽屉仍贴边，宽弹窗仍宽）', () => {
+    render(
+      <Dialog open>
+        <DialogContent className="left-auto right-0 top-0 h-[100dvh] w-[min(320px,95vw)] translate-x-0 translate-y-0 rounded-none">
+          <DialogHeader><DialogTitle>属性面板</DialogTitle></DialogHeader>
+        </DialogContent>
+      </Dialog>,
+    );
+    const cls = screen.getByRole('dialog').className;
+    expect(cls).toContain('w-[min(320px,95vw)]');
+    expect(cls).not.toContain('w-[calc(100%-2rem)]');
   });
 });
 

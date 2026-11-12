@@ -34,25 +34,38 @@ MAX_COL = 16_384
 
 
 def _resolve_session_ws(conversation_id: int, user_id: int):
-    """会话 → 工作区目录;仅本人会话可访问。"""
+    """会话 → 工作区目录；仅本人会话可访问（定位与云回落口径见 session_workspace）。"""
     from backend.modules.mind.execution import session_workspace as sw
-    from backend.common.db.metadata_db import get_metadata_conn
 
-    conn = get_metadata_conn()
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT session_key, workspace_id FROM adh_agent_sessions "
-                "WHERE conversation_id=%s AND user_id=%s",
-                (conversation_id, user_id))
-            row = cur.fetchone()
-    finally:
-        conn.close()
-    if not row or not row.get("session_key"):
-        raise HTTPException(status_code=404, detail="会话不存在或无权访问")
-    base = sw.workspace_base(create=False)
-    root = sw.session_paths(base, row["session_key"], int(row["workspace_id"] or 0), user_id, create=False)
-    return (root / "workspace").resolve()
+        return sw.conversation_workspace_root(conversation_id, user_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc) or "会话不存在或无权访问") from None
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+def _resync(req, user: dict, root) -> None:
+    """产物写盘后把云空间镜像推到最新（后台执行，不占用本次请求耗时）。
+
+    失败只落日志：文件面板按云端实际对象清单标未同步，不静默假装已上云。
+    """
+    from backend.modules.mind.execution import session_cloud
+    from backend.common.db.metadata_db import get_metadata_conn
+    uid = int(user.get("user_id") or 0)
+    try:
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT session_key FROM adh_agent_sessions "
+                            "WHERE conversation_id=%s AND user_id=%s", (req.conversation_id, uid))
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        if row and row.get("session_key"):
+            session_cloud.schedule_sync(root, uid, row["session_key"], reason="file-api")
+    except Exception:  # noqa: BLE001
+        logger.exception("产物镜像刷新调度失败: conversation=%s", req.conversation_id)
 
 
 def _resolve_target(ws_dir, path: str):
@@ -156,7 +169,7 @@ def read_xlsx(
     user: dict = Depends(get_file_user),
 ):
     """读取 xlsx: 工作表清单 + 指定 sheet 的表格数据(首行作表头)。"""
-    ws_dir = _resolve_session_ws(conversation_id, int(user.get("user_id") or 0))
+    ws_dir = (_resolve_session_ws(conversation_id, int(user.get("user_id") or 0)) / "workspace").resolve()
     target = _resolve_target(ws_dir, path)
 
     try:
@@ -213,7 +226,8 @@ def save_xlsx(req: SaveXlsxRequest, user: dict = Depends(get_file_user)):
         if len(ch.value or "") > MAX_CELL_CHARS:
             raise HTTPException(status_code=400, detail="单元格内容过长(上限 32000 字符)")
 
-    ws_dir = _resolve_session_ws(req.conversation_id, int(user.get("user_id") or 0))
+    root = _resolve_session_ws(req.conversation_id, int(user.get("user_id") or 0))
+    ws_dir = (root / "workspace").resolve()
     target = _resolve_target(ws_dir, req.path)
 
     try:
@@ -240,6 +254,7 @@ def save_xlsx(req: SaveXlsxRequest, user: dict = Depends(get_file_user)):
     finally:
         wb.close()
 
+    _resync(req, user, root)
     return {
         "filename": out.name,
         "path": str(out.relative_to(ws_dir)),
@@ -265,7 +280,8 @@ def save_table(req: SaveTableRequest, user: dict = Depends(get_file_user)):
     if len(req.rows) > MAX_TABLE_ROWS:
         raise HTTPException(status_code=400, detail=f"行数超过上限 {MAX_TABLE_ROWS}")
 
-    ws_dir = _resolve_session_ws(req.conversation_id, int(user.get("user_id") or 0))
+    root = _resolve_session_ws(req.conversation_id, int(user.get("user_id") or 0))
+    ws_dir = (root / "workspace").resolve()
 
     import io
     import openpyxl
@@ -282,6 +298,7 @@ def save_table(req: SaveTableRequest, user: dict = Depends(get_file_user)):
 
     filename = req.filename if req.filename.lower().endswith(".xlsx") else f"{req.filename}.xlsx"
     placed = write_upload_file(ws_dir, filename, buf.getvalue())
+    _resync(req, user, root)
     return {
         "filename": placed["filename"],
         "path": placed["path"],

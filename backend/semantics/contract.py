@@ -49,6 +49,51 @@ EXEC_FAIL_HINT = (
     "建议稍后重试或联系管理员核实数据源可用性。"
 )
 
+# 执行失败的**分类口径**（类别进日志与结果标注，对外只给类别 + 可操作下一步）。
+# 为什么不能一律回 EXEC_FAIL_HINT：它把每个执行失败都说成“连接/凭据暂不可用，建议
+# 稍后重试”，而 1064/1054/1146 这类是**确定性缺陷**（方言不符、表/列不存在、选错源），
+# 重试永远复现。历史缺陷（会话 1783069459277）：SLS/Presto 方言的 SQL 被选到了本站的
+# MySQL 业务库上，服务端报 1064（能报 1064 就说明连接是通的），而模型拿到“连接失败”文案后
+# 向用户报“数据源在执行阶段连接失败（系统侧问题）+建议稍后重试”——真因被掩成抖动。
+_SQL_SHAPE_MARKERS = ("1064", "syntax error", "parse error", "mismatched input",
+                      "unexpected token", "not a valid sql")
+_MISSING_OBJECT_MARKERS = ("1146", "1054", "unknown table", "unknown column",
+                           "no such table", "no such column", "table not found",
+                           "column not found", "does not exist", "doesn't exist",
+                           "cannot resolve", "logstore does not exist")
+_CONNECTIVITY_MARKERS = ("2002", "2003", "1045", "access denied", "authentication",
+                         "connection", "connect ", "timed out", "timeout",
+                         "unreachable", "reset by peer", "broken pipe",
+                         "unknownhost", "no route to host", "name or service not known")
+
+
+def classify_exec_failure(reason: str, db_type: str = "") -> tuple[str, str]:
+    """按原始异常文本归类执行失败 → (类别, 对外文案)。
+
+    对外文案只说类别与下一步，不含 SQL、表名、主机、账号（护栏 §7）；
+    认不出来时回 `EXEC_FAIL_HINT`（归类失败不得编造原因）。
+    优先级：连接/凭据类 → 表/列不存在类 → 方言/语法类（后两者文本常共现，
+    先判“不存在”能避免把缺表归成语法错）。
+    """
+    text = str(reason or "").lower()
+    src = f"（目标源类型：{db_type}）" if db_type else ""
+    if any(m in text for m in _CONNECTIVITY_MARKERS):
+        return "connectivity", EXEC_FAIL_HINT
+    if any(m in text for m in _MISSING_OBJECT_MARKERS):
+        return "missing_object", (
+            f"目标数据源里没有这条 SQL 引用的表或列{src}。这是确定性失败，重试不会好："
+            "表名/列名请先用 get_table_schema 或 search_metadata 确认（不要把语义对象名当表名用），"
+            "并核对本次选定的数据源/站点是否就是数据所在的那个源。"
+            "不得向用户展示物理表名/列名，也不得据此说“该站点无数据”。")
+    if any(m in text for m in _SQL_SHAPE_MARKERS):
+        return "sql_dialect", (
+            f"SQL 与目标数据源的方言不匹配{src}，被服务端拒绝。这是确定性失败，重试不会好："
+            "请按目标源方言重写标识符引号、时间列与函数（不同方言系对双引号标识符、"
+            "UNIX 时间函数、内置时间列的写法不同）；若目标源选错了，改用 datasource（业务名）"
+            "显式指向数据真正所在的那个源。不得向用户回显生成的 SQL。")
+    return "unclassified", EXEC_FAIL_HINT
+
+
 # 可能泄露物理表/数据源/catalog 的告警关键字，不随结果对外下发。
 LEAK_KEYWORDS = ("physical_table", "catalog", "datasource", "catalog_ref", "not in adh_table_info")
 
@@ -98,15 +143,19 @@ def safe_warnings(*groups: list[str] | None) -> list[str]:
     return out
 
 
-def sanitize_execute_reason(reason: str, blocked_at: str = "") -> str:
-    """执行阶段原始报错（可含 MySQL Access denied/IP）仅进服务端日志，对外回通用文案。
+def sanitize_execute_reason(reason: str, blocked_at: str = "", db_type: str = "") -> str:
+    """执行阶段原始报错（可含 MySQL Access denied/IP）仅进服务端日志，对外回分类后的可操作文案。
 
     非执行阶段的拒绝原因（闸门声明式文案）原样返回。
+    口径与 `classify_exec_failure` 同源：不得把确定性的方言/缺表失败说成“稍后重试”（历史缺陷：
+    会话 1783069459277 的 1064 被掩成“数据源连接失败（系统侧问题）”）。
     """
     reason = str(reason or "")
     if blocked_at == "execute" or reason.startswith("执行失败"):
-        logger.error("[semantics] execute-stage failed (detail server-side only): %s", reason)
-        return EXEC_FAIL_HINT
+        category, hint = classify_exec_failure(reason, db_type)
+        logger.error("[semantics] execute-stage failed (%s, detail server-side only): %s",
+                     category, reason)
+        return hint
     return reason
 
 

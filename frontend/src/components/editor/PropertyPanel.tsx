@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { DEFAULT_PAGE_GAP, PAGE_COLUMNS, PAGE_GAP_MAX, PAGE_GAP_MIN, PAGE_LABELS, PAGE_ROW, pageColumnPx, pageGap, pageMinHeight, pagePixelRect, pageRows, type PageBreakpoint, type PageGaps } from '@/lib/dashboardPageLayout';
-import { naturalSizeOf, type Rect } from '@/lib/dashboardDesign';
+import { minReadableWidth, naturalSizeOf, type Rect } from '@/lib/dashboardDesign';
 import { TEMPLATE_DEMO_KEY } from '@/lib/dashboardDemo';
 import {
   Settings, BarChart3, Move, Paintbrush, Monitor, Grid3x3, Palette, PanelRightClose,
@@ -16,6 +16,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { CHART_TYPES, ChartIcon } from '../DashboardChart';
+import DecisionWidgetConfig from '../decision/DecisionWidgetConfig';
+import BoardMotionSection from './BoardMotionSection';
 import { ParamNameSelect, WidgetOptionsEditor } from './ParamSelect';
 import { CUSTOM_PRESET, DEFAULT_TIME_PRESET_KEYS, TIME_PRESETS, needsTime } from '@/lib/timePresets';
 import type { PageParam } from '@/stores/dashboardStore';
@@ -59,6 +61,11 @@ interface Props {
   widgetStyleBase?: Record<string, any>;
   /** 当前挂载的控件字模名（无则按主题包基线说明） */
   widgetVisName?: string;
+  /** 看板级 filters 草稿 + 写回（只给「动效」分组用：挂/摘板级字模与板级差量） */
+  filters?: any;
+  onFiltersChange?: (filters: any) => void;
+  /** 「重新播放」：让主画布也临时播一次入场（不只预览色块） */
+  onReplayMotion?: () => void;
 }
 
 export default function PropertyPanel({
@@ -67,7 +74,7 @@ export default function PropertyPanel({
   gridSize, setGridSize, scale, setScale, allCharts,
   isNewChart, onPropertyChange, onPositionChange, onWidgetConfigChange,
   onDelete, onChartConfig, pageBreakpoint, pageRect, pageGaps, onPageGapChange, onResetPage, tab, onTab, pageParams, onCreatePageParam,
-  widgetStyleBase, widgetVisName,
+  widgetStyleBase, widgetVisName, filters, onFiltersChange, onReplayMotion,
 }: Props) {
   const [narrow, setNarrow] = useState(() => window.innerWidth < 1024);
   useEffect(() => {
@@ -184,6 +191,23 @@ export default function PropertyPanel({
                   ? `不限制最小值（宽度步进 1 列 ≈ ${Math.round(pageColumnPx(pageBreakpoint, pageGaps))}px，高度步进 1 行 = ${PAGE_ROW}px）；本类型建议 ${pageRows(pageMinHeight(selectedChart.chart_type))} 行起步，可自由缩小。`
                   : `不限制最小值，大小由你控制；本类型建议 ${naturalSizeOf(selectedChart.chart_type).w}×${naturalSizeOf(selectedChart.chart_type).h}px 起步。`}
               </p>
+              {(() => {
+                /* 日期类控件的原生输入框有内在最小宽，压不下去也换不了行（卡片高度只有一行），
+                   宽度不够时用户看到的就是“只有开始日期”——这里显式报出来并给一键补宽，不静默裁切。 */
+                const min = minReadableWidth(selectedChart.chart_type);
+                if (!min) return null;
+                const inPage = !!(pageBreakpoint && pageRect);
+                const pxW = inPage ? pagePixelRect(pageRect!, pageBreakpoint!, pageGaps).w : (selectedChart.position?.w ?? 0);
+                if (!pxW || pxW >= min) return null;
+                const span = inPage ? Math.ceil((min + pageGap(pageBreakpoint!, pageGaps)) / pageColumnPx(pageBreakpoint!, pageGaps)) : min;
+                return <div role="alert" className="rounded-md border border-amber-300 bg-amber-50/60 px-2 py-1.5 text-[11px] text-amber-900 dark:text-amber-200">
+                  <div className="mb-1">当前宽 ≈{Math.round(pxW)}px，本控件需要 ≥{min}px；宽度不够时结束日期会被裁掉（只展示一半）。</div>
+                  <Button size="sm" variant="outline" className="h-6 text-[11px]"
+                    onClick={() => onPositionChange(selectedChart.id, 'w', span)}>
+                    {inPage ? `补宽到 ${span} 列` : `补宽到 ${min}px`}
+                  </Button>
+                </div>;
+              })()}
             </div><Separator /></>}
 
             {/* Widget config */}
@@ -239,8 +263,11 @@ export default function PropertyPanel({
           </div>
           <p className="text-xs text-muted-foreground">1 行 = {PAGE_ROW}px（高度步进）、1 列 ≈ {Math.round(pageColumnPx(pageBreakpoint, pageGaps))}px（宽度步进）；间距只作用于列之间与自动避让留白，不再把卡片高度拉扇。仅修改当前断点，未调整的平板和手机布局从桌面派生。</p>
           <Button variant="outline" size="sm" onClick={onResetPage}>恢复当前断点自动适配</Button>
+          {/* 板级动效：只在外观页出现（与阅读/播放面的「出现效果」同一份解析） */}
+          {tab === 'appearance' && onFiltersChange && <BoardMotionSection filters={filters || {}} onFiltersChange={onFiltersChange} onReplay={onReplayMotion} />}
         </div> : (
           /* Canvas Properties */
+          <>
           <CanvasProperties
             canvasSize={canvasSize}
             setCanvasSize={setCanvasSize}
@@ -252,6 +279,9 @@ export default function PropertyPanel({
             setScale={setScale}
             allCharts={allCharts}
           />
+          {/* CanvasProperties 自带 space-y，这里只补层间距（否则两个分组粘成一块） */}
+          {tab === 'appearance' && onFiltersChange && <div className="mt-4"><BoardMotionSection filters={filters || {}} onFiltersChange={onFiltersChange} onReplay={onReplayMotion} /></div>}
+          </>
         )}
         </div>
       </ScrollArea>
@@ -287,13 +317,20 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
   const type: string = chart.chart_type;
   const isButton = ['widget_search', 'widget_reset', 'widget_export'].includes(type);
   const isLabel = type === 'widget_label';
-  const takesParam = !isButton && !isLabel;
+  // 决策建议卡：不写参数（只读参数）、也没有标签/占位可配，写了无消费方 = 假旋钮
+  const isDecision = type === 'widget_decision';
+  const takesParam = !isButton && !isLabel && !isDecision;
   const targetChartId = typeof chart.config?.targetChartId === 'number' ? chart.config.targetChartId : 0;
   // 选项显示图表 name（ui-resource-display）；value 用 id 是实现细节
   const exportTargets = (allCharts || []).filter(c => !String(c.chart_type || '').startsWith('widget_'));
   return (
     <div className="space-y-3">
       <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">控件配置</div>
+
+      {isDecision && (
+        <DecisionWidgetConfig chart={chart} pageParams={pageParams}
+          onWidgetConfigChange={onWidgetConfigChange} />
+      )}
 
       {chart.chart_type === 'widget_label' && (
         <div className="space-y-2">
@@ -309,10 +346,17 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
 
       {takesParam && (
         <ParamNameSelect label="参数 Key" value={chart.config?.paramKey || ''} params={pageParams}
-          placeholder="如 site / date_start" onChange={v => onWidgetConfigChange(chart.id, 'paramKey', v)}
+          placeholder="如 site / date_start"
+          onChange={v => {
+            onWidgetConfigChange(chart.id, 'paramKey', v);
+            // 选了参数就把业务名带进标签（没手填过标签时），否则画布上只能看到内部键名
+            const hit = pageParams.find(p => p.name === v);
+            if (hit && !(chart.config?.label || '').trim()) onWidgetConfigChange(chart.id, 'label', hit.label || hit.name);
+          }}
           onCreate={p => onCreatePageParam?.(p)} />
       )}
 
+      {!isDecision && (
       <div className="space-y-2">
         <Label className="text-xs">
           {isButton ? '按钮文字' : isLabel ? '名称' : '标签文字'}
@@ -321,6 +365,7 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
           value={chart.config?.label || ''}
           onChange={e => onWidgetConfigChange(chart.id, 'label', e.target.value)} />
       </div>
+      )}
 
       {takesParam && (
         <>
@@ -347,12 +392,16 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
               value={chart.config?.placeholder || ''}
               onChange={e => onWidgetConfigChange(chart.id, 'placeholder', e.target.value)} />
           </div>
-          <div className="space-y-2">
-            <Label className="text-xs">默认值</Label>
-            <Input className="h-7 text-xs"
-              value={chart.config?.defaultValue || ''}
-              onChange={e => onWidgetConfigChange(chart.id, 'defaultValue', e.target.value)} />
-          </div>
+          {/* 日期范围的默认值由下方「默认选项」控制（不预设 = 默认空值，由用户自己选），
+              这里的 defaultValue 对 daterange 无消费方，渲染出来就是“存了不生效”的假旋钮 */}
+          {type !== 'widget_daterange' && (
+            <div className="space-y-2">
+              <Label className="text-xs">默认值</Label>
+              <Input className="h-7 text-xs"
+                value={chart.config?.defaultValue || ''}
+                onChange={e => onWidgetConfigChange(chart.id, 'defaultValue', e.target.value)} />
+            </div>
+          )}
           {type === 'widget_daterange' ? (
             <div className="grid grid-cols-2 gap-2">
               {(['start', 'end'] as const).map((slot, i) => {
@@ -390,7 +439,7 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
               <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {TIME_PRESETS.map(p => <SelectItem key={p.key} value={p.key} className="text-xs">{p.label}</SelectItem>)}
-                <SelectItem value={CUSTOM_PRESET} className="text-xs">不预设（用最大间隔）</SelectItem>
+                <SelectItem value={CUSTOM_PRESET} className="text-xs">不预设（默认留空）</SelectItem>
               </SelectContent>
             </Select>
           </div>

@@ -12,7 +12,7 @@ export default function ModelCenter() {
           <TabsList>
             <TabsTrigger value="execution-layers">
               <Terminal className="h-4 w-4 mr-2" />
-              执行层
+              Harness
             </TabsTrigger>
             <TabsTrigger value="model-config">
               <Cpu className="h-4 w-4 mr-2" />

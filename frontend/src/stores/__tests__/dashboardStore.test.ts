@@ -57,6 +57,7 @@ function makeDashboard(overrides: Partial<Dashboard> = {}): Dashboard {
     filters: {},
     params: [],
     page_params: [],
+    tags: [],
     status: 'designing',
     owner_id: 1,
     is_public: false,
@@ -545,14 +546,14 @@ describe('dashboardStore', () => {
       const payload = chartPost[1]
       expect(payload.data_cache).toEqual({ columns: ['dt', 'sales'], rows: [{ dt: '10-19', sales: 182 }] })
       expect(payload.config.demoData).toBe(true)
-      // 样式模板不假设环境里的表结构：无 SQL、无 demoSql、不进取数队列
-      expect(payload.sql_query).toBe('')
+      // 样式模板不假设环境里的表结构：不携带口径字段、无 demoSql、不进取数队列
+      expect(payload.sql_query).toBeUndefined()
       expect(payload.config.demoSql).toBeUndefined()
       expect(payload.source_type).toBe('template')
       expect(JSON.stringify(payload)).not.toMatch(/SELECT/)
     })
 
-    it('导入体的字符串形态示例数据同样按样式图处理；存量图保留口径但不注入缓存', async () => {
+    it('导入体的字符串形态示例数据同样按样式图处理；存量图降为占位图（不携口径/不注入缓存）', async () => {
       const posts = install([])
       await useDashboardStore.getState().createFromTemplate({
         name: '导入的看板',
@@ -566,13 +567,69 @@ describe('dashboardStore', () => {
       const payloads = posts.filter(([url]) => url.endsWith('/charts')).map(([, b]) => b)
       expect(payloads[0].data_cache).toEqual({ columns: ['a', 'b'], rows: [{ a: 'x', b: 1 }] })
       expect(payloads[0].config.demoData).toBe(true)
-      expect(payloads[0].sql_query).toBe('')
+      expect(payloads[0].sql_query).toBeUndefined()
       // 存量图的 data_cache 是真实取数结果，客户端不得重放注入（服务端也会 400 拒）
       expect(payloads[1].config.demoData).toBeUndefined()
       expect(payloads[1].data_cache).toBeUndefined()
       expect(payloads[1].config.sql).toBeUndefined()
-      expect(payloads[1].config.datasource_id).toBe(5)
-      expect(payloads[1].sql_query).toBe('SELECT 1')
+      // 旧直连通道残留键不回填：图表通道只由 source_type/source_id 表达
+      expect(payloads[1].config.datasource_id).toBeUndefined()
+      // 带手填 SQL 的存量图 → 降为占位图（服务端写入口会拒任何 sql_query）
+      expect(payloads[1].sql_query).toBeUndefined()
+      expect(payloads[1].source_type).toBe('empty')
+      expect(payloads[1].source_id).toBeNull()
     })
   })
 })
+
+describe('resetParams（看板参数重置的唯一口径）', () => {
+  const dash = (over: any = {}): Dashboard => ({
+    id: 77, name: '异常上报', charts: [], params: [], page_params: [], filters: {}, ...over,
+  } as any);
+
+  it('两个命名空间一起恢复声明默认值，并触发重查', async () => {
+    useDashboardStore.setState({
+      currentId: 77,
+      dashboards: [dash({
+        params: [{ name: 'legacy_date', type: 'date', label: '遗留日期', default: '2026-01-01' }],
+        page_params: [{ name: 'start_time', type: 'string', label: '开始日期', default: '' }],
+      })] as any,
+      paramValues: { legacy_date: '2026-11-01', date_range: { start: 'a', end: 'b' } },
+      pageParamValues: { start_time: '2026-11-01' },
+    } as any);
+    const refresh = vi.spyOn(useDashboardStore.getState(), 'refreshCharts').mockResolvedValue(true);
+    await useDashboardStore.getState().resetParams(77);
+    const s = useDashboardStore.getState();
+    expect(s.paramValues.legacy_date).toBe('2026-01-01');   // 声明默认值，不是空串
+    expect(s.pageParamValues.start_time).toBe('');
+    expect(s.paramValues.date_range).toBe('');              // 控件写的区间值一并清掉
+    expect(refresh).toHaveBeenCalledWith(77);               // 重置要立刻反映到数据
+  });
+
+  it('控件 bind_param 驱动的键即使没登记在参数定义里也会被清', async () => {
+    useDashboardStore.setState({
+      currentId: 1,
+      dashboards: [{ id: 1, name: 'x', charts: [{ chart_type: 'widget_daterange',
+        config: { paramKey: 'window', bind_param: 'from_date,to_date' } }], params: [], page_params: [], filters: {} }] as any,
+      paramValues: { window: { start: 'a', end: 'b' } },
+      pageParamValues: { from_date: 'a', to_date: 'b' },
+    } as any);
+    vi.spyOn(useDashboardStore.getState(), 'refreshCharts').mockResolvedValue(true);
+    await useDashboardStore.getState().resetParams(1);
+    const s = useDashboardStore.getState();
+    expect(s.paramValues.window).toBe('');
+    expect(s.pageParamValues.from_date).toBe('');
+    expect(s.pageParamValues.to_date).toBe('');
+  });
+
+  it('看板不在 store 上下文里时显式报错，不假装重置成功', async () => {
+    useDashboardStore.setState({ currentId: null, dashboards: [] as any } as any);
+    const refresh = vi.spyOn(useDashboardStore.getState(), 'refreshCharts').mockResolvedValue(true);
+    refresh.mockClear();          // 同一个属性上的 spy 会复用实例，前面用例的调用记录得洗掉
+    const error = vi.spyOn(toast, 'error').mockImplementation(() => '' as any);
+    error.mockClear();
+    expect(await useDashboardStore.getState().resetParams(999)).toBe(false);
+    expect(error).toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+});

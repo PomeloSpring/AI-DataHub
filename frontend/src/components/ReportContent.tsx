@@ -1,5 +1,6 @@
 import DOMPurify from 'dompurify';
 import MarkdownWithCharts from './MarkdownWithCharts';
+import { isStandaloneHtmlDocument } from '@/lib/reportExport';
 
 export function sanitizeReportHtml(content: string): string {
   return DOMPurify.sanitize(content, {
@@ -11,7 +12,22 @@ export function sanitizeReportHtml(content: string): string {
 }
 
 export default function ReportContent({ content, format }: { content: string; format: string }) {
-  return format === 'html'
-    ? <article className="prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: sanitizeReportHtml(content) }} />
-    : <MarkdownWithCharts text={content} className="prose prose-sm max-w-none" />;
+  if (format !== 'html') {
+    return <MarkdownWithCharts text={content} className="prose prose-sm max-w-none" />;
+  }
+  // 整份自包含 HTML 文档（AI 生成的报告：带 <style> 与内联 SVG）必须隔离渲染：
+  // 白名单净化会把样式与图表剥光（存了却不长那样），而把 <style> 注进主文档会
+  // 污染全局（CSS 不按容器隔离）。与产物下载卡片同一口径（sandbox="allow-scripts"）。
+  if (isStandaloneHtmlDocument(content)) {
+    return (
+      <iframe
+        title="报告正文"
+        srcDoc={content}
+        sandbox="allow-scripts"
+        data-report-standalone-html
+        className="w-full h-[78vh] rounded-md border bg-white"
+      />
+    );
+  }
+  return <article className="prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: sanitizeReportHtml(content) }} />;
 }

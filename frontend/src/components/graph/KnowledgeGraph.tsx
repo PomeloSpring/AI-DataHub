@@ -62,7 +62,8 @@ export function circleSize(label: string): number {
 
 // ── 圆形节点（统一渲染，类型只决定颜色） ─────────────────────────────
 
-function CircleNode({ data, selected }: { data: any; selected?: boolean }) {
+/** 基准圆节点：图可视化规范 §2 的唯一实现，其他图页面（决策树编辑器等）直接复用，不得另画一套。 */
+export function CircleNode({ data, selected }: { data: any; selected?: boolean }) {
   const cfg = NODE_CONFIG[data.nodeType] || { color: '#64748b', label: data.nodeType || '节点' };
   const label = String(data.label || cfg.label);
   const chars = Array.from(label).length;
@@ -98,7 +99,8 @@ function CircleNode({ data, selected }: { data: any; selected?: boolean }) {
 
 // ── Custom Edge Component（护栏：BaseEdge + 显式 fill:none） ─────────
 
-function KnowledgeEdge({
+/** 基准连线：BaseEdge + getBezierPath + 显式 fill:'none'（护栏），跨图页面复用（规范 §5）。 */
+export function KnowledgeEdge({
   id,
   sourceX,
   sourceY,

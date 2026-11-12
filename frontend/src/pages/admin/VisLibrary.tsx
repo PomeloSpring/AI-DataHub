@@ -2,10 +2,13 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { useClientPagination } from '@/hooks/useClientPagination';
-import { VIS_CATEGORIES, type VisComponent } from '@/api/visLibrary';
+import { VIS_CATEGORIES, isVisUsable, type VisComponent } from '@/api/visLibrary';
+import { themeOfPackCode } from '@/components/ThemeMenuItems';
 import Preview, { ShapePreview, typeLabelsOf } from '@/components/VisComponentPreview';
 import { CHART_TYPES, CHART_TYPE_CATEGORIES } from '@/components/DashboardChart';
 import { sanitizePack } from '@/lib/dashboardDesign';
+import { DEFAULT_MOTION, validateMotion } from '@/lib/motion';
+import MotionPresetEditor from '@/components/admin/MotionPresetEditor';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -18,24 +21,30 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { toast } from '@/lib/toast';
-import { Plus, Edit, Trash2, RefreshCw, Lock, LayoutTemplate, Palette, Image, Gauge, Grid3x3, Frame, BarChart3, Layers, FileText, Map, Search, TextCursorInput, type LucideIcon } from 'lucide-react';
+import { Plus, Edit, Trash2, Ban, Power, RefreshCw, Lock, LayoutTemplate, Palette, Image, Gauge, Grid3x3, Frame, BarChart3, Layers, FileText, Map, Search, TextCursorInput, Activity, type LucideIcon } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import client from '@/api/client';
 import { useAuthStore } from '@/stores/authStore';
 
 const ICONS: Record<string, LucideIcon> = { theme_pack: Layers, chart_style: BarChart3, widget_style: TextCursorInput, screen_background: Image, kpi_card: Gauge,
-  layout_template: Grid3x3, decoration_frame: Frame, color_theme: Palette, report_template: FileText, map_tile: Map };
+  layout_template: Grid3x3, decoration_frame: Frame, color_theme: Palette, report_template: FileText, map_tile: Map, motion_preset: Activity };
 const CATEGORIES = VIS_CATEGORIES.map(c => ({ ...c, icon: ICONS[c.id] }));
 // 分类切换条选项（含「全部」，无图标）
 const CATEGORY_TABS: Array<{ id: string; label: string; icon?: LucideIcon }> = [{ id: 'all', label: '全部' }, ...CATEGORIES];
 // 适用类型显示业务名：typeLabelsOf 与预览组件同源（ui-resource-display.md）
 // 预览框统一几何：每张卡片的预览区等高，长短不一就是列表页“乱”的直接原因
 const PREVIEW_SLOT = 'flex h-24 shrink-0 items-center justify-center overflow-hidden border-b bg-muted/20 p-2';
+/** 切到动效预设时判断“现 JSON 是不是动效形状”：不是就给一份完整四段模板，
+ *  不让新建项一上来就带着 chart_style 的配色键被判非法 */
+const needsMotionSeed = (raw: string) => {
+  try { return validateMotion(JSON.parse(raw || '{}')).length > 0; } catch { return true; }
+};
 
 export default function VisLibrary() {
   const isAdmin = useAuthStore(s => s.user?.role) === 'admin';
-  const { items, loading, error, refresh: load } = useVisLibrary(true);
+  // 管理页口径=全量（含下架与禁用）：禁用的字模要能列出来给管理员再启用
+  const { items, loading, error, refresh: load } = useVisLibrary(true, true);
   const [catFilter, setCatFilter] = useState<string>('theme_pack');
   const [search, setSearch] = useState('');
   const [viewPack, setViewPack] = useState<VisComponent | null>(null);
@@ -47,6 +56,7 @@ export default function VisLibrary() {
   const [formOpen, setFormOpen] = useState(false);
   const [edit, setEdit] = useState<VisComponent | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<VisComponent | null>(null);
+  const [disableTarget, setDisableTarget] = useState<VisComponent | null>(null);
   const [saving, setSaving] = useState(false);
 
   // form
@@ -94,6 +104,11 @@ export default function VisLibrary() {
     if (category === 'map_tile') {
       sc = { tileUrl: mapTileUrl, provider: mapTileProvider, apiKey: mapTileApiKey, ...(mapTileDefault ? { is_default: true } : {}) };
     }
+    // 动效预设：写入口就拒非法值。存进去却不生效（渲染面只能按默认呈现）是字模库的老毛病
+    if (category === 'motion_preset') {
+      const errors = validateMotion(sc);
+      if (errors.length) { toast.error(`动效配置不能保存：${errors.join('；')}`); return; }
+    }
     setSaving(true);
     try {
       const payload = {
@@ -107,6 +122,21 @@ export default function VisLibrary() {
     } catch (e: any) {
       toast.error(e?.response?.data?.detail || '保存失败');
     } finally { setSaving(false); }
+  };
+
+  // 禁用 = 停用但保留（与"下架"分档）：条目仍在库里可查可再启用，但一律不可被选用；
+  // 主题包被禁用还要让系统主题菜单里不再出现对应主题，这个连带后果必须在提示里说清（不静默改行为）
+  const toggleEnabled = async (c: VisComponent, enabled: boolean) => {
+    try {
+      await client.post(`/vis-library/components/${c.id}/enabled`, { enabled });
+      const theme = c.category === 'theme_pack' ? themeOfPackCode(c.code) : undefined;
+      toast.success(enabled
+        ? `字模「${c.name}」已启用`
+        : theme ? `已禁用「${c.name}」：系统主题「${theme.label}」同时不可选` : `字模「${c.name}」已禁用`);
+      setDisableTarget(null); load();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || '状态更新失败');
+    }
   };
 
   const remove = async (c: VisComponent) => {
@@ -160,7 +190,7 @@ export default function VisLibrary() {
           <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
             <LayoutTemplate className="h-6 w-6 text-primary" />UI 字模库
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">大屏可复用的“活字”：主题包 / 图表样式 / 控件样式 / 背景 / KPI 卡 / 布局 / 装饰 / 配色 / 地图瓦片。系统内置仅管理员可改，自定义可回存沉淀。</p>
+          <p className="mt-1 text-sm text-muted-foreground">大屏可复用的“活字”：主题包 / 图表样式 / 控件样式 / 背景 / KPI 卡 / 布局 / 装饰 / 配色 / 地图瓦片 / 动效预设。系统内置仅管理员可改，自定义可回存沉淀。禁用=停用但保留（不可被选用），下架=软删除（历史看板靠快照兜底）。</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={load}><RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />刷新</Button>
@@ -190,8 +220,10 @@ export default function VisLibrary() {
       {error && <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm">{error}<Button size="sm" variant="outline" onClick={load}>重试</Button></div>}
       {loading && !items.length && <p role="status" className="text-sm text-muted-foreground">正在加载字模…</p>}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {paged.slice.map(c => (
-          <article key={c.id} className={`flex h-full flex-col overflow-hidden rounded-xl border bg-card transition-shadow hover:shadow-md ${c.is_active ? '' : 'opacity-60'}`}>
+        {paged.slice.map(c => {
+          const disabled = c.is_enabled === 0;
+          return (
+          <article key={c.id} className={`flex h-full flex-col overflow-hidden rounded-xl border bg-card transition-shadow hover:shadow-md ${isVisUsable(c) ? '' : 'opacity-60'} ${disabled ? 'border-amber-500/60' : ''}`}>
             <div className={PREVIEW_SLOT}><Preview c={c} /></div>
             <div className="flex-1 space-y-2 p-3">
               <div className="flex items-start gap-2">
@@ -206,6 +238,7 @@ export default function VisLibrary() {
               <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
                 {/* 适用类型显示业务名；code 是内部标识，只作次要信息供排查 */}
                 <span className="rounded-md bg-muted/60 px-1.5 py-0.5">{typeLabelsOf(c.chart_type)}</span>
+                {disabled && <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-amber-600 dark:text-amber-400">已禁用</span>}
                 {!c.is_active && <span className="rounded-md bg-destructive/10 px-1.5 py-0.5 text-destructive">已下架</span>}
                 <span className="ml-auto font-mono text-[10px]" title="字模代码（内部标识）">{c.code}</span>
               </div>
@@ -216,12 +249,20 @@ export default function VisLibrary() {
               <Button variant="outline" size="sm" disabled={!canEdit(c)} onClick={() => openEdit(c)}>
                 <Edit className="h-3.5 w-3.5 mr-1" />{canEdit(c) ? '编辑' : '只读'}
               </Button>
+              <Button variant="ghost" size="sm" disabled={!canEdit(c)}
+                aria-label={`${disabled ? '启用' : '禁用'}字模 ${c.name}`}
+                title={disabled ? '启用后重新可被选用' : '停用但保留：不可被选用，可再启用'}
+                onClick={() => (disabled ? void toggleEnabled(c, true) : setDisableTarget(c))}
+                className={disabled ? 'text-amber-600 dark:text-amber-400' : ''}>
+                {disabled ? <Power className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" />}
+              </Button>
               <Button variant="ghost" size="sm" disabled={!canEdit(c)} aria-label={`下架字模 ${c.name}`} onClick={() => setDeleteTarget(c)} className="ml-auto text-destructive">
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
             </div>
           </article>
-        ))}
+          );
+        })}
         {shown.length === 0 && !loading && !error && (
           <div className="col-span-full rounded-xl border border-dashed py-16 text-center text-sm text-muted-foreground">
             {search ? `没有匹配「${search}」的字模` : '该分类暂无字模，可点右上「新建字模」沉淀一套'}
@@ -263,7 +304,7 @@ export default function VisLibrary() {
         <DialogContent className="max-w-[560px] max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{edit ? '编辑字模' : '新建字模'}</DialogTitle>
-            <DialogDescription>样式配置以 JSON 描述,前端按类别解释(背景/卡片/图表样式/控件样式/配色/布局/装饰)。</DialogDescription>
+            <DialogDescription>样式配置以 JSON 描述,前端按类别解释(背景/卡片/图表样式/控件样式/配色/布局/装饰/动效)。动效预设可用上方旋钮，两段入口写同一份数据。</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
@@ -273,7 +314,10 @@ export default function VisLibrary() {
               </div>
               <div className="space-y-1.5">
                 <Label>类别</Label>
-                <Select value={category} onValueChange={setCategory}>
+                <Select value={category} onValueChange={v => {
+                  setCategory(v);
+                  if (v === 'motion_preset' && needsMotionSeed(styleConfig)) setStyleConfig(JSON.stringify(DEFAULT_MOTION, null, 2));
+                }}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {CATEGORIES.map(cat => <SelectItem key={cat.id} value={cat.id}>{cat.label}</SelectItem>)}
@@ -309,6 +353,7 @@ export default function VisLibrary() {
                 </div>
               );
             })()}
+            {category === 'motion_preset' && <MotionPresetEditor value={styleConfig} onChange={setStyleConfig} />}
             <div className="space-y-1.5">
               <Label>样式配置 (JSON)</Label>
               <Textarea value={styleConfig} onChange={e => setStyleConfig(e.target.value)} rows={8} className="font-mono text-xs" />
@@ -327,10 +372,14 @@ export default function VisLibrary() {
             )}
             {category === 'report_template' && (
               <div className="space-y-1.5">
-                <Label>模板内容 (Jinja2 语法)</Label>
+                <Label>报告正文（版式骨架 / 旧 Jinja2 兼容文本）</Label>
                 <Textarea value={reportContent} onChange={e => setReportContent(e.target.value)} rows={10}
-                  placeholder="使用 Jinja2 语法编写报告模板，支持 {{ 变量 }} 和 {% 控制结构 %}" className="font-mono text-xs" />
-                <p className="text-[11px] text-muted-foreground">报告模板用于自动化任务生成报告，支持 Jinja2 模板语法。</p>
+                  placeholder="章节标题与 ```chart 图表块（写完可到「模板中心 → 报告模板」从正文抽版式）" className="font-mono text-xs" />
+                {/* 说实话：生成侧读的是版式契约（headings + charts），不是这段正文里的 Jinja2 变量 */}
+                <p className="text-[11px] text-muted-foreground">
+                  报告模板的版式与主题在「系统配置 → 模板中心」维护（任务表单、报告「套用模板」共用那一份）；
+                  这里改正文不会改生成结构，旧 Jinja2 正文只作为抽版式的素材。
+                </p>
               </div>
             )}
             {category === 'map_tile' && (
@@ -387,11 +436,30 @@ export default function VisLibrary() {
         </DialogContent>
       </Dialog>
 
+      {/* 禁用确认（停用但保留：说清连带影响，不让管理员以为只是"藏起来"） */}
+      <Dialog open={!!disableTarget} onOpenChange={() => setDisableTarget(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>禁用字模？</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            禁用后「{disableTarget?.name}」<span className="font-medium text-foreground">不可被选用</span>：
+            大屏/看板编辑器的字模面板、报表主题与 AS-BOT 清单都不再给出它；条目仍保留在库里，随时可再启用。
+            {disableTarget?.category === 'theme_pack' && themeOfPackCode(disableTarget.code)
+              ? `同时，「${themeOfPackCode(disableTarget.code)!.label}」将从系统主题菜单里移除（不再是灰掉的选项），正在使用该主题的人会被切到可用主题并收到提示。`
+              : ''}
+            已引用它的历史看板/报表按不可用处理（回退挂载时快照）。
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDisableTarget(null)}>取消</Button>
+            <Button variant="destructive" onClick={() => disableTarget && void toggleEnabled(disableTarget, false)}>禁用</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* 删除确认 */}
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader><DialogTitle>下架字模?</DialogTitle></DialogHeader>
-          <p className="text-sm text-muted-foreground">将「{deleteTarget?.name}」下架(软删除),已引用它的大屏仍保留创建时快照。</p>
+          <p className="text-sm text-muted-foreground">将「{deleteTarget?.name}」下架(软删除),已引用它的大屏仍保留创建时快照。只是临时停用的话请选「禁用」（卡片上的停用按钮），下架后清单里不再给出、只能靠快照兜底。</p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
             <Button variant="destructive" onClick={() => deleteTarget && remove(deleteTarget)}>下架</Button>

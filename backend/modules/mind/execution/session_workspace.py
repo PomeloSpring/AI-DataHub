@@ -1,4 +1,8 @@
-"""本地持久卷上的独立会话；MySQL 是身份、resume 与执行互斥的唯一真值源。"""
+"""本地持久卷上的独立会话；MySQL 是身份、resume 与执行互斥的唯一真值源。
+
+会话产物同时镜像到云空间（对象存储，见 session_cloud）：本地目录缺失时由 claim/读取
+路径按需回落，换节点或卷被清理都不再意味着产物丢失。
+"""
 import json
 import logging
 import os
@@ -27,6 +31,12 @@ async def run_owned_sync(function, *args):
                     continue
             task.result()
         raise
+
+
+def session_cloud_ensure(row, *, write=None) -> bool:
+    """云空间回落薄封装（延迟导入避免与本模块循环依赖；语义见 session_cloud）。"""
+    from backend.modules.mind.execution import session_cloud
+    return session_cloud.ensure_local_workspace(row, write=write)
 
 
 def process_identity(pid):
@@ -122,27 +132,59 @@ def remove_workspace_directory(workspace_id: int, user_id: int) -> int:
     shutil.rmtree(root)
     if root.exists():
         raise HTTPException(409, "工作空间目录未完全清理，请重试删除")
+    # 云空间副本随空间一并清除：只删本地而对象留着 = 孤儿产物（隐私与容量都说不通）。
+    # 失败即中止（库行未动，用户可重试删除），不静默跳过。
+    purge_workspace_cloud(workspace_id)
     return removed
 
 
+def purge_workspace_cloud(workspace_id: int) -> int:
+    """删除该工作空间下所有会话的产物云端副本，返回清除的对象数。
+
+    会话 key 从执行映射取（删除库行之前调用，之后便无从定位）。未配置对象存储时
+    session_cloud.purge_session_cloud 返回 0（本来就没有云端副本），不报错。
+    """
+    from backend.modules.mind.execution import session_cloud
+    rows = execute_query("SELECT session_key, user_id FROM adh_agent_sessions WHERE workspace_id=%s",
+                         (workspace_id,))
+    purged = 0
+    for r in rows or []:
+        try:
+            purged += session_cloud.purge_session_cloud(int(r["user_id"] or 0), r["session_key"])
+        except Exception as exc:  # noqa: BLE001 — 转成可重试的显式失败，不留“已删库行但云端还在”
+            raise HTTPException(409, f"云空间产物未能清除（{type(exc).__name__}），请重试删除") from exc
+    return purged
+
+
+def format_bytes(value: int) -> str:
+    """可读体积（错误文案与用量提示共用）：给用户看字节数无法判断量级。"""
+    v = float(max(0, int(value or 0)))
+    for unit in ("B", "KB", "MB", "GB"):
+        if v < 1024 or unit == "GB":
+            return f"{v:.0f} {unit}" if unit in ("B", "KB") else f"{v:.1f} {unit}"
+        v /= 1024
+    return f"{v:.1f} GB"
+
+
 def assert_workspace_disk_quota(workspace_id: int, user_id: int) -> None:
-    """空间磁盘配额拦截: 用量已达配额则拒绝新建会话(提示归档/清理后重试)。"""
-    from backend.common.db.metadata_db import get_metadata_conn
-    conn = get_metadata_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT q.disk_quota_bytes FROM adh_user_workspace_quota q "
-                "JOIN adh_workspaces w ON w.owner_id = q.user_id WHERE w.id = %s",
-                (workspace_id,))
-            row = cur.fetchone()
-    finally:
-        conn.close()
-    quota = int((row or {}).get("disk_quota_bytes") or 0)
+    """空间磁盘配额拦截: 用量已达生效配额则拒绝新建会话（提示归档/清理后重试）。
+
+    配额**只从 `role_service.get_user_workspace_quota` 取**（登记行优先，无行取系统缺省），
+    本函数不得再自己 SELECT：历史缺陷是这里把"无登记行"读成 0=不限制，而管理员页与建空间门
+    按缺省显示"每空间 5GB"，双口径导致配额形同虚设（配了没用）。
+    显式登记 disk_quota_bytes=0 仍是管理员的"不设限"逃生口，与缺省靠 is_default 区分。
+    """
+    from backend.core.role_service import role_service
+    quota = int(role_service.get_user_workspace_quota(int(user_id)).get("disk_quota_bytes") or 0)
     if quota <= 0:
         return
-    if workspace_disk_usage(workspace_id, user_id) >= quota:
-        raise HTTPException(status_code=409, detail="工作空间磁盘配额已用尽，请先归档收藏产物或清理会话文件")
+    usage = workspace_disk_usage(workspace_id, user_id)
+    if usage < quota:
+        return
+    raise HTTPException(status_code=409, detail=(
+        f"该工作空间磁盘用量已达上限（已用 {format_bytes(usage)} / 配额 {format_bytes(quota)}），"
+        "新建会话会被拒绝。请在「云空间 · 资产清单」页归档收藏重要产物或删除不再需要的会话文件后重试；"
+        "确需更大配额请联系管理员在「系统管理 · 工作空间」页调整该用户的配额"))
 
 
 def session_dir(base, key, workspace_id, user_id) -> Path:
@@ -173,15 +215,71 @@ def session_paths(base, key, workspace_id, user_id, create=False, require_layout
 
 
 def locate_existing_session(base, row) -> Path:
-    """续聊时定位既有会话目录：目录不存在时给可操作提示，而不是抛看不懂的内部异常。
+    """续聊时定位既有会话目录；本地缺失先试云空间回落，仍不可用才给可操作提示。
 
-    存量会话的工作区可能已经丢失（迁移前旧目录被清理/未随迁移保留），
-    此时聊天历史仍在库里：必须明说“请新建会话继续”，而不把失败伪装成执行异常。
+    会话产物镜像在对象存储（见 session_cloud），因此“库里有历史会话、本地没有工作区”
+    不再意味着产物丢失：先按云端副本重建本地目录并接管到当前存储节点，拉不回
+    （存量未上云/云端也被清理）才明说原因——不把失败伪装成执行异常。
     """
     if not session_dir(base, row["session_key"], row["workspace_id"], row["user_id"]).is_dir():
-        raise HTTPException(409, "该会话的工作区目录已不存在（存量数据未迁移或已被清理），"
-                                 "聊天记录仍可查看，请新建会话继续")
+        from backend.modules.mind.execution import session_cloud
+        if not session_cloud.ensure_local_workspace(row):
+            raise HTTPException(409, "该会话的工作区目录已不存在，云空间也没有可恢复的产物副本"
+                                     "（存量数据未上云或已被清理），聊天记录仍可查看，请新建会话继续")
     return session_paths(base, row["session_key"], row["workspace_id"], row["user_id"])
+
+
+def conversation_workspace_root(conversation_id: int, user_id: int) -> Path:
+    """按 (会话, 属主) 定位会话工作区根目录 —— 读产物文件的**唯一**入口。
+
+    身份只信服务端：session_key 按 ``conversation_id + user_id`` 取，取不到即无权访问
+    （不接受请求体传会话/属主）。本地目录缺失先按云空间副本回落，换节点或
+    卷被清理不等于产物丢了。
+
+    文件伺服（``/chat/session-file``）、Excel 预览与报表归档共用这一份定位口径，
+    不得各写一份“会话 → 目录”（一处漏了云回落就会把“文件其实在云上”显示成 404）。
+    """
+    row = execute_query(
+        "SELECT session_key, workspace_id FROM adh_agent_sessions "
+        "WHERE conversation_id=%s AND user_id=%s",
+        (int(conversation_id or 0), int(user_id or 0)), fetchone=True)
+    if not row or not row.get("session_key"):
+        raise PermissionError("会话不存在或无权访问")
+    row = {**row, "user_id": int(user_id)}
+    if not session_cloud_ensure(row):
+        raise FileNotFoundError(
+            "该会话的工作区目录已不存在，云空间也没有可恢复的产物副本"
+            "（存量数据未上云或已被清理）")
+    return session_paths(workspace_base(create=False), row["session_key"],
+                         int(row["workspace_id"] or 0), int(user_id), create=False)
+
+
+def read_conversation_workspace_text(conversation_id: int, user_id: int, path: str,
+                                     max_chars: int = 200_000) -> str:
+    """读会话工作区里的一个文本产物（防穿越/符号链接逃逸与文件伺服同一守卫）。
+
+    只给文本（报表正文用）；二进制产物仍走下载/预览入口。读不到一律外抛可诊断原因，
+    不回空串把“没取到”伪装成“正文为空”。
+    """
+    from backend.modules.mind.multimodal.loader import normalize_rel_path, resolve_workspace_file
+
+    root = conversation_workspace_root(conversation_id, user_id)
+    ws_dir = (root / "workspace").resolve()
+    if not normalize_rel_path(path):
+        raise ValueError("产物路径无效，无法读取报表正文")
+    try:
+        target = resolve_workspace_file(ws_dir, path)
+    except ValueError as exc:
+        raise ValueError(f"产物路径不合法：{exc}") from None
+    if not target.is_file():
+        raise FileNotFoundError(f"会话工作区里找不到产物文件（{target.name}），可能已被清理")
+    try:
+        text = target.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise ValueError(f"产物文件读取失败（{target.name}）：{exc}") from None
+    if not text.strip():
+        raise ValueError(f"产物文件是空的（{target.name}），无法作为报表正文归档")
+    return text[:max_chars]
 
 
 def stale_resume_directories(root, sdk_session_id: str) -> list:
@@ -281,7 +379,20 @@ def _dead_execution_evidence(session) -> bool:
         return False                      # 宿主仍存活
     if session.get("sdk_pid") and process_identity(session["sdk_pid"]) == session.get("sdk_start"):
         return False                      # SDK 仍存活
-    _remove_token_sandbox(session.get("execution_token") or "")
+    # token 为空 = 没有 token 标记的沙箱需要核验（不是"标记坏了"）：跳过清理继续判证据。
+    # 历史缺陷：对空串调 _remove_token_sandbox 抛"执行标识无效"，把 running+token 已 NULL
+    # 的僵尸形态变成 503（既回收不了也删不掉，还丢了可诊断的 409 文案）。
+    # token 存在但形态不合法（无法据此核验容器）→ 无法证明沙箱已清 → 保持阻断并留痕，
+    # 绝不"当中没有"继续回收（宁不误杀活执行）。
+    token = session.get("execution_token") or ""
+    if token:
+        try:
+            _remove_token_sandbox(token)
+        except Exception as exc:  # noqa: BLE001 — 判据不可得即阻断，不外抛成 503
+            _logging.getLogger(__name__).error(
+                "执行标识无法核验沙箱残留，保持阻断: session=%s err=%s",
+                session.get("session_key"), exc)
+            return False
     held = _proc_holds_session(session["session_key"])
     if held:
         _logging.getLogger(__name__).error(
@@ -360,14 +471,23 @@ def delete_conversation_workspace(conversation_id, user_id):
 
     清理失败保留会话和 deleting 状态，用户可重试；换实例/进程重启也不会
     恢复已经部分删除的目录。两阶段均用数据库行锁，不以进程内标志防重。
+
+    拆行消息与会话同事务删除（只删会话行会把历史正文留成没人能定位的孤儿）。
     """
     if not user_id or int(user_id) <= 0:
         raise HTTPException(401, "缺少可信用户身份")
+    from backend.core import conversation_store
     with DBConnection() as conn:
         conn.begin()
         with conn.cursor() as cur:
             session = _lock_conversation_for_deletion(cur, conversation_id, user_id)
-            if session is not None and session.get("execution_token"):
+            # 自愈触发条件按**僵尸形态**判（running 或仍持 token），不按 token 有无判：
+            # 历史缺陷是只认 `execution_token` 非空 —— 出现 status='running' 而 token 已 NULL
+            # 的半截状态（finish 与状态写回之间被取消/重启）时，外层闸门直接跳过自愈，
+            # 而 `_session_cleanup_root` 又对 running 一律 409 → 空会话永远删不掉
+            # （会话 1783069459150 卡死的直接原因；token 为 NULL 时 _reclaim_dead_execution
+            # 本身是支持回收的，它只在「非 running 且无 token」时才拒绝）。
+            if session is not None and (session.get("execution_token") or session.get("status") == "running"):
                 # 执行权残留自愈（证据口径）：owner/sdk 均退出且无沙箱/进程证据时
                 # 回收 running 残留，删除不再被僵尸状态永久卡死；有存活证据仍走 409。
                 # write 走当前事务游标，避免跨连接对同行加锁死锁。
@@ -379,12 +499,14 @@ def delete_conversation_workspace(conversation_id, user_id):
             if session is None:
                 # 非 Agent 会话无独立目录；绝不根据会话 ID 猜目录或删共享空间。
                 cur.execute("DELETE FROM adh_conversations WHERE id=%s AND user_id=%s", (conversation_id, user_id))
+                conversation_store.delete_by_conversation(cur, conversation_id)
                 return {"success": True}
             root = _session_cleanup_root(session)
             if root is None:
                 # 工作区已空：无文件需清理，同一事务内原子删除映射与会话。
                 cur.execute("DELETE FROM adh_agent_sessions WHERE session_key=%s AND user_id=%s", (session["session_key"], user_id))
                 cur.execute("DELETE FROM adh_conversations WHERE id=%s AND user_id=%s", (conversation_id, user_id))
+                conversation_store.delete_by_conversation(cur, conversation_id)
                 return {"success": True}
             if session["status"] != "deleting":
                 cur.execute("UPDATE adh_agent_sessions SET status='deleting',version=version+1,updated_at=UTC_TIMESTAMP(6) "
@@ -403,11 +525,20 @@ def delete_conversation_workspace(conversation_id, user_id):
                 root = _session_cleanup_root(session)
                 if root is not None:
                     _remove_session_directory(root)
+                # 云空间副本随会话一并清除（未配置对象存储时为 0，不报错）：
+                # 只删库行会留下没人能定位的孤儿产物，宁阻断让用户重试删除。
+                from backend.modules.mind.execution import session_cloud
+                try:
+                    session_cloud.purge_session_cloud(int(session["user_id"]), session["session_key"])
+                except Exception as exc:  # noqa: BLE001
+                    raise HTTPException(409, f"云空间产物未能清除（{type(exc).__name__}），"
+                                             "会话未删除，请重试") from exc
                 cur.execute("DELETE FROM adh_agent_sessions WHERE session_key=%s AND user_id=%s AND status='deleting'",
                             (session["session_key"], user_id))
                 if cur.rowcount != 1:
                     raise HTTPException(409, "目录已清理，会话映射尚未删除，请重试")
             cur.execute("DELETE FROM adh_conversations WHERE id=%s AND user_id=%s", (conversation_id, user_id))
+            conversation_store.delete_by_conversation(cur, conversation_id)
     return {"success": True}
 
 
@@ -528,6 +659,60 @@ def validate_conversation(ctx, conversation_id):
     return row
 
 
+
+# 后端名会进 JSON path（`$.<backend>`），只允许安全字符；异常值一律不记账（不猜）。
+_BACKEND_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
+
+
+def normalize_backend_sessions(value) -> dict:
+    """把 `backend_sessions` 归一为 `{backend: sdk_session_id}`。
+
+    pymysql 读 JSON 列返回的是**字符串**（不归一就按字符展开，图谱侧同类历史缺陷），
+    旧环境列缺失时是 None。损坏内容记日志后按"无登记"处理 —— 后果只是接不回原转录、
+    由新转录重建，不会把脏数据当指针下发。
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            logging.getLogger(__name__).warning("backend_sessions 内容不是合法 JSON，按无登记处理: %r",
+                                                value[:120])
+            return {}
+    if not isinstance(value, dict):
+        return {}
+    return {str(k): str(v) for k, v in value.items()
+            if k and isinstance(v, str) and v}
+
+
+def _rebind_backend(cur, row, backend):
+    """执行后端（Harness）换了时的重绑：返回 (更新后的行, 切换事实；没换则 {})。
+
+    为什么不再 403：后端不是身份。CLI 转录按后端各存一份指针（`backend_sessions`），
+    换后端只是"这一侧没有转录可续"；问答文本在 `adh_conversation_messages`、产物文件在
+    `workspace/`，都与后端无关，所以会话继续可用。新后端查不到指针 → `sdk_session_id` 置空
+    → 本轮不带 resume，由 secure_sdk 把问答记录拼进提示词重建上下文（include_history）；
+    切回原后端时它自己的指针还在 map 里，转录接得回来 —— 这正是旧单槽位写法被跨后端混写
+    抹掉后永远接不回的那个损失。
+
+    切换不向用户弹提示（产品决策），可诊断性由下面的 warning 日志 + 本回合 trace span
+    （secure_sdk._obs_rebind_span）+ 执行映射落库承担。
+    """
+    previous = str(row.get("backend") or "")
+    if previous == backend:
+        return row, {}
+    sid = normalize_backend_sessions(row.get("backend_sessions")).get(backend, "")
+    # 事务内已持该行锁，登记必须走同一游标（跨连接写自己锁着的行会死锁）。
+    cur.execute("UPDATE adh_agent_sessions SET backend=%s, sdk_session_id=%s, version=version+1,"
+                "updated_at=UTC_TIMESTAMP(6) WHERE session_key=%s",
+                (backend, sid or None, row["session_key"]))
+    logging.getLogger(__name__).warning(
+        "会话 %s 执行后端切换: %s → %s（问答记录与工作区产物保留；CLI 转录%s）",
+        row["session_key"], previous, backend,
+        "沿用该后端既有转录" if sid else "无既有转录，本轮按问答记录重建")
+    return ({**row, "backend": backend, "sdk_session_id": sid},
+            {"from": previous, "to": backend, "resumed": bool(sid)})
+
+
 @dataclass
 class SessionWorkspace:
     key: str
@@ -542,6 +727,8 @@ class SessionWorkspace:
     layer_id: int = 0
     layer_bound: bool = False
     backend: str = ""
+    # 本轮发生了后端切换时的原后端名（空=没换）。切换事实要随 done.warnings 下发给用户。
+    rebound_from: str = ""
     sdk_pid: int = 0
     sdk_start: str = ""
     sandbox_used: bool = False
@@ -604,12 +791,22 @@ class SessionWorkspace:
         if sdk_session_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", sdk_session_id):
             raise ValueError("SDK 会话标识无效")
         # 仅在调用方确认所有执行已停止后释放；不能在异常中伪装成功。
-        changed = execute_write(
-            "UPDATE adh_agent_sessions SET status=%s, sdk_session_id=COALESCE(NULLIF(%s,''),sdk_session_id), "
-            "execution_token=NULL, updated_at=UTC_TIMESTAMP(6) "
-            "WHERE session_key=%s AND execution_token=%s AND status='running'",
-            ("idle" if success or initialized_only else "interrupted", sdk_session_id, self.key, self.token),
-        )
+        status = "idle" if success or initialized_only else "interrupted"
+        sql = ("UPDATE adh_agent_sessions SET status=%s, "
+               "sdk_session_id=COALESCE(NULLIF(%s,''),sdk_session_id), "
+               "execution_token=NULL, updated_at=UTC_TIMESTAMP(6) "
+               "WHERE session_key=%s AND execution_token=%s AND status='running'")
+        args = [status, sdk_session_id, self.key, self.token]
+        if sdk_session_id and _BACKEND_NAME_RE.fullmatch(self.backend or ""):
+            # 同时写 map：单槽位被跨后端混写会永久丢掉原后端的接回能力（见 _rebind_backend）
+            sql = ("UPDATE adh_agent_sessions SET status=%s, "
+                   "sdk_session_id=COALESCE(NULLIF(%s,''),sdk_session_id), "
+                   "backend_sessions=JSON_SET(COALESCE(backend_sessions, CAST('{}' AS JSON)), %s, %s), "
+                   "execution_token=NULL, updated_at=UTC_TIMESTAMP(6) "
+                   "WHERE session_key=%s AND execution_token=%s AND status='running'")
+            args = [status, sdk_session_id, f"$.{self.backend}", sdk_session_id,
+                    self.key, self.token]
+        changed = execute_write(sql, tuple(args))
         self.closed = True
         if changed != 1:
             raise RuntimeError("会话执行状态更新冲突")
@@ -621,7 +818,7 @@ def claim_session(task, backend, config):
     if not ctx or ctx.user_id <= 0:
         raise PermissionError("缺少可信执行身份")
     if config.get("cwd") or config.get("allowed_dirs"):
-        raise ValueError("AS-BOT 仅允许独立会话目录，请移除执行层 cwd/allowed_dirs 宽目录配置")
+        raise ValueError("AS-BOT 仅允许独立会话目录，请移除 Harness cwd/allowed_dirs 宽目录配置")
     cid = int(ctx.extra.get("conversation_id") or 0)
     if cid:
         validate_conversation(ctx, cid)
@@ -666,17 +863,31 @@ def claim_session(task, backend, config):
             if row:
                 # 执行映射跟随会话归属（validate_conversation 已把 ctx.workspace_id 归一到会话空间）；
                 # 存量行的 workspace_id 可能是历史入口空间，身份校验只看属主+形态，目录用行自身空间。
-                if (row["user_id"], row["as_bot_key"], row["backend"]) != (
-                        ctx.user_id, policy.as_bot["as_bot_key"], backend):
-                    raise HTTPException(403, "执行会话身份或后端不匹配，请新建会话")
-                if row["storage_node"] != node:
-                    raise HTTPException(409, "会话工作区不在当前存储节点，无法恢复")
+                if (row["user_id"], row["as_bot_key"]) != (ctx.user_id, policy.as_bot["as_bot_key"]):
+                    # 身份不匹配（换属主/换 AS-BOT 形态）不是可重绑项，仍硬拒
+                    raise HTTPException(403, "执行会话身份不匹配，请新建会话")
+                row, rebind = _rebind_backend(cur, row, backend)
+                if rebind:
+                    ctx.extra["_harness_rebound"] = rebind
                 if row["status"] == "deleting":
                     raise HTTPException(409, "该会话正在删除或等待清理重试，不能继续执行")
                 if row["status"] == "closed":
                     raise HTTPException(409, "该会话已清空，请新建会话")
                 if row["status"] == "running":
                     raise HTTPException(409, "该会话正在执行或上次执行尚未确认停止")
+                # 云空间自愈：目录不在本地 → 先按云端副本重建（claim 在事务内持有该行锁，
+                # 登记 UPDATE 必须走同一游标，跨连接写自己已锁的行会死锁）。
+                # 目录在本地但存储节点不符 → 保持阻断（卷身份与登记不一致，无法证明文件是这套）。
+                if not session_dir(base, row["session_key"], row["workspace_id"], row["user_id"]).is_dir():
+                    def _adopt(sql, params):
+                        cur.execute(sql, params)
+                        return cur.rowcount
+                    if not session_cloud_ensure(row, write=_adopt):
+                        raise HTTPException(409, "该会话的工作区目录已不存在，云空间也没有可恢复的产物副本"
+                                                 "（存量数据未上云或已被清理），聊天记录仍可查看，请新建会话继续")
+                    row = {**row, "storage_node": node, "sdk_session_id": ""}
+                elif row["storage_node"] != node:
+                    raise HTTPException(409, "会话工作区不在当前存储节点，无法恢复")
                 root = locate_existing_session(base, row)
                 if row["status"] == "interrupted":
                     # 上轮执行中断（执行权已释放）。新消息是新一轮请求、不重放中断轮副作用；
@@ -725,7 +936,8 @@ def claim_session(task, backend, config):
             if cid:
                 cur.execute("UPDATE adh_conversations SET as_bot_key=%s WHERE id=%s", (policy.as_bot["as_bot_key"], cid))
     runtime = SessionWorkspace(row["session_key"], token, root, policy, ceiling, row.get("sdk_session_id") or "",
-                               layer_id=layer_id, layer_bound=layer_bound, backend=backend)
+                               layer_id=layer_id, layer_bound=layer_bound, backend=backend,
+                               rebound_from=str((ctx.extra.get("_harness_rebound") or {}).get("from") or ""))
     ctx.extra["secure_runtime"] = runtime
     ctx.extra.pop("session_id", None)
     return runtime

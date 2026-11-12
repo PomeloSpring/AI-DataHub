@@ -1,22 +1,22 @@
 import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation, useParams } from 'react-router-dom';
 import {
-  MessageSquare, LogOut, Menu, Sun, Moon,
-  ChevronLeft, ChevronRight, X, ChevronDown, Palette, Zap, TrendingUp, Grid3x3,
-  GlassWater, Folder, UserCircle, Brain, Heart, Check, ArrowRight,
-  Clock, Gem, Plus, Archive, ChartNoAxesCombined, Trash2, Compass,
+  MessageSquare, LogOut, Menu, ChevronLeft, ChevronRight, X, ChevronDown, Palette, Folder,
+  UserCircle, Brain, Check, ArrowRight, Clock, Archive, ChartNoAxesCombined, Trash2, Compass
 } from 'lucide-react';
 import * as LucideIcons from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useAuthStore } from '../stores/authStore';
-import { useThemeStore, applyTheme, type ThemeId } from '../stores/themeStore';
+import { useThemeStore, applyTheme } from '../stores/themeStore';
 import { useBrandStore } from '../stores/brandStore';
+import { DEFAULT_APP_NAME } from '@/lib/brand';
+import BrandLogo from './BrandLogo';
 import { useWorkspaceStore, type Workspace } from '../stores/workspaceStore';
 import { useMenuAccess } from '../hooks/useMenuAccess';
 import { SidebarMenuSkeleton } from './SidebarMenuSkeleton';
@@ -25,25 +25,8 @@ import SectionSwitcher from './SectionSwitcher';
 import ReleaseNotesButton from './ReleaseNotesButton';
 import { TOUR, navTour } from '@/lib/onboarding/guides';
 import { useGuideStore } from '@/stores/guideStore';
-import { toast } from '@/lib/toast';
-import client from '@/api/client';
 import { WorkspaceDeleteDialog } from './WorkspaceDeleteDialog';
-import { Input } from '@/components/ui/input';
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
-} from '@/components/ui/dialog';
-
-const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] = [
-  { id: 'dark', label: '暗色', icon: Moon, desc: '深色背景，适合长时间使用' },
-  { id: 'light', label: '亮色', icon: Sun, desc: '浅色背景，清晰明亮' },
-  { id: 'datafoundry', label: 'DataFoundry', icon: Gem, desc: '克制优雅，近黑主色 + 宝石色调' },
-  { id: 'tech', label: '科技风', icon: Zap, desc: '深蓝底色，霓虹高亮' },
-  { id: 'finance', label: '金融风', icon: TrendingUp, desc: '深色海军蓝，金色主调' },
-  { id: 'bento', label: 'Bento Grid', icon: Grid3x3, desc: '柔和圆角卡片，彩色区块布局' },
-  { id: 'glass', label: '玻璃拟态', icon: GlassWater, desc: '深色半透明毛玻璃质感' },
-  { id: 'ainative', label: 'AI-Native', icon: Brain, desc: '深空神经网络，动态光效边框' },
-  { id: 'medical', label: '医疗平台', icon: Heart, desc: '清爽蓝绿，专业可信' },
-];
+import ThemeMenuItems from './ThemeMenuItems';
 
 /** 将路由 key 转换为 menu_key: '/ws/3/chat' → 'workspace:chat' */
 function toMenuKey(routeKey: string): string {
@@ -52,7 +35,7 @@ function toMenuKey(routeKey: string): string {
 
 // ── Workspace Selector (sidebar-embedded) ─────────────────────────
 
-/** 下拉项: 显示用 name, 默认工作站不给删(仅可删自建空间) */
+/** 下拉项: 显示用 name, 默认工作空间不给删(仅可删自建空间) */
 export function WorkspaceMenuItem({ ws, isCurrent, onSwitch, onAskDelete }: {
   ws: Workspace; isCurrent: boolean; onSwitch: () => void; onAskDelete: () => void;
 }) {
@@ -68,7 +51,7 @@ export function WorkspaceMenuItem({ ws, isCurrent, onSwitch, onAskDelete }: {
       {isCurrent && <Check className="h-4 w-4 shrink-0 text-primary" />}
       {ws.is_default ? (
         <span
-          title="默认工作站不可删除，仅可删除自行创建的自定义工作空间"
+          title="默认工作空间不可删除，仅可删除自行创建的自定义工作空间"
           className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground"
         >
           默认
@@ -90,7 +73,7 @@ export function WorkspaceMenuItem({ ws, isCurrent, onSwitch, onAskDelete }: {
 }
 
 function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collapsed: boolean; module?: 'workspace' | 'ask' }) {
-  const { workspaces, currentWorkspaceId, setWorkspace, loadWorkspaces } = useWorkspaceStore();
+  const { workspaces, currentWorkspaceId, loaded, setWorkspace, loadWorkspaces } = useWorkspaceStore();
   const navigate = useNavigate();
   const { workspaceId } = useParams();
 
@@ -116,49 +99,8 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
     navigate(module === 'workspace' ? `/ws/${ws.id}/dashboards` : `/${module}/${ws.id}`);
   };
 
-  // 新建工作空间(个人工作站, 随用户走; 受管理员配额限制)
-  const [createOpen, setCreateOpen] = useState(false);
-  const [newWsName, setNewWsName] = useState('');
-  const [creating, setCreating] = useState(false);
-  const handleCreate = async () => {
-    const name = newWsName.trim();
-    if (!name) { toast.error('请输入工作空间名称'); return; }
-    setCreating(true);
-    try {
-      const { data } = await client.post('/workspaces', { name });
-      toast.success('工作空间已创建');
-      setCreateOpen(false);
-      setNewWsName('');
-      await loadWorkspaces();
-      if (data?.id) {
-        setWorkspace(data.id);
-        navigate(module === 'workspace' ? `/ws/${data.id}/dashboards` : `/${module}/${data.id}`);
-      }
-    } catch (e: any) {
-      toast.error(e.response?.data?.detail || '创建失败');
-    } finally {
-      setCreating(false);
-    }
-  };
-  const createDialog = (
-    <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>新建工作空间</DialogTitle>
-          <DialogDescription>工作空间是你的个人工作站，可按项目分开组织会话与资产。</DialogDescription>
-        </DialogHeader>
-        <Input
-          autoFocus aria-label="工作空间名称" placeholder="输入工作空间名称" value={newWsName}
-          onChange={e => setNewWsName(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') void handleCreate(); }}
-        />
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button>
-          <Button onClick={handleCreate} disabled={creating}>{creating ? '创建中...' : '创建'}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
+  // 「新建工作空间」入口按产品决策暂不开放（一个账号一个默认工作空间够用）：
+  //   后端 POST /api/workspaces 与配额治理照旧存在，这里不挂入口；需要时去掉注释即可恢复。
 
   // 删除工作空间(仅自建空间): 确认框内先拉影响清单再让人确认（见 WorkspaceDeleteDialog）
   const [deleteTarget, setDeleteTarget] = useState<Workspace | null>(null);
@@ -166,7 +108,7 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
     const wasCurrent = deletedId === currentWorkspaceId;
     await loadWorkspaces();
     if (!wasCurrent) return;
-    // 删的是当前正在用的空间 → 落回默认工作站，不留空白路由
+    // 删的是当前正在用的空间 → 落回默认工作空间，不留空白路由
     const next = useWorkspaceStore.getState().getDefaultWorkspaceId();
     if (next) {
       setWorkspace(next);
@@ -182,6 +124,14 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
       onDeleted={afterWorkspaceDeleted}
     />
   );
+
+  // 只有一个工作空间时不挂这个下拉（2026-11-12 拍板）：新建入口按产品决策不开放，
+  //   一个账号一个默认空间，这里既无可选项也无可切换目标，摆着就是“点了只看到自己”
+  //   的空承诺（与「决策建议不占一级入口」同口径）。出现第二个空间（自建/区域分域）
+  //   自动回来；删除自建空间的入口在系统配置「工作空间管理」共用同一个确认框，
+  //   不会因为收起而丢能力。上面的 loadWorkspaces / URL 同步必须照常跑（路由与
+  //   currentWorkspaceId 依赖它），所以判定放在 hooks 之后。
+  if (loaded && workspaces.length <= 1) return null;
 
   if (collapsed) {
     return (
@@ -199,13 +149,8 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
                 onSwitch={() => handleSwitch(ws)} onAskDelete={() => setDeleteTarget(ws)}
               />
             ))}
-            <DropdownMenuItem onClick={() => setCreateOpen(true)} className="flex items-center gap-2">
-              <Plus className="h-4 w-4" />
-              <span className="flex-1">新建工作空间</span>
-            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        {createDialog}
         {deleteDialog}
       </>
     );
@@ -232,13 +177,8 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
               onSwitch={() => handleSwitch(ws)} onAskDelete={() => setDeleteTarget(ws)}
             />
           ))}
-          <DropdownMenuItem onClick={() => setCreateOpen(true)} className="flex items-center gap-2">
-            <Plus className="h-4 w-4" />
-            <span className="flex-1">新建工作空间</span>
-          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      {createDialog}
       {deleteDialog}
     </>
   );
@@ -254,7 +194,7 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
   const location = useLocation();
   const { workspaceId } = useParams();
   const { user, logout } = useAuthStore();
-  const { theme, setTheme } = useThemeStore();
+  const { theme } = useThemeStore();
   const { brand, fetchBrand } = useBrandStore();
   const startGuide = useGuideStore(s => s.startGuide);
 
@@ -265,10 +205,11 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
   useEffect(() => { setMobileMenuOpen(false); }, [location.pathname]);
 
   // 菜单可见性按权限码裁决（与 SystemLayout/DataPlatformLayout 同口径）
-  // 例外(产品决策 2026-10): 资产清单是工作站基础功能(随用户走), 不按权限码过滤;
-  // 数据看板入口同样参与菜单配置(菜单登记 workspace:dashboards ↔ dashboard:read,
-  // 默认已授给全部角色, 管理员可按角色收回), 内容级可见性仍由 adh_role_dashboard_access
-  // 在数据层 fail-closed 裁决。一级分组下无可访问项时不渲染分组标题。
+  // 「云空间」段的资产清单同样参与菜单配置（菜单登记 workspace:assets ↔ asset:read，
+  // 默认已授给全部生效角色，管理员可按角色收回）——旧「恒可见」例外（产品决策 2026-10）
+  // 已随本轮改名废除，否则角色页出现“该配的看不到”的空承诺。
+  // 数据看板入口同口径（workspace:dashboards ↔ dashboard:read），内容级可见性仍由
+  // adh_role_dashboard_access 在数据层 fail-closed 裁决。一级分组下无可访问项时不渲染分组标题。
   // 权限清单未就绪时不渲染真实菜单（isMenuAllowed 未加载时 fail-open，
   // 会把无权限的分组先画出来再抽走 → 菜单闪一下消失），改为同高骨架
   const menuAccess = useMenuAccess();
@@ -276,12 +217,16 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
     { section: '数据分析' },
     { key: `/ws/${workspaceId}/dashboards`, icon: ChartNoAxesCombined, label: '数据看板' },
     { key: `/ws/${workspaceId}/chat`, icon: MessageSquare, label: '智能问数' },
-    { key: `/ws/${workspaceId}/reports`, icon: Folder, label: '报表中心' },
-    { section: '工作站' },
-    { key: `/ws/${workspaceId}/assets`, icon: Archive, label: '资产清单', always: true },
+    { key: `/ws/${workspaceId}/reports`, icon: Folder, label: '报告中心' },
+    /* 决策建议不在工作空间侧栏单独占一项（2026-11-12 拍板）：不是每个问题都需要决策，
+       把它做成一级入口会暗示“每轮都该看建议”。消费入口仍是 Chat 建议卡、看板控件
+       与通知里的实例链接；/ws/:id/decisions 路由保留（那些链接的落地面，菜单码
+       workspace:decisions 同步下架，见 decision_tree_migration.sql）。配置面在数据中台。 */
+    { section: '云空间' },
+    { key: `/ws/${workspaceId}/assets`, icon: Archive, label: '资产清单' },
     { section: '自动化' },
     { key: `/ws/${workspaceId}/scheduled`, icon: Clock, label: '任务调度' },
-  ].filter(item => !('key' in item) || (item as any).always || menuAccess.allowed(toMenuKey((item as any).key)))) : [];
+  ].filter(item => !('key' in item) || menuAccess.allowed(toMenuKey((item as any).key)))) : [];
 
   const currentPath = location.pathname;
   // 顶栏左侧过去只在独立模块下才填内容：看板详情这类自带页头的子页，顶栏空成一条白带，
@@ -301,13 +246,9 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
       {!independent && <div className={`hidden lg:flex flex-col min-h-0 bg-sidebar border-r border-sidebar-border transition-all duration-200 ${collapsed ? 'w-[64px]' : 'w-[220px]'}`}>
         {/* Logo */}
         <div className="h-12 flex items-center justify-center border-b border-sidebar-border gap-1.5">
-          {brand.show_icon && brand.logo_url ? (
-            <img src={brand.logo_url} alt="Logo" className="h-6 w-6 rounded object-contain flex-shrink-0" />
-          ) : brand.show_icon ? (
-            <span className={`inline-flex items-center justify-center rounded bg-primary text-primary-foreground font-bold ${collapsed ? 'text-[10px] size-5' : 'text-xs size-6'} flex-shrink-0`}>AD</span>
-          ) : null}
+          <BrandLogo brand={brand} size={collapsed ? 20 : 24} />
           {!collapsed && brand.show_text && (
-            <span className="font-bold text-xl text-sidebar-foreground truncate">{brand.app_name || 'AI-DataHub'}</span>
+            <span className="font-bold text-xl text-sidebar-foreground truncate">{brand.app_name || DEFAULT_APP_NAME}</span>
           )}
         </div>
 
@@ -375,7 +316,7 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
           <div className="absolute inset-0 bg-black/50" onClick={() => setMobileMenuOpen(false)} />
           <div className="relative w-[280px] h-full bg-sidebar border-r border-sidebar-border flex flex-col min-h-0">
             <div className="h-12 flex items-center justify-between px-4 border-b border-sidebar-border">
-              <span className="font-bold text-lg text-sidebar-foreground">{brand.app_name || 'AI-DataHub'}</span>
+              <span className="font-bold text-lg text-sidebar-foreground">{brand.app_name || DEFAULT_APP_NAME}</span>
               <Button variant="ghost" size="sm" className="h-9 w-9 p-0" onClick={() => setMobileMenuOpen(false)}>
                 <X className="h-5 w-5" />
               </Button>
@@ -448,14 +389,21 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
           <div className="flex min-w-0 items-center gap-2">
             {!independent && <Button variant="ghost" size="sm" className="lg:hidden h-9 w-9 p-0" onClick={() => setMobileMenuOpen(true)}><Menu className="h-5 w-5" /></Button>}
             {independent && <>
-              <span className="hidden shrink-0 font-semibold sm:inline">{brand.app_name || 'AI-DataHub'}</span>
+              <span className="hidden shrink-0 font-semibold sm:inline">{brand.app_name || DEFAULT_APP_NAME}</span>
               <span className="hidden text-muted-foreground sm:inline">/</span>
               <span className="shrink-0 text-sm font-medium">工作空间</span>
               <div className="min-w-0 max-w-56"><WorkspaceSelectorSidebar collapsed={false} module={module} /></div>
             </>}
             {!independent && currentMenu && <>
-              <currentMenu.icon className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="shrink-0 text-sm font-medium">{currentMenu.label}</span>
+              {/* 子路径顶栏与「数据看板」列表页页头同一格式（同一 lockup：徽标 + gap-2.5 + text-lg 半粗），
+                  图标仍取菜单注册表（与侧栏同源），不另画一套；徽标走主题变量，9 套主题下都成立。
+                  （用户拍板：面包屑小字版太单薄，两级页面标题要同构） */}
+              <span className="flex shrink-0 items-center gap-2.5">
+                <span aria-hidden className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
+                  <currentMenu.icon className="h-4 w-4" />
+                </span>
+                <span className="shrink-0 text-lg font-semibold tracking-tight">{currentMenu.label}</span>
+              </span>
             </>}
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -478,19 +426,7 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
                 <TooltipContent>主题风格</TooltipContent>
               </Tooltip>
               <DropdownMenuContent align="end" className="w-48">
-                {THEMES.map(t => {
-                  const Icon = t.icon;
-                  return (
-                    <DropdownMenuItem key={t.id} onClick={() => setTheme(t.id)} className={`flex items-center gap-3 ${theme === t.id ? 'bg-accent' : ''}`}>
-                      <Icon className="h-4 w-4" />
-                      <div className="flex-1 min-w-0">
-                        <div className={`text-sm ${theme === t.id ? 'font-medium' : ''}`}>{t.label}</div>
-                        <div className="text-xs text-muted-foreground truncate">{t.desc}</div>
-                      </div>
-                      {theme === t.id && <span className="text-xs text-primary">✓</span>}
-                    </DropdownMenuItem>
-                  );
-                })}
+                <ThemeMenuItems />
               </DropdownMenuContent>
             </DropdownMenu>
 
@@ -528,7 +464,9 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
             </DropdownMenu>
           </div>
         </header>
-        <main className="min-h-0 min-w-0 flex-1 overflow-auto bg-background">
+        {/* relative 与 SystemLayout 同口径：页面内 position:absolute 且祖先链无定位元素的后代
+            （如 sr-only 标签）以 ICB 为包含块，会越过本口的裁剪把文档撑高 —— 表现为整个系统页面被滚动。 */}
+        <main className="relative min-h-0 min-w-0 flex-1 overflow-auto bg-background">
           <Outlet />
         </main>
       </div>

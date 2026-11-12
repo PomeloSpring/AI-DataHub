@@ -244,7 +244,7 @@ export default function ModelDraftReview({
           {canPublish && (
             <Button size="sm" onClick={onPublish}
               disabled={publishing || draft.base_stale || !!draft.draft_parse_error}
-              title={draft.base_stale ? '生效版已再被改动，发布会被阻断' : '发布后级联刷新对象表/图谱/知识库'}>
+              title={draft.base_stale ? '生效版已再被改动，发布会被阻断' : '发布后级联刷新对象表/部署绑定/图谱（知识库由后台对账重推，可在关系图谱页手动同步）'}>
               {publishing ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1" />}
               发布草案
             </Button>

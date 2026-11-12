@@ -455,7 +455,7 @@ def test_live_tier_key_isolated_from_round_start(cache, monkeypatch):
 
     def fake_query(user_id):
         calls.append(user_id)
-        return {"report:read": {"ai_access": "read", "label": "查看报表", "ai_note": ""}}
+        return {"report:read": {"ai_access": "read", "label": "查看报告", "ai_note": ""}}
 
     monkeypatch.setattr(role_service, "_query_user_role_ai_perms", staticmethod(fake_query))
     round_start = role_service.get_user_role_ai_perms(11, use_cache=True)
@@ -495,7 +495,7 @@ def test_perm_revocation_plus_invalidate_forces_explicit_resend(cache, monkeypat
     同时锁定另一面：没接失效钩子时，陈旧窗口的上限是 live TTL（旧值仍可用），
     而 digest 比对只会造成“要求重发”，**不可能多授权**。
     """
-    holder = {"perms": {"report:read": {"ai_access": "read", "label": "查看报表", "ai_note": ""}}}
+    holder = {"perms": {"report:read": {"ai_access": "read", "label": "查看报告", "ai_note": ""}}}
     monkeypatch.setattr(role_service, "_query_user_role_ai_perms",
                         staticmethod(lambda user_id: dict(holder["perms"])))
     monkeypatch.setattr(role_service, "get_user_roles",

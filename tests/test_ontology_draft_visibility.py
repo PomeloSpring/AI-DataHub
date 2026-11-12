@@ -345,11 +345,27 @@ class TestDraftEndpointGuard:
     def test_publish_calls_guard_with_four_args_and_server_identity(self, monkeypatch):
         calls: list = []
         out, seen = self._publish(monkeypatch, calls)
-        assert out == {"success": True, "object_count": 3}
+        # 响应契约：级联里“不致命但用户必须知道”的两件事（草案校验提醒、语义资产收编）
+        # 必须一起透出 —— 只回 success 等于发完就丢，属于假完成信号
+        assert out == {"success": True, "object_count": 3, "semantic_assets": {}, "warnings": []}
         # arity 锁：必须是 (user_id, workspace_id, perm_code, label) 四参，不得再顶旧缺陷
         assert calls == [(1791022918038, 0, "ontology:publish", "发布本体草案")]
         # 身份只从服务端解析（护栏 §2）：published_by 取 username，不来自请求体
         assert seen == {"mid": MID, "by": "admin"}
+
+    def test_publish_passes_through_warnings_and_semantic_assets(self, monkeypatch):
+        """服务层给了提醒就必须到用户脸上，不得在端点层被剔掉（no-silent-degradation）。"""
+        from backend.core import perm_link
+        from backend.modules.catalog.api import ontology as api
+
+        monkeypatch.setattr(perm_link, "require_write_perm", lambda *a, **k: None)
+        monkeypatch.setattr(api.ontology_service, "publish_draft", lambda mid, published_by="": {
+            "object_count": 2,
+            "validation_warnings": [{"code": "column_drift", "message": "属性列已变更"}],
+            "semantic_assets": {"metrics": 1, "dimensions": 2}})
+        out = api.publish_model_draft(MID, user=USER)
+        assert out["warnings"] == [{"code": "column_drift", "message": "属性列已变更"}], out
+        assert out["semantic_assets"] == {"metrics": 1, "dimensions": 2}, out
 
     def test_publish_without_perm_is_403_not_500(self, monkeypatch):
         from fastapi import HTTPException

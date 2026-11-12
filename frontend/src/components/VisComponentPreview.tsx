@@ -1,6 +1,9 @@
+import { useId } from 'react';
 import type { VisComponent } from '@/api/visLibrary';
 import { sanitizeStyle, sanitizePack } from '@/lib/dashboardDesign';
-import { CHART_TYPES } from './DashboardChart';
+import { enterClass, enterStaggerStyle, motionCssVars, sanitizeMotion } from '@/lib/motion';
+import { cn } from '@/lib/utils';
+import { CHART_TYPES, areaFadeStops } from './DashboardChart';
 import { FileText, Map } from 'lucide-react';
 
 const FALLBACK = ['#334155', '#64748b', '#94a3b8'];
@@ -23,10 +26,24 @@ export function typeLabelsOf(chartType?: string | null): string {
   return types.map(t => TYPE_LABELS[t] || `${t}（未知类型）`).join(' / ');
 }
 
+/** 面积渐隐 defs：色标与 DashboardChart 的 `areaFadeStops` 同一份数学（预览即预期效果基准） */
+function AreaFadeDefs({ id, color, stops }: { id: string; color: string; stops: { top: number; bottom: number } }) {
+  return <defs>
+    <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stopColor={color} stopOpacity={stops.top} />
+      <stop offset="100%" stopColor={color} stopOpacity={stops.bottom} />
+    </linearGradient>
+  </defs>;
+}
+
 // 轻量、不挂 G2 的形状预览: 让 line/pie/radar/gauge/funnel 等不再都显示成柱状图。
 export function ShapePreview({ type, palette, cfg }: { type: string; palette: string[]; cfg: any }) {
+  const gid = `areafade-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   palette = colorsOf(palette);
   const c = (i: number) => palette[i % palette.length];
+  // 面积填色与真实渲染同源：预览画平涂、线上画渐隐（或反之）就是"字模预览与渲染不一致"缺陷
+  const fade = areaFadeStops(cfg);
+  const areaPaint = (i: number) => (fade ? `url(#${gid})` : c(i));
   if (type.startsWith('widget_')) {
     const text = WIDGET_PREVIEW_TEXT[type];
     return <div data-preview-type={type} className="flex h-16 items-center justify-center p-2"><span className="flex h-8 w-full items-center justify-center border px-2 text-[10px]" style={{ background: cfg.backgroundColor, color: cfg.textColor || c(0), borderColor: cfg.borderColor || c(1), borderRadius: cfg.borderRadius ?? 6 }}>{text || '控件'}</span></div>;
@@ -35,13 +52,15 @@ export function ShapePreview({ type, palette, cfg }: { type: string; palette: st
   switch (type) {
     case 'line': case 'timeseries_line':
       return <svg viewBox="0 0 100 40" className="h-16 w-full" preserveAspectRatio="none">
-        {cfg.areaFill && <polygon points={`0,40 ${line} 100,40`} fill={c(0)} opacity={cfg.areaOpacity ?? 0.2} />}
+        {cfg.areaFill && fade && <AreaFadeDefs id={gid} color={c(0)} stops={fade} />}
+        {cfg.areaFill && <polygon points={`0,40 ${line} 100,40`} fill={areaPaint(0)} opacity={fade ? 1 : (cfg.areaOpacity ?? 0.2)} />}
         {cfg.smooth ? <path d="M0 30 C8 30 10 12 18 12 S28 22 36 22 S46 6 54 6 S64 16 72 16 S90 9 100 9" fill="none" stroke={c(0)} strokeWidth={cfg.lineWidth || 2} />
           : <polyline points={line} fill="none" stroke={c(0)} strokeWidth={cfg.lineWidth || 2} strokeLinejoin="round" />}
       </svg>;
     case 'area': case 'timeseries_area':
       return <svg viewBox="0 0 100 40" className="h-16 w-full" preserveAspectRatio="none">
-        <polygon points={`0,40 ${line} 100,40`} fill={c(0)} opacity={cfg.areaOpacity || 0.25} />
+        {fade && <AreaFadeDefs id={gid} color={c(0)} stops={fade} />}
+        <polygon points={`0,40 ${line} 100,40`} fill={areaPaint(0)} opacity={fade ? 1 : (cfg.areaOpacity || 0.25)} />
         <polyline points={line} fill="none" stroke={c(0)} strokeWidth={2} />
       </svg>;
     case 'pie':
@@ -212,6 +231,19 @@ export default function VisComponentPreview({ c }: { c: VisComponent }) {
     );
   }
   if (c.category === 'color_theme') return <div className="flex h-16 gap-1 rounded border p-2">{palette.map((color, i) => <span key={i} className="flex-1 rounded" style={{ background: color }} />)}</div>;
+  // 动效预设：预览跑的就是渲染面同一套 class + CSS 变量（管理页看到的节奏即真实节奏），
+  // 图表段另在编辑弹窗里展示下发给引擎的 animate 值，这里不拿 CSS 假装图表引擎。
+  if (c.category === 'motion_preset') {
+    const spec = sanitizeMotion(c.style_config).spec;
+    return <div className="flex h-16 w-full flex-col justify-center gap-1.5 rounded-md border bg-muted/20 px-3">
+      <div style={motionCssVars(spec)} className="flex items-end gap-1.5">
+        {[0, 1, 2].map(i => <span key={i} className={cn('h-6 w-10 rounded bg-primary/60', enterClass(spec.enter))} style={enterStaggerStyle(i, spec.enter)} />)}
+      </div>
+      <div className="truncate text-[10px] text-muted-foreground">
+        入场 {spec.enter.effect} {spec.enter.durationMs}ms · 切板 {spec.transition.effect === 'none' ? '直接切换' : spec.transition.effect} · 正文 {spec.reveal.effect === 'none' ? '一次性出现' : spec.reveal.effect}
+      </div>
+    </div>;
+  }
   // chart_style / color_theme: 按图表类型绘制对应形状
   return <div data-preview-type={c.chart_type || 'bar'} className="rounded-md border p-1" style={{ background: sc.viewBg }}>
     <ShapePreview type={c.chart_type || 'bar'} palette={palette} cfg={cfg} />

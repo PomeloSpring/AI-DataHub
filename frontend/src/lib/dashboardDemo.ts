@@ -32,27 +32,41 @@ export interface DemoChartInput {
  *
  * 带 `sample` 的图表 = **样式展示图**：不写任何 SQL（模板不对环境里的表结构做假设），
  * 只落示例缓存 + `demoData` 标记：它不进「刷新数据」队列（无查询可跑），
- * 也不会被刷新抹空。导入体（看板导出 JSON）里的存量图表则原样保留口径，
- * 示例标记不存在时不得携带 data_cache（缓存由服务端取数写入，不由客户端注入）。
+ * 也不会被刷新抹空。
+ *
+ * 2026-11-06 取数通道收口：入参不再携带 `sql_query`（服务端写入口直接拒）。
+ * 存量图（旧版 'query'/'snapshot' 通道，或仍带手填 SQL 且没挂数据集）导入时降为
+ * **占位图**（'empty'），语义图通道原样保留；调用侧必须同时提醒用户改挂数据集
+ * （不静默当已收编，见 no-silent-degradation）。
  */
 export function templateChartPayload(chart: DemoChartInput): Record<string, any> {
   const sample = typeof chart.sample === 'string'
     ? (() => { try { return JSON.parse(chart.sample as string); } catch { return null; } })()
     : chart.sample;
   const demo = !!sample && Array.isArray((sample as Sample).columns) && Array.isArray((sample as Sample).rows);
-  // 遗留 config.sql / config.demoSql 不回填（护栏 §7：配置不夹 SQL）
+  const semantic = !demo && (chart.query_source === 'semantic' || !!chart.semantic_query);
+  const onDataset = String(chart.source_type) === 'dataset' && !!chart.source_id;
+  // 遗留 config.sql / config.demoSql / countSql 不回填（护栏 §7：配置不夹 SQL）；
+  // config.datasource_id 是旧直连通道残留键，通道只由 source_type/source_id 表达；
+  // enableServerPagination / pageLimit / maxRows 是已退役的分页旋钮（表值图现在恒定
+  // 服务端真分页，只剩 pageSize），回填进来就是“看得见、不生效”的空旋钮
   const config: Record<string, any> = Object.fromEntries(
-    Object.entries(chart.config || {}).filter(([k]) => k !== 'sql' && k !== 'demoSql'));
+    Object.entries(chart.config || {}).filter(([k]) => !['sql', 'demoSql', 'countSql', 'datasource_id',
+      'enableServerPagination', 'pageLimit', 'maxRows'].includes(k)));
   if (demo) config[TEMPLATE_DEMO_KEY] = true;
+  // 带手填 SQL 却没挂数据集 = 收编未覆盖的存量图：口径丢弃前统一按占位图处理
+  const legacyChannel = !demo && !semantic && !onDataset
+    && (['query', 'snapshot'].includes(String(chart.source_type || '')) || !!(chart.sql_query || '').trim());
+  // 样式图卡（有 sample 且未挂数据集）身份就是“模板”：导入体里带来的旧通道名/源引用一律重置
+  const styleCard = demo && !onDataset;
   return {
     name: chart.name,
     chart_type: chart.chart_type,
     position: chart.position,
-    sql_query: demo ? '' : (chart.sql_query || ''),
     semantic_query: demo ? null : chart.semantic_query,
-    query_source: !demo && (chart.query_source === 'semantic' || chart.semantic_query) ? 'semantic' : 'raw_sql',
-    source_type: chart.source_type || 'template',
-    source_id: chart.source_id ?? null,
+    query_source: semantic ? 'semantic' : 'raw_sql',
+    source_type: styleCard ? 'template' : legacyChannel ? 'empty' : (chart.source_type || 'template'),
+    source_id: (styleCard || legacyChannel) ? null : (chart.source_id ?? null),
     config,
     data_cache: demo ? sample : undefined,
   };

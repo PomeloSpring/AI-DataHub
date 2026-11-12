@@ -1,10 +1,10 @@
 """工作空间删除：影响清单 + 级联清理（空间内产物 + 持久卷目录）。
 
 口径（需求确认 2026-10）：
-- **默认工作站不可删除**（adh_workspaces.is_default=1），只能删用户自建的自定义空间；
+- **默认工作空间不可删除**（adh_workspaces.is_default=1），只能删用户自建的自定义空间；
 - 空间内产物**彻底删除**：会话（含磁盘工作区）、看板与图表、定时任务与 DAG 工作流、
   保存查询、通知渠道、空间级绑定配置；
-- **保留**跨工作站资产（adh_user_assets 资产清单、adh_user_memory 用户记忆）、
+- **保留**跨工作空间资产（adh_user_assets 资产清单、adh_user_memory 用户记忆）、
   审计与观测流水（adh_query_audit / adh_llm_traces / adh_audit_logs /
   adh_intent_intercepts / adh_rls_audit_logs）、数据中台治理资产
   （adh_datasets / adh_data_products / 本体 / RLS 策略 / 角色）。
@@ -85,6 +85,10 @@ def build_cascade_statements(workspace_id: int, owner_id: int,
     # 会话域按 workspace_id 整片删除（会话列表本就按空间 + 属主隔离，不留孤儿）
     if "adh_message_feedback" in available_tables:
         stmts.append(("DELETE FROM adh_message_feedback WHERE workspace_id = %s", (workspace_id,)))
+    # 拆行消息与会话同批清除（只删会话行会把历史正文留成孤儿，隐私与容量都说不通）
+    if "adh_conversation_messages" in available_tables:
+        stmts.append(("DELETE FROM adh_conversation_messages WHERE workspace_id = %s",
+                      (workspace_id,)))
     stmts.append(("DELETE FROM adh_agent_sessions WHERE workspace_id = %s", (workspace_id,)))
     stmts.append(("DELETE FROM adh_conversations WHERE workspace_id = %s", (workspace_id,)))
 
@@ -144,11 +148,11 @@ def load_workspace(cur, workspace_id: int) -> dict:
 
 
 def assert_deletable(cur, workspace: dict) -> None:
-    """删除前置把关：默认工作站不可删、有活执行不可删（均 fail-loud 提醒用户）。"""
+    """删除前置把关：默认工作空间不可删、有活执行不可删（均 fail-loud 提醒用户）。"""
     if int(workspace.get("is_default") or 0) == 1:
         raise HTTPException(
             status_code=409,
-            detail="默认工作站不支持删除，仅可删除自行创建的自定义工作空间")
+            detail="默认工作空间不支持删除，仅可删除自行创建的自定义工作空间")
     cur.execute("SELECT COUNT(*) AS c FROM adh_agent_sessions WHERE workspace_id = %s "
                 "AND (status = 'running' OR status = 'deleting' OR execution_token IS NOT NULL)",
                 (workspace["id"],))
@@ -210,7 +214,8 @@ def delete_workspace(workspace_id: int, user: dict) -> dict:
         try:
             with conn.cursor() as cur:
                 available = {t for t in (
-                    "adh_message_feedback", "adh_role_dashboard_access", "adh_chart_snapshots",
+                    "adh_message_feedback", "adh_conversation_messages", "adh_role_dashboard_access",
+                    "adh_chart_snapshots",
                     "adh_scheduled_logs", "adh_dag_runs", "adh_notification_channels",
                     *_BINDING_TABLES) if _table_exists(cur, t)}
                 # 父资源 id：看板/任务/DAG 按属主收敛（他人在此空间的产物不被动）

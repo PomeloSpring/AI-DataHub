@@ -7,7 +7,9 @@ ToolResultBlock 映射为 tool_start / tool_result 流事件,并累计
 完整 tool_calls 供 done 事件持久化(历史消息回放)。
 """
 
+import json
 import logging
+import re
 import time
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,58 @@ def cap_arguments(arguments, max_str_len: int = 300) -> dict:
             out[k] = v[:max_str_len] + "..."
         else:
             out[k] = v
+    return out
+
+
+# ── knowledge_search 引用摘要（轻量、不受落库截断影响）───────────────────
+
+_KNOWLEDGE_TOOLS = {"knowledge_search", "search_business_knowledge"}
+# 从 chunk 正文提取标题（与前端 sourceTitleOf 同口径）
+_HEADING_OBJ = re.compile(r"^##\s*业务对象[:：]\s*([^(（\n]+)", re.MULTILINE)
+_HEADING_MODEL = re.compile(r"^#\s*本体模型[:：]\s*(.+)$", re.MULTILINE)
+
+
+def _is_knowledge_tool(name: str) -> bool:
+    return (name or "").rsplit("__", 1)[-1] in _KNOWLEDGE_TOOLS
+
+
+def _extract_citation_summary(raw: str) -> list[dict]:
+    """从 knowledge_search 原始 JSON 提取轻量引用摘要。
+
+    返回 [{question, sources: [title, ...]}]，总体积极小（几百字节），
+    不受 CONV_TOOL_RESULT_MAX_CHARS 截断影响。
+    """
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    groups = data.get("results") if isinstance(data.get("results"), list) else (
+        [data] if data else [])
+    out: list[dict] = []
+    for g in groups:
+        if not isinstance(g, dict):
+            continue
+        question = str(g.get("question") or "").strip()[:80]
+        sources: list[str] = []
+        for chunk in (g.get("chunks") or []):
+            title = ""
+            if isinstance(chunk, dict):
+                title = str(chunk.get("title") or "").strip()[:60]
+                if not title:
+                    content = str(chunk.get("content") or "")
+                    m = _HEADING_OBJ.search(content)
+                    if m:
+                        title = f"业务对象 · {m.group(1).strip()[:40]}"
+                    else:
+                        m2 = _HEADING_MODEL.search(content)
+                        if m2:
+                            title = f"本体模型 · {m2.group(1).strip()[:40]}"
+            if title and title not in sources:
+                sources.append(title)
+        if sources:
+            out.append({"question": question, "sources": sources[:6]})
     return out
 
 
@@ -139,6 +193,9 @@ class ToolEventTracker:
             record["elapsed"] = elapsed
             if is_error:
                 record["result"] = None
+            # knowledge_search 结果体大且常被截断，提前抽取轻量引用摘要（不受落库截断影响）
+            if not is_error and _is_knowledge_tool(name):
+                record["citation_summary"] = _extract_citation_summary(raw)
         logger.info(
             "[ExecLayer] tool result: %s (%s) error=%s elapsed=%s",
             name, tool_call_id, is_error, elapsed,

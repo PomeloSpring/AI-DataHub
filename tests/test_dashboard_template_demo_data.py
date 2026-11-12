@@ -3,10 +3,12 @@
 仪表盘模板的定位是**图表样式展示**：图卡不携带取数口径，只带内置演示数值。锁定的契约：
   - 客户端能写入的图表数据缓存**只有**示例数据（config.demoData=true），
     形状/行数超限/夹带真实数据一律拒并回可诊断原因（护栏 §7）。
-  - 样式图（未绑数据源）点「刷新数据」时不下发任何 SQL，而是原样回读示例数据 ——
+  - 样式图（未绑任何取数源）点「刷新数据」时不下发任何查询，而是原样回读示例数据 ——
     不能把用户的样式效果抹成空白，也不能静默失败。
-  - 一旦写了 SQL / 切语义查询 / 前端显式声明转真实取数，同批清掉示例标记与演示缓存
+  - 一旦改挂数据集 / 切语义查询 / 前端显式声明转真实取数，同批清掉示例标记与演示缓存
     （不留旧的 demoSql 占位口径）。
+  - 2026-11-06 取数通道收口：图表不再接受直写 SQL，提交/存量都指名收编；
+    已挂数据集的图必须走数据集通道取数，不得回读演示缓存。
   - 纯外观/布局修改不得把真实图表的 data_cache 清掉。
 """
 
@@ -100,10 +102,12 @@ class FakeConn:
         self.closed = True
 
 
-def _install(monkeypatch, log, charts=()):
+def _install(monkeypatch, log, charts=(), stored_row=None):
     conn = FakeConn(FakeCursor(log, charts))
     monkeypatch.setattr(dash, "get_metadata_conn", lambda: conn)
     monkeypatch.setattr(dash, "_invalidate_dashboard_payload", lambda *a, **k: None)
+    # 闸门回读存量行走模块名（离线用例不得碰真库）：默认回 None = 库里无此图
+    monkeypatch.setattr(dash, "execute_query", lambda *a, **k: stored_row)
     return conn
 
 
@@ -116,6 +120,18 @@ def _sets(update_entry):
 
 def _writes(log):
     return [entry for entry in log if not entry[0].startswith("SELECT")]
+
+
+def _allow_dataset_gate(monkeypatch, dataset_id: int):
+    """把“数据集在角色清单内且可执行”三道子查换成固定答案（离线用例不碰真库）。"""
+    from backend.core.role_service import role_service
+    from backend.modules.viz.services import dataset_service as ds_svc
+
+    monkeypatch.setattr(ds_svc, "get_dataset",
+                        lambda ds_id: {"id": ds_id, "name": "销售数据集", "status": "active"})
+    monkeypatch.setattr(ds_svc, "usable_scope",
+                        lambda ds, ident, **kw: ([{"id": 5, "name": "生产库"}], []))
+    monkeypatch.setattr(role_service, "get_user_allowed_datasets", lambda uid: [dataset_id])
 
 
 # ── 写入闸门：客户端缓存只允许示例数据 ──────────────────────────────────────
@@ -134,7 +150,7 @@ def test_create_chart_stores_sample_data_with_demo_flag(monkeypatch):
     stored = insert[1][9]  # data_cache 占位
     assert json.loads(stored) == SAMPLE
     assert json.loads(insert[1][5])["demoData"] is True
-    assert insert[1][4] == ""
+    assert insert[1][4] is None   # 图表行不再携带口径（写 NULL，不留空字符串占位）
 
 
 @pytest.mark.parametrize("cache,cfg,needle", [
@@ -177,21 +193,74 @@ def test_refresh_demo_chart_without_source_returns_sample_and_skips_execute(monk
 
 
 def test_refresh_chart_after_datasource_binding_and_real_sql_executes(monkeypatch):
-    """已转真实取数的图（绑了源 + 写了口径）必须正常下发治理取数，不再走示例分支。"""
+    """存量手写法：旧版“绑了源 + 写了口径”的刷新行为已退出执行链。
+
+    图表行里带着人写的 SQL 时不得再下发取数（那等于旁路仍活着），必须指名收编。
+    """
     log = []
     _install(monkeypatch, log, [demo_chart(
-        sql_query=REAL_SQL, config=json.dumps({"datasource_id": 5, "demoData": True}))])
+        sql_query=REAL_SQL, config=json.dumps({"datasource_id": 5, "demoData": False}))])
     monkeypatch.setattr(dash, "check_dashboard_visible", lambda *a, **k: True)
-    called = {}
 
-    def fake_execute(sql, datasource_id, *a, **k):
-        called["sql"], called["ds"] = sql, datasource_id
-        return {"columns": ["dt", "sales"], "rows": [{"dt": "10-19", "sales": 1}], "row_count": 1}
+    def boom(*a, **k):
+        raise AssertionError("旧版直写 SQL 不得继续下发取数（必须先收编成数据集）")
 
-    monkeypatch.setattr(dash, "governed_execute", fake_execute)
+    monkeypatch.setattr(dash, "governed_execute", boom)
+    with pytest.raises(ValueError) as exc:
+        dash.chart_service.refresh_chart(10, 21, user_id=1)
+    assert "数据集" in str(exc.value) and "旧版直写 SQL" in str(exc.value)
+
+
+def test_demo_chart_bound_to_dataset_refreshes_via_dataset_channel(monkeypatch):
+    """样式图改挂数据集 = 转真实取数：必须走数据集入口，不得再回读演示缓存。"""
+    log = []
+    _install(monkeypatch, log, [demo_chart(
+        source_type="dataset", source_id=7,
+        config=json.dumps({"xCol": "dt", "yCol": "sales", "demoData": True}))])
+    monkeypatch.setattr(dash, "check_dashboard_visible", lambda *a, **k: True)
+    seen = {}
+
+    def fake_query_dataset(dataset_id, params, identity):
+        seen["dataset_id"] = dataset_id
+        return {"columns": ["dt", "sales"], "rows": [{"dt": "10-19", "sales": 9}],
+                "row_count": 1}
+
+    from backend.modules.viz.services import dataset_service as ds_svc
+    from backend.common import auth as _auth
+    monkeypatch.setattr(ds_svc, "query_dataset", fake_query_dataset)
+    monkeypatch.setattr(_auth, "get_user_by_id", lambda uid: {"user_role": "analyst"})
     out = dash.chart_service.refresh_chart(10, 21, user_id=1)
-    assert called["ds"] == 5 and "dwd_order_real" in called["sql"]
+    assert seen["dataset_id"] == 7
     assert out["rows"] and "demo" not in out
+
+
+def test_api_chart_refresh_skips_execution_for_unbound_demo(monkeypatch):
+    """`/api/charts/{id}/refresh` 不再是第二取数实现：同一分派入口 + 同一示例图口径。"""
+    from fastapi import HTTPException
+
+    log = []
+    _install(monkeypatch, log, [demo_chart()])
+    from backend.modules.viz.api import chart as chart_api
+
+    seen = {}
+
+    def fake_refresh(dashboard_id, chart_id, **kw):
+        seen.update(dashboard_id=dashboard_id, chart_id=chart_id)
+        return dash._demo_cached_result(demo_chart())
+
+    monkeypatch.setattr(chart_api, "execute_query",
+                        lambda sql, params=None, **kw: {"dashboard_id": 10})
+    monkeypatch.setattr(chart_api, "check_dashboard_visible", lambda *a, **k: True)
+    monkeypatch.setattr(dash.chart_service, "refresh_chart", fake_refresh)
+    out = chart_api.refresh_chart(21, chart_api.ChartRefreshRequest(), user={"user_id": 1, "username": "u"})
+    assert out["demo"] is True and len(out["rows"]) == 2
+    assert seen == {"dashboard_id": 10, "chart_id": 21}
+
+    # 不可见看板里的图：403，不回数据行（旧版本入口不校验可见性 = 越权读图）
+    monkeypatch.setattr(chart_api, "check_dashboard_visible", lambda *a, **k: False)
+    with pytest.raises(HTTPException) as exc:
+        chart_api.refresh_chart(21, chart_api.ChartRefreshRequest(), user={"user_id": 2, "username": "v"})
+    assert exc.value.status_code == 403
 
 
 def test_refresh_all_charts_keeps_demo_samples_intact(monkeypatch):
@@ -210,34 +279,33 @@ def test_refresh_all_charts_keeps_demo_samples_intact(monkeypatch):
     assert not _writes(log)
 
 
-def test_api_chart_refresh_skips_execution_for_unbound_demo(monkeypatch):
-    log = []
-    conn = FakeConn(FakeCursor(log, [demo_chart()]))
-    from backend.modules.viz.api import chart as chart_api
-    monkeypatch.setattr(chart_api, "DBConnection", lambda: conn)
-
-    def boom(*a, **k):
-        raise AssertionError("示例图的演示 SQL 不得下发数据源")
-
-    monkeypatch.setattr(chart_api, "governed_execute", boom, raising=False)
-    out = chart_api.refresh_chart(21, chart_api.ChartRefreshRequest(), user={"user_id": 1, "username": "u"})
-    assert out["demo"] is True and len(out["rows"]) == 2
-    assert not [e for e in log if not e[0].startswith("SELECT")]
-
-
 # ── 转真实取数：同批清示例标记与演示缓存 ────────────────────────────────────
 
 
 def test_update_demo_chart_with_new_sql_clears_flag_and_cache(monkeypatch):
-    """样式图写了真实口径 → 同批清示例标记/演示缓存，并抹掉旧版残留的 demoSql 占位口径。"""
+    """样式图转真实取数（旧路径写 SQL）已拒：提交口径直接被拒，不能静默清标记落库。"""
     log = []
     _install(monkeypatch, log, [demo_chart(
         config=json.dumps({"xCol": "dt", "yCol": "sales", "demoData": True, "demoSql": DEMO_SQL}))])
-    dash.chart_service.update_chart(10, 21, {"sql_query": REAL_SQL})
+    with pytest.raises(ValueError) as exc:
+        dash.chart_service.update_chart(10, 21, {"sql_query": REAL_SQL})
+    assert "不再接受直接编写 SQL" in str(exc.value)
+    assert not _writes(log)          # 一笔不写（不静默清标记后当保存成功）
+
+
+def test_update_demo_chart_binding_dataset_clears_flag_and_cache(monkeypatch):
+    """改挂数据集 = 转真实取数：同批清示例标记/演示缓存，并抹掉旧版残留的 demoSql 占位口径。"""
+    log = []
+    _install(monkeypatch, log, [demo_chart(
+        config=json.dumps({"xCol": "dt", "yCol": "sales", "demoData": True, "demoSql": DEMO_SQL}))])
+    _allow_dataset_gate(monkeypatch, 7)
+    dash.chart_service.update_chart(
+        10, 21, {"source_type": "dataset", "source_id": 7},
+        identity={"user_id": 7, "role": "analyst", "username": "a", "workspace_id": 1})
     sets = _sets(_writes(log)[-1])
     assert sets["data_cache"] is None
     assert "demoData" not in sets["config"] and "demoSql" not in sets["config"]
-    assert sets["sql_query"] == REAL_SQL
+    assert sets["source_type"] == "dataset" and sets["source_id"] == 7
     assert json.loads(sets["config"])["xCol"] == "dt"  # 字段映射保留，只清示例相关键
 
 
@@ -261,17 +329,20 @@ def test_appearance_update_on_real_chart_keeps_cache(monkeypatch):
     dash.chart_service.update_chart(10, 21, {"config": {"xCol": "dt", "yCol": "sales"}, "position": {"x": 1, "y": 2, "w": 3, "h": 4}})
     update = _writes(log)[-1]
     assert "data_cache" not in update[0]
-    assert not [e for e in log if e[0].startswith("SELECT config, sql_query")]
+    assert not [e for e in log if e[0].startswith("SELECT config, source_type")]
 
 
 def test_update_chart_invalidates_detail_payload(monkeypatch):
     """图表写入后必须失效共享详情载荷（否则读者最长等一个 TTL 才看到改动）。"""
     log = []
     _install(monkeypatch, log, [demo_chart()])
+    _allow_dataset_gate(monkeypatch, 7)
     invalidated = []
     monkeypatch.setattr(dash, "_invalidate_dashboard_payload",
                         lambda dashboard_id=None, **k: invalidated.append(dashboard_id))
-    assert dash.chart_service.update_chart(10, 21, {"sql_query": "SELECT real FROM t"}) is True
+    assert dash.chart_service.update_chart(
+        10, 21, {"source_type": "dataset", "source_id": 7},
+        identity={"user_id": 7, "role": "analyst", "username": "a", "workspace_id": 1}) is True
     assert invalidated == [10]
 
 
@@ -303,3 +374,7 @@ def test_demo_predicates_boundaries():
     # 无示例标记的普通图不受影响
     assert dash.demo_sample_without_source(
         demo_chart(sql_query=REAL_SQL, config=json.dumps({"xCol": "dt"}))) is False
+    # 已挂数据集 = 已绑源：不得回读演示缓存（旧判定只看 config.datasource_id，会挂上源却不取数）
+    assert dash.demo_sample_without_source(
+        demo_chart(source_type="dataset", source_id=7,
+                   config=json.dumps({"demoData": True}))) is False

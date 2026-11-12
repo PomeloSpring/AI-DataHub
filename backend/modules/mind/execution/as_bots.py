@@ -69,6 +69,9 @@ def _normalize(row: dict) -> dict:
         "knowledge_base_ids": _resource_ids(row.get("knowledge_base_ids")),
         "skills": _parse_json(row.get("skills"), []),
         "models": _parse_json(row.get("models"), []),
+        # 绑定的执行层：0/None = 跟随工作空间默认执行层（口径见
+        # service.pick_layer_for_as_bot，那里统一裁决可用性与工作空间绑定）。
+        "execution_layer_id": int(row.get("execution_layer_id") or 0),
         "chart_enabled": bool(row.get("chart_enabled", 1)),
         "permission_mode": row.get("permission_mode") or "inherit",
         "workspace_id": row.get("workspace_id") or 0,
@@ -307,9 +310,11 @@ def _name_list(raw, skill_name: str, key: str) -> list[str]:
 def load_skills(skill_names: list[str]) -> list[dict]:
     """按名加载已绑定技能(name/display_name/description/system_prompt + 装载控制元数据),供提示词注入.
 
-    除正文外还透出 SKILL.md frontmatter 里的两个装载控制键(由 prompt_composer 消费):
+    除正文外还透出 SKILL.md frontmatter 里的装载控制键(由 prompt_composer 消费):
       - `requires_any`: 本正文依赖的工具名(任一授权即可展开), 全未注册时不展开;
-      - `triggers`:     用户问题命中词, 多技能绑定时决定展开哪几个。
+      - `triggers`:     用户问题命中词, 多技能绑定时决定展开哪几个;
+      - `exclusive_group`: 互斥组名, 同组只展开得分最高的一个正文
+        (两份互斥剧本同时展开 = 给模型矛盾指令, 如「先分诊取数」撞「不要取数」)。
     description 同时作为未展开正文时的常驻浓缩契约。
     加载失败或技能不存在时跳过该项(行为容错)。
     """
@@ -336,6 +341,7 @@ def load_skills(skill_names: list[str]) -> list[dict]:
                 "system_prompt": skill.get("system_prompt") or "",
                 "requires_any": _name_list(cfg.get("requires_any"), name, "requires_any") if isinstance(cfg, dict) else [],
                 "triggers": _name_list(cfg.get("triggers"), name, "triggers") if isinstance(cfg, dict) else [],
+                "exclusive_group": str((cfg.get("exclusive_group") if isinstance(cfg, dict) else "") or ""),
             })
     return out
 

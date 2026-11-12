@@ -39,6 +39,12 @@ import {
   type NotificationChannel,
   type NotificationChannelCreateRequest,
 } from '@/api/scheduledTask';
+import {
+  listMessageTemplates,
+  CHANNEL_KIND,
+  KIND_LABELS,
+  type MessageTemplate,
+} from '@/api/messageTemplate';
 
 const CHANNEL_TYPE_MAP: Record<string, { label: string; icon: string }> = {
   dingtalk: { label: '钉钉', icon: '🤖' },
@@ -46,7 +52,18 @@ const CHANNEL_TYPE_MAP: Record<string, { label: string; icon: string }> = {
   wecom: { label: '企业微信', icon: '💬' },
   email: { label: '邮件', icon: '📧' },
   webhook: { label: 'Webhook', icon: '🔗' },
+  sms: { label: '短信', icon: '📱' },
 };
+
+/**
+ * 消息模板只存引用（config.message_template_key → 模板中心）。
+ * 旧形态是在渠道里手填一段 config.message_template，而发送侧从来不读它 —— 改了十遍也发不出去；
+ * 模板中心改造已把存量内联文本一次性沉淀成模板并回填引用，这个死字段不再消费。
+ */
+const TEMPLATE_NONE = '__platform_default__';
+
+/** 短信参数分层：服务商凭据只读 backend/.env，渠道里只放业务参数（凭据写进 config 就是泄露面） */
+const SMS_FIELD_NOTE = '服务商凭据（AccessKey 等）只读 backend/.env，不填在这里：渠道 config 在页面上可读可导出。';
 
 interface FormData {
   name: string;
@@ -71,6 +88,11 @@ export default function NotificationChannels() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState<number | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<NotificationChannel | null>(null);
+  // 编辑既有渠道时改了类型：下面会把 config 清重填（不同通道参数不通用），
+  // 这件事必须显式提醒 —— 静默清掉 webhook 密钥与模板引用就是“看着改完了、其实空了”
+  const [typeReset, setTypeReset] = useState(false);
+  // 消息模板清单（全部分类一次取回）：下拉按当前渠道类型过滤，列表里也要看得出引用的是哪一条
+  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
 
   const loadChannels = useCallback(async () => {
     setLoading(true);
@@ -87,14 +109,41 @@ export default function NotificationChannels() {
 
   useEffect(() => { loadChannels(); }, [loadChannels]);
 
+  const loadTemplates = useCallback(async () => {
+    try {
+      // include_inactive=true：已下架的模板也得认得出来 —— 渠道正引用它时要显式提示，不能当成"没选"
+      setTemplates(await listMessageTemplates('', true));
+    } catch {
+      toast.error('加载消息模板失败：本次无法核对渠道引用的模板');
+    }
+  }, []);
+
+  useEffect(() => { loadTemplates(); }, [loadTemplates]);
+
+  const templateKind = CHANNEL_KIND[form.channel_type] || 'im';
+  /** 可选模板：分类不符的模板不能选（短信渠道选邮件模板 = 长度与格式都不对，发出去才知道） */
+  const templateOptions = templates.filter(t => t.template_kind === templateKind && Number(t.is_active));
+  const templateOf = (key: string) => templates.find(t => t.code === key);
+
+  const selectedKey = String(form.config.message_template_key || '');
+  const selectedTemplate = selectedKey ? templateOf(selectedKey) : undefined;
+  // 引用指向已删除/下架/错分类的模板时，发送会退回平台默认文案：这条必须在编辑时就看得见（§1）
+  const brokenReference = !!selectedKey && (
+    !selectedTemplate
+    || !Number(selectedTemplate.is_active)
+    || selectedTemplate.template_kind !== templateKind
+  );
+
   const openCreate = () => {
     setEditChannel(null);
     setForm(DEFAULT_FORM);
+    setTypeReset(false);
     setFormOpen(true);
   };
 
   const openEdit = (ch: NotificationChannel) => {
     setEditChannel(ch);
+    setTypeReset(false);
     setForm({
       name: ch.name,
       channel_type: ch.channel_type,
@@ -111,10 +160,14 @@ export default function NotificationChannels() {
     }
     setSaving(true);
     try {
+      // 内联 message_template 已不再消费：保存时清掉，免得"内联 + 引用"两套真值源并存、下次编辑又看到一段发不出去的文案
+      const cfg: Record<string, any> = { ...form.config };
+      delete cfg.message_template;
+      if (!cfg.message_template_key || cfg.message_template_key === TEMPLATE_NONE) delete cfg.message_template_key;
       const req: NotificationChannelCreateRequest = {
         name: form.name.trim(),
         channel_type: form.channel_type,
-        config: form.config,
+        config: cfg,
         is_active: form.is_active,
         workspace_id: 0,
       };
@@ -137,8 +190,17 @@ export default function NotificationChannels() {
   const handleTest = async (ch: NotificationChannel) => {
     setTesting(ch.id);
     try {
-      await testNotificationChannel(ch.id);
-      toast.success('测试消息发送成功');
+      const out = await testNotificationChannel(ch.id);
+      // 测试发送走的是与定时任务同一条渲染链：要把"实际发出去的是什么形态"说清楚，
+      // 只报一句"发送成功"会把"发的是默认文案/模板已失效"掩掉（§1）
+      const meta = out?.result || {};
+      const notes: string[] = [];
+      if (meta.status === 'default') notes.push('渠道未选消息模板，发的是平台默认文案');
+      if (meta.status === 'degraded') notes.push(`引用的模板不可用：${(meta.reasons || []).join('；') || '未知原因'}`);
+      if (meta.unknown_variables?.length) notes.push(`变量未登记、已原样发出：${meta.unknown_variables.join('、')}`);
+      if (meta.warnings?.length) notes.push(...meta.warnings);
+      if (notes.length) toast.warning(`已发送，但${notes.join('；')}`);
+      else toast.success('测试消息已按所选模板发送');
       loadChannels();
     } catch (e: any) {
       toast.error(e?.response?.data?.detail || '测试失败');
@@ -260,6 +322,36 @@ export default function NotificationChannels() {
         </>
       );
     }
+    if (ct === 'sms') {
+      return (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>短信签名</Label>
+              <Input value={form.config.sign_name || ''} onChange={e => updateConfig('sign_name', e.target.value)}
+                placeholder="签名名称" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>运营商模板码</Label>
+              <Input value={form.config.template_code || ''} onChange={e => updateConfig('template_code', e.target.value)}
+                placeholder="SMS_123456789" />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>收件号码（多个用逗号分隔）</Label>
+            <Input
+              value={Array.isArray(form.config.to_numbers) ? form.config.to_numbers.join(',') : (form.config.to_numbers || '')}
+              onChange={e => updateConfig('to_numbers', e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
+              placeholder="13800000000, 13900000000" />
+          </div>
+          <p className="text-xs text-amber-600">
+            短信通道本期为占位：以上参数配齐仍会显式报「服务商未配置」，接入凭据与适配器后才会真实下发。
+            国内短信正文须走运营商已审核的 template_code，平台消息模板只是文案镜像。
+          </p>
+          <p className="text-[11px] text-muted-foreground">{SMS_FIELD_NOTE}</p>
+        </>
+      );
+    }
     // webhook
     return (
       <>
@@ -324,6 +416,12 @@ export default function NotificationChannels() {
                     <div className="text-xs text-muted-foreground">
                       {CHANNEL_TYPE_MAP[ch.channel_type]?.label || ch.channel_type}
                     </div>
+                    {/* 文案来自哪：一眼看出这个渠道按哪条消息模板发（还是根本没选、在发默认文案） */}
+                    <div className="text-xs text-muted-foreground">
+                      {ch.config?.message_template_key
+                        ? `模板：${templateOf(String(ch.config.message_template_key))?.name || '引用已失效（发默认文案）'}`
+                        : '模板：未选（发平台默认文案）'}
+                    </div>
                   </div>
                 </div>
                 <Badge variant="outline" className={ch.is_active ? 'text-green-500' : 'text-gray-500'}>
@@ -350,10 +448,10 @@ export default function NotificationChannels() {
                   <Send className="w-4 h-4 mr-1" />
                   {testing === ch.id ? '发送中...' : '测试'}
                 </Button>
-                <Button variant="ghost" size="sm" onClick={() => openEdit(ch)}>
+                <Button variant="ghost" size="sm" onClick={() => openEdit(ch)} aria-label="编辑">
                   <Edit className="w-4 h-4" />
                 </Button>
-                <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(ch)}>
+                <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(ch)} aria-label="删除">
                   <Trash2 className="w-4 h-4 text-destructive" />
                 </Button>
               </div>
@@ -381,7 +479,10 @@ export default function NotificationChannels() {
               <Label>渠道类型</Label>
               <Select
                 value={form.channel_type}
-                onValueChange={v => setForm(prev => ({ ...prev, channel_type: v, config: {} }))}
+                onValueChange={v => {
+                  if (v !== form.channel_type) setTypeReset(true);
+                  setForm(prev => ({ ...prev, channel_type: v, config: {} }));
+                }}
               >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -391,38 +492,75 @@ export default function NotificationChannels() {
                 </SelectContent>
               </Select>
             </div>
+            {typeReset && (
+              <p role="alert" className="text-xs text-amber-600">
+                切换渠道类型已清空原来填的参数（Webhook/密钥、收件人与消息模板引用）：不同通道参数不通用，
+                请重新填写并选择消息模板后再保存。
+              </p>
+            )}
             {renderConfigFields()}
 
-            {/* Message Template */}
+            {/* 消息模板：只选引用，文案在模板中心维护。旧形态是这里手填一段 config.message_template，
+                而发送侧从不读它（改了十遍也发不出去），并且自己列了 9 个变量 ——
+                其中 task_name/result_summary 属业务内容，按护栏不允许进通知 */}
             <div className="space-y-1.5">
               <Label>消息模板</Label>
-              <p className="text-xs text-muted-foreground">
-                自定义通知消息格式。留空使用默认格式。可用变量：
+              <Select
+                value={selectedKey && templateOf(selectedKey) ? selectedKey : (selectedKey || TEMPLATE_NONE)}
+                onValueChange={v => updateConfig('message_template_key', v === TEMPLATE_NONE ? '' : v)}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={TEMPLATE_NONE}>平台默认文案（不选模板）</SelectItem>
+                  {templateOptions.map(t => (
+                    <SelectItem key={t.code} value={t.code}>{t.name}</SelectItem>
+                  ))}
+                  {/* 引用已失效时保留一条只读顶位：不然下拉框只剩“默认”，用户以为是自已没选 */}
+                  {brokenReference && (
+                    <SelectItem value={selectedKey} disabled>
+                      {selectedTemplate?.name || '引用已失效'}（已下架或分类不符）
+                    </SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                文案在「系统配置 → 模板中心 → {KIND_LABELS[templateKind]}」维护；这里只选引用，改文案一处生效。
               </p>
-              <div className="flex flex-wrap gap-1 text-xs">
-                {['task_name', 'date', 'time', 'total', 'succeeded', 'failed', 'status', 'result_summary', 'report_link'].map(v => (
-                  <code key={v} className="var-code cursor-pointer"
-                    onClick={() => {
-                      const ta = document.getElementById('msg-template') as HTMLTextAreaElement;
-                      if (ta) {
-                        const start = ta.selectionStart;
-                        const end = ta.selectionEnd;
-                        const val = form.config.message_template || '';
-                        const newVal = val.slice(0, start) + `{{${v}}}` + val.slice(end);
-                        updateConfig('message_template', newVal);
-                      }
-                    }}
-                  >{'{{' + v + '}}'}</code>
-                ))}
-              </div>
-              <Textarea
-                id="msg-template"
-                value={form.config.message_template || ''}
-                onChange={e => updateConfig('message_template', e.target.value)}
-                placeholder={`📊 {{task_name}}\n📅 {{date}} {{time}}\n状态: {{status}}\n\n{{result_summary}}\n\n🔗 查看完整报告: {{report_link}`}
-                rows={5}
-                className="font-mono text-sm"
-              />
+              {!templateOptions.length && (
+                <p role="alert" className="text-xs text-destructive">
+                  当前分类下没有可用模板：先到模板中心新建再回来选（不选则按平台默认文案发送）。
+                </p>
+              )}
+              {form.config.message_template && (
+                <p role="alert" className="text-xs text-destructive">
+                  渠道里还留着旧的内联文案（message_template）：它已不再消费、不会发出去，本次保存会一并清掉，请把文案维护到模板中心。
+                </p>
+              )}
+              {brokenReference && (
+                <p role="alert" className="text-xs text-destructive">
+                  引用的模板已下架/删除或分类不符：发送会退回平台默认文案（执行日志与测试发送都会显式标注）。
+                </p>
+              )}
+              {selectedTemplate && (
+                // 所见即所得：不另写一套替换，直接取模板中心的原文（变量仍是字面量，发送时才展开）
+                <div className="rounded-md border bg-muted/30 p-2 space-y-1">
+                  <div className="text-xs font-medium">{selectedTemplate.name}</div>
+                  {selectedTemplate.subject && (
+                    <div className="text-xs text-muted-foreground">主题：{selectedTemplate.subject}</div>
+                  )}
+                  <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground">{selectedTemplate.content}</pre>
+                  <div className="text-[11px] text-muted-foreground">
+                    用到变量：{(selectedTemplate.variables || []).length
+                      ? (selectedTemplate.variables || []).map(v => `{{${v}}}`).join(' ')
+                      : '无（固定文案）'}
+                    {!!(selectedTemplate.unregistered_variables || []).length && (
+                      <span className="text-destructive">
+                        　发不出去（会原样留字面量）：{(selectedTemplate.unregistered_variables || []).join('、')}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex items-center gap-2">

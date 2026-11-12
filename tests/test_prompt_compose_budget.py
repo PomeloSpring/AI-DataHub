@@ -43,12 +43,16 @@ def _skill(name, *, display=None, desc="只做演示用", body=None, triggers=No
 # ── 工具清单段：只裁决可用性 ────────────────────────────────────────
 
 def test_tool_manifest_keeps_names_and_drops_descriptions():
-    """工具名必须逐个可见（可用性唯一权威），但描述不再重抄一遍。"""
-    desc = "列出当前工作空间的分析报表摘要（标题/格式/状态/浏览次数）。"
-    caps = _caps("mcp__datahub_functions__list_reports",
-                 descriptions={"mcp__datahub_functions__list_reports": desc})
+    """工具名必须逐个可见（可用性唯一权威），但描述不再重抄一遍。
+
+    用功能壳工具作样本（它是可直接调的 datahub_functions 工具；具体动作不列在
+    本清单，由 list_platform_functions 按需下发，见 test_function_ai_access.py 第 9 节）。
+    """
+    desc = "拉取【当前用户角色】可用的平台功能清单，含每个功能的参数与不可用原因。"
+    caps = _caps("mcp__datahub_functions__list_platform_functions",
+                 descriptions={"mcp__datahub_functions__list_platform_functions": desc})
     prompt = compose_system_prompt(None, [], username="u", user_role="viewer", capabilities=caps)
-    assert "mcp__datahub_functions__list_reports" in prompt
+    assert "mcp__datahub_functions__list_platform_functions" in prompt
     assert desc not in prompt
     assert "只裁决可用性" in prompt
 
@@ -114,7 +118,7 @@ def test_no_trigger_hit_expands_no_body_but_lists_skills():
 
 def test_body_count_is_capped():
     skills = [_skill(f"s{i}", body=f"剧本正文{i}", triggers=["命中"]) for i in range(4)]
-    loaded, _reasons = _select_skill_bodies(skills, _caps(), "命中一下")
+    loaded, _reasons, _missing = _select_skill_bodies(skills, _caps(), "命中一下")
     assert len(loaded) == MAX_SKILL_BODIES
 
 
@@ -255,7 +259,7 @@ def test_real_skill_triggers_cover_traffic_and_url_questions():
         "这个页面的访问量和上周比怎么样",
         "direct-ip 落地页 EDM 投放带来多少访问",
     ):
-        bodies, _reasons = _select_skill_bodies(loaded, caps, q)
+        bodies, _reasons, _missing = _select_skill_bodies(loaded, caps, q)
         names = {b["name"] for b in bodies}
         assert names & {"data-analysis", "arms-observability"}, f"流量/URL 类问句未展开任何分析剧本: {q}"
 
@@ -284,6 +288,13 @@ def test_shipped_skill_bodies_keep_traffic_prompt_within_guardrail():
     常驻段补「回答体量必须匹配问题」，三个剧本的「六、输出规范」补适用前提，
     24,040/22,500 -> 24,845/23,300，上限取 26,000。两次抬的都是行为收益换字数，
     不是瘦身失败——后续再涨必须先说明换来了什么行为。
+
+    基线漂移提醒（2026-11-05 实测，写在这里是为了不让下一个人误判归因）：上面 24,845/23,300
+    两个数字与当前实测（prod 同形 25,973 / 窄载荷 24,415）之间约 1,100 字符**不是**多源知识检索
+    这批吃掉的 —— 本批在 prod 同形上的净增只有 ~29 字符（知识库标签换成 provider 派生的归属词 +
+    「双路权威划分」补一句外部语料的裁决），其余通道语义写在工具描述里、不占本用例口径。
+    那 1,100 属未提交的「数据源黑盒 / 平台功能操作 / 技能互斥展开」三处常驻改写，需另一次拍板
+    核对其行为收益；在它被核对之前，本用例的上限保持 26,000，不得为了变绿而抬。
     """
     from backend.modules.mind.execution.as_bots import load_skills
 
@@ -292,7 +303,7 @@ def test_shipped_skill_bodies_keep_traffic_prompt_within_guardrail():
     question = "这个页面的访问量和上周比怎么样"
     prompt = compose_system_prompt(None, [], username="u", user_role="viewer",
                                    skills=skills, capabilities=caps, question=question)
-    loaded, _ = _select_skill_bodies(skills, caps, question)
+    loaded, _, _ = _select_skill_bodies(skills, caps, question)
     assert {s["name"] for s in loaded} == {"data-analysis", "arms-observability"}
     assert len(prompt) < 27_000, f"两个分析剧本同现时 system_prompt 回涨到 {len(prompt)} 字符"
 
@@ -310,6 +321,47 @@ def test_shipped_skill_bodies_keep_traffic_prompt_within_guardrail():
                                        site_code="global", authorized_sites=sites, question=question)
     assert "## 数据源拓扑" in prod_shape and "运营知识库" in prod_shape, "生产同形载荷未注入拓扑/知识库段"
     assert len(prod_shape) < 26_000, f"生产同形载荷（含拓扑与知识库）回涨到 {len(prod_shape)} 字符"
+
+    # 多源知识检索注入段必须真的在载荷里（写了但被条件分支吞掉 = 白付字数也白拍板）
+    assert "（平台同步语料）" in prod_shape, "知识库归属标注未按 provider 派生（措辞回潮或注入被吞）"
+    assert "标「外部只读语料」的库只作背景与资料事实" in prod_shape, "双路权威划分缺外部语料裁决"
+    # 机制语义归工具描述（每回合随工具定义下发），提示词不得重抄同一句
+    assert "并行检索全部已绑定" not in prod_shape, "知识库段重抄了工具描述里的扇出机制（同一文本每回合付两遍）"
+
+
+def test_multi_kb_prompt_shape_stays_within_guardrail():
+    """同时绑定多库（qmind + 百炼外部语料）的生产同形不得把知识库段写成作文。
+
+    知识库说明行**按绑定库数量重复**，所以每行只给归属名（“平台同步语料”/“外部只读语料”），
+    裁决判据写在「双路权威划分」里说一遍并按标签名引用 —— 否则每多绑一个库就多付一段解释。
+    未接入检索通道的类型也必须照列并写明原因（隐藏它会让提示词宣称可用而检索永远拿不到），
+    它按 ~40 字符/库计价：多绑未接入库前先想清楚是否真该绑。
+    """
+    from backend.modules.mind.execution.as_bots import load_skills
+
+    skills = list(load_skills(["data-analysis", "arms-observability", "report-delivery"]))
+    rich_caps = _caps(*[f"mcp__datahub_semantic__{n}" for n in (
+        "run_semantic_query", "get_metrics", "knowledge_search", "get_glossary", "list_datasources",
+        "search_business_knowledge", "get_business_semantics", "ask_user", "create_report",
+        "search_metadata", "get_table_schema", "system_usage", "system_overview")])
+    question = "这个页面的访问量和上周比怎么样"
+    kbs = [{"name": "运营知识库", "kb_type": "qmind"}, {"name": "产品手册", "kb_type": "cloud_rag"}]
+    shape = compose_system_prompt(None, [], username="u", user_role="operator",
+                                  knowledge_bases=kbs, skills=skills, capabilities=rich_caps,
+                                  quick_paths=[], site_code="", question=question)
+    assert "（外部只读语料）" in shape, "外部语料没被标注归属（模型会拿它当口径权威）"
+    assert len(shape) < 26_000, f"两库同绑的生产同形回涨到 {len(shape)} 字符"
+    # 每多一个已接入库的增量必须是个位数级（标签写法漂移会先在这里暴露）
+    single = compose_system_prompt(None, [], username="u", user_role="operator",
+                                   knowledge_bases=kbs[:1], skills=skills, capabilities=rich_caps,
+                                   quick_paths=[], site_code="", question=question)
+    assert len(shape) - len(single) <= 20, f"第二个库多付 {len(shape) - len(single)} 字符（标签被写成了句子）"
+    # 未接入类型不得被静默摘掉（否则用户以为库没了）
+    with_local = compose_system_prompt(None, [], username="u", user_role="operator",
+                                       knowledge_bases=kbs + [{"name": "本地库", "kb_type": "local"}],
+                                       skills=skills, capabilities=rich_caps, quick_paths=[],
+                                       site_code="", question=question)
+    assert "本地库" in with_local and "本批未接入" in with_local, "未接入检索通道的库被从提示词里抹掉了"
 
 
 def test_shipped_time_window_directive_matches_implementation():

@@ -99,6 +99,11 @@ def list_perm_registry(user: dict = Depends(get_current_user)):
     - 每个权限点附 api_pattern/api_method 只读字段(接口→权限码绑定由注册表维护, 角色侧不可编辑)
     - 每个权限点附 AI 能力字段: ai_access(配置级别)/ai_effective(生效级别)/
       ai_locked(涉密硬上界)/ai_action_key(登记了才生成 LLM 功能工具)/ai_note(原因)
+    - ai_channel(接入通道): function_action=已登记功能工具 / perm_gate=执行期按权限码
+      直执行把关 / none=**没有任何消费方**。三者必须分开显示: 历史缺陷是把
+      perm_gate 也标成「未接 AI」(误导管理员去改本来生效的配置), 以及让 none 的下拉框
+      看起来能开通能力(空承诺)。角色级开关就是勾选框本身: 收回权限码 →
+      perm_link.resolve_function_actions 对该码下所有动作回 denied 并带可读原因。
     """
     rows = execute_query(
         "SELECT perm_code, label, module, module_label, description, menu_key, sort, "
@@ -120,12 +125,14 @@ def list_perm_registry(user: dict = Depends(get_current_user)):
         configured = r.get("ai_access") or "none"
         effective = perm_link.cap_level(code, configured)
         locked = code in perm_link.SECRET_BOUND_NONE_PERMS or code in perm_link.SECRET_BOUND_READ_ONLY_PERMS
+        action_key = r.get("ai_action_key") or ""
         return {
             "perm_code": code, "label": r["label"],
             "description": r.get("description") or "", "menu_key": r.get("menu_key") or "",
             "api_pattern": r.get("api_pattern") or "", "api_method": r.get("api_method") or "*",
             "ai_access": configured, "ai_effective": effective, "ai_locked": bool(locked),
-            "ai_action_key": r.get("ai_action_key") or "", "ai_note": r.get("ai_note") or "",
+            "ai_action_key": action_key, "ai_note": r.get("ai_note") or "",
+            "ai_channel": perm_link.ai_channel(code, action_key),
         }
 
     grouped: dict[str, dict] = {}
@@ -148,7 +155,9 @@ def list_perm_registry(user: dict = Depends(get_current_user)):
         })
         mg["permissions"].append(_item(r))
 
-    module_order = {"system": 0, "data": 1, "workspace": 2}
+    # 模块排序口径跟一级模块清单（SectionSwitcher）一致：新模块登记进来就排到对应位置，
+    # 未登记的落到最后但不丢（前端同样按返回的 module 全集渲染，不得再写死枚举）。
+    module_order = {"system": 0, "data": 1, "workspace": 2, "content": 3}
     menu_groups = sorted(
         by_menu.values(),
         key=lambda g: (module_order.get(g["module"], 99), g["sort"], g["label"]),
@@ -177,7 +186,7 @@ def set_perm_ai_access(perm_code: str, body: SetAiAccessRequest,
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    rows = execute_query("SELECT perm_code, label FROM adh_perm_registry WHERE perm_code=%s",
+    rows = execute_query("SELECT perm_code, label, ai_action_key FROM adh_perm_registry WHERE perm_code=%s",
                          (perm_code,)) or []
     if not rows:
         raise HTTPException(status_code=404, detail=f"权限点「{perm_code}」不存在")
@@ -204,8 +213,10 @@ def set_perm_ai_access(perm_code: str, body: SetAiAccessRequest,
         current_note = note
     # ai_access 决定角色权限码→ AS-BOT 工具继承，变更后必须失效已缓存的权限码集
     _invalidate_as_bot_config(f"set_perm_ai_access {perm_code}={level}")
+    # 回通道类型: 前端据此当场告知“这个级别有没有消费方”，不得让人以为存下就生效
     return {"perm_code": perm_code, "label": label, "ai_access": level,
-            "ai_effective": effective, "ai_note": current_note}
+            "ai_effective": effective, "ai_note": current_note,
+            "ai_channel": perm_link.ai_channel(perm_code, rows[0].get("ai_action_key") or "")}
 
 
 @router.get("/current/permissions")

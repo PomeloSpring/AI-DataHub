@@ -2,13 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Edit, Maximize, Minimize, SlidersHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { FittedDashboardCanvas } from '@/components/DashboardCanvas';
+import { ResponsiveDashboardCanvas } from '@/components/DashboardCanvas';
 import { DashboardRuntimeParams } from '@/components/DashboardParams';
+import { uncontrolledParams } from '@/lib/dashboardParamAssembly';
 import { useAuthStore } from '@/stores/authStore';
 import { useDashboardStore } from '@/stores/dashboardStore';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
 import { useCancelChartRefreshOnLeave } from '@/hooks/useCancelChartRefreshOnLeave';
 import { isEditingTarget } from '@/lib/dashboardDesign';
+import { cn } from '@/lib/utils';
+import { transitionClass } from '@/lib/motion';
+import { boardMotionRef, useMotion } from '@/hooks/useMotion';
 import DashboardAutoRefresh from '@/components/DashboardAutoRefresh';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import { useDashboardFullscreen } from '@/hooks/useDashboardFullscreen';
@@ -69,6 +73,12 @@ function ScreenPlayer() {
   const [detail, setDetail] = useState<any>(null);
   const detailRef = useRef<any>(null); detailRef.current = detail;
   const [detailLoading, setDetailLoading] = useState(false);
+  // 切板转场：板上挂载的动效预设 > 个人偏好 > 默认档（默认 transition=none，硬切如旧）
+  const { motion, cssVars: motionCss, reason: motionReason } = useMotion({ board: boardMotionRef(detail?.filters) });
+  const transition = transitionClass(motion.transition);
+  // 转场不短于轮播间隔时下一块板会打断转场 —— 显式提醒，不静默截断（护栏：不做降级掩盖）
+  const transitionClash = interval > 0 && motion.transition.effect !== 'none'
+    && motion.transition.durationMs >= interval * 1000;
   // 退出大屏播放即终止未完成的图表查询，避免连接被占导致其他功能一直 pending
   useCancelChartRefreshOnLeave();
   useEffect(() => {
@@ -138,11 +148,25 @@ function ScreenPlayer() {
         <DropdownMenuItem onClick={() => setPaused(v => !v)}>{paused ? '恢复轮播' : '暂停轮播'}</DropdownMenuItem>
         {enabled.length > 1 && <><DropdownMenuItem onClick={() => go(-1)}>上一看板</DropdownMenuItem><DropdownMenuItem onClick={() => go(1)}>下一看板</DropdownMenuItem></>}
       </>} />
-      {!!(detail.params?.length || detail.page_params?.length) && <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon" variant="ghost" title="筛选条件" aria-label="筛选条件"><SlidersHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-80"><DashboardRuntimeParams dashboard={detail} /></DropdownMenuContent></DropdownMenu>}
+      {!!uncontrolledParams(detail, detail.charts || []).length && <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon" variant="ghost" title="筛选条件" aria-label="筛选条件"><SlidersHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-80"><DashboardRuntimeParams dashboard={detail} /></DropdownMenuContent></DropdownMenu>}
       <Button size="icon" variant="ghost" title="全屏" aria-label="切换全屏播放" onClick={toggleFullscreen}>{fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}</Button>
       {!fromWorkspace && (user?.role === 'admin' || user?.id === detail.owner_id) && <Button size="icon" variant="ghost" aria-label="编辑外观与数据" title="编辑外观与数据" onClick={() => navigate(`/dashboard/editor/${detail.id}`, { state: { from: location.pathname + location.search } })}><Edit className="h-4 w-4" /></Button>}
     </header>
     {library.error && <div role="alert" className="px-4 text-xs">{library.error}<Button variant="link" onClick={library.refresh}>重试</Button></div>}
-    <div className="relative min-h-0 flex-1"><FittedDashboardCanvas key={detail.id} dashboard={detail} items={library.items} /></div>
+    {/* 动效预设失效（下架/禁用/系统减少动效）要说在明处：不能让用户以为"挂了没反应" */}
+    {motionReason && <p role="status" className="px-4 py-1 text-xs text-muted-foreground">{motionReason}</p>}
+    {/* 大屏播放走与阅读页同一套响应式页面网格：按视口宽度铺满、超出部分纵向滚动。
+        旧做法是把像素画布 contain-fit 进一屏：高看板被高度卡住缩放比，整块只占屏宽一半多，
+        字模与坐标轴标签跟着缩到不可读（用户反馈“大屏播放限制了页面的一半区域”）。
+        断点不写死：由容器实际宽度分档（≥1920 落大屏 64 列，否则桌面/平板），拼接屏与笔记本预览各自适配。 */}
+    {transitionClash && <p role="alert" className="px-4 py-1 text-xs text-amber-600 dark:text-amber-400">
+      切板转场 {motion.transition.durationMs}ms 不短于轮播间隔 {interval}s，转场会被下一块看板打断：
+      请在「编辑外观与数据 → 动效」缩短转场时长，或拉长轮播间隔。
+    </p>}
+    {/* key 挂在被动画的容器上：换一块板 = 该层重挂载一次，转场才会重播；
+        数据刷新/参数变更不会重挂载，因此也不会重播（入场只属于"出现"这一刻） */}
+    <div key={detail.id} className={cn('relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden', transition)} style={motionCss}>
+      <ResponsiveDashboardCanvas dashboard={detail} items={library.items} />
+    </div>
   </div>;
 }

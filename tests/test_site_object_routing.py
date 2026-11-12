@@ -173,6 +173,84 @@ class TestResolveSiteWithObject:
         assert str(ARMS_CN) not in msg
 
 
+class TestSQLTableHintDisambiguation:
+    """nl2sql 旁路只有 site、没有 object 上下文：用 SQL 里已有的名字反查部署事实定源。
+
+    历史缺陷（会话 1783069459277）：同一个中国站下既挂业务库（prd-cn/mysql）又挂
+    观测源（arms-prd-cn/sls）。`execute_sql` 拿不到对象上下文时只能走
+    `business_route_target`（该函数**故意**排除观测源），于是问 RUM 观测数据被定到
+    MySQL 库 → SLS 方言的 SQL 报 1064；而错错被当成“数据源连接失败”报给用户。
+    口径：只认唯一命中（物理表名走绑定行，对象 key 走部署事实），多义/零命中回到
+    原有链路与 fail-loud，绝不猜。
+    """
+
+    def _cn(self, monkeypatch, rows):
+        monkeypatch.setattr(site_service, "normalize_site_ref", lambda s: s)
+        monkeypatch.setattr(site_service, "get_site",
+                            lambda code: {"site_code": code, "display_name": "中国站点",
+                                          "is_aggregate": 0})
+        monkeypatch.setattr(site_service, "list_sites", lambda include_aggregate=True: [])
+        monkeypatch.setattr(site_service, "datasources_of_site", lambda code, allowed: [
+            {"id": PRD_CN, "name": "prd-cn", "db_type": "mysql", "is_default": 1},
+            {"id": ARMS_CN, "name": "arms-prd-cn", "db_type": "sls", "is_default": 0},
+        ])
+        monkeypatch.setattr(site_service, "site_of_model_target", lambda mid, code: "")
+        monkeypatch.setattr(site_service, "datasource_name_id_map", lambda: {})
+        _patch_bindings(monkeypatch, rows)
+
+    _RUM_BOUND = [{"model_id": 7001, "object_key": "rum_event", "datasource_id": ARMS_CN,
+                  "is_active": 1,
+                  "execution_binding": '{"physical_table": "logstore-rum"}'}]
+
+    def test_object_key_written_as_table_routes_to_observation_source(self, monkeypatch):
+        """模型把对象名当表名写（FROM "rum_event"）：按对象部署事实定到观测源。"""
+        self._cn(monkeypatch, _rum_rows())
+        got = site_service.resolve_site_to_source(
+            "cn", [PRD_CN, ARMS_CN], table_hint="rum_event")
+        assert got == ARMS_CN
+
+    def test_physical_table_name_routes_via_binding_row(self, monkeypatch):
+        """写物理表名（logstore-rum）：绑定行就在哪个源就定哪个源，不是猜。"""
+        self._cn(monkeypatch, self._RUM_BOUND)
+        assert site_service.source_for_physical_table(
+            "`logstore-rum`", [PRD_CN, ARMS_CN]) == {ARMS_CN}
+        got = site_service.resolve_site_to_source(
+            "cn", [PRD_CN, ARMS_CN], table_hint="db.logstore-rum")
+        assert got == ARMS_CN
+
+    def test_ambiguous_table_is_not_guessed(self, monkeypatch):
+        """同名表在两个授权源上都有绑定 = 多义 → 不选，回到 fail-loud（宁缺勿错）。"""
+        self._cn(monkeypatch, [
+            {"model_id": 7001, "object_key": "rum_event", "datasource_id": ARMS_CN,
+             "is_active": 1, "execution_binding": '{"physical_table": "logstore-rum"}'},
+            {"model_id": 7002, "object_key": "orders_mirror", "datasource_id": PRD_CN,
+             "is_active": 1, "execution_binding": '{"physical_table": "logstore-rum"}'},
+        ])
+        monkeypatch.setattr(site_service, "business_route_target", lambda code, ids: "")
+        assert site_service.source_for_physical_table(
+            "logstore-rum", [PRD_CN, ARMS_CN]) == {PRD_CN, ARMS_CN}
+        with pytest.raises(site_service.SiteError):
+            site_service.resolve_site_to_source("cn", [PRD_CN, ARMS_CN],
+                                               table_hint="logstore-rum")
+
+    def test_unknown_table_keeps_old_behaviour(self, monkeypatch):
+        """零命中：完全回到旧链路（本站默认业务库），存量问数行为零变化。"""
+        self._cn(monkeypatch, _rum_rows())
+        monkeypatch.setattr(site_service, "business_route_target",
+                            lambda code, ids: "prd-cn")
+        assert site_service.resolve_site_to_source(
+            "cn", [PRD_CN, ARMS_CN], table_hint="orders") == PRD_CN
+
+    def test_hint_error_text_has_no_internal_id(self, monkeypatch):
+        """护栏 §7：因 table_hint 走到 fail-loud 时，文案只能出现业务名。"""
+        self._cn(monkeypatch, [])
+        monkeypatch.setattr(site_service, "business_route_target", lambda code, ids: "")
+        with pytest.raises(site_service.SiteError) as e:
+            site_service.resolve_site_to_source("cn", [PRD_CN, ARMS_CN],
+                                               table_hint="whatever")
+        assert str(ARMS_CN) not in str(e.value)
+
+
 class TestToolWiring:
     """`run_semantic_query`/`execute_sql` 的 site 解析必须把 intent 的 object 传下去。"""
 
@@ -180,7 +258,7 @@ class TestToolWiring:
         from backend.modules.mind.execution.sdk_tools import query_tools
         seen = {}
 
-        def _fake(site, allowed, model_id=0, object_key=""):
+        def _fake(site, allowed, model_id=0, object_key="", table_hint=""):
             seen["site"], seen["object_key"] = site, object_key
             return ARMS_CN
         monkeypatch.setattr(site_service, "resolve_site_to_source", _fake)
@@ -195,7 +273,7 @@ class TestToolWiring:
         from backend.modules.mind.execution.sdk_tools import query_tools
         seen = {}
 
-        def _fake(site, allowed, model_id=0, object_key=""):
+        def _fake(site, allowed, model_id=0, object_key="", table_hint=""):
             seen["object_key"] = object_key
             return PRD_CN
         monkeypatch.setattr(site_service, "resolve_site_to_source", _fake)
@@ -203,6 +281,67 @@ class TestToolWiring:
                               extra={"available_datasource_ids": [PRD_CN]})
         assert query_tools._resolve_datasource_arg({"site": "cn"}, ctx) == PRD_CN
         assert seen["object_key"] == ""
+
+    def test_resolve_datasource_arg_forwards_table_hint(self, monkeypatch):
+        """nl2sql 旁路的消歧输入必须是 SQL 里的表名（历史缺陷：会话 1783069459277）。
+
+        本站同时挂业务库（MySQL）与观测源（SLS）时，不带表名反查绑定行就会被
+        「本站默认业务库」启发式抢走，SLS 方言的 SQL 打到 MySQL 上报 1064。
+        """
+        from backend.modules.mind.execution.sdk_tools import query_tools
+        seen = {}
+
+        # 先钉住抽取口径：取 FROM/JOIN 后的第一个名字（带引号/限定名归 site_service 负责）
+        assert query_tools._sql_table_hint('SELECT 1 FROM "rum_event" LIMIT 10') == "rum_event"
+        assert site_service._norm_table_ref(
+            query_tools._sql_table_hint("SELECT 1 FROM prd_cn.`logstore-rum`")) == "logstore-rum"
+        assert query_tools._sql_table_hint("SELECT 1") == ""
+
+        def _fake(site, allowed, model_id=0, object_key="", table_hint=""):
+            seen["table_hint"] = table_hint
+            return ARMS_CN
+        monkeypatch.setattr(site_service, "resolve_site_to_source", _fake)
+        ctx = SimpleNamespace(model_id=0, datasource_id=0,
+                              extra={"available_datasource_ids": [PRD_CN, ARMS_CN]})
+        got = query_tools._resolve_datasource_arg(
+            {"site": "cn"}, ctx, query_tools._sql_table_hint('SELECT 1 FROM "rum_event" LIMIT 10'))
+        assert got == ARMS_CN and seen == {"table_hint": "rum_event"}
+        # 未带 table_hint（语义路等有 object 上下文的入口）行为零变化
+        seen.clear()
+        query_tools._resolve_datasource_arg({"site": "cn"}, ctx)
+        assert seen == {"table_hint": ""}
+
+    def test_fanout_passes_table_hint_per_site(self, monkeypatch):
+        """多站扇出（sites/datasources）与单发同口径：每个站点解析都带 SQL 表名。
+
+        漏了这一条时，「逐站各查一次」的问数仍会把 SLS 方言 SQL 定到各站业务库，
+        与单发路径出现两种行为（同一缺陷只在半数问数里修掉）。
+        """
+        import asyncio
+        import json
+
+        from backend.modules.mind.execution.sdk_tools import context as ctxmod
+        from backend.modules.mind.execution.models import ExecutionContext
+        from backend.modules.mind.execution.sdk_tools import query_tools as qt
+
+        seen = []
+
+        def _fake(site, allowed, model_id=0, object_key="", table_hint=""):
+            seen.append((site, table_hint))
+            raise ValueError("停在这里：本用例只验消歧输入，不执行取数")
+        monkeypatch.setattr(site_service, "resolve_site_to_source", _fake)
+        token = ctxmod.set_execution_context(ExecutionContext(
+            user_id=1, username="u", user_role="admin", workspace_id=7,
+            datasource_id=0, extra={"available_datasource_ids": [PRD_CN, ARMS_CN]}))
+        try:
+            out = asyncio.run(qt.execute_sql({
+                "sql": 'SELECT COUNT(*) FROM "rum_event" LIMIT 10', "sites": ["cn", "int"]}))
+        finally:
+            ctxmod.ExecutionContextVar.reset(token)
+        assert [s for s, _ in seen] == ["cn", "int"], seen
+        assert all(h == "rum_event" for _, h in seen), seen
+        payload = json.loads(out["content"][0]["text"])
+        assert payload.get("error"), "解析全部失败必须显式报错，不得静默出空结果"
 
 
 class TestBindingWarningsNoPhysicalLeak:

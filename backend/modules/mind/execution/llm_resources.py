@@ -39,7 +39,10 @@ def list_system_llm_models() -> list[dict]:
     try:
         rows = execute_query(
             "SELECT id, name, provider, base_url, api_key, model_name, is_default "
-            "FROM adh_llm_models WHERE is_active=1 ORDER BY is_default DESC, name"
+            # 与模型中心同口径按能力序排（1=最强）：执行层/AS-BOT 的模型候选直接拿这个
+            # 顺序，名称字典序会把「最省」排在「旗舰」前面；默认项不置顶（不打断能力序）。
+            "FROM adh_llm_models WHERE is_active=1 "
+            "ORDER BY capability_rank ASC, name"
         )
     except Exception as e:
         logger.warning("List system LLM models failed: %s", e)

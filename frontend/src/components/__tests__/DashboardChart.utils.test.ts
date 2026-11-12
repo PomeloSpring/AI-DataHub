@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createElement, useEffect } from 'react'
-import { act, cleanup, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import * as G2 from '@antv/g2'
 import postcss from 'postcss'
 import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { normalizeRows } from '../../lib/chartBlocks'
 import { applyTheme, IS_DARK, useThemeStore, type ThemeId } from '../../stores/themeStore'
+import { useDashboardStore } from '../../stores/dashboardStore'
 import DashboardChart, {
   detectGroupColumn,
   isTimeColumn,
@@ -12,6 +15,7 @@ import DashboardChart, {
   aggregateTimeData,
   groupDataByColumn,
   buildG2Spec,
+  type ChartPaging,
 } from '../DashboardChart'
 
 // ============================================================
@@ -366,14 +370,85 @@ describe('buildG2Spec', () => {
     expect(spec.data[0]).toHaveProperty('end')
   })
 
+  // 桑基图历史缺陷：节点写成 {name}，而 G2 的 sankey 默认 nodeId = d => d.key 索引节点，
+  // d3-sankey 找不到节点直接抛 “missing: A”，错误只进 console → 整幅空白（用户看到“我的图呢”）。
+  const sankeyCols = ['source', 'target', 'value'];
+  const sankeyRows = [
+    { source: 'A', target: 'B', value: 10 },
+    { source: 'A', target: 'C', value: 20 },
+  ];
+
+  /** 把 spec 的 sankey 子 mark 喂给 G2 自己的布局函数（包 exports 把 ./lib/* 映射到 ./lib/*.js，
+   *  所以 require 路径不能带 .js 后缀）。节点缺 key 时这里直接抛 “missing: xxx”。 */
+  const layOutSankey = (spec: any) => {
+    const req = createRequire(import.meta.url);
+    const { initializeData } = req('@antv/g2/lib/mark/utils');
+    const { Sankey } = req('@antv/g2/lib/data/sankey');
+    const child = spec.children[0];
+    return Sankey({ nodeId: (d: any) => d.key, nodeWidth: 0.02, nodePadding: 0.02 })(
+      initializeData(child.data, child.encode),
+    );
+  };
+
   it('builds sankey chart spec', () => {
-    const sankeyRows = [
-      { source: 'A', target: 'B', value: 10 },
-      { source: 'A', target: 'C', value: 20 },
-    ]
-    const spec = buildG2Spec('sankey', ['source', 'target', 'value'], sankeyRows, {}, false, 400, 300)
+    const spec = buildG2Spec('sankey', sankeyCols, sankeyRows, {}, false, 400, 300)
     expect(spec.type).toBe('view')
     expect(spec.children[0].type).toBe('sankey')
+    // data 必须是边数组：G2 5.4 的 sankey 拿 {nodes, links} 对象时整幅静默不画（无报错无告警），
+    // 节点由它按边端点自己派生（浏览器实测：对象 0 彩色像素 / 数组 35 万）。
+    expect(Array.isArray(spec.children[0].data)).toBe(true)
+    expect(spec.children[0].data).toEqual([
+      { source: 'A', target: 'B', value: 10 },
+      { source: 'A', target: 'C', value: 20 },
+    ])
+    expect(spec.children[0].encode.value).toEqual('value')
+    // 带子按源节点取色：不写 linkColor 时 G2 把所有边刷成 #aaa@50%（浅底上就是一片 212 灰），
+    // 多条边糊在一起看不出谁到谁。必须传返回字符串的函数（传字段名会拿到节点对象而报错）。
+    const linkColor = spec.children[0].encode.linkColor
+    expect(typeof linkColor).toBe('function')
+    expect(linkColor({ source: { key: 'A' }, target: { key: 'B' } })).toBe('A')
+    expect(linkColor({ source: 'A', target: 'B' })).toBe('A')
+  })
+
+  it('桑基 spec 必须能被 G2 的 sankey 布局吃下（算得出节点与 ribbon 几何）', () => {
+    const laid = layOutSankey(buildG2Spec('sankey', sankeyCols, sankeyRows, {}, false, 400, 300) as any)
+    expect(laid.nodes).toHaveLength(3)
+    expect(laid.links[0].x).toHaveLength(4)
+    expect(Number.isFinite(laid.links[0].x[0])).toBe(true)
+  })
+
+  // 真实会话载荷（adh_conversation_messages 1783069459145）：```chart 块用「数组的数组」行，
+  // 归一化后只剩一条边 —— 单条边也必须算得出几何（历史缺陷：节点缺 key 时抛 missing → 整幅空白）。
+  it('```chart 块的数组行归一化后，单条边的桑基照样画得出', () => {
+    const columns = ['源', '目标', '流量'];
+    const rows = normalizeRows(columns, [['外部链接进入（/en/direct-ip?channel=EDMCA）', '/en/direct-ip', 20]]);
+    const spec: any = buildG2Spec('sankey', columns, rows, { xCol: '源', yCol: '流量' }, false, 800, 400);
+    expect(spec.children[0].data).toEqual([
+      { source: '外部链接进入（/en/direct-ip?channel=EDMCA）', target: '/en/direct-ip', value: 20 },
+    ]);
+    const laid = layOutSankey(spec);
+    expect(laid.nodes).toHaveLength(2);
+    expect(laid.links).toHaveLength(1);
+    expect(laid.links[0].x.every(Number.isFinite)).toBe(true);
+  })
+
+  it('桑基按 X=源 / 分组=目标 / Y=数值 取列（选择框只有通用 X/Y/分组）', () => {
+    const rows = [
+      { 源: '首页', 去向: '详情页', 流量: 5 },
+      { 源: '首页', 去向: '活动页', 流量: 7 },
+    ];
+    const spec: any = buildG2Spec('sankey', ['源', '去向', '流量'], rows,
+      { xCol: '源', yCol: '流量' }, false, 400, 300);
+    expect(spec.children[0].data).toEqual([
+      { source: '首页', target: '详情页', value: 5 },
+      { source: '首页', target: '活动页', value: 7 },
+    ]);
+  })
+
+  it('只有一个文本列（没有目标列）时显式报错，不画“节点名叫数字”的假图', () => {
+    const rows = [{ 源: '首页', 流量: 5 }];
+    expect(() => buildG2Spec('sankey', ['源', '流量'], rows,
+      { xCol: '源', yCol: '流量' }, false, 400, 300)).toThrow(/目标/);
   })
 
   it('builds heatmap chart spec', () => {
@@ -411,8 +486,10 @@ describe('buildG2Spec', () => {
     ]
     const spec = buildG2Spec('big_number_trend', ['month', 'value'], trendRows, {}, false, 400, 300)
     expect(spec.type).toBe('view')
-    // Should have total (330) and trend
-    expect(spec.children[0].style.text).toContain('330')
+    // 趋势线先画、文字后画（折线压在数值上会糊），数值 330 与涨幅各占一个 text 子节点
+    expect(spec.children[0].type).toBe('line')
+    const texts = spec.children.filter((c: any) => c.type === 'text').map((c: any) => c.style.text).join(' ')
+    expect(texts).toContain('330')
   })
 
   it('builds rose chart spec', () => {
@@ -659,5 +736,255 @@ describe('表值图渲染消费字模', () => {
     expect((container.querySelector('thead tr') as HTMLElement).style.height).toBe('')
     const body = container.querySelectorAll<HTMLElement>('tbody tr')
     expect(body[1].style.background).not.toContain('rgb(250, 251, 252)')
+  })
+})
+
+// 历史缺陷（2026-11-11 收口）：表值图把全量拉进前端再 slice，
+// “共 100 行”挂在 446 万行的明细表上 —— 那是伪分页。
+// 现口径：分页事实（page_size/page_num/total/can_jump）由服务端随取数结果回传，
+// 前端只渲染服务端给的这一页，翻页就是一次带页参的取数。
+describe('表值图服务端真分页', () => {
+  const paged = (from: number, n: number) => ({
+    columns: ['case_id', 'site'],
+    rows: Array.from({ length: n }, (_, i) => ({ case_id: `C${from + i}`, site: 'SH' })),
+  })
+  const at = (over: Partial<{ total: number; paging: ChartPaging; truncated: boolean }>) => ({ ...paged(1, 20), ...over })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('回显 paging 时总数用服务端 total，不拿本页行数冒充全量', () => {
+    const { container } = render(createElement(DashboardChart, {
+      chartType: 'table_value', config: { pageSize: 20 }, chartId: 1,
+      data: at({
+        total: 4460000,
+        paging: { mode: 'offset', page_size: 20, page_num: 1, total: 4460000, can_jump: true },
+      }),
+    }))
+    // 服务端只给了 20 行，前端就只渲染 20 行（旧实现会先拉满再 slice）
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(20)
+    expect(screen.getByText(`共 4460000 行 · 第 1/${Math.ceil(4460000 / 20)} 页`)).toBeInTheDocument()
+  })
+
+  it('页大小以服务端回显为准：配置残留旧的大页不会把行错位', () => {
+    const { container } = render(createElement(DashboardChart, {
+      chartType: 'table_value', config: { pageSize: 50 }, chartId: 1,
+      data: at({
+        total: 1000,
+        // 服务端把请求的 50 行页收到 20（存量配置/越界请求），回显才是真相
+        paging: { mode: 'offset', page_size: 20, page_num: 3, total: 1000, can_jump: true },
+      }),
+    }))
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(20)
+    expect(screen.getByText('共 1000 行 · 第 3/50 页')).toBeInTheDocument()
+  })
+
+  it('翻页 = 带 page_size/page_num 重新取数（前端不递 offset）', () => {
+    const refresh = vi.spyOn(useDashboardStore.getState(), 'refreshSingleChart').mockResolvedValue(true)
+    render(createElement(DashboardChart, {
+      chartType: 'table_value', chartName: 'CASE 明细', dashboardId: 3, chartId: 7, config: { pageSize: 20 },
+      data: at({
+        total: 60,
+        paging: { mode: 'offset', page_size: 20, page_num: 1, total: 60, can_jump: true },
+      }),
+    }))
+    fireEvent.click(screen.getByTitle('下一页'))
+    expect(refresh).toHaveBeenCalledWith(7, { dashboardId: 3, chartName: 'CASE 明细', page_size: 20, page_num: 2 })
+    const sent = refresh.mock.calls[0][1] as Record<string, unknown>
+    expect(Object.keys(sent).sort()).toEqual(['chartName', 'dashboardId', 'page_num', 'page_size'])
+  })
+
+  it('SQL 通道（can_jump）给页码按钮，点第 3 页直接跳', () => {
+    const refresh = vi.spyOn(useDashboardStore.getState(), 'refreshSingleChart').mockResolvedValue(true)
+    render(createElement(DashboardChart, {
+      chartType: 'table_value', dashboardId: 3, chartId: 7, config: { pageSize: 20 },
+      data: at({
+        total: 60,
+        paging: { mode: 'offset', page_size: 20, page_num: 1, total: 60, can_jump: true },
+      }),
+    }))
+    fireEvent.click(screen.getByRole('button', { name: '3' }))
+    expect(refresh).toHaveBeenCalledWith(7, expect.objectContaining({ page_num: 3 }))
+  })
+
+  it('ES 游标通道（can_jump=false）不给页码，只给逐页往后翻', () => {
+    render(createElement(DashboardChart, {
+      chartType: 'table_value', dashboardId: 3, chartId: 7, config: { pageSize: 20 },
+      data: at({
+        total: 4460000,
+        paging: { mode: 'cursor', page_size: 20, page_num: 2, total: 4460000, can_jump: false },
+      }),
+    }))
+    // 跳页会被服务端拒（无 PIT，游标不连续）—— 给个点了必报错的按钮是空承诺
+    expect(screen.queryByRole('button', { name: '3' })).toBeNull()
+    expect(screen.getByTitle('该通道按游标顺序翻页，需逐页往后翻（不可直接跳页）')).toBeInTheDocument()
+    expect(screen.getByText(`共 4460000 行 · 第 2/${Math.ceil(4460000 / 20)} 页`)).toBeInTheDocument()
+  })
+
+  it('服务端真分页时分页条不得被 enablePagination=false 关掉', () => {
+    render(createElement(DashboardChart, {
+      chartType: 'table_value', chartId: 7, config: { pageSize: 20, enablePagination: false },
+      data: at({
+        total: 4460000,
+        paging: { mode: 'offset', page_size: 20, page_num: 1, total: 4460000, can_jump: true },
+      }),
+    }))
+    // 关掉分页条 = 用户只看得首页且不知道后面还有多少页
+    expect(screen.getByText(`共 4460000 行 · 第 1/${Math.ceil(4460000 / 20)} 页`)).toBeInTheDocument()
+    expect(screen.getByTitle('下一页')).toBeInTheDocument()
+  })
+
+  it('行序不确定（正文无 ORDER BY）：显式说“翻页可能重行/漏行”', () => {
+    render(createElement(DashboardChart, {
+      chartType: 'table_value', chartId: 7, config: { pageSize: 20 },
+      data: at({
+        total: 5000,
+        paging: { mode: 'offset', page_size: 20, page_num: 2, total: 5000, can_jump: true,
+          stable_order: false },
+      }),
+    }))
+    // 分页参数没错，错在集合本身没有可翻的顺序：不给提醒用户只会拿到两张一样的页
+    expect(screen.getByRole('alert')).toHaveTextContent('翻页可能重复或漏行')
+  })
+
+  it('行序确定时不弹排序提醒（已写 ORDER BY 的数据集不该被打扰）', () => {
+    render(createElement(DashboardChart, {
+      chartType: 'table_value', chartId: 7, config: { pageSize: 20 },
+      data: at({
+        total: 5000,
+        paging: { mode: 'cursor', page_size: 20, page_num: 2, total: 5000, can_jump: false,
+          stable_order: true },
+      }),
+    }))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('未开分页且行数撞上限：显式说“已达上限”，不拿“共 N 行”冒充整张表', () => {
+    const big = { columns: ['case_id'], rows: Array.from({ length: 1000 }, (_, i) => ({ case_id: i })), truncated: true }
+    render(createElement(DashboardChart, { chartType: 'table_value', chartId: 7, config: {}, data: big }))
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('已达单次返回行数上限')
+    expect(alert).toHaveTextContent('支持分页')
+  })
+
+  it('旧缓存没带分页事实：挂载即补一次首页取数（自愈）', () => {
+    const refresh = vi.spyOn(useDashboardStore.getState(), 'refreshSingleChart').mockResolvedValue(true)
+    render(createElement(DashboardChart, {
+      chartType: 'table_value', chartId: 9, dashboardId: 2, chartName: 'x', config: {}, data: paged(1, 20),
+    }))
+    expect(refresh).toHaveBeenCalledWith(9, expect.objectContaining({ page_size: 20, page_num: 1 }))
+  })
+
+  it('已带分页事实时挂载不再补查（不是每张图进看板都重查）', () => {
+    const refresh = vi.spyOn(useDashboardStore.getState(), 'refreshSingleChart').mockResolvedValue(true)
+    render(createElement(DashboardChart, {
+      chartType: 'table_value', chartId: 9, dashboardId: 2, config: {},
+      data: at({ total: 20, paging: { mode: 'offset', page_size: 20, page_num: 1, total: 20, can_jump: true } }),
+    }))
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
+  it('服务端声明 unpaged（本次即全量）时挂载不补查', () => {
+    // 存量统计型表值图转圈的回归点：缓存里没有 paging 不等于“状态未知”，
+    // 服务端已经说过这就是全部行，再补一次重查纯属浪费（且一慢就一直转）
+    const refresh = vi.spyOn(useDashboardStore.getState(), 'refreshSingleChart').mockResolvedValue(true)
+    render(createElement(DashboardChart, {
+      chartType: 'table_value', chartId: 9, dashboardId: 2, config: {},
+      data: { columns: ['d', 'cnt'], rows: [{ d: '1.0.44', cnt: 1 }], unpaged: true },
+    }))
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
+  it('撞过行限（truncated）也不补查：结果状态已知，缺的是分页配置不是重取', () => {
+    const refresh = vi.spyOn(useDashboardStore.getState(), 'refreshSingleChart').mockResolvedValue(true)
+    render(createElement(DashboardChart, {
+      chartType: 'table_value', chartId: 9, dashboardId: 2, config: {},
+      data: { columns: ['d'], rows: [{ d: 1 }], truncated: true },
+    }))
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
+  it('统计型图表（无 paging）保持整页渲染，不被套页限', () => {
+    const { container } = render(createElement(DashboardChart, {
+      chartType: 'table_value', chartId: 7, config: {},
+      data: { columns: ['d', 'cnt'], rows: Array.from({ length: 5 }, (_, i) => ({ d: `2026-10-0${i + 1}`, cnt: i })), unpaged: true },
+    }))
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(5)
+    expect(screen.queryByText(/共 .* 页/)).toBeNull()
+  })
+})
+
+// 字段组的视觉一半在 globals.css：组件只负责挂 class，样式若没落地就是又一个“存了不生效”
+// （还会退回原生的三个白框 + 原生下拉箭头）。这里把 CSS 侧也锁住。
+describe('日期区间控件样式落地', () => {
+  // 与上方主题守卫同口径（vitest 的 cwd 就是 frontend，import.meta.url 不是 file: 协议）
+  const css = readFileSync('src/styles/globals.css', 'utf8')
+
+  it('字段组承接描边与聚焦环，内层不再各自成箱', () => {
+    expect(css).toMatch(/\.dh-daterange-group\s*\{[^}]*border-color:\s*var\(--dh-dr-border/)
+    expect(css).toMatch(/\.dh-daterange-group:focus-within\s*\{[\s\S]*?box-shadow/)
+  })
+
+  it('空值时分段透明 + 业务占位，聚焦时让位给编辑', () => {
+    expect(css).toMatch(/\.dh-daterange-field\.is-empty > input:not\(:focus\)\s*\{\s*color:\s*transparent/)
+    expect(css).toMatch(/\.dh-daterange-hint\s*\{[\s\S]*?pointer-events:\s*none/)
+    expect(css).toMatch(/\.dh-daterange-field\.is-empty:focus-within \.dh-daterange-hint\s*\{\s*opacity:\s*0/)
+  })
+
+  it('新增规则能被 postcss 解析（自绘箭头的 data URI 写错会静默丢掉整条声明）', () => {
+    const rules: Record<string, string> = {}
+    postcss.parse(css).walkRules(rule => {
+      if (rule.selector.includes('.dh-daterange')) rules[rule.selector] = rule.toString()
+    })
+    for (const key of ['.dh-daterange-group', '.dh-daterange-group:focus-within', '.dh-daterange-hint',
+      '.dh-daterange-preset', '.dark .dh-daterange-preset',
+      '.dh-daterange-field.is-empty > input:not(:focus)', '.dh-daterange-field.is-empty:focus-within .dh-daterange-hint'])
+      expect(rules[key], `日期区间样式缺少规则：${key}`).toBeTruthy()
+    expect(rules['.dh-daterange-preset']).toMatch(/background-image: url\("data:image\/svg\+xml/)
+    expect(rules['.dark .dh-daterange-preset']).toMatch(/background-image: url\("data:image\/svg\+xml/)
+    // 浅色主题的 --muted-foreground 偏深，占位必须带透明度才不会跟已填值一样重
+    expect(rules['.dh-daterange-hint']).toMatch(/color: hsl\(var\(--muted-foreground\) \/ 0\.72\)/)
+  })
+
+  it('快捷下拉去掉原生外框与箭头，改自绘（深浅两套）', () => {
+    expect(css).toMatch(/\.dh-daterange-preset\s*\{[\s\S]*?appearance:\s*none/)
+    expect(css).toMatch(/\.dh-daterange-preset\s*\{[\s\S]*?background-image:\s*url\(/)
+    expect(css).toMatch(/\.dark \.dh-daterange-preset\s*\{[\s\S]*?background-image/)
+  })
+})
+
+// 历史缺陷：G2 报错只进 console，画布留一片空白，用户只能问“我的图呢”。
+// 渲染失败必须在图上说出来（与 no-silent-degradation 对齐）。
+describe('渲染失败必须可见', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('spec 构建报错（桑基缺目标列）时，画布上说出原因而不是静默空白', () => {
+    // jsdom 不跑真实 rAF，与上方主题用例同口径：接住帧回调手动刷
+    const frames = new Map<number, FrameRequestCallback>()
+    let nextFrame = 0
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.set(++nextFrame, cb); return nextFrame })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id) })
+    // 尺寸量不到时不进入渲染帧（与上方主题用例同口径抹平）
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400)
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(300)
+
+    render(createElement(DashboardChart, {
+      chartType: 'sankey',
+      data: { columns: ['源', '流量'], rows: [{ 源: '首页', 流量: 5 }] },
+      config: { xCol: '源', yCol: '流量' },
+      chartName: '页面访问流向',
+    }))
+    act(() => { const pending = [...frames.values()]; frames.clear(); pending.forEach(cb => cb(0)) })
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('页面访问流向')
+    expect(alert).toHaveTextContent('渲染失败')
+    expect(alert).toHaveTextContent('目标')
   })
 })

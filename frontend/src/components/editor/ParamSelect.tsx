@@ -7,13 +7,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import client from '@/api/client';
 import { metricsApi } from '@/api/metrics';
 import type { PageParam } from '@/stores/dashboardStore';
+import { PARAM_SHAPE_LABELS } from '@/lib/dashboardParamAssembly';
 
 /**
  * 参数名选择框（对齐 ui-resource-display.md：从资源清单中选，不手填内部标识）。
  *
- * paramKey / bind_param 过去是自由文本，要求用户手工和图表 SQL 的 {{param}}、
- * 看板参数三处对齐，拼错即静默失效；这里改为从看板 page_params 中选，
- * 并允许就地新建。引用了未定义的参数必须红标提醒，不得静默不生效。
+ * paramKey / bind_param 过去是自由文本，要求用户手工和「数据集入参声明、看板参数、
+ * 控件绑定」三处对齐，拼错即静默失效；这里改为从看板 page_params 中选，并允许就地新建。
+ * 引用了未定义的参数必须红标提醒，不得静默不生效。
+ *
+ * 2026-11-06 起图表不再自带 SQL：参数最终喂给**数据集声明的入参**（`${名}`），
+ * 文案与校验都按这个口径写，不得再出现"在图表 SQL 里引用参数"这类指引。
  */
 export function ParamNameSelect({ value, params, placeholder, label, onChange, onCreate }: {
   value: string; params: PageParam[]; placeholder?: string; label: string;
@@ -77,7 +81,11 @@ export function ParamNameSelect({ value, params, placeholder, label, onChange, o
           <Input className="h-6 text-xs" value={draft.default} onChange={e => setDraft(d => ({ ...d, default: e.target.value }))} />
         </div>
       </div>
-      <p className="text-[10px] text-muted-foreground">图表 SQL 中使用 {'{{参数名}}'} 引用该参数。</p>
+      {/* 旧文案是「图表 SQL 中使用 {{参数名}}」—— 图表已不收 SQL，这句会把人往回带，改掉 */}
+      <p className="text-[10px] text-muted-foreground">
+        控件的值写入该看板参数；取数时由服务端按各数据集声明的入参对应上
+        （名字不一致时在数据集页「入参」里改判归属，不靠手打对齐）。
+      </p>
       <div className="flex justify-end gap-1">
         <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setCreating(false)}>取消</Button>
         <Button size="sm" className="h-6 text-xs" disabled={!VALID_PARAM_NAME.test(draft.name) || !draft.label.trim() || params.some(p => p.name === draft.name)} onClick={() => {
@@ -91,9 +99,9 @@ export function ParamNameSelect({ value, params, placeholder, label, onChange, o
   </div>;
 }
 
-const PARAM_TYPE_LABELS: Record<PageParam['type'], string> = {
-  string: '文本', number: '数字', date: '日期', date_range: '日期范围',
-};
+// 形状词汇与「看板参数」管理区/顶部参数带共用一份（两套各自翻译就会漂移，
+// 历史缺陷：同一形状在两套里叫 string / text，渲染时只认其中一个 → 日期被当文本填）
+const PARAM_TYPE_LABELS = PARAM_SHAPE_LABELS;
 const VALID_PARAM_NAME = /^[A-Za-z_]\w*$/;
 
 /** 选项来源：手动录入 / 维度字典 value_labels / 数据集列去重值 */

@@ -1,4 +1,4 @@
-"""LLM 出站结果的敏感信息守卫（工具结果流向 LLM 的唯一收口）。
+r"""LLM 出站结果的敏感信息守卫（工具结果流向 LLM 的唯一收口）。
 
 为什么需要它
 ------------
@@ -10,6 +10,19 @@ security-guardrails §7 要求：取数结果严禁向 LLM / 普通客户端泄�
 ``semantic_query._safe_warnings``），每个工具各管一段，新增工具很容易漏掉。
 本模块把口径收敛成**一份常量**，并在 ``compat.make_tool.guarded`` 的收口处强制执行
 —— 任何工具的结果都要过这里，漏写脱敏会在出口被拦下。
+
+射程边界（只管"工具结果 → LLM"，不管"LLM → 已鉴权用户"）
+--------------------------------------------------------
+本守卫站在**工具返回值下发给模型之前**这一道，拦的是模型不该看到的治理产物：
+`base_sql` / `secured_sql`（服务端 RLS/脱敏改写后的执行语句）、`datasource_id`、
+`catalog_ref`、连接信息、原始报错栈。模型没拿到，就不可能转述出去。
+
+它**不是**"用户能不能看到 SQL"的裁决点：用户在已鉴权会话里看本会话的业务查询 SQL
+是既有产品口径（图表卡 SQL 页签、`​```sql` 卡片、报表口径附录、设计面板编辑器），
+由 `prompt_composer` 的「数据源黑盒」段与 `chart_contract` 的输出约定统一规定。
+**不得**在这里加"正文含 SELECT/FROM 就拒发"之类的规则去反向封堵用户可见面——
+那既不读权限配置，又会造成同一段对话"图上能看、开口就拒"的两头不一
+（会话 1783069459151 的口径矛盾根因之一正是提示词与前端各说各话）。
 
 与敏感字段基线的分工（不要混）
 ------------------------------
@@ -64,6 +77,12 @@ SENSITIVE_OUTPUT_KEYS = (
     "host", "hostname", "ip", "ip_address", "port", "endpoint", "jdbc_url",
     "connection_string", "conn_str", "dsn",
     # 内部标识 / 生成 SQL / 溯源（守 §7 黑盒）
+    # `provenance` 是**语义层取数溯源**的保留名（planner/gates 的 dict，含物理表与
+    # 解析来源档位）。2026-11-11 事故：多源知识检索给每个 chunk 也起了同名键
+    # （值 platform_synced，语料归属标签），键名命中导致 knowledge_search 有命中即
+    # 整体拒发 —— 用户侧表现为"知识问答只会道歉"。RAG 侧已改名 corpus_origin。
+    # 纪律：新增对外字段前先对照本清单取名，别靠"我这个值不敏感"过关 —— 本判定
+    # 只看键名不看值（见上方注释），撞名就是全量拒发，而且拒的是整条工具结果。
     "datasource_id", "catalog_ref", "physical_table", "base_sql", "secured_sql",
     "provenance", "security_context",
 )

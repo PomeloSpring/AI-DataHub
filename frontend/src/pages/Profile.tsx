@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { toast } from '@/lib/toast';
-import { User, Mail, Phone, Shield, Save, Lock, ArrowLeft, Brain } from 'lucide-react';
+import { User, Mail, Phone, Shield, Save, Lock, ArrowLeft, Brain, Cloud } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -9,14 +9,16 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Spinner } from '@/components/ui/spinner';
+import { Switch } from '@/components/ui/switch';
 import client from '../api/client';
 import { useAuthStore } from '../stores/authStore';
+import MotionPreferenceCard from '@/components/MotionPreferenceCard';
 
-const ROLE_LABELS: Record<string, string> = {
-  admin: '管理员',
-  analyst: '分析师',
-  viewer: '查看者',
-};
+/** 角色可读名：以服务端按真值源（adh_user_roles ⋈ adh_roles.display_name）下发的 role_name 为准。
+ *  历史缺陷：本页读的是 profile.role，而 /users/me 的账号列叫 user_role → 永远取不到值，
+ *  角色一格渲染成空白徽标；前端硬编码的三档文案也接不住自定义角色（如「运营管理」）。
+ *  无生效绑定就如实说「未绑定角色」（空绑定 = 零权限码），不回退内部标识充数。 */
+const roleText = (profile: any): string => String(profile?.role_name || '').trim() || '未绑定角色';
 
 export default function Profile() {
   const [profile, setProfile] = useState<any>(null);
@@ -29,6 +31,11 @@ export default function Profile() {
 
   // Password form
   const [pwdForm, setPwdForm] = useState<any>({});
+
+  // 云空间偏好：会话产物自动上云（默认开启）
+  const [cloudSync, setCloudSync] = useState<boolean>(true);
+  const [cloudSyncLoaded, setCloudSyncLoaded] = useState(false);
+  const [cloudSyncSaving, setCloudSyncSaving] = useState(false);
 
   const updateUser = useAuthStore((s) => s.updateUser);
 
@@ -48,7 +55,36 @@ export default function Profile() {
 
   useEffect(() => {
     loadProfile();
+    loadPreferences();
   }, []);
+
+  const loadPreferences = async () => {
+    try {
+      const { data } = await client.get('/users/me/preferences');
+      setCloudSync(Boolean(data.cloud_sync_enabled));
+    } catch {
+      // 偏好读不到时不静默当成“已关闭”，也不假装“已开启”：保持未知(未加载)并在界面上说明
+      setCloudSyncLoaded(false);
+      toast.error('云空间偏好加载失败，请刷新页面重试');
+      return;
+    }
+    setCloudSyncLoaded(true);
+  };
+
+  const handleToggleCloudSync = async (next: boolean) => {
+    const prev = cloudSync;
+    setCloudSync(next);
+    setCloudSyncSaving(true);
+    try {
+      await client.put('/users/me/preferences', { cloud_sync_enabled: next });
+      toast.success(next ? '已开启会话产物自动上云' : '已关闭会话产物自动上云');
+    } catch (e: any) {
+      setCloudSync(prev);   // 保存失败回滚开关，不让界面显示与库里不一致的状态
+      toast.error(e?.response?.data?.detail || '保存失败，请稍后重试');
+    } finally {
+      setCloudSyncSaving(false);
+    }
+  };
 
   const loadProfile = async () => {
     setLoading(true);
@@ -152,7 +188,7 @@ export default function Profile() {
               <div>
                 <div className="text-sm text-muted-foreground mb-1">角色</div>
                 <Badge variant={profile?.role === 'admin' ? 'destructive' : 'secondary'}>
-                  {ROLE_LABELS[profile?.role] || profile?.role}
+                  {roleText(profile)}
                 </Badge>
               </div>
               <div>
@@ -230,6 +266,40 @@ export default function Profile() {
             </Button>
           </CardContent>
         </Card>
+
+        {/* 云空间偏好 card */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Cloud className="h-5 w-5" />
+              云空间（对话产物备份）
+            </CardTitle>
+            <CardDescription>对话中产生的文件（上传附件与助手生成的报告/图表）自动同步云空间，换节点或本地磁盘被清理时可自动取回。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <Label htmlFor="cloud-sync">会话产物自动上云</Label>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {!cloudSyncLoaded
+                    ? '偏好未加载成功，当前状态未知——请刷新后重试'
+                    : cloudSync
+                      ? '开启（默认）：每轮对话结束后在后台同步到对象存储'
+                      : '已关闭：产物只留在本地，实例迁移或清理磁盘会丢失（已有云端副本仍可取回）'}
+                </p>
+              </div>
+              <Switch
+                id="cloud-sync"
+                checked={cloudSync}
+                disabled={cloudSyncSaving || !cloudSyncLoaded}
+                onCheckedChange={v => void handleToggleCloudSync(v)}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* 界面动效（出现效果）：预设来自 UI 字模库，差量落个人偏好，与主题配色相互独立 */}
+        <MotionPreferenceCard />
 
         {/* Change password card */}
         <Card>

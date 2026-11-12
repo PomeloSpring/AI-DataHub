@@ -1,0 +1,392 @@
+{
+  "version": 4,
+  "generated_from": "docs/content/insights/**/*.md",
+  "categories": [
+    {
+      "category_key": "about",
+      "label": "关于本公司",
+      "description": "公司业务版图、发展脉络与前景（公开口径）",
+      "icon": "🏢",
+      "color": "#475569",
+      "sort": 0
+    },
+    {
+      "category_key": "industry",
+      "label": "齿科行业趋势",
+      "description": "口腔数字化市场、椅旁修复、装机与政策趋势",
+      "icon": "📈",
+      "color": "#6366f1",
+      "sort": 1
+    },
+    {
+      "category_key": "whitepaper",
+      "label": "技术白皮书",
+      "description": "扫描精度、AI 建模、材料与设计余量、数据互操作",
+      "icon": "🔬",
+      "color": "#0891b2",
+      "sort": 2
+    },
+    {
+      "category_key": "clinic",
+      "label": "临床应用",
+      "description": "种植 / 正畸 / 修复 / 全口与技师所工作流",
+      "icon": "🦷",
+      "color": "#16a34a",
+      "sort": 3
+    },
+    {
+      "category_key": "product",
+      "label": "产品动态",
+      "description": "固件、软件、开放接口与配件更新",
+      "icon": "✨",
+      "color": "#db2777",
+      "sort": 4
+    },
+    {
+      "category_key": "compliance",
+      "label": "合规与标准",
+      "description": "器械注册、质量体系、影像与扫描数据合规",
+      "icon": "🛡️",
+      "color": "#b45309",
+      "sort": 5
+    },
+    {
+      "category_key": "insight",
+      "label": "数据洞察",
+      "description": "脱敏聚合的行业与装机数据复盘",
+      "icon": "📊",
+      "color": "#ea580c",
+      "sort": 6
+    }
+  ],
+  "tag_vocabulary": [
+    "扫描精度",
+    "质量控制",
+    "临床操作",
+    "隔湿与止血",
+    "种植与导板",
+    "全口修复",
+    "设备管理",
+    "失败归因",
+    "固件与发布",
+    "质量体系",
+    "法规与标准",
+    "数据安全",
+    "市场与渗透率",
+    "数据口径"
+  ],
+  "tag_display_rule": "侧栏标签云只渲染命中 ≥2 篇的标签；命中 1 篇的标签仍在文章页与筛选中生效",
+  "articles": [
+    {
+      "slug": "company-profile",
+      "title": "联耀医疗（AlliedStar）：业务与发展前景",
+      "category": "about",
+      "summary": "牙科数字化企业：口内扫描仪、扫描软件与数字化种植正畸工作流；上海张江研发、四川资阳“中国牙谷”制造，2023 年起加入士卓曼集团。讲清它在做什么、走到哪一步、接下来往哪走。",
+      "tags": [
+        "市场与渗透率",
+        "数据口径"
+      ],
+      "kind": "html",
+      "author": "平台与数据治理组",
+      "published": true,
+      "published_at": "2026-11-11",
+      "review_by": "2027-05-11",
+      "path": "about/company-profile.md",
+      "references": [
+        "Alliedstar 官方网站：https://www.allied-star.com",
+        "Alliedstar 官网 About 页（成立 2019 年上海、公司沿革 HISTORY、AS 100 发货与 AS 200E 节点）：https://www.allied-star.com/about",
+        "Alliedstar AS 260 产品页（口内扫描精度 20 µm、机身 175 g/175 mm、配套 AS Connect 软件）：https://www.medicalexpo.com.cn/prod/alliedstar-medical-equipment-co-ltd/product-4579132-1152448.html",
+        "Alliedstar AS 100 产品页（免校准、双按键、单一 USB 供电、无需喷粉预热、扫描时间约 20 s）：https://www.medicalexpo.com.cn/prod/alliedstar-medical-equipment-co-ltd/product-4579132-1152446.html",
+        "上海联耀医疗技术有限公司单位名片（单位网址 www.allied-star.com、单位规模 100-299 人、使命表述）：https://jdjywpt.jlu.edu.cn/portal/company/details?id=3785242f832e4ce1825e74997d4d0550",
+        "联耀医疗公司简介（“中国牙谷”生产基地与张江研发中心、核心团队来自跨国医疗设备企业）：https://m.zhipin.com/companys/7b397e96a97a51e51XZ63NW8FFo~.html",
+        "Alliedstar（联耀医疗器械有限公司）企业概况，中资本项目页：https://www.cscapital.cn/productinfo/1431226.html",
+        "士卓曼集团收购联耀医疗的公开报道（AS 100 与 AS 200E 节点、2022 年产值 9800 万元、星晖系列无线口扫续航口径）：https://www.sohu.com/a/726449133_121123926",
+        "医疗器械并购事件盘点（2023-09-21 签署收购协议、六年内分阶段完成所有权、Straumann AXS 平台集成与亚太首发）：https://m.163.com/dy/article/IHM4EQJ70514CG7L.html",
+        "联耀星晖系列口腔数字印模仪招商信息（“产品遍布全球 100 多个国家和地区”、2023 年 9 月加入士卓曼集团）：https://www.vbdata.cn/linkDetail/1221",
+        "星晖系列无线口内数字印模仪发布报道（满电连续工作两小时以上、行业首创无线充电、秒放秒充）：https://www.sdihexpo.com/press_center/exhibition_ews/328.html",
+        "弗若斯特沙利文（Frost & Sullivan）转引数据：2023 年中国口腔扫描仪装机量约 2.1 万台，2025 年预计突破 4 万台（口径辨析见本栏目《中国口内扫描仪市场：渗透率的真实图景与三个常见误读》）",
+        "《中国口腔医学年鉴（2025）》转引数据：截至 2024 年底全国逾 12,000 家口腔医疗机构配备口内扫描设备",
+        "士卓曼集团官网（全球数字口腔战略与 Straumann AXS 平台）：https://www.straumann.com"
+      ],
+      "pinned": false,
+      "featured": false,
+      "chars": 17703,
+      "placeholders": 0
+    },
+    {
+      "slug": "edentulous-full-arch-scan",
+      "title": "全口无牙颌数字印模：为什么它比牙列缺损难一个量级，以及怎么把它做对",
+      "category": "clinic",
+      "summary": "无牙颌的难点不在分辨率，在黏膜可让性与缺乏刚性基准。本文说明误差为什么会产生、托盘辅助与个别托盘的价值，以及何时应退回传统印模。",
+      "tags": [
+        "全口修复",
+        "扫描精度",
+        "临床操作"
+      ],
+      "kind": "markdown",
+      "author": "临床应用研究组",
+      "published": true,
+      "published_at": "2026-11-03",
+      "review_by": "2027-05-03",
+      "path": "clinic/edentulous-full-arch-scan.md",
+      "references": [
+        "2026 年一项 20 例随机交叉设计临床研究：上颌全口数字印模整体平均 RMS 偏差 234.63 ± 43.87 μm，作者以 300 μm 为可接受参考阈值（Scientific Reports）",
+        "Ender A, Mehl A. J Prosthet Dent. 2013;109(2):121-128（全口印模 trueness/precision 测量方法）",
+        "曹悦等. 三款口腔数字印模仪获取无牙颌红膏初印模精度的对比评价. 北京大学学报(医学版), 2020,52(1):129-137",
+        "岳广娜等. 不同印模方式对松软牙槽嵴印模精度的比较研究. 实用口腔医学杂志, 2016,32(2):202-206"
+      ],
+      "pinned": false,
+      "featured": false,
+      "chars": 1712,
+      "placeholders": 0
+    },
+    {
+      "slug": "implant-guide-error-control",
+      "title": "数字化种植导板的误差从哪里来：五个控制点与可判定的通过标准",
+      "category": "clinic",
+      "summary": "导板把植入误差从自由手的 2—3 mm 量级压到亚毫米，但误差不会消失，只会转移。本文按数据采集、配准、设计、打印、术中五段拆开，给出每段的判定动作。",
+      "tags": [
+        "种植与导板",
+        "扫描精度"
+      ],
+      "kind": "markdown",
+      "author": "数字化修复中心",
+      "published": true,
+      "published_at": "2026-11-03",
+      "review_by": "2027-05-03",
+      "path": "clinic/implant-guide-error-control.md",
+      "references": [
+        "数字化口腔种植外科导板的精确度研究（47 颗种植体：肩部误差 0.58±0.23 mm、根部 0.66±0.30 mm、角度 2.40±1.02°）",
+        "ISO/TR 20896-2:2023（植入设备精度评估，聚焦植入体三维定位）",
+        "影响数字化种植导板引导种植手术精度的因素（综述类文献）"
+      ],
+      "pinned": false,
+      "featured": true,
+      "chars": 2215,
+      "placeholders": 0
+    },
+    {
+      "slug": "regulatory-standards-map",
+      "title": "口内扫描的法规与标准地图：ISO 20896 / GB/T 39111 / YY/T 1818 / 注册指导原则怎么配合使用",
+      "category": "compliance",
+      "summary": "这几份文件不是互相替代，而是各管一段：国际方法学、模型扫描仪要求、口内设备要求、注册申报口径。搞混了会出现\"报告齐全但答不上审评问题\"。",
+      "tags": [
+        "法规与标准",
+        "扫描精度"
+      ],
+      "kind": "markdown",
+      "author": "法规与质量部",
+      "published": true,
+      "published_at": "2026-11-03",
+      "review_by": "2027-02-03",
+      "path": "compliance/regulatory-standards-map.md",
+      "references": [
+        "ISO 20896-1:2019 Dentistry — Digital impression devices — Part 1: Methods for assessing accuracy",
+        "ISO/TR 20896-2:2023（植入设备精度评估方法）",
+        "GB/T 39111-2020《牙颌模型三维扫描仪技术要求》",
+        "YY/T 1818-2022《牙科学 口腔数字印模仪》（2022-05-18 发布，2024-06-01 实施）",
+        "《口腔数字印模仪注册技术审查指导原则》（2019 年第 37 号；另有后续修订征求意见稿）",
+        "《医疗器械分类目录》（原食药监总局公告 2017 年第 104 号）：口腔数字印模仪分类编码 17-01-05，管理类别Ⅱ类",
+        "《人工智能医疗器械注册审查指导原则（2026 年修订版）（征求意见稿）》，国家药监局器审中心 2026-09-14 挂出"
+      ],
+      "pinned": false,
+      "featured": true,
+      "chars": 2419,
+      "placeholders": 0
+    },
+    {
+      "slug": "scan-data-privacy-checklist",
+      "title": "口扫数据的合规红线：单独同意、去标识化与维修/远程场景处置清单",
+      "category": "compliance",
+      "summary": "口内扫描数据不是\"3D 文件\"，它能识别到具体就诊人，属于敏感个人信息。本文给出采集、留存、外发、演示四个场景的可执行清单。",
+      "tags": [
+        "数据安全",
+        "法规与标准"
+      ],
+      "kind": "markdown",
+      "author": "法规与质量部",
+      "published": true,
+      "published_at": "2026-11-03",
+      "review_by": "2027-02-03",
+      "path": "compliance/scan-data-privacy-checklist.md",
+      "references": [
+        "《个人信息保护法》第 28 条（医疗健康信息属敏感个人信息）、第 29 条（处理需取得个人单独同意）",
+        "《民法典》第 1226 条（医疗机构及其医务人员对患者隐私和个人信息保密义务）",
+        "《数据安全法》第 21 条（医疗健康数据属重要数据范畴，实行分类分级保护）",
+        "GB/T 39725-2020《信息安全技术 健康医疗数据安全指南》（含 11.8 医疗器械数据安全、附录 F 安全检查表）",
+        "GB/T 37964-2019《信息安全技术 个人信息去标识化指南》",
+        "《医疗卫生机构网络安全管理办法》（医疗卫生机构数据分类分级保护与全生命周期安全管理要求）"
+      ],
+      "pinned": false,
+      "featured": false,
+      "chars": 2249,
+      "placeholders": 0
+    },
+    {
+      "slug": "ios-penetration-china",
+      "title": "中国口内扫描仪市场：渗透率的真实图景与三个常见误读",
+      "category": "industry",
+      "summary": "政策驱动、隐形矫治放量、国产价格下探把口扫推成了\"标配\"，但装机量不等于使用率。本文拆三个误读，并给出判断客户成熟度的可用信号。",
+      "tags": [
+        "市场与渗透率",
+        "数据口径"
+      ],
+      "kind": "markdown",
+      "author": "市场与战略部",
+      "published": true,
+      "published_at": "2026-11-03",
+      "review_by": "2027-02-03",
+      "path": "industry/ios-penetration-china.md",
+      "references": [
+        "《健康口腔行动方案（2019—2025年）》，国家卫生健康委（政策背景：口腔健康纳入行动框架）",
+        "口腔种植相关专项治理与价格调控政策（2023 年起，种植牙费用下降带动病例量回升）",
+        "弗若斯特沙利文（Frost & Sullivan）转引数据：2023 年中国口腔扫描仪装机量约 2.1 万台，2025 年预计突破 4 万台",
+        "《中国口腔医学年鉴（2025）》转引数据：截至 2024 年底全国逾 12,000 家口腔医疗机构配备口内扫描设备",
+        "各市场研究机构对全球/中国口腔扫描仪规模的估计差异较大，本文不作单一结论；口径辨析见 `industry-numbers-conflict`"
+      ],
+      "pinned": false,
+      "featured": false,
+      "chars": 2117,
+      "placeholders": 0
+    },
+    {
+      "slug": "industry-numbers-conflict",
+      "title": "行业报告里的数字为什么互相打架：口腔数字化数据的六个口径坑",
+      "category": "insight",
+      "summary": "同一年\"全球口内扫描仪市场规模\"能被写成从 5 亿美元到 28 亿美元的多个版本。不是有人在造假，是口径没对齐。本文给出核对任何数字的六问。",
+      "tags": [
+        "数据口径",
+        "数据安全"
+      ],
+      "kind": "markdown",
+      "author": "数据洞察组",
+      "published": true,
+      "published_at": "2026-11-03",
+      "review_by": "2027-05-03",
+      "path": "insight/industry-numbers-conflict.md",
+      "references": [
+        "公开检索到的多家市场研究机构对全球/中国口腔扫描仪市场规模与增速的估计（同期差异显著，本文不采信单一数值）",
+        "GB/T 39725-2020《信息安全技术 健康医疗数据安全指南》（数据分级与去标识化要求）",
+        "GB/T 37964-2019《信息安全技术 个人信息去标识化指南》"
+      ],
+      "pinned": false,
+      "featured": true,
+      "chars": 1983,
+      "placeholders": 0
+    },
+    {
+      "slug": "firmware-release-note-template",
+      "title": "固件与软件发布说明怎么写：模板、变更分级与留档要求",
+      "category": "product",
+      "summary": "发布说明不是给市场部的功能清单，它是质量体系里的分发记录。本文给出可直接套用的模板、重大/轻微变更判定问句和留档要求。",
+      "tags": [
+        "固件与发布",
+        "质量体系"
+      ],
+      "kind": "markdown",
+      "author": "产品与固件组",
+      "published": true,
+      "published_at": "2026-11-03",
+      "review_by": "2027-05-03",
+      "path": "product/firmware-release-note-template.md",
+      "references": [
+        "第二类医疗器械独立软件审查要点：软件版本命名规则应能区分重大软件更新与轻微软件更新",
+        "《人工智能医疗器械注册审查指导原则（2026 年修订版）（征求意见稿）》：算法驱动型 / 数据驱动型更新的区分（以正式发布文本为准）",
+        "ISO 13485 设计变更控制与生产后信息反馈要求"
+      ],
+      "pinned": false,
+      "featured": false,
+      "chars": 1954,
+      "placeholders": 0
+    },
+    {
+      "slug": "clinic-accuracy-self-check",
+      "title": "诊室里的四步精度自查：不需要三坐标测量机也能做",
+      "category": "whitepaper",
+      "summary": "标准件的实验室报告证明不了你这台设备今天还行。四步自查用现有器材就能做，重点是让每次结果可比、能看出漂移趋势。",
+      "tags": [
+        "质量控制",
+        "设备管理",
+        "临床操作"
+      ],
+      "kind": "markdown",
+      "author": "临床应用研究组",
+      "published": true,
+      "published_at": "2026-11-03",
+      "review_by": "2027-05-03",
+      "path": "whitepaper/clinic-accuracy-self-check.md",
+      "references": [
+        "ISO 20896-1:2019（标准件与统计口径）",
+        "GB/T 39111-2020《牙颌模型三维扫描仪技术要求》",
+        "YY/T 1818-2022《牙科学 口腔数字印模仪》附录 A/B",
+        "实施建议来源：ISO 20896-1 相关解读提出医疗机构应定期（建议每 6 个月一次）做设备精度验证并建立设备使用档案"
+      ],
+      "pinned": false,
+      "featured": false,
+      "chars": 2084,
+      "placeholders": 0
+    },
+    {
+      "slug": "scan-accuracy-metric",
+      "title": "口内扫描精度怎么衡量：从标准件参数到诊室里的真实误差",
+      "category": "whitepaper",
+      "summary": "标称\"20 μm\"说的是实验室里的单帧重复性，而你交付的修复体吃的是全牙弓拼接与咬合还原的误差。本文把三层口径拆开，并给出可落地的验证方法。",
+      "tags": [
+        "扫描精度",
+        "质量控制",
+        "法规与标准"
+      ],
+      "kind": "markdown",
+      "author": "临床应用研究组",
+      "published": true,
+      "published_at": "2026-11-03",
+      "review_by": "2027-04-03",
+      "path": "whitepaper/scan-accuracy-metric.md",
+      "references": [
+        "ISO 20896-1:2019《牙科学 数字印模设备 第1部分：精度评定方法》",
+        "ISO/TR 20896-2:2023（植入设备精度评估）",
+        "GB/T 39111-2020《牙颌模型三维扫描仪技术要求》",
+        "YY/T 1818-2022《牙科学 口腔数字印模仪》（2022-05-18 发布，2024-06-01 实施）",
+        "《口腔数字印模仪注册技术审查指导原则》（2019 年第 37 号）",
+        "Ender A, Mehl A. Accuracy of complete-arch dental impressions: a new method of measuring trueness and precision. J Prosthet Dent. 2013;109(2):121-128",
+        "Mangano F, et al. Intraoral scanners in dentistry: a review of the current literature. BMC Oral Health. 2017;17:149",
+        "中国计量科学研究院等. 口腔数字印模仪曲面测量评价方法研究. 计量科学与技术, 2026. DOI:10.12338/j.issn.2096-9015.2026.0018"
+      ],
+      "pinned": true,
+      "featured": true,
+      "chars": 3354,
+      "placeholders": 0
+    },
+    {
+      "slug": "wet-field-failure-triage",
+      "title": "湿表面、出血与反光：口扫失败的三类根因与处置顺序",
+      "category": "whitepaper",
+      "summary": "补扫次数高的根因通常不是\"算法不够准\"，而是操作者不知道还差哪一块、以及处置顺序颠倒了。本文给出按根因分诊的现场处置流程。",
+      "tags": [
+        "临床操作",
+        "隔湿与止血",
+        "失败归因"
+      ],
+      "kind": "markdown",
+      "author": "临床应用研究组",
+      "published": true,
+      "published_at": "2026-11-03",
+      "review_by": "2027-05-03",
+      "path": "whitepaper/wet-field-failure-triage.md",
+      "references": [
+        "Arakida T, et al. Evaluating the influence of ambient light on scanning trueness, precision, and time of intraoral scanner. J Prosthodont Res. 2018;62(3):324-329",
+        "Jeon JH, Choi BY. Comparison of the accuracy of intraoral digital impressions obtained from different scan strategies: an in vitro study. J Adv Prosthodont. 2020;12(3):123-132"
+      ],
+      "pinned": false,
+      "featured": true,
+      "chars": 2198,
+      "placeholders": 0
+    }
+  ],
+  "content_rules": [
+    "标题唯一事实源 = front-matter.title，正文不得写 H1",
+    "正文小节从 ## 起，详情页目录由 ##/### 生成",
+    "标签必须取自 tag_vocabulary，侧栏标签云只渲染命中 ≥2 篇的标签",
+    "外部数字必须进 references；公司数据用【待填】占位，占位未清零不得置 published:true"
+  ]
+}

@@ -92,6 +92,10 @@ export default function TourEngine({ guideId }: { guideId: string }) {
       if (!deadline) deadline = Date.now() + TARGET_WAIT_MS;
       if (Date.now() < deadline) { raf = requestAnimationFrame(tick); return; }
       setRect(null);
+      // optional 步骤的锚点是按条件渲染的（如只有一个工作空间时收起的切换下拉）：
+      //   静默前进一步，不能报“页面变化或窗口过小”——那会把有意的收起当成异常，误导排查。
+      //   末步无下一步可退，退回居中说明卡（与省略 target 的同款行为）。
+      if (step?.optional && !isLast) { setMissing(''); setIndex(i => i + 1); return; }
       setMissing(`未找到「${step?.title}」入口（页面变化或窗口过小），已跳过这一步`);
     };
     raf = requestAnimationFrame(tick);

@@ -11,10 +11,15 @@ import client from './client';
 export interface Site {
   site_code: string;
   display_name: string;
-  /** 1 = 聚合态（全球）：不对应单一数据源，只作为聊天查询范围 */
+  /** 1 = 聚合态（全部站点）：不对应单一数据源，只作为聊天查询范围 */
   is_aggregate: number;
   sort_order: number;
   is_active?: number;
+  /**
+   * 站点在各业务字段上的实际取值（{字段名: 值}），如新加坡站点 `{site:'global', region:'en'}`。
+   * 看板选站点后，服务端按目标字段把值换成这里的写法；没配的字段按站点代码原样下发。
+   */
+  field_values?: Record<string, string>;
 }
 
 export interface SiteDatasource {

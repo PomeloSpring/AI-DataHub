@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/lib/toast';
 import { Plus, Edit, Trash2, Layers } from 'lucide-react';
 import client from '@/api/client';
+import { useDashboardStore } from '@/stores/dashboardStore';
 
 // 看板组合(仪表盘组)管理: 把若干看板编排为一个组合并按角色分配。
 // 组只做目录/轮播编排, 不授予看板可见性(可见性仍由角色看板授权 fail-closed 裁决)。
@@ -26,22 +27,25 @@ interface Group {
 
 export default function DashboardGroupsAdmin() {
   const [groups, setGroups] = useState<Group[]>([]);
-  const [boards, setBoards] = useState<Array<{ id: number; name: string; status?: string }>>([]);
   const [roles, setRoles] = useState<Array<{ id: number; display_name: string }>>([]);
   const [edit, setEdit] = useState<Group | 'new' | null>(null);
   const [form, setForm] = useState({ name: '', description: '', dashboard_ids: [] as number[], role_ids: [] as number[] });
   const [deleteTarget, setDeleteTarget] = useState<Group | null>(null);
   const [saving, setSaving] = useState(false);
+  // “组合内看板”必须与同页看板列表同一事实源：直接复用看板管理页按当前工作空间加载好的 store，
+  // 不再自己发一次 GET /dashboard/（不带 workspace_id 会跨工作空间全量返回，导致清单与看板列表对不上）。
+  const dashboards = useDashboardStore(s => s.dashboards);
+  const boards = useMemo(
+    () => dashboards.map(d => ({ id: d.id, name: d.name, status: d.status })),
+    [dashboards]);
 
   const load = useCallback(async () => {
     try {
-      const [g, d, r] = await Promise.all([
+      const [g, r] = await Promise.all([
         client.get('/dashboard/groups'),
-        client.get('/dashboard/'),
         client.get('/roles/'),
       ]);
       setGroups(g.data || []);
-      setBoards((d.data || []).map((x: any) => ({ id: x.id, name: x.name, status: x.status })));
       setRoles((r.data || []).map((x: any) => ({ id: x.id, display_name: x.display_name || x.name })));
     } catch {
       toast.error('加载看板组合失败');

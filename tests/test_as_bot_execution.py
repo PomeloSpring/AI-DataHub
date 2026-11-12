@@ -400,3 +400,58 @@ class TestOntologyGenerateToolSemantics:
         """目标源由服务端注入，LLM 传数据源标识显式报错（不静默丢弃）。"""
         p = self._payload(self._run(monkeypatch, {"datasource_id": 7}, self._ctx(0)))
         assert "error" in p and "不接受数据源标识" in p["error"]
+
+# ── 无人值守运行与交互链路共用同一份资源裁决 ────────────────────────────
+# 定时任务没有 SDK 会话，但有 UnattendedRuntime：`check_tool` 与
+# `validate_tool_resources` 用的还是交互链路那一份实现——不因为"没有人在看"
+# 就少一道门，也不另造一套"谁能查什么"。
+
+from tests.test_scheduled_execution import scheduled_as_bot  # noqa: E402  复用离线事实桩
+
+
+class TestUnattendedResourceGuard:
+    IDENTITY = {"user_id": 7, "workspace_id": 3}
+
+    def _run(self, scheduled_as_bot, **config):
+        from backend.modules.mind.execution import scheduled_analysis as sa
+        profile = sa.load_profile(config, self.IDENTITY)
+        return sa._ScheduledRun("统计", config, self.IDENTITY, None, profile)
+
+    def test_authorized_source_passes_shared_guard(self, scheduled_as_bot):
+        from backend.modules.mind.execution.resource_guard import validate_tool_resources
+        run = self._run(scheduled_as_bot)
+        assert run.ctx.datasource_id == 8      # 唯一候选自动选定（任务不持有源）
+        args = validate_tool_resources(run.ctx, "mcp__datahub_semantic__run_semantic_query",
+                                       {"intent": {"object": "订单"}})
+        assert args == {"intent": {"object": "订单"}}
+
+    def test_forged_datasource_id_rejected(self, scheduled_as_bot):
+        from backend.modules.mind.execution.resource_guard import (
+            ResourceScopeError, validate_tool_resources)
+        run = self._run(scheduled_as_bot)
+        with pytest.raises(ResourceScopeError, match="已授权范围"):
+            validate_tool_resources(run.ctx, "mcp__datahub_semantic__run_semantic_query",
+                                    {"intent": {"object": "订单", "datasource_id": 5}})
+
+    def test_identity_arguments_rejected(self, scheduled_as_bot):
+        from backend.modules.mind.execution.resource_guard import validate_tool_resources
+        run = self._run(scheduled_as_bot)
+        with pytest.raises(PermissionError, match="执行身份"):
+            validate_tool_resources(run.ctx, "mcp__datahub_semantic__get_metrics",
+                                    {"user_id": 1, "keyword": "订单"})
+
+    def test_aggregate_scope_keeps_per_site_self_resolution(self, scheduled_as_bot):
+        """多站落聚合态：语义查询放行（逐站自解析），裸 SQL 仍要求点名站点/源。"""
+        from backend.modules.mind.execution.resource_guard import (
+            ResourceScopeError, validate_tool_resources)
+        from tests.test_scheduled_execution import _site
+        scheduled_as_bot["sources"] = [8, 9]
+        scheduled_as_bot["sites"] = [_site("cn", "中国", datasource_ids=[8]),
+                                     _site("us", "美国", datasource_ids=[9]),
+                                     _site("global", "全球", aggregate=1)]
+        run = self._run(scheduled_as_bot)
+        assert run.ctx.datasource_id == 0 and run.ctx.extra["site_code"] == "global"
+        validate_tool_resources(run.ctx, "mcp__datahub_semantic__run_semantic_query",
+                                {"intent": {"object": "订单"}})
+        with pytest.raises(ResourceScopeError, match="指定站点"):
+            validate_tool_resources(run.ctx, "mcp__datahub_query__execute_sql", {"sql": "SELECT 1"})

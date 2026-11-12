@@ -43,3 +43,27 @@ export function splitMarkdownSections(text: string): MarkdownSection[] {
   // 空体节不产卡片(如末尾孤标题),避免空白卡片
   return sections.filter(s => s.body.trim().length > 0);
 }
+
+/**
+ * 按标题把正文切成「保留标题行」的连续片段（内容详情正文分段渐入用）。
+ *
+ * 与 splitMarkdownSections 的差别是刻意且不能合并的：那边把标题抽去当卡头，
+ * 这边一段都不能少 —— 阅读页丢掉正文标题就是丢内容。
+ * 只在围栏代码块之外的 ATX 标题处切，围栏内的 # 不误切。
+ */
+export function splitMarkdownBlocks(text: string): string[] {
+  const blocks: string[] = [];
+  let inFence = false;
+  let current = '';
+  for (const line of (text || '').split(/\r?\n/)) {
+    if (FENCE.test(line)) inFence = !inFence;
+    // 首段还没内容时不在这里切（开头的标题属于第一段）
+    if (!inFence && current.trim() && HEADING.test(line)) {
+      blocks.push(current.trimEnd());
+      current = '';
+    }
+    current += (current ? '\n' : '') + line;
+  }
+  if (current.trim()) blocks.push(current.trimEnd());
+  return blocks;
+}

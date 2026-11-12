@@ -2,6 +2,9 @@ import client from './client';
 
 export const VIS_CATEGORIES = [
   { id: 'theme_pack', label: '主题包' },
+  // 动效预设与主题包正交：主题管配色与版式，动效管时间维度，每套主题都能搭任意预设
+  // （所以它不进 sanitizePack，也不由 tp_* 携带，解析唯一入口见 lib/motion.ts）
+  { id: 'motion_preset', label: '动效预设' },
   { id: 'chart_style', label: '图表样式' }, { id: 'widget_style', label: '控件样式' },
   { id: 'screen_background', label: '大屏背景' },
   { id: 'kpi_card', label: 'KPI 卡片' }, { id: 'layout_template', label: '布局模板' },
@@ -13,6 +16,8 @@ export type VisCategory = typeof VIS_CATEGORIES[number]['id'] | 'report_template
 export interface VisComponent {
   id: number; code: string; name: string; category: VisCategory; chart_type?: string | null;
   style_config: Record<string, any>; source: string; is_builtin: number; is_active: number;
+  /** 1=启用 0=禁用（停用但保留）：条目仍可查可再启用，但一律不可被选用 */
+  is_enabled?: number;
   sort_order: number; description?: string;
   updated_at?: string;
 }
@@ -40,10 +45,19 @@ export function validateVisResponse(data: unknown): VisComponent[] {
   }
   return out;
 }
-export async function fetchVisComponents(includeInactive = false) {
-  const { data } = await client.get('/vis-library/components', { params: { include_inactive: includeInactive } });
+export async function fetchVisComponents(includeInactive = false, includeDisabled = false) {
+  const { data } = await client.get('/vis-library/components',
+    { params: { include_inactive: includeInactive, include_disabled: includeDisabled } });
   return validateVisResponse(data);
 }
+
+/**
+ * 字模是否"在用"（唯一口径）：未下架且未禁用。
+ * 下架=软删除（清单不再给出，历史引用靠挂载快照兜底）；禁用=停用但保留（管理页仍可查可再启用，
+ * 但不得被选用：主题包套不上、系统主题菜单里对应主题直接不出现）。缺列（未跑迁移的存量库）按启用处理。
+ */
+export const isVisUsable = (c: Pick<VisComponent, 'is_active' | 'is_enabled'>): boolean =>
+  !!c.is_active && c.is_enabled !== 0;
 export async function createVisComponent(payload: {
   name: string; category: VisCategory; chart_type?: string; style_config: Record<string, any>;
 }) {

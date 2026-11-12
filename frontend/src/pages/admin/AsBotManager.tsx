@@ -92,6 +92,8 @@ interface AsBot {
   knowledge_base_ids: number[];
   skills: string[];
   models: string[];
+  /** 绑定的执行层：0 = 跟随工作空间默认执行层（后端 NULL） */
+  execution_layer_id: number;
   chart_enabled: boolean;
   permission_mode: string;
   is_active: boolean;
@@ -117,6 +119,7 @@ const emptyAsBot = (): AsBot => ({
   system_prompt: '', persona: {},
   tools: { groups: [], standard: [], mcp: {}, external: {}, functions: { disabled: [] } },
   mcp_server_ids: [], knowledge_base_ids: [], skills: [], models: [], chart_enabled: true,
+  execution_layer_id: 0,
   permission_mode: 'inherit', is_active: true,
 });
 
@@ -129,6 +132,8 @@ export default function AsBotManager() {
   const [knowledgeBases, setKnowledgeBases] = useState<any[]>([]);
   const [skillOptions, setSkillOptions] = useState<any[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
+  // 执行层清单：供「执行层」下拉选择与模型候选联动（选项显示 display_name，值用 id）
+  const [layers, setLayers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<AsBot | null>(null);
@@ -165,13 +170,18 @@ export default function AsBotManager() {
     loadModelOptions();
   };
 
-  // 可用模型候选:来自已配置的 qoder(cli)执行层的 list_models。
-  // 不能直接用 cli_name=qoder 查(会因缺少层配置/路径/令牌返回空),须用 layer_id。
-  const loadModelOptions = async () => {
+  // 可用模型候选：来自**本轮实际生效的那条执行层**的 list_models。
+  // 不能直接用 cli_name=qoder 查（会因缺少层配置/路径/令牌返回空），须用 layer_id。
+  // AS-BOT 绑了层就按那条层取候选；没绑则回退到默认层（与后端选层口径同构），
+  // 避免“候选来自 A 层、实际跑在 B 层”的双口径。
+  const loadModelOptions = async (layerId = 0) => {
     try {
-      const { data: layers } = await client.get('/admin/execution-layers');
-      const arr = Array.isArray(layers) ? layers : [];
+      const { data: layersResp } = await client.get('/admin/execution-layers');
+      const arr = Array.isArray(layersResp) ? layersResp : [];
+      setLayers(arr);
       const cli =
+        (layerId && arr.find((x: any) => x.id === Number(layerId))) ||
+        arr.find((x: any) => x.layer_type === 'cli' && x.is_default) ||
         arr.find((x: any) => x.layer_type === 'cli' && ((x.config || {}).cli_name === 'qoder')) ||
         arr.find((x: any) => x.layer_type === 'cli');
       if (!cli) { setModelOptions([]); return; }
@@ -183,7 +193,12 @@ export default function AsBotManager() {
   };
   useEffect(() => { load(); }, []);
 
-  const mcpName = (id: number) => mcpServers.find((s) => s.id === id)?.name || `#${id}`;
+  const mcpName = (id: number) => {
+    // 内置服务用业务可读 label（如「Elasticsearch 检索服务」），不是内部 name；
+    // 已下架时给可读标注而不光裸 id（id 仅作为排查线索留在括号里）。
+    const srv = mcpServers.find((s) => s.id === id);
+    return srv ? (srv.label || srv.name) : `MCP 服务已下架（#${id}）`;
+  };
   const kbName = (id: number) => knowledgeBases.find((k) => k.id === id)?.name || `#${id}`;
   // 展示用中文标签(目录里缺标签时回退原始 key, 不丢信息; key 放 title 供排查)
   const groupLabel = (g: string) => toolGroups.find((x) => x.group === g)?.label || g;
@@ -243,6 +258,8 @@ export default function AsBotManager() {
   const { user } = useAuthStore();
   const isAdmin = user?.role === 'admin';
   const isReadOnly = !!(editing?.is_builtin && !isAdmin);
+  // 可选执行层：只列 cli 型（AS-BOT 安全执行链只接受 mode=sdk 的 cli 层）
+  const cliLayers = layers.filter((x: any) => x.layer_type === 'cli');
 
   return (
     <div className="p-6 space-y-4">
@@ -378,7 +395,7 @@ export default function AsBotManager() {
             </div>
 
             <Field label="工具权限 (逐工具粒度 — 未勾选的工具不会注册，LLM 无从调用)">
-              <p className="text-sm text-muted-foreground">空配置＝无工具权限。实际可用能力还需通过工作空间、执行层与用户权限校验。</p>
+              <p className="text-sm text-muted-foreground">空配置＝无工具权限。实际可用能力还需通过工作空间、Harness 与用户权限校验。</p>
               <p className="text-xs text-destructive">子任务隔离尚未完成，配置会保留但不会注册执行，并在会话权限中显示不可用原因。</p>
               
               <div className="space-y-3">
@@ -418,7 +435,7 @@ export default function AsBotManager() {
 
             <Field label="功能能力 (继承自角色权限)">
               <p className="text-xs text-muted-foreground">
-                这些是平台功能动作（报表/看板/调度/质量…），从用户角色权限码自动继承，
+                这些是平台功能动作（报告/看板/调度/质量…），从用户角色权限码自动继承，
                 与上方的数据工具是两个独立维度。这里只能关闭（减法）不能开启——
                 能不能用由角色权限与功能的 AI 级别决定，改级别请到「角色权限 → 菜单与功能」。
               </p>
@@ -495,7 +512,8 @@ export default function AsBotManager() {
                     return (
                       <Badge key={s.id} variant={active ? 'default' : 'outline'} className="cursor-pointer"
                         onClick={() => setForm({ ...form, mcp_server_ids: toggleArr(form.mcp_server_ids || [], s.id) as number[] })}>
-                        {s.name}
+                        {s.label || s.name}
+                        {s.builtin ? <span className="ml-1 text-[10px] opacity-70">内置</span> : null}
                       </Badge>
                     );
                   })}
@@ -507,8 +525,14 @@ export default function AsBotManager() {
                   const tools = Array.isArray(discovered) ? discovered : (discovered?.tools || []);
                   const selected = form.tools.external?.[String(id)] || [];
                   return <div key={id} className="mt-2 border rounded p-2 text-xs">
-                    <p>{srv?.name || id}：逐工具授权</p>
-                    <p className="text-destructive">HTTP/SSE 远程 MCP 尚缺可信身份和数据治理契约，当前禁止执行；stdio 仅在只读、禁网沙箱内运行，且须显式授权读取。</p>
+                    <p>{mcpName(id)}：逐工具授权</p>
+                    {srv?.builtin || srv?.transport === 'builtin' ? (
+                      // 内置服务在会话进程内直接执行（带真实身份与出站守卫），
+                      // 不得套用远程 MCP 的“当前禁止执行”文案误导管理员。
+                      <p className="text-muted-foreground">平台内置服务：会话内直接执行；连接配置与可查索引范围由部署侧托管，不在此页面显示。</p>
+                    ) : (
+                      <p className="text-destructive">HTTP/SSE 远程 MCP 尚缺可信身份和数据治理契约，当前禁止执行；stdio 仅在只读、禁网沙箱内运行，且须显式授权读取。</p>
+                    )}
                     {tools.length === 0 && <p className="text-destructive">缺少工具目录，请先在 MCP 管理中完成工具发现；不会默认授权全部工具。</p>}
                     <div className="flex flex-wrap gap-1 mt-1">{tools.map((t: any) => <Badge key={t.name}
                       title={t.description || t.name} className="cursor-pointer"
@@ -519,15 +543,20 @@ export default function AsBotManager() {
                 })}
               </Field>
               <Field label="引用知识库">
-                <p className="mb-2 text-xs text-muted-foreground">知识库使用范围以当前 AS-BOT 的显式绑定为准，无需再关联工作空间；空绑定不允许知识库检索。</p>
+                <p className="mb-2 text-xs text-muted-foreground">知识库使用范围以当前 AS-BOT 的显式绑定为准，无需再关联工作空间；空绑定不允许知识库检索。已绑定多个库时服务端会并行检索全部库并跨源归并，不靠绑定顺序选库。</p>
                 <div className="flex flex-wrap gap-2 max-h-[140px] overflow-y-auto">
                   {knowledgeBases.map((kb) => {
                     const active = (form.knowledge_base_ids || []).includes(kb.id);
+                    // 未接入检索通道的类型：灰显 + 原样显示服务端原因，不得做成“可选但不生效”的开关
+                    // （服务端 validate_knowledge_binding 同样会拒，只是这里先让用户看出区别）。
+                    // `retrieval` 缺失时按可用处理：不得因为旧载荷没带这个字段就锁死正常库。
+                    const blocked = kb.retrieval && kb.retrieval.readable === false;
                     return (
-                      <Badge key={kb.id} variant={active ? 'default' : 'outline'} className="cursor-pointer"
-                        title={kb.description}
-                        onClick={() => setForm({ ...form, knowledge_base_ids: toggleArr(form.knowledge_base_ids || [], kb.id) as number[] })}>
-                        {kb.name}
+                      <Badge key={kb.id} variant={active ? 'default' : 'outline'}
+                        className={blocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}
+                        title={blocked ? (kb.retrieval.reason || '该库的检索通道本批未接入') : kb.description}
+                        onClick={() => !blocked && setForm({ ...form, knowledge_base_ids: toggleArr(form.knowledge_base_ids || [], kb.id) as number[] })}>
+                        {kb.name}{blocked ? '（不可检索）' : ''}
                       </Badge>
                     );
                   })}
@@ -553,8 +582,37 @@ export default function AsBotManager() {
               </div>
             </Field>
 
+            {/* 执行层：不选=跟随工作空间默认层；选了就用那条层。
+                选项显示业务可读名（display_name），value 用 id；已停用给可读标注而不是裸 id。 */}
+            <Field label="Harness (不选=使用工作空间默认 Harness；模型通道、能力上限与计费口径按所选 Harness 生效)">
+              <Select value={String(form.execution_layer_id || 0)}
+                onValueChange={(v) => {
+                  const id = Number(v) || 0;
+                  // 换层后模型候选不再适用于新通道，清掉旧选择并重新拉候选，
+                  // 避免“拿着 A 层的模型名跑在 B 层”这种配不上的组合被静默提交。
+                  setForm({ ...form, execution_layer_id: id, models: [] });
+                  loadModelOptions(id);
+                }}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="0">默认（跟随工作空间默认 Harness）</SelectItem>
+                  {cliLayers.map((l: any) => (
+                    <SelectItem key={l.id} value={String(l.id)}>
+                      {l.display_name || l.name}{l.status !== 'active' ? ' ·已停用' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {!!form.execution_layer_id && !cliLayers.some((l: any) => l.id === form.execution_layer_id) && (
+                <p className="mt-1 text-xs text-destructive">
+                  已绑定的 Harness 不在可用清单里（可能已删除或不是 CLI 层），请重新选择；
+                  保持不动的话问答会因“Harness 不可用”直接报错，不会静默换一条 Harness 跑。
+                </p>
+              )}
+            </Field>
+
             {/* 可用模型（Chat 端可切换；仅一个/留空时不展示选择框） */}
-            <Field label="可用模型 (Chat 对话页可在其中切换；留空=使用执行层默认模型；仅选 1 个时不展示下拉)">
+            <Field label="可用模型 (Chat 对话页可在其中切换；留空=使用 Harness 默认模型；仅选 1 个时不展示下拉)">
               <div className="flex flex-wrap gap-2 max-h-[140px] overflow-y-auto">
                 {(() => {
                   const opts = Array.from(new Set([...modelOptions, ...(form.models || [])]));
@@ -569,7 +627,7 @@ export default function AsBotManager() {
                   });
                 })()}
                 {modelOptions.length === 0 && (form.models || []).length === 0 && (
-                  <span className="text-xs text-muted-foreground">未获取到执行层模型列表（将使用执行层默认模型）</span>
+                  <span className="text-xs text-muted-foreground">未获取到 Harness 模型列表（将使用 Harness 默认模型）</span>
                 )}
               </div>
             </Field>
@@ -631,6 +689,7 @@ function normalizeAsBot(r: any, catalog = MCP_TOOL_GROUPS): AsBot {
       .map((s: any) => (typeof s === 'string' ? s : String(s?.name || s?.key || '')))
       .filter(Boolean),
     models: parseArr(r.models).map((m: any) => String(m)).filter(Boolean),
+    execution_layer_id: Number(r.execution_layer_id || 0),
     chart_enabled: !!r.chart_enabled,
     is_active: !!r.is_active,
   };

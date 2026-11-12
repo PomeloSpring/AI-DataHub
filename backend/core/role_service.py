@@ -33,6 +33,17 @@ def _gen_id():
     return int(time.time() * 1000000)
 
 
+def default_workspace_quota() -> dict:
+    """系统缺省配额（**数字只在这里从配置读**，调用点不得写死 5GB/5 个）。
+
+    来源 `backend/common/config.py` 的 WORKSPACE_QUOTA_DEFAULT_MAX_WORKSPACES /
+    WORKSPACE_DISK_QUOTA_DEFAULT_BYTES（可环境变量覆盖，换环境不改代码）。
+    """
+    from backend.common import config
+    return {"max_workspaces": int(config.WORKSPACE_QUOTA_DEFAULT_MAX_WORKSPACES or 0),
+            "disk_quota_bytes": int(config.WORKSPACE_DISK_QUOTA_DEFAULT_BYTES or 0)}
+
+
 def _invalidate_datasource_derived_caches() -> None:
     """失效“我的可用数据源/可查站点”派生缓存（角色授权变更时）。
 
@@ -324,7 +335,7 @@ class RoleService:
         finally:
             conn.close()
 
-    # ── 工作空间私有化(个人工作站): 属主校验与双配额 ─────────────
+    # ── 工作空间私有化(个人空间): 属主校验与双配额 ─────────────
 
     def check_workspace_owner(self, user_id: int, workspace_id: int) -> bool:
         """工作空间随用户走: 仅属主可访问(成员体系已退役)。"""
@@ -339,7 +350,16 @@ class RoleService:
             conn.close()
 
     def get_user_workspace_quota(self, user_id: int) -> dict:
-        """每用户工作空间配额; 无配置行 = 缺省 5 个空间 / 每空间 5GB。"""
+        """用户生效配额（**唯一裁决点**）：登记行为权威，无行时取系统缺省（不是“不限制”）。
+
+        为什么只能有这一个口径：磁盘配额有两个门（建空间数、新建会话磁盘用量），历史上
+        它们各读各的 —— 无行时一边按缺省拦、一边把空读成 0=不限，结果是管理员页显示
+        “每空间 5GB”而实际从不拦（配了没用）。管理员页、用量面板与拦截门均改走本函数。
+
+        返回 `{max_workspaces, disk_quota_bytes, is_default}`：`disk_quota_bytes=0` 仅在
+        **显式登记行**里存在，含义是管理员给该用户不设限（逃生口）；缺省值不会算出 0
+        （配置项 `WORKSPACE_DISK_QUOTA_DEFAULT_BYTES` 给数字），二者靠 `is_default` 区分。
+        """
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
@@ -347,9 +367,15 @@ class RoleService:
                     "SELECT max_workspaces, disk_quota_bytes FROM adh_user_workspace_quota WHERE user_id = %s",
                     (user_id,))
                 row = cur.fetchone()
-                return dict(row) if row else {"max_workspaces": 5, "disk_quota_bytes": 5 * 1024 ** 3}
         finally:
             conn.close()
+        if row:
+            return {"max_workspaces": int(row["max_workspaces"] or 0),
+                    "disk_quota_bytes": int(row["disk_quota_bytes"] or 0),
+                    "is_default": False}
+        out = default_workspace_quota()
+        out["is_default"] = True
+        return out
 
     def count_user_workspaces(self, user_id: int) -> int:
         conn = get_metadata_conn()
@@ -376,25 +402,38 @@ class RoleService:
             conn.close()
 
     def list_workspace_quotas(self) -> list:
-        """管理员统管: 全用户 + 各自空间清单(磁盘用量由 API 层补充)。"""
+        """管理员统管: 全用户 + 各自空间清单(磁盘用量由 API 层补充)。
+
+        展示值必须与拦截门同源：这里不再用 SQL COALESCE 写死缺省，而是取原始登记行、
+        无行时走 `default_workspace_quota()`，并随行下发 `quota_is_default` 供页面标“系统缺省”。
+        """
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     """SELECT u.id AS user_id, u.username,
-                              COALESCE(q.max_workspaces, 5) AS max_workspaces,
-                              COALESCE(q.disk_quota_bytes, %s) AS disk_quota_bytes
+                              q.max_workspaces AS registered_max_workspaces,
+                              q.disk_quota_bytes AS registered_disk_quota_bytes
                        FROM adh_users u
                        LEFT JOIN adh_user_workspace_quota q ON q.user_id = u.id
-                       ORDER BY u.id""", (5 * 1024 ** 3,))
+                       ORDER BY u.id""")
                 users = cur.fetchall()
+                default = default_workspace_quota()
                 for item in users:
+                    registered_max = item.pop("registered_max_workspaces", None)
+                    registered_disk = item.pop("registered_disk_quota_bytes", None)
+                    item["max_workspaces"] = (int(registered_max) if registered_max is not None
+                                             else default["max_workspaces"])
+                    item["disk_quota_bytes"] = (int(registered_disk) if registered_disk is not None
+                                                else default["disk_quota_bytes"])
+                    # 缺省=管理员未动过，页面要能分辨“这是系统缺省”与“有人显式配过”
+                    item["quota_is_default"] = registered_disk is None and registered_max is None
                     cur.execute(
                         "SELECT id, name, is_default FROM adh_workspaces "
                         "WHERE owner_id = %s ORDER BY is_default DESC, id",
                         (item["user_id"],))
                     item["workspaces"] = cur.fetchall()
-                return users
+            return users
         finally:
             conn.close()
 

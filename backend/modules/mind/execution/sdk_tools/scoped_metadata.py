@@ -2,6 +2,7 @@
 import json
 
 from backend.common.db import execute_query
+from backend.modules.mind.execution.sdk_tools.semantic_tools import _sanitize_dict_desc
 
 NAMES = {"search_metadata", "get_table_schema", "list_datasources", "search_ontology", "get_ontology_model",
          "list_ontology_models", "get_metadata_summary", "get_glossary", "get_metrics"}
@@ -57,18 +58,25 @@ def execute(name, args, ctx, resource_scope=None):
         return bool(_model_scope_ids_from_row(row, name_id_map) & src_set)
 
     def _scope_note(out):
-        """未选具体源时业务本体目录可能不完整——显式标注，防把'上下文不完整'误报成'对象不存在'。"""
-        if (system and not datasource_id):
+        """未选具体源时业务本体目录可能不完整——显式标注，防把'上下文不完整'误报成'对象不存在'。
+
+        分支顺序必须是 **aggregate 优先于 system+ds=0**：聚合态会话的 src_ids 已经是
+        授权集内全部具体站点源（上面同一口径），业务本体**已纳入**；旧写法先命中
+        “system 且未选源”那条，给聚合态会话刷上“仅系统本体可见，业务本体需…切聚合态才纳入”
+        —— 历史缺陷（会话 1783069459277）：同一回合 keyword=IP 已返回业务对象，而文案叫模型
+        去“切聚合态”，模型据此判定业务本体不可用、跳过语义层去手写 SQL。
+        """
+        if aggregate:
             out = dict(out or {})
-            note = ("会话未选定数据源：仅系统本体可见，业务本体需选定数据源或切聚合态（全球）才纳入；"
-                    "目录为空≠对象不存在")
-            out["incomplete_scope"] = True
-            out["note"] = f"{out['note']}；{note}" if out.get("note") else note
-        elif aggregate:
-            out = dict(out or {})
-            note = ("会话站点为聚合态（全球）：已按授权集内各具体站点纳入业务本体，"
+            note = ("会话站点为聚合态（全部站点）：已按授权集内各具体站点纳入业务本体，"
                     "取数请对各站分别带 site/datasource 调用 run_semantic_query 后分站呈现；"
                     "某站在本目录无对象=该站未建模（≠无数据），需先生成/部署业务本体")
+            out["note"] = f"{out['note']}；{note}" if out.get("note") else note
+        elif (system and not datasource_id):
+            out = dict(out or {})
+            note = ("会话未选定数据源：仅系统本体可见，业务本体需选定数据源或切聚合态（全部站点）才纳入；"
+                    "目录为空≠对象不存在")
+            out["incomplete_scope"] = True
             out["note"] = f"{out['note']}；{note}" if out.get("note") else note
         return out
 
@@ -132,6 +140,9 @@ def execute(name, args, ctx, resource_scope=None):
                 for field in ("aliases", "value_labels"):
                     if isinstance(entry.get(field), str):
                         entry[field] = json.loads(entry[field])
+                # 字典口径脱敏：description 可能含物理列引用（护栏 §7）
+                if entry.get("description"):
+                    entry["description"] = _sanitize_dict_desc(entry["description"])
                 if category == "dimensions":
                     entry["enum"] = entry.pop("value_labels", None) or {}
                     entry["is_time"] = entry.pop("category", "") == "时间"

@@ -7,25 +7,40 @@ import client from '@/api/client';
 vi.mock('@/api/client', () => ({ default: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
 
 // 「菜单与功能」页签数据: 菜单分组 + 无菜单归属(standalone) + 只读接口绑定
+// ai_channel 由后端 perm_link.ai_channel 派生（function_action=已登记功能工具 /
+// perm_gate=执行期按权限码把关 / none=无消费方），三者渲染必须分开。
 const REGISTRY = {
   groups: [],
   menu_groups: [
     {
       menu_key: 'data:ontology', label: '本体管理', section: '数据资产', module: 'data', module_label: '数据中台', sort: 1,
       permissions: [
-        { perm_code: 'ontology:save', label: '保存本体', description: '保存本体模型', menu_key: 'data:ontology', api_pattern: '/api/ontology/*', api_method: 'POST' },
-        { perm_code: 'ontology:delete', label: '删除本体', description: '', menu_key: 'data:ontology', api_pattern: '/api/ontology/models/*', api_method: 'DELETE' },
+        // perm_gate: 未登记 ai_action_key 但执行期 require_write_perm 真把关
+        { perm_code: 'ontology:save', label: '保存本体', description: '保存本体模型', menu_key: 'data:ontology', api_pattern: '/api/ontology/*', api_method: 'POST', ai_access: 'write', ai_effective: 'write', ai_locked: false, ai_action_key: '', ai_channel: 'perm_gate', ai_note: '' },
+        // none: 配了级别但无任何消费方
+        { perm_code: 'ontology:delete', label: '删除本体', description: '', menu_key: 'data:ontology', api_pattern: '/api/ontology/models/*', api_method: 'DELETE', ai_access: 'read', ai_effective: 'read', ai_locked: false, ai_action_key: '', ai_channel: 'none', ai_note: '' },
       ],
     },
     {
-      menu_key: 'data:reports', label: '报表中心', section: '数据资产', module: 'data', module_label: '数据中台', sort: 2,
+      menu_key: 'data:reports', label: '报告中心', section: '数据资产', module: 'data', module_label: '数据中台', sort: 2,
       permissions: [
-        { perm_code: 'report:view', label: '查看报表', description: '', menu_key: 'data:reports', api_pattern: '/api/reports/*,/api/scheduled/*', api_method: 'GET' },
+        { perm_code: 'report:view', label: '查看报告', description: '', menu_key: 'data:reports', api_pattern: '/api/reports/*,/api/scheduled/*', api_method: 'GET', ai_access: 'none', ai_effective: 'none', ai_locked: false, ai_action_key: '', ai_channel: 'none', ai_note: '' },
+      ],
+    },
+    // 内容中心（module='content'）: 历史缺陷是页面只渲染 system/data/workspace 三块，
+    // 这一整块菜单在角色页根本看不到也配不了（菜单登记了≠能管）。
+    {
+      menu_key: 'content:kb-docs', label: '知识库文档', section: '知识运营', module: 'content', module_label: '内容中心', sort: 50,
+      permissions: [
+        { perm_code: 'kbdoc:read', label: '查看知识库文档', description: '', menu_key: 'content:kb-docs', api_pattern: '/api/content/knowledge-bases*', api_method: 'GET', ai_access: 'read', ai_effective: 'read', ai_locked: false, ai_action_key: '', ai_channel: 'none', ai_note: '' },
+        { perm_code: 'kbdoc:write', label: '编辑知识库文档', description: '', menu_key: 'content:kb-docs', api_pattern: '/api/content/knowledge-bases*', api_method: 'POST,PUT', ai_access: 'none', ai_effective: 'none', ai_locked: false, ai_action_key: '', ai_channel: 'none', ai_note: '' },
       ],
     },
   ],
   standalone: [
-    { perm_code: 'legacy:code', label: '无菜单权限', description: '', menu_key: '', api_pattern: '/api/legacy', api_method: '*' },
+    { perm_code: 'legacy:code', label: '无菜单权限', description: '', menu_key: '', api_pattern: '/api/legacy', api_method: '*', ai_access: 'none', ai_effective: 'none', ai_locked: false, ai_action_key: '', ai_channel: 'none', ai_note: '' },
+    // function_action: 已登记 LLM 功能工具（ai_action_key 非空）
+    { perm_code: 'report:read', label: '查看报告清单', description: '', menu_key: '', api_pattern: '/api/reports*', api_method: 'GET', ai_access: 'read', ai_effective: 'read', ai_locked: false, ai_action_key: 'report.list', ai_channel: 'function_action', ai_note: '' },
   ],
 };
 
@@ -84,7 +99,7 @@ describe('角色权限 — 菜单与功能页签', () => {
     // 菜单卡片组头: 菜单名 + 已选计数 + section
     expect(screen.getByText('本体管理')).toBeInTheDocument();
     expect(screen.getByText('1/2')).toBeInTheDocument();
-    expect(screen.getByText('报表中心')).toBeInTheDocument();
+    expect(screen.getByText('报告中心')).toBeInTheDocument();
     expect(screen.getByText('0/1')).toBeInTheDocument();
     // 功能项: label + perm_code + 描述
     expect(screen.getByText('保存本体')).toBeInTheDocument();
@@ -155,6 +170,53 @@ describe('角色权限 — 菜单与功能页签', () => {
     }));
     const payload = vi.mocked(client.put).mock.calls[0][1] as { permissions: string[] };
     expect(payload.permissions.sort()).toEqual(['ontology:delete', 'ontology:save']);
+  });
+
+  it('内容中心的菜单同样渲染与可勾选保存（不得只列三个模块）', async () => {
+    await openFunctionsTab();
+    // 模块标题来自服务端 module_label（业务名，不是裸 key 'content'）
+    expect(screen.getByText('内容中心')).toBeInTheDocument();
+    expect(screen.queryByText('content')).not.toBeInTheDocument();
+    expect(screen.getByText('知识运营')).toBeInTheDocument();
+
+    const head = screen.getByRole('checkbox', { name: /^知识库文档/ }) as HTMLInputElement;
+    expect(head.checked).toBe(false);
+    fireEvent.click(head); // 整组全选
+    expect((screen.getByRole('checkbox', { name: /查看知识库文档/ }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('checkbox', { name: /编辑知识库文档/ }) as HTMLInputElement).checked).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: '保存功能权限' }));
+    await waitFor(() => expect(client.put).toHaveBeenCalledWith('/roles/1/permissions', {
+      permissions: expect.arrayContaining(['kbdoc:read', 'kbdoc:write']),
+    }));
+  });
+});
+
+describe('角色权限 — AI 接入通道如实显示', () => {
+  const rowOf = (label: string) => screen.getByText(label).closest('.border') as HTMLElement;
+
+  it('三态徽标分别渲染：AI 工具 / 权限码把关 / 未接入', async () => {
+    await openFunctionsTab();
+    expect(within(rowOf('查看报告清单')).getByText('AI 工具')).toBeInTheDocument();
+    expect(within(rowOf('保存本体')).getByText('权限码把关')).toBeInTheDocument();
+    expect(within(rowOf('删除本体')).getByText('未接入')).toBeInTheDocument();
+  });
+
+  it('执行期按码把关的功能不得被误报「未接入」（历史缺陷：管理员去改本来生效的配置）', async () => {
+    await openFunctionsTab();
+    const gate = rowOf('保存本体');
+    expect(within(gate).queryByText('未接入')).not.toBeInTheDocument();
+    expect(within(gate).queryByText(/尚未接入 AI/)).not.toBeInTheDocument();
+    expect(within(gate).getByText('权限码把关').getAttribute('title')).toContain('真实生效');
+  });
+
+  it('无消费方的功能显式提示「配置暂不生效」，不让人以为选了级别就开通', async () => {
+    await openFunctionsTab();
+    const none = rowOf('删除本体');
+    expect(within(none).getByText(/尚未接入 AI/)).toBeInTheDocument();
+    expect(within(none).getByText(/不会开通任何接口能力/)).toBeInTheDocument();
+    // 已登记工具与已接码把关的功能不得出现该提示
+    expect(within(rowOf('查看报告清单')).queryByText(/尚未接入 AI/)).not.toBeInTheDocument();
   });
 });
 

@@ -16,7 +16,7 @@ import client from '../../api/client';
 const mockClient = vi.mocked(client);
 
 const SITES = [
-  { site_code: 'global', display_name: '全球站点', is_aggregate: 1, sort_order: 0, datasources: [] },
+  { site_code: 'global', display_name: '全部站点', is_aggregate: 1, sort_order: 0, datasources: [] },
   { site_code: 'cn', display_name: '中国站点', is_aggregate: 0, sort_order: 10,
     datasources: [{ id: 1, name: 'prd-cn', db_type: 'mysql' }] },
   { site_code: 'jp', display_name: '日本站点', is_aggregate: 0, sort_order: 50,
@@ -29,7 +29,7 @@ beforeEach(() => {
 });
 
 describe('loadAuthorizedSites — 可查站点是角色授权的派生视图', () => {
-  it('多站时默认选「全球」（后端已只在 ≥2 站时下发聚合态）', async () => {
+  it('多站时默认选「全部站点」（后端已只在 ≥2 站时下发聚合态）', async () => {
     mockClient.get.mockResolvedValue({ data: { items: SITES } } as never);
     await useChatStore.getState().loadAuthorizedSites(301);
     const s = useChatStore.getState();

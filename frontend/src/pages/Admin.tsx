@@ -20,11 +20,15 @@ import { Spinner } from '@/components/ui/spinner';
 import { ScrollArea } from '@/components/ui/scroll-area';
 // Separator removed — unused
 import client from '../api/client';
+import BrandLockup from '@/components/BrandLockup';
+import { useBrandStore, type BrandSettings } from '@/stores/brandStore';
+import { DEFAULT_BRAND, DEFAULT_APP_NAME, DEFAULT_TAGLINE, buildAppTitle } from '@/lib/brand';
 import IntegrationApps from './admin/IntegrationApps';
 import ERDiagram from '../components/ERDiagram';
 import IntegrationLogs from './admin/IntegrationLogs';
 import SiteManagement from './admin/SiteManagement';
 import { listSites, siteNameOf, concreteSites, type Site } from '../api/sites';
+import { modelCapabilityTags, MODEL_TAG_TONE_CLASS } from '../lib/llmModelTags';
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -2198,35 +2202,28 @@ function UsersTab() {
 // ── Brand Settings Tab ─────────────────────────────────────────────────
 
 function BrandSettingsTab() {
-  const [brand, setBrand] = useState({ app_name: 'AI-DataHub', logo_url: '', show_icon: true, show_text: true });
+  const [brand, setBrand] = useState<BrandSettings>(DEFAULT_BRAND);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const fetchBrand = useBrandStore(s => s.fetchBrand);
+  const updateBrand = useBrandStore(s => s.updateBrand);
 
   useEffect(() => {
     setLoading(true);
-    client.get('/admin/brand')
-      .then(({ data }) => setBrand(data))
-      .catch(() => {})
+    // 读取也走 brandStore：保存后全端（侧栏/顶栏/标签）与本页表单同一份品牌快照
+    fetchBrand()
+      .then(() => setBrand(useBrandStore.getState().brand))
       .finally(() => setLoading(false));
-  }, []);
+  }, [fetchBrand]);
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      const { data } = await client.put('/admin/brand', brand);
-      setBrand(data);
+      // updateBrand 内部已 PUT + 刷新全端品牌快照 + 写回标签标题与图标，本页不再重复实现
+      const saved = await updateBrand(brand);
+      setBrand(saved);
       toast.success('品牌设置已保存');
-      // Apply title immediately
-      document.title = `${data.app_name || 'AI-DataHub'} - 数据分析平台`;
-      // Apply or reset favicon
-      let link = document.querySelector("link[rel~='icon']") as HTMLLinkElement;
-      if (!link) {
-        link = document.createElement('link');
-        link.rel = 'icon';
-        document.head.appendChild(link);
-      }
-      link.href = data.logo_url || '/vite.svg';
     } catch {
       toast.error('保存失败');
     } finally {
@@ -2266,24 +2263,18 @@ function BrandSettingsTab() {
     <div className="space-y-6 max-w-[560px]">
       <div>
         <h3 className="text-lg font-semibold">品牌设置</h3>
-        <p className="text-sm text-muted-foreground">配置应用左上角显示的名称和图标，图标也会同步显示为浏览器标签页图标</p>
+        <p className="text-sm text-muted-foreground">配置应用左上角与登录页显示的名称、标语和图标；未上传图标时，浏览器标签页图标自动跟随当前主题主色，与左上角方块同一画风</p>
       </div>
 
       {/* Logo preview */}
       <div className="flex items-center gap-4 p-4 rounded-lg border bg-muted/30">
-        <div className="flex items-center gap-2">
-          {brand.show_icon && brand.logo_url ? (
-            <img src={brand.logo_url} alt="Logo" className="h-8 w-8 rounded object-contain" />
-          ) : brand.show_icon ? (
-            <div className="h-8 w-8 rounded bg-primary/10 flex items-center justify-center">
-              <span className="text-sm font-bold text-primary">CB</span>
-            </div>
-          ) : null}
-          {brand.show_text && (
-            <span className="text-xl font-bold">{brand.app_name || 'AI-DataHub'}</span>
-          )}
-        </div>
-        <span className="text-xs text-muted-foreground ml-auto">预览效果</span>
+        <BrandLockup
+          brand={brand}
+          size={32}
+          nameClassName="text-xl leading-tight"
+          taglineClassName="text-xs leading-tight"
+        />
+        <span className="text-xs text-muted-foreground ml-auto shrink-0">预览效果</span>
       </div>
 
       {/* App name */}
@@ -2294,7 +2285,19 @@ function BrandSettingsTab() {
           onChange={(e) => setBrand({ ...brand, app_name: e.target.value })}
           placeholder="AI-DataHub"
         />
-        <p className="text-xs text-muted-foreground">显示在左上角和浏览器标签页标题中</p>
+        <p className="text-xs text-muted-foreground">显示在左上角、登录页与浏览器标签页标题（固定格式「{buildAppTitle(brand.app_name || DEFAULT_APP_NAME)}」），标签页图标上的字母也由此名称派生</p>
+      </div>
+
+      {/* Tagline */}
+      <div className="space-y-2">
+        <Label>品牌标语</Label>
+        <Input
+          value={brand.tagline}
+          onChange={(e) => setBrand({ ...brand, tagline: e.target.value })}
+          placeholder={DEFAULT_TAGLINE}
+          maxLength={60}
+        />
+        <p className="text-xs text-muted-foreground">显示在登录页品牌名称下方那一行；留空则登录页不显示标语。不影响浏览器标签页标题（它固定用上方「应用名称」拼接）</p>
       </div>
 
       {/* Logo upload */}
@@ -2335,6 +2338,7 @@ function BrandSettingsTab() {
       {/* Display options */}
       <div className="space-y-3">
         <Label>显示选项</Label>
+        <p className="text-xs text-muted-foreground">对左上角、登录页等页内品牌标同时生效（浏览器标签页图标不受「显示图标」影响）</p>
         <div className="flex items-center gap-3">
           <Switch
             checked={brand.show_icon}
@@ -2725,15 +2729,28 @@ interface LLMModelRow {
   model_name: string;
   max_tokens: number;
   supports_thinking: number;
+  supports_vision: number;
+  /** 能力序：1=最强，数字越大越弱/越省；99=未定档（排序沉底） */
+  capability_rank: number;
+  input_price_per_1k: number | string | null;
+  output_price_per_1k: number | string | null;
+  currency: string | null;
   is_default: number;
   is_active: number;
+}
+
+function emptyModelForm() {
+  // 新登记不预设任何能力结论：多模态 false（未实测）、能力序 99（未定档）、单价留空（未定价）
+  return { provider: 'openai', max_tokens: 4096, context_window: 200000,
+    supports_thinking: true, supports_vision: false, capability_rank: 99,
+    input_price_per_1k: null, output_price_per_1k: null, currency: 'USD' };
 }
 
 function ModelConfigTab() {
   const [models, setModels] = useState<LLMModelRow[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<LLMModelRow | null>(null);
-  const [form, setForm] = useState<any>({ provider: 'openai', max_tokens: 4096, supports_thinking: true });
+  const [form, setForm] = useState<any>(emptyModelForm());
 
   useEffect(() => { loadModels(); }, []);
 
@@ -2746,7 +2763,7 @@ function ModelConfigTab() {
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ provider: 'openai', max_tokens: 4096, supports_thinking: true });
+    setForm(emptyModelForm());
     setModalOpen(true);
   };
 
@@ -2799,7 +2816,14 @@ function ModelConfigTab() {
       {/* LLM Models */}
       <div className="rounded-lg border bg-card">
         <div className="flex items-center justify-between p-4 border-b">
-          <h3 className="text-lg font-medium">大模型配置</h3>
+          <div>
+            <h3 className="text-lg font-medium">大模型配置</h3>
+            {/* 排序口径写在使用现场：管理员不会猜“为什么旗舰在第七行”，也不会误以为顶行就是最强 */}
+            <p className="mt-1 text-xs text-muted-foreground">
+              列表按「能力序」排序（1=最强，数字越大越弱越省）；99 为未定档，会沉到底部。
+              “默认”只是不指定模型时的选型，不代表能力最强。能力标签由已登记的列派生（能力序/多模态/思考/单价），不另存一份。
+            </p>
+          </div>
           <Button onClick={openCreate}>
             <Plus className="h-4 w-4 mr-2" />添加模型
           </Button>
@@ -2808,6 +2832,8 @@ function ModelConfigTab() {
           <table className="w-full">
             <thead>
               <tr className="border-b bg-muted/50">
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">能力序</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">能力标签</th>
                 <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">名称</th>
                 <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">提供商</th>
                 <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">模型</th>
@@ -2820,6 +2846,27 @@ function ModelConfigTab() {
             <tbody>
               {models.map(m => (
                 <tr key={m.id} className="border-b hover:bg-muted/50">
+                  <td className="px-4 py-2 text-sm">
+                    {(() => {
+                      // 读不到 capability_rank（旧后端未重启/未返回该列）时也要说“未定档”，
+                      // 不能渲成空白——空白会被读成“这个模型没能力档位”而不是“服务端没给我数据”。
+                      const rank = m.capability_rank;
+                      return typeof rank === 'number' && rank <= 90
+                        ? <span className="font-mono tabular-nums" title="1=最强，数字越大越弱/越省">{rank}</span>
+                        : <Badge variant="outline" className="text-muted-foreground" title="未定档：排序沉底，请在此行「编辑」里填能力序">未定档</Badge>;
+                    })()}
+                  </td>
+                  <td className="px-4 py-2">
+                    {/* 标签全部由 modelCapabilityTags 从已有列派生（多存一份 tags 就是第二个事实源） */}
+                    <div className="flex flex-wrap gap-1">
+                      {modelCapabilityTags(m).map(t => (
+                        <Badge key={t.key} variant="outline" title={t.title}
+                          className={MODEL_TAG_TONE_CLASS[t.tone]}>
+                          {t.label}
+                        </Badge>
+                      ))}
+                    </div>
+                  </td>
                   <td className="px-4 py-2 text-sm font-medium">{m.name}</td>
                   <td className="px-4 py-2 text-sm"><Badge variant="outline">{m.provider}</Badge></td>
                   <td className="px-4 py-2 text-sm font-mono">{m.model_name}</td>
@@ -2897,12 +2944,45 @@ function ModelConfigTab() {
                 <Input type="number" value={form.max_tokens || 4096}
                   onChange={(e) => setForm({ ...form, max_tokens: parseInt(e.target.value) || 4096 })} />
               </div>
-              <div className="flex items-center gap-2 pt-6">
-                <Switch checked={form.supports_thinking !== false}
-                  onCheckedChange={(v) => setForm({ ...form, supports_thinking: v })} />
-                <Label>支持思考模式</Label>
+              <div className="space-y-2">
+                <Label>能力序 <span className="text-muted-foreground">(1=最强，99=未定档)</span></Label>
+                <Input type="number" value={form.capability_rank ?? 99}
+                  onChange={(e) => setForm({ ...form, capability_rank: parseInt(e.target.value) || 99 })} />
               </div>
             </div>
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Switch checked={form.supports_thinking !== false}
+                  onCheckedChange={(v) => setForm({ ...form, supports_thinking: v })} />
+                <Label>支持思考链</Label>
+              </div>
+              {/* 多模态不拿默认值当“支持”：没实测过就选不上（实测脚本见 logs/probe_vision.py 口径） */}
+              <div className="flex items-center gap-2">
+                <Switch checked={form.supports_vision === true || form.supports_vision === 1}
+                  onCheckedChange={(v) => setForm({ ...form, supports_vision: v })} />
+                <Label>支持图片输入（多模态）</Label>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-4">
+              <div className="space-y-2">
+                <Label>输入单价 <span className="text-muted-foreground">/1K tok</span></Label>
+                <Input type="number" step="0.0001" value={form.input_price_per_1k ?? ''}
+                  onChange={(e) => setForm({ ...form, input_price_per_1k: e.target.value === '' ? null : Number(e.target.value) })} />
+              </div>
+              <div className="space-y-2">
+                <Label>输出单价 <span className="text-muted-foreground">/1K tok</span></Label>
+                <Input type="number" step="0.0001" value={form.output_price_per_1k ?? ''}
+                  onChange={(e) => setForm({ ...form, output_price_per_1k: e.target.value === '' ? null : Number(e.target.value) })} />
+              </div>
+              <div className="space-y-2">
+                <Label>币种</Label>
+                <Input value={form.currency || 'USD'} onChange={(e) => setForm({ ...form, currency: e.target.value })}
+                  placeholder="USD / CNY" />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              单价留空就是「未定价」：能力标签与成本页会如实写未定价，不会拿模型名猜一个价格给你。
+            </p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setModalOpen(false)}>取消</Button>

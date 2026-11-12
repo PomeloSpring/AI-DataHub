@@ -252,11 +252,12 @@ def _build_execution_binding(primary_table: str, datasource_id: int,
                 "allow_full_scan": 1,
                 "permission_tokens": [],
                 "masked_columns": [],
-                "product_ref": _product_ref_for(datasource_name, primary_table),
-        # 产品类 = 逻辑表名：同构多站点下站点实例共享一份契约（一份定义 × N 个物理部署）；
-        # binding_resolver 解析时会用 adh_data_products.product_class 校正（产品表是身份事实源）
-        "product_class": primary_table,
-                "product_class": "",   # 无物理表，无产品类
+                # 本分支的前提是 primary_table 为空：既无物理表也无产品/产品类
+                # （产品类=逻辑表名，只在下方有物理表分支登记）。历史形态是同一个
+                # dict 字面量里写了两遍 product_class（后者覆盖前者）+ product_ref
+                # 走了一次恒空的查表，读起来像"数据集绑定也带产品身份"，实际不带。
+                "product_ref": "",
+                "product_class": "",
                 "sync_state": "bound",
             }
         return {
@@ -577,6 +578,7 @@ def _persist_bindings(doc: dict, model_id: int) -> dict:
     now = ontology_service._now()
     written = drifted = unbound = 0
     col_cache: dict = {}   # 表实存列名缓存(带点列身份裁决), 逐对象复用避免重复查元数据
+    table_info = _load_table_info_map(datasource_id) if datasource_id else {}
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             # 1. 本模型旧行失效（保留历史，避免下游误读）。范围仅限**模型自有数据源**：
@@ -591,6 +593,14 @@ def _persist_bindings(doc: dict, model_id: int) -> dict:
             # 2. 逐对象写入 active 绑定行
             for obj in doc.get("objects") or []:
                 binding = obj.get("execution_binding") or {}
+                if not binding:
+                    # v0.5 B6b 后 doc 不再携带 execution_binding：按 doc 声明的形状
+                    # （primary_table / execution_dataset）派生，否则这支路对新建/
+                    # 页面编辑的对象恒跳过，绑定行永远补不上。
+                    binding = _derive_binding_for_object(
+                        obj, datasource_id,
+                        doc.get("datasource_name") or _datasource_name_by_id(datasource_id),
+                        table_info, col_cache)
                 if not binding:
                     continue
                 state = binding.get("sync_state") or "unbound"
@@ -654,7 +664,7 @@ def _persist_bindings(doc: dict, model_id: int) -> dict:
 def _column_map_from_props(obj: dict, datasource_id: int = 0,
                           table_hint: str = "",
                           col_cache: Optional[dict] = None) -> dict:
-    """从 properties[].column 提取 {属性名: 物理列名}。
+    """从 properties[].column 提取 {属性名: 物理列名}（漂移清单不需要的调用方用这支）。
 
     带点 column 有两种写法，不能一律剥前缀（历史缺陷：SLS/ARMS 嵌套字段 `view.url`
     被剥成 `url`，部署绑定 column_map 指向不存在的列，直查物理源时无法解析）：
@@ -683,6 +693,265 @@ def _column_map_from_props(obj: dict, datasource_id: int = 0,
                 obj.get("key", ""), pname, col, table or "?", verdict)
         cmap[pname] = col
     return cmap
+
+
+def _column_map_with_drift(obj: dict, datasource_id: int = 0, table_hint: str = "",
+                           col_cache: Optional[dict] = None) -> tuple[dict, list]:
+    """同 `_column_map_from_props`（裁决口径唯一实现见 physical_ref），额外回收漂移清单。
+
+    漂移只进服务端日志是历史缺陷：换库/改表后页面上属性行照旧显示一个不存在的列名，
+    没有任何一处看得见"错"（Doris 换 database 后 client_version/firmware_version
+    实为 c_version/f_version 即此形态）。回收成结构化清单，供级联告警与建模页渲染。
+    条目形态：{property, column, table, verdict}，verdict ∈ bad（列不存在）/ unverified
+    （该表列元数据缺失，无法核验——不是错，但同样不能当已绑定用）。
+    """
+    table = str(table_hint or obj.get("primary_table") or "").strip()
+    known = (_physical_ref.columns_of_table(datasource_id, table, col_cache)
+             if table else set())
+    cmap: dict[str, str] = {}
+    drift: list = []
+    for p in obj.get("properties") or []:
+        col = str(p.get("column") or "")
+        pname = str(p.get("name") or "")
+        if not col or not pname:
+            continue
+        _t, resolved, verdict = _physical_ref.resolve_column_ref(col, table, known)
+        if "." in col and resolved != col and verdict == "ok":
+            col = resolved
+        elif verdict in ("bad", "unverified") and ("." in col or not known):
+            drift.append({"property": pname, "column": col, "table": table,
+                          "verdict": verdict})
+            logger.warning(
+                "[ontology-import] 对象 %s 属性 %r 的列名 %r 未能对着该表(%s)实存列核验"
+                "(%s),保留原写法(建模回炉项)",
+                obj.get("key") or obj.get("object_key") or "", pname, col,
+                table or "?", verdict)
+        elif verdict in ("bad", "unverified"):
+            # 不带点的幽灵列（列名本身在该表实存列之外）：同样必须回收，
+            # 否则"表存在但列改名"这一类最常见的换库漂移仍然看不见。
+            drift.append({"property": pname, "column": col, "table": table,
+                          "verdict": verdict})
+            logger.warning(
+                "[ontology-import] 对象 %s 属性 %r 的列名 %r 不在该表(%s)实存列里(%s)"
+                "(建模回炉项)",
+                obj.get("key") or obj.get("object_key") or "", pname, col,
+                table or "?", verdict)
+        cmap[pname] = col
+    return cmap, drift
+
+
+def property_column_drift(obj: dict, datasource_id: int = 0,
+                          table_hint: str = "", col_cache: Optional[dict] = None) -> list:
+    """单个对象的属性列漂移清单（只读，供建模页/接口实时呈现，不落库）。
+
+    实时算而不是存快照：列元数据会随同步变，快照会把"已修好"的对象继续标成漂移。
+    """
+    _cmap, drift = _column_map_with_drift(obj, datasource_id, table_hint, col_cache)
+    return drift
+
+
+def _derive_binding_for_object(obj: dict, datasource_id: int, ds_name: str,
+                               table_info: dict, col_cache: Optional[dict] = None) -> dict:
+    """按 doc 声明的形状（primary_table / execution_dataset）派生该对象的部署绑定。
+
+    v0.5 B6b 把物理绑定从 doc 移到部署绑定层后，doc 不再有 execution_binding；
+    但"对象挂在一张已同步的表上"这件事仍然是 doc 声明的业务形状（建模页「编辑对象 →
+    绑定物理表」写的就是它）。派生口径与导入路径完全同源（`_build_execution_binding`），
+    不另造一份字段清单。无表也无数据集 → 返回 {}（纯概念对象，不是绑定缺陷）。
+    """
+    table = str(obj.get("primary_table") or "").strip()
+    dataset_ref = _dataset_ref_of_obj(obj)
+    if not table and not dataset_ref:
+        return {}
+    return _build_execution_binding(table, datasource_id, table_info, ds_name, dataset_ref)
+
+
+def _norm_obj_key(key) -> str:
+    """对象 key 的比对归一（不区分大小写与分隔符，与建模判重口径一致）。"""
+    return re.sub(r"[^a-z0-9]", "", str(key or "").lower())
+
+
+def _json_obj(raw) -> dict:
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except ValueError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+# 换表时必须随新表重取的表级派生列（它们描述的是"这张表长什么样"，不是人工配置）
+_TABLE_SHAPE_FIELDS = ("query_mode", "size_class", "allow_full_scan")
+
+
+def reconcile_deploy_bindings(doc: dict, model_id: int, datasource_id: int) -> dict:
+    """把 doc 声明的对象形状**对账**进模型自有源的部署绑定行（幂等，可反复执行）。
+
+    为什么级联必须管这一层（页面能力断链的根因）：B6b 之后登记绑定行只剩
+    `import-yaml` 与离线脚本两个入口，而建模页一边写着"发布后在部署绑定层登记物理表"，
+    一边没有任何路径真的去登记 —— 换库/新建对象后对象常年显示「未绑定物理表 · 无法取数」，
+    用户只能改库或跑脚本。本函数是页面级联（save_draft/publish/activate）的唯一登记口。
+
+    口径（宁缺勿错 + 级联不越界）：
+    - 作用域 = `model_id AND datasource_id=<模型自有源>`：跨站部署行、其它源的行一律不碰
+      （历史事故：级联按整个 model_id 废弃把四站部署打废）；
+    - doc 声明了形状的对象：缺行则登记；表/形态/数据集变了则原地 UPDATE；
+      完全没变则**原行不动**（不刷 id，不制造审计噪音）；
+    - doc 未声明形状的对象（纯概念对象/route 型）：有行就留着不动，没行也不报错，
+      只在结果里计 skip；
+    - doc 已删除的对象：其自有源行置 deprecated（真实失效，不留悬空 active 绑定）；
+    - 运维护栏列（max_rows/timeout_sec/permission_tokens/rls_policy_ref/masked_columns/
+      join_expr）永不覆盖：发布改的是业务形状，不是替人重配权限与限流；
+      只有换表时表级派生列（query_mode/size_class/allow_full_scan）才随新表重取；
+    - 属性列对不上实存列（drift verdict=bad）时 sync_state 记 `drifted`，不报"已绑定"；
+      且当**只有列映射差异**而派生映射本身含幽灵列时，不拿更差的映射覆盖现有行
+      —— 由建模人先改 doc（改列名）再发布，漂移在页面上可见。
+    """
+    datasource_id = int(datasource_id or 0)
+    ds_name = str(doc.get("datasource_name") or "") or _datasource_name_by_id(datasource_id)
+    table_info = _load_table_info_map(datasource_id) if datasource_id else {}
+    col_cache: dict = {}
+    now = ontology_service._now()
+    skipped_no_shape = 0     # doc 未声明物理形状的对象数（先于使用处初始化）
+
+    desired: dict[str, dict] = {}
+    doc_keys: set[str] = set()
+    drift_all: list = []
+    for obj in doc.get("objects") or []:
+        if not isinstance(obj, dict):
+            continue
+        key = str(obj.get("key") or obj.get("object_key") or "").strip()
+        if not key:
+            continue
+        nk = _norm_obj_key(key)
+        doc_keys.add(nk)
+        binding = obj.get("execution_binding") or _derive_binding_for_object(
+            obj, datasource_id, ds_name, table_info, col_cache)
+        if not binding:
+            skipped_no_shape += 1      # 纯概念对象/route 型：不报错，但要在结果里数得出来
+            continue
+        table = str(binding.get("physical_table") or "").strip()
+        cmap, drift = _column_map_with_drift(obj, datasource_id, table, col_cache)
+        for d in drift:
+            d["object_key"] = key
+        drift_all.extend(drift)
+        state = str(binding.get("sync_state") or "unbound")
+        if table and any(d["verdict"] == "bad" for d in drift) and state == "bound":
+            state = "drifted"          # 形状对不上不叫已绑定（不静默报成功）
+        desired[nk] = {
+            "object_key": key,
+            "physical_table": table,
+            "bind_kind": str(binding.get("bind_kind") or "primary"),
+            "dataset_ref": binding.get("dataset_ref") or "",
+            "catalog_ref": str(binding.get("catalog_ref") or ""),
+            "product_ref": str(binding.get("product_ref") or "")
+                           or _product_ref_for(ds_name, table),
+            "column_map": cmap,
+            "query_mode": str(binding.get("query_mode") or "raw_source"),
+            "size_class": binding.get("size_class"),
+            "allow_full_scan": int(binding.get("allow_full_scan") or 0),
+            "sync_state": state,
+            "has_bad_drift": any(d["verdict"] == "bad" for d in drift),
+        }
+
+    registered: list[str] = []
+    refreshed: list[str] = []
+    deprecated: list[str] = []
+    unchanged = 0
+    kept_drifted: list[str] = []
+
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, object_key, physical_table, bind_kind, dataset_ref, column_map, "
+                "sync_state, product_ref, catalog_ref FROM adh_ontology_bindings "
+                "WHERE model_id = %s AND status = 'active' AND datasource_id = %s "
+                "ORDER BY id", (model_id, datasource_id))
+            existing: dict[str, dict] = {}
+            for r in cur.fetchall() or []:
+                nk = _norm_obj_key(r.get("object_key"))
+                if nk:
+                    existing.setdefault(nk, r)   # 同 key 历史重复行只认第一行，不新增副本
+
+            for nk, d in desired.items():
+                row = existing.get(nk)
+                if row is None:
+                    cur.execute(
+                        "INSERT INTO adh_ontology_bindings "
+                        "(id, model_id, object_key, datasource_id, datasource_name, product_ref, catalog_ref, "
+                        "bind_kind, dataset_ref, physical_table, join_expr, column_map, query_mode, size_class, "
+                        "allow_full_scan, max_rows, timeout_sec, permission_tokens, rls_policy_ref, masked_columns, "
+                        "sync_state, last_verified_at, status, created_at, updated_at) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,%s,%s,%s,%s,NULL,NULL,%s,NULL,%s,%s,%s,'active',%s,%s)",
+                        (ontology_service._gen_id() + len(registered), model_id, d["object_key"],
+                         datasource_id, ds_name, d["product_ref"], d["catalog_ref"], d["bind_kind"],
+                         d["dataset_ref"] or None, d["physical_table"],
+                         json.dumps(d["column_map"], ensure_ascii=False),
+                         d["query_mode"], d["size_class"], d["allow_full_scan"],
+                         json.dumps([], ensure_ascii=False), json.dumps([], ensure_ascii=False),
+                         d["sync_state"], now if d["sync_state"] == "bound" else None, now, now))
+                    registered.append(d["object_key"])
+                    continue
+                same_table = str(row.get("physical_table") or "") == d["physical_table"]
+                same_shape = (str(row.get("bind_kind") or "primary") == d["bind_kind"]
+                              and str(row.get("dataset_ref") or "") == str(d["dataset_ref"] or ""))
+                same_map = _json_obj(row.get("column_map")) == d["column_map"]
+                same_state = str(row.get("sync_state") or "") == d["sync_state"]
+                if same_table and same_shape and same_map and same_state:
+                    unchanged += 1
+                    continue
+                if same_table and same_shape and not same_map and d["has_bad_drift"]:
+                    # 只有列映射差异，而新映射本身带幽灵列 → 覆盖它只会更错（宁缺勿错）
+                    kept_drifted.append(d["object_key"])
+                    logger.warning(
+                        "[ontology-binding] 模型 %s 对象 %s 的属性列与实际表结构不一致，"
+                        "保留现有列映射不覆盖（请改 doc 里的列名后重新发布）",
+                        model_id, d["object_key"])
+                    continue
+                sets = ["physical_table = %s", "bind_kind = %s", "dataset_ref = %s",
+                        "column_map = %s", "sync_state = %s",
+                        "last_verified_at = %s", "updated_at = %s"]
+                params: list = [d["physical_table"], d["bind_kind"], d["dataset_ref"] or None,
+                                json.dumps(d["column_map"], ensure_ascii=False), d["sync_state"],
+                                now if d["sync_state"] == "bound" else None, now]
+                # 数据产品/目录身份：派生得到就刷新，派生为空则保留原值——绑定行是
+                # "已认领的稳定身份"（binding_resolver._enrich_from_data_product 同口径），
+                # 拿一次产品表查不到就把人认领的 product_ref 抹平是倒退。
+                if d["product_ref"]:
+                    sets.append("product_ref = %s")
+                    params.append(d["product_ref"])
+                if d["catalog_ref"]:
+                    sets.append("catalog_ref = %s")
+                    params.append(d["catalog_ref"])
+                if not same_table:   # 换表 = 表级派生护栏随新表重取；人工列一律不动
+                    sets += [f"{c} = %s" for c in _TABLE_SHAPE_FIELDS]
+                    params += [d["query_mode"], d["size_class"], d["allow_full_scan"]]
+                params.append(row["id"])
+                cur.execute(
+                    f"UPDATE adh_ontology_bindings SET {', '.join(sets)} WHERE id = %s", params)
+                refreshed.append(d["object_key"])
+
+            for nk, row in existing.items():
+                if nk in doc_keys:
+                    continue
+                cur.execute(
+                    "UPDATE adh_ontology_bindings SET status = 'deprecated', updated_at = %s "
+                    "WHERE id = %s", (now, row["id"]))
+                deprecated.append(str(row.get("object_key") or ""))
+        conn.commit()
+
+    out = {"model_id": model_id, "datasource_id": datasource_id,
+           "datasource_name": ds_name, "registered": registered, "refreshed": refreshed,
+           "deprecated": deprecated, "unchanged": unchanged,
+           "skipped_no_shape": skipped_no_shape,
+           "kept_drifted": kept_drifted, "drift": drift_all}
+    logger.info(
+        "[ontology-binding] 模型 %s(源 %s) 部署绑定对账：登记 %d / 刷新 %d / 废弃 %d / 未变 %d / 未声明形状 %d",
+        model_id, ds_name or datasource_id, len(registered), len(refreshed),
+        len(deprecated), unchanged, skipped_no_shape)
+    return out
 
 
 def _rebuild_graph(datasource_id: int, kind: str = "") -> dict:

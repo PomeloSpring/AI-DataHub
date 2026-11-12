@@ -92,6 +92,15 @@ export interface ModelSiteRow {
 }
 
 /** 对象契约行（一份契约的形状描述，不再逐站重复登记） */
+/** 属性列漂移条目（服务端实时对着列元数据判，不落库快照）
+ *  verdict: bad=该列不在这张表的实存列里（换库/改表后最常见）; unverified=表列元数据缺失，无法核验 */
+export interface PropertyDriftEntry {
+  property: string;
+  column: string;
+  table: string;
+  verdict: 'bad' | 'unverified' | string;
+}
+
 export interface ContractObjectRow {
   object_key: string;
   object_name: string;
@@ -103,6 +112,35 @@ export interface ContractObjectRow {
   product_ref: string;
   /** 对象级站点白名单：显式限定的站点 code；空 = 不收紧（上方勾选的站点全可用） */
   allowed_sites: string[];
+}
+
+/** 对象属性列候选（「编辑对象 → 属性列映射」选择框的选项；与漂移判定同源，仅列元数据已同步时有值） */
+export interface ObjectColumnOption {
+  name: string;
+  type: string;
+  /** 列业务名（列注释/业务描述），作为选项主标签 */
+  comment: string;
+}
+
+export interface ObjectColumnOptions {
+  object_key: string;
+  table: string;
+  bind_kind: string;
+  dataset_ref: string;
+  columns: ObjectColumnOption[];
+  /** 拿不到候选时的可读原因（不假装有候选，也不让前端猜列名） */
+  note: string;
+}
+
+/** 发布级联的口径收编小结（doc 顶层声明的指标/维度 → 指标字典）。
+ *  字典才是取数权威：“看着有指标、问数解不出”就靠本小结驱除。 */
+export interface SemanticAssetSummary {
+  metrics_created: string[];
+  metrics_merged: string[];
+  dimensions_created: string[];
+  dimensions_merged: string[];
+  /** 未收编条目与原因（同名口径已挂别的对象/公式列不存在等），命名与口径由人拍板 */
+  blocked: { kind: string; name: string; object_key: string; reason: string }[];
 }
 
 export interface OntologyObjectHit {
@@ -174,7 +212,14 @@ export const ontologyApi = {
       sites: ModelSiteRow[];
       selected: { site_code: string; datasource: string }[];
       contract_objects: ContractObjectRow[];
+      /** 对象 key → 属性列漂移清单（建模页唯一能看到"列改名了"的地方，缺省按无漂移） */
+      property_drift?: Record<string, PropertyDriftEntry[]>;
     }>(`/catalog/ontology/models/${id}/sites`),
+  /** 对象属性的实存列候选（建模页修「列待修」的唯一列名清单；table 为弹窗内表名覆盖值） */
+  objectColumns: (id: number, objectKey: string, table = '') =>
+    client.get<ObjectColumnOptions>(
+      `/catalog/ontology/models/${id}/objects/${encodeURIComponent(objectKey)}/columns`,
+      { params: table ? { table } : {} }),
   saveSites: (
     id: number,
     sites: { site_code: string; datasource: string }[],
@@ -202,9 +247,16 @@ export const ontologyApi = {
   saveDraft: (id: number, jsonContent: string, name?: string) =>
     client.put<OntologyModel & { draft_pending?: boolean; note?: string }>(
       `/catalog/ontology/models/${id}/draft`, { json_content: jsonContent, name }),
-  /** 发布草案：生效 + 级联（重展开对象/重建图谱/同步知识库），需 ontology:publish */
+  /** 发布草案：生效 + 级联（重展开对象/登记部署绑定/收编口径字典/重建图谱），需 ontology:publish；
+   *  知识库不在本请求内同步，由后台对账重推（关系图谱页可手动同步） */
   publishDraft: (id: number) =>
-    client.post<{ success: boolean; object_count?: number }>(`/catalog/ontology/models/${id}/publish`, {}),
+    client.post<{
+      success: boolean; object_count?: number;
+      /** 口径收编小结：收进字典几条 / 几条因何未收（页面必须如实告知） */
+      semantic_assets?: SemanticAssetSummary;
+      /** 级联告警（属性列漂移等），不致命但用户要知道 */
+      warnings?: string[];
+    }>(`/catalog/ontology/models/${id}/publish`, {}),
   /** 草案状态 + 对象级差异（服务端真值，不信本地布尔）；不含草案正文 */
   getDraft: (id: number) =>
     client.get<DraftStatus>(`/catalog/ontology/models/${id}/draft`),

@@ -30,7 +30,9 @@ services:
     container_name: chatbi-frontend
     restart: unless-stopped
     ports:
-      - "3000:80"
+      # 宿主口与根目录 .env 的 FRONTEND_PORT 同源（与 docker-compose.full.yml 同口径），
+      # 不在本处抄一份 3000
+      - "${FRONTEND_PORT:-3000}:80"
     depends_on:
       backend:
         condition: service_healthy

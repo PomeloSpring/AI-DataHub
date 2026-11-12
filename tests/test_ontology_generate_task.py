@@ -28,10 +28,14 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
 
 from types import SimpleNamespace
 
 from fastapi import HTTPException
+
+from backend.core import conversation_store as _store  # noqa: E402
+from split_table_fake import SplitTable, new_state  # noqa: E402
 
 
 # 目标源内部 id：只允许出现在服务端落库参数里，不得进任务消息（LLM 黑盒）。
@@ -51,8 +55,9 @@ def _payload(result):
 # ── fake DB：记录 SQL/参数，按语句形态回放结果（不触碰真实库）────────
 
 class _Cursor:
-    def __init__(self, ops):
+    def __init__(self, ops, table=None):
         self.ops = ops
+        self.table = table          # 拆行消息表替身（写路径的唯一存储形态）
         self._row = None
 
     def __enter__(self):
@@ -63,21 +68,29 @@ class _Cursor:
 
     def execute(self, sql, params=None):
         self.ops.append((sql, params))
+        if self.table is not None and self.table.handle(sql, params):
+            self._row = None
+            return
         s = sql.lower()
         if "from adh_datasources" in s:
             self._row = {"name": DS_NAME}
         elif "from adh_table_info" in s:
             self._row = {"cnt": 42}
         elif "from adh_conversations" in s:
-            self._row = {"messages": "[]"}
+            self._row = {"user_id": 7, "workspace_id": 5, "datasource_id": DS_ID,
+                         "datasource_name": DS_NAME}
         else:
             self._row = None
 
     def fetchone(self):
-        return self._row
+        return self._row if self._row is not None else self.table.fetchone()
 
     def fetchall(self):
-        return []
+        return [] if self.table is None else self.table.fetchall()
+
+    @property
+    def rowcount(self):
+        return self.table.rowcount if self.table is not None else 1
 
     @property
     def lastrowid(self):
@@ -85,8 +98,9 @@ class _Cursor:
 
 
 class _Conn:
-    def __init__(self, ops):
+    def __init__(self, ops, table=None):
         self.ops = ops
+        self.table = table
 
     def __enter__(self):
         return self
@@ -95,17 +109,34 @@ class _Conn:
         return False
 
     def cursor(self):
-        return _Cursor(self.ops)
+        return _Cursor(self.ops, self.table)
 
     def commit(self):
         return None
 
 
-def _patch_meta_db(monkeypatch):
-    """端点侧 fake 元数据库（数据源简报/建会话/回写会话共用）。"""
+def _patch_meta_db(monkeypatch, state=None):
+    """端点侧 fake 元数据库（数据源简报/建会话/回写会话共用）。
+
+    拆行消息表由 :class:`SplitTable` 接管（写路径的唯一存储形态）；``state`` 给定时
+    用调用方的状态，便于用例断"回写后读回来长什么样"。其余表的 execute_query 原样
+    转发真实现，不拿空结果冒充。
+    """
     ops = []
+    table = SplitTable(state if state is not None else new_state(conversation_id=501))
+    import backend.common.db as dbpkg
     import backend.common.db.metadata_db as mdb
-    monkeypatch.setattr(mdb, "get_metadata_conn", lambda: _Conn(ops))
+
+    real_execute_query = dbpkg.execute_query
+
+    def _execute_query(sql, params=(), **kw):
+        if _store.TABLE not in str(sql):
+            return real_execute_query(sql, params, **kw)
+        table.handle(sql, params)
+        return table.fetchone() if kw.get("fetchone") else table.fetchall()
+
+    monkeypatch.setattr(mdb, "get_metadata_conn", lambda: _Conn(ops, table))
+    monkeypatch.setattr(dbpkg, "execute_query", _execute_query)
     return ops
 
 
@@ -210,7 +241,7 @@ class TestGenerateEndpointFailClosed:
         with pytest.raises(HTTPException) as exc:
             self._call({"datasource_id": DS_ID})
         assert exc.value.status_code == 503
-        assert "执行层" in str(exc.value.detail)
+        assert "Harness" in str(exc.value.detail)
 
     def test_identity_is_server_injected(self, monkeypatch):
         """请求体伪造 created_by/身份无效：会话归属写的是服务端登录用户。"""
@@ -339,10 +370,15 @@ class TestTaskMessage:
         cap = TestGenerateEndpointFailClosed()._run_full(monkeypatch, frames=_DONE_FRAMES)
         insert = [p for s, p in cap["ops"] if "insert into adh_conversations" in s.lower()]
         assert insert, "未创建任务会话"
-        user_id, title, ds_id, ws, as_bot_key, messages = insert[0][:6]
+        user_id, title, ds_id, ws, as_bot_key = insert[0][:5]
         assert ds_id == DS_ID and ws == 5 and as_bot_key == "admin"   # 服务端注入
         assert DS_NAME in title
-        task_message = json.loads(messages)[0]["content"]
+        # 任务正文现在落拆行消息表（不再拼进退役列 messages）
+        msg_rows = [(s, p) for s, p in cap["ops"]
+                    if s.lower().startswith(f"insert into {_store.TABLE}")]
+        assert msg_rows, "任务消息未落拆行消息表"
+        task_message = msg_rows[0][1][5]          # (cid, uid, ws, seq, role, content, ...)
+        assert msg_rows[0][1][4] == "user"
         assert DS_NAME in task_message
         assert str(DS_ID) not in task_message
         # 任务派发带着任务绑定标记（工具侧业务源写入仅限该会话；kb_ids 服务端传递）
@@ -430,7 +466,7 @@ def _clean_runs():
     ontology_api._GENERATE_RUNS.clear()
 
 
-def _patch_dispatch(monkeypatch):
+def _patch_dispatch(monkeypatch, state=None):
     """放行鉴权/执行层并接上 fake 元库（用例只关注后台执行本身）。"""
     import backend.common.auth as auth_mod
     import backend.core.role_service as rs
@@ -447,7 +483,7 @@ def _patch_dispatch(monkeypatch):
     monkeypatch.setattr(exec_service, "is_healthy_layer", lambda layer: True)
     monkeypatch.setattr(tool_policy, "resolve_policy",
                         lambda ctx: SimpleNamespace(as_bot={"as_bot_key": "admin"}))
-    return _patch_meta_db(monkeypatch)
+    return _patch_meta_db(monkeypatch, state)
 
 
 class TestBackgroundExecution:
@@ -497,24 +533,26 @@ class TestBackgroundExecution:
             return _gen()
 
         monkeypatch.setattr(chat_service.ChatService, "stream_query", fake_stream)
-        ops = _patch_dispatch(monkeypatch)
+        table_state = new_state(conversation_id=501)
+        _patch_dispatch(monkeypatch, table_state)
 
         async def _scenario():
             dispatch = await ontology_api.generate_ontology(None, {"datasource_id": DS_ID}, _user())
             final = await ontology_api.wait_generate_task(dispatch["conversation_id"], timeout=5)
             return final, ontology_api.generate_task_status(dispatch["conversation_id"], 7)
 
-        final, state = asyncio.run(_scenario())
-        assert final == "done" and state["model_id"] == 501 and state["object_count"] == 3
-        assert any("工具 save_ontology_draft 完成" in p["detail"] for p in state["progress"])
-        updates = [p for s, p in ops if s.lower().startswith("update adh_conversations")]
-        assert updates, "任务终态未回写会话（AS-BOT 侧边栏将看不到进度）"
-        msg = json.loads(updates[-1][0])[-1]
-        assert msg["role"] == "assistant" and msg["task_kind"] == "ontology_generate"
-        assert msg["task_state"] == "done" and msg["reply"] == "归纳完成"
+        final, status = asyncio.run(_scenario())
+        assert final == "done" and status["model_id"] == 501 and status["object_count"] == 3
+        assert any("工具 save_ontology_draft 完成" in p["detail"] for p in status["progress"])
+        # 回写后从拆行表读回来：同一任务只一条进度消息，终态与阶段都在上面
+        task_msgs = [m for m in table_state["messages"]
+                     if m.get("task_kind") == ontology_api._TASK_KIND]
+        assert task_msgs, "任务终态未回写会话（AS-BOT 侧边栏将看不到进度）"
+        assert len(task_msgs) == 1, "多轮回写不得越写越多（同一任务只一条进度消息）"
+        msg = task_msgs[-1]
+        assert msg["role"] == "assistant" and msg["task_state"] == "done"
+        assert msg["reply"] == "归纳完成"
         assert msg["progressStages"], "进度行未随会话落库"
-        # 只保留一条本任务 assistant 消息（多轮回写不得越写越多）
-        assert len([m for m in json.loads(updates[-1][0]) if m.get("task_kind")]) == 1
 
     def test_uncommitted_draft_is_explicit_error(self, monkeypatch):
         """agent 跑完但没提交草案：不得假报成功（旧契约靠 completed=false，现在直接错）。"""

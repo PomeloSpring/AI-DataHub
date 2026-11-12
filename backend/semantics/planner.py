@@ -1736,6 +1736,17 @@ def _plan_dataset(
         warnings.append(f"数据集 '{ref}' 不存在或已停用")
         return _empty_plan(binding, query, dialect, warnings)
 
+    # ES 型数据集不能当语义层对象绑定用：它不在治理域内（正文是 ES SQL，不能过
+    # sqlglot/方言编译与 RLS 改写），取数只走 `dataset_service.query_dataset` 的 ES 分支。
+    # 不拦就会拿 ES 语法去按目标源方言编译，结果是报错或错数（宁阻断勿错数）。
+    if str(ds.get("source_type") or "").strip().lower() == "es" \
+            or str(ds.get("es_pattern") or "").strip():
+        warnings.append(
+            f"数据集 '{ds.get('name') or ref}' 是 Elasticsearch 通道型（不在数据权限治理域），"
+            "不能作为语义层对象绑定使用；请经 query_dataset 取数，"
+            "或为同一业务口径另建一个绑定到已治理数据源的数据集")
+        return _empty_plan(binding, query, dialect, warnings)
+
     # 数据集行级范围(scope)只在 query_dataset 通道施加（它拿得到身份）；
     # 语义层绑定不施加 → 必须拒绝而不是静默少一层过滤（护栏 §2 fail-closed）
     if _dataset_has_scopes(int(ds.get("id") or 0)):

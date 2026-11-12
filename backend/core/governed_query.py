@@ -51,7 +51,12 @@ def governed_execute(
         # 异常语义还原：权限拒绝保持 PermissionError 族，其余按执行失败上抛
         if e.code is ErrorCode.FORBIDDEN:
             raise PermissionError(e.message) from e
-        raise RuntimeError(e.message) from e
+        # 错因类别必须随异常带走：`e.message` 已是给人读的中文文案，下游再拿它去
+        # `classify_exec_failure` 一遍必失配（判据是 1054/does not exist 这类英文标记），
+        # 结果是“表/列不存在”这种重试永远不好的确定缺陷被说成“连接/凭据不可用，稍后重试”。
+        err = RuntimeError(e.message)
+        err.exec_category = str((e.detail or {}).get("failure_category") or "")
+        raise err from e
 
     names = [c.name for c in result.columns]
     return {

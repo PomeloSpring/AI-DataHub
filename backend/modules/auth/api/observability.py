@@ -19,6 +19,7 @@ def usage_summary(
     user_id: int = Query(0), workspace_id: int = Query(0), datasource_id: int = Query(0),
     entrypoint: str = Query(""), status: str = Query(""), model_ref: str = Query(""),
     handled_by: str = Query("", description="处理方式: agent=走了模型 / intent_gate=前置意图层直答"),
+    channel: str = Query("", description="模型通道: qoder-gateway / anthropic-direct / unrecorded（两条通道计量单位不同）"),
     start: str = Query(""), end: str = Query(""),
     admin: dict = Depends(require_admin),
 ):
@@ -26,7 +27,7 @@ def usage_summary(
     return obs.usage_summary({
         "user_id": user_id, "workspace_id": workspace_id, "datasource_id": datasource_id,
         "entrypoint": entrypoint, "status": status, "model_ref": model_ref,
-        "handled_by": handled_by, "start": start, "end": end,
+        "handled_by": handled_by, "channel": channel, "start": start, "end": end,
     })
 
 
@@ -87,12 +88,15 @@ def review_intercept(
 def usage_models(
     user_id: int = Query(0), workspace_id: int = Query(0), datasource_id: int = Query(0),
     entrypoint: str = Query(""), status: str = Query(""), start: str = Query(""), end: str = Query(""),
+    model_ref: str = Query(""),
+    channel: str = Query("", description="模型通道：同一模型走不同通道时 credit/token 口径不同，必须分开行"),
     admin: dict = Depends(require_admin),
 ):
-    """模型维度用量（credit/token 排序）。"""
+    """模型维度用量（按模型 + 通道分组；credit 只对 Qoder 网关有意义）。"""
     return {"items": obs.usage_by_model({
         "user_id": user_id, "workspace_id": workspace_id, "datasource_id": datasource_id,
-        "entrypoint": entrypoint, "status": status, "start": start, "end": end,
+        "entrypoint": entrypoint, "status": status, "model_ref": model_ref,
+        "channel": channel, "start": start, "end": end,
     })}
 
 
@@ -112,12 +116,14 @@ async def quota(refresh: bool = Query(False), admin: dict = Depends(require_admi
 def usage_users(
     workspace_id: int = Query(0), datasource_id: int = Query(0), entrypoint: str = Query(""),
     status: str = Query(""), start: str = Query(""), end: str = Query(""),
+    channel: str = Query("", description="模型通道过滤（与概览同一口径）"),
     admin: dict = Depends(require_admin),
 ):
     """用户维度用量 rollup。"""
     return {"items": obs.usage_by_user({
         "workspace_id": workspace_id, "datasource_id": datasource_id,
-        "entrypoint": entrypoint, "status": status, "start": start, "end": end,
+        "entrypoint": entrypoint, "status": status, "channel": channel,
+        "start": start, "end": end,
     })}
 
 
@@ -126,6 +132,7 @@ def sessions(
     page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=200),
     user_id: int = Query(0), workspace_id: int = Query(0), datasource_id: int = Query(0),
     entrypoint: str = Query(""), model_ref: str = Query(""),
+    channel: str = Query("", description="模型通道过滤（与概览同一口径）"),
     start: str = Query(""), end: str = Query(""),
     admin: dict = Depends(require_admin),
 ):
@@ -133,7 +140,7 @@ def sessions(
     return obs.list_sessions({
         "page": page, "size": size, "user_id": user_id, "workspace_id": workspace_id,
         "datasource_id": datasource_id, "entrypoint": entrypoint, "model_ref": model_ref,
-        "start": start, "end": end,
+        "channel": channel, "start": start, "end": end,
     })
 
 
@@ -143,15 +150,17 @@ def traces(
     conversation_id: int = Query(0), user_id: int = Query(0), workspace_id: int = Query(0),
     datasource_id: int = Query(0), entrypoint: str = Query(""), status: str = Query(""),
     model_ref: str = Query(""), handled_by: str = Query(""),
+    channel: str = Query("", description="模型通道：两条通道的 credit/token 口径互斥，分开看才不会误判"),
+    layer_id: int = Query(0, description="实际生效的执行层 id"),
     start: str = Query(""), end: str = Query(""),
     admin: dict = Depends(require_admin),
 ):
-    """回合级 Trace 列表（可按会话/用户/状态/处理方式/时间过滤）。"""
+    """回合级 Trace 列表（可按会话/用户/状态/处理方式/通道/时间过滤）。"""
     return obs.list_traces({
         "page": page, "size": size, "conversation_id": conversation_id, "user_id": user_id,
         "workspace_id": workspace_id, "datasource_id": datasource_id, "entrypoint": entrypoint,
         "status": status, "model_ref": model_ref, "handled_by": handled_by,
-        "start": start, "end": end,
+        "channel": channel, "layer_id": layer_id, "start": start, "end": end,
     })
 
 

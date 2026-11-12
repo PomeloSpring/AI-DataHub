@@ -4,12 +4,23 @@ import { useAuthStore } from './stores/authStore';
 import { usePermissionStore } from './stores/permissionStore';
 import { useThemeStore, applyTheme } from './stores/themeStore';
 import WorkspaceLayout from './components/WorkspaceLayout';
+import { useThemePackGuard } from './components/ThemeMenuItems';
 import { WorkspaceEntry, WorkspaceBoundary } from './components/WorkspaceRoute';
 import SystemLayout from './components/SystemLayout';
 import DataPlatformLayout from './components/DataPlatformLayout';
+import ContentLayout from './components/ContentLayout';
+import ContentHome from './pages/content/ContentHome';
+import ContentPreview from './pages/content/ContentPreview';
+import MyDrafts from './pages/content/MyDrafts';
+import ContentManage from './pages/content/ContentManage';
+import ContentReview from './pages/content/ContentReview';
+import ContentTaxonomy from './pages/content/ContentTaxonomy';
+import KnowledgeDocs from './pages/content/KnowledgeDocs';
+import KnowledgeDocDetail from './pages/content/KnowledgeDocDetail';
 import Login from './pages/Login';
 import Chat from './pages/Chat';
 import Home from './pages/Home';
+import ReadArticle from './pages/home/ReadArticle';
 import WorkspaceAssets from './pages/WorkspaceAssets';
 import Dashboard from './pages/Dashboard';
 import DashboardEditor from './pages/DashboardEditor';
@@ -23,7 +34,6 @@ import Profile from './pages/Profile';
 import MemorySettings from './pages/MemorySettings';
 import WorkspaceManagerV2 from './pages/WorkspaceManagerV2';
 import ModelCenter from './pages/admin/ModelCenter';
-import MCPAgentConfig from './pages/admin/MCPAgentConfig';
 import MCPConfig from './pages/admin/MCPConfig';
 import AsBotManager from './pages/admin/AsBotManager';
 import SkillsManager from './pages/admin/SkillsManager';
@@ -35,6 +45,9 @@ import ReportView from './pages/ReportView';
 import KnowledgeBase from './pages/admin/KnowledgeBase';
 import VersionedConfigEditor, { createPromptAdapter } from './pages/admin/VersionedConfigEditor';
 import ReportsCenter from './pages/ReportsCenter';
+// 决策建议：消费面在工作空间（/ws/:id/decisions），配置面在数据中台（/data/decisions）
+import DecisionCenter from './pages/DecisionCenter';
+import DecisionTreeConfig from './pages/data/DecisionTreeConfig';
 import AsBotPanel from './components/asbot/AsBotPanel';
 import OnboardingHost from './components/onboarding/OnboardingHost';
 
@@ -47,7 +60,6 @@ import AssetPoolWorkbench from './pages/catalog/AssetPoolWorkbench';
 import OntologyGraphView from './pages/catalog/OntologyGraphView';
 import MetricsCenter from './pages/catalog/MetricsCenter';
 import TagsManager from './pages/catalog/TagsManager';
-import SqlPairs from './pages/catalog/SqlPairs';
 import Glossary from './pages/catalog/Glossary';
 import Datasets from './pages/datasets/Datasets';
 import DatasetDetail from './pages/datasets/DatasetDetail';
@@ -66,7 +78,7 @@ import SandboxManagement from './pages/admin/SandboxManagement';
 import Observability from './pages/admin/Observability';
 import EvalManagement from './pages/admin/EvalManagement';
 import EvolutionCenter from './pages/admin/EvolutionCenter';
-import KnowledgeManagement from './pages/admin/KnowledgeManagement';
+import AnalysisScenarios from './pages/catalog/AnalysisScenarios';
 import Monitoring from './pages/admin/Monitoring';
 import TaskMonitor from './pages/admin/TaskMonitor';
 import UdfManagement from './pages/admin/UdfManagement';
@@ -95,6 +107,9 @@ export default function App() {
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+  // 主题包在 UI 字模库被禁用/下架时显式收口(切到可用主题并说明原因),
+  // 不允许停在"外壳仍是该主题、图表已回退默认样式"的半截状态
+  useThemePackGuard();
 
   useEffect(() => {
     if (token && !loaded) loadPermissions();
@@ -135,16 +150,19 @@ export default function App() {
           {/* 工作空间默认页 = 数据看板清单(卡片瀑布): 进 /ws/:id 一律落看板清单 */}
           <Route index element={<Navigate to="dashboards" replace />} />
           <Route path="chat" element={<Chat />} />
-          {/* 资产清单: 工作站共享项目(会话产物归档收藏, OSS 托管) */}
+          {/* 资产清单: 账号级归档资产(会话产物归档收藏, OSS 托管, 跨工作空间随用户走) */}
           <Route path="assets" element={<WorkspaceAssets />} />
-          {/* 任务调度: 定时报表与取数任务(工作站维度) */}
+          {/* 任务调度: 定时报告与取数任务(工作空间维度) */}
           <Route path="scheduled" element={<ScheduledTasks />} />
           {/* 数据看板: 组合卡片清单 → 点组合卡直接进该组合的看板详情（…/dashboards/group/:id 为可分享的组合入口，同样跳详情） */}
           <Route path="dashboards" element={<WorkspaceDashboards />} />
           <Route path="dashboards/group/:groupId" element={<WorkspaceDashboardGroup />} />
           <Route path="dashboards/:dashboardId" element={<Analysis />} />
-          {/* 报表中心: 报表跟随属主(跨工作站), 任务产出按版本归集; 会话/手写报表可新建与编辑 */}
+          {/* 报告中心: 报告跟随属主(跨工作空间), 任务产出按版本归集; 会话/手写报告可新建与编辑 */}
           <Route path="reports" element={<ReportsCenter />} />
+          {/* 决策建议（消费面）: 看已发布的树、最近判定与命中历史，可手动重算；
+              不提供编辑入口——编辑/发布在 /data/decisions（口径资产单一配置面） */}
+          <Route path="decisions" element={<DecisionCenter />} />
           {/* 个人设置:在原本的框架(侧边栏/顶栏)下渲染, 非独立全屏页 */}
           <Route path="profile" element={<Profile />} />
           <Route path="memory" element={<MemorySettings />} />
@@ -165,7 +183,9 @@ export default function App() {
           <Route path="datasets" element={<Datasets />} />
           <Route path="datasets/:id" element={<DatasetDetail />} />
           <Route path="tags" element={<TagsManager />} />
-          <Route path="sql-pairs" element={<SqlPairs />} />
+          {/* SQL 示例对已下线（与数据集重合：问答 SQL 的沉淀单位就是数据集），
+              菜单/权限点同步退出登记，见 docker/mysql/sql_pairs_retire_migration.sql */}
+          <Route path="scenario" element={<AnalysisScenarios />} />
           <Route path="glossary" element={<Glossary />} />
           <Route path="quality" element={<QualityOverview />} />
           <Route path="quality/rules" element={<QualityRules />} />
@@ -183,10 +203,30 @@ export default function App() {
           <Route path="udfs" element={<UdfManagement />} />
           {/* 本体图谱: 语义层关系只读视图(图谱+结构化投影), 独立模型选择器 */}
           <Route path="knowledge-graph" element={<OntologyGraphView />} />
+          {/* 决策建议（配置面）: 决策树是引用指标/维度字典的口径资产, 与本体建模同族, 故在数据中台 */}
+          <Route path="decisions" element={<DecisionTreeConfig />} />
           <Route path="playground" element={<Playground />} />
           {/* 个人设置:在数据中台框架下渲染 */}
           <Route path="profile" element={<Profile />} />
           <Route path="memory" element={<MemorySettings />} />
+        </Route>
+
+        {/* 内容中心: /content/*（一级模块, 只做 创作→审核→发布）
+            资讯门户是独立模块且尚未开发, 因此这里没有面向读者的阅读页 ——
+            /content/preview/:slug 是编排期的稿件预览（不计阅读数, 仅编辑权可见）。
+            入口显隐由菜单权限码反查（content:*）, 路由存在不等于能进来。 */}
+        <Route path="/content" element={<PrivateRoute><ContentLayout /></PrivateRoute>}>
+          <Route index element={<ContentHome />} />
+          <Route path="drafts" element={<MyDrafts />} />
+          <Route path="manage" element={<ContentManage />} />
+          <Route path="review" element={<ContentReview />} />
+          <Route path="taxonomy" element={<ContentTaxonomy />} />
+          {/* 知识库文档: 云端 notebook 的目录树查看/编辑（kbdoc:read/write）。
+              清单页是卡片，点进去才拉目录树（详情是同一菜单的子路由，不另登记菜单）。
+              知识库**管理**（建库/绑 AS-BOT/配凭据）仍在 /system/knowledge-base, 不在这里。 */}
+          <Route path="kb-docs" element={<KnowledgeDocs />} />
+          <Route path="kb-docs/:kb" element={<KnowledgeDocDetail />} />
+          <Route path="preview/:slug" element={<ContentPreview />} />
         </Route>
 
         {/* System config mode: /system/* */}
@@ -194,8 +234,9 @@ export default function App() {
           <Route index element={<Navigate to="/system/models" replace />} />
           <Route path="users" element={<Admin embeddedTab="users" />} />
           <Route path="models" element={<ModelCenter />} />
-          <Route path="mcp-agent" element={<MCPAgentConfig />} />
           <Route path="mcp" element={<MCPConfig />} />
+          {/* MCP 服务旧副本页已退役，保留重定向以兼容书签 */}
+          <Route path="mcp-agent" element={<Navigate to="/system/mcp" replace />} />
           <Route path="as-bots" element={<AsBotManager />} />
           {/* 旧 Waker 路由重定向以兼容书签（Waker 已更名为 AS-BOT） */}
           <Route path="wakers" element={<Navigate to="/system/as-bots" replace />} />
@@ -224,7 +265,8 @@ export default function App() {
           <Route path="observability" element={<Observability />} />
           <Route path="eval" element={<EvalManagement />} />
           <Route path="evolution" element={<EvolutionCenter />} />
-          <Route path="knowledge-management" element={<KnowledgeManagement />} />
+          {/* 旧地址重定向: 书签与外部链接不能凭空 404 */}
+          <Route path="knowledge-management" element={<Navigate to="/data/scenario" replace />} />
           <Route path="dashboards" element={<Dashboard />} />
           <Route path="dashboards/:dashboardId" element={<Analysis />} />
           <Route path="vis-library" element={<VisLibrary />} />
@@ -261,15 +303,19 @@ export default function App() {
         <Route path="/admin" element={<Navigate to="/system/settings" replace />} />
         <Route path="/admin/data" element={<Navigate to="/system/datasources" replace />} />
         <Route path="/admin/model" element={<Navigate to="/system/models" replace />} />
-        <Route path="/admin/mcp-agent" element={<Navigate to="/system/mcp-agent" replace />} />
+        {/* MCP 服务旧副本页（/system/mcp-agent）已退役，书签统一落到现页 /system/mcp */}
+        <Route path="/admin/mcp-agent" element={<Navigate to="/system/mcp" replace />} />
         <Route path="/admin/prompts" element={<Navigate to="/system/config-versions" replace />} />
 
         {/* Other legacy routes */}
         <Route path="/playground" element={<PrivateRoute><Playground /></PrivateRoute>} />
 
-        {/* 默认首页: '/' 恒展示 Home(模块切换选「首页」即进首页,不因有看板而跳走);
-            登录时刻“有看板直达数据看板”的落点判定在 Login */}
+        {/* 默认首页: '/' 恒展示 Home。既是模块切换选「首页」的落点，也是登录成功后的
+            唯一落点（Login 不再按“有已启用看板”直达数据看板），不因有看板而跳走 */}
         <Route path="/" element={<PrivateRoute><Home /></PrivateRoute>} />
+        {/* 首页资讯区的落点：面向全体读者（article:read），不进 ContentLayout（那个布局按
+            content:* 菜单裁决，只勾读者码的人会直接被布局挡在门外）。 */}
+        <Route path="/read/:slug" element={<PrivateRoute><ReadArticle /></PrivateRoute>} />
       </Routes>
 
     </BrowserRouter>

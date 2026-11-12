@@ -110,9 +110,11 @@ def list_llm_models() -> list:
     """List all LLM models (api_key masked)."""
     rows = execute_query(
         "SELECT id, name, provider, base_url, api_key, model_name, context_window, "
-        "max_tokens, supports_thinking, supports_vision, is_default, is_active, "
-        "created_at, updated_at "
-        "FROM adh_llm_models ORDER BY is_default DESC, name"
+        "max_tokens, supports_thinking, supports_vision, capability_rank, is_default, "
+        "is_active, created_at, updated_at "
+        # 排序真值源 = capability_rank（能力序，1=最强），与 mind 侧模型中心同口径；
+        # 只按 name 字典序会把「旗舰」与「最省」混成一列，默认项也不置顶（避免打断能力序）。
+        "FROM adh_llm_models ORDER BY capability_rank ASC, name"
     )
     for r in rows:
         key = r.get("api_key") or ""
@@ -136,59 +138,58 @@ def create_llm_model(data: dict) -> int:
     encrypted_key = encrypt_password(data["api_key"]) if data.get("api_key") else ""
     execute_insert(
         "INSERT INTO adh_llm_models "
-        "(id, name, provider, base_url, api_key, model_name, max_tokens, supports_thinking, "
-        "is_default, is_active, created_at, updated_at) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, 1, %s, %s)",
-        (row_id, data["name"], data.get("provider", "openai"),
+        "(id, name, provider, model_id, base_url, api_key, model_name, max_tokens, "
+        "context_window, supports_thinking, supports_vision, capability_rank, is_default, "
+        "is_active, created_at, updated_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)",
+        (row_id, data["name"], data.get("provider", "openai"), data["model_name"],
          data["base_url"], encrypted_key, data["model_name"],
          data.get("max_tokens", 4096),
-         1 if data.get("supports_thinking", True) else 0, now, now),
+         data.get("context_window", 200000),
+         1 if data.get("supports_thinking", True) else 0,
+         # 多模态不拿建表默认值 1 当“支持”：没实测过就登为不支持（标签宁少勿假）
+         1 if data.get("supports_vision") else 0,
+         # 新登记不猜能力：缺省 99 = 未定档（排序沉底），由管理员或登记脚本显式定档
+         int(data.get("capability_rank") or 99),
+         1 if data.get("is_default") else 0, now, now),
     )
     _invalidate_models_cache()
     return row_id
 
 
 def update_llm_model(model_id: int, data: dict) -> bool:
-    """Update an LLM model."""
+    """Update an LLM model（只改传入的字段，未传的保持原值）。
+
+    历史写法是 DELETE + INSERT 重建整行，而 INSERT 列清单没带 context_window /
+    supports_vision / model_id / capability_rank —— 改个名字就把这些列静默打回默认值。
+    改为按字段 UPDATE（宁少改勿误抹）。
+    """
     from backend.common.crypto import encrypt_password
 
-    row = execute_query("SELECT * FROM adh_llm_models WHERE id = %s", (model_id,), fetchone=True)
+    row = execute_query("SELECT id FROM adh_llm_models WHERE id = %s", (model_id,), fetchone=True)
     if not row:
         return False
 
-    fields = {}
-    for f in ("name", "provider", "base_url", "model_name", "max_tokens"):
-        val = data.get(f)
-        if val is not None:
-            fields[f] = val
-        else:
-            fields[f] = row[f] or ""
-
+    fields: dict = {}
+    for f in ("name", "provider", "base_url", "model_name", "max_tokens",
+              "context_window", "capability_rank"):
+        if data.get(f) is not None:
+            fields[f] = data[f]
+    for flag in ("supports_thinking", "supports_vision"):
+        if data.get(flag) is not None:
+            fields[flag] = 1 if data[flag] else 0
     if data.get("api_key"):
         fields["api_key"] = encrypt_password(data["api_key"])
-    else:
-        fields["api_key"] = row["api_key"] or ""
+    if fields.get("model_name"):
+        # 历史列与 model_name 同值（mind 侧写入口径一致），避免同一概念两处漂移
+        fields["model_id"] = fields["model_name"]
+    if not fields:
+        return True
 
-    if data.get("supports_thinking") is not None:
-        fields["supports_thinking"] = 1 if data["supports_thinking"] else 0
-    else:
-        fields["supports_thinking"] = row.get("supports_thinking", 1)
-
-    now = _now()
-    with DBConnection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM adh_llm_models WHERE id = %s", (model_id,))
-            cur.execute(
-                "INSERT INTO adh_llm_models "
-                "(id, name, provider, base_url, api_key, model_name, max_tokens, "
-                "supports_thinking, is_default, is_active, created_at, updated_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (model_id, fields["name"], fields["provider"], fields["base_url"],
-                 fields["api_key"], fields["model_name"], fields["max_tokens"],
-                 fields["supports_thinking"],
-                 row.get("is_default", 0), row.get("is_active", 1),
-                 row.get("created_at", now), now),
-            )
+    fields["updated_at"] = _now()
+    sets = ", ".join(f"{k} = %s" for k in fields)
+    execute_write(f"UPDATE adh_llm_models SET {sets} WHERE id = %s",
+                  (*fields.values(), model_id))
     _invalidate_models_cache()
     return True
 
@@ -201,31 +202,25 @@ def delete_llm_model(model_id: int) -> bool:
 
 
 def set_default_model(model_id: int) -> bool:
-    """Set an LLM model as default."""
+    """Set an LLM model as default（只动 is_default 一位）。
+
+    历史写法把**每一条启用行** DELETE + INSERT 重建，列清单缺 context_window /
+    supports_vision / model_id / capability_rank —— 点一次「设为默认」就把全表这些列
+    打回默认值（能力序直接消失）。改为两条 UPDATE，其余列不碰。
+    """
     exists = execute_query(
         "SELECT id FROM adh_llm_models WHERE id = %s", (model_id,), fetchone=True
     )
     if not exists:
         return False
 
+    now = _now()
     with DBConnection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM adh_llm_models WHERE is_active = 1")
-            rows = cur.fetchall()
-            for row in rows:
-                new_default = 1 if row["id"] == model_id else 0
-                cur.execute("DELETE FROM adh_llm_models WHERE id = %s", (row["id"],))
-                cur.execute(
-                    "INSERT INTO adh_llm_models "
-                    "(id, name, provider, base_url, api_key, model_name, max_tokens, "
-                    "supports_thinking, is_default, is_active, created_at, updated_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (row["id"], row["name"], row["provider"], row["base_url"],
-                     row["api_key"], row["model_name"], row["max_tokens"],
-                     row.get("supports_thinking", 1),
-                     new_default, row.get("is_active", 1),
-                     row.get("created_at"), row.get("updated_at")),
-                )
+            cur.execute("UPDATE adh_llm_models SET is_default = 0 WHERE is_default = 1")
+            cur.execute(
+                "UPDATE adh_llm_models SET is_default = 1, updated_at = %s WHERE id = %s",
+                (now, model_id))
     _invalidate_models_cache()
     return True
 

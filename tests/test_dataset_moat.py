@@ -350,9 +350,41 @@ class TestDatasetChartRefreshGoverned:
 
     def test_refresh_chart_routes_dataset_charts(self):
         from backend.modules.viz.services.dashboard_service import ChartService
-        src = inspect.getsource(ChartService.refresh_chart)
-        assert '_refresh_dataset_chart' in src
-        assert 'source_type' in src
+        # 单图与整板重查共用一份通道分派（不得留第二套取数实现）
+        assert "_refresh_by_channel" in inspect.getsource(ChartService.refresh_chart)
+        assert "_refresh_by_channel" in inspect.getsource(ChartService.refresh_all_charts)
+        dispatch = inspect.getsource(ChartService._refresh_by_channel)
+        assert '_refresh_dataset_chart' in dispatch
+        assert 'source_type' in dispatch
+        # 旧版“执行图表自带 SQL + governed_execute”已从分派里退出
+        assert "governed_execute(" not in dispatch
+
+    def test_refresh_dataset_chart_supports_server_pagination(self):
+        """服务端分页只在数据集通道可走（偏移/行总数/游标全由服务端生成）。
+
+        调用方只能递两个业务分页参数 `page_size`/`page_num`：
+        旧契约的 `page_offset`（外部定偏移）与 `page_count_sql`（外部递一条统计 SQL）
+        都是第二取数口径，已从接口退出 —— 这里按源码级锁死，防止换实现时又漏回来。
+        """
+        from backend.modules.viz.services.dashboard_service import ChartService
+        src = inspect.getsource(ChartService._refresh_dataset_chart)
+        assert "page_size" in src and "page_num" in src
+        assert "page_offset" not in src and "page_count_sql" not in src
+        # 计数语句/偏移不得由调用方递交（旧 count_sql 是第二取数通道）
+        assert '"count_sql"' not in src and "params.get(\"count_sql\")" not in src
+        assert '"offset"' not in src and "params.get(\"offset\")" not in src
+
+    def test_table_value_page_is_resolved_server_side(self):
+        """表值图恒定按页取数在**服务端**收口：页大小 clamp 到 100，非表值图不分页。"""
+        # 包 __init__ 把同名单例重导出遮蔽了子模块名, 须 importlib 取真模块
+        import importlib
+        dash = importlib.import_module("backend.modules.viz.services.dashboard_service")
+        from backend.modules.viz.services.dashboard_service import ChartService
+        dispatch = inspect.getsource(ChartService._refresh_by_channel)
+        assert "_resolve_chart_page" in dispatch
+        resolve = inspect.getsource(dash._resolve_chart_page)
+        assert "TABLE_VALUE_PAGE_SIZE_MAX" in resolve   # 上限由常量把, 不写字面量
+        assert "table_value" in resolve                 # 其他图型不套页限
 
     def test_dataset_chart_requires_identity(self):
         from backend.modules.viz.services.dashboard_service import ChartService

@@ -11,6 +11,8 @@ export interface SearchSelectOption {
   label?: string
   /** 次要说明(注释/类型等), 参与搜索匹配 */
   description?: string
+  /** 只参与搜索匹配、不展示的业务文本(如数据集的描述/字段名/源名) */
+  keywords?: string
 }
 
 interface SearchSelectProps {
@@ -58,7 +60,8 @@ export function SearchSelect({
     ? options.filter(o =>
         o.value.toLowerCase().includes(q)
         || (o.label || "").toLowerCase().includes(q)
-        || (o.description || "").toLowerCase().includes(q))
+        || (o.description || "").toLowerCase().includes(q)
+        || (o.keywords || "").toLowerCase().includes(q))
     : options;
   const visible = filtered.slice(0, MAX_VISIBLE);
 

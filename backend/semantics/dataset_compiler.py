@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field as _dc_field
 from typing import Any, Optional
 
@@ -47,6 +48,9 @@ _GRAIN_MYSQL = {"second": "%Y-%m-%d %H:%i:%s", "minute": "%Y-%m-%d %H:%i",
 _GRAIN_PG = {"second": "YYYY-MM-DD HH24:MI:SS", "minute": "YYYY-MM-DD HH24:MI",
              "hour": "YYYY-MM-DD HH24", "day": "YYYY-MM-DD", "week": "IYYY-IW",
              "month": "YYYY-MM", "quarter": 'YYYY-"Q"Q', "year": "YYYY"}
+
+# 正文尾部行数上限（flat 形态下要把外层 limit 合进正文自身的 LIMIT）
+_TRAILING_LIMIT_RE = re.compile(r"\bLIMIT\s+(\d+)(\s+OFFSET\s+\d+)?\s*$", re.IGNORECASE)
 
 
 class DatasetCompileError(ValueError):
@@ -199,6 +203,22 @@ def _clamp_limit(raw: Any) -> int:
     return max(1, min(n, MAX_LIMIT))
 
 
+def _flat_detail_sql(rendered: str, limit: Any) -> str:
+    """明细形状且不套子查询时的正文 + 行数上限。
+
+    包裹形态 `SELECT * FROM (body) LIMIT n` 在 Presto 类端点上对 `WITH` 开头的正文
+    不合法，所以这里不套壳：把外层 limit 与正文自带的尾部 LIMIT 取小值合一，
+    与包裹版的行数上限语义完全一致（不会多给也不会少给）。
+    """
+    n = _clamp_limit(limit)
+    body = rendered.rstrip().rstrip(";").rstrip()
+    m = _TRAILING_LIMIT_RE.search(body)
+    if not m:
+        return f"{body} LIMIT {n}"
+    merged = f"LIMIT {min(int(m.group(1)), n)}{(m.group(2) or '').strip()}".rstrip()
+    return f"{body[:m.start()].rstrip()} {merged}"
+
+
 def compile_dataset(
     ds: dict,
     *,
@@ -249,6 +269,13 @@ def compile_dataset(
     # 其他方言（MySQL/PG/Doris 支持非 ASCII 标识符）行为完全不变（no-silent-degradation：
     # 不改能跑通的通道，只为确实不兼容的引擎加一条显式映射）。
     ascii_out = engine == "sls"
+    # SLS 的 Presto 端点拒绝子查询里带 WITH 的正文（实测报 `logstore <cte> does not exist`），
+    # 而平台内可信任预制 SQL 的典型形状（漏斗/两级聚合）恰好都是 WITH 开头。
+    # 因此本引擎下、且外层不需要投影/过滤/排序（明细形状）时直接把正文当查询发出：
+    # 行数上限与包裹版同义。其他引擎维持包裹不动（能跑通的通道不重接，与上面
+    # ascii_out 同一处置纪律）；需要外层投影时仍走包裹（那种组合报错就报错，
+    # 由建模者为该引擎补可包裹的正文，不在编译器里默默改口径）。
+    flat_detail = ascii_out
     alias_of: dict[str, str] = {}
     _slot = [0]
 
@@ -304,7 +331,8 @@ def compile_dataset(
             out.sql = "\n".join(parts)
         else:
             out.warnings.append("数据集字段声明上未解析出任何维度/度量, 回落明细形状")
-            out.sql = f"SELECT * FROM {inner}" + f" LIMIT {_clamp_limit(limit)}"
+            out.sql = (_flat_detail_sql(rendered, limit) if flat_detail
+                       else f"SELECT * FROM {inner}" + f" LIMIT {_clamp_limit(limit)}")
     else:
         if not mdl.empty and not (dimensions or measures):
             out.warnings.append("数据集未声明维度/度量, 返回明细行（要聚合请传 dimensions/measures）")
@@ -313,8 +341,11 @@ def compile_dataset(
                 "数据集未声明字段定义(field_config), 忽略 dimensions/measures: "
                 "聚合形状由正文决定, 请在字段定义里声明维度/度量")
         where = _where_from(mdl, filters, out) if not mdl.empty else None
-        out.sql = f"SELECT * FROM {inner}" + (f"\nWHERE {where}" if where else "") \
-            + f"\nLIMIT {_clamp_limit(limit)}"
+        if flat_detail and where is None and not order:
+            out.sql = _flat_detail_sql(rendered, limit)
+        else:
+            out.sql = f"SELECT * FROM {inner}" + (f"\nWHERE {where}" if where else "") \
+                + f"\nLIMIT {_clamp_limit(limit)}"
 
     out.resolved_tables = _touched(rendered, family, out)
     return out
@@ -372,5 +403,5 @@ def _touched(rendered_sql: str, family: str, out: CompiledDataset) -> list[str]:
 
         return extract_tables(rendered_sql, family)
     except Exception as e:  # noqa: BLE001
-        out.warnings.append(f"数据集正文表引用无法静态解析(行级策略未在语义层施加, 由执行层治理兜底): {e}")
+        out.warnings.append(f"数据集正文表引用无法静态解析(行级策略未在语义层施加, 由 Harness 治理兜底): {e}")
         return []

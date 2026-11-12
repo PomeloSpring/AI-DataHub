@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS adh_dashboards (
     layout            TEXT,
     filters           TEXT,
     params            TEXT,
+    tags              JSON        NULL,
     status            VARCHAR(32)  DEFAULT 'designing',
     owner_id          BIGINT       NOT NULL,
     is_public         TINYINT      DEFAULT 0,
@@ -183,6 +184,37 @@ CREATE TABLE IF NOT EXISTS adh_conversations (
     updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     INDEX idx_user (user_id)
+) ENGINE=InnoDB;
+
+-- ============================================================================
+-- 会话消息拆行表（一条消息一行）
+-- ============================================================================
+-- 取代旧形态：adh_conversations.messages 单列 LONGTEXT 存整份 JSON 数组并按轮全列覆盖
+-- （O(n²) 写放大 + 工具原始返回体明文常驻）。事实源代码：
+-- backend/modules/mind/services/conversation_store.py。
+-- 存量库迁移与回填：docker/mysql/conversation_messages_split_migration.sql。
+-- messages 列退役为迁移证据列，业务读写路径不得消费。
+CREATE TABLE IF NOT EXISTS adh_conversation_messages (
+    id              BIGINT      NOT NULL AUTO_INCREMENT,
+    conversation_id BIGINT      NOT NULL,
+    user_id         BIGINT      NOT NULL DEFAULT 0,
+    workspace_id    BIGINT      NOT NULL DEFAULT 0,
+    seq             INT         NOT NULL COMMENT '会话内序号，从 0 开始，与历史数组下标一致',
+    role            VARCHAR(16) NOT NULL DEFAULT '',
+    content         MEDIUMTEXT  NULL COMMENT '用户可见正文',
+    meta            MEDIUMTEXT  NULL COMMENT '除 role/content 外的展示字段 JSON（已按入库投影裁剪）',
+    message_uuid    VARCHAR(64) NOT NULL DEFAULT '' COMMENT '回合标识，兜底落库判重用',
+    digest          CHAR(32)    NOT NULL DEFAULT '' COMMENT '投影后消息 md5，增量改写判等',
+    storage_state   VARCHAR(16) NOT NULL DEFAULT 'full' COMMENT 'full | trimmed（保留策略裁剪后）',
+    created_at      DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_conv_seq (conversation_id, seq),
+    KEY idx_conv (conversation_id),
+    KEY idx_user_conv (user_id, conversation_id),
+    KEY idx_workspace (workspace_id),
+    KEY idx_uuid (conversation_id, message_uuid),
+    KEY idx_updated (updated_at)
 ) ENGINE=InnoDB;
 
 -- ============================================================================

@@ -1,8 +1,7 @@
-"""SDK 兼容层 — 统一加载 qodercn-agent-sdk 的工具构造器.
+"""SDK 兼容层 — 按后端加载 agent SDK 的工具构造器.
 
-qoder-agent-sdk(Global)与 qodercn-agent-sdk(qoder.cn)的 @tool /
-create_sdk_mcp_server 接口对称, 项目已统一切换 qodercn 体系(2026-10),
-本模块屏蔽 import 细节, 使工具 handler 只写一份。
+qoder-agent-sdk(Global) / qodercn-agent-sdk(CN) / claude-agent-sdk 的 @tool /
+create_sdk_mcp_server 接口对称, 本模块屏蔽 import 细节, 使工具 handler 只写一份。
 """
 
 import logging
@@ -11,7 +10,12 @@ import typing
 
 logger = logging.getLogger(__name__)
 
-SDK_BACKENDS = ("qoder",)
+SDK_BACKENDS = ("qoder", "claude")
+
+# 后端 → 凭据与计费口径（可观测/对外提示共用，避免两处各写一份）
+#   qoder  : Qoder 网关账号裁决，按 Credits 计量，BYOK 受组织策略开关约束;
+#   claude : Anthropic 协议直连模型供应商（凭据来自模型中心），不依赖 Qoder 账号。
+SDK_BACKEND_CHANNELS = {"qoder": "qoder-gateway", "claude": "anthropic-direct"}
 
 # 可写 SQL 的 AS-BOT（授权了 execute_sql）需要真实表/列元数据来拼 SQL；
 # 其 search_metadata / get_table_schema 走原始 handler（物理元数据，已剥除 datasource_id），
@@ -26,14 +30,41 @@ def _as_bot_can_write_sql(runtime) -> bool:
 
 
 def load_sdk(backend: str):
-    """加载 qodercn-agent-sdk 模块;未安装时抛 ImportError.
+    """按后端加载 SDK 模块；未安装时抛 ImportError（**不静默换另一个后端**）。
 
-    执行层唯一后端为 qoder(claude-agent-sdk 已退役),其他 backend 显式拒绝。
+    - ``qoder``: qodercn-agent-sdk —— 走 Qoder 网关与账号 Credits；
+    - ``claude``: claude-agent-sdk —— Anthropic 协议直连供应商（百炼等），
+      凭据由 `anthropic_direct.resolve_direct_channel` 从模型中心解析后注入子进程 env。
     """
-    if backend != "qoder":
-        raise ValueError(f"不支持的 SDK 后端: {backend}（仅允许 qoder）")
-    import qodercn_agent_sdk as sdk
-    return sdk
+    if backend == "qoder":
+        import qodercn_agent_sdk as sdk
+        return sdk
+    if backend == "claude":
+        import claude_agent_sdk as sdk
+        return sdk
+    raise ValueError(f"不支持的 SDK 后端: {backend}（仅允许 {'、'.join(SDK_BACKENDS)}）")
+
+
+def sdk_options_class(sdk):
+    """取 SDK 的 options 类（两个后端类名不同，字段集也不同）。"""
+    cls = getattr(sdk, "QoderAgentOptions", None) or getattr(sdk, "ClaudeAgentOptions", None)
+    if cls is None:
+        raise ImportError(f"{getattr(sdk, '__name__', sdk)} 未导出 AgentOptions 类")
+    return cls
+
+
+def sdk_options_fields(sdk) -> set:
+    """options 类真实接受的字段名（供跨后端裁剪时判定“哪些字段该后端不支持”）。"""
+    import dataclasses
+    return {f.name for f in dataclasses.fields(sdk_options_class(sdk))}
+
+
+def sdk_client_class(sdk):
+    """取 SDK 的长会话客户端类（两个后端只在此命名上不同：QoderSDKClient / ClaudeSDKClient）。"""
+    cls = getattr(sdk, "QoderSDKClient", None) or getattr(sdk, "ClaudeSDKClient", None)
+    if cls is None:
+        raise ImportError(f"{getattr(sdk, '__name__', sdk)} 未导出 SDKClient 类")
+    return cls
 
 
 def _tool_error_text(result) -> str:

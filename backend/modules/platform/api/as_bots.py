@@ -47,6 +47,7 @@ class AsBotPayload(BaseModel):
     knowledge_base_ids: list = []
     skills: list = []
     models: list = []
+    execution_layer_id: int = 0
     chart_enabled: bool = True
     permission_mode: str = "inherit"
     workspace_id: int = 0
@@ -246,6 +247,29 @@ def get_as_bot(as_bot_id: int):
     return _normalize(dict(row))
 
 
+def _check_execution_layer(layer_id) -> None:
+    """AS-BOT 绑定的执行层在写时就校存在性与启用状态（错配置当场报 422）。
+
+    为什么不等到问答时才发现：绑一条不存在/已停用的层，症状是“每次对话都起不来”，
+    而原因藏在执行层页里。写时校验把问题挡在配置入口，文案直接说清怎么改。
+    健康检查（心跳 / CLI 可达）仍留给运行时裁决，不在保存时跑子进程探测。
+    工作空间绑定关系也在运行时裁决（`service.pick_layer_for_as_bot`），
+    因为 AS-BOT 本身可以跨工作空间复用，此处无法确定“哪个工作空间”。
+    """
+    lid = int(layer_id or 0)
+    if not lid:
+        return  # 0/None = 跟随工作空间默认执行层，是合法状态
+    from backend.modules.mind.execution import service as exec_service
+
+    row = exec_service.get_layer(lid)
+    if not row:
+        raise HTTPException(422, f"Harness 不存在（id={lid}）。请重新选择，或置空以跟随工作空间默认 Harness。")
+    if row.get("status") != "active":
+        raise HTTPException(
+            422, f"Harness「{row.get('display_name') or row.get('name')}」已停用，"
+                 "请先在「Harness」页启用它再绑定。")
+
+
 @router.post("/")
 def create_as_bot(req: AsBotPayload):
     if not req.name and not req.as_bot_key:
@@ -259,14 +283,16 @@ def create_as_bot(req: AsBotPayload):
     existing = execute_query("SELECT id FROM adh_as_bots WHERE as_bot_key = %s", (key,), fetchone=True)
     if existing:
         raise HTTPException(status_code=400, detail=f"as_bot_key '{key}' 已存在")
+    _check_execution_layer(req.execution_layer_id)  # 在 try 外：配置错误要报 422，不能裹成 500
     now = _now()
     try:
         as_bot_id = execute_insert(
             """INSERT INTO adh_as_bots
                (as_bot_key, name, display_name, description, category, system_prompt,
-                persona, tools, mcp_server_ids, knowledge_base_ids, skills, models, chart_enabled,
+                persona, tools, mcp_server_ids, knowledge_base_ids, skills, models,
+                execution_layer_id, chart_enabled,
                 permission_mode, is_active, workspace_id, created_at, updated_at, created_by)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'admin')""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'admin')""",
             (
                 key, req.name or key, req.display_name, req.description, req.category,
                 req.system_prompt,
@@ -276,6 +302,7 @@ def create_as_bot(req: AsBotPayload):
                 json.dumps(req.knowledge_base_ids or [], ensure_ascii=False),
                 json.dumps(req.skills or [], ensure_ascii=False),
                 json.dumps(req.models or [], ensure_ascii=False),
+                int(req.execution_layer_id or 0) or None,
                 1 if req.chart_enabled else 0,
                 req.permission_mode,
                 1 if req.is_active else 0,
@@ -312,6 +339,11 @@ def update_as_bot(as_bot_id: int, req: AsBotUpdate, user: dict = Depends(get_cur
         if field in data:
             updates.append(f"{field} = %s")
             params.append(data[field])
+    if "execution_layer_id" in data:
+        # 写时就校可用性：错 id 存进去只会在以后每一次问答才爆，排查成本高
+        _check_execution_layer(data["execution_layer_id"])
+        updates.append("execution_layer_id = %s")
+        params.append(int(data["execution_layer_id"] or 0) or None)
     for field in ("persona", "tools", "mcp_server_ids", "knowledge_base_ids", "skills", "models"):
         if field in data:
             updates.append(f"{field} = %s")

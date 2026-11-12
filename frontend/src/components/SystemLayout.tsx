@@ -1,23 +1,21 @@
 import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
-  Database, FileText, BookOpen, Users, Brain, Bot,
-  Settings, LogOut, Menu, Palette, Sun, Moon, Zap, TrendingUp,
-  Grid3x3, GlassWater, Heart, UserCircle, X, ChevronLeft, ChevronRight,
-  Clock, Bell, BarChart3, Shield, GitBranch, Eye,
-  Activity, Server, Gem, Sparkles, Waypoints, LayoutTemplate, FlaskConical, Dna,
-  Megaphone, Compass,
+  Database, FileText, BookOpen, Users, Brain, Bot, Settings, LogOut, Menu, Palette, UserCircle, X,
+  ChevronLeft, ChevronRight, Clock, Bell, BarChart3, Shield, GitBranch, Eye, Activity, Server,
+  Sparkles, Waypoints, LayoutTemplate, FlaskConical, Dna, Megaphone, Compass
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useAuthStore } from '../stores/authStore';
-import { useThemeStore, applyTheme, type ThemeId } from '../stores/themeStore';
+import { useThemeStore, applyTheme } from '../stores/themeStore';
 import { useBrandStore } from '../stores/brandStore';
+import BrandLogo from './BrandLogo';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import SectionSwitcher from './SectionSwitcher';
 import ReleaseNotesButton from './ReleaseNotesButton';
@@ -28,23 +26,12 @@ import AsBotPanel from './asbot/AsBotPanel';
 import { useMenuAccess } from '../hooks/useMenuAccess';
 import { SidebarMenuSkeleton } from './SidebarMenuSkeleton';
 import { pruneEmptySections } from '@/lib/menuUtils';
+import ThemeMenuItems from './ThemeMenuItems';
 
 /** 将路由 key 转换为 menu_key: '/system/models' → 'system:models' */
 function toMenuKey(routeKey: string): string {
   return routeKey.replace('/system/', 'system:').replace(/^\//, '');
 }
-
-const THEMES: { id: ThemeId; label: string; icon: typeof Sun; desc: string }[] = [
-  { id: 'dark', label: '暗色', icon: Moon, desc: '深色背景，适合长时间使用' },
-  { id: 'light', label: '亮色', icon: Sun, desc: '浅色背景，清晰明亮' },
-  { id: 'datafoundry', label: 'DataFoundry', icon: Gem, desc: '克制优雅，近黑主色 + 宝石色调' },
-  { id: 'tech', label: '科技风', icon: Zap, desc: '深蓝底色，霓虹高亮' },
-  { id: 'finance', label: '金融风', icon: TrendingUp, desc: '深色海军蓝，金色主调' },
-  { id: 'bento', label: 'Bento Grid', icon: Grid3x3, desc: '柔和圆角卡片，彩色区块布局' },
-  { id: 'glass', label: '玻璃拟态', icon: GlassWater, desc: '深色半透明毛玻璃质感' },
-  { id: 'ainative', label: 'AI-Native', icon: Brain, desc: '深空神经网络，动态光效边框' },
-  { id: 'medical', label: '医疗平台', icon: Heart, desc: '清爽蓝绿，专业可信' },
-];
 
 const SYSTEM_MENU_ITEMS = [
   { section: 'AI 配置' },
@@ -52,14 +39,15 @@ const SYSTEM_MENU_ITEMS = [
   { key: '/system/mcp', icon: Server, label: 'MCP 服务' },
   { key: '/system/as-bots', icon: Bot, label: 'AS-BOT 配置' },
   { key: '/system/skills', icon: Sparkles, label: '技能配置' },
-  { key: '/system/config-versions', icon: GitBranch, label: 'Prompt配置' },
+  { key: '/system/config-versions', icon: GitBranch, label: 'Prompt配置', hidden: true },
   { section: '知识管理' },
+  /* 知识库**管理**(连接/类型/同步目标)留系统配置; 知识库内容的查看与编辑在内容中心 */
   { key: '/system/knowledge-base', icon: BookOpen, label: '知识库' },
-  { key: '/system/knowledge-management', icon: BookOpen, label: '快速路径' },
   { section: '可视化配置' },
   { key: '/system/dashboards', icon: BarChart3, label: '看板管理' },
   { key: '/system/vis-library', icon: LayoutTemplate, label: 'UI 字模库' },
-  { key: '/system/report-templates', icon: FileText, label: '报告模板' },
+  // 菜单名与 adh_menu_registry 的 label 同步改名（模板中心：报告版式 + IM/邮件/短信文案）
+  { key: '/system/report-templates', icon: FileText, label: '模板中心' },
   { section: '集成配置' },
   { key: '/system/notification-channels', icon: Bell, label: '通知渠道' },
   { section: '安全与权限' },
@@ -90,7 +78,7 @@ export default function SystemLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuthStore();
-  const { theme, setTheme } = useThemeStore();
+  const { theme } = useThemeStore();
   const { brand, fetchBrand } = useBrandStore();
   const { getDefaultWorkspaceId } = useWorkspaceStore();
   const startGuide = useGuideStore(s => s.startGuide);
@@ -110,7 +98,7 @@ export default function SystemLayout() {
   const currentPath = location.pathname;
   // 按权限过滤菜单; 一级分组下无可访问项时不渲染该分组标题
   const visibleMenu = menuAccess.ready ? pruneEmptySections(
-    SYSTEM_MENU_ITEMS.filter(item => !('key' in item) || menuAccess.allowed(toMenuKey((item as any).key)))
+    SYSTEM_MENU_ITEMS.filter(item => !('key' in item) || (!(item as any).hidden && menuAccess.allowed(toMenuKey((item as any).key))))
   ) : [];
 
   return (
@@ -119,11 +107,7 @@ export default function SystemLayout() {
       <div className={`hidden lg:flex flex-col h-full bg-sidebar border-r border-sidebar-border transition-all duration-200 ${collapsed ? 'w-[64px]' : 'w-[220px]'} overflow-hidden`}>
         {/* Logo */}
         <div className="h-12 flex items-center justify-center border-b border-sidebar-border gap-1.5">
-          {brand.show_icon && brand.logo_url ? (
-            <img src={brand.logo_url} alt="Logo" className="h-6 w-6 rounded object-contain flex-shrink-0" />
-          ) : brand.show_icon ? (
-            <span className="inline-flex items-center justify-center rounded bg-primary text-primary-foreground font-bold text-xs size-6 flex-shrink-0">AD</span>
-          ) : null}
+          <BrandLogo brand={brand} size={24} />
           {!collapsed && (
             <span className="font-bold text-sm text-sidebar-foreground truncate">系统配置</span>
           )}
@@ -260,19 +244,7 @@ export default function SystemLayout() {
                 <TooltipContent>主题风格</TooltipContent>
               </Tooltip>
               <DropdownMenuContent align="end" className="w-48">
-                {THEMES.map(t => {
-                  const Icon = t.icon;
-                  return (
-                    <DropdownMenuItem key={t.id} onClick={() => setTheme(t.id)} className={`flex items-center gap-3 ${theme === t.id ? 'bg-accent' : ''}`}>
-                      <Icon className="h-4 w-4" />
-                      <div className="flex-1 min-w-0">
-                        <div className={`text-sm ${theme === t.id ? 'font-medium' : ''}`}>{t.label}</div>
-                        <div className="text-xs text-muted-foreground truncate">{t.desc}</div>
-                      </div>
-                      {theme === t.id && <span className="text-xs text-primary">✓</span>}
-                    </DropdownMenuItem>
-                  );
-                })}
+                <ThemeMenuItems />
               </DropdownMenuContent>
             </DropdownMenu>
             <DropdownMenu>
@@ -306,7 +278,11 @@ export default function SystemLayout() {
             </DropdownMenu>
           </div>
         </header>
-        <main className="flex-1 overflow-auto bg-background p-6">
+        {/* min-h-0/min-w-0 与 WorkspaceLayout 同口径：flex 子项默认 min-height:auto 会被内容顶高，
+            页内“仅内容区滚动”的全高布局就会退化成整页滚动（页头/工具条被卷走）。
+            relative 是兜底护栏：页面内 position:absolute 且祖先链无定位元素的后代（如 sr-only 标签）
+            默认以 ICB 为包含块，会越过本口的 overflow 裁剪把文档撑高，滚轮就会连侧栏/顶栏一起卷走。 */}
+        <main className="relative min-h-0 min-w-0 flex-1 overflow-auto bg-background p-6">
           <Outlet />
         </main>
       </div>

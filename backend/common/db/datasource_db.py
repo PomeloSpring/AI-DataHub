@@ -52,7 +52,9 @@ def get_datasource_conn(db_type: str, host: str, port: int,
         database: Database name.
         ssl: Legacy SSL flag (still honored when ssl_mode is unset).
         ssl_mode: "disabled" | "preferred" | "required"; overrides ssl.
-        read_timeout: MySQL/Doris socket read timeout (seconds).
+        read_timeout: Query bound in seconds. For MySQL/Doris it is the socket
+            read timeout; for PostgreSQL/SLS it is pushed down as a server-side
+            ``statement_timeout`` (psycopg2 has no socket read timeout).
 
     Returns:
         A pymysql/psycopg2 connection for SQL datasources.
@@ -71,6 +73,14 @@ def get_datasource_conn(db_type: str, host: str, port: int,
     if db_type in POSTGRES_DB_TYPES:
         if not HAS_PSYCOPG2:
             raise ValueError("psycopg2 not installed. Run: pip install psycopg2-binary")
+        # psycopg2 没有 MySQL 那样的 socket read_timeout 参数；旧写法只设 connect_timeout，
+        # 于是**握手完成之后的查询阶段完全无上界**。跨境源(如新加坡 arms-prd-en)一旦抖动，
+        # 调用会无限挂在读上，前端超时 abort 也不会释放这条连接，重试只会越堆越多(看板"查询超时"根因)。
+        # 这里用两个对 PG 协议真实有效的上界把它收口(已实机探测 SLS 端点接受这些 libpq 参数)：
+        #   - statement_timeout：服务端在 read_timeout 秒主动取消失控查询 → psycopg2 抛 QueryCanceled，
+        #     沿既有 fail-loud 通道回可读错误(不静默换源、不假成功，符合 no-silent-degradation)；
+        #   - keepalives：探测半死/被链路(NAT/防火墙)静默断开的跨境 socket，避免复用死连接时阻塞在读上。
+        _rt = int(read_timeout or 30)
         pg_kwargs = {
             "host": host,
             "port": port,
@@ -79,6 +89,11 @@ def get_datasource_conn(db_type: str, host: str, port: int,
             "dbname": database or "postgres",
             "cursor_factory": psycopg2.extras.RealDictCursor,
             "connect_timeout": 10,
+            "options": f"-c statement_timeout={_rt * 1000}",
+            "keepalives": 1,
+            "keepalives_idle": max(5, _rt // 3),
+            "keepalives_interval": 5,
+            "keepalives_count": 3,
         }
         if effective_ssl_mode == "required":
             pg_kwargs["sslmode"] = "require"

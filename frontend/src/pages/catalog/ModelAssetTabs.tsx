@@ -9,7 +9,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { toast } from '@/lib/toast';
 import client from '@/api/client';
-import { ontologyApi } from '@/api/ontology';
+import { ontologyApi, type ObjectColumnOption, type PropertyDriftEntry } from '@/api/ontology';
 import { useGraphStore } from '@/stores/graphStore';
 import KnowledgeGraphView from '@/components/graph/KnowledgeGraph';
 import { Button } from '@/components/ui/button';
@@ -21,8 +21,8 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
-import { Network, Tag as TagIcon, Maximize2, Minimize2, X, Plus, Pencil, Trash2 } from 'lucide-react';
-import { normalizeDocObjects } from '@/lib/ontologyObjects';
+import { Network, Tag as TagIcon, Maximize2, Minimize2, X, Plus, Pencil, Trash2, AlertTriangle } from 'lucide-react';
+import { findObjectIndex, normalizeDocObjects, writeObjectField } from '@/lib/ontologyObjects';
 
 // 视图已收敛为后端 GraphType.UNIFIED 单图(分域组装 总览+业务知识+物理层/血缘),
 // 不再拆四视图切换; singleView 传入时仍锁定旧单视图(系统助手/图谱页兼容)。
@@ -1353,27 +1353,205 @@ export function ModelScenariosTab({ jsonContent, onSave }: { jsonContent: string
   );
 }
 
+/** 哨兵项前缀：漂移列不在这张表的实存列里，拿它当 Select value 会渲染成空（看着像被清空）。
+ *  用显式的「不修改（当前 x）」项承载保持原值：既不假装选中一个不存在的列，也不让行变空。 */
+const KEEP_COLUMN_PREFIX = '__keep__::';
+
+/** 「不绑定物理列」哨兵项：该表确实没有这个概念时，把属性列清空是唯一诚实的写法。
+ *  留着指向不存在列的映射更坏：planner 会把它编译进 SQL，取数直接报错；
+ *  页面也因此永远挂着修不掉的红旗（引导指向一个改了也没用的操作）。
+ *  属性定义与业务名保留，只是不再声称绑到某个物理列（column_map 少一项，解析时回抛候选）。 */
+const NONE_COLUMN_VALUE = '__none__::';
+
+/** 属性列映射编辑器（「编辑对象」弹窗内）。
+ *
+ *  为什么必须存在：换库/改表后服务端会判出「列不存在」并让对象亮「列待修」徽标，
+ *  而此前页面上没有任何一处能改属性的物理列（草案 JSON 视图只读，属性行不可编），
+ *  等于告警把人引向一个不存在的操作（no-silent-degradation）。候选来自列元数据
+ *  （与漂移判定同源），选择用选择框而非手输列名（ui-resource-display）。 */
+function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, edits, onEdit }: {
+  modelId: number;
+  objectKey: string;
+  /** 弹窗内当前表名覆盖值；空 = 由服务端按生效部署绑定行 → doc primary_table 解析 */
+  table: string;
+  properties: any[];
+  drift: PropertyDriftEntry[];
+  edits: Record<number, string>;
+  onEdit: (index: number, column: string | null) => void;
+}) {
+  const [cols, setCols] = useState<ObjectColumnOption[]>([]);
+  const [resolvedTable, setResolvedTable] = useState('');
+  const [note, setNote] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    // 表名是同一弹窗里的输入框：防逐字符重拉候选（350ms 防抖）
+    const timer = setTimeout(() => {
+      ontologyApi.objectColumns(modelId, objectKey, table)
+        .then(({ data }) => {
+          if (cancelled) return;
+          setCols(Array.isArray(data?.columns) ? data.columns : []);
+          setResolvedTable(String(data?.table || ''));
+          setNote(String(data?.note || ''));
+          setLoading(false);
+        })
+        .catch((e: any) => {
+          if (cancelled) return;
+          setCols([]);
+          setNote('');
+          // 拿不到候选必须出声：静默当作“没列可改”会把漂移留到线上错数才暴露
+          setError(String(e?.response?.data?.detail || e?.message || '接口失败'));
+          setLoading(false);
+        });
+    }, 350);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [modelId, objectKey, table]);
+
+  const names = useMemo(() => cols.map((c) => c.name), [cols]);
+  // 表限定写法（`表.列`）剥前缀后才能与候选列名对上；前缀不是本表时保持完整写法（就是待修的那一个）
+  const normCurrent = (ref: string) => {
+    const s = String(ref || '');
+    const dot = s.indexOf('.');
+    if (dot > 0 && resolvedTable && s.slice(0, dot).toLowerCase() === resolvedTable.toLowerCase()) {
+      return s.slice(dot + 1);
+    }
+    return s;
+  };
+  const driftOfProp = (p: any) => {
+    const col = String(p?.column || '');
+    const label = String(p?.name || col);
+    return drift.find((d) => (d.column && d.column === col)
+      || (d.property && d.property === label));
+  };
+
+  return (
+    <div className="rounded-md border p-2">
+      <div className="flex items-center gap-1.5 text-xs font-medium mb-1">
+        属性列映射（{properties.length}）
+        <span className="text-[11px] font-normal text-muted-foreground">物理列名，仅建模使用</span>
+      </div>
+      {drift.length > 0 && (
+        <div className="mb-1.5 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-[11px] text-amber-700">
+          <AlertTriangle className="h-3 w-3 mr-1 inline" />
+          {(() => {
+            const unv = drift.filter((d) => d.verdict === 'unverified').length;
+            const bad = drift.length - unv;
+            const seg: string[] = [];
+            if (bad) seg.push(`${bad} 个属性的列名不在该表实存列里（标红）：改选正确列，或在该表确实没这个概念时选「不绑定物理列」`);
+            if (unv) seg.push(`${unv} 个属性无法核验：这张表的列元数据还没同步，候选清单不完整，请先去「表 & 字段」同步字段再改（现在改列名没有依据）`);
+            return seg.join('；') + '。改完「保存为草案」并发布才生效';
+          })()}
+        </div>
+      )}
+      {loading && (
+        <div className="text-[11px] text-muted-foreground py-1">实存列候选加载中…</div>
+      )}
+      {error && (
+        <div className="mb-1.5 rounded border border-red-500/30 bg-red-500/5 px-2 py-1 text-[11px] text-red-600">
+          列候选读取失败（{error}）：已改为手动填写列名，请自行对着「表 & 字段」核实
+        </div>
+      )}
+      {!loading && !error && note && (
+        <div className="mb-1.5 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-[11px] text-amber-700">
+          {note}
+        </div>
+      )}
+      <div className="space-y-1 max-h-56 overflow-y-auto pr-1">
+        {!loading && properties.map((p, i) => {
+          const raw = String(p?.column || '');
+          if (!raw && !p?.name) return null;
+          const cur = normCurrent(raw);
+          const useSelect = !loading && !error && names.length > 0;
+          const edited = edits[i];
+          const bad = !!driftOfProp(p);
+          const selected = edited !== undefined
+            ? (edited === '' ? NONE_COLUMN_VALUE : edited)
+            : (useSelect ? (names.includes(cur) ? cur : `${KEEP_COLUMN_PREFIX}${raw}`) : raw);
+          return (
+            <div key={`${raw || i}`} className="flex items-center gap-2">
+              <span className="w-24 shrink-0 truncate text-[12px]" title={String(p?.name || raw)}>
+                {String(p?.name || raw)}
+              </span>
+              {useSelect ? (
+                <Select value={selected} onValueChange={(v) => onEdit(i, v.startsWith(KEEP_COLUMN_PREFIX)
+                  ? null : (v === NONE_COLUMN_VALUE ? '' : v))}>
+                  <SelectTrigger aria-label={`${String(p?.name || raw)} 的物理列`}
+                    className={`h-7 flex-1 text-[11px] font-mono ${bad && edited === undefined ? 'border-red-400 text-red-600' : ''}`}>
+                    <SelectValue placeholder="选择实存列" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {!names.includes(cur) && (
+                      <SelectItem value={`${KEEP_COLUMN_PREFIX}${raw}`} className="text-[11px]">
+                        <span className="text-red-500">不修改（当前 {raw || '未填'}，该表无此列）</span>
+                      </SelectItem>
+                    )}
+                    {bad && (
+                      <SelectItem value={NONE_COLUMN_VALUE} className="text-[11px]">
+                        <span className="text-amber-600">不绑定物理列（该表没有这个概念）</span>
+                      </SelectItem>
+                    )}
+                    {cols.map((c) => (
+                      <SelectItem key={c.name} value={c.name} className="text-[11px]">
+                        <span className="font-mono">{c.name}</span>
+                        {c.comment && <span className="ml-1.5 text-muted-foreground">{c.comment}</span>}
+                        {c.type && <span className="ml-1.5 text-muted-foreground/70">{c.type}</span>}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                // 无候选可枚举（接口失败 / 元数据未同步 / 走数据集）：回退为手填并在上方说明原因
+                <Input value={edited ?? raw} onChange={(e) => onEdit(i, e.target.value)}
+                  aria-label={`${String(p?.name || raw)} 的物理列`}
+                  className={`h-7 flex-1 text-[11px] font-mono ${bad && edited === undefined ? 'border-red-400 text-red-600' : ''}`} />
+              )}
+              {bad && (
+                <Badge variant="outline" className="text-[10px] px-1 h-4 shrink-0 text-red-500 border-red-500/40"
+                  title={driftOfProp(p)?.verdict === 'unverified'
+                    ? `该表列元数据尚未同步，无法核验列 ${raw}`
+                    : `列 ${raw} 不在 ${driftOfProp(p)?.table || resolvedTable || '该表'} 的实存列里`}>
+                  {driftOfProp(p)?.verdict === 'unverified' ? '未核验' : '列不存在'}
+                </Badge>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /** 手动新建对象按钮 + 对象表单（业务本体支持手工新增对象，不只 LLM 生成/编辑器改 JSON）。
- *  业务本体=路由索引层：对象填 route（选源本体/源对象），不绑物理表；
- *  源本体对象仍可绑物理表（物理事实唯一在源本体）。 */
-export function ObjectCreateButton({ jsonContent, onSave }: { jsonContent: string; onSave: (next: string) => void }) {
+ *  业务本体对象的形状描述可选：路由（route 指向源本体）和/或 primary_table；
+ *  两者都不填也合法——v0.5 B6b 起物理绑定唯一在部署绑定层（adh_ontology_bindings），
+ *  新对象可先建概念再在「编辑对象」里补物理表；**发布级联**才把绑定行登记上
+ *  （对象清单在发布前会显式标「未绑定物理表」）。
+ *  旧文案把登记动作指向「同构站点部署」页，而那页只配站点不写绑定行——假引导，已改。 */
+export function ObjectCreateButton({ jsonContent, onSave, modelKind }: {
+  jsonContent: string;
+  onSave: (next: string) => void;
+  /** 模型行的 kind（真值源）；存量 doc 顶层可能没写 kind */
+  modelKind?: string;
+}) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ key: '', display_name: '', description: '', primary_table: '' });
   const [route, setRoute] = useState<RouteValue>({
     mode: 'object_filter', source_ontology: '', filter_hints: [],
   });
 
-  let kind = '';
-  try { kind = String(JSON.parse(jsonContent || '{}').kind || ''); } catch { /* 非法 JSON：按源本体表单 */ }
-  const isBusiness = kind === 'business';
+  let docKind = '';
+  try { docKind = String(JSON.parse(jsonContent || '{}').kind || ''); } catch { /* 非法 JSON：按模型行 kind */ }
+  const isBusiness = (modelKind || docKind) === 'business';
 
   const submit = () => {
     const key = form.key.trim();
     if (!key) return;
-    if (isBusiness && !route.source_ontology.trim()) {
-      window.alert('业务对象必须声明路由：请选择目标源本体');
-      return;
-    }
+    const srcName = route.source_ontology.trim();
+    const table = form.primary_table.trim();
     let doc: any;
     try {
       doc = JSON.parse(jsonContent || '{}');
@@ -1381,7 +1559,9 @@ export function ObjectCreateButton({ jsonContent, onSave }: { jsonContent: strin
       return;
     }
     doc.objects = doc.objects || [];
-    if (doc.objects.some((o: any) => o.key === key)) {
+    // 查重按归一后的对象身份（不是裸 o.key）：存量 doc 只有 object_key 时，
+    // 按 o.key 比永远不命中 → 同名对象被重复 push，保存才被服务端判重拒掉（错在更早的环节）。
+    if (findObjectIndex(doc.objects, key) >= 0) {
       window.alert(`对象 key 已存在: ${key}`);
       return;
     }
@@ -1390,18 +1570,19 @@ export function ObjectCreateButton({ jsonContent, onSave }: { jsonContent: strin
       key,
       display_name: form.display_name.trim() || key,
       description: form.description.trim(),
-      ...(isBusiness
+      ...(isBusiness && srcName
         ? {
             route: {
               mode: route.mode,
-              source_ontology: route.source_ontology.trim(),
+              source_ontology: srcName,
               datasource_name: route.datasource_name || '',
               ...(route.mode === 'object_filter' && route.object_key
                 ? { object_key: route.object_key } : {}),
               ...(hints.length ? { filter_hints: hints } : {}),
             },
           }
-        : (form.primary_table.trim() ? { primary_table: form.primary_table.trim() } : {})),
+        : {}),
+      ...(table ? { primary_table: table } : {}),
       properties: [], links: [],
     });
     onSave(JSON.stringify(doc, null, 2));
@@ -1434,12 +1615,13 @@ export function ObjectCreateButton({ jsonContent, onSave }: { jsonContent: strin
             </Field>
             {isBusiness ? (
               <RouteEditor value={route} onChange={setRoute} />
-            ) : (
-              <Field label="绑定物理表（可选；数据产品登记后可在编辑器补绑定）">
-                <Input value={form.primary_table} placeholder="如：t_order_item"
-                  onChange={(e) => setForm({ ...form, primary_table: e.target.value })} />
-              </Field>
-            )}
+            ) : null}
+            <Field label={isBusiness
+              ? '绑定物理表（可选；不配路由时在此声明物理形状，保存草案后点「发布」由级联登记部署绑定）'
+              : '绑定物理表（可选；数据产品登记后可在编辑器补绑定）'}>
+              <Input value={form.primary_table} placeholder="如：t_order_item"
+                onChange={(e) => setForm({ ...form, primary_table: e.target.value })} />
+            </Field>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>取消</Button>
@@ -1451,17 +1633,27 @@ export function ObjectCreateButton({ jsonContent, onSave }: { jsonContent: strin
   );
 }
 
-/** 编辑已有对象（标量字段 + 别名 + 路由/主表）。
+/** 编辑已有对象（标量字段 + 别名 + 路由/主表 + 属性列映射）。
  *  2026-10-27 拍板：废除「修改仅 AS-BOT」硬禁令，用户侧开放页面内编辑。
  *  与新建同一落库路径：改 canonical doc → saveDraft（存草案，两段式第一段），
- *  发布才级联生效；属性/关系不在本表单（保留原值，量大且由 AS-BOT/JSON 维护）。
- *  业务本体=路由索引层（编 route）；源本体=物理事实（编 primary_table）。 */
-export function ObjectEditButton({ jsonContent, onSave, target }: {
+ *  发布才级联生效；关系不在本表单（保留原值，量大且由 AS-BOT/JSON 维护）。
+ *  属性列映射在本表单（不开放就只能改草案 JSON，而草案 JSON 视图只读 →「列待修」无修入口）。
+ *  对象形状：已声明 route 的业务对象编路由，其余（含存量直绑物理表的业务对象）编 primary_table。 */
+export function ObjectEditButton({ jsonContent, onSave, target, modelKind, modelId, boundTable, drift }: {
   jsonContent: string;
   onSave: (next: string) => void;
+  /** 模型行的 kind（真值源）；存量 doc 顶层可能没写 kind，缺它时会把业务本体当源本体表单 */
+  modelKind?: string;
+  /** 模型 id：传入才渲染属性列映射（列候选需要按模型自有源/部署绑定解析） */
+  modelId?: number;
+  /** 生效部署绑定层的物理表（doc 没写 primary_table 时作为当前表名展示） */
+  boundTable?: string;
+  /** 该对象的属性列漂移清单（服务端实时判），用于标红待修行 */
+  drift?: PropertyDriftEntry[];
   target: {
     key: string; display_name?: string; description?: string; aliases?: string[];
     primary_table?: string;
+    properties?: { column?: string; name?: string; type?: string }[];
     route?: { mode?: string; source_ontology?: string; datasource_name?: string;
       object_key?: string; filter_hints?: { dimension?: string; examples?: string[] }[] };
   };
@@ -1471,8 +1663,10 @@ export function ObjectEditButton({ jsonContent, onSave, target }: {
     display_name: target.display_name || '',
     description: target.description || '',
     aliases: (target.aliases || []).join(', '),
-    primary_table: target.primary_table || '',
+    primary_table: target.primary_table || boundTable || '',
   }));
+  // 属性列草稿（下标 → 新列名）：只存本地，点「保存为草案」才写回 doc
+  const [colEdits, setColEdits] = useState<Record<number, string>>({});
   const initRoute = (): RouteValue => ({
     mode: target.route?.mode === 'source' ? 'source' : 'object_filter',
     source_ontology: target.route?.source_ontology || '',
@@ -1483,50 +1677,70 @@ export function ObjectEditButton({ jsonContent, onSave, target }: {
   });
   const [route, setRoute] = useState<RouteValue>(initRoute);
 
-  let kind = '';
-  try { kind = String(JSON.parse(jsonContent || '{}').kind || ''); } catch { /* 非法 JSON：按源本体表单 */ }
-  const isBusiness = kind === 'business';
+  // kind 真值源是模型行，doc.kind 只兜底（后端 save_draft 才把 kind 补写进 doc，
+  // 存量正文里根本没有该字段）。
+  let docKind = '';
+  try { docKind = String(JSON.parse(jsonContent || '{}').kind || ''); } catch { /* 非法 JSON：按模型行 kind */ }
+  const isBusiness = (modelKind || docKind) === 'business';
+  // 路由编辑器只在对象**已声明 route** 时出现：v0.5 起业务契约的 route 层不再是强制校验
+  // （服务端 find_business_route_issues 已退役），存量直绑物理表的业务对象若被强制补路由，
+  // 等于给「编辑」新加门槛 → 一个也改不动。未声明 route 的对象按物理表编辑。
+  const editRoute = isBusiness && !!target.route;
+  // 属性列映射：非路由对象且有属性才给编（路由对象物理列在源本体上）；需 modelId 才能拉列候选
+  const showColumnMap = !!modelId && !editRoute && (target.properties || []).length > 0;
 
-  // 切换对象（详情面板选中变了）时重置表单为当前对象值
+  // 切换对象（详情面板选中变了）/部署绑定加载完成时重置表单为当前对象值
   useEffect(() => {
     setForm({
       display_name: target.display_name || '',
       description: target.description || '',
       aliases: (target.aliases || []).join(', '),
-      primary_table: target.primary_table || '',
+      primary_table: target.primary_table || boundTable || '',
     });
     setRoute(initRoute());
-  }, [target.key]);  // eslint-disable-line react-hooks/exhaustive-deps
+    setColEdits({});
+  }, [target.key, boundTable]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = () => {
     const key = target.key.trim();
     if (!key) return;
-    if (isBusiness && !route.source_ontology.trim()) {
-      window.alert('业务对象必须声明路由：请选择目标源本体');
-      return;
-    }
+    const srcName = route.source_ontology.trim();
     let doc: any;
     try { doc = JSON.parse(jsonContent || '{}'); } catch { return; }
-    const idx = (doc.objects || []).findIndex((o: any) => o.key === key);
-    if (idx < 0) { window.alert(`对象不存在: ${key}`); return; }
+    // 定位按归一后的对象身份：存量 doc 用旧字段名 object_key/name，展示层已归一出 key，
+    // 写入口若只认 o.key 就会假报「对象不存在」并把保存静默中止（历史缺陷）。
+    const idx = findObjectIndex(doc.objects, key);
+    if (idx < 0) {
+      window.alert(`当前正文里没有对象「${target.display_name || key}」(key=${key})；请确认切到了对象所属的正文（生效/草案）后重试`);
+      return;
+    }
     const hints = (route.filter_hints || []).filter((h) => h.dimension.trim());
     const next = { ...doc.objects[idx] };
-    next.display_name = form.display_name.trim() || key;
+    // 标量写回同步旧别名字段（doc 里不留 name/display_name 互相矛盾的两份值）
+    writeObjectField(next, 'display_name', form.display_name.trim() || key);
     next.description = form.description.trim();
     next.aliases = form.aliases.split(',').map((s) => s.trim()).filter(Boolean);
-    if (isBusiness) {
+    // 属性列映射写回：展示行与 doc.properties 同序（normalizeDocObjects 不动属性）。
+    // 改过的行才写（包含写成空值）：空值就是「该表没有这个概念」的显式表达，
+    // 比留着不存在的列名好（那会被编译进 SQL 导致取数报错）；其余字段原值保留。
+    if (Object.keys(colEdits).length && Array.isArray(next.properties)) {
+      next.properties = next.properties.map((p: any, i: number) => (
+        colEdits[i] !== undefined && colEdits[i] !== p?.column ? { ...p, column: colEdits[i] } : p));
+    }
+    if (!editRoute) {
+      if (form.primary_table.trim()) next.primary_table = form.primary_table.trim();
+      else delete next.primary_table;
+    } else if (srcName) {
       next.route = {
         mode: route.mode,
-        source_ontology: route.source_ontology.trim(),
+        source_ontology: srcName,
         datasource_name: route.datasource_name || '',
         ...(route.mode === 'object_filter' && route.object_key ? { object_key: route.object_key } : {}),
         ...(hints.length ? { filter_hints: hints } : {}),
       };
-    } else if (form.primary_table.trim()) {
-      next.primary_table = form.primary_table.trim();
-    } else {
-      delete next.primary_table;
     }
+    // editRoute 但未选源（选框无「清空」项，只可能是存量 route 缺 source_ontology 的脏数据）：
+    // 保留原声明不静默抹掉，也不阻止用户改显示名/描述（否则脏数据会让对象彻底改不动）
     doc.objects[idx] = next;
     onSave(JSON.stringify(doc, null, 2));
     setOpen(false);
@@ -1538,7 +1752,9 @@ export function ObjectEditButton({ jsonContent, onSave, target }: {
         <Pencil className="h-3.5 w-3.5 mr-1" />编辑对象
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className={isBusiness ? 'max-w-lg max-h-[88vh] overflow-y-auto overflow-x-hidden' : 'max-w-md max-h-[88vh] overflow-y-auto overflow-x-hidden'}>
+        <DialogContent className={(editRoute || showColumnMap)
+          ? 'max-w-lg max-h-[88vh] overflow-y-auto overflow-x-hidden'
+          : 'max-w-md max-h-[88vh] overflow-y-auto overflow-x-hidden'}>
           <DialogHeader>
             <DialogTitle>编辑对象 · {target.display_name || target.key}</DialogTitle>
           </DialogHeader>
@@ -1558,13 +1774,25 @@ export function ObjectEditButton({ jsonContent, onSave, target }: {
               <Textarea rows={2} value={form.description}
                 onChange={(e) => setForm({ ...form, description: e.target.value })} />
             </Field>
-            {isBusiness ? (
+            {editRoute ? (
               <RouteEditor value={route} onChange={setRoute} />
             ) : (
-              <Field label="绑定物理表">
+              <Field label="绑定物理表（表名，与「表 & 字段」里的实存表一致）">
                 <Input value={form.primary_table} placeholder="如：t_order_item"
                   onChange={(e) => setForm({ ...form, primary_table: e.target.value })} />
               </Field>
+            )}
+            {showColumnMap && (
+              <PropertyColumnEditor modelId={Number(modelId)} objectKey={target.key}
+                // 候选永远跟着弹窗里看到的表名走（所见即所校）；留空则服务端按部署绑定行 → doc 解析
+                table={form.primary_table.trim()}
+                properties={target.properties || []} drift={drift || []}
+                edits={colEdits}
+                onEdit={(i, col) => setColEdits((prev) => {
+                  const next2 = { ...prev };
+                  if (col === null) delete next2[i]; else next2[i] = col;
+                  return next2;
+                })} />
             )}
           </div>
           <DialogFooter>

@@ -86,6 +86,67 @@ def validate_sql_endpoint(
         _raise(e)
 
 
+# ── ES 内置通道（数据集第三种定义类型）: 必须在 /{dataset_id} 之前注册 ──────
+#
+# 口径与治理型数据集不同是**有意**的（详见 `dataset_service` 的「ES 分支」段注释）：
+# ES 不进列级/行级数据权限治理域（ES SQL 无 JOIN/可包裹子查询、sqlglot 无 ES 方言），
+# 闸门 = 部署侧索引模式白名单（fail-closed）∧ 数据集 es_pattern 收窄，由 `core/es_client` 执行。
+# 这三个端点只回配置结论与字段元数据，**不回数据行**（除 validate-es-sql 的一行列型样本）；
+# 持有 `dataset:es` 才能读（在 service 层按码裁决，不走路径匹配）。
+
+@router.get("/es-patterns")
+def es_patterns(
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
+    """可查索引范围清单 + 通道就绪态 + 方言提示（数据集页选择框的数据源）。
+
+    模式名是部署配置，但它的身份与 AS-BOT 的 `list_es_indexes` 一致：业务可读的
+    "可查范围"名，不是连接信息（地址/凭据/端口永不回显）；本面只在持有 dataset:es 的
+    配置面开放，普通消费面不渲染。
+    未就绪时回原因而不是空清单，否则前端会渲成"暂无索引"把配置缺口当业务结论。
+    """
+    try:
+        return dataset_service.es_pattern_options(_identity(user, workspace_id))
+    except Exception as e:  # noqa: BLE001
+        _raise(e)
+
+
+@router.get("/es-fields")
+def es_fields(
+    pattern: str = QueryParam("", description="索引模式（从 es-patterns 清单选择）"),
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
+    """索引范围的字段清单（名称/类型/可聚合性/text 的 .keyword 精确列），供写 SQL 与配字段映射。"""
+    try:
+        return dataset_service.es_field_options(pattern, _identity(user, workspace_id))
+    except Exception as e:  # noqa: BLE001
+        _raise(e)
+
+
+@router.post("/validate-es-sql")
+def validate_es_sql_endpoint(
+    req: dict,
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
+    """校验 ES 正文（只读/单表/强制 LIMIT/白名单/范围收窄）并探测输出列。
+
+    与 `validate-sql` 同构但不经 governed_execute：ES 正文不是治理域 SQL，
+    校验与执行都只在 `core/es_client` 一个入口上（存得进 = 跑得通不漂移）。
+    """
+    ident = _identity(user, workspace_id)
+    if not ident["user_id"]:
+        raise HTTPException(status_code=403, detail="缺少可信用户身份, 拒绝 ES 取数")
+    try:
+        return dataset_service.validate_es_sql(req, ident)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        _raise(e)
+
+
 # ── 语义对象 × SQL 互转(双定义; 编译 SQL 仅回显给 dataset:manage 编辑者) ────
 
 @router.get("/semantic-fields")
@@ -144,17 +205,34 @@ def extract_from_sql(
 
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
+@router.get("/channels")
+def dataset_channels(user: dict = Depends(get_current_user)):
+    """可承载数据集取数的**内置 MCP 通道**清单（数据集页「数据源/通道」筛选的选项源）。
+
+    就绪态/原因/开放范围数量一律回源 `builtin_mcp`（与 MCP 服务页同一口径，不在这里
+    另算一套“通道可用否”）；未就绪的通道照旧返回并带原因，否则前端默默少一项会被读成
+    “没这个通道”（no-silent-degradation）。按通道筛选属消费面，不要求 dataset:es
+    （受权限把关的是配置面：索引范围/字段清单，见 /es-patterns）。
+    """
+    try:
+        return {"items": dataset_service.mcp_channel_options()}
+    except Exception as e:  # noqa: BLE001
+        _raise(e)
+
+
 @router.get("/")
 def list_datasets(
     keyword: str = QueryParam("", description="名称/描述/对象 关键字"),
     datasource_id: int = QueryParam(0, description="按数据源筛选(0=全部)"),
+    channel: str = QueryParam("", description="按取数通道筛选：''=全部，es / mcp:elasticsearch=内置 Elasticsearch 通道"),
     user: dict = Depends(get_current_user),
     workspace_id: int = Depends(get_workspace_id),
 ):
     """列出数据集(可见性功能已退役, 取数侧治理不变)。"""
     try:
         items = dataset_service.list_datasets(
-            _identity(user, workspace_id), keyword=keyword, datasource_id=int(datasource_id or 0))
+            _identity(user, workspace_id), keyword=keyword, datasource_id=int(datasource_id or 0),
+            channel=channel or "")
         return {"items": items}
     except Exception as e:  # noqa: BLE001
         _raise(e)
@@ -188,6 +266,31 @@ def get_dataset(dataset_id: int,
         raise HTTPException(status_code=404, detail="数据集不存在")
     ident = _identity(user, workspace_id)
     ds["chart_preset"] = dataset_service._parse_json(ds.get("chart_preset"), {})
+    # 入参 → 逻辑参数计划（与看板取数翻译同源）：数据集页据此显示"每个入参在看板上是什么"
+    from backend.semantics import param_plan
+    ds["param_plan"] = param_plan.logical_plan(
+        ds.get("variables"), param_plan._bodies_of(ds))
+    if dataset_service.is_es_dataset(ds):
+        # ES 型不挂在数据源上：可用源/生效源/跨引擎正文对它都不成立，拿这套判定只会
+        # 渲染出"默认引擎"这个不相干标签（与列表页同口径，单口径在 service 一处判）。
+        state = dataset_service.es_channel_state()
+        pattern = str(ds.get("es_pattern") or "").strip()
+        ds["datasource_name"] = dataset_service._ES_CHANNEL_LABEL
+        ds["available_datasources"] = []
+        ds["available_source_names"] = [pattern] if pattern else []
+        ds["usable_now"] = [pattern] if dataset_service.es_scope_live(pattern) else []
+        if not state.get("ready"):
+            ds["warnings"] = [f"内置 Elasticsearch 通道当前不可用："
+                              f"{state.get('status_message') or state.get('state')}；"
+                              f"该配置由部署侧托管，请联系管理员"]
+        elif pattern and not dataset_service.es_scope_live(pattern):
+            ds["warnings"] = [f"数据集登记的索引范围「{pattern}」已不在当前开放范围内，"
+                              f"取数会被拒绝；请重新选择索引范围"]
+        ds["es_channel"] = {"ready": bool(state.get("ready")), "state": state.get("state"),
+                            "status_message": state.get("status_message") or ""}
+        ds["fields"] = dataset_service.resolve_fields(ds)
+        ds["references"] = dataset_service._references(dataset_id)
+        return ds
     catalog = dataset_service._load_datasource_catalog()
     usable, missing = dataset_service.usable_sources(ds, catalog)
     scope, _ = (dataset_service.usable_scope(ds, ident, catalog=catalog)
@@ -238,6 +341,104 @@ def delete_dataset(
         return dataset_service.delete_dataset(dataset_id, _identity(user, workspace_id))
     except Exception as e:  # noqa: BLE001
         _raise(e)
+
+
+# ── 批量操作（循环复用单条实现 + 逐条回报，不新增权限码/第二套语义） ──────────
+#
+# 权限与门禁完全交给单条函数（`delete_dataset` / `update_dataset` 内部的
+# `_require_editor` + 引用拒绝 + 可用范围校验）：批量不另判“能不能改”，避免双口径。
+# 部分成功 + 逐条点名比整批事务回滚更贴合真实语义（回滚已成功项会让人误判“什么都没发生”）。
+# 失败项保持可见、可重试；被看板引用/无编辑权/ES 不适用等“本次不处理”都显式回报原因。
+
+MAX_BATCH_ACTION = 50
+
+
+def _batch_apply(ids, ident, action) -> dict:
+    """逐条执行 `action(dataset_id)`，回报 succeeded/failed（失败带业务名与原因，护栏 §7：只出业务名）。
+
+    `action` 返回单条结果 dict（可含 `warnings`）；失败以 ValueError/PermissionError/NoIdentityError 为界。
+    """
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(status_code=400, detail="请至少选择一个数据集")
+    if len(ids) > MAX_BATCH_ACTION:
+        raise HTTPException(status_code=400,
+                            detail=f"单次批量操作最多 {MAX_BATCH_ACTION} 个数据集")
+    succeeded: list = []
+    failed: list = []
+    for raw in ids:
+        try:
+            did = int(raw)
+        except (TypeError, ValueError):
+            failed.append({"id": raw, "name": "", "reason": "数据集标识无效"})
+            continue
+        try:
+            result = action(did) or {}
+            item = {"id": did}
+            if result.get("warnings"):
+                item["warnings"] = result["warnings"]
+            succeeded.append(item)
+        except (ValueError, PermissionError, NoIdentityError) as exc:
+            name = (dataset_service.get_dataset(did) or {}).get("name") or ""
+            failed.append({"id": did, "name": name, "reason": str(exc)})
+    ok = sum(1 for s in succeeded if not s.get("warnings"))
+    warn = len(succeeded) - ok
+    message = f"成功 {len(succeeded)} 个"
+    if warn:
+        message += f"（其中 {warn} 个有方言覆盖告警）"
+    if failed:
+        message += f"，失败 {len(failed)} 个"
+    return {"succeeded": succeeded, "failed": failed,
+            "succeeded_count": len(succeeded), "failed_count": len(failed), "message": message}
+
+
+@router.post("/batch-delete")
+def batch_delete_datasets(
+    req: dict,
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
+    """批量删除数据集：逐条走 `delete_dataset`（属主/管理员 + 被引用拒绝同一门禁）。"""
+    ident = _identity(user, workspace_id)
+    try:
+        return _batch_apply(req.get("ids"), ident,
+                            lambda did: dataset_service.delete_dataset(did, ident))
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        _raise(e)
+
+
+@router.post("/batch-update-datasource")
+def batch_update_datasource(
+    req: dict,
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
+    """批量改默认数据源(执行源)与可用数据源范围：逐条走 `update_dataset`。
+
+    只带需要改的字段（未带的不动）；两个都没带直接拒（不开“点了但什么都没改”的空承诺）。
+    执行源传内部 id（前端从数据源清单选），可用范围传业务名数组（服务端按已注册源名校验）。
+    ES 型数据集不挂在数据源上，逐条回报“本次不处理”（不静默剔掉）。
+    """
+    ident = _identity(user, workspace_id)
+    patch: dict = {}
+    if req.get("datasource_id") is not None:
+        patch["datasource_id"] = req["datasource_id"]
+    if req.get("available_datasources") is not None:
+        patch["available_datasources"] = req["available_datasources"]
+    if not patch:
+        raise HTTPException(status_code=400, detail="未指定要修改的字段（默认数据源 / 可用数据源）")
+
+    def _apply(did: int) -> dict:
+        return dataset_service.update_dataset(did, dict(patch), ident)
+
+    try:
+        return _batch_apply(req.get("ids"), ident, _apply)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        _raise(e)
+
 
 
 # ── 行级范围(分享时生效; 只收紧不放宽) ──────────────────────────────────

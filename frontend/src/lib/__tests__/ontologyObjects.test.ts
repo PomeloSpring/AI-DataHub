@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeDocObjects, resolveDisplayName, resolveObjectKey, showsM234, showsSiteScope, countM234Declarations } from '@/lib/ontologyObjects';
+import {
+  findObjectIndex, normalizeDocObjects, resolveDisplayName, resolveObjectKey,
+  showsM234, showsSiteScope, countM234Declarations, writeObjectField,
+} from '@/lib/ontologyObjects';
 
 /**
  * 回归：存量源本体（kind='source'，B6 退役中）的 canonical doc 用旧字段名
@@ -94,5 +97,48 @@ describe('showsSiteScope — 适用站点页签可见域', () => {
     expect(showsSiteScope('system')).toBe(true);
     expect(showsSiteScope('')).toBe(true);
     expect(showsSiteScope(undefined)).toBe(true);
+  });
+});
+
+/**
+ * 回归（真实缺陷）：模型「数据仓库模型」的 canonical doc 用旧字段名 object_key/name，
+ * 清单里归一后看得见 case_stat，而「编辑对象」写入口按裸 o.key 查找 → 永远找不到 →
+ * 弹「对象不存在: case_stat」，该模型下所有对象都无法从页面编辑。
+ */
+describe('findObjectIndex — 原始 doc 里按归一身份定位对象（读写口径一致）', () => {
+  const objects = [
+    { object_key: 'case_stat', name: '案例统计', primary_table: 'daily_case_stats' },
+    { key: 'region', display_name: '地区' },
+    { primary_table: 'dwd_orphan' },
+  ];
+
+  it('旧字段名 object_key 的对象能按展示层给出的 key 定位', () => {
+    expect(findObjectIndex(objects, 'case_stat')).toBe(0);
+    expect(findObjectIndex(objects, 'region')).toBe(1);
+    // 无 key 只有主表的对象，身份就是主表（与 normalizeDocObjects 同口径）
+    expect(findObjectIndex(objects, 'dwd_orphan')).toBe(2);
+  });
+
+  it('大小写/分隔符差异按身份兜底命中；真正不存在的对象仍返回 -1', () => {
+    expect(findObjectIndex(objects, 'CASE-STAT')).toBe(0);
+    expect(findObjectIndex(objects, 'not_here')).toBe(-1);
+    expect(findObjectIndex(objects, '')).toBe(-1);
+    expect(findObjectIndex(undefined, 'case_stat')).toBe(-1);
+  });
+});
+
+describe('writeObjectField — 写回标量时同步旧别名字段', () => {
+  it('canonical 与旧名同时存在时两份值一起更新（不留互相矛盾的旧值）', () => {
+    const o: Record<string, any> = { object_key: 'case_stat', name: '案例统计' };
+    writeObjectField(o, 'display_name', '案例数量统计');
+    expect(o.display_name).toBe('案例数量统计');
+    expect(o.name).toBe('案例数量统计');
+    expect(o.object_key).toBe('case_stat');
+  });
+
+  it('没有旧别名字段的 canonical 对象只写 canonical', () => {
+    const o: Record<string, any> = { key: 'region' };
+    writeObjectField(o, 'display_name', '地区');
+    expect(o).toEqual({ key: 'region', display_name: '地区' });
   });
 });

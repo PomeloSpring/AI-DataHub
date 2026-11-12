@@ -22,6 +22,30 @@ def _generate_id():
     return int(_time.time() * 1000000)
 
 
+#: 任务配置里不再被消费的内部键：AS-BOT 与数据源每次执行按属主角色实时继承，
+#: 旧形态（Agent 名称 / MCP 服务绑定）已随 multi-agent 退役。写入方（API、报表建任务、
+#: Chat 指令）若还带这些字段，一律在落库前剥掉——落进库只会变成"配了但没人读"的空承诺。
+TASK_CONFIG_INTERNAL_KEYS = ("as_bot_key", "waker_key", "datasource_id", "datasource_ids",
+                             "agent_name", "agent_names", "mcp_server_id", "mcp_server_ids")
+
+
+def sanitize_task_config(config) -> dict:
+    """任务配置只保留无人值守真正消费的字段：questions / context / site_code。
+
+    剥掉的键记 info 日志（可诊断，不静默改数据语义）；`site_code` 是唯一保留的
+    范围提示，因为它取的是业务站点名（用户可理解、可点名），不是数据源标识（护栏 §7）。
+    """
+    if not isinstance(config, dict):
+        raise ValueError("task_config 必须是对象")
+    dropped = [key for key in TASK_CONFIG_INTERNAL_KEYS if key in config]
+    if dropped:
+        logger.info("定时任务配置剥除内部键（能力与可查范围按属主角色继承）: %s", ",".join(dropped))
+    clean = {k: v for k, v in config.items() if k not in TASK_CONFIG_INTERNAL_KEYS}
+    if not (clean.get("questions") or []):
+        raise ValueError("任务至少要有一个分析问题")
+    return clean
+
+
 class ScheduledTaskService:
     """Service for managing scheduled tasks, execution logs, and notification channels."""
 
@@ -75,6 +99,7 @@ class ScheduledTaskService:
         """Create a new scheduled task. Returns the new task ID."""
         if int(owner_id or 0) <= 0:
             raise PermissionError("创建任务必须有可信创建者")
+        data = {**data, "task_config": sanitize_task_config(data.get("task_config"))}
         from backend.core.task_runtime import call
         call("mind.validate_task_as_bot", {**data, "owner_id": owner_id, "workspace_id": workspace_id})
         task_id = _generate_id()
@@ -140,6 +165,8 @@ class ScheduledTaskService:
                 if not existing:
                     return False
                 self._normalize_task(existing)
+                if isinstance(data.get("task_config"), dict):
+                    data = {**data, "task_config": sanitize_task_config(data["task_config"])}
                 merged = {**existing, **{k: v for k, v in data.items() if v is not None},
                           "owner_id": existing.get("owner_id"), "workspace_id": existing.get("workspace_id") or 0}
                 from backend.core.task_runtime import call
@@ -235,8 +262,6 @@ class ScheduledTaskService:
         for field in ("task_config",):
             if isinstance(row.get(field), str):
                 row[field] = json.loads(row[field])
-        from backend.core.task_runtime import call
-        row["requires_as_bot_migration"] = call("mind.needs_as_bot_migration", row)
         for ts in ("created_at", "updated_at", "last_run_at"):
             if hasattr(row.get(ts), "isoformat"):
                 row[ts] = row[ts].isoformat()
@@ -617,131 +642,10 @@ class ScheduledTaskService:
             if hasattr(row.get(ts), "isoformat"):
                 row[ts] = row[ts].isoformat()
 
-    # ── Report Templates CRUD ───────────────────────────────────────
-
-    def list_templates(self, workspace_id: int = 0, owner_id: int = None) -> list:
-        """List report templates (system + workspace-scoped).
-
-        owner_id 给定时（非 admin 全局视图）只返回系统内置 + 自建模板。
-        """
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                if workspace_id:
-                    cur.execute(
-                        "SELECT * FROM adh_report_templates "
-                        "WHERE is_system = 1 OR workspace_id = %s "
-                        "ORDER BY is_system DESC, name ASC",
-                        (workspace_id,),
-                    )
-                elif owner_id is not None:
-                    cur.execute(
-                        "SELECT * FROM adh_report_templates "
-                        "WHERE is_system = 1 OR owner_id = %s "
-                        "ORDER BY is_system DESC, name ASC",
-                        (owner_id,),
-                    )
-                else:
-                    cur.execute("SELECT * FROM adh_report_templates ORDER BY is_system DESC, name ASC")
-                rows = cur.fetchall()
-                self._normalize_template(rows)
-                return rows
-        finally:
-            conn.close()
-
-    def get_template(self, template_id: int) -> Optional[dict]:
-        """Get a single report template by ID."""
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT * FROM adh_report_templates WHERE id = %s", (template_id,))
-                row = cur.fetchone()
-                if row:
-                    self._normalize_template([row])
-                return row
-        finally:
-            conn.close()
-
-    def create_template(self, data: dict, owner_id: int, workspace_id: int = 0) -> int:
-        """Create a new report template. Returns the new template ID."""
-        template_id = _generate_id()
-        now = _now()
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO adh_report_templates "
-                    "(id, name, description, content, format, is_system, workspace_id, owner_id, "
-                    "created_at, updated_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (
-                        template_id,
-                        data["name"],
-                        data.get("description", ""),
-                        data["content"],
-                        data.get("format", "markdown"),
-                        0,
-                        workspace_id,
-                        owner_id,
-                        now,
-                        now,
-                    ),
-                )
-            conn.commit()
-            return template_id
-        finally:
-            conn.close()
-
-    def update_template(self, template_id: int, data: dict) -> bool:
-        """Update a report template. System templates cannot be modified."""
-        if not data:
-            return False
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                # Check if system template
-                cur.execute("SELECT is_system FROM adh_report_templates WHERE id = %s", (template_id,))
-                row = cur.fetchone()
-                if row and row.get("is_system"):
-                    raise ValueError("系统内置模板不可修改")
-
-                updates = ["updated_at = %s"]
-                params = [_now()]
-                for key in ("name", "description", "content", "format"):
-                    if key in data and data[key] is not None:
-                        updates.append(f"`{key}` = %s")
-                        params.append(data[key])
-                params.append(template_id)
-                cur.execute(
-                    f"UPDATE adh_report_templates SET {', '.join(updates)} WHERE id = %s",
-                    params,
-                )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            conn.close()
-
-    def delete_template(self, template_id: int) -> bool:
-        """Delete a report template. System templates cannot be deleted."""
-        conn = get_metadata_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT is_system FROM adh_report_templates WHERE id = %s", (template_id,))
-                row = cur.fetchone()
-                if row and row.get("is_system"):
-                    raise ValueError("系统内置模板不可删除")
-                cur.execute("DELETE FROM adh_report_templates WHERE id = %s", (template_id,))
-            conn.commit()
-            return True
-        finally:
-            conn.close()
-
-    def _normalize_template(self, rows):
-        """Normalize template rows for JSON serialization."""
-        for row in rows if isinstance(rows, list) else [rows]:
-            for ts in ("created_at", "updated_at"):
-                if hasattr(row.get(ts), "isoformat"):
-                    row[ts] = row[ts].isoformat()
+    # ── 报告模板：唯一事实源已收敛到字模库 report_template
+    # （见 viz.services.report_service.resolve_report_template）。遗留表 adh_report_templates
+    # 退役为冻结表：保留结构与存量行，任何读/写路径不得再消费它——
+    # 历史缺陷是这里的 CRUD 与字模库模板并存，配置页改的一套、生成读的另一套。
 
     # ── Generated Reports ───────────────────────────────────────────
 

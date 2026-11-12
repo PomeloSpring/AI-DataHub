@@ -93,6 +93,92 @@ class TestCertifyRequiresOwner:
             ms.certify_metric(999, True, owner="张三")
 
 
+class _CaptureDB:
+    """记录 (sql, params) 的替身：验证入参真的进了 INSERT，而不是被静默丢弃。"""
+
+    def __init__(self):
+        self.calls: list[tuple[str, tuple]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def cursor(self):
+        outer = self
+
+        class _C:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def execute(self, sql, params=None):
+                outer.calls.append((" ".join(str(sql).split()), tuple(params or ())))
+
+            def fetchone(self):
+                last = outer.calls[-1][0]
+                if "MAX(id)" in last:
+                    return {"nid": 7}
+                return None
+
+            def fetchall(self):
+                return []
+
+        return _C()
+
+
+def _capture(monkeypatch):
+    fake = _CaptureDB()
+    monkeypatch.setattr(ms, "DBConnection", lambda: fake)
+    return fake
+
+
+class TestCreateDictHonoursCertification:
+    """新建入口的 certified 必须真生效，并与 _certify 一样要求责任人。
+
+    历史缺陷（两头各错一半）：
+    - `create_metric` 的 INSERT 列清单里没有 certified → 调用方传 certified=1 被丢弃，
+      行落为草稿却没人知道（目录认证覆盖率假低）；
+    - `create_dimension` 写 certified 却不写 owner_role → 治理页看见“已认证”却查不到责任人，
+      拿 0 改成 1 当认证（P4 明令禁止的假认证）。
+    """
+
+    def test_create_metric_certified_without_owner_rejected(self):
+        with pytest.raises(ValueError, match="owner"):
+            ms.create_metric({"display_name": "探针指标", "name": "probe_m",
+                              "target_table": "t_x", "formula": "COUNT(id)", "certified": 1})
+
+    def test_create_metric_certified_with_owner_lands(self, monkeypatch):
+        fake = _capture(monkeypatch)
+        ms.create_metric({"display_name": "探针指标", "name": "probe_m", "target_table": "t_x",
+                          "formula": "COUNT(id)", "certified": 1, "owner": "张三"})
+        sql, params = fake.calls[-1]
+        assert "INSERT INTO adh_metrics" in sql
+        assert "certified" in sql, "入参 certified 不得静默丢弃"
+        assert 1 in params and "张三" in params
+
+    def test_create_metric_without_certified_is_draft(self, monkeypatch):
+        fake = _capture(monkeypatch)
+        ms.create_metric({"display_name": "探针指标", "name": "probe_m", "target_table": "t_x",
+                          "formula": "COUNT(id)"})
+        sql, params = fake.calls[-1]
+        assert params[-1] == 0, "未认证入口必须落草稿（0），不能默认当成可信口径"
+
+    def test_create_dimension_certified_without_owner_rejected(self):
+        with pytest.raises(ValueError, match="owner"):
+            ms.create_dimension({"display_name": "探针维度", "certified": 1})
+
+    def test_create_dimension_certified_with_owner_writes_owner_role(self, monkeypatch):
+        fake = _capture(monkeypatch)
+        ms.create_dimension({"display_name": "探针维度", "certified": 1, "owner": "张三"})
+        sql, params = fake.calls[-1]
+        assert "owner_role" in sql, "认证维度必须同时落责任人，否则只是把 0 改成 1"
+        assert "张三" in params
+
+
 class TestOwnerColumnDiffersPerTable:
     """两表责任人列不同：adh_metrics.owner / adh_dimensions.owner_role。"""
 

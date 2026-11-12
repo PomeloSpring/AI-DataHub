@@ -6,8 +6,8 @@ export const CANVAS_WIDTH = 1920;
 export const CANVAS_HEIGHT = 1080;
 export const GRID_SIZE = 20;
 export const DEFAULT_CHART_SIZE = { w: 400, h: 300 };
-// 控件默认紧凑：刚拖进去不臃肿，拖大拖小由人控制
-export const DEFAULT_WIDGET_SIZE = { w: 180, h: 32 };
+// 控件默认尺寸不再在本文件另写一套：唯一口径是 `lib/dashboardDesign.naturalSizeOf`（按类型给），
+// 统一给一个 260×32 会把日期区间控件塞成只显一半（2026-11-10 反馈）
 
 type Point = { x: number; y: number };
 type Gesture = {

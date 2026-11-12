@@ -74,7 +74,11 @@ class TestRetrievalSuiteCoversRealChain:
         assert rep["total"] > 0, "检索评测集不应为空"
         src = rep["by_source"]
         assert src, "检索评测必须产出来源分桶（否则说明没真跑检索链路）"
-        known = {"graphrag", "ontology_traversal", "bm25", "hybrid", "local_hybrid_fallback", "qmind_hit"}
+        # 词汇与 `semantic_tools._classify_retrieval_source` / `knowledge_retriever._rag_source_of`
+        # 同源：多源接入后新增 bailian_hit / multi_source_hit（及各 provider 的 kb_type 标签）。
+        known = {"graphrag", "ontology_traversal", "bm25", "hybrid", "local_hybrid_fallback",
+                 "qmind_hit", "bailian_hit", "multi_source_hit",
+                 "qmind", "cloud_rag", "kb_multi"}
         assert known & set(src), (
             f"分桶里没有任何检索策略名，说明没走到真实检索链路: {sorted(src)}")
 

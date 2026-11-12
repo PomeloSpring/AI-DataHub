@@ -7,6 +7,7 @@ import { useVisConfig } from '@/lib/visStyle';
 import {
   filterRows, formatCell, sortRows, toCsv, toTsv,
 } from '../lib/dataGrid';
+import { applyFieldFormats } from '@/lib/fieldFormat';
 
 interface Props {
   columns: string[];
@@ -16,6 +17,12 @@ interface Props {
   /** 导出文件名前缀(不含扩展名) */
   filename?: string;
   emptyText?: string;
+  /**
+   * 列名 → 字段显示格式令牌（服务端随取数结果下发，数据集是权威源）。
+   * 与图表走 `lib/fieldFormat` 同一实现：否则会出现"屏上 2026-10-12、
+   * 复制/导出的 CSV 还是 T00:00:00.000"的所见非所导出。
+   */
+  field_formats?: Record<string, string>;
   /** 可编辑: 双击单元格进入编辑,Enter/失焦提交、Esc 取消 */
   editable?: boolean;
   onEdit?: (row: Record<string, any>, column: string, value: string) => void;
@@ -36,7 +43,8 @@ const OVERSCAN = 8;
  * 表头点击排序(数值感知,空值恒排最后)、全字段关键字过滤、
  * 复制 TSV、导出 CSV(带 BOM);固定行高虚拟滚动,万行级流畅。
  */
-export default function DataGrid({ columns, rows, height = 400, filename = 'data', emptyText, editable, onEdit }: Props) {
+export default function DataGrid({ columns, rows, height = 400, filename = 'data',
+  field_formats, emptyText, editable, onEdit }: Props) {
   const gridCfg = useVisConfig('cs_table_grid', DEFAULT_GRID);
   const rowHeight = Math.max(18, Number(gridCfg.rowHeight) || 30);
   const [keyword, setKeyword] = useState('');
@@ -45,12 +53,17 @@ export default function DataGrid({ columns, rows, height = 400, filename = 'data
   const [editing, setEditing] = useState<{ row: Record<string, any>; col: string } | null>(null);
   const [draft, setDraft] = useState('');
 
+  // 显示格式在过滤/排序/导出之前施加一次，网格内所有出口（单元格、title、复制、
+  // 导出 CSV、关键字过滤）读的都是同一批显示值。
+  const grid = useMemo(
+    () => applyFieldFormats({ columns, rows, field_formats }),
+    [columns, rows, field_formats]);
   const view = useMemo(() => {
-    const filtered = filterRows(rows, columns, keyword);
+    const filtered = filterRows(grid.rows, grid.columns, keyword);
     return sort ? sortRows(filtered, sort.col, sort.dir) : filtered;
-  }, [rows, columns, keyword, sort]);
+  }, [grid, keyword, sort]);
 
-  const gridTemplate = `repeat(${Math.max(columns.length, 1)}, minmax(120px, 1fr))`;
+  const gridTemplate = `repeat(${Math.max(grid.columns.length, 1)}, minmax(120px, 1fr))`;
   const viewportRows = Math.ceil(height / rowHeight);
   const start = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
   const end = Math.min(view.length, start + viewportRows + OVERSCAN * 2);
@@ -71,7 +84,7 @@ export default function DataGrid({ columns, rows, height = 400, filename = 'data
 
   const copyAll = async () => {
     try {
-      await navigator.clipboard.writeText(toTsv(columns, view));
+      await navigator.clipboard.writeText(toTsv(grid.columns, view));
       toast.success(`已复制 ${view.length} 行(TSV,可直接粘贴到表格软件)`);
     } catch {
       toast.error('复制失败,请手动选择内容复制');
@@ -79,7 +92,7 @@ export default function DataGrid({ columns, rows, height = 400, filename = 'data
   };
 
   const exportCsv = () => {
-    const blob = new Blob([toCsv(columns, view)], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob([toCsv(grid.columns, view)], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -103,7 +116,7 @@ export default function DataGrid({ columns, rows, height = 400, filename = 'data
           />
         </div>
         <span className="text-xs text-muted-foreground whitespace-nowrap">
-          {view.length === rows.length ? `${rows.length} 行` : `${view.length} / ${rows.length} 行`}
+          {view.length === grid.rows.length ? `${grid.rows.length} 行` : `${view.length} / ${grid.rows.length} 行`}
           {sort && ` · 按 ${sort.col} ${sort.dir === 'asc' ? '升序' : '降序'}`}
           {editable && ' · 双击单元格可编辑'}
         </span>
@@ -123,9 +136,9 @@ export default function DataGrid({ columns, rows, height = 400, filename = 'data
         style={{ height }}
         onScroll={e => setScrollTop((e.target as HTMLDivElement).scrollTop)}
       >
-        {columns.length === 0 || view.length === 0 ? (
+        {grid.columns.length === 0 || view.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            {emptyText || (rows.length === 0 ? '暂无数据' : '没有匹配的行,试试换个关键字')}
+            {emptyText || (grid.rows.length === 0 ? '暂无数据' : '没有匹配的行,试试换个关键字')}
           </div>
         ) : (
           <div style={{ minWidth: columns.length * 120 }}>
@@ -133,7 +146,7 @@ export default function DataGrid({ columns, rows, height = 400, filename = 'data
               className="sticky top-0 z-10 grid border-b text-xs font-medium text-muted-foreground"
               style={{ gridTemplateColumns: gridTemplate, background: gridCfg.headerBg }}
             >
-              {columns.map(c => (
+              {grid.columns.map(c => (
                 <button
                   key={c}
                   onClick={() => toggleSort(c)}
@@ -159,7 +172,7 @@ export default function DataGrid({ columns, rows, height = 400, filename = 'data
                   background: (start + i) % 2 === 1 ? gridCfg.zebraBg : undefined,
                 }}
               >
-                {columns.map(c => (
+                {grid.columns.map(c => (
                   editing && editing.row === row && editing.col === c ? (
                     <input
                       key={c}

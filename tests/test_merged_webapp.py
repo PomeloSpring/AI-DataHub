@@ -12,6 +12,7 @@
 import re
 from pathlib import Path
 
+import pytest
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 
@@ -211,13 +212,87 @@ def test_monitoring_registry_matches_real_processes():
     """监控登记表只列真实监听进程（单一 web 口），不得把“一个进程健康”渲染成“8 个服务健康”。"""
     from backend.modules.auth.api import monitoring as mon
 
-    ports = {s["port"] for s in mon.SERVICE_REGISTRY}
-    assert ports <= {3000, service_ports()[0]}, f"探测口漂移: {ports}"
-    keys = {s["key"] for s in mon.SERVICE_REGISTRY}
+    ports = {s["key"]: mon._resolve_port(s) for s in mon.SERVICE_REGISTRY}
+    assert ports["web"] == service_ports()[0], "web 探测口与注册表不一致"
+    # 前端探测口必须 = 解析出的 FRONTEND_PORT（而不是某个“看起来对”的常量）：
+    # 旧断言写的是 <= {3000, web}，把硬编码本身当成合法值，改端口后用例仍绿。
+    assert ports["frontend"] == _cfg.frontend_port(), (
+        f"监控前端探测口漂移: {ports['frontend']} != {_cfg.frontend_port()}")
+    keys = set(ports)
     assert "web" in keys and not keys & {"datamind", "semhub", "authservice"}
     # 分层输出不留空层（前端会把空层渲成“0 全部正常”的误导信号）
     layers = {s["layer"] for s in mon.SERVICE_REGISTRY}
     assert [x["key"] for x in mon.LAYERS] == [x["key"] for x in mon.LAYERS if x["key"] in layers]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 前端端口口径护栏：唯一配置源 = 根目录 .env 的 FRONTEND_PORT
+# ═══════════════════════════════════════════════════════════════════
+def test_frontend_port_single_source_of_truth():
+    """前端监听口不得在任何一处被抄写：脚本 / config / 监控登记表 / vite / compose 同源。
+
+    本键被改过 3000→3001，而监控侧的写死常量没跟着改，直接把在跑的前端报成
+    “Connection refused”（假故障）。护栏同时盯住代码与部署文件，避免只修一处。
+    """
+    import subprocess
+    from backend.modules.auth.api import monitoring as mon
+
+    # ① 与唯一口径实现 frontend_port.sh 对账（它读根 .env，缺省 3000）
+    shell_port = int(subprocess.run(
+        ["bash", str(ROOT / "backend" / "scripts" / "frontend_port.sh")],
+        capture_output=True, text=True, check=True).stdout.strip())
+    assert _cfg.FRONTEND_PORT == shell_port, (
+        f"config.FRONTEND_PORT={_cfg.FRONTEND_PORT} 与 frontend_port.sh={shell_port} 分叉")
+
+    # ② 登记表只存端口来源，探测时现取；源码级不得出现字面量端口
+    src = (ROOT / "backend" / "modules" / "auth" / "api" / "monitoring.py").read_text(encoding="utf-8")
+    registry = src.split("SERVICE_REGISTRY = [", 1)[1].split("]", 1)[0]
+    assert not re.search(r'"port":\s*\d', registry), "探测登记表又写死了端口字面量"
+    assert '"port_source": "frontend"' in registry and '"port_source": "web"' in registry
+    resolve = src.split("def _resolve_port", 1)[1].split("\n\n\n", 1)[0]
+    assert "_cfg.frontend_port()" in resolve and "_cfg.WEB_PORT" in resolve, \
+        "探测时不是现取解析值（冻结在导入时需重启 web 才生效，不算动态）"
+    assert '"port": port' in src, "探测返回体丢了 port 字段（前端「端口 xxx」会渲染 undefined）"
+
+    # ③ vite 仍从同一键取口（不得回退成写死的 server.port）
+    vite = (ROOT / "frontend" / "vite.config.ts").read_text(encoding="utf-8")
+    assert re.search(r"env\.FRONTEND_PORT\s*\|\|\s*DEFAULT_FRONTEND_PORT", vite), \
+        "vite 不再读 FRONTEND_PORT"
+
+    # ④ compose 宿主映射走变量，不抄另一份 3000
+    for name in ("docker-compose.yml", "docker-compose.full.yml"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        assert re.search(r'"\$\{FRONTEND_PORT:-3000\}:80"', text), f"{name} 的前端映射未与 FRONTEND_PORT 同源"
+
+
+def test_frontend_port_resolution_priority_and_fail_loud(monkeypatch, caplog):
+    """解析优先级与脚本一致；非法值回退缺省但必须留可诊断告警（不静默）。"""
+    import logging
+    root_val = _cfg._read_root_env("FRONTEND_PORT")
+
+    # ① 显式 export 优先（单次调试覆盖）
+    monkeypatch.setitem(_cfg._PRELOAD_ENV, "FRONTEND_PORT", "4123")
+    assert _cfg._resolve_frontend_port() == 4123
+
+    # ② backend/.env 的同名残留不得压过根 .env（脚本/vite 只认根 .env）
+    monkeypatch.delitem(_cfg._PRELOAD_ENV, "FRONTEND_PORT", raising=False)
+    monkeypatch.setenv("FRONTEND_PORT", "3999")
+    assert _cfg._resolve_frontend_port() == (int(root_val) if root_val else 3999)
+
+    # ③ 非数字/越界 → 回退缺省 + WARNING（告警得让人能定位到根 .env）
+    for bad in ("abc", "0", "70000"):
+        monkeypatch.setitem(_cfg._PRELOAD_ENV, "FRONTEND_PORT", bad)
+        with caplog.at_level(logging.WARNING, logger="backend.common.config"):
+            assert _cfg._resolve_frontend_port() == _cfg.FRONTEND_PORT_DEFAULT
+        assert any("FRONTEND_PORT" in r.getMessage() for r in caplog.records), bad
+
+    # ④ 监控探测口随配置现取（行为面）：改根 .env 后刷新监控页即生效，无需重启 web
+    from backend.modules.auth.api import monitoring as mon
+    monkeypatch.setattr(_cfg, "frontend_port", lambda: 4567)
+    assert mon._resolve_port({"key": "frontend", "port_source": "frontend"}) == 4567
+    assert mon._resolve_port({"key": "web", "port_source": "web"}) == _cfg.WEB_PORT
+    with pytest.raises(ValueError):
+        mon._resolve_port({"key": "x", "port_source": "unknown"})
 
 
 def test_cross_module_cache_invalidation_single_instance(monkeypatch):

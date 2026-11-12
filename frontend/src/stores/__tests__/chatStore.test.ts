@@ -5,7 +5,7 @@ import { useAsBotStore } from '../asBotStore'
 // spy 句柄取自被 mock 的 'sonner'：业务代码走 @/lib/toast 包装器，它会调到这里的 spy
 import { toast } from 'sonner'
 
-vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
+vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn(), warning: vi.fn(), info: vi.fn() } }))
 
 // Mock the axios client
 vi.mock('../../api/client', () => ({
@@ -310,6 +310,60 @@ describe('chatStore', () => {
     })
   })
 
+  describe('deleteConversations（批量删除）', () => {
+    const list = () => useChatStore.getState().conversations
+
+    it('逐条结果如实回传：成功的移出清单，失败的保留待重试', async () => {
+      mockClient.post.mockResolvedValue({ data: { deleted: [1], failed: [{ id: 2, title: 'B', reason: '会话仍在执行' }] } })
+      useChatStore.setState({
+        conversations: [
+          { id: 1, title: 'A', datasource_id: 1, created_at: '', updated_at: '' },
+          { id: 2, title: 'B', datasource_id: 1, created_at: '', updated_at: '' },
+        ],
+        currentConvId: 2, messages: [{ role: 'user', content: 'keep' }],
+      })
+
+      const res = await useChatStore.getState().deleteConversations([1, 2])
+      expect(res.deleted).toEqual([1])
+      expect(res.failed[0].reason).toBe('会话仍在执行')
+      expect(list().map(c => c.id)).toEqual([2])       // 没删掉的必须还在
+      expect(useChatStore.getState().currentConvId).toBe(2)   // 当前会话未被删，上下文不动
+      expect(useChatStore.getState().messages).toHaveLength(1)
+    })
+
+    it('当前会话被批量删掉时回到未保存的新会话（与单条删除同一语义）', async () => {
+      mockClient.post.mockResolvedValue({ data: { deleted: [2], failed: [] } })
+      useChatStore.setState({
+        conversations: [{ id: 2, title: 'B', datasource_id: 1, created_at: '', updated_at: '' }],
+        currentConvId: 2, messages: [{ role: 'user', content: 'gone' }],
+      })
+      await useChatStore.getState().deleteConversations([2])
+      expect(useChatStore.getState().currentConvId).toBeNull()
+      expect(useChatStore.getState().messages).toEqual([])
+    })
+
+    it('整批被拒（超限/网络）= 一条都没删，不得报成功也不动清单', async () => {
+      mockClient.post.mockRejectedValue({ response: { status: 400, data: { detail: '一次最多删除 50 个会话' } } })
+      useChatStore.setState({
+        conversations: [
+          { id: 1, title: 'A', datasource_id: 1, created_at: '', updated_at: '' },
+          { id: 2, title: 'B', datasource_id: 1, created_at: '', updated_at: '' },
+        ],
+      })
+      const res = await useChatStore.getState().deleteConversations([1, 2])
+      expect(res.deleted).toEqual([])
+      expect(res.failed).toHaveLength(2)
+      expect(res.failed[0].reason).toBe('一次最多删除 50 个会话')
+      expect(list()).toHaveLength(2)
+    })
+
+    it('未勾选任何会话时不发请求（也不产生“已删除”的空承诺）', async () => {
+      const res = await useChatStore.getState().deleteConversations([])
+      expect(res).toEqual({ deleted: [], failed: [] })
+      expect(mockClient.post).not.toHaveBeenCalled()
+    })
+  })
+
   describe('renameConversation', () => {
     it('updates conversation title', async () => {
       mockClient.put.mockResolvedValue({})
@@ -478,6 +532,68 @@ describe('chatStore', () => {
       expect(stored).not.toHaveProperty('reportable')
       expect(stored).not.toHaveProperty('reportable_reason')
       expect(stored.content).toBe('已记住偏好')
+    })
+
+    it('详情页分页读：首屏只请求最近一页并落下游标', async () => {
+      useChatStore.setState({ messageBaseSeq: 0, messageTotal: 0, hasMoreEarlier: false })
+      mockClient.get.mockResolvedValueOnce({
+        data: { messages: [{ role: 'user', content: 'q7' }, { role: 'assistant', content: 'a7' }],
+                oldest_seq: 6, message_total: 20, has_more_earlier: true },
+      })
+      await useChatStore.getState().switchConversation(44)
+      expect(mockClient.get.mock.calls[0][1]).toEqual({ params: { msg_limit: 60 } })
+      const s = useChatStore.getState()
+      expect(s.messageBaseSeq).toBe(6)
+      expect(s.messageTotal).toBe(20)
+      expect(s.hasMoreEarlier).toBe(true)
+    })
+
+    it('往前翻页：prepend 旧消息并后移写回起点（不重不漏）', async () => {
+      useChatStore.setState({
+        currentConvId: 44,
+        messages: [{ role: 'user', content: 'q7' } as any],
+        messageBaseSeq: 6, messageTotal: 10, hasMoreEarlier: true, loadingEarlier: false,
+      })
+      mockClient.get.mockResolvedValueOnce({
+        data: { messages: [{ role: 'user', content: 'q5' }, { role: 'assistant', content: 'a5' }],
+                oldest_seq: 4, message_total: 10, has_more_earlier: true },
+      })
+      await useChatStore.getState().loadEarlierMessages()
+      expect(mockClient.get.mock.calls[0][1])
+        .toEqual({ params: { msg_limit: 60, before_seq: 6 } })
+      const s = useChatStore.getState()
+      expect(s.messages.map(m => m.content)).toEqual(['q5', 'a5', 'q7'])
+      expect(s.messageBaseSeq).toBe(4)
+    })
+
+    it('分页窗口写回必须带起点：否则服务端会把没加载的更早消息删掉', async () => {
+      useChatStore.setState({ messageBaseSeq: 6, messageTotal: 10, hasMoreEarlier: true })
+      mockClient.put.mockResolvedValueOnce({})
+      await saveMessages(44, [{ role: 'user', content: 'q7' }])
+      expect((mockClient.put.mock.calls[0][1] as any).message_base_seq).toBe(6)
+    })
+
+    it('整份历史（未分页）写回不带上点，保持旧口径', async () => {
+      useChatStore.setState({ messageBaseSeq: 0, hasMoreEarlier: false })
+      mockClient.put.mockResolvedValueOnce({})
+      await saveMessages(44, [{ role: 'user', content: 'q0' }])
+      expect((mockClient.put.mock.calls[0][1] as any).message_base_seq).toBeUndefined()
+    })
+
+    it('窗口过期（服务端拒写）：重拉会话并告知用户，不假装保存成功', async () => {
+      useChatStore.setState({ currentConvId: 44, messageBaseSeq: 60 })
+      mockClient.put.mockRejectedValueOnce({
+        response: { status: 422,
+          data: { detail: '会话历史已变化（本地窗口起点 60 超出服务端 2 条），请重新打开会话后再保存' } } },
+      )
+      mockClient.get.mockResolvedValueOnce({
+        data: { messages: [{ role: 'user', content: 'q0' }], oldest_seq: 0,
+                message_total: 1, has_more_earlier: false },
+      })
+      const ok = await saveMessages(44, [{ role: 'user', content: 'q7' }])
+      expect(ok).toBe(false)
+      expect(useChatStore.getState().messageBaseSeq).toBe(0)
+      expect(toast.error).toHaveBeenCalled()
     })
   })
 
@@ -708,6 +824,139 @@ describe('附件粘贴(剪贴板提取与命名)', () => {
     const f = new File(['img'], 'a.png', { type: 'image/png' })
     const dt = fakeClipboard({ items: [], files: [f] })
     expect(filesFromClipboard(dt).map(x => x.name)).toEqual(['a.png'])
+  })
+})
+
+/**
+ * 回合耗时与中止信息（会话 1783069459151 的归因混乱根源）：
+ *   1. 耗时口径以服务端为准 —— 浏览器 Date.now() 与 trace.duration_ms 会差出十几秒，
+ *      同一个回合两套数字就没法回答"到底跑满没跑满"；
+ *   2. 撞线中止的回合必须把"跑了多久 / 发了多少次工具 / 已产出的正文"留下来并可回放。
+ */
+describe('回合耗时口径与中止回合信息', () => {
+  beforeEach(() => {
+    useChatStore.setState({
+      currentConvId: 7, messages: [], loading: false, stopping: false,
+      abortController: null, pipelineMode: null, selectedDsId: 0, selectedModelId: null,
+      selectedWorkspaceId: 0, executorSessionId: null,
+    })
+    mockClient.put.mockReset()
+    mockClient.put.mockResolvedValue({})
+  })
+
+  function sse(events: Array<[string, unknown]>) {
+    const enc = new TextEncoder()
+    const chunks = events.map(([ev, data]) => `event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`)
+    let i = 0
+    return {
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: async () => (i < chunks.length
+            ? { done: false, value: enc.encode(chunks[i++]) }
+            : { done: true, value: undefined }),
+          cancel: async () => {},
+        }),
+      },
+    }
+  }
+
+  it('done.stats.elapsed_ms 存在时以服务端口径落库', async () => {
+    const fetchMock = vi.fn(async () => sse([
+      ['token', { text: '已完成一半分析' }],
+      ['done', {
+        intent: 'agent', reply: '已完成一半分析', handled_by: 'agent',
+        stats: { elapsed_ms: 300283, tool_call_count: 29, queries: 24,
+                 timed_out: true, turn_limit_seconds: 300 },
+      }],
+    ]))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      await useChatStore.getState().sendMessage('近一年 app 使用情况')
+      const asst = useChatStore.getState().messages.slice(-1)[0]
+      expect(asst.elapsed_ms).toBe(300283)
+      expect(asst.executionStats?.queries).toBe(24)
+      const put = mockClient.put.mock.calls.find(c => String(c[0]).startsWith('/chat/conversations/'))
+      const stored = (put![1] as any).messages.find((m: any) => m.role === 'assistant')
+      expect(stored.elapsed_ms).toBe(300283)
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('问答模式入口已撤：请求体不再上送 chat_mode（服务端收到空 = 存量单一主路）', async () => {
+    const fetchMock = vi.fn(async () => sse([
+      ['done', { intent: 'agent', reply: '口径如下', handled_by: 'agent' }],
+    ]))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      await useChatStore.getState().sendMessage('活跃客户是什么口径')
+      const body = JSON.parse(((fetchMock.mock.calls[0] as any[])[1] as any).body)
+      // 不上送而不是上送一个默认值：上送就等于“前端还在分快速/深度”，只是把选择隐去了
+      expect(body).not.toHaveProperty('chat_mode')
+      expect(useChatStore.getInitialState()).not.toHaveProperty('chatMode')
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('/ 选中的分析场景随请求上送 selected_scenes；没选就不带空字段', async () => {
+    const fetchMock = vi.fn(async () => sse([
+      ['done', { intent: 'agent', reply: '已按方案回答', handled_by: 'agent' }],
+    ]))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      await useChatStore.getState().sendMessage('官网最近7天UV怎么样')
+      const bare = JSON.parse(((fetchMock.mock.calls[0] as any[])[1] as any).body)
+      expect(bare.selected_scenes).toEqual([])     // 没选场景：空数组，不伪造一个
+
+      await useChatStore.getState().sendMessage('再看一下', undefined, undefined, { scenes: ['1001'] })
+      const withScene = JSON.parse(((fetchMock.mock.calls[1] as any[])[1] as any).body)
+      expect(withScene.selected_scenes).toEqual(['1001'])
+
+      // 轮次上要留痕：不记在消息里，回放看不出“这题按哪个场景做的”，重试也会把场景丢成“没选”
+      const lastUser = useChatStore.getState().messages.filter(m => m.role === 'user').slice(-1)[0]
+      expect(lastUser.scenes).toEqual(['1001'])
+
+      await useChatStore.getState().retryLastTurn()
+      const retried = JSON.parse(((fetchMock.mock.calls[2] as any[])[1] as any).body)
+      expect(retried.selected_scenes).toEqual(['1001'])
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('服务端没给耗时时退回本地计时（缺精度但不改结论）', async () => {
+    const fetchMock = vi.fn(async () => sse([
+      ['done', { intent: 'agent', reply: 'ok', handled_by: 'agent', stats: { tool_call_count: 2 } }],
+    ]))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      await useChatStore.getState().sendMessage('你好')
+      const asst = useChatStore.getState().messages.slice(-1)[0]
+      expect(typeof asst.elapsed_ms).toBe('number')
+      expect(asst.elapsed_ms).toBeGreaterThanOrEqual(0)
+      expect(asst.elapsed_ms).toBeLessThan(300_000)
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('撞线中止：正文保留 + 告警与服务端计数同时落地', async () => {
+    const abortText = '执行超时或中断，请检查会话状态；不会自动重放请求（本轮已跑满执行层时长上限 300s 被中止）'
+    const fetchMock = vi.fn(async () => sse([
+      ['token', { text: '已查得中国、日本站点结果' }],
+      ['error', { message: abortText }],
+      ['done', {
+        intent: 'agent', reply: abortText, error: abortText, handled_by: 'agent',
+        warnings: ['本轮工具调用已达上限 20 次，模型基于已完成的 20 次查询给出结论'],
+        stats: { elapsed_ms: 300317, tool_call_count: 24, queries: 24, timed_out: true },
+        trace_id: 'trace-x', message_uuid: 'muuid-x',
+      }],
+    ]))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      await useChatStore.getState().sendMessage('继续')
+      const asst = useChatStore.getState().messages.slice(-1)[0]
+      // 已流式输出的正文是用户资产：错误不得把它抹成只剩错误卡
+      expect(asst.content).toContain('已查得中国、日本站点结果')
+      expect(asst.error).toBe(abortText)
+      expect(asst.warnings?.[0]).toContain('已达上限 20 次')
+      expect(asst.elapsed_ms).toBe(300317)
+      expect(asst.trace_id).toBe('trace-x')
+    } finally { vi.unstubAllGlobals() }
   })
 })
 
@@ -1011,3 +1260,230 @@ describe('中断回合保留已输出内容（不只展示最后的错误）', (
     } finally { vi.unstubAllGlobals() }
   })
 })
+
+/**
+ * 上下文进度条 + 并发排队/模型繁忙在前端的硬要求：
+ *   1. 占用数字只反映服务端采集值，读不到时说"读不到"而不是 0%；
+ *   2. 排队位置/重试次数要看得见（loadingStep 与 capacity 同源，不再只显示"正在思考"）；
+ *   3. 繁忙类失败要留下可操作痕迹：分类落消息、问题回填草稿、给"重试本轮"依据；
+ *   4. 任务进行中不许压缩（服务端权威 + 前端先拦一层）。
+ */
+describe('上下文占用与并发排队可见性', () => {
+  beforeEach(() => {
+    useChatStore.setState({
+      currentConvId: 7, messages: [], loading: false, stopping: false,
+      abortController: null, pipelineMode: null, selectedDsId: 0, selectedModelId: null,
+      selectedWorkspaceId: 0, executorSessionId: null,
+      contextUsage: null, contextCompacting: false, compacting: false,
+      capacity: { phase: 'idle' }, draftRestore: null,
+    })
+    mockClient.put.mockReset()
+    mockClient.put.mockResolvedValue({})
+    mockClient.get.mockReset()
+    mockClient.post.mockReset()
+  })
+
+  function makeSse(events: Array<[string, unknown]>) {
+    const enc = new TextEncoder()
+    const chunks = events.map(([ev, data]) => `event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`)
+    let i = 0
+    return {
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: async () => (i < chunks.length
+            ? { done: false, value: enc.encode(chunks[i++]) }
+            : { done: true, value: undefined }),
+          cancel: async () => {},
+        }),
+      },
+    }
+  }
+
+  it('capacity 事件驱动排队状态与进度文案，回合结束回到 idle', async () => {
+    const seen: Array<{ phase: string; step: string }> = []
+    vi.stubGlobal('fetch', vi.fn(async () => makeSse([
+      ['capacity', { event: 'queued', position: 3, limit: 6, estimated_wait_s: 42 }],
+      ['capacity', { event: 'started', waited_ms: 41800 }],
+      ['token', { text: '答案' }],
+      ['done', { intent: 'agent', reply: '答案', handled_by: 'agent' }],
+    ])))
+    try {
+      const un = useChatStore.subscribe(s => {
+        if (s.capacity.phase === 'queued') seen.push({ phase: 'queued', step: s.loadingStep })
+      })
+      await useChatStore.getState().sendMessage('近一月订单量')
+      un()
+      expect(seen[0]).toEqual({ phase: 'queued', step: '当前使用人数较多，你在第 3 位，预计约 42 秒' })
+      const st = useChatStore.getState()
+      expect(st.capacity.phase).toBe('idle')
+      expect(st.messages.slice(-1)[0].content).toBe('答案')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('context=compacting 期间进度条进"压缩中"，done 后落占用并复位', async () => {
+    let compactingSeen = false
+    vi.stubGlobal('fetch', vi.fn(async () => makeSse([
+      ['context', { event: 'compacting', trigger: 'auto' }],
+      ['context', { event: 'compacted', trigger: 'auto', summary_chars: 1200 }],
+      ['done', { intent: 'agent', reply: '好', handled_by: 'agent',
+                 context_usage: { used_percentage: 31, threshold_percentage: 80,
+                                  categories: [{ type: 'messages', label: '对话消息', percentage: 20 }] } }],
+    ])))
+    try {
+      const un = useChatStore.subscribe(s => { if (s.contextCompacting) compactingSeen = true })
+      await useChatStore.getState().sendMessage('继续')
+      un()
+      expect(compactingSeen).toBe(true)
+      const st = useChatStore.getState()
+      expect(st.contextCompacting).toBe(false)
+      expect(st.contextUsage?.available).toBe(true)
+      expect(st.contextUsage?.used_percentage).toBe(31)
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('提供商繁忙：分类落消息、重试实况可见、问题留成草稿', async () => {
+    const busyText = '模型服务当前繁忙，本轮未能完成。请稍后重试，或切换模型后再问。'
+    vi.stubGlobal('fetch', vi.fn(async () => makeSse([
+      ['capacity', { event: 'retrying', attempt: 2, max_attempts: 2, wait_s: 8, reason: '模型服务繁忙' }],
+      ['error', { message: busyText, error_kind: 'provider_busy', retryable: true }],
+      ['done', { intent: 'agent', reply: busyText, error: busyText, handled_by: 'agent',
+                 error_kind: 'provider_busy', retryable: true, retry_after_s: 8,
+                 stats: { retry_attempts: 2 } }],
+    ])))
+    try {
+      await useChatStore.getState().sendMessage('把上月的退款率算一下')
+      const st = useChatStore.getState()
+      const asst = st.messages.slice(-1)[0]
+      expect(asst.errorKind).toBe('provider_busy')
+      expect(asst.retryable).toBe(true)
+      expect(asst.executionStats?.retry_attempts).toBe(2)
+      // 耗尽态：提示条要拿它渲染"重试本轮/切换模型"
+      expect(st.capacity.phase).toBe('exhausted')
+      // 输入不丢：问题回到草稿
+      expect(st.draftRestore?.question).toBe('把上月的退款率算一下')
+      expect(st.contextCompacting).toBe(false)
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('草稿是一次性的：消费后不再重复回填', async () => {
+    useChatStore.setState({ draftRestore: { question: '旧问题', attachments: [] } })
+    expect(useChatStore.getState().consumeDraftRestore()?.question).toBe('旧问题')
+    expect(useChatStore.getState().consumeDraftRestore()).toBeNull()
+  })
+
+  it('重试本轮：摘掉待重试那一轮后原样重发（不出现两条同一提问，history 不带失败轮）', async () => {
+    useChatStore.setState({
+      messages: [
+        { role: 'user', content: '第一轮问题' },
+        { role: 'assistant', content: '第一轮答案' },
+        { role: 'user', content: '繁忙那轮问题' },
+        { role: 'assistant', content: '', error: '模型服务繁忙', errorKind: 'provider_busy',
+          question: '繁忙那轮问题' },
+      ] as any,
+      draftRestore: { question: '繁忙那轮问题', attachments: [] },
+    })
+    let sentBody: any = null
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: any) => {
+      sentBody = JSON.parse(init.body)
+      return makeSse([['done', { intent: 'agent', reply: '重试后的答案', handled_by: 'agent' }]])
+    }))
+    try {
+      await useChatStore.getState().retryLastTurn()
+      const st = useChatStore.getState()
+      const users = st.messages.filter(m => m.role === 'user').map(m => m.content)
+      expect(users).toEqual(['第一轮问题', '繁忙那轮问题'])
+      expect(st.messages.slice(-1)[0].content).toBe('重试后的答案')
+      // 历史按原样带上：只到第一轮为止，不重复携带待重试的那句
+      expect(sentBody.question).toBe('繁忙那轮问题')
+      expect(sentBody.history.map((h: any) => h.content)).toEqual(['第一轮问题', '第一轮答案'])
+      expect(st.draftRestore).toBeNull()
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('占用读取失败：available=false 且带原因，不回 0%', async () => {
+    mockClient.get.mockRejectedValue({ response: { data: { detail: '上下文占用读取失败' } } })
+    await useChatStore.getState().loadContextUsage(7)
+    const usage = useChatStore.getState().contextUsage
+    expect(usage?.available).toBe(false)
+    expect(usage?.used_percentage).toBeNull()
+    expect(usage?.reason).toBe('上下文占用读取失败')
+  })
+
+  it('本轮任务进行中不允许手动压缩（服务端仍是权威，这里先拦一层）', async () => {
+    useChatStore.setState({ loading: true })
+    await expect(useChatStore.getState().compactContext())
+      .rejects.toThrow('本轮任务进行中，等它结束或先停止后再压缩')
+    expect(mockClient.post).not.toHaveBeenCalled()
+  })
+
+  it('压缩成功：用回执立刻更新占用与阈值', async () => {
+    useChatStore.setState({
+      loading: false,
+      contextUsage: { available: true, used_percentage: 84, threshold_percentage: 80,
+                      categories: [], compact_count: 1 },
+    })
+    mockClient.post.mockResolvedValue({
+      data: { before_percentage: 84, after_percentage: 23, saved_percentage: 61, compact_count: 2 },
+    })
+    mockClient.get.mockResolvedValue({ data: { available: true, used_percentage: 23,
+      threshold_percentage: 80, categories: [], compact_count: 2 } })
+    const result = await useChatStore.getState().compactContext()
+    expect(result?.saved_percentage).toBe(61)
+    const usage = useChatStore.getState().contextUsage
+    expect(usage?.used_percentage).toBe(23)
+    expect(usage?.compact_count).toBe(2)
+  })
+})
+
+describe('deleteTurn（删除一轮问答）', () => {
+  const TURN = [
+    { role: 'user', content: '第一问' }, { role: 'assistant', content: '第一答' },
+    { role: 'user', content: '第二问' }, { role: 'assistant', content: '第二答' },
+  ] as ChatMessage[];
+
+  it('删除首轮会连同它的回答一起删，并把剩余历史落库', async () => {
+    useChatStore.setState({ messages: TURN, currentConvId: 7, loading: false, stopping: false });
+    mockClient.put.mockResolvedValue({ data: {} });
+    const ok = await useChatStore.getState().deleteTurn(0);
+    expect(ok).toBe(true);
+    expect(useChatStore.getState().messages.map(m => m.content)).toEqual(['第二问', '第二答']);
+    const [url, body] = mockClient.put.mock.calls[0];
+    expect(url).toBe('/chat/conversations/7');
+    expect((body as any).messages.map((m: any) => m.content)).toEqual(['第二问', '第二答']);
+  });
+
+  it('会话进行中拒绝删除并提示先停止（不发请求）', async () => {
+    useChatStore.setState({ messages: TURN, currentConvId: 7, loading: true });
+    mockClient.put.mockClear();
+    const ok = await useChatStore.getState().deleteTurn(0);
+    expect(ok).toBe(false);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('请先停止'), expect.anything());
+    expect(mockClient.put).not.toHaveBeenCalled();
+  });
+
+  it('删到空走 clear()：PUT messages=[] 让服务端一并重置模型上下文', async () => {
+    useChatStore.setState({ messages: TURN.slice(0, 2), currentConvId: 7, loading: false, stopping: false });
+    mockClient.put.mockResolvedValue({ data: {} });
+    const ok = await useChatStore.getState().deleteTurn(0);
+    expect(ok).toBe(true);
+    expect(mockClient.put).toHaveBeenCalledWith('/chat/conversations/7', { messages: [] });
+    expect(useChatStore.getState().messages).toEqual([]);
+  });
+
+  it('落库失败返回 false（调用方不得报“已删除”）', async () => {
+    useChatStore.setState({ messages: TURN, currentConvId: 7, loading: false, stopping: false });
+    mockClient.put.mockRejectedValue(new Error('boom'));
+    expect(await useChatStore.getState().deleteTurn(0)).toBe(false);
+  });
+
+  it('只能删用户提问：对 AI 回答下标报错而不静默删错东西', async () => {
+    useChatStore.setState({ messages: TURN, currentConvId: 7, loading: false, stopping: false });
+    mockClient.put.mockClear();
+    expect(await useChatStore.getState().deleteTurn(1)).toBe(false);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('只能删除你自己的提问'), expect.anything());
+    expect(mockClient.put).not.toHaveBeenCalled();
+  });
+});

@@ -84,8 +84,10 @@ def _make_tmp_model(deploy_sites: list | None, status: str = "active") -> None:
 
 FAKE_SITES = [
     {"site_code": "global", "display_name": "全球站点", "is_aggregate": 1, "sort_order": 0, "is_active": 1},
-    {"site_code": "cn", "display_name": "中国站点", "is_aggregate": 0, "sort_order": 10, "is_active": 1},
-    {"site_code": "int", "display_name": "国际站点(新加坡)", "is_aggregate": 0, "sort_order": 20, "is_active": 1},
+    {"site_code": "cn", "display_name": "中国站点", "is_aggregate": 0, "sort_order": 10, "is_active": 1,
+     "field_values": {"site": "cn", "region": "cn"}},
+    {"site_code": "int", "display_name": "国际站点(新加坡)", "is_aggregate": 0, "sort_order": 20, "is_active": 1,
+     "field_values": {"site": "global", "region": "en"}},
     {"site_code": "eu", "display_name": "欧洲站点", "is_aggregate": 0, "sort_order": 30, "is_active": 1},
 ]
 
@@ -112,6 +114,18 @@ class TestSiteRegistrySeed:
         order = [s["site_code"] for s in site_service.list_sites()]
         assert order[0] == "global"
 
+    def test_display_names_are_the_renamed_ones(self):
+        """业务名现行口径：全部站点 / 新加坡站点（site_display_name_migration.sql）。
+
+        锁住两条：1) 改名迁移已应用到库（不是只改了种子文件）；2) 旧名不得回潮
+        （「全球」像地理专名，「国际站点(新加坡)」在选择器里一长串读不清）。
+        """
+        names = {s["site_code"]: s["display_name"] for s in site_service.list_sites()}
+        assert names.get("global") == "全部站点"
+        assert names.get("int") == "新加坡站点"
+        assert "全球" not in (names.get("global") or "")
+        assert "(" not in (names.get("int") or "") and "（" not in (names.get("int") or "")
+
     def test_prd_datasources_are_site_bound(self):
         """prd-* 已回填归属站点；未站点化的平台库保持空（不编造站点）。"""
         rows = _query("SELECT name, site_code FROM adh_datasources "
@@ -129,6 +143,92 @@ class TestSiteRegistrySeed:
         with pytest.raises(site_service.SiteError) as exc:
             site_service.validate_site_code("mars", allow_aggregate=False)
         assert "中国站点" in str(exc.value)  # 回抛可选站点名，不静默放过
+
+
+class TestSiteFieldValues:
+    """站点 → 各业务字段取值（`adh_sites.field_values`）。
+
+    现网实测：新加坡站点（site_code=int）在业务表 `site` 列存 `global`，在日志侧 `region`
+    列存 `en`；看板下发 `int` 到 site 列实测 0 行。所以站点不等于字段取值，
+    映射是配置（站点维护页），不是代码常量。
+    """
+
+    def test_same_site_differs_per_field(self, fake_sites):
+        assert site_service.site_field_value("int", "site") == "global"
+        assert site_service.site_field_value("int", "region") == "en"
+        assert site_service.site_field_value("cn", "site") == "cn"
+
+    def test_business_name_and_alias_are_accepted(self, fake_sites):
+        """入口收写法（业务名/别名），不只收 code。"""
+        assert site_service.site_field_value("新加坡", "site") == "global"
+        assert site_service.site_field_value("国际站点", "site") == "global"
+
+    def test_unconfigured_field_returns_none_not_guessed(self, fake_sites):
+        """没配这个字段 / 不是站点 / 空字段名 → None，由调用方原值下发并说明。"""
+        assert site_service.site_field_value("int", "area") is None
+        assert site_service.site_field_value("eu", "site") is None   # eu 行没配映射
+        assert site_service.site_field_value("mars", "site") is None
+        assert site_service.site_field_value("int", "") is None
+        assert site_service.site_field_value("", "site") is None
+
+    def test_field_values_column_is_normalized(self):
+        """JSON 列可能回字符串/None/脏数据：归一成 dict，脏数据不当"配了空映射"。"""
+        assert site_service._field_values_of('{"site": "global"}') == {"site": "global"}
+        assert site_service._field_values_of({"site": "global"}) == {"site": "global"}
+        assert site_service._field_values_of(None) == {}
+        assert site_service._field_values_of("不是 JSON") == {}
+        assert site_service._field_values_of(["坏形状"]) == {}
+        # 空值不算配过（拿空串去筛等于把"不筛"变成"筛空值"）
+        assert site_service._field_values_of({"site": "global", "region": "  "}) == {"site": "global"}
+
+    def test_upsert_rejects_empty_field_value(self):
+        """录入门禁：字段名给了就不允许取值留空（不配就删行，不写空串）。"""
+        with pytest.raises(ValueError, match="不能为空"):
+            site_service.upsert_site("xx", "新站点", field_values={"site": "  "})
+
+    def test_api_passes_field_values_only_when_key_present(self, monkeypatch):
+        """`POST /datasources/sites` 只在请求带 field_values 时才下传。
+
+        只改名称/排序的请求不得把映射抹掉（部分更新不抹配置）。
+        """
+        import asyncio
+        from backend.modules.catalog.api import datasources as ds_api
+
+        captured: dict = {}
+
+        def _fake_upsert(code, name, **kw):
+            captured.update({"code": code, "name": name}, **kw)
+            return {"site_code": code}
+
+        monkeypatch.setattr(site_service, "upsert_site", _fake_upsert)
+        asyncio.run(ds_api.create_site({"site_code": "int", "display_name": "新加坡站点"},
+                                       {"user_id": 1}))
+        assert captured["field_values"] is None, "没带键就不该覆盖映射"
+        captured.clear()
+        asyncio.run(ds_api.create_site({"site_code": "int", "display_name": "新加坡站点",
+                                        "field_values": {"site": "global"}}, {"user_id": 1}))
+        assert captured["field_values"] == {"site": "global"}
+
+    def test_live_seed_matches_measured_values(self):
+        """迁移已应用到库（不是只改了文件）：新加坡的 site=global / region=en。"""
+        codes = {s["site_code"]: s for s in site_service.list_sites()}
+        assert codes["int"]["field_values"] == {"site": "global", "region": "en"}
+        assert codes["cn"]["field_values"].get("site") == "cn"
+        # 聚合态不配映射：选了它就是不给值、不按该字段筛，编一个具体值属于造错数
+        assert not codes["global"]["field_values"]
+
+    def test_datasets_declaring_site_variable_have_site_domain(self):
+        """存量数据集的 site/region 入参已登记 value_domain='site'（迁移第 3 段）。
+
+        不登记则翻译不会发生，看板选新加坡依旧 0 行。
+        """
+        rows = _query("SELECT id, name, variables FROM adh_datasets "
+                      "WHERE JSON_CONTAINS_PATH(variables, 'one', '$.site')")
+        assert rows, "现网有声明 site 入参的数据集，查不到就是环境不对"
+        for r in rows:
+            decl = json.loads(r["variables"]) if isinstance(r["variables"], str) else r["variables"]
+            assert (decl.get("site") or {}).get("value_domain") == "site", \
+                f"ds={r['id']}·{r['name']} 的 site 入参没登记值域"
 
 
 # ── 2. 站点写法归一 ────────────────────────────────────────────────
@@ -218,6 +318,38 @@ class TestResolveSiteToSource:
         assert site_service.is_aggregate_site("") is False
         assert site_service.is_aggregate_site(None) is False
         assert site_service.is_aggregate_site("不存在的站") is False
+
+    def test_legacy_names_still_resolve_after_rename(self, monkeypatch):
+        """改名后旧写法必须继续解析：界面已没有旧名，但用户与历史会话仍可能这么说。
+
+        别名默认由 display_name 反推，改名后反推拿不到旧名；不补旧名映射就是
+        “界面上找不到、说出来又报错”的空承诺。
+        """
+        renamed = [
+            {"site_code": "global", "display_name": "全部站点", "is_aggregate": 1,
+             "sort_order": 0, "is_active": 1},
+            {"site_code": "int", "display_name": "新加坡站点", "is_aggregate": 0,
+             "sort_order": 20, "is_active": 1},
+            {"site_code": "cn", "display_name": "中国站点", "is_aggregate": 0,
+             "sort_order": 10, "is_active": 1},
+        ]
+        monkeypatch.setattr(site_service, "list_sites",
+                            lambda only_active=True, include_aggregate=True: [dict(s) for s in renamed])
+        # 新名与旧名都落到同一 site_code
+        assert site_service.normalize_site_ref("全部") == "global"
+        assert site_service.normalize_site_ref("全球") == "global"
+        assert site_service.normalize_site_ref("全球站点") == "global"
+        assert site_service.normalize_site_ref("新加坡") == "int"
+        assert site_service.normalize_site_ref("国际站点") == "int"
+        assert site_service.normalize_site_ref("国际") == "int"
+        # 旧名不能把具体站点误判成聚合态（否则 ds=0 逐站编排会被错放行）
+        assert site_service.is_aggregate_site("全部站点") is True
+        assert site_service.is_aggregate_site("国际站点") is False
+        # 旧名只在目标 code 真存在时登记：不给没有该站的部署凭空造一个站点
+        monkeypatch.setattr(site_service, "list_sites",
+                            lambda only_active=True, include_aggregate=True: [dict(renamed[2])])
+        assert site_service.normalize_site_ref("国际站点") == ""
+        assert site_service.normalize_site_ref("全球") == ""
 
 
 # ── 4. 可查站点 = 角色授权派生（不是第二套裁决）─────────────────────

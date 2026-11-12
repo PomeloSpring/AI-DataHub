@@ -90,9 +90,11 @@ describe('图表查询资源池（渐进式刷新）', () => {
     expect(chartQueryPool.pending).toBe(0);
   });
 
-  it('默认并发 4、默认超时 20s（前端先给结论，后端 socket read_timeout 是 60s）', () => {
+  it('默认并发 4、默认超时高于后端取数上界（让服务端显式错误先于前端 abort 返回）', () => {
     expect(CHART_QUERY_CONCURRENCY).toBe(4);
-    expect(CHART_QUERY_TIMEOUT_MS).toBe(20_000);
-    expect(CHART_QUERY_TIMEOUT_MS).toBeLessThan(60_000);
+    expect(CHART_QUERY_TIMEOUT_MS).toBe(75_000);
+    // 后端数据源连接已对 PG/SLS 下推 statement_timeout（~60s），前端预算必须大于它，
+    // 否则又回到"前端 20s 提前掐断、后端跨境连接白烧"的老缺陷。
+    expect(CHART_QUERY_TIMEOUT_MS).toBeGreaterThan(60_000);
   });
 });

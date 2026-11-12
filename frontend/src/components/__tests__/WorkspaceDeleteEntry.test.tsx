@@ -12,7 +12,7 @@ vi.mock('@/api/client', () => ({
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 const personal = {
-  id: 301, name: 'admin的工作站', description: '个人工作站(随用户自动创建)',
+  id: 301, name: 'admin的工作空间', description: '个人工作空间(随用户自动创建)',
   icon: '🏠', color: '#1890ff', is_default: true, user_default: true, role: 'owner',
 } as Workspace;
 const custom = {
@@ -49,11 +49,11 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('工作空间下拉项的删除入口', () => {
-  it('默认工作站不渲染删除按钮，只标注默认', () => {
+  it('默认工作空间不渲染删除按钮，只标注默认', () => {
     renderItem(personal);
     expect(screen.queryByRole('button', { name: /删除工作空间/ })).not.toBeInTheDocument();
     expect(screen.getByText('默认')).toBeInTheDocument();
-    expect(screen.getByText('admin的工作站')).toBeInTheDocument();
+    expect(screen.getByText('admin的工作空间')).toBeInTheDocument();
   });
 
   it('自建空间渲染删除按钮，点击只打开确认框、不切空间', () => {

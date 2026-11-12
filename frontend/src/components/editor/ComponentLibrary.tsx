@@ -5,9 +5,14 @@ import { useVisLibrary } from '@/hooks/useVisLibrary';
 import VisComponentPreview, { ShapePreview, typeLabelsOf } from '@/components/VisComponentPreview';
 import { compatible, resolveDashboardDesign, chartZIndex, isChartHidden, isChartLocked } from '@/lib/dashboardDesign';
 import { libraryDragId, type LibraryDragData } from '@/lib/editorDrag';
-import { Layers, BarChart3, Settings, PanelLeftClose, Database, Download, ChevronUp, ChevronDown, Eye, EyeOff, Lock, LockOpen } from 'lucide-react';
+import {
+  DATASET_KIND_LABELS, EMPTY_DATASET_FILTER, ES_SOURCE_LABEL, ES_SOURCE_VALUE,
+  datasetKindOptions, datasetSourceOptions, filterDatasets, isDatasetFilterActive, type DatasetFilterState,
+} from '@/lib/datasetPickerFilter';
+import { Layers, BarChart3, Settings, PanelLeftClose, Database, Download, ChevronUp, ChevronDown, Eye, EyeOff, Lock, LockOpen, Search, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import client from '@/api/client';
@@ -64,14 +69,25 @@ export default function ComponentLibrary({
   // 从数据集引入: 按 name 显示(ui-resource-display), 点「引入」生成预设图表卡片
   const [datasets, setDatasets] = useState<any[]>([]);
   const [datasetsLoading, setDatasetsLoading] = useState(false);
-  useEffect(() => {
-    if (!isOpen) return;
+  // 拉不到清单不得退成“暂无数据集”（那会被读成业务结论），也不能退成“筛完为空”
+  const [datasetsError, setDatasetsError] = useState<string | null>(null);
+  const [dsFilter, setDsFilter] = useState<DatasetFilterState>(EMPTY_DATASET_FILTER);
+  const loadDatasets = () => {
     setDatasetsLoading(true);
+    setDatasetsError(null);
     client.get('/datasets/')
       .then(({ data }) => setDatasets(data.items || []))
-      .catch(() => setDatasets([]))
+      .catch(() => {
+        setDatasets([]);
+        setDatasetsError('数据集清单加载失败，请重试。');
+      })
       .finally(() => setDatasetsLoading(false));
-  }, [isOpen]);
+  };
+  useEffect(() => { if (isOpen) loadDatasets(); }, [isOpen]);
+  // 本地筛：清单是一次性全量拿到的（后端已按角色权限过滤），边打字边发请求反而会出现“半截清单”
+  const dsRows = useMemo(() => filterDatasets(datasets, dsFilter), [datasets, dsFilter]);
+  const dsSourceOptions = useMemo(() => datasetSourceOptions(datasets), [datasets]);
+  const dsKindOptions = useMemo(() => datasetKindOptions(datasets), [datasets]);
   const chartGroups = (() => {
     const groups: { category: typeof CHART_TYPE_CATEGORIES[number]; items: ChartTypeItem[] }[] = [];
     for (const cat of CHART_TYPE_CATEGORIES) {
@@ -169,13 +185,76 @@ export default function ComponentLibrary({
             <p className="text-[10px] text-muted-foreground px-2 mb-1.5">
               从数据集引入：按预设图表类型/字段映射一键生成图表卡片，取数走数据集统一治理入口
             </p>
+            {/* 检索 + 过滤：清单来自角色授权的数据集（后端裁决），本层只做已授权清单内的筛选 */}
+            <div className="relative mb-1.5">
+              <Search className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+              <Input
+                aria-label="搜索数据集"
+                value={dsFilter.keyword}
+                onChange={e => setDsFilter(f => ({ ...f, keyword: e.target.value }))}
+                placeholder="搜索名称/描述/字段/数据源"
+                className="h-8 pl-7 pr-7 text-xs"
+              />
+              {dsFilter.keyword && (
+                <button type="button" aria-label="清空搜索关键词" role="button"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  onClick={() => setDsFilter(f => ({ ...f, keyword: '' }))}>
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+            <div className="flex gap-1.5 mb-1.5">
+              <select aria-label="按数据源筛选数据集" title="按数据源筛选（该数据集能在所选源上执行；ES 通道不挂在数据源上，单列一项）"
+                className="flex-1 min-w-0 rounded border bg-background p-1.5 text-xs" value={dsFilter.source}
+                onChange={e => setDsFilter(f => ({ ...f, source: e.target.value }))}>
+                <option value="">全部数据源</option>
+                {dsSourceOptions.map(n => (
+                  <option key={n} value={n}>{n === ES_SOURCE_VALUE ? ES_SOURCE_LABEL : n}</option>
+                ))}
+              </select>
+              <select aria-label="按类型筛选数据集" title="按取数通道类型筛选"
+                className="w-[7.5rem] flex-shrink-0 rounded border bg-background p-1.5 text-xs" value={dsFilter.kind}
+                onChange={e => setDsFilter(f => ({ ...f, kind: e.target.value }))}>
+                <option value="">全部类型</option>
+                {dsKindOptions.map(k => <option key={k} value={k}>{DATASET_KIND_LABELS[k] || k}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center justify-between gap-2 px-2 mb-1.5">
+              <label className="flex items-center gap-1 text-[10px] text-muted-foreground cursor-pointer">
+                <input type="checkbox" className="h-3 w-3" checked={dsFilter.onlyUsable}
+                  onChange={e => setDsFilter(f => ({ ...f, onlyUsable: e.target.checked }))} />
+                仅看可引入
+              </label>
+              <span className="text-[10px] text-muted-foreground">
+                {datasetsError ? '—' : `命中 ${dsRows.length} / 共 ${datasets.length}`}
+              </span>
+            </div>
+            {isDatasetFilterActive(dsFilter) && (
+              <Button variant="ghost" size="sm" className="h-6 w-full px-2 text-[10px] mb-1.5"
+                onClick={() => setDsFilter(EMPTY_DATASET_FILTER)}>
+                <X className="h-3 w-3 mr-1" />清除筛选条件
+              </Button>
+            )}
             {datasetsLoading ? (
               <p className="text-xs px-2 text-muted-foreground">正在加载数据集…</p>
+            ) : datasetsError ? (
+              <div role="alert" className="flex items-center gap-2 text-xs text-destructive px-2">
+                <span className="flex-1">{datasetsError}</span>
+                <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={loadDatasets}>重试</Button>
+              </div>
             ) : datasets.length === 0 ? (
-              <p className="text-xs px-2 text-muted-foreground">暂无数据集，请先在「数据集」页创建</p>
+              <p className="text-xs px-2 text-muted-foreground">
+                当前角色没有可引入的数据集。清单 =「角色权限 → 数据集」已授权
+                <span className="whitespace-nowrap"> ∧ </span>「角色权限 → 数据源」至少能执行一个源；
+                两层任一为空都会回到这里（先到「数据集」页定义口径，再找管理员补授权）。
+              </p>
+            ) : dsRows.length === 0 ? (
+              <p className="text-xs px-2 text-muted-foreground">
+                无匹配结果：清单共 {datasets.length} 个，当前条件筛出 0 个。换个关键词或清除筛选。
+              </p>
             ) : (
               <div className="space-y-0.5">
-                {datasets.map(ds => {
+                {dsRows.map(ds => {
                   // 后端已按「可用范围 ∩ 当前角色授权源 ≠ ∅」过滤清单；仍留一道显式禁用，
                   // 避免旧响应/缓存把挂了必报错的空承诺拖到画布上
                   const usable = (ds.usable_now || []).length > 0;

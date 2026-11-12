@@ -16,7 +16,11 @@ function clearUserContext() {
 interface User {
   id: number;
   username: string;
+  /** 角色内部名（真值源首个绑定 / 登录响应）——只给 role==='admin' 这类判定用 */
   role: string;
+  /** 角色可读名（adh_roles.display_name，由 /users/me 下发）——展示一律用它，
+   *  自定义角色不会退成内部英文名（见 ui-resource-display 规范） */
+  role_name?: string;
 }
 
 interface AuthState {
@@ -53,7 +57,8 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       const { data } = await client.get('/users/me');
       if (!data?.id) return;
-      // 归一化身份形状: /users/me 返回 user_role, 前端各处消费 role(login 响应同为 role)
+      // 身份形状归一: /users/me 下发 role/role_name(真值源角色)与 user_role(账号列缓存);
+      // 无生效绑定时 role 回退列值, 仅为与 login 响应的 role 口径保持可用
       const user = { ...data, role: data.role || data.user_role };
       localStorage.setItem('user', JSON.stringify(user));
       set({ user });

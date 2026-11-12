@@ -27,7 +27,15 @@ class LLMModelCreate(BaseModel):
     context_window: int = 200000
     max_tokens: int = 4096
     supports_thinking: bool = True
+    supports_vision: bool = False
     is_default: bool = False
+    #: 能力序：1=最强，数字越大越弱/越省；留 99 = 未定档（排序沉底，由管理员显式定档）
+    capability_rank: int = 99
+    #: 单价（每 1K token）：成本标签的唯一数据源。缺省 None = 未定价（前端如实写“未定价”，
+    #: 不拿模型名猜价格）。
+    input_price_per_1k: Optional[float] = None
+    output_price_per_1k: Optional[float] = None
+    currency: Optional[str] = None
 
 
 class LLMModelUpdate(BaseModel):
@@ -39,12 +47,29 @@ class LLMModelUpdate(BaseModel):
     context_window: Optional[int] = None
     max_tokens: Optional[int] = None
     supports_thinking: Optional[bool] = None
+    supports_vision: Optional[bool] = None
     is_default: Optional[bool] = None
     is_active: Optional[bool] = None
+    capability_rank: Optional[int] = None
+    input_price_per_1k: Optional[float] = None
+    output_price_per_1k: Optional[float] = None
+    currency: Optional[str] = None
 
 
 def _now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _seal_api_key(plain: str) -> str:
+    """供应商密钥入库前加密（与 platform 侧 model_config_service 同口径）.
+
+    读取侧（llm_resources._decrypt / platform get_llm_config）已兼容密文与历史明文，
+    所以此处只需保证**新写入一定是密文**。加密失败就报错，不降级成明文落库。
+    """
+    if not plain:
+        return ""
+    from backend.common.crypto import encrypt_password
+    return encrypt_password(plain)
 
 
 @router.get("/llm")
@@ -56,8 +81,13 @@ def list_models():
     try:
         rows = execute_query(
             "SELECT id, name, provider, base_url, model_name, context_window, "
-            "max_tokens, supports_thinking, is_default, is_active, created_at, updated_at "
-            "FROM adh_llm_models ORDER BY is_default DESC, name"
+            "max_tokens, supports_thinking, supports_vision, capability_rank, "
+            "input_price_per_1k, output_price_per_1k, currency, is_default, is_active, "
+            "created_at, updated_at "
+            # 排序真值源 = capability_rank（能力序，1=最强）：旧写法只按 name 字典序，旗舰与最省
+            # 混成一列，用户与管理员看不出该选哪个。默认项不再置顶（是否默认另有 is_default 标记），
+            # 否则“按能力排序”会在第一行就被默认项打断；未定档（99）自然沉底。
+            "FROM adh_llm_models ORDER BY capability_rank ASC, name"
         )
         for r in rows:
             for k in ("created_at", "updated_at"):
@@ -76,7 +106,9 @@ def get_model(model_id: int):
     try:
         row = execute_query(
             "SELECT id, name, provider, base_url, model_name, context_window, "
-            "max_tokens, supports_thinking, is_default, is_active, created_at, updated_at "
+            "max_tokens, supports_thinking, supports_vision, capability_rank, "
+            "input_price_per_1k, output_price_per_1k, currency, is_default, is_active, "
+            "created_at, updated_at "
             "FROM adh_llm_models WHERE id = %s",
             (model_id,),
             fetchone=True,
@@ -98,11 +130,17 @@ def create_model(req: LLMModelCreate):
         now = _now()
         model_id = execute_insert(
             """INSERT INTO adh_llm_models
-               (name, provider, base_url, api_key, model_name, context_window,
-                max_tokens, supports_thinking, is_default, is_active, created_at, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)""",
-            (req.name, req.provider, req.base_url, req.api_key, req.model_name,
+               (name, provider, model_id, base_url, api_key, model_name, context_window,
+                max_tokens, supports_thinking, supports_vision, capability_rank,
+                input_price_per_1k, output_price_per_1k, currency,
+                is_default, is_active, created_at, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)""",
+            (req.name, req.provider, req.model_name, req.base_url, _seal_api_key(req.api_key),
+             req.model_name,
              req.context_window, req.max_tokens, 1 if req.supports_thinking else 0,
+             1 if req.supports_vision else 0,
+             int(req.capability_rank or 99),
+             req.input_price_per_1k, req.output_price_per_1k, req.currency,
              1 if req.is_default else 0, now, now),
         )
 
@@ -136,9 +174,12 @@ def update_model(model_id: int, req: LLMModelUpdate):
             params.append(req.base_url)
         if req.api_key is not None:
             updates.append("api_key = %s")
-            params.append(req.api_key)
+            params.append(_seal_api_key(req.api_key))
         if req.model_name is not None:
             updates.append("model_name = %s")
+            params.append(req.model_name)
+            # model_id 是历史列（无消费方），与 model_name 保持同值，避免同一概念两处漂移
+            updates.append("model_id = %s")
             params.append(req.model_name)
         if req.context_window is not None:
             updates.append("context_window = %s")
@@ -149,6 +190,16 @@ def update_model(model_id: int, req: LLMModelUpdate):
         if req.supports_thinking is not None:
             updates.append("supports_thinking = %s")
             params.append(1 if req.supports_thinking else 0)
+        if req.supports_vision is not None:
+            updates.append("supports_vision = %s")
+            params.append(1 if req.supports_vision else 0)
+        if req.capability_rank is not None:
+            updates.append("capability_rank = %s")
+            params.append(int(req.capability_rank))
+        for price_field in ("input_price_per_1k", "output_price_per_1k", "currency"):
+            if getattr(req, price_field) is not None:
+                updates.append(f"{price_field} = %s")
+                params.append(getattr(req, price_field))
         if req.is_default is not None:
             updates.append("is_default = %s")
             params.append(1 if req.is_default else 0)

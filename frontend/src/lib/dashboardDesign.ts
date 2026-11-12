@@ -1,4 +1,5 @@
-import type { VisCategory, VisComponent } from '@/api/visLibrary';
+import { isVisUsable, type VisCategory, type VisComponent } from '@/api/visLibrary';
+import { sanitizeMotion } from './motion';
 import type { DashboardChart } from '@/stores/dashboardStore';
 
 export interface LocalVisual {
@@ -13,8 +14,10 @@ export type Rect = { x: number; y: number; w: number; h: number };
 // barFade/barCap/axisLabelSize = AS 风格柱图与字模旋钮(素材 design-service 预设的「上深下浅同色系渐隐 +
 // 4px 柱顶帽」与 chartTypography.axisLabelSize/legendSize=12px),
 // 由 DashboardChart 的 bar/timeseries_bar/waterfall/默认柱图分支经 barBodyStyle/withBarCap/axisLabelStyle 真实消费。
+// areaFade = 面积图竖向渐隐开关（未配=默认开、数值=顶部 alpha、false=平涂），
+// 不登记进白名单会被入库即剥（"存了不生效"那类缺陷）
 const VISUAL_KEYS = ['colorScheme', 'gradient', 'barFade', 'barCap', 'axisLabelSize', 'borderRadius', 'showLabel', 'smooth', 'lineWidth',
-  'areaFill', 'areaOpacity', 'innerRadius', 'legend', 'thresholds', 'gridColor', 'valueColor', 'labelColor',
+  'areaFill', 'areaFade', 'areaOpacity', 'innerRadius', 'legend', 'thresholds', 'gridColor', 'valueColor', 'labelColor',
   'cardBg', 'cardBorder', 'glow', 'cornerAccent', 'showCornerBrackets', 'borderStyle',
   'titleBarBg', 'titleColor', 'showUnderline', 'underlineColor', 'titleFontSize', 'titleFontWeight', 'cardRadius',
   // 分析画布字模旋钮(DataProfileCard/GraphCard/AnimatedTimeChart/DataGrid 消费,纯展示参数)
@@ -68,7 +71,11 @@ export function sanitizeStyle(style: any): Record<string, any> {
 }
 export const snapshotComponent = (c: VisComponent): VisSnapshot => ({
   version: 1, category: c.category, code: c.code, revision: c.updated_at,
-  style_config: c.category === 'theme_pack' ? sanitizePack(c.style_config) : sanitizeStyle(c.style_config),
+  // 动效字模的 style_config 是四段结构（enter/chart/transition/reveal），要走自己的净化器：
+  // 交给 sanitizeStyle 会把四段当未知键剥干净，下架后的快照兜底直接失效（“存了不生效”同类）
+  style_config: c.category === 'theme_pack' ? sanitizePack(c.style_config)
+    : c.category === 'motion_preset' ? sanitizeMotion(c.style_config).spec
+    : sanitizeStyle(c.style_config),
 });
 export const COMPONENT_SLOT: Partial<Record<VisCategory, string>> = {
   screen_background: 'background', color_theme: 'colorTheme', kpi_card: 'cardStyle',
@@ -76,6 +83,8 @@ export const COMPONENT_SLOT: Partial<Record<VisCategory, string>> = {
   // 控件样式字模：写 style_config.widgetStyle 段，汇入 cfg.widgetStyle（与图表 config 分命名空间）
   widget_style: 'widgetStyle',
   theme_pack: 'themePack',
+  // 动效预设：板级挂载（入场/切板/图表入场由 lib/motion 统一解析），不属单图旋钮
+  motion_preset: 'motion',
 };
 // 主题包结构: { mode, palette, background, card, decoration, charts{default,<type>}, widgets{default,<type>} }
 // 卡片作用域样式: 把 borderRadius 归一为 cardRadius, 避免与图表标记的圆角(borderRadius)冲突。
@@ -103,10 +112,36 @@ export function sanitizePack(style: any): Record<string, any> {
     widgets: map(s.widgets, (v) => pick(v, WIDGET_KEYS)),
   };
 }
+/** 主题 id 的**精确**主题包（不含 datafoundry 兜底）。 */
+export const themePackExact = (theme: string | undefined, items: VisComponent[]): VisComponent | undefined =>
+  !!theme && items.find(c => c.category === 'theme_pack' && c.code === `tp_${theme}`) || undefined;
+
 export function themePackFor(theme: string | undefined, items: VisComponent[]): VisComponent | undefined {
+  // 未指定主题（如嵌入 SDK 无全局主题）不套任何包，走组件默认渲染
   if (!theme) return undefined;
-  return items.find(c => c.category === 'theme_pack' && c.code === `tp_${theme}`)
+  // 消费方传入的 items 已是"在用"口径（useVisLibrary 默认剔除下架/禁用），这里不再二次判定
+  return themePackExact(theme, items)
     || items.find(c => c.category === 'theme_pack' && c.code === 'tp_datafoundry');
+}
+
+/**
+ * 主题 id ↔ UI 字模库主题包（`tp_<theme>`）的可用性裁决 —— 系统主题菜单的唯一判断口径。
+ *
+ * - `blocked`：包在库里但已禁用或已下架 → 该主题**不可选**。禁用是"停用但保留"，
+ *   不得静默换成别套主题包（那会出现"外壳还是亮色、图表已是另一套配色"的半截状态）；
+ * - `absent`：库里根本没有这个包（未 seed 的存量库、只存在于 CSS 的主题）→ 维持可选，
+ *   主题外壳由 globals.css 调色板决定，与字模库无关；
+ * - `usable`：包在用。
+ *
+ * 判定必须拿**全量**清单（`useVisLibrary(true, true)`），否则区分不出"被禁用"与"不存在"。
+ */
+export function themePackAvailability(theme: string, items: VisComponent[]):
+  { state: 'usable' | 'blocked' | 'absent'; pack?: VisComponent; reason?: string } {
+  const pack = items.find(c => c.category === 'theme_pack' && c.code === `tp_${theme}`);
+  if (!pack) return { state: 'absent' };
+  if (isVisUsable(pack)) return { state: 'usable', pack };
+  const state = !pack.is_active ? '已下架' : '已在 UI 字模库禁用';
+  return { state: 'blocked', pack, reason: `主题包「${pack.name}」${state}` };
 }
 export function resolveComponent(ref: unknown, snapshot: VisSnapshot | undefined, items: VisComponent[]) {
   // 字模库是事实源（“活字”）：命中在用字模就按最新定义渲染 —— 改字模应当即时反映到所有已挂载的看板，
@@ -134,6 +169,42 @@ export function minSizeOf(_chartType?: string): { w: number; h: number } {
 }
 
 /**
+ * 参数控件默认尺寸：基准口径 = 「设备数据流」看板的现网尺寸（人工调优过、观感对齐）。
+ *
+ * 两条口径同时成立：
+ * ① **高度统一**（`WIDGET_DEFAULT_HEIGHT`，10 行 = 40px）—— 同一排控件上下对齐；
+ *    旧默认按类型给 24/28/32/64px，落到页面网格就是 6/7/8/16 行混排，看着参差（本次反馈）。
+ * ② **宽度按控件分别配置** —— 按钮窄、日期区间宽，因为内容形态不同。
+ *
+ * 数值是**桌面 48 列制**的列数换算结果（`px = 列数 × 列宽 − 间距`，列宽 = (1440+16)/48）：
+ * 按钮 3 列、文本/下拉 5 列、日期选择器 9 列、日期区间 18 列。日期区间必须给到 18 列：
+ * 原生日期框有内在最小宽、压不下去，宽度不够就换行，而卡片高度只有 40px → 下端被裁掉，
+ * 用户看到的就是“只有开始日期、没有结束日期”（2026-11-10 反馈）。
+ * 与 `defaultPageSpan` 的跳列数互为往返（有用例钉住，防两处漂移）。
+ */
+export const WIDGET_DEFAULT_HEIGHT = 40;
+/** 内容不能被压成一条的控件的默认高（其余控件沿用 WIDGET_DEFAULT_HEIGHT）。
+ * 决策建议卡要装命中路径 + 建议正文 + 依据表，沿用 40px 就是“只看到一行字”。 */
+export const WIDGET_DEFAULT_HEIGHT_BY_TYPE: Record<string, number> = { widget_decision: 220 };
+/** `widget_*` 里的**内容型**控件：不是一行表单控件，因此不参与「同一排控件上下对齐」
+ * 的高度基线（见 dashboardParamAssembly 用例）。新增成员必须同时在
+ * `WIDGET_DEFAULT_HEIGHT_BY_TYPE` 登记高度，否则它会悄悄漂回 40px。 */
+export const CONTENT_WIDGET_TYPES = Object.keys(WIDGET_DEFAULT_HEIGHT_BY_TYPE);
+export const WIDGET_DEFAULT_WIDTH: Record<string, number> = {
+  widget_search: 75,        // 3 列
+  widget_reset: 75,         // 3 列
+  widget_export: 75,        // 3 列
+  widget_label: 105,        // 4 列
+  widget_text: 135,         // 5 列
+  widget_number: 135,       // 5 列
+  widget_select: 135,       // 5 列
+  widget_multi_select: 135, // 5 列
+  widget_decision: 375,     // 14 列（一条建议 + 依据表不至于挤成一堆）
+  widget_date: 257,         // 9 列（单个日期 + 预设下拉）
+  widget_daterange: 530,    // 18 列（起止两个原生日期框 + 预设下拉）
+};
+
+/**
  * 自然尺寸：生成默认布局时用的**紧凑起点**，不是下限。
  *
  * 自动布局（从未被手动放置过的控件）会用它；用户一旦手动放置，以显式位置为准。
@@ -141,11 +212,18 @@ export function minSizeOf(_chartType?: string): { w: number; h: number } {
  */
 export function naturalSizeOf(chartType?: string): { w: number; h: number } {
   if (!chartType || !chartType.startsWith('widget_')) return DEFAULT_CHART_SIZE;
-  if (/_(search|reset|export|label)$/.test(chartType)) return { w: 96, h: 24 };
-  if (chartType === 'widget_daterange') return { w: 320, h: 32 };
-  if (chartType === 'widget_multi_select') return { w: 220, h: 64 };
-  return { w: 180, h: 28 };
+  // 未知控件类型不编新尺寸：按最宽的可输入控件给，宁可宽一点也不把内容裁掉
+  return { w: WIDGET_DEFAULT_WIDTH[chartType] ?? WIDGET_DEFAULT_WIDTH.widget_daterange,
+    h: WIDGET_DEFAULT_HEIGHT_BY_TYPE[chartType] ?? WIDGET_DEFAULT_HEIGHT };
 }
+
+/**
+ * 内容不可压缩控件的**可读下限**（低于此宽就会“只展示一半”，不是拖小一点的代价）。
+ * 不当硬下限用（下限依旧交给人控制，见 `minSizeOf`），只用于编辑态显式提醒 + 一键补宽。
+ */
+export const MIN_READABLE_WIDTH: Record<string, number> = { widget_daterange: 420, widget_date: 200 };
+export const minReadableWidth = (chartType?: string): number => MIN_READABLE_WIDTH[chartType || ''] || 0;
+
 export function chartRect(chart: { position?: Partial<Rect>; chart_type?: string }): Rect {
   const widget = chart.chart_type?.startsWith('widget_');
   const p = chart.position || {};
@@ -173,6 +251,26 @@ export function applyScreenComponent(filters: any = {}, c: VisComponent) {
   return { ...filters, components: c.category === 'theme_pack' ? filters.components : { ...filters.components, [slot]: c.code }, design };
 }
 /**
+ * 摘除板上挂载的某类字模（清引用 + 清快照 + 清板级差量）。
+ *
+ * 只删 `components[slot]` 而留着快照，解析口会按快照继续生效 —— 那就是「摘了但没摘掉」。
+ * 动效预设的「不挂载」入口用它，其他板级字模取消挂载同样适用。
+ */
+export function removeScreenComponent(filters: any = {}, category: VisCategory) {
+  const slot = COMPONENT_SLOT[category];
+  if (!slot) return filters;
+  const components = { ...filters.components };
+  delete components[slot];
+  let design: Record<string, any> | undefined = filters.design;
+  if (design) {
+    const snapshots = { ...design.componentSnapshots };
+    delete snapshots[slot];
+    design = { ...design, componentSnapshots: snapshots };
+    delete design.motionOverride;
+  }
+  return { ...filters, components, ...(design ? { design } : {}) };
+}
+/**
  * 字模适用类型：`chart_type` 为空 = 不限；支持逗号分隔多类型（如按钮族 widget_search,widget_reset,widget_export）。
  * 历史缺陷：seed 登记了 `widget_input` / `widget_button` 两个**不存在的类型名**，
  * compatible 永远为 false，字模在管理页看得到、在编辑器永远挂不上（空承诺）。
@@ -182,6 +280,9 @@ export function appliesToType(c: Pick<VisComponent, 'chart_type'>, chartType: st
   return !types.length || types.includes(chartType);
 }
 export function compatible(c: VisComponent, chartType: string) {
+  // 动效预设只给板级挂：单图挂它会出现「板上 + 单图」两套动效口径，而 chart.appear 本应
+  // 由 useMotion 统一注入 spec，不是逐图旋钮（见 lib/motion.ts 头部说明）
+  if (c.category === 'motion_preset') return false;
   if (c.category === 'kpi_card') return ['big_number', 'big_number_trend', 'statistic', 'text_display'].includes(chartType);
   // 控件类只能挂 widget_style 字模，不能挂 chart_style（两套旋钮命名空间不同，混挂会互相覆盖）
   if (c.category === 'chart_style') return !chartType.startsWith('widget_') && appliesToType(c, chartType);
@@ -364,6 +465,22 @@ export function chartData(chart: any) {
     if (Array.isArray(data?.columns) && Array.isArray(data?.rows)) return data;
   } catch { /* 旧缓存损坏时保留卡片 */ }
   return chart.config?.data || { columns: [], rows: [] };
+}
+
+/**
+ * 表值图每页行数：只有这三档，上限与服务端 `es_pagination.PAGE_SIZE_MAX` 同口径。
+ * 放 lib 而不是组件里：发起重查的 store 与渲染分页条的组件必须共用一份算法，
+ * 两处各推一套就会出现“按 20 取、按 50 显”的页错位。
+ */
+export const TABLE_VALUE_PAGE_SIZES = [20, 50, 100];
+export const TABLE_VALUE_PAGE_SIZE_MAX = 100;
+export const TABLE_VALUE_PAGE_SIZE_DEFAULT = 20;
+
+/** 图表配置 → 生效页大小（档位之外收敛到 100，不放开扫行规模） */
+export function pageSizeOf(cfg: Record<string, any> | undefined): number {
+  const raw = Math.floor(Number(cfg?.pageSize));
+  const n = Number.isFinite(raw) && raw > 0 ? raw : TABLE_VALUE_PAGE_SIZE_DEFAULT;
+  return Math.min(n, TABLE_VALUE_PAGE_SIZE_MAX);
 }
 export const chartDataKey = (data: any) => JSON.stringify(data || {});
 const intersects = (a: Rect, b: Rect) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;

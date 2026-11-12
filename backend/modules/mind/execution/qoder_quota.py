@@ -69,7 +69,7 @@ def _normalize_buckets(info: dict) -> list[dict]:
 
 
 async def _fetch_from_cli() -> dict:
-    """起一个隔离 CLI 子进程读账号配额（凭据/CLI 路径沿用当前生效执行层）。"""
+    """起一个隔离的 **Qoder** CLI 子进程读账号配额（凭据/CLI 路径沿用 Qoder 网关执行层）。"""
     import anyio
 
     from backend.modules.mind.execution import service as layer_service
@@ -79,25 +79,30 @@ async def _fetch_from_cli() -> dict:
     from backend.modules.mind.execution.secure_sdk import _sdk_cli_path, resolve_access_token
 
     try:
+        # 配额属于 **Qoder 网关账号**，只有 Qoder 通道能读。不能拿“默认执行层”当探测入口：
+        # 默认层现在可能是供应商直连（claude），而本函数用的是 qodercn SDK + qodercli，
+        # 那样会出现“面板写着 cli-claude-direct、实际读的是 Qoder 账号”的误导。
         layers = [r for r in layer_service.list_layers()
-                  if r.get("status") == "active" and (r.get("config") or {}).get("mode") == "sdk"]
+                  if r.get("status") == "active" and (r.get("config") or {}).get("mode") == "sdk"
+                  and (r.get("config") or {}).get("cli_name") == "qoder"]
     except Exception as e:  # noqa: BLE001 — 读配置失败也要变成对用户可见的原因
         logger.exception("读取执行层配置失败")
-        return {"available": False, "reason": f"读取执行层配置失败：{e}"}
+        return {"available": False, "reason": f"读取 Harness 配置失败：{e}"}
     if not layers:
-        return {"available": False, "reason": "当前无启用的 Qoder SDK 执行层，无法读取账号配额"}
+        return {"available": False, "reason":
+                "当前无启用的 Qoder 网关 Harness，无法读取账号配额（供应商直连通道不消耗 Qoder Credits）"}
 
     layer = next((r for r in layers if r.get("is_default")), layers[0])
     try:
         adapter = get_execution_layer_manager().build_adapter(layer)
     except Exception as e:  # noqa: BLE001
         logger.exception("构建执行层适配器失败: %s", layer.get("name"))
-        return {"available": False, "reason": f"执行层「{layer.get('name')}」不可用：{e}"}
+        return {"available": False, "reason": f"Harness「{layer.get('name')}」不可用：{e}"}
 
     config = getattr(adapter, "config", None) or {}
     token = resolve_access_token(config.get("env") or {})
     if not token:
-        return {"available": False, "reason": "执行层凭据未配置（QODERCN_PERSONAL_ACCESS_TOKEN）"}
+        return {"available": False, "reason": "Harness 凭据未配置（QODERCN_PERSONAL_ACCESS_TOKEN）"}
 
     home = tempfile.mkdtemp(prefix="adh-quota-")
     cli_path = "(未解析)"   # 供 except 分支引用，避免在赋值前抛错时 NameError 掩盖真因
@@ -123,22 +128,22 @@ async def _fetch_from_cli() -> dict:
                 info = await client.get_usage_info()
         if scope.cancelled_caught:
             return {"available": False,
-                    "reason": f"读取超时（>{int(_CLI_TIMEOUT_SECONDS)}s）：执行层 CLI 未响应"}
+                    "reason": f"读取超时（>{int(_CLI_TIMEOUT_SECONDS)}s）：Harness CLI 未响应"}
     except FileNotFoundError as e:
-        return {"available": False, "reason": f"执行层 CLI 缺失：{e}"}
+        return {"available": False, "reason": f"Harness CLI 缺失：{e}"}
     except Exception as e:  # noqa: BLE001 — 显式暴露原因，不静默返回空配额
         logger.exception("读取 Qoder 账号配额失败")
         return {"available": False,
-                "reason": f"执行层 CLI({cli_path}) 启动/握手失败：{type(e).__name__}: {e}；"
+                "reason": f"Harness CLI({cli_path}) 启动/握手失败：{type(e).__name__}: {e}；"
                           f"完整 stderr 见服务端日志"}
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
     if not isinstance(info, dict) or not info:
-        return {"available": False, "reason": "执行层未返回账号用量信息（访问令牌可能已失效）"}
+        return {"available": False, "reason": "Harness 未返回账号用量信息（访问令牌可能已失效）"}
     buckets = _normalize_buckets(info)
     if not buckets:
-        return {"available": False, "reason": "执行层返回的用量信息里没有可用的 credit 配额桶"}
+        return {"available": False, "reason": "Harness 返回的用量信息里没有可用的 credit 配额桶"}
     expires_at = _num(info.get("expiresAt"))
     return {
         "available": True,
@@ -158,6 +163,20 @@ async def _fetch_from_cli() -> dict:
 def _cache():
     from backend.common.ttl_cache import TTLCache
     return TTLCache(name="qoder_quota", maxsize=1, ttl=QUOTA_TTL_SECONDS)
+
+
+def peek_quota() -> dict:
+    """只读缓存里的配额，**不起 CLI 子进程**（供聊天侧轻量轮询）。
+
+    为什么不一律走 read_quota：未命中时 read_quota 会 spawn 一次执行层 CLI（5~8s），
+    而“现在多少人在用”这种提示条不该为它付一次子进程的钱。没采到就明说没采到，
+    不塞一个“配额充足”假信号（与进度条“未测量≠0%”同一纪律）。
+    """
+    hit = _cache().get("account")
+    if isinstance(hit, dict) and hit:
+        return {**hit, "cached": True}
+    return {"available": False, "cached": False,
+            "reason": "本进程还未采集过 credit 配额（管理端 LLM 可观测页可实时读取）"}
 
 
 async def read_quota(*, refresh: bool = False) -> dict:

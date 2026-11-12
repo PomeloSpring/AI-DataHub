@@ -229,7 +229,7 @@ def list_metrics(
     """
     # 指标字典**不按 workspace 分域**（ontology-modeling §3：口径唯一登记在 adh_metrics，
     # 是跨工作空间/跨数据源的全局权威；与 list_all_dimensions、create_dimension 同口径）。
-    # 曾按 workspace_id 精确等值过滤，导致个人工作站(ws=301) 下 61 条全局/默认空间字典行
+    # 曾按 workspace_id 精确等值过滤，导致个人工作空间(ws=301) 下 61 条全局/默认空间字典行
     # 全部被排除，指标中心显示“暂无指标数据”而维度 Tab 正常 —— 两个 Tab 口径分叉的根因。
     # 模型作用域(scope=model)看的是该模型对象挂接的资产: 本体模型是全局语义资产
     # (adh_ontology_models 无 workspace_id 列), 其挂接指标多为全局字典(ws=0)。
@@ -526,6 +526,12 @@ def create_metric(data: dict) -> dict:
     # 口径必须能在归属对象的物理表上成立，否则取数恒为 0（宁缺勿错，不静默落库）
     if data.get("bound_object_key"):
         _require_formula_matches_object(str(data["bound_object_key"]), formula)
+    # certified 入参必须真生效（历史缺陷：INSERT 列清单没这一列，调用方传的 certified 被丢弃，
+    # 行落为草稿却报“已建”，认证覆盖率也因此假低）；并沿用 _certify 的责任人规则：
+    # 没有 owner 的认证只是把 0 改成 1，不算认证 —— 直接拒，不静默当草稿处理。
+    certified = 1 if data.get("certified") else 0
+    if certified and not str(data.get("owner") or "").strip():
+        raise ValueError("认证口径必须指定 owner（口径责任人）：没有责任人的口径不叫认证")
 
     with DBConnection() as conn:
         with conn.cursor() as cur:
@@ -564,12 +570,12 @@ def create_metric(data: dict) -> dict:
                 "INSERT INTO adh_metrics "
                 "(id, workspace_id, name, name_en, formula, unit, agg_type, "
                 "target_table, target_column, description, owner, category, datasource_id, "
-                "is_active, created_at, updated_at, default_agg, bound_object_key, aliases, tags) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "is_active, created_at, updated_at, default_agg, bound_object_key, aliases, tags, certified) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     row_id,
                     # 字典行是跨工作空间口径：workspace_id 恒为 0（与 datasource_id 同口径），
-                    # 不再从调用方（UI 当前工作站 / AS-BOT 会话）继承，避免同一字典被按空间碎片化
+                    # 不再从调用方（UI 当前工作空间 / AS-BOT 会话）继承，避免同一字典被按空间碎片化
                     0,
                     biz_name,
                     name_en,
@@ -589,6 +595,7 @@ def create_metric(data: dict) -> dict:
                     data.get("bound_object_key") or None,
                     _norm_aliases(data.get("aliases")),
                     _norm_tags(kind_tags),
+                    certified,
                 ),
             )
 
@@ -635,6 +642,9 @@ _SQL_NON_COLUMN = {
     "count", "sum", "avg", "min", "max", "distinct", "case", "when", "then", "else", "end", "null",
     "is", "like", "between", "limit", "offset", "over", "partition", "interval", "day", "month", "year",
     "hour", "minute", "second", "date", "timestamp", "cast", "coalesce", "ifnull", "abs", "round", "now",
+    # NULLIF 是函数不是列：漏在这里会让「合法比率口径」（x * 1.0 / NULLIF(y, 0)）被
+    # _require_formula_matches_object 当成不存在的列拒绝，比率指标一律登记不上。
+    "nullif",
 }
 
 
@@ -1142,6 +1152,20 @@ def create_dimension(data: dict) -> dict:
         raise ValueError("dimension name is required")
     name_en = (data.get("name_en") or "").strip()
 
+    # 物理锚点实存裁决与归一**必须与 update_dimension 同路**（历史缺陷：只挂在更新分支，
+    # 新建维度原样写入 payload → 不传 target_table 就落成空值，planner 按物理表加载字典
+    # 永远命中 0 行：列名对了却取不到数，repair_rum_field_mapping 修的正是这批空表行）。
+    # 放在开库/查重之前：不合法的映射不应消耗一次写窗口，也让调用方能直接拿到拒绝原因。
+    _normalize_dim_physical_binding({}, data)
+
+    # 认证与责任人同 `certify_dimension` 口径：无责任人的 certified=1 只是把 0 改成 1，不叫认证。
+    # 历史缺陷：本入口写 certified 却不写 owner_role，治理页看见“已认证”、查不到责任人，
+    # 认证覆盖率也随之失真（宁可报错让人补 owner，也不静默落一批假认证行）。
+    certified = 1 if data.get("certified") else 0
+    owner_role = str(data.get("owner_role") or data.get("owner") or "").strip()
+    if certified and not owner_role:
+        raise ValueError("认证口径必须指定 owner（口径责任人）：没有责任人的口径不叫认证")
+
     with DBConnection() as conn:
         with conn.cursor() as cur:
             # 查重（同中文名或同英文标识）
@@ -1159,8 +1183,8 @@ def create_dimension(data: dict) -> dict:
                 "INSERT INTO adh_dimensions "
                 "(id, name, name_en, level, target_table, target_column, description, "
                 "category, datasource_id, is_active, created_at, updated_at, "
-                "bound_object_key, aliases, value_labels, certified) "
-                "VALUES (%s, %s, %s, 0, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "bound_object_key, aliases, value_labels, certified, owner_role) "
+                "VALUES (%s, %s, %s, 0, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     row_id,
                     biz_name,
@@ -1178,7 +1202,8 @@ def create_dimension(data: dict) -> dict:
                     data.get("bound_object_key") or None,
                     _norm_aliases(data.get("aliases")),
                     json.dumps(data["value_labels"], ensure_ascii=False) if data.get("value_labels") else None,
-                    1 if data.get("certified") else 0,
+                    certified,
+                    owner_role or None,
                 ),
             )
     return {"id": row_id, "success": True}

@@ -8,6 +8,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { ChevronRight, ChevronDown, Brain, Loader2 } from 'lucide-react';
 import { SlideCollapse } from './chat/StageCard';
+import { useEnterClass } from '@/hooks/useMotion';
 
 interface Props {
   content: string;
@@ -16,6 +17,8 @@ interface Props {
 
 export default function ThinkingBlock({ content, isStreaming = false }: Props) {
   // 不默认展开:流式期间也只显示“思考中”状态,避免刷屏
+  // 入场 class 由 lib/motion 解析（默认档与历史 animate-stage-in 同源）
+  const enter = useEnterClass();
   const [expanded, setExpanded] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
 
@@ -33,7 +36,7 @@ export default function ThinkingBlock({ content, isStreaming = false }: Props) {
     : content.replace(/\n/g, ' ');
 
   return (
-    <div className="mb-3 rounded-lg border border-purple-200 dark:border-purple-800/40 bg-purple-50/50 dark:bg-purple-950/20 overflow-hidden animate-stage-in">
+    <div className={`mb-3 rounded-lg border border-purple-200 dark:border-purple-800/40 bg-purple-50/50 dark:bg-purple-950/20 overflow-hidden ${enter}`}>
       {/* Header */}
       <div
         className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none hover:bg-purple-100/50 dark:hover:bg-purple-900/20 transition-colors"

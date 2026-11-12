@@ -90,11 +90,19 @@ def assert_ontology_draft_scope(ctx) -> int:
 
 
 def validate_knowledge_binding(ids):
-    """知识库权限只来自 AS-BOT；状态仍实时校验，空绑定明确拒绝。"""
+    """知识库权限只来自 AS-BOT；状态与接入通道仍实时校验，空绑定明确拒绝。
+
+    为何要同时校 `kb_type`：旧实现只看 status，于是绑一个未接入检索通道的库（如 local）
+    能绑成功、配置页看着正常，而检索时 `WHERE kb_type='qmind'` 把它静默过滤 ——
+    “配了没用”的空承诺（与 menu-permission-sync 同一类漂移）。现在绑定即拒并说清原因。
+    类型清单唯一真值源 = `rag.providers.supported_kb_types()`，不得在这里另写一份。
+    """
     if not ids:
         raise ResourceScopeError("当前 AS-BOT 未绑定知识库")
+    from backend.modules.mind.rag.providers import provider_for, supported_kb_types
+
     marks = ','.join(['%s'] * len(ids))
-    rows = execute_query(f"SELECT id FROM adh_knowledge_bases WHERE id IN ({marks}) "
+    rows = execute_query(f"SELECT id, name, kb_type FROM adh_knowledge_bases WHERE id IN ({marks}) "
                          "AND status='active'", tuple(ids))
     found = {r['id'] for r in rows}
     missing, extra = set(ids) - found, found - set(ids)
@@ -102,6 +110,13 @@ def validate_knowledge_binding(ids):
     if missing or extra:
         raise ResourceScopeError(
             f"AS-BOT 绑定的知识库校验失败: 缺失/未启用 {sorted(missing)}，越界返回 {sorted(extra)}，请检查 AS-BOT 知识库绑定")
+    unreadable = [str(r.get("name") or r["id"]) for r in rows
+                  if provider_for(r) is None or not provider_for(r).capabilities.read]
+    if unreadable:
+        raise ResourceScopeError(
+            f"绑定的知识库没有已接入的检索通道：{'、'.join(unreadable)}。"
+            f"本批支持：{', '.join(supported_kb_types())}；请在系统配置里改用已接入类型的知识库，"
+            "或由管理员解除该绑定（绑了也不会被检索，不能假装可用）")
 
 
 def validate_tool_resources(ctx, qualified_name, args):
@@ -128,9 +143,12 @@ def validate_tool_resources(ctx, qualified_name, args):
         source_scope.add(int(ctx.datasource_id))
     # 查询工具：LLM 用业务名（站点名或源名）在授权集内选源（不持有 id）。解析后作为
     # 生效源；丢弃任何模型传入/历史残留的 datasource_id，一律以服务端解析/会话源为准注入。
+    batch_self_resolved = False
     if qualified_name.startswith("mcp__datahub_query__") and name in ("execute_sql", "check_sql"):
         chosen_name = args.get("datasource")
         chosen_site = args.get("site")
+        batch_sites = _norm_name_list(args.get("sites"))
+        batch_sources = _norm_name_list(args.get("datasources"))
         args = {k: v for k, v in args.items()
                 if k not in ("datasource", "datasource_id", "site")}
         if isinstance(chosen_site, str) and chosen_site.strip():
@@ -139,6 +157,15 @@ def validate_tool_resources(ctx, qualified_name, args):
         elif isinstance(chosen_name, str) and chosen_name.strip():
             ctx.datasource_id = _resolve_authorized_source(chosen_name.strip(), available_sources)
             source_scope.add(int(ctx.datasource_id))
+        if batch_sites or batch_sources:
+            # 服务端扇出（多站一次调用内并发）：每个业务名都在**角色授权集内**预演解析，
+            # 越权/无名即拒（错因含候选名，引导 ask_user，不猜）；不回写会话生效源——
+            # 一次批量查询不应改变会话范围，具体 id 由 handler 在各子任务内再解一次。
+            for value in batch_sites:
+                _resolve_site_arg(value, available_sources, ctx.model_id)
+            for value in batch_sources:
+                _resolve_authorized_source(value, available_sources)
+            batch_self_resolved = True
         if ctx.datasource_id:
             args = {**args, "datasource_id": ctx.datasource_id}
     elif name == "query_dataset":
@@ -166,7 +193,7 @@ def validate_tool_resources(ctx, qualified_name, args):
                 raise ResourceScopeError("当前用户角色没有已授权数据源，请检查角色数据源授权")
             # 会话站点是聚合态（全球）时 ctx.datasource_id 合法地为 0（=逐站编排 /
             # 读全局共享字典），不是"未选会话源"。历史缺陷：此闸门先于 handler 把带
-            # site 的 run_semantic_query 退回"请先在会话中选择"，使全球站点的逐站编排能力
+            # site 的 run_semantic_query 退回"请先在会话中选择"，使全部站点（聚合态）的逐站编排能力
             # 形同虚设（只有 execute_sql/check_sql 在上方 131-143 提前解析了 site）。
             from backend.core.site_service import is_aggregate_site
             aggregate = is_aggregate_site((ctx.extra or {}).get("site_code") or "")
@@ -175,7 +202,10 @@ def validate_tool_resources(ctx, qualified_name, args):
             #   兜底鉴权；get_metrics/knowledge_search 读全局共享字典（datasource_id=0）；
             #   list_datasets/query_dataset 按数据集可用范围∩授权集自解析（不依赖会话源）。
             # 授权仍 fail-closed：_resolve_datasource_arg 只在 available 内解析，不放宽越权。
-            if aggregate and name in ("run_semantic_query", "get_metrics", "knowledge_search",
+            if batch_self_resolved:
+                # 扇出调用的每个源名已在授权集内预演解析（见上），不要求会话先选定单一源。
+                pass
+            elif aggregate and name in ("run_semantic_query", "get_metrics", "knowledge_search",
                                       "list_datasets", "query_dataset"):
                 pass
             else:
@@ -291,6 +321,33 @@ def _check_source(value, allowed_sources):
     elif isinstance(value, list):
         for v in value:
             _check_source(v, allowed_sources)
+
+
+def _norm_name_list(value) -> list:
+    """批量选源入参归一：只收业务名字符串，去重保序，上限 8 个。
+
+    扇出上限是护栏而非偏好：一调 20 站会把单回合墙钟与远端并发量同时打满，
+    真需要更多站点时应分批调用（每批仍是一次调用内并发）。
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw.startswith("["):
+            try:
+                value = json.loads(raw)
+            except ValueError:
+                value = [raw]
+        else:
+            value = [raw]
+    if not isinstance(value, (list, tuple)):
+        raise ResourceScopeError("批量选源参数必须是站点/数据源业务名的清单")
+    names = [str(v or "").strip() for v in value]
+    names = [n for n in names if n]
+    unique = list(dict.fromkeys(names))
+    if len(unique) > 8:
+        raise ResourceScopeError("单次扇出最多 8 个站点/数据源，请分批查询")
+    return unique
 
 
 def _resolve_authorized_source(name, available_sources):

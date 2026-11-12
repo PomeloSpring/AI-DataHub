@@ -14,58 +14,8 @@ import {
 import type { ToolCall, ProgressStage } from '../stores/chatStore';
 import { KnowledgeSummary } from './InlineDetails';
 import { SlideCollapse } from './chat/StageCard';
-
-// ── Tool display labels ────────────────────────────────────────
-
-const TOOL_LABELS: Record<string, string> = {
-  // 内置 Agent 管线工具
-  analyze_question: '分析问题',
-  search_semantic_model: '语义搜索',
-  get_schema: '表结构',
-  execute_sql: '执行 SQL',
-  search_chat_history: '历史搜索',
-  browse_data_catalog: '数据目录',
-  query_execute: '查询执行',
-  sql_validate: 'SQL 校验',
-  // 执行层进程内工具(sdk_tools)
-  search_metadata: '元数据搜索',
-  get_table_schema: '表结构',
-  list_datasources: '数据源列表',
-  get_metrics: '指标定义',
-  get_glossary: '业务术语',
-  query_by_tags: '标签查询',
-  knowledge_search: '知识搜索',
-  get_object_definition: '业务对象定义',
-  // 工作空间资产/磁盘治理工具
-  asset_list: '资产清单',
-  asset_get: '读取资产',
-  asset_archive: '归档收藏',
-  disk_status: '磁盘用量',
-  cleanup_candidates: '清理候选',
-  cleanup_execute: '执行清理',
-  // 系统运营工具
-  system_usage: '用量统计',
-  system_overview: '系统概览',
-  // 执行层内置文件/通用工具
-  Read: '读取文件',
-  Write: '写入文件',
-  Edit: '编辑文件',
-  Bash: '执行命令',
-  Glob: '查找文件',
-  Grep: '搜索内容',
-  WebSearch: '网络搜索',
-  WebFetch: '网页读取',
-  Task: '子任务',
-};
-
-function getToolLabel(tool: string): string {
-  if (TOOL_LABELS[tool]) return TOOL_LABELS[tool];
-  // mcp__server__tool → "MCP · server/tool"
-  if (tool.startsWith('mcp__')) {
-    return `MCP · ${tool.slice(5).replace(/__/g, '/')}`;
-  }
-  return tool;
-}
+// 工具名人话 = 全站一份（报告重跑的过程面板与这里同一口径），不在页面里各拼一套
+import { getToolLabel } from '../lib/toolLabel';
 
 // ── Extract summary from tool call ─────────────────────────────
 
@@ -202,6 +152,14 @@ export function SingleToolItem({ tc, conversationId }: { tc: ToolCall & { _index
                 {tc.error || tc.result || tc.result_preview}
               </pre>
             </div>
+          )}
+          {/* 明细被入库投影截断或被保留策略裁剪时显式告知，不静默少内容（no-silent-degradation）*/}
+          {(tc.result_truncated || tc.result_omitted) && (
+            <p className="text-[10px] text-muted-foreground">
+              {tc.result_omitted
+                ? '工具返回明细不持久化（仅保留摘要），完整产物见会话工作区文件。'
+                : '工具返回明细过长，仅保存开头部分。'}
+            </p>
           )}
         </div>
       </SlideCollapse>

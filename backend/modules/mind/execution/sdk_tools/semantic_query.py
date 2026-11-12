@@ -29,14 +29,84 @@ logger = logging.getLogger(__name__)
 _MAX_ROWS = 200
 
 
-def _sanitize_execute_error(se) -> str:
-    """执行阶段原始报错(可含 MySQL Access denied/IP)仅进服务端日志,对 LLM 回通用文案。
+def _peek_intent_object(payload: dict) -> str:
+    """从原始载荷里探出对象名（未定源提示要说清是哪个对象，并用于 ds=0 绑定探测）。
+
+    只读不校验：载荷合法性仍由 parse_intent 裁决（这里不得提前吃掉它的错误口径）。
+    """
+    if not isinstance(payload, dict):
+        return ""
+    obj = str(payload.get("object") or "").strip()
+    if obj:
+        return obj
+    raw = payload.get("intent_json")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return ""
+    if isinstance(raw, dict):
+        return str(raw.get("object") or "").strip()
+    return ""
+
+
+def unresolved_source_payload(ctx, object_key: str = "") -> dict:
+    """会话没定出生效源时的可操作错误（不把“未选源”误报成“对象未绑定/未建模”）。
+
+    护栏 no-silent-degradation §1：错因要可诊断。旧文案只说“未确定数据源”，
+    不告诉模型“聚合态要逐站带 site”这个具体动作，模型就自己去试错。
+    文案只含站点/源的业务名与参数名，不含物理表/主机/id（护栏 §7）。
+    """
+    extra = getattr(ctx, "extra", None) or {}
+    code = str(extra.get("site_code") or "").strip()
+    from backend.core.site_service import get_site, is_aggregate_site
+    site_label = (get_site(code) or {}).get("display_name") or code
+    who = f"对象「{object_key}」" if object_key else "本次查询"
+    if is_aggregate_site(code):
+        return {
+            "error": (f"{who} 需要先定站点：当前会话站点是聚合态（全部站点），没有单一生效源，"
+                      "而业务本体的物理绑定按站点登记，聚合态下不会命中任何绑定。"
+                      "这不代表数据未建模：请对本次查询带上 site（站点业务名，如 '中国'）逐站各调一次，"
+                      "分站呈现结果，不得把各站数字相加当作全局值。"),
+            "hint": "可查站点见「数据源拓扑」段；不确定就问用户，不要猜站点名，也不得据此向用户说“该站点暂无数据”。",
+            "retry_with": "site",
+        }
+    if code:
+        return {
+            "error": (f"{who} 需要先定数据源：会话站点「{site_label}」下有多个已授权数据源（或本站没有唯一默认源），"
+                      "本次调用没有确定的生效源，因此没命中任何绑定。"
+                      "请带上 site（站点业务名）或 datasource（list_datasources 里的源业务名）重试。"),
+            "hint": "站点内多源时 datasource 更准（观测类源与业务库常在同一站点下）；不确定就问用户，不要猜名称。",
+            "retry_with": "site 或 datasource",
+        }
+    return {
+        "error": "当前会话未确定数据源，无法执行语义查询；请先在会话中选择一个已授权数据源后重试。",
+        "hint": "可选源见 list_datasources（只回业务名与方言）。",
+        "retry_with": "datasource",
+    }
+
+
+def _effective_db_type(datasource_id) -> str:
+    """生效源引擎类型（只读提示用）：口径复用 query_tools 唯一实现，不另写一份 SQL。"""
+    from backend.modules.mind.execution.sdk_tools.query_tools import _datasource_db_type
+
+    try:
+        return _datasource_db_type(datasource_id) or ""
+    except Exception as exc:  # noqa: BLE001 — 提示性字段取不到不影响取数，也不能反过来拦主路
+        logger.debug("[run_semantic_query] db_type 提示加载失败: %s", exc)
+        return ""
+
+
+def _sanitize_execute_error(se, db_type: str = "") -> str:
+    """执行阶段原始报错(可含 MySQL Access denied/IP)仅进服务端日志,对 LLM 回分类后的可操作文案。
 
     口径委托 `semantics.contract.sanitize_execute_reason`（唯一真源）；
     兼容 SemanticExecution（.reason）与 SemanticError（.message）。
+    `db_type` 只用于文案里的“目标源类型”提示（与 list_datasources 同源，不属敏感细节），
+    没它时分类仍会给“重试不会好”，但模型无从判断是选错源还是方言写错。
     """
     reason = getattr(se, "reason", "") or getattr(se, "message", "") or ""
-    return _sanitize_execute_reason(reason, getattr(se, "blocked_at", "") or "")
+    return _sanitize_execute_reason(reason, getattr(se, "blocked_at", "") or "", db_type)
 
 
 async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
@@ -84,14 +154,25 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
             payload["datasource_id"] = int(session_source_for_site(session_site, available) or 0)
 
     # fail-loud: 业务会话未确定数据源时明确报错, 不下探 resolve_binding(datasource_id=0)
-    # 把"未选源"误报成"对象未绑定"(系统域 ds=0 是合法系统域, 不拦)。
-    from backend.modules.mind.execution.sdk_tools.scoped_metadata import system_scope
-    if not int(payload.get("datasource_id") or 0) and ctx is not None and not system_scope(ctx):
-        session_site = str((getattr(ctx, "extra", None) or {}).get("site_code") or "").strip()
-        return ({"error": "当前会话未确定数据源，无法执行语义查询；"
-                          + (f"会话站点「{session_site}」下有多个已授权数据源或为聚合态，"
-                             f"请对本次查询带上 site 参数（可查站点见「数据源拓扑」段）。"
-                             if session_site else "请先在会话中选择一个已授权数据源。")}, True)
+    # 把"未选源"误报成"对象未绑定"（系统域 ds=0 是合法系统域, 不拦）。
+    #
+    # 历史缺陷（会话 1783069459277）：旧写法用 `not system_scope(ctx)` 当守卫，而能力
+    # 叠加后 admin 类 AS-BOT 都有 system 工具组 ⇒ 聚合态会话直接跳过这条提示，落到
+    # resolve_binding(ds=0) 报出“object 'rum_event' 未绑定到任何物理表”——绑定其实好好
+    # 地在 arms-prd-cn 上（physical_table=logstore-rum），真因是本次没带 site。模型据此
+    # 放弃语义层去手写 SQL，最终三重失败。
+    # 现在的判据是事实而非能力：“该对象在 ds=0 上到底有没有绑定”——系统域对象（绑定就
+    # 在 ds=0）照常放行；业务对象在 ds=0 无绑定而会话未定源，就是“没定源”，必须给可操作提示。
+    if not int(payload.get("datasource_id") or 0) and ctx is not None:
+        from backend.modules.mind.execution.sdk_tools.scoped_metadata import system_scope
+        if not system_scope(ctx):
+            return (unresolved_source_payload(ctx, _peek_intent_object(payload)), True)
+        _probe_obj = _peek_intent_object(payload)
+        if _probe_obj:
+            _probe, _ = await asyncio.to_thread(resolve_binding, _probe_obj,
+                                                datasource_id=0)
+            if _probe is None:
+                return (unresolved_source_payload(ctx, _probe_obj), True)
 
     q, err, notes = parse_intent(payload)
     if err:
@@ -196,7 +277,7 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
             ),
             "warnings": _safe_warnings(p.warnings, bind_warnings),
             "columns": [], "rows": [], "row_count": 0, "execution_ms": None,
-            "error": _sanitize_execute_error(e),
+            "error": _sanitize_execute_error(e, _effective_db_type(q.datasource_id)),
             "blocked_at": e.blocked_at,
             "needs_approval": bool((e.detail or {}).get("needs_approval")),
         }
@@ -214,6 +295,16 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
     }
     if int(result.row_count) > _MAX_ROWS:
         rows_result = {**rows_result, "truncated": True, "rows": rows_records[:_MAX_ROWS]}
+
+    # 无人值守采集点：定时任务的报告需要服务端受控结果（含待执行 SQL/生效源/方言）
+    # 来登记来源权限快照；行数据同时照常下发 LLM（与 Chat 同口径，治理与脱敏已在
+    # 编译期施加）。交互链路没有 sink，本调用 no-op。
+    from backend.modules.mind.execution.sdk_tools.context import record_unattended_query
+    record_unattended_query(ctx, sql=p.sql, datasource_id=int(binding.datasource_id or 0),
+                            dialect=p.dialect, columns=names, rows=rows_records,
+                            row_count=int(result.row_count),
+                            truncated=bool(rows_result.get("truncated")),
+                            source="run_semantic_query")
 
     # 数据源对 LLM 是黑盒：只回声明式结果 + 安全告警,
     # 剥离 base_sql / secured_sql / datasource_id / catalog_ref / provenance / 原始报错，

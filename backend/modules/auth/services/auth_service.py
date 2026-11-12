@@ -15,7 +15,7 @@ import jwt
 
 from backend.common.config import ADH_SECRET_KEY
 from backend.common.db import DBConnection, execute_query, execute_write
-from backend.common.crypto import encrypt_password, decrypt_password, is_encrypted
+from backend.common.crypto import decrypt_field as _decrypt_field, encrypt_field as _encrypt_field
 
 logger = logging.getLogger(__name__)
 
@@ -29,29 +29,10 @@ MIN_PASSWORD_LENGTH = 8
 
 
 # ── Sensitive field encryption helpers ──────────────────────────────────
-
-def _encrypt_field(value: str) -> str:
-    """Encrypt a sensitive field (email, phone). Returns empty string for empty input."""
-    if not value:
-        return ""
-    try:
-        return encrypt_password(value)
-    except Exception as e:
-        logger.warning("Failed to encrypt field: %s", e)
-        return value  # Fallback to plaintext on error
-
-
-def _decrypt_field(value: str) -> str:
-    """Decrypt a sensitive field. Returns empty string for empty input."""
-    if not value:
-        return ""
-    try:
-        if is_encrypted(value):
-            return decrypt_password(value)
-        return value  # Not encrypted (legacy data), return as-is
-    except Exception as e:
-        logger.warning("Failed to decrypt field: %s", e)
-        return "***"  # Return masked value on error
+# 实现已收敛到 backend/common/crypto.py（全平台一份）：历史上本模块与
+# backend/common/auth.py 各写一份且行为不一致，修好的那份没人调，真正挂在
+# /api/users 上的这份却把加密失败当 warning 后回退明文 —— 双口径本身就是缺陷。
+# _encrypt_field 失败上抛 ValueError，调用方（create_user/update_user）把原因回给用户。
 
 
 def _decrypt_user_row(row: dict) -> dict:
@@ -327,6 +308,53 @@ def get_user_by_id(user_id: int) -> dict | None:
         return None
 
 
+def _list_binding_roles(user_id: int) -> list[dict]:
+    """按真值源取用户生效角色（``adh_user_roles ⋈ adh_roles``）。
+
+    display_name 为空时回 name（不给空白显示）；角色查询失败**直接上抛** ——
+    取数失败被吞成空清单会把「读不到」伪装成「没角色」。
+    """
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT r.name, r.display_name FROM adh_user_roles ur "
+                "JOIN adh_roles r ON r.id = ur.role_id "
+                "WHERE ur.user_id = %s AND r.is_active = 1 ORDER BY r.id",
+                (user_id,),
+            )
+            rows = cur.fetchall() or []
+    return [
+        {"name": str(r.get("name") or ""),
+         "display_name": str(r.get("display_name") or r.get("name") or "")}
+        for r in rows if r.get("name")
+    ]
+
+
+def get_user_profile(user_id: int) -> dict | None:
+    """个人设置/身份显示用：账号字段 + 角色可读名（真值源解析）。
+
+    在 ``get_user_by_id`` 之上追加：
+    - ``roles``：``[{name, display_name}]`` 生效角色清单；
+    - ``role``：角色内部名（取首个，供既有 ``role === 'admin'`` 判定消费）；
+    - ``role_name``：角色显示名（``adh_roles.display_name``，多角色以「、」连接）。
+
+    口径（见 ``backend/core/role_service.write_user_role_binding``）：``adh_user_roles``
+    是用户→角色的唯一真值源，``adh_users.user_role`` 只是登录/JWT 的显示缓存。
+    显示一律按真值源取 display_name —— 自定义角色（如「运营管理」）才不会退化成
+    内部英文名，也不会因为前端读错字段名而渲染成空白。
+    无生效绑定时两字段为空串，由页面如实显示「未分配角色」，不回退缓存列把配置缺口
+    伪装成正常状态（空绑定 = 零权限码，本身就是需要用户知道的事实）。
+    """
+    row = get_user_by_id(user_id)
+    if not row:
+        return None
+    roles = _list_binding_roles(user_id)
+    row["roles"] = roles
+    row["role"] = roles[0]["name"] if roles else ""
+    row["role_name"] = "、".join(r["display_name"] for r in roles)
+    return row
+
+
 def get_user_by_username(username: str) -> dict | None:
     """Get user by username. Sensitive fields are decrypted."""
     try:
@@ -393,12 +421,18 @@ def create_user(username: str, password: str, role: str = "viewer",
     if not valid:
         return False, msg, 0
 
+    # 敏感字段先加密：失败原因必须可解释，不得被下面 except 的通用"创建失败"吞掉
+    # （也不得回退明文 —— no-silent-degradation §1）
+    try:
+        enc_email = _encrypt_field(email)
+        enc_phone = _encrypt_field(phone)
+    except ValueError as exc:
+        return False, str(exc), 0
+
     try:
         pw_hash = hash_password(password)
         user_id = _ts_id()
         now = _now_str()
-        enc_email = _encrypt_field(email)
-        enc_phone = _encrypt_field(phone)
 
         with DBConnection() as conn:
             with conn.cursor() as cur:
@@ -440,6 +474,13 @@ def update_user(user_id: int, username: str = None, email: str = None,
 
     Email and phone are encrypted before storage.
     """
+    # 与 create_user 同口径：先加密，失败就把原因原样回出去（不回退明文、不被通用文案吞掉）
+    try:
+        enc_email = _encrypt_field(email) if email is not None else None
+        enc_phone = _encrypt_field(phone) if phone is not None else None
+    except ValueError as exc:
+        return False, str(exc)
+
     try:
         with DBConnection() as conn:
             with conn.cursor() as cur:
@@ -458,7 +499,6 @@ def update_user(user_id: int, username: str = None, email: str = None,
                     updates.append("username = %s")
                     params.append(username)
                 if email is not None:
-                    enc_email = _encrypt_field(email)
                     if enc_email:
                         cur.execute("SELECT id FROM adh_users WHERE email = %s AND id != %s AND email != ''",
                                     (enc_email, user_id))
@@ -467,7 +507,6 @@ def update_user(user_id: int, username: str = None, email: str = None,
                     updates.append("email = %s")
                     params.append(enc_email)
                 if phone is not None:
-                    enc_phone = _encrypt_field(phone)
                     updates.append("phone = %s")
                     params.append(enc_phone)
                 if role is not None:

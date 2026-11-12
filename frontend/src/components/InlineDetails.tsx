@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { SlideCollapse } from './chat/StageCard';
+import { useEnterClass } from '@/hooks/useMotion';
 import client from '@/api/client';
 
 export interface KnowledgeChunk {
@@ -98,6 +99,8 @@ interface RagData extends KnowledgeResult {
 }
 
 function RagSummary({ rag }: { rag: RagData }) {
+  // 出现效果跟随个人动效偏好（默认档 = 改造前的 animate-stage-in）
+  const enter = useEnterClass();
   const [expanded, setExpanded] = useState(false);
 
   const total = (rag.table_info_count || 0) + (rag.column_metadata_count || 0)
@@ -111,7 +114,7 @@ function RagSummary({ rag }: { rag: RagData }) {
     : rag.rag_source || '';
 
   return (
-    <div className="rounded-xl border bg-card shadow-sm mb-2 overflow-hidden animate-stage-in">
+    <div className={`rounded-xl border bg-card shadow-sm mb-2 overflow-hidden ${enter}`}>
       <div
         className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-muted/40 transition-colors"
         onClick={() => setExpanded(prev => !prev)}
@@ -202,11 +205,12 @@ const TIMING_LABELS: Record<string, string> = {
 const TIMING_ORDER = ['intent', 'rag', 'llm', 'validate', 'execute', 'total'] as const;
 
 function TimingsView({ timings, elapsedMs }: { timings: Record<string, number>; elapsedMs?: number }) {
+  const enter = useEnterClass();
   const keys = TIMING_ORDER.filter(k => k in timings);
   if (keys.length === 0) return null;
 
   return (
-    <div className="rounded-xl border bg-card shadow-sm mb-2 px-3 py-2 animate-stage-in">
+    <div className={`rounded-xl border bg-card shadow-sm mb-2 px-3 py-2 ${enter}`}>
       <div className="flex items-center gap-2 mb-2">
         <span className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 bg-muted">
           <Clock className="h-3.5 w-3.5 text-muted-foreground" />
@@ -236,10 +240,11 @@ function TimingsView({ timings, elapsedMs }: { timings: Record<string, number>; 
 // ── Workflow Info ───────────────────────────────────────────────
 
 function WorkflowInfo({ info }: { info: any }) {
+  const enter = useEnterClass();
   if (!info) return null;
 
   return (
-    <div className="rounded-xl border bg-card shadow-sm mb-2 px-3 py-2 animate-stage-in">
+    <div className={`rounded-xl border bg-card shadow-sm mb-2 px-3 py-2 ${enter}`}>
       <div className="flex items-center gap-2 mb-1.5">
         <span className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 bg-muted">
           <Workflow className="h-3.5 w-3.5 text-muted-foreground" />

@@ -72,6 +72,11 @@ _CALLBACKS: dict[str, str | Callable[..., Any]] = {
     "report.list": "backend.modules.viz.services.report_service:list_reports",
     "report.run": "backend.modules.viz.services.report_service:run_report",
     "report.render_fact": "backend.modules.viz.services.report_service:render_fact_report",
+    "report.evidence_verdict": "backend.modules.viz.services.report_service:evidence_verdict",
+    # 报告模板→版式契约：flow 执行器与 viz 共用一份解析/校验口径（不新增 L2 横向 import）
+    "report.resolve_template": "backend.modules.viz.services.report_service:resolve_report_template",
+    "report.layout_contract": "backend.modules.viz.services.report_service:report_layout_contract",
+    "report.render_template": "backend.modules.viz.services.report_service:render_template_report",
     "report.security_snapshot": "backend.modules.viz.services.report_service:_snapshot",
     "report.verify_snapshot": "backend.modules.viz.services.report_service:_verify_snapshot",
     "report.cleanup_stale": "backend.modules.viz.services.report_service:cleanup_stale_reports",
@@ -82,8 +87,6 @@ _CALLBACKS: dict[str, str | Callable[..., Any]] = {
     # 无人值守分析域（mind）
     "mind.analyze_question": "backend.modules.mind.execution.scheduled_analysis:analyze_question",
     "mind.validate_task_as_bot": "backend.modules.mind.execution.scheduled_analysis:validate_task_as_bot",
-    "mind.needs_as_bot_migration": "backend.modules.mind.execution.scheduled_analysis:needs_as_bot_migration",
-    "mind.as_bot_options": "backend.modules.mind.execution.scheduled_analysis:as_bot_options",
     # 治理域（gov）
     "gov.persist_sql_lineage": "backend.modules.gov.services.lineage_service:persist_sql_lineage",
     "gov.execute_quality_rule": "backend.modules.gov.services.quality_engine:execute_single_rule",
@@ -94,6 +97,23 @@ _CALLBACKS: dict[str, str | Callable[..., Any]] = {
     "evolution.run_digest": "backend.modules.catalog.services.evolution_service:run_digest",
     # 前置意图漏斗（mind）：判定流水滚动清理由 flow 的执行器触发，同样走本表白名单
     "intent_gate.purge_intercepts": "backend.modules.mind.execution.intent_gate:purge_intercepts",
+    # 会话与观测流水保留策略（mind）：内置任务壳跨模块调用，依旧走本表不新增 L2 横向 import
+    "conversation_retention.run": "backend.modules.mind.services.conversation_retention:run_retention",
+    # 任务调度域（flow）：报表中心「从报表快捷创建同款定时任务」要建任务与校 Cron，
+    # 走本表而不是 modules.viz → modules.flow 直接 import（分层契约 §0 禁 L2 横向边）。
+    "task.parse_cron": "backend.modules.flow.tasks.beat_schedule:parse_cron_expression",
+    "task.scheduled_service": "backend.modules.flow.services.scheduled_task_service:scheduled_task_service",
+    # 通知发送（flow）：决策建议的定时预警复用同一个发送口（渠道/模板/脱敏口径
+    # 只一份），decision → flow 同样走本表而不新增 L2 横向 import。
+    "task.send_notification": "backend.modules.flow.tasks.executor:_send_notification",
+    # 决策建议域（decision）：Beat 第五个调度源与任务壳在 flow，业务编排在
+    # decision，两侧都走本表对接（同 evolution.run_digest 的先例）。
+    "decision.scheduled_trees": "backend.modules.decision.scheduler:scheduled_trees",
+    "decision.scheduled_run": "backend.modules.decision.scheduler:run_scheduled",
+    "decision.dispatched": "backend.modules.decision.scheduler:dispatched",
+    # 报表归档要随正文插「决策建议」区块（viz → decision 同样走本表，不开 L2 横向边）；
+    # 只读已落实例，不重算（与 Chat 回放同一条例外与同一份来源）。
+    "decision.report_block": "backend.modules.decision.outlet:report_block_markdown",
 }
 
 # Celery app 绑定：任务派发与任务对象解耦（同一白名单②通道）。

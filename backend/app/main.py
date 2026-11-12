@@ -47,8 +47,18 @@ logging.basicConfig(
 
 # ── health 口径 / 重复路由 fail-loud 检查 ────────────────────────────────────────────
 def _health_body(request: Request) -> dict:
-    """单进程合并口径：monitoring 探测读 status/version 字段。"""
-    return {"status": "ok", "service": "ai-datahub", "version": "1.0.0"}
+    """单进程合并口径：monitoring 探测读 status/version 字段。
+
+    额外挂 ``security_advisories``：密钥类配置缺陷不得只留在日志里（启动 ERROR +
+    健康口可见，不静默把"配了加密"当成"已加密"）。无告警时不添字段，旧探测零变化。
+    """
+    from backend.common import crypto
+
+    body = {"status": "ok", "service": "ai-datahub", "version": "1.0.0"}
+    advisories = crypto.security_advisories()
+    if advisories:
+        body["security_advisories"] = advisories
+    return body
 
 
 def _iter_effective_routes(routes):
@@ -123,6 +133,12 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         """合并启动流程：任务注册表落库 + KB 对账循环 + waker 会话恢复。"""
         logger.info("AI-DataHub web starting up...")
+        # 密钥门禁（P0-2）：占位/空 ADH_SECRET_KEY 等于"密钥是公开常量"，
+        # 必须启动即报（严格模式拒绝服务），非严格模式常驻告警 —— 不静默假装已加密。
+        from backend.common import crypto as _crypto
+        _crypto.assert_key_operational()
+        for _adv in _crypto.security_advisories():
+            logger.error("[security] %s", _adv)
         # flow: 内置任务注册表落库(名称/职责/周期以代码为准，不覆盖暂停开关与运行态)
         from backend.common.system_jobs import ensure_seeded
         ensure_seeded()
@@ -225,6 +241,7 @@ def create_app() -> FastAPI:
     from backend.modules.auth.api.monitoring import router as monitoring_router
     from backend.modules.auth.api.observability import router as observability_router
     from backend.modules.auth.api.knowledge import router as knowledge_router
+    from backend.modules.auth.api.knowledge import public_router as knowledge_public_router
     from backend.modules.auth.api.eval import router as eval_router
     from backend.modules.auth.api.memory import router as memory_router
 
@@ -237,6 +254,9 @@ def create_app() -> FastAPI:
     mount("auth", monitoring_router, "/api/monitoring", ["monitoring"])
     mount("auth", observability_router, "/api/observability", ["observability"])
     mount("auth", knowledge_router, "/api/admin", ["knowledge"])
+    # 分析场景的消费面（Chat 空白页/首页示例）: 只读、只回标题与适用场景，
+    # 已加入 _OPEN_READ_ROUTES（与 /api/release-notes 同构: 内容公开读、配置写按码）。
+    mount("auth", knowledge_public_router, "/api/knowledge", ["knowledge scenarios (public read)"])
     mount("auth", eval_router, "/api/eval", ["eval"])
     mount("auth", memory_router, "/api/memory", ["memory"])
 
@@ -275,8 +295,10 @@ def create_app() -> FastAPI:
     # ── flow（原 processes/flow/main.py，8003）────────────────────────
     from backend.modules.flow.api.sync import router as sync_router
     from backend.modules.flow.api.scheduled import router as scheduled_router
-    from backend.modules.flow.api.scheduled import templates_router as report_templates_router
+    # /api/report-templates 已退役：报告模板唯一事实源 = 字模库 report_template（配置页走 /api/vis-library）
     from backend.modules.flow.api.notification import router as notification_router
+    # 模板中心的消息模板（IM/邮件/短信）：通知渠道按引用选，不再在渠道里手填文案
+    from backend.modules.flow.api.message_template import router as message_template_router
     from backend.modules.flow.api.task_monitor import router as task_monitor_router
     from backend.modules.flow.api.dag import router as dag_router
     from backend.modules.flow.api.udf import router as udf_router
@@ -285,8 +307,8 @@ def create_app() -> FastAPI:
     mount("flow", dag_router, "/api/dag", ["DAG Workflows"])
     mount("flow", udf_router, "/api", ["UDF"])
     mount("flow", scheduled_router, "/api/scheduled-tasks", ["Scheduled Tasks"])
-    mount("flow", report_templates_router, "/api/report-templates", ["Report Templates"])
     mount("flow", notification_router, "/api/notification", ["Notifications"])
+    mount("flow", message_template_router, "/api/message-templates", ["Message Templates"])
     mount("flow", task_monitor_router, "/api/task-monitor", ["Task Monitor"])
 
     # ── gov（原 processes/gov/main.py，8002）──────────────────────────
@@ -299,6 +321,14 @@ def create_app() -> FastAPI:
     mount("gov", gov_lineage_router, "/api/lineage", ["数据血缘"])
     mount("gov", standards_router, "/api/standards", ["数据标准"])
     mount("gov", security_router, "/api/security", ["敏感数据"])
+
+    # ── decision（决策建议：平台第三个能力面）─────────────────────────
+    # 数据分析答「发生了什么」、知识沉淀答「为什么」，这里答「该做什么」。
+    # 取数仍走 semantics.execute 唯一执行口，本模块不持有数据源边界；
+    # 路径分三段前缀与三个权限码一一对应（中间件按 pattern×method 做不了减法）。
+    from backend.modules.decision.api.decisions import router as decisions_router
+
+    mount("decision", decisions_router, "/api/decisions", ["决策建议"])
 
     # ── mind（原 processes/mind/main.py，8001）────────────────────────
     from backend.modules.mind.api.chat import router as chat_router
@@ -344,6 +374,8 @@ def create_app() -> FastAPI:
     from backend.modules.platform.api.prompts import router as prompts_router
     from backend.modules.platform.api.as_bots import router as as_bots_router
     from backend.modules.platform.api.sandbox import router as sandbox_router
+    from backend.modules.platform.api.content import router as content_router
+    from backend.modules.platform.api.kb_docs import router as kb_docs_router
 
     mount("platform", mcp_servers_router, "/api/admin/mcp-servers", ["MCP Servers"])
     mount("platform", embed_router, "/api/embed", ["Embed"])
@@ -359,6 +391,15 @@ def create_app() -> FastAPI:
     mount("platform", prompts_router, "/api/admin/prompts", ["Prompts"])
     mount("platform", as_bots_router, "/api/admin/as-bots", ["AS-BOTs"])
     mount("platform", sandbox_router, "/api/sandbox", ["Sandbox"])
+    # 内容中心（一级模块 /content 的后端）: 只做 创作→审核→发布（写草稿按 article:manage,
+    # 审核与发布各自独立前缀 /api/content/reviews*、/api/content/publish* 以便
+    # api_pattern 单独就能裁决）。资讯门户是独立模块且尚未开发, 只消费这里发布的结果。
+    # 内容不落数据源、不返回数据行, 不经取数护城河。
+    mount("platform", content_router, "/api/content", ["Content Center"])
+    # 知识库文档（内容中心「知识库文档」菜单的后端）: 看/改云端 notebook 内部的文档树，
+    # 按 kbdoc:read / kbdoc:write 裁决。知识库**管理**（建库、绑 AS-BOT、配凭据）仍在
+    # 系统配置 /api/knowledge-bases*（kb:read/kb:manage），两者不共用权限码。
+    mount("platform", kb_docs_router, "/api/content", ["KB Docs"])
 
     # ── semhub（原 processes/semhub/main.py，8012）────────────────────
     from backend.modules.semhub.api.graph import router as graph_router

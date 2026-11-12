@@ -33,7 +33,7 @@ REGISTRY = [
     {"perm_code": "ontology:save", "label": "保存本体", "module": "data", "module_label": "数据中台",
      "description": "保存本体模型", "menu_key": "data:ontology", "sort": 1,
      "api_pattern": "/api/ontology/*", "api_method": "POST"},
-    {"perm_code": "report:view", "label": "查看报表", "module": "data", "module_label": "数据中台",
+    {"perm_code": "report:view", "label": "查看报告", "module": "data", "module_label": "数据中台",
      "description": "", "menu_key": "data:reports", "sort": 2,
      "api_pattern": "/api/reports/*,/api/scheduled/*", "api_method": "GET"},
     # menu_key 指向不存在的菜单 → standalone
@@ -47,7 +47,7 @@ REGISTRY = [
 MENUS = [
     {"menu_key": "data:ontology", "label": "本体管理", "section": "数据资产", "module": "data",
      "sort": 1, "perm_code": "ontology:save"},
-    {"menu_key": "data:reports", "label": "报表中心", "section": "数据资产", "module": "data",
+    {"menu_key": "data:reports", "label": "报告中心", "section": "数据资产", "module": "data",
      "sort": 2, "perm_code": "report:view"},
 ]
 

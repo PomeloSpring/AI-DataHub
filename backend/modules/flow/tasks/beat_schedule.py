@@ -72,8 +72,9 @@ class WallClockCrontab(CeleryCrontab):
 def build_beat_schedule() -> dict:
     """Load active scheduled tasks from DB and build Celery Beat schedule dict.
 
-    覆盖三类周期任务：系统对账、定时分析任务（adh_scheduled_tasks）、
-    DAG 工作流（adh_dag_workflows）、同步任务（adh_sync_tasks）。
+    覆盖五类周期任务：系统对账、定时分析任务（adh_scheduled_tasks）、
+    DAG 工作流（adh_dag_workflows）、同步任务（adh_sync_tasks）、
+    决策树主动预警（adh_decision_trees.schedule_cron）。
     Returns a dict suitable for app.conf.beat_schedule.
     Called on Beat startup and periodically for hot-reload.
     """
@@ -90,6 +91,13 @@ def build_beat_schedule() -> dict:
         "intent_intercept_retention": {
             "task": "backend.modules.flow.tasks.executor.intent_intercept_retention",
             "schedule": WallClockCrontab("10 4 * * *", "Asia/Shanghai"),
+            "options": {"queue": "scheduled"},
+        },
+        # 会话与观测流水保留策略：超期 span/trace 删除 + 长期未活跃会话剥明细（不删正文）。
+        # 排在意图漏斗之后、进化归纳（03:30）不冲突，与其他凌晨任务隔 30分钟错开。
+        "conversation_history_retention": {
+            "task": "backend.modules.flow.tasks.executor.conversation_history_retention",
+            "schedule": WallClockCrontab("40 4 * * *", "Asia/Shanghai"),
             "options": {"queue": "scheduled"},
         },
     }
@@ -145,6 +153,27 @@ def build_beat_schedule() -> dict:
                 "args": (task_id,),
                 "options": {"queue": "scheduled"},
             }
+        # 决策树主动预警（第五个调度源）：只读 adh_decision_trees.schedule_cron，
+        # 不往 adh_scheduled_tasks 里塞新形态（那张表的 task_type 仍只有 agent，
+        # 是既有产品决策）；清单经 task_runtime 回调表取，不新增 L2 横向 import。
+        from backend.core.task_runtime import call as _runtime_call
+        for tree in _runtime_call("decision.scheduled_trees") or []:
+            tree_id = tree["id"]
+            try:
+                cron = WallClockCrontab(tree["schedule_cron"],
+                                        tree.get("timezone") or "Asia/Shanghai")
+            except (ValueError, KeyError) as e:
+                logger.warning("[Beat] Skipping decision tree %s: %s", tree_id, e)
+                continue
+            # run_key 派发时由 _dispatch_decision 覆写（这里给空串只是占位，
+            # 让 Celery 侧 kwargs 形状固定，不至于两个出口两套参数）
+            schedule[f"decision_tree_{tree_id}"] = {
+                "task": "backend.modules.flow.tasks.decision_tasks.evaluate_and_notify",
+                "schedule": cron,
+                "args": (tree_id,),
+                "kwargs": {"run_key": ""},
+                "options": {"queue": "scheduled"},
+            }
         logger.info("[Beat] Loaded %d active scheduled tasks", len(schedule))
     except Exception as e:
         logger.error("[Beat] Failed to load schedules from DB: %s", e)
@@ -191,6 +220,8 @@ class DatabaseScheduler(Scheduler):
             return self._dispatch_dag(entry, producer, advance, **kwargs)
         if task_name == "backend.modules.flow.tasks.dag_tasks.execute_sync_task":
             return self._dispatch_sync(entry, producer, advance, **kwargs)
+        if task_name == "backend.modules.flow.tasks.decision_tasks.evaluate_and_notify":
+            return self._dispatch_decision(entry, producer, advance, **kwargs)
         return super().apply_async(entry, producer, advance, **kwargs)
 
     def _dispatch_scheduled(self, entry, producer, advance, **kwargs):
@@ -295,3 +326,30 @@ class DatabaseScheduler(Scheduler):
             execute_write("UPDATE adh_sync_logs SET status='failed', error_code='DISPATCH_FAILED', "
                           "finished_at=%s WHERE id=%s AND status='queued'", (_now(), log_id))
             raise
+
+    def _dispatch_decision(self, entry, producer, advance, **kwargs):
+        """决策树预警派发：run_key 按墙钟分钟幂等，同一分钟不双发通知。
+
+        为什么不往 adh_scheduled_logs 里落一行：那不是定时任务（task_type 只有
+        agent 是既有产品决策），强行入表就是拿两套任务形态冒充一套。幂等位用
+        决策实例自有的 run_key 列（预警要发的就是这一分钟的命中条数，实例行
+        就是那份事实），避开建一张只记 run_key 的第二个事实源。
+        """
+        import copy
+        from datetime import datetime, timezone
+        from backend.core.task_runtime import call as _runtime_call
+
+        tree_id = entry.args[0]
+        cron = entry.schedule
+        local = datetime.now(timezone.utc).astimezone(cron.local_zone)
+        run_key = f"decisioncron:{tree_id}:{cron.timezone_name}:{local:%Y%m%d%H%M}"
+        if _runtime_call("decision.dispatched", run_key):
+            logger.info("[Beat] 决策树 %s 本分钟已评估过（%s），跳过重复预警",
+                        tree_id, run_key)
+            if advance:
+                self.reserve(entry)
+            return None
+        dispatched = copy.copy(entry)
+        dispatched.kwargs = {**entry.kwargs, "run_key": run_key}
+        dispatched.options = {**entry.options, "task_id": run_key}
+        return super().apply_async(dispatched, producer, advance, **kwargs)

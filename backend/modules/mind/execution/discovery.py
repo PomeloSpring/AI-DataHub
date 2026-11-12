@@ -35,6 +35,20 @@ KNOWN_CLIS = {
         "capabilities": ["code", "search", "read", "write", "mcp"],
         "display_name": "Qoder CLI",
     },
+    # claude 后端：Anthropic 协议直连供应商（百炼等）。**实际执行的二进制由
+    # anthropic_direct.resolve_claude_cli_path 决定（优先 SDK bundled），本项 discovery
+    # 只用于管理页清单展示，PATH 命中不等于执行层用那个。**
+    # models_cmd 缺失是有意：claude CLI 不列供应商模型，模型清单回落到模型中心（
+    # cli_adapter._list_system_models），避开“选项来自 A、配置来自 B”的双口径。
+    "claude": {
+        "binary": "claude",
+        "aliases": ["claude-code"],
+        "version_cmd": ["claude", "--version"],
+        "command": ["claude", "-p", "{question}"],
+        "model_flag": ["--model"],
+        "capabilities": ["code", "search", "read", "write", "mcp"],
+        "display_name": "Claude Agent SDK（供应商直连）",
+    },
 }
 
 

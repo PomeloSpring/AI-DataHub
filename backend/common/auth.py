@@ -25,7 +25,7 @@ from backend.common.config import (
     ADH_DEFAULT_ADMIN_PASSWORD, ADH_SECRET_KEY,
 )
 from backend.common.db.metadata_db import get_metadata_conn
-from backend.common.crypto import encrypt_password, decrypt_password, is_encrypted
+from backend.common.crypto import decrypt_field as _decrypt_field, encrypt_field as _encrypt_field
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +101,7 @@ def authorize_workspace(user: dict, workspace_id: int) -> int:
         raise HTTPException(status_code=403, detail="请选择已授权工作空间")
     from backend.core.role_service import role_service
     try:
-        # 工作空间随用户走(个人工作站): 仅属主可访问, 成员体系已退役
+        # 工作空间随用户走(个人空间): 仅属主可访问, 成员体系已退役
         allowed = role_service.check_workspace_owner(int(user["user_id"]), ws)
     except Exception:
         logger.exception("工作空间授权校验不可用")
@@ -128,9 +128,9 @@ def authorize_resource_scope(user: dict, workspace_id) -> int:
 def resolve_user_default_workspace_id(user_id: int) -> int:
     """未指定工作空间时的会话归属解析(唯一口径): 用户默认工作空间。
 
-    工作空间随用户走(个人工作站, 见 authorize_workspace): 默认空间语义随属主落
+    工作空间随用户走(个人空间, 见 authorize_workspace): 默认空间语义随属主落
     adh_workspaces.is_default(set-default 接口同一口径, 成员表已冻结)。无
-    is_default 标记时取属主最早的工作站; 均无返回 0, 由调用方显式报错——
+    is_default 标记时取属主最早的工作空间; 均无返回 0, 由调用方显式报错——
     AS-BOT 与 Waker 统一后不再有全局/系统域会话, 严禁落回 workspace 0。
     """
     if not user_id or int(user_id) <= 0:
@@ -352,29 +352,8 @@ def _ts_id():
 
 
 # ── Sensitive field encryption helpers ──────────────────────────────────
-
-def _encrypt_field(value: str) -> str:
-    """Encrypt a sensitive field (email, phone). Returns empty string for empty input."""
-    if not value:
-        return ""
-    try:
-        return encrypt_password(value)
-    except Exception as e:
-        logger.warning("Failed to encrypt field: %s", e)
-        return value  # Fallback to plaintext on error
-
-
-def _decrypt_field(value: str) -> str:
-    """Decrypt a sensitive field. Returns empty string for empty input."""
-    if not value:
-        return ""
-    try:
-        if is_encrypted(value):
-            return decrypt_password(value)
-        return value  # Not encrypted (legacy data), return as-is
-    except Exception as e:
-        logger.warning("Failed to decrypt field: %s", e)
-        return "***"  # Return masked value on error
+# 实现已收敛到 backend/common/crypto.py（全平台一份，与 /api/users 活的实现同源），
+# 不得在本模块另写一套口径。
 
 
 def _decrypt_user_row(row: dict) -> dict:
@@ -661,12 +640,18 @@ def create_user(username: str, password: str, role: str = "viewer",
     if not valid:
         return False, msg, 0
 
+    # 敏感字段先加密：失败原因必须可解释，不得被下面 except 的通用"创建失败"吞掉
+    # （也不得回退明文 —— no-silent-degradation §1）
+    try:
+        enc_email = _encrypt_field(email)
+        enc_phone = _encrypt_field(phone)
+    except ValueError as exc:
+        return False, str(exc), 0
+
     try:
         pw_hash = hash_password(password)
         user_id = _ts_id()
         now = _now_str()
-        enc_email = _encrypt_field(email)
-        enc_phone = _encrypt_field(phone)
 
         with _get_connection() as conn:
             with conn.cursor() as cur:
@@ -702,6 +687,13 @@ def update_user(user_id: int, username: str = None, email: str = None,
 
     Email and phone are encrypted before storage.
     """
+    # 与 create_user 同口径：先加密，失败就把原因原样回出去（不回退明文、不被通用文案吞掉）
+    try:
+        enc_email = _encrypt_field(email) if email is not None else None
+        enc_phone = _encrypt_field(phone) if phone is not None else None
+    except ValueError as exc:
+        return False, str(exc)
+
     try:
         with _get_connection() as conn:
             with conn.cursor() as cur:
@@ -720,7 +712,6 @@ def update_user(user_id: int, username: str = None, email: str = None,
                     updates.append("username = %s")
                     params.append(username)
                 if email is not None:
-                    enc_email = _encrypt_field(email)
                     if enc_email:
                         cur.execute("SELECT id FROM adh_users WHERE email = %s AND id != %s AND email != ''",
                                     (enc_email, user_id))
@@ -729,7 +720,6 @@ def update_user(user_id: int, username: str = None, email: str = None,
                     updates.append("email = %s")
                     params.append(enc_email)
                 if phone is not None:
-                    enc_phone = _encrypt_field(phone)
                     updates.append("phone = %s")
                     params.append(enc_phone)
                 if role is not None:

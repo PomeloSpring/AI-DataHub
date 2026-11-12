@@ -571,9 +571,10 @@ export const DASHBOARD_TEMPLATES: DashboardTemplate[] = [
 const REAL_CHART_TYPES = new Set(CHART_TYPES.map(c => c.value));
 /** 模板允许出现的 config 键：全部是 DashboardChart 真实消费的口径/分页/量程键。
  * 样式类键（颜色/渐变/圆角/字号）一律不登记 —— 那是字模库主题包的职责（ui-vis-library-style.md §1）；
- * 写错键名（如 valueCol 当 valCol）就是"存了不生效"的隐形缺陷，因此白名单外的键直接报错。*/
+ * 写错键名（如 valueCol 当 valCol）就是"存了不生效"的隐形缺陷，因此白名单外的键直接报错。
+ * maxRows 已随表值图真分页收口下线（页大小只剩 pageSize，行上限归服务端）。*/
 export const TEMPLATE_CONFIG_KEYS = new Set(['xCol', 'yCol', 'groupCol', 'nameCol', 'valCol', 'timeCol',
-  'maxValue', 'pageSize', 'maxRows']);
+  'maxValue', 'pageSize']);
 /** 地图类底图靠外部 CDN 拉取（assets.antv.antgroup.com），内网实例导入后只会显式报错，
  *  与"导入即见效果"相违 —— 模板不预置地图（需地图的用户自行换型或配本地瓦片）。*/
 const REMOTE_ASSET_TYPES = new Set(['china_map', 'world_map']);

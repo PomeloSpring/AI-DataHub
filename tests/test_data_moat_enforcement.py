@@ -12,7 +12,6 @@
 """
 
 import importlib.util
-import json
 import os
 import sys
 
@@ -35,42 +34,9 @@ def _route_paths(router):
     return [getattr(r, "path", "") for r in router.routes]
 
 
-def _fake_db(chart_row):
-    """伪造 chart.py 里 `with DBConnection() as conn: with conn.cursor() as cur:` 的嵌套上下文。"""
-
-    class _Cur:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def execute(self, *a, **k):
-            return None
-
-        def fetchone(self):
-            return chart_row
-
-    class _Conn:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def cursor(self):
-            return _Cur()
-
-    return lambda: _Conn()
-
-
-def _raw_chart_row():
-    return {
-        "id": 1, "dashboard_id": 1, "workspace_id": 9,
-        "sql_query": "SELECT * FROM t_user",
-        "config": json.dumps({"datasource_id": 7}),
-        "query_source": "raw_sql", "semantic_query": None,
-    }
+def _chart_row():
+    """`/api/charts/{id}/refresh` 预查行：只回图所属看板（不回数据行）。"""
+    return {"dashboard_id": 1}
 
 
 # ── S1: Playground 取数受治理(继承用户角色权限, 非删除/非裸执行) ──────
@@ -183,45 +149,68 @@ class TestGovernedExecutor:
 
 
 class TestChartRefresh:
-    """chart.refresh_chart: 身份取自 JWT 注入的 user, 无身份 -> 403。"""
+    """`/api/charts/{id}/refresh` 是服务层薄委托：身份取自 JWT、无身份/越权 -> 403。
+
+    2026-11-06 取数通道收口后本模块不再自己执行 SQL（旧实现是第二口：直接跑
+    `adh_charts.sql_query`、接受前端递交 `count_sql`、且不校验看板可见性），
+    因此断言收三件事：**无第二执行口**（源码级）+ **身份只从服务端注入** + **先鉴权后取数**。
+    """
 
     def test_no_bare_executor_left(self):
+        import inspect
+
+        src = inspect.getsource(chart_api).replace(chart_api.__doc__ or "", "")
         assert not hasattr(chart_api, "_execute_on_datasource")
+        # 不自己开连接、不自己治理执行（取数一律下沉服务层）
+        for banned in ("DBConnection", "governed_execute", "execute_query_with_permission"):
+            assert banned not in src, f"chart.py 不得再现 {banned}（第二取数通道）"
+        # 请求体不接受任何口径/统计语句字段（旧 count_sql = 前端递交裸 SQL 的第二口）；
+        # 分页只认 page_size/page_num 两个业务参数，offset 不得成为对外契约（由服务端算）
+        assert set(chart_api.ChartRefreshRequest.model_fields) == {"params", "page_size", "page_num"}
+
+    def _stub(self, monkeypatch, *, visible=True, captured=None, boom=None):
+        monkeypatch.setattr(chart_api, "execute_query",
+                            lambda sql, params=None, **kw: dict(_chart_row()))
+        monkeypatch.setattr(chart_api, "check_dashboard_visible", lambda dash_id, uid: visible)
+
+        def fake_refresh(dashboard_id, chart_id, **kw):
+            if captured is not None:
+                captured.update(dashboard_id=dashboard_id, chart_id=chart_id, **kw)
+            if boom is not None:
+                raise boom
+            return {"columns": ["id"], "rows": [{"id": 1}]}
+
+        monkeypatch.setattr(chart_api.chart_service, "refresh_chart", fake_refresh)
 
     def test_identity_from_server_not_body(self, monkeypatch):
         captured = {}
-
-        def fake_governed(sql, datasource_id, user_id, workspace_id, username=""):
-            captured.update(datasource_id=datasource_id, user_id=user_id,
-                            workspace_id=workspace_id)
-            return {"columns": ["id"], "rows": [{"id": 1}], "row_count": 1}
-
-        monkeypatch.setattr(chart_api, "DBConnection", _fake_db(_raw_chart_row()))
-        monkeypatch.setattr(chart_api, "governed_execute", fake_governed)
-
+        self._stub(monkeypatch, captured=captured)
         req = chart_api.ChartRefreshRequest()
-        # 身份只来自注入的 user(服务端 JWT); 伪造 body 无 user_id 字段可用
+        # 身份只来自注入的 user（服务端 JWT）；伪造 body 无 user_id 字段可用
         result = chart_api.refresh_chart(
-            chart_id=1, req=req, user={"user_id": 42, "username": "bob"})
-
-        assert captured["user_id"] == 42
-        assert captured["datasource_id"] == 7
-        assert captured["workspace_id"] == 9  # 图表所属工作区
+            chart_id=1, req=req, user={"user_id": 42, "username": "bob"}, workspace_id=9)
+        assert captured["user_id"] == 42 and captured["username"] == "bob"
+        assert captured["workspace_id"] == 9 and captured["dashboard_id"] == 1
         assert result["rows"] == [{"id": 1}]
+
+    def test_invisible_dashboard_rejected_before_query(self, monkeypatch):
+        from fastapi import HTTPException
+
+        called = {}
+        self._stub(monkeypatch, visible=False, captured=called)
+        with pytest.raises(HTTPException) as ei:
+            chart_api.refresh_chart(chart_id=1, req=chart_api.ChartRefreshRequest(),
+                                    user={"user_id": 42, "username": "bob"}, workspace_id=9)
+        assert ei.value.status_code == 403
+        assert called == {}                        # 不可见 = 一行业务数据都不取
 
     def test_no_identity_maps_to_403(self, monkeypatch):
         from fastapi import HTTPException
 
-        def raise_no_identity(*a, **k):
-            raise NoIdentityError("no identity")
-
-        monkeypatch.setattr(chart_api, "DBConnection", _fake_db(_raw_chart_row()))
-        monkeypatch.setattr(chart_api, "governed_execute", raise_no_identity)
-
+        self._stub(monkeypatch, boom=NoIdentityError("no identity"))
         with pytest.raises(HTTPException) as ei:
-            chart_api.refresh_chart(
-                chart_id=1, req=chart_api.ChartRefreshRequest(),
-                user={"user_id": 0, "username": ""})
+            chart_api.refresh_chart(chart_id=1, req=chart_api.ChartRefreshRequest(),
+                                    user={"user_id": 0, "username": ""}, workspace_id=9)
         assert ei.value.status_code == 403
 
 
@@ -347,7 +336,7 @@ class TestInternalIdentityHeader:
             assert ident and ident["user_id"] == 42 and ident["workspace_id"] == 5
 
     def test_analysis_identity_falls_back_to_default_workspace(self, monkeypatch):
-        """未显式指定 workspace 时解析用户默认工作站, 严禁签 0
+        """未显式指定 workspace 时解析用户默认工作空间, 严禁签 0
         (0 会被语义层中间件 authorize_workspace 显式拒绝)。"""
         from backend.modules.mind.api import playground as dm_pg
 

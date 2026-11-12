@@ -32,10 +32,12 @@ CREATE TABLE IF NOT EXISTS adh_sites (
 
 -- 种子：6 个站点。ON DUPLICATE 只回写顺序/聚合标记，不改 display_name/is_active
 -- （管理员改名或停用后重跑迁移不得被覆盖）。
+-- 现行业务名以 site_display_name_migration.sql 为准（全球站点→全部站点、
+-- 国际站点(新加坡)→新加坡站点）；这里的种子只影响全新库的首次落库。
 INSERT INTO adh_sites (site_code, display_name, is_aggregate, sort_order) VALUES
-    ('global', '全球站点', 1, 0),
+    ('global', '全部站点', 1, 0),
     ('cn',     '中国站点', 0, 10),
-    ('int',    '国际站点(新加坡)', 0, 20),
+    ('int',    '新加坡站点', 0, 20),
     ('eu',     '欧洲站点', 0, 30),
     ('uk',     '英国站点', 0, 40),
     ('jp',     '日本站点', 0, 50)

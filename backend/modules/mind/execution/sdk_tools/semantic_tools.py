@@ -6,12 +6,47 @@ handler 为 SDK 无关的纯函数,由 build_semantic_server(backend) 包装。
 import asyncio
 import json
 import logging
+import re
 import time
 from typing import Annotated, Optional
 
 from backend.modules.mind.execution.sdk_tools.catalog_tools import _text
 
 logger = logging.getLogger(__name__)
+
+
+# ── 字典口径 description 脱敏（护栏 §7：物理字段名不得暴露给 LLM/前端）────────
+# 历史缺陷：adh_metrics/adh_dimensions 的 description 列含物理列引用
+# （如 "排除已删除记录(del_flag=0)"、"物理列为 create_time"、"业务别名: total_cases"）
+# 直接下发 → 会话侧栏「命中的字典口径」卡片渲染出物理列名。
+# 正确口径：description 是「文字性口径说明」，物理列引用应剥离；
+# 别名已由结构化 aliases 字段承载，description 里重复列出不需要。
+_PHYSICAL_REF_PATTERNS: tuple[re.Pattern, ...] = (
+    # "物理列为 xxx" / "物理列: xxx" / "对应物理列 xxx" — 整句删除（含前导逗号/句号）
+    re.compile(r"[,，.。]?\s*(?:对应)?物理列[名]?(?:为|是|:|：)\s*\w+"),
+    # 括号内含 SQL 赋值/比较的 snake_case 标识符: (del_flag=0), (is_deleted != 1)
+    re.compile(r"[,，]?\s*\([a-z_]\w*\s*(?:[=<>!]+|IN|LIKE)\s*[^)]+\)", re.IGNORECASE),
+    # "业务别名: xxx / yyy" — 已由 aliases 字段承载，删除该子句（含前导逗号/句号）
+    re.compile(r"[,，.。]?\s*业务别名[:：]?\s*[^。，,]+"),
+    # "snake_case 口径：..." — 物理列枚举解释（如 "source_type 口径：0=案例、1=订单"）
+    re.compile(r"[,，.。;；]?\s*[a-z][a-z_]{2,}\s+口径[:：][^。；]+"),
+    # "口径来源：..." — 技术溯源注释（如 "口径来源：集成-记录表 app_code 与…同义"）
+    re.compile(r"[,，.。;；]?\s*口径来源[:：][^。]+"),
+)
+
+
+def _sanitize_dict_desc(text: str) -> str:
+    """剥离字典 description 中的物理列引用（护栏 §7 + ontology-modeling §3）。"""
+    if not text:
+        return ""
+    out = text
+    for pat in _PHYSICAL_REF_PATTERNS:
+        out = pat.sub("", out)
+    # 清理残留的多余标点和空格（保留句末句号，只剥因删除产生的悬挂标点）
+    out = re.sub(r"[,，]{2,}", "，", out)
+    out = re.sub(r"[,，;；]\s*$", "", out)
+    out = re.sub(r"^[,，.。;；\s]+", "", out)
+    return out
 
 #: 多问法并发上限：每路检索会 spawn 一个 qmind CLI(node) 子进程，不封顶会在
 #: 共享宿主上把内存打满；4 路已足以把“N 问串行”压成“~N/4 轮”。
@@ -37,7 +72,7 @@ async def get_metrics(args):
         # fail-loud: 业务会话未确定数据源时不得回空目录假成功(系统域 ds=0 是合法系统域, 不拦)。
         # 但聚合态（全球）会话 ds=0 是合法口径：指标/维度字典全局共享（adh_metrics/dimensions
         # 均 datasource_id=0），按 ds=0 加载正是全球语义层的正确目录，不得回"请先选会话源"
-        # 死胡同（历史缺陷：全球站点下连合法指标名都查不出，逐站编排无从开始）。
+        # 死胡同（历史缺陷：聚合态站点下连合法指标名都查不出，逐站编排无从开始）。
         from backend.modules.mind.execution.sdk_tools.scoped_metadata import system_scope
         if not ds_id and ctx is not None and not system_scope(ctx):
             from backend.core.site_service import is_aggregate_site
@@ -78,7 +113,7 @@ async def get_metrics(args):
                 blocked.append({"name": m["name"], "kind": "metric", "reason": reason})
                 continue
             row = {"name": m["name"], "aliases": m.get("aliases") or [],
-                   "unit": m.get("unit") or "", "description": m.get("description") or ""}
+                   "unit": m.get("unit") or "", "description": _sanitize_dict_desc(m.get("description") or "")}
             bucket(m.get("bound_object_key")).setdefault("metrics", []).append(row)
         for d in dims:
             if not _match(d):
@@ -92,7 +127,7 @@ async def get_metrics(args):
                 "name": d["name"], "aliases": d.get("aliases") or [],
                 "is_time": (d.get("category") or "") == "时间",
                 "enum": d.get("value_labels") or {},
-                "description": d.get("description") or "",
+                "description": _sanitize_dict_desc(d.get("description") or ""),
             })
         # 排掉 keyword 未命中的空桶
         items = [v for v in objects.values() if v["metrics"] or v["dimensions"]]
@@ -125,7 +160,7 @@ async def get_metrics(args):
                "usage": "dimensions/metrics 直接复制此处 name 或其 aliases; 按天/月趋势选 is_time=true 的维度并配 time_grain; "
                         "enum 字段列出码值→业务名, filter 可传业务名也可传码值, 结果自动显示业务名; "
                         "relations 列出对象间关联(跨对象字段用 '对象名.业务名' 限定引用); "
-                        "**全球/多站点问题：按 deployments 对每个可查站点分别调用 run_semantic_query（site 参数）逐站查询，"
+                        "**全部站点/多站点问题：按 deployments 对每个可查站点分别调用 run_semantic_query（site 参数）逐站查询，"
                         "站点不是维度；会话默认站点与可查站点清单见上下文「数据源拓扑」段**; "
                         "跨站去重合计口径不在取数目录提供：默认分站呈现、不得把各站数字相加当合计值；"
                         "如需一个合计数字，其口径需由知识库文档定义后向用户说明；"
@@ -246,16 +281,28 @@ async def query_by_tags(args):
 
 
 def _classify_retrieval_source(rag_source: str, count: int) -> str:
-    """把 qmind_retrieve 的 rag_source 归一为 eval 可分桶的来源标签。
+    """把检索结果的 rag_source 归一为 eval 可分桶的来源标签。
 
-    qmind_hit=云端知识库命中 / local_hybrid_fallback=回退本地 graphrag+BM25 / none=无命中。
+    词汇（与 `knowledge_retriever._rag_source_of` 同源，新增通道时两侧同改）：
+      qmind_hit=仅云端 qmind 命中 / bailian_hit=仅百炼外部语料命中 /
+      multi_source_hit=多通道同时命中（跨源名次归并）/
+      local_hybrid_fallback=回退本地 graphrag+BM25 / none=无命中。
+
+    `qmind_hit` 这个旧词汇保留：它是历史评测基线与用例的断言值，多源接入后仍准确
+    描述“只有 qmind 命中”这一档；新通道另加标签而不是重命名旧标签（否则基线伪回退）。
     """
     rs = (rag_source or "").lower()
-    if count and "qmind" in rs and "fallback" not in rs:
-        return "qmind_hit"
-    if count:
+    if not count:
+        return "none"
+    if "fallback" in rs or "graphrag" in rs or "bm25" in rs:
         return "local_hybrid_fallback"
-    return "none"
+    if rs == "kb_multi":
+        return "multi_source_hit"
+    if rs == "qmind":
+        return "qmind_hit"
+    if rs in ("cloud_rag", "bailian"):
+        return "bailian_hit"
+    return f"{rs}_hit" if rs else "none"
 
 
 def _attach_routes(result: dict) -> dict:
@@ -310,18 +357,22 @@ def _attach_graph_relations(result: dict) -> dict:
 
 
 def _retrieve_and_enrich(question: str, ds_id: int, bound_kb_ids, system_scope_flag: bool) -> dict:
-    """单问题：qmind 检索 + 增强链（业务本体路由 / 图关系 / 行为路径）整体**同步**执行。
+    """单问题：多源知识检索 + 增强链（业务本体路由 / 图关系 / 行为路径）整体**同步**执行。
 
     必须是同步函数并由调用方丢进线程：增强链里有 DB/图查询，留在事件循环上会
     ① 把并发检索退化成串行（attach 期间占住循环），② 阻塞流式消息解析。
 
     `retrieval_ms` 只计检索段（不含 attach / CLI→MCP 分派 / 工具治理开销），
     使 trace 能区分“知识库真慢”与“工具包装层慢”。
+
+    入口从 `qmind_retrieve` 改为 `knowledge_retrieve`：绑定多个知识库时由服务端
+    并行扇出到各 provider 并按名次归并，**不得**回到“逐库单问 + first-hit-wins”——
+    那会让绑定顺序决定答案来源，而那个顺序用户既看不到也调不了。
     """
-    from backend.modules.mind.rag.qmind_retriever import qmind_retrieve
+    from backend.modules.mind.rag.knowledge_retriever import knowledge_retrieve
 
     t0 = time.perf_counter()
-    result = qmind_retrieve(question, ds_id, bound_kb_ids, system_scope=system_scope_flag)
+    result = knowledge_retrieve(question, ds_id, bound_kb_ids, system_scope=system_scope_flag)
     retrieval_ms = int((time.perf_counter() - t0) * 1000)
     source = _classify_retrieval_source(result.get("rag_source"), result.get("count") or 0)
     return _attach_paths(
@@ -379,13 +430,19 @@ async def knowledge_search(args):
         fetched = await asyncio.gather(*(_one(q) for q in questions))
         wall_ms = int((time.perf_counter() - t0) * 1000)
         results = [{"question": qtext, **r} for qtext, r in zip(questions, fetched)]
-        hit = sum(1 for x in results if x["retrieval_source"] == "qmind_hit")
-        fallback = sum(1 for x in results if x["retrieval_source"] == "local_hybrid_fallback")
+        # 归因按标签动态计数（多源接入后不再只有 qmind_hit），但保留旧键恒存在：
+        # 历史用例与管理页读 `attribution["qmind_hit"]`，缺键会被当成统计异常。
+        attribution: dict[str, int] = {}
+        for x in results:
+            label = str(x.get("retrieval_source") or "none")
+            attribution[label] = attribution.get(label, 0) + 1
+        attribution.setdefault("qmind_hit", 0)
+        attribution.setdefault("local_hybrid_fallback", 0)
         record_span(kind="retrieval", name="knowledge_search", status="success",
                     duration_ms=wall_ms, input_text=f"{len(questions)} questions",
-                    output_text=f"qmind_hit={hit} fallback={fallback}")
+                    output_text=" ".join(f"{k}={v}" for k, v in sorted(attribution.items())))
         return _text({"results": results, "total": len(results),
-                      "attribution": {"qmind_hit": hit, "local_hybrid_fallback": fallback},
+                      "attribution": attribution,
                       "usage": "多问题已在一次调用内并发检索, 无需逐个重复调用。"})
     except Exception:
         logger.exception("知识检索失败")
@@ -519,16 +576,20 @@ TOOL_SPECS = [
         "name": "knowledge_search",
         "description": (
             "Retrieve authoritative business context for natural-language questions. "
-            "The bound QMind knowledge base contains the LATEST ontology model docs "
-            "(objects/metrics/dimensions/SQL-template variables) — query it FIRST: if it "
-            "answers the question, proceed directly without extra discovery tools. "
+            "服务端会并行检索**全部已绑定的知识库**（平台同步的 QMind 本体文档、以及企业维护的"
+            "外部语料）并按名次归并，你不需要也不应该选通道。平台同步库里含**最新**本体模型文档"
+            "(objects/metrics/dimensions/SQL-template variables) — 先查一次再作答。 "
             "Pass ALL questions in ONE call via `questions` (comma-separated or JSON array); "
             "多个问法在一次调用内**并发**检索，因此不要把候选问法拆成多次调用逐个试探——"
             "一次就把所有同义措辞（如“官网域名/中国站网址/访问入口”）全传进去。 "
+            "每条结果带 `knowledge_base`/`corpus_origin`：`platform_synced` 可作口径解释与建模上下文，"
+            "`external` 只作背景与资料事实，**不得**拿它当指标/维度名称权威（名称以 get_metrics 为准）；"
+            "引用结论时照 `citations` 里的标题说出处。 "
             "When hit_object_keys is returned, prefer copying those keys verbatim as the "
             "`object` of run_semantic_query (they are the KB-recognized ontology objects; verify "
             "names still exist in get_metrics if doc_stale=true). "
-            "Falls back to hybrid metadata retrieval (BM25 + graph) when no QMind hit. "
+            "无命中时回退本地元数据检索（BM25 + graph），并在 `sources`/`degraded` 里如实标注；"
+            "部分库未能检索时会带原因返回，不得把“没问到”当成“库里没有”。 "
             "仅用于业务本体/口径建模上下文；系统运营/用量/活跃类问题（如“近N天有多少人用 chat”）"
             "请用 system_usage / system_overview，不要用本工具。"
         ),

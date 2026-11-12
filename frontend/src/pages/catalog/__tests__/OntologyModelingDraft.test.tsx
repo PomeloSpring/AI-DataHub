@@ -200,6 +200,12 @@ describe('本体建模 · 草案工作区（双视图 + 可视化审阅）', () 
     expect(screen.getByRole('button', { name: /^草案 · 3/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^发布草案（2）$/ })).not.toBeDisabled();
     expect(screen.getAllByText('待发布').length).toBeGreaterThan(0);
+    // 发布按钮的说明必须只承诺级联真做的事：对象表/部署绑定/图谱。
+    // 知识库不在发布级联里（后台 kb_sync_reconcile 周期重推 + 关系图谱页手动同步），
+    // 写成"知识库已刷新"就是假承诺（徽章还是"待同步"，用户只会以为同步坏了）。
+    const publishTitle = screen.getByRole('button', { name: /^发布草案（2）$/ }).getAttribute('title') || '';
+    expect(publishTitle).toContain('部署绑定');
+    expect(publishTitle).not.toContain('知识库已');
     // 拉过服务端真值，不是凭本地布尔下结论
     expect(vi.mocked(client.get).mock.calls.some(([u]) => u === '/catalog/ontology/models/901/draft')).toBe(true);
   });

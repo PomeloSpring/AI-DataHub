@@ -80,7 +80,7 @@ def test_workspace_zero_not_global_access():
 
 def test_workspace_access_requires_scoped_role(monkeypatch):
     from backend.core.role_service import role_service
-    # 工作空间属主制(个人工作站): 授权口径是 check_workspace_owner,
+    # 工作空间属主制(个人空间): 授权口径是 check_workspace_owner,
     # 旧成员体系的 check_user_workspace_access 已退役, 打桩须对准现行方法
     monkeypatch.setattr(role_service, "check_workspace_owner", lambda uid, ws: ws == 3)
     assert auth.authorize_workspace({"user_id": 7, "role": "viewer"}, 3) == 3

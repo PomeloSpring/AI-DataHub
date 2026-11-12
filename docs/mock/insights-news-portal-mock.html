@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light" data-view="feed">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>资讯栏目 · 交互原型 Mock — 口腔数字化</title>
+<style>
+/* ── 主题令牌：与前端 globals.css 同口径（HSL 变量），切主题即全端换装 ── */
+:root{--radius:10px}
+[data-theme="dark"]{
+  --background:222 47% 6%; --foreground:210 40% 96%; --card:222 44% 9%; --popover:222 44% 10%;
+  --primary:217 91% 60%; --primary-foreground:0 0% 100%; --secondary:217 33% 17%;
+  --muted:217 33% 15%; --muted-foreground:215 20% 65%; --accent:263 70% 62%;
+  --border:217 30% 18%; --sidebar:222 46% 7%; --sidebar-foreground:210 40% 92%;
+  --sidebar-border:217 30% 15%; --sidebar-accent:217 33% 14%;}
+[data-theme="light"]{
+  --background:0 0% 98%; --foreground:222 47% 11%; --card:0 0% 100%; --popover:0 0% 100%;
+  --primary:221 83% 53%; --primary-foreground:0 0% 100%; --secondary:210 40% 94%;
+  --muted:210 40% 94%; --muted-foreground:215 16% 45%; --accent:263 70% 55%;
+  --border:214 32% 89%; --sidebar:0 0% 100%; --sidebar-foreground:222 47% 20%;
+  --sidebar-border:214 32% 90%; --sidebar-accent:210 40% 95%;}
+[data-theme="datafoundry"]{
+  --background:220 20% 7%; --foreground:40 30% 92%; --card:220 18% 10%; --popover:220 18% 11%;
+  --primary:172 66% 50%; --primary-foreground:220 25% 8%; --secondary:220 15% 16%;
+  --muted:220 15% 15%; --muted-foreground:220 12% 62%; --accent:28 88% 58%;
+  --border:220 14% 18%; --sidebar:220 20% 8%; --sidebar-foreground:40 25% 88%;
+  --sidebar-border:220 14% 15%; --sidebar-accent:220 15% 14%;}
+[data-theme="tech"]{
+  --background:225 45% 7%; --foreground:195 100% 94%; --card:225 40% 11%; --popover:225 40% 12%;
+  --primary:188 100% 55%; --primary-foreground:225 45% 8%; --secondary:225 35% 18%;
+  --muted:225 35% 16%; --muted-foreground:200 25% 65%; --accent:275 95% 68%;
+  --border:225 32% 20%; --sidebar:225 44% 8%; --sidebar-foreground:195 60% 90%;
+  --sidebar-border:225 32% 16%; --sidebar-accent:225 35% 15%;}
+[data-theme="finance"]{
+  --background:215 45% 9%; --foreground:45 30% 94%; --card:215 42% 12%; --popover:215 42% 13%;
+  --primary:43 74% 58%; --primary-foreground:215 45% 10%; --secondary:215 30% 20%;
+  --muted:215 30% 18%; --muted-foreground:215 15% 66%; --accent:200 45% 55%;
+  --border:215 28% 22%; --sidebar:215 44% 10%; --sidebar-foreground:45 25% 90%;
+  --sidebar-border:215 28% 18%; --sidebar-accent:215 30% 17%;}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  background:hsl(var(--background));color:hsl(var(--foreground));font-size:14px;line-height:1.6;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;cursor:pointer}
+svg.i{width:16px;height:16px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round;flex:none}
+svg.i.s{width:13px;height:13px}
+svg.i.l{width:20px;height:20px}
+a{color:inherit;text-decoration:none}
+
+.proto{display:flex;align-items:center;gap:10px;padding:7px 16px;font-size:12px;color:hsl(var(--muted-foreground));
+  background:hsl(var(--secondary)/.55);border-bottom:1px dashed hsl(var(--border))}
+.proto b{color:hsl(var(--primary));font-weight:600}
+.proto .grp{display:flex;gap:4px;margin-left:auto}
+.proto button{padding:3px 10px;border-radius:999px;border:1px solid hsl(var(--border));background:hsl(var(--card));font-size:12px}
+.proto button.on{background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-color:transparent}
+
+.topbar{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;
+  border-bottom:1px solid hsl(var(--border));background:hsl(var(--card)/.92);backdrop-filter:blur(8px);position:sticky;top:0;z-index:50}
+.brand{display:flex;align-items:center;gap:10px}
+.brand .logo{width:26px;height:26px;border-radius:6px;background:hsl(var(--primary));color:hsl(var(--primary-foreground));
+  display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
+.brand .name{font-weight:600;letter-spacing:-.01em}
+.brand .sep{color:hsl(var(--border))}
+.brand .mod{color:hsl(var(--muted-foreground));font-size:13px}
+.tools{display:flex;align-items:center;gap:4px;position:relative}
+.iconbtn{width:34px;height:34px;border-radius:8px;border:0;background:transparent;display:flex;align-items:center;justify-content:center;
+  color:hsl(var(--muted-foreground));position:relative}
+.iconbtn:hover{background:hsl(var(--muted));color:hsl(var(--foreground))}
+.dot{position:absolute;top:6px;right:7px;width:6px;height:6px;border-radius:50%;background:#ef4444;box-shadow:0 0 0 2px hsl(var(--card))}
+.user{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:8px}
+.user:hover{background:hsl(var(--muted))}
+.avatar{width:24px;height:24px;border-radius:50%;background:hsl(var(--primary)/.15);color:hsl(var(--primary));
+  display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;flex:none}
+.pop{position:absolute;right:56px;top:42px;width:210px;background:hsl(var(--popover));border:1px solid hsl(var(--border));
+  border-radius:10px;box-shadow:0 12px 32px -8px rgba(0,0,0,.4);padding:6px;display:none;z-index:70}
+.pop.open{display:block}
+.pop .hd{font-size:11px;color:hsl(var(--muted-foreground));padding:6px 8px 8px;border-bottom:1px solid hsl(var(--border));margin-bottom:6px}
+.pop .it{display:flex;align-items:center;gap:10px;padding:8px;border-radius:7px;font-size:13px}
+.pop .it:hover{background:hsl(var(--muted))}
+.pop .it.on{background:hsl(var(--accent)/.14)}
+.pop .it .ck{margin-left:auto;color:hsl(var(--primary))}
+
+.frame{display:flex;min-height:calc(100vh - 85px)}
+.sidebar{width:224px;flex:none;border-right:1px solid hsl(var(--sidebar-border));background:hsl(var(--sidebar));padding:14px 10px}
+.side-title{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:hsl(var(--sidebar-foreground)/.45);padding:14px 10px 6px}
+.nav{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;font-size:13px;width:100%;border:0;background:transparent;text-align:left;
+  color:hsl(var(--sidebar-foreground)/.72)}
+.nav:hover{background:hsl(var(--sidebar-accent)/.7);color:hsl(var(--sidebar-accent-foreground))}
+.nav.on{background:hsl(var(--sidebar-accent));color:hsl(var(--sidebar-accent-foreground));font-weight:500}
+.nav .sq{width:18px;height:18px;flex:none;display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1}
+.nav .cnt{margin-left:auto;font-size:11px;color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums}
+.nav .nb{width:6px;height:6px;border-radius:50%;background:hsl(var(--primary));flex:none;margin-left:5px}
+.side-hr{height:1px;background:hsl(var(--sidebar-border));margin:10px 6px}
+.tags{display:flex;flex-wrap:wrap;gap:5px;padding:2px 10px}
+.tag{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid hsl(var(--border));color:hsl(var(--muted-foreground));background:transparent}
+.tag:hover{border-color:hsl(var(--primary)/.5);color:hsl(var(--primary))}
+.tag.on{background:hsl(var(--primary)/.12);border-color:hsl(var(--primary)/.4);color:hsl(var(--primary))}
+
+.main{flex:1;min-width:0}
+.wrap{max-width:1240px;margin:0 auto;padding:22px 26px 60px}
+
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;border-radius:6px;
+  border:1px solid hsl(var(--border));background:hsl(var(--muted));color:hsl(var(--muted-foreground))}
+.badge.cat{background:var(--cc,hsl(var(--primary)));border-color:transparent;color:#fff;font-weight:500}
+.badge.t{cursor:default}
+.meta{display:flex;align-items:center;gap:8px;font-size:12px;color:hsl(var(--muted-foreground));flex-wrap:wrap}
+.meta .d{color:hsl(var(--border))}
+.btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 13px;border-radius:8px;border:1px solid hsl(var(--border));
+  background:hsl(var(--card));font-size:13px}
+.btn:hover{background:hsl(var(--muted))}
+.btn.p{background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-color:transparent}
+.btn.p:hover{filter:brightness(1.08)}
+.btn.sm{height:27px;padding:0 9px;font-size:12px}
+.btn.gh{background:transparent;border-color:transparent}
+.btn.gh:hover{background:hsl(var(--muted))}
+.seg{display:inline-flex;padding:2px;border-radius:8px;background:hsl(var(--muted));gap:2px}
+.seg button{border:0;background:transparent;padding:4px 11px;border-radius:6px;font-size:12px;color:hsl(var(--muted-foreground));display:flex;align-items:center;gap:4px}
+.seg button.on{background:hsl(var(--card));color:hsl(var(--foreground));box-shadow:0 1px 2px rgba(0,0,0,.15)}
+.search{display:flex;align-items:center;gap:7px;height:32px;padding:0 10px;border-radius:8px;border:1px solid hsl(var(--border));
+  background:hsl(var(--card));color:hsl(var(--muted-foreground));min-width:230px}
+.search input{border:0;outline:0;background:transparent;color:inherit;font-size:13px;width:100%}
+
+.cover{position:relative;aspect-ratio:16/9;border-radius:10px;overflow:hidden;background:var(--cg,#334155);display:flex;align-items:center;justify-content:center}
+.cover:after{content:"";position:absolute;inset:0;background:radial-gradient(circle at 78% 18%,rgba(255,255,255,.2),transparent 55%)}
+.cover .cv{position:relative;z-index:1;text-align:center;color:#fff}
+.cover .cv .ic{font-size:26px;line-height:1;margin-bottom:8px}
+.cover .cv .cl{font-size:11.5px;letter-spacing:.14em;opacity:.92}
+.card{background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:14px;overflow:hidden;position:relative}
+.card.hov{cursor:pointer}
+.card.hov:hover{border-color:hsl(var(--primary)/.55);box-shadow:0 8px 24px -14px hsl(var(--primary)/.55);transform:translateY(-1px)}
+.card.hov{transition:all .16s}
+.pin{position:absolute;top:10px;right:10px;z-index:2;background:hsl(var(--primary));color:hsl(var(--primary-foreground));
+  font-size:10.5px;padding:2px 7px;border-radius:999px;display:flex;align-items:center;gap:3px}
+.kform{display:inline-flex;align-items:center;gap:3px;font-size:11px;color:hsl(var(--muted-foreground))}
+.corner{position:absolute;width:14px;height:14px;border-color:hsl(var(--primary));opacity:.8;z-index:2}
+.corner.lt{left:10px;top:10px;border-left:2px solid;border-top:2px solid}
+.corner.rt{right:10px;top:10px;border-right:2px solid;border-top:2px solid}
+.corner.lb{left:10px;bottom:10px;border-left:2px solid;border-bottom:2px solid}
+.corner.rb{right:10px;bottom:10px;border-right:2px solid;border-bottom:2px solid}
+
+.pagehd{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+.pagehd h1{margin:0;font-size:19px;font-weight:650;letter-spacing:-.01em}
+.filterline{display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:12.5px;color:hsl(var(--muted-foreground));flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;border:1px solid hsl(var(--primary)/.4);
+  background:hsl(var(--primary)/.1);color:hsl(var(--primary));font-size:12px}
+.chip button{border:0;background:transparent;padding:0;color:inherit;display:flex;line-height:0}
+
+.hero{display:grid;grid-template-columns:1.35fr 1fr;gap:14px}
+.hero .big{display:flex;flex-direction:column}
+.hero .big .cover{aspect-ratio:16/8;border-radius:0}
+.hero .big .bd{padding:18px 20px 20px;display:flex;flex-direction:column;gap:9px;flex:1}
+.hero .big h2{margin:0;font-size:19px;font-weight:600;letter-spacing:-.01em;line-height:1.45}
+.hero .big p{margin:0;color:hsl(var(--muted-foreground));font-size:13px}
+.minis{display:flex;flex-direction:column;gap:10px}
+.mini{display:flex;gap:12px;padding:12px;background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:12px;cursor:pointer;transition:all .16s}
+.mini:hover{border-color:hsl(var(--primary)/.55)}
+.mini .thumb{width:76px;height:56px;border-radius:8px;flex:none;background:var(--cg,#334155);display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px}
+.mini h4{margin:0 0 5px;font-size:13.5px;font-weight:500;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
+.sec{margin-top:30px}
+.sechd{display:flex;align-items:center;gap:9px;margin-bottom:12px}
+.sechd .bar{width:3px;height:15px;border-radius:2px;background:var(--cc,hsl(var(--primary)))}
+.sechd h3{margin:0;font-size:15px;font-weight:600}
+.sechd .more{margin-left:auto;font-size:12px;color:hsl(var(--muted-foreground));display:flex;align-items:center;gap:3px}
+.sechd .more:hover{color:hsl(var(--primary))}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.pc .cover{aspect-ratio:16/8;border-radius:0}
+.pc .bd{padding:13px 15px 15px}
+.pc h4{margin:0 0 6px;font-size:14.5px;font-weight:600;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pc p{margin:0 0 11px;font-size:12.5px;color:hsl(var(--muted-foreground));display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pc .ft{display:flex;align-items:center;gap:7px;font-size:11.5px;color:hsl(var(--muted-foreground))}
+.pc .ft .r{margin-left:auto;display:flex;align-items:center;gap:4px}
+.pc .unread{width:6px;height:6px;border-radius:50%;background:hsl(var(--primary));display:inline-block}
+
+.list .row{display:flex;align-items:center;gap:14px;padding:13px 16px;border-bottom:1px solid hsl(var(--border));cursor:pointer}
+.list .row:last-child{border-bottom:0}
+.list .row:hover{background:hsl(var(--muted)/.55)}
+.list .lt{width:56px;height:40px;border-radius:7px;flex:none;background:var(--cg,#334155);display:flex;align-items:center;justify-content:center;color:#fff;font-size:15px}
+.list h4{margin:0;font-size:14px;font-weight:500}
+.list .sub{font-size:12px;color:hsl(var(--muted-foreground));margin-top:3px;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+.list .rt{margin-left:auto;display:flex;align-items:center;gap:14px;font-size:12px;color:hsl(var(--muted-foreground));flex:none}
+.empty{padding:56px 20px;text-align:center;color:hsl(var(--muted-foreground))}
+.empty .big-ic{font-size:34px;margin-bottom:12px;opacity:.6}
+.pager{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:26px}
+.pager button{min-width:30px;height:30px;border-radius:7px;border:1px solid hsl(var(--border));background:hsl(var(--card));font-size:12.5px}
+.pager button.on{background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-color:transparent}
+
+.feed-layout{display:grid;grid-template-columns:minmax(0,1fr) 268px;gap:22px;align-items:start}
+.aside{position:sticky;top:70px;display:flex;flex-direction:column;gap:16px;align-self:start}
+.panel{background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:12px;padding:14px}
+.panel h5{margin:0 0 10px;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:6px}
+.panel h5 .src{margin-left:auto;font-weight:400;font-size:11px;color:hsl(var(--muted-foreground))}
+.panel ol{margin:0;padding:0;list-style:none;counter-reset:n}
+.panel ol li{counter-increment:n;display:flex;gap:8px;padding:6px 0;font-size:12.5px;border-bottom:1px dashed hsl(var(--border));cursor:pointer}
+.panel ol li:last-child{border-bottom:0}
+.panel ol li:before{content:counter(n);width:16px;height:16px;flex:none;border-radius:4px;background:hsl(var(--muted));
+  color:hsl(var(--muted-foreground));font-size:10px;display:flex;align-items:center;justify-content:center;margin-top:3px}
+.panel ol li:nth-child(-n+3):before{background:hsl(var(--primary)/.16);color:hsl(var(--primary))}
+.panel .t{line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.panel ol li:hover .t{color:hsl(var(--primary))}
+
+.crumb{display:flex;align-items:center;gap:7px;font-size:12.5px;color:hsl(var(--muted-foreground));margin-bottom:14px}
+.crumb b{color:hsl(var(--foreground));font-weight:500}
+.crumb a:hover{color:hsl(var(--primary))}
+.art{display:grid;grid-template-columns:minmax(0,1fr) 268px;gap:26px;align-items:start}
+.art h1{margin:10px 0 12px;font-size:25px;font-weight:650;letter-spacing:-.02em;line-height:1.4}
+.lead{margin:16px 0 22px;padding:13px 16px;border-left:3px solid hsl(var(--primary));background:hsl(var(--muted)/.55);border-radius:0 10px 10px 0;
+  color:hsl(var(--muted-foreground));font-size:13.5px}
+.body h2{font-size:17px;margin:30px 0 10px;padding-bottom:7px;border-bottom:1px solid hsl(var(--border))}
+.body h3{font-size:15px;margin:22px 0 8px}
+.body p{margin:0 0 13px;font-size:14.5px;line-height:1.85;color:hsl(var(--foreground)/.92)}
+.body ul{margin:0 0 14px;padding-left:20px}
+.body li{margin-bottom:7px;font-size:14.5px;line-height:1.8}
+.body table{width:100%;border-collapse:collapse;font-size:13px;margin:0 0 18px}
+.body th,.body td{border:1px solid hsl(var(--border));padding:8px 11px;text-align:left}
+.body th{background:hsl(var(--muted)/.7);font-weight:600}
+.chartbox{border:1px solid hsl(var(--border));border-radius:12px;padding:16px 18px 12px;background:hsl(var(--card));margin:0 0 18px}
+.chartbox .ch{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;margin-bottom:14px}
+.chartbox .ch .src{margin-left:auto;font-weight:400;font-size:11px;color:hsl(var(--muted-foreground))}
+.bars{display:flex;align-items:flex-end;gap:16px;height:132px}
+.bars .b{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:6px;height:100%}
+.bars .b .bar{width:100%;max-width:46px;border-radius:5px 5px 0 0;background:linear-gradient(180deg,var(--cc,hsl(var(--primary))),hsl(var(--primary)/.3))}
+.bars .b .lb{font-size:11px;color:hsl(var(--muted-foreground));white-space:nowrap}
+pre{background:hsl(var(--muted)/.8);border:1px solid hsl(var(--border));border-radius:10px;padding:12px 14px;overflow:auto;font-size:12.5px;line-height:1.75;margin:0 0 18px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.imgph{aspect-ratio:16/6;border-radius:10px;background:linear-gradient(135deg,hsl(var(--primary)/.25),hsl(var(--accent)/.25));
+  display:flex;align-items:center;justify-content:center;font-size:12px;color:hsl(var(--muted-foreground));margin-bottom:8px}
+.att{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid hsl(var(--border));border-radius:10px;margin-bottom:9px;background:hsl(var(--card))}
+.att .ic{width:34px;height:34px;border-radius:8px;background:hsl(var(--primary)/.12);color:hsl(var(--primary));display:flex;align-items:center;justify-content:center;flex:none}
+.att .n{font-size:13px;font-weight:500}.att .z{font-size:11.5px;color:hsl(var(--muted-foreground))}
+.att .ops{margin-left:auto;display:flex;gap:6px}
+.artfoot{display:flex;align-items:center;gap:12px;margin-top:32px;padding-top:18px;border-top:1px solid hsl(var(--border))}
+.artfoot .np{flex:1;min-width:0;cursor:pointer}
+.artfoot .np .l{font-size:11px;color:hsl(var(--muted-foreground))}
+.artfoot .np .v{font-size:13px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.artfoot .np:hover .v{color:hsl(var(--primary))}
+.askbar{display:flex;align-items:center;gap:10px;margin-top:18px;padding:13px 16px;border-radius:12px;border:1px dashed hsl(var(--primary)/.45);
+  background:hsl(var(--primary)/.07);font-size:13px;line-height:1.7}
+.toc a{display:block;padding:5px 0 5px 10px;font-size:12.5px;color:hsl(var(--muted-foreground));border-left:2px solid hsl(var(--border));cursor:pointer}
+.toc a.on{color:hsl(var(--primary));border-color:hsl(var(--primary));font-weight:500}
+.note{margin-top:26px;padding:14px 16px;border-radius:12px;border:1px dashed hsl(var(--border));font-size:12px;color:hsl(var(--muted-foreground));line-height:1.85}
+.note b{color:hsl(var(--foreground));font-weight:600}
+.hide{display:none!important}
+
+.tbl{width:100%;border-collapse:collapse;font-size:13px;background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:12px;overflow:hidden}
+.tbl th{text-align:left;font-weight:600;font-size:12px;color:hsl(var(--muted-foreground));padding:10px 14px;background:hsl(var(--muted)/.6);border-bottom:1px solid hsl(var(--border))}
+.tbl td{padding:11px 14px;border-bottom:1px solid hsl(var(--border));vertical-align:middle}
+.tbl tr:last-child td{border-bottom:0}
+.tbl tbody tr:hover{background:hsl(var(--muted)/.35)}
+.tbl .ti{font-weight:500}.tbl .sub{font-size:11.5px;color:hsl(var(--muted-foreground));margin-top:2px}
+.st{display:inline-flex;align-items:center;gap:5px;font-size:11.5px}
+.st:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.st.pub{color:#16a34a}.st.draft{color:hsl(var(--muted-foreground))}.st.arch{color:#d97706}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(940px,92vw);background:hsl(var(--popover));border-left:1px solid hsl(var(--border));
+  box-shadow:-24px 0 60px -20px rgba(0,0,0,.5);z-index:80;display:none;flex-direction:column}
+.drawer.open{display:flex}
+.drawer .dh{display:flex;align-items:center;gap:10px;padding:15px 20px;border-bottom:1px solid hsl(var(--border))}
+.drawer .dh h3{margin:0;font-size:15px}
+.drawer .db{flex:1;overflow:auto;padding:20px;display:grid;grid-template-columns:288px minmax(0,1fr) 250px;gap:18px;align-items:start}
+.drawer .df{display:flex;align-items:center;gap:9px;padding:13px 20px;border-top:1px solid hsl(var(--border));background:hsl(var(--card))}
+.fld{margin-bottom:13px}
+.fld label{display:block;font-size:12px;color:hsl(var(--muted-foreground));margin-bottom:5px}
+.inp,.sel,.ta{width:100%;padding:7px 10px;border-radius:8px;border:1px solid hsl(var(--border));background:hsl(var(--card));color:inherit;font-size:13px;outline:0}
+.ta{min-height:120px;resize:vertical;font-family:ui-monospace,SFMono-Regular,monospace;font-size:12px;line-height:1.75}
+.hint{font-size:11px;color:hsl(var(--muted-foreground));margin-top:4px;line-height:1.6}
+.warn{margin-top:14px;padding:10px 12px;border-radius:9px;font-size:12px;line-height:1.65;background:hsl(var(--accent)/.1);border:1px solid hsl(var(--accent)/.35)}
+.chk{display:flex;align-items:center;gap:7px;font-size:12.5px;padding:5px 0}
+.sub-h{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:hsl(var(--muted-foreground));margin:0 0 9px;padding-bottom:6px;border-bottom:1px solid hsl(var(--border))}
+.pv{border:1px solid hsl(var(--border));border-radius:10px;padding:14px;background:hsl(var(--card));font-size:13px;line-height:1.75}
+.pv h1{font-size:16px;margin:0 0 8px}.pv h2{font-size:13.5px;margin:14px 0 6px}
+.mask{position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:75;display:none}
+.mask.open{display:block}
+@media (max-width:1180px){.feed-layout,.art,.hero{grid-template-columns:minmax(0,1fr)}.aside{display:none}.grid{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-house" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></symbol>
+<symbol id="i-news" viewBox="0 0 24 24"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8M15 18h-5M10 6h8v4h-8z"/></symbol>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+<symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82 2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 14 21a2 2 0 1 1-4 0 1.65 1.65 0 0 0-2.9 1.17l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15 2 2 0 1 1 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6 2 2 0 1 1 15 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a2 2 0 1 1 0 6z"/></symbol>
+<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+<symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+<symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+<symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></symbol>
+<symbol id="i-palette" viewBox="0 0 24 24"><circle cx="13.5" cy="6.5" r=".5"/><circle cx="17.5" cy="10.5" r=".5"/><circle cx="8.5" cy="7.5" r=".5"/><circle cx="6.5" cy="12.5" r=".5"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.9 0 1.6-.7 1.6-1.7 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1a1.64 1.64 0 0 1 1.7-1.7H16c3 0 5.5-2.5 5.5-5.5C21.5 6 17 2 12 2z"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+<symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></symbol>
+<symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+<symbol id="i-clip" viewBox="0 0 24 24"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a3 3 0 0 1 4.24 4.24l-9.2 9.19a1 1 0 0 1-1.41-1.41l8.49-8.49"/></symbol>
+<symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8"/></symbol>
+<symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16h14v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></symbol>
+<symbol id="i-star" viewBox="0 0 24 24"><path d="m12 2 3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/></symbol>
+<symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-edit" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+<symbol id="i-fire" viewBox="0 0 24 24"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5s3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></symbol>
+<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.9z"/></symbol>
+<symbol id="i-bot" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4M8 16h.01M16 16h.01"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></symbol>
+<symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 10 5-10 5L2 7z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
+</defs></svg>
+
+<div class="proto">
+  <b>交互原型</b><span>口腔数字化资讯栏目 · 静态 Mock（栏目/标签/搜索/排序/详情/收藏/已读 均可点）</span>
+  <div class="grp">
+    <button data-view="feed" class="on">① 资讯流</button>
+    <button data-view="article">② 详情页</button>
+    <button data-view="manage">③ 内容管理</button>
+  </div>
+  <div class="grp" style="margin-left:8px"><span style="align-self:center">主题</span>
+    <button data-theme="light" class="on">亮色</button><button data-theme="dark">暗色</button>
+    <button data-theme="datafoundry">DataFoundry</button><button data-theme="tech">科技风</button><button data-theme="finance">金融风</button>
+  </div>
+</div>
+
+<header class="topbar">
+  <div class="brand"><div class="logo">AD</div><span class="name">AI-DataHub</span><span class="sep">/</span><span class="mod">资讯</span></div>
+  <div class="tools">
+    <button class="iconbtn" title="AS-BOT 助手"><svg class="i"><use href="#i-bot"/></svg></button>
+    <button class="iconbtn" title="版本公告"><svg class="i"><use href="#i-bell"/></svg><span class="dot"></span></button>
+    <button class="iconbtn" id="modBtn" title="切换模块"><svg class="i"><use href="#i-grid"/></svg></button>
+    <div class="pop" id="modPop">
+      <div class="hd">模块切换</div>
+      <div class="it"><svg class="i"><use href="#i-house"/></svg><span style="flex:1">首页</span></div>
+      <div class="it on"><svg class="i"><use href="#i-news"/></svg><span style="flex:1">资讯</span><svg class="i s ck"><use href="#i-check"/></svg></div>
+      <div class="it"><svg class="i"><use href="#i-folder"/></svg><span style="flex:1">工作空间</span></div>
+      <div class="it"><svg class="i"><use href="#i-db"/></svg><span style="flex:1">数据中台</span></div>
+      <div class="it"><svg class="i"><use href="#i-gear"/></svg><span style="flex:1">系统配置</span></div>
+    </div>
+    <button class="iconbtn" title="主题风格"><svg class="i"><use href="#i-palette"/></svg></button>
+    <div class="user"><div class="avatar">林</div><span style="font-size:13px">linwei</span><svg class="i s"><use href="#i-chev"/></svg></div>
+  </div>
+</header>
+
+<div class="frame">
+  <aside class="sidebar">
+    <div class="side-title">栏目</div>
+    <div id="catNav"></div>
+    <div class="side-hr"></div>
+    <div class="side-title" style="padding-top:2px">我的</div>
+    <button class="nav" data-mine="star"><svg class="i"><use href="#i-star"/></svg><span>我的收藏</span><span class="cnt" id="cStar">0</span></button>
+    <button class="nav" data-mine="read"><svg class="i"><use href="#i-clock"/></svg><span>已读过</span><span class="cnt" id="cRead">0</span></button>
+    <div class="side-hr"></div>
+    <div class="side-title" style="padding-top:2px">热门标签</div>
+    <div class="tags" id="tagNav"></div>
+    <div class="side-hr"></div>
+    <button class="nav" data-view="manage"><svg class="i"><use href="#i-edit"/></svg><span>内容管理</span></button>
+  </aside>
+
+  <div class="main">
+    <!-- ══ 资讯流（数据驱动，栏目/标签/搜索/排序可交互） ══ -->
+    <div class="wrap" id="v-feed">
+      <div class="pagehd">
+        <h1 id="feedTitle">全部资讯</h1>
+        <span id="feedCount"></span>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+          <div class="search"><svg class="i s"><use href="#i-search"/></svg><input id="q" placeholder="搜索标题、摘要、标签…"></div>
+          <div class="seg" id="sortSeg">
+            <button data-sort="latest" class="on">最新</button><button data-sort="hot">最热</button><button data-sort="rec">推荐</button>
+          </div>
+          <div class="seg">
+            <button data-dens="card" class="on" title="卡片视图"><svg class="i s"><use href="#i-grid"/></svg></button>
+            <button data-dens="list" title="列表视图"><svg class="i s"><use href="#i-list"/></svg></button>
+          </div>
+        </div>
+      </div>
+      <div class="filterline" id="filterLine"></div>
+      <div class="feed-layout">
+        <div id="feedBody"></div>
+        <div class="aside">
+          <div class="panel"><h5><svg class="i s"><use href="#i-fire"/></svg>近 7 天热读</h5><ol id="hotList"></ol></div>
+          <div class="panel"><h5><svg class="i s"><use href="#i-bell"/></svg>平台公告<span class="src">引自版本公告</span></h5>
+            <ol><li><span class="t">固件 3.6 发布：断点续扫与咬合动态校验</span></li><li><span class="t">v5.2 软件中心上线，支持模板批量下发</span></li></ol></div>
+          <div class="panel"><h5><svg class="i s"><use href="#i-spark"/></svg>没找到想要的？</h5>
+            <div style="font-size:12.5px;color:hsl(var(--muted-foreground));line-height:1.7;margin-bottom:10px">栏目内容不足时可直接提问，或申请补充内容。</div>
+            <button class="btn sm p" style="width:100%;justify-content:center"><svg class="i s"><use href="#i-send"/></svg>申请内容 / 反馈</button></div>
+        </div>
+      </div>
+      <div class="note">
+        <b>可交互点</b>：侧栏栏目 / 标签 / 我的（收藏·已读）/ 搜索 / 排序 / 卡片·列表密度全部生效；点卡片进详情，读完自动记入「已读过」并清掉栏目未读点。
+        精选区仅在「全部资讯 + 无筛选」时出现；筛选后改为平铺，避免只剩一张卡片的空瀑布。
+      </div>
+    </div>
+
+    <!-- ══ 详情页 ══ -->
+    <div class="wrap hide" id="v-article">
+      <div class="crumb"><a data-view="feed">资讯</a><svg class="i s"><use href="#i-arrow"/></svg><a id="cbCat"></a><svg class="i s"><use href="#i-arrow"/></svg><b id="cbTitle"></b></div>
+      <div class="art">
+        <article class="card" style="padding:26px 30px 30px;overflow:visible">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap" id="adTop"></div>
+          <h1 id="adTitle"></h1>
+          <div class="meta" id="adMeta"></div>
+          <div class="lead" id="adLead"></div>
+          <div class="body" id="adBody"></div>
+          <div class="artfoot" id="adFoot"></div>
+          <div class="askbar"><svg class="i l" style="color:hsl(var(--primary))"><use href="#i-bot"/></svg>
+            <div>「就本主题提问」把本文标题与摘要作为上下文带入<b style="color:hsl(var(--primary))">智能问数</b>；
+              资讯正文是静态快照，不触发取数，也不受业务数据权限影响。</div></div>
+        </article>
+        <div class="aside">
+          <div class="panel"><h5>目录</h5><div class="toc" id="adToc"></div></div>
+          <div class="panel"><h5>同栏目推荐</h5><ol id="adRel"></ol></div>
+          <div class="panel"><h5>发布范围</h5>
+            <div style="font-size:12.5px;line-height:1.8;color:hsl(var(--muted-foreground))">全体登录用户可见<br>
+              <span style="color:hsl(var(--accent))">不经过业务数据权限过滤</span><br><span id="adPub"></span></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ 内容管理 ══ -->
+    <div class="wrap hide" id="v-manage">
+      <div class="pagehd">
+        <h1>内容管理</h1><span class="badge">4 草稿 · 22 已发布 · 1 已下架</span>
+        <div style="margin-left:auto;display:flex;gap:8px">
+          <button class="btn"><svg class="i s"><use href="#i-layers"/></svg>栏目编排</button>
+          <button class="btn p js-open"><svg class="i s"><use href="#i-plus"/></svg>新建内容</button>
+        </div>
+      </div>
+      <table class="tbl"><thead><tr><th style="width:36%">标题</th><th>栏目</th><th>形态</th><th>状态</th><th>发布 / 更新</th><th>阅读</th><th style="width:160px">操作</th></tr></thead>
+      <tbody>
+        <tr><td><div class="ti">口内扫描精度怎么衡量：从单帧误差到全弓拼接误差</div><div class="sub">slug: scan-accuracy-metric · 置顶 / 精选</div></td>
+          <td><span class="badge cat" style="--cc:#0891b2">技术白皮书</span></td><td>附件</td><td><span class="st pub">已发布</span></td><td>3 天前 / 昨天</td><td>1,247</td>
+          <td><button class="btn sm gh js-open">编辑</button><button class="btn sm gh">下架</button></td></tr>
+        <tr><td><div class="ti">种植导板全流程：从扫描到打印的 6 个控制点</div><div class="sub">slug: surgical-guide-workflow · 精选</div></td>
+          <td><span class="badge cat" style="--cc:#16a34a">临床应用</span></td><td>Markdown</td><td><span class="st pub">已发布</span></td><td>昨天 / 昨天</td><td>684</td>
+          <td><button class="btn sm gh js-open">编辑</button><button class="btn sm gh">下架</button></td></tr>
+        <tr><td><div class="ti">某区域修复体返工率上升 12% 的复盘</div><div class="sub">提升自报表「返工率周度监控」 · 已人工脱敏复核</div></td>
+          <td><span class="badge cat" style="--cc:#ea580c">数据洞察</span></td><td>提升</td><td><span class="st draft">草稿</span></td><td>— / 2 小时前</td><td>—</td>
+          <td><button class="btn sm gh js-open">编辑</button><button class="btn sm gh">发布</button><button class="btn sm gh"><svg class="i s"><use href="#i-trash"/></svg></button></td></tr>
+        <tr><td><div class="ti">固件 3.6 发布说明：断点续扫与咬合动态校验</div><div class="sub">slug: fw-3-6-notes</div></td>
+          <td><span class="badge cat" style="--cc:#db2777">产品动态</span></td><td>Markdown</td><td><span class="st pub">已发布</span></td><td>5 天前 / 5 天前</td><td>1,905</td>
+          <td><button class="btn sm gh js-open">编辑</button><button class="btn sm gh">下架</button></td></tr>
+        <tr><td><div class="ti">（旧）2024 数字化门诊改造投入测算</div><div class="sub">已下架，站内链接保留可访问性提示</div></td>
+          <td><span class="badge cat" style="--cc:#6366f1">齿科行业趋势</span></td><td>Markdown</td><td><span class="st arch">已下架</span></td><td>2025-06 / 3 周前</td><td>3,410</td>
+          <td><button class="btn sm gh js-open">编辑</button><button class="btn sm gh">重新发布</button></td></tr>
+      </tbody></table>
+      <div class="note"><b>管理页口径</b>：栏目 / 标签一律下拉选择（显示 label，不手填内部 id）；外链 URL 属"外部资源无清单可枚举"的自由输入例外；
+        「发布 / 下架 / 删除」二次确认必须写明<b>对全体登录用户可见、不受数据权限过滤</b>；提升条目在列表显式标注来源便于追溯。</div>
+    </div>
+  </div>
+</div>
+
+<div class="mask" id="mask"></div>
+<aside class="drawer" id="drawer">
+  <div class="dh"><svg class="i l" style="color:hsl(var(--primary))"><use href="#i-edit"/></svg><h3>编辑内容</h3>
+    <span class="badge">草稿 · 未发布</span><button class="iconbtn js-close" style="margin-left:auto"><svg class="i"><use href="#i-x"/></svg></button></div>
+  <div class="db">
+    <div>
+      <div class="sub-h">元信息</div>
+      <div class="fld"><label>标题 *</label><input class="inp" value="某区域修复体返工率上升 12% 的复盘"></div>
+      <div class="fld"><label>URL slug</label><input class="inp" value="rework-rate-attribution"><div class="hint">按标题自动生成，可改；对外只暴露 slug，不暴露内部 id</div></div>
+      <div class="fld"><label>栏目 *</label><select class="sel"><option>数据洞察</option><option>齿科行业趋势</option><option>技术白皮书</option><option>临床应用</option><option>产品动态</option><option>合规与标准</option></select>
+        <div class="hint">选项来自栏目清单（显示 label）</div></div>
+      <div class="fld"><label>标签</label><div style="display:flex;flex-wrap:wrap;gap:5px;border:1px solid hsl(var(--border));border-radius:8px;padding:6px;background:hsl(var(--card))">
+        <span class="badge">修复体 ×</span><span class="badge">返工率 ×</span><span class="tag">+ 添加</span></div></div>
+      <div class="fld"><label>摘要（列表卡片显示，最多 3 行）</label><textarea class="ta" style="min-height:64px">公开复盘（已脱敏，不含客户与病例明细），附归因路径与图表快照。</textarea></div>
+      <div class="fld"><label>内容形态 *</label><select class="sel"><option>提升自报表（静态快照）</option><option>站内 Markdown</option><option>外链条目（URL 直达）</option><option>附件（PDF / Office）</option></select></div>
+      <div class="fld"><label>封面</label><div style="display:flex;gap:8px;align-items:center">
+        <div style="width:64px;height:36px;border-radius:6px;background:linear-gradient(135deg,#ea580c,#c2410c)"></div>
+        <button class="btn sm">上传</button><button class="btn sm gh">用栏目主色占位</button></div>
+        <div class="hint">未上传时用「栏目主色 + 图标 + 栏目名」占位图，不显示文件名</div></div>
+      <div class="fld"><label>附件</label><div class="att" style="margin:0;padding:8px 10px"><div class="ic" style="width:26px;height:26px"><svg class="i s"><use href="#i-doc"/></svg></div>
+        <div><div class="n" style="font-size:12px">归因路径图.png</div><div class="z">218 KB</div></div>
+        <div class="ops"><button class="btn sm gh"><svg class="i s"><use href="#i-trash"/></svg></button></div></div>
+        <div class="hint">类型白名单 pdf / docx / xlsx / png / jpg，单文件 ≤ 20 MB；超限显式报错不静默截断</div></div>
+    </div>
+    <div>
+      <div class="sub-h">正文 / 预览</div>
+      <div class="seg" style="margin-bottom:10px"><button class="on">源码</button><button>预览</button></div>
+      <textarea class="ta" style="min-height:400px">## 一、异常现象
+华东区第 27 周修复体返工率 12.4%，环比上升 3.1pt。
+
+## 二、归因路径
+1. 先排除口径变更（指标字典无发布记录）
+2. 按材料 / 牙位 / 诊所类型三向拆解
+3. 定位到某批次临时冠材料的数据传输中断
+
+## 三、结论与动作
+- 动作 1：…
+- 动作 2：…
+
+```chart
+{"type":"bar","title":"返工率环比拆解（静态快照）","data":[...]}
+```</textarea>
+      <div class="hint">正文与 Chat 同一渲染管线；<code>chart</code> 块内嵌的是<b>静态快照数据</b>，不会二次取数。</div>
+      <div class="sub-h" style="margin-top:16px">预览效果</div>
+      <div class="pv"><h1>某区域修复体返工率上升 12% 的复盘</h1><h2>一、异常现象</h2>
+        <div style="color:hsl(var(--muted-foreground));font-size:12.5px">华东区第 27 周修复体返工率 12.4%，环比上升 3.1pt。</div>
+        <h2>二、归因路径</h2><div style="color:hsl(var(--muted-foreground));font-size:12.5px">排除口径变更 → 材料/牙位/诊所类型三向拆解 → 定位批次数据传输中断</div>
+        <div class="chartbox" style="margin:12px 0 0"><div class="ch"><svg class="i s"><use href="#i-layers"/></svg>返工率环比拆解<span class="src">```chart 块</span></div>
+          <div class="bars" style="height:74px"><div class="b"><div class="bar" style="height:40%"></div><div class="lb">第24周</div></div>
+            <div class="b"><div class="bar" style="height:52%"></div><div class="lb">第25周</div></div>
+            <div class="b"><div class="bar" style="height:60%"></div><div class="lb">第26周</div></div>
+            <div class="b"><div class="bar" style="height:100%"></div><div class="lb">第27周</div></div></div></div></div>
+    </div>
+    <div>
+      <div class="sub-h">发布设置</div>
+      <label class="chk"><input type="checkbox">置顶（栏目内第一张）</label>
+      <label class="chk"><input type="checkbox" checked>精选（进首页大卡区）</label>
+      <div class="fld" style="margin-top:10px"><label>生效时间</label><input class="inp" value="立即"></div>
+      <div class="fld"><label>定时下架</label><input class="inp" placeholder="留空 = 不自动下架"></div>
+      <div class="warn"><b>⚠ 可见范围</b><br>发布后<b>全体登录用户可见</b>，<b>不经过业务数据权限与行级权限过滤</b>。<br>
+        提升自报表的内容须先人工确认已去除病例明细等敏感信息。</div>
+      <div class="fld" style="margin-top:12px"><label>发布说明（进审计）</label><textarea class="ta" style="min-height:56px">复盘脱敏版，仅保留聚合结论。</textarea></div>
+      <div class="sub-h" style="margin-top:16px">溯源（只读）</div>
+      <div style="font-size:12px;color:hsl(var(--muted-foreground));line-height:1.8">来源：报表中心 ·「返工率周度监控」<br>提升人：linwei（内容管理权限）<br>提升时间：2 小时前<br>
+        <span style="color:hsl(var(--accent))">内部 id 不在页面显示，仅审计可见</span></div>
+    </div>
+  </div>
+  <div class="df"><button class="btn">保存草稿</button><button class="btn">预览</button>
+    <div style="margin-left:auto;display:flex;gap:9px;align-items:center">
+      <label class="chk" style="padding:0"><input type="checkbox">已确认内容不含受数据权限约束的明细</label>
+      <button class="btn p">发布<svg class="i s"><use href="#i-arrow"/></svg></button></div></div>
+</aside>
+
+<script>
+/* ── 栏目（真实实现来自 /api/content/categories，显示 label 不显示 key） ── */
+const CATS=[
+ {key:'industry', label:'齿科行业趋势', icon:'📈', color:'#6366f1', grad:'linear-gradient(135deg,#4f46e5,#7c3aed)', desc:'口腔数字化市场、椅旁修复与政策趋势'},
+ {key:'whitepaper',label:'技术白皮书',  icon:'🔬', color:'#0891b2', grad:'linear-gradient(135deg,#0891b2,#0d9488)', desc:'扫描精度、AI 建模与数据互操作'},
+ {key:'clinic',    label:'临床应用',    icon:'🦷', color:'#16a34a', grad:'linear-gradient(135deg,#16a34a,#15803d)', desc:'种植 / 正畸 / 修复与技师所工作流'},
+ {key:'product',   label:'产品动态',    icon:'✨', color:'#db2777', grad:'linear-gradient(135deg,#db2777,#9333ea)', desc:'固件、软件与开放接口更新'},
+ {key:'compliance',label:'合规与标准',  icon:'🛡️', color:'#b45309', grad:'linear-gradient(135deg,#b45309,#92400e)', desc:'器械注册、质量体系与数据合规'},
+ {key:'insight',   label:'数据洞察',    icon:'📊', color:'#ea580c', grad:'linear-gradient(135deg,#ea580c,#c2410c)', desc:'脱敏聚合的行业与装机数据'},
+];
+/* kind: md=站内 Markdown, link=外链, file=附件, promoted=提升自报表 */
+const A=[
+ {t:'口内扫描精度怎么衡量：从单帧误差到全弓拼接误差',c:'whitepaper',k:'file',d:3,v:1247,pin:1,ft:1,a:'临床应用研究组',
+  s:'单帧标称精度不等于临床可用精度。本文拆解三层口径（单帧 / 拼接 / 咬合），并给出可复现的验证方法与接受阈值建议。',
+  tg:['扫描精度','算法','质量控制'],f:[['口内扫描精度评估方法（全文）.pdf','PDF · 4.2 MB'],['精度验证样例数据.zip','ZIP · 118 MB']],
+  body:[{h:'一、为什么单帧精度不够看'},{p:'厂商样本上常见的"20 μm 单帧精度"描述的是静态标定块上的单帧重复性，而临床取的是全牙弓拼接后的模型。真正决定修复体边缘适合性的，是拼接后的偏差累积与咬合关系还原误差。'},{ul:['单帧精度受齿面反光、唾液与出血影响，实际波动远大于标定值。','拼接误差随扫描区域增大呈非线性增长，前磨牙区过渡带是主要误差源。','咬合记录误差会被修复体设计放大，垂直向 50 μm 的偏差足以导致咬合高点。']},
+  {h:'二、三层精度口径'},{chart:'全弓拼接误差分布（样本 n=412 例）',bars:[['前牙区',46],['前磨牙',62],['磨牙区',88],['全牙弓',100],['咬合面',71]]},
+  {table:{head:['口径','定义','建议阈值','典型返工点'],rows:[['单帧重复性','同一区域多次单帧偏差','≤ 25 μm','标定块数据好看，临床不稳定'],['拼接偏差','跨帧对齐后的网格偏差','≤ 60 μm / 全弓','过渡带未补扫就结束'],['咬合还原','上下弓对合的垂直向误差','≤ 80 μm','咬合记录受唾液污染'],['边缘完整性','肩台线连续度','≥ 95% 连续','龈沟渗血遮挡']]}},
+  {h:'三、临床可接受的验证方法'},{p:'建议用"可复现的三件套"替代主观判断：标准牙列模型重扫 3 次算重复性、跨区拼接后与印模模型叠合算偏差、修复体试戴记录调𬌗次数作为终点指标。'},{code:'# 指标口径（节选）\n指标: 全弓拼接偏差\n  权威定义: 扫描模型与参考模型按基准牙对齐后的平均表面距离（μm）\n  反例: 单帧标称精度（口径不同，不可比较）\n  绑定对象: scan_session / metric:arch_deviation_um'},{h:'四、附件与参考'},{att:1}]},
+
+ {t:'AI 边缘识别与自动补洞：扫描中断次数下降 41% 的背后',c:'whitepaper',k:'md',d:5,v:968,ft:1,a:'算法团队',
+  s:'把"哪里没扫到"从医生经验变成实时可视化：边缘完整性评分 + 盲区预测模型的工作机制、失败场景与临床验证结果。',
+  tg:['AI 建模','算法','临床体验'],body:[{h:'一、要解决的真实问题'},{p:'补扫次数高的根因通常不是"算法不够准"，而是医生不知道还差哪一块。系统把缺失区域量化成可读的进度与位置提示后，行为改变比模型提升更有效。'},{ul:['边缘完整性评分：实时给出肩台线连续度百分比与缺口位置。','盲区预测：按当前扫描轨迹预测大概率漏扫的邻面与远中龈向。','中断归因：区分"患者移动""唾液污染""路径不足"三类，提示不同处置。']},
+  {h:'二、临床验证结果'},{chart:'补扫次数与中断原因分布',bars:[['移动',52],['唾液',68],['路径不足',100],['材料反光',44],['其他',22]]},
+  {p:'12 家合作门诊、412 例后牙全冠样本：单例平均补扫次数由 3.7 次降至 2.2 次，中断次数下降 41%，医生主观负荷评分下降一档。'},{h:'三、什么时候不要信它'},{ul:['大面积金属修复体与深色牙龈：评分会偏乐观，仍需目视确认龈沟。','张口度受限的后磨牙区，预测模型样本覆盖不足，提示仅作参考。']}]},
+
+ {t:'湿表面与出血场景下的扫描策略',c:'clinic',k:'md',d:6,v:742,a:'临床应用研究组',
+  s:'龈沟渗血、唾液膜与反光三重叠加时的处置顺序：先控湿、再分区、后补扫，含四象限时间预算表。',
+  tg:['修复','临床操作','牙龈'],body:[{h:'一、处置顺序不能颠倒'},{p:'液体膜会把光散射成"看似完整"的假点云，先补扫再控湿等于把误差固化进模型。'},{ul:['隔湿：张口器 + 排龈线 + 棉卷三联，必要时吸引器持续负压。','分区：单区不超过 3 颗牙，避免长时间暴露导致二次污染。','补扫：只补缺口，不整弓重扫，防止已合格区域被再次污染。']},{h:'二、四象限时间预算'},{table:{head:['象限','建议时长','常见失败','处置'],rows:[['右上前牙','3 min','唇面反光','喷粉或调曝光'],['右下磨牙','4 min','龈沟渗血','重放排龈线'],['左上双尖牙','2.5 min','唾液膜','持续吸引'],['左下磨牙','4 min','张口疲劳','分段 + 休息']]}},{h:'三、什么时候退回传统印模'},{ul:['龈下边缘 > 1.5 mm 且隔湿失败两次以上。','患者无法维持 4 分钟以上张口（颞下颌关节不适）。']}]},
+
+ {t:'种植导板全流程：从扫描到打印的 6 个控制点',c:'clinic',k:'file',d:1,pin:0,ft:1,v:684,a:'数字化修复中心',
+  s:'口扫 → 设计 → 导板打印 → 术中适配的完整链路，每个控制点给出可判定的通过标准与失败处置。',
+  tg:['种植','导板','工作流'],f:[['种植导板流程核查表.pdf','PDF · 1.1 MB']],
+  body:[{h:'一、六个控制点'},{ul:['扫描前：植入体位置标记物就位，避免金属伪影覆盖关键区。','边缘：修复体边缘线连续度 ≥ 95%，龈向不留缺口。','咬合：动态咬合记录至少 3 个功能位。','设计：安全距离 ≥ 1.5 mm，导向套筒与骨面贴合度检查。','打印：树脂固化后清洗与二次固化参数记录。','术中：导板就位感与初始稳定性判定标准。']},{h:'二、失败率分布'},{chart:'各环节返工占比（近 12 个月）',bars:[['扫描',28],['设计',52],['打印',18],['术中',10]]},{p:'设计环节仍是主要返工源，且多数可回溯到扫描阶段的咬合记录不足——这也是把咬合列为独立控制点的原因。'},{h:'三、附件'},{att:1}]},
+
+ {t:'全口无牙颌扫描：分段策略与咬合记录的取舍',c:'clinic',k:'md',d:8,v:531,a:'临床应用研究组',
+  s:'无牙颌黏膜可让性会污染拼接结果。本文给出分段顺序、托盘辅助扫描与咬合记录方式的选择依据。',
+  tg:['全口','无牙颌','咬合'],body:[{h:'一、难点不在精度而在稳定'},{p:'黏膜在压力下形变，同一区域两次扫描可能得到不同形状，拼接算法会把这种差异当成真实几何。'},{ul:['用个别托盘作扫描辅助，把黏膜形变压到可重复范围。','分段顺序：先主承力区，后前庭沟，避免早期污染。','咬合记录优先用记录板 + 扫描，而非纯动态咬合。']},{h:'二、三种方案对比'},{table:{head:['方案','可重复性','操作时长','适用'],rows:[['纯口扫分段','中','短','牙槽嵴条件好'],['托盘辅助扫描','高','中','黏膜松软'],['扫描 + 记录板','高','中','垂直距离重建']]}}]},
+
+ {t:'技师所视角：数字工作流把返工率从 12% 压到 4%',c:'clinic',k:'promoted',d:9,v:1102,a:'渠道与培训部',
+  s:'一家 30 人技师所的改造复盘：数据接收规范、设计模板库与退回沟通话术三条主线，含 6 个月指标趋势。',
+  tg:['技师所','工作流','返工率'],body:[{h:'一、返工的真实构成'},{p:'改造前 12% 的返工里，近一半不是"做得不准"，而是"信息不全"：边缘不清、咬合缺失、比色未记录。'},{chart:'返工原因构成（改造前 → 改造后）',bars:[['信息不全',100],['边缘不清',62],['咬合问题',48],['材料/工艺',30],['沟通误解',22]]},
+  {h:'二、三条主线'},{ul:['接收规范：诊所提交前自检清单，缺项直接退回不进入排产。','模板库：20 个高频设计模板，新人上手周期从 8 周缩到 3 周。','话术标准化：退回原因用同一套术语，避免"再修修看"。']},{h:'三、6 个月指标趋势'},{p:'返工率 12% → 4%，平均交付周期 5.2 天 → 3.1 天，沟通类退回从每月 31 件降到 6 件。'},{note:'本文为提升自报表的公开复盘（已脱敏，不含具体客户与病例明细）。'}]},
+
+ {t:'色度与美学还原：真彩扫描在前牙修复中的价值',c:'whitepaper',k:'md',d:11,v:487,a:'临床应用研究组',
+  s:'比色从"技师凭经验"到"数据可传递"：色域覆盖、半透性与明度分层的评估方法，以及前牙病例的返工对比。',
+  tg:['美学','比色','前牙'],body:[{h:'一、比色信息为什么会丢'},{p:'传统比色片只记录一个色号，而天然牙的明度分层与半透性在颈部与切端差异明显，技师按单点色号做全冠必然保守。'},{ul:['真彩扫描至少可传递明度、彩度与分区域透明度。','环境光与唾液膜会显著改变采样结果，需在控湿后采集。','与比色片并用仍是当前最稳妥的做法。']},{h:'二、前牙病例对比'},{table:{head:['指标','仅比色片','真彩 + 比色片'],rows:[['一次戴牙满意度','68%','86%'],['调磨次数','2.4 次','1.3 次'],['颈部色差投诉','9 例','3 例']]}}]},
+
+ {t:'扫描数据互操作性：STL / PLY / OBJ 与椅旁生态对接',c:'whitepaper',k:'link',d:12,v:623,a:'平台与生态组',
+  s:'格式不是终点，坐标系与单位才是。梳理与主流椅旁铣削、设计软件对接时的常见坑与验收清单。',
+  tg:['互操作','椅旁','接口'],link:{label:'OpenCAD 生态互操作指南',url:'https://example-opencad.org/interop-guide'},
+  body:[{h:'一、真正的坑在坐标与单位'},{ul:['单位毫米/英寸混用导致整弓放大 25.4 倍。','坐标系原点定义不同，拼接结果偏移。','法线方向反转导致布尔运算失败。']},{h:'二、验收清单'},{table:{head:['项','通过标准','备注'],rows:[['单位','标注 mm 且实测一致','用标准块验证'],['原点','与参考模型偏差 < 30 μm','按基准牙对齐'],['法线','外法线一致','检查背面剔除'],['网格密度','设计区 ≤ 25 μm','非设计区可稀疏']]}}]},
+
+ {t:'2026 口腔数字化设备装机趋势：口内扫描仪渗透率首次突破 52%',c:'industry',k:'file',d:2,v:1502,ft:1,a:'市场与战略部',
+  s:'覆盖 14 个省市、2,100 家门诊的装机样本，给出渗透率、更新周期与椅旁配套率三条主线的年度变化。',
+  tg:['市场','装机','椅旁'],f:[['2026 口腔数字化装机趋势（摘要版）.pdf','PDF · 3.0 MB']],
+  body:[{h:'一、三条主线'},{ul:['渗透率 52.4%，新增装机中首购占比下降到 38%，换代需求开始主导。','椅旁铣削配套率 19%，与门诊连锁属性强相关。','单台设备日均扫描例数中位数 6.2 例，利用率分化明显。']},{h:'二、渗透率变化'},{chart:'口内扫描仪渗透率（2021—2026）',bars:[['2021',22],['2022',29],['2023',36],['2024',44],['2025',48],['2026',52]]},
+  {h:'三、对我们的含义'},{p:'换代期的竞争点从"能不能扫"转向"扫描后的工作流能不能落地"，椅旁配套与技师所协同成为主要交付瓶颈。'}]},
+
+ {t:'椅旁修复（CAD/CAM）在民营连锁诊所的 ROI 测算',c:'industry',k:'md',d:7,v:884,a:'市场与战略部',
+  s:'以 12 家连锁门诊实际运营数据为样本，测算设备折旧、耗材、人力与二次就诊节省之间的平衡点。',
+  tg:['椅旁','ROI','连锁'],body:[{h:'一、结论先行'},{p:'单椅位日均 4 例以上全冠需求时，椅旁当日修复的边际收益才覆盖设备与人力成本；低于该阈值建议走中心化工厂 + 快速物流。'},{table:{head:['情景','日均全冠例数','交付周期','单例综合成本'],rows:[['椅旁当日','6.5','1 次就诊','偏高但留存收益强'],['中心厂次日','4.0','2 次就诊','最优'],['外包普通','2.0','3 次就诊','低但体验差']]}},{h:'二、成本结构'},{ul:['设备折旧按 4 年直线，占单例成本 28%。','树脂与铣块耗材在当日修复情景下显著上升。','医生与护士椅旁时间是最容易被低估的项。']}]},
+
+ {t:'隐形矫治对扫描工作流的影响：从取模室到诊室',c:'industry',k:'md',d:14,v:455,a:'市场与战略部',
+  s:'隐形矫治把扫描前置到诊室，改变了牙位记录、附件定位与复诊节奏，本文给出流程重排建议。',
+  tg:['正畸','隐形矫治','流程'],body:[{h:'一、流程位移'},{p:'传统取模在技工室完成，扫描进诊室后，护士需要同时承担影像质控职责。'},{ul:['附件粘接与扫描的先后顺序影响方案精度。','复诊扫描的必要性评估：不是每次复诊都需要全弓。','与口扫仪联动的咬合分析可以替代部分面弓。']},{h:'二、诊室改造清单'},{table:{head:['环节','改造点','投入'],rows:[['牙椅旁','扫描车 + 显示器','低'],['消毒','扫描头套与冷消毒流程','中'],['人员','护士质控培训 8 课时','中']]}}]},
+
+ {t:'全球义齿加工产能转移与技师所数字化改造节奏',c:'industry',k:'link',d:16,v:398,a:'市场与战略部',
+  s:'外部研究机构报告原文，站内提供摘要与解读，点击前往原文获取完整数据表。',
+  tg:['技师所','全球'],link:{label:'外部研究机构原文页',url:'https://example-research.org/dental-lab-digital'},body:[{h:'一、摘要'},{p:'产能继续向成本洼地转移，但交期敏感市场（当日/次日修复）留在本地，形成"双轨"结构。'},{ul:['本地技师所向"设计中心 + 快反打印"转型。','数字文件传输的合规要求成为新的贸易壁垒。']}]},
+
+ {t:'固件 3.6 发布说明：断点续扫与咬合动态校验',c:'product',k:'md',d:5,v:1905,ft:1,a:'产品与固件组',
+  s:'本版重点：中断后可从缺口继续、咬合动态位自动校验、新增 3 种扫描头套规格适配清单。',
+  tg:['固件','断点续扫','咬合'],body:[{h:'一、新增'},{ul:['断点续扫：会话中断后保留已合格区域，仅重扫缺口。','咬合动态校验：功能位采集不完整时实时提示。','新增小口径扫描头（儿童/张口受限）适配。']},{h:'二、优化'},{ul:['湿表面识别灵敏度提升，误报下降 23%。','拼接耗时平均缩短 18%（后牙长桥场景）。']},{h:'三、已知限制'},{ul:['断点续扫暂不支持全口无牙颌分段模式（3.7 计划支持）。','动态校验需搭配咬合记录板使用。']},{note:'升级前请备份在用配置；固件发布流程见「合规与标准」栏目。'}]},
+
+ {t:'软件 5.2：修复体边缘自动标记 + 20 个设计模板',c:'product',k:'md',d:10,v:1148,a:'产品与固件组',
+  s:'边缘线自动标记可省掉平均 90 秒/例的手工描边；模板库支持批量下发到连锁门店。',
+  tg:['软件','模板','边缘识别'],body:[{h:'一、边缘自动标记'},{p:'基于扫描数据的肩台高亮与连续性判定，医生确认后写入设计文件，替代手工描边。'},{ul:['准确率：清晰肩台 91%，渗血场景 68%（建议人工复核）。','确认后修改留痕，便于技师追溯。']},{h:'二、模板批量下发'},{table:{head:['能力','说明','权限'],rows:[['模板库','20 个高频修复设计模板','门店可读'],['批量下发','按区域/门店选择','总部管理员'],['版本回滚','保留最近 5 版','总部管理员']]}}]},
+
+ {t:'开放接口 v2：与主流椅旁铣削机对接的设备清单与鉴权',c:'product',k:'md',d:18,v:612,a:'平台与生态组',
+  s:'统一任务下发与状态回传协议，首批通过认证的设备清单与接入流程。',
+  tg:['开放接口','椅旁'],body:[{h:'一、接口范围'},{ul:['任务下发：设计文件 + 材料 + 程序编号。','状态回传：排队 / 加工中 / 完成 / 异常。','耗材与工时统计（用于产能分析）。']},{h:'二、鉴权方式'},{p:'设备侧使用一次性配发的设备凭证，云端不下发患者标识，仅使用任务编号关联。'},{note:'接口文档属技术门户内容，本栏目只发布变更摘要。'}]},
+
+ {t:'二类医疗器械注册变更要点（扫描软件类）',c:'compliance',k:'md',d:13,v:706,a:'法规与质量部',
+  s:'算法变更、适用范围变更与版本命名的申报口径差异，附变更前后对照模板。',
+  tg:['注册','法规','软件'],body:[{h:'一、什么算"影响安全有效的变更"'},{ul:['新增适应证（如从冠桥扩展到种植导板）。','核心算法替换（拼接、边缘识别）导致输出几何变化。','运行环境从工作站迁移到云端。']},{h:'二、变更策略'},{table:{head:['变更类型','建议路径','周期'],rows:[['缺陷修复','体系内记录','—'],['算法优化','变更申报 + 验证资料','2—3 月'],['新增适应证','许可事项变更','4—6 月']]}}]},
+
+ {t:'诊所影像与扫描数据的留存与个人信息合规清单',c:'compliance',k:'file',d:20,v:833,a:'法规与质量部',
+  s:'扫描数据可关联到具体就诊人，属个人信息。给出留存期限、访问控制与外发的可执行清单。',
+  tg:['合规','数据安全','留存'],f:[['门诊数据合规自查表.xlsx','XLSX · 86 KB']],
+  body:[{h:'一、三个容易踩的点'},{ul:['把含患者标识的扫描文件发到外部沟通工具"看一下"。','设备维修时用未脱敏的真实病例做演示。','云端备份未约定留存期限与删除责任。']},{h:'二、可执行清单'},{table:{head:['项','要求','证据'],rows:[['访问控制','按角色最小授权','权限清单'],['外发','走受控通道并留痕','审计日志'],['留存','约定期限与到期删除','数据台账'],['维修演示','仅用脱敏或合成数据','变更记录']]}}]},
+
+ {t:'ISO 13485 体系下的固件发布流程',c:'compliance',k:'md',d:24,v:421,a:'法规与质量部',
+  s:'从需求确认到发布归档的六个必做节点，以及哪些改动可以走快速通道。',
+  tg:['质量体系','固件','发布'],body:[{h:'一、六个节点'},{ul:['需求与风险评估','设计输入/输出','验证与确认','变更控制','发布与分发记录','生产后信息反馈']},{h:'二、快速通道边界'},{p:'不影响预期用途与输出几何的缺陷修复可走简化评审；任何涉及算法输出变化的改动必须完整验证。'},{note:'本栏目内容为通用说明，具体以现行体系文件为准。'}]},
+
+ {t:'扫描时长分布画像：1,200 例后牙全冠的统计',c:'insight',k:'md',d:4,v:1024,ft:1,a:'数据洞察组',
+  s:'中位时长 4 分 12 秒，长尾由补扫次数驱动；给出时长与返工率的关系拐点。',
+  tg:['扫描时长','画像','后牙'],body:[{h:'一、分布形态'},{chart:'单例扫描时长分布（分钟）',bars:[['<3',18],['3—4',52],['4—5',100],['5—6',61],['6—8',34],['>8',12]]},
+  {p:'长尾不是"医生手慢"，而是补扫次数：补扫 ≥ 4 次的病例平均时长翻倍，且占长尾的 71%。'},{h:'二、与返工率的关系'},{table:{head:['时长区间','占比','返工率','解读'],rows:[['<3 min','9%','8.1%','过快，易漏边缘'],['3—5 min','63%','3.4%','健康区间'],['5—8 min','22%','4.2%','多为复杂病例'],['>8 min','6%','9.7%','质量与体验双风险']]}},{h:'三、口径说明'},{code:'指标: 单例扫描时长\n  定义: 首次有效帧至会话结束（不含隔湿与准备）\n  剔除: 中断超过 5 分钟的会话单独统计\n  样本: 近 90 天 1,200 例后牙全冠'},{note:'以上为脱敏聚合统计，不含任何个体病例数据。'}]},
+
+ {t:'某区域修复体返工率上升 12% 的复盘',c:'insight',k:'promoted',d:2,v:389,a:'数据洞察组',
+  s:'从周报阈值触发到定位批次问题的完整归因路径，附三向拆解与结论动作清单。',
+  tg:['返工率','归因','复盘'],body:[{h:'一、异常现象'},{p:'华东区第 27 周修复体返工率 12.4%，环比上升 3.1pt，触发周报阈值。'},{h:'二、归因路径'},{ul:['先排除口径变更：指标字典近 90 天无发布记录。','按材料 / 牙位 / 诊所类型三向拆解，锁定单一临时冠材料批次。','核对设备日志：该批次伴随数据传输中断率上升。']},{chart:'返工率周度趋势',bars:[['W23',38],['W24',42],['W25',55],['W26',68],['W27',100]]},
+  {h:'三、结论与动作'},{ul:['动作 1：暂停该批次材料使用并复检留样。','动作 2：数据传输中断增加自动重传与告警。','动作 3：周报阈值口径补充"批次维度"下钻。']},{note:'本文为提升自报表的公开复盘（已脱敏，不含客户与病例明细）。'}]},
+
+ {t:'装机设备联网率与返修间隔的关系（脱敏聚合）',c:'insight',k:'md',d:15,v:502,a:'数据洞察组',
+  s:'联网设备的返修间隔中位数长 4.1 个月；差异主要来自使用强度而非设备本身。',
+  tg:['装机','联网','售后'],body:[{h:'一、相关性不等于因果'},{p:'联网设备多集中在流程规范的连锁门诊，返修间隔长更多反映使用与维护习惯。'},{ul:['日均扫描例数与返修间隔呈弱负相关（例数高 → 略短）。','固件按版本收敛的门诊，异常返修占比低 34%。']},{h:'二、口径'},{table:{head:['指标','定义','剔除'],rows:[['联网率','近 30 天有上报的设备占比','停用设备'],['返修间隔','首次到首次维修的中位月数','人为损坏']]}}]},
+
+ {t:'儿童与张口受限患者的扫描适配技巧',c:'clinic',k:'md',d:21,v:377,a:'临床应用研究组',
+  s:'小口径扫描头、分区顺序与沟通节奏三件套，把儿童病例的中断率降下来。',
+  tg:['儿童','张口受限','操作'],body:[{h:'一、先解决"能扫多久"'},{ul:['单区控制在 60 秒内，主动给休息节点。','优先扫最难区（远中磨牙），其余可分段。','使用口镜辅助牵拉，减少助手手指入镜造成的遮挡。']},{h:'二、常见失败与处置'},{table:{head:['失败','原因','处置'],rows:[['中途哭闹','张口疲劳','分段 + 休息'],['唾液污染','吸引不及时','助手持续负压'],['数据缺失','视野遮挡','口镜辅助']]}},
+  {h:'三、什么时候退回传统取模'},{ul:['乳牙列配合度极差、需全麻的病例。','急性期口腔黏膜病变，扫描头接触存在交叉风险。']}]},
+
+ {t:'与 PEEK / 氧化锆材料配合的设计余量',c:'whitepaper',k:'md',d:26,v:288,a:'材料与设计组',
+  s:'不同材料的最低厚度与粘接策略决定设计余量，给出前牙/后牙的推荐区间表。',
+  tg:['材料','设计余量','氧化锆'],body:[{h:'一、材料决定设计下限'},{p:'氧化锆强度高但遮色与粘接性弱，PEEK 弹性模量接近牙本质但需要机械固位。'},{table:{head:['材料','功能区最小厚度','粘接策略','适用'],rows:[['氧化锆（多层）','1.0—1.2 mm','树脂水门汀 + 喷砂','前牙/后牙单冠'],['PEEK','1.5 mm + 固位形','机械固位为主','种植临时修复'],['复合树脂','1.2 mm','酸蚀粘接','过渡修复']]}}]},
+
+ {t:'临时修复体的数字工作流：从扫描到当日交付',c:'clinic',k:'md',d:28,v:341,a:'数字化修复中心',
+  s:'种植与修复过渡期的临时体当日交付路径，含材料选择与固化参数注意项。',
+  tg:['临时修复','椅旁','种植'],body:[{h:'一、当日交付的可行边界'},{ul:['单颗与短桥（≤ 3 单位）当日可交付。','长桥与全口临时体建议工厂制作，避免椅旁固化质量波动。']},{h:'二、关键参数'},{table:{head:['环节','要求','风险'],rows:[['扫描','咬合记录完整','垂直距离丢失'],['设计','减径 5—8%','固化后偏大'],['打印/切削','材料批次留样','颜色不稳'],['固化','二次固化时长达标','强度不足']]}}]},
+
+ {t:'（旧）2024 数字化门诊改造投入测算',c:'industry',k:'md',d:150,v:3410,arch:1,a:'市场与战略部',
+  s:'已被 2026 版测算替代，保留供历史对照。',tg:['历史'],body:[{p:'本文已下架，内容不再维护。请参见「齿科行业趋势」栏目下的最新测算文章。'}]},
+];
+/* 规范化 */
+const ARTS=A.map((x,i)=>({id:i+1,slug:x.slug||('a'+(i+1)),title:x.t,cat:x.c,kind:x.k,days:x.d,views:x.v,pin:x.pin||0,
+  featured:x.ft||0,arch:x.arch||0,author:x.a,summary:x.s,tags:x.tg||[],files:x.f||[],link:x.link||null,body:x.body||[]}));
+const catOf=k=>CATS.find(c=>c.key===k)||{label:'未分类',icon:'📄',color:'#64748b',grad:'linear-gradient(135deg,#475569,#334155)'};
+const KIND={md:'Markdown',link:'外链',file:'附件',promoted:'提升'};
+const state={cat:'all',mine:'',tag:'',q:'',sort:'latest',dens:'card',cur:null,read:new Set([2,5,9]),star:new Set([1])};
+
+const rel=d=>d<1?'刚刚':d<2?'昨天':d<30?Math.floor(d)+' 天前':Math.floor(d/30)+' 个月前';
+const fmt=n=>n>=1000?(n/1000).toFixed(1).replace('.0','')+'k':n;
+const esc=s=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function unread(c){return ARTS.filter(a=>a.cat===c&&!a.arch&&a.days<=7&&!state.read.has(a.id)).length}
+function pool(){ // 当前筛选后的条目
+  let l=ARTS.filter(a=>!a.arch);
+  if(state.mine==='star') l=l.filter(a=>state.star.has(a.id));
+  else if(state.mine==='read') l=l.filter(a=>state.read.has(a.id));
+  if(state.cat!=='all') l=l.filter(a=>a.cat===state.cat);
+  if(state.tag) l=l.filter(a=>a.tags.includes(state.tag));
+  if(state.q){const q=state.q.toLowerCase();l=l.filter(a=>(a.title+a.summary+a.tags.join()).toLowerCase().includes(q))}
+  const score=a=>a.pin*100+a.featured*40+(a.days<=7?20:0)+Math.min(a.views/1000,15);
+  if(state.sort==='hot') l=[...l].sort((a,b)=>b.views-a.views);
+  else if(state.sort==='rec') l=[...l].sort((a,b)=>score(b)-score(a));
+  else l=[...l].sort((a,b)=>a.days-b.days);
+  return l;
+}
+const filtered=()=>state.cat!=='all'||state.tag||state.q||state.mine;
+
+/* ── 侧栏 ── */
+function renderSide(){
+  const total=ARTS.filter(a=>!a.arch).length;
+  let h=`<button class="nav ${state.cat==='all'&&!state.mine?'on':''}" data-cat="all"><svg class="i"><use href="#i-layers"/></svg><span>全部资讯</span><span class="cnt">${total}</span></button>`;
+  CATS.forEach(c=>{const n=ARTS.filter(a=>a.cat===c.key&&!a.arch).length;const u=unread(c.key);
+    h+=`<button class="nav ${state.cat===c.key&&!state.mine?'on':''}" data-cat="${c.key}" title="${esc(c.desc)}">
+      <span class="sq">${c.icon}</span><span>${c.label}</span><span class="cnt">${n}</span>${u?'<span class="nb"></span>':''}</button>`});
+  document.getElementById('catNav').innerHTML=h;
+  document.getElementById('cStar').textContent=state.star.size;
+  document.getElementById('cRead').textContent=state.read.size;
+  document.querySelectorAll('.sidebar [data-mine]').forEach(b=>b.classList.toggle('on',state.mine===b.dataset.mine));
+  const cnt={};ARTS.forEach(a=>a.tags.forEach(t=>cnt[t]=(cnt[t]||0)+1));
+  document.getElementById('tagNav').innerHTML=Object.entries(cnt).sort((a,b)=>b[1]-a[1]).slice(0,10)
+    .map(([t,n])=>`<button class="tag ${state.tag===t?'on':''}" data-tag="${esc(t)}">${esc(t)} <span style="opacity:.6">${n}</span></button>`).join('');
+}
+
+/* ── 卡片 ── */
+function card(a){const c=catOf(a.cat);
+  return `<article class="card pc hov" data-a="${a.id}" style="--cg:${c.grad}">
+    ${a.pin?`<span class="pin"><svg class="i s"><use href="#i-pin"/></svg>置顶</span>`:''}
+    <div class="cover"><div class="cv"><div class="ic">${c.icon}</div><div class="cl">${c.label}</div></div></div>
+    <div class="bd"><div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+      <span class="badge cat" style="--cc:${c.color}">${c.label}</span>
+      ${a.tags[0]?`<span class="badge t">#${esc(a.tags[0])}</span>`:''}
+      ${a.kind!=='md'?`<span class="kform" style="margin-left:auto">${a.kind==='link'?'<svg class="i s"><use href="#i-link"/></svg>原文':a.kind==='file'?'<svg class="i s"><use href="#i-clip"/></svg>附件':'<svg class="i s"><use href="#i-send"/></svg>提升'}</span>`:''}
+      </div><h4>${esc(a.title)}</h4><p>${esc(a.summary)}</p>
+      <div class="ft">${state.read.has(a.id)?'':'<span class="unread"></span>'}<span>${rel(a.days)}</span>
+        <span class="r"><svg class="i s"><use href="#i-eye"/></svg>${fmt(a.views)}</span></div></div></article>`;}
+function row(a){const c=catOf(a.cat);
+  return `<div class="row" data-a="${a.id}" style="--cg:${c.grad}"><div class="lt">${c.icon}</div>
+    <div style="min-width:0;flex:1"><h4>${esc(a.title)}</h4><div class="sub">${esc(a.summary)}</div></div>
+    <div class="rt"><span class="badge cat" style="--cc:${c.color}">${c.label}</span>
+      ${a.kind!=='md'?`<span>${a.kind==='link'?'🔗':a.kind==='file'?'📎':'📤'}</span>`:''}
+      <span>${rel(a.days)}</span><span>${fmt(a.views)}</span></div></div>`;}
+
+function renderFeed(){
+  const l=pool();const c=state.cat==='all'?null:catOf(state.cat);
+  document.getElementById('feedTitle').textContent=state.mine==='star'?'我的收藏':state.mine==='read'?'已读过':(c?c.label:'全部资讯');
+  document.getElementById('feedCount').innerHTML=`<span class="badge">${l.length} 篇${!state.mine&&c&&unread(c.key)?` · ${unread(c.key)} 篇未读`:''}</span>`;
+  let fl='';
+  if(state.cat!=='all') fl+=`<span class="chip">${c.icon} ${c.label}<button data-clear="cat"><svg class="i s"><use href="#i-x"/></svg></button></span>`;
+  if(state.tag) fl+=`<span class="chip">#${esc(state.tag)}<button data-clear="tag"><svg class="i s"><use href="#i-x"/></svg></button></span>`;
+  if(state.q) fl+=`<span class="chip">搜索：${esc(state.q)}<button data-clear="q"><svg class="i s"><use href="#i-x"/></svg></button></span>`;
+  if(state.mine) fl+=`<span class="chip">${state.mine==='star'?'我的收藏':'已读过'}<button data-clear="mine"><svg class="i s"><use href="#i-x"/></svg></button></span>`;
+  if(fl) fl+=`<span style="margin-left:6px">${l.length} 条匹配</span>`;
+  document.getElementById('filterLine').innerHTML=fl;
+
+  const box=document.getElementById('feedBody');
+  if(!l.length){box.innerHTML=`<div class="card empty"><div class="big-ic">${c?c.icon:'🔍'}</div>
+    <div style="font-size:15px;font-weight:500;color:hsl(var(--foreground));margin-bottom:6px">${state.mine==='star'?'还没有收藏任何内容':'该筛选条件下暂无内容'}</div>
+    <div style="font-size:13px;margin-bottom:14px">${c?esc(c.desc):'换个栏目或清空筛选试试'}</div>
+    <button class="btn sm" data-clear="all">清空筛选</button>
+    <button class="btn sm" data-view="manage" style="margin-left:6px"><svg class="i s"><use href="#i-plus"/></svg>去发布</button></div>`;
+    document.querySelector('.aside').classList.remove('hide');bind();return;}
+
+  let h='';
+  if(!filtered()&&state.sort==='latest'&&state.dens==='card'){
+    const f=l.filter(a=>a.featured||a.pin).slice(0,4);
+    if(f.length){h+=`<section class="hero"><div class="card big hov" data-a="${f[0].id}" style="--cg:${catOf(f[0].cat).grad}">
+      <span class="corner lt"></span><span class="corner rt"></span><span class="corner lb"></span><span class="corner rb"></span>
+      <div class="cover"><div class="cv"><div class="ic">${catOf(f[0].cat).icon}</div><div class="cl">${catOf(f[0].cat).label}</div></div></div>
+      <div class="bd"><div style="display:flex;align-items:center;gap:7px">
+        <span class="badge cat" style="--cc:${catOf(f[0].cat).color}">${catOf(f[0].cat).label}</span>
+        ${f[0].pin?`<span class="pin" style="position:static"><svg class="i s"><use href="#i-pin"/></svg>置顶</span>`:''}
+        ${f[0].kind!=='md'?`<span class="kform" style="margin-left:auto">${f[0].kind==='file'?'<svg class="i s"><use href="#i-clip"/></svg>附件':'<svg class="i s"><use href="#i-link"/></svg>原文'}</span>`:''}</div>
+        <h2>${esc(f[0].title)}</h2><p>${esc(f[0].summary)}</p>
+        <div class="meta" style="margin-top:auto"><span>${esc(f[0].author)}</span><span class="d">·</span><span>${rel(f[0].days)}</span><span class="d">·</span>
+          <span><svg class="i s" style="vertical-align:-2px"><use href="#i-eye"/></svg> ${fmt(f[0].views)}</span>
+          ${f[0].files[0]?`<span class="d">·</span><span>${esc(f[0].files[0][1])}</span>`:''}
+          <span style="margin-left:auto;color:hsl(var(--primary));display:flex;align-items:center;gap:4px">阅读全文<svg class="i s"><use href="#i-arrow"/></svg></span></div>
+      </div></div><div class="minis">${f.slice(1).map(a=>{const cc=catOf(a.cat);
+        return `<article class="mini" data-a="${a.id}" style="--cg:${cc.grad}"><div class="thumb">${cc.icon}</div>
+          <div style="min-width:0;flex:1"><h4>${esc(a.title)}</h4>
+            <div class="meta"><span class="badge cat" style="--cc:${cc.color};font-size:10px;padding:1px 6px">${cc.label}</span><span>·</span><span>${rel(a.days)}</span><span class="d">·</span><span>${fmt(a.views)} 阅读</span></div></div></article>`}).join('')}</div></section>`;}
+  }
+  if(state.dens==='list'){h+=`<div class="card list" style="margin-top:${filtered()?'0':'4px'}">${l.map(row).join('')}</div>
+    <div class="pager"><button>‹</button><button class="on">1</button><button>2</button><button>›</button></div>`;}
+  else if(filtered()){h+=`<div class="grid" style="margin-top:4px">${l.map(card).join('')}</div>
+    <div class="pager"><button>‹</button><button class="on">1</button><button>2</button><button>3</button><button>›</button></div>`;}
+  else{ // 全部资讯：按栏目分区瀑布
+    CATS.forEach(c=>{const items=l.filter(a=>a.cat===c.key).slice(0,3);if(!items.length)return;
+      h+=`<section class="sec"><div class="sechd"><span class="bar" style="--cc:${c.color}"></span><h3>${c.label}</h3>
+        <span class="badge">${ARTS.filter(a=>a.cat===c.key&&!a.arch).length} 篇</span>
+        <a class="more" data-cat="${c.key}">进入该栏目<svg class="i s"><use href="#i-arrow"/></svg></a></div>
+        <div class="grid">${items.map(card).join('')}</div></section>`});}
+  box.innerHTML=h;
+  document.getElementById('hotList').innerHTML=[...ARTS].sort((a,b)=>b.views-a.views).slice(0,5)
+    .map(a=>`<li data-a="${a.id}"><span class="t">${esc(a.title)}</span></li>`).join('');
+  bind();
+}
+
+/* ── 详情 ── */
+function renderArticle(id){
+  const a=ARTS.find(x=>x.id===id)||ARTS[0];state.cur=a.id;state.read.add(a.id);
+  const c=catOf(a.cat);
+  document.getElementById('cbCat').textContent=c.label;document.getElementById('cbTitle').textContent=a.title;
+  document.getElementById('adTop').innerHTML=`<span class="badge cat" style="--cc:${c.color}">${c.label}</span>
+    ${a.tags.map(t=>`<span class="badge t">#${esc(t)}</span>`).join('')}
+    <span class="kform" style="margin-left:auto">${a.files.length?`<svg class="i s"><use href="#i-clip"/></svg>${a.files.length} 个附件`:a.link?`<svg class="i s"><use href="#i-link"/></svg>外部来源`:''}</span>`;
+  document.getElementById('adTitle').textContent=a.title;
+  document.getElementById('adMeta').innerHTML=`<span class="avatar" style="width:20px;height:20px;font-size:10px">${esc(a.author[0])}</span>
+    <span>${esc(a.author)}</span><span class="d">·</span><span>发布于 ${rel(a.days)}前</span><span class="d">·</span>
+    <span><svg class="i s" style="vertical-align:-2px"><use href="#i-eye"/></svg> ${a.views.toLocaleString()} 阅读</span>
+    <span style="margin-left:auto;display:flex;gap:6px">
+      <button class="btn sm" id="btnStar"><svg class="i s"><use href="#i-star"/></svg>${state.star.has(a.id)?'已收藏':'收藏'}</button>
+      <button class="btn sm">复制链接</button></span>`;
+  document.getElementById('adLead').textContent=a.summary;
+  let b='';
+  (a.body||[]).forEach((x,i)=>{
+    if(x.h)b+=`<h2 id="h${i}">${esc(x.h)}</h2>`;
+    else if(x.p)b+=`<p>${esc(x.p)}</p>`;
+    else if(x.ul)b+=`<ul>${x.ul.map(u=>`<li>${esc(u)}</li>`).join('')}</ul>`;
+    else if(x.chart)b+=`<div class="chartbox" style="--cc:${c.color}"><div class="ch"><svg class="i s"><use href="#i-layers"/></svg>${esc(x.chart)}<span class="src">静态快照 · 不二次取数</span></div>
+      <div class="bars">${x.bars.map(([l,v])=>`<div class="b"><div class="bar" style="height:${v}%"></div><div class="lb">${esc(String(l))}</div></div>`).join('')}</div></div>`;
+    else if(x.table)b+=`<table><thead><tr>${x.table.head.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead>
+      <tbody>${x.table.rows.map(r=>`<tr>${r.map(x2=>`<td>${esc(x2)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+    else if(x.code)b+=`<pre>${esc(x.code)}</pre>`;
+    else if(x.note)b+=`<div class="warn" style="margin:0 0 18px">${esc(x.note)}</div>`;
+    else if(x.att)b+=a.files.map(f=>`<div class="att"><div class="ic"><svg class="i"><use href="#i-doc"/></svg></div>
+      <div><div class="n">${esc(f[0])}</div><div class="z">${esc(f[1])} · 上传于 ${rel(a.days)}前</div></div>
+      <div class="ops"><button class="btn sm">站内预览</button><button class="btn sm"><svg class="i s"><use href="#i-arrow"/></svg>下载</button></div></div>`).join('');
+  });
+  if(a.link)b+=`<div class="askbar" style="margin-top:6px"><svg class="i l" style="color:hsl(var(--primary))"><use href="#i-link"/></svg>
+    <div>本条目为<b>外链条目</b>：站内保留标题、来源与摘要解读，原文点击后新窗口打开。<b style="color:hsl(var(--primary))">前往原文：${esc(a.link.label)}</b></div></div>`;
+  document.getElementById('adBody').innerHTML=b;
+  document.getElementById('adToc').innerHTML=(a.body||[]).filter(x=>x.h).map((x,i)=>`<a>${esc(x.h)}</a>`).join('')||'<a style="border:0">（无小标题）</a>';
+  const rel2=ARTS.filter(x=>x.cat===a.cat&&x.id!==a.id&&!x.arch).slice(0,4);
+  document.getElementById('adRel').innerHTML=rel2.map(x=>`<li data-a="${x.id}"><span class="t">${esc(x.title)}</span></li>`).join('')||'<li style="counter-increment:none"><span class="t">同栏目暂无其他内容</span></li>';
+  const idx=ARTS.indexOf(a);const prev=ARTS[idx-1],next=ARTS[idx+1];
+  document.getElementById('adFoot').innerHTML=`<div class="np" ${prev?`data-a="${prev.id}"`:''}><div class="l">← 上一篇</div><div class="v">${prev?esc(prev.title):'—'}</div></div>
+    <button class="btn p"><svg class="i s"><use href="#i-send"/></svg>就本主题提问</button>
+    <div class="np" style="text-align:right" ${next?`data-a="${next.id}"`:''}><div class="l">下一篇 →</div><div class="v">${next?esc(next.title):'—'}</div></div>`;
+  document.getElementById('adPub').innerHTML=`发布：${esc(a.author)} · ${rel(a.days)}前<br>下架需内容管理权限`;
+  document.getElementById('btnStar').onclick=()=>{state.star.has(a.id)?state.star.delete(a.id):state.star.add(a.id);renderArticle(a.id);renderSide();};
+  setView('article');bind();renderSide();window.scrollTo(0,0);
+}
+
+/* ── 视图切换与事件绑定 ── */
+function setView(v){document.documentElement.dataset.view=v;
+  ['feed','article','manage'].forEach(k=>document.getElementById('v-'+k).classList.toggle('hide',k!==v));
+  document.querySelectorAll('.proto [data-view]').forEach(x=>x.classList.toggle('on',x.dataset.view===v));}
+function bind(){
+  document.querySelectorAll('[data-cat]').forEach(b=>b.onclick=e=>{e.stopPropagation();state.cat=b.dataset.cat;state.mine='';state.tag='';setView('feed');renderSide();renderFeed();window.scrollTo(0,0)});
+  document.querySelectorAll('[data-tag]').forEach(b=>b.onclick=()=>{state.tag=state.tag===b.dataset.tag?'':b.dataset.tag;setView('feed');renderSide();renderFeed()});
+  document.querySelectorAll('[data-mine]').forEach(b=>b.onclick=()=>{state.mine=state.mine===b.dataset.mine?'':b.dataset.mine;state.cat='all';setView('feed');renderSide();renderFeed()});
+  document.querySelectorAll('[data-a]').forEach(b=>b.onclick=e=>{e.stopPropagation();renderArticle(+b.dataset.a)});
+  document.querySelectorAll('[data-clear]').forEach(b=>b.onclick=()=>{const k=b.dataset.clear;
+    if(k==='q'){state.q='';document.getElementById('q').value=''}else if(k==='tag')state.tag='';
+    else if(k==='cat')state.cat='all';else if(k==='mine')state.mine='';else state={...state,cat:'all',tag:'',q:'',mine:''};
+    document.getElementById('q').value='';setView('feed');renderSide();renderFeed()});
+  document.querySelectorAll('[data-view]').forEach(b=>{if(!b.onclick)b.onclick=e=>{e.stopPropagation();if(b.dataset.view!=='article')setView(b.dataset.view);renderSide();renderFeed()}});
+}
+document.getElementById('q').oninput=e=>{state.q=e.target.value.trim();setView('feed');renderSide();renderFeed()};
+document.querySelectorAll('#sortSeg button').forEach(b=>b.onclick=()=>{state.sort=b.dataset.sort;
+  document.querySelectorAll('#sortSeg button').forEach(x=>x.classList.toggle('on',x===b));renderFeed()});
+document.querySelectorAll('[data-dens]').forEach(b=>b.onclick=()=>{state.dens=b.dataset.dens;
+  document.querySelectorAll('[data-dens]').forEach(x=>x.classList.toggle('on',x===b));renderFeed()});
+document.getElementById('modBtn').onclick=e=>{e.stopPropagation();document.getElementById('modPop').classList.toggle('open')};
+document.addEventListener('click',()=>document.getElementById('modPop').classList.remove('open'));
+const dr=document.getElementById('drawer'),mk=document.getElementById('mask');
+const openD=()=>{dr.classList.add('open');mk.classList.add('open')},closeD=()=>{dr.classList.remove('open');mk.classList.remove('open')};
+document.querySelectorAll('.js-open').forEach(b=>b.onclick=openD);
+document.querySelectorAll('.js-close').forEach(b=>b.onclick=closeD);mk.onclick=closeD;
+document.querySelectorAll('.proto [data-theme]').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.proto [data-theme]').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.documentElement.dataset.theme=b.dataset.theme});
+document.querySelectorAll('.proto [data-view]').forEach(b=>b.onclick=()=>{if(b.dataset.view==='article')renderArticle(state.cur||1);
+  else{setView(b.dataset.view);renderSide();renderFeed()}});
+renderSide();renderFeed();
+</script>
+</body>
+</html>

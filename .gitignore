@@ -40,6 +40,9 @@ runtime/.npm-cache/
 .env.local
 .env.*.local
 backend/.env
+# 密钥轮换（backend/scripts/rotate_secret_key.py）写的旧值备份：含旧密钥，绝不入库
+.env.bak-*
+backend/.env.bak-*
 .pids
 pids/
 

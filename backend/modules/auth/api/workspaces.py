@@ -9,6 +9,8 @@ from pydantic import BaseModel, model_validator
 from typing import Optional
 
 from backend.common.auth import get_current_user, require_admin
+from backend.common.config import (
+    WORKSPACE_DISK_QUOTA_DEFAULT_BYTES, WORKSPACE_QUOTA_DEFAULT_MAX_WORKSPACES)
 from backend.common.db import DBConnection
 from backend.core.role_service import role_service
 
@@ -50,8 +52,10 @@ class AddWorkspaceUserRequest(BaseModel):
 # ── 管理员统管: 全用户工作空间与双配额(须在 /{workspace_id} 之前定义) ──
 
 class SetWorkspaceQuotaRequest(BaseModel):
-    max_workspaces: int = 5
-    disk_quota_bytes: int = 5 * 1024 ** 3
+    """管理员设置配额。缺省值取自配置（唯一数字来源 common/config.py），不在此写死 5GB ——
+    否则"表单默认"与"系统缺省"会成为两套数字。"""
+    max_workspaces: int = WORKSPACE_QUOTA_DEFAULT_MAX_WORKSPACES
+    disk_quota_bytes: int = WORKSPACE_DISK_QUOTA_DEFAULT_BYTES
 
 
 @router.get("/quotas")
@@ -77,7 +81,7 @@ def set_workspace_quota(user_id: int, req: SetWorkspaceQuotaRequest,
 
 @router.get("/")
 def list_workspaces(user: dict = Depends(get_current_user)):
-    """列出当前用户的工作空间(个人工作站, 随用户走); 首次访问自动创建默认空间。"""
+    """列出当前用户的工作空间(个人空间, 随用户走); 首次访问自动创建默认空间。"""
     from backend.common.ttl_cache import workspace_cache
     uid = int(user["user_id"])
     cache_key = f"list:{uid}"
@@ -92,7 +96,7 @@ def list_workspaces(user: dict = Depends(get_current_user)):
                     cur.execute(
                         "INSERT INTO adh_workspaces (name, description, icon, color, owner_id, is_default, config) "
                         "VALUES (%s, %s, %s, %s, %s, 1, %s)",
-                        (f"{user.get('username') or 'user'}的工作站", "个人工作站(随用户自动创建)",
+                        (f"{user.get('username') or 'user'}的工作空间", "个人工作空间(随用户自动创建)",
                          "🏠", "#1890ff", uid, json.dumps({})),
                     )
                     conn.commit()
@@ -254,9 +258,9 @@ def get_workspace_delete_impact(workspace_id: int, user: dict = Depends(get_curr
 def delete_workspace(workspace_id: int, user: dict = Depends(get_current_user)):
     """删除工作空间（属主或 admin）。
 
-    口径：默认工作站不可删（只能删自建空间）；空间内产物（会话含磁盘工作区、
+    口径：默认工作空间不可删（只能删自建空间）；空间内产物（会话含磁盘工作区、
     看板与图表、定时任务与 DAG、保存查询、通知渠道、空间绑定配置）彻底删除；
-    跨工作站资产（资产清单/用户记忆）与审计观测流水保留。级联见 workspace_deletion。
+    跨工作空间资产（资产清单/用户记忆）与审计观测流水保留。级联见 workspace_deletion。
     """
     from backend.modules.auth.services.workspace_deletion import delete_workspace as cascade_delete
     return cascade_delete(workspace_id, user)

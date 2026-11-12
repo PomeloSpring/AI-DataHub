@@ -101,7 +101,7 @@ def register_execution_layer(req: LayerRegister):
     from backend.modules.mind.execution import service as exec_service
     try:
         if req.layer_type not in VALID_LAYER_TYPES:
-            raise HTTPException(status_code=400, detail=f"不支持的执行层类型: {req.layer_type}")
+            raise HTTPException(status_code=400, detail=f"不支持的 Harness 类型: {req.layer_type}")
         layer_id = exec_service.register_layer(req.model_dump())
         return {"id": layer_id, "name": req.name, "success": True}
     except HTTPException:
@@ -163,14 +163,14 @@ def create_execution_layer(req: ExecutionLayerCreate):
     from backend.modules.mind.execution import service as exec_service
     try:
         if req.layer_type not in VALID_LAYER_TYPES:
-            raise HTTPException(status_code=400, detail=f"不支持的执行层类型: {req.layer_type}")
+            raise HTTPException(status_code=400, detail=f"不支持的 Harness 类型: {req.layer_type}")
         if req.status not in VALID_STATUSES:
             raise HTTPException(status_code=400, detail=f"不支持的状态: {req.status}")
         if exec_service.get_layer_by_name(req.name):
-            raise HTTPException(status_code=400, detail=f"执行层名称已存在: {req.name}")
+            raise HTTPException(status_code=400, detail=f"Harness 名称已存在: {req.name}")
         # CLI 类型必须指定 cli_name
         if req.layer_type == "cli" and not (req.config or {}).get("cli_name"):
-            raise HTTPException(status_code=400, detail="CLI 执行层必须配置 cli_name")
+            raise HTTPException(status_code=400, detail="CLI Harness 必须配置 cli_name")
         layer_id = exec_service.create_layer(req.model_dump())
         return {"id": layer_id, "success": True}
     except HTTPException:
@@ -234,7 +234,7 @@ def get_execution_layer(layer_id: int):
     try:
         row = exec_service.get_layer(layer_id)
         if not row:
-            raise HTTPException(status_code=404, detail="执行层不存在")
+            raise HTTPException(status_code=404, detail="Harness 不存在")
         return row
     except HTTPException:
         raise
@@ -249,15 +249,15 @@ def update_execution_layer(layer_id: int, req: ExecutionLayerUpdate):
     from backend.modules.mind.execution import service as exec_service
     try:
         if not exec_service.get_layer(layer_id):
-            raise HTTPException(status_code=404, detail="执行层不存在")
+            raise HTTPException(status_code=404, detail="Harness 不存在")
         if req.layer_type is not None and req.layer_type not in VALID_LAYER_TYPES:
-            raise HTTPException(status_code=400, detail=f"不支持的执行层类型: {req.layer_type}")
+            raise HTTPException(status_code=400, detail=f"不支持的 Harness 类型: {req.layer_type}")
         if req.status is not None and req.status not in VALID_STATUSES:
             raise HTTPException(status_code=400, detail=f"不支持的状态: {req.status}")
         if req.name:
             existing = exec_service.get_layer_by_name(req.name)
             if existing and existing["id"] != layer_id:
-                raise HTTPException(status_code=400, detail=f"执行层名称已存在: {req.name}")
+                raise HTTPException(status_code=400, detail=f"Harness 名称已存在: {req.name}")
         data = {k: v for k, v in req.model_dump().items() if v is not None}
         exec_service.update_layer(layer_id, data)
         from backend.common.ttl_cache import exec_layer_cache
@@ -270,6 +270,25 @@ def update_execution_layer(layer_id: int, req: ExecutionLayerUpdate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.put("/{layer_id}/default")
+def set_execution_layer_default(layer_id: int):
+    """设为系统默认执行层（AS-BOT 未指定执行层时走它）。
+
+    只走专用入口，不把 is_default 放进通用 update 字段列表：“默认层”是全局开关，
+    任何一次误写都会把全站未绑层的会话换通道，所以必须是一个显式动作。
+    """
+    from backend.modules.mind.execution import service as exec_service
+    try:
+        row = exec_service.set_default_layer(layer_id)
+        return {"success": True, "id": row.get("id"),
+                "display_name": row.get("display_name") or row.get("name")}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as e:  # noqa: BLE001
+        logger.error("Set default execution layer failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.delete("/{layer_id}")
 def delete_execution_layer(layer_id: int):
     """删除执行层(同时清理工作空间绑定)."""
@@ -277,7 +296,7 @@ def delete_execution_layer(layer_id: int):
     try:
         row = exec_service.get_layer(layer_id)
         if not row:
-            raise HTTPException(status_code=404, detail="执行层不存在")
+            raise HTTPException(status_code=404, detail="Harness 不存在")
         exec_service.delete_layer(layer_id)
         from backend.common.ttl_cache import exec_layer_cache
         exec_layer_cache.invalidate(None)
@@ -297,7 +316,7 @@ async def test_execution_layer(layer_id: int):
     try:
         row = exec_service.get_layer(layer_id)
         if not row:
-            raise HTTPException(status_code=404, detail="执行层不存在")
+            raise HTTPException(status_code=404, detail="Harness 不存在")
 
         manager = get_execution_layer_manager()
         error_msg = ""
@@ -329,7 +348,7 @@ def heartbeat_execution_layer(layer_id: int, req: LayerHeartbeat):
     try:
         ok = exec_service.heartbeat(name=req.name, layer_id=layer_id, tools=req.tools)
         if not ok:
-            raise HTTPException(status_code=404, detail="执行层不存在")
+            raise HTTPException(status_code=404, detail="Harness 不存在")
         return {"success": True}
     except HTTPException:
         raise
@@ -345,7 +364,7 @@ def deregister_execution_layer(layer_id: int, req: Optional[LayerDeregister] = N
     try:
         ok = exec_service.deregister(name=(req.name if req else ""), layer_id=layer_id)
         if not ok:
-            raise HTTPException(status_code=400, detail="执行层不存在或非自注册层(source=manual 不可注销)")
+            raise HTTPException(status_code=400, detail="Harness 不存在或非自注册层(source=manual 不可注销)")
         return {"success": True}
     except HTTPException:
         raise
@@ -361,7 +380,7 @@ async def get_execution_layer_tools(layer_id: int):
     from backend.modules.mind.execution.manager import get_execution_layer_manager
     row = exec_service.get_layer(layer_id)
     if not row:
-        raise HTTPException(status_code=404, detail="执行层不存在")
+        raise HTTPException(status_code=404, detail="Harness 不存在")
     try:
         manager = get_execution_layer_manager()
         adapter = manager.build_adapter(row)

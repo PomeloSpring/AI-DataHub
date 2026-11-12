@@ -55,7 +55,7 @@ def _collect() -> dict:
         "SELECT product_name, display_name, description, site, domain, classification, "
         "datasource_name FROM adh_data_products WHERE status = 'active'")
     data["datasets"] = _q(
-        "SELECT id, name, description, source_type, object_key, datasource_id, chart_type "
+        "SELECT id, name, description, source_type, es_pattern, object_key, datasource_id, chart_type "
         "FROM adh_datasets WHERE status = 'active' ORDER BY name")
     data["sync_tasks"] = _q(
         "SELECT name, description, source_datasource_name, source_table, "
@@ -203,6 +203,14 @@ def _build_asset_objects(data: dict, src_by_ds: dict) -> tuple[list, list]:
         return r
 
     for i, d in enumerate(data["datasets"], 1):
+        # ES 通道型数据集：正文是 ES SQL，不在数据权限治理域、无归属治理数据源
+        # （datasource_id=0）。给它建路由节点 = 把 RAG/LLM 引到未治理通道取数
+        # （护栏 §1/§6），故不生成节点；显式记 notes 而非静默过滤（no-silent-degradation）。
+        # 口径与 dataset_registry.is_es_definition 一致（L2 横向 import 禁止，故就地判定）。
+        if str(d.get("source_type") or "").strip().lower() == "es" or str(d.get("es_pattern") or "").strip():
+            notes.append(f"数据集「{d.get('name')}」是 Elasticsearch 通道型（不在数据权限治理域），未生成节点")
+            logger.info("[business-asset] 数据集「%s」为 ES 通道型，跳过（不进治理域路由图）", d.get("name"))
+            continue
         ds_name = ds_name_by_id.get(int(d.get("datasource_id") or 0), "")
         if not ds_name:
             notes.append(f"数据集「{d.get('name')}」的归属数据源已删除，未生成节点（待人工处理）")

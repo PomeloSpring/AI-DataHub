@@ -1,11 +1,12 @@
-"""Task Executor — Celery tasks for scheduled SQL and Agent execution.
+"""Task Executor — Celery tasks for scheduled Agent analysis.
 
-Two execution modes:
-- query: Direct SQL execution on datasource, returns raw results
-- agent: Calls agent_generate() pipeline, LLM autonomously plans and executes
+工作空间的定时任务只有一种形态：**Agent 分析任务**（task_type=agent）。执行身份、
+能力面与可查数据范围都按任务属主的角色实时继承，任务本身不持有 AS-BOT 与数据源。
+SQL 定时任务不在这里——那是数据中台「数据同步」的职责（adh_sync_tasks.schedule_cron /
+adh_dag_workflows.cron_expression），两套调度不互相冒充。
 
-Each task creates an execution log, runs the queries, optionally generates
-a report from a template, and sends notifications to the configured channel.
+每个任务创建一条执行日志、逐题跑无人值守分析、按模板可选地生成报告，
+并向配置的通知渠道发送结果。
 """
 
 import asyncio
@@ -39,85 +40,6 @@ def _persist_progress(task: dict):
         service.update_progress(task["_log_id"], succeeded, len(results) - succeeded)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[Executor] 进度落库失败(不影响执行): %s", exc)
-
-
-def _execute_sql_on_datasource(sql: str, datasource_id: int, identity: dict) -> dict:
-    """可信配置 SQL 必须先校验限流，再使用统一治理入口。"""
-    from backend.core.governed_query import governed_execute
-    from backend.semantics.sql_guard import bounded_query
-    sql = bounded_query(sql, 1000)
-    return governed_execute(sql, datasource_id, identity["user_id"],
-                            identity["workspace_id"], identity.get("username", ""))
-
-
-def _collect_lineage(sql: str, datasource_id: int, workspace_id: int, title: str):
-    """Best-effort lineage collection after successful SQL execution.
-
-    纯 SELECT 无写目标不会产生血缘边；解析/写入失败不影响任务本身。
-    """
-    try:
-        result = call("gov.persist_sql_lineage", sql, datasource_id, workspace_id)
-        if result["edges_created"]:
-            logger.info(
-                "[Executor] Lineage collected for '%s': %d nodes, %d edges",
-                title, len(result["nodes_created"]), len(result["edges_created"]),
-            )
-    except Exception as e:
-        logger.warning("[Executor] Lineage collection failed for '%s': %s", title, e)
-
-
-def _execute_sql_mode(task: dict) -> list:
-    """SQL mode: execute each SQL statement directly."""
-    config = task["task_config"]
-    datasource_id = config["datasource_id"]
-    workspace_id = task.get("workspace_id", 0)
-    results = task.setdefault("_results", [])
-
-    for q in config.get("questions", []):
-        _check_running(task)
-        title = q.get("title", "统计")
-        sql = q.get("sql", "")
-        if not sql:
-            results.append({"title": title, "status": "failed", "error": "Empty SQL"})
-            _persist_progress(task)
-            continue
-        try:
-            security = None
-            if task.get("report_template_key"):
-                security = call("report.security_snapshot", task["_identity"], sql, datasource_id)
-            for attempt in range(max(0, min(int(task.get("max_retries") or 0), 3)) + 1):
-                _check_running(task)
-                try:
-                    result = _wait(task, _execute_sql_on_datasource, sql, datasource_id, task["_identity"])
-                    break
-                except (RunInterrupted, PermissionError, TimeoutError, asyncio.TimeoutError, SoftTimeLimitExceeded):
-                    raise
-                except Exception:
-                    if attempt >= min(int(task.get("max_retries") or 0), 3):
-                        raise
-            if security:
-                call("report.verify_snapshot", task["_identity"], security)
-            if result.get("error"):
-                raise RuntimeError("查询未完成")
-            results.append({
-                "title": title,
-                "status": "success",
-                "columns": result.get("columns", []),
-                "rows": result.get("rows", []),
-                "row_count": result.get("row_count", 0),
-                "_security_context": security,
-            })
-            # 执行成功后自动采集血缘（用原始 SQL，不带 LIMIT 后缀）
-            _collect_lineage(sql.strip().rstrip(";"), datasource_id, workspace_id, title)
-            _persist_progress(task)
-        except (RunInterrupted, TimeoutError, asyncio.TimeoutError, SoftTimeLimitExceeded):
-            raise
-        except Exception as e:
-            logger.warning("[Executor] SQL failed for '%s': %s", title, e)
-            results.append({"title": title, "status": "failed", "error": "查询未完成，请检查配置或权限"})
-            _persist_progress(task)
-
-    return results
 
 
 def _run_async(coro_or_gen):
@@ -197,16 +119,42 @@ def _generate_report(task: dict, results: list) -> tuple[str, str]:
             if source not in sources:
                 sources.append(source)
     task["_security_context"] = call("report.policy_snapshot", task["owner_id"], task["workspace_id"], sources)
-    return call("report.render_fact", task.get("name", "分析报告"), flattened), "markdown"
+    tpl = task.get("_report_template") or {}
+    if tpl.get("found"):
+        # 按模板出正文：单问且模型终稿达标则沿用版式（带叙述与 ```chart），否则退事实表格并显式记原因。
+        # 与报表中心「用最新数据重新生成」同一 render 口径（viz 一处实现，执行器不复制判断）。
+        answer = next((r.get("answer") for r in results if isinstance(r, dict) and r.get("answer")), "")
+        content, fmt, layout_result = call("report.render_template",
+            task.get("name", "分析报告"), flattened, answer, tpl.get("layout") or {},
+            tpl.get("theme") or "", single_question=len(results) <= 1)
+        task["_layout_result"] = layout_result
+        return _with_evidence(task, flattened, content, fmt)
+    return _with_evidence(task, flattened,
+                          call("report.render_fact", task.get("name", "分析报告"), flattened), "markdown")
+
+
+def _with_evidence(task: dict, flattened: list, content: str, fmt: str) -> tuple[str, str]:
+    """把报表终态与证据摘要挂在任务上，随报表落库。
+
+    判定口径在 viz 一处（report.evidence_verdict），执行器不复制一套、也不再写死 degraded；
+    快照逐条已在上面 verify 过，所以“证据已登记”是事实，不是默认。
+    """
+    status, summary = call("report.evidence_verdict", flattened, content=content)
+    task["_generation_status"] = status
+    task["_evidence_summary"] = summary
+    return content, fmt
 
 
 def _send_notification(task: dict, results: list, report_content: str = None,
                        report_format: str = "markdown", report_link: str = None) -> str:
-    """Send notification with report link and summary.
+    """按渠道引用的消息模板渲染并发送通知，回 ``sent``/``failed``/``skipped``。
 
-    Uses channel's message_template if configured, otherwise uses default format.
+    正文唯一来源 = 渠道 ``config.message_template_key`` 指向的模板（模板中心维护）；
+    没选模板或模板读不到时回平台默认文案，并把原因写进日志（此前这里硬编码一句、
+    渠道里填的消息模板根本没人消费 —— docstring 与实现不符已一并纠正）。
     """
-    from backend.modules.flow.tasks.notification import notification_sender
+    from backend.modules.flow.services import message_template_service as mts
+    from backend.modules.flow.services.notification_service import notification_service
     from backend.modules.flow.services.scheduled_task_service import scheduled_task_service
 
     channel_id = task.get("channel_id")
@@ -218,20 +166,26 @@ def _send_notification(task: dict, results: list, report_content: str = None,
         return "skipped"
     if int(channel.get("workspace_id") or 0) != int(task.get("workspace_id") or 0):
         return "failed"
-    # 通知只发送执行状态和需登录的报告链接，不含业务标题、正文、数据行或 token。
-    status = results[0].get("status", "failed") if results else "failed"
-    content = f"定时分析任务已结束，状态：{status}。请登录平台查看。"
-    if report_link:
-        content += f"\n{report_link}"
-
+    # 通知只发送执行状态与需登录的报告链接，不含业务标题、正文、数据行或 token。
+    # 可用变量口径唯一来自 message_template_service.MESSAGE_TEMPLATE_VARIABLES：
+    # 任务名与结果摘要**不在其中**，所以模板作者拿不到业务内容（护栏与用例同口径）。
+    ctx = mts.build_context(task, results, report_link or "")
     try:
-        notification_sender.send(channel_id, content)
-        scheduled_task_service.update_channel_test_status(channel_id, "success")
-        return "sent"
-    except Exception as e:
-        logger.error("[Executor] Notification failed: %s", e)
+        out = notification_service.send_rendered(channel_id, ctx)
+    except Exception as exc:
+        logger.error("[Executor] Notification failed: %s", exc)
         scheduled_task_service.update_channel_test_status(channel_id, "failed")
         return "failed"
+    # 渲染非正常态必须留痕：模板被删/下架、或正文用了发不出去的变量时，通知会突然变短
+    # 或带着 {{xxx}} 字面量 —— 没有这行日志就只剩"通知怎么长这样"（§1 可诊断）。
+    if (out.get("status") != "rendered" or out.get("unknown_variables")
+            or out.get("warnings")):
+        logger.warning(
+            "[Executor] 通知渲染非正常态 channel=%s status=%s reasons=%s unknown=%s warnings=%s",
+            channel_id, out.get("status"), "; ".join(out.get("reasons") or []),
+            out.get("unknown_variables"), "; ".join(out.get("warnings") or []))
+    scheduled_task_service.update_channel_test_status(channel_id, "success")
+    return "sent"
 
 
 def _save_report_and_get_link(task: dict, log_id: int, report_content: str,
@@ -246,6 +200,16 @@ def _save_report_and_get_link(task: dict, log_id: int, report_content: str,
     owner_id = task.get("owner_id", 0)
     access_mode = "private"  # Default to private
 
+    # 把模板沿用结果（layout_result）写进 analysis_source：报表中心据此回显“这版有没按模板版式”，
+    # 不沿用就把原因显式带给用户（no-silent-degradation）；不开第二列，与报表重跑同一回读口径。
+    tpl = task.get("_report_template") or {}
+    analysis_source = {"kind": "scheduled_report",
+                       "template_key": task.get("report_template_key") or "",
+                       "template_name": tpl.get("name") or "",
+                       "report_theme": tpl.get("theme") or ""}
+    if task.get("_layout_result"):
+        analysis_source["layout_result"] = task["_layout_result"]
+
     report = scheduled_task_service.create_report(
         task_id=task_id,
         log_id=log_id,
@@ -257,12 +221,18 @@ def _save_report_and_get_link(task: dict, log_id: int, report_content: str,
         owner_id=owner_id,
         run_key=task["_run_key"],
         security_context=task.get("_security_context"),
-        generation_status="degraded",
-        evidence_summary={"validation_status": "unverified", "quality_status": "unknown", "completeness": "sample_only"},
+        generation_status=task.get("_generation_status") or "ready",
+        analysis_source=analysis_source,
+        evidence_summary=task.get("_evidence_summary") or {},
     )
 
     # Build link
-    base_url = os.getenv("ADH_BASE_URL", "http://localhost:3000")
+    # 默认 base_url 与前端监听口同源（根目录 .env 的 FRONTEND_PORT，经 config 解析）：
+    # 历史上此处写死 :3000，换端口后通知里的报告链接指向无服务的口。显式配置
+    # ADH_BASE_URL 仍为最高优先级（多域名/生产对外地址）；空值按未配置处理，
+    # 不得拼出 "/report/1" 这种缺 host 的坏链接。
+    from backend.common import config as _cfg
+    base_url = os.getenv("ADH_BASE_URL") or f"http://localhost:{_cfg.frontend_port()}"
     report_id = report["id"]
     return f"{base_url}/report/{report_id}"
 
@@ -299,18 +269,6 @@ def _wait(task, operation, *args):
 def _resolve_owner(task):
     from backend.common.auth import resolve_execution_owner
     return resolve_execution_owner(task.get("owner_id"), task.get("workspace_id") or 0)
-
-
-def _check_datasource(task, identity):
-    from backend.core.role_service import role_service
-    ds_id = int(task["task_config"].get("datasource_id") or 0)
-    if ds_id <= 0:
-        raise PermissionError("任务必须明确绑定数据源")
-    # 纯角色裁决: 数据源可用集=执行身份(任务创建者)的角色授权; 空授权 fail-closed。
-    allowed = set(role_service.get_user_allowed_datasources(
-        identity["user_id"], identity["workspace_id"]))
-    if ds_id not in allowed:
-        raise PermissionError("执行身份的角色未授权该数据源")
 
 
 def _check_running(task):
@@ -352,16 +310,29 @@ def _execute_core(task_id, trigger_type, run_key=None, worker_id="sync-process")
         if not task.get("owner_id"):
             error_code = "OWNER_REQUIRED"
         task["_identity"] = _resolve_owner(task)
+        # validate_task_as_bot 内部即"按属主角色解析 AS-BOT + 可查范围"，
+        # 不在这里再查一遍数据源（源可用性只有一个裁决点：角色授权集）。
         call("mind.validate_task_as_bot", task)
-        _check_datasource(task, task["_identity"])
         _check_running(task)
         config = task["task_config"]
-        if task["task_type"] not in ("query", "agent"):
-            raise ValueError("任务类型无效")
+        if task["task_type"] != "agent":
+            raise ValueError("任务类型无效：工作空间定时任务只有 Agent 分析形态"
+                             "（SQL 定时任务请在数据中台的数据同步里配置）")
         if not config.get("questions"):
             raise ValueError("任务没有可执行的问题")
-        agent_mode = task["task_type"] == "agent"
-        results = _execute_agent_mode(task) if agent_mode else _execute_sql_mode(task)
+        # 报告模板：解析成版式契约随 agent 运行带走（与报表中心重跑/问数出报告同一口径）。
+        # 设了模板却读不到 → 显式失败，不静默退通用事实表冒充“已按模板生成”（no-silent-degradation §1）。
+        tpl_key = task.get("report_template_key")
+        if tpl_key:
+            tpl = call("report.resolve_template", tpl_key)
+            if not tpl.get("found"):
+                raise ValueError(tpl.get("reason") or "报告模板不可用")
+            task["_report_template"] = tpl
+            config["report_theme"] = tpl.get("theme") or ""
+            # 无版式时 report_layout_contract 自判回空串，不往提示词灌空契约
+            config["layout_contract"] = call("report.layout_contract",
+                                             tpl.get("layout") or {}, tpl.get("theme") or "")
+        results = _execute_agent_mode(task)
         _check_running(task)
         required = bool(task.get("report_template_key"))
         if required and any(r["status"] in ("success", "partial") for r in results):
@@ -438,7 +409,7 @@ def reconcile_runs():
         result = {"tasks": scheduled_task_service.cleanup_stale_running_logs(),
                   "reports": call("report.cleanup_stale")}
         system_jobs.record_run("runs_reconcile", "success",
-                               f"清理卡死执行实例 {result['tasks']} 个、报表生成 {result['reports']} 个")
+                               f"清理卡死执行实例 {result['tasks']} 个、报告生成 {result['reports']} 个")
         return result
     except Exception as exc:  # noqa: BLE001 — 记录后显式抛出，不把失败掩成成功
         logger.exception("[Reconcile] 运行对账失败")
@@ -491,6 +462,31 @@ def intent_intercept_retention():
         logger.exception("[IntentGate] 判定流水清理失败")
         system_jobs.record_run("intent_intercept_retention", "failed",
                                f"清理失败（{type(exc).__name__}），详见服务端日志")
+        raise
+
+
+@app.task(name="backend.modules.flow.tasks.executor.conversation_history_retention", queue="scheduled")
+def conversation_history_retention():
+    """内置任务：会话与观测流水保留策略（超期观测删除 + 长期会话剥明细）。
+
+    只增不减的代价是看得见的（写放大 / 敏感数据驻留窗口），清理失败必须
+    record_run('failed') 并抛出，不把"流水还在涨"掩成"本轮无事可清"（no-silent-degradation §1）。
+    子步骤失败不重试不回退：下一日调度会重跑（任务幂等，仅处理 storage_state='full'）。
+    """
+    from backend.common import system_jobs
+    if not system_jobs.is_job_active("conversation_history_retention"):
+        logger.info("[Retention] 内置任务已人工暂停，本轮保留策略跳过")
+        return {"skipped": "paused"}
+    try:
+        # 经 core.task_runtime 回调表跨模块调用（分层契约 §0：不新增 L2 横向 import 边）
+        out = call("conversation_retention.run")
+        system_jobs.record_run("conversation_history_retention", "success",
+                               str(out.get("summary") or "")[:500])
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[Retention] 会话与观测流水保留策略执行失败")
+        system_jobs.record_run("conversation_history_retention", "failed",
+                               f"执行失败（{type(exc).__name__}），详见服务端日志")
         raise
 
 

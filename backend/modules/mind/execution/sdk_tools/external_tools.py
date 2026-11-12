@@ -1,9 +1,17 @@
-"""外部 MCP 的显式逐工具代理；stdio 仅在当前会话容器中运行。"""
+"""外部 MCP 的显式逐工具代理；内置服务走进程内 handler；stdio 仅在当前会话容器中运行。
+
+三类 transport 的分派口径（同一个「引用 MCP 服务」授权入口，不另造第二套）：
+- builtin：平台内置服务（如 Elasticsearch），用进程内 handler 注册，不建连、
+  不做配置漂移比对（代码不入库也不可被页面改）；
+- stdio：会话沙箱内起子进程，要求显式授权读取；
+- http/sse：远程服务，尚未接入可验证的身份与数据治理契约 → 显式拒（不静默可用）。
+"""
 import asyncio
 from contextlib import asynccontextmanager
 import json
 
 from backend.common.db import execute_query
+from backend.modules.mind.execution import builtin_mcp
 from backend.modules.mind.execution.sdk_tools.compat import make_tool, make_server
 
 
@@ -18,6 +26,16 @@ def load_server(server_id, policy):
     )
     if not row:
         raise PermissionError("AS-BOT 绑定的 MCP 服务不存在或已停用")
+    if builtin_mcp.is_builtin_row(row):
+        # 内置服务只认代码登记：库里行存在但无实现 = 配了没用，必须显式拒。
+        if not builtin_mcp.resolve(row.get("name")):
+            raise PermissionError(
+                f"内置 MCP 服务「{row.get('name')}」未登记实现，请联系管理员")
+        state = builtin_mcp.state_of(row.get("name"))
+        if not state["ready"]:
+            # 未开启/未配齐时不给注册：否则模型拿到工具只会反复报错
+            raise PermissionError(
+                f"内置 MCP 服务「{row.get('name')}」当前不可用：{state['status_message']}")
     return row
 
 
@@ -80,6 +98,18 @@ async def build_external_servers(backend, ctx, runtime):
         if not selected:
             continue
         row = await asyncio.to_thread(load_server, int(sid), runtime.policy)
+        server_name = f"external_{sid}"
+
+        if builtin_mcp.is_builtin_row(row):
+            # 内置服务：进程内注册，与数据工具组同一条收口（真实身份 + check_tool + 出站守卫）
+            for spec in builtin_mcp.resolve(row["name"])["tool_specs"]():
+                if spec["name"] in selected:
+                    runtime.policy.descriptions[f"mcp__{server_name}__{spec['name']}"] = spec["description"]
+            servers[server_name] = await asyncio.to_thread(
+                builtin_mcp.build_builtin_server, backend, dict(row), server_name,
+                f"mcp__{server_name}", list(selected))
+            continue
+
         import anyio
         with anyio.fail_after(30):
             tools_by_name = await discover(row, ctx, runtime)
@@ -105,7 +135,6 @@ async def build_external_servers(backend, ctx, runtime):
                     return result.model_dump(exclude_none=True)
 
             tools.append(make_tool(backend, name, spec.description or name, schema, handler,
-                                   qualified_name=f"mcp__external_{sid}__{name}"))
-        server_name = f"external_{sid}"
+                                   qualified_name=f"mcp__{server_name}__{name}"))
         servers[server_name] = make_server(backend, server_name, tools)
     return servers

@@ -14,6 +14,9 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
 - **禁止**新增任何直连数据源、绕过 `permission_enforcer` 的裸执行通道；**禁止**新增"返回数据行但不经治理"的 `/execute` 类端点。
 - 语义层 `run_semantic_query` 与 nl2sql `execute_sql` 是**同一执行口的两条入口**（都过 `semantics.execute`），不是"一条合规一条旁路"；判合不合规只看**是否过治理入口**，不看走的是语义层还是 SQL。
 - SQL Playground / 看板 / 报表 / 组件的 raw_sql 取数一律走治理入口，与主链路同源（`execute_via_playground`、`governed_execute`）。
+- **本条约束的对象是「向人或 LLM 返回数据行」的路径**。数据工程通道（数据同步 / DAG / 定时物化：读源表→计算→写授权表，不回数据行、不经 LLM）
+  不套用分析面的 `LIMIT` / 调用者 RLS / 结果侧脱敏语义，改由 `data-sync-engineering.md` §4 的七条围栏把关（登记白名单 + 预算即拒 + 回报必复核 + 原子切换 + 通道显式）；
+  **不得**用 `require_limit=False` 等分析面开关给批处理开后门，那属于旁路而非合规。
 
 ## 2. 身份 fail-closed
 - 身份**只信服务端**：JWT / 嵌入 AK / 报表创建者，由服务端解析后传入；**绝不**从请求体 `body.user_id` 等不可信字段取值。
@@ -39,6 +42,8 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
 ## 5. SQL 校验（`validate_sql`）
 - 仅允许 `SELECT` / `WITH`(CTE)；**禁** DDL（CREATE/ALTER/DROP/TRUNCATE/RENAME/GRANT/REVOKE）、DML（INSERT/UPDATE/DELETE/REPLACE）、多语句（引号/反引号/注释外的分号）。
 - 默认要求 `LIMIT`；确有需要（count 包裹、Playground 内部已另行补限流）才可传 `require_limit=False`，但**不得**用于绕过安全关键字与多语句校验。
+- **`LIMIT` 语义只覆盖交互式查询**：批处理/物化不得依赖"自动补默认 LIMIT"来放行（那会把全表静默截断成前 N 行还报成功，属错数不是限流）；
+  数据面按 `data-sync-engineering.md` §4-4 用**显式资源预算 + 超预算拒绝**替代，且落地行数必须与源侧对账相等。
 - 缺 LIMIT 的扫描应"自动补默认 LIMIT 后再校验"，而非直接放行（见 `sdk_tools/query_tools.py`）。
 
 ## 6. Chat / Agent 取数：语义层与 nl2sql 双路径（均须受治理）
@@ -112,6 +117,8 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
 - 触碰 `semantics/{planner,rls}.py` 或 `semantics/security/masking.py`（列级安全策略编译进 SQL）后，**必须**跑
   `tests/test_planner_sls_engine.py`（`TestColumnPolicyCompiledIntoSlsSql`：投影+GROUP BY 同口径、聚合不受影响、
   策略源为数据权限、加载失败拒编译、探针 tuned 的谓词不被重写）+ `tests/test_semantic_security.py`（mask 表达式按方言/引擎）+ 护城河三件套。
+- 触碰 `modules/flow/dag/`（节点执行 / 联邦读取 / 目标写入）或执行体外接层后，**必须**跑 `tests/test_dag_engine.py`
+  （节点失败必显式 `failed`/`partial`、并发只执行一次、错误脱敏）+ 本文件护城河三件套；新增数据面通道时补"行数对账相等"与"未登记表被拒"两条用例（见 `data-sync-engineering.md` §7）。
 - 服务以 uvicorn **无 `--reload`** 常驻（Phase 4 起 **web 单进程** `backend/app/main.py` 单进程绑定 8001-8007/8012 全部契约端口）：接口/权限代码改动后重启 web 即全局生效（`./stop-all.sh web && ./start-all.sh -d`），另有 celery-worker/beat（dataengine 已退役）；数据源配置来自 `.env`（唯一来源 `backend/.env`，见 `backend/common/config.py`）。
 
 ## 12. 禁止的反模式（速查）
@@ -120,3 +127,5 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
 - ❌ 用 nl2sql 绕过本体去查已治理建模对象；❌ 把裸 SQL 塞进语义 intent（`parse_intent` 必拒）；
 - ❌ 把 `execute_sql` 生成的原始 SQL 直连数据源（必过 `execute_query_with_permission`，审核不过即中止）；❌ 跳过 `check_sql` 预检直接 `execute_sql`；
 - ❌ 对外回显 SQL/数据源/账号/基础设施 IP/报错栈；❌ 把业务敏感列的裁决 hardcode 在出站层（内容形态正则）而不去配 `adh_sensitive_fields`；❌ `to_json` 裸序列化或吞异常致空结果；❌ 观测/审计改动抛异常影响主链路。
+- ❌ 批处理沿用交互式默认 `LIMIT` 并据此报成功（静默截断 → 错数）；❌ 用 `require_limit=False` 当批处理旁路开关；
+- ❌ 拿执行体回报的行数直接标记分区就绪（必平台侧对账复核）；❌ 把数据同步/DAG/物化权限点对 AI 开放（`sync:*`/`dag:*`/`udf:*` 的 `ai_access` 必为 `none`）。

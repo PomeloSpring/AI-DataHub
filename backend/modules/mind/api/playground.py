@@ -107,7 +107,7 @@ def _scrub_body(req: dict) -> dict:
 
 def _analysis_identity_headers(user: dict, workspace_id: int = 0) -> dict:
     """为语义层分析代理签发可信内部身份头(I2/I4): 身份只信服务端 JWT 解析结果。
-    workspace 未显式指定时解析用户默认工作站(resolve_user_default_workspace_id),
+    workspace 未显式指定时解析用户默认工作空间(resolve_user_default_workspace_id),
     严禁落 0 —— 语义层中间件对 _INTERNAL_ROUTES 会再做 authorize_workspace,
     0 会被显式拒绝; 缺头则整体 401"缺少可信身份"(fail-closed, 不静默降级)。"""
     uid = int(user.get("user_id") or 0)

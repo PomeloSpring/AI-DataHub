@@ -7,7 +7,7 @@ import logging
 
 import pymysql
 from fastapi import APIRouter, Depends, HTTPException, Query as QueryParam
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 
 from backend.common.auth import get_current_user, get_workspace_id, require_admin
@@ -17,11 +17,9 @@ from backend.modules.viz.services.dashboard_service import (
     dashboard_service,
     chart_service,
     snapshot_service,
-    preview_saved_query,
-    list_datasource_aggregations,
     build_visible_groups,
     check_dashboard_editable,
-    assert_dataset_chart_usable,
+    chart_identity_from_user,
     _invalidate_dashboard_payload,
 )
 
@@ -43,17 +41,8 @@ def _require_editable(dashboard_id: int, user: dict) -> None:
 
 
 def _chart_identity(user: dict) -> dict:
-    """图表写操作的服务端可信身份（只取 JWT，不取请求体；护栏 §2）。
-
-    数据源授权按 `adh_user_roles` 裁决（与 workspace 无关），workspace_id 仅作为
-    数据集服务内部取用上下文，此处从 JWT 载荷取、取不到则为 0（不影响源级 RBAC 口径）。
-    """
-    return {
-        "user_id": int(user.get("user_id") or 0),
-        "username": user.get("username") or "",
-        "role": user.get("role") or "",
-        "workspace_id": int(user.get("workspace_id") or 0),
-    }
+    """图表写入口的可信身份（委托服务层唯一构造，字段名不得两处各写一套）。"""
+    return chart_identity_from_user(user)
 
 
 # ── Pydantic Models ─────────────────────────────────────────────────────────
@@ -65,6 +54,7 @@ class DashboardCreate(BaseModel):
     layout: Optional[list] = []
     filters: Optional[dict] = {}
     params: Optional[list] = []
+    tags: Optional[list] = []
     status: Optional[str] = "designing"
     is_public: bool = False
     is_default: bool = False
@@ -78,6 +68,7 @@ class DashboardUpdate(BaseModel):
     layout: Optional[list] = None
     filters: Optional[dict] = None
     params: Optional[list] = None
+    tags: Optional[list] = None
     status: Optional[str] = None
     is_public: Optional[bool] = None
     is_default: Optional[bool] = None
@@ -85,14 +76,24 @@ class DashboardUpdate(BaseModel):
 
 
 class ChartCreate(BaseModel):
+    """新增图表。
+
+    取数口径不再属于图表（2026-11-06 拍板）：图表只能挂角色授权清单内的数据集
+    （source_type='dataset' + source_id）或声明式语义意图。口径收口在「数据集」页
+    （有字段声明/认证/血缘/角色清单），看板只做可视化装配。
+    `sql_query` 字段保留只为把旧客户端的提交送到服务层显式拒掉（400 + 出路），
+    不静默丢弃后当保存成功；服务层 `assert_chart_data_source` 是唯一把关点。
+    """
     name: str
     chart_type: str
-    sql_query: Optional[str] = None
+    sql_query: Optional[str] = Field(None, deprecated=True,
+                                    description="已下线：口径请在数据集页定义，图表只挂数据集")
     config: Optional[dict] = None
     position: Optional[dict] = None
-    source_type: Optional[str] = "query"
+    # 缺省不写通道名：未绑数据集时服端落成占位图，不默认长进已下线的 'query' 通道
+    source_type: Optional[str] = None
     source_id: Optional[int] = None
-    # Phase 5: 大屏语义化 — 存声明式 SemanticQuery 而非裸 SQL
+    # Phase 5: 大屏语义化 — 存声明式 SemanticQuery（SQL 由语义层编译，非人写）
     semantic_query: Optional[dict] = None
     query_source: Optional[str] = "raw_sql"  # raw_sql | semantic
     # 模板导入的示例数据（{columns, rows}）：服务层校验仅允许 config.demoData=true 的图表写入
@@ -100,9 +101,11 @@ class ChartCreate(BaseModel):
 
 
 class ChartUpdate(BaseModel):
+    """图表局部更新（同 ChartCreate：`sql_query` 带内容到服务层即 400）。"""
     name: Optional[str] = None
     chart_type: Optional[str] = None
-    sql_query: Optional[str] = None
+    sql_query: Optional[str] = Field(None, deprecated=True,
+                                    description="已下线：口径请在数据集页定义，图表只挂数据集")
     config: Optional[dict] = None
     position: Optional[dict] = None
     source_type: Optional[str] = None
@@ -119,7 +122,11 @@ class ChartUpdate(BaseModel):
 
 
 class ChartBatchSave(BaseModel):
-    """整板草稿提交：新增/修改/删除一次带上来，避开 N 次往返。"""
+    """整板草稿提交：新增/修改/删除一次带上来，避开 N 次往返。
+
+    added/changed 是裸结构（旧前端逐条保存的同状载荷），口径把关放在服务层：
+    逐条预检不过则整笔中止并在 errors 里指名图表（不留半截草稿）。
+    """
     added: Optional[list] = []
     changed: Optional[dict] = {}
     deleted: Optional[list] = []
@@ -127,10 +134,16 @@ class ChartBatchSave(BaseModel):
 
 
 class ChartRefreshRequest(BaseModel):
+    """重查请求。
+
+    **没有 `count_sql`**：旧版这个字段等于让前端递一条可执行 SQL（第二取数通道），
+    行总数现在由服务端从数据集编译产物生成；分页只在数据集通道可用。
+    分页只接受 `page_size`（每页行数，服务端硬上限 100）与 `page_num`（页号，从 1 起），
+    不接受 offset —— 偏移量由服务端算，不让调用方决定扫到第几行。
+    """
     params: Optional[dict] = {}
-    page_limit: Optional[int] = None
-    page_offset: Optional[int] = None
-    count_sql: Optional[str] = None
+    page_size: Optional[int] = None
+    page_num: Optional[int] = None
 
 
 class LayoutItem(BaseModel):
@@ -230,35 +243,9 @@ def reorder_dashboards_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/preview")
-def preview_datasource_endpoint(
-    req: dict,
-    user: dict = Depends(get_current_user),
-    workspace_id: int = Depends(get_workspace_id),
-):
-    """Execute a saved query/dataset SQL and return preview data."""
-    try:
-        source_type = req.get("source_type", "")
-        source_id = req.get("source_id", 0)
-        result = preview_saved_query(user["user_id"], source_type, source_id, workspace_id)
-        return result
-    except NoIdentityError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to preview datasource")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/datasources")
-def list_datasources_endpoint(
-    user: dict = Depends(get_current_user),
-):
-    """Aggregate available data sources: snapshots, saved queries, datasets."""
-    try:
-        return list_datasource_aggregations(user["user_id"])
-    except Exception as e:
-        logger.exception("Failed to list datasources")
-        raise HTTPException(status_code=500, detail=str(e))
+# 旧版这两个入口服务的是“图表数据源 = 快照/保存查询”的退役模型（且 preview 会按
+# source_id 直接回数据行）：图表取数已收口到角色授权内的数据集，入口一并删除，
+# 不留“文档里还能选快照/保存查询”的第二口径。
 
 
 # ── Dashboard Groups (仪表盘组/看板组合: 看板目录切换维度) ────────────
@@ -324,12 +311,15 @@ def create_group_endpoint(req: GroupCreate, admin: dict = Depends(require_admin)
 @router.put("/groups/{group_id}")
 def update_group_endpoint(group_id: int, req: GroupCreate, admin: dict = Depends(require_admin)):
     """更新仪表盘组(仅 admin)."""
-    from backend.common.db import execute_write
-    n = execute_write(
+    from backend.common.db import execute_write, execute_query
+    # 存在性必须用 SELECT 判（与 /items、/roles 同口径）：拿 UPDATE 的影响行数当存在性
+    # 会把“名称/说明/排序没改动的重复保存”当成 0 行受影响 → 误报「仪表盘组不存在」404
+    # （MySQL 对值未变的行不计数，历史缺陷：用户在编辑弹窗里原样再点保存必报错）。
+    if not execute_query("SELECT id FROM adh_dashboard_groups WHERE id=%s", (group_id,), fetchone=True):
+        raise HTTPException(status_code=404, detail="仪表盘组不存在")
+    execute_write(
         "UPDATE adh_dashboard_groups SET name=%s, description=%s, sort=%s WHERE id=%s",
         (req.name, req.description or "", req.sort or 0, group_id))
-    if not n:
-        raise HTTPException(status_code=404, detail="仪表盘组不存在")
     _invalidate_dashboard_payload()
     return {"success": True}
 
@@ -494,13 +484,14 @@ def add_chart_endpoint(
     req: ChartCreate,
     user: dict = Depends(get_current_user),
 ):
-    """Add a chart to a dashboard."""
+    """Add a chart to a dashboard.
+
+    口径把关在服务层 `create_chart`（数据集必须在角色授权清单内且可执行）。
+    """
     try:
         _require_editable(dashboard_id, user)
-        payload = req.model_dump()
-        # 挂数据集图表：编辑者需在“数据集可用数据源范围 ∩ 角色授权源”里至少有一个源
-        assert_dataset_chart_usable(payload, _chart_identity(user))
-        cid = chart_service.create_chart(dashboard_id, payload)
+        cid = chart_service.create_chart(dashboard_id, req.model_dump(),
+                                        identity=_chart_identity(user))
         return {"id": cid}
     except HTTPException:
         raise
@@ -519,14 +510,15 @@ def update_chart_endpoint(
     req: ChartUpdate,
     user: dict = Depends(get_current_user),
 ):
-    """Update a chart within a dashboard."""
+    """Update a chart within a dashboard.
+
+    patch 只带局部字段时由服务层回读拼出有效口径后把关（含旧存量 SQL 图的收编拒）。
+    """
     try:
         _require_editable(dashboard_id, user)
         patch = req.model_dump(exclude_unset=True)
-        # 改图同样把关（patch 只带局部字段时由服务层回读现有行拼出口径）
-        assert_dataset_chart_usable(patch, _chart_identity(user), chart_id=chart_id)
         updated = chart_service.update_chart(
-            dashboard_id, chart_id, patch,
+            dashboard_id, chart_id, patch, identity=_chart_identity(user),
         )
         if not updated:
             raise HTTPException(status_code=404, detail="Chart not found")
@@ -576,11 +568,6 @@ def batch_save_charts_endpoint(
         _require_editable(dashboard_id, user)
         errors: list = []
         ident = _chart_identity(user)
-        # 先全量预检数据集图的可用源（与 create/update 入口同口径）：避免存上一堆“挂得上、刷新必报错”的图
-        for payload in (req.added or []):
-            assert_dataset_chart_usable(payload, ident)
-        for cid, patch in (req.changed or {}).items():
-            assert_dataset_chart_usable(patch, ident, chart_id=int(cid))
         saved_metadata = False
         if req.metadata:
             saved_metadata = dashboard_service.update_dashboard(
@@ -588,7 +575,8 @@ def batch_save_charts_endpoint(
             )
             if not saved_metadata and req.metadata:
                 errors.append("看板元数据未写入（无变更或看板不存在）")
-        outcome = chart_service.batch_save(dashboard_id, req.added or [], req.changed or {}, req.deleted or [])
+        outcome = chart_service.batch_save(dashboard_id, req.added or [], req.changed or {},
+                                          req.deleted or [], identity=ident)
         errors.extend(outcome["errors"])
         return {
             "success": bool(outcome["ok"]) and not errors,
@@ -614,14 +602,13 @@ def refresh_chart_endpoint(
     user: dict = Depends(get_current_user),
     workspace_id: int = Depends(get_workspace_id),
 ):
-    """Re-execute a chart's SQL query on its configured datasource."""
+    """按查看者身份重查一个图表（只经数据集/声明式语义/AS-BOT 设计三条通道）。"""
     try:
         result = chart_service.refresh_chart(
             dashboard_id, chart_id,
             params=req.params,
-            page_limit=req.page_limit,
-            page_offset=req.page_offset,
-            count_sql=req.count_sql,
+            page_size=req.page_size,
+            page_num=req.page_num,
             user_id=user.get("user_id") or 0,
             workspace_id=workspace_id,
             username=user.get("username", "") or "",

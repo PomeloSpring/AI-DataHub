@@ -16,7 +16,7 @@ description: 页面/导航结构一变（新增、改名、移动、删除菜单
 - 以上任意一项发生，**同一批次**完成 §2 的登记与迁移，不得"先改页面、权限配置以后再说"。
 
 ## 2. 同批必须落地的五件事
-1. **菜单登记** `adh_menu_registry`：`menu_key`（路由式命名，如 `workspace:dashboards`）+ `label`（与侧栏文案一致）+ `section`/`module`（与实际分组一致）+ `sort`（与侧栏顺序一致）+ `perm_code`（显隐反查用）+ `ai_access`；
+1. **菜单登记** `adh_menu_registry`：`menu_key`（路由式命名，如 `workspace:dashboards`）+ `label`（与侧栏文案一致）+ `section`/`module`（与实际分组一致）+ `sort`（与侧栏顺序一致）+ `perm_code`（显隐反查用）+ `ai_access`（**必须显式取值**：不开放给 AI 的域写 `none` 并在 `adh_perm_registry.ai_note` 说明原因，不得缺省留空——缺省会被后人当成"忘了配"而去补开）；
 2. **权限点归属** `adh_perm_registry.menu_key`：读权限归消费菜单、写权限归管理菜单（样板：`dashboard:read`→`workspace:dashboards`，`dashboard:manage`→`system:dashboards`）；一个菜单下至少要有一个权限点，否则角色页渲染不出该菜单（配了也白配）；
 3. **存量角色默认授权**：新菜单对应的权限点要 `INSERT IGNORE` 给既有角色，维持迁移前的入口可见现状（管理员仍可按角色收回）；漏了这步 = 存量用户入口凭空消失；
 4. **前端显隐口径对齐**：侧栏/入口按 `isMenuAllowed(toMenuKey(...))` 从权限码反查，与登记的 menu_key 一一对应；确需 `always: true` 例外（如资产清单=工作站基础功能）必须在代码注释写明原因；
@@ -42,4 +42,6 @@ description: 页面/导航结构一变（新增、改名、移动、删除菜单
 - ❌ 登记了菜单但 `perm_code` 为空/没挂权限点（角色页渲染不出，或勾选无效的死开关）；
 - ❌ 只改前端 label/分组不改 `adh_menu_registry`（角色页显示旧名旧位置）；
 - ❌ 新菜单漏了存量角色默认授权（老用户入口凭空消失）；
-- ❌ 改了默认落地页/入口显隐口径却留旧口径代码与旧菜单结构（双口径并存）。
+- ❌ 改了默认落地页/入口显隐口径却留旧口径代码与旧菜单结构（双口径并存）；
+- ❌ 某域确定不对 AI 开放，却把它的权限点留在 `read`/`write`（角色页能勾但不生成工具也不参与裁决 = 空承诺），或只改配置不纳入代码层硬上界（下一次迁移又会被抬回去）——典型本域：数据同步/DAG/UDF/物化（口径与待落地项见 `data-sync-engineering.md` §2/§9）；
+- ❌ 不给 AI 的功能省掉菜单登记，或用 `ai_access` 缺省值表达"不开放"意图而不写原因。

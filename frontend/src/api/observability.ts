@@ -44,6 +44,8 @@ export interface CommonFilters {
   model_ref?: string;
   /** 处理方式：agent=走了执行层模型 / intent_gate=前置意图层本地直答 */
   handled_by?: string;
+  /** 模型通道：qoder-gateway=Qoder网关(按credit) / anthropic-direct=供应商直连(按token) / unrecorded=未记录 */
+  channel?: string;
   start?: string;
   end?: string;
 }
@@ -55,9 +57,20 @@ export interface UsageSummary {
   llm_calls: number;
   total_tokens: number;
   credits: number | null;
-  /** 本回合成本：CLI 上报（USD）或按 credit 单价折算（币种由 OBSERVABILITY_CREDIT_COST_* 配置） */
-  cost_amount: number | null;
-  cost_currency: string | null;
+  /** @deprecated 跨币种混加的历史字段，已不再返回；成本请用 cost_by_currency 按币种看 */
+  cost_amount?: number | null;
+  cost_currency?: string | null;
+  /** 成本按币种分别汇总（Qoder 通道为 CNY 折算、直连为供应商 USD，两者不可相加） */
+  cost_by_currency?: Array<{ currency: string | null; turns: number; amount: number }>;
+  /** 按模型通道分桶：credit 只对 Qoder 网关有意义，token 只有直连会回报 */
+  by_channel?: Array<{
+    channel: string; turns: number; llm_calls: number; total_tokens: number;
+    credits: number | null; cost_amount: number | null; cost_currency: string | null;
+    /** 其中多少个回合的通道值是按判据回填的（不是运行时实记） */
+    backfilled_turns?: number | null;
+  }>;
+  /** 走供应商直连的回合数（不消耗 Qoder Credits） */
+  direct_turns?: number;
   errors: number | null;
   avg_duration_ms: number | null;
   thumbs_up: number | null;
@@ -82,6 +95,8 @@ export interface DailyPoint {
 
 export interface ModelUsage {
   model_ref: string;
+  /** 模型通道：同一模型走不同通道时 credit/token 口径不同，所以按（模型, 通道）分组 */
+  channel?: string;
   turns: number;
   llm_calls: number;
   input_tokens: number;
@@ -139,6 +154,16 @@ export interface TraceRow {
   session_credits: number | null;
   llm_call_count: number;
   span_count: number;
+  /** 实际走的模型通道（历史未记录行会归为 unrecorded，前置拦截行归为 not-executed） */
+  channel?: string;
+  /** 通道值来源：runtime=执行层实记，backfilled=判据回填，空=未记录 */
+  channel_source?: string | null;
+  /** 实际生效的执行层（id 仅供排查，展示用 layer_name） */
+  layer_id?: number | null;
+  layer_name?: string | null;
+  /** 本回合成本与币种：Qoder 通道为折算 CNY，直连为供应商上报 USD */
+  cost_amount?: number | null;
+  cost_currency?: string | null;
   feedback_satisfied: number | null;
 }
 

@@ -8,6 +8,9 @@
   * 归档后会话本地产物可基于磁盘配额清理(资产不受影响);
   * LLM 经 assets 工具组感知清单并与用户确认归档/清理。
 
+会话工作区产物另有云空间镜像（见 execution/session_cloud）：本地产物缺失时读路径
+按云端副本自动回落后才继续列/读，文件项带 `synced` 标记（以云端实际对象为准）。
+
 路由分两域:
   * /api/assets          — 用户资产域(跨工作空间), 属主校验 = user_id 过滤(fail-closed);
   * /api/workspace-assets — 工作空间本地产物域(会话文件/磁盘配额/清理), 仍按工作空间治理。
@@ -47,6 +50,22 @@ class CleanupRequest(BaseModel):
     confirm: bool = False
 
 
+def _session_root_or_restore(row, user_id: int):
+    """定位会话目录根；本地缺失时先从云空间回落（换节点/卷清理后产物仍可读写）。
+
+    回落不可得时抛 409 可操作提示，而不是把 session_paths 的内部异常抛给用户。
+    """
+    from backend.modules.mind.execution import session_cloud
+    from backend.modules.mind.execution import session_workspace as sw
+    if not session_cloud.ensure_local_workspace({**row, "user_id": user_id}):
+        raise HTTPException(status_code=409,
+                            detail="该会话的工作区目录已不存在，云空间也没有可恢复的产物副本"
+                                   "（存量数据未上云或已被清理）")
+    base = sw.workspace_base(create=False)
+    return sw.session_paths(base, row["session_key"], int(row["workspace_id"] or 0),
+                            user_id, create=False)
+
+
 def _locate_session_file(user_id: int, conversation_id: int, rel_path: str,
                          workspace_id: Optional[int] = None):
     """定位会话产物文件(仅属主, 防目录穿越/符号链接逃逸)。
@@ -55,7 +74,6 @@ def _locate_session_file(user_id: int, conversation_id: int, rel_path: str,
     conversation_id + user_id 定位(资产跟人走, 不限定工作空间)。
     返回 (target, workspace_id, 规范化相对路径)。
     """
-    from backend.modules.mind.execution import session_workspace as sw
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
@@ -74,8 +92,7 @@ def _locate_session_file(user_id: int, conversation_id: int, rel_path: str,
         conn.close()
     if not row or not row.get("session_key"):
         raise HTTPException(status_code=404, detail="会话不存在或无权访问")
-    base = sw.workspace_base(create=False)
-    root = sw.session_paths(base, row["session_key"], row["workspace_id"], user_id, create=False)
+    root = _session_root_or_restore(row, user_id)
     ws_dir = (root / "workspace").resolve()
     rel = (rel_path or "").strip()
     for prefix in ("/workspace/", "/workspace", "workspace/", "./", "/"):
@@ -130,6 +147,8 @@ def archive_session_file(user_id: int, conversation_id: int, rel_path: str,
             target.unlink()
         except OSError:
             logger.warning("归档成功但删除本地产物失败: %s", target)
+        else:
+            _resync_after_local_change(origin_ws, conversation_id, user_id)
     return {"id": asset_id, "name": name or filename, "filename": filename, "size": len(data),
             "source_conversation_id": conversation_id, "origin_workspace_id": origin_ws}
 
@@ -222,6 +241,39 @@ def delete_asset_endpoint(asset_id: str, user: dict = Depends(get_current_user))
     return {"success": True}
 
 
+def find_asset(asset_id: str, user_id: int) -> dict | None:
+    """按 (asset_id, user_id) 取资产行；不存在或非本人所有返回 None（属主 fail-closed）。"""
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, filename, object_key, category, size, name, "
+                "       origin_workspace_id, source_conversation_id, created_at "
+                "FROM adh_user_assets WHERE id=%s AND user_id=%s",
+                (asset_id, user_id))
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def fetch_asset_bytes(asset_id: str, user_id: int) -> tuple[str, bytes]:
+    """取回归档资产内容 → (filename, bytes)（聊天框 `@` 引用、跨会话复用同一入口）。
+
+    失败一律外抛含原因 ValueError，不回空内容冒充"文件是空的"：用户 @ 的是清单里的项，
+    取不到必须当场知道（资产被删 / 对象存储读不出 / 大小异常），而不是让 Agent 拿着
+    零字节文件去分析。
+    """
+    row = find_asset(asset_id, user_id)
+    if not row:
+        raise ValueError(f"归档资产不存在或无权访问: {asset_id}")
+    data = get_object_storage().download_bytes(row["object_key"])
+    if data is None:
+        raise ValueError(f"归档资产内容不可用(对象存储读取失败): {row['filename']}")
+    if not data:
+        raise ValueError(f"归档资产是空文件，无法作为上下文: {row['filename']}")
+    return row["filename"], data
+
+
 def _get_asset(asset_id: str, user_id: int) -> dict:
     """按 (asset_id, user_id) 取资产(属主 fail-closed: 他人的资产一律 404)。"""
     conn = get_metadata_conn()
@@ -264,11 +316,37 @@ def delete_session_file_endpoint(workspace_id: int, conversation_id: int,
         target.unlink()
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"删除失败: {e}")
+    _resync_after_local_change(workspace_id, conversation_id, user["user_id"])
     return {"ok": True, "deleted": target.name}
 
 
+def _resync_after_local_change(workspace_id: int, conversation_id: int, user_id: int) -> None:
+    """本地产物增删后把镜像推到云空间（后台执行，不占用本次请求耗时）。"""
+    from backend.modules.mind.execution import session_cloud
+    from backend.modules.mind.execution import session_workspace as sw
+    try:
+        row = _session_row(workspace_id, conversation_id, user_id)
+        root = sw.session_paths(sw.workspace_base(create=False), row["session_key"],
+                                row["workspace_id"], user_id, create=False)
+        session_cloud.schedule_sync(root, user_id, row["session_key"], reason="file-api")
+    except Exception:  # noqa: BLE001 — 镜像刷新失败不影响本次操作，面板按云端清单标未同步
+        logger.exception("产物镜像刷新调度失败: conversation=%s", conversation_id)
+
+
 def list_session_files(workspace_id: int, conversation_id: int, user_id: int) -> list:
-    target_root, _, _ = _locate_session_file_root(workspace_id, conversation_id, user_id)
+    """会话工作区产物清单（含每项是否已同步云空间）。
+
+    本地产物缺失但云端有副本时先回落再列（用户看到的是“文件还在”，不是空面板）；
+    两边都没有才返回空列表——那确实是“这个会话没有产物文件”。
+    """
+    from backend.modules.mind.execution import session_cloud
+    from backend.modules.mind.execution import session_workspace as sw
+    row = _session_row(workspace_id, conversation_id, user_id)
+    if not session_cloud.ensure_local_workspace({**row, "user_id": user_id}):
+        return []
+    base = sw.workspace_base(create=False)
+    target_root = sw.session_paths(base, row["session_key"], int(row["workspace_id"] or 0),
+                                  user_id, create=False)
     ws_dir = (target_root / "workspace").resolve()
     if not ws_dir.is_dir():
         return []
@@ -279,17 +357,23 @@ def list_session_files(workspace_id: int, conversation_id: int, user_id: int) ->
                 files.append({"path": str(p.relative_to(ws_dir)), "size": p.stat().st_size})
         except OSError:
             continue
+    # 同步态以云端实际对象清单为准（不拿本地清单自证“已同步”）
+    try:
+        session_cloud.sync_status(user_id, row["session_key"], files)
+    except Exception:  # noqa: BLE001 — 同步态算不出就一律标未同步，不影响清单可用
+        logger.exception("会话产物同步状态计算失败: conversation=%s", conversation_id)
+        for f in files:
+            f["synced"] = False
     return files
 
 
-def _locate_session_file_root(workspace_id: int, conversation_id: int, user_id: int):
-    """定位会话目录根(仅属主); 返回 (session_root, workspace_id, "")。"""
-    from backend.modules.mind.execution import session_workspace as sw
+def _session_row(workspace_id: int, conversation_id: int, user_id: int) -> dict:
+    """按 (会话, 属主, 空间) 取执行映射行（云端回落需要 session_key）。"""
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT session_key, workspace_id FROM adh_agent_sessions "
+                "SELECT session_key, workspace_id, user_id FROM adh_agent_sessions "
                 "WHERE conversation_id=%s AND user_id=%s AND workspace_id=%s",
                 (conversation_id, user_id, workspace_id))
             row = cur.fetchone()
@@ -297,8 +381,25 @@ def _locate_session_file_root(workspace_id: int, conversation_id: int, user_id: 
         conn.close()
     if not row or not row.get("session_key"):
         raise HTTPException(status_code=404, detail="会话不存在或无权访问")
-    base = sw.workspace_base(create=False)
-    return sw.session_paths(base, row["session_key"], row["workspace_id"], user_id, create=False), row["workspace_id"], ""
+    return row
+
+
+def _locate_session_file_root(workspace_id: int, conversation_id: int, user_id: int):
+    """定位会话目录根(仅属主); 本地缺失先按云空间回落。返回 (root, workspace_id, "")。"""
+    row = _session_row(workspace_id, conversation_id, user_id)
+    return _session_root_or_restore(row, user_id), row["workspace_id"], ""
+
+
+@workspace_router.get("/{workspace_id}/conversations/{conversation_id}/files-sync")
+def session_files_sync_endpoint(workspace_id: int, conversation_id: int,
+                                user: dict = Depends(get_current_user)):
+    """云空间同步态：用户是否开启自动上云 + 对象存储是否可用（面板据此说明“未同步”原因）。"""
+    from backend.modules.mind.execution import session_cloud
+    authorize_workspace(user, workspace_id)
+    uid = int(user["user_id"])
+    return {"enabled": session_cloud.cloud_sync_enabled(uid),
+            "configured": session_cloud.sync_available(),
+            "note": ("" if session_cloud.sync_available() else "对象存储未配置，产物只在本地")}
 
 
 @workspace_router.get("/{workspace_id}/disk-status")
@@ -309,26 +410,30 @@ def disk_status_endpoint(workspace_id: int, user: dict = Depends(get_current_use
 
 
 def disk_status(workspace_id: int, user_id: int) -> dict:
+    """用量/配额面板数据。配额与新建会话的拦截门**同源**（role_service 唯一裁决点）。
+
+    历史缺陷：本面板把"无登记行"读成 0 → 显示"未设配额"，而管理员页 COALESCE 显示 5GB，
+    两处双口径让人无法判断真实限制。现在无行返回系统缺省并标 quota_is_default，
+    面板据此显示"（系统缺省）"而不是"未设配额"。
+    """
+    from backend.core.role_service import role_service
     from backend.modules.mind.execution.session_workspace import workspace_disk_usage
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT q.disk_quota_bytes FROM adh_user_workspace_quota q "
-                "JOIN adh_workspaces w ON w.owner_id = q.user_id WHERE w.id = %s",
-                (workspace_id,))
-            quota_row = cur.fetchone()
             cur.execute(
                 "SELECT session_key, conversation_id, status, created_at FROM adh_agent_sessions "
                 "WHERE workspace_id=%s ORDER BY created_at DESC LIMIT 50", (workspace_id,))
             sessions = cur.fetchall()
     finally:
         conn.close()
-    quota = int((quota_row or {}).get("disk_quota_bytes") or 0)
+    effective = role_service.get_user_workspace_quota(user_id)
+    quota = int(effective.get("disk_quota_bytes") or 0)
     usage = workspace_disk_usage(workspace_id, user_id)
     for s in sessions:
         s["bytes"] = _session_dir_bytes(workspace_id, user_id, s.get("session_key") or "")
     return {"workspace_id": workspace_id, "usage_bytes": usage, "quota_bytes": quota,
+            "quota_is_default": bool(effective.get("is_default")),
             "sessions": sessions}
 
 

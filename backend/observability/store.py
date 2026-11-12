@@ -78,8 +78,9 @@ def save_trace(summary: dict, spans: list[dict]) -> None:
                     workspace_id, datasource_id, entrypoint, handled_by, model_ref, question, final_answer,
                     status, error_message, started_at, duration_ms, input_tokens, output_tokens,
                     total_tokens, credits, cost_amount, cost_currency, session_credits,
-                    llm_call_count, span_count)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    llm_call_count, span_count, queue_wait_ms, retry_count,
+                    channel, channel_source, layer_id, layer_name)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON DUPLICATE KEY UPDATE
                      final_answer=VALUES(final_answer), status=VALUES(status),
                      handled_by=VALUES(handled_by),
@@ -88,7 +89,11 @@ def save_trace(summary: dict, spans: list[dict]) -> None:
                      total_tokens=VALUES(total_tokens), credits=VALUES(credits),
                      cost_amount=VALUES(cost_amount), cost_currency=VALUES(cost_currency),
                      session_credits=VALUES(session_credits),
-                     llm_call_count=VALUES(llm_call_count), span_count=VALUES(span_count)""",
+                     llm_call_count=VALUES(llm_call_count), span_count=VALUES(span_count),
+                     queue_wait_ms=VALUES(queue_wait_ms), retry_count=VALUES(retry_count),
+                     channel=VALUES(channel), channel_source=VALUES(channel_source),
+                     layer_id=VALUES(layer_id),
+                     layer_name=VALUES(layer_name)""",
                 (
                     summary["trace_id"], summary.get("message_uuid"), summary.get("conversation_id", 0),
                     summary.get("user_id", 0), summary.get("username", ""), summary.get("user_role", ""),
@@ -103,6 +108,13 @@ def save_trace(summary: dict, spans: list[dict]) -> None:
                     summary.get("credits"), summary.get("cost_amount"),
                     summary.get("cost_currency") or None, summary.get("session_credits"),
                     summary.get("llm_call_count", 0), summary.get("span_count", len(spans)),
+                    # 排队与自动重试（未发生则为 NULL，不写 0：0 会被读成“排了但一秒都没等”）
+                    summary.get("queue_wait_ms"), summary.get("retry_count"),
+                    # 执行层与模型通道：计量单位因通道而异（credit vs token），没进执行层的
+                    # 拦截回合保持 NULL，不能当成“走了某个通道”
+                    summary.get("channel") or None, summary.get("channel_source") or None,
+                    summary.get("layer_id") or None,
+                    summary.get("layer_name") or None,
                 ),
             )
             for sp in spans:

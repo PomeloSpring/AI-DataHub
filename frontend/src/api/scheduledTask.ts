@@ -6,7 +6,8 @@ export interface ScheduledTask {
   id: number;
   name: string;
   description: string;
-  task_type: 'query' | 'agent';
+  /** 工作空间定时任务只有 Agent 分析形态；SQL 定时任务在数据中台的数据同步里配置 */
+  task_type: 'agent';
   task_config: TaskConfig;
   report_template_key: string | null;
   cron_expression: string;
@@ -21,7 +22,6 @@ export interface ScheduledTask {
   workspace_id: number;
   owner_id: number;
   ownership_status?: 'owned' | 'unclaimed';
-  requires_as_bot_migration?: boolean;
   last_run_at: string | null;
   last_status: string | null;
   last_error: string | null;
@@ -33,20 +33,15 @@ export interface ScheduledTask {
 }
 
 export interface TaskConfig {
-  datasource_id: number;
-  datasource_ids?: number[];
   questions: TaskQuestion[];
-  as_bot_key?: string;
-  agent_name?: string;
-  agent_names?: string[];
-  mcp_server_id?: number;
-  mcp_server_ids?: number[];
-  max_iterations?: number;
+  /** 给 Agent 的补充说明（口径、语言、范围等） */
   context?: string;
+  /** 可选的业务站点提示；不填=按角色授权自动/逐站取数（不是数据源标识） */
+  site_code?: string;
+  max_iterations?: number;
 }
 
 export interface TaskQuestion {
-  sql?: string;
   question?: string;
   title: string;
 }
@@ -95,7 +90,7 @@ export interface NotificationChannel {
 export interface ScheduledTaskCreateRequest {
   name: string;
   description?: string;
-  task_type: 'query' | 'agent';
+  /** 任务类型由服务端固定为 agent，请求体不再接受 task_type */
   task_config: TaskConfig;
   report_template_key?: string;
   cron_expression: string;
@@ -122,23 +117,6 @@ export interface NotificationChannelCreateRequest {
 }
 
 export type NotificationChannelUpdateRequest = Partial<NotificationChannelCreateRequest>;
-
-export interface ScheduledAsBotOption {
-  as_bot_key: string;
-  name: string;
-  available: boolean;
-  reason?: string;
-  datasource_ids: number[];
-  tools: string[];
-  unavailable_tools: { name: string; reason: string }[];
-}
-
-export async function listScheduledAsBots(workspaceId: number, taskId?: number): Promise<ScheduledAsBotOption[]> {
-  const { data } = await client.get(taskId
-    ? `/scheduled-tasks/tasks/${taskId}/as-bot-options`
-    : '/scheduled-tasks/as-bot-options', { params: taskId ? undefined : { workspace_id: workspaceId } });
-  return data;
-}
 
 // ── Scheduled Tasks API ────────────────────────────────────────
 
@@ -257,25 +235,9 @@ export async function testNotificationChannel(id: number): Promise<{ success: bo
   return data;
 }
 
-// ── Report Templates API ────────────────────────────────────────
+// 报告模板的旧入口已退役：/scheduled-tasks/templates 与遗留表 adh_report_templates
+// 不再有消费方。报告模板的候选清单与骨架均走 `@/api/report`（/reports/templates*，
+// 维护在「系统配置 → 模板中心」）；通知文案则走 `@/api/messageTemplate`（渠道只存引用）。
 
-export interface ReportTemplate {
-  id: number;
-  name: string;
-  description: string;
-  content: string;
-  format: 'markdown' | 'html';
-  is_system: boolean;
-  workspace_id: number;
-  owner_id: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export async function listReportTemplates(workspaceId?: number): Promise<ReportTemplate[]> {
-  const { data } = await client.get('/scheduled-tasks/templates', { params: { workspace_id: workspaceId } });
-  return data;
-}
-
-// 报表中心（含非定时任务产出的报表）的清单/详情/增删改已迁至 `@/api/report`：
-// 报表跟随属主且不再只由任务产出，继续挂在 scheduled-tasks 下会误导页面职责边界。
+// 报告中心（含非定时任务产出的报告）的清单/详情/增删改已迁至 `@/api/report`：
+// 报告跟随属主且不再只由任务产出，继续挂在 scheduled-tasks 下会误导页面职责边界。

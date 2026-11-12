@@ -107,7 +107,7 @@ UPDATE adh_perm_registry SET ai_access='read', ai_action_key='datasource.list_sa
 WHERE perm_code='datasource:read';
 UPDATE adh_perm_registry SET ai_access='read', ai_action_key='knowledge_base.list', ai_note='仅回知识库名称/类型/状态; 禁止一切写'
 WHERE perm_code='kb:read';
-UPDATE adh_perm_registry SET ai_access='read', ai_action_key='report.list', ai_note='仅回报表标题/格式/状态, 不含正文与分享令牌; 禁止一切写'
+UPDATE adh_perm_registry SET ai_access='read', ai_action_key='report.list', ai_note='仅回报告标题/格式/状态, 不含正文与分享令牌; 禁止一切写'
 WHERE perm_code='report:read';
 UPDATE adh_perm_registry SET ai_access='read', ai_action_key='dashboard.list', ai_note='仅回看板名称/描述/状态; 禁止一切写'
 WHERE perm_code='dashboard:read';
@@ -156,7 +156,7 @@ UPDATE adh_perm_registry SET ai_access='write', ai_action_key='', ai_note='本�
 WHERE perm_code IN ('ontology:generate','ontology:save','ontology:activate','ontology:import');
 UPDATE adh_perm_registry SET ai_access='write', ai_action_key='', ai_note='取数走统一治理入口(execute_query_with_permission), 受数据护城河约束'
 WHERE perm_code IN ('dataset:query','playground:execute','scheduled:execute');
-UPDATE adh_perm_registry SET ai_access='write', ai_action_key='report.generate', ai_note='生成报表; 输出不含正文以外的凭据字段'
+UPDATE adh_perm_registry SET ai_access='write', ai_action_key='report.generate', ai_note='生成报告; 输出不含正文以外的凭据字段'
 WHERE perm_code='report:manage';
 UPDATE adh_perm_registry SET ai_access='write', ai_action_key='scheduled_task.create', ai_note='创建调度任务; Webhook 密钥由服务端生成, 一律不回显'
 WHERE perm_code='scheduled:manage';

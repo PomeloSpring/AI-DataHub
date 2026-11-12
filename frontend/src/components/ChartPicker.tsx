@@ -12,8 +12,11 @@ import MapHeatmap, { detectGeoColumns } from './MapHeatmap';
 import SqlCard from './SqlCard';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
 import { useChartDesign } from '@/hooks/useChartDesign';
+import { useMotion } from '@/hooks/useMotion';
+import { g2Animate } from '@/lib/motion';
 import * as XLSX from 'xlsx';
 import html2canvas from 'html2canvas';
+import { toast } from '@/lib/toast';
 
 interface Props {
   data: {
@@ -137,10 +140,13 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
 
   const hasSeries = seriesCol && seriesValues.length > 1;
 
-  // 图表样式跟随 UI 字模库主题包 —— 统一走 useChartDesign 管线(色板/卡片/线型/轴线，
+  // 图表样式跟随 UI 字模库主题包 —— 统一走 useChartDesign 管线（色板/卡片/线型/轴线，
   // 见 ui-vis-library-style.md)；library 另用于字模加载失败的显式降级提示
   const library = useVisLibrary();
   const { chartStyle } = useChartDesign();
+  // 出现效果与配色同源但相互独立：Chat 面走「用户偏好 > 系统默认」（不传 board）
+  const { motion, cssVars } = useMotion();
+  const motionAnimate = g2Animate(motion.chart);
   const styled = useMemo(
     () => chartStyle({ xCol: x, yCol: y, groupCol: seriesCol || undefined }, chartType),
     [chartStyle, chartType, x, y, seriesCol],
@@ -193,7 +199,7 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
   );
 
   const controlsBlock = (
-    <div className="space-y-3">
+    <div className="space-y-3" data-export-strip>
       <div className="flex gap-2 items-center flex-wrap">
         {typeSelect}
 
@@ -293,6 +299,10 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
       const canvas = await html2canvas(chartContainerRef.current, {
         backgroundColor: styled.visual.viewBg || '#ffffff',
         scale: 2,
+        // useCORS 必须开：默认 allowTaint 会把跨域瓦片直接画进画布，画布随即被污染，
+        // 下一句 toDataURL 抛 SecurityError —— 表现就是"点了导出什么都没发生"。
+        // 高德/Carto 等瓦片都回 Access-Control-Allow-Origin: *，走 CORS 拿得到像素。
+        useCORS: true,
       });
       const url = canvas.toDataURL('image/png');
       const a = document.createElement('a');
@@ -301,12 +311,19 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
       a.click();
     } catch (e) {
       console.error('Export failed:', e);
+      // 失败必须让用户看见：只 console.error 会被当成"导出按钮坏了"
+      // （与报告导出的快照占位说明同口径，见 lib/reportExport）
+      toast.error('图表 PNG 导出失败', {
+        description: '瓦片或图源未允许跨域读取，无法拍成图片。可改用「PDF（浏览器打印）」，或换用支持跨域的瓦片源。',
+      });
     }
   };
 
   return (
     <div className="mt-3">
-      <div className="flex items-center justify-between mb-2">
+      {/* data-export-strip: 图表明细/SQL 页签与本页导出下拉都是交互入口，
+          静态文件里没有可点的页签，留下文字只会让导出结果像坏了。 */}
+      <div className="flex items-center justify-between mb-2" data-export-strip>
         <Tabs value={view} onValueChange={(v) => setView(v as any)}>
           <TabsList>
             <TabsTrigger value="chart"><BarChart3 className="h-4 w-4 mr-1" />图表</TabsTrigger>
@@ -332,7 +349,7 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
         {libraryNotice}
         {isMapChart ? (
           <>
-            <div className="flex gap-2 items-center flex-wrap">
+            <div className="flex gap-2 items-center flex-wrap" data-export-strip>
               {typeSelect}
               <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setFullscreen(true)}>
                 <Maximize2 className="h-4 w-4" />
@@ -346,8 +363,8 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
           <>
             {controlsBlock}
             <div className="relative mt-3" ref={chartContainerRef}>
-              <div className="h-[360px]">
-                <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={styled.config} visual={styled.visual} onDrill={onDrill ? onChartDrill : undefined} />
+              <div className="h-[360px]" style={cssVars}>
+                <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={styled.config} visual={styled.visual} onDrill={onDrill ? onChartDrill : undefined} motionAnimate={motionAnimate} />
               </div>
               <Button
                 variant="ghost"
@@ -400,8 +417,8 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
             ) : (
               <>
                 {controlsBlock}
-                <div className="relative flex-1 mt-3 min-h-0">
-                  <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={styled.config} visual={styled.visual} onDrill={onDrill ? onChartDrill : undefined} />
+                <div className="relative flex-1 mt-3 min-h-0" style={cssVars}>
+                  <DashboardChart chartType={chartType} data={{ columns, rows: filteredRows }} config={styled.config} visual={styled.visual} onDrill={onDrill ? onChartDrill : undefined} motionAnimate={motionAnimate} />
                 </div>
               </>
             )}

@@ -56,9 +56,9 @@ async def execute_task(req: ExecuteRequest, user: dict = Depends(get_current_use
         if req.execution_layer_id:
             row = service.get_layer(req.execution_layer_id)
             if not row:
-                raise HTTPException(status_code=404, detail=f"执行层不存在: id={req.execution_layer_id}")
+                raise HTTPException(status_code=404, detail=f"Harness 不存在: id={req.execution_layer_id}")
             if row.get("status") != "active":
-                raise HTTPException(status_code=400, detail=f"执行层不可用: {row.get('name')}")
+                raise HTTPException(status_code=400, detail=f"Harness 不可用: {row.get('name')}")
         else:
             row = await manager.resolve_workspace_layer(req.workspace_id)
     except HTTPException:
@@ -70,7 +70,7 @@ async def execute_task(req: ExecuteRequest, user: dict = Depends(get_current_use
     from starlette.concurrency import run_in_threadpool
     await run_in_threadpool(preflight_request, req, user)
     if row.get("layer_type") != "cli" or (row.get("config") or {}).get("mode") != "sdk":
-        raise HTTPException(422, "所选执行层不支持 AS-BOT 安全执行")
+        raise HTTPException(422, "所选 Harness 不支持 AS-BOT 安全执行")
     # 执行层全局生效(不按工作空间绑定), 无需绑定校验
     # 附件按工作区相对路径引用既有文件(place_attachments 做包含/存在校验,缺失显式报错)
     task_attachments = [{"path": p} for p in req.attachments]

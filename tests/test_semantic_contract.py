@@ -283,3 +283,76 @@ def test_execute_sql_facade_error_mapping(monkeypatch):
     with pytest.raises(SemanticError) as ei:
         facade.execute_sql("SELECT 1", {"datasource_id": 7})
     assert ei.value.code is ErrorCode.FORBIDDEN
+
+
+# ── 执行失败分类口径（确定性缺陷不得被掩成"系统抖动，稍后重试"）──────────
+# 历史缺陷（会话 1783069459277）：SLS 方言的 SQL 被定到本站 MySQL 业务库，服务端报
+# 1064（能报 1064 就说明连接是通的），而门面把原始异常直接换成 EXEC_FAIL_HINT 下发，
+# 模型据此向用户报"数据源在执行阶段连接失败（系统侧问题），建议稍后重试"。
+
+
+def test_classify_exec_failure_distinguishes_deterministic_defects():
+    assert contract.classify_exec_failure("(1064, You have an error in your SQL syntax)") [0] \
+        == "sql_dialect"
+    assert contract.classify_exec_failure("(1146, Table 'db.x' doesn't exist)")[0] == "missing_object"
+    assert contract.classify_exec_failure('(1054, Unknown column "geo.country")')[0] == "missing_object"
+    assert contract.classify_exec_failure("line 1:47: mismatched input") [0] == "sql_dialect"
+    # 抖动类与认不出的仍回通用文案（分类失败不得编造原因）
+    assert contract.classify_exec_failure("(2002, Can't connect to MySQL server)")[0] == "connectivity"
+    assert contract.classify_exec_failure("boom")[0] == "unclassified"
+    # 优先级：缺表不得被归成语法错（两者文本常共现）
+    assert contract.classify_exec_failure("1064 syntax error; Table 'x' doesn't exist")[0] \
+        == "missing_object"
+
+
+def test_classify_exec_failure_hint_is_actionable_and_leak_free():
+    raw = '(1064, You have an error in your SQL syntax near ' \
+          '"SELECT \\"geo.country\\" FROM prd-cn.logstore-rum" at host 10.0.0.9 user root)'
+    category, hint = contract.classify_exec_failure(raw, "mysql")
+    assert category == "sql_dialect"
+    assert "重试不会好" in hint and "方言" in hint
+    assert "目标源类型：mysql" in hint
+    # 护栏 §7：对外文案不含主机/账号/物理表/原始语句
+    for secret in ("10.0.0.9", "root", "logstore-rum", "prd-cn"):
+        assert secret not in hint, secret
+
+
+def test_sanitize_execute_reason_passes_db_type_and_keeps_declared_rejections():
+    out = contract.sanitize_execute_reason("执行失败: (1064) syntax error", "execute", "sls")
+    assert "方言" in out and "目标源类型：sls" in out
+    # 非执行阶段的闸门声明式文案仍原样返回
+    keep = "查询被行级策略拦截"
+    assert contract.sanitize_execute_reason(keep, "rls", "mysql") == keep
+
+
+def test_execute_sql_facade_classifies_before_masking(monkeypatch):
+    """分类必须发生在门面里：原始异常一被换成通用文案，上层再怎么分类都分不出来。"""
+    monkeypatch.setattr(facade, "lookup_db_type", lambda ds_id: "mysql")
+
+    def fail(sql, datasource_id=None, user_context=None, workspace_id=0):
+        raise RuntimeError('(1064, You have an error in your SQL syntax near \'"\\"\\""...\')')
+
+    monkeypatch.setattr("backend.core.query_executor.execute_query_with_permission", fail)
+    with pytest.raises(SemanticError) as ei:
+        facade.execute_sql('SELECT 1 FROM "rum_event"', {"datasource_id": 7})
+    err = ei.value
+    assert err.code is ErrorCode.EXEC_FAILED
+    assert err.detail.get("failure_category") == "sql_dialect"
+    assert "方言" in err.message and "重试不会好" in err.message
+    assert err.message != EXEC_FAIL_HINT, "确定性缺陷不得回抖动文案"
+    assert "1064" not in err.message, "原始报错细节只进服务端日志（护栏 §7）"
+
+
+def test_execute_sql_facade_connectivity_still_generic(monkeypatch):
+    """真抖动（连不上）仍回通用文案 + 稍后重试，不得反向误导成"重写 SQL"。"""
+    monkeypatch.setattr(facade, "lookup_db_type", lambda ds_id: "mysql")
+
+    def fail(sql, datasource_id=None, user_context=None, workspace_id=0):
+        raise RuntimeError("(2003, Can't connect to MySQL server on '10.0.0.9')")
+
+    monkeypatch.setattr("backend.core.query_executor.execute_query_with_permission", fail)
+    with pytest.raises(SemanticError) as ei:
+        facade.execute_sql("SELECT 1", {"datasource_id": 7})
+    assert ei.value.detail.get("failure_category") == "connectivity"
+    assert ei.value.message == EXEC_FAIL_HINT
+    assert "10.0.0.9" not in ei.value.message

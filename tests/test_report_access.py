@@ -1,5 +1,6 @@
 """报告所有入口共享私有、外链、策略撤销校验。"""
 import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -50,8 +51,15 @@ def test_policy_change_revokes_even_owner(report, monkeypatch):
 
 
 def test_projection_never_returns_security_or_token(report):
-    report.update(access_token="legacy-secret", content="报告正文")
+    """投影里既没有凭据、也没有正文本身：正文是对象存储上的对象，
+    客户端只拿读取时现拼的签名直链（由 report_service.get_report 附加）。"""
+    report.update(access_token="legacy-secret", content="报告正文",
+                  content_object_key="ai-datahub/7/reports/1", content_size=12)
     out = access.public_report(report)
     assert "access_token" not in out and "share_token_hash" not in out
     assert "security_context" not in out
-    assert out["content"] == "报告正文"
+    assert "content" not in out and "content_url" not in out
+    assert out["content_size"] == 12
+    blob = json.dumps(out, ensure_ascii=False, default=str)
+    for forbidden in ("报告正文", "ai-datahub/7/reports/1", "content_object_key"):
+        assert forbidden not in blob, forbidden

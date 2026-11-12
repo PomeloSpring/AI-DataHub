@@ -154,8 +154,10 @@ def test_knowledge_search_system_scope_passes_through(monkeypatch):
         seen["system_scope"] = system_scope
         seen["kb_ids"] = kb_ids
         return {"chunks": [], "count": 0, "rag_source": "system_kb_only"}
-    monkeypatch.setattr("backend.modules.mind.rag.qmind_retriever.qmind_retrieve", fake_retrieve)
-    monkeypatch.setattr("backend.modules.mind.execution.resource_guard.execute_query", lambda *a: [{"id": 11}])
+    # 接缝：多源接入后 chat 主路走 knowledge_retrieve（qmind_retrieve 保留给写侧链路）
+    monkeypatch.setattr("backend.modules.mind.rag.knowledge_retriever.knowledge_retrieve", fake_retrieve)
+    monkeypatch.setattr("backend.modules.mind.execution.resource_guard.execute_query",
+                        lambda *a: [{"id": 11, "name": "系统库", "kb_type": "qmind"}])
     try:
         asyncio.run(stl.knowledge_search({"question": "近3天有谁用chat"}))
     finally:
@@ -175,8 +177,9 @@ def test_knowledge_search_business_scope_not_system(monkeypatch):
     def fake_retrieve(q, ds, kb_ids, system_scope=False):
         seen["system_scope"] = system_scope
         return {"chunks": [], "count": 0, "rag_source": "none"}
-    monkeypatch.setattr("backend.modules.mind.rag.qmind_retriever.qmind_retrieve", fake_retrieve)
-    monkeypatch.setattr("backend.modules.mind.execution.resource_guard.execute_query", lambda *a: [{"id": 22}])
+    monkeypatch.setattr("backend.modules.mind.rag.knowledge_retriever.knowledge_retrieve", fake_retrieve)
+    monkeypatch.setattr("backend.modules.mind.execution.resource_guard.execute_query",
+                        lambda *a: [{"id": 22, "name": "业务库", "kb_type": "qmind"}])
     try:
         asyncio.run(stl.knowledge_search({"question": "销售额"}))
     finally:
@@ -213,9 +216,9 @@ def test_knowledge_search_multi_questions_run_concurrently(monkeypatch):
         return {"chunks": [{"content": q}], "count": 1, "rag_source": "qmind",
                 "hit_object_keys": []}
 
-    monkeypatch.setattr("backend.modules.mind.rag.qmind_retriever.qmind_retrieve", fake_retrieve)
+    monkeypatch.setattr("backend.modules.mind.rag.knowledge_retriever.knowledge_retrieve", fake_retrieve)
     monkeypatch.setattr("backend.modules.mind.execution.resource_guard.execute_query",
-                        lambda *a: [{"id": 22}])
+                        lambda *a: [{"id": 22, "name": "业务库", "kb_type": "qmind"}])
     monkeypatch.setattr(stl, "_attach_routes", lambda r: r)
     monkeypatch.setattr(stl, "_attach_paths", lambda r, keywords=None: r)
     questions = ["官网域名", "中国站网址", "访问入口"]

@@ -19,11 +19,14 @@ export function exportChart(chart: any) {
   const keep = (value: any, drop: (key: string) => boolean): any => Array.isArray(value)
     ? value.map(v => keep(v, drop)) : value && typeof value === 'object'
       ? Object.fromEntries(Object.entries(value).filter(([key]) => !drop(key)).map(([key, val]) => [key, keep(val, drop)])) : value;
-  // 语义图：config 里任何 SQL 痕迹一律带走（护栏 §7）
+  // 语义图：config 里任何 SQL 痕迹一律剥掉（护栏 §7）
   const stripSql = (value: any) => keep(value, key => /sql|data_cache|previewData|demoSql/i.test(key));
-  // raw 图：sql_query 本身已是导出字段，config 只剥重复/内部键；
-  // countSql 等用户显式口径必须保留，剥掉会让导入后的服务端分页静默改走自动包装 COUNT(*)（行为漂移）
-  const stripInternal = (value: any) => keep(value, key => /^(sql|demoSql|data_cache|previewData)$/i.test(key));
+  // 图表不再携带口径（2026-11-06 拍板）：config 里的 SQL 痕迹一律剥。
+  // 同时剥掉已退役的分页旋钮：enableServerPagination / pageLimit / maxRows ——
+  // 表值图现在恒定走服务端真分页（只剩 pageSize 一个旋钮），带走旧键等于把
+  // “旧口径还能用”的空承诺复制给导入方（no-silent-degradation）。
+  const stripInternal = (value: any) => keep(value, key =>
+    /^(sql|demoSql|countSql|data_cache|previewData|enableServerPagination|pageLimit|maxRows)$/i.test(key));
   // 示例数据（模板导入且未绑源）随导出带走，分享/备份后导入仍能看到效果；
   // 真实查询结果属数据行，护栏 §7 禁止离开本实例，因此不写入导出体。
   const isDemo = chart.config?.[TEMPLATE_DEMO_KEY] === true;
@@ -32,11 +35,20 @@ export function exportChart(chart: any) {
     const raw = typeof chart.data_cache === 'string' ? (() => { try { return JSON.parse(chart.data_cache); } catch { return null; } })() : chart.data_cache;
     if (Array.isArray(raw?.columns) && Array.isArray(raw?.rows)) sample = raw;
   }
-  return { name: chart.name, chart_type: chart.chart_type,
-    ...(semantic ? { semantic_query: chart.semantic_query, query_source: 'semantic' } : { sql_query: chart.sql_query, query_source: chart.query_source || 'raw_sql' }),
+  const onDataset = String(chart.source_type) === 'dataset' && !!chart.source_id;
+  // 存量手写法图（收编未覆盖）：口径不写进导出体就会静默丢失，因此带走并标
+  // needs_migration；导入侧会按占位图落位并显式提醒重新挂数据集（不静默当已收编）。
+  const legacySql = !semantic && !onDataset && !!(chart.sql_query || '').trim();
+  return {
+    name: chart.name, chart_type: chart.chart_type,
+    ...(semantic ? { semantic_query: chart.semantic_query, query_source: 'semantic' } : {}),
+    // 数据集引用同时给名称（给人看）与 id（同实例回绑）；导入后以服务端角色清单为准
+    ...(onDataset ? { dataset_id: chart.source_id, dataset_name: chart.dataset_name || '' } : {}),
+    ...(legacySql ? { sql_query: chart.sql_query, needs_migration: true } : {}),
     ...(sample ? { sample } : {}),
     config: semantic ? stripSql(chart.config) : stripInternal(chart.config), position: chart.position,
-    source_type: chart.source_type, source_id: chart.source_id };
+    source_type: chart.source_type, source_id: chart.source_id,
+  };
 }
 
 export default function DashboardExportImport({ dashboard, onImport }: DashboardExportImportProps) {
@@ -109,6 +121,15 @@ export default function DashboardExportImport({ dashboard, onImport }: Dashboard
       }
 
       const { name, description, charts, filters, carousel_interval, params, page_params } = parsed.dashboard;
+      // 带旧版 SQL 的图（needs_migration）会在服务端被拒，先显式告知再导入：
+      // 退成占位图可以接受，静默丢掉口径或笼统报“导入失败”不可接受
+      const stale = (charts || []).filter((c: any) => !c.semantic_query
+        && String(c.source_type) !== 'dataset' && !(c.dataset_id) && (c.sql_query || '').trim());
+      if (stale.length) {
+        toast.warning(`${stale.length} 个图表带旧版直写 SQL（该通道已下线）：将按占位图导入，`
+          + `请在图表配置里改挂数据集。涉及「${stale.slice(0, 3).map((c: any) => c.name).join('、')}」`,
+          { duration: 9000 });
+      }
 
       await onImport({
         name: name ? `${name} (导入)` : '导入的仪表盘',
@@ -120,8 +141,11 @@ export default function DashboardExportImport({ dashboard, onImport }: Dashboard
       toast.success('导入成功');
       setImportOpen(false);
       setImportData('');
-    } catch {
-      toast.error('导入未完成，请检查 JSON 或服务后重试；已保留输入内容');
+    } catch (e: any) {
+      // 带因上报（服务端回的是业务原因文案）：“导入未完成”不能只让人猜哪个图卡住了
+      toast.error(e?.response?.data?.detail
+        ? `导入未完成：${e.response.data.detail}；已保留输入内容`
+        : '导入未完成，请检查 JSON 或服务后重试；已保留输入内容');
     } finally { importLock.current = false; setImporting(false); }
   }, [importData, onImport]);
 

@@ -254,8 +254,9 @@ def _drive(monkeypatch, question, *, mode, service_kwargs=None, lexicon=None):
         reached["agent"] = True
         return []
 
-    monkeypatch.setattr(exec_service, "get_workspace_layers", _layers)
-    monkeypatch.setattr(exec_service, "get_default_external_layer", lambda: None)
+    # 默认层口径的唯一实现（service.pick_active_layer）读全局清单；
+    # 工作空间绑定表已退役（写入 API 已删），不再是要拦截的 seam。
+    monkeypatch.setattr(exec_service, "list_layers", _layers)
 
     service = ChatService()
     kwargs = dict(question=question, history=[], datasource_id=1, model_id=None,

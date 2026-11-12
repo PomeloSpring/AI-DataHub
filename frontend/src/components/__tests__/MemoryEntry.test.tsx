@@ -17,7 +17,7 @@ vi.mock('@/api/client', () => ({ default: { get: vi.fn(), put: vi.fn(), post: vi
 /**
  * 记忆入口回归。
  *
- * 背景：ChatBI 回答「已记住 X」后，用户在日常场景（工作站聊天 / 数据中台 / 首页）
+ * 背景：ChatBI 回答「已记住 X」后，用户在日常场景（工作空间聊天 / 数据中台 / 首页）
  * 的用户下拉里只看到「个人设置 / 退出登录」——「我的记忆」只挂在系统配置页，
  * 等于用户无法核对与删除 AI 写入的内容（只能手输 URL）。入口必须与承诺同场景可见。
  */
@@ -46,7 +46,7 @@ async function openUserMenu() {
 }
 
 describe('用户菜单里的「我的记忆」入口', () => {
-  it('工作站（Chat 场景）可进入 /ws/7/memory', async () => {
+  it('工作空间（Chat 场景）可进入 /ws/7/memory', async () => {
     render(
       <TooltipProvider>
         <MemoryRouter initialEntries={['/ws/7/chat']}>

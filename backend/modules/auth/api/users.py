@@ -39,12 +39,25 @@ class UpdateUserStatusRequest(BaseModel):
     status: str
 
 
+class UpdatePreferencesRequest(BaseModel):
+    """个人偏好（云空间 = 对话产物备份 + 界面动效）。
+
+    cloud_sync_enabled / motion_preset_code：None = 本次不改该项。
+    motion_override 是**三态**：请求体里没出现 = 不改；显式传 null = 清除差量（回到纯预设）。
+    区分靠 model_fields_set（pydantic 只记录「这次真的传了哪些字段」）——
+    拿 None 兼作「不改」和「清空」会让前端一提交就把用户的差量偏好误清掉。
+    """
+    cloud_sync_enabled: Optional[bool] = None
+    motion_preset_code: Optional[str] = None
+    motion_override: Optional[dict] = None
+
+
 # ── Current user (profile) ─────────────────────────────────────────────
 
 @router.get("/me")
 def me(user: dict = Depends(get_current_user)):
-    """Get current user profile."""
-    row = auth_service.get_user_by_id(user["user_id"])
+    """Get current user profile（含角色可读名，个人设置/身份显示用）。"""
+    row = auth_service.get_user_profile(user["user_id"])
     if not row:
         raise HTTPException(status_code=404, detail="用户不存在")
     return row
@@ -61,7 +74,7 @@ def update_me(req: UpdateUserRequest, user: dict = Depends(get_current_user)):
     )
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
-    return auth_service.get_user_by_id(user["user_id"])
+    return auth_service.get_user_profile(user["user_id"])
 
 
 @router.put("/me/password")
@@ -72,6 +85,60 @@ def change_my_password(req: ChangePasswordRequest, user: dict = Depends(get_curr
         raise HTTPException(status_code=400, detail=msg)
     auth_service.log_audit(user["user_id"], user["username"], "change_password", detail="修改密码")
     return {"success": True, "message": msg}
+
+
+# ── Current user preferences (工作空间) ──────────────────────────────────
+
+@router.get("/me/preferences")
+def get_my_preferences(user: dict = Depends(get_current_user)):
+    """个人偏好：会话产物自动上云（云空间备份）开关 + 界面动效预设/差量。
+
+    动效两项无值时回 None（= 跟随系统默认 mp_default），前端不编造「已按默认档」的假状态。
+    """
+    from backend.modules.mind.execution.session_cloud import cloud_sync_enabled
+    from backend.modules.auth.services.user_preference_service import get_motion_preferences
+    motion = get_motion_preferences(int(user["user_id"]))
+    return {
+        "cloud_sync_enabled": cloud_sync_enabled(int(user["user_id"])),
+        "motion_preset_code": motion["preset_code"],
+        "motion_override": motion["override"],
+    }
+
+
+@router.put("/me/preferences")
+def update_my_preferences(req: UpdatePreferencesRequest, user: dict = Depends(get_current_user)):
+    """保存个人偏好（按项写，互不覆盖）；回读最新值而不是回显入参，
+    避免「界面显示与库里不一致」（与云空间开关同一口径）。
+    """
+    from backend.modules.mind.execution.session_cloud import set_cloud_sync_enabled
+    from backend.modules.auth.services.user_preference_service import (
+        set_motion_override, set_motion_preset,
+    )
+    provided = req.model_fields_set
+    user_id = int(user["user_id"])
+    facts: list[str] = []
+    if "cloud_sync_enabled" in provided and req.cloud_sync_enabled is not None:
+        # 只看「传了这个字段且不是 null」：bool(None) 会把显式 null 当“关闭”静默改掉开关
+        set_cloud_sync_enabled(user_id, bool(req.cloud_sync_enabled))
+        facts.append(f"会话产物自动上云={'开' if req.cloud_sync_enabled else '关'}")
+    if "motion_preset_code" in provided:
+        try:
+            set_motion_preset(user_id, req.motion_preset_code)
+        except ValueError as e:
+            # 预设已下架/禁用/不存在 → 显式拒收，不能存一个「选了没反应」的编码
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        facts.append(f"动效预设={req.motion_preset_code or '跟随系统默认'}")
+    if "motion_override" in provided:
+        try:
+            set_motion_override(user_id, req.motion_override)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        facts.append("动效差量=" + ("已清除" if req.motion_override is None else "已保存"))
+    if not facts:
+        # 只传来一个 null 开关 = 没有任何可保存项，显式拒绝而不是回 200 假装成功
+        raise HTTPException(status_code=400, detail="没有需要保存的偏好项")
+    auth_service.log_audit(user_id, user.get("username") or "", "update_preferences", detail="；".join(facts))
+    return get_my_preferences(user)
 
 
 # ── Admin: User management ─────────────────────────────────────────────

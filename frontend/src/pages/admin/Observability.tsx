@@ -76,9 +76,19 @@ const SPAN_KIND_LABELS: Record<string, string> = {
 
 // 处理方（意图漏斗拦截率口径）与判定标签的中文显示名——页面不得把枚举直给用户看
 const HANDLED_BY_LABELS: Record<string, string> = {
-  agent: '模型（执行层）',
+  agent: '模型（Harness）',
   intent_gate: '前置意图层直答',
 };
+
+// 模型通道显示名：两条通道计量单位不同，页面必须把单位说清而不是只换个名字
+export const CHANNEL_LABELS: Record<string, string> = {
+  'qoder-gateway': 'Qoder 网关（按 Credit）',
+  'anthropic-direct': '供应商直连（按 Token）',
+  // 这两个是“伪桶”：库里 channel 为 NULL，但语义完全不同，不能混为一谈
+  'not-executed': '未走 Harness（前置拦截）',
+  unrecorded: '未记录（当时未落库）',
+};
+const channelLabel = (c?: string | null) => CHANNEL_LABELS[c || 'unrecorded'] || c || '未记录';
 const LABEL_LABELS: Record<string, string> = {
   empty_or_noise: '无效输入',
   social_ack: '寒暄/应答',
@@ -137,6 +147,8 @@ export default function Observability() {
   const [status, setStatus] = useState('all');
   const [handledBy, setHandledBy] = useState('all');
   const [modelRef, setModelRef] = useState('all');
+  // 模型通道筛选：Qoder 网关与供应商直连的成本/计量口径不同，混在一起看会得出错结论
+  const [channel, setChannel] = useState('all');
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [rangeOpen, setRangeOpen] = useState(false);
   const [rangePreset, setRangePreset] = useState('1h');
@@ -170,8 +182,9 @@ export default function Observability() {
     entrypoint: entrypoint === 'all' ? '' : entrypoint,
     status: status === 'all' ? '' : status,
     handled_by: handledBy === 'all' ? '' : handledBy,
+    channel: channel === 'all' ? '' : channel,
     model_ref: modelRef === 'all' ? '' : modelRef, start, end,
-  }), [entrypoint, status, handledBy, modelRef, start, end]);
+  }), [entrypoint, status, handledBy, channel, modelRef, start, end]);
 
   const applyFilters = () => {
     const r = rangePreset === 'custom' ? { start, end } : presetRange(rangePreset);
@@ -275,8 +288,21 @@ export default function Observability() {
             <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">全部</SelectItem>
-              <SelectItem value="agent">模型（执行层）</SelectItem>
+              <SelectItem value="agent">模型（Harness）</SelectItem>
               <SelectItem value="intent_gate">前置意图层直答</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">模型通道</label>
+          <Select value={channel} onValueChange={setChannel}>
+            <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部通道</SelectItem>
+              <SelectItem value="qoder-gateway">Qoder 网关（按 Credit）</SelectItem>
+              <SelectItem value="anthropic-direct">供应商直连（按 Token）</SelectItem>
+              <SelectItem value="not-executed">未走 Harness（前置拦截）</SelectItem>
+              <SelectItem value="unrecorded">未记录（当时未落库）</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -341,9 +367,20 @@ export default function Observability() {
             <StatCard icon={GitBranch} label="回合数" value={fmt(s?.turns)} hint={`用户 ${fmt(s?.users)}`} />
             <StatCard icon={Sparkles} label="模型请求" value={fmt(s?.llm_calls)} hint={`平均耗时 ${fmt(s?.avg_duration_ms)}ms`} />
             <StatCard icon={AlertCircle} label="错误" value={fmt(s?.errors)} />
-            <StatCard icon={Activity} label="总 Token" value={fmt(s?.total_tokens)} />
-            <StatCard icon={Activity} label="Credit（主口径）" value={fmt(s?.credits, 4)} />
-            <StatCard icon={Activity} label="成本（估算）" value={fmtCost(s?.cost_amount, s?.cost_currency)} />
+            <StatCard icon={Activity} label="总 Token" value={fmt(s?.total_tokens)}
+              hint="仅供应商直连通道回报；Qoder 网关不回报 token" />
+            <StatCard icon={Activity} label="Credit（主口径）" value={fmt(s?.credits, 4)}
+              hint="仅 Qoder 网关通道；直连不产生 Credit" />
+            {/* 成本按币种分别显示：Qoder 通道是按资源包单价折算的 CNY、直连是供应商上报的 USD，
+                历史实现把两者直接相加再挂一个“MAX 出来的币种”，是假数字。 */}
+            <StatCard icon={Activity} label="成本（估算）"
+              value={(s?.cost_by_currency?.length)
+                ? '≈ ' + s.cost_by_currency.map(c => fmtCost(c.amount, c.currency)).join(' + ')
+                : '—'}
+              hint={s?.cost_by_currency?.length
+                ? `分币种统计：${s.cost_by_currency.map(c => `${(c.currency || '?').toUpperCase()} ${fmt(c.turns)} 回合`).join('，')}；均为估算非账单值`
+                : '按币种分别统计；均为估算非账单值'}
+            />
             <StatCard icon={ThumbsUp} label="满意率" value={satRate === null ? '—' : satRate + '%'} hint={`👍${fmt(s?.thumbs_up)} 👎${fmt(s?.thumbs_down)}`} />
             {/* 前置意图漏斗：拦截掉的回合不起子进程、不烧 credit */}
             <StatCard
@@ -356,6 +393,58 @@ export default function Observability() {
               value={fmt(s?.estimated_saved_credits, 2)}
               hint="拦截回合数 × agent 回合均值 credit；Qoder 不回报单回合实测成本"
             />
+          </div>
+          {/* 模型通道分桶：credit 与 token 是两个不可互推的量（Qoder 不报 token、直连没有 credit），
+              混在一行里就会得出“直连什么都没花”的错结论。 */}
+          <div className="rounded-lg border bg-card p-4">
+            <div className="text-sm font-medium mb-2">模型通道</div>
+            {s?.by_channel?.length ? (
+              <table className="w-full text-sm">
+                <thead><tr className="text-muted-foreground text-xs border-b">
+                  <th className="text-left py-1">通道</th><th className="text-right">回合</th>
+                  <th className="text-right">模型请求</th><th className="text-right">Token</th>
+                  <th className="text-right">Credit</th><th className="text-right">成本（估算）</th>
+                </tr></thead>
+                <tbody>
+                  {s.by_channel.map(c => {
+                    // 未走执行层（前置拦截）根本没有模型消耗：写 0/不回报 都是误导，只能给 —
+                    const na = c.channel === 'not-executed';
+                    return (
+                      <tr key={c.channel} className="border-b border-border/40 last:border-0">
+                        <td className="py-1">
+                          {channelLabel(c.channel)}
+                          {!!c.backfilled_turns && (
+                            <span className="ml-1 text-xs text-muted-foreground"
+                              title={`其中 ${c.backfilled_turns} 个回合的通道值是按判据回填的（channel_source=backfilled），不是运行时实记`}>
+                              ·含回填 {c.backfilled_turns}
+                            </span>
+                          )}
+                        </td>
+                        <td className="text-right">{fmt(c.turns)}</td>
+                        <td className="text-right">{na ? '—' : fmt(c.llm_calls)}</td>
+                        <td className="text-right">{na ? '—' : (c.channel === 'qoder-gateway' ? '不回报' : fmt(c.total_tokens))}</td>
+                        <td className="text-right">{na || c.channel === 'anthropic-direct' ? '不适用' : fmt(c.credits, 4)}</td>
+                        <td className="text-right">{na ? '—' : fmtCost(c.cost_amount, c.cost_currency)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            ) : (
+              <div className="text-sm text-muted-foreground">当前时间窗内没有 Harness 回合</div>
+            )}
+            {!!s?.direct_turns && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                本窗口有 {fmt(s.direct_turns)} 个回合走供应商直连：它们的成本由百炼等服务商按 Token 结算，
+                <span className="font-medium text-foreground">不消耗也不会出现在下方 Qoder Credit 配额里</span>。
+              </p>
+            )}
+            {/* 估算依据必须写清来源：这两个数字都不是账单，且币种不同不能相加 */}
+            <p className="mt-2 text-xs text-muted-foreground">
+              成本均为<span className="font-medium text-foreground">估算值，非账单金额</span>：
+              Qoder 网关 = credit × 资源包官方单价折算（CNY，Qoder 不回报账单成本）；
+              供应商直连 = CLI 自报成本（USD，属价格表估算）。两者币种不同，不能相加。
+            </p>
           </div>
           <QuotaPanel />
           <div className="rounded-lg border bg-card p-4">
@@ -403,16 +492,27 @@ export default function Observability() {
             </div>
           )}
           <DataTable
-            head={['开始时间', '用户', '入口', '处理方式', '模型', '问题', '状态', 'Credit', '耗时', '反馈', '']}
+            head={['开始时间', '用户', '入口', '处理方式', '通道/Harness', '模型', '问题', '状态', 'Credit', 'Token', '耗时', '反馈', '']}
             rows={traces.items.map(r => [
               fmtTime(r.started_at), `${r.username}`, r.entrypoint,
               <Badge variant={r.handled_by === 'intent_gate' ? 'secondary' : 'outline'}>
                 {HANDLED_BY_LABELS[r.handled_by || 'agent'] || r.handled_by}
               </Badge>,
+              // 通道与执行层直接列出来：排查“这条会话到底跑在哪、花的谁的钱”不该靠猜
+              <span title={`layer_id=${r.layer_id ?? '—'}`}>
+                {channelLabel(r.channel)}
+                {r.layer_name ? <span className="block text-xs text-muted-foreground">{r.layer_name}</span> : null}
+              </span>,
               r.model_ref || (r.handled_by === 'intent_gate' ? '未调用模型' : '—'),
               <span className="truncate max-w-xs inline-block align-bottom" title={r.question}>{r.question}</span>,
               <Badge variant={r.status === 'error' ? 'destructive' : 'outline'}>{r.status}</Badge>,
-              fmt(r.credits, 2), `${fmt(r.duration_ms)}ms`,
+              // 直连通道没有 credit 这个量：写 0 会被读成“跑了但没花钱”，写 — 又会被当成缺数据
+              r.channel === 'anthropic-direct' ? '不适用'
+                : (r.handled_by === 'intent_gate' ? '未调用模型'
+                  : ((r.channel === 'unrecorded' || !r.channel_source) && !r.credits ? '—' : fmt(r.credits, 2))),
+              r.channel === 'anthropic-direct' ? fmt(r.total_tokens)
+                : (r.handled_by === 'intent_gate' ? '—' : '不回报'),
+              `${fmt(r.duration_ms)}ms`,
               r.feedback_satisfied === 1 ? <ThumbsUp className="h-4 w-4 text-green-600" /> : r.feedback_satisfied === 0 ? <ThumbsDown className="h-4 w-4 text-red-500" /> : '—',
               <Button size="sm" variant="ghost" onClick={() => openTrace(r.trace_id)}>详情</Button>,
             ])}
@@ -423,11 +523,11 @@ export default function Observability() {
 
         <TabsContent value="models">
           <DataTable
-            head={['模型', '回合', '请求数', '输入Token', '输出Token', 'Credit', '成本']}
-            rows={models.map(m => [m.model_ref || '—', fmt(m.turns), fmt(m.llm_calls), fmt(m.input_tokens), fmt(m.output_tokens), fmt(m.credits, 4), fmtCost(m.cost_amount, m.cost_currency)])}
+            head={['模型', '通道', '回合', '请求数', '输入Token', '输出Token', 'Credit', '成本(估算)']}
+            rows={models.map(m => [m.model_ref || '—', channelLabel(m.channel), fmt(m.turns), fmt(m.llm_calls), fmt(m.input_tokens), fmt(m.output_tokens), fmt(m.credits, 4), fmtCost(m.cost_amount, m.cost_currency)])}
           />
           <p className="mt-2 text-xs text-muted-foreground">
-            模型为回合内实际生效模型（未指定时由执行层上报的模型名回填）；Credit 为回合增量（会话累计值之差）；
+            模型为回合内实际生效模型（未指定时由 Harness 上报的模型名回填）；Credit 为回合增量（会话累计值之差）；
             成本 = credit × 单价（默认取 Qoder CN 企业资源包官方价 80 元 / 2,000 Credits = ¥0.04/Credit，
             可用 OBSERVABILITY_CREDIT_COST_RATE / _CURRENCY 改为你自己的实际采购价），属估算而非账单值。
           </p>
@@ -466,6 +566,9 @@ export default function Observability() {
                 <KV k="Token" v={fmt(detail.trace.total_tokens)} />
                 <KV k="Credit(回合)" v={fmt(detail.trace.credits, 2)} />
                 <KV k="Credit(会话)" v={fmt(detail.trace.session_credits, 2)} />
+                <KV k="模型通道" v={channelLabel(detail.trace.channel)} />
+                <KV k="Harness" v={detail.trace.layer_name || (detail.trace.layer_id ? `#${detail.trace.layer_id}` : '未记录')} />
+                <KV k="成本(估算)" v={fmtCost(detail.trace.cost_amount, detail.trace.cost_currency)} />
                 <KV k="耗时" v={`${fmt(detail.trace.duration_ms)}ms`} />
               </div>
               <TextBlock label={`问题（${detail.trace.question?.length || 0} 字）`} text={detail.trace.question} />
@@ -548,7 +651,7 @@ function QuotaPanel() {
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           {quota?.available && (
             <span>
-              {quota.layer ? `执行层：${quota.layer} · ` : ''}
+              {quota.layer ? `探测用 Harness：${quota.layer} · ` : ''}
               {quota.cached ? '缓存值' : '实时读取'} · 采集于 {fmtTime(quota.fetched_at)}
             </span>
           )}
@@ -558,7 +661,7 @@ function QuotaPanel() {
         </div>
       </div>
 
-      {!quota && <div className="text-sm text-muted-foreground">正在读取账号 credit 配额…（需起一次执行层 CLI）</div>}
+      {!quota && <div className="text-sm text-muted-foreground">正在读取账号 credit 配额…（需起一次 Harness CLI）</div>}
       {quota && !quota.available && (
         <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
           <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />

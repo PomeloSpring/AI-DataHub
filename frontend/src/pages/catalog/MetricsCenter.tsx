@@ -977,7 +977,7 @@ export default function MetricsCenter({
             </p>
           ) : (
             <p className="text-sm text-muted-foreground">
-              停用后该口径不再参与语义检索与取数（与 AS-BOT 未发布同义），字典行与历史报表保留，
+              停用后该口径不再参与语义检索与取数（与 AS-BOT 未发布同义），字典行与历史报告保留，
               随时可在本页置回启用。仅影响语义层命中，不会删数据。
             </p>
           )}

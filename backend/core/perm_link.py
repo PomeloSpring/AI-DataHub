@@ -73,8 +73,6 @@ SECRET_BOUND_NONE_PERMS = frozenset({
     "settings:manage", "settings:read", "system:settings",
     # 注入面：系统提示词 / 技能提示词
     "prompt:manage", "prompt:read", "skill:manage", "skill:read",
-    # 物理 SQL 与表列名（守 §7 黑盒）
-    "sql-pairs:manage", "sql-pairs:read",
 })
 
 # 上限 read：可见但禁止一切写（涉密域的"只读可见"边界）。
@@ -82,6 +80,46 @@ SECRET_BOUND_READ_ONLY_PERMS = frozenset({
     "datasource:read", "model:read", "sensitive:read",
     "audit:read", "observability:read",
 })
+
+# ── AI 通道（级别配置到底有没有消费方）────────────────────────────────────────
+# 角色页的「AI 可调用级别」只有落在下面两类通道上才真实生效：
+#   1) function_action —— 权限点在 ``function_tools.FUNCTION_ACTION_SPECS`` 里登记了
+#      动作（DB 侧镜像 = ``adh_perm_registry.ai_action_key``，双侧一致由
+#      tests/test_function_ai_access.py 把门），``resolve_function_actions`` 据此注册工具；
+#   2) perm_gate —— 能力挂在 sdk 工具组的工具上，执行期用
+#      ``require_write_perm(perm_code)`` 按码裁决。这类码的 ``ai_action_key``
+#      **故意留空**（填了就是广告一个代码里不存在的功能动作），但级别真实生效。
+# 两类都不是的（``none``）= 配置没有消费方，UI 必须如实标注，不得让人以为勾了就生效
+# （no-silent-degradation §1：空承诺同样是缺陷）。
+#
+# 清单必须与代码里的 ``require_write_perm`` / ``check_write_perm`` 调用点逐字一致，漂移由
+# tests/test_function_ai_access.py::test_perm_gated_action_perms_match_call_sites 拦下
+# （该守卫同时扫 ``_require_write_perm`` 形态的本模块外封装，早期只扫三参形
+# 式漏掉 ontology:create/activate/import，导致三个真实生效的码被当成「未接 AI」）。
+# 注：``article:manage`` 同时挂了功能工具（content_* 六个动作），属于双通道；
+# :func:`ai_channel` 以 function_action 优先，不重复计入。
+PERM_GATED_ACTION_PERMS = frozenset({
+    "ontology:generate", "ontology:save", "ontology:publish",
+    "ontology:create", "ontology:activate", "ontology:import",
+    "dashboard:manage", "dataset:manage", "scheduled:manage", "article:manage",
+})
+
+AI_CHANNEL_FUNCTION_ACTION = "function_action"
+AI_CHANNEL_PERM_GATE = "perm_gate"
+AI_CHANNEL_NONE = "none"
+
+
+def ai_channel(perm_code: str, ai_action_key: str = "") -> str:
+    """该权限点的 AI 接入通道类型（供角色页如实说明级别配置是否生效）。
+
+    只读判定，不产生新配置面：通道 1 的真值源是 ``ai_action_key``（DB 列），
+    通道 2 的真值源是本模块的 ``PERM_GATED_ACTION_PERMS``（代码调用点）。
+    """
+    if (ai_action_key or "").strip():
+        return AI_CHANNEL_FUNCTION_ACTION
+    if perm_code in PERM_GATED_ACTION_PERMS:
+        return AI_CHANNEL_PERM_GATE
+    return AI_CHANNEL_NONE
 
 
 def normalize_level(value, field: str = "ai_access") -> str:

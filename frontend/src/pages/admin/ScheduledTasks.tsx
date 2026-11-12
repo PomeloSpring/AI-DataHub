@@ -41,23 +41,19 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
   timeout: { label: '超时', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
 };
 
-const TASK_TYPE_MAP: Record<string, { label: string; color: string }> = {
-  query: { label: 'SQL', color: 'bg-purple-500/10 text-purple-500 border-purple-500/20' },
-  agent: { label: 'Agent', color: 'bg-orange-500/10 text-orange-500 border-orange-500/20' },
-};
-
 const TRIGGER_TYPE_MAP: Record<string, { label: string; color: string }> = {
   cron: { label: '定时', color: 'bg-sky-500/10 text-sky-500 border-sky-500/20' },
   webhook: { label: 'Webhook', color: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' },
   both: { label: '定时+Webhook', color: 'bg-indigo-500/10 text-indigo-500 border-indigo-500/20' },
 };
 
-function getSourceBadge(task: ScheduledTask): { label: string; color: string } {
-  const cfg = task.task_config || {} as any;
-  if (task.requires_as_bot_migration) return { label: '需重新配置 AS-BOT', color: 'text-orange-500 border-orange-500/20' };
-  if (cfg.as_bot_key) return { label: `AS-BOT · ${cfg.as_bot_key}`, color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' };
-  return { label: '数据源', color: 'bg-gray-500/10 text-gray-500 border-gray-500/20' };
-}
+// 执行身份固定为「按属主角色继承」：任务不持有 AS-BOT 与数据源，
+// 每次执行按创建者的角色实时解析能力与可查范围（把内部 key 显示出来既不可读也无意义）。
+const SOURCE_BADGE = {
+  label: '按角色权限执行',
+  color: 'bg-blue-500/10 text-blue-500 border-blue-500/20',
+  hint: 'AS-BOT 与可查数据范围按任务创建者的角色实时继承，无需在任务里选择',
+};
 
 export default function ScheduledTasks() {
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
@@ -139,7 +135,7 @@ export default function ScheduledTasks() {
       <div className="flex items-center justify-between shrink-0">
         <div>
           <h1 className="text-2xl font-bold">任务调度</h1>
-          <p className="text-muted-foreground text-sm mt-1">配置定时执行的 SQL 或 Agent 任务</p>
+          <p className="text-muted-foreground text-sm mt-1">配置定时执行的 Agent 分析任务</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={loadTasks}>
@@ -159,8 +155,7 @@ export default function ScheduledTasks() {
           <thead className="bg-muted/50">
             <tr>
               <th className="text-left p-3 font-medium">任务名称</th>
-              <th className="text-left p-3 font-medium">类型</th>
-              <th className="text-left p-3 font-medium">执行来源</th>
+              <th className="text-left p-3 font-medium">执行身份</th>
               <th className="text-left p-3 font-medium">触发方式</th>
               <th className="text-left p-3 font-medium">状态</th>
               <th className="text-left p-3 font-medium">上次执行</th>
@@ -172,13 +167,13 @@ export default function ScheduledTasks() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={9} className="p-8 text-center text-muted-foreground">
+                <td colSpan={8} className="p-8 text-center text-muted-foreground">
                   加载中...
                 </td>
               </tr>
             ) : tasks.length === 0 ? (
               <tr>
-                <td colSpan={9} className="p-8 text-center text-muted-foreground">
+                <td colSpan={8} className="p-8 text-center text-muted-foreground">
                   暂无任务调度
                 </td>
               </tr>
@@ -194,13 +189,8 @@ export default function ScheduledTasks() {
                     )}
                   </td>
                   <td className="p-3">
-                    <Badge variant="outline" className={TASK_TYPE_MAP[task.task_type]?.color}>
-                      {TASK_TYPE_MAP[task.task_type]?.label || task.task_type}
-                    </Badge>
-                  </td>
-                  <td className="p-3">
-                    <Badge variant="outline" className={getSourceBadge(task).color}>
-                      {getSourceBadge(task).label}
+                    <Badge variant="outline" className={SOURCE_BADGE.color} title={SOURCE_BADGE.hint}>
+                      {SOURCE_BADGE.label}
                     </Badge>
                   </td>
                   <td className="p-3">
@@ -218,8 +208,6 @@ export default function ScheduledTasks() {
                   <td className="p-3">
                     {task.ownership_status === 'unclaimed' ? (
                       <Badge variant="outline" className="text-orange-500">待认领（通过 AS-BOT 审批）</Badge>
-                    ) : task.requires_as_bot_migration ? (
-                      <Badge variant="outline" className="text-orange-500">需重新配置 AS-BOT</Badge>
                     ) : task.last_status ? (
                       <Badge variant="outline" className={STATUS_MAP[task.last_status]?.color}>
                         {STATUS_MAP[task.last_status]?.label || task.last_status}
@@ -257,7 +245,7 @@ export default function ScheduledTasks() {
                         variant="ghost"
                         size="sm"
                         onClick={() => handleTrigger(task)}
-                        disabled={task.ownership_status === 'unclaimed' || task.requires_as_bot_migration}
+                        disabled={task.ownership_status === 'unclaimed'}
                         title="手动触发"
                       >
                         <Play className="w-4 h-4" />
@@ -309,7 +297,7 @@ export default function ScheduledTasks() {
       {/* Create/Edit Form Dialog — only close via X/cancel/ESC, not by clicking outside */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent
-          className="max-w-3xl max-h-[90vh] overflow-y-auto overflow-x-hidden"
+          className="max-w-2xl max-h-[90vh] overflow-y-auto overflow-x-hidden"
           onPointerDownOutside={(e) => e.preventDefault()}
           onInteractOutside={(e) => e.preventDefault()}
         >

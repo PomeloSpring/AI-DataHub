@@ -5,6 +5,10 @@ import {
   GUIDE_ALL_KEY, GUIDE_WELCOME_KEY,
   type GuideStatus, type ReleaseNote, type GuideStateItem,
 } from '@/api/releaseNotes';
+import { guideAccessOf, pageGuideIdForPath } from '@/lib/onboarding/guides';
+import { prefixAllowedOf } from '@/hooks/useMenuAccess';
+import { useAuthStore } from './authStore';
+import { usePermissionStore } from './permissionStore';
 import { toast } from '@/lib/toast';
 
 /**
@@ -58,6 +62,24 @@ export function selectAutoPrompt(
   if (unreadMajor.length) return { reason: 'upgrade', notes: unreadMajor };
   return null;
 }
+
+/**
+ * 当前页面可播的引导 id（'' = 本页没有引导内容）。
+ *
+ * store 动作是非响应式上下文，拿 `window.location` + 权限快照，但判定口径与
+ * WelcomeDialog / OnboardingHost 共用 `pageGuideIdForPath`，不另造第二套。公告面板
+ * 里的「查看新功能引导」是显式指名某条引导，不走本判定。
+ */
+export const currentPageGuideId = () => {
+  const perm = usePermissionStore.getState();
+  return pageGuideIdForPath(
+    window.location.pathname,
+    guideAccessOf({
+      ready: perm.loaded,
+      prefixAllowed: (prefix: string) => prefixAllowedOf(perm, prefix),
+    }, useAuthStore.getState().user),
+  );
+};
 
 export const useGuideStore = create<GuideState>((set, get) => ({
   notes: [],
@@ -114,7 +136,15 @@ export const useGuideStore = create<GuideState>((set, get) => ({
   },
 
   startGuide: (id) => {
-    if (!id || id === 'welcome') { set({ welcomeOpen: true }); return; }
+    if (!id || id === 'welcome') {
+      // 手动入口与自动弹同一口径: 本页没有可引导内容就不弹空壳，而是显式告知去哪看
+      if (!currentPageGuideId()) {
+        toast.info('当前页面没有可引导的内容，请到首页 / 工作空间 / 数据中台 / 系统配置页面再打开新手引导');
+        return;
+      }
+      set({ welcomeOpen: true });
+      return;
+    }
     set({ activeGuide: id });
   },
   stopGuide: () => set({ activeGuide: null }),

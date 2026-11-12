@@ -2,23 +2,23 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  DEFAULT_PAGE_GAP, LEGACY_PAGE_COLUMNS, LEGACY_PAGE_GAP, LEGACY_PAGE_ROW, PAGE_COLUMNS, PAGE_GAP_MAX,
+  DEFAULT_PAGE_GAP, LEGACY_PAGE_COLUMNS, LEGACY_PAGE_GAP, LEGACY_PAGE_ROW, PAGE_BREAKPOINTS, PAGE_COLUMNS, PAGE_GAP_MAX, PAGE_WIDTHS,
   PAGE_LAYOUT_VERSION, PAGE_ROW, computeAlignHints, defaultPageSpan, gapRows, nextPageRow, pageBreakpoint, pageCanvasSize,
   pageColumnPx, pageGap, pageGapsOf, pageMinHeight, pagePixelRect, pageRowPx, pageRows, previewInsert,
   resolvePageLayout, movePageItem, withPageRect, type PageBreakpoint,
 } from '../dashboardPageLayout';
-import { applyChartComponent, clearChartVisualOverrides, libraryThemeFilters } from '../dashboardDesign';
+import { applyChartComponent, clearChartVisualOverrides, libraryThemeFilters, naturalSizeOf } from '../dashboardDesign';
 import { exportChart } from '@/components/DashboardExportImport';
 import type { DashboardChart } from '@/stores/dashboardStore';
 import type { VisComponent } from '@/api/visLibrary';
 
 const chart = (id: number, type = 'bar', x = 0, y = 0): DashboardChart => ({ id, chart_type: type, name: `图表 ${id}`, config: {}, position: { x, y, w: 600, h: 120 } } as DashboardChart);
 const dashboard = { filters: { design: { version: 1, canvas: { width: 1200, height: 1080 } } }, charts: [chart(10, 'widget_input'), chart(9, 'bar', 600), chart(8, 'table_value', 0, 200), chart(7, 'big_number', 600, 600)] };
-const breakpoints: PageBreakpoint[] = ['desktop', 'tablet', 'mobile'];
+const breakpoints: PageBreakpoint[] = PAGE_BREAKPOINTS;
 /** v2（含 v1）时代的像素算法：行单位 = 4 + 固定 gap，列单位 = (设计宽 + gap) / 旧列数 */
 const legacyPx = (rect: { x: number; y: number; w: number; h: number }, bp: PageBreakpoint) => {
   const gap = LEGACY_PAGE_GAP[bp];
-  const column = ({ desktop: 1440, tablet: 768, mobile: 390 }[bp] + gap) / LEGACY_PAGE_COLUMNS[bp];
+  const column = (PAGE_WIDTHS[bp] + gap) / LEGACY_PAGE_COLUMNS[bp];
   return { x: rect.x * column, y: rect.y * (PAGE_ROW + gap), w: rect.w * column - gap, h: rect.h * (PAGE_ROW + gap) - gap };
 };
 function assertNoOverlap(items: ReturnType<typeof resolvePageLayout>) {
@@ -29,7 +29,7 @@ function assertNoOverlap(items: ReturnType<typeof resolvePageLayout>) {
 }
 
 describe('响应式页面布局', () => {
-  it.each([[390, 'mobile'], [639, 'mobile'], [640, 'tablet'], [1023, 'tablet'], [1024, 'desktop'], [1920, 'desktop']])('容器宽度 %s 选择 %s', (width, bp) => expect(pageBreakpoint(Number(width))).toBe(bp));
+  it.each([[390, 'mobile'], [639, 'mobile'], [640, 'tablet'], [1023, 'tablet'], [1024, 'desktop'], [1919, 'desktop'], [1920, 'screen'], [2560, 'screen']])('容器宽度 %s 选择 %s', (width, bp) => expect(pageBreakpoint(Number(width))).toBe(bp));
   it.each(breakpoints)('%s 确定性兼容历史布局，不丢组件、不改大屏位置、无碰撞', bp => {
     const before = JSON.stringify(dashboard);
     const items = resolvePageLayout(dashboard, bp);
@@ -77,39 +77,44 @@ describe('响应式页面布局', () => {
     expect(exportChart({ ...chart(1), config }).config.pageLayout).toEqual(config.pageLayout);
     expect(libraryThemeFilters({ design: { page: { version: 1 } } }).design.page).toEqual({ version: 1 });
   });
-  it('控件不再一律 48px 地板，按自然尺寸取默认高', () => {
-    expect(pageMinHeight('widget_search')).toBe(24);
-    expect(pageMinHeight('widget_daterange')).toBe(32);
+  it('控件默认高统一 40px（同一排上下对齐），图表仍按类型给', () => {
+    expect(pageMinHeight('widget_search')).toBe(40);
+    expect(pageMinHeight('widget_daterange')).toBe(40);
     expect(pageMinHeight('bar')).toBe(280);
-    // v3：1 行 = 4px，所以 24px 高的按钮是 6 行
-    expect(pageRows(pageMinHeight('widget_search'))).toBe(6);
+    // v3：1 行 = 4px，所以 40px 高的控件是 10 行（基准口径：设备数据流看板）
+    expect(pageRows(pageMinHeight('widget_search'))).toBe(10);
     expect(pagePixelRect({ x: 0, y: 0, w: 3, h: 2 }, 'desktop').h).toBe(8);
     // 已存的合法小行高不再被读取时抬回下限
     const small = { ...dashboard, charts: [{ ...chart(3, 'widget_search'), config: withPageRect({}, 'desktop', { x: 0, y: 0, w: 3, h: 2 }) }] };
     expect(resolvePageLayout(small, 'desktop').find(i => i.chart.id === 3)?.rect.h).toBe(2);
   });
-  it('拖入默认跳列与自然尺寸一致，不再生成一条横带', () => {
-    // 列宽 ≈ 30px：按钮自然宽 96 → 4 列(105px)、日期范围 320 → 11 列、下拉 180 → 6 列；图表半屏
-    expect(defaultPageSpan('widget_search', 'desktop')).toBe(4);
-    expect(defaultPageSpan('widget_daterange', 'desktop')).toBe(11);
-    expect(defaultPageSpan('widget_select', 'desktop')).toBe(6);
+  it('拖入默认跳列与自然尺寸一致（基准=设备数据流：统一 10 行高，宽度按控件给）', () => {
+    // 列宽 ≈ 30px（含 gap）：按钮 3 列、文本/下拉 5 列、日期选择器 9 列、日期区间 18 列；图表半屏
+    expect(defaultPageSpan('widget_search', 'desktop')).toBe(3);
+    expect(defaultPageSpan('widget_daterange', 'desktop')).toBe(18);
+    expect(defaultPageSpan('widget_select', 'desktop')).toBe(5);
+    expect(defaultPageSpan('widget_date', 'desktop')).toBe(9);
     expect(defaultPageSpan('bar', 'desktop')).toBe(24);
     // 手机单列下收敛到列数上限
     expect(defaultPageSpan('bar', 'mobile')).toBe(1);
-    expect(defaultPageSpan('widget_daterange', 'tablet')).toBe(10);
-    // 默认跳列必须装得下自然宽（ceil 而非 round）
+    expect(defaultPageSpan('widget_daterange', 'tablet')).toBe(17);
+    // 默认跳列换算回像素必须**装得下**自然宽（gap 已加回去，不再差一个 gap 把区间控件压到半截）
     for (const type of ['widget_search', 'widget_daterange', 'widget_select']) {
       const span = defaultPageSpan(type, 'desktop');
-      expect(pagePixelRect({ x: 0, y: 0, w: span, h: 1 }, 'desktop').w).toBeGreaterThanOrEqual(
-        // 允许半列以内的取整误差
-        ({ widget_search: 96, widget_daterange: 320, widget_select: 180 } as Record<string, number>)[type] - pageColumnPx('desktop') / 2);
+      const natural = naturalSizeOf(type).w;
+      expect(pagePixelRect({ x: 0, y: 0, w: span, h: 1 }, 'desktop').w)
+        .toBeGreaterThanOrEqual(natural);
+    }
+    // 高度不分控件类型：全部 10 行（40px），同一排才能上下对齐
+    for (const type of ['widget_text', 'widget_select', 'widget_daterange', 'widget_search']) {
+      expect(pageRows(naturalSizeOf(type).h), type).toBe(10);
     }
   });
   it('自动布局不把未放置的控件从 position 放大：按钮只按自然宽取列', () => {
     const button = { ...chart(4, 'widget_search'), position: { x: 0, y: 0, w: 300, h: 60 } } as DashboardChart;
     const items = resolvePageLayout({ filters: { design: { version: 1, canvas: { width: 1440, height: 1080 } } }, charts: [button] }, 'desktop');
-    expect(items[0].rect.w).toBe(4);
-    expect(items[0].rect.h).toBe(6);
+    expect(items[0].rect.w).toBe(3);
+    expect(items[0].rect.h).toBe(10);
   });
   it('resize 只受 1 行/1 列量子约束：可缩到很小，不被类型下限抬回', () => {
     const items = resolvePageLayout(dashboard, 'desktop');
@@ -127,6 +132,14 @@ describe('v3 网格：分辨率、间距与存量换算', () => {
   it('列 12→48 后宽度步进降到 1/4（拖拽不再整列跳）', () => {
     expect(PAGE_COLUMNS.desktop / LEGACY_PAGE_COLUMNS.desktop).toBe(4);
     expect(Math.round(pageColumnPx('desktop'))).toBe(30);
+  });
+
+  it('大屏档：设计宽 1920 · 64 列，列宽步进与桌面同粒度（不是把桌面拉大）', () => {
+    expect(PAGE_COLUMNS.screen / LEGACY_PAGE_COLUMNS.screen).toBe(4);
+    expect(Math.round(pageColumnPx('screen'))).toBe(Math.round(pageColumnPx('desktop')));
+    expect(pageCanvasSize(resolvePageLayout(dashboard, 'screen'), 'screen')).toMatchObject({ width: 1920 });
+    // 大屏档是新断点：没有存量手动布局，一律由大屏坐标自动生成（读路不写库）
+    expect(resolvePageLayout(dashboard, 'screen').every(item => item.automatic)).toBe(true);
   });
 
   it.each(['desktop', 'tablet', 'mobile'] as PageBreakpoint[])('%s：v2 存量布局按像素完全等值换算到 v3', bp => {

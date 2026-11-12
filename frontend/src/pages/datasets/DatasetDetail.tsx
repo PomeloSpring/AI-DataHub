@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   ArrowLeft, Code2, Play, Save, Plus, Trash2, Loader2, Users, Shield,
@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
@@ -19,8 +20,14 @@ import {
 } from '@/components/ui/popover';
 import client from '../../api/client';
 import { hasPerm } from '../../stores/permissionStore';
+import EsSourcePicker from '../../components/EsSourcePicker';
 import DashboardChart, { CHART_TYPES } from '../../components/DashboardChart';
+import { CONTROL_LABELS, KIND_LABELS, ROLE_LABELS, VALUE_TYPE_LABELS } from '@/lib/dashboardParamAssembly';
 import { useChartDesign } from '@/hooks/useChartDesign';
+import { FIELD_DISPLAY_FORMATS, applyFieldFormats } from '@/lib/fieldFormat';
+
+// Radix Select 不接受空串作为选项值，「不格式化」用哨兵位表示（存回后端仍是空 = 原样下发）
+const NO_FORMAT = '__no_format__';
 
 interface DatasetField {
   field: string;
@@ -37,6 +44,8 @@ interface DatasetField {
   sql_column?: string;
   maps_to?: string;
   unmapped?: boolean;
+  // 显示格式令牌（时间列怎么给人看）：数据集声明，服务端随取数结果下发给各渲染面
+  display_format?: string;
 }
 
 interface Scope {
@@ -47,8 +56,12 @@ interface Scope {
 }
 
 const OPS = ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in', 'like'];
+// 来源类型显示业务名（内部枚举 es/semantic/both 不得直接当名称展示，ui-resource-display §1）
 const SOURCE_LABELS: Record<string, string> = {
   sql: 'SQL',
+  semantic: '语义对象',
+  both: '语义 + SQL',
+  es: 'ES 索引',
 };
 const PRESET_CHART_TYPES = CHART_TYPES.filter(t => t.category !== 'widget');
 const CHART_TYPE_LABELS: Record<string, string> = Object.fromEntries(
@@ -113,14 +126,19 @@ export default function DatasetDetail() {
   const saveConfig = async () => {
     setSaving(true);
     try {
+      const isEs = ds.source_type === 'es';
       const { data } = await client.put(`/datasets/${datasetId}`, {
         description: ds.description || '',
         sql_query: ds.sql_query || '',
-        datasource_id: Number(ds.datasource_id) || 0,
+        // ES 型不挂在数据源上：源/可用范围一律置空（后端也会显式拒非空）
+        datasource_id: isEs ? 0 : (Number(ds.datasource_id) || 0),
         // 可用数据源范围：存数据源**业务名**数组（不存 id，删建仍存活）
-        available_datasources: ds.available_datasources || [],
+        available_datasources: isEs ? [] : (ds.available_datasources || []),
+        es_pattern: isEs ? (ds.es_pattern || '') : '',
         chart_type: ds.chart_type || '',
         chart_preset: cleanPreset(ds.chart_preset),
+        // 明细行集 vs 统计汇总：表值图能不能真翻页由这一位决定（在数据集层声明）
+        paginable: !!ds.paginable,
       });
       setDs(normalizeDataset(data));
       load(true);
@@ -161,6 +179,7 @@ export default function DatasetDetail() {
         <TabsList>
           <TabsTrigger value="config">配置</TabsTrigger>
           <TabsTrigger value="fields">字段定义 ({fields.length})</TabsTrigger>
+        <TabsTrigger value="params">入参 ({(ds.param_plan || []).length})</TabsTrigger>
           <TabsTrigger value="scopes">行级范围</TabsTrigger>
           <TabsTrigger value="refs">引用</TabsTrigger>
         </TabsList>
@@ -230,6 +249,7 @@ export default function DatasetDetail() {
                   <th className="text-left px-3 py-2 font-medium">SQL 列</th>
                   <th className="text-left px-3 py-2 font-medium">显示名</th>
                   <th className="text-left px-3 py-2 font-medium w-28">角色</th>
+                  <th className="text-left px-3 py-2 font-medium w-40">显示格式</th>
                   <th className="text-left px-3 py-2 font-medium">说明</th>
                 </tr>
               </thead>
@@ -274,6 +294,32 @@ export default function DatasetDetail() {
                           </Badge>
                         )}
                       </td>
+                      <td className="px-3 py-2">
+                        {/* 可编辑条件与落库形状一致：config 项原样写、语义项靠 sql_column 生成
+                            {field, maps_to} 行才写得进去。没 sql_column 的语义字段根本不在
+                            field_config 里，此处给下拉就是"配了存不下"的空承诺 —— 直接说明原因。 */}
+                        {canManage && (f.from === 'config' || f.sql_column) ? (
+                          <Select value={f.display_format || NO_FORMAT}
+                            onValueChange={v => setFields(prev => prev.map((p, pi) =>
+                              pi === i ? { ...p, display_format: v === NO_FORMAT ? '' : v } : p))}>
+                            <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={NO_FORMAT} className="text-xs">不格式化（原样）</SelectItem>
+                              {FIELD_DISPLAY_FORMATS.filter(o => o.value).map(o => (
+                                <SelectItem key={o.value} value={o.value} className="text-xs">
+                                  {o.label} · {o.example}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            {f.display_format
+                              ? FIELD_DISPLAY_FORMATS.find(o => o.value === f.display_format)?.example || f.display_format
+                              : '原样'}
+                          </span>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-xs text-muted-foreground">
                         {f.description || (f.aliases?.length ? `别名: ${f.aliases.join(', ')}` : '')}
                         {f.calculation ? ` · ${f.calculation}` : ''}
@@ -282,13 +328,16 @@ export default function DatasetDetail() {
                   );
                 })}
                 {fields.length === 0 && (
-                  <tr><td colSpan={5} className="text-center py-6 text-muted-foreground text-sm">暂无字段</td></tr>
+                  <tr><td colSpan={6} className="text-center py-6 text-muted-foreground text-sm">暂无字段</td></tr>
                 )}
               </tbody>
             </table>
           </div>
           <p className="text-xs text-muted-foreground mt-2">
-            SQL 独有列与映射关系保存在 field_config
+            SQL 独有列与映射关系保存在 field_config。
+            「显示格式」只改**怎么给人看**（取数结果仍是可比较、可运算的原值）：时间列配成
+            「按日」后，图表 X 轴、tooltip、表值图与明细表同时变成 2026-10-12，
+            不再是一排被截断的 2026-10-12T00:00:00.000。
           </p>
           {canManage && (
             <Button size="sm" className="mt-3" onClick={async () => {
@@ -298,7 +347,8 @@ export default function DatasetDetail() {
                 .map(({ from, unmapped, ...rest }: any) => rest)
                 .concat(fields
                   .filter(f => f.from === 'semantic' && f.sql_column)
-                  .map(f => ({ field: f.sql_column, maps_to: f.field, role: f.role })));
+                  .map(f => ({ field: f.sql_column, maps_to: f.field, role: f.role,
+                               display_format: f.display_format || '' })));
               try {
                 await client.put(`/datasets/${datasetId}`, { field_config: cfg });
                 toast.success('字段配置已保存');
@@ -310,9 +360,13 @@ export default function DatasetDetail() {
           )}
         </TabsContent>
 
-        {/* ── 行级范围 ── */}
+        {/* ── 行级范围（ES 型不适用，面板内显式说明原因）── */}
+        <TabsContent value="params" className="pt-3">
+          <ParamsPanel ds={ds} datasetId={datasetId} canManage={canManage} onSaved={() => load(true)} />
+        </TabsContent>
+
         <TabsContent value="scopes" className="pt-3">
-          <ScopesPanel datasetId={datasetId} fields={fields} canManage={canManage} />
+          <ScopesPanel datasetId={datasetId} fields={fields} canManage={canManage} ds={ds} />
         </TabsContent>
 
         {/* ── 引用 ── */}
@@ -342,51 +396,85 @@ function ExecPanel({ ds, canManage, onDsChange }: {
   ds: any; fields: DatasetField[]; canManage: boolean;
   onSaved: (data: any) => void; onDsChange: (patch: any) => void;
 }) {
+  const isEs = ds.source_type === 'es';
   return (
     <div className="space-y-4">
-      {/* 执行 SQL */}
+      {/* 执行正文：治理域走"执行数据源 + 可用范围"，ES 型走"索引范围"（两套口径互斥） */}
       <div className="border rounded-lg p-3 space-y-2">
         <div className="flex items-center gap-1.5 text-sm font-medium">
-          <Code2 className="h-4 w-4" /> 执行 SQL
-          <Badge variant="outline" className="text-[10px]">实际执行通道 · 仅 SELECT/WITH</Badge>
+          <Code2 className="h-4 w-4" /> {isEs ? 'ES 查询正文' : '执行 SQL'}
+          <Badge variant="outline" className="text-[10px]">
+            {isEs ? '内置 ES 通道 · 单表 SELECT，必须 LIMIT' : '实际执行通道 · 仅 SELECT/WITH'}
+          </Badge>
         </div>
-        <div className="space-y-1.5">
-          <Label>执行数据源</Label>
-          <SqlDatasourceSelect
-            value={ds.datasource_id || 0}
+        {isEs && (
+          <EsSourcePicker
+            value={ds.es_pattern || ''}
             disabled={!canManage}
-            onChange={v => onDsChange({ datasource_id: v })}
+            onChange={v => onDsChange({ es_pattern: v })}
           />
-        </div>
-        <div className="space-y-1.5">
-          <Label>可用数据源范围</Label>
-          <DatasourceScopeSelect
-            value={ds.available_datasources || []}
-            disabled={!canManage}
-            execName={ds.datasource_name || ''}
-            onChange={v => onDsChange({ available_datasources: v })}
-          />
-          <p className="text-xs text-muted-foreground">
-            不填 = 仅能在执行数据源上跑。填入多个源后，同一份 SQL 可在这些源上执行
-            （看板与 Chat 取数时服务端按当前用户的已授权源定源，多义时会要求指定站点）。
-          </p>
-          {(ds.warnings || []).length > 0 && (
-            <div className="border rounded-md p-2 bg-amber-50 dark:bg-amber-950/30 space-y-1">
-              {(ds.warnings || []).map((w: string, i: number) => (
-                <div key={i} className="text-xs text-amber-700 dark:text-amber-400">· {w}</div>
-              ))}
+        )}
+        {!isEs && (
+          <>
+            <div className="space-y-1.5">
+              <Label>执行数据源</Label>
+              <SqlDatasourceSelect
+                value={ds.datasource_id || 0}
+                disabled={!canManage}
+                onChange={v => onDsChange({ datasource_id: v })}
+              />
             </div>
-          )}
-        </div>
+            <div className="space-y-1.5">
+              <Label>可用数据源范围</Label>
+              <DatasourceScopeSelect
+                value={ds.available_datasources || []}
+                disabled={!canManage}
+                execName={ds.datasource_name || ''}
+                onChange={v => onDsChange({ available_datasources: v })}
+              />
+              <p className="text-xs text-muted-foreground">
+                不填 = 仅能在执行数据源上跑。填入多个源后，同一份 SQL 可在这些源上执行
+                （看板与 Chat 取数时服务端按当前用户的已授权源定源，多义时会要求指定站点）。
+              </p>
+            </div>
+          </>
+        )}
+        {(ds.warnings || []).length > 0 && (
+          <div className="border rounded-md p-2 bg-amber-50 dark:bg-amber-950/30 space-y-1">
+            {(ds.warnings || []).map((w: string, i: number) => (
+              <div key={i} className="text-xs text-amber-700 dark:text-amber-400">· {w}</div>
+            ))}
+          </div>
+        )}
         <Textarea
           rows={8} className="font-mono text-xs"
           value={ds.sql_query || ''}
           disabled={!canManage}
           onChange={e => onDsChange({ sql_query: e.target.value })}
-          placeholder="SELECT region, status, COUNT(*) AS cnt FROM t_case_records GROUP BY region, status"
+          placeholder={isEs
+            ? 'SELECT DATE_TRUNC(\'DAY\', "@timestamp") AS d, COUNT(*) AS c\nFROM "logs-*" GROUP BY DATE_TRUNC(\'DAY\', "@timestamp") ORDER BY d ASC LIMIT 60'
+            : 'SELECT region, status, COUNT(*) AS cnt FROM t_case_records GROUP BY region, status'}
         />
         <p className="text-xs text-muted-foreground">
           修改后点击上方「保存配置」统一提交（含基本信息与图表预设）
+        </p>
+      </div>
+
+      {/* 结果形状声明：能不能按页取是正文决定的，所以登记在数据集而不是图表 */}
+      <div className="border rounded-lg p-3 space-y-2">
+        <div className="flex items-center gap-2">
+          <Switch
+            checked={!!ds.paginable}
+            disabled={!canManage}
+            onCheckedChange={v => onDsChange({ paginable: v })}
+          />
+          <Label className="text-sm font-medium">支持分页（结果是明细行集）</Label>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          开启后，看板上的表值图会按「每页行数 / 页号」向服务端取数（每页上限 100 行），
+          不再一次拉全量再在前端切片。数据源型数据集可直接跳页，ES 型数据集按游标逐页往后翻。
+          正文是 GROUP BY / 聚合统计的（本身就是完整的一页）请关闭本项，
+          否则翻页会对统计结果套页限、把趋势砍没。
         </p>
       </div>
     </div>
@@ -585,6 +673,9 @@ function DatasourceScopeSelect({ value, disabled, execName, onChange }: {
 function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: DatasetField[]; ds: any }) {
   const [result, setResult] = useState<any>(null);
   const [running, setRunning] = useState(false);
+  // ES 型：取数形状由正文决定，不存在"选哪些维度/度量重新聚合"这回事；
+  // 也不给执行数据源选择器（它不挂在数据源上）。把控件渲出来但传了不生效就是空承诺。
+  const isEs = ds?.source_type === 'es';
   // 图表样式走 UI 字模库主题包管线(useChartDesign): 预览与看板/Chat 同观感
   const { chartStyle } = useChartDesign();
   const presetChart = chartStyle(cleanPreset(ds.chart_preset), ds.chart_type);
@@ -598,13 +689,21 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
     ? ds.usable_now : ds.available_source_names) || [];
   const [sourceSel, setSourceSel] = useState<string>('');
 
+  // 字段显示格式（服务端随取数结果下发）在进渲染面前归一一次：下方明细表直接读它，
+  // 图表预览把它随 data 交给 DashboardChart（那边内部走同一实现）。
+  // 不在这里归一就会出现"图上是 2026-10-12、同一屏的表里还挂着 T00:00:00.000"。
+  const preview = useMemo(() => applyFieldFormats({
+    columns: result?.columns || [],
+    rows: result?.rows || [],
+    field_formats: result?.field_formats,
+  }), [result]);
+
   const run = async () => {
     setRunning(true);
     try {
-      const { data } = await client.post(`/datasets/${datasetId}/preview`, {
-        dimensions, measures: measuresSel, limit: 100,
-        datasource: sourceSel || '',
-      });
+      const { data } = await client.post(`/datasets/${datasetId}/preview`, isEs
+        ? { limit: 100 }
+        : { dimensions, measures: measuresSel, limit: 100, datasource: sourceSel || '' });
       setResult(data);
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '预览失败');
@@ -616,6 +715,18 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-2 items-end">
+        {isEs && (
+          <div className="min-w-40">
+            <Label className="text-xs">索引范围</Label>
+            <div className="mt-1">
+              <Badge variant="outline" className="text-[11px] max-w-[280px] truncate"
+                title="内置 Elasticsearch 通道：只读、按正文取数，不施加列级/行级数据权限">
+                {ds.es_pattern || '-'}
+              </Badge>
+            </div>
+          </div>
+        )}
+        {!isEs && <>
         <div className="min-w-40">
           <Label className="text-xs">维度</Label>
           <div className="flex flex-wrap gap-1 mt-1">
@@ -655,14 +766,32 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
             </Select>
           </div>
         )}
+        </>}
         <Button size="sm" onClick={run} disabled={running}>
           {running ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Play className="h-3.5 w-3.5 mr-1" />}
           预览取数
         </Button>
       </div>
+      {isEs && (
+        <p className="text-[10px] text-muted-foreground">
+          ES 型数据集直接执行已保存正文（不做维度/度量重聚合，也不套行/列级策略）。
+          全量模式聚合可能超过默认 20s 超时，请先在正文里用 WHERE 收窄时间范围。
+        </p>
+      )}
 
       {result && (
         <>
+          {/* 配置面的通道溯源标注：评测/排查能分辨这次走的是 ES 还是治理入口 */}
+          {result.execution_mode === 'es' && (
+            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <Badge variant="outline" className="text-[10px]">ES 通道 · 未施加列级/行级策略</Badge>
+              <span title={result.governance?.note || ''}>
+                范围: {result.es_scope || ds.es_pattern || '-'}
+                {(result.es_indexes || []).length > 0 && `・命中索引: ${result.es_indexes.join(', ')}`}
+                ・本次 {result.row_count ?? (result.rows || []).length} 行
+              </span>
+            </div>
+          )}
           {/* 图表预览: 按已保存的图表预设同步渲染(预设改动即时反映, 不需重新取数) */}
           {ds.chart_type && (
             <div className="border rounded-lg p-3">
@@ -674,7 +803,7 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
                 <div className="relative h-[320px]">
                   <DashboardChart
                     chartType={ds.chart_type}
-                    data={{ columns: result.columns || [], rows: result.rows || [] }}
+                    data={preview}
                     config={presetChart.config}
                     visual={presetChart.visual}
                     draft
@@ -697,12 +826,12 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
           <div className="border rounded-lg overflow-auto max-h-[60vh]">
             <table className="w-full text-xs">
               <thead className="bg-muted/50 sticky top-0">
-                <tr>{(result.columns || []).map((c: string) => <th key={c} className="text-left px-2.5 py-1.5 font-medium whitespace-nowrap">{c}</th>)}</tr>
+                <tr>{preview.columns.map((c: string) => <th key={c} className="text-left px-2.5 py-1.5 font-medium whitespace-nowrap">{c}</th>)}</tr>
               </thead>
               <tbody>
-                {(result.rows || []).slice(0, 100).map((row: any, ri: number) => (
+                {preview.rows.slice(0, 100).map((row: any, ri: number) => (
                   <tr key={ri} className="border-t">
-                    {(result.columns || []).map((c: string) => (
+                    {preview.columns.map((c: string) => (
                       <td key={c} className="px-2.5 py-1 whitespace-nowrap">{row[c] == null ? '—' : String(row[c])}</td>
                     ))}
                   </tr>
@@ -723,13 +852,16 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
 
 // ── 行级范围配置 ──────────────────────────────────────────────────────
 
-function ScopesPanel({ datasetId, fields, canManage }: {
-  datasetId: number; fields: DatasetField[]; canManage: boolean;
+function ScopesPanel({ datasetId, fields, canManage, ds }: {
+  datasetId: number; fields: DatasetField[]; canManage: boolean; ds?: any;
 }) {
   const [scopes, setScopes] = useState<Scope[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [roles, setRoles] = useState<any[]>([]);
   const [saving, setSaving] = useState(false);
+  // ES 型数据集不支持行级范围（注入靠子查询包裹，ES SQL 不成立）。
+  // 这里不给"能配但一保存就报错"的入口，而是直接说明为何不可用（不开空承诺）。
+  const isEs = ds?.source_type === 'es';
 
   useEffect(() => {
     client.get(`/datasets/${datasetId}/scopes`).then(({ data }) => setScopes(data.scopes || [])).catch(() => {});
@@ -760,6 +892,22 @@ function ScopesPanel({ datasetId, fields, canManage }: {
       setSaving(false);
     }
   };
+
+  // ES 型：不渲染任何可编辑入口（配了也不会生效，保存还会被后端拒），只给原因
+  if (isEs) {
+    return (
+      <div className="space-y-2">
+        <p className="text-sm text-muted-foreground">
+          ES 型数据集不支持行级范围：该能力靠将正文包成子查询后拼 WHERE 注入，
+          而 ES SQL 不接受这种形状（也无列级策略可改写），配了也不会生效。
+        </p>
+        <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
+          要收窄数据请直接把条件写进查询正文（如 WHERE "region" = 'cn'），
+          或改用数据源型数据集以获得行级权限与脱敏。
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3">
@@ -853,4 +1001,198 @@ function ScopesPanel({ datasetId, fields, canManage }: {
       )}
     </div>
   );
+}
+
+
+/**
+ * 入参（看板参数）面板：把数据集声明的 `${}` 入参翻成"在看板上会长成什么样"。
+ *
+ * 为什么这一页必须有：入参声明过去只能靠建模人员手打 JSON，看板侧只能猜名字对齐，
+ * 猜错就静默按数据集默认值出数（用户以为筛过了）。这里提供唯一的**改判入口**：
+ *  - 「看板显示名」：装配时给用户看的词；
+ *  - 「归属逻辑参数」：不同表叫法不同（如 site / region）时并成一个控件的登记处，
+ *    留空 = 由平台按正文形状推断（推断结果一并显示，避免"改了不知道有没有生效"）。
+ *
+ * 形状判定不在这里重做：`ds.param_plan` 由服务端 `semantics.param_plan` 给出，
+ * 与看板取数翻译同一份口径。
+ */
+export function ParamsPanel({ ds, datasetId, canManage, onSaved }: {
+  ds: any; datasetId: number; canManage: boolean; onSaved: () => void;
+}) {
+  const plan: any[] = ds?.param_plan || [];
+  const [saving, setSaving] = useState(false);
+  const [candidates, setCandidates] = useState<string[]>([]);
+  const [dashKeys, setDashKeys] = useState<Record<string, string>>({});
+  const [groupLabels, setGroupLabels] = useState<Record<string, string>>({});
+  // 入参值域（''=普通业务值 / 'site'=值是站点）：取数时要不要把站点换成该字段的实际写法，
+  // 唯一判据就登记在这里（不靠变量名猜），所以必须给一个可见可改的入口
+  const [domains, setDomains] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    // 候选逻辑参数清单：聚合所有可见数据集已用的键（只做聚合，不重做形状判定）
+    client.get('/datasets/').then(({ data }) => {
+      const keys = new Set<string>();
+      (data.items || []).forEach((row: any) => (row.param_summary || []).forEach((p: any) => keys.add(p.key)));
+      setCandidates([...keys].sort((a, b) => a.localeCompare(b, 'zh-CN')));
+    }).catch(() => setCandidates([]));
+  }, []);
+
+  // 编辑态跟随服务端计划：切换数据集或重新加载后不残留上一份草稿
+  useEffect(() => {
+    const keys: Record<string, string> = {};
+    const labels: Record<string, string> = {};
+    const doms: Record<string, string> = {};
+    for (const g of plan) {
+      labels[g.key] = (g.targets || []).some((t: any) => t.label_declared) ? String(g.label || '') : '';
+      for (const t of g.targets || []) {
+        keys[t.var] = String(t.dash_key || '');
+        doms[t.var] = String(t.value_domain || '');
+      }
+    }
+    setDashKeys(keys);
+    setGroupLabels(labels);
+    setDomains(doms);
+  }, [ds]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const dirty = useMemo(() => {
+    let n = 0;
+    for (const g of plan) {
+      const declared = (g.targets || []).some((t: any) => t.label_declared) ? String(g.label || '') : '';
+      if ((groupLabels[g.key] || '') !== declared) n += 1;
+      for (const t of g.targets || []) {
+        if ((dashKeys[t.var] || '') !== String(t.dash_key || '')) n += 1;
+        if ((domains[t.var] || '') !== String(t.value_domain || '')) n += 1;
+      }
+    }
+    return n;
+  }, [plan, dashKeys, groupLabels, domains]);
+
+  if (!plan.length) {
+    return <div className="rounded-md border p-4 text-xs text-muted-foreground">
+      该数据集没有声明入参。若正文里写了 <code className="font-mono">${'{'}参数名{'}'}</code>，
+      请声明对应入参，否则看板无法为它提供筛选，取数会按正文默认值执行。
+    </div>;
+  }
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const base = parseVariables(ds.variables);
+      for (const g of plan) {
+        const label = (groupLabels[g.key] || '').trim();
+        for (const t of g.targets || []) {
+          const decl = base[t.var];
+          if (!decl || typeof decl !== 'object') continue;
+          const key = (dashKeys[t.var] || '').trim();
+          if (key) decl.dash_key = key; else delete decl.dash_key;
+          // 显示名属于逻辑参数整组，不是单个变量：同组每个变量都落同一个词
+          if (label) decl.label = label; else delete decl.label;
+          const domain = (domains[t.var] || '').trim();
+          if (domain) decl.value_domain = domain; else delete decl.value_domain;
+        }
+      }
+      await client.put(`/datasets/${datasetId}`, { variables: JSON.stringify(base) });
+      toast.success('入参归属已保存');
+      onSaved();
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return <div className="space-y-3">
+    <div className="flex items-center justify-between gap-2">
+      <p className="text-xs text-muted-foreground">
+        这些入参决定看板上会出现哪些筛选控件。控件在看板「引入数据集」时按这里的声明自动装配，
+        口径仍由数据集正文负责（看板不能改正文）。
+      </p>
+      {canManage && <Button size="sm" onClick={save} disabled={saving || !dirty}>
+        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Save className="h-3.5 w-3.5 mr-1" />}
+        保存入参归属{dirty ? `（${dirty} 处改动）` : ''}
+      </Button>}
+    </div>
+
+    {plan.map((g: any) => (
+      <div key={g.key} className="rounded-md border p-3 space-y-2">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <div className="text-sm font-medium">{g.label}</div>
+          <div className="text-[11px] text-muted-foreground">
+            {KIND_LABELS[g.kind] || g.kind}
+            {' · '}{VALUE_TYPE_LABELS[g.value_type] || g.value_type || '形态待定'}
+            {' · '}{g.control
+              ? `看板控件：${CHART_TYPES.find(c => c.value === g.control)?.label || CONTROL_LABELS[g.control]}`
+              : '不自动建控件'}
+          </div>
+        </div>
+
+        <ul className="space-y-1">
+          {(g.targets || []).map((t: any) => (
+            <li key={t.var} className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="font-mono w-40 shrink-0">{t.var}</span>
+              <span className="w-32 shrink-0 text-muted-foreground">{ROLE_LABELS[t.role] || t.role}</span>
+              {canManage
+                ? <Input className="h-6 w-40 text-xs font-mono" list="adh-param-key-candidates"
+                    value={dashKeys[t.var] || ''} aria-label={`归属逻辑参数 ${t.var}`} placeholder={g.key}
+                    onChange={e => setDashKeys(v => ({ ...v, [t.var]: e.target.value }))} />
+                : <span className="font-mono text-muted-foreground">{g.key}</span>}
+              {!(dashKeys[t.var] || '').trim() && (
+                <span className="text-[10px] text-muted-foreground">留空 = 按正文形状归到 {g.key}</span>
+              )}
+              {canManage ? (
+                <Select value={domains[t.var] || 'none'} onValueChange={(v) => setDomains((prev) => ({ ...prev, [t.var]: v === 'none' ? '' : v }))}>
+                  <SelectTrigger className="h-6 w-36 text-xs" aria-label={`入参值域 ${t.var}`}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">值域：普通业务值</SelectItem>
+                    <SelectItem value="site">值域：站点</SelectItem>
+                  </SelectContent>
+                </Select>
+              ) : ((t.value_domain || '') === 'site' && (
+                <Badge variant="secondary" className="text-[10px]">值域：站点</Badge>
+              ))}
+            </li>
+          ))}
+        </ul>
+
+        {canManage && (
+          <label className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="shrink-0 text-muted-foreground">看板显示名</span>
+            <Input className="h-6 w-56 text-xs"
+              value={groupLabels[g.key] || ''} aria-label={`看板显示名 ${g.key}`} placeholder={g.suggested_label || g.key}
+              onChange={e => setGroupLabels(v => ({ ...v, [g.key]: e.target.value }))} />
+            <span className="text-[10px] text-muted-foreground">装配控件与参数清单上给用户看的词</span>
+          </label>
+        )}
+
+        {(g.conflicts || []).length > 0 && (
+          <div role="alert" className="rounded-md border border-amber-300 bg-amber-50/60 px-2 py-1.5 text-[11px] text-amber-900">
+            <ul className="list-disc pl-4 space-y-0.5">
+              {g.conflicts.map((c: string) => <li key={c}>{c}</li>)}
+            </ul>
+          </div>
+        )}
+      </div>
+    ))}
+    {/* 归属逻辑参数的候选来自全平台清单聚合：可以选已有键，也可以新起一个规范名 */}
+    <datalist id="adh-param-key-candidates">{candidates.map(k => <option key={k} value={k} />)}</datalist>
+  </div>;
+}
+
+/** 保留原声明字段（type/default/values…），只改 dash_key/label：入参声明是数据集的口径载体，不能整份重写 */
+function parseVariables(raw: any): Record<string, any> {
+  let v = raw;
+  if (typeof v === 'string') { try { v = JSON.parse(v || '{}'); } catch { v = {}; } }
+  if (Array.isArray(v)) {
+    return v.reduce((acc: Record<string, any>, item: any) => {
+      if (item && item.name) acc[String(item.name)] = { ...item };
+      return acc;
+    }, {});
+  }
+  if (v && typeof v === 'object') {
+    return Object.fromEntries(Object.entries(v).map(([k, val]) =>
+      [k, (val && typeof val === 'object') ? { ...(val as any) } : { type: String(val) }]));
+  }
+  return {};
 }

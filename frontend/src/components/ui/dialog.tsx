@@ -48,8 +48,13 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 // 标题/关闭按钮在视口上方、保存/取消在视口下方，用户既滚不动也点不到（历史缺陷）。
 // 故基准即带 max-h + 纵向滚动；各页自己的 max-h-[85vh] 之类经 twMerge 仍优先生效。
 // 例外：需要占满整高的抽屉（PropertyPanel narrow）自行写 max-h-[100dvh] 覆盖。
+//
+// 宽度护栏（同一类缺陷的另一轴）：基准原先是 `w-full`（= 视口宽），窗口比弹窗
+// max-w 还窄时，弹窗左右贴到窗口边、圆角与边框被切，输入框看着像“超出弹窗”（历史缺陷：
+// 新建定时任务表单）。改 `w-[calc(100%-2rem)]` 后两侧永远留 16px 余量，窄窗口下弹窗自己
+// 缩，而不是把内容挤到窗外；需要贴边/占满宽度的抽屉与弹窗用自己的 w-[…] 覆盖即可。
 const BASE_CONTENT_CLASSES =
-  "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg max-h-[90vh] overflow-y-auto overflow-x-hidden translate-x-[-50%] translate-y-[-50%] gap-4 border border-border bg-background p-5 shadow-2xl duration-200 [&>*]:min-w-0 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] rounded-2xl";
+  "fixed left-[50%] top-[50%] z-50 grid w-[calc(100%-2rem)] max-w-lg max-h-[90vh] overflow-y-auto overflow-x-hidden translate-x-[-50%] translate-y-[-50%] gap-4 border border-border bg-background p-5 shadow-2xl duration-200 [&>*]:min-w-0 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] rounded-2xl";
 
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,

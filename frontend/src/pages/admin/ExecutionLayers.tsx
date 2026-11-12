@@ -6,9 +6,15 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
 import { toast } from '@/lib/toast';
 import { Plus, Pencil, Trash2, Terminal, Radar, Wrench, RefreshCw } from 'lucide-react';
 import client from '@/api/client';
+
+// 可走 SDK 安全执行链的 CLI 后端（与后端 manager.build_adapter 的接受集一致）
+const SDK_CLI_NAMES = ['qoder', 'claude'];
 
 interface ExecutionLayer {
   id: number;
@@ -18,6 +24,8 @@ interface ExecutionLayer {
   layer_type: string;
   config: Record<string, any>;
   status: string;
+  /** 系统默认执行层（AS-BOT 未指定执行层时走它）；全表至多一行为 1 */
+  is_default?: number;
   health_check_at?: string;
   last_test_status?: string;
   last_test_message?: string;
@@ -39,7 +47,7 @@ interface DiscoveredCLI {
 }
 
 const LAYER_TYPE_LABELS: Record<string, string> = {
-  builtin: '内置执行层',
+  builtin: '内置 Harness',
   cli: 'CLI 进程',
   docker: 'Docker 容器',
   remote: '远程 Agent',
@@ -173,21 +181,34 @@ export default function ExecutionLayers() {
     });
   };
 
+  /** 关闭表单弹窗并复位编辑态（取消 / 外点 / 保存成功后统一走这里） */
+  const closeForm = () => {
+    setFormOpen(false);
+    setEditing(null);
+    setForm({ ...EMPTY_FORM });
+  };
+
   const handleSave = async () => {
-    if (!form.name) { toast.error('请输入执行层名称'); return; }
+    if (!form.name) { toast.error('请输入 Harness 名称'); return; }
     if (form.layer_type === 'cli' && !form.cli_name) { toast.error('请选择 CLI 类型'); return; }
 
     const config: Record<string, any> = {};
     if (form.layer_type === 'cli') {
       config.cli_name = form.cli_name;
-      if (form.cli_path) config.cli_path = form.cli_path;
-      if (form.timeout) config.timeout = Number(form.timeout);
-      if (form.model) config.model = form.model;
-      if (form.cli_name === 'qoder' && form.mode === 'sdk') config.mode = 'sdk';
+      // 空值显式传 null：后端对 config 做合并写入（防“点一下保存就把表单不认识的键抹掉”，
+      // 历史上 `mode=sdk` 就是这样被丢的），所以清空字段必须点名而不是不传。
+      config.cli_path = form.cli_path || null;
+      config.timeout = form.timeout ? Number(form.timeout) : null;
+      config.model = form.model || null;
+      // 两种 SDK 后端都必须写 mode：以前只在 cli_name==='qoder' 时写，导致 claude 层
+      // 从界面上永远配不出可被 AS-BOT 安全执行链接受的层。
+      config.mode = SDK_CLI_NAMES.includes(form.cli_name) ? form.mode : null;
       if (form.env_text) {
         try {
           config.env = JSON.parse(form.env_text);
         } catch { toast.error('环境变量不是合法 JSON'); return; }
+      } else {
+        config.env = null;
       }
     }
 
@@ -212,9 +233,7 @@ export default function ExecutionLayers() {
         await client.post('/admin/execution-layers', payload);
         toast.success('已创建');
       }
-      setFormOpen(false);
-      setEditing(null);
-      setForm({ ...EMPTY_FORM });
+      closeForm();
       load();
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '保存失败');
@@ -245,13 +264,24 @@ export default function ExecutionLayers() {
   };
 
   const handleDelete = async (l: ExecutionLayer) => {
-    if (l.layer_type === 'builtin') { toast.error('内置执行层不可删除'); return; }
-    if (!confirm(`确定删除执行层「${l.display_name || l.name}」？`)) return;
+    if (l.layer_type === 'builtin') { toast.error('内置 Harness 不可删除'); return; }
+    if (!confirm(`确定删除 Harness「${l.display_name || l.name}」？`)) return;
     try {
       await client.delete(`/admin/execution-layers/${l.id}`);
       toast.success('已删除');
       load();
     } catch (e: any) { toast.error(e.response?.data?.detail || '删除失败'); }
+  };
+
+  const handleSetDefault = async (l: ExecutionLayer) => {
+    if (!confirm(`把「${l.display_name || l.name}」设为系统默认 Harness？\n未绑定 Harness 的 AS-BOT 会全部改走这条 Harness（模型通道与计费口径随之变化）。`)) return;
+    try {
+      await client.put(`/admin/execution-layers/${l.id}/default`);
+      toast.success('已设为默认 Harness');
+      load();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || '设置失败');
+    }
   };
 
   const handleTest = async (l: ExecutionLayer) => {
@@ -287,24 +317,29 @@ export default function ExecutionLayers() {
   (editing?.tools || []).forEach(t => { if (!toolCandidateMap.has(t.name)) toolCandidateMap.set(t.name, { name: t.name }); });
   (form.allowed_tools || []).forEach((n: string) => { if (!toolCandidateMap.has(n)) toolCandidateMap.set(n, { name: n }); });
   const toolCandidates = Array.from(toolCandidateMap.values());
+  // 当前默认执行层（标题行据此显示，不再硬编码成 qodercli）：
+  // 改了默认层而页面还说“qodercli”会把人误导到另一个通道上。
+  const defaultLayer = layers.find(l => Number(l.is_default || 0) === 1) || null;
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
-            <Terminal className="h-5 w-5" /> 执行层管理
+            <Terminal className="h-5 w-5" /> Harness 管理
           </h2>
           <p className="text-sm text-muted-foreground mt-1">
-            配置 AI 任务的执行后端:qodercli
+            配置 AI 任务的执行后端：{defaultLayer
+              ? (defaultLayer.display_name || defaultLayer.name)
+              : '未设置默认 Harness'}
           </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={handleDiscover} disabled={discovering}>
             <Radar className="h-4 w-4 mr-1" /> {discovering ? '扫描中...' : '发现本机 CLI'}
           </Button>
-          <Button size="sm" onClick={() => { setEditing(null); setForm({ ...EMPTY_FORM }); setFormOpen(!formOpen); }}>
-            <Plus className="h-4 w-4 mr-1" /> 新建执行层
+          <Button size="sm" onClick={() => { setEditing(null); setForm({ ...EMPTY_FORM }); setFormOpen(true); }}>
+            <Plus className="h-4 w-4 mr-1" /> 新建 Harness
           </Button>
         </div>
       </div>
@@ -320,16 +355,18 @@ export default function ExecutionLayers() {
                 <span className="ml-2 text-xs text-muted-foreground">{c.path}</span>
                 {c.version && <span className="ml-2 text-xs text-muted-foreground">({c.version})</span>}
               </div>
-              <Button size="sm" variant="outline" onClick={() => applyDiscovered(c)}>添加为执行层</Button>
+              <Button size="sm" variant="outline" onClick={() => applyDiscovered(c)}>添加为 Harness</Button>
             </div>
           ))}
         </div>
       )}
 
-      {/* Form */}
-      {formOpen && (
-        <div className="border border-border rounded-xl p-4 space-y-3">
-          <div className="text-sm font-medium">{editing ? '编辑执行层' : '新建执行层'}</div>
+      {/* Form —— 新建/编辑统一走弹窗（字段多，不再内联顶开列表；长表单靠 DialogContent 的限高滚动） */}
+      <Dialog open={formOpen} onOpenChange={(open) => { if (!open) closeForm(); }}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>{editing ? '编辑 Harness' : '新建 Harness'}</DialogTitle>
+          </DialogHeader>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <Label>名称(唯一标识)</Label>
@@ -342,12 +379,12 @@ export default function ExecutionLayers() {
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <Label>执行层类型</Label>
+              <Label>Harness 类型</Label>
               <Select value={form.layer_type} onValueChange={v => setForm({ ...form, layer_type: v })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="cli">CLI 进程</SelectItem>
-                  <SelectItem value="builtin">内置执行层</SelectItem>
+                  <SelectItem value="builtin">内置 Harness</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -358,17 +395,24 @@ export default function ExecutionLayers() {
           </div>
           {form.layer_type === 'cli' && (
             <>
-              <div className={`grid ${form.cli_name === 'qoder' ? 'grid-cols-3' : 'grid-cols-2'} gap-4`}>
+              <div className={`grid ${SDK_CLI_NAMES.includes(form.cli_name) ? 'grid-cols-3' : 'grid-cols-2'} gap-4`}>
                 <div className="space-y-1.5">
                   <Label>CLI 类型</Label>
-                  <Select value={form.cli_name} onValueChange={v => { setForm({ ...form, cli_name: v, model: '', mode: 'process' }); loadModels(v); }}>
+                  <Select value={form.cli_name} onValueChange={v => {
+                    // 换后端时调用方式跟着重置：两种 SDK 后端默认走 SDK 安全执行链，
+                    // 子进程模式对它们不可用（AS-BOT 只接受 mode=sdk）。
+                    setForm({ ...form, cli_name: v, model: '',
+                      mode: SDK_CLI_NAMES.includes(v) ? 'sdk' : 'process' });
+                    loadModels(v);
+                  }}>
                     <SelectTrigger><SelectValue placeholder="选择 CLI" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="qoder">Qoder CLI</SelectItem>
+                      <SelectItem value="claude">Claude Agent SDK（供应商直连）</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
-                {form.cli_name === 'qoder' && (
+                {SDK_CLI_NAMES.includes(form.cli_name) && (
                   <div className="space-y-1.5">
                     <Label>调用方式</Label>
                     <Select value={form.mode} onValueChange={v => setForm({ ...form, mode: v })}>
@@ -378,6 +422,9 @@ export default function ExecutionLayers() {
                         <SelectItem value="sdk">SDK(支持 MCP/Agent 注入)</SelectItem>
                       </SelectContent>
                     </Select>
+                    {form.mode !== 'sdk' && (
+                      <p className="text-xs text-destructive">AS-BOT 安全执行链仅接受 SDK 方式；选子进程时该层不会被问答使用。</p>
+                    )}
                   </div>
                 )}
                 <div className="space-y-1.5">
@@ -433,7 +480,7 @@ export default function ExecutionLayers() {
                 );
               })}
             </div>
-            <p className="text-xs text-muted-foreground">候选 = 标准工具目录 ∪ 该执行层实测工具;最终生效 = 层级 ∩ 工作空间绑定</p>
+            <p className="text-xs text-muted-foreground">候选 = 标准工具目录 ∪ 该 Harness 实测工具;最终生效 = 层级 ∩ 工作空间绑定</p>
           </div>
           <div className="space-y-1.5">
             <Label>可执行目录(每行一个绝对路径,空=回退工作空间目录)</Label>
@@ -448,12 +495,12 @@ export default function ExecutionLayers() {
             <Switch checked={form.status === 'active'} onCheckedChange={v => setForm({ ...form, status: v ? 'active' : 'inactive' })} />
             <span className="text-sm">启用</span>
           </div>
-          <div className="flex gap-2">
+          <DialogFooter>
+            <Button size="sm" variant="ghost" onClick={closeForm}>取消</Button>
             <Button size="sm" onClick={handleSave}>保存</Button>
-            <Button size="sm" variant="ghost" onClick={() => { setFormOpen(false); setEditing(null); }}>取消</Button>
-          </div>
-        </div>
-      )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* List */}
       <div className="border border-border rounded-xl divide-y divide-border">
@@ -473,6 +520,9 @@ export default function ExecutionLayers() {
                     : healthy
                       ? <span className="ml-2 text-xs text-green-600">● 在线</span>
                       : <span className="ml-2 text-xs text-amber-600">● 心跳超时</span>}
+                  {l.is_default ? (
+                    <Badge variant="secondary" className="ml-2 text-[10px] font-normal">默认 Harness</Badge>
+                  ) : null}
                   {l.source !== 'self' && l.status === 'active' && l.last_test_status === 'success' && <span className="ml-2 text-xs text-green-600">✅ 连通</span>}
                   {l.source !== 'self' && l.status === 'active' && l.last_test_status === 'failed' && <span className="ml-2 text-xs text-destructive">❌ 不可用</span>}
                 </div>
@@ -507,6 +557,14 @@ export default function ExecutionLayers() {
                 )}
               </div>
               <div className="flex gap-1 shrink-0">
+                {/* 停用层也要看到入口（只是不可点），否则管理员不知道“为什么没有设为默认” */}
+                {!l.is_default && (
+                  <Button size="sm" variant="outline" disabled={l.status !== 'active'}
+                    onClick={() => handleSetDefault(l)}
+                    title={l.status !== 'active' ? '请先在「编辑」里启用该 Harness，才能设为默认' : '设为默认 Harness'}>
+                    设为默认
+                  </Button>
+                )}
                 <Button size="sm" variant="outline" onClick={() => handleTest(l)} disabled={testing === l.id}>
                   {testing === l.id ? '检测中...' : '测试'}
                 </Button>
@@ -557,7 +615,7 @@ export default function ExecutionLayers() {
         })}
         {!loading && layers.length === 0 && (
           <div className="text-sm text-muted-foreground text-center py-12">
-            暂无执行层,请先执行迁移 SQL 或点击「发现本机 CLI」添加
+            暂无 Harness,请先执行迁移 SQL 或点击「发现本机 CLI」添加
           </div>
         )}
       </div>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { BarChart3, LayoutDashboard, Search, Settings } from 'lucide-react';
+import { BarChart3, Info, LayoutDashboard, Search, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { hasPerm } from '@/stores/permissionStore';
@@ -75,36 +75,39 @@ export default function WorkspaceDashboards() {
     if (entry) playBoard(entry.id, group.id);
   };
 
-  return <div className="mx-auto max-w-[1800px] space-y-5 p-5 md:p-8">
-    <header className="flex flex-wrap items-end justify-between gap-4">
-      <div className="min-w-0">
-        <div className="mb-2 text-xs tracking-[0.2em] text-muted-foreground">WORKSPACE / DASHBOARDS</div>
-        <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-          <BarChart3 className="h-6 w-6 text-primary" />数据看板
-        </h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {query ? '搜索结果跨组合直接匹配看板，点卡片进入看板详情。' : '你被授权的看板组合都在这里，点组合卡直接进入该组合的看板，页内可切换同组看板。'}
+  return <div className="mx-auto max-w-[1800px] space-y-4 p-5 md:p-6">
+    {/* 页头压成一行：旧版“eyebrow + 2xl 大标题 + 说明句 + border-y 工具条”三叠，卡片还没开始看就已经滑掉小半屏；
+        工作空间顶栏已有面包屑/模块切换，这里只需“锚点 + 标题 + 搜索 + 计数 + 管理入口”一行。 */}
+    <header className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <div className="flex min-w-0 items-center gap-2.5">
+        <span aria-hidden className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
+          <BarChart3 className="h-4 w-4" />
+        </span>
+        <h1 className="shrink-0 text-lg font-semibold tracking-tight">数据看板</h1>
+        <p className="hidden min-w-0 truncate text-xs text-muted-foreground xl:block">
+          {query ? '搜索结果跨组合直接匹配看板，点卡片进入看板详情。' : '点组合卡直接进入该组合的看板，页内可切换同组看板。'}
         </p>
       </div>
-      {canManage && <Button variant="outline" onClick={() => navigate('/system/dashboards')}>
-        <Settings className="mr-2 h-4 w-4" />看板管理
-      </Button>}
-    </header>
-
-    <div className="flex flex-wrap items-center gap-3 border-y py-4">
-      <div className="relative min-w-[200px] max-w-md flex-1">
-        <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-        <Input aria-label="搜索看板" placeholder="搜索名称或描述…" className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
+      <div className="ml-auto flex items-center gap-2">
+        <div className="relative w-52 sm:w-64">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input aria-label="搜索看板" placeholder="搜索名称或描述…" className="h-8 pl-8 text-xs"
+            value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+        <span className="whitespace-nowrap text-xs text-muted-foreground">
+          {query ? `${hits.length} 个匹配看板` : `${realGroups.length} 个组合 · ${enabled.length} 个看板`}
+        </span>
+        {canManage && <Button size="sm" variant="outline" className="h-8 shrink-0" onClick={() => navigate('/system/dashboards')}>
+          <Settings className="mr-1.5 h-3.5 w-3.5" />看板管理
+        </Button>}
       </div>
-      <span className="ml-auto text-xs text-muted-foreground">
-        {query ? `${hits.length} 个匹配看板` : `${realGroups.length} 个组合 · ${enabled.length} 个看板`}
-      </span>
-      {/* 未启用/已关闭的可见看板显式提示数量: 不混进消费清单, 也不静默消失 */}
-      {!loading && !error && !!unreadyCount && <p className="w-full text-xs text-muted-foreground">
+      {/* 未启用/已关闭的可见看板显式提示数量: 不混进消费清单, 也不静默消失（留在页头内，不再开一条带边框的横栏） */}
+      {!loading && !error && !!unreadyCount && <p className="flex w-full items-center gap-1.5 text-xs text-muted-foreground">
+        <Info aria-hidden className="h-3.5 w-3.5 shrink-0" />
         另有 {unreadyCount} 个可见看板未启用（设计中/已关闭），不进入浏览清单；
         {canManage ? '可在「看板管理」中查看并启用。' : '可联系管理员启用后查看。'}
       </p>}
-    </div>
+    </header>
 
     {loading ? <p role="status" className="text-sm text-muted-foreground">正在加载看板清单…</p>
       : error ? <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm">
@@ -124,12 +127,12 @@ export default function WorkspaceDashboards() {
           字模库加载失败，卡片预览暂时使用灰度配色（与看板管理页不一致）。
           <Button size="sm" variant="outline" onClick={library.refresh}>重试</Button>
         </div>}
-        {query ? (hits.length ? <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+        {query ? (hits.length ? <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
           {hits.map(b => <BoardCard key={`${b.group_id}-${b.id}`} board={b} groupName={b.group_name}
             items={library.items} onOpen={openBoard} onPlay={id => playBoard(id, b.group_id)} />)}
         </div> : <div className="rounded-xl border border-dashed py-16 text-center text-sm text-muted-foreground">
           没有匹配「{search.trim()}」的看板，可换个关键词，或清空搜索按组合浏览。
-        </div>) : <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+        </div>) : <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
           {realGroups.map(g => <GroupCard key={g.id} group={g} items={library.items}
             onEnter={enterGroup} onPlay={playGroup} onOpenBoard={openBoard} />)}
           {/* 未分组看板：平铺为单看板卡（不塑进「未分组」组合卡内），group 上下文传 0 保证页内切换条/返回落点一致 */}

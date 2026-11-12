@@ -193,9 +193,20 @@ describe('共享画布与渲染稳定性', () => {
   it.each(CHART_TYPES.filter(t => t.category === 'widget').map(t => t.value))('%s 内部使用主题包而非全局颜色', type => {
     const design = resolveDashboardDesign(applyScreenComponent({}, pack), []);
     const view = render(createElement(DashboardChartCard, { chart: { ...chart, chart_type: type }, design, items: [], draft: true }));
-    const element = view.container.querySelector('input,select,button');
+    // 日期区间是“一个控件”：主题包的底色/文字色落在字段组上，
+    // input 自身透明并从组继承文字色（写了 inline color 就会压掉空值占位规则）
+    // 决策建议卡是内容型控件：没有 input/select/button，主题包色值落在卡片自身
+    const element = type === 'widget_daterange'
+      ? view.container.querySelector('.dh-daterange-group')
+      : type === 'widget_decision'
+        ? view.container.querySelector('.dh-decision-widget')
+        : view.container.querySelector('input,select,button');
     if (element) expect(element).toHaveStyle({ background: '#112233', color: '#ddeeff' });
     else expect(view.getByText('文本标签')).toHaveStyle({ color: '#ddeeff' });
+    if (type === 'widget_daterange') {
+      for (const input of Array.from(view.container.querySelectorAll('input')))
+        expect(input.style.color, 'input 写了 inline color').toBe('');
+    }
   });
 });
 
@@ -226,6 +237,60 @@ describe('编辑态控件可操作性', () => {
     const view = render(createElement(DashboardChart, { chartType: 'widget_search', data: { columns: [], rows: [] }, config: { label: '搜索' }, draft: true }));
     fireEvent.click(view.getByRole('button', { name: '搜索' }));
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('重置按钮走 store 的一份口径（按看板 id 清两个命名空间并重查）', () => {
+    // 旧实现只清 paramValues，而下发时 pageParamValues 同名键会覆盖回来 → 按了没反应
+    const reset = vi.spyOn(useDashboardStore.getState(), 'resetParams').mockResolvedValue(true);
+    const view = render(createElement(DashboardChart, { chartType: 'widget_reset', data: { columns: [], rows: [] },
+      config: { label: '重置' }, dashboardId: 77, draft: true }));
+    fireEvent.click(view.getByRole('button', { name: '重置' }));
+    expect(reset).toHaveBeenCalledWith(77);
+  });
+
+  it('参数框没配占位提示时按业务名给默认提示（不留无名空框）', () => {
+    const { container } = render(
+      <DashboardChart chartType="widget_text" data={{ columns: [], rows: [] }}
+        config={{ paramKey: 'sn', label: '设备序列号' }} />);
+    expect(container.querySelector('input')).toHaveAttribute('placeholder', '请输入 设备序列号');
+  });
+
+  it('下拉控件占位显示“请选择 + 业务名”', () => {
+    const { container } = render(
+      <DashboardChart chartType="widget_select" data={{ columns: [], rows: [] }}
+        config={{ paramKey: 'region', label: '区域', options: [{ label: '华东', value: '华东' }] }} />);
+    expect(container.querySelector('option')).toHaveTextContent('请选择 区域');
+  });
+
+  it('没候选值的下拉说清去哪里补（不能只写“请选择”然后点开是空的）', () => {
+    const { container } = render(
+      <DashboardChart chartType="widget_select" data={{ columns: [], rows: [] }}
+        config={{ paramKey: 'region', label: '区域' }} />);
+    expect(container.querySelector('option')).toHaveTextContent('候选值未配置');
+  });
+
+  it('本图没写 label 时按 paramKey 反查看板参数的业务名（不拿内部键当主信息）', () => {
+    useDashboardStore.setState({
+      dashboards: [{ id: 11, name: '看板', params: [],
+        page_params: [{ name: 'level', label: '严重等级', type: 'select', default: '' } as never],
+        charts: [] } as never],
+      currentId: 11,
+    });
+    const { container, getByText } = render(
+      <DashboardChart chartType="widget_select" data={{ columns: [], rows: [] }}
+        config={{ paramKey: 'level', options: [{ label: '致命', value: '致命' }] }} dashboardId={11} />);
+    expect(getByText('严重等级')).toBeInTheDocument();
+    expect(container.querySelector('option')).toHaveTextContent('请选择 严重等级');
+  });
+
+  it('未绑定参数的控件显式说明不会生效（不假装是个能用的筛选框）', () => {
+    const { container } = render(<DashboardChart chartType="widget_text" data={{ columns: [], rows: [] }} config={{}} />);
+    expect(container.querySelector('input')).toHaveAttribute('placeholder', '未绑定看板参数，填了不会生效');
+  });
+
+  it('静态文本标签不受“未绑定”提示影响（它没有绑定概念）', () => {
+    const { container } = render(<DashboardChart chartType="widget_label" data={{ columns: [], rows: [] }} config={{}} />);
+    expect(container.textContent).toBe('文本标签');
   });
 
   it('编辑态文本控件的输入写入参数值（不再静默丢弃）', () => {
@@ -311,6 +376,33 @@ describe('时间区间快捷选项', () => {
     view.unmount();
   });
 
+  it('未配「默认选项」时区间保持空值：rangeMaxDays 只是手选跨度上限，不是默认值', () => {
+    // 缺陷回归锁：过去只要配了最大跨度，控件就会按 rangeMaxDays/365 回填成“近一年”，
+    // 而真实取数窗口由图表 SQL 决定，两者不是一回事，等于给用户一个假的范围声明。
+    const state = useDashboardStore.getState();
+    useDashboardStore.setState({ paramValues: {}, pageParamValues: {} });
+    const view = range({ rangeMaxDays: 365 });
+    expect(useDashboardStore.getState().paramValues.range).toBeUndefined();
+    const inputs = Array.from(view.container.querySelectorAll('input'));
+    expect(inputs.map(i => i.value)).toEqual(['', '']);
+    // 上限仍生效（结束框的 max 在选了开始日后才计算，故此处为空）
+    expect(inputs[1].getAttribute('max')).toBeNull();
+    useDashboardStore.setState(state);
+    view.unmount();
+  });
+
+  it('显式配了默认选项才预填该预设窗口', () => {
+    const state = useDashboardStore.getState();
+    useDashboardStore.setState({ paramValues: {}, pageParamValues: {} });
+    const view = range({ rangeMaxDays: 365, defaultPreset: '7d' });
+    const value = useDashboardStore.getState().paramValues.range;
+    expect(value.preset).toBe('7d');
+    expect(parseTime(value.end)!.getTime() - parseTime(value.start)!.getTime()).toBe(7 * 86_400_000);
+    expect((view.container.querySelector('input') as HTMLInputElement).value).toBe(value.start.slice(0, 10));
+    useDashboardStore.setState(state);
+    view.unmount();
+  });
+
   it('选「近 1 小时」写入本地时区的时分秒区间，并切到 datetime 输入', () => {
     const state = useDashboardStore.getState();
     useDashboardStore.setState({ paramValues: {}, pageParamValues: {} });
@@ -375,6 +467,60 @@ describe('时间区间快捷选项', () => {
     }
     // 小时级预设已把两个输入框撑到 datetime，仍不得写死 height
     expect((row.querySelector('input') as HTMLInputElement).type).toBe('datetime-local');
+    useDashboardStore.setState(state);
+    view.unmount();
+  });
+
+  it('字模旋钮落在字段组（一个控件只有一层描边）', () => {
+    // 旧形状：卡片一层框 + 两个日期框各一层框 + 快捷项一层框，视觉上是三个盒子
+    const state = useDashboardStore.getState();
+    useDashboardStore.setState({ paramValues: {}, pageParamValues: {} });
+    const view = range({ widgetStyle: {
+      borderColor: '#E9ECF8', borderWidth: 1, borderRadius: 8,
+      padding: '4px 10px', height: 32, backgroundColor: '#ffffff', textColor: '#262626',
+    } });
+    const group = view.container.querySelector('.dh-daterange-group') as HTMLElement;
+    expect(group.style.borderRadius).toBe('8px');
+    expect(group.style.getPropertyValue('--dh-dr-border')).toBe('#E9ECF8');
+    expect(group.style.height).toBe('32px');
+    expect(group.style.padding).toBe('4px 10px');
+    expect(group.style.background).toContain('rgb(255, 255, 255)');
+    expect(group.style.color).toContain('rgb(38, 38, 38)');
+    // 内层不再各自描边：日期框完全无框，快捷项只留一条分隔线（不是第三个白框）
+    expect((view.container.querySelector('input') as HTMLElement).style.borderWidth).toBe('0px');
+    const preset = view.getByLabelText('时间区间快捷选项') as HTMLElement;
+    // 只有左侧一条分隔线，其余三边无宽 —— 不再是第三个独立白框
+    expect(preset.style.borderLeftStyle).toBe('solid');
+    expect(preset.style.borderLeftWidth).toBe('1px');
+    expect(preset.style.borderTopWidth).toBe('0px');
+    expect(preset.style.background).toBe('transparent');
+    // 去掉原生箭头/外框与自绘箭头都在 globals.css（见 DashboardChart.utils 的样式守卫）
+    expect(preset.className).toBe('dh-daterange-preset');
+    useDashboardStore.setState(state);
+    view.unmount();
+  });
+
+  it('空值时显示业务占位，而不是原生「年/月/日」分段噪音', () => {
+    const state = useDashboardStore.getState();
+    useDashboardStore.setState({ paramValues: {}, pageParamValues: {} });
+    const view = range();
+    expect(view.getByText('开始日期')).toBeTruthy();
+    expect(view.getByText('结束日期')).toBeTruthy();
+    const fields = Array.from(view.container.querySelectorAll('.dh-daterange-field'));
+    expect(fields.map(f => f.className)).toEqual(
+      ['dh-daterange-field is-empty', 'dh-daterange-field is-empty']);
+    useDashboardStore.setState(state);
+    view.unmount();
+  });
+
+  it('占位文案跟随粒度：小时级说「开始时间/结束时间」，填完的一侧不再显示', () => {
+    const state = useDashboardStore.getState();
+    useDashboardStore.setState({ paramValues: {
+      range: { start: '2026-10-22 03:10:00', end: '', preset: '12h' }, pageParamValues: {} } });
+    const view = range();
+    expect(view.queryByText('开始时间')).toBeNull();
+    expect(view.getByText('结束时间')).toBeTruthy();
+    expect(view.queryByText('开始日期')).toBeNull();
     useDashboardStore.setState(state);
     view.unmount();
   });
@@ -446,7 +592,10 @@ describe('双布局草稿与页面交互', () => {
     expect(view.container.querySelector('.adh-page-canvas > .grid')).toHaveStyle({ gridTemplateColumns: 'repeat(1, minmax(0, 1fr))' });
     expect(view.container.innerHTML).not.toContain('scale(');
     expect(refresh).not.toHaveBeenCalled();
-    expect(get).not.toHaveBeenCalled(); expect(post).not.toHaveBeenCalled(); expect(put).not.toHaveBeenCalled();
+    // 本例要守的是「预览面不向数据源重查询、不写库」；动效偏好是只读的用户设置
+    // （GET /users/me/preferences，全局一次），不属于数据查询，不能拿它当回归口径。
+    expect(get.mock.calls.filter(([url]) => url !== '/users/me/preferences')).toHaveLength(0);
+    expect(post).not.toHaveBeenCalled(); expect(put).not.toHaveBeenCalled();
     view.rerender(<ResponsiveDashboardCanvas dashboard={dashboard} breakpoint="desktop" />);
     expect(view.container.querySelector('.adh-page-canvas')).toHaveAttribute('data-breakpoint', 'desktop');
   });
@@ -869,6 +1018,18 @@ describe('全部类型的字模预览', () => {
     expect(view.container.innerHTML).not.toMatch(/NaN|undefined/);
     expect(view.container.textContent).not.toBe(type);
   });
+  it('面积预览与图表渲染同源：渐隐色标取自 areaFadeStops（预览是"预期效果"基准）', () => {
+    const view = render(createElement(ShapePreview, { type: 'area', palette: ['#22d3ee'], cfg: { areaOpacity: 0.42 } }));
+    const stops = Array.from(view.container.querySelectorAll('stop'));
+    expect(stops.map(s => s.getAttribute('stop-opacity'))).toEqual(['0.42', '0.07']);
+    expect(view.container.querySelector('polygon')?.getAttribute('fill')).toMatch(/^url\(#areafade/);
+
+    // 显式关掉渐隐 → 预览回到平涂，与 spec 侧 areaFade=false 同一口径
+    const flat = render(createElement(ShapePreview, { type: 'area', palette: ['#22d3ee'], cfg: { areaFade: false, areaOpacity: 0.42 } }));
+    expect(flat.container.querySelector('stop')).toBeNull();
+    expect(flat.container.querySelector('polygon')?.getAttribute('fill')).toBe('#22d3ee');
+  });
+
   it('主题包同时展示柱、线、饼而非单个柱状样本', () => {
     const view = render(createElement(Preview, { c: pack }));
     expect(view.container.querySelector('polyline')).toBeTruthy();
@@ -898,5 +1059,91 @@ describe('模板示例数据角标（降级必须显式）', () => {
     canvas.unmount();
     const page = render(createElement(ResponsiveDashboardCanvas, { dashboard, items: [] }));
     expect(page.getByText('示例数据')).toBeTruthy();
+  });
+});
+
+describe('图卡的参数落地提示（unbound 不得静默）', () => {
+  const designOf = () => resolveDashboardDesign({}, []);
+  const datasetChart = { ...chart, source_type: 'dataset', source_id: 41 };
+
+  // 角标现在只看“本次提交了哪些条件”，所以两个命名空间的值都要清
+  afterEach(() => useDashboardStore.setState({
+    paramDiagnostics: {}, paramValues: {}, pageParamValues: {},
+  }));
+  it('已填条件却没被这张图接住 → 卡片指名道姓提示，而不是让人以为筛过了', () => {
+    useDashboardStore.setState({
+      paramDiagnostics: { 7: {
+        unbound: [{ key: 'time_window', label: '统计时间窗口', kind: 'time_window', partial: false }], notes: [],
+      } },
+      pageParamValues: { time_window: { start: '2026-11-01', end: '2026-11-06' } },
+    });
+    const view = render(createElement(DashboardChartCard, { chart: datasetChart, design: designOf(), items: [] }));
+    const badge = view.getByText('已填条件未生效');
+    expect(badge).toHaveAttribute('title', expect.stringContaining('「统计时间窗口」'));
+    expect(badge).toHaveAttribute('title', expect.stringContaining('已经填了值'));
+  });
+
+  it('首屏什么都没填 → 不挂角标（出全量是预期态，不是把行话贴满每张卡）', () => {
+    useDashboardStore.setState({ paramDiagnostics: { 7: {
+      unbound: [{ key: 'site', label: 'site', kind: 'scalar', partial: false }], notes: [],
+    } } });
+    const view = render(createElement(DashboardChartCard, { chart: datasetChart, design: designOf(), items: [] }));
+    expect(view.queryByText('已填条件未生效')).toBeNull();
+    // 填了别的条件（日期）但这张图不吃 site → 同样不该告警
+    useDashboardStore.setState({ paramValues: { start_time: '2026-11-01' } });
+    view.rerender(createElement(DashboardChartCard, { chart: datasetChart, design: designOf(), items: [] }));
+    expect(view.queryByText('已填条件未生效')).toBeNull();
+  });
+
+  it('区间缺一端单独成文案', () => {
+    useDashboardStore.setState({
+      paramDiagnostics: { 7: {
+        unbound: [{ key: 'time_window', label: '统计时间窗口', kind: 'time_window', partial: true }], notes: [],
+      } },
+      paramValues: { time_window: { start: '2026-11-01', end: '' } },
+    });
+    const view = render(createElement(DashboardChartCard, { chart: datasetChart, design: designOf(), items: [] }));
+    expect(view.getByText('筛选区间不完整')).toBeInTheDocument();
+  });
+
+  it('角标用看板上的业务名（控件 label/placeholder），不把变量名丢给用户', () => {
+    // 控件只写了 paramKey/bind_param，label 就是用户看到的词（区域）
+    const board = { id: 900, name: '设备操作记录', charts: [
+      { ...chart, id: 21, chart_type: 'widget_select', config: { paramKey: 'site', bind_param: 'site', label: '区域' } },
+    ], params: [], page_params: [] } as any;
+    useDashboardStore.setState({
+      dashboards: [board],
+      currentId: 900,
+      paramDiagnostics: { 7: {
+        unbound: [{ key: 'site', label: 'site', kind: 'scalar', partial: false }], notes: [],
+      } },
+      paramValues: { site: 'int' },
+    });
+    const view = render(createElement(DashboardChartCard, {
+      chart: datasetChart, design: designOf(), items: [], dashboardId: 900 }));
+    const badge = view.getByText('已填条件未生效');
+    expect(badge).toHaveAttribute('title', expect.stringContaining('「区域」'));
+    expect(badge.getAttribute('title')).not.toMatch(/\bsite\b/);
+  });
+
+  it('无诊断或诊断为空时不挂角标（正常图不能被贴满警告）', () => {
+    useDashboardStore.setState({ paramValues: { site: 'cn' } });
+    const view = render(createElement(DashboardChartCard, { chart: datasetChart, design: designOf(), items: [] }));
+    expect(view.queryByText('已填条件未生效')).toBeNull();
+    useDashboardStore.setState({ paramDiagnostics: { 7: { unbound: [], notes: ['派生说明'] } } });
+    view.rerender(createElement(DashboardChartCard, { chart: datasetChart, design: designOf(), items: [] }));
+    expect(view.queryByText('已填条件未生效')).toBeNull();
+  });
+
+  it('控件卡不挂该角标（控件本身不取数）', () => {
+    useDashboardStore.setState({
+      paramDiagnostics: { 7: {
+        unbound: [{ key: 'site', label: '站点', kind: 'scalar', partial: false }], notes: [],
+      } },
+      paramValues: { site: 'int' },
+    });
+    const view = render(createElement(DashboardChartCard, {
+      chart: { ...chart, chart_type: 'widget_select' }, design: designOf(), items: [], draft: true }));
+    expect(view.queryByText('已填条件未生效')).toBeNull();
   });
 });

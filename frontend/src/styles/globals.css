@@ -692,6 +692,135 @@
   animation: stageSlideIn 0.45s cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 
+/* ── 界面动效（出现效果：入场 / 切板转场 / 正文出现）──────────────────────────
+   真值源 = UI 字模库 motion_preset 字模 + 用户偏好；时长/缓动/位移一律读 CSS 变量
+   （由 lib/motion.motionCssVars 写在容器上），这里不写死数值 —— 写死了改字模就不生效
+   （.qoder/rules/ui-vis-library-style.md §2「存了不生效」同类）。
+   默认档 fadeUp 与上面的 stageSlideIn 同曲线、同时长、同 10px 位移，只是把位移改成变量，
+   所以「未配动效」的观感与历史逐字节一致（用例：lib/__tests__/motion.test.ts 钉住常量）。
+   系统开了「减少动效」时，下方既有的 @media (prefers-reduced-motion) 已把所有动画压到
+   0.01ms；lib/motion 还会把段值归零并回传原因，配置入口据此禁用控件并写明理由（不是静默关掉）。 */
+:root {
+  --motion-enter-dur: 450ms;
+  --motion-enter-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-enter-offset: 10px;
+  --motion-transition-dur: 500ms;
+  --motion-transition-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-transition-offset: 32px;
+  --motion-reveal-dur: 450ms;
+  --motion-reveal-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* 只动 opacity/transform/clip-path/filter 四类合成层属性：
+   不碰 width/position 等触发重排的通道，大屏多卡片同时入场才不会掉帧。 */
+@keyframes motionEnterFadeUp {
+  from { opacity: 0; transform: translateY(var(--motion-enter-offset)); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes motionEnterSlideDown {
+  from { opacity: 0; transform: translateY(calc(var(--motion-enter-offset) * -1)); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes motionEnterSlideLeft {
+  from { opacity: 0; transform: translateX(var(--motion-enter-offset)); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes motionEnterScale {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes motionEnterBlur {
+  from { opacity: 0; filter: blur(6px); }
+  to { opacity: 1; filter: blur(0); }
+}
+@keyframes motionEnterWipeDown {
+  from { opacity: 1; clip-path: inset(0 0 100% 0); }
+  to { opacity: 1; clip-path: inset(0 0 0 0); }
+}
+/* pop：位移 + 缩放 + 一帧回弹（卡片“拍上台”）。overshoot 只放在中间帧，
+   曲线仍走 --motion-enter-ease，不另开一份缓动口径。 */
+@keyframes motionEnterPop {
+  0% { opacity: 0; transform: translateY(var(--motion-enter-offset)) scale(0.92); }
+  64% { opacity: 1; transform: translateY(calc(var(--motion-enter-offset) * -0.14)) scale(1.02); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+/* flipUp：透视翻入。perspective 写进 transform 本身，不给父级加样式 ——
+   class 挂在哪一层都自洽，不会因为祖先没有 perspective 而退化成普通缩放。 */
+@keyframes motionEnterFlipUp {
+  from { opacity: 0; transform: perspective(900px) rotateX(-16deg) translateY(var(--motion-enter-offset)); }
+  to { opacity: 1; transform: perspective(900px) rotateX(0deg) translateY(0); }
+}
+
+.motion-enter {
+  animation-duration: var(--motion-enter-dur);
+  animation-timing-function: var(--motion-enter-ease);
+  /* backwards: 入场后不保留 transform, 避免影响卡内 fixed 定位元素（与 stage-in 同因） */
+  animation-fill-mode: backwards;
+}
+.motion-enter-fadeUp { animation-name: motionEnterFadeUp; }
+.motion-enter-slideDown { animation-name: motionEnterSlideDown; }
+.motion-enter-slideLeft { animation-name: motionEnterSlideLeft; }
+.motion-enter-scale { animation-name: motionEnterScale; }
+.motion-enter-blur { animation-name: motionEnterBlur; }
+.motion-enter-wipeDown { animation-name: motionEnterWipeDown; }
+.motion-enter-pop { animation-name: motionEnterPop; }
+.motion-enter-flipUp { animation-name: motionEnterFlipUp; transform-origin: 50% 0%; }
+/* 纯淡入复用既有 fadeIn, 不再复制一条等价 keyframes */
+.motion-enter-fade { animation-name: fadeIn; }
+
+/* 切板转场：新渲染层渐入（旧层直接卸载，不做双缓冲交叉淡出 —— 那会要求卸载前播完，
+   而卸载时机由取数完成时刻决定，不可控；语义因此叫「淡入切换」而不是「交叉淡出」）。 */
+@keyframes motionTransitionFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes motionPushLeft {
+  from { opacity: 0; transform: translateX(var(--motion-transition-offset)); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes motionTransitionZoomIn {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes motionTransitionWipe {
+  from { clip-path: inset(0 0 100% 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+.motion-transition {
+  animation-duration: var(--motion-transition-dur);
+  animation-timing-function: var(--motion-transition-ease);
+  animation-fill-mode: backwards;
+}
+.motion-transition-fadeIn { animation-name: motionTransitionFadeIn; }
+.motion-transition-pushLeft { animation-name: motionPushLeft; }
+.motion-transition-zoomIn { animation-name: motionTransitionZoomIn; }
+.motion-transition-wipeDown { animation-name: motionTransitionWipe; }
+
+/* 正文出现：fadeIn 与 sectionStagger 共用一条 keyframes，差别只在调用方是否按分段
+   给 inline animation-delay（见 lib/motion.sectionStaggerStyle）。
+   HTML 版式正文只作用外层容器：sanitize 白名单禁 <style>，不往正文注入动画。 */
+.motion-reveal {
+  animation-name: fadeIn;
+  animation-duration: var(--motion-reveal-dur);
+  animation-timing-function: var(--motion-reveal-ease);
+  animation-fill-mode: backwards;
+}
+
+/* 会话提问节点跳转后的短暂高亮(见 components/chat/TurnNavigator)。
+   用 outline 而不是 border/box-shadow: outline 不占布局, 高亮瞬间不会把整行
+   内容顶偏; 1.4s 内自行淡出到透明, 不需要 JS 兜底清样式。 */
+@keyframes chatTurnFlash {
+  from { outline-color: hsl(var(--primary) / 0.55); }
+  to { outline-color: transparent; }
+}
+
+.chat-turn-flash {
+  border-radius: 12px;
+  outline: 2px solid hsl(var(--primary) / 0.55);
+  outline-offset: 6px;
+  animation: chatTurnFlash 1.4s ease-out forwards;
+}
+
 /* ── 等待指示:三点弹跳打字动画(人性化等待) ── */
 .typing-dot {
   width: 5px;
@@ -799,6 +928,55 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator {
 input[type="date"]::-webkit-calendar-picker-indicator:hover,
 input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
   opacity: 1;
+}
+
+/* ── 看板控件 · 日期区间（widget_daterange）─────────────────────────────────
+   一个控件而不是三个盒子：卡片只做排版，描边/底色/圆角/控件高落在字段组
+   （字模 ws_daterange_* 的旋钮因此作用在看得见的那一层，ui-vis-library-style §2）。
+   空值时原生日期框只显示「年/月/日」分段，读起来像输入框坏了 → 叠一层业务提示，
+   聚焦时让位给分段编辑。组件里 input 不写 inline color，否则下面的规则会被压掉。 */
+.dh-daterange-group { border-color: var(--dh-dr-border, hsl(var(--input))); }
+.dh-daterange-group:focus-within {
+  border-color: hsl(var(--ring));
+  box-shadow: 0 0 0 2px hsl(var(--ring) / 0.18);
+}
+/* 字段的布局在组件 inline（与其它 ws.* 同源），这里只放 inline 写不出来的伪元素规则 */
+.dh-daterange-field > input::-webkit-datetime-edit { padding: 0; }
+.dh-daterange-field > input::-webkit-calendar-picker-indicator {
+  opacity: 0.4;
+  padding: 0 2px;
+}
+.dh-daterange-field > input:hover::-webkit-calendar-picker-indicator,
+.dh-daterange-field > input:focus::-webkit-calendar-picker-indicator { opacity: 0.85; }
+.dh-daterange-field.is-empty > input:not(:focus) { color: transparent; }
+.dh-daterange-hint {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: 100%;
+  overflow: hidden;
+  /* 带透明度：浅色主题的 --muted-foreground 本身偏深，直接用会跟已填值一样重 */
+  color: hsl(var(--muted-foreground) / 0.72);
+  font-size: 0.92em;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.12s ease;
+}
+.dh-daterange-field.is-empty:focus-within .dh-daterange-hint { opacity: 0; }
+/* 快捷下拉：去掉原生外框与箭头，只留一条分隔线 + 自绘箭头（与两端点同属一个控件） */
+.dh-daterange-preset {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1.5 5 5.5 9 1.5' fill='none' stroke='%2394a3b8' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 4px center;
+}
+.dh-daterange-preset:hover { color: hsl(var(--primary)); }
+.dark .dh-daterange-preset {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1.5 5 5.5 9 1.5' fill='none' stroke='%23cbd5e1' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 /* Line clamp utilities */
@@ -2267,3 +2445,33 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
   animation: login-rise 0.5s ease-out both;
 }
 
+
+/* ── 报表「导出为 PDF」的打印隔离 ─────────────────────────────────
+   打印时只露出报表正文（[data-report-print]），其余界面（侧栏、筛选行、
+   版本下拉、按钮）全部隐去。用 visibility 而不是 display：display:none
+   会重排整棵树，图表 canvas 的绘制尺寸会跟着塌掉。
+   类名由 lib/reportExport.ts 的 printReport() 挂/收，只在这一个入口生效。 */
+@media print {
+  html.printing-report body * { visibility: hidden; }
+  html.printing-report [data-report-print],
+  html.printing-report [data-report-print] * { visibility: visible; }
+  html.printing-report [data-report-print] {
+    position: absolute; left: 0; top: 0; width: 100%;
+    max-height: none !important; overflow: visible !important;
+    padding: 0 24px !important; border: 0 !important;
+  }
+  /* 父级 overflow:hidden 会把打印内容裁到一屏，逐层放开 */
+  html.printing-report body, html.printing-report #root,
+  html.printing-report [data-report-print], html.printing-report [data-report-print] * {
+    overflow: visible !important;
+  }
+  html.printing-report { height: auto !important; }
+  html.printing-report body { height: auto !important; overflow: visible !important; }
+}
+
+/* 导出/打印时剪掉交互控件条（与 lib/reportExport 的 [data-export-strip] 同一约定）：
+   屏幕上是页签和下拉，落到纸面/文件里就是几行没有上下文的操作残句。
+   打印与 HTML 导出必须同口径，否则"屏幕上看到的"和"发出去的两份东西"两样。 */
+@media print {
+  html.printing-report [data-export-strip] { display: none !important; }
+}

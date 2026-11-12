@@ -4,6 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
+from unittest.mock import Mock
+
 import pymysql
 import pytest
 
@@ -59,6 +61,12 @@ def isolated(monkeypatch):
         monkeypatch.setattr(scheduled, "get_metadata_conn", factory)
         from backend.common import auth as _auth
         monkeypatch.setattr(_auth, "get_metadata_conn", factory)
+        # 角色继承解析（AS-BOT/站点/授权源）要一整套配置表；本文件只验 MySQL 上的
+        # 日志状态机、租约与幂等，因此在那道边界打桩。解析口径的回归见
+        # tests/test_scheduled_execution.py（离线事实桩）与 test_as_bot_execution.py。
+        from backend.modules.mind.execution import scheduled_analysis as _sa
+        monkeypatch.setattr(_sa, "load_profile",
+                            lambda config, identity: {"tools": [], "sources": set()})
         yield factory
     finally:
         conn.close()
@@ -68,8 +76,8 @@ def isolated(monkeypatch):
 
 
 def _task():
-    return scheduled.scheduled_task_service.create_task({"name": "隔离测试", "task_type": "query",
-        "task_config": {"datasource_id": 8, "questions": [{"sql": "SELECT 1"}]},
+    return scheduled.scheduled_task_service.create_task({"name": "隔离测试", "task_type": "agent",
+        "task_config": {"questions": [{"title": "统计", "question": "统计订单"}]},
         "cron_expression": "* * * * *"}, owner_id=7, workspace_id=3)
 
 
@@ -189,10 +197,12 @@ def test_execute_core_full_path_and_idempotent(isolated, monkeypatch):
     from backend.modules.flow.tasks import executor
     _seed_owner(isolated)
     tid = _task()
-    # 叶子取数 mock：不连真实数据源，返回已治理结果形状
-    monkeypatch.setattr(executor, "_execute_sql_on_datasource",
-                        lambda sql, ds, ident: {"columns": ["n"], "rows": [{"n": 1}], "row_count": 1})
-    monkeypatch.setattr(executor, "_collect_lineage", lambda *a: None)
+    # 叶子替身：不跑真实 LLM 与取数，只交回一条已治理的成功结果（结果形状同采集点产物）
+    def agent_mode(task):
+        task["_results"].append({"title": "统计", "status": "success",
+                                 "_analysis_results": [{"status": "success", "rows": []}]})
+        return task["_results"]
+    monkeypatch.setattr(executor, "_execute_agent_mode", agent_mode)
 
     out = executor._execute_core(tid, "manual", "core-run-1", "test-worker")
     assert out["status"] == "success" and out["succeeded"] == 1
@@ -212,10 +222,12 @@ def test_execute_core_rejects_unowned_task(isolated, monkeypatch):
     _seed_owner(isolated)
     tid = _task()
     db.execute_write("UPDATE adh_scheduled_tasks SET owner_id=0 WHERE id=%s", (tid,))
-    monkeypatch.setattr(executor, "_execute_sql_on_datasource", lambda *a: {"rows": [], "columns": []})
+    mode = Mock()
+    monkeypatch.setattr(executor, "_execute_agent_mode", mode)
     out = executor._execute_core(tid, "manual", "unowned-run", "test-worker")
     assert out["status"] == "failed"
     log = scheduled.scheduled_task_service.get_log(out["log_id"])
     assert log["status"] == "failed" and log["stage_error_code"] == "OWNER_REQUIRED"
-    # 无创建者 → 从未取数
+    # 无创建者 → 从不进入分析链路
     assert log["questions_succeeded"] == 0
+    mode.assert_not_called()

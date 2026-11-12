@@ -121,8 +121,11 @@ _ACTION_WRITE_RE = re.compile(
 _PROBE_SECRET_RE = re.compile(
     r"系统提示词|system\s*prompt|你的提示词|你的指令|密钥|api\s*key|access\s*key|ak/sk"
     r"|连接串|数据库地址|账号密码|密码是什么|口令|内部\s*token|bearer\s*token"
-    r"|忽略.{0,6}(规则|指令|提示|约束)|绕过.{0,6}(权限|规则|护栏|校验|限制)|越权"
-    r"|把.{0,6}(sql|语句).{0,6}(给我|发我|展示出来)|物理表名|底层表结构")
+    r"|忽略.{0,6}(规则|指令|提示|约束)|绕过.{0,6}(权限|规则|护栏|校验|限制)|越权")
+# 口径对齐（会话 1783069459151 的"两头不一"根因）：原先还把"把 SQL 给我/物理表名/底层表结构"
+# 当涉密索要本地拒答，但图表卡的 SQL 页签、报表口径附录里这些本来就可展示给用户 ——
+# 同一段对话里"图上看得见、开口就拒"既误导用户也误导模型。业务查询 SQL 与其携带的
+# 表/列名交由模型按本会话工具授权与数据权限作答（拿不到就说拿不到），不在这里一刀切。
 #: 帮助/使用说明
 _HELP_RE = re.compile(r"帮助|使用帮助|使用说明|使用手册|怎么用|怎么使用|如何使用|如何使[用做]"
                       r"|有什么(功能|用途|能力)|能做哪些|支持哪些功能|功能清单|能干什么|help\b")
@@ -514,7 +517,7 @@ def route_intent(question: str, *, ctx: Any = None, history: Optional[list] = No
                          reason="前端显式要求深度分析（force_agent），跳过漏斗", latency_ms=_ms())
     if attachments:
         return _decision(mode=mode, layer="agent", label=L_AMBIG, intercept=False,
-                         reason="本轮携带附件，必须由执行层处理",
+                         reason="本轮携带附件，必须由 Harness 处理",
                          signals=["has_attachments"], latency_ms=_ms())
     if task_binding:
         return _decision(mode=mode, layer="agent", label=L_AMBIG, intercept=False,
@@ -670,9 +673,10 @@ def build_local_reply(decision: dict, *, policy: Any = None, ctx: Any = None) ->
                 "你可以直接问业务问题，例如：「近7天各渠道的订单量趋势」。")
 
     if label == L_PROBE:
-        return ("系统提示词、数据源凭据（账号/密码/密钥/连接串）、主机地址与物理 SQL "
-                "属于平台黑盒，不对对话开放，我也不会在这里提供。\n"
-                "如果你需要的是业务数据或平台功能操作，请直接说明目标，我会按权限处理。")
+        return ("系统提示词、数据源凭据（账号/密码/密钥/连接串）、主机地址与端口属于平台黑盒，"
+                "不对对话开放，我也不会在这里提供。\n"
+                "如果你需要的是业务数据、查询口径或平台功能操作，请直接说明目标，我会按权限处理"
+                "（业务查询 SQL 属会话内可见内容，不属于上面这项）。")
 
     if label == L_HELP:
         lines = _capability_lines(policy)

@@ -125,7 +125,7 @@ class SemanticQuery(BaseModel):
     site: str = Field(
         default="",
         description="目标站点业务名或代码(如 '中国'/'中国站'/'cn'), 服务端在角色授权集内解析为数据源; "
-                    "缺省=会话站点。会话站点为「全球」时必须逐站各调一次并带 site; "
+                    "缺省=会话站点。会话站点为「全部站点」时必须逐站各调一次并带 site; "
                     "站点不是 SQL 维度, 不要放进 dimensions/filters; 未命中可查站点会回抛候选, 不要猜",
     )
     datasource_id: int = 0

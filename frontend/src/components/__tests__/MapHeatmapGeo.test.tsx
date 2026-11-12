@@ -161,11 +161,17 @@ describe('层叠上下文护栏(下拉框被遮/全屏残影)', () => {
     expect(src).toMatch(/overflow-hidden\s+isolate/);
   });
 
-  it('内部叠层只用小 z，禁止再次写高位 z-index', () => {
-    // isolate 之内，热力层/图例/角标只跟自己人比；写 450/500/1000 就会逸出
-    expect(src).not.toMatch(/zIndex:\s*(?:[2-9]\d\d|1000)/);
-    expect(src).not.toMatch(/z-\[\s*(?:[2-9]\d\d|1000)\s*\]/);
+  it('内部叠层必须高于 Leaflet pane 的 200/400，否则瓦片会埋掉热力层', () => {
+    // 承载地图的 div 不建层叠上下文，pane 的 z-index 与热力 canvas 直接同级比较；
+    // 曾经用 1/2/3，刷新后瓦片(200)加载完就把热力层整个盖住（实时页面 + 导出都中招）
+    const z = (name: string) => Number(src.match(new RegExp(`const ${name} = (\\d+)`))?.[1]);
+    expect(z('Z_CANVAS')).toBeGreaterThan(400);   // 压过 .leaflet-tile-pane / overlay-pane
+    expect(z('Z_BADGE')).toBeGreaterThan(z('Z_CANVAS'));
+    expect(z('Z_EMPTY')).toBeGreaterThan(z('Z_CANVAS'));
+    // 但仍不得进入 control 层(800)以上，且一律走常量，不许散写数字
+    expect(z('Z_EMPTY')).toBeLessThan(800);
     expect(src).toMatch(/zIndex:\s*Z_CANVAS/);
     expect(src).toMatch(/zIndex:\s*Z_BADGE/);
+    expect(src).not.toMatch(/zIndex:\s*\d+/);
   });
 });

@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import client from '@/api/client';
 import {
-  useGuideStore, selectAutoPrompt, selectUnreadNotes, isAutoGuideMuted,
+  useGuideStore, selectAutoPrompt, selectUnreadNotes, isAutoGuideMuted, currentPageGuideId,
 } from '@/stores/guideStore';
 import {
   GUIDE_ALL_KEY, GUIDE_WELCOME_KEY, guideKey, noteKey,
   type GuideStateItem, type ReleaseNote,
 } from '@/api/releaseNotes';
+import { useAuthStore } from '@/stores/authStore';
+import { usePermissionStore } from '@/stores/permissionStore';
 import { toast } from '@/lib/toast';
 
 vi.mock('@/api/client', () => ({ default: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
@@ -17,8 +19,9 @@ vi.mock('@/lib/toast', () => ({
 /**
  * guideStore 的判定口径回归。
  *
- * 重点盯两件事: ① 状态以服务端为事实源 —— 写失败绝不本地"当作已跳过";
- * ② 自动弹出的判定只有一处(selectAutoPrompt), 静音标记必须压住自动弹但压不住手动入口。
+ * 重点盯三件事: ① 状态以服务端为事实源 —— 写失败绝不本地"当作已跳过";
+ * ② 自动弹出的判定只有一处(selectAutoPrompt), 静音标记必须压住自动弹但压不住手动入口;
+ * ③ 欢迎总览**只讲当前页面** —— 本页没有引导内容时手动入口也不弹空壳。
  */
 
 const NOTES: ReleaseNote[] = [
@@ -44,6 +47,10 @@ beforeEach(() => {
   // 否则 client.put 的失败桩会泄漏到后面的用例, 测出来的是桩而不是代码
   vi.resetAllMocks();
   seed();
+  // store 里的页面口径读 window.location, 每个用例从首页起算
+  window.history.replaceState(null, '', '/');
+  useAuthStore.setState({ user: { id: 1, username: 'tester', role: 'analyst' } as never });
+  usePermissionStore.setState({ loaded: true, unrestricted: true, allowedMenus: null, perms: null });
 });
 
 describe('load', () => {
@@ -120,6 +127,23 @@ describe('startGuide(手动入口)', () => {
     useGuideStore.getState().startGuide('welcome');
     expect(useGuideStore.getState().welcomeOpen).toBe(true);
     expect(useGuideStore.getState().activeGuide).toBeNull();
+  });
+
+  it('当前页面没有引导内容时不弹空壳，而是显式告知去哪看', () => {
+    window.history.replaceState(null, '', '/dashboards');
+    useGuideStore.getState().startGuide('welcome');
+    expect(useGuideStore.getState().welcomeOpen).toBe(false);
+    expect(vi.mocked(toast.info)).toHaveBeenCalledWith(expect.stringContaining('当前页面没有可引导的内容'));
+  });
+
+  it('本页有引导但当前用户无该模块权限 → 同样不弹(不跨模块退回首页引导)', () => {
+    window.history.replaceState(null, '', '/ws/7/chat');
+    usePermissionStore.setState({
+      loaded: true, unrestricted: false, allowedMenus: ['data:datasources'], perms: null,
+    });
+    expect(currentPageGuideId()).toBe('');
+    useGuideStore.getState().startGuide('welcome');
+    expect(useGuideStore.getState().welcomeOpen).toBe(false);
   });
 });
 

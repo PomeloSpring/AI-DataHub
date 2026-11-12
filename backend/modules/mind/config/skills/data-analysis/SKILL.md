@@ -3,6 +3,7 @@ name: data-analysis
 display_name: 数据分析（语义层）
 description: ChatBI 分析师的语义层分析技能：以假设驱动的探索循环灵活决策，只用统一语义层(run_semantic_query 声明式意图)取数、不写也不执行任何 SQL；覆盖趋势/异常/留存/漏斗/流量/画像分析剧本，强调量化归因、统计严谨、自我校验与可执行结论。
 category: analysis
+exclusive_group: playbook
 requires_any: [run_semantic_query]
 triggers: [分析, 趋势, 环比, 同比, 增长, 下降, 上升, 波动, 异常, 留存, 漏斗, 转化, 流失, 画像, 分布, 占比, 排名, 对比, 归因, 为什么, 原因, 走势, 拐点, 指标, 统计, 汇总, 多少, 流量, 访问量, 访问, PV, UV, 页面, 渠道, 投放, 新增, 活跃, 复购, 会员, 门店, 工单, 销售]
 ---
@@ -38,6 +39,7 @@ triggers: [分析, 趋势, 环比, 同比, 增长, 下降, 上升, 波动, 异�
 - **模板对象**：绑定 SQL 模板的对象（漏斗/留存等，`knowledge_search` 会标注 variables）用 intent 的 `params` 按声明传参。
 - **未绑定/未建模**：`run_semantic_query` 返回 object 未绑定 → 如实告知该对象尚未建模，**建议补建模或转数据分析师(NL2SQL)**，不回退裸 SQL、不猜表名。
 - **数据源黑盒**：不向用户暴露 SQL/datasource/库表/账号/IP；执行失败按提示说明"数据源当前不可用"，不臆测根因。
+- **SLS 源的默认时间窗（NL2SQL 兜底时必读）**：SLS(PG 协议) 引擎在 SQL **没有 `__time__` 比较谓词**时只扫描自身默认窗（探针实测≈最近 15 分钟；用 `date`/`timestamp` 列过滤**不会**放宽该窗口，只能收窄）。所以 `row_count` 很小**不等于**「库里只有这么点数据/没数据」——同一张表无谓词 37 行、加一年谓词 2200 万+ 行是实测同表对比。工具返回里出现「SLS 默认时间窗陷阱」提醒时，先补 `__time__ >= to_unixtime(now()) - <秒数>` 与用户问的时间范围对齐后再取数下结论；确实只需最近 15 分钟可忽略。取证脚本：`backend/scripts/probe_sls_default_time_window.py`。
 
 ### 多站点与全球问题（分站呈现为默认）
 

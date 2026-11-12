@@ -1,4 +1,4 @@
-import { memo, useRef, useEffect, useState } from 'react';
+import { memo, useRef, useEffect, useMemo, useState } from 'react';
 import { Chart } from '@antv/g2';
 import { toast } from '@/lib/toast';
 import * as topojson from 'topojson-client';
@@ -14,10 +14,14 @@ import { Label } from '@/components/ui/label';
 import { useDashboardStore } from '../stores/dashboardStore';
 import ModalPage from './ModalPage';
 import AnimatedTimeChart from './AnimatedTimeChart';
-import { chartDataKey, type LocalVisual } from '@/lib/dashboardDesign';
+import DecisionWidget from './decision/DecisionWidget';
+import { chartDataKey, pageSizeOf, type LocalVisual } from '@/lib/dashboardDesign';
+import { applyG2Animate } from '@/lib/motion';
+import { applyFieldFormats } from '@/lib/fieldFormat';
+import { placeholderOfShape, shapeOfControl } from '@/lib/dashboardParamAssembly';
 import { readChartPalette, readToken } from '@/lib/chartTheme';
 import {
-  CUSTOM_PRESET, DAY_MS, enabledPresets, effectiveGranularity, formatTime,
+  CUSTOM_PRESET, enabledPresets, effectiveGranularity, formatTime,
   fromInputValue, maxEndFor, resolvePreset, toInputValue, type TimeGranularity,
 } from '@/lib/timePresets';
 
@@ -36,9 +40,51 @@ export function ChartIcon({ name, className }: { name: string; className?: strin
   return <Icon className={className} />;
 }
 
+/**
+ * 服务端随取数结果回传的分页事实（`dataset_service` 生成，前端不得自行反推）。
+ *
+ * 为什么由服务端而不是前端判定：能不能翻页、翻到第几页、能不能跳页，全部由
+ * 数据集是否声明「支持分页」与实际取数通道决定；前端拿行数反推会把首页当成全量
+ * （旧伪分页缺陷的根因）。
+ * - mode='offset'：SQL 通道 LIMIT/OFFSET，页号可随机定位（can_jump=true）；
+ * - mode='cursor'：ES 通道 search_after 游标（集群无 PIT，只能顺序往后翻，can_jump=false）。
+ */
+export interface ChartPaging {
+  mode: 'offset' | 'cursor';
+  page_size: number;
+  page_num: number;
+  total: number | null;
+  can_jump: boolean;
+  /**
+   * 行序是否确定（服务端正文最外层有 ORDER BY）。
+   * SQL 通道缺它时 `LIMIT n OFFSET m` 的行序由引擎自定，相邻页会重行/漏行；
+   * ES 游标通道恒为 true（`_doc` 全序 tiebreaker）。缺省按 true 处理（旧结果无此键）。
+   */
+  stable_order?: boolean;
+}
+
 interface Props {
   chartType: string;
-  data: { columns: string[]; rows: any[]; total?: number };
+  data: {
+    columns: string[];
+    rows: any[];
+    /** 服务端行总数（仅分页取数时回） */
+    total?: number;
+    /** 行数撞到服务端上限：结果不是全量，必须显式提醒 */
+    truncated?: boolean;
+    /**
+     * 服务端声明「本次没按页取数，返回的就是全部行」（统计型数据集走这条）。
+     * 有它才知道缓存里的行是完整结果，不必再补一次重查；缺它就只能当成状态未知。
+     */
+    unpaged?: boolean;
+    paging?: ChartPaging;
+    /**
+     * 列名 → 字段显示格式令牌（数据集 `field_config.display_format` 声明，服务端随取数
+     * 结果下发）。格式跟数据走、不复制进图表 config：后者会让每张图各持一份第二事实源
+     * （改一次要重挂每张图，看板「从数据集引入」时还会被静默丢掉）。
+     */
+    field_formats?: Record<string, string>;
+  };
   config?: Record<string, any>;
   style?: React.CSSProperties;
   loading?: boolean;
@@ -51,6 +97,14 @@ interface Props {
   draft?: boolean;
   /** 图上下钻: 点击图形元素时回传该行原始数据(不传则不挂载点击事件) */
   onDrill?: (datum: Record<string, any>) => void;
+  /**
+   * 图表入场动画（由 lib/motion 的 g2Animate 算出，调用方不得自己拼）：
+   * - `undefined` = **不往 spec 写 animate 键**，与改造前逐字节相同（默认预设 mp_default 的口径，
+   *   用例 components/__tests__/DashboardChartSpec.test.ts 钉住）；
+   * - `false` = 关掉 G2 动画；
+   * - 对象 = `{ enter: { type, duration, easing } }`（type 取 @antv/g2 注册表名）。
+   */
+  motionAnimate?: Record<string, any> | false;
 }
 
 // Map data URLs
@@ -303,6 +357,24 @@ function withAlpha(color: string, alpha: number): string {
  * `l(90)` → 180deg = to bottom，色标 0（深）才落在柱顶。gradient 保持 `l(270)` 不动：
  * 那是存量主题（科技风等）已验收的方向，改它等于顺带换别人的衣。
  */
+/**
+ * 系列色映射：G2 的分类色标按**数据里首次出现顺序**建域，这里必须同口径。
+ *
+ * 历史缺陷：柱体 `style.fill` 是个常量通道（一律取 colors[0]），会把色标按系列上色盖掉
+ * → 图例是蓝/绿、柱子全是蓝，多系列根本分不出来（2026-11-10 反馈）。
+ */
+function seriesColorMap(data: any[], seriesField: string, colors: string[]): (value: unknown) => string {
+  const domain: string[] = [];
+  for (const row of data) {
+    const key = String(row?.[seriesField] ?? '');
+    if (!domain.includes(key)) domain.push(key);
+  }
+  // 本模块导入了 lucide 的 `Map` 图标，这里不能写 new Map()；null 原型避开 'constructor' 这类键碰撞
+  const byValue: Record<string, string> = Object.create(null);
+  domain.forEach((v, i) => { byValue[v] = colors[i % Math.max(1, colors.length)]; });
+  return (value: unknown) => byValue[String(value ?? '')] || colors[0] || '#1677ff';
+}
+
 function barFadeFill(config: any, colors: string[]): string | undefined {
   const raw = config?.barFade;
   if (raw === undefined || raw === false || raw === '' || raw === 0) return undefined;
@@ -310,12 +382,77 @@ function barFadeFill(config: any, colors: string[]): string | undefined {
   return `l(90) 0:${withAlpha(colors[0], top)} 1:${withAlpha(colors[0], Math.max(0.05, top / 6))}`;
 }
 
-/** 柱体样式单一口径：圆角 + 填充（渐隐 > 跨色渐变 > 色板主色）。bar/时序柱/瀑布/默认柱图共用。 */
-function barBodyStyle(config: any, colors: string[]): Record<string, any> {
+/**
+ * 面积填充口径（图表渲染与字模预览共用这一份数学）：竖向同色系渐隐 ——
+ * 顶部按 `areaOpacity` 出实色，往下收敛到近透明（面积图的通行画法：填色是"纵深"，
+ * 不是"色块"；平涂 0.5 的蓝会把整片糊成一块，线形反而读不出来）。
+ *
+ * `areaFade` 三态：未配 = 默认开；数值 = 开且作为顶部 alpha；false = 回到平涂。
+ * 顶部沿用 `areaOpacity`，所以存量字模的这个旋钮继续生效（只是底端变透），没有废掉它。
+ */
+export function areaFadeStops(config: any): { top: number; bottom: number } | null {
+  const raw = config?.areaFade;
+  if (raw === false || raw === '') return null;
+  const declared = Number(config?.areaOpacity);
+  const fallback = Number.isFinite(declared) && config?.areaOpacity != null ? declared : 0.55;
+  const top = typeof raw === 'number' && Number.isFinite(raw) ? raw : fallback;
+  const clamped = Math.min(1, Math.max(0.05, top));
+  // 底端按 1/6 收敛（与柱体渐隐同一形状），取两位小数免得色标串里拖一长串浮点尾数
+  return { top: clamped, bottom: Math.round(Math.max(0.04, clamped / 6) * 100) / 100 };
+}
+
+/**
+ * 面积 mark 的 style：默认渐隐，`areaFade=false` 时平涂。
+ *
+ * 多系列必须按**该系列自己的颜色**做纵深 —— 写死 colors[0] 会把系列洗成同色（与柱图同一历史缺陷）。
+ * 走渐隐时不再写 fillOpacity：色标已带 alpha，再乘一道会把整片洗淡（同一件事只留一处口径）。
+ */
+function areaFillStyle(config: any, colors: string[], data?: any[], seriesField?: string | null,
+  fallbackOpacity = 0.3): Record<string, any> {
+  const fade = areaFadeStops(config);
+  if (!fade) return { fillOpacity: Number(config?.areaOpacity ?? fallbackOpacity) };
+  const fillOf = (c: string) => `l(90) 0:${withAlpha(c, fade.top)} 1:${withAlpha(c, fade.bottom)}`;
+  if (seriesField && data?.length) {
+    const colorOf = seriesColorMap(data, seriesField, colors);
+    return { fill: (d: any) => fillOf(colorOf(d?.[seriesField])) };
+  }
+  return { fill: fillOf(colors[0]) };
+}
+
+/**
+ * 柱体样式单一口径：圆角 + 填充（渐隐 > 渐变 > 色板主色）。bar/时序柱/瀑布/默认柱图共用。
+ *
+ * 传了 `seriesField` 时**填充必须按系列取色**（否则多系列柱子同色，图例白给）：
+ * 渐隐/渐变都在“该系列自己的颜色”上做纵深，既保住 AS 观感，又让系列之间一眼分得开；
+ * 没配渐隐/渐变时不写 fill，交回 G2 色标上色。
+ */
+function barBodyStyle(config: any, colors: string[], data?: any[], seriesField?: string | null): Record<string, any> {
   const radius = Number.parseFloat(config?.borderRadius ?? 4) || 0;
-  const fill = barFadeFill(config, colors)
-    || (config?.gradient ? `l(270) 0:${colors[0]} 1:${colors[1] || colors[0]}` : undefined);
-  return { radiusTopLeft: radius, radiusTopRight: radius, ...(fill ? { fill } : {}) };
+  const style: Record<string, any> = { radiusTopLeft: radius, radiusTopRight: radius };
+  if (!seriesField || !data?.length) {
+    const fill = barFadeFill(config, colors)
+      || (config?.gradient ? `l(270) 0:${colors[0]} 1:${colors[1] || colors[0]}` : undefined);
+    if (fill) style.fill = fill;
+    return style;
+  }
+  const colorOf = seriesColorMap(data, seriesField, colors);
+  const raw = config?.barFade;
+  const fade = raw === undefined || raw === false || raw === '' || raw === 0
+    ? undefined
+    : (typeof raw === 'number' && Number.isFinite(raw) ? Math.min(1, Math.max(0.05, raw)) : 0.6);
+  if (fade !== undefined) {
+    style.fill = (d: any) => {
+      const c = colorOf(d?.[seriesField]);
+      return `l(90) 0:${withAlpha(c, fade)} 1:${withAlpha(c, Math.max(0.05, fade / 6))}`;
+    };
+  } else if (config?.gradient) {
+    // 多系列的“渐变”是同色系纵深，不跟下一个系列借色（借了就把系列色洗掉了）
+    style.fill = (d: any) => {
+      const c = colorOf(d?.[seriesField]);
+      return `l(270) 0:${c} 1:${withAlpha(c, 0.55)}`;
+    };
+  }
+  return style;
 }
 
 /**
@@ -348,6 +485,171 @@ function withBarCap(spec: any, config: any, data: any[], xCol: string, yCol: str
 }
 
 
+/**
+ * 无 canvas 度量时的文本占宽估算：全角字形（中日韩文字/全角标点）按 1em，其余按 0.6em。
+ * 只用于「会不会挤在一起」的判定，宁可高估（多转一档/多截几个字）也不低估（糊成一坨）。
+ */
+const FULLWIDTH_CHAR = /[\u2E80-\u303F\u3040-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/;
+
+export function estimateTextWidth(text: string, fontSize: number): number {
+  let w = 0;
+  for (const ch of String(text)) w += FULLWIDTH_CHAR.test(ch) ? fontSize : fontSize * 0.6;
+  return w;
+}
+
+/** 按估算宽度截断（尾部省略号）。截断而非抽稀：一个类目都不丢，完整值仍可 hover 看 tooltip。 */
+export function truncateToWidth(text: string, maxWidth: number, fontSize: number): string {
+  if (!Number.isFinite(maxWidth) || maxWidth <= 0) return text;
+  if (estimateTextWidth(text, fontSize) <= maxWidth) return text;
+  const budget = Math.max(0, maxWidth - fontSize * 0.6);
+  let w = 0;
+  let out = '';
+  for (const ch of String(text)) {
+    const cw = FULLWIDTH_CHAR.test(ch) ? fontSize : fontSize * 0.6;
+    if (w + cw > budget) break;
+    w += cw;
+    out += ch;
+  }
+  return `${out}…`;
+}
+
+const XAXIS_ROTATE_STEPS = [0, 30, 45, 60, 90];
+const XAXIS_SIDE_PADDING = 24;         // baseSpec 的左右留白（与 padding[1]/[3] 同源）
+const XAXIS_BASE_PADDING = 40;          // 未旋转时的底部留白（维持历史版式）
+const XAXIS_MAX_PADDING_RATIO = 0.28;   // 轴下方最多吃掉图高 28%，再多就挤压绘图区
+const XAXIS_MAX_PADDING = 96;
+
+/**
+ * X 轴类目标签排布裁决：数据多 / 标签长时自动选旋转角、撑高轴带、按需截断。
+ *
+ * 为什么不能交给 G2 自动旋转（历史缺陷根因）：`labelAutoRotate` 的碰撞消解会把标签转进
+ * 「轴带」，而轴带高度 = 组件 size —— 显式 padding 下 `computeAxisSize` 根本不被调用
+ * （runtime/layout.js 的 `autoSizeOf` 只在 `padding === 'auto'` 分支里算尺寸），size 恒为
+ * 默认 45px。200px 的长标签转 45° 需要 ~150px 竖向空间，contain 检测在任何角度都过不了，
+ * autoRotate 的 `recoverWhenFailed` 于是把角度复位成 0 —— 标签原地水平挤成一坨（Chat 结果图）。
+ * 结论：角度自己定，并把 padding[2] 与轴 `size` 一起撑开，让「旋转后的投影」真有地方放。
+ *
+ * 档位择优：旋转是用「竖向空间」换「横向可容纳宽度」，只有换得更多才值得转 ——
+ * 类目很少但单个标签很长时（band 很宽），水平截断比旋转保字更多，就不转。
+ * 两个方向都得夹住：竖向 = 斜投影装得进轴带；横向 = 最外侧那条标签不能溢出画布
+ * （θ>0 时 G2 按 start 对齐从 tick 单向伸出，θ=0 时居中向两侧各占一半）。
+ */
+export function resolveXAxisLabelLayout(
+  labels: string[],
+  opts: { width: number; height: number; fontSize: number; explicitRotate?: number },
+): { rotate: number; bottomPadding: number; maxLabelWidth: number; truncate: boolean; hideWhenOverlap: boolean } {
+  const { width, height, fontSize, explicitRotate = 0 } = opts;
+  const sin = (deg: number) => Math.sin((deg * Math.PI) / 180);
+  const lineH = fontSize * 1.25 + 8;                     // 标签行高 + tick/labelSpacing
+  const plotWidth = Math.max(60, width - XAXIS_SIDE_PADDING * 2);  // 扣左右 padding
+  const maxRoom = Math.max(XAXIS_BASE_PADDING, Math.min(XAXIS_MAX_PADDING, Math.round(height * XAXIS_MAX_PADDING_RATIO)));
+  const room = Math.max(fontSize * 2, maxRoom - lineH);  // 可用于标签斜向投影的高度
+  const base = { rotate: explicitRotate, bottomPadding: XAXIS_BASE_PADDING, maxLabelWidth: 0, truncate: false, hideWhenOverlap: false };
+  if (labels.length === 0) return base;
+  const band = plotWidth / labels.length;
+  const wMax = labels.reduce((m, t) => Math.max(m, estimateTextWidth(t, fontSize)), 0);
+  const fits = labels.length < 2 || wMax + 6 <= band;
+  const keep = (deg: number) => {
+    const cos = Math.cos((deg * Math.PI) / 180);
+    // 最外侧 tick 到画布边缘还有 sidePad + band/2，超出就会被裁（G2 不做沿轴方向的兼容）
+    const lateral = deg === 0 ? (XAXIS_SIDE_PADDING + band / 2) * 2 : (XAXIS_SIDE_PADDING + band / 2) / cos;
+    return deg === 0
+      ? Math.min(wMax, band - 6, lateral)
+      : Math.min(wMax, room / sin(deg), lateral);
+  };
+  // 相邻斜标签的垂直间距 = band·sinθ，必须放得下一行文字，否则该档位仍然糊
+  const allowed = (deg: number) => deg === 0 || band * sin(deg) >= lineH * 1.05;
+  const rotate = explicitRotate || (fits ? 0
+    : XAXIS_ROTATE_STEPS.filter(allowed).reduce((best, deg) => (keep(deg) > keep(best) ? deg : best), 0));
+  const maxLabelWidth = Math.max(fontSize * 3, rotate === 0 ? (fits ? wMax : keep(0)) : keep(rotate));
+  return {
+    rotate,
+    bottomPadding: Math.max(XAXIS_BASE_PADDING, Math.min(maxRoom, Math.ceil(maxLabelWidth * sin(rotate) + lineH))),
+    maxLabelWidth,
+    truncate: maxLabelWidth < wMax - 1,
+    // 极端拥挤（连竖排都放不下）才允许 G2 抽稀，其余情况一律全量呈现 + 截断
+    hideWhenOverlap: band < lineH,
+  };
+}
+
+/** 不参与 X 轴类目标签自动排布：无极坐标轴（饼/玫瑰/仪表/漏斗/地图/词云/HTML 渲染），
+ *  或 x 轴沿圆周排布（radar/radial_bar，统一旋转角无意义）。 */
+const NO_X_LABEL_LAYOUT_TYPES = new Set([
+  'pie', 'rose', 'gauge', 'funnel', 'word_cloud', 'tree', 'treemap', 'sankey',
+  'text_display', 'big_number_trend', 'table_value', 'china_map', 'world_map',
+  'radar', 'radial_bar', 'widget_decision',
+]);
+
+/** 饼图外围标签单条最大宽度：超出截断（完整名仍在 tooltip/图例里）。
+ *  spider 列贴在画布两侧，列位 = 外半径 + 引导线长，不限制宽长名字会把列推出画布。 */
+const PIE_LABEL_MAX_WIDTH = 80;
+
+// ── KPI 大数字版式（text_display / big_number_trend 共用）─────────────────────
+const KPI_PADDING_X = 16;
+const KPI_MIN_VALUE_FONT = 12;
+const KPI_MIN_DELTA_FONT = 9;
+
+/** KPI 上下留白：这两类图不渲染坐标轴，沿用 baseSpec 的 40px 轴留白等于凭空吃掉 80px 绘图区，
+ *  小尺寸卡片连「数值 + 涨幅」两行都装不下 —— 按图高收敛到 6~16px。 */
+export const kpiPaddingY = (height: number) => Math.max(6, Math.min(16, Math.round(height * 0.1)));
+
+/**
+ * 大数字 + 涨幅的排版裁决：以**绘图区**为坐标系，字号与行位随图表实际尺寸收敛。
+ *
+ * 为什么必须自己算（2026-11-12 反馈「大数字下面的涨幅看不到了」根因）：G2 把 mark 层
+ * `translate(paddingLeft, paddingTop)` 到了绘图区原点（runtime/plot.js updateBBox），所以
+ * `style.x/y` 是**绘图区**坐标。旧写法 `height / 2 ± 20` 拿整图高当基准又用固定偏移，涨幅行的
+ * 画布 y = paddingTop + height/2 + 20，图高 ≤130 时越过画布下沿被裁掉半行；x 同理整体右偏 paddingLeft。
+ *
+ * 两条约束同时成立（缺一不算「适配」）：
+ * ① 纵向 —— 数值行 + 行距 + 涨幅行整体在绘图区垂直居中，装不下先缩数值字号（涨幅字号有下限，
+ *    它已是最小可读单位，再缩等于没有）；
+ * ② 横向 —— 两行各自按 estimateTextWidth 夹进绘图区宽（长数字、带「同比 | 环比」前缀同样可见）。
+ *
+ * 返回的 padding 与坐标是同一口径，调用方把 padding 原样写进 spec 即可（不得两处各算一遍留白）。
+ */
+export function kpiNumberLayout(opts: {
+  width: number; height: number;
+  valueText: string; deltaText?: string;
+  /** 数值行基准字号（用户配置优先）：作为上限，仍会被可用高/宽夹小 */
+  baseValueFontSize?: number;
+}): {
+  padding: [number, number, number, number];
+  cx: number;
+  value: { y: number; fontSize: number };
+  delta: { y: number; fontSize: number } | null;
+} {
+  const { width, height, valueText, deltaText = '' } = opts;
+  const base = Number(opts.baseValueFontSize);
+  const padY = kpiPaddingY(height);
+  const innerWidth = Math.max(24, width - KPI_PADDING_X * 2);
+  const innerHeight = Math.max(24, height - padY * 2);
+  const hasDelta = !!deltaText;
+  // 涨幅行：占绘图区高 16%，夹在 9~14px。不跟数值等比缩是因为它字号本就小，
+  // 等比下去会跌破可读下限（缩没 = 静默丢信息，等同把涨幅藏回画布外）。
+  const deltaFontSize = hasDelta ? Math.max(KPI_MIN_DELTA_FONT, Math.min(14, Math.round(innerHeight * 0.16))) : 0;
+  const gap = hasDelta ? Math.max(3, Math.min(8, Math.round(innerHeight * 0.06))) : 0;
+  // 按宽回缩：给定字号下估宽超了，就按比例换算出「刚好塞进 innerWidth」的字号（不低于下限）
+  const fitByWidth = (text: string, size: number, minSize: number) => {
+    const w = estimateTextWidth(text, size);
+    return w <= innerWidth ? size : Math.max(minSize, Math.floor(innerWidth * size / w));
+  };
+  const valueRoom = hasDelta ? innerHeight - deltaFontSize - gap : innerHeight;
+  // 取整后才参与排版：否则「渲染字号（整数）」与「占位高度（小数）」不一致，行数会整块偏移半像素
+  const valueFontSize = Math.round(fitByWidth(String(valueText),
+    Math.max(KPI_MIN_VALUE_FONT, Math.min(Number.isFinite(base) && base > 0 ? base : 36, valueRoom)),
+    KPI_MIN_VALUE_FONT));
+  const deltaSize = hasDelta ? fitByWidth(deltaText, deltaFontSize, KPI_MIN_DELTA_FONT) : 0;
+  const total = valueFontSize + (hasDelta ? gap + deltaSize : 0);
+  const top = (innerHeight - total) / 2;
+  return {
+    padding: [padY, KPI_PADDING_X, padY, KPI_PADDING_X],
+    cx: innerWidth / 2,
+    value: { y: top + valueFontSize / 2, fontSize: valueFontSize },
+    delta: hasDelta ? { y: top + valueFontSize + gap + deltaSize / 2, fontSize: deltaSize } : null,
+  };
+}
+
 // Build G2 spec based on chart type
 export function buildG2Spec(chartType: string, columns: string[], rows: any[], config: Record<string, any>, isDark: boolean, width: number, height: number, visual?: LocalVisual) {
   isDark = visual?.mode ? visual.mode === 'dark' : isDark;
@@ -373,15 +675,9 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
 
   // 坐标轴显式配置（图表级覆盖，在「坐标轴」页可配）：这一组曾经只写 config、无人消费，
   // 面板拉满也没反应（ui-vis-library-style.md §2：“存了不生效”就是缺陷，不是待办）。
+  // 0 = 自动（由 resolveXAxisLabelLayout 按标签宽/类目数裁决），>0 = 用户指定的固定角度。
   const rotate = Math.max(0, Math.min(90, Number(config?.xAxisLabelRotate) || 0));
   const axisGrid = config?.showGrid === false ? { grid: false } : {};
-  const xAxis: any = config?.showXAxis === false ? false : {
-    // 显式设了旋转角就不再让 G2 自决：labelAutoRotate 会在溢出时改写成 rotate(90)，与用户设定冲突
-    labelAutoRotate: rotate === 0,
-    ...(rotate ? { labelTransform: `rotate(${rotate})` } : {}),
-    ...axisGrid,
-    style: axisLabelStyle,
-  };
   // y 轴不渲染标题：G2 的 y 轴标题默认竖排（theme.axisLeft.titleDirection='vertical' + rotate(-90)），
   // 小字号旋转后贴左边缘糊成一排，用户读不出（反馈“左侧字看不清”），而原文又是物理列名；
   // 但用户显式写了「Y轴名称」时照他说的渲染（显式覆盖优先于默认）。
@@ -456,6 +752,40 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
     }
   }
 
+  // X 轴类目标签排布（自动旋转角 + 轴带撑高 + 按需截断）：依赖标签集，故在数据准备后裁决。
+  // x 通道实际编码的列在分支间有差异（时序族走 timeCol、瀑布走 categoryCol、日历热力走 dateCol…），
+  // 拿错列会按错的标签集判角；标签集也要取真正渲染的那批行（时间聚合后类目数会变）。
+  const xLabelCol = chartType.startsWith('timeseries') ? (config?.timeCol || xCol)
+    : chartType === 'waterfall' ? (config?.categoryCol || xCol)
+    : chartType === 'calendar_heatmap' ? (config?.dateCol || xCol)
+    : chartType === 'bubble' ? (config?.xCol || columns.find(c => typeof rows[0]?.[c] === 'number') || xCol)
+    : xCol;
+  const xLabelRows = chartType.startsWith('timeseries') ? rows : processedData;
+  const xLabelFontSize = Number(axisLabelStyle.labelFontSize) || 11;
+  const xLabels = NO_X_LABEL_LAYOUT_TYPES.has(chartType)
+    ? []
+    : [...new Set(xLabelRows.map(r => String(r[xLabelCol] ?? '')))];
+  const xLayout = resolveXAxisLabelLayout(xLabels, {
+    width, height, fontSize: xLabelFontSize, explicitRotate: rotate,
+  });
+  // 柱顶帽/瀑布等按绘图区高反推数据单位的分支共用：扣掉上下 padding 后的真实高度
+  const plotHeightHint = Math.max(60, height - 40 - xLayout.bottomPadding);
+  const xAxis: any = config?.showXAxis === false ? false : {
+    // 旋转/截断一律由 resolveXAxisLabelLayout 裁决，不再交给 G2 自决：
+    // 显式 padding 下它的 labelAutoRotate 永远算不过碰撞检测（见该函数注释），等于没开。
+    labelAutoRotate: false,
+    labelAutoHide: xLayout.hideWhenOverlap,
+    // size 即轴带高度：与 padding[2] 同值，G2 的碰撞消解才知道标签真有多少地方可摆
+    size: xLayout.bottomPadding,
+    ...(xLayout.rotate ? { labelTransform: `rotate(${xLayout.rotate})` } : {}),
+    // 超宽标签截断（完整值仍在 tooltip 里），避免长 URL/长名称溢出画布
+    ...(xLayout.truncate
+      ? { labelFormatter: (v: any) => truncateToWidth(String(v), xLayout.maxLabelWidth, xLabelFontSize) }
+      : {}),
+    ...axisGrid,
+    style: axisLabelStyle,
+  };
+
   // Build spec based on chart type
   const baseSpec: any = {
     width,
@@ -502,7 +832,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         },
       },
     },
-    padding: [40, 24, 40, 24],
+    padding: [40, 24, xLayout.bottomPadding, 24],
     style: {
       viewFill: bgColor,
     },
@@ -515,16 +845,21 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         type: 'interval',
         data: processedData,
         encode: { x: xCol, y: yCol, color: seriesField || undefined },
+        // 多系列默认**分组**（每系列一根柱、各自取色）：G2 的 interval 带 color 时默认堆叠，
+        // 会把几个系列挤进同一根柱、读不出谁是谁（2026-11-10 反馈，参考图为分组柱）。
+        // 真要累计口径（部分与整体）在图表配置里切「堆叠」，不静默替人决定。
+        ...(seriesField && config?.seriesLayout !== 'stack'
+          ? { transform: [{ type: 'dodgeX' }] } : {}),
         axis: {
           x: xAxis,
           y: yAxis,
         },
         scale: { color: { range: colors } },
-        style: barBodyStyle(config, colors),
+        style: barBodyStyle(config, colors, processedData, seriesField),
         labels: config?.showLabel ? [{ text: yCol, style: { fill: textColor } }] : [],
         interaction: { tooltip: { shared: true } },
       };
-      return withBarCap(barSpec, config, processedData, xCol, yCol, height - 80);
+      return withBarCap(barSpec, config, processedData, xCol, yCol, plotHeightHint);
     }
 
     case 'line': {
@@ -534,7 +869,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         scale: { color: { range: colors } },
         axis: { x: xAxis, y: yAxis },
         children: [
-          { type: 'area', encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config.smooth === false ? 'area' : 'smooth' }, style: { fillOpacity: config.areaOpacity ?? 0.15 } },
+          { type: 'area', encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config.smooth === false ? 'area' : 'smooth' }, style: areaFillStyle(config, colors, processedData, seriesField || null, 0.15) },
           { type: 'line', encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config.smooth === false ? 'line' : 'smooth' }, style: { lineWidth: config.lineWidth ?? 2, ...(config.glow ? { shadowColor: colors[0], shadowBlur: 8 } : {}) } },
           // 单点时 area/line 都画不出形状，叠加圆点兜住可见性
           ...(isSparseSeries(processedData, xCol) ? [visiblePointMark(lineEncode)] : []),
@@ -566,7 +901,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
           y: yAxis,
         },
         scale: { color: { range: colors } },
-        style: { fillOpacity: config?.areaOpacity ?? 0.3 },
+        style: areaFillStyle(config, colors, processedData, seriesField || null),
         interaction: { tooltip: { shared: true } },
       }, processedData, xCol);
 
@@ -575,16 +910,45 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         name: String(r[xCol]),
         value: Number(r[yCol]) || 0,
       }));
+      // theta 坐标是 Transpose+Polar：x 通道落在「半径」维度、y 通道落在「角度」维度。
+      // 曾经这里编码了 x='name'，后果是（历史缺陷，截图表现为“环细如发丝 + 标签糊成一团”）：
+      //  ① 每个切片只占 1/类目数 的一段同心细环（8 个类目时环粗只剩几像素），而不是整段半径；
+      //  ② stackY 默认按 x 分组，各自独立堆叠 → 角度按「值/最大值」而不是「值/总和」，
+      //     各切片角度之和 > 360° 互相叠压，小切片全挤在同一角度区间，外围标签必然重叠。
+      // 正确写法只编码 y + color，x 由 G2 的 MaybeZeroX 补常量 0 → 切片占满 [inner, outer]、角度累加。
+      // innerRadius 按「占外半径的比例」理解（上界 0.75：环粗不得退化到发丝；0 = 实心饼），
+      // 并等比跟随下面的 outerRadius —— 主题包写 0.58 就仍是“环粗 = 外半径的 42%”，
+      // 不会因为给标签让位而把环越改越细（字模/主题包实际取值 0.4~0.6）。
+      const rawInner = Number(config?.innerRadius);
+      const innerRatio = Number.isFinite(rawInner) ? Math.max(0, Math.min(0.75, rawInner)) : 0.4;
+      // 外半径给标签留环带：写满 1 时 spider 标签列贴画布左右边缘，长名字被裁成残字。
+      const showPieLabel = config?.showLabel !== false;
+      const outerRadius = showPieLabel ? 0.72 : 0.9;
+      const innerRadius = innerRatio * outerRadius;
+      const pieLabelSize = Number.parseFloat(config?.axisLabelSize ?? '') || 11;
       return {
         ...baseSpec,
         type: 'interval',
         data: pieData,
-        encode: { x: 'name', y: 'value', color: 'name' },
+        encode: { y: 'value', color: 'name' },
         transform: [{ type: 'stackY' }],
-        coordinate: { type: 'theta', innerRadius: config?.innerRadius ?? 0.4 },
+        coordinate: { type: 'theta', innerRadius, outerRadius },
         scale: { color: { range: colors } },
         style: { stroke: bgColor, lineWidth: 2 },
-        labels: config?.showLabel === false ? [] : [{ text: 'name', position: 'outside', style: { fontSize: 11, fill: textColor } }],
+        // spider 布局：标签按左右两列竖向避让（dodgeY）并保留引导线锚在弧上，
+        // 放不下时才隐藏（值仍在 tooltip/图例里）；单纯 overlapDodgeY 会把引导线整条拖离切片。
+        labels: showPieLabel ? [{
+          text: (d: any) => truncateToWidth(String(d.name), PIE_LABEL_MAX_WIDTH, pieLabelSize),
+          position: 'spider',
+          style: { fontSize: pieLabelSize, fill: textColor },
+          connector: true,
+          connectorStroke: borderColor,
+          connectorLineWidth: 1,
+          connectorLength: 8,
+          connectorLength2: 8,
+          connectorDistance: 4,
+          labelHeight: Math.round(pieLabelSize * 1.6),
+        }] : [],
         legend: config?.legend === false ? false : { color: { position: config?.legend || 'right', itemLabelStyle: legendLabelStyle } },
         interaction: { tooltip: {} },
       };
@@ -618,6 +982,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         type: config?.areaOpacity != null ? 'area' : 'line',
         data: radarData,
         encode: { x: 'name', y: 'value', color: 'category' },
+        // 极坐标：竖向渐隐没有方向可言（"上深下浅"会随角度绕圈），这里刻意不套 areaFillStyle
         coordinate: { type: 'polar' },
         scale: { color: { range: colors } },
         style: { lineWidth: config?.lineWidth ?? 2, fillOpacity: config?.areaOpacity ?? 0 },
@@ -735,9 +1100,22 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
       const momChange = momValue && momValue !== 0 ? ((value - momValue) / momValue * 100) : null;
 
       const showComparison = config?.showComparison !== false;
+      const deltaText = showComparison
+        ? [
+            yoyChange !== null ? `同比 ${yoyChange >= 0 ? '↑' : '↓'} ${Math.abs(yoyChange).toFixed(1)}%` : '',
+            momChange !== null ? `环比 ${momChange >= 0 ? '↑' : '↓'} ${Math.abs(momChange).toFixed(1)}%` : '',
+          ].filter(Boolean).join('  |  ')
+        : '';
+      const layout = kpiNumberLayout({ width, height, valueText: formattedValue, deltaText, baseValueFontSize: valueFontSize });
+      const deltaColor = (yoyChange !== null && yoyChange >= 0) || (momChange !== null && momChange >= 0)
+        ? '#52c41a'
+        : (yoyChange !== null && yoyChange < 0) || (momChange !== null && momChange < 0)
+          ? '#ff4d4f'
+          : textColor;
 
       return {
         ...baseSpec,
+        padding: layout.padding,
         type: 'view',
         children: [
           // Main value
@@ -746,32 +1124,25 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
             data: { value: null },
             style: {
               text: formattedValue,
-              x: width / 2,
-              y: height / 2 - (showComparison && (yoyChange !== null || momChange !== null) ? 20 : 0),
-              fontSize: valueFontSize,
+              x: layout.cx,
+              y: layout.value.y,
+              fontSize: layout.value.fontSize,
               fontWeight: 'bold',
               fill: config?.valueColor || textColor,
               textAlign: 'center',
             },
           },
           // Comparison labels
-          ...(showComparison && (yoyChange !== null || momChange !== null) ? [
+          ...(layout.delta ? [
             {
               type: 'text',
               data: { value: null },
               style: {
-                text: [
-                  yoyChange !== null ? `同比 ${yoyChange >= 0 ? '↑' : '↓'} ${Math.abs(yoyChange).toFixed(1)}%` : '',
-                  momChange !== null ? `环比 ${momChange >= 0 ? '↑' : '↓'} ${Math.abs(momChange).toFixed(1)}%` : '',
-                ].filter(Boolean).join('  |  '),
-                x: width / 2,
-                y: height / 2 + valueFontSize / 2 + 8,
-                fontSize: 13,
-                fill: (yoyChange !== null && yoyChange >= 0) || (momChange !== null && momChange >= 0)
-                  ? '#52c41a'
-                  : (yoyChange !== null && yoyChange < 0) || (momChange !== null && momChange < 0)
-                    ? '#ff4d4f'
-                    : textColor,
+                text: deltaText,
+                x: layout.cx,
+                y: layout.delta.y,
+                fontSize: layout.delta.fontSize,
+                fill: deltaColor,
                 textAlign: 'center',
               },
             },
@@ -786,19 +1157,33 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
       const prevVal = Number(rows[rows.length - 2]?.[yCol]) || lastVal;
       const changePercent = prevVal ? ((lastVal - prevVal) / prevVal * 100).toFixed(1) : '0';
       const isUp = lastVal >= prevVal;
+      const valueText = total.toLocaleString();
+      const deltaText = `${isUp ? '↑' : '↓'} ${changePercent}%`;
+      const layout = kpiNumberLayout({ width, height, valueText, deltaText });
+      const delta = layout.delta!;
 
       return {
         ...baseSpec,
+        padding: layout.padding,
         type: 'view',
         children: [
+          // 趋势线先画、文字后画：旧顺序把 line 放在最后，折线会压在数值与涨幅上；
+          // 收紧上下留白后折线铺满整卡，遮挡更明显 —— 数值才是这张图的主读信息。
+          {
+            type: 'line',
+            data: processedData,
+            encode: { x: xCol, y: yCol },
+            style: { stroke: colors[0], lineWidth: 2 },
+            axis: false,
+          },
           {
             type: 'text',
             data: { value: null },
             style: {
-              text: total.toLocaleString(),
-              x: width / 2,
-              y: height / 2 - 20,
-              fontSize: 36,
+              text: valueText,
+              x: layout.cx,
+              y: layout.value.y,
+              fontSize: layout.value.fontSize,
               fontWeight: 'bold',
               fill: config?.valueColor || textColor,
               textAlign: 'center',
@@ -808,20 +1193,13 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
             type: 'text',
             data: { value: null },
             style: {
-              text: `${isUp ? '↑' : '↓'} ${changePercent}%`,
-              x: width / 2,
-              y: height / 2 + 20,
-              fontSize: 14,
+              text: deltaText,
+              x: layout.cx,
+              y: delta.y,
+              fontSize: delta.fontSize,
               fill: isUp ? '#52c41a' : '#ff4d4f',
               textAlign: 'center',
             },
-          },
-          {
-            type: 'line',
-            data: processedData,
-            encode: { x: xCol, y: yCol },
-            style: { stroke: colors[0], lineWidth: 2 },
-            axis: false,
           },
         ],
       };
@@ -866,16 +1244,21 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
           y: yAxis,
         },
         scale: { color: { range: colors } },
+        // 时序柱与 bar 同口径：多系列默认分组，填充按系列取色（写死 colors[0] 会把系列洗成同色）
+        ...(isBar && tsHasGroups && config?.seriesLayout !== 'stack'
+          ? { transform: [{ type: 'dodgeX' }] } : {}),
         style: isBar
-          ? barBodyStyle(config, colors)
-          : { lineWidth: config?.lineWidth ?? 2, fillOpacity: isArea ? (config?.areaOpacity ?? 0.3) : 0,
+          ? barBodyStyle(config, colors, tsData, tsHasGroups ? tsGroupCol : null)
+          : { lineWidth: config?.lineWidth ?? 2,
+              // 面积族与 area 分支同一口径（默认竖向渐隐，系列各自取色）；纯线不填底
+              ...(isArea ? areaFillStyle(config, colors, tsData, tsHasGroups ? tsGroupCol : null) : { fillOpacity: 0 }),
               ...(config?.glow ? { shadowColor: colors[0], shadowBlur: 8 } : {}) },
         labels: isBar && config?.showLabel ? [{ text: valCol, style: { fill: textColor } }] : [],
         interaction: { tooltip: { shared: true } },
       };
       // 柱状单点本身可见；线/面单点画不出形状，叠加圆点
       return isBar
-        ? withBarCap(tsSpec, config, tsData, timeCol, valCol, height - 80)
+        ? withBarCap(tsSpec, config, tsData, timeCol, valCol, plotHeightHint)
         : ensureVisiblePoints(tsSpec, tsData, timeCol);
     }
 
@@ -952,27 +1335,43 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
     }
 
     case 'sankey': {
-      const sourceCol = config?.sourceCol || columns.find(c => typeof rows[0]?.[c] === 'string') || columns[0];
-      const targetCol = config?.targetCol || columns.find(c => typeof rows[0]?.[c] === 'string' && c !== sourceCol) || columns[1];
-      const valueCol = config?.valueCol || columns.find(c => typeof rows[0]?.[c] === 'number') || columns[2];
+      // 桑基要的是「源 / 目标 / 数值」三件，而选择框只给通用 X/Y/分组：按 X=源、分组=目标、Y=数值对齐。
+      // 凑不齐三件就不画（旧写法把 targetCol 兜到 columns[1]，那往往是数值列 →
+      // 生成一个“节点名叫数字”的假图，或整幅空白）。
+      const stringCols = columns.filter(c => typeof rows[0]?.[c] === 'string');
+      const numberCols = columns.filter(c => typeof rows[0]?.[c] === 'number');
+      const sourceCol = config?.sourceCol || config?.xCol || stringCols[0];
+      const targetCol = config?.targetCol || config?.groupCol
+        || stringCols.find(c => c !== sourceCol) || (typeof rows[0]?.[config?.yCol] === 'string' ? config?.yCol : undefined);
+      const valueCol = config?.valueCol
+        || (numberCols.includes(config?.yCol) ? config?.yCol : undefined) || numberCols[0];
+      if (!sourceCol || !targetCol || !valueCol || targetCol === sourceCol) {
+        throw new Error('桑基图需要「源」与「目标」两列文本加一列数值，当前数据凑不齐（可改用其它图型或补上目标列）');
+      }
 
-      const nodeSet: Record<string, boolean> = {};
-      const links = rows.map(r => {
-        const source = String(r[sourceCol]);
-        const target = String(r[targetCol]);
-        nodeSet[source] = true;
-        nodeSet[target] = true;
-        return { source, target, value: Number(r[valueCol]) || 0 };
-      });
-      const nodes = Object.keys(nodeSet).map(name => ({ name }));
+      const links = rows.map(r => ({
+        source: String(r[sourceCol]),
+        target: String(r[targetCol]),
+        value: Number(r[valueCol]) || 0,
+      }));
 
       return {
         ...baseSpec,
         type: 'view',
         children: [{
           type: 'sankey',
-          data: { nodes, links },
-          encode: { x: 'x', y: 'y', value: 'value' },
+          // data 只传边数组，不传 {nodes, links} 对象：G2 5.4 的 sankey 拿到对象形态时整幅静默不画
+          // （无报错无告警、彩色像素为 0，2026-11-10 浏览器实测定位）。节点由 G2 按边端点自己派生成
+          // {key}，正好和它默认的 nodeId = d => d.key 对齐；手写 nodes 反而要自己保证字段叫 key
+          // （旧写法造 {name} 时 d3-sankey 直接抛 “missing: xxx”，也是整幅空白）。
+          data: links,
+          // encode 只被 initializeData 读 source/target/value（默认取 d.source/d.target），
+          // x/y 字段对布局不起作用，留着只会让人以为它们在控位。
+          // linkColor：给带子按「源节点」取色。不写时 G2 把所有边刷成 #aaa@50%（在浅底上正好是
+          // 一片 212,212,212），多条边完全糊在一起看不出谁到谁（浏览器实测对比：不写=全灰带，
+          // 写=与源竖条同色系彩带）。注意这里必须传返回字符串的函数：传字段名 'source' 会拿到
+          // 布局后的节点对象，G2 内部报 colorStr.indexOf is not a function。
+          encode: { value: 'value', linkColor: (d: any) => String(d.source?.key ?? d.source ?? '') },
           style: { labelFill: textColor, labelFontSize: 12, labelFontWeight: '600' },
           interaction: { tooltip: {} },
         }],
@@ -1157,6 +1556,31 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
       };
     }
 
+    case 'widget_decision': {
+      // 看板「决策建议」控件：DOM 渲染、没有 G2 mark，但 `widget_style` 旋钮必须
+      // 在这里被真实解析一次（字模/主题包/本图覆盖已在上游汇入 config.widgetStyle）。
+      // 渲染面只消费这份结果、不再各自读 ws.*：两处读法必然漂移，“存了不生效”
+      // 就从这里诞生（ui-vis-library-style.md §2）。
+      const ws = config?.widgetStyle || {};
+      return {
+        type: 'html',
+        _widget: 'decision',
+        _chrome: {
+          background: ws.backgroundColor || bgColor,
+          color: ws.textColor || textColor,
+          borderColor: ws.borderColor || borderColor,
+          borderWidth: typeof ws.borderWidth === 'number' ? ws.borderWidth : 1,
+          borderStyle: ws.borderStyle || 'solid',
+          borderRadius: typeof ws.borderRadius === 'number' ? ws.borderRadius : 6,
+          padding: ws.padding ?? '10px 12px',
+          fontSize: typeof ws.fontSize === 'number' ? ws.fontSize : 13,
+          height: typeof ws.height === 'number' && ws.height > 0 ? ws.height : undefined,
+          opacity: ws.opacity,
+          boxShadow: ws.boxShadow,
+        },
+      };
+    }
+
     case 'table_value':
       // Rendered as HTML table in DashboardChartInner, not a G2 chart
       return { ...baseSpec, type: 'view', children: [] };
@@ -1168,21 +1592,54 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         type: 'interval',
         data: processedData,
         encode: { x: xCol, y: yCol, color: seriesField || undefined },
+        // 兜底柱图与 bar 分支同口径（多系列分组 + 按系列取色），否则同一数据换图型就变堆叠同色
+        ...(seriesField && config?.seriesLayout !== 'stack'
+          ? { transform: [{ type: 'dodgeX' }] } : {}),
         axis: {
           x: xAxis,
           y: yAxis,
         },
         scale: { color: { range: colors } },
-        style: barBodyStyle(config, colors),
+        style: barBodyStyle(config, colors, processedData, seriesField),
         labels: config?.showLabel ? [{ text: yCol, style: { fill: textColor } }] : [],
         interaction: { tooltip: { shared: true } },
       };
-      return withBarCap(spec, config, processedData, xCol, yCol, height - 80);
+      return withBarCap(spec, config, processedData, xCol, yCol, plotHeightHint);
     }
   }
 }
 
-function DashboardChartInner({ chartType, data, config, style, loading, chartId, dashboardId, chartName, visual, draft = false, onDrill }: Props) {
+/** 控件按 paramKey 反查看板参数定义里的业务名（ui-resource-display.md：显示用 name，不拿内部键当主信息） */
+function declaredParamLabel(dashboardId: number | undefined, key: string): string {
+  if (!key) return '';
+  const store = useDashboardStore.getState();
+  const dash = store.dashboards?.find(d => d.id === (dashboardId ?? store.currentId));
+  const hit = [...(dash?.params || []), ...(dash?.page_params || [])].find(p => p.name === key);
+  return String(hit?.label || '').trim();
+}
+
+/**
+ * 控件占位提示：没配 placeholder 时按“动作 + 业务名”给默认文案，不留一个无名的空框（2026-11-10 用户反馈）。
+ * 文案与看板顶部参数带同源（`placeholderOfShape`）；日期类原生输入框不渲染 placeholder，调用方靠 label / title 兼容。
+ */
+function widgetPlaceholder(chartType: string, label: string, bound: boolean, optionCount = 1): string {
+  if (!bound) return '未绑定看板参数，填了不会生效';
+  if (chartType === 'widget_multi_select') return label ? `可多选 ${label}` : '可多选';
+  // 没候选值的下拉 = 点开是空的，得说清去哪里补，不能只写“请选择”
+  if (chartType === 'widget_select' && optionCount === 0) return '候选值未配置，请在属性面板的「候选值」里填写';
+  return placeholderOfShape(shapeOfControl(chartType), label);
+}
+
+/**
+ * 渲染失败的可读原因：优先 Error.message（图型分支抛的都是中文原因），兜底 String(e)。
+ * 拿不到原因也要说一句事实，不能让人对着空白猜。
+ */
+function reasonOf(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e ?? '');
+  return msg.trim() || '图表渲染失败（未给出原因）';
+}
+
+function DashboardChartInner({ chartType, data, config, style, loading, chartId, dashboardId, chartName, visual, draft = false, onDrill, motionAnimate }: Props) {
   // 依赖 theme(主题 id)而非 isDark: 同明暗主题切换(dark→tech)也需重建图表以读取新令牌色
   const theme = useThemeStore(s => s.theme);
   const isDark = visual?.mode ? visual.mode === 'dark' : IS_DARK[theme];
@@ -1193,11 +1650,25 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const [mapData, setMapData] = useState<any>(null);
   const [mapError, setMapError] = useState('');
+  // 渲染失败必须可见：过去 G2 报错只进 console，画布就留一片空白（桑基图整幅没图就是这么藏的）
+  const [renderError, setRenderError] = useState('');
   const [modalState, setModalState] = useState<{ pageId: number; params: Record<string, any> } | null>(null);
   const [page, setPage] = useState(1);
 
   const cfg = config || {};
   const widgetParams = useDashboardStore(s => s.paramValues);
+  // 决策建议控件取参数走**下发时的同一份合并口径**（`{ ...paramValues, ...pageParamValues }`，
+  // 与 store 里刷新取数处同源），不在控件里另起一套取值逻辑。
+  const pageParamValues = useDashboardStore(s => s.pageParamValues);
+  const dashWorkspaceId = useDashboardStore(s => s.currentWorkspaceId);
+
+  // Serialize data/config to detect actual content changes (not just reference changes)
+  const dataKey = chartDataKey(data);
+  // 字段显示格式在进渲染面**之前**归一一次：轴标签、tooltip、图例、表值图单元格、下钻条件
+  // 读的都是同一批行值，逐图型分支挂 labelFormatter 必然漏掉某一面（与"字模挂了没反应"
+  // 同一类缺陷）。只按 dataKey 重算，内容没变不重复扫行。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const view = useMemo(() => applyFieldFormats(data), [dataKey]);
 
   // Initialize date/date range default values before chart refresh
   useEffect(() => {
@@ -1205,17 +1676,18 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
     const store = useDashboardStore.getState();
     const current = store.paramValues[cfg.paramKey];
 
-    if (chartType === 'widget_daterange' && (cfg.defaultPreset || cfg.rangeMaxDays)) {
+    // 时间区间：只有显式配了「默认选项」才预填。rangeMaxDays 是手选跨度上限，不是默认值
+    // （历史缺陷：没配默认选项也按 rangeMaxDays/365 回填成“近一年”，用户以为数据只覆盖这段时间，
+    //   而实际取数窗口由 SQL 自身口径决定 —— 控件显示与真实范围两回事，宁留空让人自己选）
+    if (chartType === 'widget_daterange' && cfg.defaultPreset) {
       if (!current || (!current.start && !current.end)) {
-        const now = new Date();
-        // 预设优先；没配预设时沿用 rangeMaxDays 的默认窗口
-        const window = resolvePreset(cfg.defaultPreset, now)
-          || { start: new Date(now.getTime() - (cfg.rangeMaxDays || 365) * DAY_MS), end: now };
+        const window = resolvePreset(cfg.defaultPreset, new Date());
+        if (!window) return; // 未知预设不回填，留空由用户自选
         // 本地时区格式化：原先用 toISOString() 取的是 UTC，在 UTC+8 晚间会算成前一天
         const granularity = effectiveGranularity(cfg.granularity, cfg.defaultPreset);
         store.setParamValue(cfg.paramKey, {
           start: formatTime(window.start, granularity), end: formatTime(window.end, granularity),
-          preset: cfg.defaultPreset || CUSTOM_PRESET,
+          preset: cfg.defaultPreset,
         });
       }
     } else if (chartType === 'widget_date' && cfg.defaultValue) {
@@ -1223,19 +1695,28 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
         store.setParamValue(cfg.paramKey, cfg.defaultValue);
       }
     }
-  }, [draft, chartType, cfg.paramKey, cfg.rangeMaxDays, cfg.defaultPreset, cfg.granularity, cfg.defaultValue]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [draft, chartType, cfg.paramKey, cfg.defaultPreset, cfg.granularity, cfg.defaultValue]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-refresh for server-side pagination on mount (data_cache has full data, need paginated)
+  // 真分页事实必须随首屏数据一起到。旧缓存（分页上线前写的 data_cache）没带 paging/total，
+  // 拿它会“共 20 行”当成全量挂在几百万行的明细表上 —— 补一次首页取数。
+  // 只在缓存确实陈旧时发（拿到 paging 后永不再发），不是每张图进看板都重查。
   useEffect(() => {
-    if (chartId && chartType === 'table_value' && cfg.enableServerPagination && !loading) {
-      const pageLimit = cfg.pageLimit || 20;
-      useDashboardStore.getState().refreshSingleChart(chartId, { dashboardId, chartName, page_limit: pageLimit, page_offset: 0, count_sql: cfg.countSql });
-    }
-  }, [chartId, dashboardId]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!chartId || draft || chartType !== 'table_value') return;
+    if (loading) return;
+    // 三种"已知状态"都不必重查：按页取过（paging）、撞过线（truncated）、
+    // 服务端声明本次即全量（unpaged，统计型数据集恒定走这条）。
+    const bound = data.paging != null || data.truncated === true
+      || data.unpaged === true || data.rows.length === 0;
+    if (bound) return;
+    useDashboardStore.getState().refreshSingleChart(chartId, {
+      dashboardId, chartName, page_size: pageSizeOf(cfg), page_num: 1,
+    });
+  }, [chartId, dashboardId, draft]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Serialize data/config to detect actual content changes (not just reference changes)
-  const dataKey = chartDataKey(data);
   const configKey = JSON.stringify({ config: cfg, visual });
+  // 预设切换（包括从默认档换成有动画的档）要让图表重建一次才能吃到新 animate；
+  // 序列化后比较，避免引用变化把没动的图表全重建一遍
+  const motionAnimateKey = JSON.stringify(motionAnimate ?? null);
 
   // Measure container dimensions
   useEffect(() => {
@@ -1264,7 +1745,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       window.removeEventListener('resize', measure);
       if (observer) observer.disconnect();
     };
-  }, [chartType, !!data.columns?.length, !!data.rows?.length, !!mapData]);
+  }, [chartType, !!view.columns?.length, !!view.rows?.length, !!mapData]);
 
   // Fetch map data for map charts
   useEffect(() => {
@@ -1297,7 +1778,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
   // Build and render chart
   useEffect(() => {
     if (!containerRef.current || dimensions.width === 0 || dimensions.height === 0) return;
-    if (!data.columns?.length || !data.rows?.length) return;
+    if (!view.columns?.length || !view.rows?.length) return;
 
     // For map charts, wait for map data
     if ((chartType === 'china_map' || chartType === 'world_map') && !mapData) return;
@@ -1312,19 +1793,21 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       }
 
       try {
-        const spec = buildG2Spec(
-          chartType, data.columns, data.rows, cfg, isDark,
+        // 动效只在显式给了预设时写进 spec（undefined 时原样返回），保证默认档零变化
+        const spec = applyG2Animate(buildG2Spec(
+          chartType, view.columns, view.rows, cfg, isDark,
           dimensions.width, dimensions.height, visual
-        );
+        ), motionAnimate);
+        setRenderError('');
 
         // Handle map charts
         if (chartType === 'china_map' || chartType === 'world_map') {
-          const nameCol = cfg?.nameCol || data.columns.find(c => typeof data.rows[0]?.[c] === 'string') || data.columns[0];
-          const valueCol = cfg?.valueCol || data.columns.find(c => typeof data.rows[0]?.[c] === 'number') || data.columns[1];
+          const nameCol = cfg?.nameCol || view.columns.find(c => typeof view.rows[0]?.[c] === 'string') || view.columns[0];
+          const valueCol = cfg?.valueCol || view.columns.find(c => typeof view.rows[0]?.[c] === 'number') || view.columns[1];
 
           // Prepare data as a map for quick lookup
           const dataMap: Record<string, number> = {};
-          data.rows.forEach(r => {
+          view.rows.forEach(r => {
             const name = String(r[nameCol]);
             const value = Number(r[valueCol]) || 0;
             dataMap[name] = value;
@@ -1370,11 +1853,15 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
                   title: 'name',
                   items: [{ field: 'value', name: '数值' }],
                 },
+                // geoView 的 animate 是 mark 级的（落在 geoPath 子节点上），根层写了不吃；
+                // 不给它另开一套「地图不带动效」的例外，否则预设在这两类图上就是静默失效
+                ...(motionAnimate !== undefined ? { animate: motionAnimate } : {}),
               },
             ],
           });
 
-          chart.render();
+          const renderedMap = chart.render() as any;
+          if (renderedMap && typeof renderedMap.catch === 'function') renderedMap.catch((e: any) => setRenderError(reasonOf(e)));
           chartRef.current = chart;
         } else {
           const chart = new Chart({
@@ -1385,7 +1872,10 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
           });
 
           chart.options(spec);
-          chart.render();
+          // G2 v5 的 render 是异步的：布局/转换报错走不到下面的 catch，不接住就是静默空白。
+          // 拿不到 thenable（旧版本/测试替身返回 undefined）时不能假设有 .catch
+          const rendered = chart.render() as any;
+          if (rendered && typeof rendered.catch === 'function') rendered.catch((e: any) => setRenderError(reasonOf(e)));
           // 图上下钻:点击图形元素回传该行数据(G2 v5 element:click,datum 在 event.data.data)
           if (onDrill) {
             chart.on('element:click', (e: any) => {
@@ -1397,6 +1887,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
         }
       } catch (e) {
         console.error('Chart render error:', e);
+        setRenderError(reasonOf(e));
       }
     });
 
@@ -1407,7 +1898,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
         chartRef.current = null;
       }
     };
-  }, [chartType, dataKey, configKey, dimensions.width, dimensions.height, mapData, theme]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [chartType, dataKey, configKey, dimensions.width, dimensions.height, mapData, theme, motionAnimateKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 时间动画图表(竞速条形图/时序播放) — 独立播放器组件,G2 实例常驻 + changeData 过渡动画
   const ANIMATED_TYPES = ['bar_race', 'timeline_play'];
@@ -1415,12 +1906,42 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
     return <AnimatedTimeChart chartType={chartType as 'bar_race' | 'timeline_play'} data={data} config={cfg} style={style} />;
   }
 
+  // 决策建议控件（widget_decision）：不是表单控件也不画 G2，只展示服务端引擎算好的
+  // 结论（计划 §四出口 4）。样式由 buildG2Spec 的同名分支解析一次，这里只消费结果；
+  // 看板筛选只把参数原值 + 绑定清单交给服务端（翻译唯一在 semantics.param_plan）。
+  if (chartType === 'widget_decision') {
+    const spec: any = buildG2Spec(chartType, [], [], cfg, isDark,
+      dimensions.width || 360, dimensions.height || 220, visual);
+    return (
+      <DecisionWidget
+        chrome={spec?._chrome || {}}
+        treeKey={String(cfg.treeKey || '')}
+        paramBindings={Array.isArray(cfg.paramBindings) ? cfg.paramBindings : []}
+        params={{ ...widgetParams, ...pageParamValues }}
+        workspaceId={Number(cfg.workspaceId ?? dashWorkspaceId ?? 0)}
+        draft={draft}
+      />
+    );
+  }
+
   // Widget rendering — compact form controls, not G2 charts (buttons handled separately below)
   const WIDGET_TYPES = ['widget_label', 'widget_text', 'widget_number', 'widget_date', 'widget_daterange', 'widget_select', 'widget_multi_select'];
   if (WIDGET_TYPES.includes(chartType)) {
     const paramKey = cfg?.paramKey || '';
-    const label = cfg?.label || paramKey;
-    const placeholder = cfg?.placeholder || '';
+    const bound = !!paramKey;
+    /*
+     * 业务名优先级：本图显式 label > 看板参数定义里的 label > 参数键本身。
+     * 没绑参数的控件不假装能用（否则是个“填了什么都不发生”的空框）：
+     * 能用 placeholder 说清的（文本/数字/单选下拉）不改动布局；
+     * 原生日期框与多选框不渲染 placeholder，才补一个可见 label（静态文本标签无绑定概念，不参与）。
+     */
+    const isInputWidget = chartType !== 'widget_label';
+    const needsUnboundLabel = !bound && isInputWidget
+      && ['widget_date', 'widget_daterange', 'widget_multi_select'].includes(chartType);
+    const label = (cfg?.label || '').trim() || declaredParamLabel(dashboardId, paramKey) || paramKey
+      || (needsUnboundLabel ? '未绑定参数' : '');
+    const placeholder = cfg?.placeholder || (isInputWidget
+      ? widgetPlaceholder(chartType, label, bound, ((cfg?.options || []) as unknown[]).length) : '');
     const defaultValue = cfg?.defaultValue ?? '';
     const labelPosition = cfg?.labelPosition || 'left';
     const showLabel = cfg?.showLabel !== false;
@@ -1497,6 +2018,17 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       ...(controlHeight ? { height: controlHeight, maxHeight: '100%' } : {}),
     };
 
+    // 需要自己画外框的控件（日期/多选）：有标签时主题色必须落在内层元素上，
+    // 否则 label 模式下背景/文字色回到 transparent，字模与主题包挂了没效果
+    const fieldChrome: React.CSSProperties = {
+      borderRadius: ws.borderRadius ?? 6,
+      border: `1px solid ${isDark ? 'rgba(255,255,255,0.15)' : 'hsl(var(--input))'}`,
+      background: ws.backgroundColor || visual?.viewBg || (isDark ? '#1e293b' : '#ffffff'),
+      padding: ws.padding ?? '4px 8px',
+      color: ws.textColor || visual?.textColor || (isDark ? '#e2e8f0' : '#111827'),
+      colorScheme: isDark ? 'dark' : 'light',
+    };
+
     const labelEl = hasLabel ? (
       <Label style={{
         fontSize: 'inherit', fontWeight: 500, color: ws.textColor || visual?.subTextColor || (isDark ? '#cbd5e1' : '#475569'),
@@ -1530,6 +2062,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
     // widget_daterange — two inputs + separator, needs minimal wrapper
     if (chartType === 'widget_daterange') {
       const rangeMaxDays = cfg?.rangeMaxDays || 365; // default 1 year
+      const rangeHint = placeholder || undefined;
       const startDate = typeof currentValue?.start === 'string' ? currentValue.start : '';
       const endDate = typeof currentValue?.end === 'string' ? currentValue.end : '';
       const presets = enabledPresets(cfg?.presets);
@@ -1545,29 +2078,83 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       const endMaxBoundary = endMax ? inputValue(endMax) : '';
       const commit = (patch: Record<string, unknown>) => handleChange({ ...currentValue, ...patch });
 
-      const dateInputStyle: React.CSSProperties = {
-        // 不写 height:100%：一旦换行，每行都会占满容器高度而垂直溢出；交给原生控件自身高度
-        // （「控件高」旋钮给定时才写死高度，与字模/本图覆盖同源）
-        flex: '1 1 8.5rem', minWidth: 0, maxWidth: '100%',
-        ...(controlHeight ? { height: controlHeight, maxHeight: '100%' } : {}),
-        fontSize: 'inherit', lineHeight: 'inherit',
-        borderRadius: ws.borderRadius ?? 6,
-        border: `1px solid ${isDark ? 'rgba(255,255,255,0.15)' : 'hsl(var(--input))'}`,
-        background: ws.backgroundColor || (isDark ? '#1e293b' : '#ffffff'),
-        padding: ws.padding ?? '4px 8px', outline: 'none',
-        color: ws.textColor || visual?.textColor || (isDark ? '#e2e8f0' : '#111827'),
-        colorScheme: isDark ? 'dark' : 'light',
-        boxSizing: 'border-box',
+      // 一个控件，而不是三个盒子：卡片只做排版（透明、无描边、无内边距），
+      // 描边/底色/圆角/内边距/控件高全部落在字段组上 —— 字模 ws_daterange_* 的旋钮由此作用在
+      // “看得见的那一层”，而不是三个小框各描一遍边（ui-vis-library-style §2）。
+      const shellStyle: React.CSSProperties = {
+        ...directStyle, border: 'none', background: 'transparent', padding: 0,
+        gap: ws.gap ?? (hasLabel ? 6 : 0),
       };
-      // 预设下拉不参与伸展（否则会把两个日期框挤到读不出），但允许收缩到内容以下
-      const presetStyle: React.CSSProperties = { ...dateInputStyle, flex: '0 1 auto', cursor: 'pointer' };
+      const groupStyle = {
+        display: 'flex', alignItems: 'center', alignContent: 'center', flexWrap: 'wrap',
+        flex: '1 1 12rem', minWidth: 0, maxWidth: '100%', boxSizing: 'border-box',
+        // 不给 input 写高度：换行后每行占满容器会垂直溢出（见交互回归用例）
+        minHeight: controlHeight ?? 30,
+        ...(controlHeight ? { height: controlHeight } : {}),
+        borderRadius: ws.borderRadius ?? 6,
+        borderWidth: ws.borderWidth ?? 1, borderStyle: 'solid',
+        // 边框色走 CSS 变量：focus 环要能覆盖它（inline 颜色 class 压不住）
+        '--dh-dr-border': ws.borderColor || (isDark ? 'rgba(255,255,255,0.15)' : 'hsl(var(--input))'),
+        background: ws.backgroundColor || visual?.viewBg || (isDark ? '#1e293b' : '#ffffff'),
+        color: ws.textColor || visual?.textColor || (isDark ? '#e2e8f0' : '#111827'),
+        padding: ws.padding ?? '0 8px',
+        gap: ws.gap ?? 4, rowGap: 2,
+        fontSize: 'inherit', fontFamily: 'inherit', lineHeight: 'inherit', fontWeight: 'inherit',
+      } as React.CSSProperties;
+      // 字段自身不再描边（组给）；文字色靠继承，input 上**不写 inline color** ——
+      // 否则 globals.css 的「空值时分段透明」压不过 inline，那行「年/月/日」噪音还在
+      // 字段是 flex 项（min-width:0 + 裁剪）：原生日期框的内在最小宽压不下去时，
+      // 裁掉的是日期文字，而不是把快捷项挤到第二行把控件撑成两截
+      const fieldStyle: React.CSSProperties = {
+        position: 'relative', display: 'flex', alignItems: 'center',
+        flex: '1 1 6.5rem', minWidth: 0, maxWidth: '100%', overflow: 'hidden',
+      };
+      const inputStyle: React.CSSProperties = {
+        width: '100%', minWidth: 0,
+        borderWidth: 0, borderStyle: 'none', background: 'transparent', outline: 'none', padding: 0,
+        fontSize: 'inherit', fontFamily: 'inherit', lineHeight: 'inherit', fontWeight: 'inherit',
+        fontVariantNumeric: 'tabular-nums',
+      };
+      const divider = isDark ? 'rgba(255,255,255,0.14)' : 'hsl(var(--border))';
+      // 快捷项排在两个端点之后，只留一条分隔线（不再是第三个独立白框）；
+      // 宽度不够时换行被挤掉的是快捷项，而不是结束日期
+      const presetStyle: React.CSSProperties = {
+        flex: '0 1 auto', minWidth: 0, maxWidth: '9.5rem',
+        borderWidth: 0, borderLeftStyle: 'solid', borderLeftWidth: 1, borderLeftColor: divider,
+        borderRadius: 0,
+        background: 'transparent', outline: 'none', color: 'inherit', cursor: 'pointer',
+        fontSize: 'inherit', fontFamily: 'inherit', lineHeight: 'inherit', fontWeight: 'inherit',
+        paddingLeft: 8, paddingRight: 18,
+        whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden',
+      };
+      const hints = granularity === 'datetime' ? ['开始时间', '结束时间'] : ['开始日期', '结束日期'];
 
       return (
-        <div onClick={e => e.stopPropagation()} style={directStyle}>
+        <div onClick={e => e.stopPropagation()} style={shellStyle}>
           {labelEl}
-          <div style={{ display: 'flex', alignItems: 'center', alignContent: 'center', flexWrap: 'wrap',
-            gap: ws.gap ?? 6, flex: '1 1 12rem', minWidth: 0, maxHeight: '100%' }}>
-            {presets.length > 0 && <select
+          <div className="dh-daterange-group" style={groupStyle}>
+            <span className={`dh-daterange-field${startBoundary ? '' : ' is-empty'}`} style={fieldStyle}>
+              <input type={granularity === 'datetime' ? 'datetime-local' : 'date'}
+                aria-label={`${label || '时间区间'}开始`} title={rangeHint}
+                value={startBoundary} max={endBoundary || undefined}
+                onChange={e => commit({ preset: CUSTOM_PRESET, start: fromInputValue(e.target.value, granularity) })}
+                style={inputStyle} />
+              {!startBoundary && <span className="dh-daterange-hint">{hints[0]}</span>}
+            </span>
+            <span className="dh-daterange-sep" style={{
+              flexShrink: 0, fontSize: '0.85em',
+              color: isDark ? 'rgba(226,232,240,0.5)' : 'hsl(var(--muted-foreground))',
+            }}>~</span>
+            <span className={`dh-daterange-field${endBoundary ? '' : ' is-empty'}`} style={fieldStyle}>
+              <input type={granularity === 'datetime' ? 'datetime-local' : 'date'}
+                aria-label={`${label || '时间区间'}结束`}
+                value={endBoundary} min={startBoundary || undefined} max={endMaxBoundary || undefined}
+                title={endMaxBoundary ? `可选区间最长 ${rangeMaxDays} 天` : undefined}
+                onChange={e => commit({ preset: CUSTOM_PRESET, end: fromInputValue(e.target.value, granularity) })}
+                style={inputStyle} />
+              {!endBoundary && <span className="dh-daterange-hint">{hints[1]}</span>}
+            </span>
+            {presets.length > 0 && <select className="dh-daterange-preset"
               aria-label={`${label || '时间区间'}快捷选项`}
               value={presets.some(p => p.key === selectedPreset) ? selectedPreset : CUSTOM_PRESET}
               onChange={e => {
@@ -1582,18 +2169,6 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
               {presets.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
               <option value={CUSTOM_PRESET}>自由选择</option>
             </select>}
-            <input type={granularity === 'datetime' ? 'datetime-local' : 'date'}
-              aria-label={`${label || '时间区间'}开始`}
-              value={startBoundary} max={endBoundary || undefined}
-              onChange={e => commit({ preset: CUSTOM_PRESET, start: fromInputValue(e.target.value, granularity) })}
-              style={dateInputStyle} />
-            <span style={{ fontSize: '0.85em', color: isDark ? '#ccc' : 'hsl(var(--muted-foreground))', flexShrink: 0 }}>~</span>
-            <input type={granularity === 'datetime' ? 'datetime-local' : 'date'}
-              aria-label={`${label || '时间区间'}结束`}
-              value={endBoundary} min={startBoundary || undefined} max={endMaxBoundary || undefined}
-              title={endMaxBoundary ? `可选区间最长 ${rangeMaxDays} 天` : undefined}
-              onChange={e => commit({ preset: CUSTOM_PRESET, end: fromInputValue(e.target.value, granularity) })}
-              style={dateInputStyle} />
           </div>
         </div>
       );
@@ -1616,16 +2191,8 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
     }
 
     if (chartType === 'widget_date') {
-      const dateProps = { onClick: (e: React.MouseEvent) => e.stopPropagation() };
-      const dateInnerStyle: React.CSSProperties = {
-        ...innerFieldStyle,
-        borderRadius: ws.borderRadius ?? 6,
-        border: `1px solid ${isDark ? 'rgba(255,255,255,0.15)' : 'hsl(var(--input))'}`,
-        background: ws.backgroundColor || (isDark ? '#1e293b' : '#ffffff'),
-        padding: ws.padding ?? '4px 8px',
-        color: ws.textColor || visual?.textColor || (isDark ? '#e2e8f0' : '#111827'),
-        colorScheme: isDark ? 'dark' : 'light',
-      };
+      const dateProps = { onClick: (e: React.MouseEvent) => e.stopPropagation(), title: placeholder || undefined };
+      const dateInnerStyle: React.CSSProperties = { ...innerFieldStyle, ...fieldChrome };
       if (!hasLabel) return <input type="date" {...dateProps} value={currentValue || ''} onChange={e => handleChange(e.target.value)} style={directStyle} />;
       return <div {...dateProps} style={directStyle}>{labelEl}<input type="date" value={currentValue || ''} onChange={e => handleChange(e.target.value)} style={dateInnerStyle} /></div>;
     }
@@ -1643,10 +2210,10 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
 
     // 多选框高度不再写死 60：由「控件高」旋钮接管，使小尺寸控件可以真正缩小
     if (chartType === 'widget_multi_select') {
-      if (!hasLabel) return <select multiple {...commonProps} value={Array.isArray(currentValue) ? currentValue : []} onChange={e => handleChange(Array.from(e.target.selectedOptions, o => o.value))} style={{ ...directStyle, cursor: 'pointer', minHeight: ws.height ?? 60 }}>
+      if (!hasLabel) return <select multiple {...commonProps} value={Array.isArray(currentValue) ? currentValue : []} onChange={e => handleChange(Array.from(e.target.selectedOptions, o => o.value))} title={placeholder || undefined} style={{ ...directStyle, cursor: 'pointer', minHeight: ws.height ?? 60 }}>
         {options.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
       </select>;
-      return <div {...commonProps} style={directStyle}>{labelEl}<select multiple value={Array.isArray(currentValue) ? currentValue : []} onChange={e => handleChange(Array.from(e.target.selectedOptions, o => o.value))} style={{ ...innerFieldStyle, cursor: 'pointer', minHeight: ws.height ?? 60 }}>
+      return <div {...commonProps} style={directStyle}>{labelEl}<select multiple value={Array.isArray(currentValue) ? currentValue : []} onChange={e => handleChange(Array.from(e.target.selectedOptions, o => o.value))} title={placeholder || undefined} style={{ ...innerFieldStyle, ...fieldChrome, cursor: 'pointer', minHeight: ws.height ?? 60 }}>
         {options.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
       </select></div>;
     }
@@ -1668,9 +2235,10 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
         // 查询按钮必须真实重查询：按所属看板 id 逐图 POST（缺上下文时 store 会显式报错）
         useDashboardStore.getState().refreshCharts(dashboardId);
       } else if (chartType === 'widget_reset') {
-        const paramValues = widgetParams;
-        const keys = Object.keys(paramValues);
-        keys.forEach(k => useDashboardStore.getState().setParamValue(k, ''));
+        // 与顶栏「重置」共用 store 的一份口径：两个命名空间一起恢复默认值后重查。
+        // 旧实现只清 paramValues，而下发时 `{...paramValues, ...pageParamValues}` 会把
+        // 控件 bind_param 写的同名键覆盖回来 → 按了“重置”取数仍按旧区间（空承诺）。
+        void useDashboardStore.getState().resetParams(dashboardId);
       } else if (chartType === 'widget_export') {
         if (exportNoTarget) { toast.error('请先在属性面板选择要导出的图表'); return; }
         const store = useDashboardStore.getState();
@@ -1735,7 +2303,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
     );
   }
 
-  if (!data.columns?.length || !data.rows?.length) {
+  if (!view.columns?.length || !view.rows?.length) {
     return (
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -1746,17 +2314,15 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
     );
   }
 
-  // table_value: render as HTML table with pagination
+  // table_value: HTML 表格 + 真分页（服务端按 page_size/page_num 取数，前端不再切片全量）
   if (chartType === 'table_value') {
-    const maxRows = cfg?.maxRows || 100;
     const showIndex = cfg?.showIndex !== false;
     const striped = cfg?.striped !== false;
-    const pageSize = cfg?.pageSize || 20;
-    const enableServerPagination = cfg?.enableServerPagination === true;
-    const pageLimit = cfg?.pageLimit || pageSize;
-    const serverTotal = data.total || 0; // total from backend
-    const enablePagination = cfg?.enablePagination !== false && (enableServerPagination || data.rows.length > pageSize);
-    const allRows = data.rows.slice(0, maxRows);
+    const paging = data.paging;
+    // 页大小以服务端回显为准（它可能把越界请求收到 100），前端只看配置算会错位
+    const pageSize = paging?.page_size || pageSizeOf(cfg);
+    const serverPaged = !!paging;
+    const allRows = view.rows;
 
     // Drill-through link config
     const links: Array<{
@@ -1789,27 +2355,50 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
       }
     };
 
-    const totalPages = enableServerPagination
-      ? Math.max(1, Math.ceil(serverTotal / pageLimit))
-      : (enablePagination ? Math.ceil(allRows.length / pageSize) : 1);
-    const currentPage = Math.min(page, totalPages);
-    const rows = enableServerPagination
+    // 分页口径两分：
+    // · 服务端分页（数据集声明了支持分页）—— rows 就是本次那一页，总数来自服务端；
+    // · 无分页事实（统计展示型数据集整页返回 / 设计预览 / 对话结果卡）—— 本地切片，
+    //   此时“共 N 行”说的是本次查询返回的全部行，不是“拉了多少算多少”。
+    const totalRows = serverPaged ? (paging.total ?? allRows.length) : allRows.length;
+    // 服务端真分页时分页条恒显示：拿 enablePagination 关掉它，用户就只看得到首页
+    // 且不知道后面还有多少页 —— 与“共 20 行”冒充全量是同一类空承诺
+    const enablePagination = serverPaged
+      || (cfg?.enablePagination !== false && allRows.length > pageSize);
+    const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+    // 当前页以服务端回显为准：改参数后整板重查会回到首页，只跟本地 state 会显错页
+    const currentPage = Math.min(Math.max(1, serverPaged ? (paging.page_num || 1) : page), totalPages);
+    const rows = serverPaged
       ? allRows
       : (enablePagination ? allRows.slice((currentPage - 1) * pageSize, currentPage * pageSize) : allRows);
-    const startIndex = enableServerPagination ? (currentPage - 1) * pageLimit : (enablePagination ? (currentPage - 1) * pageSize : 0);
+    const startIndex = enablePagination ? (currentPage - 1) * pageSize : 0;
+    // ES 游标式分页（集群无 PIT）只能从上一页往后走：随机跳页会被服务端拒，按钮就不给
+    const canJump = serverPaged ? paging.can_jump !== false : true;
 
-    // Generate page numbers to display
-    const pageNumbers: (number | '...')[] = [];
-    if (totalPages <= 7) {
-      for (let i = 1; i <= totalPages; i++) pageNumbers.push(i);
-    } else {
-      pageNumbers.push(1);
-      if (currentPage > 3) pageNumbers.push('...');
-      for (let i = Math.max(2, currentPage - 1); i <= Math.min(totalPages - 1, currentPage + 1); i++) {
-        pageNumbers.push(i);
+    const goPage = (next: number) => {
+      const target = Math.min(Math.max(1, next), totalPages);
+      if (target === currentPage) return;
+      setPage(target);
+      if (serverPaged && chartId) {
+        useDashboardStore.getState().refreshSingleChart(chartId, {
+          dashboardId, chartName, page_size: pageSize, page_num: target,
+        });
       }
-      if (currentPage < totalPages - 2) pageNumbers.push('...');
-      pageNumbers.push(totalPages);
+    };
+
+    // Generate page numbers to display（仅可跳页时给页码；游标式分页只给顺序按钮）
+    const pageNumbers: (number | '...')[] = [];
+    if (canJump) {
+      if (totalPages <= 7) {
+        for (let i = 1; i <= totalPages; i++) pageNumbers.push(i);
+      } else {
+        pageNumbers.push(1);
+        if (currentPage > 3) pageNumbers.push('...');
+        for (let i = Math.max(2, currentPage - 1); i <= Math.min(totalPages - 1, currentPage + 1); i++) {
+          pageNumbers.push(i);
+        }
+        if (currentPage < totalPages - 2) pageNumbers.push('...');
+        pageNumbers.push(totalPages);
+      }
     }
 
     const btnStyle = (active = false, disabled = false): React.CSSProperties => ({
@@ -1876,7 +2465,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
             <thead>
               <tr style={{ borderBottom: `2px solid ${tableBorder}`, position: 'sticky', top: 0, background: tableHeaderBg || visual?.viewBg || (isDark ? '#0f172a' : '#ffffff'), zIndex: 1, height: tableRowHeight || undefined }}>
                 {showIndex && <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 500, color: tableHeaderColor, width: 40 }}>#</th>}
-                {data.columns.map(col => (
+                {view.columns.map(col => (
                   <th key={col} style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 500, color: tableHeaderColor, whiteSpace: 'nowrap' }}>{col}</th>
                 ))}
               </tr>
@@ -1889,7 +2478,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
                   background: striped && i % 2 === 1 ? tableZebraBg : 'transparent',
                 }}>
                   {showIndex && <td style={{ padding: '4px 8px', color: 'hsl(var(--muted-foreground))', fontSize: 11 }}>{startIndex + i + 1}</td>}
-                  {data.columns.map(col => {
+                  {view.columns.map(col => {
                     const val = row[col];
                     const isNum = typeof val === 'number';
                     const linkDef = links.find(l => l.column === col);
@@ -1927,7 +2516,30 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
           </table>
         </div>
 
-        {/* Pagination footer */}
+        {/* 行序不确定（正文没顶层 ORDER BY）：翻页会重行/漏行——分页参数没错，
+            错在集合本身没有可翻的顺序，得说出来而不是让用户拿到两张一样的页 */}
+        {serverPaged && paging.stable_order === false && (
+          <div role="alert" style={{
+            padding: '3px 8px', borderTop: '1px solid hsl(var(--border))',
+            flexShrink: 0, fontSize: 11, color: '#b45309',
+            background: 'rgba(245, 158, 11, 0.08)',
+          }}>
+            该数据集正文没有排序（ORDER BY），翻页可能重复或漏行。请在数据集正文补上稳定排序。
+          </div>
+        )}
+
+        {/* 行数撞到服务端上限：结果不是全量，必须说出来 —— 不得拿“共 N 行”冒充整张表 */}
+        {!serverPaged && data.truncated && (
+          <div role="alert" style={{
+            padding: '3px 8px', borderTop: '1px solid hsl(var(--border))',
+            flexShrink: 0, fontSize: 11, color: '#b45309',
+            background: 'rgba(245, 158, 11, 0.08)',
+          }}>
+            已达单次返回行数上限（{allRows.length} 行），实际结果更多。如需翻页请在数据集开启「支持分页」。
+          </div>
+        )}
+
+        {/* 分页条：总数与页号一律用服务端回显的事实，不再拿本页行数冒充全量 */}
         {enablePagination && (
           <div style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -1935,20 +2547,14 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
             flexShrink: 0, gap: 4, fontSize: 11,
           }}>
             <span style={{ color: 'hsl(var(--muted-foreground))' }}>
-              {enableServerPagination ? `共 ${serverTotal} 行 · 第 ${currentPage}/${totalPages} 页` : `共 ${allRows.length} 行`}
+              {`共 ${totalRows} 行 · 第 ${currentPage}/${totalPages} 页`}
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
               <button
                 style={btnStyle(false, currentPage <= 1)}
-                onClick={() => {
-                  if (currentPage <= 1) return;
-                  const newPage = currentPage - 1;
-                  setPage(newPage);
-                  if (enableServerPagination && chartId) {
-                    useDashboardStore.getState().refreshSingleChart(chartId, { dashboardId, chartName, page_limit: pageLimit, page_offset: (newPage - 1) * pageLimit, count_sql: cfg.countSql });
-                  }
-                }}
+                onClick={() => goPage(currentPage - 1)}
                 disabled={currentPage <= 1}
+                title="上一页"
               >‹</button>
               {pageNumbers.map((p, idx) =>
                 p === '...'
@@ -1956,25 +2562,14 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
                   : <button
                       key={p}
                       style={btnStyle(p === currentPage)}
-                      onClick={() => {
-                        setPage(p as number);
-                        if (enableServerPagination && chartId) {
-                          useDashboardStore.getState().refreshSingleChart(chartId, { dashboardId, chartName, page_limit: pageLimit, page_offset: ((p as number) - 1) * pageLimit, count_sql: cfg.countSql });
-                        }
-                      }}
+                      onClick={() => goPage(p as number)}
                     >{p}</button>
               )}
               <button
                 style={btnStyle(false, currentPage >= totalPages)}
-                onClick={() => {
-                  if (currentPage >= totalPages) return;
-                  const newPage = currentPage + 1;
-                  setPage(newPage);
-                  if (enableServerPagination && chartId) {
-                    useDashboardStore.getState().refreshSingleChart(chartId, { dashboardId, chartName, page_limit: pageLimit, page_offset: (newPage - 1) * pageLimit, count_sql: cfg.countSql });
-                  }
-                }}
+                onClick={() => goPage(currentPage + 1)}
                 disabled={currentPage >= totalPages}
+                title={canJump ? '下一页' : '该通道按游标顺序翻页，需逐页往后翻（不可直接跳页）'}
               >›</button>
             </div>
           </div>
@@ -2054,6 +2649,18 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
           </svg>
         </div>
       )}
+      {/* 渲染失败：说清是哪张图、为什么不成，并给可行动下一步（不静默留一片空白） */}
+      {!!renderError && (
+        <div role="alert" style={{
+          position: 'absolute', inset: 0, zIndex: 11,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column',
+          gap: 6, padding: 16, textAlign: 'center', background: isDark ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.75)',
+          color: '#b45309', fontSize: 12, lineHeight: 1.6,
+        }}>
+          <span>{chartName ? `「${chartName}」` : '该图表'}渲染失败：{renderError}</span>
+          <span style={{ color: '#999' }}>可换个图型重试，或在「明细」页看原始数据。</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -2113,6 +2720,8 @@ export const CHART_TYPES: ChartTypeItem[] = [
   { value: 'widget_search', label: '搜索按钮', icon: 'Search', category: 'widget' },
   { value: 'widget_reset', label: '重置按钮', icon: 'RotateCcw', category: 'widget' },
   { value: 'widget_export', label: '导出按钮', icon: 'Download', category: 'widget' },
+  // 展示型控件：不写参数，只把服务端算好的结论放在看板上
+  { value: 'widget_decision', label: '决策建议卡', icon: 'ListChecks', category: 'widget' },
 ];
 
 export const CHART_TYPE_CATEGORIES = [

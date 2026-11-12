@@ -83,6 +83,19 @@ class CLIProcessAdapter(ExecutionLayerAdapter):
         存在性不在此校验: 无效路径由执行/SDK 侧 fail-loud 报错(不静默回退)。
         """
         raw = (raw or "").strip()
+        if self.cli_name == "claude":
+            # claude 后端：优先用 claude-agent-sdk 自带的 bundled 二进制（与执行期同一口径，
+            # 见 anthropic_direct.resolve_claude_cli_path），避免 PATH 命中宿主机残留版本。
+            # 构造阶段**不抛异常**：manager 会为每条执行层建 adapter，一条停用的 claude 层
+            # 不该把整个服务拖死；“找不到 CLI”在健康检查里显式报 unavailable，
+            # 并在真正执行时 fail-loud（secure_sdk._build_claude_options）。
+            from backend.modules.mind.execution.anthropic_direct import resolve_claude_cli_path
+            try:
+                return resolve_claude_cli_path(raw)
+            except Exception as exc:  # noqa: BLE001 — 延迟到执行期报错，此处只保留配置意图
+                logger.warning("[ExecLayer:%s] claude CLI 未能解析(%s)，配置值原样保留: %r",
+                               self._name, exc, raw or self.binary)
+                return raw or self.binary
         if not raw:
             return str(_RUNTIME_QODER_CLI) if _RUNTIME_QODER_CLI.is_file() else (
                 shutil.which(self.binary) or self.binary)

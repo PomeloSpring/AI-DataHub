@@ -56,10 +56,21 @@ class _FakeConn:
 
 @pytest.fixture
 def ws(tmp_path, monkeypatch):
-    """临时会话工作区 + 假 DB(仅本人会话)。"""
+    """临时会话工作区 + 假 DB(仅本人会话)。
+
+    会话→工作区的定位已收口到 `session_workspace.conversation_workspace_root`（文件伺服/
+    预览/报表归档共用一份），它走模块级 `execute_query`；这里同时桩掉旧 seam
+    （get_metadata_conn，`_resync` 仍在用）与新 seam，避免把同一事实写两处。
+    """
     monkeypatch.setattr("backend.common.config.ADH_WORKSPACES_DIR", str(tmp_path))
     monkeypatch.setattr(metadata_db, "get_metadata_conn",
                         lambda: _FakeConn({"session_key": SESSION_KEY, "workspace_id": 3}))
+    row = {"session_key": SESSION_KEY, "workspace_id": 3}
+
+    def _query(sql, params=None, fetchone=False):
+        return dict(row) if "adh_agent_sessions" in str(sql) else None
+
+    monkeypatch.setattr(sw, "execute_query", _query)
     root = sw.session_paths(tmp_path, SESSION_KEY, 3, 7, create=True)
     return root / "workspace"
 

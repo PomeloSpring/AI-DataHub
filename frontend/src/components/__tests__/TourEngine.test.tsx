@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import TourEngine from '../onboarding/TourEngine';
 import client from '@/api/client';
 import { GUIDE_ALL_KEY, guideKey } from '@/api/releaseNotes';
-import { TOUR } from '@/lib/onboarding/guides';
+import { TOUR, navTour } from '@/lib/onboarding/guides';
 import { useGuideStore } from '@/stores/guideStore';
 import { toast } from '@/lib/toast';
 
@@ -26,7 +26,7 @@ const RECT = {
 };
 
 const ALL_TARGETS = [
-  TOUR.homeOverview, TOUR.homeQuick, TOUR.headerReleaseNotes, TOUR.headerModuleSwitcher, TOUR.headerTheme,
+  TOUR.homeOverview, TOUR.homeFeed, TOUR.homeQuick, TOUR.headerReleaseNotes, TOUR.headerModuleSwitcher, TOUR.headerTheme,
 ];
 
 function mountFixture(targets: string[] = ALL_TARGETS) {
@@ -70,34 +70,34 @@ afterEach(() => {
 describe('步骤推进', () => {
   it('下一步/上一步按步序移动，高亮跟随锚点', async () => {
     renderEngine();
-    expect(await screen.findByText('数据概览')).toBeInTheDocument();
-    expect(await screen.findByText('第 1/5 步')).toBeInTheDocument();
+    expect(await screen.findByText('直接提问')).toBeInTheDocument();
+    expect(await screen.findByText('第 1/6 步')).toBeInTheDocument();
     // 高亮层要等 rAF tick 拿到 rect 才渲染，同步查会漏
     expect(await screen.findByTestId('tour-highlight')).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: '下一步' }));
-    expect(screen.getByText('快捷入口')).toBeInTheDocument();
-    expect(screen.getByText('第 2/5 步')).toBeInTheDocument();
+    expect(screen.getByText('最新资讯')).toBeInTheDocument();
+    expect(screen.getByText('第 2/6 步')).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: '上一步' }));
-    expect(screen.getByText('第 1/5 步')).toBeInTheDocument();
+    expect(screen.getByText('第 1/6 步')).toBeInTheDocument();
   });
 
   it('键盘 Enter 前进、← 回退', async () => {
     renderEngine();
-    await screen.findByText('数据概览');
+    await screen.findByText('直接提问');
     fireEvent.keyDown(window, { key: 'Enter' });
-    expect(await screen.findByText('第 2/5 步')).toBeInTheDocument();
+    expect(await screen.findByText('第 2/6 步')).toBeInTheDocument();
     fireEvent.keyDown(window, { key: 'ArrowLeft' });
-    expect(await screen.findByText('第 1/5 步')).toBeInTheDocument();
+    expect(await screen.findByText('第 1/6 步')).toBeInTheDocument();
   });
 });
 
 describe('落库口径', () => {
   it('走完最后一步点完成 → guide:<id>=completed', async () => {
     renderEngine();
-    await screen.findByText('数据概览');
-    for (let i = 0; i < 4; i++) {
+    await screen.findByText('直接提问');
+    for (let i = 0; i < 5; i++) {
       await userEvent.click(screen.getByRole('button', { name: '下一步' }));
     }
     await userEvent.click(await screen.findByRole('button', { name: '完成' }));
@@ -107,21 +107,21 @@ describe('落库口径', () => {
 
   it('「跳过本引导」按钮写 skipped 且只落一次库', async () => {
     renderEngine();
-    await screen.findByText('数据概览');
+    await screen.findByText('直接提问');
     await userEvent.click(screen.getByRole('button', { name: '跳过本引导' }));
     expect(putCalls()).toEqual([{ keys: [guideKey('home')], status: 'skipped' }]);
   });
 
   it('Esc 等价于跳过本引导', async () => {
     renderEngine();
-    await screen.findByText('数据概览');
+    await screen.findByText('直接提问');
     fireEvent.keyDown(window, { key: 'Escape' });
     await waitFor(() => expect(putCalls()).toEqual([{ keys: [guideKey('home')], status: 'skipped' }]));
   });
 
   it('「不再自动弹出」写全局静音 guide:all 并退出', async () => {
     renderEngine();
-    await screen.findByText('数据概览');
+    await screen.findByText('直接提问');
     await userEvent.click(screen.getByRole('button', { name: '不再自动弹出' }));
     expect(putCalls()).toEqual([{ keys: [GUIDE_ALL_KEY], status: 'skipped' }]);
     expect(useGuideStore.getState().activeGuide).toBeNull();
@@ -129,19 +129,19 @@ describe('落库口径', () => {
 
   it('「跳过这一步」只推进，不落任何状态', async () => {
     renderEngine();
-    await screen.findByText('数据概览');
+    await screen.findByText('直接提问');
     await userEvent.click(screen.getByRole('button', { name: '跳过这一步' }));
-    expect(screen.getByText('第 2/5 步')).toBeInTheDocument();
+    expect(screen.getByText('第 2/6 步')).toBeInTheDocument();
     expect(vi.mocked(client.put)).not.toHaveBeenCalled();
   });
 
   it('写失败时不退出引导（不假装已跳过）', async () => {
     vi.mocked(client.put).mockRejectedValue({ response: { data: { detail: '登录状态已失效' } } });
     renderEngine();
-    await screen.findByText('数据概览');
+    await screen.findByText('直接提问');
     await userEvent.click(screen.getByRole('button', { name: '跳过本引导' }));
     expect(vi.mocked(toast.error)).toHaveBeenCalledWith(expect.stringContaining('登录状态已失效'), expect.anything());
-    expect(screen.getByText('数据概览')).toBeInTheDocument();
+    expect(screen.getByText('直接提问')).toBeInTheDocument();
     expect(useGuideStore.getState().activeGuide).toBe('home');
   });
 });
@@ -150,21 +150,31 @@ describe('目标缺失不静默', () => {
   it('锚点找不到时显式写明并自动前进', async () => {
     mountFixture(ALL_TARGETS.filter(t => t !== TOUR.homeOverview));
     renderEngine();
-    expect(await screen.findByText(/未找到「数据概览」入口/, undefined, { timeout: 3000 })).toBeInTheDocument();
+    expect(await screen.findByText(/未找到「直接提问」入口/, undefined, { timeout: 3000 })).toBeInTheDocument();
     // 提示驻留后自动进到下一步(而不是无声跳走)
-    expect(await screen.findByText('快捷入口', undefined, { timeout: 3000 })).toBeInTheDocument();
+    expect(await screen.findByText('最新资讯', undefined, { timeout: 3000 })).toBeInTheDocument();
   });
 
   it('最后一步缺失时中断且不写 completed', async () => {
     mountFixture(ALL_TARGETS.filter(t => t !== TOUR.headerTheme));
     renderEngine();
-    await screen.findByText('数据概览');
-    for (let i = 0; i < 4; i++) {
+    await screen.findByText('直接提问');
+    for (let i = 0; i < 5; i++) {
       await userEvent.click(screen.getByRole('button', { name: '下一步' }));
     }
     expect(await screen.findByText(/未找到「主题风格」入口/, undefined, { timeout: 3000 })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '完成' }));
     expect(vi.mocked(toast.warning)).toHaveBeenCalledWith(expect.stringContaining('本次引导未走完'));
     expect(putCalls().some(c => c.status === 'completed')).toBe(false);
+  });
+
+  it('optional 步骤的锚点被有意收起时静默前进，不报「未找到入口」', async () => {
+    // 只有一个工作空间时侧栏不挂切换下拉（无项可切），这一步属条件隐藏而不是页面异常：
+    //   报「页面变化或窗口过小」会把有意的设计当成故障，误导用户与排查。
+    mountFixture([navTour('ws', 'dashboards')]);
+    render(<MemoryRouter initialEntries={['/ws/7/chat']}><TourEngine guideId="workspace" /></MemoryRouter>);
+    expect(await screen.findByText('数据看板', undefined, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.queryByText(/未找到/)).not.toBeInTheDocument();
+    expect(screen.queryByText('工作空间切换')).not.toBeInTheDocument();
   });
 });
