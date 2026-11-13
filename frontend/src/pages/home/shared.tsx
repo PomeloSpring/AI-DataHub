@@ -50,10 +50,31 @@ export function kindHint(a: Pick<ContentArticle, 'kind' | 'kind_label'>) {
 }
 
 /**
- * 栏目徽章 + 封面。主色是**业务数据**（`adh_content_categories.color`，管理员在
- * 「栏目与标签」页可改），不是前端硬编码的样式常量，所以直接内联使用；
- * 其余色彩一律走主题变量（与 ui-vis-library-style 一致）。
+ * 文章 → 栏目对象（徽章文案、封面主色/图标都从这里取）。
+ *
+ * 两级口径，都是接口数据，任何一级都不落回裸 id（ui-resource-display §1）：
+ * 1. 按 `category_id` 命中 `/content/categories` 清单 —— 这是栏目名的权威来源；
+ * 2. 命中不到（清单还没加载完、栏目被停用/删除）时用服务端随文章一并下发的
+ *    `category_label/icon/color`（清单 SQL JOIN `adh_content_categories` 出来的同一份值）。
+ * 两级都拿不到才交给 `CategoryBadge` 显示「栏目未知」。
+ *
+ * 抽成一处的原因是历史缺陷：资讯卡曾把**已解析出的栏目名**再喂给按 key/id 查的
+ * `catOf`（`catOf(catLabel(a))`），永远查不中 → 首页每张卡都显示「栏目未知」。
+ * 消费点只认这一个函数，不要再自己拼解析链。
  */
+export function categoryOfArticle(
+  a: Pick<ContentArticle, 'category_id' | 'category_label' | 'category_icon' | 'category_color'>,
+  categories: ContentCategory[],
+): ContentCategory | undefined {
+  const hit = categories.find(c => c.id === a.category_id || c.key === a.category_id);
+  if (hit) return hit;
+  if (!a.category_label) return undefined;
+  return {
+    id: a.category_id, key: '', label: a.category_label, description: '',
+    icon: a.category_icon, color: a.category_color, sort: 0, is_active: 1,
+  };
+}
+
 /**
  * 期次标记（“第 N 期·2026-10”）：首页资讯卡与阅读页共用一份画法。
  *
@@ -76,6 +97,12 @@ export function ReleaseChip({ article }: { article: Pick<ContentArticle, 'releas
   );
 }
 
+/**
+ * 栏目徽章 + 封面。主色是**业务数据**（`adh_content_categories.color`，管理员在
+ * 「栏目与标签」页可改），不是前端硬编码的样式常量，所以直接内联使用；
+ * 其余色彩一律走主题变量（与 ui-vis-library-style 一致）。
+ * 入参一律由 `categoryOfArticle` 解析得出，消费点不要自己按 label/id 拼查找。
+ */
 export function CategoryBadge({ category, withIcon = true }: { category?: ContentCategory; withIcon?: boolean }) {
   if (!category) {
     // 栏目被删/未加载完时不得回退成裸 id 或空串（ui-resource-display §1）

@@ -61,6 +61,18 @@ async function doRefreshToken(): Promise<string | null> {
   }
 }
 
+// 401 且刷新失败时回登录页——但若此刻已在 /login，绝不能再 location.href='/login'：
+// 那会触发整页重载，登录页重新挂载又发出同一个 401 请求（fetchBrand / 陈旧 token 的
+// refreshUser），刷新仍失败再跳 /login —— 形成无限重载循环（历史缺陷）。
+// 已在登录页时只清凭据、把错误原样抛回（调用方自行提示），不重载。
+function toLoginIfNotAlready(): void {
+  localStorage.removeItem('token');
+  localStorage.removeItem('refresh_token');
+  if (window.location.pathname !== '/login') {
+    window.location.href = '/login';
+  }
+}
+
 // ── Request interceptor: attach token ────────────────────────────
 client.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
@@ -79,9 +91,7 @@ client.interceptors.response.use(
 
       // 刷新请求本身 401 时不再重试，直接跳登录
       if (originalRequest.url?.includes('/auth/refresh')) {
-        localStorage.removeItem('token');
-        localStorage.removeItem('refresh_token');
-        window.location.href = '/login';
+        toLoginIfNotAlready();
         return Promise.reject(err);
       }
 
@@ -106,9 +116,7 @@ client.interceptors.response.use(
       }
 
       // Refresh failed — redirect to login
-      localStorage.removeItem('token');
-      localStorage.removeItem('refresh_token');
-      window.location.href = '/login';
+      toLoginIfNotAlready();
     }
 
     return Promise.reject(err);

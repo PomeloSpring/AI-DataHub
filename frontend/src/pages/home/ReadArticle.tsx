@@ -21,7 +21,7 @@ import { contentApi, contentError, type ContentArticle, type ReleaseItem } from 
 import { useTaxonomy } from '@/pages/content/shared';
 import ArticleFiles from '@/pages/content/ArticleFiles';
 import { ErrorBanner } from '@/pages/content/shared';
-import { CategoryBadge, relTime, stashQuestion, useReadState, viewCount } from './shared';
+import { CategoryBadge, categoryOfArticle, relTime, stashQuestion, useReadState, viewCount } from './shared';
 
 /**
  * 文章阅读页 `/read/:slug` —— 首页资讯区的落点（面向全体登录读者，不是编排预览）。
@@ -121,7 +121,8 @@ export default function ReadArticle() {
     navigate(wsId ? `/ws/${wsId}/chat` : '/workspace');
   };
 
-  const cat = categories.find(c => c.key === (article?.category_label ?? '') || c.label === article?.category_label);
+  // 栏目与首页资讯卡走同一解析口（按 category_id 命中清单，命中不到用文章自带的业务名兜底）
+  const cat = article ? categoryOfArticle(article, categories) : undefined;
   // 正文出现效果（个人偏好面，不看板上挂载）：默认档 reveal=none → 下面一个 class 都不加。
   // HTML 版式只作用外层容器（不往正文里注 <style>/animation，sanitize 白名单不因此动一格）。
   const { motion, cssVars } = useMotion();

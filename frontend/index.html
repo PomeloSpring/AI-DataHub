@@ -7,6 +7,16 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AI-DataHub - 数据分析平台</title>
+    <!-- 刷新消闪：内联脚本在 HTML 解析时就同步把标题顶成上次配置的品牌名，
+         早于整个 bundle 加载（main.tsx 顶层要等模块图解析完才跑，那段时间会先闪默认名）。
+         键与 frontend/src/lib/brand.ts 的 BRAND_TITLE_STORAGE_KEY 同值（有护栏用例把门）；
+         无缓存时不动，保持上面的静态默认标题。 -->
+    <script>
+      try {
+        var t = localStorage.getItem('chatbi-brand-title');
+        if (t) document.title = t;
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

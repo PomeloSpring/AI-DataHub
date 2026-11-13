@@ -3,7 +3,9 @@ import { ArrowRight, Flame, Layers, Search, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { contentApi, contentError, type ContentArticle, type ContentCategory } from '@/api/content';
-import { CategoryBadge, ReadMeta, ReleaseChip, kindHint, useReadState, ABOUT_CATEGORY } from './shared';
+import {
+  CategoryBadge, ReadMeta, ReleaseChip, categoryOfArticle, kindHint, useReadState, ABOUT_CATEGORY,
+} from './shared';
 
 type Sort = 'latest' | 'hot' | 'rec';
 const SORTS: Array<{ key: Sort; label: string }> = [
@@ -69,7 +71,10 @@ export default function NewsFeed({
   const catOf = useCallback(
     (keyOrId: number | string) => categories.find(c => c.key === keyOrId || c.id === keyOrId),
     [categories]);
-  const catLabel = useCallback((a: ContentArticle) => catOf(a.category_id)?.label || a.category_label || '', [catOf]);
+  // 卡片徽章/封面取色走文章 → 栏目的唯一解析口（按 category_id 命中，清单没有时用服务端
+  // 随文章下发的 label 兜底）。历史缺陷：这里曾写成 catOf(catLabel(a))，把栏目名当 key/id 查，
+  // 永远查不中 → 每张卡都显示「栏目未知」。
+  const catOfArticle = useCallback((a: ContentArticle) => categoryOfArticle(a, categories), [categories]);
 
   const filteredHard = !!(category || tag || q);
   const featured = useMemo(() => {
@@ -197,13 +202,13 @@ export default function NewsFeed({
               <span
                 aria-hidden
                 className="hidden w-[190px] flex-none items-center justify-center rounded-xl text-3xl text-white sm:flex"
-                style={{ background: `linear-gradient(135deg, ${catOf(catLabel(featured))?.color || 'hsl(var(--primary))'}, ${catOf(catLabel(featured))?.color || 'hsl(var(--primary))'}99)` }}
+                style={{ background: `linear-gradient(135deg, ${catOfArticle(featured)?.color || 'hsl(var(--primary))'}, ${catOfArticle(featured)?.color || 'hsl(var(--primary))'}99)` }}
               >
-                {catOf(catLabel(featured))?.icon || '📄'}
+                {catOfArticle(featured)?.icon || '📄'}
               </span>
               <span className="flex min-w-0 flex-1 flex-col gap-2">
                 <span className="flex flex-wrap items-center gap-1.5">
-                  <CategoryBadge category={catOf(catLabel(featured))} />
+                  <CategoryBadge category={catOfArticle(featured)} />
                   {featured.pinned ? (
                     <span className="inline-flex items-center gap-1 rounded-md bg-primary/12 px-1.5 py-0.5 text-[11px] font-medium text-primary">
                       <Flame className="h-3 w-3" />置顶
@@ -240,7 +245,7 @@ export default function NewsFeed({
                 className="group flex flex-col rounded-xl border bg-card p-3.5 text-left transition-all hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-md"
               >
                 <span className="flex flex-wrap items-center gap-1.5">
-                  <CategoryBadge category={catOf(catLabel(a))} withIcon={false} />
+                  <CategoryBadge category={catOfArticle(a)} withIcon={false} />
                   {kindHint(a) && (
                     <span className="rounded-md border px-1.5 py-0.5 text-[11px] text-muted-foreground">
                       {kindHint(a)!.label}

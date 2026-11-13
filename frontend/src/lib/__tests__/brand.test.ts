@@ -11,9 +11,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  APP_TITLE_SUFFIX, DEFAULT_APP_NAME, DEFAULT_TAGLINE, applyDocumentBrand, brandAbbrev,
+  APP_TITLE_SUFFIX, BRAND_STORAGE_KEY, BRAND_TITLE_STORAGE_KEY, DEFAULT_APP_NAME, DEFAULT_TAGLINE, applyDocumentBrand, brandAbbrev,
   brandMarkDataUrl, brandMarkSvg, brandNameOf, buildAppTitle, markFontSize, markRadius,
-  setBrandSnapshot, taglineOf,
+  restoreBrandSnapshot, setBrandSnapshot, taglineOf,
 } from '../brand';
 
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -23,6 +23,9 @@ const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
 describe('标签标题口径唯一', () => {
   it('index.html 静态标题与运行时同文案（防首屏与加载后两个标题）', () => {
     expect(html).toContain(`<title>${buildAppTitle()}</title>`);
+  });
+  it('index.html 内联消闪脚本与 lib/brand.ts 同一缓存键（键不一致=改了不生效）', () => {
+    expect(html).toContain(`localStorage.getItem('${BRAND_TITLE_STORAGE_KEY}')`);
   });
   it('标题格式固定为「{应用名} - 数据分析平台」', () => {
     expect(buildAppTitle('某平台')).toBe(`某平台 - ${APP_TITLE_SUFFIX}`);
@@ -145,6 +148,49 @@ describe('applyDocumentBrand：标题与图标的唯一落地路径', () => {
     applyDocumentBrand();
     expect(link()).toBeTruthy();
     expect(link().getAttribute('href')).toMatch(/^data:image\/svg\+xml,/);
+  });
+});
+
+describe('品牌快照本地缓存：刷新时标题不再先闪默认名', () => {
+  const link = () => document.querySelector("link[rel~='icon']") as HTMLLinkElement;
+
+  beforeEach(() => {
+    document.head.innerHTML = '<link rel="icon" type="image/svg+xml" href="/favicon.svg" />';
+    document.title = '';
+    localStorage.clear();
+    vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+      getPropertyValue: () => '',
+    } as unknown as CSSStyleDeclaration);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('setBrandSnapshot 把品牌写入 localStorage（回访首屏可同步恢复）', () => {
+    setBrandSnapshot({ app_name: '数智平台', logo_url: '' });
+    expect(JSON.parse(localStorage.getItem(BRAND_STORAGE_KEY) || '{}').app_name).toBe('数智平台');
+  });
+  it('applyDocumentBrand 把完整标题同步落缓存（供 index.html 内联脚本模块加载前顶回）', () => {
+    setBrandSnapshot({ app_name: '数智平台', logo_url: '' });
+    expect(localStorage.getItem(BRAND_TITLE_STORAGE_KEY)).toBe('数智平台 - 数据分析平台');
+  });
+  it('restoreBrandSnapshot 在异步拉取前就把缓存名顶到标题（消除跳字）', () => {
+    localStorage.setItem(BRAND_STORAGE_KEY, JSON.stringify({ app_name: '数智平台', logo_url: '' }));
+    document.title = buildAppTitle(); // 模拟 index.html 默认标题先渲染
+    restoreBrandSnapshot();
+    expect(document.title).toBe('数智平台 - 数据分析平台');
+    expect(decodeURIComponent(link().getAttribute('href')!)).toContain('>数</text>');
+  });
+  it('无缓存时 restore 不动默认快照（下次 fetchBrand 仍会校正）', () => {
+    setBrandSnapshot({ app_name: DEFAULT_APP_NAME, logo_url: '' });
+    localStorage.clear();
+    document.title = buildAppTitle(); // 模拟 index.html 默认标题先渲染
+    restoreBrandSnapshot();
+    expect(document.title).toBe(buildAppTitle());
+  });
+  it('缓存损坏时 restore 不抛错、保留默认标题', () => {
+    localStorage.setItem(BRAND_STORAGE_KEY, '{坏掉的 JSON');
+    document.title = buildAppTitle();
+    expect(() => restoreBrandSnapshot()).not.toThrow();
+    expect(document.title).toBe(buildAppTitle());
   });
 });
 

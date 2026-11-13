@@ -164,9 +164,54 @@ function isSvgIcon(href: string): boolean {
 // 当前品牌快照：主题切换时要按新主题色重算标签图标，而 themeStore 不该反向依赖 brandStore
 let currentBrand: BrandLike = { ...DEFAULT_BRAND };
 
+/**
+ * 品牌快照的本地缓存键：刷新时浏览器标签标题的"闪一下"根因是——index.html 的静态标题先渲染，
+ * 配置名要等 /admin/brand 异步返回后才 applyDocumentBrand 覆盖。把上次拉到的品牌同步存一份，
+ * 供启动时恢复（favicon 靠它按主题重算）。
+ */
+export const BRAND_STORAGE_KEY = 'chatbi-brand';
+
+/**
+ * 标题的本地缓存键（存"已算好的完整标题字符串"，不是 app_name）：
+ * 光在 main.tsx 顶层 restoreBrandSnapshot 仍会闪——那段代码要等整个 bundle 的模块图
+ * 加载解析完才执行（dev 下数百 ms～秒级），期间浏览器一直显示 index.html 写死的默认标题。
+ * 唯一能早于模块加载落地标题的地方是 index.html 的内联脚本（HTML 一解析就同步跑），
+ * 它直接读这个键把 document.title 顶成上次配置的值，无需在 index.html 里重复拼后缀文案。
+ */
+export const BRAND_TITLE_STORAGE_KEY = 'chatbi-brand-title';
+
+function persistBrandSnapshot(): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(BRAND_STORAGE_KEY, JSON.stringify(currentBrand));
+  } catch {
+    // 隐私模式/配额写不进不影响功能：下次刷新退回异步校正即可
+  }
+}
+
+/**
+ * 应用启动时（渲染前）按本地缓存同步恢复品牌：让浏览器标签标题与图标在首屏就是上次配置的值，
+ * 消除"先闪默认名再切配置名"。缓存缺失/损坏时保持默认快照不动（后续 fetchBrand 仍会校正）。
+ */
+export function restoreBrandSnapshot(): void {
+  if (typeof localStorage === 'undefined') return;
+  const raw = localStorage.getItem(BRAND_STORAGE_KEY);
+  if (!raw) return;
+  try {
+    const parsed = JSON.parse(raw) as BrandLike;
+    if (parsed && typeof parsed === 'object') {
+      currentBrand = { ...currentBrand, ...parsed };
+      applyDocumentBrand();
+    }
+  } catch {
+    // 缓存损坏按无缓存处理，回落默认品牌
+  }
+}
+
 /** brandStore 拉到/保存品牌设置后调用：写入快照并刷新标签标题与图标 */
 export function setBrandSnapshot(brand: BrandLike): void {
   currentBrand = { ...currentBrand, ...brand };
+  persistBrandSnapshot();
   applyDocumentBrand();
 }
 
@@ -178,6 +223,14 @@ export function setBrandSnapshot(brand: BrandLike): void {
 export function applyDocumentBrand(): void {
   if (typeof document === 'undefined') return;
   document.title = buildAppTitle(currentBrand.app_name);
+  // 标题字符串同步落缓存，供 index.html 内联脚本在模块加载前顶回配置名（消除刷新闪默认名）
+  if (typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem(BRAND_TITLE_STORAGE_KEY, document.title);
+    } catch {
+      // 写不进不影响功能，下次刷新退回异步校正
+    }
+  }
   const link = ensureFaviconLink();
   const logo = (currentBrand.logo_url || '').trim();
   if (logo) {

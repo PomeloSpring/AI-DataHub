@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
@@ -198,7 +198,29 @@ describe('首页 = 工作台 + 资讯流', () => {
     });
     renderHome();
     expect(await screen.findByRole('button', { name: /临床应用（改名后）/ }, { timeout: 3000 })).toBeInTheDocument();
-    expect(screen.queryByText('技术白皮书')).not.toBeInTheDocument();
+    // 卡片徽章：清单里没有该栏目（停用/删除/未加载）时用服务端随文章下发的业务名兜底，
+    // 不得退化成「栏目未知」或裸 id —— 那个名字同样来自接口（清单 SQL JOIN 出来的）
+    const card = screen.getByRole('button', { name: /口内扫描精度怎么衡量/ });
+    expect(within(card).getByText('技术白皮书')).toBeInTheDocument();
+    expect(screen.queryByText('栏目未知')).not.toBeInTheDocument();
+  });
+
+  it('资讯卡徽章按 category_id 命中栏目清单（历史缺陷：把栏目名再当 key/id 二次查找→每张卡「栏目未知」）', async () => {
+    defaultRoutes({
+      '/content/articles': {
+        items: [article(), article({ slug: 'other-one', title: '另一篇内容', pinned: 0, featured: 0 })],
+        total: 2, page: 1, page_size: 5,
+      },
+    });
+    renderHome();
+    const featured = await screen.findByRole('button', { name: /口内扫描精度怎么衡量/ }, { timeout: 3000 });
+    const tile = screen.getByRole('button', { name: /另一篇内容/ });
+    // 精选大卡与平铺小卡走同一个解析口，两张都必须出栏目名
+    expect(within(featured).getByText('技术白皮书')).toBeInTheDocument();
+    expect(within(tile).getByText('技术白皮书')).toBeInTheDocument();
+    expect(screen.queryByText('栏目未知')).not.toBeInTheDocument();
+    // 封面主色取栏目 color，不是默认主题色兜底
+    expect(featured.querySelector('[aria-hidden]')?.getAttribute('style')).toContain('#0891b2');
   });
 
   it('资讯区按菜单码 home:feed 显隐，且无读者码时一个内容请求都不发', async () => {
