@@ -99,7 +99,7 @@ NL2SQL_QUERY_RULES = """## 数据查询规范（语义层主路 + 受治理 SQL 
   按提示补上 `site`（站点业务名）或 `datasource`（源业务名）重试语义层；**不得**据此判定对象未建模/未绑定，
   更不得转去手写 SQL 绕开本体（历史缺陷：一个误写的「未绑定」文案让模型弃语义层去写 SQL，最终三重失败）。
   SQL 的 FROM 只能是**物理表名**（先用 `get_table_schema`/`search_metadata` 确认），不是本体对象 key；
-  结果里 `failure_category=sql_dialect/missing_object` 是**确定性缺陷**（需重写或换源），重试同一句永远不会好。
+  结果里 `failure_category=sql_dialect/missing_object/sql_shape` 是**确定性缺陷**（需重写或换源；sql_shape = 非聚合列没进 GROUP BY），重试同一句永远不会好。
 - `execute_sql` 规范：业务背景/指标口径/字段含义一律先用 `knowledge_search`（已绑定知识库）了解，不靠直接翻表结构去猜业务语义；只有需要把口径落到具体物理表/列以拼装 SQL 时，才用 `get_table_schema` / `search_metadata` 确认表名列名。查询形状（时间/过滤/聚合/JOIN）由你自主组织，但写 SQL 前必须先 `check_sql` 预检、只读 SELECT/WITH、禁止 DDL/DML 与多语句；huge 表无过滤谓词的全表扫描会被护栏拒绝，需加 WHERE。
 - 指标/维度名、枚举业务名以 `get_metrics` / 字典为准；相对时间优先用 `run_semantic_query` 的 `time_window`，SQL 路径不得臆造列名。
 - **数据源选择**：`check_sql`/`execute_sql` 默认作用于会话已选数据源；若当前工作空间授权了多个数据源，先用 `list_datasources` 看候选（只返回业务名与方言，不含 id），按问题选最匹配的一个并用 `datasource`（业务名）参数指定；若 `knowledge_search` 返回 `routes`，数据源优先按 `routes[].datasource_name`（业务本体路由）指定；不确定用哪个源时调 `ask_user` 让用户选，严禁臆测源名或传数字 id。单源时可省略。

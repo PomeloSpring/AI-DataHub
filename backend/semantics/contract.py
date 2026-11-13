@@ -65,6 +65,14 @@ _CONNECTIVITY_MARKERS = ("2002", "2003", "1045", "access denied", "authenticatio
                          "connection", "connect ", "timed out", "timeout",
                          "unreachable", "reset by peer", "broken pipe",
                          "unknownhost", "no route to host", "name or service not known")
+# 聚合形状非法：SELECT 里的非聚合列既没进 GROUP BY 也没套聚合函数（Presto/SLS 与
+# MySQL 严格模式的原始文本）。**单列一类**而不混进 `sql_dialect`：它不是方言问题，
+# 换源/改标识符引号都不会好，处置方向是改聚合声明（历史缺陷 2026-11-13：数据集
+# `agg=NONE` 预聚合度量与维度同选时编出非法 SQL，因本类无判据而退成“稍后重试”）。
+# 不用裸 `1140` 做判据：数字会撞上无关文本，而 MySQL 那句必含
+# “not in GROUP BY clause”。
+_GROUP_BY_MARKERS = ("must be an aggregate expression", "not in group by clause",
+                     "column must be in the group by", "only_full_group_by")
 
 
 def classify_exec_failure(reason: str, db_type: str = "") -> tuple[str, str]:
@@ -72,8 +80,9 @@ def classify_exec_failure(reason: str, db_type: str = "") -> tuple[str, str]:
 
     对外文案只说类别与下一步，不含 SQL、表名、主机、账号（护栏 §7）；
     认不出来时回 `EXEC_FAIL_HINT`（归类失败不得编造原因）。
-    优先级：连接/凭据类 → 表/列不存在类 → 方言/语法类（后两者文本常共现，
-    先判“不存在”能避免把缺表归成语法错）。
+    优先级：连接/凭据类 → 表/列不存在类 → 聚合形状类 → 方言/语法类（后几类文本常共现，
+    先判“不存在”能避免把缺表归成语法错；聚合形状排在方言之前，否则 Presto 那句
+    会被 `syntax error` 类标记误报成“方言不匹配”）。
     """
     text = str(reason or "").lower()
     src = f"（目标源类型：{db_type}）" if db_type else ""
@@ -85,6 +94,11 @@ def classify_exec_failure(reason: str, db_type: str = "") -> tuple[str, str]:
             "表名/列名请先用 get_table_schema 或 search_metadata 确认（不要把语义对象名当表名用），"
             "并核对本次选定的数据源/站点是否就是数据所在的那个源。"
             "不得向用户展示物理表名/列名，也不得据此说“该站点无数据”。")
+    if any(m in text for m in _GROUP_BY_MARKERS):
+        return "sql_shape", (
+            f"查询的聚合形状被目标数据源拒绝{src}：SELECT 里的非聚合列既没进 GROUP BY，也没套聚合函数。"
+            "这是确定性失败，重试不会好：请核对度量的聚合声明（正文已预聚合的列不要再按维度二次聚合，"
+            "直接取列绘图），或把分组补进正文的聚合口径。不得据此向用户说“数据源不可用”。")
     if any(m in text for m in _SQL_SHAPE_MARKERS):
         return "sql_dialect", (
             f"SQL 与目标数据源的方言不匹配{src}，被服务端拒绝。这是确定性失败，重试不会好："

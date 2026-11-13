@@ -41,6 +41,15 @@ _FILTER_SYMBOLS = {"eq": "=", "ne": "<>", "gt": ">", "gte": ">=", "lt": "<", "lt
 _FILTER_OPS = set(_FILTER_SYMBOLS) | {"in", "nin", "like", "between", "is_null", "is_not_null"}
 _AGG_FNS = {"SUM", "COUNT", "COUNT_DISTINCT", "MAX", "MIN", "AVG", "NONE"}
 
+# 聚合函数调用：用于判定度量表达式**自己是否已经聚合**。`agg=NONE` 的预聚合列与跨列派生
+# `expr` 都是裸列/裸表达式，有分组键时它们必须并入 GROUP BY（SQL 标准要求），否则
+# Presto/SLS 报 `must be an aggregate expression or appear in GROUP BY clause`、
+# MySQL 严格模式报 1140（only_full_group_by）。
+_AGG_CALL_RE = re.compile(
+    r"\b(SUM|COUNT|COUNT_DISTINCT|MAX|MIN|AVG|GROUP_CONCAT|ARRAY_AGG|APPROX_DISTINCT"
+    r"|APPROX_PERCENTILE|STDDEV|STDDEV_POP|STDDEV_SAMP|VAR_POP|VAR_SAMP)\s*\(",
+    re.IGNORECASE)
+
 # 时间粒度模板（与 planner 同一张表：MySQL 族 DATE_FORMAT / PG 族 to_char）
 _GRAIN_MYSQL = {"second": "%Y-%m-%d %H:%i:%s", "minute": "%Y-%m-%d %H:%i",
                 "hour": "%Y-%m-%d %H", "day": "%Y-%m-%d", "week": "%x-%v",
@@ -203,6 +212,11 @@ def _clamp_limit(raw: Any) -> int:
     return max(1, min(n, MAX_LIMIT))
 
 
+def _is_aggregate_expr(expr: Any) -> bool:
+    """表达式是否自带聚合函数（决定它能否留在“有 GROUP BY 却不分组”的 SELECT 位置）。"""
+    return bool(_AGG_CALL_RE.search(str(expr or "")))
+
+
 def _flat_detail_sql(rendered: str, limit: Any) -> str:
     """明细形状且不套子查询时的正文 + 行数上限。
 
@@ -317,6 +331,19 @@ def compile_dataset(
             out.resolution_sources[str(m)] = "dataset_field"
         if select_items:
             where = _where_from(mdl, filters, out)
+            # 有分组键时，非聚合的投影列必须一起进 GROUP BY。度量的两种形态返回的是裸表达式：
+            # `agg=NONE`（正文已预聚合，图表直接取列绘图）与跨列派生 `expr`。旧写法只把维度
+            # 放进 group_by，于是编出 `SELECT dim, 裸列 … GROUP BY dim` —— 在 Presto/SLS 与
+            # MySQL 严格模式下都是非法 SQL（2026-11-13 现网：数据集预览页默认全选维度+度量
+            # 必失败，`'"checks"' must be an aggregate expression or appear in GROUP BY clause`，
+            # 还被通用文案掩成“连接/凭据不可用，稍后重试”）。
+            # 并入分组不造数：正文已按同一粒度聚合时行数与取值完全不变；正文粒度更细时如实
+            # 出行，不静默套一层 SUM/MAX 凑个看起来对的聚合（no-silent-degradation）。
+            # 无分组键（只要度量、不要维度）时不进这里 —— 裸列投影本就合法，行为零变化。
+            if group_by:
+                for _expr, _proj in select_items:
+                    if _expr not in group_by and not _is_aggregate_expr(_expr):
+                        group_by.append(_expr)
             order_by = _order_from(order, select_items, family, alias_of)
             # 别名必须始终包引号：业务名可能含 ()/% 等字符（如「层间转化率(%)」）
             parts = [f"SELECT {', '.join(f'{e} AS {sem_dialect.quote_alias(a, family)}' for e, a in select_items)}",
