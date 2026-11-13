@@ -91,6 +91,10 @@ def build_cascade_statements(workspace_id: int, owner_id: int,
                       (workspace_id,)))
     stmts.append(("DELETE FROM adh_agent_sessions WHERE workspace_id = %s", (workspace_id,)))
     stmts.append(("DELETE FROM adh_conversations WHERE workspace_id = %s", (workspace_id,)))
+    # 交付文档对象（整份报告/图表数据）随会话同片清除：它们按属主可取回，
+    # 只删会话行会把正文留成没人能定位的孤儿（隐私与容量双重缺口）。
+    if "adh_render_documents" in available_tables:
+        stmts.append(("DELETE FROM adh_render_documents WHERE workspace_id = %s", (workspace_id,)))
 
     dash_ids = parent_ids.get("dashboards") or []
     if dash_ids:

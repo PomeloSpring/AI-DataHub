@@ -374,6 +374,37 @@ class TestListVisibility:
         assert len(svc.list_datasets(_identity(role="admin"))) == 12
         assert len(hits_a) == len(hits_b) == 1, f"1 行 {hits_a} vs 12 行 {hits_b}"
 
+    def test_list_es_flag_does_not_query_per_row(self, catalog, granted, monkeypatch):
+        """is_es 判定不得逐行回库：必须复用本次请求已加载的数据源目录。
+
+        上一用例只统计走 `svc.execute_query` 的往返，而 `execution_is_es` 旧写法走
+        `datasource_db.datasource_db_type` 的独立连接路径 —— N+1 正是从这里漏掉的
+        （2026-11-13 实测：82 行清单 82 次远端往返，GET /api/datasets/ 全程 3.2s）。
+        """
+        from backend.common.db import datasource_db
+
+        calls: list = []
+        monkeypatch.setattr(datasource_db, "datasource_db_type",
+                            lambda ds_id: calls.append(ds_id) or "mysql")
+        self._stub(monkeypatch, [_ds(id=i, datasource_id=(11 if i % 2 else 13))
+                                 for i in range(1, 13)])
+        items = svc.list_datasets(_identity(role="admin"))
+        assert len(items) == 12
+        assert calls == [], f"is_es 判定逐行回库 {len(calls)} 次"
+        assert all(it["is_es"] is False for it in items)
+
+    def test_list_es_flag_reads_catalog_db_type(self, catalog, granted, monkeypatch):
+        """ES 型数据源上的数据集：清单行 `is_es=True` 且 `channel=es` 命中（判据来自目录）。"""
+        es_catalog = dict(CATALOG)
+        es_catalog["prd-es"] = {"id": 14, "name": "prd-es", "db_type": "es", "site_code": "cn"}
+        monkeypatch.setattr(svc, "_load_datasource_catalog", lambda: dict(es_catalog))
+        granted["ids"] = [11, 12, 13, 14]
+        self._stub(monkeypatch, [_ds(id=1, datasource_id=14), _ds(id=2, datasource_id=11)])
+
+        items = svc.list_datasets(_identity(role="admin"))
+        assert {d["id"]: d["is_es"] for d in items} == {1: True, 2: False}
+        assert [d["id"] for d in svc.list_datasets(_identity(role="admin"), channel="es")] == [1]
+
 
 # ── 5. 保存侧校验与告警 ─────────────────────────────────────────────────
 

@@ -8,6 +8,8 @@ import ArtifactCard from './ArtifactCard';
 import SqlCard from './SqlCard';
 import GraphCard from './GraphCard';
 import DesignCard from './DesignCard';
+import ReportCard from './chat/ReportCard';
+import ChartRefCard from './chat/ChartRefCard';
 import StageCard from './chat/StageCard';
 import { splitChartBlocks } from '../lib/chartBlocks';
 import { useMotion } from '../hooks/useMotion';
@@ -24,6 +26,11 @@ interface Props {
   onDrill?: (question: string) => void;
   /** 设计卡片「返回对话继续完善」时回传追问文本(不传则按钮不可用)。 */
   onDesignContinue?: (text: string) => void;
+  /**
+   * 交付文档的「存为报告草稿」入口（与消息操作行同一个流程：同一函数 + 同一 reportable 判定，
+   * 不另写一套归档逻辑）。不传就是本轮服务端未判为可报告 —— 卡片里不能给一个调不通的按钮。
+   */
+  onSaveReport?: { label?: string; busy?: boolean; onSave: () => void };
   /**
    * 回答内容卡片化: 把 markdown 正文按标题切成阶段性卡片(卡头可滑动展开/收起,
    * 逐段滑入)。chat 回答输出用;报告/AS-BOT 等默认不开。
@@ -62,8 +69,8 @@ function RevealBlock({ show, className, style, children }: { show: boolean; clas
  * ```design 块在该位置内嵌仪表盘设计卡片(LLM 需要用户打开面板时输出)。
  * 解析失败降级为代码块。图表/卡片内嵌于 content,天然随消息持久化与回放。
  */
-export default function MarkdownWithCharts({ text, className, conversationId, onDrill, onDesignContinue, sections = false, streaming = false, reveal = false }: Props) {
-  const segments = useMemo(() => splitChartBlocks(text || ''), [text]);
+export default function MarkdownWithCharts({ text, className, conversationId, onDrill, onDesignContinue, onSaveReport, sections = false, streaming = false, reveal = false }: Props) {
+  const segments = useMemo(() => splitChartBlocks(text || '', streaming), [text, streaming]);
   // 逐段滑入的节奏（时长/错峰/上限）取自动效解析口，不再写死 90ms/450ms
   const { motion } = useMotion();
   const enter = enterClass(motion.enter);
@@ -142,6 +149,10 @@ export default function MarkdownWithCharts({ text, className, conversationId, on
             </div>
           );
         }
+        if (seg.kind === 'chart-ref') {
+          // 渲染机（render_chart）产出的图表：数据按引用取回，不在消息里存快照
+          return <ChartRefCard key={seg.chartRef} chartRef={seg.chartRef} title={seg.title} onDrill={onDrill} />;
+        }
         if (seg.kind === 'mermaid') {
           return <RevealBlock key={i} show={!!revealCls} className={revealCls} style={blockStyle()}><MermaidBlock code={seg.code} title={seg.title} /></RevealBlock>;
         }
@@ -167,6 +178,19 @@ export default function MarkdownWithCharts({ text, className, conversationId, on
         }
         if (seg.kind === 'design') {
           return <DesignCard key={i} designId={seg.designId} onContinue={onDesignContinue} />;
+        }
+        if (seg.kind === 'report') {
+          // 交付形态渲染机产出的文档：正文按 doc_id 取回落在此处，不在消息里存快照
+          // （html 走隔离 iframe，spec 走平台组件逐章渲染，分派在 ReportCard 里）
+          return <ReportCard key={seg.docId} docId={seg.docId} bodyKind={seg.bodyKind} title={seg.title} onDrill={onDrill} saveReport={onSaveReport} />;
+        }
+        if (seg.kind === 'report-pending') {
+          // 渲染机调用还在流式输出：给进度占位，不把半途 JSON 当代码块念给用户
+          return (
+            <div key={i} role="status" className="my-3 rounded-lg border bg-card px-3 py-3 text-xs text-muted-foreground">
+              正在组装交付文档…
+            </div>
+          );
         }
         // 解析失败:降级为代码块
         return (

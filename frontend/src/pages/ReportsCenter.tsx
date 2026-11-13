@@ -4,7 +4,8 @@
 // 归集口径: 同归集键(series_key, 服务端一处算)的多行是同一份报告的历史版本 ——
 //          任务按任务归集、「用最新数据重新生成」继承来源报告、内容型一条一份、其余按标题。
 // 卡片身份取原始报告(最早一版): 会话保存的报告重跑后仍是「会话保存」，可编辑/删除。
-// 删除: 内容型与分析生成可删(按归集键带走全部版本); 定时任务产出留给任务调度。
+// 删除分两个意图（不得共用一个“删除”）：卡片垃圾桶 = 删整份报告（含全部历史版本）；
+// 详情页「删除这一版」= 只删当前选中的那一版。定时任务产出留给任务调度。
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import {
@@ -335,17 +336,48 @@ export default function ReportsCenter() {
     }
   };
 
-  const removeReport = async (r: ReportSummary) => {
-    // 后端按归集键带走同一份报告的全部历史版本（重跑追加的版本不残留），文案先说清删几版
-    const versions = series.find(s => s.reports.some(x => x.id === r.id))?.reports.length || 1;
-    const suffix = versions > 1 ? `（含 ${versions} 个历史版本）` : '';
-    if (!window.confirm(`确定删除报告「${seriesName(r)}」${suffix}？删除后不可恢复。`)) return;
+  /** 删整份报告（卡片上的垃圾桶）：按归集键带走全部历史版本，确认框先说清删几版。 */
+  const removeSeries = async (s: Series) => {
+    const versions = s.reports.length;
+    const suffix = versions > 1 ? `（连同 ${versions} 个历史版本一起删除）` : '';
+    if (!window.confirm(`确定删除整份报告「${s.name}」${suffix}？删除后不可恢复。`)) return;
     try {
-      await deleteReport(r.id);
+      // 归集键同一组的 id 都能代删（服务端拿第一行的键反查整组），传最新一版即可
+      await deleteReport(s.reports[0].id, 'series');
       toast.success('报告已删除');
       // 删的是当前选中卡片时清空选中（整份报告已不在，不能只按 latest id 判）
-      if (activeKey && editableKey(r) === activeKey) { setActiveKey(''); setActiveId(0); setDetail(null); }
+      if (activeKey && activeKey === s.key) { setActiveKey(''); setActiveId(0); setDetail(null); }
       await reload();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || '删除失败，请重试');
+    }
+  };
+
+  /** 只删当前选中的这一版：同系列其余历史版本保留。
+   *
+   * 旧写法这里走的也是“按归集键删整组”：在版本下拉里选中 v3 点删除，v1/v2 连同卡片一起没了。
+   * 删一版与删整份是两个意图，所以页面上也列两条入口，不再让人猜垃圾桶到底删多少。
+   */
+  const removeVersion = async (r: ReportDetail) => {
+    const s = activeSeries;
+    if (!s || s.reports.length < 2) return;
+    const idx = s.reports.findIndex(x => x.id === r.id);
+    if (idx < 0) return;
+    const label = `v${s.reports.length - idx}（${formatDate(r.created_at)}）`;
+    const lines = [`确定删除报告「${s.name}」的 ${label} 这一版？`,
+                   `其余 ${s.reports.length - 1} 个历史版本保留，删除后不可恢复。`];
+    // 最早一版 = 原始报告（卡片身份那一版）：删它后卡片的来源与编辑入口会改按剩余最早版算，
+    // 后果必须在删之前说出来，不能让人事后发现“卡片变成不可编辑了”
+    if (idx === s.reports.length - 1) {
+      lines.push('这一版是最早的原始报告：删除后这张卡片的来源与编辑入口将改按剩余最早的一版计算。');
+    }
+    if (!window.confirm(lines.join('\n'))) return;
+    const next = s.reports.find(x => x.id !== r.id);   // 清单按时间倒序 → 剩余里最新的一版
+    try {
+      const out = await deleteReport(r.id, 'version');
+      toast.success(`已删除 ${label}，剩余 ${out?.remaining ?? s.reports.length - 1} 个版本`);
+      await reload();
+      if (next) setActiveId(next.id);
     } catch (e: any) {
       toast.error(e?.response?.data?.detail || '删除失败，请重试');
     }
@@ -515,9 +547,26 @@ export default function ReportsCenter() {
       onSelect: () => setPromoteOpen(true),
     });
     if (isDeletableReport(detail)) {
+      const versions = activeSeries?.reports.length ?? 1;
+      if (versions > 1) {
+        // 只删当前这一版：重跑追加的失败版/旧版可以单独清掉，不必连原始报告一起没
+        items.push({
+          key: 'delete-version', label: '删除这一版', icon: <Trash2 className="h-3.5 w-3.5" />,
+          danger: true, separatorBefore: true,
+          disabled: refresh.active,
+          title: refresh.active
+            ? '正在按最新数据重新生成，先停掉这一轮再删版本'
+            : `只删当前选中的这一版，同系列其余 ${versions - 1} 个历史版本保留`,
+          onSelect: () => void removeVersion(detail),
+        });
+      }
       items.push({
-        key: 'delete', label: '删除', icon: <Trash2 className="h-3.5 w-3.5" />,
-        danger: true, separatorBefore: true, onSelect: () => removeReport(detail),
+        key: 'delete',
+        label: versions > 1 ? `删除整份报告（含 ${versions} 个版本）` : '删除',
+        icon: <Trash2 className="h-3.5 w-3.5" />,
+        danger: true, separatorBefore: versions <= 1,
+        title: versions > 1 ? '连同这份报告的全部历史版本一起删除，不可恢复' : '删除这份报告，不可恢复',
+        onSelect: () => { if (activeSeries) void removeSeries(activeSeries); },
       });
     }
     return items;
@@ -601,8 +650,11 @@ export default function ReportsCenter() {
                     )}
                     {s.deletable && (
                       <Button variant="ghost" size="sm"
-                        className={`h-6 w-6 p-0 text-destructive ${s.editable ? '' : 'ml-auto'}`} title="删除报告"
-                        onClick={() => removeReport(latest)}>
+                        className={`h-6 w-6 p-0 text-destructive ${s.editable ? '' : 'ml-auto'}`}
+                        title={s.reports.length > 1
+                          ? `删除整份报告（含 ${s.reports.length} 个历史版本）；只想删某一版请进详情页用「删除这一版」`
+                          : '删除报告'}
+                        onClick={() => void removeSeries(s)}>
                         <Trash2 className="h-3 w-3" />
                       </Button>
                     )}

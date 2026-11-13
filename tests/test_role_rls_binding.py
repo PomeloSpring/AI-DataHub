@@ -8,7 +8,8 @@
   R4  无角色 / 无绑定 = 空限制(不施加任何 RLS 行/列限制);
   R5  workspace_id=0 的全局策略对实际工作空间同样生效;
   R6  :user_xxx 属性取值: 统一由角色属性供给(adh_rls_user_attributes 已退役, 残留数据不得被读取);
-  R7  PUT 绑定后 invalidate_access_cache() 生效(enforcer 访问缓存清空)。
+  R7  PUT 绑定后 invalidate_access_cache() 生效（enforcer 访问缓存清空）;
+  R8  DELETE 策略同批清角色绑定与列策略（不留孤儿行 = 角色页无残影）。
 
 全部用假 execute_query/execute_write / 假 cursor 注入, 不落真库。
 """
@@ -134,6 +135,7 @@ class _FakeCursor:
     def __init__(self, db):
         self.db = db
         self._rows: list = []
+        self.rowcount = 0
 
     def __enter__(self):
         return self
@@ -144,6 +146,27 @@ class _FakeCursor:
     def execute(self, sql, params=None):
         s = " ".join(sql.split())
         p = list(params or [])
+        # DELETE 分支：`delete_policy` 的删除链（列策略 → 角色绑定 → 策略本体）要能在内存里
+        # 真生效，否则“删了策略、角色页却还挂着残影”这类缺陷测不出来。
+        if s.startswith("DELETE FROM adh_rls_column_policies"):
+            self.rowcount = len(self.db["column_policies"].pop(p[0], []) or [])
+            return
+        if s.startswith("DELETE FROM adh_role_rls_policies"):
+            if "WHERE role_id" in s:
+                self.rowcount = len(self.db["bindings"].pop(p[0], set()) or set())
+            else:
+                n = 0
+                for bound in self.db["bindings"].values():
+                    if p[0] in bound:
+                        bound.discard(p[0])
+                        n += 1
+                self.rowcount = n
+            return
+        if s.startswith("DELETE FROM adh_rls_policies"):
+            before = len(self.db["policies"])
+            self.db["policies"] = [x for x in self.db["policies"] if x["id"] != p[0]]
+            self.rowcount = before - len(self.db["policies"])
+            return
         if "FROM adh_role_rls_policies" in s:
             # SELECT DISTINCT policy_id ... WHERE role_id IN (...)
             bound: set = set()
@@ -218,6 +241,28 @@ def exec_db(monkeypatch):
     monkeypatch.setattr(role_svc_mod.role_service, "get_user_effective_attributes",
                         lambda user_id, workspace_id: dict(db["role_attrs"]))
     return db
+
+
+def test_delete_policy_clears_role_bindings_too(exec_db):
+    """R8: 删策略必须同批清角色绑定（不留孤儿行）。
+
+    `/roles/{id}/rls-policies` 直接回 `adh_role_rls_policies.policy_id` 清单，绑定行不清
+    就是给角色页留一个“看不见也改不掉”的残影（真机探针 2026-11-13 实测到）。
+    """
+    assert 10 in exec_db["bindings"][2] and 10 in exec_db["column_policies"]
+
+    assert rls_svc_mod.rls_service.delete_policy(10) is True
+
+    assert exec_db["bindings"][2] == set()          # 角色绑定同批清掉
+    assert 10 not in exec_db["column_policies"]      # 列策略同批清掉
+    assert [p["id"] for p in exec_db["policies"]] == [11, 12]
+    # 执行层也真的不再施加该策略（取数口径与配置面同一事实源）
+    res = rls_svc_mod.rls_service.get_effective_policies(9, 5, 1, "orders")
+    assert res["policies_applied"] == [] and res["hidden_columns"] == []
+
+
+def test_delete_unknown_policy_returns_false(exec_db):
+    assert rls_svc_mod.rls_service.delete_policy(999999) is False
 
 
 def test_effective_policies_only_bound_apply(exec_db):

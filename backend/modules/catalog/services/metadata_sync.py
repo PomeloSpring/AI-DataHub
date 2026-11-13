@@ -22,6 +22,7 @@ from backend.common.config import (
     METADATA_DB_HOST, METADATA_DB_PORT, METADATA_DB_USER,
     METADATA_DB_PASSWORD, METADATA_DB_DATABASE,
 )
+from backend.semantics.dialect import is_es_db_type  # ES 型判定单一入口（与执行分派同源）
 
 
 # ---------------------------------------------------------------------------
@@ -415,11 +416,43 @@ def _sync_sls_metadata(ds_id: int, ds_config: dict) -> None:
         dst_conn.close()
 
 
+def _sync_es_metadata(ds_id: int) -> None:
+    """ES 型数据源的元数据同步：表 = 已登记索引别名，列 = `_field_caps` 字段并集。
+
+    口径与拍板一致（2026-11-13）：**取并集**、不逐索引展开、不统计索引数量。
+    表名写成别名是故意与行级策略/敏感字段登记的键空间对齐（同一个逻辑表在 ES 与
+    MySQL 两个通道用同一个名字治理）；`t-别名*` 模式写法在取数侧由 `es_alias_of` 归一。
+    字段清单直接复用 `datasource_service` 的 ES 分支，不开第二套口径。
+    """
+    from backend.modules.catalog.services.datasource_service import es_column_list, es_table_list
+
+    ds = {"id": ds_id}
+    tables = es_table_list(ds)
+    dst_conn = _get_doris_conn(METADATA_DB_DATABASE)
+    try:
+        _apply_sync(ds_id, dst_conn, tables, lambda t: es_column_list(ds, t))
+    finally:
+        dst_conn.close()
+
+
+def _sync_es_table_columns(ds_id: int, table_name: str) -> dict:
+    """单个别名的列元数据同步（与全量同步共用 `es_column_list`）。"""
+    from backend.modules.catalog.services.datasource_service import es_column_list
+
+    columns = es_column_list({"id": ds_id}, table_name)
+    dst_conn = _get_doris_conn(METADATA_DB_DATABASE)
+    try:
+        return _apply_columns_sync(ds_id, dst_conn, table_name, columns)
+    finally:
+        dst_conn.close()
+
+
 def sync_metadata(ds_id: int = 0) -> None:
     """Incremental sync: sync table info and column metadata.
 
     Dispatches by datasource type: mysql/doris → information_schema(pymysql);
-    sls → PG 协议 information_schema(psycopg2)。其余类型 fail-loud 拒绝。
+    sls → PG 协议 information_schema(psycopg2); es → 索引别名 + `_field_caps` 并集。
+    其余类型 fail-loud 报错（不给默认方言去探）。
     """
     if not ds_id:
         raise ValueError("datasource_id is required")
@@ -431,6 +464,8 @@ def sync_metadata(ds_id: int = 0) -> None:
         _sync_mysql_metadata(ds_id, ds_config)
     elif db_type == "sls":
         _sync_sls_metadata(ds_id, ds_config)
+    elif is_es_db_type(db_type):
+        _sync_es_metadata(ds_id)
     else:
         raise ValueError(f"暂不支持从 {db_type} 类型数据源同步元数据")
 
@@ -453,6 +488,8 @@ def sync_table_columns(ds_id: int, table_name: str) -> dict:
         return _sync_mysql_table_columns(ds_id, ds_config, table_name)
     elif db_type == "sls":
         return _sync_sls_table_columns(ds_id, ds_config, table_name)
+    elif is_es_db_type(db_type):
+        return _sync_es_table_columns(ds_id, table_name)
     else:
         raise ValueError(f"暂不支持从 {db_type} 类型数据源同步元数据")
 

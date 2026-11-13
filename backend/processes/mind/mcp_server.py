@@ -56,52 +56,50 @@ TOOLS = [
 ]
 
 
+# 返给外部 AI 客户端的行数上限（上下文护栏）。它不是“取数上限”：全量行数在
+# `row_count` 里如实回报，超出时另标 `truncated=true`，不得把前 N 行当全量（护栏 §5）。
+_MCP_ROW_CAP = 100
+
+
 async def handle_execute_sql(arguments: dict) -> str:
-    """Execute SQL directly against the datasource (治理入口，统一取数护栏 §1)。"""
-    from backend.core.query_executor import execute_query_with_permission
+    """Execute SQL directly against the datasource —— 与其他取数入口同一个出口（护栏 §1）。
+
+    旧写法在这里开了第三条壳：直调 `execute_query_with_permission` + `df.to_dict(records)`
+    + 手写 NaN/Decimal 清洗 + `rows[:100]` 截断。后果是重名列不走无损消歧（护栏 §8）、
+    SQL 形状出口的三态审计少一笔、而“只返 100 行”不标注就是把前 100 行当全量（错数不是降级）。
+    现在只保留 MCP 的响应壳：取数、序列化、错因分类与看板/数据集/Chat/Playground 同源。
+    行数上限仍留（保护外部 AI 客户端上下文），但必须显式标 `truncated`。
+    """
+    from backend.semantics.contract import ErrorCode, SemanticError
+    from backend.semantics.execute import PolicyContext, execute_sql
 
     sql = arguments.get("sql", "")
-    datasource_id = arguments.get("datasource_id", 0)
-
     if not sql:
         return json.dumps({"error": "sql is required"})
 
+    # 系统调用身份（user_id=0）：只套敏感基线，不做 RBAC/RLS（护栏 §2）。
+    # 严禁回退到裸 execute_query/get_connection 直连（护栏 §12）。
+    ctx = PolicyContext(user_id=0, username="mcp", workspace_id=0,
+                        datasource_id=int(arguments.get("datasource_id") or 0))
     try:
-        # 系统调用身份（user_id=0）：只套敏感基线，不做 RBAC/RLS（护栏 §2）。
-        # 严禁回退到裸 execute_query/get_connection 直连（护栏 §12）。
-        df, elapsed_ms, row_count = execute_query_with_permission(
-            sql, datasource_id, "sql", {"user_id": 0, "username": "mcp"}, 0)
-        columns = list(df.columns) if not df.empty else []
-        rows = df.to_dict(orient="records") if not df.empty else []
+        result = execute_sql(sql, ctx)
+    except SemanticError as e:
+        # FORBIDDEN = 治理拒绝（可操作提示，回显给 MCP 客户端）；
+        # EXEC_FAILED 的 message 已由出口按错因分类且不物理信息（护栏 §7）。
+        if e.code is not ErrorCode.FORBIDDEN:
+            logger.error("[mcp] execute_sql failed: %s", e.message)
+        return json.dumps({"error": e.message}, ensure_ascii=False)
 
-        # Sanitize for JSON
-        import math
-        from decimal import Decimal
-        for row in rows:
-            for k, v in row.items():
-                if hasattr(v, "isoformat"):
-                    row[k] = v.isoformat()
-                elif isinstance(v, bytes):
-                    row[k] = v.decode("utf-8", errors="replace")
-                elif isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-                    row[k] = None
-                elif isinstance(v, Decimal):
-                    row[k] = float(v)
-
-        return json.dumps({
-            "columns": columns,
-            "rows": rows[:100],  # Limit for MCP response
-            "row_count": row_count,
-            "elapsed_ms": elapsed_ms,
-        }, ensure_ascii=False, default=str)
-
-    except PermissionError as e:
-        # 治理拒绝（安全校验/权限）是可操作提示，回显给 MCP 客户端。
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-    except Exception:
-        # 原始报错可能含主机/账号等物理信息，仅进服务端日志（护栏 §7）。
-        logger.exception("execute_sql failed")
-        return json.dumps({"error": "SQL 执行失败，请联系管理员查看服务端日志"}, ensure_ascii=False)
+    names = [c.name for c in result.columns]
+    rows = [dict(zip(names, r)) for r in result.rows]
+    cap = _MCP_ROW_CAP
+    return json.dumps({
+        "columns": names,
+        "rows": rows[:cap],
+        "row_count": int(result.row_count),
+        "truncated": len(rows) > cap,
+        "elapsed_ms": result.elapsed_ms,
+    }, ensure_ascii=False, default=str)
 
 
 # ── MCP JSON-RPC Handler ─────────────────────────────────────────────

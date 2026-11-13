@@ -9,11 +9,14 @@ import { EmptyState, LoadingRow } from './shared';
  * 不写死 `/content` → 我的草稿，是因为审核人可能只有 article:review：
  * 固定跳转会把他带进一个 403 空壳页（"点进去只剩空布局"）。这里按菜单登记键
  * 反查，与侧栏用的是同一份权限清单，不另造第二套判断。
+ *
+ * 「审核发布」已并入「内容管理」（2026-11-13）：菜单反查会把 content:manage 同时
+ * 发给只持 article:review 的角色（归属反查，见 backend/modules/auth/api/roles.py），
+ * 所以审核人落点仍是内容管理，不会空转。
  */
 const ORDER = [
   { menu: 'content:drafts', path: '/content/drafts' },
   { menu: 'content:manage', path: '/content/manage' },
-  { menu: 'content:review', path: '/content/review' },
   { menu: 'content:taxonomy', path: '/content/taxonomy' },
   { menu: 'content:kb-docs', path: '/content/kb-docs' },
 ];

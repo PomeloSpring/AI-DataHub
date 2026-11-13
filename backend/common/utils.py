@@ -9,11 +9,14 @@ Functions:
   - _parse_llm_json: Parse LLM JSON responses, handling markdown fences and edge cases
   - _now: Return current datetime as ISO string
   - _generate_id: Generate a microsecond-precision timestamp ID string
+  - next_row_id: 无 auto_increment 表的单调递增微秒主键（防同毫秒碰撞丢行）
 """
 
 import json
 import math
 import re
+import threading
+import time
 from datetime import datetime
 from decimal import Decimal
 
@@ -99,3 +102,26 @@ def _generate_id() -> str:
     database auto-increment.
     """
     return str(int(datetime.now().timestamp() * 1_000_000))
+
+
+# ── 行主键（无 auto_increment 的表用）──────────────────────────
+_row_id_lock = threading.Lock()
+_row_id_last = 0
+
+
+def next_row_id() -> int:
+    """进程内单调递增的微秒时间戳主键（给没有 auto_increment 的表用）。
+
+    为何不是 `int(time.time() * 1000)`：同毫秒的两次写入会拿到同一个值，第二写
+    直接 duplicate-key 报错——审计写入把它 `except` 成一条 warning 后**整行静默丢弃**
+    （整板刷新这种连续多图的取数就是这种场景，实测到）。微秒精度 + 单调递增把同进程内的
+    碰撞降为不可能；跨进程的同一微秒仍是残留风险（约 1e-6/对），远小于旧口径。
+    真正免碰的方案是让表用 auto_increment（`adh_audit_logs`/`adh_query_audit` 已如此）。
+    """
+    global _row_id_last
+    with _row_id_lock:
+        now = int(time.time() * 1_000_000)
+        if now <= _row_id_last:
+            now = _row_id_last + 1
+        _row_id_last = now
+        return now

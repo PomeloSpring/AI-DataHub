@@ -5,10 +5,10 @@ and SQL filtering logic for row-level and column-level security.
 """
 
 import logging
-import time
 from typing import Optional
 
 from backend.common.db.metadata_db import get_metadata_conn
+from backend.common.utils import next_row_id
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,12 @@ def _now():
 
 
 def _gen_id():
-    return int(time.time() * 1000000)
+    """行主键 = 单调递增微秒（同微秒不重号）。
+
+    以前直接 `int(time.time() * 1000000)`：同一微秒的两次写入会拿到同一个 id，
+    duplicate-key 后调用方普遍 `except` 成 warning —— 审计行就这么静默丢了。
+    """
+    return next_row_id()
 
 
 def _invalidate_as_bot_config(reason: str) -> None:
@@ -35,9 +40,59 @@ def _invalidate_as_bot_config(reason: str) -> None:
 
 # 列策略是纯黑名单: 每一行必须声明要剔除/脱敏的列, 合法 access_type 仅此两种。
 # 'visible'(白名单语义)会被执行层 get_effective_policies 静默忽略——保存它等于把
-# "配了不生效"的缺陷落库, 必须在写入口 fail-loud 拒绝(白名单能力由表策略
+# "配了不生效"的缺陷落库, 必须在写入口 fail-loud 报错(白名单能力由表策略
 # policy_type='table' 承担, 列的可见性白名单可通过删除列策略或建表策略实现)。
 _VALID_COLUMN_ACCESS = frozenset({"hidden", "masked"})
+
+
+def _es_policy_table(datasource_id, table_name: str) -> str:
+    """ES 型数据源的策略表名：归一到索引别名 + 未登记即报错（其余类型原样返回）。
+
+    为什么在**保存时**把关而不是等取数：行级策略的命中靠 `table_name` 与正文 FROM 引用对齐，
+    拼错的键永远命不中，而命不中在取数侧只能报“策略没套用到这张表”——管理员看到的是
+    “我配了策略为什么没效果”，排查成本极高（计划设计决定 5/6）。登记入口有数据源上下文，
+    此时报错最便宜、也最接近错因。
+
+    归一方向：`t-别名*` 模式写法在落库时收成别名（取数侧 `es_alias_of` 同口径），
+    避开“同一张表两种键并存 → 命中哪条看正文写法”的键空间漂移。
+    报错文案只给别名清单（业务名），不含地址/凭据（护栏 §7）。
+    """
+    from backend.common.db import get_datasource_by_id
+    from backend.semantics.dialect import is_es_db_type
+
+    row = get_datasource_by_id(int(datasource_id or 0)) or {}
+    if not is_es_db_type(row.get("db_type")):
+        return table_name
+
+    from backend.core import es_client
+
+    name = es_client.es_alias_of(table_name)
+    candidates = sorted({es_client.es_alias_of(x) for x in es_client.ctx_for(row.get("id")).allowed})
+    if name.lower() in {c.lower() for c in candidates}:
+        return name
+    raise ValueError(
+        f"表「{table_name}」不在数据源「{row.get('name')}」开放的索引别名里；"
+        f"可选别名：{'、'.join(candidates) or '（尚未开放任何别名）'}")
+
+
+def _es_reject_unsupported_mask(datasource_id, columns: list) -> None:
+    """ES 引擎没有哈希函数 → `hash` 型脱敏在登记时就拒，不等取数时报错。
+
+    不是“暂未实现”而是引擎没有（MD5/SHA1/SHA2/TO_HEX 实机均 400），所以给的是
+    “改 partial 或把数据物化到 MySQL/Doris”这类可操作建议，而不是“稍后重试”。
+    """
+    from backend.common.db import get_datasource_by_id
+    from backend.semantics.dialect import is_es_db_type
+
+    row = get_datasource_by_id(int(datasource_id or 0)) or {}
+    if not is_es_db_type(row.get("db_type")):
+        return
+    bad = [str(c.get("column_name") or "") for c in columns or []
+           if c.get("access_type") == "masked" and str(c.get("mask_pattern") or "").strip().lower() == "hash"]
+    if bad:
+        raise ValueError(
+            f"数据源「{row.get('name')}」是 Elasticsearch，不支持 hash 型脱敏（引擎没有哈希函数）："
+            f"{'、'.join(bad)} 请改用 partial，或把该数据物化到 MySQL/Doris 后再配 hash")
 
 
 class RLSService:
@@ -99,6 +154,7 @@ class RLSService:
     def create_policy(self, data: dict) -> int:
         """Create a new RLS policy."""
         policy_id = _gen_id()
+        table_name = _es_policy_table(data["datasource_id"], data["table_name"])
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
@@ -108,7 +164,7 @@ class RLSService:
                         policy_type, filter_type, filter_expr, user_attribute, is_active, created_by)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (policy_id, data["name"], data.get("description", ""),
-                     data["workspace_id"], data["datasource_id"], data["table_name"],
+                     data["workspace_id"], data["datasource_id"], table_name,
                      data.get("policy_type", "both"),
                      data.get("filter_type", "condition"),
                      data.get("filter_expr", ""),
@@ -133,6 +189,23 @@ class RLSService:
             with conn.cursor() as cur:
                 fields = []
                 params = []
+                if "datasource_id" in data or "table_name" in data:
+                    # ES 源的策略表名要归一别名校验：两个字段只改一个时，拿库里另一个拼成
+                    # 完整上下文再校（否则“只换源不换表名”会绕过把关）；两个都传了就不多一查。
+                    eff_ds = data.get("datasource_id")
+                    eff_table = data.get("table_name")
+                    if eff_ds is None or not eff_table:
+                        cur.execute(
+                            "SELECT datasource_id, table_name FROM adh_rls_policies WHERE id = %s",
+                            (policy_id,))
+                        old = cur.fetchone() or {}
+                        eff_ds = eff_ds if eff_ds is not None else old.get("datasource_id")
+                        eff_table = eff_table or old.get("table_name")
+                    if eff_table:
+                        data = dict(data)
+                        data["table_name"] = _es_policy_table(eff_ds, eff_table)
+                        if "datasource_id" in data:
+                            data["datasource_id"] = eff_ds
                 for key in ["name", "description", "datasource_id", "table_name",
                             "policy_type", "filter_type",
                             "filter_expr", "user_attribute", "is_active"]:
@@ -164,6 +237,9 @@ class RLSService:
         try:
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM adh_rls_column_policies WHERE policy_id = %s", (policy_id,))
+                # 角色绑定必须同批清：`/roles/{id}/rls-policies` 直接回该表的 policy_id 清单，
+                # 留孤儿行就是给角色页留一个“看不见也改不掉”的残影（真机探针 2026-11-13 实测到）。
+                cur.execute("DELETE FROM adh_role_rls_policies WHERE policy_id = %s", (policy_id,))
                 cur.execute("DELETE FROM adh_rls_policies WHERE id = %s", (policy_id,))
                 conn.commit()
                 deleted = cur.rowcount > 0
@@ -214,6 +290,9 @@ class RLSService:
                         raise ValueError(
                             f"列 '{col.get('column_name', '')}' 的 access_type={access_type!r} 非法，"
                             f"列黑名单仅支持 {'/'.join(sorted(_VALID_COLUMN_ACCESS))}")
+                # 引擎不支持的脱敏形式在登记时就拒（ES 无哈希函数），不等取数时才报错
+                cur.execute("SELECT datasource_id FROM adh_rls_policies WHERE id = %s", (policy_id,))
+                _es_reject_unsupported_mask((cur.fetchone() or {}).get("datasource_id"), columns)
                 # Delete existing
                 cur.execute("DELETE FROM adh_rls_column_policies WHERE policy_id = %s", (policy_id,))
                 # Insert new
@@ -405,7 +484,11 @@ class RLSService:
     def log_audit(self, user_id: int, workspace_id: int, policy_id: int = None,
                   policy_name: str = "", table_name: str = "", action: str = "",
                   original_sql: str = "", filtered_sql: str = "") -> None:
-        """Log an RLS enforcement event."""
+        """Log an RLS enforcement event.
+
+        主键走 `_gen_id()`（单调递增微秒）：同微秒不重号，不会因 duplicate-key
+        被 `except` 吞掉而丢审计行（与 `query_executor._log_permission_audit` 同口径）。
+        """
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:

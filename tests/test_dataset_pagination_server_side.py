@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 ds_svc = importlib.import_module("backend.modules.viz.services.dataset_service")
 gq = importlib.import_module("backend.core.governed_query")
-es_pagination = importlib.import_module("backend.modules.viz.services.es_pagination")
+es_pagination = importlib.import_module("backend.core.es_pagination")
 es_client = importlib.import_module("backend.core.es_client")
 
 IDENT = {"user_id": 7, "username": "analyst01", "role": "analyst", "workspace_id": 1}
@@ -251,143 +251,16 @@ def test_sql_row_cap_reads_outermost_trailing_limit(sql, want):
     assert ds_svc._sql_row_cap(sql) == want
 
 
-# ── ES 通道：translate → search_after 游标（只能顺序翻） ────────────────────
+# ── ES 游标分页本体（形状门 + 顺序游标） ─────────────────────────
 
 ES_DETAIL_SQL = ('SELECT "warningTime.keyword" AS warning_time, "level.keyword" AS level '
                  'FROM "logs-*" WHERE isRelease = 1 ORDER BY warning_time DESC LIMIT 500')
-
-
-def _stub_es(monkeypatch, *, dsl=None, page=None, run=None, render=None):
-    monkeypatch.setattr(ds_svc, "require_es_channel", lambda: None)
-    monkeypatch.setattr(ds_svc, "_es_default_window", lambda ds, args: (args, {}))
-    # 默认固定渲染结果；传 `render` 可模拟滚动窗逐次漂移（现网缺陷回归用）
-    monkeypatch.setattr(ds_svc, "_render_es_body", render or (lambda ds, args: ES_DETAIL_SQL))
-    monkeypatch.setattr(ds_svc, "_es_audit", lambda *a, **k: None)
-    monkeypatch.setattr(es_client, "parse_select", lambda sql: (sql, 500))
-    if dsl is not None:
-        monkeypatch.setattr(es_client, "translate_select", lambda sql: dsl)
-    if page is not None:
-        monkeypatch.setattr(es_pagination, "query_page", page)
-    if run is not None:
-        monkeypatch.setattr(es_client, "run_sql", run)
-
-
 ES_FLAT_DSL = {
     "query": {"term": {"isRelease": {"value": 1}}},
     "fields": [{"field": "warningTime.keyword"}, {"field": "level.keyword"}],
     "sort": [{"warningTime.keyword": {"order": "desc"}}],
     "size": 500, "track_total_hits": -1, "_source": False,
 }
-
-
-def test_es_dataset_pages_via_cursor_mode(monkeypatch):
-    def fake_query_page(pattern, sql, *, page_size, page_num, context_key):
-        return {"columns": ["warning_time", "level"],
-                "rows": [["2026-11-11 10:00:00", "error"]],
-                "row_count": 1, "total": 4468044,
-                "page_size": page_size, "page_num": page_num, "paging_mode": "cursor",
-                "sql": sql}
-
-    _stub_es(monkeypatch, page=fake_query_page)
-    out = ds_svc._query_es({"id": 33, "paginable": 1, "es_pattern": "logs-*"},
-                           {"page_size": 20, "page_num": 2}, IDENT)
-    assert out["total"] == 4468044
-    assert out["columns"] == ["warning_time", "level"]
-    # 集群无 PIT ⇒ search_after 只能顺序往后翻：前端据此只给上/下页按钮，不给页码
-    assert out["paging"] == {"mode": "cursor", "page_size": 20, "page_num": 2,
-                             "total": 4468044, "can_jump": False, "stable_order": True}
-
-
-def test_es_paging_context_survives_default_window_drift(monkeypatch):
-    """回归（活库实测踩过）：服务端按当前时刻补的滚动窗会让每页渲染出不同正文。
-
-    旧实现拿**渲染后**的正文算游标签名 ⇒ 两次请求隔几秒签名就变了，
-    第 2 页永远找不到第 1 页留下的游标，整张 ES 明细表只能停在首页。
-    翻页上下文必须只认不随时刻变化的口径（正文模板 + 调用方给的参 + 页大小）。
-    """
-    keys, sqls = [], []
-    tick = iter(range(100))
-
-    def drifting_render(ds, args):
-        return ES_DETAIL_SQL.replace("isRelease = 1", f"isRelease = {next(tick)}")
-
-    def fake_query_page(pattern, sql, *, page_size, page_num, context_key):
-        keys.append(context_key)
-        sqls.append(sql)
-        return {"columns": ["warning_time", "level"], "rows": [["t", "e"]], "row_count": 1,
-                "total": 3, "page_size": page_size, "page_num": page_num,
-                "paging_mode": "cursor", "sql": ES_DETAIL_SQL}
-
-    _stub_es(monkeypatch, page=fake_query_page, render=drifting_render)
-    ds = {"id": 33, "paginable": 1, "es_pattern": "logs-*", "sql_query": ES_DETAIL_SQL}
-    for n in (1, 2, 3):
-        ds_svc._query_es(ds, {"page_size": 20, "page_num": n}, IDENT)
-    assert len(set(keys)) == 1        # 三页共用同一翻页上下文
-    assert len(set(sqls)) == 3        # 渲染确实每次都不同（缺陷源头还在，只是不再影响口径）
-
-
-def test_es_dataset_non_paginable_still_uses_run_sql(monkeypatch):
-    seen = {}
-
-    def fake_run_sql(sql, fetch_size=0):
-        seen["fetch_size"] = fetch_size
-        return {"columns": [{"name": "warning_time"}, {"name": "level"}],
-                "rows": [["t", "e"]], "indexes": ["logs-2026.11"]}
-
-    _stub_es(monkeypatch, run=fake_run_sql)
-    out = ds_svc._query_es({"id": 33, "paginable": 0, "es_pattern": "logs-*"},
-                           {"limit": 200}, IDENT)
-    assert seen["fetch_size"] == 200
-    assert "paging" not in out
-    assert out["execution_mode"] == "es"
-    assert out["unpaged"] is True and "truncated" not in out   # 1 行 < 200 → 完整
-
-
-def test_es_dataset_marks_truncated_at_row_ceiling(monkeypatch):
-    """不分页且行数撞到上限：必须标 truncated，前端要提醒"可能还有更多"。
-
-    拿"共 N 行"挂在 446 万行的明细表上就是本次要根治的伪分页缺陷形态。
-    """
-    def fake_run_sql(sql, fetch_size=0):
-        return {"columns": [{"name": "a"}], "rows": [[i] for i in range(fetch_size)],
-                "indexes": []}
-
-    _stub_es(monkeypatch, run=fake_run_sql)
-    out = ds_svc._query_es({"id": 33, "paginable": 0, "es_pattern": "logs-*"},
-                           {"limit": 1000}, IDENT)
-    assert out["truncated"] is True and out["row_count"] == 1000
-    assert "unpaged" not in out        # 撞线时两条事实互斥，不得既说完整又说可能还有更多
-
-
-def test_es_dataset_paginable_but_unpageable_shape_fails_loud(monkeypatch):
-    """标了支持分页、正文却是聚合统计：显式拒绝并指路，不回"空结果"充数。"""
-    def boom(*a, **k):
-        raise es_pagination.EsPagingUnsupported("该 ES 正文是聚合统计结果")
-
-    _stub_es(monkeypatch, dsl=ES_FLAT_DSL, page=boom)
-    with pytest.raises(ValueError) as exc:
-        ds_svc._query_es({"id": 33, "paginable": 1, "es_pattern": "logs-*"},
-                         {"page_size": 20}, IDENT)
-    assert "聚合统计" in str(exc.value)
-
-
-def test_es_dataset_rejects_runtime_filters_even_when_paginated(monkeypatch):
-    _stub_es(monkeypatch, dsl=ES_FLAT_DSL)
-    with pytest.raises(ValueError) as exc:
-        ds_svc._query_es({"id": 33, "paginable": 1, "es_pattern": "logs-*"},
-                         {"page_size": 20, "filters": [{"field": "a", "value": 1}]}, IDENT)
-    assert "不支持运行时筛选器" in str(exc.value)
-
-
-def test_es_dataset_requires_identity_for_paging(monkeypatch):
-    _stub_es(monkeypatch, dsl=ES_FLAT_DSL)
-    from backend.core.governed_query import NoIdentityError
-    with pytest.raises(NoIdentityError):
-        ds_svc._query_es({"id": 33, "paginable": 1, "es_pattern": "logs-*"},
-                         {"page_size": 20}, {"user_id": 0})
-
-
-# ── ES 游标分页本体（形状门 + 顺序游标） ────────────────────────────────────
 
 
 class TestEsSelectItems:
@@ -439,7 +312,7 @@ class TestEsCursorOrdering:
         return es_pagination.paging_key("logs-*", body, args or {}, page_size)
 
     def _fake_search(self, captured):
-        def fake(pattern, dsl, *, size, search_after=None):
+        def fake(pattern, dsl, *, size, search_after=None, ctx=None):
             captured.setdefault("cursors", []).append(search_after)
             rows = [{"warningTime.keyword": f"t{i}", "level.keyword": "e"} for i in range(size)]
             return {"rows": rows, "total": 100, "row_count": len(rows),
@@ -448,7 +321,7 @@ class TestEsCursorOrdering:
 
     def test_page_one_needs_no_cursor_then_next_page_reuses_it(self, monkeypatch):
         seen = {}
-        monkeypatch.setattr(es_client, "translate_select", lambda sql: ES_FLAT_DSL)
+        monkeypatch.setattr(es_client, "translate_select", lambda sql, ctx=None: ES_FLAT_DSL)
         monkeypatch.setattr(es_client, "search_page", self._fake_search(seen))
         key = self._key()
         first = es_pagination.query_page("logs-*", ES_DETAIL_SQL, page_size=2, page_num=1,
@@ -471,7 +344,7 @@ class TestEsCursorOrdering:
         """
         seen = {}
 
-        def fake_translate(sql):
+        def fake_translate(sql, ctx=None):
             seen.setdefault("translated", []).append(sql)
             return ES_FLAT_DSL
 
@@ -486,7 +359,7 @@ class TestEsCursorOrdering:
 
     def test_jump_over_uncached_page_is_rejected(self, monkeypatch):
         seen = {}
-        monkeypatch.setattr(es_client, "translate_select", lambda sql: ES_FLAT_DSL)
+        monkeypatch.setattr(es_client, "translate_select", lambda sql, ctx=None: ES_FLAT_DSL)
         monkeypatch.setattr(es_client, "search_page", self._fake_search(seen))
         key = self._key()
         es_pagination.query_page("logs-*", ES_DETAIL_SQL, page_size=2, page_num=1, context_key=key)
@@ -497,7 +370,7 @@ class TestEsCursorOrdering:
 
     def test_back_to_visited_page_works(self, monkeypatch):
         seen = {}
-        monkeypatch.setattr(es_client, "translate_select", lambda sql: ES_FLAT_DSL)
+        monkeypatch.setattr(es_client, "translate_select", lambda sql, ctx=None: ES_FLAT_DSL)
         monkeypatch.setattr(es_client, "search_page", self._fake_search(seen))
         key = self._key()
         for n in (1, 2, 3):
@@ -508,7 +381,7 @@ class TestEsCursorOrdering:
     def test_back_to_page_one_reopens_the_run(self, monkeypatch):
         """回第 1 页 = 重新起翻：陈旧的后页游标一律作废（不能拿着旧窗口继续往后翻）。"""
         seen = {}
-        monkeypatch.setattr(es_client, "translate_select", lambda sql: ES_FLAT_DSL)
+        monkeypatch.setattr(es_client, "translate_select", lambda sql, ctx=None: ES_FLAT_DSL)
         monkeypatch.setattr(es_client, "search_page", self._fake_search(seen))
         key = self._key()
         for n in (1, 2, 3):
@@ -520,7 +393,7 @@ class TestEsCursorOrdering:
     def test_expired_context_asks_for_page_one(self, monkeypatch):
         """没取过首页就要第 2 页（服务重启/上下文过期）：明说“先回第 1 页”，不回空表。"""
         seen = {}
-        monkeypatch.setattr(es_client, "translate_select", lambda sql: ES_FLAT_DSL)
+        monkeypatch.setattr(es_client, "translate_select", lambda sql, ctx=None: ES_FLAT_DSL)
         monkeypatch.setattr(es_client, "search_page", self._fake_search(seen))
         with pytest.raises(es_pagination.EsPagingUnsupported) as exc:
             es_pagination.query_page("logs-*", ES_DETAIL_SQL, page_size=2, page_num=2,
@@ -530,7 +403,7 @@ class TestEsCursorOrdering:
     def test_page_size_change_switches_cursor_namespace(self, monkeypatch):
         """换页大小等于换查询：旧游标不能复用，否则会拿到错位的一页。"""
         seen = {}
-        monkeypatch.setattr(es_client, "translate_select", lambda sql: ES_FLAT_DSL)
+        monkeypatch.setattr(es_client, "translate_select", lambda sql, ctx=None: ES_FLAT_DSL)
         monkeypatch.setattr(es_client, "search_page", self._fake_search(seen))
         es_pagination.query_page("logs-*", ES_DETAIL_SQL, page_size=20, page_num=1,
                                 context_key=self._key(page_size=20))
@@ -541,7 +414,7 @@ class TestEsCursorOrdering:
     def test_filter_change_switches_cursor_namespace(self, monkeypatch):
         """调用方换了筛选参（args）= 换口径：不能拿旧集合的游标继续翻。"""
         seen = {}
-        monkeypatch.setattr(es_client, "translate_select", lambda sql: ES_FLAT_DSL)
+        monkeypatch.setattr(es_client, "translate_select", lambda sql, ctx=None: ES_FLAT_DSL)
         monkeypatch.setattr(es_client, "search_page", self._fake_search(seen))
         es_pagination.query_page("logs-*", ES_DETAIL_SQL, page_size=2, page_num=1,
                                 context_key=self._key(args={"site": "SH"}))
@@ -561,11 +434,11 @@ class TestEsCursorOrdering:
 
     def test_last_sort_dropped_when_page_not_full(self, monkeypatch):
         """本页没取满 = 已到末尾：不能留"下一页游标"，否则回翻后再点下一页会翻出空页。"""
-        def short(pattern, dsl, *, size, search_after=None):
+        def short(pattern, dsl, *, size, search_after=None, ctx=None):
             return {"rows": [{"warningTime.keyword": "t", "level.keyword": "e"}],
                     "total": 21, "row_count": 1, "last_sort": ["t", 0], "has_more": False}
 
-        monkeypatch.setattr(es_client, "translate_select", lambda sql: ES_FLAT_DSL)
+        monkeypatch.setattr(es_client, "translate_select", lambda sql, ctx=None: ES_FLAT_DSL)
         monkeypatch.setattr(es_client, "search_page", short)
         key = self._key(page_size=20)
         es_pagination.query_page("logs-*", ES_DETAIL_SQL, page_size=20, page_num=1, context_key=key)

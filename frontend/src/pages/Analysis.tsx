@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Edit, Play, Maximize, Minimize, LayoutDashboard, Layers, ChevronDown, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -15,7 +15,9 @@ import DashboardAutoRefresh from '@/components/DashboardAutoRefresh';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
 import { useDashboardStore } from '@/stores/dashboardStore';
 import { useAuthStore } from '@/stores/authStore';
-import { fetchVisibleGroups, type GroupView } from '@/lib/dashboardCatalog';
+import { fetchVisibleGroups, collectBoardTags, filterBoards, isBoardFilterActive,
+  EMPTY_BOARD_FILTER, type BoardFilter, type GroupView } from '@/lib/dashboardCatalog';
+import { BoardFilterControl } from '@/components/DashboardBoardFilter';
 import client from '@/api/client';
 
 /**
@@ -71,6 +73,18 @@ export default function Analysis() {
     : undefined;
   const boards = groupMode ? (currentGroup?.dashboards || []) : [];
   const enabled = boards.filter(d => d.status === 'enabled');
+  // 组内筛选（名称 + 标签）：一个组合下挂几十张板时（如「App 单应用看板」 24 张），
+  // 靠横滚 pill 条找板等于找不动。它只改切换条里看得见哪几张，不改取数也不改权限。
+  const [boardFilter, setBoardFilter] = useState<BoardFilter>(EMPTY_BOARD_FILTER);
+  const boardTags = useMemo(() => collectBoardTags(enabled), [enabled]);
+  const shownBoards = useMemo(() => filterBoards(enabled, boardFilter), [enabled, boardFilter]);
+  const filterOn = isBoardFilterActive(boardFilter);
+  // 筛完把当前看板筛掉了要说出来：否则切换条上突然没有选中项，看起来像选中态坏了
+  const currentFilteredOut = filterOn && !!current && !shownBoards.some(d => d.id === current.id);
+  // 换组合时清掉筛选：上一个组合的标签在新组合里多半一个都不命中，
+  // 带过来只会让切换条看起来“新组合是空的”。
+  const groupId = currentGroup?.id;
+  useEffect(() => { setBoardFilter(EMPTY_BOARD_FILTER); }, [groupId]);
 
   // 完整看板(含 charts)按需加载; 管理预览(/system/dashboards/:id)同用
   // editable = 服务端裁决的可写性(仅属主/admin), 角色授予的可见权不含编辑权
@@ -115,7 +129,7 @@ export default function Analysis() {
   }, [managementPreview, groupMode, dashboardId, current?.id, loadDetail]);
 
   const navigation = useDashboardNavigation(
-    enabled,
+    shownBoards,
     current?.id,
     target => navigate(boardPath(target)),
   );
@@ -208,6 +222,15 @@ export default function Analysis() {
       {!!listPath && <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0" aria-label={managementPreview ? '返回看板列表' : '返回看板清单'} onClick={() => navigate(listPath)}><ArrowLeft className="h-4 w-4" /></Button>}
       {groupSwitch}
       {groupSwitch && !!switchTabs && <span aria-hidden className="h-4 w-px shrink-0 bg-border" />}
+      {/* 组内筛选：同组超过 4 张板才给这个入口（两三张时靠 pill 一眼认得出，多一个控件反而抖） */}
+      {groupMode && enabled.length > 4 && (
+        <BoardFilterControl tags={boardTags} value={boardFilter} onChange={setBoardFilter}
+          matched={shownBoards.length} total={enabled.length} label="筛选同组看板" />)}
+      {currentFilteredOut && (
+        <span role="status" className="shrink-0 truncate text-[11px] text-muted-foreground"
+          title="当前看板不满足刚选的筛选条件，切换条里不展它；清除筛选可回到全部同组看板">
+          当前看板不在筛选结果内
+        </span>)}
       {switchTabs
         ? <>
             {/* 同组看板切换条本身就是页头标题（选中 pill = 当前看板），不再另起一行重复同名大标题；

@@ -337,12 +337,14 @@ export interface ArticleQuery {
   tag?: string;
   q?: string;
   /**
-   * 工作流态。空 = 只看门户在线内容；`all` = **不加状态条件**（含草稿），
-   * 仅对具备编辑权的调用方生效 —— 内容管理页选「全部状态」必须传 all，
-   * 传空串会得到一份"看起来少了几篇草稿"的清单。
+   * 工作流态。空 = 只看门户在线内容；`all` = 不加状态条件（仅对具备编辑权的调用方生效）。
+   * **草稿只在 `mine` 作用域回**：未提交的工作稿属个人区（「我的草稿」），
+   * 非 mine 传 `status='draft'` 服务端直接拒并说明去哪看（不静默给空清单）。
    */
   status?: '' | 'all' | ArticleStatus;
   mine?: string;
+  /** 只看「到期复核」（已上线且 review_by 过期）：与待审队列同谓词，不另写一份口径 */
+  expired?: boolean;
   /** 服务端只接受这三个值（latest/hot/rec），写错会被直接拒而不是默默换默认 */
   sort?: 'latest' | 'hot' | 'rec';
   page?: number;

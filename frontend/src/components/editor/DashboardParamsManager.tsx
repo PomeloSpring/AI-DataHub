@@ -34,6 +34,8 @@ export interface ParamRow {
   shape: ParamShape;
   defaultValue: string;
   options: string[];
+  /** 看板级常数（仅对 `page` 成立）：值照下发，页面上不开输入口 */
+  readonly: boolean;
 }
 
 /** 两套定义 → 同一份行模型（编辑期只操作行模型，落库时再拆回两套，避免两处各写一份表单） */
@@ -41,9 +43,10 @@ export function toParamRows(params: DashboardParam[] = [], pageParams: PageParam
   return [
     ...params.map((p, index) => ({ via: 'param' as const, index, name: p.name, label: p.label || '',
       shape: (p.type === 'text' ? 'string' : (p.type as ParamShape)) || 'string',
-      defaultValue: p.default ?? '', options: p.options || [] })),
+      defaultValue: p.default ?? '', options: p.options || [], readonly: false })),
     ...pageParams.map((p, index) => ({ via: 'page' as const, index, name: p.name, label: p.label || '',
-      shape: ((p.type as ParamShape) || 'string'), defaultValue: p.default ?? '', options: p.options || [] })),
+      shape: ((p.type as ParamShape) || 'string'), defaultValue: p.default ?? '',
+      options: p.options || [], readonly: !!p.readonly })),
   ];
 }
 
@@ -52,6 +55,9 @@ export function fromParamRows(rows: ParamRow[], params: DashboardParam[] = [], p
   const build = (row: ParamRow): DashboardParam | PageParam => ({
     name: row.name.trim(), label: row.label.trim() || row.name.trim(), type: row.shape,
     default: row.defaultValue, ...(row.shape === 'select' ? { options: row.options } : {}),
+    // readonly 要显式写回（包括 false）：下方 mergeOld 会先把存量行铺回来，
+    // 不把“刚取消勾选”这件事写进去，取消只读会被旧值盖掉（存了不生效）。
+    ...(row.via === 'page' ? { readonly: row.readonly } : {}),
   }) as DashboardParam | PageParam;
   const nextParams = rows.filter(r => r.via === 'param').map(build);
   const nextPage = rows.filter(r => r.via === 'page').map(build);
@@ -88,7 +94,7 @@ export default function DashboardParamsManager({ params = [], pageParams = [], c
     onChange(fromParamRows(rows.filter(r => !(r.via === via && r.index === index)), params, pageParams));
   const add = (via: ParamRow['via']) => onChange(fromParamRows(
     [...rows, { via, index: rows.filter(r => r.via === via).length, name: '', label: '',
-      shape: 'string', defaultValue: '', options: [] }], params, pageParams));
+      shape: 'string', defaultValue: '', options: [], readonly: false }], params, pageParams));
 
   const section = (via: ParamRow['via'], title: string, hint: string) => {
     const items = rows.filter(r => r.via === via);
@@ -144,6 +150,15 @@ export default function DashboardParamsManager({ params = [], pageParams = [], c
               {!row.options.length && <span className="text-[10px] text-amber-600 dark:text-amber-500">
                 未配置候选值，页面上会是空下拉</span>}
             </>}
+            {/* 看板级常数只对「看板参数」开：遗留 params 不参与本页顶部渲染带之外的口径固定 */}
+            {row.via === 'page' && <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <input type="checkbox" className="h-3.5 w-3.5 accent-primary"
+                aria-label={`固定为看板级常数 ${row.name || '新参数'}`} checked={row.readonly}
+                onChange={e => patch(row.via, row.index, { readonly: e.target.checked })} />
+              只读（看板级常数）
+            </label>}
+            {row.via === 'page' && row.readonly && <span className="text-[10px] text-muted-foreground">
+              值仍随取数下发，但页面上不给改（适合单 App 看板的分析对象）</span>}
           </div>
         </div>;
       })}

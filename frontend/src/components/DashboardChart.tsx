@@ -771,6 +771,10 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
   // 柱顶帽/瀑布等按绘图区高反推数据单位的分支共用：扣掉上下 padding 后的真实高度
   const plotHeightHint = Math.max(60, height - 40 - xLayout.bottomPadding);
   const xAxis: any = config?.showXAxis === false ? false : {
+    // x 轴不渲染标题：G2 默认把编码字段名（如 app_code）当轴标题，而底部 padding 只为旋转标签留高、
+    // 不含标题行 → 标题溢出卡片下沿（用户反馈）。与 y 轴同口径：不编码物理列名当标题，
+    // 需要轴名时由业务名配置，绝不把裸列名甩给用户（ui-resource-display / 物理名泄露）。
+    title: false,
     // 旋转/截断一律由 resolveXAxisLabelLayout 裁决，不再交给 G2 自决：
     // 显式 padding 下它的 labelAutoRotate 永远算不过碰撞检测（见该函数注释），等于没开。
     labelAutoRotate: false,

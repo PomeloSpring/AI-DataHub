@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Plus, Layers, Code2, Trash2, Eye, Loader2, Check,
@@ -14,11 +14,10 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import {
-  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import client from '../../api/client';
 import { hasPerm } from '../../stores/permissionStore';
-import EsSourcePicker from '@/components/EsSourcePicker';
 import { CHART_TYPES } from '../../components/DashboardChart';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { useClientPagination } from '@/hooks/useClientPagination';
@@ -28,12 +27,12 @@ interface Dataset {
   id: number;
   name: string;
   description: string;
-  source_type: 'semantic' | 'sql' | 'both' | 'es';
+  source_type: 'semantic' | 'sql' | 'both';
   object_key: string;
   datasource_id: number;
   datasource_name?: string;
-  /** ES 型数据集：已选索引范围（data view 模式名） */
-  es_pattern?: string;
+  /** 执行通道位（服务端 `execution_is_es`下发）：正文是否跑在 ES 型数据源上 */
+  is_es?: boolean;
   /** 可用数据源范围(业务名)：执行源 ∪ available_datasources，经后端按授权交集过滤后返回 */
   available_source_names?: string[];
   /** 当前用户在范围内真正有权限执行的源(业务名) */
@@ -45,12 +44,13 @@ interface Dataset {
   updated_at: string;
 }
 
-// 来源类型显示业务名（不得把内部枚举 es/semantic/both 直接当名称展示，ui-resource-display §1）
+// 来源类型显示业务名（不得把内部枚举 semantic/both 直接当名称展示，ui-resource-display §1）
+// “es” 这个取值已随内置通道退役（库里 0 行、写入被后端显式拒），ES 数据集的 source_type 就是 sql，
+// ES 身份由服务端的 `is_es` 下发（判据与取数分派同源），不靠枚举名反推。
 const SOURCE_LABELS: Record<string, string> = {
   sql: 'SQL',
   semantic: '语义对象',
   both: '语义 + SQL',
-  es: 'ES 索引',
 };
 const CHART_TYPE_LABELS: Record<string, string> = Object.fromEntries(
   CHART_TYPES.map(t => [t.value, t.label]),
@@ -58,39 +58,23 @@ const CHART_TYPE_LABELS: Record<string, string> = Object.fromEntries(
 // 图表预设只支持真实图表(排除参数控件)
 const PRESET_CHART_TYPES = CHART_TYPES.filter(t => t.category !== 'widget');
 
-/**
- * 可承载数据集取数的内置 MCP 通道（`GET /datasets/channels`）。
+/** 筛选只有「数据源」一个维度 —— “ES 取数通道”这一项已于 2026-11-13 撤掉。
  *
- * 筛选选项一律来自后端（按 MCP 服务分维度）：前端不得再硬编码“ES 那一项”的文案与 value，
- * 否则新增一个 MCP 通道就要改前端，且两处文案会漂移（ui-resource-display §2）。
+ * 它原本是内置 MCP 通道时代的“按通道筛”，通道退役后被改写成“正文执行在 ES 型数据源上”
+ * （`GET /datasets/?channel=es`）。但现网只有 1 个 ES 源，选它与直接选 `cloud-platform-es`
+ * 结果逐字相同，而“取数通道”这个词会让人以为**还有一条不走数据源的取数路**（实测：用户就
+ * 这么误读了）。按 `ui-resource-display.md`“不留看得见但语义含混/重复的选项”，前端不再提供；
+ * 后端 `channel` 参数暂留（脚本/将来多 ES 源场景可用，随阶段三第 2 步一并拆除）。
  */
-interface McpChannelOption {
-  value: string;
-  label: string;
-  group: string;
-  ready: boolean;
-  state: string;
-  status_message: string;
-  open_view_count: number;
-}
-
-/** 通道类筛选值：`mcp:<服务>`（后端下发的选项）或旧写法 `es`，都不占用 datasource_id */
-const isChannelFilter = (v: string) => v.startsWith('mcp:') || v === 'es';
 
 export default function Datasets() {
   const navigate = useNavigate();
   const [items, setItems] = useState<Dataset[]>([]);
   const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState('');
-  // 筛选项：'0'=全部 | '<id>'=具体数据源 | 'mcp:<服务>'=内置 MCP 取数通道
-  //（ES 型数据集不挂在数据源上，只能走 channel 筛，否则清单里看得到、下拉里选不出）
+  // 筛选项：'0'=全部 | '<id>'=具体数据源（ES 型数据集也挂在 ES 数据源上，按源筛自然涵盖）
   const [sourceFilter, setSourceFilter] = useState('0');
   const [datasources, setDatasources] = useState<any[]>([]);
-  // 内置 MCP 通道清单与就绪态（事实源 GET /datasets/channels，与 MCP 服务页同源）：
-  // 下拉里该出现哪几项、能不能选、不可用的原因，都由它定，不拿前端假设凑。
-  const [mcpChannels, setMcpChannels] = useState<McpChannelOption[]>([]);
-  const [channelState, setChannelState] = useState<{ loaded: boolean; failed: boolean; message: string }>(
-    { loaded: false, failed: false, message: '' });
   const [createOpen, setCreateOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<any>(null);
@@ -111,9 +95,7 @@ export default function Datasets() {
       const { data } = await client.get('/datasets/', {
         params: {
           keyword,
-          // MCP 通道不是数据源：选它时 datasource_id 传 0，改由 channel=<选项 value> 筛（后端两者互斥）
-          datasource_id: isChannelFilter(sourceFilter) ? 0 : (Number(sourceFilter) || 0),
-          channel: isChannelFilter(sourceFilter) ? sourceFilter : '',
+          datasource_id: Number(sourceFilter) || 0,
         },
       });
       setItems(data.items || []);
@@ -137,36 +119,6 @@ export default function Datasets() {
       .then(({ data }) => setDatasources(Array.isArray(data) ? data : (data?.items || [])))
       .catch(() => setDatasources([]));
   }, []);
-
-  // 通道清单拉失败/未就绪都要可见：不能给一个“选得出、永远 0 结果”的假筛选项，
-  // 也不能因为拉失败就悄悄少一项（那会被读成“这个部署没有 ES 通道”）。
-  const loadChannels = useCallback(() => {
-    client.get('/datasets/channels')
-      .then(({ data }) => {
-        const items: McpChannelOption[] = Array.isArray(data?.items) ? data.items : [];
-        setMcpChannels(items);
-        setChannelState({ loaded: true, failed: false, message: '' });
-      })
-      .catch((e: any) => {
-        setMcpChannels([]);
-        setChannelState({
-          loaded: true, failed: true,
-          message: e?.response?.data?.detail || 'ES 通道状态获取失败',
-        });
-      });
-  }, []);
-  useEffect(() => { loadChannels(); }, [loadChannels]);
-
-  // 按后端下发的 group 分组（组名与项都不得写死）：日后多一个能承载数据集的 MCP 服务，
-  // 下拉自己长出一项，不需要改前端。
-  const mcpGroups = useMemo(() => {
-    const map = new Map<string, McpChannelOption[]>();
-    mcpChannels.forEach(c => {
-      const key = c.group || 'MCP 服务（内置）';
-      map.set(key, [...(map.get(key) || []), c]);
-    });
-    return [...map.entries()];
-  }, [mcpChannels]);
 
   const handleDelete = async (ds: Dataset) => {
     if (!confirm(`确定删除数据集 "${ds.name}"？`)) return;
@@ -292,48 +244,18 @@ export default function Datasets() {
           value={sourceFilter}
           onValueChange={setSourceFilter}
         >
-          <SelectTrigger className="w-56 h-9" aria-label="按数据源或 MCP 通道筛选数据集">
+          <SelectTrigger className="w-56 h-9" aria-label="按数据源筛选数据集">
             <SelectValue placeholder="全部来源" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="0">全部来源</SelectItem>
-            {/* 按取数通道分维度：内置 MCP 服务一组（选项来自 /datasets/channels），
-                数据源一组（选项来自 /datasources/）。ES 型数据集不挂在数据源上，
-                不单列这一组就永远筛不到它。 */}
-            {mcpGroups.map(([groupName, opts]) => (
-              <SelectGroup key={groupName}>
-                <SelectLabel>{groupName}</SelectLabel>
-                {opts.map(c => (
-                  <SelectItem key={c.value} value={c.value} disabled={!c.ready}
-                              title={c.ready ? '' : (c.status_message || c.state)}>
-                    {c.label}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
+            {/* 只留「数据源」一个维度：“ES 取数通道”那组已撤（与按 ES 源筛重复且词容易误读，
+                理由见文首 ES 通道注释）；数据源清单回源 `/datasources/`，不写死。 */}
+            {datasources.map((d: any) => (
+              <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>
             ))}
-            <SelectGroup>
-              <SelectLabel>数据源</SelectLabel>
-              {datasources.map((d: any) => (
-                <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>
-              ))}
-            </SelectGroup>
           </SelectContent>
         </Select>
-        {/* 不可选的原因必须可见：不能留一个“选得出、永远 0 结果”的假筛选项，也不能拿默认引擎凑数 */}
-        {!channelState.loaded && (
-          <p className="w-full text-[11px] text-muted-foreground">正在确认可用取数通道…</p>
-        )}
-        {channelState.loaded && channelState.failed && (
-          <p role="alert" className="w-full text-[11px] text-destructive">
-            {channelState.message}
-            <button type="button" className="ml-1 underline" onClick={loadChannels}>重试</button>
-          </p>
-        )}
-        {mcpChannels.filter(c => !c.ready).map(c => (
-          <p role="alert" key={c.value} className="w-full text-[11px] text-destructive">
-            {c.label}当前不可用：{c.status_message || c.state || '未配置'}（筛选项已禁用；配置由部署侧托管，请联系管理员）
-          </p>
-        ))}
       </div>
 
       {/* 批量操作条：进入批量模式即出现（含全选，未选时也可先全选）；未选时动作按钮置灰 */}
@@ -399,15 +321,14 @@ export default function Datasets() {
                 <span>被 {ds.references} 图表引用</span>
                 {/* 数据源显示业务名（后端返回，不靠前端拼 ID 兜底）；多源时标注可用范围 */}
                 <Badge variant="outline" className="text-[10px]"
-                  title={ds.source_type === 'es'
-                    ? `内置 Elasticsearch 通道，索引范围: ${ds.es_pattern || '-'}`
-                    : `执行数据源: ${ds.datasource_name || '数据源'}`}>
+                  title={`执行数据源: ${ds.datasource_name || '数据源'}`}>
                   {ds.datasource_name || '数据源'}
                 </Badge>
-                {ds.source_type === 'es' && ds.es_pattern && (
-                  <Badge variant="secondary" className="text-[10px] max-w-[160px] truncate"
-                    title={`已选索引范围（只读通道，不套行列级策略）: ${ds.es_pattern}`}>
-                    {ds.es_pattern}
+                {/* 执行通道位只从服务端 `is_es` 读：这一位与其他源同一个治理口（列级/行级策略已编译进 SQL） */}
+                {ds.is_es && (
+                  <Badge variant="secondary" className="text-[10px]"
+                    title="正文执行在 ES 型数据源上：与其他数据源同一取数口，列级/行级策略编译进待执行 SQL">
+                    ES 通道
                   </Badge>
                 )}
                 {(ds.available_source_names || []).length > 1 && (
@@ -535,13 +456,12 @@ export default function Datasets() {
 function CreateDatasetDialog({
   open, onClose, onCreated,
 }: { open: boolean; onClose: () => void; onCreated: (id: number) => void }) {
-  // 来源类型：sql=数据源上的预制 SQL（经治理入口）；es=内置 Elasticsearch 通道（不进治理域）
-  const [kind, setKind] = useState<'sql' | 'es'>('sql');
-  // ES 配置面单独一个权限码：无该码就不渲染 ES 选项，而不是给人一个点了必 403 的按钮
-  const canUseEs = hasPerm('dataset:es');
+  // 新建只有一条通道：数据源上的预制 SQL（经治理入口）。内置 Elasticsearch 通道已于
+  // 2026-11-13 退役（ES 现在是正式数据源，取数走角色源授权 + RLS/列级 + 审计），
+  // 所以这里不再给「ES 索引」入口 —— 留着就是一个点了必报错的死选项（后端显式拒）。
   const [form, setForm] = useState({
     name: '', description: '', datasource_id: 0, sql_query: '',
-    chart_type: '', es_pattern: '',
+    chart_type: '',
   });
   const [preset, setPreset] = useState({ xCol: '', yCol: '', groupCol: '' });
   const [datasources, setDatasources] = useState<any[]>([]);
@@ -563,16 +483,11 @@ function CreateDatasetDialog({
 
   const validateSql = async () => {
     if (!form.sql_query.trim()) { toast.error('请先输入 SQL'); return; }
-    if (kind === 'es' && !form.es_pattern) { toast.error('请先选择索引范围'); return; }
     setValidating(true);
     try {
-      const { data } = kind === 'es'
-        ? await client.post('/datasets/validate-es-sql', {
-          sql: form.sql_query, es_pattern: form.es_pattern,
-        })
-        : await client.post('/datasets/validate-sql', {
-          sql: form.sql_query, datasource_id: Number(form.datasource_id) || 0,
-        });
+      const { data } = await client.post('/datasets/validate-sql', {
+        sql: form.sql_query, datasource_id: Number(form.datasource_id) || 0,
+      });
       setInferredFields(data.fields || []);
       toast.success(`校验通过，推断 ${data.fields?.length || 0} 个字段`);
     } catch (e: any) {
@@ -586,9 +501,8 @@ function CreateDatasetDialog({
   const handleSave = async () => {
     if (!form.name.trim()) { toast.error('名称必填'); return; }
     if (!form.sql_query.trim()) {
-      toast.error(kind === 'es' ? '请输入 ES 查询正文' : '请输入执行 SQL'); return;
+      toast.error('请输入执行 SQL'); return;
     }
-    if (kind === 'es' && !form.es_pattern) { toast.error('请选择索引范围'); return; }
     if (form.sql_query.trim() && inferredFields.length === 0) {
       toast.error('请先「校验并推断字段」'); return;
     }
@@ -601,10 +515,9 @@ function CreateDatasetDialog({
       const { data } = await client.post('/datasets/', {
         name: form.name.trim(),
         description: form.description,
-        // ES 型不挂在数据源上：datasource_id 传 0（后端会显式校核并拒掉非 0）
-        datasource_id: kind === 'es' ? 0 : (Number(form.datasource_id) || 0),
-        source_type: kind,
-        es_pattern: kind === 'es' ? form.es_pattern : '',
+        // 预制 SQL 一律挂在已登记数据源上（0=默认引擎），由服务端按 db_type 分派执行口
+        datasource_id: Number(form.datasource_id) || 0,
+        source_type: 'sql',
         sql_query: form.sql_query,
         chart_type: form.chart_type,
         chart_preset: chartPreset,
@@ -625,71 +538,41 @@ function CreateDatasetDialog({
         <DialogHeader>
           <DialogTitle>新建数据集</DialogTitle>
           <DialogDescription>
-            {kind === 'es'
-              ? '内置 Elasticsearch 通道取数：只读、按索引范围查询，不进列级/行级数据权限治理域'
-              : '执行 SQL 负责取数，经统一治理入口；看板、报告与 Chat 共用同一口径'}
+            执行 SQL 负责取数，经统一治理入口；看板、报告与 Chat 共用同一口径
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
-          {canUseEs && (
-            <div className="space-y-1.5">
-              <Label>数据来源</Label>
-              <div className="flex gap-2">
-                {([
-                  { value: 'sql' as const, label: '数据源 SQL', desc: '已登记数据源上的预制 SQL，套敏感/RLS/审计' },
-                  { value: 'es' as const, label: 'Elasticsearch 索引', desc: '平台内置只读通道，按索引范围取数，不套行列级策略' },
-                ]).map(o => (
-                  <button key={o.value} type="button" title={o.desc}
-                    onClick={() => { setKind(o.value); setInferredFields([]); }}
-                    className={`flex-1 rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
-                      kind === o.value
-                        ? 'border-primary bg-primary/5 font-medium'
-                        : 'border-border hover:bg-muted/40'}`}>
-                    {o.label}
-                    <span className="mt-0.5 block text-[10px] text-muted-foreground">{o.desc}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>名称 *</Label>
               <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="如：案件分析数据集" />
             </div>
-            {kind === 'es' ? (
-              <EsSourcePicker required
-                value={form.es_pattern}
-                onChange={v => { setForm({ ...form, es_pattern: v }); setInferredFields([]); }}
-              />
-            ) : (
-              <div className="space-y-1.5">
-                <Label>数据源</Label>
-                <Select
-                  value={form.datasource_id ? String(form.datasource_id) : '0'}
-                  onValueChange={v => setForm({ ...form, datasource_id: Number(v) })}
-                >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="0">默认引擎</SelectItem>
-                    {datasources.map((d: any) => <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
+            <div className="space-y-1.5">
+              <Label>数据源</Label>
+              <Select
+                value={form.datasource_id ? String(form.datasource_id) : '0'}
+                onValueChange={v => setForm({ ...form, datasource_id: Number(v) })}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="0">默认引擎</SelectItem>
+                  {datasources.map((d: any) => <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <div className="space-y-1.5">
             <Label>描述</Label>
             <Textarea rows={2} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
           </div>
 
-          {/* ── 执行正文（治理域 SQL | ES SQL）── */}
+          {/* ── 执行正文（治理域 SQL）── */}
           <div className="border rounded-lg p-3 space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5 text-sm font-medium">
-                <Code2 className="h-4 w-4" /> {kind === 'es' ? 'ES 查询正文' : '执行 SQL'}
+                <Code2 className="h-4 w-4" /> 执行 SQL
                 <Badge variant="outline" className="text-[10px]">
-                  {kind === 'es' ? '单表 SELECT，必须 LIMIT' : '仅 SELECT/WITH'}
+                  仅 SELECT/WITH
                 </Badge>
               </div>
               <Button size="sm" variant="outline" onClick={validateSql} disabled={validating}>
@@ -701,9 +584,7 @@ function CreateDatasetDialog({
               rows={6} className="font-mono text-xs"
               value={form.sql_query}
               onChange={e => { setForm({ ...form, sql_query: e.target.value }); setInferredFields([]); }}
-              placeholder={kind === 'es'
-                ? 'SELECT DATE_TRUNC(\'DAY\', "@timestamp") AS d, COUNT(*) AS c\nFROM "logs-*" GROUP BY DATE_TRUNC(\'DAY\', "@timestamp") ORDER BY d ASC LIMIT 60'
-                : 'SELECT region, status, COUNT(*) AS cnt FROM t_case_records GROUP BY region, status'}
+              placeholder={'SELECT region, status, COUNT(*) AS cnt FROM t_case_records GROUP BY region, status'}
             />
             {inferredFields.length > 0 && (
               <div className="border rounded-lg p-2.5 text-xs space-y-1">

@@ -1,17 +1,27 @@
-"""平台内置 Elasticsearch 能力的回归门禁。
+"""ES 供数层闸门 + 内置 MCP 机制的回归门禁。
 
-锁定的不变量（2026-11-04 决策：ES 作为内置能力而非数据源，不进列级/行级治理域）：
-1. 索引白名单是数据面唯一闸门，且 **空白名单 = 不开放任何索引**（fail-closed，
-   不得解释为"没配就不限制"）；
-2. 只读口径与护栏 §5 一致（仅单条 SELECT、禁 DDL/DML/多语句、必须 LIMIT、
-   LIMIT 按配置上限收紧）；
-3. 任何对外文案**不含**连接地址 / 端口 / 账号 / 凭据 / ES 原始响应（护栏 §7）；
-4. 内置服务在「MCP 服务」页只读投影，响应体里根本没有配置字段可泄；
-5. 未开启的能力不列入 AS-BOT 工具目录（不做"配了没用"的死开关）；
-6. ES 通道的结果必须带 governance 标注（与治理通道可区分，no-silent-degradation）。
+【口径已换（2026-11-13 阶段三）】内置 Elasticsearch MCP 服务（`adh_mcp_servers` 旧 id=9001 与
+`list_es_indexes`/`describe_es_index`/`query_es_sql` 三工具）**已退役**：ES 现在是**正式数据源**
+（`adh_datasources.db_type='es'`），取数一律过治理执行口（角色源授权 + RLS/列级 + 审计，护栏 §1）。
+那三个工具直接调 `es_client`，既不查角色数据源授权也不套列级/行级策略，属护栏 §1 的旁路，故整体下线。
+
+本文件锁三层不变量：
+1. **ES 供数层闸门**（第 1-4 节）：开放范围 fail-closed（**空白名单 = 不开放任何索引**，
+   不得解释为"没配就不限制"）、只读口径与护栏 §5 一致（仅单条 SELECT、禁 DDL/DML/多语句、
+   必须 LIMIT、LIMIT 按上限收紧）、任何对外文案不含地址/端口/账号/凭据/ES 原始响应（护栏 §7）；
+2. **退役可证伪**（第 5 节）：注册表查不到 elasticsearch、`es_tools` 模块与种子脚本已删除、
+   任何工具组不广告裸 ES SQL 入口、库里残留的内置行被显式拒（不是静默无工具）；
+3. **内置 MCP 机制**（第 6-7 节）：与外部服务同一授权入口、未登记实现/未就绪均显式拒、
+   响应投影剥光配置字段、内置行不可被页面改删 —— 将来登记新内置服务时按同一口径把关。
+
+（阶段三第 2 步已摘掉 `config.ES_*` 与 `es_client.legacy_ctx()`：第 1-4 节的夹具因此改为
+按「一条 ES 型数据源」构造 `EsCtx`，闸门断言逐字不变。）
 """
-import asyncio
+import functools
+import importlib.util
+import inspect
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -21,28 +31,61 @@ from fastapi import HTTPException
 from backend.common import config
 from backend.core import es_client
 from backend.modules.mind.execution import builtin_mcp
-from backend.modules.mind.execution.sdk_tools import es_tools
 
 
-# ── 夹具：可控的 ES 配置 ────────────────────────────────────────────────
+# ── 夹具：ES 目标（一条 ES 型数据源） ────────────────────────────────────────────────
+
+ES_SRC_ID = 1794535612029          # 相当于一条已登记的 `db_type='es'` 数据源行
+_ES_ENTRY_POINTS = ("index_allowed", "require_index", "parse_select", "run_sql",
+                    "translate_select", "list_patterns", "describe_index_fields", "health")
+
+
+class EsTarget:
+    """用例里可改单项的 ES 目标（每次调用现组 EsCtx，改了立即生效）。"""
+
+    def __init__(self, **over):
+        self.fields = dict(
+            datasource_id=ES_SRC_ID, label="cloud-platform-es",
+            base_url="http://es-inner:9200", username="svc-es-readonly",
+            password="s3cr3t-pass", api_key="", verify_certs=False,
+            timeout_sec=5, max_rows=1000, allowed=("orders-*", "cases"),
+            pool_size=es_client.DEFAULT_POOL_SIZE)
+        self.fields.update(over)
+
+    def patch(self, **over):
+        self.fields.update(over)
+
+    def ctx(self):
+        return es_client.EsCtx(**self.fields)
+
 
 @pytest.fixture
 def es_config(monkeypatch):
-    """把 ES 配置置为"已开启 + 有地址 + 有白名单"，返回可继续覆盖的 SimpleNamespace。"""
-    state = SimpleNamespace(
-        ES_MCP_ENABLED=True,
-        ES_URL="http://es-inner:9200",
-        ES_USERNAME="svc-es-readonly",
-        ES_PASSWORD="s3cr3t-pass",
-        ES_API_KEY="",
-        ES_VERIFY_CERTS=False,
-        ES_TIMEOUT_SEC=5,
-        ES_MAX_ROWS=1000,
-        ES_ALLOWED_INDEXES=("orders-*", "cases"),
-    )
-    for key, value in vars(state).items():
-        monkeypatch.setattr(config, key, value)
-    return state
+    """把 ES 入口接上一条已登记的 ES 数据源（地址 + 开放范围齐备），返回可继续覆盖的目标。
+
+    旧夹具往 `config.ES_*` 上打补丁（内置通道）。阶段三第 2 步把那组全局配置与
+    `es_client.legacy_ctx()` 一并退役，所以这里直接构造一份 `EsCtx`（等同一条
+    `db_type='es'` 的数据源行），并把 ES 入口统一注入它：用例不必逐个传 ctx，而闸门
+    断言（开放范围/只读/LIMIT/不泄露物理信息）与迁移前逐字相同。
+    """
+    target = EsTarget()
+
+    def make(fn, tgt=target):
+        sig = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def call(*args, **kwargs):
+            # 只在调用方**没给** ctx 时注入：ES 入口之间会互相带 ctx 递归调用
+            # （如 `run_sql` 把 scope 位置参递给 `parse_select`），无条件补 kwarg
+            # 会报“多次传 ctx”，把闸门用例错当成功能失败。
+            if "ctx" in sig.parameters and "ctx" not in sig.bind_partial(*args, **kwargs).arguments:
+                kwargs["ctx"] = tgt.ctx()
+            return fn(*args, **kwargs)
+        return call
+
+    for name in _ES_ENTRY_POINTS:
+        monkeypatch.setattr(es_client, name, make(getattr(es_client, name)))
+    return target
 
 
 class _FakeResp:
@@ -56,22 +99,28 @@ class _FakeResp:
 
 
 def _install_transport(monkeypatch, responses):
-    """替换 requests.request，记录每次调用参数供断言。"""
+    """替换 ES 的 HTTP 传输层，记录每次调用参数供断言。
+
+    2026-11-13 起 `es_client` 走按 ctx 缓存的 `requests.Session` 连接池（`_session_for`），
+    打 `requests.request` 已拦不住（会变成真去解析 es-inner 主机名，测试靠 DNS 失败“巧合通过”），
+    所以必须打 session 工厂：`responses` 可为响应对象或按序号生成（也可抛异常模拟传输失败）。
+    """
     calls = []
 
-    def _fake(**kwargs):
-        calls.append(kwargs)
-        return responses(len(calls) - 1) if callable(responses) else responses
+    class _FakeSession:
+        def request(self, **kwargs):
+            calls.append(kwargs)
+            return responses(len(calls) - 1) if callable(responses) else responses
 
-    monkeypatch.setattr(es_client.requests, "request", _fake)
+    monkeypatch.setattr(es_client, "_session_for", lambda ctx: _FakeSession())
     return calls
 
 
 # ── 1. 白名单：数据面唯一闸门 ───────────────────────────────────────────
 
-def test_empty_allowlist_opens_nothing(monkeypatch):
+def test_empty_allowlist_opens_nothing(es_config):
     """空白名单必须拒绝一切 —— 不得当成"不限制"（与空角色授权不同口径）。"""
-    monkeypatch.setattr(config, "ES_ALLOWED_INDEXES", ())
+    es_config.patch(allowed=())
     assert es_client.index_allowed("orders-2026") is False
     assert es_client.index_allowed("anything") is False
     with pytest.raises(es_client.EsError):
@@ -157,11 +206,8 @@ def test_comment_content_is_not_mistaken_for_code(es_config):
         es_client.parse_select("SELECT a FROM cases LIMIT 10 -- c\n; DELETE FROM cases LIMIT 1")
 
 
-def test_limit_tightened_to_config_cap(monkeypatch):
-    monkeypatch.setattr(config, "ES_MCP_ENABLED", True)
-    monkeypatch.setattr(config, "ES_URL", "http://es-inner:9200")
-    monkeypatch.setattr(config, "ES_MAX_ROWS", 50)
-    monkeypatch.setattr(config, "ES_ALLOWED_INDEXES", ("cases",))
+def test_limit_tightened_to_config_cap(es_config):
+    es_config.patch(max_rows=50, allowed=("cases",))
     query, limit = es_client.parse_select("SELECT * FROM cases LIMIT 99999")
     assert limit == 50 and "LIMIT 50" in query
 
@@ -235,25 +281,53 @@ def test_http_error_returns_generic_message(es_config, monkeypatch):
     assert "Elasticsearch" in message
 
 
-def test_connection_error_hides_host(es_config, monkeypatch):
-    def _boom(**kwargs):
-        raise requests.exceptions.ConnectionError("Failed to establish a new connection: es-inner:9200")
+def test_http_error_names_the_concrete_cause_by_type(es_config, monkeypatch):
+    """ES 已把错因分类（error.type）：文案必须给方向，不能一律“请检查是否受支持”。
 
-    monkeypatch.setattr(es_client.requests, "request", _boom)
+    现网反馈：Playground/数据集报 HTTP 400 时只看到“请检查查询是否受支持”，
+    而 ES 其实回了 parsing_exception（语法不支持）或 verification_exception（列不存在）——
+    两件事的修法完全不同，拿掉分类就是把排查方向抹平（护栏 §7 只禁止转述自由文本）。
+    """
+    _install_transport(monkeypatch, _FakeResp(
+        {"error": {"type": "parsing_exception", "reason": "mismatched input '$' at [3:7]"}},
+        status=400))
+    with pytest.raises(es_client.EsError) as exc:
+        es_client.run_sql("SELECT * FROM cases LIMIT 10")
+    message = str(exc.value)
+    assert "无派生表" in message or "不支持" in message
+    assert "mismatched input" not in message          # reason 依旧不外泄
+    assert exc.value.error_type == "parsing_exception"  # type: ignore[attr-defined]
+
+    _install_transport(monkeypatch, _FakeResp(
+        {"error": {"root_cause": [{"type": "verification_exception",
+                                   "reason": "Unknown column [caseUidTypo]"}]}},
+        status=400))
+    with pytest.raises(es_client.EsError) as exc2:
+        es_client.run_sql("SELECT caseUidTypo FROM cases LIMIT 10")
+    assert "字段或索引" in str(exc2.value)
+    assert "Unknown column" not in str(exc2.value)
+
+
+def test_connection_error_hides_host(es_config, monkeypatch):
+    def _boom(_idx):
+        raise requests.exceptions.ConnectionError(
+            "Failed to establish a new connection: es-inner:9200")
+
+    _install_transport(monkeypatch, _boom)
     with pytest.raises(es_client.EsError) as exc:
         es_client.run_sql("SELECT * FROM cases LIMIT 10")
     assert "es-inner" not in str(exc.value) and "9200" not in str(exc.value)
 
 
-def test_missing_configuration_fails_loud(monkeypatch):
-    monkeypatch.setattr(config, "ES_URL", "")
+def test_missing_configuration_fails_loud(es_config):
+    """数据源缺地址就拒，不猜集群也不打空 URL。"""
+    es_config.patch(base_url="")
     with pytest.raises(es_client.EsError):
         es_client.run_sql("SELECT * FROM cases LIMIT 10")
 
 
 def test_api_key_sent_as_header_not_url(es_config, monkeypatch):
-    monkeypatch.setattr(config, "ES_API_KEY", "AK-XYZ")
-    monkeypatch.setattr(config, "ES_USERNAME", "")
+    es_config.patch(api_key="AK-XYZ", username="")
     calls = _install_transport(monkeypatch, _FakeResp({"columns": [], "rows": []}))
     es_client.run_sql("SELECT * FROM cases LIMIT 10")
     sent = calls[0]
@@ -313,82 +387,113 @@ def test_list_patterns_does_not_expand_or_call_cluster(es_config, monkeypatch):
 
     实机校准一个模式背 331~403 个月分片，展开会把上千个名字塞进模型上下文。
     """
-    def _boom(**kwargs):
+    def _boom(_idx):
         raise AssertionError("列开放范围不该发请求（展开是集群侧在查询时做的事）")
 
-    monkeypatch.setattr(es_client.requests, "request", _boom)
+    _install_transport(monkeypatch, _boom)
     assert es_client.list_patterns() == ["orders-*", "cases"]
 
 
-# ── 5. 工具层：未开启要显式提示，结果要标治理口径 ──────────────────────
+# ── 5. 内置 ES MCP 通道已退役（防“把裸路捡回来”的可证伪锁）────────────────
 
-def test_tool_reports_unconfigured_loudly(monkeypatch):
-    """未开启时不得返回空清单 —— 空结果会被模型当成"索引里没数据"从而答错。"""
-    monkeypatch.setattr(config, "ES_MCP_ENABLED", False)
-    result = asyncio.run(es_tools.list_es_indexes({}))
-    assert result.get("isError") is True
-    payload = json.loads(result["content"][0]["text"])
-    assert "配置" in payload["error"]
+def test_builtin_registry_has_no_elasticsearch():
+    """ES 已数据源化：内置注册表里不得再有 elasticsearch。
 
-
-def test_list_tool_returns_patterns_not_months(es_config, monkeypatch):
-    """工具层同口径：返回开放模式，不展开成月索引（展开会把上下文塞满）。"""
-    def _boom(**kwargs):
-        raise AssertionError("列开放范围不该访问集群")
-
-    monkeypatch.setattr(es_client.requests, "request", _boom)
-    payload = json.loads(asyncio.run(es_tools.list_es_indexes({}))["content"][0]["text"])
-    assert payload["data_views"] == ["orders-*", "cases"]
-    assert 'FROM "<pattern>"' in payload["how_to_query"]
-    assert payload["governance"]["gate"] == "index_allowlist"
+    留着代码条目而库里无实现行（或反之）就是“页面勾了、执行说没有”的空承诺；
+    注册表为空 = 当前没有内置服务，机制保留。`catalog()` 是展示侧单一事实源，必须同步为空。
+    """
+    assert "elasticsearch" not in builtin_mcp.BUILTIN_MCP_SERVICES
+    assert builtin_mcp.resolve("elasticsearch") is None
+    assert builtin_mcp.catalog() == []
 
 
-def test_list_tool_empty_allowlist_is_error_not_empty_list(es_config, monkeypatch):
-    """空白名单要报错而不是空清单：空清单会被模型答成"这个范围没有数据"。"""
-    monkeypatch.setattr(config, "ES_ALLOWED_INDEXES", ())
-    result = asyncio.run(es_tools.list_es_indexes({}))
-    assert result.get("isError") is True
-    assert "未开放" in json.loads(result["content"][0]["text"])["error"]
+def test_es_tools_module_is_gone():
+    """三个裸 SQL/元数据工具的模块必须物理删除：留着文件就留着“不经治理口直调 es_client”的旁路。"""
+    assert importlib.util.find_spec(
+        "backend.modules.mind.execution.sdk_tools.es_tools") is None
 
 
-def test_describe_tool_returns_view_and_field_split(es_config, monkeypatch):
-    _install_transport(monkeypatch, _FakeResp({"fields": {"a": {"keyword": {}}}}))
-    monkeypatch.setattr(es_tools, "_audit", lambda *a, **k: None)
-    payload = json.loads(
-        asyncio.run(es_tools.describe_es_index({"index": "orders-*"}))["content"][0]["text"])
-    assert payload["view"] == "orders-*" and payload["total"] == 1
-    assert ".keyword" in payload["hint"]  # text 不能精确分组：不提示就会查不出数
+def test_builtin_es_row_seeder_script_is_gone():
+    """往 `adh_mcp_servers` 种 9001 行的脚本同步删除：留着就能把死行重新塞回任何新环境。"""
+    backend_root = Path(es_client.__file__).parents[1]   # .../backend
+    repo_root = backend_root.parent
+    assert not (backend_root / "scripts" / "migrate_es_builtin_mcp.py").exists()
+    # 历史迁移不再插行（只保留表结构变更），否则新装库会出现“有服务行、无代码实现”
+    seeder_sql = (repo_root / "docker" / "mysql" / "es_builtin_mcp_migration.sql").read_text()
+    assert "INSERT INTO adh_mcp_servers" not in seeder_sql
 
 
-def test_query_result_carries_governance_note(es_config, monkeypatch):
-    """ES 通道结果必须可被审计/评测分辨：显式声明未套列级/行级策略。"""
-    _install_transport(monkeypatch, _FakeResp(
-        {"columns": [{"name": "a", "type": "LONG"}], "rows": [[1]]}))
-    monkeypatch.setattr(es_tools, "_audit", lambda *a, **k: None)
-    result = asyncio.run(es_tools.query_es_sql({"sql": "SELECT a FROM cases LIMIT 10"}))
-    payload = json.loads(result["content"][0]["text"])
-    assert payload["governance"]["channel"] == "builtin_elasticsearch"
-    assert payload["governance"]["column_policy"] == "not_applied"
-    assert payload["rows"] == [{"a": 1}]
+def test_no_agent_tool_advertises_raw_es_sql():
+    """工具目录口径：任何工具组都不得再广告 `query_es_sql` 这类裸 ES 入口。
+
+    替代通路必须存在（ES SQL 走治理口，按 `db_type='es'` 分派，见 test_dataset_es_source /
+    test_es_rls_injection），否则就是“拆了旧的没给新的”。
+    """
+    from backend.modules.mind.execution.sdk_tools import TOOL_SERVER_TOOLS
+
+    names = {n for _server, ns in TOOL_SERVER_TOOLS.values() for n in ns}
+    for retired in ("list_es_indexes", "describe_es_index", "query_es_sql"):
+        assert retired not in names
+    assert {"check_sql", "execute_sql"} <= names
 
 
-def test_query_error_does_not_leak_transport_detail(es_config, monkeypatch):
-    def _boom(**kwargs):
-        raise requests.exceptions.ConnectionError("read timeout to es-inner:9200 as svc-es-readonly")
+def test_es_mcp_is_not_installable_from_market():
+    """MCP 市场清单不得再提供可安装的 Elasticsearch 服务（旁路不能拆一边又开一边）。
 
-    monkeypatch.setattr(es_client.requests, "request", _boom)
-    monkeypatch.setattr(es_tools, "_audit", lambda *a, **k: None)
-    result = asyncio.run(es_tools.query_es_sql({"sql": "SELECT a FROM cases LIMIT 10"}))
-    text = result["content"][0]["text"]
-    assert result.get("isError") is True
-    for leak in ("es-inner", "9200", "svc-es-readonly", "timeout"):
-        assert leak not in text
+    官方 `docker.elastic.co/mcp/elasticsearch` 安装后是一行 stdio 外部服务：AS-BOT 绑上就能
+    拿 ES_URL/ES_API_KEY 直连集群，不查角色源授权、不套行/列策略、不落取数审计（护栏 §1）。
+    市场页只接了浏览/详情/安装三个端点（create/update/delete_registry 无消费方），
+    所以下架只能落迁移 `mcp_registry_es_retire_migration.sql`。同时不得有已安装的 ES 服务行。
+    """
+    from backend.common.db import execute_query
+
+    assert execute_query(
+        "SELECT COUNT(*) n FROM adh_mcp_registry "
+        "WHERE LOWER(COALESCE(package_name,'')) LIKE '%elasticsearch%' "
+        "OR name = 'Elasticsearch'", fetchone=True)["n"] == 0, \
+        "迁移 mcp_registry_es_retire_migration.sql 未应用到当前库"
+    assert not execute_query(
+        "SELECT id, name FROM adh_mcp_servers "
+        "WHERE LOWER(name) LIKE '%elastic%' OR LOWER(COALESCE(args,'')) LIKE '%elasticsearch%' "
+        "OR LOWER(COALESCE(command,'')) LIKE '%elastic%'")
 
 
-# ── 6. 内置 MCP 服务的注册与授权接线 ──────────────────────────────────
+# ── 6. 内置 MCP 机制接线（注册表当前为空，用中性样例锁机制）──────────────
+
+DEMO_TOOL = {"name": "demo_tool", "description": "机制样例工具",
+             "schema": {"type": "object", "properties": {}},
+             "handler": lambda args: {"content": []}}
+
+
+def _demo_spec(ready: bool = True) -> dict:
+    """内置服务契约的最小实现（label/description/tool_specs/state/probe 齐备）。
+
+    真实内置服务已退役（注册表为空），但机制不得因此失去回归：将来登记新服务时，
+    下面的用例就是它必须满足的口径。样例不接任何外部系统，`state` 只给结论与原因。
+    """
+    return {
+        "label": "演示内置服务",
+        "description": "只用于锁机制",
+        "tool_specs": lambda: [DEMO_TOOL],
+        "state": lambda cfg: {
+            "ready": ready,
+            "state": "ready" if ready else "disabled",
+            "status_message": "" if ready else "未启用（部署侧开关关闭）",
+            "open_view_count": 3 if ready else 0,
+        },
+        "probe": lambda: {"success": ready,
+                          "message": "连接正常" if ready else "未启用"},
+    }
+
+
+@pytest.fixture
+def demo_builtin(monkeypatch):
+    monkeypatch.setattr(builtin_mcp, "BUILTIN_MCP_SERVICES", {"demo-builtin": _demo_spec()})
+    return "demo-builtin"
+
 
 def test_es_is_not_a_data_tool_group():
-    """ES 只从「引用 MCP 服务」入口配置：不得同时存在于数据工具组（双口径）。"""
+    """ES 不得同时存在于数据工具组（双口径）：它现在是数据源，不是工具组、也不是内置服务。"""
     from backend.modules.mind.execution.sdk_tools import TOOL_SERVER_TOOLS, TOOL_SERVER_BUILDERS
 
     assert "elasticsearch" not in TOOL_SERVER_TOOLS
@@ -402,12 +507,12 @@ def test_builtin_row_detection():
     assert builtin_mcp.is_builtin_row({}) is False
 
 
-def test_builtin_server_registers_under_authorized_prefix():
+def test_builtin_server_registers_under_authorized_prefix(demo_builtin):
     """注册前缀必须与 tool_policy 生成的 `mcp__external_{sid}__{tool}` 同源，否则勾了调不到。"""
     cfg = builtin_mcp.build_builtin_server(
-        "qoder", {"name": "elasticsearch"}, "external_9001",
-        "mcp__external_9001", ["list_es_indexes", "query_es_sql"])
-    assert cfg["name"] == "external_9001"
+        "qoder", {"name": demo_builtin}, "external_9101",
+        "mcp__external_9101", ["demo_tool"])
+    assert cfg["name"] == "external_9101"
 
 
 def test_unregistered_builtin_row_rejected():
@@ -417,32 +522,38 @@ def test_unregistered_builtin_row_rejected():
                                         "external_9", "mcp__external_9", ["x"])
 
 
-def test_selected_builtin_tool_must_exist():
-    with pytest.raises(ValueError):
+def test_retired_builtin_row_is_rejected_by_name():
+    """已退役的 elasticsearch 内置行走同一条 fail-loud 分支（不是“返空工具”）。
+
+    退役迁移只软删服务行；若某环境漏跑迁移、或有人手建一行同名 builtin，绑上去必须报错，
+    而不是“能绑上但模型永远拿不到工具”。
+    """
+    with pytest.raises(PermissionError) as exc:
         builtin_mcp.build_builtin_server("qoder", {"name": "elasticsearch"},
-                                        "external_9001", "mcp__external_9001", ["not_a_tool"])
+                                        "external_9001", "mcp__external_9001", ["query_es_sql"])
+    assert "未登记实现" in str(exc.value)
 
 
-def test_binding_not_ready_builtin_service_is_rejected(es_config, monkeypatch):
+def test_selected_builtin_tool_must_exist(demo_builtin):
+    with pytest.raises(ValueError):
+        builtin_mcp.build_builtin_server("qoder", {"name": demo_builtin},
+                                        "external_9101", "mcp__external_9101", ["not_a_tool"])
+
+
+def test_binding_not_ready_builtin_service_is_rejected(monkeypatch):
     """未就绪的内置服务不给注册：否则模型拿到工具只会反复报错（不假承诺）。"""
     from backend.modules.mind.execution.sdk_tools import external_tools
 
-    row = {"id": 9001, "name": "elasticsearch", "transport": "builtin", "is_builtin": 1}
+    row = {"id": 9101, "name": "demo-builtin", "transport": "builtin", "is_builtin": 1}
+    policy = SimpleNamespace(as_bot={"mcp_server_ids": [9101]}, external={"9101": ["demo_tool"]})
     monkeypatch.setattr(external_tools, "execute_query", lambda *a, **k: dict(row))
-    policy = SimpleNamespace(as_bot={"mcp_server_ids": [9001]},
-                             external={"9001": ["list_es_indexes"]})
 
-    monkeypatch.setattr(config, "ES_MCP_ENABLED", False)
+    monkeypatch.setattr(builtin_mcp, "BUILTIN_MCP_SERVICES", {"demo-builtin": _demo_spec(ready=False)})
     with pytest.raises(PermissionError):
-        external_tools.load_server(9001, policy)
+        external_tools.load_server(9101, policy)
 
-    monkeypatch.setattr(config, "ES_ALLOWED_INDEXES", ())
-    monkeypatch.setattr(config, "ES_MCP_ENABLED", True)
-    with pytest.raises(PermissionError):
-        external_tools.load_server(9001, policy)
-
-    monkeypatch.setattr(config, "ES_ALLOWED_INDEXES", ("cases",))
-    assert external_tools.load_server(9001, policy)["name"] == "elasticsearch"
+    monkeypatch.setattr(builtin_mcp, "BUILTIN_MCP_SERVICES", {"demo-builtin": _demo_spec()})
+    assert external_tools.load_server(9101, policy)["name"] == "demo-builtin"
 
 
 def test_binding_unknown_builtin_impl_is_rejected(es_config, monkeypatch):
@@ -457,95 +568,155 @@ def test_binding_unknown_builtin_impl_is_rejected(es_config, monkeypatch):
 
 # ── 7. 展示与写保护：内置行不回配置字段、不可改删 ────────────────────
 
-BUILTIN_ROW = {"id": 9001, "name": "elasticsearch", "transport": "builtin", "is_builtin": 1,
-               "description": "平台内置 Elasticsearch 只读查询能力", "is_active": 1,
+BUILTIN_ROW = {"id": 9101, "name": "demo-builtin", "transport": "builtin", "is_builtin": 1,
+               "description": "平台内置能力（配置由部署侧托管）", "is_active": 1,
                # 故意放入脏数据：历史误填或手工改库也不能把凭据带进页面
-               "url": "http://stale-es:9200", "command": "npx es-server",
-               "args": "--nodeps", "env": '{"ES_PASSWORD": "s3cr3t-pass"}',
-               "tools_config": "{}", "discovered_tools": "[]"}
+               "url": "http://stale-host:9200", "command": "npx internal-runner",
+               "args": "--nodeps", "env": '{"PASSWORD": "s3cr3t-pass"}',
+               # 旧清单：内置行的工具清单必须回源代码，不得拿这一列广告调不到的入口
+               "tools_config": "{}",
+               "discovered_tools": json.dumps(
+                   [{"name": "ghost_tool", "description": "种子留下的旧清单"}])}
+
+# 已退役服务的残留行（代码无实现）：投影必须是“不可用 + 可读原因”，旧工具清单要被洗掉
+RETIRED_ROW = {"id": 9001, "name": "elasticsearch", "transport": "builtin", "is_builtin": 1,
+               "description": "平台内置 Elasticsearch 只读查询能力", "is_active": 0,
+               "url": "http://stale-es:9200", "command": "", "args": "",
+               "env": '{"ES_PASSWORD": "s3cr3t-pass"}',
+               "tools_config": "{}",
+               "discovered_tools": json.dumps([{"name": n, "description": n} for n in (
+                   "list_es_indexes", "describe_es_index", "query_es_sql")])}
 
 
-def test_builtin_row_projection_strips_configuration(es_config):
+def test_builtin_row_projection_strips_configuration(demo_builtin):
     from backend.modules.platform.api import mcp_servers as api
 
     out = api._project_builtin(dict(BUILTIN_ROW))
     for key in ("url", "command", "args", "env", "tools_config"):
         assert key not in out
     text = json.dumps(out, ensure_ascii=False)
-    for leak in ("stale-es", "9200", "s3cr3t-pass", "npx", "svc-es-readonly"):
+    for leak in ("stale-host", "9200", "s3cr3t-pass", "npx"):
         assert leak not in text
     assert out["builtin"] is True and out["state"] == "ready" and out["is_active"] == 1
-    assert out["label"] == "Elasticsearch 检索服务"
+    assert out["label"] == "演示内置服务"
+    # 工具清单回源代码：DB 列里的旧清单（ghost_tool）不得原样外渲
+    assert [t["name"] for t in json.loads(out["discovered_tools"])] == ["demo_tool"]
+    assert "ghost_tool" not in text
+
+
+def test_retired_builtin_row_projects_as_unregistered():
+    """库里残留的已退役内置行：不得投影成“就绪”，脏配置字段同样剥光（护栏 §7）。
+
+    这是“页面看得见但永远用不了”的典型形态，状态与原因必须可读（不是 unknown 裸值）。
+    """
+    from backend.modules.platform.api import mcp_servers as api
+
+    out = api._project_builtin(dict(RETIRED_ROW))
+    assert out["state"] == "unknown" and out["is_active"] == 0
+    assert "未登记实现" in out["status_message"]
+    assert out["open_view_count"] == 0
+    # 服务已退役 → 旧工具清单必须被洗成空：页面不能“提供工具 (3)”但三个都调不到
+    assert json.loads(out["discovered_tools"]) == []
+    text = json.dumps(out, ensure_ascii=False)
+    for name in ("list_es_indexes", "describe_es_index", "query_es_sql"):
+        assert name not in text
+    for key in ("url", "command", "args", "env", "tools_config"):
+        assert key not in out
+    for leak in ("stale-es", "9200", "s3cr3t-pass"):
+        assert leak not in text
 
 
 def test_projection_marks_not_ready_service_inactive(monkeypatch):
     """未就绪的内置行对外 is_active=0：AS-BOT 候选按 is_active 过滤，绑不上也不会“绑了必错”。"""
     from backend.modules.platform.api import mcp_servers as api
 
-    monkeypatch.setattr(config, "ES_MCP_ENABLED", False)
+    monkeypatch.setattr(builtin_mcp, "BUILTIN_MCP_SERVICES", {"demo-builtin": _demo_spec(ready=False)})
     out = api._project_builtin(dict(BUILTIN_ROW))
     assert out["is_active"] == 0 and out["state"] == "disabled"
     assert "未启用" in out["status_message"]
 
 
-def test_catalog_projection_carries_no_configuration(es_config):
+def test_catalog_projection_carries_no_configuration(demo_builtin):
     """展示侧单一事实源：catalog() 的结构里根本没有配置字段可泄。"""
     text = json.dumps(builtin_mcp.catalog(), ensure_ascii=False)
-    for leak in ("stale-es", "9200", "s3cr3t-pass", "svc-es-readonly", "http://", "orders-*"):
+    for leak in ("stale-host", "9200", "s3cr3t-pass", "http://", "orders-*"):
         assert leak not in text
     item = builtin_mcp.catalog()[0]
-    assert {t["name"] for t in item["tools"]} == {
-        "list_es_indexes", "describe_es_index", "query_es_sql"}
-    assert item["open_view_count"] == 2  # 只给数量，不给模式内容（模式名属部署配置）
+    assert {t["name"] for t in item["tools"]} == {"demo_tool"}
+    assert item["open_view_count"] == 3  # 只给数量，不给范围清单（属部署配置）
 
 
-def test_probe_message_hides_cluster_identity(es_config, monkeypatch):
-    _install_transport(monkeypatch, _FakeResp(
-        {"version": {"number": "8.13.0"}, "cluster_name": "prod-secret-cluster",
-         "name": "node-7.internal"}))
-    result = builtin_mcp._es_probe()
-    text = json.dumps(result, ensure_ascii=False)
-    assert result["success"] is True
-    for leak in ("prod-secret-cluster", "node-7.internal", "es-inner", "9200", "s3cr3t-pass"):
-        assert leak not in text
-    assert "已开放 2 个索引范围" in result["message"]
+def test_empty_registry_catalog_is_empty_and_fails_loud_per_row():
+    """注册表为空：展示侧给空清单（前端渲空态），但已存在的内置行仍按“未登记实现”拒。"""
+    assert builtin_mcp.catalog() == []
+    assert builtin_mcp.state_of("anything")["ready"] is False
+    assert "未登记实现" in builtin_mcp.state_of("anything")["status_message"]
 
 
-def test_probe_reports_disabled_without_connecting(es_config, monkeypatch):
-    called = []
-    monkeypatch.setattr(es_client.requests, "request",
-                        lambda **kw: called.append(kw) or _FakeResp({}))
-    monkeypatch.setattr(config, "ES_MCP_ENABLED", False)
-    result = builtin_mcp._es_probe()
-    assert result["success"] is False and "未启用" in result["message"]
-    assert called == []  # 未就绪时不应去碰集群
+def test_builtin_test_endpoint_uses_code_probe_not_remote_connection(demo_builtin, monkeypatch):
+    """内置行点「测试连接」只调代码登记的 probe，绝不建远程 MCP 连接（不读库里的 url/command）。
+
+    probe 自己不得在“未就绪”时去碰外部系统：这是内置服务与部署配置之间的唯一硬约束。
+    """
+    from backend.modules.platform.api import mcp_servers as api
+
+    monkeypatch.setattr(api, "execute_query", lambda *a, **k: dict(BUILTIN_ROW))
+    seen = {}
+    monkeypatch.setattr(api, "update_builtin_test_result",
+                        lambda sid, probe: seen.update(sid=sid, probe=probe))
+
+    def _boom(*a, **kw):
+        raise AssertionError("内置服务不得走远程连接发现流程")
+
+    monkeypatch.setattr("backend.mcp_client.client.MCPClient", _boom)
+    out = api.test_mcp_server(9101)
+    assert seen["sid"] == 9101 and out == seen["probe"]
+    assert out["success"] is True and "连接正常" in out["message"]
 
 
-def test_builtin_test_writeback_keeps_tool_catalog(es_config, monkeypatch):
+def test_builtin_test_endpoint_rejects_row_without_impl(monkeypatch):
+    """无实现的内置行点测试：显式失败并给出原因，不假成功（no-silent-degradation）。"""
+    from backend.modules.platform.api import mcp_servers as api
+
+    monkeypatch.setattr(api, "execute_query", lambda *a, **k: dict(RETIRED_ROW))
+    seen = {}
+    monkeypatch.setattr(api, "update_builtin_test_result",
+                        lambda sid, probe: seen.update(sid=sid, probe=probe))
+
+    def _boom(*a, **kw):
+        raise AssertionError("已退役服务行不得去连集群")
+
+    monkeypatch.setattr("backend.mcp_client.client.MCPClient", _boom)
+    out = api.test_mcp_server(9001)
+    assert out["success"] is False and "未登记实现" in out["message"]
+    assert seen["probe"]["success"] is False
+
+
+def test_builtin_test_writeback_keeps_tool_catalog(monkeypatch):
     """内置行的工具清单来自代码登记：测试失败也不得清空它，否则逐工具授权渲不出。"""
     from backend.modules.platform.api import mcp_servers as api
 
     captured = {}
     monkeypatch.setattr(api, "execute_write",
                         lambda sql, params=None: captured.update(sql=sql, params=params))
-    api.update_builtin_test_result(9001, {"success": False, "message": "x" * 900})
+    api.update_builtin_test_result(9101, {"success": False, "message": "x" * 900})
     assert "discovered_tools" not in captured["sql"]
     assert "is_builtin=1" in captured["sql"]
     assert len(captured["params"][2]) <= 500  # 对齐列宽，不靠数据库报错发现
 
 
-def test_builtin_row_cannot_be_edited_or_deleted(es_config, monkeypatch):
+def test_builtin_row_cannot_be_edited_or_deleted(monkeypatch):
     from backend.modules.platform.api import mcp_servers as api
 
     monkeypatch.setattr(api, "execute_query", lambda *a, **k: dict(BUILTIN_ROW))
     for verb in ("修改", "删除"):
         with pytest.raises(HTTPException) as exc:
-            api._reject_builtin_mutation(9001, verb)
+            api._reject_builtin_mutation(9101, verb)
         assert exc.value.status_code == 409
         assert "系统维护" in exc.value.detail and "部署侧托管" in exc.value.detail
 
 
-def test_builtin_row_mutation_allows_external_rows(es_config, monkeypatch):
+def test_builtin_row_mutation_allows_external_rows(monkeypatch):
     from backend.modules.platform.api import mcp_servers as api
 
     monkeypatch.setattr(api, "execute_query",
@@ -553,8 +724,8 @@ def test_builtin_row_mutation_allows_external_rows(es_config, monkeypatch):
     api._reject_builtin_mutation(7, "修改")  # 外部服务不受限
 
 
-def test_page_cannot_create_fake_builtin_service(es_config):
-    """内置服务只能由迁移登记：允许页面新建 builtin = 允许伪造无实现入口。"""
+def test_page_cannot_create_fake_builtin_service():
+    """内置服务只能由代码登记 + 迁移建行：允许页面新建 builtin = 允许伪造无实现入口。"""
     from backend.modules.platform.api import mcp_servers as api
 
     with pytest.raises(HTTPException) as exc:

@@ -165,6 +165,8 @@ export interface ReportDraftPayload {
   format?: string;
   /** 正文来源的产物文件（服务端从会话工作区读）；无产物时为 null */
   artifact?: { filename: string; type: string } | null;
+  /** 正文来源的交付文档对象（渲染机产出，服务端从受管文档表读）；与 artifact 两存其一 */
+  document?: { doc_id: string; body_kind: string } | null;
   created_at: string;
   updated_at: string;
   revisions: number;
@@ -205,8 +207,14 @@ export async function updateReport(reportId: number, patch: {
   return data;
 }
 
-export async function deleteReport(reportId: number): Promise<void> {
-  await client.delete(`/reports/${reportId}`);
+/** 删除报表。两个意图必须分开传（旧写法一次带走整份报告的全部历史版本）：
+ *  - `version`（默认）：只删这一版，同系列其余历史版本保留；
+ *  - `series`：删整份报告（全部历史版本）。 */
+export async function deleteReport(
+  reportId: number, scope: 'version' | 'series' = 'version',
+): Promise<{ report_id: number; scope: string; deleted: number; remaining: number; remaining_base_id: number }> {
+  const { data } = await client.delete(`/reports/${reportId}`, { params: { scope } });
+  return data;
 }
 
 /** 「用最新数据重新生成」的过程事件（服务端一处产出，前端只按类型显示，不自己判结局）。

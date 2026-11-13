@@ -158,7 +158,7 @@ def test_batch_surfaces_per_item_warning_and_soft_reminders(spy):
 
 def test_batch_audits_every_succeeded_item_only(spy):
     """审计逐条落（成功与拒绝都要有痕迹），且只给真成功的记状态转换审计。"""
-    spy.state["fail"][2] = ("已上线的内容不能直接删除，请先在「审核发布」里下架（保留下架流水可追溯）", 400)
+    spy.state["fail"][2] = ("已上线的内容不能直接删除，请先在「内容管理」里下架（保留下架流水可追溯）", 400)
     _run(api.batch_delete_articles, ["a1", "a2"])
 
     assert [a[1] for a in spy.state["audit"]] == [1]

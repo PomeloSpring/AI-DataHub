@@ -1,7 +1,9 @@
 """SQL 安全解析与按作用域注入 RLS；无法识别时拒绝，不回退裸查询。
 
 方言约定（与 semantics.planner._DIALECT_OF_DBTYPE 同一口径，修改需两处同步）：
-mysql/doris 同族（MySQL 协议/语法），postgres 家族含 sls（PG 协议接入）。
+mysql/doris 同族（MySQL 协议/语法），postgres 家族含 sls（PG 协议接入）；
+**es 单独立档**（见 `semantics/es_dialect.py` 的实机取证）：语法骨架走 Presto、函数渲染
+改回 ES 形态，行策略走「AND 进顶层 WHERE」专支（ES 不认包裹子查询形态）。
 """
 from __future__ import annotations
 
@@ -9,10 +11,15 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.optimizer.scope import traverse_scope
 
+from backend.semantics.es_dialect import ES_DIALECT, ES_ENGINE, assert_es_renderable
+
 # db_type -> sqlglot 方言：未知类型保守回落 mysql（与旧行为一致）。
+# es 必须显式登记：落回 mysql 会把 `"appCode.keyword"` 变成字符串字面量、
+# `DATE_TRUNC` 重写成 `STR_TO_DATE(CONCAT(...))` —— 语法能过、结果全错的静默错数。
 _DIALECT_OF_DBTYPE = {
     "mysql": "mysql", "doris": "mysql",
     "postgres": "postgres", "postgresql": "postgres", "pg": "postgres", "sls": "postgres",
+    "elasticsearch": ES_DIALECT, "es": ES_DIALECT,
 }
 
 
@@ -98,10 +105,75 @@ def extract_tables(sql: str, dialect: str = "mysql") -> list[str]:
     return tables
 
 
-def inject_filters(sql: str, filters: dict[str, str], dialect: str = "mysql") -> tuple[str, list[str]]:
+def _row_predicate_condition(predicate: str, dialect: str) -> exp.Condition:
+    """策略谓词→AST，并拒子查询/写操作（ES 实机不支持 IN (SELECT)/EXISTS，全引擎同样拒）。"""
+    condition = sqlglot.parse_one(predicate, read=dialect, into=exp.Condition)
+    if any(isinstance(item, (exp.Query, exp.DDL, exp.DML, exp.Command)) for item in condition.walk()):
+        raise ValueError("行策略不能包含子查询或写操作")
+    return condition
+
+
+def _inject_filters_es(sql: str, filters: dict[str, str], dialect: str) -> tuple[str, list[str]]:
+    """ES 形态的行策略注入：谓词 **AND 进顶层 WHERE**，不包裹子查询。
+
+    为什么不能走通用支路（取证 2026-11-13）：通用实现把 `FROM t` 换成
+    `FROM (SELECT * FROM t WHERE p) AS t`，而 ES 派生表的 `SELECT *` **不透传 `.keyword`
+    多字段**（实机 400：`Unknown column [businessType.keyword], did you mean
+    [businessType]?`），本仓 ES 正文全部走 `.keyword` —— 包裹形态在 ES 上必跑不通。
+    ES 也没有 JOIN/派生表，所以只支持「单表单层 SELECT」；不满足即拒，
+    不得只在一侧套过滤、也不得回退到未过滤正文。
+
+    策略未命中表引用时**显式拒**（列键与 FROM 实际引用）：静默原句返回等于“看起来过了
+    治理口、一条策略也没套”的假治理，是本类问题里代价最高的一种。
+    """
+    tree = parse_query(sql, dialect)
+    refs = physical_references(tree)
+    if len(refs) != 1:
+        raise PermissionError(
+            f"ES 行级策略只支持单表查询（ES SQL 无 JOIN/派生表），当前正文引用 {len(refs)} 张表，已拒绝执行")
+    _scope, node = refs[0]
+    key = table_key(node)
+    predicate = filters.get(key.lower())
+    if not predicate:
+        # 兼容同一目标的两种写法（索引别名 ↔ `t-{别名}*` 模式）：策略按哪个登都能命中，
+        # 但两个都不匹配时必须拒（而不是原句放行）。
+        # 多键归一后指向同一目标时 **AND 合并**，不得拿第一个命中就当结果（那会按字典序
+        # 静默丢掉一条策略）；与通用支路的同表多策略 AND 口径一致。
+        from backend.core.es_client import es_alias_of
+
+        alias = es_alias_of(key).lower()
+        matched = [v for k, v in filters.items() if es_alias_of(k).lower() == alias and v]
+        predicate = "(" + ") AND (".join(matched) + ")" if len(matched) > 1 else (matched[0] if matched else None)
+    if not predicate:
+        raise PermissionError(
+            f"行级策略未能应用到 ES 查询：策略登记的表 {sorted(filters)} 与正文 FROM 引用「{key}」"
+            f"不一致（ES 的 FROM 目标是索引别名或其 `t-别名*` 模式写法，必须逐字对齐），已拒绝执行")
+    try:
+        condition = _row_predicate_condition(predicate, dialect)
+    except Exception as exc:
+        raise PermissionError("行级策略无法安全应用") from exc
+
+    where = tree.args.get("where")
+    if where is not None:
+        where.set("this", exp.and_(where.this, condition, copy=False))
+    else:
+        tree.set("where", exp.Where(this=condition))
+    return assert_es_renderable(tree.sql(dialect=dialect)), [key]
+
+
+def inject_filters(sql: str, filters: dict[str, str], dialect: str = "mysql",
+                   engine: str = "") -> tuple[str, list[str]]:
+    """按目标源注入行级过滤。
+
+    engine='es' 走专支（顶层 WHERE AND）：ES 不认通用的包裹子查询形态。
+    其余引擎保持现有行为：只改写命中策略的表引用，未命中时原句返回 + applied 为空，
+    由调用方（`permission_enforcer.enforce_sql`）统一 fail-loud。
+    """
     filters = {key.lower(): value for key, value in filters.items() if value}
     if not filters:
         return sql, []
+    if (engine or "").strip().lower() == ES_ENGINE:
+        return _inject_filters_es(sql, filters, dialect or ES_DIALECT)
     tree = parse_query(sql, dialect)
     refs = physical_references(tree)
     applied = []
@@ -114,9 +186,7 @@ def inject_filters(sql: str, filters: dict[str, str], dialect: str = "mysql") ->
         if not predicate:
             continue
         try:
-            condition = sqlglot.parse_one(predicate, read=dialect, into=exp.Condition)
-            if any(isinstance(item, (exp.Query, exp.DDL, exp.DML, exp.Command)) for item in condition.walk()):
-                raise ValueError("行策略不能包含子查询或写操作")
+            condition = _row_predicate_condition(predicate, dialect)
             alias = node.alias or node.name
             base = node.copy()
             base.set("alias", None)

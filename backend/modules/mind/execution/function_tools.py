@@ -455,7 +455,7 @@ def _create_scheduled_task(args):
 #   * 六个动作全部挂 ``article:manage``（AI 级别 write）：能让 AI 代编的，就是能自己编的人；
 #   * **发布 / 下架 / 审核不给 AI**：``article:publish`` 与 ``article:review`` 的
 #     ``ai_access=none``（对外内容代表公司立场，必须有人负责）。被拒时如实说缺哪个码，
-#     并指回「内容中心 → 审核发布」，不得换工具绕过；
+#     并指回「内容中心 → 内容管理」（审核与发布都在行上，旧「审核发布」页已并入），不得换工具绕过；
 #   * **同步知识库语料不给 AI**：``kbdoc:write`` 的 ``ai_access=none``（改语料等于改 AI
 #     自己的知识），需要时由人在内容管理页点「同步到知识库」。
 # 标识口径（护栏 §7 + ui-resource-display §2）：入参与返回一律用**业务标识**
@@ -673,7 +673,7 @@ def _submit_content_review(args):
         return _text({"error": _err(e)}, is_error=True)
     return _text({**out,
                   "note": "已进入待审队列，但尚未发布：审核与发布是人的动作（article:review / "
-                          "article:publish 未开放 AI 调用），请在「内容中心 → 审核发布」处理。"})
+                          "article:publish 未开放 AI 调用），请在「内容中心 → 内容管理」处理。"})
 
 
 # ═════════════════════════════════════════════════════════════════════════════

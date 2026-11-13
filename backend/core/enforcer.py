@@ -81,6 +81,37 @@ def _table_columns_snapshot(datasource_id: int, table: str) -> Optional[list]:
         return None
 
 
+def _es_table_columns(datasource_id: int, table: str) -> Optional[list]:
+    """ES 型数据源的**根字段**清单：先按正文里的实际引用取，再按归一别名取。
+
+    同一个索引目标有两种等价写法（`t-别名*` 模式与裸别名），而元数据快照按**别名**登记
+    （`datasource_service.es_table_list` 的表清单就是去重后的别名）。只查一种写法会
+    拿不到列清单 → `*` 展不开 → 本函数调用方必须拒执行，故两种写法都试一次。
+
+    列清单里要剔掉 `.keyword` 子字段：ES 的 `SELECT *` 只返回根字段（实机比对过列名），
+    把它们当普通列展开会凭空多出一批输出列（改写前后结果形状不同）；子字段写法的策略
+    命中靠 `_restrict_columns_in_es_sql` 里的键展开，不依赖列清单。
+    两者都拿不到时返回 None，由调用方显式拒绝（不猜列）。
+    """
+    from backend.core.es_client import es_alias_of, es_field_of
+
+    def _roots(cols):
+        out, seen = [], set()
+        for c in cols or []:
+            name = str(c or "")
+            if es_field_of(name) != name.lower() or name.lower() in seen:
+                continue      # 子字段（尾部 .keyword）/ 重复项：不进 `*` 展开清单
+            seen.add(name.lower())
+            out.append(name)
+        return out or None
+
+    cols = _roots(_table_columns_snapshot(datasource_id, table))
+    if cols:
+        return cols
+    alias = es_alias_of(table)
+    return _roots(_table_columns_snapshot(datasource_id, alias)) if alias != table else None
+
+
 def _ds_deny_reason(datasource_id) -> str:
     """数据源拒绝文案：显示 name 不裸显 id（ui-resource-display）。
 
@@ -285,6 +316,17 @@ class PermissionEnforcer:
             ds_dialect = dialect_of_db_type(_src.get("db_type") or "mysql")
             from backend.semantics.dialect import engine_of
             ds_engine = engine_of(_src.get("db_type") or "")
+        # ES 目标的“策略键”与“注入键”不是同一个名字（详见下面循环里的注释），先标出来。
+        is_es_source = (ds_engine or "").strip().lower() == "es"
+        # 列名归一：ES 正文里 text 字段一律写成子字段 `"appCode.keyword"`，策略却按物理列名
+        # `appCode` 登记（敏感数据页/RLS 列策略都是按字段配的），不归一到同一逻辑字段就会
+        # 两条护栏同时miss；非 ES 保持原有“仅小写”口径不变。
+        if is_es_source:
+            from backend.core.es_client import es_field_of
+
+            col_norm = es_field_of
+        else:
+            col_norm = None
         # 总是解析真实查询，调用方传入的表清单不能省略 JOIN 或 CTE 内的表。
         tables = extract_tables(sql, ds_dialect)
 
@@ -320,6 +362,14 @@ class PermissionEnforcer:
 
         for table in tables:
             policy_table, table_ds_id = self._resolve_table_ref(table, datasource_id)
+            if is_es_source:
+                # ES 的 FROM 目标是**索引别名**或其 `t-别名*` 模式写法（同一份数据的两种写法，
+                # 实机验证覆盖集合与计数完全相等），而行级策略/敏感字段在元库按裸表名登记。
+                # 所以查策略用归一后的别名，注入键仍用正文里的实际引用（`table_filters[table]`）：
+                # 两者混用会命不中，而命不中在通用路径是“原句不动”，在 ES 专支是显式拒。
+                from backend.core.es_client import es_alias_of
+
+                policy_table = es_alias_of(policy_table)
 
             if not only_sensitive:
                 # 跨源表所属源同样必须逐个在授权集内（限定名不得绕过数据源授权）。
@@ -362,16 +412,19 @@ class PermissionEnforcer:
                 previous = combined_result.masked_columns.get(col)
                 combined_result.masked_columns[col] = mask if previous in (None, mask) else "null"
             if result.hidden_columns or result.masked_columns:
-                col_restr_by_table[policy_table] = {
+                # 列级限制的作用域键 = 正文里的表引用名（`apply_column_restriction` 按
+                # `exp.Table.name` 比对）：ES 必须用实际引用而不是归一别名，否则
+                # “策略加载到了、改写时一张表也没命中”→ 静默不脱敏。
+                col_restr_by_table[table if is_es_source else policy_table] = {
                     "hidden": list(result.hidden_columns or []),
                     "masked": dict(result.masked_columns or {}),
                 }
             combined_result.policies_applied.extend(result.policies_applied)
 
-        self._protect_projection(sql, combined_result, ds_dialect)
+        self._protect_projection(sql, combined_result, ds_dialect, normalize=col_norm)
         # RLS 注入会整条重写 SQL，必须用目标源方言（已在上方按 db_type 解析，sls 属 postgres 族）；
         # 硬编码 mysql 会把 `"quoted_id"` 变字符串字面量、ARRAY[] 变 ARRAY() → 目标源报语法错。
-        modified_sql, applied = inject_filters(sql, table_filters, dialect=ds_dialect)
+        modified_sql, applied = inject_filters(sql, table_filters, dialect=ds_dialect, engine=ds_engine)
         # fail-loud: 行策略必须全部落到表引用上。键与引用不匹配时宁拒绝勿旁路，
         # 杜绝未来重构（如提取键与注入键口径不一致）导致 RLS 静默失效。
         missing = set(table_filters) - set(applied)
@@ -406,6 +459,17 @@ class PermissionEnforcer:
             return sql
         from backend.semantics.rls import apply_column_restriction, renderer_faithful
 
+        if (engine or "").strip().lower() == "es":
+            # ES 有两个与其他源不同的口径（都是实机取证定的，不是保守）：
+            # 1) 不用“渲染保真门”判：严格字符串往返对 ES 太脆（存量 24 条正文只 3 条能过，
+            #    差异全是 `<>`→`!=`、逗号补空格这类装饰性改写），拿它当门会把合法查询误拒；
+            #    改判“产物里有没有 ES 不认的函数/语法形态”（`es_dialect.es_rejection`）。
+            # 2) 改写不成时**直接拒绝执行**，不能像其他源那样回退结果侧脱敏：ES 正文的输出列
+            #    是业务别名（`AS app`）或带 `.keyword` 的字段路径，结果侧按物理列名匹配根本
+            #    对不上 → 兜底等于静默不脱敏（护栏 §7 明确禁止的失效模式）。
+            return self._restrict_columns_in_es_sql(
+                sql, col_restr, datasource_id, dialect, engine, result)
+
         if not renderer_faithful(sql, dialect):
             result.policies_applied.append("column_restriction:result_side_fallback(renderer_unfaithful)")
             logger.info("[enforcer] AST 重渲染不保真，列级策略改走结果侧脱敏（方言/函数形态敏感）")
@@ -427,6 +491,61 @@ class PermissionEnforcer:
             return sql
         if not applied:
             return sql          # 本条 SQL 没引用受控列：无需标注，也没做任何改写
+        for name in handled:
+            result.masked_columns.pop(name, None)
+        result.policies_applied.append(
+            "column_restriction:in_sql(" + ",".join(sorted(handled)) + ")")
+        return secured
+
+    def _restrict_columns_in_es_sql(
+        self, sql: str, col_restr: dict, datasource_id: int,
+        dialect: str, engine: str, result: "PermissionResult",
+    ) -> str:
+        """ES 型数据源的列级策略改写：产物过形态门，改写不成即拒（不回退结果侧）。
+
+        与通用支路的三处不同（每一处都有实机取证支撑，见 `semantics/es_dialect.py` 头）：
+        1) 方言固定用 `es`（Presto 骨架 + ES 函数渲染），绝不落到 mysql 生成器 ——
+           那会把 `"appCode.keyword"` 变成字符串字面量，语法能过、结果全错；
+        2) 不用 `renderer_faithful` 判（严格往返对 ES 会误拒合法正文），改判产物里有没有
+           ES 不认的函数/语法形态（`es_rejection`）；
+        3) `err`（解析不了 / `*` 拿不到列清单 / sqlglot 缺失）**必须拒**：ES 输出列是业务别名
+           或 `.keyword` 字段路径，结果侧按物理列名匹配对不上，兜底等于静默不脱敏。
+        """
+        from backend.semantics.es_dialect import ES_DIALECT, es_rejection
+        from backend.core.es_client import es_field_variants
+        from backend.semantics.rls import apply_column_restriction
+
+        # 策略键展开成 ES 正文的两种写法（`appCode` / `appCode.keyword`）：同一逻辑字段，
+        # 不能因为管理员按物理列名配了、而正文写了子字段就静默不脱敏。
+        restr: dict = {}
+        for tbl, spec in (col_restr or {}).items():
+            hidden = {v for c in (spec or {}).get("hidden") or [] for v in es_field_variants(c)}
+            masked: dict = {}
+            for col, kind in ((spec or {}).get("masked") or {}).items():
+                for v in es_field_variants(col):
+                    masked[v] = kind
+            restr[tbl] = {"hidden": sorted(hidden), "masked": masked}
+
+        cache: dict = {}
+
+        def get_columns(table: str):
+            key = str(table or "").lower()
+            if key not in cache:
+                cache[key] = _es_table_columns(datasource_id, table)
+            return cache[key]
+
+        secured, applied, err, handled = apply_column_restriction(
+            sql, restr, get_columns, dialect=ES_DIALECT, engine=engine)
+        if err:
+            raise PermissionError(
+                f"列级安全策略无法改写进 ES 查询（{err}），已拒绝执行："
+                "ES 侧结果按业务别名输出，无法在结果侧按物理列名兜底脱敏")
+        if not applied:
+            return sql          # 本条 SQL 没引用受控列：无需标注，也没做任何改写
+        reason = es_rejection(secured)
+        if reason:
+            raise PermissionError(
+                f"列级策略改写后的 ES 查询不被引擎接受（{reason}），已拒绝执行")
         for name in handled:
             result.masked_columns.pop(name, None)
         result.policies_applied.append(
@@ -632,17 +751,25 @@ class PermissionEnforcer:
         return self._resolve_table_ref(table, datasource_id)[0]
 
     @staticmethod
-    def _protect_projection(sql: str, result: PermissionResult, dialect: str = "mysql"):
-        """避免通过列别名或计算表达式绕过结果侧隐藏和脱敏。"""
+    def _protect_projection(sql: str, result: PermissionResult, dialect: str = "mysql",
+                            normalize=None):
+        """避免通过列别名或计算表达式绕过结果侧隐藏和脱敏。
+
+        `normalize`：引擎特定的列名归一（只在 ES 分支传入）。ES 对 text 字段的精确比较/分组
+        必须写子字段 `"appCode.keyword"`（存量正文几乎全这样写），而 sqlglot 把双引号标识符
+        解成**单个**名字 `appCode.keyword`，与策略登记的物理列名 `appCode` 对不上——不归一就会
+        让“禁止访问字段”/“派生计算”两道护栏整体miss（配了也不拦，属静默失效）。
+        """
         from sqlglot import exp
         from backend.semantics.sql_guard import parse_readonly
         if not result.hidden_columns and not result.masked_columns:
             return
         # 宽容解析（优先目标源方言）：SLS/Presto 形状在 mysql 下解不动，不得因此误拒合法只读查询。
         tree = parse_readonly(sql, dialect)
-        hidden = {str(c).lower() for c in result.hidden_columns}
-        masks = {str(c).lower(): m for c, m in result.masked_columns.items()}
-        if any(c.name.lower() in hidden for c in tree.find_all(exp.Column)):
+        norm = normalize or (lambda c: str(c or "").lower())
+        hidden = {norm(c) for c in result.hidden_columns}
+        masks = {norm(c): m for c, m in result.masked_columns.items()}
+        if any(norm(c.name) in hidden for c in tree.find_all(exp.Column)):
             raise PermissionError("查询引用了禁止访问的字段")
         # 显式位置列重命名无法用名称可靠传播，保守拒绝。
         # 例外：给“表生成函数”输出列命名的语法不是物理列位置重命名，按名传播仍成立：
@@ -660,7 +787,7 @@ class PermissionEnforcer:
         for _ in range(len(list(tree.find_all(exp.Select))) + 1):
             for select in tree.find_all(exp.Select):
                 for item in select.expressions:
-                    hits = [masks[c.name.lower()] for c in item.find_all(exp.Column) if c.name.lower() in masks]
+                    hits = [masks[norm(c.name)] for c in item.find_all(exp.Column) if norm(c.name) in masks]
                     if not hits:
                         continue
                     value = item.this if isinstance(item, exp.Alias) else item
@@ -668,7 +795,7 @@ class PermissionEnforcer:
                         raise PermissionError("受保护字段不支持派生计算")
                     alias = item.alias_or_name
                     mask = hits[0] if len(set(hits)) == 1 else "null"
-                    masks[alias.lower()] = mask
+                    masks[norm(alias)] = mask
                     result.masked_columns[alias] = mask
 
     # FROM/JOIN 后的下一词若是这些关键字, 说明表没有别名(而是子句边界), 不得误当作别名

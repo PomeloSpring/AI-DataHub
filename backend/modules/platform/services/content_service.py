@@ -199,6 +199,14 @@ def _unique_slug(base: str, exclude_id: int = 0) -> str:
 EDIT_PERM = "article:manage"
 
 
+def is_admin_user(user: dict) -> bool:
+    """admin 判定的**唯一口径**（与 ``check_api_permission`` 对 ``role='admin'`` 的判定同源）。
+
+    身份只信服务端：role 由 ``get_current_user`` 从库里 ``user_role`` 读出，不接受请求体传入。
+    """
+    return isinstance(user, dict) and str(user.get("role") or "") == "admin"
+
+
 def viewer_can_edit(user: dict, workspace_id: int = 0) -> bool:
     """当前用户能否看到/编辑草稿（复用角色权限码这一唯一裁决源，不另造判断）。
 
@@ -207,7 +215,7 @@ def viewer_can_edit(user: dict, workspace_id: int = 0) -> bool:
     """
     if not isinstance(user, dict):
         return False
-    if str(user.get("role") or "") == "admin":
+    if is_admin_user(user):
         return True
     uid = int(user.get("user_id") or 0)
     if not uid:
@@ -667,7 +675,7 @@ def _kb_sync_of(row: dict) -> dict | None:
 
 def list_articles(*, category: str = "", exclude_category: str = "", kind: str = "",
                   tag: str = "", q: str = "", status: str = "", mine: str = "",
-                  can_edit: bool = False, sort: str = "latest",
+                  can_edit: bool = False, sort: str = "latest", expired: bool = False,
                   page: int = 1, page_size: int = 12) -> dict:
     """分页清单。默认只回门户可见内容；草稿只有可编辑者按 status 显式筛才回。
 
@@ -675,6 +683,9 @@ def list_articles(*, category: str = "", exclude_category: str = "", kind: str =
     「关于本公司」让给右上角简介卡（同屏两份同一条目是重复信息）；内容管理页
     不传它，编排面照常看全量。NULL 安全用 COALESCE 兜住 —— LEFT JOIN 下未挂栏目
     的条目谓词为 NULL，直接 NOT(...) 会把它们一起筛掉（静默少内容，不是本意）。
+
+    ``expired``：只看「到期复核」的稿（与 :func:`pending_reviews` 的 review_expired
+    同一谓词，不另写一份时口径）。
     """
     page = max(1, int(page or 1))
     page_size = min(50, max(1, int(page_size or 12)))
@@ -687,6 +698,18 @@ def list_articles(*, category: str = "", exclude_category: str = "", kind: str =
         if status not in STATUSES:
             raise ContentError(f"状态取值不合法（只支持 {'/'.join(STATUSES)}）")
         where.append("a.status=%s"); params.append(status)
+
+    # 未提交的工作稿只属于个人工作台：非 mine 作用域（内容管理/门户）一律不回 draft，
+    # 管理员也一样（拍板：草稿是私有稿，被驳回的稿会退回个人区，审核流水仍留痕）。
+    # 显式筛 draft 又不在 mine 作用域 = 不合法组合：报错说清去哪看，不静默给空清单。
+    if not mine:
+        if status == STATUS_DRAFT:
+            raise ContentError("草稿只在「我的草稿」可见（未提交的工作稿不进取数编排面）；"
+                               "要处理待审/已通过的内容请选对应状态")
+        where.append("a.status<>%s"); params.append(STATUS_DRAFT)
+
+    if expired:
+        where.append("a.review_by IS NOT NULL AND a.review_by < CURDATE()")
 
     if category:
         where.append("(c.category_key=%s OR a.category_id=%s)")
@@ -967,7 +990,7 @@ def delete_article(article_id: int, actor: str) -> dict:
     if not row:
         raise ContentError("内容不存在", 404)
     if int(row.get("live_revision_id") or 0):
-        raise ContentError("已上线的内容不能直接删除，请先在「审核发布」里下架（保留下架流水可追溯）")
+        raise ContentError("已上线的内容不能直接删除，请先在「内容管理」里下架（保留下架流水可追溯）")
     # 附件对象跟条目一起清。只删 DB 行会把文件留成桶里无人引用的孤儿：旧直链仍
     # 能取到已删内容（治理问题）, 存储也在无声膨胀 —— 与 delete_file 同一纪律：
     # 先删行（下载入口立即消失）, 再删对象, 删不掉的必须说出来。
@@ -1215,11 +1238,27 @@ def submit_review(article_id: int, actor: str, *, expected_version: int | None =
             "message": "已提交审核" + (f"，有 {len(warns)} 条提醒需要审核人逐条确认" if warns else "")}
 
 
-def _assert_not_self_review(row: dict, actor: str, revision_id: int) -> None:
-    """作者不得自审自己的稿。免审直发是显式例外（走 publish 的 waive 分支并留原因）。"""
+def _assert_not_self_review(row: dict, actor: str, revision_id: int, *,
+                            is_admin: bool = False) -> bool:
+    """作者不得自审自己的稿；**admin 不受此限**（拍板：admin 可审所有人含自己写的）。
+
+    返回是否发生了“作者自审”（admin 例外放行）。放行不等于静默：调用方必须把这件事
+    说给发布人与审计看（approve 回执附注 + 审计文案），否则职责分离的例外就隐身了。
+
+    为什么 admin 可以：他本来就能勾「免审直发」（只要填原因 + 过门禁硬阻断），那是比
+    “自己点通过”更弱的痕迹；拦住建 admin 只会把单人团队逼进“不能自审 + 找不到直发”的
+    死胡同（本轮实测踩过）。
+    """
     author = _revision_author(revision_id) or str(row.get("created_by") or "")
-    if author and author == actor:
-        raise ContentError("不能审核自己写的稿。需要直发请走「免审直发」（会留审计原因）", 403)
+    if not author or author != actor:
+        return False
+    if is_admin:
+        return True
+    # 文案必须指到一个**真存在**的入口：非 admin 作者既不能自审、又只能走审核时，
+    # 得告诉他另一条路在哪（发布弹框里的「免审直发」开关）
+    raise ContentError(
+        "不能审核自己写的稿。要直接上线请在「内容管理」该行点「发布」（未提交的稿在「我的草稿」），"
+        "勾选「免审直发」并写明原因（会进审计，供事后追溯）", 403)
 
 
 def _revision_author(revision_id: int) -> str:
@@ -1231,12 +1270,16 @@ def _revision_author(revision_id: int) -> str:
 
 
 def approve_review(article_id: int, actor: str, *, comment: str = "",
-                   acknowledged: list[dict] | None = None) -> dict:
+                   acknowledged: list[dict] | None = None,
+                   is_admin: bool = False) -> dict:
+    """审核通过。``is_admin`` 由 API 层从服务端身份算出（不信任请求体），
+    admin 可审自己写的稿；非 admin 作者自审仍拒。
+    """
     row = _load_for_action(article_id)
     if str(row.get("status")) != STATUS_IN_REVIEW:
         raise ContentError("只有「审核中」的内容才能通过")
     rid = int(row.get("head_revision_id") or 0)
-    _assert_not_self_review(row, actor, rid)
+    self_approved = _assert_not_self_review(row, actor, rid, is_admin=is_admin)
     body = _revision_body(rid)
     hard, warns = gate_article(row, body)
     if hard:
@@ -1248,7 +1291,14 @@ def approve_review(article_id: int, actor: str, *, comment: str = "",
             raise ContentError("还有提醒没确认完，逐条确认后才能通过：" + "；".join(missing), 409)
     _set_status(int(article_id), int(row.get("version") or 1), status=STATUS_APPROVED)
     _log_review(int(article_id), rid, "approve", comment, acknowledged or warns, actor)
-    return {"status": STATUS_APPROVED, "message": "审核通过，可以发布了"}
+    out = {"status": STATUS_APPROVED, "message": "审核通过，可以发布了"}
+    if self_approved:
+        # 职责分离的例外必须显式可见（不是降级掩盖）：回执里说清这一版是作者本人审的，
+        # API 层据此写审计文案（不靠“有没有 warning”反推，那会随提醒种类漂移）
+        out["self_approved"] = True
+        out["warning"] = ("这一版由作者本人审核通过（admin 可审自己写的稿）："
+                          "审核流水与审计已记下你和作者同为一人，发布前建议再看一遍门禁提醒。")
+    return out
 
 
 def reject_review(article_id: int, actor: str, *, comment: str) -> dict:

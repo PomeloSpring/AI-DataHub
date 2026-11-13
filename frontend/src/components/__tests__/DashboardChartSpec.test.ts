@@ -74,6 +74,12 @@ describe('buildG2Spec 消费字模样式', () => {
     expect(plain.axis.x.style.labelFontSize).toBe(11);
   });
 
+  it('x 轴不渲染裸列名标题（与 y 轴同口径），避免标题行溢出卡片下沿', () => {
+    const bar: any = buildG2Spec('bar', cols, rows, { xCol: 'app_code', yCol: '数量' }, false, 800, 400, asLight);
+    expect(bar.axis.x.title).toBe(false);
+    expect(bar.axis.y.title).toBe(false);
+  });
+
   it('timeseries_bar：与 bar 同口径消费 barFade/barCap', () => {
     const spec: any = buildG2Spec('timeseries_bar', cols, rows, asPackConfig, false, 800, 400, asLight);
     expect(spec.children[0].style.fill).toBe('l(90) 0:rgba(0,55,203,0.6) 1:rgba(0,55,203,0.1)');
@@ -279,15 +285,16 @@ describe('buildG2Spec 单点序列可见化', () => {
   });
 });
 
-// y 轴标题在 G2 v5 默认竖排（theme.axisLeft: titleDirection='vertical' + rotate(-90)），
-// 紧凑卡片里小字旋转后贴左边缘糊成一排（用户反馈“左侧字看不清”），而原文又是物理列名——不渲染。
+// 两轴标题在 G2 v5 默认渲染编码字段名（物理列名，如 app_code）：y 轴竖排小字贴左边缘糊成一排，
+// x 轴标题又落在旋转标签下方、底部 padding 没为它留高 → 溢出卡片下沿（用户反馈）。
+// 口径：两轴都不渲染裸列名标题（与 ui-resource-display「不甩物理名」一致）；需要轴名由业务名另行配置。
 describe('buildG2Spec 轴标题口径', () => {
   const axisCfg = { xCol: '日期', yCol: '数量' };
   it.each(['bar', 'line', 'area', 'scatter', 'timeseries_line', 'timeseries_bar', 'timeseries_area', 'heatmap'])(
-    '%s：y 轴不出标题，x 轴不动', (type) => {
+    '%s：y 轴与 x 轴都不出裸列名标题', (type) => {
       const spec: any = buildG2Spec(type, cols, rows, axisCfg, true, 800, 400, tech);
       expect(spec.axis.y.title).toBe(false);
-      expect(spec.axis.x.title).toBeUndefined();
+      expect(spec.axis.x.title).toBe(false);
     });
 
   it('y 轴刻度样式仍走 axisLabelStyle（只关标题，不伤可读性）', () => {

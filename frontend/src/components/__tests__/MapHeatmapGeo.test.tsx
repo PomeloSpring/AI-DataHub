@@ -28,6 +28,11 @@ vi.mock('../../api/visLibrary', () => ({
     id: 1, code: 'mt_amap', name: '高德地图标准', category: 'map_tile',
     is_active: 1, style_config: { tileUrl: 'https://tile.example/{z}/{x}/{y}.png', provider: tileState.provider },
   }]),
+  // vi.mock 是整份顶掉模块：组件还 import 了 isVisUsable，不补上就是 undefined，
+  // 组件里一调用就抛 TypeError → 地图根本不建，用例会以“bounds 为 null”这种误导形态失败。
+  // 口径与 src/api/visLibrary.ts 的实名一致（在用且未被 UI 禁用）。
+  isVisUsable: (c: { is_active?: number | boolean; is_enabled?: number }) =>
+    !!c.is_active && c.is_enabled !== 0,
 }));
 vi.mock('../../lib/mapTileCache', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/mapTileCache')>()),

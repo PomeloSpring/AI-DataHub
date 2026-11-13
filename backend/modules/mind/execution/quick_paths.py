@@ -11,6 +11,8 @@
   content          = 查询方案说明（注入给 LLM 的指引正文）
   metadata.triggers= 触发词清单 [{..}] / ["词1","词2"]
   metadata.scenario= 适用场景（可选，仅管理页展示）
+  metadata.report_template= 绑定的**报告模板业务名**（可选；命中该场景时平台把模板版式
+  写成契约注入提示词。存名字不存字模 id —— 模型与管理页都不该拿 id 当口径）
   related_tables   = 关联表（可选，附注）
   priority / datasource_id / workspace_id / is_active 沿用既有语义。
 
@@ -59,6 +61,8 @@ def _normalize(row: dict) -> dict:
         "title": row.get("title") or "",
         "content": row.get("content") or "",
         "scenario": (meta.get("scenario") or "").strip(),
+        # 场景绑定的报告模板（业务名）：由 prompt_composer 在命中时解析成版式契约
+        "report_template": (meta.get("report_template") or "").strip(),
         "triggers": clean,
         "subjects": subjects,
         "subject_all": subject_all,
@@ -192,6 +196,7 @@ def _hit_payload(path: dict, hits: list[str], pinned: bool = False) -> dict:
         "title": path["title"],
         "content": path["content"],
         "scenario": path["scenario"],
+        "report_template": path.get("report_template") or "",
         "related_tables": path["related_tables"],
         "subjects": path.get("subjects") or [],
         "matched_triggers": hits,

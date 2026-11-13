@@ -69,7 +69,13 @@ def normalize_tools(raw):
         raise ValueError("functions 必须是对象")
     functions = {"disabled": string_list(functions_raw.get("disabled"), "functions.disabled")}
     return {"groups": list(mcp), "standard": standard, "mcp": mcp, "external": external,
-            "functions": functions}
+            "functions": functions,
+            # 面板**显式写过**哪几个组（含勾成空）：与“从未配过”必须可区分 ——
+            # 技能细则壳的自动接入靠它判定“管理员显式清空了 skills 组”而非“没配过”。
+            # 存排序名单而不是 set：本结构会进 AS-BOT 配置缓存（RedisCache 用
+            # `json.dumps(default=str)`），set 会被静默存成 `"{'skills'}"` 这类脏数据，
+            # 反序列化回来就是个字符串而不是集合，判定靠 `in` 会从“成员判定”退化成“子串判定”。
+            "mcp_configured": sorted({str(g) for g in (selection or {})})}
 
 
 @dataclass(frozen=True)
@@ -91,9 +97,9 @@ class ToolPolicy:
     def manifest(self):
         from backend.modules.mind.execution.tool_catalog import TOOL_CATALOG
         labels = {t["name"]: t["label"] for t in TOOL_CATALOG}
-        from backend.modules.mind.execution.sdk_tools import catalog_tools, semantic_tools, ontology_tools, screen_tools, system_tools, query_tools, asset_tools, memory_tools
+        from backend.modules.mind.execution.sdk_tools import catalog_tools, semantic_tools, ontology_tools, screen_tools, system_tools, query_tools, asset_tools, memory_tools, render_tools, skill_tools
         for module in (catalog_tools, semantic_tools, ontology_tools, screen_tools, system_tools,
-                       query_tools, asset_tools, memory_tools):
+                       query_tools, asset_tools, memory_tools, render_tools, skill_tools):
             for spec in getattr(module, "TOOL_SPECS", []):
                 labels[spec["name"]] = spec.get("description") or spec["name"]
         # 功能壳工具的业务描述（会话能力面板与提示词的「实际工具权限」段共用）
@@ -138,6 +144,21 @@ def compile_policy(as_bot, ceiling=None, role_perms=None):
         raise ValueError("外部工具引用了未绑定的 MCP 服务")
     if ids - set(external):
         raise ValueError("外部 MCP 绑定需确认逐工具授权")
+    # ── 技能作业细则按需加载（渐进披露第二层）：绑定≥2 个技能才接入 `load_skill_guide` ──
+    # 与平台功能惰性壳同一口径：授权依据是“这个助手绑了技能”这一事实，不新增第二套判断，
+    # 也不需要迁移给每个 AS-BOT 逐个勾选。**必须放在 ceiling 交集之前** —— 执行层上限同样
+    # 管得住这个壳（否则等于给新工具开了绕过 ceiling 的后门）。
+    # 为何要 ≥2：只绑 1 个技能时规则 2 永远展开那份正文（单职责角色不拿口径换字数），
+    # 壳工具永远只会回“已在上下文”——真机实测 analyst 因此白付 58 字符。不给模型注册一个
+    # 调了也没用的入口，比“统一接入”更诚实。
+    # 管理员在面板显式写过 `mcp.skills`（含清空）时尊重配置：未接入壳时 prompt_composer 那侧
+    # 同时回到“按触发词自动展开正文”的老行为（决议只在一处），所以关掉它只是回到旧开销，
+    # 不会出现“细则既看不到也拉不到”的能力倒退（no-silent-degradation）。
+    from backend.modules.mind.execution import as_bots
+    _guide_server, _guide_names = TOOL_SERVER_TOOLS["skills"]
+    if (len(as_bots.collect_skill_names([as_bot])) > 1
+            and "skills" not in (tools.get("mcp_configured") or ())):
+        selection = {**(selection or {}), "skills": list(_guide_names)}
     for name in standard:
         allowed.add(f"mcp__datahub_workspace__{name}")
     for group, names in selection.items():

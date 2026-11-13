@@ -22,8 +22,9 @@ const rows = [
   { id: 8, name: 'ARMS·用户与会话趋势', description: '按日统计 UV/PV', source_type: 'sql',
     datasource_name: 'arms-prd-cn', available_source_names: ['arms-prd-cn'], usable_now: ['arms-prd-cn'],
     field_count: 5, field_config: JSON.stringify([{ label: '统计日期' }, { label: '独立访客' }]) },
-  { id: 40, name: '网关访问日志', source_type: 'es', es_pattern: 'nginx-access-*',
-    datasource_name: 'ES 检索通道', available_source_names: ['nginx-access-*'], usable_now: ['nginx-access-*'] },
+  { id: 40, name: '网关访问日志', source_type: 'sql', is_es: true,
+    datasource_name: 'cloud-platform-es', available_source_names: ['cloud-platform-es'],
+    usable_now: ['cloud-platform-es'] },
   { id: 9, name: '待授权数据集', source_type: 'sql', datasource_name: 'prd-eu',
     available_source_names: ['prd-eu'], usable_now: [] },
 ];
@@ -64,7 +65,7 @@ describe('检索与过滤', () => {
     expect(screen.getByText('ARMS·用户与会话趋势')).toBeTruthy();
   });
 
-  it('数据源筛选按业务名给选项，选中后只留能在该源执行的数据集（ES 不属于任何源）', async () => {
+  it('数据源筛选按业务名给选项，选中后只留能在该源执行的数据集', async () => {
     renderPanel();
     const sourceSelect = await screen.findByLabelText('按数据源筛选数据集');
     fireEvent.change(sourceSelect, { target: { value: 'arms-prd-cn' } });
@@ -72,15 +73,15 @@ describe('检索与过滤', () => {
     expect(screen.queryByText('网关访问日志')).toBeNull();
     expect(screen.queryByText('待授权数据集')).toBeNull();
     // 选项来自清单：prd-eu 不在任何行的 usable_now 里 → 不作为源选项；
-    // ES 通道不挂在数据源上，单列一项（否则 ES 型数据集永远选不到）
+    // ES 型数据集就挂在 ES 数据源上，与其余源同列一处（内置通道那一维已退役，不得凭空长一项）
     expect(Array.from(sourceSelect.querySelectorAll('option')).map(o => o.textContent))
-      .toEqual(['全部数据源', 'arms-prd-cn', '内置 Elasticsearch 通道']);
+      .toEqual(['全部数据源', 'arms-prd-cn', 'cloud-platform-es']);
   });
 
-  it('选 ES 通道只筛出 ES 型数据集（卡片上写着通道名、下拉里选不出就是缺陷）', async () => {
+  it('按 ES 型数据源筛即命中 ES 数据集（不需要也不得有“不属于任何源”的通道项）', async () => {
     renderPanel();
     const sourceSelect = await screen.findByLabelText('按数据源筛选数据集');
-    fireEvent.change(sourceSelect, { target: { value: 'es' } });
+    fireEvent.change(sourceSelect, { target: { value: 'cloud-platform-es' } });
     expect(screen.getByText('网关访问日志')).toBeTruthy();
     expect(screen.queryByText('ARMS·用户与会话趋势')).toBeNull();
     expect(screen.getByText(/命中 1 \/ 共 3/)).toBeTruthy();

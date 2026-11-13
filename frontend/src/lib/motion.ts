@@ -415,10 +415,25 @@ export function motionSummary(motion: MotionSpec): { label: string; text: string
  * 不碰 axis/legend/title 这类组件节点 —— G2 的 animate 是 mark 级属性，
  * 组件节点带上会被 props 校验当对象吃掉但无意义，view 包装层则不吃继承。
  */
+const RADIAL_COORDINATES = new Set(['theta', 'polar', 'radial', 'helix']);
+/**
+ * 极坐标/theta 的 interval（饼/环/玫瑰）不吃笛卡尔 enter 动画（growInY/pathIn/waveIn/growInX…）：
+ * 那些动画按直角坐标算“生长/描画”，套到 theta 上 G2 会把切片角度/半径算错→部分切片直接不画（环图丢内容，用户反馈）。
+ * 这类 mark 只保留坐标无关的淡入（fadeIn）；`none`（false）原样保留。
+ */
+function enterForMark(node: any, animate: Record<string, any> | false): Record<string, any> | false {
+  if (animate === false) return animate;
+  const coord = node?.coordinate?.type;
+  const enterType = animate.enter?.type as string | undefined;
+  if (coord && RADIAL_COORDINATES.has(coord) && node?.type === 'interval' && enterType && enterType !== 'fadeIn') {
+    return { ...animate, enter: { ...animate.enter, type: 'fadeIn' } };
+  }
+  return animate;
+}
 export function applyG2Animate<T extends Record<string, any>>(spec: T, animate: Record<string, any> | false | undefined): T {
   if (animate === undefined) return spec;
   const isMark = (n: any) => !!n && typeof n === 'object' && typeof n.type === 'string' && !!n.encode;
-  const out: any = { ...spec, animate };
-  if (Array.isArray(out.children)) out.children = out.children.map((child: any) => (isMark(child) ? { ...child, animate } : child));
+  const out: any = { ...spec, animate: enterForMark(spec, animate) };
+  if (Array.isArray(out.children)) out.children = out.children.map((child: any) => (isMark(child) ? { ...child, animate: enterForMark(child, animate) } : child));
   return out;
 }

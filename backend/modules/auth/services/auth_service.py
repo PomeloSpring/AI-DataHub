@@ -621,15 +621,20 @@ def delete_user(user_id: int) -> tuple[bool, str]:
 def log_audit(user_id: int, username: str, action: str,
               target_type: str = "", target_id: int = 0,
               detail: str = "", ip_address: str = "", module: str = ""):
-    """Write an audit log entry."""
+    """Write an audit log entry.
+
+    `id` 不自己生成（与 `backend/common/auth.py:log_audit` 同口径）：该表本来就是
+    auto_increment，拿 `_ts_id()` 的毫秒值强占主键会让同毫秒的第二条写 duplicate-key，
+    再被 `except` 吞成 warning —— 审计行静默丢（护栏 §9 不允许）。
+    """
     try:
         with DBConnection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO adh_audit_logs "
-                    "(id, user_id, username, action, target_type, target_id, detail, ip_address, module, created_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (_ts_id(), user_id, username, action, target_type, target_id,
+                    "(user_id, username, action, target_type, target_id, detail, ip_address, module, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (user_id, username, action, target_type, target_id,
                      detail, ip_address, module, _now_str()),
                 )
     except Exception as e:

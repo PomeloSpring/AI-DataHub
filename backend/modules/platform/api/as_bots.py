@@ -159,6 +159,10 @@ _TOOL_GROUP_META = {
     "system": ("系统运营", "本系统只读运营/可观测能力(仅管理员)"),
     "assets": ("工作空间资产", "会话产物与磁盘治理(资产清单/归档收藏/配额用量/两步确认清理)"),
     "memory": ("用户记忆", "个人跨会话稳定偏好/口径纠错的读写(仅作用于本人记忆行, 不返回业务数据行; 严禁存会话上下文)"),
+    "render": ("交付渲染机", "交付形态渲染机(模型在单图/整份文档间自选): 正文落受管文档对象、消息内只留引用;"
+                          " 服务端只把能力硬门与 HTML 体检, 不替模型判“该不该用整页文档”)"),
+    # skills 组（技能细则按需加载）不登记标签：它是机制组，不在本目录渲染（见
+    # sdk_tools.MECHANISM_GROUPS）；登记了却没消费方就是配了看不见的空承诺。
 }
 _TOOL_LABELS = {
     "search_metadata": "元数据搜索", "get_table_schema": "表结构", "list_datasources": "数据源列表",
@@ -180,6 +184,7 @@ _TOOL_LABELS = {
     "asset_list": "资产清单", "asset_get": "读取资产", "asset_archive": "归档收藏*",
     "disk_status": "磁盘用量", "cleanup_candidates": "清理候选", "cleanup_execute": "执行清理*",
     "save_memory": "保存记忆*", "list_memory": "记忆列表", "delete_memory": "删除记忆*",
+    "render_html": "交付 HTML 报告*", "render_chart": "交付图表*", "render_report": "交付结构化报告*",
 }
 
 
@@ -194,19 +199,22 @@ def tool_catalog(user: dict = Depends(get_current_user)):
 
     两个维度分开是为了避免把「看板页能读指标」误当成「可以执行 SQL」。
     """
-    from backend.modules.mind.execution.sdk_tools import TOOL_SERVER_TOOLS
+    from backend.modules.mind.execution.sdk_tools import TOOL_SERVER_TOOLS, MECHANISM_GROUPS
     from backend.modules.mind.execution.tool_catalog import TOOL_CATALOG
     from backend.core import perm_link
     from backend.modules.mind.execution import function_tools
     from backend.core.role_service import role_service
 
+    # 机制组不在授权面渲染（渐进披露等平台机制不是管理员可调的能力开关，见
+    # sdk_tools.MECHANISM_GROUPS）：面板里出现一个“默认生效但显示未勾”的复选框，
+    # 只会诱导人随手勾一下把默认策略变成显式配置。
     groups = [
         {"group": g,
          "source": "as_bot_config",
          "label": _TOOL_GROUP_META.get(g, (g, ""))[0],
          "desc": _TOOL_GROUP_META.get(g, (g, ""))[1] or "按实际工具名授权，未勾选即禁止",
          "tools": [{"name": n, "label": _TOOL_LABELS.get(n, n)} for n in names]}
-        for g, (_, names) in TOOL_SERVER_TOOLS.items()
+        for g, (_, names) in TOOL_SERVER_TOOLS.items() if g not in MECHANISM_GROUPS
     ]
 
     try:

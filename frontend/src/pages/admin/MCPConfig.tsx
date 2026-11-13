@@ -32,7 +32,7 @@ interface MCPServer {
   label?: string;
   state?: string;
   status_message?: string;
-  /** 内置 ES 服务已开放的索引范围数量（只给数量，模式名属部署配置） */
+  /** 内置服务已开放的数据范围数量（只给数量，范围清单属部署配置） */
   open_view_count?: number;
 }
 
@@ -40,6 +40,8 @@ const BUILTIN_STATE_BADGE: Record<string, { text: string; cls: string }> = {
   ready: { text: '就绪', cls: 'text-green-600' },
   incomplete: { text: '配置不完整', cls: 'text-amber-600' },
   disabled: { text: '未启用', cls: 'text-muted-foreground' },
+  // 库里有内置行、代码里没有实现（服务已退役或迁移漏登记）：属配置漂移，必须显式可见
+  unknown: { text: '未登记实现', cls: 'text-destructive' },
 }
 
 const builtinBadge = (s: MCPServer) =>
@@ -317,7 +319,7 @@ export default function MCPConfig() {
                 {/* 内置服务给数量不给名单：管理员要能判断“配了没配”，但页面读不到配置本身 */}
                 {s.builtin && typeof s.open_view_count === 'number' && (
                   <div className="text-xs text-muted-foreground mt-1">
-                    已开放 {s.open_view_count} 个索引范围（按模式查询，不展开具体索引）
+                    已开放 {s.open_view_count} 个数据范围
                   </div>
                 )}
               </div>
@@ -366,7 +368,7 @@ export default function MCPConfig() {
             })()}
             {s.builtin && (
               <div className="mt-2 text-[11px] text-muted-foreground">
-                连接地址、凭据与访问范围（如 Elasticsearch 的可查索引模式）由部署配置托管，不在本页面显示或修改；启用范围请在 AS-BOT「引用 MCP 服务」中绑定并逐工具授权。
+                连接地址、凭据与访问范围由部署配置托管，不在本页面显示或修改；启用范围请在 AS-BOT「引用 MCP 服务」中绑定并逐工具授权。
               </div>
             )}
           </div>

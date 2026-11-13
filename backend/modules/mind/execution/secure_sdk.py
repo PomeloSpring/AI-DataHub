@@ -243,6 +243,7 @@ def build_options(adapter, task, backend):
     #   claude SDK: 先**继承 os.environ** 再用 options.env 覆盖（见其 subprocess_cli.connect），
     #               所以 None 会让 spawn 直接 TypeError，而“删掉键”等于把宿主真实值
     #               原样留给子进程（凭据泄漏）。claude 分支里把剥除意图翻译成显式置空。
+    _skill_state: dict = {}
     prompt = compose_system_prompt(
         policy.as_bot, [policy.as_bot], ctx.username, ctx.user_role,
         # 提示词组装属轮次起点：知识库元信息走配置事实缓存（写时失效 + 短 TTL）。
@@ -271,11 +272,17 @@ def build_options(adapter, task, backend):
         # 目前它只决定本轮作业要求，不绕过任何工具侧权限裁决（模式切换≠开关能力；
         # 按模式 deny_tools / 收紧轮次上限的硬门控尚未接线）。
         chat_mode=str(ctx.extra.get("chat_mode") or ""),
+        skill_state=_skill_state,
     )
+    # 本轮常驻了哪几份技能正文回写回合上下文：load_skill_guide 据此把“重复下发”降成
+    # 一句“已在上下文”（pinned / 单职责角色 / 无人值守仍走常驻展开，那些不必再拉）。
+    from backend.modules.mind.execution.sdk_tools.skill_tools import RESIDENT_KEY
+    ctx.extra[RESIDENT_KEY] = _skill_state
     common = dict(tools=[], allowed_tools=sorted(policy.allowed), permission_mode="default",
                   setting_sources=[], cwd=str(runtime.workspace), add_dirs=[], env=env,
                   mcp_servers=servers, agents={}, system_prompt=prompt, resume=runtime.sdk_session_id or None,
-                  max_turns=int(adapter.config.get("max_turns") or 20), include_partial_messages=True,
+                  max_turns=int(adapter.config.get("max_turns") or DEFAULT_MAX_TOOL_ROUNDS),
+                  include_partial_messages=True,
                   can_use_tool=permit,
                   hooks={"PreToolUse": [sdk.HookMatcher(hooks=[before_tool])],
                          "PreCompact": [sdk.HookMatcher(hooks=[on_pre_compact])],
@@ -286,12 +293,13 @@ def build_options(adapter, task, backend):
     # task's current cancel scope”——表现为“答案已完整输出但仍报执行未完成”。
     # 可诊断性改由 _execute_stream 错误文案里的 model/cli_path 承担
     # （实测就是靠它定位到“模型下架”）。
-    # 模型优先级：前端选择/AS-BOT.models[0] → 执行层 adapter.model →
-    # .env QODER_MODEL (AS-BOT 未绑模型时的兜底) → None (SDK 默认 Auto)。
-    # 旧实现只到 adapter.model，AS-BOT 没绑模型且执行层也没配时就直接 Auto，
-    # .env 里的 QODER_MODEL 不生效（子进程 env 已被剥除，仅能走 SDK options）。
-    from backend.common.config import QODER_MODEL
-    model = ctx.extra.get("model_ref") or adapter.model or QODER_MODEL or None
+    # 模型优先级四级链（回合选择 → Harness → 模型中心默认 → .env QODER_MODEL）：
+    # 唯一实现见 llm_resources.resolve_effective_model，问答/压缩/无人值守同源。
+    # 历史缺陷有两个，均已收口：① build_options 不读 config，AS-BOT 没绑模型且执行层
+    # 也没配时直接落 SDK Auto，.env 的 QODER_MODEL 不生效（子进程 env 已被剥除，
+    # 仅能走 SDK options）；② 模型中心「设为默认」在链上没消费点，设与不设都命中不到。
+    from backend.modules.mind.execution.llm_resources import resolve_effective_model
+    model = resolve_effective_model(ctx.extra.get("model_ref") or "", adapter.model) or None
 
     # 可观测登记“本回合实际跑在哪条层、哪个模型通道”：两条通道的计量单位不同
     # （Qoder=credit 不报 token / 直连=token 没有 credit），不分开就会汇总错。
@@ -315,6 +323,11 @@ def build_options(adapter, task, backend):
     return sdk.QoderAgentOptions(**common, cli_path=_sdk_cli_path(adapter),
                                 model=model,
                                 auth=AccessTokenAuthOptions(access_token=token),
+                                # skills=[] 是刻意为空，不是漏配：SDK 自带的技能目录从文件系统加载，
+                                # 会绕过本平台的技能资产口径（adh_skills DB 行覆盖文件、按 AS-BOT 绑定、
+                                # requires_any 能力门控、互斥组、`/` 点名 pinned、无人值守 force_all）。
+                                # 技能正文的披露由 prompt_composer + load_skill_guide 自己管（见
+                                # sdk_tools.MECHANISM_GROUPS），不能让 CLI 自己扫目录往里塞。
                                 strict_mcp_config=True, allowed_mcp_server_names=list(servers), skills=[])
 
 

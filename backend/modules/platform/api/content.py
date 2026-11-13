@@ -305,6 +305,7 @@ def read_articles(
     q: str = Query(""),
     status: str = Query(""),
     mine: str = Query("", description="按作者用户名过滤（仅可编辑者生效）"),
+    expired: bool = Query(False, description="只看「到期复核」的稿（与待审队列同谓词）"),
     sort: str = Query("latest"),
     page: int = Query(1, ge=1),
     page_size: int = Query(12, ge=1, le=50),
@@ -312,8 +313,9 @@ def read_articles(
 ):
     """分页清单，契约 ``{items,total,page,page_size}``。
 
-    默认只回门户可见内容（``live_revision_id<>0`` 且未下架）。草稿必须由**可编辑者**
-    显式传 ``status=draft`` 才回 —— 不是靠前端不显示，服务端就一道门。
+    默认只回门户可见内容（``live_revision_id<>0`` 且未下架）。
+    **未提交的草稿不进取数编排面**：只有 ``mine``（「我的草稿」按服务端身份识别）
+    才回 draft；非 mine 传 ``status=draft`` 直接拒并说清去哪看（不静默给空清单）。
     ``exclude_category`` 是读侧展示让位（首页右上已有「关于本公司」简介卡），
     只影响这一份清单；编排面与简介卡自身的查询都不传它。
     """
@@ -321,7 +323,7 @@ def read_articles(
         return svc.list_articles(category=category, exclude_category=exclude_category,
                                  kind=kind, tag=tag, q=q, status=status,
                                  mine=mine, can_edit=_can_edit(user), sort=sort,
-                                 page=page, page_size=page_size)
+                                 expired=expired, page=page, page_size=page_size)
     except svc.ContentError as e:
         raise _fail(e) from None
 
@@ -686,8 +688,11 @@ def reviews_approve(ident: str, payload: ReviewAction, request: Request,
     article_id = _resolve_id(ident)
     try:
         out = svc.approve_review(article_id, _actor(user), comment=payload.comment or "",
-                                 acknowledged=payload.acknowledged)
-        _audit(user, request, "content.article.approve", article_id, "审核通过")
+                                 acknowledged=payload.acknowledged,
+                                 is_admin=svc.is_admin_user(user))
+        # 审计要说真话：admin 自审自己写的稿是放行的，但必须能在审计里一眼看出“作者与审核人同一”
+        _audit(user, request, "content.article.approve", article_id,
+               "审核通过（作者自审，admin 例外）" if out.get("self_approved") else "审核通过")
         return out
     except svc.ContentError as e:
         raise _fail(e) from None

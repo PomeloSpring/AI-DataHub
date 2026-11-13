@@ -110,7 +110,35 @@ def _readable_types(user: dict) -> list:
             if rc in codes or f"{rc.split(':')[0]}:*" in codes]
 
 
-# ── 分析场景的主体归属（配置面校验 + 可见性标注）─────────────────────────────
+# ── 分析场景的配置面校验（主体归属 + 报告模板绑定）与可见性标注 ──
+
+def _assert_scenario_template(ktype: str, metadata: dict | None) -> None:
+    """分析场景绑定的报告模板必须是**业务名**且当前可读（写入点就拦，不留到运行时才失败）。
+
+    为何只认名字：模板存在字模库，id 属实现细节且随环境漂移；存 id 会让“场景绑了个读不到的
+    模板”变成问答里的静默回落（管理员看见的是“已绑定”，用户看到的是没套用）。手填 id 直接拒，
+    只能从下拉框选（与主体选择不允许手输 object_key 同一口径）。
+    """
+    if str(ktype or "") != "quick_path":
+        return
+    name = str((metadata or {}).get("report_template") or "").strip()
+    if not name:
+        return
+    if name.isdigit():
+        raise HTTPException(status_code=422,
+                            detail="报告模板需要选业务名，不能填模板 id（从下拉清单里选）")
+    from backend.core.task_runtime import call as runtime_call
+    try:
+        hit = runtime_call("report.resolve_template_by_name", name) or {}
+    except Exception as e:  # noqa: BLE001 — 模板清单读不到就是存不了，不能假存成功
+        raise HTTPException(status_code=502,
+                            detail=f"报告模板清单读取失败，无法校验绑定：{e.__class__.__name__}")
+    if not hit.get("found"):
+        avail = "、".join(str(n) for n in (hit.get("available") or [])[:8]) or "（当前没有可用模板）"
+        raise HTTPException(
+            status_code=422,
+            detail=f"{(hit.get('reason') or '报告模板不可用')}；可用模板：{avail}")
+
 
 def _assert_scenario_subjects(ktype: str, metadata: dict | None) -> None:
     """分析场景（quick_path）必须显式声明主体范围：要么选至少一个主体，要么勾「不限主体」。
@@ -343,6 +371,28 @@ def list_scenario_subjects(user: dict = Depends(get_current_user)):
                       for c in subject_catalog() if c.get("key")]}
 
 
+@router.get("/knowledge/report-templates")
+def list_scenario_report_templates(user: dict = Depends(get_current_user)):
+    """分析场景可绑定的报告模板候选：管理页「报告模板」选择框的唯一数据源。
+
+    只回**业务名与形状**（不回字模 id）：绑定的口径就是名字，把 id 递到前端就等于让人手填它。
+    本域读码（quick_path 的 knowledge:read）就能拿候选，不依赖「报告模板」菜单权限；
+    没登记版式的模板也列出来但标 `usable=false`（能选，选了就是“只有示例正文、无固定骨架”）。
+    """
+    _assert_type_perm(user, "quick_path")
+    from backend.core.task_runtime import call as runtime_call
+    try:
+        rows = runtime_call("report.list_templates") or []
+    except Exception as e:  # noqa: BLE001 — 拉不到候选就不能让人手输名字（与主体清单同口径）
+        logger.warning("[knowledge] 报告模板候选读取失败: %s", e)
+        raise HTTPException(status_code=502, detail="报告模板清单读取失败，请重试")
+    return {"items": [{"name": str(r.get("name") or ""),
+                       "format": str(r.get("format") or "markdown"),
+                       "usable": bool(r.get("has_layout")),
+                       "sections": len(r.get("headings") or [])} for r in rows
+                      if int(r.get("is_active") or 0) == 1 and str(r.get("name") or "").strip()]}
+
+
 @router.get("/knowledge/random")
 def random_knowledge(
     knowledge_type: str = Query("recommend_question"),
@@ -426,6 +476,7 @@ def create_knowledge(body: KnowledgeCreate, user: dict = Depends(get_current_use
     """创建知识条目（按 knowledge_type 归到对应权限码）。"""
     _assert_type_perm(user, body.knowledge_type, write=True)
     _assert_scenario_subjects(body.knowledge_type, body.metadata)
+    _assert_scenario_template(body.knowledge_type, body.metadata)
     item_id = uuid.uuid4().int & ((1 << 63) - 1)  # 正 BIGINT
     metadata_json = json.dumps(body.metadata, ensure_ascii=False) if body.metadata else None
 
@@ -474,6 +525,7 @@ def update_knowledge(item_id: int, body: KnowledgeUpdate, user: dict = Depends(g
             if body.metadata is not None:
                 # 主体声明只在写 metadata 时校（没改 metadata 就不拿旧数据为新的错负责）
                 _assert_scenario_subjects(ktype, body.metadata)
+                _assert_scenario_template(ktype, body.metadata)
             cur.execute(f"UPDATE adh_knowledge_items SET {set_sql} WHERE id = %s", params)
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="条目不存在")

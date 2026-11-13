@@ -588,6 +588,26 @@ def get_session_file(
     return FileResponse(str(target), media_type=media_type, headers=headers)
 
 
+@router.get("/render-document/{doc_id}")
+def get_render_document(doc_id: str, user: UserInfo = Depends(get_current_user)):
+    """按引用取渲染机交付对象（整份报告/图表数据）。
+
+    为什么需要它：交付形态渲染机把正文存成受管文档对象、消息里只留 `{"doc_id": ...}`
+    引用（正文不进消息 content：会话存储的容量闸门不覆盖 content，整份 HTML 落消息会
+    把会话表体量改坏）。前端渲染时按引用取回。
+
+    归属只校验属主本人（与会话/设计草稿同口径）：不存在与无权访问**分开返**，
+    前端才能给“已被清理”和“无权访问”两种不同文案（而不是一律“加载失败”）。
+    """
+    from backend.modules.viz.services import report_document_service as docs
+
+    try:
+        return docs.load_document(doc_id, user_id=int(user["user_id"] or 0))
+    except docs.RenderDocumentError as exc:
+        status = {"not_found": 404, "forbidden": 403, "no_identity": 401}.get(exc.code, 400)
+        raise HTTPException(status_code=status, detail=exc.message) from None
+
+
 @router.get("/conversations")
 def list_conversations(
     workspace_id: int = Query(0, description="Filter by workspace"),

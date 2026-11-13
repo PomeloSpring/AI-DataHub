@@ -30,7 +30,7 @@ const EDGE_PAD = 12;
  *    测早了得出“没溢出”的结论，箭头就永远不出现（本条是用户反馈的直接根因）。
  */
 export function useDashboardNavigation(dashboards: DashboardNavItem[], currentId?: number, onSelect?: (id: number) => void) {
-  // 服务端已按角色可见集过滤并排好序（is_default/sort_order/updated_at），保持传入顺序。
+  // 服务端已按角色可见集过滤并排好序（组内 = 管理端编排顺序，未分组 = is_default/sort_order），保持传入顺序。
   const visible = dashboards;
   const navRef = useRef<HTMLElement | null>(null);
   const [edge, setEdge] = useState({ overflow: false, left: false, right: false });

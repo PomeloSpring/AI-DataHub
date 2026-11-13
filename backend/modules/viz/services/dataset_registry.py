@@ -14,10 +14,14 @@
 5. **碰了哪些表可静态回答**：`touched_tables` 由服务端从正文提取，供语义层 RLS
    改写与审计消费（护栏 §4/§10），不接受请求体自报。
 
-**ES 型数据集（source_type='es'）另走一套校验入口**（`validate_es_definition`）：
-正文不是平台治理域 SQL，不能过 sqlglot（无 elasticsearch 方言，`[a.b]` 字段路径与
-受限语法会被误判成"结构不受支持"），改由 `core/es_client.parse_select` 做只读/单表/
-强制 LIMIT/索引白名单四件套 —— 与运行期同一个实现，两侧不会漂移。
+**ES 正文（内置通道型与 ES 数据源型）另走一套校验入口**：正文不是平台治理域 SQL，
+不能过 sqlglot（无 elasticsearch 方言，`[a.b]` 字段路径与受限语法会被误判成"结构不受支持"），
+改由 `core/es_client.parse_select` 做只读/单表/强制 LIMIT/索引开放范围四件套 ——
+与运行期同一个实现，两侧不会漂移。
+
+- 内置 MCP 通道型（`source_type='es'` + `es_pattern`）已随阶段三退役：ES 只剩数据源型一种形态。
+- `validate_es_source_definition`：ES 数据源型（阶段二终态），闸门在**该源的开放范围**，
+  且该源参与治理域（行/列策略可配），因此不再有"es_pattern 收窄"这一层。
 """
 
 from __future__ import annotations
@@ -47,7 +51,6 @@ FIELD_DISPLAY_FORMATS = frozenset({
 })
 
 # ES 型数据集的定义类型标识（与 semantic / sql 并列的第三种）
-ES_SOURCE_TYPE = "es"
 # 实机校准（2026-11-06，集群 ES 8.9.1，探针 logs/probe_es_sql_shapes{,2,3,4}.py）：
 # `DATE_FORMAT("@timestamp", 'yyyy-MM')` **语法通过但把格式串当常量返回**（所有行聚成
 # 一桶、桶值就是 'yyyy-MM'），参数换成 ('yyyy-MM', ts) 则直接 400。这类"不报错但错数"
@@ -113,18 +116,6 @@ def probe_sql(sql: str, variables: dict, dialect_label: str) -> tuple[list[str],
     return errors, tables
 
 
-def is_es_definition(raw: dict) -> bool:
-    """该定义是否 ES 型：显式 `source_type='es'`，或登记了索引范围 `es_pattern`。
-
-    两个入口都要认：更新时 patch 常只带 `es_pattern` 不带 source_type（与看板图表
-    挂载校验回读现有行拼有效口径的做法一致）。
-    """
-    body = raw or {}
-    if str(body.get("source_type") or "").strip().lower() == ES_SOURCE_TYPE:
-        return True
-    return bool(str(body.get("es_pattern") or "").strip())
-
-
 def pattern_covers(pattern: str, target: str) -> bool:
     """数据集声明的索引范围是否覆盖正文 FROM 目标（fnmatch，与 `es_client` 同口径）。
 
@@ -135,14 +126,18 @@ def pattern_covers(pattern: str, target: str) -> bool:
     return fnmatch.fnmatchcase(str(target or ""), str(pattern or ""))
 
 
-def probe_es_sql(sql: str, variables: dict, pattern: str) -> tuple[list[str], list[str]]:
+def probe_es_sql(sql: str, variables: dict, pattern: str,
+                 datasource_id: int = 0) -> tuple[list[str], list[str]]:
     """ES 正文校验：渲染占位符 → `es_client.parse_select`（与执行期同一个实现）。
 
     返回 (错误清单, 正文触及的索引名)。不用 sqlglot（无 ES 方言会误杀合法写法），
     也不做"解不动就当合法"的宽松回落：解析不通过一律拒。
+    `datasource_id>0` 时开放范围按**该 ES 数据源**判（阶段二后的形态）；传 0 仍是
+    内置通道的 `.env` 白名单（存量通道行为零变化），两个来源不得静默互转。
     """
     from backend.core import es_client
 
+    ctx = es_client.ctx_for(datasource_id) if int(datasource_id or 0) else None
     errors: list[str] = []
     text = str(sql or "").strip()
     if not text:
@@ -161,7 +156,7 @@ def probe_es_sql(sql: str, variables: dict, pattern: str) -> tuple[list[str], li
     if "${" in probe:
         errors.append("正文存在写法非法的占位符（应为 ${name}）")
     try:
-        es_client.parse_select(probe)
+        es_client.parse_select(probe, ctx)
     except es_client.EsError as exc:
         # EsError 文案按约定只含索引名/字段名与业务原因，可安全回给配置人
         errors.append(f"ES 正文未通过校验: {str(exc)[:220]}")
@@ -179,44 +174,62 @@ def probe_es_sql(sql: str, variables: dict, pattern: str) -> tuple[list[str], li
     return errors, indexes
 
 
-def validate_es_definition(req: dict) -> tuple[list[str], dict]:
-    """ES 型数据集定义校验：范围在清单内 + 正文可解析且在范围内 + 参数/字段可信任。
+def es_source_row_of(raw: dict) -> dict:
+    """该定义的执行源是否 ES 型数据源 → 源行；非 ES（含未挂源）回空 dict。
 
-    与 sql/semantic 型的差异是**有意**的，不是简版实现：
-    - `sql_bodies`/`dialect` 必须为空：ES SQL 只有一种方言，按引擎分正文没有命中可能；
-    - `object_key` 必须为空：ES 不进本体/治理域，双定义在此不成立；
-    - `field_config` 的度量不得带 `expr`：字段层派生表达式靠 sqlglot 解析并拼回 SQL，
-      ES 上不可用；聚合请写在正文里（宁拒不误存下一段永不生效的声明）。
+    阶段二的迁移判据就落在这里：ES 数据集不再靠 `source_type='es'`/`es_pattern` 自我介绍，
+    而是“执行源的 db_type 就是 es”（单一事实源 = `adh_datasources.db_type`）。
     """
-    from backend.core import es_client
+    ds_id = int((raw or {}).get("datasource_id") or 0)
+    if not ds_id:
+        return {}
+    try:
+        from backend.common.db.datasource_db import get_datasource_by_id
+        from backend.common.db_types import is_es_db_type
 
+        row = get_datasource_by_id(ds_id) or {}
+    except Exception:  # noqa: BLE001 — 查不到源行时当“非 ES 型”处理，由通用链去报“源不存在”
+        return {}
+    return row if is_es_db_type(row.get("db_type")) else {}
+
+
+def is_es_source_definition(raw: dict) -> bool:
+    """该定义是否“挂在 ES 数据源上的 SQL 数据集”（现在唯一的 ES 形态）。"""
+    return bool(es_source_row_of(raw))
+
+
+def validate_es_source_definition(req: dict) -> tuple[list[str], dict]:
+    """ES 数据源型数据集的定义校验（阶段二终态）。
+
+    ES 正文规则与执行期同一个实现（`probe_es_sql` → `es_client.parse_select`）：
+    - 不校 `es_pattern`（内置通道的数据集级收窄层已退役）：能查什么由**该 ES 源的开放范围**与角色授权裁决；
+      两者同时登记属于双口径（一边说 `logs-*`、一边源说另一些索引），直接拒；
+    - `object_key` 仍必空：ES 对象绑语义层是阶段四的事（planner 有 `is_known_db_type` 硬门），
+      现在存下来 = 配了不生效的空承诺；
+    - `sql_bodies`/`dialect` 仍必空：ES SQL 只有一种方言，按引擎分正文永不命中（死键）；
+    - 度量 `expr` 仍不可用：字段层派生表达式靠 sqlglot 拼回 SQL，ES 上无外层可拼。
+    """
     errors: list[str] = []
-    pattern = str(req.get("es_pattern") or "").strip()
+    row = es_source_row_of(req)
     sql = str(req.get("sql_query") or "").strip()
 
+    if str(req.get("es_pattern") or "").strip():
+        errors.append("执行源已是 Elasticsearch 数据源，不能再填索引范围（es_pattern 属内置通道字段）："
+                      "可查面由该数据源的开放范围与角色授权裁决，请在数据集页清空该项")
+    if str(req.get("object_key") or "").strip():
+        errors.append("ES 数据源数据集不能同时绑定本体对象（ES 语义层尚未开放）："
+                      "请只保留执行 SQL，或先改挂非 ES 数据源")
     if str(req.get("dialect") or "").strip():
-        errors.append("ES 数据集不支持 dialect 标注（ES SQL 只有一种方言）")
-    # 先归一形状再判空：更新路径会把存量行的 sql_bodies 以 JSON **字符串** 合进来，
-    # 直接拿值比 `{}` 会把空定义误判成“不支持”（历史缺陷：ES 数据集改正文保存即被拒）。
+        errors.append("ES 源数据集不支持 dialect 标注（ES SQL 只有一种方言）")
     bodies = req.get("sql_bodies")
     if isinstance(bodies, str):
         bodies = parse_json_obj(bodies, {}) or {}
     if bodies not in (None, "", {}, []):
-        errors.append("ES 数据集不支持 sql_bodies（按引擎分正文在 ES 上永不命中）")
-    if str(req.get("object_key") or "").strip():
-        errors.append("ES 数据集不能同时绑定本体对象：ES 不进治理域，语义对象与它不是一种定义")
-
-    if not pattern:
-        errors.append("ES 数据集必须选择索引范围（es_pattern）")
-    elif not es_client.index_allowed(pattern):
-        errors.append(
-            f"索引范围「{pattern}」不在当前部署开放的范围内；当前可查: "
-            f"{', '.join(es_client.allowed_patterns()) or '（无，部署侧尚未登记）'}")
+        errors.append("ES 源数据集不支持 sql_bodies（按引擎分正文在 ES 上永不命中）")
 
     var_errors, decls = validate_variables(req.get("variables"))
     errors += var_errors
-
-    body_errors, indexes = probe_es_sql(sql, decls, pattern)
+    body_errors, indexes = probe_es_sql(sql, decls, "", int(row.get("id") or 0))
     errors += body_errors
 
     fc_errors, _cols = validate_field_config(req.get("field_config"))
@@ -225,7 +238,7 @@ def validate_es_definition(req: dict) -> tuple[list[str], dict]:
     cols = cols if isinstance(cols, list) else parse_json_obj(cols, None)
     for c in (cols or []):
         if isinstance(c, dict) and str(c.get("expr") or "").strip():
-            errors.append(f"字段 {c.get('field')!r} 的 expr 在 ES 数据集不可用："
+            errors.append(f"字段 {c.get('field')!r} 的 expr 在 ES 源数据集不可用："
                           f"请把聚合写进正文（如 SUM(x)、COUNT(DISTINCT y)）")
 
     dedup = sorted({t for t in indexes if t})
@@ -333,11 +346,11 @@ def validate_definition(req: dict) -> tuple[list[str], dict]:
     归一化产物含 `touched_tables`（JSON 文本）——提表结果由服务端计算，
     不接受请求体自报（护栏 §2）。
 
-    分派：ES 型走 `validate_es_definition`（不能过 sqlglot，也不能走只读治理校验），
+    分派：ES 正文不能过 sqlglot（无 elasticsearch 方言），走 ES 专用校验支；
     其余保持原有的方言正文 + 参数 + 字段校验链。
     """
-    if is_es_definition(req):
-        return validate_es_definition(req)
+    if is_es_source_definition(req):
+        return validate_es_source_definition(req)
 
     errors: list[str] = []
     sql_main = str(req.get("sql_query") or "").strip()

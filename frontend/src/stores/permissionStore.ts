@@ -64,3 +64,18 @@ export function hasPerm(permCode: string): boolean {
   if (!loaded || unrestricted) return true;
   return matchPerm(perms ?? [], permCode);
 }
+
+/**
+ * 响应式版 :func:`hasPerm`：同一个 `matchPerm` 口径（含 `module:*` 与 `*` 通配），
+ * 但订阅权限清单，供组件在渲染期拿到的值随清单加载/刷新而变。
+ *
+ * 需要“没加载完就不算有”的场景请另外用 `loaded` 一起判（本钩子与 hasPerm 一致，
+ * 未就绪时放行，避免首帧把入口抽走又装回去）。
+ */
+export function useHasPerm(permCode: string): boolean {
+  const perms = usePermissionStore(s => s.perms);
+  const unrestricted = usePermissionStore(s => s.unrestricted);
+  const loaded = usePermissionStore(s => s.loaded);
+  if (!loaded || unrestricted) return true;
+  return matchPerm(perms ?? [], permCode);
+}

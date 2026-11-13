@@ -4,7 +4,8 @@ import { BarChart3, Info, LayoutDashboard, Search, Settings } from 'lucide-react
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { hasPerm } from '@/stores/permissionStore';
-import { fetchVisibleGroups, flattenGroupBoards, type GroupView } from '@/lib/dashboardCatalog';
+import { fetchVisibleGroups, flattenGroupBoards, filterBoards, collectBoardTags,
+  type GroupView, type BoardFilter } from '@/lib/dashboardCatalog';
 import { BoardCard, GroupCard, groupEntryBoard } from '@/components/DashboardCatalogCards';
 import { toast } from '@/lib/toast';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
@@ -26,6 +27,9 @@ export default function WorkspaceDashboards() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
+  // 标签筛选（与看板管理页同口径：独立下拉框，不是芯片行）：看板上量后按名字找不动，
+  // 按「单App看板 / 三方集成App / 低样本」这类标签找才是真需求。只影响本页清单。
+  const [tag, setTag] = useState('');
   const canManage = hasPerm('dashboard:manage');
 
   const load = useCallback(async () => {
@@ -44,10 +48,15 @@ export default function WorkspaceDashboards() {
 
   const boards = useMemo(() => flattenGroupBoards(groups), [groups]);
   const enabled = useMemo(() => boards.filter(b => b.status === 'enabled'), [boards]);
-  const query = search.trim().toLowerCase();
-  const hits = useMemo(() => (query
-    ? enabled.filter(b => `${b.name} ${b.description || ''}`.toLowerCase().includes(query))
-    : []), [enabled, query]);
+  const filter: BoardFilter = { query: search, tag };
+  const filtering = Boolean(search.trim() || tag);
+  // 搜索与标签同一套判据（与组内切换条、看板管理页同口径）：命中就以看板卡平铺，
+  // 跨组合直接找板——找看板的意图不该被层级挡住。
+  const hits = useMemo(() => (filtering ? filterBoards(enabled, filter) : []), [enabled, search, tag, filtering]);
+  const allTags = useMemo(() => collectBoardTags(enabled), [enabled]);
+  // 空结果文案要逐个说出刚筛了什么（只写一个条件等于把另一个条件隐掉）
+  const hitsCondition = [search.trim() && `匹配「${search.trim()}」`, tag && `带「${tag}」标签`]
+    .filter(Boolean).join(' 且 ') || '符合筛选条件';
   // 只列「组里有东西」的组合：全空壳的组合卡点了必然落到空态，不如不出现
   const shownGroups = useMemo(() => groups.filter(g => g.dashboards.length > 0), [groups]);
   // 「未分组」(id=0 兑底组) 不再当作一张组合卡：其看板平铺成单看板卡（用户拍板：未分组平铺，不塞进一个“未分组”组内）
@@ -85,7 +94,7 @@ export default function WorkspaceDashboards() {
         </span>
         <h1 className="shrink-0 text-lg font-semibold tracking-tight">数据看板</h1>
         <p className="hidden min-w-0 truncate text-xs text-muted-foreground xl:block">
-          {query ? '搜索结果跨组合直接匹配看板，点卡片进入看板详情。' : '点组合卡直接进入该组合的看板，页内可切换同组看板。'}
+          {filtering ? '搜索结果跨组合直接匹配看板，点卡片进入看板详情。' : '点组合卡直接进入该组合的看板，页内可切换同组看板。'}
         </p>
       </div>
       <div className="ml-auto flex items-center gap-2">
@@ -94,8 +103,14 @@ export default function WorkspaceDashboards() {
           <Input aria-label="搜索看板" placeholder="搜索名称或描述…" className="h-8 pl-8 text-xs"
             value={search} onChange={e => setSearch(e.target.value)} />
         </div>
+        {/* 标签下拉（与看板管理页、组内切换条同一判据）：无标签时置灰并说出原因，不做一个点开是空的死开关 */}
+        <select aria-label="标签筛选" role="combobox" className="h-8 max-w-[11rem] rounded-md border bg-background px-2 text-xs"
+          disabled={allTags.length === 0} value={tag} onChange={e => setTag(e.target.value)}>
+          <option value="">{allTags.length === 0 ? '全部标签（暂无）' : '全部标签'}</option>
+          {allTags.map(t => <option key={t} value={t}>#{t}</option>)}
+        </select>
         <span className="whitespace-nowrap text-xs text-muted-foreground">
-          {query ? `${hits.length} 个匹配看板` : `${realGroups.length} 个组合 · ${enabled.length} 个看板`}
+          {filtering ? `${hits.length} 个匹配看板` : `${realGroups.length} 个组合 · ${enabled.length} 个看板`}
         </span>
         {canManage && <Button size="sm" variant="outline" className="h-8 shrink-0" onClick={() => navigate('/system/dashboards')}>
           <Settings className="mr-1.5 h-3.5 w-3.5" />看板管理
@@ -127,11 +142,11 @@ export default function WorkspaceDashboards() {
           字模库加载失败，卡片预览暂时使用灰度配色（与看板管理页不一致）。
           <Button size="sm" variant="outline" onClick={library.refresh}>重试</Button>
         </div>}
-        {query ? (hits.length ? <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+        {filtering ? (hits.length ? <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
           {hits.map(b => <BoardCard key={`${b.group_id}-${b.id}`} board={b} groupName={b.group_name}
             items={library.items} onOpen={openBoard} onPlay={id => playBoard(id, b.group_id)} />)}
         </div> : <div className="rounded-xl border border-dashed py-16 text-center text-sm text-muted-foreground">
-          没有匹配「{search.trim()}」的看板，可换个关键词，或清空搜索按组合浏览。
+          没有{hitsCondition}的看板，可换个关键词、选其他标签，或清空筛选按组合浏览。
         </div>) : <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
           {realGroups.map(g => <GroupCard key={g.id} group={g} items={library.items}
             onEnter={enterGroup} onPlay={playGroup} onOpenBoard={openBoard} />)}

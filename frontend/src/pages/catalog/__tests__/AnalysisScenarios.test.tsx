@@ -4,9 +4,12 @@
 //  2. 场景必须显式声明主体范围：要么选主体，要么勾「不限主体」——没声明的场景对所有
 //     角色都不会命中，所以保存前先拦一层，并把服务端的不可见原因当场显示出来；
 //  3. 主体从清单选（显示业务名），不让人手输 object_key（ui-resource-display §2）。
+//  4. （M5）报告模板同样只从本域候选选、只存业务名：候选拉不到就显式报错重试，
+//     绑过的模板不在候选里也要当场看得见 —— 静默当成“没绑”会把配置缺口推到问答里才暴露。
 // 历史缺陷：旧版把三条写死的示例问句当"场景"候选铺在首页，且清单把正文全铺出来。
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 // mock 句柄必须走 vi.hoisted：vi.mock 工厂会被提到文件顶部，直接引用
 // 下面声明的 `const mockClient` 会报 "Cannot access before initialization"。
@@ -36,10 +39,18 @@ const SUBJECTS = { items: [
   { key: 'case', name: 'Case', model_name: '联耀业务本体', kind: 'business' },
 ] };
 
+// 报告模板候选：本域接口只回名字与形状（字模 id 不下发，递过去就等于让人手填它）
+const TEMPLATES = { items: [
+  { name: '周报模板', format: 'markdown', usable: true, sections: 4 },
+  { name: '地域分布版式', format: 'markdown', usable: true, sections: 3 },
+  { name: '空白模板', format: 'markdown', usable: false, sections: 0 },
+] };
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockClient.get.mockImplementation((url: string) => {
     if (String(url).endsWith('/knowledge/subjects')) return Promise.resolve({ data: SUBJECTS });
+    if (String(url).endsWith('/knowledge/report-templates')) return Promise.resolve({ data: TEMPLATES });
     return Promise.resolve({ data: { items: [ROW], total: 1, page: 1, size: 20 } });
   });
 });
@@ -107,11 +118,110 @@ describe('分析场景清单（表格化 + 主体授权）', () => {
 
   it('主体无权限而不可见的场景，原因当场写在清单里（不让人到问答里才发现没生效）', async () => {
     mockClient.get.mockImplementation((url: string) => (
-      String(url).endsWith('/knowledge/subjects')
-        ? Promise.resolve({ data: SUBJECTS })
-        : Promise.resolve({ data: { items: [{ ...ROW, visible_to_me: false,
+      String(url).endsWith('/knowledge/subjects') ? Promise.resolve({ data: SUBJECTS })
+        : String(url).endsWith('/knowledge/report-templates') ? Promise.resolve({ data: TEMPLATES })
+          : Promise.resolve({ data: { items: [{ ...ROW, visible_to_me: false,
             visibility_note: '所绑主体当前身份无权限（主体：rum_event）' }], total: 1, page: 1, size: 20 } })));
     render(<AnalysisScenarios />);
     expect(await screen.findByText(/所绑主体当前身份无权限/)).toBeInTheDocument();
+  });
+});
+
+// 填完必需项（名称/触发词/正文 + 不限主体），专门用于“选模板后保存”这类用例
+const fillRequired = () => {
+  fireEvent.change(screen.getByPlaceholderText('如: 按月统计销售额'), { target: { value: '新场景' } });
+  fireEvent.change(screen.getByPlaceholderText('如: 销售额, GMV, 成交金额'), { target: { value: '销售额' } });
+  fireEvent.change(screen.getByPlaceholderText(/告诉 AI 该如何查询/), { target: { value: '步骤正文' } });
+  const note = screen.getAllByText('不限主体（所有角色都能命中该场景）')[0];
+  fireEvent.click(note.parentElement!.querySelector('button[role="switch"]')!);
+};
+
+describe('场景绑定的报告模板（只认业务名 · 读不到要看得见）', () => {
+  it('候选走本域接口、只列业务名；未登记版式的模板标出来', async () => {
+    render(<AnalysisScenarios />);
+    await screen.findByText('官网 Web 端体验与流量分析');
+    expect(mockClient.get).toHaveBeenCalledWith('/admin/knowledge/report-templates');
+    // 不走 /reports/templates：那要「报告模板」菜单权限，配场景的人不一定有
+    expect(mockClient.get).not.toHaveBeenCalledWith(expect.stringContaining('/reports/templates'));
+
+    fireEvent.click(screen.getByRole('button', { name: /新增分析场景/ }));
+    const trigger = screen.getByRole('combobox', { name: '报告模板' });
+    await userEvent.click(trigger);
+    await screen.findByRole('option', { name: '周报模板' });
+    expect(screen.getByRole('option', { name: '空白模板（未登记版式，只有示例正文）' })).toBeInTheDocument();
+    // 名字之外不得出现可手填的输入口（id 与手填名字都不是合法入口）
+    expect(screen.queryByPlaceholderText(/模板/)).not.toBeInTheDocument();
+  });
+
+  it('选定模板后存的是业务名（metadata.report_template），不存 id', async () => {
+    render(<AnalysisScenarios />);
+    await screen.findByText('官网 Web 端体验与流量分析');
+    fireEvent.click(screen.getByRole('button', { name: /新增分析场景/ }));
+    fillRequired();
+    await userEvent.click(screen.getByRole('combobox', { name: '报告模板' }));
+    fireEvent.click(await screen.findByRole('option', { name: '周报模板' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+    await waitFor(() => expect(mockClient.post).toHaveBeenCalled());
+    const payload = mockClient.post.mock.calls[0][1] as any;
+    expect(payload.metadata.report_template).toBe('周报模板');
+  });
+
+  it('不绑定就不往 metadata 里写一个空键', async () => {
+    render(<AnalysisScenarios />);
+    await screen.findByText('官网 Web 端体验与流量分析');
+    fireEvent.click(screen.getByRole('button', { name: /新增分析场景/ }));
+    fillRequired();
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+    await waitFor(() => expect(mockClient.post).toHaveBeenCalled());
+    const payload = mockClient.post.mock.calls[0][1] as any;
+    expect(payload.metadata.report_template).toBeUndefined();
+  });
+
+  it('候选拉不到：显式报错 + 重试，不给一个空下拉让人当“没模板”', async () => {
+    mockClient.get.mockImplementation((url: string) => (
+      String(url).endsWith('/knowledge/report-templates')
+        ? Promise.reject({ response: { data: { detail: '报告模板清单读取失败' } } })
+        : Promise.resolve({ data: String(url).endsWith('/knowledge/subjects')
+          ? SUBJECTS : { items: [ROW], total: 1, page: 1, size: 20 } })));
+    render(<AnalysisScenarios />);
+    await screen.findByText('官网 Web 端体验与流量分析');
+    fireEvent.click(screen.getByRole('button', { name: /新增分析场景/ }));
+    expect(await screen.findByText('报告模板清单读取失败')).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: '报告模板' })).not.toBeInTheDocument();
+
+    // 重试后拿到候选就回到正常选择路径（错误态不是终态）
+    mockClient.get.mockImplementation((url: string) => (
+      String(url).endsWith('/knowledge/report-templates') ? Promise.resolve({ data: TEMPLATES })
+        : Promise.resolve({ data: String(url).endsWith('/knowledge/subjects')
+          ? SUBJECTS : { items: [ROW], total: 1, page: 1, size: 20 } })));
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '报告模板' })).toBeInTheDocument());
+  });
+
+  it('绑过的模板已从候选里消失（下架/改名）：当场写明，不从下拉里静默消失', async () => {
+    mockClient.get.mockImplementation((url: string) => (
+      String(url).endsWith('/knowledge/subjects') ? Promise.resolve({ data: SUBJECTS })
+        : String(url).endsWith('/knowledge/report-templates') ? Promise.resolve({ data: TEMPLATES })
+          : Promise.resolve({ data: { items: [{ ...ROW,
+            metadata: { ...ROW.metadata, report_template: '幽灵模板' } }],
+            total: 1, page: 1, size: 20 } })));
+    render(<AnalysisScenarios />);
+    fireEvent.click(await screen.findByRole('button', { name: /编辑（含触发词与查询步骤正文）/ }));
+    expect(await screen.findByText(/不在可用模板清单里/)).toBeInTheDocument();
+    expect(screen.getByText(/当前绑定的「幽灵模板」/)).toBeInTheDocument();
+  });
+
+  it('清单里能扫到绑了哪个模板（配置事实不该逐条开弹窗看）', async () => {
+    mockClient.get.mockImplementation((url: string) => (
+      String(url).endsWith('/knowledge/subjects') ? Promise.resolve({ data: SUBJECTS })
+        : String(url).endsWith('/knowledge/report-templates') ? Promise.resolve({ data: TEMPLATES })
+          : Promise.resolve({ data: { items: [{ ...ROW,
+            metadata: { ...ROW.metadata, report_template: '周报模板' } }],
+            total: 1, page: 1, size: 20 } })));
+    render(<AnalysisScenarios />);
+    const row = await screen.findByText('官网 Web 端体验与流量分析');
+    expect(within(row.closest('td')!).getByText('报告模板：周报模板')).toBeInTheDocument();
   });
 });

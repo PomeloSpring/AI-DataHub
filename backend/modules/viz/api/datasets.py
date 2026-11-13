@@ -86,67 +86,6 @@ def validate_sql_endpoint(
         _raise(e)
 
 
-# ── ES 内置通道（数据集第三种定义类型）: 必须在 /{dataset_id} 之前注册 ──────
-#
-# 口径与治理型数据集不同是**有意**的（详见 `dataset_service` 的「ES 分支」段注释）：
-# ES 不进列级/行级数据权限治理域（ES SQL 无 JOIN/可包裹子查询、sqlglot 无 ES 方言），
-# 闸门 = 部署侧索引模式白名单（fail-closed）∧ 数据集 es_pattern 收窄，由 `core/es_client` 执行。
-# 这三个端点只回配置结论与字段元数据，**不回数据行**（除 validate-es-sql 的一行列型样本）；
-# 持有 `dataset:es` 才能读（在 service 层按码裁决，不走路径匹配）。
-
-@router.get("/es-patterns")
-def es_patterns(
-    user: dict = Depends(get_current_user),
-    workspace_id: int = Depends(get_workspace_id),
-):
-    """可查索引范围清单 + 通道就绪态 + 方言提示（数据集页选择框的数据源）。
-
-    模式名是部署配置，但它的身份与 AS-BOT 的 `list_es_indexes` 一致：业务可读的
-    "可查范围"名，不是连接信息（地址/凭据/端口永不回显）；本面只在持有 dataset:es 的
-    配置面开放，普通消费面不渲染。
-    未就绪时回原因而不是空清单，否则前端会渲成"暂无索引"把配置缺口当业务结论。
-    """
-    try:
-        return dataset_service.es_pattern_options(_identity(user, workspace_id))
-    except Exception as e:  # noqa: BLE001
-        _raise(e)
-
-
-@router.get("/es-fields")
-def es_fields(
-    pattern: str = QueryParam("", description="索引模式（从 es-patterns 清单选择）"),
-    user: dict = Depends(get_current_user),
-    workspace_id: int = Depends(get_workspace_id),
-):
-    """索引范围的字段清单（名称/类型/可聚合性/text 的 .keyword 精确列），供写 SQL 与配字段映射。"""
-    try:
-        return dataset_service.es_field_options(pattern, _identity(user, workspace_id))
-    except Exception as e:  # noqa: BLE001
-        _raise(e)
-
-
-@router.post("/validate-es-sql")
-def validate_es_sql_endpoint(
-    req: dict,
-    user: dict = Depends(get_current_user),
-    workspace_id: int = Depends(get_workspace_id),
-):
-    """校验 ES 正文（只读/单表/强制 LIMIT/白名单/范围收窄）并探测输出列。
-
-    与 `validate-sql` 同构但不经 governed_execute：ES 正文不是治理域 SQL，
-    校验与执行都只在 `core/es_client` 一个入口上（存得进 = 跑得通不漂移）。
-    """
-    ident = _identity(user, workspace_id)
-    if not ident["user_id"]:
-        raise HTTPException(status_code=403, detail="缺少可信用户身份, 拒绝 ES 取数")
-    try:
-        return dataset_service.validate_es_sql(req, ident)
-    except HTTPException:
-        raise
-    except Exception as e:  # noqa: BLE001
-        _raise(e)
-
-
 # ── 语义对象 × SQL 互转(双定义; 编译 SQL 仅回显给 dataset:manage 编辑者) ────
 
 @router.get("/semantic-fields")
@@ -205,26 +144,11 @@ def extract_from_sql(
 
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
-@router.get("/channels")
-def dataset_channels(user: dict = Depends(get_current_user)):
-    """可承载数据集取数的**内置 MCP 通道**清单（数据集页「数据源/通道」筛选的选项源）。
-
-    就绪态/原因/开放范围数量一律回源 `builtin_mcp`（与 MCP 服务页同一口径，不在这里
-    另算一套“通道可用否”）；未就绪的通道照旧返回并带原因，否则前端默默少一项会被读成
-    “没这个通道”（no-silent-degradation）。按通道筛选属消费面，不要求 dataset:es
-    （受权限把关的是配置面：索引范围/字段清单，见 /es-patterns）。
-    """
-    try:
-        return {"items": dataset_service.mcp_channel_options()}
-    except Exception as e:  # noqa: BLE001
-        _raise(e)
-
-
 @router.get("/")
 def list_datasets(
     keyword: str = QueryParam("", description="名称/描述/对象 关键字"),
     datasource_id: int = QueryParam(0, description="按数据源筛选(0=全部)"),
-    channel: str = QueryParam("", description="按取数通道筛选：''=全部，es / mcp:elasticsearch=内置 Elasticsearch 通道"),
+    channel: str = QueryParam("", description="按执行通道筛选：''=全部，es=执行通道为 ES 型数据源"),
     user: dict = Depends(get_current_user),
     workspace_id: int = Depends(get_workspace_id),
 ):
@@ -266,31 +190,15 @@ def get_dataset(dataset_id: int,
         raise HTTPException(status_code=404, detail="数据集不存在")
     ident = _identity(user, workspace_id)
     ds["chart_preset"] = dataset_service._parse_json(ds.get("chart_preset"), {})
+    # ES 执行通道：把方言规则随详情下发（文案源只有 `_ES_SQL_HINT` 一处）。
+    # 内置通道退役后它原先的出口 `/es-patterns` 已不存在，不补这一位的话，
+    # 写 ES 正文的人只能靠试错（前端另写一份会与实际执行的解析规则漂移）。
+    if ds.get("is_es"):
+        ds["es_sql_hint"] = dataset_service._ES_SQL_HINT
     # 入参 → 逻辑参数计划（与看板取数翻译同源）：数据集页据此显示"每个入参在看板上是什么"
     from backend.semantics import param_plan
     ds["param_plan"] = param_plan.logical_plan(
         ds.get("variables"), param_plan._bodies_of(ds))
-    if dataset_service.is_es_dataset(ds):
-        # ES 型不挂在数据源上：可用源/生效源/跨引擎正文对它都不成立，拿这套判定只会
-        # 渲染出"默认引擎"这个不相干标签（与列表页同口径，单口径在 service 一处判）。
-        state = dataset_service.es_channel_state()
-        pattern = str(ds.get("es_pattern") or "").strip()
-        ds["datasource_name"] = dataset_service._ES_CHANNEL_LABEL
-        ds["available_datasources"] = []
-        ds["available_source_names"] = [pattern] if pattern else []
-        ds["usable_now"] = [pattern] if dataset_service.es_scope_live(pattern) else []
-        if not state.get("ready"):
-            ds["warnings"] = [f"内置 Elasticsearch 通道当前不可用："
-                              f"{state.get('status_message') or state.get('state')}；"
-                              f"该配置由部署侧托管，请联系管理员"]
-        elif pattern and not dataset_service.es_scope_live(pattern):
-            ds["warnings"] = [f"数据集登记的索引范围「{pattern}」已不在当前开放范围内，"
-                              f"取数会被拒绝；请重新选择索引范围"]
-        ds["es_channel"] = {"ready": bool(state.get("ready")), "state": state.get("state"),
-                            "status_message": state.get("status_message") or ""}
-        ds["fields"] = dataset_service.resolve_fields(ds)
-        ds["references"] = dataset_service._references(dataset_id)
-        return ds
     catalog = dataset_service._load_datasource_catalog()
     usable, missing = dataset_service.usable_sources(ds, catalog)
     scope, _ = (dataset_service.usable_scope(ds, ident, catalog=catalog)

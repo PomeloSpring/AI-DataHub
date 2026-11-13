@@ -347,6 +347,17 @@ def execute_sql(
         # 对内审计留真实错因（否则失败行无因可查）
         _sql_audit(ctx, sql, status="error", error=str(e)[:1000],
                    time_ms=int((time.monotonic() - t0) * 1000))
+        # 抛错方自带“已脱敏且面向人”的文案（`es_client.EsError`、`EsPagingUnsupported`、
+        # `query_gate.QueryQueueTimeout`）原样下发：这类文案给的是可操作下一步（开放范围清单 /
+        # 收窄时间窗 / 关闭数据集分页 / 减少同刷图表数），进通用分类会把它们降级成
+        # “系统侧问题，建议稍后重试”—— 排查方向直接指错。
+        # 判据是抛错方的显式声明（不是按文案猜“像不像中文”），新通道要透传必须同样声明。
+        # 类别同样由抛错方自带（`exec_category`）：拿同一句“es_business”去标容量退让，
+        # 审计与排障会把“排队排不到”当成 ES 业务错，两类问题的处置完全不同。
+        if getattr(e, "safe_business_message", False):
+            raise SemanticError(ErrorCode.EXEC_FAILED, str(e), blocked_at="execute",
+                                detail={"failure_category":
+                                        (getattr(e, "exec_category", "") or "es_business")}) from e
         # 分类必须在**原始异常还在手上**的时候做：旧写法直接抛 EXEC_FAIL_HINT，把
         # 1064（方言不符）与 2002（连不上）归为同一句“系统侧问题，建议稍后重试”，
         # 模型据此向用户报“数据源执行阶段连接失败”——重试永远复现的缺陷被当成抖动。

@@ -163,8 +163,10 @@ OBSERVABILITY_CREDIT_COST_CURRENCY = (os.getenv("OBSERVABILITY_CREDIT_COST_CURRE
 
 # 名称对齐 qodercli 自身的环境变量约定(README 中 QODER_MODEL ↔ -m/--model)；
 # secure_sdk.build_options 会剥除子进程 env，本项仅作为本侧读取入口，不直接
-# 依赖子进程继承。优先级：前端选择/AS-BOT.models[0] > 执行层 adapter.model >
-# QODER_MODEL > SDK 默认(Auto)。支持 `{provider}/{model}` 形式(见 llm_resources)。
+# 依赖子进程继承。它是四级优先级的**最后一档部署兜底**：回合选择 > 执行层 config.model >
+# 模型中心「设为默认」> 本项（唯一实现 llm_resources.resolve_effective_model）。
+# 高于本项的模型中心默认已存在，所以这里只当“没任何平台/层配置时”的兜底；
+# 支持 `{provider}/{model}` 形式(见 llm_resources)。
 QODER_MODEL = os.getenv("QODER_MODEL", "").strip()
 
 # ════════════════════════════════════════════════════════════════════════
@@ -320,33 +322,23 @@ SEMANTIC_SERVICE_URL = os.getenv("SEMANTIC_SERVICE_URL", f"http://localhost:{WEB
 SEMANTIC_TIMEOUT = int(os.getenv("SEMANTIC_TIMEOUT", "60"))
 
 # ══════════════════════════════════════════════════════════════════════════
-# Elasticsearch 内置 MCP 能力（平台内置服务，非数据源）
+# Elasticsearch 性能旋钮（取数机件已迁到数据源）
 # ══════════════════════════════════════════════════════════════════════════
 #
-# 定位决策（2026-11-04）：ES 作为**平台内置 MCP 服务**（adh_mcp_servers 的 is_builtin=1
-# 行，在 AS-BOT「引用 MCP 服务」里绑定并逐工具授权），而不是登记成数据源。理由：
-#   - 不进治理域 ⇒ 不消费 RLS/列级策略（ES SQL 不支持子查询包裹、sqlglot 无 ES
-#     方言，编译期改写手法在 ES 上不成立）；数据面唯一闸门是下面的索引模式白名单。
-#   - 前提是「范围内数据已脱敏」——属产品决策，不在代码层验证；若接入未脱敏索引
-#     需重新评估（见 tests/test_es_builtin_mcp.py 的口径用例）。
-# 凭据与访问范围**只走 .env**（本模块是唯一读取口）：内置行只存能力登记，不存任何
-# 连接字段，地址/凭据/模式名永不出现在 API 响应或 UI（安全护栏 §7）。
+# 内置 MCP 通道那套全局配置（ES_URL/ES_USERNAME/ES_PASSWORD/ES_API_KEY/ES_VERIFY_CERTS/
+# ES_TIMEOUT_SEC/ES_MAX_ROWS/ES_ALLOWED_INDEXES/ES_MCP_ENABLED）已随阶段三退役：
+# ES 是正式数据源，地址、凭据、证书校验、超时与行上限、开放索引范围全部只从
+# `adh_datasources`（`db_type='es'` + `extra_config`）读——两边都配会变成“改了界面
+# 没反应、变量在 .env 里”的双口径。历史一次性登记脚本 `backend/scripts/register_es_datasource.py`
+# 自己读旧变量（不占用本模块），作为运维工具保留。
 
-ES_MCP_ENABLED = os.getenv("ES_MCP_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
-ES_URL = os.getenv("ES_URL", "").strip()
-ES_USERNAME = os.getenv("ES_USERNAME", "").strip()
-ES_PASSWORD = os.getenv("ES_PASSWORD", "")
-ES_API_KEY = os.getenv("ES_API_KEY", "").strip()
-# 自签证书集群需显式关闭；缺省校验（不因“连不上”就悄悄关掉 TLS 验证）。
-ES_VERIFY_CERTS = os.getenv("ES_VERIFY_CERTS", "true").strip().lower() not in ("0", "false", "no", "off")
-ES_TIMEOUT_SEC = int(os.getenv("ES_TIMEOUT_SEC", "20"))
-ES_MAX_ROWS = int(os.getenv("ES_MAX_ROWS", "1000"))
-# 可查索引模式白名单（逗号分隔，每项就是一个可查范围，同 Kibana data view）。查询直接
-# 拿模式作 FROM 目标（如 FROM "logs-*"），由 ES 跨时间分片合并，**不向集群展开**。
-# **空 = 不开放任何范围**（fail-closed，与“空角色授权不等于全量”同口径）；
-# 写法必须整体落在某个已登记模式内（带 * 收窄可以，丢掉模式里的字面字符会被当扩权拒）。
-ES_ALLOWED_INDEXES = tuple(
-    x.strip() for x in os.getenv("ES_ALLOWED_INDEXES", "").split(",") if x.strip()
-)
+# 同参数 ES 查询去重的复用窗口（秒，进程内，不落 Redis）：一次看板刷新里多张卡
+# 打同一条正文 + 同一组参数时只下发一次（前端图表并发度 4，KPI 卡就是同一条查询）。
+# 0 = 关闭去重（每张卡各自回源）。取值必须 **≥ 单条重查询耗时**（本域实测 13s）：否则连发
+# 的重复请求根本赶不上上一份还在窗口里，只能靠并发在途合并（前端图表并发度 4 就是这种情况）。
+# 窗口代价：改数据集正文会即时失效（写路径显式 clear 且键含 updated_at），但**角色授权/脱敏
+# 策略的变更最长晚这么多久才反映到已去重的结果**；需要即时生效就把本值调成 0。
+# 注意：这一项属**数据源侧的性能旋钮**，不随 ES 内置通道遗产一起删。
+ES_QUERY_DEDUP_TTL_SEC = int(os.getenv("ES_QUERY_DEDUP_TTL_SEC", "20"))
 
 

@@ -15,6 +15,7 @@ Tables: adh_saved_queries
 """
 
 import logging
+import re
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -153,13 +154,15 @@ def execute_via_playground(
 ):
     """交互式 SQL 执行 —— 继承当前用户角色权限(与可视化大屏 raw_sql 同源)。
 
-    本平台不是数据库直连工具: 取数一律经统一护城河 `execute_query_with_permission`
-    (permission_enforcer: 敏感 block 列剔除 / mask 脱敏 + RLS 行级过滤 + RBAC + 审计),
-    身份只信服务端 JWT(I2), 无可信身份 -> fail-closed 4xx(I5)。仅只读语句。
+    本平台不是数据库直连工具: 取数一律经 **SQL 形状的唯一出口**
+    `semantics.execute.execute_sql`（由 `governed_execute` 收口），与数据集/看板/Chat
+    完全同一条链路：同一治理改写（敏感 block 列剔除 / mask 脱敏 + RLS 行级过滤 + RBAC）、
+    同一份查询审计（success/denied/error 三态）、同一套错因分类文案。
+    Playground 多出来的是**功能**（AST/血缘/RLS 改写预览/保存查询），不是另一条取数路。
+    身份只信服务端 JWT(I2)，无可信身份 -> fail-closed 4xx(I5)，仅只读语句。
     """
-    from backend.core.query_executor import (
-        execute_query_with_permission, validate_sql,
-    )
+    from backend.core.governed_query import governed_execute
+    from backend.core.query_executor import validate_sql
 
     sql = (req.get("sql") or "").strip().rstrip(";")
     if not sql:
@@ -168,6 +171,20 @@ def execute_via_playground(
     ok, msg = validate_sql(sql, require_limit=False)
     if not ok:
         raise HTTPException(status_code=400, detail=f"SQL 校验失败: {msg}")
+
+    # 未渲染的数据集入参占位符必须在这里说清（而不是等引擎报一个语法错）：
+    # 从数据集/看板复制正文到 Playground 时，`${start_time}` 这类占位符不会被替换
+    # （Playground 执行的是手写的裸 SQL，不吃数据集入参），ES 会回
+    # `parsing_exception: mismatched input '$'`，而旧文案只说“请检查查询是否受支持”——
+    # 可诊断信息缺失，用户只能猜（no-silent-degradation：报错要带真因与下一步）。
+    placeholders = sorted({str(m) for m in re.findall(r"\$\{([A-Za-z_][\w.]*)\}", sql)})
+    if placeholders:
+        shown = "、".join(f"${{{p}}}" for p in placeholders[:3])
+        more = f" 等 {len(placeholders)} 个" if len(placeholders) > 3 else ""
+        raise HTTPException(status_code=400, detail=(
+            f"SQL 校验失败: 正文里还有未渲染的数据集入参占位符 {shown}{more}。"
+            "Playground 执行手写的裸 SQL，不替换数据集入参：请把占位符改成具体值（字符串要加引号），"
+            "或到数据集详情页用「预览取数」按入参执行。"))
 
     user_id = user.get("user_id") or 0
     if not user_id:
@@ -180,14 +197,15 @@ def execute_via_playground(
     except (TypeError, ValueError):
         datasource_id = None
 
-    t0 = time.time()
+    # 取数经唯一出口（与数据集/看板/Chat 同一壳）：旧写法在这里直调
+    # `execute_query_with_permission` 开第二条壳 —— 序列化与错误映射各写一套、
+    # SQL 形状出口的审计少一笔，而且 `f"SQL 执行失败: {e}"` 拿到的是引擎原始异常
+    # （可能带 ES 响应体/集群内部信息）直接回显给前端（护栏 §7）。
+    # 现在异常文案由出口按错因分类给出，原始细节只进服务端日志/审计。
     try:
-        df, elapsed_ms, row_count = execute_query_with_permission(
-            sql,
-            datasource_id=datasource_id,
-            user_context={"user_id": user_id, "username": user.get("username", "") or ""},
-            workspace_id=int(workspace_id or 0),
-        )
+        return governed_execute(
+            sql, int(datasource_id or 0), user_id, int(workspace_id or 0),
+            user.get("username", "") or "")
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=f"权限拦截: {e}")
     except ValueError as e:
@@ -195,13 +213,6 @@ def execute_via_playground(
     except Exception as e:  # noqa: BLE001
         logger.warning("Playground execute failed: %s", e)
         raise HTTPException(status_code=400, detail=f"SQL 执行失败: {e}")
-
-    from backend.common.df_serialize import df_to_columns_rows
-    # 关联查询(t1.*, t2.*)会带重复列名, 统一走无损消歧序列化, 避免 to_json 500
-    columns, rows = df_to_columns_rows(df)
-    if elapsed_ms is None:
-        elapsed_ms = int((time.time() - t0) * 1000)
-    return {"columns": columns, "rows": rows, "row_count": row_count, "elapsed_ms": elapsed_ms}
 
 
 @router.get("/queries")

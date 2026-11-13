@@ -79,7 +79,50 @@ describe('报告历史版本归集与失败原因', () => {
     expect(list?.textContent).not.toContain('分析生成')
     // 会话保存可编辑 + 可删除 → 名称/编辑/删除三个按钮（分析生成不可删的旧行为已修）
     expect(list?.querySelectorAll('button').length).toBe(3)
-    expect(list?.querySelector('[title="删除报告"]')).toBeInTheDocument()
+    // 卡片垃圾桶的悬停文案要把"删多少"说清（旧写法只写「删除报告」，用户不知道它会连历史版本一起没）
+    expect(list?.querySelector('[title^="删除整份报告"]')).toBeInTheDocument()
+  })
+
+  // 用户实拍：选中 v3 点删除，整份报告连同 v1/v2 一起没了 —— 删一版与删整份必须分成两个动作。
+  it('卡片垃圾桶 = 删整份：确认框说清连同几版一起走，传 scope=series', async () => {
+    const confirms: string[] = []
+    const confirmSpy = vi.spyOn(window, 'confirm').mockImplementation((msg: any) => {
+      confirms.push(String(msg)); return true
+    })
+    const { deleteReport } = await import('@/api/report')
+    render(<MemoryRouter><ReportsCenter /></MemoryRouter>)
+    const trash = await waitFor(() => {
+      const el = document.querySelector('[title^="删除整份报告"]') as HTMLElement | null
+      expect(el).toBeTruthy()
+      return el as HTMLElement
+    })
+    fireEvent.click(trash)
+    await waitFor(() => expect(deleteReport).toHaveBeenCalledWith(v2.id, 'series'))
+    expect(confirms[confirms.length - 1]).toContain('连同 2 个历史版本一起删除')
+    confirmSpy.mockRestore()
+  })
+
+  it('详情页「删除这一版」= 只删那一版：传 scope=version，确认框带版本号与剩余版数', async () => {
+    const confirms: string[] = []
+    const confirmSpy = vi.spyOn(window, 'confirm').mockImplementation((msg: any) => {
+      confirms.push(String(msg)); return true
+    })
+    const { deleteReport } = await import('@/api/report')
+    render(<MemoryRouter><ReportsCenter /></MemoryRouter>)
+    // 默认选中的是最新一版 v2（失败那一版）：两条入口都在，不再共用一个「删除」
+    fireEvent.click(await screen.findByTestId('action-overflow-menu'))
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: '删除这一版' }))
+      .toBeInTheDocument())
+    expect(screen.getByRole('menuitem', { name: /删除整份报告（含 2 个版本）/ }))
+      .toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除这一版' }))
+    await waitFor(() => expect(deleteReport).toHaveBeenCalledWith(v2.id, 'version'))
+    const last = confirms[confirms.length - 1]
+    expect(last).toContain('v2')
+    expect(last).toContain('其余 1 个历史版本保留')
+    // 标识用版本号 + 日期，不得拿裸 id 当名字（ui-resource-display）
+    expect(last).not.toMatch(/\bid[:：]?\s*844/)
+    confirmSpy.mockRestore()
   })
 
   it('失败版本在版本下拉里可见，切回 v1 渲染 v1 正文', async () => {

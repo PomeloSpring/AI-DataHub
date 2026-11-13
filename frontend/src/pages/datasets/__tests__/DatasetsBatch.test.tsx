@@ -28,7 +28,6 @@ beforeEach(() => {
   (client.get as any).mockImplementation(async (url: string) => {
     if (url === '/datasets/') return { data: { items: [row(1, '数据集甲'), row(2, '数据集乙')] } };
     if (url === '/datasources/') return { data: [{ id: 11, name: 'prd-cn', site_code: 'cn', db_type: 'mysql' }] };
-    if (url === '/datasets/channels') return { data: { items: [] } };
     throw new Error(`unexpected GET ${url}`);
   });
   (client.post as any).mockResolvedValue({ data: { succeeded: [], failed: [], succeeded_count: 0, failed_count: 0, message: '' } });

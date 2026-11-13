@@ -245,10 +245,17 @@ def update_report(report_id: int, req: ReportUpdateRequest,
 
 
 @router.delete("/{report_id}")
-def delete_report(report_id: int, user: dict = Depends(get_current_user)):
-    """删除报表（仅内容型报表、仅属主）。"""
+def delete_report(report_id: int,
+                  scope: str = Query("version", pattern="^(version|series)$",
+                                     description="version=只删这一版（默认）；series=删整份报告的全部历史版本"),
+                  user: dict = Depends(get_current_user)):
+    """删除报表（仅属主）。路径里的 id 就是一个版本行，所以**默认只删它自己**。
+
+    旧行为是把同归集键的全部版本一起删：用户在版本下拉里选中 v3 点删除，整份报告连同
+    v1/v2 都没了——那不是"删除"这个动作的对象，而是另一个意图，必须显式要求（``scope=series``）。
+    """
     try:
-        return report_service.delete_report(report_id, user)
+        return report_service.delete_report(report_id, user, scope=scope)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:

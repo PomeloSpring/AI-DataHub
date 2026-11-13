@@ -70,3 +70,8 @@ def truncate_rows(table: pa.Table, max_rows: Optional[int]) -> pa.Table:
     if max_rows is not None and table.num_rows > max_rows:
         return table.slice(0, max_rows)
     return table
+
+
+# 连接超时的解析口径只有一个入口：`backend.common.db.datasource_db.resolve_timeouts`
+# （L0，与连接器工厂同源）——不在连接器层再算一套，否则语义层与元数据探查会拿到
+# 不同的超时，同一张表“看板能查、预览超时”这类差异最难排查。

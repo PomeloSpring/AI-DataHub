@@ -13,7 +13,6 @@ import ContentHome from './pages/content/ContentHome';
 import ContentPreview from './pages/content/ContentPreview';
 import MyDrafts from './pages/content/MyDrafts';
 import ContentManage from './pages/content/ContentManage';
-import ContentReview from './pages/content/ContentReview';
 import ContentTaxonomy from './pages/content/ContentTaxonomy';
 import KnowledgeDocs from './pages/content/KnowledgeDocs';
 import KnowledgeDocDetail from './pages/content/KnowledgeDocDetail';
@@ -219,7 +218,9 @@ export default function App() {
           <Route index element={<ContentHome />} />
           <Route path="drafts" element={<MyDrafts />} />
           <Route path="manage" element={<ContentManage />} />
-          <Route path="review" element={<ContentReview />} />
+          {/* 「审核发布」已并入「内容管理」（2026-11-13）：旧地址重定向到待审筛选，
+              书签与外部链接不失效；菜单登记同步置为 is_active=0 */}
+          <Route path="review" element={<Navigate to="/content/manage?status=in_review" replace />} />
           <Route path="taxonomy" element={<ContentTaxonomy />} />
           {/* 知识库文档: 云端 notebook 的目录树查看/编辑（kbdoc:read/write）。
               清单页是卡片，点进去才拉目录树（详情是同一菜单的子路由，不另登记菜单）。

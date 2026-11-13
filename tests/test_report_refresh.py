@@ -29,6 +29,23 @@ def _chat_report(**over):
     return row
 
 
+def _stub_series(monkeypatch, *rows):
+    """版本系列桩：重跑要往同一系列里回溯可信版式基线，测试里不连库。"""
+    members = [dict(r) for r in rows]
+    monkeypatch.setattr(reports, "_series_member_rows",
+                        lambda row, user: members or [dict(row)])
+
+
+def _stub_body(monkeypatch, text_by_id):
+    """按报表 id 桩正文读取（``{id: 正文}``，缺的视为读不到）。"""
+    def _read(row):
+        body = text_by_id.get(int(row.get("id") or 0))
+        if body is None:
+            raise LookupError("报告正文为空，请重新生成或重新保存")
+        return body.encode("utf-8")
+    monkeypatch.setattr(reports, "read_report_content_bytes", _read)
+
+
 # ── 1. 标题归纳：报告自己的名字优先于用户口语提问 ─────────────────────────────
 
 def test_title_prefers_body_heading_over_question():
@@ -128,8 +145,11 @@ def test_refresh_rejects_report_without_registered_question(monkeypatch):
         reports.prepare_report_refresh(1, OWNER)
 
     # 只有问题、没有 AS-BOT/源：照样可重跑（不再把旧报告当成不可复跑）
-    monkeypatch.setattr(reports, "_load_owned_report", lambda rid, user: _chat_report(
-        analysis_source={"origin": {"question": "查个数"}}))
+    row = _chat_report(content_object_key="k/1",
+                      analysis_source={"origin": {"question": "查个数"}})
+    monkeypatch.setattr(reports, "_load_owned_report", lambda rid, user: row)
+    _stub_series(monkeypatch, row)
+    _stub_body(monkeypatch, {1: _ORIGINAL_BODY})
     monkeypatch.setattr(reports, "create_report", lambda **kw: {"id": 99})
     monkeypatch.setattr(reports, "claim_report", lambda rid: True)
     monkeypatch.setattr(reports, "resolve_execution_owner", lambda uid, ws: {"user_id": uid})
@@ -148,6 +168,7 @@ def test_prepare_creates_and_claims_the_new_version_without_dispatch(monkeypatch
         analysis_source={"origin": {"question": "查个数", "as_bot_key": "nl2sql_expert",
                                     "datasource_id": 5, "site_code": "cn",
                                     "conversation_id": 42}}))
+    _stub_series(monkeypatch)          # 只有当前这一版
     captured = {}
 
     def fake_create(**kw):
@@ -182,35 +203,148 @@ def test_prepare_creates_and_claims_the_new_version_without_dispatch(monkeypatch
 
 def test_prepare_refuses_when_previous_rerun_has_not_finished(monkeypatch):
     """抢不到认领就是上一轮还在跑：显式停住，不并发跑两次把正文写成半截。"""
-    monkeypatch.setattr(reports, "_load_owned_report", lambda rid, user: _chat_report(
-        analysis_source={"origin": {"question": "查个数"}}))
+    row = _chat_report(content_object_key="k/1",
+                       analysis_source={"origin": {"question": "查个数"}})
+    monkeypatch.setattr(reports, "_load_owned_report", lambda rid, user: row)
+    _stub_series(monkeypatch, row)
+    _stub_body(monkeypatch, {1: _ORIGINAL_BODY})
     monkeypatch.setattr(reports, "create_report", lambda **kw: {"id": 99})
     monkeypatch.setattr(reports, "claim_report", lambda rid: False)
     with pytest.raises(ValueError, match="还没结束"):
         reports.prepare_report_refresh(1, OWNER)
 
 
-def test_agent_question_branch_finishes_as_fact_report(monkeypatch):
-    """无版式可沿的重跑（旧报告没正文/没结构）仍产事实表，并把原因带在版本上。"""
+# ── 3a. 版式基线必须是**真原版**：降级产物当基线会让版式逐代劣化（v3 事故回归）─────
+
+_V1_HTML = ('<!DOCTYPE html><html><head><style>b{}</style></head><body>'
+            '<h1>direct-ip 页面访问 IP 归属地分布报告</h1><h2>省份排名</h2><p>广东 2445</p>'
+            '<h2>关键发现</h2><h2>行动建议</h2></body></html>')
+# v2：上一代重跑不达契约后退成的平台事实表格（占位标题），它不能当原版式
+_V2_FACT_MARKDOWN = ('# direct-ip 页面访问 IP 归属地分布报告\n\n'
+                     '> 平台事实表格：由已鉴权查询返回的结果直接汇总。\n\n'
+                     '## 分析项 1\n\n| 省份 | 页面浏览量 |\n\n## 分析项 2\n\n| 城市 | PV |\n\n'
+                     '## 分析项 3\n\n| 国家 | PV |\n')
+
+
+def _series_rows():
+    v1 = {"id": 1794303565906571, "owner_id": 7, "workspace_id": 3, "task_id": None,
+          "title": "direct-ip 页面访问 IP 归属地分布报告", "source_type": "conversation",
+          "format": "html", "generation_status": "ready",
+          "content_object_key": "k/v1", "analysis_source": {}}
+    v2 = {"id": 1794363426710353, "owner_id": 7, "workspace_id": 3, "task_id": None,
+          "title": v1["title"], "source_type": "analysis", "format": "markdown",
+          "generation_status": "degraded", "stage_error_code": "FACT_ONLY",
+          "content_object_key": "k/v2",
+          "analysis_source": {"refresh_series": "report:1794303565906571"}}
+    return v1, v2
+
+
+def test_degraded_fact_table_is_never_the_layout_baseline(monkeypatch):
+    """在 v2（降级事实表）上点重跑 → 基线回溯到 v1，拿到真章节与 HTML 格式。"""
+    v1, v2 = _series_rows()
+    _stub_series(monkeypatch, v1, v2)
+    _stub_body(monkeypatch, {v1["id"]: _V1_HTML, v2["id"]: _V2_FACT_MARKDOWN})
+    baseline = reports.resolve_layout_baseline(v2, OWNER)
+    assert baseline["report_id"] == v1["id"] and baseline["format"] == "html"
+    assert baseline["skipped_degraded"] == [v2["id"]]
+    layout = reports.extract_report_layout(baseline["body"], baseline["format"])
+    assert "关键发现" in layout["headings"] and "分析项 1" not in layout["headings"]
+
+    # 全系列都是降级产物 → 不编造基线，把原因说出来
+    _stub_body(monkeypatch, {v2["id"]: _V2_FACT_MARKDOWN})
+    _stub_series(monkeypatch, v2)
+    only_v2 = dict(v2, content_object_key="k/v2")
+    monkeypatch.setattr(reports, "_series_member_rows", lambda row, user: [only_v2])
+    out = reports.resolve_layout_baseline(only_v2, OWNER)
+    assert out["body"] == "" and "历史版本都是平台事实表格" in out["reason"]
+
+
+def test_is_platform_fact_body():
+    assert reports.is_platform_fact_body(_V2_FACT_MARKDOWN) is True
+    assert reports.is_platform_fact_body(_ORIGINAL_BODY) is False
+    assert reports.is_platform_fact_body(_V1_HTML) is False
+    assert reports.is_platform_fact_body("") is False
+    # 只有一处「分析项」字样的人写正文不被误判（靠抬头条款或≥ 两处占位标题定性）
+    assert reports.is_platform_fact_body("## 分析项 1\n\n正文\n") is False
+
+
+def test_prepare_refuses_when_no_trustworthy_baseline_exists(monkeypatch):
+    """全系列都没真版式 → 点击时就拒，不建空版本、不跑一轮取数再退事实表。"""
+    v1, v2 = _series_rows()
+    clicked = dict(v2, analysis_source={**v2["analysis_source"],
+                                        "origin": {"question": "查个数"}})
+    monkeypatch.setattr(reports, "_load_owned_report", lambda rid, user: clicked)
+    _stub_body(monkeypatch, {v2["id"]: _V2_FACT_MARKDOWN})
+    monkeypatch.setattr(reports, "_series_member_rows", lambda row, user: [clicked])
+    created = Mock()
+    monkeypatch.setattr(reports, "create_report", created)
+    with pytest.raises(ValueError, match="历史版本都是平台事实表格"):
+        reports.prepare_report_refresh(v2["id"], OWNER)
+    created.assert_not_called()
+
+
+def test_layout_contract_carries_the_original_body_as_reference():
+    """原版正文整份当参照发给模型：只给章节字符串一长串，模型看不见真样式（v3 根因）。"""
+    layout = reports.extract_report_layout(_ORIGINAL_BODY)
+    contract = reports.report_layout_contract(layout, "", _ORIGINAL_BODY)
+    assert "仅作版式参照" in contract and "数值一律不得沿用" in contract
+    assert "全国企业分布地图" in contract          # 图表真形状在参照正文里
+
+    # 过长截断要在契约里说出来，不得让模型以为原版就到这里
+    long_body = _ORIGINAL_BODY + ("## 附录\n\n" + "很长的正文" * 9000)
+    cut = reports.report_layout_contract(reports.extract_report_layout(long_body), "", long_body)
+    assert "上一版正文过长" in cut and len(cut) < len(long_body) + 2000
+
+
+def test_rerun_copying_the_previous_body_is_rejected(monkeypatch):
+    """把旧正文当参照后，最大的风险是照抄旧数字：行级重合率能机械判，判到就显式拒。"""
+    v1, _ = _series_rows()
+    _stub_body(monkeypatch, {v1["id"]: _V1_HTML})
+    monkeypatch.setattr(reports, "load_report", lambda rid: dict(v1))
+    finished = {}
+    monkeypatch.setattr(reports, "finish_report", lambda rid, **kw: finished.update(kw) or True)
+    reports._finalize_agent_report(
+        99, {"title": "direct-ip 页面访问 IP 归属地分布报告"},
+        {"kind": "agent_question", "question": "查个数",
+         "layout": {"format": "html", "headings": ["省份排名", "关键发现", "行动建议"], "charts": []},
+         "layout_baseline_report_id": v1["id"]},
+        {"status": "success", "answer": _V1_HTML, "_analysis_results": [
+            {"status": "success", "columns": [{"name": "省份"}], "rows": [{"省份": "广东"}],
+             "_security_context": {"version": 1}}]})
+    assert finished["generation_status"] == "failed" and finished["content"] == ""
+    assert "照抄旧报表" in finished["analysis_source"]["layout_result"]["reasons"][0]
+
+    # 同一基线下，真正换了数据的正文照旧能入库
+    fresh = _V1_HTML.replace("广东 2445", "广东 3120")
+    monkeypatch.setattr(reports, "layout_deviation", lambda body, layout: [])
+    reports._finalize_agent_report(
+        99, {"title": "T"}, {"kind": "agent_question", "layout": {
+            "format": "html", "headings": ["省份排名"], "charts": []},
+            "layout_baseline_report_id": v1["id"]},
+        {"status": "success", "answer": fresh, "_analysis_results": [
+            {"status": "success", "columns": [{"name": "省份"}], "rows": [{"省份": "广东"}],
+             "_security_context": {"version": 1}}]})
+    assert finished["generation_status"] == "ready" and "3120" in finished["content"]
+
+
+def test_agent_question_without_a_reusable_layout_fails_instead_of_degrading(monkeypatch):
+    """拿不到原版式就不产“事实表格凑数”的新版本：不行就不行，原因逐条说（用户拍板）。"""
     finished = {}
     monkeypatch.setattr(reports, "finish_report",
                         lambda rid, **kw: finished.update(kw) or True)
-    reports._finalize_agent_report(
+    out = reports._finalize_agent_report(
         99, {"title": "T"}, {"kind": "agent_question", "question": "查个数",
                              "site_code": "cn", "layout_error": "上一版正文读不到"},
         {"status": "success", "answer": "随便一段正文", "_analysis_results": [
             {"status": "success", "columns": [{"name": "省份"}], "rows": [{"省份": "广东"}],
              "_security_context": {"version": 1}}]})
-    # 事实表也是已鉴权取数的产物 → ready；"没沿用版式"记在 layout_result，不当假降级用
-    assert finished["generation_status"] == "ready"
-    assert finished["evidence_summary"]["validation_status"] == "governed"
-    assert finished["security_context"] == {"version": 1}
-    assert "广东" in finished["content"] and "不可对外发布" not in finished["content"]
-    # 拿不到原版式 → 不声称沿用了版式，原因随 layout_result 下发给用户
+    assert finished["generation_status"] == "failed"
+    assert finished["stage_error_code"] == "LAYOUT_DEVIATION"
+    # 旧写法这里会存一张「分析项 1」干表格并标 ready——那张表会被下一代重跑当成原版式基线
+    assert finished["content"] == ""
     layout = finished["analysis_source"]["layout_result"]
-    assert layout["status"] == "fact_only"
-    assert "上一版正文读不到" in layout["reasons"][0]
-    assert finished["stage_error_code"] == "FACT_ONLY"
+    assert layout["status"] == "rejected" and "上一版正文读不到" in layout["reasons"][0]
+    assert "上一版正文读不到" in out["reason"]
 
 
 def test_refresh_product_inherits_the_source_series_key(monkeypatch):
@@ -219,8 +353,11 @@ def test_refresh_product_inherits_the_source_series_key(monkeypatch):
     历史缺陷：会话保存的报告点「用最新数据重新生成」后，产物按标题落到另一张卡片，
     报告中心出现两张同名卡片；新卡片里只有失败的空正文，用户以为历史版本丢了。
     """
-    row = _chat_report(analysis_source={"origin": {"question": "查个数"}})
+    row = _chat_report(content_object_key="k/1",
+                       analysis_source={"origin": {"question": "查个数"}})
     monkeypatch.setattr(reports, "_load_owned_report", lambda rid, user: row)
+    _stub_series(monkeypatch, row)
+    _stub_body(monkeypatch, {1: _ORIGINAL_BODY})
     captured = {}
     monkeypatch.setattr(reports, "create_report",
                         lambda **kw: captured.update(kw) or {"id": 99})
@@ -407,46 +544,49 @@ def test_refresh_registers_the_original_layout_and_format(monkeypatch):
                        content_object_key="ai-datahub/7/reports/1",
                        analysis_source={"origin": {"question": "查企业分布", "site_code": "cn"}})
     monkeypatch.setattr(reports, "_load_owned_report", lambda rid, user: row)
-    monkeypatch.setattr(reports, "read_report_content_bytes",
-                        lambda r: _ORIGINAL_BODY.encode("utf-8"))
+    _stub_series(monkeypatch, row)
+    _stub_body(monkeypatch, {1: _ORIGINAL_BODY})
     captured = {}
     monkeypatch.setattr(reports, "create_report",
                         lambda **kw: captured.update(kw) or {"id": 99})
     monkeypatch.setattr(reports, "claim_report", lambda rid: True)
     monkeypatch.setattr(reports, "resolve_execution_owner", lambda uid, ws: {"user_id": uid})
-    reports.prepare_report_refresh(1, OWNER)
+    plan = reports.prepare_report_refresh(1, OWNER)
     source = captured["analysis_source"]
     assert source["layout"]["charts"][0]["chart_type"] == "china_map"
     assert source["layout_error"] == ""
+    assert source["layout_baseline_report_id"] == 1      # 基线就是刚被点的那一版
     assert captured["format"] == "markdown"
+    # 原版正文整份进提示词契约（只给章节字符串模型看不见真样式，v3 那一代就是这么跑偏的）
+    assert "上一版报表正文（仅作版式参照）" in plan["config"]["layout_contract"]
+    assert "全国企业分布地图" in plan["config"]["layout_contract"]
     # 上一版交付声明过的主题随任务带走（没有则空，由提示词按平台默认主题包兜）
     assert source["report_theme"] == ""
 
-    # 旧报告没有可沿用的结构：不猜版式，但把原因登下来（产出时要显式回显）
-    monkeypatch.setattr(reports, "read_report_content_bytes",
-                        lambda r: "只有一句正文，没有结构".encode("utf-8"))
-    monkeypatch.setattr(reports, "resolve_execution_owner", lambda uid, ws: {"user_id": uid})
-    reports.prepare_report_refresh(1, OWNER)
-    assert captured["analysis_source"]["layout_error"]
+    # 旧报告没有可沿用的结构：不猜版式、也不跑一轮取数退事实表 → 点击时就报错并给出路
+    _stub_body(monkeypatch, {1: "只有一句正文，没有结构"})
+    with pytest.raises(ValueError, match="无章节标题与图表块"):
+        reports.prepare_report_refresh(1, OWNER)
 
 
 def test_refresh_records_why_the_layout_could_not_be_read(monkeypatch):
-    """上一版正文读不到不能悄声重跑：用户必须知道这一版为什么长得不一样。"""
+    """上一版正文读不到不能悄声重跑，也不得拿事实表充数：点击时就告诉用户为什么不行。"""
     row = _chat_report(content_object_key="ai-datahub/7/reports/1",
                        analysis_source={"origin": {"question": "查企业分布"}})
     monkeypatch.setattr(reports, "_load_owned_report", lambda rid, user: row)
+    _stub_series(monkeypatch, row)
 
     def missing(r):
         raise ValueError("报告正文在对象存储里取不到了")
 
     monkeypatch.setattr(reports, "read_report_content_bytes", missing)
-    captured = {}
-    monkeypatch.setattr(reports, "create_report",
-                        lambda **kw: captured.update(kw) or {"id": 99})
+    created = Mock()
+    monkeypatch.setattr(reports, "create_report", created)
     monkeypatch.setattr(reports, "claim_report", lambda rid: True)
     monkeypatch.setattr(reports, "resolve_execution_owner", lambda uid, ws: {"user_id": uid})
-    reports.prepare_report_refresh(1, OWNER)
-    assert "取不到" in captured["analysis_source"]["layout_error"]
+    with pytest.raises(ValueError, match="取不到"):
+        reports.prepare_report_refresh(1, OWNER)
+    created.assert_not_called()      # 不建空版本：不行就不行，不跑一轮取数再退事实表
 
 
 def _finish_through_fakes(monkeypatch, answer, layout, theme=""):
@@ -481,24 +621,29 @@ def test_rerun_body_follows_the_original_layout(monkeypatch):
     assert finished["evidence_summary"]["completeness"] == "as_queried"
 
 
-def test_rerun_that_breaks_the_layout_falls_back_with_the_reason(monkeypatch):
+def test_rerun_that_breaks_the_layout_fails_with_the_reason(monkeypatch):
+    """不达版式 = 本轮失败：不存事实表格、不把"未按原版式"掩成"新报表天然长那样"。"""
     layout = reports.extract_report_layout(_ORIGINAL_BODY)
     finished = _finish_through_fakes(monkeypatch, "## 核心发现\n\n新数据见下表\n", layout)
-    assert "分析项 1" in finished["content"]              # 退回事实表格
-    assert finished["format"] == "markdown" and finished["stage_error_code"] == "FACT_ONLY"
+    assert finished["content"] == "" and finished["generation_status"] == "failed"
+    assert finished["format"] == "markdown" and finished["stage_error_code"] == "LAYOUT_DEVIATION"
     result = finished["analysis_source"]["layout_result"]
-    assert result["status"] == "fact_only" and "缺少图表" in result["reasons"][0]
+    assert result["status"] == "rejected" and "缺少图表" in result["reasons"][0]
+    # 错文把逐条原因带上（用户能直接看出差在哪一结构，不用去翻库）
+    assert "缺少图表" in reports.generation_failure_reason(
+        {"stage_error_code": "LAYOUT_DEVIATION", "analysis_source": {"layout_result": result}})
 
 
-def test_rerun_without_final_text_or_past_outbound_guard_falls_back(monkeypatch):
+def test_rerun_without_final_text_or_past_outbound_guard_fails(monkeypatch):
     layout = reports.extract_report_layout(_ORIGINAL_BODY)
     finished = _finish_through_fakes(monkeypatch, "", layout)
+    assert finished["generation_status"] == "failed" and finished["content"] == ""
     assert "未交回报告正文" in finished["analysis_source"]["layout_result"]["reasons"][0]
 
     monkeypatch.setattr(reports, "outbound_guard_hits", lambda text: ["datasource_id"])
     finished = _finish_through_fakes(monkeypatch, _layout_body(), layout)
     assert "脱敏" in finished["analysis_source"]["layout_result"]["reasons"][0]
-    assert "分析项 1" in finished["content"]
+    assert finished["content"] == ""      # 旧写法这里会把「分析项 1」事实表存进去并标 ready
 
 
 def test_html_report_refresh_keeps_html_when_the_doc_survives(monkeypatch):
@@ -514,9 +659,11 @@ def test_html_report_refresh_keeps_html_when_the_doc_survives(monkeypatch):
     assert finished["content"] == doc and finished["format"] == "html"
     assert finished["analysis_source"]["layout_result"]["status"] == "preserved"
 
-    # 模型没交回整份文档→ 格式要跟着正文换回 markdown（库与渲染面不能各说一套）
+    # 模型没交回整份文档 → 本轮判失败，格式不得跟着改成 markdown（那会留下"库变 markdown、
+    # 原版其实是 HTML"的永久漂移，下一代的版式基线就从此错下去）
     finished = _finish_through_fakes(monkeypatch, "## 核心结论\n\n新数据", layout)
-    assert finished["format"] == "markdown" and "分析项 1" in finished["content"]
+    assert finished["generation_status"] == "failed" and finished["content"] == ""
+    assert finished["format"] == "html"
     assert "不是整份 HTML 文档" in finished["analysis_source"]["layout_result"]["reasons"][0]
 
 
@@ -795,6 +942,7 @@ def test_rerun_keeps_the_previous_report_theme(monkeypatch):
     row = _chat_report(format="markdown", content_object_key="ai-datahub/7/reports/1",
                        analysis_source={"origin": {"question": "查企业分布", "theme": "datafoundry"}})
     monkeypatch.setattr(reports, "_load_owned_report", lambda rid, user: row)
+    _stub_series(monkeypatch, row)
     monkeypatch.setattr(reports, "read_report_content_bytes", lambda r: _ORIGINAL_BODY.encode("utf-8"))
     captured = {}
     monkeypatch.setattr(reports, "create_report",
@@ -872,8 +1020,12 @@ def test_resolve_report_template_missing_is_loud(monkeypatch):
     assert out["found"] is False and "下架" in out["reason"]
 
 
-def test_render_template_report_preserves_or_falls_back_explicitly():
-    """单问且终稿达标 → 沿用版式；多问/不达标 → 退事实表格并把原因带在 layout_result。"""
+def test_render_template_report_rejects_a_registered_layout_it_missed():
+    """单问且终稿达标 → 沿用版式；模板登记了版式却没做到 → 空正文（= 失败）+ 原因。
+
+    多问任务（逐问终稿不等于整份报告）与模板本来没登记版式两类，事实表格是正常产物，
+    不属降级，但原因要带在 layout_result 上。
+    """
     layout = {"format": "markdown", "headings": ["核心结论"],
               "charts": [{"title": "", "chart_type": "bar", "columns": ["省份"]}]}
     good = "## 核心结论\n\n```chart\n{\"chart_type\":\"bar\",\"columns\":[\"省份\"],\"rows\":[[\"广东\"]]}\n```"
@@ -885,9 +1037,14 @@ def test_render_template_report_preserves_or_falls_back_explicitly():
     _, _, res2 = reports.render_template_report("报告", results, good, layout, single_question=False)
     assert res2["status"] == "fact_only" and res2["reasons"]
 
-    # 单问但终稿不达版式（缺章节）→ 退事实表并记下缺什么
-    _, _, res3 = reports.render_template_report("报告", results, "随便一段没有结构的正文", layout, single_question=True)
-    assert res3["status"] == "fact_only" and any("核心结论" in r for r in res3["reasons"])
+    # 单问但终稿不达版式（缺章节）→ 不产事实表，回空正文 + 逐条原因（调用方据此判失败）
+    content3, _, res3 = reports.render_template_report("报告", results, "随便一段没有结构的正文", layout,
+                                                       single_question=True)
+    assert content3 == "" and res3["status"] == "rejected" and any("核心结论" in r for r in res3["reasons"])
+
+    # 模板没登记版式：事实表格就是这种形状的正常产物（没承诺过结构，谈不上违反）
+    _, _, res4 = reports.render_template_report("报告", results, "随便一段正文", {}, single_question=True)
+    assert res4["status"] == "fact_only" and "未登记" in res4["reasons"][0]
 
 
 # ── 3b. 在线重跑：过程可见 · 离开即终止 ──────────────────────────────────────
@@ -897,8 +1054,11 @@ def _stream_plan(**over):
             "question": "查个数", "config": {"site_code": "cn", "report_theme": "",
                                              "layout_contract": ""},
             "report": {"id": 99, "title": "全国企业分布地图"}, "source": {
-                "kind": "agent_question", "question": "查个数", "layout": {},
-                "layout_error": "上一版正文没有可复用的版式结构"},
+                "kind": "agent_question", "question": "查个数",
+                # 重跑一定带得回版式（拿不到就在 prepare 阶段拒了），所以这里给一份真契约：
+                # 收口只会用模型终稿，不达版式就判失败，不再退事实表格
+                "layout": {"format": "markdown", "headings": ["核心发现"], "charts": []},
+                "layout_error": ""},
             "identity": {"user_id": 7}}
     plan.update(over)
     return plan

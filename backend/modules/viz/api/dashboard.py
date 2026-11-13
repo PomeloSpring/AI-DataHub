@@ -20,6 +20,7 @@ from backend.modules.viz.services.dashboard_service import (
     build_visible_groups,
     check_dashboard_editable,
     chart_identity_from_user,
+    reorder_groups,
     _invalidate_dashboard_payload,
 )
 
@@ -254,7 +255,12 @@ def reorder_dashboards_endpoint(
 class GroupCreate(BaseModel):
     name: str
     description: Optional[str] = ""
-    sort: int = 0
+    # 缺省 None = 不动已有顺序（编辑名称/说明时前端不回传 sort，传 0 会把已排好的组合抹到首位）
+    sort: Optional[int] = None
+
+
+class GroupReorderRequest(BaseModel):
+    orders: list[dict]
 
 
 class GroupItemsRequest(BaseModel):
@@ -300,9 +306,16 @@ def create_group_endpoint(req: GroupCreate, admin: dict = Depends(require_admin)
     """新建仪表盘组(仅 admin)."""
     with DBConnection() as conn:
         with conn.cursor() as cur:
+            # 新组合默认排末尾(COALESCE(MAX(sort),0)+10): 固定写 0 会把刚建好的顺序顶掉一位，
+            # 管理员“新建完再排”会变成“新建自动插队到第一”。显式传 sort 时尊重传值。
+            if req.sort is None:
+                cur.execute("SELECT COALESCE(MAX(sort), 0) AS max_sort FROM adh_dashboard_groups")
+                sort = int((cur.fetchone() or {}).get("max_sort") or 0) + 10
+            else:
+                sort = int(req.sort)
             cur.execute(
                 "INSERT INTO adh_dashboard_groups (name, description, sort) VALUES (%s, %s, %s)",
-                (req.name, req.description or "", req.sort or 0))
+                (req.name, req.description or "", sort))
             group_id = cur.lastrowid
     _invalidate_dashboard_payload()
     return {"success": True, "id": group_id}
@@ -317,11 +330,30 @@ def update_group_endpoint(group_id: int, req: GroupCreate, admin: dict = Depends
     # （MySQL 对值未变的行不计数，历史缺陷：用户在编辑弹窗里原样再点保存必报错）。
     if not execute_query("SELECT id FROM adh_dashboard_groups WHERE id=%s", (group_id,), fetchone=True):
         raise HTTPException(status_code=404, detail="仪表盘组不存在")
+    # 未传 sort 时保留原值（只改名称/说明不得把组合顺序抬回 0 = 首位）
+    current = execute_query("SELECT sort FROM adh_dashboard_groups WHERE id=%s", (group_id,), fetchone=True) or {}
+    sort = int(req.sort) if req.sort is not None else int(current.get("sort") or 0)
     execute_write(
         "UPDATE adh_dashboard_groups SET name=%s, description=%s, sort=%s WHERE id=%s",
-        (req.name, req.description or "", req.sort or 0, group_id))
+        (req.name, req.description or "", sort, group_id))
     _invalidate_dashboard_payload()
     return {"success": True}
+
+
+@router.post("/groups/reorder")
+def reorder_groups_endpoint(req: GroupReorderRequest, admin: dict = Depends(require_admin)):
+    """保存组合展示顺序(仅 admin, 看板组合卡上移/下移).
+
+    只写 sort 列; 顺序是编排事实, 入库后浏览端下次拉目录即生效(载荷缓存已同批失效)。
+    """
+    try:
+        reorder_groups(req.orders)
+        return {"success": True, "count": len(req.orders or [])}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to reorder dashboard groups")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/groups/{group_id}")

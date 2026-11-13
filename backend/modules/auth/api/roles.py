@@ -242,15 +242,31 @@ def get_current_user_permissions(user: dict = Depends(get_current_user)):
     # 未配置不授予任何功能权限。
     if not perms:
         return {"permissions": [], "menus": [], "unrestricted": False}
-    # 由权限码反查可访问菜单
+    # 由权限码反查可访问菜单：两个来源取并集
+    #   ① menu_registry.perm_code：菜单的主权限码（历史口径）
+    #   ② perm_registry.menu_key：权限点自己声明归属哪个菜单
+    # ②必须并进来：一个菜单可以对应多个动作权限码（如「内容管理」同时收
+    # 编辑/审核/发布三个码），只按 ① 反查会让“只有审核权、没有编辑权”的角色
+    # 看不见这个菜单 —— 页面合并后就是“该配的看不到”（menu-permission-sync §2.2）。
     perm_set = set(perms)
+
+    def _holds(perm_code: str) -> bool:
+        module = str(perm_code or "").split(":", 1)[0]
+        return (perm_code in perm_set or f"{module}:*" in perm_set or "*" in perm_set)
+
+    live_menus = {m["menu_key"] for m in (execute_query(
+        "SELECT menu_key FROM adh_menu_registry WHERE is_active=1") or [])}
     menus = set()
     for mrow in (execute_query(
         "SELECT menu_key, perm_code FROM adh_menu_registry WHERE is_active=1 AND perm_code<>''") or []):
-        pc = mrow["perm_code"]
-        module = pc.split(":", 1)[0]
-        if pc in perm_set or f"{module}:*" in perm_set or "*" in perm_set:
+        if _holds(mrow["perm_code"]):
             menus.add(mrow["menu_key"])
+    # 归属反查只认仍登记在册的菜单：悬空 menu_key 不得把已退役入口放回清单
+    for prow in (execute_query(
+        "SELECT perm_code, menu_key FROM adh_perm_registry "
+        "WHERE is_active=1 AND menu_key<>''") or []):
+        if prow["menu_key"] in live_menus and _holds(prow["perm_code"]):
+            menus.add(prow["menu_key"])
     return {"permissions": perms, "menus": sorted(menus), "unrestricted": False}
 
 

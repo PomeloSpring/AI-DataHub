@@ -50,8 +50,12 @@ _contexts: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
 class EsPagingUnsupported(ValueError):
     """该 ES 正文形态不能按页取数（聚合/表达式/列映射不可证）。
 
-    文案面向人（数据集页/看板都能看到），只含业务原因与可行做法，不含集群地址/凭据。
+    文案面向人（数据集页/看板都能看到），只含业务原因与可行做法，不含集群地址/凭据；
+    `safe_business_message` 让治理口原样外抛这句（而不是降级成通用“执行失败，稍后重试”，
+    与 `es_client.EsError` 同一约定）。
     """
+
+    safe_business_message = True
 
 
 def resolve_page(params: dict) -> Optional[tuple[int, int]]:
@@ -195,7 +199,7 @@ def _validate_shape(dsl: dict, items: list[tuple[str, str]]) -> None:
 
 
 def query_page(pattern: str, sql: str, *, page_size: int, page_num: int,
-               context_key: str) -> dict[str, Any]:
+               context_key: str, ctx: Optional["es_client.EsCtx"] = None) -> dict[str, Any]:
     """按页取 ES 明细：返回 columns/rows/row_count/total/page_size/page_num/paging_mode/sql。
 
     `columns` 用 SQL 投影的业务别名（不是 ES 字段路径），与 `run_sql` 的输出列名同口径；
@@ -204,10 +208,12 @@ def query_page(pattern: str, sql: str, *, page_size: int, page_num: int,
     `context_key` 是翻页上下文签名（由 `paging_key` 算，不含随时刻漂移的渲染结果）；
     回显的 `sql` 是本页**实际检索用的正文**，调用方的审计/es_indexes 要按它算，
     不得拿自己重新渲染的那一份（后续页用的是首页确立的口径）。
+    `ctx` 缺省 = 内置 ES 通道（阶段二迁完前的存量行为零变化）；挂 ES 数据源时由
+    调用方传 `es_client.ctx_for(datasource_id)`，开放范围与预算一律按该源判。
     """
     sql = _page_context(context_key, sql, page_num)
     items = es_client.select_items(sql)
-    dsl = es_client.translate_select(sql)
+    dsl = es_client.translate_select(sql, ctx=ctx)
     _validate_shape(dsl, items)
 
     # `_doc` 作唯一性 tiebreaker：主排序键（如秒级时间戳）必然存在并列，
@@ -215,7 +221,7 @@ def query_page(pattern: str, sql: str, *, page_size: int, page_num: int,
     paged_dsl = {**dsl, "sort": list(dsl.get("sort") or []) + [{"_doc": "asc"}]}
     cursor = _resolve_cursor(context_key, page_num)
 
-    res = es_client.search_page(pattern, paged_dsl, size=page_size, search_after=cursor)
+    res = es_client.search_page(pattern, paged_dsl, size=page_size, search_after=cursor, ctx=ctx)
     rows = [[r.get(path) for path, _alias in items] for r in res["rows"]]
     _remember_cursor(context_key, page_num, res)
 

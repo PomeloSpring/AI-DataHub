@@ -56,7 +56,9 @@ describe('DashboardParamsManager', () => {
     fireEvent.click(screen.getByRole('option', { name: '日期' }));
     const next = onChange.mock.calls[0][0];
     expect(next.params[0]).toEqual({ name: 'start_time', label: '开始日期', type: 'date', default: '' });
-    expect(next.page_params).toEqual(PAGE);
+    // page 侧多写一份 readonly: false 是有意的（取消勾选必须真的落库，否则被旧值盖掉），
+    // 遗留 params 那一侧不带这个开关
+    expect(next.page_params).toEqual(PAGE.map(p => ({ ...p, readonly: false })));
   });
 
   it('删除与添加如实回传两套定义', () => {
@@ -110,5 +112,30 @@ describe('DashboardParamsManager', () => {
     expect(rows[0].shape).toBe('string');            // text 归一到统一词汇
     expect(fromParamRows(rows, legacy, []).params[0]).toEqual({ ...legacy[0], type: 'string', label: '关键词' });
     expect(PARAM_SHAPES).toHaveLength(5);
+  });
+
+  // 看板级常数（单 App 看板的 app_code）：勾选与取消都必须真的写回。
+  // mergeOld 会先把存量行铺回来，不把 readonly 显式包 false 写进去，
+  // “取消只读”就会被旧值盖掉（存了不生效）。
+  it('看板参数可标为只读（看板级常数），取消勾选也真的写回 false', () => {
+    const page = [{ name: 'app_code', label: '分析对象', type: 'string' as const, default: 'MeshCompare', readonly: true }];
+    expect(toParamRows([], page)[0].readonly).toBe(true);
+    expect(fromParamRows(toParamRows([], page), [], page).page_params[0]).toMatchObject({ readonly: true });
+
+    const off = fromParamRows([{ ...toParamRows([], page)[0], readonly: false }], [], page).page_params[0];
+    expect(off.readonly).toBeFalsy();
+
+    // 遗留 params 不养这个开关（只读只对看板参数成立）
+    const legacy = [{ name: 'kw', label: '关键词', type: 'string' as const, default: '' }];
+    expect(fromParamRows(toParamRows(legacy, []), legacy, []).params[0]).not.toHaveProperty('readonly');
+  });
+
+  it('只读勾选框只出现在「看板参数」区，不在遗留参数区重复出现', () => {
+    render(<DashboardParamsManager
+      pageParams={[{ name: 'app_code', label: '分析对象', type: 'string', default: 'MeshCompare' }]}
+      params={[{ name: 'kw', label: '关键词', type: 'string', default: '' }]}
+      charts={[]} onChange={vi.fn()} />);
+    expect(screen.getAllByLabelText(/固定为看板级常数/)).toHaveLength(1);
+    expect(screen.getByLabelText('固定为看板级常数 app_code')).toBeInTheDocument();
   });
 });

@@ -4,6 +4,7 @@ import re
 import time
 import logging
 from contextlib import contextmanager
+from typing import Any
 
 import pandas as pd
 
@@ -18,6 +19,7 @@ from backend.common.config import (
 from backend.common.db.metadata_db import get_metadata_conn
 from backend.common.crypto import decrypt_password, is_encrypted
 from backend.common.ttl_cache import datasource_cache
+from backend.common.utils import next_row_id
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,11 @@ _DEFAULT_DS_CONFIG = {
     "db_type": "doris",
     "ssl": False,
 }
+
+# 元数据/结构探查路径的读预算上限（没配数据源高级配置时的缺省，与历史写死值一致）。
+# 取数侧的缺省 30s 在 `datasource_db.DEFAULT_READ_TIMEOUT_SEC`，两个天花板不同用途，
+# 不拿一个值盖另一个（目录扫描给 30s 会把存量探查打成超时）。
+_METADATA_READ_TIMEOUT_SEC = 60
 
 
 def _get_ds_conn_params(datasource_id: int = None) -> dict:
@@ -69,12 +76,12 @@ def _get_ds_conn_params(datasource_id: int = None) -> dict:
                     try:
                         cur.execute(
                             "SELECT host, port, username, password, database_name, db_type, "
-                            "`ssl`, ssl_mode "
+                            "`ssl`, ssl_mode, extra_config "
                             "FROM adh_datasources WHERE id = %s",
                             (datasource_id,),
                         )
                     except Exception:
-                        # ssl_mode 列为迁移新增(未迁移时不阻断): 回落旧列查询
+                        # ssl_mode/extra_config 列为迁移新增(未迁移时不阻断): 回落旧列查询
                         conn.rollback()
                         cur.execute(
                             "SELECT host, port, username, password, database_name, db_type, `ssl` "
@@ -96,6 +103,8 @@ def _get_ds_conn_params(datasource_id: int = None) -> dict:
                             "db_type": row.get("db_type", "doris"),
                             "ssl": bool(row.get("ssl", 0)),
                             "ssl_mode": row.get("ssl_mode") or None,
+                            # 高级配置（超时）随源下发：不拿写死值覆盖运维在「数据源」页的预算
+                            "extra_config": row.get("extra_config"),
                         }
             finally:
                 conn.close()
@@ -121,9 +130,17 @@ def get_connection(datasource_id: int = None):
     按 db_type 分发: mysql/doris → pymysql, postgres/sls → psycopg2(共享工厂
     datasource_db.get_datasource_conn)。仅供元数据/结构探查等内部非取数路径;
     取数链路严禁用作执行失败的兜底(护栏 §12, 禁止降级直连)。
+
+    超时：数据源高级配置（connect/read_timeout_sec）优先；没配则沿用本路径既有的
+    60s 元数据天花板（不是取数侧的 30s 默认，避免给目录扫描误收预算）。
     """
-    from backend.common.db.datasource_db import get_datasource_conn
+    from backend.common.db.datasource_db import (
+        DEFAULT_CONNECT_TIMEOUT_SEC,
+        get_datasource_conn,
+        source_extra,
+    )
     params = _get_ds_conn_params(datasource_id)
+    extra = source_extra(params)
     conn = get_datasource_conn(
         db_type=params.get("db_type", "doris"),
         host=params["host"],
@@ -133,7 +150,8 @@ def get_connection(datasource_id: int = None):
         database=params["database"],
         ssl=bool(params.get("ssl", False)),
         ssl_mode=params.get("ssl_mode"),
-        read_timeout=60,
+        read_timeout=int(extra.get("read_timeout_sec") or _METADATA_READ_TIMEOUT_SEC),
+        connect_timeout=int(extra.get("connect_timeout_sec") or DEFAULT_CONNECT_TIMEOUT_SEC),
     )
     try:
         yield conn
@@ -268,6 +286,8 @@ def execute_query(
     Raises:
         ValueError: If SQL validation fails.
         RuntimeError: If query execution fails.
+        query_gate.QueryQueueTimeout: 该数据源并发已满且排队超预算（可读拒绝，
+            不是把空结果当成"没数据"）。
     """
     # Clean SQL: strip leading prose, markdown fences, etc.
     sql = _extract_sql_from_text(sql)
@@ -282,10 +302,66 @@ def execute_query(
     if not valid:
         raise ValueError(f"SQL validation failed: {reason}")
 
+    # 并发闸门只围“真正打源”那一段（护栏 §1：本函数是所有返回数据行的取数漏斗）。
+    # 上限按数据源配（`extra_config.max_concurrency`）：一次整板刷新 = N 图 × M 用户，
+    # 而 SQL 型源每次取数都新建连接，不设上限就是集体撞源侧 max_connections。
+    # 拒绝与校验不占名额（否则把语法错误的代价转嫁给正在排队的用户）。
+    from backend.core.query_gate import slot_for_datasource
+
+    if _is_es_datasource(datasource_id):
+        # ES 型数据源：执行载体是 `core.es_client`（不是下推连接器）
+        if federated:
+            raise PermissionError(
+                "ES 型数据源不参与跨源联邦（ES SQL 无 JOIN/子查询）；"
+                "请单独对 ES 源取数，或把待关联的数据物化到 MySQL/Doris 后再联邦")
+        with slot_for_datasource(datasource_id):
+            return _execute_via_es_client(sql, int(datasource_id or 0))
+
     # 执行载体：semantics.execution（远程下推 / 跨源联邦）
-    return _execute_via_semantic_execution(
-        sql, datasource_id, user_id=user_id, workspace_id=workspace_id,
-        user_role=user_role, federated=federated)
+    # 联邦场景只限主源并发（辅源连接配置由调用侧直传、无 id 可分桶）：不假装已跨源限流
+    with slot_for_datasource(datasource_id):
+        return _execute_via_semantic_execution(
+            sql, datasource_id, user_id=user_id, workspace_id=workspace_id,
+            user_role=user_role, federated=federated)
+
+
+def _is_es_datasource(datasource_id: Any) -> bool:
+    """该源是否 ES 型（唯一判定点：`adh_datasources.db_type`）。
+
+    ES 在 2026-11-13 前是内置 MCP 通道（不是数据源行），那段时间的 ES 数据集
+    `datasource_id=0` 仍走 `dataset_service._query_es` 内置通道分支；一旦挂上 ES 源行，
+    执行就改走本模块 —— 两个入口共用 `es_client` 的开放范围硬门，不会长出第二套闸门。
+    """
+    from backend.common.db.datasource_db import get_datasource_by_id
+    from backend.semantics.dialect import is_es_db_type
+
+    row = get_datasource_by_id(int(datasource_id or 0)) or {}
+    return is_es_db_type(row.get("db_type"))
+
+
+def _execute_via_es_client(sql: str, datasource_id: int) -> tuple[pd.DataFrame, int, int]:
+    """ES 型数据源的执行载体：`core.es_client`（REST `/_sql` + 索引开放范围硬门）。
+
+    不走 semantics.execution 的下推连接器：那套的前提是 DB-API 连接与目标方言回写，
+    ES 两者都没有。护栏 §1 约束的是“必须过治理执行口”（`enforce_sql` 已在上游完成 SQL
+    改写与权限判定），不是“必须走同一个连接器”。
+
+    这里**不做二次策略注入**（与下推路径的纵深防御不同）：ES 侧正文逐字下发、引擎不
+    重新规划，不存在“改写被下游优化器吞掉”的旁路面；重复 AND 同一谓词只会让审计难读。
+    重名列走 `_unique_columns` 消歧（护栏 §8）：ES 允许 `SELECT "a.keyword", "a.keyword"`，
+    不去重会让下游 `to_json(orient="records")` 直接报错。
+    """
+    from backend.common.df_serialize import _unique_columns
+    from backend.core import es_client
+
+    ctx = es_client.ctx_for(datasource_id)
+    start = time.time()
+    data = es_client.run_sql(sql, ctx=ctx)
+    names = _unique_columns([str(c.get("name") or "") for c in data.get("columns") or []])
+    rows = data.get("rows") or []
+    df = pd.DataFrame(list(rows), columns=names) if names else pd.DataFrame()
+    elapsed_ms = int((time.time() - start) * 1000)
+    return df, elapsed_ms, int(len(rows))
 
 
 def _extract_table_names(sql: str) -> list[str]:
@@ -436,16 +512,11 @@ def execute_query_with_permission(
     # 无 user_context 不再整体旁路: 敏感列屏蔽基线对所有调用(含系统/内部)强制生效。
     # enforce_sql 对 user_id=0 走 sensitive_only(仅治理基线, 不做 RBAC/RLS 行级过滤)。
     user_id = (user_context or {}).get("user_id") or 0
-    has_user = bool(user_id)
 
     try:
         # Step 1-3: Check permissions and rewrite SQL
-        modified_sql, perm_result = permission_enforcer.enforce_sql(
-            sql=sql,
-            user_id=user_id,
-            workspace_id=workspace_id,
-            datasource_id=datasource_id or 0,
-        )
+        modified_sql, perm_result = secure_read_sql(
+            sql, int(datasource_id or 0), int(user_id), int(workspace_id or 0))
 
         # Step 4: Execute the modified query
         df, elapsed_ms, row_count = execute_query(
@@ -457,32 +528,149 @@ def execute_query_with_permission(
             df = permission_enforcer.apply_post_processing(df, perm_result)
 
         # Step 6: Log audit (success) — 仅真实用户调用落审计
-        if has_user:
-            _log_permission_audit(
-                user_context=user_context,
-                datasource_id=datasource_id,
-                tables=permission_enforcer._extract_tables(sql),
-                original_sql=sql,
-                filtered_sql=modified_sql,
-                allowed=True,
-                policies=perm_result.policies_applied,
-                workspace_id=workspace_id,
-            )
+        log_read_success_audit(sql, modified_sql, perm_result,
+                               user_context=user_context, datasource_id=datasource_id,
+                               workspace_id=workspace_id)
 
         return df, elapsed_ms, row_count
 
     except PermissionError as exc:
-        if has_user:
-            try:
-                denied_tables = permission_enforcer._extract_tables(sql)
-            except Exception:
-                denied_tables = []
-            _log_permission_audit(
-                user_context=user_context or {}, datasource_id=datasource_id,
-                tables=denied_tables, original_sql=sql, filtered_sql="",
-                allowed=False, deny_reason=str(exc), workspace_id=workspace_id,
-            )
+        log_read_denial_audit(sql, user_context=user_context, datasource_id=datasource_id,
+                              workspace_id=workspace_id, reason=str(exc))
         raise
+
+
+def secure_read_sql(sql: str, datasource_id: int, user_id: int,
+                    workspace_id: int) -> tuple[str, Any]:
+    """治理改写（敏感基线/RBAC/RLS/列级）→ (待执行 SQL, 裁决产物)。
+
+    它是 `execute_query_with_permission` 的前半段（同一实现，不是另一套判定）：任何
+    拿不到 secured SQL 的通道都必须从这里取，不存在“自己调 enforcer 再说自己过了治理口”。
+    审计不在这里落：拒绝侧与成功侧各由调用方在错误离开它的地方记一次（防重复行）。
+    """
+    from backend.core.enforcer import permission_enforcer
+
+    return permission_enforcer.enforce_sql(
+        sql=sql, user_id=int(user_id or 0), workspace_id=int(workspace_id or 0),
+        datasource_id=int(datasource_id or 0))
+
+
+def log_read_success_audit(sql: str, modified_sql: str, perm_result: Any, *,
+                          user_context: dict = None, datasource_id: int = 0,
+                          workspace_id: int = 0) -> None:
+    """治理读成功侧审计（与 `execute_query_with_permission` 同一实现）：仅真实用户落行。"""
+    if not int((user_context or {}).get("user_id") or 0):
+        return
+    from backend.core.enforcer import permission_enforcer
+
+    _log_permission_audit(
+        user_context=user_context,
+        datasource_id=datasource_id,
+        tables=permission_enforcer._extract_tables(sql),
+        original_sql=sql,
+        filtered_sql=modified_sql,
+        allowed=True,
+        policies=getattr(perm_result, "policies_applied", None),
+        workspace_id=workspace_id,
+    )
+
+
+def log_read_denial_audit(sql: str, *, user_context: dict = None, datasource_id: int = 0,
+                          workspace_id: int = 0, reason: str = "") -> None:
+    """治理读拒绝侧审计（与主口同一实现）：审计本身不得把原异常顶掉（护栏 §9）。"""
+    if not int((user_context or {}).get("user_id") or 0):
+        return
+    from backend.core.enforcer import permission_enforcer
+
+    try:
+        denied_tables = permission_enforcer._extract_tables(sql)
+    except Exception:  # noqa: BLE001 — 提表失败不影响拒绝语义，表清单留空
+        denied_tables = []
+    _log_permission_audit(
+        user_context=user_context or {}, datasource_id=datasource_id,
+        tables=denied_tables, original_sql=sql, filtered_sql="",
+        allowed=False, deny_reason=str(reason), workspace_id=workspace_id,
+    )
+
+
+def execute_es_page_with_permission(sql: str, datasource_id: int, user_context: dict = None,
+                                    workspace_id: int = 0, *,
+                                    page_size: int, page_num: int,
+                                    context_key: str) -> dict[str, Any]:
+    """ES 型数据源的按页取数：治理口形态之一（`/_sql/translate` + `search_after`）。
+
+    为什么不能走 `execute_query` 那条 SQL 载体：ES SQL 语法里没有 OFFSET，
+    `LIMIT n OFFSET m` 与 `COUNT(*) FROM (…) AS x` 实机均不成立（取证见
+    `core/es_pagination.py` 模块头），按页取一行只能拿检索 DSL 打 `/_search`。
+
+    它**不是第二套取数口**：权限/RLS/列级改写用 `secure_read_sql`、成功与拒绝审计用
+    `log_read_*_audit`，与 `execute_query_with_permission` 完整共用同一实现；游标检索只
+    接受改写后的正文，拿不到未审核的 SQL。身份 fail-closed 与主口同口径。
+
+    返回 {columns, rows, row_count, total, page_size, page_num, paging_mode}；
+    `total` 是本次口径下的行总数（前端分页条用它算总页数）。
+    """
+    from backend.core import es_pagination
+    from backend.core.es_client import ctx_for, from_indexes
+    from backend.core.governed_query import NoIdentityError
+    from backend.core.enforcer import permission_enforcer
+
+    user_id = int((user_context or {}).get("user_id") or 0)
+    if not user_id:
+        raise NoIdentityError("缺少可信用户身份, 拒绝 ES 分页取数(数据合规护城河)")
+    if not _is_es_datasource(datasource_id):
+        # 不降级成 offset 分页：那会把“翻页口径”静默换成另一种 SQL 形状，错页比报错难查
+        raise ValueError("按页取数（search_after 游标）只适用于 Elasticsearch 型数据源；"
+                         "其他数据源请走常规取数口（LIMIT/OFFSET 分页）")
+
+    try:
+        secured_sql, perm_result = secure_read_sql(
+            sql, int(datasource_id or 0), user_id, int(workspace_id or 0))
+    except PermissionError as exc:
+        log_read_denial_audit(sql, user_context=user_context, datasource_id=datasource_id,
+                              workspace_id=workspace_id, reason=str(exc))
+        raise
+
+    refs = from_indexes(secured_sql)
+    if len(refs) != 1:
+        # 检索载体需要一个明确的索引目标（`/{target}/_search`）：拿不到就不能猜一个
+        #（猜索引名 = 可能拿别的集合的行冒充答案）；多表正文同时会被 `parse_select` 的
+        # `_MULTI_INDEX_FROM` 硬门拒，两层不同名不重复判定也不互相遮着。
+        raise ValueError(f"ES 分页取数需要正文 FROM 中唯一的索引别名/模式，本次命中 {len(refs)} 个引用，已拒绝执行")
+    ctx = ctx_for(datasource_id)
+    start = time.time()
+    # 分页取数不经 `execute_query`（载体是 `/_search` 游标检索），闸门在这里补上同一道限流：
+    # 否则同一张看板的"分页图"可以绕过并发上限无限打源，上限就成了只挡一半流量的假闸门。
+    from backend.core.query_gate import slot_for_datasource
+
+    with slot_for_datasource(datasource_id):
+        page = es_pagination.query_page(refs[0], secured_sql, page_size=int(page_size),
+                                        page_num=int(page_num), context_key=context_key, ctx=ctx)
+    elapsed_ms = int((time.time() - start) * 1000)
+
+    # 与 SQL 载体同一结果加工作台：重名列消歧（护栏 §8）+ 列级策略的纵深兜底（主路径已写进 SQL）。
+    from backend.common.df_serialize import _unique_columns
+
+    names = _unique_columns([str(c or "") for c in (page.get("columns") or [])])
+    records = [dict(zip(names, r)) for r in (page.get("rows") or [])]
+    df = pd.DataFrame(records, columns=names) if names else pd.DataFrame()
+    if perm_result.hidden_columns or perm_result.masked_columns:
+        df = permission_enforcer.apply_post_processing(df, perm_result)
+        records = df.to_dict("records")
+
+    log_read_success_audit(sql, secured_sql, perm_result,
+                           user_context=user_context, datasource_id=datasource_id,
+                           workspace_id=workspace_id)
+    return {
+        "columns": names,
+        "rows": records,
+        "row_count": len(records),
+        "elapsed_ms": elapsed_ms,
+        "total": page.get("total"),
+        "page_size": page.get("page_size"),
+        "page_num": page.get("page_num"),
+        "paging_mode": page.get("paging_mode"),
+    }
 
 
 def explain_query_with_permission(
@@ -553,10 +741,16 @@ def _log_permission_audit(
     policies: list = None,
     workspace_id: int = 0,
 ):
-    """Log permission enforcement audit to adh_rls_audit_logs."""
+    """Log permission enforcement audit to adh_rls_audit_logs.
+
+    主键用 `next_row_id()`（单调递增微秒）而不是毫秒：同毫秒的两次裁决（整板刷新
+    逐图取数、或一次查询同时落 allow+deny）会拿到同一个 id，第 2 条 duplicate-key
+    后被本函数的 `except` 吞掉 —— 审计行静默丢失，而护栏 §9 要求成功与拒绝都落账。
+    （`adh_rls_audit_logs.id` 无 auto_increment，所以必须自己给值；能给值的表里只保
+    证“不重”就行，不需要可读性。）
+    """
     try:
-        import time as _time
-        audit_id = int(_time.time() * 1000)
+        audit_id = next_row_id()
 
         # policies_applied 混合了 RLS 数字策略 id 与字符串治理标记(如
         # "sensitive_block:..."/"sensitive_fields:..."), 而 policy_id 列为整型 ——
@@ -635,15 +829,14 @@ def log_audit(
         datasource_id: ID of the datasource used.
         query_type: 'sql' 或 'semantic'.
     """
-    import time as _time
-    audit_id = int(_time.time() * 1000)
-
+    # `adh_query_audit.id` 是 auto_increment：不自己拼主键（毫秒值同毫秒必碰，
+    # 碰了就被下面的 `except` 吞成 warning，审计行丢），交给库分配。
     insert_sql = """
         INSERT INTO adh_query_audit
-            (id, datasource_id, user_id, username, user_role, question, generated_sql,
+            (datasource_id, user_id, username, user_role, question, generated_sql,
              query_type, execution_status, row_count, execution_time_ms, error_message, created_at)
         VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
     """
     try:
         from backend.common.db.metadata_db import get_metadata_conn
@@ -651,7 +844,7 @@ def log_audit(
         try:
             with conn.cursor() as cur:
                 cur.execute(insert_sql, (
-                    audit_id, datasource_id, user_id, username, role, question, sql,
+                    datasource_id, user_id, username, role, question, sql,
                     query_type, status, row_count, time_ms, error,
                 ))
             conn.commit()

@@ -12,9 +12,10 @@ import backend.common.db as common_db
 dash_svc = importlib.import_module("backend.modules.viz.services.dashboard_service")
 
 
-def _row(did, filters="{}"):
+def _row(did, filters="{}", tags=None):
     return {"id": did, "name": f"看板 {did}", "status": "enabled", "is_default": 0,
-            "sort_order": 0, "owner_id": 1, "description": "", "updated_at": None, "filters": filters}
+            "sort_order": 0, "owner_id": 1, "description": "", "updated_at": None,
+            "filters": filters, "tags": tags}
 
 
 _CHARTS = [
@@ -66,6 +67,29 @@ def test_preview_does_not_leak_query_config(monkeypatch):
         assert leaked not in blob, f"预览载荷泄露口径字段: {leaked}"
     # 原始 filters 用完即剔除，不随目录下发
     assert "filters" not in out[0]
+
+
+# ── tags：工作空间「数据看板」的名称/标签筛选依赖目录行带标签 ────────────────
+def test_catalog_row_carries_tags_as_clean_string_list(monkeypatch):
+    """JSON 列经 pymysql 回读为字符串：目录行必须归一成字符串数组再下发。
+
+    不归一时前端 `.includes`/`.forEach` 打在字符串上直接抛错（旧进程未重启的真实形态）。
+    """
+    rows = [_row(101, tags='["单App看板", "单App看板", " 低样本 ", ""]'),
+            _row(102, tags=None),
+            _row(103, tags=[])]
+    out, _ = _run(monkeypatch, rows)
+    assert out[0]["tags"] == ["单App看板", "低样本"]      # 去重 + 去空 + strip
+    assert out[1]["tags"] == []                          # NULL 列→ 空数组，不给 None
+    assert out[2]["tags"] == []
+
+
+def test_card_rows_select_includes_tags_column():
+    """目录行的 SELECT 必须拉 tags：漏了这一列，组内标签筛选永远筛不出东西。"""
+    import inspect
+
+    src = inspect.getsource(dash_svc._card_rows)
+    assert "tags" in src.split("FROM adh_dashboards")[0], "_card_rows 未选取 tags 列"
 
 
 def test_screen_mode_dashboard_still_expands_canvas_by_positions(monkeypatch):

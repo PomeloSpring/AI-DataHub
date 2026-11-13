@@ -1315,13 +1315,136 @@ const DB_TYPES = [
   { value: 'postgresql', label: 'PostgreSQL', icon: Database, color: 'text-indigo-400', defaultPort: 5432, category: 'relational' },
   { value: 'doris', label: 'Apache Doris', icon: Cylinder, color: 'text-cyan-400', defaultPort: 9030, category: 'warehouse' },
   { value: 'sls', label: 'SLS (PG协议接入)', icon: Server, color: 'text-teal-400', defaultPort: 5432, category: 'other' },
+  // ES 没有 DB-API 连接（走 REST /_sql），“库”这一层由索引别名承担，因此没有数据库名字段
+  { value: 'es', label: 'Elasticsearch', icon: Server, color: 'text-rose-400', defaultPort: 9200, category: 'other' },
 ];
+
+const isEsDbType = (dbType: string) => String(dbType || '').toLowerCase() === 'es'
+  || String(dbType || '').toLowerCase() === 'elasticsearch';
+
+/** extra_config  tolerant 解析（后端可能回对象、JSON 字符串或 NULL）。
+ *
+ * ES 与 SQL 型的高级配置都存在同一列（超时/最大行数/连接池 vs 连接超时/查询超时），
+ * 所以一个解析器同时回两套字段；谁可编辑由各类型的表单块自己决定（不给非对应类型摆入口）。
+ */
+function esExtraOf(raw: any): {
+  aliases: string[]; patterns: string[]; timeoutSec: string; maxRows: string;
+  verifyCerts: boolean; poolSize: string; connectSec: string; readSec: string;
+  maxConcurrency: string; queueWaitSec: string;
+} {
+  let extra: any = raw?.extra_config ?? raw ?? {};
+  if (typeof extra === 'string') {
+    try { extra = JSON.parse(extra || '{}'); } catch { extra = {}; }
+  }
+  if (!extra || typeof extra !== 'object') extra = {};
+  const num = (v: any) => (v != null ? String(v) : '');
+  return {
+    aliases: (extra.allowed_aliases || []).map(String),
+    patterns: (extra.allowed_index_patterns || []).map(String),
+    timeoutSec: num(extra.timeout_sec),
+    maxRows: num(extra.max_rows),
+    poolSize: num(extra.pool_size),
+    verifyCerts: extra.verify_certs !== false,
+    connectSec: num(extra.connect_timeout_sec),
+    readSec: num(extra.read_timeout_sec),
+    // 取数并发闸门：ES 与 SQL 型共用同一组键（不存在“只有一类源能配”的分局）
+    maxConcurrency: num(extra.max_concurrency),
+    queueWaitSec: num(extra.queue_wait_sec),
+  };
+}
 
 function dbCategoryOf(dbType: string): string {
   return DB_TYPES.find(d => d.value === dbType)?.category || 'other';
 }
 
-function DatasourceTab() {
+/** 清单式录入（标签 chips + 输入框添加/删除）：ES 开放范围用它，不要求管理员手拼 JSON。 */
+function EsTagField({ label, placeholder, values, hint, onChange }: {
+  label: string;
+  placeholder: string;
+  values: string[];
+  hint?: string;
+  onChange: (next: string[]) => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const add = () => {
+    const text = draft.trim();
+    if (!text) return;
+    if (!values.includes(text)) onChange([...values, text]);
+    setDraft('');
+  };
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      {values.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {values.map((v) => (
+            <Badge key={v} variant="secondary" className="text-xs gap-1">
+              {v}
+              <button
+                type="button"
+                aria-label={`移除 ${v}`}
+                onClick={() => onChange(values.filter((x) => x !== v))}
+              >
+                <XIcon className="h-3 w-3" />
+              </button>
+            </Badge>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <Input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
+          placeholder={placeholder}
+        />
+        <Button type="button" size="sm" variant="outline" onClick={add}>添加</Button>
+      </div>
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+/** 取数并发闸门录入（ES 与 SQL 型都适用，共用一套 state 键名，不另开两份字段）。
+ *
+ * 消费方 `backend/core/query_gate.py`：一次看板刷新 = N 图 × M 个用户，而 SQL 型源
+ * 每次取数都新建连接，不限并发就是集体撞源侧 max_connections。满员先排队（FIFO），
+ * 排不过「排队等待上限」才给用户一句可读的“稍后重试”（不会把空结果当成没数据）。
+ * `queue_wait_sec` 允许 0（不排队直接拒），提交侧因此判 `!== ''` 而不是判真值。
+ */
+function QueryGateFields({ values, onPatch }: { values: any; onPatch: (patch: Record<string, any>) => void }) {
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label>最大并发查询数</Label>
+          <Input
+            type="number" min={1} max={64}
+            value={values.gate_max_concurrency}
+            onChange={(e) => onPatch({ gate_max_concurrency: e.target.value })}
+            placeholder="默认 8，按源体量收紧或放宽"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>排队等待上限（秒）</Label>
+          <Input
+            type="number" min={0} max={120}
+            value={values.gate_queue_wait_sec}
+            onChange={(e) => onPatch({ gate_queue_wait_sec: e.target.value })}
+            placeholder="默认 10 秒；填 0 = 不排队直接拒"
+          />
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        保护源侧资源：同时打到本源的查询数不超过上限，超出先排队，排不到则提示“稍后重试”。
+        留空 = 用平台默认（8 并发 / 排队 10 秒）；保存后即时生效，不重启也不打断在跑的查询。
+      </p>
+    </div>
+  );
+}
+
+// 导出供用例直接验证 ES 型表单（extra_config 往返与 fail-closed 护栏），不必从整页导航进入
+export function DatasourceTab() {
   const [datasources, setDatasources] = useState<any[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1338,6 +1461,19 @@ function DatasourceTab() {
     is_default: false,
     ssl: false,
     site_code: '',
+    // ES 专用（开放范围与预算）：提交前组装成 extra_config，不直接入库
+    es_aliases: [] as string[],
+    es_patterns: [] as string[],
+    es_timeout_sec: '',
+    es_max_rows: '',
+    es_pool_size: '',
+    es_verify_certs: true,
+    // SQL 型专用（连接/查询超时）：同样进 extra_config，留空 = 用代码缺省
+    sql_connect_timeout_sec: '',
+    sql_read_timeout_sec: '',
+    // 取数并发闸门（ES 与 SQL 型共用，不另开两套名字）
+    gate_max_concurrency: '',
+    gate_queue_wait_sec: '',
   });
   const [testing, setTesting] = useState<number | null>(null);
   const [testResult, setTestResult] = useState<{ id: number; success: boolean; message: string } | null>(null);
@@ -1374,12 +1510,23 @@ function DatasourceTab() {
       is_default: false,
       ssl: false,
       site_code: '',
+      es_aliases: [],
+      es_patterns: [],
+      es_timeout_sec: '',
+      es_max_rows: '',
+      es_pool_size: '',
+      es_verify_certs: true,
+      sql_connect_timeout_sec: '',
+      sql_read_timeout_sec: '',
+      gate_max_concurrency: '',
+      gate_queue_wait_sec: '',
     });
     setModalOpen(true);
   };
 
   const openEdit = (record: any) => {
     setEditing(record);
+    const extra = esExtraOf(record);
     setFormValues({
       name: record.name || '',
       db_type: record.db_type || 'mysql',
@@ -1391,17 +1538,74 @@ function DatasourceTab() {
       is_default: !!record.is_default,
       ssl: !!record.ssl,
       site_code: record.site_code || '',
+      es_aliases: extra.aliases,
+      es_patterns: extra.patterns,
+      es_timeout_sec: extra.timeoutSec,
+      es_max_rows: extra.maxRows,
+      es_pool_size: extra.poolSize,
+      es_verify_certs: extra.verifyCerts,
+      sql_connect_timeout_sec: extra.connectSec,
+      sql_read_timeout_sec: extra.readSec,
+      gate_max_concurrency: extra.maxConcurrency,
+      gate_queue_wait_sec: extra.queueWaitSec,
     });
     setModalOpen(true);
   };
 
+  /** 提交载荷：高级配置组装进 extra_config（ES 与 SQL 型共用一列，各自只写自己那一套）。
+   *
+   * SQL 型两个超时都留空时传 null = 清空该列回到代码缺省（不是“不提交”）：
+   * 否则配上去的预算在 UI 上改不回来，只能加不能减。
+   */
+  const buildPayload = () => {
+    const {
+      es_aliases, es_patterns, es_timeout_sec, es_max_rows, es_pool_size, es_verify_certs,
+      sql_connect_timeout_sec, sql_read_timeout_sec,
+      gate_max_concurrency, gate_queue_wait_sec, ...rest
+    } = formValues;
+    // 闸门旋钮两类源都写（同一组 extra_config 键，消费方同一处）
+    const gateExtra = () => {
+      const patch: Record<string, any> = {};
+      if (gate_max_concurrency !== '' && gate_max_concurrency != null) {
+        patch.max_concurrency = Number(gate_max_concurrency);
+      }
+      if (gate_queue_wait_sec !== '' && gate_queue_wait_sec != null) {
+        patch.queue_wait_sec = Number(gate_queue_wait_sec);   // 0 是真配置（不排队），不能当没填
+      }
+      return patch;
+    };
+    if (!isEsDbType(formValues.db_type)) {
+      const extra: Record<string, any> = { ...gateExtra() };
+      if (sql_connect_timeout_sec) extra.connect_timeout_sec = Number(sql_connect_timeout_sec);
+      if (sql_read_timeout_sec) extra.read_timeout_sec = Number(sql_read_timeout_sec);
+      return { ...rest, extra_config: Object.keys(extra).length ? JSON.stringify(extra) : null };
+    }
+    const extra: Record<string, any> = {
+      allowed_aliases: (es_aliases || []).map((s: string) => String(s).trim()).filter(Boolean),
+      allowed_index_patterns: (es_patterns || []).map((s: string) => String(s).trim()).filter(Boolean),
+      verify_certs: !!es_verify_certs,
+      ...gateExtra(),
+    };
+    if (es_timeout_sec) extra.timeout_sec = Number(es_timeout_sec);
+    if (es_max_rows) extra.max_rows = Number(es_max_rows);
+    if (es_pool_size) extra.pool_size = Number(es_pool_size);
+    return { ...rest, extra_config: JSON.stringify(extra) };
+  };
+
   const handleSave = async () => {
+    if (isEsDbType(formValues.db_type)
+        && !(formValues.es_aliases || []).length && !(formValues.es_patterns || []).length) {
+      // 与后端同一口径（开放范围为空即拒建源）：前端先拦一道，不让管理员存一个永远跑不通的源
+      toast.error('请至少登记一个可查索引别名（开放范围为空 = 不开放任何索引）');
+      return;
+    }
     try {
+      const payload = buildPayload();
       if (editing) {
-        await client.put(`/datasources/${editing.id}`, formValues);
+        await client.put(`/datasources/${editing.id}`, payload);
         toast.success('已更新');
       } else {
-        await client.post('/datasources', formValues);
+        await client.post('/datasources', payload);
         toast.success('已创建');
       }
       setModalOpen(false);
@@ -1460,7 +1664,7 @@ function DatasourceTab() {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-lg font-semibold">数据源管理</h3>
-          <p className="text-sm text-muted-foreground">管理数据库连接，支持 MySQL、Apache Doris、PostgreSQL、SLS(PG协议)</p>
+          <p className="text-sm text-muted-foreground">管理数据库连接，支持 MySQL、Apache Doris、PostgreSQL、SLS(PG协议)、Elasticsearch</p>
         </div>
         <Button onClick={openCreate}>
           <Plus className="h-4 w-4 mr-2" />
@@ -1537,7 +1741,10 @@ function DatasourceTab() {
                     </div>
                     <div className="flex items-center gap-2">
                       <Database className="h-3 w-3" />
-                      <span>{ds.database_name || '-'}</span>
+                      {/* ES 没有库名：这一行说开放索引别名（数量 + 首个名字），不拿「-」充数 */}
+                      <span>{isEsDbType(ds.db_type)
+                        ? `${esExtraOf(ds).aliases.length} 个索引别名（如 ${esExtraOf(ds).aliases[0] || '未登记'}）`
+                        : (ds.database_name || '-')}</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <Globe className="h-3 w-3" />
@@ -1574,6 +1781,7 @@ function DatasourceTab() {
                     <Button
                       size="sm"
                       variant="outline"
+                      aria-label={`编辑数据源 ${ds.name}`}
                       onClick={() => openEdit(ds)}
                     >
                       <Edit className="h-3 w-3" />
@@ -1581,6 +1789,7 @@ function DatasourceTab() {
                     <Button
                       size="sm"
                       variant="outline"
+                      aria-label={`删除数据源 ${ds.name}`}
                       onClick={() => handleDelete(ds.id)}
                     >
                       <Trash2 className="h-3 w-3 text-destructive" />
@@ -1687,14 +1896,108 @@ function DatasourceTab() {
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label>数据库名称</Label>
-              <Input
-                value={formValues.database_name}
-                onChange={(e) => setFormValues({ ...formValues, database_name: e.target.value })}
-                placeholder="数据库名"
-              />
-            </div>
+            {/* ES 没有 database 概念：“库”这一层 = 已登记的索引别名/模式（开放范围） */}
+            {isEsDbType(formValues.db_type) ? (
+              <>
+                <EsTagField
+                  label="可查索引别名 *"
+                  placeholder="如：t_software_app_operation_log"
+                  values={formValues.es_aliases || []}
+                  onChange={(v) => setFormValues({ ...formValues, es_aliases: v })}
+                  hint="别名是集群侧的索引集合名，与策略/敏感登记用的表名同一套名字；不向集群展开具体索引。"
+                />
+                <EsTagField
+                  label="索引模式（可选）"
+                  placeholder="如：t-t_equipment_warning_log*"
+                  values={formValues.es_patterns || []}
+                  onChange={(v) => setFormValues({ ...formValues, es_patterns: v })}
+                  hint="与别名取并集：两种写法都能过白名单硬门（存量正文里仍有模式写法）；但去掉 t- 前缀的模式会多匹配另一族索引，按扩权拒。"
+                />
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <Label>查询超时（秒）</Label>
+                    <Input
+                      type="number" min={1} max={300}
+                      value={formValues.es_timeout_sec}
+                      onChange={(e) => setFormValues({ ...formValues, es_timeout_sec: e.target.value })}
+                      placeholder="留空用平台默认 20"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>单次最大行数</Label>
+                    <Input
+                      type="number" min={1}
+                      value={formValues.es_max_rows}
+                      onChange={(e) => setFormValues({ ...formValues, es_max_rows: e.target.value })}
+                      placeholder="留空用平台默认 1000"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>连接池数量</Label>
+                    <Input
+                      type="number" min={1} max={64}
+                      value={formValues.es_pool_size}
+                      onChange={(e) => setFormValues({ ...formValues, es_pool_size: e.target.value })}
+                      placeholder="留空用默认 10"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  预算按源配（不同源体量与链路不同）：超时 1~300 秒、连接池 1~64。
+                  连接池 = 对本集群复用的 HTTP 连接数，看板一次刷新多张图不再各自重做 TLS 握手；
+                  池只管复用不管限流（池满时仍会新建连接），“同时最多多少条查询”由下面的并发上限控。
+                </p>
+                <QueryGateFields
+                  values={formValues}
+                  onPatch={(patch) => setFormValues({ ...formValues, ...patch })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Elasticsearch 源支持行级/列级策略（行过滤以 AND 写进顶层 WHERE，列脱敏编译进 SQL）；
+                  hash 型脱敏本引擎没有对应函数，只能选 partial 或将数据物化到支持哈希的引擎。
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <Label>数据库名称</Label>
+                  <Input
+                    value={formValues.database_name}
+                    onChange={(e) => setFormValues({ ...formValues, database_name: e.target.value })}
+                    placeholder="数据库名"
+                  />
+                </div>
+                {/* 高级配置：这两个预算过去写死在代码里（不同源要给不同预算只能改代码），现按数据源可配 */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>连接超时（秒）</Label>
+                    <Input
+                      type="number" min={1} max={120}
+                      value={formValues.sql_connect_timeout_sec}
+                      onChange={(e) => setFormValues({ ...formValues, sql_connect_timeout_sec: e.target.value })}
+                      placeholder="留空用默认 10"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>查询超时（秒）</Label>
+                    <Input
+                      type="number" min={1} max={600}
+                      value={formValues.sql_read_timeout_sec}
+                      onChange={(e) => setFormValues({ ...formValues, sql_read_timeout_sec: e.target.value })}
+                      placeholder="留空用默认 30"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  跨境/高延迟源可适当拉高；两项都清空 = 回到默认（连接 10 秒 / 查询 30 秒）。
+                  查询超时在源侧强制执行（MySQL/Doris 走 socket read_timeout，PG/SLS 下发 statement_timeout）。
+                </p>
+                {/* 超时只管“单条查询多久”，不管“同时多少条”：后者才是源侧连接数/配额被打爆的原因 */}
+                <QueryGateFields
+                  values={formValues}
+                  onPatch={(patch) => setFormValues({ ...formValues, ...patch })}
+                />
+              </>
+            )}
 
             {/* 站点归属：决定该源在哪个查询站点下可被选中（聊天站点选择器/本体适用站点路由） */}
             <div className="space-y-2">

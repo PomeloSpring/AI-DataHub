@@ -18,6 +18,29 @@ router = APIRouter()
 VALID_LAYER_TYPES = ("cli", "docker", "remote")
 VALID_STATUSES = ("active", "inactive", "error")
 
+# 单轮工具调用上限的值域。唯一消费点是 secure_sdk.build_options 的 PreToolUse 轮次闸
+# （取 `config.get("max_turns") or DEFAULT_MAX_TOOL_ROUNDS`，缺省 20）。
+# 0 / 负数会在那个 ` or ` 上静默回落成 20（配了等于没配），200 以上实际是借配置之名
+# 行“不限制”之实 —— 长回合会退回被墙钟硬切。两者都是空承诺，故在入口拒并说明取值口径，
+# 不悄悄改成另一个数（no-silent-degradation §1）。
+MAX_TOOL_ROUNDS_MIN = 1
+MAX_TOOL_ROUNDS_MAX = 200
+
+
+def _validate_layer_config(config: Optional[dict]) -> None:
+    """校验本仓消费的回合上限；其余 config 键由各消费点自行把关."""
+    value = (config or {}).get("max_turns")
+    if value is None:
+        # 不传 / 传 null = 清空该键，回到系统默认（浅合并会删键），合法
+        return
+    if (isinstance(value, bool) or not isinstance(value, int)
+            or not MAX_TOOL_ROUNDS_MIN <= value <= MAX_TOOL_ROUNDS_MAX):
+        raise HTTPException(
+            status_code=400,
+            detail=(f"单轮工具调用上限(max_turns)必须是 {MAX_TOOL_ROUNDS_MIN}~{MAX_TOOL_ROUNDS_MAX} 的整数，"
+                    f"当前值 {value!r}；留空表示沿用系统默认 20 次"),
+        )
+
 
 # ── Request Models ────────────────────────────────────────────────
 
@@ -171,6 +194,7 @@ def create_execution_layer(req: ExecutionLayerCreate):
         # CLI 类型必须指定 cli_name
         if req.layer_type == "cli" and not (req.config or {}).get("cli_name"):
             raise HTTPException(status_code=400, detail="CLI Harness 必须配置 cli_name")
+        _validate_layer_config(req.config)
         layer_id = exec_service.create_layer(req.model_dump())
         return {"id": layer_id, "success": True}
     except HTTPException:
@@ -258,6 +282,7 @@ def update_execution_layer(layer_id: int, req: ExecutionLayerUpdate):
             existing = exec_service.get_layer_by_name(req.name)
             if existing and existing["id"] != layer_id:
                 raise HTTPException(status_code=400, detail=f"Harness 名称已存在: {req.name}")
+        _validate_layer_config(req.config)
         data = {k: v for k, v in req.model_dump().items() if v is not None}
         exec_service.update_layer(layer_id, data)
         from backend.common.ttl_cache import exec_layer_cache

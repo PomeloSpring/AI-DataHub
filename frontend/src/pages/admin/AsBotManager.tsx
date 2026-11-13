@@ -529,7 +529,7 @@ export default function AsBotManager() {
                     {srv?.builtin || srv?.transport === 'builtin' ? (
                       // 内置服务在会话进程内直接执行（带真实身份与出站守卫），
                       // 不得套用远程 MCP 的“当前禁止执行”文案误导管理员。
-                      <p className="text-muted-foreground">平台内置服务：会话内直接执行；连接配置与可查索引范围由部署侧托管，不在此页面显示。</p>
+                      <p className="text-muted-foreground">平台内置服务：会话内直接执行；连接配置与可查范围由部署侧托管，不在此页面显示。</p>
                     ) : (
                       <p className="text-destructive">HTTP/SSE 远程 MCP 尚缺可信身份和数据治理契约，当前禁止执行；stdio 仅在只读、禁网沙箱内运行，且须显式授权读取。</p>
                     )}
@@ -612,7 +612,7 @@ export default function AsBotManager() {
             </Field>
 
             {/* 可用模型（Chat 端可切换；仅一个/留空时不展示选择框） */}
-            <Field label="可用模型 (Chat 对话页可在其中切换；留空=使用 Harness 默认模型；仅选 1 个时不展示下拉)">
+            <Field label="可用模型 (Chat 对话页可在其中切换；留空=用默认模型，按 Harness 配置 → 模型中心「设为默认」逐级取；仅选 1 个时不展示下拉)">
               <div className="flex flex-wrap gap-2 max-h-[140px] overflow-y-auto">
                 {(() => {
                   const opts = Array.from(new Set([...modelOptions, ...(form.models || [])]));
@@ -627,7 +627,7 @@ export default function AsBotManager() {
                   });
                 })()}
                 {modelOptions.length === 0 && (form.models || []).length === 0 && (
-                  <span className="text-xs text-muted-foreground">未获取到 Harness 模型列表（将使用 Harness 默认模型）</span>
+                  <span className="text-xs text-muted-foreground">未获取到 Harness 模型列表（将按默认优先级取模型）</span>
                 )}
               </div>
             </Field>

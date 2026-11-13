@@ -346,8 +346,9 @@ def _compact_options(sdk, adapter, workspace: Path, runtime_dir: Path, resume_id
     两个后端都要支持：压缩必须跑在“本轮问答用的同一条执行层/同一个模型通道”上，
     否则 claude 直连会话会被丢回 Qoder 网关去压缩（计费口径与转录都不一致）。
     """
-    from backend.modules.mind.execution.secure_sdk import _sdk_cli_path, resolve_access_token
-    from backend.common.config import QODER_MODEL
+    from backend.modules.mind.execution.secure_sdk import (
+        DEFAULT_MAX_TOOL_ROUNDS, _sdk_cli_path, resolve_access_token)
+    from backend.modules.mind.execution.llm_resources import resolve_effective_model
 
     env = {k: None for k in os.environ if k not in ("PATH", "LANG", "LC_ALL")}
     home = str(runtime_dir)
@@ -367,7 +368,8 @@ def _compact_options(sdk, adapter, workspace: Path, runtime_dir: Path, resume_id
         events["summary_chars"] = len(str((data or {}).get("compact_summary") or ""))
         return {}
 
-    max_turns = int((getattr(adapter, "config", None) or {}).get("max_turns") or 20)
+    # 上限与问答同一个键、同一个缺省常量（写死 20 会变成“改了 Harness 只有一边生效”的双口径）
+    max_turns = int((getattr(adapter, "config", None) or {}).get("max_turns") or DEFAULT_MAX_TOOL_ROUNDS)
     shared = dict(tools=[], allowed_tools=[], permission_mode="default", setting_sources=[],
                   cwd=str(workspace), add_dirs=[], env=env, mcp_servers={}, agents={},
                   system_prompt="", max_turns=max_turns, include_partial_messages=False,
@@ -375,7 +377,9 @@ def _compact_options(sdk, adapter, workspace: Path, runtime_dir: Path, resume_id
                   hooks={"PreCompact": [sdk.HookMatcher(hooks=[on_pre_compact])],
                          "PostCompact": [sdk.HookMatcher(hooks=[on_post_compact])]})
 
-    model = getattr(adapter, "model", "") or QODER_MODEL or None
+    # 与问答同一个四级链（见 llm_resources.resolve_effective_model）。回合级传空是
+    # 诚实的：压缩是会话内部整理动作，本轮没有人在现场选模型，从 Harness 级起算。
+    model = resolve_effective_model("", getattr(adapter, "model", "")) or None
     if (getattr(adapter, "backend", "") or "qoder") == "claude":
         # claude 后端：凭据与会话参数走与问答同一个实现（apply_direct_channel），
         # 不在此重写一份“怎么归一地址 / 首轮还是续会话” 的规则。

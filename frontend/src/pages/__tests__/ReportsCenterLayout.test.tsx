@@ -27,6 +27,8 @@ const rerun = {
   evidence: { validation_status: 'governed', query_count: 2,
               sources: ['run_semantic_query'], completeness: 'sample_only', reasons: [] } as Record<string, unknown>,
   status: 'ready',
+  // 服务端给的可读原因（generation_failure_reason）：新口径下不达版式就是 failed + 逐条偏差
+  warning: '',
 }
 const v2 = {
   ...v1, id: 844, source_type: 'analysis',
@@ -38,7 +40,9 @@ vi.mock('@/api/report', () => ({
   getReportDetail: vi.fn((id: number) => Promise.resolve(
     id === v1.id ? { ...v1, content_url: '/c/843', content_size: 1 }
       : { ...v2, generation_status: rerun.status, layout: rerun.layout,
-          evidence_summary: rerun.evidence, content_url: '/c/844', content_size: 1 })),
+          evidence_summary: rerun.evidence, access_warning: rerun.warning,
+          content_url: rerun.status === 'failed' ? '' : '/c/844',
+          content_size: rerun.status === 'failed' ? 0 : 1 })),
   fetchReportContent: vi.fn((url: string) =>
     Promise.resolve(url.endsWith('843') ? MAP_BODY : rerun.body)),
   updateReport: vi.fn(), deleteReport: vi.fn(),
@@ -68,6 +72,7 @@ describe('重跑版本的版式结局可见', () => {
                      reasons: ['缺少图表：china_map（省份/页面浏览量）'] }
     rerun.body = FACT_BODY
     rerun.status = 'ready'
+    rerun.warning = ''
     rerun.evidence = { validation_status: 'governed', query_count: 2,
                        completeness: 'sample_only', reasons: [] }
   })
@@ -120,5 +125,25 @@ describe('重跑版本的版式结局可见', () => {
     fireEvent.change(select, { target: { value: String(v1.id) } })
     await waitFor(() => expect(screen.getByTestId('body')).toHaveTextContent('china_map'))
     expect(screen.queryByRole('note')).toBeNull()
+  })
+
+  // 2026-11 口径变更（用户拍板：不要擅自降级）：不达版式不再改产「分析项 N」事实表并标 ready，
+  // 而是本版本判失败 + 逐条偏差上页面。真机事故：v3 把 v2 那张事实表当原版式基线，
+  // 契约变成「缺少章节：分析项 1、分析项 2、分析项 3」，本轮好产出反被否掉。
+  it('不达版式 = 本版本失败：页面给逐条偏差，不拿事实表充数', async () => {
+    rerun.layout = { has_layout: true, status: 'rejected', format: 'html',
+                     reasons: ['缺少章节：关键发现、行动建议'] }
+    rerun.status = 'failed'
+    rerun.body = ''
+    rerun.warning = '本次生成未完成：本轮产出未符合上一版报告的版式，已按失败处理'
+      + '（缺少章节：关键发现、行动建议）。可点「用最新数据重新生成」重试；'
+      + '切换历史版本仍可查看之前生成的正文'
+    render(<MemoryRouter><ReportsCenter /></MemoryRouter>)
+    const select = await picker()
+    expect(select.options[0].textContent).toContain('未按原版式')
+    await waitFor(() => expect(screen.getByText(/本轮产出未符合上一版报告的版式/))
+      .toBeInTheDocument())
+    // 失败那一版不得渲染任何正文（尤其不得是「分析项 1」事实表）
+    expect(screen.queryByTestId('body')).toBeNull()
   })
 })

@@ -54,8 +54,11 @@ class SlsConnector:
         if not row.get("host"):
             raise ValueError(f"SLS 连接配置缺失: datasource_id={self._datasource_id}")
 
-        from backend.common.db.datasource_db import get_datasource_conn
+        from backend.common.db.datasource_db import get_datasource_conn, resolve_timeouts
 
+        # 以前这里完全不往下看 timeout_sec（只吃工厂默认 30s）：治理下发的执行预算
+        # 到 SLS 就丢了（护栏 §5 要求超时执行前强制）。现与 mysql/postgres 同一份优先级。
+        connect_sec, read_sec = resolve_timeouts(row, timeout_sec=timeout_sec)
         return get_datasource_conn(
             "sls",
             row.get("host"),
@@ -65,6 +68,8 @@ class SlsConnector:
             row.get("database") or row.get("database_name"),
             ssl=bool(row.get("ssl")),
             ssl_mode=row.get("ssl_mode"),
+            read_timeout=read_sec,
+            connect_timeout=connect_sec,
         )
 
     def execute_pushdown(

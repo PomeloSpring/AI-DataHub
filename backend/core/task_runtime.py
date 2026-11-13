@@ -75,7 +75,12 @@ _CALLBACKS: dict[str, str | Callable[..., Any]] = {
     "report.evidence_verdict": "backend.modules.viz.services.report_service:evidence_verdict",
     # 报告模板→版式契约：flow 执行器与 viz 共用一份解析/校验口径（不新增 L2 横向 import）
     "report.resolve_template": "backend.modules.viz.services.report_service:resolve_report_template",
+    # 按**业务名**解析模板（分析场景绑定、AI 工具侧都只能给名字，拿不到字模 id）
+    "report.resolve_template_by_name":
+        "backend.modules.viz.services.report_service:resolve_report_template_by_name",
     "report.layout_contract": "backend.modules.viz.services.report_service:report_layout_contract",
+    # 模板候选清单（分析场景管理页的选择框）：同样走本表，不开 auth → viz 的 L2 横向边
+    "report.list_templates": "backend.modules.viz.services.report_service:list_report_templates",
     "report.render_template": "backend.modules.viz.services.report_service:render_template_report",
     "report.security_snapshot": "backend.modules.viz.services.report_service:_snapshot",
     "report.verify_snapshot": "backend.modules.viz.services.report_service:_verify_snapshot",

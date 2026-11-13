@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Eye, History, Library, ListChecks, PencilLine, Plus, Send, Trash2 } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Eye, History, Library, ListChecks, PencilLine, Plus, Send, ShieldCheck, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -21,12 +21,18 @@ import {
   type ReleaseItem,
 } from '@/api/content';
 import ArticleEditor from './ArticleEditor';
+import ArticleFiles from './ArticleFiles';
 import {
-  EmptyState, ErrorBanner, KbSyncBadge, LoadingRow, NoticeBanner, StatusBadge,
+  EmptyState, ErrorBanner, GateList, KbSyncBadge, LoadingRow, NoticeBanner, StatusBadge,
   TagChips, statusText, useContentPerms, useTaxonomy,
 } from './shared';
 
 const PAGE_SIZE = 20;
+/**
+ * 每页条数档位：服务端 `/content/articles` 的 `page_size` 上限是 50（`Query(le=50)`），
+ * 所以这里不给 100 —— 选了只会换来一个 422，而不是“多显示几条”。
+ */
+const PAGE_SIZES = [20, 50];
 const ALL = '__all__';
 const KIND_ALL = '__kind_all__';
 
@@ -38,13 +44,24 @@ const KIND_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'file', label: '附件' },
 ];
 
-const STATUS_OPTIONS: Array<{ value: 'all' | ArticleStatus; label: string }> = [
-  // 状态筛选直接用服务端的 'all' 取值（不是本文件的 __all__ 哨兵）：
-  // 'all' 才是"不加状态条件", 见下方 load 的注释
-  { value: 'all', label: '全部状态' },
-  ...(['draft', 'in_review', 'approved', 'published', 'archived'] as ArticleStatus[])
-    .map(s => ({ value: s, label: STATUS_LABELS[s] })),
-];
+/**
+ * 状态筛选项按作用域给：「内容管理」不提供也不回「草稿」（服务端同口径拒）。
+ *
+ * 未提交的工作稿属个人区；被驳回的稿会退回 draft，也就从编排面消失 —— 这是拍板口径
+ * 不是漏配：审核流水与「我的草稿」仍追得到它。
+ */
+function statusOptionsOf(scope: 'all' | 'mine'): Array<{ value: 'all' | ArticleStatus; label: string }> {
+  const flow = (['in_review', 'approved', 'published', 'archived'] as ArticleStatus[])
+    .map(s => ({ value: s as 'all' | ArticleStatus, label: STATUS_LABELS[s] }));
+  return [
+    // 状态筛选直接用服务端的 'all' 取值（不是本文件的 __all__ 哨兵）：
+    // 'all' 才是"不加状态条件", 见下方 load 的注释
+    { value: 'all', label: '全部状态' },
+    ...(scope === 'mine'
+      ? [{ value: 'draft' as 'all' | ArticleStatus, label: STATUS_LABELS.draft }, ...flow]
+      : flow),
+  ];
+}
 
 /**
  * 行上的发布类动作模式（单条按钮、单条弹框与批量分组**共用这一份判据**）。
@@ -55,8 +72,15 @@ const STATUS_OPTIONS: Array<{ value: 'all' | ArticleStatus; label: string }> = [
 function publishModeOf(a: ContentArticle): 'publish' | 'archive' | 'republish' | null {
   if (a.is_live) return 'archive';
   if (a.can_republish) return 'republish';
-  if (a.status === 'approved' || a.has_pending_change) return 'publish';
-  return null;
+  /**
+   * 未上线的都给发布入口（含草稿与待审）：「免审直发」开关只存在于这个弹框里，
+   * 而服务端 waive 分支对**任何状态**都放行（只要逐条写明原因并过门禁硬阻断）。
+   * 旧写法只给 approved / has_pending_change，于是自审被拒时那句
+   * “需要直发请走「免审直发」”指向的入口在列表里根本不存在（死胡同：
+   * 非 admin 作者不能自审、又没有发布按钮，只能重建一篇）。
+   * 入口给上不等于默许跳审：弹框里不勾开关时确认键是死的（见 needsWaive）。
+   */
+  return 'publish';
 }
 
 const PUBLISH_MODE_LABELS: Record<'publish' | 'archive' | 'republish', string> = {
@@ -129,19 +153,30 @@ const BATCH_ORDER: BatchKind[] = ['submit', 'publish', 'republish', 'archive', '
  */
 export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
   const navigate = useNavigate();
+  const [sp] = useSearchParams();
   const { has } = useContentPerms();
   const { user } = useAuthStore();
   const { categories, reload: reloadTaxonomy } = useTaxonomy();
 
   const canEdit = has('article:manage');
   const canPublish = has('article:publish');
+  // 审核与发布是两个码：原「审核发布」页已并入本页，入口按码给
+  const canReview = has('article:review');
   // 同步走语料通道自己的权限码：能编内容/能发布不等于能写 AS-BOT 的知识
   const canSyncKb = has('kbdoc:write');
 
   const [items, setItems] = useState<ContentArticle[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [status, setStatus] = useState<'all' | ArticleStatus>('all');
+  const [pageSize, setPageSize] = useState(PAGE_SIZE);
+  const [status, setStatus] = useState<'all' | ArticleStatus>(() => {
+    // 初始筛选可由地址带（旧 /content/review 重定向到 ?status=in_review，书签/分享同理）：
+    // 只接受本页筛选器真有的取值，不合法就回落 all（编排面的“草稿”不是合法取值）
+    const v = sp.get('status');
+    return v && statusOptionsOf(scope).some(o => o.value === v) ? (v as ArticleStatus) : 'all';
+  });
+  // 到期复核是“待处理”的另一类（已上线但复核日期过了），与状态不同维度，单开一个开关
+  const [expired, setExpired] = useState(sp.get('expired') === '1');
   const [category, setCategory] = useState(ALL);
   const [kind, setKind] = useState(KIND_ALL);
   const [qInput, setQInput] = useState('');
@@ -154,6 +189,8 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
   const [editorOpen, setEditorOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ContentArticle | null>(null);
   const [publishTarget, setPublishTarget] = useState<ContentArticle | null>(null);
+  // 审核弹框（逐条确认门禁提醒 + 通过/驳回）：从已删除的「审核发布」页搬到行操作上
+  const [reviewTarget, setReviewTarget] = useState<ContentArticle | null>(null);
   // 「切换展示版本」单列一个入口：它必须逐条指名期次，所以不进批量（同免审直发那条纪律）
   const [rollbackTarget, setRollbackTarget] = useState<ContentArticle | null>(null);
   const [syncTarget, setSyncTarget] = useState<ContentArticle | null>(null);
@@ -172,23 +209,24 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
       // 「全部状态」必须显式传 all：传空串会被服务端当成"只看门户在线内容"，
       // 草稿就会从管理清单里消失（不是少几行，是整个草稿看不见）
       status,
+      expired,
       category: category === ALL ? '' : category,
       // 哨兵值不往外传：服务端 kind 只认四个形态名，传错是直接拒而不是默默空清单
       kind: kind === KIND_ALL ? '' : kind,
       q,
       page,
-      page_size: PAGE_SIZE,
+      page_size: pageSize,
       sort: 'latest',
     })
       .then(res => { setItems(res.data.items); setTotal(res.data.total); })
       .catch(err => { setError(contentError(err)); setItems([]); setTotal(0); })
       .finally(() => setLoading(false));
-  }, [scope, user?.username, status, category, kind, q, page]);
+  }, [scope, user?.username, status, expired, category, kind, q, page, pageSize]);
 
   useEffect(load, [load]);
 
   // 换筛选条件或翻页就清勾选：勾选属于“这一页这份清单”，带过去等于让用户对没看到的条目下手
-  useEffect(() => { setSelected([]); setBatchResult(null); }, [status, category, kind, q, page]);
+  useEffect(() => { setSelected([]); setBatchResult(null); }, [status, expired, category, kind, q, page, pageSize]);
 
   const picked = items.filter(a => selected.includes(a.slug));
   const allPicked = items.length > 0 && picked.length === items.length;
@@ -221,7 +259,7 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
           <p className="text-sm text-muted-foreground">
             {scope === 'mine'
               ? '这里只列你名下未发布的工作稿，新建内容也在这里；提交审核后仍会留在列表里，直到审核出结论。'
-              : '编排全部内容：草稿、待审、已发布与已下架。发布动作需要单独的发布权限；新建与编写请在「我的草稿」进行。'}
+              : '编排已提交的内容：待审、已通过、已发布与已下架。未提交的草稿（含被驳回退回的）只在「我的草稿」，新建与编写也在那里；审核与发布都在行上，按各自权限码给。'}
           </p>
         </div>
         {/* 新建入口只给「我的草稿」：写作是作者在自己名下开工，内容管理是编排面
@@ -244,7 +282,7 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
         <Select value={status} onValueChange={v => { setStatus(v as 'all' | ArticleStatus); setPage(1); }}>
           <SelectTrigger className="w-[150px]" aria-label="状态筛选"><SelectValue /></SelectTrigger>
           <SelectContent>
-            {STATUS_OPTIONS.map(s => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
+            {statusOptionsOf(scope).map(s => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={category} onValueChange={v => { setCategory(v); setPage(1); }}>
@@ -262,6 +300,15 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
           </SelectContent>
         </Select>
         <Button variant="outline" onClick={() => { setQ(qInput.trim()); setPage(1); }}>搜索</Button>
+        {/* 到期复核快捷筛选：它不是状态而是“该重新确认口径”（已上线且 review_by 过期），
+            原「审核发布」页顶部那张清单并入到这里，口径仍走服务端同一谓词 */}
+        {canReview && scope === 'all' && (
+          <Button variant={expired ? 'default' : 'outline'} size="sm" aria-pressed={expired}
+            title="只看过了复核日期、需要重新确认口径的内容"
+            onClick={() => { setExpired(v => !v); setStatus('all'); setPage(1); }}>
+            到期复核
+          </Button>
+        )}
         {/* 批量入口按权限给：只读角色本来也进不了这一页（菜单按 article:manage 反查） */}
         {(canEdit || canPublish) && (
           <Button variant={batchMode ? 'default' : 'outline'} aria-pressed={batchMode}
@@ -433,6 +480,14 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
                       )}
                       {/* 三个改门户可见性的动作共用一个入口（服务端 can_republish 决定给不给）：
                           已下架不给上架入口就是死胡同 —— 下架只收入口，不推翻审核结论 */}
+                      {/* 审核入口只在「内容管理」的行上（拍板：审核不必单开一页，但也不处处开）：
+                          已提交的稿子本来就在编排面，在「我的草稿」重复给一份审核入口
+                          只会把“作者个人区”又变成审核工作台 */}
+                      {canReview && scope === 'all' && a.status === 'in_review' && !expired && (
+                        <Button size="sm" variant="outline" onClick={() => setReviewTarget(a)}>
+                          <ShieldCheck className="mr-1 h-3.5 w-3.5" />审核
+                        </Button>
+                      )}
                       {canPublish && mode && (
                         <Button size="sm" variant="outline" onClick={() => setPublishTarget(a)}>
                           {PUBLISH_MODE_LABELS[mode]}
@@ -457,8 +512,16 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
         </div>
       )}
 
-      {!loading && (
-        <PaginationBar page={page} pageSize={PAGE_SIZE} total={total} onChange={setPage} hideWhenSingle />
+      {/* 统一分页条：不拿 hideWhenSingle 关掉——编排面需要“共 N 条”与每页档位常驻可见
+          （单页时关掉会让人以为本页没有分页机制）；空清单不占一条底栏，
+          重拉期间保留整条并把按钮置灰（避免筛一下底栏就闪没） */}
+      {total > 0 && (
+        <PaginationBar
+          page={page} pageSize={pageSize} total={total} busy={loading}
+          onChange={setPage}
+          onPageSizeChange={n => { setPageSize(n); setPage(1); }}
+          pageSizeOptions={PAGE_SIZES}
+        />
       )}
 
       <ArticleEditor
@@ -490,6 +553,16 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
         onDone={(msg, warnings) => {
           setPublishTarget(null);
           // 服务端返回的提醒（如“已同步的语料还在库里”）拼在结论后面，不顶掉结论也不静默
+          setNotice([msg, ...warnings].filter(Boolean).join(' —— '));
+          load();
+        }}
+      />
+
+      <ReviewDialog
+        article={reviewTarget}
+        onClose={() => setReviewTarget(null)}
+        onDone={(msg, warnings) => {
+          setReviewTarget(null);
           setNotice([msg, ...warnings].filter(Boolean).join(' —— '));
           load();
         }}
@@ -557,6 +630,131 @@ function suggestReleaseLabel(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
+/**
+ * 审核弹框（原「审核发布」工作台的行内版）。
+ *
+ * 三条把关与合并前完全一致，只是发生位置变了：
+ * 1. 软提醒必须**逐条**确认后才可能通过（服务端 409 兜底，前端先把按钮按住）；
+ * 2. 硬阻断直接说“必须修完”，不给通过按钮；
+ * 3. 驳回必须写原因（作者要据此改）。
+ * 读稿走 /reviews/{slug}/draft：审核人不必具备编辑权（由 article:review 自己裁决）。
+ */
+function ReviewDialog({ article, onClose, onDone }: {
+  article: ContentArticle | null;
+  onClose: () => void;
+  onDone: (msg: string, warnings: string[]) => void;
+}) {
+  const [detail, setDetail] = useState<ContentArticle | null>(null);
+  const [acks, setAcks] = useState<Record<string, boolean>>({});
+  const [comment, setComment] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  // 读稿：重入（附件上传后刷新、换条目）都回到同一个入口，不在本组件另存一份真值
+  const read = useCallback(() => {
+    if (!article) return;
+    contentApi.reviewDraft(article.slug)
+      .then(res => setDetail(res.data))
+      .catch(err => setError(contentError(err)));
+  }, [article?.slug]);
+
+  useEffect(() => {
+    setDetail(null); setAcks({}); setComment(''); setError('');
+    if (!article) return;
+    read();
+  }, [article?.slug, read]);
+
+  if (!article) return null;
+  const warnings = detail?.gate_warnings ?? [];
+  const hard = detail?.gate_hard ?? [];
+  const allAcked = warnings.every(w => acks[w.code]);
+  // 通过按钮的可用条件与服务端一致：拿到稿、无硬阻断、提醒逐条确认完
+  const canApprove = !!detail && hard.length === 0 && allAcked;
+
+  const run = (kind: 'approve' | 'reject') => {
+    if (kind === 'reject' && !comment.trim()) {
+      // 前端先拦一次，服务端同样会拒（驳回必须有原因，作者要据此改）
+      setError('驳回必须写原因，作者要据此修改。');
+      return;
+    }
+    setBusy(true); setError('');
+    const call = kind === 'approve'
+      ? contentApi.approve(article.slug, comment.trim(),
+                           warnings.map(w => ({ ...w, acknowledged: !!acks[w.code] })))
+      : contentApi.reject(article.slug, comment.trim());
+    // 回执里的 warning（如“这一版由作者本人审核通过”）必须带到结论后面，不得只取 message
+    call.then(res => onDone(res.data.message, [res.data.warning ?? ''].filter(Boolean)))
+      .catch(err => setError(contentError(err)))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <Dialog open onOpenChange={v => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>审核内容</DialogTitle>
+          <DialogDescription>
+            审核是人的判断，AI 不参与批与发。通过后可由具「发布与下架内容」权限的人上线。
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <ErrorBanner message={error} />
+          {!detail && !error && <LoadingRow text="正在读稿与门禁结果" />}
+
+          {detail && (
+            <div className="space-y-3">
+              <div className="rounded-lg border bg-muted/30 p-3 text-xs leading-5 space-y-1.5">
+                <p className="font-medium text-sm">{detail.title}</p>
+                <p className="flex flex-wrap items-center gap-1.5">
+                  当前状态：<StatusBadge article={detail} />
+                  {!!detail.submitted_by && <span className="text-muted-foreground">· 提交人 {detail.submitted_by}</span>}
+                  <a
+                    href={`/content/preview/${detail.slug}`} target="_blank" rel="noreferrer"
+                    className="ml-auto text-primary hover:underline"
+                  >打开全文预览</a>
+                </p>
+                <TagChips tags={detail.tags} />
+              </div>
+
+              <GateList items={hard} kind="hard" />
+              {/* 附件：审核人必能下载。挂 scope=reviews 走 article:review 自己裁决 ——
+                  只勾审核权的角色拿不到 articles*，看不到附件的审核是空承诺。 */}
+              {!!(detail.files ?? []).length && (
+                <ArticleFiles slug={detail.slug} files={detail.files ?? []}
+                  scope="reviews" onRefresh={read} />
+              )}
+              {!!warnings.length && (
+                <GateList items={warnings} kind="warning" acknowledge={acks}
+                  onAck={(code, value) => setAcks(prev => ({ ...prev, [code]: value }))} />
+              )}
+              {!hard.length && !warnings.length && (
+                <p className="text-xs text-muted-foreground">门禁没有提醒，也没得确认项，可直接通过。</p>
+              )}
+
+              <div className="space-y-1">
+                <Label htmlFor="review-comment">审核意见（驳回时必填，通过可选填）</Label>
+                <Textarea id="review-comment" rows={2} value={comment} onChange={e => setComment(e.target.value)}
+                  placeholder="例如：第 3 节的样本区间与标题不一致，改后重交" />
+              </div>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>取消</Button>
+          <Button variant="outline" onClick={() => run('reject')} disabled={busy}>
+            驳回
+          </Button>
+          <Button onClick={() => run('approve')} disabled={busy || !canApprove}>
+            {busy ? '处理中' : '审核通过'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function PublishDialog({ article, onClose, onDone }: {
   article: ContentArticle | null;
   onClose: () => void;
@@ -579,9 +777,16 @@ function PublishDialog({ article, onClose, onDone }: {
    * 三个动作同一个弹框：它们都只改“门户可见性”，拆成三份很容易写出
    * “下架要填原因、上架不用”这种双口径。mode 只由条目当前状态决定，不再推一遍权限。
    */
-  // mode 与行上按钮、批量分组同一份判据（弹框只在 publishModeOf 非空时打得开，
-  // 兜底 'publish' 走不到，留着只为类型收敛）
+  // mode 与行上按钮、批量分组同一份判据；未上线的一律落在 'publish'（上面 `?? 'publish'`
+  // 只是类型兼容，publishModeOf 已不再返回 null）
   const mode = publishModeOf(article) ?? 'publish';
+  /**
+   * 这一版没审过（非 approved）时，不勾「免审直发」的发布点了也**必定被服务端拒**。
+   * 与其让人吃一个 422，不如在点之前把条件说清并把确认键置灰：
+   * 开关仍默认不勾（不拿默认值替人跳审），“要么走审核、要么显式留痕迹”两条路都递到眼前。
+   */
+  const needsWaive = mode === 'publish' && article.status !== 'approved';
+  const blockedByReview = needsWaive && !waive;
 
   const submit = async () => {
     setBusy(true);
@@ -678,6 +883,13 @@ function PublishDialog({ article, onClose, onDone }: {
                 <Switch checked={waive} onCheckedChange={setWaive} />
                 免审直发（跳过审核直接上线）
               </label>
+              {needsWaive && (
+                <p className="mt-1.5 text-amber-700 dark:text-amber-400">
+                  这一版还没审核通过（当前是「{STATUS_LABELS[article.status]}」）。
+                  正常路径是「提交审核 → 审核人通过 → 发布」；
+                  要跳过这一步只能勾下面的「免审直发」并写明原因（进审计）。
+                </p>
+              )}
               {waive && (
                 <div className="mt-2 space-y-1">
                   <Label htmlFor="waive-reason">免审原因（必填，会写入审计）</Label>
@@ -685,7 +897,7 @@ function PublishDialog({ article, onClose, onDone }: {
                     placeholder="例如：合规部门已在评审会上确认，负责人张三" />
                 </div>
               )}
-              {!waive && (
+              {!waive && !needsWaive && (
                 <p className="mt-1.5 text-muted-foreground">
                   未走审核的内容不能发布。需要跳过审核请显式勾选「免审直发」并写明原因 —— 这个例外会留下痕迹，不是暗门。
                 </p>
@@ -710,7 +922,7 @@ function PublishDialog({ article, onClose, onDone }: {
         <DialogFooter>
           <Button variant="ghost" onClick={onClose} disabled={busy}>取消</Button>
           <Button onClick={submit}
-            disabled={busy || (mode === 'publish' && waive && !reason.trim())}>
+            disabled={busy || blockedByReview || (mode === 'publish' && waive && !reason.trim())}>
             {busy ? '处理中'
               : mode === 'archive' ? '确认下架'
                 : mode === 'republish' ? '确认上架' : '确认发布'}

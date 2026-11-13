@@ -8,6 +8,9 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
 import { toast } from '@/lib/toast';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { Plus, Edit, Trash2, Workflow, Search, BookX } from 'lucide-react';
@@ -22,7 +25,8 @@ interface KnowledgeItem {
   knowledge_type: string;
   title: string;
   content: string;
-  metadata: { triggers?: string[]; scenario?: string; subjects?: string[]; subject_all?: boolean } | null;
+  metadata: { triggers?: string[]; scenario?: string; subjects?: string[]; subject_all?: boolean;
+    report_template?: string } | null;
   related_tables: string;
   priority: number;
   usage_count: number;
@@ -42,10 +46,18 @@ interface KnowledgeItem {
 /** 主体候选（本体对象）：选择框数据源，显示业务名、value 用内部 key。 */
 interface SubjectOption { key: string; name: string; model_name: string; kind: string }
 
+/**
+ * 报告模板候选：只带业务名与形状，不带字模 id。
+ * 场景绑定的口径就是名字（服务端按名字解析，id 随环境漂移），拿不到 id 是有意为之：
+ * 递过去就会有人手填它（后端也会直接 422 拒 id）。
+ */
+interface ReportTemplateOption { name: string; format: string; usable: boolean; sections: number }
+
 interface FormData {
   title: string;
   triggers: string;       // 逗号分隔的触发词
   scenario: string;       // 适用场景
+  report_template: string; // 绑定的报告模板（业务名，命中该场景时按它的版式出报告）
   content: string;        // 查询步骤说明（注入 AI 取数上下文的正文）
   related_tables: string;
   subjects: string[];     // 绑定的主体（本体对象 key）
@@ -58,6 +70,7 @@ const DEFAULT_FORM: FormData = {
   title: '',
   triggers: '',
   scenario: '',
+  report_template: '',
   content: '',
   related_tables: '',
   subjects: [],
@@ -65,6 +78,8 @@ const DEFAULT_FORM: FormData = {
   priority: 0,
   is_active: true,
 };
+
+const NO_TEMPLATE = '__none__';
 
 const splitTriggers = (s: string): string[] =>
   s.split(/[,，]/).map(t => t.trim()).filter(Boolean);
@@ -83,6 +98,9 @@ export default function AnalysisScenarios() {
   // 主体候选清单与加载态：拉不到就不能让人手输 object_key（宁可显式报错重试）
   const [subjects, setSubjects] = useState<SubjectOption[]>([]);
   const [subjectsError, setSubjectsError] = useState('');
+  // 报告模板候选与加载态：同一口径 —— 拉不到就显式报错重试，不让人手填模板名或 id
+  const [reportTemplates, setReportTemplates] = useState<ReportTemplateOption[]>([]);
+  const [reportTemplatesError, setReportTemplatesError] = useState('');
 
   const [PAGE_SIZE, setPageSize] = useState(DEFAULT_PAGE_SIZE);
 
@@ -126,6 +144,20 @@ export default function AnalysisScenarios() {
 
   useEffect(() => { loadSubjects(); }, [loadSubjects]);
 
+  // 报告模板候选：走本域 `/admin/knowledge/report-templates`（配场景的读码就能拿），
+  // 不走 `/reports/templates` —— 那要「报告模板」菜单权限，配场景的人不一定有。
+  const loadReportTemplates = useCallback(async () => {
+    setReportTemplatesError('');
+    try {
+      const { data } = await client.get('/admin/knowledge/report-templates');
+      setReportTemplates(Array.isArray(data?.items) ? data.items : []);
+    } catch (e: any) {
+      setReportTemplatesError(e?.response?.data?.detail || '报告模板清单加载失败，请重试');
+    }
+  }, []);
+
+  useEffect(() => { loadReportTemplates(); }, [loadReportTemplates]);
+
   // ── Form handling ────────────────────────────────────────────────
 
   const openCreate = () => {
@@ -140,6 +172,7 @@ export default function AnalysisScenarios() {
       title: item.title,
       triggers: (item.metadata?.triggers || []).join(', '),
       scenario: item.metadata?.scenario || '',
+      report_template: item.metadata?.report_template || '',
       content: item.content,
       related_tables: item.related_tables || '',
       subjects: item.metadata?.subjects || [],
@@ -149,6 +182,11 @@ export default function AnalysisScenarios() {
     });
     setFormOpen(true);
   };
+
+  // 当前绑定值不在候选里（模板被下架/改名）：必须当场看得见，不能从下拉里静默消失
+  // 让人以为“没绑过”，保存时又被服务端拦下却不知道为什么。
+  const boundMissing = !!form.report_template
+    && !reportTemplates.some(t => t.name === form.report_template);
 
   const handleSave = async () => {
     if (!form.title.trim() || !form.content.trim()) {
@@ -166,13 +204,15 @@ export default function AnalysisScenarios() {
     }
     setSaving(true);
     try {
-      const metadata = {
+      const metadata: Record<string, any> = {
         triggers: splitTriggers(form.triggers),
         scenario: form.scenario.trim(),
         // 主体授权的唯一声明：服务端拿它算“哪些角色能看见/能命中”
         subjects: form.subject_all ? [] : form.subjects,
         subject_all: form.subject_all,
       };
+      // 没绑模板就不往 metadata 里写空键（旧数据里多一个意义不明的字段）
+      if (form.report_template.trim()) metadata.report_template = form.report_template.trim();
       const payload: any = {
         workspace_id: 0,
         datasource_id: 0,
@@ -300,6 +340,13 @@ export default function AnalysisScenarios() {
                       {noTrigger && (
                         <p className="mt-0.5 pl-5 text-xs text-amber-600">未配置触发词，该场景不会被命中</p>
                       )}
+                      {/* 绑了哪个报告模板属于配置事实，要能在清单里扫到（不然只能逐条开弹窗看） */}
+                      {item.metadata?.report_template && (
+                        <p className="mt-0.5 pl-5 text-xs text-muted-foreground"
+                          title="命中该场景时按此模板的版式出报告">
+                          报告模板：{item.metadata.report_template}
+                        </p>
+                      )}
                     </td>
                     <td className="px-4 py-2 min-w-0">
                       <span className="text-sm" title={`场景按所绑主体授权：角色对该主体有数据源权限才能看到与命中它`}>{subjectText}</span>
@@ -381,6 +428,48 @@ export default function AnalysisScenarios() {
                 onChange={e => setForm(f => ({ ...f, scenario: e.target.value }))}
                 placeholder="简述这类问题何时出现（可选）"
               />
+            </div>
+            <div>
+              <Label>报告模板（可选）</Label>
+              {/* 场景绑定模板 = 命中该场景时按模板版式出报告。选择框只给业务名（候选走本域接口），
+                  不让人手填字模 id：id 随环境漂移，“绑了个读不到的模板”最后会变成问答里的
+                  静默回落（管理员看见“已绑定”，用户看见“没套用”）。 */}
+              {reportTemplatesError ? (
+                <div className="mt-1 flex items-center gap-2 text-xs text-destructive">
+                  {reportTemplatesError}
+                  <Button variant="outline" size="sm" className="h-6 text-xs"
+                    onClick={loadReportTemplates}>重试</Button>
+                </div>
+              ) : (
+                <Select value={form.report_template || NO_TEMPLATE}
+                  onValueChange={v => setForm(f => ({
+                    ...f, report_template: v === NO_TEMPLATE ? '' : v,
+                  }))}>
+                  <SelectTrigger className="mt-1 w-full" aria-label="报告模板">
+                    <SelectValue placeholder="不绑定（按通用报告骨架出稿）" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_TEMPLATE}>不绑定（按通用报告骨架出稿）</SelectItem>
+                    {reportTemplates.map(t => (
+                      <SelectItem key={t.name} value={t.name}>
+                        {t.name}{t.usable ? '' : '（未登记版式，只有示例正文）'}
+                      </SelectItem>
+                    ))}
+                    {reportTemplates.length === 0 && (
+                      <SelectItem value="__empty__" disabled>没有可用模板（可先到「报告模板」配置页新建）</SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+              )}
+              <p className="text-xs text-muted-foreground mt-1">
+                绑定后：命中本场景的回合会把该模板的章节与图位写成版式契约交给 AI（数值仍一律取本轮查询）；
+                模板被下架/读不到时会在回答里显式说明，不会默默换个版式。
+              </p>
+              {boundMissing && (
+                <p className="mt-1 text-xs text-amber-600">
+                  当前绑定的「{form.report_template}」不在可用模板清单里（可能已下架或改名），请换一个或改为不绑定。
+                </p>
+              )}
             </div>
             <div>
               <Label>主体范围 *</Label>

@@ -35,8 +35,11 @@ const groupBoard = (id: number, status: Dashboard['status'] = 'enabled', is_defa
   editable: id !== 4, owner_id: id === 4 ? 1 : 9,
   updated_at: '2026-10-01T08:00:00', preview: { width: 1920, height: 1080, charts: [{ id: 11, chart_type: 'bar', position: { x: 40, y: 40, w: 600, h: 400 } }] },
 });
-const groupsFixture = (opts?: { defaultId?: number | null }) => ([
-  { id: 7, name: '经营组', description: '', sort: 0, dashboards: [groupBoard(1, 'closed', opts?.defaultId === 1), groupBoard(2, 'enabled', opts?.defaultId === 2), groupBoard(3, 'enabled', opts?.defaultId === 3 || opts?.defaultId === undefined)] },
+// 组内数组顺序 = 管理端「组合内看板」的编排顺序（服务端按 adh_dashboard_group_items.sort 下发）。
+// 故意把「默认看板」(看板 3) 排在第 2 位：锁定“编排首位说了算、is_default 不再抢位”，
+// 同时 sort 取上移/下移写入的真实值（(i+1)*10）而不是清一色 0。
+const groupsFixture = () => ([
+  { id: 7, name: '经营组', description: '', sort: 10, dashboards: [groupBoard(1, 'closed'), groupBoard(2), groupBoard(3, 'enabled', true)] },
   { id: 0, name: '未分组', description: '', sort: 9999, dashboards: [groupBoard(4)] },
 ]);
 function Path() { const location = useLocation(); return <output data-testid="path">{location.pathname}{location.search}</output>; }
@@ -96,16 +99,37 @@ describe('工作空间数据看板 — 组合卡片清单', () => {
     expect(within(card).getByRole('button', { name: '看板 2' })).toBeInTheDocument();
     expect(within(card).getByRole('button', { name: '大屏轮播 经营组' })).toBeInTheDocument();
   });
-  it('点组合卡直接进入组内看板详情（默认看板优先），不再中间插一层看板卡', async () => {
+  it('组合卡与组内快捷项严格跟随服务端目录顺序（前端不按 id/名称二次重排）', async () => {
+    vi.mocked(client.get).mockImplementation(async url => {
+      if (url === '/dashboard/groups/visible') return { data: [
+        // 目录已按管理端 sort 出序: 后建的 8 组排在 7 组前, 组内 3 号板排在 2 号前
+        { id: 8, name: 'B 组合', description: '', sort: 10, dashboards: [groupBoard(3), groupBoard(2)] },
+        { id: 7, name: 'A 组合', description: '', sort: 20, dashboards: [groupBoard(1)] },
+        { id: 0, name: '未分组', description: '', sort: 9999, dashboards: [] },
+      ] };
+      const m = /^\/dashboard\/(\d+)$/.exec(url);
+      if (m) return { data: board(Number(m[1])) };
+      return { data: [] };
+    });
+    routes('/ws/7/dashboards');
+    await screen.findByRole('button', { name: '进入组合 B 组合' });
+    expect(screen.getAllByRole('button', { name: /^进入组合/ }).map(b => b.getAttribute('aria-label')))
+      .toEqual(['进入组合 B 组合', '进入组合 A 组合']);
+    const card = screen.getByRole('button', { name: '进入组合 B 组合' }).closest('article')!;
+    expect(within(card).getAllByRole('button').map(b => b.textContent).filter(t => t === '看板 3' || t === '看板 2'))
+      .toEqual(['看板 3', '看板 2']);
+  });
+  it('点组合卡直接进入编排首位看板（「默认」不再抢位），不再中间插一层看板卡', async () => {
     routes('/ws/7/dashboards');
     fireEvent.click(await screen.findByRole('button', { name: '进入组合 经营组' }));
-    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/3'));
+    // 看板 1 未启用被跳过, 看板 3 虽是默认但排第 2 位 → 入口是编排首位的看板 2
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/2'));
     await screen.findByText('响应式网格');
   });
-  it('组合卡轮播起点与“进入看板”是同一块屏，并携带 group', async () => {
+  it('组合卡轮播起点与“进入看板”是同一块屏（同为编排首位），并携带 group', async () => {
     routes('/ws/7/dashboards');
     fireEvent.click(await screen.findByRole('button', { name: '大屏轮播 经营组' }));
-    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/screen/3?group=7&from='));
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/screen/2?group=7&from='));
   });
   it('组合卡内的看板快捷项直达对应看板详情', async () => {
     routes('/ws/7/dashboards');
@@ -178,9 +202,9 @@ describe('工作空间数据看板 — 组合卡片清单', () => {
 });
 
 describe('组合入口路由 — 直接跳看板详情', () => {
-  it('/ws/7/dashboards/group/7 重定向到组内默认看板', async () => {
+  it('/ws/7/dashboards/group/7 重定向到组内编排首位看板', async () => {
     routes('/ws/7/dashboards/group/7');
-    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/3'));
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/2'));
     await screen.findByText('响应式网格');
   });
   it('未分组（id=0）能正常进入，不被当成缺失', async () => {
@@ -203,9 +227,9 @@ describe('组合入口路由 — 直接跳看板详情', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('组合「试运行组」里还没有可看的看板');
     expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/group/5');
   });
-  it('旧组合链接 /dashboards/<groupId> 最终落到该组合的看板详情', async () => {
+  it('旧组合链接 /dashboards/<groupId> 最终落到该组合的编排首位看板', async () => {
     routes('/dashboards/7');
-    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/3'));
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/2'));
   });
 });
 
@@ -432,8 +456,8 @@ describe('看板管理域与大屏播放', () => {
     expect(within(card!).getByText('每日经营盘面')).toBeInTheDocument();
     expect(within(card!).getByText('1 个看板')).toBeInTheDocument();
     expect(within(card!).getByText('1 个角色')).toBeInTheDocument();
-    // 组内成员与角色显示业务名（不是裸 id），卡片网格与看板卡同一几何口径
-    expect(within(card!).getByText('看板：看板 21')).toBeInTheDocument();
+    // 组内成员与角色显示业务名（不是裸 id），卡片网格与看板卡同一几何口径；序号就是编排顺序
+    expect(within(card!).getByText('看板：1. 看板 21')).toBeInTheDocument();
     expect(within(card!).getByText('角色：数据分析师')).toBeInTheDocument();
     expect(within(card!).queryByText(/\d{3,}/)).not.toBeInTheDocument();
     expect(container.querySelector('section > div.grid')).toBeTruthy();

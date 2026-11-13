@@ -145,7 +145,9 @@ def _chart_preview_rect(position, widget: bool) -> tuple:
 def card_catalog_fields(rows: list) -> list:
     """就地补齐看板目录行的「卡片瀑布清单」共享字段(可缓存, 与查看者无关)。
 
-    补: description / updated_at(ISO) / chart_count(数据图表数) / preview(画布尺寸 + 每图摘要)。
+    补: description / updated_at(ISO) / chart_count(数据图表数) / tags(自由标签) / preview(画布尺寸 + 每图摘要)。
+    tags 必须随目录下发：工作空间「数据看板」的组合内筛选靠它，缺了这个字段
+    前端只能按名字模糊找（看板一多就翻不动）。
     预览**只回几何与布局数据**，不含 SQL、语义查询、样式配置与数据行 —— 清单页不需要,
     浏览域响应也不该把口径带出去(护栏 §7); 原始 filters 用完即剔除。
 
@@ -169,6 +171,8 @@ def card_catalog_fields(rows: list) -> list:
                 if isinstance(design.get("page"), dict):
                     page = {k: v for k, v in design["page"].items() if k in ("version", "gap")}
         row["description"] = row.get("description") or ""
+        # JSON 列经 pymysql 回读为字符串, 与 get_dashboard 同一归一口径(字符串数组, 去空去重)
+        row["tags"] = _clean_tags(row.get("tags"))
         if hasattr(row.get("updated_at"), "isoformat"):
             row["updated_at"] = row["updated_at"].isoformat()
         row["preview"] = {"width": _geo_num(canvas.get("width"), 1920.0),
@@ -747,7 +751,7 @@ def _clear_default(user_id: int, workspace_id: int = 0):
 # 「看板长什么样 / 有哪些组」的共享载荷 + 用户角色归属(仅用于分组编排,
 # 不授予任何看板可见性)。写路径显式失效(_invalidate_dashboard_payload),
 # 短 TTL 兑底防漏失效。
-CARDS_KEY = "dash:cards:v3"            # 共享: 目录行 + 卡片预览摘要（v3: blocks → charts 摘要）
+CARDS_KEY = "dash:cards:v4"            # 共享: 目录行 + 卡片预览摘要（v4: 补 tags 下发; v3: blocks → charts 摘要）
 GROUPS_KEY = "dash:groups:v2"          # 共享: 组 + 组内看板 + 组→角色绑定
 DETAIL_KEY = "dash:detail:{}"          # 共享: 单看板完整载荷(charts 含 data_cache)
 USER_ROLES_KEY = "dash:user_roles:{}"  # 按用户: 角色 id 集(仅分组编排用)
@@ -948,7 +952,7 @@ def _card_rows() -> list:
     def build():
         from backend.common.db import execute_query
         rows = execute_query(
-            "SELECT id, name, description, status, is_default, sort_order, updated_at, owner_id, filters "
+            "SELECT id, name, description, status, is_default, sort_order, updated_at, owner_id, filters, tags "
             "FROM adh_dashboards ORDER BY is_default DESC, sort_order, id") or []
         return card_catalog_fields(rows)
     return dashboard_cache.get_or_set(CARDS_KEY, build, ttl=PAYLOAD_TTL) or []
@@ -1014,16 +1018,52 @@ def build_visible_groups(user_id: int, user_role: str = "") -> list:
                  for g in struct["role_groups"].get(str(rid), [])}
         groups = [g for g in struct["groups"] if int(g["id"]) in bound]
     out, grouped_ids = [], set()
+    cards_by_id = {int(c["id"]): c for c in cards}
     for g in groups:
-        member_ids = set(struct["items"].get(str(g["id"]), []))
-        member_ids &= {c["id"] for c in cards}
+        # 组内顺序 = 管理端编排顺序(adh_dashboard_group_items.sort, _groups_structure 已按 sort 读出)。
+        # 不得回退成按目录全局序(is_default→sort_order)过滤: 那样管理员在组合里排出来的顺序
+        # 会被抹平, 点组合进哪块板 / 组内切换条左右 / 大屏轮播依次播放全都对不上编排意图。
+        # 可见集只做交集过滤(fail-closed), 不改变相对次序。
+        ordered = [cards_by_id[int(did)] for did in struct["items"].get(str(g["id"]), [])
+                   if int(did) in cards_by_id]
+        member_ids = {int(c["id"]) for c in ordered}
         grouped_ids |= member_ids
         out.append({"id": g["id"], "name": g["name"], "description": g.get("description") or "",
                     "sort": g.get("sort") or 0,
-                    "dashboards": [c for c in cards if c["id"] in member_ids]})
+                    "dashboards": ordered})
     out.append({"id": 0, "name": "未分组", "description": "未加入任何仪表盘组的可见看板",
                 "sort": 9999, "dashboards": [c for c in cards if c["id"] not in grouped_ids]})
     return out
+
+
+def reorder_groups(orders: list) -> bool:
+    """更新仪表盘组展示顺序(管理端「看板组合」卡片上移/下移)。
+
+    只写 sort 一列: 整行 UPDATE 会把 name/description 抹成空值(与既有「幂等 upsert 覆盖列」
+    同一类缺陷), 顺序本身也是编排的一部分, 逐条按 id 定位才谈得上可诊断。
+    顺序写在库里即数据事实, 不做「前端本地排序兜底」—— 写失败必须抛出给管理员看。
+    """
+    if not orders:
+        return True
+    from backend.common.db import execute_query
+    # 存在性只能靠 SELECT 判：MySQL 对「值未变的行」UPDATE 回 0 行，拿 rowcount 当存在性
+    # 会把“原样重提交/部分未变”误报成组合不存在（与 update_group 同一历史坑）。
+    known = {int(r["id"]) for r in (execute_query("SELECT id FROM adh_dashboard_groups") or [])}
+    missing = [int(item.get("id") or 0) for item in orders if int(item.get("id") or 0) not in known]
+    if missing:
+        # 组合已被别人删掉：静默跳过会让这次排序整体丢一半，必须报错提醒重试
+        raise ValueError(f"{len(missing)} 个仪表盘组已不存在，排序未保存，请刷新后重试")
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            for item in orders:
+                cur.execute("UPDATE adh_dashboard_groups SET sort=%s WHERE id=%s",
+                            (int(item.get("sort", 0) or 0), int(item["id"])))
+        conn.commit()
+        _invalidate_dashboard_payload()
+        return True
+    finally:
+        conn.close()
 
 
 def refresh_designed_chart(chart, user_id):

@@ -141,12 +141,16 @@ def deletion_store(tmp_path, monkeypatch):
                          'owner_start': sessions.process_identity(os.getpid())},
              # 拆行消息表：会话存在时就有行，删除必须把它带走（哨兵值便于断言"真删了"）
              'conversation_messages': {'conversation_id': 10},
+             # 交付文档（adh_render_documents）与会话同生命周期：报告正文外置在这里，
+             # 不随会话删除清掉就是越权面（新会话拿不到 id，但存量行永远留着内容）
+             'render_documents': {'conversation_id': 10},
              'log': [], 'commits': 0}
 
     class Connection:
         def __enter__(self):
             self.tx = copy.deepcopy(
-                {k: state[k] for k in ('conversation', 'session', 'conversation_messages')})
+                {k: state[k] for k in ('conversation', 'session', 'conversation_messages',
+                                       'render_documents')})
             return self
 
         def __exit__(self, exc_type, *_):
@@ -193,6 +197,10 @@ def deletion_store(tmp_path, monkeypatch):
             elif sql.startswith('DELETE FROM adh_conversation_messages'):
                 # 拆行消息表必须随会话一起清（只删会话行会留孤儿正文）
                 tx['conversation_messages'] = None
+            elif sql.startswith('DELETE FROM adh_render_documents'):
+                # 交付文档同样按 conversation_id 带走（不带会话条件就是跨会话误删）
+                assert params and int(params[0]) == 10
+                tx['render_documents'] = None
             else:
                 raise AssertionError(sql)
 
@@ -214,6 +222,7 @@ def test_delete_conversation_cleans_only_its_session(deletion_store, status):
     assert (root.parents[4] / '.storage-node').exists()
     assert state['session'] is None and state['conversation'] is None
     assert state['conversation_messages'] is None, "拆行消息没随会话删除（会留孤儿正文）"
+    assert state['render_documents'] is None, "交付文档没随会话删除（报告正文成为孤儿数据）"
     assert chat.delete_conversation(10, {'user_id': 7}) == {'success': True}
 
 

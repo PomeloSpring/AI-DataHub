@@ -395,15 +395,19 @@ def check_password(password: str, pw_hash: str) -> bool:
 def log_audit(user_id: int, username: str, action: str,
               target_type: str = "", target_id: int = 0,
               detail: str = "", ip_address: str = "", module: str = ""):
-    """Write an audit log entry."""
+    """Write an audit log entry.
+
+    `id` 不自己生成：`adh_audit_logs.id` 本来就是 auto_increment，拿毫秒时间戳强占主键
+    只会让同毫秒的第二条写入 duplicate-key，再被下面的 `except` 吞成 warning（审计行丢）。
+    """
     try:
         with _get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO adh_audit_logs "
-                    "(id, user_id, username, action, target_type, target_id, detail, ip_address, module, created_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (_ts_id(), user_id, username, action, target_type, target_id,
+                    "(user_id, username, action, target_type, target_id, detail, ip_address, module, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (user_id, username, action, target_type, target_id,
                      detail, ip_address, module, _now_str()),
                 )
             conn.commit()

@@ -126,7 +126,9 @@ export default function ReportDraftEditor({ draft, onClose, onSave, onArchive, b
                 <span className="ml-auto text-[10px]">{markdown.length} 字</span>
               </span>
               <p className="text-xs text-muted-foreground">
-                正文取自本轮交付的《{draft.artifact?.filename || 'HTML 报告'}》，归档后在报告中心按 HTML 渲染。
+                正文取自{draft.document
+                  ? '本轮交付的报告文档（与对话里那份同源）'
+                  : `本轮交付的《${draft.artifact?.filename || 'HTML 报告'}》`}，归档后在报告中心按 HTML 渲染。
                 要改内容请回对话让 AI 重新生成该报告（把整份 HTML 当纯文本改会丢样式与图表）。
               </p>
               <iframe

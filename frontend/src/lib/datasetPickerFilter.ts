@@ -20,20 +20,11 @@ export const DATASET_KIND_LABELS: Record<string, string> = {
 
 const KIND_ORDER = ['sql', 'semantic', 'es'];
 
-/**
- * ES 通道的筛选值与显示名。
- *
- * ES 型数据集不挂在 `adh_datasources` 上，拿数据源 id 永远筛不到它（历史缺口：
- * 卡片上写着「内置 Elasticsearch 通道」，数据源下拉里却没有这一项）。
- * 文案与后端 `dataset_service._ES_CHANNEL_LABEL` 保持一致；服务端对应 `?channel=es`。
- */
-export const ES_SOURCE_VALUE = 'es';
-export const ES_SOURCE_LABEL = '内置 Elasticsearch 通道';
-
 export interface DatasetFilterState {
   /** 关键词：空白分词，多词按 AND 命中 */
   keyword: string;
-  /** 数据源业务名（''=全部）；`ES_SOURCE_VALUE` = 只看 ES 通道，与具体源互斥 */
+  /** 数据源业务名（''=全部）。ES 型数据集就挂在 ES 型数据源上，因此源选项天然涵盖它，
+   *  不再有“内置通道”这种不挂源的第二维度（那一维随阶段三退役） */
   source: string;
   /** 通道类型 sql|semantic|es（''=全部） */
   kind: string;
@@ -43,11 +34,21 @@ export interface DatasetFilterState {
 
 export const EMPTY_DATASET_FILTER: DatasetFilterState = { keyword: '', source: '', kind: '', onlyUsable: false };
 
-/** 通道类型判别与后端 `is_es_dataset` 同口径（source_type='es' 或登记了索引模式） */
+/**
+ * 通道类型判别：只看后端下发的**执行通道位** `is_es`（= 取数分派用的 `execution_is_es`，
+ * 事实源是执行数据源的 db_type）。
+ *
+ * 旧写法是 `source_type==='es' || es_pattern 非空`：前者是已退役内置通道的行形状标记，
+ * 后者是它的残留字段——拿它们当判据会把 ES 数据源型数据集认成 SQL 集，
+ * 于是预览照旧发维度/度量重聚合而被护栏显式拒（同一份数据在看板上能出、在这里必失败）。
+ */
 export function datasetKindOf(ds: any): string {
+  if (ds?.is_es) return 'es';
   const st = String(ds?.source_type || '').toLowerCase();
-  if (st === 'es' || String(ds?.es_pattern || '').trim()) return 'es';
-  return st || 'sql';
+  if (st === 'semantic' || st === 'both') return st;
+  // 'es' 这个已退役的枚举取值故意不承认：否则前端就又长出一套“拿标记当通道”的判据，
+  // 与取数分派不同源（那种行现在根本存不进来：写入被后端显式拒）
+  return 'sql';
 }
 
 const fieldLabelsOf = (ds: any): string[] => {
@@ -60,10 +61,10 @@ const fieldLabelsOf = (ds: any): string[] => {
     ? [f.label, f.name, f.field].filter(Boolean) : [f]);
 };
 
-/** 参与关键词命中的全部业务文本（名称/描述/业务对象/预设类型/字段业务名/源名/索引模式） */
+/** 参与关键词命中的全部业务文本（名称/描述/业务对象/预设类型/字段业务名/源名） */
 export function datasetSearchText(ds: any): string {
   return [
-    ds?.name, ds?.description, ds?.object_key, ds?.chart_type, ds?.es_pattern, ds?.datasource_name,
+    ds?.name, ds?.description, ds?.object_key, ds?.chart_type, ds?.datasource_name,
     ...(ds?.available_source_names || []), ...(ds?.usable_now || []), ...fieldLabelsOf(ds),
   ].filter(Boolean).map(v => String(v).toLowerCase()).join(' ');
 }
@@ -89,13 +90,9 @@ export function filterDatasets(items: any[], f: DatasetFilterState): any[] {
   const tokens = f.keyword.trim().toLowerCase().split(/\s+/).filter(Boolean);
   return (items || []).filter(ds => {
     if (f.kind && datasetKindOf(ds) !== f.kind) return false;
-    if (f.source) {
-      // 选 ES 通道 = 只看挂在内置检索通道上的数据集
-      if (f.source === ES_SOURCE_VALUE) return datasetKindOf(ds) === 'es';
-      // 选具体源 = 该数据集能在该源上执行（与后端 datasource_id 筛选同口径：ES 不属于任何源）
-      if (datasetKindOf(ds) === 'es') return false;
-      if (!(ds.usable_now || []).includes(f.source)) return false;
-    }
+    // 选具体源 = 该数据集能在该源上执行（与后端 `datasource_id` 筛选同口径：
+    // 都看“可用范围”里有没有这个源，ES 型数据集不再被排除在外）
+    if (f.source && !(ds.usable_now || []).includes(f.source)) return false;
     if (f.onlyUsable && !(ds.usable_now || []).length) return false;
     if (tokens.length) {
       const hay = datasetSearchText(ds);
@@ -105,17 +102,11 @@ export function filterDatasets(items: any[], f: DatasetFilterState): any[] {
   });
 }
 
-/** 数据源筛选项：源名按业务名排序，清单里真有 ES 型数据集时补上 ES 通道一项 */
+/** 数据源筛选项：取自已授权清单里出现过的源业务名，按名排序 */
 export function datasetSourceOptions(items: any[]): string[] {
   const names = new Set<string>();
-  let hasEs = false;
-  (items || []).forEach(ds => {
-    if (datasetKindOf(ds) === 'es') { hasEs = true; return; }
-    (ds.usable_now || []).forEach((n: string) => n && names.add(n));
-  });
-  const sorted = [...names].sort((a, b) => a.localeCompare(b, 'zh-CN'));
-  // ES 排最后：它是兼选通道，不是数据源清单里的一员
-  return hasEs ? [...sorted, ES_SOURCE_VALUE] : sorted;
+  (items || []).forEach(ds => (ds.usable_now || []).forEach((n: string) => n && names.add(n)));
+  return [...names].sort((a, b) => a.localeCompare(b, 'zh-CN'));
 }
 
 /** 类型筛选项：只列清单里出现的通道类型，固定 sql→semantic→es 顺序 */

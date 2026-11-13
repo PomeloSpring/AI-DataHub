@@ -466,13 +466,25 @@ def _remove_session_directory(root):
     shutil.rmtree(root)
 
 
+def _purge_render_documents(cur, conversation_id):
+    """随会话清除交付文档对象（整份报告/图表数据）。
+
+    只删会话行会把正文留成孤儿：它既能按 doc_id 被任何持有者取回（归属按属主
+    判定），又不在会话存储的容量闸门里 —— 不级联清就是隐私与容量双重缺口。
+    走当前事务游标，不跨连接对同行加锁（与会话删除同一原子单元）。
+    """
+    from backend.modules.viz.services import report_document_service as docs
+    docs.purge_conversation_documents(int(conversation_id or 0), cur=cur)
+
+
 def delete_conversation_workspace(conversation_id, user_id):
     """两阶段删除：持久化 deleting → 清理精确会话目录 → 删除映射与会话。
 
     清理失败保留会话和 deleting 状态，用户可重试；换实例/进程重启也不会
     恢复已经部分删除的目录。两阶段均用数据库行锁，不以进程内标志防重。
 
-    拆行消息与会话同事务删除（只删会话行会把历史正文留成没人能定位的孤儿）。
+    拆行消息与交付文档对象与会话同事务删除（只删会话行会把历史正文留成
+    没人能定位的孤儿）。
     """
     if not user_id or int(user_id) <= 0:
         raise HTTPException(401, "缺少可信用户身份")
@@ -500,6 +512,7 @@ def delete_conversation_workspace(conversation_id, user_id):
                 # 非 Agent 会话无独立目录；绝不根据会话 ID 猜目录或删共享空间。
                 cur.execute("DELETE FROM adh_conversations WHERE id=%s AND user_id=%s", (conversation_id, user_id))
                 conversation_store.delete_by_conversation(cur, conversation_id)
+                _purge_render_documents(cur, conversation_id)
                 return {"success": True}
             root = _session_cleanup_root(session)
             if root is None:
@@ -507,6 +520,7 @@ def delete_conversation_workspace(conversation_id, user_id):
                 cur.execute("DELETE FROM adh_agent_sessions WHERE session_key=%s AND user_id=%s", (session["session_key"], user_id))
                 cur.execute("DELETE FROM adh_conversations WHERE id=%s AND user_id=%s", (conversation_id, user_id))
                 conversation_store.delete_by_conversation(cur, conversation_id)
+                _purge_render_documents(cur, conversation_id)
                 return {"success": True}
             if session["status"] != "deleting":
                 cur.execute("UPDATE adh_agent_sessions SET status='deleting',version=version+1,updated_at=UTC_TIMESTAMP(6) "
@@ -539,6 +553,7 @@ def delete_conversation_workspace(conversation_id, user_id):
                     raise HTTPException(409, "目录已清理，会话映射尚未删除，请重试")
             cur.execute("DELETE FROM adh_conversations WHERE id=%s AND user_id=%s", (conversation_id, user_id))
             conversation_store.delete_by_conversation(cur, conversation_id)
+            _purge_render_documents(cur, conversation_id)
     return {"success": True}
 
 

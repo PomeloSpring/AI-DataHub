@@ -131,11 +131,18 @@ def test_sql_and_semantic_channel_attaches_formats():
     _capture_attached(inspect.getsource(svc.query_dataset))
 
 
-def test_es_channel_also_attaches_formats():
-    """ES 分支在定源前 return（它不挂在数据源上），漏挂就等于 ES 数据集永远没格式。"""
+def test_all_branches_share_one_format_attach_point():
+    """格式只在分派后挂一次：任何分支（SQL/语义/ES 数据源）都得经同一个出口。
+
+    旧写法切 `is_es_dataset(ds)` 那段单独断言（内置通道在定源前 return，不挂就等于没格式）；
+    通道退役后 ES 就是普通 SQL 集，这里改锁“全部分派支都在同一个 `field_formats_for` 之上”，
+    再开一条分叉式 just-in-time 补挂的写法就会让某些渲染面静默丢格式。
+    """
     src = inspect.getsource(svc.query_dataset)
-    es_block = src.split("is_es_dataset(ds)", 1)[1].split("\n    if params.get(", 1)[0]
-    assert "field_formats_for" in es_block, "ES 通道未下发字段显示格式"
+    assert src.count("field_formats_for") == 1, "格式下发不得多套实现（多一处就有一处会漏）"
+    assert "_query_sql(ds, params, scopes, identity)" in src and "_query_semantic(" in src
+    assert src.index("_query_sql(") < src.index("field_formats_for"), \
+        "格式必须在取数分派之后统一下发，否则新分支会静默不挂"
 
 
 def test_emitted_payload_is_column_to_token_only():

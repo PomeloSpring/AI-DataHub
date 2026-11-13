@@ -58,6 +58,9 @@ function segmentPlaceholder(seg: ChartSegment): string {
   switch (seg.kind) {
     case 'chart':
       return seg.title ? `【图表：${seg.title}】` : '【图表】';
+    case 'chart-ref':
+      // 渲染机图表：数据在受管对象里（不在消息文本中），同样给可读占位而不漏 id/JSON
+      return seg.title ? `【图表：${seg.title}】` : '【图表】';
     case 'mermaid':
       return seg.title ? `【流程图：${seg.title}】` : '【流程图】';
     case 'graph':
@@ -66,6 +69,13 @@ function segmentPlaceholder(seg: ChartSegment): string {
       return `【文件：${seg.filename}】`;
     case 'design':
       return '【看板设计】';
+    case 'report':
+      // 交付文档正文在受管对象里（不在消息文本中）：复制时给可读占位，
+      // 不把 doc_id / JSON 源码当成“正文”塞给用户
+      return seg.title ? `【整页报告：${seg.title}】` : '【整页报告】';
+    case 'report-pending':
+      // 流式中途复制：文档还没组装完，给进度占位而不是漏 JSON 源码
+      return '【整页报告生成中】';
     case 'sql':
       return seg.code;      // SQL 卡片展示的就是语句本身
     case 'raw':

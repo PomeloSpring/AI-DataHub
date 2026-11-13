@@ -86,11 +86,17 @@ const EMPTY_FORM = {
   cli_path: '',
   env_text: '',
   timeout: 300,
+  // 单轮工具调用上限（执行层 config.max_turns）：空串 = 不写该键，由后端沿用默认 20
+  max_turns: '' as string | number,
   model: '',
   mode: 'process',
   allowed_tools: [] as string[],
   dirs_text: '',
 };
+
+// 与后端 api/execution_layers.py 的 MAX_TOOL_ROUNDS_MIN/MAX 同口径
+const MAX_TOOL_ROUNDS_MIN = 1;
+const MAX_TOOL_ROUNDS_MAX = 200;
 
 export default function ExecutionLayers() {
   const [layers, setLayers] = useState<ExecutionLayer[]>([]);
@@ -192,6 +198,19 @@ export default function ExecutionLayers() {
     if (!form.name) { toast.error('请输入 Harness 名称'); return; }
     if (form.layer_type === 'cli' && !form.cli_name) { toast.error('请选择 CLI 类型'); return; }
 
+    // 轮次上限留空 = 不写该键（后端浅合并会删键 → 回默认 20）。
+    // 0 / 负数会被消费点的 `or` 静默回落成 20（配了等于没配），所以在提交前就拦下来
+    // 并说清取值口径，而不是发上去让界面显示已保存。
+    const rawRounds = String(form.max_turns ?? '').trim();
+    let rounds: number | null = null;
+    if (rawRounds !== '') {
+      rounds = Number(rawRounds);
+      if (!Number.isInteger(rounds) || rounds < MAX_TOOL_ROUNDS_MIN || rounds > MAX_TOOL_ROUNDS_MAX) {
+        toast.error(`单轮工具调用上限必须是 ${MAX_TOOL_ROUNDS_MIN}~${MAX_TOOL_ROUNDS_MAX} 的整数，留空则沿用默认 20 次`);
+        return;
+      }
+    }
+
     const config: Record<string, any> = {};
     if (form.layer_type === 'cli') {
       config.cli_name = form.cli_name;
@@ -199,6 +218,7 @@ export default function ExecutionLayers() {
       // 历史上 `mode=sdk` 就是这样被丢的），所以清空字段必须点名而不是不传。
       config.cli_path = form.cli_path || null;
       config.timeout = form.timeout ? Number(form.timeout) : null;
+      config.max_turns = rounds;
       config.model = form.model || null;
       // 两种 SDK 后端都必须写 mode：以前只在 cli_name==='qoder' 时写，导致 claude 层
       // 从界面上永远配不出可被 AS-BOT 安全执行链接受的层。
@@ -252,6 +272,7 @@ export default function ExecutionLayers() {
       cli_path: l.config?.cli_path || '',
       env_text: l.config?.env ? JSON.stringify(l.config.env) : '',
       timeout: l.config?.timeout || 300,
+      max_turns: l.config?.max_turns ?? '',
       model: l.config?.model || '',
       mode: l.config?.mode === 'sdk' ? 'sdk' : 'process',
       allowed_tools: Array.isArray(l.config?.allowed_tools) ? l.config.allowed_tools : [],
@@ -440,7 +461,7 @@ export default function ExecutionLayers() {
                   </Select>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-4">
                 <div className="space-y-1.5">
                   <Label>可执行文件路径(留空自动查找)</Label>
                   <Input value={form.cli_path} onChange={e => setForm({ ...form, cli_path: e.target.value })} placeholder="/usr/local/bin/qodercli" />
@@ -448,6 +469,17 @@ export default function ExecutionLayers() {
                 <div className="space-y-1.5">
                   <Label>超时(秒)</Label>
                   <Input type="number" value={form.timeout} onChange={e => setForm({ ...form, timeout: e.target.value })} />
+                </div>
+                {/* 轮次上限与超时是一对：上限到点模型仍会产出完整结论 + 可见告警（主动收尾），
+                    跑满超时则是被动中止。只抬一个等于白抬，故同排呈现并给出换算建议。 */}
+                <div className="space-y-1.5">
+                  <Label>单轮工具调用上限(次)</Label>
+                  <Input type="number" min={MAX_TOOL_ROUNDS_MIN} max={MAX_TOOL_ROUNDS_MAX}
+                    value={form.max_turns} onChange={e => setForm({ ...form, max_turns: e.target.value })}
+                    placeholder="默认 20" />
+                  <p className="text-xs text-muted-foreground">
+                    留空沿用默认 20 次；建议 ≤ 超时秒数 × 0.8 ÷ 单次取数耗时，调大超时时同步上调。
+                  </p>
                 </div>
               </div>
               <div className="space-y-1.5">
@@ -532,6 +564,10 @@ export default function ExecutionLayers() {
                   )}
                   {l.layer_type === 'cli' && l.config?.model && (
                     <Badge variant="outline" className="mr-2">模型: {l.config.model}</Badge>
+                  )}
+                  {/* 只在显式配过时显示：未配就是默认 20，逐条挂一个默认值 Badge 没有信息量 */}
+                  {l.config?.max_turns != null && (
+                    <Badge variant="outline" className="mr-2">单轮工具调用上限: {l.config.max_turns}</Badge>
                   )}
                   {Array.isArray(l.config?.allowed_tools) && l.config.allowed_tools.length > 0 && (
                     <Badge variant="outline" className="mr-2">工具白名单: {l.config.allowed_tools.length}</Badge>

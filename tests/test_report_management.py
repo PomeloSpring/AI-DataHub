@@ -273,7 +273,7 @@ def test_delete_report_owner_only_and_data_derived_guard(monkeypatch):
 
 
 def test_delete_report_removes_whole_series(monkeypatch):
-    """删一份报告 = 删它的全部历史版本（含重跑追加的分析版），不留孤儿卡片。
+    """``scope=series``（卡片上的垃圾桶）= 删它的全部历史版本（含重跑追加的分析版），不留孤儿卡片。
 
     历史缺陷：卡片身份取最新一版时，只删 latest 会把原始会话报告留下、卡片仍在。
     归集口径只认 series_key：同键的属主行一起删。
@@ -291,10 +291,45 @@ def test_delete_report_removes_whole_series(monkeypatch):
     monkeypatch.setattr(reports, "drop_report_content", lambda row: dropped.append(row["content_object_key"]))
     monkeypatch.setattr("backend.common.db.execute_write",
                         lambda sql, params=(): written.append(params[0]) or 1)
-    out = reports.delete_report(1, OWNER)
-    assert out["deleted"] == 2                       # base + 重跑版，unrelated 不牵连
+    out = reports.delete_report(1, OWNER, scope="series")
+    assert out["deleted"] == 2 and out["remaining"] == 0   # base + 重跑版，unrelated 不牵连
     assert set(written) == {1, 2}
     assert set(dropped) == {"k/1", "k/2"}
+
+
+def test_delete_report_version_scope_keeps_the_other_versions(monkeypatch):
+    """默认只删路径里这一版：选中 v3 点删除不得把整份报告连 v1/v2 一起带走（用户实拍）。
+
+    同时回下剩余版本数与新的基线版（卡片身份那一版），调用方据此把后果说到确认文案里。
+    """
+    base = _content_report(id=1, title="全国页面访问统计", source_type="conversation",
+                           content_object_key="k/1")
+    child = {"id": 2, "owner_id": 7, "task_id": None, "log_id": None, "title": base["title"],
+             "source_type": "analysis", "content_object_key": "k/2",
+             "analysis_source": {"refresh_series": "report:1"}}
+    grand = {"id": 3, "owner_id": 7, "task_id": None, "log_id": None, "title": base["title"],
+             "source_type": "analysis", "content_object_key": "k/3",
+             "analysis_source": {"refresh_series": "report:1"}}
+    monkeypatch.setattr(reports, "load_report", lambda rid: dict(grand))
+    monkeypatch.setattr("backend.common.db.execute_query", lambda sql, params=(): [base, child, grand])
+    dropped, written = [], []
+    monkeypatch.setattr(reports, "drop_report_content", lambda row: dropped.append(row["content_object_key"]))
+    monkeypatch.setattr("backend.common.db.execute_write",
+                        lambda sql, params=(): written.append(params[0]) or 1)
+    out = reports.delete_report(3, OWNER)
+    assert written == [3] and dropped == ["k/3"]
+    assert out["scope"] == "version" and out["deleted"] == 1
+    assert out["remaining"] == 2 and out["remaining_base_id"] == 1
+
+    # 删掉最早一版（原始报告）后基线换人：卡片身份改按剩余最早版算，得把新基线回给调用方
+    monkeypatch.setattr(reports, "load_report", lambda rid: dict(base))
+    written.clear(); dropped.clear()
+    out2 = reports.delete_report(1, OWNER)
+    assert out2["remaining"] == 2 and out2["remaining_base_id"] == 2
+
+    # 范围写错不得默默当成某一档：报错并给可选值
+    with pytest.raises(ValueError, match="删除范围"):
+        reports.delete_report(1, OWNER, scope="all")
 
 
 # ── 3. 会话存报告（正文只从服务端已落库会话读）─────────────────────────────────

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
-  FileEdit, Inbox, Tags, LogOut, Menu, Palette, X, ChevronLeft, ChevronRight, Compass, ShieldCheck,
+  FileEdit, Inbox, Tags, LogOut, Menu, Palette, X, ChevronLeft, ChevronRight, Compass,
   FolderTree, type LucideIcon
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -20,6 +20,7 @@ import ReleaseNotesButton from './ReleaseNotesButton';
 import { TOUR } from '@/lib/onboarding/guides';
 import { useGuideStore } from '../stores/guideStore';
 import { useMenuAccess } from '../hooks/useMenuAccess';
+import { useHasPerm } from '../stores/permissionStore';
 import { SidebarMenuSkeleton } from './SidebarMenuSkeleton';
 import { pruneEmptySections } from '@/lib/menuUtils';
 import ThemeMenuItems from './ThemeMenuItems';
@@ -40,12 +41,13 @@ interface ContentMenuItem {
 }
 
 // 内容中心只管 创作 → 审核 → 发布；资讯门户是独立模块（尚未开发），不在这里给入口。
+// 「审核发布」已于 2026-11-13 并入「内容管理」（审核与发布只是状态区别，都在行上发生）：
+// 菜单登记同步置为 is_active=0，待审角标改挂在内容管理上。
 const CONTENT_MENU_ITEMS: ContentMenuItem[] = [
   { section: '我的工作台' },
   { key: '/content/drafts', menu: 'content:drafts', icon: FileEdit, label: '我的草稿' },
   { section: '内容生产' },
   { key: '/content/manage', menu: 'content:manage', icon: Inbox, label: '内容管理' },
-  { key: '/content/review', menu: 'content:review', icon: ShieldCheck, label: '审核发布' },
   { section: '编排配置' },
   { key: '/content/taxonomy', menu: 'content:taxonomy', icon: Tags, label: '栏目与标签' },
   // 知识运营：知识库是一个目录，这里看/改目录里的文档（kbdoc:*）；
@@ -73,10 +75,13 @@ export default function ContentLayout() {
   useEffect(() => { setMobileMenuOpen(false); }, [location.pathname]);
 
   const currentPath = location.pathname;
-  // 待审数角标: 只在拿得到审核权限时请求（无 article:review 的角色不反查队列）
+  // 待审数角标: 只在拿得到审核权限码时请求（无 article:review 的角色不反查队列）。
+  // 判据用权限码而不是菜单 key：页面合并后角标挂在内容管理上，但内容管理对
+  // “只能编草稿”的角色也可见，拿菜单 key 当条件会给没审核权的人白拉一次队列。
+  const canReview = useHasPerm('article:review');
   const [pendingCount, setPendingCount] = useState(0);
   useEffect(() => {
-    if (!menuAccess.allowed('content:review')) { setPendingCount(0); return; }
+    if (!menuAccess.ready || !canReview) { setPendingCount(0); return; }
     let alive = true;
     import('@/api/content').then(({ contentApi }) =>
       contentApi.pendingReviews({ page: 1, page_size: 1 })
@@ -85,7 +90,7 @@ export default function ContentLayout() {
         .catch(() => { if (alive) setPendingCount(-1); })
     );
     return () => { alive = false; };
-  }, [menuAccess, currentPath]);
+  }, [menuAccess, canReview, currentPath]);
 
   // 权限未就绪时渲染骨架（避免无权限项先画出来再抽走）
   const visibleMenu = menuAccess.ready ? pruneEmptySections(
@@ -122,7 +127,7 @@ export default function ContentLayout() {
           >
             <Icon className={`${mobile ? 'h-5 w-5' : 'h-4 w-4'} flex-shrink-0`} />
             {!collapsed || mobile ? <span className="truncate flex-1 text-left">{item.label}</span> : null}
-            {item.menu === 'content:review' && pendingCount !== 0 && (
+            {item.menu === 'content:manage' && pendingCount !== 0 && (
               <span className={`rounded-full px-1.5 text-[10px] leading-4 flex-shrink-0
                 ${isActive ? 'bg-primary-foreground/25 text-primary-foreground' : 'bg-destructive/15 text-destructive'}`}>
                 {pendingCount > 0 ? pendingCount : '·'}

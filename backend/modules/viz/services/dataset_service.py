@@ -1,15 +1,15 @@
-"""Dataset Service — BI 治理建模层（语义对象 × SQL × ES 索引三种定义类型）。
+"""Dataset Service — BI 治理建模层（语义对象 × SQL 双定义）。
 
 语义对象 × SQL 是**双定义**(非二选一): 执行 SQL 是查询的实际执行通道; 本体对象绑定供语义层
 检索/业务口径(字段随本体自动演进)。两者可互相转换:
 - compile_from_semantic: 语义意图 → 编译 SQL(固化为执行定义)
 - extract_from_sql:      执行 SQL 输出列 → 语义字段映射建议(未命中回抛待映射)
 
-ES 型数据集（source_type='es'）是**第三种类型，不参与双定义互转**：它面向平台内置
-Elasticsearch 通道（`core/es_client.py`），按 2026-11-04 产品决策不进治理域（ES SQL 无 JOIN
-与可包裹子查询、sqlglot 无 ES 方言，因此 RLS/列级策略在本通道技术上不可实现），数据面
-闸门 = 部署侧索引模式白名单 ∧ 数据集 `es_pattern` 收窄。详见下方「ES 分支」段与
-`es_client` / `es_tools` 的模块注释。
+ES 不再是独立的定义类型（内置通道已随阶段三退役）：ES 数据集就是 `source_type='sql'`
++ 挂在 `db_type='es'` 的数据源上，**与 SQL 源同一个治理口**（列级屏蔽/脱敏编译进正文、
+行级策略 AND 进顶层 WHERE、审计同样落）。差别只在正文形状与翻页手法：ES SQL 无派生表/
+无 OFFSET，所以不套 `_ds_base` 壳、翻页走 `search_after` 游标（见 `_query_es_on_source`）。
+执行通道判定只有一个口径：`execution_is_es`（与取数分派同源，不得在消费侧另推一套）。
 
 数据集同时是平台内**唯一的"可信任预制 SQL"载体**：语义层编译不出的形状（漏斗/路径
 的两级聚合、窗口函数、自关联）由数据集正文承担，参数与输出列由声明约束；
@@ -19,7 +19,6 @@ Elasticsearch 通道（`core/es_client.py`），按 2026-11-04 产品决策不�
 - 有执行 SQL: 保存即只读校验 → 参数渲染/输出列聚合编译 → 行级 scope 子查询包裹
   → governed_execute(敏感基线+RLS+审计)
 - 仅语义对象: intent → resolve_binding → plan → execute_semantic(七闸门链, 与 Chat 同源)
-- ES 索引: 参数渲染 → `es_client.run_sql`（白名单硬门）; 结果必带 `execution_mode='es'`
   与 `governance` 标注 + 落审计 —— 这是"行为可区分"的强制底线，UI 不标注不等于不记。
 - 身份只信服务端 JWT 解析后传入; 无可信身份 fail-closed(NoIdentityError 向上传播)。
 - 数据集级行范围"只收紧不放宽": 与用户查询条件 AND 合并, 叠加在 RLS/敏感屏蔽之上。
@@ -31,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from typing import Callable
 
 from backend.common.db import execute_query, execute_write
 from backend.core.governed_query import NoIdentityError
@@ -67,6 +67,11 @@ _EXEC_FAIL_HINT_BY_CATEGORY = {
 }
 
 
+# 抛错方自带“已脱敏且面向人”文案的错因类别（与 `semantics.execute.execute_sql` 的透传口径同源）：
+# 这些类别不进 `_EXEC_FAIL_HINT_BY_CATEGORY` 分类，原样下发抛错方的文案。
+_EXEC_PASSTHROUGH_CATEGORIES = ("es_business", "capacity_queue")
+
+
 def _exec_category_of(exc) -> str:
     """从异常上取错因类别（抛错方在原始引擎异常还在手上时已分好）。
 
@@ -91,6 +96,14 @@ def _exec_fail_text(reason: str, db_type: str = "", category: str = "") -> str:
     “连接/凭据不可用，稍后重试”（2026-11-10 现网：两个遗留看板 9 张图就这么被误判）。
     """
     cat = str(category or "").strip()
+    if cat in _EXEC_PASSTHROUGH_CATEGORIES:
+        # 抛错方已声明“文案脱敏且面向人”（`es_client.EsError` / `EsPagingUnsupported` /
+        # `query_gate.QueryQueueTimeout`）：这类文案给的就是可操作下一步（开放范围清单 /
+        # 收窄时间窗 / 关闭数据集分页 / 排队中请稍后重试），再分类套一句通用提示会把
+        # 排查方向指错（no-silent-degradation：可诊断）。
+        # 尤其容量退让不能退成“连接/凭据不可用”：用户看到的应该是“在排队”，
+        # 管理员看到的应该是“可以收紧这个源的并发上限”，而不是去查网络。
+        return str(reason or "").strip() or _EXEC_FAIL_HINT
     if not cat:
         from backend.semantics.contract import classify_exec_failure
 
@@ -130,104 +143,71 @@ def _sql_str(v) -> str:
 # CRUD
 # ═══════════════════════════════════════════════════════════════════
 
-def _derive_source_type(object_key: str, sql_query: str, es_pattern: str = "") -> str:
-    """展示用来源标注(不驱动分支): 双定义并存时为 'both'; ES 型优先判 es。
+def _derive_source_type(object_key: str, sql_query: str) -> str:
+    """展示用来源标注(不驱动分支): 双定义并存时为 'both'。
 
-    ES 与其他类型**不共存**（`validate_es_definition` 会拒掉 object_key），所以 es 命中
-    就直接返回，不再参与 both 组合。
+    ES 型不再是这里的一个取值：内置通道（`source_type='es'`）已随阶段三退役，
+    ES 数据集是 `source_type='sql'` + ES 型数据源，执行通道的判定单一靠 `execution_is_es`。
     """
-    if str(es_pattern or "").strip():
-        return "es"
     has_obj, has_sql = bool(object_key), bool(sql_query)
     return "both" if has_obj and has_sql else ("semantic" if has_obj else "sql")
 
 
-def is_es_dataset(ds: dict) -> bool:
-    """该数据集行是否走 ES 通道（只用 source_type/es_pattern 两个字段判别）。"""
-    row = ds or {}
-    if str(row.get("source_type") or "").strip().lower() == "es":
-        return True
-    return bool(str(row.get("es_pattern") or "").strip())
+def execution_is_es(ds: dict, *, db_type: str | None = None) -> bool:
+    """该数据集的执行通道是否 Elasticsearch —— **判定层、前端与清单筛选的唯一口径**。
 
+    历史缺陷（2026-11-13）：前端拿 `source_type === 'es'`（内置通道标记）判 ES，
+    而 ES 数据源化（阶段二）后存量集都是 `source_type='sql'` + ES 型数据源，该标记恒为 false
+    → 数据集详情页照旧把维度/度量当运行时二次聚合发出去，被 ES 护栏显式拒（同一份数据
+    在看板上能出、在预览里必失败）。判定必须与执行分派同源，不得在消费侧另推一套。
+    内置通道（阶段三第 2 步）退役后，ES 只剩一种形态：挂在 ES 型数据源上的数据集。
 
-def es_channel_state() -> dict:
-    """内置 ES 通道就绪态（直接复用 `builtin_mcp.state_of` 这个单一事实源）。
-
-    不在这里另算一套"通道可用否"：MCP 服务页与数据集页必须同一口径，否则
-    会出现页面 A 说就绪、页面 B 说未配置的漂移。只给结论/原因/数量，不回配置值。
+    `db_type` 供**清单类循环**传入该行的执行源 db_type（调用方一次目录查询已带回）：
+    判据仍是同一个 `adh_datasources.db_type` × `is_es_db_type`，只是不再逐行回库。
+    历史缺陷（2026-11-13 实测）：清单逐行不传时 82 行 = 82 次远端往返，
+    `GET /api/datasets/` 被拖到 3.2s（元数据库在公网另一侧，单程 ~43ms）。
+    传 `""`（源行已删除）与非 ES 同解，与回库查不到的结果一致。
     """
-    from backend.modules.mind.execution import builtin_mcp
+    if db_type is not None:
+        from backend.common.db_types import is_es_db_type
 
-    return builtin_mcp.state_of("elasticsearch")
-
-
-def require_es_channel() -> dict:
-    """通道未就绪即拒（fail-loud），不回空结果。返回就绪态供调用方复用。"""
-    state = es_channel_state()
-    if not state.get("ready"):
-        raise ValueError(
-            f"内置 Elasticsearch 通道当前不可用：{state.get('status_message') or state.get('state')}。"
-            f"该配置由部署侧托管，请联系管理员处理后重试（不要向用户展示空结果当作“没数据”）")
-    return state
+        return is_es_db_type(db_type)
+    return _es_source_dataset(ds)
 
 
-# 能承载数据集取数的**内置 MCP 服务**（viz 侧能力声明：内置 MCP 不止一个，只有登记在此的
-# 才会出现在数据集「通道」筛选里）。key = builtin_mcp 的服务名（= adh_mcp_servers.name，
-# 删除重建 id 会变、name 不变），value = list_datasets 用的规范通道名。
-# 名称/就绪态一律回源 builtin_mcp，不在这里另抄一份文案（防两处漂移）。
-_DATASET_MCP_CHANNELS: dict[str, str] = {"elasticsearch": "es"}
+# 内置 Elasticsearch 通道（`.env` 托管、数据集行用 `source_type='es'` + `es_pattern` 登记）已于
+# 阶段三退役：库里 0 行，通道机件（`config.ES_*`、`es_client.legacy_ctx`、`_query_es`）同批删除。
+# 下面的拒绝口留着是因为**历史调用与旧前端包仍可能递交 `es_pattern`**：静默丢弃会让用户
+# 以为配好了 ES 数据集，实际存成一条普通 SQL 集（no-silent-degradation）。
+_ES_CHANNEL_RETIRED_MESSAGE = (
+    "内置 Elasticsearch 通道已退役（2026-11-13）：ES 现在是正式数据源，行/列权限与审计均按治理口执行。"
+    "请在「数据源」页登记 `db_type=es` 的数据源，并在数据集上选它、把索引别名写进 SQL 正文；"
+    "不要向用户展示空结果当作“没数据”。")
 
 
-def mcp_channel_options() -> list[dict]:
-    """数据集清单「取数通道」筛选的 MCP 服务清单（供选择框渲染：显示用 label，选择用 value）。
+def _reject_builtin_es_request(scene: str = "配置") -> None:
+    """要求走内置 ES 通道的请求显式拒（fail-loud），并给出可行的路。"""
+    raise ValueError(f"无法{scene}内置 Elasticsearch 数据集：{_ES_CHANNEL_RETIRED_MESSAGE}")
 
-    未就绪的服务**照常列出并带原因**：悄悄少一项会让用户读成“没这个通道”，而事实是
-    部署侧没开（no-silent-degradation）。这里不要求 dataset:es——筛选属消费面，
-    受权限把关的是配置面（索引范围/字段清单，见 es_pattern_options）。
-    """
-    from backend.modules.mind.execution import builtin_mcp
 
-    out: list[dict] = []
-    for item in builtin_mcp.catalog():
-        name = str(item.get("name") or "").strip()
-        channel = _DATASET_MCP_CHANNELS.get(name)
-        if not channel:
-            continue
-        state = builtin_mcp.state_of(name)
-        out.append({
-            # value 是给选择框当 key 的实现细节，页面展示只看 label（ui-resource-display §1）
-            "value": f"mcp:{name}",
-            "channel": channel,
-            "server": name,
-            "label": _ES_CHANNEL_LABEL if channel == "es" else (item.get("label") or name),
-            "group": "MCP 服务（内置）",
-            "ready": bool(state.get("ready")),
-            "state": state.get("state") or "",
-            "status_message": state.get("status_message") or "",
-            "open_view_count": int(state.get("open_view_count") or 0),
-        })
-    return out
+# 能承载数据集取数的**内置 MCP 通道**声明已随阶段三退役（`BUILTIN_MCP_SERVICES` 已置空），
+# 因此不再对清单页渲「取数通道」选项。ES 型数据集现在都是普通数据源型，按数据源筛即可。
 
 
 def _canonical_channel_filter(channel: Any) -> str:
-    """把筛选值归一成服务端规范通道名：'' / 'es' / 'mcp:elasticsearch' 都合法。
+    """把「取数通道」筛选值归一：`''` = 不限，`es` = 执行通道为 ES 型数据源。
 
-    未知值显式拒并给出候选，不得静默当“不限”——那会把“筛过了但空清单”误读成“没数据集”。
-    'mcp:<服务名>' 是按 MCP 分维度的写法（前端筛选器按服务分组渲），'es' 是同义旧写法，
-    两者都收：历史调用与用例不因此改口径。
+    `es` 的语义随阶段二/三换过一次内核：以前指内置 MCP 通道（不挂数据源），
+    现在指「正文执行在 ES 型数据源上」，判据用 `execution_is_es`（与取数分派同源）。
+    `mcp:<服务名>` 那套按服务分维度的写法随内置服务下线取消；未知值显式拒并给出候选，
+    不得静默当“不限”——那会把“筛过了但空清单”误读成“没数据集”。
     """
     raw = str(channel or "").strip().lower()
     if raw in ("", "all"):
         return ""
     if raw == "es":
         return "es"
-    valid = ", ".join([f"mcp:{k}" for k in _DATASET_MCP_CHANNELS] + ["es"])
-    if raw.startswith("mcp:"):
-        mapped = _DATASET_MCP_CHANNELS.get(raw.split(":", 1)[1])
-        if mapped:
-            return mapped
-        raise ValueError(f"不支持的取数通道筛选：{channel or '(空)'}；可选 {valid}，或留空表示不限")
-    raise ValueError(f"不支持的取数通道筛选：{channel or '(空)'}；可选 {valid}，或留空表示不限")
+    raise ValueError(f"不支持的取数通道筛选：{channel or '(空)'}；可选 es（执行通道为 ES 型数据源），或留空表示不限")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -237,29 +217,7 @@ def _canonical_channel_filter(channel: Any) -> str:
 # (既有 governed_execute 对 0/None 不做源级 RBAC, 存量行为零变化)。
 _DEFAULT_ENGINE_ID = 0
 _DEFAULT_ENGINE_LABEL = "默认引擎"
-# ES 型数据集的"执行源"位显示的业务可读标注：它不挂在任何数据源上，不得拿
-# "默认引擎"或裸 id 充当名称（ui-resource-display §1）。
-_ES_CHANNEL_LABEL = "内置 Elasticsearch 通道"
-
-
-def _es_patterns_live() -> tuple:
-    """当前部署开放的索引模式白名单（唯一事实源是 config，每次现读不缓存）。"""
-    from backend.core import es_client
-
-    return es_client.allowed_patterns()
-
-
-def es_scope_live(pattern: str) -> bool:
-    """数据集登记的范围当前是否仍可查（通道就绪 ∧ 落在白名单内）。
-
-    必须按 `index_allowed` 的 fnmatch 口径判，**不能拿字面值去比对白名单元组**：
-    数据集登记的是时间片段收窄后的模式（如 `logs-*2026.11`），它被白名单里的
-    `logs-*` 覆盖但不字面相等——用 `in` 会把它误判成"范围已失效"而从清单里掉出去。
-    """
-    from backend.core import es_client
-
-    want = str(pattern or "").strip()
-    return bool(want) and es_client.index_allowed(want)
+# ES 型数据集的"执行源"位显示业务名：它挂在 ES 型数据源上，走 `_datasource_name_by_id`。
 
 
 def _load_datasource_catalog() -> dict[str, dict]:
@@ -461,24 +419,21 @@ def list_datasets(identity: dict, keyword: str = "", datasource_id: int = 0,
     只有 B 权限的用户也能看到“执行源为 A、但 B 在可用范围内”的数据集（并能在 B 上跑）；
     完全无交集的直接隐藏，避免“点得开、一取数就报错”的空承诺。
 
-    `channel` = 按取数通道筛：''=不限，`es` / `mcp:elasticsearch`=只走内置 Elasticsearch
-    通道（同义，后者是按 MCP 服务分维度的写法，与筛选器选项 value 一致）。
-    ES 型不挂在 `adh_datasources` 上，拿 datasource_id 永远筛不到它（历史缺口：清单里
-    看得到、数据源下拉里选不出）。通道与数据源两个筛选互斥，传错值显式拒，
-    不静默当“不限”（no-silent-degradation）。
+    `channel` = 按**执行通道**筛：''=不限，`es`=执行通道为 ES 型数据源（判据 `execution_is_es`，
+    与取数分派同源）。内置 ES 通道退役前这里指“不挂数据源的内置通道行”；现在 ES 集就挂在
+    ES 型数据源上，所与 `datasource_id` 筛选不再互斥（两者可以同时给：先按源筛、再按通道筛）。
+    传错值显式拒，不静默当“不限”（no-silent-degradation）。
     """
     from backend.core.role_service import role_service
 
     channel = _canonical_channel_filter(channel)
-    if channel == "es" and int(datasource_id or 0):
-        raise ValueError("「数据源」与「ES 通道」两个筛选不能同时生效：ES 型数据集不挂在数据源上")
 
     user_id = int(identity.get("user_id") or 0)
     user_role = identity.get("role") or ""
 
     # 被引计数随主查询一次 LEFT JOIN 取回：元数据库在远端（单往返百 ms 级），
     # 逐行 COUNT 会把 24 行清单拖成 24 次往返（实测 11s+）。
-    sql = ("SELECT d.id, d.name, d.description, d.source_type, d.object_key, d.es_pattern, "
+    sql = ("SELECT d.id, d.name, d.description, d.source_type, d.object_key, "
            "d.datasource_id, d.available_datasources, d.chart_type, d.chart_preset, d.owner_id, "
            "d.status, d.origin, "
            "d.field_config, d.created_at, d.updated_at, COALESCE(ref.n, 0) AS `references`, "
@@ -510,43 +465,30 @@ def list_datasets(identity: dict, keyword: str = "", datasource_id: int = 0,
     # 数据源筛选（数据集页顶栏选择器）：语义 = 该源在可用范围内（含执行源）。
     # 按可用范围/交集的判定要拿全量源清单与授权集，故在 Python 侧一次算好（源表行数个位数）。
     catalog = _load_datasource_catalog()
+    # 执行通道判定复用这份目录（与下面 dict_memo 同一纪律）：不传 db_type 时 `execution_is_es`
+    # 会逐行发一条 `SELECT db_type FROM adh_datasources WHERE id=%s`，而元库在公网另一侧，
+    # 82 行清单实测 3.5s（占整个接口 95%+）。判据不变，只是免掉逐行往返。
+    db_type_by_id = {int(v["id"]): str(v.get("db_type") or "") for v in catalog.values()}
     filter_name = _datasource_name_by_id(int(datasource_id or 0), catalog) if datasource_id else ""
     if datasource_id and not filter_name and int(datasource_id) != _DEFAULT_ENGINE_ID:
         return []                      # 筛选的源已不存在 → 无命中（不静默当"全部"）
     allowed_ds = _allowed_source_ids(identity)
-    # ES 通道就绪态在循环外取一次（纯配置读，不入库）：逐行再读是多余的，
-    # 且中途拿到不同值会造成"同一页里一半可见一半不可见"。
-    es_ready = bool(es_channel_state().get("ready"))
     # 语义字典按数据源复用（一次请求内同一源只取一遍）：同上，不得逐行回源。
     dict_memo: dict[int, tuple[list, list]] = {}
 
     out: list[dict] = []
     for r in rows:
-        # 口径来源显示业务名（ui-resource-display）：前端不得自己映射枚举，且 ES 型同样要标
+        # 口径来源显示业务名（ui-resource-display）：前端不得自己映射枚举
         r["origin"] = normalize_origin(r.get("origin"))
         r["origin_label"] = ORIGIN_LABELS[r["origin"]]
-        if is_es_dataset(r):
-            # ES 型不挂在数据源上：`usable_scope`（可用范围 ∩ 角色授权源）对它不适用，
-            # 走同一套判定会永远得到"默认引擎"这个不相干标签。可见性按其自身口径判：
-            # 通道就绪 ∧ 登记的索引模式仍在白名单内（与取数侧 fail-loud 同口径，
-            # 不开"点得开、一取数就报错"的空承诺）。
-            pattern = str(r.get("es_pattern") or "").strip()
-            if not (es_ready and es_scope_live(pattern)):
-                continue
-            if datasource_id:          # 按具体数据源筛选时 ES 不属于任何源 → 不命中
-                continue
-            r["chart_preset"] = _parse_json(r.get("chart_preset"), {})
-            r["field_count"] = len(resolve_fields(r, memo=dict_memo))
-            r["datasource_name"] = _ES_CHANNEL_LABEL
-            r["available_source_names"] = [pattern]
-            r["usable_now"] = [pattern]
-            out.append(r)
-            continue
         usable, _missing = usable_scope(r, identity, catalog=catalog, allowed_ds=allowed_ds)
         if not usable:
             continue                   # 无任何可执行源 → 不可见（与取数侧 fail-closed 同口径）
-        if channel == "es":
-            continue                   # 只要 ES 通道时，挂在数据源上的数据集不命中
+        # 执行通道位与取数分派同源（内置通道已退役：ES = 挂在 ES 型数据源上的普通 SQL 集）
+        r["is_es"] = execution_is_es(
+            r, db_type=db_type_by_id.get(int(r.get("datasource_id") or 0), ""))
+        if channel == "es" and not r["is_es"]:
+            continue                   # 只要 ES 执行通道：非 ES 源的集不命中
         if datasource_id and datasource_id not in {u["id"] for u in usable}:
             continue
         r["chart_preset"] = _parse_json(r.get("chart_preset"), {})
@@ -582,6 +524,12 @@ def _fill_param_summaries(rows: list[dict]) -> None:
 def get_dataset(dataset_id: int) -> dict | None:
     row = execute_query(
         "SELECT * FROM adh_datasets WHERE id = %s", (dataset_id,), fetchone=True)
+    if row is not None:
+        # 详情页的 ES 判定靠这一位（与取数分派同源），不是 `source_type === 'es'`
+        row["is_es"] = execution_is_es(row)
+        # 退役字段不再对外下发（列保留供跨环境核对历史值）：下发一个永远为空的字段
+        # 会被后人当成“还没接通的配置面”，正是本轮要拆掉的双口径源头
+        row.pop("es_pattern", None)
     return row
 
 
@@ -601,7 +549,7 @@ def _paging_request(ds: dict, params: dict) -> tuple[int, int] | None:
     不报错而是回 None：统计展示型数据集本就整页返回，图表拿不到 paging 块即不画分页条。
     真被截断（行数撞到上限）时由结果里的 `truncated` 显式暴露，不靠这里拦。
     """
-    from backend.modules.viz.services import es_pagination
+    from backend.core import es_pagination
 
     page = es_pagination.resolve_page(params)
     if page is None or not dataset_paginable(ds):
@@ -622,23 +570,14 @@ def _validate_and_normalize(req: dict, existing: dict | None = None) -> dict:
     （touched_tables 由正文静态提取，不信请求体自报）。
     """
     from backend.modules.viz.services.dataset_registry import (
-        is_es_definition, validate_definition, validate_es_definition)
+        validate_definition)
 
     merged = dict(existing or {})
     merged.update({k: v for k, v in (req or {}).items() if k in (
         "sql_query", "sql_bodies", "variables", "field_config", "dialect",
-        "es_pattern", "source_type", "object_key")})
-    if is_es_definition(merged):
-        # ES 型止于 `validate_es_definition`（其中会查白名单与范围收窄）；不能回退到
-        # 下面的跨引擎编译校验链——那会拿 sqlglot 去解 ES 语法（必误判）。
-        try:
-            errors, es_stored = validate_es_definition(merged)
-        except Exception as e:  # noqa: BLE001 — 校验器自身异常也必须拒，不得默认放行
-            logger.exception("[dataset] ES 定义校验异常")
-            raise ValueError(f"数据集校验未完成: {str(e)[:200]}") from e
-        if errors:
-            raise ValueError("数据集定义不符合规范，已拒绝保存: " + "; ".join(errors[:8]))
-        return es_stored or {}
+        # datasource_id 参与判定：ES 正文能不能过 sqlglot 由**执行源类型**决定（阶段二终态），
+        # 不带它就认不出 ES 源，会掉回按 mysql 语法走的跨引擎校验链（拿错的语法判 ES 正文）。
+        "source_type", "object_key", "datasource_id")})
     if not str(merged.get("sql_query") or "").strip() \
             and not merged.get("sql_bodies"):
         return {}                      # 纯语义对象数据集: 无预制 SQL, 不跑正文校验
@@ -650,6 +589,22 @@ def _validate_and_normalize(req: dict, existing: dict | None = None) -> dict:
     if errors:
         raise ValueError("数据集定义不符合规范，已拒绝保存: " + "; ".join(errors[:8]))
     return stored or {}
+
+
+def _validate_es_source_scope(datasource_id: int, names: list[str], catalog: dict[str, dict]) -> None:
+    """ES 源数据集的可用数据源范围必须同型（全为 ES 源）。
+
+    ES 正文只能在 ES 引擎上跑（无派生表/`.keyword` 子字段/必带 LIMIT）：混进一个 MySQL 源
+    就能被 `resolve_effective_source` 选中，结果是拿 mysql 语法跑 ES 正文——存下来就是错数，
+    所以保存这一关直接拒（而不是运行期由引擎回 400）。
+    """
+    from backend.semantics.dialect import is_es_db_type
+
+    bad = [nm for nm in names if not is_es_db_type((catalog.get(nm) or {}).get("db_type"))]
+    if bad:
+        raise ValueError(f"ES 数据源数据集的可用数据源范围只能包含 Elasticsearch 源，"
+                         f"下列不是 ES 型：{'、'.join(bad)}；"
+                         "ES 正文无法在其他引擎上执行（跨引擎请另建数据集并登记对应方言正文）")
 
 
 def _normalize_available_datasources(value, catalog: dict[str, dict]) -> str:
@@ -715,39 +670,39 @@ def _dialect_coverage_warnings(ds_row: dict, catalog: dict[str, dict]) -> list[s
 def create_dataset(req: dict, identity: dict, *, origin: str = "manual") -> dict:
     """新建数据集。
 
-    `origin` 为**仅限服务端调用方**的关键字参数（收编脚本/会话产物沉淠）：
+    `origin` 为**仅限服务端调用方的**关键字参数（收编脚本/会话产物沉淠）：
     REST 请求体里的同名字段不参与判定（否则任何人可把自己的口径伪造成
     「AI 会话产物」或反向洗白），API 层不传即按 manual 落库。
     """
+    from backend.modules.viz.services import dataset_registry
+
     name = (req.get("name") or "").strip()
     if not name:
         raise ValueError("数据集名称必填")
     object_key = (req.get("object_key") or "").strip()
     sql_query = (req.get("sql_query") or "").strip()
     datasource_id = int(req.get("datasource_id") or 0)
-    es_pattern = (req.get("es_pattern") or "").strip()
-    es_mode = is_es_dataset({"source_type": req.get("source_type"), "es_pattern": es_pattern})
+    if (str(req.get("es_pattern") or "").strip()
+            or str(req.get("source_type") or "").strip().lower() == "es"):
+        # 不静默存成普通 SQL 集：那会吞掉用户的 ES 配置并给出“数据集已建好”的假回执
+        _reject_builtin_es_request("新建")
 
-    # 双定义并存: 至少一种查询定义, 两者可互转；ES 型只要求正文
-    if es_mode:
-        _require_es_config_perm(identity, "create")
-        require_es_channel()          # 通道未就绪 → 不开放新建（不开"存下来永远跑不通"的空承诺）
-        if object_key:
-            raise ValueError("ES 数据集不能同时绑定本体对象（ES 不进治理域）")
-        if datasource_id:
-            raise ValueError("ES 数据集不挂在数据源上：datasource_id 请置空，执行范围由索引模式决定")
-        if not sql_query:
-            raise ValueError("ES 数据集必须提供 ES SQL 正文")
-    elif not object_key and not sql_query:
+    # 双定义并存: 至少一种查询定义, 两者可互转
+    if not object_key and not sql_query:
         raise ValueError("数据集至少需要一种查询定义: 绑定本体对象或提供执行 SQL(两者可并存互转)")
-    if sql_query and not es_mode:
+    # ES 数据源型（阶段二终态，也是现在唯一的 ES 形态）：正文是 ES SQL，不能过按治理方言写的
+    # `_validate_select`；它的只读/单表/必带 LIMIT/开放范围四件套由
+    # `_validate_and_normalize` → ES 校验支兼领。
+    es_source_mode = dataset_registry.is_es_source_definition({"datasource_id": datasource_id})
+    if sql_query and not es_source_mode:
         _validate_select(sql_query)
     stored = _validate_and_normalize(req)
 
-    # 可用数据源范围：按业务名校验（未知名拒绝）+ 跨引擎正文覆盖告警；ES 型不适用（不挂在源上）
+    # 可用数据源范围：按业务名校验（未知名拒绝）+ 跨引擎正文覆盖告警
     catalog = _load_datasource_catalog()
-    available_json = "[]" if es_mode else _normalize_available_datasources(
-        req.get("available_datasources"), catalog)
+    available_json = _normalize_available_datasources(req.get("available_datasources"), catalog)
+    if es_source_mode:
+        _validate_es_source_scope(datasource_id, json.loads(available_json or "[]"), catalog)
 
     if execute_query("SELECT id FROM adh_datasets WHERE name=%s", (name,), fetchone=True):
         raise ValueError(f"数据集名称已存在: {name}")
@@ -761,10 +716,9 @@ def create_dataset(req: dict, identity: dict, *, origin: str = "manual") -> dict
         "chart_type, chart_preset, paginable, owner_id, origin, status) "
         "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active')",
         (new_id, name, req.get("description") or "",
-         _derive_source_type(object_key, sql_query, es_pattern), object_key, es_pattern,
-         0 if es_mode else datasource_id, available_json, sql_query,
-         ("{}" if es_mode else
-          (stored.get("sql_bodies") or json.dumps(req.get("sql_bodies") or {}, ensure_ascii=False))),
+         _derive_source_type(object_key, sql_query), object_key, "",
+         datasource_id, available_json, sql_query,
+         (stored.get("sql_bodies") or json.dumps(req.get("sql_bodies") or {}, ensure_ascii=False)),
          _as_json_text(req.get("variables"), "{}"),
          stored.get("touched_tables"),
          field_config,
@@ -773,7 +727,7 @@ def create_dataset(req: dict, identity: dict, *, origin: str = "manual") -> dict
          1 if req.get("paginable") else 0,
          int(identity.get("user_id") or 0), normalize_origin(origin)))
     ds = get_dataset(new_id) or {}
-    warnings = [] if es_mode else _dialect_coverage_warnings(
+    warnings = _dialect_coverage_warnings(
         {**ds, "available_datasources": available_json}, catalog)
     for w in warnings:
         logger.warning("[dataset] %s: %s", name, w)
@@ -792,19 +746,24 @@ def _as_json_text(value, fallback: str) -> str:
 
 
 def update_dataset(dataset_id: int, req: dict, identity: dict) -> dict:
+    from backend.modules.viz.services import dataset_registry
+
     ds = get_dataset(dataset_id)
     if not ds:
         raise ValueError("数据集不存在")
     _require_editor(ds, identity)
     # 有效口径 = patch 叠在存量行上（改定义类型/改范围常只带局部字段）
     merged = {**ds, **{k: v for k, v in req.items() if v is not None}}
-    es_mode = is_es_dataset(merged)
-    if es_mode != is_es_dataset(ds):
-        # 定义类型切换是权限面上最敏感的一步（进出治理域），同样要 dataset:es + 通道就绪
-        _require_es_config_perm(identity, "switch")
-        require_es_channel()
+    if (str(req.get("es_pattern") or "").strip()
+            or str(req.get("source_type") or "").strip().lower() == "es"):
+        # 内置 ES 通道已退役：`es_pattern` 不再是可写字段（库里 0 行，写入只会存成跑不通的定义）
+        _reject_builtin_es_request("修改")
+    # ES 数据源型（阶段二终态，也是现在唯一的 ES 形态）：正文是 ES SQL，治理方言校验链
+    # （`_validate_select`/sqlglot 只读门）对它不成立，改走 ES 正文专用校验（与取数侧同一个
+    # `es_client.parse_select` 实现）。
+    es_source_mode = dataset_registry.is_es_source_definition(merged)
     updates, params = [], []
-    for col in ("description", "object_key", "sql_query", "es_pattern"):
+    for col in ("description", "object_key", "sql_query"):
         if req.get(col) is not None:
             updates.append(f"{col} = %s")
             params.append(req[col])
@@ -831,40 +790,35 @@ def update_dataset(dataset_id: int, req: dict, identity: dict) -> dict:
         updates.append("chart_preset = %s")
         params.append(json.dumps(req["chart_preset"], ensure_ascii=False))
     if req.get("datasource_id") is not None:
-        if es_mode and int(req["datasource_id"] or 0):
-            raise ValueError("ES 数据集不挂在数据源上：datasource_id 请置空")
         updates.append("datasource_id = %s")
         params.append(int(req["datasource_id"]))
     if req.get("available_datasources") is not None:
         # 可用数据源范围（业务名数组）：未知名直接报错，不存下来等运行期发现问题
-        if es_mode:
-            raise ValueError("ES 数据集不挂在数据源上，没有可用数据源范围可配；"
-                             "请改设索引范围（es_pattern）")
-        updates.append("available_datasources = %s")
-        params.append(_normalize_available_datasources(
+        names = json.loads(_normalize_available_datasources(
             req["available_datasources"], _load_datasource_catalog()))
+        if es_source_mode:
+            _validate_es_source_scope(int(merged.get("datasource_id") or 0), names,
+                                      _load_datasource_catalog())
+        updates.append("available_datasources = %s")
+        params.append(json.dumps(names, ensure_ascii=False))
     if req.get("field_config") is not None:
         updates.append("field_config = %s")
         params.append(json.dumps(req["field_config"], ensure_ascii=False))
     if req.get("status") in ("active", "inactive"):
         updates.append("status = %s")
         params.append(req["status"])
-    # 更新后至少保留一种查询定义(语义对象/执行 SQL/ES 正文), source_type 随之重算
+    # 更新后至少保留一种查询定义(语义对象/执行 SQL), source_type 随之重算
     object_key = str(req["object_key"] if req.get("object_key") is not None
                      else ds.get("object_key") or "").strip()
     sql_query = str(req["sql_query"] if req.get("sql_query") is not None
                     else ds.get("sql_query") or "").strip()
-    es_pattern = str(req["es_pattern"] if req.get("es_pattern") is not None
-                     else ds.get("es_pattern") or "").strip()
     if not object_key and not sql_query:
         raise ValueError("数据集至少需要一种查询定义: 绑定本体对象或提供执行 SQL(两者可并存互转)")
     # 改 SQL 必须重新过校验（只读正文 + 参数声明 + 字段声明），不通过不保存
     body_touched = any(req.get(k) is not None for k in
-                       ("sql_query", "sql_bodies", "variables", "field_config", "es_pattern"))
-    if sql_query and not es_mode and (req.get("sql_query") or body_touched):
+                       ("sql_query", "sql_bodies", "variables", "field_config"))
+    if sql_query and not es_source_mode and (req.get("sql_query") or body_touched):
         _validate_select(sql_query)
-    if es_mode:
-        require_es_channel()
     stored = _validate_and_normalize(req, existing=ds) if body_touched else {}
     if stored.get("touched_tables") is not None:
         updates.append("touched_tables = %s")
@@ -872,14 +826,6 @@ def update_dataset(dataset_id: int, req: dict, identity: dict) -> dict:
     if stored.get("sql_bodies") is not None and req.get("sql_bodies") is None:
         updates.append("sql_bodies = %s")
         params.append(stored["sql_bodies"])
-    if es_mode:
-        # ES 只有一种方言：残留的多引擎正文必须清掉，否则存下一段永不命中却看似已配的死定义
-        updates.append("sql_bodies = %s")
-        params.append("{}")
-        updates.append("available_datasources = %s")
-        params.append("[]")
-        updates.append("datasource_id = %s")
-        params.append(0)
     # 正文/参数/字段变更即认证失效（防"改完仍挂已认证"）
     if any(req.get(k) is not None for k in ("sql_query", "sql_bodies", "variables",
                                             "field_config")) and req.get("certified") is None:
@@ -888,17 +834,21 @@ def update_dataset(dataset_id: int, req: dict, identity: dict) -> dict:
         updates.append("approved_by = %s")
         params.append(None)
     updates.append("source_type = %s")
-    params.append(_derive_source_type(object_key, sql_query, es_pattern))
+    params.append(_derive_source_type(object_key, sql_query))
     if updates:
         execute_write(f"UPDATE adh_datasets SET {', '.join(updates)} WHERE id = %s",
                       tuple(params) + (dataset_id,))
     saved = get_dataset(dataset_id) or {}
-    # 保存后重算方言覆盖告警（显式返回，不静默；运行期仍由编译器拒绝无正文的源）；ES 不适用
-    warnings = [] if es_mode else _dialect_coverage_warnings(saved, _load_datasource_catalog())
+    # 保存后重算方言覆盖告警（显式返回，不静默；运行期仍由编译器拒绝无正文的源）
+    warnings = _dialect_coverage_warnings(saved, _load_datasource_catalog())
     for w in warnings:
         logger.warning("[dataset] %s: %s", saved.get("name"), w)
     if warnings:
         saved["warnings"] = warnings
+    # 口径刚改完，不得拿几十秒前的去重结果回答“改对了没”（测试也靠这条隔离）。
+    # 清全部键是粗粒度但无害的：这只是一份性能备忘录，不是数据源。
+    from backend.common import query_dedup
+    query_dedup.clear()
     return saved
 
 
@@ -947,29 +897,6 @@ def _require_manage(identity: dict, path: str):
     from backend.common.api_permission import check_api_permission
     if not check_api_permission(identity.get("role") or "", "POST", path):
         raise PermissionError("角色未授予「dataset:manage」权限, 无法编译 SQL 或对齐语义字段")
-
-
-def _require_es_config_perm(identity: dict, scene: str = "use"):
-    """ES 型数据集的**配置面**把关：角色须持有 `dataset:es`（fail-closed）。
-
-    只 gate 配置侧（新建/切换定义类型/改索引范围/校验正文/看字段/预览）；**不 gate
-    已保存图表的取数** —— 渲染一张 ES 数据集图表属消费面（按 dataset:read + 看板
-    可见性裁决），把它压进 dataset:es 会造出“管理员配好了、普通用户看不了图”的空承诺。
-
-    为什么不走 API 中间件的路径匹配：ES 端点与数据集端点同前缀（`/api/datasets*`），
-    持有 `dataset:manage` 的角色按路径就会命中 ES 端点，分不出两者；所以该码的
-    `api_pattern` 故意留空，改由本函数按码裁决。
-    """
-    from backend.core.role_service import role_service
-
-    if (identity or {}).get("role") == "admin":
-        return
-    codes = set(role_service.get_user_role_perm_codes(int(identity.get("user_id") or 0)))
-    if "dataset:es" not in codes:
-        action = {"create": "新建", "switch": "切换为", "read": "查看"}.get(scene, "配置")
-        raise PermissionError(
-            f"当前角色未授予「dataset:es」（使用 Elasticsearch 数据集）权限，"
-            f"无法{action} ES 型数据集定义。ES 不进数据权限治理域，默认不开放。")
 
 
 def compile_from_semantic(req: dict, identity: dict) -> dict:
@@ -1204,12 +1131,13 @@ def set_scopes(dataset_id: int, scopes: list[dict], identity: dict) -> dict:
     if not ds:
         raise ValueError("数据集不存在")
     _require_editor(ds, identity)
-    if is_es_dataset(ds) and (scopes or []):
+    if _es_source_dataset(ds) and (scopes or []):
         # 行级 scope 靠 `SELECT * FROM (正文) AS _ds_scoped WHERE ...` 子查询包裹注入，
-        # ES SQL 不接受这种形状（也无列级策略可用）。存下 scope 等于配了一个永不生效的
-        # 权限开关，比不配更糟（no-silent-degradation），所以这里显式拒。
+        # ES SQL 不接受这种形状（无论内置通道还是 ES 数据源，都无派生表）。存下 scope
+        # 等于配了一个永不生效的权限开关，比不配更糟（no-silent-degradation），所以显式拒。
         raise ValueError("ES 型数据集不支持行级范围（靠子查询包裹注入，ES SQL 不成立）；"
-                         "请把收窄条件直接写进查询正文，或改用数据源型数据集")
+                         "请把收窄条件直接写进查询正文；要按角色隔离行可见性，"
+                         "请给该 ES 数据源配「行级策略」（治理层会把谓词 AND 进顶层 WHERE）")
     cleaned = []
     for s in scopes or []:
         st = s.get("subject_type")
@@ -1261,27 +1189,17 @@ def _scope_filters(dataset_id: int, identity: dict) -> list[dict]:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# ES 分支（内置 Elasticsearch 通道：数据集的第三种定义类型）
+# ES 型数据源数据集（现在唯一的 ES 形态）：正文权威 + 治理口执行
 # ═══════════════════════════════════════════════════════════════════
-# 本分支**不经** `semantics.execute` / `governed_execute`，原因不是"没接"，而是技术上不成立：
-# ES SQL 无 JOIN、只接受可扁平化的子查询（RLS 的包裹注入手法没有落点），且 sqlglot 无
-# elasticsearch 方言（列级策略的编译期改写没有解析器）。2026-11-04 的产品决策据此把 ES
-# 划在治理域之外，闸门收敛为两条、实现只在 `core/es_client.py` 一处：
-#   部署侧索引模式白名单（fail-closed，空白名单 = 全拒）∧ 数据集 es_pattern 收窄。
-# 代价必须在非 UI 层留痕（no-silent-degradation §1「行为可区分」）：结果带
-# `execution_mode='es'` + `governance` 标注，成功与拒绝均落审计（护栏 §9）。
-# 前提（写在配置、代码与页面三处）：白名单内索引的数据**应已脱敏**；若接入未脱敏索引
-# 或需按角色限制行/列可见性，必须重新评估本通道口径，不是在这里加兜底。
-
-# 与 `es_tools._GOVERNANCE_NOTE` 同口径（那边是会话通道，这里是配置/取数通道，
-# 字段必须一致，否则审计与评测无法用同一个条件分辨“未套策略的通道”）。
-_ES_GOVERNANCE_NOTE = {
-    "channel": "builtin_elasticsearch",
-    "column_policy": "not_applied",
-    "row_filter": "not_applied",
-    "gate": "index_allowlist+dataset_scope",
-    "note": "内置 Elasticsearch 通道：按产品决策不参与列级/行级数据权限治理；"
-            "可查范围 = 部署侧开放的索引模式 ∧ 数据集已选范围，模式内数据应已脱敏。",
+# 阶段二终态：ES 挂在正式数据源上，治理与 SQL 源同一口径（不是“只读通道”）。
+# 消费面：看板/数据集预览的溯源标注与查询审计都读这一份，不在前端另写一句。
+_ES_SOURCE_GOVERNANCE_NOTE = {
+    "channel": "elasticsearch_datasource",
+    "column_policy": "compiled_into_sql",
+    "row_filter": "compiled_into_sql",
+    "gate": "permission_enforcer+index_allowlist",
+    "note": "Elasticsearch 数据源：列级屏蔽/脱敏编译进待执行 SQL，行级策略以 AND 写进顶层 WHERE；"
+            "可查范围另受数据源登记的索引别名/模式硬门约束。",
 }
 
 # 写给建模人员的方言规则：每条都有实机凭据（集群 ES 8.9.1，探针 logs/probe_es_sql_shapes{,2,3,4}.py），
@@ -1290,113 +1208,12 @@ _ES_SQL_HINT = (
     "Elasticsearch SQL 是受限方言（以下均经本集群实测）：只能单条 SELECT、FROM 只能一个索引模式、"
     "无 JOIN/CTE，必须显式 LIMIT。索引名含连字符与点，不包双引号会被当成减法；必须写 "
     'FROM "模式名"（模式原样复制，不展开成具体月索引）。字段名同样要双引号："@timestamp"'
-    "（反引号不行，实测报 parsing_exception）。日期桁用 DATE_TRUNC('DAY'|'WEEK'|'MONTH'|"
+    "（反引号不行，实测报 parsing_exception）。日期轴用 DATE_TRUNC('DAY'|'WEEK'|'MONTH'|"
     "'QUARTER', \"字段\")；DATE_FORMAT 实测会语法通过但把格式串当常量返回（错数），已拒收。"
-    "text 字段可直接 GROUP BY（ES 自动取 .keyword 子桁）。时间片段接在模式末尾（如 \"logs-*2026.11\"）"
+    "text 字段可直接 GROUP BY（ES 自动取 .keyword 子字段）。时间片段接在模式末尾（如 \"logs-*2026.11\"）"
     "只收窄**索引**、不收窄行（实测该模式仍含上月数据）；要按时间收行请写 WHERE \"@timestamp\" 范围。"
     "全模式聚合（实测 2.7 亿行）会超过默认 20s 超时，请靠 WHERE/时间片段收小后再挂图。"
 )
-
-
-def es_pattern_options(identity: dict) -> dict:
-    """可查索引范围清单 + 通道就绪态 + 方言提示（数据集页选择框的数据源，同屏给结论）。
-
-    未就绪时**不返回空清单了事**：把原因一起回（前端据此提示而不是渲成“暂无索引”，
-    否则配置缺口会被当成业务结论：这个范围就是没数据）。
-    """
-    from backend.core import es_client
-
-    _require_es_config_perm(identity, "read")
-    state = es_channel_state()
-    patterns = list(es_client.allowed_patterns()) if state.get("ready") else []
-    return {
-        "ready": bool(state.get("ready")),
-        "state": state.get("state"),
-        "status_message": state.get("status_message") or "",
-        "patterns": patterns,
-        "governance": _ES_GOVERNANCE_NOTE,
-        "sql_hint": _ES_SQL_HINT,
-    }
-
-
-def es_field_options(pattern: str, identity: dict) -> dict:
-    """索引范围的字段清单（写 ES SQL 与配字段映射前确认形状）。
-
-    字段能力直接决定图能不能画：`aggregatable=false` 的字段不能当桁，text 字段要拿
-    `exact_match_field`（.keyword）——原样透传 `describe_index_fields` 的标注，不在这里重新判定。
-    """
-    from backend.core import es_client
-
-    _require_es_config_perm(identity, "read")
-    want = str(pattern or "").strip()
-    if not want:
-        raise ValueError("缺少索引范围（pattern）：请从清单选择，不要手输")
-    if not es_client.index_allowed(want):
-        raise ValueError(
-            f"索引范围「{want}」不在当前部署开放的范围内；当前可查: "
-            f"{', '.join(es_client.allowed_patterns()) or '（无，部署侧尚未登记）'}")
-    try:
-        info = es_client.describe_index_fields(want)
-    except es_client.EsError as exc:
-        # 模式未匹配到任何字段时 ES 回 200+空 fields，`describe_index_fields` 已按约定显式报错；
-        # 文案含可查清单，属可操作提示，原样外抛（护栏 §7：EsError 不带地址/凭据）
-        raise ValueError(str(exc)) from exc
-    return {
-        "pattern": info["pattern"],
-        "fields": info["fields"],
-        "sub_fields": info["sub_fields"],
-        "governance": _ES_GOVERNANCE_NOTE,
-    }
-
-
-def validate_es_sql(req: dict, identity: dict) -> dict:
-    """保存前校验 ES 正文并探测输出列（仅回列名与一行样本，不回全量数据）。
-
-    与 `validate-sql`（治理源）同构但手法不同：ES 不支持子查询包裹，不能拿
-    `SELECT * FROM (...) LIMIT 1` 去探列，因此直接按正文执行并用 fetch_size=1 收小回页；
-    列名以 ES 响应的 columns 为凭，不靠猜。
-    """
-    from backend.core import es_client
-    from backend.semantics.sql_params import parse_variables, render_body
-
-    _require_es_config_perm(identity, "read")
-    require_es_channel()
-    sql = str(req.get("sql") or req.get("sql_query") or "").strip()
-    pattern = str(req.get("es_pattern") or "").strip()
-    if not sql:
-        raise ValueError("ES SQL 不能为空")
-    decls = parse_variables(req.get("variables"))
-    body, errs = render_body(sql, decls, req.get("args") or {})
-    errors, _indexes = _es_probe_errors(body, decls, pattern)
-    if errs:
-        errors = errs + errors
-    if errors:
-        raise ValueError("; ".join(errors[:6]))
-    try:
-        result = es_client.run_sql(body, fetch_size=1)
-    except es_client.EsError as exc:
-        raise ValueError(str(exc)) from exc
-    columns = [str(c.get("name")) for c in (result.get("columns") or [])]
-    types = {str(c.get("name")): str(c.get("type") or "")
-             for c in (result.get("columns") or [])}
-    first = (result.get("rows") or [[]])[0]
-    fields = []
-    for i, name in enumerate(columns):
-        v = first[i] if i < len(first) else None
-        # 角色推断与治理源同口径（数值→度量，其余→维度），但 ES 自带的 type 更可信
-        numeric = isinstance(v, (int, float)) and not isinstance(v, bool)
-        fields.append({"field": name, "label": name,
-                       "role": "measure" if numeric else "dimension",
-                       "es_type": types.get(name, "")})
-    return {"fields": fields, "columns": columns, "indexes": result.get("indexes") or [],
-            "governance": _ES_GOVERNANCE_NOTE}
-
-
-def _es_probe_errors(body: str, decls: dict, pattern: str) -> tuple[list[str], list[str]]:
-    """委托注册层做静态校验（同一个实现，不在这里重复一套判定）。"""
-    from backend.modules.viz.services.dataset_registry import probe_es_sql
-
-    return probe_es_sql(body, decls, pattern)
 
 
 def _es_default_window(ds: dict, args: dict) -> tuple[dict, dict]:
@@ -1463,7 +1280,11 @@ def _es_audit(identity: dict, ds: dict, sql: str, *, ok: bool, row_count: int = 
         from backend.common.auth import log_audit
         from backend.core import es_client
 
-        indexes = ",".join(es_client.from_indexes(sql) or []) or str(ds.get("es_pattern") or "-")
+        # 索引范围优先取本次正文；去重命中时传的是空串（不拿备忘录里那份 SQL 记审计），
+        # 就回取数据集正文模板里的索引引用（不随时间参数漂移）
+        indexes = ",".join(es_client.from_indexes(sql)
+                          or es_client.from_indexes(str(ds.get("sql_query") or ""))
+                          or []) or "-"
         log_audit(
             int(identity.get("user_id") or 0), str(identity.get("username") or ""),
             action="es_dataset_query" if ok else "es_dataset_query_denied",
@@ -1475,95 +1296,162 @@ def _es_audit(identity: dict, ds: dict, sql: str, *, ok: bool, row_count: int = 
         logger.debug("[dataset] es audit skipped: %s", exc)
 
 
-def _query_es(ds: dict, params: dict, identity: dict) -> dict:
-    """ES 型数据集取数：参数渲染 → `es_client`（白名单硬门在执行口内）。
+def _es_dedup_key(ds: dict, params: dict, identity: dict) -> tuple | None:
+    """同参数去重的键；返回 None = 本次不去重（宁可多跑一次，不能复用错的东西）。
 
-    与 sql/semantic 分支的三处不同是口径决定的，不是简化：
-    - 不走 `resolve_effective_source`：ES 不是 adh_datasources 行，拿它求“可用范围 ∩
-      角色授权源”恒为空，会把能查的数误拒成无权；执行范围由 es_pattern + 白名单裁决。
-    - 不套行级 scope / 不做列级脱敏：技术上不可实现（见本节头注释），因此在定义时就
-      拒配 scope，而不是运行期静默不套。
-    - 分页走 `es_pagination`（translate + search_after 游标）而不是在 SQL 里拼 OFFSET：
-      ES SQL 语法里没有 OFFSET（`LIMIT a, b` / `LIMIT n OFFSET m` 实机均回 400）。
+    键 = 数据集版本 + 身份 + **params 全量规范化**。这里故意不用“白名单取几个键”：
+    图表刷新路径带的是 `{args, limit, filters, order, dimensions, measures, datasource}`
+    一整块（见 `dashboard_service.refresh_chart`），只拾 args/limit 会让真路径永远不去重；
+    反过来，把整个 params 进键 = 任何影响结果的输入不同就不共用，不会漏维度。
+
+    身份进键是硬要求：角色授权/RLS/脱敏策略按人不同，不同用户绝不共用一份结果。
+    数据集 `updated_at` 进键：改完正文就是另一个键（写路径另外显式 clear）。
     """
-    from backend.common.df_serialize import _unique_columns
-    from backend.core import es_client
-    from backend.modules.viz.services import es_pagination
+    if _paging_request(ds, params):
+        # 翻页带 search_after 游标上下文，复用会打乱页序（且翻页是交互行为，不是批量重复）
+        return None
+    try:
+        blob = json.dumps(params, sort_keys=True, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return None
+    return (int(ds.get("id") or 0), str(ds.get("updated_at") or ""),
+            int(identity.get("user_id") or 0), int(identity.get("workspace_id") or 0), blob)
 
-    uid = int(identity.get("user_id") or 0)
-    if not uid:
-        raise NoIdentityError("缺少可信用户身份, 拒绝 ES 取数(数据合规护城河)")
-    require_es_channel()   # 通道未就绪 → 先给可读原因，不去打集群也不回空结果（否则被当成“没数据”）
-    pattern = str(ds.get("es_pattern") or "").strip()
-    if not pattern:
-        raise ValueError("ES 数据集缺少索引范围（es_pattern），请在数据集页重新选择")
-    # 时间参数留空 → 服务端补滚动窗（见 `_es_default_window`：ES 侧拿不到本地当前时刻）
+
+def _query_es_deduped(ds: dict, params: dict, identity: dict, run: Callable[[], dict]) -> dict:
+    """ES 两支取数共用的同参数去重外壳（设计前提见 `backend/common/query_dedup`）。
+
+    为什么只套 ES 两支：重查询超读预算发生在“一张板多张卡打同一条聚合”上，而 ES
+    日志集正是这种形状（单条 13s / 预算 20s，4 张卡并发时互相拖到全部超时）；
+    MySQL/Doris 等 SQL 分支与语义分支不在本次改动里顺手改动（改动面越小越容易判断对不对）。
+    """
+    from backend.common import query_dedup
+    from backend.common.config import ES_QUERY_DEDUP_TTL_SEC
+
+    key = _es_dedup_key(ds, params, identity)
+    if not key or ES_QUERY_DEDUP_TTL_SEC <= 0:
+        return run()
+    result, source = query_dedup.run(key, run, ttl=ES_QUERY_DEDUP_TTL_SEC)
+    if query_dedup.shared_source(source):
+        # 命中不发 ES 请求，但审计照旧落一行（护栏 §9：成功与拒绝均落审计），并把
+        # “这次没真跑”写进原因与响应：去重不得被藏起来，否则排查时会以为真执行了。
+        # 不拿备忘录里那份 SQL 去记审计：只记数据集与索引范围（首发那条已经记了完整索引清单）。
+        _es_audit(identity, ds, "", ok=True, row_count=len(result.get("rows") or []),
+                  reason=f"dedup:{source}")
+        result["query_dedup"] = source
+    return result
+
+
+def _es_source_dataset(ds: dict) -> bool:
+    """该 SQL 数据集的执行源是否 ES 型（阶段二迁移后的 ES 数据集判据）。
+
+    判据只用数据源 db_type（单一事实源），不再拿 `es_pattern` 当辅助信号（迁移后会残留旧值）；
+    实现下沉到 L0 `datasource_db.is_es_datasource`，与语义层编译门（planner）同一个口径。
+    """
+    from backend.common.db.datasource_db import is_es_datasource
+
+    return is_es_datasource(int(ds.get("datasource_id") or 0))
+
+
+def _es_paging_scope_label(ds: dict, source_id: int) -> str:
+    """翻页上下文的作键分量：执行源 + 正文 FROM 引用的索引（两者都不随时刻变化）。
+
+    与 `es_pagination.paging_key` 同一纪律：拿渲染后的正文算会因滚动窗逐秒漂移，
+    第 2 页永远找不到首页留下的游标。迁移后不再有 `es_pattern`，索引目标改从正文模板取。
+    """
+    from backend.core import es_client
+
+    refs = ",".join(sorted(set(es_client.from_indexes(str(ds.get("sql_query") or "")))))
+    return f"source:{source_id}|{refs or '-'}"
+
+
+def _query_es_on_source(ds: dict, params: dict, scopes: list[dict], identity: dict) -> dict:
+    """挂在 ES 数据源上的数据集取数（阶段二终态）：正文权威 + 治理口执行。
+
+    与 `_query_sql` 主分支的四处不同都是 ES SQL 引擎边界决定的，不是简化实现：
+    1. **不套** `SELECT * FROM (…) AS _ds_base`：ES 无派生表（实机：包裹后子字段 `.keyword`
+       不透传、谓词直接报错），外层二次聚合/过滤也无从表达 ⇒ 正文形状就是本次口径，
+       与迁移前走内置通道时逐字一致（同一张图不得多一层或少一层聚合）。
+    2. 翻页走 `es_pagination`（`/_sql/translate` + `search_after` 游标），经治理口的分页
+       形态 `execute_es_page_with_permission`：ES SQL 语法里没有 OFFSET，
+       `COUNT(*) FROM (…) AS x` 也不成立（实机均回 400）。
+    3. 时间参数留空由服务端补滚动窗（`_es_default_window`），并把实际窗口回显给调用方。
+    4. 行级 scope 不能用（它靠包裹子查询叠加）：ES 源的行级隔离请配「行级策略」，
+       治理层会把谓词 AND 进顶层 WHERE（阶段一已落地并真机验证）。
+
+    权限/RLS/列级脱敏/审计全部经统一取数执行口（护栏 §1），不再是内置通道的
+    “白名单即闸门”口径 —— 这正是本次迁移的目的。
+    """
+    from backend.core import es_pagination
+    from backend.core.governed_query import governed_execute
+    from backend.core.query_executor import execute_es_page_with_permission
+    from backend.semantics.dataset_compiler import _flat_detail_sql
+
+    if scopes:
+        raise ValueError("ES 型数据集不支持行级范围（scope 靠包裹子查询叠加，ES SQL 无派生表）；"
+                         "请按角色配「行级策略」（ES 源支持顶层 WHERE 注入）")
+    if params.get("filters") or params.get("order"):
+        raise ValueError("ES 型数据集不支持运行时筛选器/排序追加（无外层 AST 改写可用）；"
+                         "请把条件做成数据集参数 ${...} 写进正文")
+    if params.get("dimensions") or params.get("measures") or params.get("metrics"):
+        # 迁移前走内置通道时这两类参数被整体忽略（正文自己就是聚合口径）。现在显式拒
+        # 而不是继续静默忽略：“图上绑了指标”与“实际出的数”必须是一回事（no-silent-degradation）。
+        raise ValueError("ES 型数据集不支持运行时二次聚合（dimensions/measures）：ES SQL 无派生表，"
+                         "外层再包一次 GROUP BY 不成立；请把聚合写在正文里，图表按输出列绑定字段")
+
+    source_id = int(ds.get("datasource_id") or 0)
     raw_args = params.get("args") or params.get("variables") or {}
     es_args, default_window = _es_default_window(ds, raw_args)
-    sql = _render_es_body(ds, es_args)
-    if params.get("filters") or params.get("order"):
-        # 看板自由筛选器/排序需要往正文拼 WHERE，而 ES 无治理层 AST 改写可用；
-        # 不拿字符串拼接冒充支持（拼错了就是错数），显式拒并给出可行的路。
-        raise ValueError("ES 型数据集不支持运行时筛选器/排序追加（无 AST 改写可用）；"
-                         "请把条件做成数据集参数 ${...} 写进正文")
+    # 行数上限与正文自带的尾部 LIMIT 取小值合一（与编译器 flat 形态同一实现）：
+    # 不套壳就不能把 limit 写在外层，拿“图上只显 20 行、实际拉 500 行”的口径偏差不可接受。
     page = _paging_request(ds, params)
     limit = min(int(params.get("limit") or _DEFAULT_LIMIT), _MAX_LIMIT)
     if page:
-        # 按页取数时行限就是页大小：不开“图上只显 20 行、实际拉了 500 行”的口径偏差
         limit = min(limit, page[0])
-    try:
-        _norm, declared_limit = es_client.parse_select(sql)
-    except es_client.EsError as exc:
-        _es_audit(identity, ds, sql, ok=False, reason=str(exc))
-        raise ValueError(str(exc)) from exc
-    if declared_limit is not None and declared_limit < limit:
-        # 正文 LIMIT 比图表要的行数小是建模选择（控制扇描规模），不算错；但不得静默拉高，
-        # 否则“图上只显示 50 根柱”与“正文写 LIMIT 50”对不上，排查时看不出来。
-        logger.info("[dataset] es limit capped by body LIMIT: ds=%s body=%s want=%s",
-                    ds.get("id"), declared_limit, limit)
+    sql = _flat_detail_sql(_render_es_body(ds, es_args), limit)
+
+    uid = int(identity.get("user_id") or 0)
+    ws = int(identity.get("workspace_id") or 0)
+    user_context = {"user_id": uid, "username": identity.get("username") or ""}
     paged: dict | None = None
     try:
         if page:
-            # 翻页上下文签名只用**不随时刻变化**的口径（正文模板 + 调用方给的参）：
-            # 拿渲染后正文算会因滚动窗逐秒漂移，第 2 页永远找不到第 1 页的游标
-            paged = es_pagination.query_page(
-                pattern, sql, page_size=page[0], page_num=page[1],
+            paged = execute_es_page_with_permission(
+                sql, source_id, user_context, ws,
+                page_size=page[0], page_num=page[1],
                 context_key=es_pagination.paging_key(
-                    pattern, str(ds.get("sql_query") or ""), raw_args, page[0]))
-            raw_columns, raw_rows = paged["columns"], paged["rows"]
-            # 后续页检索的是首页确立的那份正文，审计/索引清单都得按它算
-            sql = paged["sql"]
+                    _es_paging_scope_label(ds, source_id),
+                    str(ds.get("sql_query") or ""), raw_args, page[0]))
+            result = {"columns": paged["columns"], "rows": paged["rows"],
+                      "row_count": paged["row_count"], "elapsed_ms": paged.get("elapsed_ms")}
         else:
-            raw = es_client.run_sql(sql, fetch_size=limit)
-            raw_columns = [str(c.get("name")) for c in (raw.get("columns") or [])]
-            raw_rows = raw.get("rows") or []
+            result = governed_execute(sql, source_id, uid, ws, identity.get("username") or "")
+    except NoIdentityError:
+        raise
     except es_pagination.EsPagingUnsupported as exc:
         # 正文形态不可按页取（聚合/表达式/列映射对不上）：指名怎么改，不回“空结果”充数
         _es_audit(identity, ds, sql, ok=False, reason=str(exc))
         raise ValueError(str(exc)) from exc
-    except es_client.EsError as exc:
-        # 白名单/方言拒绝的文案含可查清单，属可操作提示，原样外抛（不含地址/凭据）
+    except PermissionError as exc:
+        # 治理拒绝文案（行/列策略、越权）可诊断，原样外抛（不含地址/凭据）
         _es_audit(identity, ds, sql, ok=False, reason=str(exc))
-        raise ValueError(str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001 — ES 原始报错可能含索引表达式/集群信息
-        logger.error("[dataset] es execution failed ds=%s: %s", ds.get("id"), exc)
+        raise
+    except Exception as exc:  # noqa: BLE001  原始报错仅进日志，对外按错因分类
+        logger.error("[dataset] es-source execution failed ds=%s: %s", ds.get("id"), exc)
         _es_audit(identity, ds, sql, ok=False, reason=type(exc).__name__)
-        raise ValueError("Elasticsearch 取数失败，请联系管理员查看服务端日志") from exc
+        raise ValueError(_exec_fail_text(str(exc), "es", _exec_category_of(exc))) from exc
 
-    # 两条执行通道同形（列名 + 按位值数组），重名列在此统一消歧后一次成行
-    columns = _unique_columns(raw_columns)
-    rows = [dict(zip(columns, r)) for r in raw_rows]
-    _es_audit(identity, ds, sql, ok=True, row_count=len(rows))
-    result = {
-        "columns": columns,
-        "rows": rows,
-        "row_count": len(rows),
-        "dataset": ds.get("name"),
-        "execution_mode": "es",
-        "es_scope": pattern,
-        "es_indexes": es_client.from_indexes(sql),
-        "governance": _ES_GOVERNANCE_NOTE,
-    }
+    result["dataset"] = ds.get("name")
+    result["execution_mode"] = "es"
+    # 治理标注必须随结果下发（前端不得再按 `execution_mode==='es'` 硬编码“未施加策略”）：
+    # 数据源型 ES 集恰恰**在治理域内**（列级屏蔽/脱敏与行过滤都编译进待执行 SQL），
+    # 沿用内置通道那句话就是反向陈述，管理员会按“这里没权限生效”去做错误判断。
+    result["governance"] = _ES_SOURCE_GOVERNANCE_NOTE
+    try:
+        result["es_indexes"] = list(es_client.from_indexes(sql) or [])
+    except Exception:  # noqa: BLE001 — 标注取不到不影响取数，退为空（前端显 '-'）
+        result["es_indexes"] = []
+    _es_audit(identity, ds, sql, ok=True, row_count=int(result.get("row_count") or 0))
     if paged is not None:
         result["total"] = paged.get("total")
         result["paging"] = {
@@ -1573,20 +1461,16 @@ def _query_es(ds: dict, params: dict, identity: dict) -> dict:
             "total": paged.get("total"),
             # 集群无 PIT ⇒ 游标式只能往后走（随机跳页不可得）：前端据此只给顺序按钮
             "can_jump": False,
-            # ES 通道行序恒确定：正文的 sort + `search_after` 补的 `_doc` 全序 tiebreaker
+            # 正文的 sort + `search_after` 补的 `_doc` 全序 tiebreaker ⇒ 行序恒确定
             "stable_order": True,
         }
-    elif len(rows) >= limit:
-        # 不分页且行数撞到上限：显式标 truncated，前端要提醒“可能还有更多”，
-        # 不得把“共 1000 行”当成全量冒充在 446 万行的明细表上
-        result["truncated"] = True
     else:
-        # 没分页也没撞线：必须说出来“本次结果就是全部”（unpaged）。
-        # 缺这条事实，渲染面无法区分“缓存里是完整结果”与“缓存是分页上线前的旧全量”，
-        # 只能每次进页面都补一次重查——存量统计型表值图一直转圈就是这么来的。
-        result["unpaged"] = True
+        # 不分页：与 SQL 路同一说法判“本次是否取完”（撞线=可能还有更多，不得冒充全量）
+        if len(result.get("rows") or []) >= _sql_row_cap(sql):
+            result["truncated"] = True
+        else:
+            result["unpaged"] = True
     if default_window:
-        # 可见地告知“本次用的是哪个窗口”，而不是让调用方把默认窗口误读成“全量/无数据”
         result["default_window"] = default_window
     return result
 
@@ -1609,19 +1493,12 @@ def query_dataset(dataset_id: int, params: dict, identity: dict) -> dict:
     `site`/`datasource` 是业务名（唯一可接受的选源入参，服务端在可用范围∩授权集内
     解析为 id）；本函数**不接受** datasource_id（§7 黑盒，内部 id 不得由外部供给）。
     semantic 源走七闸门链; sql 源走 governed_execute(scope 以子查询包裹);
-    ES 源走 `es_client`（内置通道，不进治理域，结果带显式标注与审计）。
+    ES 型数据源走 `governed_execute`/`execute_es_page_with_permission`（同一治理口，
+    差别只在正文形状与翻页手法，见 `_query_es_on_source`）。
     """
     ds = get_dataset(dataset_id)
     if not ds or ds.get("status") != "active":
         raise ValueError("数据集不存在或已停用")
-    # ES 分支先于定源：它不挂在数据源上，把 resolve_effective_source 走在前面会
-    # 因“可用范围 ∩ 授权集 = 空”而把能查的数误拒成无权（口径不同，不是换通道）。
-    if is_es_dataset(ds):
-        result = _query_es(ds, params, identity)
-        formats = field_formats_for(ds, result.get("columns") or [])
-        if formats:
-            result["field_formats"] = formats
-        return result
     if params.get("datasource_id"):
         raise ValueError("不接受数据源内部 id：请用 site（站点业务名）或 datasource（数据源业务名）指定")
     scopes = _scope_filters(dataset_id, identity)
@@ -1754,6 +1631,13 @@ def _query_sql(ds: dict, params: dict, scopes: list[dict], identity: dict) -> di
     from backend.core.query_executor import validate_sql
     from backend.core.governed_query import governed_execute
     from backend.semantics.dataset_compiler import DatasetCompileError, compile_dataset
+
+    if _es_source_dataset(ds):
+        # ES 型执行源另走一条形态：编译器会给正文套一层派生表（`FROM (…) AS _ds_base`），
+        # 而 ES SQL 无派生表也无 OFFSET —— 详见 `_query_es_on_source`。
+        # 现网 App 使用类数据集就落在这一支（source_type=sql + ES 数据源），所以去重必须套在这里。
+        return _query_es_deduped(ds, params, identity,
+                                 lambda: _query_es_on_source(ds, params, scopes, identity))
 
     args = params.get("args") or params.get("variables") or {}
     try:

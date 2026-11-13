@@ -6,7 +6,7 @@ import VisComponentPreview, { ShapePreview, typeLabelsOf } from '@/components/Vi
 import { compatible, resolveDashboardDesign, chartZIndex, isChartHidden, isChartLocked } from '@/lib/dashboardDesign';
 import { libraryDragId, type LibraryDragData } from '@/lib/editorDrag';
 import {
-  DATASET_KIND_LABELS, EMPTY_DATASET_FILTER, ES_SOURCE_LABEL, ES_SOURCE_VALUE,
+  DATASET_KIND_LABELS, EMPTY_DATASET_FILTER,
   datasetKindOptions, datasetSourceOptions, filterDatasets, isDatasetFilterActive, type DatasetFilterState,
 } from '@/lib/datasetPickerFilter';
 import { Layers, BarChart3, Settings, PanelLeftClose, Database, Download, ChevronUp, ChevronDown, Eye, EyeOff, Lock, LockOpen, Search, X } from 'lucide-react';
@@ -204,12 +204,12 @@ export default function ComponentLibrary({
               )}
             </div>
             <div className="flex gap-1.5 mb-1.5">
-              <select aria-label="按数据源筛选数据集" title="按数据源筛选（该数据集能在所选源上执行；ES 通道不挂在数据源上，单列一项）"
+              <select aria-label="按数据源筛选数据集" title="按数据源筛选（该数据集能在所选源上执行；ES 型数据集也挂在 ES 数据源上，按源筛自然涵盖）"
                 className="flex-1 min-w-0 rounded border bg-background p-1.5 text-xs" value={dsFilter.source}
                 onChange={e => setDsFilter(f => ({ ...f, source: e.target.value }))}>
                 <option value="">全部数据源</option>
                 {dsSourceOptions.map(n => (
-                  <option key={n} value={n}>{n === ES_SOURCE_VALUE ? ES_SOURCE_LABEL : n}</option>
+                  <option key={n} value={n}>{n}</option>
                 ))}
               </select>
               <select aria-label="按类型筛选数据集" title="按取数通道类型筛选"

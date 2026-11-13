@@ -10,12 +10,12 @@
  *     选择器、`select` 给选择框（没配候选值就显式说出来，不静默退成文本框）。
  *     历史缺陷：`type` 存了但渲染不生效（string 与 text 两套词汇并存，日期被当文本填）。
  */
-import { Search, RotateCcw } from 'lucide-react';
+import { Search, RotateCcw, Lock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useDashboardStore, type Dashboard, type DashboardParam, type PageParam } from '../stores/dashboardStore';
-import { placeholderOfShape, shapeOfParam, uncontrolledParams } from '@/lib/dashboardParamAssembly';
+import { editableParamRows, placeholderOfShape, shapeOfParam, uncontrolledParams } from '@/lib/dashboardParamAssembly';
 
 type AnyParam = DashboardParam | PageParam;
 
@@ -34,6 +34,15 @@ export function ParamField({ param, value, onChange }: {
   param: AnyParam; value: any; onChange: (value: any) => void;
 }) {
   const shape = shapeOfParam(param);
+  // 看板级常数（如单 App 看板的 app_code）：只呈现不给输入口。
+  // 留一个能改的框等于允许“标题写着 A、图上算的是 B”，那比不给这个参数更糟。
+  if ((param as PageParam).readonly) {
+    return <output title="本看板的固定口径，不可修改（换分析对象请回到看板清单选对应的看板）"
+      className="inline-flex h-8 max-w-[16rem] items-center gap-1 truncate rounded-md border bg-muted/40 px-2 text-xs text-muted-foreground">
+      <Lock aria-hidden className="h-3 w-3 shrink-0" />
+      <span className="truncate">{String(value ?? '') || '（未设置）'}</span>
+    </output>;
+  }
   // 占位文案与画布控件同源（“动作 + 业务名”），本参数显式配的 placeholder 优先
   const placeholder = (param as DashboardParam).placeholder || placeholderOfShape(shape, param.label || param.name);
   const options = (param as DashboardParam).options || (param as PageParam).options || [];
@@ -94,7 +103,10 @@ export function DashboardRuntimeParams({ dashboard }: { dashboard: Dashboard }) 
   // 同一个参数只有一个输入口：画布控件（paramKey / bind_param）已驱动的键不再重复渲染，
   // 两套命名空间合并成一行（一行两带是历史遗留，用户无法判断以哪个为准）
   const rows = uncontrolledParams(dashboard, charts || []);
-  if (!rows.length) return null;
+  // 只剩只读的看板级常数时整带不出现：那一行既改不了任何东西，又带一套「搜索/重置」，
+  // 而画布已经有日期区间/站点/查询/重置（单 App 看板就是这形态，分析对象由标题表达）。
+  // 与大屏「筛选条件」入口同一判据（editableParamRows），不得两处各写一份。
+  if (!editableParamRows(rows).length) return null;
   return <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-muted/20 px-4 py-2">
     {rows.map(({ param, via }) => {
       const value = via === 'param'

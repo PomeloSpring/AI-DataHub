@@ -842,6 +842,17 @@ export default function Chat() {
   );
 
   /**
+   * 会话内「存为报告草稿」动作（消息操作行与交付文档卡共用一份）：
+   * 入口可以有两处，流程只能有一份 —— 两处各写一套就会有一处漏跟 reportable 判定。
+   */
+  const reportSaveAction = (idx: number, msg: any) => (msg?.reportable === true ? {
+    busy: savingReport !== null || loading,
+    // 两段式第一段：先在会话里生成草稿（可反复改），侧栏里点「归档」才进报告中心
+    label: msg.reportDraft ? '继续编辑报告草稿' : '存为报告草稿',
+    onSave: () => { void createReportDraftFromTurn(idx, msg); },
+  } : undefined);
+
+  /**
    * 消息操作行（参照千问）：一条回答只有**一行**操作，全部左靠，不分两端也不另起一行。
    *
    * 不是每轮都有的入口一律收进 `⋯`：存为报告要服务端判定本轮 reportable，
@@ -865,12 +876,7 @@ export default function Chat() {
           disabled={loading && idx === messages.length - 1}
           onCreateDoc={() => { void createDocFromMessage(idx, msg); }}
           onOpenDoc={() => setDocEditorIdx(idx)}
-          report={msg.reportable === true ? {
-            busy: savingReport !== null || loading,
-            // 两段式第一段：先在会话里生成草稿（可反复改），侧栏里点「归档」才进报告中心
-            label: msg.reportDraft ? '继续编辑报告草稿' : '存为报告草稿',
-            onSave: () => { void createReportDraftFromTurn(idx, msg); },
-          } : undefined}
+          report={reportSaveAction(idx, msg)}
           feedback={giveFeedback ? {
             value: fb,
             onUp: () => { void handleFeedback(idx, true); },
@@ -1578,7 +1584,7 @@ export default function Chat() {
                     <SelectValue placeholder="选择模型" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="default">默认模型(Harness 配置)</SelectItem>
+                    <SelectItem value="default">默认模型(Harness 配置 → 模型中心默认)</SelectItem>
                     {(executionLayer?.models || []).map((ref) => (
                       <SelectItem key={ref} value={ref}>{ref}</SelectItem>
                     ))}
@@ -1860,6 +1866,7 @@ export default function Chat() {
                           streaming={loading && idx === messages.length - 1}
                           conversationId={currentConvId}
                           onDesignContinue={text => { void sendMessage(text); }}
+                          onSaveReport={reportSaveAction(idx, msg)}
                         />
                         {msg.error && (
                           <p className="mt-1 text-xs text-muted-foreground">以上为中断前已输出的内容，可能不完整</p>
@@ -1876,7 +1883,7 @@ export default function Chat() {
 
                     {/* Agent/执行层最终回复(无 SQL 结果,如 qoder 执行层,含内嵌图表/设计卡片块)+ 赞踩打标 */}
                     {msg.reply && !msg.sql && !msg.error && msg.intent === 'agent' && (
-                      <MarkdownWithCharts text={msg.reply} sections streaming={loading && idx === messages.length - 1} conversationId={currentConvId} onDrill={handleDrill} onDesignContinue={text => { void sendMessage(text); }} />
+                      <MarkdownWithCharts text={msg.reply} sections streaming={loading && idx === messages.length - 1} conversationId={currentConvId} onDrill={handleDrill} onDesignContinue={text => { void sendMessage(text); }} onSaveReport={reportSaveAction(idx, msg)} />
                     )}
 
                     {/* 前置意图漏斗本地直答：界面上只留「转深度分析」这个逃生门，

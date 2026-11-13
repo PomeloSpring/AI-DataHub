@@ -145,14 +145,28 @@ _STAGE_ERROR_HINTS = {
     "LAYER_UNAVAILABLE": "执行层（Harness）未启用或不可用",
     "LAYER_UNSUPPORTED": "执行层适配器不支持当前配置",
     "EMPTY_QUESTION": "报告未登记可复跑的原始问题",
+    # 版式不达标不再改产平台事实表格（用户拍板：“不行就不行”），所以这是一个真的失败终态
+    "LAYOUT_DEVIATION": "本轮产出未符合上一版报告的版式，已按失败处理（不会改用通用事实表格冒充新报表）",
 }
 
 
 def generation_failure_reason(row: dict) -> str:
-    """生成未完成时的可读原因（错码 + 出路），供详情与列表共用。"""
-    code = str((row or {}).get("stage_error_code") or "").strip()
+    """生成未完成时的可读原因（错码 + 出路），供详情与列表共用。
+
+    版式不达标额外把逐条原因拼上（“缺少章节：关键发现”这种）：否则用户只看到
+    一句“未符合版式”，既不知道差在哪里，也无从判断是模型跑偏还是原版式本身有问题。
+    """
+    row = row or {}
+    code = str(row.get("stage_error_code") or "").strip()
     hint = _STAGE_ERROR_HINTS.get(code, "取数或分析环节失败")
-    return (f"本次生成未完成：{hint}。可点「用最新数据重新生成」重试；"
+    detail = ""
+    if code == "LAYOUT_DEVIATION":
+        reasons = ((json_object(row.get("analysis_source")) or {})
+                   .get("layout_result") or {}).get("reasons") or []
+        reasons = [str(r).strip() for r in reasons if str(r).strip()]
+        if reasons:
+            detail = "（" + "；".join(reasons[:3]) + "）"
+    return (f"本次生成未完成：{hint}{detail}。可点「用最新数据重新生成」重试；"
             "切换历史版本仍可查看之前生成的正文")
 
 
@@ -480,7 +494,8 @@ def _series_member_rows(row: dict, user: dict) -> list:
     key = report_access.series_key(row)
     target_id = int(row.get("id") or 0)
     rows = execute_query(
-        "SELECT id, owner_id, task_id, log_id, title, source_type, analysis_source, content_object_key "
+        "SELECT id, owner_id, task_id, log_id, title, source_type, format, generation_status, "
+        "stage_error_code, analysis_source, content, content_object_key "
         "FROM adh_reports WHERE owner_id=%s", (int(user["user_id"]),)) or []
     members = [r for r in rows if report_access.series_key(r) == key]
     if not any(int(r.get("id") or 0) == target_id for r in members):
@@ -488,23 +503,44 @@ def _series_member_rows(row: dict, user: dict) -> list:
     return members
 
 
-def delete_report(report_id: int, user: dict) -> dict:
-    """删除报表：仅属主；内容型与分析生成（含重跑追加的版本）可删，按归集键带走全部历史版本；
-    定时任务产出的报表跟执行记录一一对应，只能在任务调度的执行记录里管理。"""
+def delete_report(report_id: int, user: dict, scope: str = "version") -> dict:
+    """删除报表（仅属主）。``scope`` 只有两档，且必须分清楚：
+
+    * ``version``（默认）：只删路径里这一版。URL 里的 id 就是一个版本行，删它不该顺手带走整份报告
+     （用户实拍：点删除后连同历史版本全没了，而卡片上那个垃圾桶看上去只删当前选的这一版）；
+    * ``series``：显式删整份报告（按归集键带走全部历史版本），重跑追加的版本不残留孤儿卡片。
+
+    两档都不接定时任务产出的报表：它与执行记录一一对应，只能在任务调度的执行记录里管理。
+    内容型（会话保存/手写）一条即一份，所以 ``version`` 删它就是整份消失（``remaining=0``），
+    调用方得把这句话说到确认文案里，而不是删完才发现卡片没了。
+    """
+    if scope not in ("version", "series"):
+        raise ValueError("删除范围只能是单个版本（version）或整份报告（series）")
     row = _load_owned_report(report_id, user)
     if not report_access.deletable(row):
         raise ValueError("定时任务产出的报告与其执行记录一一对应，"
                          "请在任务调度的执行记录中管理")
     from backend.common.db import execute_write
+    members = _series_member_rows(row, user)
+    targets = [row] if scope == "version" else members
     deleted = 0
-    for member in _series_member_rows(row, user):
+    for member in targets:
         if execute_write("DELETE FROM adh_reports WHERE id=%s AND owner_id=%s",
                          (int(member["id"]), int(user["user_id"]))) == 1:
             drop_report_content(member)   # 行已删，正文对象跟着走（失败只留孤儿，见函数注释）
             deleted += 1
     if not deleted:
         raise ValueError("报告删除失败（记录已变化），请刷新后重试")
-    return {"report_id": report_id, "deleted": deleted}
+    deleted_ids = {int(t["id"]) for t in targets}
+    remaining = [m for m in members if int(m.get("id") or 0) not in deleted_ids]
+    # 基线（卡片身份那一版）= 剩余里最早的一版：id 是雪花号按时间递增，而成员查询没 ORDER BY，
+    # 不得拿列表末位当"最早"
+    base = min(remaining, key=lambda m: int(m.get("id") or 0)) if remaining else None
+    return {"report_id": report_id, "scope": scope, "deleted": deleted,
+            "remaining": len(remaining),
+            # 删掉最早一版（原始报告）后，卡片身份会改按剩余最早版本算（会话保存 → 分析生成），
+            # 调用方要能据此提醒用户，而不是让人事后发现编辑入口不见了
+            "remaining_base_id": int(base["id"]) if base else 0}
 
 
 def _md_cell(value) -> str:
@@ -531,6 +567,104 @@ _ARTIFACT_BLOCK = re.compile(r"```artifact\s*\n(.*?)\n```", re.S)
 # 可当报表正文的产物类型 → 报表格式。其余类型（excel/csv/pdf/图片）是数据文件或二进制
 # 产物，归档入口在资产清单（报表中心只支持 markdown/html 渲染面，不假装能展示）。
 _ARTIFACT_DOC_FORMATS = {"html": "html", "md": "markdown", "markdown": "markdown"}
+
+# 交付形态渲染机的引用块（```report）：正文不在消息里，而在受管文档对象表里。
+# 它是新的主通道；```artifact(html) 保留给历史回合与用户点名要下载件的场合。
+_REPORT_BLOCK = re.compile(r"```report\s*\n(.*?)\n```", re.S)
+
+
+def report_deliverables(answer: dict) -> list:
+    """从回答里解析交付文档引用（形状非法的块跳过，不猜 doc_id）。"""
+    body = "\n".join(str((answer or {}).get(k) or "") for k in ("content", "reply"))
+    out = []
+    for raw in _REPORT_BLOCK.findall(body):
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(data, dict) and str(data.get("doc_id") or "").strip():
+            out.append({"doc_id": str(data["doc_id"]).strip(),
+                        "body_kind": str(data.get("body_kind") or "html").strip().lower(),
+                        "title": str(data.get("title") or "").strip()})
+    return out
+
+
+def latest_report_deliverable(answer: dict) -> dict:
+    """本轮的主交付对象（多个引用取最后一个 = 最新修订）。"""
+    items = report_deliverables(answer)
+    return items[-1] if items else {}
+
+
+def read_render_document_body(*, user: dict, deliverable: dict) -> dict:
+    """按引用取交付对象，回 ``{format, content, title, theme, doc_id, body_kind}``；取不到一律外抛原因。
+
+    与 ``read_document_artifact`` 同一条纪律：**不得**“取不到就回退去存对话目录摘要”
+    （no-silent-degradation §1）—— 用户在本轮看到的就是这份文档，摘要冒充不了它。
+
+    两种正文形态的归档口径不同（都是显式选择，不是静默降级）：
+    - ``html``：直接存原文（与对话里的 iframe 同一份）；
+    - ``spec``：存服务端渲染的**自包含快照**（图表退表格并写明原因）。为什么不存引用：
+      交付对象随会话删除会被清理，而报表必须脱离会话独立存活；引用不能当存档。
+      报表里另外存着 ``origin.render_doc_id``，对象还在世时可以回到对话看可交互版。
+    其他形态（如 chart-data）尚未接归档面，同样显式报错，不静默转成 markdown 凑一份不相等的报表。
+    """
+    from backend.modules.viz.services import report_document_service as docs
+
+    doc_id = str(deliverable.get("doc_id") or "").strip()
+    body_kind = str(deliverable.get("body_kind") or "html").strip().lower()
+    if body_kind not in ("html", "spec"):
+        raise ValueError(
+            f"本轮交付对象是 {body_kind or '未知'} 形态，报表中心该形态的归档尚未接线；"
+            "请在对话里要求改用整页文档（HTML）或结构化报告交付后再存为报告")
+    try:
+        row = docs.load_document(doc_id, user_id=int(user["user_id"]))
+    except docs.RenderDocumentError as exc:
+        raise ValueError(
+            f"本轮报告正文已取不到（{exc.message}）。报表正文以该交付对象为事实源，"
+            "不能拿对话摘要冒充；请在对话里重新生成该报告后再存为报告") from None
+    saved_kind = str(row.get("body_kind") or "").strip().lower()
+    if saved_kind != body_kind:
+        # 声明与实际不符时不能“就当这个形态存”：那会把一份渲染面不同的东西归档成报告
+        raise ValueError(
+            f"引用块声明的是 {body_kind} 形态，而交付对象实际是 {saved_kind} 形态（两者已不一致）。"
+            "请在对话里重新生成该报告后再存为报告")
+    theme = str(row.get("theme") or "")
+    if saved_kind == "spec":
+        notes = list(row.get("warnings") or []) if isinstance(row.get("warnings"), list) else []
+        content = docs.render_spec_to_html(row.get("body") or "", title=str(row.get("title") or ""),
+                                           theme=theme or None, notes=notes)
+        # 归档正文同样过出站守卫（由调用方统一校）；快照里不得出现未接线的未知章节
+        return {"format": "html", "content": content, "title": str(row.get("title") or "").strip(),
+                "theme": theme, "doc_id": doc_id, "body_kind": "spec",
+                "snapshot": True}
+    return {"format": "html", "content": str(row.get("body") or ""),
+            "title": str(row.get("title") or "").strip(),
+            "theme": theme, "doc_id": doc_id, "body_kind": saved_kind}
+
+
+def _render_document_theme(deliverable: dict, user: dict) -> str:
+    """取交付对象采用的主题 id（草稿分支只要主题，不需要整份正文）。
+
+    取不到不报错、也不猜默认值：重跑拿不到上一版主题时会按查看者当前主题出图，
+    那与“主题漂移”同性质但归因不同 —— 这里宁返空串也不编造一个“看起来对”的 id。
+    """
+    from backend.modules.viz.services import report_document_service as docs
+
+    try:
+        row = docs.load_document(str(deliverable.get("doc_id") or ""),
+                                 user_id=int(user["user_id"]), include_body=False)
+    except docs.RenderDocumentError:
+        return ""
+    return str(row.get("theme") or "")
+
+
+def _deliverable_title(deliverable: dict, doc_title: str = "") -> str:
+    """交付对象标题：以后端文档标题为准，块里声明的值只作兼容回退（不把 doc_id 当名字）。"""
+    for cand in (doc_title, str(deliverable.get("title") or "")):
+        cleaned = _clean_heading(cand) if cand else ""
+        if cleaned and len(cleaned) >= 4:
+            return cleaned
+    return ""
 
 
 def conversation_artifacts(answer: dict) -> list:
@@ -629,6 +763,10 @@ def turn_reportability(turn: dict) -> tuple[bool, str]:
         return False, "回合记录无效"
     if turn.get("error"):
         return False, "该回合执行未完成，没有可归档的结果"
+    # 交付形态渲染机的主交付物（```report 引用）= 本轮成品就是一份报告
+    # （旧写法不看本块：M1 上线后会出现“对话里看得到报告、存不进报告中心”的同类缺口）
+    if latest_report_deliverable(turn):
+        return True, "含交付文档对象"
     # 交付了 HTML/Markdown 报告文件 = 本轮成品就是报表（旧写法不看 artifact，
     # 导致整份 HTML 报告的回合连「存为报表」入口都不给）
     if document_artifact(turn):
@@ -875,8 +1013,14 @@ def build_report_draft(*, user: dict, conversation_id: int, message_index: int =
     if not answer_text:
         raise ValueError("该回合没有可保存的正文（可能执行失败或被中断）")
     result = answer.get("result") if isinstance(answer.get("result"), dict) else None
+    deliverable = latest_report_deliverable(answer)
     artifact = document_artifact(answer)
-    if artifact:
+    doc_meta: dict = {}
+    if deliverable:
+        # 本轮主交付物是渲染机落下的文档对象：正文取该对象本身（与对话里看到的那份同一事实源）
+        doc_meta = read_render_document_body(user=user, deliverable=deliverable)
+        fmt, content = doc_meta["format"], doc_meta["content"]
+    elif artifact:
         # 本轮交付的是 HTML/Markdown 报告文件：正文取产物本身（与下载卡片同一份），
         # 而不是把“报告已生成，包含…”那段目录当报表正文存下来
         fmt, content = read_document_artifact(
@@ -891,15 +1035,20 @@ def build_report_draft(*, user: dict, conversation_id: int, message_index: int =
         raise ValueError("该回答包含不应归档的基础设施信息（命中: "
                          + ", ".join(hits) + "），不能存为报告；请在对话中重新表述业务结论")
     now = _now()
-    artifact_title = _artifact_title(artifact, content) if artifact else ""
+    artifact_title = (_deliverable_title(deliverable, str(doc_meta.get("title") or ""))
+                      if deliverable
+                      else (_artifact_title(artifact, content) if artifact else ""))
     return {
         "title": (artifact_title
                   or derive_report_title(question, answer_text, result))[:_MAX_TITLE_CHARS],
         "markdown": content[:_MAX_CONTENT_CHARS],
-        # 正文格式随产物走：html 草稿不是 markdown，前端不得把它当纯文本给入编辑器
+        # 正文格式随交付物走：html 草稿不是 markdown，前端不得把它当纯文本给入编辑器
         "format": fmt,
         "artifact": ({"filename": str(artifact.get("filename") or ""),
                       "type": str(artifact.get("type") or "")} if artifact else None),
+        # 交付对象引用：报告中心靠它取回与对话里完全同源的那一份（与 artifact 两存其一）
+        "document": ({"doc_id": str(deliverable.get("doc_id") or ""),
+                      "body_kind": str(deliverable.get("body_kind") or "")} if deliverable else None),
         "created_at": now, "updated_at": now, "revisions": 0,
         "message_uuid": str(answer.get("message_uuid") or message_uuid or ""),
         "conversation_id": int(conv["id"]),
@@ -940,13 +1089,22 @@ def save_conversation_report(*, user: dict, conversation_id: int, title: str = "
     if not answer_text:
         raise ValueError("该回合没有可保存的正文（可能执行失败或被中断）")
     draft_body = str(draft.get("markdown") or "").strip()
+    deliverable = latest_report_deliverable(answer)
     artifact = document_artifact(answer)
+    doc_meta: dict = {}
     if draft_body:
         # 草稿即成品：不再追加结果表（结果表已在初稿里，用户删掉就是不要）
         content = draft_body
         draft_format = str(draft.get("format") or "").strip()
         fmt = draft_format if draft_format in CONTENT_FORMATS else (
-            artifact_report_format(artifact) if artifact else "markdown")
+            "html" if deliverable else (artifact_report_format(artifact) if artifact else "markdown"))
+        # 草稿正文与交付对象不一致时以草稿为准（用户改过稿），但来源要可账：存 doc_id 供溯源
+        doc_meta = {"doc_id": str(deliverable.get("doc_id") or ""),
+                    "theme": _render_document_theme(deliverable, user)} if deliverable else {}
+    elif deliverable:
+        # 没有草稿正文（旧客户端直接归档）：正文取本轮交付对象，不退回去存目录摘要
+        doc_meta = read_render_document_body(user=user, deliverable=deliverable)
+        fmt, content = doc_meta["format"], doc_meta["content"]
     elif artifact:
         # 没有草稿正文（旧客户端直接归档）：正文仍取本轮报告产物，不退回存目录摘要
         fmt, content = read_document_artifact(
@@ -965,6 +1123,7 @@ def save_conversation_report(*, user: dict, conversation_id: int, title: str = "
                          + ", ".join(hits) + "），不能进报告中心；请修改正文后重试")
     report_title = (str(title or "").strip()
                     or str(draft.get("title") or "").strip()
+                    or (_deliverable_title(deliverable, str(doc_meta.get("title") or "")) if deliverable else "")
                     or (_artifact_title(artifact, content) if artifact else "")
                     or derive_report_title(question, answer_text,
                                           answer.get("result") if isinstance(answer.get("result"), dict) else None))
@@ -986,9 +1145,12 @@ def save_conversation_report(*, user: dict, conversation_id: int, title: str = "
                 "site_code": str(conv.get("site_code") or ""),
                 # 产物溯源：报表正文来自哪份文件（仅供服务端排查，不对外下发新字段）
                 "artifact_filename": str(artifact.get("filename") or ""),
-                # 上一版交付时声明的主题（```artifact 块的 theme 字段）：重跑沿用同一主题，
-                # 而不是让模型每轮重新猜一套配色（真机实测它会自造 hex，与字模库漂移）
-                "theme": str(artifact.get("theme") or "")})
+                # 交付对象溯源：正文来自哪份受管文档（重跑/排查靠它定位到同一份）
+                "render_doc_id": str(doc_meta.get("doc_id") or ""),
+                # 上一版交付时声明的主题（artifact 块的 theme 字段或文档对象实际采用的主题）：
+                # 重跑沿用同一主题，而不是让模型每轮重新猜一套配色（真机实测它会自造 hex，
+                # 与字模库漂移）
+                "theme": str(artifact.get("theme") or doc_meta.get("theme") or "")})
     result["workspace_id"] = int(conv.get("workspace_id") or 0)
     result["archived_at"] = _now()
     return result
@@ -1009,8 +1171,87 @@ def report_origin(row: dict) -> dict:
 # 叙述与图表整段丢弃 —— 会话里存的那张中国地图报表重跑后变成两张干表格，用户读到的是
 # "数据新了但这不是原来那份报表"。版式在点重跑时抽取并随任务带走，产出后按同一份校验。
 def has_report_layout(layout: dict) -> bool:
-    """有没有可复用的原版式（无结构就别假装能沿用版式，重跑会退回事实表格并说明原因）。"""
+    """有没有可复用的原版式（无结构就别假装能沿用版式，重跑会在点击时就显式拒）。"""
     return bool((layout or {}).get("headings") or (layout or {}).get("charts"))
+
+
+# 平台自己生成的事实表格正文（重跑降级产物）。它**绝不能**当"原版式"基线传给下一轮：
+# 真机事故（报告 1794536229135541 / v3）——重跑把上一版（已是降级事实表）当原版，抽出的契约
+# 成了「分析项 1/2/3」这种占位标题；本轮产出因为没有这些占位标题被判不达标 → 再退一次事实表，
+# 占位标题从 3 个长到 9 个。降级产物当基线 = 版式逐代劣化。
+_FACT_TABLE_MARKERS = ("平台事实表格", "降级事实报告")
+_FACT_SECTION_HEADING_RE = re.compile(r"^\s{0,3}#{1,4}\s*分析项\s*\d+\s*$", re.M)
+# 原版正文整份带给模型当版式参照的上限（超出截断，并在契约里显式说明截断了）
+_LAYOUT_REF_MAX_CHARS = 30000
+# 新正文与参照的行级重合率 ≥ 该值 → 判"本轮照抄了上一版"（参照正文带旧数字，必须防这一手）
+_LAYOUT_COPY_OVERLAP_RATIO = 0.92
+# 回溯基线时最多往前翻多少版：防把整条系列的历史正文全拉一遍（每版一次对象存储读）
+_LAYOUT_BASELINE_LOOKBACK = 12
+
+
+def is_platform_fact_body(body: str) -> bool:
+    """这份正文是不是平台自己生成的事实表格（而非模型/人写的报表正文）。"""
+    text = str(body or "")
+    if not text.strip():
+        return False
+    if any(marker in text[:600] for marker in _FACT_TABLE_MARKERS):
+        return True
+    return len(_FACT_SECTION_HEADING_RE.findall(text)) >= 2
+
+
+def _read_body_text(row: dict) -> tuple:
+    """读一版报表的正文，回 ``(正文, 读不到时的原因)``（正文空 = 不可用）。
+
+    原因取真实那一条（对象存储取不到 / 还没迁移 / 本来就没正文），不拿一句笼统文案盖掉：
+    回溯基线时用户看到的就应该是“为什么这一版拿不到”。
+    """
+    if not report_access.has_body(row):
+        return "", body_missing_reason(row)
+    try:
+        return read_report_content_bytes(row).decode("utf-8", "replace"), ""
+    except (ValueError, LookupError) as exc:
+        logger.warning("报表 %s 正文读取失败（回溯版式基线时跳过）: %s", row.get("id"), exc)
+        return "", str(exc)
+
+
+def resolve_layout_baseline(row: dict, user: dict) -> dict:
+    """为重跑找一份**可信的原版式参照**：从当前版本往同一系列里回溯，跳过平台事实表格产物。
+
+    回 ``{body, format, report_id, skipped_degraded, reason}``：
+    * ``body`` 非空 = 找到了，``format`` 跟着这一版走（HTML 报表不会因某次降级而永久变 markdown）；
+    * 全系列都没有可用正文 → ``reason`` 写清为什么（调用方必须把它说出来，不得拿降级产物凑数）。
+
+    只包系列内当前版本及更早的版本：重跑旧版本时不得把更新的一版当"原版"（时间不能倒流）。
+    """
+    current_id = int(row.get("id") or 0)
+    try:
+        members = _series_member_rows(row, user)
+    except Exception:      # 系列查询失败不能把重跑堵死：退回用当前版本自己当基线
+        logger.exception("报表 %s 版本系列读取失败，版式基线退回当前版本", current_id)
+        members = [row]
+    candidates = [m for m in members if int(m.get("id") or 0) <= current_id]
+    candidates.sort(key=lambda m: int(m.get("id") or 0), reverse=True)
+    candidates = candidates[:_LAYOUT_BASELINE_LOOKBACK]
+    skipped, unreadable = [], ""
+    for member in candidates:
+        body, error = _read_body_text(member)
+        if not body:
+            if not unreadable:
+                unreadable = error
+            continue
+        if is_platform_fact_body(body):
+            skipped.append(int(member.get("id") or 0))
+            continue
+        return {"body": body, "format": str(member.get("format") or "markdown"),
+                "report_id": int(member.get("id") or 0), "skipped_degraded": skipped, "reason": ""}
+    if skipped:
+        reason = ("这份报表的历史版本都是平台事实表格（之前的重新生成都没能沿用版式），"
+                  "没有原版式可沿用")
+    elif unreadable:
+        reason = f"历史版本正文都读不到（{unreadable}），本次无原版式可沿用"
+    else:
+        reason = "这份报表还没有可用的正文版本，本次无原版式可沿用"
+    return {"body": "", "format": "", "report_id": 0, "skipped_degraded": skipped, "reason": reason}
 
 
 def extract_report_layout(body: str, fmt: str = "markdown") -> dict:
@@ -1046,18 +1287,39 @@ def extract_report_layout(body: str, fmt: str = "markdown") -> dict:
             "charts": charts[:_LAYOUT_MAX_CHARTS]}
 
 
-def report_layout_contract(layout: dict, theme: str = "") -> str:
-    """把原版式写成给无人值守模型的输出契约（整段文本由报表域一处生成，执行链只拼接）。
+def report_layout_contract(layout: dict, theme: str = "", reference: str = "",
+                           framing: str = "rerun", origin: str = "") -> str:
+    """把既定版式写成给模型的输出契约（整段文本由报表域一处生成，执行链只拼接）。
 
     最要紧的一条写在最前：**数值必须来自本次查询**——否则模型会照抄上一版正文，
     产出一份"版式完全正确、数字全是旧的"报表，那比版式变了更坏。
+
+    ``reference`` 是原版正文全文：只给 12 个章节字符串的话，模型看不见真实的表格列、
+    图表位置与 HTML 样式，只能猜（这就是 v3 那一代版式越跑越不像的根因）；把原版整份带上，
+    它是"照着旧版式重写一遍"，而不是"猜一个长得像的"。
+
+    ``framing`` 裁决这段契约说在哪种场合（文字仍只此一份，靠档位切换措辞，不在执行链另写一套）：
+    - ``"rerun"``（默认）：报表「用最新数据重新生成」/ 定时任务沿用上一版 —— 有"上一版"可抄，
+      所以口径是"只换数据、不换版式"；
+    - ``"template"``：任务/分析场景选定了报告模板，本轮是**第一次**按该模板出稿 —— 没有上一版，
+      谎称"沿用上一版"会让模型以为模板正文里的示例数字是可以沿用的旧数据，故措辞改成
+      "结构照模板、模板里的数字一个都不许写进来"（``origin`` 说明版式从哪来，写进标题行）。
     """
     if not has_report_layout(layout):
         return ""
     headings = [str(h) for h in (layout.get("headings") or [])]
     charts = [c for c in (layout.get("charts") or []) if isinstance(c, dict)]
-    lines = ["## 报表版式要求（本次是按最新数据重新生成：只换数据，不换版式）",
-             "这份报表上一版有固定版式，下列结构必须在你的回答里原样保留："]
+    by_template = str(framing or "").strip().lower() == "template"
+    ref_label = "报告模板正文" if by_template else "上一版报表正文"
+    # 截断提示用短标签（与改动前的文字一致，不拿标题当可断言口径）
+    ref_short = "模板正文" if by_template else "上一版正文"
+    if by_template:
+        who = (str(origin or "").strip() or "本次选定的报告模板")
+        lines = [f"## 报表版式要求（按{who}出稿：结构照模板，数值全部来自本轮查询）",
+                 "下列结构由该模板规定，必须原样出现在你的回答里："]
+    else:
+        lines = ["## 报表版式要求（本次是按最新数据重新生成：只换数据，不换版式）",
+                 "这份报表上一版有固定版式，下列结构必须在你的回答里原样保留："]
     if headings:
         lines.append("- 章节标题逐字保留（层级与文字一致、顺序不变）：" + " / ".join(headings))
     for spec in charts:
@@ -1070,19 +1332,61 @@ def report_layout_contract(layout: dict, theme: str = "") -> str:
             + "（chart_type 与 columns 不得改，只把 rows 换成最新查询结果；"
               "标题里写死的时间范围按本轮实际窗口改写，其余文字沿用）")
     if str(theme or "").strip():
-        lines.append(f"- 配色沿用上一版报表的主题 {str(theme).strip()}（令牌取系统提示词「报告主题令牌」段，不得自造颜色）。")
-    lines += ["- 所有数值一律取本轮查询返回的结果：严禁沿用上一版的数字、严禁编造；"
-              "本轮查不到的项就写" + "\"暂无数据\"" + "，不要留旧值；"]
+        _t = str(theme).strip()
+        lines.append(f"- 配色{'按模板指定的主题' if by_template else '沿用上一版报表的主题'} {_t}"
+                     "（令牌取系统提示词「报告主题令牌」段，不得自造颜色）。")
+    lines += ["- 所有数值一律取本轮查询返回的结果："
+              + ("模板正文里的示例数字一个都不许写进本次报告" if by_template else "严禁沿用上一版的数字")
+              + "、严禁编造；本轮查不到的项就写" + "\"暂无数据\"" + "，不要留旧值；"]
     # 只有登记了章节才谈"章节下的结论"：纯图表版式（只有一张图、没有固定章节）里这句是空话，
     # 留着会让模型凭空补出契约没要求的章节，反倒把版式改宽了。
     if headings:
         lines.append("- 章节下的结论文字按最新数据重写，数据里没有依据的结论不要写；")
     lines.append("- 只输出报表正文：不要开场白、不要说明你做了什么、不要输出 ```artifact 块。")
     if str(layout.get("format") or "") == "html":
-        lines.append("- 正文是整份自包含 HTML 文档（含 <style> 与内联图表），沿用上一版的章节结构与样式基调。")
+        lines.append("- 正文是整份自包含 HTML 文档（含 <style> 与内联图表），"
+                     + ("沿用模板的章节结构与样式基调。" if by_template else "沿用上一版的章节结构与样式基调。"))
     else:
         lines.append("- 正文用 Markdown 输出（配合上面的 ```chart 块）。")
+    ref = str(reference or "").strip()
+    if ref:
+        note = ""
+        if len(ref) > _LAYOUT_REF_MAX_CHARS:
+            # 截断不是静默改口径：契约里就要说清只带了前段，否则模型会以为原版就到这里
+            ref = ref[:_LAYOUT_REF_MAX_CHARS]
+            note = f"（{ref_short}过长，此处只携带前 {len(ref)} 字；未给出的部分按已给结构延续）"
+        lines += ["", f"### {ref_label}（仅作版式参照）",
+                  "按它的章节、表格列、图表位置与样式重写；**里面的数值一律不得沿用**，"
+                  "本轮一律以最新查询结果为准。" + note,
+                  f"<{ref_label}>", ref, f"</{ref_label}>"]
     return "\n".join(lines)
+
+
+def _layout_reference_body(source: dict) -> str:
+    """取本次重跑携带的原版正文（只用于事后"照抄旧版"校验，不落 analysis_source）。"""
+    baseline_id = int((source or {}).get("layout_baseline_report_id") or 0)
+    if not baseline_id:
+        return ""
+    row = load_report(baseline_id) or {}
+    body, _ = _read_body_text(row)
+    return body
+
+
+def _copied_from_reference(body: str, reference: str) -> bool:
+    """新正文与原版行级重合率 ≥ 阈值 → 判"本轮没把新数据写进去，只是把旧报表抄了一遍"。
+
+    把旧正文当参照带给模型，最大的风险就是照抄；这一条能机械判（行集合重合率），
+    不靠模型自觉。阈值取高（默认 0.92）：真数据未变时两版也会高度相似，但那本来就是
+    少数情况，宁可误报一条原因给用户，也不能抄着旧数字冒充"已按最新数据生成"。
+    """
+    if not str(body or "").strip() or not str(reference or "").strip():
+        return False
+    def _lines(text: str) -> set:
+        return {ln.strip() for ln in str(text).splitlines() if len(ln.strip()) >= 8}
+    new_lines, ref_lines = _lines(body), _lines(reference)
+    if not new_lines or not ref_lines:
+        return False
+    return len(new_lines & ref_lines) / max(1, len(new_lines)) >= _LAYOUT_COPY_OVERLAP_RATIO
 
 
 def _looks_like_html_doc(text: str) -> bool:
@@ -1176,20 +1480,21 @@ def prepare_report_refresh(report_id: int, user: dict) -> dict:
     from uuid import uuid4
     run_id = uuid4().hex
     title = str(row.get("title") or "分析报告")
-    # 原版式：抽得到就带走（只换数据、不换版式）；读不到正文不掩成"没版式"，
-    # 而是记下原因，产出时一并回显（否则用户只会看到"新报表长得不一样"，查不出为什么）
-    layout_error = ""
-    body_text = ""
-    if report_access.has_body(row):
-        try:
-            body_text = read_report_content_bytes(row).decode("utf-8", "replace")
-        except (ValueError, LookupError) as exc:
-            layout_error = f"上一版正文读不到（{exc}），本次无版式可沿用"
-            logger.warning("报表 %s 原版式抽取失败: %s", report_id, exc)
-    fmt = str(row.get("format") or "markdown")
-    layout = extract_report_layout(body_text, fmt)
+    # 原版式：先回溯一份**可信基线**（跳过平台事实表格产物），抽得到就带走。
+    # 拿不到基线就在点击时显式拒（不建空版本、不跑一轮取数再退事实表格）：重跑的定位是
+    # "同一份报表换新数据"，没有版式可沿时它就不是这件事，由人决定要不要去重新问一轮。
+    baseline = resolve_layout_baseline(row, user)
+    body_text = baseline["body"]
+    fmt = baseline["format"] or str(row.get("format") or "markdown")
+    layout = extract_report_layout(body_text, fmt) if body_text else {"format": fmt,
+                                                                     "headings": [], "charts": []}
+    layout_error = baseline["reason"]
     if not layout_error and not has_report_layout(layout):
         layout_error = "上一版正文没有可复用的版式结构（无章节标题与图表块）"
+    if layout_error:
+        raise ValueError(f"无法按最新数据重新生成：{layout_error}；"
+                         "本版式重跑不会退回通用事实表格冒充新报表。"
+                         "可在智能问数里重新提问，再把那一轮另存为报告")
     theme = str(origin.get("theme") or "")
     source = {"kind": "agent_question", "question": question,
               "site_code": site_code,
@@ -1199,7 +1504,11 @@ def prepare_report_refresh(report_id: int, user: dict) -> dict:
               "refresh_series": report_access.series_key(row),
               # 版式契约（含 format）：生成侧据此拼提示词并校验产出
               "layout": layout,
-              "layout_error": layout_error,
+              "layout_error": "",
+              # 版式基线是哪一版（可能与刚被点的那版不同：降级产物不能当基线）：
+              # 产出后拿这一版正文做"照抄旧报表"的机械校验，因此不落进 source 正文本身
+              "layout_baseline_report_id": int(baseline["report_id"] or 0),
+              "layout_baseline_skipped_degraded": list(baseline["skipped_degraded"] or []),
               # 主题沿用：上一版交付声明过的主题（没有则交提示词按默认主题包）
               "report_theme": theme,
               # 新报表自己也要可再次重跑 / 可建任务：可复跑问题随 origin 带走
@@ -1210,7 +1519,7 @@ def prepare_report_refresh(report_id: int, user: dict) -> dict:
                          "conversation_id": int(origin.get("conversation_id") or 0),
                          "conversation_title": str(origin.get("conversation_title") or "")}}
     report = create_report(
-        title=title, content="", format=fmt if has_report_layout(layout) else "markdown",
+        title=title, content="", format=fmt,
         workspace_id=int(row.get("workspace_id") or 0),
         owner_id=int(user["user_id"]), run_key=run_id, generation_status="queued",
         source_type="analysis", analysis_source=source)
@@ -1224,9 +1533,9 @@ def prepare_report_refresh(report_id: int, user: dict) -> dict:
         # `_finalize_agent_report` 需要的报表上下文（正文优先级判断只看标题与版式）
         "report": {"id": report["id"], "title": title},
         "source": source,
-        # 无人值守配置：与定时任务同一形状（版式契约由报表域算好整段带走）
+        # 无人值守配置：与定时任务同一形状（版式契约由报表域算好整段带走，含原版正文参照）
         "config": {"site_code": site_code, "report_theme": theme,
-                   "layout_contract": report_layout_contract(layout, theme)},
+                   "layout_contract": report_layout_contract(layout, theme, body_text)},
         # 执行身份按报表属主的**当前**角色重解（能力与可查范围实时继承，不信报表里存的配置）
         "identity": resolve_execution_owner(int(user["user_id"]),
                                            int(row.get("workspace_id") or 0)),
@@ -1640,13 +1949,13 @@ def finish_report(report_id, **values):
 def _finalize_agent_report(report_id: int, report: dict, source: dict, response: dict) -> dict:
     """一次无人值守重跑的**唯一收口**：把产出落成报表终态，并回终态摘要给播报侧。
 
-    正文优先级：**模型终稿（沿用原版式）> 事实表格**。旧写法不分情况一律只存
-    `render_fact_report`，把模型写的叙述与 ```chart 图表整段丢掉了，报表中心里同一份
-    报表的新一代与上一代看上去就是两份不同的东西（用户反馈："数据是新的，但不是原本报表的样式"）。
+    **只有沿用原版式的模型终稿才能入库**；不达版式就是本轮失败，显式记 `LAYOUT_DEVIATION`
+    与逐条原因，不再改产平台事实表格——旧写法把"退回事实表"当成一种可用结局，用户拿到的是一张
+    与原版式无关的干表而库上写着 ready，而真正的代价是这份降级产物会被下一代重跑当成
+    "原版式"基线（版式逐代劣化的入口，见 `resolve_layout_baseline`）。退回可以，但由人决定。
 
     终态按事实判（`evidence_verdict`：有已登记的受治理取数 + 正文非空 = ready），
-    不再一律写死 degraded；"有没有沿用原版式"是另一件事，记在 `layout_result` 里
-    并让用户看得到原因（§1：退回事实表格可以，但要说清是退回）。
+    不一律写死 degraded；"有没有沿用原版式"记在 `layout_result` 里并让用户看得到原因。
 
     只在这里写终态：在线流式重跑与任何后续产出方都调它，不在别处再拼一套判断。
     回 ``{generation_status, stage_error_code, layout_result, evidence, ...}``。
@@ -1660,20 +1969,27 @@ def _finalize_agent_report(report_id: int, report: dict, source: dict, response:
     results = [item for item in (response.get("_analysis_results") or [response])]
     security = next((r.get("_security_context") for r in results
                      if isinstance(r, dict) and r.get("_security_context")), {}) or {}
-    facts = render_fact_report(report["title"], results)
     content, reasons = _body_for_layout(response.get("answer"), layout, source)
-    if content:
-        fmt, layout_status = str(layout.get("format") or "markdown"), "preserved"
-    else:
-        # 不达契约就退回事实表格：格式跟着正文换，不留"库说自己是 HTML、正文是 Markdown"的假格式
-        content, fmt, layout_status = facts, "markdown", "fact_only"
+    fmt = str(layout.get("format") or "markdown")
+    if not content:
+        _, evidence = evidence_verdict(results, content="")
+        layout_result = {"status": "rejected", "format": fmt, "reasons": reasons[:5]}
+        finish_report(report_id, generation_status="failed", content="", format=fmt,
+                      security_context=security, evidence_summary=evidence,
+                      stage_error_code="LAYOUT_DEVIATION",
+                      analysis_source={**source, "layout_result": layout_result})
+        return {"generation_status": "failed", "stage_error_code": "LAYOUT_DEVIATION",
+                "format": fmt, "layout_result": layout_result, "evidence": evidence,
+                "query_count": int(evidence.get("query_count") or 0),
+                "reason": generation_failure_reason(
+                    {"stage_error_code": "LAYOUT_DEVIATION",
+                     "analysis_source": {"layout_result": layout_result}})}
     status, evidence = evidence_verdict(results, content=content)
-    stage = "" if layout_status == "preserved" else "FACT_ONLY"
-    layout_result = {"status": layout_status, "format": fmt, "reasons": reasons[:5]}
+    layout_result = {"status": "preserved", "format": fmt, "reasons": []}
     finish_report(report_id, generation_status=status, content=content, format=fmt,
-                  security_context=security, evidence_summary=evidence, stage_error_code=stage,
+                  security_context=security, evidence_summary=evidence, stage_error_code="",
                   analysis_source={**source, "layout_result": layout_result})
-    return {"generation_status": status, "stage_error_code": stage, "format": fmt,
+    return {"generation_status": status, "stage_error_code": "", "format": fmt,
             "layout_result": layout_result, "evidence": evidence,
             "query_count": int(evidence.get("query_count") or 0),
             "reason": "" if status == "ready" else str(
@@ -1681,10 +1997,11 @@ def _finalize_agent_report(report_id: int, report: dict, source: dict, response:
 
 
 def _body_for_layout(answer, layout: dict, source: dict) -> tuple:
-    """模型终稿整形为可入库的报表正文，回 ``(正文, 拒绝原因)``（正文空 = 用事实表格）。
+    """模型终稿整形为可入库的报表正文，回 ``(正文, 拒绝原因)``（正文空 = 本轮判失败）。
 
-    四道门：有结构可沿 → 有终稿 → 过出站脱敏 → 剥完围栏后与原版式无结构偏差。任一道不过
-    都不是“将就着用”，而是显式记下原因（§1：降级可以，但不把“没沿用版式”掩成“新报表天然长这样”）。
+    五道门：有结构可沿 → 有终稿 → 过出站脱敏 → 剥完围栏后与原版式无结构偏差 →
+    不是把旧报表照抄了一遍（原版正文已作为参照整份发给模型，照抄旧数字是这一改法的新风险）。
+    任一道不过都不是“将就着用”，而是显式记下原因（§1：降级由人决定，代码不得自行掩）。
     """
     if not has_report_layout(layout):
         return "", [str(source.get("layout_error") or "上一版报告没有可沿用的版式")]
@@ -1698,7 +2015,13 @@ def _body_for_layout(answer, layout: dict, source: dict) -> tuple:
     if reason:
         return "", [reason]
     reasons = layout_deviation(body, layout)
-    return ("", reasons) if reasons else (body, [])
+    if reasons:
+        return "", reasons
+    reference = _layout_reference_body(source)
+    if reference and _copied_from_reference(body, reference):
+        return "", ["本轮正文与上一版几乎相同，疑似照抄旧报表而非按最新数据重写；"
+                    "若本轮数据确实没变，请在智能问数里重新提问并另存为报告"]
+    return body, []
 
 
 # ── 报表证据判定：ready / degraded 的唯一口径（生成侧写，前端只消费）────────────
@@ -1810,20 +2133,25 @@ def resolve_report_template_by_name(name: str) -> dict:
 
 def render_template_report(title: str, results: list, answer, layout: dict, theme: str = "",
                            single_question: bool = True) -> tuple:
-    """定时任务按报告模板出正文，回 ``(正文, 格式, layout_result)``。
+    """定时任务按报告模板出正文，回 ``(正文, 格式, layout_result)``（正文空 = 本轮判失败）。
 
-    与报表中心「用最新数据重新生成」同一套版式校验（``_body_for_layout``）：模型终稿达标就用它
-    （带叙述与 ```chart 图表），不达标就退回确定性事实表格并把原因带在 layout_result 上（可见，
-    不静默）。``single_question`` 由调用方传：多问题任务里逐问终稿不等于整份报表，只有单问才用终稿。
+    与报表中心「用最新数据重新生成」同一套版式校验（``_body_for_layout``），但不降级口径分两档：
+    * 模板**登记了版式**而终稿没做到 → 回空正文 + ``status=rejected`` + 逐条原因，由调用方判失败；
+      不得改产事实表格冒充"已按模板生成"（那会把不达标掩成可用产物，还会被下一代当基线）。
+    * 模板**本来就没登记版式**，或多问题任务（逐问终稿不等于整份报告）→ 事实表格就是这种
+      形状的正常产物，不是降级；仍在 ``layout_result`` 里把原因写清给用户看。
     """
-    facts = render_fact_report(title, results)
-    content, reasons = ("", ["本轮为多问题任务，按模板版式以事实表格汇总"])
-    if single_question:
-        content, reasons = _body_for_layout(answer, layout or {}, {"layout_error": "模板未登记可沿用版式"})
-    if content:
-        return content, str((layout or {}).get("format") or "markdown"), \
-            {"status": "preserved", "format": str((layout or {}).get("format") or "markdown"), "reasons": []}
-    return facts, "markdown", {"status": "fact_only", "format": "markdown", "reasons": reasons[:5]}
+    layout = layout or {}
+    fmt = str(layout.get("format") or "markdown")
+    if single_question and has_report_layout(layout):
+        content, reasons = _body_for_layout(answer, layout, {"layout_error": ""})
+        if content:
+            return content, fmt, {"status": "preserved", "format": fmt, "reasons": []}
+        return "", fmt, {"status": "rejected", "format": fmt, "reasons": reasons[:5]}
+    why = ("本轮为多问题任务，逐问终稿不等于整份报告，按事实表格汇总" if not single_question
+           else "报告模板未登记可沿用的版式结构（无章节标题与图表规格），按事实表格汇总")
+    return render_fact_report(title, results), "markdown", {
+        "status": "fact_only", "format": "markdown", "reasons": [why]}
 
 
 # ── 模板的使用面：沉淀（报表→模板）/ 套用（模板→骨架）/ 预览（与真实渲染同一管线）──────

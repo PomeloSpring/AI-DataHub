@@ -36,6 +36,11 @@ REGISTRY = [
     {"perm_code": "report:view", "label": "查看报告", "module": "data", "module_label": "数据中台",
      "description": "", "menu_key": "data:reports", "sort": 2,
      "api_pattern": "/api/reports/*,/api/scheduled/*", "api_method": "GET"},
+    # 同一个菜单收多个动作权限码（内容中心把「审核发布」并入「内容管理」后的形态）：
+    # 菜单主码是 report:view，审核码只靠“归属登记”挂在同一菜单下
+    {"perm_code": "report:review", "label": "审核报告", "module": "data", "module_label": "数据中台",
+     "description": "", "menu_key": "data:reports", "sort": 5,
+     "api_pattern": "/api/reports/review*", "api_method": "POST"},
     # menu_key 指向不存在的菜单 → standalone
     {"perm_code": "orphan:code", "label": "孤儿权限", "module": "system", "module_label": "系统配置",
      "description": "", "menu_key": "ghost:menu", "sort": 3, "api_pattern": "", "api_method": ""},
@@ -193,6 +198,29 @@ def test_menus_derived_from_perm_codes(store):
     assert res["permissions"] == ["report:view"]
     assert res["menus"] == ["data:reports"]   # 本体菜单未授权 → 不可见
     assert res["unrestricted"] is False
+
+
+def test_menu_visible_via_belonging_perm_not_only_main_code(store):
+    """一个菜单可以收多个动作码：只持“归属码”的角色也要看得见该菜单。
+
+    旧反查只看 menu_registry.perm_code（菜单主码）。内容中心把「审核发布」并入
+    「内容管理」后，主码是 article:manage，而审核人角色只持 article:review（归属登记为
+    content:manage）——只按主码反查会让审核人看不见页面 = “该配的看不到”（空承诺）。
+    """
+    store.perms[7] = {"report:review"}      # 不是 data:reports 的主码，只靠归属登记
+    res = roles_api.get_current_user_permissions(user=VIEWER)
+    assert res["menus"] == ["data:reports"]
+
+
+def test_belonging_lookup_ignores_dangling_menu_key(store):
+    """归属反查只认在册菜单：悬空 menu_key 不得把已退役入口放回清单。
+
+    REGISTRY 里 orphan:code 的 menu_key='ghost:menu' 不存在于菜单表；角色即使
+    被误授了这个码，也不能凭空多出一个入口。
+    """
+    store.perms[7] = {"orphan:code"}
+    res = roles_api.get_current_user_permissions(user=VIEWER)
+    assert res["menus"] == []
 
 
 def test_module_wildcard_unlocks_menu(store):

@@ -20,7 +20,6 @@ import {
 } from '@/components/ui/popover';
 import client from '../../api/client';
 import { hasPerm } from '../../stores/permissionStore';
-import EsSourcePicker from '../../components/EsSourcePicker';
 import DashboardChart, { CHART_TYPES } from '../../components/DashboardChart';
 import { CONTROL_LABELS, KIND_LABELS, ROLE_LABELS, VALUE_TYPE_LABELS } from '@/lib/dashboardParamAssembly';
 import { useChartDesign } from '@/hooks/useChartDesign';
@@ -56,12 +55,13 @@ interface Scope {
 }
 
 const OPS = ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in', 'like'];
-// 来源类型显示业务名（内部枚举 es/semantic/both 不得直接当名称展示，ui-resource-display §1）
+// 来源类型显示业务名（内部枚举 semantic/both 不得直接当名称展示，ui-resource-display §1）
+// 'es' 取值随内置通道退役（写入被后端显式拒）；ES 数据集的 source_type 就是 sql，
+// 它的 ES 身份由服务端下发的执行通道位 `is_es` 表达，不在前端拿枚举反推。
 const SOURCE_LABELS: Record<string, string> = {
   sql: 'SQL',
   semantic: '语义对象',
   both: '语义 + SQL',
-  es: 'ES 索引',
 };
 const PRESET_CHART_TYPES = CHART_TYPES.filter(t => t.category !== 'widget');
 const CHART_TYPE_LABELS: Record<string, string> = Object.fromEntries(
@@ -126,15 +126,12 @@ export default function DatasetDetail() {
   const saveConfig = async () => {
     setSaving(true);
     try {
-      const isEs = ds.source_type === 'es';
       const { data } = await client.put(`/datasets/${datasetId}`, {
         description: ds.description || '',
         sql_query: ds.sql_query || '',
-        // ES 型不挂在数据源上：源/可用范围一律置空（后端也会显式拒非空）
-        datasource_id: isEs ? 0 : (Number(ds.datasource_id) || 0),
+        datasource_id: Number(ds.datasource_id) || 0,
         // 可用数据源范围：存数据源**业务名**数组（不存 id，删建仍存活）
-        available_datasources: isEs ? [] : (ds.available_datasources || []),
-        es_pattern: isEs ? (ds.es_pattern || '') : '',
+        available_datasources: ds.available_datasources || [],
         chart_type: ds.chart_type || '',
         chart_preset: cleanPreset(ds.chart_preset),
         // 明细行集 vs 统计汇总：表值图能不能真翻页由这一位决定（在数据集层声明）
@@ -396,49 +393,41 @@ function ExecPanel({ ds, canManage, onDsChange }: {
   ds: any; fields: DatasetField[]; canManage: boolean;
   onSaved: (data: any) => void; onDsChange: (patch: any) => void;
 }) {
-  const isEs = ds.source_type === 'es';
+  // ES 正文也是“选执行数据源 + 可用范围”的正常数据集，只有一件事不同：方言受限。
+  // 判据用服务端下发的执行通道位 `is_es`（= 取数分派的 execution_is_es），
+  // 内置通道那一套“索引范围选择器 + source_type==='es'”已于阶段三退役。
+  const isEs = !!ds.is_es;
   return (
     <div className="space-y-4">
-      {/* 执行正文：治理域走"执行数据源 + 可用范围"，ES 型走"索引范围"（两套口径互斥） */}
+      {/* 执行正文：所有通道都是“执行数据源 + 可用范围 + 正文”，不存在第二套登记口径 */}
       <div className="border rounded-lg p-3 space-y-2">
         <div className="flex items-center gap-1.5 text-sm font-medium">
-          <Code2 className="h-4 w-4" /> {isEs ? 'ES 查询正文' : '执行 SQL'}
+          <Code2 className="h-4 w-4" /> 执行 SQL
           <Badge variant="outline" className="text-[10px]">
-            {isEs ? '内置 ES 通道 · 单表 SELECT，必须 LIMIT' : '实际执行通道 · 仅 SELECT/WITH'}
+            {isEs ? 'ES SQL 方言 · 单表 SELECT，必须 LIMIT' : '实际执行通道 · 仅 SELECT/WITH'}
           </Badge>
         </div>
-        {isEs && (
-          <EsSourcePicker
-            value={ds.es_pattern || ''}
+        <div className="space-y-1.5">
+          <Label>执行数据源</Label>
+          <SqlDatasourceSelect
+            value={ds.datasource_id || 0}
             disabled={!canManage}
-            onChange={v => onDsChange({ es_pattern: v })}
+            onChange={v => onDsChange({ datasource_id: v })}
           />
-        )}
-        {!isEs && (
-          <>
-            <div className="space-y-1.5">
-              <Label>执行数据源</Label>
-              <SqlDatasourceSelect
-                value={ds.datasource_id || 0}
-                disabled={!canManage}
-                onChange={v => onDsChange({ datasource_id: v })}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>可用数据源范围</Label>
-              <DatasourceScopeSelect
-                value={ds.available_datasources || []}
-                disabled={!canManage}
-                execName={ds.datasource_name || ''}
-                onChange={v => onDsChange({ available_datasources: v })}
-              />
-              <p className="text-xs text-muted-foreground">
-                不填 = 仅能在执行数据源上跑。填入多个源后，同一份 SQL 可在这些源上执行
-                （看板与 Chat 取数时服务端按当前用户的已授权源定源，多义时会要求指定站点）。
-              </p>
-            </div>
-          </>
-        )}
+        </div>
+        <div className="space-y-1.5">
+          <Label>可用数据源范围</Label>
+          <DatasourceScopeSelect
+            value={ds.available_datasources || []}
+            disabled={!canManage}
+            execName={ds.datasource_name || ''}
+            onChange={v => onDsChange({ available_datasources: v })}
+          />
+          <p className="text-xs text-muted-foreground">
+            不填 = 仅能在执行数据源上跑。填入多个源后，同一份 SQL 可在这些源上执行
+            （看板与 Chat 取数时服务端按当前用户的已授权源定源，多义时会要求指定站点）。
+          </p>
+        </div>
         {(ds.warnings || []).length > 0 && (
           <div className="border rounded-md p-2 bg-amber-50 dark:bg-amber-950/30 space-y-1">
             {(ds.warnings || []).map((w: string, i: number) => (
@@ -455,6 +444,11 @@ function ExecPanel({ ds, canManage, onDsChange }: {
             ? 'SELECT DATE_TRUNC(\'DAY\', "@timestamp") AS d, COUNT(*) AS c\nFROM "logs-*" GROUP BY DATE_TRUNC(\'DAY\', "@timestamp") ORDER BY d ASC LIMIT 60'
             : 'SELECT region, status, COUNT(*) AS cnt FROM t_case_records GROUP BY region, status'}
         />
+        {/* 方言规则只从服务端 `es_sql_hint` 读（与执行侧同一个解析器校准的事实源）：
+            前端自己写一份就会与实机行为漂移，内置通道退役后这个出口从 /es-patterns 移到详情响应 */}
+        {isEs && ds.es_sql_hint && (
+          <p className="text-[10px] leading-relaxed text-muted-foreground">{ds.es_sql_hint}</p>
+        )}
         <p className="text-xs text-muted-foreground">
           修改后点击上方「保存配置」统一提交（含基本信息与图表预设）
         </p>
@@ -670,12 +664,17 @@ function DatasourceScopeSelect({ value, disabled, execName, onChange }: {
 
 // ── 数据预览(治理取数, 服务端施加权限/RLS/scopes) ─────────────────────
 
-function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: DatasetField[]; ds: any }) {
+// 导出供用例直接验证 ES 执行通道的预览契约（请求体形状与治理标注来源）
+export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: DatasetField[]; ds: any }) {
   const [result, setResult] = useState<any>(null);
   const [running, setRunning] = useState(false);
-  // ES 型：取数形状由正文决定，不存在"选哪些维度/度量重新聚合"这回事；
-  // 也不给执行数据源选择器（它不挂在数据源上）。把控件渲出来但传了不生效就是空承诺。
-  const isEs = ds?.source_type === 'es';
+  // ES 型：取数形状由正文决定，不存在"选哪些维度/度量重新聚合"这回事（传了会被护栏显式拒）。
+  // 判据必须用后端下发的**执行通道位** `is_es`：历史缺陷是拿 `source_type === 'es'` 判，
+  // ES 数据源化后该标记恒为 false → 预览照旧发 dimensions/measures，被 ES 护栏显式拒
+  // （同一份数据在看板上能出、在这一页必失败）。
+  const isEs = !!ds?.is_es;
+  // 内置通道退役后没有“索引范围徽标 / 不施加行列级策略”那一套了：ES 集就挂在 ES 数据源上，
+  // 与其余源同一个治理口（列级/行级编译进待执行 SQL），“选哪个源”也照常可用。
   // 图表样式走 UI 字模库主题包管线(useChartDesign): 预览与看板/Chat 同观感
   const { chartStyle } = useChartDesign();
   const presetChart = chartStyle(cleanPreset(ds.chart_preset), ds.chart_type);
@@ -701,9 +700,13 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
   const run = async () => {
     setRunning(true);
     try {
-      const { data } = await client.post(`/datasets/${datasetId}/preview`, isEs
-        ? { limit: 100 }
-        : { dimensions, measures: measuresSel, limit: 100, datasource: sourceSel || '' });
+      // 选源入参与其他通道同一形状（服务端在可用范围∩已授权集内解析）；
+      // ES 只是不带维度/度量（无派生表，二次聚合不成立）
+      const { data } = await client.post(`/datasets/${datasetId}/preview`, {
+        ...(isEs ? {} : { dimensions, measures: measuresSel }),
+        limit: 100,
+        datasource: sourceSel || '',
+      });
       setResult(data);
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '预览失败');
@@ -715,19 +718,7 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-2 items-end">
-        {isEs && (
-          <div className="min-w-40">
-            <Label className="text-xs">索引范围</Label>
-            <div className="mt-1">
-              <Badge variant="outline" className="text-[11px] max-w-[280px] truncate"
-                title="内置 Elasticsearch 通道：只读、按正文取数，不施加列级/行级数据权限">
-                {ds.es_pattern || '-'}
-              </Badge>
-            </div>
-          </div>
-        )}
-        {!isEs && <>
-        <div className="min-w-40">
+        {!isEs && <div className="min-w-40">
           <Label className="text-xs">维度</Label>
           <div className="flex flex-wrap gap-1 mt-1">
             {dims.map(f => (
@@ -739,8 +730,8 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
               </Badge>
             ))}
           </div>
-        </div>
-        <div className="min-w-40">
+        </div>}
+        {!isEs && <div className="min-w-40">
           <Label className="text-xs">度量</Label>
           <div className="flex flex-wrap gap-1 mt-1">
             {measures.map(f => (
@@ -752,13 +743,15 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
               </Badge>
             ))}
           </div>
-        </div>
+        </div>}
+        {/* 选源与其余通道同一条路：服务端把 datasource 业务名在“可用范围 ∩ 已授权集”内解成生效源
+            （ES 也一样，见 query_dataset 的 resolve_effective_source），多源时才出现这一项 */}
         {scopeNames.length > 1 && (
           <div className="min-w-44">
             <Label className="text-xs">执行数据源</Label>
             <Select value={sourceSel || '__auto__'}
               onValueChange={v => setSourceSel(v === '__auto__' ? '' : v)}>
-              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="h-8 text-xs" aria-label="执行数据源"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="__auto__">自动（服务端定源）</SelectItem>
                 {scopeNames.map(n => <SelectItem key={n} value={n}>{n}</SelectItem>)}
@@ -766,7 +759,6 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
             </Select>
           </div>
         )}
-        </>}
         <Button size="sm" onClick={run} disabled={running}>
           {running ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Play className="h-3.5 w-3.5 mr-1" />}
           预览取数
@@ -774,19 +766,25 @@ function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: Da
       </div>
       {isEs && (
         <p className="text-[10px] text-muted-foreground">
-          ES 型数据集直接执行已保存正文（不做维度/度量重聚合，也不套行/列级策略）。
-          全量模式聚合可能超过默认 20s 超时，请先在正文里用 WHERE 收窄时间范围。
+          ES 执行通道直接跑已保存正文（不做维度/度量重聚合）。
+          列级脱敏/屏蔽与行级策略已编译进待执行 SQL（与其他数据源同口径）。
+          超时预算按数据源配（「数据源」页高级配置），时间留空时按数据集声明的滚动窗取。
         </p>
       )}
 
       {result && (
         <>
-          {/* 配置面的通道溯源标注：评测/排查能分辨这次走的是 ES 还是治理入口 */}
+          {/* 溯源标注：排查时能分辨这次走的是哪条执行通道（文案单一事实源 = 服务端 governance） */}
           {result.execution_mode === 'es' && (
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <Badge variant="outline" className="text-[10px]">ES 通道 · 未施加列级/行级策略</Badge>
+              {/* 标注文案只从服务端下发的 governance 读：前端不得拿 `execution_mode==='es'` 自行
+                  编“未施加列级/行级策略”——内置通道退役后那句话已不成立。 */}
+              <Badge variant="outline" className="text-[10px]"
+                title={result.governance?.note || ''}>
+                ES 数据源 · 已施加列级/行级策略
+              </Badge>
               <span title={result.governance?.note || ''}>
-                范围: {result.es_scope || ds.es_pattern || '-'}
+                范围: {(result.es_indexes || []).join(', ') || result.es_scope || '-'}
                 {(result.es_indexes || []).length > 0 && `・命中索引: ${result.es_indexes.join(', ')}`}
                 ・本次 {result.row_count ?? (result.rows || []).length} 行
               </span>
@@ -859,9 +857,11 @@ function ScopesPanel({ datasetId, fields, canManage, ds }: {
   const [users, setUsers] = useState<any[]>([]);
   const [roles, setRoles] = useState<any[]>([]);
   const [saving, setSaving] = useState(false);
-  // ES 型数据集不支持行级范围（注入靠子查询包裹，ES SQL 不成立）。
-  // 这里不给"能配但一保存就报错"的入口，而是直接说明为何不可用（不开空承诺）。
-  const isEs = ds?.source_type === 'es';
+  // ES 执行通道不支持行级范围（注入靠子查询包裹，ES SQL 不成立）。
+  // 这里不给"能配但一取数就报错"的入口，而是直接说明为何不可用（不开空承诺）；
+  // 行级隔离在 ES 上仍然可用——那是数据源层的「行级策略」（治理层把谓词 AND 进顶层 WHERE），
+  // 不是这一页的数据集级范围。判据用 `is_es`（与取数分派同源）。
+  const isEs = !!ds?.is_es;
 
   useEffect(() => {
     client.get(`/datasets/${datasetId}/scopes`).then(({ data }) => setScopes(data.scopes || [])).catch(() => {});
@@ -894,16 +894,18 @@ function ScopesPanel({ datasetId, fields, canManage, ds }: {
   };
 
   // ES 型：不渲染任何可编辑入口（配了也不会生效，保存还会被后端拒），只给原因
+  // 文案与后端 `set_scopes` 的拒写理由同口径（不得把“无列级策略可改写”这种旧内置通道说法留在这里）
   if (isEs) {
     return (
       <div className="space-y-2">
         <p className="text-sm text-muted-foreground">
-          ES 型数据集不支持行级范围：该能力靠将正文包成子查询后拼 WHERE 注入，
-          而 ES SQL 不接受这种形状（也无列级策略可改写），配了也不会生效。
+          ES 型数据集不支持本页的“行级范围”：该能力靠将正文包成子查询后拼 WHERE 注入，
+          而 ES SQL 无派生表，不接受这种形状，配了也不会生效。
         </p>
         <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
-          要收窄数据请直接把条件写进查询正文（如 WHERE "region" = 'cn'），
-          或改用数据源型数据集以获得行级权限与脱敏。
+          要收窄数据请把条件直接写进查询正文（如 WHERE "region" = 'cn'）；
+          要按角色隔离行可见性，请到「数据源」页给该 ES 数据源配「行级策略」
+          （与其他数据源同一条治理口，谓词会 AND 进待执行 SQL 的顶层 WHERE）。
         </p>
       </div>
     );

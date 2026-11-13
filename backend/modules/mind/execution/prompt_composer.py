@@ -8,7 +8,8 @@ import logging
 
 from backend.common import as_bot_config_cache as config_cache
 from backend.modules.mind.execution import slash_commands
-from backend.modules.mind.execution.chart_contract import chart_contract_text
+from backend.modules.mind.execution.chart_contract import (
+    chart_contract_text, granted_render_tools, render_contract_text)
 
 logger = logging.getLogger(__name__)
 
@@ -342,9 +343,19 @@ def _take_by_score(pool: list, q_norm: str, quota: int, chosen: list,
     return chosen
 
 
+def _progressive_disclosure(capabilities: dict | None) -> bool:
+    """本会话是否具备“技能细则按需加载”能力（唯一口径：工具清单里有 load_skill_guide）。
+
+    只读工具事实，不另写一套开关：管理员在 AS-BOT 面板关掉 skills 组、或执行层 ceiling 把它筛掉时，
+    这里返回 False → 装载策略整体回到改动前的行为（按触发词自动展开），不会出现
+    “细则既不在上下文也拉不到”的能力倒退。
+    """
+    return "load_skill_guide" in _session_tool_suffixes(capabilities)
+
+
 def _select_skill_bodies(skills: list, capabilities: dict | None,
                         question: str, force_all: bool = False,
-                        pinned: list | tuple = ()) -> tuple:
+                        pinned: list | tuple = (), progressive: bool | None = None) -> tuple:
     """决定哪些技能展开正文 → (装载列表, {技能名: 未装载原因}, 未命中的指定技能名)。
 
     四条确定性规则(零额外 LLM 调用):
@@ -367,6 +378,11 @@ def _select_skill_bodies(skills: list, capabilities: dict | None,
        字数问题而是指令冲突。同组只留得分/指定顺序最高的一个, 其余给显式原因而不是静默丢。
 
     未展开的技能**不静默消失**: 仍进「已绑定技能」清单并带上原因, 模型与排查都能看到。
+
+    6. **渐进披露（`progressive`）**：本会话能调 `load_skill_guide` 时，**仅靠触发词命中**的那批
+       正文不再常驻，改为在清单里告诉模型怎么按需取回（命中信息仍算，当相关性提示用）。
+       三条强制展开不变：用户 `/` 点名的 pinned、只绑 1 个技能的单职责角色、无人值守
+       `force_all` —— 它们是“不能拿产出口径冒险换字数”的场景，与规则 2/4 的既有理由一致。
     """
     skills = [s for s in (skills or []) if isinstance(s, dict)]
     pinned_names = [str(x).strip() for x in (pinned or []) if str(x).strip()]
@@ -432,12 +448,29 @@ def _select_skill_bodies(skills: list, capabilities: dict | None,
                 groups.add(group)
         return keep, reasons, missing
     q_norm = (question or "").strip().lower()
+    if progressive is None:
+        progressive = _progressive_disclosure(capabilities)
     loaded = _take_by_score(capable, q_norm, MAX_SKILL_BODIES, [], reasons)
     loaded_ids = {id(s) for s in loaded}
     for s in capable:
-        key = s.get("name") or s.get("display_name") or ""
+        key = _skill_key(s)
         if id(s) not in loaded_ids and key not in reasons:
-            reasons[key] = "本轮问题未命中该技能的触发词"
+            # 原因要可诊断：零命中与“命中了但被名额挤掉”是两件不同的事，写成同一句会把人
+            # 引去改触发词（历史误诊点）。渐进披露分支也先跑完这段再改写，否则落选技能
+            # 会回落到清单里的默认措辞“本轮未命中”，把误诊又带回来。
+            hits = len(_skill_trigger_hits(s, q_norm))
+            if hits:
+                winners = "、".join(_skill_key(x) for x in loaded)
+                reasons[key] = (f"命中 {hits} 个触发词，但本轮展开名额已满（已展开：{winners}）")
+            else:
+                reasons[key] = "本轮问题未命中该技能的触发词"
+    if progressive and loaded:
+        # 命中信息当“相关性提示”留下，正文不常驻：由模型自己调 load_skill_guide 取回。
+        for s in loaded:
+            key = _skill_key(s)
+            reasons[key] = (f"本轮问题命中触发词，但作业细则未常驻（渐进披露）："
+                            f"需要该域完整口径时先调 `load_skill_guide(\"{key}\")` 取回再作答")
+        return [], reasons, missing
     return loaded, reasons, missing
 
 
@@ -550,6 +583,90 @@ def _quick_path_lines(paths: list) -> list[str]:
                 "方案与本会话工具清单冲突时以工具清单为准;方案内出现的物理信息不得回显给用户。",
                 "",
             ] + entries
+    return lines
+
+
+# ── 分析场景绑定的报告模板 → 版式契约（M5）────────────────────────
+# 为什么在提示词侧而不是工具侧裁决：模型不知道哪个场景配了模板，靠它“记得套模板”必然漂移；
+# 命中场景时由平台把模板版式算好注进提示词，才是“场景绑模板”真正生效的位置。模板解析与
+# 契约文字全在报表域一处（经 core.task_runtime 回调表取），mind 只决定何时拼、不反推版式形状。
+def _scene_template_bridge(granted: list) -> str:
+    """桥接句只提名本会话真的授权了的渲染机（拿未授权工具当出路 = 与契约注入同一类漂移）。"""
+    tools = set(granted or [])
+    parts: list[str] = []
+    doc_tools = [t for t in ("render_html", "render_report") if t in tools]
+    if doc_tools:
+        parts.append("整份文档交给 `" + "` / `".join(doc_tools) + "`（回答里只留 ```report 引用块）")
+    if "render_chart" in tools:
+        parts.append("单个图位交给 `render_chart`（引用块等价于契约里的 ```chart 图位，"
+                     "chart_type 与 columns 不得改）")
+    if not parts:
+        return ""
+    return ("- 上面这段与已授权的交付通道同时生效：版式（章节、图位、图型、列名）照本契约，"
+            "交付形态照渲染机契约——" + "；".join(parts) +
+            "。契约里的“只输出报表正文”指交给渲染机的那份正文，不是把整份文档贴进对话。")
+
+
+def _scene_template_contract_lines(paths: list, granted_render: list | None = None) -> list[str]:
+    """命中场景绑定的报告模板 → 版式契约段（没绑模板不花字数；读不到模板必须显式说出来）。"""
+    bound = [(str(p.get("title") or "").strip(), str(p.get("report_template") or "").strip())
+             for p in (paths or []) if isinstance(p, dict)
+             and str(p.get("report_template") or "").strip()]
+    if not bound:
+        return []
+    from backend.core.task_runtime import call as runtime_call
+
+    applied: tuple[str, str, str] | None = None      # (场景, 模板名, 契约)
+    skipped: list[str] = []                          # 已命中模板但本轮未套用的原因（逐条可见）
+    for scene, name in bound:
+        try:
+            tpl = runtime_call("report.resolve_template_by_name", name) or {}
+        except Exception as e:  # noqa: BLE001 — 读不到就是本轮无该模板，但要让模型知道为什么
+            logger.warning("[PromptComposer] 场景模板解析失败 scene=%s template=%s: %s", scene, name, e)
+            skipped.append(f"模板读取失败（{e.__class__.__name__}）")
+            continue
+        if not tpl.get("found"):
+            avail = "、".join(str(n) for n in (tpl.get("available") or [])[:5])
+            reason = str(tpl.get("reason") or f"报告模板「{name}」不可用")
+            skipped.append(f"「{scene or '未命名场景'}」绑定的模板「{name}」本轮读不到：{reason}"
+                           + (f"（当前可用：{avail}）" if avail else ""))
+            continue
+        try:
+            contract = str(runtime_call(
+                "report.layout_contract", tpl.get("layout") or {}, str(tpl.get("theme") or ""),
+                framing="template",
+                origin=f"分析场景「{scene or name}」绑定的报告模板「{name}」") or "").strip()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[PromptComposer] 场景模板版式契约生成失败 template=%s: %s", name, e)
+            skipped.append(f"「{scene}」绑定的模板「{name}」版式契约生成失败（{e.__class__.__name__}）")
+            continue
+        if not contract:
+            # 模板存在但没登记可用版式：契约会是空串，灌空段等于静默。明说按通用骨架走。
+            skipped.append(f"「{scene}」绑定的模板「{name}」没有登记可用版式（无固定章节与图位）")
+            continue
+        if applied is None:
+            applied = (scene, name, contract)
+        else:
+            skipped.append(f"「{scene}」也绑定了模板「{name}」：一轮只套一份版式，本轮未套用")
+    lines: list[str] = []
+    if applied:
+        scene, name, contract = applied
+        lines += ["## 分析场景绑定的报告模板（版式契约）",
+                  f"- 本轮命中的分析场景「{scene}」绑定了报告模板「{name}」：本轮如产出报告或整页文档，"
+                  "必须按下面这段版式契约出稿（结构照模板，数值一律取本轮查询结果）。", ""]
+    else:
+        lines += ["## 分析场景绑定的报告模板未生效",
+                  "- 本轮命中的分析场景绑定了报告模板，但**本轮没有**按该模板版式出稿，原因："]
+    for item in skipped:
+        lines.append(f"  · {item}")
+    if not applied:
+        lines.append("- 请在回答里如实告知用户这一事实与原因（可建议换一个可用模板或请管理员到「报告模板」"
+                     "配置页检查该模板），不得假装已套用；本轮按报告交付技能的通用骨架出稿。")
+    if applied:
+        lines += [contract, ""]
+        bridge = _scene_template_bridge(granted_render or [])
+        if bridge:
+            lines.append(bridge)
     return lines
 
 
@@ -835,6 +952,7 @@ def compose_system_prompt(
     pinned_skills: list | None = None,
     user_directive: str = "",
     chat_mode: str = "",
+    skill_state: dict | None = None,
 ) -> str:
     """组合执行层系统提示词.
 
@@ -907,6 +1025,11 @@ def compose_system_prompt(
     skill_bodies, skill_reasons, pinned_missing = _select_skill_bodies(
         skills, capabilities, question,
         force_all=force_all_skill_bodies, pinned=pinned)
+    # 把“本轮哪几份正文已常驻”回传给调用方（写进 runtime），供 load_skill_guide 判定
+    # “已在上下文，不必重复下发”。决议只在这一处发生：让工具自己重算一遍必然与提示词漂移。
+    if skill_state is not None:
+        skill_state["loaded"] = [_skill_key(s) for s in skill_bodies]
+        skill_state["progressive"] = _progressive_disclosure(capabilities)
     skill_lines = _skill_lines(skills, skill_bodies, skill_reasons)
     if skill_lines:
         sections.append("## 已绑定技能\n" + "\n".join(skill_lines))
@@ -945,6 +1068,16 @@ def compose_system_prompt(
     qp_lines = _quick_path_lines(quick_paths)
     if qp_lines:
         sections.append("\n".join(qp_lines).rstrip())
+
+    # 渲染机授权清单只算一次：下文场景模板桥接与「交付形态渲染机」契约共用同一份判定
+    # （写两处必然与工具清单漂移，见下文注释）。
+    granted_render = granted_render_tools(capabilities)
+
+    # 场景绑定了报告模板且本轮命中：把模板版式写成契约跟着方案正文走（没绑则零开销）。
+    # 模板读不到时注入一段显式失败，不静默回落成通用骨架（no-silent-degradation）。
+    scene_tpl_lines = _scene_template_contract_lines(quick_paths, granted_render)
+    if scene_tpl_lines:
+        sections.append("\n".join(scene_tpl_lines).rstrip())
 
     # 用户用 `/` 显式选了却没生效的场景：不静默丢弃，把原因写进提示词让用户看见
     # （不存在/已停用/正文为空/所绑主体无权限）——no-silent-degradation。
@@ -1035,6 +1168,13 @@ def compose_system_prompt(
     # 图表契约:任一生效 AS-BOT 开启图表即注入
     if any(w.get("chart_enabled") for w in as_bots) or default_as_bot is None:
         sections.append(chart_contract_text())
+
+    # 交付形态渲染机契约：按已授权的渲染机逐段注入（只勾了图表机就不能承诺整页文档）。
+    # 判定口径只一处（chart_contract.granted_render_tools）：另写一套必然与工具清单漂移。
+    # 没授权就给契约 = 向模型广告一个调不到的入口，它会把“报告已生成”当成事实说出来，
+    # 而前端拿不到任何交付对象。
+    if granted_render:
+        sections.append(render_contract_text(granted_render))
 
     # 报告主题令牌: 交付 HTML/Excel 时只能用的配色(默认继承用户当前 App 主题)。
     # 不分“有没有传主题”都要注入：无人值守（定时任务/报表重跑）没有前端可传主题，

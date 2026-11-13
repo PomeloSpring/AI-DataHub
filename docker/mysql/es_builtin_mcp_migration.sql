@@ -1,21 +1,20 @@
 -- ============================================================================
--- 内置 Elasticsearch MCP 服务（迁移）
+-- MCP 服务表结构迁移（原：内置 Elasticsearch MCP 服务）
 --
--- 定位：ES 是**平台内置 MCP 服务**，与外部注册服务同在 adh_mcp_servers 里被
--- AS-BOT「引用 MCP 服务」绑定并逐工具授权 —— 不另开数据工具组，避免双口径。
+-- 【2026-11-13 阶段三已改性质】内置 `elasticsearch` 服务行已从本文件移除（退役见
+-- `docker/mysql/es_builtin_mcp_retire_migration.sql`）：ES 现在是**正式数据源**
+-- （`adh_datasources.db_type='es'` + `extra_config` 开放范围），不再需要“凭据由
+-- 部署侧 .env 托管的内置 MCP 服务”这套承载。本文件只保留仍需的部分：
+--   ① `adh_mcp_servers` 建表（外部 MCP 服务仍在用）；
+--   ② `is_builtin` 列与“内置行不持有连接配置”的安全约定（`builtin_mcp` 机制保留，
+--      注册表当前为空；将来登记新内置服务时直接往 `BUILTIN_MCP_SERVICES` 加）。
 --
--- 与外部服务的关键差别：is_builtin=1 的行**不持有连接配置**。
---   url / command / args / env 一律留空，真实地址与凭据只在 backend/.env
---   （见 backend/common/config.py 的 ES_* 段），API 响应与 UI 均不回显（护栏 §7）。
---   执行侧由 external_tools.build_external_servers 识别 transport='builtin'
---   分派到进程内 handler，不建 HTTP 连接、不做配置漂移比对。
+-- 历史上本文件还声称“ES 不进数据权限治理域——技术上不成立”。该断言已被推翻：
+-- ES SQL 确实无 JOIN/派生表，但行级策略可“谓词 AND 进顶层 WHERE”、列级策略可编译期
+-- 改写（实现见 `semantics/sql_guard._inject_filters_es` 与 `semantics/es_dialect.py`），
+-- ES 源现已全部走治理执行口（角色源授权 + RLS/列级 + 审计）。
 --
 -- 幂等：uk_name 为键，可重复执行。
---
--- 本文件的权威程度：结构 + 内置行留档（新装库直接建好）。**工具清单与描述的单一
--- 事实源是代码**（sdk_tools/es_tools.py 的 TOOL_SPECS），由
--- backend/scripts/migrate_es_builtin_mcp.py 从代码生成并写库；改工具请重跑该脚本，
--- 不要只改本文件的 JSON（否则会出现“页面显示的工具与执行侧注册的不一致”）。
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS adh_mcp_servers (
@@ -45,24 +44,8 @@ CREATE TABLE IF NOT EXISTS adh_mcp_servers (
 -- 内置标记列（存量库补列；已存在时报错由幂等执行方忽略）
 ALTER TABLE adh_mcp_servers ADD COLUMN is_builtin TINYINT NOT NULL DEFAULT 0 COMMENT '1=平台内置服务：配置由部署侧托管，页面不可编辑';
 
-INSERT INTO adh_mcp_servers
-    (id, name, description, transport, url, command, args, `env`,
-     tools_config, discovered_tools, is_active, is_builtin, datasource_id, created_by)
-VALUES
-    (9001, 'elasticsearch',
-     '平台内置 Elasticsearch 只读查询能力（列开放索引范围 / 看字段 / 跑 SQL）。索引按时间分片，以模式（如 logs-*）为查询单位；访问范围由部署侧索引白名单限定，不参与列级/行级数据权限治理。',
-     'builtin', '', '', '', NULL, NULL,
-     '[{"name":"list_es_indexes","description":"List the Elasticsearch index patterns (data views) open for querying in this deployment. The pattern itself is the queryable unit; do not enumerate concrete monthly indexes."},{"name":"describe_es_index","description":"Show the fields of an Elasticsearch index pattern (name, type, aggregatable, dotted sub-fields, .keyword exact-match field) before writing SQL."},{"name":"query_es_sql","description":"Run a read-only Elasticsearch SQL query and return rows. Single SELECT over one double-quoted index pattern, no JOIN, LIMIT is mandatory."}]',
-     1, 1, 0, 'system')
-ON DUPLICATE KEY UPDATE
-    description      = VALUES(description),
-    transport        = VALUES(transport),
-    -- 内置行永远不带连接配置：重跑迁移会把误填的值清回空
-    url              = '',
-    command          = '',
-    args             = '',
-    `env`            = NULL,
-    discovered_tools = VALUES(discovered_tools),
-    is_builtin       = 1,
-    datasource_id    = 0,
-    updated_at       = CURRENT_TIMESTAMP;
+-- 【已退役、故意不插行】内置 `elasticsearch` 服务行（旧 id=9001）：
+--   代码侧 `builtin_mcp.BUILTIN_MCP_SERVICES` 已摘掉该条目并删除 `sdk_tools/es_tools.py`，
+--   新装库再插这行就是“库里有服务、代码无实现”的空承诺（AS-BOT 勾上也不会生成工具），
+--   所以本文件不再创建它。存量库里的旧行由 `es_builtin_mcp_retire_migration.sql` 软删。
+--   若历史上已执行过本文件的旧版本，补跑一次那条退役迁移即可。

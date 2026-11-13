@@ -4,7 +4,7 @@ import { ArrowLeft, Edit, Maximize, Minimize, SlidersHorizontal } from 'lucide-r
 import { Button } from '@/components/ui/button';
 import { ResponsiveDashboardCanvas } from '@/components/DashboardCanvas';
 import { DashboardRuntimeParams } from '@/components/DashboardParams';
-import { uncontrolledParams } from '@/lib/dashboardParamAssembly';
+import { editableParamRows, uncontrolledParams } from '@/lib/dashboardParamAssembly';
 import { useAuthStore } from '@/stores/authStore';
 import { useDashboardStore } from '@/stores/dashboardStore';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
@@ -134,7 +134,8 @@ function ScreenPlayer() {
   }, [go, toggleFullscreen, navigate, returnPath]);
   const showControls = () => { setVisible(true); clearTimeout(timer.current); timer.current = setTimeout(() => setVisible(false), 5000); };
   useEffect(() => { showControls(); return () => clearTimeout(timer.current); }, []);
-  if (!dashboardId && ready && !error && enabled.length) return <Navigate to={`/screen/${(enabled.find(d => d.is_default) || enabled[0]).id}${location.search}`} replace state={location.state} />;
+  // 无 board id 直接进大屏：从清单首块板起播（组内 = 管理端编排首位，与「数据看板」点组合卡同一口径）
+  if (!dashboardId && ready && !error && enabled.length) return <Navigate to={`/screen/${enabled[0].id}${location.search}`} replace state={location.state} />;
   if (!currentMeta || !detail || error) return <div className="p-8 text-center"><p role="status">{detailLoading || !ready ? '正在加载…' : error || '该看板不存在、未启用或不在你的可见范围'}</p>{error && <Button variant="outline" onClick={() => setRetry(v => v + 1)}>重试</Button>}<Button variant="link" onClick={() => navigate(returnPath)}>返回看板列表</Button></div>;
   return <div ref={root} className="fixed inset-0 z-40 flex flex-col overflow-hidden bg-background" onMouseMove={showControls} onTouchStart={showControls}>
     <header className={`z-10 flex h-12 shrink-0 items-center gap-1 border-b bg-background/95 px-3 ${fullscreen ? `absolute inset-x-0 top-0 transition-opacity ${visible ? '' : 'opacity-0 focus-within:opacity-100 hover:opacity-100'}` : ''}`}>
@@ -148,7 +149,9 @@ function ScreenPlayer() {
         <DropdownMenuItem onClick={() => setPaused(v => !v)}>{paused ? '恢复轮播' : '暂停轮播'}</DropdownMenuItem>
         {enabled.length > 1 && <><DropdownMenuItem onClick={() => go(-1)}>上一看板</DropdownMenuItem><DropdownMenuItem onClick={() => go(1)}>下一看板</DropdownMenuItem></>}
       </>} />
-      {!!uncontrolledParams(detail, detail.charts || []).length && <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon" variant="ghost" title="筛选条件" aria-label="筛选条件"><SlidersHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-80"><DashboardRuntimeParams dashboard={detail} /></DropdownMenuContent></DropdownMenu>}
+      {/* 入口存在与否 = 面板里真的能改东西（与 DashboardRuntimeParams 同判据）：
+          只看 uncontrolledParams 全量的话，只剩只读常数的看板会渲出一个点开是空的按钮 */}
+      {!!editableParamRows(uncontrolledParams(detail, detail.charts || [])).length && <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon" variant="ghost" title="筛选条件" aria-label="筛选条件"><SlidersHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-80"><DashboardRuntimeParams dashboard={detail} /></DropdownMenuContent></DropdownMenu>}
       <Button size="icon" variant="ghost" title="全屏" aria-label="切换全屏播放" onClick={toggleFullscreen}>{fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}</Button>
       {!fromWorkspace && (user?.role === 'admin' || user?.id === detail.owner_id) && <Button size="icon" variant="ghost" aria-label="编辑外观与数据" title="编辑外观与数据" onClick={() => navigate(`/dashboard/editor/${detail.id}`, { state: { from: location.pathname + location.search } })}><Edit className="h-4 w-4" /></Button>}
     </header>

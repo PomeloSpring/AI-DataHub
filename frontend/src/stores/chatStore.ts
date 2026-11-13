@@ -220,6 +220,8 @@ export interface ChatReportDraft {
   format?: string;
   /** 正文来源的产物文件（报告中心按它渲染 HTML） */
   artifact?: { filename: string; type: string } | null;
+  /** 正文来源的交付文档对象（渲染机产出）；与 artifact 两存其一 */
+  document?: { doc_id: string; body_kind: string } | null;
   created_at: string;
   updated_at: string;
   /** 保存次数（面板上的「已改 N 次」，不是版本号） */

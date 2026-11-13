@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import type { VisComponent } from '@/api/visLibrary';
 import type { DashboardPreview, GroupBoard, GroupView } from '@/lib/dashboardCatalog';
+import { toTagList } from '@/lib/dashboardCatalog';
 import type { Dashboard } from '@/stores/dashboardStore';
 
 // 工作空间「数据看板」的共享卡片：组合卡（一级）+ 看板卡（搜索结果与未分组平铺）。
@@ -48,10 +49,11 @@ export function previewSource(preview?: DashboardPreview): Pick<Dashboard, 'filt
   };
 }
 
-/** 组内"进入"目标看板：默认看板优先，其次首个已启用看板（服务端目录已按 is_default → sort_order 排） */
+/** 组内"进入"目标看板：取清单首位（服务端目录已按管理端编排顺序 adh_dashboard_group_items.sort 下发，
+ * 未分组兑底组则是 is_default → sort_order）。
+ * 不再拿 is_default 抢位：抢了就等于管理员在组合里排的顺序对“先进哪块板”不算数。 */
 export function groupEntryBoard(group: GroupView): GroupBoard | undefined {
-  const enabled = group.dashboards.filter(d => d.status === 'enabled');
-  return enabled.find(d => d.is_default) || enabled[0];
+  return group.dashboards.filter(d => d.status === 'enabled')[0];
 }
 
 /** 单看板卡片：未分组平铺与搜索结果用（与组合卡同一套行几何） */
@@ -73,10 +75,20 @@ export function BoardCard({ board, groupName, items, onOpen, onPlay }: {
         <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{board.description || '暂无描述'}</p>
       </div>
       <div className={ROW_CLS}>
-        {/* 左侧连排（归属·默认·图表数·更新时间），不靠 ml-auto 拉到两端：
-            两端对齐会在中间留一大段虚空，同一行读不出是一组信息 */}
+        {/* 左侧连排（归属·默认·标签·图表数·更新时间），不靠 ml-auto 拉到两端：
+            两端对齐会在中间留一大段虚空，同一行读不出是一组信息。
+            标签 chips 插在中间而不另起一行：本行的弹性项只有「更新于」（min-w-0 truncate），
+            多插几个 shrink-0 chip 只会把时间压短，不会把行撑高、也不会与旁边的组合卡错位。 */}
         {!!groupName && <Badge variant="secondary" className="shrink-0">{groupName}</Badge>}
         {!!board.is_default && <Badge variant="outline" className="shrink-0">默认</Badge>}
+        {toTagList(board.tags).slice(0, 2).map(t => (
+          <span key={t} title={`标签：${t}`}
+            className="shrink-0 max-w-[6.5rem] truncate rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+            #{t}
+          </span>))}
+        {toTagList(board.tags).length > 2 && (
+          <span className="shrink-0 text-[11px] text-muted-foreground"
+            title={toTagList(board.tags).join('、')}>+{toTagList(board.tags).length - 2}</span>)}
         <span className="shrink-0 text-muted-foreground">{board.chart_count ?? 0} 个图表</span>
         <span aria-hidden className="shrink-0 text-muted-foreground/60">·</span>
         <span className="min-w-0 truncate text-muted-foreground"

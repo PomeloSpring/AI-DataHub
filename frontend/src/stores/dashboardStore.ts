@@ -41,6 +41,12 @@ export interface PageParam {
   default: string;
   label: string;
   options?: string[];
+  /**
+   * 看板级常数：值仍随取数下发，但页面上只呈现不可改。
+   * 单 App 看板的分析对象（app_code）靠它固定：给个能改的输入口，
+   * 用户改掉后标题写着 A 的看板就在算 B —— 错数比没答案更糟。
+   */
+  readonly?: boolean;
 }
 
 export type DashboardStatus = 'designing' | 'enabled' | 'closed';
@@ -118,6 +124,33 @@ export interface ChartParamUnbound {
 export interface ChartParamDiagnostic {
   unbound: ChartParamUnbound[];
   notes: string[];
+  /** 本次取数未完成的可读原因（数据源并发排队超限 / 超时 / 请求未完成）。
+   *
+   * 为什么不能只弹 toast：整板刷新是 N 张图，toast 刷屏后消失，而图上留着的还是旧数——
+   * 用户读到的是“没变化”，不是“在排队、请稍后重试”。卡片留一个可见标记才算显式暴露
+   * （no-silent-degradation）；下一次取数成功后由 `diag` 整体覆盖自动清掉。 */
+  notice?: string;
+}
+
+/** 把取数未完成的原因挂到该图诊断上（保留参数诊断的其他字段，不相互擦除）。 */
+function withChartNotice(
+  current: Record<number, ChartParamDiagnostic>, chartId: number, message: string,
+): Record<number, ChartParamDiagnostic> {
+  const prev = current[chartId];
+  return {
+    ...current,
+    [chartId]: { unbound: prev?.unbound || [], notes: prev?.notes || [], notice: message },
+  };
+}
+
+/** 从查询池回传的失败负载里取服务端给用户的文案（axios `error.response.data.detail`）。
+ *
+ * `chartQueryPool.run()` 永不 reject，HTTP 4xx 是以 `{ok:false, reason:'error', error}` 回传的；
+ * 不拆这一层就只能对用户说“刷新失败”，把服务端的可操作原因（数据源并发排队请稍后重试 /
+ * 请收窄时间窗 / 表不存在）全部弄丢（no-silent-degradation：可诊断）。
+ */
+function serverDetailOf(err: unknown): string {
+  return String((err as any)?.response?.data?.detail || '');
 }
 
 interface DashboardState {
@@ -519,6 +552,12 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       ids.add(chartId);
       return { refreshingChartIds: ids, refreshing: true };
     });
+    // 卡片可见标记：toast 会滑动消失而图上还是旧数，“在排队/请稍后重试”必须留在图卡上
+    // （下一张图取数成功时 success 分支重建 diag，标记自动消失）
+    const markNotice = (message: string) => {
+      if (session !== sessionVersion) return;
+      set(state => ({ paramDiagnostics: withChartNotice(state.paramDiagnostics, chartId, message) }));
+    };
     try {
       const { paramValues, pageParamValues } = get();
       const body: any = { params: { ...paramValues, ...pageParamValues } };
@@ -532,9 +571,18 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         if (result.reason === 'cancelled') return false; // 退出页面是预期行为，不弹错
         if (session === sessionVersion) {
           const label = chartLabel(chartId, extra?.chartName);
-          toast.error(result.reason === 'timeout'
-            ? `${label}查询超过 ${result.seconds} 秒未返回，已取消`
-            : `${label}刷新失败`);
+          if (result.reason === 'timeout') {
+            toast.error(`${label}查询超过 ${result.seconds} 秒未返回，已取消`);
+            markNotice(`查询超过 ${result.seconds} 秒未返回，已取消；请重试或缩小时间范围`
+              + "（数据源并发已满时也会先排队，排不到会提示稍后重试）");
+          } else {
+            // 被拒（权限/语法/容量排队）的原文在 error.response.data.detail：旧写法只说
+            // “刷新失败”，把“请稍后重试”这类下一步弄丢了（池永不 reject，不走下面的 catch）
+            const detail = serverDetailOf(result.error);
+            const fallback = '刷新请求未完成（网络或服务不可用），请稍后重试';
+            toast.error(detail ? `${label}刷新失败: ${detail}` : `${label}${fallback}`);
+            markNotice(detail || fallback);
+          }
         }
         return false;
       }
@@ -570,10 +618,20 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         return true;
       } else if (data?.error) {
         toast.error(`${chartLabel(chartId, extra?.chartName)}刷新失败: ${data.error}`);
-      } else toast.error(`${chartLabel(chartId, extra?.chartName)}未返回有效结果`);
+        markNotice(String(data.error));   // 服务端已按错因给人话（含容量排队提示），不另写一套
+      } else {
+        toast.error(`${chartLabel(chartId, extra?.chartName)}未返回有效结果`);
+        markNotice('未返回有效取数结果，请稍后重试');
+      }
       return false;
     } catch (e: any) {
-      if (session === sessionVersion) toast.error(e.response?.data?.detail || `${chartLabel(chartId, extra?.chartName)}刷新失败`);
+      const detail = String(e.response?.data?.detail || '');
+      if (session === sessionVersion) {
+        toast.error(detail || `${chartLabel(chartId, extra?.chartName)}刷新失败`);
+        // 取数被拒（权限/语法/容量排队）的原文就在 detail 里：卡片上挂同一句，
+        // 否则只看到“图没变”而不知道自己在等位
+        markNotice(detail || '刷新失败，请稍后重试');
+      }
       return false;
     } finally {
       if (session === sessionVersion && refreshVersions.get(chartId) === version) set(state => {

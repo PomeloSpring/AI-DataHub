@@ -87,6 +87,11 @@ export const DashboardChartCard = memo(function DashboardChartCard({ chart, desi
         {paramHint && <span
           title={paramHint.title}
           className="shrink-0 rounded border border-orange-500/40 bg-orange-500/10 px-1 text-[10px] font-normal leading-4 text-orange-700">{paramHint.text}</span>}
+        {/* 本次取数未完成（数据源并发排队超限 / 超时 / 被拒）：卡片上留着可见标记 + 完整原因，
+            不得只靠一次就消失的 toast 把“在排队”说成“没变化”（no-silent-degradation） */}
+        {paramDiag?.notice && <span
+          title={`本次取数未完成：${paramDiag.notice}`}
+          className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-normal leading-4 text-amber-600">取数未完成</span>}
       </span>
       {actions}
     </div>}

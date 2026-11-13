@@ -448,6 +448,26 @@ class TestPlannerDatasetBinding:
         assert planned.sql == ""
         assert any("行级范围" in w for w in planned.warnings), planned.warnings
 
+    def test_es_execution_dataset_cannot_be_bound(self, monkeypatch):
+        """ES 执行通道的数据集不得按目标源方言二次编译（ES SQL 无派生表）→ 显式拒。
+
+        锁两点：① 判据是执行源 db_type（L0 `is_es_datasource`）而不是已退役的
+        `source_type='es'`/`es_pattern` 行形状（拿它判会恒 false，这道门静默失效）；
+        ② 拒绝文案不得再讲“不在数据权限治理域”——ES 数据源型数据集现在就在治理域内，
+        不可做的是“归到关系源上二次编译”这件事（no-silent-degradation：原因要说对）。
+        """
+        from backend.common.db import datasource_db
+
+        monkeypatch.setattr(planner, "_load_dataset_row",
+                            lambda ref: dict(_ds(), source_type="sql", es_pattern="", datasource_id=17))
+        monkeypatch.setattr(planner, "_dataset_has_scopes", lambda _id: False)
+        monkeypatch.setattr(datasource_db, "is_es_datasource", lambda _id: True)
+        planned = planner.plan(self._query(), _bind())
+        assert planned.sql == ""
+        text = " ".join(planned.warnings)
+        assert "Elasticsearch 数据源" in text and "query_dataset" in text, planned.warnings
+        assert "不在数据权限治理域" not in text, planned.warnings
+
     def test_window_mode_on_dataset_is_refused(self, stub_dataset):
         planned = planner.plan(
             self._query(window={"type": "rank", "metric": "到达实体数"}), _bind())

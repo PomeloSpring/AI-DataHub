@@ -25,6 +25,25 @@ from __future__ import annotations
 _PG_FAMILY = ("postgres", "postgresql", "pg")
 _MYSQL_FAMILY = ("mysql", "doris", "datafusion")
 _SLS_ENGINES = ("sls",)
+_ES_ENGINES = ("es",)
+
+
+def _es_partial_case(col_text: str) -> str:
+    """ES 引擎的 partial mask：与 `_partial_case` 同口径（首尾各 2、中间打星、<=4 全打星）。
+
+    不直接复用 `_partial_case` 是实机取证定的三件事（2026-11-13）：
+    1) ES 没有 `SUBSTR`，而 Presto/默认生成器会把 `LEFT/RIGHT/SUBSTRING` 渲染成它 ——
+       所以这里直接产出 ES 规范形（`SUBSTRING` 三参），不再依赖方言映射兼容；
+    2) ES 的 `CONCAT` **只收 2 个参数**（三段拼接写成嵌套）；
+    3) 取尾不用 `RIGHT`（避开函数系差异），用 `SUBSTRING(x, GREATEST(LENGTH(x)-1, 1), 2)`。
+    产物形状已在真实集群执行验证，且经 `semantics/es_dialect` 渲染后仍为同一形式。
+    """
+    return (
+        f"CASE WHEN LENGTH({col_text}) <= 4 THEN REPEAT('*', LENGTH({col_text})) "
+        f"ELSE CONCAT(SUBSTRING({col_text}, 1, 2), "
+        f"CONCAT(REPEAT('*', GREATEST(LENGTH({col_text}) - 4, 0)), "
+        f"SUBSTRING({col_text}, GREATEST(LENGTH({col_text}) - 1, 1), 2))) END"
+    )
 
 
 def _partial_case(col_text: str, len_fn: str = "LENGTH") -> str:
@@ -50,6 +69,19 @@ def mask_expr(column_sql: str, mask_type: str, dialect: str = "mysql",
     eng = (engine or "").strip().lower()
     col = str(column_sql)
     is_sls = eng in _SLS_ENGINES or dialect in _SLS_ENGINES
+    is_es = eng in _ES_ENGINES or dialect == "es"
+
+    if is_es:
+        # ES SQL（Calcite 子集）：无哈希函数、CONCAT 只两参、取子串只能 SUBSTRING 三参
+        if kind in ("null", "full", "block"):
+            return "NULL"
+        if kind == "hash":
+            raise ValueError(
+                "Elasticsearch 引擎没有哈希函数（MD5/SHA1/SHA2/TO_HEX 实机均 400），"
+                "hash 型脱敏在本引擎不可表达：请改用 partial，或让该数据走数据源 SQL 通道")
+        if kind == "partial":
+            return _es_partial_case(col)
+        raise ValueError(f"未知 mask 类型 {mask_type!r}（fail-loud，不得静默放行原列）")
 
     if is_sls:
         # SLS(Presto 子集)：CAST 到 VARCHAR、哈希只能 MD5、取尾只能 RIGHT（见模块 docstring）

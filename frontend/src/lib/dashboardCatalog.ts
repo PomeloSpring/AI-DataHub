@@ -35,12 +35,15 @@ export interface GroupBoard extends Pick<Dashboard, 'id' | 'name' | 'status' | '
   description?: string;
   updated_at?: string;
   chart_count?: number;
+  /** 自由标签：目录行必须下发，否则浏览侧只能按名字模糊找（看板一多就翻不动） */
+  tags?: string[];
   preview?: DashboardPreview;
   /** 服务端裁决: 仅看板属主/管理员可写; 角色授予的可见权不含编辑权 */
   editable?: boolean;
 }
 
-/** 仪表盘组目录项: 组按角色分配, 组内看板 ∩ 角色可见(可见性 fail-closed) */
+/** 仪表盘组目录项: 组按角色分配, 组内看板 ∩ 角色可见(可见性 fail-closed)。
+ * 数组顺序 = 展示/轮播顺序(组间按 adh_dashboard_groups.sort、组内按成员表 sort)，不是任意序。 */
 export interface GroupView {
   id: number;
   name: string;
@@ -80,7 +83,59 @@ async function rawFetchVisibleGroups(): Promise<GroupView[]> {
   return Array.isArray(data) ? data : [];
 }
 
-/** 展平为看板清单(带所属组), 保持服务端顺序(is_default → sort_order) */
+/** 展平为看板清单(带所属组), 保持服务端顺序。
+ *
+ * 服务端顺序就是编排事实：真组合内 = 管理端「组合内看板」的 sort，
+ * 「未分组」兑底组 = 看板目录序(is_default → sort_order)。前端不再二次排序把它抹平。 */
 export function flattenGroupBoards(groups: GroupView[]): Array<GroupBoard & { group_id: number; group_name: string }> {
   return groups.flatMap(g => g.dashboards.map(d => ({ ...d, group_id: g.id, group_name: g.name })));
+}
+
+// ── 看板清单的名称/标签过滤（一级清单页与组内切换条同一口径）────────────────
+// 抽成纯函数只为让"筛出来的是哪几个"在两处不会各写一套判据（一处改了另一处默默失效）；
+// 它不参与取数与权限，可见集仍由服务端 fail-closed 裁决。
+
+export interface BoardFilter {
+  query: string;
+  tag: string;
+}
+
+export const EMPTY_BOARD_FILTER: BoardFilter = { query: '', tag: '' };
+
+export const isBoardFilterActive = (f: BoardFilter) =>
+  Boolean(f.query.trim() || f.tag);
+
+/** 看板已有标签并集（业务可读名, 按中文序）；下拉选项唯一来源，不得各处自拼 */
+export function collectBoardTags(boards: Array<Pick<GroupBoard, 'tags'>>): string[] {
+  const set = new Set<string>();
+  boards.forEach(b => toTagList(b.tags).forEach(t => set.add(t)));
+  return [...set].sort((a, b) => a.localeCompare(b, 'zh'));
+}
+
+/**
+ * 目录行 tags 兼容归一：后端已回字符串数组，但缓存/旧进程可能回 JSON 文本（甚至 '[]'）。
+ * 不收这一道，下面 `.includes`/`.forEach` 会在旧进程未重启时直接抛错白屏。
+ */
+export function toTagList(value: unknown): string[] {
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    try { parsed = JSON.parse(value); } catch { parsed = value.trim() ? [value] : []; }
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: string[] = [];
+  for (const item of parsed) {
+    const s = String(item ?? '').trim();
+    if (s && !out.includes(s)) out.push(s);
+  }
+  return out;
+}
+
+/** 命中判据：名称/描述模糊包含（不分大小写）+ 标签精确命中（单选） */
+export function filterBoards<T extends Pick<GroupBoard, 'name' | 'description' | 'tags'>>(
+  boards: T[], filter: BoardFilter,
+): T[] {
+  const q = filter.query.trim().toLowerCase();
+  return boards.filter(b =>
+    (!q || `${b.name} ${b.description || ''}`.toLowerCase().includes(q))
+    && (!filter.tag || toTagList(b.tags).includes(filter.tag)));
 }

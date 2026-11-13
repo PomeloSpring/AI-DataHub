@@ -21,16 +21,29 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable, Optional
 
+# ES 型 db_type 判定的事实源在 L0（`common/db_types.py`）：连接工厂也要用同一个清单，
+# 而分层契约禁止 common 引 semantics。这里引上来并再导出，保持既有消费方（core/modules）
+# 的 `from backend.semantics.dialect import is_es_db_type` 写法不变。
+from backend.common.db_types import ES_DB_TYPES, is_es_db_type  # noqa: F401 (re-export)
+
 # db_type -> 编译方言族（SQL 语法骨架）
+# 注意：`es` **故意不登在这里**。语义编译层（planner/dataset_compiler）只认
+# mysql/postgres 两族骨架，ES 的形状（必带 LIMIT、`.keyword` 子字段、无 JOIN/派生表/窗口
+# 函数、CONCAT 只两参）需要专门的 es 引擎才能表达；而 planner 入口有
+# `is_known_db_type(binding.db_type)` 硬门 —— 不登 family 就等于“绑不上语义对象”，
+# 比默默走 mysql 骨架编出一条错 SQL 好得多（阶段四做 es 引擎时再一并放开）。
 FAMILY_OF_DBTYPE: dict[str, str] = {
     "mysql": "mysql", "doris": "mysql",
     "postgres": "postgres", "postgresql": "postgres", "pg": "postgres", "sls": "postgres",
 }
 
 # db_type -> 引擎名（同族内的函数/特性差异 + 模板可用范围）
+# es 只登 engine：治理层（RLS 注入形态 / mask 函数系 / 渲染产物复核）需要按引擎分支，
+# 取证见 `semantics/es_dialect.py` 与 `security/masking.py` 的 ES 支。
 ENGINE_OF_DBTYPE: dict[str, str] = {
     "mysql": "mysql", "doris": "doris",
     "postgres": "postgres", "postgresql": "postgres", "pg": "postgres", "sls": "sls",
+    "es": "es", "elasticsearch": "es",
 }
 
 # 变体声明里允许的键：引擎名 ∪ 方言族名（族键=同族所有引擎共享的写法）

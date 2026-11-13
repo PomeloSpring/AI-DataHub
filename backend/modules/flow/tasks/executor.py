@@ -121,8 +121,9 @@ def _generate_report(task: dict, results: list) -> tuple[str, str]:
     task["_security_context"] = call("report.policy_snapshot", task["owner_id"], task["workspace_id"], sources)
     tpl = task.get("_report_template") or {}
     if tpl.get("found"):
-        # 按模板出正文：单问且模型终稿达标则沿用版式（带叙述与 ```chart），否则退事实表格并显式记原因。
-        # 与报表中心「用最新数据重新生成」同一 render 口径（viz 一处实现，执行器不复制判断）。
+        # 按模板出正文：单问且模型终稿达标则沿用版式（带叙述与 ```chart）；模板登记了版式却没做到
+        # 则回空正文（= 本轮失败，不降级成事实表格）。与报表中心「用最新数据重新生成」同一 render
+        # 口径（viz 一处实现，执行器不复制判断）。
         answer = next((r.get("answer") for r in results if isinstance(r, dict) and r.get("answer")), "")
         content, fmt, layout_result = call("report.render_template",
             task.get("name", "分析报告"), flattened, answer, tpl.get("layout") or {},
@@ -329,9 +330,13 @@ def _execute_core(task_id, trigger_type, run_key=None, worker_id="sync-process")
                 raise ValueError(tpl.get("reason") or "报告模板不可用")
             task["_report_template"] = tpl
             config["report_theme"] = tpl.get("theme") or ""
-            # 无版式时 report_layout_contract 自判回空串，不往提示词灌空契约
-            config["layout_contract"] = call("report.layout_contract",
-                                             tpl.get("layout") or {}, tpl.get("theme") or "")
+            # 无版式时 report_layout_contract 自判回空串，不往提示词灌空契约。
+            # framing=template：任务第一次按模板出稿，没有“上一版”可沿 —— 写成重跑口径会让模型
+            # 把模板正文里的示例数字当成可以沿用的旧数据（措辞口径只报表域一处有，这里只传档位）。
+            config["layout_contract"] = call(
+                "report.layout_contract", tpl.get("layout") or {}, tpl.get("theme") or "",
+                framing="template",
+                origin=f"定时任务选定的报告模板「{tpl.get('name') or tpl_key}」")
         results = _execute_agent_mode(task)
         _check_running(task)
         required = bool(task.get("report_template_key"))
@@ -339,7 +344,12 @@ def _execute_core(task_id, trigger_type, run_key=None, worker_id="sync-process")
             try:
                 content, fmt = _wait(task, _generate_report, task, results)
                 if not content:
-                    raise ValueError("必需报告未生成")
+                    # 模板登记了版式而本轮没做到 = 失败（viz 侧不再改产事实表格冒充成品），
+                    # 原因必须带进日志错文，否则用户只看到"报告未生成"，查不出差在哪一结构
+                    reasons = [str(r).strip() for r in ((task.get("_layout_result") or {})
+                                                        .get("reasons") or []) if str(r).strip()]
+                    raise ValueError("必需报告未生成：本轮产出未符合报告模板的版式"
+                                     + ("（" + "；".join(reasons[:3]) + "）" if reasons else ""))
                 _check_running(task)
                 report_link = _save_report_and_get_link(task, log_id, content, fmt)
             except (RunInterrupted, TimeoutError, asyncio.TimeoutError, SoftTimeLimitExceeded):

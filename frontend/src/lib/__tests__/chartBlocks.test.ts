@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseChartBody, parseArtifactBody, parseDesignBody, normalizeRows, splitChartBlocks } from '../chartBlocks';
+import { parseChartBody, parseArtifactBody, parseDesignBody, parseReportBody, normalizeRows, splitChartBlocks } from '../chartBlocks';
 
 describe('splitChartBlocks', () => {
   it('提取 chart 块并保留其余 markdown', () => {
@@ -146,5 +146,100 @@ describe('parseDesignBody', () => {
     const text = '```design\n{"design_id":"d1"}\n```\n```design\n{"design_id":"d2"}\n```';
     const segs = splitChartBlocks(text);
     expect(segs.filter(s => s.kind === 'design')).toHaveLength(2);
+  });
+});
+
+describe('report 交付块（渲染机引用）', () => {
+  it('解析 doc_id + 形态 + 标题', () => {
+    const seg = parseReportBody('{"doc_id":"abc","body_kind":"html","title":"订单分析报告"}') as any;
+    expect(seg.kind).toBe('report');
+    expect(seg.docId).toBe('abc');
+    expect(seg.bodyKind).toBe('html');
+    expect(seg.title).toBe('订单分析报告');
+  });
+
+  it('body_kind 缺失时按 html 处理，但仍是一块（不得当“没这个块”丢掉）', () => {
+    const seg = parseReportBody('{"doc_id":"abc"}') as any;
+    expect(seg.kind).toBe('report');
+    expect(seg.bodyKind).toBe('html');
+  });
+
+  it('缺 doc_id / 非法 JSON → 降级 raw', () => {
+    expect(parseReportBody('{"title":"x"}').kind).toBe('raw');
+    expect(parseReportBody('{ not json }').kind).toBe('raw');
+    expect(parseReportBody('{"doc_id":"  "}').kind).toBe('raw');
+  });
+
+  it('splitChartBlocks 在回答内嵌交付卡，其余正文仍是 markdown', () => {
+    const text = '结论如下。\n```report\n{"doc_id":"d1","body_kind":"html","title":"报告"}\n```\n以上。';
+    const segs = splitChartBlocks(text);
+    expect(segs.map(s => s.kind)).toEqual(['markdown', 'report', 'markdown']);
+    expect((segs[1] as any).docId).toBe('d1');
+  });
+
+  it('一轮只一个主交付物：同一 doc 重复引用只渲一次，且不回退成源码', () => {
+    const block = '```report\n{"doc_id":"same"}\n```';
+    const segs = splitChartBlocks(`${block}\n中间文字\n${block}`);
+    expect(segs.filter(s => s.kind === 'report')).toHaveLength(1);
+    // 被消耗的那块不得以 raw/markdown 形式把 JSON 源码漏给用户
+    expect(JSON.stringify(segs)).not.toMatch(/doc_id":\s*"same"/);
+  });
+
+  it('未闭合围栏不切块（流式期不把半份报告当正文念出来）', () => {
+    const segs = splitChartBlocks('正在生成…\n```report\n{"doc_id":"d1"}');
+    expect(segs.filter(s => s.kind === 'report')).toHaveLength(0);
+  });
+
+  it('流式模式下未闭合的 report 围栏换成进度占位，不漏 JSON 源码', () => {
+    const segs = splitChartBlocks('结论如下。\n```report\n{"doc_id":"d1", "bo', true);
+    expect(segs.map(s => s.kind)).toEqual(['markdown', 'report-pending']);
+    expect(JSON.stringify(segs)).not.toContain('doc_id');
+  });
+
+  it('流式模式下已闭合的 report 块照常规渲染（不拿占位顶替成品）', () => {
+    const segs = splitChartBlocks('```report\n{"doc_id":"d1"}\n```\n以上。', true);
+    expect(segs.map(s => s.kind)).toEqual(['report', 'markdown']);
+  });
+
+  it('非流式（历史回放）不受占位影响：未闭合就照旧当正文', () => {
+    const segs = splitChartBlocks('```report\n{"doc_id":"d1"}', false);
+    expect(segs.every(s => s.kind !== 'report-pending')).toBe(true);
+  });
+});
+
+describe('chart 引用形态（render_chart 渲染机）', () => {
+  it('chart_ref 块解析成 chart-ref 段（数据不在消息里）', () => {
+    const seg = parseChartBody('{"chart_ref":"c1","title":"月度订单量"}');
+    expect(seg).toEqual({ kind: 'chart-ref', chartRef: 'c1', title: '月度订单量' });
+  });
+
+  it('同时给了 chart_ref 与内联 columns/rows 时以引用为准（服务端取数才是事实源）', () => {
+    const seg = parseChartBody(
+      '{"chart_ref":"c1","columns":["月","额"],"rows":[["2026-01",999]]}');
+    expect(seg.kind).toBe('chart-ref');
+  });
+
+  it('缺 chart_ref 的块仍走内联形态（历史消息回放不回退）', () => {
+    const seg = parseChartBody('{"chart_ref":"","columns":["月","额"],"rows":[{"月":"1","额":2}]}');
+    expect(seg.kind).toBe('chart');
+  });
+
+  it('坏 JSON 降级为 raw，不猜 ref', () => {
+    expect(parseChartBody('{"chart_ref": 语法错').kind).toBe('raw');
+  });
+
+  it('混排：markdown / chart-ref / chart 内联各归其位', () => {
+    const text = [
+      '先看趋势。',
+      '```chart',
+      '{"chart_ref":"c1"}',
+      '```',
+      '再看明细。',
+      '```chart',
+      '{"chart_type":"bar","columns":["月","额"],"rows":[["2026-01",120]]}',
+      '```',
+    ].join('\n');
+    const segs = splitChartBlocks(text);
+    expect(segs.map(s => s.kind)).toEqual(['markdown', 'chart-ref', 'markdown', 'chart']);
   });
 });

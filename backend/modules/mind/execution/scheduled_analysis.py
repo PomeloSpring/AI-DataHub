@@ -132,6 +132,9 @@ def _execution_layer(workspace_id: int, as_bot: dict | None = None) -> dict:
         # 与 claim_session 同口径：执行层状态与工具上限每次实读（停用即刻生效）。
         ceiling = live_ceiling(None, SimpleNamespace(layer_id=layer_id, layer_bound=True, backend=backend))
     return {"layer_id": layer_id, "backend": backend, "ceiling": ceiling,
+            # Harness 级默认模型随层一并带出：无人值守建 options 时要走与问答同一个
+            # 四级优先级链（见 llm_resources.resolve_effective_model），旧写法直接漏了这一级。
+            "model": getattr(adapter, "model", "") or "",
             "timeout": int(getattr(adapter, "timeout", 0) or 0)}
 
 
@@ -234,6 +237,7 @@ def load_profile(config, identity) -> dict:
     profile["site_code"] = site
     profile["site_labels"] = [str(s.get("display_name") or s.get("site_code")) for s in concrete]
     profile["layer_timeout"] = layer["timeout"]
+    profile["layer_model"] = layer["model"]
     # 后端随 profile 带走：options 构造与单发流必须用**同一个** SDK，
     # 缺这个字段会让运行悄悄退回 qoder（见 _build_oneshot_options）。
     profile["backend"] = layer["backend"]
@@ -585,6 +589,7 @@ def _build_oneshot_options(run: "_ScheduledRun"):
     env = {k: None for k in os.environ if k not in ("PATH", "LANG", "LC_ALL")}
     env.update({"HOME": str(home), "XDG_CONFIG_HOME": str(home), "TMPDIR": str(home / "tmp"),
                 "QODERCN_CONFIG_DIR": str(home) + "/qoder-cn"})
+    _skill_state: dict = {}
     system_prompt = "\n".join([
         SCHEDULED_GUIDANCE,
         "## 本轮可查范围（服务端按任务属主角色派生）",
@@ -608,20 +613,27 @@ def _build_oneshot_options(run: "_ScheduledRun"):
             # 无人值守：没有人在现场纠偏，不因省字数拿技能正文（分析剧本/交付口径）冒险；
             # 仍走能力门控，未授权的工具不会诱导模型去用。
             force_all_skill_bodies=True,
+            skill_state=_skill_state,
         ),
     ])
+    # 正文已全量常驻，所以本链路里 load_skill_guide 只会回“已在上下文”（不重复下发）；
+    # 仍回写决议，避免“细则拉不到”被当成故障：渐进披露在无人值守上不生效是有意选择。
+    from backend.modules.mind.execution.sdk_tools.skill_tools import RESIDENT_KEY
+    ctx.extra[RESIDENT_KEY] = _skill_state
     token = resolve_access_token()
     if not token and backend != "claude":
         # claude 直连不需要 Qoder 凭据（它用模型中心登记的供应商 Key），不能因为
         # 没配 PAT 就把直连的定时任务拦下；非 claude 后端仍保持原有硬要求。
         raise ValueError("Harness 凭据未配置(QODERCN_PERSONAL_ACCESS_TOKEN)")
-    # 无人值守同交互链路一致的模型优先级：
-    # ctx.extra.model_ref（resolve_policy 已从 AS-BOT.models[0] 默认注入）
-    # → AS-BOT.models[0] → .env QODER_MODEL 兜底 → None（SDK Auto）。
-    from backend.common.config import QODER_MODEL
+    # 无人值守与交互链路同一个四级优先级链（回合级/AS-BOT 首项 → Harness 级 →
+    # 模型中心「设为默认」→ .env QODER_MODEL），唯一实现见 llm_resources.resolve_effective_model。
+    # 旧写法在这里少一级 Harness 配置、三处都少平台默认，导致同一个问题在 Chat 里问
+    # 与定时跑可能命中不同模型（口径漂移）。
+    from backend.modules.mind.execution.llm_resources import resolve_effective_model
     _sem = (run.ctx.extra or {}).get("model_ref") or ""
     _asbot_models = run.policy.as_bot.get("models") or []
-    _model = _sem or (_asbot_models[0] if _asbot_models else "") or QODER_MODEL or None
+    _turn = _sem or (_asbot_models[0] if _asbot_models else "")
+    _model = resolve_effective_model(_turn, run.profile.get("layer_model") or "") or None
     shared = dict(
         tools=[], allowed_tools=allowed_tools, permission_mode="default", setting_sources=[],
         cwd=str(home / "workspace"), add_dirs=[], env=env,

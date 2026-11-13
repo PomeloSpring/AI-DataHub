@@ -259,6 +259,22 @@ describe('动效落地产物', () => {
     expect(specInput.children[0].animate).toBeUndefined();   // 不原地改调用方对象
   });
 
+  it('环/饼/玫瑰（theta/polar 的 interval）不吃笛卡尔 enter 动画 → 降级为 fadeIn（防丢切片）', () => {
+    const grow = { enter: { type: 'growInY', duration: 700, easing: 'e' } };
+    // theta 饼：顶层 mark 带 coordinate.type=theta，growInY 会被换成 fadeIn，时长/缓动保留
+    const pie = applyG2Animate({ type: 'interval', encode: { y: 'v', color: 'n' }, coordinate: { type: 'theta' } } as Record<string, any>, grow);
+    expect(pie.animate).toEqual({ enter: { type: 'fadeIn', duration: 700, easing: 'e' } });
+    // polar 玫瑰（children 里的 interval mark）同样降级
+    const rose = applyG2Animate({ type: 'view', children: [{ type: 'interval', encode: { y: 'v' }, coordinate: { type: 'polar' } }] } as Record<string, any>, { enter: { type: 'pathIn' } });
+    expect(rose.children[0].animate.enter.type).toBe('fadeIn');
+    // 笛卡尔 interval（普通柱状）不受影响，照原样下发
+    const bar = applyG2Animate({ type: 'interval', encode: { x: 'a', y: 'b' } } as Record<string, any>, grow);
+    expect(bar.animate.enter.type).toBe('growInY');
+    // 本来就是 fadeIn / none(false) → 原样
+    expect(applyG2Animate({ type: 'interval', encode: { y: 'v' }, coordinate: { type: 'theta' } } as Record<string, any>, { enter: { type: 'fadeIn' } }).animate.enter.type).toBe('fadeIn');
+    expect(applyG2Animate({ type: 'interval', encode: { y: 'v' }, coordinate: { type: 'theta' } } as Record<string, any>, false).animate).toBe(false);
+  });
+
   it('非法旋钮回落默认值并记录原因（写入口必须拒收，不能存了不生效）', () => {
     // 效果名不合法 → 回落默认档值 + invalid 给出可直接展示的文案
     const badEffect = sanitizeMotion({ enter: { effect: 'zoomSlide' } });

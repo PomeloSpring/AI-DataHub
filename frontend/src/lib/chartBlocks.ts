@@ -18,11 +18,17 @@ export interface ChartData {
 export type ChartSegment =
   | { kind: 'markdown'; text: string }
   | { kind: 'chart'; title?: string; chartType?: string; sql?: string; data: ChartData }
+  /** 渲染机（render_chart）产出的图表引用：数据在受管文档对象里，不在消息里 */
+  | { kind: 'chart-ref'; chartRef: string; title?: string }
   | { kind: 'mermaid'; code: string; title?: string }
   | { kind: 'artifact'; type: 'excel' | 'pdf' | 'html' | 'md' | 'png' | 'jpg' | 'gif' | 'webp' | 'csv'; filename: string; content?: string; path?: string; theme?: string; description?: string }
   | { kind: 'sql'; code: string }
   | { kind: 'graph'; title?: string; nodes: { id: string; label?: string; type?: string }[]; edges: { source: string; target: string; label?: string }[] }
   | { kind: 'design'; designId: string }
+  /** 交付形态渲染机产出的整份文档引用（正文在受管文档对象里，块只携带 ref） */
+  | { kind: 'report'; docId: string; bodyKind: string; title?: string }
+  /** 流式期间 ` ```report ` 围栏尚未闭合：渲染进度占位，**不得**把半途 JSON 当代码块念给用户 */
+  | { kind: 'report-pending'; bodyKind?: string }
   | { kind: 'raw'; text: string }; // 解析失败 → 原样代码文本
 
 // 匹配 ```chart ... ``` 围栏(语言标注为 chart,大小写不敏感)
@@ -37,6 +43,9 @@ const SQL_FENCE = /```sql[ \t]*\r?\n([\s\S]*?)```/gi;
 const GRAPH_FENCE = /```graph[ \t]*\r?\n([\s\S]*?)```/gi;
 // 匹配 ```design ... ``` 围栏(仪表盘设计卡片引用 JSON: {"design_id":"..."},由 LLM 需要用户打开面板时内嵌)
 const DESIGN_FENCE = /```design[ \t]*\r?\n([\s\S]*?)```/gi;
+// 匹配 ```report ... ``` 围栏(交付文档引用 JSON: {"doc_id":"...","body_kind":"html|spec","title":"..."})
+// 正文不在消息里：渲染机把整份文档落成受管对象，此处只携引用，组件按 doc_id 取回后渲染
+const REPORT_FENCE = /```report[ \t]*\r?\n([\s\S]*?)```/gi;
 
 /** 把 rows(数组的数组 或 对象的数组)归一化为对象数组。 */
 export function normalizeRows(columns: string[], rawRows: any[]): Record<string, any>[] {
@@ -52,11 +61,24 @@ export function normalizeRows(columns: string[], rawRows: any[]): Record<string,
   });
 }
 
-/** 解析单个 chart 块 body(JSON)→ chart 段或 raw 段(降级)。 */
+/** 解析单个 chart 块 body(JSON)→ chart / chart-ref 段或 raw 段(降级)。
+ *  两种形态：
+ *  - `chart_ref`：渲染机产出的引用（数据由服务端取并落文档对象，数字不经模型转抄）；
+ *  - 内联 `columns + rows`：历史契约，保留给存量消息回放。
+ * 引用形态单独成一个 kind 而不是把 data 做成可选：消费方拿到 `data` 缺失的 chart 段
+ * 只会渲染出空白卡片（正是本次要消除的那类静默）。 */
 export function parseChartBody(body: string): ChartSegment {
   const text = body.trim();
   try {
     const obj = JSON.parse(text);
+    const chartRef = typeof obj?.chart_ref === 'string' ? obj.chart_ref.trim() : '';
+    if (chartRef) {
+      return {
+        kind: 'chart-ref',
+        chartRef,
+        title: typeof obj.title === 'string' ? obj.title : undefined,
+      };
+    }
     const columns: string[] = Array.isArray(obj?.columns) ? obj.columns.map(String) : [];
     const rawRows: any[] = Array.isArray(obj?.rows) ? obj.rows : [];
     if (!columns.length || !rawRows.length) throw new Error('empty chart');
@@ -145,9 +167,33 @@ export function parseDesignBody(body: string): ChartSegment {
   }
 }
 
-/** 把整段回答文本切分为 markdown / chart / mermaid / artifact / sql / graph / design / raw 交替片段。
- *  同一回答内相同 design_id 只保留第一个 design 块(重复引用不重复弹卡片)。 */
-export function splitChartBlocks(text: string): ChartSegment[] {
+/** 解析 ```report 块 body(JSON)→ report 段或 raw 段(降级)。
+ *  只携带 doc_id：正文在渲染机落的受管文档对象里，REST 实时取回（不在消息里存快照）。
+ *  body_kind 缺失时按 html 处理：后端写入时总带，漏写属异常形状，**不得**当“没这个块”丢掉。 */
+export function parseReportBody(body: string): ChartSegment {
+  const text = body.trim();
+  try {
+    const obj = JSON.parse(text);
+    const docId = typeof obj?.doc_id === 'string' ? obj.doc_id.trim() : '';
+    if (!docId) throw new Error('missing doc_id');
+    return {
+      kind: 'report',
+      docId,
+      bodyKind: typeof obj?.body_kind === 'string' ? obj.body_kind.trim() : 'html',
+      title: typeof obj?.title === 'string' ? obj.title : undefined,
+    };
+  } catch {
+    return { kind: 'raw', text };
+  }
+}
+
+/** 把整段回答文本切分为 markdown / chart / mermaid / artifact / sql / graph / design / report / raw 交替片段。
+ *  同一回答内相同 design_id 只保留第一个 design 块(重复引用不重复弹卡片)。
+ *
+ *  `streaming=true` 时额外处理未闭合的 ` ```report ` 围栏：引用块虽然小（正文不在块里），
+ *  但把半途 JSON 当代码块逐字滑给用户同样是在展示一个还不存在的东西 —— 改为进度占位。
+ *  只对 report 做这件事：其余块（chart/mermaid）未闭合时保持既有行为，不拿本次改动改它们。 */
+export function splitChartBlocks(text: string, streaming = false): ChartSegment[] {
   const segs: ChartSegment[] = [];
   if (!text) return segs;
   const src = text;
@@ -161,6 +207,7 @@ export function splitChartBlocks(text: string): ChartSegment[] {
     { regex: SQL_FENCE, kind: 'sql' },
     { regex: GRAPH_FENCE, kind: 'graph' },
     { regex: DESIGN_FENCE, kind: 'design' },
+    { regex: REPORT_FENCE, kind: 'report' },
   ];
 
   // 收集所有匹配
@@ -178,6 +225,7 @@ export function splitChartBlocks(text: string): ChartSegment[] {
 
   // 构建片段
   const seenDesignIds = new Set<string>();
+  const seenDocIds = new Set<string>();
   for (const match of matches) {
     if (match.index > last) {
       segs.push({ kind: 'markdown', text: src.slice(last, match.index) });
@@ -203,6 +251,17 @@ export function splitChartBlocks(text: string): ChartSegment[] {
       } else {
         segs.push(seg);
       }
+    } else if (match.kind === 'report') {
+      const seg = parseReportBody(match.body);
+      if (seg.kind === 'report') {
+        // 一轮只一个主交付物：同一 doc 重复引用只渲一次，但块照样消耗（不回退成源码给用户看）
+        if (!seenDocIds.has(seg.docId)) {
+          seenDocIds.add(seg.docId);
+          segs.push(seg);
+        }
+      } else {
+        segs.push(seg);
+      }
     }
     last = match.index + match.length;
   }
@@ -210,5 +269,21 @@ export function splitChartBlocks(text: string): ChartSegment[] {
   if (last < src.length) {
     segs.push({ kind: 'markdown', text: src.slice(last) });
   }
+  if (streaming) {
+    return collapsePendingReportFence(segs);
+  }
   return segs;
+}
+
+/** 流式收尾：末段 markdown 里挂着未闭合的 ` ```report ` 围栏时，拆成进度占位。 */
+export function collapsePendingReportFence(segs: ChartSegment[]): ChartSegment[] {
+  const tail = segs[segs.length - 1];
+  if (!tail || tail.kind !== 'markdown') return segs;
+  const open = tail.text.search(/(^|\n)```report[ \t]*\r?\n/i);
+  if (open < 0) return segs;
+  const before = tail.text.slice(0, open);
+  const out = segs.slice(0, -1);
+  if (before.trim()) out.push({ kind: 'markdown', text: before });
+  out.push({ kind: 'report-pending' });
+  return out;
 }

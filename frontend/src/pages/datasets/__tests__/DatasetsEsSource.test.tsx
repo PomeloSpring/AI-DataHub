@@ -1,229 +1,160 @@
+/** 数据集清单页 — ES 形态的显示与筛选（内置通道退役后）。
+ *
+ * 退役前这一页有两条 ES 口径：卡片显「内置 Elasticsearch 通道 + 索引范围」，筛选下拉从
+ * `/datasets/channels` 拉内置 MCP 服务清单（就绪态、不可用原因都在那儿）。阶段三把内置通道
+ * 整体下架后，ES 数据集就是一条普通数据源型数据集：
+ *  - 显示：执行数据源业务名 + 服务端 `is_es` 给的「ES 通道」标注，不得再出现索引范围与"内置"字样；
+ *  - 筛选：只有一个维度 = 按数据源（`datasource_id`）。“ES 取数通道”那一项已于 2026-11-13 从
+ *    前端撤掉：现网只 1 个 ES 源时它与直接选 `cloud-platform-es` 结果逐字相同，而“取数通道”
+ *    这个词会被读成“还有一条不走数据源的取数路”（实际发生过误读）；
+ *  - 配置面端点 `/datasets/channels`·`/datasets/es-patterns` 不得再被请求（前端留一次调用
+ *    就是给退役机件留一条复活路径）。
+ */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import client from '@/api/client';
-import { ES_SOURCE_LABEL } from '@/lib/datasetPickerFilter';
 import Datasets from '../Datasets';
 
 vi.mock('@/api/client', () => ({
   default: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() },
 }));
 
+/** 终态形状：source_type='sql' + ES 型数据源 + 服务端下发 is_es */
 const ES_ROW = {
-  id: 900, name: '设备告警按天', description: '', source_type: 'es',
-  es_pattern: 't-t_equipment_warning_log*', object_key: '', datasource_id: 0,
-  datasource_name: '内置 Elasticsearch 通道',
-  available_source_names: ['t-t_equipment_warning_log*'],
-  usable_now: ['t-t_equipment_warning_log*'],
+  id: 900, name: '设备告警按天', description: '', source_type: 'sql', is_es: true,
+  object_key: '', datasource_id: 1794535612029, datasource_name: 'cloud-platform-es',
+  available_source_names: ['cloud-platform-es'], usable_now: ['cloud-platform-es'],
   chart_type: 'line', owner_id: 1, field_count: 2, references: 1, updated_at: '',
 };
 
-const PATTERNS_OK = {
-  ready: true, state: 'ready', status_message: '',
-  patterns: ['t-t_equipment_warning_log*', 'logs-*'],
-  sql_hint: 'Elasticsearch SQL 是受限方言（以下均经本集群实测）',
+const MYSQL_ROW = {
+  id: 41, name: '版本统计·App 版本分布', description: '', source_type: 'sql', is_es: false,
+  object_key: '', datasource_id: 11, datasource_name: 'prd-cn',
+  available_source_names: ['prd-cn'], usable_now: ['prd-cn'],
+  chart_type: 'bar', owner_id: 1, field_count: 3, references: 0, updated_at: '',
 };
 
-// 内置 MCP 通道清单（GET /datasets/channels 的下发形状）：下拉里的这一项必须来自它，
-// 而不是前端硬编码（否则新增一个能承载数据集的 MCP 服务就得改前端）。
-const ES_CHANNEL = {
-  value: 'mcp:elasticsearch', channel: 'es', server: 'elasticsearch',
-  label: ES_SOURCE_LABEL, group: 'MCP 服务（内置）',
-  ready: true, state: 'ready', status_message: '', open_view_count: 4,
-};
-const channelsOf = (...items: any[]) => ({ items: items.length ? items : [ES_CHANNEL] });
-const CHANNELS_OK = channelsOf();
-
-/** 按 URL 分派的假后端：数据集清单 + 数据源清单 + ES 通道事实（配置面与筛选面各自接口） */
-/** 页面依赖 useNavigate，必须套 Router 上下文 */
-function renderPage() {
-  return render(<MemoryRouter><Datasets /></MemoryRouter>);
-}
-
-function route(options: any = PATTERNS_OK, channels: any = CHANNELS_OK) {
+/** 按 URL 分派的假后端：数据集清单 + 数据源清单（内置通道时代的两条配置面 GET 已不存在） */
+function route(items: any[] = [ES_ROW, MYSQL_ROW], datasources: any[] = []) {
   (client.get as any).mockImplementation(async (url: string) => {
-    if (url === '/datasets/') return { data: { items: [ES_ROW] } };
-    if (url === '/datasources/') return { data: [] };
-    if (url === '/datasets/es-patterns') return { data: options };
-    if (url === '/datasets/channels') return { data: channels };
+    if (url === '/datasets/') return { data: { items } };
+    if (url === '/datasources/') return { data: datasources };
     if (url === '/dashboard/') return { data: [] };
     throw new Error(`unexpected GET ${url}`);
   });
 }
 
+/** 页面依赖 useNavigate，必须套 Router 上下文 */
+function renderPage() {
+  return render(<MemoryRouter><Datasets /></MemoryRouter>);
+}
+
 beforeEach(() => { vi.clearAllMocks(); route(); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
-describe('数据集页 — ES 型来源的显示与配置入口', () => {
-  it('ES 数据集卡片显示业务名「ES 索引」与已选范围，不出现裸枚举 es', async () => {
+describe('数据集卡片 — ES 型的显示口径', () => {
+  it('ES 数据集执行位显示数据源业务名 + 「ES 通道」标注，不出现裸枚举与"内置"字样', async () => {
     const { container } = renderPage();
     await waitFor(() => expect(screen.getByText('设备告警按天')).toBeInTheDocument());
-    expect(screen.getByText('ES 索引')).toBeInTheDocument();
-    // 内部枚举不得当名称展示（ui-resource-display §1）
-    expect(container.textContent).not.toMatch(/\bes\b/);
-    expect(screen.getByText('t-t_equipment_warning_log*')).toBeInTheDocument();
+    expect(screen.getByText('cloud-platform-es')).toBeInTheDocument();
+    expect(screen.getByText('ES 通道')).toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/内置|Elasticsearch 通道/);
+    // 内部枚举不得当名称展示（ui-resource-display §1）：两张卡的类型位都显业务名 SQL，
+    // 不再为 ES 行单列一个“ES 索引”枚举名
+    expect(screen.getAllByText('SQL')).toHaveLength(2);
+    expect(screen.queryByText('ES 索引')).not.toBeInTheDocument();
   });
 
-  it('ES 数据集的执行位显示通道名，而不是数据源 id 或"默认引擎"', async () => {
-    renderPage();
+  it('索引范围（es_pattern）不再出现在清单上：那是退役通道的字段', async () => {
+    route([{ ...ES_ROW, es_pattern: 't-t_equipment_warning_log*' }]);
+    const { container } = renderPage();
     await waitFor(() => expect(screen.getByText('设备告警按天')).toBeInTheDocument());
-    expect(screen.getByText('内置 Elasticsearch 通道')).toBeInTheDocument();
-    expect(screen.queryByText('默认引擎')).not.toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/t-t_equipment_warning_log/);
   });
 
-  it('新建弹窗选 ES 来源后：索引范围是选择框且选项来自后端清单（不是手输框）', async () => {
+  it('非 ES 数据集不挂「ES 通道」标注（判据是服务端 is_es，不按正文文本猜）', async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByText('设备告警按天')).toBeInTheDocument());
-
-    fireEvent.click(screen.getByRole('button', { name: '新建数据集' }));
-    const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: /Elasticsearch 索引/ }));
-
-    // 选择框：必须能点开并从清单里选，页面不得要求手输模式名
-    const trigger = within(dialog).getByRole('combobox', { name: /索引范围/ });
-    expect(within(dialog).queryByRole('textbox', { name: /索引范围/ })).toBeNull();
-
-    // Radix Select 在 jsdom 下要 pointer 事件序列才弹开（fireEvent.click 不生效，仓内同口径用 userEvent）
-    await userEvent.click(trigger);
-    expect(await screen.findByRole('option', { name: 'logs-*' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 't-t_equipment_warning_log*' })).toBeInTheDocument();
-    // 选中后下拉收起，正文区仍能看到后端下发的方言提示（前端不另写一份实机校准结果）
-    await userEvent.click(screen.getByRole('option', { name: 'logs-*' }));
-    expect(within(dialog).getByRole('combobox', { name: /索引范围/ })).toHaveTextContent('logs-*');
-    expect(within(dialog).getByText(/Elasticsearch SQL 是受限方言/)).toBeInTheDocument();
-  });
-
-  it('通道未就绪：显式给出原因，而不是渲成"没有索引"的空态', async () => {
-    route({ ready: false, state: 'incomplete', status_message: '已启用但未开放任何索引范围（白名单为空，默认不开放）', patterns: [] });
-    renderPage();
-    await waitFor(() => expect(screen.getByText('设备告警按天')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: '新建数据集' }));
-    const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: /Elasticsearch 索引/ }));
-
-    const alert = await within(dialog).findByRole('alert');
-    expect(alert.textContent).toContain('未开放任何索引范围');
-    expect(within(dialog).getByRole('combobox', { name: /索引范围/ })).toBeDisabled();
-  });
-
-  it('清单接口失败：提醒可重试，不静默留空下拉（配置缺口不能被读成"没数据"）', async () => {
-    (client.get as any).mockImplementation(async (url: string) => {
-      if (url === '/datasets/es-patterns') throw new Error('boom');
-      if (url === '/datasets/') return { data: { items: [ES_ROW] } };
-      if (url === '/datasources/') return { data: [] };
-      if (url === '/dashboard/') return { data: [] };
-      throw new Error(`unexpected GET ${url}`);
-    });
-    renderPage();
-    await waitFor(() => expect(screen.getByText('设备告警按天')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: '新建数据集' }));
-    const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: /Elasticsearch 索引/ }));
-
-    const alert = await within(dialog).findByRole('alert');
-    expect(alert.textContent).toContain('ES 通道状态获取失败');
-    expect(within(dialog).getByRole('button', { name: '重试' })).toBeInTheDocument();
-  });
-
-  it('ES 模式不渲染"数据源/默认引擎"选择（它不挂在数据源上）', async () => {
-    renderPage();
-    await waitFor(() => expect(screen.getByText('设备告警按天')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: '新建数据集' }));
-    const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: /Elasticsearch 索引/ }));
-
-    expect(within(dialog).queryByRole('combobox', { name: /数据源/ })).toBeNull();
-    // 未脱敏/未套策略这件事必须在配置面说出来（不是在看板卡片上贴徽标）
-    expect(within(dialog).getByText(/不施加列级\/行级数据权限/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('版本统计·App 版本分布')).toBeInTheDocument());
+    expect(screen.getAllByText('ES 通道')).toHaveLength(1);
   });
 });
 
-describe('筛选器要按取数通道（MCP）分维度，并能选到 ES 通道', () => {
-  it('选中「内置 Elasticsearch 通道」后请求带 channel=mcp:elasticsearch（datasource_id 归 0，后端两者互斥）', async () => {
+describe('新建弹窗 — 只剩一条通道', () => {
+  it('不提供「Elasticsearch 索引」入口，也不拉内置通道配置面（不留点了必报错的死选项）', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('设备告警按天')).toBeInTheDocument());
     (client.get as any).mockClear();
-    await userEvent.click(screen.getByRole('combobox', { name: '按数据源或 MCP 通道筛选数据集' }));
-    await userEvent.click(await screen.findByRole('option', { name: ES_SOURCE_LABEL }));
-    await waitFor(() => expect(client.get).toHaveBeenCalledWith('/datasets/', {
-      params: { keyword: '', datasource_id: 0, channel: 'mcp:elasticsearch' },
-    }));
+    fireEvent.click(screen.getByRole('button', { name: '新建数据集' }));
+    const dialog = await screen.findByRole('dialog');
+
+    expect(within(dialog).queryByRole('button', { name: /Elasticsearch 索引/ })).toBeNull();
+    expect(within(dialog).queryByText('数据来源')).toBeNull();
+    expect(within(dialog).queryByRole('combobox', { name: /索引范围/ })).toBeNull();
+    expect(within(dialog).getByText('执行 SQL')).toBeInTheDocument();
+    expect(within(dialog).getByText('数据源')).toBeInTheDocument();
+
+    const urls = (client.get as any).mock.calls.map(([u]: string[]) => u);
+    expect(urls).not.toContain('/datasets/channels');
+    expect(urls).not.toContain('/datasets/es-patterns');
   });
 
-  it('下拉按「MCP 服务」与「数据源」分组，选项来自后端清单而不是写死', async () => {
-    // 再下发一项（本仓尚未登记的）MCP 服务：前端不得需要改动就能渲出这一项
-    const EXTRA = { value: 'mcp:log_search', channel: 'mcp:log_search', server: 'log_search',
-      label: '日志检索服务', group: 'MCP 服务（内置）',
-      ready: true, state: 'ready', status_message: '', open_view_count: 2 };
-    (client.get as any).mockImplementation(async (url: string) => {
-      if (url === '/datasets/') return { data: { items: [] } };
-      if (url === '/datasources/') return { data: [{ id: 11, name: 'prd-cn' }] };
-      if (url === '/datasets/es-patterns') return { data: PATTERNS_OK };
-      if (url === '/datasets/channels') return { data: channelsOf(ES_CHANNEL, EXTRA) };
-      if (url === '/dashboard/') return { data: [] };
-      throw new Error(`unexpected GET ${url}`);
-    });
+  it('新建文案不再宣传「不进治理域」（ES 已是正式数据源，旧口径已作废）', async () => {
     renderPage();
-    await userEvent.click(await screen.findByRole('combobox', { name: '按数据源或 MCP 通道筛选数据集' }));
+    await waitFor(() => expect(screen.getByText('设备告警按天')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: '新建数据集' }));
+    const dialog = await screen.findByRole('dialog');
+    const text = dialog.textContent || '';
+    expect(text).not.toMatch(/不进列级\/行级|不施加列级\/行级|不套行列级策略/);
+    expect(text).toMatch(/经统一治理入口/);
+  });
+});
 
-    expect(await screen.findByText('MCP 服务（内置）')).toBeInTheDocument();
-    expect(screen.getByText('数据源')).toBeInTheDocument();
-    expect(await screen.findByRole('option', { name: '日志检索服务' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'prd-cn' })).toBeInTheDocument();
+describe('筛选器 — 只有「数据源」一个维度（ES 取数通道项已撤）', () => {
+  it('下拉不再出现「ES 取数通道」与“取数通道”分组，请求也不带 channel', async () => {
+    route([], [{ id: 11, name: 'prd-cn', db_type: 'mysql' }]);
+    renderPage();
+    await userEvent.click(await screen.findByRole('combobox', { name: '按数据源筛选数据集' }));
+
+    expect(screen.queryByRole('option', { name: 'ES 取数通道' })).not.toBeInTheDocument();
+    expect(screen.queryByText('取数通道')).not.toBeInTheDocument();
 
     (client.get as any).mockClear();
-    await userEvent.click(screen.getByRole('option', { name: '日志检索服务' }));
+    await userEvent.click(screen.getByRole('option', { name: 'prd-cn' }));
     await waitFor(() => expect(client.get).toHaveBeenCalledWith('/datasets/', {
-      params: { keyword: '', datasource_id: 0, channel: 'mcp:log_search' },
+      params: { keyword: '', datasource_id: 11 },
+    }));
+    expect((client.get as any).mock.calls.at(-1)?.[1]?.params).not.toHaveProperty('channel');
+  });
+
+  it('按 ES 型数据源筛就是按 datasource_id 筛（ES 集挂在源上，不需要特殊通道）', async () => {
+    route([ES_ROW], [{ id: 1794535612029, name: 'cloud-platform-es', db_type: 'es' }]);
+    renderPage();
+    await userEvent.click(await screen.findByRole('combobox', { name: '按数据源筛选数据集' }));
+    await userEvent.click(await screen.findByRole('option', { name: 'cloud-platform-es' }));
+    await waitFor(() => expect(client.get).toHaveBeenCalledWith('/datasets/', {
+      params: { keyword: '', datasource_id: 1794535612029 },
     }));
   });
 
-  it('选具体数据源时仍按 datasource_id 筛，不带 channel', async () => {
-    (client.get as any).mockImplementation(async (url: string) => {
-      if (url === '/datasets/') return { data: { items: [] } };
-      if (url === '/datasources/') return { data: [{ id: 11, name: 'prd-cn' }] };
-      if (url === '/datasets/es-patterns') return { data: PATTERNS_OK };
-      if (url === '/datasets/channels') return { data: CHANNELS_OK };
-      if (url === '/dashboard/') return { data: [] };
-      throw new Error(`unexpected GET ${url}`);
-    });
+  it('数据源选项来自 /datasources/ 而不是写死，且不出现任何“通道/服务”维度', async () => {
+    route([], [{ id: 11, name: 'prd-cn', db_type: 'mysql' }, { id: 12, name: 'prd-jp', db_type: 'mysql' }]);
     renderPage();
-    await userEvent.click(await screen.findByRole('combobox', { name: '按数据源或 MCP 通道筛选数据集' }));
-    await userEvent.click(await screen.findByRole('option', { name: 'prd-cn' }));
-    await waitFor(() => expect(client.get).toHaveBeenCalledWith('/datasets/', {
-      params: { keyword: '', datasource_id: 11, channel: '' },
-    }));
+    await userEvent.click(await screen.findByRole('combobox', { name: '按数据源筛选数据集' }));
+
+    expect(await screen.findByRole('option', { name: 'prd-cn' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'prd-jp' })).toBeInTheDocument();
+    // 内置 MCP 服务与“按通道分维度”的写法都已随通道退役：不得再被重新引入
+    expect(screen.queryByText('MCP 服务（内置）')).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /mcp:/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'ES 取数通道' })).not.toBeInTheDocument();
   });
 
-  it('通道未就绪：选项禁用并给出原因，不让人选了拿到永远 0 的清单', async () => {
-    route(
-      { ready: false, state: 'incomplete', status_message: '已启用但未开放任何索引范围', patterns: [] },
-      channelsOf({ ...ES_CHANNEL, ready: false, state: 'incomplete',
-                   status_message: '已启用但未开放任何索引范围' }),
-    );
+  it('整页不请求已退役的配置面端点', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('设备告警按天')).toBeInTheDocument());
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('已启用但未开放任何索引范围');
-    await userEvent.click(screen.getByRole('combobox', { name: '按数据源或 MCP 通道筛选数据集' }));
-    expect((await screen.findByRole('option', { name: ES_SOURCE_LABEL })).getAttribute('aria-disabled'))
-      .toBe('true');
-  });
-
-  it('通道清单拉失败：显式可重试，不把选项静默抽掉（那会被读成“这个部署没有 ES”）', async () => {
-    (client.get as any).mockImplementation(async (url: string) => {
-      if (url === '/datasets/es-patterns') throw new Error('boom');
-      if (url === '/datasets/channels') throw new Error('boom');
-      if (url === '/datasets/') return { data: { items: [ES_ROW] } };
-      if (url === '/datasources/') return { data: [] };
-      if (url === '/dashboard/') return { data: [] };
-      throw new Error(`unexpected GET ${url}`);
-    });
-    renderPage();
-    await waitFor(() => expect(screen.getByText('设备告警按天')).toBeInTheDocument());
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('ES 通道状态获取失败');
-    expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument();
+    const urls: string[] = (client.get as any).mock.calls.map(([u]: string[]) => u);
+    expect(urls.filter((u: string) => u.startsWith('/datasets/'))).toEqual(['/datasets/']);
   });
 });

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,7 +9,6 @@ import { useAuthStore } from '@/stores/authStore';
 import { usePermissionStore } from '@/stores/permissionStore';
 import ContentManage from '../ContentManage';
 import MyDrafts from '../MyDrafts';
-import ContentReview from '../ContentReview';
 import ArticleEditor from '../ArticleEditor';
 import { CONTENT_FILE_ACCEPT } from '@/api/content';
 import type { ContentArticle, ContentFile } from '@/api/content';
@@ -67,7 +66,9 @@ const grant = (perms: string[]) =>
   usePermissionStore.setState({ loaded: true, unrestricted: false, perms, allowedMenus: [] });
 
 describe('内容管理 — 清单口径与权限门', () => {
-  it('默认「全部状态」必须带 status=all，否则草稿会从管理清单消失', async () => {
+  it('内容管理不回草稿：请求带 status=all 且 expired=false，筛选器也不给「草稿」选项', async () => {
+    // 拍板口径：未提交的工作稿属个人区。服务端同口径（非 mine 传 status=draft 直接拒），
+    // 这里锁的是前端不再提供这个选项（给了就是一个点了必被拒的死筛选）。
     grant(['article:manage']);
     route({
       '/content/articles': LIST,
@@ -77,8 +78,58 @@ describe('内容管理 — 清单口径与权限门', () => {
     renderPage(<ContentManage />);
     await waitFor(() => expect(screen.getByText('种植导板精度复盘')).toBeInTheDocument());
 
-    const call = vi.mocked(client.get).mock.calls.find(([url]) => url === '/content/articles');
-    expect((call?.[1] as { params: Record<string, unknown> }).params.status).toBe('all');
+    const calls = vi.mocked(client.get).mock.calls.filter(([url]) => url === '/content/articles');
+    const params = (calls[calls.length - 1]?.[1] as { params: Record<string, unknown> }).params;
+    expect(params.status).toBe('all');
+    expect(params.expired).toBe(false);
+
+    fireEvent.click(screen.getByRole('combobox', { name: '状态筛选' }));
+    expect(await screen.findByRole('option', { name: '待审核' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: '草稿' })).not.toBeInTheDocument();
+  });
+
+  it('「我的草稿」仍给草稿筛选（草稿的唯一去处）', async () => {
+    grant(['article:manage']);
+    route({
+      '/content/articles': LIST,
+      '/content/categories': { items: [] },
+      '/content/tags': { items: [] },
+    });
+    renderPage(<MyDrafts />);
+    await waitFor(() => expect(screen.getByText('种植导板精度复盘')).toBeInTheDocument());
+
+    const calls = vi.mocked(client.get).mock.calls.filter(([url]) => url === '/content/articles');
+    const params = (calls[calls.length - 1]?.[1] as { params: Record<string, unknown> }).params;
+    // mine 由服务端按登录身份识别，不是前端传任意用户名去看别人的草稿
+    expect(params.mine).toBe('alice');
+    fireEvent.click(screen.getByRole('combobox', { name: '状态筛选' }));
+    expect(await screen.findByRole('option', { name: '草稿' })).toBeTruthy();
+  });
+
+  it('分页条常驻可见：给「共 N 条」与每页档位，改档位会带 page_size 并回到第 1 页', async () => {
+    grant(['article:manage']);
+    route({
+      '/content/articles': { ...LIST, items: [article()], total: 42, page: 1, page_size: 20 },
+      '/content/categories': { items: [] },
+      '/content/tags': { items: [] },
+    });
+    renderPage(<ContentManage />);
+    // 旧写法拿 hideWhenSingle 把单页整条关掉，加上不给每页档位（全站 30 处都有）
+    // → 用户看到的是“本页没有分页机制”，而不是“只有一页”
+    expect(await screen.findByText(/共 42 条/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('combobox', { name: '每页条数' }));
+    expect(await screen.findByRole('option', { name: '50 条' })).toBeTruthy();
+    // 不给 100：服务端 page_size 上限是 50（Query le=50），选了只会换一个 422
+    expect(screen.queryByRole('option', { name: '100 条' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('option', { name: '50 条' }));
+    await waitFor(() => {
+      const calls = vi.mocked(client.get).mock.calls.filter(([url]) => url === '/content/articles');
+      const params = (calls[calls.length - 1]?.[1] as { params: Record<string, unknown> }).params;
+      expect(params.page_size).toBe(50);
+      expect(params.page).toBe(1);        // 换档位必回第 1 页，否则停在旧页码上会空清单
+    });
   });
 
   it('只有编辑权时不给发布入口；有发布权才出现发布/下架按钮', async () => {
@@ -95,6 +146,50 @@ describe('内容管理 — 清单口径与权限门', () => {
     grant(['article:manage', 'article:publish']);
     renderPage(<ContentManage />);
     await waitFor(() => expect(screen.getByRole('button', { name: '发布' })).toBeInTheDocument());
+  });
+
+  it('未审的稿（草稿/待审）也给发布入口，但不勾「免审直发」时确认键是死的', async () => {
+    // 回归护栏：自审被服务端 403 拒时，文案让人“走免审直发”，而开关只在发布弹框里。
+    // 旧判据不给草稿/待审行上「发布」按钮，那句话就指向一个不存在的入口（死胡同）。
+    grant(['article:manage', 'article:publish']);
+    route({
+      '/content/articles': { ...LIST, items: [article({ status: 'in_review' })] },
+      '/content/categories': { items: [] }, '/content/tags': { items: [] },
+    });
+    vi.mocked(client.post).mockResolvedValue({ data: { status: 'published', message: '已发布' } } as never);
+    renderPage(<ContentManage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '发布' }));
+    expect(await screen.findByText(/这一版还没审核通过/)).toBeInTheDocument();
+
+    const confirm = screen.getByRole('button', { name: '确认发布' });
+    expect(confirm).toBeDisabled();                      // 不勾开关：点了也必被 422 拒
+    fireEvent.click(screen.getByRole('switch'));
+    expect(screen.getByRole('button', { name: '确认发布' })).toBeDisabled();  // 勾了但未写原因
+
+    fireEvent.change(screen.getByLabelText(/免审原因/), { target: { value: '合规已在评审会确认' } });
+    fireEvent.click(screen.getByRole('button', { name: '确认发布' }));
+    await waitFor(() => expect(client.post).toHaveBeenCalledWith('/content/publish/a1', {
+      action: 'publish', expected_version: 3, waive_review: true,
+      reason: '合规已在评审会确认', release_label: '',
+    }));
+  });
+
+  it('已审核通过的稿不勾免审直发也能直发（waive_review=false，不把跳审当默认）', async () => {
+    grant(['article:manage', 'article:publish']);
+    route({
+      '/content/articles': { ...LIST, items: [article({ status: 'approved' })] },
+      '/content/categories': { items: [] }, '/content/tags': { items: [] },
+    });
+    vi.mocked(client.post).mockResolvedValue({ data: { status: 'published', message: '已发布' } } as never);
+    renderPage(<ContentManage />);
+    fireEvent.click(await screen.findByRole('button', { name: '发布' }));
+    expect(screen.queryByText(/这一版还没审核通过/)).not.toBeInTheDocument();
+    expect(screen.getByRole('switch')).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: '确认发布' }));
+    await waitFor(() => expect(client.post).toHaveBeenCalledWith('/content/publish/a1', {
+      action: 'publish', expected_version: 3, waive_review: false, reason: '', release_label: '',
+    }));
   });
 
   it('已上线内容不给删除按钮（必须先下架，避免线上内容被直接抹掉）', async () => {
@@ -140,8 +235,8 @@ describe('内容管理 — 清单口径与权限门', () => {
     const view = renderPage(<ContentManage />);
     await waitFor(() => expect(screen.getByText('种植导板精度复盘')).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: /新建内容/ })).not.toBeInTheDocument();
-    // 入口拿走了就得告诉用户去哪开工，不能让人以为功能丢了
-    expect(screen.getByText(/新建与编写请在「我的草稿」进行/)).toBeInTheDocument();
+    // 入口拿走了就得告诉用户去哪开工（也不能让人以为草稿丢了：说清未提交的只在个人区）
+    expect(screen.getByText(/未提交的草稿（含被驳回退回的）只在「我的草稿」，新建与编写也在那里/)).toBeInTheDocument();
     view.unmount();
 
     renderPage(<MyDrafts />);
@@ -256,7 +351,7 @@ describe('内容管理 — 清单口径与权限门', () => {
   });
 });
 
-describe('审核发布 — 逐条确认与职责分离', () => {
+describe('审核（内容管理行操作）— 逐条确认与职责分离', () => {
   const warnings = [
     { code: 'refs_missing', message: '没有登记外部出处' },
     { code: 'small_sample', message: '样本量偏小' },
@@ -266,18 +361,25 @@ describe('审核发布 — 逐条确认与职责分离', () => {
     gate_hard: [], gate_warnings: warnings, submitted_by: 'bob',
   });
 
-  beforeEach(() => {
+  /**
+   * 「审核发布」页已并入内容管理：渲染清单 → 点该行「审核」→ 弹框。
+   * 读稿仍走 /reviews/{slug}/draft（审核人不必具备编辑权，由 article:review 自己裁决）。
+   */
+  const openReview = async (over: Partial<ContentArticle> = {}) => {
     route({
-      '/content/reviews/pending': { items: [draft], total: 1, page: 1, page_size: 50, review_expired: [] },
-      '/content/reviews/a1/draft': draft,
+      '/content/articles': { ...LIST, items: [{ ...draft, ...over }] },
+      '/content/categories': { items: [] }, '/content/tags': { items: [] },
+      '/content/reviews/a1/draft': { ...draft, ...over },
     });
-  });
+    renderPage(<ContentManage />);
+    fireEvent.click(await screen.findByRole('button', { name: '审核' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /审核通过/ })).toBeInTheDocument());
+  };
 
   it('提醒没逐条确认完之前，「审核通过」不可点', async () => {
     grant(['article:review']);
-    renderPage(<ContentReview />);
-    const approve = await waitFor(() => screen.getByRole('button', { name: /审核通过/ }));
-    expect(approve).toBeDisabled();
+    await openReview();
+    expect(screen.getByRole('button', { name: /审核通过/ })).toBeDisabled();
 
     const box = screen.getByRole('checkbox', { name: '确认已看过提醒：没有登记外部出处' });
     fireEvent.click(box);
@@ -287,42 +389,55 @@ describe('审核发布 — 逐条确认与职责分离', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /审核通过/ })).toBeEnabled());
   });
 
+  it('admin 自审自己写的稿：服务端 warning 必须上屏，不得只报「审核通过」', async () => {
+    // 职责分离的例外不能隐身：只取 message 会把“这一版是作者本人批的”抹掉
+    grant(['article:review', 'article:publish']);
+    vi.mocked(client.post).mockResolvedValue({
+      data: { status: 'approved', message: '审核通过，可以发布了',
+              warning: '这一版由作者本人审核通过（admin 可审自己写的稿）。' },
+    } as never);
+    await openReview();
+    warnings.forEach(w => fireEvent.click(
+      screen.getByRole('checkbox', { name: `确认已看过提醒：${w.message}` })));
+    fireEvent.click(screen.getByRole('button', { name: /审核通过/ }));
+    expect(await screen.findByText(/由作者本人审核通过/)).toBeInTheDocument();
+    expect(await screen.findByText(/审核通过，可以发布了/)).toBeInTheDocument();
+  });
+
   it('驳回不写原因时前端就拦住并说明依据（服务端同样会拒）', async () => {
     grant(['article:review']);
-    renderPage(<ContentReview />);
-    await waitFor(() => expect(screen.getByRole('heading', { name: '种植导板精度复盘' })).toBeInTheDocument());
+    await openReview();
     fireEvent.click(screen.getByRole('button', { name: '驳回' }));
     expect(await screen.findByText(/驳回必须写原因/)).toBeInTheDocument();
     expect(client.post).not.toHaveBeenCalledWith('/content/reviews/a1/reject', expect.anything());
   });
 
-  it('只有审核权时不出现发布按钮，并说明"改动不会自动上线"', async () => {
+  it('只有审核权时：行上有审核入口但没有发布按钮（两个码各管各的）', async () => {
     grant(['article:review']);
-    route({
-      '/content/reviews/pending': {
-        items: [{ ...draft, status: 'approved' }], total: 1, page: 1, page_size: 50, review_expired: [],
-      },
-      '/content/reviews/a1/draft': { ...draft, status: 'approved' },
-    });
-    renderPage(<ContentReview />);
-    await waitFor(() => expect(screen.getByRole('heading', { name: '种植导板精度复盘' })).toBeInTheDocument());
-    expect(screen.queryByRole('button', { name: '发布上线' })).not.toBeInTheDocument();
-    expect(screen.getByText(/发布需要「发布与下架内容」权限/)).toBeInTheDocument();
+    await openReview();
+    expect(screen.getByRole('button', { name: /审核通过/ })).toBeInTheDocument();
+    // 审核弹框里不给“顺手发布”：通过与发布是两个动作、两个权限码
+    expect(screen.queryByRole('button', { name: '确认发布' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /审核通过/ })).not.toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: '发布' })).not.toBeInTheDocument();
   });
 
-  it('到期复核清单单独成区，不与待审队列混排', async () => {
+  it('到期复核不再单开清单，而是内容管理的一个筛选（请求带 expired）', async () => {
     grant(['article:review']);
     route({
-      '/content/reviews/pending': {
-        items: [draft], total: 1, page: 1, page_size: 50,
-        review_expired: [article({ slug: 'old1', title: '旧版合规解读', review_by: '2026-01-01', is_live: true, status: 'published' })],
-      },
-      '/content/reviews/a1/draft': draft,
+      '/content/articles': LIST,
+      '/content/categories': { items: [] }, '/content/tags': { items: [] },
     });
-    renderPage(<ContentReview />);
-    const zone = await waitFor(() => screen.getByText(/到期未复核/).closest('section')!);
-    expect(within(zone).getByText('旧版合规解读')).toBeInTheDocument();
-    expect(within(zone).getByText(/复核日 2026-01-01/)).toBeInTheDocument();
+    renderPage(<ContentManage />);
+    await waitFor(() => expect(screen.getByText('种植导板精度复盘')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: '到期复核' }));
+    await waitFor(() => {
+      const calls = vi.mocked(client.get).mock.calls.filter(([url]) => url === '/content/articles');
+      const params = (calls[calls.length - 1]?.[1] as { params: Record<string, unknown> }).params;
+      expect(params.expired).toBe(true);
+    });
   });
 });
 
@@ -335,17 +450,24 @@ describe('附件通道 — 只给下载、不做站内预览', () => {
 
   beforeEach(() => {
     route({
-      '/content/reviews/pending': { items: [fileDraft], total: 1, page: 1, page_size: 50, review_expired: [] },
+      '/content/articles': { ...LIST, items: [fileDraft] },
+      '/content/categories': { items: [] }, '/content/tags': { items: [] },
       '/content/reviews/a1/draft': fileDraft,
       '/content/reviews/a1/files/9/download-url': { url: 'https://oss.example/direct', filename: pdf.filename },
     });
   });
 
+  /** 附件在审核弹框里（原审核页的读稿区已搬到行操作弹框） */
+  const openFileReview = async () => {
+    renderPage(<ContentManage />);
+    fireEvent.click(await screen.findByRole('button', { name: '审核' }));
+    await waitFor(() => expect(screen.getByText(pdf.filename)).toBeInTheDocument());
+  };
+
   it('审核人能下载附件，且走 reviews 前缀（只勾审核权拿不到 articles*）', async () => {
     grant(['article:review']);
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
-    renderPage(<ContentReview />);
-    await waitFor(() => expect(screen.getByText(pdf.filename)).toBeInTheDocument());
+    await openFileReview();
 
     fireEvent.click(screen.getByRole('button', { name: /^下载$/ }));
     await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://oss.example/direct', '_blank', 'noopener'));
@@ -355,8 +477,7 @@ describe('附件通道 — 只给下载、不做站内预览', () => {
 
   it('附件卡不出现预览入口（服务端下载头恒为 attachment，画个预览按钮只会失灵）', async () => {
     grant(['article:review']);
-    renderPage(<ContentReview />);
-    await waitFor(() => expect(screen.getByText(pdf.filename)).toBeInTheDocument());
+    await openFileReview();
     expect(screen.queryByRole('button', { name: /预览/ })).not.toBeInTheDocument();
     // 只勾审核权不得出现上传/删除（编排动作属 article:manage）
     expect(screen.queryByRole('button', { name: /上传附件/ })).not.toBeInTheDocument();

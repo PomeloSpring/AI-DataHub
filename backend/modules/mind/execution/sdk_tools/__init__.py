@@ -15,6 +15,15 @@ ExecutionContextVar 注入(见 context.py)。
              只落库+审计, 图谱/上云级联由用户在建模页显式触发)
 - memory:   save_memory / list_memory / delete_memory
             (用户记忆: 只读写本人行的稳定偏好/口径, 不返回业务数据行, 严禁存会话上下文)
+- render:   render_html / render_chart / render_report
+            (交付形态**渲染机**: 模型自选通道, 服务端只拒「HTML 做不到/会泄露」的能力硬门,
+             不替模型判「该不该用整份文档」; 正文落 adh_render_documents, 消息内只留引用块)
+- skills:   load_skill_guide
+            (技能作业细则的**按需加载口** = 渐进披露第二层: 「已绑定技能」清单只常驻一句话
+             description, 模型判断需要该域完整口径时自己取回正文。它是**机制组**
+             （MECHANISM_GROUPS）: 不进 AS-BOT 授权面，绑定≥2 个技能时由 tool_policy 按事实
+             自动接入；关掉渐进披露只能直接写 AS-BOT JSON 的 `mcp.skills: []`（应急回退阀）。
+             未接入时 prompt_composer 回到“按触发词自动展开正文”，不会丢细则)
 
 平台内置的 MCP 服务（如 Elasticsearch）**不归入本文件的工具组**，而是作为
 adh_mcp_servers 的内置行在 AS-BOT「引用 MCP 服务」里绑定与逐工具授权，
@@ -42,8 +51,10 @@ from backend.modules.mind.execution.sdk_tools.context import (
 from backend.modules.mind.execution.sdk_tools.ontology_tools import build_ontology_server
 from backend.modules.mind.execution.sdk_tools.memory_tools import build_memory_server
 from backend.modules.mind.execution.sdk_tools.query_tools import build_query_server
+from backend.modules.mind.execution.sdk_tools.render_tools import build_render_server
 from backend.modules.mind.execution.sdk_tools.screen_tools import build_screen_server
 from backend.modules.mind.execution.sdk_tools.semantic_tools import build_semantic_server
+from backend.modules.mind.execution.sdk_tools.skill_tools import build_skill_server
 from backend.modules.mind.execution.sdk_tools.dashboard_design_tools import build_design_server
 from backend.modules.mind.execution.sdk_tools.system_tools import build_system_server
 
@@ -61,6 +72,8 @@ TOOL_SERVER_BUILDERS = {
     "system": build_system_server,
     "assets": build_assets_server,
     "memory": build_memory_server,
+    "render": build_render_server,
+    "skills": build_skill_server,
 }
 
 # 工具组名 → server 名与工具名(用于 allowed_tools 精确预授权)
@@ -98,7 +111,21 @@ TOOL_SERVER_TOOLS = {
         "cleanup_candidates", "cleanup_execute",
     ]),
     "memory": ("datahub_memory", ["save_memory", "list_memory", "delete_memory"]),
+    # 交付形态渲染机（模型自选通道，服务端只设能力硬门）：三个形态都已接线。
+    "render": ("datahub_render", ["render_chart", "render_html", "render_report"]),
+    # 技能细则按需加载（渐进披露）：只读方法文字，不返回数据行。
+    "skills": ("datahub_skills", ["load_skill_guide"]),
 }
+
+# 机制组（不是能力开关）：**不在 AS-BOT 授权面渲染**，由 compile_policy 按事实自动接入。
+#
+# 为何要单独声明：渐进披露是平台的技能装载机制，与“能不能查数据/能不能写本体”不同类。
+# 把它做成复选框会诱导误操作：管理员看到未勾选会以为“没启用”而随手勾一下，从此该助手
+# 被一条显式配置钉住，未来改默认策略时顶不动它（同一先例：平台功能惰性壳 list/run 也不在
+# 授权面，只随角色权限码自动接入）。
+# 应急回退阀仍可用：直接在 AS-BOT JSON 里写 `"mcp": {"skills": []}` 即关闭渐进披露，
+# 回到“按触发词自动展开正文”的老行为（判定在 tool_policy.compile_policy，只此一处）。
+MECHANISM_GROUPS = frozenset({"skills"})
 
 
 def build_tool_servers(backend: str, enabled, selection=None, function_names=None) -> dict:
@@ -177,6 +204,7 @@ __all__ = [
     "build_ontology_server",
     "build_screen_server",
     "build_design_server",
+    "build_render_server",
     "build_system_server",
     "build_assets_server",
     "build_memory_server",

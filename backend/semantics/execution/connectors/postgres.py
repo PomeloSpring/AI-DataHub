@@ -13,11 +13,12 @@ from urllib.parse import quote, quote_plus
 
 import pyarrow as pa
 
-from backend.semantics.execution.connectors.base import dedup_columns, truncate_rows
+from backend.semantics.execution.connectors.base import (
+    dedup_columns,
+    truncate_rows,
+)
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_TIMEOUT_SEC = 30
 
 
 class PostgresConnector:
@@ -47,17 +48,23 @@ class PostgresConnector:
         if not row.get("host"):
             raise ValueError(f"Postgres 连接配置缺失: datasource_id={self._datasource_id}")
 
-        timeout_ms = int((timeout_sec or _DEFAULT_TIMEOUT_SEC) * 1000)
+        # (connect, read) 秒：调用侧预算 > 数据源高级配置 > 代码缺省（与 mysql 连接器同源一份优先级）
+        from backend.common.db.datasource_db import resolve_timeouts
+
+        connect_sec, read_sec = resolve_timeouts(row, timeout_sec=timeout_sec)
+        timeout_ms = int(read_sec * 1000)
         # ADBC postgresql 驱动的全部连接参数只从 URI 解析：往 db_kwargs/conn_kwargs 传
         # options 都会被驱动拒（NOT_IMPLEMENTED: [libpq] Unknown [database ]option options）。
-        # statement_timeout 经 libpq URI 查询参数 options 下发（护栏 §5 执行超时强制）。
-        uri = "postgresql://{}:{}@{}:{}/{}?options={}".format(
+        # statement_timeout 经 libpq URI 查询参数 options 下发（护栏 §5 执行超时强制）；
+        # connect_timeout 同样是 libpq 标准参数，跟 URI 一起下发。
+        uri = "postgresql://{}:{}@{}:{}/{}?options={}&connect_timeout={}".format(
             quote_plus(str(row.get("user") or row.get("username") or "")),
             quote_plus(str(row.get("password") or "")),
             row.get("host"),
             int(row.get("port") or 5432),
             row.get("database") or row.get("database_name") or "",
             quote(f"-c statement_timeout={timeout_ms}", safe=""),
+            connect_sec,
         )
         import adbc_driver_postgresql.dbapi as pg_adbc
 

@@ -364,6 +364,20 @@ export function uncontrolledParams(
   ];
 }
 
+/**
+ * 参数行里**可编辑**的那部分（排除只读的看板级常数）。
+ *
+ * 判定“参数带/筛选入口要不要存在”必须看这个，而不是 `uncontrolledParams` 的全量：
+ * 单 App 看板上 app_code 作为看板级常数登记，页面上不开输入口，于是那一行只剩
+ * 一个改不了的呈现 + 一套「搜索/重置」—— 而画布已经自带日期区间/站点/查询/重置。
+ * 点了也不会改变任何条件，属于空承诺（与上面“按钮在、点开是空面板”同一类）。
+ */
+export function editableParamRows(
+  rows: { param: DashboardParam | PageParam; via: 'param' | 'page' }[],
+): { param: DashboardParam | PageParam; via: 'param' | 'page' }[] {
+  return rows.filter(r => !(r.param as PageParam).readonly);
+}
+
 /** 后端下发的未接参数项（与 `dashboardStore.ChartParamUnbound` 同形） */
 export interface ParamUnboundLike {
   key: string; label?: string; vars?: string[]; partial?: boolean;

@@ -26,9 +26,11 @@
 -- 所以按下标展开数组（递归 CTE 出 0..63），并用 JSON_CONTAINS 判重名。
 -- JSON_ARRAYAGG 会把 NULL 聚成 JSON null，所以剔除项用 WHERE 过滤 + LEFT JOIN 回补空数组。
 -- MySQL 没有 JSON_EQUALS()，"内容未变就不写"用双向 JSON_CONTAINS 等价判定（不关心元素顺序）。
+--
+-- 不写 `USE adh;`：库名只由连接配置决定（METADATA_DB_DATABASE，现网实际为 adh2）。
+-- 写死库名会让本迁移在别的库上“执行成功但一行没改”（门禁读的是应用连的那个库，
+-- 两边不同库就永远对不上），而且报错都报不出来。
 -- ============================================================================
-USE adh;
-
 UPDATE adh_dashboards d
 JOIN (
   WITH RECURSIVE idx AS (SELECT 0 AS i UNION ALL SELECT i + 1 FROM idx WHERE i < 63),

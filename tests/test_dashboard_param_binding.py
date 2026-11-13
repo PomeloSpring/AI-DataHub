@@ -133,7 +133,6 @@ class TestListParamSummary(unittest.TestCase):
                 mock.patch.object(ds_svc, "execute_query", side_effect=fake_execute),
                 mock.patch.object(ds_svc, "_load_datasource_catalog", return_value=catalog),
                 mock.patch.object(ds_svc, "_allowed_source_ids", return_value={11}),
-                mock.patch.object(ds_svc, "es_channel_state", return_value={"ready": False}),
                 mock.patch.object(ds_svc, "usable_scope", return_value=usable),
                 mock.patch.object(ds_svc, "usable_sources", return_value=usable),
                 mock.patch.object(ds_svc, "_datasource_name_by_id", return_value="prd-cn"),

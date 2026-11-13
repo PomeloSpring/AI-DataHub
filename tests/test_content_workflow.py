@@ -6,7 +6,7 @@
 - 状态机：``draft → in_review → approved → published → archived`` 的合法转换，
   未审核不得发布（免审直发是显式例外，必须带原因）；``archived`` 可一键重新上架
   —— 放回的是下架时在线那一版（当初审过的），但下架后又改的 head 不得跟着上线；
-- 自审限制：作者不能审核自己写的版本；
+- 自审限制：作者不能审核自己写的版本（admin 例外放行，但回执与审计必须显式标出“作者自审”）；
 - 版本模型：编辑已发布内容只产生新 head revision，**线上 live 版本不受污染**；
 - 乐观锁：``expected_version`` 不匹配返 409，不覆盖他人编辑；
 - 响应体不外泄内部标识（``source_ref`` / ``cover_object_key`` / revision 指针）；
@@ -18,6 +18,7 @@ DB 用最小假实现按 SQL 形状分派（与 ``tests/test_release_notes.py`` 
 import json
 import os
 import re
+from datetime import date, timedelta
 
 import pytest
 
@@ -143,8 +144,19 @@ class FakeDB:
             rows = [a for a in rows if a["status"] in wanted]
         elif "live_revision_id <> 0" in sql:
             rows = [a for a in rows if a["live_revision_id"] and a["status"] != "archived"]
+        if "a.status<>%s" in sql:          # 编排面排除草稿（非 mine 作用域）
+            drop = self._param_for(sql, "a.status<>%s", params)
+            rows = [a for a in rows if a["status"] != drop]
+        if "a.created_by=%s" in sql:      # mine 作用域（「我的草稿」按登录身份识别）
+            who = self._param_for(sql, "a.created_by=%s", params)
+            rows = [a for a in rows if a.get("created_by") == who]
+        if "a.review_by IS NOT NULL AND a.review_by < CURDATE()" in sql:
+            today = str(date.today())
+            rows = [a for a in rows if a.get("review_by") and str(a["review_by"]) < today]
         if "a.category_id=%s" in sql:
-            rows = [a for a in rows if int(a["category_id"]) == int(params[0])]
+            # 参数位按谓词前已出现的 %s 个数取：编排面恒定排除草稿后，params[0] 不再是栏目
+            cid = self._param_for(sql, "a.category_id=%s", params)
+            rows = [a for a in rows if int(a["category_id"]) == int(cid)]
         if "COALESCE(c.category_key, '')<>%s" in sql:
             key = self._param_for(sql, "COALESCE(c.category_key", params)
             bad = {c["id"] for c in self.categories.values() if c["category_key"] == key}
@@ -189,7 +201,9 @@ class FakeDB:
             row = self.articles.get(int(params[0]))
             return [dict(row)] if row else []
         if sql.startswith("SELECT a.*, c.label"):
-            if "a.review_by IS NOT NULL" in sql:      # 到期复核清单（无参数）
+            if "a.review_by IS NOT NULL" in sql and "LIMIT %s" not in sql:
+                # pending_reviews 的到期复核清单（无参数、固定 LIMIT 20）；
+                # 内容管理的 expired 筛选带 LIMIT %s，走下面 _filter_rows 的同一谓词分支
                 return []
             if " LIMIT %s" in sql:
                 limit = params[-2] if "OFFSET" in sql else params[-1]
@@ -541,13 +555,41 @@ def test_approve_blocks_until_warnings_acknowledged(db):
 
 
 def test_author_cannot_review_own_revision(db):
-    """自审拦截：审核人不得是这一版的作者。"""
+    """自审拦截（非 admin）：审核人不得是这一版的作者。"""
     aid, rid = _seed(db, author="alice")
     svc.submit_review(aid, "alice")
     with pytest.raises(svc.ContentError) as exc:
         svc.approve_review(aid, "alice")
     assert exc.value.status == 403
     assert "自己" in exc.value.detail
+    # 拒了就不能顺手把状态推过去（否则下次提交变成“已审”假象）
+    assert db.articles[aid]["status"] == "in_review"
+
+
+def test_admin_may_approve_own_revision_but_must_be_told(db):
+    """admin 可审自己写的稿（拍板），但职责分离的例外不得隐身。
+
+    锁两件事：① 回执带 self_approved + 可读提醒（前端必须显示，不能只取 message）；
+    ② 审核流水仍按真实操作人记账（事后追溯能看出作者与审核人同一）。
+    为什么可以：admin 本来就能勾「免审直发」（只需填原因），拦住建他只造死胡同。
+    """
+    aid, _ = _seed(db, author="admin")
+    svc.submit_review(aid, "admin")
+    ack = [{"code": w["code"], "acknowledged": True}
+           for w in svc.pending_reviews()["items"][0]["gate_warnings"]]
+    out = svc.approve_review(aid, "admin", acknowledged=ack, is_admin=True)
+    assert out["status"] == "approved"
+    assert out.get("self_approved") and "作者本人" in out["warning"], out
+    assert db.articles[aid]["status"] == "approved"
+    assert db.reviews[-1]["actor"] == "admin"
+
+
+def test_self_review_flag_defaults_off_for_non_admin_callers(db):
+    """`is_admin` 默认 False：调用方漏传只会回到严格口径，不会把自审放行当默认。"""
+    aid, _ = _seed(db, author="alice")
+    svc.submit_review(aid, "alice")
+    with pytest.raises(svc.ContentError):
+        svc.approve_review(aid, "alice", is_admin=False)
 
 
 def test_cannot_submit_twice_while_in_review(db):
@@ -988,8 +1030,11 @@ def test_draft_is_invisible_to_reader(db):
 def test_list_defaults_to_live_only(db):
     aid, _ = _seed(db)
     assert svc.list_articles()["total"] == 0            # 未发布不进门户清单
-    assert svc.list_articles(status="draft", can_edit=True)["total"] == 1
-    assert svc.list_articles(status="draft", can_edit=False)["total"] == 0
+    # 草稿只在个人区：非 mine 筛 draft 是不合法组合（报错指路，不静默给空清单）
+    with pytest.raises(svc.ContentError):
+        svc.list_articles(status="draft", can_edit=True)
+    assert svc.list_articles(status="draft", mine="author", can_edit=True)["total"] == 1
+    assert svc.list_articles(status="draft", mine="author", can_edit=False)["total"] == 0
 
 
 def test_list_exclude_category_yields_feed_to_profile_card(db):
@@ -1032,12 +1077,15 @@ def test_list_query_uses_live_predicate(db, monkeypatch):
 
 
 def test_list_all_status_without_filters_is_valid_sql(db, monkeypatch):
-    """可编辑者选「全部状态」且无其他筛选 = where 为空，得省略整段 WHERE。
+    """可编辑者选「全部状态」且无其他筛选：拼出的 WHERE 必须带条件，不得是 "WHERE ORDER BY"。
 
     实机缺陷（用户 2026-11-04 截图）：内容管理页 GET /api/content/articles 直接 500，
     MySQL 1064 near '' —— 拼 SQL 时直接 join 空列表会生成 "WHERE ORDER BY"。
+    2026-11-13 起编排面恒定排除草稿，where 更不可能为空；这里同时钉住那一条。
     """
-    _seed(db)
+    _seed(db)                                    # 草稿：不进取数编排面
+    live, rid = _seed(db, status="published")
+    db.articles[live]["live_revision_id"] = rid
     seen = []
     orig = svc.execute_query
 
@@ -1048,6 +1096,7 @@ def test_list_all_status_without_filters_is_valid_sql(db, monkeypatch):
     out = svc.list_articles(can_edit=True, status="all", page=1, page_size=20, sort="latest")
     assert out["total"] == 1 and len(out["items"]) == 1, out
     assert seen, "必须真发过 SQL（不得被提前短路）"
+    assert "a.status<>%s" in seen[0], seen[0]      # 排草稿的谓词由服务端加，不是前端不显示
     for sql in seen:
         assert not re.search(r"WHERE\s*(?:ORDER|LIMIT|OFFSET|$)", sql), sql
 
@@ -1427,5 +1476,53 @@ def test_missing_object_is_not_disguised_as_no_attachment(db, store):
     assert store.download_bytes(target["object_key"]) == b"x"
     store.missing.add(target["object_key"])
     assert store.download_bytes(target["object_key"]) is None, "API 层据此回 410 而不是 404"
+
+
+# ── 编排面草稿可见性与到期复核筛选（2026-11-13「审核发布」并入「内容管理」同批口径）──
+
+def test_manage_scope_excludes_drafts(db):
+    """未提交的工作稿不进取数编排面（管理员也一样）：草稿只在 mine 作用域回。
+
+    拍板口径：草稿是个人工作稿，「内容管理」是已提交内容的编排面；
+    服务端就一道门，不是靠前端不显示。
+    """
+    _seed(db, author="alice")
+    assert svc.list_articles(status="all", can_edit=True)["total"] == 0
+    mine = svc.list_articles(status="all", mine="alice", can_edit=True)
+    assert [a["slug"] for a in mine["items"]] == ["scan-accuracy"]
+
+
+def test_rejected_draft_goes_back_to_personal_scope(db):
+    """提交后进入编排面；驳回退回 draft 就从编排面消失（回个人区，审核流水仍留痕）。"""
+    aid, _ = _seed(db, author="alice")
+    svc.submit_review(aid, "alice")
+    assert svc.list_articles(status="all", can_edit=True)["total"] == 1
+
+    svc.reject_review(aid, "boss", comment="样本区间与标题不一致")
+    assert svc.list_articles(status="all", can_edit=True)["total"] == 0
+    assert svc.list_articles(status="all", mine="alice", can_edit=True)["total"] == 1
+    # 驳回原因必须作者可见（否则退回个人区就等于从所有人眼里消失）
+    assert db.reviews[-1]["action"] == "reject" and db.reviews[-1]["comment"]
+
+
+def test_manage_scope_rejects_explicit_draft_filter(db):
+    """非 mine 显式筛 draft = 不合法组合：报错说清去哪看，不静默给空清单。"""
+    _seed(db, author="alice")
+    with pytest.raises(svc.ContentError) as exc:
+        svc.list_articles(status="draft", can_edit=True)
+    assert "我的草稿" in exc.value.detail
+
+
+def test_expired_filter_matches_review_due_date(db):
+    """到期复核走服务端同一谓词：只回 review_by 已过今天的条目，且不影响不带该筛选的清单。"""
+    due, _ = _seed(db, status="published", live=500, author="alice")
+    db.articles[due]["review_by"] = date.today() - timedelta(days=1)
+    fresh, _ = _seed(db, status="published", live=500, author="alice")
+    db.articles[fresh]["review_by"] = date.today() + timedelta(days=30)
+
+    out = svc.list_articles(status="all", can_edit=True, expired=True)
+    assert [a["id"] for a in out["items"]] == [due], out
+    # 到期与否不是状态：不带 expired 时两条都在
+    assert svc.list_articles(status="all", can_edit=True)["total"] == 2
 
 

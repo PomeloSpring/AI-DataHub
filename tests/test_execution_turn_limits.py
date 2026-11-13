@@ -13,14 +13,19 @@
 ② 中止文案自带诊断（上限、已跑时长、已发出次数、下一步），非超时中止不编造数字；
 ③ 工具轮次上限在本仓侧是真约束：达上限拒第 N+1 次并回收尾指令，blocked 计数进 meta；
 ④ 墙钟上限取 task.timeout（由执行层配置注入），服务端天花板 900s；
-⑤ elapsed_ms 对外口径 = 服务端单调钟（观测开启取与 trace 同源的值）。
+⑤ elapsed_ms 对外口径 = 服务端单调钟（观测开启取与 trace 同源的值）；
+⑥ 上限的配置面闭环：Harness 表单有它（不留“代码读、界面配不了”的空承诺），
+   且值域在入口把关（0/负数会被消费点的 `or` 静默回落成 20，属配了没用）。
 """
 import asyncio
 import inspect
+import pathlib
 import time
 from types import SimpleNamespace
 
 import anyio
+import pytest
+from fastapi import HTTPException
 
 from backend.modules.mind.execution import secure_sdk
 from backend.modules.mind.execution.models import ExecutionContext, ExecutionResult, ExecutionTask
@@ -160,3 +165,38 @@ def test_done_event_passes_warnings_and_elapsed_to_frontend():
 def chat_service_dispatch():
     from backend.modules.mind.services.chat_service import ChatService
     return ChatService._try_dispatch_via_execution_layer
+
+
+# ── ⑥ 上限的配置面：有入口 + 值域有把关 ────────────────────
+
+def test_harness_form_exposes_round_limit_field():
+    """消费点读 config.max_turns，配置面就必须有它：否则界面改不到、只能改库（与“角色页
+    配了没用”同一类空承诺）。锁源码接线，避免只删不改地把字段弄丢。"""
+    root = pathlib.Path(__file__).resolve().parents[1]
+    src = (root / "frontend/src/pages/admin/ExecutionLayers.tsx").read_text(encoding="utf-8")
+    assert "config.max_turns = rounds" in src, "表单必须把上限写回 config"
+    assert "max_turns: l.config?.max_turns ?? ''" in src, "编辑态必须回填已配值"
+    assert "单轮工具调用上限" in src
+
+
+def test_api_rejects_out_of_range_round_limit():
+    from backend.modules.platform.api.execution_layers import _validate_layer_config
+
+    # 不传 / 传 null = 清空该键（浅合并删键 → 回默认），合法
+    for ok in (None, {}, {"max_turns": None}, {"max_turns": 1}, {"max_turns": 200}):
+        _validate_layer_config(ok)
+
+    for bad in (0, -1, 201, 2.5, "30", True):
+        with pytest.raises(HTTPException) as exc:
+            _validate_layer_config({"max_turns": bad})
+        assert exc.value.status_code == 400
+        assert "1~200" in str(exc.value.detail), "拒因要说清合法区间与留空含义"
+
+
+def test_round_limit_default_is_single_sourced():
+    """缺省 20 不得在多个消费点各写一份字面量（改一处漏一处 = 双口径）。"""
+    root = pathlib.Path(__file__).resolve().parents[1]
+    usage = (root / "backend/modules/mind/execution/context_usage.py").read_text(encoding="utf-8")
+    assert 'or DEFAULT_MAX_TOOL_ROUNDS)' in usage, "压缩链路的上限必须引同一常量"
+    options_src = inspect.getsource(secure_sdk.build_options)
+    assert 'or 20)"' not in options_src and "or 20)," not in options_src

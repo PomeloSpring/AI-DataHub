@@ -10,23 +10,27 @@ vi.mock('@/api/client', () => ({
 /**
  * 内置服务行：后端 `_project_builtin` 已剥光 url/command/args/env/tools_config，
  * 所以这里的 mock 结构也**不带**这些字段 —— 前端类型里就没有它们，才是"配置隐藏"的真凭据。
+ *
+ * 样例用中性服务名（2026-11-13 内置 Elasticsearch 服务已退役，ES 现在是正式数据源）。
+ * 本文件锁的是**内置服务这一类行的展示与写保护机制**，与具体是哪个内置服务无关；
+ * 后端注册表口径由 `tests/test_es_builtin_mcp.py` 第 5 节锁定。
  */
 const BUILTIN_ROW = {
-  id: 9001,
-  name: 'elasticsearch',
-  label: 'Elasticsearch 检索服务',
-  description: '平台内置 Elasticsearch 只读查询能力（列开放索引范围 / 看字段 / 跑 SQL）。',
+  id: 9101,
+  name: 'demo-builtin',
+  label: '演示内置服务',
+  description: '平台内置能力（配置由部署侧托管，页面不可编辑）。',
   transport: 'builtin',
   builtin: true,
   state: 'ready',
   status_message: '',
   is_active: 1,
-  // 只给数量：模式名属部署配置，后端不返回，所以 mock 里也没有可泄的字段
+  // 只给数量：已开放范围清单属部署配置，后端不返回，所以 mock 里也没有可泄的字段
   open_view_count: 3,
   discovered_tools: JSON.stringify([
-    { name: 'list_es_indexes', description: '列出可查索引模式' },
-    { name: 'describe_es_index', description: '查看索引字段' },
-    { name: 'query_es_sql', description: '执行只读 SQL' },
+    { name: 'search_docs', description: '检索文档' },
+    { name: 'fetch_doc', description: '读取文档' },
+    { name: 'list_tags', description: '列出标签' },
   ]),
 };
 
@@ -53,7 +57,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 const builtinCard = async () => {
-  const title = await screen.findByText('Elasticsearch 检索服务');
+  const title = await screen.findByText('演示内置服务');
   return title.closest('.p-3') as HTMLElement;
 };
 
@@ -64,14 +68,14 @@ describe('MCP 服务页 — 内置服务与外部服务同列表呈现', () => {
     expect(screen.getByText('平台内置')).toBeInTheDocument();
     expect(screen.getByText('就绪')).toBeInTheDocument();
     fireEvent.click(within(card).getByRole('button', { name: /提供工具/ }));
-    for (const name of ['list_es_indexes', 'describe_es_index', 'query_es_sql']) {
+    for (const name of ['search_docs', 'fetch_doc', 'list_tags']) {
       expect(within(card).getByText(name)).toBeInTheDocument();
     }
     // 主标题用 label 而不是内部 name（ui-resource-display：显示用 name/label）
-    expect(within(card).queryByText('elasticsearch')).not.toBeInTheDocument();
+    expect(within(card).queryByText('demo-builtin')).not.toBeInTheDocument();
   });
 
-  it('内置服务不显示任何配置：无地址/凭据/白名单内容', async () => {
+  it('内置服务不显示任何配置：无地址/凭据/开放范围内容', async () => {
     render(<MCPConfig />);
     const card = await builtinCard();
     const text = card.textContent || '';
@@ -99,10 +103,10 @@ describe('MCP 服务页 — 内置服务与外部服务同列表呈现', () => {
     expect(container.querySelectorAll('svg.lucide-pencil').length).toBe(2);
   });
 
-  it('内置服务显示已开放范围数量，但不显示模式名单', async () => {
+  it('内置服务显示已开放范围数量，但不显示范围清单', async () => {
     render(<MCPConfig />);
     const card = await builtinCard();
-    expect(card.textContent).toContain('已开放 3 个索引范围');
+    expect(card.textContent).toContain('已开放 3 个数据范围');
     expect(card.textContent).not.toContain('orders-*');
   });
 
@@ -111,7 +115,7 @@ describe('MCP 服务页 — 内置服务与外部服务同列表呈现', () => {
     render(<MCPConfig />);
     const card = await builtinCard();
     fireEvent.click(within(card).getByRole('button', { name: '测试连接' }));
-    await waitFor(() => expect(client.post).toHaveBeenCalledWith('/admin/mcp-servers/9001/test'));
+    await waitFor(() => expect(client.post).toHaveBeenCalledWith('/admin/mcp-servers/9101/test'));
   });
 
   it('工具清单默认收起（内置与外部同口径），点一下展开、再点能收起', async () => {
@@ -120,13 +124,13 @@ describe('MCP 服务页 — 内置服务与外部服务同列表呈现', () => {
     render(<MCPConfig />);
     const card = await builtinCard();
     const toggle = within(card).getByRole('button', { name: /提供工具/ });
-    expect(within(card).queryByText('list_es_indexes')).not.toBeInTheDocument();
+    expect(within(card).queryByText('search_docs')).not.toBeInTheDocument();
     expect(toggle.textContent).toContain('▼');
     fireEvent.click(toggle);
-    expect(within(card).getByText('list_es_indexes')).toBeInTheDocument();
+    expect(within(card).getByText('search_docs')).toBeInTheDocument();
     expect(toggle.textContent).toContain('▲');
     fireEvent.click(toggle);
-    expect(within(card).queryByText('query_es_sql')).not.toBeInTheDocument();
+    expect(within(card).queryByText('fetch_doc')).not.toBeInTheDocument();
   });
 
   it('外部服务同样默认收起，点一下展开', async () => {
@@ -139,11 +143,11 @@ describe('MCP 服务页 — 内置服务与外部服务同列表呈现', () => {
   });
 
   it('配置不完整时给出可见原因，而不是静默显示成正常', async () => {
-    mockList([{ ...BUILTIN_ROW, state: 'incomplete', status_message: '已启用但未开放任何索引（白名单为空，默认不开放）', is_active: 0 }, ...EXTERNAL_ROWS]);
+    mockList([{ ...BUILTIN_ROW, state: 'incomplete', status_message: '已启用但未开放任何范围（配置为空，默认不开放）', is_active: 0 }, ...EXTERNAL_ROWS]);
     render(<MCPConfig />);
     const card = await builtinCard();
     expect(within(card).getByText('配置不完整')).toBeInTheDocument();
-    expect(card.textContent).toContain('白名单为空');
+    expect(card.textContent).toContain('配置为空');
   });
 
   it('未启用状态显示为未启用并说明原因', async () => {
@@ -152,6 +156,17 @@ describe('MCP 服务页 — 内置服务与外部服务同列表呈现', () => {
     const card = await builtinCard();
     expect(within(card).getByText('未启用')).toBeInTheDocument();
     expect(card.textContent).toContain('部署侧开关关闭');
+  });
+
+  it('已退役的内置行（代码无实现）显式标「未登记实现」，不当成正常也不裸显状态码', async () => {
+    // 退役迁移只做软删（is_active=0）留行可追溯；若漏改代码或新装库造了死行，
+    // 后端给 state=unknown —— 页面必须把它渲染成可读的异常标注，而不是 "unknown" 或"就绪"。
+    mockList([{ ...BUILTIN_ROW, state: 'unknown', status_message: '内置服务未登记实现', is_active: 0 }, ...EXTERNAL_ROWS]);
+    render(<MCPConfig />);
+    const card = await builtinCard();
+    expect(within(card).getByText('未登记实现')).toBeInTheDocument();
+    expect(card.textContent).toContain('内置服务未登记实现');
+    expect(card.textContent).not.toContain('unknown');
   });
 });
 

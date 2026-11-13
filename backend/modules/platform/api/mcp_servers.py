@@ -83,9 +83,17 @@ def _project_builtin(row: dict) -> dict:
     row["label"] = (spec or {}).get("label") or name
     row["state"] = state["state"]
     row["status_message"] = state["status_message"]
-    # 只给数量（已开放几个索引范围）：模式名属部署配置，不回显。
-    # 有数量无名单是故意的：管理员要能判断“配了没配”，但不能在页面上读到配置本身。
+    # 只给数量（已开放几个数据范围）：范围清单属部署配置，不回显。
+    # 有数量无清单是故意的：管理员要能判断“配了没配”，但不能在页面上读到配置本身。
+    # 未登记实现的内置行（已退役服务残留行）state=unknown、is_active=0，页面可见原因。
     row["open_view_count"] = state["open_view_count"]
+    # 工具清单**只认代码登记**：`discovered_tools` 本来是外部服务“测试连接”发现结果的落库列，
+    # 内置行又被迁移种子写过一份旧清单，服务退役后它会在页面上广告“提供工具 (N)”这种
+    # 永远调不到的入口（空承诺）。所以这里按 tool_specs() 重建，无实现时清空。
+    tool_specs = (spec or {}).get("tool_specs")
+    row["discovered_tools"] = json.dumps(
+        [{"name": s["name"], "description": s.get("description", "")}
+         for s in (tool_specs() if tool_specs else [])], ensure_ascii=False)
     # 未就绪时对外呈现为不可用：AS-BOT 的候选列表按 is_active 过滤，
     # 不会出现“能绑上但每次调用必报错”的假承诺；原因在 MCP 服务页可见。
     row["is_active"] = 1 if state["ready"] else 0

@@ -8,7 +8,8 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from backend.common.auth import get_current_user, require_admin
+from backend.common.auth import get_current_user, get_workspace_id, require_admin
+from backend.core.governed_query import NoIdentityError
 from backend.modules.catalog.services.datasource_service import datasource_service
 
 logger = logging.getLogger(__name__)
@@ -219,17 +220,33 @@ async def execute_sql(
     ds_id: int,
     req: dict,
     user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
 ):
-    """执行 SQL 查询。"""
+    """数据源裸 SQL 试跑 —— 经统一治理取数口（与数据集/看板/语义查数/Playground 同一条链）。
+
+    身份只信服务端 JWT，不接受 body 递交 user_id（伪造无效果）；无身份 fail-closed 403。
+    先查数据源存在性是为了把“不存在”留在 404（其余 ValueError 属本次请求本身的问题，回 400）；
+    服务层同样会再校验一次 —— 两处判定同一事实，不拿错因文案当判据。
+    """
     sql = req.get("sql", "").strip()
     if not sql:
         raise HTTPException(status_code=400, detail="SQL 不能为空")
+    if not await datasource_service.get_datasource_raw(ds_id):
+        raise HTTPException(status_code=404, detail="数据源不存在")
 
     try:
-        return await datasource_service.execute_sql(ds_id, sql)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        return await datasource_service.execute_sql(
+            ds_id, sql,
+            user_id=user.get("user_id") or 0,
+            workspace_id=int(workspace_id or 0),
+            username=user.get("username", "") or "")
+    except NoIdentityError as e:
+        raise HTTPException(status_code=403, detail=str(e) or "缺少可信用户身份, 拒绝取数")
     except PermissionError as e:
+        # 与数据集/Playground 同一口径：闸门拦截 = 403（旧实现回 400，同一个拦因三个面三个码）
+        raise HTTPException(status_code=403, detail=f"权限拦截: {e}")
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning("[datasources] execute failed ds_id=%s: %s", ds_id, e)
+        raise HTTPException(status_code=400, detail="SQL 执行失败")

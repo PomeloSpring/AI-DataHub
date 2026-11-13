@@ -49,6 +49,21 @@ export function resolveChartType(llmType?: string): string {
   return VALID_TYPES.has(llmType) ? llmType : 'bar';
 }
 
+/**
+ * 带降级标记的图型解析（新代码请用这个）。
+ *
+ * `resolveChartType` 的“认不出就退柱状图”必须保留：历史消息里的旧图型名不能回放成空白。
+ * 但它不能继续**静默**（雷达图被画成柱子，用户只会怀疑数据错了）。本函数把“被替换”
+ * 这件事回传给调用方，卡片上要显式说出来；新链路的同类校验已在服务端 render_chart 里
+ * 提前拒收并回原因，不会再走到这一步。
+ */
+export function resolveChartTypeSafe(llmType?: string): { type: string; requested: string; degraded: boolean } {
+  const requested = (llmType || '').trim();
+  const type = resolveChartType(requested || undefined);
+  // 没给图型 = 按默认柱状渲染（历史行为，不算替换）；给了但被归一/兜底 = 可见的降级
+  return { type, requested, degraded: !!requested && requested !== type };
+}
+
 export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) {
   const columns = data?.columns || [];
   const rows = data?.rows || [];
@@ -162,6 +177,14 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
   ) : null;
 
   const chartOptions = PICKABLE;
+
+  // 图型名不被支持却仍能回放（历史契约/旧别名）：把“已换图型”说出来，不静默换掉。
+  // 只看首次请求的图型（用户在下拉里自己改选不算降级）。
+  const typeDegraded = useMemo(() => {
+    const r = resolveChartTypeSafe(defaultType);
+    return r.degraded ? r : null;
+  }, [defaultType]);
+  const degradedLabel = PICKABLE.find(t => t.value === (typeDegraded?.type || ''))?.label || '柱状图';
 
   // 地图类图型(chat)统一走字模库瓦片热力(MapHeatmap):china_map/world_map 的 G2 底图
   // 依赖外网 topo 资源常不可达,且不复用字模库瓦片 —— 这里统一复用瓦片 + 地名/经纬度定位
@@ -347,6 +370,12 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
 
       {view === 'chart' && <>
         {libraryNotice}
+        {typeDegraded && (
+          <p role="alert" className="mb-2 text-xs text-muted-foreground">
+            请求的图型「{typeDegraded.requested}」平台不支持，已按「{degradedLabel}」展示 ——
+            这是图型名不对，不是数据错了。可在下方下拉里改选其他图型。
+          </p>
+        )}
         {isMapChart ? (
           <>
             <div className="flex gap-2 items-center flex-wrap" data-export-strip>

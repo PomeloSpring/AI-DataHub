@@ -24,6 +24,19 @@ describe('版式回显文案', () => {
     expect(note).toContain('切回上一版')
   })
 
+  it('版式未达成（新口径 rejected）：徽章 + 判失败，不得说“样式退回平台事实报告”', () => {
+    const rejected = {
+      has_layout: true, status: 'rejected', format: 'html',
+      reasons: ['正文不是整份 HTML 文档（上一版是 HTML 报告）'],
+    }
+    expect(layoutBadge(rejected)).toBe('未按原版式')
+    const note = layoutNote(rejected)
+    expect(note).toContain('已按失败处理')
+    // 那句是旧降级口径的话：平台不再擅自改产事实表格，页面也不得再说它长在那
+    expect(note).not.toContain('退回平台事实报告')
+    expect(note).toContain('切回上一版')
+  })
+
   it('没有版式信息（旧服务端/非重跑产物）不编造结论', () => {
     expect(layoutBadge(undefined)).toBe('')
     expect(layoutNote(undefined)).toBe('')

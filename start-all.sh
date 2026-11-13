@@ -553,20 +553,32 @@ run_foreground() {
     # dataengine 已退役：执行载体由 semantics.execution 内嵌
 
     # 启动 web 入口（单进程 :8000，代替原 8 个微服务进程）
-    start_web_fg "${FG_COLORS[$ci]}"
-    ((ci++))
-    if [ $? -eq 0 ]; then ((success++)); else ((fail++)); fi
+    # 返回码必须紧跟 if 判断：中间插 `((ci++))` 会把 $? 覆盖掉——ci 从 0 起时后置自增的
+    # 表达式值为 0，bash 让 (( )) 返回 1，于是启动成功的 web 永远被记成「1 个失败」。
+    # 计数一律用 $((...)) 赋值（不产生退出码），避免同类陷阱。
+    if start_web_fg "${FG_COLORS[$ci]}"; then
+        success=$((success + 1))
+    else
+        fail=$((fail + 1))
+    fi
+    ci=$((ci + 1))
 
-    # 启动 Celery worker + beat
+    # 启动 Celery worker + beat（成败按各自返回码计，不得无条件记成功）
     for cname in "${CELERY_PROCS[@]}"; do
-        start_celery_fg "$cname" "${FG_COLORS[$((ci % ${#FG_COLORS[@]}))]}"
-        ((ci++))
-        ((success++))
+        if start_celery_fg "$cname" "${FG_COLORS[$((ci % ${#FG_COLORS[@]}))]}"; then
+            success=$((success + 1))
+        else
+            fail=$((fail + 1))
+        fi
+        ci=$((ci + 1))
     done
 
     # 启动前端
-    start_frontend_fg "${FG_COLORS[$ci]}"
-    if [ $? -eq 0 ]; then ((success++)); else ((fail++)); fi
+    if start_frontend_fg "${FG_COLORS[$ci]}"; then
+        success=$((success + 1))
+    else
+        fail=$((fail + 1))
+    fi
 
     echo ""
     log_info "${success} 个服务已启动, ${fail} 个失败"
@@ -628,19 +640,23 @@ show_status() {
     echo -e "$frontend_status"
 
     # Celery worker / beat 状态（无端口）
+    # 前台模式不写 pid 文件（只靠 pid 判会误报"未运行"，而启动汇总又说"成功"——两套口径），
+    # pid 文件缺失/失效时按 cmdline 兜底发现实例（与 start_celery_process 同一个判据）
     for cname in "${CELERY_PROCS[@]}"; do
         local c_pid_file="$PID_DIR/${cname}.pid"
         local c_status="未运行"
         local c_pid="-"
-        if [ -f "$c_pid_file" ]; then
-            c_pid=$(cat "$c_pid_file")
-            if kill -0 "$c_pid" 2>/dev/null; then
-                c_status="${GREEN}运行中${NC}"
-            else
-                c_status="${RED}已停止${NC}"; c_pid="-"
+        if [ -f "$c_pid_file" ] && kill -0 "$(cat "$c_pid_file")" 2>/dev/null; then
+            c_pid=$(cat "$c_pid_file"); c_status="${GREEN}运行中${NC}"
+        else
+            local live=$(find_celery_pids "$cname" | head -1)
+            if [ -n "$live" ]; then
+                c_pid="$live (按进程发现)"; c_status="${GREEN}运行中${NC}"
+            elif [ -f "$c_pid_file" ]; then
+                c_status="${RED}已停止${NC}"
             fi
         fi
-        printf "  %-20s %-8s %-8s " "$cname" "-" "$c_pid"
+        printf "  %-20s %-8s %-22s " "$cname" "-" "$c_pid"
         echo -e "$c_status"
     done
 

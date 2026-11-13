@@ -45,6 +45,14 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
 - **`LIMIT` 语义只覆盖交互式查询**：批处理/物化不得依赖"自动补默认 LIMIT"来放行（那会把全表静默截断成前 N 行还报成功，属错数不是限流）；
   数据面按 `data-sync-engineering.md` §4-4 用**显式资源预算 + 超预算拒绝**替代，且落地行数必须与源侧对账相等。
 - 缺 LIMIT 的扫描应"自动补默认 LIMIT 后再校验"，而非直接放行（见 `sdk_tools/query_tools.py`）。
+- **交互式取数必须有按数据源的并发上限**（`backend/core/query_gate.py`，2026-11-13 落地）：一次看板刷新 = N 图 × M 用户，
+  而 SQL 型源每次取数新建连接（没有池），不限并发就是集体撞源侧 `max_connections`。
+  真值源 = `adh_datasources.extra_config.max_concurrency`（1~64，缺省 8）+ `queue_wait_sec`（0~120，缺省 10，0 = 不排队直接拒）；
+  生效点唯一：`query_executor.execute_query` 与 ES 分页口 `execute_es_page_with_permission`（它不走 `execute_query`，漏接就是只挡一半流量的假闸门），
+  不得在各图表/各入口另造第二套限流。满员先 FIFO 排队，排不过预算才拒，拒时抛 `QueryQueueTimeout`
+  （自带 `exec_category="capacity_queue"` + `safe_business_message`）：文案必须原样到达人（图表卡片「取数未完成」+ 排队原因），
+  **不得**退化成"连接/凭据不可用"或空结果（`no-silent-degradation.md`）。ES 的 `pool_size` 是连接**复用**、不限并发，拿它当限流属误用；
+  闸门是进程内的，多副本 / celery-worker 部署必须先换成 Redis 租约式实现，不得假装已跨进程限流。
 
 ## 6. Chat / Agent 取数：语义层与 nl2sql 双路径（均须受治理）
 > 只要满足本护栏全部安全要求（§1–§5、§7–§10），**语义层与 nl2sql 都是允许的取数路径**；
@@ -113,6 +121,11 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
   列级策略落 SQL、别名不二次脱敏、不引用受控列零改写、兜底路径可审计）、`tests/test_permission_e2e.py`，
   并为新分支补用例（尤其：带别名 JOIN 的 RLS、重名列、无可信身份拒绝、敏感 block 对 admin 生效）。
 - 触碰 `sdk_tools/query_tools.py`（`execute_sql` / `check_sql`）后，**必须**跑 `tests/test_execute_sql_governance.py`：它锁定 execute_sql 只经 `execute_query_with_permission`、权限拒绝在执行前即中止、以及源码级禁止 `get_connection`/裸 `execute_query` 旁路。新增取数工具不得绕过该门禁。
+- 触碰 `core/query_gate.py` / `query_executor.py` 的并发闸门接线（含 `semantics/execute.py` 的错因透传、`dataset_service._exec_fail_text`）后，
+  **必须**跑 `tests/test_query_gate.py`（含：满员先排队、超预算可读拒含上限/位次、同线程嵌套不重复占位、异常必归还、
+  不变式破了拒接、分桶隔离、上限来自 `extra_config` 且取消配置回缺省、`execute_query`/ES 分页口真过闸门、`capacity_queue` 不被通用文案覆盖）
+  + `logs/q_gate_live_check.py`（活库 12 项：真源并发、串行化耗时、治理口文案与类别）；前端改 `dashboardStore` 刷新失败分支另跑
+  `frontend/src/stores/__tests__/dashboardChartNotice.test.ts`。
 - 触碰 `modules/mind/execution/outbound_guard.py`（出站收口）后，**必须**跑 `tests/test_function_ai_access.py`（含：基础设施键 `ip`/`host` 仍拦、中文业务维度名不误伤、值形态规则清单里不得重现业务内容正则）+ `tests/test_as_bot_security.py`（`test_tool_error_branches_all_pass_outbound_guard` 源码级接线）。
 - 触碰 `semantics/{planner,rls}.py` 或 `semantics/security/masking.py`（列级安全策略编译进 SQL）后，**必须**跑
   `tests/test_planner_sls_engine.py`（`TestColumnPolicyCompiledIntoSlsSql`：投影+GROUP BY 同口径、聚合不受影响、
@@ -128,4 +141,6 @@ description: AI-DataHub 数据与安全护栏铁律（数据护城河）。任�
 - ❌ 把 `execute_sql` 生成的原始 SQL 直连数据源（必过 `execute_query_with_permission`，审核不过即中止）；❌ 跳过 `check_sql` 预检直接 `execute_sql`；
 - ❌ 对外回显 SQL/数据源/账号/基础设施 IP/报错栈；❌ 把业务敏感列的裁决 hardcode 在出站层（内容形态正则）而不去配 `adh_sensitive_fields`；❌ `to_json` 裸序列化或吞异常致空结果；❌ 观测/审计改动抛异常影响主链路。
 - ❌ 批处理沿用交互式默认 `LIMIT` 并据此报成功（静默截断 → 错数）；❌ 用 `require_limit=False` 当批处理旁路开关；
+- ❌ 取数因并发超限被拒时回"空结果/连接不可用"充数（用户该看到的是"在排队、请稍后重试"）；❌ 拿 ES `pool_size` 当并发限流、
+  或在图表层另造第二套排队；❌ 只在 `execute_query` 接闸门而漏掉 ES 分页口（假闸门）；
 - ❌ 拿执行体回报的行数直接标记分区就绪（必平台侧对账复核）；❌ 把数据同步/DAG/物化权限点对 AI 开放（`sync:*`/`dag:*`/`udf:*` 的 `ai_access` 必为 `none`）。

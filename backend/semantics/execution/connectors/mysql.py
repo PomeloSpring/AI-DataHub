@@ -19,8 +19,6 @@ from backend.semantics.execution.connectors.base import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_READ_TIMEOUT = 30
-
 
 class MySQLConnector:
     """MySQL/Doris（MySQL 协议）远程下推执行。"""
@@ -41,7 +39,7 @@ class MySQLConnector:
     def _connect(self, timeout_sec: Optional[int]) -> Any:
         if self._conn_factory is not None:
             return self._conn_factory()
-        from backend.common.db.datasource_db import get_datasource_conn
+        from backend.common.db.datasource_db import get_datasource_conn, resolve_timeouts
 
         row = dict(self._config or {})
         if not row:
@@ -50,6 +48,7 @@ class MySQLConnector:
             row = get_datasource_by_id(self._datasource_id) or {}
             if not row:
                 raise ValueError(f"数据源不存在: datasource_id={self._datasource_id}")
+        connect_sec, read_sec = resolve_timeouts(row, timeout_sec=timeout_sec)
         return get_datasource_conn(
             row.get("db_type") or "mysql",
             row.get("host"), int(row.get("port") or 3306),
@@ -57,7 +56,7 @@ class MySQLConnector:
             row.get("password") or "",
             row.get("database") or row.get("database_name"),
             ssl=bool(row.get("ssl")), ssl_mode=row.get("ssl_mode"),
-            read_timeout=int(timeout_sec or _DEFAULT_READ_TIMEOUT),
+            read_timeout=read_sec, connect_timeout=connect_sec,
         )
 
     def execute_pushdown(
