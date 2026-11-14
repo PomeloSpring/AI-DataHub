@@ -125,6 +125,18 @@ describe('WorkspaceLayout 菜单按权限码过滤', () => {
     const labels = screen.getAllByRole('button').map(b => b.textContent?.trim());
     expect(labels.some(t => /决策/.test(t || ''))).toBe(false);
   });
+
+  it('侧栏「数据分析」组顺序：智能问数 → 数据看板 → 报告中心', () => {
+    /* 与角色权限页的 sort（workspace:chat=1 / dashboards=2 / reports=3）同批次，
+       并且第一项就是工作空间默认页（登录落地/模块切换落点）。 */
+    usePermissionStore.setState({ loaded: true, unrestricted: true, perms: null, allowedMenus: null });
+    renderLayout();
+    const labels = screen.getAllByRole('button').map(b => b.textContent?.trim());
+    const at = (t: string) => labels.indexOf(t);
+    expect(at('智能问数')).toBeGreaterThanOrEqual(0);
+    expect(at('智能问数')).toBeLessThan(at('数据看板'));
+    expect(at('数据看板')).toBeLessThan(at('报告中心'));
+  });
 });
 
 describe('权限未就绪时不得闪现无权限菜单', () => {

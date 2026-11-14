@@ -29,7 +29,8 @@
     "selectPlaceholder": "Select workspace",
     "reload": "Reload",
     "notFound": "This workspace does not exist or you no longer have access.",
-    "chooseAccessible": "Choose an accessible workspace"
+    "chooseAccessible": "Choose an accessible workspace",
+    "backHome": "Back to home"
   },
   "delete": {
     "title": "Delete workspace",

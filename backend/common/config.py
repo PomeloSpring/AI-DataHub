@@ -19,6 +19,8 @@ import logging
 import os
 from pathlib import Path
 
+from backend.common.redis_url import effective_redis_url
+
 # Load .env —— 唯一来源 backend/.env（Phase 7：旧 services/.env 已并入）
 # load_dotenv 之前留存真实进程环境：需要区分“用户显式 export”与“backend/.env 注入”，
 # 否则下方 FRONTEND_PORT 会把 backend/.env 里的残留同名键当成环境变量优先项，
@@ -73,7 +75,11 @@ METADATA_DB_DATABASE = os.getenv("METADATA_DB_DATABASE", "adh")
 # Redis — Celery Broker + Result Backend + Distributed Lock
 # ══════════════════════════════════════════════════════════════════════════
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+# 凭据装配唯一口径：REDIS_URL 不带 userinfo 时用 REDIS_PASSWORD 补全，
+# 否则所有 from_url(REDIS_URL) 通道（缓存/Celery/图谱锁/监控探测）都会被拒 NOAUTH，
+# 且缓存侧只降级成"无缓存"不报错（见 common.redis_url 模块说明）。
+REDIS_URL = effective_redis_url(os.getenv("REDIS_URL"), os.getenv("REDIS_PASSWORD"))
+# 展示/日志需要去掉凭据时走 redis_url.redact_redis_url（凭据不出服务端，护栏 §7）
 
 # ══════════════════════════════════════════════════════════════════════════
 # Application (ADH_* replaces CHATBI_*)

@@ -181,7 +181,7 @@ describe('工作空间数据看板 — 组合卡片清单', () => {
     routes('/dashboards/7/3');
     await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/3'));
   });
-  it('进入工作空间默认落数据看板清单（不是智能问数）', async () => {
+  it('进入工作空间默认落智能问数（不再是看板清单）', async () => {
     render(<TooltipProvider><MemoryRouter initialEntries={['/']}><Path /><Routes>
       <Route path="/" element={<SectionSwitcher current="home" />} />
       <Route path="/ws/:workspaceId/dashboards" element={<WorkspaceDashboards />} />
@@ -189,15 +189,25 @@ describe('工作空间数据看板 — 组合卡片清单', () => {
     </Routes></MemoryRouter></TooltipProvider>);
     fireEvent.keyDown(screen.getByRole('button', { name: '切换模块' }), { key: 'Enter' });
     fireEvent.click(await screen.findByRole('menuitem', { name: /工作空间/ }));
-    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards'));
-    expect(screen.queryByText('智能问数主体')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/chat'));
+    expect(screen.getByText('智能问数主体')).toBeInTheDocument();
   });
-  it('工作空间入口(/workspace)重定向到看板清单', async () => {
+  it('工作空间入口(/workspace)重定向到默认页智能问数', async () => {
     render(<TooltipProvider><MemoryRouter initialEntries={['/workspace']}><Path /><Routes>
       <Route path="/workspace" element={<WorkspaceEntry module="workspace" />} />
       <Route path="/ws/:workspaceId/dashboards" element={<WorkspaceDashboards />} />
+      <Route path="/ws/:workspaceId/chat" element={<div>智能问数主体</div>} />
+    </Routes></MemoryRouter></TooltipProvider>);
+    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/chat'));
+  });
+  it('旧看板域书签仍落看板清单（链接语义不随默认页移动）', async () => {
+    render(<TooltipProvider><MemoryRouter initialEntries={['/dashboards']}><Path /><Routes>
+      <Route path="/dashboards" element={<WorkspaceEntry module="dashboards" />} />
+      <Route path="/ws/:workspaceId/dashboards" element={<WorkspaceDashboards />} />
+      <Route path="/ws/:workspaceId/chat" element={<div>智能问数主体</div>} />
     </Routes></MemoryRouter></TooltipProvider>);
     await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards'));
+    expect(screen.queryByText('智能问数主体')).not.toBeInTheDocument();
   });
 });
 

@@ -11,9 +11,8 @@ vi.mock('@/api/client', () => ({ default: { get: vi.fn(), put: vi.fn(), post: vi
 vi.mock('leaflet', () => ({ default: { map: vi.fn(() => ({ remove: vi.fn() })) } }));
 
 const library = vi.hoisted(() => ({ current: [] as VisComponent[] }));
-vi.mock('@/hooks/useVisLibrary', () => ({
-  useVisLibrary: () => ({ items: library.current, loading: false, error: null, refresh: vi.fn() }),
-}));
+// 管理页已改为服务端真分页（不再用 useVisLibrary 拉全量前端切片）：
+// 用 library.current 模拟后端按 category/q/page 下推，返回 {items,total,page,page_size} 契约。
 
 const comp = (over: Partial<VisComponent>): VisComponent => ({
   id: 1, code: 'c1', name: '字模', category: 'chart_style', chart_type: 'bar', style_config: {},
@@ -30,6 +29,20 @@ const widgetComp = (over: Partial<VisComponent> = {}) => comp({
 beforeEach(() => {
   vi.clearAllMocks();
   library.current = [];
+  // 服务端分页桩：category 精确筛 + q 模糊匹配(name/code/description) + page/page_size 切片；总数=过滤后长度
+  vi.mocked(client.get).mockImplementation(async (_url: string, cfg?: any) => {
+    const params = (cfg && cfg.params) || {};
+    let list = library.current;
+    if (params.category) list = list.filter(c => c.category === params.category);
+    if (params.q) {
+      const q = String(params.q).toLowerCase();
+      list = list.filter(c => `${c.name} ${c.code} ${c.description || ''}`.toLowerCase().includes(q));
+    }
+    const size = Number(params.page_size) || 20;
+    const pg = Number(params.page) || 1;
+    const start = (pg - 1) * size;
+    return { data: { items: list.slice(start, start + size), total: list.length, page: pg, page_size: size } };
+  });
   useAuthStore.setState({ user: { id: 1, username: 'admin', role: 'admin' } });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); useAuthStore.getState().logout(); });
@@ -65,6 +78,7 @@ describe('UI 字模库管理页 — 卡片清单', () => {
     library.current = [widgetComp()];
     const { container } = render(<VisLibrary />);
     fireEvent.click(await screen.findByRole('button', { name: '控件样式' }));
+    await screen.findByText('下拉框·AS');
     const preview = container.querySelector<HTMLElement>('[data-preview-type="widget_style"]')!;
     expect(preview.className).toContain('overflow-hidden');
     // 卡片预览槽统一高度，长短不一就是列表页“乱”的直接原因
@@ -82,14 +96,15 @@ describe('UI 字模库管理页 — 卡片清单', () => {
     expect(await screen.findByText(/不是系统里的图表\/控件类型/)).toBeInTheDocument();
   });
 
-  it('搜索按名称/说明过滤，空结果显示可操作空态', async () => {
+  it('搜索按名称/说明过滤（服务端下推），空结果显示可操作空态', async () => {
     library.current = [widgetComp(), widgetComp({ id: 3, code: 'ws_neon', name: '控件·科技风' })];
     render(<VisLibrary />);
     fireEvent.click(await screen.findByRole('button', { name: '控件样式' }));
+    // 防抖 + 服务端 q 过滤落地后才收敛到 1 条（拿“共 1 个”作为分页结果就绪的信号，不拿防抖前的全量渲染充数）
     fireEvent.change(screen.getByLabelText('搜索字模'), { target: { value: '科技风' } });
-    expect(await screen.findByText('控件·科技风')).toBeInTheDocument();
+    expect(await screen.findByText('1 个字模')).toBeInTheDocument();
+    expect(screen.getByText('控件·科技风')).toBeInTheDocument();
     expect(screen.queryByText('下拉框·AS')).not.toBeInTheDocument();
-    expect(screen.getByText('1 个字模')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('搜索字模'), { target: { value: '不存在' } });
     expect(await screen.findByText(/没有匹配「不存在」的字模/)).toBeInTheDocument();
   });

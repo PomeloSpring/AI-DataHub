@@ -133,7 +133,7 @@ def local_files(root) -> dict:
             if not p.is_file() or p.is_symlink():
                 continue
             st = p.stat()
-            out[str(p.relative_to(ws))] = {"size": int(st.st_size), "mtime_ns": int(st.st_mtime_ns)}
+            out[p.relative_to(ws).as_posix()] = {"size": int(st.st_size), "mtime_ns": int(st.st_mtime_ns)}  # key 恒用 POSIX 分隔符：跨平台云同步/恢复不因 Windows 反斜杠错位
         except OSError:
             continue
     return out
@@ -162,7 +162,7 @@ def write_manifest(root, files: dict) -> None:
     tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
     payload = json.dumps({"files": files, "synced_at": datetime.now(timezone.utc).isoformat()},
                          ensure_ascii=False)
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | (getattr(os, "O_NOFOLLOW", 0)), 0o600)  # O_NOFOLLOW Unix 专属：Windows 缺失按 0 跳过
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(payload)
@@ -348,7 +348,7 @@ def _adopt_ownership(ws) -> None:
 
     否则 root 落下的 0644 文件会让以 nobody 运行的执行层改不动自己刚“恢复回来”的产物。
     """
-    if os.geteuid() != 0:
+    if os.name != "posix" or os.geteuid() != 0:  # Unix 专属降权：Windows 无 geteuid，直接跳过
         return
     for p in [ws, *ws.rglob("*")]:
         try:

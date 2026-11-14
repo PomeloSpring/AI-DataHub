@@ -27,6 +27,7 @@ import ReleaseNotesButton from './ReleaseNotesButton';
 import { TOUR, navTour } from '@/lib/onboarding/guides';
 import { useGuideStore } from '@/stores/guideStore';
 import { WorkspaceDeleteDialog } from './WorkspaceDeleteDialog';
+import { workspaceLandingPath } from './WorkspaceRoute';
 import ThemeMenuItems from './ThemeMenuItems';
 import LanguageMenu from './LanguageMenu';
 
@@ -99,8 +100,8 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
 
   const handleSwitch = (ws: Workspace) => {
     setWorkspace(ws.id);
-    // 工作空间默认页 = 数据看板清单(卡片瀑布)
-    navigate(module === 'workspace' ? `/ws/${ws.id}/dashboards` : `/${module}/${ws.id}`);
+    // 切空间 = 进入另一个工作空间，落它的默认页（与登录/模块切换同一口径，现 = 智能问数）
+    navigate(module === 'workspace' ? workspaceLandingPath(ws.id) : `/${module}/${ws.id}`);
   };
 
   // 「新建工作空间」入口按产品决策暂不开放（一个账号一个默认工作空间够用）：
@@ -112,11 +113,11 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
     const wasCurrent = deletedId === currentWorkspaceId;
     await loadWorkspaces();
     if (!wasCurrent) return;
-    // 删的是当前正在用的空间 → 落回默认工作空间，不留空白路由
+    // 删的是当前正在用的空间 → 落回默认工作空间，不留空白路由（落点与登录/模块切换同一口径）
     const next = useWorkspaceStore.getState().getDefaultWorkspaceId();
     if (next) {
       setWorkspace(next);
-      navigate(module === 'workspace' ? `/ws/${next}/dashboards` : `/${module}/${next}`);
+      navigate(module === 'workspace' ? workspaceLandingPath(next) : `/${module}/${next}`);
     } else {
       navigate('/dashboards');
     }
@@ -224,8 +225,9 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
   // 显隐反查仍用原 menu_key（toMenuKey + 权限码口径不动）。
   const menuItems = menuAccess.ready ? pruneEmptySections([
     { section: tMenu('section.analytics') },
-    { key: `/ws/${workspaceId}/dashboards`, icon: ChartNoAxesCombined, label: tMenu('workspace.dashboards') },
+    // 侧栏顺序随 master「默认页改智能问数」：chat 居首（与 adh_menu_registry sort 同批）
     { key: `/ws/${workspaceId}/chat`, icon: MessageSquare, label: tMenu('workspace.chat') },
+    { key: `/ws/${workspaceId}/dashboards`, icon: ChartNoAxesCombined, label: tMenu('workspace.dashboards') },
     { key: `/ws/${workspaceId}/reports`, icon: Folder, label: tMenu('workspace.reports') },
     /* 决策建议不在工作空间侧栏单独占一项（2026-11-12 拍板）：不是每个问题都需要决策，
        把它做成一级入口会暗示“每轮都该看建议”。消费入口仍是 Chat 建议卡、看板控件

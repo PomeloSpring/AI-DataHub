@@ -171,10 +171,13 @@ describe('目标缺失不静默', () => {
   it('optional 步骤的锚点被有意收起时静默前进，不报「未找到入口」', async () => {
     // 只有一个工作空间时侧栏不挂切换下拉（无项可切），这一步属条件隐藏而不是页面异常：
     //   报「页面变化或窗口过小」会把有意的设计当成故障，误导用户与排查。
-    mountFixture([navTour('ws', 'dashboards')]);
+    // 跳过后应直接进到侧栏第一项（智能问数），顺序跟 WorkspaceLayout 的菜单一致。
+    mountFixture([navTour('ws', 'chat'), navTour('ws', 'dashboards')]);
     render(<MemoryRouter initialEntries={['/ws/7/chat']}><TourEngine guideId="workspace" /></MemoryRouter>);
-    expect(await screen.findByText('数据看板', undefined, { timeout: 3000 })).toBeInTheDocument();
+    expect(await screen.findByText('智能问数', undefined, { timeout: 3000 })).toBeInTheDocument();
     expect(screen.queryByText(/未找到/)).not.toBeInTheDocument();
     expect(screen.queryByText('工作空间切换')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '下一步' }));
+    expect(await screen.findByText('数据看板', undefined, { timeout: 3000 })).toBeInTheDocument();
   });
 });

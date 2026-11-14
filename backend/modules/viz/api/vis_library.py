@@ -61,11 +61,25 @@ def list_components(
     category: str = QueryParam(""),
     include_inactive: bool = QueryParam(False),
     include_disabled: bool = QueryParam(False),
+    q: str = QueryParam("", description="按名称/代码/描述模糊搜索（仅分页模式服务端下推）"),
+    page: int = QueryParam(1, ge=1, description="页号（1 起），仅在传了 page_size 时生效"),
+    page_size: Optional[int] = QueryParam(None, ge=1, le=200,
+        description="每页行数；传了才走服务端真分页并返回 {items,total,page,page_size}"),
     user: dict = Depends(get_current_user),
 ):
     """字模清单。禁用态（is_enabled=0）默认不外发（fail-closed），
-    只有管理页（include_disabled=true）需要把它们列出来给管理员再启用。"""
+    只有管理页（include_disabled=true）需要把它们列出来给管理员再启用。
+
+    两种返回契约按是否传 page_size 划分（不是同一份数据两种静默行为，而是显式声明的两档）：
+    - 不传 page_size：一次性返回**全量数组**（选用面/编辑器字模面板需要全量在手，不分页）；
+    - 传 page_size：返回 `{items,total,page,page_size}` 的**服务端真分页**（管理页专用），
+      筛选/搜索/下架/禁用全部下推 SQL，总数由 COUNT 得到，不再把全表拉到前端切片。
+    """
     try:
+        if page_size is not None:
+            return _service.list_components_page(
+                category, include_inactive, include_disabled, q, page, page_size,
+            )
         return _service.list_components(category, include_inactive, include_disabled)
     except Exception as e:
         logger.exception("Failed to list vis components")

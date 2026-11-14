@@ -11,9 +11,11 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
 import BrandLockup from '@/components/BrandLockup';
+import { workspaceLandingPath } from '@/components/WorkspaceRoute';
 import { useBrandStore } from '../stores/brandStore';
 import { brandNameOf } from '@/lib/brand';
 import { useAuthStore } from '../stores/authStore';
+import { useWorkspaceStore } from '../stores/workspaceStore';
 
 const features = [
   { icon: MessageSquare, title: '自然语言查询', desc: '用中文提问，AI 自动生成 SQL' },
@@ -77,16 +79,17 @@ export default function Login() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username || !password) {
-      toast.error('请输入用户名和密码');
+      toast.error('请输入用户名/邮箱和密码');
       return;
     }
 
     setLoading(true);
     try {
       await login(username, password);
-      // 登录落地恒进首页: 首页是统一入口(问数框/看板清单/资讯区都在这一页),
-      // 不再按"有没有已启用看板"把人直接送去数据看板——落点由用户在首页自己选。
-      navigate('/');
+      // 登录落地默认进工作空间（与顶栏模块切换器、首页「工作空间」卡同一落点口径，默认页 = 智能问数）。
+      // 刚登录时 workspaceStore 已被 reset，拿不到默认空间 id 就走 /workspace 入口解析，
+      // 由它拉清单后跳到该用户默认空间的智能问数；无可访问空间时显式告知原因，不静默转首页。
+      navigate(workspaceLandingPath(useWorkspaceStore.getState().getDefaultWorkspaceId()));
     } catch (e: any) {
       toast.error(e.response?.data?.detail || '登录失败');
     } finally {
@@ -180,12 +183,12 @@ export default function Login() {
 
               <form onSubmit={handleSubmit} className="space-y-5">
                 <div className="space-y-1.5">
-                  <Label htmlFor="username" className="text-xs font-medium text-muted-foreground">用户名</Label>
+                  <Label htmlFor="username" className="text-xs font-medium text-muted-foreground">用户名 / 邮箱</Label>
                   <div className="relative">
                     <User className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
                       id="username"
-                      placeholder="请输入用户名"
+                      placeholder="请输入用户名或邮箱"
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
                       disabled={loading}

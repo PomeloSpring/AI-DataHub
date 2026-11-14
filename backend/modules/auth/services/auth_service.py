@@ -15,7 +15,13 @@ import jwt
 
 from backend.common.config import ADH_SECRET_KEY
 from backend.common.db import DBConnection, execute_query, execute_write
-from backend.common.crypto import decrypt_field as _decrypt_field, encrypt_field as _encrypt_field
+from backend.common.crypto import (
+    DECRYPT_FAILED_HINT as _DECRYPT_FAILED_HINT,
+    decrypt_field as _decrypt_field,
+    encrypt_field as _encrypt_field,
+    fingerprint as _fingerprint,
+    normalize_email as _normalize_email,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,17 +122,13 @@ def login(username: str, password: str, ip_address: str = "") -> dict | None:
 
 
 def _local_login(username: str, password: str, ip_address: str) -> dict | None:
-    """Local (bcrypt) authentication against adh_users table."""
+    """Local (bcrypt) authentication against adh_users table.
+
+    ``username`` 是账号标识：含 ``@`` 按邮箱登录（email_hash 指纹命中，见
+    :func:`_find_user_for_login`），否则按用户名。
+    """
     try:
-        with DBConnection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, username, password_hash, user_role, status, "
-                    "login_attempts, locked_until "
-                    "FROM adh_users WHERE username = %s",
-                    (username,),
-                )
-                user = cur.fetchone()
+        user = _find_user_for_login(username)
 
         if not user:
             return None
@@ -148,14 +150,15 @@ def _local_login(username: str, password: str, ip_address: str) -> dict | None:
 
         # Check password
         if not verify_password(password, user["password_hash"]):
-            _increment_login_attempts(user["id"], username)
+            _increment_login_attempts(user["id"], user["username"])
             return None
 
         # Success — reset attempts and update last_login
         _reset_login_attempts(user["id"])
         _update_last_login(user["id"])
 
-        log_audit(user["id"], username, "login", detail="登录成功", ip_address=ip_address)
+        # 审计记真实账号名（邮箱登录时输入的是邮箱，审计主体必须是账号本身）
+        log_audit(user["id"], user["username"], "login", detail="登录成功", ip_address=ip_address)
 
         token_data = {
             "sub": str(user["id"]),
@@ -172,12 +175,74 @@ def _local_login(username: str, password: str, ip_address: str) -> dict | None:
             "user": {
                 "id": user["id"],
                 "username": user["username"],
+                "display_name": user.get("display_name") or "",
                 "role": user["user_role"],
             },
         }
     except Exception as e:
         logger.error("Local authentication error: %s", e)
         return None
+
+
+def _find_user_for_login(identifier: str) -> dict | None:
+    """按账号标识查用户：邮箱（含 @，按 email_hash 指纹命中）或用户名。"""
+    identifier = (identifier or "").strip()
+    cols = ("id, username, password_hash, user_role, status, "
+            "login_attempts, locked_until, display_name ")
+    if "@" in identifier:
+        _backfill_email_hashes()
+        with DBConnection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {cols}FROM adh_users WHERE email_hash = %s ORDER BY id LIMIT 1",
+                    (_fingerprint(_normalize_email(identifier)),),
+                )
+                return cur.fetchone()
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {cols}FROM adh_users WHERE username = %s",
+                (identifier,),
+            )
+            return cur.fetchone()
+
+
+def _backfill_email_hashes() -> None:
+    """存量用户 email_hash 幂等回填（迁移只能加列，密文指纹要应用层解密后计算）。
+
+    无待回填行时开销趋近零（索引命中空集）；解不开的存量密文跳过并留 WARNING
+    （该行暂不可邮箱登录，需管理员按新旧密钥重加密后自愈）—— 不静默、不打断
+    用户名登录主链路。
+    """
+    try:
+        with DBConnection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, email FROM adh_users "
+                    "WHERE email IS NOT NULL AND email != '' "
+                    "AND (email_hash IS NULL OR email_hash = '')"
+                )
+                rows = cur.fetchall()
+        for row in rows or []:
+            email = _decrypt_field(row.get("email", ""))
+            if not email or email == _DECRYPT_FAILED_HINT:
+                logger.warning(
+                    "email_hash 回填跳过 user_id=%s（密文解不开，需按新旧密钥重加密后才能邮箱登录）",
+                    row.get("id"),
+                )
+                continue
+            with DBConnection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE adh_users SET email_hash = %s WHERE id = %s",
+                        (_fingerprint(_normalize_email(email)), row["id"]),
+                    )
+    except Exception as e:
+        # 回填是邮箱登录的准备步骤：失败不得打断登录链路，但必须留痕（含修复指引）
+        logger.error(
+            "email_hash 回填失败（邮箱登录暂不可用；请确认已应用迁移 "
+            "docker/mysql/user_profile_email_login_migration.sql）: %s", e,
+        )
 
 
 def refresh_access_token(refresh_token: str) -> dict | None:
@@ -296,7 +361,7 @@ def get_user_by_id(user_id: int) -> dict | None:
         with DBConnection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, username, email, phone, avatar, user_role, status, "
+                    "SELECT id, username, display_name, email, phone, avatar, user_role, status, "
                     "last_login, login_attempts, locked_until, created_at, updated_at "
                     "FROM adh_users WHERE id = %s",
                     (user_id,),
@@ -361,7 +426,7 @@ def get_user_by_username(username: str) -> dict | None:
         with DBConnection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, username, email, phone, avatar, user_role, status, "
+                    "SELECT id, username, display_name, email, phone, avatar, user_role, status, "
                     "last_login, login_attempts, locked_until, created_at, updated_at "
                     "FROM adh_users WHERE username = %s",
                     (username,),
@@ -385,8 +450,9 @@ def list_users(page: int = 1, size: int = 50, search: str = "", role: str = "") 
                 where_clauses = []
                 params = []
                 if search:
-                    # Can only search username directly; email/phone are encrypted
-                    where_clauses.append("username LIKE %s")
+                    # 邮箱/手机密文不可等值检索；明文可搜列只有用户名与姓名
+                    where_clauses.append("(username LIKE %s OR display_name LIKE %s)")
+                    params.append(f"%{search}%")
                     params.append(f"%{search}%")
                 if role:
                     where_clauses.append("user_role = %s")
@@ -399,7 +465,7 @@ def list_users(page: int = 1, size: int = 50, search: str = "", role: str = "") 
 
                 offset = (page - 1) * size
                 cur.execute(
-                    f"SELECT id, username, email, phone, avatar, user_role, status, "
+                    f"SELECT id, username, display_name, email, phone, avatar, user_role, status, "
                     f"last_login, login_attempts, locked_until, created_at, updated_at "
                     f"FROM adh_users{where_sql} ORDER BY id DESC LIMIT %s OFFSET %s",
                     params + [size, offset],
@@ -412,10 +478,11 @@ def list_users(page: int = 1, size: int = 50, search: str = "", role: str = "") 
 
 
 def create_user(username: str, password: str, role: str = "viewer",
-                email: str = "", phone: str = "") -> tuple[bool, str, int]:
+                email: str = "", phone: str = "", display_name: str = "") -> tuple[bool, str, int]:
     """Create a new user. Returns (success, message, user_id).
 
     Email and phone are encrypted before storage.
+    邮箱唯一性按 email_hash 指纹判：email 是随机 IV 密文，密文等值永不命中（历史缺陷）。
     """
     valid, msg = validate_password_strength(password)
     if not valid:
@@ -428,6 +495,8 @@ def create_user(username: str, password: str, role: str = "viewer",
         enc_phone = _encrypt_field(phone)
     except ValueError as exc:
         return False, str(exc), 0
+    # 指纹按归一化邮箱算（同邮箱不同大小写/首尾空白视为同一邮箱）
+    email_hash = _fingerprint(_normalize_email(email)) if email else ""
 
     try:
         pw_hash = hash_password(password)
@@ -439,17 +508,20 @@ def create_user(username: str, password: str, role: str = "viewer",
                 cur.execute("SELECT id FROM adh_users WHERE username = %s", (username,))
                 if cur.fetchone():
                     return False, "用户名已存在", 0
-                if enc_email:
-                    # Check uniqueness by comparing encrypted values
-                    cur.execute("SELECT id FROM adh_users WHERE email = %s AND email != ''", (enc_email,))
+                if email_hash:
+                    cur.execute(
+                        "SELECT id FROM adh_users WHERE email_hash = %s AND email_hash != ''",
+                        (email_hash,),
+                    )
                     if cur.fetchone():
                         return False, "邮箱已被使用", 0
                 cur.execute(
                     "INSERT INTO adh_users "
-                    "(id, username, password_hash, email, phone, avatar, user_role, status, "
-                    "login_attempts, created_at, updated_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (user_id, username, pw_hash, enc_email, enc_phone, "", role, "active", 0, now, now),
+                    "(id, username, display_name, password_hash, email, email_hash, phone, avatar, "
+                    "user_role, status, login_attempts, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (user_id, username, (display_name or "").strip(), pw_hash, enc_email,
+                     email_hash, enc_phone, "", role, "active", 0, now, now),
                 )
 
                 # Auto-add to default workspace
@@ -469,10 +541,13 @@ def create_user(username: str, password: str, role: str = "viewer",
 
 
 def update_user(user_id: int, username: str = None, email: str = None,
-                phone: str = None, role: str = None) -> tuple[bool, str]:
+                phone: str = None, role: str = None,
+                display_name: str = None) -> tuple[bool, str]:
     """Update user info. Returns (success, message).
 
     Email and phone are encrypted before storage.
+    邮箱唯一性按 email_hash 指纹判（随机 IV 密文等值永不命中）；邮箱变更时指纹同步重算，
+    清空邮箱时指纹一并清空（否则残留指纹会把已删除的邮箱当仍占用）。
     """
     # 与 create_user 同口径：先加密，失败就把原因原样回出去（不回退明文、不被通用文案吞掉）
     try:
@@ -480,6 +555,7 @@ def update_user(user_id: int, username: str = None, email: str = None,
         enc_phone = _encrypt_field(phone) if phone is not None else None
     except ValueError as exc:
         return False, str(exc)
+    email_hash = _fingerprint(_normalize_email(email)) if (email is not None and email) else ""
 
     try:
         with DBConnection() as conn:
@@ -499,19 +575,26 @@ def update_user(user_id: int, username: str = None, email: str = None,
                     updates.append("username = %s")
                     params.append(username)
                 if email is not None:
-                    if enc_email:
-                        cur.execute("SELECT id FROM adh_users WHERE email = %s AND id != %s AND email != ''",
-                                    (enc_email, user_id))
+                    if email_hash:
+                        cur.execute(
+                            "SELECT id FROM adh_users WHERE email_hash = %s AND id != %s AND email_hash != ''",
+                            (email_hash, user_id),
+                        )
                         if cur.fetchone():
                             return False, "邮箱已被使用"
                     updates.append("email = %s")
                     params.append(enc_email)
+                    updates.append("email_hash = %s")
+                    params.append(email_hash)
                 if phone is not None:
                     updates.append("phone = %s")
                     params.append(enc_phone)
                 if role is not None:
                     updates.append("user_role = %s")
                     params.append(role)
+                if display_name is not None:
+                    updates.append("display_name = %s")
+                    params.append(display_name.strip())
 
                 if not updates:
                     return True, "无需更新"

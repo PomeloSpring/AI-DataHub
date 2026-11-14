@@ -66,7 +66,10 @@ export function categoryOfArticle(
   a: Pick<ContentArticle, 'category_id' | 'category_label' | 'category_icon' | 'category_color'>,
   categories: ContentCategory[],
 ): ContentCategory | undefined {
-  const hit = categories.find(c => c.id === a.category_id || c.key === a.category_id);
+  // category_id 服务端保证是整数（content_service 出参 `int(row.get("category_id") or 0)`），
+  // 只按 id 命中；旧写法还比过 `c.key === a.category_id`，整数对字符串 key 永为 false，
+  // 是死分支且撞 TS2367（string 与 number 无重叠），故删除。
+  const hit = categories.find(c => c.id === a.category_id);
   if (hit) return hit;
   if (!a.category_label) return undefined;
   return {

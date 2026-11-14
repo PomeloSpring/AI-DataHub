@@ -12,8 +12,7 @@ Usage:
 """
 
 import logging
-import os
-from backend.common import config as _config  # 加载统一环境配置
+from backend.common import config as _config  # 加载统一环境配置（含 Redis 凭据装配）
 
 import redis
 from celery import Celery
@@ -23,7 +22,9 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+# 必须取装配后的串（REDIS_URL 缺凭据时自动补 REDIS_PASSWORD）：否则 worker 连不上
+# broker、beat 租约丢失暂停派发，定时任务整体停摆（只刷 "Authentication required."）。
+REDIS_URL = _config.REDIS_URL
 
 app = Celery("adh_tasks")
 

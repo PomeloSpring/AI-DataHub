@@ -227,13 +227,17 @@ class TestRegistryRows:
         assert "INSERT IGNORE INTO adh_role_perms" not in body
 
     def test_workspace_menu_sort_matches_sidebar_order(self):
-        """角色页排序按 (module, sort)，与侧栏顺序不一致就是 §2.1 的漂移缺陷。"""
+        """角色页排序按 (module, sort)，与侧栏顺序不一致就是 §2.1 的漂移缺陷。
+
+        侧栏「数据分析」组第一项就是工作空间默认页（登录落地/模块切换落点，
+        见 WorkspaceRoute.workspaceLandingPath），所以这里的首位必须是 workspace:chat。
+        """
         rows = _rows("SELECT menu_key, section, sort FROM adh_menu_registry "
                      "WHERE module='workspace' AND is_active=1 ORDER BY sort")
         keys = [r["menu_key"] for r in rows]
         # 决策建议不在工作空间菜单里（侧栏没这一项，登记面也不能有）
         assert "workspace:decisions" not in keys, keys
-        assert keys[:3] == ["workspace:dashboards", "workspace:chat", "workspace:reports"], keys
+        assert keys[:3] == ["workspace:chat", "workspace:dashboards", "workspace:reports"], keys
         assert keys[-2:] == ["workspace:assets", "workspace:scheduled"], keys
 
 

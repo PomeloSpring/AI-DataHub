@@ -29,7 +29,8 @@
     "selectPlaceholder": "选择工作空间",
     "reload": "重新加载",
     "notFound": "该工作空间不存在或已无访问权限。",
-    "chooseAccessible": "选择可访问的工作空间"
+    "chooseAccessible": "选择可访问的工作空间",
+    "backHome": "返回首页"
   },
   "delete": {
     "title": "删除工作空间",

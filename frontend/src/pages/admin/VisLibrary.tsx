@@ -1,8 +1,6 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
-import { useVisLibrary } from '@/hooks/useVisLibrary';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
-import { useClientPagination } from '@/hooks/useClientPagination';
-import { VIS_CATEGORIES, isVisUsable, type VisComponent } from '@/api/visLibrary';
+import { fetchVisComponentPage, VIS_CATEGORIES, isVisUsable, type VisComponent } from '@/api/visLibrary';
 import { themeOfPackCode } from '@/components/ThemeMenuItems';
 import Preview, { ShapePreview, typeLabelsOf } from '@/components/VisComponentPreview';
 import { CHART_TYPES, CHART_TYPE_CATEGORIES } from '@/components/DashboardChart';
@@ -43,10 +41,50 @@ const needsMotionSeed = (raw: string) => {
 
 export default function VisLibrary() {
   const isAdmin = useAuthStore(s => s.user?.role) === 'admin';
-  // 管理页口径=全量（含下架与禁用）：禁用的字模要能列出来给管理员再启用
-  const { items, loading, error, refresh: load } = useVisLibrary(true, true);
+  // 管理页 = 服务端真分页（不再拉全量前端切片）：口径含下架与禁用，
+  // 禁用的字模要能列出来给管理员再启用；筛选/搜索/翻页全部下推服务端，行总数由 COUNT 得到。
+  const [rows, setRows] = useState<VisComponent[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [catFilter, setCatFilter] = useState<string>('theme_pack');
   const [search, setSearch] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
+  // 增删改/启用禁用后重取当前页（不重拉全量）
+  const load = useCallback(() => setReloadKey(k => k + 1), []);
+
+  // 搜索防抖：停手 300ms 才发请求，并与回到第 1 页同批生效（边打字边翻页会拿到错位的空清单）
+  useEffect(() => {
+    const t = setTimeout(() => { setDebouncedQ(search.trim()); setPage(1); }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true); setError(null);
+    fetchVisComponentPage({
+      page, pageSize,
+      category: catFilter === 'all' ? '' : catFilter,
+      q: debouncedQ,
+      // 管理页口径=全量（含下架与禁用）：禁用的字模要能列出来给管理员再启用
+      includeInactive: true, includeDisabled: true,
+    }).then(res => {
+      if (!alive) return;
+      setTotal(res.total);
+      // 删空当前页（如删掉末页最后一条）时收敛到最后一个有效页重取，杜绝停在空白页
+      const maxPage = Math.max(1, Math.ceil(res.total / pageSize));
+      if (page > maxPage) { setPage(maxPage); return; }
+      setRows(res.items);
+    }).catch(() => {
+      if (!alive) return;
+      setRows([]); setTotal(0); setError('字模库加载失败，请重试');
+    }).finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [page, pageSize, catFilter, debouncedQ, reloadKey]);
+
   const [viewPack, setViewPack] = useState<VisComponent | null>(null);
   const [previewTile, setPreviewTile] = useState<VisComponent | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -173,13 +211,6 @@ export default function VisLibrary() {
     return () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
   }, [previewTile]);
 
-  const shown = useMemo(() => {
-    const byCat = catFilter === 'all' ? items : items.filter(i => i.category === catFilter);
-    const q = search.trim().toLowerCase();
-    return q ? byCat.filter(i => `${i.name} ${i.code} ${i.description || ''}`.toLowerCase().includes(q)) : byCat;
-  }, [items, catFilter, search]);
-  // 字模清单客户端分页（全站统一默认每页 20 条，候选 20/50/100）
-  const paged = useClientPagination(shown, DEFAULT_PAGE_SIZE);
   const canEdit = (c: VisComponent) => isAdmin || !c.is_builtin;
 
   return (
@@ -204,7 +235,7 @@ export default function VisLibrary() {
           {CATEGORY_TABS.map(tab => {
             const on = catFilter === tab.id;
             const Icon = tab.icon;
-            return <button key={tab.id} type="button" aria-pressed={on} onClick={() => setCatFilter(tab.id)}
+            return <button key={tab.id} type="button" aria-pressed={on} onClick={() => { setCatFilter(tab.id); setPage(1); }}
               className={`shrink-0 whitespace-nowrap rounded-full px-4 py-1.5 text-[13px] transition-colors ${on ? 'bg-background font-medium text-primary shadow-sm ring-1 ring-primary/25' : 'text-muted-foreground hover:bg-background/70 hover:text-foreground'}`}>
               {!!Icon && <Icon className="mr-1.5 inline h-3.5 w-3.5 align-[-2px]" />}{tab.label}
             </button>;
@@ -214,13 +245,13 @@ export default function VisLibrary() {
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input aria-label="搜索字模" placeholder="搜索名称或说明…" className="h-9 pl-9 text-sm" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-        <span className="ml-auto text-xs text-muted-foreground">{shown.length} 个字模</span>
+        <span className="ml-auto text-xs text-muted-foreground">{total} 个字模</span>
       </div>
 
       {error && <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm">{error}<Button size="sm" variant="outline" onClick={load}>重试</Button></div>}
-      {loading && !items.length && <p role="status" className="text-sm text-muted-foreground">正在加载字模…</p>}
+      {loading && !rows.length && <p role="status" className="text-sm text-muted-foreground">正在加载字模…</p>}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {paged.slice.map(c => {
+        {rows.map(c => {
           const disabled = c.is_enabled === 0;
           return (
           <article key={c.id} className={`flex h-full flex-col overflow-hidden rounded-xl border bg-card transition-shadow hover:shadow-md ${isVisUsable(c) ? '' : 'opacity-60'} ${disabled ? 'border-amber-500/60' : ''}`}>
@@ -263,20 +294,20 @@ export default function VisLibrary() {
           </article>
           );
         })}
-        {shown.length === 0 && !loading && !error && (
+        {rows.length === 0 && !loading && !error && (
           <div className="col-span-full rounded-xl border border-dashed py-16 text-center text-sm text-muted-foreground">
-            {search ? `没有匹配「${search}」的字模` : '该分类暂无字模，可点右上「新建字模」沉淀一套'}
+            {debouncedQ ? `没有匹配「${debouncedQ}」的字模` : '该分类暂无字模，可点右上「新建字模」沉淀一套'}
           </div>
         )}
       </div>
 
       <PaginationBar
-        page={paged.page}
-        pageSize={paged.pageSize}
-        total={paged.total}
+        page={page}
+        pageSize={pageSize}
+        total={total}
         busy={loading}
-        onChange={(p: number) => paged.setPage(p)}
-        onPageSizeChange={paged.setPageSize}
+        onChange={(p: number) => setPage(p)}
+        onPageSizeChange={(n: number) => { setPageSize(n); setPage(1); }}
         hideWhenSingle
         className="-mx-5 -mb-5 px-5 md:-mx-8 md:-mb-8 md:px-8"
       />

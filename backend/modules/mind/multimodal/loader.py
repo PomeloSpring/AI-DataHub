@@ -73,7 +73,7 @@ def write_upload_file(workspace_dir, filename: str, data: bytes) -> dict:
 
     uploads = Path(workspace_dir) / UPLOADS_SUBDIR
     uploads.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if os.geteuid() == 0:
+    if os.name == "posix" and os.geteuid() == 0:  # Unix 专属降权：Windows 无 geteuid，直接跳过
         os.chown(uploads, 65534, 65534)
 
     stem, suffix = os.path.splitext(name)
@@ -82,7 +82,7 @@ def write_upload_file(workspace_dir, filename: str, data: bytes) -> dict:
         target_name = name if n == 0 else f"{stem}_{n}{suffix}"
         target = uploads / target_name
         try:
-            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | (getattr(os, "O_NOFOLLOW", 0)), 0o600)  # O_NOFOLLOW Unix 专属：Windows 缺失按 0 跳过（O_EXCL 已防覆盖）
         except FileExistsError:
             continue
         break
@@ -91,7 +91,7 @@ def write_upload_file(workspace_dir, filename: str, data: bytes) -> dict:
 
     with os.fdopen(fd, "wb") as f:
         f.write(data)
-    if os.geteuid() == 0:
+    if os.name == "posix" and os.geteuid() == 0:  # Unix 专属降权：Windows 无 geteuid，直接跳过
         os.chown(target, 65534, 65534)
     return {
         "filename": target_name,
