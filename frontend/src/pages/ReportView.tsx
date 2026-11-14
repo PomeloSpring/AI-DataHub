@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import ReportContent from '@/components/ReportContent';
 import { WIDE } from '@/lib/pageWidth';
 import { fetchReportContent } from '@/api/report';
@@ -6,6 +7,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { Badge } from '@/components/ui/badge';
 import { Lock, Eye } from 'lucide-react';
 import client from '@/api/client';
+import i18n from '@/i18n';
 import { useThemeStore, applyTheme } from '../stores/themeStore';
 
 interface Report {
@@ -23,6 +25,7 @@ interface Report {
 }
 
 export default function ReportView() {
+  const { t } = useTranslation(['report', 'common']);
   const { reportId } = useParams<{ reportId: string }>();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token');
@@ -62,7 +65,7 @@ export default function ReportView() {
     const loadBody = (data: Report) => {
       if (!data.content_url) return Promise.resolve();
       return fetchReportContent(data.content_url).then(setBody).catch(e => {
-        if (!cancelled) setError(e?.message || '读取报告正文失败');
+        if (!cancelled) setError(e?.message || i18n.t('report:view.loadBodyFailed'));
       });
     };
     const refresh = () => client.get(`/reports/${reportId}`, { params })
@@ -76,7 +79,7 @@ export default function ReportView() {
         return loadBody(data);
       })
       .catch(e => {
-        if (!cancelled) setError(e?.response?.data?.detail || '加载失败');
+        if (!cancelled) setError(e?.response?.data?.detail || i18n.t('common:state.loadFailed'));
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     refresh();
@@ -86,7 +89,7 @@ export default function ReportView() {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="text-muted-foreground">加载中...</div>
+        <div className="text-muted-foreground">{t('common:state.loading')}</div>
       </div>
     );
   }
@@ -96,9 +99,9 @@ export default function ReportView() {
       <div className="min-h-screen flex items-center justify-center bg-background">
         <div className="text-center space-y-4">
           <Lock className="w-12 h-12 mx-auto text-muted-foreground" />
-          <h1 className="text-xl font-bold">无法访问</h1>
+          <h1 className="text-xl font-bold">{t('view.noAccess')}</h1>
           <p className="text-muted-foreground">{error}</p>
-          <p className="text-sm text-muted-foreground">请确认登录身份、分享有效期及报告生成状态</p>
+          <p className="text-sm text-muted-foreground">{t('view.noAccessHint')}</p>
         </div>
       </div>
     );
@@ -113,10 +116,10 @@ export default function ReportView() {
       {/* Header */}
       <header className="z-10 border-b bg-background/80 backdrop-blur">
         <div className={`${WIDE} flex h-12 items-center justify-between`}>
-          <span className="font-bold text-sm">AI-DataHub 报告</span>
+          <span className="font-bold text-sm">{t('view.header')}</span>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Eye className="w-3 h-3" />
-            {report.view_count} 次查看
+            {t('view.viewCount', { count: report.view_count })}
           </div>
         </div>
       </header>
@@ -128,13 +131,15 @@ export default function ReportView() {
         <div className="flex items-center gap-2 mt-2">
           <Badge variant="outline">{report.format === 'html' ? 'HTML' : 'Markdown'}</Badge>
           {report.generation_status && (
-            <Badge variant="outline">{({ queued: '排队中', running: '生成中', ready: '已就绪', degraded: '降级事实报告', failed: '生成失败', timeout: '生成超时' } as Record<string, string>)[report.generation_status] || report.generation_status}</Badge>
+            <Badge variant="outline">{i18n.exists(`report:view.status.${report.generation_status}`)
+              ? t(`view.status.${report.generation_status}` as 'report:view.status.queued')
+              : report.generation_status}</Badge>
           )}
           <Badge variant="outline" className={report.access_mode === 'public' ? 'text-green-500' : 'text-orange-500'}>
-            {report.access_mode === 'public' ? '公开' : '私有'}
+            {report.access_mode === 'public' ? t('view.public') : t('view.private')}
           </Badge>
           <span className="text-xs text-muted-foreground">
-            {new Date(report.created_at).toLocaleString()}
+            {new Date(report.created_at).toLocaleString(i18n.language)}
           </span>
         </div>
       </div>
@@ -142,11 +147,11 @@ export default function ReportView() {
       {/* Report Content —— 数据报告不挤在中间一列：宽表与图表需要可用宽度（与阅读页同一口径） */}
       <div className={`${WIDE} pb-12`}>
         {['queued', 'running'].includes(report.generation_status || '') ? (
-          <p className="text-muted-foreground">报告尚未完成，页面会自动更新执行状态。</p>
+          <p className="text-muted-foreground">{t('view.pendingNote')}</p>
         ) : error && !body ? (
           <p className="text-destructive text-sm">{error}</p>
         ) : !body ? (
-          <p className="text-muted-foreground">加载报告正文...</p>
+          <p className="text-muted-foreground">{t('view.loadingBody')}</p>
         ) : (
           <div data-report-print><ReportContent content={body} format={report.format} /></div>
         )}

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
 import { RefreshCw, ShieldAlert, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Empty } from '@/components/ui/empty';
 import DecisionAdvicePanel from '@/components/decision/DecisionAdvicePanel';
 import {
-  decisionsApi, errorText, TREE_STATUS_LABELS, TRIGGER_LABELS, VERDICT_LABELS,
+  decisionsApi, errorText, treeStatusLabel, triggerLabel, verdictLabel,
   type DecisionOutcomeView, type DecisionRunRow, type DecisionTreeRow, type DecisionVerdict,
 } from '@/api/decisions';
 import { toast } from '@/lib/toast';
@@ -22,14 +23,16 @@ import { toast } from '@/lib/toast';
 
 type Tab = 'trees' | 'history';
 
-const VERDICT_HINT: Record<DecisionVerdict, string> = {
-  hit: '按已发布口径判定为需要处置',
-  no_hit: '本轮数据未触发任何建议',
-  partial: '本轮取数不足以完整判定',
-  skipped: '本次未评估，原因见详情',
+// 结论兑底说明只存 key，文案渲染期 t() 解析（服务端 verdict_reason 优先）
+const VERDICT_HINT_KEYS: Record<DecisionVerdict, string> = {
+  hit: 'decision.verdictHint.hit',
+  no_hit: 'decision.verdictHint.no_hit',
+  partial: 'decision.verdictHint.partial',
+  skipped: 'decision.verdictHint.skipped',
 };
 
 export default function DecisionCenter() {
+  const { t } = useTranslation(['workspace', 'common']);
   const { workspaceId } = useParams();
   const ws = Number(workspaceId || 0);
   const [tab, setTab] = useState<Tab>('trees');
@@ -79,7 +82,7 @@ export default function DecisionCenter() {
     setBusy('all');
     try {
       const { data } = await decisionsApi.evaluateAll(ws);
-      toast.success(`已评估 ${data.evaluated} 棵树，命中 ${data.hit_count} 条`);
+      toast.success(t('decision.evaluatedToast', { trees: data.evaluated, hits: data.hit_count }));
       (data.errors || []).forEach((e: any) => e?.reason && toast.error(e.reason));
       await load();
     } catch (err: any) {
@@ -106,7 +109,7 @@ export default function DecisionCenter() {
     return (
       <div className="mx-auto mt-16 max-w-lg rounded-xl border border-border bg-card p-6 text-center">
         <ShieldAlert className="mx-auto h-8 w-8 text-amber-500" />
-        <h2 className="mt-3 text-base font-medium">当前角色不可见决策建议</h2>
+        <h2 className="mt-3 text-base font-medium">{t('decision.forbiddenTitle')}</h2>
         <p className="mt-2 text-sm text-muted-foreground">{forbidden}</p>
       </div>
     );
@@ -116,18 +119,18 @@ export default function DecisionCenter() {
     <div className="space-y-4">
       <header className="flex flex-wrap items-center gap-3">
         <div>
-          <h1 className="text-lg font-semibold">决策建议</h1>
+          <h1 className="text-lg font-semibold">{t('decision.title')}</h1>
           <p className="text-sm text-muted-foreground">
-            按已发布的决策树判定「该做什么」；判定由确定性引擎完成，不随模型措辞变化
+            {t('decision.subtitle')}
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => setTab(tab === 'trees' ? 'history' : 'trees')}>
-            {tab === 'trees' ? '看命中历史' : '看决策树清单'}
+            {tab === 'trees' ? t('decision.viewHistory') : t('decision.viewTrees')}
           </Button>
           <Button size="sm" onClick={evaluateAll} disabled={busy === 'all' || loading}>
             {busy === 'all' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            <span className="ml-1.5">重新评估全部</span>
+            <span className="ml-1.5">{t('decision.evaluateAll')}</span>
           </Button>
         </div>
       </header>
@@ -145,8 +148,8 @@ export default function DecisionCenter() {
       )}
 
       {detail && (
-        <section aria-label="评估详情" className="space-y-2">
-          <h2 className="text-sm font-medium">评估详情</h2>
+        <section aria-label={t('decision.detailTitle')} className="space-y-2">
+          <h2 className="text-sm font-medium">{t('decision.detailTitle')}</h2>
           <DecisionAdvicePanel
             advice={detail}
             onEvaluate={detail.tree_key ? () => evaluateOne(detail.tree_key!) : undefined}
@@ -167,11 +170,12 @@ function TreeTable({
   onEvaluate: (treeKey: string) => void;
   onInspect: (run: DecisionRunRow) => void;
 }) {
+  const { t } = useTranslation(['workspace', 'common']);
   if (!trees.length) {
     return (
       <Empty
-        title="还没有已发布的决策树"
-        description="决策树的配置与发布在「数据中台 → 决策建议」，由有配置权限的人在数据中台完成。" />
+        title={t('decision.treesEmpty')}
+        description={t('decision.treesEmptyDesc')} />
     );
   }
   return (
@@ -179,45 +183,45 @@ function TreeTable({
       <table className="w-full text-sm">
         <thead className="bg-muted/40 text-xs text-muted-foreground">
           <tr className="text-left">
-            <th className="px-3 py-2 font-medium">决策树</th>
-            <th className="px-3 py-2 font-medium">状态</th>
-            <th className="px-3 py-2 font-medium">适用站点</th>
-            <th className="px-3 py-2 font-medium">最近判定</th>
-            <th className="px-3 py-2 text-right font-medium">操作</th>
+            <th className="px-3 py-2 font-medium">{t('decision.col.tree')}</th>
+            <th className="px-3 py-2 font-medium">{t('common:label.status')}</th>
+            <th className="px-3 py-2 font-medium">{t('decision.col.sites')}</th>
+            <th className="px-3 py-2 font-medium">{t('decision.col.lastVerdict')}</th>
+            <th className="px-3 py-2 text-right font-medium">{t('common:label.actions')}</th>
           </tr>
         </thead>
         <tbody>
-          {trees.map(t => {
-            const last = latest[t.tree_key];
+          {trees.map(tr => {
+            const last = latest[tr.tree_key];
             return (
-              <tr key={t.tree_key} className="border-t border-border/60">
+              <tr key={tr.tree_key} className="border-t border-border/60">
                 <td className="px-3 py-2">
-                  <div className="font-medium">{t.name}</div>
-                  <div className="text-xs text-muted-foreground">{t.description || t.tree_key}</div>
+                  <div className="font-medium">{tr.name}</div>
+                  <div className="text-xs text-muted-foreground">{tr.description || tr.tree_key}</div>
                 </td>
                 <td className="px-3 py-2">
-                  <span className="text-xs">{TREE_STATUS_LABELS[t.status]}</span>
-                  <div className="text-xs text-muted-foreground">v{t.version}</div>
+                  <span className="text-xs">{treeStatusLabel(tr.status)}</span>
+                  <div className="text-xs text-muted-foreground">v{tr.version}</div>
                 </td>
                 <td className="px-3 py-2 text-xs">
-                  {t.apply_sites?.length
-                    ? t.apply_sites.map(s => s.site_code).join('、')
-                    : <span className="text-muted-foreground">按角色授权站点</span>}
+                  {tr.apply_sites?.length
+                    ? tr.apply_sites.map(s => s.site_code).join(t('decision.siteSeparator'))
+                    : <span className="text-muted-foreground">{t('decision.sitesByRole')}</span>}
                 </td>
                 <td className="px-3 py-2 text-xs">
                   {last ? (
                     <button type="button" className="text-left hover:text-primary" onClick={() => onInspect(last)}>
-                      <div className="font-medium">{VERDICT_LABELS[last.verdict] || last.verdict}</div>
-                      <div className="text-muted-foreground">{last.created_at} · {TRIGGER_LABELS[last.trigger_type] || last.trigger_type}</div>
+                      <div className="font-medium">{verdictLabel(last.verdict)}</div>
+                      <div className="text-muted-foreground">{last.created_at} · {triggerLabel(last.trigger_type)}</div>
                     </button>
-                  ) : <span className="text-amber-700 dark:text-amber-400">从未评估（不代表无风险）</span>}
+                  ) : <span className="text-amber-700 dark:text-amber-400">{t('decision.neverEvaluated')}</span>}
                 </td>
                 <td className="px-3 py-2 text-right">
                   <Button size="sm" variant="outline"
-                    disabled={t.status !== 'active' || busy === t.tree_key}
-                    title={t.status !== 'active' ? '草案/已下架的树不参与评估' : ''}
-                    onClick={() => onEvaluate(t.tree_key)}>
-                    {busy === t.tree_key ? '评估中…' : '评估'}
+                    disabled={tr.status !== 'active' || busy === tr.tree_key}
+                    title={tr.status !== 'active' ? t('decision.inactiveTitle') : ''}
+                    onClick={() => onEvaluate(tr.tree_key)}>
+                    {busy === tr.tree_key ? t('decision.evaluating') : t('decision.evaluate')}
                   </Button>
                 </td>
               </tr>
@@ -230,19 +234,20 @@ function TreeTable({
 }
 
 function HistoryTable({ runs, onInspect }: { runs: DecisionRunRow[]; onInspect: (r: DecisionRunRow) => void }) {
+  const { t } = useTranslation(['workspace']);
   if (!runs.length) {
-    return <Empty title="还没有评估记录" description="点「重新评估全部」生成第一条。" />;
+    return <Empty title={t('decision.historyEmpty')} description={t('decision.historyEmptyDesc')} />;
   }
   return (
     <div className="overflow-hidden rounded-xl border border-border">
       <table className="w-full text-sm">
         <thead className="bg-muted/40 text-xs text-muted-foreground">
           <tr className="text-left">
-            <th className="px-3 py-2 font-medium">时间</th>
-            <th className="px-3 py-2 font-medium">决策树</th>
-            <th className="px-3 py-2 font-medium">结论</th>
-            <th className="px-3 py-2 font-medium">出口</th>
-            <th className="px-3 py-2 font-medium">说明</th>
+            <th className="px-3 py-2 font-medium">{t('decision.hcol.time')}</th>
+            <th className="px-3 py-2 font-medium">{t('decision.hcol.tree')}</th>
+            <th className="px-3 py-2 font-medium">{t('decision.hcol.verdict')}</th>
+            <th className="px-3 py-2 font-medium">{t('decision.hcol.trigger')}</th>
+            <th className="px-3 py-2 font-medium">{t('decision.hcol.reason')}</th>
           </tr>
         </thead>
         <tbody>
@@ -251,13 +256,13 @@ function HistoryTable({ runs, onInspect }: { runs: DecisionRunRow[]; onInspect: 
               <td className="px-3 py-2 text-xs whitespace-nowrap">{r.created_at}</td>
               <td className="px-3 py-2">
                 <button type="button" className="text-left hover:text-primary" onClick={() => onInspect(r)}>
-                  {r.tree_deleted ? `（已删除）${r.tree_key}` : r.tree_name}
+                  {r.tree_deleted ? t('decision.deletedTree', { key: r.tree_key }) : r.tree_name}
                 </button>
               </td>
-              <td className="px-3 py-2 text-xs">{VERDICT_LABELS[r.verdict] || r.verdict}</td>
-              <td className="px-3 py-2 text-xs">{TRIGGER_LABELS[r.trigger_type] || r.trigger_type}</td>
+              <td className="px-3 py-2 text-xs">{verdictLabel(r.verdict)}</td>
+              <td className="px-3 py-2 text-xs">{triggerLabel(r.trigger_type)}</td>
               <td className="px-3 py-2 text-xs text-muted-foreground">
-                {r.verdict_reason || VERDICT_HINT[r.verdict] || ''}
+                {r.verdict_reason || (VERDICT_HINT_KEYS[r.verdict] ? t(VERDICT_HINT_KEYS[r.verdict] as 'workspace:decision.verdictHint.hit') : '')}
               </td>
             </tr>
           ))}

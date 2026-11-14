@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -8,47 +9,47 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import i18n from '@/i18n';
 
 interface CronInputProps {
   value: string;
   onChange: (value: string) => void;
 }
 
-const PRESETS: { label: string; value: string }[] = [
-  { label: '每分钟', value: '* * * * *' },
-  { label: '每小时', value: '0 * * * *' },
-  { label: '每天 00:00', value: '0 0 * * *' },
-  { label: '每天 08:00', value: '0 8 * * *' },
-  { label: '每天 09:00', value: '0 9 * * *' },
-  { label: '每周一 09:00', value: '0 9 * * 1' },
-  { label: '每周一至五 09:00', value: '0 9 * * 1-5' },
-  { label: '每月1号 09:00', value: '0 9 1 * *' },
-  { label: '自定义', value: 'custom' },
+// 预设只存 key，文案渲染期 t() 解析（模块顶层写死文案会冻结语言）
+const PRESETS: { labelKey: string; value: string }[] = [
+  { labelKey: 'everyMinute', value: '* * * * *' },
+  { labelKey: 'hourly', value: '0 * * * *' },
+  { labelKey: 'daily00', value: '0 0 * * *' },
+  { labelKey: 'daily08', value: '0 8 * * *' },
+  { labelKey: 'daily09', value: '0 9 * * *' },
+  { labelKey: 'weeklyMon', value: '0 9 * * 1' },
+  { labelKey: 'weekdays', value: '0 9 * * 1-5' },
+  { labelKey: 'monthly1', value: '0 9 1 * *' },
+  { labelKey: 'custom', value: 'custom' },
 ];
 
 function parseCronPreview(expr: string): string[] {
   const parts = expr.trim().split(/\s+/);
-  if (parts.length !== 5) return ['无效的 Cron 表达式'];
+  if (parts.length !== 5) return [i18n.t('workspace:cron.invalid')];
 
   const [min, hour, dom, month, dow] = parts;
   const previews: string[] = [];
 
   // Simple preview for common patterns
   if (min === '*' && hour === '*') {
-    previews.push('每分钟执行');
+    previews.push(i18n.t('workspace:cron.previewEveryMinute'));
   } else if (hour === '*') {
-    previews.push(`每小时的第 ${min} 分钟执行`);
+    previews.push(i18n.t('workspace:cron.previewHourly', { min }));
   } else if (dom === '*' && month === '*' && dow === '*') {
-    previews.push(`每天 ${hour.padStart(2, '0')}:${min.padStart(2, '0')} 执行`);
+    previews.push(i18n.t('workspace:cron.previewDaily', { time: `${hour.padStart(2, '0')}:${min.padStart(2, '0')}` }));
   } else if (dow !== '*' && dom === '*') {
-    const dayNames: Record<string, string> = {
-      '0': '周日', '1': '周一', '2': '周二', '3': '周三',
-      '4': '周四', '5': '周五', '6': '周六', '7': '周日',
-    };
-    const dayLabel = dayNames[dow] || `周${dow}`;
-    previews.push(`每${dayLabel} ${hour.padStart(2, '0')}:${min.padStart(2, '0')} 执行`);
+    const dayLabel = i18n.exists(`workspace:cron.days.${dow}`)
+      ? i18n.t(`workspace:cron.days.${dow}` as 'workspace:cron.days.1')
+      : i18n.t('workspace:cron.dayFallback', { dow });
+    previews.push(i18n.t('workspace:cron.previewWeekly', { day: dayLabel, time: `${hour.padStart(2, '0')}:${min.padStart(2, '0')}` }));
   } else if (dom !== '*' && month === '*') {
-    previews.push(`每月 ${dom} 日 ${hour.padStart(2, '0')}:${min.padStart(2, '0')} 执行`);
+    previews.push(i18n.t('workspace:cron.previewMonthly', { dom, time: `${hour.padStart(2, '0')}:${min.padStart(2, '0')}` }));
   } else {
     previews.push(`${expr}`);
   }
@@ -57,6 +58,7 @@ function parseCronPreview(expr: string): string[] {
 }
 
 export default function CronInput({ value, onChange }: CronInputProps) {
+  const { t } = useTranslation(['workspace']);
   const [mode, setMode] = useState<string>('custom');
 
   useEffect(() => {
@@ -79,16 +81,16 @@ export default function CronInput({ value, onChange }: CronInputProps) {
 
   return (
     <div className="space-y-2">
-      <Label>Cron 表达式</Label>
+      <Label>{t('cron.label')}</Label>
       <div className="flex gap-2">
         <Select value={mode} onValueChange={handlePresetChange}>
           <SelectTrigger className="w-[180px]">
-            <SelectValue placeholder="选择预设" />
+            <SelectValue placeholder={t('cron.presetPlaceholder')} />
           </SelectTrigger>
           <SelectContent>
             {PRESETS.map(p => (
               <SelectItem key={p.value} value={p.value}>
-                {p.label}
+                {t(`cron.preset.${p.labelKey}` as 'workspace:cron.preset.custom')}
               </SelectItem>
             ))}
           </SelectContent>
@@ -104,11 +106,11 @@ export default function CronInput({ value, onChange }: CronInputProps) {
         />
       </div>
       <p className="text-xs text-muted-foreground">
-        格式：分 时 日 月 周（如 <code>0 9 * * 1-5</code> = 工作日 9 点）
+        {t('cron.formatBefore')}<code>0 9 * * 1-5</code>{t('cron.formatAfter')}
       </p>
       {value && (
         <p className="text-xs text-blue-500">
-          {previews.join('；')}
+          {previews.join(t('cron.previewSeparator'))}
         </p>
       )}
     </div>

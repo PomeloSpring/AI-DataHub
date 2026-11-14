@@ -1,4 +1,5 @@
 import DOMPurify from 'dompurify';
+import { useTranslation } from 'react-i18next';
 import MarkdownWithCharts from './MarkdownWithCharts';
 import { isStandaloneHtmlDocument } from '@/lib/reportExport';
 
@@ -12,6 +13,7 @@ export function sanitizeReportHtml(content: string): string {
 }
 
 export default function ReportContent({ content, format }: { content: string; format: string }) {
+  const { t } = useTranslation(['report']);
   if (format !== 'html') {
     return <MarkdownWithCharts text={content} className="prose prose-sm max-w-none" />;
   }
@@ -21,7 +23,7 @@ export default function ReportContent({ content, format }: { content: string; fo
   if (isStandaloneHtmlDocument(content)) {
     return (
       <iframe
-        title="报告正文"
+        title={t('view.bodyTitle')}
         srcDoc={content}
         sandbox="allow-scripts"
         data-report-standalone-html

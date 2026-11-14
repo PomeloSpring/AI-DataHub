@@ -14,6 +14,7 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { AlertCircle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import ChartPicker from '@/components/ChartPicker';
 import DataGrid from '@/components/DataGrid';
 import MermaidBlock from '@/components/MermaidBlock';
@@ -62,6 +63,7 @@ export function parseSpecDoc(doc: RenderDocument): SpecDoc | null {
 }
 
 function SectionBlock({ section, onDrill }: { section: SpecSection; onDrill?: (q: string) => void }) {
+  const { t } = useTranslation('chat');
   const data = section.data;
   const columns = data?.columns || [];
   const rows = data?.rows || [];
@@ -74,10 +76,10 @@ function SectionBlock({ section, onDrill }: { section: SpecSection; onDrill?: (q
       <section className="my-3 rounded-md border border-dashed p-3">
         <div className="flex items-center gap-1.5 text-sm font-medium">
           <AlertCircle className="h-4 w-4 text-muted-foreground" aria-hidden />
-          {section.title || '本节'}：暂无数据
+          {t('reportDoc.noData', { title: section.title || t('reportDoc.sectionFallback') })}
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
-          {section.error}。平台不会沿用上一版数字顶替，需要时请重新发起该查询。
+          {t('reportDoc.errorHint', { error: section.error })}
         </p>
       </section>
     );
@@ -93,11 +95,11 @@ function SectionBlock({ section, onDrill }: { section: SpecSection; onDrill?: (q
       )}
       {section.kind === 'mermaid' && (section.code
         ? <MermaidBlock code={section.code} />
-        : <p className="text-xs text-muted-foreground">本节没有 mermaid 源码。</p>)}
+        : <p className="text-xs text-muted-foreground">{t('reportDoc.noMermaid')}</p>)}
       {(section.kind === 'chart' || section.kind === 'kpi' || section.kind === 'table') && (
         columns.length < 2 || !rows.length
           // 空数据章同样要说出来：渲染成空白 = 用户以为报告坏了，而不是"这章没取到数"
-          ? <p className="text-xs text-muted-foreground">本节没有可展示的数据行。</p>
+          ? <p className="text-xs text-muted-foreground">{t('reportDoc.noRows')}</p>
           : section.kind === 'chart'
             ? <ChartPicker data={{ columns, rows }} defaultType={section.chart_type} onDrill={onDrill} />
             : <DataGrid columns={columns} rows={rows} height={Math.min(360, 40 + rows.length * 32)}
@@ -105,7 +107,7 @@ function SectionBlock({ section, onDrill }: { section: SpecSection; onDrill?: (q
       )}
       {truncated && (
         <p className="mt-1 text-[11px] text-muted-foreground">
-          本节共 {data!.row_count} 行，图上只用了前 {rows.length} 行（不得据这些行做全量求和/计数）。
+          {t('reportDoc.truncated', { total: data!.row_count, shown: rows.length })}
         </p>
       )}
     </section>
@@ -113,6 +115,7 @@ function SectionBlock({ section, onDrill }: { section: SpecSection; onDrill?: (q
 }
 
 export default function ReportDoc({ doc, onDrill }: { doc: RenderDocument; onDrill?: (q: string) => void }) {
+  const { t } = useTranslation('chat');
   const spec = parseSpecDoc(doc);
   const warnings = (Array.isArray(doc.warnings) ? doc.warnings : []).filter(w => typeof w === 'string' && w);
 
@@ -120,7 +123,7 @@ export default function ReportDoc({ doc, onDrill }: { doc: RenderDocument; onDri
     // 引用有效但正文坏形：显式报错并给成因，不拿"空报告"糊过去，也不回退显示 JSON 源码
     return (
       <div role="alert" className="px-3 py-3 text-xs text-muted-foreground">
-        这份交付文档的章节正文读不出来（结构不完整或已损坏），请让助手重新生成本报告。
+        {t('reportDoc.badBody')}
       </div>
     );
   }
@@ -128,10 +131,10 @@ export default function ReportDoc({ doc, onDrill }: { doc: RenderDocument; onDri
   return (
     <div className="px-3 pb-3">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-2 text-[11px] text-muted-foreground">
-        <span>{spec.sections.length} 个章节</span>
-        {spec.theme && <span>· 主题 {spec.theme}</span>}
-        {spec.template_name && <span>· 模板 {spec.template_name}</span>}
-        <span>· 数据由服务端逐章经语义层取（章节内可下钻）</span>
+        <span>{t('reportDoc.sectionCount', { count: spec.sections.length })}</span>
+        {spec.theme && <span>{t('reportDoc.theme', { theme: spec.theme })}</span>}
+        {spec.template_name && <span>{t('reportDoc.template', { template: spec.template_name })}</span>}
+        <span>{t('reportDoc.dataNote')}</span>
       </div>
       {warnings.length > 0 && (
         <div className="flex flex-wrap gap-1 py-2">

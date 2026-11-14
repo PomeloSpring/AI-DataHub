@@ -20,9 +20,10 @@ import { applyG2Animate } from '@/lib/motion';
 import { applyFieldFormats } from '@/lib/fieldFormat';
 import { placeholderOfShape, shapeOfControl } from '@/lib/dashboardParamAssembly';
 import { readChartPalette, readToken } from '@/lib/chartTheme';
+import i18n from '@/i18n';
 import {
   CUSTOM_PRESET, enabledPresets, effectiveGranularity, formatTime,
-  fromInputValue, maxEndFor, resolvePreset, toInputValue, type TimeGranularity,
+  fromInputValue, maxEndFor, presetLabel, resolvePreset, toInputValue, type TimeGranularity,
 } from '@/lib/timePresets';
 
 // Lucide icon map for chart types
@@ -2170,7 +2171,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
                 commit({ preset: key, start: formatTime(window.start, next), end: formatTime(window.end, next) });
               }}
               style={presetStyle}>
-              {presets.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
+              {presets.map(p => <option key={p.key} value={p.key}>{presetLabel(p)}</option>)}
               <option value={CUSTOM_PRESET}>自由选择</option>
             </select>}
           </div>
@@ -2736,3 +2737,20 @@ export const CHART_TYPE_CATEGORIES = [
   { key: 'geo', label: '地理图表' },
   { key: 'widget', label: '参数控件' },
 ] as const;
+
+/**
+ * 图表类型业务名（渲染期经 i18n 解析，切语言即时生效）。
+ * CHART_TYPES.label 保留给尚未迁移的消费方；新消费方一律用本函数。
+ */
+export function chartTypeLabel(value: string): string {
+  const key = `dashboard:chartTypes.${value}`;
+  if (i18n.exists(key)) return i18n.t(key as 'dashboard:chartTypes.bar');
+  return CHART_TYPES.find(c => c.value === value)?.label || value;
+}
+
+/** 图表分类业务名（同 chartTypeLabel 口径；CHART_TYPE_CATEGORIES.label 保留给未迁移消费方）。 */
+export function chartCategoryLabel(key: string): string {
+  const k = `dashboard:chartCategories.${key}`;
+  if (i18n.exists(k)) return i18n.t(k as 'dashboard:chartCategories.basic');
+  return CHART_TYPE_CATEGORIES.find(c => c.key === key)?.label || key;
+}

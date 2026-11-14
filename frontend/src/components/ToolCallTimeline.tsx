@@ -11,6 +11,8 @@ import {
   Wrench, CheckCircle, XCircle, Loader2,
   ChevronRight, ChevronDown,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 import type { ToolCall, ProgressStage } from '../stores/chatStore';
 import { KnowledgeSummary } from './InlineDetails';
 import { SlideCollapse } from './chat/StageCard';
@@ -20,11 +22,12 @@ import { getToolLabel } from '../lib/toolLabel';
 // ── Extract summary from tool call ─────────────────────────────
 
 function extractSummary(tc: ToolCall): string {
+  // 文案在调用期经 i18n.t 取（本函数在渲染期被调用，切语言即时生效）
   if (tc.knowledge) {
-    if (tc.knowledge.incomplete) return '部分知识检索未完成';
-    if (tc.knowledge.status === 'error') return tc.knowledge.message || '知识检索失败';
-    if (tc.knowledge.status === 'empty') return '未找到相关文档';
-    return '知识检索已完成，引用状态见下方';
+    if (tc.knowledge.incomplete) return i18n.t('chat:toolTimeline.knowledgeIncomplete');
+    if (tc.knowledge.status === 'error') return tc.knowledge.message || i18n.t('chat:toolTimeline.knowledgeError');
+    if (tc.knowledge.status === 'empty') return i18n.t('chat:toolTimeline.knowledgeEmpty');
+    return i18n.t('chat:toolTimeline.knowledgeDone');
   }
   if (tc.error) {
     const firstLine = tc.error.split('\n')[0] ?? '';
@@ -33,12 +36,13 @@ function extractSummary(tc: ToolCall): string {
   if (tc.result_preview) return tc.result_preview;
   if (tc.result) {
     const o = tc.result;
-    const rowMatch = o.match(/(\d+)\s*行/);
-    if (rowMatch) return `返回 ${rowMatch[1]} 行`;
+    // 匹配后端返回文本里的中文“N 行”是数据解析（不是界面文案），保留原口径（\u884c = 行）
+    const rowMatch = o.match(/(\d+)\s*\u884c/);
+    if (rowMatch) return i18n.t('chat:toolTimeline.returnedRows', { count: Number(rowMatch[1]) });
     if (o.length > 50) return o.slice(0, 50).replace(/\n/g, ' ') + '...';
     return o.replace(/\n/g, ' ').slice(0, 50);
   }
-  return '执行中...';
+  return i18n.t('chat:toolTimeline.running');
 }
 
 // ── Format arguments for display ───────────────────────────────
@@ -77,6 +81,7 @@ function groupToolCalls(toolCalls: ToolCall[]): ToolCallGroup[] {
 // ── Single Tool Item ───────────────────────────────────────────
 // 导出供 ProcessTimeline(思考/工具穿插的有序时间线)复用
 export function SingleToolItem({ tc, conversationId }: { tc: ToolCall & { _index: number }; conversationId?: number | null }) {
+  const { t } = useTranslation('chat');
   const [expanded, setExpanded] = useState(false);
   const failed = !!tc.error || tc.knowledge?.status === 'error' || !!tc.knowledge?.incomplete;
   const pending = !tc.result && !tc.error && !tc.knowledge;
@@ -137,7 +142,7 @@ export function SingleToolItem({ tc, conversationId }: { tc: ToolCall & { _index
         <div className="ml-9 mr-2 mb-1.5 space-y-1.5">
           {argsStr && (
             <div>
-              <span className="text-[10px] font-medium text-muted-foreground">参数</span>
+              <span className="text-[10px] font-medium text-muted-foreground">{t('toolTimeline.args')}</span>
               <pre className="mt-0.5 p-1.5 bg-muted rounded text-[10px] whitespace-pre-wrap break-all" style={{ maxHeight: 100, overflowY: 'auto' }}>
                 {argsStr}
               </pre>
@@ -146,7 +151,7 @@ export function SingleToolItem({ tc, conversationId }: { tc: ToolCall & { _index
           {(tc.result || tc.result_preview) && (
             <div>
               <span className="text-[10px] font-medium text-muted-foreground">
-                {failed ? '❌ 错误' : '返回结果'}
+                {failed ? t('toolTimeline.errorLabel') : t('toolTimeline.result')}
               </span>
               <pre className="mt-0.5 p-1.5 bg-muted rounded text-[10px] whitespace-pre-wrap break-all" style={{ maxHeight: 120, overflowY: 'auto' }}>
                 {tc.error || tc.result || tc.result_preview}
@@ -157,8 +162,8 @@ export function SingleToolItem({ tc, conversationId }: { tc: ToolCall & { _index
           {(tc.result_truncated || tc.result_omitted) && (
             <p className="text-[10px] text-muted-foreground">
               {tc.result_omitted
-                ? '工具返回明细不持久化（仅保留摘要），完整产物见会话工作区文件。'
-                : '工具返回明细过长，仅保存开头部分。'}
+                ? t('toolTimeline.omitted')
+                : t('toolTimeline.truncated')}
             </p>
           )}
         </div>
@@ -214,6 +219,7 @@ interface Props {
 }
 
 export default function ToolCallTimeline({ toolCalls, progressStages, isStreaming = false, conversationId }: Props) {
+  const { t } = useTranslation('chat');
   // Build tool calls from progressStages if toolCalls not available
   const effectiveToolCalls = useMemo(() => {
     if (toolCalls && toolCalls.length > 0) return toolCalls;
@@ -247,7 +253,7 @@ export default function ToolCallTimeline({ toolCalls, progressStages, isStreamin
       <div className="flex items-center gap-2 mb-1.5">
         <Wrench className="h-3.5 w-3.5 text-blue-500" />
         <span className="text-xs font-medium text-foreground">
-          工具调用 · {effectiveToolCalls.length} 步
+          {t('toolTimeline.header', { count: effectiveToolCalls.length })}
         </span>
         {isStreaming && (
           <Loader2 className="h-3 w-3 animate-spin text-primary" />

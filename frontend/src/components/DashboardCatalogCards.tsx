@@ -1,4 +1,6 @@
 import { Layers, Play } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 import { DashboardThumbnail } from '@/components/DashboardCanvas';
 import { DashboardThumbnailFrame, THUMB_FRAME_H } from '@/components/DashboardThumbnailFrame';
 import { Badge } from '@/components/ui/badge';
@@ -61,9 +63,11 @@ export function BoardCard({ board, groupName, items, onOpen, onPlay }: {
   board: GroupBoard; groupName?: string; items: VisComponent[];
   onOpen: (id: number) => void; onPlay: (id: number) => void;
 }) {
+  const { t } = useTranslation(['dashboard', 'common']);
   const source = previewSource(board.preview);
+  const updatedText = t('browse.updatedAt', { time: board.updated_at ? new Date(board.updated_at).toLocaleString(i18n.language) : '—' });
   return <article className={ARTICLE_CLS}>
-    <button type="button" aria-label={`打开看板 ${board.name}`} className="block w-full border-b text-left"
+    <button type="button" aria-label={t('catalog.openAria', { name: board.name })} className="block w-full border-b text-left"
       onClick={() => onOpen(board.id)}>
       <DashboardThumbnailFrame dashboard={source}>
         <DashboardThumbnail dashboard={source} items={items} />
@@ -72,7 +76,7 @@ export function BoardCard({ board, groupName, items, onOpen, onPlay }: {
     <div className={BODY_CLS}>
       <div className="min-w-0">
         <h2 className="truncate text-sm font-semibold" title={board.name}>{board.name}</h2>
-        <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{board.description || '暂无描述'}</p>
+        <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{board.description || t('catalog.noDescription')}</p>
       </div>
       <div className={ROW_CLS}>
         {/* 左侧连排（归属·默认·标签·图表数·更新时间），不靠 ml-auto 拉到两端：
@@ -80,24 +84,22 @@ export function BoardCard({ board, groupName, items, onOpen, onPlay }: {
             标签 chips 插在中间而不另起一行：本行的弹性项只有「更新于」（min-w-0 truncate），
             多插几个 shrink-0 chip 只会把时间压短，不会把行撑高、也不会与旁边的组合卡错位。 */}
         {!!groupName && <Badge variant="secondary" className="shrink-0">{groupName}</Badge>}
-        {!!board.is_default && <Badge variant="outline" className="shrink-0">默认</Badge>}
-        {toTagList(board.tags).slice(0, 2).map(t => (
-          <span key={t} title={`标签：${t}`}
+        {!!board.is_default && <Badge variant="outline" className="shrink-0">{t('common:label.default')}</Badge>}
+        {toTagList(board.tags).slice(0, 2).map(tg => (
+          <span key={tg} title={t('catalog.tagTitle', { tag: tg })}
             className="shrink-0 max-w-[6.5rem] truncate rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-            #{t}
+            #{tg}
           </span>))}
         {toTagList(board.tags).length > 2 && (
           <span className="shrink-0 text-[11px] text-muted-foreground"
-            title={toTagList(board.tags).join('、')}>+{toTagList(board.tags).length - 2}</span>)}
-        <span className="shrink-0 text-muted-foreground">{board.chart_count ?? 0} 个图表</span>
+            title={toTagList(board.tags).join(t('catalog.tagSeparator'))}>+{toTagList(board.tags).length - 2}</span>)}
+        <span className="shrink-0 text-muted-foreground">{t('catalog.chartCount', { count: board.chart_count ?? 0 })}</span>
         <span aria-hidden className="shrink-0 text-muted-foreground/60">·</span>
-        <span className="min-w-0 truncate text-muted-foreground"
-          title={`更新于 ${board.updated_at ? new Date(board.updated_at).toLocaleString('zh-CN') : '—'}`}>
-          更新于 {board.updated_at ? new Date(board.updated_at).toLocaleString('zh-CN') : '—'}</span>
+        <span className="min-w-0 truncate text-muted-foreground" title={updatedText}>{updatedText}</span>
       </div>
       <div className={FOOT_CLS}>
-        <Button size="sm" className="flex-1" onClick={() => onOpen(board.id)}>进入看板</Button>
-        <Button size="sm" variant="outline" title="大屏播放" aria-label={`大屏播放 ${board.name}`} onClick={() => onPlay(board.id)}>
+        <Button size="sm" className="flex-1" onClick={() => onOpen(board.id)}>{t('catalog.enterBoard')}</Button>
+        <Button size="sm" variant="outline" title={t('browse.playScreen')} aria-label={t('catalog.playAria', { name: board.name })} onClick={() => onPlay(board.id)}>
           <Play className="h-3.5 w-3.5" />
         </Button>
       </div>
@@ -110,29 +112,30 @@ export function GroupCard({ group, items, onEnter, onPlay, onOpenBoard }: {
   group: GroupView; items: VisComponent[];
   onEnter: (group: GroupView) => void; onPlay: (group: GroupView) => void; onOpenBoard: (id: number) => void;
 }) {
+  const { t } = useTranslation(['dashboard']);
   const boards = group.dashboards.filter(d => d.status === 'enabled');
   const unready = group.dashboards.length - boards.length;
   const entry = groupEntryBoard(group);
   const source = entry ? previewSource(entry.preview) : null;
   return <article className={ARTICLE_CLS}>
-    <button type="button" aria-label={`进入组合 ${group.name}`} className="block w-full border-b text-left"
+    <button type="button" aria-label={t('catalog.enterGroupAria', { name: group.name })} className="block w-full border-b text-left"
       onClick={() => onEnter(group)}>
       <DashboardThumbnailFrame dashboard={source || { filters: {}, charts: [] }}>
         {source ? <DashboardThumbnail dashboard={source} items={items} />
           : <span className={`flex ${THUMB_FRAME_H} flex-col items-center justify-center gap-1 text-xs text-muted-foreground`}>
-            <Layers className="h-5 w-5" />组合内暂无可看看板
+            <Layers className="h-5 w-5" />{t('catalog.groupEmpty')}
           </span>}
       </DashboardThumbnailFrame>
     </button>
     <div className={BODY_CLS}>
       <div className="min-w-0">
         <h2 className="truncate text-sm font-semibold" title={group.name}>{group.name}</h2>
-        <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{group.description || '暂无描述'}</p>
+        <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{group.description || t('catalog.noDescription')}</p>
       </div>
       <div className={ROW_CLS}>
-        <Badge variant="secondary" className="shrink-0">{boards.length} 个可看看板</Badge>
+        <Badge variant="secondary" className="shrink-0">{t('catalog.viewableCount', { count: boards.length })}</Badge>
         {/* 未启用/已关闭不混进浏览集，但数量必须显式可见，不能静默消失 */}
-        {!!unready && <Badge variant="outline" className="shrink-0">{unready} 个未启用</Badge>}
+        {!!unready && <Badge variant="outline" className="shrink-0">{t('catalog.unreadyCount', { count: unready })}</Badge>}
         {/* 组内快捷项紧跟徽标（与看板卡的「更新于」同一行同一高度）：chips 单行不换行，超出裁掉，完整名在 title 里 */}
         {!!boards.length
           ? <ul className="flex min-w-0 items-center gap-1.5 overflow-hidden">
@@ -140,17 +143,17 @@ export function GroupCard({ group, items, onEnter, onPlay, onOpenBoard }: {
               <button type="button" className="max-w-[8rem] truncate rounded-md bg-muted/60 px-2 py-0.5 text-[11px] hover:bg-muted"
                 title={b.name} onClick={() => onOpenBoard(b.id)}>{b.name}</button>
             </li>)}
-            {boards.length > 2 && <li className="shrink-0 text-[11px] text-muted-foreground">等 {boards.length} 个</li>}
+            {boards.length > 2 && <li className="shrink-0 text-[11px] text-muted-foreground">{t('catalog.moreBoards', { count: boards.length })}</li>}
           </ul>
-          : <span className="min-w-0 truncate text-muted-foreground">组内暂无可看的看板</span>}
+          : <span className="min-w-0 truncate text-muted-foreground">{t('catalog.groupEmpty')}</span>}
       </div>
       <div className={FOOT_CLS}>
         <Button size="sm" className="flex-1" disabled={!entry}
-          title={entry ? `进入「${entry.name}」，页内可切换本组 ${boards.length} 个看板` : '组合内暂无可看看板'}
-          onClick={() => onEnter(group)}>进入看板</Button>
+          title={entry ? t('catalog.enterGroupTitle', { name: entry.name, count: boards.length }) : t('catalog.groupEmpty')}
+          onClick={() => onEnter(group)}>{t('catalog.enterBoard')}</Button>
         <Button size="sm" variant="outline" disabled={!boards.length}
-          title={boards.length ? '大屏轮播本组合' : '组合内暂无可看看板'}
-          aria-label={`大屏轮播 ${group.name}`} onClick={() => onPlay(group)}>
+          title={boards.length ? t('catalog.playGroupTitle') : t('catalog.groupEmpty')}
+          aria-label={t('catalog.playGroupAria', { name: group.name })} onClick={() => onPlay(group)}>
           <Play className="h-3.5 w-3.5" />
         </Button>
       </div>

@@ -1,4 +1,5 @@
 import { isVisUsable, type VisComponent } from '@/api/visLibrary';
+import i18n from '@/i18n';
 
 /**
  * 界面动效契约 —— 「出现效果」的唯一事实源（入场 / 图表 / 切板 / 正文）。
@@ -407,6 +408,25 @@ export function motionSummary(motion: MotionSpec): { label: string; text: string
     { label: '看板切板', text: motion.transition.effect === 'none' ? '直接切换（现状）'
       : `${motion.transition.effect} · ${motion.transition.durationMs}ms` },
     { label: '内容正文', text: motion.reveal.effect === 'none' ? '一次性出现（现状）' : motion.reveal.effect },
+  ];
+}
+
+/**
+ * 多语言口径：消费面（Profile 动效偏好卡）走本函数（渲染期解析）；
+ * 上方 motionSummary 的中文口径保留给尚未迁移的编辑器属性面板，两轨共用同一份 key，不得各写一套词汇。
+ */
+export function motionSummaryLocalized(motion: MotionSpec): { label: string; text: string }[] {
+  // 动态 key 场景：类型化重载只认字面量 key，这里用宽松签名（key 存在性靠语言包同批维护）
+  const t = (i18n.t as unknown as (key: string, opts?: Record<string, unknown>) => string);
+  return [
+    { label: t('workspace:motion.summary.enter'), text: motion.enter.effect === 'none' ? t('workspace:motion.summary.enterNone')
+      : t('workspace:motion.summary.enterValue', { effect: motion.enter.effect, duration: motion.enter.durationMs, stagger: motion.enter.staggerMs }) },
+    { label: t('workspace:motion.summary.chart'), text: motion.chart.appear === 'default' ? t('workspace:motion.summary.chartDefault')
+      : motion.chart.appear === 'none' ? t('workspace:motion.summary.chartNone')
+      : t('workspace:motion.summary.chartValue', { effect: motion.chart.appear, duration: motion.chart.durationMs }) },
+    { label: t('workspace:motion.summary.transition'), text: motion.transition.effect === 'none' ? t('workspace:motion.summary.transitionNone')
+      : t('workspace:motion.summary.transitionValue', { effect: motion.transition.effect, duration: motion.transition.durationMs }) },
+    { label: t('workspace:motion.summary.reveal'), text: motion.reveal.effect === 'none' ? t('workspace:motion.summary.revealNone') : motion.reveal.effect },
   ];
 }
 

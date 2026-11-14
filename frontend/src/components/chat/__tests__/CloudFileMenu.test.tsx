@@ -65,7 +65,7 @@ describe('buildFileGroups — 候选结构与去重', () => {
     expect(groups.map(g => g.id)).toEqual(['asset', 'session']);
     expect(groups[0].items.map(i => i.ref)).toEqual(['a1', 'a2']);
     expect(groups[1].items.map(i => i.ref)).toEqual(['uploads/销售明细.csv', '月度营收报告.xlsx']);
-    expect(groups[1].label).toBe('本会话文件');
+    expect(groups[1].labelKey).toBe('cloudFiles.groupSession');
   });
 
   it('已引用的文件不再出现在候选里（同一凭据不能被 @ 两次）', () => {

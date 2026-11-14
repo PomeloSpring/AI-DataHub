@@ -1,0 +1,14 @@
+{
+  "section": {
+    "analytics": "Analytics",
+    "cloud": "Cloud Space",
+    "automation": "Automation"
+  },
+  "workspace": {
+    "dashboards": "Dashboards",
+    "chat": "Ask Data",
+    "reports": "Reports",
+    "assets": "Assets",
+    "scheduled": "Schedules"
+  }
+}

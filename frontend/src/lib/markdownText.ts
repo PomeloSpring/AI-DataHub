@@ -9,6 +9,7 @@
  * 不另写一套围栏识别 —— 否则渲染与复制两处口径会分叉（历史缺陷类型）。
  */
 import { splitChartBlocks, type ChartSegment } from './chartBlocks';
+import i18n from '../i18n';
 
 const BULLET = '• ';
 
@@ -19,7 +20,7 @@ function stripInlineMarks(line: string): string {
   s = s.replace(/^>\s?/, '');                      // 引用尖括号
   s = s.replace(/^\s*[-*+]\s+/, BULLET);           // 无序列表符号统一为圆点
   // 有序列表保留编号：编号就是步骤顺序，去掉会把“1./2.”两段并成无差别文字
-  s = s.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_m, alt) => (alt ? `【图片：${alt}】` : '【图片】'));
+  s = s.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_m, alt) => (alt ? i18n.t('chat:copy.imageAlt', { alt }) : i18n.t('chat:copy.image')));
   // 链接：正文 + 括号里的 http 地址（纯文本形态下地址是用户要的信息；非 web 协议只留正文）
   s = s.replace(/\[([^\]]*)\]\(([^)]*)\)/g,
     (_m, text, url) => (/^https?:\/\//i.test(String(url).trim()) && String(url).trim() !== String(text)
@@ -57,25 +58,25 @@ export function markdownBlockToPlainText(md: string): string {
 function segmentPlaceholder(seg: ChartSegment): string {
   switch (seg.kind) {
     case 'chart':
-      return seg.title ? `【图表：${seg.title}】` : '【图表】';
+      return seg.title ? i18n.t('chat:copy.chartTitle', { title: seg.title }) : i18n.t('chat:copy.chart');
     case 'chart-ref':
       // 渲染机图表：数据在受管对象里（不在消息文本中），同样给可读占位而不漏 id/JSON
-      return seg.title ? `【图表：${seg.title}】` : '【图表】';
+      return seg.title ? i18n.t('chat:copy.chartTitle', { title: seg.title }) : i18n.t('chat:copy.chart');
     case 'mermaid':
-      return seg.title ? `【流程图：${seg.title}】` : '【流程图】';
+      return seg.title ? i18n.t('chat:copy.mermaidTitle', { title: seg.title }) : i18n.t('chat:copy.mermaid');
     case 'graph':
-      return seg.title ? `【关系图谱：${seg.title}】` : '【关系图谱】';
+      return seg.title ? i18n.t('chat:copy.graphTitle', { title: seg.title }) : i18n.t('chat:copy.graph');
     case 'artifact':
-      return `【文件：${seg.filename}】`;
+      return i18n.t('chat:copy.file', { name: seg.filename });
     case 'design':
-      return '【看板设计】';
+      return i18n.t('chat:copy.design');
     case 'report':
       // 交付文档正文在受管对象里（不在消息文本中）：复制时给可读占位，
       // 不把 doc_id / JSON 源码当成“正文”塞给用户
-      return seg.title ? `【整页报告：${seg.title}】` : '【整页报告】';
+      return seg.title ? i18n.t('chat:copy.reportTitle', { title: seg.title }) : i18n.t('chat:copy.report');
     case 'report-pending':
       // 流式中途复制：文档还没组装完，给进度占位而不是漏 JSON 源码
-      return '【整页报告生成中】';
+      return i18n.t('chat:copy.reportPending');
     case 'sql':
       return seg.code;      // SQL 卡片展示的就是语句本身
     case 'raw':
@@ -115,7 +116,7 @@ export function markdownForDocument(md: string): string {
 
 /** 文档下载文件名：去掉路径非法字符，空标题回落"未命名文档"。 */
 export function docFileName(title: string, ext = 'html'): string {
-  const safe = (title || '').replace(/[\\/:*?"<>|]/g, '_').trim() || '未命名文档';
+  const safe = (title || '').replace(/[\\/:*?"<>|]/g, '_').trim() || i18n.t('chat:copy.untitledDoc');
   return `${safe.slice(0, 60)}.${ext}`;
 }
 
@@ -124,10 +125,10 @@ export function docFileName(title: string, ext = 'html'): string {
  * 正文原样嵌入，不做二次转换（转换即丢格式）。
  */
 export function buildDownloadHtml(title: string, bodyHtml: string): string {
-  const heading = (title || '').trim() || '未命名文档';
+  const heading = (title || '').trim() || i18n.t('chat:copy.untitledDoc');
   return [
     '<!DOCTYPE html>',
-    '<html lang="zh-CN"><head><meta charset="utf-8">',
+    `<html lang="${i18n.language}"><head><meta charset="utf-8">`,
     `<title>${escapeHtml(heading)}</title>`,
     '<style>body{max-width:820px;margin:40px auto;padding:0 24px;',
     'font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;',

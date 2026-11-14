@@ -17,6 +17,7 @@ import {
   Check, ChevronDown, Copy, FileBarChart, FileText, Loader2, MoreHorizontal,
   SquarePen, ThumbsDown, ThumbsUp,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -50,6 +51,7 @@ export default function MessageActions({
   markdown, allowDoc = false, doc, docBusy = false, disabled = false, onCreateDoc, onOpenDoc,
   feedback, report,
 }: Props) {
+  const { t } = useTranslation(['chat', 'common']);
   const [copied, setCopied] = useState<'plain' | 'md' | ''>('');
   const hasText = !!markdown.trim();
 
@@ -64,15 +66,15 @@ export default function MessageActions({
     if (!payload.trim()) {
       // 特殊块之外的正文为空（如整条只有一个看板设计卡片）：说清楚没什么可复制，
       // 而不是"已复制"却剪贴板是空的
-      toast.info('这条回答没有可复制的文本内容');
+      toast.info(t('messageActions.noText'));
       return;
     }
     try {
       await copyPlainText(payload);
       flash(kind);
-      toast.success(kind === 'md' ? '已复制为 Markdown' : '已复制');
+      toast.success(kind === 'md' ? t('messageActions.copiedMd') : t('common:action.copied'));
     } catch (e: any) {
-      toast.error(e?.message || '复制失败，请手动选择文本复制');
+      toast.error(e?.message || t('messageActions.copyFailed'));
     }
   };
 
@@ -82,8 +84,8 @@ export default function MessageActions({
         <Button
           variant="ghost" size="sm" className={`${ICON_BTN} rounded-r-none`}
           disabled={!hasText || disabled}
-          aria-label="复制回答文本"
-          title={disabled ? '回答结束后才能复制' : '复制'}
+          aria-label={t('messageActions.copyAria')}
+          title={disabled ? t('messageActions.copyDisabledTitle') : t('common:action.copy')}
           onClick={() => { void doCopy('plain'); }}
         >
           {copied === 'plain' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
@@ -93,8 +95,8 @@ export default function MessageActions({
             <Button
               variant="ghost" size="sm" className={`${ICON_BTN} w-5 rounded-l-none`}
               disabled={!hasText || disabled}
-              aria-label="复制方式"
-              title={disabled ? '回答结束后才能复制' : '复制方式'}
+              aria-label={t('messageActions.copyModeAria')}
+              title={disabled ? t('messageActions.copyDisabledTitle') : t('messageActions.copyModeAria')}
             >
               <ChevronDown className="h-3 w-3" />
             </Button>
@@ -102,11 +104,11 @@ export default function MessageActions({
           <DropdownMenuContent align="start" className="w-40">
             <DropdownMenuItem onClick={() => { void doCopy('md'); }}>
               <FileText className="mr-2 h-4 w-4" />
-              复制为Markdown
+              {t('messageActions.copyMd')}
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => { void doCopy('plain'); }}>
               <Copy className="mr-2 h-4 w-4" />
-              复制
+              {t('common:action.copy')}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -115,21 +117,21 @@ export default function MessageActions({
       {/* 赞踩与复制同一行（不分两端）：点踩不是打分，是打开归因区的入口 */}
       {feedback && (feedback.value ? (
         <span className="px-1 text-xs text-muted-foreground">
-          {feedback.value === 'up' ? '👍 已反馈' : '👎 已反馈'}
+          {feedback.value === 'up' ? t('messageActions.feedbackUp') : t('messageActions.feedbackDown')}
         </span>
       ) : (
         <>
           <Button variant="ghost" size="sm" className={ICON_BTN}
-            aria-label="结果准确？满意"
-            title="结果准确？满意"
+            aria-label={t('messageActions.feedbackUpTitle')}
+            title={t('messageActions.feedbackUpTitle')}
             disabled={disabled}
             onClick={feedback.onUp}
           >
             <ThumbsUp className="h-3.5 w-3.5" />
           </Button>
           <Button variant="ghost" size="sm" className={ICON_BTN}
-            aria-label="结果准确？不满意"
-            title="结果准确？不满意，可补充期望的业务指标/维度"
+            aria-label={t('messageActions.feedbackDownTitle')}
+            title={t('messageActions.feedbackDownTitle')}
             disabled={disabled}
             onClick={feedback.onDown}
           >
@@ -143,8 +145,8 @@ export default function MessageActions({
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="sm" className={`${ICON_BTN} rounded-md`}
               disabled={disabled || docBusy}
-              aria-label="更多操作"
-              title={disabled ? '回答结束后可用' : '更多'}
+              aria-label={t('messageActions.moreAria')}
+              title={disabled ? t('messageActions.moreDisabledTitle') : t('common:action.more')}
             >
               {docBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MoreHorizontal className="h-3.5 w-3.5" />}
             </Button>
@@ -153,12 +155,12 @@ export default function MessageActions({
             {allowDoc && (doc ? (
               <DropdownMenuItem onClick={onOpenDoc}>
                 <SquarePen className="mr-2 h-4 w-4" />
-                继续编辑文档
+                {t('messageActions.continueDoc')}
               </DropdownMenuItem>
             ) : (
               <DropdownMenuItem onClick={onCreateDoc}>
                 <SquarePen className="mr-2 h-4 w-4" />
-                转文档编辑
+                {t('messageActions.toDoc')}
               </DropdownMenuItem>
             ))}
             {/* 只有真产出过数据/分析的回合才给（服务端 reportable 判定）：
@@ -169,7 +171,7 @@ export default function MessageActions({
                 {report.busy
                   ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   : <FileBarChart className="mr-2 h-4 w-4" />}
-                {report.label || '存为报告草稿'}
+                {report.label || t('messageActions.saveReportDraft')}
               </DropdownMenuItem>
             )}
           </DropdownMenuContent>

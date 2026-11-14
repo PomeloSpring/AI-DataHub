@@ -18,17 +18,16 @@
  */
 
 import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
 
 export type WaitingStage = 'thinking' | 'tools' | 'composing' | 'idle';
 
-const STAGE_LABELS: Record<Exclude<WaitingStage, 'idle'>, string> = {
-  thinking: '正在思考',
-  tools: '正在调用工具',
-  composing: '正在组织回答',
+/** 阶段文案 key：文案在渲染期经 t() 取（不在模块顶层冻结，切语言即时生效） */
+const STAGE_LABEL_KEYS: Record<Exclude<WaitingStage, 'idle'>, 'waiting.thinking' | 'waiting.tools' | 'waiting.composing'> = {
+  thinking: 'waiting.thinking',
+  tools: 'waiting.tools',
+  composing: 'waiting.composing',
 };
-
-/** 还没有阶段信号时的唯一文案。不要往这里加"轮换池"：加一句就是一次无依据的预测 */
-const DEFAULT_LABEL = '正在等待模型响应';
 
 interface Props {
   /** 阶段感知：thinking/tools/composing 显示阶段文案；idle 显示通用等待文案 */
@@ -40,7 +39,9 @@ interface Props {
 }
 
 export default function WaitingIndicator({ stage = 'idle', label, size = 'md', className }: Props) {
-  const text = label || (stage !== 'idle' ? STAGE_LABELS[stage] : DEFAULT_LABEL);
+  const { t } = useTranslation('chat');
+  // 没有阶段信号时只用 waiting.default，不轮换、不预测（不要加"轮换池"：加一句就是一次无依据的预测）
+  const text = label || (stage !== 'idle' ? t(STAGE_LABEL_KEYS[stage]) : t('waiting.default'));
 
   return (
     <div className={cn('inline-flex items-center gap-2', className)}>

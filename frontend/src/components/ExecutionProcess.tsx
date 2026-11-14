@@ -19,6 +19,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Activity, CheckCircle2, Loader2, ChevronDown, Maximize2, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import ProcessTimeline from './ProcessTimeline';
 import { SlideCollapse } from './chat/StageCard';
 import { useEnterClass } from '@/hooks/useMotion';
@@ -39,6 +40,7 @@ interface Props {
 export default function ExecutionProcess({
   process, toolCalls, progressStages, thinking, isStreaming = false, thinkingActive, conversationId,
 }: Props) {
+  const { t } = useTranslation(['chat', 'common']);
   // 卡头入场跟随个人动效偏好（默认档 = 改造前的 animate-stage-in，观感零变化）
   const enter = useEnterClass();
   const thinkingOn = thinkingActive ?? isStreaming;
@@ -110,19 +112,19 @@ export default function ExecutionProcess({
             <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
           </span>
         )}
-        <span className="text-xs font-medium text-foreground shrink-0">执行过程</span>
+        <span className="text-xs font-medium text-foreground shrink-0">{t('process.title')}</span>
         {stepCount > 0 && (
           <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground shrink-0 tabular-nums">
-            {stepCount} 步
+            {t('process.steps', { count: stepCount })}
           </span>
         )}
         <span className="text-[11px] text-muted-foreground truncate flex-1 min-w-0">
-          {isStreaming ? '正在思考与调用工具…' : (inlineOpen ? '点击收起过程' : '已完成，点击滑动展开过程')}
+          {isStreaming ? t('process.running') : (inlineOpen ? t('process.collapseHint') : t('process.expandHint'))}
         </span>
         <button
           className="p-1 rounded hover:bg-muted text-muted-foreground shrink-0"
-          title="全屏查看完整过程"
-          aria-label="全屏查看完整过程"
+          title={t('process.fullscreen')}
+          aria-label={t('process.fullscreen')}
           onClick={(e) => { e.stopPropagation(); setModalOpen(true); }}
         >
           <Maximize2 className="h-3 w-3" />
@@ -160,16 +162,16 @@ export default function ExecutionProcess({
           >
             <div className="flex items-center gap-2 px-4 py-3 border-b shrink-0">
               <Activity className="h-4 w-4 text-primary shrink-0" />
-              <span className="text-sm font-medium">执行过程详情</span>
+              <span className="text-sm font-medium">{t('process.detailTitle')}</span>
               {stepCount > 0 && (
                 <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground tabular-nums">
-                  {stepCount} 步
+                  {t('process.steps', { count: stepCount })}
                 </span>
               )}
               <button
                 className="ml-auto p-1 rounded hover:bg-muted text-muted-foreground"
                 onClick={() => setModalOpen(false)}
-                aria-label="关闭"
+                aria-label={t('common:action.close')}
               >
                 <X className="h-4 w-4" />
               </button>

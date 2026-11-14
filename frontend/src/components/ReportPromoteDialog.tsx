@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { CheckCircle2, Loader2, Send, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -13,7 +14,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import {
-  contentApi, contentError, VERSIONING_HINTS,
+  contentApi, contentError,
   type ArticleVersioning, type PromotePreview, type PromoteResult,
 } from '@/api/content';
 
@@ -43,6 +44,7 @@ export default function ReportPromoteDialog({ open, reportId, reportTitle, onClo
   reportTitle: string;
   onClose: () => void;
 }) {
+  const { t } = useTranslation(['report', 'common']);
   const navigate = useNavigate();
   const [preview, setPreview] = useState<PromotePreview | null>(null);
   const [category, setCategory] = useState(NONE);
@@ -105,19 +107,18 @@ export default function ReportPromoteDialog({ open, reportId, reportTitle, onClo
 
   /** 提升结果分三种说法，都不许含糊：进了审核 / 只存了草稿 / 存了草稿但门禁没过 */
   const outcomeText = (r: PromoteResult) => {
-    if (r.gate_blocked?.length) return '草稿已保存到内容中心，但未提交审核';
-    if (!r.submitted && r.status === 'draft') return '已存为草稿，未提交审核';
-    return r.created ? '已新建内容草稿并提交审核' : '已作为新一期追加到原内容并提交审核';
+    if (r.gate_blocked?.length) return t('promote.gateBlocked');
+    if (!r.submitted && r.status === 'draft') return t('promote.draftOnly');
+    return r.created ? t('promote.createdSubmitted') : t('promote.appendedSubmitted');
   };
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>提交到内容管理审核</DialogTitle>
+          <DialogTitle>{t('promote.title')}</DialogTitle>
           <DialogDescription>
-            把这份报告的正文复制成站内内容的一个新版本，交给内容团队走「审核 → 发布」。
-            不搬报表快照：数据权限以后收紧也不会让已发布的内容读不到。
+            {t('promote.desc')}
           </DialogDescription>
         </DialogHeader>
 
@@ -138,18 +139,18 @@ export default function ReportPromoteDialog({ open, reportId, reportTitle, onClo
             </p>
             {!!result.gate_blocked?.length && (
               <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs leading-5">
-                <p className="mb-1 font-medium">提交审核被门禁拦下，逐条原因：</p>
+                <p className="mb-1 font-medium">{t('promote.gateTitle')}</p>
                 <ul className="list-disc space-y-0.5 pl-4">
                   {result.gate_blocked.map(g => <li key={g}>{g}</li>)}
                 </ul>
                 <p className="mt-1 text-muted-foreground">
-                  草稿已经留在内容中心里了，改完这些再提交即可（本次没有删除任何东西）。
+                  {t('promote.gateNote')}
                 </p>
               </div>
             )}
             {!!result.warnings?.length && (
               <div className="rounded-lg border p-3 text-xs leading-5">
-                <p className="mb-1 font-medium">软提醒（审核人需逐条确认）：</p>
+                <p className="mb-1 font-medium">{t('promote.warningsTitle')}</p>
                 <ul className="list-disc space-y-0.5 pl-4">
                   {result.warnings.map(w => <li key={w.code + w.message}>{w.message}</li>)}
                 </ul>
@@ -158,16 +159,16 @@ export default function ReportPromoteDialog({ open, reportId, reportTitle, onClo
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="outline"
                 onClick={() => navigate(`/content/preview/${encodeURIComponent(result.slug)}`)}>
-                到内容中心看这一篇
+                {t('promote.viewInContent')}
               </Button>
-              <Button size="sm" variant="ghost" onClick={onClose}>关闭</Button>
+              <Button size="sm" variant="ghost" onClick={onClose}>{t('common:action.close')}</Button>
             </div>
           </div>
         ) : (
           <div className="space-y-4">
             {loading && (
               <p className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />正在判断会追加到哪一篇…
+                <Loader2 className="h-4 w-4 animate-spin" />{t('promote.matching')}
               </p>
             )}
 
@@ -176,27 +177,25 @@ export default function ReportPromoteDialog({ open, reportId, reportTitle, onClo
               <div className="rounded-lg border bg-muted/30 p-3 text-xs leading-5">
                 {preview.matched ? (
                   <p>
-                    这份报告的历次版本已提升过：本次将作为<strong>新一期</strong>追加到
-                    《{preview.matched.title}》（当前已发布 {preview.matched.release_count} 期，
-                    状态 {preview.matched.status}）。
+                    {t('promote.matchedPrefix')}<strong>{t('promote.matchedNewIssue')}</strong>
+                    {t('promote.matchedSuffix', { title: preview.matched.title, count: preview.matched.release_count, status: preview.matched.status })}
                   </p>
                 ) : (
-                  <p>这份报告还没提升过：本次将<strong>新建一篇</strong>内容草稿。</p>
+                  <p>{t('promote.notMatchedPrefix')}<strong>{t('promote.notMatchedNew')}</strong>{t('promote.notMatchedSuffix')}</p>
                 )}
                 <p className="mt-1 text-muted-foreground">{preview.reason}</p>
                 <p className="mt-1 text-muted-foreground">
-                  落地形态：{preview.kind_label}（正文 {preview.body_chars} 字）。
-                  期次名由发布人在发布时给，这里不预先命名。
+                  {t('promote.landing', { kind: preview.kind_label, chars: preview.body_chars })}
                 </p>
               </div>
             )}
 
             <div className="space-y-1.5">
-              <Label>栏目{preview?.matched ? '（追加到已有条目时沿用原栏目）' : '（必选）'}</Label>
+              <Label>{t('promote.category')}{preview?.matched ? t('promote.categoryAppend') : t('promote.categoryRequired')}</Label>
               <Select value={category} onValueChange={setCategory} disabled={!!preview?.matched}>
-                <SelectTrigger aria-label="选择内容栏目"><SelectValue placeholder="选择栏目" /></SelectTrigger>
+                <SelectTrigger aria-label={t('promote.categoryAria')}><SelectValue placeholder={t('promote.categoryPlaceholder')} /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={NONE}>请选择…</SelectItem>
+                  <SelectItem value={NONE}>{t('promote.categoryNone')}</SelectItem>
                   {(preview?.categories ?? []).map(c => (
                     <SelectItem key={c.key} value={c.key}>{c.label}</SelectItem>
                   ))}
@@ -204,50 +203,50 @@ export default function ReportPromoteDialog({ open, reportId, reportTitle, onClo
               </Select>
               {!preview?.matched && (
                 <p className="text-[11px] text-muted-foreground">
-                  栏目清单来自「内容中心 → 栏目与标签」；没选栏目会被提交门禁硬拦。
+                  {t('promote.categoryNote')}
                 </p>
               )}
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="rp-title">内容标题</Label>
+              <Label htmlFor="rp-title">{t('promote.contentTitle')}</Label>
               <Input id="rp-title" value={title} onChange={e => setTitle(e.target.value)}
                 placeholder={reportTitle} />
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="rp-summary">摘要（卡片与搜索结果只显示这段）</Label>
+              <Label htmlFor="rp-summary">{t('promote.summary')}</Label>
               <Textarea id="rp-summary" rows={3} value={summary} onChange={e => setSummary(e.target.value)}
-                placeholder="留空则用服务端从正文里抽的建议摘要" />
+                placeholder={t('promote.summaryPlaceholder')} />
             </div>
 
             <div className="space-y-1.5">
-              <Label>版本策略（历史期次给不给读者看）</Label>
+              <Label>{t('promote.versioning')}</Label>
               <Select value={versioning} onValueChange={v => setVersioning(v as ArticleVersioning)}>
-                <SelectTrigger aria-label="选择版本策略"><SelectValue /></SelectTrigger>
+                <SelectTrigger aria-label={t('promote.versioningAria')}><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {(preview?.versioning_options.length
                     ? preview.versioning_options
-                    : [{ value: 'keep_history' as ArticleVersioning, label: '保留历史期次' },
-                       { value: 'latest_only' as ArticleVersioning, label: '只保留最新版本' }]
+                    : [{ value: 'keep_history' as ArticleVersioning, label: t('promote.keepHistory') },
+                       { value: 'latest_only' as ArticleVersioning, label: t('promote.latestOnly') }]
                   ).map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
                 </SelectContent>
               </Select>
-              <p className="text-[11px] text-muted-foreground">{VERSIONING_HINTS[versioning]}。</p>
+              <p className="text-[11px] text-muted-foreground">{versioning === 'keep_history' ? t('promote.keepHistoryHint') : t('promote.latestOnlyHint')}</p>
             </div>
 
             <label className="flex items-center gap-2 text-sm">
               <Switch checked={submitReview} onCheckedChange={setSubmitReview} />
-              保存后立即提交内容审核（不勾 = 只存草稿，回头在「内容中心 → 我的草稿」提交）
+              {t('promote.submitReview')}
             </label>
           </div>
         )}
 
         {!result && (
           <DialogFooter className="gap-2 sm:space-x-0">
-            <Button variant="ghost" onClick={onClose} disabled={busy}>取消</Button>
+            <Button variant="ghost" onClick={onClose} disabled={busy}>{t('common:action.cancel')}</Button>
             <Button onClick={submit} disabled={busy || loading || (!!preview && !preview.matched && category === NONE)}>
-              <Send className="mr-1.5 h-4 w-4" />{busy ? '提交中' : '提交到内容管理'}
+              <Send className="mr-1.5 h-4 w-4" />{busy ? t('promote.submitting') : t('promote.submit')}
             </Button>
           </DialogFooter>
         )}

@@ -7,6 +7,7 @@
 // 删除分两个意图（不得共用一个“删除”）：卡片垃圾桶 = 删整份报告（含全部历史版本）；
 // 详情页「删除这一版」= 只删当前选中的那一版。定时任务产出留给任务调度。
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
 import {
   FileBarChart, Loader2, Eye, Inbox, Pencil, Trash2, Search,
@@ -39,6 +40,7 @@ import {
 } from '@/api/report';
 import { getToolLabel } from '@/lib/toolLabel';
 import { evidenceNote, layoutBadge, layoutNote } from '@/lib/reportLayout';
+import i18n from '@/i18n';
 
 /** 归集后的一组报告(版本按时间倒序, [0] 为最新) */
 interface Series {
@@ -65,24 +67,30 @@ interface EditorState {
   saving: boolean;
 }
 
-const SOURCE_META: Record<string, { label: string; cls: string }> = {
-  scheduled: { label: '定时任务', cls: 'text-blue-600 border-blue-200' },
-  analysis: { label: '分析生成', cls: 'text-indigo-600 border-indigo-200' },
-  manual: { label: '手动新建', cls: 'text-emerald-600 border-emerald-200' },
-  conversation: { label: '会话保存', cls: 'text-teal-600 border-teal-200' },
-  legacy: { label: '历史报告', cls: 'text-amber-600 border-amber-200' },
+const SOURCE_META: Record<string, { cls: string }> = {
+  scheduled: { cls: 'text-blue-600 border-blue-200' },
+  analysis: { cls: 'text-indigo-600 border-indigo-200' },
+  manual: { cls: 'text-emerald-600 border-emerald-200' },
+  conversation: { cls: 'text-teal-600 border-teal-200' },
+  legacy: { cls: 'text-amber-600 border-amber-200' },
 };
 const SOURCE_ORDER: ReportSourceType[] = ['scheduled', 'analysis', 'conversation', 'manual', 'legacy'];
 
+/** 来源/状态的业务名：key 命中语言包则译，未登记的原始值照显（不编文案） */
+const sourceLabel = (s: string): string =>
+  i18n.exists(`report:center.source.${s}`) ? i18n.t(`report:center.source.${s}` as 'report:center.source.scheduled') : s;
+const statusLabel = (s: string): string =>
+  i18n.exists(`report:center.status.${s}`) ? i18n.t(`report:center.status.${s}` as 'report:center.status.queued') : s;
+
 function formatDate(iso: string): string {
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(i18n.language);
 }
 
 /** 任务报告标题形如「任务名 - 2026-07-05」, 归集名只留任务名(显示用 name) */
 function seriesName(r: ReportSummary): string {
   if (r.task_name) return r.task_name;
-  return (r.title || '').replace(/\s*-\s*\d{4}-\d{2}-\d{2}.*$/, '').trim() || '未命名报告';
+  return (r.title || '').replace(/\s*-\s*\d{4}-\d{2}-\d{2}.*$/, '').trim() || i18n.t('report:center.untitled');
 }
 
 /** 归集键: 服务端一处算（series_key）——任务按任务归集、「用最新数据重新生成」的产物
@@ -97,17 +105,17 @@ function editableKey(r: ReportSummary): string {
 // 生成状态真实映射：degraded 现在只表示**证据不成立**（没受治理取数结果 / 正文为空），
 // 判定在 `evidence_verdict` 一处；旧版把“退回事实表格”也归到 degraded（全仓写死），
 // 于是所有报告都挂上个“降级”，那句提醒就没人当真了。
-const GEN_STATUS: Record<string, { label: string; cls: string }> = {
-  queued: { label: '排队中', cls: 'text-blue-500' },
-  running: { label: '生成中', cls: 'text-blue-500' },
-  ready: { label: '已就绪', cls: 'text-green-500' },
-  degraded: { label: '证据不全', cls: 'text-amber-500' },
-  failed: { label: '生成失败', cls: 'text-red-500' },
-  timeout: { label: '生成超时', cls: 'text-yellow-500' },
+const GEN_STATUS: Record<string, { cls: string }> = {
+  queued: { cls: 'text-blue-500' },
+  running: { cls: 'text-blue-500' },
+  ready: { cls: 'text-green-500' },
+  degraded: { cls: 'text-amber-500' },
+  failed: { cls: 'text-red-500' },
+  timeout: { cls: 'text-yellow-500' },
   // 离开页面/点停止造成的中止：是“没跑完”，不是“跑坏了”（旧写法只标“生成失败”，
   // 把人自己关掉页面说成平台故障，也不告诉人重跑入口在哪）
-  cancelled: { label: '已取消', cls: 'text-muted-foreground' },
-  legacy: { label: '历史报告', cls: 'text-amber-500' },
+  cancelled: { cls: 'text-muted-foreground' },
+  legacy: { cls: 'text-amber-500' },
 };
 const PENDING = ['queued', 'running'];
 const NO_BODY = ['queued', 'running', 'failed', 'timeout', 'cancelled'];
@@ -135,6 +143,7 @@ const EMPTY_EDITOR: EditorState = {
 };
 
 export default function ReportsCenter() {
+  const { t } = useTranslation(['report', 'common', 'menu']);
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const wsId = Number(workspaceId || 0);
 
@@ -176,7 +185,7 @@ export default function ReportsCenter() {
   const reload = useCallback(() =>
     listReports(0)
       .then(data => setReports(data || []))
-      .catch(e => setError(e?.response?.data?.detail || e?.message || '加载报告清单失败')),
+      .catch(e => setError(e?.response?.data?.detail || e?.message || i18n.t('report:center.loadListFailed'))),
   []);
 
   useEffect(() => {
@@ -186,7 +195,7 @@ export default function ReportsCenter() {
     listReports(0)
       .then(data => { if (!cancelled) setReports(data || []); })
       .catch(e => {
-        if (!cancelled) setError(e?.response?.data?.detail || e?.message || '加载报告清单失败');
+        if (!cancelled) setError(e?.response?.data?.detail || e?.message || i18n.t('report:center.loadListFailed'));
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -240,12 +249,12 @@ export default function ReportsCenter() {
         setBodyLoading(true);
         return fetchReportContent(data.content_url)
           .then(text => setBody(text))
-          .catch(e => setBodyError(e?.message || '读取报告正文失败'))
+          .catch(e => setBodyError(e?.message || i18n.t('report:view.loadBodyFailed')))
           .finally(() => setBodyLoading(false));
       })
       .catch(e => {
         setDetail(null);
-        setError(e?.response?.data?.detail || '加载报告内容失败');
+        setError(e?.response?.data?.detail || i18n.t('report:center.loadDetailFailed'));
       })
       .finally(() => setDetailLoading(false));
   }, []);
@@ -280,7 +289,7 @@ export default function ReportsCenter() {
 
   const openSaveTpl = () => setSaveTpl({
     open: true,
-    name: `${detail?.title || activeSeries?.name || '报告'} 版式模板`,
+    name: t('center.tplName', { name: detail?.title || activeSeries?.name || t('export.fileFallback') }),
     description: '', saving: false,
   });
 
@@ -291,10 +300,10 @@ export default function ReportsCenter() {
       const out = await saveReportAsTemplate(detail.id, {
         name: saveTpl.name.trim(), description: saveTpl.description.trim(),
       });
-      toast.success(`模板「${out.name}」已沉淀：可在任务表单选模板、报告重跑时沿用，也可去系统配置-报告模板调版式`);
+      toast.success(t('center.tplSaved', { name: out.name }));
       setSaveTpl({ open: false, name: '', description: '', saving: false });
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '另存为模板失败，请重试');
+      toast.error(e?.response?.data?.detail || t('center.tplSaveFailed'));
       setSaveTpl(prev => ({ ...prev, saving: false }));
     }
   };
@@ -311,27 +320,27 @@ export default function ReportsCenter() {
       setActiveKey(s.key);
       setActiveId(d.id);
       const text = d.content_url ? await fetchReportContent(d.content_url) : '';
-      if (!text.trim()) { toast.error('报告正文为空，无法编辑；请先重新生成或重新保存'); return; }
+      if (!text.trim()) { toast.error(t('center.bodyEmptyEdit')); return; }
       openEdit(d, text);
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || e?.message || '读取报告正文失败，请重试');
+      toast.error(e?.response?.data?.detail || e?.message || t('center.readBodyRetry'));
     }
   };
 
   const saveEditor = async () => {
-    if (!editor.title.trim()) { toast.error('报告标题不能为空'); return; }
-    if (!editor.content.trim()) { toast.error('报告正文不能为空'); return; }
+    if (!editor.title.trim()) { toast.error(t('center.titleRequired')); return; }
+    if (!editor.content.trim()) { toast.error(t('center.contentRequired')); return; }
     setEditor(prev => ({ ...prev, saving: true }));
     try {
       await updateReport(editor.reportId, {
         title: editor.title, content: editor.content, format: editor.format,
       });
-      toast.success('报告已更新');
+      toast.success(t('center.updated'));
       await reload();
       loadDetail(editor.reportId);   // 正文已换新对象, 重取直链而不是复用旧正文
       setEditor(EMPTY_EDITOR);
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '保存失败，请重试');
+      toast.error(e?.response?.data?.detail || t('center.saveFailedRetry'));
       setEditor(prev => ({ ...prev, saving: false }));
     }
   };
@@ -339,17 +348,17 @@ export default function ReportsCenter() {
   /** 删整份报告（卡片上的垃圾桶）：按归集键带走全部历史版本，确认框先说清删几版。 */
   const removeSeries = async (s: Series) => {
     const versions = s.reports.length;
-    const suffix = versions > 1 ? `（连同 ${versions} 个历史版本一起删除）` : '';
-    if (!window.confirm(`确定删除整份报告「${s.name}」${suffix}？删除后不可恢复。`)) return;
+    const suffix = versions > 1 ? t('center.deleteSeriesSuffix', { count: versions }) : '';
+    if (!window.confirm(t('center.deleteSeriesConfirm', { name: s.name, suffix }))) return;
     try {
       // 归集键同一组的 id 都能代删（服务端拿第一行的键反查整组），传最新一版即可
       await deleteReport(s.reports[0].id, 'series');
-      toast.success('报告已删除');
+      toast.success(t('center.deleted'));
       // 删的是当前选中卡片时清空选中（整份报告已不在，不能只按 latest id 判）
       if (activeKey && activeKey === s.key) { setActiveKey(''); setActiveId(0); setDetail(null); }
       await reload();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '删除失败，请重试');
+      toast.error(e?.response?.data?.detail || t('center.deleteFailedRetry'));
     }
   };
 
@@ -364,22 +373,22 @@ export default function ReportsCenter() {
     const idx = s.reports.findIndex(x => x.id === r.id);
     if (idx < 0) return;
     const label = `v${s.reports.length - idx}（${formatDate(r.created_at)}）`;
-    const lines = [`确定删除报告「${s.name}」的 ${label} 这一版？`,
-                   `其余 ${s.reports.length - 1} 个历史版本保留，删除后不可恢复。`];
+    const lines = [t('center.deleteVersionConfirm1', { name: s.name, label }),
+                   t('center.deleteVersionConfirm2', { count: s.reports.length - 1 })];
     // 最早一版 = 原始报告（卡片身份那一版）：删它后卡片的来源与编辑入口会改按剩余最早版算，
     // 后果必须在删之前说出来，不能让人事后发现“卡片变成不可编辑了”
     if (idx === s.reports.length - 1) {
-      lines.push('这一版是最早的原始报告：删除后这张卡片的来源与编辑入口将改按剩余最早的一版计算。');
+      lines.push(t('center.deleteOriginalWarn'));
     }
     if (!window.confirm(lines.join('\n'))) return;
     const next = s.reports.find(x => x.id !== r.id);   // 清单按时间倒序 → 剩余里最新的一版
     try {
       const out = await deleteReport(r.id, 'version');
-      toast.success(`已删除 ${label}，剩余 ${out?.remaining ?? s.reports.length - 1} 个版本`);
+      toast.success(t('center.versionDeleted', { label, count: out?.remaining ?? s.reports.length - 1 }));
       await reload();
       if (next) setActiveId(next.id);
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '删除失败，请重试');
+      toast.error(e?.response?.data?.detail || t('center.deleteFailedRetry'));
     }
   };
 
@@ -391,7 +400,7 @@ export default function ReportsCenter() {
     refreshCtrl.current = null;
     setRefresh(EMPTY_REFRESH);
     if (!silent) {
-      toast.info('已停止本次重新生成：新版本记为已取消，之前生成的版本不受影响');
+      toast.info(i18n.t('report:center.stopToast'));
     }
   }, []);
 
@@ -416,28 +425,28 @@ export default function ReportsCenter() {
         if (ev.step) put(`stage:${ev.step}`, ev.message || ev.step, 'ok');
       } else if (ev.type === 'capacity') {
         note = ev.estimated_wait_s != null
-          ? `平台正忙，你在第 ${ev.position || 1} 位（预计约 ${Math.max(1, Math.round(ev.estimated_wait_s))} 秒）`
-          : `平台正忙，你在第 ${ev.position || 1} 位`;
+          ? i18n.t('report:center.capacityBusyWait', { position: ev.position || 1, seconds: Math.max(1, Math.round(ev.estimated_wait_s)) })
+          : i18n.t('report:center.capacityBusy', { position: ev.position || 1 });
         put('capacity', note);
       } else if (ev.type === 'data') {
         // 取数结果只报“第几条 / 多少行 / 有无截断 / 哪条受治理通道”，不报 SQL 与表列
-        note = `已完成 ${ev.query_count || 1} 条受治理取数…`;
+        note = i18n.t('report:center.queriesDone', { count: ev.query_count || 1 });
         put(`query:${ev.query_count || steps.filter(s => s.key.startsWith('query:')).length + 1}`,
-          `取数 #${ev.query_count || 1}：${ev.source || '受治理查询'} 返回 ${ev.row_count || 0} 行`
-          + (ev.truncated ? '（被行数上限截断，仅代表样本）' : ''), 'ok');
+          i18n.t('report:center.queryStep', { index: ev.query_count || 1, source: ev.source || i18n.t('report:center.governedQuery'), rows: ev.row_count || 0 })
+          + (ev.truncated ? i18n.t('report:center.truncated') : ''), 'ok');
       } else if (ev.type === 'tool_start') {
-        note = `${getToolLabel(ev.tool || '')} 执行中…`;
-        put(`tool:${ev.tool_call_id || ev.call_index || steps.length}`, `${getToolLabel(ev.tool || '')} 执行中`);
+        note = i18n.t('report:center.toolRunningNote', { tool: getToolLabel(ev.tool || '') });
+        put(`tool:${ev.tool_call_id || ev.call_index || steps.length}`, i18n.t('report:center.toolRunningStep', { tool: getToolLabel(ev.tool || '') }));
       } else if (ev.type === 'tool_result') {
         const secs = typeof ev.elapsed === 'number' ? ` · ${ev.elapsed.toFixed(1)}s` : '';
         put(`tool:${ev.tool_call_id || ev.call_index || steps.length}`,
-          `${getToolLabel(ev.tool || '')}${ev.ok ? ' 完成' : ' 未成功'}${secs}`,
+          i18n.t(ev.ok ? 'report:center.toolOk' : 'report:center.toolErr', { tool: getToolLabel(ev.tool || ''), secs }),
           ev.ok ? 'ok' : 'err');
       } else if (ev.type === 'text') {
-        note = `模型正在写正文（已 ${ev.chars || 0} 字）…`;
+        note = i18n.t('report:center.writingText', { chars: ev.chars || 0 });
         put('answer', note);
       } else if (ev.type === 'done') {
-        note = ev.generation_status === 'ready' ? '新版生成完成' : (ev.reason || '本轮未正常完成');
+        note = ev.generation_status === 'ready' ? i18n.t('report:center.newVersionReady') : (ev.reason || i18n.t('report:center.roundIncomplete'));
         steps.forEach((s, i) => { if (s.state === 'run') steps[i] = { ...s, state: ev.generation_status === 'ready' ? 'ok' : 'err' }; });
       }
       return { ...prev, steps, note };
@@ -449,14 +458,14 @@ export default function ReportsCenter() {
   const refreshWithLatest = async () => {
     if (!detail) return;
     const info = detail.refresh;
-    if (info && !info.available) { toast.error(info.hint || '该报告无法按最新数据重新生成'); return; }
+    if (info && !info.available) { toast.error(info.hint || t('center.refreshUnavailable')); return; }
     if (info?.channel === 'task') {
-      if (!detail.task_id) { toast.error('该报告的任务归属信息缺失，无法触发重跑'); return; }
+      if (!detail.task_id) { toast.error(t('center.taskMissing')); return; }
       try {
         await triggerScheduledTask(detail.task_id);
-        toast.success('已触发所属定时任务，新版本稍后出现在本报告的历史版本里');
+        toast.success(t('center.taskTriggered'));
       } catch (e: any) {
-        toast.error(e?.response?.data?.detail || '触发定时任务失败，请重试');
+        toast.error(e?.response?.data?.detail || t('center.taskTriggerFailed'));
       }
       return;
     }
@@ -464,12 +473,12 @@ export default function ReportsCenter() {
     refreshCtrl.current = controller;
     refreshNewId.current = 0;
     refreshOutcome.current = null;
-    setRefresh({ active: true, note: '正在准备新版本…', steps: [] });
+    setRefresh({ active: true, note: t('center.preparing'), steps: [] });
     try {
       await refreshReportStream(detail.id, { onEvent: onRefreshEvent, signal: controller.signal });
     } catch (e: any) {
       if (controller.signal.aborted) return;   // 用户自己点的停止，不再补一句错误
-      toast.error(e?.message || '重新生成未能开始，请稍后重试');
+      toast.error(e?.message || t('center.refreshStartFailedFallback'));
       setRefresh(EMPTY_REFRESH);
       refreshCtrl.current = null;
       return;
@@ -482,7 +491,7 @@ export default function ReportsCenter() {
     setRefresh(EMPTY_REFRESH);
     if (!outcome) {
       // 流断了但没收到终态：报告到底怎么样了以库里为准，重拉详情而不是猜一个结局
-      toast.error('重新生成过程连接中断，已重拉最新版本确认实际结果');
+      toast.error(t('center.streamBroken'));
       await reload();
       if (refreshNewId.current) setActiveId(refreshNewId.current);
       return;
@@ -492,12 +501,12 @@ export default function ReportsCenter() {
     const status = outcome.generation_status || '';
     if (status === 'ready') {
       const badge = layoutBadge(outcome.layout_result);
-      toast.success(badge ? `已按最新数据生成新版本（${badge}）` : '已按最新数据生成新版本');
+      toast.success(badge ? t('center.newVersionWithLayout', { badge }) : t('center.newVersion'));
     } else if (status === 'cancelled') {
-      toast.info('本轮已中止，新版本记为已取消；之前的版本仍可正常查看');
+      toast.info(t('center.cancelledToast'));
     } else {
       toast.error(outcome.reason
-        || `本轮未能生成可用版本（${GEN_STATUS[status]?.label || status || '未完成'}），原因见版本标记`);
+        || t('center.noUsableVersion', { status: statusLabel(status || '') || t('center.statusUnknown') }));
     }
   };
 
@@ -510,25 +519,25 @@ export default function ReportsCenter() {
     const hasBody = !!body.trim();
     const items: OverflowItem[] = [
       {
-        key: 'task', label: '创建为定时任务', icon: <CalendarClock className="h-3.5 w-3.5" />,
-        title: '复用本报告的分析问题，创建周期执行的 Agent 定时任务（问题正文在弹窗里可改）',
+        key: 'task', label: t('center.more.task'), icon: <CalendarClock className="h-3.5 w-3.5" />,
+        title: t('center.more.taskTitle'),
         onSelect: () => setTaskDialogOpen(true),
       },
       {
         // 好报告的版式不该只留在这一次：沉淀成模板后，定时任务表单与报告重跑共用同一份版式
-        key: 'template', label: '另存为模板', icon: <Layers className="h-3.5 w-3.5" />,
+        key: 'template', label: t('center.more.template'), icon: <Layers className="h-3.5 w-3.5" />,
         disabled: !hasBody,
         title: hasBody
-          ? '把本报告的章节与图表结构存成报告模板（只搬版式，不带数据）'
-          : '正文还没加载完成，无法抽版式',
+          ? t('center.more.templateTitle')
+          : t('center.more.templateDisabled'),
         onSelect: openSaveTpl,
       },
     ];
     if (isEditableReport(detail)) {
       items.push({
-        key: 'edit', label: '编辑', icon: <Pencil className="h-3.5 w-3.5" />,
+        key: 'edit', label: t('common:action.edit'), icon: <Pencil className="h-3.5 w-3.5" />,
         disabled: !hasBody,
-        title: hasBody ? '重命名 / 编辑正文' : '正文尚未加载完成，无法编辑',
+        title: hasBody ? t('center.more.editTitle') : t('center.more.editDisabled'),
         onSelect: () => openEdit(detail, body),
       });
     }
@@ -537,13 +546,13 @@ export default function ReportsCenter() {
     // 不让人以为“报告中心没这个功能”（menu-permission-sync / no-silent-degradation）。
     const canPromote = hasPerm('article:manage');
     items.push({
-      key: 'promote', label: '提交到内容管理审核', icon: <Send className="h-3.5 w-3.5" />,
+      key: 'promote', label: t('center.more.promote'), icon: <Send className="h-3.5 w-3.5" />,
       disabled: !hasBody || !canPromote,
       title: !canPromote
-        ? '需要「编辑内容条目」（article:manage）权限才能把报告提交到内容管理：当前账号没有这个权限，请找内容同事代提'
+        ? t('center.more.promoteNoPerm')
         : !hasBody
-          ? '正文还没加载完成，暂时提不了'
-          : '复制正文成内容中心的一个新版本（同报告系列自动追加为新一期），随后走审核与发布',
+          ? t('center.more.promoteNoBody')
+          : t('center.more.promoteTitle'),
       onSelect: () => setPromoteOpen(true),
     });
     if (isDeletableReport(detail)) {
@@ -551,21 +560,21 @@ export default function ReportsCenter() {
       if (versions > 1) {
         // 只删当前这一版：重跑追加的失败版/旧版可以单独清掉，不必连原始报告一起没
         items.push({
-          key: 'delete-version', label: '删除这一版', icon: <Trash2 className="h-3.5 w-3.5" />,
+          key: 'delete-version', label: t('center.more.deleteVersion'), icon: <Trash2 className="h-3.5 w-3.5" />,
           danger: true, separatorBefore: true,
           disabled: refresh.active,
           title: refresh.active
-            ? '正在按最新数据重新生成，先停掉这一轮再删版本'
-            : `只删当前选中的这一版，同系列其余 ${versions - 1} 个历史版本保留`,
+            ? t('center.more.deleteVersionBusy')
+            : t('center.more.deleteVersionTitle', { count: versions - 1 }),
           onSelect: () => void removeVersion(detail),
         });
       }
       items.push({
         key: 'delete',
-        label: versions > 1 ? `删除整份报告（含 ${versions} 个版本）` : '删除',
+        label: versions > 1 ? t('center.more.deleteAll', { count: versions }) : t('common:action.delete'),
         icon: <Trash2 className="h-3.5 w-3.5" />,
         danger: true, separatorBefore: versions <= 1,
-        title: versions > 1 ? '连同这份报告的全部历史版本一起删除，不可恢复' : '删除这份报告，不可恢复',
+        title: versions > 1 ? t('center.more.deleteAllTitle') : t('center.more.deleteTitle'),
         onSelect: () => { if (activeSeries) void removeSeries(activeSeries); },
       });
     }
@@ -576,9 +585,9 @@ export default function ReportsCenter() {
     <div className="h-full flex flex-col gap-4 p-6 overflow-hidden">
       <div className="flex items-center gap-2 shrink-0 flex-wrap">
         <FileBarChart className="h-5 w-5 text-primary" />
-        <h1 className="text-lg font-semibold">报告中心</h1>
+        <h1 className="text-lg font-semibold">{t('menu:workspace.reports')}</h1>
         <span className="text-sm text-muted-foreground">
-          报告跟随账号，在线实时查看；报告都是分析产物（会话存为报告 / 定时任务产出），按版本归集
+          {t('center.subtitle')}
         </span>
       </div>
 
@@ -589,27 +598,27 @@ export default function ReportsCenter() {
         <Select value={sourceFilter} onValueChange={setSourceFilter}>
           <SelectTrigger className="w-[140px] h-8 text-xs"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">全部来源</SelectItem>
+            <SelectItem value="all">{t('center.allSources')}</SelectItem>
             {SOURCE_ORDER.map(s => (
-              <SelectItem key={s} value={s}>{SOURCE_META[s].label}</SelectItem>
+              <SelectItem key={s} value={s}>{sourceLabel(s)}</SelectItem>
             ))}
           </SelectContent>
         </Select>
         <div className="relative">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
           <Input value={keyword} onChange={e => setKeyword(e.target.value)}
-            placeholder="按报告名称搜索" className="h-8 w-56 pl-7 text-xs" />
+            placeholder={t('center.searchPlaceholder')} className="h-8 w-56 pl-7 text-xs" />
         </div>
       </div>
 
       {loading ? (
         <div className="flex-1 flex items-center justify-center text-muted-foreground">
-          <Loader2 className="h-5 w-5 animate-spin mr-2" /> 加载中...
+          <Loader2 className="h-5 w-5 animate-spin mr-2" /> {t('common:state.loading')}
         </div>
       ) : !series.length ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground border border-dashed rounded-lg bg-card">
           <Inbox className="h-10 w-10 opacity-50" />
-          <p className="text-sm">{error || '暂无报告：报告是分析产物，请在智能问数里把分析结果「存为报告」，或交给定时任务产出'}</p>
+          <p className="text-sm">{error || t('center.empty')}</p>
         </div>
       ) : (
         <div className="flex-1 flex gap-4 min-h-0">
@@ -631,19 +640,19 @@ export default function ReportsCenter() {
                     </button>
                     {s.reports.length > 1 && (
                       <Badge variant="outline" className="shrink-0 text-[10px]">
-                        {s.reports.length} 个版本
+                        {t('center.versionCount', { count: s.reports.length })}
                       </Badge>
                     )}
                   </div>
                   <div className="flex items-center gap-2 mt-1">
                     <Badge variant="outline" className={`text-[10px] ${SOURCE_META[s.source]?.cls || ''}`}>
-                      {SOURCE_META[s.source]?.label || s.source}
+                      {sourceLabel(s.source)}
                     </Badge>
                     <span className="text-xs text-muted-foreground truncate">
-                      最新 {latest ? new Date(latest.created_at).toLocaleDateString() : '-'}
+                      {t('center.latest', { date: latest ? new Date(latest.created_at).toLocaleDateString(i18n.language) : '-' })}
                     </span>
                     {s.editable && (
-                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0 ml-auto" title="重命名 / 编辑正文"
+                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0 ml-auto" title={t('center.more.editTitle')}
                         onClick={() => void editSeries(s)}>
                         <Pencil className="h-3 w-3" />
                       </Button>
@@ -652,8 +661,8 @@ export default function ReportsCenter() {
                       <Button variant="ghost" size="sm"
                         className={`h-6 w-6 p-0 text-destructive ${s.editable ? '' : 'ml-auto'}`}
                         title={s.reports.length > 1
-                          ? `删除整份报告（含 ${s.reports.length} 个历史版本）；只想删某一版请进详情页用「删除这一版」`
-                          : '删除报告'}
+                          ? t('center.deleteSeriesTitle', { count: s.reports.length })
+                          : t('center.deleteReportTitle')}
                         onClick={() => void removeSeries(s)}>
                         <Trash2 className="h-3 w-3" />
                       </Button>
@@ -668,7 +677,7 @@ export default function ReportsCenter() {
           <div className="flex-1 min-w-0 flex flex-col border rounded-lg bg-card overflow-hidden">
             <div className="shrink-0 px-5 py-3 border-b flex items-center justify-between gap-3 flex-wrap gap-y-2">
               <div className="min-w-0 flex-1">
-                <h2 className="text-sm font-semibold truncate">{detail?.title || activeSeries?.name || '选择报告'}</h2>
+                <h2 className="text-sm font-semibold truncate">{detail?.title || activeSeries?.name || t('center.selectReport')}</h2>
                 <div className="flex items-center gap-2 flex-wrap mt-0.5 text-xs text-muted-foreground">
                   {detail && (
                     <>
@@ -680,13 +689,13 @@ export default function ReportsCenter() {
                           具体会话号收进徽章 title 供排查。 */}
                       <Badge variant="outline"
                         title={detail.origin?.channel === 'chat' && detail.origin?.conversation_id
-                          ? `来自会话 #${detail.origin.conversation_id}` : undefined}
+                          ? t('center.fromConversation', { id: detail.origin.conversation_id }) : undefined}
                         className={`text-[10px] ${SOURCE_META[detail.source_type || 'legacy']?.cls || ''}`}>
-                        {SOURCE_META[detail.source_type || 'legacy']?.label || detail.source_type}
+                        {sourceLabel(detail.source_type || 'legacy')}
                       </Badge>
                       {detail.generation_status && GEN_STATUS[detail.generation_status] && (
                         <Badge variant="outline" className={`text-[10px] ${GEN_STATUS[detail.generation_status].cls}`}>
-                          {GEN_STATUS[detail.generation_status].label}
+                          {statusLabel(detail.generation_status)}
                         </Badge>
                       )}
                       <span>{formatDate(detail.created_at)}</span>
@@ -705,16 +714,16 @@ export default function ReportsCenter() {
                   <Button variant="outline" size="sm" className="h-8 text-xs"
                     onClick={refreshWithLatest}
                     disabled={refresh.active || !detail.refresh || !detail.refresh.available}
-                    title={detail.refresh?.hint || '按报告登记的原始问题重新取数，过程在本页直播'}>
+                    title={detail.refresh?.hint || t('center.refreshDefaultTitle')}>
                     {refresh.active
                       ? <Loader2 className="h-3 w-3 mr-1 animate-spin" />
                       : <RefreshCw className="h-3 w-3 mr-1" />}
-                    {refresh.active ? '重新生成中…' : (detail.refresh?.action_label || '用最新数据重新生成')}
+                    {refresh.active ? t('center.refreshing') : (detail.refresh?.action_label || t('center.refreshDefaultLabel'))}
                   </Button>
                 )}
                 {detail && (
                   <ReportExportMenu
-                    title={detail.title || activeSeries?.name || '报告'}
+                    title={detail.title || activeSeries?.name || t('export.fileFallback')}
                     createdAt={detail.created_at}
                     bodyFormat={detail.format}
                     body={body}
@@ -732,7 +741,7 @@ export default function ReportsCenter() {
                       setActiveId(Number(e.target.value));
                     }}
                     className="shrink-0 max-w-[220px] h-8 rounded-md border bg-background px-2 text-xs"
-                    title="版本管理"
+                    title={t('center.versionManage')}
                   >
                     {activeSeries.reports.map((r, i) => (
                       // 版本名带上生成状态：失败/超时的版本只看时间看不出来，
@@ -740,7 +749,7 @@ export default function ReportsCenter() {
                       <option key={r.id} value={r.id}>
                         v{activeSeries.reports.length - i} · {formatDate(r.created_at)}
                         {r.generation_status && r.generation_status !== 'ready'
-                          ? ` · ${GEN_STATUS[r.generation_status]?.label || r.generation_status}` : ''}
+                          ? ` · ${statusLabel(r.generation_status)}` : ''}
                         {/* 同一份报告的新版式变了要能在选版本时看出来（否则只能切过去才发现） */}
                         {layoutBadge(r.layout) ? ` · ${layoutBadge(r.layout)}` : ''}
                       </option>
@@ -760,12 +769,12 @@ export default function ReportsCenter() {
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-xs font-medium flex items-center gap-2">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      正在按最新数据重新生成
+                      {t('center.refreshPanelTitle')}
                     </p>
                     <Button variant="ghost" size="sm" className="h-7 text-xs"
-                      title="停止本轮生成（新版本记为已取消，已生成的历史版本不受影响）"
+                      title={t('center.stopTitle')}
                       onClick={() => stopRefresh(false)}>
-                      <X className="h-3 w-3 mr-1" /> 停止
+                      <X className="h-3 w-3 mr-1" /> {t('center.stop')}
                     </Button>
                   </div>
                   <p data-testid="refresh-note" className="mt-1 text-xs text-muted-foreground">{refresh.note}</p>
@@ -787,15 +796,15 @@ export default function ReportsCenter() {
                 <p className="text-sm text-destructive">{error}</p>
               ) : detailLoading || !detail ? (
                 <div className="h-full flex items-center justify-center text-muted-foreground">
-                  <Loader2 className="h-5 w-5 animate-spin mr-2" /> 加载报告内容...
+                  <Loader2 className="h-5 w-5 animate-spin mr-2" /> {t('center.loadingDetail')}
                 </div>
               ) : NO_BODY.includes(detail.generation_status || '') ? (
                 <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
                   {PENDING.includes(detail.generation_status || '')
-                    ? <><Loader2 className="h-4 w-4 animate-spin mr-2" /> 报告生成中（由定时任务或其他页面触发），页面将自动刷新...</>
+                    ? <><Loader2 className="h-4 w-4 animate-spin mr-2" /> {t('center.generatingNote')}</>
                     : (detail.generation_status === 'cancelled'
-                        ? '这一版在重新生成过程中页面被关闭，已按取消中止；可再点一次「用最新数据重新生成」。'
-                        : '本次运行未生成可展示的报告正文（生成失败或超时）。')}
+                        ? t('center.cancelledNote')
+                        : t('center.noBodyNote'))}
                 </div>
               ) : bodyError ? (
                 /* 正文取不到必须显式暴露原因（直链过期 / 桶没开跨域 / 对象丢失），
@@ -804,12 +813,12 @@ export default function ReportsCenter() {
                   <p className="text-destructive max-w-prose text-center">{bodyError}</p>
                   <Button variant="outline" size="sm" className="h-8 text-xs"
                     onClick={() => loadDetail(detail.id)}>
-                    <RefreshCw className="h-3 w-3 mr-1" /> 重新获取正文
+                    <RefreshCw className="h-3 w-3 mr-1" /> {t('center.refetchBody')}
                   </Button>
                 </div>
               ) : bodyLoading || !body.trim() ? (
                 <div className="h-full flex items-center justify-center text-muted-foreground">
-                  <Loader2 className="h-5 w-5 animate-spin mr-2" /> 加载报告正文...
+                  <Loader2 className="h-5 w-5 animate-spin mr-2" /> {t('view.loadingBody')}
                 </div>
               ) : (
                 <>
@@ -841,21 +850,20 @@ export default function ReportsCenter() {
       <Dialog open={editor.open} onOpenChange={o => { if (!o) setEditor(EMPTY_EDITOR); }}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
-            <DialogTitle>编辑报告</DialogTitle>
+            <DialogTitle>{t('center.editor.title')}</DialogTitle>
             <DialogDescription>
-              内容型报告（会话存为报告、改造前的手写报告）仅本人可见、可在线查看与再次编辑；
-              定时任务/分析来源产出的报告正文由受治理取数生成，不在此编辑。
+              {t('center.editor.desc')}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <Label htmlFor="report-title">报告名称</Label>
+              <Label htmlFor="report-title">{t('center.editor.name')}</Label>
               <Input id="report-title" value={editor.title}
                 onChange={e => setEditor(prev => ({ ...prev, title: e.target.value }))}
-                placeholder="业务可读名称，如「新加坡近30天新增案例」" />
+                placeholder={t('center.editor.namePlaceholder')} />
             </div>
             <div className="flex items-center gap-3">
-              <Label className="shrink-0">正文格式</Label>
+              <Label className="shrink-0">{t('center.editor.format')}</Label>
               <Select value={editor.format}
                 onValueChange={v => setEditor(prev => ({ ...prev, format: v }))}>
                 <SelectTrigger className="w-[160px] h-8 text-xs"><SelectValue /></SelectTrigger>
@@ -866,19 +874,19 @@ export default function ReportsCenter() {
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="report-content">报告正文</Label>
+              <Label htmlFor="report-content">{t('center.editor.body')}</Label>
               <Textarea id="report-content" value={editor.content}
                 onChange={e => setEditor(prev => ({ ...prev, content: e.target.value }))}
                 placeholder={editor.format === 'html'
-                  ? '<h1>报告标题</h1><p>整份自包含 HTML（样式写进正文的 <style>）</p>'
-                  : '报告标题的下一行开始写正文…'}
+                  ? t('center.editor.htmlPlaceholder')
+                  : t('center.editor.mdPlaceholder')}
                 className="font-mono text-xs min-h-[320px]" />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEditor(EMPTY_EDITOR)} disabled={editor.saving}>取消</Button>
+            <Button variant="outline" onClick={() => setEditor(EMPTY_EDITOR)} disabled={editor.saving}>{t('common:action.cancel')}</Button>
             <Button onClick={saveEditor} disabled={editor.saving}>
-              {editor.saving ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />保存中…</> : '保存'}
+              {editor.saving ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />{t('common:action.saving')}</> : t('common:action.save')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -888,31 +896,30 @@ export default function ReportsCenter() {
       <Dialog open={saveTpl.open} onOpenChange={o => { if (!o) setSaveTpl({ open: false, name: '', description: '', saving: false }); }}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>另存为报告模板</DialogTitle>
+            <DialogTitle>{t('center.tpl.title')}</DialogTitle>
             <DialogDescription>
-              只沉淀版式（章节标题 + 图表规格 + 主题），正文里的数据一个也不进模板；
-              没有可抽结构的报告会被服务端拒回并说明原因。
+              {t('center.tpl.desc')}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <Label>模板名称</Label>
+              <Label>{t('center.tpl.name')}</Label>
               <Input value={saveTpl.name} onChange={e => setSaveTpl(prev => ({ ...prev, name: e.target.value }))}
-                placeholder="如：周报版式模板" />
+                placeholder={t('center.tpl.namePlaceholder')} />
             </div>
             <div className="space-y-1.5">
-              <Label>适用场景（可选）</Label>
+              <Label>{t('center.tpl.scenario')}</Label>
               <Input value={saveTpl.description}
                 onChange={e => setSaveTpl(prev => ({ ...prev, description: e.target.value }))}
-                placeholder="如：面向区域运营的同款周报" />
+                placeholder={t('center.tpl.scenarioPlaceholder')} />
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline"
               onClick={() => setSaveTpl({ open: false, name: '', description: '', saving: false })}
-              disabled={saveTpl.saving}>取消</Button>
+              disabled={saveTpl.saving}>{t('common:action.cancel')}</Button>
             <Button onClick={submitSaveTpl} disabled={saveTpl.saving || !saveTpl.name.trim()}>
-              {saveTpl.saving ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />保存中…</> : '存为模板'}
+              {saveTpl.saving ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />{t('common:action.saving')}</> : t('center.tpl.submit')}
             </Button>
           </DialogFooter>
         </DialogContent>

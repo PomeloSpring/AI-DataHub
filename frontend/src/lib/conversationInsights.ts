@@ -12,6 +12,7 @@
  * 那份文本本就随会话响应下发给本人，这里不新增信息面）。
  */
 import type { ChatMessage, ChatReportDraft } from '../stores/chatStore';
+import i18n from '../i18n';
 
 // ── 会话产物 ─────────────────────────────────────────────────────
 
@@ -52,7 +53,7 @@ export function collectArtifacts(messages: ChatMessage[]): SessionArtifacts {
     if (doc && typeof doc === 'object') {
       docs.push({
         idx,
-        title: String(doc.title || '').trim() || '无标题',
+        title: String(doc.title || '').trim() || i18n.t('chat:docCard.untitled'),
         updatedAt: String(doc.updated_at || doc.created_at || ''),
         revisions: Number(doc.revisions || 0),
       });
@@ -62,7 +63,7 @@ export function collectArtifacts(messages: ChatMessage[]): SessionArtifacts {
       const archived = draftOf((draft as any).archived) as any;
       reports.push({
         idx,
-        title: String(draft.title || '').trim() || '未命名报告草稿',
+        title: String(draft.title || '').trim() || i18n.t('chat:sidePanel.untitledDraft'),
         updatedAt: String(draft.updated_at || draft.created_at || ''),
         revisions: Number(draft.revisions || 0),
         reportId: Number(archived?.report_id || 0),
@@ -137,10 +138,13 @@ function clip(text: unknown, max = 160): string {
   return one.length > max ? `${one.slice(0, max)}…` : one;
 }
 
-/** 过滤算子的可读形式（内部码值不能直接面用户，ui-resource-display §1）。 */
+/** 过滤算子的可读形式（内部码值不能直接面用户，ui-resource-display §1）。
+ * 符号算子语言无关；词形算子只存 key，调用期经 i18n 解析（不冻结语言）。 */
 const OP_LABELS: Record<string, string> = {
   eq: '=', ne: '≠', gt: '>', gte: '≥', lt: '<', lte: '≤',
-  in: '属于', not_in: '不属于', like: '包含', between: '区间',
+};
+const OP_LABEL_KEYS: Record<string, 'sidePanel.op.in' | 'sidePanel.op.not_in' | 'sidePanel.op.like' | 'sidePanel.op.between'> = {
+  in: 'sidePanel.op.in', not_in: 'sidePanel.op.not_in', like: 'sidePanel.op.like', between: 'sidePanel.op.between',
 };
 
 interface RawFilter { dim: string; op: string; values: string[] }
@@ -157,7 +161,7 @@ function rawFilters(filters: unknown): RawFilter[] {
     const values = Array.isArray((f as any).values)
       ? strList((f as any).values)
       : (String((f as any).value ?? '').trim() ? [String((f as any).value).trim()] : []);
-    out.push({ dim, op: OP_LABELS[rawOp] || rawOp, values });
+    out.push({ dim, op: OP_LABELS[rawOp] || (OP_LABEL_KEYS[rawOp] ? i18n.t(`chat:${OP_LABEL_KEYS[rawOp]}` as 'chat:sidePanel.op.in') : rawOp), values });
   }
   return out;
 }
@@ -185,9 +189,10 @@ function intentsOf(tc: any): any[] {
   return list.filter(i => i && typeof i === 'object');
 }
 
-/** 出处标题：chunk.title 优先；本体同步文档没有标题时从 markdown 小标题取"名字"（不取正文）。 */
-const HEADING_OBJECT = /^##\s*业务对象[:：]\s*([^(（\n]+)/m;
-const HEADING_MODEL = /^#\s*本体模型[:：]\s*(.+)$/m;
+/** 出处标题：chunk.title 优先；本体同步文档没有标题时从 markdown 小标题取"名字"（不取正文）。
+ * 两个小标题正则是后端上云文档的固定契约（功能性解析，不随界面语言变）。 */
+const HEADING_OBJECT = /^##\s*\u4e1a\u52a1\u5bf9\u8c61[:：]\s*([^(（\n]+)/m;
+const HEADING_MODEL = /^#\s*\u672c\u4f53\u6a21\u578b[:：]\s*(.+)$/m;
 const HEADING_ANY = /^#{1,3}\s*(.+)$/m;
 
 function sourceTitleOf(chunk: any): string {
@@ -195,13 +200,13 @@ function sourceTitleOf(chunk: any): string {
   if (titled) return titled;
   const content = String(chunk?.content || '');
   const obj = content.match(HEADING_OBJECT);
-  if (obj?.[1]) return `业务对象 · ${String(obj[1]).trim()}`;
+  if (obj?.[1]) return i18n.t('chat:sidePanel.citationObject', { name: String(obj[1]).trim() });
   const model = content.match(HEADING_MODEL);
-  if (model?.[1]) return `本体模型 · ${clip(model[1], 60)}`;
+  if (model?.[1]) return i18n.t('chat:sidePanel.citationModel', { name: clip(model[1], 60) });
   const any = content.match(HEADING_ANY);
   if (any?.[1]) return clip(any[1], 60);
   const first = content.split('\n').map(s => s.trim()).find(Boolean);
-  return first ? clip(first, 40) : '知识库片段';
+  return first ? clip(first, 40) : i18n.t('chat:sidePanel.citationFragment');
 }
 
 /** 字典条目的码值→业务标签表（供过滤值显示成「生产」而不是「prod」）。 */

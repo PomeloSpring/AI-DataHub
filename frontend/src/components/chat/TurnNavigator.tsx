@@ -11,6 +11,7 @@
  * 只有一个提问时不渲染：单问题会话没有"回找"需求，摆一排刻度只是视觉噪音。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
 export interface TurnNavItem {
@@ -68,6 +69,8 @@ function shortLabel(text: string, max = 24): string {
 }
 
 export default function TurnNavigator({ turns, getAnchor, getViewport }: Props) {
+  // 命名 tr：下方 shown.map(t => …) 的回调参数 t 是轮次项，避免与翻译函数遮蔽
+  const { t: tr } = useTranslation('chat');
   const [hover, setHover] = useState<number | null>(null);
   const [active, setActive] = useState<number>(-1);
   const rafRef = useRef<number | null>(null);
@@ -124,7 +127,7 @@ export default function TurnNavigator({ turns, getAnchor, getViewport }: Props) 
     <div
       className="pointer-events-none absolute right-3 top-1/2 z-10 -translate-y-1/2"
       data-turn-navigator
-      aria-label="会话提问导航"
+      aria-label={tr('turnNav.aria')}
     >
       <div
         className={cn(
@@ -144,8 +147,8 @@ export default function TurnNavigator({ turns, getAnchor, getViewport }: Props) 
                   role="tooltip"
                 >
                   <div className="mb-1 flex items-center gap-2">
-                    <span className="font-medium text-foreground">第 {t.no} 问</span>
-                    <span className="text-[10px] text-muted-foreground">点击跳转到该问题</span>
+                    <span className="font-medium text-foreground">{tr('turnNav.questionNo', { no: t.no })}</span>
+                    <span className="text-[10px] text-muted-foreground">{tr('turnNav.jumpHint')}</span>
                   </div>
                   <p className="whitespace-pre-wrap break-words text-muted-foreground">
                     {t.text.length > HOVER_MAX_CHARS ? `${t.text.slice(0, HOVER_MAX_CHARS)}…` : t.text}
@@ -154,7 +157,7 @@ export default function TurnNavigator({ turns, getAnchor, getViewport }: Props) 
               )}
               <button
                 type="button"
-                aria-label={`跳转到第 ${t.no} 个问题：${shortLabel(t.text)}`}
+                aria-label={tr('turnNav.jumpAria', { no: t.no, text: shortLabel(t.text) })}
                 title={shortLabel(t.text, 60)}
                 // 当前所在轮 / 悬停态显式标出来：样式是 bg-primary + 加宽，
                 // 用例按数据属性断言，不去子串匹配 tailwind class（hover:bg-primary/60 会误命中）

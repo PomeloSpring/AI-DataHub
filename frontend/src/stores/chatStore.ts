@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import client from '../api/client';
 import { toast } from '@/lib/toast';
+import i18n from '@/i18n';
 import { useThemeStore } from './themeStore';
 import { listAuthorizedSites, type AuthorizedSite } from '../api/sites';
 import type { DecisionAdvicePayload } from '../api/decisions';
@@ -89,9 +90,9 @@ const ATTACH_EXT_CATEGORY: Record<string, AttachmentInfo['category']> = {
 export function validateLocalAttachment(file: File): { error: string } | { category: AttachmentInfo['category'] } {
   const ext = (file.name.match(/\.[^.]+$/)?.[0] || '').toLowerCase();
   const category = ATTACH_EXT_CATEGORY[ext];
-  if (!category) return { error: `不支持的文件类型: ${ext || '(无扩展名)'}` };
-  if (!file.size) return { error: `附件为空文件: ${file.name}` };
-  if (file.size > ATTACH_MAX_SIZE) return { error: `文件过大(上限 20MB): ${file.name}` };
+  if (!category) return { error: i18n.t('chat:store.attachUnsupported', { ext: ext || i18n.t('chat:store.attachNoExt') }) };
+  if (!file.size) return { error: i18n.t('chat:store.attachEmpty', { name: file.name }) };
+  if (file.size > ATTACH_MAX_SIZE) return { error: i18n.t('chat:store.attachTooLarge', { name: file.name }) };
   return { category };
 }
 
@@ -107,7 +108,7 @@ const CLIPBOARD_MIME_EXT: Record<string, string> = {
 export function ensureUploadName(file: File, now: number = Date.now()): File {
   if (file.name && /\.[^.]+$/.test(file.name)) return file;
   const ext = CLIPBOARD_MIME_EXT[file.type] || '';
-  const base = file.name || `截图_${new Date(now).toISOString().replace(/[-:T]/g, '').slice(0, 14)}`;
+  const base = file.name || i18n.t('chat:store.screenshotName', { stamp: new Date(now).toISOString().replace(/[-:T]/g, '').slice(0, 14) });
   return new File([file], `${base}${ext}`, { type: file.type });
 }
 
@@ -581,14 +582,14 @@ function capacityPatch(data: any): { patch: Partial<CapacityState>; step: string
       patch: { phase: 'queued', position: pos, limit: Number(data.limit) || 0,
                estimated_wait_s: (typeof wait === 'number' ? wait : null) },
       step: typeof wait === 'number'
-        ? `当前使用人数较多，你在第 ${pos} 位，预计约 ${Math.max(1, Math.round(wait))} 秒`
-        : `当前使用人数较多，你在第 ${pos} 位（前面还有人待处理）`,
+        ? i18n.t('chat:capacity.queued', { position: pos, estimate: i18n.t('chat:capacity.queuedEstimate', { seconds: Math.max(1, Math.round(wait)) }) })
+        : i18n.t('chat:capacity.queued', { position: pos, estimate: i18n.t('chat:capacity.queuedNoEstimate') }),
     };
   }
   if (event === 'started') {
     const waited = Math.round((Number(data.waited_ms) || 0) / 1000);
     return { patch: { phase: 'started', waited_ms: Number(data.waited_ms) || 0 },
-             step: waited > 0 ? `排队结束，开始处理（已等 ${waited} 秒）` : '开始处理本轮…' };
+             step: waited > 0 ? i18n.t('chat:capacity.startedWaited', { seconds: waited }) : i18n.t('chat:capacity.started') };
   }
   if (event === 'retrying') {
     const attempt = Number(data.attempt) || 1;
@@ -596,8 +597,11 @@ function capacityPatch(data: any): { patch: Partial<CapacityState>; step: string
     const wait = Math.max(1, Math.round(Number(data.wait_s) || 5));
     return {
       patch: { phase: 'retrying', attempt, max_attempts: max, wait_s: wait,
-               reason: data.reason || '模型服务繁忙' },
-      step: `${data.reason || '模型服务繁忙'}，正在自动重试（第 ${attempt}/${max} 次，等待 ${wait} 秒）`,
+               reason: data.reason || i18n.t('chat:capacity.modelBusy') },
+      step: i18n.t('chat:capacity.retrying', {
+        reason: data.reason || i18n.t('chat:capacity.modelBusy'),
+        attempt, max, wait: i18n.t('chat:capacity.stepRetryWait', { seconds: wait }),
+      }),
     };
   }
   return { patch: { phase: 'idle' }, step: '' };
@@ -646,7 +650,7 @@ async function attachDecisionAdvice(convId: number, msgs: ChatMessage[]): Promis
       return { ...m, decision_advice: payload };
     });
   } catch (e) {
-    console.debug('[decision] 会话建议回放未取到（无权限或无实例）', e);
+    console.debug('[decision] advice replay unavailable (no permission or no instance)', e);
     return msgs;
   }
 }
@@ -722,15 +726,16 @@ export async function saveMessages(
     return true;
   } catch (e: any) {
     const detail = String(e?.response?.data?.detail || '');
-    if (e?.response?.status === 422 && detail.includes('会话历史已变化')) {
+    // 后端 422 detail 的固定前缀是服务端契约文案（功能性匹配，不随界面语言变）
+    if (e?.response?.status === 422 && detail.includes('\u4f1a\u8bdd\u5386\u53f2\u5df2\u53d8\u5316')) {
       // 本地窗口与服务端对不上（例如别处刚清空）：重拉会话，不拿旧窗口继续写
-      console.warn('会话窗口已过期，重新加载:', detail);
+      console.warn('Conversation window stale, reloading:', detail);
       await useChatStore.getState().switchConversation(convId);
-      toast.error('会话记录已变化，已重新加载，请重试刚才的操作');
+      toast.error(i18n.t('chat:store.historyChanged'));
       return false;
     }
     console.error('Failed to save conversation:', e);
-    toast.error('会话记录保存失败，请稍后重试');
+    toast.error(i18n.t('chat:store.saveFailed'));
     return false;
   }
 }
@@ -863,7 +868,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {
       if (context !== chatContextVersion || workspaceId !== get().selectedWorkspaceId) return;
       set({ workspaceConfig: {} });
-      toast.error('工作空间配置加载失败，请重新进入工作空间');
+      toast.error(i18n.t('chat:store.wsConfigFailed'));
     }
   },
 
@@ -877,7 +882,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {
       if (context !== chatContextVersion || workspaceId !== get().selectedWorkspaceId) return;
       set({ executionLayer: null, selectedModelRef: null, executorSessionId: null });
-      toast.error('工作空间模型配置加载失败，请重新进入工作空间');
+      toast.error(i18n.t('chat:store.wsModelConfigFailed'));
     }
   },
 
@@ -898,7 +903,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (context !== chatContextVersion || get().selectedWorkspaceId !== workspaceId) return;
       // 失败也算“已定形”：按无 AS-BOT 的兜底分支渲染，不保留一个永远转圈的空位
       set({ asBots: [], asBotsLoaded: true });
-      toast.error('AS-BOT 权限清单加载失败，请重试；当前会话绑定未改变');
+      toast.error(i18n.t('chat:store.asBotPermsFailed'));
     }
   },
 
@@ -928,10 +933,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const { data } = await client.get(`/chat/conversations?workspace_id=${workspaceId}`);
       if (version !== conversationListVersion || context !== chatContextVersion) return;
-      if (!Array.isArray(data)) throw new Error('会话列表格式错误');
+      if (!Array.isArray(data)) throw new Error(i18n.t('chat:store.convListBadFormat'));
       set({ conversations: data });
     } catch {
-      if (version === conversationListVersion && context === chatContextVersion) set({ conversationError: '会话列表加载失败，请重试' });
+      if (version === conversationListVersion && context === chatContextVersion) set({ conversationError: i18n.t('chat:store.convListFailed') });
     }
   },
 
@@ -974,7 +979,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ selectedSiteCode: fallback });
     } catch (e: any) {
       if (context !== chatContextVersion) return;
-      set({ authorizedSites: [], sitesLoaded: true, siteError: e?.response?.data?.detail || '站点清单加载失败' });
+      set({ authorizedSites: [], sitesLoaded: true, siteError: e?.response?.data?.detail || i18n.t('chat:store.sitesFailed') });
     }
   },
 
@@ -984,7 +989,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const convId = get().currentConvId;
     if (convId) {
       client.put(`/chat/conversations/${convId}`, { site_code: code }).catch(() => {
-        toast.error('站点选择保存失败，本轮仍按所选站点查询');
+        toast.error(i18n.t('chat:store.siteSaveFailed'));
       });
     }
   },
@@ -1033,7 +1038,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (get().selectedWorkspaceId !== origin.selectedWorkspaceId ||
         get().selectedAsBotKey !== origin.selectedAsBotKey || get().messages !== origin.messages ||
         get().abortController !== origin.abortController) {
-      throw new Error('会话上下文已改变，未接管迟到的新会话');
+      throw new Error(i18n.t('chat:store.contextChanged'));
     }
     const conv: Conversation = {
       id: data.id,
@@ -1098,7 +1103,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (get().abortController !== switching) return;
       set({ abortController: null });
       console.error('Failed to load conversation:', e);
-      toast.error('切换会话失败，未改变当前会话');
+      toast.error(i18n.t('chat:store.switchFailed'));
     }
   },
 
@@ -1133,7 +1138,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (e: any) {
       set({ loadingEarlier: false });
       const detail = e?.response?.data?.detail;
-      toast.error(typeof detail === 'string' ? detail : '更早消息加载失败，当前记录仍完整，请重试');
+      toast.error(typeof detail === 'string' ? detail : i18n.t('chat:store.earlierFailed'));
     }
   },
 
@@ -1152,7 +1157,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
     } catch (e: any) {
       const detail = e.response?.data?.detail;
-      toast.error(typeof detail === 'string' ? detail : '删除会话失败，记录仍保留，请重试');
+      toast.error(typeof detail === 'string' ? detail : i18n.t('chat:store.deleteFailed'));
     }
   },
 
@@ -1183,7 +1188,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         deleted: [],
         failed: ids.map(id => ({
           id, title: '',
-          reason: typeof detail === 'string' ? detail : '批量删除请求失败，记录仍保留',
+          reason: typeof detail === 'string' ? detail : i18n.t('chat:store.batchDeleteFailed'),
         })),
       }
     }
@@ -1204,7 +1209,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const state = get();
     if (state.loading) return;
     if (state.stopping) {
-      toast.error('上一轮正在停止，请稍候…');
+      toast.error(i18n.t('chat:store.stoppingWait'));
       return;
     }
     const abortController = new AbortController();
@@ -1230,13 +1235,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           lastError = '';
           break;
         } catch (e: any) {
-          lastError = e?.response?.data?.detail || e?.message || '未知错误';
+          lastError = e?.response?.data?.detail || e?.message || i18n.t('chat:store.unknownError');
           if (!released && attempt === 0) continue;
           break;
         }
       }
       if (lastError) {
-        toast.warning(`本轮未产出内容的会话没能自动清理：${lastError}。稍后可在会话列表手动删除。`);
+        toast.warning(i18n.t('chat:store.emptyConvCleanupFailed', { error: lastError }));
         return;
       }
       set(st => ({
@@ -1249,7 +1254,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {
       if (get().abortController === abortController) {
         set({ loading: false, abortController: null });
-        toast.error('创建会话失败，未发送消息');
+        toast.error(i18n.t('chat:store.createFailed'));
       }
       return;
     }
@@ -1286,7 +1291,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const currentMessages = state.messages;
 
     // Create abort controller for cancellation
-    set({ loading: true, loadingStep: '正在分析意图...', messages: [...currentMessages, userMsg], abortController });
+    set({ loading: true, loadingStep: i18n.t('chat:store.analyzingIntent'), messages: [...currentMessages, userMsg], abortController });
 
     const history = currentMessages.map(m => ({
       role: m.role,
@@ -1402,7 +1407,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (typeof d === 'string') reason = d;
           else if (d != null) reason = JSON.stringify(d);
         } catch { /* 非 JSON 响应体（如网关错误页）忽略 */ }
-        throw new Error(reason ? `发送失败（${response.status}）：${reason}` : `发送失败（HTTP ${response.status}）`);
+        throw new Error(reason ? i18n.t('chat:store.sendFailedReason', { status: response.status, reason }) : i18n.t('chat:store.sendFailedHttp', { status: response.status }));
       }
 
       const reader = response.body!.getReader();
@@ -1580,7 +1585,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               } else if (currentEvent === 'done') {
                 doneData = data;
               } else if (currentEvent === 'error') {
-                streamError = data.message || '服务端返回错误';
+                streamError = data.message || i18n.t('chat:store.serverError');
                 console.error('[SSE] error event:', streamError);
               }
             } catch (e: any) {
@@ -1614,8 +1619,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 ...msgs[lastIdx],
                 // 断流前已输出的内容保留展示，错误只说明「为什么没跑完」
                 content: streamingText || msgs[lastIdx].content || '',
-                error: streamError || '服务端响应异常：未收到完成事件，请检查后端日志',
-                warnings: [...(msgs[lastIdx].warnings || []), 'SSE 流未正常结束，缺少 done 事件'],
+                error: streamError || i18n.t('chat:store.noDoneEvent'),
+                warnings: [...(msgs[lastIdx].warnings || []), i18n.t('chat:store.sseIncomplete')],
               };
             }
             return { messages: msgs, loading: false, loadingStep: '', abortController: null,
@@ -1770,7 +1775,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (msgs[lastIdx]?.role === 'assistant') {
               msgs[lastIdx] = {
                 ...msgs[lastIdx],
-                warnings: [...(msgs[lastIdx].warnings || []), '已取消'],
+                warnings: [...(msgs[lastIdx].warnings || []), i18n.t('chat:store.cancelled')],
                 elapsed_ms: elapsed,
               };
             }
@@ -1832,16 +1837,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // 也不能显示 0%（那会被读成“还有很大余量”）。
       set({ contextUsage: { available: false, used_percentage: null, threshold_percentage: null,
         categories: [],
-        reason: e?.response?.data?.detail || '上下文占用读取失败，请稍后重试',
-        error: e?.response?.data?.detail || '上下文占用读取失败，请稍后重试' } });
+        reason: e?.response?.data?.detail || i18n.t('chat:store.usageReadFailed'),
+        error: e?.response?.data?.detail || i18n.t('chat:store.usageReadFailed') } });
     }
   },
 
   compactContext: async () => {
     const { currentConvId, loading, stopping } = get();
-    if (!currentConvId) throw new Error('会话尚未落库，没有可压缩的上下文');
+    if (!currentConvId) throw new Error(i18n.t('chat:store.compactNoConv'));
     // 前端先拦一层（按钮本应已禁用），服务端仍是权威：两边拿的是同一个执行权事实。
-    if (loading || stopping) throw new Error('本轮任务进行中，等它结束或先停止后再压缩');
+    if (loading || stopping) throw new Error(i18n.t('chat:store.compactBusy'));
     set({ compacting: true });
     try {
       const { data } = await client.post('/chat/context-compact', {
@@ -1923,8 +1928,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ stopping: false });
     if (!released) {
       toast.error(queryFailed
-        ? '无法确认上一轮已停止（状态查询失败）。请稍候再发送，或联系管理员查看会话状态。'
-        : '上一轮仍未确认停止（后端需先收尾工具任务与 SDK 子进程）。请稍候再发送，或联系管理员查看会话状态。');
+        ? i18n.t('chat:store.stopUnconfirmedQuery')
+        : i18n.t('chat:store.stopUnconfirmed'));
     }
   },
 
@@ -1936,7 +1941,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ? { ...m, pendingAsk: undefined, content: m.content + `\n\n💬 ${response}` }
           : m
       );
-      return { messages: msgs, loading: true, loadingStep: 'Agent 正在继续分析...' };
+      return { messages: msgs, loading: true, loadingStep: i18n.t('chat:store.agentContinuing') };
     });
     // POST response to backend to resume the agent loop
     const token = localStorage.getItem('token');
@@ -1960,7 +1965,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set(state => {
       const msgs = state.messages.map(m =>
         m.pendingAsk?.request_id === requestId
-          ? { ...m, pendingAsk: undefined, content: m.content + '\n\n🚫 任务已取消' }
+          ? { ...m, pendingAsk: undefined, content: m.content + '\n\n' + i18n.t('chat:store.taskCancelledMarker') }
           : m
       );
       return { messages: msgs, loading: false, loadingStep: '' };
@@ -2010,7 +2015,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (e: any) {
       // 评估失败必须当场面告知：不能把“没跑起来”演成“这次没问题”
       const detail = e?.response?.data?.detail;
-      toast.error(typeof detail === 'string' ? detail : '完整评估未能运行，本轮结论仍按已取到的部分显示');
+      toast.error(typeof detail === 'string' ? detail : i18n.t('chat:store.evaluateFailed'));
     }
   },
 
@@ -2119,12 +2124,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   deleteTurn: async (idx: number): Promise<boolean> => {
     const state = get();
     if (state.loading || state.stopping) {
-      toast.error('本轮任务进行中，请先停止后再删除记录');
+      toast.error(i18n.t('chat:store.deleteTurnBusy'));
       return false;
     }
     const target = state.messages[idx];
     if (!target || target.role !== 'user') {
-      toast.error('只能删除你自己的提问（会连同该问题的回答一起删）');
+      toast.error(i18n.t('chat:store.deleteTurnNotOwn'));
       return false;
     }
     let end = idx + 1;
@@ -2163,7 +2168,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return true;
     } catch (e) {
       console.error('Failed to clear conversation:', e);
-      toast.error('会话记录未能清空（会话仍在运行中请先停止），请重试');
+      toast.error(i18n.t('chat:store.clearFailed'));
       return false;
     }
   },

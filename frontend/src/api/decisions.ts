@@ -1,4 +1,5 @@
 import client from './client';
+import i18n from '@/i18n';
 
 /**
  * 决策建议（Decision Advice）前端接口层。
@@ -263,11 +264,33 @@ export const TRIGGER_LABELS: Record<string, string> = {
   chat_turn: '智能问数', manual: '手动评估', scheduled: '定时预警', dashboard: '看板',
 };
 
+// 多语言口径：消费面（决策中心/建议面板）走下方 label 函数（渲染期解析）；
+// 上方中文常量保留给尚未迁移的页面，两轨不得各写一套词汇。
+export function treeStatusLabel(status: string): string {
+  const key = `workspace:decision.treeStatus.${status}`;
+  return i18n.exists(key) ? i18n.t(key as 'workspace:decision.treeStatus.draft') : (TREE_STATUS_LABELS[status as TreeStatus] || status);
+}
+
+export function verdictLabel(verdict: string): string {
+  const key = `workspace:decision.verdict.${verdict}`;
+  return i18n.exists(key) ? i18n.t(key as 'workspace:decision.verdict.hit') : (VERDICT_LABELS[verdict as DecisionVerdict] || verdict);
+}
+
+export function severityLabel(severity: string): string {
+  const key = `workspace:decision.severity.${severity}`;
+  return i18n.exists(key) ? i18n.t(key as 'workspace:decision.severity.low') : (SEVERITY_LABELS[severity as AdviceSeverity] || severity);
+}
+
+export function triggerLabel(trigger: string): string {
+  const key = `workspace:decision.trigger.${trigger}`;
+  return i18n.exists(key) ? i18n.t(key as 'workspace:decision.trigger.manual') : (TRIGGER_LABELS[trigger] || trigger);
+}
+
 export function errorText(err: any): string {
   const detail = err?.response?.data?.detail;
   if (typeof detail === 'string') return detail;
   if (detail) return JSON.stringify(detail);
-  return err?.message || '请求失败';
+  return err?.message || i18n.t('workspace:decision.requestFailed');
 }
 
 /**

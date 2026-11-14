@@ -1,12 +1,13 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { Maximize2, BarChart3, Table, Code, Download } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import DashboardChart, { ChartIcon, CHART_TYPES, CHART_TYPE_CATEGORIES } from './DashboardChart';
+import DashboardChart, { ChartIcon, CHART_TYPES, CHART_TYPE_CATEGORIES, chartTypeLabel, chartCategoryLabel } from './DashboardChart';
 import type { ChartTypeItem } from './DashboardChart';
 import MapHeatmap, { detectGeoColumns } from './MapHeatmap';
 import SqlCard from './SqlCard';
@@ -32,7 +33,8 @@ interface Props {
 
 // 与看板共用同一套图表类型(系统新增/删减自动同步);排除看板参数控件(非取数图表);
 // 另加 chat 专属「地图热力」(复用 UI 字模库地图瓦片 + 热力层,展示地理分布热力)
-const MAP_HEAT_ITEM: ChartTypeItem = { value: 'map_heat', label: '地图热力', icon: 'Map', category: 'geo' };
+// label 留空：文案渲染期经 typeLabelOf 解析（模块顶层常量会冻结语言）
+const MAP_HEAT_ITEM: ChartTypeItem = { value: 'map_heat', label: '', icon: 'Map', category: 'geo' };
 const PICKABLE: ChartTypeItem[] = [...CHART_TYPES.filter(t => t.category !== 'widget'), MAP_HEAT_ITEM];
 const VALID_TYPES = new Set(PICKABLE.map(t => t.value));
 
@@ -65,6 +67,9 @@ export function resolveChartTypeSafe(llmType?: string): { type: string; requeste
 }
 
 export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) {
+  const { t } = useTranslation(['data', 'common']);
+  // 图型业务名：地图热力是 chat 专属（data 包），其余与看板同源（dashboard 包）
+  const typeLabelOf = (v: string) => (v === 'map_heat' ? t('chartPicker.mapHeat') : chartTypeLabel(v));
   const columns = data?.columns || [];
   const rows = data?.rows || [];
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -96,8 +101,11 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
     const cond = xCol && datum[xCol] !== undefined
       ? `${xCol}=${datum[xCol]}`
       : Object.entries(datum).filter(([k]) => !k.startsWith('_')).slice(0, 2)
-          .map(([k, v]) => `${k}=${v}`).join(' 且 ');
-    onDrill(`下钻分析:${cond},请按其他维度拆解${yCol ? `「${yCol}」` : '关键指标'}并解释差异原因`);
+          .map(([k, v]) => `${k}=${v}`).join(t('chartPicker.drillJoin'));
+    onDrill(t('chartPicker.drillQuestion', {
+      cond,
+      target: yCol ? t('chartPicker.drillTargetCol', { col: yCol }) : t('chartPicker.drillTargetMetric'),
+    }));
   };
 
   useEffect(() => {
@@ -171,8 +179,8 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
   // （与看板同口径：样式缺失是可见的降级，用户要能知道并修复）
   const libraryNotice = library.error ? (
     <p role="alert" className="mb-2 text-xs text-muted-foreground">
-      字模库未加载，图表暂用默认样式（未按主题字模渲染）
-      <Button variant="link" size="sm" className="h-auto px-1 text-xs" onClick={() => void library.refresh()}>重试</Button>
+      {t('chartPicker.libraryMissing')}
+      <Button variant="link" size="sm" className="h-auto px-1 text-xs" onClick={() => void library.refresh()}>{t('common:action.retry')}</Button>
     </p>
   ) : null;
 
@@ -184,7 +192,7 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
     const r = resolveChartTypeSafe(defaultType);
     return r.degraded ? r : null;
   }, [defaultType]);
-  const degradedLabel = PICKABLE.find(t => t.value === (typeDegraded?.type || ''))?.label || '柱状图';
+  const degradedLabel = typeDegraded ? typeLabelOf(typeDegraded.type) : chartTypeLabel('bar');
 
   // 地图类图型(chat)统一走字模库瓦片热力(MapHeatmap):china_map/world_map 的 G2 底图
   // 依赖外网 topo 资源常不可达,且不复用字模库瓦片 —— 这里统一复用瓦片 + 地名/经纬度定位
@@ -205,12 +213,12 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
           if (!opts.length) return null;
           return (
             <SelectGroup key={cat.key}>
-              <SelectLabel className="text-[10px] text-muted-foreground">{cat.label}</SelectLabel>
+              <SelectLabel className="text-[10px] text-muted-foreground">{chartCategoryLabel(cat.key)}</SelectLabel>
               {opts.map(opt => (
                 <SelectItem key={opt.value} value={opt.value}>
                   <span className="inline-flex items-center gap-1.5">
                     <ChartIcon name={opt.icon} className="h-3.5 w-3.5 shrink-0" />
-                    {opt.label}
+                    {typeLabelOf(opt.value)}
                   </span>
                 </SelectItem>
               ))}
@@ -250,13 +258,13 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
           </SelectContent>
         </Select>
 
-        <span className="text-xs text-muted-foreground">分组:</span>
+        <span className="text-xs text-muted-foreground">{t('chartPicker.groupLabel')}</span>
         <Select value={seriesCol || '__none__'} onValueChange={(v) => { setSeriesCol(v === '__none__' ? '' : v); setSelectedSeries([]); }}>
           <SelectTrigger className="w-[120px] h-8">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="__none__">无</SelectItem>
+            <SelectItem value="__none__">{t('common:label.none')}</SelectItem>
             {stringCols.filter(c => c !== x).map((c: string) => (
               <SelectItem key={c} value={c}>{c}</SelectItem>
             ))}
@@ -266,13 +274,13 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
 
       {hasSeries && (
         <div className="flex gap-1 flex-wrap items-center">
-          <span className="text-xs text-muted-foreground mr-1">筛选:</span>
+          <span className="text-xs text-muted-foreground mr-1">{t('chartPicker.filterLabel')}</span>
           <Badge
             variant={selectedSeries.length === 0 ? 'default' : 'outline'}
             className="cursor-pointer"
             onClick={() => setSelectedSeries([])}
           >
-            全部
+            {t('common:label.all')}
           </Badge>
           {seriesValues.map(sv => {
             const active = selectedSeries.length === 0 || selectedSeries.includes(sv);
@@ -336,8 +344,8 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
       console.error('Export failed:', e);
       // 失败必须让用户看见：只 console.error 会被当成"导出按钮坏了"
       // （与报告导出的快照占位说明同口径，见 lib/reportExport）
-      toast.error('图表 PNG 导出失败', {
-        description: '瓦片或图源未允许跨域读取，无法拍成图片。可改用「PDF（浏览器打印）」，或换用支持跨域的瓦片源。',
+      toast.error(t('chartPicker.exportPngFailed'), {
+        description: t('chartPicker.exportPngFailedDesc'),
       });
     }
   };
@@ -349,21 +357,21 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
       <div className="flex items-center justify-between mb-2" data-export-strip>
         <Tabs value={view} onValueChange={(v) => setView(v as any)}>
           <TabsList>
-            <TabsTrigger value="chart"><BarChart3 className="h-4 w-4 mr-1" />图表</TabsTrigger>
-            <TabsTrigger value="table"><Table className="h-4 w-4 mr-1" />明细</TabsTrigger>
+            <TabsTrigger value="chart"><BarChart3 className="h-4 w-4 mr-1" />{t('chartPicker.viewChart')}</TabsTrigger>
+            <TabsTrigger value="table"><Table className="h-4 w-4 mr-1" />{t('chartPicker.viewTable')}</TabsTrigger>
             {sql && <TabsTrigger value="sql"><Code className="h-4 w-4 mr-1" />SQL</TabsTrigger>}
           </TabsList>
         </Tabs>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="sm" className="h-7 text-xs">
-              <Download className="h-3 w-3 mr-1" />导出
+              <Download className="h-3 w-3 mr-1" />{t('common:action.export')}
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-32">
             <DropdownMenuItem onClick={exportToExcel}>Excel</DropdownMenuItem>
             <DropdownMenuItem onClick={exportToCSV}>CSV</DropdownMenuItem>
-            <DropdownMenuItem onClick={exportChartToPNG}>图表 PNG</DropdownMenuItem>
+            <DropdownMenuItem onClick={exportChartToPNG}>{t('chartPicker.exportPng')}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -372,8 +380,7 @@ export default function ChartPicker({ data, defaultType, sql, onDrill }: Props) 
         {libraryNotice}
         {typeDegraded && (
           <p role="alert" className="mb-2 text-xs text-muted-foreground">
-            请求的图型「{typeDegraded.requested}」平台不支持，已按「{degradedLabel}」展示 ——
-            这是图型名不对，不是数据错了。可在下方下拉里改选其他图型。
+            {t('chartPicker.degradedNote', { requested: typeDegraded.requested, actual: degradedLabel })}
           </p>
         )}
         {isMapChart ? (

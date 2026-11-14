@@ -1,0 +1,57 @@
+{
+  "grid": {
+    "copiedRows_one": "已复制 {{count}} 行(TSV,可直接粘贴到表格软件)",
+    "copiedRows_other": "已复制 {{count}} 行(TSV,可直接粘贴到表格软件)",
+    "copyFailed": "复制失败,请手动选择内容复制",
+    "filterPlaceholder": "过滤所有列…",
+    "rowCount_one": "{{count}} 行",
+    "rowCount_other": "{{count}} 行",
+    "rowCountFiltered": "{{shown}} / {{total}} 行",
+    "sortInfo": " · 按 {{col}} {{dir}}",
+    "sortAsc": "升序",
+    "sortDesc": "降序",
+    "editHint": " · 双击单元格可编辑",
+    "exportCsv": "导出 CSV",
+    "noMatch": "没有匹配的行,试试换个关键字",
+    "sortTitle": "按 {{col}} 排序"
+  },
+  "profile": {
+    "title": "数据画像",
+    "kind": { "number": "数值", "category": "类别", "text": "文本", "datetime": "时间", "empty": "空列" },
+    "shape": "{{rows}} 行 × {{cols}} 列",
+    "missingRate": "缺失率",
+    "nonNullUnique": "非空 / 唯一",
+    "mean": "均值",
+    "topValue": "Top 值",
+    "listSeparator": "、"
+  },
+  "chartPicker": {
+    "mapHeat": "地图热力",
+    "drillJoin": " 且 ",
+    "drillQuestion": "下钻分析:{{cond}},请按其他维度拆解{{target}}并解释差异原因",
+    "drillTargetCol": "「{{col}}」",
+    "drillTargetMetric": "关键指标",
+    "libraryMissing": "字模库未加载，图表暂用默认样式（未按主题字模渲染）",
+    "groupLabel": "分组:",
+    "filterLabel": "筛选:",
+    "exportPngFailed": "图表 PNG 导出失败",
+    "exportPngFailedDesc": "瓦片或图源未允许跨域读取，无法拍成图片。可改用「PDF（浏览器打印）」，或换用支持跨域的瓦片源。",
+    "viewChart": "图表",
+    "viewTable": "明细",
+    "exportPng": "图表 PNG",
+    "degradedNote": "请求的图型「{{requested}}」平台不支持，已按「{{actual}}」展示 —— 这是图型名不对，不是数据错了。可在下方下拉里改选其他图型。"
+  },
+  "excel": {
+    "loadFailed": "Excel 预览加载失败,请稍后重试",
+    "savedAs": "已保存为 {{filename}}（原文件保留）",
+    "saveFailed": "保存失败,请稍后重试",
+    "previewLimit_one": "仅预览前 {{count}} 行",
+    "previewLimit_other": "仅预览前 {{count}} 行",
+    "unsavedCount": "{{count}} 处未保存",
+    "discard": "放弃修改",
+    "saveAsNew": "保存为新文件",
+    "parsing": "解析 Excel 中…",
+    "sheetEmpty": "该工作表没有数据",
+    "editNote": "编辑后「保存为新文件」写回会话工作区（{{filename}} 的新版本），原文件保留;按原单元格类型转换(数字/布尔保持类型,清空即置空)。"
+  }
+}

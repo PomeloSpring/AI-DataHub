@@ -90,9 +90,10 @@ describe('运行中的停止按钮（发送位就地切换）', () => {
   it('停止不再靠并排的文字按钮（旧「✕ 停止」不得回潮）', () => {
     const src = readFileSync(resolve(__dirname, '../Chat.tsx'), 'utf-8')
     expect(src).not.toMatch(/\?\s*'正在停止…'\s*:\s*'停止'/)
-    expect(src).toMatch(/aria-label="停止"/)
+    // 多语言口径：aria-label 走 i18n key（zh-CN 值仍是「停止」，上方渲染用例已钉）
+    expect(src).toMatch(/aria-label=\{t\('page\.stopAria'\)\}/)
     // 停止钮的 className 不得出现裸 hex（主题变量口径）
-    const stopLine = src.split('\n').filter(l => l.includes('aria-label="停止"') || l.includes('rounded-lg ring-1 ring-primary'))
+    const stopLine = src.split('\n').filter(l => l.includes("aria-label={t('page.stopAria')}") || l.includes('rounded-lg ring-1 ring-primary'))
     expect(stopLine.join('\n')).not.toMatch(/#[0-9a-fA-F]{3,8}/)
   })
 })

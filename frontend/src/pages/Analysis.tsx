@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Edit, Play, Maximize, Minimize, LayoutDashboard, Layers, ChevronDown, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -19,6 +20,7 @@ import { fetchVisibleGroups, collectBoardTags, filterBoards, isBoardFilterActive
   EMPTY_BOARD_FILTER, type BoardFilter, type GroupView } from '@/lib/dashboardCatalog';
 import { BoardFilterControl } from '@/components/DashboardBoardFilter';
 import client from '@/api/client';
+import i18n from '@/i18n';
 
 /**
  * 看板详情页(数据看板已收进工作空间):
@@ -28,6 +30,7 @@ import client from '@/api/client';
  * 可见集与组目录一律取 GET /dashboard/groups/visible(服务端 fail-closed)。
  */
 export default function Analysis() {
+  const { t } = useTranslation(['dashboard', 'common']);
   const params = useParams();
   const dashboardId = Number(params.dashboardId || params.id) || 0;
   const workspaceId = Number(params.workspaceId) || 0;
@@ -56,11 +59,11 @@ export default function Analysis() {
     try {
       setGroups(await fetchVisibleGroups());
     } catch {
-      setError('加载仪表盘组失败');
+      setError(t('browse.groupsLoadFailed'));
     } finally {
       setReady(true);
     }
-  }, []);
+  }, [t]);
   useEffect(() => { if (groupMode) void loadGroups(); }, [groupMode, loadGroups]);
 
   // 深链鲁棒: 全组找看板, 所在组即当前组(旧工作空间维度链接落组后同样可解析)
@@ -117,12 +120,12 @@ export default function Analysis() {
       // 此前浏览页从不登记，点刷新会静默 no-op（只回读旧缓存）。
       useDashboardStore.getState().adoptDashboard(data);
     } catch {
-      if (!cached) setError('加载看板失败');
-      else setRefreshError('看板最新内容加载失败，当前显示上次加载的结果');
+      if (!cached) setError(t('browse.boardLoadFailed'));
+      else setRefreshError(t('browse.refreshFailed'));
     } finally {
       setDetailLoading(false);
     }
-  }, []);
+  }, [t]);
   useEffect(() => {
     if (managementPreview && dashboardId) void loadDetail(dashboardId);
     else if (groupMode && current?.id) void loadDetail(current.id);
@@ -142,10 +145,10 @@ export default function Analysis() {
     navigate(target ? boardPath(target.id) : listPath);
   };
 
-  if (groupMode && !ready) return <div className="p-8" role="status">正在加载看板…</div>;
+  if (groupMode && !ready) return <div className="p-8" role="status">{t('browse.loadingBoard')}</div>;
   // 首帧没有任何内容才整页 loading；切换同组看板时保留页头与上一份内容，只在页头下显示进度条
   if (!detail && !error && (managementPreview || (current && current.status === 'enabled')))
-    return <div className="p-8" role="status">正在加载看板…</div>;
+    return <div className="p-8" role="status">{t('browse.loadingBoard')}</div>;
   if (!allowed || error) {
     // 完全没有仪表盘(非报错): 居中空态引导; 其余情况(未启用/无权限/加载失败)居中提示+操作
     const emptyCase = !error && !dashboardId && !current;
@@ -154,27 +157,27 @@ export default function Analysis() {
         {emptyCase ? (
           <>
             <LayoutDashboard className="h-10 w-10 text-muted-foreground" />
-            <p className="text-lg font-medium">没有仪表盘</p>
+            <p className="text-lg font-medium">{t('browse.noDashboards')}</p>
             <p className="text-sm text-muted-foreground">
               {(user?.role === 'admin')
-                ? '创建看板并编排组合、分配角色后，将在此展示。'
-                : '当前没有分配给你的仪表盘，可联系管理员为你的角色分配看板组合。'}
+                ? t('browse.emptyAdminHint')
+                : t('browse.emptyRoleHintDetail')}
             </p>
             <div className="flex items-center gap-2">
               {user?.role === 'admin' && (
-                <Button size="sm" onClick={() => navigate('/system/dashboards')}>去配置仪表盘</Button>
+                <Button size="sm" onClick={() => navigate('/system/dashboards')}>{t('browse.goConfigure')}</Button>
               )}
-              {!!listPath && <Button size="sm" variant="outline" onClick={() => navigate(listPath)}>返回看板清单</Button>}
-              <Button size="sm" variant="ghost" onClick={() => navigate('/')}>返回首页</Button>
+              {!!listPath && <Button size="sm" variant="outline" onClick={() => navigate(listPath)}>{t('browse.backToList')}</Button>}
+              <Button size="sm" variant="ghost" onClick={() => navigate('/')}>{t('browse.backHome')}</Button>
             </div>
           </>
         ) : (
           <>
-            <p role="status">{error || (current ? '该仪表盘未启用' : '看板不存在或无访问权限')}</p>
+            <p role="status">{error || (current ? t('browse.notEnabled') : t('browse.notFoundOrDenied'))}</p>
             <div className="flex items-center gap-2">
-              {error && <Button size="sm" variant="outline" onClick={() => (managementPreview ? void loadDetail(dashboardId) : void loadGroups())}>重试</Button>}
-              {!!listPath && <Button size="sm" variant="link" onClick={() => navigate(listPath)}>{managementPreview ? '返回看板列表' : '返回看板清单'}</Button>}
-              {!managementPreview && <Button size="sm" variant="link" onClick={() => navigate('/')}>返回首页</Button>}
+              {error && <Button size="sm" variant="outline" onClick={() => (managementPreview ? void loadDetail(dashboardId) : void loadGroups())}>{t('common:action.retry')}</Button>}
+              {!!listPath && <Button size="sm" variant="link" onClick={() => navigate(listPath)}>{managementPreview ? t('browse.backToManageList') : t('browse.backToList')}</Button>}
+              {!managementPreview && <Button size="sm" variant="link" onClick={() => navigate('/')}>{t('browse.backHome')}</Button>}
             </div>
           </>
         )}
@@ -196,9 +199,9 @@ export default function Analysis() {
   const groupSwitch = groupMode && groups.length > 1 && <DropdownMenu>
     <DropdownMenuTrigger asChild>
       {/* 组 chip 与同组分段控件同族（凹槽底 + 细描边），不再用 outline 按钮 → 与右侧凹槽不像两套组件 */}
-      <Button variant="ghost" size="sm" className="h-8 shrink-0 gap-1.5 rounded-full bg-muted/60 px-3 text-xs ring-1 ring-border/60 hover:bg-muted" aria-label="切换仪表盘组">
+      <Button variant="ghost" size="sm" className="h-8 shrink-0 gap-1.5 rounded-full bg-muted/60 px-3 text-xs ring-1 ring-border/60 hover:bg-muted" aria-label={t('browse.switchGroupAria')}>
         <Layers className="h-3.5 w-3.5 text-muted-foreground" />
-        <span className="max-w-[120px] truncate">{currentGroup?.name || '全部组合'}</span>
+        <span className="max-w-[120px] truncate">{currentGroup?.name || t('browse.allGroups')}</span>
         <ChevronDown className="h-3.5 w-3.5 opacity-60" />
       </Button>
     </DropdownMenuTrigger>
@@ -210,7 +213,7 @@ export default function Analysis() {
     </DropdownMenuContent>
   </DropdownMenu>;
   // 页头右侧的更新时间：贴操作凹槽（用户拍板：不显示图表数，时间靠右挨着刷新按钮）
-  const updatedText = (board as any).updated_at ? new Date((board as any).updated_at).toLocaleString('zh-CN') : '';
+  const updatedText = (board as any).updated_at ? new Date((board as any).updated_at).toLocaleString(i18n.language) : '';
   return <div ref={root} className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-background">
     {/* 页头不再是一片白底加一条线：card→background 的浅渐变把“工具栏”与“内容”拉开层次；
         色值一律走主题变量，9 套主题下都成立（不在组件里写裸 hex）。
@@ -219,17 +222,17 @@ export default function Analysis() {
         这里不再放对象徽标：顶栏已按同一 lockup 给出徽标 + 菜单名，上下两行叠同款徽标就是重复。 */}
     <header className="flex h-14 shrink-0 items-center gap-2 border-b px-3 sm:px-5"
       style={{ backgroundImage: 'linear-gradient(180deg, hsl(var(--card)) 0%, hsl(var(--background)) 100%)' }}>
-      {!!listPath && <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0" aria-label={managementPreview ? '返回看板列表' : '返回看板清单'} onClick={() => navigate(listPath)}><ArrowLeft className="h-4 w-4" /></Button>}
+      {!!listPath && <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0" aria-label={managementPreview ? t('browse.backToManageList') : t('browse.backToList')} onClick={() => navigate(listPath)}><ArrowLeft className="h-4 w-4" /></Button>}
       {groupSwitch}
       {groupSwitch && !!switchTabs && <span aria-hidden className="h-4 w-px shrink-0 bg-border" />}
       {/* 组内筛选：同组超过 4 张板才给这个入口（两三张时靠 pill 一眼认得出，多一个控件反而抖） */}
       {groupMode && enabled.length > 4 && (
         <BoardFilterControl tags={boardTags} value={boardFilter} onChange={setBoardFilter}
-          matched={shownBoards.length} total={enabled.length} label="筛选同组看板" />)}
+          matched={shownBoards.length} total={enabled.length} label={t('browse.filterLabel')} />)}
       {currentFilteredOut && (
         <span role="status" className="shrink-0 truncate text-[11px] text-muted-foreground"
-          title="当前看板不满足刚选的筛选条件，切换条里不展它；清除筛选可回到全部同组看板">
-          当前看板不在筛选结果内
+          title={t('browse.filteredOutTitle')}>
+          {t('browse.filteredOut')}
         </span>)}
       {switchTabs
         ? <>
@@ -242,15 +245,15 @@ export default function Analysis() {
       {/* 右侧簇：更新时间跟操作凹槽走（整簇 ml-auto 靠右，两者不会在行中间分家） */}
       <div className="ml-auto flex shrink-0 items-center gap-2">
         {!!updatedText && <span className="hidden whitespace-nowrap text-xs text-muted-foreground sm:block"
-          title={`最近更新于 ${updatedText}`}>更新于 {updatedText}</span>}
-        <div role="toolbar" aria-label="看板操作" className="flex shrink-0 items-center gap-1 rounded-full bg-muted/60 p-1 ring-1 ring-border/60">
+          title={t('browse.updatedTitle', { time: updatedText })}>{t('browse.updatedAt', { time: updatedText })}</span>}
+        <div role="toolbar" aria-label={t('browse.toolbarAria')} className="flex shrink-0 items-center gap-1 rounded-full bg-muted/60 p-1 ring-1 ring-border/60">
           <DashboardAutoRefresh key={board.id} onRefresh={refreshData} loading={detailLoading} menuItems={<>
-            <DropdownMenuItem disabled={board.status !== 'enabled'} onClick={play}><Play className="mr-2 h-4 w-4" />大屏播放</DropdownMenuItem>
-            {managementPreview && board.editable && <DropdownMenuItem onClick={edit}><Edit className="mr-2 h-4 w-4" />编辑看板</DropdownMenuItem>}
+            <DropdownMenuItem disabled={board.status !== 'enabled'} onClick={play}><Play className="mr-2 h-4 w-4" />{t('browse.playScreen')}</DropdownMenuItem>
+            {managementPreview && board.editable && <DropdownMenuItem onClick={edit}><Edit className="mr-2 h-4 w-4" />{t('browse.editBoard')}</DropdownMenuItem>}
           </>} />
-          {managementPreview && board.editable && <Button className="hidden h-8 w-8 sm:inline-flex" size="icon" variant="ghost" title="编辑看板" aria-label="编辑看板" onClick={edit}><Edit className="h-4 w-4" /></Button>}
-          <Button className="hidden h-8 w-8 sm:inline-flex" size="icon" variant="ghost" title="大屏播放" aria-label="大屏播放" disabled={board.status !== 'enabled'} onClick={play}><Play className="h-4 w-4" /></Button>
-          <Button className="h-8 w-8" size="icon" variant="ghost" title={fullscreen ? '退出全屏' : '全屏阅读'} aria-label={fullscreen ? '退出全屏' : '全屏阅读'} onClick={() => void toggleFullscreen()}>{fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}</Button>
+          {managementPreview && board.editable && <Button className="hidden h-8 w-8 sm:inline-flex" size="icon" variant="ghost" title={t('browse.editBoard')} aria-label={t('browse.editBoard')} onClick={edit}><Edit className="h-4 w-4" /></Button>}
+          <Button className="hidden h-8 w-8 sm:inline-flex" size="icon" variant="ghost" title={t('browse.playScreen')} aria-label={t('browse.playScreen')} disabled={board.status !== 'enabled'} onClick={play}><Play className="h-4 w-4" /></Button>
+          <Button className="h-8 w-8" size="icon" variant="ghost" title={fullscreen ? t('browse.exitFullscreen') : t('browse.fullscreenRead')} aria-label={fullscreen ? t('browse.exitFullscreen') : t('browse.fullscreenRead')} onClick={() => void toggleFullscreen()}>{fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}</Button>
         </div>
       </div>
       {/* 看板详情页不放 AS-BOT 入口（2026-11-11 拍板）：阅读时右侧托盘会挤占画布，
@@ -258,10 +261,10 @@ export default function Analysis() {
           AS-BOT 仍在数据中台/系统模块顶栏（DataPlatformLayout / SystemLayout）提供，功能不因此丢失 */}
     </header>
     {/* 加载/切换中的细进度条：保留页头与上一份内容，不再整页换成“正在加载看板…” */}
-    {detailLoading && <div role="progressbar" aria-label="正在加载看板" className="skeleton h-0.5 w-full shrink-0 rounded-none" />}
+    {detailLoading && <div role="progressbar" aria-label={t('browse.loadingAria')} className="skeleton h-0.5 w-full shrink-0 rounded-none" />}
     {!!refreshError && <p role="alert" className="flex shrink-0 items-center gap-2 px-3 py-1 text-xs text-destructive sm:px-6">{refreshError}
-      <Button size="sm" variant="link" className="h-auto p-0 text-xs" onClick={() => void loadDetail(wantedId || board.id)}>重试</Button></p>}
-    {library.error && <p role="alert" className="px-4 text-sm">{library.error}<Button variant="link" onClick={library.refresh}>重试</Button></p>}
+      <Button size="sm" variant="link" className="h-auto p-0 text-xs" onClick={() => void loadDetail(wantedId || board.id)}>{t('common:action.retry')}</Button></p>}
+    {library.error && <p role="alert" className="px-4 text-sm">{library.error}<Button variant="link" onClick={library.refresh}>{t('common:action.retry')}</Button></p>}
     {/* 动效预设失效（下架/禁用/系统减少动效）要说在明处，不能让用户以为“挂了没反应” */}
     {motionReason && <p role="status" className="shrink-0 px-4 py-1 text-xs text-muted-foreground">{motionReason}</p>}
     <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden" style={{ backgroundImage: 'linear-gradient(180deg, hsl(var(--muted) / 0.45) 0%, hsl(var(--muted) / 0.15) 220px, transparent 100%)' }}>

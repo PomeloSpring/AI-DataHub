@@ -1,0 +1,57 @@
+{
+  "grid": {
+    "copiedRows_one": "Copied {{count}} row (TSV, paste directly into spreadsheet software)",
+    "copiedRows_other": "Copied {{count}} rows (TSV, paste directly into spreadsheet software)",
+    "copyFailed": "Copy failed; please select and copy the content manually",
+    "filterPlaceholder": "Filter all columns…",
+    "rowCount_one": "{{count}} row",
+    "rowCount_other": "{{count}} rows",
+    "rowCountFiltered": "{{shown}} / {{total}} rows",
+    "sortInfo": " · by {{col}} {{dir}}",
+    "sortAsc": "ascending",
+    "sortDesc": "descending",
+    "editHint": " · double-click a cell to edit",
+    "exportCsv": "Export CSV",
+    "noMatch": "No matching rows; try a different keyword",
+    "sortTitle": "Sort by {{col}}"
+  },
+  "profile": {
+    "title": "Data profile",
+    "kind": { "number": "Number", "category": "Category", "text": "Text", "datetime": "Datetime", "empty": "Empty column" },
+    "shape": "{{rows}} rows × {{cols}} columns",
+    "missingRate": "Missing rate",
+    "nonNullUnique": "Non-null / unique",
+    "mean": "Mean",
+    "topValue": "Top value",
+    "listSeparator": ", "
+  },
+  "chartPicker": {
+    "mapHeat": "Map heatmap",
+    "drillJoin": " and ",
+    "drillQuestion": "Drill-down analysis: {{cond}}. Break down {{target}} by other dimensions and explain the differences",
+    "drillTargetCol": "\"{{col}}\"",
+    "drillTargetMetric": "the key metric",
+    "libraryMissing": "The style library is not loaded; charts use the default style (not rendered with the theme)",
+    "groupLabel": "Group:",
+    "filterLabel": "Filter:",
+    "exportPngFailed": "Chart PNG export failed",
+    "exportPngFailedDesc": "The tiles or image source do not allow cross-origin reads, so the chart cannot be captured. Use PDF (browser print) instead, or switch to a CORS-enabled tile source.",
+    "viewChart": "Chart",
+    "viewTable": "Details",
+    "exportPng": "Chart PNG",
+    "degradedNote": "The requested chart type \"{{requested}}\" is not supported; showing \"{{actual}}\" instead — the type name was wrong, not the data. Pick another type in the dropdown below."
+  },
+  "excel": {
+    "loadFailed": "Failed to load the Excel preview; please retry later",
+    "savedAs": "Saved as {{filename}} (original file kept)",
+    "saveFailed": "Save failed; please retry later",
+    "previewLimit_one": "Previewing the first {{count}} row only",
+    "previewLimit_other": "Previewing the first {{count}} rows only",
+    "unsavedCount": "{{count}} unsaved changes",
+    "discard": "Discard changes",
+    "saveAsNew": "Save as new file",
+    "parsing": "Parsing Excel…",
+    "sheetEmpty": "This sheet has no data",
+    "editNote": "After editing, Save as new file writes back to the conversation workspace (a new version of {{filename}}); the original is kept. Values are converted by the original cell type (numbers/booleans keep their type; clearing sets empty)."
+  }
+}

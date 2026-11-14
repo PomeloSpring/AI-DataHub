@@ -1,6 +1,7 @@
 import { useMemo, type CSSProperties, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useTranslation } from 'react-i18next';
 import { FileText, MessageSquare } from 'lucide-react';
 import ChartPicker from './ChartPicker';
 import MermaidBlock from './MermaidBlock';
@@ -70,6 +71,7 @@ function RevealBlock({ show, className, style, children }: { show: boolean; clas
  * 解析失败降级为代码块。图表/卡片内嵌于 content,天然随消息持久化与回放。
  */
 export default function MarkdownWithCharts({ text, className, conversationId, onDrill, onDesignContinue, onSaveReport, sections = false, streaming = false, reveal = false }: Props) {
+  const { t } = useTranslation('chat');
   const segments = useMemo(() => splitChartBlocks(text || '', streaming), [text, streaming]);
   // 逐段滑入的节奏（时长/错峰/上限）取自动效解析口，不再写死 90ms/450ms
   const { motion } = useMotion();
@@ -110,7 +112,7 @@ export default function MarkdownWithCharts({ text, className, conversationId, on
                   >
                     <StageCard
                       icon={sec.title ? FileText : MessageSquare}
-                      title={sec.title || '回答'}
+                      title={sec.title || t('renderDoc.sectionFallback')}
                       collapsible
                       defaultOpen
                       animate={false}
@@ -188,7 +190,7 @@ export default function MarkdownWithCharts({ text, className, conversationId, on
           // 渲染机调用还在流式输出：给进度占位，不把半途 JSON 当代码块念给用户
           return (
             <div key={i} role="status" className="my-3 rounded-lg border bg-card px-3 py-3 text-xs text-muted-foreground">
-              正在组装交付文档…
+              {t('renderDoc.assembling')}
             </div>
           );
         }

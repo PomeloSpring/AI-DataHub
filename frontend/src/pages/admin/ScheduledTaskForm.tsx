@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -35,6 +36,7 @@ interface Props {
 }
 
 export default function ScheduledTaskForm({ task, onClose }: Props) {
+  const { t } = useTranslation(['workspace', 'common']);
   const { currentWorkspaceId } = useWorkspaceStore();
   const isEdit = !!task;
   const workspaceId = task?.workspace_id ?? currentWorkspaceId;
@@ -115,15 +117,15 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
 
   // ── Submit ────────────────────────────────────────────────────
   const handleSubmit = async () => {
-    if (!name.trim()) { toast.error('请输入任务名称'); return; }
+    if (!name.trim()) { toast.error(t('schedule.form.nameRequired')); return; }
     if (triggerType !== 'webhook' && !cronExpression.trim()) {
-      toast.error('定时触发模式下请输入 Cron 表达式'); return;
+      toast.error(t('schedule.form.cronRequired')); return;
     }
 
     // 任务只带问题清单：AS-BOT 与数据源都不选——能力与可查范围按当前用户的角色实时继承，
     // 让用户去选一个他看不见也管不了的内部标识，等于把平台职责推给使用者。
     if (questions.some(q => !q.question?.trim())) {
-      toast.error('每个分析问题都要填写内容'); return;
+      toast.error(t('schedule.form.questionRequired')); return;
     }
 
     const taskConfig: any = { questions };
@@ -150,21 +152,21 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
     try {
       if (isEdit && task) {
         await updateScheduledTask(task.id, req);
-        toast.success('更新成功');
+        toast.success(t('schedule.form.updateSuccess'));
       } else {
         await createScheduledTask(req);
-        toast.success('创建成功');
+        toast.success(t('schedule.form.createSuccess'));
       }
       onClose(true);
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '保存失败');
+      toast.error(e?.response?.data?.detail || t('common:state.saveFailed'));
     } finally {
       setSaving(false);
     }
   };
 
   // ── Labels ──────────────────────────────────────────────────
-  const questionLabel = '分析问题';
+  const questionLabel = t('schedule.form.questions');
 
   // 根容器不写 overflow-hidden：输入框是 w-full，focus 环（ring-2 + ring-offset-2 = 4px）
   // 本来就要画到盒子外；这里再剪一刀，左右两段圆弧就没了（只剩上下两条，看着像提示线断了）。
@@ -172,16 +174,16 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
   return (
     <div className="space-y-4 min-w-0">
       <DialogHeader>
-        <DialogTitle>{isEdit ? '编辑定时任务' : '新建定时任务'}</DialogTitle>
+        <DialogTitle>{isEdit ? t('schedule.form.editTitle') : t('schedule.form.createTitle')}</DialogTitle>
         <DialogDescription>
-          配置定时执行的 Agent 分析任务
+          {t('schedule.subtitle')}
         </DialogDescription>
       </DialogHeader>
 
       {/* ── Basic Info ──────────────────────────────────────── */}
       <div className="space-y-1.5">
-        <Label>任务名称 *</Label>
-        <Input value={name} onChange={e => setName(e.target.value)} placeholder="如：每日销售日报" />
+        <Label>{t('schedule.form.nameLabel')}</Label>
+        <Input value={name} onChange={e => setName(e.target.value)} placeholder={t('schedule.form.namePlaceholder')} />
       </div>
 
       {/* ── 执行身份（新架构：零选择，按当前用户角色继承）──────────────────
@@ -190,10 +192,9 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
           - 数据源对用户是黑盒（护栏 §7），用户既看不见也不该选；可查范围就是角色授权集。
           范围有歧义时由 Agent 按站点业务名自解析，跨站需求写进问题或上下文即可。 */}
       <div className="rounded-lg border bg-muted/30 p-3 space-y-1">
-        <Label className="text-xs font-normal text-muted-foreground">执行身份</Label>
+        <Label className="text-xs font-normal text-muted-foreground">{t('schedule.form.identity')}</Label>
         <p className="text-xs text-muted-foreground leading-5">
-          按你的角色与权限执行：分析能力由角色绑定的 AS-BOT 决定，可查数据范围随角色授权变化。
-          跨站点请在问题或任务背景里点名站点（如「只看中国」）；未点名时各站分别统计、不相加合计。
+          {t('schedule.form.identityNote')}
         </p>
       </div>
 
@@ -202,7 +203,7 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
         <div className="flex items-center justify-between">
           <Label>{questionLabel}</Label>
           <Button variant="outline" size="sm" onClick={addQuestion}>
-            <Plus className="w-3 h-3 mr-1" />添加
+            <Plus className="w-3 h-3 mr-1" />{t('common:action.add')}
           </Button>
         </div>
         {questions.map((q, idx) => (
@@ -211,7 +212,7 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
               <Input
                 value={q.title}
                 onChange={e => updateQuestion(idx, 'title', e.target.value)}
-                placeholder="标题"
+                placeholder={t('schedule.form.questionTitlePlaceholder')}
                 className="flex-1"
               />
               {questions.length > 1 && (
@@ -223,7 +224,7 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
             <Textarea
               value={q.question || ''}
               onChange={e => updateQuestion(idx, 'question', e.target.value)}
-              placeholder="分析本月销售趋势，找出异常波动"
+              placeholder={t('schedule.form.questionPlaceholder')}
               rows={2}
             />
           </div>
@@ -232,24 +233,24 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
 
       {/* ── Context ─────────────────────────────────────────── */}
       <div className="space-y-1.5">
-        <Label>上下文（可选）</Label>
+        <Label>{t('schedule.form.context')}</Label>
         <Textarea
           value={context}
           onChange={e => setContext(e.target.value)}
-          placeholder="给 Agent 的额外说明，如：这是一份周报，请用简洁的商务语言；只看中国站"
+          placeholder={t('schedule.form.contextPlaceholder')}
           rows={2}
         />
       </div>
 
       {/* ── Trigger Type ──────────────────────────────────────── */}
       <div className="space-y-1.5">
-        <Label>触发方式</Label>
+        <Label>{t('schedule.col.trigger')}</Label>
         <Select value={triggerType} onValueChange={(v: 'cron' | 'webhook' | 'both') => setTriggerType(v)}>
           <SelectTrigger><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="cron">定时触发</SelectItem>
-            <SelectItem value="webhook">Webhook 触发</SelectItem>
-            <SelectItem value="both">两者都支持</SelectItem>
+            <SelectItem value="cron">{t('schedule.form.triggerCron')}</SelectItem>
+            <SelectItem value="webhook">{t('schedule.form.triggerWebhook')}</SelectItem>
+            <SelectItem value="both">{t('schedule.form.triggerBoth')}</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -264,7 +265,7 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
         <div className="space-y-3 rounded-lg border p-4 bg-muted/30">
           <div className="flex items-center gap-2">
             <Webhook className="h-4 w-4" />
-            <Label className="font-medium">Webhook 配置</Label>
+            <Label className="font-medium">{t('schedule.form.webhookConfig')}</Label>
           </div>
 
           {/* Webhook URL — only in edit mode */}
@@ -283,7 +284,7 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
                   size="icon"
                   onClick={() => {
                     navigator.clipboard.writeText(`${window.location.origin}/api/webhook/tasks/${task?.id}/${webhookToken}`);
-                    toast.success('已复制 Webhook URL');
+                    toast.success(t('schedule.webhookCopied'));
                   }}
                 >
                   <Copy className="h-4 w-4" />
@@ -297,30 +298,30 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
                     try {
                       const res = await regenerateWebhookToken(task.id);
                       setWebhookToken(res.webhook_token);
-                      toast.success('已重新生成 Webhook URL');
-                    } catch { toast.error('重新生成失败'); }
+                      toast.success(t('schedule.form.webhookRegenerated'));
+                    } catch { toast.error(t('schedule.form.webhookRegenFailed')); }
                   }}
                 >
                   <RefreshCw className="h-4 w-4" />
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                外部系统 POST 此 URL 即可触发任务执行。重新生成后旧 URL 立即失效。
+                {t('schedule.form.webhookNote')}
               </p>
             </div>
           )}
 
           {/* Webhook Secret */}
           <div className="space-y-1.5">
-            <Label className="text-sm">签名密钥（可选）</Label>
+            <Label className="text-sm">{t('schedule.form.secret')}</Label>
             <Input
               type="password"
               value={webhookSecret}
               onChange={e => setWebhookSecret(e.target.value)}
-              placeholder="留空则不验证签名"
+              placeholder={t('schedule.form.secretPlaceholder')}
             />
             <p className="text-xs text-muted-foreground">
-              配置后，调用方需在请求头 <code>X-Webhook-Signature</code> 中传递 HMAC-SHA256 签名。
+              {t('schedule.form.secretNoteBefore')}<code>X-Webhook-Signature</code>{t('schedule.form.secretNoteAfter')}
             </p>
           </div>
         </div>
@@ -329,14 +330,14 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
       {/* ── Notification & Report ───────────────────────────── */}
       <div className="grid grid-cols-2 gap-4 min-w-0">
         <div className="space-y-1.5 min-w-0">
-          <Label>通知渠道</Label>
+          <Label>{t('schedule.form.channel')}</Label>
           <Select
             value={channelId ? String(channelId) : 'none'}
             onValueChange={v => setChannelId(v === 'none' ? null : Number(v))}
           >
-            <SelectTrigger><SelectValue placeholder="不通知" /></SelectTrigger>
+            <SelectTrigger><SelectValue placeholder={t('schedule.form.noNotify')} /></SelectTrigger>
             <SelectContent onCloseAutoFocus={(e: any) => e.preventDefault()}>
-              <SelectItem value="none">不通知</SelectItem>
+              <SelectItem value="none">{t('schedule.form.noNotify')}</SelectItem>
               {channels.map(ch => (
                 <SelectItem key={ch.id} value={String(ch.id)}>{ch.name}</SelectItem>
               ))}
@@ -344,20 +345,20 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
           </Select>
         </div>
         <div className="space-y-1.5">
-          <Label>报告模板</Label>
+          <Label>{t('schedule.form.template')}</Label>
           <Select
             value={reportTemplateKey || 'none'}
             onValueChange={v => setReportTemplateKey(v === 'none' ? '' : v)}
           >
-            <SelectTrigger><SelectValue placeholder="无模板" /></SelectTrigger>
+            <SelectTrigger><SelectValue placeholder={t('schedule.form.noTemplate')} /></SelectTrigger>
             <SelectContent onCloseAutoFocus={(e: any) => e.preventDefault()}>
-              <SelectItem value="none">无模板</SelectItem>
+              <SelectItem value="none">{t('schedule.form.noTemplate')}</SelectItem>
               {reportTemplates.map(tpl => {
                 const fmt = (tpl.style_config as any)?.format || 'markdown';
                 return (
                   <SelectItem key={tpl.id} value={String(tpl.id)}>
                     {tpl.name}（{fmt === 'html' ? 'HTML' : 'MD'}）
-                    {tpl.is_builtin ? ' · 内置' : ''}
+                    {tpl.is_builtin ? t('schedule.form.builtinSuffix') : ''}
                   </SelectItem>
                 );
               })}
@@ -370,35 +371,35 @@ export default function ScheduledTaskForm({ task, onClose }: Props) {
       <div className="grid grid-cols-3 gap-4 min-w-0">
         <div className="flex items-center gap-2 min-w-0">
           <Switch checked={notifyOnSuccess} onCheckedChange={setNotifyOnSuccess} />
-          <Label className="text-sm">成功时通知</Label>
+          <Label className="text-sm">{t('schedule.form.notifySuccess')}</Label>
         </div>
         <div className="flex items-center gap-2">
           <Switch checked={notifyOnFailure} onCheckedChange={setNotifyOnFailure} />
-          <Label className="text-sm">失败时通知</Label>
+          <Label className="text-sm">{t('schedule.form.notifyFailure')}</Label>
         </div>
         <div className="flex items-center gap-2">
           <Switch checked={isActive} onCheckedChange={setIsActive} />
-          <Label className="text-sm">启用</Label>
+          <Label className="text-sm">{t('schedule.col.enabled')}</Label>
         </div>
       </div>
 
       {/* ── Advanced ────────────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-4 min-w-0">
         <div className="space-y-1.5 min-w-0">
-          <Label>超时（秒）</Label>
+          <Label>{t('schedule.form.timeout')}</Label>
           <Input type="number" value={timeoutSeconds} onChange={e => setTimeoutSeconds(Number(e.target.value))} />
         </div>
         <div className="space-y-1.5">
-          <Label>失败重试次数</Label>
+          <Label>{t('schedule.form.retries')}</Label>
           <Input type="number" value={maxRetries} onChange={e => setMaxRetries(Number(e.target.value))} />
         </div>
       </div>
 
       {/* ── Actions ─────────────────────────────────────────── */}
       <div className="flex justify-end gap-2 pt-2">
-        <Button variant="outline" onClick={() => onClose()}>取消</Button>
+        <Button variant="outline" onClick={() => onClose()}>{t('common:action.cancel')}</Button>
         <Button onClick={handleSubmit} disabled={saving}>
-          {saving ? '保存中...' : isEdit ? '更新' : '创建'}
+          {saving ? t('common:action.saving') : isEdit ? t('schedule.form.update') : t('schedule.form.create')}
         </Button>
       </div>
     </div>

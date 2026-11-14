@@ -1,4 +1,5 @@
 import { forwardRef, memo, useMemo, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import DashboardChart from './DashboardChart';
 import { useDashboardStore, type Dashboard, type DashboardChart as ChartModel } from '@/stores/dashboardStore';
 import type { VisComponent } from '@/api/visLibrary';
@@ -13,9 +14,6 @@ import { ChartGlyph } from './ChartGlyph';
 import { useMotion, boardMotionRef } from '@/hooks/useMotion';
 import { canvasEntrance, enterClass, enterStaggerStyle, g2Animate } from '@/lib/motion';
 import { TEMPLATE_DEMO_KEY } from '@/lib/dashboardDemo';
-
-/** 样式模板图（内置演示数值）的角标提示：降级必须显式，用户得知道自己看的是样式示例而非取数结果 */
-export const DEMO_DATA_HINT = '图表样式示例数据（模板内置，不取数）。要让这张卡出真数，在「数据与字段配置」里写 SQL 或语义查询；保存后示例数据与标记会自动清除。';
 
 /** 参数值算不算“给了值”：空串 / 空数组 / 区间对象两端皆空 = 没给（与后端 bound_args 同口径） */
 function hasParamValue(value: unknown): boolean {
@@ -34,6 +32,7 @@ export const DashboardChartCard = memo(function DashboardChartCard({ chart, desi
   /** 图表入场动画（板上动效预设的 chart 段）；缺省 = 不写 animate 键，与改造前逐字节相同 */
   motionAnimate?: Record<string, any> | false;
 }) {
+  const { t } = useTranslation(['dashboard']);
   const resolved = resolveChartDesign(chart.config, design, items, chart.chart_type);
   // 实时取数覆盖层：编辑器/看板浏览页/大屏/弹窗页四个渲染面共用一份刷新结果，
   // 否则非 store 宿主的页面点刷新只会看到旧缓存（历史缺陷）。
@@ -82,21 +81,21 @@ export const DashboardChartCard = memo(function DashboardChartCard({ chart, desi
       <span className="flex min-w-0 items-center gap-1.5">
         <span className="truncate font-medium">{chart.name}</span>
         {demoBadge && chart.config?.[TEMPLATE_DEMO_KEY] === true && <span
-          title={DEMO_DATA_HINT}
-          className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-normal leading-4 text-amber-600">示例数据</span>}
+          title={t('canvas.demoHint')}
+          className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-normal leading-4 text-amber-600">{t('canvas.demoBadge')}</span>}
         {paramHint && <span
           title={paramHint.title}
           className="shrink-0 rounded border border-orange-500/40 bg-orange-500/10 px-1 text-[10px] font-normal leading-4 text-orange-700">{paramHint.text}</span>}
         {/* 本次取数未完成（数据源并发排队超限 / 超时 / 被拒）：卡片上留着可见标记 + 完整原因，
             不得只靠一次就消失的 toast 把“在排队”说成“没变化”（no-silent-degradation） */}
         {paramDiag?.notice && <span
-          title={`本次取数未完成：${paramDiag.notice}`}
-          className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-normal leading-4 text-amber-600">取数未完成</span>}
+          title={t('canvas.fetchIncompleteTitle', { notice: paramDiag.notice })}
+          className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-normal leading-4 text-amber-600">{t('canvas.fetchIncomplete')}</span>}
       </span>
       {actions}
     </div>}
     {widget && actions && <div className="absolute right-0 top-0 z-20">{actions}</div>}
-    {resolved.missing.length > 0 && <span className="px-2 text-xs text-amber-600" title={resolved.missing.join(', ')}>字模缺失，保留原配置</span>}
+    {resolved.missing.length > 0 && <span className="px-2 text-xs text-amber-600" title={resolved.missing.join(', ')}>{t('canvas.missingCard')}</span>}
     <div {...(inertWidget ? { inert: '' } as any : {})} className="relative min-h-0 flex-1 overflow-hidden" style={{ padding: widget ? ws.padding : 4, color: ws.textColor, fontSize: ws.fontSize }}>
       <DashboardChart chartType={chart.chart_type} data={chartData(liveCache ? { ...chart, data_cache: liveCache } : chart)} config={resolved.config}
         visual={{ ...resolved.visual, viewBg: cfg.cardBg || resolved.visual.viewBg }} chartId={draft ? undefined : chart.id}
@@ -170,6 +169,7 @@ function useReplayWindow(nonce: number | undefined, totalMs: number): boolean {
 export const DashboardCanvas = forwardRef<HTMLDivElement, CanvasProps>(function DashboardCanvas({
   dashboard, items = [], style, children, showGrid, draft, interactive, demoBadge = true, renderChart, entrance, entranceReplay,
 }, ref) {
+  const { t } = useTranslation(['dashboard']);
   const theme = useThemeStore(s => s.theme);
   // 板上挂载的动效预设优先于个人偏好（播放场景是"给别人看"，观感由这块板决定）
   const { motion, cssVars, origin } = useMotion({ board: boardMotionRef(dashboard.filters) });
@@ -192,7 +192,7 @@ export const DashboardCanvas = forwardRef<HTMLDivElement, CanvasProps>(function 
   }}>
     {bg.overlay && <div className="pointer-events-none absolute inset-0" style={{ backgroundImage: bg.overlay }} />}
     {showGrid && <div className="pointer-events-none absolute inset-0" style={gridBackgroundStyle(canvas.gridSize, canvas.gridSize)} />}
-    {design.missing.length > 0 && <div className="absolute right-2 top-1 z-10 text-xs text-amber-600">部分字模缺失，已保留原配置</div>}
+    {design.missing.length > 0 && <div className="absolute right-2 top-1 z-10 text-xs text-amber-600">{t('canvas.missingBoard')}</div>}
     {chartRefs.map(chart => {
       const card = <DashboardChartCard chart={chart} items={items} design={design} draft={draft} interactive={interactive} demoBadge={demoBadge} dashboardId={dashboard.id} motionAnimate={chartAnimate} />;
       // 编辑器用 renderChart 自己套定位 wrapper（transform 定位），入场 class 传出让它挂到内层内容 div。
@@ -227,6 +227,7 @@ export function ResponsiveDashboardCanvas({ dashboard, items = [], draft, intera
   breakpoint?: PageBreakpoint; layout?: PageItem[]; onWidth?: (width: number) => void;
   renderItem?: (item: PageItem, card: ReactNode, style: CSSProperties, enter: string) => ReactNode;
 }) {
+  const { t } = useTranslation(['dashboard']);
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const theme = useThemeStore(s => s.theme);
@@ -246,8 +247,8 @@ export function ResponsiveDashboardCanvas({ dashboard, items = [], draft, intera
   const design = useMemo(() => resolveDashboardDesign(legacyCanvasFilters(dashboard.filters), items, { theme }), [dashboard.filters, items, theme]);
   const result = useMemo(() => {
     try { return { items: layout || resolvePageLayout(dashboard, bp), error: '' }; }
-    catch (error) { return { items: [], error: error instanceof Error ? error.message : '页面布局读取失败' }; }
-  }, [dashboard, bp, layout]);
+    catch (error) { return { items: [], error: error instanceof Error ? error.message : t('canvas.layoutError') }; }
+  }, [dashboard, bp, layout, t]);
   const shown = draft ? result.items : result.items.filter(item => !isChartHidden(item.chart));
   // v3 行单位是纯 4px 像素，所以这里 rowGap 必须为 0（间距只当列间距用），
   // 否则 CSS 行间距会叠加到 gridAutoRows 上，一改间距就把所有卡片高度拉扇。
@@ -258,7 +259,7 @@ export function ResponsiveDashboardCanvas({ dashboard, items = [], draft, intera
     backgroundImage: design.background.backgroundImage, backgroundSize: design.background.backgroundSize,
     ...cssVars,
   }}>
-    {result.error ? <p role="alert" className="p-6 text-destructive">{result.error}</p> : !shown.length ? <p className="p-12 text-center text-muted-foreground">此看板暂无图表</p> :
+    {result.error ? <p role="alert" className="p-6 text-destructive">{result.error}</p> : !shown.length ? <p className="p-12 text-center text-muted-foreground">{t('canvas.noCharts')}</p> :
       <div className="grid min-w-0" style={{
         gridTemplateColumns: `repeat(${PAGE_COLUMNS[bp]}, minmax(0, 1fr))`, gridAutoRows: PAGE_ROW,
         columnGap: gap, rowGap: 0,
@@ -279,6 +280,7 @@ export function ResponsiveDashboardCanvas({ dashboard, items = [], draft, intera
 export function CanvasRulers({ canvas, scale, pan, active, visible = true }: {
   canvas: { width: number; height: number }; scale: number; pan: { x: number; y: number }; active?: Rect; visible?: boolean;
 }) {
+  const { t } = useTranslation(['dashboard']);
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   useEffect(() => {
@@ -306,7 +308,7 @@ export function CanvasRulers({ canvas, scale, pan, active, visible = true }: {
   const y = (size.height - canvas.height * scale) / 2 + pan.y;
   // 标尺可关：小缩放下刻度信息量低但占两行空间
   if (!visible) return null;
-  return <div ref={ref} aria-label="画布坐标标尺" className="pointer-events-none absolute inset-0 z-30 text-muted-foreground">
+  return <div ref={ref} aria-label={t('canvas.rulersAria')} className="pointer-events-none absolute inset-0 z-30 text-muted-foreground">
     <svg className="absolute left-0 top-0 h-6 w-full border-b bg-background/95">
       {active && <rect x={x + active.x * scale} width={active.w * scale} height={24} fill="hsl(var(--primary) / 0.15)" />}
       {ticks(size.width, x, canvas.width, false)}
@@ -329,6 +331,7 @@ export function CanvasRulers({ canvas, scale, pan, active, visible = true }: {
  * 两者共用 `lib/dashboardThumbnail.ts: thumbnailGeometry` 的几何算点。
  */
 export function DashboardThumbnail({ dashboard, items = [] }: { dashboard: Pick<Dashboard, 'filters' | 'charts'>; items?: VisComponent[] }) {
+  const { t } = useTranslation(['dashboard']);
   const theme = useThemeStore(s => s.theme);
   const design = resolveDashboardDesign(legacyCanvasFilters(dashboard.filters), items, { theme });
   const { isPage, pageItems, canvas, box } = useMemo(() => thumbnailGeometry(dashboard), [dashboard]);
@@ -346,6 +349,6 @@ export function DashboardThumbnail({ dashboard, items = [] }: { dashboard: Pick<
         <div className="flex h-[calc(100%-4px)] items-stretch"><ChartGlyph chartType={c.chart_type} palette={palette || []} /></div>
       </div>;
     })}
-    {!tiles.length && <span className="absolute inset-0 flex items-center justify-center text-xs text-slate-400">空白画布</span>}
+    {!tiles.length && <span className="absolute inset-0 flex items-center justify-center text-xs text-slate-400">{t('canvas.empty')}</span>}
   </div>;
 }

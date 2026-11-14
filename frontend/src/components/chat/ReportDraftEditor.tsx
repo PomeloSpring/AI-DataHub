@@ -7,6 +7,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Archive, Check, Loader2, Save, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -25,6 +26,7 @@ interface Props {
 }
 
 export default function ReportDraftEditor({ draft, onClose, onSave, onArchive, busy = false }: Props) {
+  const { t } = useTranslation(['chat', 'common']);
   const [title, setTitle] = useState(draft.title);
   const [markdown, setMarkdown] = useState(draft.markdown);
   const [saving, setSaving] = useState(false);
@@ -39,11 +41,11 @@ export default function ReportDraftEditor({ draft, onClose, onSave, onArchive, b
 
   const persist = async (): Promise<boolean> => {
     if (!title.trim()) {
-      toast.error('报告标题不能为空');
+      toast.error(t('reportDraft.titleRequired'));
       return false;
     }
     if (!markdown.trim()) {
-      toast.error('报告正文不能为空');
+      toast.error(t('reportDraft.bodyRequired'));
       return false;
     }
     setSaving(true);
@@ -62,15 +64,15 @@ export default function ReportDraftEditor({ draft, onClose, onSave, onArchive, b
 
   const handleSave = async () => {
     const ok = await persist();
-    if (ok) toast.success('草稿已保存到本会话');
-    else toast.error('草稿保存失败（会话记录未写入），请重试');
+    if (ok) toast.success(t('reportDraft.saved'));
+    else toast.error(t('reportDraft.saveFailed'));
   };
 
   const handleArchive = async () => {
     if (dirty) {
       const ok = await persist();
       if (!ok) {
-        toast.error('草稿没能写入会话，已停止归档（归档读的是会话里那份正文）');
+        toast.error(t('reportDraft.archiveBlocked'));
         return;
       }
     }
@@ -79,7 +81,7 @@ export default function ReportDraftEditor({ draft, onClose, onSave, onArchive, b
 
   const handleClose = () => {
     if (dirty) {
-      if (!window.confirm('草稿有未保存的修改，确定关闭？关闭后这些修改会丢失。')) return;
+      if (!window.confirm(t('reportDraft.unsavedConfirm'))) return;
     }
     onClose();
   };
@@ -95,44 +97,44 @@ export default function ReportDraftEditor({ draft, onClose, onSave, onArchive, b
         <DialogHeader className="flex-shrink-0 space-y-1 border-b px-4 py-3">
           <DialogTitle className="flex items-center gap-2 text-sm">
             <Archive className="h-4 w-4 shrink-0 text-primary" />
-            报告草稿
+            {t('reportDraft.title')}
             {archived && (
               <span className="shrink-0 rounded border border-emerald-600/40 bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-normal text-emerald-700">
-                已归档进报告中心
+                {t('sidePanel.archivedToCenter')}
               </span>
             )}
           </DialogTitle>
           <DialogDescription className="text-xs">
             {archived
-              ? '这份草稿已归档。要继续改请到报告中心编辑该报告（本会话草稿不再重复归档）。'
-              : '草稿只属于本会话，可反复调整；点「归档」后才会出现在报告中心。'}
+              ? t('reportDraft.archivedDesc')
+              : t('reportDraft.draftDesc')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-3">
           <label className="block space-y-1">
-            <span className="text-xs text-muted-foreground">报告标题</span>
+            <span className="text-xs text-muted-foreground">{t('reportDraft.titleLabel')}</span>
             <Input
               value={title}
               onChange={e => setTitle(e.target.value)}
               disabled={archived}
-              placeholder="这份报告讲什么（会显示在报告中心清单里）"
+              placeholder={t('reportDraft.titlePlaceholder')}
             />
           </label>
           {isHtmlDoc ? (
             <div className="space-y-1">
               <span className="flex items-center gap-2 text-xs text-muted-foreground">
-                报告正文（HTML 报告产物）
-                <span className="ml-auto text-[10px]">{markdown.length} 字</span>
+                {t('reportDraft.bodyHtml')}
+                <span className="ml-auto text-[10px]">{t('reportDraft.charCount', { count: markdown.length })}</span>
               </span>
               <p className="text-xs text-muted-foreground">
-                正文取自{draft.document
-                  ? '本轮交付的报告文档（与对话里那份同源）'
-                  : `本轮交付的《${draft.artifact?.filename || 'HTML 报告'}》`}，归档后在报告中心按 HTML 渲染。
-                要改内容请回对话让 AI 重新生成该报告（把整份 HTML 当纯文本改会丢样式与图表）。
+                {draft.document
+                  ? t('reportDraft.htmlSourceDoc')
+                  : t('reportDraft.htmlSourceArtifact', { filename: draft.artifact?.filename || t('reportDraft.defaultArtifactName') })}
+                {t('reportDraft.htmlEditHint')}
               </p>
               <iframe
-                title="报告预览"
+                title={t('reportDraft.previewAria')}
                 srcDoc={markdown}
                 sandbox="allow-scripts"
                 className="w-full h-[46vh] rounded-md border bg-white"
@@ -141,8 +143,8 @@ export default function ReportDraftEditor({ draft, onClose, onSave, onArchive, b
           ) : (
             <label className="block space-y-1">
               <span className="flex items-center gap-2 text-xs text-muted-foreground">
-                报告正文（Markdown）
-                <span className="ml-auto text-[10px]">{markdown.length} 字</span>
+                {t('reportDraft.bodyMarkdown')}
+                <span className="ml-auto text-[10px]">{t('reportDraft.charCount', { count: markdown.length })}</span>
               </span>
               <Textarea
                 value={markdown}
@@ -156,7 +158,7 @@ export default function ReportDraftEditor({ draft, onClose, onSave, onArchive, b
 
         <div className="flex flex-shrink-0 items-center gap-2 border-t px-4 py-3">
           <Button variant="ghost" size="sm" onClick={handleClose} disabled={working}>
-            <X className="mr-1 h-4 w-4" />关闭
+            <X className="mr-1 h-4 w-4" />{t('common:action.close')}
           </Button>
           <span className="flex-1" />
           {!archived && (
@@ -165,11 +167,11 @@ export default function ReportDraftEditor({ draft, onClose, onSave, onArchive, b
                 {saving
                   ? <Loader2 className="mr-1 h-4 w-4 animate-spin" />
                   : <Save className="mr-1 h-4 w-4" />}
-                保存草稿
+                {t('reportDraft.saveDraft')}
               </Button>
               <Button size="sm" onClick={() => void handleArchive()} disabled={working}>
                 {busy ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Check className="mr-1 h-4 w-4" />}
-                归档进报告中心
+                {t('reportDraft.archive')}
               </Button>
             </>
           )}

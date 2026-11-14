@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { ChevronRight, ChevronDown, Brain, Loader2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { SlideCollapse } from './chat/StageCard';
 import { useEnterClass } from '@/hooks/useMotion';
 
@@ -16,6 +17,7 @@ interface Props {
 }
 
 export default function ThinkingBlock({ content, isStreaming = false }: Props) {
+  const { t } = useTranslation('chat');
   // 不默认展开:流式期间也只显示“思考中”状态,避免刷屏
   // 入场 class 由 lib/motion 解析（默认档与历史 animate-stage-in 同源）
   const enter = useEnterClass();
@@ -44,11 +46,11 @@ export default function ThinkingBlock({ content, isStreaming = false }: Props) {
       >
         <Brain className="h-3.5 w-3.5 text-purple-500 shrink-0" />
         <span className="text-xs font-medium text-purple-600 dark:text-purple-400 shrink-0">
-          思考
+          {t('thinking.title')}
         </span>
         {isStreaming && (
           <span className="flex items-center gap-1 text-xs text-purple-500/80 shrink-0">
-            <Loader2 className="h-3 w-3 animate-spin" />思考中...
+            <Loader2 className="h-3 w-3 animate-spin" />{t('thinking.streaming')}
           </span>
         )}
         {!expanded && (

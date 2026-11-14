@@ -10,6 +10,7 @@
  * 只在 `handledBy === 'intent_gate'` 时渲染；走模型的回合不出现任何多余元素。
  */
 import { Button } from '@/components/ui/button';
+import { useTranslation } from 'react-i18next';
 
 /** 服务端 done 事件回带的判定快照（与 backend intent_gate.Decision 字段对齐）。 */
 export interface GateSnapshot {
@@ -29,6 +30,7 @@ export function IntentGateBadge({
   onDeepAnalysis?: () => void;
   deepAnalysisDisabled?: boolean;
 }) {
+  const { t } = useTranslation('chat');
   if (!onDeepAnalysis) return null;
   return (
     <div className="mt-2 flex items-center gap-2">
@@ -38,9 +40,9 @@ export function IntentGateBadge({
         className="h-6 text-xs px-2"
         disabled={deepAnalysisDisabled}
         onClick={onDeepAnalysis}
-        title="让模型重新分析这条问题"
+        title={t('intentGate.deepAnalysisTitle')}
       >
-        转深度分析
+        {t('intentGate.deepAnalysis')}
       </Button>
     </div>
   );

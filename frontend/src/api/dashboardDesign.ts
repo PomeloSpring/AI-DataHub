@@ -1,4 +1,5 @@
 import client from './client';
+import i18n from '../i18n';
 
 export interface DesignWidget {
   key: string;
@@ -52,3 +53,10 @@ export const DESIGN_STATUS: Record<string, string> = {
   awaiting_selection: '待选择业务范围', designing: '设计中', preview_ready: '可预览',
   pending_confirmation: '待预览确认', published: '已发布', cancelled: '已取消', failed: '操作失败',
 };
+
+/** 设计状态业务名（渲染期经 i18n 解析；DESIGN_STATUS 保留给尚未迁移的消费方）。 */
+export function designStatusLabel(status: string): string {
+  const key = `chat:designStatus.${status}`;
+  if (i18n.exists(key)) return i18n.t(key as 'chat:designStatus.designing');
+  return DESIGN_STATUS[status] || status;
+}

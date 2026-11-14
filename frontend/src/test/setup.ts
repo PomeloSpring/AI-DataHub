@@ -1,4 +1,32 @@
 import '@testing-library/jest-dom/vitest'
+import { beforeEach } from 'vitest'
+import i18n from '@/i18n'
+import zhWorkspace from '@/i18n/locales/zh-CN/workspace.json'
+import enWorkspace from '@/i18n/locales/en-US/workspace.json'
+import zhChat from '@/i18n/locales/zh-CN/chat.json'
+import enChat from '@/i18n/locales/en-US/chat.json'
+import zhDashboard from '@/i18n/locales/zh-CN/dashboard.json'
+import enDashboard from '@/i18n/locales/en-US/dashboard.json'
+import zhData from '@/i18n/locales/zh-CN/data.json'
+import enData from '@/i18n/locales/en-US/data.json'
+import zhReport from '@/i18n/locales/zh-CN/report.json'
+import enReport from '@/i18n/locales/en-US/report.json'
+
+// i18n 测试口径：懒加载命名空间在测试里同步预载（避免异步加载竞态），
+// 新增命名空间时在此登记；每个用例前复位 zh-CN，防语言切换用例串扰。
+i18n.addResourceBundle('zh-CN', 'workspace', zhWorkspace, true, true)
+i18n.addResourceBundle('en-US', 'workspace', enWorkspace, true, true)
+i18n.addResourceBundle('zh-CN', 'chat', zhChat, true, true)
+i18n.addResourceBundle('en-US', 'chat', enChat, true, true)
+i18n.addResourceBundle('zh-CN', 'dashboard', zhDashboard, true, true)
+i18n.addResourceBundle('en-US', 'dashboard', enDashboard, true, true)
+i18n.addResourceBundle('zh-CN', 'data', zhData, true, true)
+i18n.addResourceBundle('en-US', 'data', enData, true, true)
+i18n.addResourceBundle('zh-CN', 'report', zhReport, true, true)
+i18n.addResourceBundle('en-US', 'report', enReport, true, true)
+beforeEach(async () => {
+  await i18n.changeLanguage('zh-CN')
+})
 
 // Mock localStorage
 const localStorageMock = (() => {

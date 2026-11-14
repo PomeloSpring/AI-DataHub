@@ -9,6 +9,7 @@
 // 唯一选得出的是**报告模板**（版式资产，不是资源）：选了就每次执行按模板版式出报告，
 // 不选则按平台通用版式输出；选项显示模板名，字模 id 只当值用。
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -27,6 +28,7 @@ import {
   type ReportDetail, type ReportTemplateOption,
 } from '@/api/report';
 import { triggerScheduledTask } from '@/api/scheduledTask';
+import i18n from '@/i18n';
 
 export default function ReportTaskDialog({ open, report, onClose, onCreated }: {
   open: boolean;
@@ -36,6 +38,7 @@ export default function ReportTaskDialog({ open, report, onClose, onCreated }: {
   onClose: () => void;
   onCreated?: (taskId: number) => void;
 }) {
+  const { t } = useTranslation(['report', 'common']);
   const [name, setName] = useState('');
   const [question, setQuestion] = useState('');
   const [cron, setCron] = useState('0 9 * * *');
@@ -51,7 +54,7 @@ export default function ReportTaskDialog({ open, report, onClose, onCreated }: {
   // 打开即重置：任务名默认「报告名 定时报告」（模板默认不套，沿用报告自己的版式）
   useEffect(() => {
     if (!open) return;
-    setName(`${report?.title || '报告'} 定时报告`);
+    setName(i18n.t('report:task.nameDefault', { name: report?.title || i18n.t('report:export.fileFallback') }));
     setQuestion(registered);
     setCron('0 9 * * *');
     setRunNow(false);
@@ -64,8 +67,8 @@ export default function ReportTaskDialog({ open, report, onClose, onCreated }: {
   const submit = async () => {
     if (!report) return;
     const asked = question.trim();
-    if (!asked) { toast.error('请填写要复用的分析问题'); return; }
-    if (!cron.trim()) { toast.error('请填写执行周期'); return; }
+    if (!asked) { toast.error(t('task.questionRequired')); return; }
+    if (!cron.trim()) { toast.error(t('task.cronRequired')); return; }
     setSaving(true);
     try {
       const { task_id, name: created } = await createTaskFromReport(report.id, {
@@ -76,17 +79,17 @@ export default function ReportTaskDialog({ open, report, onClose, onCreated }: {
       });
       if (runNow) {
         try { await triggerScheduledTask(task_id); } catch {
-          toast.error(`任务「${created}」已创建，但立即执行派发失败，请到任务调度里手动触发`);
+          toast.error(t('task.createdRunFailed', { name: created }));
           onClose();
           onCreated?.(task_id);
           return;
         }
       }
-      toast.success(runNow ? `任务已创建并开始执行：${created}` : `任务已创建：${created}`);
+      toast.success(runNow ? t('task.createdRunning', { name: created }) : t('task.created', { name: created }));
       onCreated?.(task_id);
       onClose();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '创建定时任务失败，请重试');
+      toast.error(e?.response?.data?.detail || t('task.createFailed'));
     } finally {
       setSaving(false);
     }
@@ -96,71 +99,70 @@ export default function ReportTaskDialog({ open, report, onClose, onCreated }: {
     <Dialog open={open} onOpenChange={o => { if (!o) onClose(); }}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>创建同款定时任务</DialogTitle>
+          <DialogTitle>{t('task.title')}</DialogTitle>
           <DialogDescription>
-            复用本报告登记的分析问题，按设定周期无人值守重新取数并产出报告。
+            {t('task.desc')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-1.5">
-          <Label htmlFor="task-question">复用的分析问题</Label>
+          <Label htmlFor="task-question">{t('task.question')}</Label>
           <Textarea id="task-question" rows={3} value={question} onChange={e => setQuestion(e.target.value)}
-            placeholder="每次执行都按这句话重新取数并出报告，如：查近 7 天各页面访问 IP 归属地分布，输出 HTML 报告" />
+            placeholder={t('task.questionPlaceholder')} />
           {questionNote && (
             <p className="text-[11px] text-muted-foreground">{questionNote}。</p>
           )}
           {!registered && (
             <p className="text-[11px] text-amber-600 dark:text-amber-500">
-              本报告未登记原始分析问题（手写报告或改造前的历史报告），此处填写后每次执行与「用最新数据重新生成」都按这句取数。
+              {t('task.unregistered')}
             </p>
           )}
           <p className="text-[11px] text-muted-foreground">
-            改过的问题会记到本报告上，「用最新数据重新生成」也按这句跑（一份报告一个口径）。
+            {t('task.questionNote')}
           </p>
         </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor="task-name">任务名称</Label>
+          <Label htmlFor="task-name">{t('task.name')}</Label>
           <Input id="task-name" value={name} onChange={e => setName(e.target.value)} />
         </div>
 
         <CronInput value={cron} onChange={setCron} />
 
         <div className="space-y-1.5">
-          <Label>报告模板（可选）</Label>
+          <Label>{t('task.template')}</Label>
           <Select value={templateKey || '__none__'} onValueChange={v => setTemplateKey(v === '__none__' ? '' : v)}>
             <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="__none__">不用模板（按平台通用版式输出）</SelectItem>
-              {templates.map(t => (
-                <SelectItem key={t.id} value={t.id}>
-                  {t.name}（{t.format === 'html' ? 'HTML' : 'MD'}）
+              <SelectItem value="__none__">{t('task.noTemplate')}</SelectItem>
+              {templates.map(tpl => (
+                <SelectItem key={tpl.id} value={tpl.id}>
+                  {tpl.name}（{tpl.format === 'html' ? 'HTML' : 'MD'}）
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
           <p className="text-[11px] text-muted-foreground">
-            选定后每次执行都按这份版式出报告（只换数据、不换章节与图表）；模板被下架时执行会显式失败，不静默换版式。
+            {t('task.templateNote')}
           </p>
         </div>
 
         <div className="rounded-lg border bg-muted/30 p-3 space-y-1">
-          <Label className="text-xs font-normal text-muted-foreground">执行身份</Label>
+          <Label className="text-xs font-normal text-muted-foreground">{t('task.identity')}</Label>
           <p className="text-xs text-muted-foreground leading-5">
-            按你的角色与权限执行：AS-BOT 与可查数据范围都随角色授权变化，无需在此选择；
-            授权被收回时执行会被服务端拒绝并如实报错。跨站点需求请在报告的问题正文里点名站点。
+            {t('task.identityNote')}
           </p>
         </div>
 
         <div className="flex items-center gap-2">
           <Switch checked={runNow} onCheckedChange={setRunNow} id="run-now" />
-          <Label htmlFor="run-now" className="text-sm">创建后立即执行一次（按最新数据出一份报告）</Label>
+          <Label htmlFor="run-now" className="text-sm">{t('task.runNow')}</Label>
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={saving}>取消</Button>
+          <Button variant="outline" onClick={onClose} disabled={saving}>{t('common:action.cancel')}</Button>
           <Button onClick={submit} disabled={saving || !question.trim()}>
-            {saving ? '创建中…' : '创建任务'}
+            {saving ? t('task.creating') : t('task.submit')}
           </Button>
         </DialogFooter>
       </DialogContent>

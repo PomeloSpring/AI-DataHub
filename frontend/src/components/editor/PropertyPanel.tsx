@@ -19,7 +19,7 @@ import { CHART_TYPES, ChartIcon } from '../DashboardChart';
 import DecisionWidgetConfig from '../decision/DecisionWidgetConfig';
 import BoardMotionSection from './BoardMotionSection';
 import { ParamNameSelect, WidgetOptionsEditor } from './ParamSelect';
-import { CUSTOM_PRESET, DEFAULT_TIME_PRESET_KEYS, TIME_PRESETS, needsTime } from '@/lib/timePresets';
+import { CUSTOM_PRESET, DEFAULT_TIME_PRESET_KEYS, TIME_PRESETS, needsTime, presetLabel } from '@/lib/timePresets';
 import type { PageParam } from '@/stores/dashboardStore';
 import { DEFAULT_CHART_SIZE, CANVAS_WIDTH, CANVAS_HEIGHT } from '../../hooks/useCanvasInteraction';
 
@@ -438,7 +438,7 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
             <Select value={chart.config?.defaultPreset || CUSTOM_PRESET} onValueChange={v => onWidgetConfigChange(chart.id, 'defaultPreset', v === CUSTOM_PRESET ? undefined : v)}>
               <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {TIME_PRESETS.map(p => <SelectItem key={p.key} value={p.key} className="text-xs">{p.label}</SelectItem>)}
+                {TIME_PRESETS.map(p => <SelectItem key={p.key} value={p.key} className="text-xs">{presetLabel(p)}</SelectItem>)}
                 <SelectItem value={CUSTOM_PRESET} className="text-xs">不预设（默认留空）</SelectItem>
               </SelectContent>
             </Select>
@@ -455,7 +455,7 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
                   const next = e.target.checked ? [...base, p.key] : base.filter((k: string) => k !== p.key);
                   onWidgetConfigChange(chart.id, 'presets', DEFAULT_TIME_PRESET_KEYS.filter(k => next.includes(k)));
                 }} />
-                {p.label}
+                {presetLabel(p)}
               </label>;
             })}
           </div>

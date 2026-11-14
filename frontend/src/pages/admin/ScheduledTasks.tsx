@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -30,32 +31,36 @@ import {
 } from '@/api/scheduledTask';
 import ScheduledTaskForm from './ScheduledTaskForm';
 import ScheduledTaskLogs from './ScheduledTaskLogs';
+import i18n from '@/i18n';
 
-const STATUS_MAP: Record<string, { label: string; color: string }> = {
-  success: { label: '成功', color: 'bg-green-500/10 text-green-500 border-green-500/20' },
-  partial: { label: '部分成功', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
-  queued: { label: '排队中', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
-  cancelled: { label: '已取消', color: 'bg-gray-500/10 text-gray-500 border-gray-500/20' },
-  failed: { label: '失败', color: 'bg-red-500/10 text-red-500 border-red-500/20' },
-  running: { label: '运行中', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
-  timeout: { label: '超时', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
+// 状态/触发方式只存 key 与色板，文案渲染期 t() 解析（模块顶层写死文案会冻结语言）
+const STATUS_MAP: Record<string, { labelKey: string; color: string }> = {
+  success: { labelKey: 'success', color: 'bg-green-500/10 text-green-500 border-green-500/20' },
+  partial: { labelKey: 'partial', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
+  queued: { labelKey: 'queued', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
+  cancelled: { labelKey: 'cancelled', color: 'bg-gray-500/10 text-gray-500 border-gray-500/20' },
+  failed: { labelKey: 'failed', color: 'bg-red-500/10 text-red-500 border-red-500/20' },
+  running: { labelKey: 'running', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
+  timeout: { labelKey: 'timeout', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
 };
 
-const TRIGGER_TYPE_MAP: Record<string, { label: string; color: string }> = {
-  cron: { label: '定时', color: 'bg-sky-500/10 text-sky-500 border-sky-500/20' },
-  webhook: { label: 'Webhook', color: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' },
-  both: { label: '定时+Webhook', color: 'bg-indigo-500/10 text-indigo-500 border-indigo-500/20' },
+const TRIGGER_TYPE_MAP: Record<string, { labelKey: string; color: string }> = {
+  cron: { labelKey: 'cron', color: 'bg-sky-500/10 text-sky-500 border-sky-500/20' },
+  webhook: { labelKey: 'webhook', color: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' },
+  both: { labelKey: 'both', color: 'bg-indigo-500/10 text-indigo-500 border-indigo-500/20' },
 };
+
+const statusLabel = (s: string): string =>
+  STATUS_MAP[s] ? i18n.t(`workspace:schedule.status.${STATUS_MAP[s].labelKey}` as 'workspace:schedule.status.success') : s;
+const triggerLabel = (s: string): string =>
+  TRIGGER_TYPE_MAP[s] ? i18n.t(`workspace:schedule.trigger.${TRIGGER_TYPE_MAP[s].labelKey}` as 'workspace:schedule.trigger.cron') : s;
 
 // 执行身份固定为「按属主角色继承」：任务不持有 AS-BOT 与数据源，
 // 每次执行按创建者的角色实时解析能力与可查范围（把内部 key 显示出来既不可读也无意义）。
-const SOURCE_BADGE = {
-  label: '按角色权限执行',
-  color: 'bg-blue-500/10 text-blue-500 border-blue-500/20',
-  hint: 'AS-BOT 与可查数据范围按任务创建者的角色实时继承，无需在任务里选择',
-};
+const SOURCE_BADGE_COLOR = 'bg-blue-500/10 text-blue-500 border-blue-500/20';
 
 export default function ScheduledTasks() {
+  const { t } = useTranslation(['workspace', 'common', 'menu']);
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -74,7 +79,7 @@ export default function ScheduledTasks() {
       setTasks(res.items);
       setTotal(res.total);
     } catch {
-      toast.error('加载任务调度失败');
+      toast.error(i18n.t('workspace:schedule.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -85,20 +90,20 @@ export default function ScheduledTasks() {
   const handleToggle = async (task: ScheduledTask) => {
     try {
       await toggleScheduledTask(task.id, !task.is_active);
-      toast.success(task.is_active ? '已禁用' : '已启用');
+      toast.success(task.is_active ? t('schedule.disabled') : t('schedule.enabled'));
       loadTasks();
     } catch {
-      toast.error('操作失败');
+      toast.error(t('common:state.operationFailed'));
     }
   };
 
   const handleTrigger = async (task: ScheduledTask) => {
     try {
       await triggerScheduledTask(task.id);
-      toast.success('已排队，请在执行历史查看实际状态');
+      toast.success(t('schedule.queuedToast'));
       setLogsTaskId(task.id);
     } catch {
-      toast.error('触发失败');
+      toast.error(t('schedule.triggerFailed'));
     }
   };
 
@@ -106,11 +111,11 @@ export default function ScheduledTasks() {
     if (!deleteTarget) return;
     try {
       await deleteScheduledTask(deleteTarget.id);
-      toast.success('已删除');
+      toast.success(t('schedule.deleted'));
       setDeleteTarget(null);
       loadTasks();
     } catch {
-      toast.error('删除失败');
+      toast.error(t('common:state.deleteFailed'));
     }
   };
 
@@ -134,17 +139,17 @@ export default function ScheduledTasks() {
     <div className="flex flex-col h-full gap-4 p-6">
       <div className="flex items-center justify-between shrink-0">
         <div>
-          <h1 className="text-2xl font-bold">任务调度</h1>
-          <p className="text-muted-foreground text-sm mt-1">配置定时执行的 Agent 分析任务</p>
+          <h1 className="text-2xl font-bold">{t('menu:workspace.scheduled')}</h1>
+          <p className="text-muted-foreground text-sm mt-1">{t('schedule.subtitle')}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={loadTasks}>
             <RefreshCw className="w-4 h-4 mr-1" />
-            刷新
+            {t('common:action.refresh')}
           </Button>
           <Button size="sm" onClick={() => { setEditTask(null); setFormOpen(true); }}>
             <Plus className="w-4 h-4 mr-1" />
-            新建任务
+            {t('schedule.newTask')}
           </Button>
         </div>
       </div>
@@ -154,27 +159,27 @@ export default function ScheduledTasks() {
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
-              <th className="text-left p-3 font-medium">任务名称</th>
-              <th className="text-left p-3 font-medium">执行身份</th>
-              <th className="text-left p-3 font-medium">触发方式</th>
-              <th className="text-left p-3 font-medium">状态</th>
-              <th className="text-left p-3 font-medium">上次执行</th>
-              <th className="text-left p-3 font-medium">执行次数</th>
-              <th className="text-center p-3 font-medium">启用</th>
-              <th className="text-right p-3 font-medium">操作</th>
+              <th className="text-left p-3 font-medium">{t('schedule.col.name')}</th>
+              <th className="text-left p-3 font-medium">{t('schedule.col.identity')}</th>
+              <th className="text-left p-3 font-medium">{t('schedule.col.trigger')}</th>
+              <th className="text-left p-3 font-medium">{t('common:label.status')}</th>
+              <th className="text-left p-3 font-medium">{t('schedule.col.lastRun')}</th>
+              <th className="text-left p-3 font-medium">{t('schedule.col.runCount')}</th>
+              <th className="text-center p-3 font-medium">{t('schedule.col.enabled')}</th>
+              <th className="text-right p-3 font-medium">{t('common:label.actions')}</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
                 <td colSpan={8} className="p-8 text-center text-muted-foreground">
-                  加载中...
+                  {t('common:state.loading')}
                 </td>
               </tr>
             ) : tasks.length === 0 ? (
               <tr>
                 <td colSpan={8} className="p-8 text-center text-muted-foreground">
-                  暂无任务调度
+                  {t('schedule.empty')}
                 </td>
               </tr>
             ) : (
@@ -189,14 +194,14 @@ export default function ScheduledTasks() {
                     )}
                   </td>
                   <td className="p-3">
-                    <Badge variant="outline" className={SOURCE_BADGE.color} title={SOURCE_BADGE.hint}>
-                      {SOURCE_BADGE.label}
+                    <Badge variant="outline" className={SOURCE_BADGE_COLOR} title={t('schedule.identityHint')}>
+                      {t('schedule.identityBadge')}
                     </Badge>
                   </td>
                   <td className="p-3">
                     <div className="flex flex-col gap-1">
                       <Badge variant="outline" className={TRIGGER_TYPE_MAP[task.trigger_type || 'cron']?.color + ' w-fit'}>
-                        {TRIGGER_TYPE_MAP[task.trigger_type || 'cron']?.label || task.trigger_type}
+                        {triggerLabel(task.trigger_type || 'cron')}
                       </Badge>
                       {task.cron_expression && (
                         <code className="text-xs bg-muted px-1.5 py-0.5 rounded w-fit">
@@ -207,17 +212,17 @@ export default function ScheduledTasks() {
                   </td>
                   <td className="p-3">
                     {task.ownership_status === 'unclaimed' ? (
-                      <Badge variant="outline" className="text-orange-500">待认领（通过 AS-BOT 审批）</Badge>
+                      <Badge variant="outline" className="text-orange-500">{t('schedule.unclaimed')}</Badge>
                     ) : task.last_status ? (
                       <Badge variant="outline" className={STATUS_MAP[task.last_status]?.color}>
-                        {STATUS_MAP[task.last_status]?.label || task.last_status}
+                        {statusLabel(task.last_status)}
                       </Badge>
                     ) : (
-                      <span className="text-xs text-muted-foreground">未执行</span>
+                      <span className="text-xs text-muted-foreground">{t('schedule.neverRun')}</span>
                     )}
                   </td>
                   <td className="p-3 text-xs text-muted-foreground">
-                    {task.last_run_at ? new Date(task.last_run_at).toLocaleString() : '-'}
+                    {task.last_run_at ? new Date(task.last_run_at).toLocaleString(i18n.language) : '-'}
                   </td>
                   <td className="p-3 text-center">{task.run_count}</td>
                   <td className="p-3 text-center">
@@ -234,9 +239,9 @@ export default function ScheduledTasks() {
                           size="sm"
                           onClick={() => {
                             navigator.clipboard.writeText(`${window.location.origin}/api/webhook/tasks/${task.id}/${task.webhook_token}`);
-                            toast.success('已复制 Webhook URL');
+                            toast.success(t('schedule.webhookCopied'));
                           }}
-                          title="复制 Webhook URL"
+                          title={t('schedule.webhookCopyTitle')}
                         >
                           <Copy className="w-4 h-4" />
                         </Button>
@@ -246,7 +251,7 @@ export default function ScheduledTasks() {
                         size="sm"
                         onClick={() => handleTrigger(task)}
                         disabled={task.ownership_status === 'unclaimed'}
-                        title="手动触发"
+                        title={t('schedule.triggerTitle')}
                       >
                         <Play className="w-4 h-4" />
                       </Button>
@@ -254,7 +259,7 @@ export default function ScheduledTasks() {
                         variant="ghost"
                         size="sm"
                         onClick={() => setLogsTaskId(task.id)}
-                        title="执行历史"
+                        title={t('schedule.logsTitle')}
                       >
                         <History className="w-4 h-4" />
                       </Button>
@@ -262,7 +267,7 @@ export default function ScheduledTasks() {
                         variant="ghost"
                         size="sm"
                         onClick={() => { setEditTask(task); setFormOpen(true); }}
-                        title="编辑"
+                        title={t('common:action.edit')}
                       >
                         <Edit className="w-4 h-4" />
                       </Button>
@@ -270,7 +275,7 @@ export default function ScheduledTasks() {
                         variant="ghost"
                         size="sm"
                         onClick={() => setDeleteTarget(task)}
-                        title="删除"
+                        title={t('common:action.delete')}
                       >
                         <Trash2 className="w-4 h-4 text-destructive" />
                       </Button>
@@ -312,14 +317,14 @@ export default function ScheduledTasks() {
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>确认删除</DialogTitle>
+            <DialogTitle>{t('schedule.deleteTitle')}</DialogTitle>
             <DialogDescription>
-              确定要删除任务调度「{deleteTarget?.name}」吗？相关的执行历史也会被删除。
+              {t('schedule.deleteDesc', { name: deleteTarget?.name })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
-            <Button variant="destructive" onClick={handleDelete}>删除</Button>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t('common:action.cancel')}</Button>
+            <Button variant="destructive" onClick={handleDelete}>{t('common:action.delete')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

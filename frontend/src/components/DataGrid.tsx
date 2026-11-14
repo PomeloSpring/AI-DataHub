@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { ArrowDown, ArrowUp, Copy, Download, Search } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/toast';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -45,6 +46,7 @@ const OVERSCAN = 8;
  */
 export default function DataGrid({ columns, rows, height = 400, filename = 'data',
   field_formats, emptyText, editable, onEdit }: Props) {
+  const { t } = useTranslation(['data', 'common']);
   const gridCfg = useVisConfig('cs_table_grid', DEFAULT_GRID);
   const rowHeight = Math.max(18, Number(gridCfg.rowHeight) || 30);
   const [keyword, setKeyword] = useState('');
@@ -85,9 +87,9 @@ export default function DataGrid({ columns, rows, height = 400, filename = 'data
   const copyAll = async () => {
     try {
       await navigator.clipboard.writeText(toTsv(grid.columns, view));
-      toast.success(`已复制 ${view.length} 行(TSV,可直接粘贴到表格软件)`);
+      toast.success(t('grid.copiedRows', { count: view.length }));
     } catch {
-      toast.error('复制失败,请手动选择内容复制');
+      toast.error(t('grid.copyFailed'));
     }
   };
 
@@ -111,21 +113,21 @@ export default function DataGrid({ columns, rows, height = 400, filename = 'data
           <Input
             value={keyword}
             onChange={e => setKeyword(e.target.value)}
-            placeholder="过滤所有列…"
+            placeholder={t('grid.filterPlaceholder')}
             className="h-7 pl-7 text-xs"
           />
         </div>
         <span className="text-xs text-muted-foreground whitespace-nowrap">
-          {view.length === grid.rows.length ? `${grid.rows.length} 行` : `${view.length} / ${grid.rows.length} 行`}
-          {sort && ` · 按 ${sort.col} ${sort.dir === 'asc' ? '升序' : '降序'}`}
-          {editable && ' · 双击单元格可编辑'}
+          {view.length === grid.rows.length ? t('grid.rowCount', { count: grid.rows.length }) : t('grid.rowCountFiltered', { shown: view.length, total: grid.rows.length })}
+          {sort && t('grid.sortInfo', { col: sort.col, dir: sort.dir === 'asc' ? t('grid.sortAsc') : t('grid.sortDesc') })}
+          {editable && t('grid.editHint')}
         </span>
         <div className="ml-auto flex items-center gap-1.5">
           <Button variant="outline" size="sm" className="h-7 text-xs" onClick={copyAll} disabled={view.length === 0}>
-            <Copy className="h-3 w-3 mr-1" />复制
+            <Copy className="h-3 w-3 mr-1" />{t('common:action.copy')}
           </Button>
           <Button variant="outline" size="sm" className="h-7 text-xs" onClick={exportCsv} disabled={view.length === 0}>
-            <Download className="h-3 w-3 mr-1" />导出 CSV
+            <Download className="h-3 w-3 mr-1" />{t('grid.exportCsv')}
           </Button>
         </div>
       </div>
@@ -138,7 +140,7 @@ export default function DataGrid({ columns, rows, height = 400, filename = 'data
       >
         {grid.columns.length === 0 || view.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            {emptyText || (grid.rows.length === 0 ? '暂无数据' : '没有匹配的行,试试换个关键字')}
+            {emptyText || (grid.rows.length === 0 ? t('common:state.empty') : t('grid.noMatch'))}
           </div>
         ) : (
           <div style={{ minWidth: columns.length * 120 }}>
@@ -151,7 +153,7 @@ export default function DataGrid({ columns, rows, height = 400, filename = 'data
                   key={c}
                   onClick={() => toggleSort(c)}
                   className="flex h-8 items-center gap-1 border-r px-3 text-left hover:bg-muted"
-                  title={`按 ${c} 排序`}
+                  title={t('grid.sortTitle', { col: c })}
                 >
                   <span className="truncate">{c}</span>
                   {sort?.col === c && (sort.dir === 'asc'

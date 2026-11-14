@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useTranslation } from 'react-i18next';
 import {
   AlertTriangle, Bold, ChevronDown, Copy, Download, Highlighter, Italic, List, ListOrdered,
   Loader2, Palette, Quote, Redo2, Strikethrough, TextAlignCenter, TextAlignEnd,
@@ -41,13 +42,14 @@ type SaveStatus = 'clean' | 'dirty' | 'saving' | 'saved' | 'error';
 
 const AUTOSAVE_DELAY_MS = 800;
 
-// 段落样式（formatBlock 取值）：与工具栏「正文」下拉一一对应
-const BLOCK_STYLES = [
-  { value: 'p', label: '正文' },
-  { value: 'h1', label: '标题 1' },
-  { value: 'h2', label: '标题 2' },
-  { value: 'h3', label: '标题 3' },
-  { value: 'blockquote', label: '引用' },
+// 段落样式（formatBlock 取值）：与工具栏「正文」下拉一一对应；文案只存 key，渲染期经 t() 取
+type BlockStyleKey = 'docEditor.block.p' | 'docEditor.block.h1' | 'docEditor.block.h2' | 'docEditor.block.h3' | 'docEditor.block.blockquote';
+const BLOCK_STYLES: { value: string; labelKey: BlockStyleKey }[] = [
+  { value: 'p', labelKey: 'docEditor.block.p' },
+  { value: 'h1', labelKey: 'docEditor.block.h1' },
+  { value: 'h2', labelKey: 'docEditor.block.h2' },
+  { value: 'h3', labelKey: 'docEditor.block.h3' },
+  { value: 'blockquote', labelKey: 'docEditor.block.blockquote' },
 ];
 const FONT_SIZES = [12, 14, 15, 16, 18, 20, 24, 28];
 
@@ -56,6 +58,7 @@ const TEXT_COLORS = ['#111827', '#ef4444', '#f97316', '#eab308', '#22c55e', '#0e
 const HIGHLIGHT_COLORS = ['transparent', '#fef08a', '#bbf7d0', '#bfdbfe', '#fbcfe8', '#fed7aa', '#e9d5ff'];
 
 export default function DocEditorPanel({ doc, sourceMarkdown, onSave, onClose }: Props) {
+  const { t } = useTranslation(['chat', 'common']);
   const [title, setTitle] = useState(doc.title);
   const [revisions, setRevisions] = useState(doc.revisions);
   const [status, setStatus] = useState<SaveStatus>('clean');
@@ -180,7 +183,7 @@ export default function DocEditorPanel({ doc, sourceMarkdown, onSave, onClose }:
     if (!range || range.collapsed || !bodyRef.current
       || !bodyRef.current.contains(range.commonAncestorContainer)) {
       // 选区不在正文里（或已收起）时不能静默不动：用户会以为字号改了
-      toast.info('请先在文档里选中要改字号的文字');
+      toast.info(t('docEditor.selectTextFirst'));
       return;
     }
     bodyRef.current.focus();
@@ -194,7 +197,7 @@ export default function DocEditorPanel({ doc, sourceMarkdown, onSave, onClose }:
       range.insertNode(span);
     }
     if (!bodyRef.current.contains(span)) {
-      toast.error('选区跨越了段落边界，请选中同一段内的文字再改字号');
+      toast.error(t('docEditor.crossParagraph'));
       return;
     }
     captureSelection();
@@ -210,14 +213,14 @@ export default function DocEditorPanel({ doc, sourceMarkdown, onSave, onClose }:
   const handleCopy = async () => {
     const el = bodyRef.current;
     const text = (el?.innerText || el?.textContent || '').trim();
-    if (!text) { toast.info('文档还没有内容'); return; }
+    if (!text) { toast.info(t('docEditor.emptyDoc')); return; }
     try {
       const mode = await copyRichText(el?.innerHTML || '', text);
       toast.success(mode === 'rich'
-        ? '已复制（保留格式）'
-        : '已复制为纯文本（当前浏览器不支持富文本剪贴板）');
+        ? t('docEditor.copiedRich')
+        : t('docEditor.copiedPlain'));
     } catch (e: any) {
-      toast.error(e?.message || '复制失败，请手动选择文本复制');
+      toast.error(e?.message || t('messageActions.copyFailed'));
     }
   };
 
@@ -232,7 +235,7 @@ export default function DocEditorPanel({ doc, sourceMarkdown, onSave, onClose }:
     a.click();
     // 下一拍再释放：与 click 同帧 revoke 会抢在浏览器取 blob 之前，下载偶发变空文件
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    toast.success('已开始下载（HTML 格式，可用 Word/WPS 打开）');
+    toast.success(t('docEditor.downloadStarted'));
   };
 
   const onTitleChange = (v: string) => {
@@ -242,11 +245,11 @@ export default function DocEditorPanel({ doc, sourceMarkdown, onSave, onClose }:
   };
 
   const statusText = ({
-    clean: `已保存（编辑 ${revisions} 次）`,
-    dirty: '有改动待保存…',
-    saving: '正在保存…',
-    saved: `已自动保存（编辑 ${revisions} 次）`,
-    error: '保存失败，改动只在当前页面，关掉就没了',
+    clean: t('docEditor.statusClean', { count: revisions }),
+    dirty: t('docEditor.statusDirty'),
+    saving: t('docEditor.statusSaving'),
+    saved: t('docEditor.statusSaved', { count: revisions }),
+    error: t('docEditor.statusError'),
   } as Record<SaveStatus, string>)[status];
 
   return (
@@ -255,69 +258,69 @@ export default function DocEditorPanel({ doc, sourceMarkdown, onSave, onClose }:
         {/* 顶栏：标题（可改）+ 编辑次数 + 复制 / 下载；右侧给基座关闭按钮留位 */}
         <div className="flex shrink-0 items-center gap-2 border-b px-4 py-3 pr-12">
           <input
-            aria-label="文档标题"
+            aria-label={t('docEditor.titleAria')}
             value={title}
-            placeholder="无标题"
+            placeholder={t('docCard.untitled')}
             onChange={e => onTitleChange(e.target.value)}
             className="min-w-0 flex-1 bg-transparent text-base font-semibold outline-none placeholder:text-muted-foreground"
           />
-          <span className="shrink-0 text-xs text-muted-foreground">编辑 {revisions} 次</span>
+          <span className="shrink-0 text-xs text-muted-foreground">{t('docEditor.editCount', { count: revisions })}</span>
           <Button variant="outline" size="sm" onClick={() => { void handleCopy(); }}>
-            <Copy className="mr-1 h-3.5 w-3.5" />复制
+            <Copy className="mr-1 h-3.5 w-3.5" />{t('common:action.copy')}
           </Button>
           <Button variant="outline" size="sm" onClick={handleDownload}>
-            <Download className="mr-1 h-3.5 w-3.5" />下载
+            <Download className="mr-1 h-3.5 w-3.5" />{t('common:action.download')}
           </Button>
         </div>
 
         {/* 工具栏：按下不抢焦点（onMouseDown preventDefault），格式才能落在原选区上 */}
         <div className="flex shrink-0 flex-wrap items-center gap-1 border-b bg-muted/20 px-4 py-2">
-          <ToolButton icon={Undo2} label="撤销" onClick={() => exec('undo')} />
-          <ToolButton icon={Redo2} label="重做" onClick={() => exec('redo')} />
+          <ToolButton icon={Undo2} label={t('docEditor.tool.undo')} onClick={() => exec('undo')} />
+          <ToolButton icon={Redo2} label={t('docEditor.tool.redo')} onClick={() => exec('redo')} />
           <MenuButton
-            label="段落样式"
-            items={BLOCK_STYLES.map(b => ({ key: b.value, label: b.label }))}
+            label={t('docEditor.blockStyle')}
+            items={BLOCK_STYLES.map(b => ({ key: b.value, label: t(b.labelKey) }))}
             onPick={v => exec('formatBlock', `<${v}>`)}
           />
           <MenuButton
-            label="字号"
+            label={t('docEditor.fontSize')}
             items={FONT_SIZES.map(px => ({ key: String(px), label: `${px}px` }))}
             onPick={v => applyFontSize(Number(v))}
           />
           <Divider />
-          <ToolButton icon={Bold} label="加粗" onClick={() => exec('bold')} />
-          <ToolButton icon={Strikethrough} label="删除线" onClick={() => exec('strikeThrough')} />
-          <ToolButton icon={Underline} label="下划线" onClick={() => exec('underline')} />
-          <ToolButton icon={Italic} label="斜体" onClick={() => exec('italic')} />
+          <ToolButton icon={Bold} label={t('docEditor.tool.bold')} onClick={() => exec('bold')} />
+          <ToolButton icon={Strikethrough} label={t('docEditor.tool.strike')} onClick={() => exec('strikeThrough')} />
+          <ToolButton icon={Underline} label={t('docEditor.tool.underline')} onClick={() => exec('underline')} />
+          <ToolButton icon={Italic} label={t('docEditor.tool.italic')} onClick={() => exec('italic')} />
           <Divider />
-          <ToolButton icon={List} label="无序列表" onClick={() => exec('insertUnorderedList')} />
-          <ToolButton icon={ListOrdered} label="有序列表" onClick={() => exec('insertOrderedList')} />
+          <ToolButton icon={List} label={t('docEditor.tool.ul')} onClick={() => exec('insertUnorderedList')} />
+          <ToolButton icon={ListOrdered} label={t('docEditor.tool.ol')} onClick={() => exec('insertOrderedList')} />
           <Divider />
-          <ToolButton icon={TextAlignStart} label="左对齐" onClick={() => exec('justifyLeft')} />
-          <ToolButton icon={TextAlignCenter} label="居中" onClick={() => exec('justifyCenter')} />
-          <ToolButton icon={TextAlignEnd} label="右对齐" onClick={() => exec('justifyRight')} />
+          <ToolButton icon={TextAlignStart} label={t('docEditor.tool.alignLeft')} onClick={() => exec('justifyLeft')} />
+          <ToolButton icon={TextAlignCenter} label={t('docEditor.tool.alignCenter')} onClick={() => exec('justifyCenter')} />
+          <ToolButton icon={TextAlignEnd} label={t('docEditor.tool.alignRight')} onClick={() => exec('justifyRight')} />
           <Divider />
           <ColorPopover
             icon={Palette}
-            label="文字颜色"
+            label={t('docEditor.tool.textColor')}
             colors={TEXT_COLORS}
             onPick={c => exec('foreColor', c)}
           />
           <ColorPopover
             icon={Highlighter}
-            label="底色"
+            label={t('docEditor.tool.highlight')}
             colors={HIGHLIGHT_COLORS}
             onPick={c => (c === 'transparent' ? exec('removeFormat') : exec('hiliteColor', c))}
           />
           <Divider />
-          <ToolButton icon={Quote} label="引用段" onClick={() => exec('formatBlock', '<blockquote>')} />
-          <ToolButton icon={Type} label="清除格式" onClick={() => exec('removeFormat')} />
+          <ToolButton icon={Quote} label={t('docEditor.tool.quote')} onClick={() => exec('formatBlock', '<blockquote>')} />
+          <ToolButton icon={Type} label={t('docEditor.tool.clearFormat')} onClick={() => exec('removeFormat')} />
         </div>
 
         {unsupported && (
           <div className="flex shrink-0 items-center gap-2 border-b bg-amber-500/10 px-4 py-1.5 text-xs text-amber-600 dark:text-amber-400">
             <AlertTriangle className="h-3.5 w-3.5" />
-            当前浏览器不支持富文本工具栏；正文仍可直接编辑，格式改动未生效。
+            {t('docEditor.unsupported')}
           </div>
         )}
 
@@ -329,7 +332,7 @@ export default function DocEditorPanel({ doc, sourceMarkdown, onSave, onClose }:
             suppressContentEditableWarning
             role="textbox"
             aria-multiline="true"
-            aria-label="文档正文"
+            aria-label={t('docEditor.bodyAria')}
             spellCheck={false}
             onInput={scheduleSave}
             onMouseUp={captureSelection}
@@ -350,14 +353,14 @@ export default function DocEditorPanel({ doc, sourceMarkdown, onSave, onClose }:
             {status === 'saving' && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {status === 'error' && <AlertTriangle className="h-3.5 w-3.5 text-destructive" />}
             {statusText}
-            {doc.created_at && <span className="ml-2 opacity-70">· {formatDocTime(doc.created_at, '创建于')}</span>}
+            {doc.created_at && <span className="ml-2 opacity-70">· {formatDocTime(doc.created_at, t('docCard.createdPrefix'))}</span>}
           </span>
           <span className="flex items-center gap-2">
             {status === 'error' && (
-              <Button variant="outline" size="sm" onClick={() => { void persist(true); }}>重试保存</Button>
+              <Button variant="outline" size="sm" onClick={() => { void persist(true); }}>{t('docEditor.retrySave')}</Button>
             )}
-            <span className="opacity-70">文档随会话保存，删除会话即一并清理</span>
-            <Button variant="outline" size="sm" onClick={() => { void handleClose(); }}>关闭</Button>
+            <span className="opacity-70">{t('docEditor.lifecycleNote')}</span>
+            <Button variant="outline" size="sm" onClick={() => { void handleClose(); }}>{t('common:action.close')}</Button>
           </span>
         </div>
 
@@ -430,6 +433,7 @@ function ToolButton({
 function ColorPopover({
   icon: Icon, label, colors, onPick,
 }: { icon: any; label: string; colors: string[]; onPick: (color: string) => void }) {
+  const { t } = useTranslation('chat');
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -449,8 +453,8 @@ function ColorPopover({
             <button
               key={c}
               type="button"
-              aria-label={`${label}：${c === 'transparent' ? '无' : c}`}
-              title={c === 'transparent' ? '无底色' : c}
+              aria-label={t('docEditor.colorAria', { label, color: c === 'transparent' ? t('docEditor.colorNone') : c })}
+              title={c === 'transparent' ? t('docEditor.noHighlight') : c}
               onClick={() => { onPick(c); }}
               className="h-5 w-5 rounded border border-border/70"
               style={{ background: c === 'transparent' ? 'repeating-conic-gradient(#e2e8f0 0% 25%, #fff 0% 50%) 50%/8px 8px' : c }}

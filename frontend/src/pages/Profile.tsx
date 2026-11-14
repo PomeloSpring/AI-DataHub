@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/toast';
 import { User, Mail, Phone, Shield, Save, Lock, ArrowLeft, Brain, Cloud } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -11,6 +12,7 @@ import { Separator } from '@/components/ui/separator';
 import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
 import client from '../api/client';
+import i18n from '@/i18n';
 import { useAuthStore } from '../stores/authStore';
 import MotionPreferenceCard from '@/components/MotionPreferenceCard';
 
@@ -18,9 +20,10 @@ import MotionPreferenceCard from '@/components/MotionPreferenceCard';
  *  历史缺陷：本页读的是 profile.role，而 /users/me 的账号列叫 user_role → 永远取不到值，
  *  角色一格渲染成空白徽标；前端硬编码的三档文案也接不住自定义角色（如「运营管理」）。
  *  无生效绑定就如实说「未绑定角色」（空绑定 = 零权限码），不回退内部标识充数。 */
-const roleText = (profile: any): string => String(profile?.role_name || '').trim() || '未绑定角色';
+const roleText = (profile: any): string => String(profile?.role_name || '').trim() || i18n.t('workspace:profile.account.noRole');
 
 export default function Profile() {
+  const { t } = useTranslation(['workspace', 'common']);
   const [profile, setProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -65,7 +68,7 @@ export default function Profile() {
     } catch {
       // 偏好读不到时不静默当成“已关闭”，也不假装“已开启”：保持未知(未加载)并在界面上说明
       setCloudSyncLoaded(false);
-      toast.error('云空间偏好加载失败，请刷新页面重试');
+      toast.error(t('profile.toast.prefLoadFailed'));
       return;
     }
     setCloudSyncLoaded(true);
@@ -77,10 +80,10 @@ export default function Profile() {
     setCloudSyncSaving(true);
     try {
       await client.put('/users/me/preferences', { cloud_sync_enabled: next });
-      toast.success(next ? '已开启会话产物自动上云' : '已关闭会话产物自动上云');
+      toast.success(next ? t('profile.toast.cloudSyncOn') : t('profile.toast.cloudSyncOff'));
     } catch (e: any) {
       setCloudSync(prev);   // 保存失败回滚开关，不让界面显示与库里不一致的状态
-      toast.error(e?.response?.data?.detail || '保存失败，请稍后重试');
+      toast.error(e?.response?.data?.detail || t('common:state.saveFailed'));
     } finally {
       setCloudSyncSaving(false);
     }
@@ -97,7 +100,7 @@ export default function Profile() {
         phone: data.phone || '',
       });
     } catch {
-      toast.error('加载个人信息失败');
+      toast.error(t('profile.toast.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -112,9 +115,9 @@ export default function Profile() {
       if (data.username !== profile?.username) {
         updateUser({ username: data.username });
       }
-      toast.success('个人信息已更新');
+      toast.success(t('profile.toast.saved'));
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '更新失败');
+      toast.error(e.response?.data?.detail || t('profile.toast.saveFailed'));
     } finally {
       setSaving(false);
     }
@@ -122,15 +125,15 @@ export default function Profile() {
 
   const handleChangePassword = async () => {
     if (!pwdForm.old_password) {
-      toast.error('请输入当前密码');
+      toast.error(t('profile.toast.pwdOldRequired'));
       return;
     }
     if (!pwdForm.new_password) {
-      toast.error('请输入新密码');
+      toast.error(t('profile.toast.pwdNewRequired'));
       return;
     }
     if (pwdForm.new_password !== pwdForm.confirm_password) {
-      toast.error('两次输入的密码不一致');
+      toast.error(t('profile.toast.pwdMismatch'));
       return;
     }
 
@@ -140,10 +143,10 @@ export default function Profile() {
         old_password: pwdForm.old_password,
         new_password: pwdForm.new_password,
       });
-      toast.success('密码修改成功');
+      toast.success(t('profile.toast.pwdChanged'));
       setPwdForm({});
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '密码修改失败');
+      toast.error(e.response?.data?.detail || t('profile.toast.pwdChangeFailed'));
     } finally {
       setChangingPwd(false);
     }
@@ -160,15 +163,15 @@ export default function Profile() {
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">个人设置</h1>
+        <h1 className="text-2xl font-bold">{t('profile.title')}</h1>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => navigate(memoryPath)}>
             <Brain className="h-4 w-4 mr-1" />
-            我的记忆
+            {t('shell.user.memory')}
           </Button>
           <Button variant="outline" size="sm" onClick={() => navigate(homePath)}>
             <ArrowLeft className="h-4 w-4 mr-1" />
-            返回主页
+            {t('profile.backHome')}
           </Button>
         </div>
       </div>
@@ -179,34 +182,34 @@ export default function Profile() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <User className="h-5 w-5" />
-              账号信息
+              {t('profile.account.title')}
             </CardTitle>
-            <CardDescription>您的账号基本信息</CardDescription>
+            <CardDescription>{t('profile.account.desc')}</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <div className="text-sm text-muted-foreground mb-1">角色</div>
+                <div className="text-sm text-muted-foreground mb-1">{t('profile.account.role')}</div>
                 <Badge variant={profile?.role === 'admin' ? 'destructive' : 'secondary'}>
                   {roleText(profile)}
                 </Badge>
               </div>
               <div>
-                <div className="text-sm text-muted-foreground mb-1">状态</div>
+                <div className="text-sm text-muted-foreground mb-1">{t('common:label.status')}</div>
                 <Badge variant={profile?.status === 'active' ? 'default' : 'destructive'}>
-                  {profile?.status === 'active' ? '正常' : profile?.status}
+                  {profile?.status === 'active' ? t('profile.account.statusActive') : profile?.status}
                 </Badge>
               </div>
               <div>
-                <div className="text-sm text-muted-foreground mb-1">创建时间</div>
+                <div className="text-sm text-muted-foreground mb-1">{t('common:label.createdAt')}</div>
                 <div className="text-sm">
-                  {profile?.created_at ? new Date(profile.created_at).toLocaleString('zh-CN') : '-'}
+                  {profile?.created_at ? new Date(profile.created_at).toLocaleString(i18n.language) : '-'}
                 </div>
               </div>
               <div>
-                <div className="text-sm text-muted-foreground mb-1">最后登录</div>
+                <div className="text-sm text-muted-foreground mb-1">{t('profile.account.lastLogin')}</div>
                 <div className="text-sm">
-                  {profile?.last_login ? new Date(profile.last_login).toLocaleString('zh-CN') : '从未登录'}
+                  {profile?.last_login ? new Date(profile.last_login).toLocaleString(i18n.language) : t('profile.account.neverLogin')}
                 </div>
               </div>
             </div>
@@ -218,13 +221,13 @@ export default function Profile() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Mail className="h-5 w-5" />
-              编辑资料
+              {t('profile.edit.title')}
             </CardTitle>
-            <CardDescription>更新您的个人信息</CardDescription>
+            <CardDescription>{t('profile.edit.desc')}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="username">用户名</Label>
+              <Label htmlFor="username">{t('profile.edit.username')}</Label>
               <Input
                 id="username"
                 value={formValues.username || ''}
@@ -233,7 +236,7 @@ export default function Profile() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="email">邮箱</Label>
+                <Label htmlFor="email">{t('profile.edit.email')}</Label>
                 <div className="relative">
                   <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
@@ -247,13 +250,13 @@ export default function Profile() {
                 </div>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="phone">手机</Label>
+                <Label htmlFor="phone">{t('profile.edit.phone')}</Label>
                 <div className="relative">
                   <Phone className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
                     id="phone"
                     className="pl-9"
-                    placeholder="手机号码"
+                    placeholder={t('profile.edit.phonePlaceholder')}
                     value={formValues.phone || ''}
                     onChange={(e) => setFormValues({ ...formValues, phone: e.target.value })}
                   />
@@ -262,7 +265,7 @@ export default function Profile() {
             </div>
             <Button onClick={handleSaveProfile} disabled={saving}>
               {saving ? <Spinner className="h-4 w-4 mr-2" /> : <Save className="h-4 w-4 mr-2" />}
-              保存修改
+              {t('profile.edit.save')}
             </Button>
           </CardContent>
         </Card>
@@ -272,20 +275,20 @@ export default function Profile() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Cloud className="h-5 w-5" />
-              云空间（对话产物备份）
+              {t('profile.cloud.title')}
             </CardTitle>
-            <CardDescription>对话中产生的文件（上传附件与助手生成的报告/图表）自动同步云空间，换节点或本地磁盘被清理时可自动取回。</CardDescription>
+            <CardDescription>{t('profile.cloud.desc')}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex items-center justify-between gap-4">
               <div className="min-w-0">
-                <Label htmlFor="cloud-sync">会话产物自动上云</Label>
+                <Label htmlFor="cloud-sync">{t('profile.cloud.toggle')}</Label>
                 <p className="text-xs text-muted-foreground mt-1">
                   {!cloudSyncLoaded
-                    ? '偏好未加载成功，当前状态未知——请刷新后重试'
+                    ? t('profile.cloud.unknown')
                     : cloudSync
-                      ? '开启（默认）：每轮对话结束后在后台同步到对象存储'
-                      : '已关闭：产物只留在本地，实例迁移或清理磁盘会丢失（已有云端副本仍可取回）'}
+                      ? t('profile.cloud.on')
+                      : t('profile.cloud.off')}
                 </p>
               </div>
               <Switch
@@ -306,17 +309,17 @@ export default function Profile() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Lock className="h-5 w-5" />
-              修改密码
+              {t('profile.password.title')}
             </CardTitle>
-            <CardDescription>定期更换密码可以提高账号安全性</CardDescription>
+            <CardDescription>{t('profile.password.desc')}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="old_password">当前密码</Label>
+              <Label htmlFor="old_password">{t('profile.password.old')}</Label>
               <Input
                 id="old_password"
                 type="password"
-                placeholder="请输入当前密码"
+                placeholder={t('profile.password.oldPlaceholder')}
                 value={pwdForm.old_password || ''}
                 onChange={(e) => setPwdForm({ ...pwdForm, old_password: e.target.value })}
               />
@@ -324,21 +327,21 @@ export default function Profile() {
             <Separator />
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="new_password">新密码</Label>
+                <Label htmlFor="new_password">{t('profile.password.new')}</Label>
                 <Input
                   id="new_password"
                   type="password"
-                  placeholder="至少8位，包含字母和数字"
+                  placeholder={t('profile.password.newPlaceholder')}
                   value={pwdForm.new_password || ''}
                   onChange={(e) => setPwdForm({ ...pwdForm, new_password: e.target.value })}
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="confirm_password">确认新密码</Label>
+                <Label htmlFor="confirm_password">{t('profile.password.confirm')}</Label>
                 <Input
                   id="confirm_password"
                   type="password"
-                  placeholder="再次输入新密码"
+                  placeholder={t('profile.password.confirmPlaceholder')}
                   value={pwdForm.confirm_password || ''}
                   onChange={(e) => setPwdForm({ ...pwdForm, confirm_password: e.target.value })}
                 />
@@ -346,7 +349,7 @@ export default function Profile() {
             </div>
             <Button onClick={handleChangePassword} disabled={changingPwd}>
               {changingPwd ? <Spinner className="h-4 w-4 mr-2" /> : <Shield className="h-4 w-4 mr-2" />}
-              修改密码
+              {t('profile.password.title')}
             </Button>
           </CardContent>
         </Card>

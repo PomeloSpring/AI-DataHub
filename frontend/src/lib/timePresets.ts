@@ -9,11 +9,15 @@
  *     在 UTC+8 的晚间会算成前一天，导致按时间窗过滤静默取错数据。
  */
 
+import i18n from '@/i18n';
+
 export type TimeGranularity = 'date' | 'datetime';
 
 export interface TimePreset {
   key: string;
-  label: string;
+  /** 文案 key（dashboard 命名空间）：显示文案在渲染期经 presetLabel() 取，
+   *  不在模块顶层冻结（切语言即时生效） */
+  labelKey: string;
   /** 固定毫秒跨度（小时/天级预设） */
   ms?: number;
   /** 日历月跨度（月级预设按自然月回退，不用固定天数近似） */
@@ -25,14 +29,19 @@ export const DAY_MS = 24 * HOUR;
 const DAY = DAY_MS;
 
 export const TIME_PRESETS: TimePreset[] = [
-  { key: '1h', label: '近 1 小时', ms: HOUR },
-  { key: '6h', label: '近 6 小时', ms: 6 * HOUR },
-  { key: '12h', label: '近 12 小时', ms: 12 * HOUR },
-  { key: '1d', label: '近 1 天', ms: DAY },
-  { key: '7d', label: '近 7 天', ms: 7 * DAY },
-  { key: '1mo', label: '近一个月', months: 1 },
-  { key: '3mo', label: '近 3 个月', months: 3 },
+  { key: '1h', labelKey: 'timePresets.1h', ms: HOUR },
+  { key: '6h', labelKey: 'timePresets.6h', ms: 6 * HOUR },
+  { key: '12h', labelKey: 'timePresets.12h', ms: 12 * HOUR },
+  { key: '1d', labelKey: 'timePresets.1d', ms: DAY },
+  { key: '7d', labelKey: 'timePresets.7d', ms: 7 * DAY },
+  { key: '1mo', labelKey: 'timePresets.1mo', months: 1 },
+  { key: '3mo', labelKey: 'timePresets.3mo', months: 3 },
 ];
+
+/** 预设显示文案（当前语言）：渲染期调用，勿缓存到模块级常量 */
+export function presetLabel(preset: TimePreset): string {
+  return i18n.t(`dashboard:${preset.labelKey}` as 'dashboard:timePresets.1h');
+}
 
 export const DEFAULT_TIME_PRESET_KEYS: string[] = TIME_PRESETS.map(p => p.key);
 /** 「自由选择」在预设下拉里的取值：选中它表示区间由用户手填 */

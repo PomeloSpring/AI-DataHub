@@ -1,0 +1,81 @@
+{
+  "action": {
+    "confirm": "确认",
+    "cancel": "取消",
+    "save": "保存",
+    "saving": "保存中…",
+    "delete": "删除",
+    "edit": "编辑",
+    "create": "新建",
+    "add": "添加",
+    "close": "关闭",
+    "retry": "重试",
+    "refresh": "刷新",
+    "search": "搜索",
+    "reset": "重置",
+    "copy": "复制",
+    "copied": "已复制",
+    "download": "下载",
+    "export": "导出",
+    "import": "导入",
+    "upload": "上传",
+    "preview": "预览",
+    "publish": "发布",
+    "submit": "提交",
+    "back": "返回",
+    "view": "查看",
+    "viewAll": "查看全部",
+    "more": "更多",
+    "expand": "展开",
+    "collapse": "收起",
+    "selectAll": "全选",
+    "clear": "清空",
+    "apply": "应用",
+    "ok": "确定"
+  },
+  "state": {
+    "loading": "加载中…",
+    "empty": "暂无数据",
+    "loadFailed": "加载失败",
+    "saveSuccess": "保存成功",
+    "saveFailed": "保存失败",
+    "deleteSuccess": "删除成功",
+    "deleteFailed": "删除失败",
+    "operationFailed": "操作失败",
+    "networkError": "网络异常，请稍后重试",
+    "comingSoon": "敬请期待"
+  },
+  "label": {
+    "name": "名称",
+    "description": "描述",
+    "status": "状态",
+    "type": "类型",
+    "createdAt": "创建时间",
+    "updatedAt": "更新时间",
+    "actions": "操作",
+    "all": "全部",
+    "none": "无",
+    "unknown": "未知",
+    "default": "默认",
+    "yes": "是",
+    "no": "否",
+    "total": "共 {{count}} 条",
+    "selected": "已选 {{count}} 项"
+  },
+  "pagination": {
+    "prev": "上一页",
+    "next": "下一页",
+    "page": "第 {{page}} 页",
+    "pageSize": "每页 {{size}} 条"
+  },
+  "confirm": {
+    "deleteTitle": "确认删除",
+    "deleteDescription": "删除后不可恢复，确定要删除吗？",
+    "unsavedChanges": "有未保存的修改，确定要离开吗？"
+  },
+  "language": {
+    "label": "语言",
+    "zh-CN": "简体中文",
+    "en-US": "English"
+  }
+}

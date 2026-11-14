@@ -4,6 +4,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { AppToaster } from '@/lib/toast';
 import App from './App';
 import { restoreBrandSnapshot } from './lib/brand';
+import './i18n'; // 多语言初始化必须先于 App 渲染（壳层菜单/通用文案首屏即用）
 import './styles/globals.css';
 
 // 渲染前按本地缓存同步恢复品牌标题/图标，消除刷新时"先闪默认名再切配置名"的跳字

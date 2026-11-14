@@ -11,6 +11,8 @@
 // 引用凭据在 chip 上挂着并随请求体提交；正文里留一串 @文字 反而会让模型把它当问题的一部分。
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, FolderOpen } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 import type { CloudFileRef } from '../../stores/chatStore';
 
 /** 候选项 = 发送时的引用凭据（同一份类型，避免面板与请求体两边各写一套字段漂移）。 */
@@ -20,9 +22,10 @@ export interface CloudFilesPayload { assets?: CloudFileItem[]; session_files?: C
 
 export type FileGroupId = 'asset' | 'session';
 
-export interface FileGroup { id: FileGroupId; label: string; items: CloudFileItem[] }
+export interface FileGroup { id: FileGroupId; labelKey: 'cloudFiles.groupAsset' | 'cloudFiles.groupSession'; items: CloudFileItem[] }
 
-const GROUP_LABEL: Record<FileGroupId, string> = { asset: '归档资产', session: '本会话文件' };
+/** 分栏标题只存 key：文案在渲染期经 t() 取（模块顶层常量会冻结语言） */
+const GROUP_LABEL_KEYS: Record<FileGroupId, 'cloudFiles.groupAsset' | 'cloudFiles.groupSession'> = { asset: 'cloudFiles.groupAsset', session: 'cloudFiles.groupSession' };
 const GROUP_ORDER: FileGroupId[] = ['asset', 'session'];
 const ICONS: Record<FileGroupId, typeof Archive> = { asset: Archive, session: FolderOpen };
 
@@ -31,8 +34,8 @@ const ICONS: Record<FileGroupId, typeof Archive> = { asset: Archive, session: Fo
  * 与「/」面板同理——不认它就是逼用户先切输入法。
  */
 export const MENTION_TRIGGERS = ['@', '＠'];
-/** 写给用户看的触发符写法（与 MENTION_TRIGGERS 同源）。 */
-export const MENTION_TRIGGER_HINT = '@ 或 ＠';
+/** 写给用户看的触发符写法（与 MENTION_TRIGGERS 同源）；调用期取当前语言，勿缓存到模块级常量 */
+export const mentionTriggerHint = (): string => i18n.t('chat:cloudFiles.triggerHint');
 
 /** 光标前最近一个触发符的下标（-1 = 没有）。 */
 function lastTriggerAt(before: string): number {
@@ -77,7 +80,7 @@ export function buildFileGroups(payload: CloudFilesPayload | null, picked: Cloud
   // 「本会话里那份」凭空从清单消失，用户看不到也选不到。
   return GROUP_ORDER.map(id => ({
     id,
-    label: GROUP_LABEL[id],
+    labelKey: GROUP_LABEL_KEYS[id],
     items: (payload?.[id === 'asset' ? 'assets' : 'session_files'] || [])
       .filter(it => it && it.ref && !taken.has(`${it.source}:${it.ref}`)),
   }));
@@ -133,12 +136,12 @@ function ScrollList({ activeIndex, children }: { activeIndex: number; children: 
   return <div ref={ref} className="max-h-[280px] min-h-[96px] overflow-y-auto">{children}</div>;
 }
 
-/** 条目的次要信息行：归档资产说清"来自哪个空间"，会话文件说清"在工作区哪个位置"。 */
+/** 条目的次要信息行：归档资产说清"来自哪个空间"，会话文件说清"在工作区哪个位置"。文案调用期取。 */
 function itemHint(item: CloudFileItem): string {
   if (item.source === 'asset') {
-    return item.origin_workspace_name ? `来自「${item.origin_workspace_name}」` : '归档资产';
+    return item.origin_workspace_name ? i18n.t('chat:cloudFiles.fromWorkspace', { name: item.origin_workspace_name }) : i18n.t('chat:cloudFiles.groupAsset');
   }
-  return item.ref.includes('/') ? item.ref : '本会话产物';
+  return item.ref.includes('/') ? item.ref : i18n.t('chat:cloudFiles.sessionArtifact');
 }
 
 function Key({ children }: { children: React.ReactNode }) {
@@ -162,24 +165,25 @@ export default function CloudFileMenu({
   loading?: boolean;
   error?: string;
 }) {
+  const { t } = useTranslation('chat');
   const shell = 'absolute bottom-full left-0 right-0 z-30 mb-2 rounded-xl border bg-card shadow-lg';
   if (error) {
     // 候选加载失败必须可见，不得静默当成"你没有可引用的文件"
     return <div className={`${shell} px-4 py-3 text-[13px] text-destructive`}>{error}</div>;
   }
   if (loading && !groups.some(g => g.items.length)) {
-    return <div className={`${shell} px-4 py-3 text-[13px] text-muted-foreground`}>正在检索云空间文件…</div>;
+    return <div className={`${shell} px-4 py-3 text-[13px] text-muted-foreground`}>{t('cloudFiles.loading')}</div>;
   }
   if (!groups.some(g => g.items.length)) {
     const kw = (query || '').trim();
     return (
       <div className={`${shell} px-4 py-3 text-[13px] text-muted-foreground`}>
         <div>
-          {kw ? `没有文件名含「${kw}」的可引用文件` : '还没有可 @ 引用的文件'}
-          （归档资产与本会话工作区文件）
+          {kw ? t('cloudFiles.emptyKw', { kw }) : t('cloudFiles.empty')}
+          {t('cloudFiles.emptyScope')}
         </div>
         <div className="mt-1 text-[12px] opacity-80">
-          产物会自动上云备份；要在别的会话复用某个产物，先在那条消息里「归档」，之后任何会话都能 @ 它。
+          {t('cloudFiles.emptyHint')}
         </div>
       </div>
     );
@@ -189,7 +193,7 @@ export default function CloudFileMenu({
   const navigable = groups.filter(g => g.items.length).length;
   return (
     <div className={shell}>
-      <div role="tablist" aria-label="文件来源" className="flex items-center gap-6 border-b px-4 pt-2.5">
+      <div role="tablist" aria-label={t('cloudFiles.tabAria')} className="flex items-center gap-6 border-b px-4 pt-2.5">
         {groups.map((g, i) => {
           const empty = !g.items.length;
           return (
@@ -206,7 +210,7 @@ export default function CloudFileMenu({
               }`}
             >
               <span className={i === tab && !empty ? 'font-semibold text-foreground' : undefined}>
-                {g.label}
+                {t(g.labelKey)}
                 <span className="ml-1 text-[11px] text-muted-foreground/80">{g.items.length}</span>
               </span>
               {i === tab && !empty && (
@@ -243,10 +247,10 @@ export default function CloudFileMenu({
         </div>
       </ScrollList>
       <div className="flex items-center gap-5 border-t bg-card px-4 py-2 text-[11px] text-muted-foreground/90">
-        <span className="flex items-center gap-1.5"><Key>↑↓</Key> 选择</span>
-        {navigable > 1 && <span className="flex items-center gap-1.5"><Key>←→</Key> 切换来源</span>}
-        <span className="flex items-center gap-1.5"><Key>Enter</Key> / <Key>Tab</Key> 引用</span>
-        <span className="ml-auto flex items-center gap-1.5"><Key>Esc</Key> 退出</span>
+        <span className="flex items-center gap-1.5"><Key>↑↓</Key> {t('cloudFiles.keySelect')}</span>
+        {navigable > 1 && <span className="flex items-center gap-1.5"><Key>←→</Key> {t('cloudFiles.keySwitch')}</span>}
+        <span className="flex items-center gap-1.5"><Key>Enter</Key> / <Key>Tab</Key> {t('cloudFiles.keyPick')}</span>
+        <span className="ml-auto flex items-center gap-1.5"><Key>Esc</Key> {t('cloudFiles.keyExit')}</span>
       </div>
     </div>
   );

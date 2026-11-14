@@ -14,6 +14,7 @@
 //    把它写进正文首行），所以原样导出即带上，不需要在这里再拼一遍。
 import DOMPurify from 'dompurify';
 import html2canvas from 'html2canvas';
+import i18n from '@/i18n';
 
 /**
  * 导出面的净化白名单 = 站内渲染口径 + 图表快照所需的 img。
@@ -46,9 +47,6 @@ function sanitizeForExport(html: string): string {
 
 export type ReportExportFormat = 'md' | 'html' | 'pdf';
 
-const EXPORT_LABEL: Record<ReportExportFormat, string> = {
-  md: 'Markdown 文件', html: 'HTML 文件', pdf: 'PDF（浏览器打印）',
-};
 const EXT: Record<ReportExportFormat, string> = { md: 'md', html: 'html', pdf: 'pdf' };
 
 /** 打印隔离用的类名：globals.css 的 @media print 规则靠它只露出报告正文 */
@@ -69,13 +67,13 @@ function dateTag(iso: string): string {
 }
 
 export function reportFileName(title: string, createdAt: string, format: ReportExportFormat): string {
-  const base = safeName(title) || '报告';
+  const base = safeName(title) || i18n.t('report:export.fileFallback');
   const day = dateTag(createdAt);
   return `${base}${day ? `-${day}` : ''}.${EXT[format]}`;
 }
 
 export function exportLabel(format: ReportExportFormat): string {
-  return EXPORT_LABEL[format];
+  return i18n.t(`report:export.format.${format}` as 'report:export.format.md');
 }
 
 /**
@@ -100,8 +98,7 @@ export function availableExportFormats(bodyFormat?: string, standaloneHtmlDoc = 
 /** 视觉区域快照失败时的可见说明：不能留白，也不能把空白图当地图发出去。 */
 function snapshotPlaceholder(label: string, why: string): HTMLElement {
   const note = document.createElement('p');
-  note.textContent = `（此处的${label}无法导出为静态图片：${why}`
-    + ' 请改用「PDF（浏览器打印）」得到与屏幕一致的版本）';
+  note.textContent = i18n.t('report:export.snapshotNote', { label, why });
   return note;
 }
 
@@ -226,10 +223,10 @@ export async function renderedHtml(container: HTMLElement): Promise<string> {
     for (const ghost of Array.from(clone.querySelectorAll<HTMLElement>(snapshotSel))) {
       const source = sources[Number(ghost.getAttribute('data-export-idx'))];
       // 属性值就是这块区域的业务名（如「地图」），空则回落"图表"
-      const label = (ghost.getAttribute('data-export-snapshot') || '').trim() || '图表';
+      const label = (ghost.getAttribute('data-export-snapshot') || '').trim() || i18n.t('report:export.chartFallback');
       const dataUrl = source ? await rasterize(source) : null;
       if (!dataUrl) {
-        ghost.replaceWith(snapshotPlaceholder(label, source ? '瓦片/图源未允许跨域读取' : '该区域未渲染'));
+        ghost.replaceWith(snapshotPlaceholder(label, source ? i18n.t('report:export.whyCrossOrigin') : i18n.t('report:export.whyNotRendered')));
         continue;
       }
       const rect = source.getBoundingClientRect();
@@ -252,8 +249,8 @@ export async function renderedHtml(container: HTMLElement): Promise<string> {
         dataUrl = '';   // 画布被跨域内容污染时读不出像素：留可见说明，不整份导出失败
       }
       ghost.replaceWith(dataUrl
-        ? Object.assign(document.createElement('img'), { src: dataUrl, alt: '图表' })
-        : snapshotPlaceholder('图表', '画布像素不可读'));
+        ? Object.assign(document.createElement('img'), { src: dataUrl, alt: i18n.t('report:export.chartFallback') })
+        : snapshotPlaceholder(i18n.t('report:export.chartFallback'), i18n.t('report:export.whyCanvasUnreadable')));
     }
 
     // 渲染面已经过站内净化，落文件前**再洗一次**：导出的文件会被别人用浏览器直接打开
@@ -315,7 +312,7 @@ export function downloadTextFile(filename: string, text: string, mime: string): 
  */
 export function printReport(): Promise<void> {
   if (typeof window.print !== 'function') {
-    return Promise.reject(new Error('当前浏览器不支持打印导出，请改用 HTML 文件导出'));
+    return Promise.reject(new Error(i18n.t('report:export.printUnsupported')));
   }
   return new Promise((resolve) => {
     const root = document.documentElement;

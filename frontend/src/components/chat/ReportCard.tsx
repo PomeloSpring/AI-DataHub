@@ -16,6 +16,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Download, FileText, FolderPlus, Maximize2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -42,9 +43,10 @@ interface Props {
 
 /** 自包含 HTML 文档的隔离渲染面：iframe srcDoc，不进主文档 DOM。 */
 function HtmlFrame({ doc, tall }: { doc: RenderDocument; tall?: boolean }) {
+  const { t } = useTranslation('chat');
   return (
     <iframe
-      title={doc.title || '交付文档'}
+      title={doc.title || t('reportCard.untitled')}
       srcDoc={doc.body}
       sandbox="allow-scripts"
       className={`w-full border-0 bg-white rounded-md ${tall ? 'h-[80vh]' : 'h-[520px]'}`}
@@ -53,6 +55,7 @@ function HtmlFrame({ doc, tall }: { doc: RenderDocument; tall?: boolean }) {
 }
 
 export default function ReportCard({ docId, bodyKind, title, onDrill, saveReport }: Props) {
+  const { t } = useTranslation(['chat', 'common']);
   const [doc, setDoc] = useState<RenderDocument | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -80,7 +83,7 @@ export default function ReportCard({ docId, bodyKind, title, onDrill, saveReport
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${(doc.title || '交付文档').slice(0, 60)}.html`;
+    a.download = `${(doc.title || t('reportCard.untitled')).slice(0, 60)}.html`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -89,17 +92,17 @@ export default function ReportCard({ docId, bodyKind, title, onDrill, saveReport
   const kind = doc ? doc.body_kind : bodyKind;
   const unsupported = !!doc && kind !== 'html' && kind !== 'spec';
   // 首屏占位用块内声明的形态（文档取回后以后端为准）：两者不一致时后端赢，不得拿声明值当事实
-  const formLabel = (form: string) => (form === 'html' ? '整页文档' : form === 'spec' ? '结构化报告' : form);
+  const formLabel = (form: string) => (form === 'html' ? t('reportCard.formHtml') : form === 'spec' ? t('reportCard.formSpec') : form);
 
   return (
     <div className="my-3 rounded-lg border bg-card overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-2 border-b bg-muted/30">
         <FileText className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden />
-        <span className="text-sm font-medium truncate">{doc?.title || title || '交付文档'}</span>
+        <span className="text-sm font-medium truncate">{doc?.title || title || t('reportCard.untitled')}</span>
         {doc && (
-          <span className="text-[11px] text-muted-foreground shrink-0" title={`正文摘要 ${doc.digest}`}>
+          <span className="text-[11px] text-muted-foreground shrink-0" title={t('reportCard.digestTitle', { digest: doc.digest })}>
             {formLabel(doc.body_kind)}
-            {doc.theme ? ` · 主题 ${doc.theme}` : ''}
+            {doc.theme ? t('reportCard.theme', { theme: doc.theme }) : ''}
             {doc.size_chars ? ` · ${Math.round(doc.size_chars / 1024)} KB` : ''}
           </span>
         )}
@@ -110,19 +113,19 @@ export default function ReportCard({ docId, bodyKind, title, onDrill, saveReport
         {doc && (
           <>
             <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => setFullscreen(true)}>
-              <Maximize2 className="h-3.5 w-3.5 mr-1" aria-hidden />全屏阅读
+              <Maximize2 className="h-3.5 w-3.5 mr-1" aria-hidden />{t('reportCard.fullscreen')}
             </Button>
             {/* 存草稿：与会话侧同一份两段式口径（这里只生成会话内草稿，归档在侧栏） */}
             {saveReport && (
               <Button size="sm" variant="ghost" className="h-7 px-2"
                 disabled={saveReport.busy} onClick={saveReport.onSave}>
-                <FolderPlus className="h-3.5 w-3.5 mr-1" aria-hidden />{saveReport.label || '存为报告草稿'}
+                <FolderPlus className="h-3.5 w-3.5 mr-1" aria-hidden />{saveReport.label || t('messageActions.saveReportDraft')}
               </Button>
             )}
             {/* 下载只对整页文档：spec 的正文是章节 JSON，当 .html 下下来只会得到一个坏文件 */}
             {kind === 'html' && (
               <Button size="sm" variant="ghost" className="h-7 px-2" onClick={onDownload}>
-                <Download className="h-3.5 w-3.5 mr-1" aria-hidden />下载
+                <Download className="h-3.5 w-3.5 mr-1" aria-hidden />{t('common:action.download')}
               </Button>
             )}
           </>
@@ -133,16 +136,15 @@ export default function ReportCard({ docId, bodyKind, title, onDrill, saveReport
         <div className="px-3 py-3 text-xs text-muted-foreground space-y-2" title={docId}>
           <p>{error}</p>
           <Button size="sm" variant="outline" disabled={busy} onClick={() => { void reload(); }}>
-            {busy ? '正在重试…' : '重试'}
+            {busy ? t('chartRef.retrying') : t('common:action.retry')}
           </Button>
         </div>
       ) : !doc ? (
-        <div role="status" className="px-3 py-6 text-xs text-muted-foreground">正在加载交付内容…</div>
+        <div role="status" className="px-3 py-6 text-xs text-muted-foreground">{t('reportCard.loading')}</div>
       ) : unsupported ? (
         // 未接线的形态同样要显式暴露：静默空白会让用户以为"报告坏了一次"，而不是"这种交付还没上"
         <div className="px-3 py-3 text-xs text-muted-foreground">
-          该交付内容以 {doc.body_kind} 形态产出，当前版本尚未支持就地渲染。
-          请让助手改用整页文档（HTML）或结构化报告交付，或把内容存进报告中心后查看。
+          {t('reportCard.unsupported', { kind: doc.body_kind })}
         </div>
       ) : kind === 'spec' ? (
         <ReportDoc doc={doc} onDrill={onDrill} />
@@ -165,7 +167,7 @@ export default function ReportCard({ docId, bodyKind, title, onDrill, saveReport
         <Dialog open onOpenChange={open => { if (!open) setFullscreen(false); }}>
           <DialogContent className="max-w-[min(1400px,96vw)] w-[96vw] h-[92vh] flex flex-col gap-2">
             <DialogHeader>
-              <DialogTitle className="text-sm">{doc.title || '交付文档'}</DialogTitle>
+              <DialogTitle className="text-sm">{doc.title || t('reportCard.untitled')}</DialogTitle>
             </DialogHeader>
             {kind === 'spec'
               ? <div className="flex-1 min-h-0 overflow-auto"><ReportDoc doc={doc} onDrill={onDrill} /></div>

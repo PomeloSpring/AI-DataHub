@@ -1,7 +1,8 @@
 import { Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Badge } from '@/components/ui/badge';
 import {
-  SEVERITY_LABELS, TREE_STATUS_LABELS, VERDICT_LABELS,
+  SEVERITY_LABELS, treeStatusLabel, verdictLabel, severityLabel,
   type AdviceSeverity, type DecisionOutcomeView, type DecisionVerdict, type TreeStatus,
 } from '@/api/decisions';
 
@@ -39,7 +40,7 @@ export const SEVERITY_CLASS: Record<AdviceSeverity, string> = {
 export function VerdictBadge({ verdict }: { verdict: DecisionVerdict }) {
   return (
     <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium ${TONE_CLASS[VERDICT_TONES[verdict] || 'muted']}`}>
-      {VERDICT_LABELS[verdict] || verdict}
+      {verdictLabel(verdict)}
     </span>
   );
 }
@@ -50,19 +51,20 @@ export function StatusBadge({ status }: { status: TreeStatus }) {
     : status === 'draft'
       ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
       : 'bg-slate-500/15 text-slate-600 dark:text-slate-300';
-  return <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${tone}`}>{TREE_STATUS_LABELS[status] || status}</span>;
+  return <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${tone}`}>{treeStatusLabel(status)}</span>;
 }
 
 export function SeverityBadge({ severity }: { severity: string }) {
   const key = (SEVERITY_LABELS as Record<string, string>)[severity] ? severity as AdviceSeverity : 'medium';
-  return <span className={`inline-flex rounded px-1.5 py-0.5 text-[11px] font-medium ${SEVERITY_CLASS[key]}`}>{SEVERITY_LABELS[key]}</span>;
+  return <span className={`inline-flex rounded px-1.5 py-0.5 text-[11px] font-medium ${SEVERITY_CLASS[key]}`}>{severityLabel(key)}</span>;
 }
 
 /** 命中路径面包屑：节点 label 序列（引擎按 label 给，物理名在这里根本没有机会出现） */
 export function HitPathCrumbs({ path }: { path: string[] }) {
+  const { t } = useTranslation(['workspace']);
   if (!path?.length) return null;
   return (
-    <ol className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground" aria-label="命中路径">
+    <ol className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground" aria-label={t('decision.panel.hitPathAria')}>
       {path.map((p, i) => (
         <li key={`${p}-${i}`} className="flex items-center gap-1">
           {i > 0 && <span aria-hidden>→</span>}
@@ -75,15 +77,16 @@ export function HitPathCrumbs({ path }: { path: string[] }) {
 
 /** 依据表：指标业务名 + 实测值 vs 阈值（后端已脱敏，这里不加任何物理层兜底渲染） */
 export function EvidenceTable({ evidence }: { evidence: DecisionOutcomeView['evidence'] }) {
+  const { t } = useTranslation(['workspace']);
   if (!evidence?.length) return null;
   return (
-    <table className="w-full text-xs" aria-label="判定依据">
+    <table className="w-full text-xs" aria-label={t('decision.panel.evidenceAria')}>
       <thead>
         <tr className="text-left text-muted-foreground">
-          <th className="py-1 pr-3 font-medium">指标</th>
-          <th className="py-1 pr-3 font-medium">判定</th>
-          <th className="py-1 pr-3 font-medium">阈值</th>
-          <th className="py-1 font-medium">实测值</th>
+          <th className="py-1 pr-3 font-medium">{t('decision.panel.metric')}</th>
+          <th className="py-1 pr-3 font-medium">{t('decision.panel.judgement')}</th>
+          <th className="py-1 pr-3 font-medium">{t('decision.panel.threshold')}</th>
+          <th className="py-1 font-medium">{t('decision.panel.measured')}</th>
         </tr>
       </thead>
       <tbody>
@@ -95,7 +98,7 @@ export function EvidenceTable({ evidence }: { evidence: DecisionOutcomeView['evi
               {formatValue(e.threshold)}{e.unit ? ` ${e.unit}` : ''}
             </td>
             <td className={`py-1 tabular-nums ${e.judged === false ? 'text-amber-700 dark:text-amber-400' : 'font-medium'}`}>
-              {e.judged === false ? '未判定' : formatValue(e.measured)}
+              {e.judged === false ? t('decision.panel.notJudged') : formatValue(e.measured)}
               {e.unit && e.judged !== false ? ` ${e.unit}` : ''}
             </td>
           </tr>
@@ -114,6 +117,7 @@ export function formatValue(v: any): string {
 
 /** 建议正文 + 知识出处（kb_refs 指向内容中心已发布文章的 slug） */
 export function AdviceList({ advice }: { advice: DecisionOutcomeView['advice'] }) {
+  const { t } = useTranslation(['workspace']);
   if (!advice?.length) return null;
   return (
     <ul className="space-y-2">
@@ -122,7 +126,7 @@ export function AdviceList({ advice }: { advice: DecisionOutcomeView['advice'] }
           <div className="flex items-start gap-2">
             <SeverityBadge severity={a.severity} />
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">{a.action || '（建议文案缺失）'}</div>
+              <div className="text-sm font-medium">{a.action || t('decision.panel.adviceMissing')}</div>
               {a.rationale && <div className="mt-1 text-xs text-muted-foreground">{a.rationale}</div>}
               {a.note && <div className="mt-1 text-xs text-amber-700 dark:text-amber-400">{a.note}</div>}
             </div>
@@ -135,7 +139,7 @@ export function AdviceList({ advice }: { advice: DecisionOutcomeView['advice'] }
                 return (
                   <Link key={`${slug}-${j}`} to={`/content/preview/${slug}`}
                     className="text-primary hover:underline">
-                    依据知识：{slug}
+                    {t('decision.panel.kbRef', { slug })}
                   </Link>
                 );
               })}
@@ -160,6 +164,7 @@ export default function DecisionAdvicePanel({
   evaluating?: boolean;
   compact?: boolean;
 }) {
+  const { t } = useTranslation(['workspace']);
   const verdict = advice.verdict;
   // 口径说明在 hit 上也要显示：看板控件带着日期区间/下拉算出的建议，如果只在
   // 非 hit 时才显 reason，人就会把“已改口径的结论”当全量结论读（双口径）。
@@ -176,7 +181,7 @@ export default function DecisionAdvicePanel({
         {!!onEvaluate && (
           <button type="button" onClick={onEvaluate} disabled={evaluating}
             className="ml-auto h-7 rounded-md border border-border px-2 text-xs hover:bg-muted disabled:opacity-60">
-            {evaluating ? '评估中…' : verdict === 'partial' ? '完整评估' : '重新评估'}
+            {evaluating ? t('decision.evaluating') : verdict === 'partial' ? t('decision.panel.fullEvaluate') : t('decision.panel.reEvaluate')}
           </button>
         )}
       </div>
@@ -185,7 +190,7 @@ export default function DecisionAdvicePanel({
 
       {!!scopeNotes.length && verdict === 'hit' && (
         <p className="text-xs leading-relaxed text-muted-foreground" role="status">
-          {scopeNotes.join('；')}
+          {scopeNotes.join(t('decision.panel.scopeSeparator'))}
         </p>
       )}
 
@@ -197,7 +202,7 @@ export default function DecisionAdvicePanel({
 
       {!!advice.missing_metrics?.length && (
         <p className="text-xs text-muted-foreground">
-          本树还需指标：{advice.missing_metrics.join('、')}（本轮未取到，未做完整判定）
+          {t('decision.panel.missingMetrics', { metrics: advice.missing_metrics.join(t('decision.panel.metricSeparator')) })}
         </p>
       )}
 
@@ -205,7 +210,12 @@ export default function DecisionAdvicePanel({
         <p className="text-xs text-muted-foreground">
           {advice.unresolved.map((u, i) => (
             <span key={i} className="mr-2">
-              「{u.term}」无法确认{u.candidates?.length ? `，候选：${u.candidates.join('、')}` : ''}
+              {t('decision.panel.unresolvedTerm', {
+                term: u.term,
+                candidates: u.candidates?.length
+                  ? t('decision.panel.unresolvedCandidates', { list: u.candidates.join(t('decision.panel.candidateSeparator')) })
+                  : '',
+              })}
             </span>
           ))}
         </p>

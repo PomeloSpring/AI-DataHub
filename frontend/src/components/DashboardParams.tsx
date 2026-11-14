@@ -11,6 +11,7 @@
  *     历史缺陷：`type` 存了但渲染不生效（string 与 text 两套词汇并存，日期被当文本填）。
  */
 import { Search, RotateCcw, Lock } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -33,14 +34,15 @@ export function rangeOf(value: any): { start: string; end: string } {
 export function ParamField({ param, value, onChange }: {
   param: AnyParam; value: any; onChange: (value: any) => void;
 }) {
+  const { t } = useTranslation(['dashboard']);
   const shape = shapeOfParam(param);
   // 看板级常数（如单 App 看板的 app_code）：只呈现不给输入口。
   // 留一个能改的框等于允许“标题写着 A、图上算的是 B”，那比不给这个参数更糟。
   if ((param as PageParam).readonly) {
-    return <output title="本看板的固定口径，不可修改（换分析对象请回到看板清单选对应的看板）"
+    return <output title={t('params.readonlyTitle')}
       className="inline-flex h-8 max-w-[16rem] items-center gap-1 truncate rounded-md border bg-muted/40 px-2 text-xs text-muted-foreground">
       <Lock aria-hidden className="h-3 w-3 shrink-0" />
-      <span className="truncate">{String(value ?? '') || '（未设置）'}</span>
+      <span className="truncate">{String(value ?? '') || t('params.unset')}</span>
     </output>;
   }
   // 占位文案与画布控件同源（“动作 + 业务名”），本参数显式配的 placeholder 优先
@@ -50,10 +52,10 @@ export function ParamField({ param, value, onChange }: {
   if (shape === 'date_range') {
     const { start, end } = rangeOf(value);
     return <span className="flex items-center gap-1">
-      <Input aria-label={`${param.label || param.name} 起始日期`} type="date" className="h-8 w-[132px] text-xs"
+      <Input aria-label={t('params.startAria', { label: param.label || param.name })} type="date" className="h-8 w-[132px] text-xs"
         value={start} onChange={e => onChange({ ...rangeOf(value), start: e.target.value })} />
       <span className="text-xs text-muted-foreground">~</span>
-      <Input aria-label={`${param.label || param.name} 结束日期`} type="date" className="h-8 w-[132px] text-xs"
+      <Input aria-label={t('params.endAria', { label: param.label || param.name })} type="date" className="h-8 w-[132px] text-xs"
         value={end} onChange={e => onChange({ ...rangeOf(value), end: e.target.value })} />
     </span>;
   }
@@ -70,11 +72,11 @@ export function ParamField({ param, value, onChange }: {
     if (!options.length) return <span className="flex items-center gap-1">
       <Select value={String(value ?? '') || undefined} onValueChange={onChange}>
         <SelectTrigger aria-label={param.label || param.name} className="h-8 w-[140px] text-xs">
-          <SelectValue placeholder="无候选值" />
+          <SelectValue placeholder={t('params.noOptions')} />
         </SelectTrigger>
         <SelectContent />
       </Select>
-      <span className="text-[10px] text-amber-600 dark:text-amber-500">未配置候选值，请在「看板参数」里填写</span>
+      <span className="text-[10px] text-amber-600 dark:text-amber-500">{t('params.noOptionsHint')}</span>
     </span>;
     return <Select value={String(value ?? '') || undefined} onValueChange={onChange}>
       <SelectTrigger aria-label={param.label || param.name} className="h-8 w-[140px] text-xs">
@@ -94,6 +96,7 @@ export function ParamField({ param, value, onChange }: {
  * 两套命名空间合并成一行（一行两带是历史遗留，用户无法判断以哪个为准）。
  */
 export function DashboardRuntimeParams({ dashboard }: { dashboard: Dashboard }) {
+  const { t } = useTranslation(['dashboard', 'common']);
   const { paramValues, pageParamValues, setParamValue, setPageParamValue, currentId } = useDashboardStore();
   const resetParams = useDashboardStore(s => s.resetParams);
   const refreshCharts = useDashboardStore(s => s.refreshCharts);
@@ -121,11 +124,11 @@ export function DashboardRuntimeParams({ dashboard }: { dashboard: Dashboard }) 
     {/* 这一带的值不会自动触发取数（与画布控件同口径），所以必须给出可见的生效入口 */}
     <span className="ml-auto flex items-center gap-2">
       <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => void refreshCharts(dashboard.id)}>
-        <Search className="mr-1 h-3.5 w-3.5" />搜索
+        <Search className="mr-1 h-3.5 w-3.5" />{t('common:action.search')}
       </Button>
-      <Button size="sm" variant="ghost" className="h-8 text-xs" title="把全部参数恢复为默认值并重新查询"
+      <Button size="sm" variant="ghost" className="h-8 text-xs" title={t('params.resetTitle')}
         onClick={() => void resetParams(dashboard.id)}>
-        <RotateCcw className="mr-1 h-3.5 w-3.5" />重置
+        <RotateCcw className="mr-1 h-3.5 w-3.5" />{t('common:action.reset')}
       </Button>
     </span>
   </div>;

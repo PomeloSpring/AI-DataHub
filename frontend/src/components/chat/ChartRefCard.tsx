@@ -12,6 +12,7 @@
  * 3. 服务端的非阻断提示（warnings：图型推断、结果截断）必须可见。
  */
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import ChartPicker from '@/components/ChartPicker';
@@ -30,6 +31,7 @@ interface Props {
 }
 
 export default function ChartRefCard({ chartRef, title, onDrill }: Props) {
+  const { t } = useTranslation(['chat', 'common']);
   const [doc, setDoc] = useState<RenderDocument | null>(null);
   const [chart, setChart] = useState<ChartDataPayload | null>(null);
   const [error, setError] = useState('');
@@ -44,7 +46,7 @@ export default function ChartRefCard({ chartRef, title, onDrill }: Props) {
       if (loaded.body_kind !== 'chart-data') {
         // 形态不符不能"将就着画"：拿 spec/html 正文当图表数据只会画出空图
         setChart(null);
-        setError(`该引用指向的是 ${loaded.body_kind} 形态的交付对象，不是图表数据。请让助手用 render_chart 重新出图`);
+        setError(t('chartRef.wrongKind', { kind: loaded.body_kind }));
         return;
       }
       setChart(parseChartDataPayload(loaded));
@@ -52,11 +54,11 @@ export default function ChartRefCard({ chartRef, title, onDrill }: Props) {
       setDoc(null);
       setChart(null);
       setError(e?.response?.status ? renderDocumentErrorText(e.response.status)
-                                   : (e?.message || '图表数据暂时取不到，请重试'));
+                                   : (e?.message || t('chartRef.fetchFailed')));
     } finally {
       setBusy(false);
     }
-  }, [chartRef]);
+  }, [chartRef, t]);
 
   useEffect(() => { void reload(); }, [reload]);
 
@@ -70,8 +72,8 @@ export default function ChartRefCard({ chartRef, title, onDrill }: Props) {
         )}
         {chart && (
           <span className="text-[11px] text-muted-foreground">
-            图型 {chart.chartType || '自动'} · 共 {chart.rowCount} 行
-            {chart.rows.length < chart.rowCount ? `（图上用前 ${chart.rows.length} 行）` : ''}
+            {t('chartRef.meta', { type: chart.chartType || t('chartRef.auto'), count: chart.rowCount })}
+            {chart.rows.length < chart.rowCount ? t('chartRef.metaPreview', { count: chart.rows.length }) : ''}
           </span>
         )}
       </div>
@@ -80,11 +82,11 @@ export default function ChartRefCard({ chartRef, title, onDrill }: Props) {
         <div role="alert" className="text-xs text-muted-foreground space-y-2">
           <p>{error}</p>
           <Button size="sm" variant="outline" disabled={busy} onClick={() => { void reload(); }}>
-            {busy ? '正在重试…' : '重试'}
+            {busy ? t('chartRef.retrying') : t('common:action.retry')}
           </Button>
         </div>
       ) : !chart ? (
-        <div role="status" className="py-6 text-xs text-muted-foreground">正在加载图表数据…</div>
+        <div role="status" className="py-6 text-xs text-muted-foreground">{t('chartRef.loading')}</div>
       ) : (
         <>
           {warnings.length > 0 && (

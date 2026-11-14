@@ -24,6 +24,7 @@ import { useHasPerm } from '../stores/permissionStore';
 import { SidebarMenuSkeleton } from './SidebarMenuSkeleton';
 import { pruneEmptySections } from '@/lib/menuUtils';
 import ThemeMenuItems from './ThemeMenuItems';
+import LanguageMenu from './LanguageMenu';
 
 interface ContentMenuItem {
   section?: string;
@@ -217,6 +218,8 @@ export default function ContentLayout() {
                 <ThemeMenuItems />
               </DropdownMenuContent>
             </DropdownMenu>
+            {/* 语言切换：顶栏常驻，与主题按钮并排（四套布局同口径） */}
+            <LanguageMenu />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button aria-label="用户菜单" data-tour={TOUR.headerUser} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">

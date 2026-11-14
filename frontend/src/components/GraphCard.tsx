@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Background, Edge, Handle, MarkerType, Node, NodeProps, Position, ReactFlow,
 } from '@xyflow/react';
@@ -80,6 +81,7 @@ const NODE_TYPES = { simple: SimpleNode };
  * 按 type 轮转色板,悬停/缩放交互保留。
  */
 export default function GraphCard({ title, nodes, edges, height = 360 }: Props) {
+  const { t } = useTranslation('chat');
   const cfg = useVisConfig('cs_graph_relation', DEFAULT_GRAPH);
 
   const typeOrder = useMemo(() => [...new Set(nodes.map(n => n.type || ''))], [nodes]);
@@ -124,13 +126,13 @@ export default function GraphCard({ title, nodes, edges, height = 360 }: Props) 
     <div className="my-3 overflow-hidden rounded-lg border bg-card">
       <div className="flex items-center gap-2 border-b bg-muted/50 px-3 py-2">
         <Network className="h-4 w-4 text-primary" />
-        <span className="text-sm font-semibold">{title || '关系图谱'}</span>
+        <span className="text-sm font-semibold">{title || t('graphCard.title')}</span>
         <Badge variant="outline" className="text-[10px] font-normal">
-          {nodes.length} 节点 · {edges.length} 边
+          {t('graphCard.shape', { nodes: nodes.length, edges: edges.length })}
         </Badge>
       </div>
       {nodes.length === 0 ? (
-        <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">暂无图数据</div>
+        <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">{t('graphCard.empty')}</div>
       ) : (
         <div style={{ height }} className="bg-background/40">
           <ReactFlow

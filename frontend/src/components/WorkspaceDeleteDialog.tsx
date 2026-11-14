@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/toast';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
@@ -34,12 +35,13 @@ export interface WorkspaceDeleteImpact {
   saved_queries: number;
 }
 
-const IMPACT_LABELS: { key: keyof WorkspaceDeleteImpact; label: string }[] = [
-  { key: 'conversations', label: '会话' },
-  { key: 'dashboards', label: '数据看板' },
-  { key: 'scheduled_tasks', label: '定时任务' },
-  { key: 'dag_workflows', label: '工作流' },
-  { key: 'saved_queries', label: '保存查询/数据集' },
+/** 影响清单行：只存 key，文案在渲染期经 t() 取（模块顶层常量会冻结语言，切语言不刷新） */
+const IMPACT_KEYS: { key: keyof WorkspaceDeleteImpact; labelKey: 'delete.impact.conversations' | 'delete.impact.dashboards' | 'delete.impact.scheduledTasks' | 'delete.impact.dagWorkflows' | 'delete.impact.savedQueries' }[] = [
+  { key: 'conversations', labelKey: 'delete.impact.conversations' },
+  { key: 'dashboards', labelKey: 'delete.impact.dashboards' },
+  { key: 'scheduled_tasks', labelKey: 'delete.impact.scheduledTasks' },
+  { key: 'dag_workflows', labelKey: 'delete.impact.dagWorkflows' },
+  { key: 'saved_queries', labelKey: 'delete.impact.savedQueries' },
 ];
 
 export function WorkspaceDeleteDialog({ workspace, open, onOpenChange, onDeleted }: {
@@ -49,6 +51,7 @@ export function WorkspaceDeleteDialog({ workspace, open, onOpenChange, onDeleted
   /** 删除成功后的回调（父级刷新清单/跳转），抛错不影响提示 */
   onDeleted?: (workspaceId: number) => void | Promise<void>;
 }) {
+  const { t } = useTranslation(['workspace', 'common']);
   const [impact, setImpact] = useState<WorkspaceDeleteImpact | null>(null);
   const [loading, setLoading] = useState(false);
   const [ack, setAck] = useState(false);
@@ -65,7 +68,7 @@ export function WorkspaceDeleteDialog({ workspace, open, onOpenChange, onDeleted
     client.get<WorkspaceDeleteImpact>(`/workspaces/${workspace.id}/delete-impact`)
       .then(({ data }) => { if (!cancelled) setImpact(data); })
       .catch((e: any) => {
-        toast.error(e.response?.data?.detail || '获取删除影响清单失败，请重试');
+        toast.error(e.response?.data?.detail || t('delete.impactFailed'));
         if (!cancelled) onOpenChange(false);
       })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -77,41 +80,40 @@ export function WorkspaceDeleteDialog({ workspace, open, onOpenChange, onDeleted
     setDeleting(true);
     try {
       await client.delete(`/workspaces/${workspace.id}`);
-      toast.success(`工作空间「${workspace.name}」已删除`);
+      toast.success(t('delete.deleted', { name: workspace.name }));
       const deletedId = workspace.id;
       onOpenChange(false);
       await onDeleted?.(deletedId);
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '删除失败');
+      toast.error(e.response?.data?.detail || t('common:state.deleteFailed'));
     } finally {
       setDeleting(false);
     }
   };
 
-  const rows = impact ? IMPACT_LABELS.filter(item => Number(impact[item.key]) > 0) : [];
+  const rows = impact ? IMPACT_KEYS.filter(item => Number(impact[item.key]) > 0) : [];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>删除工作空间</DialogTitle>
+          <DialogTitle>{t('delete.title')}</DialogTitle>
           <DialogDescription>
-            将永久删除「{workspace?.name}」及其中的会话与产物，此操作不可恢复。
-            已归档到资产清单的文件跟随账号保留，不受影响。
+            {t('delete.description', { name: workspace?.name ?? '' })}
           </DialogDescription>
         </DialogHeader>
         <div className="text-sm space-y-2">
           {loading ? (
-            <p className="text-muted-foreground">正在统计影响内容…</p>
+            <p className="text-muted-foreground">{t('delete.impactLoading')}</p>
           ) : impact ? (
             rows.length === 0
-              ? <p className="text-muted-foreground">该空间内暂无会话、看板与任务。</p>
+              ? <p className="text-muted-foreground">{t('delete.impactEmpty')}</p>
               : (
                 <ul className="space-y-1">
                   {rows.map(item => (
                     <li key={item.key} className="flex justify-between gap-4">
-                      <span>{item.label}</span>
-                      <span className="font-medium">{Number(impact[item.key])} 项</span>
+                      <span>{t(item.labelKey)}</span>
+                      <span className="font-medium">{t('delete.itemCount', { count: Number(impact[item.key]) })}</span>
                     </li>
                   ))}
                 </ul>
@@ -119,25 +121,25 @@ export function WorkspaceDeleteDialog({ workspace, open, onOpenChange, onDeleted
           ) : null}
           {impact && impact.disk_usage_bytes > 0 && (
             <p className="text-xs text-muted-foreground">
-              同时清理会话工作区文件 {formatBytes(impact.disk_usage_bytes)}
+              {t('delete.diskCleanup', { size: formatBytes(impact.disk_usage_bytes) })}
             </p>
           )}
           <label className="flex items-start gap-2 pt-1 text-sm cursor-pointer">
             <input
-              type="checkbox" aria-label="确认永久删除工作空间" checked={ack}
+              type="checkbox" aria-label={t('delete.ackAria')} checked={ack}
               onChange={e => setAck(e.target.checked)}
               className="mt-0.5 accent-destructive"
             />
-            <span>我已知晓上述内容将被永久删除且无法恢复</span>
+            <span>{t('delete.ackLabel')}</span>
           </label>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>{t('common:action.cancel')}</Button>
           <Button
             variant="destructive" onClick={handleDelete}
             disabled={deleting || !ack || loading || !impact}
           >
-            {deleting ? '删除中...' : '永久删除'}
+            {deleting ? t('delete.deleting') : t('delete.confirm')}
           </Button>
         </DialogFooter>
       </DialogContent>

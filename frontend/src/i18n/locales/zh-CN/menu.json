@@ -1,0 +1,14 @@
+{
+  "section": {
+    "analytics": "数据分析",
+    "cloud": "云空间",
+    "automation": "自动化"
+  },
+  "workspace": {
+    "dashboards": "数据看板",
+    "chat": "智能问数",
+    "reports": "报告中心",
+    "assets": "资产清单",
+    "scheduled": "任务调度"
+  }
+}

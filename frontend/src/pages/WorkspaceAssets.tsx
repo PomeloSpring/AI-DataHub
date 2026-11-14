@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,6 +11,7 @@ import {
 import { toast } from '@/lib/toast';
 import { Archive, Download, Trash2, HardDrive, Sparkles, RefreshCw, Search } from 'lucide-react';
 import client from '@/api/client';
+import i18n from '@/i18n';
 
 // 用户资产清单(资产跟随用户, 跨工作空间): 会话产物"归档收藏"后进入清单, 跟随账号复用;
 // 资产托管对象存储(OSS), 归档后可清理本地产物(受工作空间磁盘配额约束)。
@@ -38,6 +40,7 @@ const fmtBytes = (n: number) => {
 };
 
 export default function WorkspaceAssets() {
+  const { t } = useTranslation(['workspace', 'common', 'menu']);
   const { workspaceId } = useParams();
   const ws = Number(workspaceId) || 0;
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -68,19 +71,19 @@ export default function WorkspaceAssets() {
       // 响应形状校验: 未命中代理/网关误路由时会拿到 HTML/错误对象(200+非列表),
       // 不静默当空列表, 显式报错(no-silent-degradation)
       if (!Array.isArray(a.data)) {
-        toast.error('资产清单响应异常（非列表结构），请检查前端代理配置或服务日志');
+        toast.error(i18n.t('workspace:assets.loadShapeError'));
         setAssets([]);
       } else {
         setAssets(a.data);
       }
       if (!d.data || typeof d.data !== 'object' || Array.isArray(d.data)) {
-        toast.error('磁盘用量响应异常，请检查服务日志');
+        toast.error(i18n.t('workspace:assets.diskShapeError'));
         setDisk(null);
       } else {
         setDisk(d.data);
       }
     } catch {
-      toast.error('加载资产清单失败');
+      toast.error(i18n.t('workspace:assets.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -92,7 +95,7 @@ export default function WorkspaceAssets() {
     setConvId(''); setFilePath(''); setAssetName(''); setFiles([]); setDeleteSource(false);
     try {
       const { data } = await client.get('/chat/conversations', { params: { workspace_id: ws, size: 50 } });
-      setConvs((data?.items || data || []).map((c: any) => ({ id: c.id, title: c.title || `会话 ${c.id}` })));
+      setConvs((data?.items || data || []).map((c: any) => ({ id: c.id, title: c.title || i18n.t('workspace:assets.convFallback', { id: c.id }) })));
     } catch { setConvs([]); }
   };
 
@@ -102,18 +105,18 @@ export default function WorkspaceAssets() {
     try {
       const { data } = await client.get(`/workspace-assets/${ws}/conversations/${id}/files`);
       if (!Array.isArray(data)) {
-        toast.error('会话产物响应异常（非列表结构），请检查服务日志');
+        toast.error(i18n.t('workspace:assets.filesShapeError'));
         setFiles([]);
       } else {
         setFiles(data);
       }
     } catch {
-      toast.error('加载会话产物失败');
+      toast.error(i18n.t('workspace:assets.filesLoadFailed'));
     }
   };
 
   const archive = async () => {
-    if (!convId || !filePath) { toast.error('请选择会话与产物文件'); return; }
+    if (!convId || !filePath) { toast.error(t('assets.pickRequired')); return; }
     setArchiving(true);
     try {
       await client.post('/assets/archive', {
@@ -122,11 +125,11 @@ export default function WorkspaceAssets() {
         path: filePath,
         delete_source: deleteSource,
       });
-      toast.success(deleteSource ? '已归档并清理本地产物' : '已归档到我的资产');
+      toast.success(deleteSource ? t('assets.archivedCleaned') : t('assets.archived'));
       setArchiveOpen(false);
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '归档失败');
+      toast.error(e.response?.data?.detail || t('assets.archiveFailed'));
     } finally {
       setArchiving(false);
     }
@@ -139,7 +142,7 @@ export default function WorkspaceAssets() {
       const { data } = await client.post(`/workspace-assets/${ws}/cleanup`, { confirm: false });
       setCandidates(data?.candidates || []);
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '加载清理候选失败');
+      toast.error(e.response?.data?.detail || t('assets.cleanupLoadFailed'));
     }
   };
 
@@ -147,11 +150,11 @@ export default function WorkspaceAssets() {
     setCleaning(true);
     try {
       const { data } = await client.post(`/workspace-assets/${ws}/cleanup`, { confirm: true });
-      toast.success(`已清理 ${data?.cleaned ?? 0} 项，释放 ${fmtBytes(data?.freed_bytes ?? 0)}`);
+      toast.success(t('assets.cleaned', { count: data?.cleaned ?? 0, size: fmtBytes(data?.freed_bytes ?? 0) }));
       setCleanupOpen(false);
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '清理失败');
+      toast.error(e.response?.data?.detail || t('assets.cleanupFailed'));
     } finally {
       setCleaning(false);
     }
@@ -169,7 +172,7 @@ export default function WorkspaceAssets() {
       const status = e?.response?.status;
       if (status !== 400) {
         // 直链生成失败(OSS 侧问题)显式报错，不静默换道
-        toast.error(e?.response?.data?.detail || 'OSS 直链下载失败');
+        toast.error(e?.response?.data?.detail || t('assets.ossDownloadFailed'));
         return;
       }
       // 400=本地存储模式(未配置对象存储)，回落服务端代理下载
@@ -183,17 +186,17 @@ export default function WorkspaceAssets() {
       link.click();
       URL.revokeObjectURL(url);
     } catch {
-      toast.error('下载失败');
+      toast.error(t('assets.downloadFailed'));
     }
   };
 
   const remove = async (a: Asset) => {
     try {
       await client.delete(`/assets/${a.id}`);
-      toast.success('资产已删除');
+      toast.success(t('assets.removed'));
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '删除失败');
+      toast.error(e.response?.data?.detail || t('common:state.deleteFailed'));
     }
   };
 
@@ -207,27 +210,27 @@ export default function WorkspaceAssets() {
       <div className="mx-auto max-w-[1200px] p-6 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2"><Archive className="h-6 w-6" />资产清单</h1>
+            <h1 className="text-2xl font-bold flex items-center gap-2"><Archive className="h-6 w-6" />{t('menu:workspace.assets')}</h1>
             <p className="text-muted-foreground mt-1 text-sm">
-              会话产物"归档收藏"后进入清单，跟随账号跨工作空间复用；归档后可在聊天框用 <code className="rounded bg-muted px-1">@</code> 引用为当前会话上下文。资产托管在对象存储，本地会话产物可按磁盘配额清理。
+              {t('assets.subtitleBefore')}<code className="rounded bg-muted px-1">@</code>{t('assets.subtitleAfter')}
             </p>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={load} disabled={loading}><RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />刷新</Button>
-            <Button variant="outline" size="sm" onClick={openCleanup}><HardDrive className="h-4 w-4 mr-1" />清理本地产物</Button>
-            <Button size="sm" onClick={openArchive}><Sparkles className="h-4 w-4 mr-1" />归档会话产物</Button>
+            <Button variant="outline" size="sm" onClick={load} disabled={loading}><RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />{t('common:action.refresh')}</Button>
+            <Button variant="outline" size="sm" onClick={openCleanup}><HardDrive className="h-4 w-4 mr-1" />{t('assets.cleanupLocal')}</Button>
+            <Button size="sm" onClick={openArchive}><Sparkles className="h-4 w-4 mr-1" />{t('assets.archiveSession')}</Button>
           </div>
         </div>
 
         {disk && (
           <div className="border rounded-lg p-3 space-y-2">
             <div className="flex justify-between text-xs text-muted-foreground">
-              <span>工作空间磁盘用量</span>
+              <span>{t('assets.diskUsage')}</span>
               <span>
                 {fmtBytes(disk.usage_bytes)} / {disk.quota_bytes > 0
-                  ? `${fmtBytes(disk.quota_bytes)}${disk.quota_is_default ? '（系统缺省）' : ''}`
-                  : '不设限'}
-                {usagePct >= 90 ? '（接近上限，建议归档/清理）' : ''}
+                  ? `${fmtBytes(disk.quota_bytes)}${disk.quota_is_default ? t('assets.quotaDefault') : ''}`
+                  : t('assets.unlimited')}
+                {usagePct >= 90 ? t('assets.nearLimit') : ''}
               </span>
             </div>
             <div className="h-1.5 w-full rounded bg-muted overflow-hidden">
@@ -238,14 +241,14 @@ export default function WorkspaceAssets() {
 
         <div className="relative max-w-md">
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input aria-label="搜索资产" placeholder="搜索资产名称或文件名…" className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
+          <Input aria-label={t('assets.searchAria')} placeholder={t('assets.searchPlaceholder')} className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
 
         {loading ? (
-          <div className="text-center py-8 text-muted-foreground">加载中...</div>
+          <div className="text-center py-8 text-muted-foreground">{t('common:state.loading')}</div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground">
-            {search ? '没有匹配的资产' : '暂无资产，点击「归档会话产物」把重要产物收藏进清单（归档 = 可跨会话 @ 复用）'}
+            {search ? t('assets.noMatch') : t('assets.empty')}
           </div>
         ) : (
           <div className="space-y-2">
@@ -259,9 +262,9 @@ export default function WorkspaceAssets() {
                   </div>
                   <div className="text-xs text-muted-foreground truncate">
                     {a.filename}
-                    {a.source_conversation_id > 0 && <> · 来自会话 #{a.source_conversation_id}</>}
-                    {a.origin_workspace_id > 0 && <> · {a.origin_workspace_name || '工作空间已删除'}</>}
-                    {a.created_at && <> · {new Date(a.created_at).toLocaleString('zh-CN')}</>}
+                    {a.source_conversation_id > 0 && <> · {t('assets.fromConversation', { id: a.source_conversation_id })}</>}
+                    {a.origin_workspace_id > 0 && <> · {a.origin_workspace_name || t('assets.workspaceDeleted')}</>}
+                    {a.created_at && <> · {new Date(a.created_at).toLocaleString(i18n.language)}</>}
                   </div>
                 </div>
                 <div className="flex gap-1">
@@ -278,36 +281,36 @@ export default function WorkspaceAssets() {
       <Dialog open={archiveOpen} onOpenChange={setArchiveOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>归档会话产物</DialogTitle>
-            <DialogDescription>选择会话与产物文件收藏进资产清单；可选归档后清理本地文件。</DialogDescription>
+            <DialogTitle>{t('assets.archiveSession')}</DialogTitle>
+            <DialogDescription>{t('assets.archive.desc')}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>会话</Label>
-              <select aria-label="选择会话" className="w-full border rounded px-2 py-1.5 text-sm bg-background" value={convId} onChange={e => void pickConv(e.target.value)}>
-                <option value="">请选择会话</option>
+              <Label>{t('assets.archive.conv')}</Label>
+              <select aria-label={t('assets.archive.convAria')} className="w-full border rounded px-2 py-1.5 text-sm bg-background" value={convId} onChange={e => void pickConv(e.target.value)}>
+                <option value="">{t('assets.archive.convPlaceholder')}</option>
                 {convs.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
               </select>
             </div>
             <div className="space-y-2">
-              <Label>产物文件</Label>
-              <select aria-label="选择产物文件" className="w-full border rounded px-2 py-1.5 text-sm bg-background" value={filePath} onChange={e => { setFilePath(e.target.value); setAssetName(e.target.value.split('/').pop() || ''); }}>
-                <option value="">{convId ? (files.length ? '请选择产物文件' : '该会话暂无产物文件') : '请先选择会话'}</option>
+              <Label>{t('assets.archive.file')}</Label>
+              <select aria-label={t('assets.archive.fileAria')} className="w-full border rounded px-2 py-1.5 text-sm bg-background" value={filePath} onChange={e => { setFilePath(e.target.value); setAssetName(e.target.value.split('/').pop() || ''); }}>
+                <option value="">{convId ? (files.length ? t('assets.archive.filePlaceholder') : t('assets.archive.fileEmpty')) : t('assets.archive.convFirst')}</option>
                 {files.map(f => <option key={f.path} value={f.path}>{f.path}（{fmtBytes(f.size)}）</option>)}
               </select>
             </div>
             <div className="space-y-2">
-              <Label>资产名称</Label>
-              <Input value={assetName} onChange={e => setAssetName(e.target.value)} placeholder="默认使用文件名" />
+              <Label>{t('assets.archive.name')}</Label>
+              <Input value={assetName} onChange={e => setAssetName(e.target.value)} placeholder={t('assets.archive.namePlaceholder')} />
             </div>
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input type="checkbox" className="h-3.5 w-3.5" checked={deleteSource} onChange={e => setDeleteSource(e.target.checked)} />
-              归档后删除本地产物文件（节省磁盘配额，资产不受影响）
+              {t('assets.archive.deleteSource')}
             </label>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setArchiveOpen(false)}>取消</Button>
-            <Button onClick={archive} disabled={archiving}>{archiving ? '归档中...' : '归档'}</Button>
+            <Button variant="outline" onClick={() => setArchiveOpen(false)}>{t('common:action.cancel')}</Button>
+            <Button onClick={archive} disabled={archiving}>{archiving ? t('assets.archive.submitting') : t('assets.archive.submit')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -316,17 +319,17 @@ export default function WorkspaceAssets() {
       <Dialog open={cleanupOpen} onOpenChange={setCleanupOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>清理本地产物</DialogTitle>
-            <DialogDescription>候选 = 已归档资产的来源文件 + 已关闭会话目录；已归档资产保存在对象存储，不受影响。</DialogDescription>
+            <DialogTitle>{t('assets.cleanupLocal')}</DialogTitle>
+            <DialogDescription>{t('assets.cleanup.desc')}</DialogDescription>
           </DialogHeader>
           {candidates.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-2">暂无可清理的本地产物</p>
+            <p className="text-sm text-muted-foreground py-2">{t('assets.cleanup.empty')}</p>
           ) : (
             <div className="max-h-64 overflow-y-auto space-y-1">
               {candidates.map((c, i) => (
                 <div key={i} className="flex items-center justify-between gap-2 border rounded px-3 py-1.5 text-xs">
                   <span className="truncate">
-                    {c.kind === 'file' ? `产物文件: ${c.filename || c.path}` : `会话目录: #${c.conversation_id}`}
+                    {c.kind === 'file' ? t('assets.cleanup.file', { name: c.filename || c.path }) : t('assets.cleanup.session', { id: c.conversation_id })}
                   </span>
                   <span className="text-muted-foreground flex-shrink-0">{fmtBytes(c.bytes)}</span>
                 </div>
@@ -334,9 +337,9 @@ export default function WorkspaceAssets() {
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCleanupOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setCleanupOpen(false)}>{t('common:action.cancel')}</Button>
             <Button variant="destructive" onClick={runCleanup} disabled={cleaning || candidates.length === 0}>
-              {cleaning ? '清理中...' : `确认清理（${candidates.length} 项）`}
+              {cleaning ? t('assets.cleanup.submitting') : t('assets.cleanup.confirm', { count: candidates.length })}
             </Button>
           </DialogFooter>
         </DialogContent>

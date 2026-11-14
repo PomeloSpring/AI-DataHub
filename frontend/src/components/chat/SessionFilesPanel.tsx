@@ -3,6 +3,7 @@ import {
   Cloud, CloudOff, FileImage, FileSpreadsheet, FileText, FileType, Code,
   FolderOpen, Loader2, MoreHorizontal, RefreshCw, Trash2, type LucideIcon,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -74,6 +75,7 @@ const TYPE_ICONS: Record<ArtifactType, LucideIcon> = {
  * 未同步就是没上云，不假装「已保存」。
  */
 export default function SessionFilesPanel({ workspaceId, conversationId, refreshKey }: Props) {
+  const { t } = useTranslation(['chat', 'common']);
   const [files, setFiles] = useState<SessionFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -100,12 +102,12 @@ export default function SessionFilesPanel({ workspaceId, conversationId, refresh
       } catch { setSync(null); }
       // 非列表结构(如未命中代理拿到 HTML)不静默当空列表, 显式报错
       const list: SessionFile[] = Array.isArray(data) ? data : [];
-      if (!Array.isArray(data)) setError('会话产物响应异常（非列表结构），请检查服务日志');
+      if (!Array.isArray(data)) setError(t('sessionFiles.badResponse'));
       setFiles(list);
       setPreview(prev => (prev ? list.find(f => f.path === prev.path) || null : null));
     } catch (e: any) {
       setFiles([]);
-      setError(e?.response?.data?.detail || '会话文件加载失败,请稍后重试');
+      setError(e?.response?.data?.detail || t('sessionFiles.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -118,7 +120,7 @@ export default function SessionFilesPanel({ workspaceId, conversationId, refresh
 
   const openArchive = (file: SessionFile) => {
     setPreview(null);
-    setArchiveName(file.path.split('/').pop()?.replace(/\.[^.]+$/, '') || '归档文件');
+    setArchiveName(file.path.split('/').pop()?.replace(/\.[^.]+$/, '') || t('sessionFiles.archiveDefaultName'));
     setDeleteSource(false);
     setArchiveOpen(true);
   };
@@ -133,14 +135,14 @@ export default function SessionFilesPanel({ workspaceId, conversationId, refresh
         path: preview.path,
         delete_source: deleteSource,
       });
-      toast.success('已收藏到我的资产');
+      toast.success(t('sessionFiles.archived'));
       setArchiveOpen(false);
       if (deleteSource) {
         setPreview(null);
         void load();
       }
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '归档失败,请稍后重试');
+      toast.error(e?.response?.data?.detail || t('sessionFiles.archiveFailed'));
     } finally {
       setArchiving(false);
     }
@@ -148,18 +150,18 @@ export default function SessionFilesPanel({ workspaceId, conversationId, refresh
 
   const doDelete = async (file: SessionFile) => {
     const name = file.path.split('/').pop() || file.path;
-    if (!window.confirm(`确定删除「${name}」？删除后不可恢复（已归档的资产不受影响）。`)) return;
+    if (!window.confirm(t('sessionFiles.deleteConfirm', { name }))) return;
     setDeleting(true);
     try {
       await client.delete(
         `/workspace-assets/${workspaceId}/conversations/${conversationId}/files`,
         { params: { path: file.path } },
       );
-      toast.success(`已删除 ${name}`);
+      toast.success(t('sessionFiles.deleted', { name }));
       setPreview(null);
       void load();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '删除失败,请稍后重试');
+      toast.error(e?.response?.data?.detail || t('sessionFiles.deleteFailed'));
     } finally {
       setDeleting(false);
     }
@@ -168,10 +170,10 @@ export default function SessionFilesPanel({ workspaceId, conversationId, refresh
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-2">
-        <Badge variant="outline" className="text-[10px] font-normal">{files.length} 个</Badge>
+        <Badge variant="outline" className="text-[10px] font-normal">{t('sessionFiles.count', { count: files.length })}</Badge>
         <Button
           variant="ghost" size="sm" className="ml-auto h-6 px-1.5 text-[11px] text-muted-foreground"
-          onClick={() => void load()} disabled={loading} title="重新读取会话工作区"
+          onClick={() => void load()} disabled={loading} title={t('sessionFiles.reloadTitle')}
         >
           {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
         </Button>
@@ -179,7 +181,7 @@ export default function SessionFilesPanel({ workspaceId, conversationId, refresh
 
       {loading && files.length === 0 ? (
         <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />加载中…
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />{t('common:state.loading')}
         </div>
       ) : error ? (
         <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
@@ -187,7 +189,7 @@ export default function SessionFilesPanel({ workspaceId, conversationId, refresh
         </p>
       ) : files.length === 0 ? (
         <p className="text-xs text-muted-foreground">
-          当前会话还没有文件。上传附件或让助手产出图表/表格后，文件会出现在这里。
+          {t('sessionFiles.empty')}
         </p>
       ) : (
         <>
@@ -209,27 +211,27 @@ export default function SessionFilesPanel({ workspaceId, conversationId, refresh
                   </button>
                   {/* 同步态以对象存储实际清单为准：未同步就是没上云，不假装“已保存” */}
                   {f.synced
-                    ? <Cloud className="h-3 w-3 shrink-0 text-emerald-600" aria-label="已同步云空间" />
-                    : <CloudOff className="h-3 w-3 shrink-0 text-amber-600" aria-label="未同步云空间" />}
+                    ? <Cloud className="h-3 w-3 shrink-0 text-emerald-600" aria-label={t('sessionFiles.syncedAria')} />
+                    : <CloudOff className="h-3 w-3 shrink-0 text-amber-600" aria-label={t('sessionFiles.notSyncedAria')} />}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button
                         variant="ghost" size="sm" className="h-6 w-6 shrink-0 p-0 text-muted-foreground"
-                        aria-label={`文件 ${name} 的操作`}
+                        aria-label={t('sessionFiles.fileActionsAria', { name })}
                       >
                         <MoreHorizontal className="h-3.5 w-3.5" />
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="w-36">
-                      <DropdownMenuItem onClick={() => setPreview(f)}>预览</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => openArchive(f)}>归档收藏</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setPreview(f)}>{t('common:action.preview')}</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => openArchive(f)}>{t('sessionFiles.archiveMenu')}</DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         className="text-destructive focus:text-destructive"
                         disabled={deleting}
                         onClick={() => void doDelete(f)}
                       >
-                        <Trash2 className="mr-1 h-3.5 w-3.5" />删除
+                        <Trash2 className="mr-1 h-3.5 w-3.5" />{t('common:action.delete')}
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
@@ -240,10 +242,10 @@ export default function SessionFilesPanel({ workspaceId, conversationId, refresh
           {/* 同步态说明条：未配置/已关闭时把事实讲清楚，不让人以为产物已在云上 */}
           <p className="text-[10px] text-muted-foreground">
             {sync && !sync.configured
-              ? '对象存储未配置，产物只在本地（换节点或清理磁盘会丢失）'
+              ? t('sessionFiles.syncNotConfigured')
               : sync && !sync.enabled
-                ? '个人设置已关闭「会话产物自动上云」，新产物不再同步云空间'
-                : `${files.filter(f => f.synced).length}/${files.length} 已同步云空间`}
+                ? t('sessionFiles.syncDisabled')
+                : t('sessionFiles.syncProgress', { done: files.filter(f => f.synced).length, total: files.length })}
           </p>
         </>
       )}
@@ -275,15 +277,15 @@ export default function SessionFilesPanel({ workspaceId, conversationId, refresh
       <Dialog open={archiveOpen} onOpenChange={setArchiveOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>归档收藏到我的资产</DialogTitle>
+            <DialogTitle>{t('sessionFiles.archiveTitle')}</DialogTitle>
             {/* 说清归档换来什么：产物自动上云只是备份(换节点不丢)，归档才是跨会话可复用的资产 */}
             <DialogDescription>
-              归档后跟随账号跨工作空间保留，可在聊天框用 @ 引用为会话上下文。
+              {t('sessionFiles.archiveDesc')}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div>
-              <label className="text-xs text-muted-foreground" htmlFor="archive-name">资产名称</label>
+              <label className="text-xs text-muted-foreground" htmlFor="archive-name">{t('sessionFiles.nameLabel')}</label>
               <Input
                 id="archive-name"
                 value={archiveName}
@@ -298,13 +300,13 @@ export default function SessionFilesPanel({ workspaceId, conversationId, refresh
                 checked={deleteSource}
                 onChange={e => setDeleteSource(e.target.checked)}
               />
-              同时清理会话内的源文件(资产不受影响)
+              {t('sessionFiles.deleteSource')}
             </label>
             <div className="flex justify-end gap-2">
-              <Button variant="outline" size="sm" onClick={() => setArchiveOpen(false)}>取消</Button>
+              <Button variant="outline" size="sm" onClick={() => setArchiveOpen(false)}>{t('common:action.cancel')}</Button>
               <Button size="sm" onClick={() => void doArchive()} disabled={archiving || !archiveName.trim()}>
                 {archiving && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
-                归档
+                {t('artifact.archive')}
               </Button>
             </div>
           </div>

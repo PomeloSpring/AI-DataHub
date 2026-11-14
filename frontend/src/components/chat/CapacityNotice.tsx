@@ -6,6 +6,7 @@
 // 前端不编倒计时冒充精确剩余时间。
 import { useEffect, useState } from 'react';
 import { AlertCircle, Hourglass, RefreshCw } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui';
 import type { CapacityState } from '@/stores/chatStore';
 
@@ -19,6 +20,7 @@ interface Props {
 }
 
 export function CapacityNotice({ state, onCancel, onRetry, onSwitchModel }: Props) {
+  const { t } = useTranslation('chat');
   const [left, setLeft] = useState(0);
   const waiting = state.phase === 'retrying' ? Math.max(0, Math.round(state.wait_s || 0)) : 0;
 
@@ -40,12 +42,14 @@ export function CapacityNotice({ state, onCancel, onRetry, onSwitchModel }: Prop
       >
         <Hourglass className="h-3.5 w-3.5 shrink-0" />
         <span className="min-w-0 flex-1">
-          当前使用人数较多，你在第 {state.position || 1} 位
-          {estimate ? `，预计约 ${estimate} 秒` : '（前面还有人待处理，暂无平均时长可估）'}
+          {t('capacity.queued', {
+            position: state.position || 1,
+            estimate: estimate ? t('capacity.queuedEstimate', { seconds: estimate }) : t('capacity.queuedNoEstimate'),
+          })}
         </span>
         {onCancel && (
           <Button variant="ghost" size="sm" className="h-6 shrink-0 px-2 text-xs" onClick={onCancel}>
-            取消排队
+            {t('capacity.cancelQueue')}
           </Button>
         )}
       </div>
@@ -60,13 +64,16 @@ export function CapacityNotice({ state, onCancel, onRetry, onSwitchModel }: Prop
       >
         <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin" />
         <span className="min-w-0 flex-1">
-          {state.reason || '模型服务繁忙'}，正在自动重试（第 {state.attempt || 1}/
-          {state.max_attempts || state.attempt || 1} 次
-          {left > 0 ? `，${left} 秒后继续` : '，正在重连…'}）
+          {t('capacity.retrying', {
+            reason: state.reason || t('capacity.modelBusy'),
+            attempt: state.attempt || 1,
+            max: state.max_attempts || state.attempt || 1,
+            wait: left > 0 ? t('capacity.retryWait', { seconds: left }) : t('capacity.retryReconnect'),
+          })}
         </span>
         {onCancel && (
           <Button variant="ghost" size="sm" className="h-6 shrink-0 px-2 text-xs" onClick={onCancel}>
-            停止等待
+            {t('capacity.stopWaiting')}
           </Button>
         )}
       </div>
@@ -81,18 +88,17 @@ export function CapacityNotice({ state, onCancel, onRetry, onSwitchModel }: Prop
       >
         <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
         <span className="min-w-0 flex-1 text-muted-foreground">
-          模型服务持续繁忙，已停止自动重试
-          {state.reason ? `：${state.reason}` : ''}
+          {t('capacity.exhausted', { reason: state.reason ? t('capacity.exhaustedReason', { reason: state.reason }) : '' })}
         </span>
         {onRetry && (
           <Button variant="outline" size="sm" className="h-7 shrink-0 px-2.5 text-xs" onClick={onRetry}>
             <RefreshCw className="mr-1 h-3.5 w-3.5" />
-            重试本轮
+            {t('capacity.retryTurn')}
           </Button>
         )}
         {onSwitchModel && (
           <Button variant="outline" size="sm" className="h-7 shrink-0 px-2.5 text-xs" onClick={onSwitchModel}>
-            切换模型
+            {t('capacity.switchModel')}
           </Button>
         )}
       </div>

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import mermaid from 'mermaid';
 import { Download, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
+import i18n from '@/i18n';
 
 // 初始化 mermaid 配置
 mermaid.initialize({
@@ -17,6 +19,7 @@ interface Props {
 }
 
 export default function MermaidBlock({ code, title }: Props) {
+  const { t } = useTranslation('chat');
   const containerRef = useRef<HTMLDivElement>(null);
   const [svg, setSvg] = useState('');
   const [error, setError] = useState('');
@@ -38,7 +41,7 @@ export default function MermaidBlock({ code, title }: Props) {
         }
       } catch (e: any) {
         if (mounted) {
-          setError(e?.message || '渲染失败');
+          setError(e?.message || i18n.t('chat:mermaid.renderFailed'));
           setLoading(false);
         }
       }
@@ -102,7 +105,7 @@ export default function MermaidBlock({ code, title }: Props) {
             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setScale(1)}>
               <RotateCcw className="h-3.5 w-3.5" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleDownload('svg')} title="下载 SVG">
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleDownload('svg')} title={t('mermaid.downloadSvg')}>
               <Download className="h-3.5 w-3.5" />
             </Button>
           </div>
@@ -110,10 +113,10 @@ export default function MermaidBlock({ code, title }: Props) {
       )}
       <div className="p-3 overflow-auto" style={{ minHeight: 100 }}>
         {loading ? (
-          <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">渲染中...</div>
+          <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">{t('mermaid.rendering')}</div>
         ) : error ? (
           <div className="p-3 bg-destructive/10 text-destructive text-sm rounded">
-            <div className="font-medium mb-1">Mermaid 渲染失败</div>
+            <div className="font-medium mb-1">{t('mermaid.failedTitle')}</div>
             <pre className="text-xs whitespace-pre-wrap font-mono">{error}</pre>
           </div>
         ) : (

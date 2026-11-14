@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CUSTOM_PRESET, DAY_MS, DEFAULT_TIME_PRESET_KEYS, TIME_PRESETS, enabledPresets, effectiveGranularity,
-  formatTime, fromInputValue, maxEndFor, needsTime, parseTime, resolvePreset, toInputValue,
+  formatTime, fromInputValue, maxEndFor, needsTime, parseTime, presetLabel, resolvePreset, toInputValue,
 } from '../timePresets';
 
 // 固定一个本地时间基准：2026-10-22 18:30:00（本地时区）
@@ -10,7 +10,8 @@ const NOW = new Date(2026, 9, 22, 18, 30, 0);
 describe('时间区间预设清单', () => {
   it('默认给出 1/6/12 小时、1/7 天、一个月、三个月，外加自由选择', () => {
     expect(TIME_PRESETS.map(p => p.key)).toEqual(['1h', '6h', '12h', '1d', '7d', '1mo', '3mo']);
-    expect(TIME_PRESETS.map(p => p.label)).toEqual(
+    // 文案改为语言包 key + 渲染期取值（presetLabel）：默认 zh-CN 下仍是原中文文案
+    expect(TIME_PRESETS.map(p => presetLabel(p))).toEqual(
       ['近 1 小时', '近 6 小时', '近 12 小时', '近 1 天', '近 7 天', '近一个月', '近 3 个月']);
     expect(DEFAULT_TIME_PRESET_KEYS).toEqual(TIME_PRESETS.map(p => p.key));
     expect(CUSTOM_PRESET).toBe('custom');

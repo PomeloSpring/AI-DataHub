@@ -12,6 +12,8 @@ import {
   Database, FileSearch, Lightbulb, Clock, Workflow,
   ChevronDown,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 import { Badge } from '@/components/ui/badge';
 import { SlideCollapse } from './chat/StageCard';
 import { useEnterClass } from '@/hooks/useMotion';
@@ -40,6 +42,7 @@ export interface KnowledgeResult {
 }
 
 function CitationCard({ chunk, conversationId }: { chunk: KnowledgeChunk; conversationId?: number | null }) {
+  const { t } = useTranslation('chat');
   const [detail, setDetail] = useState<KnowledgeChunk | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -51,35 +54,36 @@ function CitationCard({ chunk, conversationId }: { chunk: KnowledgeChunk; conver
       const { data } = await client.get(`/chat/conversations/${conversationId}/citations/${encodeURIComponent(chunk.citation_ref!)}`);
       setDetail(data);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || '引用读取失败，请重新检索');
+      setError(e?.response?.data?.detail || t('inlineDetails.citationReadFailed'));
     } finally {
       setLoading(false);
     }
   };
   const shown = detail || chunk;
-  const label = shown.freshness === 'current' ? (detail ? '当前版本已核验' : '检索时已核验')
-    : shown.freshness === 'stale' ? '引用版本落后于当前本体' : '来源版本未确认';
+  const label = shown.freshness === 'current' ? (detail ? t('inlineDetails.freshnessCurrentVerified') : t('inlineDetails.freshnessCurrentAtSearch'))
+    : shown.freshness === 'stale' ? t('inlineDetails.freshnessStale') : t('inlineDetails.freshnessUnknown');
   return <div className="rounded border p-2 space-y-1 text-xs">
     <div className="flex gap-2 items-center"><span className="font-medium">{shown.title}</span>
       <Badge variant="outline">{label}</Badge></div>
-    {shown.version && <p className="text-muted-foreground break-all">版本：{shown.version}</p>}
+    {shown.version && <p className="text-muted-foreground break-all">{t('inlineDetails.version', { version: shown.version })}</p>}
     {error ? <p role="alert" className="text-destructive">{error}</p>
       : <p className="whitespace-pre-wrap break-words max-h-80 overflow-auto">{shown.excerpt}</p>}
-    {!error && !detail && chunk.excerpt_truncated && <p className="text-muted-foreground">展示摘录已截短</p>}
+    {!error && !detail && chunk.excerpt_truncated && <p className="text-muted-foreground">{t('inlineDetails.excerptTruncated')}</p>}
     {chunk.citation_ref && conversationId && <button type="button" disabled={loading} className="text-primary underline"
-      onClick={read}>{loading ? '正在核验权限…' : '核验并查看完整引用'}</button>}
+      onClick={read}>{loading ? t('inlineDetails.verifying') : t('inlineDetails.verifyFull')}</button>}
   </div>;
 }
 
 export function KnowledgeSummary({ data, conversationId }: { data: KnowledgeResult; conversationId?: number | null }) {
-  return <div className="border rounded-lg p-3 mb-2 space-y-2" aria-label="知识检索详情">
-    <p className="text-xs font-medium">知识检索{data.incomplete ? ' · 部分问题未完成' : ''}</p>
+  const { t } = useTranslation('chat');
+  return <div className="border rounded-lg p-3 mb-2 space-y-2" aria-label={t('inlineDetails.knowledgeAria')}>
+    <p className="text-xs font-medium">{t('inlineDetails.knowledgeTitle')}{data.incomplete ? t('inlineDetails.knowledgePartial') : ''}</p>
     {data.results && data.message && <p role={data.status === 'error' || data.incomplete ? 'alert' : undefined} className="text-xs">{data.message}</p>}
     {(data.results || [data]).map((item, i) => <div key={i} className="space-y-2">
       {item.question && <p className="text-xs font-medium">{item.question}</p>}
-      {item.status === 'error' && <p role="alert" className="text-xs text-destructive">{item.error_code ? `${item.error_code}：` : ''}{item.message || '知识检索未完成'}</p>}
-      {item.status === 'empty' && <p className="text-xs text-muted-foreground">检索已完成，未找到相关文档</p>}
-      {item.degraded && <p className="text-xs text-amber-600">当前为降级检索结果，不代表知识库已命中</p>}
+      {item.status === 'error' && <p role="alert" className="text-xs text-destructive">{item.error_code ? `${item.error_code}: ` : ''}{item.message || t('inlineDetails.knowledgeIncomplete')}</p>}
+      {item.status === 'empty' && <p className="text-xs text-muted-foreground">{t('inlineDetails.knowledgeEmpty')}</p>}
+      {item.degraded && <p className="text-xs text-amber-600">{t('inlineDetails.knowledgeDegraded')}</p>}
       {item.warnings?.map((warning, index) => <p className="text-xs text-amber-600" key={index}>{warning}</p>)}
       {item.chunks?.map((chunk, index) => <CitationCard key={`${conversationId || 0}-${chunk.citation_ref || index}-${chunk.version || ''}-${i}`} chunk={chunk} conversationId={conversationId} />)}
     </div>)}
@@ -99,6 +103,7 @@ interface RagData extends KnowledgeResult {
 }
 
 function RagSummary({ rag }: { rag: RagData }) {
+  const { t } = useTranslation('chat');
   // 出现效果跟随个人动效偏好（默认档 = 改造前的 animate-stage-in）
   const enter = useEnterClass();
   const [expanded, setExpanded] = useState(false);
@@ -109,8 +114,8 @@ function RagSummary({ rag }: { rag: RagData }) {
   if (rag.status || rag.chunks || rag.results) return <KnowledgeSummary data={rag} />;
   if (total === 0) return null;
 
-  const sourceLabel = rag.rag_source === 'keyword_selected' ? '关键词匹配'
-    : rag.rag_source === 'vector_search' ? '向量检索'
+  const sourceLabel = rag.rag_source === 'keyword_selected' ? t('inlineDetails.ragKeyword')
+    : rag.rag_source === 'vector_search' ? t('inlineDetails.ragVector')
     : rag.rag_source || '';
 
   return (
@@ -122,10 +127,10 @@ function RagSummary({ rag }: { rag: RagData }) {
         <span className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 bg-blue-500/10">
           <Database className="h-3.5 w-3.5 text-blue-500" />
         </span>
-        <span className="text-xs font-medium">RAG 检索</span>
+        <span className="text-xs font-medium">{t('inlineDetails.ragTitle')}</span>
         <span className="text-xs text-muted-foreground truncate flex-1 min-w-0">
           {sourceLabel && `${sourceLabel} · `}
-          匹配 {rag.table_info_count || 0} 张表、{rag.column_metadata_count || 0} 个字段
+          {t('inlineDetails.ragMatched', { tables: rag.table_info_count || 0, columns: rag.column_metadata_count || 0 })}
         </span>
         <ChevronDown
           className={`h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform duration-300 ${expanded ? 'rotate-180' : ''}`}
@@ -138,22 +143,22 @@ function RagSummary({ rag }: { rag: RagData }) {
           <div className="flex gap-1.5 flex-wrap pt-2">
             {(rag.table_info_count || 0) > 0 && (
               <Badge variant="outline" className="text-[10px]">
-                <Database className="h-2.5 w-2.5 mr-0.5" />表 {rag.table_info_count}
+                <Database className="h-2.5 w-2.5 mr-0.5" />{t('inlineDetails.badgeTables', { count: rag.table_info_count })}
               </Badge>
             )}
             {(rag.column_metadata_count || 0) > 0 && (
               <Badge variant="outline" className="text-[10px]">
-                <Database className="h-2.5 w-2.5 mr-0.5" />字段 {rag.column_metadata_count}
+                <Database className="h-2.5 w-2.5 mr-0.5" />{t('inlineDetails.badgeColumns', { count: rag.column_metadata_count })}
               </Badge>
             )}
             {(rag.datasets_count || 0) > 0 && (
               <Badge variant="outline" className="text-[10px]">
-                <FileSearch className="h-2.5 w-2.5 mr-0.5" />数据集 {rag.datasets_count}
+                <FileSearch className="h-2.5 w-2.5 mr-0.5" />{t('inlineDetails.badgeDatasets', { count: rag.datasets_count })}
               </Badge>
             )}
             {(rag.business_terms_count || 0) > 0 && (
               <Badge variant="outline" className="text-[10px]">
-                <Lightbulb className="h-2.5 w-2.5 mr-0.5" />术语 {rag.business_terms_count}
+                <Lightbulb className="h-2.5 w-2.5 mr-0.5" />{t('inlineDetails.badgeTerms', { count: rag.business_terms_count })}
               </Badge>
             )}
           </div>
@@ -161,7 +166,7 @@ function RagSummary({ rag }: { rag: RagData }) {
           {/* Matched tables */}
           {rag.table_info && rag.table_info.length > 0 && (
             <div>
-              <p className="text-[10px] font-medium text-muted-foreground mb-1">匹配的表</p>
+              <p className="text-[10px] font-medium text-muted-foreground mb-1">{t('inlineDetails.matchedTables')}</p>
               <div className="flex flex-wrap gap-1">
                 {rag.table_info.map((t: any, i: number) => (
                   <Badge key={i} variant="secondary" className="text-[10px]">
@@ -175,7 +180,7 @@ function RagSummary({ rag }: { rag: RagData }) {
           {/* Matched columns */}
           {rag.column_metadata && rag.column_metadata.length > 0 && (
             <div>
-              <p className="text-[10px] font-medium text-muted-foreground mb-1">匹配的字段</p>
+              <p className="text-[10px] font-medium text-muted-foreground mb-1">{t('inlineDetails.matchedColumns')}</p>
               <div className="flex flex-wrap gap-1">
                 {rag.column_metadata.map((c: any, i: number) => (
                   <Badge key={i} variant="outline" className="text-[10px]">
@@ -193,18 +198,20 @@ function RagSummary({ rag }: { rag: RagData }) {
 
 // ── Timings ────────────────────────────────────────────────────
 
-const TIMING_LABELS: Record<string, string> = {
-  intent: '意图识别',
-  rag: 'RAG 检索',
-  llm: 'SQL 生成',
-  validate: 'SQL 校验',
-  execute: 'SQL 执行',
-  total: '合计',
+/** 耗时项只存 key：文案在渲染期经 i18n.t 取（模块顶层常量会冻结语言） */
+const TIMING_LABEL_KEYS: Record<string, string> = {
+  intent: 'inlineDetails.timing.intent',
+  rag: 'inlineDetails.timing.rag',
+  llm: 'inlineDetails.timing.llm',
+  validate: 'inlineDetails.timing.validate',
+  execute: 'inlineDetails.timing.execute',
+  total: 'inlineDetails.timing.total',
 };
 
 const TIMING_ORDER = ['intent', 'rag', 'llm', 'validate', 'execute', 'total'] as const;
 
 function TimingsView({ timings, elapsedMs }: { timings: Record<string, number>; elapsedMs?: number }) {
+  const { t } = useTranslation('chat');
   const enter = useEnterClass();
   const keys = TIMING_ORDER.filter(k => k in timings);
   if (keys.length === 0) return null;
@@ -215,12 +222,12 @@ function TimingsView({ timings, elapsedMs }: { timings: Record<string, number>; 
         <span className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 bg-muted">
           <Clock className="h-3.5 w-3.5 text-muted-foreground" />
         </span>
-        <span className="text-xs font-medium">分步耗时</span>
+        <span className="text-xs font-medium">{t('inlineDetails.timingsTitle')}</span>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1">
         {keys.map(key => (
           <div key={key} className={`flex justify-between text-xs ${key === 'total' ? 'border-t pt-1 col-span-full' : ''}`}>
-            <span className="text-muted-foreground">{TIMING_LABELS[key]}</span>
+            <span className="text-muted-foreground">{i18n.t(`chat:${TIMING_LABEL_KEYS[key]}` as 'chat:inlineDetails.timing.intent')}</span>
             <span className="font-medium tabular-nums">
               {typeof timings[key] === 'number' ? `${timings[key]}s` : timings[key]}
             </span>
@@ -228,7 +235,7 @@ function TimingsView({ timings, elapsedMs }: { timings: Record<string, number>; 
         ))}
         {elapsedMs !== undefined && (
           <div className="flex justify-between text-xs col-span-full">
-            <span className="text-muted-foreground">前端总耗时</span>
+            <span className="text-muted-foreground">{t('inlineDetails.frontendTotal')}</span>
             <span className="font-medium tabular-nums">{(elapsedMs / 1000).toFixed(1)}s</span>
           </div>
         )}
@@ -240,6 +247,7 @@ function TimingsView({ timings, elapsedMs }: { timings: Record<string, number>; 
 // ── Workflow Info ───────────────────────────────────────────────
 
 function WorkflowInfo({ info }: { info: any }) {
+  const { t } = useTranslation('chat');
   const enter = useEnterClass();
   if (!info) return null;
 
@@ -249,25 +257,25 @@ function WorkflowInfo({ info }: { info: any }) {
         <span className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 bg-muted">
           <Workflow className="h-3.5 w-3.5 text-muted-foreground" />
         </span>
-        <span className="text-xs font-medium">工作流信息</span>
+        <span className="text-xs font-medium">{t('inlineDetails.workflowTitle')}</span>
       </div>
       <div className="space-y-1 text-xs">
         {info.name && (
           <div className="flex justify-between">
-            <span className="text-muted-foreground">工作流</span>
+            <span className="text-muted-foreground">{t('inlineDetails.workflowName')}</span>
             <span className="font-medium">{info.name}</span>
           </div>
         )}
         {info.rounds_used !== undefined && (
           <div className="flex justify-between">
-            <span className="text-muted-foreground">执行轮数</span>
+            <span className="text-muted-foreground">{t('inlineDetails.roundsUsed')}</span>
             <span className="font-medium">{info.rounds_used}</span>
           </div>
         )}
         {info.loop_count !== undefined && (
           <div className="flex justify-between">
-            <span className="text-muted-foreground">元数据循环</span>
-            <span className="font-medium">{info.loop_count} 次</span>
+            <span className="text-muted-foreground">{t('inlineDetails.loopCount')}</span>
+            <span className="font-medium">{t('inlineDetails.loopCountValue', { count: info.loop_count })}</span>
           </div>
         )}
       </div>

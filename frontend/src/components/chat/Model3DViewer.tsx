@@ -5,6 +5,7 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Loader2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 interface Model3DViewerProps {
   url: string;       // Attachment file URL (with auth token query param)
@@ -13,15 +14,17 @@ interface Model3DViewerProps {
 
 /** Render a glb/obj/stl model with three.js + OrbitControls. */
 export default function Model3DViewer({ url, filename }: Model3DViewerProps) {
+  const { t } = useTranslation('chat');
   const containerRef = useRef<HTMLDivElement>(null);
   const [loadingModel, setLoadingModel] = useState(true);
-  const [error, setError] = useState('');
+  // 错误只存 key：渲染期经 t() 取文案，切语言后提示同步更新
+  const [error, setError] = useState<{ key: 'model3d.loadFailed' | 'model3d.unsupportedFormat'; ext?: string } | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !url) return;
 
-    setError('');
+    setError(null);
     setLoadingModel(true);
 
     const scene = new THREE.Scene();
@@ -79,7 +82,7 @@ export default function Model3DViewer({ url, filename }: Model3DViewerProps) {
 
     const onError = (e: unknown) => {
       console.error('Load 3D model failed:', e);
-      setError('3D 模型加载失败');
+      setError({ key: 'model3d.loadFailed' });
       setLoadingModel(false);
     };
 
@@ -99,7 +102,7 @@ export default function Model3DViewer({ url, filename }: Model3DViewerProps) {
         onError
       );
     } else {
-      setError(`不支持的 3D 模型格式: .${ext}`);
+      setError({ key: 'model3d.unsupportedFormat', ext });
       setLoadingModel(false);
     }
 
@@ -140,11 +143,11 @@ export default function Model3DViewer({ url, filename }: Model3DViewerProps) {
       )}
       {error && (
         <div className="absolute inset-0 flex items-center justify-center text-sm text-red-400">
-          {error}
+          {t(error.key, { ext: error.ext })}
         </div>
       )}
       <div className="absolute bottom-2 right-2 text-[10px] text-white/50 select-none">
-        拖拽旋转 · 滚轮缩放
+        {t('model3d.hint')}
       </div>
     </div>
   );

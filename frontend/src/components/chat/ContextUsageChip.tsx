@@ -17,6 +17,7 @@
 // "正在压缩 / 已压缩"变成看得见的状态；手动压缩才是这里的动作。
 import { useEffect, useRef, useState } from 'react';
 import { Minimize2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Spinner } from '@/components/ui/spinner';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -54,6 +55,7 @@ const trackClass = (measured: boolean) => (measured
 export function ContextUsageChip({
   usage, autoCompacting = false, compacting = false, blocked = false, blockedReason, onCompact,
 }: Props) {
+  const { t } = useTranslation('chat');
   const [open, setOpen] = useState(false);
   const [summary, setSummary] = useState('');
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -73,10 +75,10 @@ export function ContextUsageChip({
   const failText = usage?.error || usage?.reason || '';
 
   const disabledReason = blocked
-    ? (blockedReason || '本轮任务进行中，等它结束或先停止后再压缩')
-    : (compacting ? '正在压缩，请稍候…'
-      : (autoCompacting ? '模型正在自动压缩上下文，请稍候…'
-        : (!measured ? (usage?.reason || '尚未测量，先发一轮消息后再试') : '')));
+    ? (blockedReason || t('contextUsage.blockedDefault'))
+    : (compacting ? t('contextUsage.compacting')
+      : (autoCompacting ? t('contextUsage.autoCompacting')
+        : (!measured ? (usage?.reason || t('contextUsage.notMeasured')) : '')));
   const disabled = !!disabledReason;
 
   // 点徽标外面或按 Esc 就收起：展开态是"临时看一眼"，常驻就把小徽标又变回一大块
@@ -106,12 +108,15 @@ export function ContextUsageChip({
     try {
       const result = await onCompact();
       if (result) {
-        showSummary(`已压缩，占用从 ${pctText(result.before_percentage)} 降到 `
-          + `${pctText(result.after_percentage)}（第 ${result.compact_count} 次）`);
+        showSummary(t('contextUsage.compactedSummary', {
+          before: pctText(result.before_percentage),
+          after: pctText(result.after_percentage),
+          count: result.compact_count,
+        }));
       }
     } catch (e: any) {
       // 失败必须显式：服务端 detail 优先（409/502 都带可读原因），不回退成"压缩成功"
-      toast.error(e?.response?.data?.detail || e?.message || '压缩失败，占用未变化');
+      toast.error(e?.response?.data?.detail || e?.message || t('contextUsage.compactFailed'));
     }
   };
 
@@ -125,10 +130,10 @@ export function ContextUsageChip({
         type="button"
         onClick={() => setOpen(o => !o)}
         aria-expanded={open}
-        aria-label={busy ? '上下文压缩中' : (measured ? `上下文占用 ${pctText(pct)}` : '上下文占用采集失败')}
-        title={busy ? '上下文压缩中…'
-          : (measured ? `上下文占用 ${pctText(pct)}（点击查看明细与压缩）`
-            : (failText || '上下文采集失败（点击查看原因）'))}
+        aria-label={busy ? t('contextUsage.ariaBusy') : (measured ? t('contextUsage.ariaUsage', { pct: pctText(pct) }) : t('contextUsage.ariaFailed'))}
+        title={busy ? t('contextUsage.titleBusy')
+          : (measured ? t('contextUsage.titleUsage', { pct: pctText(pct) })
+            : (failText || t('contextUsage.titleFailed')))}
         className={cn(
           'flex h-6 w-[68px] items-center rounded-md px-2 transition-colors hover:bg-muted/70',
           busy ? 'text-muted-foreground' : (measured ? textClass(pct!) : 'text-red-600 dark:text-red-400'),
@@ -149,9 +154,9 @@ export function ContextUsageChip({
       {open && (
         <div className="absolute bottom-full right-0 z-30 mb-2 w-[260px] rounded-xl border bg-card p-3 shadow-lg">
           <div className="flex items-baseline justify-between gap-2">
-            <span className="text-xs font-semibold">上下文窗口</span>
+            <span className="text-xs font-semibold">{t('contextUsage.windowTitle')}</span>
             <span className="text-xs tabular-nums text-muted-foreground">
-              {busy ? '压缩中…' : pctText(pct)}
+              {busy ? t('contextUsage.compressing') : pctText(pct)}
             </span>
           </div>
 
@@ -174,7 +179,7 @@ export function ContextUsageChip({
             {!busy && measured && typeof threshold === 'number' && threshold > 0 && (
               <span
                 aria-hidden
-                title={`自动压缩阈值 ${pctText(threshold)}`}
+                title={t('contextUsage.thresholdTitle', { pct: pctText(threshold) })}
                 className="absolute inset-y-[-2px] w-px bg-foreground/40"
                 style={{ left: `${Math.min(100, threshold)}%` }}
               />
@@ -185,9 +190,9 @@ export function ContextUsageChip({
             {measured
               ? (failed
                 // 有旧值 + 本次采集失败：不能只当没事发生，也不能拿旧值冒充当前值
-                ? <span className="text-red-600 dark:text-red-400">最近一次采集失败：{failText}（上方是上次成功的值）</span>
-                : '接近阈值时模型会自动压缩早期内容；手动压缩立即生效，聊天记录不受影响。')
-              : (failText || '尚未测量：发送一轮消息后开始测量')}
+                ? <span className="text-red-600 dark:text-red-400">{t('contextUsage.lastFailed', { reason: failText })}</span>
+                : t('contextUsage.hint'))
+              : (failText || t('contextUsage.notMeasuredHint'))}
           </p>
 
           {summary && <p className="mt-1.5 text-[11px] text-primary">{summary}</p>}
@@ -206,18 +211,18 @@ export function ContextUsageChip({
             </ul>
           )}
           {measured && categories.length === 0 && (
-            <p className="mt-2 text-[11px] text-muted-foreground">Harness 未返回分类明细（仅有总占用）</p>
+            <p className="mt-2 text-[11px] text-muted-foreground">{t('contextUsage.noCategories')}</p>
           )}
 
           <p className="mt-2 flex flex-wrap gap-x-1.5 text-[11px] text-muted-foreground">
             <span>
-              自动压缩：{usage?.auto_compact_enabled ? '已开启' : '未开启'}
+              {t('contextUsage.autoCompact', { state: usage?.auto_compact_enabled ? t('contextUsage.enabled') : t('contextUsage.disabled') })}
               {/* 阈值归到“自动压缩”这一句里：它是自动压缩的属性，挂在原因后面会把
                   未测量那句说明拼成半句，用户反而看不出哪句是重点 */}
-              {typeof threshold === 'number' && `（阈值 ${pctText(threshold)}）`}
+              {typeof threshold === 'number' && t('contextUsage.threshold', { pct: pctText(threshold) })}
             </span>
             {typeof usage?.compact_count === 'number' && (
-              <span>· 已手动压缩 {usage.compact_count} 次</span>
+              <span>{t('contextUsage.manualCount', { count: usage.compact_count })}</span>
             )}
             {usage?.model && <span>· {usage.model}</span>}
           </p>
@@ -226,7 +231,7 @@ export function ContextUsageChip({
             type="button"
             onClick={handleCompact}
             disabled={disabled}
-            title={disabled ? disabledReason : '压缩本会话上下文（会先归纳早期内容，聊天记录不受影响）'}
+            title={disabled ? disabledReason : t('contextUsage.compactTitle')}
             className={cn(
               'mt-2.5 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border text-xs transition-colors',
               disabled
@@ -235,7 +240,7 @@ export function ContextUsageChip({
             )}
           >
             {compacting ? <Spinner className="h-3.5 w-3.5" /> : <Minimize2 className="h-3.5 w-3.5" />}
-            压缩上下文
+            {t('contextUsage.compactAction')}
           </button>
         </div>
       )}

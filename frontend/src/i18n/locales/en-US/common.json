@@ -1,0 +1,83 @@
+{
+  "action": {
+    "confirm": "Confirm",
+    "cancel": "Cancel",
+    "save": "Save",
+    "saving": "Saving…",
+    "delete": "Delete",
+    "edit": "Edit",
+    "create": "New",
+    "add": "Add",
+    "close": "Close",
+    "retry": "Retry",
+    "refresh": "Refresh",
+    "search": "Search",
+    "reset": "Reset",
+    "copy": "Copy",
+    "copied": "Copied",
+    "download": "Download",
+    "export": "Export",
+    "import": "Import",
+    "upload": "Upload",
+    "preview": "Preview",
+    "publish": "Publish",
+    "submit": "Submit",
+    "back": "Back",
+    "view": "View",
+    "viewAll": "View all",
+    "more": "More",
+    "expand": "Expand",
+    "collapse": "Collapse",
+    "selectAll": "Select all",
+    "clear": "Clear",
+    "apply": "Apply",
+    "ok": "OK"
+  },
+  "state": {
+    "loading": "Loading…",
+    "empty": "No data",
+    "loadFailed": "Failed to load",
+    "saveSuccess": "Saved",
+    "saveFailed": "Failed to save",
+    "deleteSuccess": "Deleted",
+    "deleteFailed": "Failed to delete",
+    "operationFailed": "Operation failed",
+    "networkError": "Network error, please try again later",
+    "comingSoon": "Coming soon"
+  },
+  "label": {
+    "name": "Name",
+    "description": "Description",
+    "status": "Status",
+    "type": "Type",
+    "createdAt": "Created",
+    "updatedAt": "Updated",
+    "actions": "Actions",
+    "all": "All",
+    "none": "None",
+    "unknown": "Unknown",
+    "default": "Default",
+    "yes": "Yes",
+    "no": "No",
+    "total_one": "{{count}} item",
+    "total_other": "{{count}} items",
+    "selected_one": "{{count}} selected",
+    "selected_other": "{{count}} selected"
+  },
+  "pagination": {
+    "prev": "Previous",
+    "next": "Next",
+    "page": "Page {{page}}",
+    "pageSize": "{{size}} / page"
+  },
+  "confirm": {
+    "deleteTitle": "Confirm deletion",
+    "deleteDescription": "This cannot be undone. Are you sure you want to delete?",
+    "unsavedChanges": "You have unsaved changes. Leave anyway?"
+  },
+  "language": {
+    "label": "Language",
+    "zh-CN": "简体中文",
+    "en-US": "English"
+  }
+}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Loader2, RefreshCw, Save, Undo2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -28,6 +29,7 @@ interface SheetData {
  * 单元格修改按工作表聚合为脏改集,支持逐表保存/放弃。
  */
 export default function ExcelPreview({ path, conversationId, filename }: Props) {
+  const { t } = useTranslation('data');
   const [currentPath, setCurrentPath] = useState(path);
   const [data, setData] = useState<SheetData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -72,7 +74,7 @@ export default function ExcelPreview({ path, conversationId, filename }: Props) 
       setDirtyCount(dirtyRef.current[withDirty.active]?.size || 0);
     } catch (e: any) {
       setData(null);
-      setError(e?.response?.data?.detail || 'Excel 预览加载失败,请稍后重试');
+      setError(e?.response?.data?.detail || t('excel.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -117,12 +119,12 @@ export default function ExcelPreview({ path, conversationId, filename }: Props) 
         sheet: data.active,
         changes,
       });
-      toast.success(`已保存为 ${resp.filename}（原文件保留）`);
+      toast.success(t('excel.savedAs', { filename: resp.filename }));
       m.clear();
       setDirtyCount(0);
       setCurrentPath(resp.path); // 后续编辑/预览均落在新版本文件上
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '保存失败,请稍后重试');
+      toast.error(e?.response?.data?.detail || t('excel.saveFailed'));
     } finally {
       setSaving(false);
     }
@@ -143,19 +145,19 @@ export default function ExcelPreview({ path, conversationId, filename }: Props) 
         ))}
         {data?.truncated && (
           <Badge variant="outline" className="text-[10px] font-normal">
-            <AlertTriangle className="h-3 w-3 mr-1" />仅预览前 {data.row_count} 行
+            <AlertTriangle className="h-3 w-3 mr-1" />{t('excel.previewLimit', { count: data.row_count })}
           </Badge>
         )}
         <div className="ml-auto flex items-center gap-1.5">
           {dirtyCount > 0 && (
-            <span className="text-xs text-primary">{dirtyCount} 处未保存</span>
+            <span className="text-xs text-primary">{t('excel.unsavedCount', { count: dirtyCount })}</span>
           )}
           <Button variant="outline" size="sm" className="h-7 text-xs" onClick={discard} disabled={dirtyCount === 0 || saving}>
-            <Undo2 className="h-3 w-3 mr-1" />放弃修改
+            <Undo2 className="h-3 w-3 mr-1" />{t('excel.discard')}
           </Button>
           <Button size="sm" className="h-7 text-xs" onClick={() => void save()} disabled={dirtyCount === 0 || saving}>
             {saving ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Save className="h-3 w-3 mr-1" />}
-            保存为新文件
+            {t('excel.saveAsNew')}
           </Button>
           <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => void load(data?.active)} disabled={loading}>
             {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
@@ -169,7 +171,7 @@ export default function ExcelPreview({ path, conversationId, filename }: Props) 
         </div>
       ) : loading && !data ? (
         <div className="flex h-40 items-center justify-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" />解析 Excel 中…
+          <Loader2 className="h-4 w-4 animate-spin" />{t('excel.parsing')}
         </div>
       ) : data ? (
         <DataGrid
@@ -177,15 +179,14 @@ export default function ExcelPreview({ path, conversationId, filename }: Props) 
           rows={data.rows}
           height={360}
           filename={filename.replace(/\.[^.]+$/, '')}
-          emptyText="该工作表没有数据"
+          emptyText={t('excel.sheetEmpty')}
           editable
           onEdit={onEdit}
         />
       ) : null}
 
       <div className="text-[10px] text-muted-foreground">
-        编辑后「保存为新文件」写回会话工作区（{currentPath.split('/').pop()} 的新版本），原文件保留;
-        按原单元格类型转换(数字/布尔保持类型,清空即置空)。
+        {t('excel.editNote', { filename: currentPath.split('/').pop() })}
       </div>
     </div>
   );

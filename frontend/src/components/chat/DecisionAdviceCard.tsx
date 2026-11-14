@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import DecisionAdvicePanel from '@/components/decision/DecisionAdvicePanel';
 import type { DecisionAdvicePayload } from '@/api/decisions';
 
@@ -23,6 +24,7 @@ export default function DecisionAdviceCard({
   advice?: DecisionAdvicePayload;
   onEvaluate?: (treeKey: string) => void;
 }) {
+  const { t } = useTranslation('chat');
   const [expanded, setExpanded] = useState(false);
   const items = advice?.items || [];
   const reason = advice?.skipped_reason || '';
@@ -30,11 +32,11 @@ export default function DecisionAdviceCard({
 
   const shown = expanded ? items : items.slice(0, 1);
   return (
-    <section className="mt-3 space-y-2" aria-label="决策建议">
+    <section className="mt-3 space-y-2" aria-label={t('advice.title')}>
       <div className="flex items-center gap-2">
-        <h3 className="text-sm font-medium">决策建议</h3>
+        <h3 className="text-sm font-medium">{t('advice.title')}</h3>
         <span className="text-xs text-muted-foreground">
-          由已发布的决策树确定性判定，不是模型生成的措辞
+          {t('advice.subtitle')}
         </span>
       </div>
 
@@ -55,7 +57,7 @@ export default function DecisionAdviceCard({
       {items.length > 1 && (
         <button type="button" className="text-xs text-primary hover:underline"
           onClick={() => setExpanded(e => !e)}>
-          {expanded ? '收起' : `再看 ${items.length - 1} 棵树的判定`}
+          {expanded ? t('advice.collapse') : t('advice.moreTrees', { count: items.length - 1 })}
         </button>
       )}
     </section>

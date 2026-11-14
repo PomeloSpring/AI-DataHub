@@ -22,6 +22,8 @@ vi.mock('../DashboardChart', () => ({
     { value: 'widget_select', label: '下拉选择框', icon: 'List', category: 'widget' },
   ],
   CHART_TYPE_CATEGORIES: [{ key: 'basic', label: '基础图表' }, { key: 'widget', label: '参数控件' }],
+  chartTypeLabel: (v: string) => ({ bar: '柱状图', line: '折线图', radar: '雷达图', widget_select: '下拉选择框' } as Record<string, string>)[v] || v,
+  chartCategoryLabel: (k: string) => ({ basic: '基础图表', widget: '参数控件' } as Record<string, string>)[k] || k,
 }));
 vi.mock('../MapHeatmap', () => ({ default: () => null, detectGeoColumns: () => ({ nameMatched: false }) }));
 vi.mock('../SqlCard', () => ({ default: () => null }));

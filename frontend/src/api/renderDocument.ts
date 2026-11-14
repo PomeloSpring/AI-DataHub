@@ -6,6 +6,7 @@
  * 渲染时按引用取回 —— 与 ```design 块只带 design_id、面板实时拉取同一形态。
  */
 import client from './client';
+import i18n from '@/i18n';
 
 /** 交付正文形态：html=自包含文档，spec=结构化章节（平台渲染），chart-data=单图数据 */
 export type RenderBodyKind = 'html' | 'spec' | 'chart-data';
@@ -33,12 +34,12 @@ export async function getRenderDocument(docId: string): Promise<RenderDocument> 
   return res.data as RenderDocument;
 }
 
-/** 引用不可用时的可读原因：区分"被清理"与"无权访问"，排查方向完全不同。 */
+/** 引用不可用时的可读原因：区分"被清理"与"无权访问"，排查方向完全不同。文案在调用期取（当前语言）。 */
 export function renderDocumentErrorText(status?: number): string {
-  if (status === 404) return '该交付内容已被清理（会话删除或保留策略裁剪），无法再打开';
-  if (status === 403) return '无权访问该交付内容（只有产出它的会话属主可以打开）';
-  if (status === 401) return '登录状态已失效，请重新登录后再打开该交付内容';
-  return '交付内容暂时打不开，请重试';
+  if (status === 404) return i18n.t('chat:renderDoc.cleaned');
+  if (status === 403) return i18n.t('chat:renderDoc.forbidden');
+  if (status === 401) return i18n.t('chat:renderDoc.unauthorized');
+  return i18n.t('chat:renderDoc.generic');
 }
 
 /** `chart-data` 正文的形状（由服务端 render_chart 写入，列名/行数/图型都以它为准）。 */
@@ -63,7 +64,7 @@ export function parseChartDataPayload(doc: RenderDocument): ChartDataPayload {
   try {
     body = JSON.parse(doc.body || '{}');
   } catch {
-    throw new Error('图表数据正文不是合法 JSON（交付对象已损坏），请让助手重新出图');
+    throw new Error(i18n.t('chat:renderDoc.badJson'));
   }
   const columns: string[] = Array.isArray(body?.columns) ? body.columns.map(String) : [];
   const rawRows: any[] = Array.isArray(body?.rows) ? body.rows : [];
@@ -76,7 +77,7 @@ export function parseChartDataPayload(doc: RenderDocument): ChartDataPayload {
     return (r && typeof r === 'object') ? r : {};
   });
   if (!columns.length || !rows.length) {
-    throw new Error('图表数据对象里没有可用的行列，请让助手重新出图');
+    throw new Error(i18n.t('chat:renderDoc.emptyData'));
   }
   return {
     chartType: typeof body.chart_type === 'string' ? body.chart_type : '',

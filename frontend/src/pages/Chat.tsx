@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import {
   Send, Zap, Download, Bot, User, Lightbulb,
   CheckCircle, BarChart3, Table, Code, Clock,
@@ -24,7 +25,7 @@ import { useChatStore } from '../stores/chatStore';
 import type { AttachmentInfo, PendingAttachment, CloudFileRef, ChatReportDraft } from '../stores/chatStore';
 import { ATTACH_MAX_FILES, validateLocalAttachment, filesFromClipboard, hasModelStats } from '../stores/chatStore';
 import ChartPicker from '../components/ChartPicker';
-import { CHART_TYPES } from '../components/DashboardChart';
+import { chartTypeLabel } from '../components/DashboardChart';
 import MarkdownWithCharts from '../components/MarkdownWithCharts';
 import ExecutionProcess from '../components/ExecutionProcess';
 import InlineDetails from '../components/InlineDetails';
@@ -41,7 +42,7 @@ import BotAvatar from '../components/chat/BotAvatar';
 import WaitingIndicator from '../components/chat/WaitingIndicator';
 import SlashCommandMenu, {
   slashQueryOf, stripSlashToken, useSlashMenu, recordSlashUsage,
-  SLASH_TRIGGER_HINT, SLASH_TRIGGER_NOTE,
+  slashTriggerHint, slashTriggerNote,
   type SlashItem, type SlashOptionsPayload,
 } from '../components/chat/SlashCommandMenu';
 import MessageActions from '../components/chat/MessageActions';
@@ -51,7 +52,7 @@ import DocCard from '../components/chat/DocCard';
 import DocEditorPanel from '../components/chat/DocEditorPanel';
 import CloudFileMenu, {
   mentionQueryOf, stripMentionToken, useCloudFileMenu, formatSize,
-  MENTION_TRIGGER_HINT,
+  mentionTriggerHint,
   type CloudFileItem,
 } from '../components/chat/CloudFileMenu';
 import { IntentGateBadge } from '../components/chat/IntentGateBadge';
@@ -64,8 +65,9 @@ import client from '../api/client';
 import { consumeStashedQuestion, type StashedQuestion } from './home/shared';
 import { saveConversationAsReport, createReportDraft } from '../api/report';
 
-const CATEGORY_LABELS: Record<string, string> = {
-  image: '图片', table: '表格', document: '文档', model3d: '3D 模型',
+// 附件类别文案只存 key，渲染期经 t() 取（模块顶层常量会冻结语言）
+const CATEGORY_LABEL_KEYS: Record<string, 'page.category.image' | 'page.category.table' | 'page.category.document' | 'page.category.model3d'> = {
+  image: 'page.category.image', table: 'page.category.table', document: 'page.category.document', model3d: 'page.category.model3d',
 };
 
 /** 右侧栏展开偏好的 localStorage 键（个人视图偏好，不进账号配置） */
@@ -90,13 +92,16 @@ function answerMarkdownOf(msg: any): string {
 
 // 错误卡按服务端分类给下一步（分类码与 capacity.classify_failure 同源）：
 // 繁忙/限流是“平台过载”（稍后再试/换模型），超时是“本轮太大”，failed 才是查配置。
-const ERROR_KIND_HINT: Record<string, string> = {
-  provider_busy: '这是模型服务过载，不是你的提问方式问题；稍后再试通常就能成功。',
-  rate_limited: '模型服务请求过于频繁；等几秒再试，或换一个模型。',
-  capacity: '平台并发调度异常，已暂停接收新回合；稍后重试即可。',
-  timeout: '本轮跑满了执行时长上限；把问题拆细一点，或让多站同口径查询一次扇出，会快很多。',
-  aborted: '本轮已按要求停止；已输出的内容仍保留在上面。',
-  failed: '如果反复出现，请联系管理员查看 Harness 日志。',
+// 文案只存 key，渲染期经 t() 取。
+type ErrorKindKey = 'page.errorHint.provider_busy' | 'page.errorHint.rate_limited' | 'page.errorHint.capacity'
+  | 'page.errorHint.timeout' | 'page.errorHint.aborted' | 'page.errorHint.failed';
+const ERROR_KIND_HINT_KEYS: Record<string, ErrorKindKey> = {
+  provider_busy: 'page.errorHint.provider_busy',
+  rate_limited: 'page.errorHint.rate_limited',
+  capacity: 'page.errorHint.capacity',
+  timeout: 'page.errorHint.timeout',
+  aborted: 'page.errorHint.aborted',
+  failed: 'page.errorHint.failed',
 };
 
 // 单轮最多指定几个技能：与后端 prompt_composer.MAX_SKILL_BODIES 同口径，
@@ -121,16 +126,29 @@ function attUrl(att: AttachmentInfo, conversationId?: number | null): string {
   return token ? `${base}&token=${encodeURIComponent(token)}` : base;
 }
 
-// 图表类型标签与看板共用同一套 CHART_TYPES(前置为历史消息的旧类型别名,仅用于旧消息回放)
-const chartTypeLabels: Record<string, string> = {
-  timeseries_table: '时间序列表格', timeseries_percent: '时间序列百分比变化',
-  timeseries_pivot: '时间序列周期透视', chord: '弦图', column: '柱状图', table: '表格',
+// 图表类型标签与看板共用同一套 CHART_TYPES（经 chartTypeLabel 渲染期解析）；
+// 前置为历史消息的旧类型别名（仅用于旧消息回放），文案只存 key。
+const LEGACY_CHART_LABEL_KEYS: Record<string, 'page.chartLegacy.timeseries_table' | 'page.chartLegacy.timeseries_percent'
+  | 'page.chartLegacy.timeseries_pivot' | 'page.chartLegacy.chord' | 'page.chartLegacy.map_heat'> = {
+  timeseries_table: 'page.chartLegacy.timeseries_table',
+  timeseries_percent: 'page.chartLegacy.timeseries_percent',
+  timeseries_pivot: 'page.chartLegacy.timeseries_pivot',
+  chord: 'page.chartLegacy.chord',
   // 地图热力(chat 图表卡专属,字模库地图瓦片 + 热力层)及其 LLM 常用别名
-  map_heat: '地图热力', map: '地图热力', heatmap_map: '地图热力', geo_heatmap: '地图热力', map_heatmap: '地图热力',
-  ...Object.fromEntries(CHART_TYPES.map(t => [t.value, t.label])),
+  map_heat: 'page.chartLegacy.map_heat', map: 'page.chartLegacy.map_heat', heatmap_map: 'page.chartLegacy.map_heat',
+  geo_heatmap: 'page.chartLegacy.map_heat', map_heatmap: 'page.chartLegacy.map_heat',
 };
 
 export default function Chat() {
+  const { t } = useTranslation(['chat', 'common', 'menu']);
+  // 旧类型别名 → 历史文案 key；column/table 归一到看板同名类型，其余走 chartTypeLabel
+  const chartLabelOf = (type: string): string => {
+    const legacyKey = LEGACY_CHART_LABEL_KEYS[type];
+    if (legacyKey) return t(legacyKey);
+    if (type === 'column') return chartTypeLabel('bar');
+    if (type === 'table') return t('page.category.table');
+    return chartTypeLabel(type);
+  };
   const { workspaceId: urlWorkspaceId } = useParams<{ workspaceId: string }>();
   const navigate = useNavigate();
   const independent = useLocation().pathname.startsWith('/ask/');
@@ -212,7 +230,7 @@ export default function Chat() {
   const openModelPicker = () => {
     const trigger = modelPickerRef.current?.querySelector('button');
     if (trigger) { trigger.click(); return; }
-    toast.info('请在页面右上角的「模型」选择器里换一个模型');
+    toast.info(t('page.switchModelHint'));
   };
   // 进度条属于“当前会话”视图：切会话/新开会话都重拉（新会话无值时组件会说“未测量”）
   useEffect(() => { void loadContextUsage(currentConvId); }, [currentConvId, loadContextUsage]);
@@ -257,7 +275,7 @@ export default function Chat() {
       .catch((e: any) => {
         if (cancelled) return;
         setSlashOptions(null);
-        setSlashError(e?.response?.data?.detail || `技能/任务清单加载失败，输入 ${SLASH_TRIGGER_HINT} 可重试`);
+        setSlashError(e?.response?.data?.detail || t('slash.searchFailed', { hint: slashTriggerHint() }));
       });
     return () => { cancelled = true; };
   }, [selectedWorkspaceId]);
@@ -293,7 +311,7 @@ export default function Chat() {
           if (cancelled) return;
           setMentionPayload(null);
           // 检索失败必须可见（不能静默成"你没有可引用的文件"）
-          setMentionError(e?.response?.data?.detail || `文件清单检索失败，输入 ${MENTION_TRIGGER_HINT} 可重试`);
+          setMentionError(e?.response?.data?.detail || t('cloudFiles.searchFailed', { hint: mentionTriggerHint() }));
         })
         .finally(() => { if (!cancelled) setMentionLoading(false); });
     }, 250);
@@ -338,7 +356,7 @@ export default function Chat() {
       // 站点清单没拉到：不带着未解析的取数范围自动发，退回预填 + 把原因说出来
       setInput(q);
       inputRef.current?.focus();
-      toast.error(`站点范围尚未加载，问题已留在输入框：${siteError}`);
+      toast.error(t('page.siteNotLoaded', { reason: siteError }));
       return;
     }
     setPendingAsk({ ...pendingAsk, sent: true });
@@ -355,7 +373,7 @@ export default function Chat() {
       setPendingAsk(null);
       setInput(st.question);
       inputRef.current?.focus();
-      toast.error(`取数上下文尚未就绪，问题已留在输入框（可按 Enter 发送）：${st.question}`);
+      toast.error(t('page.contextNotReady', { question: st.question }));
     }, PENDING_ASK_FALLBACK_MS);
     return () => window.clearTimeout(timer);
   }, [pendingAsk]);
@@ -386,12 +404,13 @@ export default function Chat() {
   const [refOptions, setRefOptions] = useState<{ name: string; kind: string }[]>([]);
   const [refLoading, setRefLoading] = useState(false);
 
-  const DISSATISFACTION_REASONS: { key: string; label: string }[] = [
-    { key: 'missing_metric', label: '缺这个指标' },
-    { key: 'missing_dimension', label: '缺这个维度' },
-    { key: 'wrong_answer', label: '结果不对' },
-    { key: 'not_understood', label: '没理解我的问题' },
-    { key: 'data_incomplete', label: '数据不全' },
+  const DISSATISFACTION_REASONS: { key: string; labelKey: 'page.feedback.missing_metric' | 'page.feedback.missing_dimension'
+    | 'page.feedback.wrong_answer' | 'page.feedback.not_understood' | 'page.feedback.data_incomplete' }[] = [
+    { key: 'missing_metric', labelKey: 'page.feedback.missing_metric' },
+    { key: 'missing_dimension', labelKey: 'page.feedback.missing_dimension' },
+    { key: 'wrong_answer', labelKey: 'page.feedback.wrong_answer' },
+    { key: 'not_understood', labelKey: 'page.feedback.not_understood' },
+    { key: 'data_incomplete', labelKey: 'page.feedback.data_incomplete' },
   ];
 
   // 期望值候选：从真实字典清单来（显示 name，选框选择）。
@@ -409,15 +428,15 @@ export default function Chat() {
       const dItems = (d.data?.items ?? d.data ?? []) as any[];
       const out: { name: string; kind: string }[] = [];
       if (Array.isArray(mItems)) {
-        for (const it of mItems) if (it?.name) out.push({ name: String(it.name), kind: '指标' });
+        for (const it of mItems) if (it?.name) out.push({ name: String(it.name), kind: 'kindMetric' });
       }
       if (Array.isArray(dItems)) {
-        for (const it of dItems) if (it?.name) out.push({ name: String(it.name), kind: '维度' });
+        for (const it of dItems) if (it?.name) out.push({ name: String(it.name), kind: 'kindDimension' });
       }
       setRefOptions(out);
     } catch {
       // 候选拉不到时不伪造成可选：显式告知，并保留自由文字渠道
-      toast.error('业务指标/维度清单未能加载，反馈仍可提交，但“期望哪个业务概念”无法选择');
+      toast.error(t('page.feedback.refLoadFailed'));
     } finally {
       setRefLoading(false);
     }
@@ -430,8 +449,9 @@ export default function Chat() {
     const msg = messages[idx];
     if (!msg) return;
     // Extract tables_used from warnings
-    const tablesWarning = msg.warnings?.find((w: string) => w.startsWith('涉及表:'));
-    const tablesUsed = tablesWarning ? tablesWarning.replace('涉及表: ', '') : '';
+    // 服务端 warnings 里的固定前缀是后端契约文案（功能性解析，不随界面语言变）
+    const tablesWarning = msg.warnings?.find((w: string) => w.startsWith('\u6d89\u53ca\u8868:'));
+    const tablesUsed = tablesWarning ? tablesWarning.replace('\u6d89\u53ca\u8868: ', '') : '';
     try {
       await client.post('/chat/feedback', {
         question: msg.question || msg.content || '',
@@ -454,10 +474,10 @@ export default function Chat() {
       setFeedbackMap(prev => ({ ...prev, [idx]: satisfied ? 'up' : 'down' }));
       setShowExpectedInput(prev => ({ ...prev, [idx]: false }));
       toast.success(satisfied
-        ? '已标记满意，感谢反馈'
-        : '已记录。该负反馈会进入每日归纳作业，产出待开发指标/维度或待修绑定的候选');
+        ? t('page.feedback.thanksUp')
+        : t('page.feedback.recordedDown'));
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '反馈提交失败');
+      toast.error(e?.response?.data?.detail || t('page.feedback.submitFailed'));
     }
   };
 
@@ -581,9 +601,9 @@ export default function Chat() {
       const atts = (m.attachments || []).map(a => a.filename).filter(Boolean);
       return {
         index: idx,
-        text: text || (atts.length ? `附件：${atts.join('、')}` : '（本轮无文字提问）'),
+        text: text || (atts.length ? t('page.turnNavAttachments', { files: atts.join(t('page.listSeparator')) }) : t('page.turnNavNoText')),
       };
-    }), [messages]);
+    }), [messages, t]);
 
   // 摘掉检索片段用的 stripSlashToken 与 slashQueryOf 同在 SlashCommandMenu（同一触发符集，不两处各写一份）
   const pickSlashItem = (item: SlashItem) => {
@@ -599,7 +619,7 @@ export default function Chat() {
       // 候选没带可用标识 = 服务端契约对不上：显式拒，不能把一个 undefined 挂上 chip
       // 再当“已选中”发出去（选了等于没选，比报错更难查）。
       if (!item.scene) {
-        toast.error(`「${item.label}」缺少场景标识（候选数据异常），请重新打开快捷检索面板或刷新页面`);
+        toast.error(t('page.sceneMissingId', { label: item.label }));
         applied = false;
         setSlashQuery(null);
         return;
@@ -608,7 +628,7 @@ export default function Chat() {
       // 上限与技能同口径：多份方案同时注入会相互干扰，选了等于没选就先把话讲清。
       if (!pickedScenes.includes(item.scene)) {
         if (pickedScenes.length >= MAX_PINNED_SCENES) {
-          toast.error(`一轮最多指定 ${MAX_PINNED_SCENES} 个分析场景（多份方案同时注入会相互干扰），请先移除已选再添加`);
+          toast.error(t('page.sceneLimit', { max: MAX_PINNED_SCENES }));
           applied = false;
         } else {
           setPickedScenes(prev => [...prev, item.scene]);
@@ -618,7 +638,7 @@ export default function Chat() {
     } else if (item.kind === 'skill') {
       if (!pickedSkills.includes(item.name)) {
         if (pickedSkills.length >= MAX_PINNED_SKILLS) {
-          toast.error(`一轮最多指定 ${MAX_PINNED_SKILLS} 个技能（超出部分不会展开作业细则），请先移除已选再添加`);
+          toast.error(t('page.skillLimit', { max: MAX_PINNED_SKILLS }));
           applied = false;
         } else {
           setPickedSkills(prev => [...prev, item.name]);
@@ -630,7 +650,7 @@ export default function Chat() {
       // 不挂成本轮指令也不进请求体（服务端对 action 类上送会 400 拒，那是契约错配）。
       if (item.action) {
         if (item.action === 'clear_conversation') {
-          if (messages.length === 0) toast.info('当前会话已经是空的');
+          if (messages.length === 0) toast.info(t('page.alreadyEmpty'));
           else setClearConfirm(true);
         }
         // 确认前不算“落定”，不写入最近使用（否则取消的操会把「常用」刷出来）
@@ -654,7 +674,7 @@ export default function Chat() {
     setInput(stripMentionToken(input, caret).replace(/^\s+/, ''));
     if (pendingAtts.length + cloudRefs.length >= ATTACH_MAX_FILES) {
       // 与服务端同口径（上传附件与 @ 引用合计计入单轮上限），超了当场说，不发出去再被拒
-      toast.error(`单轮最多携带 ${ATTACH_MAX_FILES} 个文件（上传附件与 @ 引用合计），请先移除一个再添加`);
+      toast.error(t('page.fileLimit', { max: ATTACH_MAX_FILES }));
     } else if (!cloudRefs.some(c => c.source === item.source && c.ref === item.ref)) {
       setCloudRefs(prev => [...prev, item]);
     }
@@ -747,8 +767,8 @@ export default function Chat() {
     const attachments = pendingAtts.length > 0 ? pendingAtts : undefined;
     const questionText = input.trim()
       || (cloudRefs.length
-        ? `请结合我引用的文件继续分析：${cloudRefs.map(c => c.filename).join('、')}`
-        : '请分析我上传的附件');
+        ? t('page.analyzeRefsQuestion', { files: cloudRefs.map(c => c.filename).join(t('page.listSeparator')) })
+        : t('page.analyzeAttachmentsQuestion'));
 
     // 未选技能/场景/指令/引用文件时不传第四个参数（保持与旧调用形同，也不往请求体里塞空字段）
     const opts: NonNullable<Parameters<typeof sendMessage>[3]> = {
@@ -780,7 +800,7 @@ export default function Chat() {
         {showExpectedInput[idx] && !fb && (
           <div className="mt-2 w-full space-y-2 border border-border/60 rounded-md p-2 bg-muted/20">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xs text-muted-foreground shrink-0">哪里不对?</span>
+              <span className="text-xs text-muted-foreground shrink-0">{t('page.feedback.whatWrong')}</span>
               {DISSATISFACTION_REASONS.map(r => (
                 <button key={r.key} type="button"
                   onClick={() => setFeedbackReason(prev => ({ ...prev, [idx]: r.key }))}
@@ -788,32 +808,32 @@ export default function Chat() {
                     feedbackReason[idx] === r.key
                       ? 'border-primary bg-primary/10 text-primary'
                       : 'border-border text-muted-foreground hover:bg-muted'}`}
-                >{r.label}</button>
+                >{t(r.labelKey)}</button>
               ))}
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xs text-muted-foreground shrink-0">期望的业务指标/维度</span>
+              <span className="text-xs text-muted-foreground shrink-0">{t('page.feedback.expectedRef')}</span>
               <Select
                 value={feedbackRef[idx] || 'none'}
                 onValueChange={(v) => setFeedbackRef(prev => ({ ...prev, [idx]: v === 'none' ? '' : v }))}
                 disabled={refLoading && !refOptions.length}
               >
                 <SelectTrigger className="w-[240px] h-7 text-xs">
-                  <SelectValue placeholder={refLoading ? '清单加载中…' : '从字典清单选择（可不选）'} />
+                  <SelectValue placeholder={refLoading ? t('page.feedback.refLoading') : t('page.feedback.refPlaceholder')} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">暂不指定</SelectItem>
+                  <SelectItem value="none">{t('page.feedback.refNone')}</SelectItem>
                   {refOptions.map(o => (
                     <SelectItem key={`${o.kind}:${o.name}`} value={o.name}>
                       {o.name}
-                      <span className="ml-1 text-[10px] text-muted-foreground">({o.kind})</span>
+                      <span className="ml-1 text-[10px] text-muted-foreground">({t(o.kind === 'kindMetric' ? 'page.feedback.kindMetric' : 'page.feedback.kindDimension')})</span>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               {refOptions.length === 0 && !refLoading && (
                 <span className="text-[10px] text-amber-600">
-                  字典清单为空——仍可提交，但无法定位到具体业务概念
+                  {t('page.feedback.refEmpty')}
                 </span>
               )}
             </div>
@@ -821,7 +841,7 @@ export default function Chat() {
               <Input
                 value={expectedNoteInput[idx] || ''}
                 onChange={(e) => setExpectedNoteInput(prev => ({ ...prev, [idx]: e.target.value }))}
-                placeholder="补充说明（可选，只写业务描述，不需要也不应写表名/字段名）"
+                placeholder={t('page.feedback.notePlaceholder')}
                 className="h-7 text-xs flex-1"
               />
               <Button size="sm" variant="default" className="h-7 text-xs"
@@ -829,11 +849,11 @@ export default function Chat() {
                 onClick={() => handleFeedback(idx, false, {
                   reason: feedbackReason[idx], ref: feedbackRef[idx], note: expectedNoteInput[idx],
                 })}>
-                提交
+                {t('common:action.submit')}
               </Button>
               <Button size="sm" variant="ghost" className="h-7 text-xs"
                 onClick={() => { handleFeedback(idx, false); setShowExpectedInput(prev => ({ ...prev, [idx]: false })); }}>
-                跳过
+                {t('page.feedback.skip')}
               </Button>
             </div>
           </div>
@@ -848,7 +868,7 @@ export default function Chat() {
   const reportSaveAction = (idx: number, msg: any) => (msg?.reportable === true ? {
     busy: savingReport !== null || loading,
     // 两段式第一段：先在会话里生成草稿（可反复改），侧栏里点「归档」才进报告中心
-    label: msg.reportDraft ? '继续编辑报告草稿' : '存为报告草稿',
+    label: msg.reportDraft ? t('messageActions.continueReportDraft') : t('messageActions.saveReportDraft'),
     onSave: () => { void createReportDraftFromTurn(idx, msg); },
   } : undefined);
 
@@ -896,7 +916,7 @@ export default function Chat() {
     const next = [...pendingAtts];
     for (const f of files) {
       if (next.length >= ATTACH_MAX_FILES) {
-        toast.error(`单次最多携带 ${ATTACH_MAX_FILES} 个附件`);
+        toast.error(t('page.attachLimit', { max: ATTACH_MAX_FILES }));
         break;
       }
       const v = validateLocalAttachment(f);
@@ -924,7 +944,7 @@ export default function Chat() {
     if (files.length === 0) return;
     e.preventDefault();
     const added = addPendingFiles(files);
-    if (added > 0) toast.success(`已放入 ${added} 个附件，将随消息一起发送`);
+    if (added > 0) toast.success(t('page.attachAdded', { count: added }));
   };
 
   const removePendingAtt = (att: PendingAttachment) => {
@@ -946,14 +966,14 @@ export default function Chat() {
     try {
       const { data } = await client.post('/chat/session-file/table', {
         conversation_id: currentConvId,
-        filename: `查询结果_${n}.xlsx`,
+        filename: t('page.resultFilename', { n }),
         columns: result.columns,
         rows: result.rows || [],
       });
-      toast.success(`已保存到会话工作区 ${data.filename}(右侧栏可查看/归档)`);
+      toast.success(t('page.savedToWorkspace', { filename: data.filename }));
       setFilesRefreshKey(k => k + 1);
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '保存失败,请稍后重试');
+      toast.error(e?.response?.data?.detail || t('page.saveFailedRetry'));
     } finally {
       setSavingResult(false);
     }
@@ -970,7 +990,7 @@ export default function Chat() {
     const existing = msg?.reportDraft as ChatReportDraft | undefined;
     if (existing) { setDraftEditorIdx(idx); return; }   // 一条回答只一份：再点就是继续编辑
     if (!currentConvId) {
-      toast.error('会话尚未落库，无法生成报告草稿；请等本轮回答完成后再试');
+      toast.error(t('page.reportNotPersisted'));
       return;
     }
     setSavingReport(idx);
@@ -987,7 +1007,7 @@ export default function Chat() {
         revisions: 0, archived: null,
       });
       if (!ok) {
-        toast.error('草稿没能写入会话记录（报告正文尚不存在），请重试');
+        toast.error(t('page.reportDraftWriteFailed'));
         return;
       }
       setDraftEditorIdx(idx);
@@ -999,7 +1019,7 @@ export default function Chat() {
       });
     } catch (e: any) {
       // 服务端给的是可解释原因（“该回合是问答不是分析结果”等），必须原样告知
-      toast.error(e?.response?.data?.detail || '生成报告草稿失败，请重试');
+      toast.error(e?.response?.data?.detail || t('page.reportDraftCreateFailed'));
     } finally {
       setSavingReport(null);
     }
@@ -1009,7 +1029,7 @@ export default function Chat() {
     const msg: any = messages[idx];
     const draft = msg?.reportDraft as ChatReportDraft | undefined;
     if (!currentConvId || !draft) {
-      toast.error('没找到这一轮的报告草稿，请重新「存为报告」');
+      toast.error(t('page.reportDraftNotFound'));
       return;
     }
     setSavingReport(idx);
@@ -1024,18 +1044,18 @@ export default function Chat() {
       const ok = await saveMessageReportDraft(idx, { ...draft, archived });
       if (!ok) {
         // 报告已落库、会话里的归档标记没写回：如实说出来（服务端幂等，再点不会重复建）
-        toast.warning(`报告已在报告中心（${res.title}），但会话里的归档标记没写回；再点一次不会重复创建`);
+        toast.warning(t('page.archiveMarkFailed', { title: res.title }));
         return;
       }
       toast.success(res.already_archived
-        ? `这份草稿早已归档：${res.title}`
-        : `已归档进报告中心：${res.title}`, {
+        ? t('page.alreadyArchived', { title: res.title })
+        : t('page.archivedToCenter', { title: res.title }), {
         // 独立问答页(/ask/)没有工作空间侧栏，只提示结果，不给跳转
         action: independent || !selectedWorkspaceId ? undefined
-          : { label: '去查看', onClick: () => navigate(`/ws/${selectedWorkspaceId}/reports`) },
+          : { label: t('sidePanel.goView'), onClick: () => navigate(`/ws/${selectedWorkspaceId}/reports`) },
       });
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '归档失败，草稿仍保留在本会话，请重试');
+      toast.error(e?.response?.data?.detail || t('page.archiveFailed'));
     } finally {
       setSavingReport(null);
     }
@@ -1049,11 +1069,11 @@ export default function Chat() {
   const createDocFromMessage = async (idx: number, msg: any) => {
     if (msg?.doc) { setDocEditorIdx(idx); return; }
     if (!currentConvId) {
-      toast.error('会话尚未落库，无法转文档编辑；请等本轮回答完成后再试');
+      toast.error(t('page.docNotPersisted'));
       return;
     }
     if (!answerMarkdownOf(msg).trim()) {
-      toast.info('这条回答没有可转成文档的正文');
+      toast.info(t('page.docNoBody'));
       return;
     }
     setDocBusyIdx(idx);
@@ -1064,7 +1084,7 @@ export default function Chat() {
         title: '', html: '', created_at: now, updated_at: now, revisions: 0,
       });
       if (!ok) {
-        toast.error('文档创建失败（会话记录未保存），请重试');
+        toast.error(t('page.docCreateFailed'));
         return;
       }
       setDocEditorIdx(idx);
@@ -1078,7 +1098,7 @@ export default function Chat() {
   const toggleConvSelect = (id: number) => setSelectedIds(prev => {
     if (prev.includes(id)) return prev.filter(x => x !== id);
     if (prev.length >= MAX_BATCH_DELETE) {
-      toast.error(`一次最多删除 ${MAX_BATCH_DELETE} 个会话，请先取消部分勾选`);
+      toast.error(t('page.batchLimit', { max: MAX_BATCH_DELETE }));
       return prev;
     }
     return [...prev, id];
@@ -1089,7 +1109,7 @@ export default function Chat() {
     const ids = conversations.map(c => c.id);
     if (ids.length > MAX_BATCH_DELETE) {
       setSelectedIds(ids.slice(0, MAX_BATCH_DELETE));
-      toast.error(`一次最多删除 ${MAX_BATCH_DELETE} 个会话，已勾选前 ${MAX_BATCH_DELETE} 个`);
+      toast.error(t('page.batchLimitSelected', { max: MAX_BATCH_DELETE }));
       return;
     }
     setSelectedIds(ids);
@@ -1102,13 +1122,13 @@ export default function Chat() {
     setBatchDeleting(true);
     try {
       const { deleted, failed } = await deleteConversations(ids);
-      if (deleted.length) toast.success(`已删除 ${deleted.length} 个会话`);
+      if (deleted.length) toast.success(t('page.batchDeleted', { count: deleted.length }));
       if (failed.length) {
         // 失败要点名到具体会话（用标题，不是裸 id）并说清原因：正在执行/清理未完/已不存在
         // 的下一步动作不同，把整批笼统说成“部分失败”等于没告知。
         const detail = failed.slice(0, 3)
-          .map(f => `「${f.title || '未命名会话'}」${f.reason}`).join('；');
-        toast.error(`${failed.length} 个会话未能删除，记录仍保留：${detail}${failed.length > 3 ? '…等' : ''}`);
+          .map(f => t('page.batchFailedItem', { title: f.title || t('page.untitledConversation'), reason: f.reason })).join(t('page.itemSeparator'));
+        toast.error(t('page.batchFailedSummary', { count: failed.length, detail, more: failed.length > 3 ? t('page.etc') : '' }));
       }
       // 失败的保持勾选便于重试，成功的从勾选里移除；不静默退出批量态
       setSelectedIds(failed.map(f => f.id));
@@ -1124,20 +1144,20 @@ export default function Chat() {
   const handleDeleteTurn = async () => {
     if (deleteTurnIdx === null) return;
     const ok = await deleteTurn(deleteTurnIdx);
-    if (ok) toast.success('已删除这一轮问答');
+    if (ok) toast.success(t('page.turnDeleted'));
     setDeleteTurnIdx(null);
   };
 
   /** 「/ 清空当前会话」：clear() 自己报失败原因，成功才给确认文案 */
   const handleClearConversation = async () => {
     setClearConfirm(false);
-    if (await clear()) toast.success('已清空当前会话（下一轮从零上下文继续，窗口不变）');
+    if (await clear()) toast.success(t('page.cleared'));
   };
 
   // 输入卡片（参考千问起始页）：不横贯全屏，而是收窄居中（与消息列同量级）；
   // 附件/会话文件/发送都收进卡片底行，卡片自身是唯一边框（focus 时高亮）。
   // 新对话空态下这张卡片跟着欢迎语一起居中，有消息后落回底部。
-  const assistantName = asBots[0]?.display_name || asBots[0]?.name || '智能问数';
+  const assistantName = asBots[0]?.display_name || asBots[0]?.name || t('page.defaultAssistantName');
   // 首页带问题进来、自动发送还没能发出的这几百毫秒（要等工作空间同步 + 站点/AS-BOT 清单定形，
   // 否则问题会发进一个还没解析完的取数范围）：这段时间按“会话中”版式先把那句摆出来，
   // 不能让画面停在欢迎页上——用户已经按下发送了，画面必须立刻承认收到了。
@@ -1145,14 +1165,14 @@ export default function Chat() {
   const pendingQuestion = pendingAsk?.send && messages.length === 0 ? pendingAsk.question : '';
   const urlWsNum = Number(urlWorkspaceId);
   const pendingAskStage = pendingAsk?.sent
-    ? '正在发送…'
+    ? t('page.stageSending')
     : loading
-      ? '上一轮还在进行，排队发送中…'
+      ? t('page.stageQueued')
       : (urlWsNum && selectedWorkspaceId !== urlWsNum)
-        ? '正在切换工作空间…'
+        ? t('page.stageSwitchingWs')
         : (!sitesLoaded || !asBotsLoaded)
-          ? '正在准备会话上下文（站点与角色智能体）…'
-          : '正在发送…';
+          ? t('page.stagePreparing')
+          : t('page.stageSending');
   // 消息列/底部输入卡片的版式开关：有历史消息、或有一句待发的提问，都走“会话中”布局
   const hasTurnUI = messages.length > 0 || !!pendingQuestion;
   // 消息列与输入卡片共用**同一根内容列**：用户气泡、AI 回复卡、输入卡片三者右边缘对齐。
@@ -1206,7 +1226,7 @@ export default function Chat() {
                   <FileText className="h-5 w-5 text-muted-foreground" />
                 )}
                 <span className="text-xs max-w-[130px] truncate" title={att.filename}>{att.filename}</span>
-                <Badge variant="secondary" className="text-[10px] px-1 py-0">{CATEGORY_LABELS[att.category] || att.category}</Badge>
+                <Badge variant="secondary" className="text-[10px] px-1 py-0">{CATEGORY_LABEL_KEYS[att.category] ? t(CATEGORY_LABEL_KEYS[att.category]) : att.category}</Badge>
                 <button
                   className="text-muted-foreground hover:text-destructive"
                   onClick={() => removePendingAtt(att)}
@@ -1228,12 +1248,12 @@ export default function Chat() {
                   : <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" />}
                 <span className="text-xs max-w-[150px] truncate">{c.name || c.filename}</span>
                 <Badge variant="secondary" className="text-[10px] px-1 py-0">
-                  {c.source === 'asset' ? '归档资产' : '本会话文件'}
+                  {c.source === 'asset' ? t('cloudFiles.groupAsset') : t('cloudFiles.groupSession')}
                 </Badge>
                 <span className="text-[10px] text-muted-foreground">{formatSize(c.size)}</span>
                 <button
                   className="text-muted-foreground hover:text-destructive"
-                  title="取消引用该文件"
+                  title={t('page.unrefFile')}
                   onClick={() => setCloudRefs(prev => prev.filter(x => !(x.source === c.source && x.ref === c.ref)))}
                 >
                   <X className="h-3.5 w-3.5" />
@@ -1249,8 +1269,8 @@ export default function Chat() {
             {pickedScenes.map(id => (
               <Badge key={id} variant="secondary" className="gap-1 pr-1 text-xs">
                 <Workflow className="h-3 w-3" />
-                {slashOptions?.scenes?.find(s => s.key === id)?.name || '分析场景'}
-                <button className="hover:text-destructive" title="不再按该场景的方案做"
+                {slashOptions?.scenes?.find(s => s.key === id)?.name || t('page.sceneFallback')}
+                <button className="hover:text-destructive" title={t('page.removeSceneTitle')}
                   onClick={() => setPickedScenes(prev => prev.filter(x => x !== id))}>
                   <X className="h-3 w-3" />
                 </button>
@@ -1260,7 +1280,7 @@ export default function Chat() {
               <Badge key={name} variant="secondary" className="gap-1 pr-1 text-xs">
                 <Sparkles className="h-3 w-3" />
                 {slashOptions?.skills.find(s => s.name === name)?.display_name || name}
-                <button className="hover:text-destructive" title="移除该技能"
+                <button className="hover:text-destructive" title={t('page.removeSkillTitle')}
                   onClick={() => setPickedSkills(prev => prev.filter(x => x !== name))}>
                   <X className="h-3 w-3" />
                 </button>
@@ -1270,7 +1290,7 @@ export default function Chat() {
               <Badge variant="secondary" className="gap-1 pr-1 text-xs">
                 <Terminal className="h-3 w-3" />
                 {slashOptions?.commands.find(c => c.key === pickedCommand)?.label || pickedCommand}
-                <button className="hover:text-destructive" title="取消该指令"
+                <button className="hover:text-destructive" title={t('page.removeCommandTitle')}
                   onClick={() => setPickedCommand('')}>
                   <X className="h-3 w-3" />
                 </button>
@@ -1294,7 +1314,7 @@ export default function Chat() {
             value={input}
             onChange={handleSlashInputChange}
             onPaste={handlePaste}
-            placeholder={stopping ? '上一轮正在停止，请稍候…' : '输入你的数据查询问题…'}
+            placeholder={stopping ? t('page.inputStopping') : t('page.inputPlaceholder')}
             className="h-11 border-0 bg-transparent px-3 text-[15px] shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
             disabled={stopping}
             onKeyDown={handleSlashInputKeyDown}
@@ -1307,19 +1327,19 @@ export default function Chat() {
               前端不再上送 chat_mode（服务端收到空 = 不注入任何模式作业要求 = 存量行为），
               chatStore 也不再保留 chatMode 状态：没入口的开关与读不到的字段都是死配置。 */}
           <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0 rounded-full text-muted-foreground hover:text-foreground" disabled={loading}
-            title="上传附件(图片/表格/文档/3D 模型,支持 Ctrl+V 粘贴截图;随消息发送并存入会话工作区)"
+            title={t('page.uploadTitle')}
             onClick={() => fileInputRef.current?.click()}>
             <Paperclip className="h-4 w-4" />
           </Button>
           <Button
             variant={sidePanelShown ? 'secondary' : 'ghost'}
             size="icon" className="h-9 w-9 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
-            aria-label={sidePanelShown ? '收起会话侧栏' : '展开会话侧栏'}
+            aria-label={sidePanelShown ? t('page.sidePanelCollapse') : t('page.sidePanelExpand')}
             title={sidePanelShown
-              ? '收起会话侧栏（产物 / 关键知识）'
+              ? t('page.sidePanelCollapseTitle')
               : messages.length > 0
-                ? '展开会话侧栏（产物 / 关键知识）'
-                : '发送消息后可查看会话产物与关键知识'}
+                ? t('page.sidePanelExpandTitle')
+                : t('page.sidePanelEmptyTitle')}
             // 空态没有产物/关键知识可摘，侧栏不渲染：与其给一颗点了只会把正文列拉宽、
             // 画面却什么都不发生的按钮，不如显式禁用并把原因写在 title 里。
             disabled={messages.length === 0}
@@ -1327,10 +1347,10 @@ export default function Chat() {
             <FolderOpen className="h-4 w-4" />
           </Button>
           <span
-            title={SLASH_TRIGGER_NOTE}
+            title={slashTriggerNote()}
             className="ml-1 hidden min-w-0 truncate text-xs text-muted-foreground/70 sm:block"
           >
-            输入 {SLASH_TRIGGER_HINT} 选场景、技能、定时任务、指令；输入 {MENTION_TRIGGER_HINT} 引用归档资产或本会话文件
+            {t('slash.inputHint', { slash: slashTriggerHint(), mention: mentionTriggerHint() })}
           </span>
           <span className="flex-1" />
           {/* 上下文占用：平时只是右下角一条微进度条（不展示百分比数字），数值/明细与手动压缩收在点击浮层里
@@ -1341,8 +1361,8 @@ export default function Chat() {
             compacting={compacting}
             blocked={loading || stopping || !!contextUsage?.busy}
             blockedReason={loading || stopping
-              ? '本轮任务进行中，等它结束或先停止后再压缩'
-              : (contextUsage?.busy ? '会话执行权当前被占用，请等本轮结束或先停止后再压缩' : undefined)}
+              ? t('page.compactBlockedBusy')
+              : (contextUsage?.busy ? t('page.compactBlockedExec') : undefined)}
             onCompact={() => compactContext()}
           />
           {/* 运行中：发送位就地换成「停止」方块按钮（点一下即停），不再在旁边另挂一个 ✕停止 文字按钮；
@@ -1350,13 +1370,13 @@ export default function Chat() {
               配色不抄外部控件的黑底：走 Button 默认变体（bg-primary / text-primary-foreground），
               跟发送钮同一颗主题色，九套主题自动跟随；形状（圆→方）之外再叠主题色 halo，状态不只靠一个视觉线索。 */}
           {loading || stopping ? (
-            <Button onClick={cancelMessage} size="icon" aria-label="停止" title={stopping ? '正在停止上一轮…' : '停止本轮'}
+            <Button onClick={cancelMessage} size="icon" aria-label={t('page.stopAria')} title={stopping ? t('page.stoppingTitle') : t('page.stopTitle')}
               className="h-8 w-8 shrink-0 rounded-lg ring-1 ring-primary/35"
               disabled={stopping}>
               {stopping ? <Spinner className="h-4 w-4" /> : <Square className="h-3 w-3 fill-current" />}
             </Button>
           ) : (
-            <Button onClick={handleSend} size="icon" aria-label="发送" title="发送"
+            <Button onClick={handleSend} size="icon" aria-label={t('page.send')} title={t('page.send')}
               className="h-8 w-8 rounded-full shrink-0"
               disabled={!input.trim() && pendingAtts.length === 0 && cloudRefs.length === 0}>
               <Send className="h-4 w-4" />
@@ -1388,7 +1408,7 @@ export default function Chat() {
             error={slashError}
             query={slashQuery || ''}
             sceneNote={(slashOptions?.scenes_hidden || 0) > 0
-              ? `另有 ${slashOptions?.scenes_hidden} 个分析场景因所绑主体不在您的权限范围内而未列出（可向管理员申请对应主体的数据源权限）`
+              ? t('page.scenesHiddenNote', { count: slashOptions?.scenes_hidden })
               : undefined}
             onHover={slashMenu.setRow}
             onTabChange={slashMenu.gotoTab}
@@ -1399,21 +1419,21 @@ export default function Chat() {
     </div>
   );
 
-  if (urlWorkspaceId && Number(urlWorkspaceId) !== selectedWorkspaceId) return <div role="status" className="p-6">正在切换工作空间…</div>;
+  if (urlWorkspaceId && Number(urlWorkspaceId) !== selectedWorkspaceId) return <div role="status" className="p-6">{t('page.stageSwitchingWs')}</div>;
   return (
     <div className={focusMode ? 'fixed inset-0 z-50 bg-background flex overflow-hidden' : 'relative flex h-full min-w-0 overflow-hidden'}>
-      {conversationsOpen && <button className="absolute inset-0 z-20 bg-black/30 md:hidden" aria-label="关闭会话列表" onClick={() => setConversationsOpen(false)} />}
+      {conversationsOpen && <button className="absolute inset-0 z-20 bg-black/30 md:hidden" aria-label={t('page.closeConvListAria')} onClick={() => setConversationsOpen(false)} />}
       {/* 左侧会话列表在全屏（专注）模式下照样保留：切会话是高频动作，
           全屏要的是“不被外壳干扰”，不是把历史入口藏掉 */}
-      <div aria-label="会话列表" data-tour={TOUR.chatSessions} className={`${conversationsOpen ? 'absolute inset-y-0 left-0 z-30 flex bg-background' : 'hidden'} md:relative md:flex md:z-10 w-[240px] flex-shrink-0 flex-col border-r bg-muted/30`}>
+      <div aria-label={t('page.convListAria')} data-tour={TOUR.chatSessions} className={`${conversationsOpen ? 'absolute inset-y-0 left-0 z-30 flex bg-background' : 'hidden'} md:relative md:flex md:z-10 w-[240px] flex-shrink-0 flex-col border-r bg-muted/30`}>
         <div className="flex items-center gap-2 p-3 border-b">
           <Button className="flex-1" size="sm" onClick={() => { startNewConversation(); setConversationsOpen(false); exitBatch(); }}>
             <Plus className="h-4 w-4 mr-2" />
-            新建对话
+            {t('page.newConversation')}
           </Button>
           <Button variant={batchMode ? 'default' : 'outline'} size="icon" className="h-8 w-8 shrink-0"
             aria-pressed={batchMode}
-            title={batchMode ? '退出批量管理' : '批量管理会话历史（勾选后可批量删除）'}
+            title={batchMode ? t('page.batchExit') : t('page.batchEnterTitle')}
             onClick={() => (batchMode ? exitBatch() : setBatchMode(true))}>
             <ListChecks className="h-4 w-4" />
           </Button>
@@ -1423,16 +1443,16 @@ export default function Chat() {
             <label className="flex items-center gap-1.5 cursor-pointer select-none">
               <input type="checkbox" className="h-3.5 w-3.5 accent-primary"
                 checked={allSelected} onChange={toggleSelectAll} disabled={!conversations.length}
-                aria-label="全选会话" />
-              全选
+                aria-label={t('page.selectAllAria')} />
+              {t('common:action.selectAll')}
             </label>
-            <span className="text-muted-foreground">已选 {selectedIds.length} / {conversations.length}</span>
+            <span className="text-muted-foreground">{t('page.selectedCount', { selected: selectedIds.length, total: conversations.length })}</span>
           </div>
         )}
         <ScrollArea className="flex-1 min-h-0 p-2">
-          {conversationError && <p role="alert" className="p-2 text-xs text-destructive">{conversationError}<Button variant="link" size="sm" onClick={() => void loadConversations()}>重试</Button></p>}
+          {conversationError && <p role="alert" className="p-2 text-xs text-destructive">{conversationError}<Button variant="link" size="sm" onClick={() => void loadConversations()}>{t('common:action.retry')}</Button></p>}
           {!conversationError && conversations.length === 0 && (
-            <div className="text-center py-12 text-muted-foreground">暂无对话</div>
+            <div className="text-center py-12 text-muted-foreground">{t('page.noConversations')}</div>
           )}
           {conversations.map(conv => (
             <div
@@ -1451,7 +1471,7 @@ export default function Chat() {
                 <input type="checkbox" className="h-3.5 w-3.5 accent-primary shrink-0"
                   checked={selectedIds.includes(conv.id)} onChange={() => toggleConvSelect(conv.id)}
                   onClick={(e) => e.stopPropagation()}
-                  aria-label={`选择会话 ${conv.title || '未命名会话'}`} />
+                  aria-label={t('page.selectConvAria', { title: conv.title || t('page.untitledConversation') })} />
               ) : (
                 <MessageSquare className="h-4 w-4 shrink-0" />
               )}
@@ -1508,7 +1528,7 @@ export default function Chat() {
                       }}
                     >
                       <Pencil className="h-4 w-4 mr-2" />
-                      重命名
+                      {t('page.rename')}
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       className="text-destructive focus:text-destructive"
@@ -1518,7 +1538,7 @@ export default function Chat() {
                       }}
                     >
                       <Trash className="h-4 w-4 mr-2" />
-                      删除
+                      {t('common:action.delete')}
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
@@ -1528,11 +1548,11 @@ export default function Chat() {
         </ScrollArea>
         {batchMode && (
           <div className="flex items-center gap-2 p-2 border-t bg-background">
-            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={exitBatch} disabled={batchDeleting}>取消</Button>
+            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={exitBatch} disabled={batchDeleting}>{t('common:action.cancel')}</Button>
             <Button variant="destructive" size="sm" className="h-8 text-xs ml-auto"
               disabled={!selectedIds.length || batchDeleting} onClick={() => setBatchConfirm(true)}>
               {batchDeleting ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Trash className="h-3.5 w-3.5 mr-1" />}
-              删除{selectedIds.length ? ` ${selectedIds.length} 个` : ''}
+              {selectedIds.length ? t('page.deleteSelected', { count: selectedIds.length }) : t('common:action.delete')}
             </Button>
           </div>
         )}
@@ -1543,9 +1563,9 @@ export default function Chat() {
         {/* Header */}
         <div className="flex items-center justify-between gap-3 overflow-x-auto px-3 md:px-6 py-3 border-b flex-shrink-0">
           <div className="flex shrink-0 items-center gap-2">
-            <Button className="md:hidden" variant="ghost" size="icon" aria-label="打开会话列表" onClick={() => setConversationsOpen(true)}><MessageSquare className="h-4 w-4" /></Button>
+            <Button className="md:hidden" variant="ghost" size="icon" aria-label={t('page.openConvListAria')} onClick={() => setConversationsOpen(true)}><MessageSquare className="h-4 w-4" /></Button>
             <Bot className="h-6 w-6 text-primary" />
-            <h1 className="text-lg font-bold">{independent ? '工作空间' : '智能问数'}</h1>
+            <h1 className="text-lg font-bold">{independent ? t('page.workspaceTitle') : t('menu:workspace.chat')}</h1>
           </div>
           <div ref={modelPickerRef} className="flex items-center gap-2" data-tour={TOUR.chatModel}>
             {/* 模型选择器:
@@ -1562,9 +1582,9 @@ export default function Chat() {
                 const cur = selectedModelRef && wm.includes(selectedModelRef) ? selectedModelRef : wm[0];
                 return (
                   <Select key={`asBot-model-${asBot.as_bot_key}`} value={cur} onValueChange={(v) => setSelectedModelRef(v)}>
-                    <SelectTrigger className="w-[200px] h-8" title={`AS-BOT「${asBot.display_name || asBot.name}」可用模型`}>
+                    <SelectTrigger className="w-[200px] h-8" title={t('page.asBotModelsTitle', { name: asBot.display_name || asBot.name })}>
                       <Cpu className="h-3.5 w-3.5 mr-1.5" />
-                      <SelectValue placeholder="选择模型" />
+                      <SelectValue placeholder={t('page.selectModel')} />
                     </SelectTrigger>
                     <SelectContent>
                       {wm.map((ref) => (<SelectItem key={ref} value={ref}>{ref}</SelectItem>))}
@@ -1581,10 +1601,10 @@ export default function Chat() {
                 >
                   <SelectTrigger className="w-[220px] h-8" title={`Harness: ${executionLayer?.display_name || 'Qoder Harness'}`}>
                     <Cpu className="h-3.5 w-3.5 mr-1.5" />
-                    <SelectValue placeholder="选择模型" />
+                    <SelectValue placeholder={t('page.selectModel')} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="default">默认模型(Harness 配置 → 模型中心默认)</SelectItem>
+                    <SelectItem value="default">{t('page.defaultModel')}</SelectItem>
                     {(executionLayer?.models || []).map((ref) => (
                       <SelectItem key={ref} value={ref}>{ref}</SelectItem>
                     ))}
@@ -1600,10 +1620,10 @@ export default function Chat() {
               <Select value={selectedSiteCode} onValueChange={(v) => setSelectedSiteCode(v)}>
                 <SelectTrigger
                   className="w-[150px] h-8"
-                  title="查询站点范围（对话中直接说「查中国站点」可覆盖本轮）"
+                  title={t('page.siteScopeTitle')}
                 >
                   <Globe className="h-3.5 w-3.5 mr-1.5" />
-                  <SelectValue placeholder="选择站点" />
+                  <SelectValue placeholder={t('page.selectSite')} />
                 </SelectTrigger>
                 <SelectContent>
                   {authorizedSites.map((s) => (
@@ -1621,7 +1641,7 @@ export default function Chat() {
                 onClick={() => loadAuthorizedSites(selectedWorkspaceId)}
               >
                 <AlertTriangle className="h-3.5 w-3.5 mr-1" />
-                站点加载失败，点击重试
+                {t('page.siteLoadFailed')}
               </Button>
             )}
 
@@ -1632,7 +1652,7 @@ export default function Chat() {
               variant={focusMode ? 'default' : 'outline'}
               size="sm"
               onClick={() => setFocusMode(!focusMode)}
-              title={focusMode ? '退出全屏 (Esc)' : '全屏（保留左侧会话列表）'}
+              title={focusMode ? t('page.exitFocus') : t('page.enterFocus')}
             >
               {focusMode ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
             </Button>
@@ -1653,8 +1673,8 @@ export default function Chat() {
             <div className={`${CHAT_COLUMN} flex flex-col gap-10`} data-chat-column>
             <div className="flex flex-col items-center gap-4">
               <BotAvatar size={52} />
-              <p className="text-[26px] font-semibold">你好，我是{assistantName}</p>
-              <p className="text-[15px] text-muted-foreground">用中文提问，帮您完成知识检索和数据查询并深度分析</p>
+              <p className="text-[26px] font-semibold">{t('page.welcome', { name: assistantName })}</p>
+              <p className="text-[15px] text-muted-foreground">{t('page.welcomeSub')}</p>
             </div>
             {chatComposer}
             </div>
@@ -1674,10 +1694,10 @@ export default function Chat() {
                 disabled={loadingEarlier}
                 className="h-7 rounded-md border border-border/70 bg-card px-3 text-[12px] text-muted-foreground hover:bg-accent disabled:opacity-60"
               >
-                {loadingEarlier ? '加载中…' : '加载更早消息'}
+                {loadingEarlier ? t('common:state.loading') : t('page.loadEarlier')}
               </button>
               <span className="text-[11px] text-muted-foreground">
-                已加载 {messages.length} / {messageTotal || messages.length} 条
+                {t('page.loadedCount', { loaded: messages.length, total: messageTotal || messages.length })}
               </span>
             </div>
           )}
@@ -1716,7 +1736,7 @@ export default function Chat() {
                               <div key={key} className="flex items-center gap-1.5 bg-white/15 rounded-md px-2 py-1 text-xs opacity-90" title={att.filename}>
                                 <FileText className="h-3.5 w-3.5" />
                                 <span className="max-w-[140px] truncate">{att.filename}</span>
-                                <span className="opacity-70">云空间引用</span>
+                                <span className="opacity-70">{t('page.cloudRefBadge')}</span>
                               </div>
                             );
                           }
@@ -1726,7 +1746,7 @@ export default function Chat() {
                               <div key={key} className="flex items-center gap-1.5 bg-white/15 rounded-md px-2 py-1 text-xs opacity-80" title={att.filename}>
                                 <FileText className="h-3.5 w-3.5" />
                                 <span className="max-w-[140px] truncate">{att.filename}</span>
-                                <span className="opacity-70">附件已随会话清理</span>
+                                <span className="opacity-70">{t('page.attCleaned')}</span>
                               </div>
                             );
                           }
@@ -1744,11 +1764,11 @@ export default function Chat() {
                               key={key}
                               className={`flex items-center gap-1.5 bg-white/15 rounded-md px-2 py-1 text-xs ${att.category === 'model3d' ? 'cursor-pointer hover:bg-white/25' : ''}`}
                               onClick={att.category === 'model3d' ? () => setPreview3d(att) : undefined}
-                              title={att.category === 'model3d' ? '点击预览 3D 模型' : att.filename}
+                              title={att.category === 'model3d' ? t('page.preview3dTitle') : att.filename}
                             >
                               {att.category === 'model3d' ? <Box className="h-3.5 w-3.5" /> : <FileText className="h-3.5 w-3.5" />}
                               <span className="max-w-[140px] truncate">{att.filename}</span>
-                              {att.category === 'model3d' && <span className="opacity-70">预览</span>}
+                              {att.category === 'model3d' && <span className="opacity-70">{t('common:action.preview')}</span>}
                             </div>
                           );
                         })}
@@ -1761,7 +1781,7 @@ export default function Chat() {
                         {(msg.scenes || []).map(id => (
                           <span key={id} className="inline-flex items-center gap-1 rounded bg-white/20 px-1.5 py-0.5 text-[11px]">
                             <Workflow className="h-3 w-3" />
-                            {slashOptions?.scenes?.find(s => s.key === id)?.name || '分析场景'}
+                            {slashOptions?.scenes?.find(s => s.key === id)?.name || t('page.sceneFallback')}
                           </span>
                         ))}
                         {(msg.skills || []).map(s => (
@@ -1789,8 +1809,8 @@ export default function Chat() {
                       <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground"
                         disabled={loading || stopping}
                         title={loading || stopping
-                          ? '会话进行中不能删除记录，请先停止'
-                          : '删除这一问及其回答（不可撤销）'}
+                          ? t('page.deleteTurnBlocked')
+                          : t('page.deleteTurnTitle')}
                         onClick={() => setDeleteTurnIdx(idx)}>
                         <Trash className="h-3.5 w-3.5" />
                       </Button>
@@ -1831,14 +1851,14 @@ export default function Chat() {
                     {msg.executionStats && hasModelStats(msg.executionStats) && (
                       <div className="flex items-center gap-2 mb-2 text-[10px] text-muted-foreground">
                         {msg.executionStats.num_turns != null && (
-                          <span className="px-1.5 py-0.5 rounded bg-muted">{msg.executionStats.num_turns} 轮推理</span>
+                          <span className="px-1.5 py-0.5 rounded bg-muted">{t('page.statsTurns', { count: msg.executionStats.num_turns })}</span>
                         )}
                         {msg.executionStats.tool_call_count != null && msg.executionStats.tool_call_count > 0 && (
-                          <span className="px-1.5 py-0.5 rounded bg-muted">{msg.executionStats.tool_call_count} 次工具调用</span>
+                          <span className="px-1.5 py-0.5 rounded bg-muted">{t('page.statsToolCalls', { count: msg.executionStats.tool_call_count })}</span>
                         )}
                         {msg.executionStats.duration_ms != null && (
                           <span className="px-1.5 py-0.5 rounded bg-muted">
-                            耗时 {(msg.executionStats.duration_ms / 1000).toFixed(1)}s
+                            {t('page.statsDuration', { value: (msg.executionStats.duration_ms / 1000).toFixed(1) })}
                           </span>
                         )}
                       </div>
@@ -1869,7 +1889,7 @@ export default function Chat() {
                           onSaveReport={reportSaveAction(idx, msg)}
                         />
                         {msg.error && (
-                          <p className="mt-1 text-xs text-muted-foreground">以上为中断前已输出的内容，可能不完整</p>
+                          <p className="mt-1 text-xs text-muted-foreground">{t('page.interruptedNote')}</p>
                         )}
                       </>
                     )}
@@ -1940,7 +1960,8 @@ export default function Chat() {
                         )}
                         <div className="flex gap-2 pl-6">
                           <Input
-                            placeholder="输入自定义回复..."
+                            placeholder={t('page.askPlaceholder')}
+                            data-ask-reply
                             className="text-sm"
                             onKeyDown={(e) => {
                               if (e.key === 'Enter' && e.currentTarget.value.trim()) {
@@ -1953,21 +1974,22 @@ export default function Chat() {
                             variant="ghost"
                             size="sm"
                             onClick={() => {
-                              const input = document.querySelector('input[placeholder="输入自定义回复..."]') as HTMLInputElement;
+                              // 按稳定 data 属性定位（placeholder 已 i18n 化，不能当选择器用）
+                              const input = document.querySelector('input[data-ask-reply]') as HTMLInputElement;
                               if (input?.value.trim()) {
                                 respondToAsk(msg.pendingAsk!.request_id, input.value.trim());
                                 input.value = '';
                               }
                             }}
                           >
-                            发送
+                            {t('page.send')}
                           </Button>
                           <Button
                             variant="destructive"
                             size="sm"
                             onClick={() => cancelAsk(msg.pendingAsk!.request_id)}
                           >
-                            取消
+                            {t('common:action.cancel')}
                           </Button>
                         </div>
                       </div>
@@ -1982,9 +2004,9 @@ export default function Chat() {
                         </div>
                         {/* 分类文案：过去的“一句通用错误”同时背“模型过载”与“配置坏了”，
                             用户只能反复重发。这里把“不是你的问题”与下一步说清楚。 */}
-                        {msg.errorKind && ERROR_KIND_HINT[msg.errorKind] && (
+                        {msg.errorKind && ERROR_KIND_HINT_KEYS[msg.errorKind] && (
                           <p className="mt-1.5 pl-8 text-xs text-muted-foreground">
-                            {ERROR_KIND_HINT[msg.errorKind]}
+                            {t(ERROR_KIND_HINT_KEYS[msg.errorKind])}
                           </p>
                         )}
                         {msg.errorKind && (
@@ -1993,10 +2015,10 @@ export default function Chat() {
                               onClick={() => (idx === messages.length - 1
                                 ? retryTurn()
                                 : void sendMessage(msg.question || msg.content))}>
-                              <RefreshCw className="mr-1 h-3.5 w-3.5" />重试本轮
+                              <RefreshCw className="mr-1 h-3.5 w-3.5" />{t('page.retryTurn')}
                             </Button>
                             {(msg.errorKind === 'provider_busy' || msg.errorKind === 'rate_limited') && (
-                              <Button variant="outline" size="sm" onClick={openModelPicker}>切换模型</Button>
+                              <Button variant="outline" size="sm" onClick={openModelPicker}>{t('page.switchModel')}</Button>
                             )}
                           </div>
                         )}
@@ -2010,9 +2032,9 @@ export default function Chat() {
                         <div className="flex items-center justify-between gap-2 px-3 py-2 border-b bg-muted/30 flex-wrap">
                           <div className="flex gap-1.5 flex-wrap items-center">
                             {msg.brief && <Badge variant="default">{msg.brief}</Badge>}
-                            {msg.intent === 'correction' && <Badge variant="secondary">已修正</Badge>}
+                            {msg.intent === 'correction' && <Badge variant="secondary">{t('page.correctedBadge')}</Badge>}
                             {msg.chart_type && msg.chart_type !== 'table' && (
-                              <Badge variant="outline">{chartTypeLabels[msg.chart_type] || msg.chart_type}</Badge>
+                              <Badge variant="outline">{chartLabelOf(msg.chart_type)}</Badge>
                             )}
                             {msg.warnings?.map((w: string, i: number) => (
                               <Badge key={i} variant="outline" className="text-yellow-500">{w}</Badge>
@@ -2022,9 +2044,9 @@ export default function Chat() {
                           {msg.result && !msg.result.error && (
                             <Tabs value={msg.viewMode || 'chart'} onValueChange={(v) => setViewMode(idx, v as any)}>
                               <TabsList>
-                                <TabsTrigger value="chart"><BarChart3 className="h-4 w-4 mr-1" />图表</TabsTrigger>
-                                <TabsTrigger value="table"><Table className="h-4 w-4 mr-1" />明细</TabsTrigger>
-                                <TabsTrigger value="profile"><ClipboardList className="h-4 w-4 mr-1" />画像</TabsTrigger>
+                                <TabsTrigger value="chart"><BarChart3 className="h-4 w-4 mr-1" />{t('page.viewChart')}</TabsTrigger>
+                                <TabsTrigger value="table"><Table className="h-4 w-4 mr-1" />{t('page.viewTable')}</TabsTrigger>
+                                <TabsTrigger value="profile"><ClipboardList className="h-4 w-4 mr-1" />{t('page.viewProfile')}</TabsTrigger>
                                 <TabsTrigger value="sql"><Code className="h-4 w-4 mr-1" />SQL</TabsTrigger>
                               </TabsList>
                             </Tabs>
@@ -2055,7 +2077,7 @@ export default function Chat() {
                           {!msg.result && !msg.error && (
                             <div className="flex items-center gap-2 py-3">
                               <Spinner size={16} />
-                              <span className="text-sm text-muted-foreground">正在执行查询...</span>
+                              <span className="text-sm text-muted-foreground">{t('page.executingQuery')}</span>
                             </div>
                           )}
 
@@ -2063,13 +2085,13 @@ export default function Chat() {
                           {msg.prediction && (
                             <StageCard
                               icon={TrendingUp}
-                              title="数据预测"
+                              title={t('page.predictionTitle')}
                               tone="green"
                               className="mt-3"
                               extra={
                                 <Button variant="ghost" size="sm" disabled={msg.predicting}
-                                  onClick={() => predictData(idx, msg.brief || '预测趋势')}>
-                                  <RefreshCw className="h-3 w-3 mr-1" />重新预测
+                                  onClick={() => predictData(idx, msg.brief || t('page.predictBrief'))}>
+                                  <RefreshCw className="h-3 w-3 mr-1" />{t('page.repredict')}
                                 </Button>
                               }
                             >
@@ -2079,7 +2101,7 @@ export default function Chat() {
 
                           {/* 结果分析子卡 */}
                           {msg.analysis && typeof msg.analysis === 'string' && msg.analysis.trim() && (
-                            <StageCard icon={Lightbulb} title="结果分析" className="mt-3">
+                            <StageCard icon={Lightbulb} title={t('page.analysisTitle')} className="mt-3">
                               <div className="text-sm leading-relaxed whitespace-pre-wrap">{msg.analysis}</div>
                             </StageCard>
                           )}
@@ -2099,32 +2121,32 @@ export default function Chat() {
                               a.click();
                               URL.revokeObjectURL(url);
                             }}>
-                              <Download className="h-4 w-4 mr-1" />导出
+                              <Download className="h-4 w-4 mr-1" />{t('common:action.export')}
                             </Button>
                             <Button variant="outline" size="sm" disabled={savingResult || !currentConvId}
-                              title={currentConvId ? '把完整结果保存为会话工作区 xlsx 文件(随会话清理,可归档收藏)' : '发送消息后可保存'}
+                              title={currentConvId ? t('page.saveWorkspaceTitle') : t('page.saveWorkspaceDisabled')}
                               onClick={() => saveResultToWorkspace(msg.result, idx + 1)}>
-                              <Save className="h-4 w-4 mr-1" />存为工作区
+                              <Save className="h-4 w-4 mr-1" />{t('page.saveToWorkspace')}
                             </Button>
                             <Button variant="outline" size="sm" disabled={msg.analyzing}
-                              onClick={() => analyzeData(idx, msg.brief || '分析这些数据')}>
-                              <Lightbulb className="h-4 w-4 mr-1" />数据分析
+                              onClick={() => analyzeData(idx, msg.brief || t('page.analyzeBrief'))}>
+                              <Lightbulb className="h-4 w-4 mr-1" />{t('page.analyzeData')}
                             </Button>
                             <Button variant="outline" size="sm" disabled={msg.predicting}
-                              onClick={() => predictData(idx, msg.brief || '预测趋势')}>
-                              <TrendingUp className="h-4 w-4 mr-1" />数据预测
+                              onClick={() => predictData(idx, msg.brief || t('page.predictBrief'))}>
+                              <TrendingUp className="h-4 w-4 mr-1" />{t('page.predictData')}
                             </Button>
                             <Button variant="outline" size="sm" onClick={() => sendMessage(msg.question || msg.content)}>
-                              <RefreshCw className="h-4 w-4 mr-1" />重新执行
+                              <RefreshCw className="h-4 w-4 mr-1" />{t('page.rerun')}
                             </Button>
                           </div>
                         )}
 
                         {/* 卡底:耗时/行数/Token */}
                         <div className="flex gap-4 px-3 py-2 border-t text-xs text-muted-foreground flex-wrap">
-                          {msg.elapsed_ms && <span><Clock className="h-3 w-3 inline mr-1" />总耗时 {(msg.elapsed_ms / 1000).toFixed(1)}s</span>}
-                          {msg.result?.elapsed_ms && <span><Zap className="h-3 w-3 inline mr-1" />查询 {msg.result.elapsed_ms}ms</span>}
-                          {msg.result?.row_count !== undefined && <span><CheckCircle className="h-3 w-3 inline mr-1" />{msg.result.row_count} 行</span>}
+                          {msg.elapsed_ms && <span><Clock className="h-3 w-3 inline mr-1" />{t('page.totalDuration', { value: (msg.elapsed_ms / 1000).toFixed(1) })}</span>}
+                          {msg.result?.elapsed_ms && <span><Zap className="h-3 w-3 inline mr-1" />{t('page.queryMs', { value: msg.result.elapsed_ms })}</span>}
+                          {msg.result?.row_count !== undefined && <span><CheckCircle className="h-3 w-3 inline mr-1" />{t('page.rowCount', { count: msg.result.row_count })}</span>}
                           {msg.tokens && <span><Code className="h-3 w-3 inline mr-1" />Token: {msg.tokens.input}+{msg.tokens.output}={msg.tokens.total}</span>}
                         </div>
                       </div>
@@ -2140,7 +2162,7 @@ export default function Chat() {
                     {/* 已转出的文档卡片：点进去继续编辑/复制或下载 */}
                     {msg.doc && (
                       <div className="mt-3 space-y-1.5">
-                        <p className="text-xs text-muted-foreground">已为你把消息转换成文档，可直接编辑或下载。</p>
+                        <p className="text-xs text-muted-foreground">{t('page.docConvertedNote')}</p>
                         <DocCard
                           title={msg.doc.title}
                           createdAt={msg.doc.created_at}
@@ -2234,18 +2256,17 @@ export default function Chat() {
       <Dialog open={deleteTurnIdx !== null} onOpenChange={(open) => { if (!open) setDeleteTurnIdx(null); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>删除这一轮问答</DialogTitle>
+            <DialogTitle>{t('page.deleteTurnDialogTitle')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-2 text-sm">
-            <p>将删除这条提问与它的回答，删除后不可恢复。</p>
+            <p>{t('page.deleteTurnDialogBody')}</p>
             <p className="text-xs text-muted-foreground">
-              这只清理会话记录与后续上送的上下文历史；模型在本会话里已经读过的内容不会因此回退。
-              要彻底重来请用「/ 清空当前会话」或新建会话。
+              {t('page.deleteTurnDialogNote')}
             </p>
           </div>
           <div className="flex justify-end gap-2">
-            <Button variant="outline" size="sm" onClick={() => setDeleteTurnIdx(null)}>取消</Button>
-            <Button variant="destructive" size="sm" onClick={() => void handleDeleteTurn()}>确认删除</Button>
+            <Button variant="outline" size="sm" onClick={() => setDeleteTurnIdx(null)}>{t('common:action.cancel')}</Button>
+            <Button variant="destructive" size="sm" onClick={() => void handleDeleteTurn()}>{t('page.confirmDelete')}</Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -2255,18 +2276,17 @@ export default function Chat() {
       <Dialog open={clearConfirm} onOpenChange={(open) => { if (!open) setClearConfirm(false); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>清空当前会话</DialogTitle>
+            <DialogTitle>{t('page.clearDialogTitle')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-2 text-sm">
-            <p>将擦掉本会话的全部历史消息并重置模型上下文，不可恢复。</p>
+            <p>{t('page.clearDialogBody')}</p>
             <p className="text-xs text-muted-foreground">
-              不会新开一个会话窗口：下一轮仍在当前会话，只是从零上下文开始。
-              会话还在运行时请先点停止，否则清空会被拒绝。
+              {t('page.clearDialogNote')}
             </p>
           </div>
           <div className="flex justify-end gap-2">
-            <Button variant="outline" size="sm" onClick={() => setClearConfirm(false)}>取消</Button>
-            <Button variant="destructive" size="sm" onClick={() => void handleClearConversation()}>确认清空</Button>
+            <Button variant="outline" size="sm" onClick={() => setClearConfirm(false)}>{t('common:action.cancel')}</Button>
+            <Button variant="destructive" size="sm" onClick={() => void handleClearConversation()}>{t('page.confirmClear')}</Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -2276,27 +2296,27 @@ export default function Chat() {
       <Dialog open={batchConfirm} onOpenChange={(open) => { if (!open && !batchDeleting) setBatchConfirm(false); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>批量删除会话</DialogTitle>
+            <DialogTitle>{t('page.batchDialogTitle')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-2 text-sm">
-            <p>将删除 {pendingDelete.length} 个会话及其工作区文件，删除后不可恢复。正在执行的会话会被拒绝并保留。</p>
+            <p>{t('page.batchDialogBody', { count: pendingDelete.length })}</p>
             <div className="max-h-40 overflow-y-auto rounded-md border p-2 text-xs space-y-1">
               {pendingDelete.map(c => (
-                <div key={c.id} className="truncate" title={c.title}>· {c.title || '未命名会话'}</div>
+                <div key={c.id} className="truncate" title={c.title}>· {c.title || t('page.untitledConversation')}</div>
               ))}
             </div>
             {selectedIds.length > pendingDelete.length && (
               <p className="text-xs text-muted-foreground">
-                另有 {selectedIds.length - pendingDelete.length} 项已不在当前清单中（可能已被删除），本次不处理。
+                {t('page.batchStaleNote', { count: selectedIds.length - pendingDelete.length })}
               </p>
             )}
           </div>
           <div className="flex justify-end gap-2">
-            <Button variant="outline" size="sm" onClick={() => setBatchConfirm(false)} disabled={batchDeleting}>取消</Button>
+            <Button variant="outline" size="sm" onClick={() => setBatchConfirm(false)} disabled={batchDeleting}>{t('common:action.cancel')}</Button>
             <Button variant="destructive" size="sm" onClick={() => void runBatchDelete()}
               disabled={batchDeleting || !pendingDelete.length}>
               {batchDeleting && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
-              确认删除
+              {t('page.confirmDelete')}
             </Button>
           </div>
         </DialogContent>

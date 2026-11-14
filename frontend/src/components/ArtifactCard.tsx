@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Download, FileText, FileSpreadsheet, FileImage, Code, FileType, Archive } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { toast } from '@/lib/toast';
@@ -80,6 +81,7 @@ function inlineImageSrc(content: string | undefined, mime: string): string {
 }
 
 export default function ArtifactCard({ type, filename, content, path, description, theme, conversationId }: Props) {
+  const { t } = useTranslation(['chat', 'common']);
   const config = TYPE_CONFIG[type] || TYPE_CONFIG.md;
   const Icon = config.icon;
   const byRef = !!path && !!conversationId;
@@ -137,9 +139,9 @@ export default function ArtifactCard({ type, filename, content, path, descriptio
         path,
       });
       setArchived(true);
-      toast.success(`「${filename}」已存入资产清单`);
+      toast.success(t('artifact.archivedToast', { name: filename }));
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '归档失败，请重试');
+      toast.error(e?.response?.data?.detail || t('artifact.archiveFailed'));
     }
   };
 
@@ -154,12 +156,12 @@ export default function ArtifactCard({ type, filename, content, path, descriptio
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <Button variant="default" size="sm" className="h-7 text-xs" onClick={onDownload} disabled={!canDownload}>
-            <Download className="h-3 w-3 mr-1" />下载
+            <Download className="h-3 w-3 mr-1" />{t('common:action.download')}
           </Button>
           {byRef && (
             <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onArchive}
-                    disabled={archived} title="存入资产清单(跨工作空间跟随账号)">
-              <Archive className="h-3 w-3 mr-1" />{archived ? '已归档' : '归档'}
+                    disabled={archived} title={t('artifact.archiveTitle')}>
+              <Archive className="h-3 w-3 mr-1" />{archived ? t('artifact.archived') : t('artifact.archive')}
             </Button>
           )}
         </div>
@@ -219,7 +221,7 @@ export default function ArtifactCard({ type, filename, content, path, descriptio
         <div className="p-3 max-h-[300px] overflow-auto border-t">
           <pre className="text-xs font-mono whitespace-pre-wrap text-muted-foreground bg-muted/50 rounded p-2">
             {content.slice(0, 2000)}
-            {content.length > 2000 && '\n... (内容已截断,请下载查看完整文件)'}
+            {content.length > 2000 && `\n${t('artifact.truncatedNote')}`}
           </pre>
         </div>
       )}

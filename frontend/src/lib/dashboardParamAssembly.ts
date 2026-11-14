@@ -12,6 +12,7 @@
  *  - 已有同名参数一律复用，不重复新建；控件按 `boundKeys` 去重，可以反复点「引入」而不长出一排控件。
  */
 import type { DashboardParam, PageParam } from '@/stores/dashboardStore';
+import i18n from '@/i18n';
 
 /** `GET /datasets/` 行上的 `param_summary` 项（后端 param_plan.param_summary 同形） */
 export interface DatasetParamSummary {
@@ -149,10 +150,10 @@ export function shapeOfControl(control: string): ParamShape {
 export function placeholderOfShape(shape: ParamShape, label: string): string {
   const suffix = String(label || '').trim() ? ` ${String(label).trim()}` : '';
   switch (shape) {
-    case 'select': return `请选择${suffix}`;
-    case 'date': return `选择日期${suffix}`;
-    case 'date_range': return `选择日期区间${suffix}`;
-    default: return `请输入${suffix}`;
+    case 'select': return i18n.t('dashboard:params.placeholder.select', { suffix });
+    case 'date': return i18n.t('dashboard:params.placeholder.date', { suffix });
+    case 'date_range': return i18n.t('dashboard:params.placeholder.dateRange', { suffix });
+    default: return i18n.t('dashboard:params.placeholder.input', { suffix });
   }
 }
 
@@ -441,10 +442,11 @@ export function paramDiagnosticHint(diag?: {
     ? unbound.filter(u => filled.includes(u.key) || (u.vars || []).some(v => filled.includes(v)))
     : unbound;
   if (!hit.length) return null;      // 没给值 = 按数据集自身口径出全量，是预期态，不挂告警
-  const names = hit.map(u => `「${ctx?.nameOf?.(u) || u.label || u.key}」`);
+  const names = hit.map(u => i18n.t('dashboard:diag.nameQuote', { name: ctx?.nameOf?.(u) || u.label || u.key }))
+    .join(i18n.t('dashboard:diag.nameSeparator'));
   const partial = hit.some(u => u.partial);
   const title = partial
-    ? `${names.join('、')}的区间只给到一端，另一端按数据集自身默认值补齐，本次口径不完整`
-    : `${names.join('、')}已经填了值，但这张图没接住，本次仍按数据集自身口径出数（没按你看板选的条件筛）`;
-  return { text: partial ? '筛选区间不完整' : '已填条件未生效', title, partial };
+    ? i18n.t('dashboard:diag.partialTitle', { names })
+    : i18n.t('dashboard:diag.unboundTitle', { names });
+  return { text: partial ? i18n.t('dashboard:diag.partialText') : i18n.t('dashboard:diag.unboundText'), title, partial };
 }

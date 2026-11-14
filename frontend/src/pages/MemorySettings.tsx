@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/toast';
 import { Brain, Trash2, ArrowLeft, Pencil, X, Check, Eraser } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -8,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Spinner } from '@/components/ui/spinner';
 import client from '../api/client';
+import i18n from '@/i18n';
 
 interface MemoryItem {
   id: number;
@@ -27,17 +29,24 @@ interface MemoryData {
   content_max: number;
 }
 
-// 固定槽位定义（前端硬编码兜底，与后端 memory_tools.py 同源）
+// 固定槽位定义（前端硬编码兜底，与后端 memory_tools.py 同源）；
+// 显示名渲染期按 slot key 走语言包，未登记的 key 回退 label（兜底用 key 本身，不硬编码中文）
 const FIXED_SLOT_DEFS = [
-  { key: 'business_domain', label: '业务域' },
-  { key: 'preferred_chart', label: '默认图表' },
-  { key: 'default_time_grain', label: '时间粒度' },
-  { key: 'output_format', label: '输出格式' },
-  { key: 'number_precision', label: '数字精度' },
-  { key: 'role_context', label: '角色背景' },
+  { key: 'business_domain', label: 'business_domain' },
+  { key: 'preferred_chart', label: 'preferred_chart' },
+  { key: 'default_time_grain', label: 'default_time_grain' },
+  { key: 'output_format', label: 'output_format' },
+  { key: 'number_precision', label: 'number_precision' },
+  { key: 'role_context', label: 'role_context' },
 ];
 
+const slotLabel = (def: { key: string; label: string }): string => {
+  const k = `workspace:memory.fixed.slot.${def.key}`;
+  return i18n.exists(k) ? i18n.t(k as 'workspace:memory.fixed.slot.business_domain') : def.label;
+};
+
 export default function MemorySettings() {
+  const { t } = useTranslation(['workspace', 'common']);
   const navigate = useNavigate();
   const location = useLocation();
   const homePath = (() => {
@@ -62,56 +71,56 @@ export default function MemorySettings() {
       const { data } = await client.get('/memory');
       setData(data);
     } catch {
-      toast.error('加载记忆失败');
+      toast.error(t('memory.toast.loadFailed'));
     } finally {
       setLoading(false);
     }
   };
 
   const handleSaveSlot = async (slotKey: string, content: string) => {
-    if (!content.trim()) { toast.error('内容不能为空'); return; }
+    if (!content.trim()) { toast.error(t('memory.toast.contentRequired')); return; }
     try {
       await client.post('/memory', { slot_key: slotKey, content: content.trim() });
-      toast.success('记忆已保存');
+      toast.success(t('memory.toast.saved'));
       setEditingId(null);
       loadMemory();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '保存失败');
+      toast.error(e.response?.data?.detail || t('common:state.saveFailed'));
     }
   };
 
   const handleUpdate = async (id: number) => {
-    if (!editContent.trim()) { toast.error('内容不能为空'); return; }
+    if (!editContent.trim()) { toast.error(t('memory.toast.contentRequired')); return; }
     try {
       await client.put(`/memory/${id}`, { content: editContent.trim() });
-      toast.success('记忆已更新');
+      toast.success(t('memory.toast.updated'));
       setEditingId(null);
       loadMemory();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '更新失败');
+      toast.error(e.response?.data?.detail || t('profile.toast.saveFailed'));
     }
   };
 
   const handleDelete = async (id: number) => {
     try {
       await client.delete(`/memory/${id}`);
-      toast.success('记忆已删除');
+      toast.success(t('memory.toast.deleted'));
       loadMemory();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '删除失败');
+      toast.error(e.response?.data?.detail || t('common:state.deleteFailed'));
     }
   };
 
   const handleClearAll = async () => {
-    if (!window.confirm(`确定清空全部 ${totalCount} 条记忆？此操作不可撤销。`)) return;
+    if (!window.confirm(t('memory.clearConfirm', { count: totalCount }))) return;
     setClearing(true);
     try {
       const items = [...(data?.fixed_slots || []), ...(data?.floating_entries || [])];
       await Promise.all(items.map(i => client.delete(`/memory/${i.id}`)));
-      toast.success('记忆已清空');
+      toast.success(t('memory.toast.cleared'));
       loadMemory();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '清空失败');
+      toast.error(e.response?.data?.detail || t('memory.toast.clearFailed'));
     } finally {
       setClearing(false);
     }
@@ -132,28 +141,28 @@ export default function MemorySettings() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold flex items-center gap-2">
           <Brain className="h-6 w-6" />
-          我的记忆
+          {t('memory.title')}
         </h1>
         <div className="flex items-center gap-2">
           {totalCount > 0 && (
             <Button variant="outline" size="sm" className="text-destructive hover:text-destructive"
               onClick={handleClearAll} disabled={clearing}>
               <Eraser className="h-4 w-4 mr-1" />
-              {clearing ? '清空中...' : '清空记忆'}
+              {clearing ? t('memory.clearing') : t('memory.clear')}
             </Button>
           )}
           <Button variant="outline" size="sm" onClick={() => navigate(homePath)}>
             <ArrowLeft className="h-4 w-4 mr-1" />
-            返回主页
+            {t('profile.backHome')}
           </Button>
         </div>
       </div>
 
       <div className="max-w-[640px] space-y-6">
         <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground">
-          <p className="font-medium text-foreground mb-1">记忆由 AI 在对话中自动学习保存</p>
-          <p>当你说"记住我喜欢用柱状图"或纠正口径时，AI 会自动保存。此页面用于查看、修改和清理已有记忆。</p>
-          <p className="mt-1">记忆只保存稳定偏好/口径/习惯，不会保存会话上下文。</p>
+          <p className="font-medium text-foreground mb-1">{t('memory.introTitle')}</p>
+          <p>{t('memory.introBody')}</p>
+          <p className="mt-1">{t('memory.introNote')}</p>
         </div>
 
         {/* 固定槽位 */}
@@ -161,9 +170,9 @@ export default function MemorySettings() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Brain className="h-5 w-5" />
-              固定偏好
+              {t('memory.fixed.title')}
             </CardTitle>
-            <CardDescription>每项一个值，保存即覆盖旧值</CardDescription>
+            <CardDescription>{t('memory.fixed.desc')}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {(data?.fixed_slot_defs || FIXED_SLOT_DEFS).map(def => {
@@ -171,13 +180,13 @@ export default function MemorySettings() {
               const isEditing = editingId === (item?.id ?? -1000);
               return (
                 <div key={def.key} className="flex items-center gap-3">
-                  <div className="w-24 text-sm font-medium shrink-0">{def.label}</div>
+                  <div className="w-24 text-sm font-medium shrink-0">{slotLabel(def)}</div>
                   {isEditing ? (
                     <div className="flex-1 flex items-center gap-2">
                       <Input
                         value={editContent}
                         onChange={e => setEditContent(e.target.value)}
-                        placeholder={`设置${def.label}`}
+                        placeholder={t('memory.fixed.setPlaceholder', { label: slotLabel(def) })}
                         maxLength={contentMax}
                         className="flex-1"
                         autoFocus
@@ -193,9 +202,9 @@ export default function MemorySettings() {
                   ) : (
                     <div className="flex-1 flex items-center gap-2">
                       <span className="text-sm text-muted-foreground flex-1">
-                        {item?.content || <span className="italic">未设置</span>}
+                        {item?.content || <span className="italic">{t('memory.fixed.unset')}</span>}
                       </span>
-                      {item?.source === 'auto' && <Badge variant="secondary" className="text-[10px]">AI 学习</Badge>}
+                      {item?.source === 'auto' && <Badge variant="secondary" className="text-[10px]">{t('memory.aiLearned')}</Badge>}
                       <Button size="sm" variant="ghost"
                         onClick={() => {
                           setEditingId(item?.id ?? -1000);
@@ -221,15 +230,15 @@ export default function MemorySettings() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Brain className="h-5 w-5" />
-              纠错与习惯
+              {t('memory.floating.title')}
               <Badge variant="outline" className="ml-2">{floatingCount}/{floatingLimit}</Badge>
             </CardTitle>
-            <CardDescription>AI 在对话中自动学习的口径纠错与工作习惯，上限 {floatingLimit} 条</CardDescription>
+            <CardDescription>{t('memory.floating.desc', { limit: floatingLimit })}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {floatingCount === 0 && (
               <p className="text-sm text-muted-foreground italic">
-                暂无记忆。在对话中告诉 AI 你的口径偏好或纠错，它会自动记录在这里。
+                {t('memory.floating.empty')}
               </p>
             )}
             {(data?.floating_entries || []).map(item => (
@@ -255,7 +264,7 @@ export default function MemorySettings() {
                 ) : (
                   <>
                     <span className="flex-1 text-sm">{item.content}</span>
-                    {item.source === 'auto' && <Badge variant="secondary" className="text-[10px] mt-0.5">AI 学习</Badge>}
+                    {item.source === 'auto' && <Badge variant="secondary" className="text-[10px] mt-0.5">{t('memory.aiLearned')}</Badge>}
                     <Button size="sm" variant="ghost"
                       onClick={() => { setEditingId(item.id); setEditContent(item.content); }}>
                       <Pencil className="h-3 w-3" />

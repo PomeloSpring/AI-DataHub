@@ -12,6 +12,7 @@ import {
   Archive, ArrowLeftRight, BarChart3, BookOpen, Crosshair, FileBarChart, FileType,
   FolderOpen, Loader2, PanelRightClose, Sparkles,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { formatSize } from '@/lib/dataGrid';
 import {
@@ -85,34 +86,35 @@ function Chip({ children }: { children: React.ReactNode }) {
 }
 
 function ScopeRow({ card, onJump }: { card: ScopeCard; onJump: (i: number) => void }) {
+  const { t } = useTranslation('chat');
   const meta = [
-    card.timeWindow ? `窗口 ${card.timeWindow}` : '',
-    card.site ? `站点 ${card.site}` : '',
+    card.timeWindow ? t('sidePanel.windowMeta', { value: card.timeWindow }) : '',
+    card.site ? t('sidePanel.siteMeta', { value: card.site }) : '',
   ].filter(Boolean);
   return (
     <li className="space-y-1 rounded-md border border-border/60 bg-card p-2">
       <div className="flex items-center gap-1.5">
         <span className="min-w-0 flex-1 truncate text-xs font-medium" title={card.object}>
-          {card.object || '未登记对象'}
+          {card.object || t('sidePanel.unregisteredObject')}
         </span>
         {meta.length > 0 && (
           <span className="shrink-0 text-[10px] text-muted-foreground">{meta.join(' · ')}</span>
         )}
-        <JumpButton idx={card.idx} onJump={onJump} label={`定位到「${card.object || '该查询'}」那一轮`} />
+        <JumpButton idx={card.idx} onJump={onJump} label={t('sidePanel.jumpTo', { title: card.object || t('sidePanel.jumpFallbackObject') })} />
       </div>
       {card.metrics.length > 0 && (
         <div className="flex flex-wrap gap-1">
-          {card.metrics.map(n => <Chip key={`m-${n}`}><span className="text-primary/80">指标</span> {n}</Chip>)}
+          {card.metrics.map(n => <Chip key={`m-${n}`}><span className="text-primary/80">{t('sidePanel.metricChip')}</span> {n}</Chip>)}
         </div>
       )}
       {card.dimensions.length > 0 && (
         <div className="flex flex-wrap gap-1">
-          {card.dimensions.map(n => <Chip key={`d-${n}`}><span className="text-sky-600">维度</span> {n}</Chip>)}
+          {card.dimensions.map(n => <Chip key={`d-${n}`}><span className="text-sky-600">{t('sidePanel.dimensionChip')}</span> {n}</Chip>)}
         </div>
       )}
       {card.filters.length > 0 && (
         <div className="flex flex-wrap gap-1">
-          {card.filters.map(f => <Chip key={`f-${f}`}>过滤 {f}</Chip>)}
+          {card.filters.map(f => <Chip key={`f-${f}`}>{t('sidePanel.filterChip', { value: f })}</Chip>)}
         </div>
       )}
     </li>
@@ -120,13 +122,14 @@ function ScopeRow({ card, onJump }: { card: ScopeCard; onJump: (i: number) => vo
 }
 
 function CitationRow({ card, onJump }: { card: CitationCard; onJump: (i: number) => void }) {
+  const { t } = useTranslation('chat');
   return (
     <li className="space-y-1 rounded-md border border-border/60 bg-card p-2">
       <div className="flex items-start gap-1.5">
         <span className="min-w-0 flex-1 text-xs font-medium leading-snug" title={card.question}>
-          {card.question || '知识检索'}
+          {card.question || t('sidePanel.knowledgeFallback')}
         </span>
-        <JumpButton idx={card.idx} onJump={onJump} label="定位到该次检索" />
+        <JumpButton idx={card.idx} onJump={onJump} label={t('sidePanel.jumpToCitation')} />
       </div>
       {/* 只到出处标题：片段正文含物理表名（内部 md），侧栏不把它当"业务卡片"端出来 */}
       <ul className="space-y-0.5">
@@ -137,7 +140,7 @@ function CitationRow({ card, onJump }: { card: CitationCard; onJump: (i: number)
           </li>
         ))}
       </ul>
-      <p className="text-[10px] text-muted-foreground">命中 {card.chunks} 段 · 原文见该轮执行过程</p>
+      <p className="text-[10px] text-muted-foreground">{t('sidePanel.citationHits', { count: card.chunks })}</p>
     </li>
   );
 }
@@ -146,6 +149,7 @@ export default function ConversationSidePanel({
   open, onToggle, workspaceId, conversationId, messages,
   onJumpToMessage, onOpenDoc, onEditDraft, onArchiveDraft, archivingIdx, filesRefreshKey,
 }: Props) {
+  const { t } = useTranslation(['chat', 'common']);
   // hooks 必须无条件调用（`open` 提前 return 会把后面的 useMemo 变成条件 hook）
   const artifacts = useMemo(() => collectArtifacts(messages), [messages]);
   const knowledge = useMemo(() => collectKnowledge(messages), [messages]);
@@ -158,14 +162,14 @@ export default function ConversationSidePanel({
   return (
     <aside
       className="flex w-[320px] shrink-0 flex-col border-l bg-background 2xl:w-[380px]"
-      aria-label="会话侧栏"
+      aria-label={t('sidePanel.aria')}
     >
       <div className="flex items-center gap-2 border-b px-3 py-2.5">
         <PanelRightClose className="h-4 w-4 shrink-0 text-primary" />
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">会话侧栏</h2>
+        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{t('sidePanel.title')}</h2>
         <Button
           variant="ghost" size="sm" className="h-7 w-7 shrink-0 p-0 text-muted-foreground"
-          onClick={onToggle} title="收起侧栏" aria-label="收起侧栏"
+          onClick={onToggle} title={t('sidePanel.collapse')} aria-label={t('sidePanel.collapse')}
         >
           <ArrowLeftRight className="h-3.5 w-3.5" />
         </Button>
@@ -174,12 +178,12 @@ export default function ConversationSidePanel({
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
         {/* ── 会话产物 ── */}
         <section className="space-y-2">
-          <SectionTitle icon={FileBarChart} title="会话产物" />
+          <SectionTitle icon={FileBarChart} title={t('sidePanel.artifacts')} />
 
           <div className="space-y-1.5">
-            <p className="text-[11px] text-muted-foreground">报告草稿</p>
+            <p className="text-[11px] text-muted-foreground">{t('sidePanel.reportDrafts')}</p>
             {!conversationId ? (
-              <p className="text-xs text-muted-foreground">发送消息并落库后，可在回答下方「存为报告」生成草稿。</p>
+              <p className="text-xs text-muted-foreground">{t('sidePanel.reportDraftsNoConv')}</p>
             ) : hasReports ? (
               <ul className="space-y-1.5">
                 {artifacts.reports.map(r => (
@@ -189,39 +193,39 @@ export default function ConversationSidePanel({
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-xs font-medium" title={r.title}>{r.title}</p>
                         <p className="text-[10px] text-muted-foreground">
-                          {formatStamp(r.updatedAt) && `更新于 ${formatStamp(r.updatedAt)}`}
-                          {r.revisions > 0 && ` · 已改 ${r.revisions} 次`}
+                          {formatStamp(r.updatedAt) && t('sidePanel.updatedAt', { time: formatStamp(r.updatedAt) })}
+                          {r.revisions > 0 && t('sidePanel.revisions', { count: r.revisions })}
                           {` · ${formatSize(r.size)}`}
                         </p>
                       </div>
-                      <JumpButton idx={r.idx} onJump={onJumpToMessage} label={`定位到「${r.title}」那一轮`} />
+                      <JumpButton idx={r.idx} onJump={onJumpToMessage} label={t('sidePanel.jumpTo', { title: r.title })} />
                     </div>
                     {r.reportId > 0 ? (
                       <div className="flex items-center gap-1.5 text-[11px] text-emerald-700">
                         <Archive className="h-3 w-3 shrink-0" />
-                        已归档进报告中心
+                        {t('sidePanel.archivedToCenter')}
                         <a
                           className="ml-auto shrink-0 underline"
                           href={`/report/${r.reportId}`}
-                          title="在报告中心打开"
+                          title={t('sidePanel.openInCenter')}
                         >
-                          去查看
+                          {t('sidePanel.goView')}
                         </a>
                       </div>
                     ) : (
                       <div className="flex items-center gap-1.5">
                         <Button variant="outline" size="sm" className="h-6 flex-1 text-[11px]"
                           onClick={() => onEditDraft(r.idx)}>
-                          编辑草稿
+                          {t('sidePanel.editDraft')}
                         </Button>
                         <Button size="sm" className="h-6 flex-1 text-[11px]"
                           disabled={archivingIdx !== null}
-                          title="草稿定稿后进报告中心；进中心前它只属于本会话"
+                          title={t('sidePanel.archiveDraftTitle')}
                           onClick={() => onArchiveDraft(r.idx)}>
                           {archivingIdx === r.idx
                             ? <Loader2 className="mr-1 h-3 w-3 animate-spin" />
                             : <Archive className="mr-1 h-3 w-3" />}
-                          归档
+                          {t('artifact.archive')}
                         </Button>
                       </div>
                     )}
@@ -230,13 +234,13 @@ export default function ConversationSidePanel({
               </ul>
             ) : (
               <p className="text-xs text-muted-foreground">
-                还没有报告草稿。分析结果下方「更多 → 存为报告」可生成草稿，改完再归档进报告中心。
+                {t('sidePanel.reportsEmpty')}
               </p>
             )}
           </div>
 
           <div className="space-y-1.5">
-            <p className="text-[11px] text-muted-foreground">文档</p>
+            <p className="text-[11px] text-muted-foreground">{t('sidePanel.docs')}</p>
             {hasDocs ? (
               <ul className="space-y-1">
                 {artifacts.docs.map(d => (
@@ -245,49 +249,49 @@ export default function ConversationSidePanel({
                     <button
                       type="button"
                       className="min-w-0 flex-1 text-left"
-                      title={`打开编辑：${d.title}`}
+                      title={t('sidePanel.openDocTitle', { title: d.title })}
                       onClick={() => onOpenDoc(d.idx)}
                     >
                       <span className="block truncate text-xs font-medium">{d.title}</span>
                       <span className="block truncate text-[10px] text-muted-foreground">
-                        {formatStamp(d.updatedAt) && `更新于 ${formatStamp(d.updatedAt)}`}
-                        {d.revisions > 0 && ` · 已存 ${d.revisions} 次`}
+                        {formatStamp(d.updatedAt) && t('sidePanel.updatedAt', { time: formatStamp(d.updatedAt) })}
+                        {d.revisions > 0 && t('sidePanel.docRevisions', { count: d.revisions })}
                       </span>
                     </button>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="text-xs text-muted-foreground">还没有文档。回答下方「更多 → 转文档编辑」可把该轮结论转成可编辑文档。</p>
+              <p className="text-xs text-muted-foreground">{t('sidePanel.docsEmpty')}</p>
             )}
           </div>
 
           <div className="space-y-1.5">
             <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
-              <FolderOpen className="h-3 w-3" />会话工作区文件
+              <FolderOpen className="h-3 w-3" />{t('sidePanel.workspaceFiles')}
             </p>
             {conversationId ? (
               <SessionFilesPanel
                 workspaceId={workspaceId} conversationId={conversationId} refreshKey={filesRefreshKey}
               />
             ) : (
-              <p className="text-xs text-muted-foreground">发送消息后可在这里预览、下载与归档本轮产物。</p>
+              <p className="text-xs text-muted-foreground">{t('sidePanel.filesEmpty')}</p>
             )}
           </div>
         </section>
 
         {/* ── 关键知识 ── */}
         <section className="space-y-2">
-          <SectionTitle icon={Sparkles} title="关键知识" />
+          <SectionTitle icon={Sparkles} title={t('sidePanel.knowledge')} />
           {!hasKnowledge ? (
             <p className="text-xs text-muted-foreground">
-              本轮会话还没有可摘取的知识。助手检索口径、查目录或查知识库后，这里会列出用到的对象/指标/维度与出处。
+              {t('sidePanel.knowledgeEmpty')}
             </p>
           ) : (
             <>
               {knowledge.scopes.length > 0 && (
                 <div className="space-y-1.5">
-                  <p className="text-[11px] text-muted-foreground">本次口径</p>
+                  <p className="text-[11px] text-muted-foreground">{t('sidePanel.scopes')}</p>
                   <ul className="space-y-1.5">
                     {knowledge.scopes.map((s, i) => (
                       <ScopeRow key={`scope-${s.idx}-${i}`} card={s} onJump={onJumpToMessage} />
@@ -297,7 +301,7 @@ export default function ConversationSidePanel({
               )}
               {knowledge.citations.length > 0 && (
                 <div className="space-y-1.5">
-                  <p className="text-[11px] text-muted-foreground">知识引用出处</p>
+                  <p className="text-[11px] text-muted-foreground">{t('sidePanel.citations')}</p>
                   <ul className="space-y-1.5">
                     {knowledge.citations.map((ct, i) => (
                       <CitationRow key={`cit-${ct.idx}-${i}`} card={ct} onJump={onJumpToMessage} />
@@ -308,7 +312,7 @@ export default function ConversationSidePanel({
               {/* 截断不是“没有知识”：结果过长时结构化失败必须说出来（no-silent-degradation） */}
               {knowledge.unparsed > 0 && (
                 <p role="alert" className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-[11px] text-amber-700">
-                  有 {knowledge.unparsed} 段工具返回过长被截断，未能整理成卡片；完整内容在该轮的执行过程里查看。
+                  {t('sidePanel.unparsed', { count: knowledge.unparsed })}
                 </p>
               )}
             </>

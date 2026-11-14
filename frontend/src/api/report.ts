@@ -4,6 +4,7 @@
 // 正文不在详情响应里：adh_reports 只存对象 key，详情回「域名 + 签名」的短期直链，
 // 正文由浏览器直连对象存储取（fetchReportContent）。这样清单/详情都只搬元信息。
 import client from './client';
+import i18n from '@/i18n';
 
 /** 报告来源分型：scheduled/analysis=数据派生（须过权限快照，正文只读）；
  *  manual/conversation=内容型（人写或会话保存，可在线编辑）；
@@ -113,7 +114,7 @@ export function isDeletableReport(r: { source_type?: ReportSourceType }): boolea
 export async function listReports(workspaceId = 0): Promise<ReportSummary[]> {
   const { data } = await client.get('/reports', { params: { workspace_id: workspaceId, page_size: 200 } });
   const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : null;
-  if (!items) throw new Error('报告清单响应异常（非列表结构），请检查服务日志');
+  if (!items) throw new Error(i18n.t('report:api.listShapeError'));
   return items;
 }
 
@@ -135,19 +136,18 @@ export async function getReportDetail(reportId: number): Promise<ReportDetail> {
  * 把这两种混成"加载失败"会让人以为报告丢了。
  */
 export async function fetchReportContent(contentUrl?: string): Promise<string> {
-  if (!contentUrl) throw new Error('报告正文不可用：详情未返回正文地址');
+  if (!contentUrl) throw new Error(i18n.t('report:api.bodyUnavailable'));
   if (/^https?:\/\//i.test(contentUrl)) {
     let res: Response;
     try {
       res = await fetch(contentUrl, { method: 'GET' });
     } catch {
-      throw new Error('读取报告正文失败：无法直连对象存储。'
-        + '请检查网络，以及对象存储桶是否允许当前站点跨域 GET（CORS）。');
+      throw new Error(i18n.t('report:api.bodyFetchCors'));
     }
     if (!res.ok) {
       throw new Error(res.status === 403
-        ? '读取报告正文失败：对象存储签名已过期或无效，请刷新报告'
-        : `读取报告正文失败：对象存储返回 HTTP ${res.status}`);
+        ? i18n.t('report:api.bodyFetchExpired')
+        : i18n.t('report:api.bodyFetchHttp', { status: res.status }));
     }
     return res.text();
   }
@@ -283,8 +283,8 @@ export async function refreshReportStream(reportId: number, handlers: {
       const d = body?.detail ?? body?.message;
       if (typeof d === 'string') reason = d;
     } catch { /* 非 JSON 响应体（如网关错误页）：只剩状态码 */ }
-    throw new Error(reason ? `重新生成未能开始（${response.status}）：${reason}`
-                            : `重新生成未能开始（HTTP ${response.status}）`);
+    throw new Error(reason ? i18n.t('report:api.refreshStartFailedReason', { status: response.status, reason })
+                            : i18n.t('report:api.refreshStartFailed', { status: response.status }));
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -307,7 +307,7 @@ export async function refreshReportStream(reportId: number, handlers: {
         try {
           handlers.onEvent({ ...JSON.parse(dataBuffer), type: currentEvent || 'stage' });
         } catch {
-          console.warn('[report-refresh] 事件体解析失败，已跳过:', dataBuffer.slice(0, 120));
+          console.warn('[report-refresh] failed to parse event body, skipped:', dataBuffer.slice(0, 120));
         }
         currentEvent = '';
         dataBuffer = '';

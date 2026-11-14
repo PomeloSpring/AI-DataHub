@@ -15,6 +15,8 @@ vi.mock('../DashboardChart', () => ({
   ChartIcon: () => null,
   CHART_TYPES: [{ value: 'bar', label: '柱状图', icon: 'BarChart3', category: 'basic' }],
   CHART_TYPE_CATEGORIES: [{ key: 'basic', label: '基础' }],
+  chartTypeLabel: (v: string) => (v === 'bar' ? '柱状图' : v),
+  chartCategoryLabel: (k: string) => (k === 'basic' ? '基础' : k),
 }));
 vi.mock('../MapHeatmap', () => ({ default: () => null, detectGeoColumns: () => ({ nameMatched: false }) }));
 vi.mock('../SqlCard', () => ({ default: () => null }));

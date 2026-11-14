@@ -3,9 +3,10 @@
  * 本组件在该位置渲染卡片并挂载设计面板(不常驻、不集中列出,随消息持久化与回放)。
  */
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import DashboardDesignPanel from './asbot/DashboardDesignPanel';
-import { DESIGN_STATUS, getDesign, type DashboardDesign } from '@/api/dashboardDesign';
+import { designStatusLabel, getDesign, type DashboardDesign } from '@/api/dashboardDesign';
 
 export default function DesignCard({
   designId,
@@ -16,6 +17,7 @@ export default function DesignCard({
   /** 面板「返回对话继续完善」时回传的追问文本 */
   onContinue?: (text: string) => void;
 }) {
+  const { t } = useTranslation('chat');
   const [design, setDesign] = useState<DashboardDesign | null>(null);
   const [error, setError] = useState('');
   const [panelOpen, setPanelOpen] = useState(false);
@@ -27,9 +29,9 @@ export default function DesignCard({
     } catch {
       // 设计不可用须显式可见(可能已删除/无权),不静默消失也不裸显 ID
       setDesign(null);
-      setError('设计卡片不可用（可能已被删除或无权限）');
+      setError(t('designCard.unavailable'));
     }
-  }, [designId]);
+  }, [designId, t]);
 
   useEffect(() => {
     void reload();
@@ -41,17 +43,17 @@ export default function DesignCard({
         {error ? (
           <p className="text-xs text-muted-foreground" title={designId}>{error}</p>
         ) : !design ? (
-          <p className="text-xs text-muted-foreground">设计卡片加载中…</p>
+          <p className="text-xs text-muted-foreground">{t('designCard.loading')}</p>
         ) : (
           <>
-            <p className="text-sm font-medium">仪表盘设计 · {design.name || design.request.slice(0, 30)}</p>
+            <p className="text-sm font-medium">{t('designCard.title', { name: design.name || design.request.slice(0, 30) })}</p>
             <p className="text-xs text-muted-foreground">
-              {DESIGN_STATUS[design.status] || design.status} · 版本 {design.version}
+              {t('designCard.statusVersion', { status: designStatusLabel(design.status), version: design.version })}
             </p>
             <p className="text-xs">
-              {design.selection ? `业务域：${design.selection.datasource_name}` : '请先选择目标仪表盘、业务范围和知识库'}
+              {design.selection ? t('designCard.selection', { name: design.selection.datasource_name }) : t('designCard.selectionEmpty')}
             </p>
-            <Button size="sm" variant="outline" onClick={() => setPanelOpen(true)}>打开设计面板</Button>
+            <Button size="sm" variant="outline" onClick={() => setPanelOpen(true)}>{t('designCard.openPanel')}</Button>
           </>
         )}
       </div>

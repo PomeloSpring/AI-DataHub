@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Folder, Settings, Check, ChevronDown } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -28,6 +29,7 @@ interface WorkspaceSelectorV2Props {
 }
 
 export default function WorkspaceSelectorV2({ className }: WorkspaceSelectorV2Props) {
+  const { t } = useTranslation(['workspace', 'common']);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [currentWorkspace, setCurrentWorkspace] = useState<Workspace | null>(null);
   const [, setLoading] = useState(false);
@@ -81,7 +83,7 @@ export default function WorkspaceSelectorV2({ className }: WorkspaceSelectorV2Pr
     return (
       <Button variant="outline" size="sm" className={className} disabled>
         <Folder className="h-4 w-4 mr-1.5" />
-        加载中...
+        {t('common:state.loading')}
       </Button>
     );
   }
@@ -119,7 +121,7 @@ export default function WorkspaceSelectorV2({ className }: WorkspaceSelectorV2Pr
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={handleManageWorkspaces}>
           <Settings className="h-4 w-4 mr-2" />
-          管理工作空间
+          {t('selector.manage')}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

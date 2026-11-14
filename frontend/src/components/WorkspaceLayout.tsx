@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation, useParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import {
   MessageSquare, LogOut, Menu, ChevronLeft, ChevronRight, X, ChevronDown, Palette, Folder,
   UserCircle, Brain, Check, ArrowRight, Clock, Archive, ChartNoAxesCombined, Trash2, Compass
@@ -8,7 +9,7 @@ import * as LucideIcons from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -27,6 +28,7 @@ import { TOUR, navTour } from '@/lib/onboarding/guides';
 import { useGuideStore } from '@/stores/guideStore';
 import { WorkspaceDeleteDialog } from './WorkspaceDeleteDialog';
 import ThemeMenuItems from './ThemeMenuItems';
+import LanguageMenu from './LanguageMenu';
 
 /** 将路由 key 转换为 menu_key: '/ws/3/chat' → 'workspace:chat' */
 function toMenuKey(routeKey: string): string {
@@ -39,6 +41,7 @@ function toMenuKey(routeKey: string): string {
 export function WorkspaceMenuItem({ ws, isCurrent, onSwitch, onAskDelete }: {
   ws: Workspace; isCurrent: boolean; onSwitch: () => void; onAskDelete: () => void;
 }) {
+  const { t } = useTranslation('workspace');
   return (
     <DropdownMenuItem onClick={onSwitch} className="flex items-center gap-2">
       <span>{ws.icon}</span>
@@ -51,16 +54,16 @@ export function WorkspaceMenuItem({ ws, isCurrent, onSwitch, onAskDelete }: {
       {isCurrent && <Check className="h-4 w-4 shrink-0 text-primary" />}
       {ws.is_default ? (
         <span
-          title="默认工作空间不可删除，仅可删除自行创建的自定义工作空间"
+          title={t('selector.defaultNoDelete')}
           className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground"
         >
-          默认
+          {t('selector.defaultBadge')}
         </span>
       ) : (
         <button
           type="button"
-          aria-label={`删除工作空间 ${ws.name}`}
-          title="删除工作空间"
+          aria-label={t('selector.deleteAria', { name: ws.name })}
+          title={t('selector.deleteTitle')}
           onPointerDown={e => e.preventDefault()}
           onClick={e => { e.preventDefault(); e.stopPropagation(); onAskDelete(); }}
           className="shrink-0 p-1 rounded text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10 transition-colors"
@@ -73,6 +76,7 @@ export function WorkspaceMenuItem({ ws, isCurrent, onSwitch, onAskDelete }: {
 }
 
 function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collapsed: boolean; module?: 'workspace' | 'ask' }) {
+  const { t } = useTranslation('workspace');
   const { workspaces, currentWorkspaceId, loaded, setWorkspace, loadWorkspaces } = useWorkspaceStore();
   const navigate = useNavigate();
   const { workspaceId } = useParams();
@@ -138,7 +142,7 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
       <>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button aria-label="切换工作空间" data-tour={TOUR.wsSelector} className="w-full flex items-center justify-center py-3 hover:bg-sidebar-accent/50 transition-colors">
+            <button aria-label={t('shell.switchAria')} data-tour={TOUR.wsSelector} className="w-full flex items-center justify-center py-3 hover:bg-sidebar-accent/50 transition-colors">
               <span className="text-lg">{currentWs?.icon || '📊'}</span>
             </button>
           </DropdownMenuTrigger>
@@ -160,11 +164,11 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button aria-label="切换工作空间" data-tour={TOUR.wsSelector} className={`w-full min-w-0 flex items-center gap-2 px-3 py-2 hover:bg-muted/50 transition-colors ${module === 'workspace' ? 'border-b border-sidebar-border' : 'rounded-md'}`}>
+          <button aria-label={t('shell.switchAria')} data-tour={TOUR.wsSelector} className={`w-full min-w-0 flex items-center gap-2 px-3 py-2 hover:bg-muted/50 transition-colors ${module === 'workspace' ? 'border-b border-sidebar-border' : 'rounded-md'}`}>
             <span className="text-lg flex-shrink-0">{currentWs?.icon || '📊'}</span>
             <div className="flex-1 min-w-0 text-left">
               <div className="text-sm font-medium truncate text-sidebar-foreground">
-                {currentWs?.name || '选择工作空间'}
+                {currentWs?.name || t('shell.selectPlaceholder')}
               </div>
             </div>
             <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 text-sidebar-foreground/50" />
@@ -187,6 +191,8 @@ function WorkspaceSelectorSidebar({ collapsed, module = 'workspace' }: { collaps
 // ── Workspace Layout ──────────────────────────────────────────────
 
 export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'workspace' | 'ask' }) {
+  const { t } = useTranslation('workspace');
+  const { t: tMenu } = useTranslation('menu');
   const independent = module !== 'workspace';
   const [collapsed, setCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -213,19 +219,22 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
   // 权限清单未就绪时不渲染真实菜单（isMenuAllowed 未加载时 fail-open，
   // 会把无权限的分组先画出来再抽走 → 菜单闪一下消失），改为同高骨架
   const menuAccess = useMenuAccess();
+  // 菜单文案多语言：label 在渲染期从 menu 语言包取（切语言即时重渲染）。
+  // key 与 adh_menu_registry.menu_key 一一对应（冒号落点号，见 i18n.menuI18nKey）；
+  // 显隐反查仍用原 menu_key（toMenuKey + 权限码口径不动）。
   const menuItems = menuAccess.ready ? pruneEmptySections([
-    { section: '数据分析' },
-    { key: `/ws/${workspaceId}/dashboards`, icon: ChartNoAxesCombined, label: '数据看板' },
-    { key: `/ws/${workspaceId}/chat`, icon: MessageSquare, label: '智能问数' },
-    { key: `/ws/${workspaceId}/reports`, icon: Folder, label: '报告中心' },
+    { section: tMenu('section.analytics') },
+    { key: `/ws/${workspaceId}/dashboards`, icon: ChartNoAxesCombined, label: tMenu('workspace.dashboards') },
+    { key: `/ws/${workspaceId}/chat`, icon: MessageSquare, label: tMenu('workspace.chat') },
+    { key: `/ws/${workspaceId}/reports`, icon: Folder, label: tMenu('workspace.reports') },
     /* 决策建议不在工作空间侧栏单独占一项（2026-11-12 拍板）：不是每个问题都需要决策，
        把它做成一级入口会暗示“每轮都该看建议”。消费入口仍是 Chat 建议卡、看板控件
        与通知里的实例链接；/ws/:id/decisions 路由保留（那些链接的落地面，菜单码
        workspace:decisions 同步下架，见 decision_tree_migration.sql）。配置面在数据中台。 */
-    { section: '云空间' },
-    { key: `/ws/${workspaceId}/assets`, icon: Archive, label: '资产清单' },
-    { section: '自动化' },
-    { key: `/ws/${workspaceId}/scheduled`, icon: Clock, label: '任务调度' },
+    { section: tMenu('section.cloud') },
+    { key: `/ws/${workspaceId}/assets`, icon: Archive, label: tMenu('workspace.assets') },
+    { section: tMenu('section.automation') },
+    { key: `/ws/${workspaceId}/scheduled`, icon: Clock, label: tMenu('workspace.scheduled') },
   ].filter(item => !('key' in item) || menuAccess.allowed(toMenuKey((item as any).key)))) : [];
 
   const currentPath = location.pathname;
@@ -258,7 +267,7 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
         {/* Menu — min-h-0 allows flex child to shrink below content size, enabling scroll */}
         <div className="flex-1 min-h-0 overflow-hidden">
           <ScrollArea className="h-full py-2">
-          <nav className="space-y-1 px-2" role="navigation" aria-label="工作空间导航">
+          <nav className="space-y-1 px-2" role="navigation" aria-label={t('shell.navAria')}>
             {/* Static menu items */}
             {!menuAccess.ready && <SidebarMenuSkeleton rows={6} collapsed={collapsed} />}
             {menuItems.map((item, idx) => {
@@ -357,7 +366,7 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
                     className="w-full flex items-center gap-3 px-4 py-3 rounded-md text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent/50"
                   >
                     <LucideIcons.Settings className="h-5 w-5 flex-shrink-0" />
-                    <span>系统配置</span>
+                    <span>{t('shell.systemConfig')}</span>
                     <ArrowRight className="h-4 w-4 ml-auto opacity-50" />
                   </button>
                 )}
@@ -391,7 +400,7 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
             {independent && <>
               <span className="hidden shrink-0 font-semibold sm:inline">{brand.app_name || DEFAULT_APP_NAME}</span>
               <span className="hidden text-muted-foreground sm:inline">/</span>
-              <span className="shrink-0 text-sm font-medium">工作空间</span>
+              <span className="shrink-0 text-sm font-medium">{t('shell.title')}</span>
               <div className="min-w-0 max-w-56"><WorkspaceSelectorSidebar collapsed={false} module={module} /></div>
             </>}
             {!independent && currentMenu && <>
@@ -418,22 +427,25 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
               <Tooltip>
                 <TooltipTrigger asChild>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label="主题风格" data-tour={TOUR.headerTheme}>
+                    <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label={t('shell.themeAria')} data-tour={TOUR.headerTheme}>
                       <Palette className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
                 </TooltipTrigger>
-                <TooltipContent>主题风格</TooltipContent>
+                <TooltipContent>{t('shell.themeTooltip')}</TooltipContent>
               </Tooltip>
               <DropdownMenuContent align="end" className="w-48">
                 <ThemeMenuItems />
               </DropdownMenuContent>
             </DropdownMenu>
 
+            {/* 语言切换：顶栏常驻（用户拍板 2026-11-14 从用户下拉移入），与主题按钮并排 */}
+            <LanguageMenu />
+
             {/* User menu */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button aria-label="用户菜单" data-tour={TOUR.headerUser} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
+                <button aria-label={t('shell.userMenuAria')} data-tour={TOUR.headerUser} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
                   <Avatar className="h-6 w-6">
                     <AvatarFallback className="text-xs">{user?.username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
                   </Avatar>
@@ -444,21 +456,22 @@ export default function WorkspaceLayout({ module = 'workspace' }: { module?: 'wo
                 {/* 手动重看入口: 不受 guide:all 静音影响, 永远可用 */}
                 <DropdownMenuItem onClick={() => startGuide('welcome')}>
                   <Compass className="h-4 w-4 mr-2" />
-                  新手引导
+                  {t('shell.user.guide')}
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => navigate(module === 'workspace' ? `/ws/${workspaceId}/profile` : `/${module}/${workspaceId}/profile`)}>
                   <UserCircle className="h-4 w-4 mr-2" />
-                  个人设置
+                  {t('shell.user.profile')}
                 </DropdownMenuItem>
                 {/* 记忆入口: AI 在对话里说"已记住"后, 用户必须能在**同一场景**核对/删除,
                     而不是只能去系统配置页或手输 URL */}
                 <DropdownMenuItem onClick={() => navigate(module === 'workspace' ? `/ws/${workspaceId}/memory` : `/${module}/${workspaceId}/memory`)}>
                   <Brain className="h-4 w-4 mr-2" />
-                  我的记忆
+                  {t('shell.user.memory')}
                 </DropdownMenuItem>
+                <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => { logout(); navigate('/login'); }}>
                   <LogOut className="h-4 w-4 mr-2" />
-                  退出登录
+                  {t('shell.user.logout')}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

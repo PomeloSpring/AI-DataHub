@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { fetchVisibleGroups, type GroupView } from '@/lib/dashboardCatalog';
 import { groupEntryBoard } from '@/components/DashboardCatalogCards';
@@ -11,6 +12,7 @@ import { groupEntryBoard } from '@/components/DashboardCatalogCards';
 // 保留这条路由是为了可分享/可收藏的「打开某个组合」链接（含旧域 /dashboards/<groupId> 的重定向）。
 
 export default function WorkspaceDashboardGroup() {
+  const { t } = useTranslation(['dashboard', 'common']);
   const { workspaceId, groupId } = useParams();
   const navigate = useNavigate();
   const [groups, setGroups] = useState<GroupView[] | null>(null);
@@ -24,9 +26,9 @@ export default function WorkspaceDashboardGroup() {
     try {
       setGroups(await fetchVisibleGroups());
     } catch {
-      setError('加载组合内容失败，请重试');
+      setError(t('browse.groupLoadFailed'));
     }
-  }, []);
+  }, [t]);
   useEffect(() => { void load(); }, [load]);
 
   const group = useMemo(() => (groups || []).find(g => g.id === id) || null, [groups, id]);
@@ -36,22 +38,22 @@ export default function WorkspaceDashboardGroup() {
   if (!error && group && entry)
     return <Navigate to={`/ws/${workspaceId}/dashboards/${entry.id}`} replace />;
 
-  const reason = error ? '加载组合内容失败'
-    : groups && !group ? '这个组合不存在，或你已无权查看'
-      : groups && group && !entry ? `组合「${group.name}」里还没有可看的看板`
-        : '正在打开组合…';
+  const reason = error ? t('browse.reasonLoadFailed')
+    : groups && !group ? t('browse.reasonMissing')
+      : groups && group && !entry ? t('browse.reasonEmpty', { name: group.name })
+        : t('browse.reasonOpening');
 
   return <div className="mx-auto max-w-[1800px] space-y-4 p-5 md:p-8">
     <div role={error || groups ? 'alert' : undefined} className="rounded-xl border border-dashed py-20 text-center">
       <p className="font-medium">{reason}</p>
       <p className="mt-2 text-sm text-muted-foreground">
-        {error ? '可重试加载，或返回组合清单换个组合进入。'
-          : groups ? '组合可能已被下架或从你的角色收回，也可由管理员在「看板管理」中启用/编排看板。'
+        {error ? t('browse.hintError')
+          : groups ? t('browse.hintMissing')
             : ''}
       </p>
       <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-        <Button size="sm" variant="outline" onClick={() => navigate(listPath)}>返回组合清单</Button>
-        {!!error && <Button size="sm" onClick={() => void load()}>重试</Button>}
+        <Button size="sm" variant="outline" onClick={() => navigate(listPath)}>{t('browse.backToGroups')}</Button>
+        {!!error && <Button size="sm" onClick={() => void load()}>{t('common:action.retry')}</Button>}
       </div>
     </div>
   </div>;

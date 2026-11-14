@@ -15,6 +15,8 @@
 // 如实告知，不能让人以为“没配场景”。空栏仍灰显不可点、不计入 ←→ 步数（不当死开关）。
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Sparkles, Clock, Terminal, Layers } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 
 export interface SlashSkillOption { name: string; display_name: string; description: string }
 export interface SlashTaskOption { id: number; name: string; question: string; cron_expression: string }
@@ -51,10 +53,13 @@ export type SlashItem =
   | { kind: 'task'; id: string; label: string; description: string; question: string }
   | { kind: 'command'; id: string; label: string; description: string; command: string; action: string };
 
-export interface SlashGroup { id: SlashGroupId; label: string; items: SlashItem[] }
+export interface SlashGroup { id: SlashGroupId; labelKey: SlashGroupLabelKey; items: SlashItem[] }
 
-const GROUP_LABEL: Record<SlashGroupId, string> = {
-  recent: '最近使用', scene: '场景', skill: '技能', task: '定时任务', command: '指令',
+type SlashGroupLabelKey = 'slash.groupRecent' | 'slash.groupScene' | 'slash.groupSkill' | 'slash.groupTask' | 'slash.groupCommand';
+
+/** 分栏标题只存 key：文案在渲染期经 t() 取（模块顶层常量会冻结语言） */
+const GROUP_LABEL_KEYS: Record<SlashGroupId, SlashGroupLabelKey> = {
+  recent: 'slash.groupRecent', scene: 'slash.groupScene', skill: 'slash.groupSkill', task: 'slash.groupTask', command: 'slash.groupCommand',
 };
 /** 固定类别（无论有无候选都出栏位，用户看到的结构不随配置漂移）+ 最近使用打头。 */
 const FIXED_GROUPS: SlashKind[] = ['scene', 'skill', 'task', 'command'];
@@ -62,16 +67,17 @@ const GROUP_ORDER: SlashGroupId[] = ['recent', 'scene', 'skill', 'task', 'comman
 /** 「最近使用」栏只给一眼看完的量：太长就失去"快捷"的意义。 */
 const RECENT_LIMIT = 8;
 
-/** 类别前缀别名：`/` 后先报一个类名就只列那一类（如 `/技能 数据`）。 */
+/** 类别前缀别名：`/` 后先报一个类名就只列那一类（如 `/技能 数据`）。
+ *  中文别名是输入法解析契约（不是界面文案），用 Unicode 转义保留，不随语言切换变化。 */
 const SCOPE_ALIASES: Record<string, SlashGroupId> = {
-  recent: 'recent', 最近: 'recent', 最近使用: 'recent',
-  scene: 'scene', scenes: 'scene', 场景: 'scene',
-  skill: 'skill', skills: 'skill', 技能: 'skill',
-  command: 'command', commands: 'command', 指令: 'command', 命令: 'command',
-  task: 'task', tasks: 'task', 任务: 'task', 定时任务: 'task',
+  recent: 'recent', '\u6700\u8fd1': 'recent', '\u6700\u8fd1\u4f7f\u7528': 'recent',
+  scene: 'scene', scenes: 'scene', '\u573a\u666f': 'scene',
+  skill: 'skill', skills: 'skill', '\u6280\u80fd': 'skill',
+  command: 'command', commands: 'command', '\u6307\u4ee4': 'command', '\u547d\u4ee4': 'command',
+  task: 'task', tasks: 'task', '\u4efb\u52a1': 'task', '\u5b9a\u65f6\u4efb\u52a1': 'task',
 };
-/** 底行与空态里给用户的用法提示（与 SCOPE_ALIASES 同源，不另写一份文案）。 */
-export const SCOPE_HINT = '/场景 /技能 /任务 /指令';
+/** 底行与空态里给用户的用法提示（与 SCOPE_ALIASES 同源）；调用期取当前语言 */
+export const scopeHint = (): string => i18n.t('chat:slash.scopeHint');
 
 /**
  * `/` 的等价触发符集合（均为单字符，故片段起点就是「触发符下标 + 1」）。
@@ -81,11 +87,10 @@ export const SCOPE_HINT = '/场景 /技能 /任务 /指令';
  * 输入法——这是本功能最常见的流失点，故三者同权。
  */
 export const SLASH_TRIGGERS = ['/', '、', '／'];
-/** 写给用户看的触发符写法（与 SLASH_TRIGGERS 同源，别处不得再各自硬编码 '/'）。 */
-export const SLASH_TRIGGER_HINT = '/ 或 、';
+/** 写给用户看的触发符写法（与 SLASH_TRIGGERS 同源，别处不得再各自硬编码 '/'）；调用期取当前语言 */
+export const slashTriggerHint = (): string => i18n.t('chat:slash.triggerHint');
 /** 底行悬停说明：为什么要认顿号/全角斜杠（文案要短，原因给 title，不靠截断后的尾句）。 */
-export const SLASH_TRIGGER_NOTE =
-  '中文输入法（中文标点模式）下按 / 键出的是「、」、全角模式下是「／」，与半角 / 等价，无需切换输入法';
+export const slashTriggerNote = (): string => i18n.t('chat:slash.triggerNote');
 
 /** 光标前最近一个触发符的下标（-1 = 没有）。多个触发符取最靠后的，「最后输入的」才算本次检索。 */
 function lastTriggerAt(before: string): number {
@@ -229,9 +234,9 @@ export function buildSlashGroups(
     .slice(0, RECENT_LIMIT);
 
   const groups: SlashGroup[] = [];
-  if (recent.length) groups.push({ id: 'recent', label: GROUP_LABEL.recent, items: recent });
+  if (recent.length) groups.push({ id: 'recent', labelKey: GROUP_LABEL_KEYS.recent, items: recent });
   // 固定栏位无论有无候选都出栏（空栏由组件灰显），避免“配了才多一个标签”的结构漂移
-  FIXED_GROUPS.forEach(k => groups.push({ id: k, label: GROUP_LABEL[k], items: sortByUsage(byKind[k], usage) }));
+  FIXED_GROUPS.forEach(k => groups.push({ id: k, labelKey: GROUP_LABEL_KEYS[k], items: sortByUsage(byKind[k], usage) }));
   const shown = scope ? groups.filter(g => g.id === scope) : groups;
   return GROUP_ORDER
     .map(id => shown.find(g => g.id === id))
@@ -335,6 +340,7 @@ export default function SlashCommandMenu({ groups, tab, activeIndex, onHover, on
   /** 场景栏的补充说明（如“另有 N 个场景因主体无权限未列出”），不静默少返 */
   sceneNote?: string;
 }) {
+  const { t } = useTranslation('chat');
   // 定位壳只负责锚位（卡片正上方、与卡片同宽）；限高交给 ScrollList，
   // 顶部类别栏与底部提示行固定在滚动区外，候选再长也看不丢这条生命线。
   const shell = 'absolute bottom-full left-0 right-0 z-30 mb-2 rounded-lg border bg-card shadow-lg';
@@ -345,10 +351,11 @@ export default function SlashCommandMenu({ groups, tab, activeIndex, onHover, on
   if (!groups.length || groups.every(g => !g.items.length)) {
     // 固定栏位照出，但一栏内容都没有时给一行话，而不是只留一排灰标签
     const { scope, keyword } = parseSlashQuery(query || '');
-    const where = scope ? `${GROUP_LABEL[scope]}类里` : '';
+    const where = scope ? t('slash.emptyWhere', { scope: t(GROUP_LABEL_KEYS[scope]) }) : '';
+    const kw = keyword ? t('slash.emptyKwQuoted', { kw: keyword }) : '';
     return (
       <div className={`${shell} px-3.5 py-2.5 text-xs text-muted-foreground`}>
-        {where}没有匹配{keyword ? `「${keyword}」` : ''}的候选
+        {keyword ? t('slash.emptyKw', { where, kw }) : t('slash.empty', { where })}
       </div>
     );
   }
@@ -356,7 +363,7 @@ export default function SlashCommandMenu({ groups, tab, activeIndex, onHover, on
   const navigable = groups.filter(g => g.items.length).length;
   return (
     <div className={shell}>
-      <div role="tablist" aria-label="候选类别" className="flex items-center gap-5 border-b px-3.5 pt-2">
+      <div role="tablist" aria-label={t('slash.tabAria')} className="flex items-center gap-5 border-b px-3.5 pt-2">
         {groups.map((g, i) => {
           const empty = !g.items.length;
           return (
@@ -367,14 +374,14 @@ export default function SlashCommandMenu({ groups, tab, activeIndex, onHover, on
               aria-selected={i === tab && !empty}
               aria-disabled={empty || undefined}
               disabled={empty}
-              title={empty ? `${g.label}暂无可用候选` : undefined}
+              title={empty ? t('slash.tabEmpty', { label: t(g.labelKey) }) : undefined}
               onClick={() => onTabChange(i)}
               className={`relative pb-1.5 text-xs transition-colors ${
                 empty ? 'cursor-not-allowed text-muted-foreground/45' : 'text-muted-foreground hover:text-foreground'
               }`}
             >
               <span className={i === tab && !empty ? 'font-semibold text-foreground' : undefined}>
-                {g.label}
+                {t(g.labelKey)}
               </span>
               {i === tab && !empty && (
                 <span className="absolute bottom-1 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-foreground" />
@@ -412,10 +419,10 @@ export default function SlashCommandMenu({ groups, tab, activeIndex, onHover, on
         </div>
       </ScrollList>
       <div className="flex items-center gap-4 border-t bg-card px-3.5 py-1.5 text-[11px] text-muted-foreground/90">
-        <span className="flex items-center gap-1.5"><Key>↑↓</Key> 选择</span>
-        {navigable > 1 && <span className="flex items-center gap-1.5"><Key>←→</Key> 切换类别</span>}
-        <span className="flex items-center gap-1.5"><Key>Enter</Key> / <Key>Tab</Key> 添加</span>
-        <span className="ml-auto flex items-center gap-1.5"><Key>Esc</Key> 退出</span>
+        <span className="flex items-center gap-1.5"><Key>↑↓</Key> {t('slash.keySelect')}</span>
+        {navigable > 1 && <span className="flex items-center gap-1.5"><Key>←→</Key> {t('slash.keySwitch')}</span>}
+        <span className="flex items-center gap-1.5"><Key>Enter</Key> / <Key>Tab</Key> {t('slash.keyAdd')}</span>
+        <span className="ml-auto flex items-center gap-1.5"><Key>Esc</Key> {t('slash.keyExit')}</span>
       </div>
     </div>
   );

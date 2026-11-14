@@ -11,6 +11,7 @@ import { DEFAULT_APP_NAME } from '@/lib/brand';
 import BrandLogo from '@/components/BrandLogo';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import SectionSwitcher from '@/components/SectionSwitcher';
+import LanguageMenu from '@/components/LanguageMenu';
 import ReleaseNotesButton from '@/components/ReleaseNotesButton';
 import MarkdownWithCharts from '@/components/MarkdownWithCharts';
 import HtmlArticle from '@/components/HtmlArticle';
@@ -156,6 +157,8 @@ export default function ReadArticle() {
           <div className="flex items-center gap-1.5">
             <ReleaseNotesButton />
             <SectionSwitcher current="home" />
+            {/* 语言切换：顶栏常驻，不随模块切换显隐（与四套布局同口径） */}
+            <LanguageMenu />
           </div>
         </div>
       </header>

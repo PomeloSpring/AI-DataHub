@@ -31,6 +31,7 @@ import CompanyProfile from './home/CompanyProfile';
 import type { RailStats } from './home/ActionRail';
 import { stashQuestion } from './home/shared';
 import ThemeMenuItems from '@/components/ThemeMenuItems';
+import LanguageMenu from '@/components/LanguageMenu';
 
 const ROLE_LABELS: Record<string, string> = {
   admin: '管理员',
@@ -226,6 +227,8 @@ export default function Home() {
               <ThemeMenuItems />
             </DropdownMenuContent>
           </DropdownMenu>
+          {/* 语言切换：顶栏常驻，不随模块切换显隐（与四套布局同口径） */}
+          <LanguageMenu />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button aria-label="用户菜单" data-tour={TOUR.headerUser} className="flex min-h-[36px] items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-muted">

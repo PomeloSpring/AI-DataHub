@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -25,22 +26,29 @@ import {
   cleanupStaleLogs,
   type ScheduledLog,
 } from '@/api/scheduledTask';
+import i18n from '@/i18n';
 
-const STATUS_MAP: Record<string, { label: string; color: string }> = {
-  success: { label: '成功', color: 'bg-green-500/10 text-green-500 border-green-500/20' },
-  partial: { label: '部分成功', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
-  queued: { label: '排队中', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
-  failed: { label: '失败', color: 'bg-red-500/10 text-red-500 border-red-500/20' },
-  running: { label: '运行中', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
-  timeout: { label: '超时', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
-  cancelled: { label: '已取消', color: 'bg-gray-500/10 text-gray-500 border-gray-500/20' },
+// 状态色板与任务清单同源；文案渲染期 t() 解析（与 ScheduledTasks 同一份 key）
+const STATUS_MAP: Record<string, { labelKey: string; color: string }> = {
+  success: { labelKey: 'success', color: 'bg-green-500/10 text-green-500 border-green-500/20' },
+  partial: { labelKey: 'partial', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
+  queued: { labelKey: 'queued', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
+  failed: { labelKey: 'failed', color: 'bg-red-500/10 text-red-500 border-red-500/20' },
+  running: { labelKey: 'running', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
+  timeout: { labelKey: 'timeout', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
+  cancelled: { labelKey: 'cancelled', color: 'bg-gray-500/10 text-gray-500 border-gray-500/20' },
 };
 
-const TRIGGER_MAP: Record<string, string> = {
-  cron: '定时触发',
-  manual: '手动触发',
-  retry: '重试',
+const TRIGGER_KEYS: Record<string, string> = {
+  cron: 'cron',
+  manual: 'manual',
+  retry: 'retry',
 };
+
+const statusLabel = (s: string): string =>
+  STATUS_MAP[s] ? i18n.t(`workspace:schedule.status.${STATUS_MAP[s].labelKey}` as 'workspace:schedule.status.success') : s;
+const triggerLabel = (s: string): string =>
+  TRIGGER_KEYS[s] ? i18n.t(`workspace:schedule.logs.trigger.${TRIGGER_KEYS[s]}` as 'workspace:schedule.logs.trigger.cron') : s;
 
 interface Props {
   taskId: number;
@@ -48,6 +56,7 @@ interface Props {
 }
 
 export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
+  const { t } = useTranslation(['workspace', 'common']);
   const [logs, setLogs] = useState<ScheduledLog[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -68,7 +77,7 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
       setLogs(res.items);
       setTotal(res.total);
     } catch {
-      toast.error('加载执行历史失败');
+      toast.error(i18n.t('workspace:schedule.logs.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -86,10 +95,10 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
   const handleCleanup = async () => {
     try {
       const res = await cleanupScheduledLogs(30);
-      toast.success(`已清理 ${res.deleted} 条过期日志`);
+      toast.success(t('schedule.logs.cleanedLogs', { count: res.deleted }));
       loadLogs();
     } catch {
-      toast.error('清理失败');
+      toast.error(t('schedule.logs.cleanupFailed'));
     }
   };
 
@@ -99,32 +108,32 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="sm" onClick={onBack}>
             <ArrowLeft className="w-4 h-4 mr-1" />
-            返回
+            {t('common:action.back')}
           </Button>
           <div>
-            <h1 className="text-2xl font-bold">执行历史</h1>
-            <p className="text-muted-foreground text-sm">任务 #{taskId}</p>
+            <h1 className="text-2xl font-bold">{t('schedule.logsTitle')}</h1>
+            <p className="text-muted-foreground text-sm">{t('schedule.logs.taskRef', { id: taskId })}</p>
           </div>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={loadLogs}>
             <RefreshCw className="w-4 h-4 mr-1" />
-            刷新
+            {t('common:action.refresh')}
           </Button>
           <Button variant="outline" size="sm" onClick={handleCleanup}>
             <Trash2 className="w-4 h-4 mr-1" />
-            清理30天前
+            {t('schedule.logs.cleanupOld')}
           </Button>
           <Button variant="outline" size="sm" onClick={async () => {
             try {
               const res = await cleanupStaleLogs(10);
-              toast.success(`已清理 ${res.cleaned} 条超时任务`);
+              toast.success(t('schedule.logs.cleanedStale', { count: res.cleaned }));
               loadLogs();
               loadStats();
-            } catch { toast.error('清理失败'); }
+            } catch { toast.error(t('schedule.logs.cleanupFailed')); }
           }}>
             <Clock className="w-4 h-4 mr-1" />
-            清理超时
+            {t('schedule.logs.cleanupStale')}
           </Button>
         </div>
       </div>
@@ -134,23 +143,23 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
         <div className="grid grid-cols-5 gap-3">
           <div className="border rounded-lg p-3 text-center">
             <div className="text-2xl font-bold">{stats.total_runs}</div>
-            <div className="text-xs text-muted-foreground">总执行次数</div>
+            <div className="text-xs text-muted-foreground">{t('schedule.logs.stat.total')}</div>
           </div>
           <div className="border rounded-lg p-3 text-center">
             <div className="text-2xl font-bold text-green-500">{stats.success_runs}</div>
-            <div className="text-xs text-muted-foreground">成功</div>
+            <div className="text-xs text-muted-foreground">{t('schedule.status.success')}</div>
           </div>
           <div className="border rounded-lg p-3 text-center">
             <div className="text-2xl font-bold text-red-500">{stats.failed_runs}</div>
-            <div className="text-xs text-muted-foreground">失败</div>
+            <div className="text-xs text-muted-foreground">{t('schedule.status.failed')}</div>
           </div>
           <div className="border rounded-lg p-3 text-center">
             <div className="text-2xl font-bold">{stats.success_rate}%</div>
-            <div className="text-xs text-muted-foreground">成功率</div>
+            <div className="text-xs text-muted-foreground">{t('schedule.logs.stat.rate')}</div>
           </div>
           <div className="border rounded-lg p-3 text-center">
             <div className="text-2xl font-bold">{(stats.avg_elapsed_ms / 1000).toFixed(1)}s</div>
-            <div className="text-xs text-muted-foreground">平均耗时</div>
+            <div className="text-xs text-muted-foreground">{t('schedule.logs.stat.avg')}</div>
           </div>
         </div>
       )}
@@ -159,17 +168,17 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
       <div className="flex items-center gap-2">
         <Select value={statusFilter || 'all'} onValueChange={v => { setStatusFilter(v === 'all' ? '' : v); setPage(1); }}>
           <SelectTrigger className="w-[150px]">
-            <SelectValue placeholder="全部状态" />
+            <SelectValue placeholder={t('schedule.logs.allStatus')} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">全部状态</SelectItem>
-            <SelectItem value="success">成功</SelectItem>
-            <SelectItem value="partial">部分成功</SelectItem>
-            <SelectItem value="queued">排队中</SelectItem>
-            <SelectItem value="cancelled">已取消</SelectItem>
-            <SelectItem value="failed">失败</SelectItem>
-            <SelectItem value="running">运行中</SelectItem>
-            <SelectItem value="timeout">超时</SelectItem>
+            <SelectItem value="all">{t('schedule.logs.allStatus')}</SelectItem>
+            <SelectItem value="success">{t('schedule.status.success')}</SelectItem>
+            <SelectItem value="partial">{t('schedule.status.partial')}</SelectItem>
+            <SelectItem value="queued">{t('schedule.status.queued')}</SelectItem>
+            <SelectItem value="cancelled">{t('schedule.status.cancelled')}</SelectItem>
+            <SelectItem value="failed">{t('schedule.status.failed')}</SelectItem>
+            <SelectItem value="running">{t('schedule.status.running')}</SelectItem>
+            <SelectItem value="timeout">{t('schedule.status.timeout')}</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -179,30 +188,30 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
-              <th className="text-left p-3 font-medium">开始时间</th>
-              <th className="text-left p-3 font-medium">状态</th>
-              <th className="text-left p-3 font-medium">触发方式</th>
-              <th className="text-left p-3 font-medium">耗时</th>
-              <th className="text-left p-3 font-medium">结果摘要</th>
+              <th className="text-left p-3 font-medium">{t('schedule.logs.col.startedAt')}</th>
+              <th className="text-left p-3 font-medium">{t('common:label.status')}</th>
+              <th className="text-left p-3 font-medium">{t('schedule.col.trigger')}</th>
+              <th className="text-left p-3 font-medium">{t('schedule.logs.col.elapsed')}</th>
+              <th className="text-left p-3 font-medium">{t('schedule.logs.col.summary')}</th>
               <th className="text-left p-3 font-medium">Worker</th>
-              <th className="text-right p-3 font-medium">操作</th>
+              <th className="text-right p-3 font-medium">{t('common:label.actions')}</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">加载中...</td></tr>
+              <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">{t('common:state.loading')}</td></tr>
             ) : logs.length === 0 ? (
-              <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">暂无执行记录</td></tr>
+              <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">{t('schedule.logs.empty')}</td></tr>
             ) : (
               logs.map(log => (
                 <tr key={log.id} className="border-t hover:bg-muted/30">
-                  <td className="p-3 text-xs">{new Date(log.started_at).toLocaleString()}</td>
+                  <td className="p-3 text-xs">{new Date(log.started_at).toLocaleString(i18n.language)}</td>
                   <td className="p-3">
                     <Badge variant="outline" className={STATUS_MAP[log.status]?.color}>
-                      {STATUS_MAP[log.status]?.label || log.status}
+                      {statusLabel(log.status)}
                     </Badge>
                   </td>
-                  <td className="p-3 text-xs">{TRIGGER_MAP[log.trigger_type] || log.trigger_type}</td>
+                  <td className="p-3 text-xs">{triggerLabel(log.trigger_type)}</td>
                   <td className="p-3 text-xs">
                     {log.elapsed_ms != null ? `${(log.elapsed_ms / 1000).toFixed(1)}s` : '-'}
                   </td>
@@ -215,12 +224,12 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
                       {log.report_id && (
                         <Button variant="ghost" size="sm" asChild>
                           <a href={`/report/${log.report_id}`} target="_blank" rel="noopener noreferrer">
-                            报告
+                            {t('schedule.logs.report')}
                           </a>
                         </Button>
                       )}
                       <Button variant="ghost" size="sm" onClick={() => setDetailLog(log)}>
-                        详情
+                        {t('schedule.logs.detail')}
                       </Button>
                     </div>
                   </td>
@@ -246,29 +255,29 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
       <Dialog open={!!detailLog} onOpenChange={() => setDetailLog(null)}>
         <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>执行详情</DialogTitle>
+            <DialogTitle>{t('schedule.logs.detailTitle')}</DialogTitle>
           </DialogHeader>
           {detailLog && (
             <div className="space-y-3 text-sm">
               <div className="grid grid-cols-2 gap-2">
-                <div><span className="text-muted-foreground">状态：</span>{detailLog.status}</div>
-                <div><span className="text-muted-foreground">触发方式：</span>{TRIGGER_MAP[detailLog.trigger_type]}</div>
-                <div><span className="text-muted-foreground">开始时间：</span>{new Date(detailLog.started_at).toLocaleString()}</div>
-                <div><span className="text-muted-foreground">结束时间：</span>{detailLog.finished_at ? new Date(detailLog.finished_at).toLocaleString() : '-'}</div>
-                <div><span className="text-muted-foreground">耗时：</span>{detailLog.elapsed_ms != null ? `${(detailLog.elapsed_ms / 1000).toFixed(1)}s` : '-'}</div>
-                <div><span className="text-muted-foreground">Worker：</span>{detailLog.worker_id || '-'}</div>
-                <div><span className="text-muted-foreground">Celery Task ID：</span><code className="text-xs">{detailLog.celery_task_id || '-'}</code></div>
-                <div><span className="text-muted-foreground">通知状态：</span>{detailLog.notify_status || '-'}</div>
+                <div><span className="text-muted-foreground">{t('schedule.logs.d.status')}</span>{detailLog.status}</div>
+                <div><span className="text-muted-foreground">{t('schedule.logs.d.trigger')}</span>{triggerLabel(detailLog.trigger_type)}</div>
+                <div><span className="text-muted-foreground">{t('schedule.logs.d.startedAt')}</span>{new Date(detailLog.started_at).toLocaleString(i18n.language)}</div>
+                <div><span className="text-muted-foreground">{t('schedule.logs.d.finishedAt')}</span>{detailLog.finished_at ? new Date(detailLog.finished_at).toLocaleString(i18n.language) : '-'}</div>
+                <div><span className="text-muted-foreground">{t('schedule.logs.d.elapsed')}</span>{detailLog.elapsed_ms != null ? `${(detailLog.elapsed_ms / 1000).toFixed(1)}s` : '-'}</div>
+                <div><span className="text-muted-foreground">Worker: </span>{detailLog.worker_id || '-'}</div>
+                <div><span className="text-muted-foreground">Celery Task ID: </span><code className="text-xs">{detailLog.celery_task_id || '-'}</code></div>
+                <div><span className="text-muted-foreground">{t('schedule.logs.d.notify')}</span>{detailLog.notify_status || '-'}</div>
                 {detailLog.report_id && (
                   <div className="col-span-2">
-                    <span className="text-muted-foreground">报告：</span>
+                    <span className="text-muted-foreground">{t('schedule.logs.d.report')}</span>
                     <a
                       href={`/report/${detailLog.report_id}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-primary underline ml-1"
                     >
-                      查看完整报告 →
+                      {t('schedule.logs.viewReport')}
                     </a>
                   </div>
                 )}
@@ -279,44 +288,45 @@ export default function ScheduledTaskLogs({ taskId, onBack }: Props) {
                 <div className="flex gap-2 pt-1">
                   <Button size="sm" variant="destructive" onClick={async () => {
                     try {
-                      await updateLogStatus(detailLog.id, 'cancelled', '手动中止');
-                      toast.success('已中止');
+                      // 「手动中止」是写入服务端审计的原因字段（后端契约值），不随界面语言变化
+                      await updateLogStatus(detailLog.id, 'cancelled', '\u624b\u52a8\u4e2d\u6b62');
+                      toast.success(t('schedule.logs.aborted'));
                       setDetailLog(null);
                       loadLogs();
                       loadStats();
-                    } catch { toast.error('操作失败'); }
+                    } catch { toast.error(t('common:state.operationFailed')); }
                   }}>
-                    <XCircle className="w-4 h-4 mr-1" /> 中止任务
+                    <XCircle className="w-4 h-4 mr-1" /> {t('schedule.logs.abort')}
                   </Button>
                 </div>
               )}
               {detailLog.stage_error_code && (
-                <div className="text-amber-600">阶段状态：{detailLog.stage_error_code}</div>
+                <div className="text-amber-600">{t('schedule.logs.stageError', { code: detailLog.stage_error_code })}</div>
               )}
               {detailLog.run_key && (
-                <div className="text-muted-foreground">运行标识：{detailLog.run_key}</div>
+                <div className="text-muted-foreground">{t('schedule.logs.runKey', { key: detailLog.run_key })}</div>
               )}
               {detailLog.result_summary && (
                 <div>
-                  <span className="text-muted-foreground">结果摘要：</span>
+                  <span className="text-muted-foreground">{t('schedule.logs.d.summary')}</span>
                   <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap">{detailLog.result_summary}</pre>
                 </div>
               )}
               {detailLog.error_message && (
                 <div>
-                  <span className="text-muted-foreground text-red-500">错误信息：</span>
+                  <span className="text-muted-foreground text-red-500">{t('schedule.logs.d.error')}</span>
                   <pre className="mt-1 p-2 bg-red-500/10 rounded text-xs whitespace-pre-wrap text-red-500">{detailLog.error_message}</pre>
                 </div>
               )}
               {detailLog.report_content && (
                 <div>
-                  <span className="text-muted-foreground">报告内容：</span>
+                  <span className="text-muted-foreground">{t('schedule.logs.d.reportContent')}</span>
                   <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap">{detailLog.report_content}</pre>
                 </div>
               )}
               {detailLog.result_data && (
                 <div>
-                  <span className="text-muted-foreground">完整结果：</span>
+                  <span className="text-muted-foreground">{t('schedule.logs.d.fullResult')}</span>
                   <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[300px] overflow-y-auto">
                     {typeof detailLog.result_data === 'string' ? detailLog.result_data : JSON.stringify(detailLog.result_data, null, 2)}
                   </pre>

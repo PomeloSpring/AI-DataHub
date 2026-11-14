@@ -26,6 +26,7 @@ import { useMenuAccess } from '../hooks/useMenuAccess';
 import { SidebarMenuSkeleton } from './SidebarMenuSkeleton';
 import { pruneEmptySections } from '@/lib/menuUtils';
 import ThemeMenuItems from './ThemeMenuItems';
+import LanguageMenu from './LanguageMenu';
 
 /** 将路由 key 转换为 menu_key: '/data/ontology' → 'data:ontology' */
 function toMenuKey(routeKey: string): string {
@@ -237,6 +238,8 @@ export default function DataPlatformLayout() {
                 <ThemeMenuItems />
               </DropdownMenuContent>
             </DropdownMenu>
+            {/* 语言切换：顶栏常驻，与主题按钮并排（四套布局同口径） */}
+            <LanguageMenu />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button aria-label="用户菜单" data-tour={TOUR.headerUser} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">

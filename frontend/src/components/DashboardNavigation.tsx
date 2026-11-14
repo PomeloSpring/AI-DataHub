@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { Dashboard } from '@/stores/dashboardStore';
 
@@ -30,6 +31,7 @@ const EDGE_PAD = 12;
  *    测早了得出“没溢出”的结论，箭头就永远不出现（本条是用户反馈的直接根因）。
  */
 export function useDashboardNavigation(dashboards: DashboardNavItem[], currentId?: number, onSelect?: (id: number) => void) {
+  const { t } = useTranslation(['dashboard']);
   // 服务端已按角色可见集过滤并排好序（组内 = 管理端编排顺序，未分组 = is_default/sort_order），保持传入顺序。
   const visible = dashboards;
   const navRef = useRef<HTMLElement | null>(null);
@@ -132,10 +134,10 @@ export function useDashboardNavigation(dashboards: DashboardNavItem[], currentId
   // 后者会被主题全局 button[aria-current="page"] 规则(tech/glass/ainative…)涂成厚重色块/发光。
   const tabs = visible.length > 1 ? (
     <div className="flex min-w-0 items-center gap-1">
-      {edge.overflow && <button type="button" aria-label="向前翻看板" title="向前翻看板"
+      {edge.overflow && <button type="button" aria-label={t('nav.prev')} title={t('nav.prev')}
         className={arrowCls} disabled={!edge.left} onClick={() => page(-1)}>
         <ChevronLeft className="h-4 w-4" /></button>}
-      <nav ref={navRef} aria-label="同组看板"
+      <nav ref={navRef} aria-label={t('nav.groupAria')}
         className="flex min-w-0 items-center gap-1.5 overflow-x-auto rounded-full bg-muted/60 p-1.5 ring-1 ring-border/60 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {visible.map(d => <button key={d.id} type="button" title={d.name} aria-current={d.id === currentId ? 'true' : undefined}
           onClick={() => onSelect?.(d.id)}
@@ -144,7 +146,7 @@ export function useDashboardNavigation(dashboards: DashboardNavItem[], currentId
               ? 'bg-background font-medium text-primary shadow-sm ring-1 ring-primary/25'
               : 'text-muted-foreground hover:bg-background/70 hover:text-foreground'}`}>{d.name}</button>)}
       </nav>
-      {edge.overflow && <button type="button" aria-label="向后翻看板" title="向后翻看板"
+      {edge.overflow && <button type="button" aria-label={t('nav.next')} title={t('nav.next')}
         className={arrowCls} disabled={!edge.right} onClick={() => page(1)}>
         <ChevronRight className="h-4 w-4" /></button>}
     </div>
