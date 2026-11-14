@@ -10,6 +10,7 @@ router = APIRouter()
 
 
 class LoginRequest(BaseModel):
+    # username 字段是账号标识：用户名或邮箱均可（含 @ 按邮箱登录，服务端解析）
     username: str
     password: str
 
@@ -20,7 +21,7 @@ class RefreshRequest(BaseModel):
 
 @router.post("/login")
 def login(req: LoginRequest):
-    """Authenticate with username and password. Returns JWT token pair."""
+    """Authenticate with username (or email) and password. Returns JWT token pair."""
     result = auth_service.login(req.username, req.password)
 
     if result is None:

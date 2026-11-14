@@ -2139,6 +2139,7 @@ function UsersTab() {
     setSelectedUser(user);
     setEditForm({
       username: user.username,
+      display_name: user.display_name || '',
       email: user.email || '',
       phone: user.phone || '',
       role: user.role,
@@ -2210,7 +2211,7 @@ function UsersTab() {
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-2">
           <Input
-            placeholder="搜索用户名/邮箱/手机"
+            placeholder="搜索用户名/姓名"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && doSearch()}
@@ -2250,6 +2251,7 @@ function UsersTab() {
               <thead>
                 <tr className="border-b bg-muted/50">
                   <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">用户名</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">姓名</th>
                   <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">邮箱</th>
                   <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">手机</th>
                   <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">角色</th>
@@ -2263,6 +2265,7 @@ function UsersTab() {
                 {users.map((user) => (
                   <tr key={user.id} className="border-b hover:bg-muted/50 transition-colors">
                     <td className="p-4 align-middle text-sm font-medium">{user.username}</td>
+                    <td className="p-4 align-middle text-sm">{user.display_name || '-'}</td>
                     <td className="p-4 align-middle text-sm text-muted-foreground">{user.email || '-'}</td>
                     <td className="p-4 align-middle text-sm text-muted-foreground">{user.phone || '-'}</td>
                     <td className="p-4 align-middle">
@@ -2319,7 +2322,7 @@ function UsersTab() {
                 ))}
                 {users.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="p-8 text-center text-muted-foreground">
+                    <td colSpan={9} className="p-8 text-center text-muted-foreground">
                       暂无用户数据
                     </td>
                   </tr>
@@ -2347,13 +2350,23 @@ function UsersTab() {
             <DialogTitle>添加用户</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>用户名 *</Label>
-              <Input
-                placeholder="请输入用户名"
-                value={createForm.username || ''}
-                onChange={(e) => setCreateForm({ ...createForm, username: e.target.value })}
-              />
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>用户名 *</Label>
+                <Input
+                  placeholder="登录账号，如 kangxiaolong"
+                  value={createForm.username || ''}
+                  onChange={(e) => setCreateForm({ ...createForm, username: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>用户姓名</Label>
+                <Input
+                  placeholder="如：康小龙"
+                  value={createForm.display_name || ''}
+                  onChange={(e) => setCreateForm({ ...createForm, display_name: e.target.value })}
+                />
+              </div>
             </div>
             <div className="space-y-2">
               <Label>密码 *</Label>
@@ -2366,7 +2379,7 @@ function UsersTab() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>邮箱</Label>
+                <Label>邮箱（可用于登录）</Label>
                 <Input
                   type="email"
                   placeholder="user@example.com"
@@ -2411,16 +2424,26 @@ function UsersTab() {
             <DialogTitle>编辑用户</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>用户名</Label>
-              <Input
-                value={editForm.username || ''}
-                onChange={(e) => setEditForm({ ...editForm, username: e.target.value })}
-              />
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>用户名</Label>
+                <Input
+                  value={editForm.username || ''}
+                  onChange={(e) => setEditForm({ ...editForm, username: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>用户姓名</Label>
+                <Input
+                  placeholder="如：康小龙"
+                  value={editForm.display_name || ''}
+                  onChange={(e) => setEditForm({ ...editForm, display_name: e.target.value })}
+                />
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>邮箱</Label>
+                <Label>邮箱（可用于登录）</Label>
                 <Input
                   type="email"
                   value={editForm.email || ''}
