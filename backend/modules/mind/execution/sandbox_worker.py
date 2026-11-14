@@ -105,7 +105,7 @@ def _drop_privileges():
     仅当 env 指定 ADH_DROP_UID/GID 且当前为 root 时生效（Docker 后端不设这些 env → 无影响）。
     降权后无法再提权，工具代码以非特权 uid 运行。
     """
-    if os.geteuid() != 0:
+    if os.name != "posix" or os.geteuid() != 0:  # Unix 专属降权：Windows 无 geteuid，直接跳过
         return
     uid, gid = os.environ.get("ADH_DROP_UID"), os.environ.get("ADH_DROP_GID")
     if uid is None or gid is None:

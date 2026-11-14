@@ -148,7 +148,7 @@ export default function PageLayoutEditor({ dashboard, items, breakpoint, selecte
   const selectedScreen = selected && selectedPixels ? canvasRectToScreen(selectedPixels, size, viewportSize, scale, panOffset) : null;
   const empty = !result.error && !result.layout.length;
   return <div ref={viewRef} className="adh-canvas-viewport relative min-h-0 min-w-0 flex-1 overflow-hidden"
-    data-panning={panMode || undefined} data-drag-over={ghostPixels ? true : undefined}
+    data-panning={panMode || canvas.spaceHeld || undefined} data-drag-over={ghostPixels ? true : undefined}
     style={{ touchAction: 'none', userSelect: 'none', ...backdropStyle() }}
     aria-label="页面布局编辑区" onPointerDownCapture={canvas.handlePanStart}>
     <div ref={surface} className="absolute bg-background" data-testid="page-editor-surface" style={{ ...size, left: '50%', top: '50%', marginLeft: -size.width / 2, marginTop: -size.height / 2,
@@ -164,7 +164,7 @@ export default function PageLayoutEditor({ dashboard, items, breakpoint, selecte
             : target ? pagePixelRect(target.rect, breakpoint, gaps)
             : forecast ? pagePixelRect(forecast, breakpoint, gaps) : original;
           return <div key={item.chart.id} data-chart-id={item.chart.id} data-selected={selectedIds.includes(item.chart.id) || undefined}
-            className={`adh-editable-card relative min-h-0 min-w-0 overflow-hidden rounded-lg ${panMode ? '' : 'cursor-move'}`}
+            className={`adh-editable-card relative min-h-0 min-w-0 overflow-hidden rounded-lg ${(panMode || canvas.spaceHeld) ? '' : 'cursor-move'}`}
             style={{ ...style, width: pixels.w, height: pixels.h, touchAction: 'none', zIndex: dragging ? 20 : 1,
               transform: `translate3d(${pixels.x - original.x}px, ${pixels.y - original.y}px, 0)`,
               transition: active && !dragging ? 'transform 120ms ease-out' : insert ? 'transform 160ms ease-out' : undefined, willChange: dragging ? 'transform' : undefined }}

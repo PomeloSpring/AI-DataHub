@@ -444,7 +444,7 @@ def place_attachments(task, runtime):
             output.append({
                 "filename": target.name,
                 "category": classify_extension(target.suffix) or "document",
-                "path": str(target.relative_to(Path(runtime.workspace).resolve())),
+                "path": target.relative_to(Path(runtime.workspace).resolve()).as_posix(),  # 对外 path 恒用 POSIX 分隔符（Windows str(Path) 会产生反斜杠）
                 "size": size,
             })
     task.attachments = output

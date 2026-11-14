@@ -193,9 +193,12 @@ class SessionToolSandbox:
         image = _python_runtime_image()
         container = f"adh-agent-{runtime.key}-{uuid.uuid4().hex}"
         writable = _is_writable_tool(runtime, name)
-        mount = f"type=bind,src={runtime.workspace},dst=/workspace" + ("" if writable else ",readonly")
-        uid = os.getuid() if os.getuid() else 65534
-        gid = os.getgid() if os.getuid() else 65534
+        mount = f"type=bind,src={Path(runtime.workspace).as_posix()},dst=/workspace" + ("" if writable else ",readonly")
+        if os.name == "posix":  # Unix：非 root 用当前 uid/gid，root 降权 nobody；Windows 无 getuid/getgid
+            uid = os.getuid() or 65534
+            gid = os.getgid() or 65534
+        else:
+            uid = gid = 65534  # Windows 宿主：容器内固定以 nobody 运行（与镜像 USER 65534 对齐）
         return container, [
             "docker", "run", "--name", container, "--pull=never", "--rm", "-i",
             "--label", f"adh.agent.session={runtime.key}",
@@ -316,7 +319,7 @@ class SessionToolSandbox:
         mem_raw = str(cfg.get("memory_limit") or "").strip()
         if mem_raw:
             envs += ["--setenv", "ADH_RLIMIT_AS_MB", str(_to_mb(mem_raw))]
-        if os.geteuid() == 0:
+        if os.name == "posix" and os.geteuid() == 0:  # Unix 专属降权：Windows 无 geteuid，直接跳过
             # root 应用：worker 降权到 65534（对齐 session_paths 的 chown 与 docker --user 65534）。
             envs += ["--setenv", "ADH_DROP_UID", "65534", "--setenv", "ADH_DROP_GID", "65534"]
         if mode == "host-python":

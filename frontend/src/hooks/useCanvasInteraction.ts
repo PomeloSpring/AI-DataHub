@@ -39,6 +39,9 @@ export function useCanvasInteraction(opts: {
   const [resizingChart, setResizingChart] = useState<number | null>(null);
   const [resizePosition, setResizePosition] = useState<Rect>({ x: 0, y: 0, w: 400, h: 300 });
   const [isPanning, setIsPanning] = useState(false);
+  // 空格按住的渲染态：驱动视口 data-panning 抓手光标（仅视口内 hover 生效）；
+  // spacePressed ref 供手势回调同步判定，两者必须同写同复位
+  const [spaceHeld, setSpaceHeld] = useState(false);
   const [guides, setGuides] = useState<SnapGuide[]>([]);
   const gesture = useRef<Gesture | null>(null);
   const frame = useRef<number | null>(null);
@@ -62,6 +65,11 @@ export function useCanvasInteraction(opts: {
   // 供不依赖 scale 的回调读取当前缩放（避免在 setScale 更新函数里做副作用）
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
+  // 供 useEffect([]) 内的 key handler 读当前平移量与最新指针位置：
+  // 空格状态迟到（跨窗口获焦后 repeat keydown）时就地把组件拖拽转换为整画布平移
+  const panOffsetRef = useRef(panOffset);
+  panOffsetRef.current = panOffset;
+  const lastPointer = useRef<Point | null>(null);
   const isInteracting = useCallback(() => !!gesture.current || elementInteraction.current, []);
   const beginElementInteraction = useCallback(() => {
     if (isInteracting() || latest.current.interactionLocked) return false;
@@ -77,6 +85,7 @@ export function useCanvasInteraction(opts: {
     // 锁定的图层不参与拖动/缩放（只能从图层面板解锁）
     if (kind !== 'pan' && (!chart || isChartLocked(chart))) return;
     e.preventDefault(); e.stopPropagation();
+    lastPointer.current = { x: e.clientX, y: e.clientY };
     const target = (kind !== 'pan' && (e.currentTarget as HTMLElement).closest<HTMLElement>('.adh-cell')) || canvasRef.current || e.currentTarget as HTMLElement;
     const original = chart ? chartRect(chart) : { ...panOffset, w: 0, h: 0 };
     gesture.current = { kind, chartId, pointerId: e.pointerId, target, start: { x: e.clientX, y: e.clientY },
@@ -136,6 +145,7 @@ export function useCanvasInteraction(opts: {
     };
     const move = (e: PointerEvent) => {
       if (!gesture.current || gesture.current.pointerId !== e.pointerId) return;
+      lastPointer.current = { x: e.clientX, y: e.clientY };
       pending.current = e;
       if (frame.current !== null) return;
       frame.current = requestAnimationFrame(() => {
@@ -162,10 +172,23 @@ export function useCanvasInteraction(opts: {
     const cancelledPointer = (e: PointerEvent) => { if (gesture.current?.pointerId === e.pointerId) cancel(); };
     const key = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && gesture.current) { e.preventDefault(); cancel(); }
-      if (e.code === 'Space' && canvasRef.current && !isEditingTarget(e.target) && !document.querySelector('[role="dialog"],[role="menu"]')) { e.preventDefault(); spacePressed.current = true; }
+      if (e.code === 'Space' && canvasRef.current && !latest.current.interactionLocked && !isEditingTarget(e.target) && !document.querySelector('[role="dialog"],[role="menu"]')) {
+        e.preventDefault(); spacePressed.current = true; setSpaceHeld(true);
+        // 空格状态迟到（如跨窗口点击获焦后 repeat keydown 才补置）：已发起的组件拖拽/缩放
+        // 就地转换为整画布平移，保证抓手亮起时手势必为平移（光标-手势一致）
+        const g = gesture.current;
+        if (g && g.kind !== 'pan') {
+          g.kind = 'pan';
+          g.original = { x: panOffsetRef.current.x, y: panOffsetRef.current.y, w: 0, h: 0 };
+          g.current = g.original;
+          g.start = lastPointer.current ? { ...lastPointer.current } : g.start;
+          g.moved = false;
+          setDraggingChart(null); setResizingChart(null); setGuides([]);
+        }
+      }
     };
-    const keyup = (e: KeyboardEvent) => { if (e.code === 'Space') spacePressed.current = false; };
-    const blur = () => { spacePressed.current = false; cancel(); };
+    const keyup = (e: KeyboardEvent) => { if (e.code === 'Space') { spacePressed.current = false; setSpaceHeld(false); } };
+    const blur = () => { spacePressed.current = false; setSpaceHeld(false); cancel(); };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
     window.addEventListener('pointercancel', cancelledPointer);
@@ -183,7 +206,7 @@ export function useCanvasInteraction(opts: {
     };
   }, []);
 
-  useEffect(() => { cancelRef.current(); spacePressed.current = false; }, [opts.viewportKey, opts.interactionLocked]);
+  useEffect(() => { cancelRef.current(); spacePressed.current = false; setSpaceHeld(false); }, [opts.viewportKey, opts.interactionLocked]);
 
   // 非被动监听确保滚轮缩放不同时滚动页面，缩放锚点固定在鼠标位置。
   // 高频滚轮事件合并到一帧只算一次，避免触控板惯性滚动触发几十次重渲染。
@@ -249,7 +272,7 @@ export function useCanvasInteraction(opts: {
   }, [opts.autoFit, opts.viewportKey, resetZoom]);
 
   return { canvasRef, surfaceRef, canvasSize: size, setCanvasSize, gridSize, setGridSize, snapEnabled, setSnapEnabled,
-    scale, setScale, panOffset, setPanOffset, draggingChart, dragPosition, resizingChart, resizePosition, isPanning, guides,
+    scale, setScale, panOffset, setPanOffset, draggingChart, dragPosition, resizingChart, resizePosition, isPanning, spaceHeld, guides,
     handleDragStart, handleResizeStart, handlePanStart, zoomIn, zoomOut, zoomTo, resetZoom,
     isInteracting, beginElementInteraction, endElementInteraction };
 }
