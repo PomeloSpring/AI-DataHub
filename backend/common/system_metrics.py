@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import threading
 import time
 
@@ -121,12 +122,12 @@ def collect_local_metrics() -> dict:
     try:
         load1, load5, load15 = os.getloadavg()
         load = {"load1": round(load1, 2), "load5": round(load5, 2), "load15": round(load15, 2)}
-    except OSError:
+    except (OSError, AttributeError):  # AttributeError：Windows 无 getloadavg（Unix 专属）
         load = None
 
     return {
         "collected_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "hostname": os.uname().nodename,
+        "hostname": socket.gethostname(),  # 跨平台取主机名（os.uname 为 Unix 专属）
         "cpu": {
             "percent": _cpu_percent(),
             "cores": os.cpu_count(),

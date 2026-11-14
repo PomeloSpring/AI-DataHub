@@ -257,7 +257,7 @@ def save_xlsx(req: SaveXlsxRequest, user: dict = Depends(get_file_user)):
     _resync(req, user, root)
     return {
         "filename": out.name,
-        "path": str(out.relative_to(ws_dir)),
+        "path": out.relative_to(ws_dir).as_posix(),  # 对外 path 恒用 POSIX 分隔符（Windows str(Path) 会产生反斜杠）
         "size": out.stat().st_size,
         "sheet": req.sheet,
     }

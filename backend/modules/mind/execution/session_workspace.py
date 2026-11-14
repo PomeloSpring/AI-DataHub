@@ -207,7 +207,7 @@ def session_paths(base, key, workspace_id, user_id, create=False, require_layout
         for name in ("workspace", "runtime"):
             (root / name).mkdir(mode=0o700)
         (root / "runtime" / "tmp").mkdir(mode=0o700)
-        if os.geteuid() == 0:
+        if os.name == "posix" and os.geteuid() == 0:  # Unix 专属降权：Windows 无 geteuid，直接跳过
             os.chown(root / "workspace", 65534, 65534)
     if require_layout and not all((root / name).is_dir() and not (root / name).is_symlink() for name in ("workspace", "runtime")):
         raise RuntimeError("会话工作区不可用，禁止自动新建替代目录")
