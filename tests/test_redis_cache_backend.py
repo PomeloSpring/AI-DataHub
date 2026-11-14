@@ -85,6 +85,7 @@ def test_factory_returns_redis_only(monkeypatch):
     assert RedisCache is not None
     monkeypatch.delenv("CACHE_BACKEND", raising=False)
     monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6399/0")  # 未监听, 仅构造不连接
+    monkeypatch.delenv("REDIS_PASSWORD", raising=False)
     factory._instances.pop("probe-f", None)
     c = factory.get_cache("probe-f")
     assert isinstance(c, RedisCache)
@@ -108,3 +109,129 @@ def test_redis_cache_degrades_to_no_cache_when_down(monkeypatch):
     assert c.get("k") is None
     c.set("k", {"a": 1})  # 吞异常, 不抛
     assert c.get_counter("x") == 0
+
+
+# ── 凭据装配（防 NOAUTH 把缓存静默降级成"无缓存"）──────────────────────
+# 背景：现网 REDIS_URL=redis://host:port/0 不带 userinfo，密码只在 REDIS_PASSWORD，
+# 所有 from_url(REDIS_URL) 通道（缓存/Celery broker/图谱锁/监控探测）被服务端拒
+# Authentication required，缓存侧只留一行 WARNING，定时任务整体停摆。
+
+_URL = "redis://127.0.0.1:6399/0"
+
+
+def _clean_redis_env(monkeypatch):
+    for k in ("REDIS_URL", "REDIS_HOST", "REDIS_PORT", "REDIS_DB", "REDIS_PASSWORD"):
+        monkeypatch.delenv(k, raising=False)
+
+
+def test_password_component_is_injected_into_url(monkeypatch):
+    from backend.common.redis_url import effective_redis_url
+
+    _clean_redis_env(monkeypatch)
+    monkeypatch.setenv("REDIS_URL", _URL)
+    monkeypatch.setenv("REDIS_PASSWORD", "SG2LVQOQoTjzkOrd")
+    assert effective_redis_url() == "redis://:SG2LVQOQoTjzkOrd@127.0.0.1:6399/0"
+
+
+def test_special_chars_in_password_are_url_encoded(monkeypatch):
+    from backend.common.redis_url import effective_redis_url
+
+    _clean_redis_env(monkeypatch)
+    monkeypatch.setenv("REDIS_URL", _URL)
+    monkeypatch.setenv("REDIS_PASSWORD", "p@ss/w:1")
+    assembled = effective_redis_url()
+    # 不转义会把密码里的 @ 当 userinfo 分隔符，解析出的 host/密码全错
+    assert assembled == "redis://:p%40ss%2Fw%3A1@127.0.0.1:6399/0"
+    import redis as _redis
+    kwargs = _redis.Redis.from_url(assembled).connection_pool.connection_kwargs
+    assert kwargs["password"] == "p@ss/w:1" and kwargs["host"] == "127.0.0.1"
+    assert kwargs["port"] == 6399 and kwargs["db"] == 0
+
+
+def test_credentials_already_in_url_are_not_overwritten(monkeypatch):
+    from backend.common.redis_url import effective_redis_url
+
+    _clean_redis_env(monkeypatch)
+    monkeypatch.setenv("REDIS_URL", "redis://:urlpw@127.0.0.1:6399/0")
+    monkeypatch.setenv("REDIS_PASSWORD", "otherpw")
+    assert effective_redis_url() == "redis://:urlpw@127.0.0.1:6399/0"  # URL 为准
+
+
+def test_no_password_falls_back_to分项_assembly(monkeypatch):
+    from backend.common.redis_url import effective_redis_url
+
+    _clean_redis_env(monkeypatch)
+    monkeypatch.setenv("REDIS_HOST", "r-internal")
+    monkeypatch.setenv("REDIS_PORT", "6380")
+    monkeypatch.setenv("REDIS_DB", "2")
+    assert effective_redis_url() == "redis://r-internal:6380/2"
+
+
+def test_factory_url_carries_credentials(monkeypatch):
+    """缓存工厂不得再交出无凭据的串（NOAUTH 静默降级的入口）。"""
+    from backend.common.cache import factory as f
+
+    _clean_redis_env(monkeypatch)
+    monkeypatch.setenv("REDIS_URL", _URL)
+    monkeypatch.setenv("REDIS_PASSWORD", "pw1")
+    assert f._redis_url() == "redis://:pw1@127.0.0.1:6399/0"
+    f._instances.pop("probe-cred", None)
+    try:
+        c = f.get_cache("probe-cred")
+        assert c._url == "redis://:pw1@127.0.0.1:6399/0"
+    finally:
+        f._instances.pop("probe-cred", None)
+
+
+def test_redis_cache_honours_password_alongside_url(monkeypatch):
+    """RedisCache 传了 url 也必须用上 password（历史上 url 分支直接把 password 丢了）。"""
+    import redis as _redis
+
+    seen = {}
+
+    def _fake_from_url(url, **kwargs):
+        seen["url"] = url
+        return _DummyCli()
+
+    monkeypatch.setattr(_redis.Redis, "from_url", staticmethod(_fake_from_url), raising=False)
+    c = RedisCache(prefix="chatbi:x", url=_URL, password="pw2")
+    c._get_redis()
+    assert seen["url"] == "redis://:pw2@127.0.0.1:6399/0"
+
+
+class _DummyCli:
+    def ping(self):
+        return True
+
+
+def test_connect_log_and_monitor_do_not_leak_password(caplog, monkeypatch):
+    """连接日志与监控 detail 只出地址，不出凭据（护栏 §7）。"""
+    import redis as _redis
+
+    from backend.common.redis_url import describe_redis_target, redact_redis_url
+
+    url = "redis://:secretpw@127.0.0.1:6399/0"
+    assert redact_redis_url(url) == "redis://:***@127.0.0.1:6399/0"
+    assert describe_redis_target(url) == "127.0.0.1:6399/0"
+    assert "secretpw" not in describe_redis_target(url)
+
+    monkeypatch.setattr(_redis.Redis, "from_url",
+                       staticmethod(lambda u, **kw: _DummyCli()), raising=False)
+    with caplog.at_level("INFO"):
+        RedisCache(prefix="chatbi:y", url=url)._get_redis()
+    assert "secretpw" not in caplog.text
+
+
+def test_celery_broker_url_is_assembled_with_credentials(monkeypatch):
+    """Celery broker/result backend 必须拿装配后的串，否则 worker 连不上队列。"""
+    from backend.common import config as cfg
+    from backend.modules.flow.tasks import celery_app
+
+    assert celery_app.REDIS_URL is cfg.REDIS_URL
+    assert cfg.REDIS_URL == effective_redis_url_for_test()
+
+
+def effective_redis_url_for_test() -> str:
+    from backend.common.redis_url import effective_redis_url
+
+    return effective_redis_url()

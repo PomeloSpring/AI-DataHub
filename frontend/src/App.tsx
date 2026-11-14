@@ -146,8 +146,8 @@ export default function App() {
 
         {/* Workspace mode: /ws/:workspaceId/* */}
         <Route path="/ws/:workspaceId" element={<PrivateRoute><WorkspaceBoundary><WorkspaceLayout /></WorkspaceBoundary></PrivateRoute>}>
-          {/* 工作空间默认页 = 数据看板清单(卡片瀑布): 进 /ws/:id 一律落看板清单 */}
-          <Route index element={<Navigate to="dashboards" replace />} />
+          {/* 工作空间默认页 = 智能问数(与侧栏「数据分析」组第一项、workspaceLandingPath 同一口径) */}
+          <Route index element={<Navigate to="chat" replace />} />
           <Route path="chat" element={<Chat />} />
           {/* 资产清单: 账号级归档资产(会话产物归档收藏, OSS 托管, 跨工作空间随用户走) */}
           <Route path="assets" element={<WorkspaceAssets />} />
@@ -311,8 +311,8 @@ export default function App() {
         {/* Other legacy routes */}
         <Route path="/playground" element={<PrivateRoute><Playground /></PrivateRoute>} />
 
-        {/* 默认首页: '/' 恒展示 Home。既是模块切换选「首页」的落点，也是登录成功后的
-            唯一落点（Login 不再按“有已启用看板”直达数据看板），不因有看板而跳走 */}
+        {/* 默认首页: '/' 恒展示 Home。是模块切换选「首页」的落点与书签地址；
+            登录成功不再落这里，而是默认进工作空间（见 Login.tsx + workspaceLandingPath） */}
         <Route path="/" element={<PrivateRoute><Home /></PrivateRoute>} />
         {/* 首页资讯区的落点：面向全体读者（article:read），不进 ContentLayout（那个布局按
             content:* 菜单裁决，只勾读者码的人会直接被布局挡在门外）。 */}

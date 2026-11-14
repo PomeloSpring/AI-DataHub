@@ -73,8 +73,8 @@ export const GUIDES: Record<string, GuideDef> = {
       // optional：只有一个工作空间时侧栏不挂切换下拉（新建入口未开放，无项可切），
       //   这一步就静默跳过；有多空间时照旧高亮。
       { target: TOUR.wsSelector, optional: true, title: '工作空间切换', body: '有多个工作空间时在这里切换（看板与会话按空间归集）；只有一个空间时这里不展示。对话产生的文件会随账号上云备份，不会因换节点而丢。' },
-      { target: navTour('ws', 'dashboards'), title: '数据看板', body: '日常消费入口：这里列出你有权查看的看板组合，点卡片下钻具体仪表盘。' },
       { target: navTour('ws', 'chat'), title: '智能问数', body: '用业务语言直接提问取数，不用写 SQL；口径以平台已建模的指标为准。' },
+      { target: navTour('ws', 'dashboards'), title: '数据看板', body: '日常消费入口：这里列出你有权查看的看板组合，点卡片下钻具体仪表盘。' },
       { target: TOUR.chatInput, route: '/ws/:wsId/chat', title: '提问框', body: '在这里输入数据问题，可附文件；上方选择模型、Harness 与站点后再发送。' },
       { target: navTour('ws', 'reports'), title: '报告中心', body: '会话与定时任务产出的报告按版本归集在这里，可继续编辑或分享。' },
     ],

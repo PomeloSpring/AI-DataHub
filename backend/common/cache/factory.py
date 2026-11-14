@@ -6,7 +6,8 @@ Redis 不可用时，RedisCache 的 get/set 会透明降级为“无缓存”(�
 
 Configuration (in .env / 服务环境):
     REDIS_URL=redis://localhost:6379/0    # 优先
-    REDIS_HOST/REDIS_PORT/REDIS_DB/REDIS_PASSWORD  # 无 REDIS_URL 时回退
+    REDIS_HOST/REDIS_PORT/REDIS_DB/REDIS_PASSWORD  # 无 REDIS_URL 时回退;
+    URL 缺凭据时 REDIS_PASSWORD 会被注入（装配口径唯一，见 common/redis_url.py）
 """
 
 import os
@@ -15,6 +16,7 @@ from typing import Dict
 
 from backend.common.cache.base import CacheBackend
 from backend.common.cache.redis_cache import RedisCache
+from backend.common.redis_url import effective_redis_url
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +25,8 @@ _instances: Dict[str, CacheBackend] = {}
 
 
 def _redis_url() -> str:
-    url = os.getenv("REDIS_URL")
-    if url:
-        return url
-    host = os.getenv("REDIS_HOST", "localhost")
-    port = os.getenv("REDIS_PORT", "6379")
-    db = os.getenv("REDIS_DB", "0")
-    return f"redis://{host}:{port}/{db}"
+    """连接串 + 凭据装配唯一入口（运行期读环境，便于测试与配置热改）。"""
+    return effective_redis_url()
 
 
 def get_cache(prefix: str, default_ttl: int = 300) -> CacheBackend:

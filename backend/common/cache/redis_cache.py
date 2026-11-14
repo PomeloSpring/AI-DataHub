@@ -10,6 +10,7 @@ import logging
 from typing import Any, Optional
 
 from backend.common.cache.base import CacheBackend
+from backend.common.redis_url import effective_redis_url, redact_redis_url
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +52,11 @@ class RedisCache(CacheBackend):
             try:
                 import redis
                 if self._url:
+                    # URL 缺凭据时用 password 补全：from_url 里 URL 自带的 userinfo 优先于
+                    # 显式 kwarg（redis-py 行为），故只能装配进串，不能只靠传参。
+                    conn_url = effective_redis_url(self._url, self._password)
                     self._redis = redis.Redis.from_url(
-                        self._url, decode_responses=True,
+                        conn_url, decode_responses=True,
                         socket_timeout=5, socket_connect_timeout=5,
                     )
                 else:
@@ -67,7 +71,8 @@ class RedisCache(CacheBackend):
                     )
                 # Test connection
                 self._redis.ping()
-                logger.info("Redis cache connected: %s", self._url or f"{self._host}:{self._port}/{self._db}")
+                logger.info("Redis cache connected: %s",
+                            redact_redis_url(self._url or f"{self._host}:{self._port}/{self._db}"))
             except ImportError:
                 raise ImportError("redis package not installed. Run: pip install redis")
             except Exception as e:

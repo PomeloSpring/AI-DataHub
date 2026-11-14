@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends
 
 from backend.common.auth import require_admin
 from backend.common import config as _cfg
+from backend.common.redis_url import describe_redis_target as _redis_target
 from backend.common.system_metrics import collect_local_metrics
 
 logger = logging.getLogger(__name__)
@@ -241,7 +242,8 @@ def _check_mysql():
 def _check_redis():
     r = _mk("redis", "Redis", "分布式缓存 + Celery 队列/租约", "缓存与队列", True)
     url = _cfg.REDIS_URL
-    r["detail"] = url.split("://", 1)[-1]
+    # 装配后的串带凭据，展示只取地址（护栏 §7：凭据不出服务端）
+    r["detail"] = _redis_target(url)
     started = time.monotonic()
     try:
         import redis

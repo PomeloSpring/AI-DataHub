@@ -9,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useAuthStore } from '../stores/authStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useMenuAccess } from '../hooks/useMenuAccess';
+import { workspaceLandingPath } from './WorkspaceRoute';
 import { TOUR } from '@/lib/onboarding/guides';
 
 export type SectionId = 'home' | 'content' | 'workspace' | 'data' | 'system' | 'ask';
@@ -32,9 +33,8 @@ export default function SectionSwitcher({ current }: SectionSwitcherProps) {
   const { getDefaultWorkspaceId } = useWorkspaceStore();
 
   const goWorkspace = () => {
-    const wsId = getDefaultWorkspaceId();
-    // 工作空间默认页 = 数据看板清单(卡片瀑布)
-    navigate(wsId ? `/ws/${wsId}/dashboards` : '/workspace');
+    // 工作空间落点口径与登录落地同源（默认页 = 智能问数）
+    navigate(workspaceLandingPath(getDefaultWorkspaceId()));
   };
   const goContent = () => navigate('/content');
   const goData = () => navigate('/data');

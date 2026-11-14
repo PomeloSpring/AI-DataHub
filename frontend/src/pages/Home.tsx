@@ -19,6 +19,7 @@ import BrandLogo from '@/components/BrandLogo';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useMenuAccess } from '@/hooks/useMenuAccess';
 import SectionSwitcher from '@/components/SectionSwitcher';
+import { workspaceLandingPath } from '@/components/WorkspaceRoute';
 import ReleaseNotesButton from '@/components/ReleaseNotesButton';
 import { TOUR } from '@/lib/onboarding/guides';
 import { useGuideStore } from '@/stores/guideStore';
@@ -164,8 +165,8 @@ export default function Home() {
   }, [goAsk]);
 
   const goWorkspace = () => {
-    const wsId = getDefaultWorkspaceId();
-    navigate(wsId ? `/ws/${wsId}/dashboards` : '/workspace');
+    // 与顶栏模块切换器、登录落地同一落点口径
+    navigate(workspaceLandingPath(getDefaultWorkspaceId()));
   };
   const goProfile = () => {
     const wsId = getDefaultWorkspaceId();
@@ -176,7 +177,7 @@ export default function Home() {
     navigate(wsId ? `/ws/${wsId}/memory` : '/data/memory');
   };
   const goBoard = useCallback((id: number) => {
-    // -1 = 「全部」：落看板清单；具体看板落详情（与模块切换的默认页同一入口）
+    // -1 = 「全部」：落看板清单；具体看板落详情（走旧看板域入口，是链接语义，不随工作空间默认页移动）
     navigate(id > 0 ? `/dashboards/${id}` : '/dashboards');
   }, [navigate]);
   const goContent = () => navigate('/content');

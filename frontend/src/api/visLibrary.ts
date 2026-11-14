@@ -51,6 +51,35 @@ export async function fetchVisComponents(includeInactive = false, includeDisable
   return validateVisResponse(data);
 }
 
+/** 服务端真分页返回契约（与 /content/articles 同源）：管理页专用，不再拉全量前端切片。 */
+export interface VisComponentPage {
+  items: VisComponent[]; total: number; page: number; page_size: number;
+}
+
+/**
+ * 拉一页字模（服务端真分页）：category 筛选 / q 搜索 / 下架·禁用两档 / page·page_size 全部下推，
+ * 行总数由服务端 COUNT 得到。选用面（编辑器面板）需要全量在手，仍走 fetchVisComponents，不用本函数。
+ */
+export async function fetchVisComponentPage(opts: {
+  page: number; pageSize: number; category?: string; q?: string;
+  includeInactive?: boolean; includeDisabled?: boolean;
+}): Promise<VisComponentPage> {
+  const { data } = await client.get('/vis-library/components', {
+    params: {
+      category: opts.category || '', q: opts.q || '',
+      include_inactive: !!opts.includeInactive, include_disabled: !!opts.includeDisabled,
+      page: opts.page, page_size: opts.pageSize,
+    },
+  });
+  // 分页契约取 data.items；容错：万一服务端回了裸数组也按全量解析（不静默丢数据）
+  const raw = Array.isArray(data) ? data : (data?.items ?? []);
+  const items = validateVisResponse(raw);
+  return {
+    items, total: Number(data?.total ?? items.length),
+    page: Number(data?.page ?? opts.page), page_size: Number(data?.page_size ?? opts.pageSize),
+  };
+}
+
 /**
  * 字模是否"在用"（唯一口径）：未下架且未禁用。
  * 下架=软删除（清单不再给出，历史引用靠挂载快照兜底）；禁用=停用但保留（管理页仍可查可再启用，

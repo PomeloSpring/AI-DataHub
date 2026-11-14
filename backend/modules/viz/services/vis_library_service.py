@@ -92,8 +92,22 @@ class VisLibraryService:
         编辑器字模面板、报表主题下拉、AS-BOT 清单都不得给出, theme_pack 被禁用还要让
         系统主题菜单里对应主题不再出现。默认 include_disabled=False 是 fail-closed:
         新消费方漏传参数只会少给, 不会把停用的字模当在用发出去。
+
+        与分页方法 list_components_page 共用同一份筛选/排序构造(_build_filters/_ORDER_BY),
+        不得各写一套谓词导致口径漂移;本方法不分页(选用面需要全量在手)。
         """
-        sql = "SELECT * FROM adh_vis_components"
+        where, params = self._build_filters(category, include_inactive, include_disabled, "")
+        rows = execute_query("SELECT * FROM adh_vis_components" + where + self._ORDER_BY, params) or []
+        return [_normalize(r) for r in rows]
+
+    # 排序唯一口径：清单与分页必须同一 ORDER BY, 否则翻出去的两页会重行/漏行
+    _ORDER_BY = " ORDER BY sort_order ASC, is_builtin DESC, id ASC"
+    # 配置类清单的服务端每页硬上限(与 content/articles 同口径的"服务端说了算")
+    _PAGE_SIZE_MAX = 200
+
+    def _build_filters(self, category: str, include_inactive: bool,
+                       include_disabled: bool, q: str) -> tuple[str, list]:
+        """把筛选/搜索谓词下推成 SQL WHERE 片段与参数(清单与分页共用一份, 不分叉)。"""
         conds, params = [], []
         if category:
             conds.append("category = %s")
@@ -102,11 +116,34 @@ class VisLibraryService:
             conds.append("is_active = 1")
         if not include_disabled:
             conds.append("is_enabled = 1")
-        if conds:
-            sql += " WHERE " + " AND ".join(conds)
-        sql += " ORDER BY sort_order ASC, is_builtin DESC, id ASC"
-        rows = execute_query(sql, params) or []
-        return [_normalize(r) for r in rows]
+        if q:
+            like = f"%{q}%"
+            conds.append("(name LIKE %s OR code LIKE %s OR description LIKE %s)")
+            params.extend([like, like, like])
+        where = (" WHERE " + " AND ".join(conds)) if conds else ""
+        return where, params
+
+    def list_components_page(self, category: str = "", include_inactive: bool = False,
+                             include_disabled: bool = False, q: str = "",
+                             page: int = 1, page_size: int = 20) -> dict:
+        """服务端**真分页**清单(元数据级): 行总数由 COUNT 定, 当前页由 LIMIT/OFFSET 取。
+
+        与管理页"拉全量再前端切片"的假分页相对 —— 筛选(category)、搜索(q)、下架/禁用两档
+        全部下推到 SQL, 偏移量由页号算出(调用方不递 offset), 每页行数服务端夹到
+        [1, _PAGE_SIZE_MAX]。返回契约 {items,total,page,page_size} 与 content/articles 同源。
+        """
+        page = max(1, int(page or 1))
+        page_size = min(self._PAGE_SIZE_MAX, max(1, int(page_size or 20)))
+        where, params = self._build_filters(category, include_inactive, include_disabled, q)
+        total = int((execute_query(
+            "SELECT COUNT(*) AS cnt FROM adh_vis_components" + where, params, fetchone=True,
+        ) or {}).get("cnt", 0))
+        rows = execute_query(
+            "SELECT * FROM adh_vis_components" + where + self._ORDER_BY + " LIMIT %s OFFSET %s",
+            list(params) + [page_size, (page - 1) * page_size],
+        ) or []
+        return {"items": [_normalize(r) for r in rows], "total": total,
+                "page": page, "page_size": page_size}
 
     def get_component(self, component_id: int):
         row = execute_query("SELECT * FROM adh_vis_components WHERE id = %s", (component_id,), fetchone=True)
