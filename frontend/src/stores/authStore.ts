@@ -16,6 +16,8 @@ function clearUserContext() {
 interface User {
   id: number;
   username: string;
+  /** 用户姓名（真实姓名/称呼，adh_users.display_name；空=未填写） */
+  display_name?: string;
   /** 角色内部名（真值源首个绑定 / 登录响应）——只给 role==='admin' 这类判定用 */
   role: string;
   /** 角色可读名（adh_roles.display_name，由 /users/me 下发）——展示一律用它，

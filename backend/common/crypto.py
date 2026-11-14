@@ -13,6 +13,7 @@
 import os
 import base64
 import hashlib
+import hmac
 import logging
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -161,3 +162,23 @@ def decrypt_field(value: str) -> str:
     except Exception as exc:  # noqa: BLE001
         logger.error("敏感字段解密失败（密钥不匹配或密文损坏，需按新旧密钥重加密）: %s", exc)
         return DECRYPT_FAILED_HINT
+
+
+def normalize_email(value: str) -> str:
+    """邮箱归一化（去首尾空白 + 小写）：指纹与登录查找共用同一口径。"""
+    return (value or "").strip().lower()
+
+
+def fingerprint(value: str) -> str:
+    """可检索指纹（HMAC-SHA256 hex，密钥 ADH_SECRET_KEY）。
+
+    AES-GCM 每次加密用随机 IV，同一明文两次密文不同 —— 对加密存储的字段做等值
+    查找（唯一性检查 / 邮箱登录）必须走确定性盲索引：可等值检索、不含明文、
+    不可从指纹反推原值（原值仍只存密文）。调用方自行决定是否先归一化
+    （邮箱用 :func:`normalize_email`，保证同邮箱不同写法命中同一行）。
+    """
+    if not value:
+        return ""
+    return hmac.new(
+        ADH_SECRET_KEY.encode("utf-8"), value.encode("utf-8"), hashlib.sha256,
+    ).hexdigest()

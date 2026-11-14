@@ -77,7 +77,7 @@ export default function Login() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username || !password) {
-      toast.error('请输入用户名和密码');
+      toast.error('请输入用户名/邮箱和密码');
       return;
     }
 
@@ -180,12 +180,12 @@ export default function Login() {
 
               <form onSubmit={handleSubmit} className="space-y-5">
                 <div className="space-y-1.5">
-                  <Label htmlFor="username" className="text-xs font-medium text-muted-foreground">用户名</Label>
+                  <Label htmlFor="username" className="text-xs font-medium text-muted-foreground">用户名 / 邮箱</Label>
                   <div className="relative">
                     <User className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
                       id="username"
-                      placeholder="请输入用户名"
+                      placeholder="请输入用户名或邮箱"
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
                       disabled={loading}

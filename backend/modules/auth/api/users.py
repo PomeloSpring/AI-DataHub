@@ -17,6 +17,7 @@ class CreateUserRequest(BaseModel):
     role: str = "viewer"
     email: Optional[str] = ""
     phone: Optional[str] = ""
+    display_name: Optional[str] = ""
 
 
 class UpdateUserRequest(BaseModel):
@@ -24,6 +25,7 @@ class UpdateUserRequest(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     role: Optional[str] = None
+    display_name: Optional[str] = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -71,6 +73,7 @@ def update_me(req: UpdateUserRequest, user: dict = Depends(get_current_user)):
         username=req.username,
         email=req.email,
         phone=req.phone,
+        display_name=req.display_name,
     )
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
@@ -161,6 +164,7 @@ def create_user(req: CreateUserRequest, admin: dict = Depends(require_admin)):
     """Create a new user (admin only)."""
     ok, msg, uid = auth_service.create_user(
         req.username, req.password, req.role, req.email or "", req.phone or "",
+        display_name=req.display_name or "",
     )
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
@@ -180,6 +184,7 @@ def update_user(user_id: int, req: UpdateUserRequest, admin: dict = Depends(requ
         email=req.email,
         phone=req.phone,
         role=req.role,
+        display_name=req.display_name,
     )
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
