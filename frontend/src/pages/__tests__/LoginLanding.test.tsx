@@ -48,7 +48,9 @@ const enabledCatalog = [{
 }];
 
 const fillAndSubmit = async () => {
-  await userEvent.type(screen.getByLabelText('用户名'), 'alice');
+  // 字段现在同时接受用户名与邮箱（2026-11-14 邮箱登录），label 文案为「用户名 / 邮箱」；
+  // 按完整 label 取元素，文案漂移时这里会直接报错而不是静默取不到
+  await userEvent.type(screen.getByLabelText('用户名 / 邮箱'), 'alice');
   await userEvent.type(screen.getByLabelText('密码'), 'pw123456');
   await userEvent.click(screen.getByRole('button', { name: /登录/ }));
 };
