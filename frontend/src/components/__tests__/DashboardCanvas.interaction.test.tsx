@@ -764,6 +764,87 @@ describe('编辑视口、历史与流畅度回归', () => {
     pointer(cell, 'pointerdown', 20, 20); pointer(window, 'pointerup', 120, 68);
     expect(h.onChange).toHaveBeenCalledTimes(1);
   });
+  describe('空格按住的抓手光标反馈', () => {
+    it('按住空格置 spaceHeld，松开复位', () => {
+      const h = interaction();
+      expect(h.state().spaceHeld).toBe(false);
+      fireEvent.keyDown(window, { code: 'Space', key: ' ' });
+      expect(h.state().spaceHeld).toBe(true);
+      fireEvent.keyUp(window, { code: 'Space' });
+      expect(h.state().spaceHeld).toBe(false);
+    });
+    it('视口 data-panning 与卡片 cursor-move 随空格切换（抓手仅限视口内）', () => {
+      const h = pageInteraction();
+      const viewport = h.container.querySelector('.adh-canvas-viewport')!;
+      const cell = h.container.querySelector('[data-chart-id="7"]')!;
+      expect(viewport.getAttribute('data-panning')).toBeNull();
+      expect(cell.className).toContain('cursor-move');
+      fireEvent.keyDown(window, { code: 'Space', key: ' ' });
+      expect(viewport.getAttribute('data-panning')).toBe('true');
+      expect(cell.className).not.toContain('cursor-move');
+      fireEvent.keyUp(window, { code: 'Space' });
+      expect(viewport.getAttribute('data-panning')).toBeNull();
+      expect(cell.className).toContain('cursor-move');
+    });
+    it('输入框聚焦或弹窗打开时按空格不置位', () => {
+      const h = interaction();
+      const input = document.createElement('input');
+      document.body.appendChild(input);
+      fireEvent.keyDown(input, { code: 'Space', key: ' ' });
+      expect(h.state().spaceHeld).toBe(false);
+      input.remove();
+      const dialog = document.createElement('div');
+      dialog.setAttribute('role', 'dialog');
+      document.body.appendChild(dialog);
+      fireEvent.keyDown(window, { code: 'Space', key: ' ' });
+      expect(h.state().spaceHeld).toBe(false);
+      dialog.remove();
+    });
+    it('交互锁定（保存/预览）期间按空格不置位', () => {
+      const h = interaction({ interactionLocked: true });
+      fireEvent.keyDown(window, { code: 'Space', key: ' ' });
+      expect(h.state().spaceHeld).toBe(false);
+    });
+    it('窗口失焦复位空格态', () => {
+      const h = interaction();
+      fireEvent.keyDown(window, { code: 'Space', key: ' ' });
+      expect(h.state().spaceHeld).toBe(true);
+      fireEvent(window, new Event('blur'));
+      expect(h.state().spaceHeld).toBe(false);
+    });
+    it('H 常驻平移与空格临时态互不干扰', () => {
+      const h = interaction({ panMode: true });
+      expect(h.state().spaceHeld).toBe(false);
+      fireEvent.keyDown(window, { code: 'Space', key: ' ' });
+      expect(h.state().spaceHeld).toBe(true);
+      fireEvent.keyUp(window, { code: 'Space' });
+      expect(h.state().spaceHeld).toBe(false);
+    });
+    it('空格状态迟到：进行中的组件拖拽就地转换为整画布平移', () => {
+      const h = interaction();
+      pointer(h.getByTestId('cell'), 'pointerdown', 200, 200);
+      pointer(window, 'pointermove', 220, 210); flush();
+      expect(h.state().draggingChart).toBe(7);
+      fireEvent.keyDown(window, { code: 'Space', key: ' ' });
+      expect(h.state().spaceHeld).toBe(true);
+      expect(h.state().draggingChart).toBeNull();
+      pointer(window, 'pointermove', 260, 240); flush();
+      expect(h.state().panOffset).toEqual({ x: 40, y: 30 });
+      pointer(window, 'pointerup', 260, 240);
+      expect(h.onDragEnd).not.toHaveBeenCalled();
+    });
+    it('转换后 Escape 回滚 panOffset 到转换时值', () => {
+      const h = interaction();
+      act(() => h.state().setPanOffset({ x: 10, y: 5 }));
+      pointer(h.getByTestId('cell'), 'pointerdown', 200, 200);
+      pointer(window, 'pointermove', 220, 210); flush();
+      fireEvent.keyDown(window, { code: 'Space', key: ' ' });
+      pointer(window, 'pointermove', 260, 240); flush();
+      expect(h.state().panOffset).toEqual({ x: 50, y: 35 });
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(h.state().panOffset).toEqual({ x: 10, y: 5 });
+    });
+  });
   it('半比例页面拖动逐帧连续跟手，网格和 G2 实例保持稳定，松手只提交一次', () => {
     const h = pageInteraction();
     act(() => h.state().zoomTo(0.5)); flush();

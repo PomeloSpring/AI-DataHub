@@ -532,7 +532,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
           onSelect={charts.handleSelectElement} onConfig={openConfig} onDelete={charts.handleDeleteSelected}
           onChange={items => charts.updatePageLayout(breakpoint, items)} />
       </div> : <div ref={canvasDropRef} className="adh-canvas-viewport relative min-h-0 min-w-0 flex-1 overflow-hidden"
-        data-panning={panMode || undefined} data-drag-over={overCanvas || undefined}
+        data-panning={panMode || canvas.spaceHeld || undefined} data-drag-over={overCanvas || undefined}
         style={{ touchAction: 'none', userSelect: 'none', ...backdropStyle(), ...dotBackgroundStyle(dimensions.gridSize) }}
         onPointerDownCapture={canvas.handlePanStart}>
         <DashboardCanvas ref={canvas.surfaceRef} dashboard={draftDashboard} items={library.items} showGrid={showGrid} draft interactive={interactive}
@@ -545,7 +545,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
             const original = chartRect(chart);
             const p = { ...original, ...(dragging ? canvas.dragPosition : {}), ...(resizing ? canvas.resizePosition : {}) };
             return <div key={chart.id} data-chart-id={chart.id} data-selected={charts.selectedIds.includes(chart.id) || undefined}
-              className={`adh-cell adh-editable-card absolute left-0 top-0 ${panMode ? '' : 'cursor-move'}`}
+              className={`adh-cell adh-editable-card absolute left-0 top-0 ${(panMode || canvas.spaceHeld) ? '' : 'cursor-move'}`}
               style={{ transform: `translate3d(${p.x}px, ${p.y}px, 0)`, width: p.w, height: p.h, zIndex: selected ? 10 : 1,
                 willChange: dragging ? 'transform' : undefined, touchAction: 'none' }}
               onPointerDown={e => canvas.handleDragStart(e, chart.id)} onDoubleClick={() => { if (!panMode) openConfig(chart); }}>
