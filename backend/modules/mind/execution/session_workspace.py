@@ -424,6 +424,19 @@ def _reclaim_dead_execution(session, write=None) -> bool:
     return bool(released)
 
 
+def normalize_relative_dir(value) -> str:
+    """会话相对目录的规范形态：分隔符统一为 `/`。
+
+    `relative_dir` 由创建侧 `str(Path.relative_to(base))` 写入，Windows 实例上落库就是
+    `1794642933294\\workspace\\311\\sessions\\<key>`；同一份库被 Linux 实例读到时按字符
+    直比必然不等，于是这些会话**永远删不掉**（历史缺陷：删除报「会话目录映射不一致」）。
+    清理目标始终由行字段推导（见 `_session_cleanup_root` 的 expected），登记值只用来
+    核验「登记的确实是这个会话目录」，因此分隔符不参与判定；写入侧同用本函数，
+    新行一律存规范形态。
+    """
+    return str(value or "").replace("\\", "/")
+
+
 def _session_cleanup_root(session):
     """定位待清理目录；返回 None 表示目录已不存在（工作区为空），无需清理。
 
@@ -436,7 +449,11 @@ def _session_cleanup_root(session):
     from backend.common.config import ADH_WORKSPACES_DIR
     key = session["session_key"]
     expected = f"{session['user_id']}/workspace/{session['workspace_id']}/sessions/{key}"
-    if not re.fullmatch(r"[a-f0-9]{32}", key or "") or session["relative_dir"] != expected:
+    if not re.fullmatch(r"[a-f0-9]{32}", key or "") or normalize_relative_dir(session["relative_dir"]) != expected:
+        # 只拦真正的映射漂移（属主/空间/目录被改写）；跨平台分隔符差异不算
+        logging.getLogger(__name__).error(
+            "会话目录映射与行字段不符，拒绝清理: session=%s recorded=%r expected=%r",
+            key, session.get("relative_dir"), expected)
         raise HTTPException(409, "会话目录映射不一致，未执行清理，请联系管理员")
     base = Path(ADH_WORKSPACES_DIR).resolve()
     if not base.is_dir():
@@ -937,7 +954,7 @@ def claim_session(task, backend, config):
                     "INSERT INTO adh_agent_sessions (session_key,conversation_id,user_id,workspace_id,as_bot_key,backend,"
                     "storage_node,relative_dir,policy_hash) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (key, cid or None, ctx.user_id, ctx.workspace_id, policy.as_bot["as_bot_key"], backend,
-                     node, str(root.relative_to(base)), policy.digest),
+                     node, normalize_relative_dir(str(root.relative_to(base))), policy.digest),
                 )
             supplied = ctx.extra.get("session_id")
             if supplied and supplied != (row.get("sdk_session_id") or ""):

@@ -23,6 +23,11 @@ def _session(**over):
     return row
 
 
+def _derived_dir(root, sess):
+    """行字段推导出的清理目标（与 relative_dir 登记值无关）。"""
+    return root / str(sess["user_id"]) / "workspace" / str(sess["workspace_id"]) / "sessions" / sess["session_key"]
+
+
 @pytest.fixture
 def workspaces(tmp_path, monkeypatch):
     """把 ADH_WORKSPACES_DIR 指到临时目录；exists=False 模拟存储卷未挂载。"""
@@ -72,6 +77,35 @@ def test_cleanup_rejects_running_session(workspaces):
     with pytest.raises(HTTPException) as exc:
         sw._session_cleanup_root(_session(status="running", execution_token="t"))
     assert exc.value.status_code == 409
+
+
+# ── 跨平台登记值（Windows 实例落库的 `\` 分隔）────────────────────
+# 历史缺陷：relative_dir 由 str(Path.relative_to(base)) 写入，Windows 上是反斜杠；
+# Linux 实例按字符直比判成"映射不一致"，这类会话从此删不掉（前端只剩一句
+# "请联系管理员"）。清理目标本就由行字段推导，分隔符差异不构成风险。
+
+def test_cleanup_accepts_windows_recorded_separators(workspaces):
+    root = workspaces(exists=True)
+    sess = _session(storage_node="d" * 32)
+    derived = _derived_dir(root, sess)
+    derived.mkdir(parents=True)
+    (root / ".storage-node").write_text("d" * 32)
+    sess["relative_dir"] = sess["relative_dir"].replace("/", "\\")
+    assert sw._session_cleanup_root(sess) == derived
+
+
+def test_cleanup_still_rejects_real_mapping_drift(workspaces):
+    """归一只抹平分隔符：空间/属主真被改写（含反斜杠形态）依旧 409，不误删别处目录。"""
+    root = workspaces(exists=True)
+    sess = _session(storage_node="d" * 32)
+    _derived_dir(root, sess).mkdir(parents=True)
+    (root / ".storage-node").write_text("d" * 32)
+    for bad in (f"7\\workspace\\9\\sessions\\{sess['session_key']}", "..\\..\\other",
+                f"8/workspace/3/sessions/{sess['session_key']}"):
+        with pytest.raises(HTTPException) as exc:
+            sw._session_cleanup_root({**sess, "relative_dir": bad})
+        assert exc.value.status_code == 409
+        assert _derived_dir(root, sess).exists()
 
 
 # ── 执行权残留自愈（证据口径）─────────────────────────────────
