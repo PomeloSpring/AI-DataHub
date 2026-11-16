@@ -10,6 +10,7 @@
 #   ./setup-local.sh --check-only    仅检查环境, 不安装任何东西
 #   ./setup-local.sh --skip-frontend 只装 Python 依赖
 #   ./setup-local.sh --force         前端强制重装(node_modules 推倒重来)
+#   ./setup-local.sh --verbose       打印安装细节(pip -v 逐个包 / npm info + 前台脚本)
 #   ./setup-local.sh --start         安装完成后启动全部服务(= ./start-all.sh -d)
 # ═══════════════════════════════════════════════════════════════
 
@@ -23,14 +24,15 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step()  { echo -e "\n${BLUE}━━━ $1 ━━━${NC}"; }
 
-SKIP_FRONTEND=0; FORCE=0; START=0; CHECK_ONLY=0
+SKIP_FRONTEND=0; FORCE=0; START=0; CHECK_ONLY=0; VERBOSE=0
 for arg in "$@"; do
     case "$arg" in
         --check-only)    CHECK_ONLY=1 ;;
         --skip-frontend) SKIP_FRONTEND=1 ;;
         --force)         FORCE=1 ;;
+        --verbose|-v)    VERBOSE=1 ;;
         --start)         START=1 ;;
-        -h|--help)       sed -n '2,14p' "$0"; exit 0 ;;
+        -h|--help)       sed -n '2,15p' "$0"; exit 0 ;;
         *) log_error "未知参数: $arg (见 --help)"; exit 1 ;;
     esac
 done
@@ -41,6 +43,15 @@ FAILURES=0
 #   PIP_MIRROR=https://pypi.org/simple ./setup-local.sh
 PIP_MIRROR="${PIP_MIRROR:-https://mirrors.aliyun.com/pypi/simple}"
 PIP_ARGS=(-i "$PIP_MIRROR")
+
+# 安装日志详略: 默认 pip -q(只留摘要与报错, 避免满屏下载行); --verbose 换 pip -v。
+# npm 同理: 默认 notice(只报 added N packages), --verbose 提到 info 并前台执行生命周期脚本。
+# 需要更底层的解析/HTTP 证据时: PIP_LOG_ARGS 改成 -vv(手动) 或 bash -x ./setup-local.sh --verbose
+if [ $VERBOSE -eq 1 ]; then
+    PIP_LOG_ARGS=(-v); NPM_LOGLEVEL=info; NPM_EXTRA="--foreground-scripts"
+else
+    PIP_LOG_ARGS=(-q); NPM_LOGLEVEL=notice; NPM_EXTRA=""
+fi
 
 # ═══════════════ 1. 环境检查 ═══════════════
 log_step "1/5 环境检查"
@@ -72,6 +83,7 @@ fi
 
 # ═══════════════ 2. Python venv + 依赖 ═══════════════
 log_step "2/5 Python venv 与服务依赖"
+log_info "安装细节级别: pip ${PIP_LOG_ARGS[*]} | npm --loglevel=${NPM_LOGLEVEL}${NPM_EXTRA:+ ${NPM_EXTRA}}  (--verbose 可切换)"
 
 if [ ! -x "venv/bin/pip" ]; then
     if [ -z "$PY_BIN" ]; then log_error "无可用 Python, 跳过 venv 创建"; FAILURES=$((FAILURES+1));
@@ -80,7 +92,7 @@ else log_info "venv 已存在: venv/bin/python $(venv/bin/python --version 2>&1 
 
 PIP="venv/bin/pip"
 if [ -x "$PIP" ]; then
-    $PIP install "${PIP_ARGS[@]}" -q -U pip setuptools wheel || log_warn "pip 基础工具链升级失败(继续)"
+    $PIP install "${PIP_ARGS[@]}" "${PIP_LOG_ARGS[@]}" -U pip setuptools wheel || log_warn "pip 基础工具链升级失败(继续)"
     # 本地非容器模式下所有服务共用一个 venv: 先装 shared, 再逐服务安装
     # (清单与 backend/modules/*/requirements.txt 对齐; gov/viz 复用 common 依赖)
     REQ_FILES=(
@@ -98,7 +110,7 @@ if [ -x "$PIP" ]; then
     for req in "${REQ_FILES[@]}"; do
         if [ -f "$req" ]; then
             log_info "pip install -r $req"
-            $PIP install "${PIP_ARGS[@]}" -q -r "$req" || { log_error "依赖安装失败: $req"; FAILURES=$((FAILURES+1)); }
+            $PIP install "${PIP_ARGS[@]}" "${PIP_LOG_ARGS[@]}" -r "$req" || { log_error "依赖安装失败: $req"; FAILURES=$((FAILURES+1)); }
         else
             log_warn "跳过(不存在): $req"
         fi
@@ -126,10 +138,10 @@ install_npm() {
         fi
         if [ -f package-lock.json ]; then
             log_info "$label: npm ci (按 lockfile 精确安装)"
-            npm ci --no-audit --no-fund || exit 1
+            npm ci --no-audit --no-fund --loglevel=${NPM_LOGLEVEL} ${NPM_EXTRA} || exit 1
         else
             log_info "$label: npm install"
-            npm install --no-audit --no-fund || exit 1
+            npm install --no-audit --no-fund --loglevel=${NPM_LOGLEVEL} ${NPM_EXTRA} || exit 1
         fi
     ) && log_info "$label 完成" || { log_error "$label 安装失败"; FAILURES=$((FAILURES+1)); }
 }
