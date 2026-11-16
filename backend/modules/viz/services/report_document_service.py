@@ -365,8 +365,13 @@ def _spec_table(data: dict) -> str:
 
 
 def render_spec_to_html(body: Any, *, title: str = "", theme: Optional[str] = None,
-                        notes: Optional[list] = None) -> str:
-    """spec 正文 → 自包含 HTML 快照（归档进报告中心与导出用）。"""
+                        notes: Optional[list] = None, lang: Optional[str] = None) -> str:
+    """spec 正文 → 自包含 HTML 快照（归档进报告中心与导出用）。
+
+    `lang`：文档 `<html lang>`。留空时按**文档自身文字**判（标题 + 首个章节名），再不行才回平台默认；
+    归档这条链路没有请求上下文（存为报告可能在对话/定时任务里发生），拿内容当依据比拿默认值贴标签准确：
+    英文正文标 zh-CN 会让浏览器拼写/读屏/翻译错判语言。
+    """
     doc = body
     if isinstance(doc, str):
         try:
@@ -383,7 +388,11 @@ def render_spec_to_html(body: Any, *, title: str = "", theme: Optional[str] = No
 
     head = [line.replace('<title>报告标题</title>', f'<title>{heading}</title>')
             for line in _skeleton_html_head(theme)]
-    parts: list[str] = ['<!DOCTYPE html>', '<html lang="zh-CN">', *head, f'<h1>{heading}</h1>']
+    from backend.common import i18n
+    doc_lang = i18n.normalize_locale(lang) or (i18n.detect_question_language(
+        f"{heading} " + " ".join(str(s.get('title') or '') for s in spec_sections(doc)[:1] if isinstance(s, dict)))
+        or i18n.DEFAULT_LOCALE)
+    parts: list[str] = ['<!DOCTYPE html>', f'<html lang="{doc_lang}">', *head, f'<h1>{heading}</h1>']
     meta = []
     for label, value in (("生成主题", doc.get("theme") or theme or ""),
                          ("模板", doc.get("template_name") or ""),

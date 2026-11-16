@@ -68,8 +68,8 @@ export class ChatBIChat extends HTMLElement {
     this.style.display = 'block';
     this.style.height = height;
 
-    // Init client
-    this.client = new ChatBIClient(host, apiKey, userId, userName);
+    // Init client（locale 从“声明但没人消费”接上：不接就是宿主设了也不生效的空承诺）
+    this.client = new ChatBIClient(host, apiKey, userId, userName, this.getAttr('locale'));
     try {
       await this.client.init();
     } catch (e: any) {

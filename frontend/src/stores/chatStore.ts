@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import client from '../api/client';
 import { toast } from '@/lib/toast';
-import i18n from '@/i18n';
+import i18n, { localeHeaders } from '@/i18n';
 import { useThemeStore } from './themeStore';
 import { listAuthorizedSites, type AuthorizedSite } from '../api/sites';
 import type { DecisionAdvicePayload } from '../api/decisions';
@@ -1381,7 +1381,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // 有附件时整体改 multipart(payload + files),由服务端落盘到会话工作区;
       // 无附件保持 JSON(AS-BOT 同形态)。multipart 时不能手设 Content-Type(需带 boundary)。
       let reqBody: BodyInit;
-      const reqHeaders: Record<string, string> = { ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+      // SSE 用 fetch 不经过 axios 拦截器，界面语言必须在这里显式带上（否则后端拿不到 Accept-Language，
+      // 只能回退到提问语言判定，英文界面下用中文提问依旧回中文）。
+      const reqHeaders: Record<string, string> = {
+        ...localeHeaders(),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      };
       if (attachments && attachments.length > 0) {
         const form = new FormData();
         form.append('payload', JSON.stringify(requestBody));

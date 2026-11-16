@@ -3,15 +3,37 @@ export class ChatBIClient {
   private apiKey: string;
   private userId: string;
   private userName: string;
+  /** 宿主页面给的语言（`locale` 属性）：随每个请求以 Accept-Language 下发，
+   *  后端据此定 LLM 回复语言（口径：提问语言优先 → 界面语言兜底，见 backend/common/i18n）。
+   *  合法清单与后端 SUPPORTED_LOCALES / frontend/src/i18n 的 LOCALES 同源；新语言三处一起加。 */
+  private locale: string;
   private embedToken: string | null = null;
   private tokenExpiresAt: number = 0;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(host: string, apiKey: string, userId: string, userName: string = '') {
+  private static readonly SUPPORTED_LOCALES = ['zh-CN', 'en-US'];
+
+  constructor(host: string, apiKey: string, userId: string, userName: string = '', locale: string = '') {
     this.host = host.replace(/\/$/, '');
     this.apiKey = apiKey;
     this.userId = userId;
     this.userName = userName;
+    this.locale = this.normalizeLocale(locale);
+  }
+
+  /** 非法 locale 不静默采用：回默认值 + console 提醒（配置面写了却不生效比报错更难查）。 */
+  private normalizeLocale(value: string): string {
+    const raw = (value || '').trim().replace(/_/g, '-');
+    if (!raw) return ChatBIClient.SUPPORTED_LOCALES[0];
+    const hit = ChatBIClient.SUPPORTED_LOCALES.find(l => l.toLowerCase() === raw.toLowerCase());
+    if (hit) return hit;
+    console.warn(`[chatbi-sdk] 不支持的 locale "${value}"（可选: ${ChatBIClient.SUPPORTED_LOCALES.join(', ')}），已回默认语言`);
+    return ChatBIClient.SUPPORTED_LOCALES[0];
+  }
+
+  /** 所有出站请求统一带界面语言（后端用它定 LLM 回复语言与文档 lang）。 */
+  private localeHeader(): Record<string, string> {
+    return { 'Accept-Language': this.locale };
   }
 
   async init(): Promise<void> {
@@ -29,7 +51,7 @@ export class ChatBIClient {
   private async verify(): Promise<void> {
     const res = await fetch(`${this.host}/api/embed/auth/verify`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...this.localeHeader() },
       body: JSON.stringify({
         api_key: this.apiKey,
         user_id: this.userId,
@@ -53,7 +75,7 @@ export class ChatBIClient {
     try {
       const res = await fetch(`${this.host}/api/embed/auth/refresh`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.localeHeader() },
         body: JSON.stringify({ embed_token: this.embedToken }),
       });
 
@@ -84,6 +106,7 @@ export class ChatBIClient {
     const url = `${this.host}/api/embed${path}`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      ...this.localeHeader(),
       'Authorization': `Bearer ${this.embedToken}`,
       ...(options.headers as Record<string, string> || {}),
     };
@@ -146,6 +169,7 @@ export class ChatBIClient {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...this.localeHeader(),
         'Authorization': `Bearer ${this.embedToken}`,
       },
       body: JSON.stringify({

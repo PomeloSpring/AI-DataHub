@@ -635,3 +635,41 @@ describe('图表入场动效（motion.chart）落进 spec 且不破坏默认零�
     }
   });
 });
+
+// 多系列时间类目轴域（月度×分站 防乱序）：历史缺陷——分组扁平化跳过空点后，
+// G2 拿类目首现顺序建 cat 轴域，首个站点缺的月份被后面站点追加到末尾 →
+// x 轴出现 2026-11 之后又跳回 2026-02 的乱序（App·Formlabs「月度打开次数·分站」）。
+describe('buildG2Spec 多系列时间类目轴域钉死', () => {
+  const siteCols = ['ym', 'site', 'opens'];
+  // cn 缺 2026-02；行按站点成块（先 cn 后 eu），复现「缺月被后一个站点追加到末尾」的场景
+  const siteRows = [
+    { ym: '2025-11', site: 'cn', opens: 10 },
+    { ym: '2025-12', site: 'cn', opens: 20 },
+    { ym: '2026-01', site: 'cn', opens: 30 },
+    { ym: '2026-03', site: 'cn', opens: 40 },
+    { ym: '2026-02', site: 'eu', opens: 5 },
+    { ym: '2026-03', site: 'eu', opens: 15 },
+  ];
+
+  it('line 分组：x 域是全局排序的完整月份序列（2026-02 落在 01 与 03 之间，不被追加到末尾）', () => {
+    const spec: any = buildG2Spec('line', siteCols, siteRows,
+      { xCol: 'ym', yCol: 'opens', groupCol: 'site' }, false, 800, 400);
+    expect(spec.scale.x.domain).toEqual(['2025-11', '2025-12', '2026-01', '2026-02', '2026-03']);
+  });
+
+  it('area / bar 分组同样钉域（与 line 同一处收口）', () => {
+    const area: any = buildG2Spec('area', siteCols, siteRows,
+      { xCol: 'ym', yCol: 'opens', groupCol: 'site' }, false, 800, 400);
+    expect(area.scale.x.domain).toEqual(['2025-11', '2025-12', '2026-01', '2026-02', '2026-03']);
+    const bar: any = buildG2Spec('bar', siteCols, siteRows,
+      { xCol: 'ym', yCol: 'opens', groupCol: 'site' }, false, 800, 400);
+    expect(bar.scale.x.domain).toEqual(['2025-11', '2025-12', '2026-01', '2026-02', '2026-03']);
+  });
+
+  it('单系列不设 x 域（维持原样，不影响非分组图的类目顺序）', () => {
+    const spec: any = buildG2Spec('line', ['ym', 'opens'],
+      [{ ym: '2026-02', opens: 5 }, { ym: '2026-01', opens: 3 }],
+      { xCol: 'ym', yCol: 'opens' }, false, 800, 400);
+    expect(spec.scale.x).toBeUndefined();
+  });
+});

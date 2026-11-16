@@ -35,12 +35,76 @@ def _slug(text: str, fallback: str) -> str:
     return s or fallback
 
 
+# 本生成器的**专属模型槽位**（按名认领域，不抢别人家的模型）。
+# 旧写法是 `kind='business' ORDER BY id LIMIT 1` 认领第一个业务本体 —— 会撞上
+# 人工建模的「联耀业务本体」（18 对象 + 字典绑定）并触发破坏性覆盖护栏（实跑复现）。
+_MODEL_NAME = "业务本体（数据资产路由图）"
+
+# 模型行的产出者哨兵（**固定值，不取调用者用户名**）：`ontology_service._ASSET_ROUTE_PRODUCER`
+# 靠它认出“这批对象是全量重算的派生物”，在检索时给低于人工建模对象的优先级。
+# 拿调用者名字填这里会让分层随“谁按了按钮”而飘移；点按钮的人由请求中间件的审计日志记录。
+_MODEL_PRODUCER = "business_asset_ontology"
+
+
+def ensure_dataset_object_keys() -> int:
+    """为缺 `object_key` 的 active 数据集**首次**分配稳定身份并落库（只补空值，绝不改写）。
+
+    为何要稳定身份：`object_key` 是数据集在本体/绑定/图谱里的身份，字典 `bound_object_key`
+    与图谱 `queriesObject` 都按它对齐。按名称现算会撞车且随增删重排（旧形态 `dataset_app_app_3`
+    的序号兜底就是如此），改名/新增会让已建立的引用静默挂错对象 —— 所以下缀用自增 id
+    （不变、天然唯一；id 只作身份，展示一律走 display_name/aliases，不外裸 id）。
+
+    回写只补空行（`WHERE object_key IS NULL OR object_key = ''`）：已有值属于人工/历史登记，
+    不得被同步抬回去（同一批幂等迁移把列覆盖成空值的坑不得重踏）。
+    """
+    from backend.common.db.metadata_db import get_metadata_conn
+
+    rows = _q("SELECT id, name FROM adh_datasets WHERE status = 'active' "
+              "AND (object_key IS NULL OR object_key = '') ORDER BY id")
+    if not rows:
+        return 0
+    existing = _q("SELECT object_key FROM adh_datasets WHERE object_key IS NOT NULL AND object_key != ''")
+    taken = {str(r.get("object_key") or "").strip() for r in existing}
+    plan: list[tuple[str, int]] = []
+    for r in rows:
+        key = f"dataset_{_slug(str(r.get('name') or ''), 'd')}_{int(r['id'])}"
+        while key in taken:
+            key = f"{key}_x"
+        taken.add(key)
+        plan.append((key, int(r["id"])))
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            for key, ds_id in plan:
+                cur.execute(
+                    "UPDATE adh_datasets SET object_key = %s, updated_at = UTC_TIMESTAMP(6) "
+                    "WHERE id = %s AND (object_key IS NULL OR object_key = '')", (key, ds_id))
+        conn.commit()
+    logger.info("[business-asset] 为 %d 个数据集首次分配 object_key（稳定身份，不重写已有值）", len(plan))
+    return len(plan)
+
+
 def _q(sql: str, params: tuple = ()) -> list:
     from backend.common.db.metadata_db import get_metadata_conn
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, params)
             return cur.fetchall()
+
+
+def _is_es_source(datasource_id) -> bool:
+    """该数据集的执行源是否 ES 型（单一判据：`adh_datasources.db_type`）。
+
+    查不到源型时 **fail-closed 按 ES 处理**（本轮不绑语义层）：宁可少一个可查入口，
+    不给一个形状未知的源登记执行契约。
+    """
+    # 不得回到内置 ES 通道时代的行形状判据（那两个字段已退役，拿去当判据恒为 false，
+    # 会造出“门还在、行为已停”的静默失效 —— 护栏用例按源码扫这段文本也包住了）。
+    from backend.common.db.datasource_db import is_es_datasource
+    try:
+        return bool(is_es_datasource(int(datasource_id or 0)))
+    except Exception:  # noqa: BLE001 — 源型不可判定时不猜，走不绑定分支并留日志
+        logger.warning("[business-asset] 查数据源 %s 的 db_type 失败，本轮按不绑定处理（fail-closed）", datasource_id)
+        return True
 
 
 def _collect() -> dict:
@@ -183,6 +247,11 @@ def _build_asset_objects(data: dict, src_by_ds: dict) -> tuple[list, list]:
     ds_name_by_id = {int(r["id"]): str(r["name"]) for r in data["datasources"]}
     ds_names = set(ds_name_by_id.values())
     used_keys: set = set()
+    # 预登记本轮沿用的稳定身份：它们不是本轮算出来的 key，不得被序号兜底改写，
+    # 只能让其他生成 key 避开它（查重在 _key 内已完成，此处只防“稳定 key 被当成自由位”）。
+    stable_keys = {str(x.get("object_key") or "").strip() for x in data["datasets"]
+                   if str(x.get("object_key") or "").strip()}
+    used_keys |= stable_keys
 
     def _key(prefix: str, name: str, idx: int) -> str:
         k = f"{prefix}_{_slug(name, str(idx))}"
@@ -215,14 +284,36 @@ def _build_asset_objects(data: dict, src_by_ds: dict) -> tuple[list, list]:
         source_label = {"semantic": "语义对象", "sql": "SQL", "both": "语义对象+SQL"}.get(
             str(d.get("source_type") or ""), str(d.get("source_type") or ""))
         chart_seg = f"，预设图表「{d.get('chart_type')}」" if d.get("chart_type") else ""
-        objects.append({
-            "key": _key("dataset", d["name"], i),
+        # 对象 key = 数据集的稳定身份 `adh_datasets.object_key`（由 ensure_dataset_object_keys 首次分配）。
+        # 必须是同一个值：绑定行、字典 bound_object_key、图谱 queriesObject 全按它对齐，
+        # 而旧写法每轮按名称+序号重算会让这些引用静默挂错（spec F6）。
+        stable = str(d.get("object_key") or "").strip()
+        if stable and [x.get("object_key") for x in data["datasets"]].count(stable) > 1:
+            notes.append(f"数据集「{d.get('name')}」的 object_key「{stable}」与其他数据集重复，"
+                         "本轮回退按名称生成 key（待人工校正，不错挂身份）")
+            stable = ""
+        key = stable or _key("dataset", d["name"], i)
+        obj: dict = {
+            "key": key,
             "display_name": f"数据集·{d['name']}",
             "aliases": [str(d["name"])],
             "description": (f"发布数据集「{d['name']}」（归属数据源「{ds_name}」，来源 {source_label}{chart_seg}）。"
                             f"{d.get('description') or ''}"),
-            "route": _route(ds_name, str(d.get("object_key") or "")),
-        })
+            "route": _route(ds_name, stable),
+        }
+        # 可执行形状的唯一载体是 `execution_dataset`（值=数据集名）：doc 里的 execution_binding
+        # 会被 save_draft 剔离（v0.5 B6b：物理绑定唯一在部署绑定层）。本字段 →
+        # `ontology_yaml_import._build_execution_binding` 产出 bind_kind='dataset' 的绑定行，
+        # 再由 `_backfill_execution_binding` 投影到对象展开行 → planner._plan_dataset。
+        #
+        # ES 源暂不登记：语义层对 ES 数据集的门（不得按目标方言二次编译）仍在，透传契约
+        # 要到 P1 才落地——现在就绑定等于**入口宽于能力**（LLM 能选中、必被拒）。
+        # 判据单一来自 `datasource_db.is_es_datasource`（按源 db_type，不看已退役的 source_type/es_pattern）。
+        if _is_es_source(d.get("datasource_id")):
+            notes.append(f"数据集「{d.get('name')}」挂在 ES 源，本期只做路由不绑语义层（透传契约待 P1）")
+        else:
+            obj["execution_dataset"] = str(d["name"])
+        objects.append(obj)
 
     for i, t in enumerate(data["sync_tasks"], 1):
         src_n, tgt_n = str(t.get("source_datasource_name") or ""), str(t.get("target_datasource_name") or "")
@@ -391,19 +482,30 @@ def build_business_asset_doc() -> tuple[dict, list]:
 
 
 def generate_business_asset_ontology(created_by: str = "") -> dict:
-    """生成/覆盖业务本体（数据资产路由图）并走 save_draft/activate 级联。
+    """生成/覆盖**本生成器自己的**业务本体（数据资产路由图）并走 save_draft/activate 级联。
 
-    已有非归档 kind='business' 模型 → 覆盖其 json_content（save_draft 级联重建
-    派生物）；无 → 新建并激活。返回 {model_id, object_count, notes}。
+    专属槽位：按 `name = _MODEL_NAME` 认领自己的模型，没有则新建并激活；
+    绝不按 `kind='business' ORDER BY id LIMIT 1` 抓第一个业务本体 —— 旧写法会认领
+    人工建模的「联耀业务本体」（18 对象 + 字典绑定）然被破坏性覆盖护栏拦下，
+    对外文案却写成“治理资产为空/不匹配”，使该功能从未产出过任何东西（spec F3）。
+
+    返回 {model_id, object_count, bound_datasets, notes}。
     """
     from backend.modules.catalog.services import ontology_service as osvc
 
+    # 先分配稳定身份再建 doc（doc 里的对象 key 直接用它）
+    ensure_dataset_object_keys()
     doc, notes = build_business_asset_doc()
     if not doc.get("objects"):
         raise ValueError("治理资产为空，无法生成业务本体（请先注册数据源/资产）")
+    bound = sum(1 for o in doc["objects"] if o.get("execution_dataset"))
 
-    rows = _q("SELECT id, status FROM adh_ontology_models "
-              "WHERE kind = 'business' AND status != 'archived' ORDER BY id LIMIT 1")
+    rows = _q("SELECT id, status, kind FROM adh_ontology_models "
+              "WHERE name = %s AND status != 'archived' ORDER BY id LIMIT 1", (_MODEL_NAME,))
+    if rows and str(rows[0].get("kind") or "") != "business":
+        raise ValueError(
+            f"名称「{_MODEL_NAME}」已被一个 kind={rows[0].get('kind')} 的模型占用，"
+            "不跨型覆盖（请改名该模型或为本生成器另立名称）")
     payload = json.dumps(doc, ensure_ascii=False, indent=2)
     if rows:
         model_id = int(rows[0]["id"])
@@ -418,14 +520,19 @@ def generate_business_asset_ontology(created_by: str = "") -> dict:
                     "(id, datasource_id, name, kind, domain, status, json_content, "
                     "yaml_content, md_content, object_count, created_by, created_at, updated_at) "
                     "VALUES (%s, 0, %s, 'business', %s, 'draft', %s, '', '', 0, %s, %s, %s)",
-                    (model_id, "业务本体（数据资产路由图）", str(doc.get("domain") or ""),
-                     payload, created_by or "business_asset_ontology", _now(), _now()))
+                    (model_id, _MODEL_NAME, str(doc.get("domain") or ""),
+                     payload, _MODEL_PRODUCER, _now(), _now()))
             conn.commit()
+        logger.info("[business-asset] 新建专属模型 %s(model_id=%s)，调用者=%s", _MODEL_NAME, model_id,
+                    created_by or "未知")
         osvc.activate(model_id)
 
-    result = osvc.save_draft(model_id, payload)
+    # allow_full_regenerate：整份 doc 由资产清单全量重算，资产被删/血缘边变动时对应对象
+    # **本就该消失**；护栏保护的是人工/LLM 编辑的模型（该参数不转发给任何工具通道）。
+    result = osvc.save_draft(model_id, payload, allow_full_regenerate=True)
     if str((rows[0]["status"] if rows else "draft")) != "active":
         result = osvc.activate(model_id)
     return {"model_id": model_id,
             "object_count": len(doc.get("objects") or []),
+            "bound_datasets": bound,
             "notes": notes + list(result.get("validation_warnings") or [])}

@@ -165,12 +165,21 @@ def analyze_report_template(req: ReportTemplateAnalyzeRequest,
 
 @router.get("/templates/{template_key}/skeleton")
 def get_report_template_skeleton(template_key: str, theme: str = "",
+                                 request: Request = None,
                                  user: dict = Depends(get_current_user)):
     """按模板取报表骨架（报表中心「套用模板」起稿）；模板不可用回 422 + 原因，不静默给空白。
 
     ``theme``：查看者当前主题（模板锁了主题时以模板为准）——新建的报表第一版就该带样式。
+    骨架的 `<html lang>` 按查看者界面语言（Accept-Language）标注：语言只影响文档属性，
+    不改变任何权限裁决；无请求上下文（单测/内部调用）时留空按平台默认语言。
     """
-    out = report_service.template_skeleton_by_key(template_key, theme=theme)
+    from backend.common import i18n
+    lang = ""
+    try:
+        lang = i18n.parse_accept_language((request.headers.get("accept-language") if request else None))
+    except Exception:  # noqa: BLE001 — 非 starlette 对象（单测桩）按“无界面语言”
+        lang = ""
+    out = report_service.template_skeleton_by_key(template_key, theme=theme, lang=lang)
     if not out.get("found"):
         raise HTTPException(status_code=422, detail=out.get("reason") or "报告模板不可用")
     return out

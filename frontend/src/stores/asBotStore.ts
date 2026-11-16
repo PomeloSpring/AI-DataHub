@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import client from '../api/client';
+import { localeHeaders } from '@/i18n';
 import { listOntologyGenerateTasks, type GenerateTask } from '../api/ontology';
 import { toast } from '@/lib/toast';
 
@@ -298,6 +299,8 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
         signal: abortController.signal,
         headers: {
           'Content-Type': 'application/json',
+          // fetch 不经过 axios 拦截器：界面语言必须显式带（同 chatStore 的 SSE 入口）
+          ...localeHeaders(),
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify(requestBody),

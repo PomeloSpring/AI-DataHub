@@ -2200,19 +2200,32 @@ def _reject_destructive_overwrite(model: dict, json_content: str) -> None:
               "指标口径归并进对象 metrics[] 名字引用（指向指标字典）不计为属性丢失")
 
 
-def save_draft(model_id: int, json_content: str, name: str = None) -> dict:
+def save_draft(model_id: int, json_content: str, name: str = None,
+               *, allow_full_regenerate: bool = False) -> dict:
     """保存本体编辑（JSON 事实源），服务端重新派生 YAML/MD。
 
     draft：直接改内容。active：允许就地编辑，保存时按 primary_table 依据真实元数据
     重算 execution_binding、重展开 adh_ontology_objects、重写绑定并同步图谱，
     使本体与「表 & 字段 / 指标」等数据目录联动。archived 不可编辑。
+
+    `allow_full_regenerate`（**仅服务端派生生产者可用，函数关键字参数、不对外暴露**）：
+    跳过「整对象丢失/关系缩水」护栏。适用于**整份 doc 由资产清单全量重算**的模型
+    （典型：数据资产路由图）—— 资产被删除/血缘边变动时，那些对象**本就应该消失**；
+    而护栏的保护对象是人工/LLM 编辑的模型（防据摘要重建抹掉成果）。
+    护栏本身不变弱：AS-BOT 工具通道（`sdk_tools/ontology_tools` / `save_draft_only`）
+    不转发该参数，LLM 无从设置（调用点由源码级用例锁定，只有全量重算的生成器）。
     """
     model = get_model(model_id)
     if not model:
         raise ValueError("模型不存在")
     if model["status"] == "archived":
         raise ValueError("已归档模型不可编辑；如需修改请在「版本管理」中回滚激活该版本")
-    _reject_destructive_overwrite(model, json_content)
+    if allow_full_regenerate:
+        # 不静默：谁跳了护栏、为什么跳，必须留在日志里可查
+        logger.warning(
+            "[ontology] 模型 %s(%s) 跳过破坏性覆盖护栏：调用方声明为全量重算的派生模型", model_id, name or "")
+    else:
+        _reject_destructive_overwrite(model, json_content)
 
     try:
         doc = json.loads(json_content)
@@ -3570,8 +3583,36 @@ def delete_model(model_id: int) -> bool:
 # 对象检索（供本体对象关键词检索与前端预览）
 # ═══════════════════════════════════════════════════════════════════
 
+# 派生的「数据资产路由图」模型的产出者哨兵（与 business_asset_ontology._MODEL_PRODUCER 同值）。
+# 它不是审计字段，而是“这份模型全量重算、对象不携带人工成果”的结构标记：
+# 检索时要给它低于人工建模对象的优先级（见 search_objects）。
+_ASSET_ROUTE_PRODUCER = "business_asset_ontology"
+
+
+def _asset_route_model_ids() -> set:
+    """派生资产路由图的模型 id 集合（查不到回空集，不阻断检索）。"""
+    try:
+        with get_metadata_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM adh_ontology_models WHERE created_by = %s",
+                            (_ASSET_ROUTE_PRODUCER,))
+                return {int(r["id"]) for r in cur.fetchall() or []}
+    except Exception as e:  # noqa: BLE001 — 标记查询失败不影响主链路，降级为不分层（但必须留日志）
+        logger.warning("[ontology] 资产路由图模型 id 查询失败，本次检索不分层: %s", e)
+        return set()
+
+
 def search_objects(question: str, datasource_id: int = 0, limit: int = 5) -> list[dict]:
-    """本体对象关键词检索（元数据库 LIKE，无向量），返回命中对象 + 所属模型 json_content。"""
+    """本体对象关键词检索（元数据库 LIKE，无向量），返回命中对象 + 所属模型 json_content。
+
+    排序口径（两条都是必需，不是优化）：
+    1. **人工/业务建模对象优先于派生的资产路由图对象**：后者把每个数据集都展开成一个
+       `数据集·X` 对象（现网 61 个），与业务对象同为 `datasource_id=0`；不分层时，
+       聚合态/无源会话的 top-N 会被资产目录挤掉真业务对象（定位漂移）。
+    2. **确定性排序 + 唯一 tiebreaker**：原先是无 ORDER BY + LIMIT，行序由引擎自定，
+       同一次提问两次检索可拿到不同 top-5（模型行为不可复现）。现按
+       「命中位置（名称/别名 优于 描述/正文）→ 是否派生模型 → id」定序。
+    """
     tokens: list[str] = []
     q = (question or "").strip()
     for part in re.split(r"[\s,，、;；/、]+", q):
@@ -3598,12 +3639,27 @@ def search_objects(question: str, datasource_id: int = 0, limit: int = 5) -> lis
     conditions.append("(" + " OR ".join(subs) + ")")
     where = "WHERE " + " AND ".join(conditions)
 
+    asset_ids = _asset_route_model_ids()
+    if asset_ids:
+        placeholders = ", ".join(["%s"] * len(asset_ids))
+        derived_expr = f"(model_id IN ({placeholders}))"
+        derived_params: list = sorted(asset_ids)
+    else:
+        # 不得写裸常量（如 "0"）：MySQL 把 ORDER BY 里的数字当**列位置**解析，会报
+        # "Unknown column '0' in 'order clause'"。用 model_id=0 恒假（model_id 是雪花 id，永不为 0）。
+        derived_expr, derived_params = "(model_id = 0)", []
+    hit_rank = ("CASE WHEN display_name LIKE %s OR aliases LIKE %s THEN 0 "
+                "WHEN object_key LIKE %s THEN 1 ELSE 2 END")
+    hit_params: list = [f"%{tokens[0]}%", f"%{tokens[0]}%", f"%{tokens[0]}%"]
+    order_by = f"ORDER BY {hit_rank} ASC, {derived_expr} ASC, id ASC"
+    order_params = hit_params + derived_params
+
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 f"SELECT id, model_id, object_key, display_name, aliases, description "
-                f"FROM adh_ontology_objects {where} LIMIT {int(limit)}",
-                params,
+                f"FROM adh_ontology_objects {where} {order_by} LIMIT {int(limit)}",
+                params + order_params,
             )
             hits = cur.fetchall()
             if not hits:

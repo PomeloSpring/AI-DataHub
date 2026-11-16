@@ -108,7 +108,9 @@ class RoleService:
                 import json
                 default_persona = {
                     "responsibility": f"协助 {display_name or name} 角色完成数据分析与相关任务",
-                    "style": "专业、简洁、数据驱动，中文回答",
+                    # style 不写回复语言（语言口径唯一在提示词「回复语言」段，见 backend/common/i18n）：
+                    # 写进 persona 后界面切英文仍会被拉回中文，且新角色与迁移种子会双口径漂移。
+                    "style": "专业、简洁、数据驱动",
                     "boundary": "只回答数据相关问题，不臆造数据，涉及权限外数据应说明并拒绝"
                 }
                 default_tools = {

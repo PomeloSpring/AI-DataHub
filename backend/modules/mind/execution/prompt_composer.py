@@ -7,6 +7,7 @@
 import logging
 
 from backend.common import as_bot_config_cache as config_cache
+from backend.common import i18n
 from backend.modules.mind.execution import slash_commands
 from backend.modules.mind.execution.chart_contract import (
     chart_contract_text, granted_render_tools, render_contract_text)
@@ -953,6 +954,7 @@ def compose_system_prompt(
     user_directive: str = "",
     chat_mode: str = "",
     skill_state: dict | None = None,
+    ui_locale: str = "",
 ) -> str:
     """组合执行层系统提示词.
 
@@ -984,6 +986,11 @@ def compose_system_prompt(
             **本轮主路**：对应剧本已绑定时强制展开其正文，并注入一段作业要求；未绑定时
             只按作业要求执行并显式告知用户剧本未绑定。它不是权限开关，也不屏蔽另一条路的
             能力（数据分析照样可以检索知识库）。
+        ui_locale: 使用者当前界面语言（Accept-Language 解析结果，只影响叙述文字）。
+            回复语言口径唯一在 backend/common/i18n.resolve_reply_language：**提问语言优先、
+            界面语言兜底、两者都无 → 默认中文**（定时分析/评测等无人值守链路不传本参）。
+            旧形态是技能正文与角色 persona 里硬写「中文回答」：界面切英文后 LLM 仍回中文，
+            且四处写死无法一处改（2026-11-16 拍板拆除，写死处由用例拦截重现）。
     """
     as_bots = as_bots or []
     skills = skills or []
@@ -1164,6 +1171,12 @@ def compose_system_prompt(
 
     # 敏感合规护城河(L1):强制加载当前用户的 RLS 行范围与合规屏蔽列, 越权请求须拒绝
     sections.append(COMPLIANCE_RULES)
+
+    # 回复语言（常驻、每轮重判）：提问语言优先 → 界面语言兜底 → 默认中文。
+    # 判定口径只在本模块一处（backend/common/i18n.resolve_reply_language），这里只负责注入；
+    # 技能正文与角色 persona 再写死某一种语言就会和这段矛盾（用例拦截硬编码）。
+    reply_locale, reply_basis = i18n.resolve_reply_language(question=question, ui_locale=ui_locale)
+    sections.append(i18n.reply_language_directive(reply_locale, reply_basis))
 
     # 图表契约:任一生效 AS-BOT 开启图表即注入
     if any(w.get("chart_enabled") for w in as_bots) or default_as_bot is None:

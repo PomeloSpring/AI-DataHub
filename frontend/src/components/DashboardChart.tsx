@@ -707,12 +707,18 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
   // Prepare data
   let processedData: any[] = [];
   let seriesField: string | null = null;
+  // 多系列分组扁平化会跳过空点（某系列在某类目无数据），processedData 的类目首现顺序
+  // 因此按「首个系列拥有的类目 → 后续系列补齐的类目」排列，G2 的 cat 轴拿首现顺序建域 →
+  // 时间类目被打乱（历史缺陷：月度×分站折线，cn 缺的月份被后面站点追加到 2026-11 之后）。
+  // 这里显式保留「全局排序后的完整类目序列」，在轴上钉死域顺序，与扁平化跳过空点互不干扰。
+  let xDomain: string[] | null = null;
 
   if (enableTimeAgg && isTimeData) {
     const aggResult = aggregateTimeData(rows, xCol, yCol, groupCol, aggMethod, timeGranularity);
     if (groupCol && aggResult.seriesData) {
       // Multi-series with time aggregation
       seriesField = groupCol;
+      xDomain = aggResult.xData;
       Object.entries(aggResult.seriesData).forEach(([name, values]) => {
         aggResult.xData.forEach((x, i) => {
           if (values[i] !== null) {
@@ -722,6 +728,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
       });
     } else {
       // Single series with time aggregation
+      xDomain = aggResult.xData;
       processedData = aggResult.xData.map((x, i) => ({
         [xCol]: x,
         [yCol]: aggResult.yData![i],
@@ -731,6 +738,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
     // Multi-series without time aggregation
     seriesField = groupCol;
     const grouped = groupDataByColumn(rows, xCol, yCol, groupCol!);
+    xDomain = grouped.xData;
     Object.entries(grouped.seriesData).forEach(([name, values]) => {
       grouped.xData.forEach((x, i) => {
         if (values[i] !== null) {
@@ -843,6 +851,10 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
     },
   };
 
+  // 多系列/时间聚合已算出「全局排序的完整类目序列」时，把 cat 轴域钉成它，
+  // 避免扁平化跳过空点导致的类目首现顺序错乱（时间类目被打乱）。单系列不设置，维持原样。
+  const xScaleDomain = xDomain && xDomain.length ? { x: { domain: xDomain } } : {};
+
   switch (chartType) {
     case 'bar': {
       const barSpec: any = {
@@ -859,7 +871,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
           x: xAxis,
           y: yAxis,
         },
-        scale: { color: { range: colors } },
+        scale: { ...xScaleDomain, color: { range: colors } },
         style: barBodyStyle(config, colors, processedData, seriesField),
         labels: config?.showLabel ? [{ text: yCol, style: { fill: textColor } }] : [],
         interaction: { tooltip: { shared: true } },
@@ -871,7 +883,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
       const lineEncode = { x: xCol, y: yCol, color: seriesField || undefined, shape: config?.smooth === false ? undefined : 'smooth' };
       if (config?.areaFill) return {
         ...baseSpec, type: 'view', data: processedData,
-        scale: { color: { range: colors } },
+        scale: { ...xScaleDomain, color: { range: colors } },
         axis: { x: xAxis, y: yAxis },
         children: [
           { type: 'area', encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config.smooth === false ? 'area' : 'smooth' }, style: areaFillStyle(config, colors, processedData, seriesField || null, 0.15) },
@@ -889,7 +901,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
           x: xAxis,
           y: yAxis,
         },
-        scale: { color: { range: colors } },
+        scale: { ...xScaleDomain, color: { range: colors } },
         style: { lineWidth: config?.lineWidth ?? 2 },
         interaction: { tooltip: { shared: true } },
       }, processedData, xCol);
@@ -905,7 +917,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
           x: xAxis,
           y: yAxis,
         },
-        scale: { color: { range: colors } },
+        scale: { ...xScaleDomain, color: { range: colors } },
         style: areaFillStyle(config, colors, processedData, seriesField || null),
         interaction: { tooltip: { shared: true } },
       }, processedData, xCol);

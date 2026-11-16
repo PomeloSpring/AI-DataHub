@@ -214,13 +214,17 @@ def test_build_turn_prompt_appends_directive_at_tail():
         return ExecutionTask(task_id="t", question="查近三个月的", context=ExecutionContext(extra=extra))
 
     plain = build_turn_prompt(_Adapter(), _task(""), include_history=False)
-    assert plain == "查近三个月的"                      # 没指定场景：不往提示词里塞空指令
+    # 没指定场景：不塞空指令；但语言行是常驻的（2026-11-16 接入，与作业行同一"末尾才生效"机制）
+    assert plain.startswith("查近三个月的")
+    assert "本轮用简体中文回复" in plain
 
     with_scene = build_turn_prompt(_Adapter(), _task("〔本轮指定分析场景：X〕\n要求……"),
                                    include_history=False)
     assert with_scene.startswith("查近三个月的")          # 问题在前，作业行在尾
-    assert with_scene.endswith("要求……")
     assert "〔本轮指定分析场景：X〕" in with_scene
+    # 顺序固定：问题 → 场景作业行 → 语言行（语言行不得挤掉场景指令）
+    assert with_scene.index("查近三个月的") < with_scene.index("〔本轮指定分析场景：X〕") \
+        < with_scene.index("本轮用简体中文回复")
 
 
 def test_prompt_splits_pinned_and_trigger_hit_sections():

@@ -16,9 +16,6 @@ RUN pip install --no-cache-dir -r shared-requirements.txt
 COPY backend/ ./backend/
 COPY sync/ ./sync/
 
-# Create directory for embedding model cache
-RUN mkdir -p /root/.cache/huggingface
-
 EXPOSE 8000
 
 # web 入口：单进程绑定 services.conf 登记的监听口（当前单一 web :8000，

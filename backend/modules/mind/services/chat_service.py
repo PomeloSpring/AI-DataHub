@@ -15,6 +15,8 @@ from typing import Optional
 
 from fastapi import Request
 
+from backend.common import i18n
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,6 +80,20 @@ def _server_elapsed_ms(result) -> int:
     if ms is None:
         ms = (result.meta or {}).get("elapsed_ms")
     return int(ms) if ms is not None else 0
+
+
+def _ui_locale_from_request(request) -> str:
+    """取使用者当前界面语言（Accept-Language 头），取不到返回空串。
+
+    这里只做“读到”，**不做回复语言判定**（判定唯一在
+    `backend/common/i18n.resolve_reply_language`：提问语言优先、界面语言兜底）。
+    无 Request 的内部调用（本体生成、定时分析、评测）自然拿到空串 → 走兜底，不猜浏览器语言。
+    """
+    try:
+        header = request.headers.get("accept-language") if request is not None else None
+    except Exception:  # noqa: BLE001 — 单测桩/非 starlette 对象不带 headers 时按“无界面语言”
+        return ""
+    return i18n.parse_accept_language(header)
 
 
 def _slash_directive(key: str) -> str:
@@ -361,6 +377,10 @@ class ChatService:
                     # 问答模式（深度分析/快速问答）：只带 key，由 secure_sdk 同源翻译为
                     # 作业要求与对应剧本名（避免两套措辞漂移）；不进工具入参/LLM 直接视野。
                     ("chat_mode", str(chat_mode or "")),
+                    # 使用者当前界面语言（Accept-Language）：服务端内部键，只决定回复叙述语言
+                    # （见 backend/common/i18n 与 prompt_composer 的「回复语言」段），不参与任何
+                    # 权限裁决。无头/不支持时为空串 = 没有界面语言，由提问语言/默认语言兜底。
+                    ("ui_locale", _ui_locale_from_request(request)),
                     # preflight 已解析的生效策略：服务端内部键，claim_session 据此复用
                     # 同请求内已读到的 DB 事实（只重编译不重读）；不进 LLM 视野。
                     ("_chat_policy", policy),

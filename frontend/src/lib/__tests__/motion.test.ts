@@ -343,7 +343,8 @@ describe('出现效果只有一个消费入口（源码级护栏）', () => {
       // P2/P3 新增面：看板挂载与正文出现也得从同一个口取
       'components/DashboardCanvas.tsx', 'pages/Screen.tsx', 'pages/Analysis.tsx',
       'components/editor/BoardMotionSection.tsx', 'components/admin/MotionPresetEditor.tsx',
-      'pages/home/ReadArticle.tsx', 'pages/content/ContentPreview.tsx'];
+      // 阅读正文抽取为共享件（/read/:slug 独立页与报告中心内嵌共用）：动效消费口随之从 ReadArticle 迁到 ArticleReader
+      'pages/home/ArticleReader.tsx', 'pages/content/ContentPreview.tsx'];
     for (const rel of consumers) {
       const code = fs.readFileSync(path.resolve(SRC, rel), 'utf8');
       // 渲染面走 useMotion；表单/工具面直接拿 lib/motion 的纯函数（两处都算接了口）

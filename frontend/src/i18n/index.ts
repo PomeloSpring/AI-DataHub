@@ -101,6 +101,18 @@ export function setLocale(locale: Locale): void {
   void i18n.changeLanguage(locale);
 }
 
+/**
+ * 请求头里的当前界面语言（唯一输出点）。
+ *
+ * 后端用它定 LLM 回复语言（口径在 backend/common/i18n.resolve_reply_language：
+ * **提问语言优先 → 界面语言兜底 → 默认中文**），报表骨架也按它标 `<html lang>`。
+ * 语言只影响叙述文字与文档属性，不参与任何权限裁决。
+ * axios 走 api/client.ts 的请求拦截器；SSE 用 fetch 不经过 axios，必须显式带本函数结果。
+ */
+export function localeHeaders(): Record<string, string> {
+  return { 'Accept-Language': i18n.language || DEFAULT_LOCALE };
+}
+
 // 多 tab 同步：另一标签页切语言时本页跟随（storage 事件只在跨 tab 触发）
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', e => {

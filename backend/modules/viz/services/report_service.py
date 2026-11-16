@@ -2242,7 +2242,8 @@ def _skeleton_html_head(theme: Optional[str]) -> list:
 
 
 def template_skeleton_from_layout(layout: dict, sample: bool = False,
-                                  theme: Optional[str] = None) -> str:
+                                  theme: Optional[str] = None,
+                                  lang: Optional[str] = None) -> str:
     """按版式契约产出一份报表骨架正文。
 
     ``sample=True`` 仅配置页预览用：图表块带明确标注的示例行，字模样式才能在预览里看得见
@@ -2250,6 +2251,10 @@ def template_skeleton_from_layout(layout: dict, sample: bool = False,
     套用模板新建报表与另存为模板：只给结构，一个数字都不塞。
 
     ``theme``：HTML 骨架的色值内联口径（见 ``_skeleton_html_head``）；``None``=不落色值。
+
+    ``lang``：骨架 HTML 的 `<html lang>`（使用者界面语言，Accept-Language 解析结果）。
+    留空按平台默认语言——骨架是给人起稿的文档属性，必须与里面文字同语言，
+    否则英文界面新建的报表骨架仍标 zh-CN（浏览器拼写/检索/读屏会错判）。
 
     layout 不记录图表挂在哪个章节下（抽取时只留结构），因此图表统一列在章节之后；
     这是骨架而不是原样副本，套用时由人/模型把图放回合适章节。
@@ -2259,7 +2264,11 @@ def template_skeleton_from_layout(layout: dict, sample: bool = False,
     headings = [str(h) for h in (layout.get("headings") or [])]
     charts = [c for c in (layout.get("charts") or []) if isinstance(c, dict)]
     if fmt == "html":
-        parts = ['<!doctype html>', '<html lang="zh-CN">'] + _skeleton_html_head(theme)
+        from backend.common import i18n
+        # 非法/未知语言不贴标签（不猜）：归一不进来就回平台默认，避免 `<html lang="zz-ZZ">` 这种
+        # 浏览器认不出的属性值（拼写/读屏会按默认语言错判）。
+        doc_lang = i18n.normalize_locale(lang) or i18n.DEFAULT_LOCALE
+        parts = ['<!doctype html>', f'<html lang="{doc_lang}">'] + _skeleton_html_head(theme)
         for h in (headings or ["报告标题"]):
             parts.append(f"<h2>{h}</h2>")
             parts.append(f'<p class="skeleton-hint">{_SKELETON_HINT}</p>')
@@ -2301,7 +2310,8 @@ def analyze_report_layout(content: str, fmt: str = "markdown", layout: dict = No
             "skeleton": template_skeleton_from_layout(resolved, sample=True, theme=theme)}
 
 
-def template_skeleton_by_key(template_key: str, theme: str = "") -> dict:
+def template_skeleton_by_key(template_key: str, theme: str = "",
+                             lang: Optional[str] = None) -> dict:
     """按模板取骨架正文（报表中心「套用模板」起稿），回 ``{found, name, format, theme, layout, skeleton}``。
 
     ``theme`` 由调用方传查看者当前主题（模板自己锁了主题时以模板为准，见 API 层）：
@@ -2312,7 +2322,7 @@ def template_skeleton_by_key(template_key: str, theme: str = "") -> dict:
         return tpl
     # 模板自己锁了主题就以它为准（那是这份资产的语义），没锁才用调用方传的查看者主题
     effective = str(tpl.get("theme") or theme or "")
-    return {**tpl, "skeleton": template_skeleton_from_layout(tpl.get("layout") or {}, theme=effective)}
+    return {**tpl, "skeleton": template_skeleton_from_layout(tpl.get("layout") or {}, theme=effective, lang=lang)}
 
 
 def save_report_as_template(report_id: int, user: dict, *, name: str = "",

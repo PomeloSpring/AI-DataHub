@@ -272,6 +272,10 @@ def build_options(adapter, task, backend):
         # 目前它只决定本轮作业要求，不绕过任何工具侧权限裁决（模式切换≠开关能力；
         # 按模式 deny_tools / 收紧轮次上限的硬门控尚未接线）。
         chat_mode=str(ctx.extra.get("chat_mode") or ""),
+        # 界面语言（Accept-Language，服务端内部键）：只决定回复叙述语言，不参与权限裁决。
+        # 提问语言优先于它（见 prompt_composer 的「回复语言」段）；旧形态是技能正文写死
+        # 「中文回答」，界面切英文后 LLM 仍回中文 —— 那属于配置面有、消费端没有的空承诺。
+        ui_locale=str(ctx.extra.get("ui_locale") or ""),
         skill_state=_skill_state,
     )
     # 本轮常驻了哪几份技能正文回写回合上下文：load_skill_guide 据此把“重复下发”降成
@@ -825,7 +829,14 @@ def build_turn_prompt(adapter, task, *, include_history: bool) -> str:
     """
     prompt = adapter._prompt_with_attachments(task, include_history=include_history)
     directive = str((task.context.extra or {}).get("_scene_turn_directive") or "").strip()
-    return f"{prompt}\n\n{directive}" if directive else prompt
+    if directive:
+        prompt = f"{prompt}\n\n{directive}"
+    # 回复语言同口径再复述到本轮问题之后（判定仍只有一处：backend/common/i18n）。
+    # 只写进系统提示词不够：实测证明常驻段会把前面的指令压过去（与上面场景作业行同一教训）。
+    from backend.common import i18n
+    lang, basis = i18n.resolve_reply_language(question=task.question or "",
+                                              ui_locale=str((task.context.extra or {}).get("ui_locale") or ""))
+    return f"{prompt}\n\n{i18n.turn_language_line(lang, basis)}"
 
 
 async def _execute_stream(adapter, task, backend):

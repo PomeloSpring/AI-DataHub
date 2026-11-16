@@ -8,10 +8,10 @@
 // 详情页「删除这一版」= 只删当前选中的那一版。定时任务产出留给任务调度。
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   FileBarChart, Loader2, Eye, Inbox, Pencil, Trash2, Search,
-  RefreshCw, CalendarClock, Layers, X, Send,
+  RefreshCw, CalendarClock, Layers, X, Send, Newspaper, Maximize2,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
@@ -31,6 +31,8 @@ import ReportExportMenu from '@/components/ReportExportMenu';
 import ReportTaskDialog from '@/components/ReportTaskDialog';
 import ReportPromoteDialog from '@/components/ReportPromoteDialog';
 import { useContentPerms } from '@/pages/content/shared';
+import ArticleReader from '@/pages/home/ArticleReader';
+import { contentApi, type ContentArticle } from '@/api/content';
 import { triggerScheduledTask } from '@/api/scheduledTask';
 import {
   listReports, getReportDetail, updateReport, deleteReport,
@@ -73,6 +75,8 @@ const SOURCE_META: Record<string, { cls: string }> = {
   manual: { cls: 'text-emerald-600 border-emerald-200' },
   conversation: { cls: 'text-teal-600 border-teal-200' },
   legacy: { cls: 'text-amber-600 border-amber-200' },
+  // 内容中心已发布内容（不是报告来源，仅供合并清单的徽章配色/取色复用）
+  content: { cls: 'text-purple-600 border-purple-200' },
 };
 const SOURCE_ORDER: ReportSourceType[] = ['scheduled', 'analysis', 'conversation', 'manual', 'legacy'];
 
@@ -178,7 +182,20 @@ export default function ReportsCenter() {
   const [taskDialogOpen, setTaskDialogOpen] = useState(false);
   // 提交到内容管理审核（报告 → 内容提升通道）：入口按 article:manage 置灰，原因写进 title
   const [promoteOpen, setPromoteOpen] = useState(false);
-  const { has: hasPerm } = useContentPerms();
+  const { has: hasPerm, loaded: contentPermsLoaded } = useContentPerms();
+  const navigate = useNavigate();
+  // 内容中心已发布内容混入本报告清单（只读消费，点击跳 /read/:slug）：可见性由 article:read 裁决，
+  // 前端只据此决定发不发请求、列不列条目，服务端仍是唯一门（与首页资讯区同一把码）。
+  const canReadContent = hasPerm('article:read');
+  const [articles, setArticles] = useState<ContentArticle[]>([]);
+  const [articlesError, setArticlesError] = useState('');
+  // 内容内嵌阅读：选中哪篇（slug）与在读第几期（本地态，不进 URL）；置空 = 回到报告详情。
+  const [activeArticleSlug, setActiveArticleSlug] = useState('');
+  const [articleRelease, setArticleRelease] = useState(0);
+  // 落地自动展示首项不计阅读（false），用户主动点击内容才计（true）——避免每次进报告中心都顶高门户「最多阅读」
+  const [articleCountView, setArticleCountView] = useState(false);
+  // 内容清单是否已落定（resolve 或 error）：自动选中首项需等它，否则报告先返回时会抢在内容之前锁错首项
+  const [articlesSettled, setArticlesSettled] = useState(false);
 
   // 报告跟随属主、跨工作空间取全量：创建工作空间暂未开放(一个账号一个默认空间),
   // 而报告本来就不按空间隔离 —— 空间筛选器给不出任何收窄效果, 已移除。
@@ -200,6 +217,21 @@ export default function ReportsCenter() {
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, []);
+
+  // 内容中心已发布内容：空 status = 服务端只回在线（live）条目，草稿/待审在服端一道门里被挡。
+  // 权限未就绪前不发请求（否则把注定 403 的请求当“没内容”）；失败显式报错 + 重试，不回退成空清单。
+  const reloadArticles = useCallback(() => {
+    setArticlesError('');
+    setArticlesSettled(false);
+    contentApi.list({ sort: 'latest', page_size: 50 })
+      .then(({ data }) => { setArticles(data.items || []); setArticlesSettled(true); })
+      .catch(() => { setArticles([]); setArticlesError(t('center.contentLoadFailed')); setArticlesSettled(true); });
+  }, [t]);
+
+  useEffect(() => {
+    if (!contentPermsLoaded || !canReadContent) return;
+    reloadArticles();
+  }, [contentPermsLoaded, canReadContent, reloadArticles]);
 
   // 按报告归集(list 已时间倒序, 组内顺序即版本顺序)
   const series = useMemo<Series[]>(() => {
@@ -225,14 +257,65 @@ export default function ReportsCenter() {
       && (!kw || s.name.toLowerCase().includes(kw)));
   }, [reports, sourceFilter, keyword]);
 
-  // 默认选中最新的报告组及其最新版本
+  // 内容条目的排序日：优先发布时间，回退更新时间（与资讯流口径一致）。
+  const articleDate = (a: ContentArticle): string => a.published_at || a.updated_at || '';
+
+  // 左栏统一清单：报告（按版本归集的 series）与内容中心已发布内容**并集**，按日期倒序。
+  // 来源筛选：'content' 只列内容（series 无此来源自然为空）、具体报告来源只列报告、'all' 列并集。
+  // 内容只在具备 article:read 时才入列；内容条目不参与右栏详情（点击跳 /read/:slug）。
+  type ListEntry =
+    | { kind: 'report'; date: string; series: Series }
+    | { kind: 'content'; date: string; article: ContentArticle };
+  const entries = useMemo<ListEntry[]>(() => {
+    const kw = keyword.trim().toLowerCase();
+    const reportEntries: ListEntry[] = series.map(s => ({
+      kind: 'report' as const, date: s.reports[0]?.created_at || '', series: s,
+    }));
+    const contentOn = canReadContent && (sourceFilter === 'all' || sourceFilter === 'content');
+    const contentEntries: ListEntry[] = contentOn
+      ? articles
+          .filter(a => !kw || (a.title || '').toLowerCase().includes(kw))
+          .map(a => ({ kind: 'content' as const, date: articleDate(a), article: a }))
+      : [];
+    return [...reportEntries, ...contentEntries]
+      .sort((x, y) => (y.date || '').localeCompare(x.date || ''));
+  }, [series, articles, canReadContent, sourceFilter, keyword]);
+
+  // 自动选中首项的门控：报告清单加载完 +（若可读内容）内容清单已落定。
+  // 不等内容就会“报告先回→锁成报告→内容后到不再改选”，使「进入即展示第一条（资讯）」在竞态下落空。
+  // （权限在登录时就已就绪，canReadContent 首帧即正确；无需再等 contentPermsLoaded，否则不加载权限 store 的报告场景会选不中。）
+  const canAutoSelect = !loading && (!canReadContent || articlesSettled);
+
+  // 内容条目就地内嵌阅读（不离开报告中心）；全屏按钮才 navigate 到独立阅读页。
+  // 切进内容 = 离开正在直播的那轮，中止它（与 pickSeries 同口径）；用稳定 ref/setter 内联，不依赖后置的 stopRefresh。
+  const selectArticle = useCallback((slug: string) => {
+    if (refreshCtrl.current) { refreshCtrl.current.abort(); refreshCtrl.current = null; setRefresh(EMPTY_REFRESH); }
+    setActiveArticleSlug(slug);
+    setArticleRelease(0);
+    setArticleCountView(true);   // 用户主动点击（含同栏目推荐）= 一次真实阅读，计
+    // 不清 activeKey：否则默认选中 effect（activeKey 为空时重选 series[0]）会把某报告重新选中并高亮；
+    // 报告卡片高亮改由 !activeArticleSlug 门控（见列表渲染），内容阅读期间不高亮任何报告。
+    setError('');
+  }, []);
+
+  // 进入报告中心默认展示「合并清单的第一条」（按时间倒序的真实首项，可能是资讯也可能是报告），
+  // 与列表顶部一致（历史缺陷：只从报告里取 series[0]，资讯排在前时默认展示的却不是首项）。
+  // 仅在“什么都没选过”时兜底选首项；用户手动选过报告/资讯后不再覆盖。
   useEffect(() => {
-    if (!series.length) return;
-    if (!activeKey || !series.some(s => s.key === activeKey)) {
-      setActiveKey(series[0].key);
-      setActiveId(series[0].reports[0].id);
+    if (!canAutoSelect || !entries.length) return;
+    const nothingChosen = !activeArticleSlug
+      && (!activeKey || !series.some(s => s.key === activeKey));
+    if (!nothingChosen) return;
+    const first = entries[0];
+    if (first.kind === 'content') {
+      setActiveArticleSlug(first.article.slug);
+      setArticleRelease(0);
+      setArticleCountView(false);   // 落地自动展示首项不算主动阅读，不计（避免顶高门户统计）
+    } else {
+      setActiveKey(first.series.key);
+      setActiveId(first.series.reports[0]?.id ?? 0);
     }
-  }, [series, activeKey]);
+  }, [canAutoSelect, entries, series, activeKey, activeArticleSlug]);
 
   const loadDetail = useCallback((id: number) => {
     if (!id) return;
@@ -282,6 +365,7 @@ export default function ReportsCenter() {
   const pickSeries = (s: Series) => {
     // 切到另一份报告 = 离开了正在直播的那一轮 → 中止它（用户要求：离开就终止）
     if (refresh.active) stopRefresh(false);
+    setActiveArticleSlug('');   // 回到报告详情态，收起内嵌阅读
     setActiveKey(s.key);
     setActiveId(s.reports[0]?.id ?? 0);
     setError('');
@@ -599,6 +683,7 @@ export default function ReportsCenter() {
           <SelectTrigger className="w-[140px] h-8 text-xs"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t('center.allSources')}</SelectItem>
+            {canReadContent && <SelectItem value="content">{t('center.filterContent')}</SelectItem>}
             {SOURCE_ORDER.map(s => (
               <SelectItem key={s} value={s}>{sourceLabel(s)}</SelectItem>
             ))}
@@ -615,18 +700,62 @@ export default function ReportsCenter() {
         <div className="flex-1 flex items-center justify-center text-muted-foreground">
           <Loader2 className="h-5 w-5 animate-spin mr-2" /> {t('common:state.loading')}
         </div>
-      ) : !series.length ? (
+      ) : !entries.length ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground border border-dashed rounded-lg bg-card">
           <Inbox className="h-10 w-10 opacity-50" />
-          <p className="text-sm">{error || t('center.empty')}</p>
+          <p className="text-sm">{error || articlesError || t('center.empty')}</p>
+          {articlesError && !error && (
+            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={reloadArticles}>
+              <RefreshCw className="h-3 w-3 mr-1" /> {t('center.contentRetry')}
+            </Button>
+          )}
         </div>
       ) : (
         <div className="flex-1 flex gap-4 min-h-0">
-          {/* 左栏: 报告清单(任务型按版本归集) */}
+          {/* 左栏: 报告清单(任务型按版本归集) + 内容中心已发布内容，按日期倒序混排 */}
           <div className="w-72 shrink-0 overflow-y-auto border rounded-lg bg-card">
-            {series.map(s => {
+            {canReadContent && articlesError && (
+              <div className="px-3 py-2.5 border-b" role="alert">
+                <p className="text-xs text-destructive">{articlesError}</p>
+                <Button variant="outline" size="sm" className="mt-1.5 h-7 text-xs" onClick={reloadArticles}>
+                  <RefreshCw className="h-3 w-3 mr-1" /> {t('center.contentRetry')}
+                </Button>
+              </div>
+            )}
+            {entries.map(entry => entry.kind === 'content' ? (
+              /* 内容条目：只读消费，就地内嵌到右栏阅读（无版本/重跑/编辑/删除）。
+                 名称一律用业务可读标题 + 栏目名，不露裸 id/slug（slug 只进选择态，ui-resource-display §1）。 */
+              <button
+                key={`content:${entry.article.slug}`}
+                type="button"
+                onClick={() => selectArticle(entry.article.slug)}
+                className={`w-full px-3 py-2.5 border-b last:border-b-0 text-left transition-colors ${
+                  activeArticleSlug === entry.article.slug
+                    ? 'bg-primary/10 border-l-2 border-l-primary' : 'hover:bg-muted/50'
+                }`}
+              >
+                <span className={`block text-sm font-medium truncate ${activeArticleSlug === entry.article.slug ? 'text-primary' : ''}`}>{entry.article.title}</span>
+                <span className="flex items-center gap-2 mt-1">
+                  <Badge variant="outline" className={`shrink-0 text-[10px] ${SOURCE_META.content.cls}`}>
+                    <Newspaper className="h-3 w-3 mr-1" />{t('center.contentBadge')}
+                  </Badge>
+                  {!!entry.article.category_label && (
+                    <span className="flex items-center gap-1 text-xs text-muted-foreground truncate">
+                      {!!entry.article.category_color && (
+                        <span aria-hidden className="size-1.5 rounded-full"
+                          style={{ backgroundColor: entry.article.category_color }} />)}
+                      {entry.article.category_label}
+                    </span>
+                  )}
+                  <span className="ml-auto text-xs text-muted-foreground shrink-0">
+                    {entry.date ? new Date(entry.date).toLocaleDateString(i18n.language) : '-'}
+                  </span>
+                </span>
+              </button>
+            ) : (() => {
+              const s = entry.series;
               const latest = s.reports[0];
-              const active = s.key === activeKey;
+              const active = !activeArticleSlug && s.key === activeKey;
               return (
                 <div key={s.key}
                   className={`w-full px-3 py-2.5 border-b last:border-b-0 transition-colors ${
@@ -670,11 +799,39 @@ export default function ReportsCenter() {
                   </div>
                 </div>
               );
-            })}
+            })())}
           </div>
 
-          {/* 右栏: 报告详情 */}
+          {/* 右栏: 选中内容 → 内嵌阅读（就地看正文 + 全屏跳独立页）；否则 → 报告详情 */}
           <div className="flex-1 min-w-0 flex flex-col border rounded-lg bg-card overflow-hidden">
+            {activeArticleSlug ? (
+              <>
+                <div className="shrink-0 px-5 py-3 border-b flex items-center justify-between gap-3">
+                  <div className="min-w-0 flex items-center gap-2">
+                    <Badge variant="outline" className={`shrink-0 text-[10px] ${SOURCE_META.content.cls}`}>
+                      <Newspaper className="h-3 w-3 mr-1" />{t('center.contentBadge')}
+                    </Badge>
+                    <h2 className="text-sm font-semibold truncate">
+                      {articles.find(a => a.slug === activeArticleSlug)?.title || t('center.contentBadge')}
+                    </h2>
+                  </div>
+                  {/* 全屏 = 打开独立阅读页 /read/:slug（单独网页）；内嵌只读，编辑/发布回内容中心 */}
+                  <Button variant="outline" size="sm" className="h-8 text-xs shrink-0"
+                    title={t('center.contentFullscreenTitle')}
+                    onClick={() => navigate(`/read/${encodeURIComponent(activeArticleSlug)}`)}>
+                    <Maximize2 className="h-3 w-3 mr-1" />{t('center.contentFullscreen')}
+                  </Button>
+                </div>
+                <ArticleReader
+                  slug={activeArticleSlug}
+                  release={articleRelease}
+                  countView={articleCountView}
+                  onPickRelease={v => setArticleRelease(Number(v) || 0)}
+                  onOpenArticle={selectArticle}
+                />
+              </>
+            ) : (
+              <>
             <div className="shrink-0 px-5 py-3 border-b flex items-center justify-between gap-3 flex-wrap gap-y-2">
               <div className="min-w-0 flex-1">
                 <h2 className="text-sm font-semibold truncate">{detail?.title || activeSeries?.name || t('center.selectReport')}</h2>
@@ -842,6 +999,8 @@ export default function ReportsCenter() {
                 </>
               )}
             </div>
+              </>
+            )}
           </div>
         </div>
       )}

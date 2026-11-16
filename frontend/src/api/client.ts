@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { localeHeaders } from '@/i18n';
 
 const client = axios.create({ baseURL: '/api' });
 
@@ -77,6 +78,9 @@ function toLoginIfNotAlready(): void {
 client.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
+  // 界面语言随每个请求下发：后端据此定 LLM 回复语言与文档 <html lang>
+  // （口径：提问语言优先 → 界面语言兜底，见 backend/common/i18n）。
+  Object.entries(localeHeaders()).forEach(([k, v]) => { config.headers[k] = v; });
   return config;
 });
 

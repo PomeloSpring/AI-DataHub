@@ -186,10 +186,11 @@ describe('首页资讯区的阅读页 /read/:slug', () => {
     expect(screen.queryByText('上一篇')).not.toBeInTheDocument();
   });
 
-  it('返回首页回到首页资讯区，不在阅读页留下第二套导航', async () => {
+  it('独立阅读页不再提供「返回首页」（用户拍板：相当于单独的网页）', async () => {
     renderRead();
-    await userEvent.click(await screen.findByRole('button', { name: /返回首页/ }, { timeout: 3000 }));
-    await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/'));
+    await screen.findByRole('main');
+    expect(screen.queryByRole('button', { name: /返回首页/ })).toBeNull();
+    expect(screen.queryByText('首页')).toBeNull();
   });
 });
 

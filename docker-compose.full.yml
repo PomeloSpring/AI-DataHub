@@ -60,12 +60,6 @@ services:
       VECTOR_DB_DATABASE: adh
       # 应用配置
       ADH_SECRET_KEY: ${ADH_SECRET_KEY:-change-me-in-production}
-      # Embedding
-      EMBEDDING_MODEL_PATH: ${EMBEDDING_MODEL_PATH:-shibing624/text2vec-base-chinese}
-      EMBEDDING_DIM: ${EMBEDDING_DIM:-768}
-      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
-    volumes:
-      - embedding-cache:/root/.cache/huggingface
     depends_on:
       mysql:
         condition: service_healthy
@@ -95,7 +89,6 @@ services:
 
 volumes:
   mysql-data:
-  embedding-cache:
 
 networks:
   chatbi:

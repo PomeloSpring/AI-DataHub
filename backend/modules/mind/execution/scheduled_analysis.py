@@ -609,6 +609,9 @@ def _build_oneshot_options(run: "_ScheduledRun"):
             report_theme_id=str(run.config.get("report_theme") or ""),
             site_code=str(ctx.extra.get("site_code") or ""),
             authorized_sites=ctx.extra.get("authorized_sites"),
+            # 无人值守链路不传 ui_locale（任务里没有“使用者的界面”）：
+            # 回复语言仍按「任务指令正文的语言」判——中文指令出中文、英文指令出英文，
+            # 判不出才回平台默认。不能在这里写死语言，否则英文任务又被拉回中文。
             question=run.question or "",
             # 无人值守：没有人在现场纠偏，不因省字数拿技能正文（分析剧本/交付口径）冒险；
             # 仍走能力门控，未授权的工具不会诱导模型去用。
