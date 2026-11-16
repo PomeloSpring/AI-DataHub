@@ -110,13 +110,38 @@ describe('静态护栏：列表页分页一律走 PaginationBar，禁止裸写�
     expect(offenders).toEqual([]);
   });
 
-  it('分页档位全站统一 20/50/100：页面不得自定义 pageSizeOptions（用户反馈「怎么还能有 12 条」）', () => {
+  /**
+   * 分页档位只能用规范集 {20,50,100} 的子集（用户反馈「怎么还能有 12 条」）。
+   *
+   * 为什么不再一律禁掉显式 `pageSizeOptions`：`list-pagination-server-side` §3 明文要求
+   * 「档位候选必须 ≤ 服务端 page_size 上限」—— 接口 `Query(le=50)` 时给 100 只会换来 422（死选项），
+   * 典型就是内容中心文章清单（`/content/articles` le=50 → 档位 [20, 50]）。旧护栏把这种
+   * “按服务端能力收窄”也一并拒掉，与同族规则自相矛盾（2026-11-16 全量 vitest 跑出）。
+   * 收紧为两条：① 出现的档位必须都 ∈ 规范集（12/24 这类自定义档位仍拦）；
+   * ② 窄于规范集时必须就地写明服务端上限依据（注释含 `le=` 或「上限」），
+   *   防止“顺手写个收窄档位”被当成合理配置。默认仍是 [20,50,100]，不传就不进本判定。
+   */
+  it('分页档位只能用规范集 20/50/100 的子集，收窄必须写明服务端上限依据', () => {
+    const canonical = [20, 50, 100];
     const offenders: string[] = [];
     for (const file of walk(PAGES_DIR)) {
       const code = fs.readFileSync(file, 'utf8');
-      // 默认已是 [20,50,100]，任何页面显式传 pageSizeOptions 都是漂移
-      if (/pageSizeOptions=/.test(code)) {
-        offenders.push(path.relative(PAGES_DIR, file));
+      const re = /pageSizeOptions=\{([A-Za-z0-9_]+|\[[^\]]*\])\}/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(code))) {
+        const ref = m[1];
+        const rel = path.relative(PAGES_DIR, file);
+        // 解析档位清单：内联字面量直接取，标识符则回查同文件的 const 声明
+        const src = ref.startsWith('[')
+          ? ref
+          : (new RegExp(`(?:const|let)\\s+${ref}\\s*(?::\\s*number\\[\\s*\\])?\\s*=\\s*(\\[[^\\]]*\\])`).exec(code)?.[1] ?? '');
+        const nums = (src.match(/\d+/g) ?? []).map(Number);
+        if (!nums.length) { offenders.push(`${rel} → 档位清单解不到数字（${ref}）`); continue; }
+        const bad = nums.filter(n => !canonical.includes(n));
+        if (bad.length) { offenders.push(`${rel} → ${bad.join('/')}`); continue; }
+        if (nums.length < canonical.length && !/le=|page_size[^\n]{0,30}上限|上限[^\n]{0,30}page_size/.test(code)) {
+          offenders.push(`${rel} → 收窄档位未就地写明服务端上限依据`);
+        }
       }
     }
     expect(offenders).toEqual([]);
